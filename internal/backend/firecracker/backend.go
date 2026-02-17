@@ -73,13 +73,27 @@ func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.Run
 	if !req.Launch {
 		planPath := filepath.Join(runDir, "passthrough-plan.json")
 		plan := map[string]any{
-			"backend":       "firecracker",
-			"mode":          "host-passthrough",
-			"not_sandboxed": true,
-			"command_path":  cmdPath,
+			"backend":      "firecracker",
+			"mode":         "plan-only",
+			"command_path": cmdPath,
+		}
+		if req.HostPassthrough {
+			plan["mode"] = "host-passthrough"
+			plan["not_sandboxed"] = true
 		}
 		if err := writeJSON(planPath, plan); err != nil {
 			return nil, err
+		}
+
+		if !req.HostPassthrough {
+			return &backend.RunResult{
+				RunID:      req.RunID,
+				ExitCode:   0,
+				LaunchedVM: false,
+				PlanPath:   planPath,
+				RunDir:     runDir,
+				Message:    "firecracker execution plan generated; command not executed (set --launch or --host-passthrough)",
+			}, nil
 		}
 
 		exitCode, err := runHostPassthrough(ctx, req.CWD, req.Command)

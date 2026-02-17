@@ -48,7 +48,8 @@ type ExecCommand struct {
 	GuestCID          uint32 `help:"Guest vsock CID for launched VM exec path" default:"3"`
 	GuestPort         uint32 `help:"Guest vsock port for command agent" default:"10700"`
 	RetainWrites      bool   `help:"Retain rootfs writes from launched runs in the run directory (default: discard)"`
-	Launch            bool   `help:"Launch Firecracker for a short MVP window; otherwise generate plan only"`
+	HostPassthrough   bool   `help:"Run command directly on host when --launch is not set (unsafe, not sandboxed)"`
+	Launch            bool   `help:"Launch Firecracker VM for command execution; otherwise generate plan only unless --host-passthrough is set"`
 	LaunchSeconds     int64  `help:"Launch/guest-exec timeout in seconds" default:"30"`
 
 	Command []string `arg:"" passthrough:"" required:"" help:"Command to execute"`
@@ -167,6 +168,7 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 			GuestCID:        e.GuestCID,
 			GuestPort:       e.GuestPort,
 			RetainWrites:    e.RetainWrites,
+			HostPassthrough: e.HostPassthrough,
 			Launch:          e.Launch,
 			LaunchSeconds:   e.LaunchSeconds,
 		},

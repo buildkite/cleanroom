@@ -91,6 +91,9 @@ func Compile(raw rawPolicy) (*CompiledPolicy, error) {
 	if raw.Version == 0 {
 		return nil, errors.New("policy missing required field: version")
 	}
+	if raw.Version != 1 {
+		return nil, fmt.Errorf("unsupported policy version %d: only version 1 is supported", raw.Version)
+	}
 
 	networkDefault := strings.TrimSpace(strings.ToLower(raw.Sandbox.Network.Default))
 	if networkDefault == "" {

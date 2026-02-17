@@ -80,6 +80,19 @@ func TestCompileRejectsAllowDefault(t *testing.T) {
 	}
 }
 
+func TestCompileRejectsUnsupportedVersion(t *testing.T) {
+	t.Parallel()
+
+	raw := rawPolicy{}
+	raw.Version = 2
+	raw.Sandbox.Network.Default = "deny"
+
+	_, err := Compile(raw)
+	if err == nil {
+		t.Fatal("expected compile to fail for unsupported version")
+	}
+}
+
 func TestCompileHashStable(t *testing.T) {
 	t.Parallel()
 

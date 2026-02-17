@@ -29,6 +29,7 @@ type FirecrackerConfig struct {
 	GuestCID        uint32
 	GuestPort       uint32
 	RetainWrites    bool
+	HostPassthrough bool
 	Launch          bool
 	LaunchSeconds   int64
 }
