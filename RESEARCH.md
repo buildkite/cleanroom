@@ -29,6 +29,10 @@ Primary goal for v1:
 - [Sprites release notes](https://sprites.dev/release-notes)
 - [superfly/sprites-docs](https://github.com/superfly/sprites-docs)
 - [superfly/sprites-go](https://github.com/superfly/sprites-go)
+- [containers/libkrun](https://github.com/containers/libkrun) (validated release `v1.17.3`, published 2026-02-09)
+- [firecracker-microvm/firecracker](https://github.com/firecracker-microvm/firecracker) (validated release `v1.14.1`, published 2026-01-20)
+- [Firecracker FAQ](https://github.com/firecracker-microvm/firecracker/blob/main/FAQ.md)
+- [Firecracker production host setup](https://github.com/firecracker-microvm/firecracker/blob/main/docs/prod-host-setup.md)
 - [Cleanroom concept gist](https://gist.github.com/lox/cd5a74bee0c98e15c254e780bb73dd11)
 
 ## Shortlist reviewed
@@ -279,6 +283,22 @@ cleanroom exec
 3. Keep rootfs mutation host-side with a tiny guest runtime, but keep it minimal to reduce boot drift.
 4. Build lifecycle DB + reconciliation early, before adding advanced policy features, to avoid leaked TAP/nftables resources.
 5. Wire `content-cache` before implementing lockfile strictness so path mediation is in place first.
+
+## `libkrun` vs Firecracker for Cleanroom local backend
+
+Validation snapshot date: 2026-02-17.
+
+| Dimension | Firecracker | `libkrun` | Cleanroom impact |
+|---|---|---|---|
+| Isolation model | Purpose-built for secure multi-tenant workloads; production guidance explicitly expects seccomp + jailer/cgroup/namespace hardening. | Upstream security model states guest and VMM are the same security context; host isolation of the VMM is required to contain guest access. | Firecracker is a better default fit for strict isolation guarantees in Linux CI/agent workloads. |
+| Network model | Conventional microVM NIC model (virtio-net/TAP), straightforward to combine with host firewall policy and auditable allow/deny behavior. | Can use virtio-net, but default TSI mode proxies sockets through vsock in the VMM context; upstream docs treat guest+VMM as one network context. | Firecracker maps more cleanly to deterministic host/port egress enforcement and reason-code logging. |
+| Platform support | Linux host focused (KVM-based). | Linux/KVM and macOS ARM64/HVF support. | `libkrun` is attractive for a future macOS local-dev backend where parity can be relaxed. |
+| Scope and ergonomics | Full microVM manager with stable API surface and production hardening docs. | Embeddable library with simple C API; explicitly not trying to be a generic VMM. | `libkrun` is simpler to embed, but would still require significant Cleanroom-side hardening and policy plumbing. |
+
+Answer to "Would `libkrun` be better than Firecracker?":
+
+- For Cleanroom's v1 Linux backend and security goals, no: Firecracker remains the better primary choice.
+- `libkrun` is still useful as a potential secondary backend for macOS developer workflows with explicit capability downgrades.
 
 ## Key design inferences from the research
 
