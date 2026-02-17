@@ -27,8 +27,9 @@ The result is a safer baseline:
 Once implemented:
 
 ```bash
+cleanroom serve --listen unix://$XDG_RUNTIME_DIR/cleanroom/cleanroom.sock
 cleanroom policy validate
-cleanroom exec npm test
+cleanroom exec -- "npm test"
 ```
 
 ## Configuration: `cleanroom.yaml`
@@ -88,13 +89,21 @@ The policy maps to three enforcement layers:
 cleanroom policy validate
 ```
 
-### 2) Run a task in a sandbox
+### 2) Start the local control-plane server
+
+```bash
+cleanroom serve --listen unix://$XDG_RUNTIME_DIR/cleanroom/cleanroom.sock
+```
+
+All CLI commands (including `cleanroom exec`) talk to this API endpoint.
+
+### 3) Run a task in a sandbox
 
 ```bash
 cleanroom exec -- "npm install && npm test"
 ```
 
-### 2b) Run an agentic task in a sandbox
+### 3b) Run an agentic task in a sandbox
 
 ```bash
 cleanroom exec -- "agent-tool execute 'resolve docs updates and open PR branch'"
@@ -107,6 +116,35 @@ cleanroom exec --backend sprites -- "pytest -q"
 ```
 
 The same command shape works for local tools, local scripts, and agent tasks.
+
+## Server + `exec` UX
+
+Cleanroom uses a client/server model with one binary:
+
+```bash
+cleanroom serve --listen unix://$XDG_RUNTIME_DIR/cleanroom/cleanroom.sock
+```
+
+`cleanroom exec` remains the primary command UX and talks to the server API under the hood.
+
+```bash
+cleanroom exec -- "npm test"
+```
+
+Useful forms:
+
+```bash
+cleanroom exec -it -- bash
+cleanroom exec -d -- "npm run watch"
+cleanroom exec --sandbox dev --reuse -- "npm test"
+```
+
+Execution behavior:
+- resolves policy and creates a sandbox (ephemeral by default)
+- creates an execution and streams output
+- returns the workload exit code
+- tears down ephemeral sandboxes after execution
+- first `Ctrl-C` cancels execution, second `Ctrl-C` detaches the client stream
 
 ## Mise integration (first class)
 
@@ -147,14 +185,15 @@ sandbox:
       - .mise/config.toml
 ```
 
-### 3) Watch / inspect
+### 4) Watch / inspect
 
 ```bash
-cleanroom status --id <run-id>
-cleanroom policy apply --json
+cleanroom sandboxes list
+cleanroom executions get <sandbox-id> <execution-id>
+cleanroom sandboxes events <sandbox-id> --follow
 ```
 
-### 4) See what would run
+### 5) See what would run
 
 ```bash
 cleanroom policy validate --json
@@ -164,9 +203,10 @@ This prints the resolved policy and effective network/registry plan before execu
 
 ## What happens at runtime
 
-- Cleanroom reads policy and builds an internal execution spec.
+- `cleanroom exec` sends requests to the `cleanroom serve` API.
+- The control plane reads policy and builds an internal execution spec.
 - If both `cleanroom.yaml` and `.buildkite/cleanroom.yaml` exist, root config wins and `.buildkite` is ignored with a warning.
-- It starts the selected backend and applies the deny-by-default egress policy.
+- The server starts the selected backend and applies the deny-by-default egress policy.
 - Allowed package manager traffic is directed through `content-cache`.
 - Git operations can be routed through cache as well.
 - Secrets are injected only at runtime into runtime components, not from policy files.
