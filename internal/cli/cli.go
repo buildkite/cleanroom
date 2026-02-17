@@ -12,19 +12,24 @@ import (
 	"github.com/alecthomas/kong"
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/backend/firecracker"
+	"github.com/buildkite/cleanroom/internal/paths"
 	"github.com/buildkite/cleanroom/internal/policy"
+	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 )
 
 type runtimeContext struct {
-	CWD      string
-	Stdout   *os.File
-	Loader   policy.Loader
-	Backends map[string]backend.Adapter
+	CWD        string
+	Stdout     *os.File
+	Loader     policy.Loader
+	Config     runtimeconfig.Config
+	ConfigPath string
+	Backends   map[string]backend.Adapter
 }
 
 type CLI struct {
 	Policy PolicyCommand `cmd:"" help:"Policy commands"`
 	Exec   ExecCommand   `cmd:"" help:"Execute a command in a cleanroom backend"`
+	Doctor DoctorCommand `cmd:"" help:"Run environment and backend diagnostics"`
 	Status StatusCommand `cmd:"" help:"Inspect run artifacts"`
 }
 
@@ -37,26 +42,23 @@ type PolicyValidateCommand struct {
 }
 
 type ExecCommand struct {
-	Backend string `help:"Execution backend" default:"firecracker" enum:"firecracker"`
+	Backend string `help:"Execution backend (defaults to runtime config or firecracker)"`
 
-	FirecrackerBinary string `help:"Path to firecracker binary" default:"firecracker"`
-	KernelImage       string `help:"Path to Firecracker kernel image"`
-	RootFS            string `help:"Path to Firecracker root filesystem image"`
-	RunDir            string `help:"Run directory for generated artifacts (default: /tmp/cleanroom/<run-id>)"`
-	VCPUs             int64  `help:"Number of virtual CPUs" default:"1"`
-	MemoryMiB         int64  `help:"VM memory in MiB" default:"512"`
-	GuestCID          uint32 `help:"Guest vsock CID for launched VM exec path" default:"3"`
-	GuestPort         uint32 `help:"Guest vsock port for command agent" default:"10700"`
-	RetainWrites      bool   `help:"Retain rootfs writes from launched runs in the run directory (default: discard)"`
-	HostPassthrough   bool   `help:"Run command directly on host when --launch is not set (unsafe, not sandboxed)"`
-	Launch            bool   `help:"Launch Firecracker VM for command execution; otherwise generate plan only unless --host-passthrough is set"`
-	LaunchSeconds     int64  `help:"Launch/guest-exec timeout in seconds" default:"30"`
+	RunDir          string `help:"Run directory for generated artifacts (default: XDG runtime/state cleanroom path)"`
+	HostPassthrough bool   `help:"Run command directly on host when --launch is not set (unsafe, not sandboxed)"`
+	Launch          bool   `help:"Launch selected backend for command execution; otherwise generate plan only unless --host-passthrough is set"`
+	LaunchSeconds   int64  `help:"Launch/guest-exec timeout in seconds"`
 
 	Command []string `arg:"" passthrough:"" required:"" help:"Command to execute"`
 }
 
 type StatusCommand struct {
 	RunID string `help:"Run ID to inspect"`
+}
+
+type DoctorCommand struct {
+	Backend string `help:"Execution backend to diagnose (defaults to runtime config or firecracker)"`
+	JSON    bool   `help:"Print doctor report as JSON"`
 }
 
 type exitCodeError struct {
@@ -81,10 +83,17 @@ func Run(args []string) error {
 		return err
 	}
 
+	cfg, cfgPath, err := runtimeconfig.Load()
+	if err != nil {
+		return err
+	}
+
 	runtimeCtx := &runtimeContext{
-		CWD:    cwd,
-		Stdout: os.Stdout,
-		Loader: policy.Loader{},
+		CWD:        cwd,
+		Stdout:     os.Stdout,
+		Loader:     policy.Loader{},
+		Config:     cfg,
+		ConfigPath: cfgPath,
 		Backends: map[string]backend.Adapter{
 			"firecracker": firecracker.New(),
 		},
@@ -137,9 +146,10 @@ func (c *PolicyValidateCommand) Run(ctx *runtimeContext) error {
 }
 
 func (e *ExecCommand) Run(ctx *runtimeContext) error {
-	adapter, ok := ctx.Backends[e.Backend]
+	backendName := resolveBackendName(e.Backend, ctx.Config.DefaultBackend)
+	adapter, ok := ctx.Backends[backendName]
 	if !ok {
-		return fmt.Errorf("unknown backend %q", e.Backend)
+		return fmt.Errorf("unknown backend %q", backendName)
 	}
 
 	command := normalizeCommand(e.Command)
@@ -154,24 +164,11 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 
 	runID := fmt.Sprintf("run-%d", time.Now().UTC().UnixNano())
 	req := backend.RunRequest{
-		RunID:   runID,
-		CWD:     ctx.CWD,
-		Command: append([]string(nil), command...),
-		Policy:  compiled,
-		FirecrackerConfig: backend.FirecrackerConfig{
-			BinaryPath:      e.FirecrackerBinary,
-			KernelImagePath: e.KernelImage,
-			RootFSPath:      e.RootFS,
-			RunDir:          e.RunDir,
-			VCPUs:           e.VCPUs,
-			MemoryMiB:       e.MemoryMiB,
-			GuestCID:        e.GuestCID,
-			GuestPort:       e.GuestPort,
-			RetainWrites:    e.RetainWrites,
-			HostPassthrough: e.HostPassthrough,
-			Launch:          e.Launch,
-			LaunchSeconds:   e.LaunchSeconds,
-		},
+		RunID:             runID,
+		CWD:               ctx.CWD,
+		Command:           append([]string(nil), command...),
+		Policy:            compiled,
+		FirecrackerConfig: mergeFirecrackerConfig(e, ctx.Config.Backends.Firecracker),
 	}
 
 	result, err := adapter.Run(context.Background(), req)
@@ -198,6 +195,75 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 	return nil
 }
 
+func (d *DoctorCommand) Run(ctx *runtimeContext) error {
+	backendName := resolveBackendName(d.Backend, ctx.Config.DefaultBackend)
+	adapter, ok := ctx.Backends[backendName]
+	if !ok {
+		return fmt.Errorf("unknown backend %q", backendName)
+	}
+
+	checks := []backend.DoctorCheck{
+		{Name: "runtime_config", Status: "pass", Message: fmt.Sprintf("using runtime config path %s", ctx.ConfigPath)},
+		{Name: "backend", Status: "pass", Message: fmt.Sprintf("selected backend %s", backendName)},
+	}
+
+	compiled, source, err := ctx.Loader.LoadAndCompile(ctx.CWD)
+	if err != nil {
+		checks = append(checks, backend.DoctorCheck{
+			Name:    "repository_policy",
+			Status:  "warn",
+			Message: fmt.Sprintf("policy not loaded from %s: %v", ctx.CWD, err),
+		})
+	} else {
+		checks = append(checks, backend.DoctorCheck{
+			Name:    "repository_policy",
+			Status:  "pass",
+			Message: fmt.Sprintf("policy loaded from %s (hash %s)", source, compiled.Hash),
+		})
+	}
+
+	type doctorCapable interface {
+		Doctor(context.Context, backend.DoctorRequest) (*backend.DoctorReport, error)
+	}
+	if checker, ok := adapter.(doctorCapable); ok {
+		report, err := checker.Doctor(context.Background(), backend.DoctorRequest{
+			Policy:            compiled,
+			FirecrackerConfig: mergeFirecrackerConfig(&ExecCommand{}, ctx.Config.Backends.Firecracker),
+		})
+		if err != nil {
+			return err
+		}
+		checks = append(checks, report.Checks...)
+	} else {
+		checks = append(checks, backend.DoctorCheck{
+			Name:    "backend_doctor",
+			Status:  "warn",
+			Message: "selected backend does not expose doctor diagnostics",
+		})
+	}
+
+	if d.JSON {
+		payload := map[string]any{
+			"backend": backendName,
+			"checks":  checks,
+		}
+		enc := json.NewEncoder(ctx.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(payload)
+	}
+
+	_, err = fmt.Fprintf(ctx.Stdout, "doctor report (%s)\n", backendName)
+	if err != nil {
+		return err
+	}
+	for _, check := range checks {
+		if _, err := fmt.Fprintf(ctx.Stdout, "- [%s] %s: %s\n", check.Status, check.Name, check.Message); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func normalizeCommand(command []string) []string {
 	if len(command) > 0 && command[0] == "--" {
 		return command[1:]
@@ -205,8 +271,45 @@ func normalizeCommand(command []string) []string {
 	return command
 }
 
+func resolveBackendName(requested, configuredDefault string) string {
+	if requested != "" {
+		return requested
+	}
+	if configuredDefault != "" {
+		return configuredDefault
+	}
+	return "firecracker"
+}
+
+func mergeFirecrackerConfig(e *ExecCommand, cfg runtimeconfig.FirecrackerConfig) backend.FirecrackerConfig {
+	out := backend.FirecrackerConfig{
+		BinaryPath:      cfg.BinaryPath,
+		KernelImagePath: cfg.KernelImage,
+		RootFSPath:      cfg.RootFS,
+		VCPUs:           cfg.VCPUs,
+		MemoryMiB:       cfg.MemoryMiB,
+		GuestCID:        cfg.GuestCID,
+		GuestPort:       cfg.GuestPort,
+		RetainWrites:    cfg.RetainWrites,
+		LaunchSeconds:   cfg.LaunchSeconds,
+	}
+
+	if e.RunDir != "" {
+		out.RunDir = e.RunDir
+	}
+	out.HostPassthrough = e.HostPassthrough
+	out.Launch = e.Launch
+	if e.LaunchSeconds != 0 {
+		out.LaunchSeconds = e.LaunchSeconds
+	}
+	return out
+}
+
 func (s *StatusCommand) Run(ctx *runtimeContext) error {
-	baseDir := filepath.Join(os.TempDir(), "cleanroom")
+	baseDir, err := paths.RunBaseDir()
+	if err != nil {
+		return fmt.Errorf("resolve run base directory: %w", err)
+	}
 	if s.RunID != "" {
 		runDir := filepath.Join(baseDir, s.RunID)
 		if _, err := os.Stat(runDir); err != nil {

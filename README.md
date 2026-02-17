@@ -31,6 +31,30 @@ cleanroom policy validate
 cleanroom exec npm test
 ```
 
+## Runtime config (XDG)
+
+Cleanroom runtime/backend settings are loaded from:
+
+- `${XDG_CONFIG_HOME}/cleanroom/config.yaml`
+- fallback: `~/.config/cleanroom/config.yaml`
+
+Example:
+
+```yaml
+default_backend: firecracker
+backends:
+  firecracker:
+    binary_path: firecracker
+    kernel_image: /path/to/vmlinux
+    rootfs: /path/to/rootfs.ext4
+    vcpus: 1
+    memory_mib: 512
+    guest_cid: 3
+    guest_port: 10700
+    retain_writes: false
+    launch_seconds: 30
+```
+
 ## Configuration: `cleanroom.yaml`
 
 Place policy at repository root as `cleanroom.yaml` (legacy fallback: `.buildkite/cleanroom.yaml`).

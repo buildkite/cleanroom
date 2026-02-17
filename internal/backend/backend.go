@@ -42,3 +42,19 @@ type RunResult struct {
 	RunDir     string
 	Message    string
 }
+
+type DoctorRequest struct {
+	Policy *policy.CompiledPolicy
+	FirecrackerConfig
+}
+
+type DoctorReport struct {
+	Backend string        `json:"backend"`
+	Checks  []DoctorCheck `json:"checks"`
+}
+
+type DoctorCheck struct {
+	Name    string `json:"name"`
+	Status  string `json:"status"` // pass|warn|fail
+	Message string `json:"message"`
+}

@@ -1,2 +1,13 @@
 [tools]
 go = "1.23"
+
+[env]
+GOTOOLCHAIN = "local"
+
+[tasks.test]
+description = "Run Go test suite"
+run = "go test ./..."
+
+[tasks.install]
+description = "Install binaries into GOBIN (or GOPATH/bin)"
+run = "go install ./cmd/cleanroom ./cmd/cleanroom-guest-agent"

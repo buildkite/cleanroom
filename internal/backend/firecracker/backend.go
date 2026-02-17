@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/buildkite/cleanroom/internal/backend"
+	"github.com/buildkite/cleanroom/internal/paths"
 	"github.com/buildkite/cleanroom/internal/vsockexec"
 	fcvsock "github.com/firecracker-microvm/firecracker-go-sdk/vsock"
 )
@@ -25,6 +26,71 @@ func New() *Adapter {
 
 func (a *Adapter) Name() string {
 	return "firecracker"
+}
+
+func (a *Adapter) Doctor(_ context.Context, req backend.DoctorRequest) (*backend.DoctorReport, error) {
+	report := &backend.DoctorReport{
+		Backend: a.Name(),
+	}
+
+	appendCheck := func(name, status, message string) {
+		report.Checks = append(report.Checks, backend.DoctorCheck{
+			Name:    name,
+			Status:  status,
+			Message: message,
+		})
+	}
+
+	if runtime.GOOS == "linux" {
+		appendCheck("os", "pass", "linux host detected")
+	} else {
+		appendCheck("os", "fail", fmt.Sprintf("linux required, current OS is %s", runtime.GOOS))
+	}
+
+	binary := req.BinaryPath
+	if binary == "" {
+		binary = "firecracker"
+	}
+	if _, err := exec.LookPath(binary); err != nil {
+		appendCheck("binary", "fail", fmt.Sprintf("firecracker binary %q not found in PATH", binary))
+	} else {
+		appendCheck("binary", "pass", fmt.Sprintf("found firecracker binary %q", binary))
+	}
+
+	if _, err := os.Stat("/dev/kvm"); err != nil {
+		appendCheck("kvm", "fail", "missing /dev/kvm")
+	} else {
+		if f, err := os.OpenFile("/dev/kvm", os.O_RDWR, 0); err != nil {
+			appendCheck("kvm", "fail", fmt.Sprintf("cannot open /dev/kvm read-write: %v", err))
+		} else {
+			_ = f.Close()
+			appendCheck("kvm", "pass", "/dev/kvm is accessible")
+		}
+	}
+
+	if req.KernelImagePath == "" {
+		appendCheck("kernel_image", "warn", "kernel image not configured (required for --launch)")
+	} else if _, err := os.Stat(req.KernelImagePath); err != nil {
+		appendCheck("kernel_image", "fail", fmt.Sprintf("kernel image not accessible: %v", err))
+	} else {
+		appendCheck("kernel_image", "pass", fmt.Sprintf("kernel image configured: %s", req.KernelImagePath))
+	}
+
+	if req.RootFSPath == "" {
+		appendCheck("rootfs", "warn", "rootfs not configured (required for --launch)")
+	} else if _, err := os.Stat(req.RootFSPath); err != nil {
+		appendCheck("rootfs", "fail", fmt.Sprintf("rootfs not accessible: %v", err))
+	} else {
+		appendCheck("rootfs", "pass", fmt.Sprintf("rootfs configured: %s", req.RootFSPath))
+	}
+
+	if req.GuestPort == 0 {
+		appendCheck("vsock_port", "pass", fmt.Sprintf("using default guest vsock port %d", vsockexec.DefaultPort))
+	} else {
+		appendCheck("vsock_port", "pass", fmt.Sprintf("configured guest vsock port %d", req.GuestPort))
+	}
+
+	return report, nil
 }
 
 func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.RunResult, error) {
@@ -43,7 +109,11 @@ func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.Run
 
 	runDir := req.RunDir
 	if runDir == "" {
-		runDir = filepath.Join(os.TempDir(), "cleanroom", req.RunID)
+		baseDir, err := paths.RunBaseDir()
+		if err != nil {
+			return nil, fmt.Errorf("resolve run base directory: %w", err)
+		}
+		runDir = filepath.Join(baseDir, req.RunID)
 	}
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
 		return nil, err
