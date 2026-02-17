@@ -15,7 +15,7 @@ Primary goal for v1:
 ## Sources reviewed
 
 - [earendil-works/gondolin](https://github.com/earendil-works/gondolin)
-- [jingkaihe/matchlock](https://github.com/jingkaihe/matchlock)
+- [jingkaihe/matchlock](https://github.com/jingkaihe/matchlock) (validated at commit `ccce106411eca50c6f4b38ff9b83ac4416ef692e` on 2026-02-17)
 - [wolfeidau/content-cache](https://github.com/wolfeidau/content-cache)
 - [superfly/tokenizer](https://github.com/superfly/tokenizer)
 - [Sprites Overview](https://docs.sprites.dev/)
@@ -174,6 +174,112 @@ Inference (explicitly inferred, not documented as hard guarantee):
 4. Keep remote backend as adapter shell (sprites) with explicit policy payload transport.
 5. Keep CLI first: `cleanroom exec` as primary entrypoint and command pattern.
 
+## Firecracker backend proposal (initial implementation)
+
+Build our own backend in Cleanroom, but reuse Matchlock techniques that are already proven in practice.
+
+### Scope for initial backend
+
+- Linux-only local backend using Firecracker + KVM.
+- Enforce `CompiledPolicy` only (no runtime repo policy reload).
+- Deny-by-default egress with explicit host/port allowlist.
+- Route package and git egress through `content-cache`.
+- Keep secret values out of guest env and policy files.
+
+### Matchlock techniques to adopt directly
+
+1. **Backend boundary and machine API**
+   - Mirror the Matchlock split between backend creation and machine lifecycle (`Create/Start/Exec/Stop/Close`), but mapped to Cleanroom `BackendAdapter`.
+   - Keep Firecracker-specific logic in a backend package, not in CLI or policy code.
+2. **Per-run TAP + subnet allocation**
+   - Create deterministic TAP names (hash/suffix by run ID), allocate a unique subnet per run, and configure TAP before VM start.
+   - Reconcile subnet + TAP artifacts in cleanup and in a `gc` command.
+3. **Generated Firecracker JSON config**
+   - Generate boot source, machine config, drives, NIC, and vsock JSON on each run.
+   - Keep kernel args host-controlled and deterministic.
+4. **Vsock control plane**
+   - Use vsock for guest readiness and command execution RPC.
+   - Keep command execution out of SSH and avoid opening inbound guest ports.
+5. **Rootfs preparation pattern**
+   - Use per-run rootfs copy (prefer CoW/reflink where available, fallback to full copy).
+   - Inject a small guest runtime entrypoint (`/init` + guest agent) before boot.
+6. **Network interception strategy**
+   - Use host nftables for Linux interception and forwarding, with explicit rule setup/teardown.
+   - Keep a host-side policy/enforcement process for HTTP(S) interception and eventing.
+7. **Lifecycle persistence + reconciliation**
+   - Persist lifecycle phase and resource handles so crashed runs can be cleaned deterministically.
+   - Make cleanup failures visible and auditable, not best-effort-only.
+
+### Cleanroom-specific changes required (do not copy as-is)
+
+1. **Policy semantics**
+   - Matchlock allows all hosts when no allowlist is set; Cleanroom must default to deny.
+   - Matchlock currently has allowlist-focused policy + private IP blocking; Cleanroom needs deterministic allow/deny precedence and normalized host matching from `SPEC.md`.
+2. **Immutability and capability handshake**
+   - Matchlock runtime config is mutable in places (for example auto-adding secret hosts). Cleanroom should only use compiled immutable policy and fail launch on missing capabilities.
+3. **Registry mediation contract**
+   - Cleanroom must force package manager and git paths through `content-cache` with lockfile artifact constraints, not generic outbound allowlist only.
+4. **Reason-code and audit contract**
+   - Cleanroom events must emit spec-defined stable codes (`host_not_allowed`, `lockfile_violation`, etc.) across CLI/API/audit logs.
+5. **Secret model**
+   - Cleanroom policy should carry secret IDs/bindings only; secret values resolved at runtime in control plane and never stored in repository config.
+
+### Proposed Cleanroom architecture (v1 local Firecracker)
+
+```text
+cleanroom exec
+  -> policy loader + compiler -> CompiledPolicy (immutable, hashed)
+  -> capability validator (backend + policy requirements)
+  -> firecracker adapter provision()
+      -> state dir + lifecycle row
+      -> rootfs copy/inject guest runtime
+      -> start egress services:
+           - content-cache (registry/git mediation)
+           - optional secret proxy (tokenizer-style)
+      -> TAP/subnet + nftables setup
+      -> start firecracker + wait for vsock ready
+  -> run command via vsock exec service
+  -> stream logs + structured deny/allow events
+  -> shutdown + deterministic cleanup/reconcile
+```
+
+### Capability mapping to `SPEC.md` requirements
+
+| Capability key | Firecracker backend implementation (initial) |
+|---|---|
+| `network_default_deny` | nftables default drop for guest egress, explicit allow chains from compiled policy |
+| `network_host_port_filtering` | host policy matcher + nftables/proxy enforcement for host and port outcomes |
+| `dns_control_or_equivalent` | force guest DNS to managed resolvers and block unmanaged UDP DNS paths |
+| `policy_immutability` | adapter accepts only serialized `CompiledPolicy` and stores policy hash in run state |
+| `audit_event_emission` | host-side event bus emits stable reason codes with `run_id` and `policy_hash` |
+| `secret_isolation` | secret values held in host proxy/control process only; guest sees placeholders or no secret values |
+
+### Incremental implementation plan
+
+1. **Slice A: minimal Firecracker runner**
+   - Create backend adapter package and run lifecycle.
+   - Boot VM, run command over vsock, collect exit code/stdout/stderr.
+2. **Slice B: deterministic networking**
+   - Add TAP/subnet allocator + nftables setup/teardown.
+   - Enforce default deny and exact host/port allowlist (no registries yet).
+3. **Slice C: registry and git mediation**
+   - Start/attach `content-cache`.
+   - Rewrite package/git traffic through cache endpoint and emit deny reasons for bypass attempts.
+4. **Slice D: secret proxy**
+   - Add tokenizer-style host-scoped injection path.
+   - Enforce `secret_scope_violation` and keep secret values out of guest-visible env/args.
+5. **Slice E: conformance and hardening**
+   - Implement backend capability handshake.
+   - Add conformance suite from `SPEC.md` section 14 before backend marked supported.
+
+### Immediate engineering decisions for implementation kickoff
+
+1. Use Matchlock-style vsock exec and readiness signaling rather than SSH.
+2. Use nftables on Linux as the first enforcement mechanism (simple, auditable, and already aligned with Matchlock patterns).
+3. Keep rootfs mutation host-side with a tiny guest runtime, but keep it minimal to reduce boot drift.
+4. Build lifecycle DB + reconciliation early, before adding advanced policy features, to avoid leaked TAP/nftables resources.
+5. Wire `content-cache` before implementing lockfile strictness so path mediation is in place first.
+
 ## Key design inferences from the research
 
 - `gondolin` has strong isolation ideas but is a larger multi-component platform. It is best treated as design inspiration for network and filesystem controls rather than a direct v1 embed.
@@ -195,7 +301,18 @@ Inference (explicitly inferred, not documented as hard guarantee):
 
 ## Next concrete work after research
 
-- Finalize backend adapter interface contracts (`local`, `remote`) in `SPEC.md`.
+- Define `internal/backend/firecracker` package boundaries:
+  - machine lifecycle
+  - network setup (tap/subnet/nftables)
+  - guest exec transport (vsock)
+  - lifecycle persistence/reconcile
+- Add capability handshake and launch validation path from compiled policy.
+- Implement a first conformance subset:
+  - default deny
+  - explicit allow host/port
+  - explicit deny precedence
+  - stable reason codes in events
+- Integrate `content-cache` in the backend provisioning flow before lockfile strict mode.
 - Add implementation tasks for:
   - cleanroom-first command model (`exec`/`run` alignment)
   - `mise` detection and bootstrap strategy
