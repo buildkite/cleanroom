@@ -26,6 +26,8 @@ type FirecrackerConfig struct {
 	RunDir          string
 	VCPUs           int64
 	MemoryMiB       int64
+	GuestCID        uint32
+	GuestPort       uint32
 	RetainWrites    bool
 	Launch          bool
 	LaunchSeconds   int64

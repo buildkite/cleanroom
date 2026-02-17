@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/buildkite/cleanroom/internal/backend"
+	"github.com/buildkite/cleanroom/internal/vsockexec"
+	fcvsock "github.com/firecracker-microvm/firecracker-go-sdk/vsock"
 )
 
 type Adapter struct{}
@@ -53,8 +55,14 @@ func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.Run
 	if req.MemoryMiB <= 0 {
 		req.MemoryMiB = 512
 	}
+	if req.GuestCID == 0 {
+		req.GuestCID = 3
+	}
+	if req.GuestPort == 0 {
+		req.GuestPort = vsockexec.DefaultPort
+	}
 	if req.LaunchSeconds <= 0 {
-		req.LaunchSeconds = 10
+		req.LaunchSeconds = 30
 	}
 
 	cmdPath := filepath.Join(runDir, "requested-command.json")
@@ -62,8 +70,6 @@ func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.Run
 		return nil, err
 	}
 
-	vmRootFSPath := ""
-	rootfsReadOnly := true
 	if !req.Launch {
 		planPath := filepath.Join(runDir, "passthrough-plan.json")
 		plan := map[string]any{
@@ -119,10 +125,8 @@ func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.Run
 		return nil, fmt.Errorf("rootfs %s: %w", rootfsPath, err)
 	}
 
-	rootfsReadOnly = false
-	if req.RetainWrites {
-		vmRootFSPath = filepath.Join(runDir, "rootfs-retained.ext4")
-	} else {
+	vmRootFSPath := filepath.Join(runDir, "rootfs-retained.ext4")
+	if !req.RetainWrites {
 		vmRootFSPath = filepath.Join(runDir, "rootfs-ephemeral.ext4")
 		defer os.Remove(vmRootFSPath)
 	}
@@ -130,6 +134,7 @@ func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.Run
 		return nil, fmt.Errorf("prepare per-run rootfs: %w", err)
 	}
 
+	vsockPath := filepath.Join(runDir, "vsock.sock")
 	fcCfg := firecrackerConfig{
 		BootSource: bootSource{
 			KernelImagePath: kernelPath,
@@ -140,13 +145,18 @@ func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.Run
 				DriveID:      "rootfs",
 				PathOnHost:   vmRootFSPath,
 				IsRootDevice: true,
-				IsReadOnly:   rootfsReadOnly,
+				IsReadOnly:   false,
 			},
 		},
 		MachineConfig: machineConfig{
 			VCPUCount:  req.VCPUs,
 			MemSizeMiB: req.MemoryMiB,
 			SMT:        false,
+		},
+		Vsock: &vsockConfig{
+			VsockID:  "cleanroom-vsock",
+			GuestCID: req.GuestCID,
+			UDSPath:  vsockPath,
 		},
 	}
 
@@ -186,45 +196,43 @@ func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.Run
 	go func() {
 		waitCh <- fcCmd.Wait()
 	}()
+	defer stopVM(fcCmd, waitCh)
 
-	timer := time.NewTimer(time.Duration(req.LaunchSeconds) * time.Second)
-	defer timer.Stop()
+	execCtx, execCancel := context.WithTimeout(ctx, time.Duration(req.LaunchSeconds)*time.Second)
+	defer execCancel()
 
-	select {
-	case err := <-waitCh:
-		if err != nil {
-			return nil, fmt.Errorf("firecracker exited early: %w", err)
-		}
-		return &backend.RunResult{
-			RunID:      req.RunID,
-			ExitCode:   0,
-			LaunchedVM: true,
-			PlanPath:   cfgPath,
-			RunDir:     runDir,
-			Message:    runResultMessage(req.RetainWrites, "firecracker exited normally (guest command execution wiring is not implemented yet)"),
-		}, nil
-	case <-timer.C:
-		_ = fcCmd.Process.Kill()
-		<-waitCh
-		return &backend.RunResult{
-			RunID:      req.RunID,
-			ExitCode:   0,
-			LaunchedVM: true,
-			PlanPath:   cfgPath,
-			RunDir:     runDir,
-			Message:    runResultMessage(req.RetainWrites, "firecracker launched for MVP timeout window; guest command execution over vsock is pending"),
-		}, nil
-	case <-ctx.Done():
-		_ = fcCmd.Process.Kill()
-		<-waitCh
-		return nil, ctx.Err()
+	guestResult, err := runGuestCommand(execCtx, waitCh, vsockPath, req.GuestPort, req.Command)
+	if err != nil {
+		return nil, err
 	}
+
+	if _, err := io.WriteString(os.Stdout, guestResult.Stdout); err != nil {
+		return nil, err
+	}
+	if _, err := io.WriteString(os.Stderr, guestResult.Stderr); err != nil {
+		return nil, err
+	}
+
+	message := runResultMessage(req.RetainWrites, "firecracker launch and guest command execution complete")
+	if guestResult.Error != "" {
+		message = runResultMessage(req.RetainWrites, "firecracker launch and guest command execution completed with guest-side error detail: "+guestResult.Error)
+	}
+
+	return &backend.RunResult{
+		RunID:      req.RunID,
+		ExitCode:   guestResult.ExitCode,
+		LaunchedVM: true,
+		PlanPath:   cfgPath,
+		RunDir:     runDir,
+		Message:    message,
+	}, nil
 }
 
 type firecrackerConfig struct {
 	BootSource    bootSource    `json:"boot-source"`
 	Drives        []drive       `json:"drives"`
 	MachineConfig machineConfig `json:"machine-config"`
+	Vsock         *vsockConfig  `json:"vsock,omitempty"`
 }
 
 type bootSource struct {
@@ -243,6 +251,12 @@ type machineConfig struct {
 	VCPUCount  int64 `json:"vcpu_count"`
 	MemSizeMiB int64 `json:"mem_size_mib"`
 	SMT        bool  `json:"smt"`
+}
+
+type vsockConfig struct {
+	VsockID  string `json:"vsock_id"`
+	GuestCID uint32 `json:"guest_cid"`
+	UDSPath  string `json:"uds_path"`
 }
 
 func writeJSON(path string, v any) error {
@@ -296,4 +310,55 @@ func runHostPassthrough(ctx context.Context, cwd string, command []string) (int,
 		return exitErr.ExitCode(), nil
 	}
 	return 1, fmt.Errorf("run host passthrough command: %w", err)
+}
+
+func runGuestCommand(ctx context.Context, waitCh <-chan error, vsockPath string, guestPort uint32, command []string) (vsockexec.ExecResponse, error) {
+	conn, err := dialVsockUntilReady(ctx, waitCh, vsockPath, guestPort)
+	if err != nil {
+		return vsockexec.ExecResponse{}, err
+	}
+	defer conn.Close()
+
+	if err := vsockexec.EncodeRequest(conn, vsockexec.ExecRequest{Command: command}); err != nil {
+		return vsockexec.ExecResponse{}, fmt.Errorf("send guest exec request: %w", err)
+	}
+
+	res, err := vsockexec.DecodeResponse(conn)
+	if err != nil {
+		return vsockexec.ExecResponse{}, fmt.Errorf("decode guest exec response: %w", err)
+	}
+	return res, nil
+}
+
+func dialVsockUntilReady(ctx context.Context, waitCh <-chan error, vsockPath string, guestPort uint32) (io.ReadWriteCloser, error) {
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		conn, err := fcvsock.DialContext(ctx, vsockPath, guestPort)
+		if err == nil {
+			return conn, nil
+		}
+
+		select {
+		case waitErr := <-waitCh:
+			if waitErr == nil {
+				return nil, errors.New("firecracker exited before vsock guest agent became ready")
+			}
+			return nil, fmt.Errorf("firecracker exited before vsock guest agent became ready: %w", waitErr)
+		case <-ctx.Done():
+			return nil, fmt.Errorf("timed out waiting for vsock guest agent (%s): %w", vsockPath, ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+func stopVM(fcCmd *exec.Cmd, waitCh <-chan error) {
+	if fcCmd.Process != nil {
+		_ = fcCmd.Process.Kill()
+	}
+	select {
+	case <-waitCh:
+	case <-time.After(2 * time.Second):
+	}
 }

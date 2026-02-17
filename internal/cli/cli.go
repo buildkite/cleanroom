@@ -45,9 +45,11 @@ type ExecCommand struct {
 	RunDir            string `help:"Run directory for generated artifacts (default: /tmp/cleanroom/<run-id>)"`
 	VCPUs             int64  `help:"Number of virtual CPUs" default:"1"`
 	MemoryMiB         int64  `help:"VM memory in MiB" default:"512"`
+	GuestCID          uint32 `help:"Guest vsock CID for launched VM exec path" default:"3"`
+	GuestPort         uint32 `help:"Guest vsock port for command agent" default:"10700"`
 	RetainWrites      bool   `help:"Retain rootfs writes from launched runs in the run directory (default: discard)"`
 	Launch            bool   `help:"Launch Firecracker for a short MVP window; otherwise generate plan only"`
-	LaunchSeconds     int64  `help:"Maximum launch window in seconds before stopping VM" default:"10"`
+	LaunchSeconds     int64  `help:"Launch/guest-exec timeout in seconds" default:"30"`
 
 	Command []string `arg:"" passthrough:"" required:"" help:"Command to execute"`
 }
@@ -162,6 +164,8 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 			RunDir:          e.RunDir,
 			VCPUs:           e.VCPUs,
 			MemoryMiB:       e.MemoryMiB,
+			GuestCID:        e.GuestCID,
+			GuestPort:       e.GuestPort,
 			RetainWrites:    e.RetainWrites,
 			Launch:          e.Launch,
 			LaunchSeconds:   e.LaunchSeconds,
