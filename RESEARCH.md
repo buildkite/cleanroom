@@ -33,6 +33,12 @@ Primary goal for v1:
 - [firecracker-microvm/firecracker](https://github.com/firecracker-microvm/firecracker) (validated release `v1.14.1`, published 2026-01-20)
 - [Firecracker FAQ](https://github.com/firecracker-microvm/firecracker/blob/main/FAQ.md)
 - [Firecracker production host setup](https://github.com/firecracker-microvm/firecracker/blob/main/docs/prod-host-setup.md)
+- [eBPF Docs: eBPF on Linux](https://docs.ebpf.io/linux/)
+- [Apple Developer: `NEDNSProxyProvider`](https://developer.apple.com/documentation/networkextension/nednsproxyprovider)
+- [Apple Technical Note TN3165](https://developer.apple.com/documentation/technotes/tn3165-packet-filter-is-not-api)
+- [Apple Support: DNS Proxy payload settings](https://support.apple.com/guide/deployment/dns-proxy-payload-settings-dep500f65271/web)
+- [Objective-See LuLu](https://objective-see.org/products/lulu.html)
+- [Cloudflare WARP modes](https://developers.cloudflare.com/cloudflare-one/team-and-resources/devices/warp/configure-warp/warp-modes/)
 - [Cleanroom concept gist](https://gist.github.com/lox/cd5a74bee0c98e15c254e780bb73dd11)
 
 ## Shortlist reviewed
@@ -300,6 +306,28 @@ Answer to "Would `libkrun` be better than Firecracker?":
 - For Cleanroom's v1 Linux backend and security goals, no: Firecracker remains the better primary choice.
 - `libkrun` is still useful as a potential secondary backend for macOS developer workflows with explicit capability downgrades.
 
+## Cross-platform filtering findings (`Linux` + macOS)
+
+Validation snapshot date: 2026-02-17.
+
+1. There is no single kernel-level filtering substrate we can share across Linux and macOS.
+   - Linux path can use eBPF and nftables.
+   - macOS path should use Network Extension providers (for example DNS proxy provider / network filter provider model), not Linux packet-filter assumptions.
+2. DNS resolver-level filtering is practical on both platforms, but with different enforcement primitives.
+   - Linux: resolver control + egress firewall policy.
+   - macOS: DNS proxy payload / DNS proxy extension model.
+3. Prior art for reliable macOS filtering exists and is active.
+   - LuLu documents a Network Extension-based firewall model and calls out operational constraints (system extension/network filter approval flow, and known traffic classes not seen by Network Extensions).
+   - Cloudflare WARP documents production modes that separate DNS filtering from broader network filtering (`DNS only`, `Traffic and DNS`, `Traffic only`), demonstrating deployable real-world split enforcement.
+
+Implication for Cleanroom architecture:
+
+- Keep one shared policy compiler and reason-code model.
+- Implement backend-specific enforcement adapters:
+  - Linux: Firecracker + nftables/eBPF enforcement.
+  - macOS: Network Extension DNS/network filter adapter with explicit capability flags.
+- Treat macOS hostname-level and DNS-level controls as capability-scoped and verify by conformance tests, not assumption.
+
 ## Key design inferences from the research
 
 - `gondolin` has strong isolation ideas but is a larger multi-component platform. It is best treated as design inspiration for network and filesystem controls rather than a direct v1 embed.
@@ -318,6 +346,8 @@ Answer to "Would `libkrun` be better than Firecracker?":
 - Missing public SLA/SLO guarantees for availability/durability.
 - Lockfile parser maturity by ecosystem.
 - `content-cache` deployment topology for local-only vs remote-only workflows.
+- macOS Network Extension edge cases where some traffic can bypass extension visibility (must be measured in our own conformance suite).
+- macOS hostname filtering limits for traffic that does not use the expected networking APIs.
 
 ## Next concrete work after research
 
@@ -338,3 +368,6 @@ Answer to "Would `libkrun` be better than Firecracker?":
   - `mise` detection and bootstrap strategy
   - lockfile-restricted package allowlists
   - secret injection guardrails
+- Define cross-backend capability matrix (`linux-firecracker`, `darwin-network-extension`) and wire launch-time capability validation.
+- Build a macOS proof-of-concept adapter using DNS proxy + network filter extensions, including explicit install/approval checks.
+- Add cross-platform conformance tests for DNS and egress bypass paths (direct DNS, DoT, DoH, direct IP).
