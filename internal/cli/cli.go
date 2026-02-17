@@ -27,6 +27,8 @@ type runtimeContext struct {
 }
 
 type CLI struct {
+	Chdir string `short:"c" help:"Change to this directory before running commands"`
+
 	Policy PolicyCommand `cmd:"" help:"Policy commands"`
 	Exec   ExecCommand   `cmd:"" help:"Execute a command in a cleanroom backend"`
 	Doctor DoctorCommand `cmd:"" help:"Run environment and backend diagnostics"`
@@ -45,8 +47,8 @@ type ExecCommand struct {
 	Backend string `help:"Execution backend (defaults to runtime config or firecracker)"`
 
 	RunDir          string `help:"Run directory for generated artifacts (default: XDG runtime/state cleanroom path)"`
-	HostPassthrough bool   `help:"Run command directly on host when --launch is not set (unsafe, not sandboxed)"`
-	Launch          bool   `help:"Launch selected backend for command execution; otherwise generate plan only unless --host-passthrough is set"`
+	DryRun          bool   `help:"Generate execution plan without running a backend command"`
+	HostPassthrough bool   `help:"Run command directly on host instead of launching a backend (unsafe, not sandboxed)"`
 	LaunchSeconds   int64  `help:"Launch/guest-exec timeout in seconds"`
 
 	Command []string `arg:"" passthrough:"" required:"" help:"Command to execute"`
@@ -78,18 +80,12 @@ type hasExitCode interface {
 }
 
 func Run(args []string) error {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return err
-	}
-
 	cfg, cfgPath, err := runtimeconfig.Load()
 	if err != nil {
 		return err
 	}
 
 	runtimeCtx := &runtimeContext{
-		CWD:        cwd,
 		Stdout:     os.Stdout,
 		Loader:     policy.Loader{},
 		Config:     cfg,
@@ -113,6 +109,18 @@ func Run(args []string) error {
 	if err != nil {
 		return err
 	}
+
+	if cli.Chdir != "" {
+		if err := os.Chdir(cli.Chdir); err != nil {
+			return fmt.Errorf("change directory to %s: %w", cli.Chdir, err)
+		}
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	runtimeCtx.CWD = cwd
 
 	return ctx.Run(runtimeCtx)
 }
@@ -297,8 +305,11 @@ func mergeFirecrackerConfig(e *ExecCommand, cfg runtimeconfig.FirecrackerConfig)
 	if e.RunDir != "" {
 		out.RunDir = e.RunDir
 	}
+	out.Launch = true
+	if e.DryRun || e.HostPassthrough {
+		out.Launch = false
+	}
 	out.HostPassthrough = e.HostPassthrough
-	out.Launch = e.Launch
 	if e.LaunchSeconds != 0 {
 		out.LaunchSeconds = e.LaunchSeconds
 	}

@@ -55,6 +55,33 @@ backends:
     launch_seconds: 30
 ```
 
+### Prepare a rootfs for launched execution
+
+Create a base rootfs image (Alpine minirootfs + ext4):
+
+```bash
+sudo scripts/create-rootfs-image.sh
+```
+
+Then install `cleanroom-guest-agent` into that rootfs and register a boot service:
+
+```bash
+scripts/prepare-firecracker-image.sh
+```
+
+Default paths:
+
+- rootfs image: `${XDG_DATA_HOME:-~/.local/share}/cleanroom/images/rootfs.ext4`
+- mount dir: `${XDG_RUNTIME_DIR:-/tmp}/cleanroom/mnt/rootfs`
+
+Override paths if needed:
+
+```bash
+scripts/prepare-firecracker-image.sh \
+  --rootfs-image /path/to/rootfs.ext4 \
+  --mount-dir /mnt/rootfs
+```
+
 ## Configuration: `cleanroom.yaml`
 
 Place policy at repository root as `cleanroom.yaml` (legacy fallback: `.buildkite/cleanroom.yaml`).

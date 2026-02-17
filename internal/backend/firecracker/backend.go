@@ -162,7 +162,7 @@ func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.Run
 				LaunchedVM: false,
 				PlanPath:   planPath,
 				RunDir:     runDir,
-				Message:    "firecracker execution plan generated; command not executed (set --launch or --host-passthrough)",
+				Message:    "firecracker execution plan generated; command not executed (set --dry-run or --host-passthrough for non-launch modes)",
 			}, nil
 		}
 
@@ -190,7 +190,7 @@ func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.Run
 	}
 
 	if req.KernelImagePath == "" || req.RootFSPath == "" {
-		return nil, errors.New("--kernel-image and --rootfs are required when --launch is set")
+		return nil, errors.New("kernel_image and rootfs must be configured for launched execution; use --dry-run or --host-passthrough for non-launch modes")
 	}
 
 	kernelPath, err := filepath.Abs(req.KernelImagePath)
@@ -222,7 +222,7 @@ func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.Run
 	fcCfg := firecrackerConfig{
 		BootSource: bootSource{
 			KernelImagePath: kernelPath,
-			BootArgs:        "console=ttyS0 reboot=k panic=1 pci=off",
+			BootArgs:        "console=ttyS0 reboot=k panic=1 pci=off init=/sbin/cleanroom-init",
 		},
 		Drives: []drive{
 			{

@@ -7,10 +7,10 @@ This example is a minimal policy + command set you can use to verify current MVP
 From repository root:
 
 ```bash
-mise run build:cleanroom
+mise run install
 ```
 
-The CLI binary should exist at `dist/cleanroom`.
+The CLI should be available in `GOBIN` (or `GOPATH/bin`).
 
 ## Files
 
@@ -23,14 +23,14 @@ The CLI binary should exist at `dist/cleanroom`.
 Run from this directory (`examples/basic`):
 
 ```bash
-../../dist/cleanroom policy validate
+cleanroom policy validate
 ```
 
-### 1) Plan-only default (no execution)
+### 1) Plan-only mode (no execution)
 
 ```bash
 ./cleanup.sh
-../../dist/cleanroom exec -- ./marker.sh
+cleanroom exec --dry-run -- ./marker.sh
 ls -la .marker-created
 ```
 
@@ -39,7 +39,7 @@ Expected: `ls` fails because the command is not executed in plan-only mode.
 ### 2) Explicit host passthrough execution
 
 ```bash
-../../dist/cleanroom exec --host-passthrough -- ./marker.sh
+cleanroom exec --host-passthrough -- ./marker.sh
 ls -la .marker-created
 cat .marker-created
 ```
@@ -52,14 +52,13 @@ Expected: marker file exists and contains a timestamp.
 ./cleanup.sh
 ```
 
-## Optional: launched VM path
+## Optional: launched backend path
 
-Launched VM execution requires Firecracker plus a kernel/rootfs that starts `cleanroom-guest-agent`:
+Launched execution requires runtime config (`~/.config/cleanroom/config.yaml`) with Firecracker `kernel_image` and `rootfs`, plus a rootfs prepared with `cleanroom-guest-agent` boot hook:
 
 ```bash
-../../dist/cleanroom exec \
-  --launch \
-  --kernel-image /path/to/vmlinux \
-  --rootfs /path/to/rootfs.ext4 \
-  -- /bin/echo hello
+sudo ../../scripts/create-rootfs-image.sh
+../../scripts/prepare-firecracker-image.sh
+
+cleanroom exec -- /bin/echo hello
 ```
