@@ -56,6 +56,22 @@ type StatusCommand struct {
 	RunID string `help:"Run ID to inspect"`
 }
 
+type exitCodeError struct {
+	code int
+}
+
+func (e exitCodeError) Error() string {
+	return fmt.Sprintf("command failed with exit code %d", e.code)
+}
+
+func (e exitCodeError) ExitCode() int {
+	return e.code
+}
+
+type hasExitCode interface {
+	ExitCode() int
+}
+
 func Run(args []string) error {
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -89,6 +105,14 @@ func Run(args []string) error {
 	return ctx.Run(runtimeCtx)
 }
 
+func ExitCode(err error) int {
+	var codeErr hasExitCode
+	if errors.As(err, &codeErr) {
+		return codeErr.ExitCode()
+	}
+	return 1
+}
+
 func (c *PolicyValidateCommand) Run(ctx *runtimeContext) error {
 	compiled, source, err := ctx.Loader.LoadAndCompile(ctx.CWD)
 	if err != nil {
@@ -115,6 +139,11 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 		return fmt.Errorf("unknown backend %q", e.Backend)
 	}
 
+	command := normalizeCommand(e.Command)
+	if len(command) == 0 {
+		return errors.New("missing command")
+	}
+
 	compiled, source, err := ctx.Loader.LoadAndCompile(ctx.CWD)
 	if err != nil {
 		return err
@@ -124,7 +153,7 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 	req := backend.RunRequest{
 		RunID:   runID,
 		CWD:     ctx.CWD,
-		Command: append([]string(nil), e.Command...),
+		Command: append([]string(nil), command...),
 		Policy:  compiled,
 		FirecrackerConfig: backend.FirecrackerConfig{
 			BinaryPath:      e.FirecrackerBinary,
@@ -154,7 +183,20 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 		result.RunDir,
 		result.Message,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	if result.ExitCode != 0 {
+		return exitCodeError{code: result.ExitCode}
+	}
+	return nil
+}
+
+func normalizeCommand(command []string) []string {
+	if len(command) > 0 && command[0] == "--" {
+		return command[1:]
+	}
+	return command
 }
 
 func (s *StatusCommand) Run(ctx *runtimeContext) error {

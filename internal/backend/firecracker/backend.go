@@ -39,35 +39,6 @@ func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.Run
 		return nil, fmt.Errorf("firecracker backend is linux-only, current OS is %s", runtime.GOOS)
 	}
 
-	binary := req.BinaryPath
-	if binary == "" {
-		binary = "firecracker"
-	}
-	firecrackerPath, err := exec.LookPath(binary)
-	if err != nil {
-		return nil, fmt.Errorf("firecracker binary not found (%q): %w", binary, err)
-	}
-
-	if req.KernelImagePath == "" || req.RootFSPath == "" {
-		return nil, errors.New("--kernel-image and --rootfs are required for firecracker backend")
-	}
-
-	kernelPath, err := filepath.Abs(req.KernelImagePath)
-	if err != nil {
-		return nil, err
-	}
-	if _, err := os.Stat(kernelPath); err != nil {
-		return nil, fmt.Errorf("kernel image %s: %w", kernelPath, err)
-	}
-
-	rootfsPath, err := filepath.Abs(req.RootFSPath)
-	if err != nil {
-		return nil, err
-	}
-	if _, err := os.Stat(rootfsPath); err != nil {
-		return nil, fmt.Errorf("rootfs %s: %w", rootfsPath, err)
-	}
-
 	runDir := req.RunDir
 	if runDir == "" {
 		runDir = filepath.Join(os.TempDir(), "cleanroom", req.RunID)
@@ -86,19 +57,77 @@ func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.Run
 		req.LaunchSeconds = 10
 	}
 
-	vmRootFSPath := rootfsPath
+	cmdPath := filepath.Join(runDir, "requested-command.json")
+	if err := writeJSON(cmdPath, req.Command); err != nil {
+		return nil, err
+	}
+
+	vmRootFSPath := ""
 	rootfsReadOnly := true
-	if req.Launch {
-		rootfsReadOnly = false
-		if req.RetainWrites {
-			vmRootFSPath = filepath.Join(runDir, "rootfs-retained.ext4")
-		} else {
-			vmRootFSPath = filepath.Join(runDir, "rootfs-ephemeral.ext4")
-			defer os.Remove(vmRootFSPath)
+	if !req.Launch {
+		planPath := filepath.Join(runDir, "passthrough-plan.json")
+		plan := map[string]any{
+			"backend":       "firecracker",
+			"mode":          "host-passthrough",
+			"not_sandboxed": true,
+			"command_path":  cmdPath,
 		}
-		if err := copyFile(rootfsPath, vmRootFSPath); err != nil {
-			return nil, fmt.Errorf("prepare per-run rootfs: %w", err)
+		if err := writeJSON(planPath, plan); err != nil {
+			return nil, err
 		}
+
+		exitCode, err := runHostPassthrough(ctx, req.CWD, req.Command)
+		if err != nil {
+			return nil, err
+		}
+		return &backend.RunResult{
+			RunID:      req.RunID,
+			ExitCode:   exitCode,
+			LaunchedVM: false,
+			PlanPath:   planPath,
+			RunDir:     runDir,
+			Message:    "host passthrough execution complete (not sandboxed)",
+		}, nil
+	}
+
+	binary := req.BinaryPath
+	if binary == "" {
+		binary = "firecracker"
+	}
+	firecrackerPath, err := exec.LookPath(binary)
+	if err != nil {
+		return nil, fmt.Errorf("firecracker binary not found (%q): %w", binary, err)
+	}
+
+	if req.KernelImagePath == "" || req.RootFSPath == "" {
+		return nil, errors.New("--kernel-image and --rootfs are required when --launch is set")
+	}
+
+	kernelPath, err := filepath.Abs(req.KernelImagePath)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := os.Stat(kernelPath); err != nil {
+		return nil, fmt.Errorf("kernel image %s: %w", kernelPath, err)
+	}
+
+	rootfsPath, err := filepath.Abs(req.RootFSPath)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := os.Stat(rootfsPath); err != nil {
+		return nil, fmt.Errorf("rootfs %s: %w", rootfsPath, err)
+	}
+
+	rootfsReadOnly = false
+	if req.RetainWrites {
+		vmRootFSPath = filepath.Join(runDir, "rootfs-retained.ext4")
+	} else {
+		vmRootFSPath = filepath.Join(runDir, "rootfs-ephemeral.ext4")
+		defer os.Remove(vmRootFSPath)
+	}
+	if err := copyFile(rootfsPath, vmRootFSPath); err != nil {
+		return nil, fmt.Errorf("prepare per-run rootfs: %w", err)
 	}
 
 	fcCfg := firecrackerConfig{
@@ -124,22 +153,6 @@ func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.Run
 	cfgPath := filepath.Join(runDir, "firecracker-config.json")
 	if err := writeJSON(cfgPath, fcCfg); err != nil {
 		return nil, err
-	}
-
-	cmdPath := filepath.Join(runDir, "requested-command.json")
-	if err := writeJSON(cmdPath, req.Command); err != nil {
-		return nil, err
-	}
-
-	if !req.Launch {
-		return &backend.RunResult{
-			RunID:      req.RunID,
-			ExitCode:   0,
-			LaunchedVM: false,
-			PlanPath:   cfgPath,
-			RunDir:     runDir,
-			Message:    "firecracker execution plan generated with read-only rootfs; launch disabled (set --launch to start a VM)",
-		}, nil
 	}
 
 	apiSocket := filepath.Join(runDir, "firecracker.sock")
@@ -264,4 +277,23 @@ func runResultMessage(retainWrites bool, base string) string {
 		return base + "; rootfs writes retained in run directory"
 	}
 	return base + "; rootfs writes discarded after run"
+}
+
+func runHostPassthrough(ctx context.Context, cwd string, command []string) (int, error) {
+	cmd := exec.CommandContext(ctx, command[0], command[1:]...)
+	cmd.Dir = cwd
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+
+	err := cmd.Run()
+	if err == nil {
+		return 0, nil
+	}
+
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return exitErr.ExitCode(), nil
+	}
+	return 1, fmt.Errorf("run host passthrough command: %w", err)
 }
