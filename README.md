@@ -1,6 +1,6 @@
 # 🧑‍🔬 Cleanroom
 
-Cleanroom is a secure, hermetic execution environment for modern agentic and development workflows that need repeatability, speed, and supply-chain safety.
+Cleanroom is a secure, hermetic execution environment for modern agentic and development workflows that need repeatability, speed, supply-chain safety, and safe execution of untrusted code.
 
 Agents and local automation often run with mixed trust levels (external prompts, unreviewed scripts, temporary tasks). Cleanroom solves this by enforcing a policy boundary: explicit, auditable egress rules around what can be reached and from where, while still allowing practical command execution.
 
@@ -9,11 +9,12 @@ At its core, Cleanroom gives you:
 - explicit host/port allowlists for runtime access
 - cache-mediated dependency fetches (repeatable and faster)
 - safe secret injection without plaintext in repo policy or command lines
+- policy-constrained sandboxes for running untrusted scripts and agent output
 - pluggable backends (local execution today, remote execution tomorrow)
 
 ## Why this exists
 
-Agentic tools and local CLIs also need package and API access to do their jobs. Cleanroom keeps dependency and network intent in one place (`cleanroom.yaml`) and makes each execution environment auditable and reproducible.
+Agentic tools and local CLIs also need package and API access to do their jobs. Cleanroom keeps dependency and network intent in one place (`cleanroom.yaml`) and makes each execution environment auditable and reproducible, so trusted launchers can execute untrusted workloads inside explicit policy boundaries.
 
 The result is a safer baseline:
 - accidental dependency drift gets reduced
