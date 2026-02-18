@@ -32,6 +32,7 @@ type Adapter struct{}
 
 const maxWorkspaceArchiveBytes = 256 << 20
 const runObservabilityFile = "run-observability.json"
+const vsockDialRetryInterval = 50 * time.Millisecond
 
 func New() *Adapter {
 	return &Adapter{}
@@ -326,9 +327,12 @@ func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.Run
 		vmRootFSPath = filepath.Join(runDir, "rootfs-ephemeral.ext4")
 		defer os.Remove(vmRootFSPath)
 	}
+	rootfsCopyStart := time.Now()
 	if err := copyFile(rootfsPath, vmRootFSPath); err != nil {
+		observation.RootFSCopyMS = durationMillisCeil(time.Since(rootfsCopyStart))
 		return nil, fmt.Errorf("prepare per-run rootfs: %w", err)
 	}
+	observation.RootFSCopyMS = durationMillisCeil(time.Since(rootfsCopyStart))
 
 	networkSetupStart := time.Now()
 	networkCfg, cleanupNetwork, err := setupHostNetwork(ctx, req.RunID, req.Policy.Allow)
@@ -336,6 +340,7 @@ func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.Run
 		return nil, fmt.Errorf("setup host network: %w", err)
 	}
 	observation.NetworkSetupMS = time.Since(networkSetupStart).Milliseconds()
+	observation.PolicyResolveMS = networkCfg.PolicyResolveMS
 	observation.NetworkTap = networkCfg.TapName
 	observation.NetworkGuestIP = networkCfg.GuestIP
 	observation.NetworkHostIP = networkCfg.HostIP
@@ -412,9 +417,13 @@ func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.Run
 	fcCmd.Stdout = stdoutFile
 	fcCmd.Stderr = stderrFile
 
+	firecrackerStart := time.Now()
 	if err := fcCmd.Start(); err != nil {
+		observation.FirecrackerStartMS = durationMillisCeil(time.Since(firecrackerStart))
 		return nil, fmt.Errorf("start firecracker: %w", err)
 	}
+	observation.FirecrackerStartMS = durationMillisCeil(time.Since(firecrackerStart))
+	vmProcessStart := time.Now()
 
 	waitCh := make(chan error, 1)
 	go func() {
@@ -425,7 +434,9 @@ func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.Run
 	bootCtx, bootCancel := context.WithTimeout(ctx, time.Duration(req.LaunchSeconds)*time.Second)
 	defer bootCancel()
 
+	workspaceArchiveStart := time.Now()
 	workspaceArchive, err := createWorkspaceArchive(req.WorkspaceHost)
+	observation.WorkspaceArchiveMS = durationMillisCeil(time.Since(workspaceArchiveStart))
 	if err != nil {
 		return nil, fmt.Errorf("prepare workspace copy from %s: %w", req.WorkspaceHost, err)
 	}
@@ -444,7 +455,11 @@ func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.Run
 	if err != nil {
 		return nil, err
 	}
-	observation.VMReadyMS = guestTiming.WaitForAgent.Milliseconds()
+	vmReady := guestTiming.AgentReadyAt.Sub(vmProcessStart)
+	if vmReady < 0 {
+		vmReady = 0
+	}
+	observation.VMReadyMS = vmReady.Milliseconds()
 	observation.VsockWaitMS = guestTiming.WaitForAgent.Milliseconds()
 	observation.GuestExecMS = guestTiming.CommandRun.Milliseconds()
 	if guestResult.Error != "" && strings.TrimSpace(guestResult.Stderr) == "" {
@@ -461,7 +476,7 @@ func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.Run
 	observation.ExitCode = guestResult.ExitCode
 	observation.GuestError = guestResult.Error
 
-	timingSummary := fmt.Sprintf("timings boot=%s vsock_wait=%s exec=%s", guestTiming.WaitForAgent, guestTiming.WaitForAgent, guestTiming.CommandRun)
+	timingSummary := fmt.Sprintf("timings boot=%s vsock_wait=%s exec=%s", vmReady, guestTiming.WaitForAgent, guestTiming.CommandRun)
 
 	return &backend.RunResult{
 		RunID:      req.RunID,
@@ -476,23 +491,27 @@ func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.Run
 }
 
 type firecrackerRunObservation struct {
-	RunID          string `json:"run_id"`
-	Backend        string `json:"backend"`
-	LaunchedVM     bool   `json:"launched_vm"`
-	Phase          string `json:"phase"`
-	PlanPath       string `json:"plan_path,omitempty"`
-	RunDir         string `json:"run_dir,omitempty"`
-	ExitCode       int    `json:"exit_code,omitempty"`
-	GuestError     string `json:"guest_error,omitempty"`
-	NetworkTap     string `json:"network_tap,omitempty"`
-	NetworkHostIP  string `json:"network_host_ip,omitempty"`
-	NetworkGuestIP string `json:"network_guest_ip,omitempty"`
-	NetworkSetupMS int64  `json:"network_setup_ms,omitempty"`
-	VMReadyMS      int64  `json:"vm_ready_ms,omitempty"`
-	VsockWaitMS    int64  `json:"vsock_wait_ms,omitempty"`
-	GuestExecMS    int64  `json:"guest_exec_ms,omitempty"`
-	CleanupMS      int64  `json:"cleanup_ms,omitempty"`
-	TotalMS        int64  `json:"total_ms,omitempty"`
+	RunID              string `json:"run_id"`
+	Backend            string `json:"backend"`
+	LaunchedVM         bool   `json:"launched_vm"`
+	Phase              string `json:"phase"`
+	PlanPath           string `json:"plan_path,omitempty"`
+	RunDir             string `json:"run_dir,omitempty"`
+	ExitCode           int    `json:"exit_code,omitempty"`
+	GuestError         string `json:"guest_error,omitempty"`
+	NetworkTap         string `json:"network_tap,omitempty"`
+	NetworkHostIP      string `json:"network_host_ip,omitempty"`
+	NetworkGuestIP     string `json:"network_guest_ip,omitempty"`
+	PolicyResolveMS    int64  `json:"policy_resolve_ms,omitempty"`
+	RootFSCopyMS       int64  `json:"rootfs_copy_ms,omitempty"`
+	FirecrackerStartMS int64  `json:"firecracker_start_ms,omitempty"`
+	WorkspaceArchiveMS int64  `json:"workspace_archive_ms,omitempty"`
+	NetworkSetupMS     int64  `json:"network_setup_ms,omitempty"`
+	VMReadyMS          int64  `json:"vm_ready_ms,omitempty"`
+	VsockWaitMS        int64  `json:"vsock_wait_ms,omitempty"`
+	GuestExecMS        int64  `json:"guest_exec_ms,omitempty"`
+	CleanupMS          int64  `json:"cleanup_ms,omitempty"`
+	TotalMS            int64  `json:"total_ms,omitempty"`
 }
 
 type firecrackerConfig struct {
@@ -551,14 +570,30 @@ func copyFile(src, dst string) error {
 	}
 	defer in.Close()
 
-	out, err := os.Create(dst)
+	info, err := in.Stat()
+	if err != nil {
+		return err
+	}
+
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_RDWR|os.O_TRUNC, info.Mode().Perm())
 	if err != nil {
 		return err
 	}
 	defer out.Close()
-
-	if _, err := io.Copy(out, in); err != nil {
+	if err := out.Chmod(info.Mode().Perm()); err != nil {
 		return err
+	}
+
+	if !tryCloneFile(out, in) {
+		if _, err := in.Seek(0, io.SeekStart); err != nil {
+			return err
+		}
+		if _, err := out.Seek(0, io.SeekStart); err != nil {
+			return err
+		}
+		if _, err := io.Copy(out, in); err != nil {
+			return err
+		}
 	}
 	return out.Sync()
 }
@@ -592,6 +627,7 @@ func runHostPassthrough(ctx context.Context, cwd string, command []string) (int,
 
 type guestExecTiming struct {
 	WaitForAgent time.Duration
+	AgentReadyAt time.Time
 	CommandRun   time.Duration
 }
 
@@ -601,7 +637,11 @@ func runGuestCommand(bootCtx context.Context, execCtx context.Context, waitCh <-
 	if err != nil {
 		return vsockexec.ExecResponse{}, guestExecTiming{}, err
 	}
-	timing := guestExecTiming{WaitForAgent: time.Since(waitStart)}
+	readyAt := time.Now()
+	timing := guestExecTiming{
+		WaitForAgent: readyAt.Sub(waitStart),
+		AgentReadyAt: readyAt,
+	}
 	defer conn.Close()
 	if dl, ok := execCtx.Deadline(); ok {
 		if deadlineConn, ok := conn.(interface{ SetDeadline(time.Time) error }); ok {
@@ -633,7 +673,7 @@ func runGuestCommand(bootCtx context.Context, execCtx context.Context, waitCh <-
 }
 
 func dialVsockUntilReady(ctx context.Context, waitCh <-chan error, vsockPath string, guestPort uint32) (io.ReadWriteCloser, error) {
-	ticker := time.NewTicker(200 * time.Millisecond)
+	ticker := time.NewTicker(vsockDialRetryInterval)
 	defer ticker.Stop()
 
 	for {
@@ -758,9 +798,10 @@ type limitedWriter struct {
 }
 
 type hostNetworkConfig struct {
-	TapName string
-	HostIP  string
-	GuestIP string
+	TapName         string
+	HostIP          string
+	GuestIP         string
+	PolicyResolveMS int64
 }
 
 type iptablesForwardRule struct {
@@ -771,22 +812,34 @@ type iptablesForwardRule struct {
 
 type ipLookupFunc func(ctx context.Context, host string) ([]net.IP, error)
 type rootCommandFunc func(ctx context.Context, args ...string) error
+type rootCommandBatchFunc func(ctx context.Context, commands [][]string) error
 
 func setupHostNetwork(ctx context.Context, runID string, allow []policy.AllowRule) (hostNetworkConfig, func(), error) {
 	lookup := func(ctx context.Context, host string) ([]net.IP, error) {
 		return net.DefaultResolver.LookupIP(ctx, "ip4", host)
 	}
-	return setupHostNetworkWithDeps(ctx, runID, allow, lookup, runRootCommand)
+	return setupHostNetworkWithDeps(ctx, runID, allow, lookup, runRootCommand, runRootCommandBatch)
 }
 
-func setupHostNetworkWithDeps(ctx context.Context, runID string, allow []policy.AllowRule, lookup ipLookupFunc, runCommand rootCommandFunc) (hostNetworkConfig, func(), error) {
+func setupHostNetworkWithDeps(ctx context.Context, runID string, allow []policy.AllowRule, lookup ipLookupFunc, runCommand rootCommandFunc, runBatchCommand rootCommandBatchFunc) (hostNetworkConfig, func(), error) {
 	tapName := tapNameFromRunID(runID)
 	hostIP, guestIP := hostGuestIPs(runID)
 	hostCIDR := hostIP + "/24"
 	guestCIDR := guestIP + "/32"
 	const dnsServer = "1.1.1.1"
 
+	if runBatchCommand == nil {
+		runBatchCommand = func(ctx context.Context, commands [][]string) error {
+			for _, args := range commands {
+				_ = runCommand(ctx, args...)
+			}
+			return nil
+		}
+	}
+
+	policyResolveStart := time.Now()
 	forwardRules, err := resolveForwardRulesWithLookup(ctx, allow, lookup)
+	policyResolveMS := durationMillisCeil(time.Since(policyResolveStart))
 	if err != nil {
 		return hostNetworkConfig{}, func() {}, err
 	}
@@ -795,15 +848,14 @@ func setupHostNetworkWithDeps(ctx context.Context, runID string, allow []policy.
 		return runCommand(ctx, args...)
 	}
 	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	cleanupRun := func(args ...string) error {
-		return runCommand(cleanupCtx, args...)
-	}
 	cleanupCmds := make([][]string, 0, 16)
 	cleanup := func() {
 		defer cleanupCancel()
+		reversed := make([][]string, 0, len(cleanupCmds))
 		for i := len(cleanupCmds) - 1; i >= 0; i-- {
-			_ = cleanupRun(cleanupCmds[i]...)
+			reversed = append(reversed, cleanupCmds[i])
 		}
+		_ = runBatchCommand(cleanupCtx, reversed)
 	}
 	addCleanup := func(args ...string) {
 		cleanupCmds = append(cleanupCmds, append([]string(nil), args...))
@@ -863,9 +915,10 @@ func setupHostNetworkWithDeps(ctx context.Context, runID string, allow []policy.
 	addCleanup("iptables", "-D", "FORWARD", "-i", tapName, "-j", "DROP")
 
 	return hostNetworkConfig{
-		TapName: tapName,
-		HostIP:  hostIP,
-		GuestIP: guestIP,
+		TapName:         tapName,
+		HostIP:          hostIP,
+		GuestIP:         guestIP,
+		PolicyResolveMS: policyResolveMS,
 	}, cleanup, nil
 }
 
@@ -923,6 +976,63 @@ func runRootCommand(ctx context.Context, args ...string) error {
 		return fmt.Errorf("%s: %w (%s)", strings.Join(args, " "), err, msg)
 	}
 	return nil
+}
+
+func runRootCommandBatch(ctx context.Context, commands [][]string) error {
+	if len(commands) == 0 {
+		return nil
+	}
+	script := buildBestEffortShellScript(commands)
+	cmd := exec.CommandContext(ctx, "sudo", "-n", "sh", "-c", script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg == "" {
+			msg = "no stderr output"
+		}
+		return fmt.Errorf("batch root commands: %w (%s)", err, msg)
+	}
+	return nil
+}
+
+func buildBestEffortShellScript(commands [][]string) string {
+	var b strings.Builder
+	b.WriteString("set +e\n")
+	for _, args := range commands {
+		if len(args) == 0 {
+			continue
+		}
+		b.WriteString(shellJoinArgs(args))
+		b.WriteString(" || true\n")
+	}
+	b.WriteString("exit 0\n")
+	return b.String()
+}
+
+func shellJoinArgs(args []string) string {
+	quoted := make([]string, len(args))
+	for i, arg := range args {
+		quoted[i] = shellQuoteArg(arg)
+	}
+	return strings.Join(quoted, " ")
+}
+
+func shellQuoteArg(arg string) string {
+	if arg == "" {
+		return "''"
+	}
+	return "'" + strings.ReplaceAll(arg, "'", "'\"'\"'") + "'"
+}
+
+func durationMillisCeil(d time.Duration) int64 {
+	if d <= 0 {
+		return 0
+	}
+	ms := d.Milliseconds()
+	if ms == 0 {
+		return 1
+	}
+	return ms
 }
 
 func tapNameFromRunID(runID string) string {
