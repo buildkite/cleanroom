@@ -31,6 +31,7 @@ import (
 type Adapter struct{}
 
 const maxWorkspaceArchiveBytes = 256 << 20
+const runObservabilityFile = "run-observability.json"
 
 func New() *Adapter {
 	return &Adapter{}
@@ -129,11 +130,41 @@ func (a *Adapter) Doctor(_ context.Context, req backend.DoctorRequest) (*backend
 		appendCheck("workspace_access", "pass", fmt.Sprintf("workspace access configured as %s", access))
 	}
 	appendCheck("workspace_path", "pass", fmt.Sprintf("host workspace path: %s", req.WorkspaceHost))
+	policyRules := 0
+	if req.Policy != nil {
+		policyRules = len(req.Policy.Allow)
+	}
+	appendCheck("network_policy_rules", "pass", fmt.Sprintf("loaded %d policy allow entries", policyRules))
+
+	for _, cmd := range []string{"ip", "iptables", "sysctl", "sudo"} {
+		if _, err := exec.LookPath(cmd); err != nil {
+			appendCheck("network_cmd_"+cmd, "fail", fmt.Sprintf("missing required host command %q", cmd))
+		} else {
+			appendCheck("network_cmd_"+cmd, "pass", fmt.Sprintf("found host command %q", cmd))
+		}
+	}
+	if err := runRootCommand(context.Background(), "true"); err != nil {
+		appendCheck("network_sudo_nopasswd", "warn", fmt.Sprintf("sudo -n is not ready for network setup/cleanup: %v", err))
+	} else {
+		appendCheck("network_sudo_nopasswd", "pass", "sudo -n works for privileged network setup")
+	}
+	if err := runRootCommand(context.Background(), "ip", "link", "show"); err != nil {
+		appendCheck("network_sudo_ip", "warn", fmt.Sprintf("sudo -n ip link show failed: %v", err))
+	} else {
+		appendCheck("network_sudo_ip", "pass", "sudo -n can execute ip commands")
+	}
 
 	return report, nil
 }
 
 func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.RunResult, error) {
+	runStart := time.Now()
+	observation := firecrackerRunObservation{
+		RunID:      req.RunID,
+		Backend:    a.Name(),
+		LaunchedVM: req.Launch,
+	}
+
 	if req.Policy == nil {
 		return nil, errors.New("missing compiled policy")
 	}
@@ -158,6 +189,12 @@ func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.Run
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
 		return nil, err
 	}
+	observationPath := filepath.Join(runDir, runObservabilityFile)
+	writeObservation := func() {
+		observation.TotalMS = time.Since(runStart).Milliseconds()
+		_ = writeJSON(observationPath, observation)
+	}
+	defer writeObservation()
 
 	if req.VCPUs <= 0 {
 		req.VCPUs = 1
@@ -202,6 +239,7 @@ func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.Run
 	}
 
 	if !req.Launch {
+		observation.Phase = "plan_or_host_passthrough"
 		planPath := filepath.Join(runDir, "passthrough-plan.json")
 		plan := map[string]any{
 			"backend":      "firecracker",
@@ -217,6 +255,8 @@ func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.Run
 		}
 
 		if !req.HostPassthrough {
+			observation.PlanPath = planPath
+			observation.RunDir = runDir
 			return &backend.RunResult{
 				RunID:      req.RunID,
 				ExitCode:   0,
@@ -231,6 +271,9 @@ func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.Run
 		if err != nil {
 			return nil, err
 		}
+		observation.PlanPath = planPath
+		observation.RunDir = runDir
+		observation.ExitCode = exitCode
 		return &backend.RunResult{
 			RunID:      req.RunID,
 			ExitCode:   exitCode,
@@ -255,6 +298,7 @@ func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.Run
 	if req.KernelImagePath == "" || req.RootFSPath == "" {
 		return nil, errors.New("kernel_image and rootfs must be configured for launched execution; use --dry-run or --host-passthrough for non-launch modes")
 	}
+	observation.Phase = "launch"
 
 	kernelPath, err := filepath.Abs(req.KernelImagePath)
 	if err != nil {
@@ -281,11 +325,21 @@ func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.Run
 		return nil, fmt.Errorf("prepare per-run rootfs: %w", err)
 	}
 
+	networkSetupStart := time.Now()
 	networkCfg, cleanupNetwork, err := setupHostNetwork(ctx, req.RunID, req.Policy.Allow)
 	if err != nil {
 		return nil, fmt.Errorf("setup host network: %w", err)
 	}
-	defer cleanupNetwork()
+	observation.NetworkSetupMS = time.Since(networkSetupStart).Milliseconds()
+	observation.NetworkTap = networkCfg.TapName
+	observation.NetworkGuestIP = networkCfg.GuestIP
+	observation.NetworkHostIP = networkCfg.HostIP
+	cleanupMeasured := func() {
+		cleanupStart := time.Now()
+		cleanupNetwork()
+		observation.CleanupMS = time.Since(cleanupStart).Milliseconds()
+	}
+	defer cleanupMeasured()
 
 	vsockPath := filepath.Join(runDir, "vsock.sock")
 	fcCfg := firecrackerConfig{
@@ -356,6 +410,7 @@ func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.Run
 	if err := fcCmd.Start(); err != nil {
 		return nil, fmt.Errorf("start firecracker: %w", err)
 	}
+	vmStart := time.Now()
 
 	waitCh := make(chan error, 1)
 	go func() {
@@ -381,10 +436,13 @@ func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.Run
 	if _, err := cryptorand.Read(seed); err == nil {
 		guestReq.EntropySeed = seed
 	}
-	guestResult, err := runGuestCommand(bootCtx, ctx, waitCh, vsockPath, req.GuestPort, guestReq)
+	guestResult, guestTiming, err := runGuestCommand(bootCtx, ctx, waitCh, vsockPath, req.GuestPort, guestReq)
 	if err != nil {
 		return nil, err
 	}
+	observation.VMReadyMS = time.Since(vmStart).Milliseconds()
+	observation.VsockWaitMS = guestTiming.WaitForAgent.Milliseconds()
+	observation.GuestExecMS = guestTiming.CommandRun.Milliseconds()
 	if guestResult.Error != "" && strings.TrimSpace(guestResult.Stderr) == "" {
 		guestResult.Stderr = guestResult.Error + "\n"
 	}
@@ -394,16 +452,43 @@ func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.Run
 		message = runResultMessage(req.RetainWrites, "firecracker launch and guest command execution completed with guest-side error detail: "+guestResult.Error)
 	}
 
+	observation.PlanPath = cfgPath
+	observation.RunDir = runDir
+	observation.ExitCode = guestResult.ExitCode
+	observation.GuestError = guestResult.Error
+
+	timingSummary := fmt.Sprintf("timings boot=%s vsock_wait=%s exec=%s", time.Duration(observation.VMReadyMS)*time.Millisecond, guestTiming.WaitForAgent, guestTiming.CommandRun)
+
 	return &backend.RunResult{
 		RunID:      req.RunID,
 		ExitCode:   guestResult.ExitCode,
 		LaunchedVM: true,
 		PlanPath:   cfgPath,
 		RunDir:     runDir,
-		Message:    message,
+		Message:    message + "; " + timingSummary,
 		Stdout:     guestResult.Stdout,
 		Stderr:     guestResult.Stderr,
 	}, nil
+}
+
+type firecrackerRunObservation struct {
+	RunID          string `json:"run_id"`
+	Backend        string `json:"backend"`
+	LaunchedVM     bool   `json:"launched_vm"`
+	Phase          string `json:"phase"`
+	PlanPath       string `json:"plan_path,omitempty"`
+	RunDir         string `json:"run_dir,omitempty"`
+	ExitCode       int    `json:"exit_code,omitempty"`
+	GuestError     string `json:"guest_error,omitempty"`
+	NetworkTap     string `json:"network_tap,omitempty"`
+	NetworkHostIP  string `json:"network_host_ip,omitempty"`
+	NetworkGuestIP string `json:"network_guest_ip,omitempty"`
+	NetworkSetupMS int64  `json:"network_setup_ms,omitempty"`
+	VMReadyMS      int64  `json:"vm_ready_ms,omitempty"`
+	VsockWaitMS    int64  `json:"vsock_wait_ms,omitempty"`
+	GuestExecMS    int64  `json:"guest_exec_ms,omitempty"`
+	CleanupMS      int64  `json:"cleanup_ms,omitempty"`
+	TotalMS        int64  `json:"total_ms,omitempty"`
 }
 
 type firecrackerConfig struct {
@@ -501,16 +586,23 @@ func runHostPassthrough(ctx context.Context, cwd string, command []string) (int,
 	return 1, stdout.String(), stderr.String(), fmt.Errorf("run host passthrough command: %w", err)
 }
 
-func runGuestCommand(bootCtx context.Context, execCtx context.Context, waitCh <-chan error, vsockPath string, guestPort uint32, req vsockexec.ExecRequest) (vsockexec.ExecResponse, error) {
+type guestExecTiming struct {
+	WaitForAgent time.Duration
+	CommandRun   time.Duration
+}
+
+func runGuestCommand(bootCtx context.Context, execCtx context.Context, waitCh <-chan error, vsockPath string, guestPort uint32, req vsockexec.ExecRequest) (vsockexec.ExecResponse, guestExecTiming, error) {
+	waitStart := time.Now()
 	conn, err := dialVsockUntilReady(bootCtx, waitCh, vsockPath, guestPort)
 	if err != nil {
-		return vsockexec.ExecResponse{}, err
+		return vsockexec.ExecResponse{}, guestExecTiming{}, err
 	}
+	timing := guestExecTiming{WaitForAgent: time.Since(waitStart)}
 	defer conn.Close()
 	if dl, ok := execCtx.Deadline(); ok {
 		if deadlineConn, ok := conn.(interface{ SetDeadline(time.Time) error }); ok {
 			if err := deadlineConn.SetDeadline(dl); err != nil {
-				return vsockexec.ExecResponse{}, fmt.Errorf("set vsock deadline: %w", err)
+				return vsockexec.ExecResponse{}, guestExecTiming{}, fmt.Errorf("set vsock deadline: %w", err)
 			}
 		}
 	}
@@ -521,17 +613,19 @@ func runGuestCommand(bootCtx context.Context, execCtx context.Context, waitCh <-
 	}()
 
 	if err := vsockexec.EncodeRequest(conn, req); err != nil {
-		return vsockexec.ExecResponse{}, fmt.Errorf("send guest exec request: %w", err)
+		return vsockexec.ExecResponse{}, guestExecTiming{}, fmt.Errorf("send guest exec request: %w", err)
 	}
 
+	commandStart := time.Now()
 	res, err := vsockexec.DecodeResponse(conn)
 	if err != nil {
 		if ctxErr := execCtx.Err(); ctxErr != nil {
-			return vsockexec.ExecResponse{}, fmt.Errorf("guest exec canceled while waiting for response: %w", ctxErr)
+			return vsockexec.ExecResponse{}, guestExecTiming{}, fmt.Errorf("guest exec canceled while waiting for response: %w", ctxErr)
 		}
-		return vsockexec.ExecResponse{}, fmt.Errorf("decode guest exec response: %w", err)
+		return vsockexec.ExecResponse{}, guestExecTiming{}, fmt.Errorf("decode guest exec response: %w", err)
 	}
-	return res, nil
+	timing.CommandRun = time.Since(commandStart)
+	return res, timing, nil
 }
 
 func dialVsockUntilReady(ctx context.Context, waitCh <-chan error, vsockPath string, guestPort uint32) (io.ReadWriteCloser, error) {
@@ -671,24 +765,34 @@ type iptablesForwardRule struct {
 	DestPort int
 }
 
+type ipLookupFunc func(ctx context.Context, host string) ([]net.IP, error)
+type rootCommandFunc func(ctx context.Context, args ...string) error
+
 func setupHostNetwork(ctx context.Context, runID string, allow []policy.AllowRule) (hostNetworkConfig, func(), error) {
+	lookup := func(ctx context.Context, host string) ([]net.IP, error) {
+		return net.DefaultResolver.LookupIP(ctx, "ip4", host)
+	}
+	return setupHostNetworkWithDeps(ctx, runID, allow, lookup, runRootCommand)
+}
+
+func setupHostNetworkWithDeps(ctx context.Context, runID string, allow []policy.AllowRule, lookup ipLookupFunc, runCommand rootCommandFunc) (hostNetworkConfig, func(), error) {
 	tapName := tapNameFromRunID(runID)
 	hostIP, guestIP := hostGuestIPs(runID)
 	hostCIDR := hostIP + "/24"
 	guestCIDR := guestIP + "/32"
 	const dnsServer = "1.1.1.1"
 
-	forwardRules, err := resolveForwardRules(ctx, allow)
+	forwardRules, err := resolveForwardRulesWithLookup(ctx, allow, lookup)
 	if err != nil {
 		return hostNetworkConfig{}, func() {}, err
 	}
 
 	setupRun := func(args ...string) error {
-		return runRootCommand(ctx, args...)
+		return runCommand(ctx, args...)
 	}
 	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	cleanupRun := func(args ...string) error {
-		return runRootCommand(cleanupCtx, args...)
+		return runCommand(cleanupCtx, args...)
 	}
 	cleanupCmds := make([][]string, 0, 16)
 	cleanup := func() {
@@ -762,10 +866,17 @@ func setupHostNetwork(ctx context.Context, runID string, allow []policy.AllowRul
 }
 
 func resolveForwardRules(ctx context.Context, allow []policy.AllowRule) ([]iptablesForwardRule, error) {
+	lookup := func(ctx context.Context, host string) ([]net.IP, error) {
+		return net.DefaultResolver.LookupIP(ctx, "ip4", host)
+	}
+	return resolveForwardRulesWithLookup(ctx, allow, lookup)
+}
+
+func resolveForwardRulesWithLookup(ctx context.Context, allow []policy.AllowRule, lookup ipLookupFunc) ([]iptablesForwardRule, error) {
 	rules := make([]iptablesForwardRule, 0, len(allow)*2)
 	seen := map[string]struct{}{}
 	for _, entry := range allow {
-		ips, err := net.DefaultResolver.LookupIP(ctx, "ip4", entry.Host)
+		ips, err := lookup(ctx, entry.Host)
 		if err != nil {
 			return nil, fmt.Errorf("resolve policy host %q: %w", entry.Host, err)
 		}

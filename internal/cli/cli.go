@@ -75,6 +75,23 @@ type StatusCommand struct {
 	RunID string `help:"Run ID to inspect"`
 }
 
+type runObservability struct {
+	Backend        string `json:"backend"`
+	Phase          string `json:"phase"`
+	ExitCode       int    `json:"exit_code"`
+	PlanPath       string `json:"plan_path"`
+	RunDir         string `json:"run_dir"`
+	NetworkTap     string `json:"network_tap"`
+	NetworkHostIP  string `json:"network_host_ip"`
+	NetworkGuestIP string `json:"network_guest_ip"`
+	NetworkSetupMS int64  `json:"network_setup_ms"`
+	VMReadyMS      int64  `json:"vm_ready_ms"`
+	VsockWaitMS    int64  `json:"vsock_wait_ms"`
+	GuestExecMS    int64  `json:"guest_exec_ms"`
+	CleanupMS      int64  `json:"cleanup_ms"`
+	TotalMS        int64  `json:"total_ms"`
+}
+
 type DoctorCommand struct {
 	Chdir   string `short:"c" help:"Change to this directory before running commands"`
 	Backend string `help:"Execution backend to diagnose (defaults to runtime config or firecracker)"`
@@ -412,7 +429,27 @@ func (s *StatusCommand) Run(ctx *runtimeContext) error {
 			}
 			return err
 		}
-		_, err := fmt.Fprintf(ctx.Stdout, "run: %s\n", runDir)
+		if _, err := fmt.Fprintf(ctx.Stdout, "run: %s\n", runDir); err != nil {
+			return err
+		}
+		obsPath := filepath.Join(runDir, "run-observability.json")
+		b, err := os.ReadFile(obsPath)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				_, werr := fmt.Fprintf(ctx.Stdout, "observability: not found (%s)\n", obsPath)
+				return werr
+			}
+			return err
+		}
+		var obs runObservability
+		if err := json.Unmarshal(b, &obs); err != nil {
+			return fmt.Errorf("parse %s: %w", obsPath, err)
+		}
+		_, err = fmt.Fprintf(ctx.Stdout,
+			"backend: %s\nphase: %s\nexit_code: %d\nnetwork: tap=%s host=%s guest=%s\n"+
+				"timings_ms: network_setup=%d vm_ready=%d vsock_wait=%d guest_exec=%d cleanup=%d total=%d\n",
+			obs.Backend, obs.Phase, obs.ExitCode, obs.NetworkTap, obs.NetworkHostIP, obs.NetworkGuestIP,
+			obs.NetworkSetupMS, obs.VMReadyMS, obs.VsockWaitMS, obs.GuestExecMS, obs.CleanupMS, obs.TotalMS)
 		return err
 	}
 

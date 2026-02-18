@@ -202,6 +202,22 @@ cleanroom policy validate --json
 
 This prints the resolved policy and effective network/registry plan before execution.
 
+### 6) Diagnose host networking + inspect run timings
+
+```bash
+cleanroom doctor
+cleanroom status --run-id <run-id>
+```
+
+`doctor` now reports host networking prerequisites for launched Firecracker runs (presence of `ip`/`iptables`/`sysctl`/`sudo`, plus `sudo -n` checks used by TAP/NAT setup).
+
+`status --run-id` prints per-run observability from `run-observability.json`, including:
+- network setup time
+- VM ready/vsock wait time
+- guest command runtime
+- network cleanup time
+- total run time
+
 ## What happens at runtime
 
 - `cleanroom exec` sends requests to the `cleanroom serve` API.
