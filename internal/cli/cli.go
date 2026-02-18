@@ -252,7 +252,6 @@ func (s *ServeCommand) Run(ctx *runtimeContext) error {
 		Logger:   logger.With("subsystem", "service"),
 	}
 	server := controlserver.New(service, logger.With("subsystem", "http"))
-	logger.Info("serving cleanroom control API", "endpoint", ep.Address, "scheme", ep.Scheme)
 
 	runCtx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()

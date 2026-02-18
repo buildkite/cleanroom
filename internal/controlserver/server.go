@@ -82,6 +82,9 @@ func Serve(ctx context.Context, ep endpoint.Endpoint, handler http.Handler, logg
 		return err
 	}
 	defer listener.Close()
+	if logger != nil {
+		logger.Info("serving cleanroom control API", "endpoint", ep.Address, "scheme", ep.Scheme)
+	}
 
 	httpServer := &http.Server{
 		Handler:           handler,
@@ -135,13 +138,13 @@ func listen(ep endpoint.Endpoint) (net.Listener, error) {
 		return listener, nil
 	}
 
-	if ep.Scheme == "http" || ep.Scheme == "https" {
+	if ep.Scheme == "https" {
+		return nil, errors.New("https listen endpoints are not supported yet: TLS configuration is not implemented")
+	}
+	if ep.Scheme == "http" {
 		addr := ep.Address
 		if len(addr) >= 7 && addr[:7] == "http://" {
 			addr = addr[7:]
-		}
-		if len(addr) >= 8 && addr[:8] == "https://" {
-			addr = addr[8:]
 		}
 		return net.Listen("tcp", addr)
 	}

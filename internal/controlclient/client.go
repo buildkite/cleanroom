@@ -9,7 +9,6 @@ import (
 	"net"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/buildkite/cleanroom/internal/controlapi"
 	"github.com/buildkite/cleanroom/internal/endpoint"
@@ -32,7 +31,6 @@ func New(ep endpoint.Endpoint) *Client {
 	return &Client{
 		httpClient: &http.Client{
 			Transport: transport,
-			Timeout:   60 * time.Second,
 		},
 		baseURL: baseURL,
 	}
