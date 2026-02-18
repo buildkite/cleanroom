@@ -29,14 +29,10 @@ type runtimeContext struct {
 	Loader     policy.Loader
 	Config     runtimeconfig.Config
 	ConfigPath string
-	Host       string
 	Backends   map[string]backend.Adapter
 }
 
 type CLI struct {
-	Chdir string `short:"c" help:"Change to this directory before running commands"`
-	Host  string `help:"Control-plane endpoint (unix://path, http://host:port, or https://host:port)"`
-
 	Policy PolicyCommand `cmd:"" help:"Policy commands"`
 	Exec   ExecCommand   `cmd:"" help:"Execute a command in a cleanroom backend"`
 	Serve  ServeCommand  `cmd:"" help:"Run the cleanroom control-plane server"`
@@ -49,10 +45,13 @@ type PolicyCommand struct {
 }
 
 type PolicyValidateCommand struct {
-	JSON bool `help:"Print compiled policy as JSON"`
+	Chdir string `short:"c" help:"Change to this directory before running commands"`
+	JSON  bool   `help:"Print compiled policy as JSON"`
 }
 
 type ExecCommand struct {
+	Chdir   string `short:"c" help:"Change to this directory before running commands"`
+	Host    string `help:"Control-plane endpoint (unix://path, http://host:port, or https://host:port)"`
 	Backend string `help:"Execution backend (defaults to runtime config or firecracker)"`
 
 	RunDir            string `help:"Run directory for generated artifacts (default: XDG runtime/state cleanroom path)"`
@@ -65,7 +64,7 @@ type ExecCommand struct {
 }
 
 type ServeCommand struct {
-	Listen string `help:"Listen endpoint for control API (defaults to --host or runtime default)"`
+	Listen string `help:"Listen endpoint for control API (defaults to runtime endpoint)"`
 }
 
 type StatusCommand struct {
@@ -73,6 +72,7 @@ type StatusCommand struct {
 }
 
 type DoctorCommand struct {
+	Chdir   string `short:"c" help:"Change to this directory before running commands"`
 	Backend string `help:"Execution backend to diagnose (defaults to runtime config or firecracker)"`
 	JSON    bool   `help:"Print doctor report as JSON"`
 }
@@ -124,18 +124,11 @@ func Run(args []string) error {
 		return err
 	}
 
-	if cli.Chdir != "" {
-		if err := os.Chdir(cli.Chdir); err != nil {
-			return fmt.Errorf("change directory to %s: %w", cli.Chdir, err)
-		}
-	}
-
 	cwd, err := os.Getwd()
 	if err != nil {
 		return err
 	}
 	runtimeCtx.CWD = cwd
-	runtimeCtx.Host = cli.Host
 
 	return ctx.Run(runtimeCtx)
 }
@@ -149,7 +142,11 @@ func ExitCode(err error) int {
 }
 
 func (c *PolicyValidateCommand) Run(ctx *runtimeContext) error {
-	compiled, source, err := ctx.Loader.LoadAndCompile(ctx.CWD)
+	cwd, err := resolveCWD(ctx.CWD, c.Chdir)
+	if err != nil {
+		return err
+	}
+	compiled, source, err := ctx.Loader.LoadAndCompile(cwd)
 	if err != nil {
 		return err
 	}
@@ -169,13 +166,17 @@ func (c *PolicyValidateCommand) Run(ctx *runtimeContext) error {
 }
 
 func (e *ExecCommand) Run(ctx *runtimeContext) error {
-	ep, err := endpoint.Resolve(ctx.Host)
+	cwd, err := resolveCWD(ctx.CWD, e.Chdir)
+	if err != nil {
+		return err
+	}
+	ep, err := endpoint.Resolve(e.Host)
 	if err != nil {
 		return err
 	}
 	client := controlclient.New(ep)
 	resp, err := client.Exec(context.Background(), controlapi.ExecRequest{
-		CWD:     ctx.CWD,
+		CWD:     cwd,
 		Backend: e.Backend,
 		Command: append([]string(nil), e.Command...),
 		Options: controlapi.ExecOptions{
@@ -210,11 +211,7 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 }
 
 func (s *ServeCommand) Run(ctx *runtimeContext) error {
-	raw := s.Listen
-	if raw == "" {
-		raw = ctx.Host
-	}
-	ep, err := endpoint.Resolve(raw)
+	ep, err := endpoint.Resolve(s.Listen)
 	if err != nil {
 		return err
 	}
@@ -236,6 +233,10 @@ func (s *ServeCommand) Run(ctx *runtimeContext) error {
 }
 
 func (d *DoctorCommand) Run(ctx *runtimeContext) error {
+	cwd, err := resolveCWD(ctx.CWD, d.Chdir)
+	if err != nil {
+		return err
+	}
 	backendName := resolveBackendName(d.Backend, ctx.Config.DefaultBackend)
 	adapter, ok := ctx.Backends[backendName]
 	if !ok {
@@ -247,12 +248,12 @@ func (d *DoctorCommand) Run(ctx *runtimeContext) error {
 		{Name: "backend", Status: "pass", Message: fmt.Sprintf("selected backend %s", backendName)},
 	}
 
-	compiled, source, err := ctx.Loader.LoadAndCompile(ctx.CWD)
+	compiled, source, err := ctx.Loader.LoadAndCompile(cwd)
 	if err != nil {
 		checks = append(checks, backend.DoctorCheck{
 			Name:    "repository_policy",
 			Status:  "warn",
-			Message: fmt.Sprintf("policy not loaded from %s: %v", ctx.CWD, err),
+			Message: fmt.Sprintf("policy not loaded from %s: %v", cwd, err),
 		})
 	} else {
 		checks = append(checks, backend.DoctorCheck{
@@ -416,4 +417,14 @@ func (s *StatusCommand) Run(ctx *runtimeContext) error {
 		}
 	}
 	return nil
+}
+
+func resolveCWD(base, chdir string) (string, error) {
+	if chdir == "" {
+		return base, nil
+	}
+	if filepath.IsAbs(chdir) {
+		return filepath.Clean(chdir), nil
+	}
+	return filepath.Join(base, chdir), nil
 }
