@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/buildkite/cleanroom/internal/policy"
 )
@@ -67,15 +68,23 @@ func TestSetupHostNetworkWithDepsAddsDenyDefaultAndCleanupIndependentContext(t *
 		calls = append(calls, call{ctxCanceled: ctx.Err() != nil, args: copied})
 		return nil
 	}
+	runBatch := func(ctx context.Context, commands [][]string) error {
+		for _, args := range commands {
+			copied := append([]string(nil), args...)
+			calls = append(calls, call{ctxCanceled: ctx.Err() != nil, args: copied})
+		}
+		return nil
+	}
 	lookup := func(_ context.Context, host string) ([]net.IP, error) {
 		if host != "proxy.golang.org" {
 			t.Fatalf("unexpected host %q", host)
 		}
+		time.Sleep(2 * time.Millisecond)
 		return []net.IP{net.ParseIP("142.251.41.17")}, nil
 	}
 
 	reqCtx, cancel := context.WithCancel(context.Background())
-	cfg, cleanup, err := setupHostNetworkWithDeps(reqCtx, "run-12345", []policy.AllowRule{{Host: "proxy.golang.org", Ports: []int{443}}}, lookup, run)
+	cfg, cleanup, err := setupHostNetworkWithDeps(reqCtx, "run-12345", []policy.AllowRule{{Host: "proxy.golang.org", Ports: []int{443}}}, lookup, run, runBatch)
 	if err != nil {
 		t.Fatalf("setupHostNetworkWithDeps: %v", err)
 	}
@@ -85,6 +94,9 @@ func TestSetupHostNetworkWithDepsAddsDenyDefaultAndCleanupIndependentContext(t *
 	tap := cfg.TapName
 	if tap == "" {
 		t.Fatal("expected non-empty tap name")
+	}
+	if cfg.PolicyResolveMS <= 0 {
+		t.Fatalf("expected positive policy resolve timing, got %d", cfg.PolicyResolveMS)
 	}
 	haystack := make([]string, 0, len(calls))
 	for _, c := range calls {
