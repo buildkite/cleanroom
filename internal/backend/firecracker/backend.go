@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,6 +23,7 @@ import (
 
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/paths"
+	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/vsockexec"
 	fcvsock "github.com/firecracker-microvm/firecracker-go-sdk/vsock"
 )
@@ -279,7 +281,7 @@ func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.Run
 		return nil, fmt.Errorf("prepare per-run rootfs: %w", err)
 	}
 
-	networkCfg, cleanupNetwork, err := setupHostNetwork(ctx, req.RunID)
+	networkCfg, cleanupNetwork, err := setupHostNetwork(ctx, req.RunID, req.Policy.Allow)
 	if err != nil {
 		return nil, fmt.Errorf("setup host network: %w", err)
 	}
@@ -663,55 +665,136 @@ type hostNetworkConfig struct {
 	GuestIP string
 }
 
-func setupHostNetwork(ctx context.Context, runID string) (hostNetworkConfig, func(), error) {
+type iptablesForwardRule struct {
+	Protocol string
+	DestIP   string
+	DestPort int
+}
+
+func setupHostNetwork(ctx context.Context, runID string, allow []policy.AllowRule) (hostNetworkConfig, func(), error) {
 	tapName := tapNameFromRunID(runID)
 	hostIP, guestIP := hostGuestIPs(runID)
 	hostCIDR := hostIP + "/24"
 	guestCIDR := guestIP + "/32"
+	const dnsServer = "1.1.1.1"
 
-	run := func(args ...string) error {
+	forwardRules, err := resolveForwardRules(ctx, allow)
+	if err != nil {
+		return hostNetworkConfig{}, func() {}, err
+	}
+
+	setupRun := func(args ...string) error {
 		return runRootCommand(ctx, args...)
 	}
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	cleanupRun := func(args ...string) error {
+		return runRootCommand(cleanupCtx, args...)
+	}
+	cleanupCmds := make([][]string, 0, 16)
 	cleanup := func() {
-		_ = run("iptables", "-t", "nat", "-D", "POSTROUTING", "-s", guestCIDR, "-j", "MASQUERADE")
-		_ = run("iptables", "-D", "FORWARD", "-i", tapName, "-j", "ACCEPT")
-		_ = run("iptables", "-D", "FORWARD", "-o", tapName, "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT")
-		_ = run("ip", "link", "del", tapName)
+		defer cleanupCancel()
+		for i := len(cleanupCmds) - 1; i >= 0; i-- {
+			_ = cleanupRun(cleanupCmds[i]...)
+		}
+	}
+	addCleanup := func(args ...string) {
+		cleanupCmds = append(cleanupCmds, append([]string(nil), args...))
 	}
 
-	if err := run("ip", "tuntap", "add", "dev", tapName, "mode", "tap", "user", strconv.Itoa(os.Getuid())); err != nil {
+	if err := setupRun("ip", "tuntap", "add", "dev", tapName, "mode", "tap", "user", strconv.Itoa(os.Getuid())); err != nil {
 		return hostNetworkConfig{}, func() {}, fmt.Errorf("create tap device %s: %w", tapName, err)
 	}
-	if err := run("ip", "addr", "add", hostCIDR, "dev", tapName); err != nil {
+	addCleanup("ip", "link", "del", tapName)
+	if err := setupRun("ip", "addr", "add", hostCIDR, "dev", tapName); err != nil {
 		cleanup()
 		return hostNetworkConfig{}, func() {}, fmt.Errorf("assign host ip to %s: %w", tapName, err)
 	}
-	if err := run("ip", "link", "set", "dev", tapName, "up"); err != nil {
+	if err := setupRun("ip", "link", "set", "dev", tapName, "up"); err != nil {
 		cleanup()
 		return hostNetworkConfig{}, func() {}, fmt.Errorf("bring tap %s up: %w", tapName, err)
 	}
-	if err := run("sysctl", "-w", "net.ipv4.ip_forward=1"); err != nil {
+	if err := setupRun("sysctl", "-w", "net.ipv4.ip_forward=1"); err != nil {
 		cleanup()
 		return hostNetworkConfig{}, func() {}, fmt.Errorf("enable ipv4 forwarding: %w", err)
 	}
-	if err := run("iptables", "-t", "nat", "-A", "POSTROUTING", "-s", guestCIDR, "-j", "MASQUERADE"); err != nil {
+	if err := setupRun("iptables", "-t", "nat", "-A", "POSTROUTING", "-s", guestCIDR, "-j", "MASQUERADE"); err != nil {
 		cleanup()
 		return hostNetworkConfig{}, func() {}, fmt.Errorf("install nat rule for %s: %w", guestCIDR, err)
 	}
-	if err := run("iptables", "-A", "FORWARD", "-i", tapName, "-j", "ACCEPT"); err != nil {
+	addCleanup("iptables", "-t", "nat", "-D", "POSTROUTING", "-s", guestCIDR, "-j", "MASQUERADE")
+	if err := setupRun("iptables", "-A", "FORWARD", "-o", tapName, "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"); err != nil {
 		cleanup()
-		return hostNetworkConfig{}, func() {}, fmt.Errorf("install forward ingress rule for %s: %w", tapName, err)
+		return hostNetworkConfig{}, func() {}, fmt.Errorf("install forward return-path rule for %s: %w", tapName, err)
 	}
-	if err := run("iptables", "-A", "FORWARD", "-o", tapName, "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"); err != nil {
+	addCleanup("iptables", "-D", "FORWARD", "-o", tapName, "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT")
+
+	// Allow guest DNS to the configured resolver so host-based policy entries remain usable.
+	if err := setupRun("iptables", "-A", "FORWARD", "-i", tapName, "-p", "udp", "-d", dnsServer, "--dport", "53", "-j", "ACCEPT"); err != nil {
 		cleanup()
-		return hostNetworkConfig{}, func() {}, fmt.Errorf("install forward egress rule for %s: %w", tapName, err)
+		return hostNetworkConfig{}, func() {}, fmt.Errorf("install dns udp rule for %s: %w", tapName, err)
 	}
+	addCleanup("iptables", "-D", "FORWARD", "-i", tapName, "-p", "udp", "-d", dnsServer, "--dport", "53", "-j", "ACCEPT")
+	if err := setupRun("iptables", "-A", "FORWARD", "-i", tapName, "-p", "tcp", "-d", dnsServer, "--dport", "53", "-j", "ACCEPT"); err != nil {
+		cleanup()
+		return hostNetworkConfig{}, func() {}, fmt.Errorf("install dns tcp rule for %s: %w", tapName, err)
+	}
+	addCleanup("iptables", "-D", "FORWARD", "-i", tapName, "-p", "tcp", "-d", dnsServer, "--dport", "53", "-j", "ACCEPT")
+
+	for _, rule := range forwardRules {
+		port := strconv.Itoa(rule.DestPort)
+		if err := setupRun("iptables", "-A", "FORWARD", "-i", tapName, "-p", rule.Protocol, "-d", rule.DestIP, "--dport", port, "-j", "ACCEPT"); err != nil {
+			cleanup()
+			return hostNetworkConfig{}, func() {}, fmt.Errorf("install allow rule %s %s:%d: %w", rule.Protocol, rule.DestIP, rule.DestPort, err)
+		}
+		addCleanup("iptables", "-D", "FORWARD", "-i", tapName, "-p", rule.Protocol, "-d", rule.DestIP, "--dport", port, "-j", "ACCEPT")
+	}
+	if err := setupRun("iptables", "-A", "FORWARD", "-i", tapName, "-j", "DROP"); err != nil {
+		cleanup()
+		return hostNetworkConfig{}, func() {}, fmt.Errorf("install default deny forward rule for %s: %w", tapName, err)
+	}
+	addCleanup("iptables", "-D", "FORWARD", "-i", tapName, "-j", "DROP")
 
 	return hostNetworkConfig{
 		TapName: tapName,
 		HostIP:  hostIP,
 		GuestIP: guestIP,
 	}, cleanup, nil
+}
+
+func resolveForwardRules(ctx context.Context, allow []policy.AllowRule) ([]iptablesForwardRule, error) {
+	rules := make([]iptablesForwardRule, 0, len(allow)*2)
+	seen := map[string]struct{}{}
+	for _, entry := range allow {
+		ips, err := net.DefaultResolver.LookupIP(ctx, "ip4", entry.Host)
+		if err != nil {
+			return nil, fmt.Errorf("resolve policy host %q: %w", entry.Host, err)
+		}
+		if len(ips) == 0 {
+			return nil, fmt.Errorf("resolve policy host %q: no ipv4 addresses", entry.Host)
+		}
+		for _, ip := range ips {
+			ipv4 := ip.To4()
+			if ipv4 == nil {
+				continue
+			}
+			ipStr := ipv4.String()
+			for _, port := range entry.Ports {
+				for _, proto := range []string{"tcp", "udp"} {
+					key := fmt.Sprintf("%s|%s|%d", proto, ipStr, port)
+					if _, ok := seen[key]; ok {
+						continue
+					}
+					seen[key] = struct{}{}
+					rules = append(rules, iptablesForwardRule{
+						Protocol: proto,
+						DestIP:   ipStr,
+						DestPort: port,
+					})
+				}
+			}
+		}
+	}
+	return rules, nil
 }
 
 func runRootCommand(ctx context.Context, args ...string) error {
