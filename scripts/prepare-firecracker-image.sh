@@ -184,6 +184,36 @@ mount -t tmpfs tmpfs /tmp 2>/dev/null || true
 
 export HOME=/root
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/root/.local/bin
+
+cmdline="\$(cat /proc/cmdline 2>/dev/null || true)"
+arg_value() {
+  key="\$1"
+  for token in \$cmdline; do
+    case "\$token" in
+      "\$key"=*) echo "\${token#*=}"; return 0 ;;
+    esac
+  done
+  return 1
+}
+
+GUEST_IP="\$(arg_value cleanroom_guest_ip || true)"
+GUEST_GW="\$(arg_value cleanroom_guest_gw || true)"
+GUEST_MASK="\$(arg_value cleanroom_guest_mask || true)"
+GUEST_DNS="\$(arg_value cleanroom_guest_dns || true)"
+
+if command -v ip >/dev/null 2>&1 && [ -n "\$GUEST_IP" ]; then
+  [ -n "\$GUEST_MASK" ] || GUEST_MASK="24"
+  ip link set dev eth0 up 2>/dev/null || true
+  ip addr flush dev eth0 2>/dev/null || true
+  ip addr add "\$GUEST_IP/\$GUEST_MASK" dev eth0 2>/dev/null || true
+  if [ -n "\$GUEST_GW" ]; then
+    ip route add default via "\$GUEST_GW" dev eth0 2>/dev/null || true
+  fi
+  if [ -n "\$GUEST_DNS" ]; then
+    printf 'nameserver %s\n' "\$GUEST_DNS" > /etc/resolv.conf 2>/dev/null || true
+  fi
+fi
+
 export CLEANROOM_VSOCK_PORT=$AGENT_PORT
 while true; do
   /usr/local/bin/cleanroom-guest-agent || true

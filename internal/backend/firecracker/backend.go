@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"context"
 	cryptorand "crypto/rand"
+	"crypto/sha1"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -277,11 +279,21 @@ func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.Run
 		return nil, fmt.Errorf("prepare per-run rootfs: %w", err)
 	}
 
+	networkCfg, cleanupNetwork, err := setupHostNetwork(ctx, req.RunID)
+	if err != nil {
+		return nil, fmt.Errorf("setup host network: %w", err)
+	}
+	defer cleanupNetwork()
+
 	vsockPath := filepath.Join(runDir, "vsock.sock")
 	fcCfg := firecrackerConfig{
 		BootSource: bootSource{
 			KernelImagePath: kernelPath,
-			BootArgs:        "console=ttyS0 reboot=k panic=1 pci=off init=/sbin/cleanroom-init random.trust_cpu=on",
+			BootArgs: fmt.Sprintf(
+				"console=ttyS0 reboot=k panic=1 pci=off init=/sbin/cleanroom-init random.trust_cpu=on cleanroom_guest_ip=%s cleanroom_guest_gw=%s cleanroom_guest_mask=24 cleanroom_guest_dns=1.1.1.1",
+				networkCfg.GuestIP,
+				networkCfg.HostIP,
+			),
 		},
 		Drives: []drive{
 			{
@@ -300,6 +312,13 @@ func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.Run
 			VsockID:  "cleanroom-vsock",
 			GuestCID: req.GuestCID,
 			UDSPath:  vsockPath,
+		},
+		NetworkInterfaces: []networkInterface{
+			{
+				IfaceID:     "eth0",
+				HostDevName: networkCfg.TapName,
+				GuestMac:    guestMACFromRunID(req.RunID),
+			},
 		},
 		Entropy: &entropyConfig{},
 	}
@@ -386,11 +405,12 @@ func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.Run
 }
 
 type firecrackerConfig struct {
-	BootSource    bootSource     `json:"boot-source"`
-	Drives        []drive        `json:"drives"`
-	MachineConfig machineConfig  `json:"machine-config"`
-	Vsock         *vsockConfig   `json:"vsock,omitempty"`
-	Entropy       *entropyConfig `json:"entropy,omitempty"`
+	BootSource        bootSource         `json:"boot-source"`
+	Drives            []drive            `json:"drives"`
+	MachineConfig     machineConfig      `json:"machine-config"`
+	Vsock             *vsockConfig       `json:"vsock,omitempty"`
+	NetworkInterfaces []networkInterface `json:"network-interfaces,omitempty"`
+	Entropy           *entropyConfig     `json:"entropy,omitempty"`
 }
 
 type bootSource struct {
@@ -415,6 +435,12 @@ type vsockConfig struct {
 	VsockID  string `json:"vsock_id"`
 	GuestCID uint32 `json:"guest_cid"`
 	UDSPath  string `json:"uds_path"`
+}
+
+type networkInterface struct {
+	IfaceID     string `json:"iface_id"`
+	HostDevName string `json:"host_dev_name"`
+	GuestMac    string `json:"guest_mac,omitempty"`
 }
 
 type entropyConfig struct{}
@@ -629,6 +655,113 @@ type limitedWriter struct {
 	w     io.Writer
 	limit int
 	total int
+}
+
+type hostNetworkConfig struct {
+	TapName string
+	HostIP  string
+	GuestIP string
+}
+
+func setupHostNetwork(ctx context.Context, runID string) (hostNetworkConfig, func(), error) {
+	tapName := tapNameFromRunID(runID)
+	hostIP, guestIP := hostGuestIPs(runID)
+	hostCIDR := hostIP + "/24"
+	guestCIDR := guestIP + "/32"
+
+	run := func(args ...string) error {
+		return runRootCommand(ctx, args...)
+	}
+	cleanup := func() {
+		_ = run("iptables", "-t", "nat", "-D", "POSTROUTING", "-s", guestCIDR, "-j", "MASQUERADE")
+		_ = run("iptables", "-D", "FORWARD", "-i", tapName, "-j", "ACCEPT")
+		_ = run("iptables", "-D", "FORWARD", "-o", tapName, "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT")
+		_ = run("ip", "link", "del", tapName)
+	}
+
+	if err := run("ip", "tuntap", "add", "dev", tapName, "mode", "tap", "user", strconv.Itoa(os.Getuid())); err != nil {
+		return hostNetworkConfig{}, func() {}, fmt.Errorf("create tap device %s: %w", tapName, err)
+	}
+	if err := run("ip", "addr", "add", hostCIDR, "dev", tapName); err != nil {
+		cleanup()
+		return hostNetworkConfig{}, func() {}, fmt.Errorf("assign host ip to %s: %w", tapName, err)
+	}
+	if err := run("ip", "link", "set", "dev", tapName, "up"); err != nil {
+		cleanup()
+		return hostNetworkConfig{}, func() {}, fmt.Errorf("bring tap %s up: %w", tapName, err)
+	}
+	if err := run("sysctl", "-w", "net.ipv4.ip_forward=1"); err != nil {
+		cleanup()
+		return hostNetworkConfig{}, func() {}, fmt.Errorf("enable ipv4 forwarding: %w", err)
+	}
+	if err := run("iptables", "-t", "nat", "-A", "POSTROUTING", "-s", guestCIDR, "-j", "MASQUERADE"); err != nil {
+		cleanup()
+		return hostNetworkConfig{}, func() {}, fmt.Errorf("install nat rule for %s: %w", guestCIDR, err)
+	}
+	if err := run("iptables", "-A", "FORWARD", "-i", tapName, "-j", "ACCEPT"); err != nil {
+		cleanup()
+		return hostNetworkConfig{}, func() {}, fmt.Errorf("install forward ingress rule for %s: %w", tapName, err)
+	}
+	if err := run("iptables", "-A", "FORWARD", "-o", tapName, "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"); err != nil {
+		cleanup()
+		return hostNetworkConfig{}, func() {}, fmt.Errorf("install forward egress rule for %s: %w", tapName, err)
+	}
+
+	return hostNetworkConfig{
+		TapName: tapName,
+		HostIP:  hostIP,
+		GuestIP: guestIP,
+	}, cleanup, nil
+}
+
+func runRootCommand(ctx context.Context, args ...string) error {
+	cmd := exec.CommandContext(ctx, "sudo", append([]string{"-n"}, args...)...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg == "" {
+			msg = "no stderr output"
+		}
+		return fmt.Errorf("%s: %w (%s)", strings.Join(args, " "), err, msg)
+	}
+	return nil
+}
+
+func tapNameFromRunID(runID string) string {
+	filtered := strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			return r
+		}
+		return -1
+	}, runID)
+	filtered = strings.ToLower(filtered)
+	if len(filtered) > 13 {
+		filtered = filtered[len(filtered)-13:]
+	}
+	if filtered == "" {
+		filtered = "cleanroomtap"
+	}
+	return "cr" + filtered
+}
+
+func hostGuestIPs(runID string) (string, string) {
+	sum := sha1.Sum([]byte(runID))
+	o2 := int(sum[0])
+	o3 := int(sum[1])
+	if o2 == 0 {
+		o2 = 1
+	}
+	if o3 == 0 {
+		o3 = 1
+	}
+	hostIP := fmt.Sprintf("10.%d.%d.1", o2, o3)
+	guestIP := fmt.Sprintf("10.%d.%d.2", o2, o3)
+	return hostIP, guestIP
+}
+
+func guestMACFromRunID(runID string) string {
+	sum := sha1.Sum([]byte(runID))
+	return fmt.Sprintf("02:fc:%02x:%02x:%02x:%02x", sum[0], sum[1], sum[2], sum[3])
 }
 
 func buildGuestEnv(workspaceHost string) []string {
