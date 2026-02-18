@@ -131,10 +131,14 @@ func (a *Adapter) Doctor(_ context.Context, req backend.DoctorRequest) (*backend
 	}
 	appendCheck("workspace_path", "pass", fmt.Sprintf("host workspace path: %s", req.WorkspaceHost))
 	policyRules := 0
+	policyRulesStatus := "warn"
+	policyRulesMessage := "policy not loaded; cannot verify network allow entries"
 	if req.Policy != nil {
 		policyRules = len(req.Policy.Allow)
+		policyRulesStatus = "pass"
+		policyRulesMessage = fmt.Sprintf("loaded %d policy allow entries", policyRules)
 	}
-	appendCheck("network_policy_rules", "pass", fmt.Sprintf("loaded %d policy allow entries", policyRules))
+	appendCheck("network_policy_rules", policyRulesStatus, policyRulesMessage)
 
 	for _, cmd := range []string{"ip", "iptables", "sysctl", "sudo"} {
 		if _, err := exec.LookPath(cmd); err != nil {
@@ -410,7 +414,6 @@ func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.Run
 	if err := fcCmd.Start(); err != nil {
 		return nil, fmt.Errorf("start firecracker: %w", err)
 	}
-	vmStart := time.Now()
 
 	waitCh := make(chan error, 1)
 	go func() {
@@ -440,7 +443,7 @@ func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.Run
 	if err != nil {
 		return nil, err
 	}
-	observation.VMReadyMS = time.Since(vmStart).Milliseconds()
+	observation.VMReadyMS = guestTiming.WaitForAgent.Milliseconds()
 	observation.VsockWaitMS = guestTiming.WaitForAgent.Milliseconds()
 	observation.GuestExecMS = guestTiming.CommandRun.Milliseconds()
 	if guestResult.Error != "" && strings.TrimSpace(guestResult.Stderr) == "" {
@@ -457,7 +460,7 @@ func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.Run
 	observation.ExitCode = guestResult.ExitCode
 	observation.GuestError = guestResult.Error
 
-	timingSummary := fmt.Sprintf("timings boot=%s vsock_wait=%s exec=%s", time.Duration(observation.VMReadyMS)*time.Millisecond, guestTiming.WaitForAgent, guestTiming.CommandRun)
+	timingSummary := fmt.Sprintf("timings boot=%s vsock_wait=%s exec=%s", guestTiming.WaitForAgent, guestTiming.WaitForAgent, guestTiming.CommandRun)
 
 	return &backend.RunResult{
 		RunID:      req.RunID,
