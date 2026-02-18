@@ -24,6 +24,8 @@ type ExecResponse struct {
 	PlanPath     string `json:"plan_path"`
 	RunDir       string `json:"run_dir"`
 	Message      string `json:"message"`
+	Stdout       string `json:"stdout,omitempty"`
+	Stderr       string `json:"stderr,omitempty"`
 }
 
 type ErrorResponse struct {

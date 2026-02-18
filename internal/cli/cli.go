@@ -191,6 +191,17 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 		return fmt.Errorf("execute via control-plane endpoint %q: %w", ep.Address, err)
 	}
 
+	if resp.Stdout != "" {
+		if _, err := fmt.Fprint(ctx.Stdout, resp.Stdout); err != nil {
+			return err
+		}
+	}
+	if resp.Stderr != "" {
+		if _, err := fmt.Fprint(os.Stderr, resp.Stderr); err != nil {
+			return err
+		}
+	}
+
 	_, err = fmt.Fprintf(
 		ctx.Stdout,
 		"run id: %s\npolicy source: %s\npolicy hash: %s\nplan: %s\nrun dir: %s\nmessage: %s\n",

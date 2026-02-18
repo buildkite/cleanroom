@@ -222,7 +222,7 @@ func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.Run
 			}, nil
 		}
 
-		exitCode, err := runHostPassthrough(ctx, req.CWD, req.Command)
+		exitCode, stdout, stderr, err := runHostPassthrough(ctx, req.CWD, req.Command)
 		if err != nil {
 			return nil, err
 		}
@@ -233,6 +233,8 @@ func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.Run
 			PlanPath:   planPath,
 			RunDir:     runDir,
 			Message:    "host passthrough execution complete (not sandboxed)",
+			Stdout:     stdout,
+			Stderr:     stderr,
 		}, nil
 	}
 
@@ -356,13 +358,6 @@ func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.Run
 		return nil, err
 	}
 
-	if _, err := io.WriteString(os.Stdout, guestResult.Stdout); err != nil {
-		return nil, err
-	}
-	if _, err := io.WriteString(os.Stderr, guestResult.Stderr); err != nil {
-		return nil, err
-	}
-
 	message := runResultMessage(req.RetainWrites, "firecracker launch and guest command execution complete")
 	if guestResult.Error != "" {
 		message = runResultMessage(req.RetainWrites, "firecracker launch and guest command execution completed with guest-side error detail: "+guestResult.Error)
@@ -375,6 +370,8 @@ func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.Run
 		PlanPath:   cfgPath,
 		RunDir:     runDir,
 		Message:    message,
+		Stdout:     guestResult.Stdout,
+		Stderr:     guestResult.Stderr,
 	}, nil
 }
 
@@ -443,23 +440,24 @@ func runResultMessage(retainWrites bool, base string) string {
 	return base + "; rootfs writes discarded after run"
 }
 
-func runHostPassthrough(ctx context.Context, cwd string, command []string) (int, error) {
+func runHostPassthrough(ctx context.Context, cwd string, command []string) (int, string, string, error) {
 	cmd := exec.CommandContext(ctx, command[0], command[1:]...)
 	cmd.Dir = cwd
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Stdin = os.Stdin
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
 
 	err := cmd.Run()
 	if err == nil {
-		return 0, nil
+		return 0, stdout.String(), stderr.String(), nil
 	}
 
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
-		return exitErr.ExitCode(), nil
+		return exitErr.ExitCode(), stdout.String(), stderr.String(), nil
 	}
-	return 1, fmt.Errorf("run host passthrough command: %w", err)
+	return 1, stdout.String(), stderr.String(), fmt.Errorf("run host passthrough command: %w", err)
 }
 
 func runGuestCommand(ctx context.Context, waitCh <-chan error, vsockPath string, guestPort uint32, req vsockexec.ExecRequest) (vsockexec.ExecResponse, error) {

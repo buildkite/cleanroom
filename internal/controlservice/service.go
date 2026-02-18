@@ -14,9 +14,13 @@ import (
 )
 
 type Service struct {
-	Loader   policy.Loader
+	Loader   loader
 	Config   runtimeconfig.Config
 	Backends map[string]backend.Adapter
+}
+
+type loader interface {
+	LoadAndCompile(cwd string) (*policy.CompiledPolicy, string, error)
 }
 
 func (s *Service) Exec(ctx context.Context, req controlapi.ExecRequest) (*controlapi.ExecResponse, error) {
@@ -62,6 +66,8 @@ func (s *Service) Exec(ctx context.Context, req controlapi.ExecRequest) (*contro
 		PlanPath:     result.PlanPath,
 		RunDir:       result.RunDir,
 		Message:      result.Message,
+		Stdout:       result.Stdout,
+		Stderr:       result.Stderr,
 	}, nil
 }
 
