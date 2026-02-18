@@ -165,6 +165,7 @@ In that mode, Cleanroom:
 - detects `mise` files in the workspace,
 - resolves tool versions from repository-managed config,
 - applies the resulting environment inside the sandbox before executing the command,
+- auto-trusts copied workspace mise config paths in launched mode (`/workspace/.mise.toml`, `/workspace/.mise/config.toml`),
 - and still enforces the same network/registry/secret rules.
 
 To keep command parsing predictable, prefer the explicit form in scripts:

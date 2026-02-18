@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -14,9 +15,12 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"unsafe"
 
 	"github.com/buildkite/cleanroom/internal/vsockexec"
 	"github.com/mdlayher/vsock"
+	"golang.org/x/sys/unix"
 )
 
 func main() {
@@ -67,14 +71,15 @@ func handleConn(conn net.Conn) {
 			req.Dir = "/workspace"
 		}
 	}
+	if len(req.EntropySeed) > 0 {
+		_ = injectEntropy(req.EntropySeed)
+	}
 
 	cmd := exec.Command(req.Command[0], req.Command[1:]...)
 	if req.Dir != "" {
 		cmd.Dir = req.Dir
 	}
-	if len(req.Env) > 0 {
-		cmd.Env = req.Env
-	}
+	cmd.Env = buildCommandEnv(req.Env)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -92,13 +97,34 @@ func handleConn(conn net.Conn) {
 		return
 	}
 
-	outBytes, _ := io.ReadAll(stdout)
-	errBytes, _ := io.ReadAll(stderr)
+	var stdoutBuf bytes.Buffer
+	var stderrBuf bytes.Buffer
+	copyErrCh := make(chan error, 2)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_, err := io.Copy(&stdoutBuf, stdout)
+		copyErrCh <- err
+	}()
+	go func() {
+		defer wg.Done()
+		_, err := io.Copy(&stderrBuf, stderr)
+		copyErrCh <- err
+	}()
+
 	waitErr := cmd.Wait()
+	wg.Wait()
+	close(copyErrCh)
+	for copyErr := range copyErrCh {
+		if copyErr != nil && waitErr == nil {
+			waitErr = copyErr
+		}
+	}
 
 	res := vsockexec.ExecResponse{
-		Stdout: string(outBytes),
-		Stderr: string(errBytes),
+		Stdout: stdoutBuf.String(),
+		Stderr: stderrBuf.String(),
 	}
 	if waitErr == nil {
 		res.ExitCode = 0
@@ -110,6 +136,44 @@ func handleConn(conn net.Conn) {
 	}
 
 	_ = vsockexec.EncodeResponse(conn, res)
+}
+
+func buildCommandEnv(requestEnv []string) []string {
+	// Start from the current process environment so caller-provided values can
+	// override, while ensuring we have baseline HOME/PATH defaults for lookups.
+	base := map[string]string{}
+	for _, entry := range os.Environ() {
+		parts := strings.SplitN(entry, "=", 2)
+		key := parts[0]
+		value := ""
+		if len(parts) == 2 {
+			value = parts[1]
+		}
+		base[key] = value
+	}
+
+	for _, entry := range requestEnv {
+		parts := strings.SplitN(entry, "=", 2)
+		key := parts[0]
+		value := ""
+		if len(parts) == 2 {
+			value = parts[1]
+		}
+		base[key] = value
+	}
+
+	if strings.TrimSpace(base["HOME"]) == "" {
+		base["HOME"] = "/root"
+	}
+	if strings.TrimSpace(base["PATH"]) == "" {
+		base["PATH"] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/root/.local/bin"
+	}
+
+	out := make([]string, 0, len(base))
+	for key, value := range base {
+		out = append(out, key+"="+value)
+	}
+	return out
 }
 
 func materializeWorkspace(tarGz []byte, destRoot, access string) error {
@@ -215,4 +279,34 @@ func errorsIsClosed(err error) bool {
 
 func listenVsock(port uint32) (net.Listener, error) {
 	return vsock.Listen(port, nil)
+}
+
+func injectEntropy(seed []byte) error {
+	if len(seed) == 0 {
+		return nil
+	}
+
+	// Best effort fallback: mix seed into urandom even if entropy credit ioctl is unavailable.
+	if err := os.WriteFile("/dev/urandom", seed, 0o000); err != nil {
+		_ = err
+	}
+
+	f, err := os.OpenFile("/dev/random", os.O_WRONLY, 0)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	// Linux rand_pool_info:
+	// struct rand_pool_info { int entropy_count; int buf_size; __u32 buf[0]; };
+	payload := make([]byte, 8+len(seed))
+	binary.LittleEndian.PutUint32(payload[0:4], uint32(len(seed)*8))
+	binary.LittleEndian.PutUint32(payload[4:8], uint32(len(seed)))
+	copy(payload[8:], seed)
+
+	_, _, errno := unix.Syscall(unix.SYS_IOCTL, f.Fd(), uintptr(unix.RNDADDENTROPY), uintptr(unsafe.Pointer(&payload[0])))
+	if errno != 0 {
+		return errno
+	}
+	return nil
 }

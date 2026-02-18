@@ -20,3 +20,11 @@ run = "go install ./cmd/cleanroom ./cmd/cleanroom-guest-agent"
 description = "Prepare rootfs image with guest agent and tiny init (requires sudo)"
 depends = ["build", "install"]
 run = "sudo scripts/prepare-firecracker-image.sh"
+
+[tasks.doctor]
+description = "Run cleanroom diagnostics"
+run = "go run ./cmd/cleanroom doctor"
+
+[tasks.doctor-json]
+description = "Run cleanroom diagnostics as JSON"
+run = "go run ./cmd/cleanroom doctor --json"

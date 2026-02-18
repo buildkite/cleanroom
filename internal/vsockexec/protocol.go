@@ -15,6 +15,7 @@ type ExecRequest struct {
 	Env             []string `json:"env,omitempty"`
 	WorkspaceTarGz  []byte   `json:"workspace_tar_gz,omitempty"`
 	WorkspaceAccess string   `json:"workspace_access,omitempty"` // rw|ro
+	EntropySeed     []byte   `json:"entropy_seed,omitempty"`
 }
 
 type ExecResponse struct {
