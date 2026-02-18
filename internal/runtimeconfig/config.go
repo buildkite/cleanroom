@@ -35,7 +35,7 @@ type FirecrackerConfig struct {
 	GuestCID      uint32 `yaml:"guest_cid"`
 	GuestPort     uint32 `yaml:"guest_port"`
 	RetainWrites  bool   `yaml:"retain_writes"`
-	LaunchSeconds int64  `yaml:"launch_seconds"`
+	LaunchSeconds int64  `yaml:"launch_seconds"` // VM boot/guest-agent readiness timeout
 }
 
 func Path() (string, error) {
