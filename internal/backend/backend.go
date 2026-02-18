@@ -45,6 +45,8 @@ type RunResult struct {
 	PlanPath   string
 	RunDir     string
 	Message    string
+	Stdout     string
+	Stderr     string
 }
 
 type DoctorRequest struct {
