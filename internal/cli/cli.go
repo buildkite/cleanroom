@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/alecthomas/kong"
 	"github.com/buildkite/cleanroom/internal/backend"
@@ -72,24 +73,8 @@ type ServeCommand struct {
 }
 
 type StatusCommand struct {
-	RunID string `help:"Run ID to inspect"`
-}
-
-type runObservability struct {
-	Backend        string `json:"backend"`
-	Phase          string `json:"phase"`
-	ExitCode       int    `json:"exit_code"`
-	PlanPath       string `json:"plan_path"`
-	RunDir         string `json:"run_dir"`
-	NetworkTap     string `json:"network_tap"`
-	NetworkHostIP  string `json:"network_host_ip"`
-	NetworkGuestIP string `json:"network_guest_ip"`
-	NetworkSetupMS int64  `json:"network_setup_ms"`
-	VMReadyMS      int64  `json:"vm_ready_ms"`
-	VsockWaitMS    int64  `json:"vsock_wait_ms"`
-	GuestExecMS    int64  `json:"guest_exec_ms"`
-	CleanupMS      int64  `json:"cleanup_ms"`
-	TotalMS        int64  `json:"total_ms"`
+	RunID   string `help:"Run ID to inspect"`
+	LastRun bool   `help:"Inspect the most recent run"`
 }
 
 type DoctorCommand struct {
@@ -421,36 +406,41 @@ func (s *StatusCommand) Run(ctx *runtimeContext) error {
 	if err != nil {
 		return fmt.Errorf("resolve run base directory: %w", err)
 	}
+	if s.RunID != "" && s.LastRun {
+		return errors.New("choose either --run-id or --last-run")
+	}
 	if s.RunID != "" {
-		runDir := filepath.Join(baseDir, s.RunID)
-		if _, err := os.Stat(runDir); err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				return fmt.Errorf("run %q not found in %s", s.RunID, baseDir)
-			}
-			return err
-		}
-		if _, err := fmt.Fprintf(ctx.Stdout, "run: %s\n", runDir); err != nil {
-			return err
-		}
-		obsPath := filepath.Join(runDir, "run-observability.json")
-		b, err := os.ReadFile(obsPath)
+		return inspectRun(ctx.Stdout, baseDir, s.RunID)
+	}
+	if s.LastRun {
+		entries, err := os.ReadDir(baseDir)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
-				_, werr := fmt.Fprintf(ctx.Stdout, "observability: not found (%s)\n", obsPath)
+				_, werr := fmt.Fprintf(ctx.Stdout, "no runs found (%s does not exist)\n", baseDir)
 				return werr
 			}
 			return err
 		}
-		var obs runObservability
-		if err := json.Unmarshal(b, &obs); err != nil {
-			return fmt.Errorf("parse %s: %w", obsPath, err)
+		var newest string
+		var newestTime time.Time
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			info, err := entry.Info()
+			if err != nil {
+				return err
+			}
+			if newest == "" || info.ModTime().After(newestTime) {
+				newest = entry.Name()
+				newestTime = info.ModTime()
+			}
 		}
-		_, err = fmt.Fprintf(ctx.Stdout,
-			"backend: %s\nphase: %s\nexit_code: %d\nnetwork: tap=%s host=%s guest=%s\n"+
-				"timings_ms: network_setup=%d vm_ready=%d vsock_wait=%d guest_exec=%d cleanup=%d total=%d\n",
-			obs.Backend, obs.Phase, obs.ExitCode, obs.NetworkTap, obs.NetworkHostIP, obs.NetworkGuestIP,
-			obs.NetworkSetupMS, obs.VMReadyMS, obs.VsockWaitMS, obs.GuestExecMS, obs.CleanupMS, obs.TotalMS)
-		return err
+		if newest == "" {
+			_, err := fmt.Fprintf(ctx.Stdout, "no runs found in %s\n", baseDir)
+			return err
+		}
+		return inspectRun(ctx.Stdout, baseDir, newest)
 	}
 
 	entries, err := os.ReadDir(baseDir)
@@ -480,6 +470,38 @@ func (s *StatusCommand) Run(ctx *runtimeContext) error {
 		}
 	}
 	return nil
+}
+
+func inspectRun(stdout *os.File, baseDir, runID string) error {
+	runDir := filepath.Join(baseDir, runID)
+	if _, err := os.Stat(runDir); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("run %q not found in %s", runID, baseDir)
+		}
+		return err
+	}
+	if _, err := fmt.Fprintf(stdout, "run: %s\n", runDir); err != nil {
+		return err
+	}
+	obsPath := filepath.Join(runDir, "run-observability.json")
+	b, err := os.ReadFile(obsPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			_, werr := fmt.Fprintf(stdout, "observability: not found (%s)\n", obsPath)
+			return werr
+		}
+		return err
+	}
+	var obs map[string]any
+	if err := json.Unmarshal(b, &obs); err != nil {
+		return fmt.Errorf("parse %s: %w", obsPath, err)
+	}
+	out, err := json.MarshalIndent(obs, "", "  ")
+	if err != nil {
+		return fmt.Errorf("format %s: %w", obsPath, err)
+	}
+	_, err = fmt.Fprintf(stdout, "observability (%s):\n%s\n", obsPath, out)
+	return err
 }
 
 func resolveCWD(base, chdir string) (string, error) {

@@ -167,6 +167,7 @@ func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.Run
 		RunID:      req.RunID,
 		Backend:    a.Name(),
 		LaunchedVM: req.Launch,
+		ExitCode:   1,
 	}
 
 	if req.Policy == nil {
