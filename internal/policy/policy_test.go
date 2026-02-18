@@ -121,20 +121,10 @@ func TestCompileHashStable(t *testing.T) {
 func TestLoadPropagatesPrimaryStatError(t *testing.T) {
 	t.Parallel()
 
-	parent := t.TempDir()
-	restricted := filepath.Join(parent, "restricted")
-	if err := os.MkdirAll(restricted, 0o700); err != nil {
-		t.Fatalf("mkdir restricted root: %v", err)
-	}
-	if err := os.Chmod(restricted, 0o000); err != nil {
-		t.Fatalf("chmod restricted root: %v", err)
-	}
-	defer os.Chmod(restricted, 0o700)
-
 	loader := Loader{}
-	_, _, err := loader.Load(restricted)
+	_, _, err := loader.Load(string([]byte{'b', 'a', 'd', 0, 'p', 'a', 't', 'h'}))
 	if err == nil {
-		t.Fatal("expected load to fail on stat permission error")
+		t.Fatal("expected load to fail on primary policy stat error")
 	}
 	if !strings.Contains(err.Error(), "check policy") {
 		t.Fatalf("unexpected error: %v", err)

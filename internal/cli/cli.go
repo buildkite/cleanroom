@@ -61,7 +61,7 @@ type ExecCommand struct {
 	ReadOnlyWorkspace bool   `help:"Mount workspace read-only for this run"`
 	DryRun            bool   `help:"Generate execution plan without running a backend command"`
 	HostPassthrough   bool   `help:"Run command directly on host instead of launching a backend (unsafe, not sandboxed)"`
-	LaunchSeconds     int64  `help:"Launch/guest-exec timeout in seconds"`
+	LaunchSeconds     int64  `help:"VM boot/guest-agent readiness timeout in seconds"`
 
 	Command []string `arg:"" passthrough:"" required:"" help:"Command to execute"`
 }

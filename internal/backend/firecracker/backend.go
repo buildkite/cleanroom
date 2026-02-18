@@ -342,8 +342,8 @@ func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.Run
 	}()
 	defer stopVM(fcCmd, waitCh)
 
-	execCtx, execCancel := context.WithTimeout(ctx, time.Duration(req.LaunchSeconds)*time.Second)
-	defer execCancel()
+	bootCtx, bootCancel := context.WithTimeout(ctx, time.Duration(req.LaunchSeconds)*time.Second)
+	defer bootCancel()
 
 	workspaceArchive, err := createWorkspaceArchive(req.WorkspaceHost)
 	if err != nil {
@@ -360,7 +360,7 @@ func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.Run
 	if _, err := cryptorand.Read(seed); err == nil {
 		guestReq.EntropySeed = seed
 	}
-	guestResult, err := runGuestCommand(execCtx, waitCh, vsockPath, req.GuestPort, guestReq)
+	guestResult, err := runGuestCommand(bootCtx, ctx, waitCh, vsockPath, req.GuestPort, guestReq)
 	if err != nil {
 		return nil, err
 	}
@@ -473,13 +473,13 @@ func runHostPassthrough(ctx context.Context, cwd string, command []string) (int,
 	return 1, stdout.String(), stderr.String(), fmt.Errorf("run host passthrough command: %w", err)
 }
 
-func runGuestCommand(ctx context.Context, waitCh <-chan error, vsockPath string, guestPort uint32, req vsockexec.ExecRequest) (vsockexec.ExecResponse, error) {
-	conn, err := dialVsockUntilReady(ctx, waitCh, vsockPath, guestPort)
+func runGuestCommand(bootCtx context.Context, execCtx context.Context, waitCh <-chan error, vsockPath string, guestPort uint32, req vsockexec.ExecRequest) (vsockexec.ExecResponse, error) {
+	conn, err := dialVsockUntilReady(bootCtx, waitCh, vsockPath, guestPort)
 	if err != nil {
 		return vsockexec.ExecResponse{}, err
 	}
 	defer conn.Close()
-	if dl, ok := ctx.Deadline(); ok {
+	if dl, ok := execCtx.Deadline(); ok {
 		if deadlineConn, ok := conn.(interface{ SetDeadline(time.Time) error }); ok {
 			if err := deadlineConn.SetDeadline(dl); err != nil {
 				return vsockexec.ExecResponse{}, fmt.Errorf("set vsock deadline: %w", err)
@@ -488,7 +488,7 @@ func runGuestCommand(ctx context.Context, waitCh <-chan error, vsockPath string,
 	}
 	// Ensure blocked reads/writes are interrupted when context is canceled.
 	go func() {
-		<-ctx.Done()
+		<-execCtx.Done()
 		_ = conn.Close()
 	}()
 
@@ -498,8 +498,8 @@ func runGuestCommand(ctx context.Context, waitCh <-chan error, vsockPath string,
 
 	res, err := vsockexec.DecodeResponse(conn)
 	if err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return vsockexec.ExecResponse{}, fmt.Errorf("timed out waiting for guest exec response: %w", ctxErr)
+		if ctxErr := execCtx.Err(); ctxErr != nil {
+			return vsockexec.ExecResponse{}, fmt.Errorf("guest exec canceled while waiting for response: %w", ctxErr)
 		}
 		return vsockexec.ExecResponse{}, fmt.Errorf("decode guest exec response: %w", err)
 	}
