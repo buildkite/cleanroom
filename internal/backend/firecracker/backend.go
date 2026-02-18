@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	cryptorand "crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -280,7 +281,7 @@ func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.Run
 	fcCfg := firecrackerConfig{
 		BootSource: bootSource{
 			KernelImagePath: kernelPath,
-			BootArgs:        "console=ttyS0 reboot=k panic=1 pci=off init=/sbin/cleanroom-init",
+			BootArgs:        "console=ttyS0 reboot=k panic=1 pci=off init=/sbin/cleanroom-init random.trust_cpu=on",
 		},
 		Drives: []drive{
 			{
@@ -300,6 +301,7 @@ func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.Run
 			GuestCID: req.GuestCID,
 			UDSPath:  vsockPath,
 		},
+		Entropy: &entropyConfig{},
 	}
 
 	cfgPath := filepath.Join(runDir, "firecracker-config.json")
@@ -352,10 +354,18 @@ func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.Run
 		Dir:             "/workspace",
 		WorkspaceTarGz:  workspaceArchive,
 		WorkspaceAccess: req.WorkspaceAccess,
+		Env:             buildGuestEnv(req.WorkspaceHost),
+	}
+	seed := make([]byte, 64)
+	if _, err := cryptorand.Read(seed); err == nil {
+		guestReq.EntropySeed = seed
 	}
 	guestResult, err := runGuestCommand(execCtx, waitCh, vsockPath, req.GuestPort, guestReq)
 	if err != nil {
 		return nil, err
+	}
+	if guestResult.Error != "" && strings.TrimSpace(guestResult.Stderr) == "" {
+		guestResult.Stderr = guestResult.Error + "\n"
 	}
 
 	message := runResultMessage(req.RetainWrites, "firecracker launch and guest command execution complete")
@@ -376,10 +386,11 @@ func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.Run
 }
 
 type firecrackerConfig struct {
-	BootSource    bootSource    `json:"boot-source"`
-	Drives        []drive       `json:"drives"`
-	MachineConfig machineConfig `json:"machine-config"`
-	Vsock         *vsockConfig  `json:"vsock,omitempty"`
+	BootSource    bootSource     `json:"boot-source"`
+	Drives        []drive        `json:"drives"`
+	MachineConfig machineConfig  `json:"machine-config"`
+	Vsock         *vsockConfig   `json:"vsock,omitempty"`
+	Entropy       *entropyConfig `json:"entropy,omitempty"`
 }
 
 type bootSource struct {
@@ -405,6 +416,8 @@ type vsockConfig struct {
 	GuestCID uint32 `json:"guest_cid"`
 	UDSPath  string `json:"uds_path"`
 }
+
+type entropyConfig struct{}
 
 func writeJSON(path string, v any) error {
 	b, err := json.MarshalIndent(v, "", "  ")
@@ -466,6 +479,18 @@ func runGuestCommand(ctx context.Context, waitCh <-chan error, vsockPath string,
 		return vsockexec.ExecResponse{}, err
 	}
 	defer conn.Close()
+	if dl, ok := ctx.Deadline(); ok {
+		if deadlineConn, ok := conn.(interface{ SetDeadline(time.Time) error }); ok {
+			if err := deadlineConn.SetDeadline(dl); err != nil {
+				return vsockexec.ExecResponse{}, fmt.Errorf("set vsock deadline: %w", err)
+			}
+		}
+	}
+	// Ensure blocked reads/writes are interrupted when context is canceled.
+	go func() {
+		<-ctx.Done()
+		_ = conn.Close()
+	}()
 
 	if err := vsockexec.EncodeRequest(conn, req); err != nil {
 		return vsockexec.ExecResponse{}, fmt.Errorf("send guest exec request: %w", err)
@@ -473,6 +498,9 @@ func runGuestCommand(ctx context.Context, waitCh <-chan error, vsockPath string,
 
 	res, err := vsockexec.DecodeResponse(conn)
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return vsockexec.ExecResponse{}, fmt.Errorf("timed out waiting for guest exec response: %w", ctxErr)
+		}
 		return vsockexec.ExecResponse{}, fmt.Errorf("decode guest exec response: %w", err)
 	}
 	return res, nil
@@ -601,6 +629,22 @@ type limitedWriter struct {
 	w     io.Writer
 	limit int
 	total int
+}
+
+func buildGuestEnv(workspaceHost string) []string {
+	guestTrusted := make([]string, 0, 2)
+	if _, err := os.Stat(filepath.Join(workspaceHost, ".mise.toml")); err == nil {
+		guestTrusted = append(guestTrusted, "/workspace/.mise.toml")
+	}
+	if _, err := os.Stat(filepath.Join(workspaceHost, ".mise", "config.toml")); err == nil {
+		guestTrusted = append(guestTrusted, "/workspace/.mise/config.toml")
+	}
+	if len(guestTrusted) == 0 {
+		return nil
+	}
+	return []string{
+		"MISE_TRUSTED_CONFIG_PATHS=" + strings.Join(guestTrusted, ":"),
+	}
 }
 
 func (l *limitedWriter) Write(p []byte) (int, error) {
