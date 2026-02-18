@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/alecthomas/kong"
@@ -21,6 +22,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/paths"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
+	"github.com/charmbracelet/log"
 )
 
 type runtimeContext struct {
@@ -50,9 +52,10 @@ type PolicyValidateCommand struct {
 }
 
 type ExecCommand struct {
-	Chdir   string `short:"c" help:"Change to this directory before running commands"`
-	Host    string `help:"Control-plane endpoint (unix://path, http://host:port, or https://host:port)"`
-	Backend string `help:"Execution backend (defaults to runtime config or firecracker)"`
+	Chdir    string `short:"c" help:"Change to this directory before running commands"`
+	Host     string `help:"Control-plane endpoint (unix://path, http://host:port, or https://host:port)"`
+	LogLevel string `help:"Client log level (debug|info|warn|error)"`
+	Backend  string `help:"Execution backend (defaults to runtime config or firecracker)"`
 
 	RunDir            string `help:"Run directory for generated artifacts (default: XDG runtime/state cleanroom path)"`
 	ReadOnlyWorkspace bool   `help:"Mount workspace read-only for this run"`
@@ -64,7 +67,8 @@ type ExecCommand struct {
 }
 
 type ServeCommand struct {
-	Listen string `help:"Listen endpoint for control API (defaults to runtime endpoint)"`
+	Listen   string `help:"Listen endpoint for control API (defaults to runtime endpoint)"`
+	LogLevel string `help:"Server log level (debug|info|warn|error)"`
 }
 
 type StatusCommand struct {
@@ -166,6 +170,11 @@ func (c *PolicyValidateCommand) Run(ctx *runtimeContext) error {
 }
 
 func (e *ExecCommand) Run(ctx *runtimeContext) error {
+	logger, err := newLogger(e.LogLevel, "client")
+	if err != nil {
+		return err
+	}
+
 	cwd, err := resolveCWD(ctx.CWD, e.Chdir)
 	if err != nil {
 		return err
@@ -174,6 +183,14 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 	if err != nil {
 		return err
 	}
+	logger.Debug("sending execution request",
+		"endpoint", ep.Address,
+		"cwd", cwd,
+		"backend", e.Backend,
+		"command_argc", len(e.Command),
+		"dry_run", e.DryRun,
+		"host_passthrough", e.HostPassthrough,
+	)
 	client := controlclient.New(ep)
 	resp, err := client.Exec(context.Background(), controlapi.ExecRequest{
 		CWD:     cwd,
@@ -190,6 +207,15 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 	if err != nil {
 		return fmt.Errorf("execute via control-plane endpoint %q: %w", ep.Address, err)
 	}
+	logger.Debug("execution complete",
+		"run_id", resp.RunID,
+		"policy_source", resp.PolicySource,
+		"policy_hash", resp.PolicyHash,
+		"plan", resp.PlanPath,
+		"run_dir", resp.RunDir,
+		"launched_vm", resp.LaunchedVM,
+		"exit_code", resp.ExitCode,
+	)
 
 	if resp.Stdout != "" {
 		if _, err := fmt.Fprint(ctx.Stdout, resp.Stdout); err != nil {
@@ -202,19 +228,6 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 		}
 	}
 
-	_, err = fmt.Fprintf(
-		ctx.Stdout,
-		"run id: %s\npolicy source: %s\npolicy hash: %s\nplan: %s\nrun dir: %s\nmessage: %s\n",
-		resp.RunID,
-		resp.PolicySource,
-		resp.PolicyHash,
-		resp.PlanPath,
-		resp.RunDir,
-		resp.Message,
-	)
-	if err != nil {
-		return err
-	}
 	if resp.ExitCode != 0 {
 		return exitCodeError{code: resp.ExitCode}
 	}
@@ -222,6 +235,11 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 }
 
 func (s *ServeCommand) Run(ctx *runtimeContext) error {
+	logger, err := newLogger(s.LogLevel, "server")
+	if err != nil {
+		return err
+	}
+
 	ep, err := endpoint.Resolve(s.Listen)
 	if err != nil {
 		return err
@@ -231,16 +249,14 @@ func (s *ServeCommand) Run(ctx *runtimeContext) error {
 		Loader:   ctx.Loader,
 		Config:   ctx.Config,
 		Backends: ctx.Backends,
+		Logger:   logger.With("subsystem", "service"),
 	}
-	server := controlserver.New(service)
-	_, err = fmt.Fprintf(ctx.Stdout, "serving cleanroom control API on %s\n", ep.Address)
-	if err != nil {
-		return err
-	}
+	server := controlserver.New(service, logger.With("subsystem", "http"))
+	logger.Info("serving cleanroom control API", "endpoint", ep.Address, "scheme", ep.Scheme)
 
 	runCtx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	return controlserver.Serve(runCtx, ep, server.Handler())
+	return controlserver.Serve(runCtx, ep, server.Handler(), logger)
 }
 
 func (d *DoctorCommand) Run(ctx *runtimeContext) error {
@@ -438,4 +454,20 @@ func resolveCWD(base, chdir string) (string, error) {
 		return filepath.Clean(chdir), nil
 	}
 	return filepath.Join(base, chdir), nil
+}
+
+func newLogger(rawLevel, component string) (*log.Logger, error) {
+	levelName := strings.TrimSpace(strings.ToLower(rawLevel))
+	if levelName == "" {
+		levelName = "info"
+	}
+	level, err := log.ParseLevel(levelName)
+	if err != nil {
+		return nil, fmt.Errorf("invalid --log-level %q: %w", rawLevel, err)
+	}
+	logger := log.NewWithOptions(os.Stderr, log.Options{
+		Level:     level,
+		Formatter: log.TextFormatter,
+	})
+	return logger.With("component", component), nil
 }

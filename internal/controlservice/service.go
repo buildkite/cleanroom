@@ -11,12 +11,14 @@ import (
 	"github.com/buildkite/cleanroom/internal/controlapi"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
+	"github.com/charmbracelet/log"
 )
 
 type Service struct {
 	Loader   loader
 	Config   runtimeconfig.Config
 	Backends map[string]backend.Adapter
+	Logger   *log.Logger
 }
 
 type loader interface {
@@ -24,6 +26,7 @@ type loader interface {
 }
 
 func (s *Service) Exec(ctx context.Context, req controlapi.ExecRequest) (*controlapi.ExecResponse, error) {
+	started := time.Now()
 	command := normalizeCommand(req.Command)
 	if len(command) == 0 {
 		return nil, errors.New("missing command")
@@ -36,6 +39,15 @@ func (s *Service) Exec(ctx context.Context, req controlapi.ExecRequest) (*contro
 	adapter, ok := s.Backends[backendName]
 	if !ok {
 		return nil, fmt.Errorf("unknown backend %q", backendName)
+	}
+	if s.Logger != nil {
+		s.Logger.Debug("execution request received",
+			"cwd", req.CWD,
+			"backend", backendName,
+			"command_argc", len(command),
+			"dry_run", req.Options.DryRun,
+			"host_passthrough", req.Options.HostPassthrough,
+		)
 	}
 
 	compiled, source, err := s.Loader.LoadAndCompile(req.CWD)
@@ -54,7 +66,23 @@ func (s *Service) Exec(ctx context.Context, req controlapi.ExecRequest) (*contro
 
 	result, err := adapter.Run(ctx, runReq)
 	if err != nil {
+		if s.Logger != nil {
+			s.Logger.Error("execution failed", "backend", backendName, "error", err)
+		}
 		return nil, err
+	}
+	if s.Logger != nil {
+		s.Logger.Info("execution completed",
+			"backend", backendName,
+			"run_id", result.RunID,
+			"policy_source", source,
+			"policy_hash", compiled.Hash,
+			"plan", result.PlanPath,
+			"run_dir", result.RunDir,
+			"exit_code", result.ExitCode,
+			"launched_vm", result.LaunchedVM,
+			"duration_ms", time.Since(started).Milliseconds(),
+		)
 	}
 
 	return &controlapi.ExecResponse{

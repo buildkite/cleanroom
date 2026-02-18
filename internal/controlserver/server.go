@@ -14,14 +14,16 @@ import (
 	"github.com/buildkite/cleanroom/internal/controlapi"
 	"github.com/buildkite/cleanroom/internal/controlservice"
 	"github.com/buildkite/cleanroom/internal/endpoint"
+	"github.com/charmbracelet/log"
 )
 
 type Server struct {
 	service *controlservice.Service
+	logger  *log.Logger
 }
 
-func New(service *controlservice.Service) *Server {
-	return &Server{service: service}
+func New(service *controlservice.Service, logger *log.Logger) *Server {
+	return &Server{service: service, logger: logger}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -34,6 +36,7 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
+	started := time.Now()
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -44,16 +47,36 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid request body: %v", err))
 		return
 	}
+	if s.logger != nil {
+		s.logger.Debug("exec request decoded",
+			"remote_addr", r.RemoteAddr,
+			"cwd", in.CWD,
+			"backend", in.Backend,
+			"command_argc", len(in.Command),
+			"dry_run", in.Options.DryRun,
+			"host_passthrough", in.Options.HostPassthrough,
+		)
+	}
 
 	out, err := s.service.Exec(r.Context(), in)
 	if err != nil {
+		if s.logger != nil {
+			s.logger.Warn("exec request failed", "error", err, "duration_ms", time.Since(started).Milliseconds())
+		}
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
+	}
+	if s.logger != nil {
+		s.logger.Info("exec request finished",
+			"run_id", out.RunID,
+			"exit_code", out.ExitCode,
+			"duration_ms", time.Since(started).Milliseconds(),
+		)
 	}
 	writeJSON(w, http.StatusOK, out)
 }
 
-func Serve(ctx context.Context, ep endpoint.Endpoint, handler http.Handler) error {
+func Serve(ctx context.Context, ep endpoint.Endpoint, handler http.Handler, logger *log.Logger) error {
 	listener, err := listen(ep)
 	if err != nil {
 		return err
@@ -78,10 +101,16 @@ func Serve(ctx context.Context, ep endpoint.Endpoint, handler http.Handler) erro
 		if ep.Scheme == "unix" {
 			_ = os.Remove(ep.Address)
 		}
+		if logger != nil {
+			logger.Info("control API shutdown complete", "endpoint", ep.Address)
+		}
 		return nil
 	case err := <-errCh:
 		if errors.Is(err, http.ErrServerClosed) {
 			return nil
+		}
+		if logger != nil {
+			logger.Error("control API serve failed", "error", err)
 		}
 		return err
 	}
