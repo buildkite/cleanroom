@@ -6,12 +6,18 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
-	"time"
+	"syscall"
 
 	"github.com/alecthomas/kong"
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/backend/firecracker"
+	"github.com/buildkite/cleanroom/internal/controlapi"
+	"github.com/buildkite/cleanroom/internal/controlclient"
+	"github.com/buildkite/cleanroom/internal/controlserver"
+	"github.com/buildkite/cleanroom/internal/controlservice"
+	"github.com/buildkite/cleanroom/internal/endpoint"
 	"github.com/buildkite/cleanroom/internal/paths"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
@@ -23,14 +29,17 @@ type runtimeContext struct {
 	Loader     policy.Loader
 	Config     runtimeconfig.Config
 	ConfigPath string
+	Host       string
 	Backends   map[string]backend.Adapter
 }
 
 type CLI struct {
 	Chdir string `short:"c" help:"Change to this directory before running commands"`
+	Host  string `help:"Control-plane endpoint (unix://path, http://host:port, or https://host:port)"`
 
 	Policy PolicyCommand `cmd:"" help:"Policy commands"`
 	Exec   ExecCommand   `cmd:"" help:"Execute a command in a cleanroom backend"`
+	Serve  ServeCommand  `cmd:"" help:"Run the cleanroom control-plane server"`
 	Doctor DoctorCommand `cmd:"" help:"Run environment and backend diagnostics"`
 	Status StatusCommand `cmd:"" help:"Inspect run artifacts"`
 }
@@ -53,6 +62,10 @@ type ExecCommand struct {
 	LaunchSeconds     int64  `help:"Launch/guest-exec timeout in seconds"`
 
 	Command []string `arg:"" passthrough:"" required:"" help:"Command to execute"`
+}
+
+type ServeCommand struct {
+	Listen string `help:"Listen endpoint for control API (defaults to --host or runtime default)"`
 }
 
 type StatusCommand struct {
@@ -122,6 +135,7 @@ func Run(args []string) error {
 		return err
 	}
 	runtimeCtx.CWD = cwd
+	runtimeCtx.Host = cli.Host
 
 	return ctx.Run(runtimeCtx)
 }
@@ -155,53 +169,70 @@ func (c *PolicyValidateCommand) Run(ctx *runtimeContext) error {
 }
 
 func (e *ExecCommand) Run(ctx *runtimeContext) error {
-	backendName := resolveBackendName(e.Backend, ctx.Config.DefaultBackend)
-	adapter, ok := ctx.Backends[backendName]
-	if !ok {
-		return fmt.Errorf("unknown backend %q", backendName)
-	}
-
-	command := normalizeCommand(e.Command)
-	if len(command) == 0 {
-		return errors.New("missing command")
-	}
-
-	compiled, source, err := ctx.Loader.LoadAndCompile(ctx.CWD)
+	ep, err := endpoint.Resolve(ctx.Host)
 	if err != nil {
 		return err
 	}
-
-	runID := fmt.Sprintf("run-%d", time.Now().UTC().UnixNano())
-	req := backend.RunRequest{
-		RunID:             runID,
-		CWD:               ctx.CWD,
-		Command:           append([]string(nil), command...),
-		Policy:            compiled,
-		FirecrackerConfig: mergeFirecrackerConfig(ctx.CWD, e, ctx.Config),
-	}
-
-	result, err := adapter.Run(context.Background(), req)
+	client := controlclient.New(ep)
+	resp, err := client.Exec(context.Background(), controlapi.ExecRequest{
+		CWD:     ctx.CWD,
+		Backend: e.Backend,
+		Command: append([]string(nil), e.Command...),
+		Options: controlapi.ExecOptions{
+			RunDir:            e.RunDir,
+			ReadOnlyWorkspace: e.ReadOnlyWorkspace,
+			DryRun:            e.DryRun,
+			HostPassthrough:   e.HostPassthrough,
+			LaunchSeconds:     e.LaunchSeconds,
+		},
+	})
 	if err != nil {
-		return err
+		return fmt.Errorf("execute via control-plane endpoint %q: %w", ep.Address, err)
 	}
 
 	_, err = fmt.Fprintf(
 		ctx.Stdout,
 		"run id: %s\npolicy source: %s\npolicy hash: %s\nplan: %s\nrun dir: %s\nmessage: %s\n",
-		result.RunID,
-		source,
-		compiled.Hash,
-		result.PlanPath,
-		result.RunDir,
-		result.Message,
+		resp.RunID,
+		resp.PolicySource,
+		resp.PolicyHash,
+		resp.PlanPath,
+		resp.RunDir,
+		resp.Message,
 	)
 	if err != nil {
 		return err
 	}
-	if result.ExitCode != 0 {
-		return exitCodeError{code: result.ExitCode}
+	if resp.ExitCode != 0 {
+		return exitCodeError{code: resp.ExitCode}
 	}
 	return nil
+}
+
+func (s *ServeCommand) Run(ctx *runtimeContext) error {
+	raw := s.Listen
+	if raw == "" {
+		raw = ctx.Host
+	}
+	ep, err := endpoint.Resolve(raw)
+	if err != nil {
+		return err
+	}
+
+	service := &controlservice.Service{
+		Loader:   ctx.Loader,
+		Config:   ctx.Config,
+		Backends: ctx.Backends,
+	}
+	server := controlserver.New(service)
+	_, err = fmt.Fprintf(ctx.Stdout, "serving cleanroom control API on %s\n", ep.Address)
+	if err != nil {
+		return err
+	}
+
+	runCtx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	return controlserver.Serve(runCtx, ep, server.Handler())
 }
 
 func (d *DoctorCommand) Run(ctx *runtimeContext) error {
@@ -271,13 +302,6 @@ func (d *DoctorCommand) Run(ctx *runtimeContext) error {
 		}
 	}
 	return nil
-}
-
-func normalizeCommand(command []string) []string {
-	if len(command) > 0 && command[0] == "--" {
-		return command[1:]
-	}
-	return command
 }
 
 func resolveBackendName(requested, configuredDefault string) string {

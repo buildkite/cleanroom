@@ -25,7 +25,7 @@ Initial execution backends:
 - Policy schema, validation, and policy-driven sandbox creation.
 - Two sandbox backends with a common adapter interface.
 - Host-level network allowlisting + package-registry mediation via content-cache.
-- Local command-line + API surface for creating and managing runs.
+- Client/server control plane with local CLI client for creating and managing sandboxes and executions.
 - Logs, metrics, and audit metadata capture.
 - Backend capability declaration and fail-closed launch checks.
 
@@ -174,7 +174,24 @@ metadata:
 - `cleanroom exec` is the primary command for running arbitrary commands in sandbox.
 - `cleanroom exec` uses a `--` command separator consistent with common shell tooling.
 - Unless an explicit vector command form is added later, `cleanroom exec` defaults to shell execution (e.g., `/bin/sh -lc`) so commands like `cleanroom exec "npm test"` work directly.
+- Cleanroom uses a client/server architecture:
+  - `cleanroom serve` starts the local control-plane server.
+  - all CLI commands, including `cleanroom exec`, call the server API.
+  - "local execution" means local backend selected by the server, not a direct non-API code path.
 - `cleanroom run --cmd` exists for compatibility while migrating consumers.
+
+### 5.4.1 `cleanroom exec` behavior contract (normative)
+- `cleanroom exec` must:
+  1. resolve API endpoint (`--host`, env, context, default unix socket),
+  2. resolve and compile policy,
+  3. create or select sandbox,
+  4. create execution,
+  5. stream output/events to caller,
+  6. return workload exit code.
+- Default mode is ephemeral sandbox per invocation unless explicit reuse is requested.
+- Interactive mode (`-it`) must use bidirectional stream semantics.
+- Non-interactive mode must use server-streaming semantics.
+- First interrupt signal should request execution cancel; second interrupt may detach client stream immediately.
 
 ### 5.5 Compiled policy payload (normative)
 Cleanroom compiles repository policy into an immutable `CompiledPolicy` payload for run creation. This payload is the only policy input to backend adapters.
@@ -207,6 +224,8 @@ Requirements:
 
 ## 6) Runtime behavior
 ### 6.1 Launch flow
+All runtime launch behavior is initiated by control-plane API calls (for example `CreateSandbox` and `CreateExecution`) from CLI or SDK clients.
+
 1. Resolve spec file using precedence above.
 2. Read repo policy and merge with organization defaults (if provided).
 2. Validate schema and fail fast on invalid/overlapping host conflicts.
@@ -344,17 +363,20 @@ Policy feature mapping:
 
 ## 8) Configuration and integration points
 - CLI command set (v1):
+  - `cleanroom serve`
   - `cleanroom policy validate`
   - `cleanroom policy apply`
   - `cleanroom exec [--] <command>`
+  - `cleanroom sandboxes create|get|list|terminate|events`
+  - `cleanroom executions create|get|cancel|stream|attach`
   - `cleanroom run --cmd "npm test" --backend <local|sprites>` (compat alias)
-  - `cleanroom status --id <run-id>`
 - CI integration:
   - `cleanroom exec --` wrapper for existing and local automation
   - machine-readable output (`--json`) for pipeline tooling
-- Optional API/SDK:
-  - POST `/sandboxes` to create
-  - GET `/sandboxes/{id}` for status/events
+- API/SDK (v1):
+  - ConnectRPC `SandboxService` (`CreateSandbox`, `GetSandbox`, `ListSandboxes`, `TerminateSandbox`, `StreamSandboxEvents`)
+  - ConnectRPC `ExecutionService` (`CreateExecution`, `GetExecution`, `CancelExecution`, `StreamExecution`, `AttachExecution`)
+  - Optional HTTP/JSON gateway may be added later for compatibility.
 
 ### 8.1 CLI and API failure contract (normative)
 CLI:
@@ -363,9 +385,11 @@ CLI:
 - Runtime policy denies do not change process semantics unless deny prevents command completion; deny events must still be emitted.
 
 API:
-- `POST /sandboxes` returns client error for invalid policy input and conflict/error response for unsatisfied backend requirements.
-- `GET /sandboxes/{id}` must expose terminal status, exit code, and normalized failure reason (if any).
-- Error responses must include stable `code` and human-readable `message`.
+- `SandboxService.CreateSandbox` returns client error for invalid policy input and conflict/error response for unsatisfied backend requirements.
+- `SandboxService.GetSandbox` and `ExecutionService.GetExecution` must expose terminal status, exit code, and normalized failure reason (if any).
+- ConnectRPC errors must include stable application `code` and human-readable `message`.
+- `ExecutionService.StreamExecution` and `ExecutionService.AttachExecution` must terminate cleanly with final exit status signaling.
+- If an HTTP/JSON gateway is exposed, it must preserve the same stable error codes and reason semantics.
 
 ## 9) Audit and observability
 - Emit structured logs per sandbox with:
@@ -431,7 +455,8 @@ Minimum v1 codes:
 - Core policy compiler to normalized allowlist + registry map
 - Local backend (matchlock) proof-of-concept
 - content-cache wrapper integration for npm and one additional manager
-- CLI `validate` and `exec` (with `run --cmd` compatibility path)
+- `cleanroom serve` daemon plus CLI client command set (`exec`, `sandboxes`, `executions`)
+- `cleanroom exec` RPC wrapper flow (with `run --cmd` compatibility path)
 
 ### Phase 2
 - Sprites backend adapter with parity behavior
@@ -456,6 +481,7 @@ Minimum v1 codes:
 8. Launch fails when selected backend cannot satisfy required policy capabilities.
 9. Audit logs include `run_id`, `actor`, `backend`, and `policy_hash` for every run.
 10. Backend adapters must pass the Cleanroom conformance suite for required capabilities before being considered supported.
+11. All CLI execution paths (`exec`, `sandboxes`, `executions`) are routed through the control-plane API; no direct non-API execution path is supported.
 
 ## 14) Conformance test matrix (required for supported backends)
 Cleanroom must provide a backend-agnostic conformance suite that validates equivalent enforcement outcomes for the same `CompiledPolicy`.

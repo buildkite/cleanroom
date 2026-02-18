@@ -27,76 +27,9 @@ The result is a safer baseline:
 Once implemented:
 
 ```bash
+cleanroom serve --listen unix://$XDG_RUNTIME_DIR/cleanroom/cleanroom.sock
 cleanroom policy validate
-cleanroom exec npm test
-```
-
-## Runtime config (XDG)
-
-Cleanroom runtime/backend settings are loaded from:
-
-- `${XDG_CONFIG_HOME}/cleanroom/config.yaml`
-- fallback: `~/.config/cleanroom/config.yaml`
-
-Example:
-
-```yaml
-default_backend: firecracker
-workspace:
-  mode: copy
-  persist: discard
-  access: rw
-backends:
-  firecracker:
-    binary_path: firecracker
-    kernel_image: /path/to/vmlinux
-    rootfs: /path/to/rootfs.ext4
-    vcpus: 1
-    memory_mib: 512
-    guest_cid: 3
-    guest_port: 10700
-    retain_writes: false
-    launch_seconds: 30
-```
-
-`workspace.mode` supports:
-- `copy` (default): copy repository workspace into guest `/workspace` before execution.
-
-`workspace.persist` supports:
-- `discard` (default): throw away guest workspace changes after the run.
-
-`workspace.access` supports:
-- `rw` (default): writable guest workspace copy.
-- `ro`: read-only guest workspace copy.
-
-Current Firecracker MVP supports `workspace.mode: copy` with `workspace.persist: discard`.
-For safety in this MVP, workspace symlinks are not copied into launched guests.
-
-### Prepare a rootfs for launched execution
-
-Create a base rootfs image (Alpine minirootfs + ext4):
-
-```bash
-sudo scripts/create-rootfs-image.sh
-```
-
-Then install `cleanroom-guest-agent` into that rootfs and register a boot service:
-
-```bash
-mise run prepare-firecracker-image
-```
-
-Default paths:
-
-- rootfs image: `${XDG_DATA_HOME:-~/.local/share}/cleanroom/images/rootfs.ext4`
-- mount dir: `${XDG_RUNTIME_DIR:-/tmp}/cleanroom/mnt/rootfs`
-
-Override paths if needed:
-
-```bash
-scripts/prepare-firecracker-image.sh \
-  --rootfs-image /path/to/rootfs.ext4 \
-  --mount-dir /mnt/rootfs
+cleanroom exec -- "npm test"
 ```
 
 ## Configuration: `cleanroom.yaml`
@@ -156,13 +89,21 @@ The policy maps to three enforcement layers:
 cleanroom policy validate
 ```
 
-### 2) Run a task in a sandbox
+### 2) Start the local control-plane server
+
+```bash
+cleanroom serve --listen unix://$XDG_RUNTIME_DIR/cleanroom/cleanroom.sock
+```
+
+All CLI commands (including `cleanroom exec`) talk to this API endpoint.
+
+### 3) Run a task in a sandbox
 
 ```bash
 cleanroom exec -- "npm install && npm test"
 ```
 
-### 2b) Run an agentic task in a sandbox
+### 3b) Run an agentic task in a sandbox
 
 ```bash
 cleanroom exec -- "agent-tool execute 'resolve docs updates and open PR branch'"
@@ -175,6 +116,35 @@ cleanroom exec --backend sprites -- "pytest -q"
 ```
 
 The same command shape works for local tools, local scripts, and agent tasks.
+
+## Server + `exec` UX
+
+Cleanroom uses a client/server model with one binary:
+
+```bash
+cleanroom serve --listen unix://$XDG_RUNTIME_DIR/cleanroom/cleanroom.sock
+```
+
+`cleanroom exec` remains the primary command UX and talks to the server API under the hood.
+
+```bash
+cleanroom exec -- "npm test"
+```
+
+Useful forms:
+
+```bash
+cleanroom exec -it -- bash
+cleanroom exec -d -- "npm run watch"
+cleanroom exec --sandbox dev --reuse -- "npm test"
+```
+
+Execution behavior:
+- resolves policy and creates a sandbox (ephemeral by default)
+- creates an execution and streams output
+- returns the workload exit code
+- tears down ephemeral sandboxes after execution
+- first `Ctrl-C` cancels execution, second `Ctrl-C` detaches the client stream
 
 ## Mise integration (first class)
 
@@ -215,14 +185,15 @@ sandbox:
       - .mise/config.toml
 ```
 
-### 3) Watch / inspect
+### 4) Watch / inspect
 
 ```bash
-cleanroom status --id <run-id>
-cleanroom policy apply --json
+cleanroom sandboxes list
+cleanroom executions get <sandbox-id> <execution-id>
+cleanroom sandboxes events <sandbox-id> --follow
 ```
 
-### 4) See what would run
+### 5) See what would run
 
 ```bash
 cleanroom policy validate --json
@@ -232,9 +203,10 @@ This prints the resolved policy and effective network/registry plan before execu
 
 ## What happens at runtime
 
-- Cleanroom reads policy and builds an internal execution spec.
+- `cleanroom exec` sends requests to the `cleanroom serve` API.
+- The control plane reads policy and builds an internal execution spec.
 - If both `cleanroom.yaml` and `.buildkite/cleanroom.yaml` exist, root config wins and `.buildkite` is ignored with a warning.
-- It starts the selected backend and applies the deny-by-default egress policy.
+- The server starts the selected backend and applies the deny-by-default egress policy.
 - Allowed package manager traffic is directed through `content-cache`.
 - Git operations can be routed through cache as well.
 - Secrets are injected only at runtime into runtime components, not from policy files.
