@@ -1,15 +1,20 @@
 package firecracker
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/buildkite/cleanroom/internal/backend"
@@ -19,6 +24,8 @@ import (
 )
 
 type Adapter struct{}
+
+const maxWorkspaceArchiveBytes = 256 << 20
 
 func New() *Adapter {
 	return &Adapter{}
@@ -89,6 +96,34 @@ func (a *Adapter) Doctor(_ context.Context, req backend.DoctorRequest) (*backend
 	} else {
 		appendCheck("vsock_port", "pass", fmt.Sprintf("configured guest vsock port %d", req.GuestPort))
 	}
+	mode := strings.TrimSpace(strings.ToLower(req.WorkspaceMode))
+	if mode == "" {
+		mode = "copy"
+	}
+	if mode != "copy" {
+		appendCheck("workspace_mode", "fail", fmt.Sprintf("workspace mode %q is not implemented for firecracker (supported: copy)", mode))
+	} else {
+		appendCheck("workspace_mode", "pass", "workspace mode copy is enabled")
+	}
+	persist := strings.TrimSpace(strings.ToLower(req.WorkspacePersist))
+	if persist == "" {
+		persist = "discard"
+	}
+	if persist != "discard" {
+		appendCheck("workspace_persist", "warn", fmt.Sprintf("workspace persist %q is not implemented yet for firecracker copy mode (current behavior: discard)", persist))
+	} else {
+		appendCheck("workspace_persist", "pass", "workspace changes are discarded after each launched run")
+	}
+	access := strings.TrimSpace(strings.ToLower(req.WorkspaceAccess))
+	if access == "" {
+		access = "rw"
+	}
+	if access != "rw" && access != "ro" {
+		appendCheck("workspace_access", "fail", fmt.Sprintf("invalid workspace access %q (expected rw or ro)", access))
+	} else {
+		appendCheck("workspace_access", "pass", fmt.Sprintf("workspace access configured as %s", access))
+	}
+	appendCheck("workspace_path", "pass", fmt.Sprintf("host workspace path: %s", req.WorkspaceHost))
 
 	return report, nil
 }
@@ -133,6 +168,27 @@ func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.Run
 	}
 	if req.LaunchSeconds <= 0 {
 		req.LaunchSeconds = 30
+	}
+	if req.WorkspaceAccess == "" {
+		req.WorkspaceAccess = "rw"
+	}
+	if req.WorkspaceAccess != "rw" && req.WorkspaceAccess != "ro" {
+		return nil, fmt.Errorf("invalid workspace access %q: expected rw or ro", req.WorkspaceAccess)
+	}
+	if req.WorkspaceMode == "" {
+		req.WorkspaceMode = "copy"
+	}
+	if req.WorkspaceMode != "copy" {
+		return nil, fmt.Errorf("workspace mode %q is not implemented for firecracker yet; supported mode: copy", req.WorkspaceMode)
+	}
+	if req.WorkspacePersist == "" {
+		req.WorkspacePersist = "discard"
+	}
+	if req.WorkspacePersist != "discard" {
+		return nil, fmt.Errorf("workspace persist %q is not implemented for firecracker copy mode yet; supported value: discard", req.WorkspacePersist)
+	}
+	if req.WorkspaceHost == "" {
+		req.WorkspaceHost = req.CWD
 	}
 
 	cmdPath := filepath.Join(runDir, "requested-command.json")
@@ -285,7 +341,17 @@ func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.Run
 	execCtx, execCancel := context.WithTimeout(ctx, time.Duration(req.LaunchSeconds)*time.Second)
 	defer execCancel()
 
-	guestResult, err := runGuestCommand(execCtx, waitCh, vsockPath, req.GuestPort, req.Command)
+	workspaceArchive, err := createWorkspaceArchive(req.WorkspaceHost)
+	if err != nil {
+		return nil, fmt.Errorf("prepare workspace copy from %s: %w", req.WorkspaceHost, err)
+	}
+	guestReq := vsockexec.ExecRequest{
+		Command:         req.Command,
+		Dir:             "/workspace",
+		WorkspaceTarGz:  workspaceArchive,
+		WorkspaceAccess: req.WorkspaceAccess,
+	}
+	guestResult, err := runGuestCommand(execCtx, waitCh, vsockPath, req.GuestPort, guestReq)
 	if err != nil {
 		return nil, err
 	}
@@ -396,14 +462,14 @@ func runHostPassthrough(ctx context.Context, cwd string, command []string) (int,
 	return 1, fmt.Errorf("run host passthrough command: %w", err)
 }
 
-func runGuestCommand(ctx context.Context, waitCh <-chan error, vsockPath string, guestPort uint32, command []string) (vsockexec.ExecResponse, error) {
+func runGuestCommand(ctx context.Context, waitCh <-chan error, vsockPath string, guestPort uint32, req vsockexec.ExecRequest) (vsockexec.ExecResponse, error) {
 	conn, err := dialVsockUntilReady(ctx, waitCh, vsockPath, guestPort)
 	if err != nil {
 		return vsockexec.ExecResponse{}, err
 	}
 	defer conn.Close()
 
-	if err := vsockexec.EncodeRequest(conn, vsockexec.ExecRequest{Command: command}); err != nil {
+	if err := vsockexec.EncodeRequest(conn, req); err != nil {
 		return vsockexec.ExecResponse{}, fmt.Errorf("send guest exec request: %w", err)
 	}
 
@@ -445,4 +511,107 @@ func stopVM(fcCmd *exec.Cmd, waitCh <-chan error) {
 	case <-waitCh:
 	case <-time.After(2 * time.Second):
 	}
+}
+
+func createWorkspaceArchive(root string) ([]byte, error) {
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return nil, errors.New("workspace path is empty")
+	}
+	root, err := filepath.Abs(root)
+	if err != nil {
+		return nil, err
+	}
+
+	info, err := os.Stat(root)
+	if err != nil {
+		return nil, err
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("workspace path %s is not a directory", root)
+	}
+
+	var compressed bytes.Buffer
+	limited := &limitedWriter{w: &compressed, limit: maxWorkspaceArchiveBytes}
+	gzw := gzip.NewWriter(limited)
+	tw := tar.NewWriter(gzw)
+
+	walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		if rel == "." {
+			return nil
+		}
+
+		info, err := os.Lstat(path)
+		if err != nil {
+			return err
+		}
+
+		var link string
+		if info.Mode()&os.ModeSymlink != 0 {
+			link, err = os.Readlink(path)
+			if err != nil {
+				return err
+			}
+		}
+		hdr, err := tar.FileInfoHeader(info, link)
+		if err != nil {
+			return err
+		}
+		hdr.Name = rel
+		if info.IsDir() && !strings.HasSuffix(hdr.Name, "/") {
+			hdr.Name += "/"
+		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+		f, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		_, copyErr := io.Copy(tw, f)
+		closeErr := f.Close()
+		if copyErr != nil {
+			return copyErr
+		}
+		return closeErr
+	})
+	if walkErr != nil {
+		_ = tw.Close()
+		_ = gzw.Close()
+		return nil, walkErr
+	}
+	if err := tw.Close(); err != nil {
+		_ = gzw.Close()
+		return nil, err
+	}
+	if err := gzw.Close(); err != nil {
+		return nil, err
+	}
+	return compressed.Bytes(), nil
+}
+
+type limitedWriter struct {
+	w     io.Writer
+	limit int
+	total int
+}
+
+func (l *limitedWriter) Write(p []byte) (int, error) {
+	if l.total+len(p) > l.limit {
+		return 0, fmt.Errorf("workspace archive exceeds max size of %d bytes", l.limit)
+	}
+	n, err := l.w.Write(p)
+	l.total += n
+	return n, err
 }

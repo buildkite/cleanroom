@@ -6,9 +6,8 @@ usage() {
 Prepare a Firecracker rootfs image for Cleanroom launched execution.
 
 This script will:
-1. build cleanroom-guest-agent
-2. copy it into the guest rootfs at /usr/local/bin/cleanroom-guest-agent
-3. install a tiny init at /sbin/cleanroom-init that starts the guest agent
+1. copy a prebuilt cleanroom-guest-agent into the guest rootfs at /usr/local/bin/cleanroom-guest-agent
+2. install a tiny init at /sbin/cleanroom-init that starts the guest agent
 
 Usage:
   scripts/prepare-firecracker-image.sh \
@@ -29,14 +28,29 @@ Notes:
 USAGE
 }
 
-XDG_DATA_HOME_DEFAULT="${XDG_DATA_HOME:-$HOME/.local/share}"
+resolve_default_data_home() {
+  if [[ -n "${XDG_DATA_HOME:-}" ]]; then
+    echo "$XDG_DATA_HOME"
+    return
+  fi
+  if [[ "$(id -u)" -eq 0 && -n "${SUDO_USER:-}" ]]; then
+    local sudo_home
+    sudo_home="$(getent passwd "$SUDO_USER" | cut -d: -f6)"
+    if [[ -n "$sudo_home" ]]; then
+      echo "$sudo_home/.local/share"
+      return
+    fi
+  fi
+  echo "$HOME/.local/share"
+}
+
+XDG_DATA_HOME_DEFAULT="$(resolve_default_data_home)"
 XDG_RUNTIME_BASE="${XDG_RUNTIME_DIR:-/tmp}"
 ROOTFS_IMAGE="$XDG_DATA_HOME_DEFAULT/cleanroom/images/rootfs.ext4"
 USER_DEFAULT_ROOTFS_IMAGE="$ROOTFS_IMAGE"
 MOUNT_DIR="$XDG_RUNTIME_BASE/cleanroom/mnt/rootfs"
 AGENT_PORT="10700"
 AGENT_BINARY=""
-
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --rootfs-image)
@@ -112,12 +126,9 @@ if [[ -z "$AGENT_BINARY" ]]; then
 fi
 
 if [[ ! -x "$AGENT_BINARY" ]]; then
-  echo "building cleanroom-guest-agent to $AGENT_BINARY"
-  mkdir -p "$(dirname "$AGENT_BINARY")"
-  (
-    cd "$REPO_ROOT"
-    go build -o "$AGENT_BINARY" ./cmd/cleanroom-guest-agent
-  )
+  echo "agent binary not found or not executable: $AGENT_BINARY" >&2
+  echo "build it first (recommended: mise run build)" >&2
+  exit 1
 fi
 
 mkdir -p "$MOUNT_DIR"

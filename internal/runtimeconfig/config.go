@@ -11,8 +11,15 @@ import (
 )
 
 type Config struct {
-	DefaultBackend string   `yaml:"default_backend"`
-	Backends       Backends `yaml:"backends"`
+	DefaultBackend string    `yaml:"default_backend"`
+	Workspace      Workspace `yaml:"workspace"`
+	Backends       Backends  `yaml:"backends"`
+}
+
+type Workspace struct {
+	Mode    string `yaml:"mode"`    // copy|mount
+	Persist string `yaml:"persist"` // discard|commit
+	Access  string `yaml:"access"`  // rw|ro
 }
 
 type Backends struct {
@@ -64,5 +71,17 @@ func Load() (Config, string, error) {
 	}
 
 	cfg.DefaultBackend = strings.TrimSpace(cfg.DefaultBackend)
+	cfg.Workspace.Mode = strings.TrimSpace(strings.ToLower(cfg.Workspace.Mode))
+	if cfg.Workspace.Mode == "" {
+		cfg.Workspace.Mode = "copy"
+	}
+	cfg.Workspace.Persist = strings.TrimSpace(strings.ToLower(cfg.Workspace.Persist))
+	if cfg.Workspace.Persist == "" {
+		cfg.Workspace.Persist = "discard"
+	}
+	cfg.Workspace.Access = strings.TrimSpace(strings.ToLower(cfg.Workspace.Access))
+	if cfg.Workspace.Access == "" {
+		cfg.Workspace.Access = "rw"
+	}
 	return cfg, path, nil
 }

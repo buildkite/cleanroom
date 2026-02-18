@@ -42,6 +42,10 @@ Example:
 
 ```yaml
 default_backend: firecracker
+workspace:
+  mode: copy
+  persist: discard
+  access: rw
 backends:
   firecracker:
     binary_path: firecracker
@@ -55,6 +59,18 @@ backends:
     launch_seconds: 30
 ```
 
+`workspace.mode` supports:
+- `copy` (default): copy repository workspace into guest `/workspace` before execution.
+
+`workspace.persist` supports:
+- `discard` (default): throw away guest workspace changes after the run.
+
+`workspace.access` supports:
+- `rw` (default): writable guest workspace copy.
+- `ro`: read-only guest workspace copy.
+
+Current Firecracker MVP supports `workspace.mode: copy` with `workspace.persist: discard`.
+
 ### Prepare a rootfs for launched execution
 
 Create a base rootfs image (Alpine minirootfs + ext4):
@@ -66,7 +82,7 @@ sudo scripts/create-rootfs-image.sh
 Then install `cleanroom-guest-agent` into that rootfs and register a boot service:
 
 ```bash
-scripts/prepare-firecracker-image.sh
+mise run prepare-firecracker-image
 ```
 
 Default paths:

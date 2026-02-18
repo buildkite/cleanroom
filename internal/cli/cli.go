@@ -46,10 +46,11 @@ type PolicyValidateCommand struct {
 type ExecCommand struct {
 	Backend string `help:"Execution backend (defaults to runtime config or firecracker)"`
 
-	RunDir          string `help:"Run directory for generated artifacts (default: XDG runtime/state cleanroom path)"`
-	DryRun          bool   `help:"Generate execution plan without running a backend command"`
-	HostPassthrough bool   `help:"Run command directly on host instead of launching a backend (unsafe, not sandboxed)"`
-	LaunchSeconds   int64  `help:"Launch/guest-exec timeout in seconds"`
+	RunDir            string `help:"Run directory for generated artifacts (default: XDG runtime/state cleanroom path)"`
+	ReadOnlyWorkspace bool   `help:"Mount workspace read-only for this run"`
+	DryRun            bool   `help:"Generate execution plan without running a backend command"`
+	HostPassthrough   bool   `help:"Run command directly on host instead of launching a backend (unsafe, not sandboxed)"`
+	LaunchSeconds     int64  `help:"Launch/guest-exec timeout in seconds"`
 
 	Command []string `arg:"" passthrough:"" required:"" help:"Command to execute"`
 }
@@ -176,7 +177,7 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 		CWD:               ctx.CWD,
 		Command:           append([]string(nil), command...),
 		Policy:            compiled,
-		FirecrackerConfig: mergeFirecrackerConfig(e, ctx.Config.Backends.Firecracker),
+		FirecrackerConfig: mergeFirecrackerConfig(ctx.CWD, e, ctx.Config),
 	}
 
 	result, err := adapter.Run(context.Background(), req)
@@ -236,7 +237,7 @@ func (d *DoctorCommand) Run(ctx *runtimeContext) error {
 	if checker, ok := adapter.(doctorCapable); ok {
 		report, err := checker.Doctor(context.Background(), backend.DoctorRequest{
 			Policy:            compiled,
-			FirecrackerConfig: mergeFirecrackerConfig(&ExecCommand{}, ctx.Config.Backends.Firecracker),
+			FirecrackerConfig: mergeFirecrackerConfig(ctx.CWD, &ExecCommand{}, ctx.Config),
 		})
 		if err != nil {
 			return err
@@ -289,17 +290,21 @@ func resolveBackendName(requested, configuredDefault string) string {
 	return "firecracker"
 }
 
-func mergeFirecrackerConfig(e *ExecCommand, cfg runtimeconfig.FirecrackerConfig) backend.FirecrackerConfig {
+func mergeFirecrackerConfig(cwd string, e *ExecCommand, cfg runtimeconfig.Config) backend.FirecrackerConfig {
 	out := backend.FirecrackerConfig{
-		BinaryPath:      cfg.BinaryPath,
-		KernelImagePath: cfg.KernelImage,
-		RootFSPath:      cfg.RootFS,
-		VCPUs:           cfg.VCPUs,
-		MemoryMiB:       cfg.MemoryMiB,
-		GuestCID:        cfg.GuestCID,
-		GuestPort:       cfg.GuestPort,
-		RetainWrites:    cfg.RetainWrites,
-		LaunchSeconds:   cfg.LaunchSeconds,
+		BinaryPath:       cfg.Backends.Firecracker.BinaryPath,
+		KernelImagePath:  cfg.Backends.Firecracker.KernelImage,
+		RootFSPath:       cfg.Backends.Firecracker.RootFS,
+		WorkspaceHost:    cwd,
+		WorkspaceMode:    resolveWorkspaceMode(cfg.Workspace.Mode),
+		WorkspacePersist: resolveWorkspacePersist(cfg.Workspace.Persist),
+		WorkspaceAccess:  resolveWorkspaceAccess(e, cfg.Workspace.Access),
+		VCPUs:            cfg.Backends.Firecracker.VCPUs,
+		MemoryMiB:        cfg.Backends.Firecracker.MemoryMiB,
+		GuestCID:         cfg.Backends.Firecracker.GuestCID,
+		GuestPort:        cfg.Backends.Firecracker.GuestPort,
+		RetainWrites:     cfg.Backends.Firecracker.RetainWrites,
+		LaunchSeconds:    cfg.Backends.Firecracker.LaunchSeconds,
 	}
 
 	if e.RunDir != "" {
@@ -314,6 +319,33 @@ func mergeFirecrackerConfig(e *ExecCommand, cfg runtimeconfig.FirecrackerConfig)
 		out.LaunchSeconds = e.LaunchSeconds
 	}
 	return out
+}
+
+func resolveWorkspaceAccess(execCfg *ExecCommand, configured string) string {
+	access := configured
+	if access == "" {
+		access = "rw"
+	}
+	if execCfg != nil && execCfg.ReadOnlyWorkspace {
+		access = "ro"
+	}
+	return access
+}
+
+func resolveWorkspaceMode(configured string) string {
+	mode := configured
+	if mode == "" {
+		mode = "copy"
+	}
+	return mode
+}
+
+func resolveWorkspacePersist(configured string) string {
+	persist := configured
+	if persist == "" {
+		persist = "discard"
+	}
+	return persist
 }
 
 func (s *StatusCommand) Run(ctx *runtimeContext) error {

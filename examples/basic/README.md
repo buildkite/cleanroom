@@ -54,11 +54,12 @@ Expected: marker file exists and contains a timestamp.
 
 ## Optional: launched backend path
 
-Launched execution requires runtime config (`~/.config/cleanroom/config.yaml`) with Firecracker `kernel_image` and `rootfs`, plus a rootfs prepared with `cleanroom-guest-agent` boot hook:
+Launched execution requires runtime config (`~/.config/cleanroom/config.yaml`) with Firecracker `kernel_image` and `rootfs`, plus a rootfs prepared with `cleanroom-guest-agent` boot hook.
 
 ```bash
 sudo ../../scripts/create-rootfs-image.sh
 ../../scripts/prepare-firecracker-image.sh
 
-cleanroom exec -- /bin/echo hello
+cleanroom exec -- ./marker.sh
+ls -la .marker-created
 ```
