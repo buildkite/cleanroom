@@ -70,6 +70,7 @@ backends:
 - `ro`: read-only guest workspace copy.
 
 Current Firecracker MVP supports `workspace.mode: copy` with `workspace.persist: discard`.
+For safety in this MVP, workspace symlinks are not copied into launched guests.
 
 ### Prepare a rootfs for launched execution
 

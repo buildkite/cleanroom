@@ -553,14 +553,12 @@ func createWorkspaceArchive(root string) ([]byte, error) {
 		if err != nil {
 			return err
 		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			// Symlinks are excluded in MVP copy mode to avoid path traversal edge cases.
+			return nil
+		}
 
 		var link string
-		if info.Mode()&os.ModeSymlink != 0 {
-			link, err = os.Readlink(path)
-			if err != nil {
-				return err
-			}
-		}
 		hdr, err := tar.FileInfoHeader(info, link)
 		if err != nil {
 			return err

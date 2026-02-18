@@ -179,15 +179,7 @@ func extractTarGz(content []byte, destRoot string) error {
 				return err
 			}
 		case tar.TypeSymlink:
-			if filepath.IsAbs(hdr.Linkname) {
-				return fmt.Errorf("absolute symlink target not supported: %q", hdr.Linkname)
-			}
-			if err := os.MkdirAll(filepath.Dir(cleanTarget), 0o755); err != nil {
-				return err
-			}
-			if err := os.Symlink(hdr.Linkname, cleanTarget); err != nil {
-				return err
-			}
+			return fmt.Errorf("symlinks are not supported in workspace copy mode: %q", hdr.Name)
 		default:
 			// Skip unsupported entries (devices, fifos, etc.) in MVP.
 		}
