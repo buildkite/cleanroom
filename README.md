@@ -31,6 +31,74 @@ cleanroom policy validate
 cleanroom exec npm test
 ```
 
+## Runtime config (XDG)
+
+Cleanroom runtime/backend settings are loaded from:
+
+- `${XDG_CONFIG_HOME}/cleanroom/config.yaml`
+- fallback: `~/.config/cleanroom/config.yaml`
+
+Example:
+
+```yaml
+default_backend: firecracker
+workspace:
+  mode: copy
+  persist: discard
+  access: rw
+backends:
+  firecracker:
+    binary_path: firecracker
+    kernel_image: /path/to/vmlinux
+    rootfs: /path/to/rootfs.ext4
+    vcpus: 1
+    memory_mib: 512
+    guest_cid: 3
+    guest_port: 10700
+    retain_writes: false
+    launch_seconds: 30
+```
+
+`workspace.mode` supports:
+- `copy` (default): copy repository workspace into guest `/workspace` before execution.
+
+`workspace.persist` supports:
+- `discard` (default): throw away guest workspace changes after the run.
+
+`workspace.access` supports:
+- `rw` (default): writable guest workspace copy.
+- `ro`: read-only guest workspace copy.
+
+Current Firecracker MVP supports `workspace.mode: copy` with `workspace.persist: discard`.
+For safety in this MVP, workspace symlinks are not copied into launched guests.
+
+### Prepare a rootfs for launched execution
+
+Create a base rootfs image (Alpine minirootfs + ext4):
+
+```bash
+sudo scripts/create-rootfs-image.sh
+```
+
+Then install `cleanroom-guest-agent` into that rootfs and register a boot service:
+
+```bash
+mise run prepare-firecracker-image
+```
+
+Default paths:
+
+- rootfs image: `${XDG_DATA_HOME:-~/.local/share}/cleanroom/images/rootfs.ext4`
+- mount dir: `${XDG_RUNTIME_DIR:-/tmp}/cleanroom/mnt/rootfs`
+
+Override paths if needed:
+
+```bash
+scripts/prepare-firecracker-image.sh \
+  --rootfs-image /path/to/rootfs.ext4 \
+  --mount-dir /mnt/rootfs
+```
+
 ## Configuration: `cleanroom.yaml`
 
 Place policy at repository root as `cleanroom.yaml` (legacy fallback: `.buildkite/cleanroom.yaml`).

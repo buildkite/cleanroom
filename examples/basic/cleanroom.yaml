@@ -1,0 +1,7 @@
+version: 1
+sandbox:
+  network:
+    default: deny
+    allow:
+      - host: api.github.com
+        ports: [443]

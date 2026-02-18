@@ -1,0 +1,22 @@
+[tools]
+go = "1.23"
+
+[env]
+GOTOOLCHAIN = "local"
+
+[tasks.test]
+description = "Run Go test suite"
+run = "go test ./..."
+
+[tasks.build]
+description = "Build binaries into dist/"
+run = "mkdir -p dist && go build -o dist/cleanroom ./cmd/cleanroom && go build -o dist/cleanroom-guest-agent ./cmd/cleanroom-guest-agent"
+
+[tasks.install]
+description = "Install binaries into GOBIN (or GOPATH/bin)"
+run = "go install ./cmd/cleanroom ./cmd/cleanroom-guest-agent"
+
+[tasks.prepare-firecracker-image]
+description = "Prepare rootfs image with guest agent and tiny init (requires sudo)"
+depends = ["build", "install"]
+run = "sudo scripts/prepare-firecracker-image.sh"
