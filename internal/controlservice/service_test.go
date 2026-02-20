@@ -518,6 +518,96 @@ func TestExecutionAttachIOForwarding(t *testing.T) {
 	}
 }
 
+func TestExecutionAttachIOWaitsForDelayedAttachRegistration(t *testing.T) {
+	started := make(chan struct{}, 1)
+	stdinChunks := make(chan string, 1)
+	resizes := make(chan [2]uint32, 1)
+	adapter := &stubAdapter{
+		runStreamFn: func(ctx context.Context, _ backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+			select {
+			case started <- struct{}{}:
+			default:
+			}
+			time.Sleep(100 * time.Millisecond)
+			if stream.OnAttach != nil {
+				stream.OnAttach(backend.AttachIO{
+					WriteStdin: func(data []byte) error {
+						stdinChunks <- string(data)
+						return nil
+					},
+					ResizeTTY: func(cols, rows uint32) error {
+						resizes <- [2]uint32{cols, rows}
+						return nil
+					},
+				})
+			}
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+	svc := newTestService(adapter)
+
+	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Cwd: "/repo"})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createSandboxResp.GetSandbox().GetSandboxId()
+
+	createExecutionResp, err := svc.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+		SandboxId: sandboxID,
+		Command:   []string{"sh"},
+		Options: &cleanroomv1.ExecutionOptions{
+			Tty: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateExecution returned error: %v", err)
+	}
+	executionID := createExecutionResp.GetExecution().GetExecutionId()
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for execution to start")
+	}
+
+	if err := svc.WriteExecutionStdin(sandboxID, executionID, []byte("hello\n")); err != nil {
+		t.Fatalf("WriteExecutionStdin returned error: %v", err)
+	}
+	if err := svc.ResizeExecutionTTY(sandboxID, executionID, 120, 40); err != nil {
+		t.Fatalf("ResizeExecutionTTY returned error: %v", err)
+	}
+
+	select {
+	case got := <-stdinChunks:
+		if got != "hello\n" {
+			t.Fatalf("unexpected stdin payload: got %q want %q", got, "hello\n")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for delayed stdin callback")
+	}
+
+	select {
+	case got := <-resizes:
+		if got != [2]uint32{120, 40} {
+			t.Fatalf("unexpected resize payload: got %v", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for delayed resize callback")
+	}
+
+	if _, err := svc.CancelExecution(context.Background(), &cleanroomv1.CancelExecutionRequest{
+		SandboxId:   sandboxID,
+		ExecutionId: executionID,
+		Signal:      2,
+	}); err != nil {
+		t.Fatalf("CancelExecution returned error: %v", err)
+	}
+	if _, err := svc.WaitExecution(context.Background(), sandboxID, executionID); err != nil {
+		t.Fatalf("WaitExecution returned error: %v", err)
+	}
+}
+
 func TestExecutionAttachIOUnsupportedWhenBackendDoesNotExposeHandlers(t *testing.T) {
 	started := make(chan struct{}, 1)
 	adapter := &stubAdapter{

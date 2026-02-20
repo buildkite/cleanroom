@@ -102,6 +102,11 @@ var (
 	ErrExecutionResizeUnsupported = errors.New("execution resize is not supported by the current backend")
 )
 
+const (
+	attachRegistrationWait = 250 * time.Millisecond
+	attachPollInterval     = 10 * time.Millisecond
+)
+
 func (s *Service) CreateSandbox(_ context.Context, req *cleanroomv1.CreateSandboxRequest) (*cleanroomv1.CreateSandboxResponse, error) {
 	if req == nil {
 		return nil, errors.New("missing request")
@@ -522,24 +527,38 @@ func (s *Service) WriteExecutionStdin(sandboxID, executionID string, data []byte
 		return errors.New("missing execution_id")
 	}
 
-	var writeFn func([]byte) error
-	s.mu.RLock()
-	ex, ok := s.executions[executionKey(sandboxID, executionID)]
-	if !ok {
+	payload := append([]byte(nil), data...)
+	deadline := time.Now().Add(attachRegistrationWait)
+	for {
+		var (
+			writeFn func([]byte) error
+			done    <-chan struct{}
+		)
+		s.mu.RLock()
+		ex, ok := s.executions[executionKey(sandboxID, executionID)]
+		if !ok {
+			s.mu.RUnlock()
+			return fmt.Errorf("unknown execution %q in sandbox %q", executionID, sandboxID)
+		}
+		if isFinalExecutionStatus(ex.Status) {
+			s.mu.RUnlock()
+			return errors.New("execution is not running")
+		}
+		writeFn = ex.AttachStdin
+		done = ex.Done
 		s.mu.RUnlock()
-		return fmt.Errorf("unknown execution %q in sandbox %q", executionID, sandboxID)
-	}
-	if isFinalExecutionStatus(ex.Status) {
-		s.mu.RUnlock()
-		return errors.New("execution is not running")
-	}
-	writeFn = ex.AttachStdin
-	s.mu.RUnlock()
 
-	if writeFn == nil {
-		return ErrExecutionStdinUnsupported
+		if writeFn != nil {
+			return writeFn(payload)
+		}
+		if time.Now().After(deadline) {
+			return ErrExecutionStdinUnsupported
+		}
+		select {
+		case <-done:
+		case <-time.After(attachPollInterval):
+		}
 	}
-	return writeFn(append([]byte(nil), data...))
 }
 
 func (s *Service) ResizeExecutionTTY(sandboxID, executionID string, cols, rows uint32) error {
@@ -552,24 +571,37 @@ func (s *Service) ResizeExecutionTTY(sandboxID, executionID string, cols, rows u
 		return errors.New("missing execution_id")
 	}
 
-	var resizeFn func(cols, rows uint32) error
-	s.mu.RLock()
-	ex, ok := s.executions[executionKey(sandboxID, executionID)]
-	if !ok {
+	deadline := time.Now().Add(attachRegistrationWait)
+	for {
+		var (
+			resizeFn func(cols, rows uint32) error
+			done     <-chan struct{}
+		)
+		s.mu.RLock()
+		ex, ok := s.executions[executionKey(sandboxID, executionID)]
+		if !ok {
+			s.mu.RUnlock()
+			return fmt.Errorf("unknown execution %q in sandbox %q", executionID, sandboxID)
+		}
+		if isFinalExecutionStatus(ex.Status) {
+			s.mu.RUnlock()
+			return errors.New("execution is not running")
+		}
+		resizeFn = ex.AttachResize
+		done = ex.Done
 		s.mu.RUnlock()
-		return fmt.Errorf("unknown execution %q in sandbox %q", executionID, sandboxID)
-	}
-	if isFinalExecutionStatus(ex.Status) {
-		s.mu.RUnlock()
-		return errors.New("execution is not running")
-	}
-	resizeFn = ex.AttachResize
-	s.mu.RUnlock()
 
-	if resizeFn == nil {
-		return ErrExecutionResizeUnsupported
+		if resizeFn != nil {
+			return resizeFn(cols, rows)
+		}
+		if time.Now().After(deadline) {
+			return ErrExecutionResizeUnsupported
+		}
+		select {
+		case <-done:
+		case <-time.After(attachPollInterval):
+		}
 	}
-	return resizeFn(cols, rows)
 }
 
 func (s *Service) SubscribeSandboxEvents(sandboxID string) ([]*cleanroomv1.SandboxEvent, <-chan *cleanroomv1.SandboxEvent, <-chan struct{}, func(), error) {
