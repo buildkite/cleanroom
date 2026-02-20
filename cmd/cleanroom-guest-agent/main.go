@@ -123,9 +123,13 @@ func handleConn(conn net.Conn) {
 		copyErrCh <- err
 	}()
 
-	waitErr := cmd.Wait()
+	// Wait for pipe readers to drain before cmd.Wait(), which closes the
+	// pipes. Go docs: "It is incorrect to call Wait before all reads from
+	// the pipe have completed."
 	wg.Wait()
 	close(copyErrCh)
+
+	waitErr := cmd.Wait()
 	for copyErr := range copyErrCh {
 		if copyErr != nil && waitErr == nil {
 			waitErr = copyErr
