@@ -208,13 +208,16 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 		return err
 	}
 
+	ep, err := endpoint.Resolve(e.Host)
+	if err != nil {
+		return err
+	}
 	cwd, err := resolveCWD(ctx.CWD, e.Chdir)
 	if err != nil {
 		return err
 	}
-	ep, err := endpoint.Resolve(e.Host)
-	if err != nil {
-		return err
+	if ep.Scheme != "unix" && e.Chdir == "" {
+		return fmt.Errorf("remote endpoint %q requires an explicit -c/--chdir flag (local cwd %q would not exist on the server)", ep.Address, cwd)
 	}
 	logger.Debug("sending execution request",
 		"endpoint", ep.Address,
@@ -409,13 +412,16 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 		return err
 	}
 
+	ep, err := endpoint.Resolve(c.Host)
+	if err != nil {
+		return err
+	}
 	cwd, err := resolveCWD(ctx.CWD, c.Chdir)
 	if err != nil {
 		return err
 	}
-	ep, err := endpoint.Resolve(c.Host)
-	if err != nil {
-		return err
+	if ep.Scheme != "unix" && c.Chdir == "" {
+		return fmt.Errorf("remote endpoint %q requires an explicit -c/--chdir flag (local cwd %q would not exist on the server)", ep.Address, cwd)
 	}
 	command := append([]string(nil), c.Command...)
 	if len(command) == 0 {
@@ -624,7 +630,7 @@ func (s *ServeCommand) Run(ctx *runtimeContext) error {
 		return err
 	}
 
-	ep, err := endpoint.Resolve(s.Listen)
+	ep, err := endpoint.ResolveListen(s.Listen)
 	if err != nil {
 		return err
 	}

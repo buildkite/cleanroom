@@ -211,11 +211,13 @@ func TestExecIntegrationStreamsOutput(t *testing.T) {
 	}
 
 	host, _ := startIntegrationServer(t, adapter)
+	cwd := t.TempDir()
 	outcome := runExecWithCapture(ExecCommand{
 		Host:    host,
+		Chdir:   cwd,
 		Command: []string{"echo", "ignored-by-adapter"},
 	}, runtimeContext{
-		CWD: t.TempDir(),
+		CWD: cwd,
 	})
 
 	if outcome.cause != nil {
@@ -246,11 +248,13 @@ func TestExecIntegrationPropagatesExitAndStderr(t *testing.T) {
 	}
 
 	host, _ := startIntegrationServer(t, adapter)
+	cwd := t.TempDir()
 	outcome := runExecWithCapture(ExecCommand{
 		Host:    host,
+		Chdir:   cwd,
 		Command: []string{"echo", "ignored-by-adapter"},
 	}, runtimeContext{
-		CWD: t.TempDir(),
+		CWD: cwd,
 	})
 
 	if outcome.cause != nil {
@@ -285,14 +289,16 @@ func TestExecIntegrationFirstInterruptCancelsExecution(t *testing.T) {
 
 	host, _ := startIntegrationServer(t, adapter)
 	signalCh := withTestSignalChannel(t)
+	cwd := t.TempDir()
 
 	done := make(chan execOutcome, 1)
 	go func() {
 		done <- runExecWithCapture(ExecCommand{
 			Host:    host,
+			Chdir:   cwd,
 			Command: []string{"sleep", "300"},
 		}, runtimeContext{
-			CWD: t.TempDir(),
+			CWD: cwd,
 		})
 	}()
 
@@ -339,15 +345,17 @@ func TestExecIntegrationSecondInterruptTerminatesSandbox(t *testing.T) {
 
 	host, _ := startIntegrationServer(t, adapter)
 	signalCh := withTestSignalChannel(t)
+	cwd := t.TempDir()
 
 	done := make(chan execOutcome, 1)
 	go func() {
 		done <- runExecWithCapture(ExecCommand{
 			Host:     host,
+			Chdir:    cwd,
 			LogLevel: "debug",
 			Command:  []string{"sleep", "300"},
 		}, runtimeContext{
-			CWD: t.TempDir(),
+			CWD: cwd,
 		})
 	}()
 
@@ -406,11 +414,13 @@ func TestExecIntegrationVmPathUsesShForGuestCompatibility(t *testing.T) {
 	}
 
 	host, _ := startIntegrationServer(t, adapter)
+	cwd := t.TempDir()
 	outcome := runExecWithCapture(ExecCommand{
 		Host:    host,
+		Chdir:   cwd,
 		Command: []string{"sh", "-lc", "echo guest-ok"},
 	}, runtimeContext{
-		CWD: t.TempDir(),
+		CWD: cwd,
 	})
 	if outcome.cause != nil {
 		t.Fatalf("capture failure: %v", outcome.cause)

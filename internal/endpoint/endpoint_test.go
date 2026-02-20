@@ -1,11 +1,26 @@
 package endpoint
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
-func TestResolveTSNetEndpoint(t *testing.T) {
+func TestResolveTSNetEndpointRejectedByResolve(t *testing.T) {
 	t.Parallel()
 
-	ep, err := Resolve("tsnet://cleanroomd:8443")
+	_, err := Resolve("tsnet://cleanroomd:8443")
+	if err == nil {
+		t.Fatal("expected tsnet:// to be rejected by Resolve (client-side)")
+	}
+	if !strings.Contains(err.Error(), "server --listen") {
+		t.Fatalf("expected helpful error message, got %q", err)
+	}
+}
+
+func TestResolveTSNetEndpointViaResolveListen(t *testing.T) {
+	t.Parallel()
+
+	ep, err := ResolveListen("tsnet://cleanroomd:8443")
 	if err != nil {
 		t.Fatalf("resolve tsnet endpoint: %v", err)
 	}
@@ -30,7 +45,7 @@ func TestResolveTSNetEndpoint(t *testing.T) {
 func TestResolveTSNetEndpointDefaults(t *testing.T) {
 	t.Parallel()
 
-	ep, err := Resolve("tsnet://")
+	ep, err := ResolveListen("tsnet://")
 	if err != nil {
 		t.Fatalf("resolve tsnet endpoint with defaults: %v", err)
 	}
@@ -52,7 +67,7 @@ func TestResolveTSNetEndpointDefaults(t *testing.T) {
 func TestResolveTSNetEndpointRejectsInvalidPort(t *testing.T) {
 	t.Parallel()
 
-	if _, err := Resolve("tsnet://cleanroomd:99999"); err == nil {
+	if _, err := ResolveListen("tsnet://cleanroomd:99999"); err == nil {
 		t.Fatal("expected invalid tsnet port to fail")
 	}
 }
@@ -60,7 +75,7 @@ func TestResolveTSNetEndpointRejectsInvalidPort(t *testing.T) {
 func TestResolveTSNetEndpointRejectsPath(t *testing.T) {
 	t.Parallel()
 
-	if _, err := Resolve("tsnet://cleanroomd:8443/path"); err == nil {
+	if _, err := ResolveListen("tsnet://cleanroomd:8443/path"); err == nil {
 		t.Fatal("expected tsnet endpoint with path to fail")
 	}
 }

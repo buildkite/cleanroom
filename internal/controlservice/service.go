@@ -961,6 +961,18 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 	ex.Message = result.Message
 	s.mergeBufferedResultOutputLocked(ex, result, usedStreaming)
 
+	if result.ExitCode != 0 && strings.TrimSpace(result.Message) != "" && !strings.Contains(ex.Stderr, result.Message) {
+		msg := result.Message + "\n"
+		ex.Stderr += msg
+		s.recordExecutionEventLocked(ex, &cleanroomv1.ExecutionStreamEvent{
+			SandboxId:   ex.SandboxID,
+			ExecutionId: ex.ID,
+			Status:      cleanroomv1.ExecutionStatus_EXECUTION_STATUS_RUNNING,
+			Payload:     &cleanroomv1.ExecutionStreamEvent_Stderr{Stderr: []byte(msg)},
+			OccurredAt:  timestamppb.Now(),
+		})
+	}
+
 	if ex.CancelRequested {
 		ex.Status = cleanroomv1.ExecutionStatus_EXECUTION_STATUS_CANCELED
 		ex.ExitCode = cancelExitCode(ex.CancelSignal)

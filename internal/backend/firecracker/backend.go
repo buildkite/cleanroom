@@ -203,7 +203,7 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 		req.MemoryMiB = 512
 	}
 	if req.GuestCID == 0 {
-		req.GuestCID = 3
+		req.GuestCID = randomGuestCID()
 	}
 	if req.GuestPort == 0 {
 		req.GuestPort = vsockexec.DefaultPort
@@ -1131,6 +1131,16 @@ func durationMillisCeil(d time.Duration) int64 {
 		return 1
 	}
 	return ms
+}
+
+func randomGuestCID() uint32 {
+	var buf [4]byte
+	if _, err := cryptorand.Read(buf[:]); err != nil {
+		return 3
+	}
+	// Valid vsock CID range: 3 to 2^32-2 (0xFFFFFFFE).
+	cid := uint32(buf[0])<<24 | uint32(buf[1])<<16 | uint32(buf[2])<<8 | uint32(buf[3])
+	return cid%(0xFFFFFFFE-3) + 3
 }
 
 func tapNameFromRunID(runID string) string {
