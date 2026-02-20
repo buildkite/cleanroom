@@ -11,9 +11,15 @@ type Adapter interface {
 	Run(ctx context.Context, req RunRequest) (*RunResult, error)
 }
 
+type AttachIO struct {
+	WriteStdin func([]byte) error
+	ResizeTTY  func(cols, rows uint32) error
+}
+
 type OutputStream struct {
 	OnStdout func([]byte)
 	OnStderr func([]byte)
+	OnAttach func(AttachIO)
 }
 
 // StreamingAdapter can push stdout/stderr chunks while a command is running.
@@ -27,6 +33,7 @@ type RunRequest struct {
 	RunID   string
 	CWD     string
 	Command []string
+	TTY     bool
 	Policy  *policy.CompiledPolicy
 	FirecrackerConfig
 }

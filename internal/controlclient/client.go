@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"crypto/tls"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"connectrpc.com/connect"
@@ -15,6 +17,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/endpoint"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/gen/cleanroom/v1/cleanroomv1connect"
+	"golang.org/x/net/http2"
 )
 
 type Client struct {
@@ -25,20 +28,41 @@ type Client struct {
 }
 
 func New(ep endpoint.Endpoint) *Client {
-	transport := &http.Transport{}
-	if ep.Scheme == "unix" {
-		transport.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return (&net.Dialer{}).DialContext(ctx, "unix", ep.Address)
-		}
-	}
-
-	httpClient := &http.Client{Transport: transport}
 	baseURL := strings.TrimRight(ep.BaseURL, "/")
+	httpClient := &http.Client{Transport: buildTransport(ep, baseURL)}
 	return &Client{
 		httpClient:      httpClient,
 		baseURL:         baseURL,
 		sandboxClient:   cleanroomv1connect.NewSandboxServiceClient(httpClient, baseURL),
 		executionClient: cleanroomv1connect.NewExecutionServiceClient(httpClient, baseURL),
+	}
+}
+
+func buildTransport(ep endpoint.Endpoint, baseURL string) http.RoundTripper {
+	dialer := &net.Dialer{}
+	if ep.Scheme == "https" {
+		return &http.Transport{}
+	}
+
+	if ep.Scheme == "unix" {
+		return &http2.Transport{
+			AllowHTTP: true,
+			DialTLSContext: func(ctx context.Context, _, _ string, _ *tls.Config) (net.Conn, error) {
+				return dialer.DialContext(ctx, "unix", ep.Address)
+			},
+		}
+	}
+
+	parsed, err := url.Parse(baseURL)
+	if err != nil || parsed.Host == "" {
+		return &http.Transport{}
+	}
+	host := parsed.Host
+	return &http2.Transport{
+		AllowHTTP: true,
+		DialTLSContext: func(ctx context.Context, _, _ string, _ *tls.Config) (net.Conn, error) {
+			return dialer.DialContext(ctx, "tcp", host)
+		},
 	}
 }
 

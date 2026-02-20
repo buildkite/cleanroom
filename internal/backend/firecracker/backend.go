@@ -20,12 +20,14 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/paths"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/vsockexec"
+	"github.com/creack/pty"
 	fcvsock "github.com/firecracker-microvm/firecracker-go-sdk/vsock"
 )
 
@@ -253,7 +255,7 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 			}, nil
 		}
 
-		exitCode, stdout, stderr, err := runHostPassthrough(ctx, req.CWD, req.Command, stream)
+		exitCode, stdout, stderr, err := runHostPassthrough(ctx, req.CWD, req.Command, req.TTY, stream)
 		if err != nil {
 			return nil, err
 		}
@@ -579,7 +581,11 @@ func runResultMessage(base string) string {
 	return base + "; rootfs writes discarded after run"
 }
 
-func runHostPassthrough(ctx context.Context, cwd string, command []string, stream backend.OutputStream) (int, string, string, error) {
+func runHostPassthrough(ctx context.Context, cwd string, command []string, tty bool, stream backend.OutputStream) (int, string, string, error) {
+	if tty {
+		return runHostPassthroughTTY(ctx, cwd, command, stream)
+	}
+
 	cmd := exec.CommandContext(ctx, command[0], command[1:]...)
 	cmd.Dir = cwd
 	stdoutPipe, err := cmd.StdoutPipe()
@@ -628,6 +634,76 @@ func runHostPassthrough(ctx context.Context, cwd string, command []string, strea
 		return exitErr.ExitCode(), stdout.String(), stderr.String(), nil
 	}
 	return 1, stdout.String(), stderr.String(), fmt.Errorf("run host passthrough command: %w", err)
+}
+
+func runHostPassthroughTTY(ctx context.Context, cwd string, command []string, stream backend.OutputStream) (int, string, string, error) {
+	cmd := exec.CommandContext(ctx, command[0], command[1:]...)
+	cmd.Dir = cwd
+
+	ptyFile, err := pty.Start(cmd)
+	if err != nil {
+		return 1, "", "", fmt.Errorf("start host passthrough tty command: %w", err)
+	}
+	defer ptyFile.Close()
+
+	if stream.OnAttach != nil {
+		stream.OnAttach(backend.AttachIO{
+			WriteStdin: func(data []byte) error {
+				if len(data) == 0 {
+					return nil
+				}
+				_, writeErr := ptyFile.Write(data)
+				return writeErr
+			},
+			ResizeTTY: func(cols, rows uint32) error {
+				if cols == 0 || rows == 0 {
+					return nil
+				}
+				return pty.Setsize(ptyFile, &pty.Winsize{
+					Cols: uint16(cols),
+					Rows: uint16(rows),
+				})
+			},
+		})
+	}
+
+	var stdout bytes.Buffer
+	copyDone := make(chan error, 1)
+	go func() {
+		_, copyErr := io.Copy(io.MultiWriter(&stdout, callbackWriter{cb: stream.OnStdout}), ptyFile)
+		copyDone <- copyErr
+	}()
+
+	err = cmd.Wait()
+	_ = ptyFile.Close()
+	copyErr := <-copyDone
+	if copyErr != nil && !expectedPTYReadError(copyErr) && err == nil {
+		err = copyErr
+	}
+
+	if err == nil {
+		return 0, stdout.String(), "", nil
+	}
+
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return exitErr.ExitCode(), stdout.String(), "", nil
+	}
+	return 1, stdout.String(), "", fmt.Errorf("run host passthrough tty command: %w", err)
+}
+
+func expectedPTYReadError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.EOF) {
+		return true
+	}
+	var pathErr *os.PathError
+	if errors.As(err, &pathErr) {
+		return errors.Is(pathErr.Err, syscall.EIO)
+	}
+	return errors.Is(err, syscall.EIO)
 }
 
 type guestExecTiming struct {

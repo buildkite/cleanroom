@@ -70,6 +70,8 @@ type executionState struct {
 	CancelRequested  bool
 	CancelSignal     int32
 	Cancel           context.CancelFunc
+	AttachStdin      func([]byte) error
+	AttachResize     func(cols, rows uint32) error
 	EventHistory     []*cleanroomv1.ExecutionStreamEvent
 	EventSubscribers map[int]chan *cleanroomv1.ExecutionStreamEvent
 	NextSubID        int
@@ -95,6 +97,14 @@ var (
 	maxRetainedStoppedSandboxes   = 256
 	maxRetainedFinishedExecutions = 2048
 	retainedStateMaxAge           = 24 * time.Hour
+
+	ErrExecutionStdinUnsupported  = errors.New("execution stdin attach is not supported by the current backend")
+	ErrExecutionResizeUnsupported = errors.New("execution resize is not supported by the current backend")
+)
+
+const (
+	attachRegistrationWait = 250 * time.Millisecond
+	attachPollInterval     = 10 * time.Millisecond
 )
 
 func (s *Service) CreateSandbox(_ context.Context, req *cleanroomv1.CreateSandboxRequest) (*cleanroomv1.CreateSandboxResponse, error) {
@@ -504,6 +514,96 @@ func (s *Service) CancelExecution(_ context.Context, req *cleanroomv1.CancelExec
 	}, nil
 }
 
+func (s *Service) WriteExecutionStdin(sandboxID, executionID string, data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
+	sandboxID = strings.TrimSpace(sandboxID)
+	executionID = strings.TrimSpace(executionID)
+	if sandboxID == "" {
+		return errors.New("missing sandbox_id")
+	}
+	if executionID == "" {
+		return errors.New("missing execution_id")
+	}
+
+	payload := append([]byte(nil), data...)
+	deadline := time.Now().Add(attachRegistrationWait)
+	for {
+		var (
+			writeFn func([]byte) error
+			done    <-chan struct{}
+		)
+		s.mu.RLock()
+		ex, ok := s.executions[executionKey(sandboxID, executionID)]
+		if !ok {
+			s.mu.RUnlock()
+			return fmt.Errorf("unknown execution %q in sandbox %q", executionID, sandboxID)
+		}
+		if isFinalExecutionStatus(ex.Status) {
+			s.mu.RUnlock()
+			return errors.New("execution is not running")
+		}
+		writeFn = ex.AttachStdin
+		done = ex.Done
+		s.mu.RUnlock()
+
+		if writeFn != nil {
+			return writeFn(payload)
+		}
+		if time.Now().After(deadline) {
+			return ErrExecutionStdinUnsupported
+		}
+		select {
+		case <-done:
+		case <-time.After(attachPollInterval):
+		}
+	}
+}
+
+func (s *Service) ResizeExecutionTTY(sandboxID, executionID string, cols, rows uint32) error {
+	sandboxID = strings.TrimSpace(sandboxID)
+	executionID = strings.TrimSpace(executionID)
+	if sandboxID == "" {
+		return errors.New("missing sandbox_id")
+	}
+	if executionID == "" {
+		return errors.New("missing execution_id")
+	}
+
+	deadline := time.Now().Add(attachRegistrationWait)
+	for {
+		var (
+			resizeFn func(cols, rows uint32) error
+			done     <-chan struct{}
+		)
+		s.mu.RLock()
+		ex, ok := s.executions[executionKey(sandboxID, executionID)]
+		if !ok {
+			s.mu.RUnlock()
+			return fmt.Errorf("unknown execution %q in sandbox %q", executionID, sandboxID)
+		}
+		if isFinalExecutionStatus(ex.Status) {
+			s.mu.RUnlock()
+			return errors.New("execution is not running")
+		}
+		resizeFn = ex.AttachResize
+		done = ex.Done
+		s.mu.RUnlock()
+
+		if resizeFn != nil {
+			return resizeFn(cols, rows)
+		}
+		if time.Now().After(deadline) {
+			return ErrExecutionResizeUnsupported
+		}
+		select {
+		case <-done:
+		case <-time.After(attachPollInterval):
+		}
+	}
+}
+
 func (s *Service) SubscribeSandboxEvents(sandboxID string) ([]*cleanroomv1.SandboxEvent, <-chan *cleanroomv1.SandboxEvent, <-chan struct{}, func(), error) {
 	sandboxID = strings.TrimSpace(sandboxID)
 	if sandboxID == "" {
@@ -765,6 +865,7 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 		RunID:             ex.RunID,
 		CWD:               ex.CWD,
 		Command:           append([]string(nil), ex.Command...),
+		TTY:               ex.TTY,
 		Policy:            sb.Policy,
 		FirecrackerConfig: firecrackerCfg,
 	}
@@ -782,6 +883,9 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 			OnStderr: func(chunk []byte) {
 				s.recordExecutionOutputChunk(key, false, chunk)
 			},
+			OnAttach: func(io backend.AttachIO) {
+				s.setExecutionAttachIO(key, io)
+			},
 		})
 	} else {
 		result, err = adapter.Run(runCtx, runReq)
@@ -797,6 +901,7 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 	if ex.Cancel != nil {
 		ex.Cancel = nil
 	}
+	clearExecutionAttachIOLocked(ex)
 
 	if err != nil {
 		finalStatus := cleanroomv1.ExecutionStatus_EXECUTION_STATUS_FAILED
@@ -1139,6 +1244,26 @@ func closeExecutionDoneLocked(ex *executionState) {
 	}
 	close(ex.Done)
 	ex.DoneClosed = true
+}
+
+func clearExecutionAttachIOLocked(ex *executionState) {
+	if ex == nil {
+		return
+	}
+	ex.AttachStdin = nil
+	ex.AttachResize = nil
+}
+
+func (s *Service) setExecutionAttachIO(key string, io backend.AttachIO) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	ex, ok := s.executions[key]
+	if !ok || ex == nil || isFinalExecutionStatus(ex.Status) {
+		return
+	}
+	ex.AttachStdin = io.WriteStdin
+	ex.AttachResize = io.ResizeTTY
 }
 
 func closeSandboxSubscribersLocked(sb *sandboxState) {
