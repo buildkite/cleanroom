@@ -314,7 +314,6 @@ func mergeFirecrackerConfig(cwd string, opts controlapi.ExecOptions, cfg runtime
 		MemoryMiB:       cfg.Backends.Firecracker.MemoryMiB,
 		GuestCID:        cfg.Backends.Firecracker.GuestCID,
 		GuestPort:       cfg.Backends.Firecracker.GuestPort,
-		RetainWrites:    cfg.Backends.Firecracker.RetainWrites,
 		LaunchSeconds:   cfg.Backends.Firecracker.LaunchSeconds,
 	}
 

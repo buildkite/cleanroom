@@ -20,20 +20,19 @@ type RunRequest struct {
 }
 
 type FirecrackerConfig struct {
-	BinaryPath       string
-	KernelImagePath  string
-	RootFSPath       string
-	RunDir           string
-	WorkspaceHost    string
-	WorkspaceAccess  string // rw|ro
-	VCPUs            int64
-	MemoryMiB        int64
-	GuestCID         uint32
-	GuestPort        uint32
-	RetainWrites     bool
-	HostPassthrough  bool
-	Launch           bool
-	LaunchSeconds    int64
+	BinaryPath      string
+	KernelImagePath string
+	RootFSPath      string
+	RunDir          string
+	WorkspaceHost   string
+	WorkspaceAccess string // rw|ro
+	VCPUs           int64
+	MemoryMiB       int64
+	GuestCID        uint32
+	GuestPort       uint32
+	HostPassthrough bool
+	Launch          bool
+	LaunchSeconds   int64
 }
 
 type RunResult struct {
