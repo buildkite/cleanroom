@@ -29,6 +29,9 @@ func New(service *controlservice.Service, logger *log.Logger) *Server {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/exec", s.handleExec)
+	mux.HandleFunc("/v1/cleanrooms/launch", s.handleLaunchCleanroom)
+	mux.HandleFunc("/v1/cleanrooms/run", s.handleRunCleanroom)
+	mux.HandleFunc("/v1/cleanrooms/terminate", s.handleTerminateCleanroom)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
@@ -70,6 +73,118 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 		s.logger.Info("exec request finished",
 			"run_id", out.RunID,
 			"exit_code", out.ExitCode,
+			"duration_ms", time.Since(started).Milliseconds(),
+		)
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) handleLaunchCleanroom(w http.ResponseWriter, r *http.Request) {
+	started := time.Now()
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	in := controlapi.LaunchCleanroomRequest{}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid request body: %v", err))
+		return
+	}
+	if s.logger != nil {
+		s.logger.Debug("launch cleanroom request decoded",
+			"remote_addr", r.RemoteAddr,
+			"cwd", in.CWD,
+			"backend", in.Backend,
+		)
+	}
+
+	out, err := s.service.LaunchCleanroom(r.Context(), in)
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Warn("launch cleanroom request failed", "error", err, "duration_ms", time.Since(started).Milliseconds())
+		}
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if s.logger != nil {
+		s.logger.Info("launch cleanroom request finished",
+			"cleanroom_id", out.CleanroomID,
+			"duration_ms", time.Since(started).Milliseconds(),
+		)
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) handleRunCleanroom(w http.ResponseWriter, r *http.Request) {
+	started := time.Now()
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	in := controlapi.RunCleanroomRequest{}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid request body: %v", err))
+		return
+	}
+	if s.logger != nil {
+		s.logger.Debug("run cleanroom request decoded",
+			"remote_addr", r.RemoteAddr,
+			"cleanroom_id", in.CleanroomID,
+			"command_argc", len(in.Command),
+		)
+	}
+
+	out, err := s.service.RunCleanroom(r.Context(), in)
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Warn("run cleanroom request failed", "error", err, "duration_ms", time.Since(started).Milliseconds())
+		}
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if s.logger != nil {
+		s.logger.Info("run cleanroom request finished",
+			"cleanroom_id", out.CleanroomID,
+			"run_id", out.RunID,
+			"exit_code", out.ExitCode,
+			"duration_ms", time.Since(started).Milliseconds(),
+		)
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) handleTerminateCleanroom(w http.ResponseWriter, r *http.Request) {
+	started := time.Now()
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	in := controlapi.TerminateCleanroomRequest{}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid request body: %v", err))
+		return
+	}
+	if s.logger != nil {
+		s.logger.Debug("terminate cleanroom request decoded",
+			"remote_addr", r.RemoteAddr,
+			"cleanroom_id", in.CleanroomID,
+		)
+	}
+
+	out, err := s.service.TerminateCleanroom(r.Context(), in)
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Warn("terminate cleanroom request failed", "error", err, "duration_ms", time.Since(started).Milliseconds())
+		}
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if s.logger != nil {
+		s.logger.Info("terminate cleanroom request finished",
+			"cleanroom_id", out.CleanroomID,
 			"duration_ms", time.Since(started).Milliseconds(),
 		)
 	}

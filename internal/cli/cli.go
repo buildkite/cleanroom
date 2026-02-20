@@ -345,19 +345,17 @@ func resolveBackendName(requested, configuredDefault string) string {
 
 func mergeFirecrackerConfig(cwd string, e *ExecCommand, cfg runtimeconfig.Config) backend.FirecrackerConfig {
 	out := backend.FirecrackerConfig{
-		BinaryPath:       cfg.Backends.Firecracker.BinaryPath,
-		KernelImagePath:  cfg.Backends.Firecracker.KernelImage,
-		RootFSPath:       cfg.Backends.Firecracker.RootFS,
-		WorkspaceHost:    cwd,
-		WorkspaceMode:    resolveWorkspaceMode(cfg.Workspace.Mode),
-		WorkspacePersist: resolveWorkspacePersist(cfg.Workspace.Persist),
-		WorkspaceAccess:  resolveWorkspaceAccess(e, cfg.Workspace.Access),
-		VCPUs:            cfg.Backends.Firecracker.VCPUs,
-		MemoryMiB:        cfg.Backends.Firecracker.MemoryMiB,
-		GuestCID:         cfg.Backends.Firecracker.GuestCID,
-		GuestPort:        cfg.Backends.Firecracker.GuestPort,
-		RetainWrites:     cfg.Backends.Firecracker.RetainWrites,
-		LaunchSeconds:    cfg.Backends.Firecracker.LaunchSeconds,
+		BinaryPath:      cfg.Backends.Firecracker.BinaryPath,
+		KernelImagePath: cfg.Backends.Firecracker.KernelImage,
+		RootFSPath:      cfg.Backends.Firecracker.RootFS,
+		WorkspaceHost:   cwd,
+		WorkspaceAccess: resolveWorkspaceAccess(e, cfg.Workspace.Access),
+		VCPUs:           cfg.Backends.Firecracker.VCPUs,
+		MemoryMiB:       cfg.Backends.Firecracker.MemoryMiB,
+		GuestCID:        cfg.Backends.Firecracker.GuestCID,
+		GuestPort:       cfg.Backends.Firecracker.GuestPort,
+		RetainWrites:    cfg.Backends.Firecracker.RetainWrites,
+		LaunchSeconds:   cfg.Backends.Firecracker.LaunchSeconds,
 	}
 
 	if e.RunDir != "" {
@@ -383,22 +381,6 @@ func resolveWorkspaceAccess(execCfg *ExecCommand, configured string) string {
 		access = "ro"
 	}
 	return access
-}
-
-func resolveWorkspaceMode(configured string) string {
-	mode := configured
-	if mode == "" {
-		mode = "copy"
-	}
-	return mode
-}
-
-func resolveWorkspacePersist(configured string) string {
-	persist := configured
-	if persist == "" {
-		persist = "discard"
-	}
-	return persist
 }
 
 func (s *StatusCommand) Run(ctx *runtimeContext) error {
