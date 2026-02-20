@@ -1,87 +1,34 @@
-# 🧑‍🔬 Cleanroom
+# Cleanroom
 
-Cleanroom is a secure, hermetic execution environment for modern agentic and development workflows that need repeatability, speed, supply-chain safety, and safe execution of untrusted code.
+Cleanroom is an API-first control plane for isolated command execution.
 
-Agents and local automation often run with mixed trust levels (external prompts, unreviewed scripts, temporary tasks). Cleanroom solves this by enforcing a policy boundary: explicit, auditable egress rules around what can be reached and from where, while still allowing practical command execution.
+Current backend: **Firecracker** on Linux/KVM.
 
-At its core, Cleanroom gives you:
-- deny-by-default networking
-- explicit host/port allowlists for runtime access
-- cache-mediated dependency fetches (repeatable and faster)
-- safe secret injection without plaintext in repo policy or command lines
-- policy-constrained sandboxes for running untrusted scripts and agent output
-- pluggable backends (local execution today, remote execution tomorrow)
+It is built for this lifecycle:
+1. Launch a cleanroom context from repository policy.
+2. Run an agent/command in an isolated Firecracker VM.
+3. Terminate the cleanroom context.
 
-## Why this exists
+## What It Does
 
-Agentic tools and local CLIs also need package and API access to do their jobs. Cleanroom keeps dependency and network intent in one place (`cleanroom.yaml`) and makes each execution environment auditable and reproducible, so trusted launchers can execute untrusted workloads inside explicit policy boundaries.
+- Compiles repository policy from `cleanroom.yaml`
+- Enforces deny-by-default egress (`host:port` allow rules)
+- Runs commands in a Firecracker microVM via guest agent
+- Returns exit code + stdout/stderr over API
+- Stores run artifacts and timing metrics for inspection
 
-The result is a safer baseline:
-- accidental dependency drift gets reduced
-- unexpected outbound traffic is blocked by default
-- dependency fetches are routed through caching/proxy policy points
-- local and remote execution can use the same repository policy definition
+## Architecture
 
-## Install / use
+- Server: `cleanroom serve`
+- Client: CLI and direct HTTP JSON calls
+- Transport: unix socket by default (`unix://$XDG_RUNTIME_DIR/cleanroom/cleanroom.sock`)
+- Core endpoints:
+  - `POST /v1/cleanrooms/launch`
+  - `POST /v1/cleanrooms/run`
+  - `POST /v1/cleanrooms/terminate`
+  - `POST /v1/exec` (single-call compatibility path)
 
-Once implemented:
-
-```bash
-cleanroom serve --listen unix://$XDG_RUNTIME_DIR/cleanroom/cleanroom.sock
-cleanroom policy validate
-cleanroom exec -- "npm test"
-```
-
-## Configuration: `cleanroom.yaml`
-
-Place policy at repository root as `cleanroom.yaml` (legacy fallback: `.buildkite/cleanroom.yaml`).
-
-```yaml
-version: 1
-project:
-  name: example-repo
-  owner: team-platform
-
-backends:
-  default: local
-  allow_overrides: true
-
-sandbox:
-  ttl_minutes: 30
-  network:
-    default: deny
-    allow:
-      - host: registry.npmjs.org
-        ports: [443]
-      - host: api.github.com
-        ports: [443]
-
-registries:
-  npm:
-    enable: true
-    allowed_hosts:
-      - registry.npmjs.org
-      - registry.yarnpkg.com
-    cache_ref: content-cache
-    fallback: deny
-    lockfile_enforcement:
-      enabled: true
-      mode: deny_unknown
-      lockfiles:
-        - package-lock.json
-        - yarn.lock
-
-metadata:
-  team: platform-security
-  risk_class: low
-```
-
-The policy maps to three enforcement layers:
-- **network**: explicit outbound host/port controls for everything.
-- **registry**: package fetches only through content-cache and allowed registries.
-- **lockfile-aware dependency policy**: only allowed artifacts from lockfiles are fetched.
-
-## Quick usage
+## Quick Start
 
 ### 1) Validate policy
 
@@ -89,157 +36,179 @@ The policy maps to three enforcement layers:
 cleanroom policy validate
 ```
 
-### 2) Start the local control-plane server
+### 2) Start API server
 
 ```bash
 cleanroom serve --listen unix://$XDG_RUNTIME_DIR/cleanroom/cleanroom.sock
 ```
 
-All CLI commands (including `cleanroom exec`) talk to this API endpoint.
-
-### 3) Run a task in a sandbox
+### 3) Launch -> Run -> Terminate via API
 
 ```bash
-cleanroom exec -- "npm install && npm test"
+cleanroom_id="$(
+  curl --silent --show-error \
+    --unix-socket "$XDG_RUNTIME_DIR/cleanroom/cleanroom.sock" \
+    -H 'content-type: application/json' \
+    -d '{"cwd":"'"$PWD"'"}' \
+    http://localhost/v1/cleanrooms/launch | jq -r '.cleanroom_id'
+)"
+
+curl --silent --show-error \
+  --unix-socket "$XDG_RUNTIME_DIR/cleanroom/cleanroom.sock" \
+  -H 'content-type: application/json' \
+  -d '{"cleanroom_id":"'"$cleanroom_id"'","command":["pi","run","implement the requested refactor"]}' \
+  http://localhost/v1/cleanrooms/run
+
+curl --silent --show-error \
+  --unix-socket "$XDG_RUNTIME_DIR/cleanroom/cleanroom.sock" \
+  -H 'content-type: application/json' \
+  -d '{"cleanroom_id":"'"$cleanroom_id"'"}' \
+  http://localhost/v1/cleanrooms/terminate
 ```
 
-### 3b) Run an agentic task in a sandbox
+## CLI Shortcut
+
+`cleanroom exec` keeps a one-command flow, but lifecycle endpoints are the primary API model.
 
 ```bash
-cleanroom exec -- "agent-tool execute 'resolve docs updates and open PR branch'"
+cleanroom exec -- pi run "implement the requested refactor"
 ```
 
-Use `--backend sprites` to run using the remote backend once configured:
+## API Contract (Current)
 
-```bash
-cleanroom exec --backend sprites -- "pytest -q"
+### `POST /v1/cleanrooms/launch`
+
+Request:
+
+```json
+{
+  "cwd": "/path/to/repo",
+  "backend": "firecracker",
+  "options": {
+    "run_dir": "/tmp/cleanroom-runs",
+    "read_only_workspace": false,
+    "launch_seconds": 30
+  }
+}
 ```
 
-The same command shape works for local tools, local scripts, and agent tasks.
+Response fields:
+- `cleanroom_id`
+- `backend`
+- `policy_source`
+- `policy_hash`
+- `run_dir_root`
 
-## Server + `exec` UX
+### `POST /v1/cleanrooms/run`
 
-Cleanroom uses a client/server model with one binary:
+Request:
 
-```bash
-cleanroom serve --listen unix://$XDG_RUNTIME_DIR/cleanroom/cleanroom.sock
+```json
+{
+  "cleanroom_id": "cr-123",
+  "command": ["pi", "run", "implement the requested refactor"]
+}
 ```
 
-`cleanroom exec` remains the primary command UX and talks to the server API under the hood.
+Response fields:
+- `run_id`
+- `exit_code`
+- `stdout`
+- `stderr`
+- `run_dir`
+- `plan_path`
 
-```bash
-cleanroom exec -- "npm test"
+### `POST /v1/cleanrooms/terminate`
+
+Request:
+
+```json
+{
+  "cleanroom_id": "cr-123"
+}
 ```
 
-Useful forms:
+Response fields:
+- `terminated`
 
-```bash
-cleanroom exec -it -- bash
-cleanroom exec -d -- "npm run watch"
-cleanroom exec --sandbox dev --reuse -- "npm test"
-```
+## Policy File
 
-Execution behavior:
-- resolves policy and creates a sandbox (ephemeral by default)
-- creates an execution and streams output
-- returns the workload exit code
-- tears down ephemeral sandboxes after execution
-- first `Ctrl-C` cancels execution, second `Ctrl-C` detaches the client stream
+Repository policy path resolution:
+1. `cleanroom.yaml`
+2. `.buildkite/cleanroom.yaml` (fallback)
 
-## Mise integration (first class)
-
-If a repository contains `.mise.toml` (or `.mise/config.toml`), `cleanroom exec` treats `mise` as part of the runtime bootstrap path.
-
-```bash
-cleanroom exec --backend local -- "mise exec npm test"
-```
-
-You can also run through implicit bootstrap:
-
-```bash
-cleanroom exec "npm test"
-```
-
-In that mode, Cleanroom:
-
-- detects `mise` files in the workspace,
-- resolves tool versions from repository-managed config,
-- applies the resulting environment inside the sandbox before executing the command,
-- auto-trusts copied workspace mise config paths in launched mode (`/workspace/.mise.toml`, `/workspace/.mise/config.toml`),
-- and still enforces the same network/registry/secret rules.
-
-To keep command parsing predictable, prefer the explicit form in scripts:
-
-```bash
-cleanroom exec -- "mise exec node --version"
-```
-
-You can also pin this behavior in policy:
+Minimal example:
 
 ```yaml
+version: 1
 sandbox:
-  mise:
-    enabled: true
-    auto_bootstrap: true
-    config_files:
-      - .mise.toml
-      - .mise/config.toml
+  network:
+    default: deny
+    allow:
+      - host: api.github.com
+        ports: [443]
+      - host: registry.npmjs.org
+        ports: [443]
 ```
 
-### 4) Watch / inspect
+## Firecracker Runtime Config
 
-```bash
-cleanroom sandboxes list
-cleanroom executions get <sandbox-id> <execution-id>
-cleanroom sandboxes events <sandbox-id> --follow
+Runtime config path: `$XDG_CONFIG_HOME/cleanroom/config.yaml` (or `~/.config/cleanroom/config.yaml`).
+
+Example:
+
+```yaml
+default_backend: firecracker
+workspace:
+  access: rw
+backends:
+  firecracker:
+    binary_path: firecracker
+    kernel_image: /opt/cleanroom/vmlinux
+    rootfs: /opt/cleanroom/rootfs.ext4
+    vcpus: 2
+    memory_mib: 1024
+    guest_cid: 3
+    launch_seconds: 30
+    retain_writes: false
 ```
 
-### 5) See what would run
+## Isolation Model
 
-```bash
-cleanroom policy validate --json
-```
+- Workload runs in a Firecracker microVM
+- Workspace is snapshotted per run and sent to the guest agent
+- Workspace can be read-only (`workspace.access: ro` or request override)
+- Host egress is controlled with TAP + iptables rules from compiled policy
+- Default network behavior is deny
+- Rootfs writes are ephemeral by default (`retain_writes: false`)
 
-This prints the resolved policy and effective network/registry plan before execution.
+## Performance Notes
 
-### 6) Diagnose host networking + inspect run timings
+- Rootfs copy uses clone/reflink when available, with copy fallback
+- Per-run observability is written to `run-observability.json`
+- Metrics include:
+  - rootfs preparation time
+  - network setup time
+  - VM ready time
+  - guest command runtime
+  - total run time
+
+Inspect:
 
 ```bash
 cleanroom doctor
 cleanroom status --run-id <run-id>
 ```
 
-`doctor` now reports host networking prerequisites for launched Firecracker runs (presence of `ip`/`iptables`/`sysctl`/`sudo`, plus `sudo -n` checks used by TAP/NAT setup).
+## Host Requirements
 
-`status --run-id` prints per-run observability from `run-observability.json`, including:
-- policy host-resolution time
-- rootfs preparation time
-- Firecracker process start time
-- workspace archive preparation time
-- network setup time
-- VM ready time (process start -> guest agent ready)
-- vsock wait time (wait-to-connect for guest agent)
-- guest command runtime
-- network cleanup time
-- total run time
+- Linux host
+- `/dev/kvm` available and writable
+- Firecracker binary installed
+- Kernel image + rootfs image configured
+- `sudo -n` access for `ip`, `iptables`, and `sysctl` (network setup/cleanup)
 
-## What happens at runtime
+## References
 
-- `cleanroom exec` sends requests to the `cleanroom serve` API.
-- The control plane reads policy and builds an internal execution spec.
-- If both `cleanroom.yaml` and `.buildkite/cleanroom.yaml` exist, root config wins and `.buildkite` is ignored with a warning.
-- The server starts the selected backend and applies the deny-by-default egress policy.
-- Allowed package manager traffic is directed through `content-cache`.
-- Git operations can be routed through cache as well.
-- Secrets are injected only at runtime into runtime components, not from policy files.
-
-## Safety model (developer-focused)
-
-- No plaintext secrets in source control.
-- No wildcard package/network access unless explicitly allowed.
-- Lockfile-aware package enforcement to avoid unexpected dependency resolution.
-- Audit logs include what was denied and why.
-
-## Learn more
-
-Detailed architecture and implementation plan: `SPEC.md`.
+- API design notes: `API_CONNECTRPC.md`
+- Full spec and roadmap: `SPEC.md`

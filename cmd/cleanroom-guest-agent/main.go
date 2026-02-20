@@ -243,7 +243,7 @@ func extractTarGz(content []byte, destRoot string) error {
 				return err
 			}
 		case tar.TypeSymlink:
-			return fmt.Errorf("symlinks are not supported in workspace copy mode: %q", hdr.Name)
+			return fmt.Errorf("symlinks are not supported in workspace snapshots: %q", hdr.Name)
 		default:
 			// Skip unsupported entries (devices, fifos, etc.) in MVP.
 		}

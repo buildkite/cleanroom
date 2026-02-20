@@ -25,8 +25,6 @@ type FirecrackerConfig struct {
 	RootFSPath       string
 	RunDir           string
 	WorkspaceHost    string
-	WorkspaceMode    string // copy|mount
-	WorkspacePersist string // discard|commit
 	WorkspaceAccess  string // rw|ro
 	VCPUs            int64
 	MemoryMiB        int64

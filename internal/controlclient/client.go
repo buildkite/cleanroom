@@ -37,37 +37,65 @@ func New(ep endpoint.Endpoint) *Client {
 }
 
 func (c *Client) Exec(ctx context.Context, req controlapi.ExecRequest) (*controlapi.ExecResponse, error) {
-	payload, err := json.Marshal(req)
-	if err != nil {
+	out := controlapi.ExecResponse{}
+	if err := c.postJSON(ctx, "/v1/exec", req, &out); err != nil {
 		return nil, err
 	}
+	return &out, nil
+}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/exec", bytes.NewReader(payload))
-	if err != nil {
+func (c *Client) LaunchCleanroom(ctx context.Context, req controlapi.LaunchCleanroomRequest) (*controlapi.LaunchCleanroomResponse, error) {
+	out := controlapi.LaunchCleanroomResponse{}
+	if err := c.postJSON(ctx, "/v1/cleanrooms/launch", req, &out); err != nil {
 		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) RunCleanroom(ctx context.Context, req controlapi.RunCleanroomRequest) (*controlapi.RunCleanroomResponse, error) {
+	out := controlapi.RunCleanroomResponse{}
+	if err := c.postJSON(ctx, "/v1/cleanrooms/run", req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) TerminateCleanroom(ctx context.Context, req controlapi.TerminateCleanroomRequest) (*controlapi.TerminateCleanroomResponse, error) {
+	out := controlapi.TerminateCleanroomResponse{}
+	if err := c.postJSON(ctx, "/v1/cleanrooms/terminate", req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) postJSON(ctx context.Context, path string, in any, out any) error {
+	payload, err := json.Marshal(in)
+	if err != nil {
+		return err
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(payload))
+	if err != nil {
+		return err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	httpResp, err := c.httpClient.Do(httpReq)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer httpResp.Body.Close()
 
 	if httpResp.StatusCode != http.StatusOK {
 		errBody := controlapi.ErrorResponse{}
 		if decodeErr := json.NewDecoder(httpResp.Body).Decode(&errBody); decodeErr != nil {
-			return nil, fmt.Errorf("exec request failed with status %d", httpResp.StatusCode)
+			return fmt.Errorf("request to %s failed with status %d", path, httpResp.StatusCode)
 		}
 		if errBody.Error == "" {
-			return nil, fmt.Errorf("exec request failed with status %d", httpResp.StatusCode)
+			return fmt.Errorf("request to %s failed with status %d", path, httpResp.StatusCode)
 		}
-		return nil, errors.New(errBody.Error)
+		return errors.New(errBody.Error)
 	}
 
-	out := controlapi.ExecResponse{}
-	if err := json.NewDecoder(httpResp.Body).Decode(&out); err != nil {
-		return nil, err
-	}
-	return &out, nil
+	return json.NewDecoder(httpResp.Body).Decode(out)
 }
