@@ -4,6 +4,12 @@
 
 Understand candidate sandbox approaches for Cleanroom so we can decide what to implement directly, what to adapt, and what to keep as integration points.
 
+## Document status
+
+- Last reviewed: 2026-02-20.
+- Decision status for local Linux backend: keep Firecracker as default for v1.
+- Volatile claims (releases, public API surface, product guarantees) should include a validation snapshot date.
+
 Primary goal for v1:
 
 - repository-scoped egress policy (deny-by-default)
@@ -14,10 +20,19 @@ Primary goal for v1:
 
 ## Sources reviewed
 
+### Cleanroom and related baselines
+
+- [Cleanroom concept gist](https://gist.github.com/lox/cd5a74bee0c98e15c254e780bb73dd11)
 - [earendil-works/gondolin](https://github.com/earendil-works/gondolin)
-- [jingkaihe/matchlock](https://github.com/jingkaihe/matchlock) (validated at commit `ccce106411eca50c6f4b38ff9b83ac4416ef692e` on 2026-02-17)
+- [jingkaihe/matchlock](https://github.com/jingkaihe/matchlock) (validated at commit `9db058b9cddaf2769a201b5e67010e8b10f8b76e` on 2026-02-20)
+
+### Content and secret mediation
+
 - [wolfeidau/content-cache](https://github.com/wolfeidau/content-cache)
 - [superfly/tokenizer](https://github.com/superfly/tokenizer)
+
+### Sprites
+
 - [Sprites Overview](https://docs.sprites.dev/)
 - [Sprites Lifecycle and Persistence](https://docs.sprites.dev/concepts/lifecycle-and-persistence)
 - [Sprites Networking](https://docs.sprites.dev/concepts/networking)
@@ -29,17 +44,36 @@ Primary goal for v1:
 - [Sprites release notes](https://sprites.dev/release-notes)
 - [superfly/sprites-docs](https://github.com/superfly/sprites-docs)
 - [superfly/sprites-go](https://github.com/superfly/sprites-go)
-- [containers/libkrun](https://github.com/containers/libkrun) (validated release `v1.17.3`, published 2026-02-09)
+
+### Firecracker
+
 - [firecracker-microvm/firecracker](https://github.com/firecracker-microvm/firecracker) (validated release `v1.14.1`, published 2026-01-20)
+- [firecracker-microvm/firecracker releases](https://github.com/firecracker-microvm/firecracker/releases)
 - [Firecracker FAQ](https://github.com/firecracker-microvm/firecracker/blob/main/FAQ.md)
+- [Firecracker design](https://github.com/firecracker-microvm/firecracker/blob/main/docs/design.md)
 - [Firecracker production host setup](https://github.com/firecracker-microvm/firecracker/blob/main/docs/prod-host-setup.md)
+
+### libkrun
+
+- [containers/libkrun](https://github.com/containers/libkrun) (validated release `v1.17.4`, published 2026-02-18)
+- [containers/libkrun releases](https://github.com/containers/libkrun/releases)
+
+### Image distribution and VM image tooling
+
+- [cirruslabs/tart](https://github.com/cirruslabs/tart) (validated at commit `8f8a24ad19f8335640db0d30f9619605612d34a7` on 2026-02-20)
+- [Tart quick start](https://tart.run/quick-start/)
+- [Tart FAQ](https://tart.run/faq/)
+- [codecrafters-io/oci-image-executor](https://github.com/codecrafters-io/oci-image-executor) (validated at commit `abc343907821d5089764dbdf06b4e2738e838bf6` on 2026-02-20)
+- [WoodProgrammer/firecracker-rootfs-builder](https://github.com/WoodProgrammer/firecracker-rootfs-builder) (validated at commit `6e539e01e79307c68ba92990668cc33433d41175` on 2026-02-20)
+
+### Cross-platform enforcement references
+
 - [eBPF Docs: eBPF on Linux](https://docs.ebpf.io/linux/)
 - [Apple Developer: `NEDNSProxyProvider`](https://developer.apple.com/documentation/networkextension/nednsproxyprovider)
 - [Apple Technical Note TN3165](https://developer.apple.com/documentation/technotes/tn3165-packet-filter-is-not-api)
 - [Apple Support: DNS Proxy payload settings](https://support.apple.com/guide/deployment/dns-proxy-payload-settings-dep500f65271/web)
 - [Objective-See LuLu](https://objective-see.org/products/lulu.html)
 - [Cloudflare WARP modes](https://developers.cloudflare.com/cloudflare-one/team-and-resources/devices/warp/configure-warp/warp-modes/)
-- [Cleanroom concept gist](https://gist.github.com/lox/cd5a74bee0c98e15c254e780bb73dd11)
 
 ## Shortlist reviewed
 
@@ -81,6 +115,12 @@ Key implementation characteristics:
 - Includes network setup/entry points useful for deny-by-default style enforcement in v1.
 - Policy-style engine exists for allowlisting and restrictions in-progress.
 - Clean fit point for Cleanroom v1 local backend, especially for CLI-first toolchain.
+- Image flow is already close to what Cleanroom needs:
+  - accepts OCI-style image refs for `run`, with optional forced pull
+  - supports explicit image lifecycle commands (`pull`, `build`, `image ls/rm/import`)
+  - converts OCI image contents into ext4 rootfs artifacts and caches them locally
+  - stores image metadata (tag/ref, digest, size, OCI config, source) in SQLite with `local` and `registry` scopes
+  - preserves Docker-like `ENTRYPOINT`/`CMD`/`WORKDIR`/`ENV` semantics by carrying OCI config metadata into runtime command composition
 
 ### 3) `content-cache`
 
@@ -184,6 +224,49 @@ Inference (explicitly inferred, not documented as hard guarantee):
 4. Keep remote backend as adapter shell (sprites) with explicit policy payload transport.
 5. Keep CLI first: `cleanroom exec` as primary entrypoint and command pattern.
 
+## Base image management recommendation (Matchlock-style)
+
+Validation snapshot date: 2026-02-20.
+
+Recommendation:
+
+- Use OCI images as the authoring/distribution interface, and materialize/cached ext4 rootfs files for Firecracker runtime.
+- Adopt Matchlock-style image workflow shape (`pull/build/import/ls/rm`) with Cleanroom policy semantics and stricter immutability.
+- Require digest-pinned image references in repository policy (`cleanroom.yaml`), not mutable tags, for reproducibility and auditability.
+
+Proposed policy shape (backend-neutral):
+
+```yaml
+version: 1
+sandbox:
+  image:
+    ref: ghcr.io/your-org/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+```
+
+Behavioral contract for v1:
+
+1. `sandbox.image.ref` must be a digest-pinned OCI reference (`@sha256:...`).
+2. Launch fails if image ref is tag-only (for example `:latest`) or digest validation fails.
+3. Image manager:
+   - resolves and pulls OCI image by digest,
+   - materializes ext4 rootfs once,
+   - caches by digest locally,
+   - records metadata (digest, source ref, size, OCI config) in an image metadata DB.
+4. Firecracker adapter then performs per-run rootfs copy/CoW from cached base rootfs.
+5. Run events include `image_ref` and `image_digest` for audit.
+
+Why this is the right fit:
+
+- It preserves a standard image distribution UX (OCI registries, digest pinning).
+- It keeps Firecracker runtime requirements native (kernel + ext4 paths), avoiding runtime container stack complexity.
+- It matches current Cleanroom architecture direction (immutable compiled policy + deterministic per-run isolation).
+
+### Notes from adjacent tooling
+
+- Tart confirms a strong OCI-distribution model for VM images, but it uses Tart-specific OCI artifact media types and a local VM cache layout; it is not a direct Firecracker runtime path.
+- `oci-image-executor` is useful reference for OCI-image-to-ext4 execution flow, but it is tar-export based (`docker export`) and not a complete modern image lifecycle/caching model.
+- `firecracker-rootfs-builder` is a useful minimal Dockerfile-to-rootfs helper concept, but it currently lacks mature registry/distribution semantics and should be treated as idea input rather than direct baseline.
+
 ## Firecracker backend proposal (initial implementation)
 
 Build our own backend in Cleanroom, but reuse Matchlock techniques that are already proven in practice.
@@ -233,6 +316,8 @@ Build our own backend in Cleanroom, but reuse Matchlock techniques that are alre
    - Cleanroom events must emit spec-defined stable codes (`host_not_allowed`, `lockfile_violation`, etc.) across CLI/API/audit logs.
 5. **Secret model**
    - Cleanroom policy should carry secret IDs/bindings only; secret values resolved at runtime in control plane and never stored in repository config.
+6. **Digest-pinned image policy**
+   - Matchlock permits tag-based flows (`alpine:latest`) for convenience; Cleanroom should require digest-pinned image refs in `cleanroom.yaml` for deterministic runs and stronger provenance.
 
 ### Proposed Cleanroom architecture (v1 local Firecracker)
 
@@ -289,22 +374,48 @@ cleanroom exec
 3. Keep rootfs mutation host-side with a tiny guest runtime, but keep it minimal to reduce boot drift.
 4. Build lifecycle DB + reconciliation early, before adding advanced policy features, to avoid leaked TAP/nftables resources.
 5. Wire `content-cache` before implementing lockfile strictness so path mediation is in place first.
+6. Add repository policy field for base image reference and require digest-pinned OCI refs (`@sha256:...`) at launch time.
 
-## `libkrun` vs Firecracker for Cleanroom local backend
+## `libkrun` vs Firecracker for Cleanroom local backend (deep dive)
 
-Validation snapshot date: 2026-02-17.
+Validation snapshot date: 2026-02-20.
 
-| Dimension | Firecracker | `libkrun` | Cleanroom impact |
+Primary references for this section:
+
+- [Firecracker README](https://github.com/firecracker-microvm/firecracker/blob/main/README.md)
+- [Firecracker design](https://github.com/firecracker-microvm/firecracker/blob/main/docs/design.md)
+- [Firecracker production host setup](https://github.com/firecracker-microvm/firecracker/blob/main/docs/prod-host-setup.md)
+- [libkrun README](https://github.com/containers/libkrun/blob/main/README.md)
+- [libkrun releases](https://github.com/containers/libkrun/releases)
+
+### Upstream status (documented)
+
+- `libkrun`: latest release is `v1.17.4` (published 2026-02-18).
+- Firecracker: latest release is `v1.14.1` (published 2026-01-20).
+
+This is not a "stale project vs active project" decision; both are actively maintained.
+
+### Security and network model (documented facts)
+
+| Dimension | Firecracker | `libkrun` | Cleanroom implication |
 |---|---|---|---|
-| Isolation model | Purpose-built for secure multi-tenant workloads; production guidance explicitly expects seccomp + jailer/cgroup/namespace hardening. | Upstream security model states guest and VMM are the same security context; host isolation of the VMM is required to contain guest access. | Firecracker is a better default fit for strict isolation guarantees in Linux CI/agent workloads. |
-| Network model | Conventional microVM NIC model (virtio-net/TAP), straightforward to combine with host firewall policy and auditable allow/deny behavior. | Can use virtio-net, but default TSI mode proxies sockets through vsock in the VMM context; upstream docs treat guest+VMM as one network context. | Firecracker maps more cleanly to deterministic host/port egress enforcement and reason-code logging. |
-| Platform support | Linux host focused (KVM-based). | Linux/KVM and macOS ARM64/HVF support. | `libkrun` is attractive for a future macOS local-dev backend where parity can be relaxed. |
-| Scope and ergonomics | Full microVM manager with stable API surface and production hardening docs. | Embeddable library with simple C API; explicitly not trying to be a generic VMM. | `libkrun` is simpler to embed, but would still require significant Cleanroom-side hardening and policy plumbing. |
+| Positioning | Firecracker is purpose-built for secure multi-tenant workloads with a minimal device model and attack-surface reduction. | `libkrun` is a dynamic library for partially isolated execution with a simple C API. | Firecracker aligns better with strict untrusted-workload isolation goals for Linux CI/agent runs. |
+| Process isolation guidance | Firecracker design and production docs call for defense in depth: seccomp, cgroups, namespaces, and jailer-based privilege dropping. | `libkrun` security model states guest and VMM should be treated as one security context and VMM isolation must be done with host OS controls (for example namespaces). | With `libkrun`, more hardening responsibility shifts to Cleanroom/operator policy around the VMM process itself. |
+| Network behavior | Conventional microVM NIC model that naturally fits TAP + host firewall policy patterns. | Two mutually exclusive network modes: `virtio-vsock + TSI` (no virtual NIC) or `virtio-net + passt/gvproxy` (userspace proxy path). TSI docs state guest and VMM are effectively in the same network context. | Deterministic host/port allowlist enforcement and reason-code auditing are simpler to reason about in the Firecracker model for v1 Linux. |
+| Integration surface | External VMM with stable machine config surface and mature production guidance. | Embeddable library with C API and network/proxy choices that depend on host process controls. | `libkrun` is attractive for embedding, but adoption would still require backend-specific security and networking redesign. |
 
-Answer to "Would `libkrun` be better than Firecracker?":
+### Fit against current Cleanroom backend shape (inference from repo implementation)
 
-- For Cleanroom's v1 Linux backend and security goals, no: Firecracker remains the better primary choice.
-- `libkrun` is still useful as a potential secondary backend for macOS developer workflows with explicit capability downgrades.
+- Current Linux backend is explicitly Firecracker and Linux/KVM scoped.
+- Current deny-by-default enforcement path is built around per-run TAP + host firewall FORWARD rules.
+- Current launch flow shells out to a Firecracker binary with generated machine JSON and vsock guest-agent RPC.
+
+Inference: swapping to `libkrun` would be a backend re-architecture, not a drop-in runtime substitution.
+
+### Decision for v1 Linux backend
+
+- Keep Firecracker as the default local Linux backend.
+- Re-evaluate `libkrun` as an optional secondary backend where capability downgrades are explicit (for example, local macOS workflows with different enforcement guarantees).
 
 ## Cross-platform filtering findings (`Linux` + macOS)
 
@@ -341,6 +452,8 @@ Implication for Cleanroom architecture:
 ## Risks and unknowns still to validate
 
 - Matchlock network enforcement edge cases (DNS interception and port-level blocking exactness).
+- Image provenance verification depth (digest-only vs digest + signature/attestation enforcement).
+- Operator UX for digest refresh cadence (how repos update pinned base image digests safely).
 - Sprites remote policy enforcement beyond DNS/domain matching (direct-IP and DoH behavior).
 - Sprites API version drift risk between RC and dev surfaces for policy/runtime features.
 - Missing public SLA/SLO guarantees for availability/durability.
@@ -351,6 +464,14 @@ Implication for Cleanroom architecture:
 
 ## Next concrete work after research
 
+- Add policy schema for digest-pinned base image reference under `sandbox.image.ref`.
+- Add launch-time validation that rejects non-digest image refs.
+- Implement image manager package (Matchlock-like):
+  - pull by digest from OCI registry,
+  - materialize ext4 rootfs,
+  - cache by digest,
+  - persist metadata (digest/ref/size/OCI config) in image DB.
+- Add CLI image surfaces (`cleanroom image pull|ls|rm|import`) for prewarming and cache maintenance.
 - Define `internal/backend/firecracker` package boundaries:
   - machine lifecycle
   - network setup (tap/subnet/nftables)
