@@ -212,12 +212,21 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 	if err != nil {
 		return err
 	}
-	cwd, err := resolveCWD(ctx.CWD, e.Chdir)
-	if err != nil {
-		return err
-	}
-	if ep.Scheme != "unix" && e.Chdir == "" {
-		return fmt.Errorf("remote endpoint %q requires an explicit -c/--chdir flag (local cwd %q would not exist on the server)", ep.Address, cwd)
+	var cwd string
+	if ep.Scheme != "unix" {
+		if e.Chdir == "" {
+			return fmt.Errorf("remote endpoint %q requires an explicit -c/--chdir with an absolute path", ep.Address)
+		}
+		if !filepath.IsAbs(e.Chdir) {
+			return fmt.Errorf("remote endpoint %q requires an absolute -c/--chdir path, got %q", ep.Address, e.Chdir)
+		}
+		cwd = filepath.Clean(e.Chdir)
+	} else {
+		var err error
+		cwd, err = resolveCWD(ctx.CWD, e.Chdir)
+		if err != nil {
+			return err
+		}
 	}
 	logger.Debug("sending execution request",
 		"endpoint", ep.Address,
@@ -416,12 +425,21 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 	if err != nil {
 		return err
 	}
-	cwd, err := resolveCWD(ctx.CWD, c.Chdir)
-	if err != nil {
-		return err
-	}
-	if ep.Scheme != "unix" && c.Chdir == "" {
-		return fmt.Errorf("remote endpoint %q requires an explicit -c/--chdir flag (local cwd %q would not exist on the server)", ep.Address, cwd)
+	var cwd string
+	if ep.Scheme != "unix" {
+		if c.Chdir == "" {
+			return fmt.Errorf("remote endpoint %q requires an explicit -c/--chdir with an absolute path", ep.Address)
+		}
+		if !filepath.IsAbs(c.Chdir) {
+			return fmt.Errorf("remote endpoint %q requires an absolute -c/--chdir path, got %q", ep.Address, c.Chdir)
+		}
+		cwd = filepath.Clean(c.Chdir)
+	} else {
+		var err error
+		cwd, err = resolveCWD(ctx.CWD, c.Chdir)
+		if err != nil {
+			return err
+		}
 	}
 	command := append([]string(nil), c.Command...)
 	if len(command) == 0 {
