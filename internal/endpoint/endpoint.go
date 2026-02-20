@@ -2,15 +2,19 @@ package endpoint
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
 type Endpoint struct {
-	Scheme  string
-	Address string
-	BaseURL string
+	Scheme        string
+	Address       string
+	BaseURL       string
+	TSNetHostname string
+	TSNetPort     int
 }
 
 func Default() Endpoint {
@@ -42,6 +46,8 @@ func Resolve(raw string) (Endpoint, error) {
 			return Endpoint{}, fmt.Errorf("invalid unix endpoint %q", value)
 		}
 		return Endpoint{Scheme: "unix", Address: path, BaseURL: "http://unix"}, nil
+	case strings.HasPrefix(value, "tsnet://"):
+		return resolveTSNet(value)
 	case strings.HasPrefix(value, "http://"), strings.HasPrefix(value, "https://"):
 		scheme := "http"
 		if strings.HasPrefix(value, "https://") {
@@ -51,6 +57,44 @@ func Resolve(raw string) (Endpoint, error) {
 	case strings.HasPrefix(value, "/"):
 		return Endpoint{Scheme: "unix", Address: value, BaseURL: "http://unix"}, nil
 	default:
-		return Endpoint{}, fmt.Errorf("unsupported endpoint %q (expected unix://, http://, https://, or absolute unix socket path)", value)
+		return Endpoint{}, fmt.Errorf("unsupported endpoint %q (expected unix://, tsnet://, http://, https://, or absolute unix socket path)", value)
 	}
+}
+
+func resolveTSNet(value string) (Endpoint, error) {
+	const defaultHostname = "cleanroom"
+	const defaultPort = 7777
+
+	u, err := url.Parse(value)
+	if err != nil {
+		return Endpoint{}, fmt.Errorf("invalid tsnet endpoint %q: %w", value, err)
+	}
+	if u.Path != "" && u.Path != "/" {
+		return Endpoint{}, fmt.Errorf("invalid tsnet endpoint %q: path is not supported", value)
+	}
+	if u.RawQuery != "" || u.Fragment != "" {
+		return Endpoint{}, fmt.Errorf("invalid tsnet endpoint %q: query and fragment are not supported", value)
+	}
+
+	hostname := strings.TrimSpace(u.Hostname())
+	if hostname == "" {
+		hostname = defaultHostname
+	}
+
+	port := u.Port()
+	if port == "" {
+		port = strconv.Itoa(defaultPort)
+	}
+	portNum, err := strconv.Atoi(port)
+	if err != nil || portNum <= 0 || portNum > 65535 {
+		return Endpoint{}, fmt.Errorf("invalid tsnet endpoint %q: port must be in range 1-65535", value)
+	}
+
+	return Endpoint{
+		Scheme:        "tsnet",
+		Address:       fmt.Sprintf(":%d", portNum),
+		BaseURL:       fmt.Sprintf("http://%s:%d", hostname, portNum),
+		TSNetHostname: hostname,
+		TSNetPort:     portNum,
+	}, nil
 }
