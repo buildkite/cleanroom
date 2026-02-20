@@ -1,0 +1,10 @@
+version: v1
+plugins:
+  - plugin: go
+    out: .
+    opt:
+      - module=github.com/buildkite/cleanroom
+  - plugin: connect-go
+    out: .
+    opt:
+      - module=github.com/buildkite/cleanroom

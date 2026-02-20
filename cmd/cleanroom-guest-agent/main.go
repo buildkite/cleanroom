@@ -97,6 +97,8 @@ func handleConn(conn net.Conn) {
 		return
 	}
 
+	frameSender := newFrameSender(conn)
+
 	var stdoutBuf bytes.Buffer
 	var stderrBuf bytes.Buffer
 	copyErrCh := make(chan error, 2)
@@ -104,12 +106,18 @@ func handleConn(conn net.Conn) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		_, err := io.Copy(&stdoutBuf, stdout)
+		_, err := io.Copy(io.MultiWriter(&stdoutBuf, streamFrameWriter{
+			send: frameSender.Send,
+			kind: "stdout",
+		}), stdout)
 		copyErrCh <- err
 	}()
 	go func() {
 		defer wg.Done()
-		_, err := io.Copy(&stderrBuf, stderr)
+		_, err := io.Copy(io.MultiWriter(&stderrBuf, streamFrameWriter{
+			send: frameSender.Send,
+			kind: "stderr",
+		}), stderr)
 		copyErrCh <- err
 	}()
 
@@ -135,7 +143,51 @@ func handleConn(conn net.Conn) {
 		res.Error = waitErr.Error()
 	}
 
-	_ = vsockexec.EncodeResponse(conn, res)
+	if err := frameSender.Send(vsockexec.ExecStreamFrame{
+		Type:     "exit",
+		ExitCode: res.ExitCode,
+		Error:    res.Error,
+	}); err != nil {
+		// Fallback for older/newer protocol mismatches.
+		_ = vsockexec.EncodeResponse(conn, res)
+	}
+}
+
+type frameSender struct {
+	w  io.Writer
+	mu sync.Mutex
+}
+
+func newFrameSender(w io.Writer) *frameSender {
+	return &frameSender{w: w}
+}
+
+func (s *frameSender) Send(frame vsockexec.ExecStreamFrame) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return vsockexec.EncodeStreamFrame(s.w, frame)
+}
+
+type streamFrameWriter struct {
+	send func(vsockexec.ExecStreamFrame) error
+	kind string
+}
+
+func (w streamFrameWriter) Write(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	if w.send == nil {
+		return len(p), nil
+	}
+	err := w.send(vsockexec.ExecStreamFrame{
+		Type: w.kind,
+		Data: append([]byte(nil), p...),
+	})
+	if err != nil {
+		return 0, err
+	}
+	return len(p), nil
 }
 
 func buildCommandEnv(requestEnv []string) []string {
