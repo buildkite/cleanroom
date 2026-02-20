@@ -212,8 +212,13 @@ cleanroom status --run-id <run-id>
 `doctor` now reports host networking prerequisites for launched Firecracker runs (presence of `ip`/`iptables`/`sysctl`/`sudo`, plus `sudo -n` checks used by TAP/NAT setup).
 
 `status --run-id` prints per-run observability from `run-observability.json`, including:
+- policy host-resolution time
+- rootfs preparation time
+- Firecracker process start time
+- workspace archive preparation time
 - network setup time
-- VM ready/vsock wait time
+- VM ready time (process start -> guest agent ready)
+- vsock wait time (wait-to-connect for guest agent)
 - guest command runtime
 - network cleanup time
 - total run time
