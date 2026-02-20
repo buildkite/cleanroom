@@ -83,7 +83,7 @@ type ConsoleCommand struct {
 	HostPassthrough   bool   `default:"true" help:"Run command directly on host instead of launching a backend (unsafe, not sandboxed)"`
 	LaunchSeconds     int64  `help:"VM boot/guest-agent readiness timeout in seconds"`
 
-	Command []string `arg:"" passthrough:"" help:"Command to run in the console (default: sh)"`
+	Command []string `arg:"" passthrough:"" optional:"" help:"Command to run in the console (default: sh)"`
 }
 
 type ServeCommand struct {
