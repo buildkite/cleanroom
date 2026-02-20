@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/buildkite/cleanroom/internal/ociref"
 	"gopkg.in/yaml.v3"
 )
 
@@ -24,6 +25,9 @@ type Loader struct{}
 type rawPolicy struct {
 	Version int `yaml:"version"`
 	Sandbox struct {
+		Image struct {
+			Ref string `yaml:"ref"`
+		} `yaml:"image"`
 		Network struct {
 			Default string         `yaml:"default"`
 			Allow   []rawAllowRule `yaml:"allow"`
@@ -38,6 +42,8 @@ type rawAllowRule struct {
 
 type CompiledPolicy struct {
 	Version        int         `json:"version"`
+	ImageRef       string      `json:"image_ref"`
+	ImageDigest    string      `json:"image_digest"`
 	NetworkDefault string      `json:"network_default"`
 	Allow          []AllowRule `json:"allow"`
 	Hash           string      `json:"hash"`
@@ -95,6 +101,15 @@ func Compile(raw rawPolicy) (*CompiledPolicy, error) {
 		return nil, fmt.Errorf("unsupported policy version %d: only version 1 is supported", raw.Version)
 	}
 
+	imageRef := strings.TrimSpace(raw.Sandbox.Image.Ref)
+	if imageRef == "" {
+		return nil, errors.New("policy missing required field: sandbox.image.ref")
+	}
+	parsedRef, err := ociref.ParseDigestReference(imageRef)
+	if err != nil {
+		return nil, fmt.Errorf("invalid sandbox.image.ref: %w", err)
+	}
+
 	networkDefault := strings.TrimSpace(strings.ToLower(raw.Sandbox.Network.Default))
 	if networkDefault == "" {
 		networkDefault = "deny"
@@ -135,6 +150,8 @@ func Compile(raw rawPolicy) (*CompiledPolicy, error) {
 
 	compiled := &CompiledPolicy{
 		Version:        raw.Version,
+		ImageRef:       parsedRef.Original,
+		ImageDigest:    parsedRef.Digest(),
 		NetworkDefault: networkDefault,
 		Allow:          allow,
 	}

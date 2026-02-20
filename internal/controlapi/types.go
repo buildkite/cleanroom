@@ -37,6 +37,8 @@ type RunCleanroomResponse struct {
 	LaunchedVM  bool   `json:"launched_vm"`
 	PlanPath    string `json:"plan_path"`
 	RunDir      string `json:"run_dir"`
+	ImageRef    string `json:"image_ref,omitempty"`
+	ImageDigest string `json:"image_digest,omitempty"`
 	Message     string `json:"message"`
 	Stdout      string `json:"stdout,omitempty"`
 	Stderr      string `json:"stderr,omitempty"`
@@ -64,6 +66,8 @@ type ExecResponse struct {
 	LaunchedVM   bool   `json:"launched_vm"`
 	PlanPath     string `json:"plan_path"`
 	RunDir       string `json:"run_dir"`
+	ImageRef     string `json:"image_ref,omitempty"`
+	ImageDigest  string `json:"image_digest,omitempty"`
 	Message      string `json:"message"`
 	Stdout       string `json:"stdout,omitempty"`
 	Stderr       string `json:"stderr,omitempty"`

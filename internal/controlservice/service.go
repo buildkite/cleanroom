@@ -51,6 +51,8 @@ type executionState struct {
 	ID               string
 	SandboxID        string
 	RunID            string
+	ImageRef         string
+	ImageDigest      string
 	CWD              string
 	Command          []string
 	Options          controlapi.ExecOptions
@@ -82,13 +84,15 @@ type loader interface {
 }
 
 type executionSnapshot struct {
-	Execution *cleanroomv1.Execution
-	Message   string
-	Stdout    string
-	Stderr    string
-	PlanPath  string
-	RunDir    string
-	Launched  bool
+	Execution   *cleanroomv1.Execution
+	ImageRef    string
+	ImageDigest string
+	Message     string
+	Stdout      string
+	Stderr      string
+	PlanPath    string
+	RunDir      string
+	Launched    bool
 }
 
 var (
@@ -344,10 +348,18 @@ func (s *Service) CreateExecution(_ context.Context, req *cleanroomv1.CreateExec
 		s.mu.Unlock()
 		return nil, fmt.Errorf("unknown backend %q", sandbox.Backend)
 	}
+	imageRef := ""
+	imageDigest := ""
+	if sandbox.Policy != nil {
+		imageRef = sandbox.Policy.ImageRef
+		imageDigest = sandbox.Policy.ImageDigest
+	}
 
 	ex := &executionState{
 		ID:               executionID,
 		SandboxID:        sandboxID,
+		ImageRef:         imageRef,
+		ImageDigest:      imageDigest,
 		CWD:              cwd,
 		Command:          append([]string(nil), command...),
 		Options:          execOpts,
@@ -726,13 +738,15 @@ func (s *Service) ExecutionSnapshot(sandboxID, executionID string) (*executionSn
 		return nil, fmt.Errorf("unknown execution %q in sandbox %q", executionID, sandboxID)
 	}
 	return &executionSnapshot{
-		Execution: cloneExecutionLocked(ex),
-		Message:   ex.Message,
-		Stdout:    ex.Stdout,
-		Stderr:    ex.Stderr,
-		PlanPath:  ex.PlanPath,
-		RunDir:    ex.RunDir,
-		Launched:  ex.LaunchedVM,
+		Execution:   cloneExecutionLocked(ex),
+		ImageRef:    ex.ImageRef,
+		ImageDigest: ex.ImageDigest,
+		Message:     ex.Message,
+		Stdout:      ex.Stdout,
+		Stderr:      ex.Stderr,
+		PlanPath:    ex.PlanPath,
+		RunDir:      ex.RunDir,
+		Launched:    ex.LaunchedVM,
 	}, nil
 }
 
@@ -826,6 +840,10 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 	ex.StartedAt = &started
 	ex.Status = cleanroomv1.ExecutionStatus_EXECUTION_STATUS_RUNNING
 	ex.RunID = fmt.Sprintf("run-%d", started.UnixNano())
+	if sb.Policy != nil {
+		ex.ImageRef = sb.Policy.ImageRef
+		ex.ImageDigest = sb.Policy.ImageDigest
+	}
 	s.recordExecutionEventLocked(ex, &cleanroomv1.ExecutionStreamEvent{
 		SandboxId:   sandboxID,
 		ExecutionId: executionID,
@@ -925,6 +943,8 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 				"sandbox_id", ex.SandboxID,
 				"execution_id", ex.ID,
 				"run_id", ex.RunID,
+				"image_ref", ex.ImageRef,
+				"image_digest", ex.ImageDigest,
 				"status", ex.Status.String(),
 				"error", err,
 			)
@@ -936,6 +956,12 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 	ex.LaunchedVM = result.LaunchedVM
 	ex.PlanPath = result.PlanPath
 	ex.RunDir = result.RunDir
+	if strings.TrimSpace(result.ImageRef) != "" {
+		ex.ImageRef = result.ImageRef
+	}
+	if strings.TrimSpace(result.ImageDigest) != "" {
+		ex.ImageDigest = result.ImageDigest
+	}
 	ex.Message = result.Message
 	s.mergeBufferedResultOutputLocked(ex, result, usedStreaming)
 
@@ -983,6 +1009,8 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 			"sandbox_id", ex.SandboxID,
 			"execution_id", ex.ID,
 			"run_id", ex.RunID,
+			"image_ref", ex.ImageRef,
+			"image_digest", ex.ImageDigest,
 			"exit_code", ex.ExitCode,
 			"status", ex.Status.String(),
 		)
@@ -1045,6 +1073,8 @@ func (s *Service) RunCleanroom(ctx context.Context, req controlapi.RunCleanroomR
 		LaunchedVM:  snapshot.Launched,
 		PlanPath:    snapshot.PlanPath,
 		RunDir:      snapshot.RunDir,
+		ImageRef:    snapshot.ImageRef,
+		ImageDigest: snapshot.ImageDigest,
 		Message:     snapshot.Message,
 		Stdout:      snapshot.Stdout,
 		Stderr:      snapshot.Stderr,
@@ -1108,6 +1138,8 @@ func (s *Service) Exec(ctx context.Context, req controlapi.ExecRequest) (*contro
 		LaunchedVM:   snapshot.Launched,
 		PlanPath:     snapshot.PlanPath,
 		RunDir:       snapshot.RunDir,
+		ImageRef:     snapshot.ImageRef,
+		ImageDigest:  snapshot.ImageDigest,
 		Message:      snapshot.Message,
 		Stdout:       snapshot.Stdout,
 		Stderr:       snapshot.Stderr,
@@ -1523,6 +1555,12 @@ func (s *Service) recordSandboxEventLocked(sb *sandboxState, status cleanroomv1.
 func (s *Service) recordExecutionEventLocked(ex *executionState, event *cleanroomv1.ExecutionStreamEvent) {
 	if event == nil {
 		return
+	}
+	if strings.TrimSpace(event.GetImageRef()) == "" {
+		event.ImageRef = ex.ImageRef
+	}
+	if strings.TrimSpace(event.GetImageDigest()) == "" {
+		event.ImageDigest = ex.ImageDigest
 	}
 	if event.GetOccurredAt() == nil {
 		event.OccurredAt = timestamppb.Now()

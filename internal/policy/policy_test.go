@@ -7,6 +7,16 @@ import (
 	"testing"
 )
 
+const validImageRef = "ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+func baseRawPolicy() rawPolicy {
+	raw := rawPolicy{}
+	raw.Version = 1
+	raw.Sandbox.Image.Ref = validImageRef
+	raw.Sandbox.Network.Default = "deny"
+	return raw
+}
+
 func TestLoaderPrefersRootPolicy(t *testing.T) {
 	t.Parallel()
 
@@ -15,6 +25,8 @@ func TestLoaderPrefersRootPolicy(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, PrimaryPolicyPath), []byte(`
 version: 1
 sandbox:
+  image:
+    ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
   network:
     default: deny
     allow:
@@ -30,6 +42,8 @@ sandbox:
 	if err := os.WriteFile(filepath.Join(dir, FallbackPolicyPath), []byte(`
 version: 1
 sandbox:
+  image:
+    ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
   network:
     default: deny
     allow:
@@ -59,22 +73,9 @@ sandbox:
 func TestCompileRejectsAllowDefault(t *testing.T) {
 	t.Parallel()
 
-	_, err := Compile(rawPolicy{
-		Version: 1,
-		Sandbox: struct {
-			Network struct {
-				Default string         "yaml:\"default\""
-				Allow   []rawAllowRule "yaml:\"allow\""
-			} "yaml:\"network\""
-		}{
-			Network: struct {
-				Default string         "yaml:\"default\""
-				Allow   []rawAllowRule "yaml:\"allow\""
-			}{
-				Default: "allow",
-			},
-		},
-	})
+	raw := baseRawPolicy()
+	raw.Sandbox.Network.Default = "allow"
+	_, err := Compile(raw)
 	if err == nil {
 		t.Fatal("expected compile to fail for default allow")
 	}
@@ -83,9 +84,8 @@ func TestCompileRejectsAllowDefault(t *testing.T) {
 func TestCompileRejectsUnsupportedVersion(t *testing.T) {
 	t.Parallel()
 
-	raw := rawPolicy{}
+	raw := baseRawPolicy()
 	raw.Version = 2
-	raw.Sandbox.Network.Default = "deny"
 
 	_, err := Compile(raw)
 	if err == nil {
@@ -93,12 +93,34 @@ func TestCompileRejectsUnsupportedVersion(t *testing.T) {
 	}
 }
 
+func TestCompileRejectsMissingImageRef(t *testing.T) {
+	t.Parallel()
+
+	raw := baseRawPolicy()
+	raw.Sandbox.Image.Ref = ""
+
+	_, err := Compile(raw)
+	if err == nil {
+		t.Fatal("expected compile to fail for missing image ref")
+	}
+}
+
+func TestCompileRejectsTagOnlyImageRef(t *testing.T) {
+	t.Parallel()
+
+	raw := baseRawPolicy()
+	raw.Sandbox.Image.Ref = "ghcr.io/buildkite/cleanroom-base/alpine:latest"
+
+	_, err := Compile(raw)
+	if err == nil {
+		t.Fatal("expected compile to fail for tag-only image ref")
+	}
+}
+
 func TestCompileHashStable(t *testing.T) {
 	t.Parallel()
 
-	raw := rawPolicy{}
-	raw.Version = 1
-	raw.Sandbox.Network.Default = "deny"
+	raw := baseRawPolicy()
 	raw.Sandbox.Network.Allow = []rawAllowRule{
 		{Host: "api.github.com", Ports: []int{443, 443, 80}},
 		{Host: "registry.npmjs.org", Ports: []int{443}},
@@ -115,6 +137,23 @@ func TestCompileHashStable(t *testing.T) {
 
 	if compiledA.Hash != compiledB.Hash {
 		t.Fatalf("hash mismatch: %s != %s", compiledA.Hash, compiledB.Hash)
+	}
+}
+
+func TestCompileCapturesImageDigest(t *testing.T) {
+	t.Parallel()
+
+	raw := baseRawPolicy()
+	compiled, err := Compile(raw)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	if compiled.ImageRef != validImageRef {
+		t.Fatalf("unexpected image ref: got %q want %q", compiled.ImageRef, validImageRef)
+	}
+	if compiled.ImageDigest != "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" {
+		t.Fatalf("unexpected image digest: %q", compiled.ImageDigest)
 	}
 }
 

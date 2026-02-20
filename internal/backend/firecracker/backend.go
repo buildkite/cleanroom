@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/buildkite/cleanroom/internal/backend"
+	"github.com/buildkite/cleanroom/internal/imagemgr"
 	"github.com/buildkite/cleanroom/internal/paths"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/vsockexec"
@@ -93,12 +94,23 @@ func (a *Adapter) Doctor(_ context.Context, req backend.DoctorRequest) (*backend
 		appendCheck("kernel_image", "pass", fmt.Sprintf("kernel image configured: %s", req.KernelImagePath))
 	}
 
-	if req.RootFSPath == "" {
-		appendCheck("rootfs", "warn", "rootfs not configured (required for --launch)")
-	} else if _, err := os.Stat(req.RootFSPath); err != nil {
-		appendCheck("rootfs", "fail", fmt.Sprintf("rootfs not accessible: %v", err))
+	imageRefStatus := "warn"
+	imageRefMessage := "policy not loaded; cannot validate sandbox.image.ref"
+	if req.Policy != nil {
+		if strings.TrimSpace(req.Policy.ImageRef) == "" {
+			imageRefStatus = "fail"
+			imageRefMessage = "sandbox.image.ref is required for launched execution"
+		} else {
+			imageRefStatus = "pass"
+			imageRefMessage = fmt.Sprintf("sandbox image ref configured: %s", req.Policy.ImageRef)
+		}
+	}
+	appendCheck("sandbox_image_ref", imageRefStatus, imageRefMessage)
+
+	if _, err := exec.LookPath("mkfs.ext4"); err != nil {
+		appendCheck("mkfs_ext4", "fail", "mkfs.ext4 is required to materialise OCI rootfs images")
 	} else {
-		appendCheck("rootfs", "pass", fmt.Sprintf("rootfs configured: %s", req.RootFSPath))
+		appendCheck("mkfs_ext4", "pass", "found mkfs.ext4 for OCI rootfs materialisation")
 	}
 
 	if req.GuestPort == 0 {
@@ -149,6 +161,8 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 	if req.Policy == nil {
 		return nil, errors.New("missing compiled policy")
 	}
+	observation.ImageRef = req.Policy.ImageRef
+	observation.ImageDigest = req.Policy.ImageDigest
 	if req.Policy.NetworkDefault != "deny" {
 		return nil, fmt.Errorf("firecracker backend requires deny-by-default policy, got %q", req.Policy.NetworkDefault)
 	}
@@ -208,15 +222,39 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 		if err := writeJSON(planPath, plan); err != nil {
 			return nil, err
 		}
+
+		if !req.HostPassthrough {
+			observation.PlanPath = planPath
+			observation.RunDir = runDir
+			return &backend.RunResult{
+				RunID:       req.RunID,
+				ExitCode:    0,
+				LaunchedVM:  false,
+				PlanPath:    planPath,
+				RunDir:      runDir,
+				ImageRef:    req.Policy.ImageRef,
+				ImageDigest: req.Policy.ImageDigest,
+				Message:     "firecracker execution plan generated; command not executed (set --dry-run or --host-passthrough for non-launch modes)",
+			}, nil
+		}
+
+		exitCode, stdout, stderr, err := runHostPassthrough(ctx, req.CWD, req.Command, req.TTY, stream)
+		if err != nil {
+			return nil, err
+		}
 		observation.PlanPath = planPath
 		observation.RunDir = runDir
 		return &backend.RunResult{
-			RunID:      req.RunID,
-			ExitCode:   0,
-			LaunchedVM: false,
-			PlanPath:   planPath,
-			RunDir:     runDir,
-			Message:    "firecracker execution plan generated; command not executed",
+			RunID:       req.RunID,
+			ExitCode:    exitCode,
+			LaunchedVM:  false,
+			PlanPath:    planPath,
+			RunDir:      runDir,
+			ImageRef:    req.Policy.ImageRef,
+			ImageDigest: req.Policy.ImageDigest,
+			Message:     "host passthrough execution complete (not sandboxed)",
+			Stdout:      stdout,
+			Stderr:      stderr,
 		}, nil
 	}
 
@@ -229,8 +267,8 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 		return nil, fmt.Errorf("firecracker binary not found (%q): %w", binary, err)
 	}
 
-	if req.KernelImagePath == "" || req.RootFSPath == "" {
-		return nil, errors.New("kernel_image and rootfs must be configured for launched execution")
+	if req.KernelImagePath == "" {
+		return nil, errors.New("kernel_image must be configured for launched execution; use --dry-run or --host-passthrough for non-launch modes")
 	}
 	observation.Phase = "launch"
 
@@ -242,7 +280,15 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 		return nil, fmt.Errorf("kernel image %s: %w", kernelPath, err)
 	}
 
-	rootfsPath, err := filepath.Abs(req.RootFSPath)
+	imageArtifact, err := ensureImageArtifact(ctx, req.Policy.ImageRef)
+	if err != nil {
+		return nil, err
+	}
+	observation.ImageRef = imageArtifact.Ref
+	observation.ImageDigest = imageArtifact.Digest
+	observation.ImageCacheHit = imageArtifact.CacheHit
+
+	rootfsPath, err := filepath.Abs(imageArtifact.RootFSPath)
 	if err != nil {
 		return nil, err
 	}
@@ -394,14 +440,16 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 	timingSummary := fmt.Sprintf("timings boot=%s vsock_wait=%s exec=%s", vmReady, guestTiming.WaitForAgent, guestTiming.CommandRun)
 
 	return &backend.RunResult{
-		RunID:      req.RunID,
-		ExitCode:   guestResult.ExitCode,
-		LaunchedVM: true,
-		PlanPath:   cfgPath,
-		RunDir:     runDir,
-		Message:    message + "; " + timingSummary,
-		Stdout:     guestResult.Stdout,
-		Stderr:     guestResult.Stderr,
+		RunID:       req.RunID,
+		ExitCode:    guestResult.ExitCode,
+		LaunchedVM:  true,
+		PlanPath:    cfgPath,
+		RunDir:      runDir,
+		ImageRef:    imageArtifact.Ref,
+		ImageDigest: imageArtifact.Digest,
+		Message:     message + "; " + timingSummary,
+		Stdout:      guestResult.Stdout,
+		Stderr:      guestResult.Stderr,
 	}, nil
 }
 
@@ -409,6 +457,9 @@ type firecrackerRunObservation struct {
 	RunID              string `json:"run_id"`
 	Backend            string `json:"backend"`
 	LaunchedVM         bool   `json:"launched_vm"`
+	ImageRef           string `json:"image_ref,omitempty"`
+	ImageDigest        string `json:"image_digest,omitempty"`
+	ImageCacheHit      bool   `json:"image_cache_hit,omitempty"`
 	Phase              string `json:"phase"`
 	PlanPath           string `json:"plan_path,omitempty"`
 	RunDir             string `json:"run_dir,omitempty"`
@@ -510,6 +561,37 @@ func copyFile(src, dst string) error {
 		}
 	}
 	return out.Sync()
+}
+
+type imageArtifact struct {
+	Ref        string
+	Digest     string
+	RootFSPath string
+	CacheHit   bool
+}
+
+func ensureImageArtifact(ctx context.Context, imageRef string) (imageArtifact, error) {
+	trimmedRef := strings.TrimSpace(imageRef)
+	if trimmedRef == "" {
+		return imageArtifact{}, errors.New("sandbox.image.ref is required for launched execution")
+	}
+
+	mgr, err := imagemgr.New(imagemgr.Options{})
+	if err != nil {
+		return imageArtifact{}, fmt.Errorf("initialise image manager: %w", err)
+	}
+
+	result, err := mgr.Ensure(ctx, trimmedRef)
+	if err != nil {
+		return imageArtifact{}, fmt.Errorf("resolve image %q: %w", trimmedRef, err)
+	}
+
+	return imageArtifact{
+		Ref:        result.Record.Ref,
+		Digest:     result.Record.Digest,
+		RootFSPath: result.Record.RootFSPath,
+		CacheHit:   result.CacheHit,
+	}, nil
 }
 
 func runResultMessage(base string) string {

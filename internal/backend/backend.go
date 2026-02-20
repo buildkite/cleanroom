@@ -52,14 +52,16 @@ type FirecrackerConfig struct {
 }
 
 type RunResult struct {
-	RunID      string
-	ExitCode   int
-	LaunchedVM bool
-	PlanPath   string
-	RunDir     string
-	Message    string
-	Stdout     string
-	Stderr     string
+	RunID       string
+	ExitCode    int
+	LaunchedVM  bool
+	PlanPath    string
+	RunDir      string
+	ImageRef    string
+	ImageDigest string
+	Message     string
+	Stdout      string
+	Stderr      string
 }
 
 type DoctorRequest struct {

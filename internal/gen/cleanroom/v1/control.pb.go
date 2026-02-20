@@ -1410,6 +1410,8 @@ type ExecutionStreamEvent struct {
 	//	*ExecutionStreamEvent_Message
 	Payload       isExecutionStreamEvent_Payload `protobuf_oneof:"payload"`
 	OccurredAt    *timestamppb.Timestamp         `protobuf:"bytes,8,opt,name=occurred_at,json=occurredAt,proto3" json:"occurred_at,omitempty"`
+	ImageRef      string                         `protobuf:"bytes,9,opt,name=image_ref,json=imageRef,proto3" json:"image_ref,omitempty"`
+	ImageDigest   string                         `protobuf:"bytes,10,opt,name=image_digest,json=imageDigest,proto3" json:"image_digest,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1513,6 +1515,20 @@ func (x *ExecutionStreamEvent) GetOccurredAt() *timestamppb.Timestamp {
 		return x.OccurredAt
 	}
 	return nil
+}
+
+func (x *ExecutionStreamEvent) GetImageRef() string {
+	if x != nil {
+		return x.ImageRef
+	}
+	return ""
+}
+
+func (x *ExecutionStreamEvent) GetImageDigest() string {
+	if x != nil {
+		return x.ImageDigest
+	}
+	return ""
 }
 
 type isExecutionStreamEvent_Payload interface {
@@ -2109,7 +2125,7 @@ const file_proto_cleanroom_v1_control_proto_rawDesc = "" +
 	"\rExecutionExit\x12\x1b\n" +
 	"\texit_code\x18\x01 \x01(\x05R\bexitCode\x125\n" +
 	"\x06status\x18\x02 \x01(\x0e2\x1d.cleanroom.v1.ExecutionStatusR\x06status\x12\x18\n" +
-	"\amessage\x18\x03 \x01(\tR\amessage\"\xda\x02\n" +
+	"\amessage\x18\x03 \x01(\tR\amessage\"\x9a\x03\n" +
 	"\x14ExecutionStreamEvent\x12\x1d\n" +
 	"\n" +
 	"sandbox_id\x18\x01 \x01(\tR\tsandboxId\x12!\n" +
@@ -2120,7 +2136,10 @@ const file_proto_cleanroom_v1_control_proto_rawDesc = "" +
 	"\x04exit\x18\x06 \x01(\v2\x1b.cleanroom.v1.ExecutionExitH\x00R\x04exit\x12\x1a\n" +
 	"\amessage\x18\a \x01(\tH\x00R\amessage\x12;\n" +
 	"\voccurred_at\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\n" +
-	"occurredAtB\t\n" +
+	"occurredAt\x12\x1b\n" +
+	"\timage_ref\x18\t \x01(\tR\bimageRef\x12!\n" +
+	"\fimage_digest\x18\n" +
+	" \x01(\tR\vimageDigestB\t\n" +
 	"\apayload\"W\n" +
 	"\x13ExecutionAttachOpen\x12\x1d\n" +
 	"\n" +

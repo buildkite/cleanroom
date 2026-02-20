@@ -14,7 +14,7 @@ The CLI should be available in `GOBIN` (or `GOPATH/bin`).
 
 ## Files
 
-- `cleanroom.yaml`: deny-by-default network policy with one allowed host.
+- `cleanroom.yaml`: digest-pinned sandbox image ref plus a deny-by-default network policy with one allowed host.
 - `marker.sh`: command that writes a local marker file.
 - `cleanup.sh`: removes marker files created during testing.
 
@@ -54,12 +54,23 @@ Expected: marker file exists and contains a timestamp.
 
 ## Optional: launched backend path
 
-Launched execution requires runtime config (`~/.config/cleanroom/config.yaml`) with Firecracker `kernel_image` and `rootfs`, plus a rootfs prepared with `cleanroom-guest-agent` boot hook.
+Launched execution requires runtime config (`~/.config/cleanroom/config.yaml`) with Firecracker `kernel_image`, plus a digest-pinned `sandbox.image.ref` in policy.
+
+Prewarm image cache (optional):
 
 ```bash
-sudo ../../scripts/create-rootfs-image.sh
-../../scripts/prepare-firecracker-image.sh
+cleanroom image pull ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+```
 
+Or import a local tarball into the cache:
+
+```bash
+cleanroom image import ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef ./rootfs.tar.gz
+```
+
+Then run:
+
+```bash
 cleanroom exec -- ./marker.sh
 ls -la .marker-created
 ```
