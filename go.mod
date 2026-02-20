@@ -8,7 +8,7 @@ require (
 	github.com/charmbracelet/log v0.4.2
 	github.com/creack/pty v1.1.24
 	github.com/firecracker-microvm/firecracker-go-sdk v1.0.0
-	github.com/mdlayher/vsock v1.1.1
+	github.com/mdlayher/vsock v1.2.1
 	golang.org/x/net v0.38.0
 	golang.org/x/sys v0.32.0
 	golang.org/x/term v0.31.0
