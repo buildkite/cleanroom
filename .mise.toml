@@ -6,11 +6,11 @@ GOTOOLCHAIN = "local"
 
 [tasks.test]
 description = "Run Go test suite"
-run = "if [ \"$(go env GOOS)\" = \"linux\" ]; then go test ./...; else pkgs=$(go list ./...) || exit 1; pkgs=$(printf '%s\\n' \"$pkgs\" | grep -v '^github.com/buildkite/cleanroom/cmd/cleanroom-guest-agent$' || true); go test $pkgs; fi"
+run = "go test ./..."
 
 [tasks.build]
 description = "Build binaries into dist/"
-run = "mkdir -p dist && go build -o dist/cleanroom ./cmd/cleanroom && GOOS=linux GOARCH=$(go env GOARCH) go build -o dist/cleanroom-guest-agent ./cmd/cleanroom-guest-agent"
+run = "mkdir -p dist && go build -o dist/cleanroom ./cmd/cleanroom && go build -o dist/cleanroom-guest-agent ./cmd/cleanroom-guest-agent"
 
 [tasks.install]
 description = "Install binaries into GOBIN (or GOPATH/bin)"
