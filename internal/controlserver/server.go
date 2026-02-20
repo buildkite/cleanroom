@@ -20,6 +20,8 @@ import (
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/gen/cleanroom/v1/cleanroomv1connect"
 	"github.com/charmbracelet/log"
+	"golang.org/x/net/http2"
+	"golang.org/x/net/http2/h2c"
 )
 
 type Server struct {
@@ -48,7 +50,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	return mux
+	return h2c.NewHandler(mux, &http2.Server{})
 }
 
 func (s *Server) CreateSandbox(ctx context.Context, req *connect.Request[cleanroomv1.CreateSandboxRequest]) (*connect.Response[cleanroomv1.CreateSandboxResponse], error) {
@@ -287,9 +289,25 @@ func (s *Server) applyAttachInput(ctx context.Context, sandboxID, executionID st
 	case *cleanroomv1.ExecutionAttachFrame_Heartbeat:
 		return false, nil
 	case *cleanroomv1.ExecutionAttachFrame_Resize:
-		return false, connect.NewError(connect.CodeUnimplemented, errors.New("execution resize is not supported by the current backend"))
+		resize := payload.Resize
+		if resize == nil {
+			return false, nil
+		}
+		if err := s.service.ResizeExecutionTTY(sandboxID, executionID, resize.GetCols(), resize.GetRows()); err != nil {
+			if errors.Is(err, controlservice.ErrExecutionResizeUnsupported) {
+				return false, connect.NewError(connect.CodeUnimplemented, err)
+			}
+			return false, toConnectError(err)
+		}
+		return false, nil
 	case *cleanroomv1.ExecutionAttachFrame_Stdin:
-		return false, connect.NewError(connect.CodeUnimplemented, errors.New("execution stdin attach is not supported by the current backend"))
+		if err := s.service.WriteExecutionStdin(sandboxID, executionID, payload.Stdin); err != nil {
+			if errors.Is(err, controlservice.ErrExecutionStdinUnsupported) {
+				return false, connect.NewError(connect.CodeUnimplemented, err)
+			}
+			return false, toConnectError(err)
+		}
+		return false, nil
 	default:
 		return false, nil
 	}

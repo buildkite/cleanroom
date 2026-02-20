@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -25,6 +27,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 	"github.com/charmbracelet/log"
+	"golang.org/x/term"
 )
 
 type runtimeContext struct {
@@ -37,11 +40,12 @@ type runtimeContext struct {
 }
 
 type CLI struct {
-	Policy PolicyCommand `cmd:"" help:"Policy commands"`
-	Exec   ExecCommand   `cmd:"" help:"Execute a command in a cleanroom backend"`
-	Serve  ServeCommand  `cmd:"" help:"Run the cleanroom control-plane server"`
-	Doctor DoctorCommand `cmd:"" help:"Run environment and backend diagnostics"`
-	Status StatusCommand `cmd:"" help:"Inspect run artifacts"`
+	Policy  PolicyCommand  `cmd:"" help:"Policy commands"`
+	Exec    ExecCommand    `cmd:"" help:"Execute a command in a cleanroom backend"`
+	Console ConsoleCommand `cmd:"" help:"Attach an interactive console to a cleanroom execution"`
+	Serve   ServeCommand   `cmd:"" help:"Run the cleanroom control-plane server"`
+	Doctor  DoctorCommand  `cmd:"" help:"Run environment and backend diagnostics"`
+	Status  StatusCommand  `cmd:"" help:"Inspect run artifacts"`
 }
 
 type PolicyCommand struct {
@@ -66,6 +70,20 @@ type ExecCommand struct {
 	LaunchSeconds     int64  `help:"VM boot/guest-agent readiness timeout in seconds"`
 
 	Command []string `arg:"" passthrough:"" required:"" help:"Command to execute"`
+}
+
+type ConsoleCommand struct {
+	Chdir    string `short:"c" help:"Change to this directory before running commands"`
+	Host     string `help:"Control-plane endpoint (unix://path, http://host:port, or https://host:port)"`
+	LogLevel string `help:"Client log level (debug|info|warn|error)"`
+	Backend  string `help:"Execution backend (defaults to runtime config or firecracker)"`
+
+	RunDir            string `help:"Run directory for generated artifacts (default: XDG runtime/state cleanroom path)"`
+	ReadOnlyWorkspace bool   `help:"Mount workspace read-only for this run"`
+	HostPassthrough   bool   `default:"true" help:"Run command directly on host instead of launching a backend (unsafe, not sandboxed)"`
+	LaunchSeconds     int64  `help:"VM boot/guest-agent readiness timeout in seconds"`
+
+	Command []string `arg:"" passthrough:"" help:"Command to run in the console (default: sh)"`
 }
 
 type ServeCommand struct {
@@ -355,6 +373,244 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 
 	if !haveExitCode {
 		return errors.New("execution stream ended without exit status")
+	}
+	if exitCode != 0 {
+		return exitCodeError{code: exitCode}
+	}
+	return nil
+}
+
+type attachFrameSender struct {
+	mu          sync.Mutex
+	sandboxID   string
+	executionID string
+	stream      *connect.BidiStreamForClient[cleanroomv1.ExecutionAttachFrame, cleanroomv1.ExecutionAttachFrame]
+}
+
+func (s *attachFrameSender) Send(frame *cleanroomv1.ExecutionAttachFrame) error {
+	if frame == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if frame.SandboxId == "" {
+		frame.SandboxId = s.sandboxID
+	}
+	if frame.ExecutionId == "" {
+		frame.ExecutionId = s.executionID
+	}
+	return s.stream.Send(frame)
+}
+
+func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
+	logger, err := newLogger(c.LogLevel, "client")
+	if err != nil {
+		return err
+	}
+
+	cwd, err := resolveCWD(ctx.CWD, c.Chdir)
+	if err != nil {
+		return err
+	}
+	ep, err := endpoint.Resolve(c.Host)
+	if err != nil {
+		return err
+	}
+	command := append([]string(nil), c.Command...)
+	if len(command) == 0 {
+		command = []string{"sh"}
+	}
+	logger.Debug("starting interactive console",
+		"endpoint", ep.Address,
+		"cwd", cwd,
+		"backend", c.Backend,
+		"command_argc", len(command),
+		"host_passthrough", c.HostPassthrough,
+	)
+
+	client := controlclient.New(ep)
+	createSandboxResp, err := client.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Cwd:     cwd,
+		Backend: c.Backend,
+		Options: &cleanroomv1.SandboxOptions{
+			RunDir:            c.RunDir,
+			ReadOnlyWorkspace: c.ReadOnlyWorkspace,
+			LaunchSeconds:     c.LaunchSeconds,
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("console via control-plane endpoint %q: %w", ep.Address, err)
+	}
+	sandboxID := createSandboxResp.GetSandbox().GetSandboxId()
+	defer func() {
+		if sandboxID == "" {
+			return
+		}
+		_, _ = client.TerminateSandbox(context.Background(), &cleanroomv1.TerminateSandboxRequest{SandboxId: sandboxID})
+	}()
+
+	createExecutionResp, err := client.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+		SandboxId: sandboxID,
+		Command:   command,
+		Options: &cleanroomv1.ExecutionOptions{
+			RunDir:            c.RunDir,
+			ReadOnlyWorkspace: c.ReadOnlyWorkspace,
+			HostPassthrough:   c.HostPassthrough,
+			LaunchSeconds:     c.LaunchSeconds,
+			Tty:               true,
+			Cwd:               cwd,
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("create console execution via control-plane endpoint %q: %w", ep.Address, err)
+	}
+	executionID := createExecutionResp.GetExecution().GetExecutionId()
+	if _, err := fmt.Fprintf(os.Stderr, "sandbox_id=%s execution_id=%s\n", sandboxID, executionID); err != nil {
+		return err
+	}
+
+	attachCtx, attachCancel := context.WithCancel(context.Background())
+	defer attachCancel()
+	attach := client.AttachExecution(attachCtx)
+	sender := &attachFrameSender{
+		sandboxID:   sandboxID,
+		executionID: executionID,
+		stream:      attach,
+	}
+	if err := sender.Send(&cleanroomv1.ExecutionAttachFrame{
+		Payload: &cleanroomv1.ExecutionAttachFrame_Open{
+			Open: &cleanroomv1.ExecutionAttachOpen{
+				SandboxId:   sandboxID,
+				ExecutionId: executionID,
+			},
+		},
+	}); err != nil {
+		return fmt.Errorf("open attach stream: %w", err)
+	}
+
+	stdinFD := int(os.Stdin.Fd())
+	rawMode := false
+	if term.IsTerminal(stdinFD) {
+		oldState, rawErr := term.MakeRaw(stdinFD)
+		if rawErr != nil {
+			logger.Warn("failed to enter raw mode", "error", rawErr)
+		} else {
+			rawMode = true
+			defer func() {
+				_ = term.Restore(stdinFD, oldState)
+			}()
+			if cols, rows, sizeErr := term.GetSize(stdinFD); sizeErr == nil {
+				_ = sender.Send(&cleanroomv1.ExecutionAttachFrame{
+					Payload: &cleanroomv1.ExecutionAttachFrame_Resize{
+						Resize: &cleanroomv1.ExecutionResize{
+							Cols: uint32(cols),
+							Rows: uint32(rows),
+						},
+					},
+				})
+			}
+		}
+	}
+
+	signalCh := newSignalChannel()
+	notifySignals(signalCh, os.Interrupt, syscall.SIGTERM)
+	defer stopSignals(signalCh)
+
+	if rawMode {
+		resizeSignalCh := make(chan os.Signal, 4)
+		signal.Notify(resizeSignalCh, syscall.SIGWINCH)
+		defer signal.Stop(resizeSignalCh)
+		go func() {
+			for range resizeSignalCh {
+				cols, rows, sizeErr := term.GetSize(stdinFD)
+				if sizeErr != nil {
+					continue
+				}
+				_ = sender.Send(&cleanroomv1.ExecutionAttachFrame{
+					Payload: &cleanroomv1.ExecutionAttachFrame_Resize{
+						Resize: &cleanroomv1.ExecutionResize{
+							Cols: uint32(cols),
+							Rows: uint32(rows),
+						},
+					},
+				})
+			}
+		}()
+	}
+
+	go func() {
+		for sig := range signalCh {
+			num := int32(2)
+			if sig == syscall.SIGTERM {
+				num = 15
+			}
+			_ = sender.Send(&cleanroomv1.ExecutionAttachFrame{
+				Payload: &cleanroomv1.ExecutionAttachFrame_Signal{
+					Signal: &cleanroomv1.ExecutionSignal{Signal: num},
+				},
+			})
+		}
+	}()
+
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, readErr := os.Stdin.Read(buf)
+			if n > 0 {
+				payload := append([]byte(nil), buf[:n]...)
+				if sendErr := sender.Send(&cleanroomv1.ExecutionAttachFrame{
+					Payload: &cleanroomv1.ExecutionAttachFrame_Stdin{Stdin: payload},
+				}); sendErr != nil {
+					return
+				}
+			}
+			if readErr != nil {
+				return
+			}
+		}
+	}()
+
+	var exitCode int
+	haveExitCode := false
+	for {
+		frame, recvErr := attach.Receive()
+		if recvErr != nil {
+			if errors.Is(recvErr, io.EOF) || isCanceledStreamErr(recvErr) {
+				break
+			}
+			return fmt.Errorf("attach execution: %w", recvErr)
+		}
+		switch payload := frame.Payload.(type) {
+		case *cleanroomv1.ExecutionAttachFrame_Stdout:
+			if _, err := fmt.Fprint(ctx.Stdout, string(payload.Stdout)); err != nil {
+				return err
+			}
+		case *cleanroomv1.ExecutionAttachFrame_Stderr:
+			if _, err := fmt.Fprint(os.Stderr, string(payload.Stderr)); err != nil {
+				return err
+			}
+		case *cleanroomv1.ExecutionAttachFrame_Exit:
+			exitCode = int(payload.Exit.GetExitCode())
+			haveExitCode = true
+		case *cleanroomv1.ExecutionAttachFrame_Error:
+			_ = payload
+		}
+	}
+
+	if !haveExitCode {
+		getResp, getErr := client.GetExecution(context.Background(), &cleanroomv1.GetExecutionRequest{
+			SandboxId:   sandboxID,
+			ExecutionId: executionID,
+		})
+		if getErr == nil && getResp.GetExecution() != nil && isFinalExecutionStatus(getResp.GetExecution().GetStatus()) {
+			exitCode = int(getResp.GetExecution().GetExitCode())
+			haveExitCode = true
+		}
+	}
+
+	if !haveExitCode {
+		return errors.New("console stream ended without exit status")
 	}
 	if exitCode != 0 {
 		return exitCodeError{code: exitCode}
