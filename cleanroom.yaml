@@ -1,0 +1,15 @@
+version: 1
+sandbox:
+  network:
+    default: deny
+    allow:
+      - host: api.github.com
+        ports: [443]
+      - host: github.com
+        ports: [443]
+      - host: objects.githubusercontent.com
+        ports: [443]
+      - host: proxy.golang.org
+        ports: [443]
+      - host: sum.golang.org
+        ports: [443]
