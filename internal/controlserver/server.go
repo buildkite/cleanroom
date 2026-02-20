@@ -19,9 +19,11 @@ import (
 	"github.com/buildkite/cleanroom/internal/endpoint"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/gen/cleanroom/v1/cleanroomv1connect"
+	"github.com/buildkite/cleanroom/internal/paths"
 	"github.com/charmbracelet/log"
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
+	"tailscale.com/tsnet"
 )
 
 type Server struct {
@@ -31,6 +33,18 @@ type Server struct {
 
 func New(service *controlservice.Service, logger *log.Logger) *Server {
 	return &Server{service: service, logger: logger}
+}
+
+type tsnetServer interface {
+	Listen(network, addr string) (net.Listener, error)
+	Close() error
+}
+
+var newTSNetServer = func(ep endpoint.Endpoint, stateDir string) tsnetServer {
+	return &tsnet.Server{
+		Dir:      stateDir,
+		Hostname: ep.TSNetHostname,
+	}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -594,13 +608,18 @@ func (s *Server) handleTerminateCleanroom(w http.ResponseWriter, r *http.Request
 }
 
 func Serve(ctx context.Context, ep endpoint.Endpoint, handler http.Handler, logger *log.Logger) error {
-	listener, err := listen(ep)
+	listener, cleanup, err := listen(ep)
 	if err != nil {
 		return err
 	}
+	if cleanup != nil {
+		defer func() {
+			_ = cleanup()
+		}()
+	}
 	defer listener.Close()
 	if logger != nil {
-		logger.Info("serving cleanroom control API", "endpoint", ep.Address, "scheme", ep.Scheme)
+		logger.Info("serving cleanroom control API", "endpoint", ep.Address, "scheme", ep.Scheme, "base_url", ep.BaseURL)
 	}
 
 	httpServer := &http.Server{
@@ -636,37 +655,55 @@ func Serve(ctx context.Context, ep endpoint.Endpoint, handler http.Handler, logg
 	}
 }
 
-func listen(ep endpoint.Endpoint) (net.Listener, error) {
+func listen(ep endpoint.Endpoint) (net.Listener, func() error, error) {
 	if ep.Scheme == "unix" {
 		if err := os.MkdirAll(filepath.Dir(ep.Address), 0o755); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if err := os.Remove(ep.Address); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return nil, err
+			return nil, nil, err
 		}
 		listener, err := net.Listen("unix", ep.Address)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if err := os.Chmod(ep.Address, 0o600); err != nil {
 			_ = listener.Close()
-			return nil, err
+			return nil, nil, err
 		}
-		return listener, nil
+		return listener, nil, nil
+	}
+
+	if ep.Scheme == "tsnet" {
+		stateDir, err := paths.TSNetStateDir()
+		if err != nil {
+			return nil, nil, fmt.Errorf("resolve tsnet state directory: %w", err)
+		}
+		if err := os.MkdirAll(stateDir, 0o700); err != nil {
+			return nil, nil, fmt.Errorf("create tsnet state directory: %w", err)
+		}
+		server := newTSNetServer(ep, stateDir)
+		listener, err := server.Listen("tcp", ep.Address)
+		if err != nil {
+			_ = server.Close()
+			return nil, nil, fmt.Errorf("start tsnet listener for %q: %w", ep.Address, err)
+		}
+		return listener, server.Close, nil
 	}
 
 	if ep.Scheme == "https" {
-		return nil, errors.New("https listen endpoints are not supported yet: TLS configuration is not implemented")
+		return nil, nil, errors.New("https listen endpoints are not supported yet: TLS configuration is not implemented")
 	}
 	if ep.Scheme == "http" {
 		addr := ep.Address
 		if len(addr) >= 7 && addr[:7] == "http://" {
 			addr = addr[7:]
 		}
-		return net.Listen("tcp", addr)
+		listener, err := net.Listen("tcp", addr)
+		return listener, nil, err
 	}
 
-	return nil, fmt.Errorf("unsupported endpoint scheme %q", ep.Scheme)
+	return nil, nil, fmt.Errorf("unsupported endpoint scheme %q", ep.Scheme)
 }
 
 func writeError(w http.ResponseWriter, status int, message string) {

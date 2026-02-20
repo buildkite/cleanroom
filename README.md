@@ -42,6 +42,20 @@ cleanroom policy validate
 cleanroom serve --listen unix://$XDG_RUNTIME_DIR/cleanroom/cleanroom.sock
 ```
 
+All CLI commands (including `cleanroom exec`) talk to this API endpoint.
+
+To expose the API over Tailscale using embedded `tsnet`:
+
+```bash
+cleanroom serve --listen tsnet://cleanroom:7777
+```
+
+Then connect with:
+
+```bash
+cleanroom exec --host tsnet://cleanroom:7777 -- "npm test"
+```
+
 ### 3) Launch -> Run -> Terminate via API
 
 ```bash

@@ -59,7 +59,7 @@ type PolicyValidateCommand struct {
 
 type ExecCommand struct {
 	Chdir    string `short:"c" help:"Change to this directory before running commands"`
-	Host     string `help:"Control-plane endpoint (unix://path, http://host:port, or https://host:port)"`
+	Host     string `help:"Control-plane endpoint (unix://path, tsnet://hostname[:port], http://host:port, or https://host:port)"`
 	LogLevel string `help:"Client log level (debug|info|warn|error)"`
 	Backend  string `help:"Execution backend (defaults to runtime config or firecracker)"`
 
@@ -87,7 +87,7 @@ type ConsoleCommand struct {
 }
 
 type ServeCommand struct {
-	Listen   string `help:"Listen endpoint for control API (defaults to runtime endpoint)"`
+	Listen   string `help:"Listen endpoint for control API (defaults to runtime endpoint; supports tsnet://hostname[:port])"`
 	LogLevel string `help:"Server log level (debug|info|warn|error)"`
 }
 
