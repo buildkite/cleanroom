@@ -112,7 +112,7 @@ func (a *Adapter) Doctor(_ context.Context, req backend.DoctorRequest) (*backend
 	} else {
 		appendCheck("workspace_access", "pass", fmt.Sprintf("workspace access configured as %s", access))
 	}
-	appendCheck("workspace_snapshot", "pass", "workspace is snapshotted per run and sent to the guest agent")
+	appendCheck("workspace_copy", "pass", "workspace is copied per run and sent to the guest agent")
 	appendCheck("workspace_path", "pass", fmt.Sprintf("host workspace path: %s", req.WorkspaceHost))
 	policyRules := 0
 	policyRulesStatus := "warn"
@@ -293,11 +293,8 @@ func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.Run
 		return nil, fmt.Errorf("rootfs %s: %w", rootfsPath, err)
 	}
 
-	vmRootFSPath := filepath.Join(runDir, "rootfs-retained.ext4")
-	if !req.RetainWrites {
-		vmRootFSPath = filepath.Join(runDir, "rootfs-ephemeral.ext4")
-		defer os.Remove(vmRootFSPath)
-	}
+	vmRootFSPath := filepath.Join(runDir, "rootfs-ephemeral.ext4")
+	defer os.Remove(vmRootFSPath)
 	rootfsCopyStart := time.Now()
 	if err := copyFile(rootfsPath, vmRootFSPath); err != nil {
 		observation.RootFSCopyMS = durationMillisCeil(time.Since(rootfsCopyStart))
@@ -437,9 +434,9 @@ func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.Run
 		guestResult.Stderr = guestResult.Error + "\n"
 	}
 
-	message := runResultMessage(req.RetainWrites, "firecracker launch and guest command execution complete")
+	message := runResultMessage("firecracker launch and guest command execution complete")
 	if guestResult.Error != "" {
-		message = runResultMessage(req.RetainWrites, "firecracker launch and guest command execution completed with guest-side error detail: "+guestResult.Error)
+		message = runResultMessage("firecracker launch and guest command execution completed with guest-side error detail: " + guestResult.Error)
 	}
 
 	observation.PlanPath = cfgPath
@@ -569,10 +566,7 @@ func copyFile(src, dst string) error {
 	return out.Sync()
 }
 
-func runResultMessage(retainWrites bool, base string) string {
-	if retainWrites {
-		return base + "; rootfs writes retained in run directory"
-	}
+func runResultMessage(base string) string {
 	return base + "; rootfs writes discarded after run"
 }
 
@@ -717,7 +711,7 @@ func createWorkspaceArchive(root string) ([]byte, error) {
 			return err
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
-			// Symlinks are excluded in MVP workspace snapshot delivery to avoid path traversal edge cases.
+			// Symlinks are excluded in MVP workspace copy delivery to avoid path traversal edge cases.
 			return nil
 		}
 

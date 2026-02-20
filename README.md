@@ -170,17 +170,16 @@ backends:
     memory_mib: 1024
     guest_cid: 3
     launch_seconds: 30
-    retain_writes: false
 ```
 
 ## Isolation Model
 
 - Workload runs in a Firecracker microVM
-- Workspace is snapshotted per run and sent to the guest agent
+- Workspace is copied per run and sent to the guest agent
 - Workspace can be read-only (`workspace.access: ro` or request override)
 - Host egress is controlled with TAP + iptables rules from compiled policy
 - Default network behavior is deny
-- Rootfs writes are ephemeral by default (`retain_writes: false`)
+- Rootfs writes are discarded after each run
 
 ## Performance Notes
 
