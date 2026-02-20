@@ -932,6 +932,13 @@ func (s *Service) RunCleanroom(ctx context.Context, req controlapi.RunCleanroomR
 
 	executionID := created.GetExecution().GetExecutionId()
 	if _, err := s.WaitExecution(ctx, req.CleanroomID, executionID); err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			_, _ = s.CancelExecution(context.Background(), &cleanroomv1.CancelExecutionRequest{
+				SandboxId:   req.CleanroomID,
+				ExecutionId: executionID,
+				Signal:      2,
+			})
+		}
 		return nil, err
 	}
 	snapshot, err := s.ExecutionSnapshot(req.CleanroomID, executionID)

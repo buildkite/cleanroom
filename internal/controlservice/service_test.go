@@ -2,6 +2,7 @@ package controlservice
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -192,6 +193,71 @@ func TestLaunchRunTerminateLifecycle(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "unknown cleanroom") {
 		t.Fatalf("expected unknown cleanroom error after terminate, got %v", err)
+	}
+}
+
+func TestRunCleanroomCancellationCancelsRunningExecution(t *testing.T) {
+	started := make(chan struct{}, 1)
+	canceled := make(chan struct{}, 1)
+	adapter := &stubAdapter{
+		runFn: func(ctx context.Context, _ backend.RunRequest) (*backend.RunResult, error) {
+			select {
+			case started <- struct{}{}:
+			default:
+			}
+			<-ctx.Done()
+			select {
+			case canceled <- struct{}{}:
+			default:
+			}
+			return nil, ctx.Err()
+		},
+	}
+	svc := newTestService(adapter)
+
+	launchResp, err := svc.LaunchCleanroom(context.Background(), controlapi.LaunchCleanroomRequest{
+		CWD: "/repo",
+	})
+	if err != nil {
+		t.Fatalf("LaunchCleanroom returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = svc.TerminateCleanroom(context.Background(), controlapi.TerminateCleanroomRequest{
+			CleanroomID: launchResp.CleanroomID,
+		})
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	runErr := make(chan error, 1)
+	go func() {
+		_, err := svc.RunCleanroom(ctx, controlapi.RunCleanroomRequest{
+			CleanroomID: launchResp.CleanroomID,
+			Command:     []string{"sleep", "300"},
+		})
+		runErr <- err
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for backend execution start")
+	}
+
+	cancel()
+
+	select {
+	case err := <-runErr:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected context canceled error, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for RunCleanroom to return after cancellation")
+	}
+
+	select {
+	case <-canceled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for running execution to be canceled")
 	}
 }
 

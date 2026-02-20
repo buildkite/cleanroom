@@ -105,7 +105,7 @@ func (s *Server) StreamSandboxEvents(ctx context.Context, req *connect.Request[c
 			return ctx.Err()
 		case event, ok := <-updates:
 			if !ok {
-				return nil
+				return streamSubscriberDroppedErr(done, "sandbox")
 			}
 			if err := stream.Send(event); err != nil {
 				return err
@@ -162,7 +162,7 @@ func (s *Server) StreamExecution(ctx context.Context, req *connect.Request[clean
 			return ctx.Err()
 		case event, ok := <-updates:
 			if !ok {
-				return nil
+				return streamSubscriberDroppedErr(done, "execution")
 			}
 			if err := stream.Send(event); err != nil {
 				return err
@@ -240,7 +240,7 @@ func (s *Server) AttachExecution(ctx context.Context, stream *connect.BidiStream
 			return err
 		case event, ok := <-updates:
 			if !ok {
-				return nil
+				return streamSubscriberDroppedErr(done, "execution attach")
 			}
 			if err := stream.Send(executionEventToAttachFrame(event)); err != nil {
 				return err
@@ -334,6 +334,18 @@ func executionEventToAttachFrame(event *cleanroomv1.ExecutionStreamEvent) *clean
 		frame.Payload = &cleanroomv1.ExecutionAttachFrame_Error{Error: event.GetStatus().String()}
 	}
 	return frame
+}
+
+func streamSubscriberDroppedErr(done <-chan struct{}, streamName string) error {
+	select {
+	case <-done:
+		return nil
+	default:
+		return connect.NewError(
+			connect.CodeResourceExhausted,
+			fmt.Errorf("%s stream closed because the client could not keep up with event throughput", streamName),
+		)
+	}
 }
 
 func drainSandboxEvents(stream *connect.ServerStream[cleanroomv1.SandboxEvent], updates <-chan *cleanroomv1.SandboxEvent) error {
