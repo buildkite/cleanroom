@@ -103,24 +103,6 @@ func (a *Adapter) Doctor(_ context.Context, req backend.DoctorRequest) (*backend
 	} else {
 		appendCheck("vsock_port", "pass", fmt.Sprintf("configured guest vsock port %d", req.GuestPort))
 	}
-	mode := strings.TrimSpace(strings.ToLower(req.WorkspaceMode))
-	if mode == "" {
-		mode = "copy"
-	}
-	if mode != "copy" {
-		appendCheck("workspace_mode", "fail", fmt.Sprintf("workspace mode %q is not implemented for firecracker (supported: copy)", mode))
-	} else {
-		appendCheck("workspace_mode", "pass", "workspace mode copy is enabled")
-	}
-	persist := strings.TrimSpace(strings.ToLower(req.WorkspacePersist))
-	if persist == "" {
-		persist = "discard"
-	}
-	if persist != "discard" {
-		appendCheck("workspace_persist", "warn", fmt.Sprintf("workspace persist %q is not implemented yet for firecracker copy mode (current behavior: discard)", persist))
-	} else {
-		appendCheck("workspace_persist", "pass", "workspace changes are discarded after each launched run")
-	}
 	access := strings.TrimSpace(strings.ToLower(req.WorkspaceAccess))
 	if access == "" {
 		access = "rw"
@@ -130,6 +112,7 @@ func (a *Adapter) Doctor(_ context.Context, req backend.DoctorRequest) (*backend
 	} else {
 		appendCheck("workspace_access", "pass", fmt.Sprintf("workspace access configured as %s", access))
 	}
+	appendCheck("workspace_snapshot", "pass", "workspace is snapshotted per run and sent to the guest agent")
 	appendCheck("workspace_path", "pass", fmt.Sprintf("host workspace path: %s", req.WorkspaceHost))
 	policyRules := 0
 	policyRulesStatus := "warn"
@@ -222,18 +205,6 @@ func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.Run
 	}
 	if req.WorkspaceAccess != "rw" && req.WorkspaceAccess != "ro" {
 		return nil, fmt.Errorf("invalid workspace access %q: expected rw or ro", req.WorkspaceAccess)
-	}
-	if req.WorkspaceMode == "" {
-		req.WorkspaceMode = "copy"
-	}
-	if req.WorkspaceMode != "copy" {
-		return nil, fmt.Errorf("workspace mode %q is not implemented for firecracker yet; supported mode: copy", req.WorkspaceMode)
-	}
-	if req.WorkspacePersist == "" {
-		req.WorkspacePersist = "discard"
-	}
-	if req.WorkspacePersist != "discard" {
-		return nil, fmt.Errorf("workspace persist %q is not implemented for firecracker copy mode yet; supported value: discard", req.WorkspacePersist)
 	}
 	if req.WorkspaceHost == "" {
 		req.WorkspaceHost = req.CWD
@@ -746,7 +717,7 @@ func createWorkspaceArchive(root string) ([]byte, error) {
 			return err
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
-			// Symlinks are excluded in MVP copy mode to avoid path traversal edge cases.
+			// Symlinks are excluded in MVP workspace snapshot delivery to avoid path traversal edge cases.
 			return nil
 		}
 

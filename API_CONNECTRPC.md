@@ -4,6 +4,11 @@
 
 Define a minimal, functional API for creating and managing Cleanroom sandboxes with streaming execution support.
 
+Current implemented HTTP lifecycle endpoints:
+- `POST /v1/cleanrooms/launch`
+- `POST /v1/cleanrooms/run`
+- `POST /v1/cleanrooms/terminate`
+
 This document is intentionally small-scope:
 - management plane for sandbox lifecycle
 - execution plane for command runs and streaming output
