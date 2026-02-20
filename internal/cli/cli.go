@@ -12,14 +12,15 @@ import (
 	"syscall"
 	"time"
 
+	"connectrpc.com/connect"
 	"github.com/alecthomas/kong"
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/backend/firecracker"
-	"github.com/buildkite/cleanroom/internal/controlapi"
 	"github.com/buildkite/cleanroom/internal/controlclient"
 	"github.com/buildkite/cleanroom/internal/controlserver"
 	"github.com/buildkite/cleanroom/internal/controlservice"
 	"github.com/buildkite/cleanroom/internal/endpoint"
+	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/paths"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
@@ -98,6 +99,18 @@ func (e exitCodeError) ExitCode() int {
 type hasExitCode interface {
 	ExitCode() int
 }
+
+var (
+	newSignalChannel = func() chan os.Signal {
+		return make(chan os.Signal, 2)
+	}
+	notifySignals = func(ch chan os.Signal, sig ...os.Signal) {
+		signal.Notify(ch, sig...)
+	}
+	stopSignals = func(ch chan os.Signal) {
+		signal.Stop(ch)
+	}
+)
 
 func Run(args []string) error {
 	cfg, cfgPath, err := runtimeconfig.Load()
@@ -194,44 +207,157 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 		"host_passthrough", e.HostPassthrough,
 	)
 	client := controlclient.New(ep)
-	resp, err := client.Exec(context.Background(), controlapi.ExecRequest{
-		CWD:     cwd,
+	createSandboxResp, err := client.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Cwd:     cwd,
 		Backend: e.Backend,
-		Command: append([]string(nil), e.Command...),
-		Options: controlapi.ExecOptions{
+		Options: &cleanroomv1.SandboxOptions{
 			RunDir:            e.RunDir,
 			ReadOnlyWorkspace: e.ReadOnlyWorkspace,
-			DryRun:            e.DryRun,
-			HostPassthrough:   e.HostPassthrough,
 			LaunchSeconds:     e.LaunchSeconds,
 		},
 	})
 	if err != nil {
 		return fmt.Errorf("execute via control-plane endpoint %q: %w", ep.Address, err)
 	}
+
+	sandboxID := createSandboxResp.GetSandbox().GetSandboxId()
+	detached := false
+	defer func() {
+		if detached || sandboxID == "" {
+			return
+		}
+		_, _ = client.TerminateSandbox(context.Background(), &cleanroomv1.TerminateSandboxRequest{SandboxId: sandboxID})
+	}()
+
+	createExecutionResp, err := client.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+		SandboxId: sandboxID,
+		Command:   append([]string(nil), e.Command...),
+		Options: &cleanroomv1.ExecutionOptions{
+			RunDir:            e.RunDir,
+			ReadOnlyWorkspace: e.ReadOnlyWorkspace,
+			DryRun:            e.DryRun,
+			HostPassthrough:   e.HostPassthrough,
+			LaunchSeconds:     e.LaunchSeconds,
+			Cwd:               cwd,
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("create execution via control-plane endpoint %q: %w", ep.Address, err)
+	}
+	executionID := createExecutionResp.GetExecution().GetExecutionId()
+
+	if _, err := fmt.Fprintf(os.Stderr, "sandbox_id=%s execution_id=%s\n", sandboxID, executionID); err != nil {
+		return err
+	}
+
+	streamCtx, streamCancel := context.WithCancel(context.Background())
+	defer streamCancel()
+	stream, err := client.StreamExecution(streamCtx, &cleanroomv1.StreamExecutionRequest{
+		SandboxId:   sandboxID,
+		ExecutionId: executionID,
+		Follow:      true,
+	})
+	if err != nil {
+		return fmt.Errorf("stream execution via control-plane endpoint %q: %w", ep.Address, err)
+	}
+
+	signalCh := newSignalChannel()
+	notifySignals(signalCh, os.Interrupt, syscall.SIGTERM)
+	defer stopSignals(signalCh)
+
+	secondInterrupt := make(chan struct{}, 1)
+	go func() {
+		interrupts := 0
+		for range signalCh {
+			interrupts++
+			if interrupts == 1 {
+				cancelResp, cancelErr := client.CancelExecution(context.Background(), &cleanroomv1.CancelExecutionRequest{
+					SandboxId:   sandboxID,
+					ExecutionId: executionID,
+					Signal:      2,
+				})
+				if cancelErr != nil && logger != nil {
+					logger.Warn("cancel execution request failed", "sandbox_id", sandboxID, "execution_id", executionID, "error", cancelErr)
+				} else if logger != nil && cancelResp != nil {
+					logger.Debug("cancel execution requested",
+						"sandbox_id", sandboxID,
+						"execution_id", executionID,
+						"accepted", cancelResp.GetAccepted(),
+						"status", cancelResp.GetStatus().String(),
+					)
+				}
+				continue
+			}
+
+			select {
+			case secondInterrupt <- struct{}{}:
+			default:
+			}
+			streamCancel()
+			return
+		}
+	}()
+
+	var exitCode int
+	haveExitCode := false
+	for stream.Receive() {
+		event := stream.Msg()
+		switch payload := event.Payload.(type) {
+		case *cleanroomv1.ExecutionStreamEvent_Stdout:
+			if _, err := fmt.Fprint(ctx.Stdout, string(payload.Stdout)); err != nil {
+				return err
+			}
+		case *cleanroomv1.ExecutionStreamEvent_Stderr:
+			if _, err := fmt.Fprint(os.Stderr, string(payload.Stderr)); err != nil {
+				return err
+			}
+		case *cleanroomv1.ExecutionStreamEvent_Exit:
+			exitCode = int(payload.Exit.GetExitCode())
+			haveExitCode = true
+		}
+	}
+
+	streamErr := stream.Err()
+	select {
+	case <-secondInterrupt:
+		detached = true
+		terminateCtx, terminateCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_, terminateErr := client.TerminateSandbox(terminateCtx, &cleanroomv1.TerminateSandboxRequest{SandboxId: sandboxID})
+		terminateCancel()
+		if terminateErr != nil && logger != nil {
+			logger.Warn("terminate sandbox after detach failed", "sandbox_id", sandboxID, "error", terminateErr)
+		}
+		return exitCodeError{code: 130}
+	default:
+	}
+
+	if streamErr != nil && !isCanceledStreamErr(streamErr) {
+		return fmt.Errorf("stream execution: %w", streamErr)
+	}
+
+	if !haveExitCode {
+		getResp, getErr := client.GetExecution(context.Background(), &cleanroomv1.GetExecutionRequest{
+			SandboxId:   sandboxID,
+			ExecutionId: executionID,
+		})
+		if getErr == nil && getResp.GetExecution() != nil && isFinalExecutionStatus(getResp.GetExecution().GetStatus()) {
+			exitCode = int(getResp.GetExecution().GetExitCode())
+			haveExitCode = true
+		}
+	}
+
 	logger.Debug("execution complete",
-		"run_id", resp.RunID,
-		"policy_source", resp.PolicySource,
-		"policy_hash", resp.PolicyHash,
-		"plan", resp.PlanPath,
-		"run_dir", resp.RunDir,
-		"launched_vm", resp.LaunchedVM,
-		"exit_code", resp.ExitCode,
+		"sandbox_id", sandboxID,
+		"execution_id", executionID,
+		"have_exit_code", haveExitCode,
+		"exit_code", exitCode,
 	)
 
-	if resp.Stdout != "" {
-		if _, err := fmt.Fprint(ctx.Stdout, resp.Stdout); err != nil {
-			return err
-		}
+	if !haveExitCode {
+		return errors.New("execution stream ended without exit status")
 	}
-	if resp.Stderr != "" {
-		if _, err := fmt.Fprint(os.Stderr, resp.Stderr); err != nil {
-			return err
-		}
-	}
-
-	if resp.ExitCode != 0 {
-		return exitCodeError{code: resp.ExitCode}
+	if exitCode != 0 {
+		return exitCodeError{code: exitCode}
 	}
 	return nil
 }
@@ -483,6 +609,32 @@ func inspectRun(stdout *os.File, baseDir, runID string) error {
 	}
 	_, err = fmt.Fprintf(stdout, "observability (%s):\n%s\n", obsPath, out)
 	return err
+}
+
+func isCanceledStreamErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) {
+		return true
+	}
+	var connectErr *connect.Error
+	if errors.As(err, &connectErr) && connectErr.Code() == connect.CodeCanceled {
+		return true
+	}
+	return false
+}
+
+func isFinalExecutionStatus(status cleanroomv1.ExecutionStatus) bool {
+	switch status {
+	case cleanroomv1.ExecutionStatus_EXECUTION_STATUS_SUCCEEDED,
+		cleanroomv1.ExecutionStatus_EXECUTION_STATUS_FAILED,
+		cleanroomv1.ExecutionStatus_EXECUTION_STATUS_CANCELED,
+		cleanroomv1.ExecutionStatus_EXECUTION_STATUS_TIMED_OUT:
+		return true
+	default:
+		return false
+	}
 }
 
 func resolveCWD(base, chdir string) (string, error) {

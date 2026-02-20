@@ -19,6 +19,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/buildkite/cleanroom/internal/backend"
@@ -40,6 +41,14 @@ func New() *Adapter {
 
 func (a *Adapter) Name() string {
 	return "firecracker"
+}
+
+func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.RunResult, error) {
+	return a.run(ctx, req, backend.OutputStream{})
+}
+
+func (a *Adapter) RunStream(ctx context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+	return a.run(ctx, req, stream)
 }
 
 func (a *Adapter) Doctor(_ context.Context, req backend.DoctorRequest) (*backend.DoctorReport, error) {
@@ -145,7 +154,7 @@ func (a *Adapter) Doctor(_ context.Context, req backend.DoctorRequest) (*backend
 	return report, nil
 }
 
-func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.RunResult, error) {
+func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
 	runStart := time.Now()
 	observation := firecrackerRunObservation{
 		RunID:      req.RunID,
@@ -244,7 +253,7 @@ func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.Run
 			}, nil
 		}
 
-		exitCode, stdout, stderr, err := runHostPassthrough(ctx, req.CWD, req.Command)
+		exitCode, stdout, stderr, err := runHostPassthrough(ctx, req.CWD, req.Command, stream)
 		if err != nil {
 			return nil, err
 		}
@@ -419,7 +428,7 @@ func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.Run
 	if _, err := cryptorand.Read(seed); err == nil {
 		guestReq.EntropySeed = seed
 	}
-	guestResult, guestTiming, err := runGuestCommand(bootCtx, ctx, waitCh, vsockPath, req.GuestPort, guestReq)
+	guestResult, guestTiming, err := runGuestCommand(bootCtx, ctx, waitCh, vsockPath, req.GuestPort, guestReq, stream)
 	if err != nil {
 		return nil, err
 	}
@@ -570,15 +579,46 @@ func runResultMessage(base string) string {
 	return base + "; rootfs writes discarded after run"
 }
 
-func runHostPassthrough(ctx context.Context, cwd string, command []string) (int, string, string, error) {
+func runHostPassthrough(ctx context.Context, cwd string, command []string, stream backend.OutputStream) (int, string, string, error) {
 	cmd := exec.CommandContext(ctx, command[0], command[1:]...)
 	cmd.Dir = cwd
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return 1, "", "", fmt.Errorf("prepare stdout pipe: %w", err)
+	}
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		return 1, "", "", fmt.Errorf("prepare stderr pipe: %w", err)
+	}
+	if err := cmd.Start(); err != nil {
+		return 1, "", "", fmt.Errorf("start host passthrough command: %w", err)
+	}
+
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	copyErrCh := make(chan error, 2)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_, copyErr := io.Copy(io.MultiWriter(&stdout, callbackWriter{cb: stream.OnStdout}), stdoutPipe)
+		copyErrCh <- copyErr
+	}()
+	go func() {
+		defer wg.Done()
+		_, copyErr := io.Copy(io.MultiWriter(&stderr, callbackWriter{cb: stream.OnStderr}), stderrPipe)
+		copyErrCh <- copyErr
+	}()
 
-	err := cmd.Run()
+	err = cmd.Wait()
+	wg.Wait()
+	close(copyErrCh)
+	for copyErr := range copyErrCh {
+		if copyErr != nil && err == nil {
+			err = copyErr
+		}
+	}
+
 	if err == nil {
 		return 0, stdout.String(), stderr.String(), nil
 	}
@@ -596,7 +636,7 @@ type guestExecTiming struct {
 	CommandRun   time.Duration
 }
 
-func runGuestCommand(bootCtx context.Context, execCtx context.Context, waitCh <-chan error, vsockPath string, guestPort uint32, req vsockexec.ExecRequest) (vsockexec.ExecResponse, guestExecTiming, error) {
+func runGuestCommand(bootCtx context.Context, execCtx context.Context, waitCh <-chan error, vsockPath string, guestPort uint32, req vsockexec.ExecRequest, stream backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error) {
 	waitStart := time.Now()
 	conn, err := dialVsockUntilReady(bootCtx, waitCh, vsockPath, guestPort)
 	if err != nil {
@@ -626,7 +666,10 @@ func runGuestCommand(bootCtx context.Context, execCtx context.Context, waitCh <-
 	}
 
 	commandStart := time.Now()
-	res, err := vsockexec.DecodeResponse(conn)
+	res, err := vsockexec.DecodeStreamResponse(conn, vsockexec.StreamCallbacks{
+		OnStdout: stream.OnStdout,
+		OnStderr: stream.OnStderr,
+	})
 	if err != nil {
 		if ctxErr := execCtx.Err(); ctxErr != nil {
 			return vsockexec.ExecResponse{}, guestExecTiming{}, fmt.Errorf("guest exec canceled while waiting for response: %w", ctxErr)
@@ -635,6 +678,20 @@ func runGuestCommand(bootCtx context.Context, execCtx context.Context, waitCh <-
 	}
 	timing.CommandRun = time.Since(commandStart)
 	return res, timing, nil
+}
+
+type callbackWriter struct {
+	cb func([]byte)
+}
+
+func (w callbackWriter) Write(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	if w.cb != nil {
+		w.cb(append([]byte(nil), p...))
+	}
+	return len(p), nil
 }
 
 func dialVsockUntilReady(ctx context.Context, waitCh <-chan error, vsockPath string, guestPort uint32) (io.ReadWriteCloser, error) {

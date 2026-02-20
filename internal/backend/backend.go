@@ -11,6 +11,18 @@ type Adapter interface {
 	Run(ctx context.Context, req RunRequest) (*RunResult, error)
 }
 
+type OutputStream struct {
+	OnStdout func([]byte)
+	OnStderr func([]byte)
+}
+
+// StreamingAdapter can push stdout/stderr chunks while a command is running.
+// Adapters that don't implement this continue to work via Run.
+type StreamingAdapter interface {
+	Adapter
+	RunStream(ctx context.Context, req RunRequest, stream OutputStream) (*RunResult, error)
+}
+
 type RunRequest struct {
 	RunID   string
 	CWD     string

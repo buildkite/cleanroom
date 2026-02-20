@@ -29,6 +29,9 @@ func Default() Endpoint {
 func Resolve(raw string) (Endpoint, error) {
 	value := strings.TrimSpace(raw)
 	if value == "" {
+		value = strings.TrimSpace(os.Getenv("CLEANROOM_HOST"))
+	}
+	if value == "" {
 		return Default(), nil
 	}
 

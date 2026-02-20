@@ -1,0 +1,227 @@
+syntax = "proto3";
+
+package cleanroom.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1;cleanroomv1";
+
+service SandboxService {
+  rpc CreateSandbox(CreateSandboxRequest) returns (CreateSandboxResponse);
+  rpc GetSandbox(GetSandboxRequest) returns (GetSandboxResponse);
+  rpc ListSandboxes(ListSandboxesRequest) returns (ListSandboxesResponse);
+  rpc TerminateSandbox(TerminateSandboxRequest) returns (TerminateSandboxResponse);
+  rpc StreamSandboxEvents(StreamSandboxEventsRequest) returns (stream SandboxEvent);
+}
+
+service ExecutionService {
+  rpc CreateExecution(CreateExecutionRequest) returns (CreateExecutionResponse);
+  rpc GetExecution(GetExecutionRequest) returns (GetExecutionResponse);
+  rpc CancelExecution(CancelExecutionRequest) returns (CancelExecutionResponse);
+  rpc StreamExecution(StreamExecutionRequest) returns (stream ExecutionStreamEvent);
+  rpc AttachExecution(stream ExecutionAttachFrame) returns (stream ExecutionAttachFrame);
+}
+
+message Sandbox {
+  string sandbox_id = 1;
+  SandboxStatus status = 2;
+  string backend = 3;
+  string policy_hash = 4;
+  google.protobuf.Timestamp created_at = 5;
+  google.protobuf.Timestamp updated_at = 6;
+}
+
+enum SandboxStatus {
+  SANDBOX_STATUS_UNSPECIFIED = 0;
+  SANDBOX_STATUS_PROVISIONING = 1;
+  SANDBOX_STATUS_READY = 2;
+  SANDBOX_STATUS_STOPPING = 3;
+  SANDBOX_STATUS_STOPPED = 4;
+  SANDBOX_STATUS_FAILED = 5;
+}
+
+message SandboxOptions {
+  string run_dir = 1;
+  bool read_only_workspace = 2;
+  int64 launch_seconds = 3;
+}
+
+message CreateSandboxRequest {
+  string cwd = 1;
+  string backend = 2;
+  SandboxOptions options = 3;
+}
+
+message CreateSandboxResponse {
+  Sandbox sandbox = 1;
+  string policy_source = 2;
+  string message = 3;
+}
+
+message GetSandboxRequest {
+  string sandbox_id = 1;
+}
+
+message GetSandboxResponse {
+  Sandbox sandbox = 1;
+}
+
+message ListSandboxesRequest {}
+
+message ListSandboxesResponse {
+  repeated Sandbox sandboxes = 1;
+}
+
+message TerminateSandboxRequest {
+  string sandbox_id = 1;
+}
+
+message TerminateSandboxResponse {
+  string sandbox_id = 1;
+  bool terminated = 2;
+  string message = 3;
+}
+
+message StreamSandboxEventsRequest {
+  string sandbox_id = 1;
+  bool follow = 2;
+}
+
+message SandboxEvent {
+  string sandbox_id = 1;
+  SandboxStatus status = 2;
+  string message = 3;
+  google.protobuf.Timestamp occurred_at = 4;
+}
+
+message Execution {
+  string execution_id = 1;
+  string sandbox_id = 2;
+  ExecutionStatus status = 3;
+  repeated string command = 4;
+  int32 exit_code = 5;
+  google.protobuf.Timestamp started_at = 6;
+  google.protobuf.Timestamp finished_at = 7;
+  bool tty = 8;
+  string run_id = 9;
+}
+
+enum ExecutionStatus {
+  EXECUTION_STATUS_UNSPECIFIED = 0;
+  EXECUTION_STATUS_QUEUED = 1;
+  EXECUTION_STATUS_RUNNING = 2;
+  EXECUTION_STATUS_SUCCEEDED = 3;
+  EXECUTION_STATUS_FAILED = 4;
+  EXECUTION_STATUS_CANCELED = 5;
+  EXECUTION_STATUS_TIMED_OUT = 6;
+}
+
+message ExecutionOptions {
+  string run_dir = 1;
+  bool read_only_workspace = 2;
+  bool dry_run = 3;
+  bool host_passthrough = 4;
+  int64 launch_seconds = 5;
+  bool tty = 6;
+  string cwd = 7;
+}
+
+message CreateExecutionRequest {
+  string sandbox_id = 1;
+  repeated string command = 2;
+  ExecutionOptions options = 3;
+}
+
+message CreateExecutionResponse {
+  Execution execution = 1;
+}
+
+message GetExecutionRequest {
+  string sandbox_id = 1;
+  string execution_id = 2;
+}
+
+message GetExecutionResponse {
+  Execution execution = 1;
+}
+
+message CancelExecutionRequest {
+  string sandbox_id = 1;
+  string execution_id = 2;
+  int32 signal = 3;
+}
+
+message CancelExecutionResponse {
+  string sandbox_id = 1;
+  string execution_id = 2;
+  bool accepted = 3;
+  ExecutionStatus status = 4;
+}
+
+message StreamExecutionRequest {
+  string sandbox_id = 1;
+  string execution_id = 2;
+  bool follow = 3;
+}
+
+message ExecutionExit {
+  int32 exit_code = 1;
+  ExecutionStatus status = 2;
+  string message = 3;
+}
+
+message ExecutionStreamEvent {
+  string sandbox_id = 1;
+  string execution_id = 2;
+  ExecutionStatus status = 3;
+
+  oneof payload {
+    bytes stdout = 4;
+    bytes stderr = 5;
+    ExecutionExit exit = 6;
+    string message = 7;
+  }
+
+  google.protobuf.Timestamp occurred_at = 8;
+}
+
+message ExecutionAttachOpen {
+  string sandbox_id = 1;
+  string execution_id = 2;
+}
+
+message ExecutionResize {
+  uint32 cols = 1;
+  uint32 rows = 2;
+}
+
+message ExecutionSignal {
+  int32 signal = 1;
+}
+
+message ExecutionHeartbeat {}
+
+message ExecutionClose {
+  bool detach = 1;
+}
+
+message ExecutionAttachFrame {
+  string sandbox_id = 1;
+  string execution_id = 2;
+
+  oneof payload {
+    ExecutionAttachOpen open = 3;
+    bytes stdin = 4;
+    ExecutionResize resize = 5;
+    ExecutionSignal signal = 6;
+    ExecutionHeartbeat heartbeat = 7;
+    ExecutionClose close = 8;
+
+    bytes stdout = 9;
+    bytes stderr = 10;
+    ExecutionExit exit = 11;
+    string error = 12;
+  }
+
+  google.protobuf.Timestamp occurred_at = 13;
+}

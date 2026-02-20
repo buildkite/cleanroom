@@ -3,10 +3,13 @@ module github.com/buildkite/cleanroom
 go 1.23.0
 
 require (
+	connectrpc.com/connect v1.18.1
 	github.com/alecthomas/kong v1.12.1
 	github.com/charmbracelet/log v0.4.2
 	github.com/firecracker-microvm/firecracker-go-sdk v1.0.0
 	github.com/mdlayher/vsock v1.1.1
+	golang.org/x/sys v0.31.0
+	google.golang.org/protobuf v1.36.10
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -29,5 +32,4 @@ require (
 	golang.org/x/exp v0.0.0-20231006140011-7918f672742d // indirect
 	golang.org/x/net v0.38.0 // indirect
 	golang.org/x/sync v0.0.0-20210220032951-036812b2e83c // indirect
-	golang.org/x/sys v0.31.0 // indirect
 )
