@@ -89,6 +89,12 @@ CLEANROOM_CI ALL=(root) NOPASSWD: CLEANROOM_DOCTOR, CLEANROOM_NET, CLEANROOM_ROO
 
 Use a single root-owned helper binary and only grant sudo access to that helper:
 
+Install helper from this repository:
+
+```bash
+sudo install -o root -g root -m 0750 scripts/cleanroom-root-helper.sh /usr/local/sbin/cleanroom-root-helper
+```
+
 ```sudoers
 buildkite-agent ALL=(root) NOPASSWD: /usr/local/sbin/cleanroom-root-helper *
 ```
