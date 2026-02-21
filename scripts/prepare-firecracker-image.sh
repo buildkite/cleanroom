@@ -8,7 +8,7 @@ Prepare a Firecracker rootfs image for Cleanroom launched execution.
 This script will:
 1. copy a prebuilt cleanroom-guest-agent into the guest rootfs at /usr/local/bin/cleanroom-guest-agent
 2. install a tiny init at /sbin/cleanroom-init that starts the guest agent
-3. install `strace` in the guest image for debugging
+3. install `git` and `strace` in the guest image
 
 Usage:
   scripts/prepare-firecracker-image.sh \
@@ -29,6 +29,7 @@ Notes:
   try to copy it into the user's XDG image path via sudo automatically.
 - --install-mise installs Alpine package `mise` inside the guest image and
   writes a minimal `/root/.config/mise/config.toml`.
+- `git` is installed by default for clone benchmarks and repo operations.
 - `strace` is installed by default to support in-VM debugging.
 USAGE
 }
@@ -223,9 +224,9 @@ INIT
 chmod 0755 "$INIT_PATH"
 
 if [[ "$INSTALL_MISE" -eq 1 ]]; then
-  echo "installing mise + strace in guest image via apk"
+  echo "installing mise + git + strace in guest image via apk"
   rm -f "$MOUNT_DIR/root/.local/bin/mise"
-  chroot "$MOUNT_DIR" /bin/sh -lc "apk update && apk add --no-cache mise strace"
+  chroot "$MOUNT_DIR" /bin/sh -lc "apk update && apk add --no-cache mise git strace"
 
   MISE_CFG_DIR="$MOUNT_DIR/root/.config/mise"
   mkdir -p "$MISE_CFG_DIR"
@@ -236,8 +237,8 @@ not_found_auto_install = false
 disable_default_registry = true
 MISECFG
 else
-  echo "installing strace in guest image via apk"
-  chroot "$MOUNT_DIR" /bin/sh -lc "apk update && apk add --no-cache strace"
+  echo "installing git + strace in guest image via apk"
+  chroot "$MOUNT_DIR" /bin/sh -lc "apk update && apk add --no-cache git strace"
 fi
 
 echo "rootfs prepared successfully"
@@ -247,8 +248,8 @@ echo "- agent binary: /usr/local/bin/cleanroom-guest-agent"
 echo "- tiny init: /sbin/cleanroom-init"
 echo "- agent port: $AGENT_PORT"
 if [[ "$INSTALL_MISE" -eq 1 ]]; then
-  echo "- installed guest packages: mise, strace"
+  echo "- installed guest packages: mise, git, strace"
   echo "- mise config: /root/.config/mise/config.toml"
 else
-  echo "- installed guest package: strace"
+  echo "- installed guest packages: git, strace"
 fi

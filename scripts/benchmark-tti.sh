@@ -23,7 +23,8 @@ Environment:
 
 Notes:
   - This script expects the cleanroom server to already be running.
-  - The measured command is: cleanroom exec ... -- echo benchmark
+  - The measured command is: cleanroom exec --keep-sandbox ... -- echo benchmark
+  - Sandbox termination runs in hyperfine cleanup and is excluded from timing.
 EOF
 }
 
@@ -104,23 +105,50 @@ if ! command -v "$cleanroom_bin" >/dev/null 2>&1; then
   echo "cleanroom binary not found: $cleanroom_bin" >&2
   exit 1
 fi
+if ! command -v curl >/dev/null 2>&1; then
+  echo "curl is required but not found in PATH" >&2
+  exit 1
+fi
 
 mkdir -p "$output_dir"
 timestamp="$(date -u +%Y-%m-%dT%H-%M-%SZ)"
 output_path="${output_dir}/${timestamp}.json"
+sandbox_id_path="${output_dir}/.last-sandbox-id.txt"
+: > "$sandbox_id_path"
+
+terminate_cmd=""
+case "$host" in
+  unix://*)
+    socket_path="${host#unix://}"
+    printf -v socket_escaped '%q' "$socket_path"
+    terminate_cmd="curl -sS --output /dev/null --unix-socket ${socket_escaped} -H 'Content-Type: application/json' -d \"{\\\"sandbox_id\\\":\\\"\${sid}\\\"}\" http://localhost/cleanroom.v1.SandboxService/TerminateSandbox"
+    ;;
+  http://*|https://*)
+    api_endpoint="${host%/}/cleanroom.v1.SandboxService/TerminateSandbox"
+    printf -v endpoint_escaped '%q' "$api_endpoint"
+    terminate_cmd="curl -sS --output /dev/null -H 'Content-Type: application/json' -d \"{\\\"sandbox_id\\\":\\\"\${sid}\\\"}\" ${endpoint_escaped}"
+    ;;
+  *)
+    echo "unsupported host scheme for cleanup: $host" >&2
+    exit 1
+    ;;
+esac
 
 benchmark_cmd=("$cleanroom_bin" exec --host "$host" -c "$chdir")
 if [[ -n "$backend" ]]; then
   benchmark_cmd+=(--backend "$backend")
 fi
-benchmark_cmd+=(-- echo benchmark)
+benchmark_cmd+=(--keep-sandbox -- echo benchmark)
 
 quoted_cmd=""
 for token in "${benchmark_cmd[@]}"; do
   printf -v escaped '%q' "$token"
   quoted_cmd+="${escaped} "
 done
-quoted_cmd+">/dev/null 2>&1"
+printf -v sandbox_id_escaped '%q' "$sandbox_id_path"
+quoted_cmd+=">/dev/null 2>${sandbox_id_escaped}"
+
+cleanup_cmd="sid=\$(sed -n 's/.*sandbox_id=\\([^ ]*\\).*/\\1/p' ${sandbox_id_escaped} | tail -n1); if [ -n \"\${sid}\" ]; then ${terminate_cmd} || true; fi; : > ${sandbox_id_escaped}"
 
 echo "Benchmarking TTI with hyperfine"
 echo "- endpoint: ${host}"
@@ -131,7 +159,12 @@ echo "- output: ${output_path}"
 hyperfine \
   --runs "$iterations" \
   --warmup "$warmup" \
+  --prepare "$cleanup_cmd" \
+  --cleanup "$cleanup_cmd" \
   --export-json "$output_path" \
   "$quoted_cmd"
+
+bash -lc "$cleanup_cmd"
+rm -f "$sandbox_id_path"
 
 echo "Results written to ${output_path}"
