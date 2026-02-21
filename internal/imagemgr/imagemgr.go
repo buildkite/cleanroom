@@ -287,14 +287,14 @@ func (m *Manager) Remove(ctx context.Context, selector string) ([]Record, error)
 	}
 
 	for _, record := range records {
-		if _, err := db.ExecContext(ctx, `DELETE FROM images WHERE digest = ?`, record.Digest); err != nil {
-			return nil, fmt.Errorf("delete cached image metadata for %s: %w", record.Digest, err)
+		if err := os.Remove(record.RootFSPath); err != nil && !os.IsNotExist(err) {
+			return nil, fmt.Errorf("remove cached rootfs %q: %w", record.RootFSPath, err)
 		}
 	}
 
 	for _, record := range records {
-		if err := os.Remove(record.RootFSPath); err != nil && !os.IsNotExist(err) {
-			return nil, fmt.Errorf("remove cached rootfs %q: %w", record.RootFSPath, err)
+		if _, err := db.ExecContext(ctx, `DELETE FROM images WHERE digest = ?`, record.Digest); err != nil {
+			return nil, fmt.Errorf("delete cached image metadata for %s: %w", record.Digest, err)
 		}
 	}
 

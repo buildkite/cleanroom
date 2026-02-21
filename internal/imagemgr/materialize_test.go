@@ -63,6 +63,30 @@ func TestExtractTarAllowsSafeInternalSymlink(t *testing.T) {
 	}
 }
 
+func TestExtractTarAllowsAbsoluteInternalSymlinkTarget(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	stream := tarStreamWithEntries(t,
+		tarEntry{Header: &tar.Header{Name: "run", Typeflag: tar.TypeDir, Mode: 0o755}},
+		tarEntry{Header: &tar.Header{Name: "var", Typeflag: tar.TypeDir, Mode: 0o755}},
+		tarEntry{Header: &tar.Header{Name: "var/run", Typeflag: tar.TypeSymlink, Linkname: "/run", Mode: 0o777}},
+	)
+
+	if err := extractTar(root, bytes.NewReader(stream)); err != nil {
+		t.Fatalf("extractTar returned error: %v", err)
+	}
+
+	linkPath := filepath.Join(root, "var/run")
+	linkTarget, err := os.Readlink(linkPath)
+	if err != nil {
+		t.Fatalf("read symlink %s: %v", linkPath, err)
+	}
+	if got, want := linkTarget, "/run"; got != want {
+		t.Fatalf("unexpected symlink target: got %q want %q", got, want)
+	}
+}
+
 type tarEntry struct {
 	Header *tar.Header
 	Body   []byte

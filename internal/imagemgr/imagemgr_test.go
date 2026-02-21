@@ -120,6 +120,51 @@ func TestRemoveByRefSelector(t *testing.T) {
 	}
 }
 
+func TestRemoveKeepsMetadataWhenRootFSDeleteFails(t *testing.T) {
+	t.Parallel()
+
+	manager := newTestManager(t, nil)
+	now := time.Unix(1_700_000_003, 0).UTC()
+	digest := "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+	ref := "ghcr.io/buildkite/cleanroom-base/alpine@" + digest
+
+	rootfsDir := filepath.Join(t.TempDir(), "rootfs-as-dir")
+	if err := os.MkdirAll(rootfsDir, 0o755); err != nil {
+		t.Fatalf("create rootfs directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(rootfsDir, "keep"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("seed rootfs directory: %v", err)
+	}
+
+	record := Record{
+		Digest:     digest,
+		Ref:        ref,
+		RootFSPath: rootfsDir,
+		SizeBytes:  0,
+		CreatedAt:  now,
+		LastUsedAt: now,
+		Source:     "import",
+	}
+	if err := manager.upsertRecord(context.Background(), record); err != nil {
+		t.Fatalf("upsert test record: %v", err)
+	}
+
+	if _, err := manager.Remove(context.Background(), digest); err == nil {
+		t.Fatal("expected remove to fail when rootfs deletion fails")
+	}
+
+	items, err := manager.List(context.Background())
+	if err != nil {
+		t.Fatalf("list after failed remove: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected metadata to remain after failed remove, got %d records", len(items))
+	}
+	if got, want := items[0].Digest, digest; got != want {
+		t.Fatalf("unexpected remaining digest: got %q want %q", got, want)
+	}
+}
+
 func TestPersistFromTarStreamUsesUniqueTempPaths(t *testing.T) {
 	t.Parallel()
 

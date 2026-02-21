@@ -254,7 +254,15 @@ func validateSymlinkTarget(root, targetPath, linkName string) error {
 	if strings.TrimSpace(linkName) == "" {
 		return fmt.Errorf("refusing symlink %q with empty target", targetPath)
 	}
-	resolved := filepath.Clean(filepath.Join(filepath.Dir(targetPath), linkName))
+	var resolved string
+	if filepath.IsAbs(linkName) {
+		// OCI rootfs archives commonly use absolute symlink targets (for example /var/run -> /run).
+		// Treat those as absolute within the extraction root, not host-absolute paths.
+		trimmed := strings.TrimPrefix(filepath.Clean(linkName), string(filepath.Separator))
+		resolved = filepath.Join(root, trimmed)
+	} else {
+		resolved = filepath.Clean(filepath.Join(filepath.Dir(targetPath), linkName))
+	}
 	rel, err := filepath.Rel(root, resolved)
 	if err != nil {
 		return fmt.Errorf("resolve symlink target for %q: %w", targetPath, err)
