@@ -20,6 +20,7 @@ type stubAdapter struct {
 	runStreamFn    func(context.Context, backend.RunRequest, backend.OutputStream) (*backend.RunResult, error)
 	provisionFn    func(context.Context, backend.ProvisionRequest) error
 	terminateFn    func(context.Context, string) error
+	downloadFn     func(context.Context, string, string, int64) ([]byte, error)
 	req            backend.RunRequest
 	runCalls       int
 	provisionCalls int
@@ -102,6 +103,13 @@ func (s *stubAdapter) TerminateSandbox(ctx context.Context, sandboxID string) er
 		return s.terminateFn(ctx, sandboxID)
 	}
 	return nil
+}
+
+func (s *stubAdapter) DownloadSandboxFile(ctx context.Context, sandboxID, path string, maxBytes int64) ([]byte, error) {
+	if s.downloadFn != nil {
+		return s.downloadFn(ctx, sandboxID, path, maxBytes)
+	}
+	return nil, errors.New("download not configured")
 }
 
 type stubLoader struct {
@@ -388,6 +396,162 @@ func TestCreateExecutionRejectsWhenSandboxBusy(t *testing.T) {
 	}
 	if _, err := svc.WaitExecution(context.Background(), sandboxID, firstExecutionID); err != nil {
 		t.Fatalf("WaitExecution returned error: %v", err)
+	}
+}
+
+func TestDownloadSandboxFileReturnsData(t *testing.T) {
+	expectedSandboxID := ""
+	adapter := &stubAdapter{
+		downloadFn: func(_ context.Context, sandboxID, path string, maxBytes int64) ([]byte, error) {
+			if got, want := sandboxID, expectedSandboxID; got != want {
+				t.Fatalf("unexpected sandbox id: got %q want %q", got, want)
+			}
+			if got, want := path, "/home/sprite/artifacts/result.txt"; got != want {
+				t.Fatalf("unexpected path: got %q want %q", got, want)
+			}
+			if got, want := maxBytes, int64(1024); got != want {
+				t.Fatalf("unexpected max_bytes: got %d want %d", got, want)
+			}
+			return []byte("artifact-data"), nil
+		},
+	}
+	svc := newTestService(adapter)
+
+	createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	expectedSandboxID = createResp.GetSandbox().GetSandboxId()
+
+	resp, err := svc.DownloadSandboxFile(context.Background(), &cleanroomv1.DownloadSandboxFileRequest{
+		SandboxId: expectedSandboxID,
+		Path:      "/home/sprite/artifacts/result.txt",
+		MaxBytes:  1024,
+	})
+	if err != nil {
+		t.Fatalf("DownloadSandboxFile returned error: %v", err)
+	}
+	if got, want := string(resp.GetData()), "artifact-data"; got != want {
+		t.Fatalf("unexpected data: got %q want %q", got, want)
+	}
+	if got, want := resp.GetSizeBytes(), int64(len("artifact-data")); got != want {
+		t.Fatalf("unexpected size_bytes: got %d want %d", got, want)
+	}
+}
+
+func TestDownloadSandboxFileRejectsWhenSandboxBusy(t *testing.T) {
+	started := make(chan struct{}, 1)
+	adapter := &stubAdapter{
+		runFn: func(ctx context.Context, req backend.RunRequest) (*backend.RunResult, error) {
+			select {
+			case started <- struct{}{}:
+			default:
+			}
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+		downloadFn: func(_ context.Context, _, _ string, _ int64) ([]byte, error) {
+			t.Fatal("download should not be called while sandbox is busy")
+			return nil, nil
+		},
+	}
+	svc := newTestService(adapter)
+
+	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createSandboxResp.GetSandbox().GetSandboxId()
+
+	createExecutionResp, err := svc.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+		SandboxId: sandboxID,
+		Command:   []string{"sleep", "30"},
+	})
+	if err != nil {
+		t.Fatalf("CreateExecution returned error: %v", err)
+	}
+	executionID := createExecutionResp.GetExecution().GetExecutionId()
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for execution to start")
+	}
+
+	_, err = svc.DownloadSandboxFile(context.Background(), &cleanroomv1.DownloadSandboxFileRequest{
+		SandboxId: sandboxID,
+		Path:      "/home/sprite/artifacts/result.txt",
+	})
+	if err == nil {
+		t.Fatal("expected sandbox_busy error")
+	}
+	if !strings.Contains(err.Error(), "sandbox_busy") {
+		t.Fatalf("expected sandbox_busy error, got: %v", err)
+	}
+
+	if _, err := svc.CancelExecution(context.Background(), &cleanroomv1.CancelExecutionRequest{
+		SandboxId:   sandboxID,
+		ExecutionId: executionID,
+		Signal:      15,
+	}); err != nil {
+		t.Fatalf("CancelExecution returned error: %v", err)
+	}
+	if _, err := svc.WaitExecution(context.Background(), sandboxID, executionID); err != nil {
+		t.Fatalf("WaitExecution returned error: %v", err)
+	}
+}
+
+func TestCreateExecutionRejectsWhileSandboxFileDownloadInProgress(t *testing.T) {
+	downloadStarted := make(chan struct{}, 1)
+	allowDownloadFinish := make(chan struct{})
+	downloadDone := make(chan error, 1)
+
+	adapter := &stubAdapter{
+		downloadFn: func(_ context.Context, _, _ string, _ int64) ([]byte, error) {
+			select {
+			case downloadStarted <- struct{}{}:
+			default:
+			}
+			<-allowDownloadFinish
+			return []byte("artifact-data"), nil
+		},
+	}
+	svc := newTestService(adapter)
+
+	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createSandboxResp.GetSandbox().GetSandboxId()
+
+	go func() {
+		_, err := svc.DownloadSandboxFile(context.Background(), &cleanroomv1.DownloadSandboxFileRequest{
+			SandboxId: sandboxID,
+			Path:      "/home/sprite/artifacts/result.txt",
+		})
+		downloadDone <- err
+	}()
+
+	select {
+	case <-downloadStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for download to start")
+	}
+
+	_, err = svc.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+		SandboxId: sandboxID,
+		Command:   []string{"echo", "hi"},
+	})
+	if err == nil {
+		t.Fatal("expected sandbox_busy error")
+	}
+	if !strings.Contains(err.Error(), "sandbox_busy") {
+		t.Fatalf("expected sandbox_busy error, got: %v", err)
+	}
+
+	close(allowDownloadFinish)
+	if err := <-downloadDone; err != nil {
+		t.Fatalf("DownloadSandboxFile returned error: %v", err)
 	}
 }
 

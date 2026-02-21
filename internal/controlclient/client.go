@@ -85,6 +85,14 @@ func (c *Client) ListSandboxes(ctx context.Context, req *cleanroomv1.ListSandbox
 	return resp.Msg, nil
 }
 
+func (c *Client) DownloadSandboxFile(ctx context.Context, req *cleanroomv1.DownloadSandboxFileRequest) (*cleanroomv1.DownloadSandboxFileResponse, error) {
+	resp, err := c.sandboxClient.DownloadSandboxFile(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
 func (c *Client) TerminateSandbox(ctx context.Context, req *cleanroomv1.TerminateSandboxRequest) (*cleanroomv1.TerminateSandboxResponse, error) {
 	resp, err := c.sandboxClient.TerminateSandbox(ctx, connect.NewRequest(req))
 	if err != nil {

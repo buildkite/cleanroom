@@ -70,8 +70,9 @@ Two services are sufficient.
 1. `CreateSandbox(CreateSandboxRequest) returns (CreateSandboxResponse)` (unary)
 2. `GetSandbox(GetSandboxRequest) returns (GetSandboxResponse)` (unary)
 3. `ListSandboxes(ListSandboxesRequest) returns (ListSandboxesResponse)` (unary)
-4. `TerminateSandbox(TerminateSandboxRequest) returns (TerminateSandboxResponse)` (unary)
-5. `StreamSandboxEvents(StreamSandboxEventsRequest) returns (stream SandboxEvent)` (server-streaming)
+4. `DownloadSandboxFile(DownloadSandboxFileRequest) returns (DownloadSandboxFileResponse)` (unary)
+5. `TerminateSandbox(TerminateSandboxRequest) returns (TerminateSandboxResponse)` (unary)
+6. `StreamSandboxEvents(StreamSandboxEventsRequest) returns (stream SandboxEvent)` (server-streaming)
 
 ### 4.2 ExecutionService
 
@@ -146,6 +147,7 @@ service SandboxService {
   rpc CreateSandbox(CreateSandboxRequest) returns (CreateSandboxResponse);
   rpc GetSandbox(GetSandboxRequest) returns (GetSandboxResponse);
   rpc ListSandboxes(ListSandboxesRequest) returns (ListSandboxesResponse);
+  rpc DownloadSandboxFile(DownloadSandboxFileRequest) returns (DownloadSandboxFileResponse);
   rpc TerminateSandbox(TerminateSandboxRequest) returns (TerminateSandboxResponse);
   rpc StreamSandboxEvents(StreamSandboxEventsRequest) returns (stream SandboxEvent);
 }
@@ -266,6 +268,6 @@ Failure UX:
 ## 11) Out of Scope for Minimal v1
 
 - Checkpoint/restore API
-- Artifact upload/download API
+- Artifact upload API
 - Multi-tenant org/authz policy model
 - Cross-sandbox workflow orchestration

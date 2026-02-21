@@ -20,6 +20,11 @@ type PersistentSandboxAdapter interface {
 	TerminateSandbox(ctx context.Context, sandboxID string) error
 }
 
+// SandboxFileDownloadAdapter can copy files out of a persistent sandbox.
+type SandboxFileDownloadAdapter interface {
+	DownloadSandboxFile(ctx context.Context, sandboxID, path string, maxBytes int64) ([]byte, error)
+}
+
 type ProvisionRequest struct {
 	SandboxID string
 	Policy    *policy.CompiledPolicy

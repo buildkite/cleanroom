@@ -1,6 +1,7 @@
 package firecracker
 
 import (
+	"bytes"
 	"context"
 	cryptorand "crypto/rand"
 	"crypto/sha1"
@@ -79,6 +80,7 @@ const preparedRuntimeRootFSVersion = "v1"
 const privilegedModeSudo = "sudo"
 const privilegedModeHelper = "helper"
 const defaultPrivilegedHelperPath = "/usr/local/sbin/cleanroom-root-helper"
+const defaultDownloadMaxBytes int64 = 10 * 1024 * 1024
 
 const guestInitScriptTemplate = `#!/bin/sh
 set -eu
@@ -228,22 +230,6 @@ func (a *Adapter) RunInSandbox(ctx context.Context, req backend.RunRequest, stre
 		return nil, fmt.Errorf("sandbox %q is not running: %w", sandboxID, err)
 	}
 
-	guestReq := vsockexec.ExecRequest{Command: req.Command}
-	seed := make([]byte, 64)
-	if _, err := cryptorand.Read(seed); err == nil {
-		guestReq.EntropySeed = seed
-	}
-
-	connectSeconds := req.LaunchSeconds
-	if connectSeconds <= 0 {
-		connectSeconds = instance.CommandTimeout
-	}
-	if connectSeconds <= 0 {
-		connectSeconds = 30
-	}
-	bootCtx, bootCancel := context.WithTimeout(ctx, time.Duration(connectSeconds)*time.Second)
-	defer bootCancel()
-
 	runStart := time.Now()
 	runDir := strings.TrimSpace(req.RunDir)
 	if runDir == "" {
@@ -275,12 +261,7 @@ func (a *Adapter) RunInSandbox(ctx context.Context, req backend.RunRequest, stre
 		}
 	}
 
-	runGuestCommandFn := a.runGuestCommandFn
-	if runGuestCommandFn == nil {
-		runGuestCommandFn = runGuestCommand
-	}
-
-	guestResult, timing, err := runGuestCommandFn(bootCtx, ctx, instance.exitedCh, instance.exitedErrOrNil, instance.VsockPath, instance.GuestPort, guestReq, stream)
+	guestResult, timing, err := a.executeInSandbox(ctx, instance, req.LaunchSeconds, req.Command, stream)
 	if err != nil {
 		observation.ExitCode = 1
 		observation.GuestError = err.Error()
@@ -310,6 +291,59 @@ func (a *Adapter) RunInSandbox(ctx context.Context, req backend.RunRequest, stre
 	}, nil
 }
 
+func (a *Adapter) DownloadSandboxFile(ctx context.Context, sandboxID, path string, maxBytes int64) ([]byte, error) {
+	sandboxID = strings.TrimSpace(sandboxID)
+	if sandboxID == "" {
+		return nil, errors.New("missing sandbox_id")
+	}
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil, errors.New("missing path")
+	}
+	if !strings.HasPrefix(path, "/") {
+		return nil, errors.New("invalid path: must be absolute")
+	}
+	if maxBytes <= 0 {
+		maxBytes = defaultDownloadMaxBytes
+	}
+
+	a.sandboxMu.Lock()
+	instance, ok := a.sandboxes[sandboxID]
+	a.sandboxMu.Unlock()
+	if !ok {
+		return nil, fmt.Errorf("unknown sandbox %q", sandboxID)
+	}
+	if err := instance.exitedErrOrNil(); err != nil {
+		return nil, fmt.Errorf("sandbox %q is not running: %w", sandboxID, err)
+	}
+
+	var stdout bytes.Buffer
+	limit := maxBytes + 1
+	cmd := []string{"head", "-c", strconv.FormatInt(limit, 10), "--", path}
+	result, _, err := a.executeInSandbox(ctx, instance, 0, cmd, backend.OutputStream{OnStdout: func(chunk []byte) {
+		_, _ = stdout.Write(chunk)
+	}})
+	if err != nil {
+		return nil, err
+	}
+	if result.ExitCode != 0 {
+		msg := strings.TrimSpace(result.Stderr)
+		if msg == "" {
+			msg = strings.TrimSpace(result.Error)
+		}
+		if msg == "" {
+			msg = "read file command failed"
+		}
+		return nil, errors.New(msg)
+	}
+
+	data := stdout.Bytes()
+	if int64(len(data)) > maxBytes {
+		return nil, fmt.Errorf("file %q exceeds max_bytes=%d", path, maxBytes)
+	}
+	return append([]byte(nil), data...), nil
+}
+
 func (a *Adapter) TerminateSandbox(_ context.Context, sandboxID string) error {
 	sandboxID = strings.TrimSpace(sandboxID)
 	if sandboxID == "" {
@@ -328,6 +362,31 @@ func (a *Adapter) TerminateSandbox(_ context.Context, sandboxID string) error {
 
 	instance.shutdown()
 	return nil
+}
+
+func (a *Adapter) executeInSandbox(ctx context.Context, instance *sandboxInstance, launchSeconds int64, command []string, stream backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error) {
+	guestReq := vsockexec.ExecRequest{Command: append([]string(nil), command...)}
+	seed := make([]byte, 64)
+	if _, err := cryptorand.Read(seed); err == nil {
+		guestReq.EntropySeed = seed
+	}
+
+	connectSeconds := launchSeconds
+	if connectSeconds <= 0 {
+		connectSeconds = instance.CommandTimeout
+	}
+	if connectSeconds <= 0 {
+		connectSeconds = 30
+	}
+	bootCtx, bootCancel := context.WithTimeout(ctx, time.Duration(connectSeconds)*time.Second)
+	defer bootCancel()
+
+	runGuestCommandFn := a.runGuestCommandFn
+	if runGuestCommandFn == nil {
+		runGuestCommandFn = runGuestCommand
+	}
+
+	return runGuestCommandFn(bootCtx, ctx, instance.exitedCh, instance.exitedErrOrNil, instance.VsockPath, instance.GuestPort, guestReq, stream)
 }
 
 func (a *Adapter) Doctor(_ context.Context, req backend.DoctorRequest) (*backend.DoctorReport, error) {
