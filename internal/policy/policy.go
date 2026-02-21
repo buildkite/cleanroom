@@ -247,8 +247,12 @@ func FromProto(pb *cleanroomv1.Policy) (*CompiledPolicy, error) {
 	if imageRef == "" {
 		return nil, errors.New("policy missing required field: image_ref")
 	}
-	if _, err := ociref.ParseDigestReference(imageRef); err != nil {
+	parsedRef, err := ociref.ParseDigestReference(imageRef)
+	if err != nil {
 		return nil, fmt.Errorf("invalid policy image_ref: %w", err)
+	}
+	if providedDigest := strings.TrimSpace(pb.GetImageDigest()); providedDigest != "" && providedDigest != parsedRef.Digest() {
+		return nil, fmt.Errorf("policy image_digest %q does not match image_ref digest %q", providedDigest, parsedRef.Digest())
 	}
 	networkDefault := strings.TrimSpace(strings.ToLower(pb.GetNetworkDefault()))
 	if networkDefault == "" {
@@ -265,22 +269,33 @@ func FromProto(pb *cleanroomv1.Policy) (*CompiledPolicy, error) {
 			return nil, errors.New("allow rule host cannot be empty")
 		}
 		ports := make([]int, 0, len(rule.GetPorts()))
+		seen := map[int]struct{}{}
 		for _, port := range rule.GetPorts() {
 			if port < 1 || port > 65535 {
 				return nil, fmt.Errorf("allow rule for host %q contains invalid port %d", host, port)
 			}
-			ports = append(ports, int(port))
+			candidate := int(port)
+			if _, ok := seen[candidate]; ok {
+				continue
+			}
+			seen[candidate] = struct{}{}
+			ports = append(ports, candidate)
 		}
 		if len(ports) == 0 {
 			return nil, fmt.Errorf("allow rule for host %q must include at least one port", host)
 		}
+		sort.Ints(ports)
 		allow = append(allow, AllowRule{Host: host, Ports: ports})
 	}
 
+	sort.Slice(allow, func(i, j int) bool {
+		return allow[i].Host < allow[j].Host
+	})
+
 	compiled := &CompiledPolicy{
 		Version:        int(pb.GetVersion()),
-		ImageRef:       imageRef,
-		ImageDigest:    pb.GetImageDigest(),
+		ImageRef:       parsedRef.Original,
+		ImageDigest:    parsedRef.Digest(),
 		NetworkDefault: networkDefault,
 		Allow:          allow,
 	}
