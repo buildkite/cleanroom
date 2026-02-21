@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -37,7 +36,6 @@ type sandboxState struct {
 	Policy           *policy.CompiledPolicy
 	PolicySource     string
 	Firecracker      backend.FirecrackerConfig
-	RunDirRoot       string
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
 	LastExecutionID  string
@@ -129,12 +127,10 @@ func (s *Service) CreateSandbox(_ context.Context, req *cleanroomv1.CreateSandbo
 	opts := req.GetOptions()
 	execOpts := controlapi.ExecOptions{}
 	if opts != nil {
-		execOpts.RunDir = opts.GetRunDir()
 		execOpts.ReadOnlyWorkspace = opts.GetReadOnlyWorkspace()
 		execOpts.LaunchSeconds = opts.GetLaunchSeconds()
 	}
 	firecrackerCfg := mergeFirecrackerConfig(cwd, execOpts, s.Config)
-	runDirRoot := strings.TrimSpace(execOpts.RunDir)
 	firecrackerCfg.RunDir = ""
 
 	now := time.Now().UTC()
@@ -146,7 +142,6 @@ func (s *Service) CreateSandbox(_ context.Context, req *cleanroomv1.CreateSandbo
 		Policy:           compiled,
 		PolicySource:     source,
 		Firecracker:      firecrackerCfg,
-		RunDirRoot:       runDirRoot,
 		CreatedAt:        now,
 		UpdatedAt:        now,
 		Status:           cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY,
@@ -322,7 +317,6 @@ func (s *Service) CreateExecution(_ context.Context, req *cleanroomv1.CreateExec
 	tty := false
 	if opts := req.GetOptions(); opts != nil {
 		execOpts = controlapi.ExecOptions{
-			RunDir:            opts.GetRunDir(),
 			ReadOnlyWorkspace: opts.GetReadOnlyWorkspace(),
 			LaunchSeconds:     opts.GetLaunchSeconds(),
 		}
@@ -843,11 +837,6 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 	})
 
 	firecrackerCfg := sb.Firecracker
-	if ex.Options.RunDir != "" {
-		firecrackerCfg.RunDir = ex.Options.RunDir
-	} else if sb.RunDirRoot != "" {
-		firecrackerCfg.RunDir = filepath.Join(sb.RunDirRoot, ex.RunID)
-	}
 	if ex.Options.ReadOnlyWorkspace {
 		firecrackerCfg.WorkspaceAccess = "ro"
 	}
@@ -1010,7 +999,6 @@ func (s *Service) LaunchCleanroom(ctx context.Context, req controlapi.LaunchClea
 		Cwd:     req.CWD,
 		Backend: req.Backend,
 		Options: &cleanroomv1.SandboxOptions{
-			RunDir:            req.Options.RunDir,
 			ReadOnlyWorkspace: req.Options.ReadOnlyWorkspace,
 			LaunchSeconds:     req.Options.LaunchSeconds,
 		},
@@ -1024,7 +1012,6 @@ func (s *Service) LaunchCleanroom(ctx context.Context, req controlapi.LaunchClea
 		Backend:      resp.GetSandbox().GetBackend(),
 		PolicySource: resp.GetPolicySource(),
 		PolicyHash:   resp.GetSandbox().GetPolicyHash(),
-		RunDirRoot:   req.Options.RunDir,
 		Message:      resp.GetMessage(),
 	}, nil
 }
@@ -1087,7 +1074,6 @@ func (s *Service) Exec(ctx context.Context, req controlapi.ExecRequest) (*contro
 		Cwd:     req.CWD,
 		Backend: req.Backend,
 		Options: &cleanroomv1.SandboxOptions{
-			RunDir:            req.Options.RunDir,
 			ReadOnlyWorkspace: req.Options.ReadOnlyWorkspace,
 			LaunchSeconds:     req.Options.LaunchSeconds,
 		},
@@ -1104,7 +1090,6 @@ func (s *Service) Exec(ctx context.Context, req controlapi.ExecRequest) (*contro
 		SandboxId: sandboxID,
 		Command:   append([]string(nil), req.Command...),
 		Options: &cleanroomv1.ExecutionOptions{
-			RunDir:            req.Options.RunDir,
 			ReadOnlyWorkspace: req.Options.ReadOnlyWorkspace,
 			LaunchSeconds:     req.Options.LaunchSeconds,
 			Cwd:               req.CWD,
@@ -1593,9 +1578,6 @@ func mergeFirecrackerConfig(cwd string, opts controlapi.ExecOptions, cfg runtime
 		LaunchSeconds:   cfg.Backends.Firecracker.LaunchSeconds,
 	}
 
-	if opts.RunDir != "" {
-		out.RunDir = opts.RunDir
-	}
 	out.Launch = true
 	if opts.LaunchSeconds != 0 {
 		out.LaunchSeconds = opts.LaunchSeconds

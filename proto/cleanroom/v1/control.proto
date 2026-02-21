@@ -41,7 +41,6 @@ enum SandboxStatus {
 }
 
 message SandboxOptions {
-  string run_dir = 1;
   bool read_only_workspace = 2;
   int64 launch_seconds = 3;
 }
@@ -117,10 +116,7 @@ enum ExecutionStatus {
 }
 
 message ExecutionOptions {
-  string run_dir = 1;
   bool read_only_workspace = 2;
-  bool dry_run = 3;
-  bool host_passthrough = 4;
   int64 launch_seconds = 5;
   bool tty = 6;
   string cwd = 7;
