@@ -3,6 +3,7 @@ package controlservice
 import (
 	"context"
 	"errors"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/backend"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/policy"
+	"go.jetify.com/typeid"
 )
 
 type stubAdapter struct {
@@ -455,6 +457,88 @@ func TestTerminateSandboxAllowsRetryAfterBackendFailure(t *testing.T) {
 	}
 	if got, want := terminateAttempts, 2; got != want {
 		t.Fatalf("unexpected terminate attempt count: got %d want %d", got, want)
+	}
+}
+
+func TestTerminateSandboxPropagatesRequestContextToBackend(t *testing.T) {
+	var terminateCtxErr error
+	adapter := &stubAdapter{
+		terminateFn: func(ctx context.Context, _ string) error {
+			terminateCtxErr = ctx.Err()
+			return nil
+		},
+	}
+	svc := newTestService(adapter)
+
+	createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+
+	terminateCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := svc.TerminateSandbox(terminateCtx, &cleanroomv1.TerminateSandboxRequest{SandboxId: createResp.GetSandbox().GetSandboxId()}); err != nil {
+		t.Fatalf("TerminateSandbox returned error: %v", err)
+	}
+
+	if !errors.Is(terminateCtxErr, context.Canceled) {
+		t.Fatalf("expected backend terminate context to be canceled, got %v", terminateCtxErr)
+	}
+}
+
+func TestServiceGeneratedIDsUseTypeIDFormat(t *testing.T) {
+	adapter := &stubAdapter{}
+	svc := newTestService(adapter)
+
+	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createSandboxResp.GetSandbox().GetSandboxId()
+	parsedSandboxID, err := typeid.FromString(sandboxID)
+	if err != nil {
+		t.Fatalf("expected typeid-formatted sandbox id, got %q: %v", sandboxID, err)
+	}
+	if got, want := parsedSandboxID.Prefix(), "cr"; got != want {
+		t.Fatalf("unexpected sandbox id prefix: got %q want %q", got, want)
+	}
+
+	createExecutionResp, err := svc.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+		SandboxId: sandboxID,
+		Command:   []string{"echo", "ok"},
+	})
+	if err != nil {
+		t.Fatalf("CreateExecution returned error: %v", err)
+	}
+
+	executionID := createExecutionResp.GetExecution().GetExecutionId()
+	parsedExecutionID, err := typeid.FromString(executionID)
+	if err != nil {
+		t.Fatalf("expected typeid-formatted execution id, got %q: %v", executionID, err)
+	}
+	if got, want := parsedExecutionID.Prefix(), "exec"; got != want {
+		t.Fatalf("unexpected execution id prefix: got %q want %q", got, want)
+	}
+
+	if _, err := svc.WaitExecution(context.Background(), sandboxID, executionID); err != nil {
+		t.Fatalf("WaitExecution returned error: %v", err)
+	}
+
+	getResp, err := svc.GetExecution(context.Background(), &cleanroomv1.GetExecutionRequest{SandboxId: sandboxID, ExecutionId: executionID})
+	if err != nil {
+		t.Fatalf("GetExecution returned error: %v", err)
+	}
+	runID := getResp.GetExecution().GetRunId()
+	parsedRunID, err := typeid.FromString(runID)
+	if err != nil {
+		t.Fatalf("expected typeid-formatted run id, got %q: %v", runID, err)
+	}
+	if got, want := parsedRunID.Prefix(), "run"; got != want {
+		t.Fatalf("unexpected run id prefix: got %q want %q", got, want)
+	}
+	if !regexp.MustCompile(`^run_[0-9a-z]{26}$`).MatchString(runID) {
+		t.Fatalf("unexpected run id shape: %q", runID)
 	}
 }
 

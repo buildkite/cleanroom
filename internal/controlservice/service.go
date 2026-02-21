@@ -140,7 +140,7 @@ func (s *Service) CreateSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	firecrackerCfg.RunDir = ""
 
 	now := time.Now().UTC()
-	sandboxID := fmt.Sprintf("cr-%d", now.UnixNano())
+	sandboxID := newSandboxID()
 
 	if persistentAdapter, ok := adapter.(backend.PersistentSandboxAdapter); ok {
 		if err := persistentAdapter.ProvisionSandbox(ctx, backend.ProvisionRequest{
@@ -221,7 +221,7 @@ func (s *Service) ListSandboxes(_ context.Context, _ *cleanroomv1.ListSandboxesR
 	return resp, nil
 }
 
-func (s *Service) TerminateSandbox(_ context.Context, req *cleanroomv1.TerminateSandboxRequest) (*cleanroomv1.TerminateSandboxResponse, error) {
+func (s *Service) TerminateSandbox(ctx context.Context, req *cleanroomv1.TerminateSandboxRequest) (*cleanroomv1.TerminateSandboxResponse, error) {
 	if req == nil || strings.TrimSpace(req.GetSandboxId()) == "" {
 		return nil, errors.New("missing sandbox_id")
 	}
@@ -306,7 +306,7 @@ func (s *Service) TerminateSandbox(_ context.Context, req *cleanroomv1.Terminate
 	}
 
 	if !alreadyStopped && persistentAdapter != nil {
-		if err := persistentAdapter.TerminateSandbox(context.Background(), sandboxID); err != nil {
+		if err := persistentAdapter.TerminateSandbox(ctx, sandboxID); err != nil {
 			if s.Logger != nil {
 				s.Logger.Warn("terminate backend sandbox failed", "sandbox_id", sandboxID, "backend", backendName, "error", err)
 			}
@@ -363,7 +363,7 @@ func (s *Service) CreateExecution(_ context.Context, req *cleanroomv1.CreateExec
 	}
 
 	now := time.Now().UTC()
-	executionID := fmt.Sprintf("exec-%d", now.UnixNano())
+	executionID := newExecutionID()
 
 	s.mu.Lock()
 	s.ensureMapsLocked()
@@ -879,7 +879,7 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 	started := time.Now().UTC()
 	ex.StartedAt = &started
 	ex.Status = cleanroomv1.ExecutionStatus_EXECUTION_STATUS_RUNNING
-	ex.RunID = fmt.Sprintf("run-%d", started.UnixNano())
+	ex.RunID = newRunID()
 	if sb.Policy != nil {
 		ex.ImageRef = sb.Policy.ImageRef
 		ex.ImageDigest = sb.Policy.ImageDigest
