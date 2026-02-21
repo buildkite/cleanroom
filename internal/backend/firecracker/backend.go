@@ -47,8 +47,10 @@ type Adapter struct {
 
 	runtimeImageMu sync.Mutex
 
-	sandboxMu sync.Mutex
-	sandboxes map[string]*sandboxInstance
+	sandboxMu         sync.Mutex
+	sandboxes         map[string]*sandboxInstance
+	provisioning      map[string]struct{}
+	launchSandboxVMFn func(context.Context, string, *policy.CompiledPolicy, backend.FirecrackerConfig) (*sandboxInstance, error)
 }
 
 type sandboxInstance struct {
@@ -159,22 +161,39 @@ func (a *Adapter) ProvisionSandbox(ctx context.Context, req backend.ProvisionReq
 	}
 
 	a.sandboxMu.Lock()
+	if a.sandboxes == nil {
+		a.sandboxes = map[string]*sandboxInstance{}
+	}
+	if a.provisioning == nil {
+		a.provisioning = map[string]struct{}{}
+	}
 	if _, exists := a.sandboxes[sandboxID]; exists {
 		a.sandboxMu.Unlock()
 		return fmt.Errorf("sandbox %q already provisioned", sandboxID)
 	}
+	if _, exists := a.provisioning[sandboxID]; exists {
+		a.sandboxMu.Unlock()
+		return fmt.Errorf("sandbox %q is already provisioning", sandboxID)
+	}
+	a.provisioning[sandboxID] = struct{}{}
 	a.sandboxMu.Unlock()
 
-	instance, err := a.launchSandboxVM(ctx, sandboxID, req.Policy, req.FirecrackerConfig)
+	launch := a.launchSandboxVMFn
+	if launch == nil {
+		launch = a.launchSandboxVM
+	}
+
+	instance, err := launch(ctx, sandboxID, req.Policy, req.FirecrackerConfig)
 	if err != nil {
+		a.sandboxMu.Lock()
+		delete(a.provisioning, sandboxID)
+		a.sandboxMu.Unlock()
 		return err
 	}
 
 	a.sandboxMu.Lock()
 	defer a.sandboxMu.Unlock()
-	if a.sandboxes == nil {
-		a.sandboxes = map[string]*sandboxInstance{}
-	}
+	delete(a.provisioning, sandboxID)
 	if _, exists := a.sandboxes[sandboxID]; exists {
 		instance.shutdown()
 		return fmt.Errorf("sandbox %q already provisioned", sandboxID)
@@ -205,7 +224,10 @@ func (a *Adapter) RunInSandbox(ctx context.Context, req backend.RunRequest, stre
 		guestReq.EntropySeed = seed
 	}
 
-	connectSeconds := instance.CommandTimeout
+	connectSeconds := req.LaunchSeconds
+	if connectSeconds <= 0 {
+		connectSeconds = instance.CommandTimeout
+	}
 	if connectSeconds <= 0 {
 		connectSeconds = 30
 	}
@@ -1067,6 +1089,12 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 		return nil, fmt.Errorf("resolve run base directory: %w", err)
 	}
 	runDir := filepath.Join(runBaseDir, sandboxID)
+	cleanupRunDir := true
+	defer func() {
+		if cleanupRunDir {
+			_ = os.RemoveAll(runDir)
+		}
+	}()
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
 		return nil, err
 	}
@@ -1181,7 +1209,7 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 	}
 	_ = conn.Close()
 
-	return &sandboxInstance{
+	instance := &sandboxInstance{
 		SandboxID:      sandboxID,
 		RunDir:         runDir,
 		ConfigPath:     configPath,
@@ -1195,7 +1223,9 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 		waitCh:         waitCh,
 		cleanupNetwork: cleanupNetwork,
 		vmRootFSPath:   vmRootFSPath,
-	}, nil
+	}
+	cleanupRunDir = false
+	return instance, nil
 }
 
 func (s *sandboxInstance) shutdown() {
@@ -1205,6 +1235,10 @@ func (s *sandboxInstance) shutdown() {
 	stopVM(s.fcCmd, s.waitCh)
 	if s.cleanupNetwork != nil {
 		s.cleanupNetwork()
+	}
+	if strings.TrimSpace(s.RunDir) != "" {
+		_ = os.RemoveAll(s.RunDir)
+		return
 	}
 	if strings.TrimSpace(s.vmRootFSPath) != "" {
 		_ = os.Remove(s.vmRootFSPath)
@@ -1303,6 +1337,9 @@ func dialVsockUntilReady(ctx context.Context, waitCh <-chan error, vsockPath str
 }
 
 func stopVM(fcCmd *exec.Cmd, waitCh <-chan error) {
+	if fcCmd == nil {
+		return
+	}
 	if fcCmd.Process != nil {
 		_ = fcCmd.Process.Kill()
 	}
