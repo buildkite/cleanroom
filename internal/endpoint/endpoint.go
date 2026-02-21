@@ -30,7 +30,17 @@ func Default() Endpoint {
 	}
 }
 
+// ResolveListen resolves an endpoint for server-side listening, which supports
+// tsnet:// in addition to all client-side schemes.
+func ResolveListen(raw string) (Endpoint, error) {
+	return resolve(raw, true)
+}
+
 func Resolve(raw string) (Endpoint, error) {
+	return resolve(raw, false)
+}
+
+func resolve(raw string, allowTSNet bool) (Endpoint, error) {
 	value := strings.TrimSpace(raw)
 	if value == "" {
 		value = strings.TrimSpace(os.Getenv("CLEANROOM_HOST"))
@@ -47,6 +57,9 @@ func Resolve(raw string) (Endpoint, error) {
 		}
 		return Endpoint{Scheme: "unix", Address: path, BaseURL: "http://unix"}, nil
 	case strings.HasPrefix(value, "tsnet://"):
+		if !allowTSNet {
+			return Endpoint{}, fmt.Errorf("tsnet:// endpoints are only valid for server --listen; use http://HOSTNAME.tailnet.ts.net:PORT for client connections")
+		}
 		return resolveTSNet(value)
 	case strings.HasPrefix(value, "http://"), strings.HasPrefix(value, "https://"):
 		scheme := "http"
@@ -57,7 +70,7 @@ func Resolve(raw string) (Endpoint, error) {
 	case strings.HasPrefix(value, "/"):
 		return Endpoint{Scheme: "unix", Address: value, BaseURL: "http://unix"}, nil
 	default:
-		return Endpoint{}, fmt.Errorf("unsupported endpoint %q (expected unix://, tsnet://, http://, https://, or absolute unix socket path)", value)
+		return Endpoint{}, fmt.Errorf("unsupported endpoint %q (expected unix://, http://, https://, or absolute unix socket path)", value)
 	}
 }
 

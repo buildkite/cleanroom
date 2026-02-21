@@ -49,7 +49,6 @@ type FirecrackerConfig struct {
 	MemoryMiB       int64
 	GuestCID        uint32
 	GuestPort       uint32
-	HostPassthrough bool
 	Launch          bool
 	LaunchSeconds   int64
 }

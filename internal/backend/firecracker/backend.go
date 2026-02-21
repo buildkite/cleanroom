@@ -19,15 +19,12 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"sync"
-	"syscall"
 	"time"
 
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/paths"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/vsockexec"
-	"github.com/creack/pty"
 	fcvsock "github.com/firecracker-microvm/firecracker-go-sdk/vsock"
 )
 
@@ -203,7 +200,7 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 		req.MemoryMiB = 512
 	}
 	if req.GuestCID == 0 {
-		req.GuestCID = 3
+		req.GuestCID = randomGuestCID()
 	}
 	if req.GuestPort == 0 {
 		req.GuestPort = vsockexec.DefaultPort
@@ -227,50 +224,25 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 	}
 
 	if !req.Launch {
-		observation.Phase = "plan_or_host_passthrough"
-		planPath := filepath.Join(runDir, "passthrough-plan.json")
+		observation.Phase = "plan"
+		planPath := filepath.Join(runDir, "plan.json")
 		plan := map[string]any{
 			"backend":      "firecracker",
 			"mode":         "plan-only",
 			"command_path": cmdPath,
 		}
-		if req.HostPassthrough {
-			plan["mode"] = "host-passthrough"
-			plan["not_sandboxed"] = true
-		}
 		if err := writeJSON(planPath, plan); err != nil {
-			return nil, err
-		}
-
-		if !req.HostPassthrough {
-			observation.PlanPath = planPath
-			observation.RunDir = runDir
-			return &backend.RunResult{
-				RunID:      req.RunID,
-				ExitCode:   0,
-				LaunchedVM: false,
-				PlanPath:   planPath,
-				RunDir:     runDir,
-				Message:    "firecracker execution plan generated; command not executed (set --dry-run or --host-passthrough for non-launch modes)",
-			}, nil
-		}
-
-		exitCode, stdout, stderr, err := runHostPassthrough(ctx, req.CWD, req.Command, req.TTY, stream)
-		if err != nil {
 			return nil, err
 		}
 		observation.PlanPath = planPath
 		observation.RunDir = runDir
-		observation.ExitCode = exitCode
 		return &backend.RunResult{
 			RunID:      req.RunID,
-			ExitCode:   exitCode,
+			ExitCode:   0,
 			LaunchedVM: false,
 			PlanPath:   planPath,
 			RunDir:     runDir,
-			Message:    "host passthrough execution complete (not sandboxed)",
-			Stdout:     stdout,
-			Stderr:     stderr,
+			Message:    "firecracker execution plan generated; command not executed",
 		}, nil
 	}
 
@@ -284,7 +256,7 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 	}
 
 	if req.KernelImagePath == "" || req.RootFSPath == "" {
-		return nil, errors.New("kernel_image and rootfs must be configured for launched execution; use --dry-run or --host-passthrough for non-launch modes")
+		return nil, errors.New("kernel_image and rootfs must be configured for launched execution")
 	}
 	observation.Phase = "launch"
 
@@ -579,131 +551,6 @@ func copyFile(src, dst string) error {
 
 func runResultMessage(base string) string {
 	return base + "; rootfs writes discarded after run"
-}
-
-func runHostPassthrough(ctx context.Context, cwd string, command []string, tty bool, stream backend.OutputStream) (int, string, string, error) {
-	if tty {
-		return runHostPassthroughTTY(ctx, cwd, command, stream)
-	}
-
-	cmd := exec.CommandContext(ctx, command[0], command[1:]...)
-	cmd.Dir = cwd
-	stdoutPipe, err := cmd.StdoutPipe()
-	if err != nil {
-		return 1, "", "", fmt.Errorf("prepare stdout pipe: %w", err)
-	}
-	stderrPipe, err := cmd.StderrPipe()
-	if err != nil {
-		return 1, "", "", fmt.Errorf("prepare stderr pipe: %w", err)
-	}
-	if err := cmd.Start(); err != nil {
-		return 1, "", "", fmt.Errorf("start host passthrough command: %w", err)
-	}
-
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	copyErrCh := make(chan error, 2)
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		_, copyErr := io.Copy(io.MultiWriter(&stdout, callbackWriter{cb: stream.OnStdout}), stdoutPipe)
-		copyErrCh <- copyErr
-	}()
-	go func() {
-		defer wg.Done()
-		_, copyErr := io.Copy(io.MultiWriter(&stderr, callbackWriter{cb: stream.OnStderr}), stderrPipe)
-		copyErrCh <- copyErr
-	}()
-
-	err = cmd.Wait()
-	wg.Wait()
-	close(copyErrCh)
-	for copyErr := range copyErrCh {
-		if copyErr != nil && err == nil {
-			err = copyErr
-		}
-	}
-
-	if err == nil {
-		return 0, stdout.String(), stderr.String(), nil
-	}
-
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
-		return exitErr.ExitCode(), stdout.String(), stderr.String(), nil
-	}
-	return 1, stdout.String(), stderr.String(), fmt.Errorf("run host passthrough command: %w", err)
-}
-
-func runHostPassthroughTTY(ctx context.Context, cwd string, command []string, stream backend.OutputStream) (int, string, string, error) {
-	cmd := exec.CommandContext(ctx, command[0], command[1:]...)
-	cmd.Dir = cwd
-
-	ptyFile, err := pty.Start(cmd)
-	if err != nil {
-		return 1, "", "", fmt.Errorf("start host passthrough tty command: %w", err)
-	}
-	defer ptyFile.Close()
-
-	if stream.OnAttach != nil {
-		stream.OnAttach(backend.AttachIO{
-			WriteStdin: func(data []byte) error {
-				if len(data) == 0 {
-					return nil
-				}
-				_, writeErr := ptyFile.Write(data)
-				return writeErr
-			},
-			ResizeTTY: func(cols, rows uint32) error {
-				if cols == 0 || rows == 0 {
-					return nil
-				}
-				return pty.Setsize(ptyFile, &pty.Winsize{
-					Cols: uint16(cols),
-					Rows: uint16(rows),
-				})
-			},
-		})
-	}
-
-	var stdout bytes.Buffer
-	copyDone := make(chan error, 1)
-	go func() {
-		_, copyErr := io.Copy(io.MultiWriter(&stdout, callbackWriter{cb: stream.OnStdout}), ptyFile)
-		copyDone <- copyErr
-	}()
-
-	err = cmd.Wait()
-	_ = ptyFile.Close()
-	copyErr := <-copyDone
-	if copyErr != nil && !expectedPTYReadError(copyErr) && err == nil {
-		err = copyErr
-	}
-
-	if err == nil {
-		return 0, stdout.String(), "", nil
-	}
-
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
-		return exitErr.ExitCode(), stdout.String(), "", nil
-	}
-	return 1, stdout.String(), "", fmt.Errorf("run host passthrough tty command: %w", err)
-}
-
-func expectedPTYReadError(err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, io.EOF) {
-		return true
-	}
-	var pathErr *os.PathError
-	if errors.As(err, &pathErr) {
-		return errors.Is(pathErr.Err, syscall.EIO)
-	}
-	return errors.Is(err, syscall.EIO)
 }
 
 type guestExecTiming struct {
@@ -1131,6 +978,16 @@ func durationMillisCeil(d time.Duration) int64 {
 		return 1
 	}
 	return ms
+}
+
+func randomGuestCID() uint32 {
+	var buf [4]byte
+	if _, err := cryptorand.Read(buf[:]); err != nil {
+		return 3
+	}
+	// Valid vsock CID range: 3 to 2^32-2 (0xFFFFFFFE).
+	cid := uint32(buf[0])<<24 | uint32(buf[1])<<16 | uint32(buf[2])<<8 | uint32(buf[3])
+	return cid%(0xFFFFFFFE-3) + 3
 }
 
 func tapNameFromRunID(runID string) string {

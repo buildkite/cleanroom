@@ -59,15 +59,12 @@ type PolicyValidateCommand struct {
 
 type ExecCommand struct {
 	Chdir    string `short:"c" help:"Change to this directory before running commands"`
-	Host     string `help:"Control-plane endpoint (unix://path, tsnet://hostname[:port], http://host:port, or https://host:port)"`
+	Host     string `help:"Control-plane endpoint (unix://path, http://host:port, or https://host:port)"`
 	LogLevel string `help:"Client log level (debug|info|warn|error)"`
 	Backend  string `help:"Execution backend (defaults to runtime config or firecracker)"`
 
-	RunDir            string `help:"Run directory for generated artifacts (default: XDG runtime/state cleanroom path)"`
-	ReadOnlyWorkspace bool   `help:"Mount workspace read-only for this run"`
-	DryRun            bool   `help:"Generate execution plan without running a backend command"`
-	HostPassthrough   bool   `help:"Run command directly on host instead of launching a backend (unsafe, not sandboxed)"`
-	LaunchSeconds     int64  `help:"VM boot/guest-agent readiness timeout in seconds"`
+	ReadOnlyWorkspace bool  `help:"Mount workspace read-only for this run"`
+	LaunchSeconds     int64 `help:"VM boot/guest-agent readiness timeout in seconds"`
 
 	Command []string `arg:"" passthrough:"" required:"" help:"Command to execute"`
 }
@@ -78,10 +75,8 @@ type ConsoleCommand struct {
 	LogLevel string `help:"Client log level (debug|info|warn|error)"`
 	Backend  string `help:"Execution backend (defaults to runtime config or firecracker)"`
 
-	RunDir            string `help:"Run directory for generated artifacts (default: XDG runtime/state cleanroom path)"`
-	ReadOnlyWorkspace bool   `help:"Mount workspace read-only for this run"`
-	HostPassthrough   bool   `default:"true" help:"Run command directly on host instead of launching a backend (unsafe, not sandboxed)"`
-	LaunchSeconds     int64  `help:"VM boot/guest-agent readiness timeout in seconds"`
+	ReadOnlyWorkspace bool  `help:"Mount workspace read-only for this run"`
+	LaunchSeconds     int64 `help:"VM boot/guest-agent readiness timeout in seconds"`
 
 	Command []string `arg:"" passthrough:"" optional:"" help:"Command to run in the console (default: sh)"`
 }
@@ -208,28 +203,37 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 		return err
 	}
 
-	cwd, err := resolveCWD(ctx.CWD, e.Chdir)
-	if err != nil {
-		return err
-	}
 	ep, err := endpoint.Resolve(e.Host)
 	if err != nil {
 		return err
+	}
+	var cwd string
+	if ep.Scheme != "unix" {
+		if e.Chdir == "" {
+			return fmt.Errorf("remote endpoint %q requires an explicit -c/--chdir with an absolute path", ep.Address)
+		}
+		if !filepath.IsAbs(e.Chdir) {
+			return fmt.Errorf("remote endpoint %q requires an absolute -c/--chdir path, got %q", ep.Address, e.Chdir)
+		}
+		cwd = filepath.Clean(e.Chdir)
+	} else {
+		var err error
+		cwd, err = resolveCWD(ctx.CWD, e.Chdir)
+		if err != nil {
+			return err
+		}
 	}
 	logger.Debug("sending execution request",
 		"endpoint", ep.Address,
 		"cwd", cwd,
 		"backend", e.Backend,
 		"command_argc", len(e.Command),
-		"dry_run", e.DryRun,
-		"host_passthrough", e.HostPassthrough,
 	)
 	client := controlclient.New(ep)
 	createSandboxResp, err := client.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
 		Cwd:     cwd,
 		Backend: e.Backend,
 		Options: &cleanroomv1.SandboxOptions{
-			RunDir:            e.RunDir,
 			ReadOnlyWorkspace: e.ReadOnlyWorkspace,
 			LaunchSeconds:     e.LaunchSeconds,
 		},
@@ -251,10 +255,7 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 		SandboxId: sandboxID,
 		Command:   append([]string(nil), e.Command...),
 		Options: &cleanroomv1.ExecutionOptions{
-			RunDir:            e.RunDir,
 			ReadOnlyWorkspace: e.ReadOnlyWorkspace,
-			DryRun:            e.DryRun,
-			HostPassthrough:   e.HostPassthrough,
 			LaunchSeconds:     e.LaunchSeconds,
 			Cwd:               cwd,
 		},
@@ -409,13 +410,25 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 		return err
 	}
 
-	cwd, err := resolveCWD(ctx.CWD, c.Chdir)
-	if err != nil {
-		return err
-	}
 	ep, err := endpoint.Resolve(c.Host)
 	if err != nil {
 		return err
+	}
+	var cwd string
+	if ep.Scheme != "unix" {
+		if c.Chdir == "" {
+			return fmt.Errorf("remote endpoint %q requires an explicit -c/--chdir with an absolute path", ep.Address)
+		}
+		if !filepath.IsAbs(c.Chdir) {
+			return fmt.Errorf("remote endpoint %q requires an absolute -c/--chdir path, got %q", ep.Address, c.Chdir)
+		}
+		cwd = filepath.Clean(c.Chdir)
+	} else {
+		var err error
+		cwd, err = resolveCWD(ctx.CWD, c.Chdir)
+		if err != nil {
+			return err
+		}
 	}
 	command := append([]string(nil), c.Command...)
 	if len(command) == 0 {
@@ -426,7 +439,6 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 		"cwd", cwd,
 		"backend", c.Backend,
 		"command_argc", len(command),
-		"host_passthrough", c.HostPassthrough,
 	)
 
 	client := controlclient.New(ep)
@@ -434,7 +446,6 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 		Cwd:     cwd,
 		Backend: c.Backend,
 		Options: &cleanroomv1.SandboxOptions{
-			RunDir:            c.RunDir,
 			ReadOnlyWorkspace: c.ReadOnlyWorkspace,
 			LaunchSeconds:     c.LaunchSeconds,
 		},
@@ -454,9 +465,7 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 		SandboxId: sandboxID,
 		Command:   command,
 		Options: &cleanroomv1.ExecutionOptions{
-			RunDir:            c.RunDir,
 			ReadOnlyWorkspace: c.ReadOnlyWorkspace,
-			HostPassthrough:   c.HostPassthrough,
 			LaunchSeconds:     c.LaunchSeconds,
 			Tty:               true,
 			Cwd:               cwd,
@@ -624,7 +633,7 @@ func (s *ServeCommand) Run(ctx *runtimeContext) error {
 		return err
 	}
 
-	ep, err := endpoint.Resolve(s.Listen)
+	ep, err := endpoint.ResolveListen(s.Listen)
 	if err != nil {
 		return err
 	}
@@ -739,14 +748,7 @@ func mergeFirecrackerConfig(cwd string, e *ExecCommand, cfg runtimeconfig.Config
 		LaunchSeconds:   cfg.Backends.Firecracker.LaunchSeconds,
 	}
 
-	if e.RunDir != "" {
-		out.RunDir = e.RunDir
-	}
 	out.Launch = true
-	if e.DryRun || e.HostPassthrough {
-		out.Launch = false
-	}
-	out.HostPassthrough = e.HostPassthrough
 	if e.LaunchSeconds != 0 {
 		out.LaunchSeconds = e.LaunchSeconds
 	}

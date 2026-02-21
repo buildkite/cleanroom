@@ -227,7 +227,6 @@ func (x *Sandbox) GetUpdatedAt() *timestamppb.Timestamp {
 
 type SandboxOptions struct {
 	state             protoimpl.MessageState `protogen:"open.v1"`
-	RunDir            string                 `protobuf:"bytes,1,opt,name=run_dir,json=runDir,proto3" json:"run_dir,omitempty"`
 	ReadOnlyWorkspace bool                   `protobuf:"varint,2,opt,name=read_only_workspace,json=readOnlyWorkspace,proto3" json:"read_only_workspace,omitempty"`
 	LaunchSeconds     int64                  `protobuf:"varint,3,opt,name=launch_seconds,json=launchSeconds,proto3" json:"launch_seconds,omitempty"`
 	unknownFields     protoimpl.UnknownFields
@@ -262,13 +261,6 @@ func (x *SandboxOptions) ProtoReflect() protoreflect.Message {
 // Deprecated: Use SandboxOptions.ProtoReflect.Descriptor instead.
 func (*SandboxOptions) Descriptor() ([]byte, []int) {
 	return file_proto_cleanroom_v1_control_proto_rawDescGZIP(), []int{1}
-}
-
-func (x *SandboxOptions) GetRunDir() string {
-	if x != nil {
-		return x.RunDir
-	}
-	return ""
 }
 
 func (x *SandboxOptions) GetReadOnlyWorkspace() bool {
@@ -907,10 +899,7 @@ func (x *Execution) GetRunId() string {
 
 type ExecutionOptions struct {
 	state             protoimpl.MessageState `protogen:"open.v1"`
-	RunDir            string                 `protobuf:"bytes,1,opt,name=run_dir,json=runDir,proto3" json:"run_dir,omitempty"`
 	ReadOnlyWorkspace bool                   `protobuf:"varint,2,opt,name=read_only_workspace,json=readOnlyWorkspace,proto3" json:"read_only_workspace,omitempty"`
-	DryRun            bool                   `protobuf:"varint,3,opt,name=dry_run,json=dryRun,proto3" json:"dry_run,omitempty"`
-	HostPassthrough   bool                   `protobuf:"varint,4,opt,name=host_passthrough,json=hostPassthrough,proto3" json:"host_passthrough,omitempty"`
 	LaunchSeconds     int64                  `protobuf:"varint,5,opt,name=launch_seconds,json=launchSeconds,proto3" json:"launch_seconds,omitempty"`
 	Tty               bool                   `protobuf:"varint,6,opt,name=tty,proto3" json:"tty,omitempty"`
 	Cwd               string                 `protobuf:"bytes,7,opt,name=cwd,proto3" json:"cwd,omitempty"`
@@ -948,30 +937,9 @@ func (*ExecutionOptions) Descriptor() ([]byte, []int) {
 	return file_proto_cleanroom_v1_control_proto_rawDescGZIP(), []int{13}
 }
 
-func (x *ExecutionOptions) GetRunDir() string {
-	if x != nil {
-		return x.RunDir
-	}
-	return ""
-}
-
 func (x *ExecutionOptions) GetReadOnlyWorkspace() bool {
 	if x != nil {
 		return x.ReadOnlyWorkspace
-	}
-	return false
-}
-
-func (x *ExecutionOptions) GetDryRun() bool {
-	if x != nil {
-		return x.DryRun
-	}
-	return false
-}
-
-func (x *ExecutionOptions) GetHostPassthrough() bool {
-	if x != nil {
-		return x.HostPassthrough
 	}
 	return false
 }
@@ -2068,9 +2036,8 @@ const file_proto_cleanroom_v1_control_proto_rawDesc = "" +
 	"\n" +
 	"created_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
-	"updated_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\"\x80\x01\n" +
-	"\x0eSandboxOptions\x12\x17\n" +
-	"\arun_dir\x18\x01 \x01(\tR\x06runDir\x12.\n" +
+	"updated_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\"g\n" +
+	"\x0eSandboxOptions\x12.\n" +
 	"\x13read_only_workspace\x18\x02 \x01(\bR\x11readOnlyWorkspace\x12%\n" +
 	"\x0elaunch_seconds\x18\x03 \x01(\x03R\rlaunchSeconds\"z\n" +
 	"\x14CreateSandboxRequest\x12\x10\n" +
@@ -2122,12 +2089,9 @@ const file_proto_cleanroom_v1_control_proto_rawDesc = "" +
 	"\vfinished_at\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\n" +
 	"finishedAt\x12\x10\n" +
 	"\x03tty\x18\b \x01(\bR\x03tty\x12\x15\n" +
-	"\x06run_id\x18\t \x01(\tR\x05runId\"\xea\x01\n" +
-	"\x10ExecutionOptions\x12\x17\n" +
-	"\arun_dir\x18\x01 \x01(\tR\x06runDir\x12.\n" +
-	"\x13read_only_workspace\x18\x02 \x01(\bR\x11readOnlyWorkspace\x12\x17\n" +
-	"\adry_run\x18\x03 \x01(\bR\x06dryRun\x12)\n" +
-	"\x10host_passthrough\x18\x04 \x01(\bR\x0fhostPassthrough\x12%\n" +
+	"\x06run_id\x18\t \x01(\tR\x05runId\"\x8d\x01\n" +
+	"\x10ExecutionOptions\x12.\n" +
+	"\x13read_only_workspace\x18\x02 \x01(\bR\x11readOnlyWorkspace\x12%\n" +
 	"\x0elaunch_seconds\x18\x05 \x01(\x03R\rlaunchSeconds\x12\x10\n" +
 	"\x03tty\x18\x06 \x01(\bR\x03tty\x12\x10\n" +
 	"\x03cwd\x18\a \x01(\tR\x03cwd\"\x8b\x01\n" +

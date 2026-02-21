@@ -132,12 +132,14 @@ func TestConsoleIntegrationForwardsStdinAndStreamsOutput(t *testing.T) {
 	}
 
 	host, _ := startIntegrationServer(t, adapter)
+	cwd := t.TempDir()
 	outcome := runConsoleWithCapture(ConsoleCommand{
-		Host: host,
+		Host:  host,
+		Chdir: cwd,
 		// Console defaults to host passthrough for this MVP.
 		Command: []string{"sh"},
 	}, "hello\nexit\n", runtimeContext{
-		CWD: t.TempDir(),
+		CWD: cwd,
 	})
 
 	if outcome.cause != nil {
@@ -175,13 +177,15 @@ func TestConsoleIntegrationInterruptCancelsExecution(t *testing.T) {
 
 	host, _ := startIntegrationServer(t, adapter)
 	signalCh := withTestSignalChannel(t)
+	cwd := t.TempDir()
 
 	done := make(chan execOutcome, 1)
 	go func() {
 		done <- runConsoleWithCapture(ConsoleCommand{
-			Host: host,
+			Host:  host,
+			Chdir: cwd,
 		}, "", runtimeContext{
-			CWD: t.TempDir(),
+			CWD: cwd,
 		})
 	}()
 

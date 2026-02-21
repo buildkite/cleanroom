@@ -472,8 +472,6 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 			"cwd", in.CWD,
 			"backend", in.Backend,
 			"command_argc", len(in.Command),
-			"dry_run", in.Options.DryRun,
-			"host_passthrough", in.Options.HostPassthrough,
 		)
 	}
 

@@ -14,9 +14,8 @@ type LaunchCleanroomRequest struct {
 }
 
 type LaunchCleanroomOptions struct {
-	RunDir            string `json:"run_dir,omitempty"`
-	ReadOnlyWorkspace bool   `json:"read_only_workspace,omitempty"`
-	LaunchSeconds     int64  `json:"launch_seconds,omitempty"`
+	ReadOnlyWorkspace bool  `json:"read_only_workspace,omitempty"`
+	LaunchSeconds     int64 `json:"launch_seconds,omitempty"`
 }
 
 type LaunchCleanroomResponse struct {
@@ -24,7 +23,6 @@ type LaunchCleanroomResponse struct {
 	Backend      string `json:"backend"`
 	PolicySource string `json:"policy_source"`
 	PolicyHash   string `json:"policy_hash"`
-	RunDirRoot   string `json:"run_dir_root,omitempty"`
 	Message      string `json:"message"`
 }
 
@@ -56,11 +54,8 @@ type TerminateCleanroomResponse struct {
 }
 
 type ExecOptions struct {
-	RunDir            string `json:"run_dir,omitempty"`
-	ReadOnlyWorkspace bool   `json:"read_only_workspace,omitempty"`
-	DryRun            bool   `json:"dry_run,omitempty"`
-	HostPassthrough   bool   `json:"host_passthrough,omitempty"`
-	LaunchSeconds     int64  `json:"launch_seconds,omitempty"`
+	ReadOnlyWorkspace bool  `json:"read_only_workspace,omitempty"`
+	LaunchSeconds     int64 `json:"launch_seconds,omitempty"`
 }
 
 type ExecResponse struct {

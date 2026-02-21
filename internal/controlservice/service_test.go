@@ -143,9 +143,6 @@ func TestLaunchRunTerminateLifecycle(t *testing.T) {
 
 	launchResp, err := svc.LaunchCleanroom(context.Background(), controlapi.LaunchCleanroomRequest{
 		CWD: "/repo",
-		Options: controlapi.LaunchCleanroomOptions{
-			RunDir: "/tmp/cleanrooms",
-		},
 	})
 	if err != nil {
 		t.Fatalf("LaunchCleanroom returned error: %v", err)
@@ -169,9 +166,6 @@ func TestLaunchRunTerminateLifecycle(t *testing.T) {
 	}
 	if got := adapter.req.Command[0]; got != "pi" {
 		t.Fatalf("expected normalized command to start with pi, got %q", got)
-	}
-	if !strings.HasPrefix(adapter.req.RunDir, "/tmp/cleanrooms/") {
-		t.Fatalf("expected run dir under run root, got %q", adapter.req.RunDir)
 	}
 	if adapter.runCalls != 1 {
 		t.Fatalf("expected exactly one run call, got %d", adapter.runCalls)
