@@ -1,0 +1,16 @@
+#!/bin/bash
+set -euo pipefail
+
+if command -v mise >/dev/null 2>&1; then
+  exit 0
+fi
+
+echo "--- :gear: Installing mise"
+curl -sSf https://mise.run | sh
+export PATH="$HOME/.local/bin:$PATH"
+
+if command -v gh >/dev/null 2>&1; then
+  if token="$(gh auth token 2>/dev/null)"; then
+    export MISE_GITHUB_TOKEN="$token"
+  fi
+fi
