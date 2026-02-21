@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/buildkite/cleanroom/internal/backend"
@@ -238,38 +239,17 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 			return nil, err
 		}
 
-		if !req.HostPassthrough {
-			observation.PlanPath = planPath
-			observation.RunDir = runDir
-			return &backend.RunResult{
-				RunID:       req.RunID,
-				ExitCode:    0,
-				LaunchedVM:  false,
-				PlanPath:    planPath,
-				RunDir:      runDir,
-				ImageRef:    req.Policy.ImageRef,
-				ImageDigest: req.Policy.ImageDigest,
-				Message:     "firecracker execution plan generated; command not executed (set --dry-run or --host-passthrough for non-launch modes)",
-			}, nil
-		}
-
-		exitCode, stdout, stderr, err := runHostPassthrough(ctx, req.CWD, req.Command, req.TTY, stream)
-		if err != nil {
-			return nil, err
-		}
 		observation.PlanPath = planPath
 		observation.RunDir = runDir
 		return &backend.RunResult{
 			RunID:       req.RunID,
-			ExitCode:    exitCode,
+			ExitCode:    0,
 			LaunchedVM:  false,
 			PlanPath:    planPath,
 			RunDir:      runDir,
 			ImageRef:    req.Policy.ImageRef,
 			ImageDigest: req.Policy.ImageDigest,
-			Message:     "host passthrough execution complete (not sandboxed)",
-			Stdout:      stdout,
-			Stderr:      stderr,
+			Message:     "firecracker execution plan generated; command not executed",
 		}, nil
 	}
 
@@ -283,7 +263,7 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 	}
 
 	if req.KernelImagePath == "" {
-		return nil, errors.New("kernel_image must be configured for launched execution; use --dry-run or --host-passthrough for non-launch modes")
+		return nil, errors.New("kernel_image must be configured for launched execution")
 	}
 	observation.Phase = "launch"
 

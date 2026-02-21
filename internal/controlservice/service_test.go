@@ -3,6 +3,7 @@ package controlservice
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/controlapi"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
+	"github.com/buildkite/cleanroom/internal/paths"
 	"github.com/buildkite/cleanroom/internal/policy"
 )
 
@@ -185,8 +187,12 @@ func TestLaunchRunTerminateLifecycle(t *testing.T) {
 	if runResp.ImageDigest == "" {
 		t.Fatal("expected run response to include image digest")
 	}
-	if !strings.HasPrefix(adapter.req.RunDir, "/tmp/cleanrooms/") {
-		t.Fatalf("expected run dir under run root, got %q", adapter.req.RunDir)
+	runBaseDir, err := paths.RunBaseDir()
+	if err != nil {
+		t.Fatalf("resolve run base dir: %v", err)
+	}
+	if got, want := filepath.Dir(adapter.req.RunDir), filepath.Clean(runBaseDir); got != want {
+		t.Fatalf("expected run dir under %q, got %q", want, adapter.req.RunDir)
 	}
 	if adapter.runCalls != 1 {
 		t.Fatalf("expected exactly one run call, got %d", adapter.runCalls)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -12,6 +13,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/controlapi"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
+	"github.com/buildkite/cleanroom/internal/paths"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 	"github.com/charmbracelet/log"
@@ -853,6 +855,14 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 	})
 
 	firecrackerCfg := sb.Firecracker
+	if strings.TrimSpace(firecrackerCfg.RunDir) == "" {
+		if runBaseDir, err := paths.RunBaseDir(); err == nil {
+			firecrackerCfg.RunDir = filepath.Join(runBaseDir, ex.RunID)
+		}
+	}
+	if ex.Options.ReadOnlyWorkspace {
+		firecrackerCfg.WorkspaceAccess = "ro"
+	}
 	if ex.Options.LaunchSeconds != 0 {
 		firecrackerCfg.LaunchSeconds = ex.Options.LaunchSeconds
 	}
