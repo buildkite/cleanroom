@@ -10,6 +10,7 @@ service SandboxService {
   rpc CreateSandbox(CreateSandboxRequest) returns (CreateSandboxResponse);
   rpc GetSandbox(GetSandboxRequest) returns (GetSandboxResponse);
   rpc ListSandboxes(ListSandboxesRequest) returns (ListSandboxesResponse);
+  rpc DownloadSandboxFile(DownloadSandboxFileRequest) returns (DownloadSandboxFileResponse);
   rpc TerminateSandbox(TerminateSandboxRequest) returns (TerminateSandboxResponse);
   rpc StreamSandboxEvents(StreamSandboxEventsRequest) returns (stream SandboxEvent);
 }
@@ -86,6 +87,19 @@ message ListSandboxesRequest {}
 
 message ListSandboxesResponse {
   repeated Sandbox sandboxes = 1;
+}
+
+message DownloadSandboxFileRequest {
+  string sandbox_id = 1;
+  string path = 2;
+  int64 max_bytes = 3;
+}
+
+message DownloadSandboxFileResponse {
+  string sandbox_id = 1;
+  string path = 2;
+  bytes data = 3;
+  int64 size_bytes = 4;
 }
 
 message TerminateSandboxRequest {

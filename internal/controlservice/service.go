@@ -31,20 +31,21 @@ type Service struct {
 }
 
 type sandboxState struct {
-	ID                string
-	Backend           string
-	Policy            *policy.CompiledPolicy
-	Firecracker       backend.FirecrackerConfig
-	ActiveExecutionID string
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
-	LastExecutionID   string
-	Status            cleanroomv1.SandboxStatus
-	EventHistory      []*cleanroomv1.SandboxEvent
-	EventSubscribers  map[int]chan *cleanroomv1.SandboxEvent
-	NextSubID         int
-	Done              chan struct{}
-	DoneClosed        bool
+	ID                 string
+	Backend            string
+	Policy             *policy.CompiledPolicy
+	Firecracker        backend.FirecrackerConfig
+	ActiveExecutionID  string
+	DownloadInProgress bool
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+	LastExecutionID    string
+	Status             cleanroomv1.SandboxStatus
+	EventHistory       []*cleanroomv1.SandboxEvent
+	EventSubscribers   map[int]chan *cleanroomv1.SandboxEvent
+	NextSubID          int
+	Done               chan struct{}
+	DoneClosed         bool
 }
 
 type executionState struct {
@@ -108,8 +109,9 @@ var (
 )
 
 const (
-	attachRegistrationWait = 250 * time.Millisecond
-	attachPollInterval     = 10 * time.Millisecond
+	attachRegistrationWait        = 250 * time.Millisecond
+	attachPollInterval            = 10 * time.Millisecond
+	defaultDownloadMaxBytes int64 = 10 * 1024 * 1024
 )
 
 func (s *Service) CreateSandbox(ctx context.Context, req *cleanroomv1.CreateSandboxRequest) (*cleanroomv1.CreateSandboxResponse, error) {
@@ -219,6 +221,79 @@ func (s *Service) ListSandboxes(_ context.Context, _ *cleanroomv1.ListSandboxesR
 		resp.Sandboxes = append(resp.Sandboxes, cloneSandboxLocked(sb))
 	}
 	return resp, nil
+}
+
+func (s *Service) DownloadSandboxFile(ctx context.Context, req *cleanroomv1.DownloadSandboxFileRequest) (*cleanroomv1.DownloadSandboxFileResponse, error) {
+	if req == nil {
+		return nil, errors.New("missing request")
+	}
+	sandboxID := strings.TrimSpace(req.GetSandboxId())
+	if sandboxID == "" {
+		return nil, errors.New("missing sandbox_id")
+	}
+	path := req.GetPath()
+	if path == "" {
+		return nil, errors.New("missing path")
+	}
+	if !strings.HasPrefix(path, "/") {
+		return nil, errors.New("invalid path: must be absolute")
+	}
+
+	maxBytes := req.GetMaxBytes()
+	if maxBytes <= 0 {
+		maxBytes = defaultDownloadMaxBytes
+	}
+
+	s.mu.Lock()
+	state, ok := s.sandboxes[sandboxID]
+	if !ok {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("unknown sandbox %q", sandboxID)
+	}
+	if state.Status != cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("sandbox %q is not ready", sandboxID)
+	}
+	adapter, ok := s.Backends[state.Backend]
+	if !ok {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("unknown backend %q", state.Backend)
+	}
+	downloader, ok := adapter.(backend.SandboxFileDownloadAdapter)
+	if !ok {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("backend %q does not support sandbox file downloads", state.Backend)
+	}
+	if state.DownloadInProgress {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("sandbox_busy: sandbox %q already has an active file download", sandboxID)
+	}
+	if activeID := strings.TrimSpace(state.ActiveExecutionID); activeID != "" {
+		if activeExecution, ok := s.executions[executionKey(sandboxID, activeID)]; ok && !isFinalExecutionStatus(activeExecution.Status) {
+			s.mu.Unlock()
+			return nil, fmt.Errorf("sandbox_busy: sandbox %q already has active execution %q", sandboxID, activeID)
+		}
+	}
+	state.DownloadInProgress = true
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		if current, ok := s.sandboxes[sandboxID]; ok {
+			current.DownloadInProgress = false
+		}
+		s.mu.Unlock()
+	}()
+
+	data, err := downloader.DownloadSandboxFile(ctx, sandboxID, path, maxBytes)
+	if err != nil {
+		return nil, fmt.Errorf("download sandbox file: %w", err)
+	}
+	return &cleanroomv1.DownloadSandboxFileResponse{
+		SandboxId: sandboxID,
+		Path:      path,
+		Data:      data,
+		SizeBytes: int64(len(data)),
+	}, nil
 }
 
 func (s *Service) TerminateSandbox(ctx context.Context, req *cleanroomv1.TerminateSandboxRequest) (*cleanroomv1.TerminateSandboxResponse, error) {
@@ -387,6 +462,10 @@ func (s *Service) CreateExecution(_ context.Context, req *cleanroomv1.CreateExec
 			return nil, fmt.Errorf("sandbox_busy: sandbox %q already has active execution %q", sandboxID, sandbox.ActiveExecutionID)
 		}
 		sandbox.ActiveExecutionID = ""
+	}
+	if sandbox.DownloadInProgress {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("sandbox_busy: sandbox %q currently has an active file download", sandboxID)
 	}
 	imageRef := ""
 	imageDigest := ""
