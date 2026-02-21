@@ -175,9 +175,12 @@ metadata:
 - `cleanroom exec` uses a `--` command separator consistent with common shell tooling.
 - Unless an explicit vector command form is added later, `cleanroom exec` defaults to shell execution (e.g., `/bin/sh -lc`) so commands like `cleanroom exec "npm test"` work directly.
 - Cleanroom uses a client/server architecture:
-  - `cleanroom serve` starts the local control-plane server.
+  - `cleanroom` CLI resolves and compiles policy from repository files.
+  - `cleanroom serve` validates compiled policy and executes runs via backend adapters.
   - all CLI commands, including `cleanroom exec`, call the server API.
   - "local execution" means local backend selected by the server, not a direct non-API code path.
+- Current API/runtime intent: no host workspace mount input is accepted by `CreateSandbox` or `CreateExecution`.
+- Workloads run against the backend-provided sandbox image filesystem for each execution.
 
 ### 5.4.1 `cleanroom exec` behavior contract (normative)
 - `cleanroom exec` must:
@@ -225,24 +228,19 @@ Requirements:
 ### 6.1 Launch flow
 All runtime launch behavior is initiated by control-plane API calls (for example `CreateSandbox` and `CreateExecution`) from CLI or SDK clients.
 
-1. Resolve spec file using precedence above.
-2. Read repo policy and merge with organization defaults (if provided).
-2. Validate schema and fail fast on invalid/overlapping host conflicts.
-3. Compile network policy to backend-specific config.
+1. CLI/SDK client resolves spec file using precedence above.
+2. CLI/SDK client compiles policy and sends it in `CreateSandbox`.
+3. Control plane validates compiled policy and backend selection.
 4. Start sandbox via selected backend.
 5. Attach/enable content-cache proxy sidecar or endpoint wiring.
 6. Enforce runtime policy:
   - DNS/egress allowlist only.
   - outbound packet filtering to allowed host:port/protocol.
-7. If `sandbox.mise.enabled` is true and a `.mise.toml` or `.mise/config.toml` exists:
-   - resolve toolchain versions from repo config,
-   - run workload through `mise exec` or equivalent shim behavior,
-   - preserve existing policy and secret bindings.
-8. Run workload command.
-9. Emit structured events + exit status; tear down resources.
+7. Run workload command.
+8. Emit structured events + exit status; tear down resources.
 
 ### 6.1.1 Policy load and immutability
-- Policy is loaded exactly once by the control plane during sandbox creation.
+- Policy is loaded and compiled by the client, then provided to the control plane at sandbox creation.
 - Backend adapters receive a compiled immutable policy payload; they must not receive repository file paths for policy re-resolution.
 - Active runs do not support runtime policy mutation.
 - Backend adapters must not re-read repository policy files after run creation.
