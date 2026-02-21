@@ -251,6 +251,24 @@ func (a *Adapter) RunInSandbox(ctx context.Context, req backend.RunRequest, stre
 			runDir = filepath.Join(baseDir, req.RunID)
 		}
 	}
+	observation := firecrackerRunObservation{
+		RunID:       req.RunID,
+		Backend:     a.Name(),
+		LaunchedVM:  false,
+		ImageRef:    instance.ImageRef,
+		ImageDigest: instance.ImageDigest,
+		PlanPath:    instance.ConfigPath,
+		RunDir:      runDir,
+	}
+	writeObservation := func() {
+		if runDir == "" {
+			return
+		}
+		observation.TotalMS = time.Since(runStart).Milliseconds()
+		obsPath := filepath.Join(runDir, runObservabilityFile)
+		_ = writeJSON(obsPath, observation)
+	}
+	defer writeObservation()
 	if runDir != "" {
 		if err := os.MkdirAll(runDir, 0o755); err != nil {
 			return nil, fmt.Errorf("create run directory: %w", err)
@@ -264,26 +282,14 @@ func (a *Adapter) RunInSandbox(ctx context.Context, req backend.RunRequest, stre
 
 	guestResult, timing, err := runGuestCommandFn(bootCtx, ctx, instance.exitedCh, instance.exitedErrOrNil, instance.VsockPath, instance.GuestPort, guestReq, stream)
 	if err != nil {
+		observation.ExitCode = 1
+		observation.GuestError = err.Error()
 		return nil, err
 	}
-
-	if runDir != "" {
-		obsPath := filepath.Join(runDir, runObservabilityFile)
-		_ = writeJSON(obsPath, firecrackerRunObservation{
-			RunID:       req.RunID,
-			Backend:     a.Name(),
-			LaunchedVM:  false,
-			ImageRef:    instance.ImageRef,
-			ImageDigest: instance.ImageDigest,
-			PlanPath:    instance.ConfigPath,
-			RunDir:      runDir,
-			ExitCode:    guestResult.ExitCode,
-			GuestError:  guestResult.Error,
-			GuestExecMS: timing.CommandRun.Milliseconds(),
-			VsockWaitMS: timing.WaitForAgent.Milliseconds(),
-			TotalMS:     time.Since(runStart).Milliseconds(),
-		})
-	}
+	observation.ExitCode = guestResult.ExitCode
+	observation.GuestError = guestResult.Error
+	observation.GuestExecMS = timing.CommandRun.Milliseconds()
+	observation.VsockWaitMS = timing.WaitForAgent.Milliseconds()
 
 	message := runResultMessage("guest command execution complete")
 	if guestResult.Error != "" {
@@ -1146,9 +1152,9 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 		return nil, err
 	}
 
-	runBaseDir, err := paths.RunBaseDir()
+	runBaseDir, err := sandboxRuntimeBaseDir()
 	if err != nil {
-		return nil, fmt.Errorf("resolve run base directory: %w", err)
+		return nil, fmt.Errorf("resolve sandbox runtime base directory: %w", err)
 	}
 	runDir := filepath.Join(runBaseDir, sandboxID)
 	cleanupRunDir := true
@@ -1288,6 +1294,14 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 	_ = conn.Close()
 	cleanupRunDir = false
 	return instance, nil
+}
+
+func sandboxRuntimeBaseDir() (string, error) {
+	base, err := paths.StateBaseDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(base, "sandboxes"), nil
 }
 
 func (s *sandboxInstance) shutdown() {

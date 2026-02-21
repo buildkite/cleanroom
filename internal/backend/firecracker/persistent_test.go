@@ -165,3 +165,65 @@ func TestRunInSandboxWritesRunObservabilityForStatusCommand(t *testing.T) {
 		t.Fatalf("unexpected run_id: got %v want %v", got, want)
 	}
 }
+
+func TestRunInSandboxWritesRunObservabilityOnError(t *testing.T) {
+	t.Parallel()
+
+	runDir := t.TempDir()
+	adapter := &Adapter{}
+	adapter.runGuestCommandFn = func(_ context.Context, _ context.Context, _ <-chan struct{}, _ func() error, _ string, _ uint32, _ vsockexec.ExecRequest, _ backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error) {
+		return vsockexec.ExecResponse{}, guestExecTiming{}, errors.New("guest command failed")
+	}
+	adapter.sandboxes = map[string]*sandboxInstance{
+		"cr-test": {
+			SandboxID:   "cr-test",
+			VsockPath:   "/tmp/fake.sock",
+			GuestPort:   10700,
+			ConfigPath:  "/tmp/fake-config.json",
+			ImageRef:    "image-ref",
+			ImageDigest: "image-digest",
+		},
+	}
+
+	_, err := adapter.RunInSandbox(context.Background(), backend.RunRequest{
+		SandboxID: "cr-test",
+		RunID:     "run-err",
+		Command:   []string{"echo", "hello"},
+		FirecrackerConfig: backend.FirecrackerConfig{
+			RunDir: runDir,
+		},
+	}, backend.OutputStream{})
+	if err == nil {
+		t.Fatal("expected RunInSandbox to fail")
+	}
+
+	obsPath := filepath.Join(runDir, runObservabilityFile)
+	b, readErr := os.ReadFile(obsPath)
+	if readErr != nil {
+		t.Fatalf("read observability file: %v", readErr)
+	}
+	var obs map[string]any
+	if err := json.Unmarshal(b, &obs); err != nil {
+		t.Fatalf("parse observability json: %v", err)
+	}
+	if got, want := obs["run_id"], "run-err"; got != want {
+		t.Fatalf("unexpected run_id: got %v want %v", got, want)
+	}
+	if got := obs["guest_error"]; got == nil || got == "" {
+		t.Fatalf("expected guest_error to be recorded, got %v", got)
+	}
+}
+
+func TestSandboxRuntimeBaseDirUsesSeparateSandboxRoot(t *testing.T) {
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+
+	baseDir, err := sandboxRuntimeBaseDir()
+	if err != nil {
+		t.Fatalf("sandboxRuntimeBaseDir returned error: %v", err)
+	}
+	want := filepath.Join(stateHome, "cleanroom", "sandboxes")
+	if got := baseDir; got != want {
+		t.Fatalf("unexpected sandbox runtime base dir: got %q want %q", got, want)
+	}
+}
