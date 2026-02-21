@@ -324,8 +324,6 @@ func (s *Service) CreateExecution(_ context.Context, req *cleanroomv1.CreateExec
 		execOpts = controlapi.ExecOptions{
 			RunDir:            opts.GetRunDir(),
 			ReadOnlyWorkspace: opts.GetReadOnlyWorkspace(),
-			DryRun:            opts.GetDryRun(),
-			HostPassthrough:   opts.GetHostPassthrough(),
 			LaunchSeconds:     opts.GetLaunchSeconds(),
 		}
 		cwd = strings.TrimSpace(opts.GetCwd())
@@ -853,10 +851,6 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 	if ex.Options.ReadOnlyWorkspace {
 		firecrackerCfg.WorkspaceAccess = "ro"
 	}
-	if ex.Options.DryRun || ex.Options.HostPassthrough {
-		firecrackerCfg.Launch = false
-	}
-	firecrackerCfg.HostPassthrough = ex.Options.HostPassthrough
 	if ex.Options.LaunchSeconds != 0 {
 		firecrackerCfg.LaunchSeconds = ex.Options.LaunchSeconds
 	}
@@ -1112,8 +1106,6 @@ func (s *Service) Exec(ctx context.Context, req controlapi.ExecRequest) (*contro
 		Options: &cleanroomv1.ExecutionOptions{
 			RunDir:            req.Options.RunDir,
 			ReadOnlyWorkspace: req.Options.ReadOnlyWorkspace,
-			DryRun:            req.Options.DryRun,
-			HostPassthrough:   req.Options.HostPassthrough,
 			LaunchSeconds:     req.Options.LaunchSeconds,
 			Cwd:               req.CWD,
 		},
@@ -1605,10 +1597,6 @@ func mergeFirecrackerConfig(cwd string, opts controlapi.ExecOptions, cfg runtime
 		out.RunDir = opts.RunDir
 	}
 	out.Launch = true
-	if opts.DryRun || opts.HostPassthrough {
-		out.Launch = false
-	}
-	out.HostPassthrough = opts.HostPassthrough
 	if opts.LaunchSeconds != 0 {
 		out.LaunchSeconds = opts.LaunchSeconds
 	}

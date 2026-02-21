@@ -58,8 +58,6 @@ type TerminateCleanroomResponse struct {
 type ExecOptions struct {
 	RunDir            string `json:"run_dir,omitempty"`
 	ReadOnlyWorkspace bool   `json:"read_only_workspace,omitempty"`
-	DryRun            bool   `json:"dry_run,omitempty"`
-	HostPassthrough   bool   `json:"host_passthrough,omitempty"`
 	LaunchSeconds     int64  `json:"launch_seconds,omitempty"`
 }
 
