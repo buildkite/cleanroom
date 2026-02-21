@@ -220,10 +220,7 @@ func (a *Adapter) Doctor(_ context.Context, req backend.DoctorRequest) (*backend
 	privilegedMode, privilegedHelperPath := resolvePrivilegedExecution(req.FirecrackerConfig)
 	appendCheck("network_privileged_mode", "pass", fmt.Sprintf("using privileged command mode %q", privilegedMode))
 
-	requiredCommands := []string{"ip", "iptables", "sysctl"}
-	if privilegedMode == privilegedModeSudo {
-		requiredCommands = append(requiredCommands, "sudo")
-	}
+	requiredCommands := []string{"ip", "iptables", "sysctl", "sudo"}
 	for _, cmd := range requiredCommands {
 		if _, err := exec.LookPath(cmd); err != nil {
 			appendCheck("network_cmd_"+cmd, "fail", fmt.Sprintf("missing required host command %q", cmd))
@@ -1176,7 +1173,7 @@ func runRootCommand(ctx context.Context, cfg backend.FirecrackerConfig, args ...
 		if strings.TrimSpace(helperPath) == "" {
 			return errors.New("privileged helper mode requires helper path")
 		}
-		return runCombinedCommand(ctx, append([]string{helperPath}, args...), append([]string{"helper"}, args...))
+		return runCombinedCommand(ctx, append([]string{"sudo", "-n", helperPath}, args...), append([]string{"helper"}, args...))
 	default:
 		return fmt.Errorf("unsupported privileged command mode %q", mode)
 	}
