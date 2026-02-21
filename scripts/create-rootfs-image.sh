@@ -23,7 +23,7 @@ Options:
 What this script does:
 1. resolves an Alpine minirootfs tarball
 2. unpacks it into a temporary rootfs
-3. applies minimal VM defaults
+3. applies minimal VM defaults and installs base developer tooling
 4. packs it into an ext4 disk image
 
 Requirements:
@@ -155,6 +155,15 @@ cat > "$ROOTFS_DIR/etc/resolv.conf" <<RESOLV
 nameserver 1.1.1.1
 nameserver 8.8.8.8
 RESOLV
+
+host_arch="$(uname -m)"
+if [[ "$host_arch" == "$ARCH" ]]; then
+  echo "installing base packages in rootfs: git, strace, mise"
+  chroot "$ROOTFS_DIR" /bin/sh -lc "apk update && apk add --no-cache git strace mise"
+else
+  echo "skipping package installation for foreign arch rootfs (host=$host_arch target=$ARCH)"
+  echo "- create-rootfs-image still succeeds; install packages later on a matching-arch host"
+fi
 
 # Serial console login for local VM debugging.
 if [[ -f "$ROOTFS_DIR/etc/inittab" ]] && ! grep -q "ttyS0" "$ROOTFS_DIR/etc/inittab"; then
