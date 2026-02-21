@@ -233,6 +233,8 @@ func (s *Service) TerminateSandbox(_ context.Context, req *cleanroomv1.Terminate
 	}
 	cancellations := make([]cancelTarget, 0)
 	var persistentAdapter backend.PersistentSandboxAdapter
+	var backendName string
+	alreadyStopped := false
 
 	s.mu.Lock()
 	state, ok := s.sandboxes[sandboxID]
@@ -240,16 +242,21 @@ func (s *Service) TerminateSandbox(_ context.Context, req *cleanroomv1.Terminate
 		s.mu.Unlock()
 		return nil, fmt.Errorf("unknown sandbox %q", sandboxID)
 	}
+	backendName = state.Backend
 
-	if state.Status != cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPED {
+	if state.Status == cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPED {
+		alreadyStopped = true
+	} else {
 		if adapter, ok := s.Backends[state.Backend]; ok {
 			if persistent, ok := adapter.(backend.PersistentSandboxAdapter); ok {
 				persistentAdapter = persistent
 			}
 		}
 
-		state.Status = cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPING
-		s.recordSandboxEventLocked(state, cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPING, "sandbox termination requested")
+		if state.Status != cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPING {
+			state.Status = cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPING
+			s.recordSandboxEventLocked(state, cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPING, "sandbox termination requested")
+		}
 
 		terminatedAt := time.Now().UTC()
 		for key, ex := range s.executions {
@@ -291,16 +298,6 @@ func (s *Service) TerminateSandbox(_ context.Context, req *cleanroomv1.Terminate
 				cancellations = append(cancellations, cancelTarget{execID: key, cancel: ex.Cancel})
 			}
 		}
-
-		state.Status = cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPED
-		s.recordSandboxEventLocked(state, cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPED, "sandbox terminated")
-		closeSandboxDoneLocked(state)
-	}
-	s.pruneStateLocked(time.Now().UTC())
-	resp := &cleanroomv1.TerminateSandboxResponse{
-		SandboxId:  sandboxID,
-		Terminated: true,
-		Message:    "sandbox terminated",
 	}
 	s.mu.Unlock()
 
@@ -308,20 +305,36 @@ func (s *Service) TerminateSandbox(_ context.Context, req *cleanroomv1.Terminate
 		target.cancel()
 	}
 
-	if persistentAdapter != nil {
+	if !alreadyStopped && persistentAdapter != nil {
 		if err := persistentAdapter.TerminateSandbox(context.Background(), sandboxID); err != nil {
 			if s.Logger != nil {
-				s.Logger.Warn("terminate backend sandbox failed", "sandbox_id", sandboxID, "backend", state.Backend, "error", err)
+				s.Logger.Warn("terminate backend sandbox failed", "sandbox_id", sandboxID, "backend", backendName, "error", err)
 			}
 			return nil, fmt.Errorf("terminate backend sandbox: %w", err)
 		}
 	}
 
+	now := time.Now().UTC()
+	s.mu.Lock()
+	state, ok = s.sandboxes[sandboxID]
+	if ok && state.Status != cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPED {
+		state.Status = cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPED
+		s.recordSandboxEventLocked(state, cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPED, "sandbox terminated")
+		closeSandboxDoneLocked(state)
+	}
+	s.pruneStateLocked(now)
+	s.mu.Unlock()
+
+	resp := &cleanroomv1.TerminateSandboxResponse{
+		SandboxId:  sandboxID,
+		Terminated: true,
+		Message:    "sandbox terminated",
+	}
+
 	if s.Logger != nil {
 		s.Logger.Info("sandbox terminated",
 			"sandbox_id", sandboxID,
-			"backend", state.Backend,
-			"last_execution_id", state.LastExecutionID,
+			"backend", backendName,
 		)
 	}
 	return resp, nil

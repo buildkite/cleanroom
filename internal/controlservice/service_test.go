@@ -411,6 +411,53 @@ func TestTerminateSandboxReturnsBackendTerminateError(t *testing.T) {
 	}
 }
 
+func TestTerminateSandboxAllowsRetryAfterBackendFailure(t *testing.T) {
+	terminateAttempts := 0
+	adapter := &stubAdapter{
+		terminateFn: func(context.Context, string) error {
+			terminateAttempts++
+			if terminateAttempts == 1 {
+				return errors.New("transient terminate failure")
+			}
+			return nil
+		},
+	}
+	svc := newTestService(adapter)
+
+	createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createResp.GetSandbox().GetSandboxId()
+
+	if _, err := svc.TerminateSandbox(context.Background(), &cleanroomv1.TerminateSandboxRequest{SandboxId: sandboxID}); err == nil {
+		t.Fatal("expected terminate backend error on first attempt")
+	}
+
+	getResp, err := svc.GetSandbox(context.Background(), &cleanroomv1.GetSandboxRequest{SandboxId: sandboxID})
+	if err != nil {
+		t.Fatalf("GetSandbox returned error: %v", err)
+	}
+	if got, want := getResp.GetSandbox().GetStatus(), cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPING; got != want {
+		t.Fatalf("unexpected sandbox status after failed terminate: got %v want %v", got, want)
+	}
+
+	if _, err := svc.TerminateSandbox(context.Background(), &cleanroomv1.TerminateSandboxRequest{SandboxId: sandboxID}); err != nil {
+		t.Fatalf("second TerminateSandbox returned error: %v", err)
+	}
+
+	getResp, err = svc.GetSandbox(context.Background(), &cleanroomv1.GetSandboxRequest{SandboxId: sandboxID})
+	if err != nil {
+		t.Fatalf("GetSandbox returned error: %v", err)
+	}
+	if got, want := getResp.GetSandbox().GetStatus(), cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPED; got != want {
+		t.Fatalf("unexpected sandbox status after successful retry: got %v want %v", got, want)
+	}
+	if got, want := terminateAttempts, 2; got != want {
+		t.Fatalf("unexpected terminate attempt count: got %d want %d", got, want)
+	}
+}
+
 func TestExecutionAttachIOForwarding(t *testing.T) {
 	started := make(chan struct{}, 1)
 	stdinChunks := make(chan string, 1)
