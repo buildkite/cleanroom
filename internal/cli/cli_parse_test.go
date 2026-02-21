@@ -45,3 +45,34 @@ func TestExecCommandStillRequiresArgs(t *testing.T) {
 		t.Fatalf("expected missing command parse error, got %v", err)
 	}
 }
+
+func TestImagePullRequiresRef(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	_, err := parser.Parse([]string{"image", "pull"})
+	if err == nil {
+		t.Fatal("expected parse error for missing image ref")
+	}
+	if !strings.Contains(err.Error(), "<ref>") {
+		t.Fatalf("expected missing ref parse error, got %v", err)
+	}
+}
+
+func TestImageImportAllowsOptionalTarPath(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"image", "import", "ghcr.io/org/base@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}); err != nil {
+		t.Fatalf("parse image import without tar path returned error: %v", err)
+	}
+}
+
+func TestImageListAliasParses(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"image", "ls"}); err != nil {
+		t.Fatalf("parse image ls returned error: %v", err)
+	}
+}

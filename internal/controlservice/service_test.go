@@ -3,6 +3,7 @@ package controlservice
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/controlapi"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
+	"github.com/buildkite/cleanroom/internal/paths"
 	"github.com/buildkite/cleanroom/internal/policy"
 )
 
@@ -91,8 +93,13 @@ func (l stubLoader) LoadAndCompile(_ string) (*policy.CompiledPolicy, string, er
 func newTestService(adapter backend.Adapter) *Service {
 	return &Service{
 		Loader: stubLoader{
-			compiled: &policy.CompiledPolicy{Hash: "hash-1", NetworkDefault: "deny"},
-			source:   "/repo/cleanroom.yaml",
+			compiled: &policy.CompiledPolicy{
+				Hash:           "hash-1",
+				NetworkDefault: "deny",
+				ImageRef:       "ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+				ImageDigest:    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+			},
+			source: "/repo/cleanroom.yaml",
 		},
 		Backends: map[string]backend.Adapter{"firecracker": adapter},
 	}
@@ -100,20 +107,27 @@ func newTestService(adapter backend.Adapter) *Service {
 
 func TestExecForwardsBackendOutput(t *testing.T) {
 	adapter := &stubAdapter{result: &backend.RunResult{
-		RunID:      "run-1",
-		ExitCode:   0,
-		LaunchedVM: true,
-		PlanPath:   "/tmp/plan",
-		RunDir:     "/tmp/run",
-		Message:    "ok",
-		Stdout:     "hello stdout\n",
-		Stderr:     "hello stderr\n",
+		RunID:       "run-1",
+		ExitCode:    0,
+		LaunchedVM:  true,
+		PlanPath:    "/tmp/plan",
+		RunDir:      "/tmp/run",
+		ImageRef:    "ghcr.io/buildkite/cleanroom-base/alpine@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		ImageDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Message:     "ok",
+		Stdout:      "hello stdout\n",
+		Stderr:      "hello stderr\n",
 	}}
 
 	svc := &Service{
 		Loader: stubLoader{
-			compiled: &policy.CompiledPolicy{Hash: "hash-1", NetworkDefault: "deny"},
-			source:   "/repo/cleanroom.yaml",
+			compiled: &policy.CompiledPolicy{
+				Hash:           "hash-1",
+				NetworkDefault: "deny",
+				ImageRef:       "ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+				ImageDigest:    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+			},
+			source: "/repo/cleanroom.yaml",
 		},
 		Backends: map[string]backend.Adapter{"firecracker": adapter},
 	}
@@ -134,6 +148,9 @@ func TestExecForwardsBackendOutput(t *testing.T) {
 	}
 	if resp.Stderr != "hello stderr\n" {
 		t.Fatalf("expected stderr to be forwarded, got %q", resp.Stderr)
+	}
+	if got, want := resp.ImageDigest, "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"; got != want {
+		t.Fatalf("expected image digest in exec response, got %q want %q", got, want)
 	}
 }
 
@@ -166,6 +183,16 @@ func TestLaunchRunTerminateLifecycle(t *testing.T) {
 	}
 	if got := adapter.req.Command[0]; got != "pi" {
 		t.Fatalf("expected normalized command to start with pi, got %q", got)
+	}
+	if runResp.ImageDigest == "" {
+		t.Fatal("expected run response to include image digest")
+	}
+	runBaseDir, err := paths.RunBaseDir()
+	if err != nil {
+		t.Fatalf("resolve run base dir: %v", err)
+	}
+	if got, want := filepath.Dir(adapter.req.RunDir), filepath.Clean(runBaseDir); got != want {
+		t.Fatalf("expected run dir under %q, got %q", want, adapter.req.RunDir)
 	}
 	if adapter.runCalls != 1 {
 		t.Fatalf("expected exactly one run call, got %d", adapter.runCalls)
@@ -259,14 +286,16 @@ func TestExecutionStreamIncludesExitEvent(t *testing.T) {
 	adapter := &stubAdapter{
 		runFn: func(_ context.Context, req backend.RunRequest) (*backend.RunResult, error) {
 			return &backend.RunResult{
-				RunID:      req.RunID,
-				ExitCode:   7,
-				LaunchedVM: true,
-				PlanPath:   "/tmp/plan",
-				RunDir:     "/tmp/run",
-				Message:    "done",
-				Stdout:     "hello stdout\n",
-				Stderr:     "hello stderr\n",
+				RunID:       req.RunID,
+				ExitCode:    7,
+				LaunchedVM:  true,
+				PlanPath:    "/tmp/plan",
+				RunDir:      "/tmp/run",
+				ImageRef:    "ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+				ImageDigest: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+				Message:     "done",
+				Stdout:      "hello stdout\n",
+				Stderr:      "hello stderr\n",
 			}, nil
 		},
 	}
@@ -298,6 +327,9 @@ func TestExecutionStreamIncludesExitEvent(t *testing.T) {
 	var sawStderr bool
 	var exit *cleanroomv1.ExecutionExit
 	for _, event := range events {
+		if got, want := event.GetImageDigest(), "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"; got != want {
+			t.Fatalf("expected image digest on event, got %q want %q", got, want)
+		}
 		switch payload := event.Payload.(type) {
 		case *cleanroomv1.ExecutionStreamEvent_Stdout:
 			if strings.Contains(string(payload.Stdout), "hello stdout") {

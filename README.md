@@ -12,6 +12,7 @@ It is built for this lifecycle:
 ## What It Does
 
 - Compiles repository policy from `cleanroom.yaml`
+- Requires digest-pinned sandbox base images via `sandbox.image.ref`
 - Enforces deny-by-default egress (`host:port` allow rules)
 - Runs commands in a Firecracker microVM via guest agent
 - Returns exit code + stdout/stderr over API
@@ -101,6 +102,15 @@ curl --silent --show-error \
 cleanroom exec -- pi run "implement the requested refactor"
 ```
 
+Image lifecycle commands:
+
+```bash
+cleanroom image pull ghcr.io/buildkite/cleanroom-base/alpine@sha256:...
+cleanroom image ls
+cleanroom image rm sha256:...
+cleanroom image import ghcr.io/buildkite/cleanroom-base/alpine@sha256:... ./rootfs.tar.gz
+```
+
 ## API Contract (Current)
 
 ### `POST /v1/cleanrooms/launch`
@@ -141,6 +151,8 @@ Response fields:
 - `stderr`
 - `run_dir`
 - `plan_path`
+- `image_ref`
+- `image_digest`
 
 ### `POST /v1/cleanrooms/terminate`
 
@@ -166,6 +178,8 @@ Minimal example:
 ```yaml
 version: 1
 sandbox:
+  image:
+    ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
   network:
     default: deny
     allow:
@@ -187,12 +201,13 @@ backends:
   firecracker:
     binary_path: firecracker
     kernel_image: /opt/cleanroom/vmlinux
-    rootfs: /opt/cleanroom/rootfs.ext4
     vcpus: 2
     memory_mib: 1024
     guest_cid: 3
     launch_seconds: 30
 ```
+
+The Firecracker adapter resolves `sandbox.image.ref` through the local image manager and caches materialised ext4 files under XDG cache paths.
 
 ## Isolation Model
 
@@ -235,7 +250,8 @@ cleanroom status --run-id <run-id>
 - Linux host
 - `/dev/kvm` available and writable
 - Firecracker binary installed
-- Kernel image + rootfs image configured
+- Kernel image configured
+- `mkfs.ext4` installed (used to materialise OCI layers into ext4 cache artifacts)
 - `sudo -n` access for `ip`, `iptables`, and `sysctl` (network setup/cleanup)
 
 ## References

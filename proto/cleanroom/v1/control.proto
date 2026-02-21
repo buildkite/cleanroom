@@ -181,6 +181,8 @@ message ExecutionStreamEvent {
   }
 
   google.protobuf.Timestamp occurred_at = 8;
+  string image_ref = 9;
+  string image_digest = 10;
 }
 
 message ExecutionAttachOpen {
