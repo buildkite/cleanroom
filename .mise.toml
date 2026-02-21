@@ -5,7 +5,11 @@ go = "1.23"
 GOTOOLCHAIN = "local"
 
 [tasks.test]
-description = "Run Go test suite"
+description = "Run cross-platform Go test suite"
+run = "go test ./..."
+
+[tasks.test-full]
+description = "Run full Go test suite"
 run = "go test ./..."
 
 [tasks.build]

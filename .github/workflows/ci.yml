@@ -14,9 +14,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os:
-          - ubuntu-latest
-          - macos-latest
+        include:
+          - os: ubuntu-latest
+            test_task: test-full
+          - os: macos-latest
+            test_task: test
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -30,4 +32,4 @@ jobs:
         run: mise run build
 
       - name: Test
-        run: mise run test
+        run: mise run ${{ matrix.test_task }}

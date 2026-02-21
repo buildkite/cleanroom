@@ -25,13 +25,28 @@ import (
 	fcvsock "github.com/firecracker-microvm/firecracker-go-sdk/vsock"
 )
 
-type Adapter struct{}
+type imageEnsurer interface {
+	Ensure(context.Context, string) (imagemgr.EnsureResult, error)
+}
+
+type imageManagerFactory func() (imageEnsurer, error)
+
+type Adapter struct {
+	imageManagerOnce sync.Once
+	imageManager     imageEnsurer
+	imageManagerErr  error
+	newImageManager  imageManagerFactory
+}
 
 const runObservabilityFile = "run-observability.json"
 const vsockDialRetryInterval = 50 * time.Millisecond
 
 func New() *Adapter {
-	return &Adapter{}
+	return &Adapter{newImageManager: defaultImageManagerFactory}
+}
+
+func defaultImageManagerFactory() (imageEnsurer, error) {
+	return imagemgr.New(imagemgr.Options{})
 }
 
 func (a *Adapter) Name() string {
@@ -280,7 +295,7 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 		return nil, fmt.Errorf("kernel image %s: %w", kernelPath, err)
 	}
 
-	imageArtifact, err := ensureImageArtifact(ctx, req.Policy.ImageRef)
+	imageArtifact, err := a.ensureImageArtifact(ctx, req.Policy.ImageRef)
 	if err != nil {
 		return nil, err
 	}
@@ -570,13 +585,13 @@ type imageArtifact struct {
 	CacheHit   bool
 }
 
-func ensureImageArtifact(ctx context.Context, imageRef string) (imageArtifact, error) {
+func (a *Adapter) ensureImageArtifact(ctx context.Context, imageRef string) (imageArtifact, error) {
 	trimmedRef := strings.TrimSpace(imageRef)
 	if trimmedRef == "" {
 		return imageArtifact{}, errors.New("sandbox.image.ref is required for launched execution")
 	}
 
-	mgr, err := imagemgr.New(imagemgr.Options{})
+	mgr, err := a.getImageManager()
 	if err != nil {
 		return imageArtifact{}, fmt.Errorf("initialise image manager: %w", err)
 	}
@@ -592,6 +607,22 @@ func ensureImageArtifact(ctx context.Context, imageRef string) (imageArtifact, e
 		RootFSPath: result.Record.RootFSPath,
 		CacheHit:   result.CacheHit,
 	}, nil
+}
+
+func (a *Adapter) getImageManager() (imageEnsurer, error) {
+	if a.newImageManager == nil {
+		a.newImageManager = defaultImageManagerFactory
+	}
+	a.imageManagerOnce.Do(func() {
+		a.imageManager, a.imageManagerErr = a.newImageManager()
+	})
+	if a.imageManagerErr != nil {
+		return nil, a.imageManagerErr
+	}
+	if a.imageManager == nil {
+		return nil, errors.New("image manager factory returned nil manager")
+	}
+	return a.imageManager, nil
 }
 
 func runResultMessage(base string) string {

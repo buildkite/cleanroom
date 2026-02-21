@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -116,6 +117,110 @@ func TestRemoveByRefSelector(t *testing.T) {
 	}
 	if len(removed) != 1 {
 		t.Fatalf("expected one removed image, got %d", len(removed))
+	}
+}
+
+func TestPersistFromTarStreamUsesUniqueTempPaths(t *testing.T) {
+	t.Parallel()
+
+	cacheDir := filepath.Join(t.TempDir(), "cache")
+	dbPath := filepath.Join(t.TempDir(), "state", "metadata.db")
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		t.Fatalf("create state dir: %v", err)
+	}
+
+	var outputPaths []string
+	manager, err := New(Options{
+		CacheDir:       cacheDir,
+		MetadataDBPath: dbPath,
+		MaterializeRootFS: func(_ context.Context, _ io.Reader, outputPath string) (int64, error) {
+			outputPaths = append(outputPaths, outputPath)
+			return 0, errors.New("materialise fail")
+		},
+	})
+	if err != nil {
+		t.Fatalf("create manager: %v", err)
+	}
+
+	now := time.Unix(1_700_000_001, 0).UTC()
+	req := persistFromTarRequest{
+		Ref:        testImageRef,
+		Digest:     "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		TarStream:  bytes.NewReader(testRootFSTar(t)),
+		Source:     "import",
+		CreatedAt:  now,
+		LastUsedAt: now,
+	}
+
+	if _, err := manager.persistFromTarStream(context.Background(), req); err == nil {
+		t.Fatal("expected first persistFromTarStream to fail")
+	}
+	req.TarStream = bytes.NewReader(testRootFSTar(t))
+	if _, err := manager.persistFromTarStream(context.Background(), req); err == nil {
+		t.Fatal("expected second persistFromTarStream to fail")
+	}
+
+	if len(outputPaths) != 2 {
+		t.Fatalf("expected two materialise attempts, got %d", len(outputPaths))
+	}
+	if outputPaths[0] == outputPaths[1] {
+		t.Fatalf("expected unique temporary output paths, got %q twice", outputPaths[0])
+	}
+}
+
+func TestPersistFromTarStreamRemovesArtifactWhenMetadataWriteFails(t *testing.T) {
+	t.Parallel()
+
+	cacheDir := filepath.Join(t.TempDir(), "cache")
+	stateDir := filepath.Join(t.TempDir(), "state")
+	dbPath := filepath.Join(stateDir, "metadata.db")
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatalf("create state dir: %v", err)
+	}
+
+	manager, err := New(Options{
+		CacheDir:       cacheDir,
+		MetadataDBPath: dbPath,
+		MaterializeRootFS: func(_ context.Context, _ io.Reader, outputPath string) (int64, error) {
+			if err := os.WriteFile(outputPath, []byte("fake-ext4"), 0o644); err != nil {
+				return 0, err
+			}
+			if err := os.Chmod(dbPath, 0o444); err != nil {
+				return 0, err
+			}
+			if err := os.Chmod(stateDir, 0o555); err != nil {
+				return 0, err
+			}
+			return int64(len("fake-ext4")), nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("create manager: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chmod(stateDir, 0o755)
+		_ = os.Chmod(dbPath, 0o644)
+	})
+
+	digest := "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	now := time.Unix(1_700_000_002, 0).UTC()
+	req := persistFromTarRequest{
+		Ref:        "ghcr.io/buildkite/cleanroom-base/alpine@" + digest,
+		Digest:     digest,
+		TarStream:  bytes.NewReader(testRootFSTar(t)),
+		Source:     "import",
+		CreatedAt:  now,
+		LastUsedAt: now,
+	}
+
+	_, err = manager.persistFromTarStream(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected persistFromTarStream to fail when metadata write fails")
+	}
+
+	artifactPath := filepath.Join(cacheDir, strings.TrimPrefix(digest, "sha256:")+".ext4")
+	if _, statErr := os.Stat(artifactPath); !os.IsNotExist(statErr) {
+		t.Fatalf("expected artifact %s to be removed after metadata failure, stat err=%v", artifactPath, statErr)
 	}
 }
 

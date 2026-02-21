@@ -3,6 +3,7 @@ package imagemgr
 import (
 	"archive/tar"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -125,12 +126,21 @@ func extractTar(root string, stream io.Reader) error {
 
 		switch hdr.Typeflag {
 		case tar.TypeDir:
+			if err := ensureNoSymlinkPath(root, targetPath, true); err != nil {
+				return err
+			}
 			if err := os.MkdirAll(targetPath, os.FileMode(hdr.Mode)); err != nil {
 				return fmt.Errorf("create directory %q from tar stream: %w", targetPath, err)
 			}
 		case tar.TypeReg, tar.TypeRegA:
+			if err := ensureNoSymlinkPath(root, filepath.Dir(targetPath), true); err != nil {
+				return err
+			}
 			if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
 				return fmt.Errorf("create parent directory for %q: %w", targetPath, err)
+			}
+			if err := ensureNoSymlinkPath(root, targetPath, true); err != nil {
+				return err
 			}
 			f, err := os.OpenFile(targetPath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, os.FileMode(hdr.Mode))
 			if err != nil {
@@ -144,8 +154,17 @@ func extractTar(root string, stream io.Reader) error {
 				return fmt.Errorf("close file %q from tar stream: %w", targetPath, err)
 			}
 		case tar.TypeSymlink:
+			if err := ensureNoSymlinkPath(root, filepath.Dir(targetPath), true); err != nil {
+				return err
+			}
 			if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
 				return fmt.Errorf("create parent directory for symlink %q: %w", targetPath, err)
+			}
+			if err := validateSymlinkTarget(root, targetPath, hdr.Linkname); err != nil {
+				return err
+			}
+			if err := os.Remove(targetPath); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("remove existing symlink path %q: %w", targetPath, err)
 			}
 			if err := os.Symlink(hdr.Linkname, targetPath); err != nil && !os.IsExist(err) {
 				return fmt.Errorf("create symlink %q -> %q from tar stream: %w", targetPath, hdr.Linkname, err)
@@ -155,8 +174,20 @@ func extractTar(root string, stream io.Reader) error {
 			if err != nil {
 				return err
 			}
+			if err := ensureNoSymlinkPath(root, linkTarget, false); err != nil {
+				return err
+			}
+			if err := ensureNoSymlinkPath(root, filepath.Dir(targetPath), true); err != nil {
+				return err
+			}
 			if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
 				return fmt.Errorf("create parent directory for hard link %q: %w", targetPath, err)
+			}
+			if err := ensureNoSymlinkPath(root, targetPath, true); err != nil {
+				return err
+			}
+			if err := os.Remove(targetPath); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("remove existing hardlink path %q: %w", targetPath, err)
 			}
 			if err := os.Link(linkTarget, targetPath); err != nil {
 				return fmt.Errorf("create hard link %q -> %q from tar stream: %w", targetPath, linkTarget, err)
@@ -181,4 +212,55 @@ func safeJoin(root, name string) (string, error) {
 		return "", fmt.Errorf("refusing tar entry outside root %q", name)
 	}
 	return joined, nil
+}
+
+func ensureNoSymlinkPath(root, target string, allowMissingLeaf bool) error {
+	rel, err := filepath.Rel(root, target)
+	if err != nil {
+		return fmt.Errorf("resolve relative path for %q: %w", target, err)
+	}
+	if rel == "." {
+		return nil
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("refusing path outside extraction root %q", target)
+	}
+
+	parts := strings.Split(rel, string(filepath.Separator))
+	current := root
+	for i, part := range parts {
+		if part == "" || part == "." {
+			continue
+		}
+		current = filepath.Join(current, part)
+		info, statErr := os.Lstat(current)
+		if statErr != nil {
+			if errors.Is(statErr, os.ErrNotExist) {
+				if i == len(parts)-1 && allowMissingLeaf {
+					return nil
+				}
+				continue
+			}
+			return fmt.Errorf("inspect path %q: %w", current, statErr)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing archive entry that traverses symlink path component %q", current)
+		}
+	}
+	return nil
+}
+
+func validateSymlinkTarget(root, targetPath, linkName string) error {
+	if strings.TrimSpace(linkName) == "" {
+		return fmt.Errorf("refusing symlink %q with empty target", targetPath)
+	}
+	resolved := filepath.Clean(filepath.Join(filepath.Dir(targetPath), linkName))
+	rel, err := filepath.Rel(root, resolved)
+	if err != nil {
+		return fmt.Errorf("resolve symlink target for %q: %w", targetPath, err)
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("refusing symlink %q -> %q that resolves outside extraction root", targetPath, linkName)
+	}
+	return nil
 }

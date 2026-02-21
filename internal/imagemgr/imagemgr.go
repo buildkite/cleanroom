@@ -328,18 +328,22 @@ func (m *Manager) persistFromTarStream(ctx context.Context, req persistFromTarRe
 	}
 
 	outputPath := filepath.Join(m.cacheDir, strings.TrimPrefix(req.Digest, "sha256:")+".ext4")
-	tmpPath := outputPath + ".tmp"
-	if err := os.Remove(tmpPath); err != nil && !os.IsNotExist(err) {
-		return Record{}, fmt.Errorf("remove stale image temp file %q: %w", tmpPath, err)
+	tmpFile, err := os.CreateTemp(m.cacheDir, strings.TrimPrefix(req.Digest, "sha256:")+".tmp-*.ext4")
+	if err != nil {
+		return Record{}, fmt.Errorf("create temporary image artifact for %q: %w", req.Digest, err)
 	}
+	tmpPath := tmpFile.Name()
+	if err := tmpFile.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return Record{}, fmt.Errorf("close temporary image artifact file %q: %w", tmpPath, err)
+	}
+	defer os.Remove(tmpPath)
 
 	sizeBytes, err := m.materialize(ctx, req.TarStream, tmpPath)
 	if err != nil {
-		_ = os.Remove(tmpPath)
 		return Record{}, err
 	}
 	if err := os.Rename(tmpPath, outputPath); err != nil {
-		_ = os.Remove(tmpPath)
 		return Record{}, fmt.Errorf("move image artifact to cache %q: %w", outputPath, err)
 	}
 
@@ -354,6 +358,7 @@ func (m *Manager) persistFromTarStream(ctx context.Context, req persistFromTarRe
 		OCIConfig:  req.OCIConfig,
 	}
 	if err := m.upsertRecord(ctx, record); err != nil {
+		_ = os.Remove(outputPath)
 		return Record{}, err
 	}
 
