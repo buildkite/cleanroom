@@ -30,3 +30,8 @@ steps:
     command: mise run test
     agents:
       queue: mac-small
+
+  - label: ":fire: E2E (Firecracker)"
+    command: scripts/ci-cleanroom-e2e.sh
+    agents:
+      queue: cleanroom
