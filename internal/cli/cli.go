@@ -89,10 +89,12 @@ type PolicyValidateCommand struct {
 }
 
 type ExecCommand struct {
-	Chdir    string `short:"c" help:"Change to this directory before running commands"`
-	Host     string `help:"Control-plane endpoint (unix://path, http://host:port, or https://host:port)"`
-	LogLevel string `help:"Client log level (debug|info|warn|error)"`
-	Backend  string `help:"Execution backend (defaults to runtime config or firecracker)"`
+	Chdir       string `short:"c" help:"Change to this directory before running commands"`
+	Host        string `help:"Control-plane endpoint (unix://path, http://host:port, or https://host:port)"`
+	LogLevel    string `help:"Client log level (debug|info|warn|error)"`
+	Backend     string `help:"Execution backend (defaults to runtime config or firecracker)"`
+	SandboxID   string `help:"Reuse an existing sandbox instead of creating a new one"`
+	KeepSandbox bool   `help:"Keep a newly created sandbox running after command completion"`
 
 	LaunchSeconds int64 `help:"VM boot/guest-agent readiness timeout in seconds"`
 
@@ -100,10 +102,12 @@ type ExecCommand struct {
 }
 
 type ConsoleCommand struct {
-	Chdir    string `short:"c" help:"Change to this directory before running commands"`
-	Host     string `help:"Control-plane endpoint (unix://path, http://host:port, or https://host:port)"`
-	LogLevel string `help:"Client log level (debug|info|warn|error)"`
-	Backend  string `help:"Execution backend (defaults to runtime config or firecracker)"`
+	Chdir       string `short:"c" help:"Change to this directory before running commands"`
+	Host        string `help:"Control-plane endpoint (unix://path, http://host:port, or https://host:port)"`
+	LogLevel    string `help:"Client log level (debug|info|warn|error)"`
+	Backend     string `help:"Execution backend (defaults to runtime config or firecracker)"`
+	SandboxID   string `help:"Reuse an existing sandbox instead of creating a new one"`
+	KeepSandbox bool   `help:"Keep a newly created sandbox running after console exits"`
 
 	LaunchSeconds int64 `help:"VM boot/guest-agent readiness timeout in seconds"`
 
@@ -356,33 +360,37 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 		return err
 	}
 
-	compiled, _, err := ctx.Loader.LoadAndCompile(cwd)
-	if err != nil {
-		return err
-	}
-
 	logger.Debug("sending execution request",
 		"endpoint", ep.Address,
 		"backend", e.Backend,
-		"policy_hash", compiled.Hash,
+		"sandbox_id", strings.TrimSpace(e.SandboxID),
 		"command_argc", len(e.Command),
 	)
 	client := controlclient.New(ep)
-	createSandboxResp, err := client.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
-		Backend: e.Backend,
-		Options: &cleanroomv1.SandboxOptions{
-			LaunchSeconds: e.LaunchSeconds,
-		},
-		Policy: compiled.ToProto(),
-	})
-	if err != nil {
-		return fmt.Errorf("execute via control-plane endpoint %q: %w", ep.Address, err)
+	sandboxID := strings.TrimSpace(e.SandboxID)
+	createdSandbox := false
+	if sandboxID == "" {
+		compiled, _, err := ctx.Loader.LoadAndCompile(cwd)
+		if err != nil {
+			return err
+		}
+		createSandboxResp, err := client.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+			Backend: e.Backend,
+			Options: &cleanroomv1.SandboxOptions{
+				LaunchSeconds: e.LaunchSeconds,
+			},
+			Policy: compiled.ToProto(),
+		})
+		if err != nil {
+			return fmt.Errorf("execute via control-plane endpoint %q: %w", ep.Address, err)
+		}
+		sandboxID = createSandboxResp.GetSandbox().GetSandboxId()
+		createdSandbox = true
 	}
-
-	sandboxID := createSandboxResp.GetSandbox().GetSandboxId()
 	detached := false
+	autoTerminateSandbox := createdSandbox && !e.KeepSandbox
 	defer func() {
-		if detached || sandboxID == "" {
+		if detached || !autoTerminateSandbox || sandboxID == "" {
 			return
 		}
 		_, _ = client.TerminateSandbox(context.Background(), &cleanroomv1.TerminateSandboxRequest{SandboxId: sandboxID})
@@ -475,11 +483,13 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 	select {
 	case <-secondInterrupt:
 		detached = true
-		terminateCtx, terminateCancel := context.WithTimeout(context.Background(), 2*time.Second)
-		_, terminateErr := client.TerminateSandbox(terminateCtx, &cleanroomv1.TerminateSandboxRequest{SandboxId: sandboxID})
-		terminateCancel()
-		if terminateErr != nil && logger != nil {
-			logger.Warn("terminate sandbox after detach failed", "sandbox_id", sandboxID, "error", terminateErr)
+		if autoTerminateSandbox {
+			terminateCtx, terminateCancel := context.WithTimeout(context.Background(), 2*time.Second)
+			_, terminateErr := client.TerminateSandbox(terminateCtx, &cleanroomv1.TerminateSandboxRequest{SandboxId: sandboxID})
+			terminateCancel()
+			if terminateErr != nil && logger != nil {
+				logger.Warn("terminate sandbox after detach failed", "sandbox_id", sandboxID, "error", terminateErr)
+			}
 		}
 		return exitCodeError{code: 130}
 	default:
@@ -557,11 +567,6 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 		return err
 	}
 
-	compiled, _, err := ctx.Loader.LoadAndCompile(cwd)
-	if err != nil {
-		return err
-	}
-
 	command := append([]string(nil), c.Command...)
 	if len(command) == 0 {
 		command = []string{"sh"}
@@ -569,24 +574,34 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 	logger.Debug("starting interactive console",
 		"endpoint", ep.Address,
 		"backend", c.Backend,
-		"policy_hash", compiled.Hash,
+		"sandbox_id", strings.TrimSpace(c.SandboxID),
 		"command_argc", len(command),
 	)
 
 	client := controlclient.New(ep)
-	createSandboxResp, err := client.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
-		Backend: c.Backend,
-		Options: &cleanroomv1.SandboxOptions{
-			LaunchSeconds: c.LaunchSeconds,
-		},
-		Policy: compiled.ToProto(),
-	})
-	if err != nil {
-		return fmt.Errorf("console via control-plane endpoint %q: %w", ep.Address, err)
+	sandboxID := strings.TrimSpace(c.SandboxID)
+	createdSandbox := false
+	if sandboxID == "" {
+		compiled, _, err := ctx.Loader.LoadAndCompile(cwd)
+		if err != nil {
+			return err
+		}
+		createSandboxResp, err := client.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+			Backend: c.Backend,
+			Options: &cleanroomv1.SandboxOptions{
+				LaunchSeconds: c.LaunchSeconds,
+			},
+			Policy: compiled.ToProto(),
+		})
+		if err != nil {
+			return fmt.Errorf("console via control-plane endpoint %q: %w", ep.Address, err)
+		}
+		sandboxID = createSandboxResp.GetSandbox().GetSandboxId()
+		createdSandbox = true
 	}
-	sandboxID := createSandboxResp.GetSandbox().GetSandboxId()
+	autoTerminateSandbox := createdSandbox && !c.KeepSandbox
 	defer func() {
-		if sandboxID == "" {
+		if sandboxID == "" || !autoTerminateSandbox {
 			return
 		}
 		_, _ = client.TerminateSandbox(context.Background(), &cleanroomv1.TerminateSandboxRequest{SandboxId: sandboxID})

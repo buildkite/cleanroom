@@ -46,6 +46,31 @@ type Adapter struct {
 	guestAgentErr  error
 
 	runtimeImageMu sync.Mutex
+
+	sandboxMu         sync.Mutex
+	sandboxes         map[string]*sandboxInstance
+	provisioning      map[string]struct{}
+	launchSandboxVMFn func(context.Context, string, *policy.CompiledPolicy, backend.FirecrackerConfig) (*sandboxInstance, error)
+	runGuestCommandFn func(context.Context, context.Context, <-chan struct{}, func() error, string, uint32, vsockexec.ExecRequest, backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error)
+}
+
+type sandboxInstance struct {
+	SandboxID      string
+	RunDir         string
+	ConfigPath     string
+	VsockPath      string
+	GuestPort      uint32
+	Policy         *policy.CompiledPolicy
+	ImageRef       string
+	ImageDigest    string
+	CommandTimeout int64
+	fcCmd          *exec.Cmd
+	exitedCh       chan struct{}
+	exitMu         sync.RWMutex
+	exitErr        error
+	exitReady      bool
+	cleanupNetwork func()
+	vmRootFSPath   string
 }
 
 const runObservabilityFile = "run-observability.json"
@@ -128,6 +153,181 @@ func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.Run
 
 func (a *Adapter) RunStream(ctx context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
 	return a.run(ctx, req, stream)
+}
+
+func (a *Adapter) ProvisionSandbox(ctx context.Context, req backend.ProvisionRequest) error {
+	sandboxID := strings.TrimSpace(req.SandboxID)
+	if sandboxID == "" {
+		return errors.New("missing sandbox_id")
+	}
+	if req.Policy == nil {
+		return errors.New("missing compiled policy")
+	}
+
+	a.sandboxMu.Lock()
+	if a.sandboxes == nil {
+		a.sandboxes = map[string]*sandboxInstance{}
+	}
+	if a.provisioning == nil {
+		a.provisioning = map[string]struct{}{}
+	}
+	if _, exists := a.sandboxes[sandboxID]; exists {
+		a.sandboxMu.Unlock()
+		return fmt.Errorf("sandbox %q already provisioned", sandboxID)
+	}
+	if _, exists := a.provisioning[sandboxID]; exists {
+		a.sandboxMu.Unlock()
+		return fmt.Errorf("sandbox %q is already provisioning", sandboxID)
+	}
+	a.provisioning[sandboxID] = struct{}{}
+	a.sandboxMu.Unlock()
+
+	launch := a.launchSandboxVMFn
+	if launch == nil {
+		launch = a.launchSandboxVM
+	}
+
+	instance, err := launch(ctx, sandboxID, req.Policy, req.FirecrackerConfig)
+	if err != nil {
+		a.sandboxMu.Lock()
+		delete(a.provisioning, sandboxID)
+		a.sandboxMu.Unlock()
+		return err
+	}
+
+	a.sandboxMu.Lock()
+	defer a.sandboxMu.Unlock()
+	delete(a.provisioning, sandboxID)
+	if _, exists := a.sandboxes[sandboxID]; exists {
+		instance.shutdown()
+		return fmt.Errorf("sandbox %q already provisioned", sandboxID)
+	}
+	a.sandboxes[sandboxID] = instance
+	return nil
+}
+
+func (a *Adapter) RunInSandbox(ctx context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+	sandboxID := strings.TrimSpace(req.SandboxID)
+	if sandboxID == "" {
+		return nil, errors.New("missing sandbox_id")
+	}
+	if len(req.Command) == 0 {
+		return nil, errors.New("missing command")
+	}
+	if strings.TrimSpace(req.RunID) == "" {
+		return nil, errors.New("missing run_id")
+	}
+
+	a.sandboxMu.Lock()
+	instance, ok := a.sandboxes[sandboxID]
+	a.sandboxMu.Unlock()
+	if !ok {
+		return nil, fmt.Errorf("unknown sandbox %q", sandboxID)
+	}
+	if err := instance.exitedErrOrNil(); err != nil {
+		return nil, fmt.Errorf("sandbox %q is not running: %w", sandboxID, err)
+	}
+
+	guestReq := vsockexec.ExecRequest{Command: req.Command}
+	seed := make([]byte, 64)
+	if _, err := cryptorand.Read(seed); err == nil {
+		guestReq.EntropySeed = seed
+	}
+
+	connectSeconds := req.LaunchSeconds
+	if connectSeconds <= 0 {
+		connectSeconds = instance.CommandTimeout
+	}
+	if connectSeconds <= 0 {
+		connectSeconds = 30
+	}
+	bootCtx, bootCancel := context.WithTimeout(ctx, time.Duration(connectSeconds)*time.Second)
+	defer bootCancel()
+
+	runStart := time.Now()
+	runDir := strings.TrimSpace(req.RunDir)
+	if runDir == "" {
+		if baseDir, err := paths.RunBaseDir(); err == nil {
+			runDir = filepath.Join(baseDir, req.RunID)
+		}
+	}
+	observation := firecrackerRunObservation{
+		RunID:       req.RunID,
+		Backend:     a.Name(),
+		LaunchedVM:  false,
+		ImageRef:    instance.ImageRef,
+		ImageDigest: instance.ImageDigest,
+		PlanPath:    instance.ConfigPath,
+		RunDir:      runDir,
+	}
+	writeObservation := func() {
+		if runDir == "" {
+			return
+		}
+		observation.TotalMS = time.Since(runStart).Milliseconds()
+		obsPath := filepath.Join(runDir, runObservabilityFile)
+		_ = writeJSON(obsPath, observation)
+	}
+	defer writeObservation()
+	if runDir != "" {
+		if err := os.MkdirAll(runDir, 0o755); err != nil {
+			return nil, fmt.Errorf("create run directory: %w", err)
+		}
+	}
+
+	runGuestCommandFn := a.runGuestCommandFn
+	if runGuestCommandFn == nil {
+		runGuestCommandFn = runGuestCommand
+	}
+
+	guestResult, timing, err := runGuestCommandFn(bootCtx, ctx, instance.exitedCh, instance.exitedErrOrNil, instance.VsockPath, instance.GuestPort, guestReq, stream)
+	if err != nil {
+		observation.ExitCode = 1
+		observation.GuestError = err.Error()
+		return nil, err
+	}
+	observation.ExitCode = guestResult.ExitCode
+	observation.GuestError = guestResult.Error
+	observation.GuestExecMS = timing.CommandRun.Milliseconds()
+	observation.VsockWaitMS = timing.WaitForAgent.Milliseconds()
+
+	message := runResultMessage("guest command execution complete")
+	if guestResult.Error != "" {
+		message = runResultMessage("guest command execution completed with guest-side error detail: " + guestResult.Error)
+	}
+
+	return &backend.RunResult{
+		RunID:       req.RunID,
+		ExitCode:    guestResult.ExitCode,
+		LaunchedVM:  false,
+		PlanPath:    instance.ConfigPath,
+		RunDir:      runDir,
+		ImageRef:    instance.ImageRef,
+		ImageDigest: instance.ImageDigest,
+		Message:     message,
+		Stdout:      guestResult.Stdout,
+		Stderr:      guestResult.Stderr,
+	}, nil
+}
+
+func (a *Adapter) TerminateSandbox(_ context.Context, sandboxID string) error {
+	sandboxID = strings.TrimSpace(sandboxID)
+	if sandboxID == "" {
+		return errors.New("missing sandbox_id")
+	}
+
+	a.sandboxMu.Lock()
+	instance, ok := a.sandboxes[sandboxID]
+	if ok {
+		delete(a.sandboxes, sandboxID)
+	}
+	a.sandboxMu.Unlock()
+	if !ok {
+		return nil
+	}
+
+	instance.shutdown()
+	return nil
 }
 
 func (a *Adapter) Doctor(_ context.Context, req backend.DoctorRequest) (*backend.DoctorReport, error) {
@@ -489,11 +689,27 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 	observation.FirecrackerStartMS = durationMillisCeil(time.Since(firecrackerStart))
 	vmProcessStart := time.Now()
 
-	waitCh := make(chan error, 1)
+	processExited := make(chan struct{})
+	var (
+		processExitMu  sync.RWMutex
+		processExitErr error
+	)
+	processExitErrFn := func() error {
+		processExitMu.RLock()
+		defer processExitMu.RUnlock()
+		if processExitErr == nil {
+			return errors.New("firecracker exited")
+		}
+		return processExitErr
+	}
 	go func() {
-		waitCh <- fcCmd.Wait()
+		err := fcCmd.Wait()
+		processExitMu.Lock()
+		processExitErr = err
+		processExitMu.Unlock()
+		close(processExited)
 	}()
-	defer stopVM(fcCmd, waitCh)
+	defer stopVM(fcCmd, processExited)
 
 	bootCtx, bootCancel := context.WithTimeout(ctx, time.Duration(req.LaunchSeconds)*time.Second)
 	defer bootCancel()
@@ -505,7 +721,7 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 	if _, err := cryptorand.Read(seed); err == nil {
 		guestReq.EntropySeed = seed
 	}
-	guestResult, guestTiming, err := runGuestCommand(bootCtx, ctx, waitCh, vsockPath, req.GuestPort, guestReq, stream)
+	guestResult, guestTiming, err := runGuestCommand(bootCtx, ctx, processExited, processExitErrFn, vsockPath, req.GuestPort, guestReq, stream)
 	if err != nil {
 		return nil, err
 	}
@@ -881,6 +1097,252 @@ func (a *Adapter) getImageManager() (imageEnsurer, error) {
 	return a.imageManager, nil
 }
 
+func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compiled *policy.CompiledPolicy, cfg backend.FirecrackerConfig) (*sandboxInstance, error) {
+	if compiled == nil {
+		return nil, errors.New("missing compiled policy")
+	}
+	if compiled.NetworkDefault != "deny" {
+		return nil, fmt.Errorf("firecracker backend requires deny-by-default policy, got %q", compiled.NetworkDefault)
+	}
+	if runtime.GOOS != "linux" {
+		return nil, fmt.Errorf("firecracker backend is linux-only, current OS is %s", runtime.GOOS)
+	}
+
+	if cfg.VCPUs <= 0 {
+		cfg.VCPUs = 1
+	}
+	if cfg.MemoryMiB <= 0 {
+		cfg.MemoryMiB = 512
+	}
+	if cfg.GuestCID == 0 {
+		cfg.GuestCID = randomGuestCID()
+	}
+	if cfg.GuestPort == 0 {
+		cfg.GuestPort = vsockexec.DefaultPort
+	}
+	if cfg.LaunchSeconds <= 0 {
+		cfg.LaunchSeconds = 30
+	}
+
+	binary := cfg.BinaryPath
+	if binary == "" {
+		binary = "firecracker"
+	}
+	firecrackerPath, err := exec.LookPath(binary)
+	if err != nil {
+		return nil, fmt.Errorf("firecracker binary not found (%q): %w", binary, err)
+	}
+	if cfg.KernelImagePath == "" {
+		return nil, errors.New("kernel_image must be configured for launched execution")
+	}
+	kernelPath, err := filepath.Abs(cfg.KernelImagePath)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := os.Stat(kernelPath); err != nil {
+		return nil, fmt.Errorf("kernel image %s: %w", kernelPath, err)
+	}
+
+	imageArtifact, err := a.ensureImageArtifact(ctx, compiled.ImageRef)
+	if err != nil {
+		return nil, err
+	}
+	preparedRootFSPath, err := a.ensurePreparedRuntimeRootFS(ctx, cfg, imageArtifact)
+	if err != nil {
+		return nil, err
+	}
+
+	runBaseDir, err := sandboxRuntimeBaseDir()
+	if err != nil {
+		return nil, fmt.Errorf("resolve sandbox runtime base directory: %w", err)
+	}
+	runDir := filepath.Join(runBaseDir, sandboxID)
+	cleanupRunDir := true
+	defer func() {
+		if cleanupRunDir {
+			_ = os.RemoveAll(runDir)
+		}
+	}()
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		return nil, err
+	}
+
+	rootfsPath, err := filepath.Abs(preparedRootFSPath)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := os.Stat(rootfsPath); err != nil {
+		return nil, fmt.Errorf("rootfs %s: %w", rootfsPath, err)
+	}
+
+	vmRootFSPath := filepath.Join(runDir, "rootfs-persistent.ext4")
+	if err := copyFile(rootfsPath, vmRootFSPath); err != nil {
+		return nil, fmt.Errorf("prepare persistent rootfs: %w", err)
+	}
+
+	networkRunCommand := func(ctx context.Context, args ...string) error {
+		return runRootCommand(ctx, cfg, args...)
+	}
+	networkRunBatch := func(ctx context.Context, commands [][]string) error {
+		return runRootCommandBatch(ctx, cfg, commands)
+	}
+	networkCfg, cleanupNetwork, err := setupHostNetwork(ctx, sandboxID, compiled.Allow, networkRunCommand, networkRunBatch)
+	if err != nil {
+		_ = os.Remove(vmRootFSPath)
+		return nil, fmt.Errorf("setup host network: %w", err)
+	}
+
+	cleanupAll := func() {
+		cleanupNetwork()
+		_ = os.Remove(vmRootFSPath)
+	}
+
+	vsockPath := filepath.Join(runDir, "vsock.sock")
+	fcCfg := firecrackerConfig{
+		BootSource: bootSource{
+			KernelImagePath: kernelPath,
+			BootArgs: fmt.Sprintf(
+				"console=ttyS0 reboot=k panic=1 pci=off init=/sbin/cleanroom-init random.trust_cpu=on cleanroom_guest_ip=%s cleanroom_guest_gw=%s cleanroom_guest_mask=24 cleanroom_guest_dns=1.1.1.1 cleanroom_guest_port=%d",
+				networkCfg.GuestIP,
+				networkCfg.HostIP,
+				cfg.GuestPort,
+			),
+		},
+		Drives: []drive{{
+			DriveID:      "rootfs",
+			PathOnHost:   vmRootFSPath,
+			IsRootDevice: true,
+			IsReadOnly:   false,
+		}},
+		MachineConfig: machineConfig{
+			VCPUCount:  cfg.VCPUs,
+			MemSizeMiB: cfg.MemoryMiB,
+			SMT:        false,
+		},
+		Vsock: &vsockConfig{
+			VsockID:  "cleanroom-vsock",
+			GuestCID: cfg.GuestCID,
+			UDSPath:  vsockPath,
+		},
+		NetworkInterfaces: []networkInterface{{
+			IfaceID:     "eth0",
+			HostDevName: networkCfg.TapName,
+			GuestMac:    guestMACFromRunID(sandboxID),
+		}},
+		Entropy: &entropyConfig{},
+	}
+
+	configPath := filepath.Join(runDir, "firecracker-config.json")
+	if err := writeJSON(configPath, fcCfg); err != nil {
+		cleanupAll()
+		return nil, err
+	}
+
+	apiSocket := filepath.Join(runDir, "firecracker.sock")
+	stdoutPath := filepath.Join(runDir, "firecracker.stdout.log")
+	stderrPath := filepath.Join(runDir, "firecracker.stderr.log")
+	stdoutFile, err := os.Create(stdoutPath)
+	if err != nil {
+		cleanupAll()
+		return nil, err
+	}
+	defer stdoutFile.Close()
+	stderrFile, err := os.Create(stderrPath)
+	if err != nil {
+		cleanupAll()
+		return nil, err
+	}
+	defer stderrFile.Close()
+
+	fcCmd := exec.Command(firecrackerPath, "--api-sock", apiSocket, "--config-file", configPath)
+	fcCmd.Stdout = stdoutFile
+	fcCmd.Stderr = stderrFile
+	if err := fcCmd.Start(); err != nil {
+		cleanupAll()
+		return nil, fmt.Errorf("start firecracker: %w", err)
+	}
+
+	instance := &sandboxInstance{
+		SandboxID:      sandboxID,
+		RunDir:         runDir,
+		ConfigPath:     configPath,
+		VsockPath:      vsockPath,
+		GuestPort:      cfg.GuestPort,
+		Policy:         compiled,
+		ImageRef:       imageArtifact.Ref,
+		ImageDigest:    imageArtifact.Digest,
+		CommandTimeout: cfg.LaunchSeconds,
+		fcCmd:          fcCmd,
+		exitedCh:       make(chan struct{}),
+		cleanupNetwork: cleanupNetwork,
+		vmRootFSPath:   vmRootFSPath,
+	}
+	go func() {
+		err := fcCmd.Wait()
+		instance.setExited(err)
+		close(instance.exitedCh)
+	}()
+
+	bootCtx, cancel := context.WithTimeout(ctx, time.Duration(cfg.LaunchSeconds)*time.Second)
+	defer cancel()
+	conn, err := dialVsockUntilReady(bootCtx, instance.exitedCh, instance.exitedErrOrNil, vsockPath, cfg.GuestPort)
+	if err != nil {
+		stopVM(fcCmd, instance.exitedCh)
+		cleanupAll()
+		return nil, err
+	}
+	_ = conn.Close()
+	cleanupRunDir = false
+	return instance, nil
+}
+
+func sandboxRuntimeBaseDir() (string, error) {
+	base, err := paths.StateBaseDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(base, "sandboxes"), nil
+}
+
+func (s *sandboxInstance) shutdown() {
+	if s == nil {
+		return
+	}
+	stopVM(s.fcCmd, s.exitedCh)
+	if s.cleanupNetwork != nil {
+		s.cleanupNetwork()
+	}
+	if strings.TrimSpace(s.RunDir) != "" {
+		_ = os.RemoveAll(s.RunDir)
+		return
+	}
+	if strings.TrimSpace(s.vmRootFSPath) != "" {
+		_ = os.Remove(s.vmRootFSPath)
+	}
+}
+
+func (s *sandboxInstance) setExited(err error) {
+	s.exitMu.Lock()
+	defer s.exitMu.Unlock()
+	if s.exitReady {
+		return
+	}
+	s.exitErr = err
+	s.exitReady = true
+}
+
+func (s *sandboxInstance) exitedErrOrNil() error {
+	s.exitMu.RLock()
+	defer s.exitMu.RUnlock()
+	if !s.exitReady {
+		return nil
+	}
+	if s.exitErr == nil {
+		return errors.New("vm exited")
+	}
+	return s.exitErr
+}
+
 func runResultMessage(base string) string {
 	return base + "; rootfs writes discarded after run"
 }
@@ -891,9 +1353,9 @@ type guestExecTiming struct {
 	CommandRun   time.Duration
 }
 
-func runGuestCommand(bootCtx context.Context, execCtx context.Context, waitCh <-chan error, vsockPath string, guestPort uint32, req vsockexec.ExecRequest, stream backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error) {
+func runGuestCommand(bootCtx context.Context, execCtx context.Context, processExited <-chan struct{}, processExitErr func() error, vsockPath string, guestPort uint32, req vsockexec.ExecRequest, stream backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error) {
 	waitStart := time.Now()
-	conn, err := dialVsockUntilReady(bootCtx, waitCh, vsockPath, guestPort)
+	conn, err := dialVsockUntilReady(bootCtx, processExited, processExitErr, vsockPath, guestPort)
 	if err != nil {
 		return vsockexec.ExecResponse{}, guestExecTiming{}, err
 	}
@@ -949,7 +1411,7 @@ func (w callbackWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func dialVsockUntilReady(ctx context.Context, waitCh <-chan error, vsockPath string, guestPort uint32) (io.ReadWriteCloser, error) {
+func dialVsockUntilReady(ctx context.Context, processExited <-chan struct{}, processExitErr func() error, vsockPath string, guestPort uint32) (io.ReadWriteCloser, error) {
 	ticker := time.NewTicker(vsockDialRetryInterval)
 	defer ticker.Stop()
 
@@ -960,7 +1422,8 @@ func dialVsockUntilReady(ctx context.Context, waitCh <-chan error, vsockPath str
 		}
 
 		select {
-		case waitErr := <-waitCh:
+		case <-processExited:
+			waitErr := processExitErr()
 			if waitErr == nil {
 				return nil, errors.New("firecracker exited before vsock guest agent became ready")
 			}
@@ -972,12 +1435,15 @@ func dialVsockUntilReady(ctx context.Context, waitCh <-chan error, vsockPath str
 	}
 }
 
-func stopVM(fcCmd *exec.Cmd, waitCh <-chan error) {
+func stopVM(fcCmd *exec.Cmd, processExited <-chan struct{}) {
+	if fcCmd == nil {
+		return
+	}
 	if fcCmd.Process != nil {
 		_ = fcCmd.Process.Kill()
 	}
 	select {
-	case <-waitCh:
+	case <-processExited:
 	case <-time.After(2 * time.Second):
 	}
 }
