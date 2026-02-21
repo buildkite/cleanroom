@@ -93,6 +93,15 @@ cleanroom image import ghcr.io/buildkite/cleanroom-base/alpine@sha256:... ./root
 `ghcr.io/buildkite/cleanroom-base/alpine` is published from this repo on pushes to `main`
 via `.github/workflows/base-image.yml`.
 
+Benchmark sandbox TTI (time from sandbox creation to first successful command):
+
+```bash
+scripts/benchmark-tti.sh --iterations 10
+```
+
+This uses `hyperfine` to benchmark `cleanroom exec ... -- echo benchmark` and
+writes a timestamped JSON report to `benchmarks/results/`.
+
 ## API Contract (Current)
 
 Canonical API surface is defined in `proto/cleanroom/v1/control.proto` and
