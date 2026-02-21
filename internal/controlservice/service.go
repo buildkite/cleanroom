@@ -231,7 +231,7 @@ func (s *Service) DownloadSandboxFile(ctx context.Context, req *cleanroomv1.Down
 	if sandboxID == "" {
 		return nil, errors.New("missing sandbox_id")
 	}
-	path := strings.TrimSpace(req.GetPath())
+	path := req.GetPath()
 	if path == "" {
 		return nil, errors.New("missing path")
 	}

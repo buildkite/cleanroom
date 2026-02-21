@@ -297,7 +297,6 @@ func (a *Adapter) DownloadSandboxFile(ctx context.Context, sandboxID, path strin
 	if sandboxID == "" {
 		return nil, errors.New("missing sandbox_id")
 	}
-	path = strings.TrimSpace(path)
 	if path == "" {
 		return nil, errors.New("missing path")
 	}

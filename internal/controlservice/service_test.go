@@ -555,6 +555,33 @@ func TestCreateExecutionRejectsWhileSandboxFileDownloadInProgress(t *testing.T) 
 	}
 }
 
+func TestDownloadSandboxFilePreservesPathWhitespace(t *testing.T) {
+	expectedPath := "/home/sprite/artifacts/result.txt "
+	adapter := &stubAdapter{
+		downloadFn: func(_ context.Context, _, path string, _ int64) ([]byte, error) {
+			if got, want := path, expectedPath; got != want {
+				t.Fatalf("unexpected path: got %q want %q", got, want)
+			}
+			return []byte("artifact-data"), nil
+		},
+	}
+	svc := newTestService(adapter)
+
+	createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+
+	_, err = svc.DownloadSandboxFile(context.Background(), &cleanroomv1.DownloadSandboxFileRequest{
+		SandboxId: createResp.GetSandbox().GetSandboxId(),
+		Path:      expectedPath,
+		MaxBytes:  1024,
+	})
+	if err != nil {
+		t.Fatalf("DownloadSandboxFile returned error: %v", err)
+	}
+}
+
 func TestTerminateSandboxReturnsBackendTerminateError(t *testing.T) {
 	adapter := &stubAdapter{
 		terminateFn: func(context.Context, string) error {
