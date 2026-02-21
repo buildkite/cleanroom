@@ -7,6 +7,8 @@ mise run build
 KERNEL_IMAGE="${CLEANROOM_KERNEL_IMAGE:-}"
 ROOTFS_IMAGE="${CLEANROOM_ROOTFS:-}"
 FIRECRACKER_BINARY="${CLEANROOM_FIRECRACKER_BINARY:-firecracker}"
+PRIVILEGED_MODE="${CLEANROOM_PRIVILEGED_MODE:-}"
+PRIVILEGED_HELPER_PATH="${CLEANROOM_PRIVILEGED_HELPER_PATH:-}"
 
 if [[ -z "$KERNEL_IMAGE" ]]; then
   echo "CLEANROOM_KERNEL_IMAGE is required for Firecracker e2e CI" >&2
@@ -45,6 +47,13 @@ backends:
     memory_mib: 1024
     launch_seconds: 45
 EOF
+
+if [[ -n "$PRIVILEGED_MODE" ]]; then
+  echo "    privileged_mode: $PRIVILEGED_MODE" >> "$XDG_CONFIG_HOME/cleanroom/config.yaml"
+fi
+if [[ -n "$PRIVILEGED_HELPER_PATH" ]]; then
+  echo "    privileged_helper_path: $PRIVILEGED_HELPER_PATH" >> "$XDG_CONFIG_HOME/cleanroom/config.yaml"
+fi
 
 echo "--- :stethoscope: Doctor"
 ./dist/cleanroom doctor --json | tee "$tmpdir/doctor.json"

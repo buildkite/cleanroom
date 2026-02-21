@@ -51,6 +51,9 @@ type Adapter struct {
 const runObservabilityFile = "run-observability.json"
 const vsockDialRetryInterval = 50 * time.Millisecond
 const preparedRuntimeRootFSVersion = "v1"
+const privilegedModeSudo = "sudo"
+const privilegedModeHelper = "helper"
+const defaultPrivilegedHelperPath = "/usr/local/sbin/cleanroom-root-helper"
 
 const guestInitScriptTemplate = `#!/bin/sh
 set -eu
@@ -214,22 +217,38 @@ func (a *Adapter) Doctor(_ context.Context, req backend.DoctorRequest) (*backend
 	}
 	appendCheck("network_policy_rules", policyRulesStatus, policyRulesMessage)
 
-	for _, cmd := range []string{"ip", "iptables", "sysctl", "sudo"} {
+	privilegedMode, privilegedHelperPath := resolvePrivilegedExecution(req.FirecrackerConfig)
+	appendCheck("network_privileged_mode", "pass", fmt.Sprintf("using privileged command mode %q", privilegedMode))
+
+	requiredCommands := []string{"ip", "iptables", "sysctl"}
+	if privilegedMode == privilegedModeSudo {
+		requiredCommands = append(requiredCommands, "sudo")
+	}
+	for _, cmd := range requiredCommands {
 		if _, err := exec.LookPath(cmd); err != nil {
 			appendCheck("network_cmd_"+cmd, "fail", fmt.Sprintf("missing required host command %q", cmd))
 		} else {
 			appendCheck("network_cmd_"+cmd, "pass", fmt.Sprintf("found host command %q", cmd))
 		}
 	}
-	if err := runRootCommand(context.Background(), "true"); err != nil {
-		appendCheck("network_sudo_nopasswd", "warn", fmt.Sprintf("sudo -n is not ready for network setup/cleanup: %v", err))
-	} else {
-		appendCheck("network_sudo_nopasswd", "pass", "sudo -n works for privileged network setup")
+
+	if privilegedMode == privilegedModeHelper {
+		if _, err := os.Stat(privilegedHelperPath); err != nil {
+			appendCheck("network_helper", "fail", fmt.Sprintf("privileged helper %q is not accessible: %v", privilegedHelperPath, err))
+		} else {
+			appendCheck("network_helper", "pass", fmt.Sprintf("using privileged helper %q", privilegedHelperPath))
+		}
 	}
-	if err := runRootCommand(context.Background(), "ip", "link", "show"); err != nil {
-		appendCheck("network_sudo_ip", "warn", fmt.Sprintf("sudo -n ip link show failed: %v", err))
+
+	if err := runRootCommand(context.Background(), req.FirecrackerConfig, "true"); err != nil {
+		appendCheck("network_privileged_probe", "warn", fmt.Sprintf("privileged command probe failed: %v", err))
 	} else {
-		appendCheck("network_sudo_ip", "pass", "sudo -n can execute ip commands")
+		appendCheck("network_privileged_probe", "pass", "privileged command probe succeeded")
+	}
+	if err := runRootCommand(context.Background(), req.FirecrackerConfig, "ip", "link", "show"); err != nil {
+		appendCheck("network_privileged_ip", "warn", fmt.Sprintf("privileged ip link show failed: %v", err))
+	} else {
+		appendCheck("network_privileged_ip", "pass", "privileged ip command execution succeeded")
 	}
 
 	return report, nil
@@ -353,7 +372,7 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 	observation.ImageDigest = imageArtifact.Digest
 	observation.ImageCacheHit = imageArtifact.CacheHit
 
-	preparedRootFSPath, err := a.ensurePreparedRuntimeRootFS(ctx, imageArtifact)
+	preparedRootFSPath, err := a.ensurePreparedRuntimeRootFS(ctx, req.FirecrackerConfig, imageArtifact)
 	if err != nil {
 		return nil, err
 	}
@@ -376,7 +395,13 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 	observation.RootFSCopyMS = durationMillisCeil(time.Since(rootfsCopyStart))
 
 	networkSetupStart := time.Now()
-	networkCfg, cleanupNetwork, err := setupHostNetwork(ctx, req.RunID, req.Policy.Allow)
+	networkRunCommand := func(ctx context.Context, args ...string) error {
+		return runRootCommand(ctx, req.FirecrackerConfig, args...)
+	}
+	networkRunBatch := func(ctx context.Context, commands [][]string) error {
+		return runRootCommandBatch(ctx, req.FirecrackerConfig, commands)
+	}
+	networkCfg, cleanupNetwork, err := setupHostNetwork(ctx, req.RunID, req.Policy.Allow, networkRunCommand, networkRunBatch)
 	if err != nil {
 		return nil, fmt.Errorf("setup host network: %w", err)
 	}
@@ -665,7 +690,7 @@ func (a *Adapter) ensureImageArtifact(ctx context.Context, imageRef string) (ima
 	}, nil
 }
 
-func (a *Adapter) ensurePreparedRuntimeRootFS(ctx context.Context, image imageArtifact) (string, error) {
+func (a *Adapter) ensurePreparedRuntimeRootFS(ctx context.Context, cfg backend.FirecrackerConfig, image imageArtifact) (string, error) {
 	sourcePath := strings.TrimSpace(image.RootFSPath)
 	if sourcePath == "" {
 		return "", errors.New("resolved image rootfs path is empty")
@@ -707,7 +732,7 @@ func (a *Adapter) ensurePreparedRuntimeRootFS(ctx context.Context, image imageAr
 	if err := copyFile(sourcePath, tmpPath); err != nil {
 		return "", fmt.Errorf("copy rootfs image for runtime preparation: %w", err)
 	}
-	if err := a.installGuestRuntimeIntoRootFS(ctx, tmpPath, guestAgentPath); err != nil {
+	if err := a.installGuestRuntimeIntoRootFS(ctx, cfg, tmpPath, guestAgentPath); err != nil {
 		_ = os.Remove(tmpPath)
 		return "", err
 	}
@@ -735,20 +760,20 @@ func runtimeRootFSCacheKey(imageDigest, guestAgentHash string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func (a *Adapter) installGuestRuntimeIntoRootFS(ctx context.Context, rootFSPath, guestAgentPath string) error {
+func (a *Adapter) installGuestRuntimeIntoRootFS(ctx context.Context, cfg backend.FirecrackerConfig, rootFSPath, guestAgentPath string) error {
 	mountDir, err := os.MkdirTemp("", "cleanroom-firecracker-rootfs-*")
 	if err != nil {
 		return fmt.Errorf("create temporary rootfs mount directory: %w", err)
 	}
 	defer os.RemoveAll(mountDir)
 
-	if err := runRootCommand(ctx, "mount", "-o", "loop", rootFSPath, mountDir); err != nil {
+	if err := runRootCommand(ctx, cfg, "mount", "-o", "loop", rootFSPath, mountDir); err != nil {
 		return fmt.Errorf("mount rootfs image for runtime preparation: %w", err)
 	}
 	mounted := true
 	defer func() {
 		if mounted {
-			_ = runRootCommand(context.Background(), "umount", mountDir)
+			_ = runRootCommand(context.Background(), cfg, "umount", mountDir)
 		}
 	}()
 
@@ -758,16 +783,16 @@ func (a *Adapter) installGuestRuntimeIntoRootFS(ctx context.Context, rootFSPath,
 	}
 	defer os.Remove(initScriptPath)
 
-	if err := runRootCommand(ctx, "mkdir", "-p", filepath.Join(mountDir, "usr/local/bin"), filepath.Join(mountDir, "sbin")); err != nil {
+	if err := runRootCommand(ctx, cfg, "mkdir", "-p", filepath.Join(mountDir, "usr/local/bin"), filepath.Join(mountDir, "sbin")); err != nil {
 		return fmt.Errorf("prepare runtime directories in mounted rootfs: %w", err)
 	}
-	if err := runRootCommand(ctx, "install", "-m", "0755", guestAgentPath, filepath.Join(mountDir, "usr/local/bin/cleanroom-guest-agent")); err != nil {
+	if err := runRootCommand(ctx, cfg, "install", "-m", "0755", guestAgentPath, filepath.Join(mountDir, "usr/local/bin/cleanroom-guest-agent")); err != nil {
 		return fmt.Errorf("install guest agent into mounted rootfs: %w", err)
 	}
-	if err := runRootCommand(ctx, "install", "-m", "0755", initScriptPath, filepath.Join(mountDir, "sbin/cleanroom-init")); err != nil {
+	if err := runRootCommand(ctx, cfg, "install", "-m", "0755", initScriptPath, filepath.Join(mountDir, "sbin/cleanroom-init")); err != nil {
 		return fmt.Errorf("install cleanroom init into mounted rootfs: %w", err)
 	}
-	if err := runRootCommand(ctx, "umount", mountDir); err != nil {
+	if err := runRootCommand(ctx, cfg, "umount", mountDir); err != nil {
 		return fmt.Errorf("unmount prepared rootfs image: %w", err)
 	}
 	mounted = false
@@ -975,11 +1000,11 @@ type ipLookupFunc func(ctx context.Context, host string) ([]net.IP, error)
 type rootCommandFunc func(ctx context.Context, args ...string) error
 type rootCommandBatchFunc func(ctx context.Context, commands [][]string) error
 
-func setupHostNetwork(ctx context.Context, runID string, allow []policy.AllowRule) (hostNetworkConfig, func(), error) {
+func setupHostNetwork(ctx context.Context, runID string, allow []policy.AllowRule, runCommand rootCommandFunc, runBatchCommand rootCommandBatchFunc) (hostNetworkConfig, func(), error) {
 	lookup := func(ctx context.Context, host string) ([]net.IP, error) {
 		return net.DefaultResolver.LookupIP(ctx, "ip4", host)
 	}
-	return setupHostNetworkWithDeps(ctx, runID, allow, lookup, runRootCommand, runRootCommandBatch)
+	return setupHostNetworkWithDeps(ctx, runID, allow, lookup, runCommand, runBatchCommand)
 }
 
 func setupHostNetworkWithDeps(ctx context.Context, runID string, allow []policy.AllowRule, lookup ipLookupFunc, runCommand rootCommandFunc, runBatchCommand rootCommandBatchFunc) (hostNetworkConfig, func(), error) {
@@ -1126,63 +1151,58 @@ func resolveForwardRulesWithLookup(ctx context.Context, allow []policy.AllowRule
 	return rules, nil
 }
 
-func runRootCommand(ctx context.Context, args ...string) error {
-	cmd := exec.CommandContext(ctx, "sudo", append([]string{"-n"}, args...)...)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		msg := strings.TrimSpace(string(out))
-		if msg == "" {
-			msg = "no stderr output"
-		}
-		return fmt.Errorf("%s: %w (%s)", strings.Join(args, " "), err, msg)
+func resolvePrivilegedExecution(cfg backend.FirecrackerConfig) (mode string, helperPath string) {
+	mode = strings.ToLower(strings.TrimSpace(cfg.PrivilegedMode))
+	if mode == "" {
+		mode = privilegedModeSudo
 	}
-	return nil
+	helperPath = strings.TrimSpace(cfg.PrivilegedHelperPath)
+	if helperPath == "" {
+		helperPath = defaultPrivilegedHelperPath
+	}
+	return mode, helperPath
 }
 
-func runRootCommandBatch(ctx context.Context, commands [][]string) error {
-	if len(commands) == 0 {
-		return nil
+func runRootCommand(ctx context.Context, cfg backend.FirecrackerConfig, args ...string) error {
+	if len(args) == 0 {
+		return errors.New("missing privileged command")
 	}
-	script := buildBestEffortShellScript(commands)
-	cmd := exec.CommandContext(ctx, "sudo", "-n", "sh", "-c", script)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		msg := strings.TrimSpace(string(out))
-		if msg == "" {
-			msg = "no stderr output"
+
+	mode, helperPath := resolvePrivilegedExecution(cfg)
+	switch mode {
+	case privilegedModeSudo:
+		return runCombinedCommand(ctx, append([]string{"sudo", "-n"}, args...), args)
+	case privilegedModeHelper:
+		if strings.TrimSpace(helperPath) == "" {
+			return errors.New("privileged helper mode requires helper path")
 		}
-		return fmt.Errorf("batch root commands: %w (%s)", err, msg)
+		return runCombinedCommand(ctx, append([]string{helperPath}, args...), append([]string{"helper"}, args...))
+	default:
+		return fmt.Errorf("unsupported privileged command mode %q", mode)
 	}
-	return nil
 }
 
-func buildBestEffortShellScript(commands [][]string) string {
-	var b strings.Builder
-	b.WriteString("set +e\n")
+func runRootCommandBatch(ctx context.Context, cfg backend.FirecrackerConfig, commands [][]string) error {
 	for _, args := range commands {
 		if len(args) == 0 {
 			continue
 		}
-		b.WriteString(shellJoinArgs(args))
-		b.WriteString(" || true\n")
+		_ = runRootCommand(ctx, cfg, args...)
 	}
-	b.WriteString("exit 0\n")
-	return b.String()
+	return nil
 }
 
-func shellJoinArgs(args []string) string {
-	quoted := make([]string, len(args))
-	for i, arg := range args {
-		quoted[i] = shellQuoteArg(arg)
+func runCombinedCommand(ctx context.Context, command []string, errorContext []string) error {
+	cmd := exec.CommandContext(ctx, command[0], command[1:]...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg == "" {
+			msg = "no stderr output"
+		}
+		return fmt.Errorf("%s: %w (%s)", strings.Join(errorContext, " "), err, msg)
 	}
-	return strings.Join(quoted, " ")
-}
-
-func shellQuoteArg(arg string) string {
-	if arg == "" {
-		return "''"
-	}
-	return "'" + strings.ReplaceAll(arg, "'", "'\"'\"'") + "'"
+	return nil
 }
 
 func durationMillisCeil(d time.Duration) int64 {

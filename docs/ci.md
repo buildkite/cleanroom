@@ -55,33 +55,48 @@ The pipeline is currently configured to use:
 - `CLEANROOM_ROOTFS=/var/lib/buildkite-agent/.local/share/cleanroom/images/rootfs.ext4`
 - `CLEANROOM_FIRECRACKER_BINARY=/usr/local/bin/firecracker`
 
-### 3.3 Sudoers for full e2e
+### 3.3 Privileged command execution modes
 
-Create a constrained sudoers entry for networking commands used by the Firecracker backend:
+Firecracker backend supports two modes:
+
+- `sudo` (default): direct `sudo -n <command>` execution
+- `helper`: call a root-owned helper binary instead of direct sudo command execution
+
+Runtime config keys:
+
+- `backends.firecracker.privileged_mode`
+- `backends.firecracker.privileged_helper_path`
+
+For CI script usage, you can also set:
+
+- `CLEANROOM_PRIVILEGED_MODE`
+- `CLEANROOM_PRIVILEGED_HELPER_PATH`
+
+#### Option A: default `sudo` mode
+
+`sudo` mode requires NOPASSWD for commands used by launched execution:
 
 ```sudoers
 User_Alias CLEANROOM_CI = buildkite-agent
 Cmnd_Alias CLEANROOM_DOCTOR = /usr/bin/true, /usr/sbin/ip link show
 Cmnd_Alias CLEANROOM_NET = /usr/sbin/ip *, /usr/sbin/iptables *, /usr/sbin/sysctl -w net.ipv4.ip_forward=1
-Cmnd_Alias CLEANROOM_BATCH = /bin/sh -c *, /usr/bin/sh -c *
+Cmnd_Alias CLEANROOM_ROOTFS = /usr/bin/mount *, /usr/bin/umount *, /usr/bin/mkdir *, /usr/bin/install *
 
-CLEANROOM_CI ALL=(root) NOPASSWD: CLEANROOM_DOCTOR, CLEANROOM_NET, CLEANROOM_BATCH
+CLEANROOM_CI ALL=(root) NOPASSWD: CLEANROOM_DOCTOR, CLEANROOM_NET, CLEANROOM_ROOTFS
 ```
 
-Install and validate:
+#### Option B: hardened `helper` mode (recommended)
 
-```bash
-sudo tee /etc/sudoers.d/buildkite-agent-cleanroom >/dev/null <<'EOF'
-User_Alias CLEANROOM_CI = buildkite-agent
-Cmnd_Alias CLEANROOM_DOCTOR = /usr/bin/true, /usr/sbin/ip link show
-Cmnd_Alias CLEANROOM_NET = /usr/sbin/ip *, /usr/sbin/iptables *, /usr/sbin/sysctl -w net.ipv4.ip_forward=1
-Cmnd_Alias CLEANROOM_BATCH = /bin/sh -c *, /usr/bin/sh -c *
+Use a single root-owned helper binary and only grant sudo access to that helper:
 
-CLEANROOM_CI ALL=(root) NOPASSWD: CLEANROOM_DOCTOR, CLEANROOM_NET, CLEANROOM_BATCH
-EOF
-sudo chmod 440 /etc/sudoers.d/buildkite-agent-cleanroom
-sudo visudo -cf /etc/sudoers.d/buildkite-agent-cleanroom
+```sudoers
+buildkite-agent ALL=(root) NOPASSWD: /usr/local/sbin/cleanroom-root-helper *
 ```
+
+Then set:
+
+- `CLEANROOM_PRIVILEGED_MODE=helper`
+- `CLEANROOM_PRIVILEGED_HELPER_PATH=/usr/local/sbin/cleanroom-root-helper`
 
 ## 4. Optional Agent Environment Hook
 

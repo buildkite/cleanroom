@@ -882,14 +882,16 @@ func validateClientEndpoint(ep endpoint.Endpoint) error {
 
 func mergeFirecrackerConfig(cwd string, e *ExecCommand, cfg runtimeconfig.Config) backend.FirecrackerConfig {
 	out := backend.FirecrackerConfig{
-		BinaryPath:      cfg.Backends.Firecracker.BinaryPath,
-		KernelImagePath: cfg.Backends.Firecracker.KernelImage,
-		RootFSPath:      cfg.Backends.Firecracker.RootFS,
-		VCPUs:           cfg.Backends.Firecracker.VCPUs,
-		MemoryMiB:       cfg.Backends.Firecracker.MemoryMiB,
-		GuestCID:        cfg.Backends.Firecracker.GuestCID,
-		GuestPort:       cfg.Backends.Firecracker.GuestPort,
-		LaunchSeconds:   cfg.Backends.Firecracker.LaunchSeconds,
+		BinaryPath:           cfg.Backends.Firecracker.BinaryPath,
+		KernelImagePath:      cfg.Backends.Firecracker.KernelImage,
+		RootFSPath:           cfg.Backends.Firecracker.RootFS,
+		PrivilegedMode:       cfg.Backends.Firecracker.PrivilegedMode,
+		PrivilegedHelperPath: cfg.Backends.Firecracker.PrivilegedHelperPath,
+		VCPUs:                cfg.Backends.Firecracker.VCPUs,
+		MemoryMiB:            cfg.Backends.Firecracker.MemoryMiB,
+		GuestCID:             cfg.Backends.Firecracker.GuestCID,
+		GuestPort:            cfg.Backends.Firecracker.GuestPort,
+		LaunchSeconds:        cfg.Backends.Firecracker.LaunchSeconds,
 	}
 
 	out.Launch = true

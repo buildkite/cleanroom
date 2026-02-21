@@ -201,6 +201,8 @@ backends:
   firecracker:
     binary_path: firecracker
     kernel_image: /opt/cleanroom/vmlinux
+    privileged_mode: sudo # or helper
+    privileged_helper_path: /usr/local/sbin/cleanroom-root-helper
     vcpus: 2
     memory_mib: 1024
     guest_cid: 3
