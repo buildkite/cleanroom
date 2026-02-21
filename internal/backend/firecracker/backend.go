@@ -758,7 +758,9 @@ func runtimeRootFSCacheKey(imageDigest, guestAgentHash string) string {
 }
 
 func (a *Adapter) installGuestRuntimeIntoRootFS(ctx context.Context, cfg backend.FirecrackerConfig, rootFSPath, guestAgentPath string) error {
-	mountDir, err := os.MkdirTemp("", "cleanroom-firecracker-rootfs-*")
+	// Keep mount points in /tmp so helper-mode path allowlisting stays stable
+	// regardless of TMPDIR environment overrides.
+	mountDir, err := os.MkdirTemp("/tmp", "cleanroom-firecracker-rootfs-*")
 	if err != nil {
 		return fmt.Errorf("create temporary rootfs mount directory: %w", err)
 	}
