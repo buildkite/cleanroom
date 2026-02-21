@@ -1,0 +1,21 @@
+agents:
+  queue: hosted
+
+cache:
+  paths:
+    - "~/.local/share/mise"
+    - "~/.cache/mise"
+    - "~/.local/state/mise"
+  size: "20g"
+  name: "mise-cache"
+
+env:
+  MISE_YES: "1"
+  MISE_TRUSTED_CONFIG_PATHS: /buildkite/builds
+
+steps:
+  - label: ":hammer: Build"
+    command: mise run build
+
+  - label: ":test_tube: Test"
+    command: mise run test
