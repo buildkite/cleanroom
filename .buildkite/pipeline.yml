@@ -1,0 +1,37 @@
+env:
+  MISE_YES: "1"
+  MISE_TRUSTED_CONFIG_PATHS: /buildkite/builds
+
+steps:
+  - label: ":test_tube: Test (Linux)"
+    command: mise run test
+    cache:
+      paths:
+        - "~/.local/share/mise"
+        - "~/.cache/mise"
+        - "~/.local/state/mise"
+      size: "20g"
+      name: "mise-cache"
+    agents:
+      queue: hosted
+
+  - label: ":test_tube: Test (macOS)"
+    command: mise run test
+    cache:
+      paths:
+        - "~/.local/share/mise"
+        - "~/.cache/mise"
+        - "~/.local/state/mise"
+      size: "20g"
+      name: "mise-cache"
+    agents:
+      queue: mac-small
+
+  - label: ":fire: E2E (Firecracker)"
+    command: scripts/ci-cleanroom-e2e.sh
+    env:
+      CLEANROOM_KERNEL_IMAGE: /var/lib/buildkite-agent/.local/share/cleanroom/images/vmlinux.bin
+      CLEANROOM_ROOTFS: /var/lib/buildkite-agent/.local/share/cleanroom/images/rootfs.ext4
+      CLEANROOM_FIRECRACKER_BINARY: /usr/local/bin/firecracker
+    agents:
+      queue: cleanroom

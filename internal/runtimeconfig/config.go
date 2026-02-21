@@ -11,8 +11,8 @@ import (
 )
 
 type Config struct {
-	DefaultBackend string    `yaml:"default_backend"`
-	Backends Backends `yaml:"backends"`
+	DefaultBackend string   `yaml:"default_backend"`
+	Backends       Backends `yaml:"backends"`
 }
 
 type Backends struct {
@@ -20,14 +20,16 @@ type Backends struct {
 }
 
 type FirecrackerConfig struct {
-	BinaryPath    string `yaml:"binary_path"`
-	KernelImage   string `yaml:"kernel_image"`
-	RootFS        string `yaml:"rootfs"`
-	VCPUs         int64  `yaml:"vcpus"`
-	MemoryMiB     int64  `yaml:"memory_mib"`
-	GuestCID      uint32 `yaml:"guest_cid"`
-	GuestPort     uint32 `yaml:"guest_port"`
-	LaunchSeconds int64  `yaml:"launch_seconds"` // VM boot/guest-agent readiness timeout
+	BinaryPath           string `yaml:"binary_path"`
+	KernelImage          string `yaml:"kernel_image"`
+	RootFS               string `yaml:"rootfs"`
+	PrivilegedMode       string `yaml:"privileged_mode"`
+	PrivilegedHelperPath string `yaml:"privileged_helper_path"`
+	VCPUs                int64  `yaml:"vcpus"`
+	MemoryMiB            int64  `yaml:"memory_mib"`
+	GuestCID             uint32 `yaml:"guest_cid"`
+	GuestPort            uint32 `yaml:"guest_port"`
+	LaunchSeconds        int64  `yaml:"launch_seconds"` // VM boot/guest-agent readiness timeout
 }
 
 func Path() (string, error) {

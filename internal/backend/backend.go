@@ -39,16 +39,18 @@ type RunRequest struct {
 }
 
 type FirecrackerConfig struct {
-	BinaryPath      string
-	KernelImagePath string
-	RootFSPath      string
-	RunDir string
-	VCPUs  int64
-	MemoryMiB       int64
-	GuestCID        uint32
-	GuestPort       uint32
-	Launch          bool
-	LaunchSeconds   int64
+	BinaryPath           string
+	KernelImagePath      string
+	RootFSPath           string
+	PrivilegedMode       string
+	PrivilegedHelperPath string
+	RunDir               string
+	VCPUs                int64
+	MemoryMiB            int64
+	GuestCID             uint32
+	GuestPort            uint32
+	Launch               bool
+	LaunchSeconds        int64
 }
 
 type RunResult struct {

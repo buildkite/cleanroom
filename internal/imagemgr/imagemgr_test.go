@@ -230,10 +230,13 @@ func TestPersistFromTarStreamRemovesArtifactWhenMetadataWriteFails(t *testing.T)
 			if err := os.WriteFile(outputPath, []byte("fake-ext4"), 0o644); err != nil {
 				return 0, err
 			}
-			if err := os.Chmod(dbPath, 0o444); err != nil {
+			// Force metadata writes to fail in a UID-agnostic way: replacing the DB
+			// file with a directory makes sqlite open/upsert fail even when tests run
+			// as root in CI.
+			if err := os.Remove(dbPath); err != nil {
 				return 0, err
 			}
-			if err := os.Chmod(stateDir, 0o555); err != nil {
+			if err := os.Mkdir(dbPath, 0o755); err != nil {
 				return 0, err
 			}
 			return int64(len("fake-ext4")), nil
@@ -242,10 +245,6 @@ func TestPersistFromTarStreamRemovesArtifactWhenMetadataWriteFails(t *testing.T)
 	if err != nil {
 		t.Fatalf("create manager: %v", err)
 	}
-	t.Cleanup(func() {
-		_ = os.Chmod(stateDir, 0o755)
-		_ = os.Chmod(dbPath, 0o644)
-	})
 
 	digest := "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	now := time.Unix(1_700_000_002, 0).UTC()
