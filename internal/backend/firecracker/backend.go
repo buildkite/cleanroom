@@ -4,6 +4,8 @@ import (
 	"context"
 	cryptorand "crypto/rand"
 	"crypto/sha1"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -37,10 +39,73 @@ type Adapter struct {
 	imageManager     imageEnsurer
 	imageManagerErr  error
 	newImageManager  imageManagerFactory
+
+	guestAgentOnce sync.Once
+	guestAgentPath string
+	guestAgentHash string
+	guestAgentErr  error
+
+	runtimeImageMu sync.Mutex
 }
 
 const runObservabilityFile = "run-observability.json"
 const vsockDialRetryInterval = 50 * time.Millisecond
+const preparedRuntimeRootFSVersion = "v1"
+
+const guestInitScriptTemplate = `#!/bin/sh
+set -eu
+
+mount -t proc proc /proc 2>/dev/null || true
+mount -t sysfs sysfs /sys 2>/dev/null || true
+mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
+mkdir -p /dev/pts /run /tmp
+mount -t devpts devpts /dev/pts 2>/dev/null || true
+mount -t tmpfs tmpfs /run 2>/dev/null || true
+mount -t tmpfs tmpfs /tmp 2>/dev/null || true
+
+export HOME=/root
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/root/.local/bin
+
+cmdline="$(cat /proc/cmdline 2>/dev/null || true)"
+arg_value() {
+  key="$1"
+  for token in $cmdline; do
+    case "$token" in
+      "$key"=*) echo "${token#*=}"; return 0 ;;
+    esac
+  done
+  return 1
+}
+
+GUEST_IP="$(arg_value cleanroom_guest_ip || true)"
+GUEST_GW="$(arg_value cleanroom_guest_gw || true)"
+GUEST_MASK="$(arg_value cleanroom_guest_mask || true)"
+GUEST_DNS="$(arg_value cleanroom_guest_dns || true)"
+GUEST_PORT="$(arg_value cleanroom_guest_port || true)"
+
+if command -v ip >/dev/null 2>&1 && [ -n "$GUEST_IP" ]; then
+  [ -n "$GUEST_MASK" ] || GUEST_MASK="24"
+  ip link set dev eth0 up 2>/dev/null || true
+  ip addr flush dev eth0 2>/dev/null || true
+  ip addr add "$GUEST_IP/$GUEST_MASK" dev eth0 2>/dev/null || true
+  if [ -n "$GUEST_GW" ]; then
+    ip route add default via "$GUEST_GW" dev eth0 2>/dev/null || true
+  fi
+  if [ -n "$GUEST_DNS" ]; then
+    printf 'nameserver %s\n' "$GUEST_DNS" > /etc/resolv.conf 2>/dev/null || true
+  fi
+fi
+
+if [ -z "$GUEST_PORT" ]; then
+  GUEST_PORT="10700"
+fi
+export CLEANROOM_VSOCK_PORT="$GUEST_PORT"
+
+while true; do
+  /usr/local/bin/cleanroom-guest-agent || true
+  sleep 1
+done
+`
 
 func New() *Adapter {
 	return &Adapter{newImageManager: defaultImageManagerFactory}
@@ -108,6 +173,11 @@ func (a *Adapter) Doctor(_ context.Context, req backend.DoctorRequest) (*backend
 		appendCheck("kernel_image", "fail", fmt.Sprintf("kernel image not accessible: %v", err))
 	} else {
 		appendCheck("kernel_image", "pass", fmt.Sprintf("kernel image configured: %s", req.KernelImagePath))
+	}
+	if guestAgentPath, _, err := a.getGuestAgentBinary(); err != nil {
+		appendCheck("guest_agent_binary", "fail", err.Error())
+	} else {
+		appendCheck("guest_agent_binary", "pass", fmt.Sprintf("found cleanroom guest agent %q", guestAgentPath))
 	}
 
 	imageRefStatus := "warn"
@@ -283,7 +353,12 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 	observation.ImageDigest = imageArtifact.Digest
 	observation.ImageCacheHit = imageArtifact.CacheHit
 
-	rootfsPath, err := filepath.Abs(imageArtifact.RootFSPath)
+	preparedRootFSPath, err := a.ensurePreparedRuntimeRootFS(ctx, imageArtifact)
+	if err != nil {
+		return nil, err
+	}
+
+	rootfsPath, err := filepath.Abs(preparedRootFSPath)
 	if err != nil {
 		return nil, err
 	}
@@ -322,9 +397,10 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 		BootSource: bootSource{
 			KernelImagePath: kernelPath,
 			BootArgs: fmt.Sprintf(
-				"console=ttyS0 reboot=k panic=1 pci=off init=/sbin/cleanroom-init random.trust_cpu=on cleanroom_guest_ip=%s cleanroom_guest_gw=%s cleanroom_guest_mask=24 cleanroom_guest_dns=1.1.1.1",
+				"console=ttyS0 reboot=k panic=1 pci=off init=/sbin/cleanroom-init random.trust_cpu=on cleanroom_guest_ip=%s cleanroom_guest_gw=%s cleanroom_guest_mask=24 cleanroom_guest_dns=1.1.1.1 cleanroom_guest_port=%d",
 				networkCfg.GuestIP,
 				networkCfg.HostIP,
+				req.GuestPort,
 			),
 		},
 		Drives: []drive{
@@ -587,6 +663,182 @@ func (a *Adapter) ensureImageArtifact(ctx context.Context, imageRef string) (ima
 		RootFSPath: result.Record.RootFSPath,
 		CacheHit:   result.CacheHit,
 	}, nil
+}
+
+func (a *Adapter) ensurePreparedRuntimeRootFS(ctx context.Context, image imageArtifact) (string, error) {
+	sourcePath := strings.TrimSpace(image.RootFSPath)
+	if sourcePath == "" {
+		return "", errors.New("resolved image rootfs path is empty")
+	}
+	if _, err := os.Stat(sourcePath); err != nil {
+		return "", fmt.Errorf("resolved image rootfs %q: %w", sourcePath, err)
+	}
+
+	guestAgentPath, guestAgentHash, err := a.getGuestAgentBinary()
+	if err != nil {
+		return "", err
+	}
+
+	preparedPath, err := preparedRuntimeRootFSPath(image.Digest, guestAgentHash)
+	if err != nil {
+		return "", err
+	}
+	if _, err := os.Stat(preparedPath); err == nil {
+		return preparedPath, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("inspect prepared runtime rootfs %q: %w", preparedPath, err)
+	}
+
+	a.runtimeImageMu.Lock()
+	defer a.runtimeImageMu.Unlock()
+
+	if _, err := os.Stat(preparedPath); err == nil {
+		return preparedPath, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("inspect prepared runtime rootfs %q: %w", preparedPath, err)
+	}
+
+	preparedDir := filepath.Dir(preparedPath)
+	if err := os.MkdirAll(preparedDir, 0o755); err != nil {
+		return "", fmt.Errorf("create prepared rootfs cache directory %q: %w", preparedDir, err)
+	}
+
+	tmpPath := preparedPath + fmt.Sprintf(".tmp-%d", time.Now().UnixNano())
+	if err := copyFile(sourcePath, tmpPath); err != nil {
+		return "", fmt.Errorf("copy rootfs image for runtime preparation: %w", err)
+	}
+	if err := a.installGuestRuntimeIntoRootFS(ctx, tmpPath, guestAgentPath); err != nil {
+		_ = os.Remove(tmpPath)
+		return "", err
+	}
+	if err := os.Rename(tmpPath, preparedPath); err != nil {
+		_ = os.Remove(tmpPath)
+		if _, statErr := os.Stat(preparedPath); statErr == nil {
+			return preparedPath, nil
+		}
+		return "", fmt.Errorf("store prepared runtime rootfs %q: %w", preparedPath, err)
+	}
+	return preparedPath, nil
+}
+
+func preparedRuntimeRootFSPath(imageDigest, guestAgentHash string) (string, error) {
+	cacheBase, err := paths.CacheBaseDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve cache base directory: %w", err)
+	}
+	key := runtimeRootFSCacheKey(imageDigest, guestAgentHash)
+	return filepath.Join(cacheBase, "firecracker", "runtime-rootfs", key+".ext4"), nil
+}
+
+func runtimeRootFSCacheKey(imageDigest, guestAgentHash string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(imageDigest) + "|" + guestAgentHash + "|" + preparedRuntimeRootFSVersion + "|" + guestInitScriptTemplate))
+	return hex.EncodeToString(sum[:])
+}
+
+func (a *Adapter) installGuestRuntimeIntoRootFS(ctx context.Context, rootFSPath, guestAgentPath string) error {
+	mountDir, err := os.MkdirTemp("", "cleanroom-firecracker-rootfs-*")
+	if err != nil {
+		return fmt.Errorf("create temporary rootfs mount directory: %w", err)
+	}
+	defer os.RemoveAll(mountDir)
+
+	if err := runRootCommand(ctx, "mount", "-o", "loop", rootFSPath, mountDir); err != nil {
+		return fmt.Errorf("mount rootfs image for runtime preparation: %w", err)
+	}
+	mounted := true
+	defer func() {
+		if mounted {
+			_ = runRootCommand(context.Background(), "umount", mountDir)
+		}
+	}()
+
+	initScriptPath, err := createGuestInitScript()
+	if err != nil {
+		return err
+	}
+	defer os.Remove(initScriptPath)
+
+	if err := runRootCommand(ctx, "mkdir", "-p", filepath.Join(mountDir, "usr/local/bin"), filepath.Join(mountDir, "sbin")); err != nil {
+		return fmt.Errorf("prepare runtime directories in mounted rootfs: %w", err)
+	}
+	if err := runRootCommand(ctx, "install", "-m", "0755", guestAgentPath, filepath.Join(mountDir, "usr/local/bin/cleanroom-guest-agent")); err != nil {
+		return fmt.Errorf("install guest agent into mounted rootfs: %w", err)
+	}
+	if err := runRootCommand(ctx, "install", "-m", "0755", initScriptPath, filepath.Join(mountDir, "sbin/cleanroom-init")); err != nil {
+		return fmt.Errorf("install cleanroom init into mounted rootfs: %w", err)
+	}
+	if err := runRootCommand(ctx, "umount", mountDir); err != nil {
+		return fmt.Errorf("unmount prepared rootfs image: %w", err)
+	}
+	mounted = false
+	return nil
+}
+
+func createGuestInitScript() (string, error) {
+	f, err := os.CreateTemp("", "cleanroom-init-*.sh")
+	if err != nil {
+		return "", fmt.Errorf("create guest init script: %w", err)
+	}
+	if _, err := f.WriteString(guestInitScriptTemplate); err != nil {
+		_ = f.Close()
+		_ = os.Remove(f.Name())
+		return "", fmt.Errorf("write guest init script: %w", err)
+	}
+	if err := f.Chmod(0o755); err != nil {
+		_ = f.Close()
+		_ = os.Remove(f.Name())
+		return "", fmt.Errorf("chmod guest init script: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(f.Name())
+		return "", fmt.Errorf("close guest init script: %w", err)
+	}
+	return f.Name(), nil
+}
+
+func (a *Adapter) getGuestAgentBinary() (string, string, error) {
+	a.guestAgentOnce.Do(func() {
+		a.guestAgentPath, a.guestAgentErr = discoverGuestAgentBinary()
+		if a.guestAgentErr != nil {
+			return
+		}
+		a.guestAgentHash, a.guestAgentErr = hashFileSHA256(a.guestAgentPath)
+	})
+	if a.guestAgentErr != nil {
+		return "", "", a.guestAgentErr
+	}
+	if strings.TrimSpace(a.guestAgentPath) == "" || strings.TrimSpace(a.guestAgentHash) == "" {
+		return "", "", errors.New("failed to resolve cleanroom guest agent binary")
+	}
+	return a.guestAgentPath, a.guestAgentHash, nil
+}
+
+func discoverGuestAgentBinary() (string, error) {
+	if p, err := exec.LookPath("cleanroom-guest-agent"); err == nil {
+		return p, nil
+	}
+	self, err := os.Executable()
+	if err == nil {
+		candidate := filepath.Join(filepath.Dir(self), "cleanroom-guest-agent")
+		if info, statErr := os.Stat(candidate); statErr == nil && !info.IsDir() {
+			return candidate, nil
+		}
+	}
+	return "", errors.New("cleanroom-guest-agent binary not found in PATH; run `mise run install` first")
+}
+
+func hashFileSHA256(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("open %q for hashing: %w", path, err)
+	}
+	defer f.Close()
+
+	hash := sha256.New()
+	if _, err := io.Copy(hash, f); err != nil {
+		return "", fmt.Errorf("hash %q: %w", path, err)
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
 func (a *Adapter) getImageManager() (imageEnsurer, error) {
@@ -990,5 +1242,3 @@ func guestMACFromRunID(runID string) string {
 	sum := sha1.Sum([]byte(runID))
 	return fmt.Sprintf("02:fc:%02x:%02x:%02x:%02x", sum[0], sum[1], sum[2], sum[3])
 }
-
-

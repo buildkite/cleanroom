@@ -860,9 +860,6 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 			firecrackerCfg.RunDir = filepath.Join(runBaseDir, ex.RunID)
 		}
 	}
-	if ex.Options.ReadOnlyWorkspace {
-		firecrackerCfg.WorkspaceAccess = "ro"
-	}
 	if ex.Options.LaunchSeconds != 0 {
 		firecrackerCfg.LaunchSeconds = ex.Options.LaunchSeconds
 	}
