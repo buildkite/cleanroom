@@ -97,4 +97,53 @@ if ! grep -q 'run-observability.json' "$tmpdir/status.out"; then
   exit 1
 fi
 
+obs_file="$(ls -1t "$XDG_STATE_HOME"/cleanroom/runs/*/run-observability.json 2>/dev/null | head -n 1 || true)"
+if [[ -n "$obs_file" && -f "$obs_file" ]]; then
+  extract_json_number() {
+    local key="$1"
+    local file="$2"
+    sed -nE "s/.*\"${key}\"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p" "$file" | head -n 1
+  }
+  extract_json_string() {
+    local key="$1"
+    local file="$2"
+    sed -nE "s/.*\"${key}\"[[:space:]]*:[[:space:]]*\"([^\"]+)\".*/\1/p" "$file" | head -n 1
+  }
+
+  run_id="$(extract_json_string run_id "$obs_file")"
+  total_ms="$(extract_json_number total_ms "$obs_file")"
+  policy_resolve_ms="$(extract_json_number policy_resolve_ms "$obs_file")"
+  rootfs_copy_ms="$(extract_json_number rootfs_copy_ms "$obs_file")"
+  network_setup_ms="$(extract_json_number network_setup_ms "$obs_file")"
+  firecracker_start_ms="$(extract_json_number firecracker_start_ms "$obs_file")"
+  vm_ready_ms="$(extract_json_number vm_ready_ms "$obs_file")"
+  vsock_wait_ms="$(extract_json_number vsock_wait_ms "$obs_file")"
+  guest_exec_ms="$(extract_json_number guest_exec_ms "$obs_file")"
+  cleanup_ms="$(extract_json_number cleanup_ms "$obs_file")"
+
+  if command -v buildkite-agent >/dev/null 2>&1; then
+    annotation_file="$tmpdir/observability-annotation.md"
+    cat > "$annotation_file" <<EOF
+### Firecracker E2E Observability
+
+- run id: ${run_id:-n/a}
+
+| Metric | Value (ms) |
+| --- | ---: |
+| total | ${total_ms:-n/a} |
+| policy resolve | ${policy_resolve_ms:-n/a} |
+| rootfs copy | ${rootfs_copy_ms:-n/a} |
+| network setup | ${network_setup_ms:-n/a} |
+| firecracker start | ${firecracker_start_ms:-n/a} |
+| vm ready | ${vm_ready_ms:-n/a} |
+| vsock wait | ${vsock_wait_ms:-n/a} |
+| guest exec | ${guest_exec_ms:-n/a} |
+| cleanup | ${cleanup_ms:-n/a} |
+
+Source: ${obs_file}
+EOF
+    buildkite-agent annotate --context cleanroom-e2e-observability --style info < "$annotation_file"
+  fi
+fi
+
 echo "Firecracker e2e checks passed"
