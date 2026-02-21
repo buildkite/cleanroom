@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,18 +13,26 @@ import (
 
 const testDigestRef = "ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
-func TestImageSetRefUpdatesPrimaryPolicy(t *testing.T) {
+func TestImageBumpRefUpdatesPrimaryPolicy(t *testing.T) {
 	dir := t.TempDir()
 	policyPath := filepath.Join(dir, policy.PrimaryPolicyPath)
 	if err := os.WriteFile(policyPath, []byte("version: 1\nsandbox:\n  image:\n    ref: docker.io/library/alpine@sha256:25109184c71bdad752c8312a8623239686a9a2071e8825f20acb8f2198c3f659\n"), 0o644); err != nil {
 		t.Fatalf("write policy: %v", err)
 	}
 
+	restore := stubRefResolver(t, func(_ context.Context, source string) (string, error) {
+		if source != "ghcr.io/buildkite/cleanroom-base/alpine:latest" {
+			t.Fatalf("unexpected source passed to resolver: %q", source)
+		}
+		return testDigestRef, nil
+	})
+	defer restore()
+
 	stdout, readStdout := makeStdoutCapture(t)
-	cmd := &ImageSetRefCommand{Ref: testDigestRef}
+	cmd := &ImageBumpRefCommand{Source: "ghcr.io/buildkite/cleanroom-base/alpine:latest"}
 
 	if err := cmd.Run(&runtimeContext{CWD: dir, Stdout: stdout}); err != nil {
-		t.Fatalf("run set-ref: %v", err)
+		t.Fatalf("run bump-ref: %v", err)
 	}
 
 	raw, err := os.ReadFile(policyPath)
@@ -39,7 +49,7 @@ func TestImageSetRefUpdatesPrimaryPolicy(t *testing.T) {
 	}
 }
 
-func TestImageSetRefFallsBackToBuildkitePolicy(t *testing.T) {
+func TestImageBumpRefFallsBackToBuildkitePolicy(t *testing.T) {
 	dir := t.TempDir()
 	fallbackDir := filepath.Join(dir, ".buildkite")
 	if err := os.MkdirAll(fallbackDir, 0o755); err != nil {
@@ -50,11 +60,19 @@ func TestImageSetRefFallsBackToBuildkitePolicy(t *testing.T) {
 		t.Fatalf("write fallback policy: %v", err)
 	}
 
+	restore := stubRefResolver(t, func(_ context.Context, source string) (string, error) {
+		if source != "" {
+			t.Fatalf("expected empty source when command arg omitted, got %q", source)
+		}
+		return testDigestRef, nil
+	})
+	defer restore()
+
 	stdout, _ := makeStdoutCapture(t)
-	cmd := &ImageSetRefCommand{Ref: testDigestRef}
+	cmd := &ImageBumpRefCommand{}
 
 	if err := cmd.Run(&runtimeContext{CWD: dir, Stdout: stdout}); err != nil {
-		t.Fatalf("run set-ref: %v", err)
+		t.Fatalf("run bump-ref: %v", err)
 	}
 
 	raw, err := os.ReadFile(fallbackPath)
@@ -67,22 +85,63 @@ func TestImageSetRefFallsBackToBuildkitePolicy(t *testing.T) {
 	}
 }
 
-func TestImageSetRefRejectsNonDigestRef(t *testing.T) {
+func TestImageBumpRefReturnsResolverError(t *testing.T) {
 	dir := t.TempDir()
 	policyPath := filepath.Join(dir, policy.PrimaryPolicyPath)
 	if err := os.WriteFile(policyPath, []byte("version: 1\n"), 0o644); err != nil {
 		t.Fatalf("write policy: %v", err)
 	}
 
+	restore := stubRefResolver(t, func(_ context.Context, source string) (string, error) {
+		if source != "ghcr.io/buildkite/cleanroom-base/alpine:latest" {
+			t.Fatalf("unexpected source passed to resolver: %q", source)
+		}
+		return "", errors.New("registry unavailable")
+	})
+	defer restore()
+
 	stdout, _ := makeStdoutCapture(t)
-	cmd := &ImageSetRefCommand{Ref: "ghcr.io/buildkite/cleanroom-base/alpine:latest"}
+	cmd := &ImageBumpRefCommand{Source: "ghcr.io/buildkite/cleanroom-base/alpine:latest"}
 
 	err := cmd.Run(&runtimeContext{CWD: dir, Stdout: stdout})
 	if err == nil {
-		t.Fatal("expected set-ref error for non-digest ref")
+		t.Fatal("expected bump-ref error when resolver fails")
 	}
-	if !strings.Contains(err.Error(), "digest-pinned") {
+	if !strings.Contains(err.Error(), "registry unavailable") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestSetSandboxImageRefPreservesCommentsAndOrder(t *testing.T) {
+	raw := []byte("# policy comment\nversion: 1\nsandbox:\n  image:\n    ref: docker.io/library/alpine@sha256:25109184c71bdad752c8312a8623239686a9a2071e8825f20acb8f2198c3f659 # pinned image\n  network:\n    default: deny\n    allow:\n      - host: api.github.com # allow github api\n        ports: [443]\n")
+
+	updated, err := setSandboxImageRef(raw, testDigestRef)
+	if err != nil {
+		t.Fatalf("set sandbox image ref: %v", err)
+	}
+	content := string(updated)
+
+	if !strings.Contains(content, "# policy comment") {
+		t.Fatalf("expected top-level comment to be preserved, got:\n%s", content)
+	}
+	if !strings.Contains(content, "# pinned image") {
+		t.Fatalf("expected image ref comment to be preserved, got:\n%s", content)
+	}
+	if !strings.Contains(content, "# allow github api") {
+		t.Fatalf("expected network allow comment to be preserved, got:\n%s", content)
+	}
+
+	if strings.Index(content, "image:") > strings.Index(content, "network:") {
+		t.Fatalf("expected sandbox.image to stay before sandbox.network, got:\n%s", content)
+	}
+}
+
+func stubRefResolver(t *testing.T, fn func(context.Context, string) (string, error)) func() {
+	t.Helper()
+	prev := resolveReferenceForPolicyUpdate
+	resolveReferenceForPolicyUpdate = fn
+	return func() {
+		resolveReferenceForPolicyUpdate = prev
 	}
 }
 

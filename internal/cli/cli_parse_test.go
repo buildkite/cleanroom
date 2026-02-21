@@ -77,15 +77,11 @@ func TestImageListAliasParses(t *testing.T) {
 	}
 }
 
-func TestImageSetRefRequiresRef(t *testing.T) {
+func TestImageBumpRefAllowsNoArgs(t *testing.T) {
 	c := &CLI{}
 	parser := newParserForTest(t, c)
 
-	_, err := parser.Parse([]string{"image", "set-ref"})
-	if err == nil {
-		t.Fatal("expected parse error for missing image ref")
-	}
-	if !strings.Contains(err.Error(), "<ref>") {
-		t.Fatalf("expected missing ref parse error, got %v", err)
+	if _, err := parser.Parse([]string{"image", "bump-ref"}); err != nil {
+		t.Fatalf("parse image bump-ref with default ref returned error: %v", err)
 	}
 }

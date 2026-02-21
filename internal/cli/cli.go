@@ -31,9 +31,14 @@ import (
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 	"github.com/charmbracelet/log"
+	"github.com/google/go-containerregistry/pkg/authn"
+	"github.com/google/go-containerregistry/pkg/name"
+	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"golang.org/x/term"
 	"gopkg.in/yaml.v3"
 )
+
+const defaultBumpRefSource = "ghcr.io/buildkite/cleanroom-base/alpine:latest"
 
 type policyLoader interface {
 	LoadAndCompile(cwd string) (*policy.CompiledPolicy, string, error)
@@ -59,11 +64,11 @@ type CLI struct {
 }
 
 type ImageCommand struct {
-	Pull   ImagePullCommand   `cmd:"" help:"Pull and cache a digest-pinned OCI image"`
-	List   ImageListCommand   `name:"ls" aliases:"list" cmd:"" help:"List cached images"`
-	Remove ImageRemoveCommand `name:"rm" aliases:"remove" cmd:"" help:"Remove a cached image by ref or digest"`
-	Import ImageImportCommand `cmd:"" help:"Import a rootfs tar stream into the cache for a digest-pinned ref"`
-	SetRef ImageSetRefCommand `name:"set-ref" aliases:"bump-ref" cmd:"" help:"Update sandbox.image.ref in cleanroom policy"`
+	Pull    ImagePullCommand    `cmd:"" help:"Pull and cache a digest-pinned OCI image"`
+	List    ImageListCommand    `name:"ls" aliases:"list" cmd:"" help:"List cached images"`
+	Remove  ImageRemoveCommand  `name:"rm" aliases:"remove" cmd:"" help:"Remove a cached image by ref or digest"`
+	Import  ImageImportCommand  `cmd:"" help:"Import a rootfs tar stream into the cache for a digest-pinned ref"`
+	BumpRef ImageBumpRefCommand `name:"bump-ref" aliases:"set-ref" cmd:"" help:"Resolve an image tag to digest and update sandbox.image.ref in cleanroom policy"`
 }
 
 type ImagePullCommand struct {
@@ -83,8 +88,8 @@ type ImageImportCommand struct {
 	TarPath string `arg:"" optional:"" help:"Tar/tar.gz path, or '-' for stdin (default: '-')"`
 }
 
-type ImageSetRefCommand struct {
-	Ref        string `arg:"" required:"" help:"Digest-pinned OCI reference (repo/image@sha256:...)"`
+type ImageBumpRefCommand struct {
+	Source     string `arg:"" optional:"" help:"Image ref to resolve (default: ghcr.io/buildkite/cleanroom-base/alpine:latest)"`
 	Chdir      string `short:"c" help:"Change to this directory before running commands"`
 	PolicyPath string `help:"Policy file path (default: cleanroom.yaml, or .buildkite/cleanroom.yaml when primary is missing)"`
 }
@@ -165,6 +170,28 @@ var (
 	}
 	stopSignals = func(ch chan os.Signal) {
 		signal.Stop(ch)
+	}
+	resolveReferenceForPolicyUpdate = func(ctx context.Context, source string) (string, error) {
+		resolved := strings.TrimSpace(source)
+		if resolved == "" {
+			resolved = defaultBumpRefSource
+		}
+
+		if parsed, err := ociref.ParseDigestReference(resolved); err == nil {
+			return parsed.Original, nil
+		}
+
+		tag, err := name.NewTag(resolved, name.WeakValidation)
+		if err != nil {
+			return "", fmt.Errorf("parse image ref %q: %w", resolved, err)
+		}
+
+		desc, err := remote.Head(tag, remote.WithContext(ctx), remote.WithAuthFromKeychain(authn.DefaultKeychain))
+		if err != nil {
+			return "", fmt.Errorf("resolve image digest for %q: %w", resolved, err)
+		}
+
+		return fmt.Sprintf("%s@%s", tag.Context().Name(), desc.Digest.String()), nil
 	}
 )
 
@@ -352,12 +379,13 @@ func (c *ImageImportCommand) Run(ctx *runtimeContext) error {
 	return err
 }
 
-func (c *ImageSetRefCommand) Run(ctx *runtimeContext) error {
-	if _, err := ociref.ParseDigestReference(c.Ref); err != nil {
-		return fmt.Errorf("invalid image ref: %w", err)
+func (c *ImageBumpRefCommand) Run(ctx *runtimeContext) error {
+	cwd, err := resolveCWD(ctx.CWD, c.Chdir)
+	if err != nil {
+		return err
 	}
 
-	cwd, err := resolveCWD(ctx.CWD, c.Chdir)
+	resolvedRef, err := resolveReferenceForPolicyUpdate(context.Background(), c.Source)
 	if err != nil {
 		return err
 	}
@@ -372,7 +400,7 @@ func (c *ImageSetRefCommand) Run(ctx *runtimeContext) error {
 		return fmt.Errorf("read policy %s: %w", policyPath, err)
 	}
 
-	updated, err := setSandboxImageRef(raw, c.Ref)
+	updated, err := setSandboxImageRef(raw, resolvedRef)
 	if err != nil {
 		return fmt.Errorf("update policy %s: %w", policyPath, err)
 	}
@@ -386,7 +414,11 @@ func (c *ImageSetRefCommand) Run(ctx *runtimeContext) error {
 		return fmt.Errorf("write policy %s: %w", policyPath, err)
 	}
 
-	_, err = fmt.Fprintf(ctx.Stdout, "updated sandbox.image.ref\npolicy=%s\nref=%s\n", policyPath, c.Ref)
+	source := strings.TrimSpace(c.Source)
+	if source == "" {
+		source = defaultBumpRefSource
+	}
+	_, err = fmt.Fprintf(ctx.Stdout, "updated sandbox.image.ref\npolicy=%s\nsource=%s\nref=%s\n", policyPath, source, resolvedRef)
 	return err
 }
 
@@ -1168,7 +1200,10 @@ func ensureMapEntry(parent *yaml.Node, key string) *yaml.Node {
 			continue
 		}
 		if parent.Content[i+1].Kind != yaml.MappingNode {
-			parent.Content[i+1] = &yaml.Node{Kind: yaml.MappingNode}
+			parent.Content[i+1].Kind = yaml.MappingNode
+			parent.Content[i+1].Tag = ""
+			parent.Content[i+1].Value = ""
+			parent.Content[i+1].Content = nil
 		}
 		return parent.Content[i+1]
 	}
@@ -1184,7 +1219,10 @@ func setMapString(parent *yaml.Node, key, value string) {
 		if parent.Content[i].Value != key {
 			continue
 		}
-		parent.Content[i+1] = &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value}
+		parent.Content[i+1].Kind = yaml.ScalarNode
+		parent.Content[i+1].Tag = "!!str"
+		parent.Content[i+1].Value = value
+		parent.Content[i+1].Content = nil
 		return
 	}
 
