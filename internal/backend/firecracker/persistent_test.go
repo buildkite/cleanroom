@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -281,6 +282,37 @@ func TestDownloadSandboxFileFallsBackToExecResponseStdout(t *testing.T) {
 		t.Fatalf("DownloadSandboxFile returned error: %v", err)
 	}
 	if got, want := string(data), "legacy-output"; got != want {
+		t.Fatalf("unexpected data: got %q want %q", got, want)
+	}
+}
+
+func TestDownloadSandboxFileHandlesMaxInt64MaxBytes(t *testing.T) {
+	t.Parallel()
+
+	adapter := &Adapter{}
+	adapter.runGuestCommandFn = func(_ context.Context, _ context.Context, _ <-chan struct{}, _ func() error, _ string, _ uint32, req vsockexec.ExecRequest, stream backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error) {
+		if got, want := req.Command, []string{"head", "-c", "9223372036854775807", "--", "/home/sprite/artifacts/haiku.txt"}; len(got) != len(want) || strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+			t.Fatalf("unexpected command: got %v want %v", got, want)
+		}
+		if stream.OnStdout != nil {
+			stream.OnStdout([]byte("hello"))
+		}
+		return vsockexec.ExecResponse{ExitCode: 0, Stdout: "hello"}, guestExecTiming{}, nil
+	}
+	adapter.sandboxes = map[string]*sandboxInstance{
+		"cr-test": {
+			SandboxID: "cr-test",
+			VsockPath: "/tmp/fake.sock",
+			GuestPort: 10700,
+			exitedCh:  make(chan struct{}),
+		},
+	}
+
+	data, err := adapter.DownloadSandboxFile(context.Background(), "cr-test", "/home/sprite/artifacts/haiku.txt", math.MaxInt64)
+	if err != nil {
+		t.Fatalf("DownloadSandboxFile returned error: %v", err)
+	}
+	if got, want := string(data), "hello"; got != want {
 		t.Fatalf("unexpected data: got %q want %q", got, want)
 	}
 }

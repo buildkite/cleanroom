@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"os"
 	"os/exec"
@@ -319,6 +320,9 @@ func (a *Adapter) DownloadSandboxFile(ctx context.Context, sandboxID, path strin
 
 	var stdout bytes.Buffer
 	limit := maxBytes + 1
+	if maxBytes == math.MaxInt64 {
+		limit = maxBytes
+	}
 	cmd := []string{"head", "-c", strconv.FormatInt(limit, 10), "--", path}
 	result, _, err := a.executeInSandbox(ctx, instance, 0, cmd, backend.OutputStream{OnStdout: func(chunk []byte) {
 		_, _ = stdout.Write(chunk)
