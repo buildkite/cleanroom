@@ -12,7 +12,7 @@ import (
 const DefaultPort uint32 = 10700
 
 type ExecRequest struct {
-	Command         []string `json:"command"`
+	Command     []string `json:"command"`
 	Dir         string   `json:"dir,omitempty"`
 	Env         []string `json:"env,omitempty"`
 	EntropySeed []byte   `json:"entropy_seed,omitempty"`
@@ -40,10 +40,7 @@ func DecodeRequest(r io.Reader) (ExecRequest, error) {
 	if len(req.Command) == 0 {
 		return ExecRequest{}, errors.New("missing command")
 	}
-	for i := range req.Command {
-		req.Command[i] = strings.TrimSpace(req.Command[i])
-	}
-	if req.Command[0] == "" {
+	if strings.TrimSpace(req.Command[0]) == "" {
 		return ExecRequest{}, errors.New("missing command executable")
 	}
 	return req, nil
