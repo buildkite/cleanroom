@@ -63,8 +63,7 @@ type ExecCommand struct {
 	LogLevel string `help:"Client log level (debug|info|warn|error)"`
 	Backend  string `help:"Execution backend (defaults to runtime config or firecracker)"`
 
-	ReadOnlyWorkspace bool  `help:"Mount workspace read-only for this run"`
-	LaunchSeconds     int64 `help:"VM boot/guest-agent readiness timeout in seconds"`
+	LaunchSeconds int64 `help:"VM boot/guest-agent readiness timeout in seconds"`
 
 	Command []string `arg:"" passthrough:"" required:"" help:"Command to execute"`
 }
@@ -75,8 +74,7 @@ type ConsoleCommand struct {
 	LogLevel string `help:"Client log level (debug|info|warn|error)"`
 	Backend  string `help:"Execution backend (defaults to runtime config or firecracker)"`
 
-	ReadOnlyWorkspace bool  `help:"Mount workspace read-only for this run"`
-	LaunchSeconds     int64 `help:"VM boot/guest-agent readiness timeout in seconds"`
+	LaunchSeconds int64 `help:"VM boot/guest-agent readiness timeout in seconds"`
 
 	Command []string `arg:"" passthrough:"" optional:"" help:"Command to run in the console (default: sh)"`
 }
@@ -234,8 +232,7 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 		Cwd:     cwd,
 		Backend: e.Backend,
 		Options: &cleanroomv1.SandboxOptions{
-			ReadOnlyWorkspace: e.ReadOnlyWorkspace,
-			LaunchSeconds:     e.LaunchSeconds,
+			LaunchSeconds: e.LaunchSeconds,
 		},
 	})
 	if err != nil {
@@ -255,9 +252,8 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 		SandboxId: sandboxID,
 		Command:   append([]string(nil), e.Command...),
 		Options: &cleanroomv1.ExecutionOptions{
-			ReadOnlyWorkspace: e.ReadOnlyWorkspace,
-			LaunchSeconds:     e.LaunchSeconds,
-			Cwd:               cwd,
+			LaunchSeconds: e.LaunchSeconds,
+			Cwd:           cwd,
 		},
 	})
 	if err != nil {
@@ -446,8 +442,7 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 		Cwd:     cwd,
 		Backend: c.Backend,
 		Options: &cleanroomv1.SandboxOptions{
-			ReadOnlyWorkspace: c.ReadOnlyWorkspace,
-			LaunchSeconds:     c.LaunchSeconds,
+			LaunchSeconds: c.LaunchSeconds,
 		},
 	})
 	if err != nil {
@@ -465,10 +460,9 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 		SandboxId: sandboxID,
 		Command:   command,
 		Options: &cleanroomv1.ExecutionOptions{
-			ReadOnlyWorkspace: c.ReadOnlyWorkspace,
-			LaunchSeconds:     c.LaunchSeconds,
-			Tty:               true,
-			Cwd:               cwd,
+			LaunchSeconds: c.LaunchSeconds,
+			Tty:           true,
+			Cwd:           cwd,
 		},
 	})
 	if err != nil {
@@ -739,8 +733,6 @@ func mergeFirecrackerConfig(cwd string, e *ExecCommand, cfg runtimeconfig.Config
 		BinaryPath:      cfg.Backends.Firecracker.BinaryPath,
 		KernelImagePath: cfg.Backends.Firecracker.KernelImage,
 		RootFSPath:      cfg.Backends.Firecracker.RootFS,
-		WorkspaceHost:   cwd,
-		WorkspaceAccess: resolveWorkspaceAccess(e, cfg.Workspace.Access),
 		VCPUs:           cfg.Backends.Firecracker.VCPUs,
 		MemoryMiB:       cfg.Backends.Firecracker.MemoryMiB,
 		GuestCID:        cfg.Backends.Firecracker.GuestCID,
@@ -753,17 +745,6 @@ func mergeFirecrackerConfig(cwd string, e *ExecCommand, cfg runtimeconfig.Config
 		out.LaunchSeconds = e.LaunchSeconds
 	}
 	return out
-}
-
-func resolveWorkspaceAccess(execCfg *ExecCommand, configured string) string {
-	access := configured
-	if access == "" {
-		access = "rw"
-	}
-	if execCfg != nil && execCfg.ReadOnlyWorkspace {
-		access = "ro"
-	}
-	return access
 }
 
 func (s *StatusCommand) Run(ctx *runtimeContext) error {

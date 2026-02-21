@@ -12,12 +12,7 @@ import (
 
 type Config struct {
 	DefaultBackend string    `yaml:"default_backend"`
-	Workspace      Workspace `yaml:"workspace"`
-	Backends       Backends  `yaml:"backends"`
-}
-
-type Workspace struct {
-	Access string `yaml:"access"` // rw|ro
+	Backends Backends `yaml:"backends"`
 }
 
 type Backends struct {
@@ -68,9 +63,5 @@ func Load() (Config, string, error) {
 	}
 
 	cfg.DefaultBackend = strings.TrimSpace(cfg.DefaultBackend)
-	cfg.Workspace.Access = strings.TrimSpace(strings.ToLower(cfg.Workspace.Access))
-	if cfg.Workspace.Access == "" {
-		cfg.Workspace.Access = "rw"
-	}
 	return cfg, path, nil
 }

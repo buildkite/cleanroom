@@ -13,11 +13,9 @@ const DefaultPort uint32 = 10700
 
 type ExecRequest struct {
 	Command         []string `json:"command"`
-	Dir             string   `json:"dir,omitempty"`
-	Env             []string `json:"env,omitempty"`
-	WorkspaceTarGz  []byte   `json:"workspace_tar_gz,omitempty"`
-	WorkspaceAccess string   `json:"workspace_access,omitempty"` // rw|ro
-	EntropySeed     []byte   `json:"entropy_seed,omitempty"`
+	Dir         string   `json:"dir,omitempty"`
+	Env         []string `json:"env,omitempty"`
+	EntropySeed []byte   `json:"entropy_seed,omitempty"`
 }
 
 type ExecResponse struct {

@@ -1,9 +1,6 @@
 package firecracker
 
 import (
-	"archive/tar"
-	"bytes"
-	"compress/gzip"
 	"context"
 	cryptorand "crypto/rand"
 	"crypto/sha1"
@@ -11,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"net"
 	"os"
 	"os/exec"
@@ -30,7 +26,6 @@ import (
 
 type Adapter struct{}
 
-const maxWorkspaceArchiveBytes = 256 << 20
 const runObservabilityFile = "run-observability.json"
 const vsockDialRetryInterval = 50 * time.Millisecond
 
@@ -111,17 +106,6 @@ func (a *Adapter) Doctor(_ context.Context, req backend.DoctorRequest) (*backend
 	} else {
 		appendCheck("vsock_port", "pass", fmt.Sprintf("configured guest vsock port %d", req.GuestPort))
 	}
-	access := strings.TrimSpace(strings.ToLower(req.WorkspaceAccess))
-	if access == "" {
-		access = "rw"
-	}
-	if access != "rw" && access != "ro" {
-		appendCheck("workspace_access", "fail", fmt.Sprintf("invalid workspace access %q (expected rw or ro)", access))
-	} else {
-		appendCheck("workspace_access", "pass", fmt.Sprintf("workspace access configured as %s", access))
-	}
-	appendCheck("workspace_copy", "pass", "workspace is copied per run and sent to the guest agent")
-	appendCheck("workspace_path", "pass", fmt.Sprintf("host workspace path: %s", req.WorkspaceHost))
 	policyRules := 0
 	policyRulesStatus := "warn"
 	policyRulesMessage := "policy not loaded; cannot verify network allow entries"
@@ -208,16 +192,6 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 	if req.LaunchSeconds <= 0 {
 		req.LaunchSeconds = 30
 	}
-	if req.WorkspaceAccess == "" {
-		req.WorkspaceAccess = "rw"
-	}
-	if req.WorkspaceAccess != "rw" && req.WorkspaceAccess != "ro" {
-		return nil, fmt.Errorf("invalid workspace access %q: expected rw or ro", req.WorkspaceAccess)
-	}
-	if req.WorkspaceHost == "" {
-		req.WorkspaceHost = req.CWD
-	}
-
 	cmdPath := filepath.Join(runDir, "requested-command.json")
 	if err := writeJSON(cmdPath, req.Command); err != nil {
 		return nil, err
@@ -385,18 +359,8 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 	bootCtx, bootCancel := context.WithTimeout(ctx, time.Duration(req.LaunchSeconds)*time.Second)
 	defer bootCancel()
 
-	workspaceArchiveStart := time.Now()
-	workspaceArchive, err := createWorkspaceArchive(req.WorkspaceHost)
-	observation.WorkspaceArchiveMS = durationMillisCeil(time.Since(workspaceArchiveStart))
-	if err != nil {
-		return nil, fmt.Errorf("prepare workspace copy from %s: %w", req.WorkspaceHost, err)
-	}
 	guestReq := vsockexec.ExecRequest{
-		Command:         req.Command,
-		Dir:             "/workspace",
-		WorkspaceTarGz:  workspaceArchive,
-		WorkspaceAccess: req.WorkspaceAccess,
-		Env:             buildGuestEnv(req.WorkspaceHost),
+		Command: req.Command,
 	}
 	seed := make([]byte, 64)
 	if _, err := cryptorand.Read(seed); err == nil {
@@ -456,7 +420,6 @@ type firecrackerRunObservation struct {
 	PolicyResolveMS    int64  `json:"policy_resolve_ms,omitempty"`
 	RootFSCopyMS       int64  `json:"rootfs_copy_ms,omitempty"`
 	FirecrackerStartMS int64  `json:"firecracker_start_ms,omitempty"`
-	WorkspaceArchiveMS int64  `json:"workspace_archive_ms,omitempty"`
 	NetworkSetupMS     int64  `json:"network_setup_ms,omitempty"`
 	VMReadyMS          int64  `json:"vm_ready_ms,omitempty"`
 	VsockWaitMS        int64  `json:"vsock_wait_ms,omitempty"`
@@ -648,98 +611,6 @@ func stopVM(fcCmd *exec.Cmd, waitCh <-chan error) {
 	case <-waitCh:
 	case <-time.After(2 * time.Second):
 	}
-}
-
-func createWorkspaceArchive(root string) ([]byte, error) {
-	root = strings.TrimSpace(root)
-	if root == "" {
-		return nil, errors.New("workspace path is empty")
-	}
-	root, err := filepath.Abs(root)
-	if err != nil {
-		return nil, err
-	}
-
-	info, err := os.Stat(root)
-	if err != nil {
-		return nil, err
-	}
-	if !info.IsDir() {
-		return nil, fmt.Errorf("workspace path %s is not a directory", root)
-	}
-
-	var compressed bytes.Buffer
-	limited := &limitedWriter{w: &compressed, limit: maxWorkspaceArchiveBytes}
-	gzw := gzip.NewWriter(limited)
-	tw := tar.NewWriter(gzw)
-
-	walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
-		}
-		rel = filepath.ToSlash(rel)
-		if rel == "." {
-			return nil
-		}
-
-		info, err := os.Lstat(path)
-		if err != nil {
-			return err
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			// Symlinks are excluded in MVP workspace copy delivery to avoid path traversal edge cases.
-			return nil
-		}
-
-		var link string
-		hdr, err := tar.FileInfoHeader(info, link)
-		if err != nil {
-			return err
-		}
-		hdr.Name = rel
-		if info.IsDir() && !strings.HasSuffix(hdr.Name, "/") {
-			hdr.Name += "/"
-		}
-		if err := tw.WriteHeader(hdr); err != nil {
-			return err
-		}
-		if !info.Mode().IsRegular() {
-			return nil
-		}
-		f, err := os.Open(path)
-		if err != nil {
-			return err
-		}
-		_, copyErr := io.Copy(tw, f)
-		closeErr := f.Close()
-		if copyErr != nil {
-			return copyErr
-		}
-		return closeErr
-	})
-	if walkErr != nil {
-		_ = tw.Close()
-		_ = gzw.Close()
-		return nil, walkErr
-	}
-	if err := tw.Close(); err != nil {
-		_ = gzw.Close()
-		return nil, err
-	}
-	if err := gzw.Close(); err != nil {
-		return nil, err
-	}
-	return compressed.Bytes(), nil
-}
-
-type limitedWriter struct {
-	w     io.Writer
-	limit int
-	total int
 }
 
 type hostNetworkConfig struct {
@@ -1027,27 +898,4 @@ func guestMACFromRunID(runID string) string {
 	return fmt.Sprintf("02:fc:%02x:%02x:%02x:%02x", sum[0], sum[1], sum[2], sum[3])
 }
 
-func buildGuestEnv(workspaceHost string) []string {
-	guestTrusted := make([]string, 0, 2)
-	if _, err := os.Stat(filepath.Join(workspaceHost, ".mise.toml")); err == nil {
-		guestTrusted = append(guestTrusted, "/workspace/.mise.toml")
-	}
-	if _, err := os.Stat(filepath.Join(workspaceHost, ".mise", "config.toml")); err == nil {
-		guestTrusted = append(guestTrusted, "/workspace/.mise/config.toml")
-	}
-	if len(guestTrusted) == 0 {
-		return nil
-	}
-	return []string{
-		"MISE_TRUSTED_CONFIG_PATHS=" + strings.Join(guestTrusted, ":"),
-	}
-}
 
-func (l *limitedWriter) Write(p []byte) (int, error) {
-	if l.total+len(p) > l.limit {
-		return 0, fmt.Errorf("workspace archive exceeds max size of %d bytes", l.limit)
-	}
-	n, err := l.w.Write(p)
-	l.total += n
-	return n, err
-}
