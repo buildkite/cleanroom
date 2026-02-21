@@ -38,7 +38,7 @@ run_ip() {
       if [[ "$#" -eq 2 && "$1" == "del" ]]; then
         exec /usr/sbin/ip link del "$2"
       fi
-      if [[ "$#" -eq 5 && "$1" == "set" && "$2" == "dev" && "$4" == "up" ]]; then
+      if [[ "$#" -eq 4 && "$1" == "set" && "$2" == "dev" && "$4" == "up" ]]; then
         exec /usr/sbin/ip link set dev "$3" up
       fi
       ;;
