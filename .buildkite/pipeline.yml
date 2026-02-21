@@ -1,6 +1,3 @@
-agents:
-  queue: hosted
-
 cache:
   paths:
     - "~/.local/share/mise"
@@ -14,8 +11,22 @@ env:
   MISE_TRUSTED_CONFIG_PATHS: /buildkite/builds
 
 steps:
-  - label: ":hammer: Build"
+  - label: ":linux: Build (Linux)"
     command: mise run build
+    agents:
+      queue: hosted
 
-  - label: ":test_tube: Test"
+  - label: ":test_tube: Test (Linux)"
     command: mise run test
+    agents:
+      queue: hosted
+
+  - label: ":mac: Build (macOS)"
+    command: mise run build
+    agents:
+      queue: mac-small
+
+  - label: ":test_tube: Test (macOS)"
+    command: mise run test
+    agents:
+      queue: mac-small
