@@ -90,6 +90,9 @@ cleanroom image rm sha256:...
 cleanroom image import ghcr.io/buildkite/cleanroom-base/alpine@sha256:... ./rootfs.tar.gz
 ```
 
+`ghcr.io/buildkite/cleanroom-base/alpine` is published from this repo on pushes to `main`
+via `.github/workflows/base-image.yml`.
+
 ## API Contract (Current)
 
 Canonical API surface is defined in `proto/cleanroom/v1/control.proto` and
