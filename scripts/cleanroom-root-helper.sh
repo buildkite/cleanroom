@@ -27,6 +27,31 @@ is_mounted_rootfs_dest() {
   [[ "$p" == /tmp/cleanroom-firecracker-rootfs-*/usr/local/bin/cleanroom-guest-agent || "$p" == /tmp/cleanroom-firecracker-rootfs-*/sbin/cleanroom-init ]]
 }
 
+is_tap_name() {
+  local v="$1"
+  [[ "$v" =~ ^cr[a-z0-9]{1,13}$ ]]
+}
+
+is_numeric() {
+  local v="$1"
+  [[ "$v" =~ ^[0-9]+$ ]]
+}
+
+is_ipv4() {
+  local v="$1"
+  [[ "$v" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]
+}
+
+is_cidr() {
+  local v="$1"
+  [[ "$v" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$ ]]
+}
+
+is_install_source() {
+  local p="$1"
+  [[ "$p" == /var/lib/buildkite-agent/builds/*/buildkite/cleanroom/dist/cleanroom-guest-agent || "$p" == /tmp/cleanroom-init-* ]]
+}
+
 run_ip() {
   [[ "$#" -ge 1 ]] || die "ip: missing arguments"
   case "$1" in
@@ -36,21 +61,27 @@ run_ip() {
         exec /usr/sbin/ip link show
       fi
       if [[ "$#" -eq 2 && "$1" == "del" ]]; then
+        is_tap_name "$2" || die "ip link del: unsupported interface '$2'"
         exec /usr/sbin/ip link del "$2"
       fi
       if [[ "$#" -eq 4 && "$1" == "set" && "$2" == "dev" && "$4" == "up" ]]; then
+        is_tap_name "$3" || die "ip link set: unsupported interface '$3'"
         exec /usr/sbin/ip link set dev "$3" up
       fi
       ;;
     tuntap)
       shift
       if [[ "$#" -eq 7 && "$1" == "add" && "$2" == "dev" && "$4" == "mode" && "$5" == "tap" && "$6" == "user" ]]; then
+        is_tap_name "$3" || die "ip tuntap add: unsupported interface '$3'"
+        is_numeric "$7" || die "ip tuntap add: invalid uid '$7'"
         exec /usr/sbin/ip tuntap add dev "$3" mode tap user "$7"
       fi
       ;;
     addr)
       shift
       if [[ "$#" -eq 4 && "$1" == "add" && "$3" == "dev" ]]; then
+        is_cidr "$2" || die "ip addr add: invalid cidr '$2'"
+        is_tap_name "$4" || die "ip addr add: unsupported interface '$4'"
         exec /usr/sbin/ip addr add "$2" dev "$4"
       fi
       ;;
@@ -60,12 +91,29 @@ run_ip() {
 
 run_iptables() {
   [[ "$#" -ge 1 ]] || die "iptables: missing arguments"
-  # Firecracker backend only needs add/remove rules; all arguments are passed through.
-  case "$1" in
-    -A|-D|-t)
-      exec /usr/sbin/iptables "$@"
-      ;;
-  esac
+
+  if [[ "$#" -eq 8 && "$1" == "-t" && "$2" == "nat" && ( "$3" == "-A" || "$3" == "-D" ) && "$4" == "POSTROUTING" && "$5" == "-s" && "$7" == "-j" && "$8" == "MASQUERADE" ]]; then
+    is_cidr "$6" || die "iptables nat: invalid cidr '$6'"
+    exec /usr/sbin/iptables "$@"
+  fi
+
+  if [[ "$#" -eq 10 && ( "$1" == "-A" || "$1" == "-D" ) && "$2" == "FORWARD" && "$3" == "-o" && "$5" == "-m" && "$6" == "state" && "$7" == "--state" && "$8" == "RELATED,ESTABLISHED" && "$9" == "-j" && "$10" == "ACCEPT" ]]; then
+    is_tap_name "$4" || die "iptables FORWARD -o: unsupported interface '$4'"
+    exec /usr/sbin/iptables "$@"
+  fi
+
+  if [[ "$#" -eq 6 && ( "$1" == "-A" || "$1" == "-D" ) && "$2" == "FORWARD" && "$3" == "-i" && "$5" == "-j" && "$6" == "DROP" ]]; then
+    is_tap_name "$4" || die "iptables FORWARD drop: unsupported interface '$4'"
+    exec /usr/sbin/iptables "$@"
+  fi
+
+  if [[ "$#" -eq 12 && ( "$1" == "-A" || "$1" == "-D" ) && "$2" == "FORWARD" && "$3" == "-i" && "$5" == "-p" && ( "$6" == "tcp" || "$6" == "udp" ) && "$7" == "-d" && "$9" == "--dport" && "$11" == "-j" && "$12" == "ACCEPT" ]]; then
+    is_tap_name "$4" || die "iptables FORWARD allow: unsupported interface '$4'"
+    is_ipv4 "$8" || die "iptables FORWARD allow: invalid destination ip '$8'"
+    is_numeric "$10" || die "iptables FORWARD allow: invalid port '$10'"
+    exec /usr/sbin/iptables "$@"
+  fi
+
   die "iptables: unsupported arguments"
 }
 
@@ -103,6 +151,7 @@ run_install() {
   local src="$3"
   local dst="$4"
   [[ -f "$src" ]] || die "install: source file not found"
+  is_install_source "$src" || die "install: unsupported source path"
   is_mounted_rootfs_dest "$dst" || die "install: unsupported destination path"
   exec /usr/bin/install -m 0755 "$src" "$dst"
 }
