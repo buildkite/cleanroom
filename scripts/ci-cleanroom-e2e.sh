@@ -28,6 +28,11 @@ cleanup() {
 trap cleanup EXIT
 
 export XDG_CONFIG_HOME="$tmpdir/config"
+export XDG_STATE_HOME="$tmpdir/state"
+export XDG_RUNTIME_DIR="$tmpdir/runtime"
+export XDG_DATA_HOME="$tmpdir/data"
+
+mkdir -p "$XDG_CONFIG_HOME" "$XDG_STATE_HOME" "$XDG_RUNTIME_DIR" "$XDG_DATA_HOME"
 mkdir -p "$XDG_CONFIG_HOME/cleanroom"
 cat > "$XDG_CONFIG_HOME/cleanroom/config.yaml" <<EOF
 default_backend: firecracker
