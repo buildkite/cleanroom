@@ -442,3 +442,21 @@ func TestParseSandboxID(t *testing.T) {
 		t.Fatalf("expected empty sandbox id for invalid input, got %q", got)
 	}
 }
+
+func TestExecRejectsTailscaleServiceListenEndpointAsHost(t *testing.T) {
+	outcome := runExecWithCapture(ExecCommand{
+		Host:    "tssvc://cleanroom",
+		Command: []string{"echo", "hi"},
+	}, runtimeContext{
+		CWD: t.TempDir(),
+	})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err == nil {
+		t.Fatal("expected host validation error")
+	}
+	if !strings.Contains(outcome.err.Error(), "listen-only") {
+		t.Fatalf("expected listen-only host error, got %v", outcome.err)
+	}
+}

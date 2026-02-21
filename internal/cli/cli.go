@@ -207,6 +207,9 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 	if err != nil {
 		return err
 	}
+	if err := validateClientEndpoint(ep); err != nil {
+		return err
+	}
 	var cwd string
 	if ep.Scheme != "unix" {
 		if e.Chdir == "" {
@@ -412,6 +415,9 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 
 	ep, err := endpoint.Resolve(c.Host)
 	if err != nil {
+		return err
+	}
+	if err := validateClientEndpoint(ep); err != nil {
 		return err
 	}
 	var cwd string
@@ -732,6 +738,13 @@ func resolveBackendName(requested, configuredDefault string) string {
 		return configuredDefault
 	}
 	return "firecracker"
+}
+
+func validateClientEndpoint(ep endpoint.Endpoint) error {
+	if ep.Scheme != "tssvc" {
+		return nil
+	}
+	return errors.New("tssvc:// endpoints are listen-only; use https://<service>.<your-tailnet>.ts.net for --host")
 }
 
 func mergeFirecrackerConfig(cwd string, e *ExecCommand, cfg runtimeconfig.Config) backend.FirecrackerConfig {

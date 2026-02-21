@@ -203,3 +203,20 @@ func TestConsoleIntegrationInterruptCancelsExecution(t *testing.T) {
 		t.Fatalf("unexpected console exit code: got %d want %d (err=%v)", got, want, outcome.err)
 	}
 }
+
+func TestConsoleRejectsTailscaleServiceListenEndpointAsHost(t *testing.T) {
+	outcome := runConsoleWithCapture(ConsoleCommand{
+		Host: "tssvc://cleanroom",
+	}, "", runtimeContext{
+		CWD: t.TempDir(),
+	})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err == nil {
+		t.Fatal("expected host validation error")
+	}
+	if !strings.Contains(outcome.err.Error(), "listen-only") {
+		t.Fatalf("expected listen-only host error, got %v", outcome.err)
+	}
+}
