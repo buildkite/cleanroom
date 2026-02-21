@@ -76,3 +76,16 @@ func TestImageListAliasParses(t *testing.T) {
 		t.Fatalf("parse image ls returned error: %v", err)
 	}
 }
+
+func TestImageSetRefRequiresRef(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	_, err := parser.Parse([]string{"image", "set-ref"})
+	if err == nil {
+		t.Fatal("expected parse error for missing image ref")
+	}
+	if !strings.Contains(err.Error(), "<ref>") {
+		t.Fatalf("expected missing ref parse error, got %v", err)
+	}
+}
