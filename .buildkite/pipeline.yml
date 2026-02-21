@@ -3,18 +3,6 @@ env:
   MISE_TRUSTED_CONFIG_PATHS: /buildkite/builds
 
 steps:
-  - label: ":linux: Build (Linux)"
-    command: mise run build
-    cache:
-      paths:
-        - "~/.local/share/mise"
-        - "~/.cache/mise"
-        - "~/.local/state/mise"
-      size: "20g"
-      name: "mise-cache"
-    agents:
-      queue: hosted
-
   - label: ":test_tube: Test (Linux)"
     command: mise run test
     cache:
@@ -26,18 +14,6 @@ steps:
       name: "mise-cache"
     agents:
       queue: hosted
-
-  - label: ":mac: Build (macOS)"
-    command: mise run build
-    cache:
-      paths:
-        - "~/.local/share/mise"
-        - "~/.cache/mise"
-        - "~/.local/state/mise"
-      size: "20g"
-      name: "mise-cache"
-    agents:
-      queue: mac-small
 
   - label: ":test_tube: Test (macOS)"
     command: mise run test
