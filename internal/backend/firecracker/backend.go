@@ -51,6 +51,7 @@ type Adapter struct {
 	sandboxes         map[string]*sandboxInstance
 	provisioning      map[string]struct{}
 	launchSandboxVMFn func(context.Context, string, *policy.CompiledPolicy, backend.FirecrackerConfig) (*sandboxInstance, error)
+	runGuestCommandFn func(context.Context, context.Context, <-chan struct{}, func() error, string, uint32, vsockexec.ExecRequest, backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error)
 }
 
 type sandboxInstance struct {
@@ -64,7 +65,10 @@ type sandboxInstance struct {
 	ImageDigest    string
 	CommandTimeout int64
 	fcCmd          *exec.Cmd
-	waitCh         chan error
+	exitedCh       chan struct{}
+	exitMu         sync.RWMutex
+	exitErr        error
+	exitReady      bool
 	cleanupNetwork func()
 	vmRootFSPath   string
 }
@@ -210,12 +214,18 @@ func (a *Adapter) RunInSandbox(ctx context.Context, req backend.RunRequest, stre
 	if len(req.Command) == 0 {
 		return nil, errors.New("missing command")
 	}
+	if strings.TrimSpace(req.RunID) == "" {
+		return nil, errors.New("missing run_id")
+	}
 
 	a.sandboxMu.Lock()
 	instance, ok := a.sandboxes[sandboxID]
 	a.sandboxMu.Unlock()
 	if !ok {
 		return nil, fmt.Errorf("unknown sandbox %q", sandboxID)
+	}
+	if err := instance.exitedErrOrNil(); err != nil {
+		return nil, fmt.Errorf("sandbox %q is not running: %w", sandboxID, err)
 	}
 
 	guestReq := vsockexec.ExecRequest{Command: req.Command}
@@ -234,9 +244,45 @@ func (a *Adapter) RunInSandbox(ctx context.Context, req backend.RunRequest, stre
 	bootCtx, bootCancel := context.WithTimeout(ctx, time.Duration(connectSeconds)*time.Second)
 	defer bootCancel()
 
-	guestResult, _, err := runGuestCommand(bootCtx, ctx, instance.waitCh, instance.VsockPath, instance.GuestPort, guestReq, stream)
+	runStart := time.Now()
+	runDir := strings.TrimSpace(req.RunDir)
+	if runDir == "" {
+		if baseDir, err := paths.RunBaseDir(); err == nil {
+			runDir = filepath.Join(baseDir, req.RunID)
+		}
+	}
+	if runDir != "" {
+		if err := os.MkdirAll(runDir, 0o755); err != nil {
+			return nil, fmt.Errorf("create run directory: %w", err)
+		}
+	}
+
+	runGuestCommandFn := a.runGuestCommandFn
+	if runGuestCommandFn == nil {
+		runGuestCommandFn = runGuestCommand
+	}
+
+	guestResult, timing, err := runGuestCommandFn(bootCtx, ctx, instance.exitedCh, instance.exitedErrOrNil, instance.VsockPath, instance.GuestPort, guestReq, stream)
 	if err != nil {
 		return nil, err
+	}
+
+	if runDir != "" {
+		obsPath := filepath.Join(runDir, runObservabilityFile)
+		_ = writeJSON(obsPath, firecrackerRunObservation{
+			RunID:       req.RunID,
+			Backend:     a.Name(),
+			LaunchedVM:  false,
+			ImageRef:    instance.ImageRef,
+			ImageDigest: instance.ImageDigest,
+			PlanPath:    instance.ConfigPath,
+			RunDir:      runDir,
+			ExitCode:    guestResult.ExitCode,
+			GuestError:  guestResult.Error,
+			GuestExecMS: timing.CommandRun.Milliseconds(),
+			VsockWaitMS: timing.WaitForAgent.Milliseconds(),
+			TotalMS:     time.Since(runStart).Milliseconds(),
+		})
 	}
 
 	message := runResultMessage("guest command execution complete")
@@ -249,7 +295,7 @@ func (a *Adapter) RunInSandbox(ctx context.Context, req backend.RunRequest, stre
 		ExitCode:    guestResult.ExitCode,
 		LaunchedVM:  false,
 		PlanPath:    instance.ConfigPath,
-		RunDir:      instance.RunDir,
+		RunDir:      runDir,
 		ImageRef:    instance.ImageRef,
 		ImageDigest: instance.ImageDigest,
 		Message:     message,
@@ -637,11 +683,27 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 	observation.FirecrackerStartMS = durationMillisCeil(time.Since(firecrackerStart))
 	vmProcessStart := time.Now()
 
-	waitCh := make(chan error, 1)
+	processExited := make(chan struct{})
+	var (
+		processExitMu  sync.RWMutex
+		processExitErr error
+	)
+	processExitErrFn := func() error {
+		processExitMu.RLock()
+		defer processExitMu.RUnlock()
+		if processExitErr == nil {
+			return errors.New("firecracker exited")
+		}
+		return processExitErr
+	}
 	go func() {
-		waitCh <- fcCmd.Wait()
+		err := fcCmd.Wait()
+		processExitMu.Lock()
+		processExitErr = err
+		processExitMu.Unlock()
+		close(processExited)
 	}()
-	defer stopVM(fcCmd, waitCh)
+	defer stopVM(fcCmd, processExited)
 
 	bootCtx, bootCancel := context.WithTimeout(ctx, time.Duration(req.LaunchSeconds)*time.Second)
 	defer bootCancel()
@@ -653,7 +715,7 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 	if _, err := cryptorand.Read(seed); err == nil {
 		guestReq.EntropySeed = seed
 	}
-	guestResult, guestTiming, err := runGuestCommand(bootCtx, ctx, waitCh, vsockPath, req.GuestPort, guestReq, stream)
+	guestResult, guestTiming, err := runGuestCommand(bootCtx, ctx, processExited, processExitErrFn, vsockPath, req.GuestPort, guestReq, stream)
 	if err != nil {
 		return nil, err
 	}
@@ -1194,21 +1256,6 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 		return nil, fmt.Errorf("start firecracker: %w", err)
 	}
 
-	waitCh := make(chan error, 1)
-	go func() {
-		waitCh <- fcCmd.Wait()
-	}()
-
-	bootCtx, cancel := context.WithTimeout(ctx, time.Duration(cfg.LaunchSeconds)*time.Second)
-	defer cancel()
-	conn, err := dialVsockUntilReady(bootCtx, waitCh, vsockPath, cfg.GuestPort)
-	if err != nil {
-		stopVM(fcCmd, waitCh)
-		cleanupAll()
-		return nil, err
-	}
-	_ = conn.Close()
-
 	instance := &sandboxInstance{
 		SandboxID:      sandboxID,
 		RunDir:         runDir,
@@ -1220,10 +1267,25 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 		ImageDigest:    imageArtifact.Digest,
 		CommandTimeout: cfg.LaunchSeconds,
 		fcCmd:          fcCmd,
-		waitCh:         waitCh,
+		exitedCh:       make(chan struct{}),
 		cleanupNetwork: cleanupNetwork,
 		vmRootFSPath:   vmRootFSPath,
 	}
+	go func() {
+		err := fcCmd.Wait()
+		instance.setExited(err)
+		close(instance.exitedCh)
+	}()
+
+	bootCtx, cancel := context.WithTimeout(ctx, time.Duration(cfg.LaunchSeconds)*time.Second)
+	defer cancel()
+	conn, err := dialVsockUntilReady(bootCtx, instance.exitedCh, instance.exitedErrOrNil, vsockPath, cfg.GuestPort)
+	if err != nil {
+		stopVM(fcCmd, instance.exitedCh)
+		cleanupAll()
+		return nil, err
+	}
+	_ = conn.Close()
 	cleanupRunDir = false
 	return instance, nil
 }
@@ -1232,7 +1294,7 @@ func (s *sandboxInstance) shutdown() {
 	if s == nil {
 		return
 	}
-	stopVM(s.fcCmd, s.waitCh)
+	stopVM(s.fcCmd, s.exitedCh)
 	if s.cleanupNetwork != nil {
 		s.cleanupNetwork()
 	}
@@ -1245,6 +1307,28 @@ func (s *sandboxInstance) shutdown() {
 	}
 }
 
+func (s *sandboxInstance) setExited(err error) {
+	s.exitMu.Lock()
+	defer s.exitMu.Unlock()
+	if s.exitReady {
+		return
+	}
+	s.exitErr = err
+	s.exitReady = true
+}
+
+func (s *sandboxInstance) exitedErrOrNil() error {
+	s.exitMu.RLock()
+	defer s.exitMu.RUnlock()
+	if !s.exitReady {
+		return nil
+	}
+	if s.exitErr == nil {
+		return errors.New("vm exited")
+	}
+	return s.exitErr
+}
+
 func runResultMessage(base string) string {
 	return base + "; rootfs writes discarded after run"
 }
@@ -1255,9 +1339,9 @@ type guestExecTiming struct {
 	CommandRun   time.Duration
 }
 
-func runGuestCommand(bootCtx context.Context, execCtx context.Context, waitCh <-chan error, vsockPath string, guestPort uint32, req vsockexec.ExecRequest, stream backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error) {
+func runGuestCommand(bootCtx context.Context, execCtx context.Context, processExited <-chan struct{}, processExitErr func() error, vsockPath string, guestPort uint32, req vsockexec.ExecRequest, stream backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error) {
 	waitStart := time.Now()
-	conn, err := dialVsockUntilReady(bootCtx, waitCh, vsockPath, guestPort)
+	conn, err := dialVsockUntilReady(bootCtx, processExited, processExitErr, vsockPath, guestPort)
 	if err != nil {
 		return vsockexec.ExecResponse{}, guestExecTiming{}, err
 	}
@@ -1313,7 +1397,7 @@ func (w callbackWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func dialVsockUntilReady(ctx context.Context, waitCh <-chan error, vsockPath string, guestPort uint32) (io.ReadWriteCloser, error) {
+func dialVsockUntilReady(ctx context.Context, processExited <-chan struct{}, processExitErr func() error, vsockPath string, guestPort uint32) (io.ReadWriteCloser, error) {
 	ticker := time.NewTicker(vsockDialRetryInterval)
 	defer ticker.Stop()
 
@@ -1324,7 +1408,8 @@ func dialVsockUntilReady(ctx context.Context, waitCh <-chan error, vsockPath str
 		}
 
 		select {
-		case waitErr := <-waitCh:
+		case <-processExited:
+			waitErr := processExitErr()
 			if waitErr == nil {
 				return nil, errors.New("firecracker exited before vsock guest agent became ready")
 			}
@@ -1336,7 +1421,7 @@ func dialVsockUntilReady(ctx context.Context, waitCh <-chan error, vsockPath str
 	}
 }
 
-func stopVM(fcCmd *exec.Cmd, waitCh <-chan error) {
+func stopVM(fcCmd *exec.Cmd, processExited <-chan struct{}) {
 	if fcCmd == nil {
 		return
 	}
@@ -1344,7 +1429,7 @@ func stopVM(fcCmd *exec.Cmd, waitCh <-chan error) {
 		_ = fcCmd.Process.Kill()
 	}
 	select {
-	case <-waitCh:
+	case <-processExited:
 	case <-time.After(2 * time.Second):
 	}
 }

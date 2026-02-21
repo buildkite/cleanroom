@@ -1,7 +1,9 @@
 package firecracker
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -10,6 +12,7 @@ import (
 
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/policy"
+	"github.com/buildkite/cleanroom/internal/vsockexec"
 )
 
 func TestProvisionSandboxRejectsConcurrentProvisionForSameID(t *testing.T) {
@@ -74,11 +77,21 @@ func TestSandboxShutdownRemovesRunDir(t *testing.T) {
 func TestRunInSandboxUsesRequestLaunchSecondsOverride(t *testing.T) {
 	t.Parallel()
 
+	block := make(chan struct{})
+	defer close(block)
 	adapter := &Adapter{}
+	adapter.runGuestCommandFn = func(bootCtx context.Context, _ context.Context, _ <-chan struct{}, _ func() error, _ string, _ uint32, _ vsockexec.ExecRequest, _ backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error) {
+		select {
+		case <-block:
+			return vsockexec.ExecResponse{}, guestExecTiming{}, errors.New("unexpected unblock")
+		case <-bootCtx.Done():
+			return vsockexec.ExecResponse{}, guestExecTiming{}, bootCtx.Err()
+		}
+	}
 	adapter.sandboxes = map[string]*sandboxInstance{
 		"cr-test": {
 			SandboxID:      "cr-test",
-			VsockPath:      "/tmp/does-not-exist.sock",
+			VsockPath:      "/tmp/fake.sock",
 			GuestPort:      10700,
 			CommandTimeout: 1,
 		},
@@ -87,13 +100,68 @@ func TestRunInSandboxUsesRequestLaunchSecondsOverride(t *testing.T) {
 	start := time.Now()
 	_, err := adapter.RunInSandbox(context.Background(), backend.RunRequest{
 		SandboxID:         "cr-test",
+		RunID:             "run-timeout",
 		Command:           []string{"echo", "hello"},
 		FirecrackerConfig: backend.FirecrackerConfig{LaunchSeconds: 3},
 	}, backend.OutputStream{})
 	if err == nil {
-		t.Fatal("expected run to fail for missing vsock")
+		t.Fatal("expected run to fail on timeout")
 	}
 	if elapsed := time.Since(start); elapsed < 2*time.Second {
 		t.Fatalf("expected launch-seconds override to increase timeout, elapsed=%s err=%v", elapsed, err)
+	}
+}
+
+func TestRunInSandboxWritesRunObservabilityForStatusCommand(t *testing.T) {
+	t.Parallel()
+
+	runDir := t.TempDir()
+	adapter := &Adapter{}
+	adapter.runGuestCommandFn = func(_ context.Context, _ context.Context, _ <-chan struct{}, _ func() error, _ string, _ uint32, req vsockexec.ExecRequest, stream backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error) {
+		if !bytes.Equal([]byte(req.Command[0]), []byte("echo")) {
+			t.Fatalf("unexpected command: %v", req.Command)
+		}
+		if stream.OnStdout != nil {
+			stream.OnStdout([]byte("hello\n"))
+		}
+		return vsockexec.ExecResponse{ExitCode: 0, Stdout: "hello\n"}, guestExecTiming{WaitForAgent: 5 * time.Millisecond, CommandRun: 8 * time.Millisecond}, nil
+	}
+	adapter.sandboxes = map[string]*sandboxInstance{
+		"cr-test": {
+			SandboxID:   "cr-test",
+			VsockPath:   "/tmp/fake.sock",
+			GuestPort:   10700,
+			ConfigPath:  "/tmp/fake-config.json",
+			ImageRef:    "image-ref",
+			ImageDigest: "image-digest",
+		},
+	}
+
+	result, err := adapter.RunInSandbox(context.Background(), backend.RunRequest{
+		SandboxID: "cr-test",
+		RunID:     "run-123",
+		Command:   []string{"echo", "hello"},
+		FirecrackerConfig: backend.FirecrackerConfig{
+			RunDir: runDir,
+		},
+	}, backend.OutputStream{})
+	if err != nil {
+		t.Fatalf("RunInSandbox returned error: %v", err)
+	}
+	if got, want := result.RunDir, runDir; got != want {
+		t.Fatalf("unexpected run dir in result: got %q want %q", got, want)
+	}
+
+	obsPath := filepath.Join(runDir, runObservabilityFile)
+	b, err := os.ReadFile(obsPath)
+	if err != nil {
+		t.Fatalf("read observability file: %v", err)
+	}
+	var obs map[string]any
+	if err := json.Unmarshal(b, &obs); err != nil {
+		t.Fatalf("parse observability json: %v", err)
+	}
+	if got, want := obs["run_id"], "run-123"; got != want {
+		t.Fatalf("unexpected run_id: got %v want %v", got, want)
 	}
 }

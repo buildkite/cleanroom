@@ -389,6 +389,28 @@ func TestCreateExecutionRejectsWhenSandboxBusy(t *testing.T) {
 	}
 }
 
+func TestTerminateSandboxReturnsBackendTerminateError(t *testing.T) {
+	adapter := &stubAdapter{
+		terminateFn: func(context.Context, string) error {
+			return errors.New("boom")
+		},
+	}
+	svc := newTestService(adapter)
+
+	createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+
+	_, err = svc.TerminateSandbox(context.Background(), &cleanroomv1.TerminateSandboxRequest{SandboxId: createResp.GetSandbox().GetSandboxId()})
+	if err == nil {
+		t.Fatal("expected terminate backend error")
+	}
+	if !strings.Contains(err.Error(), "terminate backend sandbox") {
+		t.Fatalf("unexpected terminate error: %v", err)
+	}
+}
+
 func TestExecutionAttachIOForwarding(t *testing.T) {
 	started := make(chan struct{}, 1)
 	stdinChunks := make(chan string, 1)

@@ -112,7 +112,7 @@ const (
 	attachPollInterval     = 10 * time.Millisecond
 )
 
-func (s *Service) CreateSandbox(_ context.Context, req *cleanroomv1.CreateSandboxRequest) (*cleanroomv1.CreateSandboxResponse, error) {
+func (s *Service) CreateSandbox(ctx context.Context, req *cleanroomv1.CreateSandboxRequest) (*cleanroomv1.CreateSandboxResponse, error) {
 	if req == nil {
 		return nil, errors.New("missing request")
 	}
@@ -143,7 +143,7 @@ func (s *Service) CreateSandbox(_ context.Context, req *cleanroomv1.CreateSandbo
 	sandboxID := fmt.Sprintf("cr-%d", now.UnixNano())
 
 	if persistentAdapter, ok := adapter.(backend.PersistentSandboxAdapter); ok {
-		if err := persistentAdapter.ProvisionSandbox(context.Background(), backend.ProvisionRequest{
+		if err := persistentAdapter.ProvisionSandbox(ctx, backend.ProvisionRequest{
 			SandboxID:         sandboxID,
 			Policy:            compiled,
 			FirecrackerConfig: firecrackerCfg,
@@ -309,8 +309,11 @@ func (s *Service) TerminateSandbox(_ context.Context, req *cleanroomv1.Terminate
 	}
 
 	if persistentAdapter != nil {
-		if err := persistentAdapter.TerminateSandbox(context.Background(), sandboxID); err != nil && s.Logger != nil {
-			s.Logger.Warn("terminate backend sandbox failed", "sandbox_id", sandboxID, "backend", state.Backend, "error", err)
+		if err := persistentAdapter.TerminateSandbox(context.Background(), sandboxID); err != nil {
+			if s.Logger != nil {
+				s.Logger.Warn("terminate backend sandbox failed", "sandbox_id", sandboxID, "backend", state.Backend, "error", err)
+			}
+			return nil, fmt.Errorf("terminate backend sandbox: %w", err)
 		}
 	}
 
