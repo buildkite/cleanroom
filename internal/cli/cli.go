@@ -80,7 +80,7 @@ type ConsoleCommand struct {
 }
 
 type ServeCommand struct {
-	Listen   string `help:"Listen endpoint for control API (defaults to runtime endpoint; supports tsnet://hostname[:port])"`
+	Listen   string `help:"Listen endpoint for control API (defaults to runtime endpoint; supports tsnet://hostname[:port] and tssvc://service[:local-port])"`
 	LogLevel string `help:"Server log level (debug|info|warn|error)"`
 }
 
@@ -203,6 +203,9 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 
 	ep, err := endpoint.Resolve(e.Host)
 	if err != nil {
+		return err
+	}
+	if err := validateClientEndpoint(ep); err != nil {
 		return err
 	}
 	var cwd string
@@ -408,6 +411,9 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 
 	ep, err := endpoint.Resolve(c.Host)
 	if err != nil {
+		return err
+	}
+	if err := validateClientEndpoint(ep); err != nil {
 		return err
 	}
 	var cwd string
@@ -726,6 +732,13 @@ func resolveBackendName(requested, configuredDefault string) string {
 		return configuredDefault
 	}
 	return "firecracker"
+}
+
+func validateClientEndpoint(ep endpoint.Endpoint) error {
+	if ep.Scheme != "tssvc" {
+		return nil
+	}
+	return errors.New("tssvc:// endpoints are listen-only; use https://<service>.<your-tailnet>.ts.net for --host")
 }
 
 func mergeFirecrackerConfig(cwd string, e *ExecCommand, cfg runtimeconfig.Config) backend.FirecrackerConfig {

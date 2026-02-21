@@ -79,3 +79,52 @@ func TestResolveTSNetEndpointRejectsPath(t *testing.T) {
 		t.Fatal("expected tsnet endpoint with path to fail")
 	}
 }
+
+func TestResolveTailscaleServiceEndpoint(t *testing.T) {
+	t.Parallel()
+
+	ep, err := Resolve("tssvc://cleanroom:8443")
+	if err != nil {
+		t.Fatalf("resolve tssvc endpoint: %v", err)
+	}
+
+	if ep.Scheme != "tssvc" {
+		t.Fatalf("expected tssvc scheme, got %q", ep.Scheme)
+	}
+	if ep.Address != "127.0.0.1:8443" {
+		t.Fatalf("expected local listen address 127.0.0.1:8443, got %q", ep.Address)
+	}
+	if ep.BaseURL != "https://cleanroom.<tailnet>.ts.net" {
+		t.Fatalf("expected base url https://cleanroom.<tailnet>.ts.net, got %q", ep.BaseURL)
+	}
+	if ep.TSServiceName != "svc:cleanroom" {
+		t.Fatalf("expected service name svc:cleanroom, got %q", ep.TSServiceName)
+	}
+	if ep.TSServicePort != 8443 {
+		t.Fatalf("expected service port 8443, got %d", ep.TSServicePort)
+	}
+}
+
+func TestResolveTailscaleServiceEndpointDefaults(t *testing.T) {
+	t.Parallel()
+
+	ep, err := Resolve("tssvc://")
+	if err != nil {
+		t.Fatalf("resolve tssvc endpoint with defaults: %v", err)
+	}
+
+	if ep.Address != "127.0.0.1:7777" {
+		t.Fatalf("expected default local listen address 127.0.0.1:7777, got %q", ep.Address)
+	}
+	if ep.TSServiceName != "svc:cleanroom" {
+		t.Fatalf("expected default service name svc:cleanroom, got %q", ep.TSServiceName)
+	}
+}
+
+func TestResolveTailscaleServiceEndpointRejectsInvalidLabel(t *testing.T) {
+	t.Parallel()
+
+	if _, err := Resolve("tssvc://clean_room:8443"); err == nil {
+		t.Fatal("expected invalid tssvc service label to fail")
+	}
+}

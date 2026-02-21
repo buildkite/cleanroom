@@ -40,10 +40,25 @@ type tsnetServer interface {
 	Close() error
 }
 
-var newTSNetServer = func(ep endpoint.Endpoint, stateDir string) tsnetServer {
+var newTSNetServer = func(ep endpoint.Endpoint, stateDir string, tsLogf func(format string, args ...any)) tsnetServer {
 	return &tsnet.Server{
 		Dir:      stateDir,
 		Hostname: ep.TSNetHostname,
+		Logf:     tsLogf,
+	}
+}
+
+func tsnetLogf(logger *log.Logger) func(format string, args ...any) {
+	if logger == nil {
+		return nil
+	}
+	tsLogger := logger.With("subsystem", "tsnet")
+	return func(format string, args ...any) {
+		msg := strings.TrimSpace(fmt.Sprintf(format, args...))
+		if msg == "" {
+			return
+		}
+		tsLogger.Debug(msg)
 	}
 }
 
@@ -606,7 +621,7 @@ func (s *Server) handleTerminateCleanroom(w http.ResponseWriter, r *http.Request
 }
 
 func Serve(ctx context.Context, ep endpoint.Endpoint, handler http.Handler, logger *log.Logger) error {
-	listener, cleanup, err := listen(ep)
+	listener, cleanup, err := listen(ep, logger)
 	if err != nil {
 		return err
 	}
@@ -653,7 +668,7 @@ func Serve(ctx context.Context, ep endpoint.Endpoint, handler http.Handler, logg
 	}
 }
 
-func listen(ep endpoint.Endpoint) (net.Listener, func() error, error) {
+func listen(ep endpoint.Endpoint, logger *log.Logger) (net.Listener, func() error, error) {
 	if ep.Scheme == "unix" {
 		if err := os.MkdirAll(filepath.Dir(ep.Address), 0o755); err != nil {
 			return nil, nil, err
@@ -680,13 +695,27 @@ func listen(ep endpoint.Endpoint) (net.Listener, func() error, error) {
 		if err := os.MkdirAll(stateDir, 0o700); err != nil {
 			return nil, nil, fmt.Errorf("create tsnet state directory: %w", err)
 		}
-		server := newTSNetServer(ep, stateDir)
+		server := newTSNetServer(ep, stateDir, tsnetLogf(logger))
 		listener, err := server.Listen("tcp", ep.Address)
 		if err != nil {
 			_ = server.Close()
 			return nil, nil, fmt.Errorf("start tsnet listener for %q: %w", ep.Address, err)
 		}
 		return listener, server.Close, nil
+	}
+
+	if ep.Scheme == "tssvc" {
+		listener, err := net.Listen("tcp", ep.Address)
+		if err != nil {
+			return nil, nil, fmt.Errorf("start tailscale service listener for %q: %w", ep.Address, err)
+		}
+		setupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := configureTailscaleService(setupCtx, ep, listener.Addr().String()); err != nil {
+			_ = listener.Close()
+			return nil, nil, err
+		}
+		return listener, nil, nil
 	}
 
 	if ep.Scheme == "https" {
