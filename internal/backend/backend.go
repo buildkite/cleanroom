@@ -31,7 +31,6 @@ type StreamingAdapter interface {
 
 type RunRequest struct {
 	RunID   string
-	CWD     string
 	Command []string
 	TTY     bool
 	Policy  *policy.CompiledPolicy

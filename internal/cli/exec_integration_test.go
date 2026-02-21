@@ -66,7 +66,9 @@ type integrationLoader struct{}
 
 func (integrationLoader) LoadAndCompile(_ string) (*policy.CompiledPolicy, string, error) {
 	return &policy.CompiledPolicy{
-		Hash:           "policy-hash-test",
+		Version:        1,
+		ImageRef:       "ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		ImageDigest:    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 		NetworkDefault: "deny",
 	}, "/repo/cleanroom.yaml", nil
 }
@@ -217,7 +219,8 @@ func TestExecIntegrationStreamsOutput(t *testing.T) {
 		Chdir:   cwd,
 		Command: []string{"echo", "ignored-by-adapter"},
 	}, runtimeContext{
-		CWD: cwd,
+		CWD:    cwd,
+		Loader: integrationLoader{},
 	})
 
 	if outcome.cause != nil {
@@ -254,7 +257,8 @@ func TestExecIntegrationPropagatesExitAndStderr(t *testing.T) {
 		Chdir:   cwd,
 		Command: []string{"echo", "ignored-by-adapter"},
 	}, runtimeContext{
-		CWD: cwd,
+		CWD:    cwd,
+		Loader: integrationLoader{},
 	})
 
 	if outcome.cause != nil {
@@ -298,7 +302,8 @@ func TestExecIntegrationFirstInterruptCancelsExecution(t *testing.T) {
 			Chdir:   cwd,
 			Command: []string{"sleep", "300"},
 		}, runtimeContext{
-			CWD: cwd,
+			CWD:    cwd,
+			Loader: integrationLoader{},
 		})
 	}()
 
@@ -355,7 +360,8 @@ func TestExecIntegrationSecondInterruptTerminatesSandbox(t *testing.T) {
 			LogLevel: "debug",
 			Command:  []string{"sleep", "300"},
 		}, runtimeContext{
-			CWD: cwd,
+			CWD:    cwd,
+			Loader: integrationLoader{},
 		})
 	}()
 
@@ -420,7 +426,8 @@ func TestExecIntegrationVmPathUsesShForGuestCompatibility(t *testing.T) {
 		Chdir:   cwd,
 		Command: []string{"sh", "-lc", "echo guest-ok"},
 	}, runtimeContext{
-		CWD: cwd,
+		CWD:    cwd,
+		Loader: integrationLoader{},
 	})
 	if outcome.cause != nil {
 		t.Fatalf("capture failure: %v", outcome.cause)

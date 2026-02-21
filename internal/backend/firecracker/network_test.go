@@ -130,3 +130,35 @@ func TestSetupHostNetworkWithDepsAddsDenyDefaultAndCleanupIndependentContext(t *
 		t.Fatal("expected cleanup commands")
 	}
 }
+
+func TestInstallForwardReturnPathRuleFallsBackToStateModule(t *testing.T) {
+	t.Parallel()
+
+	var calls [][]string
+	run := func(args ...string) error {
+		calls = append(calls, append([]string(nil), args...))
+		joined := strings.Join(args, " ")
+		if strings.Contains(joined, "-m conntrack") {
+			return errors.New("conntrack not supported")
+		}
+		return nil
+	}
+
+	cleanup, err := installForwardReturnPathRule(run, "tap0")
+	if err != nil {
+		t.Fatalf("installForwardReturnPathRule returned error: %v", err)
+	}
+
+	if len(calls) != 2 {
+		t.Fatalf("expected two attempts (conntrack then state), got %d", len(calls))
+	}
+	if got := strings.Join(calls[0], " "); !strings.Contains(got, "-m conntrack") {
+		t.Fatalf("expected first attempt to use conntrack, got %q", got)
+	}
+	if got := strings.Join(calls[1], " "); !strings.Contains(got, "-m state") {
+		t.Fatalf("expected fallback to state module, got %q", got)
+	}
+	if got := strings.Join(cleanup, " "); !strings.Contains(got, "-m state") {
+		t.Fatalf("expected cleanup rule for state module, got %q", got)
+	}
+}

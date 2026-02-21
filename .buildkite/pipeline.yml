@@ -3,6 +3,11 @@ env:
   MISE_TRUSTED_CONFIG_PATHS: /buildkite/builds
 
 steps:
+  - label: ":shell: Shellcheck"
+    command: mise run lint-shell
+    agents:
+      queue: hosted
+
   - label: ":test_tube: Test (Linux)"
     command: mise run test
     cache:

@@ -1067,11 +1067,12 @@ func setupHostNetworkWithDeps(ctx context.Context, runID string, allow []policy.
 		return hostNetworkConfig{}, func() {}, fmt.Errorf("install nat rule for %s: %w", guestCIDR, err)
 	}
 	addCleanup("iptables", "-t", "nat", "-D", "POSTROUTING", "-s", guestCIDR, "-j", "MASQUERADE")
-	if err := setupRun("iptables", "-A", "FORWARD", "-o", tapName, "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"); err != nil {
+	returnPathCleanup, err := installForwardReturnPathRule(setupRun, tapName)
+	if err != nil {
 		cleanup()
 		return hostNetworkConfig{}, func() {}, fmt.Errorf("install forward return-path rule for %s: %w", tapName, err)
 	}
-	addCleanup("iptables", "-D", "FORWARD", "-o", tapName, "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT")
+	addCleanup(returnPathCleanup...)
 
 	// Allow guest DNS to the configured resolver so host-based policy entries remain usable.
 	if err := setupRun("iptables", "-A", "FORWARD", "-i", tapName, "-p", "udp", "-d", dnsServer, "--dport", "53", "-j", "ACCEPT"); err != nil {
@@ -1105,6 +1106,19 @@ func setupHostNetworkWithDeps(ctx context.Context, runID string, allow []policy.
 		GuestIP:         guestIP,
 		PolicyResolveMS: policyResolveMS,
 	}, cleanup, nil
+}
+
+func installForwardReturnPathRule(setupRun func(args ...string) error, tapName string) ([]string, error) {
+	conntrackAdd := []string{"iptables", "-A", "FORWARD", "-o", tapName, "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT"}
+	if err := setupRun(conntrackAdd...); err == nil {
+		return []string{"iptables", "-D", "FORWARD", "-o", tapName, "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT"}, nil
+	}
+
+	stateAdd := []string{"iptables", "-A", "FORWARD", "-o", tapName, "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"}
+	if err := setupRun(stateAdd...); err != nil {
+		return nil, err
+	}
+	return []string{"iptables", "-D", "FORWARD", "-o", tapName, "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"}, nil
 }
 
 func resolveForwardRules(ctx context.Context, allow []policy.AllowRule) ([]iptablesForwardRule, error) {

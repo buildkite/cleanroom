@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 
+	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/ociref"
 	"gopkg.in/yaml.v3"
 )
@@ -203,6 +204,112 @@ func exists(path string) (bool, error) {
 		return false, nil
 	}
 	return false, err
+}
+
+// ToProto converts a CompiledPolicy to the proto Policy message.
+func (p *CompiledPolicy) ToProto() *cleanroomv1.Policy {
+	if p == nil {
+		return nil
+	}
+	allow := make([]*cleanroomv1.PolicyAllowRule, 0, len(p.Allow))
+	for _, rule := range p.Allow {
+		ports := make([]int32, 0, len(rule.Ports))
+		for _, port := range rule.Ports {
+			ports = append(ports, int32(port))
+		}
+		allow = append(allow, &cleanroomv1.PolicyAllowRule{
+			Host:  rule.Host,
+			Ports: ports,
+		})
+	}
+	return &cleanroomv1.Policy{
+		Version:        int32(p.Version),
+		ImageRef:       p.ImageRef,
+		ImageDigest:    p.ImageDigest,
+		NetworkDefault: p.NetworkDefault,
+		Allow:          allow,
+		Hash:           p.Hash,
+	}
+}
+
+// FromProto converts a proto Policy message to a CompiledPolicy, validating required fields.
+func FromProto(pb *cleanroomv1.Policy) (*CompiledPolicy, error) {
+	if pb == nil {
+		return nil, errors.New("missing policy")
+	}
+	if pb.GetVersion() == 0 {
+		return nil, errors.New("policy missing required field: version")
+	}
+	if pb.GetVersion() != 1 {
+		return nil, fmt.Errorf("unsupported policy version %d: only version 1 is supported", pb.GetVersion())
+	}
+	imageRef := strings.TrimSpace(pb.GetImageRef())
+	if imageRef == "" {
+		return nil, errors.New("policy missing required field: image_ref")
+	}
+	parsedRef, err := ociref.ParseDigestReference(imageRef)
+	if err != nil {
+		return nil, fmt.Errorf("invalid policy image_ref: %w", err)
+	}
+	if providedDigest := strings.TrimSpace(pb.GetImageDigest()); providedDigest != "" && providedDigest != parsedRef.Digest() {
+		return nil, fmt.Errorf("policy image_digest %q does not match image_ref digest %q", providedDigest, parsedRef.Digest())
+	}
+	networkDefault := strings.TrimSpace(strings.ToLower(pb.GetNetworkDefault()))
+	if networkDefault == "" {
+		networkDefault = "deny"
+	}
+	if networkDefault != "deny" {
+		return nil, fmt.Errorf("unsupported policy network_default %q: cleanroom requires deny-by-default", networkDefault)
+	}
+
+	allow := make([]AllowRule, 0, len(pb.GetAllow()))
+	for _, rule := range pb.GetAllow() {
+		host := strings.TrimSpace(strings.ToLower(rule.GetHost()))
+		if host == "" {
+			return nil, errors.New("allow rule host cannot be empty")
+		}
+		ports := make([]int, 0, len(rule.GetPorts()))
+		seen := map[int]struct{}{}
+		for _, port := range rule.GetPorts() {
+			if port < 1 || port > 65535 {
+				return nil, fmt.Errorf("allow rule for host %q contains invalid port %d", host, port)
+			}
+			candidate := int(port)
+			if _, ok := seen[candidate]; ok {
+				continue
+			}
+			seen[candidate] = struct{}{}
+			ports = append(ports, candidate)
+		}
+		if len(ports) == 0 {
+			return nil, fmt.Errorf("allow rule for host %q must include at least one port", host)
+		}
+		sort.Ints(ports)
+		allow = append(allow, AllowRule{Host: host, Ports: ports})
+	}
+
+	sort.Slice(allow, func(i, j int) bool {
+		return allow[i].Host < allow[j].Host
+	})
+
+	compiled := &CompiledPolicy{
+		Version:        int(pb.GetVersion()),
+		ImageRef:       parsedRef.Original,
+		ImageDigest:    parsedRef.Digest(),
+		NetworkDefault: networkDefault,
+		Allow:          allow,
+	}
+
+	hash, err := hashPolicy(compiled)
+	if err != nil {
+		return nil, err
+	}
+
+	if pb.GetHash() != "" && pb.GetHash() != hash {
+		return nil, fmt.Errorf("policy hash mismatch: expected %q, got %q", hash, pb.GetHash())
+	}
+	compiled.Hash = hash
+	return compiled, nil
 }
 
 func hashPolicy(p *CompiledPolicy) (string, error) {

@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/buildkite/cleanroom/internal/backend"
-	"github.com/buildkite/cleanroom/internal/controlapi"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/paths"
 	"github.com/buildkite/cleanroom/internal/policy"
@@ -33,10 +32,8 @@ type Service struct {
 
 type sandboxState struct {
 	ID               string
-	CWD              string
 	Backend          string
 	Policy           *policy.CompiledPolicy
-	PolicySource     string
 	Firecracker      backend.FirecrackerConfig
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
@@ -55,9 +52,8 @@ type executionState struct {
 	RunID            string
 	ImageRef         string
 	ImageDigest      string
-	CWD              string
 	Command          []string
-	Options          controlapi.ExecOptions
+	Options          executionOptions
 	TTY              bool
 	Status           cleanroomv1.ExecutionStatus
 	ExitCode         int32
@@ -83,6 +79,10 @@ type executionState struct {
 
 type loader interface {
 	LoadAndCompile(cwd string) (*policy.CompiledPolicy, string, error)
+}
+
+type executionOptions struct {
+	LaunchSeconds int64
 }
 
 type executionSnapshot struct {
@@ -115,9 +115,13 @@ func (s *Service) CreateSandbox(_ context.Context, req *cleanroomv1.CreateSandbo
 	if req == nil {
 		return nil, errors.New("missing request")
 	}
-	cwd := strings.TrimSpace(req.GetCwd())
-	if cwd == "" {
-		return nil, errors.New("missing cwd")
+	if req.GetPolicy() == nil {
+		return nil, errors.New("missing policy")
+	}
+
+	compiled, err := policy.FromProto(req.GetPolicy())
+	if err != nil {
+		return nil, fmt.Errorf("invalid policy: %w", err)
 	}
 
 	backendName := resolveBackendName(strings.TrimSpace(req.GetBackend()), s.Config.DefaultBackend)
@@ -125,27 +129,20 @@ func (s *Service) CreateSandbox(_ context.Context, req *cleanroomv1.CreateSandbo
 		return nil, fmt.Errorf("unknown backend %q", backendName)
 	}
 
-	compiled, source, err := s.Loader.LoadAndCompile(cwd)
-	if err != nil {
-		return nil, err
-	}
-
 	opts := req.GetOptions()
-	execOpts := controlapi.ExecOptions{}
+	execOpts := executionOptions{}
 	if opts != nil {
 		execOpts.LaunchSeconds = opts.GetLaunchSeconds()
 	}
-	firecrackerCfg := mergeFirecrackerConfig(cwd, execOpts, s.Config)
+	firecrackerCfg := mergeFirecrackerConfig(execOpts, s.Config)
 	firecrackerCfg.RunDir = ""
 
 	now := time.Now().UTC()
 	sandboxID := fmt.Sprintf("cr-%d", now.UnixNano())
 	state := &sandboxState{
 		ID:               sandboxID,
-		CWD:              cwd,
 		Backend:          backendName,
 		Policy:           compiled,
-		PolicySource:     source,
 		Firecracker:      firecrackerCfg,
 		CreatedAt:        now,
 		UpdatedAt:        now,
@@ -160,9 +157,8 @@ func (s *Service) CreateSandbox(_ context.Context, req *cleanroomv1.CreateSandbo
 	s.recordSandboxEventLocked(state, cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY, "sandbox created and ready")
 	s.pruneStateLocked(now)
 	resp := &cleanroomv1.CreateSandboxResponse{
-		Sandbox:      cloneSandboxLocked(state),
-		PolicySource: source,
-		Message:      "sandbox created and ready",
+		Sandbox: cloneSandboxLocked(state),
+		Message: "sandbox created and ready",
 	}
 	s.mu.Unlock()
 
@@ -170,8 +166,6 @@ func (s *Service) CreateSandbox(_ context.Context, req *cleanroomv1.CreateSandbo
 		s.Logger.Info("sandbox created",
 			"sandbox_id", sandboxID,
 			"backend", backendName,
-			"cwd", cwd,
-			"policy_source", source,
 			"policy_hash", compiled.Hash,
 		)
 	}
@@ -317,14 +311,12 @@ func (s *Service) CreateExecution(_ context.Context, req *cleanroomv1.CreateExec
 		return nil, errors.New("missing command")
 	}
 
-	execOpts := controlapi.ExecOptions{}
-	cwd := ""
+	execOpts := executionOptions{}
 	tty := false
 	if opts := req.GetOptions(); opts != nil {
-		execOpts = controlapi.ExecOptions{
+		execOpts = executionOptions{
 			LaunchSeconds: opts.GetLaunchSeconds(),
 		}
-		cwd = strings.TrimSpace(opts.GetCwd())
 		tty = opts.GetTty()
 	}
 
@@ -343,9 +335,6 @@ func (s *Service) CreateExecution(_ context.Context, req *cleanroomv1.CreateExec
 		s.mu.Unlock()
 		return nil, fmt.Errorf("sandbox %q is not ready", sandboxID)
 	}
-	if cwd == "" {
-		cwd = sandbox.CWD
-	}
 	if _, ok := s.Backends[sandbox.Backend]; !ok {
 		s.mu.Unlock()
 		return nil, fmt.Errorf("unknown backend %q", sandbox.Backend)
@@ -362,7 +351,6 @@ func (s *Service) CreateExecution(_ context.Context, req *cleanroomv1.CreateExec
 		SandboxID:        sandboxID,
 		ImageRef:         imageRef,
 		ImageDigest:      imageDigest,
-		CWD:              cwd,
 		Command:          append([]string(nil), command...),
 		Options:          execOpts,
 		TTY:              tty,
@@ -866,7 +854,6 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 
 	runReq := backend.RunRequest{
 		RunID:             ex.RunID,
-		CWD:               ex.CWD,
 		Command:           append([]string(nil), ex.Command...),
 		TTY:               ex.TTY,
 		Policy:            sb.Policy,
@@ -1022,135 +1009,6 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 			"status", ex.Status.String(),
 		)
 	}
-}
-
-func (s *Service) LaunchCleanroom(ctx context.Context, req controlapi.LaunchCleanroomRequest) (*controlapi.LaunchCleanroomResponse, error) {
-	resp, err := s.CreateSandbox(ctx, &cleanroomv1.CreateSandboxRequest{
-		Cwd:     req.CWD,
-		Backend: req.Backend,
-		Options: &cleanroomv1.SandboxOptions{
-			LaunchSeconds: req.Options.LaunchSeconds,
-		},
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	return &controlapi.LaunchCleanroomResponse{
-		CleanroomID:  resp.GetSandbox().GetSandboxId(),
-		Backend:      resp.GetSandbox().GetBackend(),
-		PolicySource: resp.GetPolicySource(),
-		PolicyHash:   resp.GetSandbox().GetPolicyHash(),
-		Message:      resp.GetMessage(),
-	}, nil
-}
-
-func (s *Service) RunCleanroom(ctx context.Context, req controlapi.RunCleanroomRequest) (*controlapi.RunCleanroomResponse, error) {
-	created, err := s.CreateExecution(ctx, &cleanroomv1.CreateExecutionRequest{
-		SandboxId: req.CleanroomID,
-		Command:   append([]string(nil), req.Command...),
-	})
-	if err != nil {
-		if strings.Contains(err.Error(), "unknown sandbox") || strings.Contains(err.Error(), "not ready") {
-			return nil, fmt.Errorf("unknown cleanroom %q", req.CleanroomID)
-		}
-		return nil, err
-	}
-
-	executionID := created.GetExecution().GetExecutionId()
-	if _, err := s.WaitExecution(ctx, req.CleanroomID, executionID); err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			_, _ = s.CancelExecution(context.Background(), &cleanroomv1.CancelExecutionRequest{
-				SandboxId:   req.CleanroomID,
-				ExecutionId: executionID,
-				Signal:      2,
-			})
-		}
-		return nil, err
-	}
-	snapshot, err := s.ExecutionSnapshot(req.CleanroomID, executionID)
-	if err != nil {
-		return nil, err
-	}
-
-	return &controlapi.RunCleanroomResponse{
-		CleanroomID: req.CleanroomID,
-		RunID:       snapshot.Execution.GetRunId(),
-		ExitCode:    int(snapshot.Execution.GetExitCode()),
-		LaunchedVM:  snapshot.Launched,
-		PlanPath:    snapshot.PlanPath,
-		RunDir:      snapshot.RunDir,
-		ImageRef:    snapshot.ImageRef,
-		ImageDigest: snapshot.ImageDigest,
-		Message:     snapshot.Message,
-		Stdout:      snapshot.Stdout,
-		Stderr:      snapshot.Stderr,
-	}, nil
-}
-
-func (s *Service) TerminateCleanroom(ctx context.Context, req controlapi.TerminateCleanroomRequest) (*controlapi.TerminateCleanroomResponse, error) {
-	resp, err := s.TerminateSandbox(ctx, &cleanroomv1.TerminateSandboxRequest{SandboxId: req.CleanroomID})
-	if err != nil {
-		return nil, err
-	}
-	return &controlapi.TerminateCleanroomResponse{
-		CleanroomID: resp.GetSandboxId(),
-		Terminated:  resp.GetTerminated(),
-		Message:     resp.GetMessage(),
-	}, nil
-}
-
-func (s *Service) Exec(ctx context.Context, req controlapi.ExecRequest) (*controlapi.ExecResponse, error) {
-	createSandboxResp, err := s.CreateSandbox(ctx, &cleanroomv1.CreateSandboxRequest{
-		Cwd:     req.CWD,
-		Backend: req.Backend,
-		Options: &cleanroomv1.SandboxOptions{
-			LaunchSeconds: req.Options.LaunchSeconds,
-		},
-	})
-	if err != nil {
-		return nil, err
-	}
-	sandboxID := createSandboxResp.GetSandbox().GetSandboxId()
-	defer func() {
-		_, _ = s.TerminateSandbox(context.Background(), &cleanroomv1.TerminateSandboxRequest{SandboxId: sandboxID})
-	}()
-
-	createExecutionResp, err := s.CreateExecution(ctx, &cleanroomv1.CreateExecutionRequest{
-		SandboxId: sandboxID,
-		Command:   append([]string(nil), req.Command...),
-		Options: &cleanroomv1.ExecutionOptions{
-			LaunchSeconds: req.Options.LaunchSeconds,
-			Cwd:           req.CWD,
-		},
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	executionID := createExecutionResp.GetExecution().GetExecutionId()
-	if _, err := s.WaitExecution(ctx, sandboxID, executionID); err != nil {
-		return nil, err
-	}
-	snapshot, err := s.ExecutionSnapshot(sandboxID, executionID)
-	if err != nil {
-		return nil, err
-	}
-
-	return &controlapi.ExecResponse{
-		RunID:        snapshot.Execution.GetRunId(),
-		PolicySource: createSandboxResp.GetPolicySource(),
-		PolicyHash:   createSandboxResp.GetSandbox().GetPolicyHash(),
-		ExitCode:     int(snapshot.Execution.GetExitCode()),
-		LaunchedVM:   snapshot.Launched,
-		PlanPath:     snapshot.PlanPath,
-		RunDir:       snapshot.RunDir,
-		ImageRef:     snapshot.ImageRef,
-		ImageDigest:  snapshot.ImageDigest,
-		Message:      snapshot.Message,
-		Stdout:       snapshot.Stdout,
-		Stderr:       snapshot.Stderr,
-	}, nil
 }
 
 func (s *Service) ensureMapsLocked() {
@@ -1601,7 +1459,7 @@ func resolveBackendName(requested, configuredDefault string) string {
 	return "firecracker"
 }
 
-func mergeFirecrackerConfig(cwd string, opts controlapi.ExecOptions, cfg runtimeconfig.Config) backend.FirecrackerConfig {
+func mergeFirecrackerConfig(opts executionOptions, cfg runtimeconfig.Config) backend.FirecrackerConfig {
 	out := backend.FirecrackerConfig{
 		BinaryPath:           cfg.Backends.Firecracker.BinaryPath,
 		KernelImagePath:      cfg.Backends.Firecracker.KernelImage,

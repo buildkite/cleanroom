@@ -32,10 +32,14 @@ import (
 	"golang.org/x/term"
 )
 
+type policyLoader interface {
+	LoadAndCompile(cwd string) (*policy.CompiledPolicy, string, error)
+}
+
 type runtimeContext struct {
 	CWD        string
 	Stdout     *os.File
-	Loader     policy.Loader
+	Loader     policyLoader
 	Config     runtimeconfig.Config
 	ConfigPath string
 	Backends   map[string]backend.Adapter
@@ -347,35 +351,29 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 	if err := validateClientEndpoint(ep); err != nil {
 		return err
 	}
-	var cwd string
-	if ep.Scheme != "unix" {
-		if e.Chdir == "" {
-			return fmt.Errorf("remote endpoint %q requires an explicit -c/--chdir with an absolute path", ep.Address)
-		}
-		if !filepath.IsAbs(e.Chdir) {
-			return fmt.Errorf("remote endpoint %q requires an absolute -c/--chdir path, got %q", ep.Address, e.Chdir)
-		}
-		cwd = filepath.Clean(e.Chdir)
-	} else {
-		var err error
-		cwd, err = resolveCWD(ctx.CWD, e.Chdir)
-		if err != nil {
-			return err
-		}
+	cwd, err := resolveCWD(ctx.CWD, e.Chdir)
+	if err != nil {
+		return err
 	}
+
+	compiled, _, err := ctx.Loader.LoadAndCompile(cwd)
+	if err != nil {
+		return err
+	}
+
 	logger.Debug("sending execution request",
 		"endpoint", ep.Address,
-		"cwd", cwd,
 		"backend", e.Backend,
+		"policy_hash", compiled.Hash,
 		"command_argc", len(e.Command),
 	)
 	client := controlclient.New(ep)
 	createSandboxResp, err := client.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
-		Cwd:     cwd,
 		Backend: e.Backend,
 		Options: &cleanroomv1.SandboxOptions{
 			LaunchSeconds: e.LaunchSeconds,
 		},
+		Policy: compiled.ToProto(),
 	})
 	if err != nil {
 		return fmt.Errorf("execute via control-plane endpoint %q: %w", ep.Address, err)
@@ -395,7 +393,6 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 		Command:   append([]string(nil), e.Command...),
 		Options: &cleanroomv1.ExecutionOptions{
 			LaunchSeconds: e.LaunchSeconds,
-			Cwd:           cwd,
 		},
 	})
 	if err != nil {
@@ -555,40 +552,34 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 	if err := validateClientEndpoint(ep); err != nil {
 		return err
 	}
-	var cwd string
-	if ep.Scheme != "unix" {
-		if c.Chdir == "" {
-			return fmt.Errorf("remote endpoint %q requires an explicit -c/--chdir with an absolute path", ep.Address)
-		}
-		if !filepath.IsAbs(c.Chdir) {
-			return fmt.Errorf("remote endpoint %q requires an absolute -c/--chdir path, got %q", ep.Address, c.Chdir)
-		}
-		cwd = filepath.Clean(c.Chdir)
-	} else {
-		var err error
-		cwd, err = resolveCWD(ctx.CWD, c.Chdir)
-		if err != nil {
-			return err
-		}
+	cwd, err := resolveCWD(ctx.CWD, c.Chdir)
+	if err != nil {
+		return err
 	}
+
+	compiled, _, err := ctx.Loader.LoadAndCompile(cwd)
+	if err != nil {
+		return err
+	}
+
 	command := append([]string(nil), c.Command...)
 	if len(command) == 0 {
 		command = []string{"sh"}
 	}
 	logger.Debug("starting interactive console",
 		"endpoint", ep.Address,
-		"cwd", cwd,
 		"backend", c.Backend,
+		"policy_hash", compiled.Hash,
 		"command_argc", len(command),
 	)
 
 	client := controlclient.New(ep)
 	createSandboxResp, err := client.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
-		Cwd:     cwd,
 		Backend: c.Backend,
 		Options: &cleanroomv1.SandboxOptions{
 			LaunchSeconds: c.LaunchSeconds,
 		},
+		Policy: compiled.ToProto(),
 	})
 	if err != nil {
 		return fmt.Errorf("console via control-plane endpoint %q: %w", ep.Address, err)
@@ -607,7 +598,6 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 		Options: &cleanroomv1.ExecutionOptions{
 			LaunchSeconds: c.LaunchSeconds,
 			Tty:           true,
-			Cwd:           cwd,
 		},
 	})
 	if err != nil {
@@ -827,7 +817,7 @@ func (d *DoctorCommand) Run(ctx *runtimeContext) error {
 	if checker, ok := adapter.(doctorCapable); ok {
 		report, err := checker.Doctor(context.Background(), backend.DoctorRequest{
 			Policy:            compiled,
-			FirecrackerConfig: mergeFirecrackerConfig(ctx.CWD, &ExecCommand{}, ctx.Config),
+			FirecrackerConfig: mergeFirecrackerConfig(&ExecCommand{}, ctx.Config),
 		})
 		if err != nil {
 			return err
@@ -880,7 +870,7 @@ func validateClientEndpoint(ep endpoint.Endpoint) error {
 	return errors.New("tssvc:// endpoints are listen-only; use https://<service>.<your-tailnet>.ts.net for --host")
 }
 
-func mergeFirecrackerConfig(cwd string, e *ExecCommand, cfg runtimeconfig.Config) backend.FirecrackerConfig {
+func mergeFirecrackerConfig(e *ExecCommand, cfg runtimeconfig.Config) backend.FirecrackerConfig {
 	out := backend.FirecrackerConfig{
 		BinaryPath:           cfg.Backends.Firecracker.BinaryPath,
 		KernelImagePath:      cfg.Backends.Firecracker.KernelImage,

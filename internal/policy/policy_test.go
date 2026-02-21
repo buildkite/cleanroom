@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 )
 
 const validImageRef = "ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -167,5 +169,52 @@ func TestLoadPropagatesPrimaryStatError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "check policy") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestFromProtoRejectsMismatchedImageDigest(t *testing.T) {
+	t.Parallel()
+
+	_, err := FromProto(&cleanroomv1.Policy{
+		Version:        1,
+		ImageRef:       validImageRef,
+		ImageDigest:    "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+		NetworkDefault: "deny",
+	})
+	if err == nil {
+		t.Fatal("expected FromProto to reject mismatched image_digest")
+	}
+	if !strings.Contains(err.Error(), "image_digest") {
+		t.Fatalf("expected image_digest error, got %v", err)
+	}
+}
+
+func TestFromProtoCanonicalisesAllowRules(t *testing.T) {
+	t.Parallel()
+
+	compiled, err := FromProto(&cleanroomv1.Policy{
+		Version:        1,
+		ImageRef:       validImageRef,
+		NetworkDefault: "deny",
+		Allow: []*cleanroomv1.PolicyAllowRule{
+			{Host: "registry.npmjs.org", Ports: []int32{443}},
+			{Host: "api.github.com", Ports: []int32{443, 80, 443}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("FromProto returned error: %v", err)
+	}
+
+	if len(compiled.Allow) != 2 {
+		t.Fatalf("unexpected allow rule count: got %d want 2", len(compiled.Allow))
+	}
+	if got, want := compiled.Allow[0].Host, "api.github.com"; got != want {
+		t.Fatalf("expected allow rules to be sorted by host: got %q want %q", got, want)
+	}
+	if got, want := compiled.Allow[1].Host, "registry.npmjs.org"; got != want {
+		t.Fatalf("expected second host %q, got %q", want, got)
+	}
+	if got, want := compiled.Allow[0].Ports, []int{80, 443}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("expected deduplicated/sorted ports %v, got %v", want, got)
 	}
 }

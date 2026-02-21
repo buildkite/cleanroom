@@ -97,9 +97,14 @@ run_iptables() {
     exec /usr/sbin/iptables "$@"
   fi
 
-  if [[ "$#" -eq 10 && ( "$1" == "-A" || "$1" == "-D" ) && "$2" == "FORWARD" && "$3" == "-o" && "$5" == "-m" && "$6" == "state" && "$7" == "--state" && "$8" == "RELATED,ESTABLISHED" && "$9" == "-j" && "$10" == "ACCEPT" ]]; then
+  if [[ "$#" -eq 10 && ( "$1" == "-A" || "$1" == "-D" ) && "$2" == "FORWARD" && "$3" == "-o" && "$5" == "-m" && "$9" == "-j" && "${10}" == "ACCEPT" ]]; then
     is_tap_name "$4" || die "iptables FORWARD -o: unsupported interface '$4'"
-    exec /usr/sbin/iptables "$@"
+    if [[ "$6" == "state" && "$7" == "--state" && "$8" == "RELATED,ESTABLISHED" ]]; then
+      exec /usr/sbin/iptables "$@"
+    fi
+    if [[ "$6" == "conntrack" && "$7" == "--ctstate" && "$8" == "RELATED,ESTABLISHED" ]]; then
+      exec /usr/sbin/iptables "$@"
+    fi
   fi
 
   if [[ "$#" -eq 6 && ( "$1" == "-A" || "$1" == "-D" ) && "$2" == "FORWARD" && "$3" == "-i" && "$5" == "-j" && "$6" == "DROP" ]]; then
@@ -107,10 +112,10 @@ run_iptables() {
     exec /usr/sbin/iptables "$@"
   fi
 
-  if [[ "$#" -eq 12 && ( "$1" == "-A" || "$1" == "-D" ) && "$2" == "FORWARD" && "$3" == "-i" && "$5" == "-p" && ( "$6" == "tcp" || "$6" == "udp" ) && "$7" == "-d" && "$9" == "--dport" && "$11" == "-j" && "$12" == "ACCEPT" ]]; then
+  if [[ "$#" -eq 12 && ( "$1" == "-A" || "$1" == "-D" ) && "$2" == "FORWARD" && "$3" == "-i" && "$5" == "-p" && ( "$6" == "tcp" || "$6" == "udp" ) && "$7" == "-d" && "$9" == "--dport" && "${11}" == "-j" && "${12}" == "ACCEPT" ]]; then
     is_tap_name "$4" || die "iptables FORWARD allow: unsupported interface '$4'"
     is_ipv4 "$8" || die "iptables FORWARD allow: invalid destination ip '$8'"
-    is_numeric "$10" || die "iptables FORWARD allow: invalid port '$10'"
+    is_numeric "${10}" || die "iptables FORWARD allow: invalid port '${10}'"
     exec /usr/sbin/iptables "$@"
   fi
 
