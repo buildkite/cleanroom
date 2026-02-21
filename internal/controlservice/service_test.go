@@ -3,15 +3,12 @@ package controlservice
 import (
 	"context"
 	"errors"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/buildkite/cleanroom/internal/backend"
-	"github.com/buildkite/cleanroom/internal/controlapi"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
-	"github.com/buildkite/cleanroom/internal/paths"
 	"github.com/buildkite/cleanroom/internal/policy"
 )
 
@@ -90,11 +87,20 @@ func (l stubLoader) LoadAndCompile(_ string) (*policy.CompiledPolicy, string, er
 	return l.compiled, l.source, nil
 }
 
+func testPolicy() *cleanroomv1.Policy {
+	return &cleanroomv1.Policy{
+		Version:        1,
+		ImageRef:       "ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		ImageDigest:    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		NetworkDefault: "deny",
+	}
+}
+
 func newTestService(adapter backend.Adapter) *Service {
 	return &Service{
 		Loader: stubLoader{
 			compiled: &policy.CompiledPolicy{
-				Hash:           "hash-1",
+				Version:        1,
 				NetworkDefault: "deny",
 				ImageRef:       "ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 				ImageDigest:    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
@@ -102,183 +108,6 @@ func newTestService(adapter backend.Adapter) *Service {
 			source: "/repo/cleanroom.yaml",
 		},
 		Backends: map[string]backend.Adapter{"firecracker": adapter},
-	}
-}
-
-func TestExecForwardsBackendOutput(t *testing.T) {
-	adapter := &stubAdapter{result: &backend.RunResult{
-		RunID:       "run-1",
-		ExitCode:    0,
-		LaunchedVM:  true,
-		PlanPath:    "/tmp/plan",
-		RunDir:      "/tmp/run",
-		ImageRef:    "ghcr.io/buildkite/cleanroom-base/alpine@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		ImageDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		Message:     "ok",
-		Stdout:      "hello stdout\n",
-		Stderr:      "hello stderr\n",
-	}}
-
-	svc := &Service{
-		Loader: stubLoader{
-			compiled: &policy.CompiledPolicy{
-				Hash:           "hash-1",
-				NetworkDefault: "deny",
-				ImageRef:       "ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-				ImageDigest:    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-			},
-			source: "/repo/cleanroom.yaml",
-		},
-		Backends: map[string]backend.Adapter{"firecracker": adapter},
-	}
-
-	resp, err := svc.Exec(context.Background(), controlapi.ExecRequest{
-		CWD:     "/repo",
-		Command: []string{"--", "echo", "hi"},
-	})
-	if err != nil {
-		t.Fatalf("Exec returned error: %v", err)
-	}
-
-	if adapter.req.Command[0] != "echo" {
-		t.Fatalf("expected normalized command to start with echo, got %q", adapter.req.Command)
-	}
-	if resp.Stdout != "hello stdout\n" {
-		t.Fatalf("expected stdout to be forwarded, got %q", resp.Stdout)
-	}
-	if resp.Stderr != "hello stderr\n" {
-		t.Fatalf("expected stderr to be forwarded, got %q", resp.Stderr)
-	}
-	if got, want := resp.ImageDigest, "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"; got != want {
-		t.Fatalf("expected image digest in exec response, got %q want %q", got, want)
-	}
-}
-
-func TestLaunchRunTerminateLifecycle(t *testing.T) {
-	adapter := &stubAdapter{}
-	svc := newTestService(adapter)
-
-	launchResp, err := svc.LaunchCleanroom(context.Background(), controlapi.LaunchCleanroomRequest{
-		CWD: "/repo",
-	})
-	if err != nil {
-		t.Fatalf("LaunchCleanroom returned error: %v", err)
-	}
-	if launchResp.CleanroomID == "" {
-		t.Fatal("expected cleanroom_id to be set")
-	}
-	if launchResp.PolicyHash != "hash-1" {
-		t.Fatalf("unexpected policy hash: %q", launchResp.PolicyHash)
-	}
-
-	runResp, err := svc.RunCleanroom(context.Background(), controlapi.RunCleanroomRequest{
-		CleanroomID: launchResp.CleanroomID,
-		Command:     []string{"--", "pi", "run", "fix tests"},
-	})
-	if err != nil {
-		t.Fatalf("RunCleanroom returned error: %v", err)
-	}
-	if runResp.CleanroomID != launchResp.CleanroomID {
-		t.Fatalf("unexpected cleanroom id: got %q want %q", runResp.CleanroomID, launchResp.CleanroomID)
-	}
-	if got := adapter.req.Command[0]; got != "pi" {
-		t.Fatalf("expected normalized command to start with pi, got %q", got)
-	}
-	if runResp.ImageDigest == "" {
-		t.Fatal("expected run response to include image digest")
-	}
-	runBaseDir, err := paths.RunBaseDir()
-	if err != nil {
-		t.Fatalf("resolve run base dir: %v", err)
-	}
-	if got, want := filepath.Dir(adapter.req.RunDir), filepath.Clean(runBaseDir); got != want {
-		t.Fatalf("expected run dir under %q, got %q", want, adapter.req.RunDir)
-	}
-	if adapter.runCalls != 1 {
-		t.Fatalf("expected exactly one run call, got %d", adapter.runCalls)
-	}
-
-	terminateResp, err := svc.TerminateCleanroom(context.Background(), controlapi.TerminateCleanroomRequest{
-		CleanroomID: launchResp.CleanroomID,
-	})
-	if err != nil {
-		t.Fatalf("TerminateCleanroom returned error: %v", err)
-	}
-	if !terminateResp.Terminated {
-		t.Fatal("expected terminated=true")
-	}
-
-	_, err = svc.RunCleanroom(context.Background(), controlapi.RunCleanroomRequest{
-		CleanroomID: launchResp.CleanroomID,
-		Command:     []string{"echo", "should fail"},
-	})
-	if err == nil || !strings.Contains(err.Error(), "unknown cleanroom") {
-		t.Fatalf("expected unknown cleanroom error after terminate, got %v", err)
-	}
-}
-
-func TestRunCleanroomCancellationCancelsRunningExecution(t *testing.T) {
-	started := make(chan struct{}, 1)
-	canceled := make(chan struct{}, 1)
-	adapter := &stubAdapter{
-		runFn: func(ctx context.Context, _ backend.RunRequest) (*backend.RunResult, error) {
-			select {
-			case started <- struct{}{}:
-			default:
-			}
-			<-ctx.Done()
-			select {
-			case canceled <- struct{}{}:
-			default:
-			}
-			return nil, ctx.Err()
-		},
-	}
-	svc := newTestService(adapter)
-
-	launchResp, err := svc.LaunchCleanroom(context.Background(), controlapi.LaunchCleanroomRequest{
-		CWD: "/repo",
-	})
-	if err != nil {
-		t.Fatalf("LaunchCleanroom returned error: %v", err)
-	}
-	t.Cleanup(func() {
-		_, _ = svc.TerminateCleanroom(context.Background(), controlapi.TerminateCleanroomRequest{
-			CleanroomID: launchResp.CleanroomID,
-		})
-	})
-
-	ctx, cancel := context.WithCancel(context.Background())
-	runErr := make(chan error, 1)
-	go func() {
-		_, err := svc.RunCleanroom(ctx, controlapi.RunCleanroomRequest{
-			CleanroomID: launchResp.CleanroomID,
-			Command:     []string{"sleep", "300"},
-		})
-		runErr <- err
-	}()
-
-	select {
-	case <-started:
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for backend execution start")
-	}
-
-	cancel()
-
-	select {
-	case err := <-runErr:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("expected context canceled error, got %v", err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for RunCleanroom to return after cancellation")
-	}
-
-	select {
-	case <-canceled:
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for running execution to be canceled")
 	}
 }
 
@@ -301,7 +130,7 @@ func TestExecutionStreamIncludesExitEvent(t *testing.T) {
 	}
 	svc := newTestService(adapter)
 
-	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Cwd: "/repo"})
+	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
 	if err != nil {
 		t.Fatalf("CreateSandbox returned error: %v", err)
 	}
@@ -374,7 +203,7 @@ func TestCancelExecutionTransitionsToCanceled(t *testing.T) {
 	}
 	svc := newTestService(adapter)
 
-	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Cwd: "/repo"})
+	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
 	if err != nil {
 		t.Fatalf("CreateSandbox returned error: %v", err)
 	}
@@ -483,7 +312,7 @@ func TestExecutionAttachIOForwarding(t *testing.T) {
 	}
 	svc := newTestService(adapter)
 
-	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Cwd: "/repo"})
+	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
 	if err != nil {
 		t.Fatalf("CreateSandbox returned error: %v", err)
 	}
@@ -573,7 +402,7 @@ func TestExecutionAttachIOWaitsForDelayedAttachRegistration(t *testing.T) {
 	}
 	svc := newTestService(adapter)
 
-	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Cwd: "/repo"})
+	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
 	if err != nil {
 		t.Fatalf("CreateSandbox returned error: %v", err)
 	}
@@ -648,7 +477,7 @@ func TestExecutionAttachIOUnsupportedWhenBackendDoesNotExposeHandlers(t *testing
 	}
 	svc := newTestService(adapter)
 
-	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Cwd: "/repo"})
+	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
 	if err != nil {
 		t.Fatalf("CreateSandbox returned error: %v", err)
 	}
@@ -694,9 +523,7 @@ func TestExecutionAttachIOUnsupportedWhenBackendDoesNotExposeHandlers(t *testing
 func TestTerminateRetainsStoppedSandboxState(t *testing.T) {
 	svc := newTestService(&stubAdapter{})
 
-	createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
-		Cwd: "/repo",
-	})
+	createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
 	if err != nil {
 		t.Fatalf("CreateSandbox returned error: %v", err)
 	}
@@ -727,9 +554,7 @@ func TestRunExecutionSkipsAlreadyFinalExecution(t *testing.T) {
 	adapter := &stubAdapter{}
 	svc := newTestService(adapter)
 
-	createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
-		Cwd: "/repo",
-	})
+	createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
 	if err != nil {
 		t.Fatalf("CreateSandbox returned error: %v", err)
 	}
@@ -746,7 +571,6 @@ func TestRunExecutionSkipsAlreadyFinalExecution(t *testing.T) {
 	ex := &executionState{
 		ID:               executionID,
 		SandboxID:        sandboxID,
-		CWD:              "/repo",
 		Command:          []string{"echo", "stale"},
 		Status:           cleanroomv1.ExecutionStatus_EXECUTION_STATUS_CANCELED,
 		ExitCode:         143,
@@ -805,9 +629,7 @@ func TestStatePruningBoundsRetainedTerminalState(t *testing.T) {
 	svc := newTestService(&stubAdapter{})
 
 	runOnce := func() (string, string) {
-		createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
-			Cwd: "/repo",
-		})
+		createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
 		if err != nil {
 			t.Fatalf("CreateSandbox returned error: %v", err)
 		}
@@ -895,7 +717,7 @@ func TestStreamedOutputArrivesBeforeExecutionExit(t *testing.T) {
 	}
 	svc := newTestService(adapter)
 
-	sandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Cwd: "/repo"})
+	sandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
 	if err != nil {
 		t.Fatalf("CreateSandbox returned error: %v", err)
 	}

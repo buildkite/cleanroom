@@ -4,11 +4,6 @@
 
 Define a minimal, functional API for creating and managing Cleanroom sandboxes with streaming execution support.
 
-Current implemented HTTP lifecycle endpoints:
-- `POST /v1/cleanrooms/launch`
-- `POST /v1/cleanrooms/run`
-- `POST /v1/cleanrooms/terminate`
-
 This document is intentionally small-scope:
 - management plane for sandbox lifecycle
 - execution plane for command runs and streaming output
@@ -32,10 +27,7 @@ Why:
 - bidirectional stream for interactive exec (`stdin` -> guest, `stdout/stderr/events` <- guest)
 
 Non-goal for v1:
-- REST parity for every RPC endpoint
-
-Optional compatibility:
-- expose a small REST facade later for simple control-plane integrations.
+- REST endpoint support.
 
 ## 3.1 Process Model (Canonical)
 
@@ -231,7 +223,7 @@ Expose a server mode and API-driven commands in the same binary.
 - `cleanroom executions stream <sandbox-id> <execution-id>`
 - `cleanroom executions attach <sandbox-id> <execution-id>`
 
-### 9.4 Backward-compatible local UX
+### 9.4 Local UX
 
 `cleanroom exec` remains the primary developer UX, but it is implemented as client/server RPC.
 
@@ -240,16 +232,12 @@ Default command:
 
 Additional command forms:
 - `cleanroom exec -it -- bash`
-- `cleanroom exec -d -- "npm run watch"`
-- `cleanroom exec --sandbox dev --reuse -- "npm test"`
 
 Behavior contract:
 1. Resolve server endpoint (`--host`, `CLEANROOM_HOST`, context, default unix socket).
 2. Resolve and compile repository policy.
-3. Create sandbox:
-   - default: ephemeral sandbox for this invocation
-   - optional: named sandbox reuse when `--sandbox ... --reuse` is set
-4. Create execution with command, env, cwd, timeout, and TTY options.
+3. Create sandbox (default: ephemeral sandbox for this invocation).
+4. Create execution with command and TTY options.
 5. Stream output:
    - non-interactive: `StreamExecution`
    - interactive: `AttachExecution`

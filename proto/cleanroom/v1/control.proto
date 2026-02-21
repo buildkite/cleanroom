@@ -40,6 +40,20 @@ enum SandboxStatus {
   SANDBOX_STATUS_FAILED = 5;
 }
 
+message PolicyAllowRule {
+  string host = 1;
+  repeated int32 ports = 2;
+}
+
+message Policy {
+  int32 version = 1;
+  string image_ref = 2;
+  string image_digest = 3;
+  string network_default = 4;
+  repeated PolicyAllowRule allow = 5;
+  string hash = 6;
+}
+
 message SandboxOptions {
   reserved 2;
   reserved "read_only_workspace";
@@ -47,9 +61,11 @@ message SandboxOptions {
 }
 
 message CreateSandboxRequest {
-  string cwd = 1;
+  reserved 1;
+  reserved "cwd";
   string backend = 2;
   SandboxOptions options = 3;
+  Policy policy = 4;
 }
 
 message CreateSandboxResponse {
@@ -117,11 +133,10 @@ enum ExecutionStatus {
 }
 
 message ExecutionOptions {
-  reserved 2;
-  reserved "read_only_workspace";
+  reserved 2, 7;
+  reserved "read_only_workspace", "cwd";
   int64 launch_seconds = 5;
   bool tty = 6;
-  string cwd = 7;
 }
 
 message CreateExecutionRequest {

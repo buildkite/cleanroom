@@ -21,13 +21,11 @@ It is built for this lifecycle:
 ## Architecture
 
 - Server: `cleanroom serve`
-- Client: CLI and direct HTTP JSON calls
+- Client: CLI and ConnectRPC clients
 - Transport: unix socket by default (`unix://$XDG_RUNTIME_DIR/cleanroom/cleanroom.sock`)
-- Core endpoints:
-  - `POST /v1/cleanrooms/launch`
-  - `POST /v1/cleanrooms/run`
-  - `POST /v1/cleanrooms/terminate`
-  - `POST /v1/exec` (single-call compatibility path)
+- Core RPC services:
+  - `cleanroom.v1.SandboxService`
+  - `cleanroom.v1.ExecutionService`
 
 ## Quick Start
 
@@ -72,27 +70,8 @@ cleanroom exec --host https://cleanroom.<your-tailnet>.ts.net -- "npm test"
 
 ### 3) Launch -> Run -> Terminate via API
 
-```bash
-cleanroom_id="$(
-  curl --silent --show-error \
-    --unix-socket "$XDG_RUNTIME_DIR/cleanroom/cleanroom.sock" \
-    -H 'content-type: application/json' \
-    -d '{"cwd":"'"$PWD"'"}' \
-    http://localhost/v1/cleanrooms/launch | jq -r '.cleanroom_id'
-)"
-
-curl --silent --show-error \
-  --unix-socket "$XDG_RUNTIME_DIR/cleanroom/cleanroom.sock" \
-  -H 'content-type: application/json' \
-  -d '{"cleanroom_id":"'"$cleanroom_id"'","command":["pi","run","implement the requested refactor"]}' \
-  http://localhost/v1/cleanrooms/run
-
-curl --silent --show-error \
-  --unix-socket "$XDG_RUNTIME_DIR/cleanroom/cleanroom.sock" \
-  -H 'content-type: application/json' \
-  -d '{"cleanroom_id":"'"$cleanroom_id"'"}' \
-  http://localhost/v1/cleanrooms/terminate
-```
+Use the generated ConnectRPC clients against `SandboxService` and
+`ExecutionService` for lifecycle and execution operations.
 
 ## CLI Shortcut
 
@@ -113,59 +92,8 @@ cleanroom image import ghcr.io/buildkite/cleanroom-base/alpine@sha256:... ./root
 
 ## API Contract (Current)
 
-### `POST /v1/cleanrooms/launch`
-
-Request:
-
-```json
-{
-  "cwd": "/path/to/repo",
-  "backend": "firecracker",
-  "options": {
-    "launch_seconds": 30
-  }
-}
-```
-
-Response fields:
-- `cleanroom_id`
-- `backend`
-- `policy_source`
-- `policy_hash`
-
-### `POST /v1/cleanrooms/run`
-
-Request:
-
-```json
-{
-  "cleanroom_id": "cr-123",
-  "command": ["pi", "run", "implement the requested refactor"]
-}
-```
-
-Response fields:
-- `run_id`
-- `exit_code`
-- `stdout`
-- `stderr`
-- `run_dir`
-- `plan_path`
-- `image_ref`
-- `image_digest`
-
-### `POST /v1/cleanrooms/terminate`
-
-Request:
-
-```json
-{
-  "cleanroom_id": "cr-123"
-}
-```
-
-Response fields:
-- `terminated`
+Canonical API surface is defined in `proto/cleanroom/v1/control.proto` and
+served over ConnectRPC.
 
 ## Policy File
 

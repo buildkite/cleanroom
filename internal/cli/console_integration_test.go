@@ -139,7 +139,8 @@ func TestConsoleIntegrationForwardsStdinAndStreamsOutput(t *testing.T) {
 		// Console defaults to host passthrough for this MVP.
 		Command: []string{"sh"},
 	}, "hello\nexit\n", runtimeContext{
-		CWD: cwd,
+		CWD:    cwd,
+		Loader: integrationLoader{},
 	})
 
 	if outcome.cause != nil {
@@ -185,7 +186,8 @@ func TestConsoleIntegrationInterruptCancelsExecution(t *testing.T) {
 			Host:  host,
 			Chdir: cwd,
 		}, "", runtimeContext{
-			CWD: cwd,
+			CWD:    cwd,
+			Loader: integrationLoader{},
 		})
 	}()
 

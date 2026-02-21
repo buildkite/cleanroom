@@ -64,7 +64,7 @@ Deferred past MVP:
 ### 5.1 Repository config
 Repository policy file resolution (in order):
 1. `cleanroom.yaml` in repository root
-2. `.buildkite/cleanroom.yaml` (legacy/fallback path)
+2. `.buildkite/cleanroom.yaml` (fallback path)
 
 If both exist, root `cleanroom.yaml` is authoritative and `.buildkite/cleanroom.yaml` is ignored with a warning.
 
@@ -178,7 +178,6 @@ metadata:
   - `cleanroom serve` starts the local control-plane server.
   - all CLI commands, including `cleanroom exec`, call the server API.
   - "local execution" means local backend selected by the server, not a direct non-API code path.
-- `cleanroom run --cmd` exists for compatibility while migrating consumers.
 
 ### 5.4.1 `cleanroom exec` behavior contract (normative)
 - `cleanroom exec` must:
@@ -365,18 +364,17 @@ Policy feature mapping:
 - CLI command set (v1):
   - `cleanroom serve`
   - `cleanroom policy validate`
-  - `cleanroom policy apply`
   - `cleanroom exec [--] <command>`
-  - `cleanroom sandboxes create|get|list|terminate|events`
-  - `cleanroom executions create|get|cancel|stream|attach`
-  - `cleanroom run --cmd "npm test" --backend <local|sprites>` (compat alias)
+  - `cleanroom console [--] <command>`
+  - `cleanroom doctor`
+  - `cleanroom status`
+  - `cleanroom image pull|ls|rm|import`
 - CI integration:
   - `cleanroom exec --` wrapper for existing and local automation
   - machine-readable output (`--json`) for pipeline tooling
 - API/SDK (v1):
   - ConnectRPC `SandboxService` (`CreateSandbox`, `GetSandbox`, `ListSandboxes`, `TerminateSandbox`, `StreamSandboxEvents`)
   - ConnectRPC `ExecutionService` (`CreateExecution`, `GetExecution`, `CancelExecution`, `StreamExecution`, `AttachExecution`)
-  - Optional HTTP/JSON gateway may be added later for compatibility.
 
 ### 8.1 CLI and API failure contract (normative)
 CLI:
@@ -456,7 +454,7 @@ Minimum v1 codes:
 - Local backend (matchlock) proof-of-concept
 - content-cache wrapper integration for npm and one additional manager
 - `cleanroom serve` daemon plus CLI client command set (`exec`, `sandboxes`, `executions`)
-- `cleanroom exec` RPC wrapper flow (with `run --cmd` compatibility path)
+- `cleanroom exec` RPC wrapper flow
 
 ### Phase 2
 - Sprites backend adapter with parity behavior

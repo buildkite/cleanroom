@@ -2,7 +2,6 @@ package controlserver
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -14,7 +13,6 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"github.com/buildkite/cleanroom/internal/controlapi"
 	"github.com/buildkite/cleanroom/internal/controlservice"
 	"github.com/buildkite/cleanroom/internal/endpoint"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
@@ -69,12 +67,6 @@ func (s *Server) Handler() http.Handler {
 	executionPath, executionHandler := cleanroomv1connect.NewExecutionServiceHandler(s)
 	mux.Handle(sandboxPath, sandboxHandler)
 	mux.Handle(executionPath, executionHandler)
-
-	// Backward-compatible JSON endpoints.
-	mux.HandleFunc("/v1/exec", s.handleExec)
-	mux.HandleFunc("/v1/cleanrooms/launch", s.handleLaunchCleanroom)
-	mux.HandleFunc("/v1/cleanrooms/run", s.handleRunCleanroom)
-	mux.HandleFunc("/v1/cleanrooms/terminate", s.handleTerminateCleanroom)
 
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -469,157 +461,6 @@ func toConnectError(err error) error {
 	return connect.NewError(code, err)
 }
 
-func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
-	started := time.Now()
-	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-
-	in := controlapi.ExecRequest{}
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid request body: %v", err))
-		return
-	}
-	if s.logger != nil {
-		s.logger.Debug("exec request decoded",
-			"remote_addr", r.RemoteAddr,
-			"cwd", in.CWD,
-			"backend", in.Backend,
-			"command_argc", len(in.Command),
-		)
-	}
-
-	out, err := s.service.Exec(r.Context(), in)
-	if err != nil {
-		if s.logger != nil {
-			s.logger.Warn("exec request failed", "error", err, "duration_ms", time.Since(started).Milliseconds())
-		}
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	if s.logger != nil {
-		s.logger.Info("exec request finished",
-			"run_id", out.RunID,
-			"exit_code", out.ExitCode,
-			"duration_ms", time.Since(started).Milliseconds(),
-		)
-	}
-	writeJSON(w, http.StatusOK, out)
-}
-
-func (s *Server) handleLaunchCleanroom(w http.ResponseWriter, r *http.Request) {
-	started := time.Now()
-	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-
-	in := controlapi.LaunchCleanroomRequest{}
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid request body: %v", err))
-		return
-	}
-	if s.logger != nil {
-		s.logger.Debug("launch cleanroom request decoded",
-			"remote_addr", r.RemoteAddr,
-			"cwd", in.CWD,
-			"backend", in.Backend,
-		)
-	}
-
-	out, err := s.service.LaunchCleanroom(r.Context(), in)
-	if err != nil {
-		if s.logger != nil {
-			s.logger.Warn("launch cleanroom request failed", "error", err, "duration_ms", time.Since(started).Milliseconds())
-		}
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	if s.logger != nil {
-		s.logger.Info("launch cleanroom request finished",
-			"cleanroom_id", out.CleanroomID,
-			"duration_ms", time.Since(started).Milliseconds(),
-		)
-	}
-	writeJSON(w, http.StatusOK, out)
-}
-
-func (s *Server) handleRunCleanroom(w http.ResponseWriter, r *http.Request) {
-	started := time.Now()
-	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-
-	in := controlapi.RunCleanroomRequest{}
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid request body: %v", err))
-		return
-	}
-	if s.logger != nil {
-		s.logger.Debug("run cleanroom request decoded",
-			"remote_addr", r.RemoteAddr,
-			"cleanroom_id", in.CleanroomID,
-			"command_argc", len(in.Command),
-		)
-	}
-
-	out, err := s.service.RunCleanroom(r.Context(), in)
-	if err != nil {
-		if s.logger != nil {
-			s.logger.Warn("run cleanroom request failed", "error", err, "duration_ms", time.Since(started).Milliseconds())
-		}
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	if s.logger != nil {
-		s.logger.Info("run cleanroom request finished",
-			"cleanroom_id", out.CleanroomID,
-			"run_id", out.RunID,
-			"exit_code", out.ExitCode,
-			"duration_ms", time.Since(started).Milliseconds(),
-		)
-	}
-	writeJSON(w, http.StatusOK, out)
-}
-
-func (s *Server) handleTerminateCleanroom(w http.ResponseWriter, r *http.Request) {
-	started := time.Now()
-	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-
-	in := controlapi.TerminateCleanroomRequest{}
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid request body: %v", err))
-		return
-	}
-	if s.logger != nil {
-		s.logger.Debug("terminate cleanroom request decoded",
-			"remote_addr", r.RemoteAddr,
-			"cleanroom_id", in.CleanroomID,
-		)
-	}
-
-	out, err := s.service.TerminateCleanroom(r.Context(), in)
-	if err != nil {
-		if s.logger != nil {
-			s.logger.Warn("terminate cleanroom request failed", "error", err, "duration_ms", time.Since(started).Milliseconds())
-		}
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	if s.logger != nil {
-		s.logger.Info("terminate cleanroom request finished",
-			"cleanroom_id", out.CleanroomID,
-			"duration_ms", time.Since(started).Milliseconds(),
-		)
-	}
-	writeJSON(w, http.StatusOK, out)
-}
-
 func Serve(ctx context.Context, ep endpoint.Endpoint, handler http.Handler, logger *log.Logger) error {
 	listener, cleanup, err := listen(ep, logger)
 	if err != nil {
@@ -731,14 +572,4 @@ func listen(ep endpoint.Endpoint, logger *log.Logger) (net.Listener, func() erro
 	}
 
 	return nil, nil, fmt.Errorf("unsupported endpoint scheme %q", ep.Scheme)
-}
-
-func writeError(w http.ResponseWriter, status int, message string) {
-	writeJSON(w, status, controlapi.ErrorResponse{Error: message})
-}
-
-func writeJSON(w http.ResponseWriter, status int, payload any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(payload)
 }
