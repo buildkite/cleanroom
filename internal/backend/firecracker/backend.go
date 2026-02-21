@@ -338,6 +338,9 @@ func (a *Adapter) DownloadSandboxFile(ctx context.Context, sandboxID, path strin
 	}
 
 	data := stdout.Bytes()
+	if len(data) == 0 && result.Stdout != "" {
+		data = []byte(result.Stdout)
+	}
 	if int64(len(data)) > maxBytes {
 		return nil, fmt.Errorf("file %q exceeds max_bytes=%d", path, maxBytes)
 	}
