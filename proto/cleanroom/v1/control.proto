@@ -41,7 +41,8 @@ enum SandboxStatus {
 }
 
 message SandboxOptions {
-  bool read_only_workspace = 2;
+  reserved 2;
+  reserved "read_only_workspace";
   int64 launch_seconds = 3;
 }
 
@@ -116,7 +117,8 @@ enum ExecutionStatus {
 }
 
 message ExecutionOptions {
-  bool read_only_workspace = 2;
+  reserved 2;
+  reserved "read_only_workspace";
   int64 launch_seconds = 5;
   bool tty = 6;
   string cwd = 7;

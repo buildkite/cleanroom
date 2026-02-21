@@ -42,10 +42,8 @@ type FirecrackerConfig struct {
 	BinaryPath      string
 	KernelImagePath string
 	RootFSPath      string
-	RunDir          string
-	WorkspaceHost   string
-	WorkspaceAccess string // rw|ro
-	VCPUs           int64
+	RunDir string
+	VCPUs  int64
 	MemoryMiB       int64
 	GuestCID        uint32
 	GuestPort       uint32

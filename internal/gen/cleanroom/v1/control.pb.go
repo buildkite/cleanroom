@@ -226,11 +226,10 @@ func (x *Sandbox) GetUpdatedAt() *timestamppb.Timestamp {
 }
 
 type SandboxOptions struct {
-	state             protoimpl.MessageState `protogen:"open.v1"`
-	ReadOnlyWorkspace bool                   `protobuf:"varint,2,opt,name=read_only_workspace,json=readOnlyWorkspace,proto3" json:"read_only_workspace,omitempty"`
-	LaunchSeconds     int64                  `protobuf:"varint,3,opt,name=launch_seconds,json=launchSeconds,proto3" json:"launch_seconds,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	LaunchSeconds int64                  `protobuf:"varint,3,opt,name=launch_seconds,json=launchSeconds,proto3" json:"launch_seconds,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *SandboxOptions) Reset() {
@@ -261,13 +260,6 @@ func (x *SandboxOptions) ProtoReflect() protoreflect.Message {
 // Deprecated: Use SandboxOptions.ProtoReflect.Descriptor instead.
 func (*SandboxOptions) Descriptor() ([]byte, []int) {
 	return file_proto_cleanroom_v1_control_proto_rawDescGZIP(), []int{1}
-}
-
-func (x *SandboxOptions) GetReadOnlyWorkspace() bool {
-	if x != nil {
-		return x.ReadOnlyWorkspace
-	}
-	return false
 }
 
 func (x *SandboxOptions) GetLaunchSeconds() int64 {
@@ -898,13 +890,12 @@ func (x *Execution) GetRunId() string {
 }
 
 type ExecutionOptions struct {
-	state             protoimpl.MessageState `protogen:"open.v1"`
-	ReadOnlyWorkspace bool                   `protobuf:"varint,2,opt,name=read_only_workspace,json=readOnlyWorkspace,proto3" json:"read_only_workspace,omitempty"`
-	LaunchSeconds     int64                  `protobuf:"varint,5,opt,name=launch_seconds,json=launchSeconds,proto3" json:"launch_seconds,omitempty"`
-	Tty               bool                   `protobuf:"varint,6,opt,name=tty,proto3" json:"tty,omitempty"`
-	Cwd               string                 `protobuf:"bytes,7,opt,name=cwd,proto3" json:"cwd,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	LaunchSeconds int64                  `protobuf:"varint,5,opt,name=launch_seconds,json=launchSeconds,proto3" json:"launch_seconds,omitempty"`
+	Tty           bool                   `protobuf:"varint,6,opt,name=tty,proto3" json:"tty,omitempty"`
+	Cwd           string                 `protobuf:"bytes,7,opt,name=cwd,proto3" json:"cwd,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ExecutionOptions) Reset() {
@@ -935,13 +926,6 @@ func (x *ExecutionOptions) ProtoReflect() protoreflect.Message {
 // Deprecated: Use ExecutionOptions.ProtoReflect.Descriptor instead.
 func (*ExecutionOptions) Descriptor() ([]byte, []int) {
 	return file_proto_cleanroom_v1_control_proto_rawDescGZIP(), []int{13}
-}
-
-func (x *ExecutionOptions) GetReadOnlyWorkspace() bool {
-	if x != nil {
-		return x.ReadOnlyWorkspace
-	}
-	return false
 }
 
 func (x *ExecutionOptions) GetLaunchSeconds() int64 {
@@ -2036,10 +2020,9 @@ const file_proto_cleanroom_v1_control_proto_rawDesc = "" +
 	"\n" +
 	"created_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
-	"updated_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\"g\n" +
-	"\x0eSandboxOptions\x12.\n" +
-	"\x13read_only_workspace\x18\x02 \x01(\bR\x11readOnlyWorkspace\x12%\n" +
-	"\x0elaunch_seconds\x18\x03 \x01(\x03R\rlaunchSeconds\"z\n" +
+	"updated_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\"R\n" +
+	"\x0eSandboxOptions\x12%\n" +
+	"\x0elaunch_seconds\x18\x03 \x01(\x03R\rlaunchSecondsJ\x04\b\x02\x10\x03R\x13read_only_workspace\"z\n" +
 	"\x14CreateSandboxRequest\x12\x10\n" +
 	"\x03cwd\x18\x01 \x01(\tR\x03cwd\x12\x18\n" +
 	"\abackend\x18\x02 \x01(\tR\abackend\x126\n" +
@@ -2089,12 +2072,11 @@ const file_proto_cleanroom_v1_control_proto_rawDesc = "" +
 	"\vfinished_at\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\n" +
 	"finishedAt\x12\x10\n" +
 	"\x03tty\x18\b \x01(\bR\x03tty\x12\x15\n" +
-	"\x06run_id\x18\t \x01(\tR\x05runId\"\x8d\x01\n" +
-	"\x10ExecutionOptions\x12.\n" +
-	"\x13read_only_workspace\x18\x02 \x01(\bR\x11readOnlyWorkspace\x12%\n" +
+	"\x06run_id\x18\t \x01(\tR\x05runId\"x\n" +
+	"\x10ExecutionOptions\x12%\n" +
 	"\x0elaunch_seconds\x18\x05 \x01(\x03R\rlaunchSeconds\x12\x10\n" +
 	"\x03tty\x18\x06 \x01(\bR\x03tty\x12\x10\n" +
-	"\x03cwd\x18\a \x01(\tR\x03cwd\"\x8b\x01\n" +
+	"\x03cwd\x18\a \x01(\tR\x03cwdJ\x04\b\x02\x10\x03R\x13read_only_workspace\"\x8b\x01\n" +
 	"\x16CreateExecutionRequest\x12\x1d\n" +
 	"\n" +
 	"sandbox_id\x18\x01 \x01(\tR\tsandboxId\x12\x18\n" +

@@ -127,7 +127,6 @@ func (s *Service) CreateSandbox(_ context.Context, req *cleanroomv1.CreateSandbo
 	opts := req.GetOptions()
 	execOpts := controlapi.ExecOptions{}
 	if opts != nil {
-		execOpts.ReadOnlyWorkspace = opts.GetReadOnlyWorkspace()
 		execOpts.LaunchSeconds = opts.GetLaunchSeconds()
 	}
 	firecrackerCfg := mergeFirecrackerConfig(cwd, execOpts, s.Config)
@@ -317,8 +316,7 @@ func (s *Service) CreateExecution(_ context.Context, req *cleanroomv1.CreateExec
 	tty := false
 	if opts := req.GetOptions(); opts != nil {
 		execOpts = controlapi.ExecOptions{
-			ReadOnlyWorkspace: opts.GetReadOnlyWorkspace(),
-			LaunchSeconds:     opts.GetLaunchSeconds(),
+			LaunchSeconds: opts.GetLaunchSeconds(),
 		}
 		cwd = strings.TrimSpace(opts.GetCwd())
 		tty = opts.GetTty()
@@ -837,9 +835,6 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 	})
 
 	firecrackerCfg := sb.Firecracker
-	if ex.Options.ReadOnlyWorkspace {
-		firecrackerCfg.WorkspaceAccess = "ro"
-	}
 	if ex.Options.LaunchSeconds != 0 {
 		firecrackerCfg.LaunchSeconds = ex.Options.LaunchSeconds
 	}
@@ -999,8 +994,7 @@ func (s *Service) LaunchCleanroom(ctx context.Context, req controlapi.LaunchClea
 		Cwd:     req.CWD,
 		Backend: req.Backend,
 		Options: &cleanroomv1.SandboxOptions{
-			ReadOnlyWorkspace: req.Options.ReadOnlyWorkspace,
-			LaunchSeconds:     req.Options.LaunchSeconds,
+			LaunchSeconds: req.Options.LaunchSeconds,
 		},
 	})
 	if err != nil {
@@ -1074,8 +1068,7 @@ func (s *Service) Exec(ctx context.Context, req controlapi.ExecRequest) (*contro
 		Cwd:     req.CWD,
 		Backend: req.Backend,
 		Options: &cleanroomv1.SandboxOptions{
-			ReadOnlyWorkspace: req.Options.ReadOnlyWorkspace,
-			LaunchSeconds:     req.Options.LaunchSeconds,
+			LaunchSeconds: req.Options.LaunchSeconds,
 		},
 	})
 	if err != nil {
@@ -1090,9 +1083,8 @@ func (s *Service) Exec(ctx context.Context, req controlapi.ExecRequest) (*contro
 		SandboxId: sandboxID,
 		Command:   append([]string(nil), req.Command...),
 		Options: &cleanroomv1.ExecutionOptions{
-			ReadOnlyWorkspace: req.Options.ReadOnlyWorkspace,
-			LaunchSeconds:     req.Options.LaunchSeconds,
-			Cwd:               req.CWD,
+			LaunchSeconds: req.Options.LaunchSeconds,
+			Cwd:           req.CWD,
 		},
 	})
 	if err != nil {
@@ -1569,8 +1561,6 @@ func mergeFirecrackerConfig(cwd string, opts controlapi.ExecOptions, cfg runtime
 		BinaryPath:      cfg.Backends.Firecracker.BinaryPath,
 		KernelImagePath: cfg.Backends.Firecracker.KernelImage,
 		RootFSPath:      cfg.Backends.Firecracker.RootFS,
-		WorkspaceHost:   cwd,
-		WorkspaceAccess: resolveWorkspaceAccess(opts, cfg.Workspace.Access),
 		VCPUs:           cfg.Backends.Firecracker.VCPUs,
 		MemoryMiB:       cfg.Backends.Firecracker.MemoryMiB,
 		GuestCID:        cfg.Backends.Firecracker.GuestCID,
@@ -1583,15 +1573,4 @@ func mergeFirecrackerConfig(cwd string, opts controlapi.ExecOptions, cfg runtime
 		out.LaunchSeconds = opts.LaunchSeconds
 	}
 	return out
-}
-
-func resolveWorkspaceAccess(execCfg controlapi.ExecOptions, configured string) string {
-	access := configured
-	if access == "" {
-		access = "rw"
-	}
-	if execCfg.ReadOnlyWorkspace {
-		access = "ro"
-	}
-	return access
 }

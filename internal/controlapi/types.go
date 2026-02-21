@@ -14,8 +14,7 @@ type LaunchCleanroomRequest struct {
 }
 
 type LaunchCleanroomOptions struct {
-	ReadOnlyWorkspace bool  `json:"read_only_workspace,omitempty"`
-	LaunchSeconds     int64 `json:"launch_seconds,omitempty"`
+	LaunchSeconds int64 `json:"launch_seconds,omitempty"`
 }
 
 type LaunchCleanroomResponse struct {
@@ -54,8 +53,7 @@ type TerminateCleanroomResponse struct {
 }
 
 type ExecOptions struct {
-	ReadOnlyWorkspace bool  `json:"read_only_workspace,omitempty"`
-	LaunchSeconds     int64 `json:"launch_seconds,omitempty"`
+	LaunchSeconds int64 `json:"launch_seconds,omitempty"`
 }
 
 type ExecResponse struct {

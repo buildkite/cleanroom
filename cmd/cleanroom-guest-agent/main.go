@@ -3,18 +3,14 @@
 package main
 
 import (
-	"archive/tar"
 	"bytes"
-	"compress/gzip"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"net"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -63,15 +59,6 @@ func handleConn(conn net.Conn) {
 	if err != nil {
 		_ = vsockexec.EncodeResponse(conn, vsockexec.ExecResponse{ExitCode: 1, Error: err.Error()})
 		return
-	}
-	if len(req.WorkspaceTarGz) > 0 {
-		if err := materializeWorkspace(req.WorkspaceTarGz, "/workspace", req.WorkspaceAccess); err != nil {
-			_ = vsockexec.EncodeResponse(conn, vsockexec.ExecResponse{ExitCode: 1, Error: err.Error()})
-			return
-		}
-		if req.Dir == "" {
-			req.Dir = "/workspace"
-		}
 	}
 	if len(req.EntropySeed) > 0 {
 		_ = injectEntropy(req.EntropySeed)
@@ -232,100 +219,6 @@ func buildCommandEnv(requestEnv []string) []string {
 		out = append(out, key+"="+value)
 	}
 	return out
-}
-
-func materializeWorkspace(tarGz []byte, destRoot, access string) error {
-	if err := os.RemoveAll(destRoot); err != nil {
-		return fmt.Errorf("reset workspace root: %w", err)
-	}
-	if err := os.MkdirAll(destRoot, 0o755); err != nil {
-		return fmt.Errorf("create workspace root: %w", err)
-	}
-	if err := extractTarGz(tarGz, destRoot); err != nil {
-		return fmt.Errorf("extract workspace: %w", err)
-	}
-	if strings.EqualFold(strings.TrimSpace(access), "ro") {
-		if err := makeTreeReadOnly(destRoot); err != nil {
-			return fmt.Errorf("mark workspace read-only: %w", err)
-		}
-	}
-	return nil
-}
-
-func extractTarGz(content []byte, destRoot string) error {
-	gr, err := gzip.NewReader(bytes.NewReader(content))
-	if err != nil {
-		return err
-	}
-	defer gr.Close()
-
-	tr := tar.NewReader(gr)
-	root := filepath.Clean(destRoot)
-	prefix := root + string(os.PathSeparator)
-	for {
-		hdr, err := tr.Next()
-		if errors.Is(err, io.EOF) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		name := strings.TrimPrefix(filepath.Clean("/"+hdr.Name), "/")
-		if name == "." || name == "" {
-			continue
-		}
-		target := filepath.Join(root, name)
-		cleanTarget := filepath.Clean(target)
-		if cleanTarget != root && !strings.HasPrefix(cleanTarget, prefix) {
-			return fmt.Errorf("invalid archive path %q", hdr.Name)
-		}
-
-		switch hdr.Typeflag {
-		case tar.TypeDir:
-			if err := os.MkdirAll(cleanTarget, fs.FileMode(hdr.Mode)); err != nil {
-				return err
-			}
-		case tar.TypeReg, tar.TypeRegA:
-			if err := os.MkdirAll(filepath.Dir(cleanTarget), 0o755); err != nil {
-				return err
-			}
-			f, err := os.OpenFile(cleanTarget, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, fs.FileMode(hdr.Mode))
-			if err != nil {
-				return err
-			}
-			if _, err := io.Copy(f, tr); err != nil {
-				_ = f.Close()
-				return err
-			}
-			if err := f.Close(); err != nil {
-				return err
-			}
-		case tar.TypeSymlink:
-			return fmt.Errorf("symlinks are not supported in workspace snapshots: %q", hdr.Name)
-		default:
-			// Skip unsupported entries (devices, fifos, etc.) in MVP.
-		}
-	}
-}
-
-func makeTreeReadOnly(root string) error {
-	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.Type()&os.ModeSymlink != 0 {
-			return nil
-		}
-		info, err := d.Info()
-		if err != nil {
-			return err
-		}
-		mode := info.Mode().Perm()
-		if d.IsDir() {
-			return os.Chmod(path, mode&^0o222|0o555)
-		}
-		return os.Chmod(path, mode&^0o222|0o444)
-	})
 }
 
 func errorsIsClosed(err error) bool {

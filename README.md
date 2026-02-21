@@ -53,7 +53,7 @@ cleanroom serve --listen tsnet://cleanroom:7777
 Then connect with:
 
 ```bash
-cleanroom exec --host tsnet://cleanroom:7777 -- "npm test"
+cleanroom exec --host http://cleanroom.tailnet.ts.net:7777 -c /path/to/repo -- "npm test"
 ```
 
 ### 3) Launch -> Run -> Terminate via API
@@ -99,8 +99,6 @@ Request:
   "cwd": "/path/to/repo",
   "backend": "firecracker",
   "options": {
-    "run_dir": "/tmp/cleanroom-runs",
-    "read_only_workspace": false,
     "launch_seconds": 30
   }
 }
@@ -111,7 +109,6 @@ Response fields:
 - `backend`
 - `policy_source`
 - `policy_hash`
-- `run_dir_root`
 
 ### `POST /v1/cleanrooms/run`
 
@@ -173,8 +170,6 @@ Example:
 
 ```yaml
 default_backend: firecracker
-workspace:
-  access: rw
 backends:
   firecracker:
     binary_path: firecracker
@@ -189,8 +184,6 @@ backends:
 ## Isolation Model
 
 - Workload runs in a Firecracker microVM
-- Workspace is copied per run and sent to the guest agent
-- Workspace can be read-only (`workspace.access: ro` or request override)
 - Host egress is controlled with TAP + iptables rules from compiled policy
 - Default network behavior is deny
 - Rootfs writes are discarded after each run
@@ -217,7 +210,6 @@ cleanroom status --run-id <run-id>
 - policy host-resolution time
 - rootfs preparation time
 - Firecracker process start time
-- workspace archive preparation time
 - network setup time
 - VM ready time (process start -> guest agent ready)
 - vsock wait time (wait-to-connect for guest agent)
