@@ -73,6 +73,12 @@ func (integrationLoader) LoadAndCompile(_ string) (*policy.CompiledPolicy, strin
 	}, "/repo/cleanroom.yaml", nil
 }
 
+type failingLoader struct{}
+
+func (failingLoader) LoadAndCompile(_ string) (*policy.CompiledPolicy, string, error) {
+	return nil, "", errors.New("loader should not be called")
+}
+
 type execOutcome struct {
 	err    error
 	stdout string
@@ -447,6 +453,86 @@ func TestParseSandboxID(t *testing.T) {
 	}
 	if got := parseSandboxID("no id here"); got != "" {
 		t.Fatalf("expected empty sandbox id for invalid input, got %q", got)
+	}
+}
+
+func TestExecIntegrationKeepSandboxLeavesSandboxRunning(t *testing.T) {
+	host, _ := startIntegrationServer(t, &integrationAdapter{})
+	cwd := t.TempDir()
+	outcome := runExecWithCapture(ExecCommand{
+		Host:        host,
+		Chdir:       cwd,
+		KeepSandbox: true,
+		Command:     []string{"echo", "ok"},
+	}, runtimeContext{
+		CWD:    cwd,
+		Loader: integrationLoader{},
+	})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err != nil {
+		t.Fatalf("ExecCommand.Run returned error: %v", outcome.err)
+	}
+
+	sandboxID := parseSandboxID(outcome.stderr)
+	if sandboxID == "" {
+		t.Fatalf("missing sandbox_id in stderr output: %q", outcome.stderr)
+	}
+
+	ep, err := endpoint.Resolve(host)
+	if err != nil {
+		t.Fatalf("resolve endpoint: %v", err)
+	}
+	client := controlclient.New(ep)
+	getResp, err := client.GetSandbox(context.Background(), &cleanroomv1.GetSandboxRequest{SandboxId: sandboxID})
+	if err != nil {
+		t.Fatalf("GetSandbox returned error: %v", err)
+	}
+	if got, want := getResp.GetSandbox().GetStatus(), cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY; got != want {
+		t.Fatalf("unexpected sandbox status: got %v want %v", got, want)
+	}
+}
+
+func TestExecIntegrationReuseSandboxSkipsPolicyCompile(t *testing.T) {
+	host, _ := startIntegrationServer(t, &integrationAdapter{})
+	ep, err := endpoint.Resolve(host)
+	if err != nil {
+		t.Fatalf("resolve endpoint: %v", err)
+	}
+	client := controlclient.New(ep)
+
+	compiled, _, err := integrationLoader{}.LoadAndCompile(t.TempDir())
+	if err != nil {
+		t.Fatalf("load policy: %v", err)
+	}
+	createSandboxResp, err := client.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: compiled.ToProto()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createSandboxResp.GetSandbox().GetSandboxId()
+
+	outcome := runExecWithCapture(ExecCommand{
+		Host:      host,
+		SandboxID: sandboxID,
+		Command:   []string{"echo", "ok"},
+	}, runtimeContext{
+		CWD:    t.TempDir(),
+		Loader: failingLoader{},
+	})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err != nil {
+		t.Fatalf("ExecCommand.Run returned error: %v", outcome.err)
+	}
+
+	getResp, err := client.GetSandbox(context.Background(), &cleanroomv1.GetSandboxRequest{SandboxId: sandboxID})
+	if err != nil {
+		t.Fatalf("GetSandbox returned error: %v", err)
+	}
+	if got, want := getResp.GetSandbox().GetStatus(), cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY; got != want {
+		t.Fatalf("unexpected sandbox status after reused exec: got %v want %v", got, want)
 	}
 }
 

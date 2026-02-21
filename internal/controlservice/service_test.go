@@ -13,11 +13,15 @@ import (
 )
 
 type stubAdapter struct {
-	result      *backend.RunResult
-	runFn       func(context.Context, backend.RunRequest) (*backend.RunResult, error)
-	runStreamFn func(context.Context, backend.RunRequest, backend.OutputStream) (*backend.RunResult, error)
-	req         backend.RunRequest
-	runCalls    int
+	result         *backend.RunResult
+	runFn          func(context.Context, backend.RunRequest) (*backend.RunResult, error)
+	runStreamFn    func(context.Context, backend.RunRequest, backend.OutputStream) (*backend.RunResult, error)
+	provisionFn    func(context.Context, backend.ProvisionRequest) error
+	terminateFn    func(context.Context, string) error
+	req            backend.RunRequest
+	runCalls       int
+	provisionCalls int
+	terminateCalls int
 }
 
 func (s *stubAdapter) Name() string { return "stub" }
@@ -76,6 +80,26 @@ func (s *stubAdapter) RunStream(ctx context.Context, req backend.RunRequest, str
 		stream.OnStderr([]byte(result.Stderr))
 	}
 	return result, nil
+}
+
+func (s *stubAdapter) ProvisionSandbox(ctx context.Context, req backend.ProvisionRequest) error {
+	s.provisionCalls++
+	if s.provisionFn != nil {
+		return s.provisionFn(ctx, req)
+	}
+	return nil
+}
+
+func (s *stubAdapter) RunInSandbox(ctx context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+	return s.RunStream(ctx, req, stream)
+}
+
+func (s *stubAdapter) TerminateSandbox(ctx context.Context, sandboxID string) error {
+	s.terminateCalls++
+	if s.terminateFn != nil {
+		return s.terminateFn(ctx, sandboxID)
+	}
+	return nil
 }
 
 type stubLoader struct {
@@ -281,6 +305,87 @@ func TestCancelExecutionTransitionsToCanceled(t *testing.T) {
 	}
 	if got, want := exit.GetExitCode(), int32(143); got != want {
 		t.Fatalf("unexpected exit code: got %d want %d", got, want)
+	}
+}
+
+func TestCreateSandboxProvisionsPersistentBackend(t *testing.T) {
+	adapter := &stubAdapter{}
+	svc := newTestService(adapter)
+
+	createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	if createResp.GetSandbox().GetSandboxId() == "" {
+		t.Fatal("expected sandbox id")
+	}
+	if got, want := adapter.provisionCalls, 1; got != want {
+		t.Fatalf("unexpected provision call count: got %d want %d", got, want)
+	}
+
+	if _, err := svc.TerminateSandbox(context.Background(), &cleanroomv1.TerminateSandboxRequest{SandboxId: createResp.GetSandbox().GetSandboxId()}); err != nil {
+		t.Fatalf("TerminateSandbox returned error: %v", err)
+	}
+	if got, want := adapter.terminateCalls, 1; got != want {
+		t.Fatalf("unexpected terminate call count: got %d want %d", got, want)
+	}
+}
+
+func TestCreateExecutionRejectsWhenSandboxBusy(t *testing.T) {
+	started := make(chan struct{}, 1)
+	adapter := &stubAdapter{
+		runFn: func(ctx context.Context, req backend.RunRequest) (*backend.RunResult, error) {
+			select {
+			case started <- struct{}{}:
+			default:
+			}
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+	svc := newTestService(adapter)
+
+	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createSandboxResp.GetSandbox().GetSandboxId()
+
+	firstExecutionResp, err := svc.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+		SandboxId: sandboxID,
+		Command:   []string{"sleep", "30"},
+	})
+	if err != nil {
+		t.Fatalf("CreateExecution returned error: %v", err)
+	}
+	firstExecutionID := firstExecutionResp.GetExecution().GetExecutionId()
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for first execution to start")
+	}
+
+	_, err = svc.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+		SandboxId: sandboxID,
+		Command:   []string{"echo", "second"},
+	})
+	if err == nil {
+		t.Fatal("expected sandbox_busy error")
+	}
+	if !strings.Contains(err.Error(), "sandbox_busy") {
+		t.Fatalf("expected sandbox_busy error, got: %v", err)
+	}
+
+	if _, err := svc.CancelExecution(context.Background(), &cleanroomv1.CancelExecutionRequest{
+		SandboxId:   sandboxID,
+		ExecutionId: firstExecutionID,
+		Signal:      15,
+	}); err != nil {
+		t.Fatalf("CancelExecution returned error: %v", err)
+	}
+	if _, err := svc.WaitExecution(context.Background(), sandboxID, firstExecutionID); err != nil {
+		t.Fatalf("WaitExecution returned error: %v", err)
 	}
 }
 

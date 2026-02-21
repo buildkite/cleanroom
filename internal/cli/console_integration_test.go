@@ -13,6 +13,9 @@ import (
 	"time"
 
 	"github.com/buildkite/cleanroom/internal/backend"
+	"github.com/buildkite/cleanroom/internal/controlclient"
+	"github.com/buildkite/cleanroom/internal/endpoint"
+	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 )
 
 func runConsoleWithCapture(cmd ConsoleCommand, stdinData string, ctx runtimeContext) execOutcome {
@@ -220,5 +223,69 @@ func TestConsoleRejectsTailscaleServiceListenEndpointAsHost(t *testing.T) {
 	}
 	if !strings.Contains(outcome.err.Error(), "listen-only") {
 		t.Fatalf("expected listen-only host error, got %v", outcome.err)
+	}
+}
+
+func TestConsoleIntegrationReuseSandboxSkipsPolicyCompile(t *testing.T) {
+	started := make(chan struct{}, 1)
+	host, _ := startIntegrationServer(t, &integrationAdapter{
+		runStreamFn: func(_ context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+			done := make(chan struct{})
+			if stream.OnAttach != nil {
+				stream.OnAttach(backend.AttachIO{
+					WriteStdin: func(data []byte) error {
+						if stream.OnStdout != nil {
+							stream.OnStdout(data)
+						}
+						if bytes.Contains(data, []byte("exit\n")) {
+							select {
+							case <-done:
+							default:
+								close(done)
+							}
+						}
+						return nil
+					},
+				})
+			}
+			select {
+			case started <- struct{}{}:
+			default:
+			}
+			<-done
+			return &backend.RunResult{RunID: req.RunID, ExitCode: 0, Stdout: "ok\n", Message: "ok"}, nil
+		},
+	})
+	ep, err := endpoint.Resolve(host)
+	if err != nil {
+		t.Fatalf("resolve endpoint: %v", err)
+	}
+	client := controlclient.New(ep)
+	compiled, _, err := integrationLoader{}.LoadAndCompile(t.TempDir())
+	if err != nil {
+		t.Fatalf("load policy: %v", err)
+	}
+	createSandboxResp, err := client.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: compiled.ToProto()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+
+	outcome := runConsoleWithCapture(ConsoleCommand{
+		Host:      host,
+		SandboxID: createSandboxResp.GetSandbox().GetSandboxId(),
+		Command:   []string{"sh"},
+	}, "exit\n", runtimeContext{
+		CWD:    t.TempDir(),
+		Loader: failingLoader{},
+	})
+	_ = mustReceiveWithin(t, started, 2*time.Second, "timed out waiting for console execution to start")
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err != nil {
+		t.Fatalf("ConsoleCommand.Run returned error: %v", outcome.err)
+	}
+	if !strings.Contains(outcome.stdout, "ok") {
+		t.Fatalf("expected console output, got %q", outcome.stdout)
 	}
 }

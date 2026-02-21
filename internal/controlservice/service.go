@@ -31,19 +31,20 @@ type Service struct {
 }
 
 type sandboxState struct {
-	ID               string
-	Backend          string
-	Policy           *policy.CompiledPolicy
-	Firecracker      backend.FirecrackerConfig
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
-	LastExecutionID  string
-	Status           cleanroomv1.SandboxStatus
-	EventHistory     []*cleanroomv1.SandboxEvent
-	EventSubscribers map[int]chan *cleanroomv1.SandboxEvent
-	NextSubID        int
-	Done             chan struct{}
-	DoneClosed       bool
+	ID                string
+	Backend           string
+	Policy            *policy.CompiledPolicy
+	Firecracker       backend.FirecrackerConfig
+	ActiveExecutionID string
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+	LastExecutionID   string
+	Status            cleanroomv1.SandboxStatus
+	EventHistory      []*cleanroomv1.SandboxEvent
+	EventSubscribers  map[int]chan *cleanroomv1.SandboxEvent
+	NextSubID         int
+	Done              chan struct{}
+	DoneClosed        bool
 }
 
 type executionState struct {
@@ -125,7 +126,8 @@ func (s *Service) CreateSandbox(_ context.Context, req *cleanroomv1.CreateSandbo
 	}
 
 	backendName := resolveBackendName(strings.TrimSpace(req.GetBackend()), s.Config.DefaultBackend)
-	if _, ok := s.Backends[backendName]; !ok {
+	adapter, ok := s.Backends[backendName]
+	if !ok {
 		return nil, fmt.Errorf("unknown backend %q", backendName)
 	}
 
@@ -139,6 +141,17 @@ func (s *Service) CreateSandbox(_ context.Context, req *cleanroomv1.CreateSandbo
 
 	now := time.Now().UTC()
 	sandboxID := fmt.Sprintf("cr-%d", now.UnixNano())
+
+	if persistentAdapter, ok := adapter.(backend.PersistentSandboxAdapter); ok {
+		if err := persistentAdapter.ProvisionSandbox(context.Background(), backend.ProvisionRequest{
+			SandboxID:         sandboxID,
+			Policy:            compiled,
+			FirecrackerConfig: firecrackerCfg,
+		}); err != nil {
+			return nil, fmt.Errorf("provision sandbox: %w", err)
+		}
+	}
+
 	state := &sandboxState{
 		ID:               sandboxID,
 		Backend:          backendName,
@@ -219,6 +232,7 @@ func (s *Service) TerminateSandbox(_ context.Context, req *cleanroomv1.Terminate
 		cancel context.CancelFunc
 	}
 	cancellations := make([]cancelTarget, 0)
+	var persistentAdapter backend.PersistentSandboxAdapter
 
 	s.mu.Lock()
 	state, ok := s.sandboxes[sandboxID]
@@ -228,6 +242,12 @@ func (s *Service) TerminateSandbox(_ context.Context, req *cleanroomv1.Terminate
 	}
 
 	if state.Status != cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPED {
+		if adapter, ok := s.Backends[state.Backend]; ok {
+			if persistent, ok := adapter.(backend.PersistentSandboxAdapter); ok {
+				persistentAdapter = persistent
+			}
+		}
+
 		state.Status = cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPING
 		s.recordSandboxEventLocked(state, cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPING, "sandbox termination requested")
 
@@ -288,6 +308,12 @@ func (s *Service) TerminateSandbox(_ context.Context, req *cleanroomv1.Terminate
 		target.cancel()
 	}
 
+	if persistentAdapter != nil {
+		if err := persistentAdapter.TerminateSandbox(context.Background(), sandboxID); err != nil && s.Logger != nil {
+			s.Logger.Warn("terminate backend sandbox failed", "sandbox_id", sandboxID, "backend", state.Backend, "error", err)
+		}
+	}
+
 	if s.Logger != nil {
 		s.Logger.Info("sandbox terminated",
 			"sandbox_id", sandboxID,
@@ -339,6 +365,13 @@ func (s *Service) CreateExecution(_ context.Context, req *cleanroomv1.CreateExec
 		s.mu.Unlock()
 		return nil, fmt.Errorf("unknown backend %q", sandbox.Backend)
 	}
+	if strings.TrimSpace(sandbox.ActiveExecutionID) != "" {
+		if activeExecution, ok := s.executions[executionKey(sandboxID, sandbox.ActiveExecutionID)]; ok && !isFinalExecutionStatus(activeExecution.Status) {
+			s.mu.Unlock()
+			return nil, fmt.Errorf("sandbox_busy: sandbox %q already has active execution %q", sandboxID, sandbox.ActiveExecutionID)
+		}
+		sandbox.ActiveExecutionID = ""
+	}
 	imageRef := ""
 	imageDigest := ""
 	if sandbox.Policy != nil {
@@ -360,6 +393,7 @@ func (s *Service) CreateExecution(_ context.Context, req *cleanroomv1.CreateExec
 	}
 	s.executions[executionKey(sandboxID, executionID)] = ex
 	sandbox.LastExecutionID = executionID
+	sandbox.ActiveExecutionID = executionID
 	sandbox.UpdatedAt = now
 	s.recordExecutionEventLocked(ex, &cleanroomv1.ExecutionStreamEvent{
 		SandboxId:   sandboxID,
@@ -853,6 +887,7 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 	}
 
 	runReq := backend.RunRequest{
+		SandboxID:         sandboxID,
 		RunID:             ex.RunID,
 		Command:           append([]string(nil), ex.Command...),
 		TTY:               ex.TTY,
@@ -864,7 +899,20 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 	usedStreaming := false
 	var result *backend.RunResult
 	var err error
-	if streamAdapter, ok := adapter.(backend.StreamingAdapter); ok {
+	if persistentAdapter, ok := adapter.(backend.PersistentSandboxAdapter); ok {
+		usedStreaming = true
+		result, err = persistentAdapter.RunInSandbox(runCtx, runReq, backend.OutputStream{
+			OnStdout: func(chunk []byte) {
+				s.recordExecutionOutputChunk(key, true, chunk)
+			},
+			OnStderr: func(chunk []byte) {
+				s.recordExecutionOutputChunk(key, false, chunk)
+			},
+			OnAttach: func(io backend.AttachIO) {
+				s.setExecutionAttachIO(key, io)
+			},
+		})
+	} else if streamAdapter, ok := adapter.(backend.StreamingAdapter); ok {
 		usedStreaming = true
 		result, err = streamAdapter.RunStream(runCtx, runReq, backend.OutputStream{
 			OnStdout: func(chunk []byte) {
@@ -886,6 +934,10 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 	ex, ok = s.executions[key]
 	if !ok {
 		return
+	}
+	if sb, ok := s.sandboxes[sandboxID]; ok && sb.ActiveExecutionID == executionID {
+		sb.ActiveExecutionID = ""
+		sb.UpdatedAt = time.Now().UTC()
 	}
 
 	if ex.Cancel != nil {

@@ -11,6 +11,21 @@ type Adapter interface {
 	Run(ctx context.Context, req RunRequest) (*RunResult, error)
 }
 
+// PersistentSandboxAdapter supports provisioned sandbox instances that can run
+// multiple executions before explicit termination.
+type PersistentSandboxAdapter interface {
+	Adapter
+	ProvisionSandbox(ctx context.Context, req ProvisionRequest) error
+	RunInSandbox(ctx context.Context, req RunRequest, stream OutputStream) (*RunResult, error)
+	TerminateSandbox(ctx context.Context, sandboxID string) error
+}
+
+type ProvisionRequest struct {
+	SandboxID string
+	Policy    *policy.CompiledPolicy
+	FirecrackerConfig
+}
+
 type AttachIO struct {
 	WriteStdin func([]byte) error
 	ResizeTTY  func(cols, rows uint32) error
@@ -30,10 +45,11 @@ type StreamingAdapter interface {
 }
 
 type RunRequest struct {
-	RunID   string
-	Command []string
-	TTY     bool
-	Policy  *policy.CompiledPolicy
+	SandboxID string
+	RunID     string
+	Command   []string
+	TTY       bool
+	Policy    *policy.CompiledPolicy
 	FirecrackerConfig
 }
 
