@@ -1,5 +1,6 @@
 [tools]
 go = "1.23"
+shellcheck = "latest"
 
 [env]
 GOTOOLCHAIN = "local"
@@ -7,6 +8,10 @@ GOTOOLCHAIN = "local"
 [tasks.test]
 description = "Run cross-platform Go test suite"
 run = "go test ./..."
+
+[tasks.lint-shell]
+description = "Lint shell scripts"
+run = "shellcheck -x scripts/cleanroom-root-helper.sh"
 
 [tasks.test-full]
 description = "Run full Go test suite"
