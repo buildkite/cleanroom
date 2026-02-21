@@ -82,7 +82,7 @@ type ConsoleCommand struct {
 }
 
 type ServeCommand struct {
-	Listen   string `help:"Listen endpoint for control API (defaults to runtime endpoint; supports tsnet://hostname[:port])"`
+	Listen   string `help:"Listen endpoint for control API (defaults to runtime endpoint; supports tsnet://hostname[:port] and tssvc://service[:local-port])"`
 	LogLevel string `help:"Server log level (debug|info|warn|error)"`
 }
 

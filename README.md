@@ -56,6 +56,19 @@ Then connect with:
 cleanroom exec --host tsnet://cleanroom:7777 -- "npm test"
 ```
 
+To expose the API as a Tailscale Service using the local `tailscaled` daemon:
+
+```bash
+cleanroom serve --listen tssvc://cleanroom
+```
+
+This configures `svc:cleanroom` with HTTPS on port 443 and advertises the
+service from this host. Connect from another tailnet device with:
+
+```bash
+cleanroom exec --host https://cleanroom.<your-tailnet>.ts.net -- "npm test"
+```
+
 ### 3) Launch -> Run -> Terminate via API
 
 ```bash
