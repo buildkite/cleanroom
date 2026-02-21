@@ -156,8 +156,14 @@ nameserver 1.1.1.1
 nameserver 8.8.8.8
 RESOLV
 
-echo "installing base packages in rootfs: git, strace, mise"
-chroot "$ROOTFS_DIR" /bin/sh -lc "apk update && apk add --no-cache git strace mise"
+host_arch="$(uname -m)"
+if [[ "$host_arch" == "$ARCH" ]]; then
+  echo "installing base packages in rootfs: git, strace, mise"
+  chroot "$ROOTFS_DIR" /bin/sh -lc "apk update && apk add --no-cache git strace mise"
+else
+  echo "skipping package installation for foreign arch rootfs (host=$host_arch target=$ARCH)"
+  echo "- create-rootfs-image still succeeds; install packages later on a matching-arch host"
+fi
 
 # Serial console login for local VM debugging.
 if [[ -f "$ROOTFS_DIR/etc/inittab" ]] && ! grep -q "ttyS0" "$ROOTFS_DIR/etc/inittab"; then
