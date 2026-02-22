@@ -89,32 +89,28 @@ func resolvePaths(opts Options, role string) (certPath, keyPath, caPath string, 
 	keyPath = firstNonEmpty(opts.KeyPath, os.Getenv("CLEANROOM_TLS_KEY"))
 	caPath = firstNonEmpty(opts.CAPath, os.Getenv("CLEANROOM_TLS_CA"))
 
-	if certPath != "" && keyPath != "" {
-		return certPath, keyPath, caPath, nil
-	}
-
-	// Auto-discover from XDG TLS directory.
-	tlsDir, err := paths.TLSDir()
-	if err != nil {
-		return "", "", "", nil
-	}
-
-	if certPath == "" {
-		candidate := filepath.Join(tlsDir, role+".pem")
-		if fileExists(candidate) {
-			certPath = candidate
-		}
-	}
-	if keyPath == "" {
-		candidate := filepath.Join(tlsDir, role+".key")
-		if fileExists(candidate) {
-			keyPath = candidate
-		}
-	}
-	if caPath == "" {
-		candidate := filepath.Join(tlsDir, "ca.pem")
-		if fileExists(candidate) {
-			caPath = candidate
+	// Auto-discover missing paths from XDG TLS directory.
+	if certPath == "" || keyPath == "" || caPath == "" {
+		tlsDir, dirErr := paths.TLSDir()
+		if dirErr == nil {
+			if certPath == "" {
+				candidate := filepath.Join(tlsDir, role+".pem")
+				if fileExists(candidate) {
+					certPath = candidate
+				}
+			}
+			if keyPath == "" {
+				candidate := filepath.Join(tlsDir, role+".key")
+				if fileExists(candidate) {
+					keyPath = candidate
+				}
+			}
+			if caPath == "" {
+				candidate := filepath.Join(tlsDir, "ca.pem")
+				if fileExists(candidate) {
+					caPath = candidate
+				}
+			}
 		}
 	}
 

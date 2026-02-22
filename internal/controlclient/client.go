@@ -69,8 +69,9 @@ func buildTransport(ep endpoint.Endpoint, baseURL string, tlsOpts tlsconfig.Opti
 			tlsCfg = &tls.Config{MinVersion: tls.VersionTLS13}
 		}
 		return &http.Transport{
-			Proxy:           http.ProxyFromEnvironment,
-			TLSClientConfig: tlsCfg,
+			Proxy:              http.ProxyFromEnvironment,
+			TLSClientConfig:    tlsCfg,
+			ForceAttemptHTTP2:  true,
 		}, nil
 	}
 
