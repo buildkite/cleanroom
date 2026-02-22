@@ -1,0 +1,77 @@
+{
+  "benchmark": "sandbox-workloads",
+  "timestamp": "2026-02-22T00-07-09Z",
+  "host": "unix:///tmp/cleanroom.sock",
+  "backend": "default",
+  "sandbox_id": "cr_01kj1aqsw5f6ds70v3mcfecaf6",
+  "config": {
+    "iterations": 5,
+    "repo_url": "https://github.com/hashicorp/terraform.git",
+    "repo_depth": 1,
+    "iops_block_size_bytes": 4096,
+    "iops_operations": 20000,
+    "cpu_bytes_per_iteration": 536870912
+  },
+  "results": {
+    "iops": {
+      "write": {
+        "elapsed_seconds": {
+          "mean": 0.086000,
+          "min": 0.020000,
+          "max": 0.300000
+        },
+        "iops": {
+          "mean": 670476.19,
+          "min": 66666.67,
+          "max": 1000000.00
+        },
+        "throughput_mib_s": {
+          "mean": 2619.05,
+          "min": 260.42,
+          "max": 3906.25
+        }
+      },
+      "read": {
+        "elapsed_seconds": {
+          "mean": 0.016000,
+          "min": 0.010000,
+          "max": 0.020000
+        },
+        "iops": {
+          "mean": 1400000.00,
+          "min": 1000000.00,
+          "max": 2000000.00
+        },
+        "throughput_mib_s": {
+          "mean": 5468.75,
+          "min": 3906.25,
+          "max": 7812.50
+        }
+      }
+    },
+    "git_clone": {
+      "elapsed_seconds": {
+        "mean": 1.516000,
+        "min": 1.380000,
+        "max": 1.790000
+      },
+      "cloned_size_mb": {
+        "mean": 46.00,
+        "min": 46,
+        "max": 46
+      }
+    },
+    "cpu_hash": {
+      "elapsed_seconds": {
+        "mean": 2.142000,
+        "min": 2.090000,
+        "max": 2.200000
+      },
+      "throughput_mib_s": {
+        "mean": 239.11,
+        "min": 232.73,
+        "max": 244.98
+      }
+    }
+  }
+}
