@@ -46,10 +46,18 @@ message PolicyAllowRule {
   repeated int32 ports = 2;
 }
 
+message PolicyGit {
+  bool enabled = 1;
+  string source = 2;
+  repeated string allowed_hosts = 3;
+  repeated string allowed_repos = 4;
+}
+
 message Policy {
   int32 version = 1;
   string image_ref = 2;
   string image_digest = 3;
+  PolicyGit git = 7;
   string network_default = 4;
   repeated PolicyAllowRule allow = 5;
   string hash = 6;
