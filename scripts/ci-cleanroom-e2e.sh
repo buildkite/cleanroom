@@ -55,6 +55,34 @@ if [[ -n "$PRIVILEGED_HELPER_PATH" ]]; then
   echo "    privileged_helper_path: $PRIVILEGED_HELPER_PATH" >> "$XDG_CONFIG_HOME/cleanroom/config.yaml"
 fi
 
+if [[ -n "$PRIVILEGED_HELPER_PATH" && -f "scripts/cleanroom-root-helper.sh" ]]; then
+  repo_sha="$(sha256sum scripts/cleanroom-root-helper.sh | awk '{print $1}')"
+  host_sha="$(sha256sum "$PRIVILEGED_HELPER_PATH" 2>/dev/null | awk '{print $1}')" || true
+  if [[ -n "$host_sha" && "$repo_sha" != "$host_sha" ]]; then
+    echo "⚠️  Root helper on host ($PRIVILEGED_HELPER_PATH) does not match repo (scripts/cleanroom-root-helper.sh)"
+    echo "   host: $host_sha"
+    echo "   repo: $repo_sha"
+    echo "   Update with: sudo install -o root -g root -m 0755 scripts/cleanroom-root-helper.sh $PRIVILEGED_HELPER_PATH"
+    if command -v buildkite-agent >/dev/null 2>&1; then
+      buildkite-agent annotate --context root-helper-drift --style warning <<EOF
+### ⚠️ Root helper out of date
+
+The installed root helper (\`$PRIVILEGED_HELPER_PATH\`) does not match \`scripts/cleanroom-root-helper.sh\` from this commit.
+
+| | SHA-256 |
+|---|---|
+| Host | \`$host_sha\` |
+| Repo | \`$repo_sha\` |
+
+**Update on the CI host:**
+\`\`\`
+sudo install -o root -g root -m 0755 scripts/cleanroom-root-helper.sh $PRIVILEGED_HELPER_PATH
+\`\`\`
+EOF
+    fi
+  fi
+fi
+
 echo "--- :stethoscope: Doctor"
 ./dist/cleanroom doctor --json | tee "$tmpdir/doctor.json"
 if grep -q '"status": "fail"' "$tmpdir/doctor.json"; then

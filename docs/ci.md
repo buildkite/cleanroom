@@ -92,7 +92,7 @@ Use a single root-owned helper binary and only grant sudo access to that helper:
 Install helper from this repository:
 
 ```bash
-sudo install -o root -g root -m 0750 scripts/cleanroom-root-helper.sh /usr/local/sbin/cleanroom-root-helper
+sudo install -o root -g root -m 0755 scripts/cleanroom-root-helper.sh /usr/local/sbin/cleanroom-root-helper
 ```
 
 ```sudoers
