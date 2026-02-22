@@ -184,7 +184,7 @@ func TestClassifyRequest(t *testing.T) {
 		{"GET", "/org/repo.git/info/refs", "service=git-receive-pack", true, ""},
 		{"POST", "/org/repo.git/git-upload-pack", "", false, "upload-pack"},
 		{"POST", "/org/repo.git/git-receive-pack", "", true, ""},
-		{"GET", "/org/repo.git/HEAD", "", false, "other"},
+		{"GET", "/org/repo.git/HEAD", "", true, ""},
 	}
 	for _, tt := range tests {
 		act, err := h.classifyRequest(tt.method, tt.path, tt.query)

@@ -126,7 +126,7 @@ func (h *gitHandler) classifyRequest(method, repoPath, query string) (string, er
 	case method == http.MethodPost && strings.HasSuffix(repoPath, "/"+gitReceivePackService):
 		return "", fmt.Errorf("method_not_allowed: git push (receive-pack) is denied")
 	default:
-		return "other", nil
+		return "", fmt.Errorf("method_not_allowed: only git smart-HTTP operations are permitted")
 	}
 }
 

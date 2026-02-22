@@ -1629,7 +1629,10 @@ func setupHostNetworkWithDeps(ctx context.Context, runID string, allow []policy.
 	}
 
 	// Disable IPv6 on TAP to prevent bypass of IPv4-only policy controls.
-	_ = setupRun("sysctl", "-w", fmt.Sprintf("net.ipv6.conf.%s.disable_ipv6=1", tapName))
+	if err := setupRun("sysctl", "-w", fmt.Sprintf("net.ipv6.conf.%s.disable_ipv6=1", tapName)); err != nil {
+		cleanup()
+		return hostNetworkConfig{}, func() {}, fmt.Errorf("disable ipv6 on %s: %w", tapName, err)
+	}
 
 	// Anti-spoof: drop anything from this TAP not sourced from assigned guest IP.
 	if err := setupRun("iptables", "-A", "INPUT", "-i", tapName, "!", "-s", guestIP, "-j", "DROP"); err != nil {
