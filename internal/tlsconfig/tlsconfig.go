@@ -38,6 +38,7 @@ func ResolveServer(opts Options) (*tls.Config, error) {
 	tlsCfg := &tls.Config{
 		Certificates: []tls.Certificate{cert},
 		MinVersion:   tls.VersionTLS13,
+		NextProtos:   []string{"h2", "http/1.1"},
 	}
 
 	if caPath != "" {
@@ -89,28 +90,34 @@ func resolvePaths(opts Options, role string) (certPath, keyPath, caPath string, 
 	keyPath = firstNonEmpty(opts.KeyPath, os.Getenv("CLEANROOM_TLS_KEY"))
 	caPath = firstNonEmpty(opts.CAPath, os.Getenv("CLEANROOM_TLS_CA"))
 
+	// Track whether cert/key were explicitly provided. When they are, CA
+	// must also be explicit — auto-discovering a CA from XDG when cert/key
+	// were passed via flags would unexpectedly enable mTLS on the server or
+	// change the client trust root.
+	certKeyExplicit := certPath != "" && keyPath != ""
+
 	// Auto-discover missing paths from XDG TLS directory.
-	if certPath == "" || keyPath == "" || caPath == "" {
-		tlsDir, dirErr := paths.TLSDir()
-		if dirErr == nil {
-			if certPath == "" {
-				candidate := filepath.Join(tlsDir, role+".pem")
-				if fileExists(candidate) {
-					certPath = candidate
-				}
-			}
-			if keyPath == "" {
-				candidate := filepath.Join(tlsDir, role+".key")
-				if fileExists(candidate) {
-					keyPath = candidate
-				}
-			}
-			if caPath == "" {
-				candidate := filepath.Join(tlsDir, "ca.pem")
-				if fileExists(candidate) {
-					caPath = candidate
-				}
-			}
+	tlsDir, dirErr := paths.TLSDir()
+	if dirErr != nil {
+		return certPath, keyPath, caPath, nil
+	}
+
+	if certPath == "" {
+		candidate := filepath.Join(tlsDir, role+".pem")
+		if fileExists(candidate) {
+			certPath = candidate
+		}
+	}
+	if keyPath == "" {
+		candidate := filepath.Join(tlsDir, role+".key")
+		if fileExists(candidate) {
+			keyPath = candidate
+		}
+	}
+	if caPath == "" && !certKeyExplicit {
+		candidate := filepath.Join(tlsDir, "ca.pem")
+		if fileExists(candidate) {
+			caPath = candidate
 		}
 	}
 
