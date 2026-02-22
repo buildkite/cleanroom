@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/buildkite/cleanroom/internal/backend"
+	"github.com/buildkite/cleanroom/internal/gateway"
 	"github.com/buildkite/cleanroom/internal/imagemgr"
 	"github.com/buildkite/cleanroom/internal/paths"
 	"github.com/buildkite/cleanroom/internal/policy"
@@ -54,6 +55,14 @@ type Adapter struct {
 	provisioning      map[string]struct{}
 	launchSandboxVMFn func(context.Context, string, *policy.CompiledPolicy, backend.FirecrackerConfig) (*sandboxInstance, error)
 	runGuestCommandFn func(context.Context, context.Context, <-chan struct{}, func() error, string, uint32, vsockexec.ExecRequest, backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error)
+
+	GatewayRegistry gatewayRegistry
+}
+
+// gatewayRegistry is the subset of gateway.Registry used by the adapter.
+type gatewayRegistry interface {
+	Register(guestIP, sandboxID string, p *policy.CompiledPolicy) error
+	Release(guestIP string)
 }
 
 type sandboxInstance struct {
@@ -66,6 +75,8 @@ type sandboxInstance struct {
 	ImageRef       string
 	ImageDigest    string
 	CommandTimeout int64
+	HostIP         string
+	GuestIP        string
 	fcCmd          *exec.Cmd
 	exitedCh       chan struct{}
 	exitMu         sync.RWMutex
@@ -366,6 +377,9 @@ func (a *Adapter) TerminateSandbox(_ context.Context, sandboxID string) error {
 		return nil
 	}
 
+	if a.GatewayRegistry != nil && instance.GuestIP != "" {
+		a.GatewayRegistry.Release(instance.GuestIP)
+	}
 	instance.shutdown()
 	return nil
 }
@@ -375,6 +389,9 @@ func (a *Adapter) executeInSandbox(ctx context.Context, instance *sandboxInstanc
 	seed := make([]byte, 64)
 	if _, err := cryptorand.Read(seed); err == nil {
 		guestReq.EntropySeed = seed
+	}
+	if a.GatewayRegistry != nil && instance.HostIP != "" {
+		guestReq.Env = append(guestReq.Env, gatewayEnvVars(instance)...)
 	}
 
 	connectSeconds := launchSeconds
@@ -663,7 +680,7 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 	networkRunBatch := func(ctx context.Context, commands [][]string) error {
 		return runRootCommandBatch(ctx, req.FirecrackerConfig, commands)
 	}
-	networkCfg, cleanupNetwork, err := setupHostNetwork(ctx, req.RunID, req.Policy.Allow, networkRunCommand, networkRunBatch)
+	networkCfg, cleanupNetwork, err := setupHostNetwork(ctx, req.RunID, req.Policy.Allow, 0, networkRunCommand, networkRunBatch)
 	if err != nil {
 		return nil, fmt.Errorf("setup host network: %w", err)
 	}
@@ -1251,13 +1268,28 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 	networkRunBatch := func(ctx context.Context, commands [][]string) error {
 		return runRootCommandBatch(ctx, cfg, commands)
 	}
-	networkCfg, cleanupNetwork, err := setupHostNetwork(ctx, sandboxID, compiled.Allow, networkRunCommand, networkRunBatch)
+	gwPort := 0
+	if a.GatewayRegistry != nil {
+		gwPort = gateway.DefaultPort
+	}
+	networkCfg, cleanupNetwork, err := setupHostNetwork(ctx, sandboxID, compiled.Allow, gwPort, networkRunCommand, networkRunBatch)
 	if err != nil {
 		_ = os.Remove(vmRootFSPath)
 		return nil, fmt.Errorf("setup host network: %w", err)
 	}
 
+	if a.GatewayRegistry != nil {
+		if err := a.GatewayRegistry.Register(networkCfg.GuestIP, sandboxID, compiled); err != nil {
+			cleanupNetwork()
+			_ = os.Remove(vmRootFSPath)
+			return nil, fmt.Errorf("register sandbox in gateway: %w", err)
+		}
+	}
+
 	cleanupAll := func() {
+		if a.GatewayRegistry != nil {
+			a.GatewayRegistry.Release(networkCfg.GuestIP)
+		}
 		cleanupNetwork()
 		_ = os.Remove(vmRootFSPath)
 	}
@@ -1337,6 +1369,8 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 		ImageRef:       imageArtifact.Ref,
 		ImageDigest:    imageArtifact.Digest,
 		CommandTimeout: cfg.LaunchSeconds,
+		HostIP:         networkCfg.HostIP,
+		GuestIP:        networkCfg.GuestIP,
 		fcCmd:          fcCmd,
 		exitedCh:       make(chan struct{}),
 		cleanupNetwork: cleanupNetwork,
@@ -1530,14 +1564,14 @@ type ipLookupFunc func(ctx context.Context, host string) ([]net.IP, error)
 type rootCommandFunc func(ctx context.Context, args ...string) error
 type rootCommandBatchFunc func(ctx context.Context, commands [][]string) error
 
-func setupHostNetwork(ctx context.Context, runID string, allow []policy.AllowRule, runCommand rootCommandFunc, runBatchCommand rootCommandBatchFunc) (hostNetworkConfig, func(), error) {
+func setupHostNetwork(ctx context.Context, runID string, allow []policy.AllowRule, gatewayPort int, runCommand rootCommandFunc, runBatchCommand rootCommandBatchFunc) (hostNetworkConfig, func(), error) {
 	lookup := func(ctx context.Context, host string) ([]net.IP, error) {
 		return net.DefaultResolver.LookupIP(ctx, "ip4", host)
 	}
-	return setupHostNetworkWithDeps(ctx, runID, allow, lookup, runCommand, runBatchCommand)
+	return setupHostNetworkWithDeps(ctx, runID, allow, gatewayPort, lookup, runCommand, runBatchCommand)
 }
 
-func setupHostNetworkWithDeps(ctx context.Context, runID string, allow []policy.AllowRule, lookup ipLookupFunc, runCommand rootCommandFunc, runBatchCommand rootCommandBatchFunc) (hostNetworkConfig, func(), error) {
+func setupHostNetworkWithDeps(ctx context.Context, runID string, allow []policy.AllowRule, gatewayPort int, lookup ipLookupFunc, runCommand rootCommandFunc, runBatchCommand rootCommandBatchFunc) (hostNetworkConfig, func(), error) {
 	tapName := tapNameFromRunID(runID)
 	hostIP, guestIP := hostGuestIPs(runID)
 	hostCIDR := hostIP + "/24"
@@ -1593,6 +1627,34 @@ func setupHostNetworkWithDeps(ctx context.Context, runID string, allow []policy.
 		cleanup()
 		return hostNetworkConfig{}, func() {}, fmt.Errorf("enable ipv4 forwarding: %w", err)
 	}
+
+	// Disable IPv6 on TAP to prevent bypass of IPv4-only policy controls.
+	_ = setupRun("sysctl", "-w", fmt.Sprintf("net.ipv6.conf.%s.disable_ipv6=1", tapName))
+
+	// Anti-spoof: drop anything from this TAP not sourced from assigned guest IP.
+	if err := setupRun("iptables", "-A", "INPUT", "-i", tapName, "!", "-s", guestIP, "-j", "DROP"); err != nil {
+		cleanup()
+		return hostNetworkConfig{}, func() {}, fmt.Errorf("install anti-spoof rule for %s: %w", tapName, err)
+	}
+	addCleanup("iptables", "-D", "INPUT", "-i", tapName, "!", "-s", guestIP, "-j", "DROP")
+
+	// Allow guest to reach gateway port on host.
+	if gatewayPort > 0 {
+		port := strconv.Itoa(gatewayPort)
+		if err := setupRun("iptables", "-A", "INPUT", "-i", tapName, "-s", guestIP, "-p", "tcp", "--dport", port, "-j", "ACCEPT"); err != nil {
+			cleanup()
+			return hostNetworkConfig{}, func() {}, fmt.Errorf("install gateway accept rule for %s: %w", tapName, err)
+		}
+		addCleanup("iptables", "-D", "INPUT", "-i", tapName, "-s", guestIP, "-p", "tcp", "--dport", port, "-j", "ACCEPT")
+	}
+
+	// Drop all other host INPUT from this TAP.
+	if err := setupRun("iptables", "-A", "INPUT", "-i", tapName, "-j", "DROP"); err != nil {
+		cleanup()
+		return hostNetworkConfig{}, func() {}, fmt.Errorf("install input deny rule for %s: %w", tapName, err)
+	}
+	addCleanup("iptables", "-D", "INPUT", "-i", tapName, "-j", "DROP")
+
 	if err := setupRun("iptables", "-t", "nat", "-A", "POSTROUTING", "-s", guestCIDR, "-j", "MASQUERADE"); err != nil {
 		cleanup()
 		return hostNetworkConfig{}, func() {}, fmt.Errorf("install nat rule for %s: %w", guestCIDR, err)
@@ -1768,6 +1830,34 @@ func randomGuestCID() uint32 {
 	// Valid vsock CID range: 3 to 2^32-2 (0xFFFFFFFE).
 	cid := uint32(buf[0])<<24 | uint32(buf[1])<<16 | uint32(buf[2])<<8 | uint32(buf[3])
 	return cid%(0xFFFFFFFE-3) + 3
+}
+
+func gatewayEnvVars(instance *sandboxInstance) []string {
+	if instance.Policy == nil {
+		return nil
+	}
+
+	var gitHosts []string
+	for _, rule := range instance.Policy.Allow {
+		for _, port := range rule.Ports {
+			if port == 443 {
+				gitHosts = append(gitHosts, rule.Host)
+				break
+			}
+		}
+	}
+	if len(gitHosts) == 0 {
+		return nil
+	}
+
+	gatewayAddr := fmt.Sprintf("http://%s:%d", instance.HostIP, gateway.DefaultPort)
+	env := make([]string, 0, 1+len(gitHosts)*2)
+	env = append(env, fmt.Sprintf("GIT_CONFIG_COUNT=%d", len(gitHosts)))
+	for i, host := range gitHosts {
+		env = append(env, fmt.Sprintf("GIT_CONFIG_KEY_%d=url.%s/git/%s/.insteadOf", i, gatewayAddr, host))
+		env = append(env, fmt.Sprintf("GIT_CONFIG_VALUE_%d=https://%s/", i, host))
+	}
+	return env
 }
 
 func tapNameFromRunID(runID string) string {

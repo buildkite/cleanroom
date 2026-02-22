@@ -21,6 +21,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/backend/firecracker"
 	"github.com/buildkite/cleanroom/internal/controlclient"
+	"github.com/buildkite/cleanroom/internal/gateway"
 	"github.com/buildkite/cleanroom/internal/controlserver"
 	"github.com/buildkite/cleanroom/internal/controlservice"
 	"github.com/buildkite/cleanroom/internal/endpoint"
@@ -862,6 +863,21 @@ func (s *ServeCommand) Run(ctx *runtimeContext) error {
 		return err
 	}
 
+	gwRegistry := gateway.NewRegistry()
+	gwCredentials := gateway.NewEnvCredentialProvider()
+	gwServer := gateway.NewServer(gateway.ServerConfig{
+		Registry:    gwRegistry,
+		Credentials: gwCredentials,
+		Logger:      logger.With("subsystem", "gateway"),
+	})
+	if err := gwServer.Start(); err != nil {
+		return fmt.Errorf("start gateway: %w", err)
+	}
+
+	if fcAdapter, ok := ctx.Backends["firecracker"].(*firecracker.Adapter); ok {
+		fcAdapter.GatewayRegistry = gwRegistry
+	}
+
 	service := &controlservice.Service{
 		Loader:   ctx.Loader,
 		Config:   ctx.Config,
@@ -872,7 +888,9 @@ func (s *ServeCommand) Run(ctx *runtimeContext) error {
 
 	runCtx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	return controlserver.Serve(runCtx, ep, server.Handler(), logger)
+	runErr := controlserver.Serve(runCtx, ep, server.Handler(), logger)
+	_ = gwServer.Stop(context.Background())
+	return runErr
 }
 
 func (d *DoctorCommand) Run(ctx *runtimeContext) error {
