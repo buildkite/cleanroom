@@ -55,8 +55,8 @@ Fallbacks:
 3. active context config
 4. default unix socket path
 
-TCP and Tailscale endpoints are also supported:
-- `tcp://host:port` for direct TCP
+HTTP and Tailscale endpoints are also supported:
+- `http://host:port` or `https://host:port` for direct HTTP
 - `tsnet://hostname[:port]` for embedded Tailscale (tsnet)
 - `tssvc://service[:local-port]` for Tailscale Services
 
