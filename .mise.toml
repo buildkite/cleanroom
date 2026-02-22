@@ -1,6 +1,7 @@
 [tools]
 go = "1.23"
 shellcheck = "latest"
+hyperfine = "latest"
 
 [env]
 GOTOOLCHAIN = "local"
@@ -11,7 +12,7 @@ run = "go test ./..."
 
 [tasks.lint-shell]
 description = "Lint shell scripts"
-run = "shellcheck -x scripts/cleanroom-root-helper.sh"
+run = "shellcheck -x scripts/cleanroom-root-helper.sh scripts/benchmark-tti.sh"
 
 [tasks.test-full]
 description = "Run full Go test suite"
