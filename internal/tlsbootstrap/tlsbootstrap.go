@@ -129,7 +129,11 @@ func Init(dir string, force bool) error {
 		return err
 	}
 
-	server, err := IssueCert(ca.CertPEM, ca.KeyPEM, "cleanroom-server", []string{"localhost", "127.0.0.1", "::1"})
+	serverSANs := []string{"localhost", "127.0.0.1", "::1"}
+	if hostname, err := os.Hostname(); err == nil && hostname != "" && hostname != "localhost" {
+		serverSANs = append(serverSANs, hostname)
+	}
+	server, err := IssueCert(ca.CertPEM, ca.KeyPEM, "cleanroom-server", serverSANs)
 	if err != nil {
 		return fmt.Errorf("issue server certificate: %w", err)
 	}

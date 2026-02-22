@@ -74,12 +74,17 @@ func ResolveClient(opts Options) (*tls.Config, error) {
 		tlsCfg.RootCAs = pool
 	}
 
-	if certPath != "" && keyPath != "" {
+	switch {
+	case certPath != "" && keyPath != "":
 		cert, err := tls.LoadX509KeyPair(certPath, keyPath)
 		if err != nil {
 			return nil, fmt.Errorf("load client certificate: %w", err)
 		}
 		tlsCfg.Certificates = []tls.Certificate{cert}
+	case certPath != "":
+		return nil, fmt.Errorf("client TLS cert provided (%s) but key is missing", certPath)
+	case keyPath != "":
+		return nil, fmt.Errorf("client TLS key provided (%s) but cert is missing", keyPath)
 	}
 
 	return tlsCfg, nil
