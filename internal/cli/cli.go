@@ -1170,6 +1170,9 @@ func setSandboxImageRef(raw []byte, ref string) ([]byte, error) {
 	if err := yaml.Unmarshal(raw, &doc); err != nil {
 		return nil, err
 	}
+	if doc.Kind == 0 {
+		doc.Kind = yaml.DocumentNode
+	}
 
 	if len(doc.Content) == 0 {
 		doc.Content = append(doc.Content, &yaml.Node{Kind: yaml.MappingNode})

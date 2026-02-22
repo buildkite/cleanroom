@@ -136,6 +136,18 @@ func TestSetSandboxImageRefPreservesCommentsAndOrder(t *testing.T) {
 	}
 }
 
+func TestSetSandboxImageRefHandlesEmptyDocument(t *testing.T) {
+	updated, err := setSandboxImageRef([]byte("\n  \n"), testDigestRef)
+	if err != nil {
+		t.Fatalf("set sandbox image ref: %v", err)
+	}
+
+	content := string(updated)
+	if !strings.Contains(content, "sandbox:") || !strings.Contains(content, "ref: "+testDigestRef) {
+		t.Fatalf("empty document was not initialised correctly, got:\n%s", content)
+	}
+}
+
 func stubRefResolver(t *testing.T, fn func(context.Context, string) (string, error)) func() {
 	t.Helper()
 	prev := resolveReferenceForPolicyUpdate
