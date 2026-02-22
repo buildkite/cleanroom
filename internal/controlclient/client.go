@@ -68,7 +68,10 @@ func buildTransport(ep endpoint.Endpoint, baseURL string, tlsOpts tlsconfig.Opti
 		if tlsCfg == nil {
 			tlsCfg = &tls.Config{MinVersion: tls.VersionTLS13}
 		}
-		return &http.Transport{TLSClientConfig: tlsCfg}, nil
+		return &http.Transport{
+			Proxy:           http.ProxyFromEnvironment,
+			TLSClientConfig: tlsCfg,
+		}, nil
 	}
 
 	if ep.Scheme == "unix" {

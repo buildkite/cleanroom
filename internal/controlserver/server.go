@@ -598,6 +598,9 @@ func listen(ep endpoint.Endpoint, logger *log.Logger, tlsOpts *TLSOptions) (net.
 		if tlsCfg == nil {
 			return nil, nil, errors.New("https listen endpoint requires TLS certificates (run 'cleanroom tls init' or provide --tls-cert/--tls-key)")
 		}
+		if tlsCfg.ClientAuth != tls.RequireAndVerifyClientCert && logger != nil {
+			logger.Warn("HTTPS listener has no client CA configured; client certificate authentication is disabled")
+		}
 		addr := ep.Address
 		for _, prefix := range []string{"https://", "http://"} {
 			addr = strings.TrimPrefix(addr, prefix)

@@ -158,9 +158,10 @@ type TLSInitCommand struct {
 }
 
 type TLSIssueCommand struct {
-	Name string   `arg:"" required:"" help:"Common name for the certificate"`
-	SAN  []string `help:"Subject alternative names (DNS names or IP addresses)"`
-	Dir  string   `help:"TLS directory containing CA material (default: $XDG_CONFIG_HOME/cleanroom/tls)"`
+	Name  string   `arg:"" required:"" help:"Common name for the certificate"`
+	SAN   []string `help:"Subject alternative names (DNS names or IP addresses)"`
+	Dir   string   `help:"TLS directory containing CA material (default: $XDG_CONFIG_HOME/cleanroom/tls)"`
+	Force bool     `help:"Overwrite existing certificate and key files"`
 }
 
 type StatusCommand struct {
@@ -934,6 +935,13 @@ func (c *TLSIssueCommand) Run(ctx *runtimeContext) error {
 
 	certPath := filepath.Join(dir, c.Name+".pem")
 	keyPath := filepath.Join(dir, c.Name+".key")
+	if !c.Force {
+		for _, p := range []string{certPath, keyPath} {
+			if _, err := os.Stat(p); err == nil {
+				return fmt.Errorf("%s already exists (use --force to overwrite)", p)
+			}
+		}
+	}
 	if err := os.WriteFile(certPath, kp.CertPEM, 0o644); err != nil {
 		return err
 	}
