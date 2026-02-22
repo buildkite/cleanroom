@@ -33,6 +33,9 @@ func newGitHandler(creds CredentialProvider, logger *log.Logger) *gitHandler {
 				TLSHandshakeTimeout:   10 * time.Second,
 				ResponseHeaderTimeout: defaultUpstreamTimeout,
 			},
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
 		},
 	}
 }
