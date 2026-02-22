@@ -889,7 +889,9 @@ func (s *ServeCommand) Run(ctx *runtimeContext) error {
 	runCtx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	runErr := controlserver.Serve(runCtx, ep, server.Handler(), logger)
-	_ = gwServer.Stop(context.Background())
+	gwStopCtx, gwStopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer gwStopCancel()
+	_ = gwServer.Stop(gwStopCtx)
 	return runErr
 }
 

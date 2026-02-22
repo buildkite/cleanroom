@@ -3,6 +3,7 @@ package gateway
 import (
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -26,7 +27,13 @@ func newGitHandler(creds CredentialProvider, logger *log.Logger) *gitHandler {
 	return &gitHandler{
 		credentials: creds,
 		logger:      logger,
-		client:      &http.Client{Timeout: defaultUpstreamTimeout},
+		client: &http.Client{
+			Transport: &http.Transport{
+				DialContext:           (&net.Dialer{Timeout: defaultUpstreamTimeout}).DialContext,
+				TLSHandshakeTimeout:   10 * time.Second,
+				ResponseHeaderTimeout: defaultUpstreamTimeout,
+			},
+		},
 	}
 }
 
