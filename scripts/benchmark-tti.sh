@@ -9,7 +9,7 @@ Usage:
   scripts/benchmark-tti.sh [options]
 
 Options:
-  --host <endpoint>         Control-plane endpoint (default: unix://$XDG_RUNTIME_DIR/cleanroom/cleanroom.sock)
+  --host <endpoint>         Control-plane endpoint (default: unix://$XDG_RUNTIME_DIR/cleanroom/cleanroom.sock, or unix:///tmp/cleanroom/cleanroom.sock)
   -n, --iterations <count>  Number of benchmark runs (default: 10)
   --warmup <count>          Warmup runs before measuring (default: 1)
   --backend <name>          Optional backend override for cleanroom exec
@@ -31,7 +31,7 @@ EOF
 if [[ -n "${XDG_RUNTIME_DIR:-}" ]]; then
   default_host="unix://${XDG_RUNTIME_DIR}/cleanroom/cleanroom.sock"
 else
-  default_host="unix:///tmp/cleanroom.sock"
+  default_host="unix:///tmp/cleanroom/cleanroom.sock"
 fi
 
 if [[ -x "./dist/cleanroom" ]]; then
