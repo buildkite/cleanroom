@@ -57,8 +57,8 @@ Fallbacks:
 
 HTTP and Tailscale endpoints are also supported:
 - `http://host:port` or `https://host:port` for direct HTTP
-- `tsnet://hostname[:port]` for embedded Tailscale (tsnet)
-- `tssvc://service[:local-port]` for Tailscale Services
+- `tsnet://hostname[:port]` for embedded Tailscale (server-side only)
+- `tssvc://service[:local-port]` for Tailscale Services (server-side only; clients connect via `https://service.<tailnet>.ts.net`)
 
 ## 4) API Surface (Minimal v1)
 
@@ -212,8 +212,8 @@ Expose a server mode and API-driven commands in the same binary.
 ### 9.1 Server
 
 - `cleanroom serve --listen unix:///run/user/1000/cleanroom/cleanroom.sock`
-- `cleanroom serve --listen tcp://127.0.0.1:7777`
-- `cleanroom serve --listen tcp://0.0.0.0:7777 --tls-cert ... --tls-key ...`
+- `cleanroom serve --listen http://127.0.0.1:7777`
+- `cleanroom serve --listen https://0.0.0.0:7777 --tls-cert ... --tls-key ...`
 - `cleanroom serve --listen tsnet://cleanroom:7777`
 - `cleanroom serve --listen tssvc://cleanroom`
 
