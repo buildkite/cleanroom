@@ -226,7 +226,7 @@ All runtime launch behavior is initiated by control-plane API calls (for example
 2. CLI/SDK client compiles policy and sends it in `CreateSandbox`.
 3. Control plane validates compiled policy and backend selection.
 4. Start sandbox via selected backend.
-5. Attach/enable content-cache proxy sidecar or endpoint wiring.
+5. Register sandbox identity in host gateway and install anti-spoof + gateway reachability rules.
 6. Enforce runtime policy:
   - DNS/egress allowlist only.
   - outbound packet filtering to allowed host:port/protocol.
@@ -240,56 +240,90 @@ All runtime launch behavior is initiated by control-plane API calls (for example
 - Backend adapters must not re-read repository policy files after run creation.
 - Guest workloads cannot mutate control-plane policy inputs for the active run.
 
-### 6.2 Package registry filtering with content-cache
-- All package manager egress flows are redirected through content-cache endpoint.
-- content-cache applies registry allowlist before forwarding.
-- Cache serves:
-  - positive cache (hit/miss)
-  - optional metadata signing/validation hooks (future extension).
-- Unsupported registry requests are denied with explicit audit reason.
+### 6.2 Host gateway
+
+Cleanroom runs a single shared host gateway process that provides mediated access to external services (git, package registries, secrets, metadata) for all sandboxes on the host. Sandbox identity is derived from the network transport layer, not bearer tokens.
+
+#### 6.2.1 Transport and sandbox identity
+
+The gateway uses TAP-network TCP rather than `AF_VSOCK` for guest-to-host service access. In nested virtualisation environments (for example Firecracker inside EC2), the outer hypervisor owns the vsock device and CID namespace. Host-side vsock listener binds (`CID=2` / `CID=0`) fail with `cannot assign requested address` because the host kernel's `vhost_vsock` driver cannot simultaneously act as a vsock guest to the outer hypervisor and a vsock host to inner VMs. The reverse direction (host dials guest) works because Firecracker mediates it through its own vsock UDS path, which is why the guest exec agent continues to use vsock. The TAP network has no such constraint — it is managed entirely within the host kernel's networking stack.
+
+Each sandbox is provisioned with a unique TAP device and a unique guest IP. The host gateway identifies the calling sandbox by mapping the source IP of incoming connections to the registered sandbox and its `CompiledPolicy`.
+
+- The gateway listens on a small fixed set of host ports (or a single port with path-prefix routing for `/git/`, `/registry/`, `/secrets/`, `/meta/`).
+- Sandbox identity is resolved from the connection source IP. No tokens, API keys, or path-embedded credentials are used for sandbox identification.
+- The gateway maintains a registry of `(guestIP → sandboxID → CompiledPolicy)` populated at sandbox creation and removed at teardown.
+- The guest discovers the gateway via its host-side TAP IP on well-known ports, injected into the command environment (for example `GIT_CONFIG_GLOBAL`, `HTTP_PROXY`, or equivalent per-service environment variables).
+
+This model scales to O(services) listening ports regardless of sandbox count, avoiding port exhaustion at high density.
+
+#### 6.2.2 Anti-spoofing and reachability (normative)
+
+Source-IP identity requires explicit anti-spoofing enforcement on each TAP interface:
+
+- For each sandbox TAP `tapX` with guest IP `GUEST_IP`, drop any packet arriving on `tapX` not sourced from `GUEST_IP`.
+- Disable IPv6 on sandbox TAP interfaces (or install equivalent v6 anti-spoof rules).
+- Gateway ports must only be reachable from sandbox TAP interfaces. Host INPUT rules must reject gateway-port traffic from non-TAP sources (host LAN, Docker bridges, and similar).
+- Per-sandbox INPUT rules may further restrict which gateway service paths are reachable based on compiled policy (for example a sandbox whose policy includes no secret bindings should not reach the secrets endpoint).
+
+These rules are installed during sandbox network setup and torn down during cleanup, following the same lifecycle as existing FORWARD rules.
+
+#### 6.2.3 Git proxy
+
+- Cleanroom rewrites clone URLs to the host gateway's git endpoint when a repo host is in `sandbox.network.allow`.
+- Runtime injects scoped Git URL rewrite config inside the sandbox command environment (for example `url.<gateway>/git/<host>/.insteadOf=https://<host>/`).
+- Clone commands run unchanged inside the sandbox (`git clone https://github.com/org/repo.git`), with transport rewritten to the gateway endpoint.
+- The gateway resolves the target host from the request path, validates it against the sandbox's compiled policy, and proxies the git smart-HTTP protocol (`info/refs?service=git-upload-pack` and `git-upload-pack`) upstream.
+- Upstream authentication is held host-side by the gateway process (for example GitHub App installation tokens or PATs resolved from the CI secret store). Credentials are never exposed to the guest.
+- Enforcement:
+  - deny by default except policy-allowed git hosts.
+  - credential injection scoped by upstream host prefix.
+  - gateway may serve as a transparent cache with offline fallback for warm entries (future extension).
+
+#### 6.2.4 Package registry proxy
+
+- All package manager egress is redirected through the host gateway's registry endpoint.
+- The gateway applies the sandbox's registry allowlist before forwarding upstream.
+- Unsupported registry requests are denied with explicit audit reason (`registry_not_allowed`).
+- Cache layer (future extension):
+  - positive cache (hit/miss) for registry metadata and tarballs.
+  - optional metadata signing/validation hooks.
+
+#### 6.2.5 Secret injection
+
+- For outbound calls that require per-service credentials, the gateway injects credentials on the upstream leg without exposing them to the sandbox.
+- The gateway resolves secret bindings from the sandbox's compiled policy (`secrets[]` entries with `secret_id`, `allowed_hosts`, and `ttl_seconds`).
+- For each proxied request, the gateway validates the destination host against the secret binding's `allowed_hosts` scope, then injects the credential into the upstream request header (default `Authorization: Bearer` pattern).
+- Requirements:
+  - no plaintext secrets in repository policy, command arguments, or guest environment.
+  - blocked with `secret_scope_violation` if destination host does not match the secret binding's allowed hosts.
+  - all injection events are logged with secret ID, destination host, and sandbox ID; never with secret values.
+
+#### 6.2.6 Audit attribution
+
+- Every gateway request is inherently attributed to a sandbox ID from the transport identity (source IP), independent of any guest-supplied metadata.
+- The gateway emits structured audit events per request with `sandbox_id`, `service` (git/registry/secrets/meta), `destination_host`, `action` (allow/deny), and `reason_code`.
+- Deny events use the stable reason codes defined in section 9.1.
+
+#### 6.2.7 SSRF and cross-service hardening
+
+- The gateway must never act as a general-purpose HTTP proxy. It must only connect upstream to destinations explicitly permitted by the requesting sandbox's compiled policy.
+- Request path canonicalisation must prevent traversal between service endpoints (for example `/git/../../secrets/`).
+- Upstream connection pools must not be shared across sandbox identities to prevent request smuggling across sandbox boundaries.
+- The gateway must validate `Host` headers and request paths before routing to prevent host confusion attacks.
 
 ### 6.3 Default-fail semantics
 - Any destination not matched by explicit allowlist is denied.
 - Any registry not listed in an enabled `registries.*` block is denied.
 - Failed policy validation blocks launch unless explicitly bypassed by an explicit admin flag.
 
-### 6.4 Safe git clone path (content-cache)
-- Cleanroom rewrites clone URLs to `content-cache` when a repo host is in `sandbox.network.allow`.
-- Build flow:
-  - `content-cache` is started with `--git-allowed-hosts` set to the resolved allowlist hosts.
-  - cleanroom writes scoped Git URL rewrite config (for example `http://127.0.0.1:8080/git/`).
-  - Clone commands run unchanged inside sandbox (`https://github.com/org/repo.git`), with transport rewritten to cache endpoint.
-- Upstream auth is never carried in the policy file:
-  - credentials are declared in a `content-cache` credentials template.
-  - template values are resolved from environment files or secret providers at proxy startup.
-- Enforcement:
-  - deny by default except allowlisted Git hosts.
-  - optional upstream credential rules via repo prefix matching.
-  - `content-cache` can run as transparent cache + offline fallback for warm entries.
-
-### 6.5 Secret injection plane (tokenizer-style)
-- For outbound HTTPS calls that need per-service credentials, use a dedicated proxy service with:
-  - secret ciphertext in request headers (sealed outside sandbox),
-  - target-host allowlist per secret,
-  - header/destination rewrite in the proxy.
-- Behavior:
-  - Clients send HTTP(S) requests through proxy with sealed secret metadata.
-  - Proxy validates host scope and authorization metadata before decrypting.
-  - Proxy injects token into request header (default `Authorization: Bearer` pattern), then forwards upstream.
-- Cleanroom requirement:
-  - no plaintext secrets passed in repository policy.
-  - no plaintext secrets passed in command lines.
-  - blocked if host scope on a secret does not match request host.
-- Implementation note:
-  - Start with an internal Cleanroom proxy shaped like `superfly/tokenizer`, then remove in favor of hardened first-party service if/when built.
-
-### 6.6 Lockfile-restricted package fetches
+### 6.4 Lockfile-restricted package fetches
 - During policy compilation, cleanroom parses lockfiles from `registries.*.lockfile_enforcement.lockfiles`.
 - For each allowed package manager, cleanroom builds an explicit artifact allowlist:
   - package identity + version
   - registry endpoint
   - optional integrity/hash requirement
-- content-cache receives these allow rules and can only forward requests that match them.
+- The host gateway receives these allow rules and can only forward requests that match them.
 - If a request misses lockfile constraints:
   - `mode=deny_unknown`: block and emit `lockfile_violation` event.
   - `mode=warn`: allow but emit warning/metric.
