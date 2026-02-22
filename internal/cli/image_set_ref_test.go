@@ -143,6 +143,9 @@ func TestSetSandboxImageRefHandlesEmptyDocument(t *testing.T) {
 	}
 
 	content := string(updated)
+	if !strings.Contains(content, "version: 1") {
+		t.Fatalf("empty document should be bootstrapped with version: 1, got:\n%s", content)
+	}
 	if !strings.Contains(content, "sandbox:") || !strings.Contains(content, "ref: "+testDigestRef) {
 		t.Fatalf("empty document was not initialised correctly, got:\n%s", content)
 	}

@@ -1174,12 +1174,17 @@ func setSandboxImageRef(raw []byte, ref string) ([]byte, error) {
 		doc.Kind = yaml.DocumentNode
 	}
 
+	bootstrapped := false
 	if len(doc.Content) == 0 {
 		doc.Content = append(doc.Content, &yaml.Node{Kind: yaml.MappingNode})
+		bootstrapped = true
 	}
 	root := doc.Content[0]
 	if root.Kind != yaml.MappingNode {
 		return nil, fmt.Errorf("policy root must be a mapping")
+	}
+	if bootstrapped {
+		setMapInt(root, "version", 1)
 	}
 
 	sandbox := ensureMapEntry(root, "sandbox")
@@ -1233,6 +1238,25 @@ func setMapString(parent *yaml.Node, key, value string) {
 		parent.Content,
 		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key},
 		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value},
+	)
+}
+
+func setMapInt(parent *yaml.Node, key string, value int) {
+	for i := 0; i+1 < len(parent.Content); i += 2 {
+		if parent.Content[i].Value != key {
+			continue
+		}
+		parent.Content[i+1].Kind = yaml.ScalarNode
+		parent.Content[i+1].Tag = "!!int"
+		parent.Content[i+1].Value = fmt.Sprintf("%d", value)
+		parent.Content[i+1].Content = nil
+		return
+	}
+
+	parent.Content = append(
+		parent.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key},
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!int", Value: fmt.Sprintf("%d", value)},
 	)
 }
 
