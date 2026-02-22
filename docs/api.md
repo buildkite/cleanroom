@@ -7,7 +7,6 @@ Define a minimal, functional API for creating and managing Cleanroom sandboxes w
 This document is intentionally small-scope:
 - management plane for sandbox lifecycle
 - execution plane for command runs and streaming output
-- no requirement to match Sprites API shape
 
 ## 2) Terminology
 
@@ -56,7 +55,10 @@ Fallbacks:
 3. active context config
 4. default unix socket path
 
-TCP endpoints are supported later for remote control-plane use.
+HTTP and Tailscale endpoints are also supported:
+- `http://host:port` for direct HTTP (HTTPS not yet implemented)
+- `tsnet://hostname[:port]` for embedded Tailscale (server-side only)
+- `tssvc://service[:local-port]` for Tailscale Services (server-side only; clients connect via `https://service.<tailnet>.ts.net`)
 
 ## 4) API Surface (Minimal v1)
 
@@ -143,6 +145,8 @@ syntax = "proto3";
 
 package cleanroom.v1;
 
+import "google/protobuf/timestamp.proto";
+
 service SandboxService {
   rpc CreateSandbox(CreateSandboxRequest) returns (CreateSandboxResponse);
   rpc GetSandbox(GetSandboxRequest) returns (GetSandboxResponse);
@@ -165,8 +169,8 @@ message Sandbox {
   SandboxStatus status = 2;
   string backend = 3;
   string policy_hash = 4;
-  string created_at = 5;
-  string updated_at = 6;
+  google.protobuf.Timestamp created_at = 5;
+  google.protobuf.Timestamp updated_at = 6;
 }
 
 enum SandboxStatus {
@@ -182,10 +186,12 @@ message Execution {
   string execution_id = 1;
   string sandbox_id = 2;
   ExecutionStatus status = 3;
-  string command = 4;
+  repeated string command = 4;
   int32 exit_code = 5;
-  string started_at = 6;
-  string finished_at = 7;
+  google.protobuf.Timestamp started_at = 6;
+  google.protobuf.Timestamp finished_at = 7;
+  bool tty = 8;
+  string run_id = 9;
 }
 
 enum ExecutionStatus {
@@ -206,8 +212,9 @@ Expose a server mode and API-driven commands in the same binary.
 ### 9.1 Server
 
 - `cleanroom serve --listen unix:///run/user/1000/cleanroom/cleanroom.sock`
-- `cleanroom serve --listen tcp://127.0.0.1:7777`
-- `cleanroom serve --listen tcp://0.0.0.0:7777 --tls-cert ... --tls-key ...`
+- `cleanroom serve --listen http://127.0.0.1:7777`
+- `cleanroom serve --listen tsnet://cleanroom:7777`
+- `cleanroom serve --listen tssvc://cleanroom`
 
 ### 9.2 Sandbox commands
 
