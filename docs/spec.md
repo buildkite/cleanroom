@@ -8,9 +8,8 @@ Trust boundary for v1:
 - Workload code executed inside the sandbox is untrusted.
 - Security guarantees apply to enforcement inside the cleanroom boundary, not to review/approval workflows for policy changes.
 
-Initial execution backends:
-- **Remote sandbox:** `sprites.dev`
-- **Local sandbox:** `https://github.com/jingkaihe/matchlock`
+Initial execution backend:
+- **Local sandbox:** Firecracker microVM on Linux/KVM
 
 ## 2) Objectives
 1. Repository-owned configuration defines all allowed network egress and registries.
@@ -23,7 +22,7 @@ Initial execution backends:
 ## 3) Scope
 ### In scope
 - Policy schema, validation, and policy-driven sandbox creation.
-- Two sandbox backends with a common adapter interface.
+- Sandbox backend with a common adapter interface (Firecracker on Linux/KVM for v1).
 - Host-level network allowlisting + package-registry mediation via content-cache.
 - Client/server control plane with local CLI client for creating and managing sandboxes and executions.
 - Logs, metrics, and audit metadata capture.
@@ -32,7 +31,7 @@ Initial execution backends:
 ### Out of scope (v1)
 - Full kernel-level deep packet inspection / DLP.
 - Per-command inline prompt-level policy decisions.
-- Multi-cloud remote scheduler federation beyond configured remote backend.
+- Remote execution backends and multi-cloud scheduler federation.
 
 ### 3.1 Responsibility split (v1)
 Cleanroom specifies the normative security contract for a run:
@@ -57,7 +56,7 @@ Deferred past MVP:
 - As a maintainer, I can check in a policy file and ensure every build run can access only approved hosts.
 - As a developer, I can run a command that executes my existing test commands inside a compliant sandbox.
 - As a security reviewer, I can see exactly which hosts and registries were allowed for each sandbox execution.
-- As an SRE, I can switch a repo between local and remote backends from policy or CLI options.
+- As an SRE, I can configure backend selection and runtime options independently of repository policy.
 - As a developer, I can run repository-defined toolchains (for example via `mise`) inside the sandbox with the same command patterns as local tooling.
 
 ## 5) Policy model
@@ -72,10 +71,6 @@ If both exist, root `cleanroom.yaml` is authoritative and `.buildkite/cleanroom.
 version: 1
 project:
   name: my-repo
-
-backends:
-  default: local
-  allow_overrides: true
 
 sandbox:
   ttl_minutes: 60
@@ -127,7 +122,7 @@ metadata:
 ```
 
 ### 5.2 Schema rules
-- Required: `version`, `backends.default`, `sandbox.network.default`.
+- Required: `version`, `sandbox.network.default`.
 - `sandbox.network.default` must be either `deny` or `allow`; v1 default must be `deny`.
 - Host matching supports:
   - exact host (`registry.npmjs.org`)
@@ -165,7 +160,7 @@ metadata:
 - Secret IDs are resolved at run-time from the CI environment or external secret provider.
 - Runtime policy object contains:
   - `secret_id` (e.g. `npm_readonly`, `github_pat_ci`)
-  - `target` (which backend uses it: content-cache, tokenizer-broker, or direct env-injected)
+  - `target` (which backend uses it: content-cache, secret-proxy, or direct env-injected)
   - `allowed_hosts` (host restrictions for each secret binding)
   - `ttl_seconds` and optional `single_use` hints.
 - Secret material is provisioned only to the cleanroom control process and never mounted into the guest filesystem.
@@ -199,7 +194,6 @@ metadata:
 Cleanroom compiles repository policy into an immutable `CompiledPolicy` payload for run creation. This payload is the only policy input to backend adapters.
 
 Minimum required fields:
-- `run_id`
 - `policy_hash` (digest of full compiled payload)
 - `source`
   - `repository`
@@ -303,14 +297,17 @@ All runtime launch behavior is initiated by control-plane API calls (for example
 - Lockfile-derived restrictions are an additional layer on top of network/host allowlists, never a replacement.
 
 ## 7) Backend abstraction
-Introduce provider interface:
+Cleanroom provides a Go adapter interface for backend implementations:
 
-- `BackendAdapter`
-  - `name()`
-  - `provision(spec)`
-  - `run(command, env, volumes, timeout, artifacts)`
-  - `shutdown(id)`
-  - `health()`
+- `Adapter`
+  - `Name() string`
+  - `Run(ctx, RunRequest) (*RunResult, error)`
+- `PersistentSandboxAdapter` (extends `Adapter`)
+  - `ProvisionSandbox(ctx, ProvisionRequest) error`
+  - `RunInSandbox(ctx, RunRequest, OutputStream) (*RunResult, error)`
+  - `TerminateSandbox(ctx, sandboxID) error`
+- `StreamingAdapter` (extends `Adapter`)
+  - `RunStream(ctx, RunRequest, OutputStream) (*RunResult, error)`
 
 ### 7.1 Backend capability contract (required for launch)
 Each backend must publish a capability map consumed by launch-time validation. Capabilities describe enforcement outcomes, not implementation details.
@@ -347,16 +344,10 @@ Policy feature mapping:
 - Launch validation evaluates `CompiledPolicy` requirements against declared capabilities before provisioning.
 - Any unmet requirement results in `backend_capability_mismatch`.
 
-#### Local backend (matchlock)
-- Use local daemon/runtime to create network namespace and process boundary.
+#### Local backend (firecracker)
+- Firecracker microVM with per-run TAP networking and nftables enforcement.
 - Primary use: developer workflows and lightweight local CI.
-- Controls at runtime via local firewall + DNS deny/allow rules.
-
-#### Remote backend (sprites)
-- Remote execution API receives a signed execution spec.
-- Local orchestration layer only submits task and streams logs/status.
-- Enforce policy locally via generated network policy payload passed to provider.
-- Must confirm provider-native ability for host-level deny-by-default; if unavailable, enforce via local egress tunnel + reverse proxy model.
+- Controls at runtime via host nftables rules + managed DNS from compiled policy.
 
 ## 8) Configuration and integration points
 - CLI command set (v1):
@@ -366,12 +357,12 @@ Policy feature mapping:
   - `cleanroom console [--] <command>`
   - `cleanroom doctor`
   - `cleanroom status`
-  - `cleanroom image pull|ls|rm|import`
+  - `cleanroom image pull|ls|rm|import|bump-ref`
 - CI integration:
   - `cleanroom exec --` wrapper for existing and local automation
   - machine-readable output (`--json`) for pipeline tooling
 - API/SDK (v1):
-  - ConnectRPC `SandboxService` (`CreateSandbox`, `GetSandbox`, `ListSandboxes`, `TerminateSandbox`, `StreamSandboxEvents`)
+  - ConnectRPC `SandboxService` (`CreateSandbox`, `GetSandbox`, `ListSandboxes`, `DownloadSandboxFile`, `TerminateSandbox`, `StreamSandboxEvents`)
   - ConnectRPC `ExecutionService` (`CreateExecution`, `GetExecution`, `CancelExecution`, `StreamExecution`, `AttachExecution`)
 
 ### 8.1 CLI and API failure contract (normative)
@@ -437,8 +428,6 @@ Minimum v1 codes:
   - all injection events are logged with secret ID, destination, and reason, never with secret values.
 
 ## 11) Risks and open decisions
-- Exact semantics of `sprites.dev` execution interface and policy transport.
-- Whether matchlock can enforce DNS + port restrictions as tightly as required.
 - Whether tokenizer-style injection runs as embedded process in cleanroom binary or as isolated helper.
 - Hostname matching behavior under SNI/TLS certificates and proxy chains.
 - Whether to allow dynamic hostlist generation (e.g., from lockfiles).
@@ -449,13 +438,12 @@ Minimum v1 codes:
 ### Phase 1 (MVP)
 - Spec schema + validator (`cleanroom.yaml` parser with `.buildkite/cleanroom.yaml` fallback)
 - Core policy compiler to normalized allowlist + registry map
-- Local backend (matchlock) proof-of-concept
+- Local backend (Firecracker) implementation
 - content-cache wrapper integration for npm and one additional manager
 - `cleanroom serve` daemon plus CLI client command set (`exec`, `sandboxes`, `executions`)
 - `cleanroom exec` RPC wrapper flow
 
 ### Phase 2
-- Sprites backend adapter with parity behavior
 - Audit log pipeline + blocked-connection reporting
 - Caching and lockfile-aware behavior improvements
 - CI examples and templates

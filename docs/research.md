@@ -14,7 +14,7 @@ Primary goal for v1:
 
 - repository-scoped egress policy (deny-by-default)
 - package manager and git fetch control through `content-cache`
-- pluggable execution backends (local + remote)
+- pluggable execution backends (Firecracker on Linux for v1)
 - optionally first-class toolchain support for local agentic workflows (`mise`)
 - secure secret injection
 
@@ -30,20 +30,6 @@ Primary goal for v1:
 
 - [wolfeidau/content-cache](https://github.com/wolfeidau/content-cache)
 - [superfly/tokenizer](https://github.com/superfly/tokenizer)
-
-### Sprites
-
-- [Sprites Overview](https://docs.sprites.dev/)
-- [Sprites Lifecycle and Persistence](https://docs.sprites.dev/concepts/lifecycle-and-persistence)
-- [Sprites Networking](https://docs.sprites.dev/concepts/networking)
-- [Sprites Checkpoints](https://docs.sprites.dev/concepts/checkpoints)
-- [Sprites Services](https://docs.sprites.dev/concepts/services)
-- [Sprites API reference (`v0.0.1-rc30`)](https://docs.sprites.dev/api/v001-rc30)
-- [Sprites API: Policy](https://docs.sprites.dev/api/v001-rc30/policy)
-- [Sprites API: Type definitions](https://docs.sprites.dev/api/v001-rc30/types)
-- [Sprites release notes](https://sprites.dev/release-notes)
-- [superfly/sprites-docs](https://github.com/superfly/sprites-docs)
-- [superfly/sprites-go](https://github.com/superfly/sprites-go)
 
 ### Firecracker
 
@@ -150,66 +136,12 @@ Key implementation characteristics:
 - Useful pattern for short-lived, scoped secret use without embedding secrets in repo policy or commandlines.
 - Fits Cleanroom requirement to keep secret material out of task environments and logs.
 
-### 5) `sprites.dev`
-
-Observed platform shape:
-
-- Validation snapshot date: 2026-02-16 (including release notes through 2026-02-13).
-- Sprites are positioned as persistent, hardware-isolated Linux execution environments (microVM-backed) with API/CLI/SDK control surfaces.
-- Remote execution is a first-class model (create Sprite, execute commands, proxy ports, manage lifecycle/checkpoints/services).
-
-Guarantees explicitly documented:
-
-1. Isolation and environment model:
-   - Hardware-level isolation via dedicated microVM is a core product claim.
-   - Full Linux environment with persistent ext4 filesystem semantics.
-   - Fixed resource profile (currently 8 vCPU, 8 GB RAM, 100 GB storage), not user-resizable yet.
-2. Lifecycle and persistence:
-   - Automatic hibernation after 30s inactivity (not configurable yet).
-   - Wake-on-request behavior (CLI/API/HTTP) with resumed disk state.
-   - Filesystem persists across hibernation; running processes, in-memory state, and live network connections do not.
-3. Network and access control:
-   - Sprite URL is private by default and token-authenticated.
-   - URL auth can be switched to `public`.
-   - Inbound access is via Sprite URL and/or explicit local port forwarding.
-   - Outbound network access is full by default.
-   - Network policy API supports domain rules with `allow`/`deny` actions plus optional policy include presets.
-   - Policy changes apply immediately, and existing connections to newly blocked domains are terminated.
-   - Blocked DNS lookups return `REFUSED`.
-4. Checkpoint/restore:
-   - Checkpoints capture persistent state (filesystem and config) and exclude process/memory/socket state.
-   - Checkpoint create/restore is streamable over API/SDK and designed for frequent use.
-   - Restores are destructive to current runtime state and require process restart.
-   - Storage model is copy-on-write over object storage, with durability/geo-redundancy claims documented.
-5. Long-lived process management:
-   - Services are managed processes that auto-start on Sprite boot and survive full Sprite restarts.
-   - Detached sessions are suitable for long-running tasks across disconnects.
-
-Implications for Cleanroom v1:
-
-- A deny-by-default remote egress posture is implementable using Sprites network policy (e.g. wildcard deny plus explicit allowlist).
-- Policy updates are server-enforced and immediate, which is strong for post-start containment adjustments.
-- Remote backend integration can remain thin: adapter translates Cleanroom policy model to Sprites policy payloads and validates post-apply behavior.
-- Checkpoint support provides a useful primitive for task rollback, template baselining, and recovery.
-
-Limits and caveats to treat as non-guarantees:
-
-- No published SLA/uptime or formal durability SLO numbers were found in current public docs.
-- Egress controls are documented as domain/DNS-policy behavior; protocol-level and IP-literal enforcement guarantees are not explicitly stated.
-- API docs are versioned as release candidates (`v0.0.1-rc30`) with separate `dev` docs, so contract drift is a practical risk.
-- Advanced policy surfaces like privileges appear in dev docs; they are not part of the stable RC API surface yet.
-- Recent release notes confirm behavior is still moving (for example, wake/request handling and URL routing performance updates in February 2026).
-
-Inference (explicitly inferred, not documented as hard guarantee):
-
-- Because enforcement language is DNS/policy-rule based, Cleanroom should assume hostname-level enforcement unless direct-IP/DoH behavior is proven by integration tests.
-
 ## Comparison against Cleanroom requirements
 
 | Requirement | Best fit |
 |---|---|
-| Enforce repository policy for egress | Local: `matchlock` + `content-cache`; Remote: Sprites policy API + `content-cache` host routing |
-| Pluggable backends (local + remote) | `matchlock` backend abstraction + future remote adapter model |
+| Enforce repository policy for egress | Local: Firecracker + `content-cache` |
+| Pluggable backends | Cleanroom adapter interface + Firecracker backend |
 | Package restrictions & caching | `content-cache` |
 | Safe secret handling | `tokenizer` pattern (or equivalent in cleanroom control plane) |
 | Git controls + registry controls | `content-cache` + Cleanroom-specific allowlist + lockfile logic |
@@ -218,11 +150,10 @@ Inference (explicitly inferred, not documented as hard guarantee):
 
 ## What maps directly into v1 Cleanroom
 
-1. Use `matchlock` as the local sandbox backend model.
+1. Use Firecracker as the local sandbox backend (inspired by Matchlock patterns).
 2. Use `content-cache` as the package/registry and git mediation layer.
 3. Use a tokenizer-like secret-injection model with host-scoped policy and no plaintext propagation.
-4. Keep remote backend as adapter shell (sprites) with explicit policy payload transport.
-5. Keep CLI first: `cleanroom exec` as primary entrypoint and command pattern.
+4. Keep CLI first: `cleanroom exec` as primary entrypoint and command pattern.
 
 ## Base image management recommendation (Matchlock-style)
 
@@ -446,7 +377,6 @@ Implication for Cleanroom architecture:
   - backend abstraction
   - VM strategy in-process
   - command surface suitable for a wrapper binary
-- `sprites.dev` provides a practical remote execution control plane now, with meaningful policy/lifecycle primitives, but its policy model should be treated as domain-oriented until deeper protocol-level enforcement is validated.
 - `content-cache` and tokenizer-like secret mediation are cleaner to integrate as policy-aware external services than to reinvent in phase 1.
 
 ## Risks and unknowns still to validate
@@ -454,9 +384,6 @@ Implication for Cleanroom architecture:
 - Matchlock network enforcement edge cases (DNS interception and port-level blocking exactness).
 - Image provenance verification depth (digest-only vs digest + signature/attestation enforcement).
 - Operator UX for digest refresh cadence (how repos update pinned base image digests safely).
-- Sprites remote policy enforcement beyond DNS/domain matching (direct-IP and DoH behavior).
-- Sprites API version drift risk between RC and dev surfaces for policy/runtime features.
-- Missing public SLA/SLO guarantees for availability/durability.
 - Lockfile parser maturity by ecosystem.
 - `content-cache` deployment topology for local-only vs remote-only workflows.
 - macOS Network Extension edge cases where some traffic can bypass extension visibility (must be measured in our own conformance suite).
@@ -464,19 +391,6 @@ Implication for Cleanroom architecture:
 
 ## Next concrete work after research
 
-- Add policy schema for digest-pinned base image reference under `sandbox.image.ref`.
-- Add launch-time validation that rejects non-digest image refs.
-- Implement image manager package (Matchlock-like):
-  - pull by digest from OCI registry,
-  - materialize ext4 rootfs,
-  - cache by digest,
-  - persist metadata (digest/ref/size/OCI config) in image DB.
-- Add CLI image surfaces (`cleanroom image pull|ls|rm|import`) for prewarming and cache maintenance.
-- Define `internal/backend/firecracker` package boundaries:
-  - machine lifecycle
-  - network setup (tap/subnet/nftables)
-  - guest exec transport (vsock)
-  - lifecycle persistence/reconcile
 - Add capability handshake and launch validation path from compiled policy.
 - Implement a first conformance subset:
   - default deny
@@ -484,11 +398,9 @@ Implication for Cleanroom architecture:
   - explicit deny precedence
   - stable reason codes in events
 - Integrate `content-cache` in the backend provisioning flow before lockfile strict mode.
-- Add implementation tasks for:
-  - cleanroom-first command model (`exec`/`run` alignment)
-  - `mise` detection and bootstrap strategy
-  - lockfile-restricted package allowlists
-  - secret injection guardrails
+- Add `mise` detection and bootstrap strategy.
+- Implement lockfile-restricted package allowlists.
+- Add secret injection guardrails.
 - Define cross-backend capability matrix (`linux-firecracker`, `darwin-network-extension`) and wire launch-time capability validation.
 - Build a macOS proof-of-concept adapter using DNS proxy + network filter extensions, including explicit install/approval checks.
 - Add cross-platform conformance tests for DNS and egress bypass paths (direct DNS, DoT, DoH, direct IP).
