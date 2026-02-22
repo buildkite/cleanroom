@@ -159,6 +159,76 @@ func TestCompileCapturesImageDigest(t *testing.T) {
 	}
 }
 
+func TestCompileNormalizesGitPolicy(t *testing.T) {
+	t.Parallel()
+
+	raw := baseRawPolicy()
+	raw.Sandbox.Git.Enabled = true
+	raw.Sandbox.Git.Source = "HOST_MIRROR"
+	raw.Sandbox.Git.AllowedHosts = []string{" GitHub.com ", "github.com"}
+	raw.Sandbox.Git.AllowedRepos = []string{"Org/Repo", "org/repo", "org/second"}
+
+	compiled, err := Compile(raw)
+	if err != nil {
+		t.Fatalf("Compile returned error: %v", err)
+	}
+	if compiled.Git == nil {
+		t.Fatal("expected git policy to be present")
+	}
+	if got, want := compiled.Git.Source, "host_mirror"; got != want {
+		t.Fatalf("unexpected git source: got %q want %q", got, want)
+	}
+	if got, want := strings.Join(compiled.Git.AllowedHosts, ","), "github.com"; got != want {
+		t.Fatalf("unexpected git hosts: got %q want %q", got, want)
+	}
+	if got, want := strings.Join(compiled.Git.AllowedRepos, ","), "org/repo,org/second"; got != want {
+		t.Fatalf("unexpected git repos: got %q want %q", got, want)
+	}
+}
+
+func TestCompileRejectsGitEnabledWithoutHosts(t *testing.T) {
+	t.Parallel()
+
+	raw := baseRawPolicy()
+	raw.Sandbox.Git.Enabled = true
+
+	_, err := Compile(raw)
+	if err == nil {
+		t.Fatal("expected Compile to fail when git is enabled without allowed_hosts")
+	}
+	if !strings.Contains(err.Error(), "allowed_hosts") {
+		t.Fatalf("expected allowed_hosts error, got %v", err)
+	}
+}
+
+func TestFromProtoCanonicalizesGitPolicy(t *testing.T) {
+	t.Parallel()
+
+	compiled, err := FromProto(&cleanroomv1.Policy{
+		Version:        1,
+		ImageRef:       validImageRef,
+		NetworkDefault: "deny",
+		Git: &cleanroomv1.PolicyGit{
+			Enabled:      true,
+			Source:       "UPSTREAM",
+			AllowedHosts: []string{"GitHub.com", "github.com"},
+			AllowedRepos: []string{"Org/Repo", "org/repo"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("FromProto returned error: %v", err)
+	}
+	if compiled.Git == nil || !compiled.Git.Enabled {
+		t.Fatal("expected git policy in compiled output")
+	}
+	if got, want := compiled.Git.Source, "upstream"; got != want {
+		t.Fatalf("unexpected git source: got %q want %q", got, want)
+	}
+	if got, want := strings.Join(compiled.Git.AllowedHosts, ","), "github.com"; got != want {
+		t.Fatalf("unexpected git hosts: got %q want %q", got, want)
+	}
+}
+
 func TestLoadPropagatesPrimaryStatError(t *testing.T) {
 	t.Parallel()
 

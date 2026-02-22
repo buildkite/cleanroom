@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/buildkite/cleanroom/internal/backend"
+	"github.com/buildkite/cleanroom/internal/gitgateway"
 	"github.com/buildkite/cleanroom/internal/imagemgr"
 	"github.com/buildkite/cleanroom/internal/paths"
 	"github.com/buildkite/cleanroom/internal/policy"
@@ -49,6 +50,9 @@ type Adapter struct {
 
 	runtimeImageMu sync.Mutex
 
+	gitGatewayMu sync.Mutex
+	gitGateway   *sharedGitGateway
+
 	sandboxMu         sync.Mutex
 	sandboxes         map[string]*sandboxInstance
 	provisioning      map[string]struct{}
@@ -62,9 +66,13 @@ type sandboxInstance struct {
 	ConfigPath     string
 	VsockPath      string
 	GuestPort      uint32
+	HostIP         string
 	Policy         *policy.CompiledPolicy
 	ImageRef       string
 	ImageDigest    string
+	GitGatewayBase string
+	GitScope       string
+	releaseGit     func()
 	CommandTimeout int64
 	fcCmd          *exec.Cmd
 	exitedCh       chan struct{}
@@ -77,7 +85,7 @@ type sandboxInstance struct {
 
 const runObservabilityFile = "run-observability.json"
 const vsockDialRetryInterval = 50 * time.Millisecond
-const preparedRuntimeRootFSVersion = "v1"
+const preparedRuntimeRootFSVersion = "v2"
 const privilegedModeSudo = "sudo"
 const privilegedModeHelper = "helper"
 const defaultPrivilegedHelperPath = "/usr/local/sbin/cleanroom-root-helper"
@@ -116,6 +124,7 @@ GUEST_PORT="$(arg_value cleanroom_guest_port || true)"
 
 if command -v ip >/dev/null 2>&1 && [ -n "$GUEST_IP" ]; then
   [ -n "$GUEST_MASK" ] || GUEST_MASK="24"
+  ip link set dev lo up 2>/dev/null || true
   ip link set dev eth0 up 2>/dev/null || true
   ip addr flush dev eth0 2>/dev/null || true
   ip addr add "$GUEST_IP/$GUEST_MASK" dev eth0 2>/dev/null || true
@@ -372,6 +381,11 @@ func (a *Adapter) TerminateSandbox(_ context.Context, sandboxID string) error {
 
 func (a *Adapter) executeInSandbox(ctx context.Context, instance *sandboxInstance, launchSeconds int64, command []string, stream backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error) {
 	guestReq := vsockexec.ExecRequest{Command: append([]string(nil), command...)}
+	gitEnv, err := buildGitScopedEnv(instance.Policy, instance.GitGatewayBase, instance.GitScope)
+	if err != nil {
+		return vsockexec.ExecResponse{}, guestExecTiming{}, err
+	}
+	guestReq.Env = gitEnv
 	seed := make([]byte, 64)
 	if _, err := cryptorand.Read(seed); err == nil {
 		guestReq.EntropySeed = seed
@@ -393,6 +407,119 @@ func (a *Adapter) executeInSandbox(ctx context.Context, instance *sandboxInstanc
 	}
 
 	return runGuestCommandFn(bootCtx, ctx, instance.exitedCh, instance.exitedErrOrNil, instance.VsockPath, instance.GuestPort, guestReq, stream)
+}
+
+func buildGitScopedEnv(compiled *policy.CompiledPolicy, relayBaseURL, scope string) ([]string, error) {
+	if compiled == nil || compiled.Git == nil || !compiled.Git.Enabled {
+		return nil, nil
+	}
+	rules, err := gitgateway.BuildRewriteRulesForScope(relayBaseURL, scope, compiled.Git.AllowedHosts)
+	if err != nil {
+		return nil, fmt.Errorf("build git rewrite rules: %w", err)
+	}
+	return gitgateway.BuildScopedGitConfigEnv(rules), nil
+}
+
+type sharedGitGateway struct {
+	registry *gitgateway.ScopeRegistry
+	server   *gitgateway.Server
+	listener net.Listener
+	cancel   context.CancelFunc
+	port     int
+}
+
+func (a *Adapter) registerGitScope(hostIP string, compiled *policy.CompiledPolicy) (string, string, func(), error) {
+	if compiled == nil || compiled.Git == nil || !compiled.Git.Enabled {
+		return "", "", func() {}, nil
+	}
+	normalizedHostIP := strings.TrimSpace(hostIP)
+	if normalizedHostIP == "" {
+		return "", "", nil, fmt.Errorf("sandbox host IP is required for git gateway")
+	}
+
+	a.gitGatewayMu.Lock()
+	defer a.gitGatewayMu.Unlock()
+
+	if a.gitGateway == nil {
+		cacheBaseDir, err := paths.CacheBaseDir()
+		if err != nil {
+			return "", "", nil, fmt.Errorf("resolve cache base directory for git gateway: %w", err)
+		}
+		mirrorRoot := filepath.Join(cacheBaseDir, "git-mirrors")
+		ln, err := net.Listen("tcp", "0.0.0.0:0")
+		if err != nil {
+			return "", "", nil, fmt.Errorf("listen shared git gateway tcp: %w", err)
+		}
+		addr, ok := ln.Addr().(*net.TCPAddr)
+		if !ok || addr.Port == 0 {
+			_ = ln.Close()
+			return "", "", nil, fmt.Errorf("shared git gateway listener did not expose tcp port")
+		}
+		gatewayCtx, gatewayCancel := context.WithCancel(context.Background())
+		registry := gitgateway.NewScopeRegistry()
+		server, err := gitgateway.StartOnListener(gatewayCtx, ln, gitgateway.Config{
+			GitPolicy:      &policy.GitPolicy{Enabled: true},
+			PolicyForScope: registry.Resolve,
+			MirrorRoot:     mirrorRoot,
+		})
+		if err != nil {
+			gatewayCancel()
+			_ = ln.Close()
+			return "", "", nil, err
+		}
+		a.gitGateway = &sharedGitGateway{
+			registry: registry,
+			server:   server,
+			listener: ln,
+			cancel:   gatewayCancel,
+			port:     addr.Port,
+		}
+	}
+
+	scope, err := randomHexToken(16)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("generate git scope: %w", err)
+	}
+	if err := a.gitGateway.registry.Set(scope, compiled.Git); err != nil {
+		return "", "", nil, err
+	}
+
+	gatewayPort := a.gitGateway.port
+	release := func() {
+		a.releaseGitScope(scope)
+	}
+	return fmt.Sprintf("http://%s:%d", normalizedHostIP, gatewayPort), scope, release, nil
+}
+
+func (a *Adapter) releaseGitScope(scope string) {
+	normalizedScope := strings.TrimSpace(scope)
+	if normalizedScope == "" {
+		return
+	}
+	a.gitGatewayMu.Lock()
+	defer a.gitGatewayMu.Unlock()
+	if a.gitGateway == nil {
+		return
+	}
+	remaining := a.gitGateway.registry.Delete(normalizedScope)
+	if remaining > 0 {
+		return
+	}
+	a.gitGateway.cancel()
+	_ = a.gitGateway.server.Close()
+	_ = a.gitGateway.listener.Close()
+	a.gitGateway = nil
+}
+
+func randomHexToken(bytesLen int) (string, error) {
+	if bytesLen <= 0 {
+		return "", fmt.Errorf("token length must be positive")
+	}
+	b := make([]byte, bytesLen)
+	if _, err := cryptorand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
 }
 
 func (a *Adapter) Doctor(_ context.Context, req backend.DoctorRequest) (*backend.DoctorReport, error) {
@@ -679,6 +806,18 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 	}
 	defer cleanupMeasured()
 
+	gitGatewayBase := ""
+	gitScope := ""
+	if req.Policy.Git != nil && req.Policy.Git.Enabled {
+		baseURL, scope, releaseGit, err := a.registerGitScope(networkCfg.HostIP, req.Policy)
+		if err != nil {
+			return nil, fmt.Errorf("start git gateway: %w", err)
+		}
+		defer releaseGit()
+		gitGatewayBase = baseURL
+		gitScope = scope
+	}
+
 	vsockPath := filepath.Join(runDir, "vsock.sock")
 	fcCfg := firecrackerConfig{
 		BootSource: bootSource{
@@ -782,6 +921,11 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 	guestReq := vsockexec.ExecRequest{
 		Command: req.Command,
 	}
+	gitEnv, err := buildGitScopedEnv(req.Policy, gitGatewayBase, gitScope)
+	if err != nil {
+		return nil, err
+	}
+	guestReq.Env = gitEnv
 	seed := make([]byte, 64)
 	if _, err := cryptorand.Read(seed); err == nil {
 		guestReq.EntropySeed = seed
@@ -1257,9 +1401,26 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 		return nil, fmt.Errorf("setup host network: %w", err)
 	}
 
+	var releaseGit func()
 	cleanupAll := func() {
+		if releaseGit != nil {
+			releaseGit()
+		}
 		cleanupNetwork()
 		_ = os.Remove(vmRootFSPath)
+	}
+
+	gitGatewayBase := ""
+	gitScope := ""
+	if compiled.Git != nil && compiled.Git.Enabled {
+		baseURL, scope, releaseFn, err := a.registerGitScope(networkCfg.HostIP, compiled)
+		if err != nil {
+			cleanupAll()
+			return nil, fmt.Errorf("start git gateway: %w", err)
+		}
+		gitGatewayBase = baseURL
+		gitScope = scope
+		releaseGit = releaseFn
 	}
 
 	vsockPath := filepath.Join(runDir, "vsock.sock")
@@ -1333,9 +1494,13 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 		ConfigPath:     configPath,
 		VsockPath:      vsockPath,
 		GuestPort:      cfg.GuestPort,
+		HostIP:         networkCfg.HostIP,
 		Policy:         compiled,
 		ImageRef:       imageArtifact.Ref,
 		ImageDigest:    imageArtifact.Digest,
+		GitGatewayBase: gitGatewayBase,
+		GitScope:       gitScope,
+		releaseGit:     releaseGit,
 		CommandTimeout: cfg.LaunchSeconds,
 		fcCmd:          fcCmd,
 		exitedCh:       make(chan struct{}),
@@ -1374,6 +1539,9 @@ func (s *sandboxInstance) shutdown() {
 		return
 	}
 	stopVM(s.fcCmd, s.exitedCh)
+	if s.releaseGit != nil {
+		s.releaseGit()
+	}
 	if s.cleanupNetwork != nil {
 		s.cleanupNetwork()
 	}

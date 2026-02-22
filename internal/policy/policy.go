@@ -29,11 +29,19 @@ type rawPolicy struct {
 		Image struct {
 			Ref string `yaml:"ref"`
 		} `yaml:"image"`
+		Git     rawGitPolicy `yaml:"git"`
 		Network struct {
 			Default string         `yaml:"default"`
 			Allow   []rawAllowRule `yaml:"allow"`
 		} `yaml:"network"`
 	} `yaml:"sandbox"`
+}
+
+type rawGitPolicy struct {
+	Enabled      bool     `yaml:"enabled"`
+	Source       string   `yaml:"source"`
+	AllowedHosts []string `yaml:"allowed_hosts"`
+	AllowedRepos []string `yaml:"allowed_repos"`
 }
 
 type rawAllowRule struct {
@@ -45,9 +53,17 @@ type CompiledPolicy struct {
 	Version        int         `json:"version"`
 	ImageRef       string      `json:"image_ref"`
 	ImageDigest    string      `json:"image_digest"`
+	Git            *GitPolicy  `json:"git,omitempty"`
 	NetworkDefault string      `json:"network_default"`
 	Allow          []AllowRule `json:"allow"`
 	Hash           string      `json:"hash"`
+}
+
+type GitPolicy struct {
+	Enabled      bool     `json:"enabled"`
+	Source       string   `json:"source"`
+	AllowedHosts []string `json:"allowed_hosts"`
+	AllowedRepos []string `json:"allowed_repos,omitempty"`
 }
 
 type AllowRule struct {
@@ -153,9 +169,16 @@ func Compile(raw rawPolicy) (*CompiledPolicy, error) {
 		Version:        raw.Version,
 		ImageRef:       parsedRef.Original,
 		ImageDigest:    parsedRef.Digest(),
+		Git:            nil,
 		NetworkDefault: networkDefault,
 		Allow:          allow,
 	}
+
+	gitPolicy, err := compileGitPolicy(raw.Sandbox.Git)
+	if err != nil {
+		return nil, err
+	}
+	compiled.Git = gitPolicy
 
 	hash, err := hashPolicy(compiled)
 	if err != nil {
@@ -195,6 +218,70 @@ func readPolicy(path string) (rawPolicy, error) {
 	return raw, nil
 }
 
+func compileGitPolicy(raw rawGitPolicy) (*GitPolicy, error) {
+	if !raw.Enabled {
+		return nil, nil
+	}
+
+	source := strings.ToLower(strings.TrimSpace(raw.Source))
+	if source == "" {
+		source = "upstream"
+	}
+	if source != "upstream" && source != "host_mirror" {
+		return nil, fmt.Errorf("invalid sandbox.git.source %q: expected upstream or host_mirror", source)
+	}
+
+	allowedHosts := make([]string, 0, len(raw.AllowedHosts))
+	hostSeen := make(map[string]struct{}, len(raw.AllowedHosts))
+	for _, host := range raw.AllowedHosts {
+		normalized := strings.ToLower(strings.TrimSpace(host))
+		if normalized == "" {
+			return nil, errors.New("sandbox.git.allowed_hosts cannot contain empty entries")
+		}
+		if strings.Contains(normalized, "/") {
+			return nil, fmt.Errorf("sandbox.git.allowed_hosts entry %q must be a hostname, not a path", normalized)
+		}
+		if _, ok := hostSeen[normalized]; ok {
+			continue
+		}
+		hostSeen[normalized] = struct{}{}
+		allowedHosts = append(allowedHosts, normalized)
+	}
+	if len(allowedHosts) == 0 {
+		return nil, errors.New("sandbox.git.allowed_hosts must include at least one host when git is enabled")
+	}
+	sort.Strings(allowedHosts)
+
+	allowedRepos := make([]string, 0, len(raw.AllowedRepos))
+	repoSeen := make(map[string]struct{}, len(raw.AllowedRepos))
+	for _, repo := range raw.AllowedRepos {
+		normalized := strings.ToLower(strings.TrimSpace(repo))
+		if normalized == "" {
+			return nil, errors.New("sandbox.git.allowed_repos cannot contain empty entries")
+		}
+		if strings.Count(normalized, "/") != 1 {
+			return nil, fmt.Errorf("sandbox.git.allowed_repos entry %q must be in owner/repo form", normalized)
+		}
+		parts := strings.SplitN(normalized, "/", 2)
+		if parts[0] == "" || parts[1] == "" {
+			return nil, fmt.Errorf("sandbox.git.allowed_repos entry %q must be in owner/repo form", normalized)
+		}
+		if _, ok := repoSeen[normalized]; ok {
+			continue
+		}
+		repoSeen[normalized] = struct{}{}
+		allowedRepos = append(allowedRepos, normalized)
+	}
+	sort.Strings(allowedRepos)
+
+	return &GitPolicy{
+		Enabled:      true,
+		Source:       source,
+		AllowedHosts: allowedHosts,
+		AllowedRepos: allowedRepos,
+	}, nil
+}
+
 func exists(path string) (bool, error) {
 	_, err := os.Stat(path)
 	if err == nil {
@@ -222,10 +309,20 @@ func (p *CompiledPolicy) ToProto() *cleanroomv1.Policy {
 			Ports: ports,
 		})
 	}
+	var gitPolicy *cleanroomv1.PolicyGit
+	if p.Git != nil && p.Git.Enabled {
+		gitPolicy = &cleanroomv1.PolicyGit{
+			Enabled:      p.Git.Enabled,
+			Source:       p.Git.Source,
+			AllowedHosts: append([]string(nil), p.Git.AllowedHosts...),
+			AllowedRepos: append([]string(nil), p.Git.AllowedRepos...),
+		}
+	}
 	return &cleanroomv1.Policy{
 		Version:        int32(p.Version),
 		ImageRef:       p.ImageRef,
 		ImageDigest:    p.ImageDigest,
+		Git:            gitPolicy,
 		NetworkDefault: p.NetworkDefault,
 		Allow:          allow,
 		Hash:           p.Hash,
@@ -296,8 +393,22 @@ func FromProto(pb *cleanroomv1.Policy) (*CompiledPolicy, error) {
 		Version:        int(pb.GetVersion()),
 		ImageRef:       parsedRef.Original,
 		ImageDigest:    parsedRef.Digest(),
+		Git:            nil,
 		NetworkDefault: networkDefault,
 		Allow:          allow,
+	}
+
+	if pb.GetGit() != nil {
+		gitPolicy, err := compileGitPolicy(rawGitPolicy{
+			Enabled:      pb.GetGit().GetEnabled(),
+			Source:       pb.GetGit().GetSource(),
+			AllowedHosts: pb.GetGit().GetAllowedHosts(),
+			AllowedRepos: pb.GetGit().GetAllowedRepos(),
+		})
+		if err != nil {
+			return nil, err
+		}
+		compiled.Git = gitPolicy
 	}
 
 	hash, err := hashPolicy(compiled)
