@@ -92,7 +92,7 @@ cleanroom serve --listen tssvc://cleanroom
 cleanroom exec --host https://cleanroom.<your-tailnet>.ts.net -- npm test
 ```
 
-TCP is also supported: `cleanroom serve --listen tcp://0.0.0.0:7777`
+HTTP is also supported: `cleanroom serve --listen http://0.0.0.0:7777`
 
 ## Policy File
 
