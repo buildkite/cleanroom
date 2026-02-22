@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -25,12 +26,19 @@ import (
 	"github.com/buildkite/cleanroom/internal/endpoint"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/imagemgr"
+	"github.com/buildkite/cleanroom/internal/ociref"
 	"github.com/buildkite/cleanroom/internal/paths"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 	"github.com/charmbracelet/log"
+	"github.com/google/go-containerregistry/pkg/authn"
+	"github.com/google/go-containerregistry/pkg/name"
+	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"golang.org/x/term"
+	"gopkg.in/yaml.v3"
 )
+
+const defaultBumpRefSource = "ghcr.io/buildkite/cleanroom-base/alpine:latest"
 
 type policyLoader interface {
 	LoadAndCompile(cwd string) (*policy.CompiledPolicy, string, error)
@@ -56,10 +64,11 @@ type CLI struct {
 }
 
 type ImageCommand struct {
-	Pull   ImagePullCommand   `cmd:"" help:"Pull and cache a digest-pinned OCI image"`
-	List   ImageListCommand   `name:"ls" aliases:"list" cmd:"" help:"List cached images"`
-	Remove ImageRemoveCommand `name:"rm" aliases:"remove" cmd:"" help:"Remove a cached image by ref or digest"`
-	Import ImageImportCommand `cmd:"" help:"Import a rootfs tar stream into the cache for a digest-pinned ref"`
+	Pull    ImagePullCommand    `cmd:"" help:"Pull and cache a digest-pinned OCI image"`
+	List    ImageListCommand    `name:"ls" aliases:"list" cmd:"" help:"List cached images"`
+	Remove  ImageRemoveCommand  `name:"rm" aliases:"remove" cmd:"" help:"Remove a cached image by ref or digest"`
+	Import  ImageImportCommand  `cmd:"" help:"Import a rootfs tar stream into the cache for a digest-pinned ref"`
+	BumpRef ImageBumpRefCommand `name:"bump-ref" aliases:"set-ref" cmd:"" help:"Resolve an image tag to digest and update sandbox.image.ref in cleanroom policy"`
 }
 
 type ImagePullCommand struct {
@@ -77,6 +86,12 @@ type ImageRemoveCommand struct {
 type ImageImportCommand struct {
 	Ref     string `arg:"" required:"" help:"Digest-pinned OCI reference for this import"`
 	TarPath string `arg:"" optional:"" help:"Tar/tar.gz path, or '-' for stdin (default: '-')"`
+}
+
+type ImageBumpRefCommand struct {
+	Source     string `arg:"" optional:"" help:"Image ref to resolve (default: ghcr.io/buildkite/cleanroom-base/alpine:latest)"`
+	Chdir      string `short:"c" help:"Change to this directory before running commands"`
+	PolicyPath string `help:"Policy file path (default: cleanroom.yaml, or .buildkite/cleanroom.yaml when primary is missing)"`
 }
 
 type PolicyCommand struct {
@@ -155,6 +170,28 @@ var (
 	}
 	stopSignals = func(ch chan os.Signal) {
 		signal.Stop(ch)
+	}
+	resolveReferenceForPolicyUpdate = func(ctx context.Context, source string) (string, error) {
+		resolved := strings.TrimSpace(source)
+		if resolved == "" {
+			resolved = defaultBumpRefSource
+		}
+
+		if parsed, err := ociref.ParseDigestReference(resolved); err == nil {
+			return parsed.Original, nil
+		}
+
+		tag, err := name.NewTag(resolved, name.WeakValidation)
+		if err != nil {
+			return "", fmt.Errorf("parse image ref %q: %w", resolved, err)
+		}
+
+		desc, err := remote.Head(tag, remote.WithContext(ctx), remote.WithAuthFromKeychain(authn.DefaultKeychain))
+		if err != nil {
+			return "", fmt.Errorf("resolve image digest for %q: %w", resolved, err)
+		}
+
+		return fmt.Sprintf("%s@%s", tag.Context().Name(), desc.Digest.String()), nil
 	}
 )
 
@@ -339,6 +376,49 @@ func (c *ImageImportCommand) Run(ctx *runtimeContext) error {
 		record.RootFSPath,
 		record.SizeBytes,
 	)
+	return err
+}
+
+func (c *ImageBumpRefCommand) Run(ctx *runtimeContext) error {
+	cwd, err := resolveCWD(ctx.CWD, c.Chdir)
+	if err != nil {
+		return err
+	}
+
+	resolvedRef, err := resolveReferenceForPolicyUpdate(context.Background(), c.Source)
+	if err != nil {
+		return err
+	}
+
+	policyPath, err := resolvePolicyPathForUpdate(cwd, c.PolicyPath)
+	if err != nil {
+		return err
+	}
+
+	raw, err := os.ReadFile(policyPath)
+	if err != nil {
+		return fmt.Errorf("read policy %s: %w", policyPath, err)
+	}
+
+	updated, err := setSandboxImageRef(raw, resolvedRef)
+	if err != nil {
+		return fmt.Errorf("update policy %s: %w", policyPath, err)
+	}
+
+	info, err := os.Stat(policyPath)
+	if err != nil {
+		return fmt.Errorf("stat policy %s: %w", policyPath, err)
+	}
+
+	if err := os.WriteFile(policyPath, updated, info.Mode().Perm()); err != nil {
+		return fmt.Errorf("write policy %s: %w", policyPath, err)
+	}
+
+	source := strings.TrimSpace(c.Source)
+	if source == "" {
+		source = defaultBumpRefSource
+	}
+	_, err = fmt.Fprintf(ctx.Stdout, "updated sandbox.image.ref\npolicy=%s\nsource=%s\nref=%s\n", policyPath, source, resolvedRef)
 	return err
 }
 
@@ -1043,6 +1123,141 @@ func resolveCWD(base, chdir string) (string, error) {
 		return filepath.Clean(chdir), nil
 	}
 	return filepath.Join(base, chdir), nil
+}
+
+func resolvePolicyPathForUpdate(cwd, candidate string) (string, error) {
+	if strings.TrimSpace(candidate) != "" {
+		if filepath.IsAbs(candidate) {
+			return filepath.Clean(candidate), nil
+		}
+		return filepath.Join(cwd, candidate), nil
+	}
+
+	primary := filepath.Join(cwd, policy.PrimaryPolicyPath)
+	primaryExists, err := fileExists(primary)
+	if err != nil {
+		return "", fmt.Errorf("check policy %s: %w", primary, err)
+	}
+	if primaryExists {
+		return primary, nil
+	}
+
+	fallback := filepath.Join(cwd, policy.FallbackPolicyPath)
+	fallbackExists, err := fileExists(fallback)
+	if err != nil {
+		return "", fmt.Errorf("check policy %s: %w", fallback, err)
+	}
+	if fallbackExists {
+		return fallback, nil
+	}
+
+	return "", fmt.Errorf("policy not found: expected %s or %s", primary, fallback)
+}
+
+func fileExists(path string) (bool, error) {
+	_, err := os.Stat(path)
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	return false, err
+}
+
+func setSandboxImageRef(raw []byte, ref string) ([]byte, error) {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		return nil, err
+	}
+	if doc.Kind == 0 {
+		doc.Kind = yaml.DocumentNode
+	}
+
+	bootstrapped := false
+	if len(doc.Content) == 0 {
+		doc.Content = append(doc.Content, &yaml.Node{Kind: yaml.MappingNode})
+		bootstrapped = true
+	}
+	root := doc.Content[0]
+	if root.Kind != yaml.MappingNode {
+		return nil, fmt.Errorf("policy root must be a mapping")
+	}
+	if bootstrapped {
+		setMapInt(root, "version", 1)
+	}
+
+	sandbox := ensureMapEntry(root, "sandbox")
+	image := ensureMapEntry(sandbox, "image")
+	setMapString(image, "ref", ref)
+
+	var out bytes.Buffer
+	enc := yaml.NewEncoder(&out)
+	enc.SetIndent(2)
+	err := enc.Encode(&doc)
+	_ = enc.Close()
+	if err != nil {
+		return nil, err
+	}
+	return out.Bytes(), nil
+}
+
+func ensureMapEntry(parent *yaml.Node, key string) *yaml.Node {
+	for i := 0; i+1 < len(parent.Content); i += 2 {
+		if parent.Content[i].Value != key {
+			continue
+		}
+		if parent.Content[i+1].Kind != yaml.MappingNode {
+			parent.Content[i+1].Kind = yaml.MappingNode
+			parent.Content[i+1].Tag = ""
+			parent.Content[i+1].Value = ""
+			parent.Content[i+1].Content = nil
+		}
+		return parent.Content[i+1]
+	}
+
+	keyNode := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key}
+	valueNode := &yaml.Node{Kind: yaml.MappingNode}
+	parent.Content = append(parent.Content, keyNode, valueNode)
+	return valueNode
+}
+
+func setMapString(parent *yaml.Node, key, value string) {
+	for i := 0; i+1 < len(parent.Content); i += 2 {
+		if parent.Content[i].Value != key {
+			continue
+		}
+		parent.Content[i+1].Kind = yaml.ScalarNode
+		parent.Content[i+1].Tag = "!!str"
+		parent.Content[i+1].Value = value
+		parent.Content[i+1].Content = nil
+		return
+	}
+
+	parent.Content = append(
+		parent.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key},
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value},
+	)
+}
+
+func setMapInt(parent *yaml.Node, key string, value int) {
+	for i := 0; i+1 < len(parent.Content); i += 2 {
+		if parent.Content[i].Value != key {
+			continue
+		}
+		parent.Content[i+1].Kind = yaml.ScalarNode
+		parent.Content[i+1].Tag = "!!int"
+		parent.Content[i+1].Value = fmt.Sprintf("%d", value)
+		parent.Content[i+1].Content = nil
+		return
+	}
+
+	parent.Content = append(
+		parent.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key},
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!int", Value: fmt.Sprintf("%d", value)},
+	)
 }
 
 func newLogger(rawLevel, component string) (*log.Logger, error) {

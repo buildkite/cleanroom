@@ -76,3 +76,12 @@ func TestImageListAliasParses(t *testing.T) {
 		t.Fatalf("parse image ls returned error: %v", err)
 	}
 }
+
+func TestImageBumpRefAllowsNoArgs(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"image", "bump-ref"}); err != nil {
+		t.Fatalf("parse image bump-ref with default ref returned error: %v", err)
+	}
+}

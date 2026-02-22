@@ -88,6 +88,7 @@ cleanroom image pull ghcr.io/buildkite/cleanroom-base/alpine@sha256:...
 cleanroom image ls
 cleanroom image rm sha256:...
 cleanroom image import ghcr.io/buildkite/cleanroom-base/alpine@sha256:... ./rootfs.tar.gz
+cleanroom image bump-ref
 ```
 
 `ghcr.io/buildkite/cleanroom-base/alpine` is published from this repo on pushes to `main`
