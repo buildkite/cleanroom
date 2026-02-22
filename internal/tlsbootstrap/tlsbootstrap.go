@@ -83,6 +83,13 @@ func IssueCert(caCertPEM, caKeyPEM []byte, name string, sans []string) (*KeyPair
 	}
 
 	dnsNames, ips := classifySANs(sans)
+	if len(dnsNames) == 0 && len(ips) == 0 {
+		if ip := net.ParseIP(name); ip != nil {
+			ips = append(ips, ip)
+		} else {
+			dnsNames = append(dnsNames, name)
+		}
+	}
 
 	now := time.Now()
 	template := &x509.Certificate{

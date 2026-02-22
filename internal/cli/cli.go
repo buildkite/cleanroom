@@ -910,6 +910,10 @@ func (c *TLSInitCommand) Run(ctx *runtimeContext) error {
 }
 
 func (c *TLSIssueCommand) Run(ctx *runtimeContext) error {
+	if strings.ContainsAny(c.Name, "/\\") || strings.Contains(c.Name, "..") {
+		return fmt.Errorf("invalid certificate name %q: must not contain path separators or '..'", c.Name)
+	}
+
 	dir := c.Dir
 	if dir == "" {
 		d, err := paths.TLSDir()
