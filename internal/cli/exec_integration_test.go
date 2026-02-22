@@ -395,7 +395,10 @@ func TestExecIntegrationSecondInterruptTerminatesSandbox(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve endpoint: %v", err)
 	}
-	client := controlclient.New(ep)
+	client, err := controlclient.New(ep)
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
 	getResp, err := client.GetSandbox(context.Background(), &cleanroomv1.GetSandboxRequest{
 		SandboxId: sandboxID,
 	})
@@ -483,7 +486,10 @@ func TestExecIntegrationDefaultLeavesSandboxRunning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve endpoint: %v", err)
 	}
-	client := controlclient.New(ep)
+	client, err := controlclient.New(ep)
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
 	getResp, err := client.GetSandbox(context.Background(), &cleanroomv1.GetSandboxRequest{SandboxId: sandboxID})
 	if err != nil {
 		t.Fatalf("GetSandbox returned error: %v", err)
@@ -521,7 +527,10 @@ func TestExecIntegrationRemoveTerminatesSandbox(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve endpoint: %v", err)
 	}
-	client := controlclient.New(ep)
+	client, err := controlclient.New(ep)
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
 	getResp, err := client.GetSandbox(context.Background(), &cleanroomv1.GetSandboxRequest{SandboxId: sandboxID})
 	if err != nil {
 		t.Fatalf("GetSandbox returned error: %v", err)
@@ -537,7 +546,10 @@ func TestExecIntegrationReuseSandboxSkipsPolicyCompile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve endpoint: %v", err)
 	}
-	client := controlclient.New(ep)
+	client, err := controlclient.New(ep)
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
 
 	compiled, _, err := integrationLoader{}.LoadAndCompile(t.TempDir())
 	if err != nil {

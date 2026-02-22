@@ -12,17 +12,27 @@ import (
 	"strings"
 	"time"
 
+	"crypto/tls"
+
 	"connectrpc.com/connect"
 	"github.com/buildkite/cleanroom/internal/controlservice"
 	"github.com/buildkite/cleanroom/internal/endpoint"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/gen/cleanroom/v1/cleanroomv1connect"
 	"github.com/buildkite/cleanroom/internal/paths"
+	"github.com/buildkite/cleanroom/internal/tlsconfig"
 	"github.com/charmbracelet/log"
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
 	"tailscale.com/tsnet"
 )
+
+// TLSOptions holds explicit TLS paths for the server.
+type TLSOptions struct {
+	CertPath string
+	KeyPath  string
+	CAPath   string
+}
 
 type Server struct {
 	service *controlservice.Service
@@ -469,8 +479,8 @@ func toConnectError(err error) error {
 	return connect.NewError(code, err)
 }
 
-func Serve(ctx context.Context, ep endpoint.Endpoint, handler http.Handler, logger *log.Logger) error {
-	listener, cleanup, err := listen(ep, logger)
+func Serve(ctx context.Context, ep endpoint.Endpoint, handler http.Handler, logger *log.Logger, tlsOpts *TLSOptions) error {
+	listener, cleanup, err := listen(ep, logger, tlsOpts)
 	if err != nil {
 		return err
 	}
@@ -487,6 +497,11 @@ func Serve(ctx context.Context, ep endpoint.Endpoint, handler http.Handler, logg
 	httpServer := &http.Server{
 		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
+	}
+	if ep.Scheme == "https" {
+		if err := http2.ConfigureServer(httpServer, nil); err != nil {
+			return fmt.Errorf("configure HTTP/2 for TLS: %w", err)
+		}
 	}
 
 	errCh := make(chan error, 1)
@@ -517,7 +532,7 @@ func Serve(ctx context.Context, ep endpoint.Endpoint, handler http.Handler, logg
 	}
 }
 
-func listen(ep endpoint.Endpoint, logger *log.Logger) (net.Listener, func() error, error) {
+func listen(ep endpoint.Endpoint, logger *log.Logger, tlsOpts *TLSOptions) (net.Listener, func() error, error) {
 	if ep.Scheme == "unix" {
 		if err := os.MkdirAll(filepath.Dir(ep.Address), 0o755); err != nil {
 			return nil, nil, err
@@ -568,7 +583,30 @@ func listen(ep endpoint.Endpoint, logger *log.Logger) (net.Listener, func() erro
 	}
 
 	if ep.Scheme == "https" {
-		return nil, nil, errors.New("https listen endpoints are not supported yet: TLS configuration is not implemented")
+		var opts tlsconfig.Options
+		if tlsOpts != nil {
+			opts = tlsconfig.Options{
+				CertPath: tlsOpts.CertPath,
+				KeyPath:  tlsOpts.KeyPath,
+				CAPath:   tlsOpts.CAPath,
+			}
+		}
+		tlsCfg, err := tlsconfig.ResolveServer(opts)
+		if err != nil {
+			return nil, nil, fmt.Errorf("resolve server TLS config: %w", err)
+		}
+		if tlsCfg == nil {
+			return nil, nil, errors.New("https listen endpoint requires TLS certificates (run 'cleanroom tls init' or provide --tls-cert/--tls-key)")
+		}
+		addr := ep.Address
+		for _, prefix := range []string{"https://", "http://"} {
+			addr = strings.TrimPrefix(addr, prefix)
+		}
+		listener, err := tls.Listen("tcp", addr, tlsCfg)
+		if err != nil {
+			return nil, nil, fmt.Errorf("start TLS listener for %q: %w", addr, err)
+		}
+		return listener, nil, nil
 	}
 	if ep.Scheme == "http" {
 		addr := ep.Address

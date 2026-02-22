@@ -93,7 +93,7 @@ func TestListenTSNetUsesStateDirAndCleanup(t *testing.T) {
 		TSNetHostname: "cleanroom",
 	}
 
-	ln, cleanup, err := listen(ep, nil)
+	ln, cleanup, err := listen(ep, nil, nil)
 	if err != nil {
 		t.Fatalf("listen tsnet: %v", err)
 	}
@@ -140,7 +140,7 @@ func TestListenTSNetClosesServerOnListenError(t *testing.T) {
 		Scheme:        "tsnet",
 		Address:       ":7777",
 		TSNetHostname: "cleanroom",
-	}, nil)
+	}, nil, nil)
 	if err == nil {
 		t.Fatal("expected listen error")
 	}
@@ -228,7 +228,7 @@ func TestListenTailscaleServiceConfiguresServeAndAdvertise(t *testing.T) {
 		TSServiceName: "svc:cleanroom",
 	}
 
-	ln, cleanup, err := listen(ep, nil)
+	ln, cleanup, err := listen(ep, nil, nil)
 	if err != nil {
 		t.Fatalf("listen tailscale service: %v", err)
 	}
@@ -308,7 +308,7 @@ func TestListenTailscaleServiceSkipsAdvertiseWhenAlreadyPresent(t *testing.T) {
 		Scheme:        "tssvc",
 		Address:       "127.0.0.1:0",
 		TSServiceName: "svc:cleanroom",
-	}, nil)
+	}, nil, nil)
 	if err != nil {
 		t.Fatalf("listen tailscale service: %v", err)
 	}
@@ -338,7 +338,7 @@ func TestListenTailscaleServiceReturnsErrorWhenStatusFails(t *testing.T) {
 		Scheme:        "tssvc",
 		Address:       "127.0.0.1:0",
 		TSServiceName: "svc:cleanroom",
-	}, nil)
+	}, nil, nil)
 	if err == nil {
 		t.Fatal("expected listen to fail when tailscale status is unavailable")
 	}
@@ -380,7 +380,7 @@ func TestListenTSNetWiresLogger(t *testing.T) {
 		Scheme:        "tsnet",
 		Address:       ":7777",
 		TSNetHostname: "cleanroom",
-	}, logger)
+	}, logger, nil)
 	if err != nil {
 		t.Fatalf("listen tsnet: %v", err)
 	}

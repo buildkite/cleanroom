@@ -40,3 +40,18 @@ func TSNetStateDir() (string, error) {
 	}
 	return filepath.Join(base, "tsnet"), nil
 }
+
+// TLSDir returns the default directory for cleanroom TLS material.
+// Uses $XDG_CONFIG_HOME/cleanroom/tls or ~/.config/cleanroom/tls.
+func TLSDir() (string, error) {
+	configHome := strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME"))
+	if configHome != "" {
+		return filepath.Join(configHome, "cleanroom", "tls"), nil
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".config", "cleanroom", "tls"), nil
+}
