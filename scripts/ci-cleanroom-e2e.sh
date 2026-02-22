@@ -127,6 +127,29 @@ if [[ "$status" -ne 7 ]]; then
   exit 1
 fi
 
+echo "--- :closed_lock_with_key: Gateway reachability test"
+if grep -q 'gateway server started' "$tmpdir/server.log"; then
+  echo "gateway server started (confirmed from server log)"
+  # The gateway binds on 0.0.0.0:8170. Requests from localhost (non-TAP)
+  # should get 403 from the identity middleware (unregistered source IP).
+  set +e
+  gw_body="$(curl -s -o - -w '\n%{http_code}' http://127.0.0.1:8170/meta/ 2>&1)"
+  gw_status=$?
+  set -e
+  gw_http_code="$(echo "$gw_body" | tail -n1)"
+  if [[ "$gw_status" -eq 0 && "$gw_http_code" == "403" ]]; then
+    echo "gateway correctly returned 403 for non-TAP source IP"
+  elif [[ "$gw_status" -ne 0 ]]; then
+    echo "gateway connection refused/unreachable from localhost (INPUT rules blocking) — acceptable"
+  else
+    echo "unexpected gateway response: HTTP $gw_http_code (curl exit $gw_status)" >&2
+    echo "$gw_body" >&2
+    exit 1
+  fi
+else
+  echo "gateway server not started (no log entry found) — skipping reachability test"
+fi
+
 echo "--- :bar_chart: Run observability present"
 ./dist/cleanroom status --last-run | tee "$tmpdir/status.out"
 if ! grep -q 'run-observability.json' "$tmpdir/status.out"; then
