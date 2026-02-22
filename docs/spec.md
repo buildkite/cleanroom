@@ -345,9 +345,9 @@ Policy feature mapping:
 - Any unmet requirement results in `backend_capability_mismatch`.
 
 #### Local backend (firecracker)
-- Firecracker microVM with per-run TAP networking and nftables enforcement.
+- Firecracker microVM with per-run TAP networking and iptables enforcement.
 - Primary use: developer workflows and lightweight local CI.
-- Controls at runtime via host nftables rules + managed DNS from compiled policy.
+- Controls at runtime via host iptables rules + managed DNS from compiled policy.
 
 ## 8) Configuration and integration points
 - CLI command set (v1):

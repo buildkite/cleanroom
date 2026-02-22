@@ -13,20 +13,30 @@ Cleanroom uses fast Firecracker microVMs (under 2s to interactive) to create iso
 
 ## Quick Start
 
-Validate policy, start the server, run a command:
+Start the server (all CLI commands require a running server):
 
 ```bash
-cleanroom policy validate
-cleanroom serve
-cleanroom exec -- npm test
+cleanroom serve &
 ```
 
 The server listens on `unix://$XDG_RUNTIME_DIR/cleanroom/cleanroom.sock` by default.
-All CLI commands talk to this endpoint.
+
+The simplest way to run a command is `cleanroom exec`, which creates an ephemeral sandbox, runs the command, and tears it down:
+
+```bash
+cleanroom exec -- npm test
+```
+
+For long-running sandboxes, create one explicitly and run multiple commands against it:
+
+```bash
+cleanroom exec --keep-sandbox -- npm test
+# reuse the sandbox for another command
+cleanroom exec --sandbox-id <id> -- npm run lint
+# terminate when done
+```
 
 ## CLI
-
-`cleanroom exec` is the primary interface — it creates an ephemeral sandbox, runs the command, and tears down:
 
 ```bash
 cleanroom exec -- npm test
@@ -129,7 +139,7 @@ The Firecracker adapter resolves `sandbox.image.ref` through the local image man
 ## Isolation Model
 
 - Workload runs in a Firecracker microVM
-- Host egress is controlled with TAP + nftables rules from compiled policy
+- Host egress is controlled with TAP + iptables rules from compiled policy
 - Default network behaviour is deny
 - Rootfs writes are discarded after each run
 - Per-run observability is written to `run-observability.json` (rootfs prep, network setup, VM ready, command runtime, total)
