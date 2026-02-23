@@ -110,7 +110,7 @@ type ExecCommand struct {
 	LogLevel    string `help:"Client log level (debug|info|warn|error)"`
 	Backend     string `help:"Execution backend (defaults to runtime config or firecracker)"`
 	SandboxID   string `help:"Reuse an existing sandbox instead of creating a new one"`
-	KeepSandbox bool   `help:"Keep a newly created sandbox running after command completion"`
+	Remove bool `name:"rm" help:"Terminate a newly created sandbox after command completion"`
 
 	LaunchSeconds int64 `help:"VM boot/guest-agent readiness timeout in seconds"`
 
@@ -123,7 +123,7 @@ type ConsoleCommand struct {
 	LogLevel    string `help:"Client log level (debug|info|warn|error)"`
 	Backend     string `help:"Execution backend (defaults to runtime config or firecracker)"`
 	SandboxID   string `help:"Reuse an existing sandbox instead of creating a new one"`
-	KeepSandbox bool   `help:"Keep a newly created sandbox running after console exits"`
+	Remove      bool   `name:"rm" help:"Terminate a newly created sandbox after console exits"`
 
 	LaunchSeconds int64 `help:"VM boot/guest-agent readiness timeout in seconds"`
 
@@ -469,7 +469,7 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 		createdSandbox = true
 	}
 	detached := false
-	autoTerminateSandbox := createdSandbox && !e.KeepSandbox
+	autoTerminateSandbox := createdSandbox && e.Remove
 	defer func() {
 		if detached || !autoTerminateSandbox || sandboxID == "" {
 			return
@@ -564,13 +564,11 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 	select {
 	case <-secondInterrupt:
 		detached = true
-		if autoTerminateSandbox {
-			terminateCtx, terminateCancel := context.WithTimeout(context.Background(), 2*time.Second)
-			_, terminateErr := client.TerminateSandbox(terminateCtx, &cleanroomv1.TerminateSandboxRequest{SandboxId: sandboxID})
-			terminateCancel()
-			if terminateErr != nil && logger != nil {
-				logger.Warn("terminate sandbox after detach failed", "sandbox_id", sandboxID, "error", terminateErr)
-			}
+		terminateCtx, terminateCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_, terminateErr := client.TerminateSandbox(terminateCtx, &cleanroomv1.TerminateSandboxRequest{SandboxId: sandboxID})
+		terminateCancel()
+		if terminateErr != nil && logger != nil {
+			logger.Warn("terminate sandbox after detach failed", "sandbox_id", sandboxID, "error", terminateErr)
 		}
 		return exitCodeError{code: 130}
 	default:
@@ -680,7 +678,7 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 		sandboxID = createSandboxResp.GetSandbox().GetSandboxId()
 		createdSandbox = true
 	}
-	autoTerminateSandbox := createdSandbox && !c.KeepSandbox
+	autoTerminateSandbox := createdSandbox && c.Remove
 	defer func() {
 		if sandboxID == "" || !autoTerminateSandbox {
 			return

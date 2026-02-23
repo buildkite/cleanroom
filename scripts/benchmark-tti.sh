@@ -23,7 +23,7 @@ Environment:
 
 Notes:
   - This script expects the cleanroom server to already be running.
-  - The measured command is: cleanroom exec --keep-sandbox ... -- echo benchmark
+  - The measured command is: cleanroom exec ... -- echo benchmark
   - Sandbox termination runs in hyperfine cleanup and is excluded from timing.
 EOF
 }
@@ -138,7 +138,7 @@ benchmark_cmd=("$cleanroom_bin" exec --host "$host" -c "$chdir")
 if [[ -n "$backend" ]]; then
   benchmark_cmd+=(--backend "$backend")
 fi
-benchmark_cmd+=(--keep-sandbox -- echo benchmark)
+benchmark_cmd+=(-- echo benchmark)
 
 quoted_cmd=""
 for token in "${benchmark_cmd[@]}"; do
