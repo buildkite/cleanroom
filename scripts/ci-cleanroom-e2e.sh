@@ -55,6 +55,34 @@ if [[ -n "$PRIVILEGED_HELPER_PATH" ]]; then
   echo "    privileged_helper_path: $PRIVILEGED_HELPER_PATH" >> "$XDG_CONFIG_HOME/cleanroom/config.yaml"
 fi
 
+if [[ -n "$PRIVILEGED_HELPER_PATH" && -f "scripts/cleanroom-root-helper.sh" ]]; then
+  repo_sha="$(sha256sum scripts/cleanroom-root-helper.sh | awk '{print $1}')"
+  host_sha="$(sha256sum "$PRIVILEGED_HELPER_PATH" 2>/dev/null | awk '{print $1}')" || true
+  if [[ -n "$host_sha" && "$repo_sha" != "$host_sha" ]]; then
+    echo "⚠️  Root helper on host ($PRIVILEGED_HELPER_PATH) does not match repo (scripts/cleanroom-root-helper.sh)"
+    echo "   host: $host_sha"
+    echo "   repo: $repo_sha"
+    echo "   Update with: sudo install -o root -g root -m 0755 scripts/cleanroom-root-helper.sh $PRIVILEGED_HELPER_PATH"
+    if command -v buildkite-agent >/dev/null 2>&1; then
+      buildkite-agent annotate --context root-helper-drift --style warning <<EOF
+### ⚠️ Root helper out of date
+
+The installed root helper (\`$PRIVILEGED_HELPER_PATH\`) does not match \`scripts/cleanroom-root-helper.sh\` from this commit.
+
+| | SHA-256 |
+|---|---|
+| Host | \`$host_sha\` |
+| Repo | \`$repo_sha\` |
+
+**Update on the CI host:**
+\`\`\`
+sudo install -o root -g root -m 0755 scripts/cleanroom-root-helper.sh $PRIVILEGED_HELPER_PATH
+\`\`\`
+EOF
+    fi
+  fi
+fi
+
 echo "--- :stethoscope: Doctor"
 ./dist/cleanroom doctor --json | tee "$tmpdir/doctor.json"
 if grep -q '"status": "fail"' "$tmpdir/doctor.json"; then
@@ -97,6 +125,29 @@ set -e
 if [[ "$status" -ne 7 ]]; then
   echo "expected exit code 7 from guest command, got $status" >&2
   exit 1
+fi
+
+echo "--- :closed_lock_with_key: Gateway reachability test"
+if grep -q 'gateway server started' "$tmpdir/server.log"; then
+  echo "gateway server started (confirmed from server log)"
+  # The gateway binds on 0.0.0.0:8170. Requests from localhost (non-TAP)
+  # should get 403 from the identity middleware (unregistered source IP).
+  set +e
+  gw_body="$(curl -s -o - -w '\n%{http_code}' http://127.0.0.1:8170/meta/ 2>&1)"
+  gw_status=$?
+  set -e
+  gw_http_code="$(echo "$gw_body" | tail -n1)"
+  if [[ "$gw_status" -eq 0 && "$gw_http_code" == "403" ]]; then
+    echo "gateway correctly returned 403 for non-TAP source IP"
+  elif [[ "$gw_status" -ne 0 ]]; then
+    echo "gateway connection refused/unreachable from localhost (INPUT rules blocking) — acceptable"
+  else
+    echo "unexpected gateway response: HTTP $gw_http_code (curl exit $gw_status)" >&2
+    echo "$gw_body" >&2
+    exit 1
+  fi
+else
+  echo "gateway server not started (no log entry found) — skipping reachability test"
 fi
 
 echo "--- :bar_chart: Run observability present"

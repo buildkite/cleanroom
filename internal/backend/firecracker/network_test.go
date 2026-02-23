@@ -84,7 +84,7 @@ func TestSetupHostNetworkWithDepsAddsDenyDefaultAndCleanupIndependentContext(t *
 	}
 
 	reqCtx, cancel := context.WithCancel(context.Background())
-	cfg, cleanup, err := setupHostNetworkWithDeps(reqCtx, "run-12345", []policy.AllowRule{{Host: "proxy.golang.org", Ports: []int{443}}}, lookup, run, runBatch)
+	cfg, cleanup, err := setupHostNetworkWithDeps(reqCtx, "run-12345", []policy.AllowRule{{Host: "proxy.golang.org", Ports: []int{443}}}, 8170, lookup, run, runBatch)
 	if err != nil {
 		t.Fatalf("setupHostNetworkWithDeps: %v", err)
 	}
@@ -114,6 +114,24 @@ func TestSetupHostNetworkWithDepsAddsDenyDefaultAndCleanupIndependentContext(t *
 	}
 	if !strings.Contains(joined, "iptables -A FORWARD -i "+tap+" -p udp -d 142.251.41.17 --dport 443 -j ACCEPT") {
 		t.Fatalf("expected udp allow rule for policy host\ncalls:\n%s", joined)
+	}
+
+	// Verify anti-spoof INPUT rules.
+	if !strings.Contains(joined, "iptables -A INPUT -i "+tap+" ! -s "+cfg.GuestIP+" -j DROP") {
+		t.Fatalf("expected anti-spoof INPUT rule for tap %s\ncalls:\n%s", tap, joined)
+	}
+	if !strings.Contains(joined, "iptables -A INPUT -i "+tap+" -s "+cfg.GuestIP+" -p tcp --dport 8170 -j ACCEPT") {
+		t.Fatalf("expected gateway INPUT ACCEPT rule for tap %s\ncalls:\n%s", tap, joined)
+	}
+	if !strings.Contains(joined, "iptables -A INPUT -i "+tap+" -j DROP") {
+		t.Fatalf("expected INPUT catch-all DROP rule for tap %s\ncalls:\n%s", tap, joined)
+	}
+
+	// Verify INPUT rules appear before FORWARD rules.
+	inputAntiSpoofIdx := strings.Index(joined, "iptables -A INPUT -i "+tap+" ! -s ")
+	forwardIdx := strings.Index(joined, "iptables -A FORWARD -i "+tap)
+	if inputAntiSpoofIdx < 0 || forwardIdx < 0 || inputAntiSpoofIdx > forwardIdx {
+		t.Fatalf("INPUT rules must appear before FORWARD rules\ncalls:\n%s", joined)
 	}
 
 	cleanupCalls := 0

@@ -107,8 +107,8 @@ run_iptables() {
     fi
   fi
 
-  if [[ "$#" -eq 6 && ( "$1" == "-A" || "$1" == "-D" ) && "$2" == "FORWARD" && "$3" == "-i" && "$5" == "-j" && "$6" == "DROP" ]]; then
-    is_tap_name "$4" || die "iptables FORWARD drop: unsupported interface '$4'"
+  if [[ "$#" -eq 6 && ( "$1" == "-A" || "$1" == "-D" ) && ( "$2" == "FORWARD" || "$2" == "INPUT" ) && "$3" == "-i" && "$5" == "-j" && "$6" == "DROP" ]]; then
+    is_tap_name "$4" || die "iptables $2 drop: unsupported interface '$4'"
     exec /usr/sbin/iptables "$@"
   fi
 
@@ -119,13 +119,34 @@ run_iptables() {
     exec /usr/sbin/iptables "$@"
   fi
 
+  # Anti-spoof: iptables -A INPUT -i <tap> ! -s <IP> -j DROP
+  if [[ "$#" -eq 9 && ( "$1" == "-A" || "$1" == "-D" ) && "$2" == "INPUT" && "$3" == "-i" && "$5" == "!" && "$6" == "-s" && "$8" == "-j" && "$9" == "DROP" ]]; then
+    is_tap_name "$4" || die "iptables INPUT anti-spoof: unsupported interface '$4'"
+    is_ipv4 "$7" || die "iptables INPUT anti-spoof: invalid ip '$7'"
+    exec /usr/sbin/iptables "$@"
+  fi
+
+  # Gateway accept: iptables -A INPUT -i <tap> -s <IP> -p tcp --dport <port> -j ACCEPT
+  if [[ "$#" -eq 12 && ( "$1" == "-A" || "$1" == "-D" ) && "$2" == "INPUT" && "$3" == "-i" && "$5" == "-s" && "$7" == "-p" && "$8" == "tcp" && "$9" == "--dport" && "${11}" == "-j" && "${12}" == "ACCEPT" ]]; then
+    is_tap_name "$4" || die "iptables INPUT accept: unsupported interface '$4'"
+    is_ipv4 "$6" || die "iptables INPUT accept: invalid ip '$6'"
+    is_numeric "${10}" || die "iptables INPUT accept: invalid port '${10}'"
+    exec /usr/sbin/iptables "$@"
+  fi
+
   die "iptables: unsupported arguments"
 }
 
 run_sysctl() {
-  [[ "$#" -eq 2 ]] || die "sysctl: expected '-w net.ipv4.ip_forward=1'"
-  [[ "$1" == "-w" && "$2" == "net.ipv4.ip_forward=1" ]] || die "sysctl: unsupported arguments"
-  exec /usr/sbin/sysctl -w net.ipv4.ip_forward=1
+  [[ "$#" -eq 2 ]] || die "sysctl: expected 2 arguments"
+  [[ "$1" == "-w" ]] || die "sysctl: unsupported flag '$1'"
+  if [[ "$2" == "net.ipv4.ip_forward=1" ]]; then
+    exec /usr/sbin/sysctl -w net.ipv4.ip_forward=1
+  fi
+  if [[ "$2" =~ ^net\.ipv6\.conf\.cr[a-z0-9]{1,13}\.disable_ipv6=1$ ]]; then
+    exec /usr/sbin/sysctl -w "$2"
+  fi
+  die "sysctl: unsupported arguments"
 }
 
 run_mount() {
