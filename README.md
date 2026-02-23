@@ -134,7 +134,7 @@ cleanroom tls init                    # generate CA + server/client certs
 cleanroom tls issue myhost --san myhost.internal
 ```
 
-Image lifecycle:
+## Image Lifecycle
 
 ```bash
 cleanroom image pull ghcr.io/buildkite/cleanroom-base/alpine@sha256:...
