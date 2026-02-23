@@ -186,7 +186,7 @@ create_cmd=("$cleanroom_bin" exec --host "$host" -c "$chdir")
 if [[ -n "$backend" ]]; then
   create_cmd+=(--backend "$backend")
 fi
-create_cmd+=(--keep-sandbox -- sh -lc "true")
+create_cmd+=(-- sh -lc "true")
 
 create_stderr_file="$(mktemp)"
 "${create_cmd[@]}" >/dev/null 2>"$create_stderr_file"

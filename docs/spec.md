@@ -166,7 +166,8 @@ metadata:
 - Secret material is provisioned only to the cleanroom control process and never mounted into the guest filesystem.
 
 ### 5.4 Execution model
-- `cleanroom exec` is the primary command for running arbitrary commands in sandbox.
+- A sandbox is the primary unit of lifecycle. It is created once and accepts multiple executions.
+- `cleanroom exec` is the primary command for running arbitrary commands in a sandbox.
 - `cleanroom exec` uses a `--` command separator consistent with common shell tooling.
 - Unless an explicit vector command form is added later, `cleanroom exec` defaults to shell execution (e.g., `/bin/sh -lc`) so commands like `cleanroom exec "npm test"` work directly.
 - Cleanroom uses a client/server architecture:
@@ -174,8 +175,9 @@ metadata:
   - `cleanroom serve` validates compiled policy and executes runs via backend adapters.
   - all CLI commands, including `cleanroom exec`, call the server API.
   - "local execution" means local backend selected by the server, not a direct non-API code path.
+- Filesystem writes persist across executions within a sandbox and are discarded on sandbox termination.
 - Current API/runtime intent: no host workspace mount input is accepted by `CreateSandbox` or `CreateExecution`.
-- Workloads run against the backend-provided sandbox image filesystem for each execution.
+- Workloads run against the backend-provided sandbox image filesystem.
 
 ### 5.4.1 `cleanroom exec` behavior contract (normative)
 - `cleanroom exec` must:
@@ -185,7 +187,8 @@ metadata:
   4. create execution,
   5. stream output/events to caller,
   6. return workload exit code.
-- Default mode is ephemeral sandbox per invocation unless explicit reuse is requested.
+- Default mode creates a persistent sandbox that remains `READY` after execution completes. Use `--rm` to terminate the sandbox after execution.
+- Reuse an existing sandbox with `--sandbox-id <id>`.
 - Interactive mode (`-it`) must use bidirectional stream semantics.
 - Non-interactive mode must use server-streaming semantics.
 - First interrupt signal should request execution cancel; second interrupt may detach client stream immediately.
@@ -231,7 +234,7 @@ All runtime launch behavior is initiated by control-plane API calls (for example
   - DNS/egress allowlist only.
   - outbound packet filtering to allowed host:port/protocol.
 7. Run workload command.
-8. Emit structured events + exit status; tear down resources.
+8. Emit structured events + exit status. Sandbox remains `READY` for further executions until explicitly terminated or TTL expires.
 
 ### 6.1.1 Policy load and immutability
 - Policy is loaded and compiled by the client, then provided to the control plane at sandbox creation.

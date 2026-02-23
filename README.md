@@ -21,19 +21,23 @@ cleanroom serve &
 
 The server listens on `unix://$XDG_RUNTIME_DIR/cleanroom/cleanroom.sock` by default.
 
-The simplest way to run a command is `cleanroom exec`, which creates an ephemeral sandbox, runs the command, and tears it down:
+Run a command in a sandbox:
 
 ```bash
 cleanroom exec -- npm test
 ```
 
-For long-running sandboxes, create one explicitly and run multiple commands against it:
+The sandbox stays running after the command completes. Run more commands against it:
 
 ```bash
-cleanroom exec --keep-sandbox -- npm test
-# reuse the sandbox for another command
 cleanroom exec --sandbox-id <id> -- npm run lint
-# terminate when done
+cleanroom exec --sandbox-id <id> -- npm run build
+```
+
+Use `--rm` to tear down the sandbox after the command completes (useful for one-off CI jobs):
+
+```bash
+cleanroom exec --rm -- npm test
 ```
 
 ## CLI
@@ -141,7 +145,7 @@ The Firecracker adapter resolves `sandbox.image.ref` through the local image man
 - Workload runs in a Firecracker microVM
 - Host egress is controlled with TAP + iptables rules from compiled policy
 - Default network behaviour is deny
-- Rootfs writes are discarded after each run
+- Rootfs writes persist across executions within a sandbox and are discarded on sandbox termination
 - Per-run observability is written to `run-observability.json` (rootfs prep, network setup, VM ready, command runtime, total)
 - Rootfs copy uses clone/reflink when available, with copy fallback
 

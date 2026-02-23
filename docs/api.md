@@ -245,13 +245,13 @@ Additional command forms:
 Behavior contract:
 1. Resolve server endpoint (`--host`, `CLEANROOM_HOST`, context, default unix socket).
 2. Resolve and compile repository policy.
-3. Create sandbox (default: ephemeral sandbox for this invocation).
+3. Create or reuse sandbox (`--sandbox-id <id>` reuses an existing sandbox).
 4. Create execution with command and TTY options.
 5. Stream output:
    - non-interactive: `StreamExecution`
    - interactive: `AttachExecution`
 6. Return the command exit code.
-7. If sandbox is ephemeral, terminate it after execution completion.
+7. Sandbox remains `READY` for further executions. Use `--rm` to terminate after execution.
 
 Signal behavior:
 1. First `Ctrl-C`: `CancelExecution`.

@@ -20,7 +20,7 @@ We currently track two benchmark categories:
 
 Script: `scripts/benchmark-tti.sh`
 
-- Starts from `cleanroom exec --keep-sandbox -- echo benchmark`
+- Starts from `cleanroom exec -- echo benchmark`
 - Uses `hyperfine` for repeated runs
 - Excludes sandbox teardown from timed command
 - Performs termination in `--prepare/--cleanup` steps
