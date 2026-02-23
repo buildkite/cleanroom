@@ -260,7 +260,10 @@ func TestConsoleIntegrationReuseSandboxSkipsPolicyCompile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve endpoint: %v", err)
 	}
-	client := controlclient.New(ep)
+	client, err := controlclient.New(ep)
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
 	compiled, _, err := integrationLoader{}.LoadAndCompile(t.TempDir())
 	if err != nil {
 		t.Fatalf("load policy: %v", err)

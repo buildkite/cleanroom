@@ -25,6 +25,8 @@ import (
 	"github.com/buildkite/cleanroom/internal/controlserver"
 	"github.com/buildkite/cleanroom/internal/controlservice"
 	"github.com/buildkite/cleanroom/internal/endpoint"
+	"github.com/buildkite/cleanroom/internal/tlsbootstrap"
+	"github.com/buildkite/cleanroom/internal/tlsconfig"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/imagemgr"
 	"github.com/buildkite/cleanroom/internal/ociref"
@@ -60,6 +62,7 @@ type CLI struct {
 	Exec    ExecCommand    `cmd:"" help:"Execute a command in a cleanroom backend"`
 	Console ConsoleCommand `cmd:"" help:"Attach an interactive console to a cleanroom execution"`
 	Serve   ServeCommand   `cmd:"" help:"Run the cleanroom control-plane server"`
+	TLS     TLSCommand     `cmd:"" help:"Manage TLS certificates for mTLS"`
 	Doctor  DoctorCommand  `cmd:"" help:"Run environment and backend diagnostics"`
 	Status  StatusCommand  `cmd:"" help:"Inspect run artifacts"`
 }
@@ -110,7 +113,10 @@ type ExecCommand struct {
 	LogLevel    string `help:"Client log level (debug|info|warn|error)"`
 	Backend     string `help:"Execution backend (defaults to runtime config or firecracker)"`
 	SandboxID   string `help:"Reuse an existing sandbox instead of creating a new one"`
-	Remove bool `name:"rm" help:"Terminate a newly created sandbox after command completion"`
+	Remove  bool   `name:"rm" help:"Terminate a newly created sandbox after command completion"`
+	TLSCert string `help:"Path to TLS client certificate (auto-discovered from XDG config for https)"`
+	TLSKey  string `help:"Path to TLS client private key (auto-discovered from XDG config for https)"`
+	TLSCA   string `help:"Path to CA certificate for server verification (auto-discovered from XDG config for https)"`
 
 	LaunchSeconds int64 `help:"VM boot/guest-agent readiness timeout in seconds"`
 
@@ -123,7 +129,10 @@ type ConsoleCommand struct {
 	LogLevel    string `help:"Client log level (debug|info|warn|error)"`
 	Backend     string `help:"Execution backend (defaults to runtime config or firecracker)"`
 	SandboxID   string `help:"Reuse an existing sandbox instead of creating a new one"`
-	Remove      bool   `name:"rm" help:"Terminate a newly created sandbox after console exits"`
+	Remove  bool   `name:"rm" help:"Terminate a newly created sandbox after console exits"`
+	TLSCert string `help:"Path to TLS client certificate (auto-discovered from XDG config for https)"`
+	TLSKey  string `help:"Path to TLS client private key (auto-discovered from XDG config for https)"`
+	TLSCA   string `help:"Path to CA certificate for server verification (auto-discovered from XDG config for https)"`
 
 	LaunchSeconds int64 `help:"VM boot/guest-agent readiness timeout in seconds"`
 
@@ -133,6 +142,26 @@ type ConsoleCommand struct {
 type ServeCommand struct {
 	Listen   string `help:"Listen endpoint for control API (defaults to runtime endpoint; supports tsnet://hostname[:port] and tssvc://service[:local-port])"`
 	LogLevel string `help:"Server log level (debug|info|warn|error)"`
+	TLSCert  string `help:"Path to TLS server certificate (auto-discovered from XDG config for https)"`
+	TLSKey   string `help:"Path to TLS server private key (auto-discovered from XDG config for https)"`
+	TLSCA    string `help:"Path to CA certificate for client verification (auto-discovered from XDG config for https)"`
+}
+
+type TLSCommand struct {
+	Init  TLSInitCommand  `cmd:"" help:"Generate CA and server/client certificates"`
+	Issue TLSIssueCommand `cmd:"" help:"Issue an additional certificate signed by the CA"`
+}
+
+type TLSInitCommand struct {
+	Dir   string `help:"Output directory for TLS material (default: $XDG_CONFIG_HOME/cleanroom/tls)"`
+	Force bool   `help:"Overwrite existing CA and certificates"`
+}
+
+type TLSIssueCommand struct {
+	Name  string   `arg:"" required:"" help:"Common name for the certificate"`
+	SAN   []string `help:"Subject alternative names (DNS names or IP addresses)"`
+	Dir   string   `help:"TLS directory containing CA material (default: $XDG_CONFIG_HOME/cleanroom/tls)"`
+	Force bool     `help:"Overwrite existing certificate and key files"`
 }
 
 type StatusCommand struct {
@@ -447,7 +476,14 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 		"sandbox_id", strings.TrimSpace(e.SandboxID),
 		"command_argc", len(e.Command),
 	)
-	client := controlclient.New(ep)
+	client, err := controlclient.New(ep, controlclient.WithTLS(tlsconfig.Options{
+		CertPath: e.TLSCert,
+		KeyPath:  e.TLSKey,
+		CAPath:   e.TLSCA,
+	}))
+	if err != nil {
+		return fmt.Errorf("configure TLS: %w", err)
+	}
 	sandboxID := strings.TrimSpace(e.SandboxID)
 	createdSandbox := false
 	if sandboxID == "" {
@@ -657,7 +693,14 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 		"command_argc", len(command),
 	)
 
-	client := controlclient.New(ep)
+	client, err := controlclient.New(ep, controlclient.WithTLS(tlsconfig.Options{
+		CertPath: c.TLSCert,
+		KeyPath:  c.TLSKey,
+		CAPath:   c.TLSCA,
+	}))
+	if err != nil {
+		return fmt.Errorf("configure TLS: %w", err)
+	}
 	sandboxID := strings.TrimSpace(c.SandboxID)
 	createdSandbox := false
 	if sandboxID == "" {
@@ -850,6 +893,69 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 	return nil
 }
 
+func (c *TLSInitCommand) Run(ctx *runtimeContext) error {
+	dir := c.Dir
+	if dir == "" {
+		d, err := paths.TLSDir()
+		if err != nil {
+			return err
+		}
+		dir = d
+	}
+	if err := tlsbootstrap.Init(dir, c.Force); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "TLS material written to %s\n", dir)
+	return nil
+}
+
+func (c *TLSIssueCommand) Run(ctx *runtimeContext) error {
+	if strings.ContainsAny(c.Name, "/\\") || strings.Contains(c.Name, "..") {
+		return fmt.Errorf("invalid certificate name %q: must not contain path separators or '..'", c.Name)
+	}
+
+	dir := c.Dir
+	if dir == "" {
+		d, err := paths.TLSDir()
+		if err != nil {
+			return err
+		}
+		dir = d
+	}
+
+	caCertPEM, err := os.ReadFile(filepath.Join(dir, "ca.pem"))
+	if err != nil {
+		return fmt.Errorf("read CA certificate: %w (run 'cleanroom tls init' first)", err)
+	}
+	caKeyPEM, err := os.ReadFile(filepath.Join(dir, "ca.key"))
+	if err != nil {
+		return fmt.Errorf("read CA key: %w", err)
+	}
+
+	kp, err := tlsbootstrap.IssueCert(caCertPEM, caKeyPEM, c.Name, c.SAN)
+	if err != nil {
+		return err
+	}
+
+	certPath := filepath.Join(dir, c.Name+".pem")
+	keyPath := filepath.Join(dir, c.Name+".key")
+	if !c.Force {
+		for _, p := range []string{certPath, keyPath} {
+			if _, err := os.Stat(p); err == nil {
+				return fmt.Errorf("%s already exists (use --force to overwrite)", p)
+			}
+		}
+	}
+	if err := os.WriteFile(certPath, kp.CertPEM, 0o644); err != nil {
+		return err
+	}
+	if err := os.WriteFile(keyPath, kp.KeyPEM, 0o600); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "Certificate written to %s\n", certPath)
+	return nil
+}
+
 func (s *ServeCommand) Run(ctx *runtimeContext) error {
 	logger, err := newLogger(s.LogLevel, "server")
 	if err != nil {
@@ -876,6 +982,15 @@ func (s *ServeCommand) Run(ctx *runtimeContext) error {
 		fcAdapter.GatewayRegistry = gwRegistry
 	}
 
+	var serverTLS *controlserver.TLSOptions
+	if ep.Scheme == "https" {
+		serverTLS = &controlserver.TLSOptions{
+			CertPath: s.TLSCert,
+			KeyPath:  s.TLSKey,
+			CAPath:   s.TLSCA,
+		}
+	}
+
 	service := &controlservice.Service{
 		Loader:   ctx.Loader,
 		Config:   ctx.Config,
@@ -886,7 +1001,7 @@ func (s *ServeCommand) Run(ctx *runtimeContext) error {
 
 	runCtx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	runErr := controlserver.Serve(runCtx, ep, server.Handler(), logger)
+	runErr := controlserver.Serve(runCtx, ep, server.Handler(), logger, serverTLS)
 	gwStopCtx, gwStopCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer gwStopCancel()
 	_ = gwServer.Stop(gwStopCtx)
