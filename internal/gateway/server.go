@@ -77,7 +77,7 @@ func (s *Server) Start() error {
 		return errors.New("gateway server already started")
 	}
 
-	ln, err := net.Listen("tcp", s.addr)
+	ln, err := net.Listen("tcp4", s.addr)
 	if err != nil {
 		return err
 	}

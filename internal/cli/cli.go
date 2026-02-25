@@ -1052,6 +1052,17 @@ func (s *ServeCommand) Run(ctx *runtimeContext) error {
 	if fcAdapter, ok := ctx.Backends["firecracker"].(*firecracker.Adapter); ok {
 		fcAdapter.GatewayRegistry = gwRegistry
 		fcAdapter.GatewayPort = gwPort
+
+		fwCfg := backend.FirecrackerConfig{
+			PrivilegedMode:       ctx.Config.Backends.Firecracker.PrivilegedMode,
+			PrivilegedHelperPath: ctx.Config.Backends.Firecracker.PrivilegedHelperPath,
+		}
+		fwCleanup, err := firecracker.SetupGatewayFirewall(context.Background(), gwPort, fwCfg)
+		if err != nil {
+			logger.Warn("failed to install gateway firewall rules", "error", err)
+		} else {
+			defer fwCleanup()
+		}
 	}
 
 	var serverTLS *controlserver.TLSOptions
