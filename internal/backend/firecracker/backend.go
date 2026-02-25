@@ -57,6 +57,7 @@ type Adapter struct {
 	runGuestCommandFn func(context.Context, context.Context, <-chan struct{}, func() error, string, uint32, vsockexec.ExecRequest, backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error)
 
 	GatewayRegistry gatewayRegistry
+	GatewayPort     int
 }
 
 // gatewayRegistry is the subset of gateway.Registry used by the adapter.
@@ -273,7 +274,7 @@ func (a *Adapter) RunInSandbox(ctx context.Context, req backend.RunRequest, stre
 		}
 	}
 
-	guestResult, timing, err := a.executeInSandbox(ctx, instance, req.LaunchSeconds, req.Command, stream)
+	guestResult, timing, err := a.executeInSandbox(ctx, instance, req.LaunchSeconds, req.Command, req.TTY, stream)
 	if err != nil {
 		observation.ExitCode = 1
 		observation.GuestError = err.Error()
@@ -334,7 +335,7 @@ func (a *Adapter) DownloadSandboxFile(ctx context.Context, sandboxID, path strin
 		limit = maxBytes
 	}
 	cmd := []string{"head", "-c", strconv.FormatInt(limit, 10), "--", path}
-	result, _, err := a.executeInSandbox(ctx, instance, 0, cmd, backend.OutputStream{OnStdout: func(chunk []byte) {
+	result, _, err := a.executeInSandbox(ctx, instance, 0, cmd, false, backend.OutputStream{OnStdout: func(chunk []byte) {
 		_, _ = stdout.Write(chunk)
 	}})
 	if err != nil {
@@ -384,14 +385,18 @@ func (a *Adapter) TerminateSandbox(_ context.Context, sandboxID string) error {
 	return nil
 }
 
-func (a *Adapter) executeInSandbox(ctx context.Context, instance *sandboxInstance, launchSeconds int64, command []string, stream backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error) {
-	guestReq := vsockexec.ExecRequest{Command: append([]string(nil), command...)}
+func (a *Adapter) executeInSandbox(ctx context.Context, instance *sandboxInstance, launchSeconds int64, command []string, tty bool, stream backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error) {
+	guestReq := vsockexec.ExecRequest{Command: append([]string(nil), command...), TTY: tty}
 	seed := make([]byte, 64)
 	if _, err := cryptorand.Read(seed); err == nil {
 		guestReq.EntropySeed = seed
 	}
 	if a.GatewayRegistry != nil && instance.HostIP != "" {
-		guestReq.Env = append(guestReq.Env, gatewayEnvVars(instance)...)
+		gwPort := a.GatewayPort
+		if gwPort == 0 {
+			gwPort = gateway.DefaultPort
+		}
+		guestReq.Env = append(guestReq.Env, gatewayEnvVars(instance, gwPort)...)
 	}
 
 	connectSeconds := launchSeconds
@@ -798,6 +803,7 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 
 	guestReq := vsockexec.ExecRequest{
 		Command: req.Command,
+		TTY:     req.TTY,
 	}
 	seed := make([]byte, 64)
 	if _, err := cryptorand.Read(seed); err == nil {
@@ -1270,7 +1276,10 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 	}
 	gwPort := 0
 	if a.GatewayRegistry != nil {
-		gwPort = gateway.DefaultPort
+		gwPort = a.GatewayPort
+		if gwPort == 0 {
+			gwPort = gateway.DefaultPort
+		}
 	}
 	networkCfg, cleanupNetwork, err := setupHostNetwork(ctx, sandboxID, compiled.Allow, gwPort, networkRunCommand, networkRunBatch)
 	if err != nil {
@@ -1481,6 +1490,34 @@ func runGuestCommand(bootCtx context.Context, execCtx context.Context, processEx
 		return vsockexec.ExecResponse{}, guestExecTiming{}, fmt.Errorf("send guest exec request: %w", err)
 	}
 
+	// Provide stdin/resize handlers so the caller can forward interactive
+	// input to the guest process via the same vsock connection.
+	inputSender := &inputFrameSender{w: conn}
+	if stream.OnAttach != nil {
+		stream.OnAttach(backend.AttachIO{
+			WriteStdin: func(data []byte) error {
+				return inputSender.Send(vsockexec.ExecInputFrame{
+					Type: "stdin",
+					Data: data,
+				})
+			},
+			ResizeTTY: func(cols, rows uint32) error {
+				return inputSender.Send(vsockexec.ExecInputFrame{
+					Type: "resize",
+					Cols: cols,
+					Rows: rows,
+				})
+			},
+		})
+	}
+	if !req.TTY {
+		// Non-TTY commands don't expect interactive stdin. Send eof
+		// immediately so the guest process sees stdin EOF rather than
+		// blocking. The control service always sets OnAttach even for
+		// non-interactive exec, so we can't rely on OnAttach == nil.
+		_ = inputSender.Send(vsockexec.ExecInputFrame{Type: "eof"})
+	}
+
 	commandStart := time.Now()
 	res, err := vsockexec.DecodeStreamResponse(conn, vsockexec.StreamCallbacks{
 		OnStdout: stream.OnStdout,
@@ -1494,6 +1531,17 @@ func runGuestCommand(bootCtx context.Context, execCtx context.Context, processEx
 	}
 	timing.CommandRun = time.Since(commandStart)
 	return res, timing, nil
+}
+
+type inputFrameSender struct {
+	w  io.Writer
+	mu sync.Mutex
+}
+
+func (s *inputFrameSender) Send(frame vsockexec.ExecInputFrame) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return vsockexec.EncodeInputFrame(s.w, frame)
 }
 
 type callbackWriter struct {
@@ -1835,7 +1883,7 @@ func randomGuestCID() uint32 {
 	return cid%(0xFFFFFFFE-3) + 3
 }
 
-func gatewayEnvVars(instance *sandboxInstance) []string {
+func gatewayEnvVars(instance *sandboxInstance, gwPort int) []string {
 	if instance.Policy == nil {
 		return nil
 	}
@@ -1853,7 +1901,7 @@ func gatewayEnvVars(instance *sandboxInstance) []string {
 		return nil
 	}
 
-	gatewayAddr := fmt.Sprintf("http://%s:%d", instance.HostIP, gateway.DefaultPort)
+	gatewayAddr := fmt.Sprintf("http://%s:%d", instance.HostIP, gwPort)
 	env := make([]string, 0, 1+len(gitHosts)*2)
 	env = append(env, fmt.Sprintf("GIT_CONFIG_COUNT=%d", len(gitHosts)))
 	for i, host := range gitHosts {

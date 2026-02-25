@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "--- :hammer: Building binaries"
-mise run build
-
 KERNEL_IMAGE="${CLEANROOM_KERNEL_IMAGE:-}"
 ROOTFS_IMAGE="${CLEANROOM_ROOTFS:-}"
 FIRECRACKER_BINARY="${CLEANROOM_FIRECRACKER_BINARY:-firecracker}"
@@ -19,12 +16,86 @@ if [[ -z "$ROOTFS_IMAGE" ]]; then
   exit 1
 fi
 
+# run_privileged executes a privileged command via the root helper,
+# falling back to sudo, then direct execution.
+run_privileged() {
+  if [[ -n "${PRIVILEGED_HELPER_PATH:-}" ]]; then
+    "$PRIVILEGED_HELPER_PATH" "$@"
+  elif command -v sudo >/dev/null 2>&1; then
+    sudo "$@"
+  else
+    "$@"
+  fi
+}
+
+# purge_stale_cleanroom_resources removes TAP devices, iptables rules,
+# firecracker processes, and temp mount dirs left over from a previous
+# run that crashed before cleanup.
+purge_stale_cleanroom_resources() {
+  # Kill orphaned firecracker processes owned by the current user.
+  local stale_pids
+  stale_pids="$(pgrep -u "$(id -u)" firecracker 2>/dev/null || true)"
+  if [[ -n "$stale_pids" ]]; then
+    echo "killing orphaned firecracker processes: $stale_pids"
+    # shellcheck disable=SC2086
+    kill $stale_pids 2>/dev/null || true
+    sleep 1
+    # shellcheck disable=SC2086
+    kill -9 $stale_pids 2>/dev/null || true
+  fi
+
+  # Remove stale TAP devices (prefixed "cr") and their iptables rules.
+  local taps
+  taps="$(run_privileged ip -o link show 2>/dev/null | grep -oP 'cr[a-z0-9]{1,13}(?=:)' || true)"
+  for tap in $taps; do
+    echo "removing stale tap device and iptables rules: $tap"
+    # Delete all iptables rules referencing this TAP by listing and reversing.
+    for chain in INPUT FORWARD; do
+      local rules
+      rules="$(run_privileged iptables -S "$chain" 2>/dev/null | grep -- " $tap " || true)"
+      while IFS= read -r rule; do
+        [[ -n "$rule" ]] || continue
+        # shellcheck disable=SC2086
+        run_privileged iptables ${rule/-A/-D} 2>/dev/null || true
+      done <<< "$rules"
+    done
+    run_privileged ip link del "$tap" 2>/dev/null || true
+  done
+
+  # Remove stale NAT MASQUERADE rules for cleanroom subnets (10.x.x.0/24).
+  local nat_rules
+  nat_rules="$(run_privileged iptables -t nat -S POSTROUTING 2>/dev/null | grep 'MASQUERADE' | grep -E '10\.[0-9]+\.[0-9]+\.' || true)"
+  while IFS= read -r rule; do
+    [[ -n "$rule" ]] || continue
+    # shellcheck disable=SC2086
+    run_privileged iptables -t nat ${rule/-A/-D} 2>/dev/null || true
+  done <<< "$nat_rules"
+
+  # Unmount and remove stale rootfs temp dirs.
+  for mnt in /tmp/cleanroom-firecracker-rootfs-*; do
+    [[ -d "$mnt" ]] || continue
+    echo "cleaning stale mount: $mnt"
+    run_privileged umount "$mnt" 2>/dev/null || true
+    rm -rf "$mnt" 2>/dev/null || true
+  done
+}
+
+echo "--- :broom: Pre-build cleanup"
+purge_stale_cleanroom_resources
+
+echo "--- :hammer: Building binaries"
+mise run build
+
 tmpdir="$(mktemp -d)"
 cleanup() {
   if [[ -n "${srv_pid:-}" ]]; then
     kill "$srv_pid" >/dev/null 2>&1 || true
     wait "$srv_pid" >/dev/null 2>&1 || true
   fi
+  # Give the server a moment to clean up sandboxes (TAPs, iptables, VMs).
+  sleep 1
+  # Best-effort cleanup of any resources the server didn't tear down.
+  purge_stale_cleanroom_resources 2>/dev/null || true
   rm -rf "$tmpdir"
 }
 trap cleanup EXIT
@@ -64,8 +135,8 @@ if [[ -n "$PRIVILEGED_HELPER_PATH" && -f "scripts/cleanroom-root-helper.sh" ]]; 
     echo "   repo: $repo_sha"
     echo "   Update with: sudo install -o root -g root -m 0755 scripts/cleanroom-root-helper.sh $PRIVILEGED_HELPER_PATH"
     if command -v buildkite-agent >/dev/null 2>&1; then
-      buildkite-agent annotate --context root-helper-drift --style warning <<EOF
-### ⚠️ Root helper out of date
+      buildkite-agent annotate --context root-helper-drift --style error <<EOF
+### ❌ Root helper out of date
 
 The installed root helper (\`$PRIVILEGED_HELPER_PATH\`) does not match \`scripts/cleanroom-root-helper.sh\` from this commit.
 
@@ -80,6 +151,7 @@ sudo install -o root -g root -m 0755 scripts/cleanroom-root-helper.sh $PRIVILEGE
 \`\`\`
 EOF
     fi
+    exit 1
   fi
 fi
 
@@ -94,7 +166,7 @@ socket_path="$tmpdir/cleanroom.sock"
 listen_endpoint="unix://$socket_path"
 
 echo "--- :rocket: Start cleanroom control-plane"
-./dist/cleanroom serve --listen "$listen_endpoint" >"$tmpdir/server.log" 2>&1 &
+./dist/cleanroom serve --listen "$listen_endpoint" --gateway-listen "127.0.0.1:0" >"$tmpdir/server.log" 2>&1 &
 srv_pid=$!
 
 for _ in $(seq 1 40); do
@@ -119,21 +191,33 @@ fi
 
 echo "--- :warning: Exit code propagation test"
 set +e
-./dist/cleanroom exec --host "$listen_endpoint" -c "$PWD" -- sh -lc 'exit 7' >/dev/null 2>&1
+./dist/cleanroom exec --host "$listen_endpoint" -c "$PWD" -- sh -lc 'exit 7' >"$tmpdir/exit7.out" 2>"$tmpdir/exit7.err"
 status=$?
 set -e
 if [[ "$status" -ne 7 ]]; then
   echo "expected exit code 7 from guest command, got $status" >&2
+  echo "stdout:" >&2
+  cat "$tmpdir/exit7.out" >&2 || true
+  echo "stderr:" >&2
+  cat "$tmpdir/exit7.err" >&2 || true
+  echo "server log (last 30 lines):" >&2
+  tail -n 30 "$tmpdir/server.log" >&2 || true
   exit 1
 fi
 
 echo "--- :closed_lock_with_key: Gateway reachability test"
 if grep -q 'gateway server started' "$tmpdir/server.log"; then
   echo "gateway server started (confirmed from server log)"
-  # The gateway binds on 0.0.0.0:8170. Requests from localhost (non-TAP)
-  # should get 403 from the identity middleware (unregistered source IP).
+  # Extract the actual gateway port from the server log (may be ephemeral).
+  gw_addr="$(grep 'gateway server started' "$tmpdir/server.log" | sed -nE 's/.*addr=([^ ]+).*/\1/p' | head -n1)"
+  if [[ -z "$gw_addr" ]]; then
+    gw_addr="127.0.0.1:8170"
+  fi
+  echo "gateway address: $gw_addr"
+  # Requests from localhost (non-TAP) should get 403 from the identity
+  # middleware (unregistered source IP).
   set +e
-  gw_body="$(curl -s -o - -w '\n%{http_code}' http://127.0.0.1:8170/meta/ 2>&1)"
+  gw_body="$(curl -s -o - -w '\n%{http_code}' "http://$gw_addr/meta/" 2>&1)"
   gw_status=$?
   set -e
   gw_http_code="$(echo "$gw_body" | tail -n1)"

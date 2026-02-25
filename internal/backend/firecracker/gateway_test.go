@@ -18,7 +18,7 @@ func TestGatewayEnvVarsEmptyWhenNoPolicyHosts(t *testing.T) {
 			Allow:          []policy.AllowRule{{Host: "example.com", Ports: []int{80}}},
 		},
 	}
-	env := gatewayEnvVars(instance)
+	env := gatewayEnvVars(instance, 8170)
 	if len(env) != 0 {
 		t.Fatalf("expected no env vars for host without port 443, got %v", env)
 	}
@@ -39,7 +39,7 @@ func TestGatewayEnvVarsGeneratesGitConfig(t *testing.T) {
 		},
 	}
 
-	env := gatewayEnvVars(instance)
+	env := gatewayEnvVars(instance, 8170)
 	if len(env) != 5 {
 		t.Fatalf("expected 5 env vars (1 count + 2*2 key/value), got %d: %v", len(env), env)
 	}
@@ -63,7 +63,7 @@ func TestGatewayEnvVarsNilPolicy(t *testing.T) {
 	t.Parallel()
 
 	instance := &sandboxInstance{HostIP: "10.1.1.1"}
-	env := gatewayEnvVars(instance)
+	env := gatewayEnvVars(instance, 8170)
 	if env != nil {
 		t.Fatalf("expected nil for nil policy, got %v", env)
 	}

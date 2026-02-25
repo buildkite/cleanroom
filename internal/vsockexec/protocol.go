@@ -16,6 +16,7 @@ type ExecRequest struct {
 	Dir         string   `json:"dir,omitempty"`
 	Env         []string `json:"env,omitempty"`
 	EntropySeed []byte   `json:"entropy_seed,omitempty"`
+	TTY         bool     `json:"tty,omitempty"`
 }
 
 type ExecResponse struct {
@@ -25,6 +26,7 @@ type ExecResponse struct {
 	Error    string `json:"error,omitempty"`
 }
 
+// ExecStreamFrame is sent from guest to host. Types: stdout|stderr|exit.
 type ExecStreamFrame struct {
 	Type     string `json:"type,omitempty"` // stdout|stderr|exit
 	Data     []byte `json:"data,omitempty"`
@@ -64,6 +66,28 @@ func EncodeResponse(w io.Writer, res ExecResponse) error {
 
 func EncodeStreamFrame(w io.Writer, frame ExecStreamFrame) error {
 	return json.NewEncoder(w).Encode(frame)
+}
+
+// ExecInputFrame is sent from host to guest over the vsock connection after
+// the initial ExecRequest. The guest reads these to forward stdin and handle
+// window resize events.
+type ExecInputFrame struct {
+	Type string `json:"type"`           // stdin|resize
+	Data []byte `json:"data,omitempty"` // stdin payload
+	Cols uint32 `json:"cols,omitempty"` // resize columns
+	Rows uint32 `json:"rows,omitempty"` // resize rows
+}
+
+func EncodeInputFrame(w io.Writer, frame ExecInputFrame) error {
+	return json.NewEncoder(w).Encode(frame)
+}
+
+func DecodeInputFrame(r io.Reader) (ExecInputFrame, error) {
+	var frame ExecInputFrame
+	if err := json.NewDecoder(r).Decode(&frame); err != nil {
+		return ExecInputFrame{}, err
+	}
+	return frame, nil
 }
 
 type StreamCallbacks struct {
