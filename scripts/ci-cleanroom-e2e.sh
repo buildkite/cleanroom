@@ -119,11 +119,17 @@ fi
 
 echo "--- :warning: Exit code propagation test"
 set +e
-./dist/cleanroom exec --host "$listen_endpoint" -c "$PWD" -- sh -lc 'exit 7' >/dev/null 2>&1
+./dist/cleanroom exec --host "$listen_endpoint" -c "$PWD" -- sh -lc 'exit 7' >"$tmpdir/exit7.out" 2>"$tmpdir/exit7.err"
 status=$?
 set -e
 if [[ "$status" -ne 7 ]]; then
   echo "expected exit code 7 from guest command, got $status" >&2
+  echo "stdout:" >&2
+  cat "$tmpdir/exit7.out" >&2 || true
+  echo "stderr:" >&2
+  cat "$tmpdir/exit7.err" >&2 || true
+  echo "server log (last 30 lines):" >&2
+  tail -n 30 "$tmpdir/server.log" >&2 || true
   exit 1
 fi
 
