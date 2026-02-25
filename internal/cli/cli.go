@@ -65,6 +65,7 @@ type CLI struct {
 	TLS     TLSCommand     `cmd:"" help:"Manage TLS certificates for mTLS"`
 	Doctor  DoctorCommand  `cmd:"" help:"Run environment and backend diagnostics"`
 	Status  StatusCommand  `cmd:"" help:"Inspect run artifacts"`
+	Sandbox SandboxCommand `cmd:"" help:"Manage sandboxes"`
 }
 
 type ImageCommand struct {
@@ -107,16 +108,35 @@ type PolicyValidateCommand struct {
 	JSON  bool   `help:"Print compiled policy as JSON"`
 }
 
+type clientFlags struct {
+	Host     string `help:"Control-plane endpoint (unix://path, http://host:port, or https://host:port)"`
+	LogLevel string `help:"Client log level (debug|info|warn|error)"`
+	TLSCert  string `help:"Path to TLS client certificate (auto-discovered from XDG config for https)"`
+	TLSKey   string `help:"Path to TLS client private key (auto-discovered from XDG config for https)"`
+	TLSCA    string `help:"Path to CA certificate for server verification (auto-discovered from XDG config for https)"`
+}
+
+func (f *clientFlags) connect() (*controlclient.Client, error) {
+	ep, err := endpoint.Resolve(f.Host)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateClientEndpoint(ep); err != nil {
+		return nil, err
+	}
+	return controlclient.New(ep, controlclient.WithTLS(tlsconfig.Options{
+		CertPath: f.TLSCert,
+		KeyPath:  f.TLSKey,
+		CAPath:   f.TLSCA,
+	}))
+}
+
 type ExecCommand struct {
-	Chdir       string `short:"c" help:"Change to this directory before running commands"`
-	Host        string `help:"Control-plane endpoint (unix://path, http://host:port, or https://host:port)"`
-	LogLevel    string `help:"Client log level (debug|info|warn|error)"`
-	Backend     string `help:"Execution backend (defaults to runtime config or firecracker)"`
-	SandboxID   string `help:"Reuse an existing sandbox instead of creating a new one"`
-	Remove  bool   `name:"rm" help:"Terminate a newly created sandbox after command completion"`
-	TLSCert string `help:"Path to TLS client certificate (auto-discovered from XDG config for https)"`
-	TLSKey  string `help:"Path to TLS client private key (auto-discovered from XDG config for https)"`
-	TLSCA   string `help:"Path to CA certificate for server verification (auto-discovered from XDG config for https)"`
+	clientFlags
+	Chdir     string `short:"c" help:"Change to this directory before running commands"`
+	Backend   string `help:"Execution backend (defaults to runtime config or firecracker)"`
+	SandboxID string `help:"Reuse an existing sandbox instead of creating a new one"`
+	Remove    bool   `name:"rm" help:"Terminate a newly created sandbox after command completion"`
 
 	LaunchSeconds int64 `help:"VM boot/guest-agent readiness timeout in seconds"`
 
@@ -124,15 +144,11 @@ type ExecCommand struct {
 }
 
 type ConsoleCommand struct {
-	Chdir       string `short:"c" help:"Change to this directory before running commands"`
-	Host        string `help:"Control-plane endpoint (unix://path, http://host:port, or https://host:port)"`
-	LogLevel    string `help:"Client log level (debug|info|warn|error)"`
-	Backend     string `help:"Execution backend (defaults to runtime config or firecracker)"`
-	SandboxID   string `help:"Reuse an existing sandbox instead of creating a new one"`
-	Remove  bool   `name:"rm" help:"Terminate a newly created sandbox after console exits"`
-	TLSCert string `help:"Path to TLS client certificate (auto-discovered from XDG config for https)"`
-	TLSKey  string `help:"Path to TLS client private key (auto-discovered from XDG config for https)"`
-	TLSCA   string `help:"Path to CA certificate for server verification (auto-discovered from XDG config for https)"`
+	clientFlags
+	Chdir     string `short:"c" help:"Change to this directory before running commands"`
+	Backend   string `help:"Execution backend (defaults to runtime config or firecracker)"`
+	SandboxID string `help:"Reuse an existing sandbox instead of creating a new one"`
+	Remove    bool   `name:"rm" help:"Terminate a newly created sandbox after console exits"`
 
 	LaunchSeconds int64 `help:"VM boot/guest-agent readiness timeout in seconds"`
 
@@ -173,6 +189,21 @@ type DoctorCommand struct {
 	Chdir   string `short:"c" help:"Change to this directory before running commands"`
 	Backend string `help:"Execution backend to diagnose (defaults to runtime config or firecracker)"`
 	JSON    bool   `help:"Print doctor report as JSON"`
+}
+
+type SandboxCommand struct {
+	List      SandboxListCommand      `name:"ls" aliases:"list" cmd:"" help:"List active sandboxes"`
+	Terminate SandboxTerminateCommand `name:"rm" aliases:"terminate" cmd:"" help:"Terminate a sandbox"`
+}
+
+type SandboxListCommand struct {
+	clientFlags
+	JSON bool `help:"Print sandboxes as JSON"`
+}
+
+type SandboxTerminateCommand struct {
+	clientFlags
+	SandboxID string `arg:"" required:"" help:"Sandbox ID to terminate"`
 }
 
 type exitCodeError struct {
@@ -452,17 +483,70 @@ func (c *ImageBumpRefCommand) Run(ctx *runtimeContext) error {
 	return err
 }
 
+func (c *SandboxListCommand) Run(ctx *runtimeContext) error {
+	client, err := c.connect()
+	if err != nil {
+		return err
+	}
+
+	resp, err := client.ListSandboxes(context.Background(), &cleanroomv1.ListSandboxesRequest{})
+	if err != nil {
+		return err
+	}
+
+	if c.JSON {
+		enc := json.NewEncoder(ctx.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(resp.Sandboxes)
+	}
+
+	if len(resp.Sandboxes) == 0 {
+		_, err := fmt.Fprintln(ctx.Stdout, "no active sandboxes")
+		return err
+	}
+
+	tw := tabwriter.NewWriter(ctx.Stdout, 0, 2, 2, ' ', 0)
+	if _, err := fmt.Fprintln(tw, "ID\tSTATUS\tBACKEND\tCREATED"); err != nil {
+		return err
+	}
+	for _, sb := range resp.Sandboxes {
+		status := sandboxStatusString(sb.Status)
+		created := ""
+		if sb.CreatedAt != nil {
+			created = sb.CreatedAt.AsTime().Format(time.RFC3339)
+		}
+		if _, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", sb.SandboxId, status, sb.Backend, created); err != nil {
+			return err
+		}
+	}
+	return tw.Flush()
+}
+
+func (c *SandboxTerminateCommand) Run(ctx *runtimeContext) error {
+	client, err := c.connect()
+	if err != nil {
+		return err
+	}
+
+	resp, err := client.TerminateSandbox(context.Background(), &cleanroomv1.TerminateSandboxRequest{
+		SandboxId: c.SandboxID,
+	})
+	if err != nil {
+		return err
+	}
+
+	_, err = fmt.Fprintln(ctx.Stdout, resp.Message)
+	return err
+}
+
 func (e *ExecCommand) Run(ctx *runtimeContext) error {
 	logger, err := newLogger(e.LogLevel, "client")
 	if err != nil {
 		return err
 	}
 
-	ep, err := endpoint.Resolve(e.Host)
+	client, err := e.connect()
 	if err != nil {
-		return err
-	}
-	if err := validateClientEndpoint(ep); err != nil {
 		return err
 	}
 	cwd, err := resolveCWD(ctx.CWD, e.Chdir)
@@ -471,19 +555,11 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 	}
 
 	logger.Debug("sending execution request",
-		"endpoint", ep.Address,
+		"host", e.Host,
 		"backend", e.Backend,
 		"sandbox_id", strings.TrimSpace(e.SandboxID),
 		"command_argc", len(e.Command),
 	)
-	client, err := controlclient.New(ep, controlclient.WithTLS(tlsconfig.Options{
-		CertPath: e.TLSCert,
-		KeyPath:  e.TLSKey,
-		CAPath:   e.TLSCA,
-	}))
-	if err != nil {
-		return fmt.Errorf("configure TLS: %w", err)
-	}
 	sandboxID := strings.TrimSpace(e.SandboxID)
 	createdSandbox := false
 	if sandboxID == "" {
@@ -499,7 +575,7 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 			Policy: compiled.ToProto(),
 		})
 		if err != nil {
-			return fmt.Errorf("execute via control-plane endpoint %q: %w", ep.Address, err)
+			return fmt.Errorf("create sandbox: %w", err)
 		}
 		sandboxID = createSandboxResp.GetSandbox().GetSandboxId()
 		createdSandbox = true
@@ -521,13 +597,11 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 		},
 	})
 	if err != nil {
-		return fmt.Errorf("create execution via control-plane endpoint %q: %w", ep.Address, err)
+		return fmt.Errorf("create execution: %w", err)
 	}
 	executionID := createExecutionResp.GetExecution().GetExecutionId()
 
-	if _, err := fmt.Fprintf(os.Stderr, "sandbox_id=%s execution_id=%s\n", sandboxID, executionID); err != nil {
-		return err
-	}
+	logger.Debug("execution started", "sandbox_id", sandboxID, "execution_id", executionID)
 
 	streamCtx, streamCancel := context.WithCancel(context.Background())
 	defer streamCancel()
@@ -537,7 +611,7 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 		Follow:      true,
 	})
 	if err != nil {
-		return fmt.Errorf("stream execution via control-plane endpoint %q: %w", ep.Address, err)
+		return fmt.Errorf("stream execution: %w", err)
 	}
 
 	signalCh := newSignalChannel()
@@ -670,11 +744,8 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 		return err
 	}
 
-	ep, err := endpoint.Resolve(c.Host)
+	client, err := c.connect()
 	if err != nil {
-		return err
-	}
-	if err := validateClientEndpoint(ep); err != nil {
 		return err
 	}
 	cwd, err := resolveCWD(ctx.CWD, c.Chdir)
@@ -687,20 +758,11 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 		command = []string{"sh"}
 	}
 	logger.Debug("starting interactive console",
-		"endpoint", ep.Address,
+		"host", c.Host,
 		"backend", c.Backend,
 		"sandbox_id", strings.TrimSpace(c.SandboxID),
 		"command_argc", len(command),
 	)
-
-	client, err := controlclient.New(ep, controlclient.WithTLS(tlsconfig.Options{
-		CertPath: c.TLSCert,
-		KeyPath:  c.TLSKey,
-		CAPath:   c.TLSCA,
-	}))
-	if err != nil {
-		return fmt.Errorf("configure TLS: %w", err)
-	}
 	sandboxID := strings.TrimSpace(c.SandboxID)
 	createdSandbox := false
 	if sandboxID == "" {
@@ -716,7 +778,7 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 			Policy: compiled.ToProto(),
 		})
 		if err != nil {
-			return fmt.Errorf("console via control-plane endpoint %q: %w", ep.Address, err)
+			return fmt.Errorf("create sandbox: %w", err)
 		}
 		sandboxID = createSandboxResp.GetSandbox().GetSandboxId()
 		createdSandbox = true
@@ -738,12 +800,10 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 		},
 	})
 	if err != nil {
-		return fmt.Errorf("create console execution via control-plane endpoint %q: %w", ep.Address, err)
+		return fmt.Errorf("create execution: %w", err)
 	}
 	executionID := createExecutionResp.GetExecution().GetExecutionId()
-	if _, err := fmt.Fprintf(os.Stderr, "sandbox_id=%s execution_id=%s\n", sandboxID, executionID); err != nil {
-		return err
-	}
+	logger.Debug("console execution started", "sandbox_id", sandboxID, "execution_id", executionID)
 
 	attachCtx, attachCancel := context.WithCancel(context.Background())
 	defer attachCancel()
@@ -1234,6 +1294,23 @@ func isCanceledStreamErr(err error) bool {
 		return true
 	}
 	return false
+}
+
+func sandboxStatusString(s cleanroomv1.SandboxStatus) string {
+	switch s {
+	case cleanroomv1.SandboxStatus_SANDBOX_STATUS_PROVISIONING:
+		return "provisioning"
+	case cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY:
+		return "ready"
+	case cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPING:
+		return "stopping"
+	case cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPED:
+		return "stopped"
+	case cleanroomv1.SandboxStatus_SANDBOX_STATUS_FAILED:
+		return "failed"
+	default:
+		return "unknown"
+	}
 }
 
 func isFinalExecutionStatus(status cleanroomv1.ExecutionStatus) bool {

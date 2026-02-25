@@ -80,6 +80,7 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "ok\n")
 	})
 	return h2c.NewHandler(mux, &http2.Server{})
 }
