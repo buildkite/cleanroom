@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "--- :hammer: Building binaries"
-mise run build
-
 KERNEL_IMAGE="${CLEANROOM_KERNEL_IMAGE:-}"
 ROOTFS_IMAGE="${CLEANROOM_ROOTFS:-}"
 FIRECRACKER_BINARY="${CLEANROOM_FIRECRACKER_BINARY:-firecracker}"
@@ -19,12 +16,85 @@ if [[ -z "$ROOTFS_IMAGE" ]]; then
   exit 1
 fi
 
+# run_root executes a privileged command via sudo. The root helper
+# allowlist is too narrow for cleanup operations (no iptables -S), so
+# cleanup always uses sudo directly.
+run_root() {
+  if command -v sudo >/dev/null 2>&1; then
+    sudo "$@"
+  else
+    "$@"
+  fi
+}
+
+# purge_stale_cleanroom_resources removes TAP devices, iptables rules,
+# firecracker processes, and temp mount dirs left over from a previous
+# run that crashed before cleanup.
+purge_stale_cleanroom_resources() {
+  # Kill orphaned firecracker processes owned by the current user.
+  local stale_pids
+  stale_pids="$(pgrep -u "$(id -u)" firecracker 2>/dev/null || true)"
+  if [[ -n "$stale_pids" ]]; then
+    echo "killing orphaned firecracker processes: $stale_pids"
+    # shellcheck disable=SC2086
+    kill $stale_pids 2>/dev/null || true
+    sleep 1
+    # shellcheck disable=SC2086
+    kill -9 $stale_pids 2>/dev/null || true
+  fi
+
+  # Remove stale TAP devices (prefixed "cr") and their iptables rules.
+  local taps
+  taps="$(ip -o link show 2>/dev/null | grep -oP 'cr[a-z0-9]{1,13}(?=:)' || true)"
+  for tap in $taps; do
+    echo "removing stale tap device and iptables rules: $tap"
+    # Delete all iptables rules referencing this TAP by listing and reversing.
+    for chain in INPUT FORWARD; do
+      local rules
+      rules="$(run_root iptables -S "$chain" 2>/dev/null | grep -- " $tap " || true)"
+      while IFS= read -r rule; do
+        [[ -n "$rule" ]] || continue
+        # shellcheck disable=SC2086
+        run_root iptables ${rule/-A/-D} 2>/dev/null || true
+      done <<< "$rules"
+    done
+    run_root ip link del "$tap" 2>/dev/null || true
+  done
+
+  # Remove stale NAT MASQUERADE rules for cleanroom subnets (10.x.x.0/24).
+  local nat_rules
+  nat_rules="$(run_root iptables -t nat -S POSTROUTING 2>/dev/null | grep 'MASQUERADE' | grep -E '10\.[0-9]+\.[0-9]+\.' || true)"
+  while IFS= read -r rule; do
+    [[ -n "$rule" ]] || continue
+    # shellcheck disable=SC2086
+    run_root iptables -t nat ${rule/-A/-D} 2>/dev/null || true
+  done <<< "$nat_rules"
+
+  # Unmount and remove stale rootfs temp dirs.
+  for mnt in /tmp/cleanroom-firecracker-rootfs-*; do
+    [[ -d "$mnt" ]] || continue
+    echo "cleaning stale mount: $mnt"
+    run_root umount "$mnt" 2>/dev/null || true
+    rm -rf "$mnt" 2>/dev/null || true
+  done
+}
+
+echo "--- :broom: Pre-build cleanup"
+purge_stale_cleanroom_resources
+
+echo "--- :hammer: Building binaries"
+mise run build
+
 tmpdir="$(mktemp -d)"
 cleanup() {
   if [[ -n "${srv_pid:-}" ]]; then
     kill "$srv_pid" >/dev/null 2>&1 || true
     wait "$srv_pid" >/dev/null 2>&1 || true
   fi
+  # Give the server a moment to clean up sandboxes (TAPs, iptables, VMs).
+  sleep 1
+  # Best-effort cleanup of any resources the server didn't tear down.
+  purge_stale_cleanroom_resources 2>/dev/null || true
   rm -rf "$tmpdir"
 }
 trap cleanup EXIT
