@@ -135,8 +135,8 @@ if [[ -n "$PRIVILEGED_HELPER_PATH" && -f "scripts/cleanroom-root-helper.sh" ]]; 
     echo "   repo: $repo_sha"
     echo "   Update with: sudo install -o root -g root -m 0755 scripts/cleanroom-root-helper.sh $PRIVILEGED_HELPER_PATH"
     if command -v buildkite-agent >/dev/null 2>&1; then
-      buildkite-agent annotate --context root-helper-drift --style warning <<EOF
-### ⚠️ Root helper out of date
+      buildkite-agent annotate --context root-helper-drift --style error <<EOF
+### ❌ Root helper out of date
 
 The installed root helper (\`$PRIVILEGED_HELPER_PATH\`) does not match \`scripts/cleanroom-root-helper.sh\` from this commit.
 
@@ -151,6 +151,7 @@ sudo install -o root -g root -m 0755 scripts/cleanroom-root-helper.sh $PRIVILEGE
 \`\`\`
 EOF
     fi
+    exit 1
   fi
 fi
 
