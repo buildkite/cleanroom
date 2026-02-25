@@ -150,6 +150,18 @@ run_iptables() {
     exec /usr/sbin/iptables "$@"
   fi
 
+  # Global gateway loopback: iptables -A|-D INPUT -i lo -p tcp --dport <port> -j ACCEPT
+  if [[ "$#" -eq 10 && ( "$1" == "-A" || "$1" == "-D" ) && "$2" == "INPUT" && "$3" == "-i" && "$4" == "lo" && "$5" == "-p" && "$6" == "tcp" && "$7" == "--dport" && "$9" == "-j" && "${10}" == "ACCEPT" ]]; then
+    is_numeric "$8" || die "iptables INPUT gateway loopback: invalid port '$8'"
+    exec /usr/sbin/iptables "$@"
+  fi
+
+  # Global gateway drop (non-TAP): iptables -A|-D INPUT ! -i cr+ -p tcp --dport <port> -j DROP
+  if [[ "$#" -eq 11 && ( "$1" == "-A" || "$1" == "-D" ) && "$2" == "INPUT" && "$3" == "!" && "$4" == "-i" && "$5" == "cr+" && "$6" == "-p" && "$7" == "tcp" && "$8" == "--dport" && "${10}" == "-j" && "${11}" == "DROP" ]]; then
+    is_numeric "$9" || die "iptables INPUT gateway drop: invalid port '$9'"
+    exec /usr/sbin/iptables "$@"
+  fi
+
   die "iptables: unsupported arguments"
 }
 
