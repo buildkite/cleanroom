@@ -1501,9 +1501,12 @@ func runGuestCommand(bootCtx context.Context, execCtx context.Context, processEx
 				})
 			},
 		})
-	} else {
-		// No interactive input — immediately signal stdin EOF so the
-		// guest process doesn't block waiting for input.
+	}
+	if !req.TTY {
+		// Non-TTY commands don't expect interactive stdin. Send eof
+		// immediately so the guest process sees stdin EOF rather than
+		// blocking. The control service always sets OnAttach even for
+		// non-interactive exec, so we can't rely on OnAttach == nil.
 		_ = inputSender.Send(vsockexec.ExecInputFrame{Type: "eof"})
 	}
 
