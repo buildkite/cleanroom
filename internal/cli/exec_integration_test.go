@@ -192,7 +192,7 @@ func mustReceiveWithin[T any](t *testing.T, ch <-chan T, timeout time.Duration, 
 }
 
 func parseSandboxID(stderr string) string {
-	match := regexp.MustCompile(`sandbox_id=([^\s]+)\s+execution_id=`).FindStringSubmatch(stderr)
+	match := regexp.MustCompile(`sandbox_id="?([^"\s]+)"?`).FindStringSubmatch(stderr)
 	if len(match) < 2 {
 		return ""
 	}
@@ -221,9 +221,9 @@ func TestExecIntegrationStreamsOutput(t *testing.T) {
 	host, _ := startIntegrationServer(t, adapter)
 	cwd := t.TempDir()
 	outcome := runExecWithCapture(ExecCommand{
-		Host:    host,
-		Chdir:   cwd,
-		Command: []string{"echo", "ignored-by-adapter"},
+		clientFlags: clientFlags{Host: host},
+		Chdir:       cwd,
+		Command:     []string{"echo", "ignored-by-adapter"},
 	}, runtimeContext{
 		CWD:    cwd,
 		Loader: integrationLoader{},
@@ -259,9 +259,9 @@ func TestExecIntegrationPropagatesExitAndStderr(t *testing.T) {
 	host, _ := startIntegrationServer(t, adapter)
 	cwd := t.TempDir()
 	outcome := runExecWithCapture(ExecCommand{
-		Host:    host,
-		Chdir:   cwd,
-		Command: []string{"echo", "ignored-by-adapter"},
+		clientFlags: clientFlags{Host: host},
+		Chdir:       cwd,
+		Command:     []string{"echo", "ignored-by-adapter"},
 	}, runtimeContext{
 		CWD:    cwd,
 		Loader: integrationLoader{},
@@ -304,9 +304,9 @@ func TestExecIntegrationFirstInterruptCancelsExecution(t *testing.T) {
 	done := make(chan execOutcome, 1)
 	go func() {
 		done <- runExecWithCapture(ExecCommand{
-			Host:    host,
-			Chdir:   cwd,
-			Command: []string{"sleep", "300"},
+			clientFlags: clientFlags{Host: host},
+			Chdir:       cwd,
+			Command:     []string{"sleep", "300"},
 		}, runtimeContext{
 			CWD:    cwd,
 			Loader: integrationLoader{},
@@ -361,10 +361,9 @@ func TestExecIntegrationSecondInterruptTerminatesSandbox(t *testing.T) {
 	done := make(chan execOutcome, 1)
 	go func() {
 		done <- runExecWithCapture(ExecCommand{
-			Host:     host,
-			Chdir:    cwd,
-			LogLevel: "debug",
-			Command:  []string{"sleep", "300"},
+			clientFlags: clientFlags{Host: host, LogLevel: "debug"},
+			Chdir:       cwd,
+			Command:     []string{"sleep", "300"},
 		}, runtimeContext{
 			CWD:    cwd,
 			Loader: integrationLoader{},
@@ -431,9 +430,9 @@ func TestExecIntegrationVmPathUsesShForGuestCompatibility(t *testing.T) {
 	host, _ := startIntegrationServer(t, adapter)
 	cwd := t.TempDir()
 	outcome := runExecWithCapture(ExecCommand{
-		Host:    host,
-		Chdir:   cwd,
-		Command: []string{"sh", "-lc", "echo guest-ok"},
+		clientFlags: clientFlags{Host: host},
+		Chdir:       cwd,
+		Command:     []string{"sh", "-lc", "echo guest-ok"},
 	}, runtimeContext{
 		CWD:    cwd,
 		Loader: integrationLoader{},
@@ -450,7 +449,7 @@ func TestExecIntegrationVmPathUsesShForGuestCompatibility(t *testing.T) {
 }
 
 func TestParseSandboxID(t *testing.T) {
-	in := "sandbox_id=cr-123 execution_id=exec-456\n"
+	in := "DEBU execution started component=client sandbox_id=cr-123 execution_id=exec-456\n"
 	if got, want := parseSandboxID(in), "cr-123"; got != want {
 		t.Fatalf("unexpected sandbox id: got %q want %q", got, want)
 	}
@@ -463,9 +462,9 @@ func TestExecIntegrationDefaultLeavesSandboxRunning(t *testing.T) {
 	host, _ := startIntegrationServer(t, &integrationAdapter{})
 	cwd := t.TempDir()
 	outcome := runExecWithCapture(ExecCommand{
-		Host:    host,
-		Chdir:   cwd,
-		Command: []string{"echo", "ok"},
+		clientFlags: clientFlags{Host: host, LogLevel: "debug"},
+		Chdir:       cwd,
+		Command:     []string{"echo", "ok"},
 	}, runtimeContext{
 		CWD:    cwd,
 		Loader: integrationLoader{},
@@ -503,10 +502,10 @@ func TestExecIntegrationRemoveTerminatesSandbox(t *testing.T) {
 	host, _ := startIntegrationServer(t, &integrationAdapter{})
 	cwd := t.TempDir()
 	outcome := runExecWithCapture(ExecCommand{
-		Host:    host,
-		Chdir:   cwd,
-		Remove:  true,
-		Command: []string{"echo", "ok"},
+		clientFlags: clientFlags{Host: host, LogLevel: "debug"},
+		Chdir:       cwd,
+		Remove:      true,
+		Command:     []string{"echo", "ok"},
 	}, runtimeContext{
 		CWD:    cwd,
 		Loader: integrationLoader{},
@@ -562,9 +561,9 @@ func TestExecIntegrationReuseSandboxSkipsPolicyCompile(t *testing.T) {
 	sandboxID := createSandboxResp.GetSandbox().GetSandboxId()
 
 	outcome := runExecWithCapture(ExecCommand{
-		Host:      host,
-		SandboxID: sandboxID,
-		Command:   []string{"echo", "ok"},
+		clientFlags: clientFlags{Host: host},
+		SandboxID:   sandboxID,
+		Command:     []string{"echo", "ok"},
 	}, runtimeContext{
 		CWD:    t.TempDir(),
 		Loader: failingLoader{},
@@ -587,8 +586,8 @@ func TestExecIntegrationReuseSandboxSkipsPolicyCompile(t *testing.T) {
 
 func TestExecRejectsTailscaleServiceListenEndpointAsHost(t *testing.T) {
 	outcome := runExecWithCapture(ExecCommand{
-		Host:    "tssvc://cleanroom",
-		Command: []string{"echo", "hi"},
+		clientFlags: clientFlags{Host: "tssvc://cleanroom"},
+		Command:     []string{"echo", "hi"},
 	}, runtimeContext{
 		CWD: t.TempDir(),
 	})

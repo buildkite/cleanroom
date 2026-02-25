@@ -36,9 +36,10 @@ Run a command in a sandbox:
 cleanroom exec -- npm test
 ```
 
-The sandbox stays running after the command completes. Run more commands against it:
+The sandbox stays running after the command completes. List sandboxes and run more commands:
 
 ```bash
+cleanroom sandbox ls
 cleanroom exec --sandbox-id <id> -- npm run lint
 cleanroom exec --sandbox-id <id> -- npm run build
 ```
@@ -146,6 +147,13 @@ cleanroom image bump-ref
 
 `ghcr.io/buildkite/cleanroom-base/alpine` is published from this repo on pushes to `main`
 via `.github/workflows/base-image.yml`.
+
+Sandbox management:
+
+```bash
+cleanroom sandbox ls
+cleanroom sandbox rm <sandbox-id>
+```
 
 Diagnostics:
 

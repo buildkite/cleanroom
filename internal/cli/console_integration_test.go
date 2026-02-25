@@ -137,8 +137,8 @@ func TestConsoleIntegrationForwardsStdinAndStreamsOutput(t *testing.T) {
 	host, _ := startIntegrationServer(t, adapter)
 	cwd := t.TempDir()
 	outcome := runConsoleWithCapture(ConsoleCommand{
-		Host:  host,
-		Chdir: cwd,
+		clientFlags: clientFlags{Host: host},
+		Chdir:       cwd,
 		// Console defaults to host passthrough for this MVP.
 		Command: []string{"sh"},
 	}, "hello\nexit\n", runtimeContext{
@@ -186,8 +186,8 @@ func TestConsoleIntegrationInterruptCancelsExecution(t *testing.T) {
 	done := make(chan execOutcome, 1)
 	go func() {
 		done <- runConsoleWithCapture(ConsoleCommand{
-			Host:  host,
-			Chdir: cwd,
+			clientFlags: clientFlags{Host: host},
+			Chdir:       cwd,
 		}, "", runtimeContext{
 			CWD:    cwd,
 			Loader: integrationLoader{},
@@ -211,7 +211,7 @@ func TestConsoleIntegrationInterruptCancelsExecution(t *testing.T) {
 
 func TestConsoleRejectsTailscaleServiceListenEndpointAsHost(t *testing.T) {
 	outcome := runConsoleWithCapture(ConsoleCommand{
-		Host: "tssvc://cleanroom",
+		clientFlags: clientFlags{Host: "tssvc://cleanroom"},
 	}, "", runtimeContext{
 		CWD: t.TempDir(),
 	})
@@ -274,9 +274,9 @@ func TestConsoleIntegrationReuseSandboxSkipsPolicyCompile(t *testing.T) {
 	}
 
 	outcome := runConsoleWithCapture(ConsoleCommand{
-		Host:      host,
-		SandboxID: createSandboxResp.GetSandbox().GetSandboxId(),
-		Command:   []string{"sh"},
+		clientFlags: clientFlags{Host: host},
+		SandboxID:   createSandboxResp.GetSandbox().GetSandboxId(),
+		Command:     []string{"sh"},
 	}, "exit\n", runtimeContext{
 		CWD:    t.TempDir(),
 		Loader: failingLoader{},
