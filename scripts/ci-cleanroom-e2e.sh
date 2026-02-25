@@ -16,11 +16,12 @@ if [[ -z "$ROOTFS_IMAGE" ]]; then
   exit 1
 fi
 
-# run_root executes a privileged command via sudo. The root helper
-# allowlist is too narrow for cleanup operations (no iptables -S), so
-# cleanup always uses sudo directly.
-run_root() {
-  if command -v sudo >/dev/null 2>&1; then
+# run_privileged executes a privileged command via the root helper,
+# falling back to sudo, then direct execution.
+run_privileged() {
+  if [[ -n "${PRIVILEGED_HELPER_PATH:-}" ]]; then
+    "$PRIVILEGED_HELPER_PATH" "$@"
+  elif command -v sudo >/dev/null 2>&1; then
     sudo "$@"
   else
     "$@"
@@ -45,36 +46,36 @@ purge_stale_cleanroom_resources() {
 
   # Remove stale TAP devices (prefixed "cr") and their iptables rules.
   local taps
-  taps="$(ip -o link show 2>/dev/null | grep -oP 'cr[a-z0-9]{1,13}(?=:)' || true)"
+  taps="$(run_privileged ip -o link show 2>/dev/null | grep -oP 'cr[a-z0-9]{1,13}(?=:)' || true)"
   for tap in $taps; do
     echo "removing stale tap device and iptables rules: $tap"
     # Delete all iptables rules referencing this TAP by listing and reversing.
     for chain in INPUT FORWARD; do
       local rules
-      rules="$(run_root iptables -S "$chain" 2>/dev/null | grep -- " $tap " || true)"
+      rules="$(run_privileged iptables -S "$chain" 2>/dev/null | grep -- " $tap " || true)"
       while IFS= read -r rule; do
         [[ -n "$rule" ]] || continue
         # shellcheck disable=SC2086
-        run_root iptables ${rule/-A/-D} 2>/dev/null || true
+        run_privileged iptables ${rule/-A/-D} 2>/dev/null || true
       done <<< "$rules"
     done
-    run_root ip link del "$tap" 2>/dev/null || true
+    run_privileged ip link del "$tap" 2>/dev/null || true
   done
 
   # Remove stale NAT MASQUERADE rules for cleanroom subnets (10.x.x.0/24).
   local nat_rules
-  nat_rules="$(run_root iptables -t nat -S POSTROUTING 2>/dev/null | grep 'MASQUERADE' | grep -E '10\.[0-9]+\.[0-9]+\.' || true)"
+  nat_rules="$(run_privileged iptables -t nat -S POSTROUTING 2>/dev/null | grep 'MASQUERADE' | grep -E '10\.[0-9]+\.[0-9]+\.' || true)"
   while IFS= read -r rule; do
     [[ -n "$rule" ]] || continue
     # shellcheck disable=SC2086
-    run_root iptables -t nat ${rule/-A/-D} 2>/dev/null || true
+    run_privileged iptables -t nat ${rule/-A/-D} 2>/dev/null || true
   done <<< "$nat_rules"
 
   # Unmount and remove stale rootfs temp dirs.
   for mnt in /tmp/cleanroom-firecracker-rootfs-*; do
     [[ -d "$mnt" ]] || continue
     echo "cleaning stale mount: $mnt"
-    run_root umount "$mnt" 2>/dev/null || true
+    run_privileged umount "$mnt" 2>/dev/null || true
     rm -rf "$mnt" 2>/dev/null || true
   done
 }

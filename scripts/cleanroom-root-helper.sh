@@ -55,6 +55,12 @@ is_install_source() {
 run_ip() {
   [[ "$#" -ge 1 ]] || die "ip: missing arguments"
   case "$1" in
+    -o)
+      shift
+      if [[ "$#" -eq 2 && "$1" == "link" && "$2" == "show" ]]; then
+        exec /usr/sbin/ip -o link show
+      fi
+      ;;
     link)
       shift
       if [[ "$#" -eq 1 && "$1" == "show" ]]; then
@@ -91,6 +97,16 @@ run_ip() {
 
 run_iptables() {
   [[ "$#" -ge 1 ]] || die "iptables: missing arguments"
+
+  # List rules: iptables -S <chain>
+  if [[ "$#" -eq 2 && "$1" == "-S" && ( "$2" == "INPUT" || "$2" == "FORWARD" ) ]]; then
+    exec /usr/sbin/iptables "$@"
+  fi
+
+  # List NAT rules: iptables -t nat -S POSTROUTING
+  if [[ "$#" -eq 4 && "$1" == "-t" && "$2" == "nat" && "$3" == "-S" && "$4" == "POSTROUTING" ]]; then
+    exec /usr/sbin/iptables "$@"
+  fi
 
   if [[ "$#" -eq 8 && "$1" == "-t" && "$2" == "nat" && ( "$3" == "-A" || "$3" == "-D" ) && "$4" == "POSTROUTING" && "$5" == "-s" && "$7" == "-j" && "$8" == "MASQUERADE" ]]; then
     is_cidr "$6" || die "iptables nat: invalid cidr '$6'"
