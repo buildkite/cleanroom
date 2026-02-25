@@ -1501,6 +1501,10 @@ func runGuestCommand(bootCtx context.Context, execCtx context.Context, processEx
 				})
 			},
 		})
+	} else {
+		// No interactive input — immediately signal stdin EOF so the
+		// guest process doesn't block waiting for input.
+		_ = inputSender.Send(vsockexec.ExecInputFrame{Type: "eof"})
 	}
 
 	commandStart := time.Now()
