@@ -57,6 +57,7 @@ type Adapter struct {
 	runGuestCommandFn func(context.Context, context.Context, <-chan struct{}, func() error, string, uint32, vsockexec.ExecRequest, backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error)
 
 	GatewayRegistry gatewayRegistry
+	GatewayPort     int
 }
 
 // gatewayRegistry is the subset of gateway.Registry used by the adapter.
@@ -391,7 +392,11 @@ func (a *Adapter) executeInSandbox(ctx context.Context, instance *sandboxInstanc
 		guestReq.EntropySeed = seed
 	}
 	if a.GatewayRegistry != nil && instance.HostIP != "" {
-		guestReq.Env = append(guestReq.Env, gatewayEnvVars(instance)...)
+		gwPort := a.GatewayPort
+		if gwPort == 0 {
+			gwPort = gateway.DefaultPort
+		}
+		guestReq.Env = append(guestReq.Env, gatewayEnvVars(instance, gwPort)...)
 	}
 
 	connectSeconds := launchSeconds
@@ -1271,7 +1276,10 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 	}
 	gwPort := 0
 	if a.GatewayRegistry != nil {
-		gwPort = gateway.DefaultPort
+		gwPort = a.GatewayPort
+		if gwPort == 0 {
+			gwPort = gateway.DefaultPort
+		}
 	}
 	networkCfg, cleanupNetwork, err := setupHostNetwork(ctx, sandboxID, compiled.Allow, gwPort, networkRunCommand, networkRunBatch)
 	if err != nil {
@@ -1875,7 +1883,7 @@ func randomGuestCID() uint32 {
 	return cid%(0xFFFFFFFE-3) + 3
 }
 
-func gatewayEnvVars(instance *sandboxInstance) []string {
+func gatewayEnvVars(instance *sandboxInstance, gwPort int) []string {
 	if instance.Policy == nil {
 		return nil
 	}
@@ -1893,7 +1901,7 @@ func gatewayEnvVars(instance *sandboxInstance) []string {
 		return nil
 	}
 
-	gatewayAddr := fmt.Sprintf("http://%s:%d", instance.HostIP, gateway.DefaultPort)
+	gatewayAddr := fmt.Sprintf("http://%s:%d", instance.HostIP, gwPort)
 	env := make([]string, 0, 1+len(gitHosts)*2)
 	env = append(env, fmt.Sprintf("GIT_CONFIG_COUNT=%d", len(gitHosts)))
 	for i, host := range gitHosts {

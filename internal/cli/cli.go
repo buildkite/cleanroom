@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"net"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -156,11 +158,12 @@ type ConsoleCommand struct {
 }
 
 type ServeCommand struct {
-	Listen   string `help:"Listen endpoint for control API (defaults to runtime endpoint; supports tsnet://hostname[:port] and tssvc://service[:local-port])"`
-	LogLevel string `help:"Server log level (debug|info|warn|error)"`
-	TLSCert  string `help:"Path to TLS server certificate (auto-discovered from XDG config for https)"`
-	TLSKey   string `help:"Path to TLS server private key (auto-discovered from XDG config for https)"`
-	TLSCA    string `help:"Path to CA certificate for client verification (auto-discovered from XDG config for https)"`
+	Listen        string `help:"Listen endpoint for control API (defaults to runtime endpoint; supports tsnet://hostname[:port] and tssvc://service[:local-port])"`
+	GatewayListen string `help:"Listen address for the host gateway (default :8170, use :0 for ephemeral port)"`
+	LogLevel      string `help:"Server log level (debug|info|warn|error)"`
+	TLSCert       string `help:"Path to TLS server certificate (auto-discovered from XDG config for https)"`
+	TLSKey        string `help:"Path to TLS server private key (auto-discovered from XDG config for https)"`
+	TLSCA         string `help:"Path to CA certificate for client verification (auto-discovered from XDG config for https)"`
 }
 
 type TLSCommand struct {
@@ -1030,6 +1033,7 @@ func (s *ServeCommand) Run(ctx *runtimeContext) error {
 	gwRegistry := gateway.NewRegistry()
 	gwCredentials := gateway.NewEnvCredentialProvider()
 	gwServer := gateway.NewServer(gateway.ServerConfig{
+		ListenAddr:  s.GatewayListen,
 		Registry:    gwRegistry,
 		Credentials: gwCredentials,
 		Logger:      logger.With("subsystem", "gateway"),
@@ -1038,8 +1042,16 @@ func (s *ServeCommand) Run(ctx *runtimeContext) error {
 		return fmt.Errorf("start gateway: %w", err)
 	}
 
+	gwPort := gateway.DefaultPort
+	if _, portStr, err := net.SplitHostPort(gwServer.Addr()); err == nil {
+		if p, err := strconv.Atoi(portStr); err == nil && p > 0 {
+			gwPort = p
+		}
+	}
+
 	if fcAdapter, ok := ctx.Backends["firecracker"].(*firecracker.Adapter); ok {
 		fcAdapter.GatewayRegistry = gwRegistry
+		fcAdapter.GatewayPort = gwPort
 	}
 
 	var serverTLS *controlserver.TLSOptions

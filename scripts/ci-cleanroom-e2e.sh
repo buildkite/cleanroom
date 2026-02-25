@@ -94,7 +94,7 @@ socket_path="$tmpdir/cleanroom.sock"
 listen_endpoint="unix://$socket_path"
 
 echo "--- :rocket: Start cleanroom control-plane"
-./dist/cleanroom serve --listen "$listen_endpoint" >"$tmpdir/server.log" 2>&1 &
+./dist/cleanroom serve --listen "$listen_endpoint" --gateway-listen "127.0.0.1:0" >"$tmpdir/server.log" 2>&1 &
 srv_pid=$!
 
 for _ in $(seq 1 40); do
@@ -130,10 +130,16 @@ fi
 echo "--- :closed_lock_with_key: Gateway reachability test"
 if grep -q 'gateway server started' "$tmpdir/server.log"; then
   echo "gateway server started (confirmed from server log)"
-  # The gateway binds on 0.0.0.0:8170. Requests from localhost (non-TAP)
-  # should get 403 from the identity middleware (unregistered source IP).
+  # Extract the actual gateway port from the server log (may be ephemeral).
+  gw_addr="$(grep 'gateway server started' "$tmpdir/server.log" | sed -nE 's/.*addr=([^ ]+).*/\1/p' | head -n1)"
+  if [[ -z "$gw_addr" ]]; then
+    gw_addr="127.0.0.1:8170"
+  fi
+  echo "gateway address: $gw_addr"
+  # Requests from localhost (non-TAP) should get 403 from the identity
+  # middleware (unregistered source IP).
   set +e
-  gw_body="$(curl -s -o - -w '\n%{http_code}' http://127.0.0.1:8170/meta/ 2>&1)"
+  gw_body="$(curl -s -o - -w '\n%{http_code}' "http://$gw_addr/meta/" 2>&1)"
   gw_status=$?
   set -e
   gw_http_code="$(echo "$gw_body" | tail -n1)"
