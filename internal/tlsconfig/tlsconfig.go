@@ -91,9 +91,9 @@ func ResolveClient(opts Options) (*tls.Config, error) {
 }
 
 func resolvePaths(opts Options, role string) (certPath, keyPath, caPath string, err error) {
-	certPath = firstNonEmpty(opts.CertPath, os.Getenv("CLEANROOM_TLS_CERT"))
-	keyPath = firstNonEmpty(opts.KeyPath, os.Getenv("CLEANROOM_TLS_KEY"))
-	caPath = firstNonEmpty(opts.CAPath, os.Getenv("CLEANROOM_TLS_CA"))
+	certPath = opts.CertPath
+	keyPath = opts.KeyPath
+	caPath = opts.CAPath
 
 	// Track whether cert/key were explicitly provided. When they are, CA
 	// must also be explicit — auto-discovering a CA from XDG when cert/key
@@ -139,15 +139,6 @@ func loadCAPool(path string) (*x509.CertPool, error) {
 		return nil, fmt.Errorf("no valid certificates found in CA file %s", path)
 	}
 	return pool, nil
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
 }
 
 func fileExists(path string) bool {
