@@ -1256,10 +1256,33 @@ func (d *DoctorCommand) Run(ctx *runtimeContext) error {
 		return fmt.Errorf("unknown backend %q", backendName)
 	}
 	capabilities := backend.CapabilitiesForAdapter(adapter)
+	gwCredentials := gateway.NewEnvCredentialProvider()
+	gwHosts := gwCredentials.ConfiguredHosts()
+	gwRoutes := gateway.Routes()
+	credSummary := "none configured"
+	if len(gwHosts) > 0 {
+		credSummary = strings.Join(gwHosts, ", ")
+	}
+	routeSummary := strings.Join(gwRoutes, ", ")
 
 	checks := []backend.DoctorCheck{
 		{Name: "runtime_config", Status: "pass", Message: fmt.Sprintf("using runtime config path %s", ctx.ConfigPath)},
 		{Name: "backend", Status: "pass", Message: fmt.Sprintf("selected backend %s", backendName)},
+		{
+			Name:    "gateway_listen",
+			Status:  "pass",
+			Message: fmt.Sprintf("default listen %s (port %d; override with cleanroom serve --gateway-listen)", gateway.DefaultListenAddr, gateway.DefaultPort),
+		},
+		{
+			Name:    "gateway_routes",
+			Status:  "pass",
+			Message: fmt.Sprintf("enabled routes: %s", routeSummary),
+		},
+		{
+			Name:    "gateway_credentials",
+			Status:  "pass",
+			Message: fmt.Sprintf("configured credential hosts: %s", credSummary),
+		},
 	}
 	for _, key := range backend.SortedCapabilityKeys(capabilities) {
 		status := "warn"
@@ -1315,6 +1338,12 @@ func (d *DoctorCommand) Run(ctx *runtimeContext) error {
 			"backend":      backendName,
 			"capabilities": backend.CloneCapabilities(capabilities),
 			"checks":       checks,
+			"gateway": map[string]any{
+				"default_listen":   gateway.DefaultListenAddr,
+				"default_port":     gateway.DefaultPort,
+				"routes":           gwRoutes,
+				"credential_hosts": gwHosts,
+			},
 		}
 		enc := json.NewEncoder(ctx.Stdout)
 		enc.SetIndent("", "  ")
