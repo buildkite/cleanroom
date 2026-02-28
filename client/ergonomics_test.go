@@ -21,6 +21,8 @@ type blockingPersistentAdapter struct {
 	integrationAdapter
 	provisionEntered chan struct{}
 	provisionRelease chan struct{}
+	terminateEntered chan struct{}
+	terminateRelease chan struct{}
 	provisionCalls   atomic.Int32
 }
 
@@ -40,7 +42,30 @@ func (a *blockingPersistentAdapter) RunInSandbox(ctx context.Context, req backen
 }
 
 func (a *blockingPersistentAdapter) TerminateSandbox(context.Context, string) error {
+	if a.terminateEntered != nil {
+		a.terminateEntered <- struct{}{}
+	}
+	if a.terminateRelease != nil {
+		<-a.terminateRelease
+	}
 	return nil
+}
+
+type cancelAwareStreamingAdapter struct {
+	integrationAdapter
+	runEntered  chan struct{}
+	runCanceled chan struct{}
+}
+
+func (a *cancelAwareStreamingAdapter) RunStream(ctx context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+	if a.runEntered != nil {
+		a.runEntered <- struct{}{}
+	}
+	<-ctx.Done()
+	if a.runCanceled != nil {
+		a.runCanceled <- struct{}{}
+	}
+	return nil, ctx.Err()
 }
 
 func startIntegrationServerWithAdapter(t *testing.T, adapter backend.Adapter) string {
@@ -250,6 +275,59 @@ func TestEnsureSandboxSerializesConcurrentCreatesByKey(t *testing.T) {
 	}
 }
 
+func TestEnsureSandboxReplacesStoppingSandbox(t *testing.T) {
+	adapter := &blockingPersistentAdapter{
+		terminateEntered: make(chan struct{}, 1),
+		terminateRelease: make(chan struct{}),
+	}
+	host := startIntegrationServerWithAdapter(t, adapter)
+
+	c, err := New(host)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	ctx := context.Background()
+
+	first, err := c.EnsureSandbox(ctx, "thread:stopping", EnsureSandboxOptions{
+		Backend: "firecracker",
+		Policy:  testPolicy(),
+	})
+	if err != nil {
+		t.Fatalf("first EnsureSandbox returned error: %v", err)
+	}
+
+	terminateDone := make(chan error, 1)
+	go func() {
+		_, terminateErr := c.TerminateSandbox(ctx, &TerminateSandboxRequest{SandboxId: first.ID})
+		terminateDone <- terminateErr
+	}()
+
+	select {
+	case <-adapter.terminateEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("TerminateSandbox did not reach backend terminate")
+	}
+
+	second, err := c.EnsureSandbox(ctx, "thread:stopping", EnsureSandboxOptions{
+		Backend: "firecracker",
+		Policy:  testPolicy(),
+	})
+	if err != nil {
+		t.Fatalf("EnsureSandbox while stopping returned error: %v", err)
+	}
+	if second == nil || !second.Created {
+		t.Fatal("expected a newly created replacement sandbox while cached sandbox is stopping")
+	}
+	if second.ID == first.ID {
+		t.Fatalf("expected replacement sandbox id to differ from stopping sandbox id %q", first.ID)
+	}
+
+	close(adapter.terminateRelease)
+	if err := <-terminateDone; err != nil {
+		t.Fatalf("TerminateSandbox returned error: %v", err)
+	}
+}
+
 func TestEnsureSandboxAcceptsExplicitSandboxID(t *testing.T) {
 	host := startIntegrationServer(t)
 	c, err := New(host)
@@ -310,6 +388,57 @@ func TestExecAndWait(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "hello from cleanroom") {
 		t.Fatalf("expected stdout writer to receive output, got %q", stdout.String())
+	}
+}
+
+func TestExecAndWaitTimeoutCancelsExecution(t *testing.T) {
+	adapter := &cancelAwareStreamingAdapter{
+		runEntered:  make(chan struct{}, 1),
+		runCanceled: make(chan struct{}, 1),
+	}
+	host := startIntegrationServerWithAdapter(t, adapter)
+	c, err := New(host)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	ctx := context.Background()
+	sb, err := c.EnsureSandbox(ctx, "thread:timeout-cancel", EnsureSandboxOptions{
+		Backend: "firecracker",
+		Policy:  testPolicy(),
+	})
+	if err != nil {
+		t.Fatalf("EnsureSandbox returned error: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, runErr := c.ExecAndWait(ctx, sb.ID, []string{"sleep", "999"}, ExecOptions{
+			Timeout: 100 * time.Millisecond,
+		})
+		done <- runErr
+	}()
+
+	select {
+	case <-adapter.runEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("execution never reached backend")
+	}
+
+	var runErr error
+	select {
+	case runErr = <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("ExecAndWait did not return after timeout")
+	}
+	if runErr == nil {
+		t.Fatal("expected timeout error from ExecAndWait")
+	}
+
+	select {
+	case <-adapter.runCanceled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected execution run context to be canceled after timeout")
 	}
 }
 

@@ -194,7 +194,7 @@ func (c *Client) EnsureSandbox(ctx context.Context, key string, opts EnsureSandb
 	if cachedID, ok := c.lookupSandboxKey(trimmedKey); ok {
 		handle, err := c.fetchSandboxHandle(ctx, cachedID, false)
 		if err == nil {
-			if !isTerminalSandboxStatus(handle.Status) {
+			if isReusableSandboxStatus(handle.Status) {
 				return handle, nil
 			}
 			c.clearSandboxKey(trimmedKey)
@@ -231,8 +231,8 @@ func (c *Client) EnsureSandbox(ctx context.Context, key string, opts EnsureSandb
 	}, nil
 }
 
-func isTerminalSandboxStatus(status SandboxStatus) bool {
-	return status == SandboxStatus_SANDBOX_STATUS_STOPPED || status == SandboxStatus_SANDBOX_STATUS_FAILED
+func isReusableSandboxStatus(status SandboxStatus) bool {
+	return status == SandboxStatus_SANDBOX_STATUS_READY
 }
 
 func (c *Client) fetchSandboxHandle(ctx context.Context, sandboxID string, created bool) (*SandboxHandle, error) {
@@ -398,6 +398,14 @@ func (c *Client) ExecAndWait(ctx context.Context, sandboxID string, command []st
 		}
 	}
 	if streamErr := stream.Err(); streamErr != nil {
+		if errors.Is(execCtx.Err(), context.Canceled) || errors.Is(execCtx.Err(), context.DeadlineExceeded) {
+			cancelCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			_, _ = c.CancelExecution(cancelCtx, &CancelExecutionRequest{
+				SandboxId:   sandboxID,
+				ExecutionId: executionID,
+			})
+			cancel()
+		}
 		return nil, streamErr
 	}
 
