@@ -71,6 +71,23 @@ func example() error {
 - status enums (`client.SandboxStatus_*`, `client.ExecutionStatus_*`)
 - ergonomic wrappers (`client.NewFromEnv`, `client.EnsureSandbox`, `client.ExecAndWait`)
 
+## Install
+
+Install the latest release:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/buildkite/cleanroom/main/scripts/install.sh | bash
+```
+
+Install a specific version:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/buildkite/cleanroom/main/scripts/install.sh | \
+  bash -s -- --version v0.1.0
+```
+
+By default this installs to `/usr/local/bin`. Override with `--install-dir` or `CLEANROOM_INSTALL_DIR`.
+
 ## Quick Start
 
 Initialize runtime config and check host prerequisites:
@@ -148,7 +165,7 @@ macOS note:
 
 - `darwin-vz` is the default backend on macOS
 - install host tools for rootfs derivation with `brew install e2fsprogs`
-- `cleanroom-darwin-vz` helper must be installed and signed with `com.apple.security.virtualization` entitlement (`mise run install` handles this in this repo)
+- `cleanroom-darwin-vz` helper must be installed and signed with `com.apple.security.virtualization` entitlement (the release install script handles this automatically; `mise run install` also handles it in this repo)
 
 ## CLI
 
