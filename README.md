@@ -1,15 +1,24 @@
 # 🧑‍🔬 Cleanroom
 
-Cleanroom uses fast Firecracker microVMs (under 2s to interactive) to create isolated environments for untrusted workloads like AI agents and CI jobs. Deny-by-default egress, digest-pinned images, and immutable policy make it safe to run code you don't trust.
+Cleanroom uses fast Linux microVM backends to create isolated environments for untrusted workloads like AI agents and CI jobs. It supports Firecracker on Linux and Virtualization.framework (`darwin-vz`) on macOS. Deny-by-default policy, digest-pinned images, and immutable policy compilation make it safe to run code you don't trust.
 
 ## What It Does
 
 - Compiles repository policy from `cleanroom.yaml`
 - Requires digest-pinned sandbox base images via `sandbox.image.ref`
 - Enforces deny-by-default egress (`host:port` allow rules)
-- Runs commands in a Firecracker microVM via guest agent
+- Runs commands in a backend microVM (`firecracker` on Linux, `darwin-vz` on macOS)
 - Returns exit code + stdout/stderr over API
 - Stores run artifacts and timing metrics for inspection
+
+## Backend Support
+
+| Host OS | Backend | Status | Notes |
+|---------|---------|--------|-------|
+| Linux | `firecracker` | Full local backend | Supports persistent sandboxes, sandbox file download, and egress allowlist enforcement |
+| macOS | `darwin-vz` | Supported with known gaps | Per-run VMs (no persistent sandboxes yet), no sandbox file download, and no guest NIC/egress allowlist enforcement yet |
+
+Backend capabilities are exposed in `cleanroom doctor --json` under `capabilities`.
 
 ## Architecture
 
@@ -21,6 +30,13 @@ Cleanroom uses fast Firecracker microVMs (under 2s to interactive) to create iso
   - `cleanroom.v1.ExecutionService`
 
 ## Quick Start
+
+Initialize runtime config and check host prerequisites:
+
+```bash
+cleanroom config init
+cleanroom doctor
+```
 
 Start the server (all CLI commands require a running server):
 
@@ -50,11 +66,19 @@ Use `--rm` to tear down the sandbox after the command completes (useful for one-
 cleanroom exec --rm -- npm test
 ```
 
+macOS note:
+
+- `darwin-vz` is the default backend on macOS
+- install host tools for rootfs derivation with `brew install e2fsprogs`
+- `cleanroom-darwin-vz` helper must be installed and signed with `com.apple.security.virtualization` entitlement (`mise run install` handles this in this repo)
+
 ## CLI
 
 ```bash
 cleanroom exec -- npm test
 cleanroom exec -c /path/to/repo -- make build
+cleanroom exec --backend darwin-vz -- npm test
+cleanroom exec --backend firecracker -- npm test
 ```
 
 Interactive console:
@@ -163,15 +187,7 @@ cleanroom status --run-id <run-id>
 cleanroom status --last-run
 ```
 
-## Architecture
-
-- Server: `cleanroom serve`
-- Client: CLI and ConnectRPC clients
-- Transport: unix socket by default
-- API: `cleanroom.v1.SandboxService` and `cleanroom.v1.ExecutionService`
-- Proto definition: `proto/cleanroom/v1/control.proto`
-
-### Remote Access
+## Remote Access
 
 The server supports Tailscale listeners for remote access:
 
@@ -267,13 +283,22 @@ The helper (not the main `cleanroom` binary) needs the `com.apple.security.virtu
 
 ## Host Requirements
 
-- Linux host with `/dev/kvm` available and writable
+Linux (`firecracker` backend):
+
+- `/dev/kvm` available and writable
 - Firecracker binary installed
-- Kernel image configured, or internet access for first-run managed kernel download
+- kernel image configured, or internet access for first-run managed kernel download
 - `mkfs.ext4` installed (materialises OCI layers into ext4 cache artifacts)
 - `sudo -n` access for `ip`, `iptables`, and `sysctl` (network setup/cleanup)
-- macOS host requires `cleanroom-darwin-vz` helper plus `com.apple.security.virtualization` entitlement on that helper binary
-- macOS rootfs derivation requires `mkfs.ext4` and `debugfs` (install via `brew install e2fsprogs`)
+
+macOS (`darwin-vz` backend):
+
+- `cleanroom-darwin-vz` helper installed
+- helper binary signed with `com.apple.security.virtualization` entitlement
+- `mkfs.ext4` and `debugfs` for rootfs derivation (`brew install e2fsprogs`)
+
+General:
+
 - `cleanroom doctor --json` includes a machine-readable `capabilities` map for the selected backend
 
 ## References
