@@ -66,6 +66,26 @@ Use `--rm` to tear down the sandbox after the command completes (useful for one-
 cleanroom exec --rm -- npm test
 ```
 
+### Git Gateway (Firecracker)
+
+The server runs a host gateway (`/git/`, `/registry/`, `/secrets/`, `/meta/`) and
+injects scoped git URL rewrites for policy-allowed hosts.
+
+Allowed host example (from this repo policy):
+
+```bash
+cleanroom exec -- git ls-remote https://github.com/buildkite/cleanroom.git HEAD
+```
+
+Denied host example (not in `sandbox.network.allow`):
+
+```bash
+cleanroom exec -- git ls-remote https://gitlab.com/gitlab-org/gitlab.git HEAD
+```
+
+Optional host-side credentials can be provided to the gateway via environment
+variables such as `CLEANROOM_GITHUB_TOKEN` and `CLEANROOM_GITLAB_TOKEN`.
+
 macOS note:
 
 - `darwin-vz` is the default backend on macOS
@@ -183,6 +203,7 @@ Diagnostics:
 
 ```bash
 cleanroom doctor
+cleanroom doctor --json   # includes gateway defaults/routes/credential-host summary
 cleanroom status --run-id <run-id>
 cleanroom status --last-run
 ```
