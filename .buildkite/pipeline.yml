@@ -34,6 +34,8 @@ steps:
 
   - label: ":fire: E2E (Firecracker)"
     command: scripts/ci-cleanroom-e2e.sh
+    concurrency: 1
+    concurrency_group: cleanroom-e2e
     env:
       CLEANROOM_KERNEL_IMAGE: /var/lib/buildkite-agent/.local/share/cleanroom/images/vmlinux.bin
       CLEANROOM_FIRECRACKER_BINARY: /usr/local/bin/firecracker
