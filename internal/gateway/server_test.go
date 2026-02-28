@@ -79,6 +79,58 @@ func TestIdentityMiddlewareInjectsScope(t *testing.T) {
 	}
 }
 
+func TestIdentityMiddlewareFallsBackToScopeToken(t *testing.T) {
+	t.Parallel()
+
+	reg := NewRegistry()
+	p := &policy.CompiledPolicy{Version: 1, NetworkDefault: "deny"}
+	if err := reg.RegisterScopeToken("token-1", "sandbox-token", p); err != nil {
+		t.Fatalf("register scope token: %v", err)
+	}
+
+	srv := &Server{registry: reg}
+	var gotScope *SandboxScope
+	inner := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		gotScope, _ = ScopeFromContext(r.Context())
+	})
+	handler := srv.identityMiddleware(inner)
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	req.RemoteAddr = "172.16.1.100:12345"
+	req.Header.Set(ScopeTokenHeader, "token-1")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if gotScope == nil {
+		t.Fatal("expected scope in context")
+	}
+	if gotScope.SandboxID != "sandbox-token" {
+		t.Fatalf("expected sandbox-token, got %s", gotScope.SandboxID)
+	}
+}
+
+func TestIdentityMiddlewareRejectsUnknownScopeToken(t *testing.T) {
+	t.Parallel()
+
+	reg := NewRegistry()
+	srv := &Server{registry: reg}
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := srv.identityMiddleware(inner)
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	req.RemoteAddr = "172.16.1.100:12345"
+	req.Header.Set(ScopeTokenHeader, "unknown-token")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", w.Code)
+	}
+}
+
 func TestPathMiddlewareRejectsTraversal(t *testing.T) {
 	t.Parallel()
 

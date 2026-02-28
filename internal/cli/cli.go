@@ -1211,6 +1211,13 @@ func (s *ServeCommand) Run(ctx *runtimeContext) error {
 			}
 		}
 	}
+	if darwinAdapter, ok := ctx.Backends["darwin-vz"].(*darwinvz.Adapter); ok {
+		darwinAdapter.GatewayRegistry = gwRegistry
+		darwinAdapter.GatewayPort = gwPort
+		if host := strings.TrimSpace(os.Getenv("CLEANROOM_DARWIN_GATEWAY_HOST")); host != "" {
+			darwinAdapter.GatewayHost = host
+		}
+	}
 
 	var serverTLS *controlserver.TLSOptions
 	if ep.Scheme == "https" {

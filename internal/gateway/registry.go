@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/buildkite/cleanroom/internal/policy"
@@ -16,13 +17,17 @@ type SandboxScope struct {
 
 // Registry is a thread-safe mapping of guest IPs to sandbox scopes.
 type Registry struct {
-	mu        sync.RWMutex
-	byGuestIP map[string]*SandboxScope
+	mu           sync.RWMutex
+	byGuestIP    map[string]*SandboxScope
+	byScopeToken map[string]*SandboxScope
 }
 
 // NewRegistry creates an empty registry.
 func NewRegistry() *Registry {
-	return &Registry{byGuestIP: make(map[string]*SandboxScope)}
+	return &Registry{
+		byGuestIP:    make(map[string]*SandboxScope),
+		byScopeToken: make(map[string]*SandboxScope),
+	}
 }
 
 // Register adds a sandbox scope keyed by guest IP. Returns an error if the IP
@@ -53,5 +58,39 @@ func (r *Registry) Lookup(guestIP string) (*SandboxScope, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	scope, ok := r.byGuestIP[guestIP]
+	return scope, ok
+}
+
+// RegisterScopeToken adds a sandbox scope keyed by a capability token.
+// Returns an error if the token is already registered.
+func (r *Registry) RegisterScopeToken(scopeToken, sandboxID string, p *policy.CompiledPolicy) error {
+	scopeToken = strings.TrimSpace(scopeToken)
+	if scopeToken == "" {
+		return fmt.Errorf("scope token must not be empty")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, exists := r.byScopeToken[scopeToken]; exists {
+		return fmt.Errorf("scope token already registered")
+	}
+	r.byScopeToken[scopeToken] = &SandboxScope{
+		SandboxID: sandboxID,
+		Policy:    p,
+	}
+	return nil
+}
+
+// ReleaseScopeToken removes a sandbox scope by token.
+func (r *Registry) ReleaseScopeToken(scopeToken string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.byScopeToken, scopeToken)
+}
+
+// LookupScopeToken retrieves a sandbox scope by token.
+func (r *Registry) LookupScopeToken(scopeToken string) (*SandboxScope, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	scope, ok := r.byScopeToken[scopeToken]
 	return scope, ok
 }

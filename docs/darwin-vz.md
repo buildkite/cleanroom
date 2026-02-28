@@ -99,7 +99,7 @@ On macOS, cleanroom also probes common Homebrew `e2fsprogs` locations.
 
 - `network.default` must be `deny`
 - `network.allow` entries are ignored and produce a warning
-- no virtual NIC is attached, so guest outbound networking is unavailable in current builds
+- a virtual NIC is attached (NAT), so guest outbound networking is available
 
 The backend currently has no allowlist egress enforcement equivalent to Linux Firecracker iptables rules.
 
@@ -116,7 +116,12 @@ Current `darwin-vz` capability values:
 - `sandbox.file_download=false`
 - `network.default_deny=true`
 - `network.allowlist_egress=false`
-- `network.guest_interface=false`
+- `network.guest_interface=true`
+
+Gateway access for git rewrite flow:
+
+- darwin guests can access the host gateway through the NAT host address
+- default host is `192.168.64.1`; override with `CLEANROOM_DARWIN_GATEWAY_HOST`
 
 ## Entitlements and Signing
 
