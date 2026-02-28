@@ -303,6 +303,8 @@ if grep -q 'gateway server started' "$tmpdir/server.log"; then
   if [[ -z "$gw_addr" ]]; then
     gw_addr="127.0.0.1:8170"
   fi
+  # Normalise 0.0.0.0 to 127.0.0.1 so curl doesn't route through HTTP_PROXY.
+  gw_addr="${gw_addr/0.0.0.0/127.0.0.1}"
   echo "gateway address: $gw_addr"
   # Requests from localhost (non-TAP) should get 403 from the identity
   # middleware (unregistered source IP).
