@@ -232,6 +232,11 @@ set +e
     allow_resp="$(wget -q -S -O - "$allow_url" 2>&1)"
     allow_rc=$?
     set -e
+    if [ "$allow_rc" -ne 0 ]; then
+      echo "allowlisted host probe failed (exit $allow_rc)" >&2
+      echo "$allow_resp" >&2
+      exit 5
+    fi
     if echo "$allow_resp" | grep -q "host_not_allowed"; then
       echo "allowlisted host was denied by gateway" >&2
       echo "$allow_resp" >&2
