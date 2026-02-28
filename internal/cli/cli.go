@@ -1351,7 +1351,7 @@ WantedBy=multi-user.target
 func joinSystemdExecArgs(args []string) string {
 	quoted := make([]string, 0, len(args))
 	for _, arg := range args {
-		if strings.ContainsAny(arg, " \t\"\\") {
+		if strings.ContainsAny(arg, " \t\"\\'") {
 			quoted = append(quoted, strconv.Quote(arg))
 			continue
 		}

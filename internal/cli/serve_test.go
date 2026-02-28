@@ -362,3 +362,16 @@ func TestServeInstallReturnsCommandErrors(t *testing.T) {
 		t.Fatalf("expected daemon-reload context, got: %v", err)
 	}
 }
+
+func TestJoinSystemdExecArgsQuotesSingleQuoteArgs(t *testing.T) {
+	joined := joinSystemdExecArgs([]string{
+		"/usr/local/bin/cleanroom",
+		"serve",
+		"--tls-ca",
+		"/etc/cleanroom/bob's-ca.pem",
+	})
+
+	if !strings.Contains(joined, "\"/etc/cleanroom/bob's-ca.pem\"") {
+		t.Fatalf("expected single-quote arg to be quoted, got: %q", joined)
+	}
+}
