@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -104,7 +105,7 @@ func startIntegrationServer(t *testing.T, adapter backend.Adapter) (string, *con
 	return httpServer.URL, svc
 }
 
-func runExecWithCapture(cmd ExecCommand, ctx runtimeContext) execOutcome {
+func runWithCapture(runFn func(*runtimeContext) error, stdinData *string, ctx runtimeContext) execOutcome {
 	tmpDir, err := os.MkdirTemp("", "cleanroom-cli-test-*")
 	if err != nil {
 		return execOutcome{cause: fmt.Errorf("create temp dir: %w", err)}
@@ -126,6 +127,26 @@ func runExecWithCapture(cmd ExecCommand, ctx runtimeContext) execOutcome {
 	}
 	defer stderrFile.Close()
 
+	oldStdin := os.Stdin
+	if stdinData != nil {
+		stdinReader, stdinWriter, err := os.Pipe()
+		if err != nil {
+			return execOutcome{cause: fmt.Errorf("create stdin pipe: %w", err)}
+		}
+		defer stdinReader.Close()
+		if _, err := io.WriteString(stdinWriter, *stdinData); err != nil {
+			_ = stdinWriter.Close()
+			return execOutcome{cause: fmt.Errorf("write stdin payload: %w", err)}
+		}
+		if err := stdinWriter.Close(); err != nil {
+			return execOutcome{cause: fmt.Errorf("close stdin writer: %w", err)}
+		}
+		os.Stdin = stdinReader
+		defer func() {
+			os.Stdin = oldStdin
+		}()
+	}
+
 	oldStderr := os.Stderr
 	os.Stderr = stderrFile
 	defer func() {
@@ -133,7 +154,7 @@ func runExecWithCapture(cmd ExecCommand, ctx runtimeContext) execOutcome {
 	}()
 
 	ctx.Stdout = stdoutFile
-	runErr := cmd.Run(&ctx)
+	runErr := runFn(&ctx)
 
 	if err := stdoutFile.Sync(); err != nil {
 		return execOutcome{cause: fmt.Errorf("sync stdout capture: %w", err)}
@@ -156,6 +177,12 @@ func runExecWithCapture(cmd ExecCommand, ctx runtimeContext) execOutcome {
 		stdout: string(stdoutBytes),
 		stderr: string(stderrBytes),
 	}
+}
+
+func runExecWithCapture(cmd ExecCommand, ctx runtimeContext) execOutcome {
+	return runWithCapture(func(runCtx *runtimeContext) error {
+		return cmd.Run(runCtx)
+	}, nil, ctx)
 }
 
 func withTestSignalChannel(t *testing.T) chan os.Signal {

@@ -4,10 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
-	"io"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -17,72 +14,9 @@ import (
 )
 
 func runConsoleWithCapture(cmd ConsoleCommand, stdinData string, ctx runtimeContext) execOutcome {
-	tmpDir, err := os.MkdirTemp("", "cleanroom-console-test-*")
-	if err != nil {
-		return execOutcome{cause: fmt.Errorf("create temp dir: %w", err)}
-	}
-	defer os.RemoveAll(tmpDir)
-
-	stdoutPath := filepath.Join(tmpDir, "stdout.log")
-	stderrPath := filepath.Join(tmpDir, "stderr.log")
-
-	stdoutFile, err := os.Create(stdoutPath)
-	if err != nil {
-		return execOutcome{cause: fmt.Errorf("create stdout capture file: %w", err)}
-	}
-	defer stdoutFile.Close()
-
-	stderrFile, err := os.Create(stderrPath)
-	if err != nil {
-		return execOutcome{cause: fmt.Errorf("create stderr capture file: %w", err)}
-	}
-	defer stderrFile.Close()
-
-	stdinReader, stdinWriter, err := os.Pipe()
-	if err != nil {
-		return execOutcome{cause: fmt.Errorf("create stdin pipe: %w", err)}
-	}
-	if stdinData != "" {
-		if _, err := io.WriteString(stdinWriter, stdinData); err != nil {
-			return execOutcome{cause: fmt.Errorf("write stdin payload: %w", err)}
-		}
-	}
-	_ = stdinWriter.Close()
-	defer stdinReader.Close()
-
-	oldStdin := os.Stdin
-	oldStderr := os.Stderr
-	os.Stdin = stdinReader
-	os.Stderr = stderrFile
-	defer func() {
-		os.Stdin = oldStdin
-		os.Stderr = oldStderr
-	}()
-
-	ctx.Stdout = stdoutFile
-	runErr := cmd.Run(&ctx)
-
-	if err := stdoutFile.Sync(); err != nil {
-		return execOutcome{cause: fmt.Errorf("sync stdout capture: %w", err)}
-	}
-	if err := stderrFile.Sync(); err != nil {
-		return execOutcome{cause: fmt.Errorf("sync stderr capture: %w", err)}
-	}
-
-	stdoutBytes, err := os.ReadFile(stdoutPath)
-	if err != nil {
-		return execOutcome{cause: fmt.Errorf("read stdout capture: %w", err)}
-	}
-	stderrBytes, err := os.ReadFile(stderrPath)
-	if err != nil {
-		return execOutcome{cause: fmt.Errorf("read stderr capture: %w", err)}
-	}
-
-	return execOutcome{
-		err:    runErr,
-		stdout: string(stdoutBytes),
-		stderr: string(stderrBytes),
-	}
+	return runWithCapture(func(runCtx *runtimeContext) error {
+		return cmd.Run(runCtx)
+	}, &stdinData, ctx)
 }
 
 func TestConsoleIntegrationForwardsStdinAndStreamsOutput(t *testing.T) {
