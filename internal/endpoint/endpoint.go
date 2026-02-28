@@ -19,7 +19,14 @@ type Endpoint struct {
 	TSServicePort int
 }
 
-func Default() Endpoint {
+const DefaultSystemSocketPath = "/var/run/cleanroom/cleanroom.sock"
+
+const defaultSystemSocketPath = DefaultSystemSocketPath
+
+var endpointStat = os.Stat
+var endpointGeteuid = os.Geteuid
+
+func defaultListenEndpoint() Endpoint {
 	runtimeDir := strings.TrimSpace(os.Getenv("XDG_RUNTIME_DIR"))
 	if runtimeDir == "" {
 		runtimeDir = filepath.Join(os.TempDir(), "cleanroom")
@@ -30,6 +37,23 @@ func Default() Endpoint {
 		Address: sock,
 		BaseURL: "http://unix",
 	}
+}
+
+func defaultClientEndpoint() Endpoint {
+	if endpointGeteuid() == 0 {
+		if st, err := endpointStat(defaultSystemSocketPath); err == nil && !st.IsDir() && st.Mode()&os.ModeSocket != 0 {
+			return Endpoint{
+				Scheme:  "unix",
+				Address: defaultSystemSocketPath,
+				BaseURL: "http://unix",
+			}
+		}
+	}
+	return defaultListenEndpoint()
+}
+
+func Default() Endpoint {
+	return defaultListenEndpoint()
 }
 
 // ResolveListen resolves an endpoint for server-side listening, which supports
@@ -48,7 +72,10 @@ func resolve(raw string, allowTSNet bool) (Endpoint, error) {
 		value = strings.TrimSpace(os.Getenv("CLEANROOM_HOST"))
 	}
 	if value == "" {
-		return Default(), nil
+		if allowTSNet {
+			return defaultListenEndpoint(), nil
+		}
+		return defaultClientEndpoint(), nil
 	}
 
 	switch {

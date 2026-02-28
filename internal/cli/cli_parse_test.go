@@ -94,3 +94,66 @@ func TestConfigInitParses(t *testing.T) {
 		t.Fatalf("parse config init returned error: %v", err)
 	}
 }
+
+func TestServeCommandParsesWithoutAction(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"serve"}); err != nil {
+		t.Fatalf("parse serve returned error: %v", err)
+	}
+	if got := c.Serve.Action; got != "" {
+		t.Fatalf("expected empty serve action, got %q", got)
+	}
+}
+
+func TestServeInstallParses(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"serve", "install"}); err != nil {
+		t.Fatalf("parse serve install returned error: %v", err)
+	}
+	if got := c.Serve.Action; got != "install" {
+		t.Fatalf("expected serve action install, got %q", got)
+	}
+}
+
+func TestServeInstallForceParses(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"serve", "install", "--force"}); err != nil {
+		t.Fatalf("parse serve install --force returned error: %v", err)
+	}
+	if got := c.Serve.Action; got != "install" {
+		t.Fatalf("expected serve action install, got %q", got)
+	}
+	if !c.Serve.Force {
+		t.Fatal("expected --force to set Serve.Force")
+	}
+}
+
+func TestServeTLSCAFlagParses(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"serve", "--tls-ca", "/tmp/ca.pem"}); err != nil {
+		t.Fatalf("parse serve --tls-ca returned error: %v", err)
+	}
+	if got, want := c.Serve.TLSCA, "/tmp/ca.pem"; got != want {
+		t.Fatalf("expected serve TLSCA %q, got %q", want, got)
+	}
+}
+
+func TestServeTLSCALegacyAliasParses(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"serve", "--tlsca", "/tmp/ca.pem"}); err != nil {
+		t.Fatalf("parse serve --tlsca alias returned error: %v", err)
+	}
+	if got, want := c.Serve.TLSCA, "/tmp/ca.pem"; got != want {
+		t.Fatalf("expected serve TLSCA %q, got %q", want, got)
+	}
+}
