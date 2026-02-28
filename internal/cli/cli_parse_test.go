@@ -85,3 +85,12 @@ func TestImageBumpRefAllowsNoArgs(t *testing.T) {
 		t.Fatalf("parse image bump-ref with default ref returned error: %v", err)
 	}
 }
+
+func TestConfigInitParses(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"config", "init"}); err != nil {
+		t.Fatalf("parse config init returned error: %v", err)
+	}
+}

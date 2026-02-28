@@ -35,24 +35,26 @@ The `:fire: E2E (Firecracker)` step runs a real launched Firecracker execution a
 
 - Linux host with `/dev/kvm` available
 - Firecracker binary (default `/usr/local/bin/firecracker`)
-- Readable kernel and rootfs images for the `buildkite-agent` user
+- Readable kernel image for the `buildkite-agent` user (or allow managed kernel auto-download)
+- Internet egress to pull `sandbox.image.ref` from registry on first run
+- `mkfs.ext4` available for OCI-to-ext4 materialization
 - Passwordless sudo for required network setup commands
 
-### 3.2 Place runtime images
+### 3.2 Place runtime kernel image
 
-Put image assets under the Buildkite agent home so CI can read them:
+Put kernel assets under the Buildkite agent home so CI can read them:
 
 ```bash
 sudo install -d -o buildkite-agent -g buildkite-agent /var/lib/buildkite-agent/.local/share/cleanroom/images
 sudo cp /path/to/vmlinux.bin /var/lib/buildkite-agent/.local/share/cleanroom/images/
-sudo cp /path/to/rootfs.ext4 /var/lib/buildkite-agent/.local/share/cleanroom/images/
-sudo chown buildkite-agent:buildkite-agent /var/lib/buildkite-agent/.local/share/cleanroom/images/*
+sudo chown buildkite-agent:buildkite-agent /var/lib/buildkite-agent/.local/share/cleanroom/images/vmlinux.bin
 ```
+
+The Firecracker backend derives runtime rootfs from `sandbox.image.ref` automatically; no prebuilt `rootfs.ext4` is required.
 
 The pipeline is currently configured to use:
 
 - `CLEANROOM_KERNEL_IMAGE=/var/lib/buildkite-agent/.local/share/cleanroom/images/vmlinux.bin`
-- `CLEANROOM_ROOTFS=/var/lib/buildkite-agent/.local/share/cleanroom/images/rootfs.ext4`
 - `CLEANROOM_FIRECRACKER_BINARY=/usr/local/bin/firecracker`
 
 ### 3.3 Privileged command execution modes
@@ -113,7 +115,6 @@ If you prefer host-level env over pipeline step env, set variables in `/etc/buil
 set -euo pipefail
 
 export CLEANROOM_KERNEL_IMAGE="/var/lib/buildkite-agent/.local/share/cleanroom/images/vmlinux.bin"
-export CLEANROOM_ROOTFS="/var/lib/buildkite-agent/.local/share/cleanroom/images/rootfs.ext4"
 export CLEANROOM_FIRECRACKER_BINARY="/usr/local/bin/firecracker"
 ```
 

@@ -36,7 +36,6 @@ steps:
     command: scripts/ci-cleanroom-e2e.sh
     env:
       CLEANROOM_KERNEL_IMAGE: /var/lib/buildkite-agent/.local/share/cleanroom/images/vmlinux.bin
-      CLEANROOM_ROOTFS: /var/lib/buildkite-agent/.local/share/cleanroom/images/rootfs.ext4
       CLEANROOM_FIRECRACKER_BINARY: /usr/local/bin/firecracker
     agents:
       queue: cleanroom

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -64,6 +65,9 @@ func materializeExt4(ctx context.Context, mkfsBinary string, tarStream io.Reader
 	cmd := exec.CommandContext(ctx, mkfsBinary, "-F", "-d", rootFSDir, outputPath)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
+		if runtime.GOOS == "darwin" && (errors.Is(err, exec.ErrNotFound) || strings.Contains(err.Error(), "executable file not found")) {
+			return 0, fmt.Errorf("run %s for %q: %w; install it with `brew install e2fsprogs`", mkfsBinary, outputPath, err)
+		}
 		return 0, fmt.Errorf("run %s for %q: %w: %s", mkfsBinary, outputPath, err, strings.TrimSpace(string(output)))
 	}
 

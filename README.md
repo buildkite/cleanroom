@@ -213,43 +213,73 @@ sandbox:
 
 Runtime config path: `$XDG_CONFIG_HOME/cleanroom/config.yaml` (or `~/.config/cleanroom/config.yaml`).
 
+Bootstrap a config file with defaults:
+
+```bash
+cleanroom config init
+```
+
+On macOS, `cleanroom config init` defaults `default_backend` to `darwin-vz`. On other platforms it defaults to `firecracker`.
+
 ```yaml
 default_backend: firecracker
 backends:
   firecracker:
     binary_path: firecracker
-    kernel_image: /opt/cleanroom/vmlinux
+    kernel_image: "" # optional; auto-managed when unset/missing
     privileged_mode: sudo # or helper
     privileged_helper_path: /usr/local/sbin/cleanroom-root-helper
     vcpus: 2
     memory_mib: 1024
     guest_cid: 3
     launch_seconds: 30
+  darwin-vz:
+    kernel_image: "" # optional; auto-managed when unset/missing
+    rootfs: "" # optional; derived from sandbox.image.ref when unset/missing
+    vcpus: 2
+    memory_mib: 1024
+    guest_port: 10700
+    launch_seconds: 30
 ```
 
 The Firecracker adapter resolves `sandbox.image.ref` through the local image manager and caches materialised ext4 files under XDG cache paths.
+When `backends.<name>.kernel_image` is unset (or points to a missing file), cleanroom auto-downloads a verified managed kernel asset into XDG data paths.
+Set `kernel_image` explicitly if you need fully offline operation.
+When `backends.<name>.rootfs` is unset (or points to a missing file), cleanroom derives a runtime rootfs from `sandbox.image.ref` and injects the guest runtime automatically.
+This derivation path requires `mkfs.ext4` and `debugfs` on the host.
+On macOS, cleanroom auto-detects Homebrew `e2fsprogs` (`mkfs.ext4`/`debugfs`) from common keg locations even when they are not in `PATH`.
+The `darwin-vz` backend launches a dedicated helper binary (`cleanroom-darwin-vz`) and resolves it in this order:
+1. `CLEANROOM_DARWIN_VZ_HELPER`
+2. sibling binary next to `cleanroom`
+3. `PATH`
+
+The helper (not the main `cleanroom` binary) needs the `com.apple.security.virtualization` entitlement.
 
 ## Isolation Model
 
-- Workload runs in a Firecracker microVM
-- Host egress is controlled with TAP + iptables rules from compiled policy
-- Default network behaviour is deny
-- Rootfs writes persist across executions within a sandbox and are discarded on sandbox termination
+- Workload runs in a Linux microVM backend (`firecracker` on Linux, `darwin-vz` on macOS)
+- `firecracker` enforces policy egress allowlists with TAP + iptables
+- `darwin-vz` currently requires `network.default: deny` and ignores `network.allow` entries (warns when present)
+- `firecracker` rootfs writes persist across executions within a sandbox and are discarded on sandbox termination
+- `darwin-vz` executes each command in a fresh VM/rootfs copy (writes are discarded after each run)
 - Per-run observability is written to `run-observability.json` (rootfs prep, network setup, VM ready, command runtime, total)
-- Rootfs copy uses clone/reflink when available, with copy fallback
+- `firecracker` rootfs copy uses clone/reflink when available, with copy fallback
 
 ## Host Requirements
 
 - Linux host with `/dev/kvm` available and writable
 - Firecracker binary installed
-- Kernel image configured
+- Kernel image configured, or internet access for first-run managed kernel download
 - `mkfs.ext4` installed (materialises OCI layers into ext4 cache artifacts)
 - `sudo -n` access for `ip`, `iptables`, and `sysctl` (network setup/cleanup)
+- macOS host requires `cleanroom-darwin-vz` helper plus `com.apple.security.virtualization` entitlement on that helper binary
+- macOS rootfs derivation requires `mkfs.ext4` and `debugfs` (install via `brew install e2fsprogs`)
 
 ## References
 
 - [API design](docs/api.md) — ConnectRPC surface and proto sketch
 - [Benchmarks](docs/benchmarks.md) — TTI measurement and results
 - [CI](docs/ci.md) — Buildkite pipeline and base image workflow
+- [Darwin VZ](docs/darwin-vz.md) — macOS backend/helper design and behavior
 - [Spec](docs/spec.md) — Full specification and roadmap
 - [Research](docs/research.md) — Backend and tooling evaluation notes

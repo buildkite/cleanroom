@@ -7,10 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"net"
+	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,20 +22,21 @@ import (
 	"connectrpc.com/connect"
 	"github.com/alecthomas/kong"
 	"github.com/buildkite/cleanroom/internal/backend"
+	"github.com/buildkite/cleanroom/internal/backend/darwinvz"
 	"github.com/buildkite/cleanroom/internal/backend/firecracker"
 	"github.com/buildkite/cleanroom/internal/controlclient"
-	"github.com/buildkite/cleanroom/internal/gateway"
 	"github.com/buildkite/cleanroom/internal/controlserver"
 	"github.com/buildkite/cleanroom/internal/controlservice"
 	"github.com/buildkite/cleanroom/internal/endpoint"
-	"github.com/buildkite/cleanroom/internal/tlsbootstrap"
-	"github.com/buildkite/cleanroom/internal/tlsconfig"
+	"github.com/buildkite/cleanroom/internal/gateway"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/imagemgr"
 	"github.com/buildkite/cleanroom/internal/ociref"
 	"github.com/buildkite/cleanroom/internal/paths"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
+	"github.com/buildkite/cleanroom/internal/tlsbootstrap"
+	"github.com/buildkite/cleanroom/internal/tlsconfig"
 	"github.com/charmbracelet/log"
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
@@ -60,6 +62,7 @@ type runtimeContext struct {
 
 type CLI struct {
 	Policy  PolicyCommand  `cmd:"" help:"Policy commands"`
+	Config  ConfigCommand  `cmd:"" help:"Runtime config commands"`
 	Image   ImageCommand   `cmd:"" help:"Manage OCI image cache artifacts"`
 	Exec    ExecCommand    `cmd:"" help:"Execute a command in a cleanroom backend"`
 	Console ConsoleCommand `cmd:"" help:"Attach an interactive console to a cleanroom execution"`
@@ -108,6 +111,16 @@ type PolicyCommand struct {
 type PolicyValidateCommand struct {
 	Chdir string `short:"c" help:"Change to this directory before running commands"`
 	JSON  bool   `help:"Print compiled policy as JSON"`
+}
+
+type ConfigCommand struct {
+	Init ConfigInitCommand `cmd:"" help:"Create a runtime config file with defaults"`
+}
+
+type ConfigInitCommand struct {
+	Path           string `help:"Output path (default: $XDG_CONFIG_HOME/cleanroom/config.yaml)"`
+	Force          bool   `help:"Overwrite existing config file"`
+	DefaultBackend string `help:"Default backend value for config (firecracker|darwin-vz)"`
 }
 
 type clientFlags struct {
@@ -272,6 +285,7 @@ func Run(args []string) error {
 		ConfigPath: cfgPath,
 		Backends: map[string]backend.Adapter{
 			"firecracker": firecracker.New(),
+			"darwin-vz":   darwinvz.New(),
 		},
 	}
 
@@ -329,6 +343,87 @@ func (c *PolicyValidateCommand) Run(ctx *runtimeContext) error {
 
 	_, err = fmt.Fprintf(ctx.Stdout, "policy valid: %s\npolicy hash: %s\n", source, compiled.Hash)
 	return err
+}
+
+func (c *ConfigInitCommand) Run(ctx *runtimeContext) error {
+	path := strings.TrimSpace(c.Path)
+	if path == "" {
+		resolved, err := runtimeconfig.Path()
+		if err != nil {
+			return err
+		}
+		path = resolved
+	} else if !filepath.IsAbs(path) {
+		path = filepath.Join(ctx.CWD, path)
+	}
+
+	defaultBackend := strings.TrimSpace(c.DefaultBackend)
+	if defaultBackend == "" {
+		defaultBackend = hostDefaultBackend()
+	}
+	switch defaultBackend {
+	case "firecracker", "darwin-vz":
+	default:
+		return fmt.Errorf("unsupported default backend %q (expected firecracker or darwin-vz)", defaultBackend)
+	}
+
+	if st, err := os.Stat(path); err == nil && !st.IsDir() && !c.Force {
+		return fmt.Errorf("runtime config already exists at %s (use --force to overwrite)", path)
+	} else if err == nil && st.IsDir() {
+		return fmt.Errorf("runtime config path %s is a directory", path)
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("stat %s: %w", path, err)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create config directory: %w", err)
+	}
+
+	payload, err := yaml.Marshal(defaultRuntimeConfig(defaultBackend))
+	if err != nil {
+		return fmt.Errorf("marshal runtime config template: %w", err)
+	}
+	if err := os.WriteFile(path, payload, 0o644); err != nil {
+		return fmt.Errorf("write runtime config %s: %w", path, err)
+	}
+
+	_, err = fmt.Fprintf(ctx.Stdout, "runtime config written: %s\n", path)
+	return err
+}
+
+func hostDefaultBackend() string {
+	if runtime.GOOS == "darwin" {
+		return "darwin-vz"
+	}
+	return "firecracker"
+}
+
+func defaultRuntimeConfig(defaultBackend string) runtimeconfig.Config {
+	return runtimeconfig.Config{
+		DefaultBackend: defaultBackend,
+		Backends: runtimeconfig.Backends{
+			Firecracker: runtimeconfig.FirecrackerConfig{
+				BinaryPath:           "firecracker",
+				KernelImage:          "",
+				RootFS:               "",
+				PrivilegedMode:       "sudo",
+				PrivilegedHelperPath: "/usr/local/sbin/cleanroom-root-helper",
+				VCPUs:                2,
+				MemoryMiB:            1024,
+				GuestCID:             3,
+				GuestPort:            10700,
+				LaunchSeconds:        30,
+			},
+			DarwinVZ: runtimeconfig.DarwinVZConfig{
+				KernelImage:   "",
+				RootFS:        "",
+				VCPUs:         2,
+				MemoryMiB:     1024,
+				GuestPort:     10700,
+				LaunchSeconds: 30,
+			},
+		},
+	}
 }
 
 func newImageManager() (*imagemgr.Manager, error) {
@@ -911,6 +1006,8 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 
 	var exitCode int
 	haveExitCode := false
+	stdoutEndedCR := false
+	stderrEndedCR := false
 	for {
 		frame, recvErr := attach.Receive()
 		if recvErr != nil {
@@ -921,11 +1018,19 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 		}
 		switch payload := frame.Payload.(type) {
 		case *cleanroomv1.ExecutionAttachFrame_Stdout:
-			if _, err := fmt.Fprint(ctx.Stdout, string(payload.Stdout)); err != nil {
+			chunk := payload.Stdout
+			if rawMode {
+				chunk, stdoutEndedCR = normalizeLineEndingsForRawTTY(chunk, stdoutEndedCR)
+			}
+			if _, err := ctx.Stdout.Write(chunk); err != nil {
 				return err
 			}
 		case *cleanroomv1.ExecutionAttachFrame_Stderr:
-			if _, err := fmt.Fprint(os.Stderr, string(payload.Stderr)); err != nil {
+			chunk := payload.Stderr
+			if rawMode {
+				chunk, stderrEndedCR = normalizeLineEndingsForRawTTY(chunk, stderrEndedCR)
+			}
+			if _, err := os.Stderr.Write(chunk); err != nil {
 				return err
 			}
 		case *cleanroomv1.ExecutionAttachFrame_Exit:
@@ -954,6 +1059,27 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 		return exitCodeError{code: exitCode}
 	}
 	return nil
+}
+
+func normalizeLineEndingsForRawTTY(chunk []byte, prevEndedCR bool) ([]byte, bool) {
+	if len(chunk) == 0 {
+		return chunk, prevEndedCR
+	}
+
+	if bytes.IndexByte(chunk, '\n') < 0 {
+		return chunk, chunk[len(chunk)-1] == '\r'
+	}
+
+	out := make([]byte, 0, len(chunk)+4)
+	endedCR := prevEndedCR
+	for _, b := range chunk {
+		if b == '\n' && !endedCR {
+			out = append(out, '\r')
+		}
+		out = append(out, b)
+		endedCR = b == '\r'
+	}
+	return out, endedCR
 }
 
 func (c *TLSInitCommand) Run(ctx *runtimeContext) error {
@@ -1053,15 +1179,17 @@ func (s *ServeCommand) Run(ctx *runtimeContext) error {
 		fcAdapter.GatewayRegistry = gwRegistry
 		fcAdapter.GatewayPort = gwPort
 
-		fwCfg := backend.FirecrackerConfig{
-			PrivilegedMode:       ctx.Config.Backends.Firecracker.PrivilegedMode,
-			PrivilegedHelperPath: ctx.Config.Backends.Firecracker.PrivilegedHelperPath,
-		}
-		fwCleanup, err := firecracker.SetupGatewayFirewall(context.Background(), gwPort, fwCfg)
-		if err != nil {
-			logger.Warn("failed to install gateway firewall rules", "error", err)
-		} else {
-			defer fwCleanup()
+		if shouldInstallGatewayFirewall(runtime.GOOS) {
+			fwCfg := backend.FirecrackerConfig{
+				PrivilegedMode:       ctx.Config.Backends.Firecracker.PrivilegedMode,
+				PrivilegedHelperPath: ctx.Config.Backends.Firecracker.PrivilegedHelperPath,
+			}
+			fwCleanup, err := firecracker.SetupGatewayFirewall(context.Background(), gwPort, fwCfg)
+			if err != nil {
+				logger.Warn("failed to install gateway firewall rules", "error", err)
+			} else {
+				defer fwCleanup()
+			}
 		}
 	}
 
@@ -1128,7 +1256,7 @@ func (d *DoctorCommand) Run(ctx *runtimeContext) error {
 	if checker, ok := adapter.(doctorCapable); ok {
 		report, err := checker.Doctor(context.Background(), backend.DoctorRequest{
 			Policy:            compiled,
-			FirecrackerConfig: mergeFirecrackerConfig(&ExecCommand{}, ctx.Config),
+			FirecrackerConfig: mergeBackendConfig(backendName, 0, ctx.Config),
 		})
 		if err != nil {
 			return err
@@ -1174,6 +1302,10 @@ func resolveBackendName(requested, configuredDefault string) string {
 	return "firecracker"
 }
 
+func shouldInstallGatewayFirewall(goos string) bool {
+	return strings.EqualFold(strings.TrimSpace(goos), "linux")
+}
+
 func validateClientEndpoint(ep endpoint.Endpoint) error {
 	if ep.Scheme != "tssvc" {
 		return nil
@@ -1181,7 +1313,7 @@ func validateClientEndpoint(ep endpoint.Endpoint) error {
 	return errors.New("tssvc:// endpoints are listen-only; use https://<service>.<your-tailnet>.ts.net for --host")
 }
 
-func mergeFirecrackerConfig(e *ExecCommand, cfg runtimeconfig.Config) backend.FirecrackerConfig {
+func mergeBackendConfig(backendName string, launchSeconds int64, cfg runtimeconfig.Config) backend.FirecrackerConfig {
 	out := backend.FirecrackerConfig{
 		BinaryPath:           cfg.Backends.Firecracker.BinaryPath,
 		KernelImagePath:      cfg.Backends.Firecracker.KernelImage,
@@ -1194,10 +1326,18 @@ func mergeFirecrackerConfig(e *ExecCommand, cfg runtimeconfig.Config) backend.Fi
 		GuestPort:            cfg.Backends.Firecracker.GuestPort,
 		LaunchSeconds:        cfg.Backends.Firecracker.LaunchSeconds,
 	}
+	if backendName == "darwin-vz" {
+		out.KernelImagePath = cfg.Backends.DarwinVZ.KernelImage
+		out.RootFSPath = cfg.Backends.DarwinVZ.RootFS
+		out.VCPUs = cfg.Backends.DarwinVZ.VCPUs
+		out.MemoryMiB = cfg.Backends.DarwinVZ.MemoryMiB
+		out.GuestPort = cfg.Backends.DarwinVZ.GuestPort
+		out.LaunchSeconds = cfg.Backends.DarwinVZ.LaunchSeconds
+	}
 
 	out.Launch = true
-	if e.LaunchSeconds != 0 {
-		out.LaunchSeconds = e.LaunchSeconds
+	if launchSeconds != 0 {
+		out.LaunchSeconds = launchSeconds
 	}
 	return out
 }

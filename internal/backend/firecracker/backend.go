@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"net"
 	"os"
@@ -23,7 +24,9 @@ import (
 	"time"
 
 	"github.com/buildkite/cleanroom/internal/backend"
+	"github.com/buildkite/cleanroom/internal/bootassets"
 	"github.com/buildkite/cleanroom/internal/gateway"
+	"github.com/buildkite/cleanroom/internal/hosttools"
 	"github.com/buildkite/cleanroom/internal/imagemgr"
 	"github.com/buildkite/cleanroom/internal/paths"
 	"github.com/buildkite/cleanroom/internal/policy"
@@ -457,12 +460,22 @@ func (a *Adapter) Doctor(_ context.Context, req backend.DoctorRequest) (*backend
 		}
 	}
 
-	if req.KernelImagePath == "" {
-		appendCheck("kernel_image", "warn", "kernel image not configured (required for --launch)")
-	} else if _, err := os.Stat(req.KernelImagePath); err != nil {
-		appendCheck("kernel_image", "fail", fmt.Sprintf("kernel image not accessible: %v", err))
+	if configured := strings.TrimSpace(req.KernelImagePath); configured == "" {
+		if spec, ok := bootassets.LookupManagedKernelForHost(a.Name()); ok {
+			path, _ := bootassets.ManagedKernelPathForHost(a.Name())
+			appendCheck("kernel_image", "pass", fmt.Sprintf("kernel image will be auto-managed (%s -> %s)", spec.ID, path))
+		} else {
+			appendCheck("kernel_image", "warn", "kernel image not configured and no managed kernel asset is available for this host")
+		}
+	} else if _, err := os.Stat(configured); err != nil {
+		if spec, ok := bootassets.LookupManagedKernelForHost(a.Name()); ok {
+			path, _ := bootassets.ManagedKernelPathForHost(a.Name())
+			appendCheck("kernel_image", "warn", fmt.Sprintf("configured kernel image is not accessible (%v); runtime will use managed kernel (%s -> %s)", err, spec.ID, path))
+		} else {
+			appendCheck("kernel_image", "fail", fmt.Sprintf("kernel image not accessible: %v", err))
+		}
 	} else {
-		appendCheck("kernel_image", "pass", fmt.Sprintf("kernel image configured: %s", req.KernelImagePath))
+		appendCheck("kernel_image", "pass", fmt.Sprintf("kernel image configured: %s", configured))
 	}
 	if guestAgentPath, _, err := a.getGuestAgentBinary(); err != nil {
 		appendCheck("guest_agent_binary", "fail", err.Error())
@@ -483,10 +496,14 @@ func (a *Adapter) Doctor(_ context.Context, req backend.DoctorRequest) (*backend
 	}
 	appendCheck("sandbox_image_ref", imageRefStatus, imageRefMessage)
 
-	if _, err := exec.LookPath("mkfs.ext4"); err != nil {
-		appendCheck("mkfs_ext4", "fail", "mkfs.ext4 is required to materialise OCI rootfs images")
+	if mkfsPath, err := hosttools.ResolveE2FSProgsBinary("mkfs.ext4"); err != nil {
+		status := "fail"
+		if runtime.GOOS == "darwin" {
+			status = "warn"
+		}
+		appendCheck("mkfs_ext4", status, fmt.Sprintf("mkfs.ext4 not available: %v", err))
 	} else {
-		appendCheck("mkfs_ext4", "pass", "found mkfs.ext4 for OCI rootfs materialisation")
+		appendCheck("mkfs_ext4", "pass", fmt.Sprintf("found mkfs.ext4 (%s) for OCI rootfs materialisation", mkfsPath))
 	}
 
 	if req.GuestPort == 0 {
@@ -634,19 +651,13 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 	if err != nil {
 		return nil, fmt.Errorf("firecracker binary not found (%q): %w", binary, err)
 	}
-
-	if req.KernelImagePath == "" {
-		return nil, errors.New("kernel_image must be configured for launched execution")
-	}
 	observation.Phase = "launch"
 
-	kernelPath, err := filepath.Abs(req.KernelImagePath)
+	kernelPath, kernelNotice, err := a.resolveKernelPath(ctx, req.KernelImagePath)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := os.Stat(kernelPath); err != nil {
-		return nil, fmt.Errorf("kernel image %s: %w", kernelPath, err)
-	}
+	logRunNotice(a.Name(), req.RunID, kernelNotice)
 
 	imageArtifact, err := a.ensureImageArtifact(ctx, req.Policy.ImageRef)
 	if err != nil {
@@ -1220,15 +1231,9 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 	if err != nil {
 		return nil, fmt.Errorf("firecracker binary not found (%q): %w", binary, err)
 	}
-	if cfg.KernelImagePath == "" {
-		return nil, errors.New("kernel_image must be configured for launched execution")
-	}
-	kernelPath, err := filepath.Abs(cfg.KernelImagePath)
+	kernelPath, _, err := a.resolveKernelPath(ctx, cfg.KernelImagePath)
 	if err != nil {
 		return nil, err
-	}
-	if _, err := os.Stat(kernelPath); err != nil {
-		return nil, fmt.Errorf("kernel image %s: %w", kernelPath, err)
 	}
 
 	imageArtifact, err := a.ensureImageArtifact(ctx, compiled.ImageRef)
@@ -1402,6 +1407,14 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 	_ = conn.Close()
 	cleanupRunDir = false
 	return instance, nil
+}
+
+func (a *Adapter) resolveKernelPath(ctx context.Context, configuredPath string) (path, notice string, err error) {
+	resolved, err := bootassets.ResolveKernelPathForHost(ctx, a.Name(), configuredPath)
+	if err != nil {
+		return "", "", err
+	}
+	return resolved.Path, resolved.Notice, nil
 }
 
 func sandboxRuntimeBaseDir() (string, error) {
@@ -1818,6 +1831,19 @@ func resolvePrivilegedExecution(cfg backend.FirecrackerConfig) (mode string, hel
 		helperPath = defaultPrivilegedHelperPath
 	}
 	return mode, helperPath
+}
+
+func logRunNotice(backendName, runID, notice string) {
+	msg := strings.TrimSpace(notice)
+	if msg == "" {
+		return
+	}
+	id := strings.TrimSpace(runID)
+	if id == "" {
+		log.Printf("%s: %s", backendName, msg)
+		return
+	}
+	log.Printf("%s run_id=%s: %s", backendName, id, msg)
 }
 
 func runRootCommand(ctx context.Context, cfg backend.FirecrackerConfig, args ...string) error {

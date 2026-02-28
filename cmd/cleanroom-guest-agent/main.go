@@ -24,6 +24,11 @@ import (
 )
 
 func main() {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("CLEANROOM_GUEST_TRANSPORT")), "stdio") {
+		handleConn(stdioConn{})
+		return
+	}
+
 	port := vsockexec.DefaultPort
 	if raw := os.Getenv("CLEANROOM_VSOCK_PORT"); raw != "" {
 		parsed, err := strconv.ParseUint(raw, 10, 32)
@@ -54,7 +59,7 @@ func main() {
 	}
 }
 
-func handleConn(conn net.Conn) {
+func handleConn(conn io.ReadWriteCloser) {
 	defer conn.Close()
 
 	// Use a single json.Decoder so buffered bytes from the request aren't
@@ -85,7 +90,7 @@ func handleConn(conn net.Conn) {
 	}
 }
 
-func handleConnTTY(conn net.Conn, dec *json.Decoder, req vsockexec.ExecRequest) {
+func handleConnTTY(conn io.ReadWriteCloser, dec *json.Decoder, req vsockexec.ExecRequest) {
 	cmd := exec.Command(req.Command[0], req.Command[1:]...)
 	if req.Dir != "" {
 		cmd.Dir = req.Dir
@@ -115,7 +120,7 @@ func handleConnTTY(conn net.Conn, dec *json.Decoder, req vsockexec.ExecRequest) 
 	sendExitResult(sender, conn, cmd.Wait())
 }
 
-func handleConnPipes(conn net.Conn, dec *json.Decoder, req vsockexec.ExecRequest) {
+func handleConnPipes(conn io.ReadWriteCloser, dec *json.Decoder, req vsockexec.ExecRequest) {
 	cmd := exec.Command(req.Command[0], req.Command[1:]...)
 	if req.Dir != "" {
 		cmd.Dir = req.Dir
@@ -204,23 +209,29 @@ func readInputFrames(dec *json.Decoder, w io.Writer, closeStdin func(), resizeFn
 	}
 }
 
-func sendErrorResponse(conn net.Conn, err error) {
-	_ = vsockexec.EncodeResponse(conn, vsockexec.ExecResponse{ExitCode: 1, Error: err.Error()})
+func sendErrorResponse(w io.Writer, err error) {
+	_ = vsockexec.EncodeResponse(w, vsockexec.ExecResponse{ExitCode: 1, Error: err.Error()})
 }
 
-func sendExitResult(sender *frameSender, conn net.Conn, waitErr error) {
+func sendExitResult(sender *frameSender, w io.Writer, waitErr error) {
 	exitCode, errMsg := exitResult(waitErr)
 	if err := sender.Send(vsockexec.ExecStreamFrame{
 		Type:     "exit",
 		ExitCode: exitCode,
 		Error:    errMsg,
 	}); err != nil {
-		_ = vsockexec.EncodeResponse(conn, vsockexec.ExecResponse{
+		_ = vsockexec.EncodeResponse(w, vsockexec.ExecResponse{
 			ExitCode: exitCode,
 			Error:    errMsg,
 		})
 	}
 }
+
+type stdioConn struct{}
+
+func (stdioConn) Read(p []byte) (int, error)  { return os.Stdin.Read(p) }
+func (stdioConn) Write(p []byte) (int, error) { return os.Stdout.Write(p) }
+func (stdioConn) Close() error                { return nil }
 
 func exitResult(waitErr error) (int, string) {
 	if waitErr == nil {

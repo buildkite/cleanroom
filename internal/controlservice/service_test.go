@@ -11,6 +11,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/backend"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/policy"
+	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 	"go.jetify.com/typeid"
 )
 
@@ -22,6 +23,7 @@ type stubAdapter struct {
 	terminateFn    func(context.Context, string) error
 	downloadFn     func(context.Context, string, string, int64) ([]byte, error)
 	req            backend.RunRequest
+	provisionReq   backend.ProvisionRequest
 	runCalls       int
 	provisionCalls int
 	terminateCalls int
@@ -86,6 +88,7 @@ func (s *stubAdapter) RunStream(ctx context.Context, req backend.RunRequest, str
 }
 
 func (s *stubAdapter) ProvisionSandbox(ctx context.Context, req backend.ProvisionRequest) error {
+	s.provisionReq = req
 	s.provisionCalls++
 	if s.provisionFn != nil {
 		return s.provisionFn(ctx, req)
@@ -338,6 +341,79 @@ func TestCreateSandboxProvisionsPersistentBackend(t *testing.T) {
 	}
 	if got, want := adapter.terminateCalls, 1; got != want {
 		t.Fatalf("unexpected terminate call count: got %d want %d", got, want)
+	}
+}
+
+func TestCreateSandboxMergesDarwinVZConfig(t *testing.T) {
+	adapter := &stubAdapter{}
+	svc := &Service{
+		Loader: stubLoader{
+			compiled: &policy.CompiledPolicy{
+				Version:        1,
+				NetworkDefault: "deny",
+				ImageRef:       "ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+				ImageDigest:    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+			},
+			source: "/repo/cleanroom.yaml",
+		},
+		Config: runtimeconfig.Config{
+			DefaultBackend: "darwin-vz",
+			Backends: runtimeconfig.Backends{
+				Firecracker: runtimeconfig.FirecrackerConfig{
+					KernelImage:   "/firecracker-kernel",
+					RootFS:        "/firecracker-rootfs",
+					VCPUs:         1,
+					MemoryMiB:     256,
+					GuestPort:     10700,
+					LaunchSeconds: 10,
+				},
+				DarwinVZ: runtimeconfig.DarwinVZConfig{
+					KernelImage:   "/darwin-vz-kernel",
+					RootFS:        "/darwin-vz-rootfs",
+					VCPUs:         4,
+					MemoryMiB:     2048,
+					GuestPort:     12000,
+					LaunchSeconds: 45,
+				},
+			},
+		},
+		Backends: map[string]backend.Adapter{"darwin-vz": adapter},
+	}
+
+	_, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy: testPolicy(),
+		Options: &cleanroomv1.SandboxOptions{
+			LaunchSeconds: 33,
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	if got, want := adapter.provisionCalls, 1; got != want {
+		t.Fatalf("unexpected provision call count: got %d want %d", got, want)
+	}
+
+	gotCfg := adapter.provisionReq.FirecrackerConfig
+	if got, want := gotCfg.KernelImagePath, "/darwin-vz-kernel"; got != want {
+		t.Fatalf("unexpected kernel image: got %q want %q", got, want)
+	}
+	if got, want := gotCfg.RootFSPath, "/darwin-vz-rootfs"; got != want {
+		t.Fatalf("unexpected rootfs: got %q want %q", got, want)
+	}
+	if got, want := gotCfg.VCPUs, int64(4); got != want {
+		t.Fatalf("unexpected vcpus: got %d want %d", got, want)
+	}
+	if got, want := gotCfg.MemoryMiB, int64(2048); got != want {
+		t.Fatalf("unexpected memory_mib: got %d want %d", got, want)
+	}
+	if got, want := gotCfg.GuestPort, uint32(12000); got != want {
+		t.Fatalf("unexpected guest_port: got %d want %d", got, want)
+	}
+	if got, want := gotCfg.LaunchSeconds, int64(33); got != want {
+		t.Fatalf("unexpected launch_seconds: got %d want %d", got, want)
+	}
+	if got := gotCfg.Launch; !got {
+		t.Fatalf("expected launch=true")
 	}
 }
 
@@ -832,7 +908,7 @@ func TestExecutionAttachIOWaitsForDelayedAttachRegistration(t *testing.T) {
 			case started <- struct{}{}:
 			default:
 			}
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(500 * time.Millisecond)
 			if stream.OnAttach != nil {
 				stream.OnAttach(backend.AttachIO{
 					WriteStdin: func(data []byte) error {

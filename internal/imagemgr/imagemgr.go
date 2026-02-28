@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/buildkite/cleanroom/internal/hosttools"
 	"github.com/buildkite/cleanroom/internal/ociref"
 	"github.com/buildkite/cleanroom/internal/paths"
 	_ "modernc.org/sqlite"
@@ -99,7 +100,11 @@ func New(opts Options) (*Manager, error) {
 
 	mkfsBinary := strings.TrimSpace(opts.MkfsBinary)
 	if mkfsBinary == "" {
-		mkfsBinary = defaultMkfsBinary
+		if resolvedMkfs, err := hosttools.ResolveE2FSProgsBinary(defaultMkfsBinary); err == nil {
+			mkfsBinary = resolvedMkfs
+		} else {
+			mkfsBinary = defaultMkfsBinary
+		}
 	}
 
 	manager := &Manager{

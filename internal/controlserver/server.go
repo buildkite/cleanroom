@@ -335,7 +335,15 @@ func (s *Server) applyAttachInput(ctx context.Context, sandboxID, executionID st
 		}
 		if err := s.service.ResizeExecutionTTY(sandboxID, executionID, resize.GetCols(), resize.GetRows()); err != nil {
 			if errors.Is(err, controlservice.ErrExecutionResizeUnsupported) {
-				return false, connect.NewError(connect.CodeUnimplemented, err)
+				if s.logger != nil {
+					s.logger.Debug("ignoring unsupported execution resize request",
+						"sandbox_id", sandboxID,
+						"execution_id", executionID,
+						"cols", resize.GetCols(),
+						"rows", resize.GetRows(),
+					)
+				}
+				return false, nil
 			}
 			return false, toConnectError(err)
 		}

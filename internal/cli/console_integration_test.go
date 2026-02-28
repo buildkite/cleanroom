@@ -292,3 +292,47 @@ func TestConsoleIntegrationReuseSandboxSkipsPolicyCompile(t *testing.T) {
 		t.Fatalf("expected console output, got %q", outcome.stdout)
 	}
 }
+
+func TestConsoleIntegrationRoutesBackendWarningsToStderr(t *testing.T) {
+	host, _ := startIntegrationServer(t, &integrationAdapter{
+		runStreamFn: func(_ context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+			if stream.OnAttach != nil {
+				stream.OnAttach(backend.AttachIO{
+					WriteStdin: func([]byte) error { return nil },
+				})
+			}
+			if stream.OnStderr != nil {
+				stream.OnStderr([]byte("warning: backend warning\n"))
+			}
+			if stream.OnStdout != nil {
+				stream.OnStdout([]byte("/ # "))
+			}
+			return &backend.RunResult{
+				RunID:    req.RunID,
+				ExitCode: 0,
+				Stdout:   "/ # ",
+				Stderr:   "warning: backend warning\n",
+			}, nil
+		},
+	})
+
+	outcome := runConsoleWithCapture(ConsoleCommand{
+		clientFlags: clientFlags{Host: host},
+		Command:     []string{"sh"},
+	}, "", runtimeContext{
+		CWD:    t.TempDir(),
+		Loader: integrationLoader{},
+	})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err != nil {
+		t.Fatalf("ConsoleCommand.Run returned error: %v", outcome.err)
+	}
+	if !strings.Contains(outcome.stderr, "warning: backend warning\n") {
+		t.Fatalf("expected warning on stderr, got %q", outcome.stderr)
+	}
+	if strings.Contains(outcome.stdout, "warning: backend warning\n") {
+		t.Fatalf("unexpected warning in stdout: %q", outcome.stdout)
+	}
+}
