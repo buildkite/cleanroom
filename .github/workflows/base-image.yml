@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - Dockerfile.base-image
+      - Dockerfile.base-image-docker
       - scripts/base-image-tag.sh
       - .github/workflows/base-image.yml
   workflow_dispatch:
@@ -16,13 +17,23 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image_name: alpine
+            dockerfile: Dockerfile.base-image
+            repository: ghcr.io/buildkite/cleanroom-base/alpine
+          - image_name: alpine-docker
+            dockerfile: Dockerfile.base-image-docker
+            repository: ghcr.io/buildkite/cleanroom-base/alpine-docker
     steps:
       - uses: actions/checkout@v4
 
       - name: Compute base image tag
         id: meta
         run: |
-          echo "base_tag=$(scripts/base-image-tag.sh)" >> "$GITHUB_OUTPUT"
+          echo "base_tag=$(scripts/base-image-tag.sh \"${{ matrix.image_name }}\" \"${{ matrix.dockerfile }}\")" >> "$GITHUB_OUTPUT"
 
       - uses: docker/login-action@v3
         with:
@@ -33,9 +44,9 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           context: .
-          file: Dockerfile.base-image
+          file: ${{ matrix.dockerfile }}
           push: true
           tags: |
-            ghcr.io/buildkite/cleanroom-base/alpine:latest
-            ghcr.io/buildkite/cleanroom-base/alpine:${{ steps.meta.outputs.base_tag }}
-            ghcr.io/buildkite/cleanroom-base/alpine:${{ github.sha }}
+            ${{ matrix.repository }}:latest
+            ${{ matrix.repository }}:${{ steps.meta.outputs.base_tag }}
+            ${{ matrix.repository }}:${{ github.sha }}

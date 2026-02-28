@@ -131,6 +131,28 @@ if [ -z "$GUEST_PORT" ]; then
 fi
 export CLEANROOM_VSOCK_PORT="$GUEST_PORT"
 
+if command -v dockerd >/dev/null 2>&1; then
+  mkdir -p /var/log /var/lib/docker /etc/docker /var/run /sys/fs/cgroup
+  mount -t cgroup2 none /sys/fs/cgroup 2>/dev/null || true
+  if [ ! -S /var/run/docker.sock ]; then
+    dockerd --host=unix:///var/run/docker.sock --iptables=false --storage-driver=vfs >/var/log/dockerd.log 2>&1 &
+  fi
+  i=0
+  while [ "$i" -lt 200 ]; do
+    if [ -S /var/run/docker.sock ]; then
+      if command -v docker >/dev/null 2>&1; then
+        if docker version >/dev/null 2>&1; then
+          break
+        fi
+      else
+        break
+      fi
+    fi
+    sleep 0.1
+    i=$((i + 1))
+  done
+fi
+
 AGENT_DEV=""
 if [ -c /dev/hvc1 ]; then
   AGENT_DEV="/dev/hvc1"
