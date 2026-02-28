@@ -165,6 +165,14 @@ func (a *Adapter) Name() string {
 	return "firecracker"
 }
 
+func (a *Adapter) Capabilities() map[string]bool {
+	return map[string]bool{
+		backend.CapabilityNetworkDefaultDeny:     true,
+		backend.CapabilityNetworkAllowlistEgress: true,
+		backend.CapabilityNetworkGuestInterface:  true,
+	}
+}
+
 func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.RunResult, error) {
 	return a.run(ctx, req, backend.OutputStream{})
 }

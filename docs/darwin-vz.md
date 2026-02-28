@@ -99,8 +99,24 @@ On macOS, cleanroom also probes common Homebrew `e2fsprogs` locations.
 
 - `network.default` must be `deny`
 - `network.allow` entries are ignored and produce a warning
+- no virtual NIC is attached, so guest outbound networking is unavailable in current builds
 
 The backend currently has no allowlist egress enforcement equivalent to Linux Firecracker iptables rules.
+
+At runtime, `darwin-vz` emits an explicit stderr warning for this so it is visible during `exec`/`console`.
+
+## Capability Surface
+
+Backends now expose a machine-readable capability map (visible in `cleanroom doctor --json` under `capabilities`).
+
+Current `darwin-vz` capability values:
+
+- `exec.streaming=true`
+- `sandbox.persistent=false`
+- `sandbox.file_download=false`
+- `network.default_deny=true`
+- `network.allowlist_egress=false`
+- `network.guest_interface=false`
 
 ## Entitlements and Signing
 

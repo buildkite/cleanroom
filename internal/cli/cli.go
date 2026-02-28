@@ -1229,10 +1229,24 @@ func (d *DoctorCommand) Run(ctx *runtimeContext) error {
 	if !ok {
 		return fmt.Errorf("unknown backend %q", backendName)
 	}
+	capabilities := backend.CapabilitiesForAdapter(adapter)
 
 	checks := []backend.DoctorCheck{
 		{Name: "runtime_config", Status: "pass", Message: fmt.Sprintf("using runtime config path %s", ctx.ConfigPath)},
 		{Name: "backend", Status: "pass", Message: fmt.Sprintf("selected backend %s", backendName)},
+	}
+	for _, key := range backend.SortedCapabilityKeys(capabilities) {
+		status := "warn"
+		message := fmt.Sprintf("%s: unsupported", key)
+		if capabilities[key] {
+			status = "pass"
+			message = fmt.Sprintf("%s: supported", key)
+		}
+		checks = append(checks, backend.DoctorCheck{
+			Name:    capabilityCheckName(key),
+			Status:  status,
+			Message: message,
+		})
 	}
 
 	compiled, source, err := ctx.Loader.LoadAndCompile(cwd)
@@ -1272,8 +1286,9 @@ func (d *DoctorCommand) Run(ctx *runtimeContext) error {
 
 	if d.JSON {
 		payload := map[string]any{
-			"backend": backendName,
-			"checks":  checks,
+			"backend":      backendName,
+			"capabilities": backend.CloneCapabilities(capabilities),
+			"checks":       checks,
 		}
 		enc := json.NewEncoder(ctx.Stdout)
 		enc.SetIndent("", "  ")
@@ -1304,6 +1319,16 @@ func resolveBackendName(requested, configuredDefault string) string {
 
 func shouldInstallGatewayFirewall(goos string) bool {
 	return strings.EqualFold(strings.TrimSpace(goos), "linux")
+}
+
+var capabilityNameReplacer = strings.NewReplacer(".", "_", "-", "_")
+
+func capabilityCheckName(key string) string {
+	trimmed := strings.TrimSpace(key)
+	if trimmed == "" {
+		return "capability_unknown"
+	}
+	return "capability_" + capabilityNameReplacer.Replace(trimmed)
 }
 
 func validateClientEndpoint(ep endpoint.Endpoint) error {

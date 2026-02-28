@@ -20,6 +20,14 @@ func (a *Adapter) Name() string {
 	return "darwin-vz"
 }
 
+func (a *Adapter) Capabilities() map[string]bool {
+	return map[string]bool{
+		backend.CapabilityNetworkDefaultDeny:     true,
+		backend.CapabilityNetworkAllowlistEgress: false,
+		backend.CapabilityNetworkGuestInterface:  false,
+	}
+}
+
 func (a *Adapter) Run(_ context.Context, _ backend.RunRequest) (*backend.RunResult, error) {
 	return nil, fmt.Errorf("darwin-vz backend requires macOS, current OS is %s", runtime.GOOS)
 }
@@ -36,6 +44,11 @@ func (a *Adapter) Doctor(_ context.Context, _ backend.DoctorRequest) (*backend.D
 				Name:    "os",
 				Status:  "fail",
 				Message: fmt.Sprintf("darwin-vz backend requires macOS, current OS is %s", runtime.GOOS),
+			},
+			{
+				Name:    "guest_networking",
+				Status:  "warn",
+				Message: guestNetworkUnavailableWarning,
 			},
 		},
 	}, nil

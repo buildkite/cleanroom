@@ -259,7 +259,7 @@ The helper (not the main `cleanroom` binary) needs the `com.apple.security.virtu
 
 - Workload runs in a Linux microVM backend (`firecracker` on Linux, `darwin-vz` on macOS)
 - `firecracker` enforces policy egress allowlists with TAP + iptables
-- `darwin-vz` currently requires `network.default: deny` and ignores `network.allow` entries (warns when present)
+- `darwin-vz` currently requires `network.default: deny`, ignores `network.allow` entries, and attaches no guest NIC (warns on stderr during execution)
 - `firecracker` rootfs writes persist across executions within a sandbox and are discarded on sandbox termination
 - `darwin-vz` executes each command in a fresh VM/rootfs copy (writes are discarded after each run)
 - Per-run observability is written to `run-observability.json` (rootfs prep, network setup, VM ready, command runtime, total)
@@ -274,6 +274,7 @@ The helper (not the main `cleanroom` binary) needs the `com.apple.security.virtu
 - `sudo -n` access for `ip`, `iptables`, and `sysctl` (network setup/cleanup)
 - macOS host requires `cleanroom-darwin-vz` helper plus `com.apple.security.virtualization` entitlement on that helper binary
 - macOS rootfs derivation requires `mkfs.ext4` and `debugfs` (install via `brew install e2fsprogs`)
+- `cleanroom doctor --json` includes a machine-readable `capabilities` map for the selected backend
 
 ## References
 

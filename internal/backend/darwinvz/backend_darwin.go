@@ -135,6 +135,14 @@ func (a *Adapter) Name() string {
 	return "darwin-vz"
 }
 
+func (a *Adapter) Capabilities() map[string]bool {
+	return map[string]bool{
+		backend.CapabilityNetworkDefaultDeny:     true,
+		backend.CapabilityNetworkAllowlistEgress: false,
+		backend.CapabilityNetworkGuestInterface:  false,
+	}
+}
+
 func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.RunResult, error) {
 	return a.run(ctx, req, backend.OutputStream{})
 }
@@ -154,6 +162,7 @@ func (a *Adapter) Doctor(_ context.Context, req backend.DoctorRequest) (*backend
 	} else {
 		appendCheck("os", "fail", fmt.Sprintf("darwin required, current OS is %s", runtime.GOOS))
 	}
+	appendCheck("guest_networking", "warn", guestNetworkUnavailableWarning)
 
 	if configured := strings.TrimSpace(req.KernelImagePath); configured == "" {
 		if spec, ok := bootassets.LookupManagedKernelForHost(a.Name()); ok {
@@ -322,11 +331,14 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 		return nil, err
 	}
 
+	warnings := buildRuntimeWarnings(policyWarn)
+
 	stderrPrefix := ""
-	if policyWarn != "" {
-		stderrPrefix = "warning: " + policyWarn + "\n"
+	for _, warningText := range warnings {
+		warningLine := "warning: " + warningText + "\n"
+		stderrPrefix += warningLine
 		if stream.OnStderr != nil {
-			stream.OnStderr([]byte(stderrPrefix))
+			stream.OnStderr([]byte(warningLine))
 		}
 	}
 
@@ -537,6 +549,15 @@ func darwinVZResultMessage(guestErr string) string {
 		return ""
 	}
 	return guestErr
+}
+
+func buildRuntimeWarnings(policyWarning string) []string {
+	warnings := make([]string, 0, 2)
+	if trimmed := strings.TrimSpace(policyWarning); trimmed != "" {
+		warnings = append(warnings, trimmed)
+	}
+	warnings = append(warnings, guestNetworkUnavailableWarning)
+	return warnings
 }
 
 type imageArtifact struct {
