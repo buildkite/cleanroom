@@ -50,9 +50,10 @@ import (
 const defaultBumpRefSource = "ghcr.io/buildkite/cleanroom-base/alpine:latest"
 
 const (
-	systemdServiceName  = "cleanroom.service"
-	launchdServiceName  = "com.buildkite.cleanroom"
-	defaultDaemonListen = "unix://" + endpoint.DefaultSystemSocketPath
+	systemdServiceName      = "cleanroom.service"
+	launchdServiceName      = "com.buildkite.cleanroom"
+	defaultDaemonListen     = "unix://" + endpoint.DefaultSystemSocketPath
+	sandboxTerminateTimeout = 2 * time.Second
 )
 
 type policyLoader interface {
@@ -712,7 +713,7 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 		if detached || !autoTerminateSandbox || sandboxID == "" {
 			return
 		}
-		_, _ = client.TerminateSandbox(context.Background(), &cleanroomv1.TerminateSandboxRequest{SandboxId: sandboxID})
+		terminateSandboxBestEffort(client, sandboxID, logger, "terminate sandbox after exec failed")
 	}()
 
 	createExecutionResp, err := client.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
@@ -800,11 +801,8 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 	select {
 	case <-secondInterrupt:
 		detached = true
-		terminateCtx, terminateCancel := context.WithTimeout(context.Background(), 2*time.Second)
-		_, terminateErr := client.TerminateSandbox(terminateCtx, &cleanroomv1.TerminateSandboxRequest{SandboxId: sandboxID})
-		terminateCancel()
-		if terminateErr != nil && logger != nil {
-			logger.Warn("terminate sandbox after detach failed", "sandbox_id", sandboxID, "error", terminateErr)
+		if e.Remove {
+			terminateSandboxBestEffort(client, sandboxID, logger, "terminate sandbox after detach failed")
 		}
 		return exitCodeError{code: 130}
 	default:
@@ -894,7 +892,7 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 		if sandboxID == "" || !autoTerminateSandbox {
 			return
 		}
-		_, _ = client.TerminateSandbox(context.Background(), &cleanroomv1.TerminateSandboxRequest{SandboxId: sandboxID})
+		terminateSandboxBestEffort(client, sandboxID, logger, "terminate sandbox after console failed")
 	}()
 
 	createExecutionResp, err := client.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
@@ -1809,6 +1807,19 @@ func getFinalExecutionExitCode(client *controlclient.Client, sandboxID, executio
 		return 0, false
 	}
 	return int(execution.GetExitCode()), true
+}
+
+func terminateSandboxBestEffort(client *controlclient.Client, sandboxID string, logger *log.Logger, warnMessage string) {
+	if client == nil || strings.TrimSpace(sandboxID) == "" {
+		return
+	}
+
+	terminateCtx, terminateCancel := context.WithTimeout(context.Background(), sandboxTerminateTimeout)
+	_, err := client.TerminateSandbox(terminateCtx, &cleanroomv1.TerminateSandboxRequest{SandboxId: sandboxID})
+	terminateCancel()
+	if err != nil && logger != nil {
+		logger.Warn(warnMessage, "sandbox_id", sandboxID, "error", err)
+	}
 }
 
 func isCanceledStreamErr(err error) bool {
