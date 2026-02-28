@@ -428,6 +428,10 @@ private final class VMRuntime {
     func stop(vmID requestedID: String?) throws {
         lock.lock()
         let currentID = vmID
+        if let requestedID, !requestedID.isEmpty, let currentID, requestedID != currentID {
+            lock.unlock()
+            throw HelperError.invalidRequest("unknown vm_id \(requestedID)")
+        }
         let vm = self.vm
         let serialChannel = self.serialChannel
         let vmQueue = self.vmQueue
@@ -440,10 +444,6 @@ private final class VMRuntime {
         self.vmQueue = nil
         self.proxy = nil
         lock.unlock()
-
-        if let requestedID, !requestedID.isEmpty, let currentID, requestedID != currentID {
-            throw HelperError.invalidRequest("unknown vm_id \(requestedID)")
-        }
 
         proxy?.stop()
         serialChannel?.close()
