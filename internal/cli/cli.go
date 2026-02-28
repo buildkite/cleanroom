@@ -52,7 +52,7 @@ const defaultBumpRefSource = "ghcr.io/buildkite/cleanroom-base/alpine:latest"
 const (
 	systemdServiceName  = "cleanroom.service"
 	launchdServiceName  = "com.buildkite.cleanroom"
-	defaultDaemonListen = "unix:///var/run/cleanroom/cleanroom.sock"
+	defaultDaemonListen = "unix://" + endpoint.DefaultSystemSocketPath
 )
 
 type policyLoader interface {

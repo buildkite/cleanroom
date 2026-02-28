@@ -149,14 +149,11 @@ func TestResolveDefaultClientPrefersSystemSocketWhenPresent(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
 
 	prevStat := endpointStat
-	prevEUID := endpointGeteuid
 	endpointStat = func(string) (os.FileInfo, error) {
 		return fakeFileInfo{mode: os.ModeSocket}, nil
 	}
-	endpointGeteuid = func() int { return 0 }
 	t.Cleanup(func() {
 		endpointStat = prevStat
-		endpointGeteuid = prevEUID
 	})
 
 	ep, err := Resolve("")
@@ -176,14 +173,11 @@ func TestResolveDefaultClientFallsBackToRuntimeSocketWhenSystemPathIsNotSocket(t
 	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
 
 	prevStat := endpointStat
-	prevEUID := endpointGeteuid
 	endpointStat = func(string) (os.FileInfo, error) {
 		return fakeFileInfo{mode: 0}, nil
 	}
-	endpointGeteuid = func() int { return 0 }
 	t.Cleanup(func() {
 		endpointStat = prevStat
-		endpointGeteuid = prevEUID
 	})
 
 	ep, err := Resolve("")
@@ -201,14 +195,11 @@ func TestResolveDefaultClientFallsBackToRuntimeSocketWhenSystemSocketMissing(t *
 	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
 
 	prevStat := endpointStat
-	prevEUID := endpointGeteuid
 	endpointStat = func(string) (os.FileInfo, error) {
 		return nil, errors.New("missing")
 	}
-	endpointGeteuid = func() int { return 0 }
 	t.Cleanup(func() {
 		endpointStat = prevStat
-		endpointGeteuid = prevEUID
 	})
 
 	ep, err := Resolve("")
@@ -221,40 +212,24 @@ func TestResolveDefaultClientFallsBackToRuntimeSocketWhenSystemSocketMissing(t *
 	}
 }
 
-func TestResolveDefaultClientFallsBackToRuntimeSocketWhenNotRoot(t *testing.T) {
+func TestResolveDefaultClientPrefersSystemSocketWhenPresentForNonRoot(t *testing.T) {
 	runtimeDir := t.TempDir()
 	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
 
-	tmpFile, err := os.CreateTemp(t.TempDir(), "cleanroom-system-sock-*")
-	if err != nil {
-		t.Fatalf("create temp socket stub: %v", err)
-	}
-	if err := tmpFile.Close(); err != nil {
-		t.Fatalf("close temp socket stub: %v", err)
-	}
-	fi, err := os.Stat(tmpFile.Name())
-	if err != nil {
-		t.Fatalf("stat temp socket stub: %v", err)
-	}
-
 	prevStat := endpointStat
-	prevEUID := endpointGeteuid
 	endpointStat = func(string) (os.FileInfo, error) {
-		return fi, nil
+		return fakeFileInfo{mode: os.ModeSocket}, nil
 	}
-	endpointGeteuid = func() int { return 1000 }
 	t.Cleanup(func() {
 		endpointStat = prevStat
-		endpointGeteuid = prevEUID
 	})
 
 	ep, err := Resolve("")
 	if err != nil {
 		t.Fatalf("resolve default client endpoint: %v", err)
 	}
-	want := filepath.Join(runtimeDir, "cleanroom", "cleanroom.sock")
-	if ep.Address != want {
-		t.Fatalf("expected runtime socket path %q for non-root, got %q", want, ep.Address)
+	if ep.Address != defaultSystemSocketPath {
+		t.Fatalf("expected system socket path %q for non-root, got %q", defaultSystemSocketPath, ep.Address)
 	}
 }
 

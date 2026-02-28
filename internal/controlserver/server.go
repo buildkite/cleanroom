@@ -553,7 +553,7 @@ func listen(ep endpoint.Endpoint, logger *log.Logger, tlsOpts *TLSOptions) (net.
 		if err != nil {
 			return nil, nil, err
 		}
-		if err := os.Chmod(ep.Address, 0o600); err != nil {
+		if err := os.Chmod(ep.Address, unixSocketMode(ep.Address)); err != nil {
 			_ = listener.Close()
 			return nil, nil, err
 		}
@@ -630,4 +630,12 @@ func listen(ep endpoint.Endpoint, logger *log.Logger, tlsOpts *TLSOptions) (net.
 	}
 
 	return nil, nil, fmt.Errorf("unsupported endpoint scheme %q", ep.Scheme)
+}
+
+func unixSocketMode(path string) os.FileMode {
+	if path == endpoint.DefaultSystemSocketPath {
+		// System daemon installs default to this socket; keep it reachable for non-root clients.
+		return 0o666
+	}
+	return 0o600
 }

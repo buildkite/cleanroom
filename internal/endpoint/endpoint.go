@@ -19,10 +19,11 @@ type Endpoint struct {
 	TSServicePort int
 }
 
-const defaultSystemSocketPath = "/var/run/cleanroom/cleanroom.sock"
+const DefaultSystemSocketPath = "/var/run/cleanroom/cleanroom.sock"
+
+const defaultSystemSocketPath = DefaultSystemSocketPath
 
 var endpointStat = os.Stat
-var endpointGeteuid = os.Geteuid
 
 func defaultListenEndpoint() Endpoint {
 	runtimeDir := strings.TrimSpace(os.Getenv("XDG_RUNTIME_DIR"))
@@ -38,13 +39,11 @@ func defaultListenEndpoint() Endpoint {
 }
 
 func defaultClientEndpoint() Endpoint {
-	if endpointGeteuid() == 0 {
-		if st, err := endpointStat(defaultSystemSocketPath); err == nil && !st.IsDir() && st.Mode()&os.ModeSocket != 0 {
-			return Endpoint{
-				Scheme:  "unix",
-				Address: defaultSystemSocketPath,
-				BaseURL: "http://unix",
-			}
+	if st, err := endpointStat(defaultSystemSocketPath); err == nil && !st.IsDir() && st.Mode()&os.ModeSocket != 0 {
+		return Endpoint{
+			Scheme:  "unix",
+			Address: defaultSystemSocketPath,
+			BaseURL: "http://unix",
 		}
 	}
 	return defaultListenEndpoint()
