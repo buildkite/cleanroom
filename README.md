@@ -58,6 +58,10 @@ Use `--force` to overwrite an existing service file:
 sudo cleanroom serve install --force
 ```
 
+The system daemon socket is root-owned (`unix:///var/run/cleanroom/cleanroom.sock`),
+so client commands against that daemon should be run with `sudo` unless you
+configure an alternate endpoint.
+
 Run a command in a sandbox:
 
 ```bash

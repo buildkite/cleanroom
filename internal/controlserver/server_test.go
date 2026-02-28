@@ -5,7 +5,6 @@ import (
 	"errors"
 	"io"
 	"net"
-	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -70,19 +69,6 @@ func (s *stubTSNetServer) Close() error {
 		return s.listener.Close()
 	}
 	return nil
-}
-
-func TestUnixSocketModeForSystemSocket(t *testing.T) {
-	if got, want := unixSocketMode(endpoint.DefaultSystemSocketPath), os.FileMode(0o666); got != want {
-		t.Fatalf("unixSocketMode(%q) = %v, want %v", endpoint.DefaultSystemSocketPath, got, want)
-	}
-}
-
-func TestUnixSocketModeForNonSystemSocket(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "cleanroom.sock")
-	if got, want := unixSocketMode(path), os.FileMode(0o600); got != want {
-		t.Fatalf("unixSocketMode(%q) = %v, want %v", path, got, want)
-	}
 }
 
 func TestListenTSNetUsesStateDirAndCleanup(t *testing.T) {
