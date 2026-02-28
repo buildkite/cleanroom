@@ -1,20 +1,28 @@
 # 👩‍🔬 Cleanroom
 
-Cleanroom runs untrusted code in microVMs with deny-by-default network policy. It is built for AI agent sandboxing and CI jobs where you need to control what the workload can reach.
+Cleanroom runs untrusted code in microVMs with deny-by-default network policy. It is self-hosted, enforces repository-scoped egress rules, and keeps credentials on the host side of the VM boundary.
 
-Unlike cloud sandbox providers (E2B, Daytona, Sprites), Cleanroom is self-hosted and enforces repository-scoped egress rules. Unlike local VM tools (SmolVM), it has a policy engine that controls network access per host and port.
+Agent sandboxing tools are [proliferating fast](docs/research.md). Most focus on isolation alone. Cleanroom adds policy-controlled network access so you decide exactly what the sandbox can reach.
 
 ## Why Cleanroom?
 
 **Deny-by-default egress.** A `cleanroom.yaml` policy file in your repo controls exactly which hosts the sandbox can reach. Everything else is blocked.
 
-**Self-hosted.** Runs on your infrastructure. Your code and data never leave your machines. Firecracker on Linux, Virtualization.framework on macOS.
+**MicroVM isolation.** Each sandbox is a hardware-virtualized microVM (Firecracker on Linux, Virtualization.framework on macOS), not a container. A VM boundary is stronger than namespaces, seccomp, or gVisor -- a kernel vulnerability in the guest doesn't compromise the host.
+
+**Self-hosted.** Runs on your infrastructure. Your code and data never leave your machines.
 
 **Credentials stay on the host.** A [host-side gateway](docs/gateway.md) proxies git clones and package fetches, injecting credentials on the upstream leg. Tokens never enter the sandbox.
 
 **Standard OCI images.** Use any OCI image from any registry as your sandbox base. Digest-pinned in policy for reproducibility. No custom VM image format or vendor-specific base images. Same image works across backends.
 
+**Docker inside the sandbox.** Enable a guest Docker daemon with a single policy flag (`services.docker.required: true`). Build and run containers inside the microVM.
+
+**Coming soon:** package registry proxy with lockfile enforcement, Docker pull caching, content caching for hermetic offline builds, and structured audit logging. See the [spec](docs/spec.md) for the full roadmap.
+
 ## Quick start
+
+> **Install:** There is no install script yet. For now, clone the repo and build from source with `go install ./cmd/cleanroom`. On macOS, you also need the darwin-vz helper (see [host requirements](#host-requirements)).
 
 Initialize runtime config and check host prerequisites:
 
@@ -235,14 +243,14 @@ cleanroom version
 
 ## Further reading
 
-- [TLS and mTLS](docs/tls.md) -- certificate bootstrap, auto-discovery, HTTPS transport
-- [Gateway](docs/gateway.md) -- host-side git/registry proxy and credential injection
-- [Remote access](docs/remote-access.md) -- Tailscale and HTTP listeners
-- [Isolation model](docs/isolation.md) -- enforcement details and persistence behavior
-- [API design](docs/api.md) -- ConnectRPC surface and proto sketch
-- [Darwin VZ](docs/darwin-vz.md) -- macOS backend and helper design
-- [Vsock protocol](docs/vsock.md) -- guest execution protocol
-- [Benchmarks](docs/benchmarks.md) -- TTI measurement and results
-- [CI](docs/ci.md) -- Buildkite pipeline and base image workflow
-- [Spec](docs/spec.md) -- full specification and roadmap
-- [Research](docs/research.md) -- backend and tooling evaluation notes
+- [`tls.md`](docs/tls.md) -- certificate bootstrap, auto-discovery, HTTPS transport
+- [`gateway.md`](docs/gateway.md) -- host-side git/registry proxy and credential injection
+- [`remote-access.md`](docs/remote-access.md) -- Tailscale and HTTP listeners
+- [`isolation.md`](docs/isolation.md) -- enforcement details and persistence behavior
+- [`api.md`](docs/api.md) -- ConnectRPC surface and proto sketch
+- [`darwin-vz.md`](docs/darwin-vz.md) -- macOS backend and helper design
+- [`vsock.md`](docs/vsock.md) -- guest execution protocol
+- [`benchmarks.md`](docs/benchmarks.md) -- TTI measurement and results
+- [`ci.md`](docs/ci.md) -- Buildkite pipeline and base image workflow
+- [`spec.md`](docs/spec.md) -- full specification and roadmap
+- [`research.md`](docs/research.md) -- backend and tooling evaluation notes
