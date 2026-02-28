@@ -46,6 +46,18 @@ cleanroom serve &
 
 The server listens on `unix://$XDG_RUNTIME_DIR/cleanroom/cleanroom.sock` by default.
 
+Install as a system daemon (Linux `systemd` / macOS `launchd`):
+
+```bash
+sudo cleanroom serve install
+```
+
+Use `--force` to overwrite an existing service file:
+
+```bash
+sudo cleanroom serve install --force
+```
+
 Run a command in a sandbox:
 
 ```bash

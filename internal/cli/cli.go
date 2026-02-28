@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
@@ -46,6 +48,11 @@ import (
 )
 
 const defaultBumpRefSource = "ghcr.io/buildkite/cleanroom-base/alpine:latest"
+
+const (
+	systemdServiceName = "cleanroom.service"
+	launchdServiceName = "com.buildkite.cleanroom"
+)
 
 type policyLoader interface {
 	LoadAndCompile(cwd string) (*policy.CompiledPolicy, string, error)
@@ -128,7 +135,7 @@ type clientFlags struct {
 	LogLevel string `help:"Client log level (debug|info|warn|error)"`
 	TLSCert  string `help:"Path to TLS client certificate (auto-discovered from XDG config for https)"`
 	TLSKey   string `help:"Path to TLS client private key (auto-discovered from XDG config for https)"`
-	TLSCA    string `help:"Path to CA certificate for server verification (auto-discovered from XDG config for https)"`
+	TLSCA    string `name:"tls-ca" aliases:"tlsca" help:"Path to CA certificate for server verification (auto-discovered from XDG config for https)"`
 }
 
 func (f *clientFlags) connect() (*controlclient.Client, error) {
@@ -171,12 +178,14 @@ type ConsoleCommand struct {
 }
 
 type ServeCommand struct {
+	Action        string `arg:"" optional:"" help:"Serve action (install daemon)"`
+	Force         bool   `help:"Overwrite existing daemon service file (serve install only)"`
 	Listen        string `help:"Listen endpoint for control API (defaults to runtime endpoint; supports tsnet://hostname[:port] and tssvc://service[:local-port])"`
 	GatewayListen string `help:"Listen address for the host gateway (default :8170, use :0 for ephemeral port)"`
 	LogLevel      string `help:"Server log level (debug|info|warn|error)"`
 	TLSCert       string `help:"Path to TLS server certificate (auto-discovered from XDG config for https)"`
 	TLSKey        string `help:"Path to TLS server private key (auto-discovered from XDG config for https)"`
-	TLSCA         string `help:"Path to CA certificate for client verification (auto-discovered from XDG config for https)"`
+	TLSCA         string `name:"tls-ca" aliases:"tlsca" help:"Path to CA certificate for client verification (auto-discovered from XDG config for https)"`
 }
 
 type TLSCommand struct {
@@ -270,6 +279,15 @@ var (
 
 		return fmt.Sprintf("%s@%s", tag.Context().Name(), desc.Digest.String()), nil
 	}
+	serveInstallGOOS            = runtime.GOOS
+	serveInstallEUID            = os.Geteuid
+	serveInstallStat            = os.Stat
+	serveInstallMkdirAll        = os.MkdirAll
+	serveInstallWriteFile       = os.WriteFile
+	serveInstallExecutablePath  = os.Executable
+	serveInstallRunCommand      = runServeInstallCommand
+	serveInstallSystemdUnitPath = "/etc/systemd/system/" + systemdServiceName
+	serveInstallLaunchdPath     = "/Library/LaunchDaemons/" + launchdServiceName + ".plist"
 )
 
 func Run(args []string) error {
@@ -1146,6 +1164,208 @@ func (c *TLSIssueCommand) Run(ctx *runtimeContext) error {
 }
 
 func (s *ServeCommand) Run(ctx *runtimeContext) error {
+	switch strings.TrimSpace(strings.ToLower(s.Action)) {
+	case "":
+		if s.Force {
+			return errors.New("--force is only supported with 'cleanroom serve install'")
+		}
+		return s.runServer(ctx)
+	case "install":
+		return s.installDaemon(ctx)
+	default:
+		return fmt.Errorf("unsupported serve action %q", s.Action)
+	}
+}
+
+func (s *ServeCommand) daemonRunArgs() []string {
+	args := []string{"serve"}
+	if value := strings.TrimSpace(s.Listen); value != "" {
+		args = append(args, "--listen", value)
+	}
+	if value := strings.TrimSpace(s.GatewayListen); value != "" {
+		args = append(args, "--gateway-listen", value)
+	}
+	if value := strings.TrimSpace(s.LogLevel); value != "" {
+		args = append(args, "--log-level", value)
+	}
+	if value := strings.TrimSpace(s.TLSCert); value != "" {
+		args = append(args, "--tls-cert", value)
+	}
+	if value := strings.TrimSpace(s.TLSKey); value != "" {
+		args = append(args, "--tls-key", value)
+	}
+	if value := strings.TrimSpace(s.TLSCA); value != "" {
+		args = append(args, "--tls-ca", value)
+	}
+	return args
+}
+
+func (s *ServeCommand) installDaemon(ctx *runtimeContext) error {
+	if serveInstallEUID() != 0 {
+		return errors.New("serve install requires root privileges (use sudo cleanroom serve install)")
+	}
+
+	executablePath, err := serveInstallExecutablePath()
+	if err != nil {
+		return fmt.Errorf("resolve cleanroom executable path: %w", err)
+	}
+	if !filepath.IsAbs(executablePath) {
+		executablePath, err = filepath.Abs(executablePath)
+		if err != nil {
+			return fmt.Errorf("resolve absolute executable path: %w", err)
+		}
+	}
+
+	args := s.daemonRunArgs()
+	switch serveInstallGOOS {
+	case "linux":
+		return installSystemdDaemon(ctx.Stdout, executablePath, args, s.Force)
+	case "darwin":
+		return installLaunchdDaemon(ctx.Stdout, executablePath, args, s.Force)
+	default:
+		return fmt.Errorf("serve install is unsupported on %s (expected linux or darwin)", serveInstallGOOS)
+	}
+}
+
+func installSystemdDaemon(stdout io.Writer, executablePath string, args []string, force bool) error {
+	content := renderSystemdService(executablePath, args)
+	if err := writeDaemonFile(serveInstallSystemdUnitPath, content, force, 0o644); err != nil {
+		return err
+	}
+
+	if err := serveInstallRunCommand("systemctl", "daemon-reload"); err != nil {
+		return fmt.Errorf("reload systemd: %w", err)
+	}
+	if err := serveInstallRunCommand("systemctl", "enable", "--now", systemdServiceName); err != nil {
+		return fmt.Errorf("enable systemd service %s: %w", systemdServiceName, err)
+	}
+
+	_, err := fmt.Fprintf(stdout, "daemon installed\nmanager=systemd\nservice=%s\npath=%s\n", systemdServiceName, serveInstallSystemdUnitPath)
+	return err
+}
+
+func installLaunchdDaemon(stdout io.Writer, executablePath string, args []string, force bool) error {
+	content := renderLaunchdService(executablePath, args)
+	if err := writeDaemonFile(serveInstallLaunchdPath, content, force, 0o644); err != nil {
+		return err
+	}
+
+	if force {
+		_ = serveInstallRunCommand("launchctl", "bootout", "system/"+launchdServiceName)
+	}
+	if err := serveInstallRunCommand("launchctl", "bootstrap", "system", serveInstallLaunchdPath); err != nil {
+		return fmt.Errorf("bootstrap launchd service %s: %w", launchdServiceName, err)
+	}
+	if err := serveInstallRunCommand("launchctl", "enable", "system/"+launchdServiceName); err != nil {
+		return fmt.Errorf("enable launchd service %s: %w", launchdServiceName, err)
+	}
+
+	_, err := fmt.Fprintf(stdout, "daemon installed\nmanager=launchd\nservice=%s\npath=%s\n", launchdServiceName, serveInstallLaunchdPath)
+	return err
+}
+
+func writeDaemonFile(path, content string, force bool, mode os.FileMode) error {
+	if st, err := serveInstallStat(path); err == nil {
+		if st.IsDir() {
+			return fmt.Errorf("daemon service path %s is a directory", path)
+		}
+		if !force {
+			return fmt.Errorf("%s already exists (use --force to overwrite)", path)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("stat %s: %w", path, err)
+	}
+
+	if err := serveInstallMkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create daemon service directory: %w", err)
+	}
+	if err := serveInstallWriteFile(path, []byte(content), mode); err != nil {
+		return fmt.Errorf("write daemon service file %s: %w", path, err)
+	}
+	return nil
+}
+
+func renderSystemdService(executablePath string, args []string) string {
+	cmd := append([]string{executablePath}, args...)
+	return fmt.Sprintf(`[Unit]
+Description=Cleanroom control-plane server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%s
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+`, joinSystemdExecArgs(cmd))
+}
+
+func joinSystemdExecArgs(args []string) string {
+	quoted := make([]string, 0, len(args))
+	for _, arg := range args {
+		if strings.ContainsAny(arg, " \t\"\\") {
+			quoted = append(quoted, strconv.Quote(arg))
+			continue
+		}
+		quoted = append(quoted, arg)
+	}
+	return strings.Join(quoted, " ")
+}
+
+func renderLaunchdService(executablePath string, args []string) string {
+	cmd := append([]string{executablePath}, args...)
+	var b strings.Builder
+	b.WriteString(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">` + "\n")
+	b.WriteString(`<plist version="1.0">` + "\n")
+	b.WriteString("<dict>\n")
+	b.WriteString("\t<key>Label</key>\n")
+	b.WriteString("\t<string>")
+	b.WriteString(escapePlistValue(launchdServiceName))
+	b.WriteString("</string>\n")
+	b.WriteString("\t<key>ProgramArguments</key>\n")
+	b.WriteString("\t<array>\n")
+	for _, arg := range cmd {
+		b.WriteString("\t\t<string>")
+		b.WriteString(escapePlistValue(arg))
+		b.WriteString("</string>\n")
+	}
+	b.WriteString("\t</array>\n")
+	b.WriteString("\t<key>RunAtLoad</key>\n")
+	b.WriteString("\t<true/>\n")
+	b.WriteString("\t<key>KeepAlive</key>\n")
+	b.WriteString("\t<true/>\n")
+	b.WriteString("</dict>\n")
+	b.WriteString("</plist>\n")
+	return b.String()
+}
+
+func escapePlistValue(value string) string {
+	var b strings.Builder
+	if err := xml.EscapeText(&b, []byte(value)); err != nil {
+		return value
+	}
+	return b.String()
+}
+
+func runServeInstallCommand(name string, args ...string) error {
+	cmd := exec.Command(name, args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg == "" {
+			msg = "no stderr output"
+		}
+		parts := append([]string{name}, args...)
+		return fmt.Errorf("%s: %w (%s)", strings.Join(parts, " "), err, msg)
+	}
+	return nil
+}
+
+func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 	ep, err := endpoint.ResolveListen(s.Listen)
 	if err != nil {
 		return err
