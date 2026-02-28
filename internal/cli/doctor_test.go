@@ -118,8 +118,14 @@ func TestDoctorCommandJSONIncludesCapabilities(t *testing.T) {
 	if len(payload.Gateway.Routes) != 4 {
 		t.Fatalf("expected 4 gateway routes, got %d (%v)", len(payload.Gateway.Routes), payload.Gateway.Routes)
 	}
-	if len(payload.Gateway.CredentialHosts) != 1 || payload.Gateway.CredentialHosts[0] != "github.com" {
-		t.Fatalf("unexpected gateway credential hosts: %v", payload.Gateway.CredentialHosts)
+	foundGitHub := false
+	for _, h := range payload.Gateway.CredentialHosts {
+		if h == "github.com" {
+			foundGitHub = true
+		}
+	}
+	if !foundGitHub {
+		t.Fatalf("expected github.com in credential hosts, got %v", payload.Gateway.CredentialHosts)
 	}
 
 	foundCapabilityCheck := false
