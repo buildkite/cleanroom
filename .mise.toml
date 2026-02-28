@@ -2,6 +2,7 @@
 go = "1.23"
 shellcheck = "latest"
 hyperfine = "latest"
+svu = "3"
 
 [env]
 GOTOOLCHAIN = "local"
@@ -20,7 +21,12 @@ run = "go test ./..."
 
 [tasks."build:go"]
 description = "Build Go binaries into dist/"
-run = "mkdir -p dist && go build -o dist/cleanroom ./cmd/cleanroom && go build -o dist/cleanroom-guest-agent ./cmd/cleanroom-guest-agent"
+run = """
+VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo dev)
+mkdir -p dist
+go build -ldflags "-X main.version=$VERSION" -o dist/cleanroom ./cmd/cleanroom
+go build -o dist/cleanroom-guest-agent ./cmd/cleanroom-guest-agent
+"""
 
 [tasks."build:darwin"]
 description = "Build macOS darwin-vz helper into dist/"
@@ -33,7 +39,15 @@ run = "true"
 
 [tasks."install:go"]
 description = "Install Go binaries into GOBIN (or GOPATH/bin)"
-run = "BIN_DIR=\"$(go env GOBIN)\"; if [ -z \"$BIN_DIR\" ]; then BIN_DIR=\"$(go env GOPATH)/bin\"; fi; HOST_ARCH=\"$(go env GOARCH)\"; mkdir -p \"$BIN_DIR\" && go install ./cmd/cleanroom ./cmd/cleanroom-guest-agent && GOOS=linux GOARCH=\"$HOST_ARCH\" CGO_ENABLED=0 go build -trimpath -o \"$BIN_DIR/cleanroom-guest-agent-linux-$HOST_ARCH\" ./cmd/cleanroom-guest-agent"
+run = """
+VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo dev)
+BIN_DIR="$(go env GOBIN)"
+if [ -z "$BIN_DIR" ]; then BIN_DIR="$(go env GOPATH)/bin"; fi
+HOST_ARCH="$(go env GOARCH)"
+mkdir -p "$BIN_DIR"
+go install -ldflags "-X main.version=$VERSION" ./cmd/cleanroom ./cmd/cleanroom-guest-agent
+GOOS=linux GOARCH="$HOST_ARCH" CGO_ENABLED=0 go build -trimpath -o "$BIN_DIR/cleanroom-guest-agent-linux-$HOST_ARCH" ./cmd/cleanroom-guest-agent
+"""
 
 [tasks."install:darwin"]
 description = "Install macOS darwin-vz helper into GOBIN (or GOPATH/bin)"
@@ -52,3 +66,24 @@ run = "go run ./cmd/cleanroom doctor"
 [tasks.doctor-json]
 description = "Run cleanroom diagnostics as JSON"
 run = "go run ./cmd/cleanroom doctor --json"
+
+[tasks.check]
+description = "Run build, test, and lint"
+depends = ["build", "test", "lint-shell"]
+run = "true"
+
+[tasks.release]
+description = "Tag the next version and push to trigger a release"
+depends = ["check"]
+run = """
+NEXT=$(svu next)
+CURRENT=$(svu current)
+if [ "$NEXT" = "$CURRENT" ]; then
+  echo "No version bump detected (current: $CURRENT). Use conventional commits (feat:, fix:, etc.)."
+  exit 1
+fi
+echo "Releasing $CURRENT -> $NEXT"
+git tag "$NEXT"
+git push origin "$NEXT"
+echo "Tagged and pushed $NEXT — release workflow will run on GitHub."
+"""
