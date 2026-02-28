@@ -160,7 +160,7 @@ socket_path="$tmpdir/cleanroom.sock"
 listen_endpoint="unix://$socket_path"
 
 echo "--- :rocket: Start cleanroom control-plane"
-./dist/cleanroom serve --listen "$listen_endpoint" --gateway-listen "127.0.0.1:0" >"$tmpdir/server.log" 2>&1 &
+./dist/cleanroom serve --listen "$listen_endpoint" --gateway-listen ":0" >"$tmpdir/server.log" 2>&1 &
 srv_pid=$!
 
 for _ in $(seq 1 40); do
