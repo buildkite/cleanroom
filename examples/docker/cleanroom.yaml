@@ -1,0 +1,16 @@
+version: 1
+sandbox:
+  image:
+    ref: index.docker.io/library/docker@sha256:aa3df78ecf320f5fafdce71c659f1629e96e9de0968305fe1de670e0ca9176ce
+  services:
+    docker:
+      required: true
+  network:
+    default: deny
+    allow:
+      - host: auth.docker.io
+        ports: [443]
+      - host: registry-1.docker.io
+        ports: [443]
+      - host: production.cloudflare.docker.com
+        ports: [443]

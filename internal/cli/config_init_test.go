@@ -45,6 +45,15 @@ func TestConfigInitWritesRuntimeConfig(t *testing.T) {
 	if got := strings.TrimSpace(cfg.Backends.DarwinVZ.KernelImage); got != "" {
 		t.Fatalf("expected backends.darwin-vz.kernel_image to default empty, got %q", got)
 	}
+	if got, want := cfg.Backends.Firecracker.Services.Docker.StartupTimeoutSeconds, int64(20); got != want {
+		t.Fatalf("expected backends.firecracker.services.docker.startup_timeout_seconds=%d, got %d", want, got)
+	}
+	if got, want := cfg.Backends.Firecracker.Services.Docker.StorageDriver, "vfs"; got != want {
+		t.Fatalf("expected backends.firecracker.services.docker.storage_driver=%q, got %q", want, got)
+	}
+	if cfg.Backends.Firecracker.Services.Docker.IPTables {
+		t.Fatal("expected backends.firecracker.services.docker.iptables to default false")
+	}
 }
 
 func TestConfigInitRefusesOverwriteWithoutForce(t *testing.T) {

@@ -10,6 +10,7 @@ private struct ControlRequest: Decodable {
     let op: String
     let kernelPath: String?
     let rootFSPath: String?
+    let bootArgs: String?
     let vcpus: Int?
     let memoryMiB: Int64?
     let guestPort: UInt32?
@@ -23,6 +24,7 @@ private struct ControlRequest: Decodable {
         case op
         case kernelPath = "kernel_path"
         case rootFSPath = "rootfs_path"
+        case bootArgs = "boot_args"
         case vcpus
         case memoryMiB = "memory_mib"
         case guestPort = "guest_port"
@@ -376,6 +378,13 @@ private final class VMRuntime {
         let memoryMiB = max(Int64(256), req.memoryMiB ?? 512)
         let guestPort = req.guestPort ?? 10_700
         let launchSeconds = max(Int64(5), req.launchSeconds ?? 30)
+        let defaultBootArgs = "console=hvc0 root=/dev/vda rw init=/sbin/cleanroom-init cleanroom_guest_port=\(guestPort)"
+        let bootArgs: String
+        if let requestedBootArgs = req.bootArgs?.trimmingCharacters(in: .whitespacesAndNewlines), !requestedBootArgs.isEmpty {
+            bootArgs = requestedBootArgs
+        } else {
+            bootArgs = defaultBootArgs
+        }
 
         lock.lock()
         if vm != nil {
@@ -391,9 +400,9 @@ private final class VMRuntime {
         let (vm, serialChannel) = try buildVM(
             kernelPath: kernelPath,
             rootFSPath: rootFSPath,
+            bootArgs: bootArgs,
             vcpus: vcpus,
             memoryMiB: memoryMiB,
-            guestPort: guestPort,
             consoleLogPath: consoleLogPath,
             queue: vmQueue
         )
@@ -456,9 +465,9 @@ private final class VMRuntime {
     private func buildVM(
         kernelPath: String,
         rootFSPath: String,
+        bootArgs: String,
         vcpus: Int,
         memoryMiB: Int64,
-        guestPort: UInt32,
         consoleLogPath: String,
         queue: DispatchQueue
     ) throws -> (VZVirtualMachine, GuestChannel) {
@@ -467,7 +476,7 @@ private final class VMRuntime {
         let consoleURL = URL(fileURLWithPath: consoleLogPath)
 
         let bootLoader = VZLinuxBootLoader(kernelURL: kernelURL)
-        bootLoader.commandLine = "console=hvc0 root=/dev/vda rw init=/sbin/cleanroom-init cleanroom_guest_port=\(guestPort)"
+        bootLoader.commandLine = bootArgs
 
         let config = VZVirtualMachineConfiguration()
         config.bootLoader = bootLoader

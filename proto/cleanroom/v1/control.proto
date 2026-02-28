@@ -46,6 +46,14 @@ message PolicyAllowRule {
   repeated int32 ports = 2;
 }
 
+message PolicyDockerService {
+  bool required = 1;
+}
+
+message PolicyServices {
+  PolicyDockerService docker = 1;
+}
+
 message Policy {
   int32 version = 1;
   string image_ref = 2;
@@ -53,6 +61,7 @@ message Policy {
   string network_default = 4;
   repeated PolicyAllowRule allow = 5;
   string hash = 6;
+  PolicyServices services = 7;
 }
 
 message SandboxOptions {

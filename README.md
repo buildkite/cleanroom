@@ -169,8 +169,9 @@ cleanroom image import ghcr.io/buildkite/cleanroom-base/alpine@sha256:... ./root
 cleanroom image bump-ref
 ```
 
-`ghcr.io/buildkite/cleanroom-base/alpine` is published from this repo on pushes to `main`
-via `.github/workflows/base-image.yml`.
+`ghcr.io/buildkite/cleanroom-base/alpine` and
+`ghcr.io/buildkite/cleanroom-base/alpine-docker` are published from this repo
+on pushes to `main` via `.github/workflows/base-image.yml`.
 
 Sandbox management:
 
@@ -223,6 +224,15 @@ sandbox:
         ports: [443]
       - host: registry.npmjs.org
         ports: [443]
+```
+
+Enable Docker as an explicit guest service:
+
+```yaml
+sandbox:
+  services:
+    docker:
+      required: true
 ```
 
 ## Runtime Config

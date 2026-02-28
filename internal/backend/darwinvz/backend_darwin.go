@@ -131,6 +131,48 @@ if [ -z "$GUEST_PORT" ]; then
 fi
 export CLEANROOM_VSOCK_PORT="$GUEST_PORT"
 
+DOCKER_REQUIRED="$(arg_value cleanroom_service_docker_required || true)"
+if [ "$DOCKER_REQUIRED" = "1" ] && command -v dockerd >/dev/null 2>&1; then
+  DOCKER_STARTUP_TIMEOUT="$(arg_value cleanroom_service_docker_startup_timeout || true)"
+  case "$DOCKER_STARTUP_TIMEOUT" in
+    ''|*[!0-9]*) DOCKER_STARTUP_TIMEOUT="20" ;;
+  esac
+  if [ "$DOCKER_STARTUP_TIMEOUT" -le 0 ]; then
+    DOCKER_STARTUP_TIMEOUT="20"
+  fi
+  DOCKER_STORAGE_DRIVER="$(arg_value cleanroom_service_docker_storage_driver || true)"
+  if [ -z "$DOCKER_STORAGE_DRIVER" ]; then
+    DOCKER_STORAGE_DRIVER="vfs"
+  fi
+  DOCKER_IPTABLES="$(arg_value cleanroom_service_docker_iptables || true)"
+
+  DOCKER_ARGS="--host=unix:///var/run/docker.sock --storage-driver=$DOCKER_STORAGE_DRIVER"
+  if [ "$DOCKER_IPTABLES" = "0" ] || [ "$DOCKER_IPTABLES" = "false" ]; then
+    DOCKER_ARGS="$DOCKER_ARGS --iptables=false"
+  fi
+
+  mkdir -p /var/log /var/lib/docker /etc/docker /var/run /sys/fs/cgroup
+  mount -t cgroup2 none /sys/fs/cgroup 2>/dev/null || true
+  if [ ! -S /var/run/docker.sock ]; then
+    dockerd $DOCKER_ARGS >/var/log/dockerd.log 2>&1 &
+  fi
+  i=0
+  DOCKER_WAIT_TICKS=$((DOCKER_STARTUP_TIMEOUT * 10))
+  while [ "$i" -lt "$DOCKER_WAIT_TICKS" ]; do
+    if [ -S /var/run/docker.sock ]; then
+      if command -v docker >/dev/null 2>&1; then
+        if docker version >/dev/null 2>&1; then
+          break
+        fi
+      else
+        break
+      fi
+    fi
+    sleep 0.1
+    i=$((i + 1))
+  done
+fi
+
 AGENT_DEV=""
 if [ -c /dev/hvc1 ]; then
   AGENT_DEV="/dev/hvc1"
@@ -435,7 +477,11 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 		_ = os.Remove(vmRootFSPath)
 	}()
 
-	bootArgs := fmt.Sprintf("console=hvc0 root=/dev/vda rw init=/sbin/cleanroom-init cleanroom_guest_port=%d", req.GuestPort)
+	bootArgs := fmt.Sprintf(
+		"console=hvc0 root=/dev/vda rw init=/sbin/cleanroom-init cleanroom_guest_port=%d %s",
+		req.GuestPort,
+		dockerServiceBootArgs(req.Policy, req.FirecrackerConfig),
+	)
 	consolePath := filepath.Join(runDir, "vm.console.log")
 
 	vmPlanPath := filepath.Join(runDir, "darwin-vz-config.json")
@@ -474,6 +520,7 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 		Op:              "StartVM",
 		KernelPath:      kernelPath,
 		RootFSPath:      vmRootFSPath,
+		BootArgs:        bootArgs,
 		VCPUs:           req.VCPUs,
 		MemoryMiB:       req.MemoryMiB,
 		GuestPort:       req.GuestPort,

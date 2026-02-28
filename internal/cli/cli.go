@@ -414,9 +414,16 @@ func defaultRuntimeConfig(defaultBackend string) runtimeconfig.Config {
 		DefaultBackend: defaultBackend,
 		Backends: runtimeconfig.Backends{
 			Firecracker: runtimeconfig.FirecrackerConfig{
-				BinaryPath:           "firecracker",
-				KernelImage:          "",
-				RootFS:               "",
+				BinaryPath:  "firecracker",
+				KernelImage: "",
+				RootFS:      "",
+				Services: runtimeconfig.ServicesConfig{
+					Docker: runtimeconfig.DockerServiceConfig{
+						StartupTimeoutSeconds: 20,
+						StorageDriver:         "vfs",
+						IPTables:              false,
+					},
+				},
 				PrivilegedMode:       "sudo",
 				PrivilegedHelperPath: "/usr/local/sbin/cleanroom-root-helper",
 				VCPUs:                2,
@@ -426,8 +433,15 @@ func defaultRuntimeConfig(defaultBackend string) runtimeconfig.Config {
 				LaunchSeconds:        30,
 			},
 			DarwinVZ: runtimeconfig.DarwinVZConfig{
-				KernelImage:   "",
-				RootFS:        "",
+				KernelImage: "",
+				RootFS:      "",
+				Services: runtimeconfig.ServicesConfig{
+					Docker: runtimeconfig.DockerServiceConfig{
+						StartupTimeoutSeconds: 20,
+						StorageDriver:         "vfs",
+						IPTables:              false,
+					},
+				},
 				VCPUs:         2,
 				MemoryMiB:     1024,
 				GuestPort:     10700,
@@ -1372,6 +1386,9 @@ func mergeBackendConfig(backendName string, launchSeconds int64, cfg runtimeconf
 		BinaryPath:           cfg.Backends.Firecracker.BinaryPath,
 		KernelImagePath:      cfg.Backends.Firecracker.KernelImage,
 		RootFSPath:           cfg.Backends.Firecracker.RootFS,
+		DockerStartupSeconds: cfg.Backends.Firecracker.Services.Docker.StartupTimeoutSeconds,
+		DockerStorageDriver:  cfg.Backends.Firecracker.Services.Docker.StorageDriver,
+		DockerIPTables:       cfg.Backends.Firecracker.Services.Docker.IPTables,
 		PrivilegedMode:       cfg.Backends.Firecracker.PrivilegedMode,
 		PrivilegedHelperPath: cfg.Backends.Firecracker.PrivilegedHelperPath,
 		VCPUs:                cfg.Backends.Firecracker.VCPUs,
@@ -1383,6 +1400,9 @@ func mergeBackendConfig(backendName string, launchSeconds int64, cfg runtimeconf
 	if backendName == "darwin-vz" {
 		out.KernelImagePath = cfg.Backends.DarwinVZ.KernelImage
 		out.RootFSPath = cfg.Backends.DarwinVZ.RootFS
+		out.DockerStartupSeconds = cfg.Backends.DarwinVZ.Services.Docker.StartupTimeoutSeconds
+		out.DockerStorageDriver = cfg.Backends.DarwinVZ.Services.Docker.StorageDriver
+		out.DockerIPTables = cfg.Backends.DarwinVZ.Services.Docker.IPTables
 		out.VCPUs = cfg.Backends.DarwinVZ.VCPUs
 		out.MemoryMiB = cfg.Backends.DarwinVZ.MemoryMiB
 		out.GuestPort = cfg.Backends.DarwinVZ.GuestPort

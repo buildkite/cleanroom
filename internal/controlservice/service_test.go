@@ -362,6 +362,7 @@ func TestCreateSandboxMergesDarwinVZConfig(t *testing.T) {
 				Firecracker: runtimeconfig.FirecrackerConfig{
 					KernelImage:   "/firecracker-kernel",
 					RootFS:        "/firecracker-rootfs",
+					Services:      runtimeconfig.ServicesConfig{Docker: runtimeconfig.DockerServiceConfig{StartupTimeoutSeconds: 11, StorageDriver: "btrfs", IPTables: true}},
 					VCPUs:         1,
 					MemoryMiB:     256,
 					GuestPort:     10700,
@@ -370,6 +371,7 @@ func TestCreateSandboxMergesDarwinVZConfig(t *testing.T) {
 				DarwinVZ: runtimeconfig.DarwinVZConfig{
 					KernelImage:   "/darwin-vz-kernel",
 					RootFS:        "/darwin-vz-rootfs",
+					Services:      runtimeconfig.ServicesConfig{Docker: runtimeconfig.DockerServiceConfig{StartupTimeoutSeconds: 55, StorageDriver: "overlay2", IPTables: false}},
 					VCPUs:         4,
 					MemoryMiB:     2048,
 					GuestPort:     12000,
@@ -411,6 +413,15 @@ func TestCreateSandboxMergesDarwinVZConfig(t *testing.T) {
 	}
 	if got, want := gotCfg.LaunchSeconds, int64(33); got != want {
 		t.Fatalf("unexpected launch_seconds: got %d want %d", got, want)
+	}
+	if got, want := gotCfg.DockerStartupSeconds, int64(55); got != want {
+		t.Fatalf("unexpected docker startup timeout: got %d want %d", got, want)
+	}
+	if got, want := gotCfg.DockerStorageDriver, "overlay2"; got != want {
+		t.Fatalf("unexpected docker storage driver: got %q want %q", got, want)
+	}
+	if got := gotCfg.DockerIPTables; got {
+		t.Fatal("expected docker iptables=false from darwin-vz config")
 	}
 	if got := gotCfg.Launch; !got {
 		t.Fatalf("expected launch=true")

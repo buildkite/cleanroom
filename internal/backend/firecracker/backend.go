@@ -147,6 +147,48 @@ if [ -z "$GUEST_PORT" ]; then
 fi
 export CLEANROOM_VSOCK_PORT="$GUEST_PORT"
 
+DOCKER_REQUIRED="$(arg_value cleanroom_service_docker_required || true)"
+if [ "$DOCKER_REQUIRED" = "1" ] && command -v dockerd >/dev/null 2>&1; then
+  DOCKER_STARTUP_TIMEOUT="$(arg_value cleanroom_service_docker_startup_timeout || true)"
+  case "$DOCKER_STARTUP_TIMEOUT" in
+    ''|*[!0-9]*) DOCKER_STARTUP_TIMEOUT="20" ;;
+  esac
+  if [ "$DOCKER_STARTUP_TIMEOUT" -le 0 ]; then
+    DOCKER_STARTUP_TIMEOUT="20"
+  fi
+  DOCKER_STORAGE_DRIVER="$(arg_value cleanroom_service_docker_storage_driver || true)"
+  if [ -z "$DOCKER_STORAGE_DRIVER" ]; then
+    DOCKER_STORAGE_DRIVER="vfs"
+  fi
+  DOCKER_IPTABLES="$(arg_value cleanroom_service_docker_iptables || true)"
+
+  DOCKER_ARGS="--host=unix:///var/run/docker.sock --storage-driver=$DOCKER_STORAGE_DRIVER"
+  if [ "$DOCKER_IPTABLES" = "0" ] || [ "$DOCKER_IPTABLES" = "false" ]; then
+    DOCKER_ARGS="$DOCKER_ARGS --iptables=false"
+  fi
+
+  mkdir -p /var/log /var/lib/docker /etc/docker /var/run /sys/fs/cgroup
+  mount -t cgroup2 none /sys/fs/cgroup 2>/dev/null || true
+  if [ ! -S /var/run/docker.sock ]; then
+    dockerd $DOCKER_ARGS >/var/log/dockerd.log 2>&1 &
+  fi
+  i=0
+  DOCKER_WAIT_TICKS=$((DOCKER_STARTUP_TIMEOUT * 10))
+  while [ "$i" -lt "$DOCKER_WAIT_TICKS" ]; do
+    if [ -S /var/run/docker.sock ]; then
+      if command -v docker >/dev/null 2>&1; then
+        if docker version >/dev/null 2>&1; then
+          break
+        fi
+      else
+        break
+      fi
+    fi
+    sleep 0.1
+    i=$((i + 1))
+  done
+fi
+
 while true; do
   /usr/local/bin/cleanroom-guest-agent || true
   sleep 1
@@ -721,14 +763,16 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 	defer cleanupMeasured()
 
 	vsockPath := filepath.Join(runDir, "vsock.sock")
+	dockerBootArgs := dockerServiceBootArgs(req.Policy, req.FirecrackerConfig)
 	fcCfg := firecrackerConfig{
 		BootSource: bootSource{
 			KernelImagePath: kernelPath,
 			BootArgs: fmt.Sprintf(
-				"console=ttyS0 reboot=k panic=1 pci=off init=/sbin/cleanroom-init random.trust_cpu=on cleanroom_guest_ip=%s cleanroom_guest_gw=%s cleanroom_guest_mask=24 cleanroom_guest_dns=1.1.1.1 cleanroom_guest_port=%d",
+				"console=ttyS0 reboot=k panic=1 pci=off init=/sbin/cleanroom-init random.trust_cpu=on cleanroom_guest_ip=%s cleanroom_guest_gw=%s cleanroom_guest_mask=24 cleanroom_guest_dns=1.1.1.1 cleanroom_guest_port=%d %s",
 				networkCfg.GuestIP,
 				networkCfg.HostIP,
 				req.GuestPort,
+				dockerBootArgs,
 			),
 		},
 		Drives: []drive{
@@ -1317,14 +1361,16 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 	}
 
 	vsockPath := filepath.Join(runDir, "vsock.sock")
+	dockerBootArgs := dockerServiceBootArgs(compiled, cfg)
 	fcCfg := firecrackerConfig{
 		BootSource: bootSource{
 			KernelImagePath: kernelPath,
 			BootArgs: fmt.Sprintf(
-				"console=ttyS0 reboot=k panic=1 pci=off init=/sbin/cleanroom-init random.trust_cpu=on cleanroom_guest_ip=%s cleanroom_guest_gw=%s cleanroom_guest_mask=24 cleanroom_guest_dns=1.1.1.1 cleanroom_guest_port=%d",
+				"console=ttyS0 reboot=k panic=1 pci=off init=/sbin/cleanroom-init random.trust_cpu=on cleanroom_guest_ip=%s cleanroom_guest_gw=%s cleanroom_guest_mask=24 cleanroom_guest_dns=1.1.1.1 cleanroom_guest_port=%d %s",
 				networkCfg.GuestIP,
 				networkCfg.HostIP,
 				cfg.GuestPort,
+				dockerBootArgs,
 			),
 		},
 		Drives: []drive{{
@@ -1943,6 +1989,46 @@ func gatewayEnvVars(instance *sandboxInstance, gwPort int) []string {
 		env = append(env, fmt.Sprintf("GIT_CONFIG_VALUE_%d=https://%s/", i, host))
 	}
 	return env
+}
+
+func dockerServiceBootArgs(compiled *policy.CompiledPolicy, cfg backend.FirecrackerConfig) string {
+	if compiled == nil || !compiled.RequiresDockerService() {
+		return "cleanroom_service_docker_required=0"
+	}
+
+	startupSeconds := cfg.DockerStartupSeconds
+	if startupSeconds <= 0 {
+		startupSeconds = 20
+	}
+
+	storageDriver := sanitizeKernelArgValue(strings.TrimSpace(cfg.DockerStorageDriver))
+	if storageDriver == "" {
+		storageDriver = "vfs"
+	}
+
+	iptables := 0
+	if cfg.DockerIPTables {
+		iptables = 1
+	}
+
+	return fmt.Sprintf(
+		"cleanroom_service_docker_required=1 cleanroom_service_docker_startup_timeout=%d cleanroom_service_docker_storage_driver=%s cleanroom_service_docker_iptables=%d",
+		startupSeconds,
+		storageDriver,
+		iptables,
+	)
+}
+
+func sanitizeKernelArgValue(value string) string {
+	var b strings.Builder
+	b.Grow(len(value))
+	for _, r := range value {
+		isAlphaNum := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
+		if isAlphaNum || r == '.' || r == '_' || r == '-' {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 func tapNameFromRunID(runID string) string {

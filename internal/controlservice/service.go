@@ -109,10 +109,10 @@ var (
 )
 
 const (
-	attachStdinRegistrationWait   = 2 * time.Second
-	attachResizeRegistrationWait  = 250 * time.Millisecond
-	attachPollInterval            = 10 * time.Millisecond
-	defaultDownloadMaxBytes int64 = 10 * 1024 * 1024
+	attachStdinRegistrationWait        = 2 * time.Second
+	attachResizeRegistrationWait       = 250 * time.Millisecond
+	attachPollInterval                 = 10 * time.Millisecond
+	defaultDownloadMaxBytes      int64 = 10 * 1024 * 1024
 )
 
 func (s *Service) CreateSandbox(ctx context.Context, req *cleanroomv1.CreateSandboxRequest) (*cleanroomv1.CreateSandboxResponse, error) {
@@ -1612,6 +1612,9 @@ func mergeBackendConfig(backendName string, opts executionOptions, cfg runtimeco
 		BinaryPath:           cfg.Backends.Firecracker.BinaryPath,
 		KernelImagePath:      cfg.Backends.Firecracker.KernelImage,
 		RootFSPath:           cfg.Backends.Firecracker.RootFS,
+		DockerStartupSeconds: cfg.Backends.Firecracker.Services.Docker.StartupTimeoutSeconds,
+		DockerStorageDriver:  cfg.Backends.Firecracker.Services.Docker.StorageDriver,
+		DockerIPTables:       cfg.Backends.Firecracker.Services.Docker.IPTables,
 		PrivilegedMode:       cfg.Backends.Firecracker.PrivilegedMode,
 		PrivilegedHelperPath: cfg.Backends.Firecracker.PrivilegedHelperPath,
 		VCPUs:                cfg.Backends.Firecracker.VCPUs,
@@ -1623,6 +1626,9 @@ func mergeBackendConfig(backendName string, opts executionOptions, cfg runtimeco
 	if backendName == "darwin-vz" {
 		out.KernelImagePath = cfg.Backends.DarwinVZ.KernelImage
 		out.RootFSPath = cfg.Backends.DarwinVZ.RootFS
+		out.DockerStartupSeconds = cfg.Backends.DarwinVZ.Services.Docker.StartupTimeoutSeconds
+		out.DockerStorageDriver = cfg.Backends.DarwinVZ.Services.Docker.StorageDriver
+		out.DockerIPTables = cfg.Backends.DarwinVZ.Services.Docker.IPTables
 		out.VCPUs = cfg.Backends.DarwinVZ.VCPUs
 		out.MemoryMiB = cfg.Backends.DarwinVZ.MemoryMiB
 		out.GuestPort = cfg.Backends.DarwinVZ.GuestPort
