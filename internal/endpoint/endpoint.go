@@ -22,6 +22,7 @@ type Endpoint struct {
 const defaultSystemSocketPath = "/var/run/cleanroom/cleanroom.sock"
 
 var endpointStat = os.Stat
+var endpointGeteuid = os.Geteuid
 
 func defaultListenEndpoint() Endpoint {
 	runtimeDir := strings.TrimSpace(os.Getenv("XDG_RUNTIME_DIR"))
@@ -37,11 +38,13 @@ func defaultListenEndpoint() Endpoint {
 }
 
 func defaultClientEndpoint() Endpoint {
-	if st, err := endpointStat(defaultSystemSocketPath); err == nil && !st.IsDir() {
-		return Endpoint{
-			Scheme:  "unix",
-			Address: defaultSystemSocketPath,
-			BaseURL: "http://unix",
+	if endpointGeteuid() == 0 {
+		if st, err := endpointStat(defaultSystemSocketPath); err == nil && !st.IsDir() {
+			return Endpoint{
+				Scheme:  "unix",
+				Address: defaultSystemSocketPath,
+				BaseURL: "http://unix",
+			}
 		}
 	}
 	return defaultListenEndpoint()

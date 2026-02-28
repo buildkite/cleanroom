@@ -149,10 +149,15 @@ func TestResolveDefaultClientPrefersSystemSocketWhenPresent(t *testing.T) {
 	}
 
 	prevStat := endpointStat
+	prevEUID := endpointGeteuid
 	endpointStat = func(string) (os.FileInfo, error) {
 		return fi, nil
 	}
-	t.Cleanup(func() { endpointStat = prevStat })
+	endpointGeteuid = func() int { return 0 }
+	t.Cleanup(func() {
+		endpointStat = prevStat
+		endpointGeteuid = prevEUID
+	})
 
 	ep, err := Resolve("")
 	if err != nil {
@@ -171,10 +176,15 @@ func TestResolveDefaultClientFallsBackToRuntimeSocketWhenSystemSocketMissing(t *
 	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
 
 	prevStat := endpointStat
+	prevEUID := endpointGeteuid
 	endpointStat = func(string) (os.FileInfo, error) {
 		return nil, errors.New("missing")
 	}
-	t.Cleanup(func() { endpointStat = prevStat })
+	endpointGeteuid = func() int { return 0 }
+	t.Cleanup(func() {
+		endpointStat = prevStat
+		endpointGeteuid = prevEUID
+	})
 
 	ep, err := Resolve("")
 	if err != nil {
@@ -183,6 +193,43 @@ func TestResolveDefaultClientFallsBackToRuntimeSocketWhenSystemSocketMissing(t *
 	want := filepath.Join(runtimeDir, "cleanroom", "cleanroom.sock")
 	if ep.Address != want {
 		t.Fatalf("expected runtime socket path %q, got %q", want, ep.Address)
+	}
+}
+
+func TestResolveDefaultClientFallsBackToRuntimeSocketWhenNotRoot(t *testing.T) {
+	runtimeDir := t.TempDir()
+	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
+
+	tmpFile, err := os.CreateTemp(t.TempDir(), "cleanroom-system-sock-*")
+	if err != nil {
+		t.Fatalf("create temp socket stub: %v", err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		t.Fatalf("close temp socket stub: %v", err)
+	}
+	fi, err := os.Stat(tmpFile.Name())
+	if err != nil {
+		t.Fatalf("stat temp socket stub: %v", err)
+	}
+
+	prevStat := endpointStat
+	prevEUID := endpointGeteuid
+	endpointStat = func(string) (os.FileInfo, error) {
+		return fi, nil
+	}
+	endpointGeteuid = func() int { return 1000 }
+	t.Cleanup(func() {
+		endpointStat = prevStat
+		endpointGeteuid = prevEUID
+	})
+
+	ep, err := Resolve("")
+	if err != nil {
+		t.Fatalf("resolve default client endpoint: %v", err)
+	}
+	want := filepath.Join(runtimeDir, "cleanroom", "cleanroom.sock")
+	if ep.Address != want {
+		t.Fatalf("expected runtime socket path %q for non-root, got %q", want, ep.Address)
 	}
 }
 
