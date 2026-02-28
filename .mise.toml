@@ -13,7 +13,7 @@ run = "go test ./..."
 
 [tasks.lint-shell]
 description = "Lint shell scripts"
-run = "shellcheck -x scripts/*.sh"
+run = "shellcheck -x scripts/cleanroom-root-helper.sh scripts/benchmark-tti.sh scripts/build-go.sh scripts/install-go.sh scripts/release.sh"
 
 [tasks.test-full]
 description = "Run full Go test suite"
