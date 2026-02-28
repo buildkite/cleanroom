@@ -293,6 +293,58 @@ func TestConsoleIntegrationReuseSandboxSkipsPolicyCompile(t *testing.T) {
 	}
 }
 
+func TestConsoleIntegrationRemoveTerminatesSuppliedSandbox(t *testing.T) {
+	host, _ := startIntegrationServer(t, &integrationAdapter{
+		runStreamFn: func(_ context.Context, req backend.RunRequest, _ backend.OutputStream) (*backend.RunResult, error) {
+			return &backend.RunResult{RunID: req.RunID, ExitCode: 0, Stdout: "ok\n", Message: "ok"}, nil
+		},
+	})
+	ep, err := endpoint.Resolve(host)
+	if err != nil {
+		t.Fatalf("resolve endpoint: %v", err)
+	}
+	client, err := controlclient.New(ep)
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	compiled, _, err := integrationLoader{}.LoadAndCompile(t.TempDir())
+	if err != nil {
+		t.Fatalf("load policy: %v", err)
+	}
+	createSandboxResp, err := client.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: compiled.ToProto()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createSandboxResp.GetSandbox().GetSandboxId()
+	if sandboxID == "" {
+		t.Fatal("expected sandbox id from CreateSandbox")
+	}
+
+	outcome := runConsoleWithCapture(ConsoleCommand{
+		clientFlags: clientFlags{Host: host},
+		SandboxID:   sandboxID,
+		Remove:      true,
+		Command:     []string{"sh"},
+	}, "", runtimeContext{
+		CWD:    t.TempDir(),
+		Loader: failingLoader{},
+	})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err != nil {
+		t.Fatalf("ConsoleCommand.Run returned error: %v", outcome.err)
+	}
+
+	getResp, err := client.GetSandbox(context.Background(), &cleanroomv1.GetSandboxRequest{SandboxId: sandboxID})
+	if err != nil {
+		t.Fatalf("GetSandbox returned error: %v", err)
+	}
+	if got, want := getResp.GetSandbox().GetStatus(), cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPED; got != want {
+		t.Fatalf("unexpected sandbox status: got %v want %v", got, want)
+	}
+}
+
 func TestConsoleIntegrationRoutesBackendWarningsToStderr(t *testing.T) {
 	host, _ := startIntegrationServer(t, &integrationAdapter{
 		runStreamFn: func(_ context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {

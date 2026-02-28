@@ -328,7 +328,7 @@ func TestExecIntegrationFirstInterruptCancelsExecution(t *testing.T) {
 	}
 }
 
-func TestExecIntegrationSecondInterruptTerminatesSandbox(t *testing.T) {
+func TestExecIntegrationSecondInterruptTerminatesSandboxWithRemove(t *testing.T) {
 	started := make(chan struct{}, 1)
 	releaseRun := make(chan struct{})
 	runReturned := make(chan struct{})
@@ -363,6 +363,7 @@ func TestExecIntegrationSecondInterruptTerminatesSandbox(t *testing.T) {
 		done <- runExecWithCapture(ExecCommand{
 			clientFlags: clientFlags{Host: host, LogLevel: "debug"},
 			Chdir:       cwd,
+			Remove:      true,
 			Command:     []string{"sleep", "300"},
 		}, runtimeContext{
 			CWD:    cwd,
@@ -405,6 +406,97 @@ func TestExecIntegrationSecondInterruptTerminatesSandbox(t *testing.T) {
 		t.Fatalf("GetSandbox returned error: %v", err)
 	}
 	if got, want := getResp.GetSandbox().GetStatus(), cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPED; got != want {
+		t.Fatalf("unexpected sandbox status after second interrupt: got %v want %v", got, want)
+	}
+
+	release()
+	_ = mustReceiveWithin(t, runReturned, 2*time.Second, "timed out waiting for adapter run to return after release")
+}
+
+func TestExecIntegrationSecondInterruptKeepsSuppliedSandboxWithoutRemove(t *testing.T) {
+	started := make(chan struct{}, 1)
+	releaseRun := make(chan struct{})
+	runReturned := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() {
+		releaseOnce.Do(func() {
+			close(releaseRun)
+		})
+	}
+	t.Cleanup(release)
+
+	adapter := &integrationAdapter{
+		runFn: func(ctx context.Context, _ backend.RunRequest) (*backend.RunResult, error) {
+			defer close(runReturned)
+			select {
+			case started <- struct{}{}:
+			default:
+			}
+			<-releaseRun
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			return &backend.RunResult{ExitCode: 0, Message: "unexpected success"}, nil
+		},
+	}
+
+	host, _ := startIntegrationServer(t, adapter)
+	ep, err := endpoint.Resolve(host)
+	if err != nil {
+		t.Fatalf("resolve endpoint: %v", err)
+	}
+	client, err := controlclient.New(ep)
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	compiled, _, err := integrationLoader{}.LoadAndCompile(t.TempDir())
+	if err != nil {
+		t.Fatalf("load policy: %v", err)
+	}
+	createSandboxResp, err := client.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: compiled.ToProto()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createSandboxResp.GetSandbox().GetSandboxId()
+	if sandboxID == "" {
+		t.Fatal("expected sandbox id from CreateSandbox")
+	}
+
+	signalCh := withTestSignalChannel(t)
+	cwd := t.TempDir()
+	done := make(chan execOutcome, 1)
+	go func() {
+		done <- runExecWithCapture(ExecCommand{
+			clientFlags: clientFlags{Host: host, LogLevel: "debug"},
+			Chdir:       cwd,
+			SandboxID:   sandboxID,
+			Command:     []string{"sleep", "300"},
+		}, runtimeContext{
+			CWD:    cwd,
+			Loader: failingLoader{},
+		})
+	}()
+
+	_ = mustReceiveWithin(t, started, 2*time.Second, "timed out waiting for execution to start")
+	signalCh <- os.Interrupt
+	signalCh <- os.Interrupt
+
+	outcome := mustReceiveWithin(t, done, 2*time.Second, "timed out waiting for second-interrupt exit")
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err == nil {
+		t.Fatal("expected cancellation error")
+	}
+	if got, want := ExitCode(outcome.err), 130; got != want {
+		t.Fatalf("unexpected cli exit code: got %d want %d (err=%v)", got, want, outcome.err)
+	}
+
+	getResp, err := client.GetSandbox(context.Background(), &cleanroomv1.GetSandboxRequest{SandboxId: sandboxID})
+	if err != nil {
+		t.Fatalf("GetSandbox returned error: %v", err)
+	}
+	if got, want := getResp.GetSandbox().GetStatus(), cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY; got != want {
 		t.Fatalf("unexpected sandbox status after second interrupt: got %v want %v", got, want)
 	}
 
@@ -530,6 +622,56 @@ func TestExecIntegrationRemoveTerminatesSandbox(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create client: %v", err)
 	}
+	getResp, err := client.GetSandbox(context.Background(), &cleanroomv1.GetSandboxRequest{SandboxId: sandboxID})
+	if err != nil {
+		t.Fatalf("GetSandbox returned error: %v", err)
+	}
+	if got, want := getResp.GetSandbox().GetStatus(), cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPED; got != want {
+		t.Fatalf("unexpected sandbox status: got %v want %v", got, want)
+	}
+}
+
+func TestExecIntegrationRemoveTerminatesSuppliedSandbox(t *testing.T) {
+	host, _ := startIntegrationServer(t, &integrationAdapter{})
+	ep, err := endpoint.Resolve(host)
+	if err != nil {
+		t.Fatalf("resolve endpoint: %v", err)
+	}
+	client, err := controlclient.New(ep)
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	compiled, _, err := integrationLoader{}.LoadAndCompile(t.TempDir())
+	if err != nil {
+		t.Fatalf("load policy: %v", err)
+	}
+	createSandboxResp, err := client.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: compiled.ToProto()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createSandboxResp.GetSandbox().GetSandboxId()
+	if sandboxID == "" {
+		t.Fatal("expected sandbox id from CreateSandbox")
+	}
+
+	cwd := t.TempDir()
+	outcome := runExecWithCapture(ExecCommand{
+		clientFlags: clientFlags{Host: host, LogLevel: "debug"},
+		Chdir:       cwd,
+		SandboxID:   sandboxID,
+		Remove:      true,
+		Command:     []string{"echo", "ok"},
+	}, runtimeContext{
+		CWD:    cwd,
+		Loader: failingLoader{},
+	})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err != nil {
+		t.Fatalf("ExecCommand.Run returned error: %v", outcome.err)
+	}
+
 	getResp, err := client.GetSandbox(context.Background(), &cleanroomv1.GetSandboxRequest{SandboxId: sandboxID})
 	if err != nil {
 		t.Fatalf("GetSandbox returned error: %v", err)
