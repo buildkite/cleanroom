@@ -57,3 +57,17 @@ func TestEnvCredentialProviderCaseInsensitive(t *testing.T) {
 		t.Fatalf("expected ghp_token, got %q", token)
 	}
 }
+
+func TestEnvCredentialProviderConfiguredHostsSorted(t *testing.T) {
+	t.Setenv("CLEANROOM_GITHUB_TOKEN", "ghp_token")
+	t.Setenv("CLEANROOM_GITLAB_TOKEN", "glpat_token")
+	p := NewEnvCredentialProvider()
+
+	hosts := p.ConfiguredHosts()
+	if len(hosts) != 2 {
+		t.Fatalf("expected 2 hosts, got %d (%v)", len(hosts), hosts)
+	}
+	if hosts[0] != "github.com" || hosts[1] != "gitlab.com" {
+		t.Fatalf("expected sorted hosts [github.com gitlab.com], got %v", hosts)
+	}
+}
