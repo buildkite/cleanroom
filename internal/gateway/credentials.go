@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"os"
+	"sort"
 	"strings"
 )
 
@@ -42,4 +43,14 @@ func NewEnvCredentialProvider() *EnvCredentialProvider {
 func (p *EnvCredentialProvider) Resolve(_ context.Context, upstreamHost string) (string, error) {
 	host := strings.ToLower(strings.TrimSpace(upstreamHost))
 	return p.hostTokens[host], nil
+}
+
+// ConfiguredHosts returns a sorted list of upstream hosts with configured tokens.
+func (p *EnvCredentialProvider) ConfiguredHosts() []string {
+	hosts := make([]string, 0, len(p.hostTokens))
+	for host := range p.hostTokens {
+		hosts = append(hosts, host)
+	}
+	sort.Strings(hosts)
+	return hosts
 }

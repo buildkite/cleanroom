@@ -12,6 +12,19 @@ import (
 	"github.com/charmbracelet/log"
 )
 
+func TestUpstreamTransportIsolationDisablesSharedPooling(t *testing.T) {
+	t.Parallel()
+
+	h := newGitHandler(nil, nil)
+	transport, ok := h.client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("expected *http.Transport, got %T", h.client.Transport)
+	}
+	if !transport.DisableKeepAlives {
+		t.Fatal("expected upstream keep-alives to be disabled to avoid cross-sandbox pool sharing")
+	}
+}
+
 // --- Cross-sandbox isolation ---
 
 func TestCrossSandboxIsolation(t *testing.T) {

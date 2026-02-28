@@ -46,6 +46,9 @@ func (doctorFailingLoader) LoadAndCompile(string) (*policy.CompiledPolicy, strin
 }
 
 func TestDoctorCommandJSONIncludesCapabilities(t *testing.T) {
+	t.Setenv("CLEANROOM_GITHUB_TOKEN", "ghp_testtoken")
+	t.Setenv("CLEANROOM_GITLAB_TOKEN", "")
+
 	tmpDir := t.TempDir()
 	stdoutPath := filepath.Join(tmpDir, "doctor.json")
 	stdout, err := os.Create(stdoutPath)
@@ -83,6 +86,12 @@ func TestDoctorCommandJSONIncludesCapabilities(t *testing.T) {
 		Backend      string                `json:"backend"`
 		Capabilities map[string]bool       `json:"capabilities"`
 		Checks       []backend.DoctorCheck `json:"checks"`
+		Gateway      struct {
+			DefaultListen   string   `json:"default_listen"`
+			DefaultPort     int      `json:"default_port"`
+			Routes          []string `json:"routes"`
+			CredentialHosts []string `json:"credential_hosts"`
+		} `json:"gateway"`
 	}
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		t.Fatalf("unmarshal doctor JSON: %v", err)
@@ -99,6 +108,24 @@ func TestDoctorCommandJSONIncludesCapabilities(t *testing.T) {
 	}
 	if payload.Capabilities[backend.CapabilityNetworkGuestInterface] {
 		t.Fatalf("expected %s=false", backend.CapabilityNetworkGuestInterface)
+	}
+	if payload.Gateway.DefaultListen != ":8170" {
+		t.Fatalf("unexpected gateway default listen: %q", payload.Gateway.DefaultListen)
+	}
+	if payload.Gateway.DefaultPort != 8170 {
+		t.Fatalf("unexpected gateway default port: %d", payload.Gateway.DefaultPort)
+	}
+	if len(payload.Gateway.Routes) != 4 {
+		t.Fatalf("expected 4 gateway routes, got %d (%v)", len(payload.Gateway.Routes), payload.Gateway.Routes)
+	}
+	foundGitHub := false
+	for _, h := range payload.Gateway.CredentialHosts {
+		if h == "github.com" {
+			foundGitHub = true
+		}
+	}
+	if !foundGitHub {
+		t.Fatalf("expected github.com in credential hosts, got %v", payload.Gateway.CredentialHosts)
 	}
 
 	foundCapabilityCheck := false
@@ -145,6 +172,12 @@ func TestDoctorCommandTextUsesPolishedPlainOutput(t *testing.T) {
 	}
 	if !strings.Contains(out, "! [warn] repository_policy:") {
 		t.Fatalf("expected warn check line, got: %q", out)
+	}
+	if !strings.Contains(out, "✓ [pass] gateway_listen:") {
+		t.Fatalf("expected gateway listen check line, got: %q", out)
+	}
+	if !strings.Contains(out, "✓ [pass] gateway_routes:") {
+		t.Fatalf("expected gateway routes check line, got: %q", out)
 	}
 	if !strings.Contains(out, "summary: ") {
 		t.Fatalf("expected summary line, got: %q", out)

@@ -160,7 +160,7 @@ socket_path="$tmpdir/cleanroom.sock"
 listen_endpoint="unix://$socket_path"
 
 echo "--- :rocket: Start cleanroom control-plane"
-./dist/cleanroom serve --listen "$listen_endpoint" --gateway-listen "127.0.0.1:0" >"$tmpdir/server.log" 2>&1 &
+./dist/cleanroom serve --listen "$listen_endpoint" --gateway-listen ":0" >"$tmpdir/server.log" 2>&1 &
 srv_pid=$!
 
 for _ in $(seq 1 40); do
@@ -180,6 +180,102 @@ echo "--- :white_check_mark: Launched execution smoke test"
 ./dist/cleanroom exec --host "$listen_endpoint" -c "$PWD" -- sh -lc 'echo cleanroom-e2e' | tee "$tmpdir/exec.out"
 if ! grep -q '^cleanroom-e2e$' "$tmpdir/exec.out"; then
   echo "expected smoke-test output missing" >&2
+  exit 1
+fi
+
+echo "--- :satellite: Git gateway allow/deny test"
+set +e
+# shellcheck disable=SC2016
+./dist/cleanroom exec --host "$listen_endpoint" -c "$PWD" -- sh -lc '
+  set -eu
+
+  key="$(env | awk -F= '"'"'/^GIT_CONFIG_KEY_[0-9]+=url\.http:\/\/.+\/git\/github\.com\/\.insteadOf$/ {print $2; exit}'"'"')"
+  if [ -z "$key" ]; then
+    echo "failed to discover injected git gateway rewrite key" >&2
+    exit 2
+  fi
+  gw="${key#url.}"
+  gw="${gw%/github.com/.insteadOf}"
+
+  # Preferred path: use git client when present in guest image.
+  if command -v git >/dev/null 2>&1; then
+    git ls-remote https://github.com/buildkite/cleanroom.git HEAD >/dev/null
+
+    set +e
+    git ls-remote "${gw}/gitlab.com/gitlab-org/gitlab.git" HEAD >/tmp/git-deny.out 2>/tmp/git-deny.err
+    deny_rc=$?
+    set -e
+
+    if [ "$deny_rc" -eq 0 ]; then
+      echo "expected disallowed host to fail through git gateway, but command succeeded" >&2
+      cat /tmp/git-deny.out >&2 || true
+      cat /tmp/git-deny.err >&2 || true
+      exit 3
+    fi
+    if ! grep -q "host_not_allowed" /tmp/git-deny.err; then
+      echo "expected host_not_allowed in git deny stderr" >&2
+      cat /tmp/git-deny.err >&2 || true
+      exit 4
+    fi
+
+    echo "git gateway checks passed (git client path)"
+    exit 0
+  fi
+
+  # Fallback path for minimal guest images without git: exercise the same
+  # gateway routes with wget.
+  if command -v wget >/dev/null 2>&1; then
+    allow_url="${gw}/github.com/buildkite/cleanroom.git/info/refs?service=git-upload-pack"
+    deny_url="${gw}/gitlab.com/gitlab-org/gitlab.git/info/refs?service=git-upload-pack"
+
+    set +e
+    allow_resp="$(wget -q -S -O - "$allow_url" 2>&1)"
+    allow_rc=$?
+    set -e
+    if [ "$allow_rc" -ne 0 ]; then
+      echo "allowlisted host probe failed (exit $allow_rc)" >&2
+      echo "$allow_resp" >&2
+      exit 5
+    fi
+    if echo "$allow_resp" | grep -q "host_not_allowed"; then
+      echo "allowlisted host was denied by gateway" >&2
+      echo "$allow_resp" >&2
+      exit 5
+    fi
+
+    set +e
+    deny_resp="$(wget -q -S -O - "$deny_url" 2>&1)"
+    deny_rc=$?
+    set -e
+    if [ "$deny_rc" -eq 0 ]; then
+      echo "expected deny probe to fail for disallowed host, but it succeeded" >&2
+      echo "$deny_resp" >&2
+      exit 6
+    fi
+    if ! echo "$deny_resp" | grep -qE "host_not_allowed|403 Forbidden"; then
+      echo "expected host_not_allowed or 403 in deny probe response" >&2
+      echo "$deny_resp" >&2
+      exit 7
+    fi
+
+    echo "git gateway checks passed (wget fallback path; allow_rc=${allow_rc})"
+    exit 0
+  fi
+
+  echo "guest image missing both git and wget; cannot exercise git gateway" >&2
+  exit 8
+' >"$tmpdir/git-gateway.out" 2>"$tmpdir/git-gateway.err"
+git_gateway_status=$?
+set -e
+
+if [[ "$git_gateway_status" -ne 0 ]]; then
+  echo "git gateway allow/deny test failed (exit $git_gateway_status)" >&2
+  echo "--- guest stdout ---" >&2
+  cat "$tmpdir/git-gateway.out" >&2 || true
+  echo "--- guest stderr ---" >&2
+  cat "$tmpdir/git-gateway.err" >&2 || true
+  echo "--- gateway log tail ---" >&2
+  tail -n 40 "$tmpdir/server.log" >&2 || true
   exit 1
 fi
 
@@ -207,6 +303,8 @@ if grep -q 'gateway server started' "$tmpdir/server.log"; then
   if [[ -z "$gw_addr" ]]; then
     gw_addr="127.0.0.1:8170"
   fi
+  # Normalise 0.0.0.0 to 127.0.0.1 so curl doesn't route through HTTP_PROXY.
+  gw_addr="${gw_addr/0.0.0.0/127.0.0.1}"
   echo "gateway address: $gw_addr"
   # Requests from localhost (non-TAP) should get 403 from the identity
   # middleware (unregistered source IP).

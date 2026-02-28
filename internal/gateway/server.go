@@ -12,7 +12,29 @@ import (
 )
 
 // DefaultPort is the default gateway listen port.
-const DefaultPort = 8170
+const (
+	DefaultPort       = 8170
+	DefaultListenAddr = ":8170"
+
+	RouteGit      = "/git/"
+	RouteRegistry = "/registry/"
+	RouteSecrets  = "/secrets/"
+	RouteMeta     = "/meta/"
+)
+
+var serviceRoutes = []string{
+	RouteGit,
+	RouteRegistry,
+	RouteSecrets,
+	RouteMeta,
+}
+
+// Routes returns the configured gateway service route prefixes.
+func Routes() []string {
+	out := make([]string, len(serviceRoutes))
+	copy(out, serviceRoutes)
+	return out
+}
 
 type contextKey int
 
@@ -51,7 +73,7 @@ type Server struct {
 func NewServer(cfg ServerConfig) *Server {
 	addr := cfg.ListenAddr
 	if addr == "" {
-		addr = ":8170"
+		addr = DefaultListenAddr
 	}
 
 	s := &Server{
@@ -61,10 +83,10 @@ func NewServer(cfg ServerConfig) *Server {
 	}
 
 	mux := http.NewServeMux()
-	mux.Handle("/git/", newGitHandler(cfg.Credentials, cfg.Logger))
-	mux.HandleFunc("/registry/", stubHandler("registry"))
-	mux.HandleFunc("/secrets/", stubHandler("secrets"))
-	mux.HandleFunc("/meta/", stubHandler("meta"))
+	mux.Handle(RouteGit, newGitHandler(cfg.Credentials, cfg.Logger))
+	mux.HandleFunc(RouteRegistry, stubHandler("registry"))
+	mux.HandleFunc(RouteSecrets, stubHandler("secrets"))
+	mux.HandleFunc(RouteMeta, stubHandler("meta"))
 
 	s.httpServer = &http.Server{
 		Handler: s.identityMiddleware(s.pathMiddleware(mux)),

@@ -1,7 +1,7 @@
 # Host Gateway Implementation Plan
 
 **Spec reference:** SPEC.md §6.2
-**Status:** Proposed
+**Status:** In progress (slices 1-4 and 6 implemented; slice 5 pending)
 
 ## Summary
 
@@ -56,7 +56,7 @@ The gateway listens on a single port. Every connection's source IP is mapped to 
 |---|---|
 | `internal/backend/firecracker/backend.go` | `setupHostNetwork`: add anti-spoof INPUT rules. `ProvisionSandbox`/`TerminateSandbox`: register/release sandbox in gateway. `executeInSandbox`: inject gateway env vars into exec requests. |
 | `internal/backend/backend.go` | Add gateway registry interface to adapter or provision request. |
-| `internal/controlservice/service.go` | Own the gateway lifecycle — start lazily, pass registry to backend adapter. |
+| `internal/cli/cli.go` | `ServeCommand.Run` creates and starts gateway server, then wires registry/port into the firecracker adapter. |
 | `internal/policy/policy.go` | No changes needed. `CompiledPolicy` and `AllowRule` already carry what the gateway needs. |
 | `cmd/cleanroom-guest-agent/main.go` | No changes needed. Gateway env vars are injected per-exec via the vsockexec protocol. |
 
@@ -162,6 +162,7 @@ Rule ordering matters — the ACCEPT for the gateway port must come before the c
 **Upstream transport:**
 
 - Per-sandbox `http.Transport` (or transport keyed by sandbox ID). No connection pool sharing across sandbox identities.
+- Current implementation enforces this by disabling upstream keep-alive pooling in the git proxy transport.
 - Timeout on upstream requests (30s default, configurable).
 
 **Audit events:**

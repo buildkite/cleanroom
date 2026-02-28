@@ -15,6 +15,11 @@ const (
 	gitUploadPackService   = "git-upload-pack"
 	gitReceivePackService  = "git-receive-pack"
 	defaultUpstreamTimeout = 30 * time.Second
+
+	reasonCodeHeader       = "X-Cleanroom-Reason-Code"
+	reasonHostNotAllowed   = "host_not_allowed"
+	reasonMethodNotAllowed = "method_not_allowed"
+	reasonUpstreamError    = "upstream_error"
 )
 
 type gitHandler struct {
@@ -32,6 +37,9 @@ func newGitHandler(creds CredentialProvider, logger *log.Logger) *gitHandler {
 				DialContext:           (&net.Dialer{Timeout: defaultUpstreamTimeout}).DialContext,
 				TLSHandshakeTimeout:   10 * time.Second,
 				ResponseHeaderTimeout: defaultUpstreamTimeout,
+				// Disable keep-alives to avoid sharing any upstream connection pool
+				// across sandbox identities.
+				DisableKeepAlives: true,
 			},
 			CheckRedirect: func(*http.Request, []*http.Request) error {
 				return http.ErrUseLastResponse
@@ -65,14 +73,14 @@ func (h *gitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	repoPath := trimmed[slashIdx:] // includes leading /
 
 	if !scope.Policy.Allows(upstreamHost, 443) {
-		h.auditLog(scope.SandboxID, upstreamHost, repoPath, "deny", "host_not_allowed")
-		http.Error(w, "host_not_allowed", http.StatusForbidden)
+		h.auditLog(scope.SandboxID, upstreamHost, repoPath, "deny", reasonHostNotAllowed)
+		writeReasonError(w, http.StatusForbidden, reasonHostNotAllowed, "upstream host is not allowed by sandbox policy")
 		return
 	}
 
 	if _, err := h.classifyRequest(r.Method, repoPath, r.URL.RawQuery); err != nil {
-		h.auditLog(scope.SandboxID, upstreamHost, repoPath, "deny", "method_not_allowed")
-		http.Error(w, err.Error(), http.StatusForbidden)
+		h.auditLog(scope.SandboxID, upstreamHost, repoPath, "deny", reasonMethodNotAllowed)
+		writeReasonError(w, http.StatusForbidden, reasonMethodNotAllowed, err.Error())
 		return
 	}
 
@@ -108,7 +116,7 @@ func (h *gitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := h.client.Do(upstreamReq)
 	if err != nil {
-		http.Error(w, "upstream error", http.StatusBadGateway)
+		writeReasonError(w, http.StatusBadGateway, reasonUpstreamError, "upstream error")
 		return
 	}
 	defer resp.Body.Close()
@@ -162,4 +170,9 @@ func queryParam(rawQuery, key string) string {
 		}
 	}
 	return ""
+}
+
+func writeReasonError(w http.ResponseWriter, status int, reasonCode, message string) {
+	w.Header().Set(reasonCodeHeader, reasonCode)
+	http.Error(w, reasonCode+": "+message, status)
 }
