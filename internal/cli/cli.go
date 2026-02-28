@@ -142,11 +142,11 @@ type ConfigInitCommand struct {
 }
 
 type clientFlags struct {
-	Host     string `help:"Control-plane endpoint (unix://path, http://host:port, or https://host:port)"`
+	Host     string `help:"Control-plane endpoint (unix://path, http://host:port, or https://host:port)" env:"CLEANROOM_HOST"`
 	LogLevel string `help:"Client log level (debug|info|warn|error)"`
-	TLSCert  string `help:"Path to TLS client certificate (auto-discovered from XDG config for https)"`
-	TLSKey   string `help:"Path to TLS client private key (auto-discovered from XDG config for https)"`
-	TLSCA    string `name:"tls-ca" aliases:"tlsca" help:"Path to CA certificate for server verification (auto-discovered from XDG config for https)"`
+	TLSCert  string `help:"Path to TLS client certificate (auto-discovered from XDG config for https)" env:"CLEANROOM_TLS_CERT"`
+	TLSKey   string `help:"Path to TLS client private key (auto-discovered from XDG config for https)" env:"CLEANROOM_TLS_KEY"`
+	TLSCA    string `name:"tls-ca" aliases:"tlsca" help:"Path to CA certificate for server verification (auto-discovered from XDG config for https)" env:"CLEANROOM_TLS_CA"`
 }
 
 func (f *clientFlags) connect() (*controlclient.Client, error) {
@@ -169,7 +169,7 @@ type ExecCommand struct {
 	Chdir     string `short:"c" help:"Change to this directory before running commands"`
 	Backend   string `help:"Execution backend (defaults to runtime config or firecracker)"`
 	SandboxID string `help:"Reuse an existing sandbox instead of creating a new one"`
-	Remove    bool   `name:"rm" help:"Terminate a newly created sandbox after command completion"`
+	Remove    bool   `name:"rm" help:"Terminate the sandbox after command completion"`
 
 	LaunchSeconds int64 `help:"VM boot/guest-agent readiness timeout in seconds"`
 
@@ -181,7 +181,7 @@ type ConsoleCommand struct {
 	Chdir     string `short:"c" help:"Change to this directory before running commands"`
 	Backend   string `help:"Execution backend (defaults to runtime config or firecracker)"`
 	SandboxID string `help:"Reuse an existing sandbox instead of creating a new one"`
-	Remove    bool   `name:"rm" help:"Terminate a newly created sandbox after console exits"`
+	Remove    bool   `name:"rm" help:"Terminate the sandbox after console exits"`
 
 	LaunchSeconds int64 `help:"VM boot/guest-agent readiness timeout in seconds"`
 
@@ -194,9 +194,9 @@ type ServeCommand struct {
 	Listen        string `help:"Listen endpoint for control API (defaults to runtime endpoint; supports tsnet://hostname[:port] and tssvc://service[:local-port])"`
 	GatewayListen string `help:"Listen address for the host gateway (default :8170, use :0 for ephemeral port)"`
 	LogLevel      string `help:"Server log level (debug|info|warn|error)"`
-	TLSCert       string `help:"Path to TLS server certificate (auto-discovered from XDG config for https)"`
-	TLSKey        string `help:"Path to TLS server private key (auto-discovered from XDG config for https)"`
-	TLSCA         string `name:"tls-ca" aliases:"tlsca" help:"Path to CA certificate for client verification (auto-discovered from XDG config for https)"`
+	TLSCert       string `help:"Path to TLS server certificate (auto-discovered from XDG config for https)" env:"CLEANROOM_TLS_CERT"`
+	TLSKey        string `help:"Path to TLS server private key (auto-discovered from XDG config for https)" env:"CLEANROOM_TLS_KEY"`
+	TLSCA         string `name:"tls-ca" aliases:"tlsca" help:"Path to CA certificate for client verification (auto-discovered from XDG config for https)" env:"CLEANROOM_TLS_CA"`
 }
 
 type TLSCommand struct {
@@ -703,7 +703,6 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 		"command_argc", len(e.Command),
 	)
 	sandboxID := strings.TrimSpace(e.SandboxID)
-	createdSandbox := false
 	if sandboxID == "" {
 		compiled, _, err := ctx.Loader.LoadAndCompile(cwd)
 		if err != nil {
@@ -720,10 +719,9 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 			return fmt.Errorf("create sandbox: %w", err)
 		}
 		sandboxID = createSandboxResp.GetSandbox().GetSandboxId()
-		createdSandbox = true
 	}
 	detached := false
-	autoTerminateSandbox := createdSandbox && e.Remove
+	autoTerminateSandbox := e.Remove
 	defer func() {
 		if detached || !autoTerminateSandbox || sandboxID == "" {
 			return
@@ -816,11 +814,13 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 	select {
 	case <-secondInterrupt:
 		detached = true
-		terminateCtx, terminateCancel := context.WithTimeout(context.Background(), 2*time.Second)
-		_, terminateErr := client.TerminateSandbox(terminateCtx, &cleanroomv1.TerminateSandboxRequest{SandboxId: sandboxID})
-		terminateCancel()
-		if terminateErr != nil && logger != nil {
-			logger.Warn("terminate sandbox after detach failed", "sandbox_id", sandboxID, "error", terminateErr)
+		if e.Remove {
+			terminateCtx, terminateCancel := context.WithTimeout(context.Background(), 2*time.Second)
+			_, terminateErr := client.TerminateSandbox(terminateCtx, &cleanroomv1.TerminateSandboxRequest{SandboxId: sandboxID})
+			terminateCancel()
+			if terminateErr != nil && logger != nil {
+				logger.Warn("terminate sandbox after detach failed", "sandbox_id", sandboxID, "error", terminateErr)
+			}
 		}
 		return exitCodeError{code: 130}
 	default:
@@ -906,7 +906,6 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 		"command_argc", len(command),
 	)
 	sandboxID := strings.TrimSpace(c.SandboxID)
-	createdSandbox := false
 	if sandboxID == "" {
 		compiled, _, err := ctx.Loader.LoadAndCompile(cwd)
 		if err != nil {
@@ -923,9 +922,8 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 			return fmt.Errorf("create sandbox: %w", err)
 		}
 		sandboxID = createSandboxResp.GetSandbox().GetSandboxId()
-		createdSandbox = true
 	}
-	autoTerminateSandbox := createdSandbox && c.Remove
+	autoTerminateSandbox := c.Remove
 	defer func() {
 		if sandboxID == "" || !autoTerminateSandbox {
 			return

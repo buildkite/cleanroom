@@ -69,9 +69,6 @@ func Resolve(raw string) (Endpoint, error) {
 func resolve(raw string, allowTSNet bool) (Endpoint, error) {
 	value := strings.TrimSpace(raw)
 	if value == "" {
-		value = strings.TrimSpace(os.Getenv("CLEANROOM_HOST"))
-	}
-	if value == "" {
 		if allowTSNet {
 			return defaultListenEndpoint(), nil
 		}
