@@ -2,6 +2,7 @@
 go = "1.23"
 shellcheck = "latest"
 hyperfine = "latest"
+svu = "3"
 
 [env]
 GOTOOLCHAIN = "local"
@@ -12,7 +13,7 @@ run = "go test ./..."
 
 [tasks.lint-shell]
 description = "Lint shell scripts"
-run = "shellcheck -x scripts/cleanroom-root-helper.sh scripts/benchmark-tti.sh"
+run = "shellcheck -x scripts/cleanroom-root-helper.sh scripts/benchmark-tti.sh scripts/build-go.sh scripts/install-go.sh scripts/release.sh"
 
 [tasks.test-full]
 description = "Run full Go test suite"
@@ -20,7 +21,7 @@ run = "go test ./..."
 
 [tasks."build:go"]
 description = "Build Go binaries into dist/"
-run = "mkdir -p dist && go build -o dist/cleanroom ./cmd/cleanroom && go build -o dist/cleanroom-guest-agent ./cmd/cleanroom-guest-agent"
+run = "scripts/build-go.sh"
 
 [tasks."build:darwin"]
 description = "Build macOS darwin-vz helper into dist/"
@@ -33,7 +34,7 @@ run = "true"
 
 [tasks."install:go"]
 description = "Install Go binaries into GOBIN (or GOPATH/bin)"
-run = "BIN_DIR=\"$(go env GOBIN)\"; if [ -z \"$BIN_DIR\" ]; then BIN_DIR=\"$(go env GOPATH)/bin\"; fi; HOST_ARCH=\"$(go env GOARCH)\"; mkdir -p \"$BIN_DIR\" && go install ./cmd/cleanroom ./cmd/cleanroom-guest-agent && GOOS=linux GOARCH=\"$HOST_ARCH\" CGO_ENABLED=0 go build -trimpath -o \"$BIN_DIR/cleanroom-guest-agent-linux-$HOST_ARCH\" ./cmd/cleanroom-guest-agent"
+run = "scripts/install-go.sh"
 
 [tasks."install:darwin"]
 description = "Install macOS darwin-vz helper into GOBIN (or GOPATH/bin)"
@@ -52,3 +53,13 @@ run = "go run ./cmd/cleanroom doctor"
 [tasks.doctor-json]
 description = "Run cleanroom diagnostics as JSON"
 run = "go run ./cmd/cleanroom doctor --json"
+
+[tasks.check]
+description = "Run build, test, and lint"
+depends = ["build", "test", "lint-shell"]
+run = "true"
+
+[tasks.release]
+description = "Tag the next version and push to trigger a release"
+depends = ["check"]
+run = "scripts/release.sh"

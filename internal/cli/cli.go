@@ -71,6 +71,16 @@ type CLI struct {
 	Doctor  DoctorCommand  `cmd:"" help:"Run environment and backend diagnostics"`
 	Status  StatusCommand  `cmd:"" help:"Inspect run artifacts"`
 	Sandbox SandboxCommand `cmd:"" help:"Manage sandboxes"`
+	Version VersionCommand `cmd:"" help:"Print version information"`
+}
+
+type VersionCommand struct {
+	version string
+}
+
+func (c *VersionCommand) Run() error {
+	fmt.Println("cleanroom version " + c.version)
+	return nil
 }
 
 type ImageCommand struct {
@@ -272,7 +282,7 @@ var (
 	}
 )
 
-func Run(args []string) error {
+func Run(args []string, version string) error {
 	cfg, cfgPath, err := runtimeconfig.Load()
 	if err != nil {
 		return err
@@ -290,10 +300,11 @@ func Run(args []string) error {
 	}
 
 	cli := CLI{}
+	cli.Version.version = version
 	parser, err := kong.New(
 		&cli,
 		kong.Name("cleanroom"),
-		kong.Description("Cleanroom CLI (MVP)"),
+		kong.Description("Cleanroom CLI"),
 	)
 	if err != nil {
 		return err
