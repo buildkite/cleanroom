@@ -9,8 +9,32 @@ permissions:
   contents: write
 
 jobs:
+  build-darwin-vz:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build cleanroom-darwin-vz
+        run: |
+          mkdir -p dist
+          xcrun swiftc -O -target arm64-apple-macosx13.0 -framework Virtualization \
+            cmd/cleanroom-darwin-vz/main.swift \
+            -o dist/cleanroom-darwin-vz
+
+      - name: Create archive
+        run: |
+          cp cmd/cleanroom-darwin-vz/entitlements.plist dist/
+          tar -czf "dist/cleanroom-darwin-vz_Darwin_arm64.tar.gz" \
+            -C dist cleanroom-darwin-vz entitlements.plist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cleanroom-darwin-vz
+          path: dist/cleanroom-darwin-vz_Darwin_arm64.tar.gz
+
   release:
     runs-on: ubuntu-latest
+    needs: build-darwin-vz
     steps:
       - uses: actions/checkout@v4
         with:
@@ -26,3 +50,15 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: cleanroom-darwin-vz
+          path: dist
+
+      - name: Upload darwin-vz helper to release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ github.ref_name }}" \
+            dist/cleanroom-darwin-vz_Darwin_arm64.tar.gz
