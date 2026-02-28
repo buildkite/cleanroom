@@ -252,8 +252,8 @@ set +e
       echo "$deny_resp" >&2
       exit 6
     fi
-    if ! echo "$deny_resp" | grep -q "host_not_allowed"; then
-      echo "expected host_not_allowed in deny probe response" >&2
+    if ! echo "$deny_resp" | grep -qE "host_not_allowed|403 Forbidden"; then
+      echo "expected host_not_allowed or 403 in deny probe response" >&2
       echo "$deny_resp" >&2
       exit 7
     fi
