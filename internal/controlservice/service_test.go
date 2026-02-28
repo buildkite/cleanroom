@@ -1225,6 +1225,177 @@ func TestStatePruningBoundsRetainedTerminalState(t *testing.T) {
 	}
 }
 
+func TestExecutionRetentionBoundsOutput(t *testing.T) {
+	origOutputLimit := maxRetainedExecutionOutputBytes
+	maxRetainedExecutionOutputBytes = 8
+	defer func() {
+		maxRetainedExecutionOutputBytes = origOutputLimit
+	}()
+
+	adapter := &stubAdapter{
+		runStreamFn: func(_ context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+			for _, chunk := range []string{"1234", "5678", "90"} {
+				if stream.OnStdout != nil {
+					stream.OnStdout([]byte(chunk))
+				}
+			}
+			for _, chunk := range []string{"abcd", "efgh", "ij"} {
+				if stream.OnStderr != nil {
+					stream.OnStderr([]byte(chunk))
+				}
+			}
+			return &backend.RunResult{
+				RunID:      req.RunID,
+				ExitCode:   0,
+				LaunchedVM: false,
+				PlanPath:   "/tmp/plan",
+				RunDir:     "/tmp/run",
+				Message:    "ok",
+				Stdout:     "1234567890",
+				Stderr:     "abcdefghij",
+			}, nil
+		},
+	}
+	svc := newTestService(adapter)
+
+	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createSandboxResp.GetSandbox().GetSandboxId()
+
+	createExecutionResp, err := svc.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+		SandboxId: sandboxID,
+		Command:   []string{"echo", "bounded"},
+	})
+	if err != nil {
+		t.Fatalf("CreateExecution returned error: %v", err)
+	}
+	executionID := createExecutionResp.GetExecution().GetExecutionId()
+
+	if _, err := svc.WaitExecution(context.Background(), sandboxID, executionID); err != nil {
+		t.Fatalf("WaitExecution returned error: %v", err)
+	}
+
+	snapshot, err := svc.ExecutionSnapshot(sandboxID, executionID)
+	if err != nil {
+		t.Fatalf("ExecutionSnapshot returned error: %v", err)
+	}
+	if got, want := snapshot.Stdout, "34567890"; got != want {
+		t.Fatalf("unexpected retained stdout: got %q want %q", got, want)
+	}
+	if got, want := snapshot.Stderr, "cdefghij"; got != want {
+		t.Fatalf("unexpected retained stderr: got %q want %q", got, want)
+	}
+}
+
+func TestExecutionRetentionBoundsEventHistory(t *testing.T) {
+	origEventLimit := maxRetainedExecutionEvents
+	maxRetainedExecutionEvents = 3
+	defer func() {
+		maxRetainedExecutionEvents = origEventLimit
+	}()
+
+	adapter := &stubAdapter{
+		runStreamFn: func(_ context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+			for _, chunk := range []string{"1", "2", "3", "4"} {
+				if stream.OnStdout != nil {
+					stream.OnStdout([]byte(chunk))
+				}
+			}
+			return &backend.RunResult{
+				RunID:      req.RunID,
+				ExitCode:   0,
+				LaunchedVM: false,
+				PlanPath:   "/tmp/plan",
+				RunDir:     "/tmp/run",
+				Message:    "ok",
+				Stdout:     "1234",
+			}, nil
+		},
+	}
+	svc := newTestService(adapter)
+
+	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createSandboxResp.GetSandbox().GetSandboxId()
+
+	createExecutionResp, err := svc.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+		SandboxId: sandboxID,
+		Command:   []string{"echo", "events"},
+	})
+	if err != nil {
+		t.Fatalf("CreateExecution returned error: %v", err)
+	}
+	executionID := createExecutionResp.GetExecution().GetExecutionId()
+
+	if _, err := svc.WaitExecution(context.Background(), sandboxID, executionID); err != nil {
+		t.Fatalf("WaitExecution returned error: %v", err)
+	}
+
+	svc.mu.RLock()
+	ex := svc.executions[executionKey(sandboxID, executionID)]
+	if ex == nil {
+		svc.mu.RUnlock()
+		t.Fatal("expected execution state to exist")
+	}
+	history := append([]*cleanroomv1.ExecutionStreamEvent(nil), ex.EventHistory...)
+	svc.mu.RUnlock()
+
+	if got, want := len(history), 3; got != want {
+		t.Fatalf("unexpected retained execution events: got %d want %d", got, want)
+	}
+	if got, want := string(history[0].GetStdout()), "3"; got != want {
+		t.Fatalf("unexpected first retained stdout event: got %q want %q", got, want)
+	}
+	if got, want := string(history[1].GetStdout()), "4"; got != want {
+		t.Fatalf("unexpected second retained stdout event: got %q want %q", got, want)
+	}
+	if history[2].GetExit() == nil {
+		t.Fatalf("expected exit event in retained history, got %+v", history[2].Payload)
+	}
+}
+
+func TestSandboxRetentionBoundsEventHistory(t *testing.T) {
+	origEventLimit := maxRetainedSandboxEvents
+	maxRetainedSandboxEvents = 2
+	defer func() {
+		maxRetainedSandboxEvents = origEventLimit
+	}()
+
+	svc := newTestService(&stubAdapter{})
+
+	createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createResp.GetSandbox().GetSandboxId()
+
+	if _, err := svc.TerminateSandbox(context.Background(), &cleanroomv1.TerminateSandboxRequest{
+		SandboxId: sandboxID,
+	}); err != nil {
+		t.Fatalf("TerminateSandbox returned error: %v", err)
+	}
+
+	history, _, _, unsubscribe, err := svc.SubscribeSandboxEvents(sandboxID)
+	if err != nil {
+		t.Fatalf("SubscribeSandboxEvents returned error: %v", err)
+	}
+	defer unsubscribe()
+
+	if got, want := len(history), 2; got != want {
+		t.Fatalf("unexpected retained sandbox events: got %d want %d", got, want)
+	}
+	if got, want := history[0].GetStatus(), cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPING; got != want {
+		t.Fatalf("unexpected first retained sandbox status: got %v want %v", got, want)
+	}
+	if got, want := history[1].GetStatus(), cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPED; got != want {
+		t.Fatalf("unexpected second retained sandbox status: got %v want %v", got, want)
+	}
+}
+
 func TestStreamedOutputArrivesBeforeExecutionExit(t *testing.T) {
 	adapter := &stubAdapter{
 		runStreamFn: func(ctx context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {

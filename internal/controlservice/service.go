@@ -100,9 +100,12 @@ type executionSnapshot struct {
 }
 
 var (
-	maxRetainedStoppedSandboxes   = 256
-	maxRetainedFinishedExecutions = 2048
-	retainedStateMaxAge           = 24 * time.Hour
+	maxRetainedStoppedSandboxes     = 256
+	maxRetainedFinishedExecutions   = 2048
+	maxRetainedSandboxEvents        = 256
+	maxRetainedExecutionEvents      = 2048
+	maxRetainedExecutionOutputBytes = 1 * 1024 * 1024
+	retainedStateMaxAge             = 24 * time.Hour
 
 	ErrExecutionStdinUnsupported  = errors.New("execution stdin attach is not supported by the current backend")
 	ErrExecutionResizeUnsupported = errors.New("execution resize is not supported by the current backend")
@@ -1056,14 +1059,7 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 		ex.ExitCode = exitCode
 		ex.Message = err.Error()
 		if strings.TrimSpace(err.Error()) != "" {
-			ex.Stderr += err.Error() + "\n"
-			s.recordExecutionEventLocked(ex, &cleanroomv1.ExecutionStreamEvent{
-				SandboxId:   ex.SandboxID,
-				ExecutionId: ex.ID,
-				Status:      finalStatus,
-				Payload:     &cleanroomv1.ExecutionStreamEvent_Stderr{Stderr: []byte(err.Error() + "\n")},
-				OccurredAt:  timestamppb.Now(),
-			})
+			s.appendExecutionStderrLocked(ex, finalStatus, []byte(err.Error()+"\n"))
 		}
 		finished := time.Now().UTC()
 		ex.FinishedAt = &finished
@@ -1109,14 +1105,7 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 
 	if result.ExitCode != 0 && strings.TrimSpace(result.Message) != "" && !strings.Contains(ex.Stderr, result.Message) {
 		msg := result.Message + "\n"
-		ex.Stderr += msg
-		s.recordExecutionEventLocked(ex, &cleanroomv1.ExecutionStreamEvent{
-			SandboxId:   ex.SandboxID,
-			ExecutionId: ex.ID,
-			Status:      cleanroomv1.ExecutionStatus_EXECUTION_STATUS_RUNNING,
-			Payload:     &cleanroomv1.ExecutionStreamEvent_Stderr{Stderr: []byte(msg)},
-			OccurredAt:  timestamppb.Now(),
-		})
+		s.appendExecutionStderrLocked(ex, cleanroomv1.ExecutionStatus_EXECUTION_STATUS_RUNNING, []byte(msg))
 	}
 
 	if ex.CancelRequested {
@@ -1175,36 +1164,13 @@ func (s *Service) mergeBufferedResultOutputLocked(ex *executionState, result *ba
 
 	appendStdout := result.Stdout
 	appendStderr := result.Stderr
-
 	if usedStreaming {
-		if len(ex.Stdout) > 0 && strings.HasPrefix(result.Stdout, ex.Stdout) {
-			appendStdout = result.Stdout[len(ex.Stdout):]
-		}
-		if len(ex.Stderr) > 0 && strings.HasPrefix(result.Stderr, ex.Stderr) {
-			appendStderr = result.Stderr[len(ex.Stderr):]
-		}
+		appendStdout = bufferedResultDelta(ex.Stdout, result.Stdout)
+		appendStderr = bufferedResultDelta(ex.Stderr, result.Stderr)
 	}
 
-	if appendStdout != "" {
-		ex.Stdout += appendStdout
-		s.recordExecutionEventLocked(ex, &cleanroomv1.ExecutionStreamEvent{
-			SandboxId:   ex.SandboxID,
-			ExecutionId: ex.ID,
-			Status:      cleanroomv1.ExecutionStatus_EXECUTION_STATUS_RUNNING,
-			Payload:     &cleanroomv1.ExecutionStreamEvent_Stdout{Stdout: []byte(appendStdout)},
-			OccurredAt:  timestamppb.Now(),
-		})
-	}
-	if appendStderr != "" {
-		ex.Stderr += appendStderr
-		s.recordExecutionEventLocked(ex, &cleanroomv1.ExecutionStreamEvent{
-			SandboxId:   ex.SandboxID,
-			ExecutionId: ex.ID,
-			Status:      cleanroomv1.ExecutionStatus_EXECUTION_STATUS_RUNNING,
-			Payload:     &cleanroomv1.ExecutionStreamEvent_Stderr{Stderr: []byte(appendStderr)},
-			OccurredAt:  timestamppb.Now(),
-		})
-	}
+	s.appendExecutionStdoutLocked(ex, cleanroomv1.ExecutionStatus_EXECUTION_STATUS_RUNNING, []byte(appendStdout))
+	s.appendExecutionStderrLocked(ex, cleanroomv1.ExecutionStatus_EXECUTION_STATUS_RUNNING, []byte(appendStderr))
 }
 
 func (s *Service) recordExecutionOutputChunk(key string, isStdout bool, chunk []byte) {
@@ -1225,18 +1191,32 @@ func (s *Service) recordExecutionOutputChunk(key string, isStdout bool, chunk []
 	}
 
 	if isStdout {
-		ex.Stdout += string(chunk)
-		s.recordExecutionEventLocked(ex, &cleanroomv1.ExecutionStreamEvent{
-			SandboxId:   ex.SandboxID,
-			ExecutionId: ex.ID,
-			Status:      status,
-			Payload:     &cleanroomv1.ExecutionStreamEvent_Stdout{Stdout: append([]byte(nil), chunk...)},
-			OccurredAt:  timestamppb.Now(),
-		})
+		s.appendExecutionStdoutLocked(ex, status, chunk)
 		return
 	}
 
-	ex.Stderr += string(chunk)
+	s.appendExecutionStderrLocked(ex, status, chunk)
+}
+
+func (s *Service) appendExecutionStdoutLocked(ex *executionState, status cleanroomv1.ExecutionStatus, chunk []byte) {
+	if ex == nil || len(chunk) == 0 {
+		return
+	}
+	ex.Stdout = appendRetainedOutput(ex.Stdout, string(chunk), maxRetainedExecutionOutputBytes)
+	s.recordExecutionEventLocked(ex, &cleanroomv1.ExecutionStreamEvent{
+		SandboxId:   ex.SandboxID,
+		ExecutionId: ex.ID,
+		Status:      status,
+		Payload:     &cleanroomv1.ExecutionStreamEvent_Stdout{Stdout: append([]byte(nil), chunk...)},
+		OccurredAt:  timestamppb.Now(),
+	})
+}
+
+func (s *Service) appendExecutionStderrLocked(ex *executionState, status cleanroomv1.ExecutionStatus, chunk []byte) {
+	if ex == nil || len(chunk) == 0 {
+		return
+	}
+	ex.Stderr = appendRetainedOutput(ex.Stderr, string(chunk), maxRetainedExecutionOutputBytes)
 	s.recordExecutionEventLocked(ex, &cleanroomv1.ExecutionStreamEvent{
 		SandboxId:   ex.SandboxID,
 		ExecutionId: ex.ID,
@@ -1553,7 +1533,7 @@ func (s *Service) recordSandboxEventLocked(sb *sandboxState, status cleanroomv1.
 		Message:    message,
 		OccurredAt: timestamppb.New(now),
 	}
-	sb.EventHistory = append(sb.EventHistory, event)
+	sb.EventHistory = appendBounded(sb.EventHistory, event, maxRetainedSandboxEvents)
 
 	for id, ch := range sb.EventSubscribers {
 		select {
@@ -1578,7 +1558,7 @@ func (s *Service) recordExecutionEventLocked(ex *executionState, event *cleanroo
 	if event.GetOccurredAt() == nil {
 		event.OccurredAt = timestamppb.Now()
 	}
-	ex.EventHistory = append(ex.EventHistory, event)
+	ex.EventHistory = appendBounded(ex.EventHistory, event, maxRetainedExecutionEvents)
 
 	for id, ch := range ex.EventSubscribers {
 		select {
@@ -1595,6 +1575,55 @@ func normalizeCommand(command []string) []string {
 		return command[1:]
 	}
 	return command
+}
+
+func bufferedResultDelta(retained, buffered string) string {
+	if buffered == "" {
+		return ""
+	}
+	if retained == "" {
+		return buffered
+	}
+	if strings.HasPrefix(buffered, retained) {
+		return buffered[len(retained):]
+	}
+	if strings.HasSuffix(buffered, retained) {
+		return ""
+	}
+	return buffered
+}
+
+func appendRetainedOutput(existing, chunk string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	if chunk == "" {
+		if len(existing) <= limit {
+			return existing
+		}
+		return existing[len(existing)-limit:]
+	}
+	if len(chunk) >= limit {
+		return chunk[len(chunk)-limit:]
+	}
+	keepExisting := limit - len(chunk)
+	if keepExisting < len(existing) {
+		existing = existing[len(existing)-keepExisting:]
+	}
+	return existing + chunk
+}
+
+func appendBounded[T any](history []T, item T, limit int) []T {
+	if limit <= 0 {
+		return nil
+	}
+	history = append(history, item)
+	if len(history) <= limit {
+		return history
+	}
+	trimmed := make([]T, limit)
+	copy(trimmed, history[len(history)-limit:])
+	return trimmed
 }
 
 func resolveBackendName(requested, configuredDefault string) string {
