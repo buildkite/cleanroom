@@ -958,38 +958,7 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 	}
 	s.mu.Unlock()
 
-	usedStreaming := false
-	var result *backend.RunResult
-	var err error
-	if persistentAdapter, ok := adapter.(backend.PersistentSandboxAdapter); ok {
-		usedStreaming = true
-		result, err = persistentAdapter.RunInSandbox(runCtx, runReq, backend.OutputStream{
-			OnStdout: func(chunk []byte) {
-				s.recordExecutionOutputChunk(key, true, chunk)
-			},
-			OnStderr: func(chunk []byte) {
-				s.recordExecutionOutputChunk(key, false, chunk)
-			},
-			OnAttach: func(io backend.AttachIO) {
-				s.setExecutionAttachIO(key, io)
-			},
-		})
-	} else if streamAdapter, ok := adapter.(backend.StreamingAdapter); ok {
-		usedStreaming = true
-		result, err = streamAdapter.RunStream(runCtx, runReq, backend.OutputStream{
-			OnStdout: func(chunk []byte) {
-				s.recordExecutionOutputChunk(key, true, chunk)
-			},
-			OnStderr: func(chunk []byte) {
-				s.recordExecutionOutputChunk(key, false, chunk)
-			},
-			OnAttach: func(io backend.AttachIO) {
-				s.setExecutionAttachIO(key, io)
-			},
-		})
-	} else {
-		result, err = adapter.Run(runCtx, runReq)
-	}
+	result, usedStreaming, err := s.runAdapterExecution(runCtx, adapter, runReq, key)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1008,19 +977,7 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 	clearExecutionAttachIOLocked(ex)
 
 	if err != nil {
-		finalStatus := cleanroomv1.ExecutionStatus_EXECUTION_STATUS_FAILED
-		exitCode := int32(1)
-		if ex.CancelRequested || errors.Is(runCtx.Err(), context.Canceled) {
-			finalStatus = cleanroomv1.ExecutionStatus_EXECUTION_STATUS_CANCELED
-			exitCode = cancelExitCode(ex.CancelSignal)
-		} else if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
-			finalStatus = cleanroomv1.ExecutionStatus_EXECUTION_STATUS_TIMED_OUT
-			exitCode = 124
-		}
-
-		ex.Status = finalStatus
-		ex.ExitCode = exitCode
-		ex.Message = err.Error()
+		finalStatus, exitCode := executionRunErrorStatus(ex, runCtx)
 		if strings.TrimSpace(err.Error()) != "" {
 			s.appendExecutionStderrLocked(ex, finalStatus, []byte(err.Error()+"\n"))
 		}
@@ -1080,6 +1037,47 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 			"status", ex.Status.String(),
 		)
 	}
+}
+
+func (s *Service) runAdapterExecution(runCtx context.Context, adapter backend.Adapter, runReq backend.RunRequest, key string) (*backend.RunResult, bool, error) {
+	if persistentAdapter, ok := adapter.(backend.PersistentSandboxAdapter); ok {
+		result, err := persistentAdapter.RunInSandbox(runCtx, runReq, s.executionOutputStream(key))
+		return result, true, err
+	}
+	if streamAdapter, ok := adapter.(backend.StreamingAdapter); ok {
+		result, err := streamAdapter.RunStream(runCtx, runReq, s.executionOutputStream(key))
+		return result, true, err
+	}
+
+	result, err := adapter.Run(runCtx, runReq)
+	return result, false, err
+}
+
+func (s *Service) executionOutputStream(key string) backend.OutputStream {
+	return backend.OutputStream{
+		OnStdout: func(chunk []byte) {
+			s.recordExecutionOutputChunk(key, true, chunk)
+		},
+		OnStderr: func(chunk []byte) {
+			s.recordExecutionOutputChunk(key, false, chunk)
+		},
+		OnAttach: func(io backend.AttachIO) {
+			s.setExecutionAttachIO(key, io)
+		},
+	}
+}
+
+func executionRunErrorStatus(ex *executionState, runCtx context.Context) (cleanroomv1.ExecutionStatus, int32) {
+	if ex == nil {
+		return cleanroomv1.ExecutionStatus_EXECUTION_STATUS_FAILED, 1
+	}
+	if ex.CancelRequested || errors.Is(runCtx.Err(), context.Canceled) {
+		return cleanroomv1.ExecutionStatus_EXECUTION_STATUS_CANCELED, cancelExitCode(ex.CancelSignal)
+	}
+	if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
+		return cleanroomv1.ExecutionStatus_EXECUTION_STATUS_TIMED_OUT, 124
+	}
+	return cleanroomv1.ExecutionStatus_EXECUTION_STATUS_FAILED, 1
 }
 
 func (s *Service) ensureMapsLocked() {
