@@ -124,10 +124,12 @@ func TestServeInstallForceOverwritesAndEnablesService(t *testing.T) {
 	prevSystemdPath := serveInstallSystemdUnitPath
 	prevExecutable := serveInstallExecutablePath
 	prevRunCommand := serveInstallRunCommand
+	prevDefaultListen := serveInstallDefaultListen
 	serveInstallEUID = func() int { return 0 }
 	serveInstallGOOS = "linux"
 	serveInstallSystemdUnitPath = unitPath
 	serveInstallExecutablePath = func() (string, error) { return "/usr/local/bin/cleanroom", nil }
+	serveInstallDefaultListen = func() string { return "unix:///run/cleanroom/default.sock" }
 	var calls [][]string
 	serveInstallRunCommand = func(name string, args ...string) error {
 		call := append([]string{name}, args...)
@@ -140,6 +142,7 @@ func TestServeInstallForceOverwritesAndEnablesService(t *testing.T) {
 		serveInstallSystemdUnitPath = prevSystemdPath
 		serveInstallExecutablePath = prevExecutable
 		serveInstallRunCommand = prevRunCommand
+		serveInstallDefaultListen = prevDefaultListen
 	})
 
 	stdout, _ := makeStdoutCapture(t)
@@ -156,7 +159,7 @@ func TestServeInstallForceOverwritesAndEnablesService(t *testing.T) {
 	if !strings.Contains(content, "ExecStart=/usr/local/bin/cleanroom serve") {
 		t.Fatalf("expected serve exec start, got:\n%s", content)
 	}
-	if !strings.Contains(content, "--listen unix:///var/run/cleanroom/cleanroom.sock") {
+	if !strings.Contains(content, "--listen unix:///run/cleanroom/default.sock") {
 		t.Fatalf("expected explicit default --listen in unit, got:\n%s", content)
 	}
 	if strings.Contains(content, "serve install") {
@@ -206,10 +209,12 @@ func TestServeInstallUsesProvidedListenInUnit(t *testing.T) {
 	prevSystemdPath := serveInstallSystemdUnitPath
 	prevExecutable := serveInstallExecutablePath
 	prevRunCommand := serveInstallRunCommand
+	prevDefaultListen := serveInstallDefaultListen
 	serveInstallEUID = func() int { return 0 }
 	serveInstallGOOS = "linux"
 	serveInstallSystemdUnitPath = unitPath
 	serveInstallExecutablePath = func() (string, error) { return "/usr/local/bin/cleanroom", nil }
+	serveInstallDefaultListen = func() string { return "unix:///run/cleanroom/default.sock" }
 	serveInstallRunCommand = func(name string, args ...string) error { return nil }
 	t.Cleanup(func() {
 		serveInstallEUID = prevEUID
@@ -217,6 +222,7 @@ func TestServeInstallUsesProvidedListenInUnit(t *testing.T) {
 		serveInstallSystemdUnitPath = prevSystemdPath
 		serveInstallExecutablePath = prevExecutable
 		serveInstallRunCommand = prevRunCommand
+		serveInstallDefaultListen = prevDefaultListen
 	})
 
 	stdout, _ := makeStdoutCapture(t)
@@ -233,7 +239,7 @@ func TestServeInstallUsesProvidedListenInUnit(t *testing.T) {
 	if !strings.Contains(content, "--listen unix:///tmp/custom-cleanroom.sock") {
 		t.Fatalf("expected provided --listen in unit, got:\n%s", content)
 	}
-	if strings.Contains(content, "--listen unix:///var/run/cleanroom/cleanroom.sock") {
+	if strings.Contains(content, "--listen unix:///run/cleanroom/default.sock") {
 		t.Fatalf("did not expect default listen when custom listen is provided, got:\n%s", content)
 	}
 }
@@ -311,5 +317,16 @@ func TestServeInstallReturnsCommandErrors(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "reload systemd") {
 		t.Fatalf("expected daemon-reload context, got: %v", err)
+	}
+}
+
+func TestDefaultDaemonListenEndpointUsesEndpointDefault(t *testing.T) {
+	runtimeDir := t.TempDir()
+	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
+
+	got := defaultDaemonListenEndpoint()
+	want := "unix://" + filepath.Join(runtimeDir, "cleanroom", "cleanroom.sock")
+	if got != want {
+		t.Fatalf("defaultDaemonListenEndpoint() = %q, want %q", got, want)
 	}
 }

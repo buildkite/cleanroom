@@ -50,9 +50,8 @@ import (
 const defaultBumpRefSource = "ghcr.io/buildkite/cleanroom-base/alpine:latest"
 
 const (
-	systemdServiceName  = "cleanroom.service"
-	launchdServiceName  = "com.buildkite.cleanroom"
-	defaultDaemonListen = "unix:///var/run/cleanroom/cleanroom.sock"
+	systemdServiceName = "cleanroom.service"
+	launchdServiceName = "com.buildkite.cleanroom"
 )
 
 type policyLoader interface {
@@ -289,6 +288,7 @@ var (
 	serveInstallRunCommand      = runServeInstallCommand
 	serveInstallSystemdUnitPath = "/etc/systemd/system/" + systemdServiceName
 	serveInstallLaunchdPath     = "/Library/LaunchDaemons/" + launchdServiceName + ".plist"
+	serveInstallDefaultListen   = defaultDaemonListenEndpoint
 )
 
 func Run(args []string) error {
@@ -1181,7 +1181,7 @@ func (s *ServeCommand) Run(ctx *runtimeContext) error {
 func (s *ServeCommand) daemonRunArgs() []string {
 	listen := strings.TrimSpace(s.Listen)
 	if listen == "" {
-		listen = defaultDaemonListen
+		listen = serveInstallDefaultListen()
 	}
 
 	args := []string{"serve", "--listen", listen}
@@ -1201,6 +1201,17 @@ func (s *ServeCommand) daemonRunArgs() []string {
 		args = append(args, "--tls-ca", value)
 	}
 	return args
+}
+
+func defaultDaemonListenEndpoint() string {
+	ep := endpoint.Default()
+	if ep.Scheme == "unix" {
+		return "unix://" + ep.Address
+	}
+	if strings.TrimSpace(ep.Address) != "" {
+		return ep.Address
+	}
+	return ep.BaseURL
 }
 
 func (s *ServeCommand) installDaemon(ctx *runtimeContext) error {
