@@ -279,13 +279,13 @@ When `rootfs` is unset, Cleanroom derives one from `sandbox.image.ref` and injec
 
 ## Host requirements
 
-**Linux (firecracker):**
+**Linux ([firecracker](docs/backend/firecracker.md)):**
 - `/dev/kvm` available and writable
 - Firecracker binary installed
 - `mkfs.ext4` for OCI-to-ext4 materialization
 - `sudo -n` access for `ip`, `iptables`, `sysctl`
 
-**macOS ([darwin-vz](docs/darwin-vz.md)):**
+**macOS ([darwin-vz](docs/backend/darwin-vz.md)):**
 - `cleanroom-darwin-vz` helper signed with `com.apple.security.virtualization` entitlement
 - `mkfs.ext4` and `debugfs` (`brew install e2fsprogs`)
 
@@ -301,14 +301,15 @@ cleanroom version
 
 ## Further reading
 
-- [`tls.md`](docs/tls.md) -- certificate bootstrap, auto-discovery, HTTPS transport
-- [`gateway.md`](docs/gateway.md) -- host-side git/registry proxy and credential injection
-- [`remote-access.md`](docs/remote-access.md) -- Tailscale and HTTP listeners
-- [`isolation.md`](docs/isolation.md) -- enforcement details and persistence behavior
-- [`api.md`](docs/api.md) -- ConnectRPC surface and proto sketch
-- [`darwin-vz.md`](docs/darwin-vz.md) -- macOS backend and helper design
-- [`vsock.md`](docs/vsock.md) -- guest execution protocol
-- [`benchmarks.md`](docs/benchmarks.md) -- TTI measurement and results
-- [`ci.md`](docs/ci.md) -- Buildkite pipeline and base image workflow
-- [`spec.md`](docs/spec.md) -- full specification and roadmap
-- [`research.md`](docs/research.md) -- backend and tooling evaluation notes
+- [research.md](docs/research.md) -- backend and tooling evaluation notes
+- [benchmarks.md](docs/benchmarks.md) -- TTI measurement and results
+- [ci.md](docs/ci.md) -- Buildkite pipeline and base image workflow
+- [spec.md](docs/spec.md) -- full specification and roadmap
+- [tls.md](docs/tls.md) -- certificate bootstrap, auto-discovery, HTTPS transport
+- [gateway.md](docs/gateway.md) -- host-side git/registry proxy and credential injection
+- [remote-access.md](docs/remote-access.md) -- Tailscale and HTTP listeners
+- [isolation.md](docs/isolation.md) -- enforcement details and persistence behavior
+- [api.md](docs/api.md) -- ConnectRPC surface and proto sketch
+- [vsock.md](docs/vsock.md) -- guest execution protocol
+- [backend/firecracker.md](docs/backend/firecracker.md) -- Firecracker backend design
+- [backend/darwin-vz.md](docs/backend/darwin-vz.md) -- macOS backend and helper design
