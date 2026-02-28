@@ -1146,15 +1146,34 @@ func (c *TLSIssueCommand) Run(ctx *runtimeContext) error {
 }
 
 func (s *ServeCommand) Run(ctx *runtimeContext) error {
-	logger, err := newLogger(s.LogLevel, "server")
-	if err != nil {
-		return err
-	}
-
 	ep, err := endpoint.ResolveListen(s.Listen)
 	if err != nil {
 		return err
 	}
+	if shouldShowStartupHeader(os.Stderr) {
+		gatewayListen := strings.TrimSpace(s.GatewayListen)
+		if gatewayListen == "" {
+			gatewayListen = fmt.Sprintf(":%d", gateway.DefaultPort)
+		}
+		if err := writeStartupHeader(os.Stderr, startupHeader{
+			Title: "cleanroom serve",
+			Fields: []startupField{
+				{Key: "workspace", Value: ctx.CWD},
+				{Key: "listen", Value: endpointDisplay(ep)},
+				{Key: "gateway_listen", Value: gatewayListen},
+				{Key: "runtime_config", Value: ctx.ConfigPath},
+				{Key: "log_level", Value: effectiveLogLevel(s.LogLevel)},
+			},
+		}, shouldUseANSI(os.Stderr)); err != nil {
+			return err
+		}
+	}
+
+	logger, err := newLogger(s.LogLevel, "server")
+	if err != nil {
+		return err
+	}
+	log.SetDefault(logger)
 
 	gwRegistry := gateway.NewRegistry()
 	gwCredentials := gateway.NewEnvCredentialProvider()
@@ -1295,16 +1314,8 @@ func (d *DoctorCommand) Run(ctx *runtimeContext) error {
 		return enc.Encode(payload)
 	}
 
-	_, err = fmt.Fprintf(ctx.Stdout, "doctor report (%s)\n", backendName)
-	if err != nil {
-		return err
-	}
-	for _, check := range checks {
-		if _, err := fmt.Fprintf(ctx.Stdout, "- [%s] %s: %s\n", check.Status, check.Name, check.Message); err != nil {
-			return err
-		}
-	}
-	return nil
+	_, err = fmt.Fprint(ctx.Stdout, renderDoctorReport(backendName, checks, shouldUseANSI(ctx.Stdout)))
+	return err
 }
 
 func resolveBackendName(requested, configuredDefault string) string {
@@ -1659,10 +1670,7 @@ func setMapInt(parent *yaml.Node, key string, value int) {
 }
 
 func newLogger(rawLevel, component string) (*log.Logger, error) {
-	levelName := strings.TrimSpace(strings.ToLower(rawLevel))
-	if levelName == "" {
-		levelName = "info"
-	}
+	levelName := effectiveLogLevel(rawLevel)
 	level, err := log.ParseLevel(levelName)
 	if err != nil {
 		return nil, fmt.Errorf("invalid --log-level %q: %w", rawLevel, err)
@@ -1671,5 +1679,6 @@ func newLogger(rawLevel, component string) (*log.Logger, error) {
 		Level:     level,
 		Formatter: log.TextFormatter,
 	})
+	applyPolishedLoggerStyles(logger, shouldUseANSI(os.Stderr))
 	return logger.With("component", component), nil
 }

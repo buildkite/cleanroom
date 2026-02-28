@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/buildkite/cleanroom/internal/backend"
@@ -111,5 +112,44 @@ func TestDoctorCommandJSONIncludesCapabilities(t *testing.T) {
 	}
 	if !foundCapabilityCheck {
 		t.Fatal("expected capability_network_guest_interface check in doctor output")
+	}
+}
+
+func TestDoctorCommandTextUsesPolishedPlainOutput(t *testing.T) {
+	tmpDir := t.TempDir()
+	stdout, readStdout := makeStdoutCapture(t)
+
+	cmd := DoctorCommand{
+		Backend: "doctor-test",
+	}
+	err := cmd.Run(&runtimeContext{
+		CWD:        tmpDir,
+		Stdout:     stdout,
+		Loader:     doctorFailingLoader{},
+		Config:     runtimeconfig.Config{},
+		ConfigPath: filepath.Join(tmpDir, "config.yaml"),
+		Backends: map[string]backend.Adapter{
+			"doctor-test": doctorTestAdapter{},
+		},
+	})
+	if err != nil {
+		t.Fatalf("DoctorCommand.Run returned error: %v", err)
+	}
+
+	out := readStdout()
+	if !strings.Contains(out, "doctor report (doctor-test)") {
+		t.Fatalf("expected doctor report title, got: %q", out)
+	}
+	if !strings.Contains(out, "✓ [pass] runtime_config:") {
+		t.Fatalf("expected pass check line, got: %q", out)
+	}
+	if !strings.Contains(out, "! [warn] repository_policy:") {
+		t.Fatalf("expected warn check line, got: %q", out)
+	}
+	if !strings.Contains(out, "summary: ") {
+		t.Fatalf("expected summary line, got: %q", out)
+	}
+	if strings.Contains(out, "\x1b[") {
+		t.Fatalf("expected plain output without ANSI escapes, got: %q", out)
 	}
 }
