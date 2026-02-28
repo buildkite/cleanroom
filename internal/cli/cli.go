@@ -702,23 +702,9 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 		"sandbox_id", strings.TrimSpace(e.SandboxID),
 		"command_argc", len(e.Command),
 	)
-	sandboxID := strings.TrimSpace(e.SandboxID)
-	if sandboxID == "" {
-		compiled, _, err := ctx.Loader.LoadAndCompile(cwd)
-		if err != nil {
-			return err
-		}
-		createSandboxResp, err := client.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
-			Backend: e.Backend,
-			Options: &cleanroomv1.SandboxOptions{
-				LaunchSeconds: e.LaunchSeconds,
-			},
-			Policy: compiled.ToProto(),
-		})
-		if err != nil {
-			return fmt.Errorf("create sandbox: %w", err)
-		}
-		sandboxID = createSandboxResp.GetSandbox().GetSandboxId()
+	sandboxID, err := ensureSandboxID(client, ctx.Loader, cwd, e.Backend, strings.TrimSpace(e.SandboxID), e.LaunchSeconds)
+	if err != nil {
+		return err
 	}
 	detached := false
 	autoTerminateSandbox := e.Remove
@@ -829,12 +815,8 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 	}
 
 	if !haveExitCode {
-		getResp, getErr := client.GetExecution(context.Background(), &cleanroomv1.GetExecutionRequest{
-			SandboxId:   sandboxID,
-			ExecutionId: executionID,
-		})
-		if getErr == nil && getResp.GetExecution() != nil && isFinalExecutionStatus(getResp.GetExecution().GetStatus()) {
-			exitCode = int(getResp.GetExecution().GetExitCode())
+		if fetchedExitCode, ok := getFinalExecutionExitCode(client, sandboxID, executionID); ok {
+			exitCode = fetchedExitCode
 			haveExitCode = true
 		}
 	}
@@ -903,23 +885,9 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 		"sandbox_id", strings.TrimSpace(c.SandboxID),
 		"command_argc", len(command),
 	)
-	sandboxID := strings.TrimSpace(c.SandboxID)
-	if sandboxID == "" {
-		compiled, _, err := ctx.Loader.LoadAndCompile(cwd)
-		if err != nil {
-			return err
-		}
-		createSandboxResp, err := client.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
-			Backend: c.Backend,
-			Options: &cleanroomv1.SandboxOptions{
-				LaunchSeconds: c.LaunchSeconds,
-			},
-			Policy: compiled.ToProto(),
-		})
-		if err != nil {
-			return fmt.Errorf("create sandbox: %w", err)
-		}
-		sandboxID = createSandboxResp.GetSandbox().GetSandboxId()
+	sandboxID, err := ensureSandboxID(client, ctx.Loader, cwd, c.Backend, strings.TrimSpace(c.SandboxID), c.LaunchSeconds)
+	if err != nil {
+		return err
 	}
 	autoTerminateSandbox := c.Remove
 	defer func() {
@@ -1082,12 +1050,8 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 	}
 
 	if !haveExitCode {
-		getResp, getErr := client.GetExecution(context.Background(), &cleanroomv1.GetExecutionRequest{
-			SandboxId:   sandboxID,
-			ExecutionId: executionID,
-		})
-		if getErr == nil && getResp.GetExecution() != nil && isFinalExecutionStatus(getResp.GetExecution().GetStatus()) {
-			exitCode = int(getResp.GetExecution().GetExitCode())
+		if fetchedExitCode, ok := getFinalExecutionExitCode(client, sandboxID, executionID); ok {
+			exitCode = fetchedExitCode
 			haveExitCode = true
 		}
 	}
@@ -1807,6 +1771,44 @@ func inspectRun(stdout *os.File, baseDir, runID string) error {
 	}
 	_, err = fmt.Fprintf(stdout, "observability (%s):\n%s\n", obsPath, out)
 	return err
+}
+
+func ensureSandboxID(client *controlclient.Client, loader policyLoader, cwd, backendName, existingSandboxID string, launchSeconds int64) (string, error) {
+	sandboxID := strings.TrimSpace(existingSandboxID)
+	if sandboxID != "" {
+		return sandboxID, nil
+	}
+
+	compiled, _, err := loader.LoadAndCompile(cwd)
+	if err != nil {
+		return "", err
+	}
+	createSandboxResp, err := client.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Backend: backendName,
+		Options: &cleanroomv1.SandboxOptions{
+			LaunchSeconds: launchSeconds,
+		},
+		Policy: compiled.ToProto(),
+	})
+	if err != nil {
+		return "", fmt.Errorf("create sandbox: %w", err)
+	}
+	return strings.TrimSpace(createSandboxResp.GetSandbox().GetSandboxId()), nil
+}
+
+func getFinalExecutionExitCode(client *controlclient.Client, sandboxID, executionID string) (int, bool) {
+	getResp, err := client.GetExecution(context.Background(), &cleanroomv1.GetExecutionRequest{
+		SandboxId:   sandboxID,
+		ExecutionId: executionID,
+	})
+	if err != nil || getResp.GetExecution() == nil {
+		return 0, false
+	}
+	execution := getResp.GetExecution()
+	if !isFinalExecutionStatus(execution.GetStatus()) {
+		return 0, false
+	}
+	return int(execution.GetExitCode()), true
 }
 
 func isCanceledStreamErr(err error) bool {
