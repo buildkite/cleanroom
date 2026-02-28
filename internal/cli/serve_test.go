@@ -279,6 +279,55 @@ func TestServeInstallUsesTLSCADashedFlagInUnit(t *testing.T) {
 	}
 }
 
+func TestServeInstallCanonicalizesRelativeTLSPaths(t *testing.T) {
+	tmpDir := t.TempDir()
+	unitPath := filepath.Join(tmpDir, "cleanroom.service")
+
+	prevEUID := serveInstallEUID
+	prevGOOS := serveInstallGOOS
+	prevSystemdPath := serveInstallSystemdUnitPath
+	prevExecutable := serveInstallExecutablePath
+	prevRunCommand := serveInstallRunCommand
+	serveInstallEUID = func() int { return 0 }
+	serveInstallGOOS = "linux"
+	serveInstallSystemdUnitPath = unitPath
+	serveInstallExecutablePath = func() (string, error) { return "/usr/local/bin/cleanroom", nil }
+	serveInstallRunCommand = func(name string, args ...string) error { return nil }
+	t.Cleanup(func() {
+		serveInstallEUID = prevEUID
+		serveInstallGOOS = prevGOOS
+		serveInstallSystemdUnitPath = prevSystemdPath
+		serveInstallExecutablePath = prevExecutable
+		serveInstallRunCommand = prevRunCommand
+	})
+
+	stdout, _ := makeStdoutCapture(t)
+	cmd := &ServeCommand{
+		Action:  "install",
+		TLSCert: "certs/server.pem",
+		TLSKey:  "certs/server.key",
+		TLSCA:   "certs/ca.pem",
+	}
+	if err := cmd.Run(&runtimeContext{CWD: tmpDir, Stdout: stdout}); err != nil {
+		t.Fatalf("ServeCommand.Run returned error: %v", err)
+	}
+
+	raw, err := os.ReadFile(unitPath)
+	if err != nil {
+		t.Fatalf("read generated unit: %v", err)
+	}
+	content := string(raw)
+	if !strings.Contains(content, "--tls-cert "+filepath.Join(tmpDir, "certs/server.pem")) {
+		t.Fatalf("expected absolute --tls-cert path in unit, got:\n%s", content)
+	}
+	if !strings.Contains(content, "--tls-key "+filepath.Join(tmpDir, "certs/server.key")) {
+		t.Fatalf("expected absolute --tls-key path in unit, got:\n%s", content)
+	}
+	if !strings.Contains(content, "--tls-ca "+filepath.Join(tmpDir, "certs/ca.pem")) {
+		t.Fatalf("expected absolute --tls-ca path in unit, got:\n%s", content)
+	}
+}
+
 func TestServeInstallReturnsCommandErrors(t *testing.T) {
 	tmpDir := t.TempDir()
 	unitPath := filepath.Join(tmpDir, "cleanroom.service")

@@ -39,7 +39,7 @@ func defaultListenEndpoint() Endpoint {
 
 func defaultClientEndpoint() Endpoint {
 	if endpointGeteuid() == 0 {
-		if st, err := endpointStat(defaultSystemSocketPath); err == nil && !st.IsDir() {
+		if st, err := endpointStat(defaultSystemSocketPath); err == nil && !st.IsDir() && st.Mode()&os.ModeSocket != 0 {
 			return Endpoint{
 				Scheme:  "unix",
 				Address: defaultSystemSocketPath,

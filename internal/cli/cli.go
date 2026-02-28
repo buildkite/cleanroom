@@ -1178,7 +1178,7 @@ func (s *ServeCommand) Run(ctx *runtimeContext) error {
 	}
 }
 
-func (s *ServeCommand) daemonRunArgs() []string {
+func (s *ServeCommand) daemonRunArgs(cwd string) ([]string, error) {
 	listen := strings.TrimSpace(s.Listen)
 	if listen == "" {
 		listen = defaultDaemonListen
@@ -1192,15 +1192,46 @@ func (s *ServeCommand) daemonRunArgs() []string {
 		args = append(args, "--log-level", value)
 	}
 	if value := strings.TrimSpace(s.TLSCert); value != "" {
-		args = append(args, "--tls-cert", value)
+		resolved, err := resolveDaemonInstallPath(cwd, value)
+		if err != nil {
+			return nil, fmt.Errorf("resolve --tls-cert path: %w", err)
+		}
+		args = append(args, "--tls-cert", resolved)
 	}
 	if value := strings.TrimSpace(s.TLSKey); value != "" {
-		args = append(args, "--tls-key", value)
+		resolved, err := resolveDaemonInstallPath(cwd, value)
+		if err != nil {
+			return nil, fmt.Errorf("resolve --tls-key path: %w", err)
+		}
+		args = append(args, "--tls-key", resolved)
 	}
 	if value := strings.TrimSpace(s.TLSCA); value != "" {
-		args = append(args, "--tls-ca", value)
+		resolved, err := resolveDaemonInstallPath(cwd, value)
+		if err != nil {
+			return nil, fmt.Errorf("resolve --tls-ca path: %w", err)
+		}
+		args = append(args, "--tls-ca", resolved)
 	}
-	return args
+	return args, nil
+}
+
+func resolveDaemonInstallPath(cwd, value string) (string, error) {
+	if filepath.IsAbs(value) {
+		return filepath.Clean(value), nil
+	}
+
+	base := strings.TrimSpace(cwd)
+	if base == "" {
+		base = "."
+	}
+	if !filepath.IsAbs(base) {
+		absBase, err := filepath.Abs(base)
+		if err != nil {
+			return "", fmt.Errorf("resolve absolute working directory: %w", err)
+		}
+		base = absBase
+	}
+	return filepath.Clean(filepath.Join(base, value)), nil
 }
 
 func (s *ServeCommand) installDaemon(ctx *runtimeContext) error {
@@ -1229,7 +1260,10 @@ func (s *ServeCommand) installDaemon(ctx *runtimeContext) error {
 		}
 	}
 
-	args := s.daemonRunArgs()
+	args, err := s.daemonRunArgs(ctx.CWD)
+	if err != nil {
+		return err
+	}
 	return installFn(ctx.Stdout, executablePath, args, s.Force)
 }
 
