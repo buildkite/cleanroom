@@ -1204,6 +1204,16 @@ func (s *ServeCommand) daemonRunArgs() []string {
 }
 
 func (s *ServeCommand) installDaemon(ctx *runtimeContext) error {
+	var installFn func(io.Writer, string, []string, bool) error
+	switch serveInstallGOOS {
+	case "linux":
+		installFn = installSystemdDaemon
+	case "darwin":
+		installFn = installLaunchdDaemon
+	default:
+		return fmt.Errorf("serve install is unsupported on %s (expected linux or darwin)", serveInstallGOOS)
+	}
+
 	if serveInstallEUID() != 0 {
 		return errors.New("serve install requires root privileges (use sudo cleanroom serve install)")
 	}
@@ -1220,14 +1230,7 @@ func (s *ServeCommand) installDaemon(ctx *runtimeContext) error {
 	}
 
 	args := s.daemonRunArgs()
-	switch serveInstallGOOS {
-	case "linux":
-		return installSystemdDaemon(ctx.Stdout, executablePath, args, s.Force)
-	case "darwin":
-		return installLaunchdDaemon(ctx.Stdout, executablePath, args, s.Force)
-	default:
-		return fmt.Errorf("serve install is unsupported on %s (expected linux or darwin)", serveInstallGOOS)
-	}
+	return installFn(ctx.Stdout, executablePath, args, s.Force)
 }
 
 func installSystemdDaemon(stdout io.Writer, executablePath string, args []string, force bool) error {
@@ -1241,6 +1244,11 @@ func installSystemdDaemon(stdout io.Writer, executablePath string, args []string
 	}
 	if err := serveInstallRunCommand("systemctl", "enable", "--now", systemdServiceName); err != nil {
 		return fmt.Errorf("enable systemd service %s: %w", systemdServiceName, err)
+	}
+	if force {
+		if err := serveInstallRunCommand("systemctl", "restart", systemdServiceName); err != nil {
+			return fmt.Errorf("restart systemd service %s: %w", systemdServiceName, err)
+		}
 	}
 
 	_, err := fmt.Fprintf(stdout, "daemon installed\nmanager=systemd\nservice=%s\npath=%s\n", systemdServiceName, serveInstallSystemdUnitPath)

@@ -166,9 +166,34 @@ func TestServeInstallForceOverwritesAndEnablesService(t *testing.T) {
 	wantCalls := [][]string{
 		{"systemctl", "daemon-reload"},
 		{"systemctl", "enable", "--now", "cleanroom.service"},
+		{"systemctl", "restart", "cleanroom.service"},
 	}
 	if !reflect.DeepEqual(calls, wantCalls) {
 		t.Fatalf("unexpected systemctl commands: got %v want %v", calls, wantCalls)
+	}
+}
+
+func TestServeInstallUnsupportedOSCheckedBeforeRoot(t *testing.T) {
+	prevEUID := serveInstallEUID
+	prevGOOS := serveInstallGOOS
+	serveInstallEUID = func() int { return 1000 }
+	serveInstallGOOS = "windows"
+	t.Cleanup(func() {
+		serveInstallEUID = prevEUID
+		serveInstallGOOS = prevGOOS
+	})
+
+	stdout, _ := makeStdoutCapture(t)
+	cmd := &ServeCommand{Action: "install"}
+	err := cmd.Run(&runtimeContext{CWD: t.TempDir(), Stdout: stdout})
+	if err == nil {
+		t.Fatal("expected unsupported OS error")
+	}
+	if !strings.Contains(err.Error(), "unsupported on windows") {
+		t.Fatalf("expected unsupported OS message, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "requires root") {
+		t.Fatalf("expected unsupported OS before root message, got: %v", err)
 	}
 }
 
