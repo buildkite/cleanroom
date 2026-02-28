@@ -156,6 +156,9 @@ func TestServeInstallForceOverwritesAndEnablesService(t *testing.T) {
 	if !strings.Contains(content, "ExecStart=/usr/local/bin/cleanroom serve") {
 		t.Fatalf("expected serve exec start, got:\n%s", content)
 	}
+	if !strings.Contains(content, "--listen unix:///var/run/cleanroom/cleanroom.sock") {
+		t.Fatalf("expected explicit default --listen in unit, got:\n%s", content)
+	}
 	if strings.Contains(content, "serve install") {
 		t.Fatalf("unit should run server mode, not install mode:\n%s", content)
 	}
@@ -166,6 +169,47 @@ func TestServeInstallForceOverwritesAndEnablesService(t *testing.T) {
 	}
 	if !reflect.DeepEqual(calls, wantCalls) {
 		t.Fatalf("unexpected systemctl commands: got %v want %v", calls, wantCalls)
+	}
+}
+
+func TestServeInstallUsesProvidedListenInUnit(t *testing.T) {
+	tmpDir := t.TempDir()
+	unitPath := filepath.Join(tmpDir, "cleanroom.service")
+
+	prevEUID := serveInstallEUID
+	prevGOOS := serveInstallGOOS
+	prevSystemdPath := serveInstallSystemdUnitPath
+	prevExecutable := serveInstallExecutablePath
+	prevRunCommand := serveInstallRunCommand
+	serveInstallEUID = func() int { return 0 }
+	serveInstallGOOS = "linux"
+	serveInstallSystemdUnitPath = unitPath
+	serveInstallExecutablePath = func() (string, error) { return "/usr/local/bin/cleanroom", nil }
+	serveInstallRunCommand = func(name string, args ...string) error { return nil }
+	t.Cleanup(func() {
+		serveInstallEUID = prevEUID
+		serveInstallGOOS = prevGOOS
+		serveInstallSystemdUnitPath = prevSystemdPath
+		serveInstallExecutablePath = prevExecutable
+		serveInstallRunCommand = prevRunCommand
+	})
+
+	stdout, _ := makeStdoutCapture(t)
+	cmd := &ServeCommand{Action: "install", Listen: "unix:///tmp/custom-cleanroom.sock"}
+	if err := cmd.Run(&runtimeContext{CWD: tmpDir, Stdout: stdout}); err != nil {
+		t.Fatalf("ServeCommand.Run returned error: %v", err)
+	}
+
+	raw, err := os.ReadFile(unitPath)
+	if err != nil {
+		t.Fatalf("read generated unit: %v", err)
+	}
+	content := string(raw)
+	if !strings.Contains(content, "--listen unix:///tmp/custom-cleanroom.sock") {
+		t.Fatalf("expected provided --listen in unit, got:\n%s", content)
+	}
+	if strings.Contains(content, "--listen unix:///var/run/cleanroom/cleanroom.sock") {
+		t.Fatalf("did not expect default listen when custom listen is provided, got:\n%s", content)
 	}
 }
 

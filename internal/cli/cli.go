@@ -50,8 +50,9 @@ import (
 const defaultBumpRefSource = "ghcr.io/buildkite/cleanroom-base/alpine:latest"
 
 const (
-	systemdServiceName = "cleanroom.service"
-	launchdServiceName = "com.buildkite.cleanroom"
+	systemdServiceName  = "cleanroom.service"
+	launchdServiceName  = "com.buildkite.cleanroom"
+	defaultDaemonListen = "unix:///var/run/cleanroom/cleanroom.sock"
 )
 
 type policyLoader interface {
@@ -1178,10 +1179,12 @@ func (s *ServeCommand) Run(ctx *runtimeContext) error {
 }
 
 func (s *ServeCommand) daemonRunArgs() []string {
-	args := []string{"serve"}
-	if value := strings.TrimSpace(s.Listen); value != "" {
-		args = append(args, "--listen", value)
+	listen := strings.TrimSpace(s.Listen)
+	if listen == "" {
+		listen = defaultDaemonListen
 	}
+
+	args := []string{"serve", "--listen", listen}
 	if value := strings.TrimSpace(s.GatewayListen); value != "" {
 		args = append(args, "--gateway-listen", value)
 	}
