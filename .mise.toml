@@ -13,7 +13,7 @@ run = "go test ./..."
 
 [tasks.lint-shell]
 description = "Lint shell scripts"
-run = "shellcheck -x scripts/cleanroom-root-helper.sh scripts/benchmark-tti.sh"
+run = "shellcheck -x scripts/*.sh"
 
 [tasks.test-full]
 description = "Run full Go test suite"
@@ -21,12 +21,7 @@ run = "go test ./..."
 
 [tasks."build:go"]
 description = "Build Go binaries into dist/"
-run = """
-VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo dev)
-mkdir -p dist
-go build -ldflags "-X main.version=$VERSION" -o dist/cleanroom ./cmd/cleanroom
-go build -o dist/cleanroom-guest-agent ./cmd/cleanroom-guest-agent
-"""
+run = "scripts/build-go.sh"
 
 [tasks."build:darwin"]
 description = "Build macOS darwin-vz helper into dist/"
@@ -39,15 +34,7 @@ run = "true"
 
 [tasks."install:go"]
 description = "Install Go binaries into GOBIN (or GOPATH/bin)"
-run = """
-VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo dev)
-BIN_DIR="$(go env GOBIN)"
-if [ -z "$BIN_DIR" ]; then BIN_DIR="$(go env GOPATH)/bin"; fi
-HOST_ARCH="$(go env GOARCH)"
-mkdir -p "$BIN_DIR"
-go install -ldflags "-X main.version=$VERSION" ./cmd/cleanroom ./cmd/cleanroom-guest-agent
-GOOS=linux GOARCH="$HOST_ARCH" CGO_ENABLED=0 go build -trimpath -o "$BIN_DIR/cleanroom-guest-agent-linux-$HOST_ARCH" ./cmd/cleanroom-guest-agent
-"""
+run = "scripts/install-go.sh"
 
 [tasks."install:darwin"]
 description = "Install macOS darwin-vz helper into GOBIN (or GOPATH/bin)"
@@ -75,15 +62,4 @@ run = "true"
 [tasks.release]
 description = "Tag the next version and push to trigger a release"
 depends = ["check"]
-run = """
-NEXT=$(svu next)
-CURRENT=$(svu current)
-if [ "$NEXT" = "$CURRENT" ]; then
-  echo "No version bump detected (current: $CURRENT). Use conventional commits (feat:, fix:, etc.)."
-  exit 1
-fi
-echo "Releasing $CURRENT -> $NEXT"
-git tag "$NEXT"
-git push origin "$NEXT"
-echo "Tagged and pushed $NEXT — release workflow will run on GitHub."
-"""
+run = "scripts/release.sh"
