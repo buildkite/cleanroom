@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
@@ -69,6 +70,10 @@ func (a *cancelAwareStreamingAdapter) RunStream(ctx context.Context, req backend
 }
 
 func startIntegrationServerWithAdapter(t *testing.T, adapter backend.Adapter) string {
+	return startIntegrationServerWithAdapterAndHandler(t, adapter, nil)
+}
+
+func startIntegrationServerWithAdapterAndHandler(t *testing.T, adapter backend.Adapter, wrap func(http.Handler) http.Handler) string {
 	t.Helper()
 
 	svc := &controlservice.Service{
@@ -78,7 +83,11 @@ func startIntegrationServerWithAdapter(t *testing.T, adapter backend.Adapter) st
 		},
 	}
 
-	httpServer := httptest.NewServer(controlserver.New(svc, nil).Handler())
+	handler := controlserver.New(svc, nil).Handler()
+	if wrap != nil {
+		handler = wrap(handler)
+	}
+	httpServer := httptest.NewServer(handler)
 	t.Cleanup(httpServer.Close)
 	return httpServer.URL
 }
@@ -439,6 +448,53 @@ func TestExecAndWaitTimeoutCancelsExecution(t *testing.T) {
 	case <-adapter.runCanceled:
 	case <-time.After(2 * time.Second):
 		t.Fatal("expected execution run context to be canceled after timeout")
+	}
+}
+
+func TestExecAndWaitStreamSetupFailureCancelsExecution(t *testing.T) {
+	adapter := &cancelAwareStreamingAdapter{
+		runEntered:  make(chan struct{}, 1),
+		runCanceled: make(chan struct{}, 1),
+	}
+	host := startIntegrationServerWithAdapterAndHandler(t, adapter, func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.Contains(r.URL.Path, "ExecutionService/StreamExecution") {
+				time.Sleep(200 * time.Millisecond)
+			}
+			next.ServeHTTP(w, r)
+		})
+	})
+	c, err := New(host)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	ctx := context.Background()
+	sb, err := c.EnsureSandbox(ctx, "thread:stream-setup-fail-cancel", EnsureSandboxOptions{
+		Backend: "firecracker",
+		Policy:  testPolicy(),
+	})
+	if err != nil {
+		t.Fatalf("EnsureSandbox returned error: %v", err)
+	}
+
+	_, runErr := c.ExecAndWait(ctx, sb.ID, []string{"sleep", "999"}, ExecOptions{
+		Timeout: 50 * time.Millisecond,
+	})
+	if runErr == nil {
+		t.Fatal("expected stream setup timeout error from ExecAndWait")
+	}
+
+	select {
+	case <-adapter.runEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("execution never reached backend")
+	}
+
+	select {
+	case <-adapter.runCanceled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected execution to be canceled when stream setup fails")
 	}
 }
 

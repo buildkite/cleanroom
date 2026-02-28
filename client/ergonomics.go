@@ -357,6 +357,7 @@ func (c *Client) ExecAndWait(ctx context.Context, sandboxID string, command []st
 		Follow:      true,
 	})
 	if err != nil {
+		c.cancelExecutionBestEffort(sandboxID, executionID)
 		return nil, err
 	}
 
@@ -399,12 +400,7 @@ func (c *Client) ExecAndWait(ctx context.Context, sandboxID string, command []st
 	}
 	if streamErr := stream.Err(); streamErr != nil {
 		if errors.Is(execCtx.Err(), context.Canceled) || errors.Is(execCtx.Err(), context.DeadlineExceeded) {
-			cancelCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			_, _ = c.CancelExecution(cancelCtx, &CancelExecutionRequest{
-				SandboxId:   sandboxID,
-				ExecutionId: executionID,
-			})
-			cancel()
+			c.cancelExecutionBestEffort(sandboxID, executionID)
 		}
 		return nil, streamErr
 	}
@@ -430,4 +426,13 @@ func (c *Client) ExecAndWait(ctx context.Context, sandboxID string, command []st
 		Stdout:      stdoutBuf.String(),
 		Stderr:      stderrBuf.String(),
 	}, nil
+}
+
+func (c *Client) cancelExecutionBestEffort(sandboxID, executionID string) {
+	cancelCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, _ = c.CancelExecution(cancelCtx, &CancelExecutionRequest{
+		SandboxId:   sandboxID,
+		ExecutionId: executionID,
+	})
 }
