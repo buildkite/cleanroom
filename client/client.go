@@ -21,7 +21,7 @@ type Client struct {
 }
 
 type ensureKeyLock struct {
-	mu   sync.Mutex
+	gate chan struct{}
 	refs int
 }
 

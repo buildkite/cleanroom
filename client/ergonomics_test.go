@@ -129,12 +129,18 @@ func startIntegrationServerWithAdapter(t *testing.T, adapter backend.Adapter) st
 
 func startIntegrationServerWithAdapterAndExecutionHooks(t *testing.T, adapter backend.Adapter, hooks integrationExecutionHooks) string {
 	t.Helper()
+	return startIntegrationServerWithBackendsAndExecutionHooks(t, map[string]backend.Adapter{"firecracker": adapter}, hooks)
+}
 
+func startIntegrationServerWithBackendsAndExecutionHooks(t *testing.T, backends map[string]backend.Adapter, hooks integrationExecutionHooks) string {
+	t.Helper()
+
+	if len(backends) == 0 {
+		t.Fatal("expected at least one backend")
+	}
 	svc := &controlservice.Service{
-		Config: runtimeconfig.Config{DefaultBackend: "firecracker"},
-		Backends: map[string]backend.Adapter{
-			"firecracker": adapter,
-		},
+		Config:   runtimeconfig.Config{DefaultBackend: "firecracker"},
+		Backends: backends,
 	}
 
 	server := &integrationHookedServer{
@@ -262,6 +268,46 @@ func TestEnsureSandboxReusesKey(t *testing.T) {
 	}
 }
 
+func TestEnsureSandboxBackendChangeCreatesNewSandbox(t *testing.T) {
+	host := startIntegrationServerWithBackendsAndExecutionHooks(t, map[string]backend.Adapter{
+		"firecracker": integrationAdapter{},
+		"darwin-vz":   integrationAdapter{},
+	}, integrationExecutionHooks{})
+	c, err := New(host)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	ctx := context.Background()
+	first, err := c.EnsureSandbox(ctx, "thread:backend-switch", EnsureSandboxOptions{
+		Backend: "firecracker",
+		Policy:  testPolicy(),
+	})
+	if err != nil {
+		t.Fatalf("first EnsureSandbox returned error: %v", err)
+	}
+	if !first.Created {
+		t.Fatal("expected first ensure call to create sandbox")
+	}
+
+	second, err := c.EnsureSandbox(ctx, "thread:backend-switch", EnsureSandboxOptions{
+		Backend: "darwin-vz",
+		Policy:  testPolicy(),
+	})
+	if err != nil {
+		t.Fatalf("second EnsureSandbox returned error: %v", err)
+	}
+	if !second.Created {
+		t.Fatal("expected backend change to create a new sandbox")
+	}
+	if second.ID == first.ID {
+		t.Fatalf("expected backend change to return a different sandbox id, got %q", second.ID)
+	}
+	if second.Backend != "darwin-vz" {
+		t.Fatalf("expected replacement sandbox backend to be darwin-vz, got %q", second.Backend)
+	}
+}
+
 func TestEnsureSandboxReplacesTerminalSandbox(t *testing.T) {
 	host := startIntegrationServer(t)
 	c, err := New(host)
@@ -365,6 +411,60 @@ func TestEnsureSandboxSerializesConcurrentCreatesByKey(t *testing.T) {
 	}
 	if got := adapter.provisionCalls.Load(); got != 1 {
 		t.Fatalf("expected exactly one provision call, got %d", got)
+	}
+}
+
+func TestEnsureSandboxKeyLockHonorsContextCancellation(t *testing.T) {
+	adapter := &blockingPersistentAdapter{
+		provisionEntered: make(chan struct{}, 1),
+		provisionRelease: make(chan struct{}),
+	}
+	host := startIntegrationServerWithAdapter(t, adapter)
+
+	c, err := New(host)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	firstDone := make(chan error, 1)
+	go func() {
+		_, runErr := c.EnsureSandbox(context.Background(), "thread:ctx-lock", EnsureSandboxOptions{
+			Backend: "firecracker",
+			Policy:  testPolicy(),
+		})
+		firstDone <- runErr
+	}()
+
+	select {
+	case <-adapter.provisionEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first EnsureSandbox did not reach provisioning")
+	}
+
+	waitCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	started := time.Now()
+	_, secondErr := c.EnsureSandbox(waitCtx, "thread:ctx-lock", EnsureSandboxOptions{
+		Backend: "firecracker",
+		Policy:  testPolicy(),
+	})
+	if secondErr == nil {
+		t.Fatal("expected second EnsureSandbox to fail on context timeout while lock held")
+	}
+	if !errors.Is(secondErr, context.DeadlineExceeded) {
+		t.Fatalf("expected context deadline exceeded, got %v", secondErr)
+	}
+	if elapsed := time.Since(started); elapsed > 750*time.Millisecond {
+		t.Fatalf("EnsureSandbox lock wait ignored context timeout: elapsed=%s", elapsed)
+	}
+	if got := adapter.provisionCalls.Load(); got != 1 {
+		t.Fatalf("expected only first call to reach provisioning while second timed out, got %d", got)
+	}
+
+	close(adapter.provisionRelease)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first EnsureSandbox returned error: %v", err)
 	}
 }
 

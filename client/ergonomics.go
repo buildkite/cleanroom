@@ -182,8 +182,12 @@ func (c *Client) EnsureSandbox(ctx context.Context, key string, opts EnsureSandb
 	if trimmedKey == "" {
 		return nil, errors.New("missing key")
 	}
-	unlockKey := c.lockEnsureKey(trimmedKey)
+	unlockKey, err := c.lockEnsureKey(ctx, trimmedKey)
+	if err != nil {
+		return nil, err
+	}
 	defer unlockKey()
+	requestedBackend := strings.TrimSpace(opts.Backend)
 
 	if explicitID := strings.TrimSpace(opts.SandboxID); explicitID != "" {
 		handle, err := c.fetchSandboxHandle(ctx, explicitID, false)
@@ -198,9 +202,13 @@ func (c *Client) EnsureSandbox(ctx context.Context, key string, opts EnsureSandb
 		handle, err := c.fetchSandboxHandle(ctx, cachedID, false)
 		if err == nil {
 			if isReusableSandboxStatus(handle.Status) {
-				return handle, nil
+				if requestedBackend == "" || handle.Backend == requestedBackend {
+					return handle, nil
+				}
+				c.clearSandboxKey(trimmedKey)
+			} else {
+				c.clearSandboxKey(trimmedKey)
 			}
-			c.clearSandboxKey(trimmedKey)
 		} else if ErrCode(err) != ErrorCodeNotFound {
 			return nil, err
 		} else {
@@ -209,7 +217,7 @@ func (c *Client) EnsureSandbox(ctx context.Context, key string, opts EnsureSandb
 	}
 
 	createReq := &CreateSandboxRequest{
-		Backend: strings.TrimSpace(opts.Backend),
+		Backend: requestedBackend,
 		Options: opts.Options,
 		Policy:  opts.Policy,
 	}
@@ -274,20 +282,35 @@ func (c *Client) clearSandboxKey(key string) {
 	delete(c.sandboxByKey, key)
 }
 
-func (c *Client) lockEnsureKey(key string) func() {
+func (c *Client) lockEnsureKey(ctx context.Context, key string) (func(), error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	c.mu.Lock()
 	lock, ok := c.ensureLocks[key]
 	if !ok {
-		lock = &ensureKeyLock{}
+		lock = &ensureKeyLock{gate: make(chan struct{}, 1)}
+		lock.gate <- struct{}{}
 		c.ensureLocks[key] = lock
 	}
 	lock.refs++
 	c.mu.Unlock()
 
-	lock.mu.Lock()
+	select {
+	case <-ctx.Done():
+		c.mu.Lock()
+		lock.refs--
+		if lock.refs == 0 {
+			delete(c.ensureLocks, key)
+		}
+		c.mu.Unlock()
+		return nil, ctx.Err()
+	case <-lock.gate:
+	}
 
 	return func() {
-		lock.mu.Unlock()
+		lock.gate <- struct{}{}
 
 		c.mu.Lock()
 		lock.refs--
@@ -295,7 +318,7 @@ func (c *Client) lockEnsureKey(key string) func() {
 			delete(c.ensureLocks, key)
 		}
 		c.mu.Unlock()
-	}
+	}, nil
 }
 
 // ExecOptions controls how ExecAndWait streams command output.
