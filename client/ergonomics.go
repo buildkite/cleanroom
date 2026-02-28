@@ -297,9 +297,10 @@ func (c *Client) lockEnsureKey(key string) func() {
 
 // ExecOptions controls how ExecAndWait streams command output.
 type ExecOptions struct {
-	Stdout  io.Writer
-	Stderr  io.Writer
-	TTY     bool
+	Stdout io.Writer
+	Stderr io.Writer
+	TTY    bool
+	// Timeout bounds the stream/wait phase after execution creation.
 	Timeout time.Duration
 }
 
@@ -327,13 +328,6 @@ func (c *Client) ExecAndWait(ctx context.Context, sandboxID string, command []st
 		return nil, errors.New("missing command")
 	}
 
-	execCtx := ctx
-	cancel := func() {}
-	if opts.Timeout > 0 {
-		execCtx, cancel = context.WithTimeout(ctx, opts.Timeout)
-	}
-	defer cancel()
-
 	createReq := &CreateExecutionRequest{
 		SandboxId: sandboxID,
 		Command:   append([]string(nil), command...),
@@ -342,7 +336,7 @@ func (c *Client) ExecAndWait(ctx context.Context, sandboxID string, command []st
 		createReq.Options = &ExecutionOptions{Tty: true}
 	}
 
-	created, err := c.CreateExecution(execCtx, createReq)
+	created, err := c.CreateExecution(ctx, createReq)
 	if err != nil {
 		return nil, err
 	}
@@ -351,7 +345,14 @@ func (c *Client) ExecAndWait(ctx context.Context, sandboxID string, command []st
 		return nil, errors.New("create execution returned empty execution_id")
 	}
 
-	stream, err := c.StreamExecution(execCtx, &StreamExecutionRequest{
+	waitCtx := ctx
+	cancel := func() {}
+	if opts.Timeout > 0 {
+		waitCtx, cancel = context.WithTimeout(ctx, opts.Timeout)
+	}
+	defer cancel()
+
+	stream, err := c.StreamExecution(waitCtx, &StreamExecutionRequest{
 		SandboxId:   sandboxID,
 		ExecutionId: executionID,
 		Follow:      true,
@@ -399,14 +400,12 @@ func (c *Client) ExecAndWait(ctx context.Context, sandboxID string, command []st
 		}
 	}
 	if streamErr := stream.Err(); streamErr != nil {
-		if errors.Is(execCtx.Err(), context.Canceled) || errors.Is(execCtx.Err(), context.DeadlineExceeded) {
-			c.cancelExecutionBestEffort(sandboxID, executionID)
-		}
+		c.cancelExecutionBestEffort(sandboxID, executionID)
 		return nil, streamErr
 	}
 
 	if status == ExecutionStatus_EXECUTION_STATUS_UNSPECIFIED {
-		getResp, err := c.GetExecution(execCtx, &GetExecutionRequest{SandboxId: sandboxID, ExecutionId: executionID})
+		getResp, err := c.GetExecution(ctx, &GetExecutionRequest{SandboxId: sandboxID, ExecutionId: executionID})
 		if err != nil {
 			return nil, err
 		}

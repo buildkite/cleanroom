@@ -15,7 +15,10 @@ import (
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/controlserver"
 	"github.com/buildkite/cleanroom/internal/controlservice"
+	"github.com/buildkite/cleanroom/internal/gen/cleanroom/v1/cleanroomv1connect"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
+	"golang.org/x/net/http2"
+	"golang.org/x/net/http2/h2c"
 )
 
 type blockingPersistentAdapter struct {
@@ -69,11 +72,37 @@ func (a *cancelAwareStreamingAdapter) RunStream(ctx context.Context, req backend
 	return nil, ctx.Err()
 }
 
-func startIntegrationServerWithAdapter(t *testing.T, adapter backend.Adapter) string {
-	return startIntegrationServerWithAdapterAndHandler(t, adapter, nil)
+type integrationExecutionHooks struct {
+	beforeStreamExecution func(context.Context, *StreamExecutionRequest) error
+	onCancelExecution     func(*CancelExecutionRequest)
 }
 
-func startIntegrationServerWithAdapterAndHandler(t *testing.T, adapter backend.Adapter, wrap func(http.Handler) http.Handler) string {
+type integrationHookedServer struct {
+	*controlserver.Server
+	hooks integrationExecutionHooks
+}
+
+func (s *integrationHookedServer) StreamExecution(ctx context.Context, req *connect.Request[StreamExecutionRequest], stream *connect.ServerStream[ExecutionStreamEvent]) error {
+	if s.hooks.beforeStreamExecution != nil {
+		if err := s.hooks.beforeStreamExecution(ctx, req.Msg); err != nil {
+			return err
+		}
+	}
+	return s.Server.StreamExecution(ctx, req, stream)
+}
+
+func (s *integrationHookedServer) CancelExecution(ctx context.Context, req *connect.Request[CancelExecutionRequest]) (*connect.Response[CancelExecutionResponse], error) {
+	if s.hooks.onCancelExecution != nil && req != nil && req.Msg != nil {
+		s.hooks.onCancelExecution(req.Msg)
+	}
+	return s.Server.CancelExecution(ctx, req)
+}
+
+func startIntegrationServerWithAdapter(t *testing.T, adapter backend.Adapter) string {
+	return startIntegrationServerWithAdapterAndExecutionHooks(t, adapter, integrationExecutionHooks{})
+}
+
+func startIntegrationServerWithAdapterAndExecutionHooks(t *testing.T, adapter backend.Adapter, hooks integrationExecutionHooks) string {
 	t.Helper()
 
 	svc := &controlservice.Service{
@@ -83,10 +112,21 @@ func startIntegrationServerWithAdapterAndHandler(t *testing.T, adapter backend.A
 		},
 	}
 
-	handler := controlserver.New(svc, nil).Handler()
-	if wrap != nil {
-		handler = wrap(handler)
+	server := &integrationHookedServer{
+		Server: controlserver.New(svc, nil),
+		hooks:  hooks,
 	}
+	mux := http.NewServeMux()
+	sandboxPath, sandboxHandler := cleanroomv1connect.NewSandboxServiceHandler(server)
+	executionPath, executionHandler := cleanroomv1connect.NewExecutionServiceHandler(server)
+	mux.Handle(sandboxPath, sandboxHandler)
+	mux.Handle(executionPath, executionHandler)
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok\n"))
+	})
+
+	handler := h2c.NewHandler(mux, &http2.Server{})
 	httpServer := httptest.NewServer(handler)
 	t.Cleanup(httpServer.Close)
 	return httpServer.URL
@@ -405,7 +445,15 @@ func TestExecAndWaitTimeoutCancelsExecution(t *testing.T) {
 		runEntered:  make(chan struct{}, 1),
 		runCanceled: make(chan struct{}, 1),
 	}
-	host := startIntegrationServerWithAdapter(t, adapter)
+	cancelCalled := make(chan struct{}, 1)
+	host := startIntegrationServerWithAdapterAndExecutionHooks(t, adapter, integrationExecutionHooks{
+		onCancelExecution: func(*CancelExecutionRequest) {
+			select {
+			case cancelCalled <- struct{}{}:
+			default:
+			}
+		},
+	})
 	c, err := New(host)
 	if err != nil {
 		t.Fatalf("New returned error: %v", err)
@@ -445,8 +493,20 @@ func TestExecAndWaitTimeoutCancelsExecution(t *testing.T) {
 	}
 
 	select {
+	case <-cancelCalled:
+	case <-time.After(5 * time.Second):
+		runCanceledObserved := false
+		select {
+		case <-adapter.runCanceled:
+			runCanceledObserved = true
+		default:
+		}
+		t.Fatalf("expected ExecAndWait to request cancellation after timeout (runErr=%v runCanceledObserved=%t)", runErr, runCanceledObserved)
+	}
+
+	select {
 	case <-adapter.runCanceled:
-	case <-time.After(2 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("expected execution run context to be canceled after timeout")
 	}
 }
@@ -456,13 +516,23 @@ func TestExecAndWaitStreamSetupFailureCancelsExecution(t *testing.T) {
 		runEntered:  make(chan struct{}, 1),
 		runCanceled: make(chan struct{}, 1),
 	}
-	host := startIntegrationServerWithAdapterAndHandler(t, adapter, func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if strings.Contains(r.URL.Path, "ExecutionService/StreamExecution") {
-				time.Sleep(200 * time.Millisecond)
+	cancelCalled := make(chan struct{}, 1)
+	host := startIntegrationServerWithAdapterAndExecutionHooks(t, adapter, integrationExecutionHooks{
+		beforeStreamExecution: func(context.Context, *StreamExecutionRequest) error {
+			select {
+			case <-adapter.runEntered:
+			case <-time.After(2 * time.Second):
+				return errors.New("execution did not reach backend before stream delay")
 			}
-			next.ServeHTTP(w, r)
-		})
+			time.Sleep(200 * time.Millisecond)
+			return nil
+		},
+		onCancelExecution: func(*CancelExecutionRequest) {
+			select {
+			case cancelCalled <- struct{}{}:
+			default:
+			}
+		},
 	})
 	c, err := New(host)
 	if err != nil {
@@ -486,14 +556,14 @@ func TestExecAndWaitStreamSetupFailureCancelsExecution(t *testing.T) {
 	}
 
 	select {
-	case <-adapter.runEntered:
-	case <-time.After(2 * time.Second):
-		t.Fatal("execution never reached backend")
+	case <-cancelCalled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("expected ExecAndWait to request cancellation when stream setup fails")
 	}
 
 	select {
 	case <-adapter.runCanceled:
-	case <-time.After(2 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("expected execution to be canceled when stream setup fails")
 	}
 }
