@@ -814,13 +814,11 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 	select {
 	case <-secondInterrupt:
 		detached = true
-		if e.Remove {
-			terminateCtx, terminateCancel := context.WithTimeout(context.Background(), 2*time.Second)
-			_, terminateErr := client.TerminateSandbox(terminateCtx, &cleanroomv1.TerminateSandboxRequest{SandboxId: sandboxID})
-			terminateCancel()
-			if terminateErr != nil && logger != nil {
-				logger.Warn("terminate sandbox after detach failed", "sandbox_id", sandboxID, "error", terminateErr)
-			}
+		terminateCtx, terminateCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_, terminateErr := client.TerminateSandbox(terminateCtx, &cleanroomv1.TerminateSandboxRequest{SandboxId: sandboxID})
+		terminateCancel()
+		if terminateErr != nil && logger != nil {
+			logger.Warn("terminate sandbox after detach failed", "sandbox_id", sandboxID, "error", terminateErr)
 		}
 		return exitCodeError{code: 130}
 	default:
