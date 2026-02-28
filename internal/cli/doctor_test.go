@@ -47,6 +47,7 @@ func (doctorFailingLoader) LoadAndCompile(string) (*policy.CompiledPolicy, strin
 
 func TestDoctorCommandJSONIncludesCapabilities(t *testing.T) {
 	t.Setenv("CLEANROOM_GITHUB_TOKEN", "ghp_testtoken")
+	t.Setenv("CLEANROOM_GITLAB_TOKEN", "")
 
 	tmpDir := t.TempDir()
 	stdoutPath := filepath.Join(tmpDir, "doctor.json")
