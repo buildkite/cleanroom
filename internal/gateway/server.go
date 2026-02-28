@@ -15,13 +15,18 @@ import (
 const (
 	DefaultPort       = 8170
 	DefaultListenAddr = ":8170"
+
+	RouteGit      = "/git/"
+	RouteRegistry = "/registry/"
+	RouteSecrets  = "/secrets/"
+	RouteMeta     = "/meta/"
 )
 
 var serviceRoutes = []string{
-	"/git/",
-	"/registry/",
-	"/secrets/",
-	"/meta/",
+	RouteGit,
+	RouteRegistry,
+	RouteSecrets,
+	RouteMeta,
 }
 
 // Routes returns the configured gateway service route prefixes.
@@ -78,10 +83,10 @@ func NewServer(cfg ServerConfig) *Server {
 	}
 
 	mux := http.NewServeMux()
-	mux.Handle(serviceRoutes[0], newGitHandler(cfg.Credentials, cfg.Logger))
-	mux.HandleFunc(serviceRoutes[1], stubHandler("registry"))
-	mux.HandleFunc(serviceRoutes[2], stubHandler("secrets"))
-	mux.HandleFunc(serviceRoutes[3], stubHandler("meta"))
+	mux.Handle(RouteGit, newGitHandler(cfg.Credentials, cfg.Logger))
+	mux.HandleFunc(RouteRegistry, stubHandler("registry"))
+	mux.HandleFunc(RouteSecrets, stubHandler("secrets"))
+	mux.HandleFunc(RouteMeta, stubHandler("meta"))
 
 	s.httpServer = &http.Server{
 		Handler: s.identityMiddleware(s.pathMiddleware(mux)),
