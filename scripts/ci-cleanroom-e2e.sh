@@ -183,6 +183,41 @@ if ! grep -q '^cleanroom-e2e$' "$tmpdir/exec.out"; then
   exit 1
 fi
 
+echo "--- :satellite: Git gateway allow/deny test"
+./dist/cleanroom exec --host "$listen_endpoint" -c "$PWD" -- sh -lc 'git ls-remote https://github.com/buildkite/cleanroom.git HEAD >/dev/null'
+
+set +e
+# shellcheck disable=SC2016
+./dist/cleanroom exec --host "$listen_endpoint" -c "$PWD" -- sh -lc '
+  set -eu
+  key="$(env | awk -F= '"'"'/^GIT_CONFIG_KEY_[0-9]+=url\.http:\/\/.+\/git\/github\.com\/\.insteadOf$/ {print $2; exit}'"'"')"
+  if [ -z "$key" ]; then
+    echo "failed to discover injected git gateway rewrite key" >&2
+    exit 2
+  fi
+  gw="${key#url.}"
+  gw="${gw%/github.com/.insteadOf}"
+  git ls-remote "${gw}/gitlab.com/gitlab-org/gitlab.git" HEAD
+' >"$tmpdir/git-deny.out" 2>"$tmpdir/git-deny.err"
+git_deny_status=$?
+set -e
+
+if [[ "$git_deny_status" -eq 0 ]]; then
+  echo "expected disallowed host to fail through git gateway, but command succeeded" >&2
+  cat "$tmpdir/git-deny.out" >&2 || true
+  cat "$tmpdir/git-deny.err" >&2 || true
+  exit 1
+fi
+
+if ! grep -q 'host_not_allowed' "$tmpdir/git-deny.err" && ! grep -q 'reason_code=host_not_allowed' "$tmpdir/server.log"; then
+  echo "expected host_not_allowed signal in git deny stderr or gateway logs" >&2
+  echo "--- git deny stderr ---" >&2
+  cat "$tmpdir/git-deny.err" >&2 || true
+  echo "--- gateway log tail ---" >&2
+  tail -n 40 "$tmpdir/server.log" >&2 || true
+  exit 1
+fi
+
 echo "--- :warning: Exit code propagation test"
 set +e
 ./dist/cleanroom exec --host "$listen_endpoint" -c "$PWD" -- sh -lc 'exit 7' >"$tmpdir/exit7.out" 2>"$tmpdir/exit7.err"
