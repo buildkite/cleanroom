@@ -1,6 +1,6 @@
 # Docker-In-Guest Example
 
-This example boots a sandbox from the Docker image, auto-starts `dockerd` in guest init, and runs `docker` commands inside the sandbox.
+This example boots a sandbox from the Docker image, enables the explicit Docker service contract in policy, and runs `docker` commands inside the sandbox.
 
 ## Prerequisites
 
@@ -12,7 +12,7 @@ mise run install
 
 ## Files
 
-- `cleanroom.yaml`: digest-pinned Docker image ref and a deny-by-default network allowlist for Docker Hub pull endpoints.
+- `cleanroom.yaml`: digest-pinned Docker image ref, `sandbox.services.docker.required: true`, and a deny-by-default network allowlist for Docker Hub pull endpoints.
 
 ## Quick test flow
 

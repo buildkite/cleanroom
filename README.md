@@ -226,6 +226,15 @@ sandbox:
         ports: [443]
 ```
 
+Enable Docker as an explicit guest service:
+
+```yaml
+sandbox:
+  services:
+    docker:
+      required: true
+```
+
 ## Runtime Config
 
 Runtime config path: `$XDG_CONFIG_HOME/cleanroom/config.yaml` (or `~/.config/cleanroom/config.yaml`).

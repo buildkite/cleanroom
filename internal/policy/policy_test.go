@@ -159,6 +159,21 @@ func TestCompileCapturesImageDigest(t *testing.T) {
 	}
 }
 
+func TestCompileCapturesDockerServiceRequirement(t *testing.T) {
+	t.Parallel()
+
+	raw := baseRawPolicy()
+	raw.Sandbox.Services.Docker.Required = true
+
+	compiled, err := Compile(raw)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if !compiled.Services.Docker.Required {
+		t.Fatal("expected compiled policy to require docker service")
+	}
+}
+
 func TestLoadPropagatesPrimaryStatError(t *testing.T) {
 	t.Parallel()
 
@@ -216,5 +231,26 @@ func TestFromProtoCanonicalisesAllowRules(t *testing.T) {
 	}
 	if got, want := compiled.Allow[0].Ports, []int{80, 443}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
 		t.Fatalf("expected deduplicated/sorted ports %v, got %v", want, got)
+	}
+}
+
+func TestFromProtoPropagatesDockerServiceRequirement(t *testing.T) {
+	t.Parallel()
+
+	compiled, err := FromProto(&cleanroomv1.Policy{
+		Version:        1,
+		ImageRef:       validImageRef,
+		NetworkDefault: "deny",
+		Services: &cleanroomv1.PolicyServices{
+			Docker: &cleanroomv1.PolicyDockerService{
+				Required: true,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("FromProto returned error: %v", err)
+	}
+	if !compiled.Services.Docker.Required {
+		t.Fatal("expected docker service requirement from proto policy")
 	}
 }

@@ -29,11 +29,20 @@ type rawPolicy struct {
 		Image struct {
 			Ref string `yaml:"ref"`
 		} `yaml:"image"`
-		Network struct {
+		Services rawServices `yaml:"services"`
+		Network  struct {
 			Default string         `yaml:"default"`
 			Allow   []rawAllowRule `yaml:"allow"`
 		} `yaml:"network"`
 	} `yaml:"sandbox"`
+}
+
+type rawServices struct {
+	Docker rawDockerService `yaml:"docker"`
+}
+
+type rawDockerService struct {
+	Required bool `yaml:"required"`
 }
 
 type rawAllowRule struct {
@@ -45,9 +54,18 @@ type CompiledPolicy struct {
 	Version        int         `json:"version"`
 	ImageRef       string      `json:"image_ref"`
 	ImageDigest    string      `json:"image_digest"`
+	Services       Services    `json:"services"`
 	NetworkDefault string      `json:"network_default"`
 	Allow          []AllowRule `json:"allow"`
 	Hash           string      `json:"hash"`
+}
+
+type Services struct {
+	Docker DockerService `json:"docker"`
+}
+
+type DockerService struct {
+	Required bool `json:"required"`
 }
 
 type AllowRule struct {
@@ -150,9 +168,14 @@ func Compile(raw rawPolicy) (*CompiledPolicy, error) {
 	})
 
 	compiled := &CompiledPolicy{
-		Version:        raw.Version,
-		ImageRef:       parsedRef.Original,
-		ImageDigest:    parsedRef.Digest(),
+		Version:     raw.Version,
+		ImageRef:    parsedRef.Original,
+		ImageDigest: parsedRef.Digest(),
+		Services: Services{
+			Docker: DockerService{
+				Required: raw.Sandbox.Services.Docker.Required,
+			},
+		},
 		NetworkDefault: networkDefault,
 		Allow:          allow,
 	}
@@ -179,6 +202,13 @@ func (p *CompiledPolicy) Allows(host string, port int) bool {
 		}
 	}
 	return false
+}
+
+func (p *CompiledPolicy) RequiresDockerService() bool {
+	if p == nil {
+		return false
+	}
+	return p.Services.Docker.Required
 }
 
 func readPolicy(path string) (rawPolicy, error) {
@@ -223,9 +253,14 @@ func (p *CompiledPolicy) ToProto() *cleanroomv1.Policy {
 		})
 	}
 	return &cleanroomv1.Policy{
-		Version:        int32(p.Version),
-		ImageRef:       p.ImageRef,
-		ImageDigest:    p.ImageDigest,
+		Version:     int32(p.Version),
+		ImageRef:    p.ImageRef,
+		ImageDigest: p.ImageDigest,
+		Services: &cleanroomv1.PolicyServices{
+			Docker: &cleanroomv1.PolicyDockerService{
+				Required: p.Services.Docker.Required,
+			},
+		},
 		NetworkDefault: p.NetworkDefault,
 		Allow:          allow,
 		Hash:           p.Hash,
@@ -293,9 +328,14 @@ func FromProto(pb *cleanroomv1.Policy) (*CompiledPolicy, error) {
 	})
 
 	compiled := &CompiledPolicy{
-		Version:        int(pb.GetVersion()),
-		ImageRef:       parsedRef.Original,
-		ImageDigest:    parsedRef.Digest(),
+		Version:     int(pb.GetVersion()),
+		ImageRef:    parsedRef.Original,
+		ImageDigest: parsedRef.Digest(),
+		Services: Services{
+			Docker: DockerService{
+				Required: pb.GetServices().GetDocker().GetRequired(),
+			},
+		},
 		NetworkDefault: networkDefault,
 		Allow:          allow,
 	}

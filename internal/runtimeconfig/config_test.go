@@ -19,6 +19,11 @@ backends:
   darwin-vz:
     kernel_image: /tmp/kernel
     rootfs: /tmp/rootfs
+    services:
+      docker:
+        startup_timeout_seconds: 25
+        storage_driver: overlay2
+        iptables: true
     vcpus: 2
     memory_mib: 1024
     guest_port: 10700
@@ -34,6 +39,15 @@ backends:
 	}
 	if got, want := cfg.Backends.DarwinVZ.KernelImage, "/tmp/kernel"; got != want {
 		t.Fatalf("unexpected darwin-vz kernel: got %q want %q", got, want)
+	}
+	if got, want := cfg.Backends.DarwinVZ.Services.Docker.StartupTimeoutSeconds, int64(25); got != want {
+		t.Fatalf("unexpected docker startup timeout: got %d want %d", got, want)
+	}
+	if got, want := cfg.Backends.DarwinVZ.Services.Docker.StorageDriver, "overlay2"; got != want {
+		t.Fatalf("unexpected docker storage driver: got %q want %q", got, want)
+	}
+	if !cfg.Backends.DarwinVZ.Services.Docker.IPTables {
+		t.Fatal("expected docker iptables to be enabled")
 	}
 }
 

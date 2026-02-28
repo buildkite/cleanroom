@@ -142,6 +142,9 @@ type FirecrackerConfig struct {
 	BinaryPath           string
 	KernelImagePath      string
 	RootFSPath           string
+	DockerStartupSeconds int64
+	DockerStorageDriver  string
+	DockerIPTables       bool
 	PrivilegedMode       string
 	PrivilegedHelperPath string
 	RunDir               string

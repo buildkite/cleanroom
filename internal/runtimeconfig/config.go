@@ -21,25 +21,37 @@ type Backends struct {
 }
 
 type FirecrackerConfig struct {
-	BinaryPath           string `yaml:"binary_path"`
-	KernelImage          string `yaml:"kernel_image"`
-	RootFS               string `yaml:"rootfs"`
-	PrivilegedMode       string `yaml:"privileged_mode"`
-	PrivilegedHelperPath string `yaml:"privileged_helper_path"`
-	VCPUs                int64  `yaml:"vcpus"`
-	MemoryMiB            int64  `yaml:"memory_mib"`
-	GuestCID             uint32 `yaml:"guest_cid"`
-	GuestPort            uint32 `yaml:"guest_port"`
-	LaunchSeconds        int64  `yaml:"launch_seconds"` // VM boot/guest-agent readiness timeout
+	BinaryPath           string         `yaml:"binary_path"`
+	KernelImage          string         `yaml:"kernel_image"`
+	RootFS               string         `yaml:"rootfs"`
+	Services             ServicesConfig `yaml:"services"`
+	PrivilegedMode       string         `yaml:"privileged_mode"`
+	PrivilegedHelperPath string         `yaml:"privileged_helper_path"`
+	VCPUs                int64          `yaml:"vcpus"`
+	MemoryMiB            int64          `yaml:"memory_mib"`
+	GuestCID             uint32         `yaml:"guest_cid"`
+	GuestPort            uint32         `yaml:"guest_port"`
+	LaunchSeconds        int64          `yaml:"launch_seconds"` // VM boot/guest-agent readiness timeout
 }
 
 type DarwinVZConfig struct {
-	KernelImage   string `yaml:"kernel_image"`
-	RootFS        string `yaml:"rootfs"`
-	VCPUs         int64  `yaml:"vcpus"`
-	MemoryMiB     int64  `yaml:"memory_mib"`
-	GuestPort     uint32 `yaml:"guest_port"`
-	LaunchSeconds int64  `yaml:"launch_seconds"` // VM boot/guest-agent readiness timeout
+	KernelImage   string         `yaml:"kernel_image"`
+	RootFS        string         `yaml:"rootfs"`
+	Services      ServicesConfig `yaml:"services"`
+	VCPUs         int64          `yaml:"vcpus"`
+	MemoryMiB     int64          `yaml:"memory_mib"`
+	GuestPort     uint32         `yaml:"guest_port"`
+	LaunchSeconds int64          `yaml:"launch_seconds"` // VM boot/guest-agent readiness timeout
+}
+
+type ServicesConfig struct {
+	Docker DockerServiceConfig `yaml:"docker"`
+}
+
+type DockerServiceConfig struct {
+	StartupTimeoutSeconds int64  `yaml:"startup_timeout_seconds"`
+	StorageDriver         string `yaml:"storage_driver"`
+	IPTables              bool   `yaml:"iptables"`
 }
 
 func Path() (string, error) {
@@ -91,6 +103,9 @@ func Load() (Config, string, error) {
 func darwinVZConfigIsZero(cfg DarwinVZConfig) bool {
 	return strings.TrimSpace(cfg.KernelImage) == "" &&
 		strings.TrimSpace(cfg.RootFS) == "" &&
+		cfg.Services.Docker.StartupTimeoutSeconds == 0 &&
+		strings.TrimSpace(cfg.Services.Docker.StorageDriver) == "" &&
+		!cfg.Services.Docker.IPTables &&
 		cfg.VCPUs == 0 &&
 		cfg.MemoryMiB == 0 &&
 		cfg.GuestPort == 0 &&

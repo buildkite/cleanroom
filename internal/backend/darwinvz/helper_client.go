@@ -31,6 +31,7 @@ type helperControlRequest struct {
 	Op              string `json:"op"`
 	KernelPath      string `json:"kernel_path,omitempty"`
 	RootFSPath      string `json:"rootfs_path,omitempty"`
+	BootArgs        string `json:"boot_args,omitempty"`
 	VCPUs           int64  `json:"vcpus,omitempty"`
 	MemoryMiB       int64  `json:"memory_mib,omitempty"`
 	GuestPort       uint32 `json:"guest_port,omitempty"`
