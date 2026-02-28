@@ -17,6 +17,12 @@ type Client struct {
 
 	mu           sync.Mutex
 	sandboxByKey map[string]string
+	ensureLocks  map[string]*ensureKeyLock
+}
+
+type ensureKeyLock struct {
+	mu   sync.Mutex
+	refs int
 }
 
 // TLSOptions configures optional TLS material for HTTPS connections.
@@ -75,6 +81,7 @@ func New(host string, opts ...Option) (*Client, error) {
 	return &Client{
 		inner:        inner,
 		sandboxByKey: map[string]string{},
+		ensureLocks:  map[string]*ensureKeyLock{},
 	}, nil
 }
 

@@ -4,12 +4,59 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/buildkite/cleanroom/internal/backend"
+	"github.com/buildkite/cleanroom/internal/controlserver"
+	"github.com/buildkite/cleanroom/internal/controlservice"
+	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 )
+
+type blockingPersistentAdapter struct {
+	integrationAdapter
+	provisionEntered chan struct{}
+	provisionRelease chan struct{}
+	provisionCalls   atomic.Int32
+}
+
+func (a *blockingPersistentAdapter) ProvisionSandbox(context.Context, backend.ProvisionRequest) error {
+	a.provisionCalls.Add(1)
+	if a.provisionEntered != nil {
+		a.provisionEntered <- struct{}{}
+	}
+	if a.provisionRelease != nil {
+		<-a.provisionRelease
+	}
+	return nil
+}
+
+func (a *blockingPersistentAdapter) RunInSandbox(ctx context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+	return a.RunStream(ctx, req, stream)
+}
+
+func (a *blockingPersistentAdapter) TerminateSandbox(context.Context, string) error {
+	return nil
+}
+
+func startIntegrationServerWithAdapter(t *testing.T, adapter backend.Adapter) string {
+	t.Helper()
+
+	svc := &controlservice.Service{
+		Config: runtimeconfig.Config{DefaultBackend: "firecracker"},
+		Backends: map[string]backend.Adapter{
+			"firecracker": adapter,
+		},
+	}
+
+	httpServer := httptest.NewServer(controlserver.New(svc, nil).Handler())
+	t.Cleanup(httpServer.Close)
+	return httpServer.URL
+}
 
 func TestNewFromEnvUsesCLEANROOMHOST(t *testing.T) {
 	host := startIntegrationServer(t)
@@ -94,6 +141,112 @@ func TestEnsureSandboxReusesKey(t *testing.T) {
 	}
 	if first.ID != second.ID {
 		t.Fatalf("expected same sandbox id, got %q and %q", first.ID, second.ID)
+	}
+}
+
+func TestEnsureSandboxReplacesTerminalSandbox(t *testing.T) {
+	host := startIntegrationServer(t)
+	c, err := New(host)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	ctx := context.Background()
+	first, err := c.EnsureSandbox(ctx, "thread:terminal", EnsureSandboxOptions{
+		Backend: "firecracker",
+		Policy:  testPolicy(),
+	})
+	if err != nil {
+		t.Fatalf("first EnsureSandbox returned error: %v", err)
+	}
+	if _, err := c.TerminateSandbox(ctx, &TerminateSandboxRequest{SandboxId: first.ID}); err != nil {
+		t.Fatalf("TerminateSandbox returned error: %v", err)
+	}
+
+	second, err := c.EnsureSandbox(ctx, "thread:terminal", EnsureSandboxOptions{
+		Backend: "firecracker",
+		Policy:  testPolicy(),
+	})
+	if err != nil {
+		t.Fatalf("second EnsureSandbox returned error: %v", err)
+	}
+	if second == nil {
+		t.Fatal("expected second sandbox handle")
+	}
+	if !second.Created {
+		t.Fatal("expected terminal sandbox to be replaced with a newly created sandbox")
+	}
+	if second.ID == first.ID {
+		t.Fatalf("expected replacement sandbox id to differ: got %q", second.ID)
+	}
+}
+
+func TestEnsureSandboxSerializesConcurrentCreatesByKey(t *testing.T) {
+	adapter := &blockingPersistentAdapter{
+		provisionEntered: make(chan struct{}, 2),
+		provisionRelease: make(chan struct{}),
+	}
+	host := startIntegrationServerWithAdapter(t, adapter)
+
+	c, err := New(host)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	type ensureResult struct {
+		handle *SandboxHandle
+		err    error
+	}
+	firstDone := make(chan ensureResult, 1)
+	secondDone := make(chan ensureResult, 1)
+
+	go func() {
+		handle, runErr := c.EnsureSandbox(context.Background(), "thread:concurrent", EnsureSandboxOptions{
+			Backend: "firecracker",
+			Policy:  testPolicy(),
+		})
+		firstDone <- ensureResult{handle: handle, err: runErr}
+	}()
+
+	select {
+	case <-adapter.provisionEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first EnsureSandbox did not reach provisioning")
+	}
+
+	go func() {
+		handle, runErr := c.EnsureSandbox(context.Background(), "thread:concurrent", EnsureSandboxOptions{
+			Backend: "firecracker",
+			Policy:  testPolicy(),
+		})
+		secondDone <- ensureResult{handle: handle, err: runErr}
+	}()
+
+	select {
+	case <-adapter.provisionEntered:
+		t.Fatal("second EnsureSandbox should not start provisioning while first is in-flight")
+	case <-time.After(250 * time.Millisecond):
+		// expected: second call waits for first to complete and map the key
+	}
+
+	close(adapter.provisionRelease)
+
+	first := <-firstDone
+	if first.err != nil {
+		t.Fatalf("first EnsureSandbox returned error: %v", first.err)
+	}
+	second := <-secondDone
+	if second.err != nil {
+		t.Fatalf("second EnsureSandbox returned error: %v", second.err)
+	}
+	if first.handle == nil || second.handle == nil {
+		t.Fatal("expected both EnsureSandbox calls to return handles")
+	}
+	if first.handle.ID != second.handle.ID {
+		t.Fatalf("expected concurrent calls to reuse one sandbox id, got %q and %q", first.handle.ID, second.handle.ID)
+	}
+	if got := adapter.provisionCalls.Load(); got != 1 {
+		t.Fatalf("expected exactly one provision call, got %d", got)
 	}
 }
 

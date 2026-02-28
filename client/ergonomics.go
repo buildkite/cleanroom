@@ -179,6 +179,8 @@ func (c *Client) EnsureSandbox(ctx context.Context, key string, opts EnsureSandb
 	if trimmedKey == "" {
 		return nil, errors.New("missing key")
 	}
+	unlockKey := c.lockEnsureKey(trimmedKey)
+	defer unlockKey()
 
 	if explicitID := strings.TrimSpace(opts.SandboxID); explicitID != "" {
 		handle, err := c.fetchSandboxHandle(ctx, explicitID, false)
@@ -191,13 +193,16 @@ func (c *Client) EnsureSandbox(ctx context.Context, key string, opts EnsureSandb
 
 	if cachedID, ok := c.lookupSandboxKey(trimmedKey); ok {
 		handle, err := c.fetchSandboxHandle(ctx, cachedID, false)
-		if err == nil && !isTerminalSandboxStatus(handle.Status) {
-			return handle, nil
-		}
-		if ErrCode(err) != ErrorCodeNotFound {
+		if err == nil {
+			if !isTerminalSandboxStatus(handle.Status) {
+				return handle, nil
+			}
+			c.clearSandboxKey(trimmedKey)
+		} else if ErrCode(err) != ErrorCodeNotFound {
 			return nil, err
+		} else {
+			c.clearSandboxKey(trimmedKey)
 		}
-		c.clearSandboxKey(trimmedKey)
 	}
 
 	createReq := &CreateSandboxRequest{
@@ -264,6 +269,30 @@ func (c *Client) clearSandboxKey(key string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	delete(c.sandboxByKey, key)
+}
+
+func (c *Client) lockEnsureKey(key string) func() {
+	c.mu.Lock()
+	lock, ok := c.ensureLocks[key]
+	if !ok {
+		lock = &ensureKeyLock{}
+		c.ensureLocks[key] = lock
+	}
+	lock.refs++
+	c.mu.Unlock()
+
+	lock.mu.Lock()
+
+	return func() {
+		lock.mu.Unlock()
+
+		c.mu.Lock()
+		lock.refs--
+		if lock.refs == 0 {
+			delete(c.ensureLocks, key)
+		}
+		c.mu.Unlock()
+	}
 }
 
 // ExecOptions controls how ExecAndWait streams command output.
