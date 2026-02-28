@@ -26,3 +26,29 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  release-darwin-vz:
+    runs-on: macos-latest
+    needs: release
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build cleanroom-darwin-vz
+        run: |
+          mkdir -p dist
+          xcrun swiftc -O -framework Virtualization \
+            cmd/cleanroom-darwin-vz/main.swift \
+            -o dist/cleanroom-darwin-vz
+
+      - name: Create archive
+        run: |
+          cp cmd/cleanroom-darwin-vz/entitlements.plist dist/
+          tar -czf "dist/cleanroom-darwin-vz_Darwin_arm64.tar.gz" \
+            -C dist cleanroom-darwin-vz entitlements.plist
+
+      - name: Upload to release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ github.ref_name }}" \
+            dist/cleanroom-darwin-vz_Darwin_arm64.tar.gz
