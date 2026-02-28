@@ -12,7 +12,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -28,6 +27,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/imagemgr"
 	"github.com/buildkite/cleanroom/internal/paths"
 	"github.com/buildkite/cleanroom/internal/vsockexec"
+	"github.com/charmbracelet/log"
 )
 
 // Adapter runs single-execution Linux VMs on macOS via Virtualization.framework.
@@ -1016,10 +1016,10 @@ func logRunNotice(backendName, runID, notice string) {
 	if msg == "" {
 		return
 	}
+	fields := []any{"backend", strings.TrimSpace(backendName)}
 	id := strings.TrimSpace(runID)
-	if id == "" {
-		log.Printf("%s: %s", backendName, msg)
-		return
+	if id != "" {
+		fields = append(fields, "run_id", id)
 	}
-	log.Printf("%s run_id=%s: %s", backendName, id, msg)
+	log.Info(msg, fields...)
 }

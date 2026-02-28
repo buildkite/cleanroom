@@ -2,7 +2,13 @@
 
 package darwinvz
 
-import "testing"
+import (
+	"bytes"
+	"strings"
+	"testing"
+
+	"github.com/charmbracelet/log"
+)
 
 func TestDarwinVZResultMessageEmptyWithoutGuestError(t *testing.T) {
 	if got := darwinVZResultMessage(""); got != "" {
@@ -41,5 +47,32 @@ func TestBuildRuntimeWarningsIncludesPolicyWarningWhenPresent(t *testing.T) {
 	}
 	if warnings[1] != guestNetworkUnavailableWarning {
 		t.Fatalf("unexpected guest networking warning: got %q", warnings[1])
+	}
+}
+
+func TestLogRunNoticeUsesCharmLogger(t *testing.T) {
+	prev := log.Default()
+	t.Cleanup(func() {
+		log.SetDefault(prev)
+	})
+
+	var buf bytes.Buffer
+	logger := log.NewWithOptions(&buf, log.Options{
+		Level:     log.InfoLevel,
+		Formatter: log.TextFormatter,
+	})
+	log.SetDefault(logger)
+
+	logRunNotice("darwin-vz", "run-123", "using managed kernel asset my-kernel (cache hit)")
+
+	out := buf.String()
+	if !strings.Contains(out, "using managed kernel asset my-kernel (cache hit)") {
+		t.Fatalf("expected notice text in logger output, got %q", out)
+	}
+	if !strings.Contains(out, "backend=darwin-vz") {
+		t.Fatalf("expected backend field in logger output, got %q", out)
+	}
+	if !strings.Contains(out, "run_id=run-123") {
+		t.Fatalf("expected run_id field in logger output, got %q", out)
 	}
 }

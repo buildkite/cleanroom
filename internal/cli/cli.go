@@ -1173,6 +1173,7 @@ func (s *ServeCommand) Run(ctx *runtimeContext) error {
 	if err != nil {
 		return err
 	}
+	log.SetDefault(logger)
 
 	gwRegistry := gateway.NewRegistry()
 	gwCredentials := gateway.NewEnvCredentialProvider()
