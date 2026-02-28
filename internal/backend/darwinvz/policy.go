@@ -6,7 +6,7 @@ import (
 )
 
 const allowRulesIgnoredWarning = "darwin-vz ignores sandbox.network.allow entries; allowlist egress filtering is not implemented"
-const guestNetworkUnavailableWarning = "darwin-vz currently exposes no guest network interface; guest outbound networking is unavailable"
+const guestNetworkUnavailableWarning = "darwin-vz guest networking is enabled without host-side egress filtering"
 
 func evaluateNetworkPolicy(networkDefault string, allowCount int) (string, error) {
 	if strings.TrimSpace(networkDefault) != "deny" {

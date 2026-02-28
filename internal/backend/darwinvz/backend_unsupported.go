@@ -10,7 +10,11 @@ import (
 	"github.com/buildkite/cleanroom/internal/backend"
 )
 
-type Adapter struct{}
+type Adapter struct {
+	GatewayRegistry gatewayRegistry
+	GatewayPort     int
+	GatewayHost     string
+}
 
 func New() *Adapter {
 	return &Adapter{}
@@ -24,7 +28,7 @@ func (a *Adapter) Capabilities() map[string]bool {
 	return map[string]bool{
 		backend.CapabilityNetworkDefaultDeny:     true,
 		backend.CapabilityNetworkAllowlistEgress: false,
-		backend.CapabilityNetworkGuestInterface:  false,
+		backend.CapabilityNetworkGuestInterface:  true,
 	}
 }
 

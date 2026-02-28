@@ -6,7 +6,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/backend"
 )
 
-func TestCapabilitiesDeclareNoGuestNetworkInterface(t *testing.T) {
+func TestCapabilitiesDeclareGuestNetworkInterfaceWithoutAllowlistFiltering(t *testing.T) {
 	caps := New().Capabilities()
 
 	if !caps[backend.CapabilityNetworkDefaultDeny] {
@@ -15,7 +15,7 @@ func TestCapabilitiesDeclareNoGuestNetworkInterface(t *testing.T) {
 	if caps[backend.CapabilityNetworkAllowlistEgress] {
 		t.Fatalf("expected %s=false", backend.CapabilityNetworkAllowlistEgress)
 	}
-	if caps[backend.CapabilityNetworkGuestInterface] {
-		t.Fatalf("expected %s=false", backend.CapabilityNetworkGuestInterface)
+	if !caps[backend.CapabilityNetworkGuestInterface] {
+		t.Fatalf("expected %s=true", backend.CapabilityNetworkGuestInterface)
 	}
 }

@@ -24,6 +24,7 @@ import (
 
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/bootassets"
+	"github.com/buildkite/cleanroom/internal/gateway"
 	"github.com/buildkite/cleanroom/internal/hosttools"
 	"github.com/buildkite/cleanroom/internal/imagemgr"
 	"github.com/buildkite/cleanroom/internal/paths"
@@ -48,6 +49,10 @@ type Adapter struct {
 	runtimeImageMu sync.Mutex
 
 	ensurePreparedRootFSFn func(context.Context, string) (preparedRootFS, error)
+
+	GatewayRegistry gatewayRegistry
+	GatewayPort     int
+	GatewayHost     string
 }
 
 type imageEnsurer interface {
@@ -80,6 +85,34 @@ mount -t tmpfs tmpfs /tmp 2>/dev/null || true
 
 export HOME=/root
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/root/.local/bin
+
+setup_guest_network() {
+  NET_IFACE=""
+  for cand in /sys/class/net/*; do
+    name="$(basename "$cand")"
+    if [ "$name" = "lo" ]; then
+      continue
+    fi
+    NET_IFACE="$name"
+    break
+  done
+  if [ -z "$NET_IFACE" ]; then
+    return 0
+  fi
+
+  if command -v ip >/dev/null 2>&1; then
+    ip link set "$NET_IFACE" up 2>/dev/null || true
+  elif command -v ifconfig >/dev/null 2>&1; then
+    ifconfig "$NET_IFACE" up 2>/dev/null || true
+  fi
+
+  if command -v udhcpc >/dev/null 2>&1; then
+    udhcpc -q -n -t 3 -T 3 -i "$NET_IFACE" >/dev/null 2>&1 || true
+  elif command -v dhclient >/dev/null 2>&1; then
+    dhclient -1 "$NET_IFACE" >/dev/null 2>&1 || true
+  fi
+}
+setup_guest_network
 
 cmdline="$(cat /proc/cmdline 2>/dev/null || true)"
 arg_value() {
@@ -139,7 +172,7 @@ func (a *Adapter) Capabilities() map[string]bool {
 	return map[string]bool{
 		backend.CapabilityNetworkDefaultDeny:     true,
 		backend.CapabilityNetworkAllowlistEgress: false,
-		backend.CapabilityNetworkGuestInterface:  false,
+		backend.CapabilityNetworkGuestInterface:  true,
 	}
 }
 
@@ -492,7 +525,38 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 		_ = conn.Close()
 	}()
 
+	gatewayScopeToken := ""
+	if a.GatewayRegistry != nil {
+		token, tokenErr := randomScopeToken()
+		if tokenErr != nil {
+			return nil, fmt.Errorf("generate gateway scope token: %w", tokenErr)
+		}
+		scopeSandboxID := strings.TrimSpace(req.SandboxID)
+		if scopeSandboxID == "" {
+			scopeSandboxID = strings.TrimSpace(req.RunID)
+		}
+		if scopeSandboxID == "" {
+			scopeSandboxID = vmID
+		}
+		if err := a.GatewayRegistry.RegisterScopeToken(token, scopeSandboxID, req.Policy); err != nil {
+			return nil, fmt.Errorf("register sandbox in gateway: %w", err)
+		}
+		gatewayScopeToken = token
+		defer a.GatewayRegistry.ReleaseScopeToken(gatewayScopeToken)
+	}
+
 	guestReq := vsockexec.ExecRequest{Command: append([]string(nil), req.Command...), TTY: req.TTY}
+	if a.GatewayRegistry != nil && gatewayScopeToken != "" {
+		gwPort := a.GatewayPort
+		if gwPort <= 0 {
+			gwPort = gateway.DefaultPort
+		}
+		gwHost := strings.TrimSpace(a.GatewayHost)
+		if gwHost == "" {
+			gwHost = defaultGatewayHost
+		}
+		guestReq.Env = append(guestReq.Env, gatewayEnvVars(req.Policy, gwHost, gwPort, gatewayScopeToken)...)
+	}
 	seed := make([]byte, 64)
 	if _, err := cryptorand.Read(seed); err == nil {
 		guestReq.EntropySeed = seed
@@ -1022,4 +1086,12 @@ func logRunNotice(backendName, runID, notice string) {
 		return
 	}
 	log.Printf("%s run_id=%s: %s", backendName, id, msg)
+}
+
+func randomScopeToken() (string, error) {
+	buf := make([]byte, 32)
+	if _, err := cryptorand.Read(buf); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(buf), nil
 }

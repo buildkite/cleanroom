@@ -16,7 +16,7 @@ Cleanroom uses fast Linux microVM backends to create isolated environments for u
 | Host OS | Backend | Status | Notes |
 |---------|---------|--------|-------|
 | Linux | `firecracker` | Full local backend | Supports persistent sandboxes, sandbox file download, and egress allowlist enforcement |
-| macOS | `darwin-vz` | Supported with known gaps | Per-run VMs (no persistent sandboxes yet), no sandbox file download, and no guest NIC/egress allowlist enforcement yet |
+| macOS | `darwin-vz` | Supported with known gaps | Per-run VMs (no persistent sandboxes yet), no sandbox file download, guest NIC with unfiltered egress, and no egress allowlist enforcement yet |
 
 Backend capabilities are exposed in `cleanroom doctor --json` under `capabilities`.
 
@@ -275,7 +275,7 @@ The helper (not the main `cleanroom` binary) needs the `com.apple.security.virtu
 
 - Workload runs in a Linux microVM backend (`firecracker` on Linux, `darwin-vz` on macOS)
 - `firecracker` enforces policy egress allowlists with TAP + iptables
-- `darwin-vz` currently requires `network.default: deny`, ignores `network.allow` entries, and attaches no guest NIC (warns on stderr during execution)
+- `darwin-vz` currently requires `network.default: deny`, ignores `network.allow` entries, and provides guest networking without egress filtering (warns on stderr during execution)
 - `firecracker` rootfs writes persist across executions within a sandbox and are discarded on sandbox termination
 - `darwin-vz` executes each command in a fresh VM/rootfs copy (writes are discarded after each run)
 - Per-run observability is written to `run-observability.json` (rootfs prep, network setup, VM ready, command runtime, total)

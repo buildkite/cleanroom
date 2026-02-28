@@ -492,6 +492,10 @@ private final class VMRuntime {
         let blockDevice = VZVirtioBlockDeviceConfiguration(attachment: diskAttachment)
         config.storageDevices = [blockDevice]
 
+        let networkDevice = VZVirtioNetworkDeviceConfiguration()
+        networkDevice.attachment = VZNATNetworkDeviceAttachment()
+        config.networkDevices = [networkDevice]
+
         config.entropyDevices = [VZVirtioEntropyDeviceConfiguration()]
         config.memoryBalloonDevices = [VZVirtioTraditionalMemoryBalloonDeviceConfiguration()]
         config.socketDevices = [VZVirtioSocketDeviceConfiguration()]

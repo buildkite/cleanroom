@@ -20,3 +20,12 @@ func TestGuestInitScriptAlwaysStartsStdioAgentWhenSerialDeviceExists(t *testing.
 		t.Fatal("expected stdio guest-agent loop to run in background")
 	}
 }
+
+func TestGuestInitScriptBootstrapsNetwork(t *testing.T) {
+	if !strings.Contains(guestInitScriptTemplate, "setup_guest_network") {
+		t.Fatal("expected guest network setup function in init script")
+	}
+	if !strings.Contains(guestInitScriptTemplate, "udhcpc -q -n -t 3 -T 3 -i") {
+		t.Fatal("expected udhcpc DHCP bootstrap in init script")
+	}
+}

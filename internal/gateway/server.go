@@ -18,6 +18,10 @@ type contextKey int
 
 const scopeContextKey contextKey = iota
 
+// ScopeTokenHeader is the request header used for capability-token fallback
+// identity when source-IP identity is unavailable (for example darwin NAT).
+const ScopeTokenHeader = "X-Cleanroom-Scope-Token"
+
 // ScopeFromContext retrieves the SandboxScope injected by identity middleware.
 func ScopeFromContext(ctx context.Context) (*SandboxScope, bool) {
 	scope, ok := ctx.Value(scopeContextKey).(*SandboxScope)
@@ -110,25 +114,30 @@ func (s *Server) Stop(ctx context.Context) error {
 	return s.httpServer.Shutdown(ctx)
 }
 
-// identityMiddleware extracts the source IP from RemoteAddr, looks up the
-// sandbox scope in the registry, and injects it into the request context.
-// Returns 403 if the source IP is not registered.
+// identityMiddleware resolves sandbox identity and injects scope into the
+// request context. It prefers source-IP identity and falls back to a scoped
+// capability token header. Returns 403 when neither identity is valid.
 func (s *Server) identityMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sourceIP := extractSourceIP(r.RemoteAddr)
-		if sourceIP == "" {
-			http.Error(w, "forbidden", http.StatusForbidden)
-			return
+		if sourceIP != "" {
+			if scope, ok := s.registry.Lookup(sourceIP); ok {
+				ctx := context.WithValue(r.Context(), scopeContextKey, scope)
+				next.ServeHTTP(w, r.WithContext(ctx))
+				return
+			}
 		}
 
-		scope, ok := s.registry.Lookup(sourceIP)
-		if !ok {
-			http.Error(w, "forbidden", http.StatusForbidden)
-			return
+		scopeToken := strings.TrimSpace(r.Header.Get(ScopeTokenHeader))
+		if scopeToken != "" {
+			if scope, ok := s.registry.LookupScopeToken(scopeToken); ok {
+				ctx := context.WithValue(r.Context(), scopeContextKey, scope)
+				next.ServeHTTP(w, r.WithContext(ctx))
+				return
+			}
 		}
 
-		ctx := context.WithValue(r.Context(), scopeContextKey, scope)
-		next.ServeHTTP(w, r.WithContext(ctx))
+		http.Error(w, "forbidden", http.StatusForbidden)
 	})
 }
 

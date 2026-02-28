@@ -116,6 +116,62 @@ func TestRegistryReRegisterAfterRelease(t *testing.T) {
 	}
 }
 
+func TestRegistryRegisterScopeTokenAndLookup(t *testing.T) {
+	t.Parallel()
+	r := NewRegistry()
+
+	p := testPolicy()
+	if err := r.RegisterScopeToken("token-1", "sandbox-1", p); err != nil {
+		t.Fatalf("register scope token: %v", err)
+	}
+
+	scope, ok := r.LookupScopeToken("token-1")
+	if !ok {
+		t.Fatal("expected token lookup to succeed")
+	}
+	if scope.SandboxID != "sandbox-1" {
+		t.Fatalf("expected sandbox-1, got %s", scope.SandboxID)
+	}
+	if scope.Policy != p {
+		t.Fatal("policy mismatch")
+	}
+}
+
+func TestRegistryDuplicateScopeTokenReturnsError(t *testing.T) {
+	t.Parallel()
+	r := NewRegistry()
+
+	if err := r.RegisterScopeToken("token-1", "sandbox-1", testPolicy()); err != nil {
+		t.Fatalf("first register: %v", err)
+	}
+	if err := r.RegisterScopeToken("token-1", "sandbox-2", testPolicy()); err == nil {
+		t.Fatal("expected error on duplicate token registration")
+	}
+}
+
+func TestRegistryEmptyScopeTokenReturnsError(t *testing.T) {
+	t.Parallel()
+	r := NewRegistry()
+
+	if err := r.RegisterScopeToken("   ", "sandbox-1", testPolicy()); err == nil {
+		t.Fatal("expected error on empty token registration")
+	}
+}
+
+func TestRegistryReleaseScopeToken(t *testing.T) {
+	t.Parallel()
+	r := NewRegistry()
+
+	if err := r.RegisterScopeToken("token-1", "sandbox-1", testPolicy()); err != nil {
+		t.Fatalf("register scope token: %v", err)
+	}
+	r.ReleaseScopeToken("token-1")
+
+	if _, ok := r.LookupScopeToken("token-1"); ok {
+		t.Fatal("expected token lookup to fail after release")
+	}
+}
+
 func itoa(i int) string {
 	if i < 10 {
 		return string(rune('0' + i))
