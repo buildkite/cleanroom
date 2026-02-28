@@ -355,22 +355,15 @@ func (s *Service) TerminateSandbox(ctx context.Context, req *cleanroomv1.Termina
 				OccurredAt:  timestamppb.Now(),
 			})
 			if ex.Status == cleanroomv1.ExecutionStatus_EXECUTION_STATUS_QUEUED {
-				ex.Status = cleanroomv1.ExecutionStatus_EXECUTION_STATUS_CANCELED
-				ex.ExitCode = cancelExitCode(ex.CancelSignal)
 				finished := terminatedAt
-				ex.FinishedAt = &finished
-				s.recordExecutionEventLocked(ex, &cleanroomv1.ExecutionStreamEvent{
-					SandboxId:   ex.SandboxID,
-					ExecutionId: ex.ID,
-					Status:      ex.Status,
-					Payload: &cleanroomv1.ExecutionStreamEvent_Exit{Exit: &cleanroomv1.ExecutionExit{
-						ExitCode: ex.ExitCode,
-						Status:   ex.Status,
-						Message:  "execution canceled before start (sandbox termination)",
-					}},
-					OccurredAt: timestamppb.New(finished),
-				})
-				closeExecutionDoneLocked(ex)
+				s.finalizeExecutionLocked(
+					ex,
+					cleanroomv1.ExecutionStatus_EXECUTION_STATUS_CANCELED,
+					cancelExitCode(ex.CancelSignal),
+					ex.Message,
+					"execution canceled before start (sandbox termination)",
+					finished,
+				)
 				continue
 			}
 			if ex.Cancel != nil {
@@ -594,24 +587,16 @@ func (s *Service) CancelExecution(_ context.Context, req *cleanroomv1.CancelExec
 	})
 
 	if ex.Status == cleanroomv1.ExecutionStatus_EXECUTION_STATUS_QUEUED {
-		ex.Status = cleanroomv1.ExecutionStatus_EXECUTION_STATUS_CANCELED
-		ex.ExitCode = cancelExitCode(signalNum)
 		finished := now
-		ex.FinishedAt = &finished
-		s.recordExecutionEventLocked(ex, &cleanroomv1.ExecutionStreamEvent{
-			SandboxId:   sandboxID,
-			ExecutionId: executionID,
-			Status:      ex.Status,
-			Payload: &cleanroomv1.ExecutionStreamEvent_Exit{Exit: &cleanroomv1.ExecutionExit{
-				ExitCode: ex.ExitCode,
-				Status:   ex.Status,
-				Message:  "execution canceled before start",
-			}},
-			OccurredAt: timestamppb.New(finished),
-		})
-		closeExecutionDoneLocked(ex)
-		s.pruneStateLocked(now)
-		status = ex.Status
+		s.finalizeExecutionLocked(
+			ex,
+			cleanroomv1.ExecutionStatus_EXECUTION_STATUS_CANCELED,
+			cancelExitCode(signalNum),
+			ex.Message,
+			"execution canceled before start",
+			finished,
+		)
+		status = cleanroomv1.ExecutionStatus_EXECUTION_STATUS_CANCELED
 		s.mu.Unlock()
 		return &cleanroomv1.CancelExecutionResponse{
 			SandboxId:   sandboxID,
@@ -888,70 +873,48 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 	}
 	sb, ok := s.sandboxes[sandboxID]
 	if !ok {
-		ex.Status = cleanroomv1.ExecutionStatus_EXECUTION_STATUS_FAILED
-		ex.ExitCode = 1
 		finished := time.Now().UTC()
-		ex.FinishedAt = &finished
-		s.recordExecutionEventLocked(ex, &cleanroomv1.ExecutionStreamEvent{
-			SandboxId:   sandboxID,
-			ExecutionId: executionID,
-			Status:      ex.Status,
-			Payload: &cleanroomv1.ExecutionStreamEvent_Exit{Exit: &cleanroomv1.ExecutionExit{
-				ExitCode: ex.ExitCode,
-				Status:   ex.Status,
-				Message:  "sandbox no longer exists",
-			}},
-			OccurredAt: timestamppb.New(finished),
-		})
-		closeExecutionDoneLocked(ex)
-		s.pruneStateLocked(finished)
+		s.finalizeExecutionLocked(
+			ex,
+			cleanroomv1.ExecutionStatus_EXECUTION_STATUS_FAILED,
+			1,
+			ex.Message,
+			"sandbox no longer exists",
+			finished,
+		)
 		s.mu.Unlock()
 		return
 	}
 	if sb.Status != cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY {
-		ex.Status = cleanroomv1.ExecutionStatus_EXECUTION_STATUS_FAILED
-		ex.ExitCode = 1
+		finalStatus := cleanroomv1.ExecutionStatus_EXECUTION_STATUS_FAILED
+		exitCode := int32(1)
 		if sb.Status == cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPING || sb.Status == cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPED {
-			ex.Status = cleanroomv1.ExecutionStatus_EXECUTION_STATUS_CANCELED
-			ex.ExitCode = cancelExitCode(ex.CancelSignal)
+			finalStatus = cleanroomv1.ExecutionStatus_EXECUTION_STATUS_CANCELED
+			exitCode = cancelExitCode(ex.CancelSignal)
 		}
 		finished := time.Now().UTC()
-		ex.FinishedAt = &finished
-		s.recordExecutionEventLocked(ex, &cleanroomv1.ExecutionStreamEvent{
-			SandboxId:   sandboxID,
-			ExecutionId: executionID,
-			Status:      ex.Status,
-			Payload: &cleanroomv1.ExecutionStreamEvent_Exit{Exit: &cleanroomv1.ExecutionExit{
-				ExitCode: ex.ExitCode,
-				Status:   ex.Status,
-				Message:  fmt.Sprintf("sandbox %q is not ready", sandboxID),
-			}},
-			OccurredAt: timestamppb.New(finished),
-		})
-		closeExecutionDoneLocked(ex)
-		s.pruneStateLocked(finished)
+		s.finalizeExecutionLocked(
+			ex,
+			finalStatus,
+			exitCode,
+			ex.Message,
+			fmt.Sprintf("sandbox %q is not ready", sandboxID),
+			finished,
+		)
 		s.mu.Unlock()
 		return
 	}
 	adapter, ok := s.Backends[sb.Backend]
 	if !ok {
-		ex.Status = cleanroomv1.ExecutionStatus_EXECUTION_STATUS_FAILED
-		ex.ExitCode = 1
 		finished := time.Now().UTC()
-		ex.FinishedAt = &finished
-		s.recordExecutionEventLocked(ex, &cleanroomv1.ExecutionStreamEvent{
-			SandboxId:   sandboxID,
-			ExecutionId: executionID,
-			Status:      ex.Status,
-			Payload: &cleanroomv1.ExecutionStreamEvent_Exit{Exit: &cleanroomv1.ExecutionExit{
-				ExitCode: ex.ExitCode,
-				Status:   ex.Status,
-				Message:  fmt.Sprintf("unknown backend %q", sb.Backend),
-			}},
-			OccurredAt: timestamppb.New(finished),
-		})
-		closeExecutionDoneLocked(ex)
-		s.pruneStateLocked(finished)
+		s.finalizeExecutionLocked(
+			ex,
+			cleanroomv1.ExecutionStatus_EXECUTION_STATUS_FAILED,
+			1,
+			ex.Message,
+			fmt.Sprintf("unknown backend %q", sb.Backend),
+			finished,
+		)
 		s.mu.Unlock()
 		return
 	}
@@ -1062,20 +1025,7 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 			s.appendExecutionStderrLocked(ex, finalStatus, []byte(err.Error()+"\n"))
 		}
 		finished := time.Now().UTC()
-		ex.FinishedAt = &finished
-		s.recordExecutionEventLocked(ex, &cleanroomv1.ExecutionStreamEvent{
-			SandboxId:   ex.SandboxID,
-			ExecutionId: ex.ID,
-			Status:      ex.Status,
-			Payload: &cleanroomv1.ExecutionStreamEvent_Exit{Exit: &cleanroomv1.ExecutionExit{
-				ExitCode: ex.ExitCode,
-				Status:   ex.Status,
-				Message:  ex.Message,
-			}},
-			OccurredAt: timestamppb.New(finished),
-		})
-		closeExecutionDoneLocked(ex)
-		s.pruneStateLocked(finished)
+		s.finalizeExecutionLocked(ex, finalStatus, exitCode, err.Error(), "", finished)
 		if s.Logger != nil {
 			s.Logger.Warn("execution failed",
 				"sandbox_id", ex.SandboxID,
@@ -1108,32 +1058,16 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 		s.appendExecutionStderrLocked(ex, cleanroomv1.ExecutionStatus_EXECUTION_STATUS_RUNNING, []byte(msg))
 	}
 
+	finalStatus := cleanroomv1.ExecutionStatus_EXECUTION_STATUS_FAILED
+	finalExitCode := int32(result.ExitCode)
 	if ex.CancelRequested {
-		ex.Status = cleanroomv1.ExecutionStatus_EXECUTION_STATUS_CANCELED
-		ex.ExitCode = cancelExitCode(ex.CancelSignal)
+		finalStatus = cleanroomv1.ExecutionStatus_EXECUTION_STATUS_CANCELED
+		finalExitCode = cancelExitCode(ex.CancelSignal)
 	} else if result.ExitCode == 0 {
-		ex.Status = cleanroomv1.ExecutionStatus_EXECUTION_STATUS_SUCCEEDED
-		ex.ExitCode = int32(result.ExitCode)
-	} else {
-		ex.Status = cleanroomv1.ExecutionStatus_EXECUTION_STATUS_FAILED
-		ex.ExitCode = int32(result.ExitCode)
+		finalStatus = cleanroomv1.ExecutionStatus_EXECUTION_STATUS_SUCCEEDED
 	}
 	finished := time.Now().UTC()
-	ex.FinishedAt = &finished
-
-	s.recordExecutionEventLocked(ex, &cleanroomv1.ExecutionStreamEvent{
-		SandboxId:   ex.SandboxID,
-		ExecutionId: ex.ID,
-		Status:      ex.Status,
-		Payload: &cleanroomv1.ExecutionStreamEvent_Exit{Exit: &cleanroomv1.ExecutionExit{
-			ExitCode: ex.ExitCode,
-			Status:   ex.Status,
-			Message:  ex.Message,
-		}},
-		OccurredAt: timestamppb.New(finished),
-	})
-	closeExecutionDoneLocked(ex)
-	s.pruneStateLocked(finished)
+	s.finalizeExecutionLocked(ex, finalStatus, finalExitCode, ex.Message, "", finished)
 
 	if s.Logger != nil {
 		s.Logger.Info("execution completed",
@@ -1568,6 +1502,35 @@ func (s *Service) recordExecutionEventLocked(ex *executionState, event *cleanroo
 			delete(ex.EventSubscribers, id)
 		}
 	}
+}
+
+func (s *Service) finalizeExecutionLocked(ex *executionState, status cleanroomv1.ExecutionStatus, exitCode int32, message, exitMessage string, finished time.Time) {
+	if ex == nil {
+		return
+	}
+	if finished.IsZero() {
+		finished = time.Now().UTC()
+	}
+	if exitMessage == "" {
+		exitMessage = message
+	}
+	ex.Status = status
+	ex.ExitCode = exitCode
+	ex.Message = message
+	ex.FinishedAt = &finished
+	s.recordExecutionEventLocked(ex, &cleanroomv1.ExecutionStreamEvent{
+		SandboxId:   ex.SandboxID,
+		ExecutionId: ex.ID,
+		Status:      ex.Status,
+		Payload: &cleanroomv1.ExecutionStreamEvent_Exit{Exit: &cleanroomv1.ExecutionExit{
+			ExitCode: ex.ExitCode,
+			Status:   ex.Status,
+			Message:  exitMessage,
+		}},
+		OccurredAt: timestamppb.New(finished),
+	})
+	closeExecutionDoneLocked(ex)
+	s.pruneStateLocked(finished)
 }
 
 func normalizeCommand(command []string) []string {
