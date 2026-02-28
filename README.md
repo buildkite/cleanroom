@@ -29,6 +29,48 @@ Backend capabilities are exposed in `cleanroom doctor --json` under `capabilitie
   - `cleanroom.v1.SandboxService`
   - `cleanroom.v1.ExecutionService`
 
+## Go Client (Public API)
+
+Use `github.com/buildkite/cleanroom/client` from external Go modules.
+
+```go
+import (
+  "context"
+  "os"
+
+  "github.com/buildkite/cleanroom/client"
+)
+
+func example() error {
+  c := client.Must(client.NewFromEnv())
+
+  sb, err := c.EnsureSandbox(context.Background(), "thread:abc123", client.EnsureSandboxOptions{
+    Backend: "firecracker",
+    Policy: client.PolicyFromAllowlist(
+      "ghcr.io/buildkite/cleanroom-base/alpine@sha256:...",
+      "sha256:...",
+      client.Allow("api.github.com", 443),
+      client.Allow("registry.npmjs.org", 443),
+    ),
+  })
+  if err != nil { return err }
+
+  result, err := c.ExecAndWait(context.Background(), sb.ID, []string{"bash", "-lc", "echo hello"}, client.ExecOptions{
+    Stdout: os.Stdout,
+    Stderr: os.Stderr,
+  })
+  if err != nil { return err }
+  _ = result
+  return nil
+}
+```
+
+`client` exposes:
+- `client.Client` for RPC calls
+- protobuf request/response/event types (for example `client.CreateExecutionRequest`)
+- status enums (`client.SandboxStatus_*`, `client.ExecutionStatus_*`)
+- ergonomic wrappers (`client.NewFromEnv`, `client.EnsureSandbox`, `client.ExecAndWait`)
+
 ## Quick Start
 
 Initialize runtime config and check host prerequisites:
