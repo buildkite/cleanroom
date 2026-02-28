@@ -22,9 +22,20 @@ builds:
       - -s -w
 
 archives:
-  - formats: [tar.gz]
+  - id: cleanroom
+    ids: [cleanroom]
+    formats: [tar.gz]
     name_template: >-
-      {{ .ProjectName }}_
+      {{ .Binary }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else }}{{ .Arch }}{{ end }}
+
+  - id: cleanroom-guest-agent
+    ids: [cleanroom-guest-agent]
+    formats: [tar.gz]
+    name_template: >-
+      {{ .Binary }}_
       {{- title .Os }}_
       {{- if eq .Arch "amd64" }}x86_64
       {{- else }}{{ .Arch }}{{ end }}
