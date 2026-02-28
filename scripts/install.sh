@@ -66,7 +66,25 @@ download() {
 download_optional() {
   local url="$1"
   local dest="$2"
-  curl -fsSL --retry 3 --connect-timeout 10 "$url" -o "$dest"
+  local http_code
+
+  if ! http_code=$(curl -sSL --retry 3 --connect-timeout 10 -w '%{http_code}' -o "$dest" "$url"); then
+    return 2
+  fi
+
+  case "$http_code" in
+    404)
+      rm -f "$dest"
+      return 4
+      ;;
+    2*)
+      return 0
+      ;;
+    *)
+      rm -f "$dest"
+      return 3
+      ;;
+  esac
 }
 
 normalize_version() {
@@ -141,9 +159,13 @@ prepare_install_dir() {
     if [ "$(id -u)" -eq 0 ]; then
       mkdir -p "$INSTALL_DIR"
     else
-      command -v sudo >/dev/null 2>&1 || die "${INSTALL_DIR} does not exist and sudo is unavailable"
-      SUDO_CMD=(sudo)
-      "${SUDO_CMD[@]}" mkdir -p "$INSTALL_DIR"
+      if mkdir -p "$INSTALL_DIR" 2>/dev/null; then
+        :
+      else
+        command -v sudo >/dev/null 2>&1 || die "${INSTALL_DIR} does not exist and sudo is unavailable"
+        SUDO_CMD=(sudo)
+        "${SUDO_CMD[@]}" mkdir -p "$INSTALL_DIR"
+      fi
     fi
   fi
 
@@ -250,13 +272,21 @@ if [ "$HOST_OS" = "Darwin" ] && [ "$INSTALL_DARWIN_HELPER" != "0" ]; then
   HELPER_ARCHIVE_PATH="${WORK_DIR}/${HELPER_ASSET}"
   HELPER_SHA_PATH="${WORK_DIR}/${HELPER_ASSET}.sha256"
 
-  if download_optional "${RELEASE_BASE}/${HELPER_ASSET}" "$HELPER_ARCHIVE_PATH"; then
+  helper_download_status=0
+  download_optional "${RELEASE_BASE}/${HELPER_ASSET}" "$HELPER_ARCHIVE_PATH" || helper_download_status=$?
+
+  if [ "$helper_download_status" -eq 0 ]; then
     require_cmd codesign
 
-    if download_optional "${RELEASE_BASE}/${HELPER_ASSET}.sha256" "$HELPER_SHA_PATH"; then
+    helper_sha_download_status=0
+    download_optional "${RELEASE_BASE}/${HELPER_ASSET}.sha256" "$HELPER_SHA_PATH" || helper_sha_download_status=$?
+
+    if [ "$helper_sha_download_status" -eq 0 ]; then
       verify_asset_against_sha_file "$HELPER_ASSET" "$HELPER_ARCHIVE_PATH" "$HELPER_SHA_PATH"
-    else
+    elif [ "$helper_sha_download_status" -eq 4 ]; then
       warn "${HELPER_ASSET}.sha256 not found; continuing without helper checksum verification"
+    else
+      die "failed to download ${RELEASE_BASE}/${HELPER_ASSET}.sha256"
     fi
 
     HELPER_EXTRACT_DIR="${WORK_DIR}/darwin-helper"
@@ -270,8 +300,10 @@ if [ "$HOST_OS" = "Darwin" ] && [ "$INSTALL_DARWIN_HELPER" != "0" ]; then
       --entitlements "${HELPER_EXTRACT_DIR}/entitlements.plist" \
       "${INSTALL_DIR}/cleanroom-darwin-vz"
     DARWIN_HELPER_INSTALLED=1
-  else
+  elif [ "$helper_download_status" -eq 4 ]; then
     warn "${HELPER_ASSET} not found in release; skipping cleanroom-darwin-vz install"
+  else
+    die "failed to download ${RELEASE_BASE}/${HELPER_ASSET}"
   fi
 fi
 

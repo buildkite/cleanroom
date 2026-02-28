@@ -237,8 +237,18 @@ set +e
       echo "$allow_resp" >&2
       exit 5
     fi
+    if echo "$allow_resp" | grep -q "upstream_error"; then
+      echo "allowlisted host probe hit upstream_error" >&2
+      echo "$allow_resp" >&2
+      exit 5
+    fi
     if echo "$allow_resp" | grep -q "host_not_allowed"; then
       echo "allowlisted host was denied by gateway" >&2
+      echo "$allow_resp" >&2
+      exit 5
+    fi
+    if ! echo "$allow_resp" | grep -q "git-upload-pack"; then
+      echo "allowlisted host probe did not return git upload-pack response" >&2
       echo "$allow_resp" >&2
       exit 5
     fi
