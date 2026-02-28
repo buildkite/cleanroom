@@ -33,7 +33,7 @@ jobs:
       - name: Compute base image tag
         id: meta
         run: |
-          echo "base_tag=$(scripts/base-image-tag.sh \"${{ matrix.image_name }}\" \"${{ matrix.dockerfile }}\")" >> "$GITHUB_OUTPUT"
+          echo "base_tag=$(scripts/base-image-tag.sh '${{ matrix.image_name }}' '${{ matrix.dockerfile }}')" >> "$GITHUB_OUTPUT"
 
       - uses: docker/login-action@v3
         with:
