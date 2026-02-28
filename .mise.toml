@@ -18,18 +18,32 @@ run = "shellcheck -x scripts/cleanroom-root-helper.sh scripts/benchmark-tti.sh"
 description = "Run full Go test suite"
 run = "go test ./..."
 
-[tasks.build]
-description = "Build binaries into dist/"
+[tasks."build:go"]
+description = "Build Go binaries into dist/"
 run = "mkdir -p dist && go build -o dist/cleanroom ./cmd/cleanroom && go build -o dist/cleanroom-guest-agent ./cmd/cleanroom-guest-agent"
 
-[tasks.install]
-description = "Install binaries into GOBIN (or GOPATH/bin)"
-run = "go install ./cmd/cleanroom ./cmd/cleanroom-guest-agent"
+[tasks."build:darwin"]
+description = "Build macOS darwin-vz helper into dist/"
+run = "{% if os() == \"macos\" %}mkdir -p dist && xcrun swiftc -O -framework Virtualization cmd/cleanroom-darwin-vz/main.swift -o dist/cleanroom-darwin-vz && codesign --force --sign - --entitlements cmd/cleanroom-darwin-vz/entitlements.plist dist/cleanroom-darwin-vz{% else %}true{% endif %}"
 
-[tasks.prepare-firecracker-image]
-description = "Prepare rootfs image with guest agent and tiny init (requires sudo)"
-depends = ["build", "install"]
-run = "sudo scripts/prepare-firecracker-image.sh"
+[tasks.build]
+description = "Build binaries into dist/"
+depends = ["build:go", "build:darwin"]
+run = "true"
+
+[tasks."install:go"]
+description = "Install Go binaries into GOBIN (or GOPATH/bin)"
+run = "BIN_DIR=\"$(go env GOBIN)\"; if [ -z \"$BIN_DIR\" ]; then BIN_DIR=\"$(go env GOPATH)/bin\"; fi; HOST_ARCH=\"$(go env GOARCH)\"; mkdir -p \"$BIN_DIR\" && go install ./cmd/cleanroom ./cmd/cleanroom-guest-agent && GOOS=linux GOARCH=\"$HOST_ARCH\" CGO_ENABLED=0 go build -trimpath -o \"$BIN_DIR/cleanroom-guest-agent-linux-$HOST_ARCH\" ./cmd/cleanroom-guest-agent"
+
+[tasks."install:darwin"]
+description = "Install macOS darwin-vz helper into GOBIN (or GOPATH/bin)"
+depends = ["build:darwin"]
+run = "{% if os() == \"macos\" %}BIN_DIR=\"$(go env GOBIN)\"; if [ -z \"$BIN_DIR\" ]; then BIN_DIR=\"$(go env GOPATH)/bin\"; fi; ENTITLEMENTS=\"cmd/cleanroom-darwin-vz/entitlements.plist\"; mkdir -p \"$BIN_DIR\" && install -m 0755 dist/cleanroom-darwin-vz \"$BIN_DIR/cleanroom-darwin-vz\" && codesign --force --sign - --entitlements \"$ENTITLEMENTS\" \"$BIN_DIR/cleanroom-darwin-vz\"{% else %}true{% endif %}"
+
+[tasks.install]
+description = "Install all binaries into GOBIN (or GOPATH/bin)"
+depends = ["install:go", "install:darwin"]
+run = "true"
 
 [tasks.doctor]
 description = "Run cleanroom diagnostics"

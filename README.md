@@ -1,15 +1,24 @@
 # 🧑‍🔬 Cleanroom
 
-Cleanroom uses fast Firecracker microVMs (under 2s to interactive) to create isolated environments for untrusted workloads like AI agents and CI jobs. Deny-by-default egress, digest-pinned images, and immutable policy make it safe to run code you don't trust.
+Cleanroom uses fast Linux microVM backends to create isolated environments for untrusted workloads like AI agents and CI jobs. It supports Firecracker on Linux and Virtualization.framework (`darwin-vz`) on macOS. Deny-by-default policy, digest-pinned images, and immutable policy compilation make it safe to run code you don't trust.
 
 ## What It Does
 
 - Compiles repository policy from `cleanroom.yaml`
 - Requires digest-pinned sandbox base images via `sandbox.image.ref`
 - Enforces deny-by-default egress (`host:port` allow rules)
-- Runs commands in a Firecracker microVM via guest agent
+- Runs commands in a backend microVM (`firecracker` on Linux, `darwin-vz` on macOS)
 - Returns exit code + stdout/stderr over API
 - Stores run artifacts and timing metrics for inspection
+
+## Backend Support
+
+| Host OS | Backend | Status | Notes |
+|---------|---------|--------|-------|
+| Linux | `firecracker` | Full local backend | Supports persistent sandboxes, sandbox file download, and egress allowlist enforcement |
+| macOS | `darwin-vz` | Supported with known gaps | Per-run VMs (no persistent sandboxes yet), no sandbox file download, and no guest NIC/egress allowlist enforcement yet |
+
+Backend capabilities are exposed in `cleanroom doctor --json` under `capabilities`.
 
 ## Architecture
 
@@ -21,6 +30,13 @@ Cleanroom uses fast Firecracker microVMs (under 2s to interactive) to create iso
   - `cleanroom.v1.ExecutionService`
 
 ## Quick Start
+
+Initialize runtime config and check host prerequisites:
+
+```bash
+cleanroom config init
+cleanroom doctor
+```
 
 Start the server (all CLI commands require a running server):
 
@@ -50,11 +66,19 @@ Use `--rm` to tear down the sandbox after the command completes (useful for one-
 cleanroom exec --rm -- npm test
 ```
 
+macOS note:
+
+- `darwin-vz` is the default backend on macOS
+- install host tools for rootfs derivation with `brew install e2fsprogs`
+- `cleanroom-darwin-vz` helper must be installed and signed with `com.apple.security.virtualization` entitlement (`mise run install` handles this in this repo)
+
 ## CLI
 
 ```bash
 cleanroom exec -- npm test
 cleanroom exec -c /path/to/repo -- make build
+cleanroom exec --backend darwin-vz -- npm test
+cleanroom exec --backend firecracker -- npm test
 ```
 
 Interactive console:
@@ -163,15 +187,7 @@ cleanroom status --run-id <run-id>
 cleanroom status --last-run
 ```
 
-## Architecture
-
-- Server: `cleanroom serve`
-- Client: CLI and ConnectRPC clients
-- Transport: unix socket by default
-- API: `cleanroom.v1.SandboxService` and `cleanroom.v1.ExecutionService`
-- Proto definition: `proto/cleanroom/v1/control.proto`
-
-### Remote Access
+## Remote Access
 
 The server supports Tailscale listeners for remote access:
 
@@ -213,43 +229,83 @@ sandbox:
 
 Runtime config path: `$XDG_CONFIG_HOME/cleanroom/config.yaml` (or `~/.config/cleanroom/config.yaml`).
 
+Bootstrap a config file with defaults:
+
+```bash
+cleanroom config init
+```
+
+On macOS, `cleanroom config init` defaults `default_backend` to `darwin-vz`. On other platforms it defaults to `firecracker`.
+
 ```yaml
 default_backend: firecracker
 backends:
   firecracker:
     binary_path: firecracker
-    kernel_image: /opt/cleanroom/vmlinux
+    kernel_image: "" # optional; auto-managed when unset/missing
     privileged_mode: sudo # or helper
     privileged_helper_path: /usr/local/sbin/cleanroom-root-helper
     vcpus: 2
     memory_mib: 1024
     guest_cid: 3
     launch_seconds: 30
+  darwin-vz:
+    kernel_image: "" # optional; auto-managed when unset/missing
+    rootfs: "" # optional; derived from sandbox.image.ref when unset/missing
+    vcpus: 2
+    memory_mib: 1024
+    guest_port: 10700
+    launch_seconds: 30
 ```
 
 The Firecracker adapter resolves `sandbox.image.ref` through the local image manager and caches materialised ext4 files under XDG cache paths.
+When `backends.<name>.kernel_image` is unset (or points to a missing file), cleanroom auto-downloads a verified managed kernel asset into XDG data paths.
+Set `kernel_image` explicitly if you need fully offline operation.
+When `backends.<name>.rootfs` is unset (or points to a missing file), cleanroom derives a runtime rootfs from `sandbox.image.ref` and injects the guest runtime automatically.
+This derivation path requires `mkfs.ext4` and `debugfs` on the host.
+On macOS, cleanroom auto-detects Homebrew `e2fsprogs` (`mkfs.ext4`/`debugfs`) from common keg locations even when they are not in `PATH`.
+The `darwin-vz` backend launches a dedicated helper binary (`cleanroom-darwin-vz`) and resolves it in this order:
+1. `CLEANROOM_DARWIN_VZ_HELPER`
+2. sibling binary next to `cleanroom`
+3. `PATH`
+
+The helper (not the main `cleanroom` binary) needs the `com.apple.security.virtualization` entitlement.
 
 ## Isolation Model
 
-- Workload runs in a Firecracker microVM
-- Host egress is controlled with TAP + iptables rules from compiled policy
-- Default network behaviour is deny
-- Rootfs writes persist across executions within a sandbox and are discarded on sandbox termination
+- Workload runs in a Linux microVM backend (`firecracker` on Linux, `darwin-vz` on macOS)
+- `firecracker` enforces policy egress allowlists with TAP + iptables
+- `darwin-vz` currently requires `network.default: deny`, ignores `network.allow` entries, and attaches no guest NIC (warns on stderr during execution)
+- `firecracker` rootfs writes persist across executions within a sandbox and are discarded on sandbox termination
+- `darwin-vz` executes each command in a fresh VM/rootfs copy (writes are discarded after each run)
 - Per-run observability is written to `run-observability.json` (rootfs prep, network setup, VM ready, command runtime, total)
-- Rootfs copy uses clone/reflink when available, with copy fallback
+- `firecracker` rootfs copy uses clone/reflink when available, with copy fallback
 
 ## Host Requirements
 
-- Linux host with `/dev/kvm` available and writable
+Linux (`firecracker` backend):
+
+- `/dev/kvm` available and writable
 - Firecracker binary installed
-- Kernel image configured
+- kernel image configured, or internet access for first-run managed kernel download
 - `mkfs.ext4` installed (materialises OCI layers into ext4 cache artifacts)
 - `sudo -n` access for `ip`, `iptables`, and `sysctl` (network setup/cleanup)
+
+macOS (`darwin-vz` backend):
+
+- `cleanroom-darwin-vz` helper installed
+- helper binary signed with `com.apple.security.virtualization` entitlement
+- `mkfs.ext4` and `debugfs` for rootfs derivation (`brew install e2fsprogs`)
+
+General:
+
+- `cleanroom doctor --json` includes a machine-readable `capabilities` map for the selected backend
 
 ## References
 
 - [API design](docs/api.md) — ConnectRPC surface and proto sketch
 - [Benchmarks](docs/benchmarks.md) — TTI measurement and results
 - [CI](docs/ci.md) — Buildkite pipeline and base image workflow
+- [Darwin VZ](docs/darwin-vz.md) — macOS backend/helper design and behavior
 - [Spec](docs/spec.md) — Full specification and roadmap
 - [Research](docs/research.md) — Backend and tooling evaluation notes

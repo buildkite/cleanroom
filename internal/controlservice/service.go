@@ -109,7 +109,8 @@ var (
 )
 
 const (
-	attachRegistrationWait        = 250 * time.Millisecond
+	attachStdinRegistrationWait   = 2 * time.Second
+	attachResizeRegistrationWait  = 250 * time.Millisecond
 	attachPollInterval            = 10 * time.Millisecond
 	defaultDownloadMaxBytes int64 = 10 * 1024 * 1024
 )
@@ -138,7 +139,7 @@ func (s *Service) CreateSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	if opts != nil {
 		execOpts.LaunchSeconds = opts.GetLaunchSeconds()
 	}
-	firecrackerCfg := mergeFirecrackerConfig(execOpts, s.Config)
+	firecrackerCfg := mergeBackendConfig(backendName, execOpts, s.Config)
 	firecrackerCfg.RunDir = ""
 
 	now := time.Now().UTC()
@@ -649,7 +650,7 @@ func (s *Service) WriteExecutionStdin(sandboxID, executionID string, data []byte
 	}
 
 	payload := append([]byte(nil), data...)
-	deadline := time.Now().Add(attachRegistrationWait)
+	deadline := time.Now().Add(attachStdinRegistrationWait)
 	for {
 		var (
 			writeFn func([]byte) error
@@ -692,7 +693,7 @@ func (s *Service) ResizeExecutionTTY(sandboxID, executionID string, cols, rows u
 		return errors.New("missing execution_id")
 	}
 
-	deadline := time.Now().Add(attachRegistrationWait)
+	deadline := time.Now().Add(attachResizeRegistrationWait)
 	for {
 		var (
 			resizeFn func(cols, rows uint32) error
@@ -1606,7 +1607,7 @@ func resolveBackendName(requested, configuredDefault string) string {
 	return "firecracker"
 }
 
-func mergeFirecrackerConfig(opts executionOptions, cfg runtimeconfig.Config) backend.FirecrackerConfig {
+func mergeBackendConfig(backendName string, opts executionOptions, cfg runtimeconfig.Config) backend.FirecrackerConfig {
 	out := backend.FirecrackerConfig{
 		BinaryPath:           cfg.Backends.Firecracker.BinaryPath,
 		KernelImagePath:      cfg.Backends.Firecracker.KernelImage,
@@ -1618,6 +1619,14 @@ func mergeFirecrackerConfig(opts executionOptions, cfg runtimeconfig.Config) bac
 		GuestCID:             cfg.Backends.Firecracker.GuestCID,
 		GuestPort:            cfg.Backends.Firecracker.GuestPort,
 		LaunchSeconds:        cfg.Backends.Firecracker.LaunchSeconds,
+	}
+	if backendName == "darwin-vz" {
+		out.KernelImagePath = cfg.Backends.DarwinVZ.KernelImage
+		out.RootFSPath = cfg.Backends.DarwinVZ.RootFS
+		out.VCPUs = cfg.Backends.DarwinVZ.VCPUs
+		out.MemoryMiB = cfg.Backends.DarwinVZ.MemoryMiB
+		out.GuestPort = cfg.Backends.DarwinVZ.GuestPort
+		out.LaunchSeconds = cfg.Backends.DarwinVZ.LaunchSeconds
 	}
 
 	out.Launch = true

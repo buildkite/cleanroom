@@ -2,17 +2,12 @@
 set -euo pipefail
 
 KERNEL_IMAGE="${CLEANROOM_KERNEL_IMAGE:-}"
-ROOTFS_IMAGE="${CLEANROOM_ROOTFS:-}"
 FIRECRACKER_BINARY="${CLEANROOM_FIRECRACKER_BINARY:-firecracker}"
 PRIVILEGED_MODE="${CLEANROOM_PRIVILEGED_MODE:-}"
 PRIVILEGED_HELPER_PATH="${CLEANROOM_PRIVILEGED_HELPER_PATH:-}"
 
 if [[ -z "$KERNEL_IMAGE" ]]; then
   echo "CLEANROOM_KERNEL_IMAGE is required for Firecracker e2e CI" >&2
-  exit 1
-fi
-if [[ -z "$ROOTFS_IMAGE" ]]; then
-  echo "CLEANROOM_ROOTFS is required for Firecracker e2e CI" >&2
   exit 1
 fi
 
@@ -113,7 +108,6 @@ backends:
   firecracker:
     binary_path: $FIRECRACKER_BINARY
     kernel_image: $KERNEL_IMAGE
-    rootfs: $ROOTFS_IMAGE
     vcpus: 2
     memory_mib: 1024
     launch_seconds: 45

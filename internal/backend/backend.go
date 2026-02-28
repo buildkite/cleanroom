@@ -2,13 +2,93 @@ package backend
 
 import (
 	"context"
+	"maps"
+	"sort"
 
 	"github.com/buildkite/cleanroom/internal/policy"
 )
 
+const (
+	CapabilityExecStreaming          = "exec.streaming"
+	CapabilitySandboxPersistent      = "sandbox.persistent"
+	CapabilitySandboxFileDownload    = "sandbox.file_download"
+	CapabilityNetworkDefaultDeny     = "network.default_deny"
+	CapabilityNetworkAllowlistEgress = "network.allowlist_egress"
+	CapabilityNetworkGuestInterface  = "network.guest_interface"
+)
+
+var knownCapabilityKeys = []string{
+	CapabilityExecStreaming,
+	CapabilitySandboxPersistent,
+	CapabilitySandboxFileDownload,
+	CapabilityNetworkDefaultDeny,
+	CapabilityNetworkAllowlistEgress,
+	CapabilityNetworkGuestInterface,
+}
+
 type Adapter interface {
 	Name() string
 	Run(ctx context.Context, req RunRequest) (*RunResult, error)
+}
+
+// CapabilityReporter allows backend adapters to publish backend-specific
+// capability flags in a machine-readable form.
+type CapabilityReporter interface {
+	Capabilities() map[string]bool
+}
+
+// CapabilitiesForAdapter returns a merged capability map for the adapter.
+//
+// Baseline capabilities are inferred from backend interfaces:
+// - StreamingAdapter => exec.streaming
+// - PersistentSandboxAdapter => sandbox.persistent
+// - SandboxFileDownloadAdapter => sandbox.file_download
+//
+// Additional backend-specific capabilities can be provided by implementing
+// CapabilityReporter.
+func CapabilitiesForAdapter(adapter Adapter) map[string]bool {
+	caps := make(map[string]bool, len(knownCapabilityKeys))
+	for _, key := range knownCapabilityKeys {
+		caps[key] = false
+	}
+
+	if adapter == nil {
+		return caps
+	}
+	if _, ok := adapter.(StreamingAdapter); ok {
+		caps[CapabilityExecStreaming] = true
+	}
+	if _, ok := adapter.(PersistentSandboxAdapter); ok {
+		caps[CapabilitySandboxPersistent] = true
+	}
+	if _, ok := adapter.(SandboxFileDownloadAdapter); ok {
+		caps[CapabilitySandboxFileDownload] = true
+	}
+
+	if reporter, ok := adapter.(CapabilityReporter); ok {
+		for key, value := range reporter.Capabilities() {
+			caps[key] = value
+		}
+	}
+
+	return caps
+}
+
+// SortedCapabilityKeys returns deterministic capability keys for presentation.
+func SortedCapabilityKeys(caps map[string]bool) []string {
+	keys := make([]string, 0, len(caps))
+	for key := range caps {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// CloneCapabilities returns a detached copy of the capability map.
+func CloneCapabilities(caps map[string]bool) map[string]bool {
+	out := make(map[string]bool, len(caps))
+	maps.Copy(out, caps)
+	return out
 }
 
 // PersistentSandboxAdapter supports provisioned sandbox instances that can run

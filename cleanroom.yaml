@@ -1,7 +1,7 @@
 version: 1
 sandbox:
   image:
-    ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:962db9c461c02b86db105507bf2db4f01eb5d8fdf1a452598d140a569178324b
+    ref: docker.io/library/alpine@sha256:a4f4213abb84c497377b8544c81b3564f313746700372ec4fe84653e4fb03805
   network:
     default: deny
     allow:

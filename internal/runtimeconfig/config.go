@@ -17,6 +17,7 @@ type Config struct {
 
 type Backends struct {
 	Firecracker FirecrackerConfig `yaml:"firecracker"`
+	DarwinVZ    DarwinVZConfig    `yaml:"darwin-vz"`
 }
 
 type FirecrackerConfig struct {
@@ -30,6 +31,15 @@ type FirecrackerConfig struct {
 	GuestCID             uint32 `yaml:"guest_cid"`
 	GuestPort            uint32 `yaml:"guest_port"`
 	LaunchSeconds        int64  `yaml:"launch_seconds"` // VM boot/guest-agent readiness timeout
+}
+
+type DarwinVZConfig struct {
+	KernelImage   string `yaml:"kernel_image"`
+	RootFS        string `yaml:"rootfs"`
+	VCPUs         int64  `yaml:"vcpus"`
+	MemoryMiB     int64  `yaml:"memory_mib"`
+	GuestPort     uint32 `yaml:"guest_port"`
+	LaunchSeconds int64  `yaml:"launch_seconds"` // VM boot/guest-agent readiness timeout
 }
 
 func Path() (string, error) {
@@ -63,7 +73,26 @@ func Load() (Config, string, error) {
 	if err := yaml.Unmarshal(b, &cfg); err != nil {
 		return Config{}, path, fmt.Errorf("parse %s: %w", path, err)
 	}
+	if darwinVZConfigIsZero(cfg.Backends.DarwinVZ) {
+		legacyCfg := struct {
+			Backends struct {
+				DarwinVZ DarwinVZConfig `yaml:"darwin_vz"`
+			} `yaml:"backends"`
+		}{}
+		if err := yaml.Unmarshal(b, &legacyCfg); err == nil && !darwinVZConfigIsZero(legacyCfg.Backends.DarwinVZ) {
+			cfg.Backends.DarwinVZ = legacyCfg.Backends.DarwinVZ
+		}
+	}
 
 	cfg.DefaultBackend = strings.TrimSpace(cfg.DefaultBackend)
 	return cfg, path, nil
+}
+
+func darwinVZConfigIsZero(cfg DarwinVZConfig) bool {
+	return strings.TrimSpace(cfg.KernelImage) == "" &&
+		strings.TrimSpace(cfg.RootFS) == "" &&
+		cfg.VCPUs == 0 &&
+		cfg.MemoryMiB == 0 &&
+		cfg.GuestPort == 0 &&
+		cfg.LaunchSeconds == 0
 }
