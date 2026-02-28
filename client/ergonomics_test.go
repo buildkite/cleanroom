@@ -72,8 +72,21 @@ func (a *cancelAwareStreamingAdapter) RunStream(ctx context.Context, req backend
 	return nil, ctx.Err()
 }
 
+type immediateStreamingAdapter struct {
+	integrationAdapter
+}
+
+func (a *immediateStreamingAdapter) RunStream(context.Context, backend.RunRequest, backend.OutputStream) (*backend.RunResult, error) {
+	return &backend.RunResult{
+		ExitCode: 0,
+		Message:  "done",
+	}, nil
+}
+
 type integrationExecutionHooks struct {
 	beforeStreamExecution func(context.Context, *StreamExecutionRequest) error
+	overrideStream        func(context.Context, *connect.Request[StreamExecutionRequest], *connect.ServerStream[ExecutionStreamEvent]) error
+	beforeGetExecution    func(context.Context, *GetExecutionRequest) error
 	onCancelExecution     func(*CancelExecutionRequest)
 }
 
@@ -83,12 +96,24 @@ type integrationHookedServer struct {
 }
 
 func (s *integrationHookedServer) StreamExecution(ctx context.Context, req *connect.Request[StreamExecutionRequest], stream *connect.ServerStream[ExecutionStreamEvent]) error {
+	if s.hooks.overrideStream != nil {
+		return s.hooks.overrideStream(ctx, req, stream)
+	}
 	if s.hooks.beforeStreamExecution != nil {
 		if err := s.hooks.beforeStreamExecution(ctx, req.Msg); err != nil {
 			return err
 		}
 	}
 	return s.Server.StreamExecution(ctx, req, stream)
+}
+
+func (s *integrationHookedServer) GetExecution(ctx context.Context, req *connect.Request[GetExecutionRequest]) (*connect.Response[GetExecutionResponse], error) {
+	if s.hooks.beforeGetExecution != nil {
+		if err := s.hooks.beforeGetExecution(ctx, req.Msg); err != nil {
+			return nil, err
+		}
+	}
+	return s.Server.GetExecution(ctx, req)
 }
 
 func (s *integrationHookedServer) CancelExecution(ctx context.Context, req *connect.Request[CancelExecutionRequest]) (*connect.Response[CancelExecutionResponse], error) {
@@ -180,6 +205,25 @@ func TestPolicyFromAllowlist(t *testing.T) {
 	}
 	if policy.GetAllow()[0].GetHost() != "api.github.com" {
 		t.Fatalf("unexpected first allow host: %q", policy.GetAllow()[0].GetHost())
+	}
+}
+
+func TestPolicyFromAllowlistSkipsEntriesWithoutPorts(t *testing.T) {
+	policy := PolicyFromAllowlist(
+		"ghcr.io/buildkite/cleanroom-base/alpine@sha256:abc",
+		"sha256:abc",
+		Allow("api.github.com"),
+		Allow("registry.npmjs.org", 443),
+	)
+
+	if got := len(policy.GetAllow()); got != 1 {
+		t.Fatalf("expected only one valid allow entry, got %d", got)
+	}
+	if got := policy.GetAllow()[0].GetHost(); got != "registry.npmjs.org" {
+		t.Fatalf("unexpected allow entry host: got %q", got)
+	}
+	if got := policy.GetAllow()[0].GetPorts(); len(got) != 1 || got[0] != 443 {
+		t.Fatalf("unexpected allow ports: %#v", got)
 	}
 }
 
@@ -565,6 +609,51 @@ func TestExecAndWaitStreamSetupFailureCancelsExecution(t *testing.T) {
 	case <-adapter.runCanceled:
 	case <-time.After(5 * time.Second):
 		t.Fatal("expected execution to be canceled when stream setup fails")
+	}
+}
+
+func TestExecAndWaitTimeoutAppliesToFallbackStatusFetch(t *testing.T) {
+	adapter := &immediateStreamingAdapter{}
+	host := startIntegrationServerWithAdapterAndExecutionHooks(t, adapter, integrationExecutionHooks{
+		overrideStream: func(context.Context, *connect.Request[StreamExecutionRequest], *connect.ServerStream[ExecutionStreamEvent]) error {
+			// Return a successful stream with no events so ExecAndWait uses GetExecution fallback.
+			return nil
+		},
+		beforeGetExecution: func(ctx context.Context, _ *GetExecutionRequest) error {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(200 * time.Millisecond):
+				return nil
+			}
+		},
+	})
+	c, err := New(host)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	ctx := context.Background()
+	sb, err := c.EnsureSandbox(ctx, "thread:fallback-timeout", EnsureSandboxOptions{
+		Backend: "firecracker",
+		Policy:  testPolicy(),
+	})
+	if err != nil {
+		t.Fatalf("EnsureSandbox returned error: %v", err)
+	}
+
+	started := time.Now()
+	_, runErr := c.ExecAndWait(ctx, sb.ID, []string{"echo", "hello"}, ExecOptions{
+		Timeout: 50 * time.Millisecond,
+	})
+	if runErr == nil {
+		t.Fatal("expected timeout error from fallback status fetch")
+	}
+	if got := ErrCode(runErr); got != ErrorCodeDeadlineExceeded {
+		t.Fatalf("expected deadline_exceeded from fallback status fetch, got %q (%v)", got, runErr)
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("fallback status fetch exceeded timeout budget: elapsed=%s", elapsed)
 	}
 }
 

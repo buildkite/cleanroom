@@ -145,6 +145,9 @@ func PolicyFromAllowlist(imageRef, imageDigest string, entries ...HostPort) *Pol
 		}
 		ports := make([]int32, len(entry.Ports))
 		copy(ports, entry.Ports)
+		if len(ports) == 0 {
+			continue
+		}
 		policy.Allow = append(policy.Allow, &PolicyAllowRule{Host: host, Ports: ports})
 	}
 	return policy
@@ -405,7 +408,7 @@ func (c *Client) ExecAndWait(ctx context.Context, sandboxID string, command []st
 	}
 
 	if status == ExecutionStatus_EXECUTION_STATUS_UNSPECIFIED {
-		getResp, err := c.GetExecution(ctx, &GetExecutionRequest{SandboxId: sandboxID, ExecutionId: executionID})
+		getResp, err := c.GetExecution(waitCtx, &GetExecutionRequest{SandboxId: sandboxID, ExecutionId: executionID})
 		if err != nil {
 			return nil, err
 		}
