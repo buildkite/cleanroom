@@ -13,8 +13,6 @@ import (
 	"time"
 
 	"github.com/buildkite/cleanroom/internal/backend"
-	"github.com/buildkite/cleanroom/internal/controlclient"
-	"github.com/buildkite/cleanroom/internal/endpoint"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 )
 
@@ -256,26 +254,12 @@ func TestConsoleIntegrationReuseSandboxSkipsPolicyCompile(t *testing.T) {
 			return &backend.RunResult{RunID: req.RunID, ExitCode: 0, Stdout: "ok\n", Message: "ok"}, nil
 		},
 	})
-	ep, err := endpoint.Resolve(host)
-	if err != nil {
-		t.Fatalf("resolve endpoint: %v", err)
-	}
-	client, err := controlclient.New(ep)
-	if err != nil {
-		t.Fatalf("create client: %v", err)
-	}
-	compiled, _, err := integrationLoader{}.LoadAndCompile(t.TempDir())
-	if err != nil {
-		t.Fatalf("load policy: %v", err)
-	}
-	createSandboxResp, err := client.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: compiled.ToProto()})
-	if err != nil {
-		t.Fatalf("CreateSandbox returned error: %v", err)
-	}
+	client := mustNewControlClient(t, host)
+	sandboxID := mustCreateSandbox(t, client)
 
 	outcome := runConsoleWithCapture(ConsoleCommand{
 		clientFlags: clientFlags{Host: host},
-		SandboxID:   createSandboxResp.GetSandbox().GetSandboxId(),
+		SandboxID:   sandboxID,
 		Command:     []string{"sh"},
 	}, "exit\n", runtimeContext{
 		CWD:    t.TempDir(),
@@ -299,26 +283,8 @@ func TestConsoleIntegrationRemoveTerminatesSuppliedSandbox(t *testing.T) {
 			return &backend.RunResult{RunID: req.RunID, ExitCode: 0, Stdout: "ok\n", Message: "ok"}, nil
 		},
 	})
-	ep, err := endpoint.Resolve(host)
-	if err != nil {
-		t.Fatalf("resolve endpoint: %v", err)
-	}
-	client, err := controlclient.New(ep)
-	if err != nil {
-		t.Fatalf("create client: %v", err)
-	}
-	compiled, _, err := integrationLoader{}.LoadAndCompile(t.TempDir())
-	if err != nil {
-		t.Fatalf("load policy: %v", err)
-	}
-	createSandboxResp, err := client.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: compiled.ToProto()})
-	if err != nil {
-		t.Fatalf("CreateSandbox returned error: %v", err)
-	}
-	sandboxID := createSandboxResp.GetSandbox().GetSandboxId()
-	if sandboxID == "" {
-		t.Fatal("expected sandbox id from CreateSandbox")
-	}
+	client := mustNewControlClient(t, host)
+	sandboxID := mustCreateSandbox(t, client)
 
 	outcome := runConsoleWithCapture(ConsoleCommand{
 		clientFlags: clientFlags{Host: host},
@@ -336,13 +302,7 @@ func TestConsoleIntegrationRemoveTerminatesSuppliedSandbox(t *testing.T) {
 		t.Fatalf("ConsoleCommand.Run returned error: %v", outcome.err)
 	}
 
-	getResp, err := client.GetSandbox(context.Background(), &cleanroomv1.GetSandboxRequest{SandboxId: sandboxID})
-	if err != nil {
-		t.Fatalf("GetSandbox returned error: %v", err)
-	}
-	if got, want := getResp.GetSandbox().GetStatus(), cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPED; got != want {
-		t.Fatalf("unexpected sandbox status: got %v want %v", got, want)
-	}
+	requireSandboxStatus(t, client, sandboxID, cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPED)
 }
 
 func TestConsoleIntegrationRoutesBackendWarningsToStderr(t *testing.T) {
