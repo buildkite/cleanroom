@@ -53,6 +53,9 @@ func TestGitHandlerHostNotAllowed(t *testing.T) {
 	if body := w.Body.String(); !strings.Contains(body, "host_not_allowed") {
 		t.Fatalf("expected host_not_allowed in body, got %q", body)
 	}
+	if got := w.Header().Get("X-Cleanroom-Reason-Code"); got != "host_not_allowed" {
+		t.Fatalf("expected X-Cleanroom-Reason-Code=host_not_allowed, got %q", got)
+	}
 }
 
 func TestGitHandlerReceivePackDenied(t *testing.T) {
