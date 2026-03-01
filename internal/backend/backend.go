@@ -114,6 +114,7 @@ type ProvisionRequest struct {
 type AttachIO struct {
 	WriteStdin func([]byte) error
 	ResizeTTY  func(cols, rows uint32) error
+	Metadata   map[string]string
 }
 
 type OutputStream struct {

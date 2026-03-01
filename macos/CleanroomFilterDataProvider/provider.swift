@@ -10,6 +10,7 @@ final class CleanroomFilterDataProvider: NEFilterDataProvider {
         let defaultAction: String
         let targetProcessPath: String?
         let allow: [AllowRule]
+        let processRules: [ProcessRule]?
 
         private enum CodingKeys: String, CodingKey {
             case version
@@ -17,12 +18,18 @@ final class CleanroomFilterDataProvider: NEFilterDataProvider {
             case defaultAction = "default_action"
             case targetProcessPath = "target_process_path"
             case allow
+            case processRules = "process_rules"
         }
     }
 
     private struct AllowRule: Decodable {
         let host: String
         let ports: [Int]
+    }
+
+    private struct ProcessRule: Decodable {
+        let pid: Int32
+        let allow: [AllowRule]
     }
 
     private enum ProviderConstants {
@@ -61,7 +68,18 @@ final class CleanroomFilterDataProvider: NEFilterDataProvider {
             return .drop()
         }
 
-        if isAllowed(host: host, port: port, policy: policy) {
+        if let pid = sourceProcessPID(for: flow), let scopedAllow = scopedAllowRules(for: pid, policy: policy) {
+            if isAllowed(host: host, port: port, rules: scopedAllow) {
+                return .allow()
+            }
+            return .drop()
+        }
+
+        if let processRules = policy.processRules, !processRules.isEmpty {
+            return .drop()
+        }
+
+        if isAllowed(host: host, port: port, rules: policy.allow) {
             return .allow()
         }
         return .drop()
@@ -153,6 +171,19 @@ final class CleanroomFilterDataProvider: NEFilterDataProvider {
     }
 
     private func sourceProcessPath(for flow: NEFilterFlow) -> String? {
+        guard let pid = sourceProcessPID(for: flow), pid > 0 else {
+            return nil
+        }
+
+        var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+        let length = proc_pidpath(pid, &buffer, UInt32(buffer.count))
+        guard length > 0 else {
+            return nil
+        }
+        return String(cString: buffer)
+    }
+
+    private func sourceProcessPID(for flow: NEFilterFlow) -> Int32? {
         guard let tokenData = flow.sourceProcessAuditToken else {
             return nil
         }
@@ -165,16 +196,20 @@ final class CleanroomFilterDataProvider: NEFilterDataProvider {
             }
             return audit_token_to_pid(token)
         }
-        guard pid > 0 else {
+        if pid <= 0 {
             return nil
         }
+        return pid
+    }
 
-        var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
-        let length = proc_pidpath(pid, &buffer, UInt32(buffer.count))
-        guard length > 0 else {
+    private func scopedAllowRules(for pid: Int32, policy: PolicySnapshot) -> [AllowRule]? {
+        guard let processRules = policy.processRules else {
             return nil
         }
-        return String(cString: buffer)
+        for rule in processRules where rule.pid == pid {
+            return rule.allow
+        }
+        return nil
     }
 
     private func canonicalPath(_ value: String) -> String {
@@ -184,8 +219,8 @@ final class CleanroomFilterDataProvider: NEFilterDataProvider {
             .path
     }
 
-    private func isAllowed(host: String, port: Int, policy: PolicySnapshot) -> Bool {
-        for rule in policy.allow {
+    private func isAllowed(host: String, port: Int, rules: [AllowRule]) -> Bool {
+        for rule in rules {
             let ruleHost = rule.host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             guard !ruleHost.isEmpty else {
                 continue

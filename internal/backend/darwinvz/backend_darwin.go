@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -502,6 +503,10 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 	if err != nil {
 		return nil, fmt.Errorf("start darwin-vz helper: %w", err)
 	}
+	helperPID := 0
+	if helper.cmd != nil && helper.cmd.Process != nil {
+		helperPID = helper.cmd.Process.Pid
+	}
 	defer func() {
 		if closeErr := helper.close(); closeErr != nil && stream.OnStderr != nil {
 			stream.OnStderr([]byte("warning: failed to close darwin-vz helper: " + closeErr.Error() + "\n"))
@@ -614,6 +619,12 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 
 	inputSender := &inputFrameSender{w: conn}
 	if stream.OnAttach != nil {
+		var metadata map[string]string
+		if helperPID > 0 {
+			metadata = map[string]string{
+				"network_process_pid": strconv.Itoa(helperPID),
+			}
+		}
 		stream.OnAttach(backend.AttachIO{
 			WriteStdin: func(data []byte) error {
 				return inputSender.Send(vsockexec.ExecInputFrame{Type: "stdin", Data: data})
@@ -621,6 +632,7 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 			ResizeTTY: func(cols, rows uint32) error {
 				return inputSender.Send(vsockexec.ExecInputFrame{Type: "resize", Cols: cols, Rows: rows})
 			},
+			Metadata: metadata,
 		})
 	}
 	if !req.TTY {
