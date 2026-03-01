@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"testing"
 
 	"github.com/buildkite/cleanroom/internal/controlservice"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
+	"github.com/quic-go/quic-go"
 )
 
 type testResizeCall struct {
@@ -146,5 +148,25 @@ func TestShouldFailInteractiveOnStdinErr(t *testing.T) {
 	}
 	if !shouldFailInteractiveOnStdinErr(errors.New("stdin write failed")) {
 		t.Fatal("expected non-EOF stdin error to fail session")
+	}
+}
+
+func TestIsInteractiveAcceptClosedErr(t *testing.T) {
+	t.Parallel()
+
+	if isInteractiveAcceptClosedErr(nil) {
+		t.Fatal("expected nil not to be treated as closed-listener accept error")
+	}
+	if !isInteractiveAcceptClosedErr(context.Canceled) {
+		t.Fatal("expected context.Canceled to be treated as closed-listener accept error")
+	}
+	if !isInteractiveAcceptClosedErr(quic.ErrServerClosed) {
+		t.Fatal("expected quic.ErrServerClosed to be treated as closed-listener accept error")
+	}
+	if !isInteractiveAcceptClosedErr(net.ErrClosed) {
+		t.Fatal("expected net.ErrClosed to be treated as closed-listener accept error")
+	}
+	if isInteractiveAcceptClosedErr(errors.New("accept failed")) {
+		t.Fatal("expected generic accept error not to be treated as closed-listener accept error")
 	}
 }

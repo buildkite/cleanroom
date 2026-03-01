@@ -907,7 +907,15 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 		openResp.GetSessionToken(),
 	)
 	if err != nil {
-		return fmt.Errorf("dial interactive execution: %w", err)
+		return resolveConsoleDialFailure(
+			err,
+			func() (int, bool, error) {
+				return replayExecutionHistory(client, sandboxID, executionID, ctx.Stdout, os.Stderr)
+			},
+			func() (int, bool) {
+				return getFinalExecutionExitCode(client, sandboxID, executionID)
+			},
+		)
 	}
 	defer interactiveSession.Close()
 
@@ -1897,6 +1905,37 @@ func replayExecutionHistory(client *controlclient.Client, sandboxID, executionID
 		return 0, false, err
 	}
 	return exitCode, haveExitCode, nil
+}
+
+func resolveConsoleDialFailure(
+	dialErr error,
+	replayFn func() (int, bool, error),
+	getFinalFn func() (int, bool),
+) error {
+	haveExitCode := false
+	exitCode := 0
+	if replayFn != nil {
+		replayedExitCode, replayedHaveExitCode, replayErr := replayFn()
+		if replayErr == nil {
+			haveExitCode = replayedHaveExitCode
+			exitCode = replayedExitCode
+		}
+	}
+
+	if !haveExitCode && getFinalFn != nil {
+		if fetchedExitCode, ok := getFinalFn(); ok {
+			haveExitCode = true
+			exitCode = fetchedExitCode
+		}
+	}
+
+	if haveExitCode {
+		if exitCode != 0 {
+			return exitCodeError{code: exitCode}
+		}
+		return nil
+	}
+	return fmt.Errorf("dial interactive execution: %w", dialErr)
 }
 
 func terminateSandboxBestEffort(client *controlclient.Client, sandboxID string, timeout time.Duration, logger *log.Logger, warnMessage string) {

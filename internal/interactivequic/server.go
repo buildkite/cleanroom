@@ -102,14 +102,11 @@ func (s *Server) serve(ctx context.Context) {
 	for {
 		conn, err := s.listener.Accept(ctx)
 		if err != nil {
-			if errors.Is(err, context.Canceled) {
+			if isInteractiveAcceptClosedErr(err) || ctx.Err() != nil {
 				return
 			}
 			if s.logger != nil {
 				s.logger.Warn("interactive QUIC accept failed", "error", err)
-			}
-			if ctx.Err() != nil {
-				return
 			}
 			continue
 		}
@@ -350,6 +347,15 @@ func isIgnorableInteractiveResizeErr(err error) bool {
 
 func shouldFailInteractiveOnStdinErr(err error) bool {
 	return err != nil && !errors.Is(err, io.EOF)
+}
+
+func isInteractiveAcceptClosedErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, context.Canceled) ||
+		errors.Is(err, quic.ErrServerClosed) ||
+		errors.Is(err, net.ErrClosed)
 }
 
 func (s *Server) readStdinLoop(session *controlservice.InteractiveSession, stream *quic.ReceiveStream, errCh chan<- error) {
