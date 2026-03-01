@@ -713,9 +713,10 @@ func (c *SandboxTerminateCommand) Run(ctx *runtimeContext) error {
 }
 
 func (a *AgentCodexCommand) Run(ctx *runtimeContext) error {
-	command := make([]string, 0, len(a.Args)+1)
+	args := trimPassthroughSeparator(a.Args)
+	command := make([]string, 0, len(args)+1)
 	command = append(command, "codex")
-	command = append(command, a.Args...)
+	command = append(command, args...)
 
 	console := ConsoleCommand{
 		clientFlags:   a.clientFlags,
@@ -978,14 +979,19 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 
 	stdinFD := int(os.Stdin.Fd())
 	rawMode := false
-	normalizeRawTTYOutput := false
+	normalizeRawTTYStdout := false
+	normalizeRawTTYStderr := false
 	if term.IsTerminal(stdinFD) {
 		oldState, rawErr := term.MakeRaw(stdinFD)
 		if rawErr != nil {
 			logger.Warn("failed to enter raw mode", "error", rawErr)
 		} else {
 			rawMode = true
-			normalizeRawTTYOutput = shouldNormalizeRawTTYOutput(command)
+			normalizeRawTTYStdout = shouldNormalizeRawTTYOutput(command)
+			// Stderr frames in TTY sessions come from runtime/control-plane warnings
+			// rather than the PTY command stream, so CRLF normalization is safe and
+			// keeps lines aligned while stdin is in raw mode.
+			normalizeRawTTYStderr = true
 			defer func() {
 				_ = term.Restore(stdinFD, oldState)
 			}()
@@ -1075,7 +1081,7 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 		switch payload := frame.Payload.(type) {
 		case *cleanroomv1.ExecutionAttachFrame_Stdout:
 			chunk := payload.Stdout
-			if rawMode && normalizeRawTTYOutput {
+			if rawMode && normalizeRawTTYStdout {
 				chunk, stdoutEndedCR = normalizeLineEndingsForRawTTY(chunk, stdoutEndedCR)
 			}
 			if _, err := ctx.Stdout.Write(chunk); err != nil {
@@ -1083,7 +1089,7 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 			}
 		case *cleanroomv1.ExecutionAttachFrame_Stderr:
 			chunk := payload.Stderr
-			if rawMode && normalizeRawTTYOutput {
+			if rawMode && normalizeRawTTYStderr {
 				chunk, stderrEndedCR = normalizeLineEndingsForRawTTY(chunk, stderrEndedCR)
 			}
 			if _, err := os.Stderr.Write(chunk); err != nil {
@@ -1145,6 +1151,18 @@ func shouldNormalizeRawTTYOutput(command []string) bool {
 	default:
 		return false
 	}
+}
+
+func trimPassthroughSeparator(args []string) []string {
+	if len(args) == 0 {
+		return args
+	}
+	if strings.TrimSpace(args[0]) != "--" {
+		return args
+	}
+	out := make([]string, 0, len(args)-1)
+	out = append(out, args[1:]...)
+	return out
 }
 
 func (c *TLSInitCommand) Run(ctx *runtimeContext) error {

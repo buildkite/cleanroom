@@ -184,6 +184,41 @@ func TestAgentCodexIntegrationPassesArgsToCodex(t *testing.T) {
 	}
 }
 
+func TestAgentCodexIntegrationTrimsLeadingPassthroughSeparator(t *testing.T) {
+	var gotCommand []string
+	adapter := &integrationAdapter{
+		runStreamFn: func(_ context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+			gotCommand = append([]string(nil), req.Command...)
+			return &backend.RunResult{
+				RunID:    req.RunID,
+				ExitCode: 0,
+				Message:  "ok",
+			}, nil
+		},
+	}
+
+	host, _ := startIntegrationServer(t, adapter)
+	cwd := t.TempDir()
+	outcome := runAgentCodexWithCapture(AgentCodexCommand{
+		clientFlags: clientFlags{Host: host},
+		Chdir:       cwd,
+		Args:        []string{"--", "--yolo"},
+	}, "", runtimeContext{
+		CWD:    cwd,
+		Loader: integrationLoader{},
+	})
+
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err != nil {
+		t.Fatalf("AgentCodexCommand.Run returned error: %v", outcome.err)
+	}
+	if got, want := gotCommand, []string{"codex", "--yolo"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected command: got %v want %v", got, want)
+	}
+}
+
 func TestAgentCodexIntegrationOverridesImageRefForCreatedSandbox(t *testing.T) {
 	var gotImageRef string
 	adapter := &integrationAdapter{
