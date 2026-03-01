@@ -258,6 +258,16 @@ cleanroom image bump-ref    # resolve :latest tag to digest and update cleanroom
 
 `ghcr.io/buildkite/cleanroom-base/alpine`, `ghcr.io/buildkite/cleanroom-base/alpine-docker`, and `ghcr.io/buildkite/cleanroom-base/alpine-agents` are published from this repo on pushes to `main`.
 
+Build these locally with `mise`:
+
+```bash
+mise run build:images
+# or individually:
+mise run build:image:alpine
+mise run build:image:alpine-docker
+mise run build:image:alpine-agents
+```
+
 ## Runtime config
 
 Config path: `$XDG_CONFIG_HOME/cleanroom/config.yaml` (typically `~/.config/cleanroom/config.yaml`).
