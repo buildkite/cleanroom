@@ -150,6 +150,10 @@ func (s *Server) handleConnection(ctx context.Context, conn *quic.Conn) {
 		_ = sendControl(controlMessage{Type: controlTypeError, Error: err.Error()})
 		return
 	}
+	if err := s.applyInitialTTYSize(session); err != nil {
+		_ = sendControl(controlMessage{Type: controlTypeError, Error: err.Error()})
+		return
+	}
 	if err := sendControl(controlMessage{Type: controlTypeHelloAck}); err != nil {
 		return
 	}
@@ -206,8 +210,12 @@ func (s *Server) handleConnection(ctx context.Context, conn *quic.Conn) {
 			_ = sendControl(controlMessage{Type: controlTypeError, Error: err.Error()})
 			return
 		case err := <-stdinErrCh:
-			if err != nil && !errors.Is(err, io.EOF) && s.logger != nil {
-				s.logger.Warn("interactive stdin stream failed", "session_id", session.SessionID, "error", err)
+			if shouldFailInteractiveOnStdinErr(err) {
+				if s.logger != nil {
+					s.logger.Warn("interactive stdin stream failed", "session_id", session.SessionID, "error", err)
+				}
+				_ = sendControl(controlMessage{Type: controlTypeError, Error: err.Error()})
+				return
 			}
 		case event, ok := <-updates:
 			if !ok {
@@ -261,7 +269,7 @@ func (s *Server) readControlLoop(ctx context.Context, decoder *json.Decoder, ses
 		switch msg.Type {
 		case controlTypeResize:
 			if err := s.service.ResizeExecutionTTY(session.SandboxID, session.ExecutionID, msg.Cols, msg.Rows); err != nil {
-				if errors.Is(err, controlservice.ErrExecutionResizeUnsupported) {
+				if isIgnorableInteractiveResizeErr(err) {
 					if s.logger != nil {
 						s.logger.Debug(
 							"ignoring unsupported interactive resize request",
@@ -308,6 +316,40 @@ func (s *Server) readControlLoop(ctx context.Context, decoder *json.Decoder, ses
 			return
 		}
 	}
+}
+
+func (s *Server) applyInitialTTYSize(session *controlservice.InteractiveSession) error {
+	if s == nil || s.service == nil || session == nil {
+		return nil
+	}
+	if session.InitialCols == 0 || session.InitialRows == 0 {
+		return nil
+	}
+	if err := s.service.ResizeExecutionTTY(session.SandboxID, session.ExecutionID, session.InitialCols, session.InitialRows); err != nil {
+		if isIgnorableInteractiveResizeErr(err) {
+			if s.logger != nil {
+				s.logger.Debug(
+					"ignoring unsupported initial interactive tty size",
+					"session_id", session.SessionID,
+					"sandbox_id", session.SandboxID,
+					"execution_id", session.ExecutionID,
+					"cols", session.InitialCols,
+					"rows", session.InitialRows,
+				)
+			}
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+func isIgnorableInteractiveResizeErr(err error) bool {
+	return errors.Is(err, controlservice.ErrExecutionResizeUnsupported)
+}
+
+func shouldFailInteractiveOnStdinErr(err error) bool {
+	return err != nil && !errors.Is(err, io.EOF)
 }
 
 func (s *Server) readStdinLoop(session *controlservice.InteractiveSession, stream *quic.ReceiveStream, errCh chan<- error) {
