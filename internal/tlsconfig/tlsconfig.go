@@ -1,4 +1,4 @@
-// Package tlsconfig discovers and loads TLS material for cleanroom mTLS.
+// Package tlsconfig discovers and loads TLS material for cleanroom server-auth TLS.
 package tlsconfig
 
 import (
@@ -22,7 +22,7 @@ type Options struct {
 // are provided, it auto-discovers from the XDG TLS directory.
 // Returns nil if no TLS material is found.
 func ResolveServer(opts Options) (*tls.Config, error) {
-	certPath, keyPath, caPath, err := resolvePaths(opts, "server")
+	certPath, keyPath, err := resolveServerPaths(opts)
 	if err != nil {
 		return nil, err
 	}
@@ -41,15 +41,6 @@ func ResolveServer(opts Options) (*tls.Config, error) {
 		NextProtos:   []string{"h2", "http/1.1"},
 	}
 
-	if caPath != "" {
-		pool, err := loadCAPool(caPath)
-		if err != nil {
-			return nil, err
-		}
-		tlsCfg.ClientCAs = pool
-		tlsCfg.ClientAuth = tls.RequireAndVerifyClientCert
-	}
-
 	return tlsCfg, nil
 }
 
@@ -57,7 +48,11 @@ func ResolveServer(opts Options) (*tls.Config, error) {
 // are provided, it auto-discovers from the XDG TLS directory.
 // Returns nil if no TLS material is found.
 func ResolveClient(opts Options) (*tls.Config, error) {
-	certPath, keyPath, caPath, err := resolvePaths(opts, "client")
+	if opts.CertPath != "" || opts.KeyPath != "" {
+		return nil, fmt.Errorf("client certificates are not supported")
+	}
+
+	caPath, err := resolveClientCAPath(opts.CAPath)
 	if err != nil {
 		return nil, err
 	}
@@ -74,59 +69,49 @@ func ResolveClient(opts Options) (*tls.Config, error) {
 		tlsCfg.RootCAs = pool
 	}
 
-	switch {
-	case certPath != "" && keyPath != "":
-		cert, err := tls.LoadX509KeyPair(certPath, keyPath)
-		if err != nil {
-			return nil, fmt.Errorf("load client certificate: %w", err)
-		}
-		tlsCfg.Certificates = []tls.Certificate{cert}
-	case certPath != "":
-		return nil, fmt.Errorf("client TLS cert provided (%s) but key is missing", certPath)
-	case keyPath != "":
-		return nil, fmt.Errorf("client TLS key provided (%s) but cert is missing", keyPath)
-	}
-
 	return tlsCfg, nil
 }
 
-func resolvePaths(opts Options, role string) (certPath, keyPath, caPath string, err error) {
+func resolveServerPaths(opts Options) (certPath, keyPath string, err error) {
 	certPath = opts.CertPath
 	keyPath = opts.KeyPath
-	caPath = opts.CAPath
-
-	// Track whether cert/key were explicitly provided. When they are, CA
-	// must also be explicit — auto-discovering a CA from XDG when cert/key
-	// were passed via flags would unexpectedly enable mTLS on the server or
-	// change the client trust root.
-	certKeyExplicit := certPath != "" && keyPath != ""
-
-	// Auto-discover missing paths from XDG TLS directory.
 	tlsDir, dirErr := paths.TLSDir()
 	if dirErr != nil {
-		return certPath, keyPath, caPath, nil
+		return certPath, keyPath, nil
 	}
 
 	if certPath == "" {
-		candidate := filepath.Join(tlsDir, role+".pem")
+		candidate := filepath.Join(tlsDir, "server.pem")
 		if fileExists(candidate) {
 			certPath = candidate
 		}
 	}
 	if keyPath == "" {
-		candidate := filepath.Join(tlsDir, role+".key")
+		candidate := filepath.Join(tlsDir, "server.key")
 		if fileExists(candidate) {
 			keyPath = candidate
 		}
 	}
-	if caPath == "" && !certKeyExplicit {
-		candidate := filepath.Join(tlsDir, "ca.pem")
-		if fileExists(candidate) {
-			caPath = candidate
-		}
+
+	return certPath, keyPath, nil
+}
+
+func resolveClientCAPath(caPath string) (string, error) {
+	if caPath != "" {
+		return caPath, nil
 	}
 
-	return certPath, keyPath, caPath, nil
+	tlsDir, dirErr := paths.TLSDir()
+	if dirErr != nil {
+		return "", nil
+	}
+
+	candidate := filepath.Join(tlsDir, "ca.pem")
+	if fileExists(candidate) {
+		return candidate, nil
+	}
+
+	return "", nil
 }
 
 func loadCAPool(path string) (*x509.CertPool, error) {

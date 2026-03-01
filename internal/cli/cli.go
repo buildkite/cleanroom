@@ -37,7 +37,6 @@ import (
 	"github.com/buildkite/cleanroom/internal/paths"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
-	"github.com/buildkite/cleanroom/internal/tlsbootstrap"
 	"github.com/buildkite/cleanroom/internal/tlsconfig"
 	"github.com/charmbracelet/log"
 	"github.com/google/go-containerregistry/pkg/authn"
@@ -76,7 +75,6 @@ type CLI struct {
 	Exec    ExecCommand    `cmd:"" help:"Execute a command in a cleanroom backend"`
 	Console ConsoleCommand `cmd:"" help:"Attach an interactive console to a cleanroom execution"`
 	Serve   ServeCommand   `cmd:"" help:"Run the cleanroom control-plane server"`
-	TLS     TLSCommand     `cmd:"" help:"Manage TLS certificates for mTLS"`
 	Doctor  DoctorCommand  `cmd:"" help:"Run environment and backend diagnostics"`
 	Status  StatusCommand  `cmd:"" help:"Inspect run artifacts"`
 	Sandbox SandboxCommand `cmd:"" help:"Manage sandboxes"`
@@ -145,8 +143,6 @@ type ConfigInitCommand struct {
 type clientFlags struct {
 	Host     string `help:"Control-plane endpoint (unix://path, http://host:port, or https://host:port)" env:"CLEANROOM_HOST"`
 	LogLevel string `help:"Client log level (debug|info|warn|error)"`
-	TLSCert  string `help:"Path to TLS client certificate (auto-discovered from XDG config for https)" env:"CLEANROOM_TLS_CERT"`
-	TLSKey   string `help:"Path to TLS client private key (auto-discovered from XDG config for https)" env:"CLEANROOM_TLS_KEY"`
 	TLSCA    string `name:"tls-ca" aliases:"tlsca" help:"Path to CA certificate for server verification (auto-discovered from XDG config for https)" env:"CLEANROOM_TLS_CA"`
 }
 
@@ -155,13 +151,8 @@ func (f *clientFlags) connect() (*controlclient.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := validateClientEndpoint(ep); err != nil {
-		return nil, err
-	}
 	return controlclient.New(ep, controlclient.WithTLS(tlsconfig.Options{
-		CertPath: f.TLSCert,
-		KeyPath:  f.TLSKey,
-		CAPath:   f.TLSCA,
+		CAPath: f.TLSCA,
 	}))
 }
 
@@ -192,29 +183,11 @@ type ConsoleCommand struct {
 type ServeCommand struct {
 	Action        string `arg:"" optional:"" help:"Serve action (install daemon)"`
 	Force         bool   `help:"Overwrite existing daemon service file (serve install only)"`
-	Listen        string `help:"Listen endpoint for control API (defaults to runtime endpoint; supports tsnet://hostname[:port] and tssvc://service[:local-port])"`
+	Listen        string `help:"Listen endpoint for control API (defaults to runtime endpoint)"`
 	GatewayListen string `help:"Listen address for the host gateway (default :8170, use :0 for ephemeral port)"`
 	LogLevel      string `help:"Server log level (debug|info|warn|error)"`
 	TLSCert       string `help:"Path to TLS server certificate (auto-discovered from XDG config for https)" env:"CLEANROOM_TLS_CERT"`
 	TLSKey        string `help:"Path to TLS server private key (auto-discovered from XDG config for https)" env:"CLEANROOM_TLS_KEY"`
-	TLSCA         string `name:"tls-ca" aliases:"tlsca" help:"Path to CA certificate for client verification (auto-discovered from XDG config for https)" env:"CLEANROOM_TLS_CA"`
-}
-
-type TLSCommand struct {
-	Init  TLSInitCommand  `cmd:"" help:"Generate CA and server/client certificates"`
-	Issue TLSIssueCommand `cmd:"" help:"Issue an additional certificate signed by the CA"`
-}
-
-type TLSInitCommand struct {
-	Dir   string `help:"Output directory for TLS material (default: $XDG_CONFIG_HOME/cleanroom/tls)"`
-	Force bool   `help:"Overwrite existing CA and certificates"`
-}
-
-type TLSIssueCommand struct {
-	Name  string   `arg:"" required:"" help:"Common name for the certificate"`
-	SAN   []string `help:"Subject alternative names (DNS names or IP addresses)"`
-	Dir   string   `help:"TLS directory containing CA material (default: $XDG_CONFIG_HOME/cleanroom/tls)"`
-	Force bool     `help:"Overwrite existing certificate and key files"`
 }
 
 type StatusCommand struct {
@@ -1084,67 +1057,30 @@ func normalizeLineEndingsForRawTTY(chunk []byte, prevEndedCR bool) ([]byte, bool
 	return out, endedCR
 }
 
-func (c *TLSInitCommand) Run(ctx *runtimeContext) error {
-	dir := c.Dir
-	if dir == "" {
-		d, err := paths.TLSDir()
-		if err != nil {
-			return err
-		}
-		dir = d
+func attachTTYSize(fd int) (uint32, uint32) {
+	cols, rows, err := term.GetSize(fd)
+	if err != nil {
+		return 80, 24
 	}
-	if err := tlsbootstrap.Init(dir, c.Force); err != nil {
-		return err
+	if cols <= 0 {
+		cols = 80
 	}
-	fmt.Fprintf(os.Stderr, "TLS material written to %s\n", dir)
-	return nil
+	if rows <= 0 {
+		rows = 24
+	}
+	return uint32(cols), uint32(rows)
 }
 
-func (c *TLSIssueCommand) Run(ctx *runtimeContext) error {
-	if strings.ContainsAny(c.Name, "/\\") || strings.Contains(c.Name, "..") {
-		return fmt.Errorf("invalid certificate name %q: must not contain path separators or '..'", c.Name)
+func trimPassthroughSeparator(args []string) []string {
+	if len(args) == 0 {
+		return args
 	}
-
-	dir := c.Dir
-	if dir == "" {
-		d, err := paths.TLSDir()
-		if err != nil {
-			return err
-		}
-		dir = d
+	if strings.TrimSpace(args[0]) != "--" {
+		return args
 	}
-
-	caCertPEM, err := os.ReadFile(filepath.Join(dir, "ca.pem"))
-	if err != nil {
-		return fmt.Errorf("read CA certificate: %w (run 'cleanroom tls init' first)", err)
-	}
-	caKeyPEM, err := os.ReadFile(filepath.Join(dir, "ca.key"))
-	if err != nil {
-		return fmt.Errorf("read CA key: %w", err)
-	}
-
-	kp, err := tlsbootstrap.IssueCert(caCertPEM, caKeyPEM, c.Name, c.SAN)
-	if err != nil {
-		return err
-	}
-
-	certPath := filepath.Join(dir, c.Name+".pem")
-	keyPath := filepath.Join(dir, c.Name+".key")
-	if !c.Force {
-		for _, p := range []string{certPath, keyPath} {
-			if _, err := os.Stat(p); err == nil {
-				return fmt.Errorf("%s already exists (use --force to overwrite)", p)
-			}
-		}
-	}
-	if err := os.WriteFile(certPath, kp.CertPEM, 0o644); err != nil {
-		return err
-	}
-	if err := os.WriteFile(keyPath, kp.KeyPEM, 0o600); err != nil {
-		return err
-	}
-	fmt.Fprintf(os.Stderr, "Certificate written to %s\n", certPath)
-	return nil
+	out := make([]string, 0, len(args)-1)
+	out = append(out, args[1:]...)
+	return out
 }
 
 func (s *ServeCommand) Run(ctx *runtimeContext) error {
@@ -1187,13 +1123,6 @@ func (s *ServeCommand) daemonRunArgs(cwd string) ([]string, error) {
 			return nil, fmt.Errorf("resolve --tls-key path: %w", err)
 		}
 		args = append(args, "--tls-key", resolved)
-	}
-	if value := strings.TrimSpace(s.TLSCA); value != "" {
-		resolved, err := resolveDaemonInstallPath(cwd, value)
-		if err != nil {
-			return nil, fmt.Errorf("resolve --tls-ca path: %w", err)
-		}
-		args = append(args, "--tls-ca", resolved)
 	}
 	return args, nil
 }
@@ -1472,7 +1401,6 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 		serverTLS = &controlserver.TLSOptions{
 			CertPath: s.TLSCert,
 			KeyPath:  s.TLSKey,
-			CAPath:   s.TLSCA,
 		}
 	}
 
@@ -1624,13 +1552,6 @@ func capabilityCheckName(key string) string {
 		return "capability_unknown"
 	}
 	return "capability_" + capabilityNameReplacer.Replace(trimmed)
-}
-
-func validateClientEndpoint(ep endpoint.Endpoint) error {
-	if ep.Scheme != "tssvc" {
-		return nil
-	}
-	return errors.New("tssvc:// endpoints are listen-only; use https://<service>.<your-tailnet>.ts.net for --host")
 }
 
 func mergeBackendConfig(backendName string, launchSeconds int64, cfg runtimeconfig.Config) backend.FirecrackerConfig {

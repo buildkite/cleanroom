@@ -55,10 +55,9 @@ Fallbacks:
 3. active context config
 4. default unix socket path
 
-HTTP and Tailscale endpoints are also supported:
-- `http://host:port` for direct HTTP (HTTPS not yet implemented)
-- `tsnet://hostname[:port]` for embedded Tailscale (server-side only)
-- `tssvc://service[:local-port]` for Tailscale Services (server-side only; clients connect via `https://service.<tailnet>.ts.net`)
+HTTP endpoints are also supported:
+- `http://host:port` for direct HTTP
+- `https://host:port` for TLS transport
 
 ## 4) API Surface (Minimal v1)
 
@@ -213,8 +212,7 @@ Expose a server mode and API-driven commands in the same binary.
 
 - `cleanroom serve --listen unix:///run/user/1000/cleanroom/cleanroom.sock`
 - `cleanroom serve --listen http://127.0.0.1:7777`
-- `cleanroom serve --listen tsnet://cleanroom:7777`
-- `cleanroom serve --listen tssvc://cleanroom`
+- `cleanroom serve --listen https://127.0.0.1:7777 --tls-cert /path/to/server.pem --tls-key /path/to/server.key`
 
 ### 9.2 Sandbox commands
 

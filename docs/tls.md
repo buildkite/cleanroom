@@ -1,43 +1,26 @@
-# TLS and mTLS
+# TLS
 
-Cleanroom supports mutual TLS for HTTPS transport. TLS material is stored in
-`$XDG_CONFIG_HOME/cleanroom/tls/` (typically `~/.config/cleanroom/tls/`).
+Cleanroom supports HTTPS transport with server-auth TLS.
 
-## Bootstrap certificates
-
-```bash
-cleanroom tls init
-```
-
-This generates a CA, server certificate (with localhost + hostname SANs), and
-client certificate. Use `--force` to overwrite existing material.
-
-## Issue additional certificates
-
-```bash
-cleanroom tls issue worker-1 --san worker-1.internal --san 10.0.0.5
-```
-
-When `--san` is omitted, the certificate name is added as a SAN automatically.
-
-## Serve with HTTPS + mTLS
-
-```bash
-cleanroom serve --listen https://0.0.0.0:7777
-```
-
-TLS material is auto-discovered from the XDG TLS directory. To use explicit
-paths:
+## Serve with HTTPS
 
 ```bash
 cleanroom serve --listen https://0.0.0.0:7777 \
   --tls-cert /path/to/server.pem \
-  --tls-key /path/to/server.key \
-  --tls-ca /path/to/ca.pem
+  --tls-key /path/to/server.key
 ```
 
-When a CA is configured, the server requires and verifies client certificates
-(mTLS). Without `--tls-ca`, the server accepts any TLS client.
+If explicit paths are omitted, cleanroom auto-discovers:
+
+- server cert: `<tlsdir>/server.pem`
+- server key: `<tlsdir>/server.key`
+
+`<tlsdir>` defaults to `$XDG_CONFIG_HOME/cleanroom/tls/` (typically `~/.config/cleanroom/tls/`).
+
+Environment variables for server TLS:
+
+- `CLEANROOM_TLS_CERT`
+- `CLEANROOM_TLS_KEY`
 
 ## Connect over HTTPS
 
@@ -45,20 +28,20 @@ When a CA is configured, the server requires and verifies client certificates
 cleanroom exec --host https://server.example.com:7777 -- echo hello
 ```
 
-Client certificates and CA are auto-discovered from the XDG TLS directory, or
-specified with `--tls-cert`, `--tls-key`, and `--tls-ca`.
+To trust a custom CA, use:
 
-Environment variables `CLEANROOM_TLS_CERT`, `CLEANROOM_TLS_KEY`, and
-`CLEANROOM_TLS_CA` are also supported.
+```bash
+cleanroom exec --host https://server.example.com:7777 \
+  --tls-ca /path/to/ca.pem -- echo hello
+```
 
-## Auto-discovery
+If `--tls-ca` is omitted, cleanroom uses system roots and falls back to `<tlsdir>/ca.pem` when present.
 
-When no explicit TLS flags are provided, cleanroom looks for:
+Environment variable for client CA trust:
 
-| Role   | Cert                    | Key                     | CA               |
-|--------|-------------------------|-------------------------|------------------|
-| Server | `<tlsdir>/server.pem`   | `<tlsdir>/server.key`   | `<tlsdir>/ca.pem` |
-| Client | `<tlsdir>/client.pem`   | `<tlsdir>/client.key`   | `<tlsdir>/ca.pem` |
+- `CLEANROOM_TLS_CA`
 
-CA auto-discovery is skipped when cert/key are explicitly provided, to avoid
-unexpectedly enabling mTLS.
+## Notes
+
+- Client certificate authentication (mTLS) is not supported.
+- Built-in TLS certificate generation commands are not provided.

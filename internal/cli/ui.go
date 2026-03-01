@@ -197,24 +197,6 @@ func endpointDisplay(ep endpoint.Endpoint) string {
 			return ep.Address
 		}
 		return ep.BaseURL
-	case "tsnet":
-		host := strings.TrimSpace(ep.TSNetHostname)
-		if host == "" {
-			host = "cleanroom"
-		}
-		if ep.TSNetPort > 0 {
-			return fmt.Sprintf("tsnet://%s:%d", host, ep.TSNetPort)
-		}
-		return "tsnet://" + host
-	case "tssvc":
-		label := strings.TrimSpace(strings.TrimPrefix(ep.TSServiceName, "svc:"))
-		if label == "" {
-			label = "cleanroom"
-		}
-		if ep.TSServicePort > 0 {
-			return fmt.Sprintf("tssvc://%s:%d", label, ep.TSServicePort)
-		}
-		return "tssvc://" + label
 	default:
 		if ep.Address != "" {
 			return ep.Address

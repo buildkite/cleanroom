@@ -19,19 +19,16 @@ import (
 	"github.com/buildkite/cleanroom/internal/endpoint"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/gen/cleanroom/v1/cleanroomv1connect"
-	"github.com/buildkite/cleanroom/internal/paths"
 	"github.com/buildkite/cleanroom/internal/tlsconfig"
 	"github.com/charmbracelet/log"
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
-	"tailscale.com/tsnet"
 )
 
 // TLSOptions holds explicit TLS paths for the server.
 type TLSOptions struct {
 	CertPath string
 	KeyPath  string
-	CAPath   string
 }
 
 type Server struct {
@@ -41,33 +38,6 @@ type Server struct {
 
 func New(service *controlservice.Service, logger *log.Logger) *Server {
 	return &Server{service: service, logger: logger}
-}
-
-type tsnetServer interface {
-	Listen(network, addr string) (net.Listener, error)
-	Close() error
-}
-
-var newTSNetServer = func(ep endpoint.Endpoint, stateDir string, tsLogf func(format string, args ...any)) tsnetServer {
-	return &tsnet.Server{
-		Dir:      stateDir,
-		Hostname: ep.TSNetHostname,
-		Logf:     tsLogf,
-	}
-}
-
-func tsnetLogf(logger *log.Logger) func(format string, args ...any) {
-	if logger == nil {
-		return nil
-	}
-	tsLogger := logger.With("subsystem", "tsnet")
-	return func(format string, args ...any) {
-		msg := strings.TrimSpace(fmt.Sprintf(format, args...))
-		if msg == "" {
-			return
-		}
-		tsLogger.Debug(msg)
-	}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -489,7 +459,7 @@ func toConnectError(err error) error {
 }
 
 func Serve(ctx context.Context, ep endpoint.Endpoint, handler http.Handler, logger *log.Logger, tlsOpts *TLSOptions) error {
-	listener, cleanup, err := listen(ep, logger, tlsOpts)
+	listener, cleanup, err := listen(ep, tlsOpts)
 	if err != nil {
 		return err
 	}
@@ -541,7 +511,7 @@ func Serve(ctx context.Context, ep endpoint.Endpoint, handler http.Handler, logg
 	}
 }
 
-func listen(ep endpoint.Endpoint, logger *log.Logger, tlsOpts *TLSOptions) (net.Listener, func() error, error) {
+func listen(ep endpoint.Endpoint, tlsOpts *TLSOptions) (net.Listener, func() error, error) {
 	if ep.Scheme == "unix" {
 		if err := os.MkdirAll(filepath.Dir(ep.Address), 0o755); err != nil {
 			return nil, nil, err
@@ -560,44 +530,12 @@ func listen(ep endpoint.Endpoint, logger *log.Logger, tlsOpts *TLSOptions) (net.
 		return listener, nil, nil
 	}
 
-	if ep.Scheme == "tsnet" {
-		stateDir, err := paths.TSNetStateDir()
-		if err != nil {
-			return nil, nil, fmt.Errorf("resolve tsnet state directory: %w", err)
-		}
-		if err := os.MkdirAll(stateDir, 0o700); err != nil {
-			return nil, nil, fmt.Errorf("create tsnet state directory: %w", err)
-		}
-		server := newTSNetServer(ep, stateDir, tsnetLogf(logger))
-		listener, err := server.Listen("tcp", ep.Address)
-		if err != nil {
-			_ = server.Close()
-			return nil, nil, fmt.Errorf("start tsnet listener for %q: %w", ep.Address, err)
-		}
-		return listener, server.Close, nil
-	}
-
-	if ep.Scheme == "tssvc" {
-		listener, err := net.Listen("tcp", ep.Address)
-		if err != nil {
-			return nil, nil, fmt.Errorf("start tailscale service listener for %q: %w", ep.Address, err)
-		}
-		setupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if err := configureTailscaleService(setupCtx, ep, listener.Addr().String()); err != nil {
-			_ = listener.Close()
-			return nil, nil, err
-		}
-		return listener, nil, nil
-	}
-
 	if ep.Scheme == "https" {
 		var opts tlsconfig.Options
 		if tlsOpts != nil {
 			opts = tlsconfig.Options{
 				CertPath: tlsOpts.CertPath,
 				KeyPath:  tlsOpts.KeyPath,
-				CAPath:   tlsOpts.CAPath,
 			}
 		}
 		tlsCfg, err := tlsconfig.ResolveServer(opts)
@@ -605,10 +543,7 @@ func listen(ep endpoint.Endpoint, logger *log.Logger, tlsOpts *TLSOptions) (net.
 			return nil, nil, fmt.Errorf("resolve server TLS config: %w", err)
 		}
 		if tlsCfg == nil {
-			return nil, nil, errors.New("https listen endpoint requires TLS certificates (run 'cleanroom tls init' or provide --tls-cert/--tls-key)")
-		}
-		if tlsCfg.ClientAuth != tls.RequireAndVerifyClientCert && logger != nil {
-			logger.Warn("HTTPS listener has no client CA configured; client certificate authentication is disabled")
+			return nil, nil, errors.New("https listen endpoint requires TLS certificates (provide --tls-cert/--tls-key)")
 		}
 		addr := ep.Address
 		for _, prefix := range []string{"https://", "http://"} {
