@@ -220,7 +220,17 @@ cleanroom image import ghcr.io/buildkite/cleanroom-base/alpine@sha256:... ./root
 cleanroom image bump-ref    # resolve :latest tag to digest and update cleanroom.yaml
 ```
 
-`ghcr.io/buildkite/cleanroom-base/alpine` and `ghcr.io/buildkite/cleanroom-base/alpine-docker` are published from this repo on pushes to `main`.
+`ghcr.io/buildkite/cleanroom-base/alpine`, `ghcr.io/buildkite/cleanroom-base/alpine-docker`, and `ghcr.io/buildkite/cleanroom-base/alpine-agents` are published from this repo on pushes to `main`.
+
+Build these locally with `mise`:
+
+```bash
+mise run build:images
+# or individually:
+mise run build:image:alpine
+mise run build:image:alpine-docker
+mise run build:image:alpine-agents
+```
 
 ## Runtime config
 

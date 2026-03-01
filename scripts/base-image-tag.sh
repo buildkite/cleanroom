@@ -2,7 +2,7 @@
 set -euo pipefail
 
 image_name="${1:-alpine}"
-dockerfile="${2:-Dockerfile.base-image}"
+dockerfile="${2:-images/Dockerfile.base-image}"
 
 if [[ ! -f "$dockerfile" ]]; then
   echo "dockerfile not found: $dockerfile" >&2

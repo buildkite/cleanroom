@@ -6,4 +6,6 @@ RUN apk add --no-cache \
   strace \
   mise
 
+RUN docker --version && mise --version
+
 CMD ["/bin/sh"]

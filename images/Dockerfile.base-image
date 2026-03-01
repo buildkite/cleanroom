@@ -5,4 +5,6 @@ RUN apk add --no-cache \
   strace \
   mise
 
+RUN mise --version
+
 CMD ["/bin/sh"]
