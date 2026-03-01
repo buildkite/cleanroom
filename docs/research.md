@@ -122,6 +122,20 @@ Current status: per-run VMs only (no persistent sandboxes). Guest outbound netwo
 
 Used by: Tart, Matchlock (macOS path), Cleanroom (macOS path).
 
+### Apple Containerization framework (`containerization` + `container`)
+
+Apple introduced a first-party container runtime stack at WWDC 2025: the
+[`containerization` framework](https://github.com/apple/containerization) and
+the [`container` CLI](https://github.com/apple/container). This is a plausible
+future macOS backend option for Cleanroom where OCI-native container lifecycle
+and local developer ergonomics are the priority.
+
+For Cleanroom, this should be treated as an optional backend candidate with
+explicit capability gating rather than a replacement for Firecracker on Linux,
+because policy-grade egress enforcement guarantees still need to be validated
+against Cleanroom's backend capability contract. Session reference:
+[WWDC 2025 Session 346](https://developer.apple.com/videos/play/wwdc2025/346/).
+
 ### Docker / containers
 
 Container isolation (Linux namespaces, cgroups, seccomp) is the weakest boundary in this comparison. A kernel vulnerability in the container can compromise the host. Containers do not provide a hardware virtualization boundary.
@@ -176,4 +190,3 @@ Key properties of this model:
 2. Use `content-cache` as the package/registry and git mediation layer.
 3. Use a tokenizer-like secret-injection model with host-scoped policy and no plaintext propagation.
 4. Keep CLI first: `cleanroom exec` as primary entrypoint and command pattern.
-
