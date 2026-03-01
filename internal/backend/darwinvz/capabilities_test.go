@@ -1,9 +1,11 @@
 package darwinvz
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/buildkite/cleanroom/internal/backend"
 )
@@ -28,7 +30,8 @@ func TestCapabilitiesDeclareAllowlistFilteringWhenHostFilterEnabled(t *testing.T
 	statusPath := filepath.Join(t.TempDir(), "network-filter-status.json")
 	t.Setenv(networkFilterStatusPathEnv, statusPath)
 
-	status := []byte(`{"version":1,"available":true,"loaded":true,"enabled":true}`)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	status := []byte(fmt.Sprintf(`{"version":1,"updated_at":%q,"available":true,"loaded":true,"enabled":true}`, now))
 	if err := os.WriteFile(statusPath, status, 0o644); err != nil {
 		t.Fatalf("write status file: %v", err)
 	}
