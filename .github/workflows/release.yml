@@ -50,12 +50,12 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: darwin-vz-arm64
-          path: .
+          path: release-extra
 
       - uses: actions/download-artifact@v4
         with:
           name: darwin-vz-amd64
-          path: .
+          path: release-extra
 
       - name: Build release extra binaries
         run: |
