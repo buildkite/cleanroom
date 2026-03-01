@@ -356,7 +356,7 @@ func (s *Service) TerminateSandbox(ctx context.Context, req *cleanroomv1.Termina
 			})
 			if ex.Status == cleanroomv1.ExecutionStatus_EXECUTION_STATUS_QUEUED {
 				finished := terminatedAt
-				s.finalizeExecutionLocked(
+				s.finalizeExecutionWithoutPruneLocked(
 					ex,
 					cleanroomv1.ExecutionStatus_EXECUTION_STATUS_CANCELED,
 					cancelExitCode(ex.CancelSignal),
@@ -1503,6 +1503,14 @@ func (s *Service) recordExecutionEventLocked(ex *executionState, event *cleanroo
 }
 
 func (s *Service) finalizeExecutionLocked(ex *executionState, status cleanroomv1.ExecutionStatus, exitCode int32, message, exitMessage string, finished time.Time) {
+	s.finalizeExecutionInternalLocked(ex, status, exitCode, message, exitMessage, finished, true)
+}
+
+func (s *Service) finalizeExecutionWithoutPruneLocked(ex *executionState, status cleanroomv1.ExecutionStatus, exitCode int32, message, exitMessage string, finished time.Time) {
+	s.finalizeExecutionInternalLocked(ex, status, exitCode, message, exitMessage, finished, false)
+}
+
+func (s *Service) finalizeExecutionInternalLocked(ex *executionState, status cleanroomv1.ExecutionStatus, exitCode int32, message, exitMessage string, finished time.Time, prune bool) {
 	if ex == nil {
 		return
 	}
@@ -1528,7 +1536,9 @@ func (s *Service) finalizeExecutionLocked(ex *executionState, status cleanroomv1
 		OccurredAt: timestamppb.New(finished),
 	})
 	closeExecutionDoneLocked(ex)
-	s.pruneStateLocked(finished)
+	if prune {
+		s.pruneStateLocked(finished)
+	}
 }
 
 func normalizeCommand(command []string) []string {

@@ -1149,6 +1149,54 @@ func TestRunExecutionSkipsAlreadyFinalExecution(t *testing.T) {
 	}
 }
 
+func TestFinalizeExecutionWithoutPruneSkipsImmediateStatePruning(t *testing.T) {
+	origLimit := maxRetainedFinishedExecutions
+	maxRetainedFinishedExecutions = 0
+	defer func() {
+		maxRetainedFinishedExecutions = origLimit
+	}()
+
+	svc := newTestService(&stubAdapter{})
+	createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createResp.GetSandbox().GetSandboxId()
+	executionID := "exec-no-prune"
+	key := executionKey(sandboxID, executionID)
+
+	now := time.Now().UTC()
+	ex := &executionState{
+		ID:               executionID,
+		SandboxID:        sandboxID,
+		Command:          []string{"echo", "ok"},
+		Status:           cleanroomv1.ExecutionStatus_EXECUTION_STATUS_QUEUED,
+		EventSubscribers: map[int]chan *cleanroomv1.ExecutionStreamEvent{},
+		Done:             make(chan struct{}),
+	}
+
+	svc.mu.Lock()
+	svc.executions[key] = ex
+	svc.finalizeExecutionWithoutPruneLocked(
+		ex,
+		cleanroomv1.ExecutionStatus_EXECUTION_STATUS_CANCELED,
+		130,
+		"canceled",
+		"",
+		now,
+	)
+	if _, ok := svc.executions[key]; !ok {
+		svc.mu.Unlock()
+		t.Fatal("execution should remain when finalize skips pruning")
+	}
+	svc.pruneStateLocked(now)
+	if _, ok := svc.executions[key]; ok {
+		svc.mu.Unlock()
+		t.Fatal("execution should be pruned once explicit prune runs")
+	}
+	svc.mu.Unlock()
+}
+
 func TestStatePruningBoundsRetainedTerminalState(t *testing.T) {
 	origSandboxes := maxRetainedStoppedSandboxes
 	origExecutions := maxRetainedFinishedExecutions
