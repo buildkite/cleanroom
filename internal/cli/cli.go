@@ -1278,8 +1278,12 @@ func uninstallSystemdDaemon(stdout io.Writer) error {
 		return fmt.Errorf("service file %s does not exist", serveInstallSystemdUnitPath)
 	}
 
-	_ = serveInstallRunCommand("systemctl", "stop", systemdServiceName)
-	_ = serveInstallRunCommand("systemctl", "disable", systemdServiceName)
+	if err := serveInstallRunCommand("systemctl", "stop", systemdServiceName); err != nil {
+		return fmt.Errorf("stop systemd service %s: %w", systemdServiceName, err)
+	}
+	if err := serveInstallRunCommand("systemctl", "disable", systemdServiceName); err != nil {
+		return fmt.Errorf("disable systemd service %s: %w", systemdServiceName, err)
+	}
 
 	if err := serveInstallRemoveFile(serveInstallSystemdUnitPath); err != nil {
 		return fmt.Errorf("remove service file %s: %w", serveInstallSystemdUnitPath, err)
@@ -1297,7 +1301,9 @@ func uninstallLaunchdDaemon(stdout io.Writer) error {
 		return fmt.Errorf("service file %s does not exist", serveInstallLaunchdPath)
 	}
 
-	_ = serveInstallRunCommand("launchctl", "bootout", "system/"+launchdServiceName)
+	if err := serveInstallRunCommand("launchctl", "bootout", "system/"+launchdServiceName); err != nil {
+		return fmt.Errorf("bootout launchd service %s: %w", launchdServiceName, err)
+	}
 
 	if err := serveInstallRemoveFile(serveInstallLaunchdPath); err != nil {
 		return fmt.Errorf("remove service file %s: %w", serveInstallLaunchdPath, err)
