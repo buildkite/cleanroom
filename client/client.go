@@ -161,10 +161,3 @@ func (c *Client) StreamExecution(ctx context.Context, req *StreamExecutionReques
 	}
 	return c.inner.StreamExecution(ctx, req)
 }
-
-func (c *Client) AttachExecution(ctx context.Context) *connect.BidiStreamForClient[ExecutionAttachFrame, ExecutionAttachFrame] {
-	if c == nil || c.inner == nil {
-		return nil
-	}
-	return c.inner.AttachExecution(ctx)
-}

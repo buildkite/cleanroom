@@ -17,10 +17,10 @@ Keep Connect RPC for control-plane operations and move interactive bytes to a de
 This work lands in a single umbrella PR, using phased commits:
 
 1. phase 0 (done): remove built-in Tailscale listener modes (`tsnet://`, `tssvc://`) and mTLS management/auth paths; keep plain HTTPS + server-auth TLS.
-2. phase 1 (in progress): add explicit execution kinds + `OpenInteractiveExecution` bootstrap RPC.
-3. phase 2: add server-side QUIC interactive transport and session registry.
-4. phase 3: migrate CLI interactive commands (`console`, `agent codex`) to QUIC path.
-5. phase 4: remove legacy attach stream path and finalize docs/tests/observability.
+2. phase 1 (done): add explicit execution kinds + `OpenInteractiveExecution` bootstrap RPC.
+3. phase 2 (done): add server-side QUIC interactive transport and session registry.
+4. phase 3 (in progress): migrate CLI interactive commands to QUIC path (`console` done; `agent codex` pending command implementation in this repo).
+5. phase 4 (done): remove legacy attach stream path; finalize docs/tests/observability follow-ups.
 
 ## Why change
 
@@ -174,7 +174,7 @@ Client maps these to stable CLI errors.
 1. `CreateExecutionRequest` takes `kind` instead of inferring from `tty`.
 2. add unary `OpenInteractiveExecution`.
 3. `StreamExecution` remains batch-only durable stream.
-4. deprecate `AttachExecution` once `console` and `agent` migrate.
+4. remove `AttachExecution` (done in this branch).
 
 CLI/API UX expectation:
 
@@ -248,7 +248,7 @@ Definition of done:
 
 1. `cleanroom console` and `cleanroom agent codex` use QUIC interactive path end-to-end.
 
-### Slice 4: remove legacy interactive stream
+### Slice 4: remove legacy interactive stream (done)
 
 1. delete `AttachExecution` internals and proto fields once cutover is complete.
 2. keep only batch stream semantics in `StreamExecution`.

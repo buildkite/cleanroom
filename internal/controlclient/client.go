@@ -176,7 +176,3 @@ func (c *Client) CancelExecution(ctx context.Context, req *cleanroomv1.CancelExe
 func (c *Client) StreamExecution(ctx context.Context, req *cleanroomv1.StreamExecutionRequest) (*connect.ServerStreamForClient[cleanroomv1.ExecutionStreamEvent], error) {
 	return c.executionClient.StreamExecution(ctx, connect.NewRequest(req))
 }
-
-func (c *Client) AttachExecution(ctx context.Context) *connect.BidiStreamForClient[cleanroomv1.ExecutionAttachFrame, cleanroomv1.ExecutionAttachFrame] {
-	return c.executionClient.AttachExecution(ctx)
-}

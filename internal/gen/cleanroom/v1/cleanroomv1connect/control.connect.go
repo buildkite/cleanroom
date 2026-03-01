@@ -68,9 +68,6 @@ const (
 	// ExecutionServiceStreamExecutionProcedure is the fully-qualified name of the ExecutionService's
 	// StreamExecution RPC.
 	ExecutionServiceStreamExecutionProcedure = "/cleanroom.v1.ExecutionService/StreamExecution"
-	// ExecutionServiceAttachExecutionProcedure is the fully-qualified name of the ExecutionService's
-	// AttachExecution RPC.
-	ExecutionServiceAttachExecutionProcedure = "/cleanroom.v1.ExecutionService/AttachExecution"
 )
 
 // SandboxServiceClient is a client for the cleanroom.v1.SandboxService service.
@@ -280,7 +277,6 @@ type ExecutionServiceClient interface {
 	GetExecution(context.Context, *connect.Request[v1.GetExecutionRequest]) (*connect.Response[v1.GetExecutionResponse], error)
 	CancelExecution(context.Context, *connect.Request[v1.CancelExecutionRequest]) (*connect.Response[v1.CancelExecutionResponse], error)
 	StreamExecution(context.Context, *connect.Request[v1.StreamExecutionRequest]) (*connect.ServerStreamForClient[v1.ExecutionStreamEvent], error)
-	AttachExecution(context.Context) *connect.BidiStreamForClient[v1.ExecutionAttachFrame, v1.ExecutionAttachFrame]
 }
 
 // NewExecutionServiceClient constructs a client for the cleanroom.v1.ExecutionService service. By
@@ -324,12 +320,6 @@ func NewExecutionServiceClient(httpClient connect.HTTPClient, baseURL string, op
 			connect.WithSchema(executionServiceMethods.ByName("StreamExecution")),
 			connect.WithClientOptions(opts...),
 		),
-		attachExecution: connect.NewClient[v1.ExecutionAttachFrame, v1.ExecutionAttachFrame](
-			httpClient,
-			baseURL+ExecutionServiceAttachExecutionProcedure,
-			connect.WithSchema(executionServiceMethods.ByName("AttachExecution")),
-			connect.WithClientOptions(opts...),
-		),
 	}
 }
 
@@ -340,7 +330,6 @@ type executionServiceClient struct {
 	getExecution             *connect.Client[v1.GetExecutionRequest, v1.GetExecutionResponse]
 	cancelExecution          *connect.Client[v1.CancelExecutionRequest, v1.CancelExecutionResponse]
 	streamExecution          *connect.Client[v1.StreamExecutionRequest, v1.ExecutionStreamEvent]
-	attachExecution          *connect.Client[v1.ExecutionAttachFrame, v1.ExecutionAttachFrame]
 }
 
 // CreateExecution calls cleanroom.v1.ExecutionService.CreateExecution.
@@ -368,11 +357,6 @@ func (c *executionServiceClient) StreamExecution(ctx context.Context, req *conne
 	return c.streamExecution.CallServerStream(ctx, req)
 }
 
-// AttachExecution calls cleanroom.v1.ExecutionService.AttachExecution.
-func (c *executionServiceClient) AttachExecution(ctx context.Context) *connect.BidiStreamForClient[v1.ExecutionAttachFrame, v1.ExecutionAttachFrame] {
-	return c.attachExecution.CallBidiStream(ctx)
-}
-
 // ExecutionServiceHandler is an implementation of the cleanroom.v1.ExecutionService service.
 type ExecutionServiceHandler interface {
 	CreateExecution(context.Context, *connect.Request[v1.CreateExecutionRequest]) (*connect.Response[v1.CreateExecutionResponse], error)
@@ -380,7 +364,6 @@ type ExecutionServiceHandler interface {
 	GetExecution(context.Context, *connect.Request[v1.GetExecutionRequest]) (*connect.Response[v1.GetExecutionResponse], error)
 	CancelExecution(context.Context, *connect.Request[v1.CancelExecutionRequest]) (*connect.Response[v1.CancelExecutionResponse], error)
 	StreamExecution(context.Context, *connect.Request[v1.StreamExecutionRequest], *connect.ServerStream[v1.ExecutionStreamEvent]) error
-	AttachExecution(context.Context, *connect.BidiStream[v1.ExecutionAttachFrame, v1.ExecutionAttachFrame]) error
 }
 
 // NewExecutionServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -420,12 +403,6 @@ func NewExecutionServiceHandler(svc ExecutionServiceHandler, opts ...connect.Han
 		connect.WithSchema(executionServiceMethods.ByName("StreamExecution")),
 		connect.WithHandlerOptions(opts...),
 	)
-	executionServiceAttachExecutionHandler := connect.NewBidiStreamHandler(
-		ExecutionServiceAttachExecutionProcedure,
-		svc.AttachExecution,
-		connect.WithSchema(executionServiceMethods.ByName("AttachExecution")),
-		connect.WithHandlerOptions(opts...),
-	)
 	return "/cleanroom.v1.ExecutionService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case ExecutionServiceCreateExecutionProcedure:
@@ -438,8 +415,6 @@ func NewExecutionServiceHandler(svc ExecutionServiceHandler, opts ...connect.Han
 			executionServiceCancelExecutionHandler.ServeHTTP(w, r)
 		case ExecutionServiceStreamExecutionProcedure:
 			executionServiceStreamExecutionHandler.ServeHTTP(w, r)
-		case ExecutionServiceAttachExecutionProcedure:
-			executionServiceAttachExecutionHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -467,8 +442,4 @@ func (UnimplementedExecutionServiceHandler) CancelExecution(context.Context, *co
 
 func (UnimplementedExecutionServiceHandler) StreamExecution(context.Context, *connect.Request[v1.StreamExecutionRequest], *connect.ServerStream[v1.ExecutionStreamEvent]) error {
 	return connect.NewError(connect.CodeUnimplemented, errors.New("cleanroom.v1.ExecutionService.StreamExecution is not implemented"))
-}
-
-func (UnimplementedExecutionServiceHandler) AttachExecution(context.Context, *connect.BidiStream[v1.ExecutionAttachFrame, v1.ExecutionAttachFrame]) error {
-	return connect.NewError(connect.CodeUnimplemented, errors.New("cleanroom.v1.ExecutionService.AttachExecution is not implemented"))
 }
