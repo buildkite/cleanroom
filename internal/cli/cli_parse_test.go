@@ -95,6 +95,24 @@ func TestConfigInitParses(t *testing.T) {
 	}
 }
 
+func TestSandboxCreateParses(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"sandbox", "create"}); err != nil {
+		t.Fatalf("parse sandbox create returned error: %v", err)
+	}
+}
+
+func TestTopLevelCreateParses(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"create"}); err != nil {
+		t.Fatalf("parse create returned error: %v", err)
+	}
+}
+
 func TestServeCommandParsesWithoutAction(t *testing.T) {
 	c := &CLI{}
 	parser := newParserForTest(t, c)
