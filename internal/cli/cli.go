@@ -286,18 +286,19 @@ var (
 
 		return fmt.Sprintf("%s@%s", tag.Context().Name(), desc.Digest.String()), nil
 	}
-	resolveReferenceForImageOverride = func(ctx context.Context, source string) (string, error) {
+	importLocalDockerImageForOverrideFn = importLocalDockerImageForOverride
+	resolveReferenceForImageOverride    = func(ctx context.Context, source string) (string, error) {
+		localRef, localErr := importLocalDockerImageForOverrideFn(ctx, source)
+		if localErr == nil {
+			return localRef, nil
+		}
+
 		resolved, err := resolveReferenceForPolicyUpdate(ctx, source)
 		if err == nil {
 			return resolved, nil
 		}
 
-		localRef, localErr := importLocalDockerImageForOverride(ctx, source)
-		if localErr == nil {
-			return localRef, nil
-		}
-
-		return "", fmt.Errorf("%w; local docker fallback failed: %v", err, localErr)
+		return "", fmt.Errorf("%w; local docker resolution failed: %v", err, localErr)
 	}
 	serveInstallGOOS            = runtime.GOOS
 	serveInstallEUID            = os.Geteuid
