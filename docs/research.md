@@ -1,366 +1,148 @@
 # Cleanroom research notes
 
-## Objective
+This document surveys agent sandbox tools and isolation backends to inform Cleanroom's design. It covers hosted providers, self-hosted tools, and the isolation technologies they use. The goal is practical: what exists, what works, and where Cleanroom fits.
 
-Understand candidate sandbox approaches for Cleanroom so we can decide what to implement directly, what to adapt, and what to keep as integration points.
+## Landscape comparison
 
-## Document status
+| Tool | Type | Isolation | Egress policy | Persistence | Image format | Boot time | SDK/CLI |
+|---|---|---|---|---|---|---|---|
+| E2B | Hosted | Firecracker microVM | None (full internet) | Ephemeral (pause/resume within session) | Custom templates | ~80-200ms | Python/JS/TS SDK |
+| Daytona | Hosted (customer-managed option) | Not documented | None (full internet) | Persistent/stateful | Snapshots (OCI-compatible builder) | ~90ms creation | Python/TS/Go/Ruby SDK |
+| Fly.io Sprites | Hosted (Fly.io infra) | Firecracker microVM | None (full internet) | Persistent, checkpoint/restore | No Docker/OCI | ~1-2s | CLI + Go/Python/Elixir SDKs |
+| Modal | Hosted | gVisor (user-space kernel) | None (full internet) | Task-based/serverless | Python-defined environments | N/A | Python SDK |
+| Tart | Self-hosted | Virtualization.framework (macOS) / libkrun (Linux) | None | Persistent | OCI images | ~5-10s | CLI (Swift) |
+| Shuru | Self-hosted | Virtualization.framework (macOS only) | Deny-by-default (`--allow-net` opt-in) | Ephemeral (checkpoint reuse) | Alpine rootfs | Fast (checkpoint restore) | CLI (Rust) |
+| SmolVM | Self-hosted | libkrun microVM | None | Ephemeral + persistent | OCI images | <200ms | CLI (Rust) |
+| Matchlock | Self-hosted | Firecracker (Linux) / Virtualization.framework (macOS) | Allow-list (allow-all default, TLS MITM proxy) | Ephemeral | OCI images (EROFS) | <1s | CLI + Go/Python/TS SDK |
+| Cleanroom | Self-hosted | Firecracker (Linux) / Virtualization.framework (macOS) | Deny-by-default, host:port allow rules in repo policy | Persistent sandboxes (Firecracker) | OCI images (digest-pinned, ext4) | N/A | CLI + ConnectRPC API |
 
-- Last reviewed: 2026-02-20.
-- Decision status for local Linux backend: keep Firecracker as default for v1.
-- Volatile claims (releases, public API surface, product guarantees) should include a validation snapshot date.
+For independent TTI (time-to-interactive) benchmarks across hosted sandbox providers, see [ComputeSDK benchmarks](https://www.computesdk.com/benchmarks/).
 
-Primary goal for v1:
+## Hosted providers
 
-- repository-scoped egress policy (deny-by-default)
-- package manager and git fetch control through `content-cache`
-- pluggable execution backends (Firecracker on Linux for v1)
-- optionally first-class toolchain support for local agentic workflows (`mise`)
-- secure secret injection
+### E2B
 
-## Sources reviewed
+[E2B](https://e2b.dev) runs Firecracker microVMs on hosted infrastructure. The open source infrastructure code means you can inspect the stack, but the product is a hosted API. Boot times are 80-200ms and custom templates let you pre-bake environments. Sandboxes are ephemeral with pause/resume within session limits.
 
-### Cleanroom and related baselines
+No egress policy. Sandboxes get full internet access with no network filtering or credential isolation.
 
-- [Cleanroom concept gist](https://gist.github.com/lox/cd5a74bee0c98e15c254e780bb73dd11)
-- [earendil-works/gondolin](https://github.com/earendil-works/gondolin)
-- [jingkaihe/matchlock](https://github.com/jingkaihe/matchlock) (validated at commit `9db058b9cddaf2769a201b5e67010e8b10f8b76e` on 2026-02-20)
+### Daytona
 
-### Content and secret mediation
+[Daytona](https://daytona.io) is open source with an option for customer-managed compute. The isolation mechanism is not publicly documented. Sandbox creation takes around 90ms and sandboxes persist across sessions. Images are built from snapshots or via a declarative builder that accepts OCI-compatible base images.
 
-- [wolfeidau/content-cache](https://github.com/wolfeidau/content-cache)
-- [superfly/tokenizer](https://github.com/superfly/tokenizer)
+Daytona has configurable network limits but no repo-scoped egress policy or credential isolation.
+
+### Fly.io Sprites
+
+[Sprites](https://sprites.dev) runs on Fly.io infrastructure using Firecracker. Persistent, durable machines with checkpoint/restore. They do not use Docker or OCI images. Boot time is 1-2 seconds.
+
+No egress policy. No network filtering.
+
+### Modal
+
+[Modal](https://modal.com) uses gVisor for isolation (a user-space kernel, not a full VM boundary). Environments are defined in Python. Modal has GPU support and a serverless execution model.
+
+No egress policy.
+
+### What hosted providers share
+
+Every hosted provider gives sandboxes full internet access by default. None support repo-scoped egress policy or credential isolation. If you need to control what a sandbox can reach, you have to build that yourself on top of their APIs.
+
+The [Browser Use thread](https://x.com/larsencc/status/2027225210412470668) is a good real-world example of how to work around this: isolate the agent in a micro-VM and hold credentials in a control plane that mediates all external access. The sandbox itself has zero secrets. This is the Pattern 2 architecture that Cleanroom also follows.
+
+## Self-hosted tools
+
+### Tart
+
+[Tart](https://github.com/cirruslabs/tart) is a VM runner built on Virtualization.framework (macOS) and libkrun (Linux). It uses OCI-compatible images for distribution and supports both macOS and Linux guests. Persistent VMs with snapshot support. No egress policy, no network filtering, no sandbox policy model.
+
+Tart is focused on CI workloads (Cirrus CI uses it). Not an agent sandbox tool, but relevant as prior art for OCI image distribution across VM backends.
+
+### Shuru
+
+[Shuru](https://github.com/superhq-ai/shuru) boots lightweight Linux VMs on macOS using Virtualization.framework. Each sandbox is ephemeral -- the rootfs resets on every run. Network access is denied by default and enabled with `--allow-net`. Checkpoints save disk state for reuse across runs. Uses vsock for guest communication and VirtioFS for directory mounts. macOS only (Apple Silicon), CLI only, written in Rust.
+
+Shuru has the right default (deny-by-default network), but no policy engine, no per-host allowlisting, and no Linux support.
+
+### SmolVM
+
+[SmolVM](https://github.com/smol-machines/smolvm) is a VM runner using libkrun with OCI image support and sub-200ms boot. No policy engine, no networking control, no egress filtering. CLI only, written in Rust.
+
+Useful if you just want a fast local VM. Not useful if you need any kind of network policy.
+
+### Matchlock
+
+[Matchlock](https://github.com/jingkaihe/matchlock) (validated at commit `9db058b9cddaf2769a201b5e67010e8b10f8b76e` on 2026-02-20) is the closest tool to Cleanroom. Same backend choices (Firecracker on Linux, Virtualization.framework on macOS), same general shape (CLI + SDK, OCI images, guest agent over vsock).
+
+Matchlock has egress allow-listing and secret injection, which puts it ahead of everything else in this list. But there are design differences that matter:
+
+- Matchlock defaults to allow-all when no allowlist is set. Cleanroom defaults to deny.
+- Matchlock uses tag-based image references. Cleanroom requires digest-pinned refs for reproducibility.
+- Matchlock's runtime policy is mutable (it auto-adds secret hosts at runtime). Cleanroom uses immutable compiled policy and fails launch on missing capabilities.
+- Matchlock's TLS interception uses a MITM proxy. Cleanroom uses a gateway proxy model that avoids MITM.
+- Matchlock's policy is runtime configuration. Cleanroom treats policy as code, scoped to the repository.
+
+### Cleanroom positioning
+
+Cleanroom is a self-hosted tool with deny-by-default egress, digest-pinned images, immutable compiled policy, and a gateway proxy (no MITM). Policy is defined per-repository in `cleanroom.yaml` and compiled before launch. The sandbox has no secrets -- credentials are held by the host control plane.
+
+Early design references: [concept gist](https://gist.github.com/lox/cd5a74bee0c98e15c254e780bb73dd11), [earendil-works/gondolin](https://github.com/earendil-works/gondolin).
+
+## Backends
+
+The tools above use different isolation technologies. This section covers each backend independently, with notes on how it fits Cleanroom's enforcement model.
 
 ### Firecracker
 
-- [firecracker-microvm/firecracker](https://github.com/firecracker-microvm/firecracker) (validated release `v1.14.1`, published 2026-01-20)
-- [firecracker-microvm/firecracker releases](https://github.com/firecracker-microvm/firecracker/releases)
-- [Firecracker FAQ](https://github.com/firecracker-microvm/firecracker/blob/main/FAQ.md)
-- [Firecracker design](https://github.com/firecracker-microvm/firecracker/blob/main/docs/design.md)
-- [Firecracker production host setup](https://github.com/firecracker-microvm/firecracker/blob/main/docs/prod-host-setup.md)
+[Firecracker](https://github.com/firecracker-microvm/firecracker) is a microVM monitor purpose-built for secure multi-tenant workloads. Minimal device model, fast boot, strong isolation boundary. Network model uses per-VM TAP interfaces and host firewall rules, which maps directly to deny-by-default enforcement.
+
+Cleanroom uses Firecracker as the primary Linux backend. The backend is built around per-run TAP interfaces, host iptables FORWARD rules, generated machine JSON, and vsock guest-agent RPC.
+
+Used by: E2B, Sprites, Matchlock, Cleanroom.
+
+Current validated release: `v1.14.1` (published 2026-01-20). See also: [design](https://github.com/firecracker-microvm/firecracker/blob/main/docs/design.md), [FAQ](https://github.com/firecracker-microvm/firecracker/blob/main/FAQ.md), [production host setup](https://github.com/firecracker-microvm/firecracker/blob/main/docs/prod-host-setup.md).
+
+Related image tooling: [firecracker-rootfs-builder](https://github.com/WoodProgrammer/firecracker-rootfs-builder), [oci-image-executor](https://github.com/codecrafters-io/oci-image-executor).
 
 ### libkrun
 
-- [containers/libkrun](https://github.com/containers/libkrun) (validated release `v1.17.4`, published 2026-02-18)
-- [containers/libkrun releases](https://github.com/containers/libkrun/releases)
+[libkrun](https://github.com/containers/libkrun) is an embeddable VM library. It uses Hypervisor.framework on macOS and KVM on Linux. Guest and VMM share a security context. Network modes are TSI (transparent socket impersonation) or passt/gvproxy, which would require a different enforcement architecture than Cleanroom's TAP + host firewall model.
 
-### Image distribution and VM image tooling
+Decision: keep Firecracker as the default local Linux backend for v1. Both projects are actively maintained (libkrun `v1.17.4`, Firecracker `v1.14.1`). Swapping to libkrun would be a backend re-architecture, not a drop-in substitution. Re-evaluate libkrun as an optional secondary backend later, with explicit capability downgrades (for example, local macOS workflows with different enforcement guarantees).
 
-- [cirruslabs/tart](https://github.com/cirruslabs/tart) (validated at commit `8f8a24ad19f8335640db0d30f9619605612d34a7` on 2026-02-20)
-- [Tart quick start](https://tart.run/quick-start/)
-- [Tart FAQ](https://tart.run/faq/)
-- [codecrafters-io/oci-image-executor](https://github.com/codecrafters-io/oci-image-executor) (validated at commit `abc343907821d5089764dbdf06b4e2738e838bf6` on 2026-02-20)
-- [WoodProgrammer/firecracker-rootfs-builder](https://github.com/WoodProgrammer/firecracker-rootfs-builder) (validated at commit `6e539e01e79307c68ba92990668cc33433d41175` on 2026-02-20)
+Used by: Tart (Linux path), SmolVM.
 
-### Cross-platform enforcement references
+Current validated release: `v1.17.4` (published 2026-02-18). See also: [releases](https://github.com/containers/libkrun/releases).
 
-- [eBPF Docs: eBPF on Linux](https://docs.ebpf.io/linux/)
-- [Apple Developer: `NEDNSProxyProvider`](https://developer.apple.com/documentation/networkextension/nednsproxyprovider)
-- [Apple Technical Note TN3165](https://developer.apple.com/documentation/technotes/tn3165-packet-filter-is-not-api)
-- [Apple Support: DNS Proxy payload settings](https://support.apple.com/guide/deployment/dns-proxy-payload-settings-dep500f65271/web)
-- [Objective-See LuLu](https://objective-see.org/products/lulu.html)
-- [Cloudflare WARP modes](https://developers.cloudflare.com/cloudflare-one/team-and-resources/devices/warp/configure-warp/warp-modes/)
+### Apple Virtualization.framework
 
-## Shortlist reviewed
+Apple's [Virtualization.framework](https://developer.apple.com/documentation/virtualization) provides hardware-accelerated VMs on macOS (Apple Silicon and Intel). Cleanroom's `darwin-vz` backend uses a dedicated Swift helper binary for VM lifecycle and keeps policy/image/control-plane orchestration in Go.
 
-### 1) `gondolin`
+Current status: per-run VMs only (no persistent sandboxes). Guest outbound networking is available via NAT, but allowlist egress filtering is not yet implemented. The backend enforces `network.default: deny` as a policy shape check and warns that `network.allow` entries are ignored. See [darwin-vz.md](backend/darwin-vz.md) for implementation details.
 
-Repo structure and observed architecture:
+Used by: Tart, Matchlock (macOS path), Cleanroom (macOS path).
 
-- Host orchestration is TypeScript/Node.
-- Uses QEMU as a local VM layer.
-- Multiple moving pieces:
-  - control components on host
-  - guest VM image and daemons (for example init-like services and filesystem mediation)
-  - network control implemented in host + custom proxy/stack mediation
+### Docker / containers
 
-Key implementation characteristics:
+Container isolation (Linux namespaces, cgroups, seccomp) is the weakest boundary in this comparison. A kernel vulnerability in the container can compromise the host. Containers do not provide a hardware virtualization boundary.
 
-- Strong containment model with custom VM filesystem and virtio control paths.
-- Not a single binary product in current architecture.
-- Policy and runtime flow is split across host packages, guest image assets, and service binaries.
-- Good source of ideas for:
-  - host-mediated network enforcement
-  - VM boundary design
-  - guest service bootstrap patterns
-- Less aligned with v1 “single CLI binary” goal.
+Docker is widely used for developer tooling and CI, and container images (OCI) are the standard packaging format. Cleanroom uses OCI images as sandbox base images but runs them inside microVMs rather than containers for a stronger isolation boundary.
 
-### 2) `matchlock`
+Used by: Daytona.
 
-Repo structure and observed architecture:
-
-- Go-first implementation with clear backend abstraction.
-- `pkg/vm` defines a backend interface.
-- Linux path uses Firecracker; Darwin path uses Apple Virtualization Framework.
-- `cmd/matchlock` / guest init path exists for command dispatch and lifecycle.
-
-Key implementation characteristics:
-
-- Backends are pluggable through a Go interface.
-- Good executable-first ergonomics; likely easiest to integrate as a local execution backend.
-- Includes network setup/entry points useful for deny-by-default style enforcement in v1.
-- Policy-style engine exists for allowlisting and restrictions in-progress.
-- Clean fit point for Cleanroom v1 local backend, especially for CLI-first toolchain.
-- Image flow is already close to what Cleanroom needs:
-  - accepts OCI-style image refs for `run`, with optional forced pull
-  - supports explicit image lifecycle commands (`pull`, `build`, `image ls/rm/import`)
-  - converts OCI image contents into ext4 rootfs artifacts and caches them locally
-  - stores image metadata (tag/ref, digest, size, OCI config, source) in SQLite with `local` and `registry` scopes
-  - preserves Docker-like `ENTRYPOINT`/`CMD`/`WORKDIR`/`ENV` semantics by carrying OCI config metadata into runtime command composition
-
-### 3) `content-cache`
-
-Repo structure and observed architecture:
-
-- Dedicated package/cache proxy layer with routing support for package registries and git.
-- Acts as policy-bearing mediation layer between builds and upstream.
-
-Key implementation characteristics:
-
-- Helps solve network minimization for package managers and git clone flows.
-- Useful for:
-  - allowed host filtering
-  - route-based allow/deny behavior
-  - cached fetches and repeatability
-- Natural anchor for cleanroom’s registry and git controls.
-
-### 4) `tokenizer`
-
-Repo structure and observed architecture:
-
-- Proxy-based secret injection model.
-- Requests pass through a secret broker that applies destination policy and injects auth headers.
-
-Key implementation characteristics:
-
-- Useful pattern for short-lived, scoped secret use without embedding secrets in repo policy or commandlines.
-- Fits Cleanroom requirement to keep secret material out of task environments and logs.
-
-## Comparison against Cleanroom requirements
-
-| Requirement | Best fit |
-|---|---|
-| Enforce repository policy for egress | Local: Firecracker + `content-cache` |
-| Pluggable backends | Cleanroom adapter interface + Firecracker backend |
-| Package restrictions & caching | `content-cache` |
-| Safe secret handling | `tokenizer` pattern (or equivalent in cleanroom control plane) |
-| Git controls + registry controls | `content-cache` + Cleanroom-specific allowlist + lockfile logic |
-| Single-binary distribution | `matchlock` adapter pattern is closest; `gondolin` is not naturally single binary |
-| First-class local developer/agentic workflows (`mise`) | Better served by Cleanroom wrapping execution command path |
-
-## What maps directly into v1 Cleanroom
-
-1. Use Firecracker as the local sandbox backend (inspired by Matchlock patterns).
-2. Use `content-cache` as the package/registry and git mediation layer.
-3. Use a tokenizer-like secret-injection model with host-scoped policy and no plaintext propagation.
-4. Keep CLI first: `cleanroom exec` as primary entrypoint and command pattern.
-
-## Base image management recommendation (Matchlock-style)
-
-Validation snapshot date: 2026-02-20.
-
-Recommendation:
-
-- Use OCI images as the authoring/distribution interface, and materialize/cached ext4 rootfs files for Firecracker runtime.
-- Adopt Matchlock-style image workflow shape (`pull/build/import/ls/rm`) with Cleanroom policy semantics and stricter immutability.
-- Require digest-pinned image references in repository policy (`cleanroom.yaml`), not mutable tags, for reproducibility and auditability.
-
-Proposed policy shape (backend-neutral):
-
-```yaml
-version: 1
-sandbox:
-  image:
-    ref: ghcr.io/your-org/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
-```
-
-Behavioral contract for v1:
-
-1. `sandbox.image.ref` must be a digest-pinned OCI reference (`@sha256:...`).
-2. Launch fails if image ref is tag-only (for example `:latest`) or digest validation fails.
-3. Image manager:
-   - resolves and pulls OCI image by digest,
-   - materializes ext4 rootfs once,
-   - caches by digest locally,
-   - records metadata (digest, source ref, size, OCI config) in an image metadata DB.
-4. Firecracker adapter then performs per-run rootfs copy/CoW from cached base rootfs.
-5. Run events include `image_ref` and `image_digest` for audit.
-
-Why this is the right fit:
-
-- It preserves a standard image distribution UX (OCI registries, digest pinning).
-- It keeps Firecracker runtime requirements native (kernel + ext4 paths), avoiding runtime container stack complexity.
-- It matches current Cleanroom architecture direction (immutable compiled policy + deterministic per-run isolation).
-
-### Notes from adjacent tooling
-
-- Tart confirms a strong OCI-distribution model for VM images, but it uses Tart-specific OCI artifact media types and a local VM cache layout; it is not a direct Firecracker runtime path.
-- `oci-image-executor` is useful reference for OCI-image-to-ext4 execution flow, but it is tar-export based (`docker export`) and not a complete modern image lifecycle/caching model.
-- `firecracker-rootfs-builder` is a useful minimal Dockerfile-to-rootfs helper concept, but it currently lacks mature registry/distribution semantics and should be treated as idea input rather than direct baseline.
-
-## Firecracker backend proposal (initial implementation)
-
-Build our own backend in Cleanroom, but reuse Matchlock techniques that are already proven in practice.
-
-### Scope for initial backend
-
-- Linux-only local backend using Firecracker + KVM.
-- Enforce `CompiledPolicy` only (no runtime repo policy reload).
-- Deny-by-default egress with explicit host/port allowlist.
-- Route package and git egress through `content-cache`.
-- Keep secret values out of guest env and policy files.
-
-### Matchlock techniques to adopt directly
-
-1. **Backend boundary and machine API**
-   - Mirror the Matchlock split between backend creation and machine lifecycle (`Create/Start/Exec/Stop/Close`), but mapped to Cleanroom `BackendAdapter`.
-   - Keep Firecracker-specific logic in a backend package, not in CLI or policy code.
-2. **Per-run TAP + subnet allocation**
-   - Create deterministic TAP names (hash/suffix by run ID), allocate a unique subnet per run, and configure TAP before VM start.
-   - Reconcile subnet + TAP artifacts in cleanup and in a `gc` command.
-3. **Generated Firecracker JSON config**
-   - Generate boot source, machine config, drives, NIC, and vsock JSON on each run.
-   - Keep kernel args host-controlled and deterministic.
-4. **Vsock control plane**
-   - Use vsock for guest readiness and command execution RPC.
-   - Keep command execution out of SSH and avoid opening inbound guest ports.
-5. **Rootfs preparation pattern**
-   - Use per-run rootfs copy (prefer CoW/reflink where available, fallback to full copy).
-   - Inject a small guest runtime entrypoint (`/init` + guest agent) before boot.
-6. **Network interception strategy**
-   - Use host nftables for Linux interception and forwarding, with explicit rule setup/teardown.
-   - Keep a host-side policy/enforcement process for HTTP(S) interception and eventing.
-7. **Lifecycle persistence + reconciliation**
-   - Persist lifecycle phase and resource handles so crashed runs can be cleaned deterministically.
-   - Make cleanup failures visible and auditable, not best-effort-only.
-
-### Cleanroom-specific changes required (do not copy as-is)
-
-1. **Policy semantics**
-   - Matchlock allows all hosts when no allowlist is set; Cleanroom must default to deny.
-   - Matchlock currently has allowlist-focused policy + private IP blocking; Cleanroom needs deterministic allow/deny precedence and normalized host matching from `SPEC.md`.
-2. **Immutability and capability handshake**
-   - Matchlock runtime config is mutable in places (for example auto-adding secret hosts). Cleanroom should only use compiled immutable policy and fail launch on missing capabilities.
-3. **Registry mediation contract**
-   - Cleanroom must force package manager and git paths through `content-cache` with lockfile artifact constraints, not generic outbound allowlist only.
-4. **Reason-code and audit contract**
-   - Cleanroom events must emit spec-defined stable codes (`host_not_allowed`, `lockfile_violation`, etc.) across CLI/API/audit logs.
-5. **Secret model**
-   - Cleanroom policy should carry secret IDs/bindings only; secret values resolved at runtime in control plane and never stored in repository config.
-6. **Digest-pinned image policy**
-   - Matchlock permits tag-based flows (`alpine:latest`) for convenience; Cleanroom should require digest-pinned image refs in `cleanroom.yaml` for deterministic runs and stronger provenance.
-
-### Proposed Cleanroom architecture (v1 local Firecracker)
-
-```text
-cleanroom exec
-  -> policy loader + compiler -> CompiledPolicy (immutable, hashed)
-  -> capability validator (backend + policy requirements)
-  -> firecracker adapter provision()
-      -> state dir + lifecycle row
-      -> rootfs copy/inject guest runtime
-      -> start egress services:
-           - content-cache (registry/git mediation)
-           - optional secret proxy (tokenizer-style)
-      -> TAP/subnet + nftables setup
-      -> start firecracker + wait for vsock ready
-  -> run command via vsock exec service
-  -> stream logs + structured deny/allow events
-  -> shutdown + deterministic cleanup/reconcile
-```
-
-### Capability mapping to `SPEC.md` requirements
-
-| Capability key | Firecracker backend implementation (initial) |
-|---|---|
-| `network_default_deny` | nftables default drop for guest egress, explicit allow chains from compiled policy |
-| `network_host_port_filtering` | host policy matcher + nftables/proxy enforcement for host and port outcomes |
-| `dns_control_or_equivalent` | force guest DNS to managed resolvers and block unmanaged UDP DNS paths |
-| `policy_immutability` | adapter accepts only serialized `CompiledPolicy` and stores policy hash in run state |
-| `audit_event_emission` | host-side event bus emits stable reason codes with `run_id` and `policy_hash` |
-| `secret_isolation` | secret values held in host proxy/control process only; guest sees placeholders or no secret values |
-
-### Incremental implementation plan
-
-1. **Slice A: minimal Firecracker runner**
-   - Create backend adapter package and run lifecycle.
-   - Boot VM, run command over vsock, collect exit code/stdout/stderr.
-2. **Slice B: deterministic networking**
-   - Add TAP/subnet allocator + nftables setup/teardown.
-   - Enforce default deny and exact host/port allowlist (no registries yet).
-3. **Slice C: registry and git mediation**
-   - Start/attach `content-cache`.
-   - Rewrite package/git traffic through cache endpoint and emit deny reasons for bypass attempts.
-4. **Slice D: secret proxy**
-   - Add tokenizer-style host-scoped injection path.
-   - Enforce `secret_scope_violation` and keep secret values out of guest-visible env/args.
-5. **Slice E: conformance and hardening**
-   - Implement backend capability handshake.
-   - Add conformance suite from `SPEC.md` section 14 before backend marked supported.
-
-### Immediate engineering decisions for implementation kickoff
-
-1. Use Matchlock-style vsock exec and readiness signaling rather than SSH.
-2. Use nftables on Linux as the first enforcement mechanism (simple, auditable, and already aligned with Matchlock patterns).
-3. Keep rootfs mutation host-side with a tiny guest runtime, but keep it minimal to reduce boot drift.
-4. Build lifecycle DB + reconciliation early, before adding advanced policy features, to avoid leaked TAP/nftables resources.
-5. Wire `content-cache` before implementing lockfile strictness so path mediation is in place first.
-6. Add repository policy field for base image reference and require digest-pinned OCI refs (`@sha256:...`) at launch time.
-
-## `libkrun` vs Firecracker for Cleanroom local backend (deep dive)
-
-Validation snapshot date: 2026-02-20.
-
-Primary references for this section:
-
-- [Firecracker README](https://github.com/firecracker-microvm/firecracker/blob/main/README.md)
-- [Firecracker design](https://github.com/firecracker-microvm/firecracker/blob/main/docs/design.md)
-- [Firecracker production host setup](https://github.com/firecracker-microvm/firecracker/blob/main/docs/prod-host-setup.md)
-- [libkrun README](https://github.com/containers/libkrun/blob/main/README.md)
-- [libkrun releases](https://github.com/containers/libkrun/releases)
-
-### Upstream status (documented)
-
-- `libkrun`: latest release is `v1.17.4` (published 2026-02-18).
-- Firecracker: latest release is `v1.14.1` (published 2026-01-20).
-
-This is not a "stale project vs active project" decision; both are actively maintained.
-
-### Security and network model (documented facts)
-
-| Dimension | Firecracker | `libkrun` | Cleanroom implication |
-|---|---|---|---|
-| Positioning | Firecracker is purpose-built for secure multi-tenant workloads with a minimal device model and attack-surface reduction. | `libkrun` is a dynamic library for partially isolated execution with a simple C API. | Firecracker aligns better with strict untrusted-workload isolation goals for Linux CI/agent runs. |
-| Process isolation guidance | Firecracker design and production docs call for defense in depth: seccomp, cgroups, namespaces, and jailer-based privilege dropping. | `libkrun` security model states guest and VMM should be treated as one security context and VMM isolation must be done with host OS controls (for example namespaces). | With `libkrun`, more hardening responsibility shifts to Cleanroom/operator policy around the VMM process itself. |
-| Network behavior | Conventional microVM NIC model that naturally fits TAP + host firewall policy patterns. | Two mutually exclusive network modes: `virtio-vsock + TSI` (no virtual NIC) or `virtio-net + passt/gvproxy` (userspace proxy path). TSI docs state guest and VMM are effectively in the same network context. | Deterministic host/port allowlist enforcement and reason-code auditing are simpler to reason about in the Firecracker model for v1 Linux. |
-| Integration surface | External VMM with stable machine config surface and mature production guidance. | Embeddable library with C API and network/proxy choices that depend on host process controls. | `libkrun` is attractive for embedding, but adoption would still require backend-specific security and networking redesign. |
-
-### Fit against current Cleanroom backend shape (inference from repo implementation)
-
-- Current Linux backend is explicitly Firecracker and Linux/KVM scoped.
-- Current deny-by-default enforcement path is built around per-run TAP + host firewall FORWARD rules.
-- Current launch flow shells out to a Firecracker binary with generated machine JSON and vsock guest-agent RPC.
-
-Inference: swapping to `libkrun` would be a backend re-architecture, not a drop-in runtime substitution.
-
-### Decision for v1 Linux backend
-
-- Keep Firecracker as the default local Linux backend.
-- Re-evaluate `libkrun` as an optional secondary backend where capability downgrades are explicit (for example, local macOS workflows with different enforcement guarantees).
-
-## Cross-platform filtering findings (`Linux` + macOS)
+### Cross-platform filtering
 
 Validation snapshot date: 2026-02-17.
 
-1. There is no single kernel-level filtering substrate we can share across Linux and macOS.
-   - Linux path can use eBPF and nftables.
-   - macOS path should use Network Extension providers (for example DNS proxy provider / network filter provider model), not Linux packet-filter assumptions.
+1. There is no single kernel-level filtering substrate shared across Linux and macOS.
+   - Linux path can use [eBPF](https://docs.ebpf.io/linux/) and nftables.
+   - macOS path should use Network Extension providers (for example [`NEDNSProxyProvider`](https://developer.apple.com/documentation/networkextension/nednsproxyprovider) / network filter provider model), not Linux packet-filter assumptions. Apple's [TN3165](https://developer.apple.com/documentation/technotes/tn3165-packet-filter-is-not-api) confirms that packet filter is not a supported API.
 2. DNS resolver-level filtering is practical on both platforms, but with different enforcement primitives.
    - Linux: resolver control + egress firewall policy.
    - macOS: DNS proxy payload / DNS proxy extension model.
 3. Prior art for reliable macOS filtering exists and is active.
-   - LuLu documents a Network Extension-based firewall model and calls out operational constraints (system extension/network filter approval flow, and known traffic classes not seen by Network Extensions).
-   - Cloudflare WARP documents production modes that separate DNS filtering from broader network filtering (`DNS only`, `Traffic and DNS`, `Traffic only`), demonstrating deployable real-world split enforcement.
+   - [LuLu](https://objective-see.org/products/lulu.html) documents a Network Extension-based firewall model and calls out operational constraints (system extension/network filter approval flow, and known traffic classes not seen by Network Extensions).
+   - [Cloudflare WARP](https://developers.cloudflare.com/cloudflare-one/team-and-resources/devices/warp/configure-warp/warp-modes/) documents production modes that separate DNS filtering from broader network filtering ("DNS only", "Traffic and DNS", "Traffic only"), demonstrating deployable real-world split enforcement.
 
 Implication for Cleanroom architecture:
 
@@ -370,37 +152,28 @@ Implication for Cleanroom architecture:
   - macOS: Network Extension DNS/network filter adapter with explicit capability flags.
 - Treat macOS hostname-level and DNS-level controls as capability-scoped and verify by conformance tests, not assumption.
 
-## Key design inferences from the research
+## Caching and secret mediation
 
-- `gondolin` has strong isolation ideas but is a larger multi-component platform. It is best treated as design inspiration for network and filesystem controls rather than a direct v1 embed.
-- `matchlock` is the pragmatic base for local execution because it already provides:
-  - backend abstraction
-  - VM strategy in-process
-  - command surface suitable for a wrapper binary
-- `content-cache` and tokenizer-like secret mediation are cleaner to integrate as policy-aware external services than to reinvent in phase 1.
+### content-cache
 
-## Risks and unknowns still to validate
+[content-cache](https://github.com/wolfeidau/content-cache) is a caching proxy for package registries and git hosting. Cleanroom uses it as the mediation layer between the sandbox and upstream registries. Package and git egress is routed through content-cache on the host side, so the sandbox never talks directly to upstream. This gives Cleanroom a single point for allowlist enforcement, caching, and audit logging of registry traffic.
 
-- Matchlock network enforcement edge cases (DNS interception and port-level blocking exactness).
-- Image provenance verification depth (digest-only vs digest + signature/attestation enforcement).
-- Operator UX for digest refresh cadence (how repos update pinned base image digests safely).
-- Lockfile parser maturity by ecosystem.
-- `content-cache` deployment topology for local-only vs remote-only workflows.
-- macOS Network Extension edge cases where some traffic can bypass extension visibility (must be measured in our own conformance suite).
-- macOS hostname filtering limits for traffic that does not use the expected networking APIs.
+content-cache also enables offline/hermetic builds when only pre-warmed cached artifacts are permitted.
 
-## Next concrete work after research
+### tokenizer
 
-- Add capability handshake and launch validation path from compiled policy.
-- Implement a first conformance subset:
-  - default deny
-  - explicit allow host/port
-  - explicit deny precedence
-  - stable reason codes in events
-- Integrate `content-cache` in the backend provisioning flow before lockfile strict mode.
-- Add `mise` detection and bootstrap strategy.
-- Implement lockfile-restricted package allowlists.
-- Add secret injection guardrails.
-- Define cross-backend capability matrix (`linux-firecracker`, `darwin-network-extension`) and wire launch-time capability validation.
-- Build a macOS proof-of-concept adapter using DNS proxy + network filter extensions, including explicit install/approval checks.
-- Add cross-platform conformance tests for DNS and egress bypass paths (direct DNS, DoT, DoH, direct IP).
+[tokenizer](https://github.com/superfly/tokenizer) is Fly.io's credential proxy. It holds secrets and injects them into outbound requests on behalf of callers that never see the plaintext values. Cleanroom follows the same pattern: secret IDs are declared in policy, resolved at runtime by the host control plane, and injected on the upstream leg of proxied requests. The sandbox never has access to secret material.
+
+Key properties of this model:
+
+- No plaintext secrets in policy files, command arguments, or guest environment.
+- Secret injection is scoped by destination host -- a secret bound to `api.github.com` cannot be injected into requests to other hosts.
+- All injection events are logged with secret ID and destination, never with secret values.
+
+## Research conclusions
+
+1. Use Firecracker as the local sandbox backend (inspired by Matchlock patterns). See [backend/firecracker.md](backend/firecracker.md) for implementation details.
+2. Use `content-cache` as the package/registry and git mediation layer.
+3. Use a tokenizer-like secret-injection model with host-scoped policy and no plaintext propagation.
+4. Keep CLI first: `cleanroom exec` as primary entrypoint and command pattern.
+

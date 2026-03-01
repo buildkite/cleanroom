@@ -1,33 +1,24 @@
-# 🧑‍🔬 Cleanroom
+# 👩‍🔬 Cleanroom
 
-Cleanroom uses fast Linux microVM backends to create isolated environments for untrusted workloads like AI agents and CI jobs. It supports Firecracker on Linux and Virtualization.framework (`darwin-vz`) on macOS. Deny-by-default policy, digest-pinned images, and immutable policy compilation make it safe to run code you don't trust.
+Cleanroom runs untrusted code in microVMs with deny-by-default network policy. It is self-hosted, enforces repository-scoped egress rules, and keeps credentials on the host side of the VM boundary.
 
-## What It Does
+Agent sandboxing tools are [proliferating fast](docs/research.md). Most focus on isolation alone. Cleanroom adds policy-controlled network access so you decide exactly what the sandbox can reach.
 
-- Compiles repository policy from `cleanroom.yaml`
-- Requires digest-pinned sandbox base images via `sandbox.image.ref`
-- Enforces deny-by-default egress (`host:port` allow rules)
-- Runs commands in a backend microVM (`firecracker` on Linux, `darwin-vz` on macOS)
-- Returns exit code + stdout/stderr over API
-- Stores run artifacts and timing metrics for inspection
+## Why Cleanroom?
 
-## Backend Support
+**Deny-by-default egress.** A `cleanroom.yaml` policy file in your repo controls exactly which hosts the sandbox can reach. Everything else is blocked.
 
-| Host OS | Backend | Status | Notes |
-|---------|---------|--------|-------|
-| Linux | `firecracker` | Full local backend | Supports persistent sandboxes, sandbox file download, and egress allowlist enforcement |
-| macOS | `darwin-vz` | Supported with known gaps | Per-run VMs (no persistent sandboxes yet), no sandbox file download, guest NIC with unfiltered egress, and no egress allowlist enforcement yet |
+**MicroVM isolation.** Each sandbox is a hardware-virtualized microVM (Firecracker on Linux, Virtualization.framework on macOS), not a container. A VM boundary is stronger than namespaces, seccomp, or gVisor -- a kernel vulnerability in the guest doesn't compromise the host.
 
-Backend capabilities are exposed in `cleanroom doctor --json` under `capabilities`.
+**Self-hosted.** Runs on your infrastructure. Your code and data never leave your machines.
 
-## Architecture
+**Credentials stay on the host.** A [host-side gateway](docs/gateway.md) proxies git clones and package fetches, injecting credentials on the upstream leg. Tokens never enter the sandbox.
 
-- Server: `cleanroom serve`
-- Client: CLI and ConnectRPC clients
-- Transport: unix socket (default), HTTPS with mTLS, or Tailscale
-- Core RPC services:
-  - `cleanroom.v1.SandboxService`
-  - `cleanroom.v1.ExecutionService`
+**Standard OCI images.** Use any OCI image from any registry as your sandbox base. Digest-pinned in policy for reproducibility. No custom VM image format or vendor-specific base images. Same image works across backends.
+
+**Docker inside the sandbox.** Enable a guest Docker daemon with a single policy flag (`services.docker.required: true`). Build and run containers inside the microVM.
+
+**Coming soon:** package registry proxy with lockfile enforcement, Docker pull caching, content caching for hermetic offline builds, and structured audit logging. See the [spec](docs/spec.md) for the full roadmap.
 
 ## Go Client (Public API)
 
@@ -88,7 +79,7 @@ curl -fsSL https://raw.githubusercontent.com/buildkite/cleanroom/main/scripts/in
 
 By default this installs to `/usr/local/bin`. Override with `--install-dir` or `CLEANROOM_INSTALL_DIR`.
 
-## Quick Start
+## Quick start
 
 Initialize runtime config and check host prerequisites:
 
@@ -97,7 +88,7 @@ cleanroom config init
 cleanroom doctor
 ```
 
-Start the server (all CLI commands require a running server):
+Start the server (all CLI commands need a running server):
 
 ```bash
 cleanroom serve &
@@ -141,40 +132,6 @@ Use `--rm` to tear down the sandbox after the command completes (useful for one-
 cleanroom exec --rm -- npm test
 ```
 
-### Git Gateway (Firecracker)
-
-The server runs a host gateway (`/git/`, `/registry/`, `/secrets/`, `/meta/`) and
-injects scoped git URL rewrites for policy-allowed hosts.
-
-Allowed host example (from this repo policy):
-
-```bash
-cleanroom exec -- git ls-remote https://github.com/buildkite/cleanroom.git HEAD
-```
-
-Denied host example (not in `sandbox.network.allow`):
-
-```bash
-cleanroom exec -- git ls-remote https://gitlab.com/gitlab-org/gitlab.git HEAD
-```
-
-Optional host-side credentials can be provided to the gateway via environment
-variables such as `CLEANROOM_GITHUB_TOKEN` and `CLEANROOM_GITLAB_TOKEN`.
-
-macOS note:
-
-- `darwin-vz` is the default backend on macOS
-- install host tools for rootfs derivation with `brew install e2fsprogs`
-- `cleanroom-darwin-vz` helper must be installed and signed with `com.apple.security.virtualization` entitlement (the release install script handles this automatically; `mise run install` also handles it in this repo)
-
-## CLI
-
-```bash
-cleanroom exec -- npm test
-cleanroom exec -c /path/to/repo -- make build
-cleanroom exec --backend darwin-vz -- npm test
-cleanroom exec --backend firecracker -- npm test
-```
 
 Interactive console:
 
@@ -182,131 +139,9 @@ Interactive console:
 cleanroom console -- bash
 ```
 
-## TLS / mTLS
+## Policy file
 
-Cleanroom supports mutual TLS for HTTPS transport. TLS material is stored in
-`$XDG_CONFIG_HOME/cleanroom/tls/` (typically `~/.config/cleanroom/tls/`).
-
-### Bootstrap certificates
-
-```bash
-cleanroom tls init
-```
-
-This generates a CA, server certificate (with localhost + hostname SANs), and
-client certificate. Use `--force` to overwrite existing material.
-
-### Issue additional certificates
-
-```bash
-cleanroom tls issue worker-1 --san worker-1.internal --san 10.0.0.5
-```
-
-When `--san` is omitted, the certificate name is added as a SAN automatically.
-
-### Serve with HTTPS + mTLS
-
-```bash
-cleanroom serve --listen https://0.0.0.0:7777
-```
-
-TLS material is auto-discovered from the XDG TLS directory. To use explicit
-paths:
-
-```bash
-cleanroom serve --listen https://0.0.0.0:7777 \
-  --tls-cert /path/to/server.pem \
-  --tls-key /path/to/server.key \
-  --tls-ca /path/to/ca.pem
-```
-
-When a CA is configured, the server requires and verifies client certificates
-(mTLS). Without `--tls-ca`, the server accepts any TLS client.
-
-### Connect over HTTPS
-
-```bash
-cleanroom exec --host https://server.example.com:7777 -- echo hello
-```
-
-Client certificates and CA are auto-discovered from the XDG TLS directory, or
-specified with `--tls-cert`, `--tls-key`, and `--tls-ca`.
-
-Environment variables `CLEANROOM_TLS_CERT`, `CLEANROOM_TLS_KEY`, and
-`CLEANROOM_TLS_CA` are also supported.
-
-### Auto-discovery
-
-When no explicit TLS flags are provided, cleanroom looks for:
-
-| Role   | Cert                | Key                 | CA       |
-|--------|---------------------|---------------------|----------|
-| Server | `<tlsdir>/server.pem` | `<tlsdir>/server.key` | `<tlsdir>/ca.pem` |
-| Client | `<tlsdir>/client.pem` | `<tlsdir>/client.key` | `<tlsdir>/ca.pem` |
-
-CA auto-discovery is skipped when cert/key are explicitly provided, to avoid
-unexpectedly enabling mTLS.
-
-TLS commands:
-
-```bash
-cleanroom tls init                    # generate CA + server/client certs
-cleanroom tls issue myhost --san myhost.internal
-```
-
-## Image Lifecycle
-
-```bash
-cleanroom image pull ghcr.io/buildkite/cleanroom-base/alpine@sha256:...
-cleanroom image ls
-cleanroom image rm sha256:...
-cleanroom image import ghcr.io/buildkite/cleanroom-base/alpine@sha256:... ./rootfs.tar.gz
-cleanroom image bump-ref
-```
-
-`ghcr.io/buildkite/cleanroom-base/alpine` and
-`ghcr.io/buildkite/cleanroom-base/alpine-docker` are published from this repo
-on pushes to `main` via `.github/workflows/base-image.yml`.
-
-Sandbox management:
-
-```bash
-cleanroom sandbox ls
-cleanroom sandbox rm <sandbox-id>
-```
-
-Diagnostics:
-
-```bash
-cleanroom doctor
-cleanroom doctor --json   # includes gateway defaults/routes/credential-host summary
-cleanroom status --run-id <run-id>
-cleanroom status --last-run
-```
-
-## Remote Access
-
-The server supports Tailscale listeners for remote access:
-
-```bash
-# Embedded tsnet
-cleanroom serve --listen tsnet://cleanroom:7777
-cleanroom exec --host http://cleanroom.tailnet.ts.net:7777 -c /path/to/repo -- npm test
-
-# Tailscale Service (via local tailscaled)
-cleanroom serve --listen tssvc://cleanroom
-cleanroom exec --host https://cleanroom.<your-tailnet>.ts.net -- npm test
-```
-
-HTTP is also supported: `cleanroom serve --listen http://0.0.0.0:7777`
-
-## Policy File
-
-Repository policy path resolution:
-1. `cleanroom.yaml`
-2. `.buildkite/cleanroom.yaml` (fallback)
-
-Minimal example:
+A `cleanroom.yaml` in your repo defines the sandbox policy. Cleanroom also checks `.buildkite/cleanroom.yaml` as a fallback.
 
 ```yaml
 version: 1
@@ -322,7 +157,7 @@ sandbox:
         ports: [443]
 ```
 
-Enable Docker as an explicit guest service:
+Enable Docker as a guest service:
 
 ```yaml
 sandbox:
@@ -331,87 +166,150 @@ sandbox:
       required: true
 ```
 
-## Runtime Config
+Validate policy without running anything:
 
-Runtime config path: `$XDG_CONFIG_HOME/cleanroom/config.yaml` (or `~/.config/cleanroom/config.yaml`).
+```bash
+cleanroom policy validate
+```
 
-Bootstrap a config file with defaults:
+## Backend support
+
+| Host OS | Backend | Status | Notes |
+|---------|---------|--------|-------|
+| Linux | `firecracker` | Full support | Persistent sandboxes, file download, egress allowlist enforcement |
+| macOS | `darwin-vz` | Supported with gaps | Per-run VMs (no persistent sandboxes yet), no file download, no egress filtering yet |
+
+Backend capabilities are exposed in `cleanroom doctor --json` under `capabilities`. See [isolation model](docs/isolation.md) for enforcement and persistence details.
+
+Select a backend explicitly:
+
+```bash
+cleanroom exec --backend firecracker -- npm test
+cleanroom exec --backend darwin-vz -- npm test
+```
+
+## Architecture
+
+- **Server:** `cleanroom serve` (required for all operations)
+- **Client:** CLI and ConnectRPC clients
+- **Transport:** unix socket (default), [HTTPS with mTLS](docs/tls.md), or [Tailscale](docs/remote-access.md)
+- **RPC services:** `cleanroom.v1.SandboxService`, `cleanroom.v1.ExecutionService` ([API design](docs/api.md))
+
+## Go client
+
+Use `github.com/buildkite/cleanroom/client` from external Go modules.
+
+```go
+import (
+  "context"
+  "os"
+
+  "github.com/buildkite/cleanroom/client"
+)
+
+func example() error {
+  c := client.Must(client.NewFromEnv())
+
+  sb, err := c.EnsureSandbox(context.Background(), "thread:abc123", client.EnsureSandboxOptions{
+    Backend: "firecracker",
+    Policy: client.PolicyFromAllowlist(
+      "ghcr.io/buildkite/cleanroom-base/alpine@sha256:...",
+      "sha256:...",
+      client.Allow("api.github.com", 443),
+      client.Allow("registry.npmjs.org", 443),
+    ),
+  })
+  if err != nil { return err }
+
+  result, err := c.ExecAndWait(context.Background(), sb.ID, []string{"bash", "-lc", "echo hello"}, client.ExecOptions{
+    Stdout: os.Stdout,
+    Stderr: os.Stderr,
+  })
+  if err != nil { return err }
+  _ = result
+  return nil
+}
+```
+
+## Images
+
+Cleanroom uses digest-pinned OCI images as sandbox bases. Images are pulled from any OCI registry and materialized into ext4 rootfs files for the VM backend.
+
+```bash
+cleanroom image pull ghcr.io/buildkite/cleanroom-base/alpine@sha256:...
+cleanroom image ls
+cleanroom image rm sha256:...
+cleanroom image import ghcr.io/buildkite/cleanroom-base/alpine@sha256:... ./rootfs.tar.gz
+cleanroom image bump-ref    # resolve :latest tag to digest and update cleanroom.yaml
+```
+
+`ghcr.io/buildkite/cleanroom-base/alpine` and `ghcr.io/buildkite/cleanroom-base/alpine-docker` are published from this repo on pushes to `main`.
+
+## Runtime config
+
+Config path: `$XDG_CONFIG_HOME/cleanroom/config.yaml` (typically `~/.config/cleanroom/config.yaml`).
 
 ```bash
 cleanroom config init
 ```
 
-On macOS, `cleanroom config init` defaults `default_backend` to `darwin-vz`. On other platforms it defaults to `firecracker`.
+On macOS this defaults `default_backend` to `darwin-vz`. On Linux it defaults to `firecracker`.
 
 ```yaml
 default_backend: firecracker
 backends:
   firecracker:
     binary_path: firecracker
-    kernel_image: "" # optional; auto-managed when unset/missing
-    privileged_mode: sudo # or helper
-    privileged_helper_path: /usr/local/sbin/cleanroom-root-helper
+    kernel_image: ""    # auto-managed when unset
+    privileged_mode: sudo
     vcpus: 2
     memory_mib: 1024
-    guest_cid: 3
     launch_seconds: 30
   darwin-vz:
-    kernel_image: "" # optional; auto-managed when unset/missing
-    rootfs: "" # optional; derived from sandbox.image.ref when unset/missing
+    kernel_image: ""    # auto-managed when unset
+    rootfs: ""          # derived from sandbox.image.ref when unset
     vcpus: 2
     memory_mib: 1024
-    guest_port: 10700
     launch_seconds: 30
 ```
 
-The Firecracker adapter resolves `sandbox.image.ref` through the local image manager and caches materialised ext4 files under XDG cache paths.
-When `backends.<name>.kernel_image` is unset (or points to a missing file), cleanroom auto-downloads a verified managed kernel asset into XDG data paths.
-Set `kernel_image` explicitly if you need fully offline operation.
-When `backends.<name>.rootfs` is unset (or points to a missing file), cleanroom derives a runtime rootfs from `sandbox.image.ref` and injects the guest runtime automatically.
-This derivation path requires `mkfs.ext4` and `debugfs` on the host.
-On macOS, cleanroom auto-detects Homebrew `e2fsprogs` (`mkfs.ext4`/`debugfs`) from common keg locations even when they are not in `PATH`.
-The `darwin-vz` backend launches a dedicated helper binary (`cleanroom-darwin-vz`) and resolves it in this order:
-1. `CLEANROOM_DARWIN_VZ_HELPER`
-2. sibling binary next to `cleanroom`
-3. `PATH`
+When `kernel_image` is unset, Cleanroom auto-downloads a managed kernel. Set it explicitly for offline operation.
 
-The helper (not the main `cleanroom` binary) needs the `com.apple.security.virtualization` entitlement.
+When `rootfs` is unset, Cleanroom derives one from `sandbox.image.ref` and injects the guest runtime. This requires `mkfs.ext4` and `debugfs` on the host (macOS: `brew install e2fsprogs`).
 
-## Isolation Model
+## Host requirements
 
-- Workload runs in a Linux microVM backend (`firecracker` on Linux, `darwin-vz` on macOS)
-- `firecracker` enforces policy egress allowlists with TAP + iptables
-- `darwin-vz` currently requires `network.default: deny`, ignores `network.allow` entries, and provides guest networking without egress filtering (warns on stderr during execution)
-- `firecracker` rootfs writes persist across executions within a sandbox and are discarded on sandbox termination
-- `darwin-vz` executes each command in a fresh VM/rootfs copy (writes are discarded after each run)
-- Per-run observability is written to `run-observability.json` (rootfs prep, network setup, VM ready, command runtime, total)
-- `firecracker` rootfs copy uses clone/reflink when available, with copy fallback
-
-## Host Requirements
-
-Linux (`firecracker` backend):
-
+**Linux ([firecracker](docs/backend/firecracker.md)):**
 - `/dev/kvm` available and writable
 - Firecracker binary installed
-- kernel image configured, or internet access for first-run managed kernel download
-- `mkfs.ext4` installed (materialises OCI layers into ext4 cache artifacts)
-- `sudo -n` access for `ip`, `iptables`, and `sysctl` (network setup/cleanup)
+- `mkfs.ext4` for OCI-to-ext4 materialization
+- `sudo -n` access for `ip`, `iptables`, `sysctl`
 
-macOS (`darwin-vz` backend):
+**macOS ([darwin-vz](docs/backend/darwin-vz.md)):**
+- `cleanroom-darwin-vz` helper signed with `com.apple.security.virtualization` entitlement
+- `mkfs.ext4` and `debugfs` (`brew install e2fsprogs`)
 
-- `cleanroom-darwin-vz` helper installed
-- helper binary signed with `com.apple.security.virtualization` entitlement
-- `mkfs.ext4` and `debugfs` for rootfs derivation (`brew install e2fsprogs`)
+## Diagnostics
 
-General:
+```bash
+cleanroom doctor              # check host prerequisites
+cleanroom doctor --json       # machine-readable with capabilities map
+cleanroom status --last-run   # inspect most recent run
+cleanroom status --run-id <id>
+cleanroom version
+```
 
-- `cleanroom doctor --json` includes a machine-readable `capabilities` map for the selected backend
+## Further reading
 
-## References
-
-- [API design](docs/api.md) — ConnectRPC surface and proto sketch
-- [Benchmarks](docs/benchmarks.md) — TTI measurement and results
-- [CI](docs/ci.md) — Buildkite pipeline and base image workflow
-- [Darwin VZ](docs/darwin-vz.md) — macOS backend/helper design and behavior
-- [Spec](docs/spec.md) — Full specification and roadmap
-- [Research](docs/research.md) — Backend and tooling evaluation notes
+- [research.md](docs/research.md) -- backend and tooling evaluation notes
+- [benchmarks.md](docs/benchmarks.md) -- TTI measurement and results
+- [ci.md](docs/ci.md) -- Buildkite pipeline and base image workflow
+- [spec.md](docs/spec.md) -- full specification and roadmap
+- [tls.md](docs/tls.md) -- certificate bootstrap, auto-discovery, HTTPS transport
+- [gateway.md](docs/gateway.md) -- host-side git/registry proxy and credential injection
+- [remote-access.md](docs/remote-access.md) -- Tailscale and HTTP listeners
+- [isolation.md](docs/isolation.md) -- enforcement details and persistence behavior
+- [api.md](docs/api.md) -- ConnectRPC surface and proto sketch
+- [vsock.md](docs/vsock.md) -- guest execution protocol
+- [backend/firecracker.md](docs/backend/firecracker.md) -- Firecracker backend design
+- [backend/darwin-vz.md](docs/backend/darwin-vz.md) -- macOS backend and helper design
