@@ -713,7 +713,7 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 		if detached || !autoTerminateSandbox || sandboxID == "" {
 			return
 		}
-		terminateSandboxBestEffort(client, sandboxID, logger, "terminate sandbox after exec failed")
+		terminateSandboxBestEffort(client, sandboxID, 0, logger, "terminate sandbox after exec failed")
 	}()
 
 	createExecutionResp, err := client.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
@@ -802,7 +802,7 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 	case <-secondInterrupt:
 		detached = true
 		if e.Remove {
-			terminateSandboxBestEffort(client, sandboxID, logger, "terminate sandbox after detach failed")
+			terminateSandboxBestEffort(client, sandboxID, sandboxTerminateTimeout, logger, "terminate sandbox after detach failed")
 		}
 		return exitCodeError{code: 130}
 	default:
@@ -892,7 +892,7 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 		if sandboxID == "" || !autoTerminateSandbox {
 			return
 		}
-		terminateSandboxBestEffort(client, sandboxID, logger, "terminate sandbox after console failed")
+		terminateSandboxBestEffort(client, sandboxID, 0, logger, "terminate sandbox after console failed")
 	}()
 
 	createExecutionResp, err := client.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
@@ -1809,14 +1809,19 @@ func getFinalExecutionExitCode(client *controlclient.Client, sandboxID, executio
 	return int(execution.GetExitCode()), true
 }
 
-func terminateSandboxBestEffort(client *controlclient.Client, sandboxID string, logger *log.Logger, warnMessage string) {
+func terminateSandboxBestEffort(client *controlclient.Client, sandboxID string, timeout time.Duration, logger *log.Logger, warnMessage string) {
 	if client == nil || strings.TrimSpace(sandboxID) == "" {
 		return
 	}
 
-	terminateCtx, terminateCancel := context.WithTimeout(context.Background(), sandboxTerminateTimeout)
+	terminateCtx := context.Background()
+	var terminateCancel context.CancelFunc
+	if timeout > 0 {
+		terminateCtx, terminateCancel = context.WithTimeout(context.Background(), timeout)
+		defer terminateCancel()
+	}
+
 	_, err := client.TerminateSandbox(terminateCtx, &cleanroomv1.TerminateSandboxRequest{SandboxId: sandboxID})
-	terminateCancel()
 	if err != nil && logger != nil {
 		logger.Warn(warnMessage, "sandbox_id", sandboxID, "error", err)
 	}
