@@ -223,7 +223,7 @@ func TestAgentCodexIntegrationOverridesImageRefForCreatedSandbox(t *testing.T) {
 }
 
 func TestAgentCodexIntegrationResolvesTaggedImageOverrideForCreatedSandbox(t *testing.T) {
-	restore := stubRefResolver(t, func(_ context.Context, source string) (string, error) {
+	restore := stubImageOverrideResolver(t, func(_ context.Context, source string) (string, error) {
 		if got, want := source, testAgentImageOverrideTag; got != want {
 			t.Fatalf("unexpected source passed to resolver: got %q want %q", got, want)
 		}
@@ -269,7 +269,7 @@ func TestAgentCodexIntegrationResolvesTaggedImageOverrideForCreatedSandbox(t *te
 }
 
 func TestAgentCodexIntegrationReturnsImageOverrideResolutionError(t *testing.T) {
-	restore := stubRefResolver(t, func(_ context.Context, _ string) (string, error) {
+	restore := stubImageOverrideResolver(t, func(_ context.Context, _ string) (string, error) {
 		return "", errors.New("registry unavailable")
 	})
 	defer restore()
@@ -294,6 +294,15 @@ func TestAgentCodexIntegrationReturnsImageOverrideResolutionError(t *testing.T) 
 	}
 	if got, want := outcome.err.Error(), "invalid --image value: registry unavailable"; !strings.Contains(got, want) {
 		t.Fatalf("expected error to contain %q, got %q", want, got)
+	}
+}
+
+func stubImageOverrideResolver(t *testing.T, fn func(context.Context, string) (string, error)) func() {
+	t.Helper()
+	prev := resolveReferenceForImageOverride
+	resolveReferenceForImageOverride = fn
+	return func() {
+		resolveReferenceForImageOverride = prev
 	}
 }
 

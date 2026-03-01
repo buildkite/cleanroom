@@ -3,6 +3,8 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/xml"
 	"errors"
@@ -308,6 +310,18 @@ var (
 		}
 
 		return fmt.Sprintf("%s@%s", tag.Context().Name(), desc.Digest.String()), nil
+	}
+	resolveReferenceForImageOverride = func(ctx context.Context, source string) (string, error) {
+		resolved, err := resolveReferenceForPolicyUpdate(ctx, source)
+		if err == nil {
+			return resolved, nil
+		}
+
+		localRef, localErr := importLocalDockerImageForOverride(ctx, source)
+		if localErr == nil {
+			return localRef, nil
+		}
+		return "", fmt.Errorf("%w; local docker fallback failed: %v", err, localErr)
 	}
 	serveInstallGOOS            = runtime.GOOS
 	serveInstallEUID            = os.Geteuid
@@ -1822,7 +1836,7 @@ func ensureSandboxID(client *controlclient.Client, loader policyLoader, cwd, bac
 		return "", err
 	}
 	if imageRefOverride != "" {
-		resolvedRef, err := resolveReferenceForPolicyUpdate(context.Background(), imageRefOverride)
+		resolvedRef, err := resolveReferenceForImageOverride(context.Background(), imageRefOverride)
 		if err != nil {
 			return "", fmt.Errorf("invalid --image value: %w", err)
 		}
@@ -1850,6 +1864,72 @@ func ensureSandboxID(client *controlclient.Client, loader policyLoader, cwd, bac
 		return "", fmt.Errorf("create sandbox: %w", err)
 	}
 	return strings.TrimSpace(createSandboxResp.GetSandbox().GetSandboxId()), nil
+}
+
+func importLocalDockerImageForOverride(ctx context.Context, source string) (string, error) {
+	source = strings.TrimSpace(source)
+	if source == "" {
+		return "", errors.New("image reference cannot be empty")
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		return "", fmt.Errorf("docker CLI not found in PATH: %w", err)
+	}
+
+	createCmd := exec.CommandContext(ctx, "docker", "create", source)
+	var createStdout bytes.Buffer
+	var createStderr bytes.Buffer
+	createCmd.Stdout = &createStdout
+	createCmd.Stderr = &createStderr
+	if err := createCmd.Run(); err != nil {
+		errText := strings.TrimSpace(createStderr.String())
+		if errText == "" {
+			errText = err.Error()
+		}
+		return "", fmt.Errorf("create container from %q: %s", source, errText)
+	}
+	containerID := strings.TrimSpace(createStdout.String())
+	if containerID == "" {
+		return "", fmt.Errorf("create container from %q returned empty container id", source)
+	}
+	defer func() {
+		_ = exec.Command("docker", "rm", "-f", containerID).Run()
+	}()
+
+	exportFile, err := os.CreateTemp("", "cleanroom-local-image-*.tar")
+	if err != nil {
+		return "", fmt.Errorf("create temporary export file: %w", err)
+	}
+	defer func() {
+		_ = exportFile.Close()
+		_ = os.Remove(exportFile.Name())
+	}()
+
+	hasher := sha256.New()
+	exportCmd := exec.CommandContext(ctx, "docker", "export", containerID)
+	var exportStderr bytes.Buffer
+	exportCmd.Stdout = io.MultiWriter(exportFile, hasher)
+	exportCmd.Stderr = &exportStderr
+	if err := exportCmd.Run(); err != nil {
+		errText := strings.TrimSpace(exportStderr.String())
+		if errText == "" {
+			errText = err.Error()
+		}
+		return "", fmt.Errorf("export container %q from %q: %s", containerID, source, errText)
+	}
+	if _, err := exportFile.Seek(0, io.SeekStart); err != nil {
+		return "", fmt.Errorf("rewind temporary export file: %w", err)
+	}
+
+	digestHex := hex.EncodeToString(hasher.Sum(nil))
+	resolvedRef := fmt.Sprintf("local/docker-image@sha256:%s", digestHex)
+	mgr, err := newImageManager()
+	if err != nil {
+		return "", err
+	}
+	if _, err := mgr.Import(ctx, resolvedRef, "-", exportFile); err != nil {
+		return "", fmt.Errorf("import local docker image %q into cleanroom cache: %w", source, err)
+	}
+	return resolvedRef, nil
 }
 
 func getFinalExecutionExitCode(client *controlclient.Client, sandboxID, executionID string) (int, bool) {
