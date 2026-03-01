@@ -3,8 +3,6 @@ package cli
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"encoding/xml"
 	"errors"
@@ -1875,6 +1873,49 @@ func importLocalDockerImageForOverride(ctx context.Context, source string) (stri
 		return "", fmt.Errorf("docker CLI not found in PATH: %w", err)
 	}
 
+	inspectCmd := exec.CommandContext(ctx, "docker", "image", "inspect", "--format", "{{.Id}}", source)
+	var inspectStdout bytes.Buffer
+	var inspectStderr bytes.Buffer
+	inspectCmd.Stdout = &inspectStdout
+	inspectCmd.Stderr = &inspectStderr
+	if err := inspectCmd.Run(); err != nil {
+		errText := strings.TrimSpace(inspectStderr.String())
+		if errText == "" {
+			errText = err.Error()
+		}
+		return "", fmt.Errorf("inspect local docker image %q: %s", source, errText)
+	}
+
+	imageID := strings.TrimSpace(inspectStdout.String())
+	if imageID == "" {
+		return "", fmt.Errorf("inspect local docker image %q returned empty image id", source)
+	}
+	digestRef, err := ociref.ParseDigestReference("local/docker-image@" + imageID)
+	if err != nil {
+		return "", fmt.Errorf("inspect local docker image %q returned invalid image id %q: %w", source, imageID, err)
+	}
+
+	mgr, err := newImageManager()
+	if err != nil {
+		return "", err
+	}
+
+	cachedRecords, err := mgr.List(ctx)
+	if err != nil {
+		return "", err
+	}
+	for _, record := range cachedRecords {
+		if record.Digest != digestRef.Digest() {
+			continue
+		}
+		if _, statErr := os.Stat(record.RootFSPath); statErr == nil {
+			_, _ = fmt.Fprintf(os.Stderr, "using cached local image override %s\n", digestRef.Original)
+			return digestRef.Original, nil
+		}
+	}
+
+	_, _ = fmt.Fprintf(os.Stderr, "importing local docker image %q into cleanroom cache (first run can take a while)\n", source)
+
 	createCmd := exec.CommandContext(ctx, "docker", "create", source)
 	var createStdout bytes.Buffer
 	var createStderr bytes.Buffer
@@ -1904,10 +1945,9 @@ func importLocalDockerImageForOverride(ctx context.Context, source string) (stri
 		_ = os.Remove(exportFile.Name())
 	}()
 
-	hasher := sha256.New()
 	exportCmd := exec.CommandContext(ctx, "docker", "export", containerID)
 	var exportStderr bytes.Buffer
-	exportCmd.Stdout = io.MultiWriter(exportFile, hasher)
+	exportCmd.Stdout = exportFile
 	exportCmd.Stderr = &exportStderr
 	if err := exportCmd.Run(); err != nil {
 		errText := strings.TrimSpace(exportStderr.String())
@@ -1920,16 +1960,11 @@ func importLocalDockerImageForOverride(ctx context.Context, source string) (stri
 		return "", fmt.Errorf("rewind temporary export file: %w", err)
 	}
 
-	digestHex := hex.EncodeToString(hasher.Sum(nil))
-	resolvedRef := fmt.Sprintf("local/docker-image@sha256:%s", digestHex)
-	mgr, err := newImageManager()
-	if err != nil {
-		return "", err
-	}
-	if _, err := mgr.Import(ctx, resolvedRef, "-", exportFile); err != nil {
+	if _, err := mgr.Import(ctx, digestRef.Original, "-", exportFile); err != nil {
 		return "", fmt.Errorf("import local docker image %q into cleanroom cache: %w", source, err)
 	}
-	return resolvedRef, nil
+	_, _ = fmt.Fprintf(os.Stderr, "imported local docker image override as %s\n", digestRef.Original)
+	return digestRef.Original, nil
 }
 
 func getFinalExecutionExitCode(client *controlclient.Client, sandboxID, executionID string) (int, bool) {
