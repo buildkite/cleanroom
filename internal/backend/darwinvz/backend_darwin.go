@@ -285,7 +285,7 @@ func (a *Adapter) Doctor(_ context.Context, req backend.DoctorRequest) (*backend
 	if req.Policy == nil {
 		appendCheck("policy", "warn", "policy not loaded")
 	} else {
-		policyWarn, policyErr := evaluateNetworkPolicy(req.Policy.NetworkDefault, len(req.Policy.Allow), allowlistSupported)
+		policyWarn, policyErr := evaluateNetworkPolicyForDoctor(req.Policy.NetworkDefault, len(req.Policy.Allow), allowlistSupported)
 		if policyErr != nil {
 			appendCheck("policy_network_default", "fail", policyErr.Error())
 		} else {
@@ -377,8 +377,11 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 		return nil, errors.New("missing compiled policy")
 	}
 	allowlistSupported, allowlistStatusDetail := hostEgressFilterEnabled()
-	policyWarn, policyErr := evaluateNetworkPolicy(req.Policy.NetworkDefault, len(req.Policy.Allow), allowlistSupported)
+	policyWarn, policyErr := evaluateNetworkPolicyForRun(req.Policy.NetworkDefault, len(req.Policy.Allow), allowlistSupported)
 	if policyErr != nil {
+		if len(req.Policy.Allow) > 0 && !allowlistSupported && allowlistStatusDetail != "" {
+			return nil, fmt.Errorf("%w (%s)", policyErr, allowlistStatusDetail)
+		}
 		return nil, policyErr
 	}
 	if len(req.Command) == 0 {
