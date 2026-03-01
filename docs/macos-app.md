@@ -54,9 +54,10 @@ Primary reason for having a macOS app:
 - App now loads/saves `NEFilterManager` preferences for network-filter enable/disable requests and surfaces status/error in the menu.
 - App bundle now includes `CleanroomFilterDataProvider.appex` from `macos/CleanroomFilterDataProvider/`.
 - User LaunchAgent now exports `CLEANROOM_NETWORK_FILTER_POLICY_PATH` and `CLEANROOM_NETWORK_FILTER_TARGET_PROCESS` so `cleanroom serve` can publish filter policy snapshots.
+- User LaunchAgent now exports `CLEANROOM_NETWORK_FILTER_STATUS_PATH`; the menubar app persists filter enabled/disabled state for backend/doctor checks.
 - Service stdout/stderr is captured to `~/Library/Logs/cleanroom-user-server.log`.
 - App logs remain in `~/Library/Logs/cleanroom-menubar.log`.
-- Provider now enforces host/port allow rules for cleanroom helper traffic using policy snapshots; per-run scoping is still the next milestone.
+- Provider now enforces host/port allow rules for cleanroom helper traffic using policy snapshots, scoped per active execution PID.
 
 ### Privileged path
 
@@ -139,9 +140,8 @@ When to split to its own repo:
 - Open logs and quit
 
 2. Network filtering (primary follow-up)
-- add policy-sync plumbing from `cleanroom serve` into the bundled NE provider
 - optional control provider target if bidirectional control path is needed
-- enforce per-cleanroom run ingress/egress allowlists
+- tighten ingress/egress semantics and failure handling around extension health changes
 
 3. Stability pass
 - login item support

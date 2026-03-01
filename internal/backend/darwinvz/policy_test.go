@@ -6,7 +6,7 @@ import (
 )
 
 func TestEvaluateNetworkPolicyRequiresDenyDefault(t *testing.T) {
-	warn, err := evaluateNetworkPolicy("allow", 0)
+	warn, err := evaluateNetworkPolicy("allow", 0, false)
 	if err == nil {
 		t.Fatal("expected error for non-deny network default")
 	}
@@ -19,7 +19,7 @@ func TestEvaluateNetworkPolicyRequiresDenyDefault(t *testing.T) {
 }
 
 func TestEvaluateNetworkPolicyWarnsWhenAllowEntriesPresent(t *testing.T) {
-	warn, err := evaluateNetworkPolicy("deny", 2)
+	warn, err := evaluateNetworkPolicy("deny", 2, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -29,7 +29,17 @@ func TestEvaluateNetworkPolicyWarnsWhenAllowEntriesPresent(t *testing.T) {
 }
 
 func TestEvaluateNetworkPolicyAcceptsDenyWithNoAllowEntries(t *testing.T) {
-	warn, err := evaluateNetworkPolicy("deny", 0)
+	warn, err := evaluateNetworkPolicy("deny", 0, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if warn != "" {
+		t.Fatalf("expected no warning, got %q", warn)
+	}
+}
+
+func TestEvaluateNetworkPolicyAcceptsAllowEntriesWhenHostFilterIsEnabled(t *testing.T) {
+	warn, err := evaluateNetworkPolicy("deny", 2, true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

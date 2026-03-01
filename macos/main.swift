@@ -14,8 +14,10 @@ private enum AppConstants {
     static let networkFilterProviderBundleName = "CleanroomFilterDataProvider.appex"
     static let networkFilterProviderExecutableName = "CleanroomFilterDataProvider"
     static let networkFilterPolicyRelativePath = "Library/Application Support/Cleanroom/network-filter-policy.json"
+    static let networkFilterStatusRelativePath = "Library/Application Support/Cleanroom/network-filter-status.json"
     static let networkFilterPolicyPathEnv = "CLEANROOM_NETWORK_FILTER_POLICY_PATH"
     static let networkFilterTargetProcessEnv = "CLEANROOM_NETWORK_FILTER_TARGET_PROCESS"
+    static let networkFilterStatusPathEnv = "CLEANROOM_NETWORK_FILTER_STATUS_PATH"
     static let networkFilterPolicyPathVendorKey = "policy_path"
     static let networkFilterTargetProcessVendorKey = "target_process_path"
     static let appLogRelativePath = "Library/Logs/cleanroom-menubar.log"
@@ -86,6 +88,11 @@ final class CleanroomMenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate
     private lazy var networkFilterPolicyURL: URL = {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(AppConstants.networkFilterPolicyRelativePath, isDirectory: false)
+    }()
+
+    private lazy var networkFilterStatusURL: URL = {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(AppConstants.networkFilterStatusRelativePath, isDirectory: false)
     }()
 
     private lazy var launchAgentURL: URL = {
@@ -451,12 +458,14 @@ final class CleanroomMenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate
         try fm.createDirectory(at: launchAgentURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try fm.createDirectory(at: serviceLogURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try fm.createDirectory(at: networkFilterPolicyURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try fm.createDirectory(at: networkFilterStatusURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         if !fm.fileExists(atPath: serviceLogURL.path) {
             fm.createFile(atPath: serviceLogURL.path, contents: Data())
         }
         let runOnStartupEnabled = isRunOnStartupEnabled()
         var environment: [String: String] = [
             AppConstants.networkFilterPolicyPathEnv: networkFilterPolicyURL.path,
+            AppConstants.networkFilterStatusPathEnv: networkFilterStatusURL.path,
         ]
         if let helperURL = resolveDarwinVZHelperBinary() {
             environment[AppConstants.networkFilterTargetProcessEnv] = helperURL.path
@@ -558,12 +567,36 @@ final class CleanroomMenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate
         return String(trimmed[..<idx]) + "..."
     }
 
+    private func persistNetworkFilterStatusSnapshot() {
+        var payload: [String: Any] = [
+            "version": 1,
+            "updated_at": ISO8601DateFormatter().string(from: Date()),
+            "available": networkFilterAvailable,
+            "loaded": networkFilterLoaded,
+            "enabled": networkFilterEnabled,
+        ]
+        if let lastError = networkFilterLastError?.trimmingCharacters(in: .whitespacesAndNewlines), !lastError.isEmpty {
+            payload["last_error"] = lastError
+        }
+        do {
+            try FileManager.default.createDirectory(
+                at: networkFilterStatusURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            let data = try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys])
+            try data.write(to: networkFilterStatusURL, options: .atomic)
+        } catch {
+            appendLog("failed to persist network filter status: \(error.localizedDescription)")
+        }
+    }
+
     private func refreshNetworkFilterStatus() {
         if !isNetworkFilterExtensionInstalled() {
             networkFilterAvailable = false
             networkFilterLoaded = false
             networkFilterEnabled = false
             networkFilterLastError = "filter extension is not bundled in Cleanroom.app"
+            persistNetworkFilterStatusSnapshot()
             refreshUI()
             return
         }
@@ -582,6 +615,7 @@ final class CleanroomMenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate
                 self.networkFilterEnabled = manager?.isEnabled ?? false
                 self.networkFilterLastError = nil
             }
+            self.persistNetworkFilterStatusSnapshot()
             self.refreshUI()
         }
     }
