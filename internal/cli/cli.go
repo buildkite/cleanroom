@@ -978,12 +978,14 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 
 	stdinFD := int(os.Stdin.Fd())
 	rawMode := false
+	normalizeRawTTYOutput := false
 	if term.IsTerminal(stdinFD) {
 		oldState, rawErr := term.MakeRaw(stdinFD)
 		if rawErr != nil {
 			logger.Warn("failed to enter raw mode", "error", rawErr)
 		} else {
 			rawMode = true
+			normalizeRawTTYOutput = shouldNormalizeRawTTYOutput(command)
 			defer func() {
 				_ = term.Restore(stdinFD, oldState)
 			}()
@@ -1073,7 +1075,7 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 		switch payload := frame.Payload.(type) {
 		case *cleanroomv1.ExecutionAttachFrame_Stdout:
 			chunk := payload.Stdout
-			if rawMode {
+			if rawMode && normalizeRawTTYOutput {
 				chunk, stdoutEndedCR = normalizeLineEndingsForRawTTY(chunk, stdoutEndedCR)
 			}
 			if _, err := ctx.Stdout.Write(chunk); err != nil {
@@ -1081,7 +1083,7 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 			}
 		case *cleanroomv1.ExecutionAttachFrame_Stderr:
 			chunk := payload.Stderr
-			if rawMode {
+			if rawMode && normalizeRawTTYOutput {
 				chunk, stderrEndedCR = normalizeLineEndingsForRawTTY(chunk, stderrEndedCR)
 			}
 			if _, err := os.Stderr.Write(chunk); err != nil {
@@ -1130,6 +1132,19 @@ func normalizeLineEndingsForRawTTY(chunk []byte, prevEndedCR bool) ([]byte, bool
 		endedCR = b == '\r'
 	}
 	return out, endedCR
+}
+
+func shouldNormalizeRawTTYOutput(command []string) bool {
+	if len(command) == 0 {
+		return true
+	}
+	executable := strings.ToLower(strings.TrimSpace(filepath.Base(command[0])))
+	switch executable {
+	case "ash", "bash", "csh", "dash", "fish", "ksh", "sh", "tcsh", "zsh":
+		return true
+	default:
+		return false
+	}
 }
 
 func (c *TLSInitCommand) Run(ctx *runtimeContext) error {

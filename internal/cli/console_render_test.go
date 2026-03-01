@@ -29,3 +29,28 @@ func TestNormalizeLineEndingsForRawTTYPreservesCRLFAcrossChunks(t *testing.T) {
 		t.Fatal("expected endedCR=false after second chunk")
 	}
 }
+
+func TestShouldNormalizeRawTTYOutputTrueForShells(t *testing.T) {
+	for _, command := range [][]string{
+		{"sh"},
+		{"bash"},
+		{"/bin/zsh"},
+		{"ash", "-lc", "echo hi"},
+	} {
+		if !shouldNormalizeRawTTYOutput(command) {
+			t.Fatalf("expected normalization enabled for command %v", command)
+		}
+	}
+}
+
+func TestShouldNormalizeRawTTYOutputFalseForTUIs(t *testing.T) {
+	for _, command := range [][]string{
+		{"codex"},
+		{"/usr/local/bin/codex", "--yolo"},
+		{"vim"},
+	} {
+		if shouldNormalizeRawTTYOutput(command) {
+			t.Fatalf("expected normalization disabled for command %v", command)
+		}
+	}
+}
