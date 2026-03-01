@@ -2,8 +2,10 @@ package controlservice
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -113,7 +115,28 @@ const (
 	attachResizeRegistrationWait       = 250 * time.Millisecond
 	attachPollInterval                 = 10 * time.Millisecond
 	defaultDownloadMaxBytes      int64 = 10 * 1024 * 1024
+
+	networkFilterPolicyPathEnv    = "CLEANROOM_NETWORK_FILTER_POLICY_PATH"
+	networkFilterTargetProcessEnv = "CLEANROOM_NETWORK_FILTER_TARGET_PROCESS"
+	networkFilterPolicySchema     = 1
+	networkFilterActionAllow      = "allow"
+	networkFilterActionDeny       = "deny"
+	stoppedSandboxStatus          = cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPED
+	terminatingSandboxStatus      = cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPING
 )
+
+type networkFilterPolicySnapshot struct {
+	Version           int                            `json:"version"`
+	UpdatedAt         string                         `json:"updated_at"`
+	DefaultAction     string                         `json:"default_action"`
+	TargetProcessPath string                         `json:"target_process_path,omitempty"`
+	Allow             []networkFilterPolicyAllowRule `json:"allow"`
+}
+
+type networkFilterPolicyAllowRule struct {
+	Host  string `json:"host"`
+	Ports []int  `json:"ports"`
+}
 
 func (s *Service) CreateSandbox(ctx context.Context, req *cleanroomv1.CreateSandboxRequest) (*cleanroomv1.CreateSandboxResponse, error) {
 	if req == nil {
@@ -177,6 +200,7 @@ func (s *Service) CreateSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 		Message: "sandbox created and ready",
 	}
 	s.mu.Unlock()
+	s.SyncNetworkFilterPolicy()
 
 	if s.Logger != nil {
 		s.Logger.Info("sandbox created",
@@ -400,6 +424,7 @@ func (s *Service) TerminateSandbox(ctx context.Context, req *cleanroomv1.Termina
 	}
 	s.pruneStateLocked(now)
 	s.mu.Unlock()
+	s.SyncNetworkFilterPolicy()
 
 	resp := &cleanroomv1.TerminateSandboxResponse{
 		SandboxId:  sandboxID,
@@ -1166,6 +1191,119 @@ func (s *Service) ensureMapsLocked() {
 	if s.executions == nil {
 		s.executions = map[string]*executionState{}
 	}
+}
+
+// SyncNetworkFilterPolicy writes a snapshot that can be consumed by the macOS
+// Network Extension provider. It is a no-op when the policy path environment
+// variable is not configured.
+func (s *Service) SyncNetworkFilterPolicy() {
+	policyPath := strings.TrimSpace(os.Getenv(networkFilterPolicyPathEnv))
+	if policyPath == "" {
+		return
+	}
+	targetProcessPath := strings.TrimSpace(os.Getenv(networkFilterTargetProcessEnv))
+	snapshot := s.buildNetworkFilterPolicySnapshot(targetProcessPath)
+	if err := writeNetworkFilterPolicySnapshot(policyPath, snapshot); err != nil {
+		if s.Logger != nil {
+			s.Logger.Warn("failed to sync network filter policy snapshot", "path", policyPath, "error", err)
+		}
+		return
+	}
+	if s.Logger != nil {
+		s.Logger.Debug("synced network filter policy snapshot", "path", policyPath, "allow_rules", len(snapshot.Allow))
+	}
+}
+
+func (s *Service) buildNetworkFilterPolicySnapshot(targetProcessPath string) networkFilterPolicySnapshot {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rules := make(map[string]map[int]struct{})
+	defaultAction := networkFilterActionAllow
+
+	for _, sb := range s.sandboxes {
+		if sb == nil || sb.Policy == nil {
+			continue
+		}
+		if sb.Status == stoppedSandboxStatus || sb.Status == terminatingSandboxStatus {
+			continue
+		}
+		if strings.TrimSpace(strings.ToLower(sb.Policy.NetworkDefault)) != networkFilterActionDeny {
+			continue
+		}
+		defaultAction = networkFilterActionDeny
+		for _, allow := range sb.Policy.Allow {
+			host := strings.TrimSpace(strings.ToLower(allow.Host))
+			if host == "" {
+				continue
+			}
+			if len(allow.Ports) == 0 {
+				continue
+			}
+			ports, ok := rules[host]
+			if !ok {
+				ports = make(map[int]struct{}, len(allow.Ports))
+				rules[host] = ports
+			}
+			for _, port := range allow.Ports {
+				if port < 1 || port > 65535 {
+					continue
+				}
+				ports[port] = struct{}{}
+			}
+		}
+	}
+
+	allow := make([]networkFilterPolicyAllowRule, 0, len(rules))
+	for host, portSet := range rules {
+		ports := make([]int, 0, len(portSet))
+		for port := range portSet {
+			ports = append(ports, port)
+		}
+		sort.Ints(ports)
+		allow = append(allow, networkFilterPolicyAllowRule{
+			Host:  host,
+			Ports: ports,
+		})
+	}
+	sort.Slice(allow, func(i, j int) bool {
+		return allow[i].Host < allow[j].Host
+	})
+
+	return networkFilterPolicySnapshot{
+		Version:           networkFilterPolicySchema,
+		UpdatedAt:         time.Now().UTC().Format(time.RFC3339Nano),
+		DefaultAction:     defaultAction,
+		TargetProcessPath: strings.TrimSpace(targetProcessPath),
+		Allow:             allow,
+	}
+}
+
+func writeNetworkFilterPolicySnapshot(path string, snapshot networkFilterPolicySnapshot) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create network filter policy directory: %w", err)
+	}
+
+	data, err := json.MarshalIndent(snapshot, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal network filter policy snapshot: %w", err)
+	}
+	data = append(data, '\n')
+
+	tempPath := path + ".tmp"
+	if err := os.WriteFile(tempPath, data, 0o644); err != nil {
+		return fmt.Errorf("write network filter policy snapshot temp file: %w", err)
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		_ = os.Remove(tempPath)
+		return fmt.Errorf("rename network filter policy snapshot into place: %w", err)
+	}
+	return nil
 }
 
 func (s *Service) mergeBufferedResultOutputLocked(ex *executionState, result *backend.RunResult, usedStreaming bool) {
