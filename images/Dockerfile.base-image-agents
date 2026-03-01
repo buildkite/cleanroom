@@ -30,7 +30,7 @@ RUN ln -sf /root/.local/share/mise/shims/codex /usr/local/bin/codex \
 
 ENV PATH="/root/.local/share/mise/shims:${PATH}"
 
-RUN node --version && npm --version && python3 --version \
+RUN mise --version && node --version && npm --version && python3 --version \
   && PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" codex --version \
   && PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" claude --version \
   && PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" gemini --version
