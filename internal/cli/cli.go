@@ -1301,7 +1301,7 @@ func uninstallLaunchdDaemon(stdout io.Writer) error {
 		return fmt.Errorf("service file %s does not exist", serveInstallLaunchdPath)
 	}
 
-	if err := serveInstallRunCommand("launchctl", "bootout", "system/"+launchdServiceName); err != nil {
+	if err := serveInstallRunCommand("launchctl", "bootout", "system/"+launchdServiceName); err != nil && !isExitError(err) {
 		return fmt.Errorf("bootout launchd service %s: %w", launchdServiceName, err)
 	}
 
