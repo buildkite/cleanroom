@@ -95,10 +95,7 @@ func handleConnTTY(conn io.ReadWriteCloser, dec *json.Decoder, req vsockexec.Exe
 	if req.Dir != "" {
 		cmd.Dir = req.Dir
 	}
-	env := buildCommandEnv(req.Env)
-	if !envHasKey(env, "TERM") {
-		env = append(env, "TERM=xterm-256color")
-	}
+	env := ensureTTYTERM(buildCommandEnv(req.Env))
 	cmd.Env = env
 
 	// When the host-side attach resize arrives late, a non-interactive launcher
@@ -254,6 +251,32 @@ func envHasKey(env []string, key string) bool {
 		}
 	}
 	return false
+}
+
+func ensureTTYTERM(env []string) []string {
+	for i, entry := range env {
+		key, value, ok := splitEnvEntry(entry)
+		if !ok || key != "TERM" {
+			continue
+		}
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" || strings.EqualFold(trimmed, "dumb") || strings.EqualFold(trimmed, "linux") {
+			env[i] = "TERM=xterm-256color"
+		}
+		return env
+	}
+	return append(env, "TERM=xterm-256color")
+}
+
+func splitEnvEntry(entry string) (key, value string, ok bool) {
+	parts := strings.SplitN(entry, "=", 2)
+	if len(parts) == 0 || strings.TrimSpace(parts[0]) == "" {
+		return "", "", false
+	}
+	if len(parts) == 1 {
+		return parts[0], "", true
+	}
+	return parts[0], parts[1], true
 }
 
 type frameSender struct {
