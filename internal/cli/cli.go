@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -892,9 +893,14 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 		}
 		return fmt.Errorf("open interactive execution: %w", err)
 	}
+	controlEndpoint, err := endpoint.Resolve(c.Host)
+	if err != nil {
+		return err
+	}
+	quicEndpoint := resolveInteractiveDialEndpoint(controlEndpoint, openResp.GetQuicEndpoint())
 	interactiveSession, err := interactivequic.Dial(
 		context.Background(),
-		openResp.GetQuicEndpoint(),
+		quicEndpoint,
 		openResp.GetAlpn(),
 		openResp.GetServerCertPinSha256(),
 		openResp.GetSessionId(),
@@ -1473,12 +1479,7 @@ func resolveInteractiveQUICEndpoint(ep endpoint.Endpoint) (listenAddr, advertise
 		normalizedHost = "0.0.0.0"
 	}
 
-	advertiseHost = host
-	switch strings.TrimSpace(advertiseHost) {
-	case "", "0.0.0.0", "::", "[::]":
-		advertiseHost = "127.0.0.1"
-	}
-
+	advertiseHost = strings.TrimSpace(host)
 	return net.JoinHostPort(normalizedHost, port), advertiseHost
 }
 
@@ -1494,11 +1495,65 @@ func interactiveAdvertiseEndpoint(listenerAddr net.Addr, advertiseHost string) s
 	if targetHost == "" {
 		targetHost = host
 	}
-	switch targetHost {
-	case "", "0.0.0.0", "::", "[::]":
-		targetHost = "127.0.0.1"
-	}
 	return net.JoinHostPort(targetHost, port)
+}
+
+func resolveInteractiveDialEndpoint(controlEP endpoint.Endpoint, quicEndpoint string) string {
+	quicEndpoint = strings.TrimSpace(quicEndpoint)
+	if quicEndpoint == "" {
+		return quicEndpoint
+	}
+	quicHost, quicPort, err := net.SplitHostPort(quicEndpoint)
+	if err != nil || strings.TrimSpace(quicPort) == "" {
+		return quicEndpoint
+	}
+	if !isWildcardOrLoopbackHost(quicHost) {
+		return quicEndpoint
+	}
+
+	controlHost := resolveEndpointDialHost(controlEP)
+	if controlHost == "" || isWildcardHost(controlHost) {
+		return quicEndpoint
+	}
+	return net.JoinHostPort(controlHost, quicPort)
+}
+
+func resolveEndpointDialHost(ep endpoint.Endpoint) string {
+	if ep.Scheme == "unix" {
+		return ""
+	}
+	baseURL := strings.TrimSpace(ep.BaseURL)
+	if baseURL == "" {
+		return ""
+	}
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(parsed.Hostname())
+}
+
+func isWildcardOrLoopbackHost(host string) bool {
+	return isWildcardHost(host) || isLoopbackHost(host)
+}
+
+func isWildcardHost(host string) bool {
+	host = strings.TrimSpace(strings.Trim(host, "[]"))
+	switch host {
+	case "", "0.0.0.0", "::":
+		return true
+	default:
+		return false
+	}
+}
+
+func isLoopbackHost(host string) bool {
+	host = strings.TrimSpace(strings.Trim(host, "[]"))
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func (d *DoctorCommand) Run(ctx *runtimeContext) error {
