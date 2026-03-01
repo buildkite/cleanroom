@@ -1,44 +1,54 @@
 version: 2
 
 builds:
-  - id: cleanroom
+  - id: cleanroom-linux
     main: ./cmd/cleanroom
     binary: cleanroom
-    env:
-      - CGO_ENABLED=0
-    goos: [linux, darwin]
-    goarch: [amd64, arm64]
-    ldflags:
-      - -s -w -X main.version={{.Version}}
-
-  - id: cleanroom-guest-agent
-    main: ./cmd/cleanroom-guest-agent
-    binary: cleanroom-guest-agent
     env:
       - CGO_ENABLED=0
     goos: [linux]
     goarch: [amd64, arm64]
     ldflags:
-      - -s -w
+      - -s -w -X main.version={{.Version}}
+
+  - id: cleanroom-darwin
+    main: ./cmd/cleanroom
+    binary: cleanroom
+    env:
+      - CGO_ENABLED=0
+    goos: [darwin]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w -X main.version={{.Version}}
 
 archives:
-  - id: cleanroom
-    ids: [cleanroom]
+  - id: cleanroom-linux
+    ids: [cleanroom-linux]
     formats: [tar.gz]
     name_template: >-
       {{ .Binary }}_
       {{- title .Os }}_
       {{- if eq .Arch "amd64" }}x86_64
       {{- else }}{{ .Arch }}{{ end }}
+    files:
+      - src: release-extra/linux_{{ .Arch }}/cleanroom-guest-agent
+        strip_parent: true
 
-  - id: cleanroom-guest-agent
-    ids: [cleanroom-guest-agent]
+  - id: cleanroom-darwin
+    ids: [cleanroom-darwin]
     formats: [tar.gz]
     name_template: >-
       {{ .Binary }}_
       {{- title .Os }}_
       {{- if eq .Arch "amd64" }}x86_64
       {{- else }}{{ .Arch }}{{ end }}
+    files:
+      - src: release-extra/linux_{{ .Arch }}/cleanroom-guest-agent
+        strip_parent: true
+      - src: release-extra/darwin_{{ .Arch }}/cleanroom-darwin-vz
+        strip_parent: true
+      - src: release-extra/darwin_{{ .Arch }}/entitlements.plist
+        strip_parent: true
 
 checksum:
   name_template: "checksums.txt"

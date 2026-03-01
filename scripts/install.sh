@@ -24,10 +24,10 @@ Usage:
 Examples:
   curl -fsSL https://raw.githubusercontent.com/buildkite/cleanroom/main/scripts/install.sh | bash
   curl -fsSL https://raw.githubusercontent.com/buildkite/cleanroom/main/scripts/install.sh | \
-    bash -s -- --version v0.1.0
+    bash -s -- --version vX.Y.Z
 
 Environment variables:
-  CLEANROOM_VERSION               Optional release version (example: v0.1.0)
+  CLEANROOM_VERSION               Optional release version (example: vX.Y.Z)
   CLEANROOM_INSTALL_DIR           Install destination (default: /usr/local/bin)
   CLEANROOM_REPO                  GitHub repo in owner/repo format (default: buildkite/cleanroom)
   CLEANROOM_INSTALL_DARWIN_HELPER Set to 0 to skip cleanroom-darwin-vz install on macOS
@@ -63,30 +63,6 @@ download() {
   fi
 }
 
-download_optional() {
-  local url="$1"
-  local dest="$2"
-  local http_code
-
-  if ! http_code=$(curl -sSL --retry 3 --connect-timeout 10 -w '%{http_code}' -o "$dest" "$url"); then
-    return 2
-  fi
-
-  case "$http_code" in
-    404)
-      rm -f "$dest"
-      return 4
-      ;;
-    2*)
-      return 0
-      ;;
-    *)
-      rm -f "$dest"
-      return 3
-      ;;
-  esac
-}
-
 normalize_version() {
   local raw="$1"
   if [ -z "$raw" ] || [ "$raw" = "latest" ]; then
@@ -120,24 +96,6 @@ verify_asset_against_checksums() {
   local expected actual
 
   expected=$(lookup_checksum "$asset" "$checksums_file")
-  actual=$(sha256_file "$asset_path")
-
-  if [ "$expected" != "$actual" ]; then
-    die "checksum mismatch for ${asset}"
-  fi
-}
-
-verify_asset_against_sha_file() {
-  local asset="$1"
-  local asset_path="$2"
-  local sha_file="$3"
-  local expected actual
-
-  expected=$(awk 'NR==1 { print $1 }' "$sha_file")
-  if [ -z "$expected" ]; then
-    die "could not read expected checksum from ${sha_file}"
-  fi
-
   actual=$(sha256_file "$asset_path")
 
   if [ "$expected" != "$actual" ]; then
@@ -263,51 +221,26 @@ verify_asset_against_checksums "$CLEANROOM_ASSET" "$CLEANROOM_ARCHIVE_PATH" "$CH
 CLEANROOM_EXTRACT_DIR="${WORK_DIR}/cleanroom"
 extract_binary "$CLEANROOM_ARCHIVE_PATH" "$CLEANROOM_EXTRACT_DIR"
 [ -f "${CLEANROOM_EXTRACT_DIR}/cleanroom" ] || die "cleanroom binary missing in ${CLEANROOM_ASSET}"
+[ -f "${CLEANROOM_EXTRACT_DIR}/cleanroom-guest-agent" ] || die "cleanroom-guest-agent missing in ${CLEANROOM_ASSET}"
 
 prepare_install_dir
 install_binary "${CLEANROOM_EXTRACT_DIR}/cleanroom" "${INSTALL_DIR}/cleanroom"
+install_binary "${CLEANROOM_EXTRACT_DIR}/cleanroom-guest-agent" "${INSTALL_DIR}/cleanroom-guest-agent"
 
 if [ "$HOST_OS" = "Darwin" ] && [ "$INSTALL_DARWIN_HELPER" != "0" ]; then
-  HELPER_ASSET="cleanroom-darwin-vz_Darwin_${HOST_ARCH}.tar.gz"
-  HELPER_ARCHIVE_PATH="${WORK_DIR}/${HELPER_ASSET}"
-  HELPER_SHA_PATH="${WORK_DIR}/${HELPER_ASSET}.sha256"
+  require_cmd codesign
+  [ -f "${CLEANROOM_EXTRACT_DIR}/cleanroom-darwin-vz" ] || die "cleanroom-darwin-vz missing in ${CLEANROOM_ASSET}"
+  [ -f "${CLEANROOM_EXTRACT_DIR}/entitlements.plist" ] || die "entitlements.plist missing in ${CLEANROOM_ASSET}"
 
-  helper_download_status=0
-  download_optional "${RELEASE_BASE}/${HELPER_ASSET}" "$HELPER_ARCHIVE_PATH" || helper_download_status=$?
-
-  if [ "$helper_download_status" -eq 0 ]; then
-    require_cmd codesign
-
-    helper_sha_download_status=0
-    download_optional "${RELEASE_BASE}/${HELPER_ASSET}.sha256" "$HELPER_SHA_PATH" || helper_sha_download_status=$?
-
-    if [ "$helper_sha_download_status" -eq 0 ]; then
-      verify_asset_against_sha_file "$HELPER_ASSET" "$HELPER_ARCHIVE_PATH" "$HELPER_SHA_PATH"
-    elif [ "$helper_sha_download_status" -eq 4 ]; then
-      warn "${HELPER_ASSET}.sha256 not found; continuing without helper checksum verification"
-    else
-      die "failed to download ${RELEASE_BASE}/${HELPER_ASSET}.sha256"
-    fi
-
-    HELPER_EXTRACT_DIR="${WORK_DIR}/darwin-helper"
-    extract_binary "$HELPER_ARCHIVE_PATH" "$HELPER_EXTRACT_DIR"
-
-    [ -f "${HELPER_EXTRACT_DIR}/cleanroom-darwin-vz" ] || die "cleanroom-darwin-vz missing in ${HELPER_ASSET}"
-    [ -f "${HELPER_EXTRACT_DIR}/entitlements.plist" ] || die "entitlements.plist missing in ${HELPER_ASSET}"
-
-    install_binary "${HELPER_EXTRACT_DIR}/cleanroom-darwin-vz" "${INSTALL_DIR}/cleanroom-darwin-vz"
-    "${SUDO_CMD[@]}" codesign --force --sign - \
-      --entitlements "${HELPER_EXTRACT_DIR}/entitlements.plist" \
-      "${INSTALL_DIR}/cleanroom-darwin-vz"
-    DARWIN_HELPER_INSTALLED=1
-  elif [ "$helper_download_status" -eq 4 ]; then
-    warn "${HELPER_ASSET} not found in release; skipping cleanroom-darwin-vz install"
-  else
-    die "failed to download ${RELEASE_BASE}/${HELPER_ASSET}"
-  fi
+  install_binary "${CLEANROOM_EXTRACT_DIR}/cleanroom-darwin-vz" "${INSTALL_DIR}/cleanroom-darwin-vz"
+  "${SUDO_CMD[@]}" codesign --force --sign - \
+    --entitlements "${CLEANROOM_EXTRACT_DIR}/entitlements.plist" \
+    "${INSTALL_DIR}/cleanroom-darwin-vz"
+  DARWIN_HELPER_INSTALLED=1
 fi
 
 log "Installed cleanroom to ${INSTALL_DIR}/cleanroom"
+log "Installed cleanroom-guest-agent to ${INSTALL_DIR}/cleanroom-guest-agent"
 if [ "$DARWIN_HELPER_INSTALLED" = "1" ]; then
   log "Installed cleanroom-darwin-vz to ${INSTALL_DIR}/cleanroom-darwin-vz"
 fi
