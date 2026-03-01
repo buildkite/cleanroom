@@ -119,6 +119,22 @@ func TestAgentCodexPassesThroughArgs(t *testing.T) {
 	}
 }
 
+func TestAgentCodexParsesImageOverrideAndPassthroughArgs(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	imageRef := "ghcr.io/buildkite/cleanroom-base/alpine-agents@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+	if _, err := parser.Parse([]string{"agent", "codex", "--image", imageRef, "--yolo"}); err != nil {
+		t.Fatalf("parse agent codex with image override returned error: %v", err)
+	}
+	if got, want := c.Agent.Codex.Image, imageRef; got != want {
+		t.Fatalf("unexpected image override: got %q want %q", got, want)
+	}
+	if got, want := strings.Join(c.Agent.Codex.Args, " "), "--yolo"; got != want {
+		t.Fatalf("unexpected codex args: got %q want %q", got, want)
+	}
+}
+
 func TestServeCommandParsesWithoutAction(t *testing.T) {
 	c := &CLI{}
 	parser := newParserForTest(t, c)

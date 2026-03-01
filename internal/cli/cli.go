@@ -133,6 +133,7 @@ type AgentCodexCommand struct {
 	Chdir     string `short:"c" help:"Change to this directory before running commands"`
 	Backend   string `help:"Execution backend (defaults to runtime config or firecracker)"`
 	SandboxID string `help:"Reuse an existing sandbox instead of creating a new one"`
+	Image     string `help:"Override sandbox image ref for newly created sandboxes (digest-pinned OCI ref)"`
 
 	LaunchSeconds int64 `help:"VM boot/guest-agent readiness timeout in seconds"`
 
@@ -198,6 +199,7 @@ type ConsoleCommand struct {
 	Chdir     string `short:"c" help:"Change to this directory before running commands"`
 	Backend   string `help:"Execution backend (defaults to runtime config or firecracker)"`
 	SandboxID string `help:"Reuse an existing sandbox instead of creating a new one"`
+	Image     string `help:"Override sandbox image ref for newly created sandboxes (digest-pinned OCI ref)"`
 	Remove    bool   `name:"rm" help:"Terminate the sandbox after console exits"`
 
 	LaunchSeconds int64 `help:"VM boot/guest-agent readiness timeout in seconds"`
@@ -708,6 +710,7 @@ func (a *AgentCodexCommand) Run(ctx *runtimeContext) error {
 		Chdir:         a.Chdir,
 		Backend:       a.Backend,
 		SandboxID:     a.SandboxID,
+		Image:         a.Image,
 		LaunchSeconds: a.LaunchSeconds,
 		Command:       command,
 	}
@@ -736,7 +739,7 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 		"command_argc", len(e.Command),
 	)
 	sandboxCreated := strings.TrimSpace(e.SandboxID) == ""
-	sandboxID, err := ensureSandboxID(client, ctx.Loader, cwd, e.Backend, strings.TrimSpace(e.SandboxID), e.LaunchSeconds)
+	sandboxID, err := ensureSandboxID(client, ctx.Loader, cwd, e.Backend, strings.TrimSpace(e.SandboxID), "", e.LaunchSeconds)
 	if err != nil {
 		return err
 	}
@@ -916,7 +919,7 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 		"sandbox_id", strings.TrimSpace(c.SandboxID),
 		"command_argc", len(command),
 	)
-	sandboxID, err := ensureSandboxID(client, ctx.Loader, cwd, c.Backend, strings.TrimSpace(c.SandboxID), c.LaunchSeconds)
+	sandboxID, err := ensureSandboxID(client, ctx.Loader, cwd, c.Backend, strings.TrimSpace(c.SandboxID), c.Image, c.LaunchSeconds)
 	if err != nil {
 		return err
 	}
@@ -1804,15 +1807,33 @@ func inspectRun(stdout *os.File, baseDir, runID string) error {
 	return err
 }
 
-func ensureSandboxID(client *controlclient.Client, loader policyLoader, cwd, backendName, existingSandboxID string, launchSeconds int64) (string, error) {
+func ensureSandboxID(client *controlclient.Client, loader policyLoader, cwd, backendName, existingSandboxID, imageRefOverride string, launchSeconds int64) (string, error) {
 	sandboxID := strings.TrimSpace(existingSandboxID)
+	imageRefOverride = strings.TrimSpace(imageRefOverride)
 	if sandboxID != "" {
+		if imageRefOverride != "" {
+			return "", errors.New("--image cannot be used with --sandbox-id")
+		}
 		return sandboxID, nil
 	}
 
 	compiled, _, err := loader.LoadAndCompile(cwd)
 	if err != nil {
 		return "", err
+	}
+	if imageRefOverride != "" {
+		parsedRef, err := ociref.ParseDigestReference(imageRefOverride)
+		if err != nil {
+			return "", fmt.Errorf("invalid --image value: %w", err)
+		}
+		pb := compiled.ToProto()
+		pb.ImageRef = parsedRef.Original
+		pb.ImageDigest = parsedRef.Digest()
+		pb.Hash = ""
+		compiled, err = policy.FromProto(pb)
+		if err != nil {
+			return "", fmt.Errorf("apply --image override: %w", err)
+		}
 	}
 	createSandboxResp, err := client.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
 		Backend: backendName,

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/buildkite/cleanroom/internal/backend"
@@ -15,6 +16,8 @@ import (
 	"github.com/buildkite/cleanroom/internal/endpoint"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 )
+
+const testAgentImageOverrideRef = "ghcr.io/buildkite/cleanroom-base/alpine-agents@sha256:1111111111111111111111111111111111111111111111111111111111111111"
 
 func runAgentCodexWithCapture(cmd AgentCodexCommand, stdinData string, ctx runtimeContext) execOutcome {
 	tmpDir, err := os.MkdirTemp("", "cleanroom-agent-codex-test-*")
@@ -177,5 +180,71 @@ func TestAgentCodexIntegrationPassesArgsToCodex(t *testing.T) {
 	}
 	if got, want := gotCommand, []string{"codex", "exec", "--yolo", "fix lint failures"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("unexpected command: got %v want %v", got, want)
+	}
+}
+
+func TestAgentCodexIntegrationOverridesImageRefForCreatedSandbox(t *testing.T) {
+	var gotImageRef string
+	adapter := &integrationAdapter{
+		runStreamFn: func(_ context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+			if req.Policy == nil {
+				return nil, errors.New("expected policy on run request")
+			}
+			gotImageRef = req.Policy.ImageRef
+			return &backend.RunResult{
+				RunID:    req.RunID,
+				ExitCode: 0,
+				Message:  "ok",
+			}, nil
+		},
+	}
+
+	host, _ := startIntegrationServer(t, adapter)
+	cwd := t.TempDir()
+	outcome := runAgentCodexWithCapture(AgentCodexCommand{
+		clientFlags: clientFlags{Host: host},
+		Chdir:       cwd,
+		Image:       testAgentImageOverrideRef,
+	}, "", runtimeContext{
+		CWD:    cwd,
+		Loader: integrationLoader{},
+	})
+
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err != nil {
+		t.Fatalf("AgentCodexCommand.Run returned error: %v", outcome.err)
+	}
+	if got, want := gotImageRef, testAgentImageOverrideRef; got != want {
+		t.Fatalf("unexpected image ref: got %q want %q", got, want)
+	}
+}
+
+func TestAgentCodexIntegrationRejectsImageOverrideWhenSandboxProvided(t *testing.T) {
+	adapter := &integrationAdapter{}
+	host, _ := startIntegrationServer(t, adapter)
+	client := mustNewControlClient(t, host)
+	sandboxID := mustCreateSandbox(t, client)
+
+	cwd := t.TempDir()
+	outcome := runAgentCodexWithCapture(AgentCodexCommand{
+		clientFlags: clientFlags{Host: host},
+		Chdir:       cwd,
+		SandboxID:   sandboxID,
+		Image:       testAgentImageOverrideRef,
+	}, "", runtimeContext{
+		CWD:    cwd,
+		Loader: integrationLoader{},
+	})
+
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err == nil {
+		t.Fatal("expected AgentCodexCommand.Run to fail when both --sandbox-id and --image are set")
+	}
+	if got, want := outcome.err.Error(), "--image cannot be used with --sandbox-id"; !strings.Contains(got, want) {
+		t.Fatalf("expected error to contain %q, got %q", want, got)
 	}
 }
