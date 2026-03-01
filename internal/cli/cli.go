@@ -211,6 +211,9 @@ type ServeCommand struct {
 	LogLevel      string `help:"Server log level (debug|info|warn|error)"`
 	TLSCert       string `help:"Path to TLS server certificate (auto-discovered from XDG config for https)" env:"CLEANROOM_TLS_CERT"`
 	TLSKey        string `help:"Path to TLS server private key (auto-discovered from XDG config for https)" env:"CLEANROOM_TLS_KEY"`
+	TLSCA         string `name:"tls-ca" aliases:"tlsca" help:"Path to CA certificate for client verification (auto-discovered from XDG config for https)" env:"CLEANROOM_TLS_CA"`
+	version       string
+}
 }
 
 type StatusCommand struct {
@@ -222,6 +225,7 @@ type DoctorCommand struct {
 	Chdir   string `short:"c" help:"Change to this directory before running commands"`
 	Backend string `help:"Execution backend to diagnose (defaults to runtime config or firecracker)"`
 	JSON    bool   `help:"Print doctor report as JSON"`
+	version string
 }
 
 type SandboxCommand struct {
@@ -337,6 +341,8 @@ func Run(args []string, version string) error {
 
 	cli := CLI{}
 	cli.Version.version = version
+	cli.Serve.version = version
+	cli.Doctor.version = version
 	parser, err := kong.New(
 		&cli,
 		kong.Name("cleanroom"),
@@ -1576,21 +1582,10 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 	if err != nil {
 		return err
 	}
+	header := buildServeStartupHeader(ctx, ep, s.GatewayListen, s.LogLevel, s.version)
+	cleanroomVersion := normalizeVersion(s.version)
 	if shouldShowStartupHeader(os.Stderr) {
-		gatewayListen := strings.TrimSpace(s.GatewayListen)
-		if gatewayListen == "" {
-			gatewayListen = fmt.Sprintf(":%d", gateway.DefaultPort)
-		}
-		if err := writeStartupHeader(os.Stderr, startupHeader{
-			Title: "cleanroom serve",
-			Fields: []startupField{
-				{Key: "workspace", Value: ctx.CWD},
-				{Key: "listen", Value: endpointDisplay(ep)},
-				{Key: "gateway_listen", Value: gatewayListen},
-				{Key: "runtime_config", Value: ctx.ConfigPath},
-				{Key: "log_level", Value: effectiveLogLevel(s.LogLevel)},
-			},
-		}, shouldUseANSI(os.Stderr)); err != nil {
+		if err := writeStartupHeader(os.Stderr, header, shouldUseANSI(os.Stderr)); err != nil {
 			return err
 		}
 	}
@@ -1600,11 +1595,12 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 		return err
 	}
 	log.SetDefault(logger)
+	logger.Info("cleanroom server starting", "version", cleanroomVersion)
 
 	gwRegistry := gateway.NewRegistry()
 	gwCredentials := gateway.NewEnvCredentialProvider()
 	gwServer := gateway.NewServer(gateway.ServerConfig{
-		ListenAddr:  s.GatewayListen,
+		ListenAddr:  strings.TrimSpace(s.GatewayListen),
 		Registry:    gwRegistry,
 		Credentials: gwCredentials,
 		Logger:      logger.With("subsystem", "gateway"),
@@ -1802,6 +1798,7 @@ func (d *DoctorCommand) Run(ctx *runtimeContext) error {
 	routeSummary := strings.Join(gwRoutes, ", ")
 
 	checks := []backend.DoctorCheck{
+		{Name: "cleanroom_version", Status: "pass", Message: fmt.Sprintf("cleanroom version %s", normalizeVersion(d.version))},
 		{Name: "runtime_config", Status: "pass", Message: fmt.Sprintf("using runtime config path %s", ctx.ConfigPath)},
 		{Name: "backend", Status: "pass", Message: fmt.Sprintf("selected backend %s", backendName)},
 		{
@@ -1871,9 +1868,10 @@ func (d *DoctorCommand) Run(ctx *runtimeContext) error {
 
 	if d.JSON {
 		payload := map[string]any{
-			"backend":      backendName,
-			"capabilities": backend.CloneCapabilities(capabilities),
-			"checks":       checks,
+			"backend":           backendName,
+			"cleanroom_version": normalizeVersion(d.version),
+			"capabilities":      backend.CloneCapabilities(capabilities),
+			"checks":            checks,
 			"gateway": map[string]any{
 				"default_listen":   gateway.DefaultListenAddr,
 				"default_port":     gateway.DefaultPort,
@@ -1898,6 +1896,33 @@ func resolveBackendName(requested, configuredDefault string) string {
 		return configuredDefault
 	}
 	return "firecracker"
+}
+
+func buildServeStartupHeader(ctx *runtimeContext, ep endpoint.Endpoint, gatewayListen, logLevel, version string) startupHeader {
+	normalizedGatewayListen := strings.TrimSpace(gatewayListen)
+	if normalizedGatewayListen == "" {
+		normalizedGatewayListen = fmt.Sprintf(":%d", gateway.DefaultPort)
+	}
+
+	return startupHeader{
+		Title: "cleanroom serve",
+		Fields: []startupField{
+			{Key: "version", Value: normalizeVersion(version)},
+			{Key: "workspace", Value: ctx.CWD},
+			{Key: "listen", Value: endpointDisplay(ep)},
+			{Key: "gateway_listen", Value: normalizedGatewayListen},
+			{Key: "runtime_config", Value: ctx.ConfigPath},
+			{Key: "log_level", Value: effectiveLogLevel(logLevel)},
+		},
+	}
+}
+
+func normalizeVersion(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "dev"
+	}
+	return trimmed
 }
 
 func shouldInstallGatewayFirewall(goos string) bool {
