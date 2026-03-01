@@ -17,6 +17,7 @@ service SandboxService {
 
 service ExecutionService {
   rpc CreateExecution(CreateExecutionRequest) returns (CreateExecutionResponse);
+  rpc OpenInteractiveExecution(OpenInteractiveExecutionRequest) returns (OpenInteractiveExecutionResponse);
   rpc GetExecution(GetExecutionRequest) returns (GetExecutionResponse);
   rpc CancelExecution(CancelExecutionRequest) returns (CancelExecutionResponse);
   rpc StreamExecution(StreamExecutionRequest) returns (stream ExecutionStreamEvent);
@@ -143,6 +144,7 @@ message Execution {
   google.protobuf.Timestamp finished_at = 7;
   bool tty = 8;
   string run_id = 9;
+  ExecutionKind kind = 10;
 }
 
 enum ExecutionStatus {
@@ -153,6 +155,12 @@ enum ExecutionStatus {
   EXECUTION_STATUS_FAILED = 4;
   EXECUTION_STATUS_CANCELED = 5;
   EXECUTION_STATUS_TIMED_OUT = 6;
+}
+
+enum ExecutionKind {
+  EXECUTION_KIND_UNSPECIFIED = 0;
+  EXECUTION_KIND_BATCH = 1;
+  EXECUTION_KIND_INTERACTIVE = 2;
 }
 
 message ExecutionOptions {
@@ -166,10 +174,24 @@ message CreateExecutionRequest {
   string sandbox_id = 1;
   repeated string command = 2;
   ExecutionOptions options = 3;
+  ExecutionKind kind = 4;
 }
 
 message CreateExecutionResponse {
   Execution execution = 1;
+}
+
+message OpenInteractiveExecutionRequest {
+  string sandbox_id = 1;
+  string execution_id = 2;
+  uint32 initial_cols = 3;
+  uint32 initial_rows = 4;
+}
+
+message OpenInteractiveExecutionResponse {
+  string session_id = 1;
+  string session_token = 2;
+  google.protobuf.Timestamp expires_at = 3;
 }
 
 message GetExecutionRequest {

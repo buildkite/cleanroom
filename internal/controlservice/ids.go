@@ -28,6 +28,10 @@ func newRunID() string {
 	return newID("run")
 }
 
+func newInteractiveSessionID() string {
+	return newID("isess")
+}
+
 func newID(prefix string) string {
 	id, err := generateTypeID(prefix)
 	if err == nil && strings.TrimSpace(id) != "" {

@@ -2,6 +2,8 @@ package controlservice
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -25,9 +27,10 @@ type Service struct {
 	Backends map[string]backend.Adapter
 	Logger   *log.Logger
 
-	mu         sync.RWMutex
-	sandboxes  map[string]*sandboxState
-	executions map[string]*executionState
+	mu                  sync.RWMutex
+	sandboxes           map[string]*sandboxState
+	executions          map[string]*executionState
+	interactiveSessions map[string]*interactiveSessionState
 }
 
 type sandboxState struct {
@@ -57,6 +60,7 @@ type executionState struct {
 	Command          []string
 	Options          executionOptions
 	TTY              bool
+	Kind             cleanroomv1.ExecutionKind
 	Status           cleanroomv1.ExecutionStatus
 	ExitCode         int32
 	StartedAt        *time.Time
@@ -77,6 +81,16 @@ type executionState struct {
 	NextSubID        int
 	Done             chan struct{}
 	DoneClosed       bool
+}
+
+type interactiveSessionState struct {
+	SessionID   string
+	SandboxID   string
+	ExecutionID string
+	Token       string
+	ExpiresAt   time.Time
+	InitialCols uint32
+	InitialRows uint32
 }
 
 type loader interface {
@@ -115,6 +129,7 @@ const (
 	attachStdinRegistrationWait        = 2 * time.Second
 	attachResizeRegistrationWait       = 250 * time.Millisecond
 	attachPollInterval                 = 10 * time.Millisecond
+	interactiveSessionTokenTTL         = 30 * time.Second
 	defaultDownloadMaxBytes      int64 = 10 * 1024 * 1024
 )
 
@@ -433,6 +448,13 @@ func (s *Service) CreateExecution(_ context.Context, req *cleanroomv1.CreateExec
 		}
 		tty = opts.GetTty()
 	}
+	kind, err := resolveExecutionKind(req.GetKind(), tty)
+	if err != nil {
+		return nil, err
+	}
+	if kind == cleanroomv1.ExecutionKind_EXECUTION_KIND_INTERACTIVE {
+		tty = true
+	}
 
 	now := time.Now().UTC()
 	executionID := newExecutionID()
@@ -479,6 +501,7 @@ func (s *Service) CreateExecution(_ context.Context, req *cleanroomv1.CreateExec
 		Command:          append([]string(nil), command...),
 		Options:          execOpts,
 		TTY:              tty,
+		Kind:             kind,
 		Status:           cleanroomv1.ExecutionStatus_EXECUTION_STATUS_QUEUED,
 		EventSubscribers: map[int]chan *cleanroomv1.ExecutionStreamEvent{},
 		Done:             make(chan struct{}),
@@ -507,9 +530,68 @@ func (s *Service) CreateExecution(_ context.Context, req *cleanroomv1.CreateExec
 			"execution_id", executionID,
 			"command_argc", len(command),
 			"tty", tty,
+			"kind", kind.String(),
 		)
 	}
 	return resp, nil
+}
+
+func (s *Service) OpenInteractiveExecution(_ context.Context, req *cleanroomv1.OpenInteractiveExecutionRequest) (*cleanroomv1.OpenInteractiveExecutionResponse, error) {
+	if req == nil {
+		return nil, errors.New("missing request")
+	}
+	sandboxID := strings.TrimSpace(req.GetSandboxId())
+	executionID := strings.TrimSpace(req.GetExecutionId())
+	if sandboxID == "" {
+		return nil, errors.New("missing sandbox_id")
+	}
+	if executionID == "" {
+		return nil, errors.New("missing execution_id")
+	}
+
+	now := time.Now().UTC()
+	token, err := newSessionToken()
+	if err != nil {
+		return nil, fmt.Errorf("generate session token: %w", err)
+	}
+	sessionID := newInteractiveSessionID()
+	expiresAt := now.Add(interactiveSessionTokenTTL)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	ex, ok := s.executions[executionKey(sandboxID, executionID)]
+	if !ok {
+		return nil, fmt.Errorf("unknown execution %q in sandbox %q", executionID, sandboxID)
+	}
+	if ex.Kind != cleanroomv1.ExecutionKind_EXECUTION_KIND_INTERACTIVE {
+		return nil, fmt.Errorf("execution %q is not interactive", executionID)
+	}
+	if isFinalExecutionStatus(ex.Status) {
+		return nil, fmt.Errorf("execution %q is no longer active", executionID)
+	}
+
+	s.ensureMapsLocked()
+	for id, session := range s.interactiveSessions {
+		if session == nil || now.After(session.ExpiresAt) {
+			delete(s.interactiveSessions, id)
+		}
+	}
+	s.interactiveSessions[sessionID] = &interactiveSessionState{
+		SessionID:   sessionID,
+		SandboxID:   sandboxID,
+		ExecutionID: executionID,
+		Token:       token,
+		ExpiresAt:   expiresAt,
+		InitialCols: req.GetInitialCols(),
+		InitialRows: req.GetInitialRows(),
+	}
+
+	return &cleanroomv1.OpenInteractiveExecutionResponse{
+		SessionId:    sessionID,
+		SessionToken: token,
+		ExpiresAt:    timestamppb.New(expiresAt),
+	}, nil
 }
 
 func (s *Service) GetExecution(_ context.Context, req *cleanroomv1.GetExecutionRequest) (*cleanroomv1.GetExecutionResponse, error) {
@@ -1087,6 +1169,9 @@ func (s *Service) ensureMapsLocked() {
 	if s.executions == nil {
 		s.executions = map[string]*executionState{}
 	}
+	if s.interactiveSessions == nil {
+		s.interactiveSessions = map[string]*interactiveSessionState{}
+	}
 }
 
 func (s *Service) mergeBufferedResultOutputLocked(ex *executionState, result *backend.RunResult, usedStreaming bool) {
@@ -1483,6 +1568,7 @@ func cloneExecutionLocked(state *executionState) *cleanroomv1.Execution {
 		ExitCode:    state.ExitCode,
 		Tty:         state.TTY,
 		RunId:       state.RunID,
+		Kind:        state.Kind,
 	}
 	if state.StartedAt != nil {
 		out.StartedAt = timestamppb.New(*state.StartedAt)
@@ -1491,6 +1577,31 @@ func cloneExecutionLocked(state *executionState) *cleanroomv1.Execution {
 		out.FinishedAt = timestamppb.New(*state.FinishedAt)
 	}
 	return out
+}
+
+func resolveExecutionKind(kind cleanroomv1.ExecutionKind, tty bool) (cleanroomv1.ExecutionKind, error) {
+	if kind == cleanroomv1.ExecutionKind_EXECUTION_KIND_UNSPECIFIED {
+		if tty {
+			return cleanroomv1.ExecutionKind_EXECUTION_KIND_INTERACTIVE, nil
+		}
+		return cleanroomv1.ExecutionKind_EXECUTION_KIND_BATCH, nil
+	}
+	switch kind {
+	case cleanroomv1.ExecutionKind_EXECUTION_KIND_BATCH:
+		return kind, nil
+	case cleanroomv1.ExecutionKind_EXECUTION_KIND_INTERACTIVE:
+		return kind, nil
+	default:
+		return cleanroomv1.ExecutionKind_EXECUTION_KIND_UNSPECIFIED, fmt.Errorf("unsupported execution kind %q", kind.String())
+	}
+}
+
+func newSessionToken() (string, error) {
+	buf := make([]byte, 24)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(buf), nil
 }
 
 func (s *Service) recordSandboxEventLocked(sb *sandboxState, status cleanroomv1.SandboxStatus, message string) {
