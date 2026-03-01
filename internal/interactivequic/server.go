@@ -261,6 +261,19 @@ func (s *Server) readControlLoop(ctx context.Context, decoder *json.Decoder, ses
 		switch msg.Type {
 		case controlTypeResize:
 			if err := s.service.ResizeExecutionTTY(session.SandboxID, session.ExecutionID, msg.Cols, msg.Rows); err != nil {
+				if errors.Is(err, controlservice.ErrExecutionResizeUnsupported) {
+					if s.logger != nil {
+						s.logger.Debug(
+							"ignoring unsupported interactive resize request",
+							"session_id", session.SessionID,
+							"sandbox_id", session.SandboxID,
+							"execution_id", session.ExecutionID,
+							"cols", msg.Cols,
+							"rows", msg.Rows,
+						)
+					}
+					continue
+				}
 				errCh <- err
 				return
 			}
