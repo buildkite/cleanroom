@@ -22,8 +22,17 @@ RUN mise use -g --pin \
   npm:@anthropic-ai/claude-code@"${CLAUDE_CODE_VERSION}" \
   npm:@google/gemini-cli@"${GEMINI_CLI_VERSION}"
 
+# Ensure agent binaries are available on the default PATH even when OCI env
+# metadata is not propagated.
+RUN ln -sf /root/.local/share/mise/shims/codex /usr/local/bin/codex \
+  && ln -sf /root/.local/share/mise/shims/claude /usr/local/bin/claude \
+  && ln -sf /root/.local/share/mise/shims/gemini /usr/local/bin/gemini
+
 ENV PATH="/root/.local/share/mise/shims:${PATH}"
 
-RUN node --version && npm --version && python3 --version && codex --version && claude --version && gemini --version
+RUN node --version && npm --version && python3 --version \
+  && PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" codex --version \
+  && PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" claude --version \
+  && PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" gemini --version
 
 CMD ["/bin/sh"]
