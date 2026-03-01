@@ -7,6 +7,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/buildkite/cleanroom/internal/endpoint"
 )
 
 func TestShouldInstallGatewayFirewall(t *testing.T) {
@@ -373,5 +375,68 @@ func TestJoinSystemdExecArgsQuotesSingleQuoteArgs(t *testing.T) {
 
 	if !strings.Contains(joined, "\"/etc/cleanroom/bob's-ca.pem\"") {
 		t.Fatalf("expected single-quote arg to be quoted, got: %q", joined)
+	}
+}
+
+func TestBuildServeStartupHeaderIncludesVersion(t *testing.T) {
+	ctx := &runtimeContext{
+		CWD:        "/tmp/repo",
+		ConfigPath: "/tmp/config.yaml",
+	}
+	ep := endpoint.Endpoint{
+		Scheme:  "unix",
+		Address: "/tmp/cleanroom.sock",
+	}
+
+	header := buildServeStartupHeader(ctx, ep, "", "debug", "v1.2.3")
+
+	if got, want := header.Title, "cleanroom serve"; got != want {
+		t.Fatalf("header title = %q, want %q", got, want)
+	}
+
+	values := map[string]string{}
+	for _, field := range header.Fields {
+		values[field.Key] = field.Value
+	}
+
+	if got, want := values["version"], "v1.2.3"; got != want {
+		t.Fatalf("version field = %q, want %q", got, want)
+	}
+	if got, want := values["workspace"], "/tmp/repo"; got != want {
+		t.Fatalf("workspace field = %q, want %q", got, want)
+	}
+	if got, want := values["listen"], "unix:///tmp/cleanroom.sock"; got != want {
+		t.Fatalf("listen field = %q, want %q", got, want)
+	}
+	if got, want := values["gateway_listen"], ":8170"; got != want {
+		t.Fatalf("gateway_listen field = %q, want %q", got, want)
+	}
+	if got, want := values["runtime_config"], "/tmp/config.yaml"; got != want {
+		t.Fatalf("runtime_config field = %q, want %q", got, want)
+	}
+	if got, want := values["log_level"], "debug"; got != want {
+		t.Fatalf("log_level field = %q, want %q", got, want)
+	}
+}
+
+func TestBuildServeStartupHeaderDefaultsVersionToDev(t *testing.T) {
+	ctx := &runtimeContext{CWD: "/tmp/repo", ConfigPath: "/tmp/config.yaml"}
+	ep := endpoint.Endpoint{Scheme: "unix", Address: "/tmp/cleanroom.sock"}
+
+	header := buildServeStartupHeader(ctx, ep, ":9999", "", "  ")
+
+	values := map[string]string{}
+	for _, field := range header.Fields {
+		values[field.Key] = field.Value
+	}
+
+	if got, want := values["version"], "dev"; got != want {
+		t.Fatalf("version field = %q, want %q", got, want)
+	}
+	if got, want := values["log_level"], "info"; got != want {
+		t.Fatalf("log_level field = %q, want %q", got, want)
+	}
+	if got, want := values["gateway_listen"], ":9999"; got != want {
+		t.Fatalf("gateway_listen field = %q, want %q", got, want)
 	}
 }

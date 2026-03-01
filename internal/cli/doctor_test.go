@@ -83,10 +83,11 @@ func TestDoctorCommandJSONIncludesCapabilities(t *testing.T) {
 	}
 
 	var payload struct {
-		Backend      string                `json:"backend"`
-		Capabilities map[string]bool       `json:"capabilities"`
-		Checks       []backend.DoctorCheck `json:"checks"`
-		Gateway      struct {
+		Backend          string                `json:"backend"`
+		CleanroomVersion string                `json:"cleanroom_version"`
+		Capabilities     map[string]bool       `json:"capabilities"`
+		Checks           []backend.DoctorCheck `json:"checks"`
+		Gateway          struct {
 			DefaultListen   string   `json:"default_listen"`
 			DefaultPort     int      `json:"default_port"`
 			Routes          []string `json:"routes"`
@@ -99,6 +100,9 @@ func TestDoctorCommandJSONIncludesCapabilities(t *testing.T) {
 
 	if payload.Backend != "doctor-test" {
 		t.Fatalf("unexpected backend: got %q", payload.Backend)
+	}
+	if payload.CleanroomVersion != "dev" {
+		t.Fatalf("unexpected cleanroom version: got %q", payload.CleanroomVersion)
 	}
 	if payload.Capabilities == nil {
 		t.Fatal("expected capabilities map in doctor JSON")
@@ -166,6 +170,9 @@ func TestDoctorCommandTextUsesPolishedPlainOutput(t *testing.T) {
 	out := readStdout()
 	if !strings.Contains(out, "doctor report (doctor-test)") {
 		t.Fatalf("expected doctor report title, got: %q", out)
+	}
+	if !strings.Contains(out, "cleanroom_version: cleanroom version dev") {
+		t.Fatalf("expected version check line, got: %q", out)
 	}
 	if !strings.Contains(out, "✓ [pass] runtime_config:") {
 		t.Fatalf("expected pass check line, got: %q", out)
