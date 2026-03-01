@@ -28,6 +28,8 @@ func (s *testInteractiveService) ConsumeInteractiveSession(sessionID, token stri
 	return nil, errors.New("not implemented")
 }
 
+func (s *testInteractiveService) ReleaseInteractiveExecution(sandboxID, executionID string) {}
+
 func (s *testInteractiveService) WriteExecutionStdin(sandboxID, executionID string, data []byte) error {
 	return nil
 }
@@ -145,6 +147,9 @@ func TestShouldFailInteractiveOnStdinErr(t *testing.T) {
 	}
 	if shouldFailInteractiveOnStdinErr(io.EOF) {
 		t.Fatal("expected io.EOF stdin error not to fail session")
+	}
+	if shouldFailInteractiveOnStdinErr(controlservice.ErrExecutionStdinUnsupported) {
+		t.Fatal("expected ErrExecutionStdinUnsupported stdin error not to fail session")
 	}
 	if !shouldFailInteractiveOnStdinErr(errors.New("stdin write failed")) {
 		t.Fatal("expected non-EOF stdin error to fail session")

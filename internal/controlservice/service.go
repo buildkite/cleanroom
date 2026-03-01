@@ -31,6 +31,7 @@ type Service struct {
 	sandboxes           map[string]*sandboxState
 	executions          map[string]*executionState
 	interactiveSessions map[string]*interactiveSessionState
+	interactiveAttached map[string]struct{}
 	interactiveEndpoint string
 	interactiveALPN     string
 	interactiveCertPin  string
@@ -587,10 +588,13 @@ func (s *Service) OpenInteractiveExecution(_ context.Context, req *cleanroomv1.O
 	}
 
 	s.ensureMapsLocked()
-	for id, session := range s.interactiveSessions {
-		if session == nil || now.After(session.ExpiresAt) {
-			delete(s.interactiveSessions, id)
-		}
+	s.pruneExpiredInteractiveSessionsLocked(now)
+	execKey := executionKey(sandboxID, executionID)
+	if _, attached := s.interactiveAttached[execKey]; attached {
+		return nil, fmt.Errorf("execution %q already has an active interactive session", executionID)
+	}
+	if s.hasPendingInteractiveSessionLocked(execKey) {
+		return nil, fmt.Errorf("execution %q already has a pending interactive session", executionID)
 	}
 	s.interactiveSessions[sessionID] = &interactiveSessionState{
 		SessionID:   sessionID,
@@ -636,11 +640,7 @@ func (s *Service) ConsumeInteractiveSession(sessionID, token string) (*Interacti
 	defer s.mu.Unlock()
 	s.ensureMapsLocked()
 
-	for key, session := range s.interactiveSessions {
-		if session == nil || now.After(session.ExpiresAt) {
-			delete(s.interactiveSessions, key)
-		}
-	}
+	s.pruneExpiredInteractiveSessionsLocked(now)
 
 	session, ok := s.interactiveSessions[id]
 	if !ok || session == nil {
@@ -663,8 +663,13 @@ func (s *Service) ConsumeInteractiveSession(sessionID, token string) (*Interacti
 		delete(s.interactiveSessions, id)
 		return nil, fmt.Errorf("execution %q is no longer active", session.ExecutionID)
 	}
+	if _, attached := s.interactiveAttached[execKey]; attached {
+		delete(s.interactiveSessions, id)
+		return nil, fmt.Errorf("execution %q already has an active interactive session", session.ExecutionID)
+	}
 
 	delete(s.interactiveSessions, id)
+	s.interactiveAttached[execKey] = struct{}{}
 	return &InteractiveSession{
 		SessionID:   session.SessionID,
 		SandboxID:   session.SandboxID,
@@ -672,6 +677,19 @@ func (s *Service) ConsumeInteractiveSession(sessionID, token string) (*Interacti
 		InitialCols: session.InitialCols,
 		InitialRows: session.InitialRows,
 	}, nil
+}
+
+func (s *Service) ReleaseInteractiveExecution(sandboxID, executionID string) {
+	sandboxID = strings.TrimSpace(sandboxID)
+	executionID = strings.TrimSpace(executionID)
+	if sandboxID == "" || executionID == "" {
+		return
+	}
+	execKey := executionKey(sandboxID, executionID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ensureMapsLocked()
+	delete(s.interactiveAttached, execKey)
 }
 
 func (s *Service) GetExecution(_ context.Context, req *cleanroomv1.GetExecutionRequest) (*cleanroomv1.GetExecutionResponse, error) {
@@ -1252,6 +1270,32 @@ func (s *Service) ensureMapsLocked() {
 	if s.interactiveSessions == nil {
 		s.interactiveSessions = map[string]*interactiveSessionState{}
 	}
+	if s.interactiveAttached == nil {
+		s.interactiveAttached = map[string]struct{}{}
+	}
+}
+
+func (s *Service) pruneExpiredInteractiveSessionsLocked(now time.Time) {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	for id, session := range s.interactiveSessions {
+		if session == nil || now.After(session.ExpiresAt) {
+			delete(s.interactiveSessions, id)
+		}
+	}
+}
+
+func (s *Service) hasPendingInteractiveSessionLocked(execKey string) bool {
+	for _, session := range s.interactiveSessions {
+		if session == nil {
+			continue
+		}
+		if executionKey(session.SandboxID, session.ExecutionID) == execKey {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) mergeBufferedResultOutputLocked(ex *executionState, result *backend.RunResult, usedStreaming bool) {
@@ -1436,6 +1480,7 @@ func (s *Service) dropExecutionLocked(key string, ex *executionState) {
 	}
 	closeExecutionSubscribersLocked(ex)
 	closeExecutionDoneLocked(ex)
+	s.clearInteractiveExecutionStateLocked(key)
 	delete(s.executions, key)
 }
 
@@ -1765,8 +1810,22 @@ func (s *Service) finalizeExecutionInternalLocked(ex *executionState, status cle
 		OccurredAt: timestamppb.New(finished),
 	})
 	closeExecutionDoneLocked(ex)
+	s.clearInteractiveExecutionStateLocked(executionKey(ex.SandboxID, ex.ID))
 	if prune {
 		s.pruneStateLocked(finished)
+	}
+}
+
+func (s *Service) clearInteractiveExecutionStateLocked(execKey string) {
+	delete(s.interactiveAttached, execKey)
+	for id, session := range s.interactiveSessions {
+		if session == nil {
+			delete(s.interactiveSessions, id)
+			continue
+		}
+		if executionKey(session.SandboxID, session.ExecutionID) == execKey {
+			delete(s.interactiveSessions, id)
+		}
 	}
 }
 

@@ -19,6 +19,7 @@ const DefaultALPN = "cleanroom-interactive-v1"
 
 type Service interface {
 	ConsumeInteractiveSession(sessionID, token string) (*controlservice.InteractiveSession, error)
+	ReleaseInteractiveExecution(sandboxID, executionID string)
 	WriteExecutionStdin(sandboxID, executionID string, data []byte) error
 	ResizeExecutionTTY(sandboxID, executionID string, cols, rows uint32) error
 	CancelExecution(ctx context.Context, req *cleanroomv1.CancelExecutionRequest) (*cleanroomv1.CancelExecutionResponse, error)
@@ -146,6 +147,7 @@ func (s *Server) handleConnection(ctx context.Context, conn *quic.Conn) {
 		_ = sendControl(controlMessage{Type: controlTypeError, Error: err.Error()})
 		return
 	}
+	defer s.releaseInteractiveExecution(session)
 	if err := s.applyInitialTTYSize(session); err != nil {
 		_ = sendControl(controlMessage{Type: controlTypeError, Error: err.Error()})
 		return
@@ -341,7 +343,11 @@ func isIgnorableInteractiveResizeErr(err error) bool {
 }
 
 func shouldFailInteractiveOnStdinErr(err error) bool {
-	return err != nil && !errors.Is(err, io.EOF)
+	return err != nil && !errors.Is(err, io.EOF) && !isRetryableInteractiveStdinErr(err)
+}
+
+func isRetryableInteractiveStdinErr(err error) bool {
+	return errors.Is(err, controlservice.ErrExecutionStdinUnsupported)
 }
 
 func isInteractiveAcceptClosedErr(err error) bool {
@@ -358,7 +364,20 @@ func (s *Server) readStdinLoop(session *controlservice.InteractiveSession, strea
 	for {
 		n, err := stream.Read(buf)
 		if n > 0 {
-			if writeErr := s.service.WriteExecutionStdin(session.SandboxID, session.ExecutionID, append([]byte(nil), buf[:n]...)); writeErr != nil {
+			payload := append([]byte(nil), buf[:n]...)
+			if writeErr := s.service.WriteExecutionStdin(session.SandboxID, session.ExecutionID, payload); writeErr != nil {
+				if isRetryableInteractiveStdinErr(writeErr) {
+					if s.logger != nil {
+						s.logger.Debug(
+							"ignoring transient interactive stdin attach error",
+							"session_id", session.SessionID,
+							"sandbox_id", session.SandboxID,
+							"execution_id", session.ExecutionID,
+							"error", writeErr,
+						)
+					}
+					continue
+				}
 				errCh <- writeErr
 				return
 			}
@@ -368,6 +387,13 @@ func (s *Server) readStdinLoop(session *controlservice.InteractiveSession, strea
 			return
 		}
 	}
+}
+
+func (s *Server) releaseInteractiveExecution(session *controlservice.InteractiveSession) {
+	if s == nil || s.service == nil || session == nil {
+		return
+	}
+	s.service.ReleaseInteractiveExecution(session.SandboxID, session.ExecutionID)
 }
 
 func (s *Server) forwardEventToPTY(event *cleanroomv1.ExecutionStreamEvent, stream *quic.SendStream) bool {
