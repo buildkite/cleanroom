@@ -195,42 +195,6 @@ cleanroom exec --backend darwin-vz -- npm test
 - **Transport:** unix socket (default), [HTTPS with mTLS](docs/tls.md), or [Tailscale](docs/remote-access.md)
 - **RPC services:** `cleanroom.v1.SandboxService`, `cleanroom.v1.ExecutionService` ([API design](docs/api.md))
 
-## Go client
-
-Use `github.com/buildkite/cleanroom/client` from external Go modules.
-
-```go
-import (
-  "context"
-  "os"
-
-  "github.com/buildkite/cleanroom/client"
-)
-
-func example() error {
-  c := client.Must(client.NewFromEnv())
-
-  sb, err := c.EnsureSandbox(context.Background(), "thread:abc123", client.EnsureSandboxOptions{
-    Backend: "firecracker",
-    Policy: client.PolicyFromAllowlist(
-      "ghcr.io/buildkite/cleanroom-base/alpine@sha256:...",
-      "sha256:...",
-      client.Allow("api.github.com", 443),
-      client.Allow("registry.npmjs.org", 443),
-    ),
-  })
-  if err != nil { return err }
-
-  result, err := c.ExecAndWait(context.Background(), sb.ID, []string{"bash", "-lc", "echo hello"}, client.ExecOptions{
-    Stdout: os.Stdout,
-    Stderr: os.Stderr,
-  })
-  if err != nil { return err }
-  _ = result
-  return nil
-}
-```
-
 ## Images
 
 Cleanroom uses digest-pinned OCI images as sandbox bases. Images are pulled from any OCI registry and materialized into ext4 rootfs files for the VM backend.
