@@ -192,6 +192,9 @@ message OpenInteractiveExecutionResponse {
   string session_id = 1;
   string session_token = 2;
   google.protobuf.Timestamp expires_at = 3;
+  string quic_endpoint = 4;
+  string alpn = 5;
+  string server_cert_pin_sha256 = 6;
 }
 
 message GetExecutionRequest {

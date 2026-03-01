@@ -1539,12 +1539,15 @@ func (x *OpenInteractiveExecutionRequest) GetInitialRows() uint32 {
 }
 
 type OpenInteractiveExecutionResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
-	SessionToken  string                 `protobuf:"bytes,2,opt,name=session_token,json=sessionToken,proto3" json:"session_token,omitempty"`
-	ExpiresAt     *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state               protoimpl.MessageState `protogen:"open.v1"`
+	SessionId           string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	SessionToken        string                 `protobuf:"bytes,2,opt,name=session_token,json=sessionToken,proto3" json:"session_token,omitempty"`
+	ExpiresAt           *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`
+	QuicEndpoint        string                 `protobuf:"bytes,4,opt,name=quic_endpoint,json=quicEndpoint,proto3" json:"quic_endpoint,omitempty"`
+	Alpn                string                 `protobuf:"bytes,5,opt,name=alpn,proto3" json:"alpn,omitempty"`
+	ServerCertPinSha256 string                 `protobuf:"bytes,6,opt,name=server_cert_pin_sha256,json=serverCertPinSha256,proto3" json:"server_cert_pin_sha256,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *OpenInteractiveExecutionResponse) Reset() {
@@ -1596,6 +1599,27 @@ func (x *OpenInteractiveExecutionResponse) GetExpiresAt() *timestamppb.Timestamp
 		return x.ExpiresAt
 	}
 	return nil
+}
+
+func (x *OpenInteractiveExecutionResponse) GetQuicEndpoint() string {
+	if x != nil {
+		return x.QuicEndpoint
+	}
+	return ""
+}
+
+func (x *OpenInteractiveExecutionResponse) GetAlpn() string {
+	if x != nil {
+		return x.Alpn
+	}
+	return ""
+}
+
+func (x *OpenInteractiveExecutionResponse) GetServerCertPinSha256() string {
+	if x != nil {
+		return x.ServerCertPinSha256
+	}
+	return ""
 }
 
 type GetExecutionRequest struct {
@@ -2679,13 +2703,16 @@ const file_proto_cleanroom_v1_control_proto_rawDesc = "" +
 	"sandbox_id\x18\x01 \x01(\tR\tsandboxId\x12!\n" +
 	"\fexecution_id\x18\x02 \x01(\tR\vexecutionId\x12!\n" +
 	"\finitial_cols\x18\x03 \x01(\rR\vinitialCols\x12!\n" +
-	"\finitial_rows\x18\x04 \x01(\rR\vinitialRows\"\xa1\x01\n" +
+	"\finitial_rows\x18\x04 \x01(\rR\vinitialRows\"\x8f\x02\n" +
 	" OpenInteractiveExecutionResponse\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12#\n" +
 	"\rsession_token\x18\x02 \x01(\tR\fsessionToken\x129\n" +
 	"\n" +
-	"expires_at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\texpiresAt\"W\n" +
+	"expires_at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\texpiresAt\x12#\n" +
+	"\rquic_endpoint\x18\x04 \x01(\tR\fquicEndpoint\x12\x12\n" +
+	"\x04alpn\x18\x05 \x01(\tR\x04alpn\x123\n" +
+	"\x16server_cert_pin_sha256\x18\x06 \x01(\tR\x13serverCertPinSha256\"W\n" +
 	"\x13GetExecutionRequest\x12\x1d\n" +
 	"\n" +
 	"sandbox_id\x18\x01 \x01(\tR\tsandboxId\x12!\n" +

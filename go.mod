@@ -11,6 +11,7 @@ require (
 	github.com/firecracker-microvm/firecracker-go-sdk v1.0.0
 	github.com/google/go-containerregistry v0.20.2
 	github.com/mdlayher/vsock v1.2.1
+	github.com/quic-go/quic-go v0.54.1
 	go.jetify.com/typeid v1.3.0
 	golang.org/x/net v0.38.0
 	golang.org/x/sys v0.32.0
@@ -54,9 +55,13 @@ require (
 	github.com/sirupsen/logrus v1.9.3 // indirect
 	github.com/vbatts/tar-split v0.11.6 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
+	go.uber.org/mock v0.5.0 // indirect
+	golang.org/x/crypto v0.36.0 // indirect
 	golang.org/x/exp v0.0.0-20250106191152-7588d65b2ba8 // indirect
+	golang.org/x/mod v0.22.0 // indirect
 	golang.org/x/sync v0.12.0 // indirect
 	golang.org/x/text v0.23.0 // indirect
+	golang.org/x/tools v0.29.0 // indirect
 	gotest.tools/v3 v3.4.0 // indirect
 	modernc.org/gc/v3 v3.0.0-20240107210532-573471604cb6 // indirect
 	modernc.org/libc v1.55.3 // indirect

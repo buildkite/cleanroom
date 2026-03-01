@@ -1622,6 +1622,7 @@ func TestOpenInteractiveExecutionRejectsBatchExecution(t *testing.T) {
 		},
 	}
 	svc := newTestService(adapter)
+	svc.ConfigureInteractiveTransport("127.0.0.1:4433", "cleanroom-interactive-v1", "abc123")
 
 	sandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
 	if err != nil {
@@ -1672,6 +1673,7 @@ func TestOpenInteractiveExecutionReturnsSessionToken(t *testing.T) {
 		},
 	}
 	svc := newTestService(adapter)
+	svc.ConfigureInteractiveTransport("127.0.0.1:4433", "cleanroom-interactive-v1", "abc123")
 
 	sandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
 	if err != nil {
@@ -1710,12 +1712,87 @@ func TestOpenInteractiveExecutionReturnsSessionToken(t *testing.T) {
 	if openResp.GetExpiresAt() == nil {
 		t.Fatal("expected expires_at")
 	}
+	if got, want := openResp.GetQuicEndpoint(), "127.0.0.1:4433"; got != want {
+		t.Fatalf("unexpected quic endpoint: got %q want %q", got, want)
+	}
+	if got, want := openResp.GetAlpn(), "cleanroom-interactive-v1"; got != want {
+		t.Fatalf("unexpected alpn: got %q want %q", got, want)
+	}
+	if got, want := openResp.GetServerCertPinSha256(), "abc123"; got != want {
+		t.Fatalf("unexpected cert pin: got %q want %q", got, want)
+	}
 	if !openResp.GetExpiresAt().AsTime().After(time.Now().UTC()) {
 		t.Fatalf("expected expires_at in the future, got %v", openResp.GetExpiresAt().AsTime())
 	}
 
 	close(release)
 	if _, err := svc.WaitExecution(context.Background(), sandboxID, executionID); err != nil {
+		t.Fatalf("WaitExecution returned error: %v", err)
+	}
+}
+
+func TestConsumeInteractiveSessionIsSingleUse(t *testing.T) {
+	release := make(chan struct{})
+	adapter := &stubAdapter{
+		runFn: func(ctx context.Context, req backend.RunRequest) (*backend.RunResult, error) {
+			select {
+			case <-release:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+			return &backend.RunResult{
+				RunID:      req.RunID,
+				ExitCode:   0,
+				LaunchedVM: false,
+				PlanPath:   "/tmp/plan",
+				RunDir:     "/tmp/run",
+				Message:    "ok",
+			}, nil
+		},
+	}
+	svc := newTestService(adapter)
+	svc.ConfigureInteractiveTransport("127.0.0.1:4433", "cleanroom-interactive-v1", "abc123")
+
+	sandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := sandboxResp.GetSandbox().GetSandboxId()
+
+	execResp, err := svc.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+		SandboxId: sandboxID,
+		Command:   []string{"sh"},
+		Kind:      cleanroomv1.ExecutionKind_EXECUTION_KIND_INTERACTIVE,
+		Options: &cleanroomv1.ExecutionOptions{
+			Tty: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateExecution returned error: %v", err)
+	}
+
+	openResp, err := svc.OpenInteractiveExecution(context.Background(), &cleanroomv1.OpenInteractiveExecutionRequest{
+		SandboxId:   sandboxID,
+		ExecutionId: execResp.GetExecution().GetExecutionId(),
+	})
+	if err != nil {
+		t.Fatalf("OpenInteractiveExecution returned error: %v", err)
+	}
+
+	session, err := svc.ConsumeInteractiveSession(openResp.GetSessionId(), openResp.GetSessionToken())
+	if err != nil {
+		t.Fatalf("ConsumeInteractiveSession returned error: %v", err)
+	}
+	if got, want := session.ExecutionID, execResp.GetExecution().GetExecutionId(); got != want {
+		t.Fatalf("unexpected execution id: got %q want %q", got, want)
+	}
+
+	if _, err := svc.ConsumeInteractiveSession(openResp.GetSessionId(), openResp.GetSessionToken()); err == nil {
+		t.Fatal("expected second ConsumeInteractiveSession call to fail")
+	}
+
+	close(release)
+	if _, err := svc.WaitExecution(context.Background(), sandboxID, execResp.GetExecution().GetExecutionId()); err != nil {
 		t.Fatalf("WaitExecution returned error: %v", err)
 	}
 }

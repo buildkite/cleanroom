@@ -16,7 +16,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 	"text/tabwriter"
 	"time"
@@ -33,6 +32,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/gateway"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/imagemgr"
+	"github.com/buildkite/cleanroom/internal/interactivequic"
 	"github.com/buildkite/cleanroom/internal/ociref"
 	"github.com/buildkite/cleanroom/internal/paths"
 	"github.com/buildkite/cleanroom/internal/policy"
@@ -42,6 +42,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
+	"github.com/quic-go/quic-go"
 	"golang.org/x/term"
 	"gopkg.in/yaml.v3"
 )
@@ -809,29 +810,6 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 	return nil
 }
 
-type attachFrameSender struct {
-	mu          sync.Mutex
-	sandboxID   string
-	executionID string
-	stream      *connect.BidiStreamForClient[cleanroomv1.ExecutionAttachFrame, cleanroomv1.ExecutionAttachFrame]
-}
-
-func (s *attachFrameSender) Send(frame *cleanroomv1.ExecutionAttachFrame) error {
-	if frame == nil {
-		return nil
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if frame.SandboxId == "" {
-		frame.SandboxId = s.sandboxID
-	}
-	if frame.ExecutionId == "" {
-		frame.ExecutionId = s.executionID
-	}
-	return s.stream.Send(frame)
-}
-
 func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 	logger, err := newLogger(c.LogLevel, "client")
 	if err != nil {
@@ -884,26 +862,49 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 	executionID := createExecutionResp.GetExecution().GetExecutionId()
 	logger.Debug("console execution started", "sandbox_id", sandboxID, "execution_id", executionID)
 
-	attachCtx, attachCancel := context.WithCancel(context.Background())
-	defer attachCancel()
-	attach := client.AttachExecution(attachCtx)
-	sender := &attachFrameSender{
-		sandboxID:   sandboxID,
-		executionID: executionID,
-		stream:      attach,
-	}
-	if err := sender.Send(&cleanroomv1.ExecutionAttachFrame{
-		Payload: &cleanroomv1.ExecutionAttachFrame_Open{
-			Open: &cleanroomv1.ExecutionAttachOpen{
-				SandboxId:   sandboxID,
-				ExecutionId: executionID,
-			},
-		},
-	}); err != nil {
-		return fmt.Errorf("open attach stream: %w", err)
-	}
-
 	stdinFD := int(os.Stdin.Fd())
+	initialCols, initialRows := attachTTYSize(stdinFD)
+	openResp, err := client.OpenInteractiveExecution(context.Background(), &cleanroomv1.OpenInteractiveExecutionRequest{
+		SandboxId:   sandboxID,
+		ExecutionId: executionID,
+		InitialCols: initialCols,
+		InitialRows: initialRows,
+	})
+	if err != nil {
+		if isExecutionNoLongerActiveErr(err) {
+			exitCode, haveExitCode, replayErr := replayExecutionHistory(client, sandboxID, executionID, ctx.Stdout, os.Stderr)
+			if replayErr != nil {
+				return fmt.Errorf("open interactive execution: %w", err)
+			}
+			if !haveExitCode {
+				if fetchedExitCode, ok := getFinalExecutionExitCode(client, sandboxID, executionID); ok {
+					exitCode = fetchedExitCode
+					haveExitCode = true
+				}
+			}
+			if !haveExitCode {
+				return errors.New("console stream ended without exit status")
+			}
+			if exitCode != 0 {
+				return exitCodeError{code: exitCode}
+			}
+			return nil
+		}
+		return fmt.Errorf("open interactive execution: %w", err)
+	}
+	interactiveSession, err := interactivequic.Dial(
+		context.Background(),
+		openResp.GetQuicEndpoint(),
+		openResp.GetAlpn(),
+		openResp.GetServerCertPinSha256(),
+		openResp.GetSessionId(),
+		openResp.GetSessionToken(),
+	)
+	if err != nil {
+		return fmt.Errorf("dial interactive execution: %w", err)
+	}
+	defer interactiveSession.Close()
+
 	rawMode := false
 	if term.IsTerminal(stdinFD) {
 		oldState, rawErr := term.MakeRaw(stdinFD)
@@ -915,14 +916,7 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 				_ = term.Restore(stdinFD, oldState)
 			}()
 			if cols, rows, sizeErr := term.GetSize(stdinFD); sizeErr == nil {
-				_ = sender.Send(&cleanroomv1.ExecutionAttachFrame{
-					Payload: &cleanroomv1.ExecutionAttachFrame_Resize{
-						Resize: &cleanroomv1.ExecutionResize{
-							Cols: uint32(cols),
-							Rows: uint32(rows),
-						},
-					},
-				})
+				_ = interactiveSession.SendResize(uint32(cols), uint32(rows))
 			}
 		}
 	}
@@ -941,14 +935,7 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 				if sizeErr != nil {
 					continue
 				}
-				_ = sender.Send(&cleanroomv1.ExecutionAttachFrame{
-					Payload: &cleanroomv1.ExecutionAttachFrame_Resize{
-						Resize: &cleanroomv1.ExecutionResize{
-							Cols: uint32(cols),
-							Rows: uint32(rows),
-						},
-					},
-				})
+				_ = interactiveSession.SendResize(uint32(cols), uint32(rows))
 			}
 		}()
 	}
@@ -959,11 +946,7 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 			if sig == syscall.SIGTERM {
 				num = 15
 			}
-			_ = sender.Send(&cleanroomv1.ExecutionAttachFrame{
-				Payload: &cleanroomv1.ExecutionAttachFrame_Signal{
-					Signal: &cleanroomv1.ExecutionSignal{Signal: num},
-				},
-			})
+			_ = interactiveSession.SendSignal(num)
 		}
 	}()
 
@@ -973,52 +956,85 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 			n, readErr := os.Stdin.Read(buf)
 			if n > 0 {
 				payload := append([]byte(nil), buf[:n]...)
-				if sendErr := sender.Send(&cleanroomv1.ExecutionAttachFrame{
-					Payload: &cleanroomv1.ExecutionAttachFrame_Stdin{Stdin: payload},
-				}); sendErr != nil {
+				if sendErr := interactiveSession.WriteStdin(payload); sendErr != nil {
 					return
 				}
 			}
 			if readErr != nil {
+				_ = interactiveSession.CloseStdin()
 				return
 			}
 		}
 	}()
 
+	exitCodeCh := make(chan int, 1)
+	controlErrCh := make(chan error, 1)
+	go func() {
+		defer close(controlErrCh)
+		for msg := range interactiveSession.Events() {
+			switch msg.Type {
+			case "exit":
+				select {
+				case exitCodeCh <- int(msg.ExitCode):
+				default:
+				}
+				return
+			case "error":
+				if strings.TrimSpace(msg.Error) == "" {
+					continue
+				}
+				controlErrCh <- errors.New(msg.Error)
+				return
+			}
+		}
+		if err, ok := <-interactiveSession.EventErr(); ok && err != nil {
+			controlErrCh <- err
+		}
+	}()
+
 	var exitCode int
 	haveExitCode := false
-	stdoutEndedCR := false
-	stderrEndedCR := false
+	endedCR := false
+	buf := make([]byte, 4096)
 	for {
-		frame, recvErr := attach.Receive()
-		if recvErr != nil {
-			if errors.Is(recvErr, io.EOF) || isCanceledStreamErr(recvErr) {
-				break
-			}
-			return fmt.Errorf("attach execution: %w", recvErr)
-		}
-		switch payload := frame.Payload.(type) {
-		case *cleanroomv1.ExecutionAttachFrame_Stdout:
-			chunk := payload.Stdout
+		n, readErr := interactiveSession.ReadPTY(buf)
+		if n > 0 {
+			chunk := append([]byte(nil), buf[:n]...)
 			if rawMode {
-				chunk, stdoutEndedCR = normalizeLineEndingsForRawTTY(chunk, stdoutEndedCR)
+				chunk, endedCR = normalizeLineEndingsForRawTTY(chunk, endedCR)
 			}
 			if _, err := ctx.Stdout.Write(chunk); err != nil {
 				return err
 			}
-		case *cleanroomv1.ExecutionAttachFrame_Stderr:
-			chunk := payload.Stderr
-			if rawMode {
-				chunk, stderrEndedCR = normalizeLineEndingsForRawTTY(chunk, stderrEndedCR)
-			}
-			if _, err := os.Stderr.Write(chunk); err != nil {
-				return err
-			}
-		case *cleanroomv1.ExecutionAttachFrame_Exit:
-			exitCode = int(payload.Exit.GetExitCode())
+		}
+		select {
+		case code := <-exitCodeCh:
+			exitCode = code
 			haveExitCode = true
-		case *cleanroomv1.ExecutionAttachFrame_Error:
-			_ = payload
+		case controlErr := <-controlErrCh:
+			if controlErr != nil && !isInteractiveStreamClosedErr(controlErr) {
+				return fmt.Errorf("interactive control stream: %w", controlErr)
+			}
+		default:
+		}
+		if readErr != nil {
+			if !isInteractiveStreamClosedErr(readErr) {
+				return fmt.Errorf("interactive pty stream: %w", readErr)
+			}
+			break
+		}
+	}
+
+	if !haveExitCode {
+		select {
+		case code := <-exitCodeCh:
+			exitCode = code
+			haveExitCode = true
+		case controlErr := <-controlErrCh:
+			if controlErr != nil && !isInteractiveStreamClosedErr(controlErr) {
+				return fmt.Errorf("interactive control stream: %w", controlErr)
+			}
+		case <-time.After(2 * time.Second):
 		}
 	}
 
@@ -1416,11 +1432,73 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 
 	runCtx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+	interactiveListen, interactiveHost := resolveInteractiveQUICEndpoint(ep)
+	interactiveServer, err := interactivequic.Start(runCtx, interactiveListen, service, logger.With("subsystem", "interactive-quic"))
+	if err != nil {
+		return fmt.Errorf("start interactive quic server: %w", err)
+	}
+	defer interactiveServer.Close()
+
+	interactiveEndpoint := interactiveAdvertiseEndpoint(interactiveServer.Addr(), interactiveHost)
+	service.ConfigureInteractiveTransport(interactiveEndpoint, interactiveServer.ALPN(), interactiveServer.CertPinSHA256())
+	logger.Info(
+		"interactive QUIC server ready",
+		"listen", interactiveServer.Addr().String(),
+		"endpoint", interactiveEndpoint,
+		"alpn", interactiveServer.ALPN(),
+	)
+
 	runErr := controlserver.Serve(runCtx, ep, server.Handler(), logger, serverTLS)
 	gwStopCtx, gwStopCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer gwStopCancel()
 	_ = gwServer.Stop(gwStopCtx)
 	return runErr
+}
+
+func resolveInteractiveQUICEndpoint(ep endpoint.Endpoint) (listenAddr, advertiseHost string) {
+	if ep.Scheme == "unix" {
+		return "127.0.0.1:0", "127.0.0.1"
+	}
+
+	address := strings.TrimSpace(ep.Address)
+	address = strings.TrimPrefix(address, "http://")
+	address = strings.TrimPrefix(address, "https://")
+	host, port, err := net.SplitHostPort(address)
+	if err != nil || strings.TrimSpace(port) == "" {
+		return "127.0.0.1:0", "127.0.0.1"
+	}
+
+	normalizedHost := host
+	if normalizedHost == "" {
+		normalizedHost = "0.0.0.0"
+	}
+
+	advertiseHost = host
+	switch strings.TrimSpace(advertiseHost) {
+	case "", "0.0.0.0", "::", "[::]":
+		advertiseHost = "127.0.0.1"
+	}
+
+	return net.JoinHostPort(normalizedHost, port), advertiseHost
+}
+
+func interactiveAdvertiseEndpoint(listenerAddr net.Addr, advertiseHost string) string {
+	if listenerAddr == nil {
+		return ""
+	}
+	host, port, err := net.SplitHostPort(listenerAddr.String())
+	if err != nil || strings.TrimSpace(port) == "" {
+		return listenerAddr.String()
+	}
+	targetHost := strings.TrimSpace(advertiseHost)
+	if targetHost == "" {
+		targetHost = host
+	}
+	switch targetHost {
+	case "", "0.0.0.0", "::", "[::]":
+		targetHost = "127.0.0.1"
+	}
+	return net.JoinHostPort(targetHost, port)
 }
 
 func (d *DoctorCommand) Run(ctx *runtimeContext) error {
@@ -1732,6 +1810,40 @@ func getFinalExecutionExitCode(client *controlclient.Client, sandboxID, executio
 	return int(execution.GetExitCode()), true
 }
 
+func replayExecutionHistory(client *controlclient.Client, sandboxID, executionID string, stdout, stderr io.Writer) (int, bool, error) {
+	stream, err := client.StreamExecution(context.Background(), &cleanroomv1.StreamExecutionRequest{
+		SandboxId:   sandboxID,
+		ExecutionId: executionID,
+		Follow:      false,
+	})
+	if err != nil {
+		return 0, false, err
+	}
+
+	exitCode := 0
+	haveExitCode := false
+	for stream.Receive() {
+		event := stream.Msg()
+		switch payload := event.Payload.(type) {
+		case *cleanroomv1.ExecutionStreamEvent_Stdout:
+			if _, err := stdout.Write(payload.Stdout); err != nil {
+				return 0, false, err
+			}
+		case *cleanroomv1.ExecutionStreamEvent_Stderr:
+			if _, err := stderr.Write(payload.Stderr); err != nil {
+				return 0, false, err
+			}
+		case *cleanroomv1.ExecutionStreamEvent_Exit:
+			exitCode = int(payload.Exit.GetExitCode())
+			haveExitCode = true
+		}
+	}
+	if err := stream.Err(); err != nil {
+		return 0, false, err
+	}
+	return exitCode, haveExitCode, nil
+}
+
 func terminateSandboxBestEffort(client *controlclient.Client, sandboxID string, timeout time.Duration, logger *log.Logger, warnMessage string) {
 	if client == nil || strings.TrimSpace(sandboxID) == "" {
 		return
@@ -1759,6 +1871,27 @@ func isCanceledStreamErr(err error) bool {
 	}
 	var connectErr *connect.Error
 	if errors.As(err, &connectErr) && connectErr.Code() == connect.CodeCanceled {
+		return true
+	}
+	return false
+}
+
+func isExecutionNoLongerActiveErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "no longer active")
+}
+
+func isInteractiveStreamClosedErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) || errors.Is(err, net.ErrClosed) {
+		return true
+	}
+	var appErr *quic.ApplicationError
+	if errors.As(err, &appErr) && appErr.ErrorCode == 0 {
 		return true
 	}
 	return false

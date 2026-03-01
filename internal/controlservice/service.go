@@ -31,6 +31,9 @@ type Service struct {
 	sandboxes           map[string]*sandboxState
 	executions          map[string]*executionState
 	interactiveSessions map[string]*interactiveSessionState
+	interactiveEndpoint string
+	interactiveALPN     string
+	interactiveCertPin  string
 }
 
 type sandboxState struct {
@@ -89,6 +92,14 @@ type interactiveSessionState struct {
 	ExecutionID string
 	Token       string
 	ExpiresAt   time.Time
+	InitialCols uint32
+	InitialRows uint32
+}
+
+type InteractiveSession struct {
+	SessionID   string
+	SandboxID   string
+	ExecutionID string
 	InitialCols uint32
 	InitialRows uint32
 }
@@ -560,6 +571,10 @@ func (s *Service) OpenInteractiveExecution(_ context.Context, req *cleanroomv1.O
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if strings.TrimSpace(s.interactiveEndpoint) == "" || strings.TrimSpace(s.interactiveALPN) == "" {
+		return nil, errors.New("interactive transport is not configured")
+	}
+
 	ex, ok := s.executions[executionKey(sandboxID, executionID)]
 	if !ok {
 		return nil, fmt.Errorf("unknown execution %q in sandbox %q", executionID, sandboxID)
@@ -588,9 +603,74 @@ func (s *Service) OpenInteractiveExecution(_ context.Context, req *cleanroomv1.O
 	}
 
 	return &cleanroomv1.OpenInteractiveExecutionResponse{
-		SessionId:    sessionID,
-		SessionToken: token,
-		ExpiresAt:    timestamppb.New(expiresAt),
+		SessionId:           sessionID,
+		SessionToken:        token,
+		ExpiresAt:           timestamppb.New(expiresAt),
+		QuicEndpoint:        s.interactiveEndpoint,
+		Alpn:                s.interactiveALPN,
+		ServerCertPinSha256: s.interactiveCertPin,
+	}, nil
+}
+
+func (s *Service) ConfigureInteractiveTransport(endpoint, alpn, certPinSHA256 string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.interactiveEndpoint = strings.TrimSpace(endpoint)
+	s.interactiveALPN = strings.TrimSpace(alpn)
+	s.interactiveCertPin = strings.TrimSpace(certPinSHA256)
+}
+
+func (s *Service) ConsumeInteractiveSession(sessionID, token string) (*InteractiveSession, error) {
+	id := strings.TrimSpace(sessionID)
+	tok := strings.TrimSpace(token)
+	if id == "" {
+		return nil, errors.New("missing session_id")
+	}
+	if tok == "" {
+		return nil, errors.New("missing session_token")
+	}
+
+	now := time.Now().UTC()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ensureMapsLocked()
+
+	for key, session := range s.interactiveSessions {
+		if session == nil || now.After(session.ExpiresAt) {
+			delete(s.interactiveSessions, key)
+		}
+	}
+
+	session, ok := s.interactiveSessions[id]
+	if !ok || session == nil {
+		return nil, fmt.Errorf("unknown interactive session %q", id)
+	}
+	if session.Token != tok {
+		return nil, errors.New("invalid session token")
+	}
+	execKey := executionKey(session.SandboxID, session.ExecutionID)
+	ex, ok := s.executions[execKey]
+	if !ok {
+		delete(s.interactiveSessions, id)
+		return nil, fmt.Errorf("unknown execution %q in sandbox %q", session.ExecutionID, session.SandboxID)
+	}
+	if ex.Kind != cleanroomv1.ExecutionKind_EXECUTION_KIND_INTERACTIVE {
+		delete(s.interactiveSessions, id)
+		return nil, fmt.Errorf("execution %q is not interactive", session.ExecutionID)
+	}
+	if isFinalExecutionStatus(ex.Status) {
+		delete(s.interactiveSessions, id)
+		return nil, fmt.Errorf("execution %q is no longer active", session.ExecutionID)
+	}
+
+	delete(s.interactiveSessions, id)
+	return &InteractiveSession{
+		SessionID:   session.SessionID,
+		SandboxID:   session.SandboxID,
+		ExecutionID: session.ExecutionID,
+		InitialCols: session.InitialCols,
+		InitialRows: session.InitialRows,
 	}, nil
 }
 
