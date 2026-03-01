@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -539,7 +540,7 @@ func TestServeStatusSystemdNotInstalled(t *testing.T) {
 	serveInstallGOOS = "linux"
 	serveInstallSystemdUnitPath = unitPath
 	serveInstallRunCommand = func(name string, args ...string) error {
-		return errors.New("not found")
+		return &exec.ExitError{ProcessState: &os.ProcessState{}}
 	}
 	t.Cleanup(func() {
 		serveInstallGOOS = prevGOOS

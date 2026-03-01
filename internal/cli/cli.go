@@ -1336,11 +1336,15 @@ func systemdDaemonStatus(stdout io.Writer) error {
 	active := "inactive"
 	if err := serveInstallRunCommand("systemctl", "is-active", "--quiet", systemdServiceName); err == nil {
 		active = "active"
+	} else if !isExitError(err) {
+		return fmt.Errorf("check systemd service active state: %w", err)
 	}
 
 	enabled := "false"
 	if err := serveInstallRunCommand("systemctl", "is-enabled", "--quiet", systemdServiceName); err == nil {
 		enabled = "true"
+	} else if !isExitError(err) {
+		return fmt.Errorf("check systemd service enabled state: %w", err)
 	}
 
 	_, err := fmt.Fprintf(stdout, "manager=systemd\nservice=%s\ninstalled=%s\nactive=%s\nenabled=%s\n",
@@ -1357,6 +1361,8 @@ func launchdDaemonStatus(stdout io.Writer) error {
 	active := "inactive"
 	if err := serveInstallRunCommand("launchctl", "print", "system/"+launchdServiceName); err == nil {
 		active = "active"
+	} else if !isExitError(err) {
+		return fmt.Errorf("check launchd service state: %w", err)
 	}
 
 	_, err := fmt.Fprintf(stdout, "manager=launchd\nservice=%s\ninstalled=%s\nactive=%s\n",
@@ -1491,6 +1497,11 @@ func escapePlistValue(value string) string {
 		return value
 	}
 	return b.String()
+}
+
+func isExitError(err error) bool {
+	var exitErr *exec.ExitError
+	return errors.As(err, &exitErr)
 }
 
 func runServeInstallCommand(name string, args ...string) error {
