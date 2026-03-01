@@ -987,7 +987,7 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 			logger.Warn("failed to enter raw mode", "error", rawErr)
 		} else {
 			rawMode = true
-			normalizeRawTTYStdout = shouldNormalizeRawTTYOutput(command)
+			normalizeRawTTYStdout = true
 			// Stderr frames in TTY sessions come from runtime/control-plane warnings
 			// rather than the PTY command stream, so CRLF normalization is safe and
 			// keeps lines aligned while stdin is in raw mode.
@@ -1138,19 +1138,6 @@ func normalizeLineEndingsForRawTTY(chunk []byte, prevEndedCR bool) ([]byte, bool
 		endedCR = b == '\r'
 	}
 	return out, endedCR
-}
-
-func shouldNormalizeRawTTYOutput(command []string) bool {
-	if len(command) == 0 {
-		return true
-	}
-	executable := strings.ToLower(strings.TrimSpace(filepath.Base(command[0])))
-	switch executable {
-	case "ash", "bash", "csh", "dash", "fish", "ksh", "sh", "tcsh", "zsh":
-		return true
-	default:
-		return false
-	}
 }
 
 func trimPassthroughSeparator(args []string) []string {
