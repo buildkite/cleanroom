@@ -15,7 +15,7 @@ const (
 	testImageOverrideTag = "ghcr.io/buildkite/cleanroom-base/alpine:latest"
 )
 
-func stubImageOverrideResolver(t *testing.T, fn func(context.Context, string) (string, error)) func() {
+func stubImageOverrideResolver(t *testing.T, fn func(context.Context, string, bool) (string, error)) func() {
 	t.Helper()
 	prev := resolveReferenceForImageOverride
 	resolveReferenceForImageOverride = fn
@@ -25,7 +25,7 @@ func stubImageOverrideResolver(t *testing.T, fn func(context.Context, string) (s
 }
 
 func TestSandboxCreateIntegrationOverridesImageRefForNewSandbox(t *testing.T) {
-	restore := stubImageOverrideResolver(t, func(_ context.Context, source string) (string, error) {
+	restore := stubImageOverrideResolver(t, func(_ context.Context, source string, _ bool) (string, error) {
 		if got, want := source, testImageOverrideTag; got != want {
 			t.Fatalf("unexpected source passed to resolver: got %q want %q", got, want)
 		}
@@ -89,7 +89,7 @@ func TestSandboxCreateIntegrationOverridesImageRefForNewSandbox(t *testing.T) {
 }
 
 func TestExecIntegrationOverridesImageRefForCreatedSandbox(t *testing.T) {
-	restore := stubImageOverrideResolver(t, func(_ context.Context, source string) (string, error) {
+	restore := stubImageOverrideResolver(t, func(_ context.Context, source string, _ bool) (string, error) {
 		if got, want := source, testImageOverrideTag; got != want {
 			t.Fatalf("unexpected source passed to resolver: got %q want %q", got, want)
 		}
@@ -133,7 +133,7 @@ func TestExecIntegrationOverridesImageRefForCreatedSandbox(t *testing.T) {
 }
 
 func TestConsoleIntegrationOverridesImageRefForCreatedSandbox(t *testing.T) {
-	restore := stubImageOverrideResolver(t, func(_ context.Context, source string) (string, error) {
+	restore := stubImageOverrideResolver(t, func(_ context.Context, source string, _ bool) (string, error) {
 		if got, want := source, testImageOverrideTag; got != want {
 			t.Fatalf("unexpected source passed to resolver: got %q want %q", got, want)
 		}
@@ -173,6 +173,40 @@ func TestConsoleIntegrationOverridesImageRefForCreatedSandbox(t *testing.T) {
 	gotImageRef := mustReceiveWithin(t, imageRefCh, 2*time.Second, "timed out waiting for run request policy")
 	if got, want := gotImageRef, testImageOverrideRef; got != want {
 		t.Fatalf("unexpected image ref: got %q want %q", got, want)
+	}
+}
+
+func TestExecIntegrationRejectsLocalImageOverrideForRemoteHost(t *testing.T) {
+	restore := stubImageOverrideResolver(t, func(_ context.Context, source string, allowLocal bool) (string, error) {
+		if got, want := source, testImageOverrideTag; got != want {
+			t.Fatalf("unexpected source passed to resolver: got %q want %q", got, want)
+		}
+		if allowLocal {
+			t.Fatal("expected allowLocal=false for non-unix integration host")
+		}
+		return "", errors.New("local docker image overrides require a local control-plane endpoint (unix socket)")
+	})
+	defer restore()
+
+	host, _ := startIntegrationServer(t, &integrationAdapter{})
+	cwd := t.TempDir()
+	outcome := runExecWithCapture(ExecCommand{
+		clientFlags: clientFlags{Host: host},
+		Chdir:       cwd,
+		Image:       testImageOverrideTag,
+		Command:     []string{"echo", "ok"},
+	}, runtimeContext{
+		CWD:    cwd,
+		Loader: integrationLoader{},
+	})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err == nil {
+		t.Fatal("expected ExecCommand.Run to fail for remote host local image override")
+	}
+	if got, want := outcome.err.Error(), "invalid --image value: local docker image overrides require a local control-plane endpoint"; !strings.Contains(got, want) {
+		t.Fatalf("expected error to contain %q, got %q", want, got)
 	}
 }
 

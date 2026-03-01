@@ -287,9 +287,12 @@ var (
 		return fmt.Sprintf("%s@%s", tag.Context().Name(), desc.Digest.String()), nil
 	}
 	importLocalDockerImageForOverrideFn = importLocalDockerImageForOverride
-	resolveReferenceForImageOverride    = func(ctx context.Context, source string) (string, error) {
+	resolveReferenceForImageOverride    = func(ctx context.Context, source string, allowLocal bool) (string, error) {
 		localRef, localErr := importLocalDockerImageForOverrideFn(ctx, source)
 		if localErr == nil {
+			if !allowLocal {
+				return "", errors.New("local docker image overrides require a local control-plane endpoint (unix socket)")
+			}
 			return localRef, nil
 		}
 
@@ -706,7 +709,11 @@ func runSandboxCreate(ctx *runtimeContext, connectFlags clientFlags, chdir, back
 	if err != nil {
 		return err
 	}
-	compiled, err = overrideCompiledPolicyImage(compiled, imageRefOverride)
+	allowLocalImageOverride, err := isLocalControlPlaneEndpoint(connectFlags.Host)
+	if err != nil {
+		return err
+	}
+	compiled, err = overrideCompiledPolicyImage(compiled, imageRefOverride, allowLocalImageOverride)
 	if err != nil {
 		return err
 	}
@@ -767,7 +774,7 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 		"sandbox_id", strings.TrimSpace(e.SandboxID),
 		"command_argc", len(e.Command),
 	)
-	sandboxID, err := ensureSandboxID(client, ctx.Loader, cwd, e.Backend, strings.TrimSpace(e.SandboxID), e.Image, e.LaunchSeconds)
+	sandboxID, err := ensureSandboxID(client, ctx.Loader, cwd, e.Host, e.Backend, strings.TrimSpace(e.SandboxID), e.Image, e.LaunchSeconds)
 	if err != nil {
 		return err
 	}
@@ -947,7 +954,7 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 		"sandbox_id", strings.TrimSpace(c.SandboxID),
 		"command_argc", len(command),
 	)
-	sandboxID, err := ensureSandboxID(client, ctx.Loader, cwd, c.Backend, strings.TrimSpace(c.SandboxID), c.Image, c.LaunchSeconds)
+	sandboxID, err := ensureSandboxID(client, ctx.Loader, cwd, c.Host, c.Backend, strings.TrimSpace(c.SandboxID), c.Image, c.LaunchSeconds)
 	if err != nil {
 		return err
 	}
@@ -1907,7 +1914,7 @@ func inspectRun(stdout *os.File, baseDir, runID string) error {
 	return err
 }
 
-func ensureSandboxID(client *controlclient.Client, loader policyLoader, cwd, backendName, existingSandboxID, imageRefOverride string, launchSeconds int64) (string, error) {
+func ensureSandboxID(client *controlclient.Client, loader policyLoader, cwd, host, backendName, existingSandboxID, imageRefOverride string, launchSeconds int64) (string, error) {
 	sandboxID := strings.TrimSpace(existingSandboxID)
 	if sandboxID != "" {
 		if strings.TrimSpace(imageRefOverride) != "" {
@@ -1920,7 +1927,11 @@ func ensureSandboxID(client *controlclient.Client, loader policyLoader, cwd, bac
 	if err != nil {
 		return "", err
 	}
-	compiled, err = overrideCompiledPolicyImage(compiled, imageRefOverride)
+	allowLocalImageOverride, err := isLocalControlPlaneEndpoint(host)
+	if err != nil {
+		return "", err
+	}
+	compiled, err = overrideCompiledPolicyImage(compiled, imageRefOverride, allowLocalImageOverride)
 	if err != nil {
 		return "", err
 	}
@@ -1937,13 +1948,21 @@ func ensureSandboxID(client *controlclient.Client, loader policyLoader, cwd, bac
 	return strings.TrimSpace(createSandboxResp.GetSandbox().GetSandboxId()), nil
 }
 
-func overrideCompiledPolicyImage(compiled *policy.CompiledPolicy, imageRefOverride string) (*policy.CompiledPolicy, error) {
+func isLocalControlPlaneEndpoint(host string) (bool, error) {
+	ep, err := endpoint.Resolve(host)
+	if err != nil {
+		return false, err
+	}
+	return ep.Scheme == "unix", nil
+}
+
+func overrideCompiledPolicyImage(compiled *policy.CompiledPolicy, imageRefOverride string, allowLocal bool) (*policy.CompiledPolicy, error) {
 	imageRefOverride = strings.TrimSpace(imageRefOverride)
 	if imageRefOverride == "" {
 		return compiled, nil
 	}
 
-	resolvedRef, err := resolveReferenceForImageOverride(context.Background(), imageRefOverride)
+	resolvedRef, err := resolveReferenceForImageOverride(context.Background(), imageRefOverride, allowLocal)
 	if err != nil {
 		return nil, fmt.Errorf("invalid --image value: %w", err)
 	}

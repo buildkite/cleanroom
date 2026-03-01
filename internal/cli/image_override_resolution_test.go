@@ -43,7 +43,7 @@ func TestResolveReferenceForImageOverridePrefersLocal(t *testing.T) {
 		},
 	)
 
-	got, err := resolveReferenceForImageOverride(context.Background(), "alpine:latest")
+	got, err := resolveReferenceForImageOverride(context.Background(), "alpine:latest", true)
 	if err != nil {
 		t.Fatalf("resolveReferenceForImageOverride returned error: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestResolveReferenceForImageOverrideFallsBackToRemote(t *testing.T) {
 		},
 	)
 
-	got, err := resolveReferenceForImageOverride(context.Background(), "alpine:latest")
+	got, err := resolveReferenceForImageOverride(context.Background(), "alpine:latest", true)
 	if err != nil {
 		t.Fatalf("resolveReferenceForImageOverride returned error: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestResolveReferenceForImageOverrideReturnsCombinedError(t *testing.T) {
 		},
 	)
 
-	_, err := resolveReferenceForImageOverride(context.Background(), "alpine:latest")
+	_, err := resolveReferenceForImageOverride(context.Background(), "alpine:latest", true)
 	if err == nil {
 		t.Fatal("expected resolveReferenceForImageOverride to fail when local and remote resolution fail")
 	}
@@ -103,5 +103,30 @@ func TestResolveReferenceForImageOverrideReturnsCombinedError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "local docker resolution failed: local missing") {
 		t.Fatalf("expected local error in returned message, got %v", err)
+	}
+}
+
+func TestResolveReferenceForImageOverrideRejectsLocalForRemoteEndpoint(t *testing.T) {
+	remoteCalls := 0
+	withImageOverrideResolversForTest(
+		t,
+		func(_ context.Context, _ string) (string, error) {
+			return "local/docker-image@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", nil
+		},
+		func(_ context.Context, _ string) (string, error) {
+			remoteCalls++
+			return "ghcr.io/buildkite/cleanroom-base/alpine@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", nil
+		},
+	)
+
+	_, err := resolveReferenceForImageOverride(context.Background(), "alpine:latest", false)
+	if err == nil {
+		t.Fatal("expected local override rejection for non-local control-plane endpoint")
+	}
+	if !strings.Contains(err.Error(), "local docker image overrides require a local control-plane endpoint") {
+		t.Fatalf("expected local-endpoint requirement error, got %v", err)
+	}
+	if remoteCalls != 0 {
+		t.Fatalf("expected remote resolver call count 0, got %d", remoteCalls)
 	}
 }
