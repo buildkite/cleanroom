@@ -20,6 +20,7 @@ private enum AppConstants {
     static let networkFilterStatusPathEnv = "CLEANROOM_NETWORK_FILTER_STATUS_PATH"
     static let networkFilterPolicyPathVendorKey = "policy_path"
     static let networkFilterTargetProcessVendorKey = "target_process_path"
+    static let networkFilterStatusRefreshIntervalSeconds: TimeInterval = 30
     static let appLogRelativePath = "Library/Logs/cleanroom-menubar.log"
     static let serviceLogRelativePath = "Library/Logs/cleanroom-user-server.log"
     static let launchdSystemPlistPath = "/Library/LaunchDaemons/com.buildkite.cleanroom.plist"
@@ -74,6 +75,7 @@ final class CleanroomMenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate
     private var networkFilterLoaded = false
     private var networkFilterEnabled = false
     private var networkFilterLastError: String?
+    private var networkFilterRefreshTimer: Timer?
 
     private lazy var appLogURL: URL = {
         FileManager.default.homeDirectoryForCurrentUser
@@ -178,10 +180,13 @@ final class CleanroomMenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate
 
         statusItem.menu = menu
         refreshNetworkFilterStatus()
+        startNetworkFilterStatusRefreshTimer()
         refreshUI()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        networkFilterRefreshTimer?.invalidate()
+        networkFilterRefreshTimer = nil
         closeAppLogHandle()
     }
 
@@ -588,6 +593,18 @@ final class CleanroomMenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate
         } catch {
             appendLog("failed to persist network filter status: \(error.localizedDescription)")
         }
+    }
+
+    private func startNetworkFilterStatusRefreshTimer() {
+        networkFilterRefreshTimer?.invalidate()
+        let timer = Timer(
+            timeInterval: AppConstants.networkFilterStatusRefreshIntervalSeconds,
+            repeats: true
+        ) { [weak self] _ in
+            self?.refreshNetworkFilterStatus()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        networkFilterRefreshTimer = timer
     }
 
     private func refreshNetworkFilterStatus() {

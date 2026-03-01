@@ -7,12 +7,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 const (
 	networkFilterStatusPathEnv         = "CLEANROOM_NETWORK_FILTER_STATUS_PATH"
 	networkFilterStatusSnapshotVersion = 1
 	networkFilterStatusRelativePath    = "Library/Application Support/Cleanroom/network-filter-status.json"
+	networkFilterStatusMaxAge          = 10 * time.Minute
 )
 
 type networkFilterStatusSnapshot struct {
@@ -33,6 +35,10 @@ func hostEgressFilterEnabled() (bool, string) {
 		return false, "network filter status file not found"
 	}
 	if snapshot.Enabled {
+		fresh, freshnessDetail := networkFilterStatusFreshness(snapshot.UpdatedAt, time.Now().UTC())
+		if !fresh {
+			return false, freshnessDetail
+		}
 		return true, ""
 	}
 	if lastError := strings.TrimSpace(snapshot.LastError); lastError != "" {
@@ -71,6 +77,29 @@ func readNetworkFilterStatusSnapshot() (networkFilterStatusSnapshot, bool, error
 		)
 	}
 	return snapshot, true, nil
+}
+
+func networkFilterStatusFreshness(updatedAt string, now time.Time) (bool, string) {
+	timestamp := strings.TrimSpace(updatedAt)
+	if timestamp == "" {
+		return false, "network filter status timestamp is missing"
+	}
+
+	parsed, err := time.Parse(time.RFC3339Nano, timestamp)
+	if err != nil {
+		parsed, err = time.Parse(time.RFC3339, timestamp)
+	}
+	if err != nil {
+		return false, fmt.Sprintf("network filter status timestamp %q is invalid", timestamp)
+	}
+	if parsed.After(now.Add(2 * time.Minute)) {
+		return false, fmt.Sprintf("network filter status timestamp %q is in the future", timestamp)
+	}
+	age := now.Sub(parsed)
+	if age > networkFilterStatusMaxAge {
+		return false, fmt.Sprintf("network filter status is stale (last update %s ago)", age.Round(time.Second))
+	}
+	return true, ""
 }
 
 func resolveNetworkFilterStatusPath() (string, error) {

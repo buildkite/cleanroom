@@ -1,19 +1,22 @@
 package darwinvz
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestHostEgressFilterEnabledReturnsStatusFromSnapshot(t *testing.T) {
 	statusPath := filepath.Join(t.TempDir(), "network-filter-status.json")
 	t.Setenv(networkFilterStatusPathEnv, statusPath)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
 
 	if err := os.WriteFile(
 		statusPath,
-		[]byte(`{"version":1,"available":true,"loaded":true,"enabled":true}`),
+		[]byte(fmt.Sprintf(`{"version":1,"updated_at":%q,"available":true,"loaded":true,"enabled":true}`, now)),
 		0o644,
 	); err != nil {
 		t.Fatalf("write status file: %v", err)
@@ -31,10 +34,11 @@ func TestHostEgressFilterEnabledReturnsStatusFromSnapshot(t *testing.T) {
 func TestHostEgressFilterEnabledReturnsReasonWhenDisabled(t *testing.T) {
 	statusPath := filepath.Join(t.TempDir(), "network-filter-status.json")
 	t.Setenv(networkFilterStatusPathEnv, statusPath)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
 
 	if err := os.WriteFile(
 		statusPath,
-		[]byte(`{"version":1,"available":true,"loaded":true,"enabled":false,"last_error":"approval pending"}`),
+		[]byte(fmt.Sprintf(`{"version":1,"updated_at":%q,"available":true,"loaded":true,"enabled":false,"last_error":"approval pending"}`, now)),
 		0o644,
 	); err != nil {
 		t.Fatalf("write status file: %v", err)
@@ -59,5 +63,48 @@ func TestHostEgressFilterEnabledHandlesMissingSnapshot(t *testing.T) {
 	}
 	if !strings.Contains(detail, "not found") {
 		t.Fatalf("expected not-found detail, got %q", detail)
+	}
+}
+
+func TestHostEgressFilterEnabledRejectsStaleSnapshot(t *testing.T) {
+	statusPath := filepath.Join(t.TempDir(), "network-filter-status.json")
+	t.Setenv(networkFilterStatusPathEnv, statusPath)
+	stale := time.Now().UTC().Add(-(networkFilterStatusMaxAge + time.Minute)).Format(time.RFC3339Nano)
+
+	if err := os.WriteFile(
+		statusPath,
+		[]byte(fmt.Sprintf(`{"version":1,"updated_at":%q,"available":true,"loaded":true,"enabled":true}`, stale)),
+		0o644,
+	); err != nil {
+		t.Fatalf("write status file: %v", err)
+	}
+
+	enabled, detail := hostEgressFilterEnabled()
+	if enabled {
+		t.Fatal("expected enabled=false for stale status")
+	}
+	if !strings.Contains(detail, "stale") {
+		t.Fatalf("expected stale detail, got %q", detail)
+	}
+}
+
+func TestHostEgressFilterEnabledRejectsMissingTimestampWhenEnabled(t *testing.T) {
+	statusPath := filepath.Join(t.TempDir(), "network-filter-status.json")
+	t.Setenv(networkFilterStatusPathEnv, statusPath)
+
+	if err := os.WriteFile(
+		statusPath,
+		[]byte(`{"version":1,"available":true,"loaded":true,"enabled":true}`),
+		0o644,
+	); err != nil {
+		t.Fatalf("write status file: %v", err)
+	}
+
+	enabled, detail := hostEgressFilterEnabled()
+	if enabled {
+		t.Fatal("expected enabled=false with missing timestamp")
+	}
+	if !strings.Contains(detail, "timestamp is missing") {
+		t.Fatalf("expected missing timestamp detail, got %q", detail)
 	}
 }
