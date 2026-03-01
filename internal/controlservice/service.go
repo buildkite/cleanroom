@@ -944,7 +944,7 @@ func (s *Service) SubscribeExecutionEvents(sandboxID, executionID string) ([]*cl
 	}
 
 	history := append([]*cleanroomv1.ExecutionStreamEvent(nil), ex.EventHistory...)
-	updates := make(chan *cleanroomv1.ExecutionStreamEvent, 128)
+	updates := make(chan *cleanroomv1.ExecutionStreamEvent, 2048)
 	done := ex.Done
 
 	subID := ex.NextSubID

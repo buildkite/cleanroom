@@ -16,6 +16,7 @@ import (
 )
 
 const DefaultALPN = "cleanroom-interactive-v1"
+const interactiveHistoryReplayLimit = 256
 
 type Service interface {
 	ConsumeInteractiveSession(sessionID, token string) (*controlservice.InteractiveSession, error)
@@ -165,6 +166,10 @@ func (s *Server) handleConnection(ctx context.Context, conn *quic.Conn) {
 		return
 	}
 	defer unsubscribe()
+
+	if len(history) > interactiveHistoryReplayLimit {
+		history = history[len(history)-interactiveHistoryReplayLimit:]
+	}
 
 	controlErrCh := make(chan error, 1)
 	go s.readControlLoop(ctx, decoder, session, controlErrCh)
