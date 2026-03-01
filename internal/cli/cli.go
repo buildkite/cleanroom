@@ -190,7 +190,7 @@ type ConsoleCommand struct {
 }
 
 type ServeCommand struct {
-	Action        string `arg:"" optional:"" help:"Serve action (install daemon)"`
+	Action        string `arg:"" optional:"" help:"Serve action (install, uninstall, status)"`
 	Force         bool   `help:"Overwrite existing daemon service file (serve install only)"`
 	Listen        string `help:"Listen endpoint for control API (defaults to runtime endpoint; supports tsnet://hostname[:port] and tssvc://service[:local-port])"`
 	GatewayListen string `help:"Listen address for the host gateway (default :8170, use :0 for ephemeral port)"`
@@ -296,6 +296,7 @@ var (
 	serveInstallStat            = os.Stat
 	serveInstallMkdirAll        = os.MkdirAll
 	serveInstallWriteFile       = os.WriteFile
+	serveInstallRemoveFile      = os.Remove
 	serveInstallExecutablePath  = os.Executable
 	serveInstallRunCommand      = runServeInstallCommand
 	serveInstallSystemdUnitPath = "/etc/systemd/system/" + systemdServiceName
@@ -1156,6 +1157,10 @@ func (s *ServeCommand) Run(ctx *runtimeContext) error {
 		return s.runServer(ctx)
 	case "install":
 		return s.installDaemon(ctx)
+	case "uninstall":
+		return s.uninstallDaemon(ctx)
+	case "status":
+		return s.daemonStatus(ctx)
 	default:
 		return fmt.Errorf("unsupported serve action %q", s.Action)
 	}
@@ -1248,6 +1253,109 @@ func (s *ServeCommand) installDaemon(ctx *runtimeContext) error {
 		return err
 	}
 	return installFn(ctx.Stdout, executablePath, args, s.Force)
+}
+
+func (s *ServeCommand) uninstallDaemon(ctx *runtimeContext) error {
+	var uninstallFn func(io.Writer) error
+	switch serveInstallGOOS {
+	case "linux":
+		uninstallFn = uninstallSystemdDaemon
+	case "darwin":
+		uninstallFn = uninstallLaunchdDaemon
+	default:
+		return fmt.Errorf("serve uninstall is unsupported on %s (expected linux or darwin)", serveInstallGOOS)
+	}
+
+	if serveInstallEUID() != 0 {
+		return errors.New("serve uninstall requires root privileges (use sudo cleanroom serve uninstall)")
+	}
+
+	return uninstallFn(ctx.Stdout)
+}
+
+func uninstallSystemdDaemon(stdout io.Writer) error {
+	if _, err := serveInstallStat(serveInstallSystemdUnitPath); errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("service file %s does not exist", serveInstallSystemdUnitPath)
+	}
+
+	_ = serveInstallRunCommand("systemctl", "stop", systemdServiceName)
+	_ = serveInstallRunCommand("systemctl", "disable", systemdServiceName)
+
+	if err := serveInstallRemoveFile(serveInstallSystemdUnitPath); err != nil {
+		return fmt.Errorf("remove service file %s: %w", serveInstallSystemdUnitPath, err)
+	}
+	if err := serveInstallRunCommand("systemctl", "daemon-reload"); err != nil {
+		return fmt.Errorf("reload systemd: %w", err)
+	}
+
+	_, err := fmt.Fprintf(stdout, "daemon uninstalled\nmanager=systemd\nservice=%s\n", systemdServiceName)
+	return err
+}
+
+func uninstallLaunchdDaemon(stdout io.Writer) error {
+	if _, err := serveInstallStat(serveInstallLaunchdPath); errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("service file %s does not exist", serveInstallLaunchdPath)
+	}
+
+	_ = serveInstallRunCommand("launchctl", "bootout", "system/"+launchdServiceName)
+
+	if err := serveInstallRemoveFile(serveInstallLaunchdPath); err != nil {
+		return fmt.Errorf("remove service file %s: %w", serveInstallLaunchdPath, err)
+	}
+
+	_, err := fmt.Fprintf(stdout, "daemon uninstalled\nmanager=launchd\nservice=%s\n", launchdServiceName)
+	return err
+}
+
+func (s *ServeCommand) daemonStatus(ctx *runtimeContext) error {
+	var statusFn func(io.Writer) error
+	switch serveInstallGOOS {
+	case "linux":
+		statusFn = systemdDaemonStatus
+	case "darwin":
+		statusFn = launchdDaemonStatus
+	default:
+		return fmt.Errorf("serve status is unsupported on %s (expected linux or darwin)", serveInstallGOOS)
+	}
+
+	return statusFn(ctx.Stdout)
+}
+
+func systemdDaemonStatus(stdout io.Writer) error {
+	installed := "false"
+	if _, err := serveInstallStat(serveInstallSystemdUnitPath); err == nil {
+		installed = "true"
+	}
+
+	active := "inactive"
+	if err := serveInstallRunCommand("systemctl", "is-active", "--quiet", systemdServiceName); err == nil {
+		active = "active"
+	}
+
+	enabled := "false"
+	if err := serveInstallRunCommand("systemctl", "is-enabled", "--quiet", systemdServiceName); err == nil {
+		enabled = "true"
+	}
+
+	_, err := fmt.Fprintf(stdout, "manager=systemd\nservice=%s\ninstalled=%s\nactive=%s\nenabled=%s\n",
+		systemdServiceName, installed, active, enabled)
+	return err
+}
+
+func launchdDaemonStatus(stdout io.Writer) error {
+	installed := "false"
+	if _, err := serveInstallStat(serveInstallLaunchdPath); err == nil {
+		installed = "true"
+	}
+
+	active := "inactive"
+	if err := serveInstallRunCommand("launchctl", "print", "system/"+launchdServiceName); err == nil {
+		active = "active"
+	}
+
+	_, err := fmt.Fprintf(stdout, "manager=launchd\nservice=%s\ninstalled=%s\nactive=%s\n",
+		launchdServiceName, installed, active)
+	return err
 }
 
 func installSystemdDaemon(stdout io.Writer, executablePath string, args []string, force bool) error {

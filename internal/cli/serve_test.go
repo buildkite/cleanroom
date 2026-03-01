@@ -363,6 +363,226 @@ func TestServeInstallReturnsCommandErrors(t *testing.T) {
 	}
 }
 
+func TestServeUninstallRequiresRoot(t *testing.T) {
+	prevEUID := serveInstallEUID
+	prevGOOS := serveInstallGOOS
+	serveInstallEUID = func() int { return 1000 }
+	serveInstallGOOS = "linux"
+	t.Cleanup(func() {
+		serveInstallEUID = prevEUID
+		serveInstallGOOS = prevGOOS
+	})
+
+	stdout, _ := makeStdoutCapture(t)
+	cmd := &ServeCommand{Action: "uninstall"}
+	err := cmd.Run(&runtimeContext{CWD: t.TempDir(), Stdout: stdout})
+	if err == nil {
+		t.Fatal("expected root requirement error")
+	}
+	if !strings.Contains(err.Error(), "requires root") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(err.Error(), "sudo cleanroom serve uninstall") {
+		t.Fatalf("expected sudo guidance, got: %v", err)
+	}
+}
+
+func TestServeUninstallRemovesServiceAndStops(t *testing.T) {
+	tmpDir := t.TempDir()
+	unitPath := filepath.Join(tmpDir, "cleanroom.service")
+	if err := os.WriteFile(unitPath, []byte("existing-unit"), 0o644); err != nil {
+		t.Fatalf("write existing unit: %v", err)
+	}
+
+	prevEUID := serveInstallEUID
+	prevGOOS := serveInstallGOOS
+	prevSystemdPath := serveInstallSystemdUnitPath
+	prevRunCommand := serveInstallRunCommand
+	prevRemoveFile := serveInstallRemoveFile
+	serveInstallEUID = func() int { return 0 }
+	serveInstallGOOS = "linux"
+	serveInstallSystemdUnitPath = unitPath
+	serveInstallRemoveFile = os.Remove
+	var calls [][]string
+	serveInstallRunCommand = func(name string, args ...string) error {
+		call := append([]string{name}, args...)
+		calls = append(calls, call)
+		return nil
+	}
+	t.Cleanup(func() {
+		serveInstallEUID = prevEUID
+		serveInstallGOOS = prevGOOS
+		serveInstallSystemdUnitPath = prevSystemdPath
+		serveInstallRunCommand = prevRunCommand
+		serveInstallRemoveFile = prevRemoveFile
+	})
+
+	stdout, readStdout := makeStdoutCapture(t)
+	cmd := &ServeCommand{Action: "uninstall"}
+	if err := cmd.Run(&runtimeContext{CWD: tmpDir, Stdout: stdout}); err != nil {
+		t.Fatalf("ServeCommand.Run returned error: %v", err)
+	}
+
+	if _, err := os.Stat(unitPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected service file to be removed")
+	}
+
+	wantCalls := [][]string{
+		{"systemctl", "stop", "cleanroom.service"},
+		{"systemctl", "disable", "cleanroom.service"},
+		{"systemctl", "daemon-reload"},
+	}
+	if !reflect.DeepEqual(calls, wantCalls) {
+		t.Fatalf("unexpected systemctl commands: got %v want %v", calls, wantCalls)
+	}
+
+	out := readStdout()
+	if !strings.Contains(out, "daemon uninstalled") {
+		t.Fatalf("expected uninstalled message, got: %s", out)
+	}
+	if !strings.Contains(out, "manager=systemd") {
+		t.Fatalf("expected manager=systemd, got: %s", out)
+	}
+}
+
+func TestServeUninstallFailsWhenNotInstalled(t *testing.T) {
+	tmpDir := t.TempDir()
+	unitPath := filepath.Join(tmpDir, "cleanroom.service")
+
+	prevEUID := serveInstallEUID
+	prevGOOS := serveInstallGOOS
+	prevSystemdPath := serveInstallSystemdUnitPath
+	serveInstallEUID = func() int { return 0 }
+	serveInstallGOOS = "linux"
+	serveInstallSystemdUnitPath = unitPath
+	t.Cleanup(func() {
+		serveInstallEUID = prevEUID
+		serveInstallGOOS = prevGOOS
+		serveInstallSystemdUnitPath = prevSystemdPath
+	})
+
+	stdout, _ := makeStdoutCapture(t)
+	cmd := &ServeCommand{Action: "uninstall"}
+	err := cmd.Run(&runtimeContext{CWD: tmpDir, Stdout: stdout})
+	if err == nil {
+		t.Fatal("expected error when service file doesn't exist")
+	}
+	if !strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestServeUninstallUnsupportedOS(t *testing.T) {
+	prevGOOS := serveInstallGOOS
+	serveInstallGOOS = "windows"
+	t.Cleanup(func() {
+		serveInstallGOOS = prevGOOS
+	})
+
+	stdout, _ := makeStdoutCapture(t)
+	cmd := &ServeCommand{Action: "uninstall"}
+	err := cmd.Run(&runtimeContext{CWD: t.TempDir(), Stdout: stdout})
+	if err == nil {
+		t.Fatal("expected unsupported OS error")
+	}
+	if !strings.Contains(err.Error(), "unsupported on windows") {
+		t.Fatalf("expected unsupported OS message, got: %v", err)
+	}
+}
+
+func TestServeStatusSystemdInstalled(t *testing.T) {
+	tmpDir := t.TempDir()
+	unitPath := filepath.Join(tmpDir, "cleanroom.service")
+	if err := os.WriteFile(unitPath, []byte("unit"), 0o644); err != nil {
+		t.Fatalf("write unit: %v", err)
+	}
+
+	prevGOOS := serveInstallGOOS
+	prevSystemdPath := serveInstallSystemdUnitPath
+	prevRunCommand := serveInstallRunCommand
+	serveInstallGOOS = "linux"
+	serveInstallSystemdUnitPath = unitPath
+	serveInstallRunCommand = func(name string, args ...string) error {
+		return nil // all commands succeed (active + enabled)
+	}
+	t.Cleanup(func() {
+		serveInstallGOOS = prevGOOS
+		serveInstallSystemdUnitPath = prevSystemdPath
+		serveInstallRunCommand = prevRunCommand
+	})
+
+	stdout, readStdout := makeStdoutCapture(t)
+	cmd := &ServeCommand{Action: "status"}
+	if err := cmd.Run(&runtimeContext{CWD: tmpDir, Stdout: stdout}); err != nil {
+		t.Fatalf("ServeCommand.Run returned error: %v", err)
+	}
+
+	out := readStdout()
+	if !strings.Contains(out, "installed=true") {
+		t.Fatalf("expected installed=true, got: %s", out)
+	}
+	if !strings.Contains(out, "active=active") {
+		t.Fatalf("expected active=active, got: %s", out)
+	}
+	if !strings.Contains(out, "enabled=true") {
+		t.Fatalf("expected enabled=true, got: %s", out)
+	}
+}
+
+func TestServeStatusSystemdNotInstalled(t *testing.T) {
+	tmpDir := t.TempDir()
+	unitPath := filepath.Join(tmpDir, "cleanroom.service")
+
+	prevGOOS := serveInstallGOOS
+	prevSystemdPath := serveInstallSystemdUnitPath
+	prevRunCommand := serveInstallRunCommand
+	serveInstallGOOS = "linux"
+	serveInstallSystemdUnitPath = unitPath
+	serveInstallRunCommand = func(name string, args ...string) error {
+		return errors.New("not found")
+	}
+	t.Cleanup(func() {
+		serveInstallGOOS = prevGOOS
+		serveInstallSystemdUnitPath = prevSystemdPath
+		serveInstallRunCommand = prevRunCommand
+	})
+
+	stdout, readStdout := makeStdoutCapture(t)
+	cmd := &ServeCommand{Action: "status"}
+	if err := cmd.Run(&runtimeContext{CWD: tmpDir, Stdout: stdout}); err != nil {
+		t.Fatalf("ServeCommand.Run returned error: %v", err)
+	}
+
+	out := readStdout()
+	if !strings.Contains(out, "installed=false") {
+		t.Fatalf("expected installed=false, got: %s", out)
+	}
+	if !strings.Contains(out, "active=inactive") {
+		t.Fatalf("expected active=inactive, got: %s", out)
+	}
+	if !strings.Contains(out, "enabled=false") {
+		t.Fatalf("expected enabled=false, got: %s", out)
+	}
+}
+
+func TestServeStatusUnsupportedOS(t *testing.T) {
+	prevGOOS := serveInstallGOOS
+	serveInstallGOOS = "windows"
+	t.Cleanup(func() {
+		serveInstallGOOS = prevGOOS
+	})
+
+	stdout, _ := makeStdoutCapture(t)
+	cmd := &ServeCommand{Action: "status"}
+	err := cmd.Run(&runtimeContext{CWD: t.TempDir(), Stdout: stdout})
+	if err == nil {
+		t.Fatal("expected unsupported OS error")
+	}
+	if !strings.Contains(err.Error(), "unsupported on windows") {
+		t.Fatalf("expected unsupported OS message, got: %v", err)
+	}
+}
+
 func TestJoinSystemdExecArgsQuotesSingleQuoteArgs(t *testing.T) {
 	joined := joinSystemdExecArgs([]string{
 		"/usr/local/bin/cleanroom",
