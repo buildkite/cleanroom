@@ -1,0 +1,29 @@
+FROM alpine:3.22
+
+ARG CODEX_VERSION=0.106.0
+ARG CLAUDE_CODE_VERSION=2.1.63
+ARG GEMINI_CLI_VERSION=0.31.0
+
+# `gemini` currently needs native build deps on Alpine and GNU `env` for `env -S`.
+RUN apk add --no-cache \
+  coreutils \
+  g++ \
+  git \
+  make \
+  nodejs \
+  npm \
+  python3 \
+  strace \
+  mise
+
+# Install common agent CLIs with pinned versions for reproducible builds.
+RUN mise use -g --pin \
+  npm:@openai/codex@"${CODEX_VERSION}" \
+  npm:@anthropic-ai/claude-code@"${CLAUDE_CODE_VERSION}" \
+  npm:@google/gemini-cli@"${GEMINI_CLI_VERSION}"
+
+ENV PATH="/root/.local/share/mise/shims:${PATH}"
+
+RUN codex --version && claude --version && gemini --version
+
+CMD ["/bin/sh"]
