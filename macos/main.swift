@@ -1,6 +1,7 @@
 import AppKit
 import Darwin
 import Foundation
+import NetworkExtension
 
 private enum AppConstants {
     static let statusIconFallback = "👩‍🔬"
@@ -8,6 +9,10 @@ private enum AppConstants {
     static let statusIconExtension = "png"
     static let statusIcon2xResource = "menubar-icon@2x"
     static let menuTitle = "Cleanroom"
+    static let networkFilterDescription = "Cleanroom Network Filter"
+    static let networkFilterOrganization = "Buildkite Cleanroom"
+    static let networkFilterProviderBundleName = "CleanroomFilterDataProvider.appex"
+    static let networkFilterProviderExecutableName = "CleanroomFilterDataProvider"
     static let appLogRelativePath = "Library/Logs/cleanroom-menubar.log"
     static let serviceLogRelativePath = "Library/Logs/cleanroom-user-server.log"
     static let launchdSystemPlistPath = "/Library/LaunchDaemons/com.buildkite.cleanroom.plist"
@@ -50,12 +55,18 @@ final class CleanroomMenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate
 
     private var enableItem: NSMenuItem!
     private var runOnStartupItem: NSMenuItem!
+    private var enableNetworkFilterItem: NSMenuItem!
+    private var disableNetworkFilterItem: NSMenuItem!
     private var advancedRestartItem: NSMenuItem!
     private var advancedStopItem: NSMenuItem!
     private var advancedInstallDaemonItem: NSMenuItem!
     private var logsItem: NSMenuItem!
 
     private var appLogHandle: FileHandle?
+    private var networkFilterAvailable = false
+    private var networkFilterLoaded = false
+    private var networkFilterEnabled = false
+    private var networkFilterLastError: String?
 
     private lazy var appLogURL: URL = {
         FileManager.default.homeDirectoryForCurrentUser
@@ -93,7 +104,7 @@ final class CleanroomMenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate
         daemonStatusItem.isEnabled = false
         menu.addItem(daemonStatusItem)
 
-        networkFilterStatusItem = NSMenuItem(title: "Network filter: planned (next milestone)", action: nil, keyEquivalent: "")
+        networkFilterStatusItem = NSMenuItem(title: "Network filter: checking...", action: nil, keyEquivalent: "")
         networkFilterStatusItem.isEnabled = false
         menu.addItem(networkFilterStatusItem)
 
@@ -111,6 +122,16 @@ final class CleanroomMenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate
         runOnStartupItem = NSMenuItem(title: "Run Server At Login", action: #selector(toggleRunOnStartup), keyEquivalent: "")
         runOnStartupItem.target = self
         advancedMenu.addItem(runOnStartupItem)
+
+        advancedMenu.addItem(NSMenuItem.separator())
+
+        enableNetworkFilterItem = NSMenuItem(title: "Enable Network Filter", action: #selector(enableNetworkFilter), keyEquivalent: "")
+        enableNetworkFilterItem.target = self
+        advancedMenu.addItem(enableNetworkFilterItem)
+
+        disableNetworkFilterItem = NSMenuItem(title: "Disable Network Filter", action: #selector(disableNetworkFilter), keyEquivalent: "")
+        disableNetworkFilterItem.target = self
+        advancedMenu.addItem(disableNetworkFilterItem)
 
         advancedMenu.addItem(NSMenuItem.separator())
 
@@ -139,6 +160,7 @@ final class CleanroomMenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate
         menu.addItem(quitItem)
 
         statusItem.menu = menu
+        refreshNetworkFilterStatus()
         refreshUI()
     }
 
@@ -147,6 +169,7 @@ final class CleanroomMenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate
     }
 
     func menuWillOpen(_ menu: NSMenu) {
+        refreshNetworkFilterStatus()
         refreshUI()
     }
 
@@ -212,6 +235,14 @@ final class CleanroomMenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate
             presentError("failed to update startup setting: \(error.localizedDescription)")
             refreshUI()
         }
+    }
+
+    @objc private func enableNetworkFilter(_ sender: Any?) {
+        saveNetworkFilter(enabled: true)
+    }
+
+    @objc private func disableNetworkFilter(_ sender: Any?) {
+        saveNetworkFilter(enabled: false)
     }
 
     @objc private func stopServer(_ sender: Any?) {
@@ -330,6 +361,16 @@ final class CleanroomMenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate
             daemonStatusItem.title = "System daemon: not installed"
         }
 
+        if let error = networkFilterLastError {
+            networkFilterStatusItem.title = "Network filter: unavailable (\(statusErrorSummary(error)))"
+        } else if !networkFilterLoaded {
+            networkFilterStatusItem.title = "Network filter: checking..."
+        } else if networkFilterEnabled {
+            networkFilterStatusItem.title = "Network filter: enabled"
+        } else {
+            networkFilterStatusItem.title = "Network filter: disabled"
+        }
+
         if binaryAvailable {
             if running && cliInstalled {
                 enableItem.title = "Repair Cleanroom"
@@ -343,6 +384,8 @@ final class CleanroomMenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate
         enableItem.isEnabled = binaryAvailable
         runOnStartupItem.state = runOnStartupEnabled ? .on : .off
         runOnStartupItem.isEnabled = binaryAvailable
+        enableNetworkFilterItem.isEnabled = binaryAvailable && networkFilterAvailable && networkFilterLoaded && !networkFilterEnabled
+        disableNetworkFilterItem.isEnabled = binaryAvailable && networkFilterAvailable && networkFilterLoaded && networkFilterEnabled
         advancedRestartItem.isEnabled = binaryAvailable
         advancedStopItem.isEnabled = running
         advancedInstallDaemonItem.isEnabled = binaryAvailable
@@ -482,6 +525,128 @@ final class CleanroomMenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate
             return "exit status \(result.terminationStatus)"
         }
         return merged
+    }
+
+    private func statusErrorSummary(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            return "unknown"
+        }
+        let maxChars = 72
+        if trimmed.count <= maxChars {
+            return trimmed
+        }
+        let idx = trimmed.index(trimmed.startIndex, offsetBy: maxChars)
+        return String(trimmed[..<idx]) + "..."
+    }
+
+    private func refreshNetworkFilterStatus() {
+        if !isNetworkFilterExtensionInstalled() {
+            networkFilterAvailable = false
+            networkFilterLoaded = false
+            networkFilterEnabled = false
+            networkFilterLastError = "filter extension is not bundled in Cleanroom.app"
+            refreshUI()
+            return
+        }
+
+        networkFilterAvailable = true
+        loadNetworkFilterManager { [weak self] manager, error in
+            guard let self else {
+                return
+            }
+            if let error {
+                self.networkFilterLoaded = false
+                self.networkFilterEnabled = false
+                self.networkFilterLastError = error.localizedDescription
+            } else {
+                self.networkFilterLoaded = true
+                self.networkFilterEnabled = manager?.isEnabled ?? false
+                self.networkFilterLastError = nil
+            }
+            self.refreshUI()
+        }
+    }
+
+    private func saveNetworkFilter(enabled: Bool) {
+        if !isNetworkFilterExtensionInstalled() {
+            presentError("network filter extension is missing from Cleanroom.app")
+            refreshNetworkFilterStatus()
+            return
+        }
+
+        loadNetworkFilterManager { [weak self] manager, error in
+            guard let self else {
+                return
+            }
+            if let error {
+                self.presentError("failed to load network filter preferences: \(error.localizedDescription)")
+                self.refreshNetworkFilterStatus()
+                return
+            }
+            guard let manager else {
+                self.presentError("failed to load network filter manager")
+                self.refreshNetworkFilterStatus()
+                return
+            }
+
+            if enabled {
+                manager.providerConfiguration = self.makeNetworkFilterConfiguration()
+                manager.localizedDescription = AppConstants.networkFilterDescription
+            }
+            manager.isEnabled = enabled
+            manager.saveToPreferences { [weak self] saveError in
+                DispatchQueue.main.async {
+                    guard let self else {
+                        return
+                    }
+                    if let saveError {
+                        self.presentError("failed to \(enabled ? "enable" : "disable") network filter: \(saveError.localizedDescription)")
+                    } else {
+                        self.appendLog("\(enabled ? "enabled" : "disabled") network filter")
+                        if enabled {
+                            self.showInfo("Network filter enabled request submitted.\nmacOS may prompt for additional approval in System Settings.")
+                        }
+                    }
+                    self.refreshNetworkFilterStatus()
+                }
+            }
+        }
+    }
+
+    private func loadNetworkFilterManager(
+        completion: @escaping (_ manager: NEFilterManager?, _ error: Error?) -> Void
+    ) {
+        let manager = NEFilterManager.shared()
+        manager.loadFromPreferences { error in
+            DispatchQueue.main.async {
+                completion(manager, error)
+            }
+        }
+    }
+
+    private func makeNetworkFilterConfiguration() -> NEFilterProviderConfiguration {
+        let configuration = NEFilterProviderConfiguration()
+        configuration.filterSockets = true
+        configuration.organization = AppConstants.networkFilterOrganization
+        return configuration
+    }
+
+    private func isNetworkFilterExtensionInstalled() -> Bool {
+        guard let pluginsURL = Bundle.main.builtInPlugInsURL else {
+            return false
+        }
+        let extensionURL = pluginsURL.appendingPathComponent(
+            AppConstants.networkFilterProviderBundleName,
+            isDirectory: true
+        )
+        let infoURL = extensionURL.appendingPathComponent("Contents/Info.plist", isDirectory: false)
+        let executableURL = extensionURL.appendingPathComponent(
+            "Contents/MacOS/\(AppConstants.networkFilterProviderExecutableName)",
+            isDirectory: false
+        )
+        let fm = FileManager.default
+        return fm.fileExists(atPath: infoURL.path) && fm.isExecutableFile(atPath: executableURL.path)
     }
 
     private func isRunOnStartupEnabled() -> Bool {
