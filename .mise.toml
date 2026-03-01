@@ -13,7 +13,7 @@ run = "go test ./..."
 
 [tasks.lint-shell]
 description = "Lint shell scripts"
-run = "shellcheck -x scripts/cleanroom-root-helper.sh scripts/benchmark-tti.sh scripts/build-go.sh scripts/install-go.sh scripts/install.sh scripts/release.sh"
+run = "shellcheck -x scripts/cleanroom-root-helper.sh scripts/benchmark-tti.sh scripts/build-go.sh scripts/build-macos-app.sh scripts/install-go.sh scripts/install-macos-app.sh scripts/install.sh scripts/release.sh"
 
 [tasks.test-full]
 description = "Run full Go test suite"
@@ -27,9 +27,14 @@ run = "scripts/build-go.sh"
 description = "Build macOS darwin-vz helper into dist/"
 run = "{% if os() == \"macos\" %}mkdir -p dist && xcrun swiftc -O -framework Virtualization cmd/cleanroom-darwin-vz/main.swift -o dist/cleanroom-darwin-vz && codesign --force --sign - --entitlements cmd/cleanroom-darwin-vz/entitlements.plist dist/cleanroom-darwin-vz{% else %}true{% endif %}"
 
+[tasks."build:macos-app"]
+description = "Build macOS menubar app bundle into dist/"
+depends = ["build:go", "build:darwin"]
+run = "{% if os() == \"macos\" %}scripts/build-macos-app.sh{% else %}true{% endif %}"
+
 [tasks.build]
 description = "Build binaries into dist/"
-depends = ["build:go", "build:darwin"]
+depends = ["build:go", "build:darwin", "build:macos-app"]
 run = "true"
 
 [tasks."install:go"]
@@ -41,9 +46,14 @@ description = "Install macOS darwin-vz helper into GOBIN (or GOPATH/bin)"
 depends = ["build:darwin"]
 run = "{% if os() == \"macos\" %}BIN_DIR=\"$(go env GOBIN)\"; if [ -z \"$BIN_DIR\" ]; then BIN_DIR=\"$(go env GOPATH)/bin\"; fi; ENTITLEMENTS=\"cmd/cleanroom-darwin-vz/entitlements.plist\"; mkdir -p \"$BIN_DIR\" && install -m 0755 dist/cleanroom-darwin-vz \"$BIN_DIR/cleanroom-darwin-vz\" && codesign --force --sign - --entitlements \"$ENTITLEMENTS\" \"$BIN_DIR/cleanroom-darwin-vz\"{% else %}true{% endif %}"
 
+[tasks."install:macos-app"]
+description = "Install macOS menubar app to ~/Applications (override with CLEANROOM_APP_INSTALL_DIR)"
+depends = ["build:macos-app"]
+run = "{% if os() == \"macos\" %}scripts/install-macos-app.sh{% else %}true{% endif %}"
+
 [tasks.install]
 description = "Install all binaries into GOBIN (or GOPATH/bin)"
-depends = ["install:go", "install:darwin"]
+depends = ["install:go", "install:darwin", "install:macos-app"]
 run = "true"
 
 [tasks.doctor]
