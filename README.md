@@ -74,7 +74,7 @@ Install a specific version:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/buildkite/cleanroom/main/scripts/install.sh | \
-  bash -s -- --version v0.1.0
+  bash -s -- --version vX.Y.Z
 ```
 
 By default this installs to `/usr/local/bin`. Override with `--install-dir` or `CLEANROOM_INSTALL_DIR`.

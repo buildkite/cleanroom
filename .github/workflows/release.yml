@@ -17,35 +17,23 @@ jobs:
         include:
           - arch: arm64
             target: arm64-apple-macosx13.0
-          - arch: x86_64
+          - arch: amd64
             target: x86_64-apple-macosx13.0
     steps:
       - uses: actions/checkout@v4
 
       - name: Build cleanroom-darwin-vz
         run: |
-          mkdir -p dist
+          mkdir -p "release-extra/darwin_${{ matrix.arch }}"
           xcrun swiftc -O -target "${{ matrix.target }}" -framework Virtualization \
             cmd/cleanroom-darwin-vz/main.swift \
-            -o dist/cleanroom-darwin-vz
-
-      - name: Create archive
-        run: |
-          ARCHIVE="cleanroom-darwin-vz_Darwin_${{ matrix.arch }}.tar.gz"
-          cp cmd/cleanroom-darwin-vz/entitlements.plist dist/
-          tar -czf "dist/${ARCHIVE}" \
-            -C dist cleanroom-darwin-vz entitlements.plist
-          (
-            cd dist
-            shasum -a 256 "${ARCHIVE}" > "${ARCHIVE}.sha256"
-          )
+            -o "release-extra/darwin_${{ matrix.arch }}/cleanroom-darwin-vz"
+          cp cmd/cleanroom-darwin-vz/entitlements.plist "release-extra/darwin_${{ matrix.arch }}/entitlements.plist"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: cleanroom-darwin-vz-${{ matrix.arch }}
-          path: |
-            dist/cleanroom-darwin-vz_Darwin_${{ matrix.arch }}.tar.gz
-            dist/cleanroom-darwin-vz_Darwin_${{ matrix.arch }}.tar.gz.sha256
+          name: darwin-vz-${{ matrix.arch }}
+          path: release-extra
 
   release:
     runs-on: ubuntu-latest
@@ -59,23 +47,27 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - uses: actions/download-artifact@v4
+        with:
+          name: darwin-vz-arm64
+          path: release-extra
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: darwin-vz-amd64
+          path: release-extra
+
+      - name: Build release extra binaries
+        run: |
+          mkdir -p release-extra/linux_amd64 release-extra/linux_arm64
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" \
+            -o release-extra/linux_amd64/cleanroom-guest-agent ./cmd/cleanroom-guest-agent
+          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" \
+            -o release-extra/linux_arm64/cleanroom-guest-agent ./cmd/cleanroom-guest-agent
+
       - uses: goreleaser/goreleaser-action@v6
         with:
           version: "~> v2"
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: cleanroom-darwin-vz-*
-          merge-multiple: true
-          path: dist
-
-      - name: Upload darwin-vz helper to release
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release upload "${{ github.ref_name }}" \
-            dist/cleanroom-darwin-vz_Darwin_*.tar.gz \
-            dist/cleanroom-darwin-vz_Darwin_*.tar.gz.sha256
