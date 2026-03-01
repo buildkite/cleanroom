@@ -33,6 +33,7 @@ Primary reason for having a macOS app:
 - One-click setup (`Enable Cleanroom`) handles service + CLI wiring.
 - Ongoing user service control remains in `Advanced` actions.
 - `Advanced` includes a `Run Server At Login` checkbox.
+- `Advanced` includes `Enable Network Filter` / `Disable Network Filter` controls.
 - Logs are discoverable from the menu.
 - Existing CLI UX remains valid; app is additive.
 
@@ -50,9 +51,11 @@ Primary reason for having a macOS app:
 - Menubar app manages a per-user `launchd` LaunchAgent at `~/Library/LaunchAgents/com.buildkite.cleanroom.user.plist`.
 - `Enable Cleanroom` bootstraps/kickstarts the LaunchAgent and ensures `/usr/local/bin/cleanroom` points to bundled CLI.
 - Advanced actions can restart/stop user service and install the system daemon when needed.
+- App now loads/saves `NEFilterManager` preferences for network-filter enable/disable requests and surfaces status/error in the menu.
+- App bundle now includes `CleanroomFilterDataProvider.appex` from `macos/CleanroomFilterDataProvider/`.
 - Service stdout/stderr is captured to `~/Library/Logs/cleanroom-user-server.log`.
 - App logs remain in `~/Library/Logs/cleanroom-menubar.log`.
-- Network filter integration is not in MVP; it is the immediate next milestone.
+- Provider-side per-cleanroom policy enforcement remains the immediate next milestone (current provider behavior is allow-all).
 
 ### Privileged path
 
@@ -60,7 +63,7 @@ Primary reason for having a macOS app:
 - This reuses current daemon install logic and service file rendering in Go.
 - Network filter enablement (next milestone) will also require explicit user/admin approval via System Settings prompts.
 
-### Network Extension model (next milestone)
+### Network Extension model (phase 2)
 
 - The app enables a system network filter using `NEFilterManager`.
 - Cleanroom run policy (allowlist/deny) is pushed from `cleanroom serve` to the extension control plane.
@@ -81,13 +84,16 @@ Implementation notes:
 - Bundle embeds `cleanroom` at `Contents/Helpers/cleanroom` so app startup does not depend on PATH.
 - Bundle embeds `cleanroom-darwin-vz` at `Contents/Helpers/cleanroom-darwin-vz` so the darwin-vz backend can resolve its sibling helper path.
 - Bundle embeds `cleanroom-guest-agent-linux-<arch>` at `Contents/Resources/` for darwin-vz guest bootstrapping on host architecture.
+- Bundle embeds `CleanroomFilterDataProvider.appex` at `Contents/PlugIns/` and signs it with content-filter entitlements.
+- Local ad-hoc builds do not apply network-extension entitlements to the host app so `Cleanroom.app` remains launchable.
+- Host app network-extension entitlements are applied when using a real signing identity (`CLEANROOM_CODESIGN_IDENTITY`).
 
 ### Local install
 
 - `mise run install:macos-app` copies the app to `~/Applications/Cleanroom.app`.
 - User launches it directly from Finder/Spotlight.
 
-### Network filter install flow (next milestone)
+### Network filter install flow
 
 1. User installs/launches `Cleanroom.app`.
 2. User chooses "Enable Network Filter" in the menubar app.
@@ -131,9 +137,8 @@ When to split to its own repo:
 - Open logs and quit
 
 2. Network filtering (primary follow-up)
-- add NE app extension targets (data provider, optional control provider)
-- menubar action to enable/disable filter and show health
-- policy sync channel from `cleanroom serve` -> NE provider
+- add policy-sync plumbing from `cleanroom serve` into the bundled NE provider
+- optional control provider target if bidirectional control path is needed
 - enforce per-cleanroom run ingress/egress allowlists
 
 3. Stability pass
