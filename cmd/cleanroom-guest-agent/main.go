@@ -101,7 +101,10 @@ func handleConnTTY(conn io.ReadWriteCloser, dec *json.Decoder, req vsockexec.Exe
 	}
 	cmd.Env = env
 
-	ptmx, err := pty.Start(cmd)
+	// When the host-side attach resize arrives late, a non-interactive launcher
+	// can leave PTYs at 0x0. Start with a safe fallback size so full-screen TUIs
+	// can render immediately, then honor resize frames as they arrive.
+	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: 80, Rows: 24})
 	if err != nil {
 		sendErrorResponse(conn, err)
 		return
