@@ -162,6 +162,7 @@ type ExecCommand struct {
 	Chdir     string `short:"c" help:"Change to this directory before running commands"`
 	Backend   string `help:"Execution backend (defaults to runtime config or firecracker)"`
 	SandboxID string `help:"Reuse an existing sandbox instead of creating a new one"`
+	Image     string `help:"Override sandbox image ref for newly created sandboxes (tag, digest, or local Docker image)"`
 	Remove    bool   `name:"rm" help:"Terminate the sandbox after command completion"`
 
 	LaunchSeconds int64 `help:"VM boot/guest-agent readiness timeout in seconds"`
@@ -173,6 +174,7 @@ type SandboxCreateCommand struct {
 	clientFlags
 	Chdir         string `short:"c" help:"Change to this directory before running commands"`
 	Backend       string `help:"Execution backend (defaults to runtime config or firecracker)"`
+	Image         string `help:"Override sandbox image ref (tag, digest, or local Docker image)"`
 	LaunchSeconds int64  `help:"VM boot/guest-agent readiness timeout in seconds"`
 	JSON          bool   `help:"Print sandbox as JSON"`
 }
@@ -181,6 +183,7 @@ type CreateCommand struct {
 	clientFlags
 	Chdir         string `short:"c" help:"Change to this directory before running commands"`
 	Backend       string `help:"Execution backend (defaults to runtime config or firecracker)"`
+	Image         string `help:"Override sandbox image ref (tag, digest, or local Docker image)"`
 	LaunchSeconds int64  `help:"VM boot/guest-agent readiness timeout in seconds"`
 	JSON          bool   `help:"Print sandbox as JSON"`
 }
@@ -190,6 +193,7 @@ type ConsoleCommand struct {
 	Chdir     string `short:"c" help:"Change to this directory before running commands"`
 	Backend   string `help:"Execution backend (defaults to runtime config or firecracker)"`
 	SandboxID string `help:"Reuse an existing sandbox instead of creating a new one"`
+	Image     string `help:"Override sandbox image ref for newly created sandboxes (tag, digest, or local Docker image)"`
 	Remove    bool   `name:"rm" help:"Terminate the sandbox after console exits"`
 
 	LaunchSeconds int64 `help:"VM boot/guest-agent readiness timeout in seconds"`
@@ -281,6 +285,19 @@ var (
 		}
 
 		return fmt.Sprintf("%s@%s", tag.Context().Name(), desc.Digest.String()), nil
+	}
+	resolveReferenceForImageOverride = func(ctx context.Context, source string) (string, error) {
+		resolved, err := resolveReferenceForPolicyUpdate(ctx, source)
+		if err == nil {
+			return resolved, nil
+		}
+
+		localRef, localErr := importLocalDockerImageForOverride(ctx, source)
+		if localErr == nil {
+			return localRef, nil
+		}
+
+		return "", fmt.Errorf("%w; local docker fallback failed: %v", err, localErr)
 	}
 	serveInstallGOOS            = runtime.GOOS
 	serveInstallEUID            = os.Geteuid
@@ -674,7 +691,7 @@ func (c *SandboxTerminateCommand) Run(ctx *runtimeContext) error {
 	return err
 }
 
-func runSandboxCreate(ctx *runtimeContext, connectFlags clientFlags, chdir, backend string, launchSeconds int64, outputJSON bool) error {
+func runSandboxCreate(ctx *runtimeContext, connectFlags clientFlags, chdir, backend, imageRefOverride string, launchSeconds int64, outputJSON bool) error {
 	client, err := connectFlags.connect()
 	if err != nil {
 		return err
@@ -685,6 +702,10 @@ func runSandboxCreate(ctx *runtimeContext, connectFlags clientFlags, chdir, back
 		return err
 	}
 	compiled, _, err := ctx.Loader.LoadAndCompile(cwd)
+	if err != nil {
+		return err
+	}
+	compiled, err = overrideCompiledPolicyImage(compiled, imageRefOverride)
 	if err != nil {
 		return err
 	}
@@ -717,11 +738,11 @@ func runSandboxCreate(ctx *runtimeContext, connectFlags clientFlags, chdir, back
 }
 
 func (c *SandboxCreateCommand) Run(ctx *runtimeContext) error {
-	return runSandboxCreate(ctx, c.clientFlags, c.Chdir, c.Backend, c.LaunchSeconds, c.JSON)
+	return runSandboxCreate(ctx, c.clientFlags, c.Chdir, c.Backend, c.Image, c.LaunchSeconds, c.JSON)
 }
 
 func (c *CreateCommand) Run(ctx *runtimeContext) error {
-	return runSandboxCreate(ctx, c.clientFlags, c.Chdir, c.Backend, c.LaunchSeconds, c.JSON)
+	return runSandboxCreate(ctx, c.clientFlags, c.Chdir, c.Backend, c.Image, c.LaunchSeconds, c.JSON)
 }
 
 func (e *ExecCommand) Run(ctx *runtimeContext) error {
@@ -745,7 +766,7 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 		"sandbox_id", strings.TrimSpace(e.SandboxID),
 		"command_argc", len(e.Command),
 	)
-	sandboxID, err := ensureSandboxID(client, ctx.Loader, cwd, e.Backend, strings.TrimSpace(e.SandboxID), e.LaunchSeconds)
+	sandboxID, err := ensureSandboxID(client, ctx.Loader, cwd, e.Backend, strings.TrimSpace(e.SandboxID), e.Image, e.LaunchSeconds)
 	if err != nil {
 		return err
 	}
@@ -925,7 +946,7 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 		"sandbox_id", strings.TrimSpace(c.SandboxID),
 		"command_argc", len(command),
 	)
-	sandboxID, err := ensureSandboxID(client, ctx.Loader, cwd, c.Backend, strings.TrimSpace(c.SandboxID), c.LaunchSeconds)
+	sandboxID, err := ensureSandboxID(client, ctx.Loader, cwd, c.Backend, strings.TrimSpace(c.SandboxID), c.Image, c.LaunchSeconds)
 	if err != nil {
 		return err
 	}
@@ -1885,13 +1906,20 @@ func inspectRun(stdout *os.File, baseDir, runID string) error {
 	return err
 }
 
-func ensureSandboxID(client *controlclient.Client, loader policyLoader, cwd, backendName, existingSandboxID string, launchSeconds int64) (string, error) {
+func ensureSandboxID(client *controlclient.Client, loader policyLoader, cwd, backendName, existingSandboxID, imageRefOverride string, launchSeconds int64) (string, error) {
 	sandboxID := strings.TrimSpace(existingSandboxID)
 	if sandboxID != "" {
+		if strings.TrimSpace(imageRefOverride) != "" {
+			return "", errors.New("--image cannot be used with --sandbox-id")
+		}
 		return sandboxID, nil
 	}
 
 	compiled, _, err := loader.LoadAndCompile(cwd)
+	if err != nil {
+		return "", err
+	}
+	compiled, err = overrideCompiledPolicyImage(compiled, imageRefOverride)
 	if err != nil {
 		return "", err
 	}
@@ -1906,6 +1934,137 @@ func ensureSandboxID(client *controlclient.Client, loader policyLoader, cwd, bac
 		return "", fmt.Errorf("create sandbox: %w", err)
 	}
 	return strings.TrimSpace(createSandboxResp.GetSandbox().GetSandboxId()), nil
+}
+
+func overrideCompiledPolicyImage(compiled *policy.CompiledPolicy, imageRefOverride string) (*policy.CompiledPolicy, error) {
+	imageRefOverride = strings.TrimSpace(imageRefOverride)
+	if imageRefOverride == "" {
+		return compiled, nil
+	}
+
+	resolvedRef, err := resolveReferenceForImageOverride(context.Background(), imageRefOverride)
+	if err != nil {
+		return nil, fmt.Errorf("invalid --image value: %w", err)
+	}
+	parsedRef, err := ociref.ParseDigestReference(resolvedRef)
+	if err != nil {
+		return nil, fmt.Errorf("invalid --image value: %w", err)
+	}
+
+	pb := compiled.ToProto()
+	pb.ImageRef = parsedRef.Original
+	pb.ImageDigest = parsedRef.Digest()
+	pb.Hash = ""
+
+	overridden, err := policy.FromProto(pb)
+	if err != nil {
+		return nil, fmt.Errorf("apply --image override: %w", err)
+	}
+	return overridden, nil
+}
+
+func importLocalDockerImageForOverride(ctx context.Context, source string) (string, error) {
+	source = strings.TrimSpace(source)
+	if source == "" {
+		return "", errors.New("image reference cannot be empty")
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		return "", fmt.Errorf("docker CLI not found in PATH: %w", err)
+	}
+
+	inspectCmd := exec.CommandContext(ctx, "docker", "image", "inspect", "--format", "{{.Id}}", source)
+	var inspectStdout bytes.Buffer
+	var inspectStderr bytes.Buffer
+	inspectCmd.Stdout = &inspectStdout
+	inspectCmd.Stderr = &inspectStderr
+	if err := inspectCmd.Run(); err != nil {
+		errText := strings.TrimSpace(inspectStderr.String())
+		if errText == "" {
+			errText = err.Error()
+		}
+		return "", fmt.Errorf("inspect local docker image %q: %s", source, errText)
+	}
+
+	imageID := strings.TrimSpace(inspectStdout.String())
+	if imageID == "" {
+		return "", fmt.Errorf("inspect local docker image %q returned empty image id", source)
+	}
+	digestRef, err := ociref.ParseDigestReference("local/docker-image@" + imageID)
+	if err != nil {
+		return "", fmt.Errorf("inspect local docker image %q returned invalid image id %q: %w", source, imageID, err)
+	}
+
+	mgr, err := newImageManager()
+	if err != nil {
+		return "", err
+	}
+
+	cachedRecords, err := mgr.List(ctx)
+	if err != nil {
+		return "", err
+	}
+	for _, record := range cachedRecords {
+		if record.Digest != digestRef.Digest() {
+			continue
+		}
+		if _, statErr := os.Stat(record.RootFSPath); statErr == nil {
+			_, _ = fmt.Fprintf(os.Stderr, "using cached local image override %s\n", digestRef.Original)
+			return digestRef.Original, nil
+		}
+	}
+
+	_, _ = fmt.Fprintf(os.Stderr, "importing local docker image %q into cleanroom cache (first run can take a while)\n", source)
+
+	createCmd := exec.CommandContext(ctx, "docker", "create", source)
+	var createStdout bytes.Buffer
+	var createStderr bytes.Buffer
+	createCmd.Stdout = &createStdout
+	createCmd.Stderr = &createStderr
+	if err := createCmd.Run(); err != nil {
+		errText := strings.TrimSpace(createStderr.String())
+		if errText == "" {
+			errText = err.Error()
+		}
+		return "", fmt.Errorf("create container from %q: %s", source, errText)
+	}
+	containerID := strings.TrimSpace(createStdout.String())
+	if containerID == "" {
+		return "", fmt.Errorf("create container from %q returned empty container id", source)
+	}
+	defer func() {
+		_ = exec.Command("docker", "rm", "-f", containerID).Run()
+	}()
+
+	exportFile, err := os.CreateTemp("", "cleanroom-local-image-*.tar")
+	if err != nil {
+		return "", fmt.Errorf("create temporary export file: %w", err)
+	}
+	defer func() {
+		_ = exportFile.Close()
+		_ = os.Remove(exportFile.Name())
+	}()
+
+	exportCmd := exec.CommandContext(ctx, "docker", "export", containerID)
+	var exportStderr bytes.Buffer
+	exportCmd.Stdout = exportFile
+	exportCmd.Stderr = &exportStderr
+	if err := exportCmd.Run(); err != nil {
+		errText := strings.TrimSpace(exportStderr.String())
+		if errText == "" {
+			errText = err.Error()
+		}
+		return "", fmt.Errorf("export container %q from %q: %s", containerID, source, errText)
+	}
+	if _, err := exportFile.Seek(0, io.SeekStart); err != nil {
+		return "", fmt.Errorf("rewind temporary export file: %w", err)
+	}
+
+	if _, err := mgr.Import(ctx, digestRef.Original, "-", exportFile); err != nil {
+		return "", fmt.Errorf("import local docker image %q into cleanroom cache: %w", source, err)
+	}
+
+	_, _ = fmt.Fprintf(os.Stderr, "imported local docker image override as %s\n", digestRef.Original)
+	return digestRef.Original, nil
 }
 
 func getFinalExecutionExitCode(client *controlclient.Client, sandboxID, executionID string) (int, bool) {
