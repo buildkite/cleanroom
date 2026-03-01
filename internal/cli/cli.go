@@ -73,6 +73,7 @@ type CLI struct {
 	Policy  PolicyCommand  `cmd:"" help:"Policy commands"`
 	Config  ConfigCommand  `cmd:"" help:"Runtime config commands"`
 	Image   ImageCommand   `cmd:"" help:"Manage OCI image cache artifacts"`
+	Agent   AgentCommand   `cmd:"" help:"Run long-lived agent workflows"`
 	Exec    ExecCommand    `cmd:"" help:"Execute a command in a cleanroom backend"`
 	Console ConsoleCommand `cmd:"" help:"Attach an interactive console to a cleanroom execution"`
 	Serve   ServeCommand   `cmd:"" help:"Run the cleanroom control-plane server"`
@@ -121,6 +122,21 @@ type ImageBumpRefCommand struct {
 	Source     string `arg:"" optional:"" help:"Image ref to resolve (default: ghcr.io/buildkite/cleanroom-base/alpine:latest)"`
 	Chdir      string `short:"c" help:"Change to this directory before running commands"`
 	PolicyPath string `help:"Policy file path (default: cleanroom.yaml, or .buildkite/cleanroom.yaml when primary is missing)"`
+}
+
+type AgentCommand struct {
+	Codex AgentCodexCommand `cmd:"" help:"Create and run a long-running Codex agent session in a sandbox"`
+}
+
+type AgentCodexCommand struct {
+	clientFlags
+	Chdir     string `short:"c" help:"Change to this directory before running commands"`
+	Backend   string `help:"Execution backend (defaults to runtime config or firecracker)"`
+	SandboxID string `help:"Reuse an existing sandbox instead of creating a new one"`
+
+	LaunchSeconds int64 `help:"VM boot/guest-agent readiness timeout in seconds"`
+
+	Args []string `arg:"" passthrough:"" optional:"" help:"Arguments to pass to codex (prefix with '--' to separate cleanroom and codex flags)"`
 }
 
 type PolicyCommand struct {
@@ -680,6 +696,22 @@ func (c *SandboxTerminateCommand) Run(ctx *runtimeContext) error {
 
 	_, err = fmt.Fprintln(ctx.Stdout, resp.Message)
 	return err
+}
+
+func (a *AgentCodexCommand) Run(ctx *runtimeContext) error {
+	command := make([]string, 0, len(a.Args)+1)
+	command = append(command, "codex")
+	command = append(command, a.Args...)
+
+	console := ConsoleCommand{
+		clientFlags:   a.clientFlags,
+		Chdir:         a.Chdir,
+		Backend:       a.Backend,
+		SandboxID:     a.SandboxID,
+		LaunchSeconds: a.LaunchSeconds,
+		Command:       command,
+	}
+	return console.Run(ctx)
 }
 
 func (e *ExecCommand) Run(ctx *runtimeContext) error {

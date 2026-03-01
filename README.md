@@ -139,6 +139,18 @@ Interactive console:
 cleanroom console -- bash
 ```
 
+Agent shortcut (creates/reuses sandbox from current policy and runs Codex inside it):
+
+```bash
+cleanroom agent codex
+cleanroom agent codex --yolo --model gpt-5.3-codex
+```
+
+## Examples
+
+- [Basic](examples/basic/README.md)
+- [Codex `--yolo` on macOS](examples/codex-yolo-macos/README.md)
+
 ## Policy file
 
 A `cleanroom.yaml` in your repo defines the sandbox policy. Cleanroom also checks `.buildkite/cleanroom.yaml` as a fallback.

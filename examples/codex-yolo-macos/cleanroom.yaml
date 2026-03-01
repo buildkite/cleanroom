@@ -1,0 +1,13 @@
+version: 1
+sandbox:
+  image:
+    ref: ghcr.io/your-org/cleanroom-codex@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  network:
+    default: deny
+    allow:
+      - host: api.openai.com
+        ports: [443]
+      - host: github.com
+        ports: [443]
+      - host: api.github.com
+        ports: [443]

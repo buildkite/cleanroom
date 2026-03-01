@@ -95,6 +95,30 @@ func TestConfigInitParses(t *testing.T) {
 	}
 }
 
+func TestAgentCodexParsesWithoutArgs(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"agent", "codex"}); err != nil {
+		t.Fatalf("parse agent codex returned error: %v", err)
+	}
+	if got := len(c.Agent.Codex.Args); got != 0 {
+		t.Fatalf("expected no codex args, got %v", c.Agent.Codex.Args)
+	}
+}
+
+func TestAgentCodexPassesThroughArgs(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"agent", "codex", "--yolo", "--model", "gpt-5.3-codex"}); err != nil {
+		t.Fatalf("parse agent codex args returned error: %v", err)
+	}
+	if got, want := strings.Join(c.Agent.Codex.Args, " "), "--yolo --model gpt-5.3-codex"; got != want {
+		t.Fatalf("unexpected codex args: got %q want %q", got, want)
+	}
+}
+
 func TestServeCommandParsesWithoutAction(t *testing.T) {
 	c := &CLI{}
 	parser := newParserForTest(t, c)
