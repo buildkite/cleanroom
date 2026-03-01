@@ -69,9 +69,9 @@ func buildTransport(ep endpoint.Endpoint, baseURL string, tlsOpts tlsconfig.Opti
 			tlsCfg = &tls.Config{MinVersion: tls.VersionTLS13}
 		}
 		return &http.Transport{
-			Proxy:              http.ProxyFromEnvironment,
-			TLSClientConfig:    tlsCfg,
-			ForceAttemptHTTP2:  true,
+			Proxy:             http.ProxyFromEnvironment,
+			TLSClientConfig:   tlsCfg,
+			ForceAttemptHTTP2: true,
 		}, nil
 	}
 
@@ -143,6 +143,14 @@ func (c *Client) StreamSandboxEvents(ctx context.Context, req *cleanroomv1.Strea
 
 func (c *Client) CreateExecution(ctx context.Context, req *cleanroomv1.CreateExecutionRequest) (*cleanroomv1.CreateExecutionResponse, error) {
 	resp, err := c.executionClient.CreateExecution(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
+func (c *Client) OpenInteractiveExecution(ctx context.Context, req *cleanroomv1.OpenInteractiveExecutionRequest) (*cleanroomv1.OpenInteractiveExecutionResponse, error) {
+	resp, err := c.executionClient.OpenInteractiveExecution(ctx, connect.NewRequest(req))
 	if err != nil {
 		return nil, err
 	}

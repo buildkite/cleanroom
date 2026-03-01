@@ -134,6 +134,13 @@ func (c *Client) CreateExecution(ctx context.Context, req *CreateExecutionReques
 	return c.inner.CreateExecution(ctx, req)
 }
 
+func (c *Client) OpenInteractiveExecution(ctx context.Context, req *OpenInteractiveExecutionRequest) (*OpenInteractiveExecutionResponse, error) {
+	if c == nil || c.inner == nil {
+		return nil, errors.New("nil client")
+	}
+	return c.inner.OpenInteractiveExecution(ctx, req)
+}
+
 func (c *Client) GetExecution(ctx context.Context, req *GetExecutionRequest) (*GetExecutionResponse, error) {
 	if c == nil || c.inner == nil {
 		return nil, errors.New("nil client")

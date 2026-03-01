@@ -136,6 +136,14 @@ func (s *Server) CreateExecution(ctx context.Context, req *connect.Request[clean
 	return connect.NewResponse(resp), nil
 }
 
+func (s *Server) OpenInteractiveExecution(ctx context.Context, req *connect.Request[cleanroomv1.OpenInteractiveExecutionRequest]) (*connect.Response[cleanroomv1.OpenInteractiveExecutionResponse], error) {
+	resp, err := s.service.OpenInteractiveExecution(ctx, req.Msg)
+	if err != nil {
+		return nil, toConnectError(err)
+	}
+	return connect.NewResponse(resp), nil
+}
+
 func (s *Server) GetExecution(ctx context.Context, req *connect.Request[cleanroomv1.GetExecutionRequest]) (*connect.Response[cleanroomv1.GetExecutionResponse], error) {
 	resp, err := s.service.GetExecution(ctx, req.Msg)
 	if err != nil {

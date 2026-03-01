@@ -692,6 +692,7 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 	createExecutionResp, err := client.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
 		SandboxId: sandboxID,
 		Command:   append([]string(nil), e.Command...),
+		Kind:      cleanroomv1.ExecutionKind_EXECUTION_KIND_BATCH,
 		Options: &cleanroomv1.ExecutionOptions{
 			LaunchSeconds: e.LaunchSeconds,
 		},
@@ -871,6 +872,7 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 	createExecutionResp, err := client.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
 		SandboxId: sandboxID,
 		Command:   command,
+		Kind:      cleanroomv1.ExecutionKind_EXECUTION_KIND_INTERACTIVE,
 		Options: &cleanroomv1.ExecutionOptions{
 			LaunchSeconds: c.LaunchSeconds,
 			Tty:           true,
