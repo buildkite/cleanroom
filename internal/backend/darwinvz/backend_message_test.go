@@ -27,8 +27,8 @@ func TestDarwinVZResultMessageIncludesGuestError(t *testing.T) {
 	}
 }
 
-func TestBuildRuntimeWarningsAlwaysIncludesGuestNetworkWarning(t *testing.T) {
-	warnings := buildRuntimeWarnings("")
+func TestBuildRuntimeWarningsIncludesGuestNetworkWarningWhenProvided(t *testing.T) {
+	warnings := buildRuntimeWarnings("", guestNetworkUnavailableWarning)
 	if len(warnings) != 1 {
 		t.Fatalf("expected one warning, got %d", len(warnings))
 	}
@@ -38,7 +38,7 @@ func TestBuildRuntimeWarningsAlwaysIncludesGuestNetworkWarning(t *testing.T) {
 }
 
 func TestBuildRuntimeWarningsIncludesPolicyWarningWhenPresent(t *testing.T) {
-	warnings := buildRuntimeWarnings("  policy warn  ")
+	warnings := buildRuntimeWarnings("  policy warn  ", guestNetworkUnavailableWarning)
 	if len(warnings) != 2 {
 		t.Fatalf("expected two warnings, got %d", len(warnings))
 	}
@@ -47,6 +47,16 @@ func TestBuildRuntimeWarningsIncludesPolicyWarningWhenPresent(t *testing.T) {
 	}
 	if warnings[1] != guestNetworkUnavailableWarning {
 		t.Fatalf("unexpected guest networking warning: got %q", warnings[1])
+	}
+}
+
+func TestBuildRuntimeWarningsOmitsGuestNetworkWarningWhenEmpty(t *testing.T) {
+	warnings := buildRuntimeWarnings("  policy warn  ", "")
+	if len(warnings) != 1 {
+		t.Fatalf("expected one warning, got %d", len(warnings))
+	}
+	if warnings[0] != "policy warn" {
+		t.Fatalf("unexpected policy warning: got %q", warnings[0])
 	}
 }
 

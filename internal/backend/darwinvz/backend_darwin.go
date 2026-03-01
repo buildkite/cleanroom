@@ -212,9 +212,10 @@ func (a *Adapter) Name() string {
 }
 
 func (a *Adapter) Capabilities() map[string]bool {
+	allowlistSupported, _ := hostEgressFilterEnabled()
 	return map[string]bool{
 		backend.CapabilityNetworkDefaultDeny:     true,
-		backend.CapabilityNetworkAllowlistEgress: false,
+		backend.CapabilityNetworkAllowlistEgress: allowlistSupported,
 		backend.CapabilityNetworkGuestInterface:  true,
 	}
 }
@@ -232,13 +233,20 @@ func (a *Adapter) Doctor(_ context.Context, req backend.DoctorRequest) (*backend
 	appendCheck := func(name, status, message string) {
 		report.Checks = append(report.Checks, backend.DoctorCheck{Name: name, Status: status, Message: message})
 	}
+	allowlistSupported, allowlistStatusDetail := hostEgressFilterEnabled()
 
 	if runtime.GOOS == "darwin" {
 		appendCheck("os", "pass", "darwin host detected")
 	} else {
 		appendCheck("os", "fail", fmt.Sprintf("darwin required, current OS is %s", runtime.GOOS))
 	}
-	appendCheck("guest_networking", "warn", guestNetworkUnavailableWarning)
+	if allowlistSupported {
+		appendCheck("guest_networking", "pass", guestNetworkProtectedMessage)
+	} else if allowlistStatusDetail != "" {
+		appendCheck("guest_networking", "warn", fmt.Sprintf("%s (%s)", guestNetworkUnavailableWarning, allowlistStatusDetail))
+	} else {
+		appendCheck("guest_networking", "warn", guestNetworkUnavailableWarning)
+	}
 
 	if configured := strings.TrimSpace(req.KernelImagePath); configured == "" {
 		if spec, ok := bootassets.LookupManagedKernelForHost(a.Name()); ok {
@@ -277,13 +285,15 @@ func (a *Adapter) Doctor(_ context.Context, req backend.DoctorRequest) (*backend
 	if req.Policy == nil {
 		appendCheck("policy", "warn", "policy not loaded")
 	} else {
-		policyWarn, policyErr := evaluateNetworkPolicy(req.Policy.NetworkDefault, len(req.Policy.Allow))
+		policyWarn, policyErr := evaluateNetworkPolicy(req.Policy.NetworkDefault, len(req.Policy.Allow), allowlistSupported)
 		if policyErr != nil {
 			appendCheck("policy_network_default", "fail", policyErr.Error())
 		} else {
 			appendCheck("policy_network_default", "pass", "deny-by-default policy")
 			if policyWarn != "" {
 				appendCheck("policy_network_allow", "warn", policyWarn)
+			} else if len(req.Policy.Allow) > 0 {
+				appendCheck("policy_network_allow", "pass", "allow list enforced by host-side egress filter")
 			} else {
 				appendCheck("policy_network_allow", "pass", "allow list empty")
 			}
@@ -366,7 +376,8 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 	if req.Policy == nil {
 		return nil, errors.New("missing compiled policy")
 	}
-	policyWarn, policyErr := evaluateNetworkPolicy(req.Policy.NetworkDefault, len(req.Policy.Allow))
+	allowlistSupported, allowlistStatusDetail := hostEgressFilterEnabled()
+	policyWarn, policyErr := evaluateNetworkPolicy(req.Policy.NetworkDefault, len(req.Policy.Allow), allowlistSupported)
 	if policyErr != nil {
 		return nil, policyErr
 	}
@@ -407,7 +418,15 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 		return nil, err
 	}
 
-	warnings := buildRuntimeWarnings(policyWarn)
+	guestNetworkingWarning := ""
+	if !allowlistSupported {
+		guestNetworkingWarning = guestNetworkUnavailableWarning
+		if allowlistStatusDetail != "" {
+			guestNetworkingWarning = fmt.Sprintf("%s (%s)", guestNetworkUnavailableWarning, allowlistStatusDetail)
+		}
+	}
+
+	warnings := buildRuntimeWarnings(policyWarn, guestNetworkingWarning)
 
 	stderrPrefix := ""
 	for _, warningText := range warnings {
@@ -674,12 +693,14 @@ func darwinVZResultMessage(guestErr string) string {
 	return guestErr
 }
 
-func buildRuntimeWarnings(policyWarning string) []string {
+func buildRuntimeWarnings(policyWarning, guestNetworkingWarning string) []string {
 	warnings := make([]string, 0, 2)
 	if trimmed := strings.TrimSpace(policyWarning); trimmed != "" {
 		warnings = append(warnings, trimmed)
 	}
-	warnings = append(warnings, guestNetworkUnavailableWarning)
+	if trimmed := strings.TrimSpace(guestNetworkingWarning); trimmed != "" {
+		warnings = append(warnings, trimmed)
+	}
 	return warnings
 }
 
