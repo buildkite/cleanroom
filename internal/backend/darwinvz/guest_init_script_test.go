@@ -31,6 +31,10 @@ func TestGuestInitScriptBootstrapsNetwork(t *testing.T) {
 }
 
 func TestGuestInitScriptAutostartsDockerWhenAvailable(t *testing.T) {
+	if !strings.Contains(guestInitScriptTemplate, "export TERM=xterm-256color") {
+		t.Fatal("expected init script to set TERM=xterm-256color")
+	}
+
 	if !strings.Contains(guestInitScriptTemplate, "DOCKER_REQUIRED=\"$(arg_value cleanroom_service_docker_required || true)\"") {
 		t.Fatal("expected docker service required flag lookup in init script")
 	}

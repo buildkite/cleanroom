@@ -29,3 +29,10 @@ func TestNormalizeLineEndingsForRawTTYPreservesCRLFAcrossChunks(t *testing.T) {
 		t.Fatal("expected endedCR=false after second chunk")
 	}
 }
+
+func TestAttachTTYSizeDefaultsWhenSizeIsZero(t *testing.T) {
+	cols, rows := attachTTYSize(-1)
+	if cols != 80 || rows != 24 {
+		t.Fatalf("unexpected default tty size: got %dx%d want 80x24", cols, rows)
+	}
+}

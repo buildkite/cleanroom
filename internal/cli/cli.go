@@ -995,16 +995,15 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 			defer func() {
 				_ = term.Restore(stdinFD, oldState)
 			}()
-			if cols, rows, sizeErr := term.GetSize(stdinFD); sizeErr == nil {
-				_ = sender.Send(&cleanroomv1.ExecutionAttachFrame{
-					Payload: &cleanroomv1.ExecutionAttachFrame_Resize{
-						Resize: &cleanroomv1.ExecutionResize{
-							Cols: uint32(cols),
-							Rows: uint32(rows),
-						},
+			cols, rows := attachTTYSize(stdinFD)
+			_ = sender.Send(&cleanroomv1.ExecutionAttachFrame{
+				Payload: &cleanroomv1.ExecutionAttachFrame_Resize{
+					Resize: &cleanroomv1.ExecutionResize{
+						Cols: cols,
+						Rows: rows,
 					},
-				})
-			}
+				},
+			})
 		}
 	}
 
@@ -1018,15 +1017,12 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 		defer signal.Stop(resizeSignalCh)
 		go func() {
 			for range resizeSignalCh {
-				cols, rows, sizeErr := term.GetSize(stdinFD)
-				if sizeErr != nil {
-					continue
-				}
+				cols, rows := attachTTYSize(stdinFD)
 				_ = sender.Send(&cleanroomv1.ExecutionAttachFrame{
 					Payload: &cleanroomv1.ExecutionAttachFrame_Resize{
 						Resize: &cleanroomv1.ExecutionResize{
-							Cols: uint32(cols),
-							Rows: uint32(rows),
+							Cols: cols,
+							Rows: rows,
 						},
 					},
 				})
@@ -1138,6 +1134,20 @@ func normalizeLineEndingsForRawTTY(chunk []byte, prevEndedCR bool) ([]byte, bool
 		endedCR = b == '\r'
 	}
 	return out, endedCR
+}
+
+func attachTTYSize(fd int) (uint32, uint32) {
+	cols, rows, err := term.GetSize(fd)
+	if err != nil {
+		return 80, 24
+	}
+	if cols <= 0 {
+		cols = 80
+	}
+	if rows <= 0 {
+		rows = 24
+	}
+	return uint32(cols), uint32(rows)
 }
 
 func trimPassthroughSeparator(args []string) []string {

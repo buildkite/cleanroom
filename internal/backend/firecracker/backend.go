@@ -111,6 +111,7 @@ mount -t tmpfs tmpfs /tmp 2>/dev/null || true
 
 export HOME=/root
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/root/.local/bin
+export TERM=xterm-256color
 
 cmdline="$(cat /proc/cmdline 2>/dev/null || true)"
 arg_value() {
@@ -440,6 +441,9 @@ func (a *Adapter) TerminateSandbox(_ context.Context, sandboxID string) error {
 
 func (a *Adapter) executeInSandbox(ctx context.Context, instance *sandboxInstance, launchSeconds int64, command []string, tty bool, stream backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error) {
 	guestReq := vsockexec.ExecRequest{Command: append([]string(nil), command...), TTY: tty}
+	if tty {
+		guestReq.Env = append(guestReq.Env, "TERM=xterm-256color")
+	}
 	seed := make([]byte, 64)
 	if _, err := cryptorand.Read(seed); err == nil {
 		guestReq.EntropySeed = seed
@@ -867,6 +871,9 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 	guestReq := vsockexec.ExecRequest{
 		Command: req.Command,
 		TTY:     req.TTY,
+	}
+	if req.TTY {
+		guestReq.Env = append(guestReq.Env, "TERM=xterm-256color")
 	}
 	seed := make([]byte, 64)
 	if _, err := cryptorand.Read(seed); err == nil {
