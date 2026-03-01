@@ -288,11 +288,12 @@ var (
 	}
 	importLocalDockerImageForOverrideFn = importLocalDockerImageForOverride
 	resolveReferenceForImageOverride    = func(ctx context.Context, source string, allowLocal bool) (string, error) {
+		if !allowLocal {
+			return resolveReferenceForPolicyUpdate(ctx, source)
+		}
+
 		localRef, localErr := importLocalDockerImageForOverrideFn(ctx, source)
 		if localErr == nil {
-			if !allowLocal {
-				return "", errors.New("local docker image overrides require a local control-plane endpoint (unix socket)")
-			}
 			return localRef, nil
 		}
 

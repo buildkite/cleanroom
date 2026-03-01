@@ -106,27 +106,33 @@ func TestResolveReferenceForImageOverrideReturnsCombinedError(t *testing.T) {
 	}
 }
 
-func TestResolveReferenceForImageOverrideRejectsLocalForRemoteEndpoint(t *testing.T) {
+func TestResolveReferenceForImageOverrideSkipsLocalForRemoteEndpoint(t *testing.T) {
+	localCalls := 0
 	remoteCalls := 0
+	remoteRef := "ghcr.io/buildkite/cleanroom-base/alpine@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	withImageOverrideResolversForTest(
 		t,
 		func(_ context.Context, _ string) (string, error) {
+			localCalls++
 			return "local/docker-image@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", nil
 		},
 		func(_ context.Context, _ string) (string, error) {
 			remoteCalls++
-			return "ghcr.io/buildkite/cleanroom-base/alpine@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", nil
+			return remoteRef, nil
 		},
 	)
 
-	_, err := resolveReferenceForImageOverride(context.Background(), "alpine:latest", false)
-	if err == nil {
-		t.Fatal("expected local override rejection for non-local control-plane endpoint")
+	got, err := resolveReferenceForImageOverride(context.Background(), "alpine:latest", false)
+	if err != nil {
+		t.Fatalf("resolveReferenceForImageOverride returned error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "local docker image overrides require a local control-plane endpoint") {
-		t.Fatalf("expected local-endpoint requirement error, got %v", err)
+	if got != remoteRef {
+		t.Fatalf("unexpected resolved ref: got %q want %q", got, remoteRef)
 	}
-	if remoteCalls != 0 {
-		t.Fatalf("expected remote resolver call count 0, got %d", remoteCalls)
+	if localCalls != 0 {
+		t.Fatalf("expected local resolver call count 0, got %d", localCalls)
+	}
+	if remoteCalls != 1 {
+		t.Fatalf("expected remote resolver call count 1, got %d", remoteCalls)
 	}
 }
