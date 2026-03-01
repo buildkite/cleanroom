@@ -1021,15 +1021,11 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 				return err
 			}
 		}
-		select {
-		case code := <-exitCodeCh:
-			exitCode = code
+		if polledExitCode, gotExitCode, pollErr := pollInteractiveExitOrControlErr(exitCodeCh, &controlErrCh); pollErr != nil {
+			return pollErr
+		} else if gotExitCode {
+			exitCode = polledExitCode
 			haveExitCode = true
-		case controlErr := <-controlErrCh:
-			if controlErr != nil && !isInteractiveStreamClosedErr(controlErr) {
-				return fmt.Errorf("interactive control stream: %w", controlErr)
-			}
-		default:
 		}
 		if readErr != nil {
 			if !isInteractiveStreamClosedErr(readErr) {
@@ -1040,15 +1036,13 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 	}
 
 	if !haveExitCode {
-		select {
-		case code := <-exitCodeCh:
-			exitCode = code
+		waitedExitCode, gotExitCode, waitErr := waitForInteractiveExitOrControlErr(exitCodeCh, &controlErrCh, 2*time.Second)
+		if waitErr != nil {
+			return waitErr
+		}
+		if gotExitCode {
+			exitCode = waitedExitCode
 			haveExitCode = true
-		case controlErr := <-controlErrCh:
-			if controlErr != nil && !isInteractiveStreamClosedErr(controlErr) {
-				return fmt.Errorf("interactive control stream: %w", controlErr)
-			}
-		case <-time.After(2 * time.Second):
 		}
 	}
 
@@ -1905,6 +1899,68 @@ func replayExecutionHistory(client *controlclient.Client, sandboxID, executionID
 		return 0, false, err
 	}
 	return exitCode, haveExitCode, nil
+}
+
+func pollInteractiveExitOrControlErr(exitCodeCh <-chan int, controlErrCh *chan error) (int, bool, error) {
+	if exitCodeCh != nil {
+		select {
+		case code := <-exitCodeCh:
+			return code, true, nil
+		default:
+		}
+	}
+
+	if controlErrCh == nil || *controlErrCh == nil {
+		return 0, false, nil
+	}
+
+	select {
+	case controlErr, ok := <-*controlErrCh:
+		if !ok {
+			*controlErrCh = nil
+			return 0, false, nil
+		}
+		if controlErr != nil && !isInteractiveStreamClosedErr(controlErr) {
+			return 0, false, fmt.Errorf("interactive control stream: %w", controlErr)
+		}
+	default:
+	}
+	return 0, false, nil
+}
+
+func waitForInteractiveExitOrControlErr(exitCodeCh <-chan int, controlErrCh *chan error, timeout time.Duration) (int, bool, error) {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+
+	for {
+		if code, haveExitCode, pollErr := pollInteractiveExitOrControlErr(exitCodeCh, controlErrCh); pollErr != nil || haveExitCode {
+			return code, haveExitCode, pollErr
+		}
+
+		if controlErrCh == nil || *controlErrCh == nil {
+			select {
+			case code := <-exitCodeCh:
+				return code, true, nil
+			case <-deadline.C:
+				return 0, false, nil
+			}
+		}
+
+		select {
+		case code := <-exitCodeCh:
+			return code, true, nil
+		case controlErr, ok := <-*controlErrCh:
+			if !ok {
+				*controlErrCh = nil
+				continue
+			}
+			if controlErr != nil && !isInteractiveStreamClosedErr(controlErr) {
+				return 0, false, fmt.Errorf("interactive control stream: %w", controlErr)
+			}
+		case <-deadline.C:
+			return 0, false, nil
+		}
+	}
 }
 
 func resolveConsoleDialFailure(
