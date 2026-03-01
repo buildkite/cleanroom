@@ -865,8 +865,11 @@ func discoverGuestAgentBinary() (string, error) {
 
 	self, err := os.Executable()
 	if err == nil {
-		candidates = append(candidates, filepath.Join(filepath.Dir(self), linuxName))
-		candidates = append(candidates, filepath.Join(filepath.Dir(self), "cleanroom-guest-agent"))
+		dirs := executableSearchDirs(self)
+		for _, dir := range dirs {
+			candidates = append(candidates, filepath.Join(dir, linuxName))
+			candidates = append(candidates, filepath.Join(dir, "cleanroom-guest-agent"))
+		}
 	}
 
 	for _, candidate := range candidates {
@@ -894,6 +897,41 @@ func discoverGuestAgentBinary() (string, error) {
 		}
 	}
 	return "", fmt.Errorf("linux guest-agent binary not found for architecture %s; run `mise run install` to build and install cleanroom-guest-agent-linux-%s", runtime.GOARCH, runtime.GOARCH)
+}
+
+func executableSearchDirs(self string) []string {
+	trimmed := strings.TrimSpace(self)
+	if trimmed == "" {
+		return nil
+	}
+
+	var dirs []string
+	addDir := func(path string) {
+		if strings.TrimSpace(path) == "" {
+			return
+		}
+		for _, existing := range dirs {
+			if existing == path {
+				return
+			}
+		}
+		dirs = append(dirs, path)
+	}
+	addFromExecutable := func(execPath string) {
+		if strings.TrimSpace(execPath) == "" {
+			return
+		}
+		execDir := filepath.Dir(execPath)
+		addDir(execDir)
+		contentsDir := filepath.Dir(execDir)
+		addDir(filepath.Join(contentsDir, "Resources"))
+	}
+
+	addFromExecutable(trimmed)
+	if resolved, err := filepath.EvalSymlinks(trimmed); err == nil {
+		addFromExecutable(resolved)
+	}
+	return dirs
 }
 
 func isLinuxGuestAgentBinary(path string) (bool, error) {

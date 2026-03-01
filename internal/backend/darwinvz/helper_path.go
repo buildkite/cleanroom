@@ -33,9 +33,11 @@ func resolveHelperBinaryPathWith(
 	}
 
 	if self, err := executable(); err == nil {
-		sibling := filepath.Join(filepath.Dir(self), helperBinaryName)
-		if path, err := resolveHelperCandidatePath(sibling, stat); err == nil {
-			return path, nil
+		for _, dir := range executableCandidateDirs(self) {
+			sibling := filepath.Join(dir, helperBinaryName)
+			if path, err := resolveHelperCandidatePath(sibling, stat); err == nil {
+				return path, nil
+			}
 		}
 	}
 
@@ -49,6 +51,33 @@ func resolveHelperBinaryPathWith(
 		helperEnvVar,
 		helperBinaryName,
 	)
+}
+
+func executableCandidateDirs(self string) []string {
+	trimmed := strings.TrimSpace(self)
+	if trimmed == "" {
+		return nil
+	}
+
+	var dirs []string
+	add := func(path string) {
+		if strings.TrimSpace(path) == "" {
+			return
+		}
+		dir := filepath.Dir(path)
+		for _, existing := range dirs {
+			if existing == dir {
+				return
+			}
+		}
+		dirs = append(dirs, dir)
+	}
+
+	add(trimmed)
+	if resolved, err := filepath.EvalSymlinks(trimmed); err == nil {
+		add(resolved)
+	}
+	return dirs
 }
 
 func resolveHelperCandidatePath(path string, stat func(string) (os.FileInfo, error)) (string, error) {
