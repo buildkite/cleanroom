@@ -18,6 +18,7 @@ import (
 )
 
 const testAgentImageOverrideRef = "ghcr.io/buildkite/cleanroom-base/alpine-agents@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+const testAgentImageOverrideTag = "ghcr.io/buildkite/cleanroom-base/alpine-agents:latest"
 
 func runAgentCodexWithCapture(cmd AgentCodexCommand, stdinData string, ctx runtimeContext) execOutcome {
 	tmpDir, err := os.MkdirTemp("", "cleanroom-agent-codex-test-*")
@@ -218,6 +219,81 @@ func TestAgentCodexIntegrationOverridesImageRefForCreatedSandbox(t *testing.T) {
 	}
 	if got, want := gotImageRef, testAgentImageOverrideRef; got != want {
 		t.Fatalf("unexpected image ref: got %q want %q", got, want)
+	}
+}
+
+func TestAgentCodexIntegrationResolvesTaggedImageOverrideForCreatedSandbox(t *testing.T) {
+	restore := stubRefResolver(t, func(_ context.Context, source string) (string, error) {
+		if got, want := source, testAgentImageOverrideTag; got != want {
+			t.Fatalf("unexpected source passed to resolver: got %q want %q", got, want)
+		}
+		return testAgentImageOverrideRef, nil
+	})
+	defer restore()
+
+	var gotImageRef string
+	adapter := &integrationAdapter{
+		runStreamFn: func(_ context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+			if req.Policy == nil {
+				return nil, errors.New("expected policy on run request")
+			}
+			gotImageRef = req.Policy.ImageRef
+			return &backend.RunResult{
+				RunID:    req.RunID,
+				ExitCode: 0,
+				Message:  "ok",
+			}, nil
+		},
+	}
+
+	host, _ := startIntegrationServer(t, adapter)
+	cwd := t.TempDir()
+	outcome := runAgentCodexWithCapture(AgentCodexCommand{
+		clientFlags: clientFlags{Host: host},
+		Chdir:       cwd,
+		Image:       testAgentImageOverrideTag,
+	}, "", runtimeContext{
+		CWD:    cwd,
+		Loader: integrationLoader{},
+	})
+
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err != nil {
+		t.Fatalf("AgentCodexCommand.Run returned error: %v", outcome.err)
+	}
+	if got, want := gotImageRef, testAgentImageOverrideRef; got != want {
+		t.Fatalf("unexpected image ref: got %q want %q", got, want)
+	}
+}
+
+func TestAgentCodexIntegrationReturnsImageOverrideResolutionError(t *testing.T) {
+	restore := stubRefResolver(t, func(_ context.Context, _ string) (string, error) {
+		return "", errors.New("registry unavailable")
+	})
+	defer restore()
+
+	adapter := &integrationAdapter{}
+	host, _ := startIntegrationServer(t, adapter)
+	cwd := t.TempDir()
+	outcome := runAgentCodexWithCapture(AgentCodexCommand{
+		clientFlags: clientFlags{Host: host},
+		Chdir:       cwd,
+		Image:       testAgentImageOverrideTag,
+	}, "", runtimeContext{
+		CWD:    cwd,
+		Loader: integrationLoader{},
+	})
+
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err == nil {
+		t.Fatal("expected AgentCodexCommand.Run to fail when image override cannot be resolved")
+	}
+	if got, want := outcome.err.Error(), "invalid --image value: registry unavailable"; !strings.Contains(got, want) {
+		t.Fatalf("expected error to contain %q, got %q", want, got)
 	}
 }
 

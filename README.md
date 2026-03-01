@@ -145,6 +145,7 @@ Agent shortcut (creates/reuses sandbox from current policy and runs Codex inside
 cleanroom agent codex
 cleanroom agent codex --yolo --model gpt-5.3-codex
 cleanroom agent codex --image ghcr.io/buildkite/cleanroom-base/alpine-agents@sha256:... -- --yolo
+cleanroom agent codex --image ghcr.io/buildkite/cleanroom-base/alpine-agents:latest -- --yolo  # resolved to digest before launch
 ```
 
 ## Examples

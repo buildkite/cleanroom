@@ -133,7 +133,7 @@ type AgentCodexCommand struct {
 	Chdir     string `short:"c" help:"Change to this directory before running commands"`
 	Backend   string `help:"Execution backend (defaults to runtime config or firecracker)"`
 	SandboxID string `help:"Reuse an existing sandbox instead of creating a new one"`
-	Image     string `help:"Override sandbox image ref for newly created sandboxes (digest-pinned OCI ref)"`
+	Image     string `help:"Override sandbox image ref for newly created sandboxes (tag or digest; tags are resolved to digest)"`
 
 	LaunchSeconds int64 `help:"VM boot/guest-agent readiness timeout in seconds"`
 
@@ -199,7 +199,7 @@ type ConsoleCommand struct {
 	Chdir     string `short:"c" help:"Change to this directory before running commands"`
 	Backend   string `help:"Execution backend (defaults to runtime config or firecracker)"`
 	SandboxID string `help:"Reuse an existing sandbox instead of creating a new one"`
-	Image     string `help:"Override sandbox image ref for newly created sandboxes (digest-pinned OCI ref)"`
+	Image     string `help:"Override sandbox image ref for newly created sandboxes (tag or digest; tags are resolved to digest)"`
 	Remove    bool   `name:"rm" help:"Terminate the sandbox after console exits"`
 
 	LaunchSeconds int64 `help:"VM boot/guest-agent readiness timeout in seconds"`
@@ -1822,7 +1822,11 @@ func ensureSandboxID(client *controlclient.Client, loader policyLoader, cwd, bac
 		return "", err
 	}
 	if imageRefOverride != "" {
-		parsedRef, err := ociref.ParseDigestReference(imageRefOverride)
+		resolvedRef, err := resolveReferenceForPolicyUpdate(context.Background(), imageRefOverride)
+		if err != nil {
+			return "", fmt.Errorf("invalid --image value: %w", err)
+		}
+		parsedRef, err := ociref.ParseDigestReference(resolvedRef)
 		if err != nil {
 			return "", fmt.Errorf("invalid --image value: %w", err)
 		}
