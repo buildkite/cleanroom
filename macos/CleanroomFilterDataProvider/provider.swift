@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import Network
 import NetworkExtension
 
 @objc(CleanroomFilterDataProvider)
@@ -154,20 +155,44 @@ final class CleanroomFilterDataProvider: NEFilterDataProvider {
         guard let socketFlow = flow as? NEFilterSocketFlow else {
             return nil
         }
-        guard let endpoint = socketFlow.remoteEndpoint as? NWHostEndpoint else {
+        if #available(macOS 15.0, *) {
+            guard let endpoint = socketFlow.remoteFlowEndpoint else {
+                return nil
+            }
+            guard case let .hostPort(host, port) = endpoint else {
+                return nil
+            }
+            let hostValue = normalizeHost(String(describing: host))
+            guard !hostValue.isEmpty else {
+                return nil
+            }
+            let portValue = Int(port.rawValue)
+            guard portValue >= 1, portValue <= 65535 else {
+                return nil
+            }
+            return (hostValue, portValue)
+        }
+        // Use KVC for pre-macOS 15 endpoint access to avoid hard references to
+        // deprecated NetworkExtension endpoint symbols in current SDKs.
+        guard
+            let endpointObject = (socketFlow as NSObject).value(forKey: "remoteEndpoint") as? NSObject,
+            let rawHost = endpointObject.value(forKey: "hostname") as? String
+        else {
             return nil
         }
-        let host = endpoint.hostname
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .trimmingCharacters(in: CharacterSet(charactersIn: "."))
-            .lowercased()
-        guard !host.isEmpty else {
+        let hostValue = normalizeHost(rawHost)
+        guard !hostValue.isEmpty else {
             return nil
         }
-        guard let port = Int(endpoint.port), port >= 1, port <= 65535 else {
+        guard
+            let rawPort = endpointObject.value(forKey: "port") as? String,
+            let portValue = Int(rawPort),
+            portValue >= 1,
+            portValue <= 65535
+        else {
             return nil
         }
-        return (host, port)
+        return (hostValue, portValue)
     }
 
     private func sourceProcessPath(for flow: NEFilterFlow) -> String? {
@@ -181,6 +206,13 @@ final class CleanroomFilterDataProvider: NEFilterDataProvider {
             return nil
         }
         return String(cString: buffer)
+    }
+
+    private func normalizeHost(_ host: String) -> String {
+        host
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+            .lowercased()
     }
 
     private func sourceProcessPID(for flow: NEFilterFlow) -> Int32? {
