@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/buildkite/cleanroom/internal/backend"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
@@ -1206,6 +1207,18 @@ func TestBufferedResultDeltaPrefersSuffixMatch(t *testing.T) {
 	}
 	if got, want := bufferedResultDelta("tail", "head-tail"), ""; got != want {
 		t.Fatalf("expected suffix-only delta suppression: got %q want %q", got, want)
+	}
+}
+
+func TestAppendRetainedOutputClonesTailSlice(t *testing.T) {
+	source := strings.Repeat("x", 1024) + "tail"
+	tail := source[len(source)-4:]
+	got := appendRetainedOutput("", source, 4)
+	if got != "tail" {
+		t.Fatalf("unexpected retained tail: got %q want %q", got, "tail")
+	}
+	if unsafe.StringData(got) == unsafe.StringData(tail) {
+		t.Fatal("expected retained tail to be copied, but it reuses source backing storage")
 	}
 }
 

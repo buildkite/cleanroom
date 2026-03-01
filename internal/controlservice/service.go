@@ -1572,14 +1572,14 @@ func appendRetainedOutput(existing, chunk string, limit int) string {
 		if len(existing) <= limit {
 			return existing
 		}
-		return existing[len(existing)-limit:]
+		return strings.Clone(existing[len(existing)-limit:])
 	}
 	if len(chunk) >= limit {
-		return chunk[len(chunk)-limit:]
+		return strings.Clone(chunk[len(chunk)-limit:])
 	}
 	keepExisting := limit - len(chunk)
 	if keepExisting < len(existing) {
-		existing = existing[len(existing)-keepExisting:]
+		existing = strings.Clone(existing[len(existing)-keepExisting:])
 	}
 	return existing + chunk
 }
