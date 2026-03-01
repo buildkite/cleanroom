@@ -4,87 +4,19 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
-	"io"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/buildkite/cleanroom/internal/backend"
-	"github.com/buildkite/cleanroom/internal/controlclient"
-	"github.com/buildkite/cleanroom/internal/endpoint"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 )
 
 func runConsoleWithCapture(cmd ConsoleCommand, stdinData string, ctx runtimeContext) execOutcome {
-	tmpDir, err := os.MkdirTemp("", "cleanroom-console-test-*")
-	if err != nil {
-		return execOutcome{cause: fmt.Errorf("create temp dir: %w", err)}
-	}
-	defer os.RemoveAll(tmpDir)
-
-	stdoutPath := filepath.Join(tmpDir, "stdout.log")
-	stderrPath := filepath.Join(tmpDir, "stderr.log")
-
-	stdoutFile, err := os.Create(stdoutPath)
-	if err != nil {
-		return execOutcome{cause: fmt.Errorf("create stdout capture file: %w", err)}
-	}
-	defer stdoutFile.Close()
-
-	stderrFile, err := os.Create(stderrPath)
-	if err != nil {
-		return execOutcome{cause: fmt.Errorf("create stderr capture file: %w", err)}
-	}
-	defer stderrFile.Close()
-
-	stdinReader, stdinWriter, err := os.Pipe()
-	if err != nil {
-		return execOutcome{cause: fmt.Errorf("create stdin pipe: %w", err)}
-	}
-	if stdinData != "" {
-		if _, err := io.WriteString(stdinWriter, stdinData); err != nil {
-			return execOutcome{cause: fmt.Errorf("write stdin payload: %w", err)}
-		}
-	}
-	_ = stdinWriter.Close()
-	defer stdinReader.Close()
-
-	oldStdin := os.Stdin
-	oldStderr := os.Stderr
-	os.Stdin = stdinReader
-	os.Stderr = stderrFile
-	defer func() {
-		os.Stdin = oldStdin
-		os.Stderr = oldStderr
-	}()
-
-	ctx.Stdout = stdoutFile
-	runErr := cmd.Run(&ctx)
-
-	if err := stdoutFile.Sync(); err != nil {
-		return execOutcome{cause: fmt.Errorf("sync stdout capture: %w", err)}
-	}
-	if err := stderrFile.Sync(); err != nil {
-		return execOutcome{cause: fmt.Errorf("sync stderr capture: %w", err)}
-	}
-
-	stdoutBytes, err := os.ReadFile(stdoutPath)
-	if err != nil {
-		return execOutcome{cause: fmt.Errorf("read stdout capture: %w", err)}
-	}
-	stderrBytes, err := os.ReadFile(stderrPath)
-	if err != nil {
-		return execOutcome{cause: fmt.Errorf("read stderr capture: %w", err)}
-	}
-
-	return execOutcome{
-		err:    runErr,
-		stdout: string(stdoutBytes),
-		stderr: string(stderrBytes),
-	}
+	return runWithCapture(func(runCtx *runtimeContext) error {
+		return cmd.Run(runCtx)
+	}, &stdinData, ctx)
 }
 
 func TestConsoleIntegrationForwardsStdinAndStreamsOutput(t *testing.T) {
@@ -256,26 +188,12 @@ func TestConsoleIntegrationReuseSandboxSkipsPolicyCompile(t *testing.T) {
 			return &backend.RunResult{RunID: req.RunID, ExitCode: 0, Stdout: "ok\n", Message: "ok"}, nil
 		},
 	})
-	ep, err := endpoint.Resolve(host)
-	if err != nil {
-		t.Fatalf("resolve endpoint: %v", err)
-	}
-	client, err := controlclient.New(ep)
-	if err != nil {
-		t.Fatalf("create client: %v", err)
-	}
-	compiled, _, err := integrationLoader{}.LoadAndCompile(t.TempDir())
-	if err != nil {
-		t.Fatalf("load policy: %v", err)
-	}
-	createSandboxResp, err := client.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: compiled.ToProto()})
-	if err != nil {
-		t.Fatalf("CreateSandbox returned error: %v", err)
-	}
+	client := mustNewControlClient(t, host)
+	sandboxID := mustCreateSandbox(t, client)
 
 	outcome := runConsoleWithCapture(ConsoleCommand{
 		clientFlags: clientFlags{Host: host},
-		SandboxID:   createSandboxResp.GetSandbox().GetSandboxId(),
+		SandboxID:   sandboxID,
 		Command:     []string{"sh"},
 	}, "exit\n", runtimeContext{
 		CWD:    t.TempDir(),
@@ -291,6 +209,34 @@ func TestConsoleIntegrationReuseSandboxSkipsPolicyCompile(t *testing.T) {
 	if !strings.Contains(outcome.stdout, "ok") {
 		t.Fatalf("expected console output, got %q", outcome.stdout)
 	}
+}
+
+func TestConsoleIntegrationRemoveTerminatesSuppliedSandbox(t *testing.T) {
+	host, _ := startIntegrationServer(t, &integrationAdapter{
+		runStreamFn: func(_ context.Context, req backend.RunRequest, _ backend.OutputStream) (*backend.RunResult, error) {
+			return &backend.RunResult{RunID: req.RunID, ExitCode: 0, Stdout: "ok\n", Message: "ok"}, nil
+		},
+	})
+	client := mustNewControlClient(t, host)
+	sandboxID := mustCreateSandbox(t, client)
+
+	outcome := runConsoleWithCapture(ConsoleCommand{
+		clientFlags: clientFlags{Host: host},
+		SandboxID:   sandboxID,
+		Remove:      true,
+		Command:     []string{"sh"},
+	}, "", runtimeContext{
+		CWD:    t.TempDir(),
+		Loader: failingLoader{},
+	})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err != nil {
+		t.Fatalf("ConsoleCommand.Run returned error: %v", outcome.err)
+	}
+
+	requireSandboxStatus(t, client, sandboxID, cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPED)
 }
 
 func TestConsoleIntegrationRoutesBackendWarningsToStderr(t *testing.T) {

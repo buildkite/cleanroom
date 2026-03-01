@@ -100,9 +100,12 @@ type executionSnapshot struct {
 }
 
 var (
-	maxRetainedStoppedSandboxes   = 256
-	maxRetainedFinishedExecutions = 2048
-	retainedStateMaxAge           = 24 * time.Hour
+	maxRetainedStoppedSandboxes     = 256
+	maxRetainedFinishedExecutions   = 2048
+	maxRetainedSandboxEvents        = 256
+	maxRetainedExecutionEvents      = 2048
+	maxRetainedExecutionOutputBytes = 1 * 1024 * 1024
+	retainedStateMaxAge             = 24 * time.Hour
 
 	ErrExecutionStdinUnsupported  = errors.New("execution stdin attach is not supported by the current backend")
 	ErrExecutionResizeUnsupported = errors.New("execution resize is not supported by the current backend")
@@ -352,22 +355,15 @@ func (s *Service) TerminateSandbox(ctx context.Context, req *cleanroomv1.Termina
 				OccurredAt:  timestamppb.Now(),
 			})
 			if ex.Status == cleanroomv1.ExecutionStatus_EXECUTION_STATUS_QUEUED {
-				ex.Status = cleanroomv1.ExecutionStatus_EXECUTION_STATUS_CANCELED
-				ex.ExitCode = cancelExitCode(ex.CancelSignal)
 				finished := terminatedAt
-				ex.FinishedAt = &finished
-				s.recordExecutionEventLocked(ex, &cleanroomv1.ExecutionStreamEvent{
-					SandboxId:   ex.SandboxID,
-					ExecutionId: ex.ID,
-					Status:      ex.Status,
-					Payload: &cleanroomv1.ExecutionStreamEvent_Exit{Exit: &cleanroomv1.ExecutionExit{
-						ExitCode: ex.ExitCode,
-						Status:   ex.Status,
-						Message:  "execution canceled before start (sandbox termination)",
-					}},
-					OccurredAt: timestamppb.New(finished),
-				})
-				closeExecutionDoneLocked(ex)
+				s.finalizeExecutionWithoutPruneLocked(
+					ex,
+					cleanroomv1.ExecutionStatus_EXECUTION_STATUS_CANCELED,
+					cancelExitCode(ex.CancelSignal),
+					ex.Message,
+					"execution canceled before start (sandbox termination)",
+					finished,
+				)
 				continue
 			}
 			if ex.Cancel != nil {
@@ -591,24 +587,16 @@ func (s *Service) CancelExecution(_ context.Context, req *cleanroomv1.CancelExec
 	})
 
 	if ex.Status == cleanroomv1.ExecutionStatus_EXECUTION_STATUS_QUEUED {
-		ex.Status = cleanroomv1.ExecutionStatus_EXECUTION_STATUS_CANCELED
-		ex.ExitCode = cancelExitCode(signalNum)
 		finished := now
-		ex.FinishedAt = &finished
-		s.recordExecutionEventLocked(ex, &cleanroomv1.ExecutionStreamEvent{
-			SandboxId:   sandboxID,
-			ExecutionId: executionID,
-			Status:      ex.Status,
-			Payload: &cleanroomv1.ExecutionStreamEvent_Exit{Exit: &cleanroomv1.ExecutionExit{
-				ExitCode: ex.ExitCode,
-				Status:   ex.Status,
-				Message:  "execution canceled before start",
-			}},
-			OccurredAt: timestamppb.New(finished),
-		})
-		closeExecutionDoneLocked(ex)
-		s.pruneStateLocked(now)
-		status = ex.Status
+		s.finalizeExecutionLocked(
+			ex,
+			cleanroomv1.ExecutionStatus_EXECUTION_STATUS_CANCELED,
+			cancelExitCode(signalNum),
+			ex.Message,
+			"execution canceled before start",
+			finished,
+		)
+		status = cleanroomv1.ExecutionStatus_EXECUTION_STATUS_CANCELED
 		s.mu.Unlock()
 		return &cleanroomv1.CancelExecutionResponse{
 			SandboxId:   sandboxID,
@@ -885,70 +873,48 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 	}
 	sb, ok := s.sandboxes[sandboxID]
 	if !ok {
-		ex.Status = cleanroomv1.ExecutionStatus_EXECUTION_STATUS_FAILED
-		ex.ExitCode = 1
 		finished := time.Now().UTC()
-		ex.FinishedAt = &finished
-		s.recordExecutionEventLocked(ex, &cleanroomv1.ExecutionStreamEvent{
-			SandboxId:   sandboxID,
-			ExecutionId: executionID,
-			Status:      ex.Status,
-			Payload: &cleanroomv1.ExecutionStreamEvent_Exit{Exit: &cleanroomv1.ExecutionExit{
-				ExitCode: ex.ExitCode,
-				Status:   ex.Status,
-				Message:  "sandbox no longer exists",
-			}},
-			OccurredAt: timestamppb.New(finished),
-		})
-		closeExecutionDoneLocked(ex)
-		s.pruneStateLocked(finished)
+		s.finalizeExecutionLocked(
+			ex,
+			cleanroomv1.ExecutionStatus_EXECUTION_STATUS_FAILED,
+			1,
+			ex.Message,
+			"sandbox no longer exists",
+			finished,
+		)
 		s.mu.Unlock()
 		return
 	}
 	if sb.Status != cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY {
-		ex.Status = cleanroomv1.ExecutionStatus_EXECUTION_STATUS_FAILED
-		ex.ExitCode = 1
+		finalStatus := cleanroomv1.ExecutionStatus_EXECUTION_STATUS_FAILED
+		exitCode := int32(1)
 		if sb.Status == cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPING || sb.Status == cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPED {
-			ex.Status = cleanroomv1.ExecutionStatus_EXECUTION_STATUS_CANCELED
-			ex.ExitCode = cancelExitCode(ex.CancelSignal)
+			finalStatus = cleanroomv1.ExecutionStatus_EXECUTION_STATUS_CANCELED
+			exitCode = cancelExitCode(ex.CancelSignal)
 		}
 		finished := time.Now().UTC()
-		ex.FinishedAt = &finished
-		s.recordExecutionEventLocked(ex, &cleanroomv1.ExecutionStreamEvent{
-			SandboxId:   sandboxID,
-			ExecutionId: executionID,
-			Status:      ex.Status,
-			Payload: &cleanroomv1.ExecutionStreamEvent_Exit{Exit: &cleanroomv1.ExecutionExit{
-				ExitCode: ex.ExitCode,
-				Status:   ex.Status,
-				Message:  fmt.Sprintf("sandbox %q is not ready", sandboxID),
-			}},
-			OccurredAt: timestamppb.New(finished),
-		})
-		closeExecutionDoneLocked(ex)
-		s.pruneStateLocked(finished)
+		s.finalizeExecutionLocked(
+			ex,
+			finalStatus,
+			exitCode,
+			ex.Message,
+			fmt.Sprintf("sandbox %q is not ready", sandboxID),
+			finished,
+		)
 		s.mu.Unlock()
 		return
 	}
 	adapter, ok := s.Backends[sb.Backend]
 	if !ok {
-		ex.Status = cleanroomv1.ExecutionStatus_EXECUTION_STATUS_FAILED
-		ex.ExitCode = 1
 		finished := time.Now().UTC()
-		ex.FinishedAt = &finished
-		s.recordExecutionEventLocked(ex, &cleanroomv1.ExecutionStreamEvent{
-			SandboxId:   sandboxID,
-			ExecutionId: executionID,
-			Status:      ex.Status,
-			Payload: &cleanroomv1.ExecutionStreamEvent_Exit{Exit: &cleanroomv1.ExecutionExit{
-				ExitCode: ex.ExitCode,
-				Status:   ex.Status,
-				Message:  fmt.Sprintf("unknown backend %q", sb.Backend),
-			}},
-			OccurredAt: timestamppb.New(finished),
-		})
-		closeExecutionDoneLocked(ex)
-		s.pruneStateLocked(finished)
+		s.finalizeExecutionLocked(
+			ex,
+			cleanroomv1.ExecutionStatus_EXECUTION_STATUS_FAILED,
+			1,
+			ex.Message,
+			fmt.Sprintf("unknown backend %q", sb.Backend),
+			finished,
+		)
 		s.mu.Unlock()
 		return
 	}
@@ -992,38 +958,7 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 	}
 	s.mu.Unlock()
 
-	usedStreaming := false
-	var result *backend.RunResult
-	var err error
-	if persistentAdapter, ok := adapter.(backend.PersistentSandboxAdapter); ok {
-		usedStreaming = true
-		result, err = persistentAdapter.RunInSandbox(runCtx, runReq, backend.OutputStream{
-			OnStdout: func(chunk []byte) {
-				s.recordExecutionOutputChunk(key, true, chunk)
-			},
-			OnStderr: func(chunk []byte) {
-				s.recordExecutionOutputChunk(key, false, chunk)
-			},
-			OnAttach: func(io backend.AttachIO) {
-				s.setExecutionAttachIO(key, io)
-			},
-		})
-	} else if streamAdapter, ok := adapter.(backend.StreamingAdapter); ok {
-		usedStreaming = true
-		result, err = streamAdapter.RunStream(runCtx, runReq, backend.OutputStream{
-			OnStdout: func(chunk []byte) {
-				s.recordExecutionOutputChunk(key, true, chunk)
-			},
-			OnStderr: func(chunk []byte) {
-				s.recordExecutionOutputChunk(key, false, chunk)
-			},
-			OnAttach: func(io backend.AttachIO) {
-				s.setExecutionAttachIO(key, io)
-			},
-		})
-	} else {
-		result, err = adapter.Run(runCtx, runReq)
-	}
+	result, usedStreaming, err := s.runAdapterExecution(runCtx, adapter, runReq, key)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1042,44 +977,12 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 	clearExecutionAttachIOLocked(ex)
 
 	if err != nil {
-		finalStatus := cleanroomv1.ExecutionStatus_EXECUTION_STATUS_FAILED
-		exitCode := int32(1)
-		if ex.CancelRequested || errors.Is(runCtx.Err(), context.Canceled) {
-			finalStatus = cleanroomv1.ExecutionStatus_EXECUTION_STATUS_CANCELED
-			exitCode = cancelExitCode(ex.CancelSignal)
-		} else if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
-			finalStatus = cleanroomv1.ExecutionStatus_EXECUTION_STATUS_TIMED_OUT
-			exitCode = 124
-		}
-
-		ex.Status = finalStatus
-		ex.ExitCode = exitCode
-		ex.Message = err.Error()
+		finalStatus, exitCode := executionRunErrorStatus(ex, runCtx)
 		if strings.TrimSpace(err.Error()) != "" {
-			ex.Stderr += err.Error() + "\n"
-			s.recordExecutionEventLocked(ex, &cleanroomv1.ExecutionStreamEvent{
-				SandboxId:   ex.SandboxID,
-				ExecutionId: ex.ID,
-				Status:      finalStatus,
-				Payload:     &cleanroomv1.ExecutionStreamEvent_Stderr{Stderr: []byte(err.Error() + "\n")},
-				OccurredAt:  timestamppb.Now(),
-			})
+			s.appendExecutionStderrLocked(ex, finalStatus, []byte(err.Error()+"\n"))
 		}
 		finished := time.Now().UTC()
-		ex.FinishedAt = &finished
-		s.recordExecutionEventLocked(ex, &cleanroomv1.ExecutionStreamEvent{
-			SandboxId:   ex.SandboxID,
-			ExecutionId: ex.ID,
-			Status:      ex.Status,
-			Payload: &cleanroomv1.ExecutionStreamEvent_Exit{Exit: &cleanroomv1.ExecutionExit{
-				ExitCode: ex.ExitCode,
-				Status:   ex.Status,
-				Message:  ex.Message,
-			}},
-			OccurredAt: timestamppb.New(finished),
-		})
-		closeExecutionDoneLocked(ex)
-		s.pruneStateLocked(finished)
+		s.finalizeExecutionLocked(ex, finalStatus, exitCode, err.Error(), "", finished)
 		if s.Logger != nil {
 			s.Logger.Warn("execution failed",
 				"sandbox_id", ex.SandboxID,
@@ -1109,42 +1012,19 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 
 	if result.ExitCode != 0 && strings.TrimSpace(result.Message) != "" && !strings.Contains(ex.Stderr, result.Message) {
 		msg := result.Message + "\n"
-		ex.Stderr += msg
-		s.recordExecutionEventLocked(ex, &cleanroomv1.ExecutionStreamEvent{
-			SandboxId:   ex.SandboxID,
-			ExecutionId: ex.ID,
-			Status:      cleanroomv1.ExecutionStatus_EXECUTION_STATUS_RUNNING,
-			Payload:     &cleanroomv1.ExecutionStreamEvent_Stderr{Stderr: []byte(msg)},
-			OccurredAt:  timestamppb.Now(),
-		})
+		s.appendExecutionStderrLocked(ex, cleanroomv1.ExecutionStatus_EXECUTION_STATUS_RUNNING, []byte(msg))
 	}
 
+	finalStatus := cleanroomv1.ExecutionStatus_EXECUTION_STATUS_FAILED
+	finalExitCode := int32(result.ExitCode)
 	if ex.CancelRequested {
-		ex.Status = cleanroomv1.ExecutionStatus_EXECUTION_STATUS_CANCELED
-		ex.ExitCode = cancelExitCode(ex.CancelSignal)
+		finalStatus = cleanroomv1.ExecutionStatus_EXECUTION_STATUS_CANCELED
+		finalExitCode = cancelExitCode(ex.CancelSignal)
 	} else if result.ExitCode == 0 {
-		ex.Status = cleanroomv1.ExecutionStatus_EXECUTION_STATUS_SUCCEEDED
-		ex.ExitCode = int32(result.ExitCode)
-	} else {
-		ex.Status = cleanroomv1.ExecutionStatus_EXECUTION_STATUS_FAILED
-		ex.ExitCode = int32(result.ExitCode)
+		finalStatus = cleanroomv1.ExecutionStatus_EXECUTION_STATUS_SUCCEEDED
 	}
 	finished := time.Now().UTC()
-	ex.FinishedAt = &finished
-
-	s.recordExecutionEventLocked(ex, &cleanroomv1.ExecutionStreamEvent{
-		SandboxId:   ex.SandboxID,
-		ExecutionId: ex.ID,
-		Status:      ex.Status,
-		Payload: &cleanroomv1.ExecutionStreamEvent_Exit{Exit: &cleanroomv1.ExecutionExit{
-			ExitCode: ex.ExitCode,
-			Status:   ex.Status,
-			Message:  ex.Message,
-		}},
-		OccurredAt: timestamppb.New(finished),
-	})
-	closeExecutionDoneLocked(ex)
-	s.pruneStateLocked(finished)
+	s.finalizeExecutionLocked(ex, finalStatus, finalExitCode, ex.Message, "", finished)
 
 	if s.Logger != nil {
 		s.Logger.Info("execution completed",
@@ -1157,6 +1037,47 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 			"status", ex.Status.String(),
 		)
 	}
+}
+
+func (s *Service) runAdapterExecution(runCtx context.Context, adapter backend.Adapter, runReq backend.RunRequest, key string) (*backend.RunResult, bool, error) {
+	if persistentAdapter, ok := adapter.(backend.PersistentSandboxAdapter); ok {
+		result, err := persistentAdapter.RunInSandbox(runCtx, runReq, s.executionOutputStream(key))
+		return result, true, err
+	}
+	if streamAdapter, ok := adapter.(backend.StreamingAdapter); ok {
+		result, err := streamAdapter.RunStream(runCtx, runReq, s.executionOutputStream(key))
+		return result, true, err
+	}
+
+	result, err := adapter.Run(runCtx, runReq)
+	return result, false, err
+}
+
+func (s *Service) executionOutputStream(key string) backend.OutputStream {
+	return backend.OutputStream{
+		OnStdout: func(chunk []byte) {
+			s.recordExecutionOutputChunk(key, true, chunk)
+		},
+		OnStderr: func(chunk []byte) {
+			s.recordExecutionOutputChunk(key, false, chunk)
+		},
+		OnAttach: func(io backend.AttachIO) {
+			s.setExecutionAttachIO(key, io)
+		},
+	}
+}
+
+func executionRunErrorStatus(ex *executionState, runCtx context.Context) (cleanroomv1.ExecutionStatus, int32) {
+	if ex == nil {
+		return cleanroomv1.ExecutionStatus_EXECUTION_STATUS_FAILED, 1
+	}
+	if ex.CancelRequested || errors.Is(runCtx.Err(), context.Canceled) {
+		return cleanroomv1.ExecutionStatus_EXECUTION_STATUS_CANCELED, cancelExitCode(ex.CancelSignal)
+	}
+	if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
+		return cleanroomv1.ExecutionStatus_EXECUTION_STATUS_TIMED_OUT, 124
+	}
+	return cleanroomv1.ExecutionStatus_EXECUTION_STATUS_FAILED, 1
 }
 
 func (s *Service) ensureMapsLocked() {
@@ -1175,35 +1096,22 @@ func (s *Service) mergeBufferedResultOutputLocked(ex *executionState, result *ba
 
 	appendStdout := result.Stdout
 	appendStderr := result.Stderr
-
+	replaceStdout := false
+	replaceStderr := false
 	if usedStreaming {
-		if len(ex.Stdout) > 0 && strings.HasPrefix(result.Stdout, ex.Stdout) {
-			appendStdout = result.Stdout[len(ex.Stdout):]
-		}
-		if len(ex.Stderr) > 0 && strings.HasPrefix(result.Stderr, ex.Stderr) {
-			appendStderr = result.Stderr[len(ex.Stderr):]
-		}
+		appendStdout, replaceStdout = bufferedResultDelta(ex.Stdout, result.Stdout, maxRetainedExecutionOutputBytes)
+		appendStderr, replaceStderr = bufferedResultDelta(ex.Stderr, result.Stderr, maxRetainedExecutionOutputBytes)
 	}
 
-	if appendStdout != "" {
-		ex.Stdout += appendStdout
-		s.recordExecutionEventLocked(ex, &cleanroomv1.ExecutionStreamEvent{
-			SandboxId:   ex.SandboxID,
-			ExecutionId: ex.ID,
-			Status:      cleanroomv1.ExecutionStatus_EXECUTION_STATUS_RUNNING,
-			Payload:     &cleanroomv1.ExecutionStreamEvent_Stdout{Stdout: []byte(appendStdout)},
-			OccurredAt:  timestamppb.Now(),
-		})
+	if replaceStdout {
+		s.replaceExecutionStdoutFromBufferedLocked(ex, cleanroomv1.ExecutionStatus_EXECUTION_STATUS_RUNNING, appendStdout)
+	} else {
+		s.appendExecutionStdoutLocked(ex, cleanroomv1.ExecutionStatus_EXECUTION_STATUS_RUNNING, []byte(appendStdout))
 	}
-	if appendStderr != "" {
-		ex.Stderr += appendStderr
-		s.recordExecutionEventLocked(ex, &cleanroomv1.ExecutionStreamEvent{
-			SandboxId:   ex.SandboxID,
-			ExecutionId: ex.ID,
-			Status:      cleanroomv1.ExecutionStatus_EXECUTION_STATUS_RUNNING,
-			Payload:     &cleanroomv1.ExecutionStreamEvent_Stderr{Stderr: []byte(appendStderr)},
-			OccurredAt:  timestamppb.Now(),
-		})
+	if replaceStderr {
+		s.replaceExecutionStderrFromBufferedLocked(ex, cleanroomv1.ExecutionStatus_EXECUTION_STATUS_RUNNING, appendStderr)
+	} else {
+		s.appendExecutionStderrLocked(ex, cleanroomv1.ExecutionStatus_EXECUTION_STATUS_RUNNING, []byte(appendStderr))
 	}
 }
 
@@ -1225,23 +1133,65 @@ func (s *Service) recordExecutionOutputChunk(key string, isStdout bool, chunk []
 	}
 
 	if isStdout {
-		ex.Stdout += string(chunk)
-		s.recordExecutionEventLocked(ex, &cleanroomv1.ExecutionStreamEvent{
-			SandboxId:   ex.SandboxID,
-			ExecutionId: ex.ID,
-			Status:      status,
-			Payload:     &cleanroomv1.ExecutionStreamEvent_Stdout{Stdout: append([]byte(nil), chunk...)},
-			OccurredAt:  timestamppb.Now(),
-		})
+		s.appendExecutionStdoutLocked(ex, status, chunk)
 		return
 	}
 
-	ex.Stderr += string(chunk)
+	s.appendExecutionStderrLocked(ex, status, chunk)
+}
+
+func (s *Service) appendExecutionStdoutLocked(ex *executionState, status cleanroomv1.ExecutionStatus, chunk []byte) {
+	if ex == nil || len(chunk) == 0 {
+		return
+	}
+	ex.Stdout = appendRetainedOutput(ex.Stdout, string(chunk), maxRetainedExecutionOutputBytes)
+	s.recordExecutionEventLocked(ex, &cleanroomv1.ExecutionStreamEvent{
+		SandboxId:   ex.SandboxID,
+		ExecutionId: ex.ID,
+		Status:      status,
+		Payload:     &cleanroomv1.ExecutionStreamEvent_Stdout{Stdout: append([]byte(nil), chunk...)},
+		OccurredAt:  timestamppb.Now(),
+	})
+}
+
+func (s *Service) appendExecutionStderrLocked(ex *executionState, status cleanroomv1.ExecutionStatus, chunk []byte) {
+	if ex == nil || len(chunk) == 0 {
+		return
+	}
+	ex.Stderr = appendRetainedOutput(ex.Stderr, string(chunk), maxRetainedExecutionOutputBytes)
 	s.recordExecutionEventLocked(ex, &cleanroomv1.ExecutionStreamEvent{
 		SandboxId:   ex.SandboxID,
 		ExecutionId: ex.ID,
 		Status:      status,
 		Payload:     &cleanroomv1.ExecutionStreamEvent_Stderr{Stderr: append([]byte(nil), chunk...)},
+		OccurredAt:  timestamppb.Now(),
+	})
+}
+
+func (s *Service) replaceExecutionStdoutFromBufferedLocked(ex *executionState, status cleanroomv1.ExecutionStatus, output string) {
+	if ex == nil || output == "" {
+		return
+	}
+	ex.Stdout = appendRetainedOutput("", output, maxRetainedExecutionOutputBytes)
+	s.recordExecutionEventLocked(ex, &cleanroomv1.ExecutionStreamEvent{
+		SandboxId:   ex.SandboxID,
+		ExecutionId: ex.ID,
+		Status:      status,
+		Payload:     &cleanroomv1.ExecutionStreamEvent_Stdout{Stdout: []byte(output)},
+		OccurredAt:  timestamppb.Now(),
+	})
+}
+
+func (s *Service) replaceExecutionStderrFromBufferedLocked(ex *executionState, status cleanroomv1.ExecutionStatus, output string) {
+	if ex == nil || output == "" {
+		return
+	}
+	ex.Stderr = appendRetainedOutput("", output, maxRetainedExecutionOutputBytes)
+	s.recordExecutionEventLocked(ex, &cleanroomv1.ExecutionStreamEvent{
+		SandboxId:   ex.SandboxID,
+		ExecutionId: ex.ID,
+		Status:      status,
+		Payload:     &cleanroomv1.ExecutionStreamEvent_Stderr{Stderr: []byte(output)},
 		OccurredAt:  timestamppb.Now(),
 	})
 }
@@ -1553,7 +1503,7 @@ func (s *Service) recordSandboxEventLocked(sb *sandboxState, status cleanroomv1.
 		Message:    message,
 		OccurredAt: timestamppb.New(now),
 	}
-	sb.EventHistory = append(sb.EventHistory, event)
+	sb.EventHistory = appendBounded(sb.EventHistory, event, maxRetainedSandboxEvents)
 
 	for id, ch := range sb.EventSubscribers {
 		select {
@@ -1578,7 +1528,7 @@ func (s *Service) recordExecutionEventLocked(ex *executionState, event *cleanroo
 	if event.GetOccurredAt() == nil {
 		event.OccurredAt = timestamppb.Now()
 	}
-	ex.EventHistory = append(ex.EventHistory, event)
+	ex.EventHistory = appendBounded(ex.EventHistory, event, maxRetainedExecutionEvents)
 
 	for id, ch := range ex.EventSubscribers {
 		select {
@@ -1590,11 +1540,109 @@ func (s *Service) recordExecutionEventLocked(ex *executionState, event *cleanroo
 	}
 }
 
+func (s *Service) finalizeExecutionLocked(ex *executionState, status cleanroomv1.ExecutionStatus, exitCode int32, message, exitMessage string, finished time.Time) {
+	s.finalizeExecutionInternalLocked(ex, status, exitCode, message, exitMessage, finished, true)
+}
+
+func (s *Service) finalizeExecutionWithoutPruneLocked(ex *executionState, status cleanroomv1.ExecutionStatus, exitCode int32, message, exitMessage string, finished time.Time) {
+	s.finalizeExecutionInternalLocked(ex, status, exitCode, message, exitMessage, finished, false)
+}
+
+func (s *Service) finalizeExecutionInternalLocked(ex *executionState, status cleanroomv1.ExecutionStatus, exitCode int32, message, exitMessage string, finished time.Time, prune bool) {
+	if ex == nil {
+		return
+	}
+	if finished.IsZero() {
+		finished = time.Now().UTC()
+	}
+	if exitMessage == "" {
+		exitMessage = message
+	}
+	ex.Status = status
+	ex.ExitCode = exitCode
+	ex.Message = message
+	ex.FinishedAt = &finished
+	s.recordExecutionEventLocked(ex, &cleanroomv1.ExecutionStreamEvent{
+		SandboxId:   ex.SandboxID,
+		ExecutionId: ex.ID,
+		Status:      ex.Status,
+		Payload: &cleanroomv1.ExecutionStreamEvent_Exit{Exit: &cleanroomv1.ExecutionExit{
+			ExitCode: ex.ExitCode,
+			Status:   ex.Status,
+			Message:  exitMessage,
+		}},
+		OccurredAt: timestamppb.New(finished),
+	})
+	closeExecutionDoneLocked(ex)
+	if prune {
+		s.pruneStateLocked(finished)
+	}
+}
+
 func normalizeCommand(command []string) []string {
 	if len(command) > 0 && command[0] == "--" {
 		return command[1:]
 	}
 	return command
+}
+
+func bufferedResultDelta(retained, buffered string, retentionLimit int) (string, bool) {
+	if buffered == "" {
+		return "", false
+	}
+	if retained == "" {
+		return buffered, false
+	}
+	if strings.HasSuffix(buffered, retained) {
+		// If retention is saturated, treat suffix-only overlap as a truncation artifact
+		// and avoid replaying duplicate tail bytes from the buffered result.
+		if retentionLimit > 0 && len(retained) >= retentionLimit {
+			return "", false
+		}
+		if strings.HasPrefix(buffered, retained) {
+			return buffered[len(retained):], false
+		}
+		// Stream callbacks likely missed earlier bytes; replace retained output with
+		// the complete buffered output so snapshots/history stay correct.
+		return buffered, true
+	}
+	if strings.HasPrefix(buffered, retained) {
+		return buffered[len(retained):], false
+	}
+	return buffered, true
+}
+
+func appendRetainedOutput(existing, chunk string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	if chunk == "" {
+		if len(existing) <= limit {
+			return existing
+		}
+		return strings.Clone(existing[len(existing)-limit:])
+	}
+	if len(chunk) >= limit {
+		return strings.Clone(chunk[len(chunk)-limit:])
+	}
+	keepExisting := limit - len(chunk)
+	if keepExisting < len(existing) {
+		existing = strings.Clone(existing[len(existing)-keepExisting:])
+	}
+	return existing + chunk
+}
+
+func appendBounded[T any](history []T, item T, limit int) []T {
+	if limit <= 0 {
+		return nil
+	}
+	history = append(history, item)
+	if len(history) <= limit {
+		return history
+	}
+	trimmed := make([]T, limit)
+	copy(trimmed, history[len(history)-limit:])
+	return trimmed
 }
 
 func resolveBackendName(requested, configuredDefault string) string {
