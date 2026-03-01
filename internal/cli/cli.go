@@ -735,6 +735,7 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 		"sandbox_id", strings.TrimSpace(e.SandboxID),
 		"command_argc", len(e.Command),
 	)
+	sandboxCreated := strings.TrimSpace(e.SandboxID) == ""
 	sandboxID, err := ensureSandboxID(client, ctx.Loader, cwd, e.Backend, strings.TrimSpace(e.SandboxID), e.LaunchSeconds)
 	if err != nil {
 		return err
@@ -833,7 +834,7 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 	select {
 	case <-secondInterrupt:
 		detached = true
-		if e.Remove {
+		if e.Remove || sandboxCreated {
 			terminateSandboxBestEffort(client, sandboxID, sandboxTerminateTimeout, logger, "terminate sandbox after detach failed")
 		}
 		return exitCodeError{code: 130}
