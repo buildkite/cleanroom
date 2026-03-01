@@ -85,6 +85,7 @@ mount -t tmpfs tmpfs /tmp 2>/dev/null || true
 
 export HOME=/root
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/root/.local/bin
+export TERM=xterm-256color
 
 setup_guest_network() {
   NET_IFACE=""
@@ -603,6 +604,9 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 			gwHost = defaultGatewayHost
 		}
 		guestReq.Env = append(guestReq.Env, gatewayEnvVars(req.Policy, gwHost, gwPort, gatewayScopeToken)...)
+	}
+	if req.TTY {
+		guestReq.Env = append(guestReq.Env, "TERM=xterm-256color")
 	}
 	seed := make([]byte, 64)
 	if _, err := cryptorand.Read(seed); err == nil {

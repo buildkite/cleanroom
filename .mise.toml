@@ -27,6 +27,23 @@ run = "scripts/build-go.sh"
 description = "Build macOS darwin-vz helper into dist/"
 run = "{% if os() == \"macos\" %}mkdir -p dist && xcrun swiftc -O -framework Virtualization cmd/cleanroom-darwin-vz/main.swift -o dist/cleanroom-darwin-vz && codesign --force --sign - --entitlements cmd/cleanroom-darwin-vz/entitlements.plist dist/cleanroom-darwin-vz{% else %}true{% endif %}"
 
+[tasks."build:image:alpine"]
+description = "Build local alpine base image"
+run = "docker build -f images/Dockerfile.base-image -t cleanroom-base:alpine ."
+
+[tasks."build:image:alpine-docker"]
+description = "Build local alpine-docker base image"
+run = "docker build -f images/Dockerfile.base-image-docker -t cleanroom-base:alpine-docker ."
+
+[tasks."build:image:alpine-agents"]
+description = "Build local alpine-agents base image"
+run = "docker build -f images/Dockerfile.base-image-agents -t cleanroom-base:alpine-agents ."
+
+[tasks."build:images"]
+description = "Build all local base images"
+depends = ["build:image:alpine", "build:image:alpine-docker", "build:image:alpine-agents"]
+run = "true"
+
 [tasks.build]
 description = "Build binaries into dist/"
 depends = ["build:go", "build:darwin"]

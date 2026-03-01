@@ -97,6 +97,20 @@ Interactive console:
 cleanroom console -- bash
 ```
 
+Agent shortcut (creates/reuses sandbox from current policy and runs Codex inside it):
+
+```bash
+cleanroom agent codex
+cleanroom agent codex --yolo --model gpt-5.3-codex
+cleanroom agent codex --image ghcr.io/buildkite/cleanroom-base/alpine-agents@sha256:... -- --yolo
+cleanroom agent codex --image ghcr.io/buildkite/cleanroom-base/alpine-agents:latest -- --yolo  # resolved to digest before launch
+```
+
+## Examples
+
+- [Basic](examples/basic/README.md)
+- [Codex `--yolo` on macOS](examples/codex-yolo-macos/README.md)
+
 ## Policy file
 
 A `cleanroom.yaml` in your repo defines the sandbox policy. Cleanroom also checks `.buildkite/cleanroom.yaml` as a fallback.
@@ -207,7 +221,17 @@ cleanroom image import ghcr.io/buildkite/cleanroom-base/alpine@sha256:... ./root
 cleanroom image bump-ref    # resolve :latest tag to digest and update cleanroom.yaml
 ```
 
-`ghcr.io/buildkite/cleanroom-base/alpine` and `ghcr.io/buildkite/cleanroom-base/alpine-docker` are published from this repo on pushes to `main`.
+`ghcr.io/buildkite/cleanroom-base/alpine`, `ghcr.io/buildkite/cleanroom-base/alpine-docker`, and `ghcr.io/buildkite/cleanroom-base/alpine-agents` are published from this repo on pushes to `main`.
+
+Build these locally with `mise`:
+
+```bash
+mise run build:images
+# or individually:
+mise run build:image:alpine
+mise run build:image:alpine-docker
+mise run build:image:alpine-agents
+```
 
 ## Runtime config
 

@@ -4,8 +4,9 @@ on:
   push:
     branches: [main]
     paths:
-      - Dockerfile.base-image
-      - Dockerfile.base-image-docker
+      - images/Dockerfile.base-image
+      - images/Dockerfile.base-image-docker
+      - images/Dockerfile.base-image-agents
       - scripts/base-image-tag.sh
       - .github/workflows/base-image.yml
   workflow_dispatch:
@@ -22,11 +23,14 @@ jobs:
       matrix:
         include:
           - image_name: alpine
-            dockerfile: Dockerfile.base-image
+            dockerfile: images/Dockerfile.base-image
             repository: ghcr.io/buildkite/cleanroom-base/alpine
           - image_name: alpine-docker
-            dockerfile: Dockerfile.base-image-docker
+            dockerfile: images/Dockerfile.base-image-docker
             repository: ghcr.io/buildkite/cleanroom-base/alpine-docker
+          - image_name: alpine-agents
+            dockerfile: images/Dockerfile.base-image-agents
+            repository: ghcr.io/buildkite/cleanroom-base/alpine-agents
     steps:
       - uses: actions/checkout@v4
 

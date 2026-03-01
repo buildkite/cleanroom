@@ -1506,10 +1506,7 @@ func (s *Service) recordSandboxEventLocked(sb *sandboxState, status cleanroomv1.
 	sb.EventHistory = appendBounded(sb.EventHistory, event, maxRetainedSandboxEvents)
 
 	for id, ch := range sb.EventSubscribers {
-		select {
-		case ch <- event:
-		default:
-			close(ch)
+		if !enqueueLatestSandboxEvent(ch, event) {
 			delete(sb.EventSubscribers, id)
 		}
 	}
@@ -1531,12 +1528,55 @@ func (s *Service) recordExecutionEventLocked(ex *executionState, event *cleanroo
 	ex.EventHistory = appendBounded(ex.EventHistory, event, maxRetainedExecutionEvents)
 
 	for id, ch := range ex.EventSubscribers {
-		select {
-		case ch <- event:
-		default:
-			close(ch)
+		if !enqueueLatestExecutionEvent(ch, event) {
 			delete(ex.EventSubscribers, id)
 		}
+	}
+}
+
+func enqueueLatestSandboxEvent(ch chan *cleanroomv1.SandboxEvent, event *cleanroomv1.SandboxEvent) bool {
+	if ch == nil {
+		return false
+	}
+	select {
+	case ch <- event:
+		return true
+	default:
+	}
+	// Keep stream subscribers alive for bursty producers by dropping one stale
+	// pending item and retrying with the newest event.
+	select {
+	case <-ch:
+	default:
+	}
+	select {
+	case ch <- event:
+		return true
+	default:
+		return true
+	}
+}
+
+func enqueueLatestExecutionEvent(ch chan *cleanroomv1.ExecutionStreamEvent, event *cleanroomv1.ExecutionStreamEvent) bool {
+	if ch == nil {
+		return false
+	}
+	select {
+	case ch <- event:
+		return true
+	default:
+	}
+	// Keep stream subscribers alive for bursty producers by dropping one stale
+	// pending item and retrying with the newest event.
+	select {
+	case <-ch:
+	default:
+	}
+	select {
+	case ch <- event:
+		return true
+	default:
+		return true
 	}
 }
 

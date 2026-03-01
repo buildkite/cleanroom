@@ -114,6 +114,38 @@ func TestRunInSandboxUsesRequestLaunchSecondsOverride(t *testing.T) {
 	}
 }
 
+func TestRunInSandboxAddsTERMForTTYRequests(t *testing.T) {
+	t.Parallel()
+
+	var capturedReq vsockexec.ExecRequest
+	adapter := &Adapter{}
+	adapter.runGuestCommandFn = func(_ context.Context, _ context.Context, _ <-chan struct{}, _ func() error, _ string, _ uint32, req vsockexec.ExecRequest, _ backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error) {
+		capturedReq = req
+		return vsockexec.ExecResponse{ExitCode: 0}, guestExecTiming{}, nil
+	}
+	adapter.sandboxes = map[string]*sandboxInstance{
+		"cr-test": {
+			SandboxID:      "cr-test",
+			VsockPath:      "/tmp/fake.sock",
+			GuestPort:      10700,
+			CommandTimeout: 1,
+		},
+	}
+
+	_, err := adapter.RunInSandbox(context.Background(), backend.RunRequest{
+		SandboxID: "cr-test",
+		RunID:     "run-term",
+		Command:   []string{"sh"},
+		TTY:       true,
+	}, backend.OutputStream{})
+	if err != nil {
+		t.Fatalf("RunInSandbox returned error: %v", err)
+	}
+	if !strings.Contains(strings.Join(capturedReq.Env, "\n"), "TERM=xterm-256color") {
+		t.Fatalf("expected TERM=xterm-256color in guest env, got %v", capturedReq.Env)
+	}
+}
+
 func TestRunInSandboxWritesRunObservabilityForStatusCommand(t *testing.T) {
 	t.Parallel()
 

@@ -1150,6 +1150,45 @@ func TestRunExecutionSkipsAlreadyFinalExecution(t *testing.T) {
 	}
 }
 
+func TestRecordExecutionEventKeepsSubscriberAliveWhenBufferFull(t *testing.T) {
+	svc := newTestService(&stubAdapter{})
+	ch := make(chan *cleanroomv1.ExecutionStreamEvent, 1)
+	old := &cleanroomv1.ExecutionStreamEvent{
+		SandboxId:   "sb-1",
+		ExecutionId: "exec-1",
+		Status:      cleanroomv1.ExecutionStatus_EXECUTION_STATUS_RUNNING,
+		Payload:     &cleanroomv1.ExecutionStreamEvent_Stdout{Stdout: []byte("old")},
+	}
+	ch <- old
+
+	ex := &executionState{
+		ID:               "exec-1",
+		SandboxID:        "sb-1",
+		Status:           cleanroomv1.ExecutionStatus_EXECUTION_STATUS_RUNNING,
+		EventSubscribers: map[int]chan *cleanroomv1.ExecutionStreamEvent{1: ch},
+	}
+	newEvent := &cleanroomv1.ExecutionStreamEvent{
+		SandboxId:   "sb-1",
+		ExecutionId: "exec-1",
+		Status:      cleanroomv1.ExecutionStatus_EXECUTION_STATUS_RUNNING,
+		Payload:     &cleanroomv1.ExecutionStreamEvent_Stdout{Stdout: []byte("new")},
+	}
+
+	svc.recordExecutionEventLocked(ex, newEvent)
+
+	if _, ok := ex.EventSubscribers[1]; !ok {
+		t.Fatal("expected subscriber to remain registered")
+	}
+	select {
+	case got := <-ch:
+		if got != newEvent {
+			t.Fatalf("expected latest event in subscriber buffer, got %#v want %#v", got, newEvent)
+		}
+	default:
+		t.Fatal("expected buffered event for subscriber")
+	}
+}
+
 func TestFinalizeExecutionWithoutPruneSkipsImmediateStatePruning(t *testing.T) {
 	origLimit := maxRetainedFinishedExecutions
 	maxRetainedFinishedExecutions = 0

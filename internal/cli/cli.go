@@ -73,6 +73,7 @@ type CLI struct {
 	Policy  PolicyCommand  `cmd:"" help:"Policy commands"`
 	Config  ConfigCommand  `cmd:"" help:"Runtime config commands"`
 	Image   ImageCommand   `cmd:"" help:"Manage OCI image cache artifacts"`
+	Agent   AgentCommand   `cmd:"" help:"Run long-lived agent workflows"`
 	Exec    ExecCommand    `cmd:"" help:"Execute a command in a cleanroom backend"`
 	Console ConsoleCommand `cmd:"" help:"Attach an interactive console to a cleanroom execution"`
 	Serve   ServeCommand   `cmd:"" help:"Run the cleanroom control-plane server"`
@@ -121,6 +122,22 @@ type ImageBumpRefCommand struct {
 	Source     string `arg:"" optional:"" help:"Image ref to resolve (default: ghcr.io/buildkite/cleanroom-base/alpine:latest)"`
 	Chdir      string `short:"c" help:"Change to this directory before running commands"`
 	PolicyPath string `help:"Policy file path (default: cleanroom.yaml, or .buildkite/cleanroom.yaml when primary is missing)"`
+}
+
+type AgentCommand struct {
+	Codex AgentCodexCommand `cmd:"" help:"Create and run a long-running Codex agent session in a sandbox"`
+}
+
+type AgentCodexCommand struct {
+	clientFlags
+	Chdir     string `short:"c" help:"Change to this directory before running commands"`
+	Backend   string `help:"Execution backend (defaults to runtime config or firecracker)"`
+	SandboxID string `help:"Reuse an existing sandbox instead of creating a new one"`
+	Image     string `help:"Override sandbox image ref for newly created sandboxes (tag or digest; tags are resolved to digest)"`
+
+	LaunchSeconds int64 `help:"VM boot/guest-agent readiness timeout in seconds"`
+
+	Args []string `arg:"" passthrough:"" optional:"" help:"Arguments to pass to codex (prefix with '--' to separate cleanroom and codex flags)"`
 }
 
 type PolicyCommand struct {
@@ -182,6 +199,7 @@ type ConsoleCommand struct {
 	Chdir     string `short:"c" help:"Change to this directory before running commands"`
 	Backend   string `help:"Execution backend (defaults to runtime config or firecracker)"`
 	SandboxID string `help:"Reuse an existing sandbox instead of creating a new one"`
+	Image     string `help:"Override sandbox image ref for newly created sandboxes (tag or digest; tags are resolved to digest)"`
 	Remove    bool   `name:"rm" help:"Terminate the sandbox after console exits"`
 
 	LaunchSeconds int64 `help:"VM boot/guest-agent readiness timeout in seconds"`
@@ -290,6 +308,18 @@ var (
 		}
 
 		return fmt.Sprintf("%s@%s", tag.Context().Name(), desc.Digest.String()), nil
+	}
+	resolveReferenceForImageOverride = func(ctx context.Context, source string) (string, error) {
+		resolved, err := resolveReferenceForPolicyUpdate(ctx, source)
+		if err == nil {
+			return resolved, nil
+		}
+
+		localRef, localErr := importLocalDockerImageForOverride(ctx, source)
+		if localErr == nil {
+			return localRef, nil
+		}
+		return "", fmt.Errorf("%w; local docker fallback failed: %v", err, localErr)
 	}
 	serveInstallGOOS            = runtime.GOOS
 	serveInstallEUID            = os.Geteuid
@@ -682,6 +712,24 @@ func (c *SandboxTerminateCommand) Run(ctx *runtimeContext) error {
 	return err
 }
 
+func (a *AgentCodexCommand) Run(ctx *runtimeContext) error {
+	args := trimPassthroughSeparator(a.Args)
+	command := make([]string, 0, len(args)+1)
+	command = append(command, "codex")
+	command = append(command, args...)
+
+	console := ConsoleCommand{
+		clientFlags:   a.clientFlags,
+		Chdir:         a.Chdir,
+		Backend:       a.Backend,
+		SandboxID:     a.SandboxID,
+		Image:         a.Image,
+		LaunchSeconds: a.LaunchSeconds,
+		Command:       command,
+	}
+	return console.Run(ctx)
+}
+
 func (e *ExecCommand) Run(ctx *runtimeContext) error {
 	logger, err := newLogger(e.LogLevel, "client")
 	if err != nil {
@@ -703,7 +751,8 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 		"sandbox_id", strings.TrimSpace(e.SandboxID),
 		"command_argc", len(e.Command),
 	)
-	sandboxID, err := ensureSandboxID(client, ctx.Loader, cwd, e.Backend, strings.TrimSpace(e.SandboxID), e.LaunchSeconds)
+	sandboxCreated := strings.TrimSpace(e.SandboxID) == ""
+	sandboxID, err := ensureSandboxID(client, ctx.Loader, cwd, e.Backend, strings.TrimSpace(e.SandboxID), "", e.LaunchSeconds)
 	if err != nil {
 		return err
 	}
@@ -801,7 +850,7 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 	select {
 	case <-secondInterrupt:
 		detached = true
-		if e.Remove {
+		if e.Remove || sandboxCreated {
 			terminateSandboxBestEffort(client, sandboxID, sandboxTerminateTimeout, logger, "terminate sandbox after detach failed")
 		}
 		return exitCodeError{code: 130}
@@ -883,7 +932,7 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 		"sandbox_id", strings.TrimSpace(c.SandboxID),
 		"command_argc", len(command),
 	)
-	sandboxID, err := ensureSandboxID(client, ctx.Loader, cwd, c.Backend, strings.TrimSpace(c.SandboxID), c.LaunchSeconds)
+	sandboxID, err := ensureSandboxID(client, ctx.Loader, cwd, c.Backend, strings.TrimSpace(c.SandboxID), c.Image, c.LaunchSeconds)
 	if err != nil {
 		return err
 	}
@@ -930,25 +979,31 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 
 	stdinFD := int(os.Stdin.Fd())
 	rawMode := false
+	normalizeRawTTYStdout := false
+	normalizeRawTTYStderr := false
 	if term.IsTerminal(stdinFD) {
 		oldState, rawErr := term.MakeRaw(stdinFD)
 		if rawErr != nil {
 			logger.Warn("failed to enter raw mode", "error", rawErr)
 		} else {
 			rawMode = true
+			normalizeRawTTYStdout = true
+			// Stderr frames in TTY sessions come from runtime/control-plane warnings
+			// rather than the PTY command stream, so CRLF normalization is safe and
+			// keeps lines aligned while stdin is in raw mode.
+			normalizeRawTTYStderr = true
 			defer func() {
 				_ = term.Restore(stdinFD, oldState)
 			}()
-			if cols, rows, sizeErr := term.GetSize(stdinFD); sizeErr == nil {
-				_ = sender.Send(&cleanroomv1.ExecutionAttachFrame{
-					Payload: &cleanroomv1.ExecutionAttachFrame_Resize{
-						Resize: &cleanroomv1.ExecutionResize{
-							Cols: uint32(cols),
-							Rows: uint32(rows),
-						},
+			cols, rows := attachTTYSize(stdinFD)
+			_ = sender.Send(&cleanroomv1.ExecutionAttachFrame{
+				Payload: &cleanroomv1.ExecutionAttachFrame_Resize{
+					Resize: &cleanroomv1.ExecutionResize{
+						Cols: cols,
+						Rows: rows,
 					},
-				})
-			}
+				},
+			})
 		}
 	}
 
@@ -962,15 +1017,12 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 		defer signal.Stop(resizeSignalCh)
 		go func() {
 			for range resizeSignalCh {
-				cols, rows, sizeErr := term.GetSize(stdinFD)
-				if sizeErr != nil {
-					continue
-				}
+				cols, rows := attachTTYSize(stdinFD)
 				_ = sender.Send(&cleanroomv1.ExecutionAttachFrame{
 					Payload: &cleanroomv1.ExecutionAttachFrame_Resize{
 						Resize: &cleanroomv1.ExecutionResize{
-							Cols: uint32(cols),
-							Rows: uint32(rows),
+							Cols: cols,
+							Rows: rows,
 						},
 					},
 				})
@@ -1025,7 +1077,7 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 		switch payload := frame.Payload.(type) {
 		case *cleanroomv1.ExecutionAttachFrame_Stdout:
 			chunk := payload.Stdout
-			if rawMode {
+			if rawMode && normalizeRawTTYStdout {
 				chunk, stdoutEndedCR = normalizeLineEndingsForRawTTY(chunk, stdoutEndedCR)
 			}
 			if _, err := ctx.Stdout.Write(chunk); err != nil {
@@ -1033,7 +1085,7 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 			}
 		case *cleanroomv1.ExecutionAttachFrame_Stderr:
 			chunk := payload.Stderr
-			if rawMode {
+			if rawMode && normalizeRawTTYStderr {
 				chunk, stderrEndedCR = normalizeLineEndingsForRawTTY(chunk, stderrEndedCR)
 			}
 			if _, err := os.Stderr.Write(chunk); err != nil {
@@ -1082,6 +1134,32 @@ func normalizeLineEndingsForRawTTY(chunk []byte, prevEndedCR bool) ([]byte, bool
 		endedCR = b == '\r'
 	}
 	return out, endedCR
+}
+
+func attachTTYSize(fd int) (uint32, uint32) {
+	cols, rows, err := term.GetSize(fd)
+	if err != nil {
+		return 80, 24
+	}
+	if cols <= 0 {
+		cols = 80
+	}
+	if rows <= 0 {
+		rows = 24
+	}
+	return uint32(cols), uint32(rows)
+}
+
+func trimPassthroughSeparator(args []string) []string {
+	if len(args) == 0 {
+		return args
+	}
+	if strings.TrimSpace(args[0]) != "--" {
+		return args
+	}
+	out := make([]string, 0, len(args)-1)
+	out = append(out, args[1:]...)
+	return out
 }
 
 func (c *TLSInitCommand) Run(ctx *runtimeContext) error {
@@ -1771,15 +1849,37 @@ func inspectRun(stdout *os.File, baseDir, runID string) error {
 	return err
 }
 
-func ensureSandboxID(client *controlclient.Client, loader policyLoader, cwd, backendName, existingSandboxID string, launchSeconds int64) (string, error) {
+func ensureSandboxID(client *controlclient.Client, loader policyLoader, cwd, backendName, existingSandboxID, imageRefOverride string, launchSeconds int64) (string, error) {
 	sandboxID := strings.TrimSpace(existingSandboxID)
+	imageRefOverride = strings.TrimSpace(imageRefOverride)
 	if sandboxID != "" {
+		if imageRefOverride != "" {
+			return "", errors.New("--image cannot be used with --sandbox-id")
+		}
 		return sandboxID, nil
 	}
 
 	compiled, _, err := loader.LoadAndCompile(cwd)
 	if err != nil {
 		return "", err
+	}
+	if imageRefOverride != "" {
+		resolvedRef, err := resolveReferenceForImageOverride(context.Background(), imageRefOverride)
+		if err != nil {
+			return "", fmt.Errorf("invalid --image value: %w", err)
+		}
+		parsedRef, err := ociref.ParseDigestReference(resolvedRef)
+		if err != nil {
+			return "", fmt.Errorf("invalid --image value: %w", err)
+		}
+		pb := compiled.ToProto()
+		pb.ImageRef = parsedRef.Original
+		pb.ImageDigest = parsedRef.Digest()
+		pb.Hash = ""
+		compiled, err = policy.FromProto(pb)
+		if err != nil {
+			return "", fmt.Errorf("apply --image override: %w", err)
+		}
 	}
 	createSandboxResp, err := client.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
 		Backend: backendName,
@@ -1792,6 +1892,109 @@ func ensureSandboxID(client *controlclient.Client, loader policyLoader, cwd, bac
 		return "", fmt.Errorf("create sandbox: %w", err)
 	}
 	return strings.TrimSpace(createSandboxResp.GetSandbox().GetSandboxId()), nil
+}
+
+func importLocalDockerImageForOverride(ctx context.Context, source string) (string, error) {
+	source = strings.TrimSpace(source)
+	if source == "" {
+		return "", errors.New("image reference cannot be empty")
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		return "", fmt.Errorf("docker CLI not found in PATH: %w", err)
+	}
+
+	inspectCmd := exec.CommandContext(ctx, "docker", "image", "inspect", "--format", "{{.Id}}", source)
+	var inspectStdout bytes.Buffer
+	var inspectStderr bytes.Buffer
+	inspectCmd.Stdout = &inspectStdout
+	inspectCmd.Stderr = &inspectStderr
+	if err := inspectCmd.Run(); err != nil {
+		errText := strings.TrimSpace(inspectStderr.String())
+		if errText == "" {
+			errText = err.Error()
+		}
+		return "", fmt.Errorf("inspect local docker image %q: %s", source, errText)
+	}
+
+	imageID := strings.TrimSpace(inspectStdout.String())
+	if imageID == "" {
+		return "", fmt.Errorf("inspect local docker image %q returned empty image id", source)
+	}
+	digestRef, err := ociref.ParseDigestReference("local/docker-image@" + imageID)
+	if err != nil {
+		return "", fmt.Errorf("inspect local docker image %q returned invalid image id %q: %w", source, imageID, err)
+	}
+
+	mgr, err := newImageManager()
+	if err != nil {
+		return "", err
+	}
+
+	cachedRecords, err := mgr.List(ctx)
+	if err != nil {
+		return "", err
+	}
+	for _, record := range cachedRecords {
+		if record.Digest != digestRef.Digest() {
+			continue
+		}
+		if _, statErr := os.Stat(record.RootFSPath); statErr == nil {
+			_, _ = fmt.Fprintf(os.Stderr, "using cached local image override %s\n", digestRef.Original)
+			return digestRef.Original, nil
+		}
+	}
+
+	_, _ = fmt.Fprintf(os.Stderr, "importing local docker image %q into cleanroom cache (first run can take a while)\n", source)
+
+	createCmd := exec.CommandContext(ctx, "docker", "create", source)
+	var createStdout bytes.Buffer
+	var createStderr bytes.Buffer
+	createCmd.Stdout = &createStdout
+	createCmd.Stderr = &createStderr
+	if err := createCmd.Run(); err != nil {
+		errText := strings.TrimSpace(createStderr.String())
+		if errText == "" {
+			errText = err.Error()
+		}
+		return "", fmt.Errorf("create container from %q: %s", source, errText)
+	}
+	containerID := strings.TrimSpace(createStdout.String())
+	if containerID == "" {
+		return "", fmt.Errorf("create container from %q returned empty container id", source)
+	}
+	defer func() {
+		_ = exec.Command("docker", "rm", "-f", containerID).Run()
+	}()
+
+	exportFile, err := os.CreateTemp("", "cleanroom-local-image-*.tar")
+	if err != nil {
+		return "", fmt.Errorf("create temporary export file: %w", err)
+	}
+	defer func() {
+		_ = exportFile.Close()
+		_ = os.Remove(exportFile.Name())
+	}()
+
+	exportCmd := exec.CommandContext(ctx, "docker", "export", containerID)
+	var exportStderr bytes.Buffer
+	exportCmd.Stdout = exportFile
+	exportCmd.Stderr = &exportStderr
+	if err := exportCmd.Run(); err != nil {
+		errText := strings.TrimSpace(exportStderr.String())
+		if errText == "" {
+			errText = err.Error()
+		}
+		return "", fmt.Errorf("export container %q from %q: %s", containerID, source, errText)
+	}
+	if _, err := exportFile.Seek(0, io.SeekStart); err != nil {
+		return "", fmt.Errorf("rewind temporary export file: %w", err)
+	}
+
+	if _, err := mgr.Import(ctx, digestRef.Original, "-", exportFile); err != nil {
+		return "", fmt.Errorf("import local docker image %q into cleanroom cache: %w", source, err)
+	}
+	_, _ = fmt.Fprintf(os.Stderr, "imported local docker image override as %s\n", digestRef.Original)
+	return digestRef.Original, nil
 }
 
 func getFinalExecutionExitCode(client *controlclient.Client, sandboxID, executionID string) (int, bool) {
