@@ -55,6 +55,7 @@ type CLI struct {
 	Config    ConfigCommand    `cmd:"" help:"Runtime config commands"`
 	Image     ImageCommand     `cmd:"" help:"Manage OCI image cache artifacts"`
 	Inspect   InspectCommand   `cmd:"" help:"Inspect a sandbox, execution, or snapshot by ID"`
+	Agent     AgentCommand     `cmd:"" help:"Run long-lived agent workflows"`
 	Snapshot  SnapshotCommand  `cmd:"" help:"Manage snapshots"`
 	Create    CreateCommand    `cmd:"" help:"Create a sandbox using repo policy"`
 	Exec      ExecCommand      `cmd:"" help:"Execute a command in a sandbox"`
