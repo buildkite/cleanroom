@@ -13,6 +13,11 @@ private enum AppConstants {
     static let networkFilterOrganization = "Buildkite Cleanroom"
     static let networkFilterProviderBundleName = "CleanroomFilterDataProvider.appex"
     static let networkFilterProviderExecutableName = "CleanroomFilterDataProvider"
+    static let networkFilterPolicyRelativePath = "Library/Application Support/Cleanroom/network-filter-policy.json"
+    static let networkFilterPolicyPathEnv = "CLEANROOM_NETWORK_FILTER_POLICY_PATH"
+    static let networkFilterTargetProcessEnv = "CLEANROOM_NETWORK_FILTER_TARGET_PROCESS"
+    static let networkFilterPolicyPathVendorKey = "policy_path"
+    static let networkFilterTargetProcessVendorKey = "target_process_path"
     static let appLogRelativePath = "Library/Logs/cleanroom-menubar.log"
     static let serviceLogRelativePath = "Library/Logs/cleanroom-user-server.log"
     static let launchdSystemPlistPath = "/Library/LaunchDaemons/com.buildkite.cleanroom.plist"
@@ -76,6 +81,11 @@ final class CleanroomMenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate
     private lazy var serviceLogURL: URL = {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(AppConstants.serviceLogRelativePath, isDirectory: false)
+    }()
+
+    private lazy var networkFilterPolicyURL: URL = {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(AppConstants.networkFilterPolicyRelativePath, isDirectory: false)
     }()
 
     private lazy var launchAgentURL: URL = {
@@ -440,16 +450,24 @@ final class CleanroomMenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate
         let fm = FileManager.default
         try fm.createDirectory(at: launchAgentURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try fm.createDirectory(at: serviceLogURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try fm.createDirectory(at: networkFilterPolicyURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         if !fm.fileExists(atPath: serviceLogURL.path) {
             fm.createFile(atPath: serviceLogURL.path, contents: Data())
         }
         let runOnStartupEnabled = isRunOnStartupEnabled()
+        var environment: [String: String] = [
+            AppConstants.networkFilterPolicyPathEnv: networkFilterPolicyURL.path,
+        ]
+        if let helperURL = resolveDarwinVZHelperBinary() {
+            environment[AppConstants.networkFilterTargetProcessEnv] = helperURL.path
+        }
 
         let plist: [String: Any] = [
             "Label": AppConstants.userLaunchAgentLabel,
             "ProgramArguments": [binaryURL.path, "serve"],
             "RunAtLoad": runOnStartupEnabled,
             "KeepAlive": runOnStartupEnabled,
+            "EnvironmentVariables": environment,
             "WorkingDirectory": fm.homeDirectoryForCurrentUser.path,
             "StandardOutPath": serviceLogURL.path,
             "StandardErrorPath": serviceLogURL.path,
@@ -629,6 +647,13 @@ final class CleanroomMenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate
         let configuration = NEFilterProviderConfiguration()
         configuration.filterSockets = true
         configuration.organization = AppConstants.networkFilterOrganization
+        var vendorConfiguration: [String: Any] = [
+            AppConstants.networkFilterPolicyPathVendorKey: networkFilterPolicyURL.path,
+        ]
+        if let helperURL = resolveDarwinVZHelperBinary() {
+            vendorConfiguration[AppConstants.networkFilterTargetProcessVendorKey] = helperURL.path
+        }
+        configuration.vendorConfiguration = vendorConfiguration
         return configuration
     }
 
@@ -739,6 +764,23 @@ final class CleanroomMenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate
         let fallback = "/usr/local/bin/cleanroom"
         if FileManager.default.isExecutableFile(atPath: fallback) {
             return URL(fileURLWithPath: fallback)
+        }
+        return nil
+    }
+
+    private func resolveDarwinVZHelperBinary() -> URL? {
+        let bundled = Bundle.main.bundleURL
+            .appendingPathComponent("Contents/Helpers/cleanroom-darwin-vz", isDirectory: false)
+            .path
+        if FileManager.default.isExecutableFile(atPath: bundled) {
+            return URL(fileURLWithPath: bundled)
+        }
+
+        if let cleanroom = resolvedBinaryURL {
+            let candidate = cleanroom.deletingLastPathComponent().appendingPathComponent("cleanroom-darwin-vz")
+            if FileManager.default.isExecutableFile(atPath: candidate.path) {
+                return candidate
+            }
         }
         return nil
     }

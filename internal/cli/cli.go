@@ -1655,6 +1655,7 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 		Backends: ctx.Backends,
 		Logger:   logger.With("subsystem", "service"),
 	}
+	service.SyncNetworkFilterPolicy()
 	server := controlserver.New(service, logger.With("subsystem", "http"))
 
 	runCtx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

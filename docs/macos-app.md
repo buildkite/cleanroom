@@ -53,9 +53,10 @@ Primary reason for having a macOS app:
 - Advanced actions can restart/stop user service and install the system daemon when needed.
 - App now loads/saves `NEFilterManager` preferences for network-filter enable/disable requests and surfaces status/error in the menu.
 - App bundle now includes `CleanroomFilterDataProvider.appex` from `macos/CleanroomFilterDataProvider/`.
+- User LaunchAgent now exports `CLEANROOM_NETWORK_FILTER_POLICY_PATH` and `CLEANROOM_NETWORK_FILTER_TARGET_PROCESS` so `cleanroom serve` can publish filter policy snapshots.
 - Service stdout/stderr is captured to `~/Library/Logs/cleanroom-user-server.log`.
 - App logs remain in `~/Library/Logs/cleanroom-menubar.log`.
-- Provider-side per-cleanroom policy enforcement remains the immediate next milestone (current provider behavior is allow-all).
+- Provider now enforces host/port allow rules for cleanroom helper traffic using policy snapshots; per-run scoping is still the next milestone.
 
 ### Privileged path
 
@@ -66,8 +67,9 @@ Primary reason for having a macOS app:
 ### Network Extension model (phase 2)
 
 - The app enables a system network filter using `NEFilterManager`.
-- Cleanroom run policy (allowlist/deny) is pushed from `cleanroom serve` to the extension control plane.
-- The filter enforces egress/ingress decisions at host level for cleanroom-originated flows.
+- `cleanroom serve` publishes a merged policy snapshot JSON at `CLEANROOM_NETWORK_FILTER_POLICY_PATH`.
+- App passes policy metadata to the provider using `NEFilterProviderConfiguration.vendorConfiguration`.
+- Provider enforces host/port allowlist decisions for flows whose source process matches `CLEANROOM_NETWORK_FILTER_TARGET_PROCESS`.
 - If filter policy is unavailable, cleanroom should fail closed when filter mode is required.
 
 Implementation notes:

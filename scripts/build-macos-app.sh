@@ -66,7 +66,7 @@ install -m 0644 macos/Info.plist "$APP_PLIST"
 install -m 0755 dist/cleanroom "$APP_HELPER_BIN"
 install -m 0755 dist/cleanroom-darwin-vz "$APP_DARWIN_VZ_HELPER_BIN"
 install -m 0644 "dist/cleanroom-guest-agent-linux-$HOST_ARCH" "$APP_GUEST_AGENT_BIN"
-xcrun swiftc -O -module-name "$FILTER_PROVIDER_NAME" -framework NetworkExtension "$FILTER_PROVIDER_SRC" -o "$FILTER_PROVIDER_APPEX_EXEC"
+xcrun swiftc -O -module-name "$FILTER_PROVIDER_NAME" -framework NetworkExtension "$FILTER_PROVIDER_SRC" -o "$FILTER_PROVIDER_APPEX_EXEC" -lbsm
 install -m 0644 "$FILTER_PROVIDER_PLIST_SRC" "$FILTER_PROVIDER_APPEX_PLIST"
 if [[ -f "$MENUBAR_ICON_SRC" ]]; then
   install -m 0644 "$MENUBAR_ICON_SRC" "$APP_RESOURCES_DIR/menubar-icon.png"
