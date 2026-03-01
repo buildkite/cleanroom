@@ -76,6 +76,19 @@ Run a command in a sandbox:
 cleanroom exec -- npm test
 ```
 
+Pre-create a long-running sandbox without running a command:
+
+```bash
+SANDBOX_ID="$(cleanroom create)"
+cleanroom exec --sandbox-id "$SANDBOX_ID" -- npm run lint
+```
+
+Equivalent namespaced command:
+
+```bash
+cleanroom sandbox create
+```
+
 The sandbox stays running after the command completes. List sandboxes and run more commands:
 
 ```bash

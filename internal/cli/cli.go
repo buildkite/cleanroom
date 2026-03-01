@@ -72,6 +72,7 @@ type CLI struct {
 	Policy  PolicyCommand  `cmd:"" help:"Policy commands"`
 	Config  ConfigCommand  `cmd:"" help:"Runtime config commands"`
 	Image   ImageCommand   `cmd:"" help:"Manage OCI image cache artifacts"`
+	Create  CreateCommand  `cmd:"" help:"Create a sandbox"`
 	Exec    ExecCommand    `cmd:"" help:"Execute a command in a cleanroom backend"`
 	Console ConsoleCommand `cmd:"" help:"Attach an interactive console to a cleanroom execution"`
 	Serve   ServeCommand   `cmd:"" help:"Run the cleanroom control-plane server"`
@@ -168,6 +169,22 @@ type ExecCommand struct {
 	Command []string `arg:"" passthrough:"" required:"" help:"Command to execute"`
 }
 
+type SandboxCreateCommand struct {
+	clientFlags
+	Chdir         string `short:"c" help:"Change to this directory before running commands"`
+	Backend       string `help:"Execution backend (defaults to runtime config or firecracker)"`
+	LaunchSeconds int64  `help:"VM boot/guest-agent readiness timeout in seconds"`
+	JSON          bool   `help:"Print sandbox as JSON"`
+}
+
+type CreateCommand struct {
+	clientFlags
+	Chdir         string `short:"c" help:"Change to this directory before running commands"`
+	Backend       string `help:"Execution backend (defaults to runtime config or firecracker)"`
+	LaunchSeconds int64  `help:"VM boot/guest-agent readiness timeout in seconds"`
+	JSON          bool   `help:"Print sandbox as JSON"`
+}
+
 type ConsoleCommand struct {
 	clientFlags
 	Chdir     string `short:"c" help:"Change to this directory before running commands"`
@@ -202,6 +219,7 @@ type DoctorCommand struct {
 }
 
 type SandboxCommand struct {
+	Create    SandboxCreateCommand    `cmd:"" help:"Create a sandbox"`
 	List      SandboxListCommand      `name:"ls" aliases:"list" cmd:"" help:"List active sandboxes"`
 	Terminate SandboxTerminateCommand `name:"rm" aliases:"terminate" cmd:"" help:"Terminate a sandbox"`
 }
@@ -654,6 +672,56 @@ func (c *SandboxTerminateCommand) Run(ctx *runtimeContext) error {
 
 	_, err = fmt.Fprintln(ctx.Stdout, resp.Message)
 	return err
+}
+
+func runSandboxCreate(ctx *runtimeContext, connectFlags clientFlags, chdir, backend string, launchSeconds int64, outputJSON bool) error {
+	client, err := connectFlags.connect()
+	if err != nil {
+		return err
+	}
+
+	cwd, err := resolveCWD(ctx.CWD, chdir)
+	if err != nil {
+		return err
+	}
+	compiled, _, err := ctx.Loader.LoadAndCompile(cwd)
+	if err != nil {
+		return err
+	}
+
+	resp, err := client.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Backend: backend,
+		Options: &cleanroomv1.SandboxOptions{
+			LaunchSeconds: launchSeconds,
+		},
+		Policy: compiled.ToProto(),
+	})
+	if err != nil {
+		return fmt.Errorf("create sandbox: %w", err)
+	}
+
+	sandbox := resp.GetSandbox()
+	sandboxID := strings.TrimSpace(sandbox.GetSandboxId())
+	if sandboxID == "" {
+		return errors.New("create sandbox: response missing sandbox id")
+	}
+
+	if outputJSON {
+		enc := json.NewEncoder(ctx.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(sandbox)
+	}
+
+	_, err = fmt.Fprintln(ctx.Stdout, sandboxID)
+	return err
+}
+
+func (c *SandboxCreateCommand) Run(ctx *runtimeContext) error {
+	return runSandboxCreate(ctx, c.clientFlags, c.Chdir, c.Backend, c.LaunchSeconds, c.JSON)
+}
+
+func (c *CreateCommand) Run(ctx *runtimeContext) error {
+	return runSandboxCreate(ctx, c.clientFlags, c.Chdir, c.Backend, c.LaunchSeconds, c.JSON)
 }
 
 func (e *ExecCommand) Run(ctx *runtimeContext) error {
