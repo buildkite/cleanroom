@@ -6,6 +6,7 @@ on:
     paths:
       - Dockerfile.base-image
       - Dockerfile.base-image-docker
+      - Dockerfile.base-image-agents
       - scripts/base-image-tag.sh
       - .github/workflows/base-image.yml
   workflow_dispatch:
@@ -27,6 +28,9 @@ jobs:
           - image_name: alpine-docker
             dockerfile: Dockerfile.base-image-docker
             repository: ghcr.io/buildkite/cleanroom-base/alpine-docker
+          - image_name: alpine-agents
+            dockerfile: Dockerfile.base-image-agents
+            repository: ghcr.io/buildkite/cleanroom-base/alpine-agents
     steps:
       - uses: actions/checkout@v4
 
