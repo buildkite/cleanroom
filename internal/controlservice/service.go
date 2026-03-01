@@ -1096,13 +1096,23 @@ func (s *Service) mergeBufferedResultOutputLocked(ex *executionState, result *ba
 
 	appendStdout := result.Stdout
 	appendStderr := result.Stderr
+	replaceStdout := false
+	replaceStderr := false
 	if usedStreaming {
-		appendStdout = bufferedResultDelta(ex.Stdout, result.Stdout)
-		appendStderr = bufferedResultDelta(ex.Stderr, result.Stderr)
+		appendStdout, replaceStdout = bufferedResultDelta(ex.Stdout, result.Stdout, maxRetainedExecutionOutputBytes)
+		appendStderr, replaceStderr = bufferedResultDelta(ex.Stderr, result.Stderr, maxRetainedExecutionOutputBytes)
 	}
 
-	s.appendExecutionStdoutLocked(ex, cleanroomv1.ExecutionStatus_EXECUTION_STATUS_RUNNING, []byte(appendStdout))
-	s.appendExecutionStderrLocked(ex, cleanroomv1.ExecutionStatus_EXECUTION_STATUS_RUNNING, []byte(appendStderr))
+	if replaceStdout {
+		s.replaceExecutionStdoutFromBufferedLocked(ex, cleanroomv1.ExecutionStatus_EXECUTION_STATUS_RUNNING, appendStdout)
+	} else {
+		s.appendExecutionStdoutLocked(ex, cleanroomv1.ExecutionStatus_EXECUTION_STATUS_RUNNING, []byte(appendStdout))
+	}
+	if replaceStderr {
+		s.replaceExecutionStderrFromBufferedLocked(ex, cleanroomv1.ExecutionStatus_EXECUTION_STATUS_RUNNING, appendStderr)
+	} else {
+		s.appendExecutionStderrLocked(ex, cleanroomv1.ExecutionStatus_EXECUTION_STATUS_RUNNING, []byte(appendStderr))
+	}
 }
 
 func (s *Service) recordExecutionOutputChunk(key string, isStdout bool, chunk []byte) {
@@ -1154,6 +1164,34 @@ func (s *Service) appendExecutionStderrLocked(ex *executionState, status cleanro
 		ExecutionId: ex.ID,
 		Status:      status,
 		Payload:     &cleanroomv1.ExecutionStreamEvent_Stderr{Stderr: append([]byte(nil), chunk...)},
+		OccurredAt:  timestamppb.Now(),
+	})
+}
+
+func (s *Service) replaceExecutionStdoutFromBufferedLocked(ex *executionState, status cleanroomv1.ExecutionStatus, output string) {
+	if ex == nil || output == "" {
+		return
+	}
+	ex.Stdout = appendRetainedOutput("", output, maxRetainedExecutionOutputBytes)
+	s.recordExecutionEventLocked(ex, &cleanroomv1.ExecutionStreamEvent{
+		SandboxId:   ex.SandboxID,
+		ExecutionId: ex.ID,
+		Status:      status,
+		Payload:     &cleanroomv1.ExecutionStreamEvent_Stdout{Stdout: []byte(output)},
+		OccurredAt:  timestamppb.Now(),
+	})
+}
+
+func (s *Service) replaceExecutionStderrFromBufferedLocked(ex *executionState, status cleanroomv1.ExecutionStatus, output string) {
+	if ex == nil || output == "" {
+		return
+	}
+	ex.Stderr = appendRetainedOutput("", output, maxRetainedExecutionOutputBytes)
+	s.recordExecutionEventLocked(ex, &cleanroomv1.ExecutionStreamEvent{
+		SandboxId:   ex.SandboxID,
+		ExecutionId: ex.ID,
+		Status:      status,
+		Payload:     &cleanroomv1.ExecutionStreamEvent_Stderr{Stderr: []byte(output)},
 		OccurredAt:  timestamppb.Now(),
 	})
 }
@@ -1548,20 +1586,30 @@ func normalizeCommand(command []string) []string {
 	return command
 }
 
-func bufferedResultDelta(retained, buffered string) string {
+func bufferedResultDelta(retained, buffered string, retentionLimit int) (string, bool) {
 	if buffered == "" {
-		return ""
+		return "", false
 	}
 	if retained == "" {
-		return buffered
+		return buffered, false
 	}
 	if strings.HasSuffix(buffered, retained) {
-		return ""
+		// If retention is saturated, treat suffix-only overlap as a truncation artifact
+		// and avoid replaying duplicate tail bytes from the buffered result.
+		if retentionLimit > 0 && len(retained) >= retentionLimit {
+			return "", false
+		}
+		if strings.HasPrefix(buffered, retained) {
+			return buffered[len(retained):], false
+		}
+		// Stream callbacks likely missed earlier bytes; replace retained output with
+		// the complete buffered output so snapshots/history stay correct.
+		return buffered, true
 	}
 	if strings.HasPrefix(buffered, retained) {
-		return buffered[len(retained):]
+		return buffered[len(retained):], false
 	}
-	return buffered
+	return buffered, true
 }
 
 func appendRetainedOutput(existing, chunk string, limit int) string {

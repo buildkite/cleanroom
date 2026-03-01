@@ -1198,15 +1198,40 @@ func TestFinalizeExecutionWithoutPruneSkipsImmediateStatePruning(t *testing.T) {
 	svc.mu.Unlock()
 }
 
-func TestBufferedResultDeltaPrefersSuffixMatch(t *testing.T) {
-	if got, want := bufferedResultDelta("abc", "abcabc"), ""; got != want {
-		t.Fatalf("expected suffix match to suppress duplicate delta: got %q want %q", got, want)
+func TestBufferedResultDeltaModes(t *testing.T) {
+	if got, replace := bufferedResultDelta("abc", "abcabc", 3); got != "" || replace {
+		t.Fatalf("expected saturated suffix overlap to suppress duplicate delta, got delta=%q replace=%t", got, replace)
 	}
-	if got, want := bufferedResultDelta("prefix-", "prefix-tail"), "tail"; got != want {
-		t.Fatalf("expected prefix-only delta: got %q want %q", got, want)
+	if got, replace := bufferedResultDelta("prefix-", "prefix-tail", 1024); got != "tail" || replace {
+		t.Fatalf("expected prefix-only append delta, got delta=%q replace=%t", got, replace)
 	}
-	if got, want := bufferedResultDelta("tail", "head-tail"), ""; got != want {
-		t.Fatalf("expected suffix-only delta suppression: got %q want %q", got, want)
+	if got, replace := bufferedResultDelta("tail", "head-tail", 1024); got != "head-tail" || !replace {
+		t.Fatalf("expected suffix-only backfill replacement, got delta=%q replace=%t", got, replace)
+	}
+}
+
+func TestMergeBufferedResultOutputReplacesMissingStreamPrefix(t *testing.T) {
+	svc := newTestService(&stubAdapter{})
+	ex := &executionState{
+		ID:               "exec-1",
+		SandboxID:        "sb-1",
+		Stdout:           "tail",
+		Status:           cleanroomv1.ExecutionStatus_EXECUTION_STATUS_RUNNING,
+		EventSubscribers: map[int]chan *cleanroomv1.ExecutionStreamEvent{},
+	}
+
+	svc.mergeBufferedResultOutputLocked(ex, &backend.RunResult{
+		Stdout: "head-tail",
+	}, true)
+
+	if got, want := ex.Stdout, "head-tail"; got != want {
+		t.Fatalf("expected buffered replacement to preserve missing prefix: got %q want %q", got, want)
+	}
+	if got, want := len(ex.EventHistory), 1; got != want {
+		t.Fatalf("expected single buffered stdout event, got %d want %d", got, want)
+	}
+	if got, want := string(ex.EventHistory[0].GetStdout()), "head-tail"; got != want {
+		t.Fatalf("unexpected buffered stdout event payload: got %q want %q", got, want)
 	}
 }
 
