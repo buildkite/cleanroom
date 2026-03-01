@@ -1555,11 +1555,11 @@ func bufferedResultDelta(retained, buffered string) string {
 	if retained == "" {
 		return buffered
 	}
-	if strings.HasPrefix(buffered, retained) {
-		return buffered[len(retained):]
-	}
 	if strings.HasSuffix(buffered, retained) {
 		return ""
+	}
+	if strings.HasPrefix(buffered, retained) {
+		return buffered[len(retained):]
 	}
 	return buffered
 }

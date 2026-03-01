@@ -1197,6 +1197,18 @@ func TestFinalizeExecutionWithoutPruneSkipsImmediateStatePruning(t *testing.T) {
 	svc.mu.Unlock()
 }
 
+func TestBufferedResultDeltaPrefersSuffixMatch(t *testing.T) {
+	if got, want := bufferedResultDelta("abc", "abcabc"), ""; got != want {
+		t.Fatalf("expected suffix match to suppress duplicate delta: got %q want %q", got, want)
+	}
+	if got, want := bufferedResultDelta("prefix-", "prefix-tail"), "tail"; got != want {
+		t.Fatalf("expected prefix-only delta: got %q want %q", got, want)
+	}
+	if got, want := bufferedResultDelta("tail", "head-tail"), ""; got != want {
+		t.Fatalf("expected suffix-only delta suppression: got %q want %q", got, want)
+	}
+}
+
 func TestStatePruningBoundsRetainedTerminalState(t *testing.T) {
 	origSandboxes := maxRetainedStoppedSandboxes
 	origExecutions := maxRetainedFinishedExecutions
