@@ -24,6 +24,6 @@ RUN mise use -g --pin \
 
 ENV PATH="/root/.local/share/mise/shims:${PATH}"
 
-RUN codex --version && claude --version && gemini --version
+RUN node --version && npm --version && python3 --version && codex --version && claude --version && gemini --version
 
 CMD ["/bin/sh"]
