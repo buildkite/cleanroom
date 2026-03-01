@@ -1,22 +1,6 @@
 # Remote access
 
-The Cleanroom server supports multiple listener types for remote access.
-
-## Tailscale
-
-### Embedded tsnet
-
-```bash
-cleanroom serve --listen tsnet://cleanroom:7777
-cleanroom exec --host http://cleanroom.tailnet.ts.net:7777 -c /path/to/repo -- npm test
-```
-
-### Tailscale Service (via local tailscaled)
-
-```bash
-cleanroom serve --listen tssvc://cleanroom
-cleanroom exec --host https://cleanroom.<your-tailnet>.ts.net -- npm test
-```
+The Cleanroom server supports HTTP and HTTPS listener modes for remote access.
 
 ## HTTP
 
@@ -24,10 +8,12 @@ cleanroom exec --host https://cleanroom.<your-tailnet>.ts.net -- npm test
 cleanroom serve --listen http://0.0.0.0:7777
 ```
 
-## HTTPS with mTLS
+## HTTPS
 
-See [TLS and mTLS](tls.md) for certificate setup and auto-discovery.
+See [TLS](tls.md) for certificate setup.
 
 ```bash
-cleanroom serve --listen https://0.0.0.0:7777
+cleanroom serve --listen https://0.0.0.0:7777 \
+  --tls-cert /path/to/server.pem \
+  --tls-key /path/to/server.key
 ```

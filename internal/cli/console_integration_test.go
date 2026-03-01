@@ -141,7 +141,7 @@ func TestConsoleIntegrationInterruptCancelsExecution(t *testing.T) {
 	}
 }
 
-func TestConsoleRejectsTailscaleServiceListenEndpointAsHost(t *testing.T) {
+func TestConsoleRejectsUnsupportedHostScheme(t *testing.T) {
 	outcome := runConsoleWithCapture(ConsoleCommand{
 		clientFlags: clientFlags{Host: "tssvc://cleanroom"},
 	}, "", runtimeContext{
@@ -153,8 +153,8 @@ func TestConsoleRejectsTailscaleServiceListenEndpointAsHost(t *testing.T) {
 	if outcome.err == nil {
 		t.Fatal("expected host validation error")
 	}
-	if !strings.Contains(outcome.err.Error(), "listen-only") {
-		t.Fatalf("expected listen-only host error, got %v", outcome.err)
+	if !strings.Contains(outcome.err.Error(), "unsupported endpoint") {
+		t.Fatalf("expected unsupported endpoint error, got %v", outcome.err)
 	}
 }
 

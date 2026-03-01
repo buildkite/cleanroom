@@ -169,7 +169,7 @@ func TestClientLifecycle(t *testing.T) {
 	}
 }
 
-func TestNewRejectsServerOnlyEndpoint(t *testing.T) {
+func TestNewRejectsUnsupportedEndpointScheme(t *testing.T) {
 	tests := []struct {
 		name string
 		host string
@@ -178,12 +178,12 @@ func TestNewRejectsServerOnlyEndpoint(t *testing.T) {
 		{
 			name: "tsnet",
 			host: "tsnet://cleanroom:7777",
-			want: "only valid for server",
+			want: "unsupported endpoint",
 		},
 		{
 			name: "tssvc",
 			host: "tssvc://cleanroom",
-			want: "listen-only",
+			want: "unsupported endpoint",
 		},
 	}
 

@@ -33,14 +33,6 @@ func StateBaseDir() (string, error) {
 	return "", errors.New("unable to resolve state directory from XDG state/runtime or home")
 }
 
-func TSNetStateDir() (string, error) {
-	base, err := StateBaseDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(base, "tsnet"), nil
-}
-
 // TLSDir returns the default directory for cleanroom TLS material.
 // Uses $XDG_CONFIG_HOME/cleanroom/tls or ~/.config/cleanroom/tls.
 func TLSDir() (string, error) {

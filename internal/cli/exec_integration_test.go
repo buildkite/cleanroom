@@ -686,7 +686,7 @@ func TestExecIntegrationReuseSandboxSkipsPolicyCompile(t *testing.T) {
 	requireSandboxStatus(t, client, sandboxID, cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY)
 }
 
-func TestExecRejectsTailscaleServiceListenEndpointAsHost(t *testing.T) {
+func TestExecRejectsUnsupportedHostScheme(t *testing.T) {
 	outcome := runExecWithCapture(ExecCommand{
 		clientFlags: clientFlags{Host: "tssvc://cleanroom"},
 		Command:     []string{"echo", "hi"},
@@ -699,7 +699,7 @@ func TestExecRejectsTailscaleServiceListenEndpointAsHost(t *testing.T) {
 	if outcome.err == nil {
 		t.Fatal("expected host validation error")
 	}
-	if !strings.Contains(outcome.err.Error(), "listen-only") {
-		t.Fatalf("expected listen-only host error, got %v", outcome.err)
+	if !strings.Contains(outcome.err.Error(), "unsupported endpoint") {
+		t.Fatalf("expected unsupported endpoint error, got %v", outcome.err)
 	}
 }

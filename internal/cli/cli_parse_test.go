@@ -133,27 +133,3 @@ func TestServeInstallForceParses(t *testing.T) {
 		t.Fatal("expected --force to set Serve.Force")
 	}
 }
-
-func TestServeTLSCAFlagParses(t *testing.T) {
-	c := &CLI{}
-	parser := newParserForTest(t, c)
-
-	if _, err := parser.Parse([]string{"serve", "--tls-ca", "/tmp/ca.pem"}); err != nil {
-		t.Fatalf("parse serve --tls-ca returned error: %v", err)
-	}
-	if got, want := c.Serve.TLSCA, "/tmp/ca.pem"; got != want {
-		t.Fatalf("expected serve TLSCA %q, got %q", want, got)
-	}
-}
-
-func TestServeTLSCALegacyAliasParses(t *testing.T) {
-	c := &CLI{}
-	parser := newParserForTest(t, c)
-
-	if _, err := parser.Parse([]string{"serve", "--tlsca", "/tmp/ca.pem"}); err != nil {
-		t.Fatalf("parse serve --tlsca alias returned error: %v", err)
-	}
-	if got, want := c.Serve.TLSCA, "/tmp/ca.pem"; got != want {
-		t.Fatalf("expected serve TLSCA %q, got %q", want, got)
-	}
-}
