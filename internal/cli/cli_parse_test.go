@@ -104,12 +104,64 @@ func TestSandboxCreateParses(t *testing.T) {
 	}
 }
 
+func TestSandboxCreateParsesImageOverride(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	imageRef := "ghcr.io/buildkite/cleanroom-base/alpine@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+	if _, err := parser.Parse([]string{"sandbox", "create", "--image", imageRef}); err != nil {
+		t.Fatalf("parse sandbox create --image returned error: %v", err)
+	}
+	if got, want := c.Sandbox.Create.Image, imageRef; got != want {
+		t.Fatalf("unexpected sandbox create image override: got %q want %q", got, want)
+	}
+}
+
 func TestTopLevelCreateParses(t *testing.T) {
 	c := &CLI{}
 	parser := newParserForTest(t, c)
 
 	if _, err := parser.Parse([]string{"create"}); err != nil {
 		t.Fatalf("parse create returned error: %v", err)
+	}
+}
+
+func TestTopLevelCreateParsesImageOverride(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	imageRef := "ghcr.io/buildkite/cleanroom-base/alpine@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+	if _, err := parser.Parse([]string{"create", "--image", imageRef}); err != nil {
+		t.Fatalf("parse create --image returned error: %v", err)
+	}
+	if got, want := c.Create.Image, imageRef; got != want {
+		t.Fatalf("unexpected create image override: got %q want %q", got, want)
+	}
+}
+
+func TestExecParsesImageOverride(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	imageRef := "ghcr.io/buildkite/cleanroom-base/alpine@sha256:3333333333333333333333333333333333333333333333333333333333333333"
+	if _, err := parser.Parse([]string{"exec", "--image", imageRef, "--", "echo", "ok"}); err != nil {
+		t.Fatalf("parse exec --image returned error: %v", err)
+	}
+	if got, want := c.Exec.Image, imageRef; got != want {
+		t.Fatalf("unexpected exec image override: got %q want %q", got, want)
+	}
+}
+
+func TestConsoleParsesImageOverride(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	imageRef := "ghcr.io/buildkite/cleanroom-base/alpine@sha256:4444444444444444444444444444444444444444444444444444444444444444"
+	if _, err := parser.Parse([]string{"console", "--image", imageRef, "--", "sh"}); err != nil {
+		t.Fatalf("parse console --image returned error: %v", err)
+	}
+	if got, want := c.Console.Image, imageRef; got != want {
+		t.Fatalf("unexpected console image override: got %q want %q", got, want)
 	}
 }
 

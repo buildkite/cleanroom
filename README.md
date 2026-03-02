@@ -83,6 +83,14 @@ SANDBOX_ID="$(cleanroom create)"
 cleanroom exec --sandbox-id "$SANDBOX_ID" -- npm run lint
 ```
 
+Override the sandbox image per command (remote tag/digest or local Docker image name):
+
+```bash
+cleanroom sandbox create --image ghcr.io/buildkite/cleanroom-base/alpine:latest
+cleanroom exec --image ghcr.io/buildkite/cleanroom-base/alpine:latest -- npm test
+cleanroom console --image my-local-image:dev -- sh
+```
+
 Equivalent namespaced command:
 
 ```bash
