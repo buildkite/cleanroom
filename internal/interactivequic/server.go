@@ -16,6 +16,7 @@ import (
 )
 
 const DefaultALPN = "cleanroom-interactive-v1"
+const interactiveStdinRetryInterval = 10 * time.Millisecond
 
 type Service interface {
 	ConsumeInteractiveSession(sessionID, token string) (*controlservice.InteractiveSession, error)
@@ -179,7 +180,7 @@ func (s *Server) handleConnection(ctx context.Context, conn *quic.Conn) {
 			stdinErrCh <- acceptErr
 			return
 		}
-		s.readStdinLoop(session, stdinStream, stdinErrCh)
+		s.readStdinLoop(ctx, session, stdinStream, stdinErrCh)
 	}()
 
 	for _, event := range history {
@@ -359,25 +360,13 @@ func isInteractiveAcceptClosedErr(err error) bool {
 		errors.Is(err, net.ErrClosed)
 }
 
-func (s *Server) readStdinLoop(session *controlservice.InteractiveSession, stream *quic.ReceiveStream, errCh chan<- error) {
+func (s *Server) readStdinLoop(ctx context.Context, session *controlservice.InteractiveSession, stream *quic.ReceiveStream, errCh chan<- error) {
 	buf := make([]byte, 4096)
 	for {
 		n, err := stream.Read(buf)
 		if n > 0 {
 			payload := append([]byte(nil), buf[:n]...)
-			if writeErr := s.service.WriteExecutionStdin(session.SandboxID, session.ExecutionID, payload); writeErr != nil {
-				if isRetryableInteractiveStdinErr(writeErr) {
-					if s.logger != nil {
-						s.logger.Debug(
-							"ignoring transient interactive stdin attach error",
-							"session_id", session.SessionID,
-							"sandbox_id", session.SandboxID,
-							"execution_id", session.ExecutionID,
-							"error", writeErr,
-						)
-					}
-					continue
-				}
+			if writeErr := s.writeInteractiveStdinWithRetry(ctx, session, payload); writeErr != nil {
 				errCh <- writeErr
 				return
 			}
@@ -385,6 +374,35 @@ func (s *Server) readStdinLoop(session *controlservice.InteractiveSession, strea
 		if err != nil {
 			errCh <- err
 			return
+		}
+	}
+}
+
+func (s *Server) writeInteractiveStdinWithRetry(ctx context.Context, session *controlservice.InteractiveSession, payload []byte) error {
+	if s == nil || s.service == nil || session == nil || len(payload) == 0 {
+		return nil
+	}
+	for {
+		writeErr := s.service.WriteExecutionStdin(session.SandboxID, session.ExecutionID, payload)
+		if writeErr == nil {
+			return nil
+		}
+		if !isRetryableInteractiveStdinErr(writeErr) {
+			return writeErr
+		}
+		if s.logger != nil {
+			s.logger.Debug(
+				"ignoring transient interactive stdin attach error",
+				"session_id", session.SessionID,
+				"sandbox_id", session.SandboxID,
+				"execution_id", session.ExecutionID,
+				"error", writeErr,
+			)
+		}
+		select {
+		case <-time.After(interactiveStdinRetryInterval):
+		case <-ctx.Done():
+			return io.EOF
 		}
 	}
 }

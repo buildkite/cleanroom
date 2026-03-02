@@ -20,8 +20,9 @@ type testResizeCall struct {
 }
 
 type testInteractiveService struct {
-	resizeErr   error
-	resizeCalls []testResizeCall
+	resizeErr    error
+	resizeCalls  []testResizeCall
+	writeStdinFn func(sandboxID, executionID string, data []byte) error
 }
 
 func (s *testInteractiveService) ConsumeInteractiveSession(sessionID, token string) (*controlservice.InteractiveSession, error) {
@@ -31,6 +32,9 @@ func (s *testInteractiveService) ConsumeInteractiveSession(sessionID, token stri
 func (s *testInteractiveService) ReleaseInteractiveExecution(sandboxID, executionID string) {}
 
 func (s *testInteractiveService) WriteExecutionStdin(sandboxID, executionID string, data []byte) error {
+	if s.writeStdinFn != nil {
+		return s.writeStdinFn(sandboxID, executionID, data)
+	}
 	return nil
 }
 
@@ -153,6 +157,42 @@ func TestShouldFailInteractiveOnStdinErr(t *testing.T) {
 	}
 	if !shouldFailInteractiveOnStdinErr(errors.New("stdin write failed")) {
 		t.Fatal("expected non-EOF stdin error to fail session")
+	}
+}
+
+func TestWriteInteractiveStdinWithRetryPreservesPayload(t *testing.T) {
+	t.Parallel()
+
+	attempts := 0
+	payloads := make([]string, 0, 2)
+	svc := &testInteractiveService{
+		writeStdinFn: func(sandboxID, executionID string, data []byte) error {
+			if sandboxID != "sbx-123" || executionID != "exec-123" {
+				return errors.New("unexpected execution identifiers")
+			}
+			payloads = append(payloads, string(data))
+			attempts++
+			if attempts == 1 {
+				return controlservice.ErrExecutionStdinUnsupported
+			}
+			return nil
+		},
+	}
+	server := &Server{service: svc}
+	session := &controlservice.InteractiveSession{
+		SessionID:   "sess-123",
+		SandboxID:   "sbx-123",
+		ExecutionID: "exec-123",
+	}
+
+	if err := server.writeInteractiveStdinWithRetry(context.Background(), session, []byte("hello\n")); err != nil {
+		t.Fatalf("writeInteractiveStdinWithRetry returned error: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("expected two write attempts, got %d", attempts)
+	}
+	if len(payloads) != 2 || payloads[0] != "hello\n" || payloads[1] != "hello\n" {
+		t.Fatalf("expected payload preserved across retry, got %#v", payloads)
 	}
 }
 
