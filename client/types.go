@@ -45,9 +45,19 @@ const (
 	ExecutionStatus_EXECUTION_STATUS_TIMED_OUT   = cleanroomv1.ExecutionStatus_EXECUTION_STATUS_TIMED_OUT
 )
 
+type ExecutionKind = cleanroomv1.ExecutionKind
+
+const (
+	ExecutionKind_EXECUTION_KIND_UNSPECIFIED = cleanroomv1.ExecutionKind_EXECUTION_KIND_UNSPECIFIED
+	ExecutionKind_EXECUTION_KIND_BATCH       = cleanroomv1.ExecutionKind_EXECUTION_KIND_BATCH
+	ExecutionKind_EXECUTION_KIND_INTERACTIVE = cleanroomv1.ExecutionKind_EXECUTION_KIND_INTERACTIVE
+)
+
 type ExecutionOptions = cleanroomv1.ExecutionOptions
 type CreateExecutionRequest = cleanroomv1.CreateExecutionRequest
 type CreateExecutionResponse = cleanroomv1.CreateExecutionResponse
+type OpenInteractiveExecutionRequest = cleanroomv1.OpenInteractiveExecutionRequest
+type OpenInteractiveExecutionResponse = cleanroomv1.OpenInteractiveExecutionResponse
 type GetExecutionRequest = cleanroomv1.GetExecutionRequest
 type GetExecutionResponse = cleanroomv1.GetExecutionResponse
 type CancelExecutionRequest = cleanroomv1.CancelExecutionRequest
@@ -55,9 +65,3 @@ type CancelExecutionResponse = cleanroomv1.CancelExecutionResponse
 type StreamExecutionRequest = cleanroomv1.StreamExecutionRequest
 type ExecutionExit = cleanroomv1.ExecutionExit
 type ExecutionStreamEvent = cleanroomv1.ExecutionStreamEvent
-type ExecutionAttachOpen = cleanroomv1.ExecutionAttachOpen
-type ExecutionResize = cleanroomv1.ExecutionResize
-type ExecutionSignal = cleanroomv1.ExecutionSignal
-type ExecutionHeartbeat = cleanroomv1.ExecutionHeartbeat
-type ExecutionClose = cleanroomv1.ExecutionClose
-type ExecutionAttachFrame = cleanroomv1.ExecutionAttachFrame

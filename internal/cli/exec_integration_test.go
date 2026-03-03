@@ -20,6 +20,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/controlservice"
 	"github.com/buildkite/cleanroom/internal/endpoint"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
+	"github.com/buildkite/cleanroom/internal/interactivequic"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 )
@@ -102,6 +103,22 @@ func startIntegrationServer(t *testing.T, adapter backend.Adapter) (string, *con
 
 	httpServer := httptest.NewServer(controlserver.New(svc, nil).Handler())
 	t.Cleanup(httpServer.Close)
+
+	quicCtx, quicCancel := context.WithCancel(context.Background())
+	t.Cleanup(quicCancel)
+	quicServer, err := interactivequic.Start(quicCtx, "127.0.0.1:0", svc, nil)
+	if err != nil {
+		t.Fatalf("start interactive quic server: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = quicServer.Close()
+	})
+	svc.ConfigureInteractiveTransport(
+		quicServer.Addr().String(),
+		quicServer.ALPN(),
+		quicServer.CertPinSHA256(),
+	)
+
 	return httpServer.URL, svc
 }
 

@@ -136,6 +136,14 @@ func (s *Server) CreateExecution(ctx context.Context, req *connect.Request[clean
 	return connect.NewResponse(resp), nil
 }
 
+func (s *Server) OpenInteractiveExecution(ctx context.Context, req *connect.Request[cleanroomv1.OpenInteractiveExecutionRequest]) (*connect.Response[cleanroomv1.OpenInteractiveExecutionResponse], error) {
+	resp, err := s.service.OpenInteractiveExecution(ctx, req.Msg)
+	if err != nil {
+		return nil, toConnectError(err)
+	}
+	return connect.NewResponse(resp), nil
+}
+
 func (s *Server) GetExecution(ctx context.Context, req *connect.Request[cleanroomv1.GetExecutionRequest]) (*connect.Response[cleanroomv1.GetExecutionResponse], error) {
 	resp, err := s.service.GetExecution(ctx, req.Msg)
 	if err != nil {
@@ -185,193 +193,6 @@ func (s *Server) StreamExecution(ctx context.Context, req *connect.Request[clean
 	}
 }
 
-func (s *Server) AttachExecution(ctx context.Context, stream *connect.BidiStream[cleanroomv1.ExecutionAttachFrame, cleanroomv1.ExecutionAttachFrame]) error {
-	first, err := stream.Receive()
-	if err != nil {
-		if errors.Is(err, io.EOF) {
-			return toConnectError(errors.New("missing attach open frame"))
-		}
-		return err
-	}
-
-	sandboxID, executionID := resolveAttachTarget(first)
-	if sandboxID == "" || executionID == "" {
-		return toConnectError(errors.New("attach frame missing sandbox_id or execution_id"))
-	}
-
-	if detached, err := s.applyAttachInput(ctx, sandboxID, executionID, first); err != nil {
-		return err
-	} else if detached {
-		return nil
-	}
-
-	history, updates, done, unsubscribe, err := s.service.SubscribeExecutionEvents(sandboxID, executionID)
-	if err != nil {
-		return toConnectError(err)
-	}
-	defer unsubscribe()
-
-	recvErr := make(chan error, 1)
-	go func() {
-		for {
-			frame, recvErrInner := stream.Receive()
-			if recvErrInner != nil {
-				if errors.Is(recvErrInner, io.EOF) {
-					recvErr <- nil
-					return
-				}
-				recvErr <- recvErrInner
-				return
-			}
-			detach, applyErr := s.applyAttachInput(ctx, sandboxID, executionID, frame)
-			if applyErr != nil {
-				recvErr <- applyErr
-				return
-			}
-			if detach {
-				recvErr <- nil
-				return
-			}
-		}
-	}()
-
-	for _, event := range history {
-		if err := stream.Send(executionEventToAttachFrame(event)); err != nil {
-			return err
-		}
-	}
-
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case err := <-recvErr:
-			if err == nil {
-				return nil
-			}
-			return err
-		case event, ok := <-updates:
-			if !ok {
-				return streamSubscriberDroppedErr(done, "execution attach")
-			}
-			if err := stream.Send(executionEventToAttachFrame(event)); err != nil {
-				return err
-			}
-		case <-done:
-			if err := drainAttachEvents(stream, updates); err != nil {
-				return err
-			}
-			return nil
-		}
-	}
-}
-
-func (s *Server) applyAttachInput(ctx context.Context, sandboxID, executionID string, frame *cleanroomv1.ExecutionAttachFrame) (bool, error) {
-	if frame == nil {
-		return false, nil
-	}
-
-	switch payload := frame.Payload.(type) {
-	case *cleanroomv1.ExecutionAttachFrame_Open:
-		return false, nil
-	case *cleanroomv1.ExecutionAttachFrame_Signal:
-		_, err := s.service.CancelExecution(ctx, &cleanroomv1.CancelExecutionRequest{
-			SandboxId:   sandboxID,
-			ExecutionId: executionID,
-			Signal:      payload.Signal.GetSignal(),
-		})
-		if err != nil {
-			return false, toConnectError(err)
-		}
-		return false, nil
-	case *cleanroomv1.ExecutionAttachFrame_Close:
-		if !payload.Close.GetDetach() {
-			_, err := s.service.CancelExecution(ctx, &cleanroomv1.CancelExecutionRequest{
-				SandboxId:   sandboxID,
-				ExecutionId: executionID,
-				Signal:      2,
-			})
-			if err != nil {
-				return false, toConnectError(err)
-			}
-		}
-		return true, nil
-	case *cleanroomv1.ExecutionAttachFrame_Heartbeat:
-		return false, nil
-	case *cleanroomv1.ExecutionAttachFrame_Resize:
-		resize := payload.Resize
-		if resize == nil {
-			return false, nil
-		}
-		if err := s.service.ResizeExecutionTTY(sandboxID, executionID, resize.GetCols(), resize.GetRows()); err != nil {
-			if errors.Is(err, controlservice.ErrExecutionResizeUnsupported) {
-				if s.logger != nil {
-					s.logger.Debug("ignoring unsupported execution resize request",
-						"sandbox_id", sandboxID,
-						"execution_id", executionID,
-						"cols", resize.GetCols(),
-						"rows", resize.GetRows(),
-					)
-				}
-				return false, nil
-			}
-			return false, toConnectError(err)
-		}
-		return false, nil
-	case *cleanroomv1.ExecutionAttachFrame_Stdin:
-		if err := s.service.WriteExecutionStdin(sandboxID, executionID, payload.Stdin); err != nil {
-			if errors.Is(err, controlservice.ErrExecutionStdinUnsupported) {
-				return false, connect.NewError(connect.CodeUnimplemented, err)
-			}
-			return false, toConnectError(err)
-		}
-		return false, nil
-	default:
-		return false, nil
-	}
-}
-
-func resolveAttachTarget(frame *cleanroomv1.ExecutionAttachFrame) (string, string) {
-	if frame == nil {
-		return "", ""
-	}
-	sandboxID := strings.TrimSpace(frame.GetSandboxId())
-	executionID := strings.TrimSpace(frame.GetExecutionId())
-	if open := frame.GetOpen(); open != nil {
-		if sandboxID == "" {
-			sandboxID = strings.TrimSpace(open.GetSandboxId())
-		}
-		if executionID == "" {
-			executionID = strings.TrimSpace(open.GetExecutionId())
-		}
-	}
-	return sandboxID, executionID
-}
-
-func executionEventToAttachFrame(event *cleanroomv1.ExecutionStreamEvent) *cleanroomv1.ExecutionAttachFrame {
-	if event == nil {
-		return &cleanroomv1.ExecutionAttachFrame{}
-	}
-	frame := &cleanroomv1.ExecutionAttachFrame{
-		SandboxId:   event.GetSandboxId(),
-		ExecutionId: event.GetExecutionId(),
-		OccurredAt:  event.GetOccurredAt(),
-	}
-	switch payload := event.Payload.(type) {
-	case *cleanroomv1.ExecutionStreamEvent_Stdout:
-		frame.Payload = &cleanroomv1.ExecutionAttachFrame_Stdout{Stdout: payload.Stdout}
-	case *cleanroomv1.ExecutionStreamEvent_Stderr:
-		frame.Payload = &cleanroomv1.ExecutionAttachFrame_Stderr{Stderr: payload.Stderr}
-	case *cleanroomv1.ExecutionStreamEvent_Exit:
-		frame.Payload = &cleanroomv1.ExecutionAttachFrame_Exit{Exit: payload.Exit}
-	case *cleanroomv1.ExecutionStreamEvent_Message:
-		frame.Payload = &cleanroomv1.ExecutionAttachFrame_Error{Error: payload.Message}
-	default:
-		frame.Payload = &cleanroomv1.ExecutionAttachFrame_Error{Error: event.GetStatus().String()}
-	}
-	return frame
-}
-
 func streamSubscriberDroppedErr(done <-chan struct{}, streamName string) error {
 	select {
 	case <-done:
@@ -408,22 +229,6 @@ func drainExecutionEvents(stream *connect.ServerStream[cleanroomv1.ExecutionStre
 				return nil
 			}
 			if err := stream.Send(event); err != nil {
-				return err
-			}
-		default:
-			return nil
-		}
-	}
-}
-
-func drainAttachEvents(stream *connect.BidiStream[cleanroomv1.ExecutionAttachFrame, cleanroomv1.ExecutionAttachFrame], updates <-chan *cleanroomv1.ExecutionStreamEvent) error {
-	for {
-		select {
-		case event, ok := <-updates:
-			if !ok {
-				return nil
-			}
-			if err := stream.Send(executionEventToAttachFrame(event)); err != nil {
 				return err
 			}
 		default:

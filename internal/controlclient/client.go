@@ -69,9 +69,9 @@ func buildTransport(ep endpoint.Endpoint, baseURL string, tlsOpts tlsconfig.Opti
 			tlsCfg = &tls.Config{MinVersion: tls.VersionTLS13}
 		}
 		return &http.Transport{
-			Proxy:              http.ProxyFromEnvironment,
-			TLSClientConfig:    tlsCfg,
-			ForceAttemptHTTP2:  true,
+			Proxy:             http.ProxyFromEnvironment,
+			TLSClientConfig:   tlsCfg,
+			ForceAttemptHTTP2: true,
 		}, nil
 	}
 
@@ -149,6 +149,14 @@ func (c *Client) CreateExecution(ctx context.Context, req *cleanroomv1.CreateExe
 	return resp.Msg, nil
 }
 
+func (c *Client) OpenInteractiveExecution(ctx context.Context, req *cleanroomv1.OpenInteractiveExecutionRequest) (*cleanroomv1.OpenInteractiveExecutionResponse, error) {
+	resp, err := c.executionClient.OpenInteractiveExecution(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
 func (c *Client) GetExecution(ctx context.Context, req *cleanroomv1.GetExecutionRequest) (*cleanroomv1.GetExecutionResponse, error) {
 	resp, err := c.executionClient.GetExecution(ctx, connect.NewRequest(req))
 	if err != nil {
@@ -167,8 +175,4 @@ func (c *Client) CancelExecution(ctx context.Context, req *cleanroomv1.CancelExe
 
 func (c *Client) StreamExecution(ctx context.Context, req *cleanroomv1.StreamExecutionRequest) (*connect.ServerStreamForClient[cleanroomv1.ExecutionStreamEvent], error) {
 	return c.executionClient.StreamExecution(ctx, connect.NewRequest(req))
-}
-
-func (c *Client) AttachExecution(ctx context.Context) *connect.BidiStreamForClient[cleanroomv1.ExecutionAttachFrame, cleanroomv1.ExecutionAttachFrame] {
-	return c.executionClient.AttachExecution(ctx)
 }

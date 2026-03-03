@@ -56,6 +56,9 @@ const (
 	// ExecutionServiceCreateExecutionProcedure is the fully-qualified name of the ExecutionService's
 	// CreateExecution RPC.
 	ExecutionServiceCreateExecutionProcedure = "/cleanroom.v1.ExecutionService/CreateExecution"
+	// ExecutionServiceOpenInteractiveExecutionProcedure is the fully-qualified name of the
+	// ExecutionService's OpenInteractiveExecution RPC.
+	ExecutionServiceOpenInteractiveExecutionProcedure = "/cleanroom.v1.ExecutionService/OpenInteractiveExecution"
 	// ExecutionServiceGetExecutionProcedure is the fully-qualified name of the ExecutionService's
 	// GetExecution RPC.
 	ExecutionServiceGetExecutionProcedure = "/cleanroom.v1.ExecutionService/GetExecution"
@@ -65,9 +68,6 @@ const (
 	// ExecutionServiceStreamExecutionProcedure is the fully-qualified name of the ExecutionService's
 	// StreamExecution RPC.
 	ExecutionServiceStreamExecutionProcedure = "/cleanroom.v1.ExecutionService/StreamExecution"
-	// ExecutionServiceAttachExecutionProcedure is the fully-qualified name of the ExecutionService's
-	// AttachExecution RPC.
-	ExecutionServiceAttachExecutionProcedure = "/cleanroom.v1.ExecutionService/AttachExecution"
 )
 
 // SandboxServiceClient is a client for the cleanroom.v1.SandboxService service.
@@ -273,10 +273,10 @@ func (UnimplementedSandboxServiceHandler) StreamSandboxEvents(context.Context, *
 // ExecutionServiceClient is a client for the cleanroom.v1.ExecutionService service.
 type ExecutionServiceClient interface {
 	CreateExecution(context.Context, *connect.Request[v1.CreateExecutionRequest]) (*connect.Response[v1.CreateExecutionResponse], error)
+	OpenInteractiveExecution(context.Context, *connect.Request[v1.OpenInteractiveExecutionRequest]) (*connect.Response[v1.OpenInteractiveExecutionResponse], error)
 	GetExecution(context.Context, *connect.Request[v1.GetExecutionRequest]) (*connect.Response[v1.GetExecutionResponse], error)
 	CancelExecution(context.Context, *connect.Request[v1.CancelExecutionRequest]) (*connect.Response[v1.CancelExecutionResponse], error)
 	StreamExecution(context.Context, *connect.Request[v1.StreamExecutionRequest]) (*connect.ServerStreamForClient[v1.ExecutionStreamEvent], error)
-	AttachExecution(context.Context) *connect.BidiStreamForClient[v1.ExecutionAttachFrame, v1.ExecutionAttachFrame]
 }
 
 // NewExecutionServiceClient constructs a client for the cleanroom.v1.ExecutionService service. By
@@ -294,6 +294,12 @@ func NewExecutionServiceClient(httpClient connect.HTTPClient, baseURL string, op
 			httpClient,
 			baseURL+ExecutionServiceCreateExecutionProcedure,
 			connect.WithSchema(executionServiceMethods.ByName("CreateExecution")),
+			connect.WithClientOptions(opts...),
+		),
+		openInteractiveExecution: connect.NewClient[v1.OpenInteractiveExecutionRequest, v1.OpenInteractiveExecutionResponse](
+			httpClient,
+			baseURL+ExecutionServiceOpenInteractiveExecutionProcedure,
+			connect.WithSchema(executionServiceMethods.ByName("OpenInteractiveExecution")),
 			connect.WithClientOptions(opts...),
 		),
 		getExecution: connect.NewClient[v1.GetExecutionRequest, v1.GetExecutionResponse](
@@ -314,27 +320,26 @@ func NewExecutionServiceClient(httpClient connect.HTTPClient, baseURL string, op
 			connect.WithSchema(executionServiceMethods.ByName("StreamExecution")),
 			connect.WithClientOptions(opts...),
 		),
-		attachExecution: connect.NewClient[v1.ExecutionAttachFrame, v1.ExecutionAttachFrame](
-			httpClient,
-			baseURL+ExecutionServiceAttachExecutionProcedure,
-			connect.WithSchema(executionServiceMethods.ByName("AttachExecution")),
-			connect.WithClientOptions(opts...),
-		),
 	}
 }
 
 // executionServiceClient implements ExecutionServiceClient.
 type executionServiceClient struct {
-	createExecution *connect.Client[v1.CreateExecutionRequest, v1.CreateExecutionResponse]
-	getExecution    *connect.Client[v1.GetExecutionRequest, v1.GetExecutionResponse]
-	cancelExecution *connect.Client[v1.CancelExecutionRequest, v1.CancelExecutionResponse]
-	streamExecution *connect.Client[v1.StreamExecutionRequest, v1.ExecutionStreamEvent]
-	attachExecution *connect.Client[v1.ExecutionAttachFrame, v1.ExecutionAttachFrame]
+	createExecution          *connect.Client[v1.CreateExecutionRequest, v1.CreateExecutionResponse]
+	openInteractiveExecution *connect.Client[v1.OpenInteractiveExecutionRequest, v1.OpenInteractiveExecutionResponse]
+	getExecution             *connect.Client[v1.GetExecutionRequest, v1.GetExecutionResponse]
+	cancelExecution          *connect.Client[v1.CancelExecutionRequest, v1.CancelExecutionResponse]
+	streamExecution          *connect.Client[v1.StreamExecutionRequest, v1.ExecutionStreamEvent]
 }
 
 // CreateExecution calls cleanroom.v1.ExecutionService.CreateExecution.
 func (c *executionServiceClient) CreateExecution(ctx context.Context, req *connect.Request[v1.CreateExecutionRequest]) (*connect.Response[v1.CreateExecutionResponse], error) {
 	return c.createExecution.CallUnary(ctx, req)
+}
+
+// OpenInteractiveExecution calls cleanroom.v1.ExecutionService.OpenInteractiveExecution.
+func (c *executionServiceClient) OpenInteractiveExecution(ctx context.Context, req *connect.Request[v1.OpenInteractiveExecutionRequest]) (*connect.Response[v1.OpenInteractiveExecutionResponse], error) {
+	return c.openInteractiveExecution.CallUnary(ctx, req)
 }
 
 // GetExecution calls cleanroom.v1.ExecutionService.GetExecution.
@@ -352,18 +357,13 @@ func (c *executionServiceClient) StreamExecution(ctx context.Context, req *conne
 	return c.streamExecution.CallServerStream(ctx, req)
 }
 
-// AttachExecution calls cleanroom.v1.ExecutionService.AttachExecution.
-func (c *executionServiceClient) AttachExecution(ctx context.Context) *connect.BidiStreamForClient[v1.ExecutionAttachFrame, v1.ExecutionAttachFrame] {
-	return c.attachExecution.CallBidiStream(ctx)
-}
-
 // ExecutionServiceHandler is an implementation of the cleanroom.v1.ExecutionService service.
 type ExecutionServiceHandler interface {
 	CreateExecution(context.Context, *connect.Request[v1.CreateExecutionRequest]) (*connect.Response[v1.CreateExecutionResponse], error)
+	OpenInteractiveExecution(context.Context, *connect.Request[v1.OpenInteractiveExecutionRequest]) (*connect.Response[v1.OpenInteractiveExecutionResponse], error)
 	GetExecution(context.Context, *connect.Request[v1.GetExecutionRequest]) (*connect.Response[v1.GetExecutionResponse], error)
 	CancelExecution(context.Context, *connect.Request[v1.CancelExecutionRequest]) (*connect.Response[v1.CancelExecutionResponse], error)
 	StreamExecution(context.Context, *connect.Request[v1.StreamExecutionRequest], *connect.ServerStream[v1.ExecutionStreamEvent]) error
-	AttachExecution(context.Context, *connect.BidiStream[v1.ExecutionAttachFrame, v1.ExecutionAttachFrame]) error
 }
 
 // NewExecutionServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -377,6 +377,12 @@ func NewExecutionServiceHandler(svc ExecutionServiceHandler, opts ...connect.Han
 		ExecutionServiceCreateExecutionProcedure,
 		svc.CreateExecution,
 		connect.WithSchema(executionServiceMethods.ByName("CreateExecution")),
+		connect.WithHandlerOptions(opts...),
+	)
+	executionServiceOpenInteractiveExecutionHandler := connect.NewUnaryHandler(
+		ExecutionServiceOpenInteractiveExecutionProcedure,
+		svc.OpenInteractiveExecution,
+		connect.WithSchema(executionServiceMethods.ByName("OpenInteractiveExecution")),
 		connect.WithHandlerOptions(opts...),
 	)
 	executionServiceGetExecutionHandler := connect.NewUnaryHandler(
@@ -397,24 +403,18 @@ func NewExecutionServiceHandler(svc ExecutionServiceHandler, opts ...connect.Han
 		connect.WithSchema(executionServiceMethods.ByName("StreamExecution")),
 		connect.WithHandlerOptions(opts...),
 	)
-	executionServiceAttachExecutionHandler := connect.NewBidiStreamHandler(
-		ExecutionServiceAttachExecutionProcedure,
-		svc.AttachExecution,
-		connect.WithSchema(executionServiceMethods.ByName("AttachExecution")),
-		connect.WithHandlerOptions(opts...),
-	)
 	return "/cleanroom.v1.ExecutionService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case ExecutionServiceCreateExecutionProcedure:
 			executionServiceCreateExecutionHandler.ServeHTTP(w, r)
+		case ExecutionServiceOpenInteractiveExecutionProcedure:
+			executionServiceOpenInteractiveExecutionHandler.ServeHTTP(w, r)
 		case ExecutionServiceGetExecutionProcedure:
 			executionServiceGetExecutionHandler.ServeHTTP(w, r)
 		case ExecutionServiceCancelExecutionProcedure:
 			executionServiceCancelExecutionHandler.ServeHTTP(w, r)
 		case ExecutionServiceStreamExecutionProcedure:
 			executionServiceStreamExecutionHandler.ServeHTTP(w, r)
-		case ExecutionServiceAttachExecutionProcedure:
-			executionServiceAttachExecutionHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -428,6 +428,10 @@ func (UnimplementedExecutionServiceHandler) CreateExecution(context.Context, *co
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cleanroom.v1.ExecutionService.CreateExecution is not implemented"))
 }
 
+func (UnimplementedExecutionServiceHandler) OpenInteractiveExecution(context.Context, *connect.Request[v1.OpenInteractiveExecutionRequest]) (*connect.Response[v1.OpenInteractiveExecutionResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cleanroom.v1.ExecutionService.OpenInteractiveExecution is not implemented"))
+}
+
 func (UnimplementedExecutionServiceHandler) GetExecution(context.Context, *connect.Request[v1.GetExecutionRequest]) (*connect.Response[v1.GetExecutionResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cleanroom.v1.ExecutionService.GetExecution is not implemented"))
 }
@@ -438,8 +442,4 @@ func (UnimplementedExecutionServiceHandler) CancelExecution(context.Context, *co
 
 func (UnimplementedExecutionServiceHandler) StreamExecution(context.Context, *connect.Request[v1.StreamExecutionRequest], *connect.ServerStream[v1.ExecutionStreamEvent]) error {
 	return connect.NewError(connect.CodeUnimplemented, errors.New("cleanroom.v1.ExecutionService.StreamExecution is not implemented"))
-}
-
-func (UnimplementedExecutionServiceHandler) AttachExecution(context.Context, *connect.BidiStream[v1.ExecutionAttachFrame, v1.ExecutionAttachFrame]) error {
-	return connect.NewError(connect.CodeUnimplemented, errors.New("cleanroom.v1.ExecutionService.AttachExecution is not implemented"))
 }
