@@ -28,7 +28,19 @@ func resolveGuestAgentPort(defaultPort uint32, envPort, cmdline string) (uint32,
 }
 
 func readKernelCmdline() string {
-	raw, err := os.ReadFile("/proc/cmdline")
+	return readKernelCmdlineWith(os.ReadFile, ensureProcMounted)
+}
+
+func readKernelCmdlineWith(readFileFn func(string) ([]byte, error), mountProcFn func() error) string {
+	raw, err := readFileFn("/proc/cmdline")
+	if err == nil {
+		return strings.TrimSpace(string(raw))
+	}
+	if mountProcFn != nil {
+		if mountErr := mountProcFn(); mountErr == nil {
+			raw, err = readFileFn("/proc/cmdline")
+		}
+	}
 	if err != nil {
 		return ""
 	}
