@@ -68,6 +68,7 @@ final class CleanroomMenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate
     private var advancedRestartItem: NSMenuItem!
     private var advancedStopItem: NSMenuItem!
     private var advancedInstallDaemonItem: NSMenuItem!
+    private var advancedUninstallItem: NSMenuItem!
     private var logsItem: NSMenuItem!
 
     private var appLogHandle: FileHandle?
@@ -167,6 +168,12 @@ final class CleanroomMenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate
         advancedInstallDaemonItem = NSMenuItem(title: "Install System Daemon (Admin)", action: #selector(installDaemon), keyEquivalent: "")
         advancedInstallDaemonItem.target = self
         advancedMenu.addItem(advancedInstallDaemonItem)
+
+        advancedMenu.addItem(NSMenuItem.separator())
+
+        advancedUninstallItem = NSMenuItem(title: "Uninstall Cleanroom", action: #selector(uninstallCleanroom), keyEquivalent: "")
+        advancedUninstallItem.target = self
+        advancedMenu.addItem(advancedUninstallItem)
 
         let advancedItem = NSMenuItem(title: "Advanced", action: nil, keyEquivalent: "")
         menu.setSubmenu(advancedMenu, for: advancedItem)
@@ -343,6 +350,56 @@ final class CleanroomMenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate
         refreshUI()
     }
 
+    @objc private func uninstallCleanroom(_ sender: Any?) {
+        guard confirmUninstall() else {
+            return
+        }
+
+        removeNetworkFilterPreferences { [weak self] filterError in
+            guard let self else {
+                return
+            }
+
+            var issues = [String]()
+            if let filterError {
+                issues.append("network filter: \(filterError.localizedDescription)")
+            }
+
+            do {
+                try self.uninstallUserServiceAndLaunchAgent()
+            } catch {
+                issues.append("user service: \(error.localizedDescription)")
+            }
+
+            do {
+                try self.removeLocalFilterStateFiles()
+            } catch {
+                issues.append("local state: \(error.localizedDescription)")
+            }
+
+            do {
+                try self.removeRequiredCLISymlinkWithAdminIfPresent()
+            } catch {
+                issues.append("CLI symlink: \(error.localizedDescription)")
+            }
+
+            self.appendLog("uninstalled cleanroom user setup")
+            self.refreshNetworkFilterStatus()
+            self.refreshUI()
+
+            if issues.isEmpty {
+                self.showInfo(
+                    "Cleanroom user setup removed.\n" +
+                    "LaunchAgent and network filter preferences were removed."
+                )
+            } else {
+                self.presentError(
+                    "Uninstall completed with warnings:\n" + issues.joined(separator: "\n")
+                )
+            }
+        }
+    }
+
     @objc private func openLogs(_ sender: Any?) {
         if FileManager.default.fileExists(atPath: serviceLogURL.path) {
             NSWorkspace.shared.open(serviceLogURL)
@@ -361,7 +418,9 @@ final class CleanroomMenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate
         let installed = FileManager.default.fileExists(atPath: launchAgentURL.path)
         let binaryAvailable = resolvedBinaryURL != nil
         let cliInstalled = areRequiredCLISymlinksInstalled(cleanroomBinaryURL: resolvedBinaryURL)
+        let cliSymlinkPresent = isSymbolicLink(path: AppConstants.cliSymlinkPath)
         let runOnStartupEnabled = isRunOnStartupEnabled()
+        let uninstallable = running || installed || cliSymlinkPresent || networkFilterLoaded || networkFilterEnabled
 
         if running {
             serverStatusItem.title = "Server: running (LaunchAgent)"
@@ -411,6 +470,7 @@ final class CleanroomMenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate
         advancedRestartItem.isEnabled = binaryAvailable
         advancedStopItem.isEnabled = running
         advancedInstallDaemonItem.isEnabled = binaryAvailable
+        advancedUninstallItem.isEnabled = uninstallable
         logsItem.isEnabled = true
     }
 
@@ -683,6 +743,30 @@ final class CleanroomMenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate
         }
     }
 
+    private func removeNetworkFilterPreferences(completion: @escaping (Error?) -> Void) {
+        guard isNetworkFilterExtensionInstalled() else {
+            completion(nil)
+            return
+        }
+
+        loadNetworkFilterManager { manager, error in
+            if let error {
+                completion(error)
+                return
+            }
+            guard let manager else {
+                completion(AppError.commandFailed(command: "network filter uninstall", details: "manager unavailable"))
+                return
+            }
+            manager.isEnabled = false
+            manager.removeFromPreferences { removeError in
+                DispatchQueue.main.async {
+                    completion(removeError)
+                }
+            }
+        }
+    }
+
     private func loadNetworkFilterManager(
         completion: @escaping (_ manager: NEFilterManager?, _ error: Error?) -> Void
     ) {
@@ -767,6 +851,63 @@ final class CleanroomMenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate
             .deletingLastPathComponent()
             .appendingPathComponent(rawDest)
             .path
+    }
+
+    private func isSymbolicLink(path: String) -> Bool {
+        guard
+            let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+            let type = attrs[.type] as? FileAttributeType
+        else {
+            return false
+        }
+        return type == .typeSymbolicLink
+    }
+
+    private func uninstallUserServiceAndLaunchAgent() throws {
+        let serviceTarget = userServiceTarget()
+        let bootoutResult = try runCommandAllowFailure("/bin/launchctl", ["bootout", serviceTarget])
+        if bootoutResult.terminationStatus != 0 && queryUserServiceLoaded() {
+            throw AppError.commandFailed(
+                command: commandDescription("/bin/launchctl", ["bootout", serviceTarget]),
+                details: commandDetails(bootoutResult)
+            )
+        }
+        _ = try runCommandAllowFailure("/bin/launchctl", ["disable", serviceTarget])
+        if FileManager.default.fileExists(atPath: launchAgentURL.path) {
+            try FileManager.default.removeItem(at: launchAgentURL)
+        }
+    }
+
+    private func removeLocalFilterStateFiles() throws {
+        let fm = FileManager.default
+        for fileURL in [networkFilterPolicyURL, networkFilterStatusURL] {
+            if fm.fileExists(atPath: fileURL.path) {
+                try fm.removeItem(at: fileURL)
+            }
+        }
+
+        let supportDir = networkFilterPolicyURL.deletingLastPathComponent()
+        if fm.fileExists(atPath: supportDir.path) {
+            let entries = try fm.contentsOfDirectory(atPath: supportDir.path)
+            if entries.isEmpty {
+                try fm.removeItem(at: supportDir)
+            }
+        }
+    }
+
+    private func removeRequiredCLISymlinkWithAdminIfPresent() throws {
+        guard isSymbolicLink(path: AppConstants.cliSymlinkPath) else {
+            return
+        }
+        let shellCommand = "/bin/rm -f \(shellQuote(AppConstants.cliSymlinkPath))"
+        let appleScript = "do shell script \"\(escapeForAppleScript(shellCommand))\" with administrator privileges"
+        let result = try runCommandAllowFailure("/usr/bin/osascript", ["-e", appleScript])
+        if result.terminationStatus != 0 {
+            throw AppError.commandFailed(
+                command: "remove CLI symlink",
+                details: commandDetails(result)
+            )
+        }
     }
 
     private func installRequiredCLISymlinksWithAdmin(cleanroomBinaryURL: URL) throws {
@@ -885,6 +1026,18 @@ final class CleanroomMenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate
         alert.messageText = AppConstants.menuTitle
         alert.informativeText = message
         alert.runModal()
+    }
+
+    private func confirmUninstall() -> Bool {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = AppConstants.menuTitle
+        alert.informativeText =
+            "Uninstall Cleanroom setup?\n\n" +
+            "This disables network filter preferences, removes the user LaunchAgent, and removes /usr/local/bin/cleanroom if it is a symlink."
+        alert.addButton(withTitle: "Uninstall")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
     }
 
     private func showInfo(_ message: String) {

@@ -34,6 +34,7 @@ Primary reason for having a macOS app:
 - Ongoing user service control remains in `Advanced` actions.
 - `Advanced` includes a `Run Server At Login` checkbox.
 - `Advanced` includes `Enable Network Filter` / `Disable Network Filter` controls.
+- `Advanced` includes an `Uninstall Cleanroom` action for removing local user setup.
 - Logs are discoverable from the menu.
 - Existing CLI UX remains valid; app is additive.
 
@@ -94,6 +95,7 @@ Implementation notes:
 ### Local install
 
 - `mise run install:macos-app` copies the app to `~/Applications/Cleanroom.app`.
+- `mise run uninstall:macos-app` removes `~/Applications/Cleanroom.app`.
 - User launches it directly from Finder/Spotlight.
 
 ### Network filter install flow

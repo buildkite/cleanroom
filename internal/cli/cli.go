@@ -214,7 +214,6 @@ type ServeCommand struct {
 	TLSCA         string `name:"tls-ca" aliases:"tlsca" help:"Path to CA certificate for client verification (auto-discovered from XDG config for https)" env:"CLEANROOM_TLS_CA"`
 	version       string
 }
-}
 
 type StatusCommand struct {
 	RunID   string `help:"Run ID to inspect"`

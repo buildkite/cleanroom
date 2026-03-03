@@ -13,7 +13,7 @@ run = "go test ./..."
 
 [tasks.lint-shell]
 description = "Lint shell scripts"
-run = "shellcheck -x scripts/cleanroom-root-helper.sh scripts/benchmark-tti.sh scripts/build-go.sh scripts/build-macos-app.sh scripts/install-go.sh scripts/install-macos-app.sh scripts/install.sh scripts/release.sh"
+run = "shellcheck -x scripts/cleanroom-root-helper.sh scripts/benchmark-tti.sh scripts/build-go.sh scripts/build-macos-app.sh scripts/install-go.sh scripts/install-macos-app.sh scripts/uninstall-macos-app.sh scripts/install.sh scripts/release.sh"
 
 [tasks.test-full]
 description = "Run full Go test suite"
@@ -67,6 +67,10 @@ run = "{% if os() == \"macos\" %}BIN_DIR=\"$(go env GOBIN)\"; if [ -z \"$BIN_DIR
 description = "Install macOS menubar app to ~/Applications (override with CLEANROOM_APP_INSTALL_DIR)"
 depends = ["build:macos-app"]
 run = "{% if os() == \"macos\" %}scripts/install-macos-app.sh{% else %}true{% endif %}"
+
+[tasks."uninstall:macos-app"]
+description = "Remove macOS menubar app from ~/Applications (override with CLEANROOM_APP_INSTALL_DIR)"
+run = "{% if os() == \"macos\" %}scripts/uninstall-macos-app.sh{% else %}true{% endif %}"
 
 [tasks.install]
 description = "Install all binaries into GOBIN (or GOPATH/bin)"
