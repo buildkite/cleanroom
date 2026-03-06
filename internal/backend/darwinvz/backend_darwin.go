@@ -72,6 +72,11 @@ const preparedRuntimeRootFSVersion = "v8-darwin-vz"
 
 var virtualizationEntitlementPattern = regexp.MustCompile(`(?s)<key>\s*com\.apple\.security\.virtualization\s*</key>\s*<true\s*/?>`)
 
+const (
+	guestInitScriptPath = "/sbin/cleanroom-init"
+	guestAgentPath      = "/usr/local/bin/cleanroom-guest-agent"
+)
+
 const guestInitScriptTemplate = `#!/bin/sh
 set -eu
 
@@ -477,8 +482,11 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 		_ = os.Remove(vmRootFSPath)
 	}()
 
+	guestInitPath, guestInitNotice := guestInitExecutableForRootFS(vmRootFSPath)
+	logRunNotice(a.Name(), req.RunID, guestInitNotice)
 	bootArgs := fmt.Sprintf(
-		"console=hvc0 root=/dev/vda rw init=/sbin/cleanroom-init cleanroom_guest_port=%d %s",
+		"console=hvc0 root=/dev/vda rw init=%s cleanroom_guest_port=%d %s",
+		guestInitPath,
 		req.GuestPort,
 		dockerServiceBootArgs(req.Policy, req.FirecrackerConfig),
 	)
@@ -731,12 +739,16 @@ func (a *Adapter) ensurePreparedRuntimeRootFSFromImage(ctx context.Context, imag
 		return preparedRootFS{}, err
 	}
 	if _, err := os.Stat(preparedPath); err == nil {
-		return preparedRootFS{
-			Ref:    artifact.Ref,
-			Digest: artifact.Digest,
-			Path:   preparedPath,
-			Hit:    true,
-		}, nil
+		if validateErr := validatePreparedRuntimeRootFS(preparedPath); validateErr == nil {
+			return preparedRootFS{
+				Ref:    artifact.Ref,
+				Digest: artifact.Digest,
+				Path:   preparedPath,
+				Hit:    true,
+			}, nil
+		}
+		// Stale/incomplete cache entries should be rebuilt instead of reused.
+		_ = os.Remove(preparedPath)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return preparedRootFS{}, fmt.Errorf("inspect prepared runtime rootfs %q: %w", preparedPath, err)
 	}
@@ -745,12 +757,17 @@ func (a *Adapter) ensurePreparedRuntimeRootFSFromImage(ctx context.Context, imag
 	defer a.runtimeImageMu.Unlock()
 
 	if _, err := os.Stat(preparedPath); err == nil {
-		return preparedRootFS{
-			Ref:    artifact.Ref,
-			Digest: artifact.Digest,
-			Path:   preparedPath,
-			Hit:    true,
-		}, nil
+		if validateErr := validatePreparedRuntimeRootFS(preparedPath); validateErr == nil {
+			return preparedRootFS{
+				Ref:    artifact.Ref,
+				Digest: artifact.Digest,
+				Path:   preparedPath,
+				Hit:    true,
+			}, nil
+		}
+		if removeErr := os.Remove(preparedPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			return preparedRootFS{}, fmt.Errorf("remove invalid prepared runtime rootfs %q: %w", preparedPath, removeErr)
+		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return preparedRootFS{}, fmt.Errorf("inspect prepared runtime rootfs %q: %w", preparedPath, err)
 	}
@@ -768,15 +785,22 @@ func (a *Adapter) ensurePreparedRuntimeRootFSFromImage(ctx context.Context, imag
 		_ = os.Remove(tmpPath)
 		return preparedRootFS{}, err
 	}
+	if err := validatePreparedRuntimeRootFS(tmpPath); err != nil {
+		_ = os.Remove(tmpPath)
+		return preparedRootFS{}, fmt.Errorf("validate prepared runtime rootfs %q: %w", tmpPath, err)
+	}
 	if err := os.Rename(tmpPath, preparedPath); err != nil {
 		_ = os.Remove(tmpPath)
 		if _, statErr := os.Stat(preparedPath); statErr == nil {
-			return preparedRootFS{
-				Ref:    artifact.Ref,
-				Digest: artifact.Digest,
-				Path:   preparedPath,
-				Hit:    true,
-			}, nil
+			if validateErr := validatePreparedRuntimeRootFS(preparedPath); validateErr == nil {
+				return preparedRootFS{
+					Ref:    artifact.Ref,
+					Digest: artifact.Digest,
+					Path:   preparedPath,
+					Hit:    true,
+				}, nil
+			}
+			return preparedRootFS{}, fmt.Errorf("prepared runtime rootfs %q became invalid during rename race", preparedPath)
 		}
 		return preparedRootFS{}, fmt.Errorf("store prepared runtime rootfs %q: %w", preparedPath, err)
 	}
@@ -787,6 +811,31 @@ func (a *Adapter) ensurePreparedRuntimeRootFSFromImage(ctx context.Context, imag
 		Path:   preparedPath,
 		Hit:    false,
 	}, nil
+}
+
+var preparedRuntimeRootFSRequiredPaths = []string{
+	guestAgentPath,
+	guestInitScriptPath,
+}
+
+func validatePreparedRuntimeRootFS(path string) error {
+	for _, requiredPath := range preparedRuntimeRootFSRequiredPaths {
+		if err := runDebugFS(path, false, fmt.Sprintf("stat %s", requiredPath)); err != nil {
+			return fmt.Errorf("required runtime file %q is missing or unreadable: %w", requiredPath, err)
+		}
+	}
+	return nil
+}
+
+func guestInitExecutableForRootFS(rootFSPath string) (path, notice string) {
+	return guestInitExecutableForShellPresence(ext4PathExists(rootFSPath, "/bin/sh"))
+}
+
+func guestInitExecutableForShellPresence(hasShell bool) (path, notice string) {
+	if hasShell {
+		return guestInitScriptPath, ""
+	}
+	return guestAgentPath, fmt.Sprintf("rootfs is shell-less; using %s as init", guestAgentPath)
 }
 
 func preparedRuntimeRootFSPath(imageDigest, guestAgentHash string) (string, error) {
@@ -1065,10 +1114,40 @@ func runDebugFS(imagePath string, writable bool, command string) error {
 	args = append(args, "-R", command, imagePath)
 	cmd := exec.Command(debugfsBinary, args...)
 	output, err := cmd.CombinedOutput()
+	trimmedOutput := strings.TrimSpace(string(output))
 	if err != nil {
-		return fmt.Errorf("debugfs command %q failed: %w: %s", command, err, strings.TrimSpace(string(output)))
+		return fmt.Errorf("debugfs command %q failed: %w: %s", command, err, trimmedOutput)
+	}
+	if outputErr := debugFSCommandOutputError(trimmedOutput); outputErr != "" {
+		return fmt.Errorf("debugfs command %q reported error: %s", command, outputErr)
 	}
 	return nil
+}
+
+func debugFSCommandOutputError(output string) string {
+	trimmed := strings.TrimSpace(output)
+	if trimmed == "" {
+		return ""
+	}
+	for _, line := range strings.Split(trimmed, "\n") {
+		msg := strings.TrimSpace(line)
+		if msg == "" {
+			continue
+		}
+		lower := strings.ToLower(msg)
+		if strings.HasPrefix(lower, "debugfs ") {
+			// Version banner.
+			continue
+		}
+		if strings.Contains(lower, "file not found") ||
+			strings.Contains(lower, "ext2_lookup") ||
+			strings.Contains(lower, "command not found") ||
+			strings.Contains(lower, "no such file or directory") ||
+			strings.Contains(lower, "not a directory") {
+			return msg
+		}
+	}
+	return ""
 }
 
 func (a *Adapter) resolveKernelPath(ctx context.Context, configuredPath string) (path, notice string, err error) {

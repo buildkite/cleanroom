@@ -12,7 +12,6 @@ import (
 	"net"
 	"os"
 	"os/exec"
-	"strconv"
 	"strings"
 	"sync"
 	"unsafe"
@@ -29,14 +28,10 @@ func main() {
 		return
 	}
 
-	port := vsockexec.DefaultPort
-	if raw := os.Getenv("CLEANROOM_VSOCK_PORT"); raw != "" {
-		parsed, err := strconv.ParseUint(raw, 10, 32)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "invalid CLEANROOM_VSOCK_PORT %q: %v\n", raw, err)
-			os.Exit(2)
-		}
-		port = uint32(parsed)
+	port, err := resolveGuestAgentPort(vsockexec.DefaultPort, os.Getenv("CLEANROOM_VSOCK_PORT"), readKernelCmdline())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		os.Exit(2)
 	}
 
 	ln, err := listenVsock(port)
