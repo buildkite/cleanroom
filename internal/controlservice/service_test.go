@@ -145,6 +145,9 @@ func newTestService(adapter backend.Adapter) *Service {
 			},
 			source: "/repo/cleanroom.yaml",
 		},
+		Config: runtimeconfig.Config{
+			DefaultBackend: "firecracker",
+		},
 		Backends: map[string]backend.Adapter{"firecracker": adapter},
 	}
 }

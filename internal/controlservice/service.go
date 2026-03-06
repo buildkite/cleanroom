@@ -1902,7 +1902,7 @@ func resolveBackendName(requested, configuredDefault string) string {
 	if configuredDefault != "" {
 		return configuredDefault
 	}
-	return "firecracker"
+	return runtimeconfig.DefaultBackendForHost()
 }
 
 func mergeBackendConfig(backendName string, opts executionOptions, cfg runtimeconfig.Config) backend.FirecrackerConfig {
