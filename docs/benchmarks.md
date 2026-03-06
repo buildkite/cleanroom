@@ -49,6 +49,7 @@ Script: `scripts/benchmark-sandbox-workloads.sh`
   - hashes a fixed byte count using `sha256sum`
   - reports elapsed seconds + MiB/s
 - Sandbox teardown happens outside measured workload sections
+- Git clone workload requires `git` in the guest image; use `--image <ref>` if your policy image does not include git
 
 Example:
 
@@ -56,6 +57,7 @@ Example:
 ./scripts/benchmark-sandbox-workloads.sh \
   --host unix:///tmp/cleanroom.sock \
   --iterations 5 \
+  --image ghcr.io/buildkite/cleanroom-base/alpine@sha256:962db9c461c02b86db105507bf2db4f01eb5d8fdf1a452598d140a569178324b \
   --repo-url https://github.com/hashicorp/terraform.git \
   --repo-depth 1
 ```
