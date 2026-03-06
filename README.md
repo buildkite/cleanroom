@@ -249,6 +249,7 @@ cleanroom config init
 ```
 
 On macOS this defaults `default_backend` to `darwin-vz`. On Linux it defaults to `firecracker`.
+If `default_backend` is omitted or blank in an existing config, Cleanroom falls back to the same host default at load time.
 
 ```yaml
 default_backend: firecracker
