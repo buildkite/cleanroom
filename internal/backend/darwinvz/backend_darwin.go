@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -216,9 +217,10 @@ func (a *Adapter) Name() string {
 }
 
 func (a *Adapter) Capabilities() map[string]bool {
+	allowlistSupported, _ := hostEgressFilterEnabled()
 	return map[string]bool{
 		backend.CapabilityNetworkDefaultDeny:     true,
-		backend.CapabilityNetworkAllowlistEgress: false,
+		backend.CapabilityNetworkAllowlistEgress: allowlistSupported,
 		backend.CapabilityNetworkGuestInterface:  true,
 	}
 }
@@ -236,13 +238,20 @@ func (a *Adapter) Doctor(_ context.Context, req backend.DoctorRequest) (*backend
 	appendCheck := func(name, status, message string) {
 		report.Checks = append(report.Checks, backend.DoctorCheck{Name: name, Status: status, Message: message})
 	}
+	allowlistSupported, allowlistStatusDetail := hostEgressFilterEnabled()
 
 	if runtime.GOOS == "darwin" {
 		appendCheck("os", "pass", "darwin host detected")
 	} else {
 		appendCheck("os", "fail", fmt.Sprintf("darwin required, current OS is %s", runtime.GOOS))
 	}
-	appendCheck("guest_networking", "warn", guestNetworkUnavailableWarning)
+	if allowlistSupported {
+		appendCheck("guest_networking", "pass", guestNetworkProtectedMessage)
+	} else if allowlistStatusDetail != "" {
+		appendCheck("guest_networking", "warn", fmt.Sprintf("%s (%s)", guestNetworkUnavailableWarning, allowlistStatusDetail))
+	} else {
+		appendCheck("guest_networking", "warn", guestNetworkUnavailableWarning)
+	}
 
 	if configured := strings.TrimSpace(req.KernelImagePath); configured == "" {
 		if spec, ok := bootassets.LookupManagedKernelForHost(a.Name()); ok {
@@ -281,13 +290,15 @@ func (a *Adapter) Doctor(_ context.Context, req backend.DoctorRequest) (*backend
 	if req.Policy == nil {
 		appendCheck("policy", "warn", "policy not loaded")
 	} else {
-		policyWarn, policyErr := evaluateNetworkPolicy(req.Policy.NetworkDefault, len(req.Policy.Allow))
+		policyWarn, policyErr := evaluateNetworkPolicyForDoctor(req.Policy.NetworkDefault, len(req.Policy.Allow), allowlistSupported)
 		if policyErr != nil {
 			appendCheck("policy_network_default", "fail", policyErr.Error())
 		} else {
 			appendCheck("policy_network_default", "pass", "deny-by-default policy")
 			if policyWarn != "" {
 				appendCheck("policy_network_allow", "warn", policyWarn)
+			} else if len(req.Policy.Allow) > 0 {
+				appendCheck("policy_network_allow", "pass", "allow list enforced by host-side egress filter")
 			} else {
 				appendCheck("policy_network_allow", "pass", "allow list empty")
 			}
@@ -370,8 +381,12 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 	if req.Policy == nil {
 		return nil, errors.New("missing compiled policy")
 	}
-	policyWarn, policyErr := evaluateNetworkPolicy(req.Policy.NetworkDefault, len(req.Policy.Allow))
+	allowlistSupported, allowlistStatusDetail := hostEgressFilterEnabled()
+	policyWarn, policyErr := evaluateNetworkPolicyForRun(req.Policy.NetworkDefault, len(req.Policy.Allow), allowlistSupported)
 	if policyErr != nil {
+		if len(req.Policy.Allow) > 0 && !allowlistSupported && allowlistStatusDetail != "" {
+			return nil, fmt.Errorf("%w (%s)", policyErr, allowlistStatusDetail)
+		}
 		return nil, policyErr
 	}
 	if len(req.Command) == 0 {
@@ -411,7 +426,15 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 		return nil, err
 	}
 
-	warnings := buildRuntimeWarnings(policyWarn)
+	guestNetworkingWarning := ""
+	if !allowlistSupported {
+		guestNetworkingWarning = guestNetworkUnavailableWarning
+		if allowlistStatusDetail != "" {
+			guestNetworkingWarning = fmt.Sprintf("%s (%s)", guestNetworkUnavailableWarning, allowlistStatusDetail)
+		}
+	}
+
+	warnings := buildRuntimeWarnings(policyWarn, guestNetworkingWarning)
 
 	stderrPrefix := ""
 	for _, warningText := range warnings {
@@ -509,6 +532,10 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 	helper, err := startHelperSession(ctx, runDir, req.LaunchSeconds)
 	if err != nil {
 		return nil, fmt.Errorf("start darwin-vz helper: %w", err)
+	}
+	helperPID := 0
+	if helper.cmd != nil && helper.cmd.Process != nil {
+		helperPID = helper.cmd.Process.Pid
 	}
 	defer func() {
 		if closeErr := helper.close(); closeErr != nil && stream.OnStderr != nil {
@@ -622,6 +649,12 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 
 	inputSender := &inputFrameSender{w: conn}
 	if stream.OnAttach != nil {
+		var metadata map[string]string
+		if helperPID > 0 {
+			metadata = map[string]string{
+				"network_process_pid": strconv.Itoa(helperPID),
+			}
+		}
 		stream.OnAttach(backend.AttachIO{
 			WriteStdin: func(data []byte) error {
 				return inputSender.Send(vsockexec.ExecInputFrame{Type: "stdin", Data: data})
@@ -629,6 +662,7 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 			ResizeTTY: func(cols, rows uint32) error {
 				return inputSender.Send(vsockexec.ExecInputFrame{Type: "resize", Cols: cols, Rows: rows})
 			},
+			Metadata: metadata,
 		})
 	}
 	if !req.TTY {
@@ -670,12 +704,14 @@ func darwinVZResultMessage(guestErr string) string {
 	return guestErr
 }
 
-func buildRuntimeWarnings(policyWarning string) []string {
+func buildRuntimeWarnings(policyWarning, guestNetworkingWarning string) []string {
 	warnings := make([]string, 0, 2)
 	if trimmed := strings.TrimSpace(policyWarning); trimmed != "" {
 		warnings = append(warnings, trimmed)
 	}
-	warnings = append(warnings, guestNetworkUnavailableWarning)
+	if trimmed := strings.TrimSpace(guestNetworkingWarning); trimmed != "" {
+		warnings = append(warnings, trimmed)
+	}
 	return warnings
 }
 
@@ -914,8 +950,11 @@ func discoverGuestAgentBinary() (string, error) {
 
 	self, err := os.Executable()
 	if err == nil {
-		candidates = append(candidates, filepath.Join(filepath.Dir(self), linuxName))
-		candidates = append(candidates, filepath.Join(filepath.Dir(self), "cleanroom-guest-agent"))
+		dirs := executableSearchDirs(self)
+		for _, dir := range dirs {
+			candidates = append(candidates, filepath.Join(dir, linuxName))
+			candidates = append(candidates, filepath.Join(dir, "cleanroom-guest-agent"))
+		}
 	}
 
 	for _, candidate := range candidates {
@@ -943,6 +982,41 @@ func discoverGuestAgentBinary() (string, error) {
 		}
 	}
 	return "", fmt.Errorf("linux guest-agent binary not found for architecture %s; run `mise run install` to build and install cleanroom-guest-agent-linux-%s", runtime.GOARCH, runtime.GOARCH)
+}
+
+func executableSearchDirs(self string) []string {
+	trimmed := strings.TrimSpace(self)
+	if trimmed == "" {
+		return nil
+	}
+
+	var dirs []string
+	addDir := func(path string) {
+		if strings.TrimSpace(path) == "" {
+			return
+		}
+		for _, existing := range dirs {
+			if existing == path {
+				return
+			}
+		}
+		dirs = append(dirs, path)
+	}
+	addFromExecutable := func(execPath string) {
+		if strings.TrimSpace(execPath) == "" {
+			return
+		}
+		execDir := filepath.Dir(execPath)
+		addDir(execDir)
+		contentsDir := filepath.Dir(execDir)
+		addDir(filepath.Join(contentsDir, "Resources"))
+	}
+
+	addFromExecutable(trimmed)
+	if resolved, err := filepath.EvalSymlinks(trimmed); err == nil {
+		addFromExecutable(resolved)
+	}
+	return dirs
 }
 
 func isLinuxGuestAgentBinary(path string) (bool, error) {
