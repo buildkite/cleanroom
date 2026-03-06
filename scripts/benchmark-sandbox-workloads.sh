@@ -16,10 +16,11 @@ Usage:
 Options:
   --host <endpoint>          Control-plane endpoint (default: unix://$XDG_RUNTIME_DIR/cleanroom/cleanroom.sock)
   --backend <name>           Optional backend override for initial sandbox creation
+  --image <ref>              Optional sandbox image override for initial sandbox creation
   -c, --chdir <path>         Repository/policy directory (default: current directory)
   -n, --iterations <count>   Iterations per workload (default: 5)
   --output-dir <path>        Output directory (default: benchmarks/results)
-  --cleanroom-bin <path>     cleanroom binary path (default: ./dist/cleanroom, then cleanroom from PATH)
+  --cleanroom-bin <path>     cleanroom binary path (default: cleanroom from PATH, then ./dist/cleanroom)
   --repo-url <url>           Git repo for clone benchmark (default: https://github.com/kubernetes/kubernetes.git)
   --repo-depth <count>       Git clone depth (default: 1)
   --iops-block-size <bytes>  Block size for IOPS benchmark (default: 4096)
@@ -43,7 +44,9 @@ else
   default_host="unix:///tmp/cleanroom.sock"
 fi
 
-if [[ -x "./dist/cleanroom" ]]; then
+if command -v cleanroom >/dev/null 2>&1; then
+  cleanroom_bin="$(command -v cleanroom)"
+elif [[ -x "./dist/cleanroom" ]]; then
   cleanroom_bin="./dist/cleanroom"
 else
   cleanroom_bin="cleanroom"
@@ -51,6 +54,7 @@ fi
 
 host="$default_host"
 backend=""
+image_ref=""
 chdir="$PWD"
 iterations=5
 output_dir="benchmarks/results"
@@ -68,6 +72,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --backend)
       backend="$2"
+      shift 2
+      ;;
+    --image)
+      image_ref="$2"
       shift 2
       ;;
     -c|--chdir)
@@ -138,8 +146,13 @@ if ! [[ "$cpu_bytes" =~ ^[0-9]+$ ]] || [[ "$cpu_bytes" -le 0 ]]; then
   echo "cpu-bytes must be a positive integer" >&2
   exit 1
 fi
-if ! command -v "$cleanroom_bin" >/dev/null 2>&1; then
-  echo "cleanroom binary not found: $cleanroom_bin" >&2
+if [[ "$cleanroom_bin" == */* ]]; then
+  if [[ ! -x "$cleanroom_bin" ]]; then
+    echo "cleanroom binary not found or not executable: $cleanroom_bin" >&2
+    exit 1
+  fi
+elif ! command -v "$cleanroom_bin" >/dev/null 2>&1; then
+  echo "cleanroom binary not found in PATH: $cleanroom_bin" >&2
   exit 1
 fi
 if ! command -v curl >/dev/null 2>&1; then
@@ -186,15 +199,18 @@ create_cmd=("$cleanroom_bin" exec --host "$host" -c "$chdir")
 if [[ -n "$backend" ]]; then
   create_cmd+=(--backend "$backend")
 fi
-create_cmd+=(-- sh -lc "true")
+if [[ -n "$image_ref" ]]; then
+  create_cmd+=(--image "$image_ref")
+fi
+create_cmd+=(--print-sandbox-id -- sh -lc "true")
 
 create_stderr_file="$(mktemp)"
 "${create_cmd[@]}" >/dev/null 2>"$create_stderr_file"
-sandbox_id="$(sed -n 's/.*sandbox_id=\([^ ]*\).*/\1/p' "$create_stderr_file" | tail -n1)"
+sandbox_id="$(grep -m1 '^sandbox_id=' "$create_stderr_file" | cut -d= -f2 || true)"
 rm -f "$create_stderr_file"
 
-if [[ -z "$sandbox_id" ]]; then
-  echo "failed to determine sandbox_id from cleanroom exec output" >&2
+if [[ -z "$sandbox_id" || "$sandbox_id" == "null" ]]; then
+  echo "failed to determine sandbox_id from cleanroom exec --print-sandbox-id" >&2
   exit 1
 fi
 
@@ -273,6 +289,7 @@ jq -n \
   --arg host "$host" \
   --arg sandbox_id "$sandbox_id" \
   --arg backend "${backend:-default}" \
+  --arg image_ref "$image_ref" \
   --arg repo_url "$repo_url" \
   --argjson repo_depth "$repo_depth" \
   --argjson iterations "$iterations" \
@@ -292,6 +309,7 @@ jq -n \
     sandbox_id: $sandbox_id,
     config: {
       iterations: $iterations,
+      image_ref: (if $image_ref == "" then "default" else $image_ref end),
       repo_url: $repo_url,
       repo_depth: $repo_depth,
       iops_block_size_bytes: $iops_block_size,

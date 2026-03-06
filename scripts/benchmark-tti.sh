@@ -15,7 +15,7 @@ Options:
   --backend <name>          Optional backend override for cleanroom exec
   -c, --chdir <path>        Repository/policy directory (default: current directory)
   --output-dir <path>       JSON output directory (default: benchmarks/results)
-  --cleanroom-bin <path>    cleanroom binary path (default: ./dist/cleanroom, then cleanroom from PATH)
+  --cleanroom-bin <path>    cleanroom binary path (default: cleanroom from PATH, then ./dist/cleanroom)
   -h, --help                Show this help
 
 Environment:
@@ -34,7 +34,9 @@ else
   default_host="unix:///tmp/cleanroom/cleanroom.sock"
 fi
 
-if [[ -x "./dist/cleanroom" ]]; then
+if command -v cleanroom >/dev/null 2>&1; then
+  cleanroom_bin="$(command -v cleanroom)"
+elif [[ -x "./dist/cleanroom" ]]; then
   cleanroom_bin="./dist/cleanroom"
 else
   cleanroom_bin="cleanroom"
@@ -101,54 +103,42 @@ if ! command -v hyperfine >/dev/null 2>&1; then
   echo "hyperfine is required but not found in PATH" >&2
   exit 1
 fi
-if ! command -v "$cleanroom_bin" >/dev/null 2>&1; then
-  echo "cleanroom binary not found: $cleanroom_bin" >&2
+if [[ "$cleanroom_bin" == */* ]]; then
+  if [[ ! -x "$cleanroom_bin" ]]; then
+    echo "cleanroom binary not found or not executable: $cleanroom_bin" >&2
+    exit 1
+  fi
+elif ! command -v "$cleanroom_bin" >/dev/null 2>&1; then
+  echo "cleanroom binary not found in PATH: $cleanroom_bin" >&2
   exit 1
 fi
-if ! command -v curl >/dev/null 2>&1; then
-  echo "curl is required but not found in PATH" >&2
+if ! command -v grep >/dev/null 2>&1; then
+  echo "grep is required but not found in PATH" >&2
   exit 1
 fi
 
 mkdir -p "$output_dir"
 timestamp="$(date -u +%Y-%m-%dT%H-%M-%SZ)"
 output_path="${output_dir}/${timestamp}.json"
-sandbox_id_path="${output_dir}/.last-sandbox-id.txt"
-: > "$sandbox_id_path"
-
-terminate_cmd=""
-case "$host" in
-  unix://*)
-    socket_path="${host#unix://}"
-    printf -v socket_escaped '%q' "$socket_path"
-    terminate_cmd="curl -sS --output /dev/null --unix-socket ${socket_escaped} -H 'Content-Type: application/json' -d \"{\\\"sandbox_id\\\":\\\"\${sid}\\\"}\" http://localhost/cleanroom.v1.SandboxService/TerminateSandbox"
-    ;;
-  http://*|https://*)
-    api_endpoint="${host%/}/cleanroom.v1.SandboxService/TerminateSandbox"
-    printf -v endpoint_escaped '%q' "$api_endpoint"
-    terminate_cmd="curl -sS --output /dev/null -H 'Content-Type: application/json' -d \"{\\\"sandbox_id\\\":\\\"\${sid}\\\"}\" ${endpoint_escaped}"
-    ;;
-  *)
-    echo "unsupported host scheme for cleanup: $host" >&2
-    exit 1
-    ;;
-esac
+sandbox_id_path="$(mktemp "${output_dir}/.tti-sandbox-id.XXXXXX")"
 
 benchmark_cmd=("$cleanroom_bin" exec --host "$host" -c "$chdir")
 if [[ -n "$backend" ]]; then
   benchmark_cmd+=(--backend "$backend")
 fi
-benchmark_cmd+=(-- echo benchmark)
+benchmark_cmd+=(--print-sandbox-id -- echo benchmark)
 
-quoted_cmd=""
+quoted_benchmark_cmd=""
 for token in "${benchmark_cmd[@]}"; do
   printf -v escaped '%q' "$token"
-  quoted_cmd+="${escaped} "
+  quoted_benchmark_cmd+="${escaped} "
 done
 printf -v sandbox_id_escaped '%q' "$sandbox_id_path"
-quoted_cmd+=">/dev/null 2>${sandbox_id_escaped}"
+quoted_benchmark_cmd+=" >/dev/null 2>${sandbox_id_escaped}"
 
-cleanup_cmd="sid=\$(sed -n 's/.*sandbox_id=\\([^ ]*\\).*/\\1/p' ${sandbox_id_escaped} | tail -n1); if [ -n \"\${sid}\" ]; then ${terminate_cmd} || true; fi; : > ${sandbox_id_escaped}"
+printf -v cleanroom_bin_escaped '%q' "$cleanroom_bin"
+printf -v host_escaped '%q' "$host"
+cleanup_cmd="sid=\$(grep -m1 '^sandbox_id=' ${sandbox_id_escaped} | cut -d= -f2 || true); if [ -n \"\${sid}\" ]; then ${cleanroom_bin_escaped} sandbox rm --host ${host_escaped} \"\${sid}\" >/dev/null 2>&1 || true; fi; : > ${sandbox_id_escaped}"
 
 echo "Benchmarking TTI with hyperfine"
 echo "- endpoint: ${host}"
@@ -162,7 +152,7 @@ hyperfine \
   --prepare "$cleanup_cmd" \
   --cleanup "$cleanup_cmd" \
   --export-json "$output_path" \
-  "$quoted_cmd"
+  "$quoted_benchmark_cmd"
 
 bash -lc "$cleanup_cmd"
 rm -f "$sandbox_id_path"

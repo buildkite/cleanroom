@@ -594,8 +594,39 @@ func TestParseSandboxID(t *testing.T) {
 	if got, want := parseSandboxID(in), "cr-123"; got != want {
 		t.Fatalf("unexpected sandbox id: got %q want %q", got, want)
 	}
+	in = "sandbox_id=cr_123\n"
+	if got, want := parseSandboxID(in), "cr_123"; got != want {
+		t.Fatalf("unexpected sandbox id from print output: got %q want %q", got, want)
+	}
 	if got := parseSandboxID("no id here"); got != "" {
 		t.Fatalf("expected empty sandbox id for invalid input, got %q", got)
+	}
+}
+
+func TestExecIntegrationPrintSandboxIDFlag(t *testing.T) {
+	host, _ := startIntegrationServer(t, &integrationAdapter{})
+	cwd := t.TempDir()
+	outcome := runExecWithCapture(ExecCommand{
+		clientFlags:    clientFlags{Host: host},
+		Chdir:          cwd,
+		PrintSandboxID: true,
+		Command:        []string{"echo", "ok"},
+	}, runtimeContext{
+		CWD:    cwd,
+		Loader: integrationLoader{},
+	})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err != nil {
+		t.Fatalf("ExecCommand.Run returned error: %v", outcome.err)
+	}
+	sandboxID := parseSandboxID(outcome.stderr)
+	if sandboxID == "" {
+		t.Fatalf("missing sandbox_id in stderr output: %q", outcome.stderr)
+	}
+	if strings.Contains(outcome.stdout, "sandbox_id=") {
+		t.Fatalf("sandbox_id marker must not be written to stdout: %q", outcome.stdout)
 	}
 }
 

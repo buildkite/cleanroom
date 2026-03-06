@@ -161,11 +161,12 @@ func (f *clientFlags) connect() (*controlclient.Client, error) {
 
 type ExecCommand struct {
 	clientFlags
-	Chdir     string `short:"c" help:"Change to this directory before running commands"`
-	Backend   string `help:"Execution backend (defaults to runtime config or host default)"`
-	SandboxID string `help:"Reuse an existing sandbox instead of creating a new one"`
-	Image     string `help:"Override sandbox image ref for newly created sandboxes (tag, digest, or local Docker image)"`
-	Remove    bool   `name:"rm" help:"Terminate the sandbox after command completion"`
+	Chdir          string `short:"c" help:"Change to this directory before running commands"`
+	Backend        string `help:"Execution backend (defaults to runtime config or host default)"`
+	SandboxID      string `help:"Reuse an existing sandbox instead of creating a new one"`
+	Image          string `help:"Override sandbox image ref for newly created sandboxes (tag, digest, or local Docker image)"`
+	Remove         bool   `name:"rm" help:"Terminate the sandbox after command completion"`
+	PrintSandboxID bool   `name:"print-sandbox-id" help:"Print resolved sandbox_id=<id> to stderr before streaming output"`
 
 	LaunchSeconds int64 `help:"VM boot/guest-agent readiness timeout in seconds"`
 
@@ -777,6 +778,11 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 	sandboxID, err := ensureSandboxID(client, ctx.Loader, cwd, e.Host, e.Backend, strings.TrimSpace(e.SandboxID), e.Image, e.LaunchSeconds)
 	if err != nil {
 		return err
+	}
+	if e.PrintSandboxID {
+		if _, err := fmt.Fprintf(os.Stderr, "sandbox_id=%s\n", sandboxID); err != nil {
+			return err
+		}
 	}
 	detached := false
 	autoTerminateSandbox := e.Remove
