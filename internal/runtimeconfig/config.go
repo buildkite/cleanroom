@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -54,6 +55,17 @@ type DockerServiceConfig struct {
 	IPTables              bool   `yaml:"iptables"`
 }
 
+func DefaultBackendForGOOS(goos string) string {
+	if strings.EqualFold(strings.TrimSpace(goos), "darwin") {
+		return "darwin-vz"
+	}
+	return "firecracker"
+}
+
+func DefaultBackendForHost() string {
+	return DefaultBackendForGOOS(runtime.GOOS)
+}
+
 func Path() (string, error) {
 	configHome := strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME"))
 	if configHome != "" {
@@ -97,6 +109,9 @@ func Load() (Config, string, error) {
 	}
 
 	cfg.DefaultBackend = strings.TrimSpace(cfg.DefaultBackend)
+	if cfg.DefaultBackend == "" {
+		cfg.DefaultBackend = DefaultBackendForHost()
+	}
 	return cfg, path, nil
 }
 

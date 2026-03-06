@@ -162,7 +162,7 @@ func (f *clientFlags) connect() (*controlclient.Client, error) {
 type ExecCommand struct {
 	clientFlags
 	Chdir     string `short:"c" help:"Change to this directory before running commands"`
-	Backend   string `help:"Execution backend (defaults to runtime config or firecracker)"`
+	Backend   string `help:"Execution backend (defaults to runtime config or host default)"`
 	SandboxID string `help:"Reuse an existing sandbox instead of creating a new one"`
 	Image     string `help:"Override sandbox image ref for newly created sandboxes (tag, digest, or local Docker image)"`
 	Remove    bool   `name:"rm" help:"Terminate the sandbox after command completion"`
@@ -175,7 +175,7 @@ type ExecCommand struct {
 type SandboxCreateCommand struct {
 	clientFlags
 	Chdir         string `short:"c" help:"Change to this directory before running commands"`
-	Backend       string `help:"Execution backend (defaults to runtime config or firecracker)"`
+	Backend       string `help:"Execution backend (defaults to runtime config or host default)"`
 	Image         string `help:"Override sandbox image ref (tag, digest, or local Docker image)"`
 	LaunchSeconds int64  `help:"VM boot/guest-agent readiness timeout in seconds"`
 	JSON          bool   `help:"Print sandbox as JSON"`
@@ -184,7 +184,7 @@ type SandboxCreateCommand struct {
 type CreateCommand struct {
 	clientFlags
 	Chdir         string `short:"c" help:"Change to this directory before running commands"`
-	Backend       string `help:"Execution backend (defaults to runtime config or firecracker)"`
+	Backend       string `help:"Execution backend (defaults to runtime config or host default)"`
 	Image         string `help:"Override sandbox image ref (tag, digest, or local Docker image)"`
 	LaunchSeconds int64  `help:"VM boot/guest-agent readiness timeout in seconds"`
 	JSON          bool   `help:"Print sandbox as JSON"`
@@ -193,7 +193,7 @@ type CreateCommand struct {
 type ConsoleCommand struct {
 	clientFlags
 	Chdir     string `short:"c" help:"Change to this directory before running commands"`
-	Backend   string `help:"Execution backend (defaults to runtime config or firecracker)"`
+	Backend   string `help:"Execution backend (defaults to runtime config or host default)"`
 	SandboxID string `help:"Reuse an existing sandbox instead of creating a new one"`
 	Image     string `help:"Override sandbox image ref for newly created sandboxes (tag, digest, or local Docker image)"`
 	Remove    bool   `name:"rm" help:"Terminate the sandbox after console exits"`
@@ -220,7 +220,7 @@ type StatusCommand struct {
 
 type DoctorCommand struct {
 	Chdir   string `short:"c" help:"Change to this directory before running commands"`
-	Backend string `help:"Execution backend to diagnose (defaults to runtime config or firecracker)"`
+	Backend string `help:"Execution backend to diagnose (defaults to runtime config or host default)"`
 	JSON    bool   `help:"Print doctor report as JSON"`
 }
 
@@ -439,10 +439,7 @@ func (c *ConfigInitCommand) Run(ctx *runtimeContext) error {
 }
 
 func hostDefaultBackend() string {
-	if runtime.GOOS == "darwin" {
-		return "darwin-vz"
-	}
-	return "firecracker"
+	return runtimeconfig.DefaultBackendForHost()
 }
 
 func defaultRuntimeConfig(defaultBackend string) runtimeconfig.Config {
@@ -1897,7 +1894,7 @@ func resolveBackendName(requested, configuredDefault string) string {
 	if configuredDefault != "" {
 		return configuredDefault
 	}
-	return "firecracker"
+	return runtimeconfig.DefaultBackendForHost()
 }
 
 func shouldInstallGatewayFirewall(goos string) bool {

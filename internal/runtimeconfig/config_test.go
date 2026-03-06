@@ -84,3 +84,28 @@ backends:
 		t.Fatalf("unexpected darwin-vz vcpus: got %d want %d", got, want)
 	}
 }
+
+func TestLoadDefaultsBackendWhenMissing(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	configPath := filepath.Join(tmp, "cleanroom", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	content := `backends:
+  firecracker:
+    binary_path: firecracker
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, _, err := Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if got, want := cfg.DefaultBackend, DefaultBackendForHost(); got != want {
+		t.Fatalf("unexpected default backend: got %q want %q", got, want)
+	}
+}
