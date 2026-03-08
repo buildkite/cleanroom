@@ -289,6 +289,24 @@ func TestClientSnapshotLifecycle(t *testing.T) {
 		t.Fatalf("unexpected restored sandbox status: %v", got)
 	}
 
+	_, err = client.DeleteSnapshot(ctx, &DeleteSnapshotRequest{SnapshotId: snapshotID})
+	if err == nil {
+		t.Fatal("expected delete snapshot to fail while active sandboxes depend on it")
+	}
+	if !strings.Contains(err.Error(), "snapshot_busy") {
+		t.Fatalf("unexpected delete snapshot error: %v", err)
+	}
+
+	for _, id := range []string{forkResp.GetSandbox().GetSandboxId(), sandboxID} {
+		terminateResp, terminateErr := client.TerminateSandbox(ctx, &TerminateSandboxRequest{SandboxId: id})
+		if terminateErr != nil {
+			t.Fatalf("TerminateSandbox returned error for %q: %v", id, terminateErr)
+		}
+		if !terminateResp.GetTerminated() {
+			t.Fatalf("expected terminated=true for %q", id)
+		}
+	}
+
 	deleteSnapshotResp, err := client.DeleteSnapshot(ctx, &DeleteSnapshotRequest{SnapshotId: snapshotID})
 	if err != nil {
 		t.Fatalf("DeleteSnapshot returned error: %v", err)

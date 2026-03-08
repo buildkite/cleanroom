@@ -36,6 +36,8 @@ type Service struct {
 	mu                  sync.RWMutex
 	sandboxes           map[string]*sandboxState
 	executions          map[string]*executionState
+	snapshotOps         map[string]int
+	snapshotDeletions   map[string]struct{}
 	interactiveSessions map[string]*interactiveSessionState
 	interactiveAttached map[string]struct{}
 	interactiveEndpoint string
@@ -47,6 +49,7 @@ type sandboxState struct {
 	ID                 string
 	Backend            string
 	Policy             *policy.CompiledPolicy
+	SourceSnapshotID   string
 	Firecracker        backend.FirecrackerConfig
 	Repository         *repositorycheckout.Checkout
 	RepositoryBusy     bool
@@ -272,6 +275,15 @@ func (s *Service) createSandboxFromSnapshot(ctx context.Context, req *cleanroomv
 		return nil, err
 	}
 
+	s.mu.Lock()
+	s.ensureMapsLocked()
+	if err := s.beginSnapshotUseLocked(snapshotID); err != nil {
+		s.mu.Unlock()
+		return nil, err
+	}
+	s.mu.Unlock()
+	defer s.finishSnapshotUse(snapshotID)
+
 	record, ok, err := store.Get(ctx, snapshotID)
 	if err != nil {
 		return nil, fmt.Errorf("load snapshot %q: %w", snapshotID, err)
@@ -323,6 +335,7 @@ func (s *Service) createSandboxFromSnapshot(ctx context.Context, req *cleanroomv
 		ID:               sandboxID,
 		Backend:          backendName,
 		Policy:           compiled,
+		SourceSnapshotID: snapshotID,
 		Firecracker:      firecrackerCfg,
 		CreatedAt:        now,
 		UpdatedAt:        now,
@@ -549,6 +562,15 @@ func (s *Service) RestoreSandbox(ctx context.Context, req *cleanroomv1.RestoreSa
 	if err != nil {
 		return nil, err
 	}
+	s.mu.Lock()
+	s.ensureMapsLocked()
+	if err := s.beginSnapshotUseLocked(snapshotID); err != nil {
+		s.mu.Unlock()
+		return nil, err
+	}
+	s.mu.Unlock()
+	defer s.finishSnapshotUse(snapshotID)
+
 	record, ok, err := store.Get(ctx, snapshotID)
 	if err != nil {
 		return nil, fmt.Errorf("load snapshot %q: %w", snapshotID, err)
@@ -619,6 +641,7 @@ func (s *Service) RestoreSandbox(ctx context.Context, req *cleanroomv1.RestoreSa
 		s.mu.Unlock()
 		return nil, fmt.Errorf("unknown sandbox %q", sandboxID)
 	}
+	state.SourceSnapshotID = snapshotID
 	s.recordSandboxEventLocked(state, cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY, fmt.Sprintf("sandbox restored from snapshot %s", snapshotID))
 	resp := &cleanroomv1.RestoreSandboxResponse{
 		Sandbox: cloneSandboxLocked(state),
@@ -633,6 +656,15 @@ func (s *Service) DeleteSnapshot(ctx context.Context, req *cleanroomv1.DeleteSna
 		return nil, errors.New("missing snapshot_id")
 	}
 	snapshotID := strings.TrimSpace(req.GetSnapshotId())
+
+	s.mu.Lock()
+	s.ensureMapsLocked()
+	if err := s.beginSnapshotDeleteLocked(snapshotID); err != nil {
+		s.mu.Unlock()
+		return nil, err
+	}
+	s.mu.Unlock()
+	defer s.finishSnapshotDelete(snapshotID)
 
 	store, err := s.snapshotStoreOrErr()
 	if err != nil {
@@ -1925,12 +1957,61 @@ func (s *Service) ensureMapsLocked() {
 	if s.executions == nil {
 		s.executions = map[string]*executionState{}
 	}
+	if s.snapshotOps == nil {
+		s.snapshotOps = map[string]int{}
+	}
+	if s.snapshotDeletions == nil {
+		s.snapshotDeletions = map[string]struct{}{}
+	}
 	if s.interactiveSessions == nil {
 		s.interactiveSessions = map[string]*interactiveSessionState{}
 	}
 	if s.interactiveAttached == nil {
 		s.interactiveAttached = map[string]struct{}{}
 	}
+}
+
+func (s *Service) beginSnapshotUseLocked(snapshotID string) error {
+	if _, deleting := s.snapshotDeletions[snapshotID]; deleting {
+		return fmt.Errorf("snapshot_busy: snapshot %q is being deleted", snapshotID)
+	}
+	s.snapshotOps[snapshotID]++
+	return nil
+}
+
+func (s *Service) finishSnapshotUse(snapshotID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if count := s.snapshotOps[snapshotID]; count > 1 {
+		s.snapshotOps[snapshotID] = count - 1
+		return
+	}
+	delete(s.snapshotOps, snapshotID)
+}
+
+func (s *Service) beginSnapshotDeleteLocked(snapshotID string) error {
+	if _, deleting := s.snapshotDeletions[snapshotID]; deleting {
+		return fmt.Errorf("snapshot_busy: snapshot %q is already being deleted", snapshotID)
+	}
+	if count := s.snapshotOps[snapshotID]; count > 0 {
+		return fmt.Errorf("snapshot_busy: snapshot %q is currently in use by another operation", snapshotID)
+	}
+	for _, sb := range s.sandboxes {
+		if sb == nil || sb.Status == cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPED {
+			continue
+		}
+		if strings.TrimSpace(sb.SourceSnapshotID) == snapshotID {
+			return fmt.Errorf("snapshot_busy: snapshot %q is in use by sandbox %q", snapshotID, sb.ID)
+		}
+	}
+	s.snapshotDeletions[snapshotID] = struct{}{}
+	return nil
+}
+
+func (s *Service) finishSnapshotDelete(snapshotID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.snapshotDeletions, snapshotID)
 }
 
 func (s *Service) pruneExpiredInteractiveSessionsLocked(now time.Time) {
