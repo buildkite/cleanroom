@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -88,6 +89,10 @@ type sandboxInstance struct {
 	Helper          *helperSession
 	VMID            string
 	vmRootFSPath    string
+	exitedCh        chan struct{}
+	exitMu          sync.RWMutex
+	exitErr         error
+	exitReady       bool
 }
 
 const preparedRuntimeRootFSVersion = "v8-darwin-vz"
@@ -321,6 +326,9 @@ func (a *Adapter) RunInSandbox(ctx context.Context, req backend.RunRequest, stre
 	a.sandboxMu.Unlock()
 	if !ok {
 		return nil, fmt.Errorf("unknown sandbox %q", sandboxID)
+	}
+	if err := instance.exitedErrOrNil(); err != nil {
+		return nil, fmt.Errorf("sandbox %q is not running: %w", sandboxID, err)
 	}
 
 	if req.Policy == nil {
@@ -951,9 +959,7 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 		return nil, fmt.Errorf("proxy socket path %q is too long: %w", proxySocketPath, err)
 	}
 
-	helperNeedsClose = false
-	cleanupRunDir = false
-	return &sandboxInstance{
+	instance := &sandboxInstance{
 		SandboxID:       sandboxID,
 		RunDir:          runDir,
 		ConfigPath:      configPath,
@@ -966,7 +972,31 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 		Helper:          helper,
 		VMID:            vmID,
 		vmRootFSPath:    vmRootFSPath,
-	}, nil
+		exitedCh:        make(chan struct{}),
+	}
+	go func() {
+		err, ok := <-helper.done
+		if !ok {
+			err = nil
+		}
+		if normalized := helper.normalizeHelperExitErr(err); normalized != nil {
+			err = fmt.Errorf("sandbox helper exited: %w", normalized)
+		} else {
+			err = nil
+		}
+		instance.setExited(err)
+		close(instance.exitedCh)
+	}()
+
+	bootCtx, cancel := context.WithTimeout(ctx, time.Duration(cfg.LaunchSeconds)*time.Second)
+	defer cancel()
+	if err := probeGuestExecReadyWithExit(bootCtx, helper, proxySocketPath, instance.exitedCh, instance.exitedErrOrNil); err != nil {
+		return nil, err
+	}
+
+	helperNeedsClose = false
+	cleanupRunDir = false
+	return instance, nil
 }
 
 func (a *Adapter) executeInSandbox(bootCtx context.Context, runCtx context.Context, instance *sandboxInstance, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
@@ -1007,8 +1037,11 @@ func (a *Adapter) executeInSandbox(bootCtx context.Context, runCtx context.Conte
 	if proxySocketPath == "" {
 		return nil, errors.New("darwin-vz sandbox proxy socket path is empty")
 	}
+	if err := instance.exitedErrOrNil(); err != nil {
+		return nil, fmt.Errorf("sandbox %q is not running: %w", instance.SandboxID, err)
+	}
 
-	conn, err := dialUnixSocketWithRetry(bootCtx, proxySocketPath)
+	conn, err := dialUnixSocketWithExit(bootCtx, proxySocketPath, instance.exitedCh, instance.exitedErrOrNil)
 	if err != nil {
 		return nil, helper.decorateError(fmt.Errorf("connect darwin-vz proxy socket %q: %w", proxySocketPath, err))
 	}
@@ -1112,6 +1145,72 @@ func sandboxRuntimeBaseDir() (string, error) {
 	return filepath.Join(base, "sandboxes"), nil
 }
 
+func probeGuestExecReady(ctx context.Context, helper *helperSession, socketPath string) error {
+	return probeGuestExecReadyWithExit(ctx, helper, socketPath, nil, nil)
+}
+
+func probeGuestExecReadyWithExit(ctx context.Context, helper *helperSession, socketPath string, exitedCh <-chan struct{}, exitedErrOrNil func() error) error {
+	conn, err := dialUnixSocketWithExit(ctx, socketPath, exitedCh, exitedErrOrNil)
+	if err != nil {
+		if helper != nil {
+			return helper.decorateError(fmt.Errorf("connect darwin-vz proxy socket %q for guest readiness probe: %w", socketPath, err))
+		}
+		return fmt.Errorf("connect darwin-vz proxy socket %q for guest readiness probe: %w", socketPath, err)
+	}
+	defer conn.Close()
+
+	if err := vsockexec.EncodeRequest(conn, vsockexec.ExecRequest{}); err != nil {
+		if helper != nil {
+			return helper.decorateError(fmt.Errorf("send guest readiness probe over darwin-vz proxy: %w", err))
+		}
+		return fmt.Errorf("send guest readiness probe over darwin-vz proxy: %w", err)
+	}
+	if _, err := vsockexec.DecodeResponse(conn); err != nil {
+		if helper != nil {
+			return helper.decorateError(fmt.Errorf("decode guest readiness probe over darwin-vz proxy: %w", err))
+		}
+		return fmt.Errorf("decode guest readiness probe over darwin-vz proxy: %w", err)
+	}
+	return nil
+}
+
+func dialUnixSocketWithExit(ctx context.Context, socketPath string, exitedCh <-chan struct{}, exitedErrOrNil func() error) (net.Conn, error) {
+	dialer := net.Dialer{}
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+
+	exitErr := func() error {
+		if exitedErrOrNil == nil {
+			return nil
+		}
+		return exitedErrOrNil()
+	}
+
+	for {
+		conn, err := dialer.DialContext(ctx, "unix", socketPath)
+		if err == nil {
+			return conn, nil
+		}
+		if err := exitErr(); err != nil {
+			return nil, fmt.Errorf("sandbox exited while waiting for unix socket %q: %w", socketPath, err)
+		}
+
+		select {
+		case <-ctx.Done():
+			if err := exitErr(); err != nil {
+				return nil, fmt.Errorf("sandbox exited while waiting for unix socket %q: %w", socketPath, err)
+			}
+			return nil, fmt.Errorf("timed out waiting for unix socket %q: %w", socketPath, ctx.Err())
+		case <-exitedCh:
+			if err := exitErr(); err != nil {
+				return nil, fmt.Errorf("sandbox exited while waiting for unix socket %q: %w", socketPath, err)
+			}
+			return nil, fmt.Errorf("sandbox exited while waiting for unix socket %q", socketPath)
+		case <-ticker.C:
+		}
+	}
+}
+
 func (s *sandboxInstance) shutdown() {
 	if s == nil {
 		return
@@ -1131,6 +1230,28 @@ func (s *sandboxInstance) shutdown() {
 	if strings.TrimSpace(s.vmRootFSPath) != "" {
 		_ = os.Remove(s.vmRootFSPath)
 	}
+}
+
+func (s *sandboxInstance) setExited(err error) {
+	s.exitMu.Lock()
+	defer s.exitMu.Unlock()
+	if s.exitReady {
+		return
+	}
+	s.exitErr = err
+	s.exitReady = true
+}
+
+func (s *sandboxInstance) exitedErrOrNil() error {
+	s.exitMu.RLock()
+	defer s.exitMu.RUnlock()
+	if !s.exitReady {
+		return nil
+	}
+	if s.exitErr == nil {
+		return errors.New("sandbox exited")
+	}
+	return s.exitErr
 }
 
 func darwinVZResultMessage(guestErr string) string {

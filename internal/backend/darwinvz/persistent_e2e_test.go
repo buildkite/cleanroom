@@ -23,6 +23,10 @@ const (
 	darwinVZE2EEnvRootFS      = "CLEANROOM_DARWIN_VZ_E2E_ROOTFS"
 )
 
+func defaultDarwinVZE2EImageRef() string {
+	return "docker.io/library/alpine@sha256:a4f4213abb84c497377b8544c81b3564f313746700372ec4fe84653e4fb03805"
+}
+
 func TestPersistentSandboxE2E(t *testing.T) {
 	if strings.TrimSpace(os.Getenv(darwinVZE2EEnvEnabled)) == "" {
 		t.Skipf("set %s=1 to run real darwin-vz persistence e2e", darwinVZE2EEnvEnabled)
@@ -58,7 +62,7 @@ func TestPersistentSandboxE2E(t *testing.T) {
 
 	imageRef := strings.TrimSpace(os.Getenv(darwinVZE2EEnvImageRef))
 	if imageRef == "" {
-		imageRef = "ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+		imageRef = defaultDarwinVZE2EImageRef()
 	}
 
 	cfg := backend.FirecrackerConfig{
