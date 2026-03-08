@@ -156,7 +156,7 @@ cleanroom policy validate
 | Host OS | Backend | Status | Notes |
 |---------|---------|--------|-------|
 | Linux | `firecracker` | Full support | Persistent sandboxes, file download, egress allowlist enforcement |
-| macOS | `darwin-vz` | Supported with gaps | Per-run VMs (no persistent sandboxes yet), no file download, no egress filtering yet |
+| macOS | `darwin-vz` | Supported with gaps | Persistent sandboxes, no file download, no egress filtering yet |
 
 Backend capabilities are exposed in `cleanroom doctor --json` under `capabilities`. See [isolation model](docs/isolation.md) for enforcement and persistence details.
 

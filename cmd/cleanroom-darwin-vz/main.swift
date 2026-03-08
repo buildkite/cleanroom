@@ -218,13 +218,21 @@ private final class UnixListener {
 private final class GuestChannel {
     let readFD: Int32
     let writeFD: Int32
+    private let closeAfterUse: Bool
     private var closed = false
     private let onClose: () -> Void
 
-    init(readFD: Int32, writeFD: Int32, onClose: @escaping () -> Void) {
+    init(readFD: Int32, writeFD: Int32, closeAfterUse: Bool = true, onClose: @escaping () -> Void) {
         self.readFD = readFD
         self.writeFD = writeFD
+        self.closeAfterUse = closeAfterUse
         self.onClose = onClose
+    }
+
+    func finishSession() {
+        if closeAfterUse {
+            close()
+        }
     }
 
     func close() {
@@ -249,7 +257,7 @@ private final class ProxyServer {
 
     func start(connectGuest: @escaping () throws -> GuestChannel) {
         queue.async { [weak self] in
-            self?.acceptAndBridge(connectGuest: connectGuest)
+            self?.serve(connectGuest: connectGuest)
         }
     }
 
@@ -262,7 +270,18 @@ private final class ProxyServer {
         listener.close()
     }
 
-    private func acceptAndBridge(connectGuest: @escaping () throws -> GuestChannel) {
+    private func serve(connectGuest: @escaping () throws -> GuestChannel) {
+        while true {
+            if isStopped() {
+                return
+            }
+            if !acceptAndBridge(connectGuest: connectGuest), !isStopped() {
+                usleep(100_000)
+            }
+        }
+    }
+
+    private func acceptAndBridge(connectGuest: @escaping () throws -> GuestChannel) -> Bool {
         let hostFD: Int32
         do {
             hostFD = try listener.accept()
@@ -270,12 +289,11 @@ private final class ProxyServer {
             if !isStopped() {
                 fputs("cleanroom-darwin-vz proxy accept failed: \(error)\n", stderr)
             }
-            return
+            return false
         }
-
         defer { _ = Darwin.close(hostFD) }
         if isStopped() {
-            return
+            return false
         }
 
         let guestChannel: GuestChannel
@@ -283,7 +301,7 @@ private final class ProxyServer {
             guestChannel = try connectGuest()
         } catch {
             fputs("cleanroom-darwin-vz guest channel connect failed: \(error)\n", stderr)
-            return
+            return true
         }
 
         lock.lock()
@@ -291,13 +309,14 @@ private final class ProxyServer {
         lock.unlock()
 
         bridge(hostFD: hostFD, guestReadFD: guestChannel.readFD, guestWriteFD: guestChannel.writeFD)
-        guestChannel.close()
+        guestChannel.finishSession()
 
         lock.lock()
         if activeChannel === guestChannel {
             activeChannel = nil
         }
         lock.unlock()
+        return true
     }
 
     private func bridge(hostFD: Int32, guestReadFD: Int32, guestWriteFD: Int32) {
@@ -513,6 +532,7 @@ private final class VMRuntime {
         let channel = GuestChannel(
             readFD: guestToHost.fileHandleForReading.fileDescriptor,
             writeFD: hostToGuest.fileHandleForWriting.fileDescriptor,
+            closeAfterUse: false,
             onClose: {
                 guestToHost.fileHandleForReading.closeFile()
                 hostToGuest.fileHandleForWriting.closeFile()

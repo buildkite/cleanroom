@@ -118,7 +118,7 @@ Current validated release: `v1.17.4` (published 2026-02-18). See also: [releases
 
 Apple's [Virtualization.framework](https://developer.apple.com/documentation/virtualization) provides hardware-accelerated VMs on macOS (Apple Silicon and Intel). Cleanroom's `darwin-vz` backend uses a dedicated Swift helper binary for VM lifecycle and keeps policy/image/control-plane orchestration in Go.
 
-Current status: per-run VMs only (no persistent sandboxes). Guest outbound networking is available via NAT, but allowlist egress filtering is not yet implemented. The backend enforces `network.default: deny` as a policy shape check and warns that `network.allow` entries are ignored. See [darwin-vz.md](backend/darwin-vz.md) for implementation details.
+Current status: persistent sandboxes are supported. Guest outbound networking is available via NAT, but allowlist egress filtering is not yet implemented. The backend enforces `network.default: deny` as a policy shape check and warns that `network.allow` entries are ignored. See [darwin-vz.md](backend/darwin-vz.md) for implementation details.
 
 Used by: Tart, Matchlock (macOS path), Cleanroom (macOS path).
 
