@@ -31,25 +31,17 @@ func pullImageFromRegistry(ctx context.Context, ref string) (io.ReadCloser, OCIC
 	rootFSTar := mutate.Extract(img)
 
 	return rootFSTar, OCIConfig{
-		Entrypoint: append([]string(nil), cfg.Config.Entrypoint...),
-		Cmd:        append([]string(nil), cfg.Config.Cmd...),
-		Env:        append([]string(nil), cfg.Config.Env...),
-		Workdir:    cfg.Config.WorkingDir,
-		User:       cfg.Config.User,
+		Entrypoint:   append([]string(nil), cfg.Config.Entrypoint...),
+		Cmd:          append([]string(nil), cfg.Config.Cmd...),
+		Env:          append([]string(nil), cfg.Config.Env...),
+		Workdir:      cfg.Config.WorkingDir,
+		User:         cfg.Config.User,
+		OS:           cfg.OS,
+		Architecture: cfg.Architecture,
+		Variant:      cfg.Variant,
 	}, nil
 }
 
 func hostLinuxPlatform() v1.Platform {
-	return linuxPlatformForArch(runtime.GOARCH)
-}
-
-func linuxPlatformForArch(goArch string) v1.Platform {
-	switch goArch {
-	case "amd64":
-		return v1.Platform{OS: "linux", Architecture: "amd64"}
-	case "arm64":
-		return v1.Platform{OS: "linux", Architecture: "arm64", Variant: "v8"}
-	default:
-		return v1.Platform{OS: "linux", Architecture: goArch}
-	}
+	return HostLinuxPlatformForGOARCH(runtime.GOARCH)
 }

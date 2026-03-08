@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -24,11 +25,14 @@ import (
 const defaultMkfsBinary = "mkfs.ext4"
 
 type OCIConfig struct {
-	Entrypoint []string
-	Cmd        []string
-	Env        []string
-	Workdir    string
-	User       string
+	Entrypoint   []string
+	Cmd          []string
+	Env          []string
+	Workdir      string
+	User         string
+	OS           string
+	Architecture string
+	Variant      string
 }
 
 type Record struct {
@@ -149,6 +153,9 @@ func (m *Manager) Ensure(ctx context.Context, ref string) (EnsureResult, error) 
 	if found {
 		_, statErr := os.Stat(record.RootFSPath)
 		if statErr == nil {
+			if err := m.validateCachedRecordPlatform(ctx, parsedRef, &record); err != nil {
+				return EnsureResult{}, err
+			}
 			record.Ref = parsedRef.Original
 			record.LastUsedAt = now
 			if err := m.upsertRecord(ctx, record); err != nil {
@@ -169,6 +176,9 @@ func (m *Manager) Ensure(ctx context.Context, ref string) (EnsureResult, error) 
 		return EnsureResult{}, err
 	}
 	defer tarStream.Close()
+	if err := ValidateImagePlatformForHost(config.OS, config.Architecture, runtime.GOARCH); err != nil {
+		return EnsureResult{}, fmt.Errorf("image %q platform is incompatible: %w", parsedRef.Original, err)
+	}
 
 	record, err = m.persistFromTarStream(ctx, persistFromTarRequest{
 		Ref:        parsedRef.Original,
@@ -184,6 +194,54 @@ func (m *Manager) Ensure(ctx context.Context, ref string) (EnsureResult, error) 
 	}
 
 	return EnsureResult{Record: record, CacheHit: false}, nil
+}
+
+func (m *Manager) validateCachedRecordPlatform(ctx context.Context, parsedRef ociref.DigestReference, record *Record) error {
+	if record == nil {
+		return nil
+	}
+	if needsPlatformMetadata(record.OCIConfig) && strings.EqualFold(strings.TrimSpace(record.Source), "registry") {
+		resolvedConfig, err := m.resolveOCIConfigFromRegistry(ctx, parsedRef.Original)
+		if err != nil {
+			return fmt.Errorf("resolve image platform for cached ref %q: %w", parsedRef.Original, err)
+		}
+		record.OCIConfig = mergeOCIConfig(record.OCIConfig, resolvedConfig)
+	}
+	if err := ValidateImagePlatformForHost(record.OCIConfig.OS, record.OCIConfig.Architecture, runtime.GOARCH); err != nil {
+		return fmt.Errorf("image %q platform is incompatible: %w", parsedRef.Original, err)
+	}
+	return nil
+}
+
+func (m *Manager) resolveOCIConfigFromRegistry(ctx context.Context, ref string) (OCIConfig, error) {
+	if m == nil || m.pullImage == nil {
+		return OCIConfig{}, fmt.Errorf("image puller is not configured")
+	}
+	stream, config, err := m.pullImage(ctx, ref)
+	if stream != nil {
+		_ = stream.Close()
+	}
+	if err != nil {
+		return OCIConfig{}, err
+	}
+	return config, nil
+}
+
+func needsPlatformMetadata(cfg OCIConfig) bool {
+	return strings.TrimSpace(cfg.OS) == "" || strings.TrimSpace(cfg.Architecture) == ""
+}
+
+func mergeOCIConfig(base, overlay OCIConfig) OCIConfig {
+	if strings.TrimSpace(overlay.OS) != "" {
+		base.OS = overlay.OS
+	}
+	if strings.TrimSpace(overlay.Architecture) != "" {
+		base.Architecture = overlay.Architecture
+	}
+	if strings.TrimSpace(overlay.Variant) != "" {
+		base.Variant = overlay.Variant
+	}
+	return base
 }
 
 func (m *Manager) Pull(ctx context.Context, ref string) (EnsureResult, error) {
@@ -242,7 +300,10 @@ func (m *Manager) List(ctx context.Context) ([]Record, error) {
 			oci_cmd_json,
 			oci_env_json,
 			oci_workdir,
-			oci_user
+			oci_user,
+			oci_os,
+			oci_architecture,
+			oci_variant
 		FROM images
 		ORDER BY last_used_at_unix DESC, created_at_unix DESC, digest ASC
 	`)
@@ -390,12 +451,26 @@ func (m *Manager) initDB(ctx context.Context) error {
 			oci_cmd_json TEXT NOT NULL,
 			oci_env_json TEXT NOT NULL,
 			oci_workdir TEXT NOT NULL,
-			oci_user TEXT NOT NULL
+			oci_user TEXT NOT NULL,
+			oci_os TEXT NOT NULL DEFAULT '',
+			oci_architecture TEXT NOT NULL DEFAULT '',
+			oci_variant TEXT NOT NULL DEFAULT ''
 		);
 		CREATE INDEX IF NOT EXISTS idx_images_ref ON images(ref);
 	`)
 	if err != nil {
 		return fmt.Errorf("initialise image metadata schema: %w", err)
+	}
+	for _, stmt := range []string{
+		`ALTER TABLE images ADD COLUMN oci_os TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE images ADD COLUMN oci_architecture TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE images ADD COLUMN oci_variant TEXT NOT NULL DEFAULT ''`,
+	} {
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			if !strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
+				return fmt.Errorf("migrate image metadata schema: %w", err)
+			}
+		}
 	}
 	return nil
 }
@@ -424,7 +499,10 @@ func (m *Manager) lookupByDigest(ctx context.Context, digest string) (Record, bo
 			oci_cmd_json,
 			oci_env_json,
 			oci_workdir,
-			oci_user
+			oci_user,
+			oci_os,
+			oci_architecture,
+			oci_variant
 		FROM images
 		WHERE digest = ?
 	`, digest)
@@ -491,8 +569,11 @@ func (m *Manager) upsertRecord(ctx context.Context, record Record) error {
 			oci_cmd_json,
 			oci_env_json,
 			oci_workdir,
-			oci_user
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			oci_user,
+			oci_os,
+			oci_architecture,
+			oci_variant
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(digest) DO UPDATE SET
 			ref = excluded.ref,
 			rootfs_path = excluded.rootfs_path,
@@ -504,7 +585,10 @@ func (m *Manager) upsertRecord(ctx context.Context, record Record) error {
 			oci_cmd_json = excluded.oci_cmd_json,
 			oci_env_json = excluded.oci_env_json,
 			oci_workdir = excluded.oci_workdir,
-			oci_user = excluded.oci_user
+			oci_user = excluded.oci_user,
+			oci_os = excluded.oci_os,
+			oci_architecture = excluded.oci_architecture,
+			oci_variant = excluded.oci_variant
 	`,
 		record.Digest,
 		record.Ref,
@@ -518,6 +602,9 @@ func (m *Manager) upsertRecord(ctx context.Context, record Record) error {
 		envJSON,
 		record.OCIConfig.Workdir,
 		record.OCIConfig.User,
+		record.OCIConfig.OS,
+		record.OCIConfig.Architecture,
+		record.OCIConfig.Variant,
 	)
 	if err != nil {
 		return fmt.Errorf("upsert image metadata for %s: %w", record.Digest, err)
@@ -561,7 +648,10 @@ func queryRecordsBySelector(ctx context.Context, db *sql.DB, selector string) ([
 			oci_cmd_json,
 			oci_env_json,
 			oci_workdir,
-			oci_user
+			oci_user,
+			oci_os,
+			oci_architecture,
+			oci_variant
 		FROM images
 		WHERE ref = ?
 	`, selector)
@@ -598,7 +688,10 @@ func queryRecordByDigest(ctx context.Context, db *sql.DB, digest string) (Record
 			oci_cmd_json,
 			oci_env_json,
 			oci_workdir,
-			oci_user
+			oci_user,
+			oci_os,
+			oci_architecture,
+			oci_variant
 		FROM images
 		WHERE digest = ?
 	`, digest)
@@ -639,6 +732,9 @@ func scanRecord(s scanner) (Record, error) {
 		&envJSON,
 		&record.OCIConfig.Workdir,
 		&record.OCIConfig.User,
+		&record.OCIConfig.OS,
+		&record.OCIConfig.Architecture,
+		&record.OCIConfig.Variant,
 	); err != nil {
 		return Record{}, err
 	}

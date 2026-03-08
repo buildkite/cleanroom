@@ -2,7 +2,7 @@ package imagemgr
 
 import "testing"
 
-func TestLinuxPlatformForArch(t *testing.T) {
+func TestHostLinuxPlatformForGOARCH(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -21,7 +21,7 @@ func TestLinuxPlatformForArch(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := linuxPlatformForArch(tc.goArch)
+			got := HostLinuxPlatformForGOARCH(tc.goArch)
 			if got.OS != tc.wantOS {
 				t.Fatalf("unexpected OS: got %q want %q", got.OS, tc.wantOS)
 			}

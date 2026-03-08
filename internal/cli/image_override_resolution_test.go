@@ -106,6 +106,29 @@ func TestResolveReferenceForImageOverrideReturnsCombinedError(t *testing.T) {
 	}
 }
 
+func TestResolveReferenceForImageOverrideReturnsRemoteErrorOnlyForExplicitRegistryRef(t *testing.T) {
+	withImageOverrideResolversForTest(
+		t,
+		func(_ context.Context, _ string) (string, error) {
+			return "", errors.New("local missing")
+		},
+		func(_ context.Context, _ string) (string, error) {
+			return "", errors.New("remote unavailable")
+		},
+	)
+
+	_, err := resolveReferenceForImageOverride(context.Background(), "ghcr.io/buildkite/cleanroom-base/alpine:latest", true)
+	if err == nil {
+		t.Fatal("expected resolveReferenceForImageOverride to fail when local and remote resolution fail")
+	}
+	if !strings.Contains(err.Error(), "remote unavailable") {
+		t.Fatalf("expected remote error in returned message, got %v", err)
+	}
+	if strings.Contains(err.Error(), "local docker resolution failed") {
+		t.Fatalf("expected explicit registry refs to omit local docker error details, got %v", err)
+	}
+}
+
 func TestResolveReferenceForImageOverrideSkipsLocalForRemoteEndpoint(t *testing.T) {
 	localCalls := 0
 	remoteCalls := 0

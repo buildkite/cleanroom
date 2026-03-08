@@ -272,21 +272,34 @@ var (
 			resolved = defaultBumpRefSource
 		}
 
-		if parsed, err := ociref.ParseDigestReference(resolved); err == nil {
-			return parsed.Original, nil
-		}
-
-		tag, err := name.NewTag(resolved, name.WeakValidation)
+		ref, err := name.ParseReference(resolved, name.WeakValidation)
 		if err != nil {
 			return "", fmt.Errorf("parse image ref %q: %w", resolved, err)
 		}
-
-		desc, err := remote.Head(tag, remote.WithContext(ctx), remote.WithAuthFromKeychain(authn.DefaultKeychain))
+		img, err := remote.Image(
+			ref,
+			remote.WithContext(ctx),
+			remote.WithAuthFromKeychain(authn.DefaultKeychain),
+			remote.WithPlatform(imagemgr.HostLinuxPlatformForGOARCH(runtime.GOARCH)),
+		)
 		if err != nil {
 			return "", fmt.Errorf("resolve image digest for %q: %w", resolved, err)
 		}
 
-		return fmt.Sprintf("%s@%s", tag.Context().Name(), desc.Digest.String()), nil
+		cfg, err := img.ConfigFile()
+		if err != nil {
+			return "", fmt.Errorf("read image config for %q: %w", resolved, err)
+		}
+		if err := imagemgr.ValidateImagePlatformForHost(cfg.OS, cfg.Architecture, runtime.GOARCH); err != nil {
+			return "", fmt.Errorf("resolve image digest for %q: %w", resolved, err)
+		}
+
+		digest, err := img.Digest()
+		if err != nil {
+			return "", fmt.Errorf("resolve image digest for %q: %w", resolved, err)
+		}
+
+		return fmt.Sprintf("%s@%s", ref.Context().Name(), digest.String()), nil
 	}
 	importLocalDockerImageForOverrideFn = importLocalDockerImageForOverride
 	resolveReferenceForImageOverride    = func(ctx context.Context, source string, allowLocal bool) (string, error) {
@@ -303,6 +316,9 @@ var (
 		if err == nil {
 			return resolved, nil
 		}
+		if isExplicitRegistryReference(source) {
+			return "", err
+		}
 
 		return "", fmt.Errorf("%w; local docker resolution failed: %v", err, localErr)
 	}
@@ -317,6 +333,36 @@ var (
 	serveInstallSystemdUnitPath = "/etc/systemd/system/" + systemdServiceName
 	serveInstallLaunchdPath     = "/Library/LaunchDaemons/" + launchdServiceName + ".plist"
 )
+
+func isExplicitRegistryReference(raw string) bool {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return false
+	}
+	if parsed, err := ociref.ParseDigestReference(trimmed); err == nil {
+		return isRegistryHostPrefix(parsed.Repository)
+	}
+	namePart := trimmed
+	if at := strings.Index(namePart, "@"); at >= 0 {
+		namePart = namePart[:at]
+	}
+	if colon := strings.LastIndex(namePart, ":"); colon > strings.LastIndex(namePart, "/") {
+		namePart = namePart[:colon]
+	}
+	first := strings.TrimSpace(strings.SplitN(namePart, "/", 2)[0])
+	return isRegistryHostPrefix(first)
+}
+
+func isRegistryHostPrefix(component string) bool {
+	component = strings.TrimSpace(strings.ToLower(component))
+	if component == "" {
+		return false
+	}
+	if component == "localhost" {
+		return true
+	}
+	return strings.Contains(component, ".") || strings.Contains(component, ":")
+}
 
 func Run(args []string, version string) error {
 	cfg, cfgPath, err := runtimeconfig.Load()
