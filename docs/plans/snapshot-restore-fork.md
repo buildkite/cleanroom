@@ -795,77 +795,94 @@ Why this is phase 2:
 If we add this later, the user-visible API does not change. It only makes
 `fork` and `restore` faster on compatible hosts.
 
-## Implementation Slices
+## Implementation Status
 
-### Slice 1: API and metadata
+This section tracks what is already implemented and what remains. The current
+branch lands the first functional slice with a file-backed Firecracker
+implementation and a persisted snapshot metadata store. The later storage-driver
+and fleet-distribution work is still pending.
 
-- add `SnapshotService`
-- add `CreateSandbox --from-snapshot`
-- add `RestoreSandbox`
-- add checkpoint request state to the control plane
-- add durable snapshot metadata store
-- add CLI commands
+### Implemented in this branch
 
-Definition of done:
+- [done] `SnapshotService` with create, get, list, and delete
+- [done] `CreateSandbox` from `snapshot_id`
+- [done] `RestoreSandbox`
+- [done] backend-neutral capability flags:
+  - `sandbox.snapshot`
+  - `sandbox.restore`
+  - `sandbox.fork`
+- [done] persisted snapshot metadata store in SQLite
+- [done] CLI commands:
+  - `cleanroom snapshot create|get|list|delete`
+  - `cleanroom sandbox create --from-snapshot`
+  - `cleanroom sandbox restore --snapshot`
+- [done] Firecracker adapter support for snapshot, fork, and restore
+- [done] control-plane concurrency checks:
+  - no snapshot or restore during active exec
+  - no snapshot or restore during file download
+  - create-from-snapshot derives backend and policy from snapshot metadata
+- [done] tests covering:
+  - snapshot metadata store
+  - control service snapshot lifecycle
+  - Firecracker snapshot/fork/restore adapter flow
 
-- snapshots can be created, listed, and deleted at the control-plane level
-- sandboxes can be created from snapshot metadata, even if only a stub backend
-  exists initially
+### Remaining implementation list
 
-### Slice 2: volume store abstraction
+#### 1. Replace file-backed Firecracker storage with a volume-store abstraction
 
-- add `internal/volumestore`
-- define driver interface
-- add `zfs` driver
-- add runtime config loading and doctor checks for ZFS availability
-
-Definition of done:
-
-- the volume store can seed base volumes, create writable clones, snapshot
-  volumes, and destroy them
-
-### Slice 3: Firecracker from volume
-
-- replace direct persistent rootfs copy with volume-backed rootfs when enabled
-- keep current copy/reflink behavior as fallback
-
-Definition of done:
-
-- a normal persistent Firecracker sandbox boots from a cloned ZFS volume
-
-### Slice 4: snapshot, fork, restore
-
-- add guest-agent cooperative quiesce plus pause/resume flow
-- add guest checkpoint request plumbing
-- add snapshot create in the adapter
-- add provision-from-snapshot and restore in the adapter
-- gate concurrent operations correctly in control service
-
-Definition of done:
-
-- one sandbox can create a snapshot
-- a guest workload can request a checkpoint and have it materialized once the
-  sandbox is safe
-- a second sandbox can fork from it
-- the original sandbox can restore back to it
-
-### Slice 5: retention and ergonomics
-
-- snapshot delete safety checks
-- labels or names
-- human-friendly CLI output
-- CI examples and docs
+- [todo] add `internal/volumestore`
+- [todo] define driver interface for:
+  - seed base volume
+  - clone writable volume
+  - snapshot volume
+  - destroy volume
+  - destroy snapshot
+- [todo] add `zfs` driver
+- [todo] add runtime config loading for Firecracker snapshot storage
+- [todo] add doctor checks for `zfs` availability and configuration
 
 Definition of done:
 
-- operators can manage snapshot lifecycle without orphaning hidden volumes
+- Firecracker persistent sandboxes can boot from a managed volume instead of a
+  copied rootfs image
+- snapshot, restore, and fork use the volume driver instead of direct file
+  cloning
 
-### Slice 6: darwin-vz disk-state support
+#### 2. Tighten Firecracker snapshot semantics
 
-- add persistent `darwin-vz` sandboxes
-- add `apfs` volume-store driver
-- add `darwin-vz` snapshot, restore, and fork using cloned ext4 image files
-- keep API and capability semantics identical to Firecracker
+- [todo] replace host process `SIGSTOP`/`SIGCONT` with an explicit pause/resume
+  or equivalent quiesce strategy if needed
+- [todo] add guest-agent cooperative quiesce hook before snapshot
+- [todo] add guest checkpoint request plumbing
+- [todo] define behavior for pending checkpoint requests and safe-point
+  materialization
+
+Definition of done:
+
+- snapshot creation is explicitly guest-cooperative and host-authoritative
+- checkpoint requests can be issued from inside the guest and materialized once
+  the sandbox is safe
+
+#### 3. Retention and ergonomics
+
+- [todo] snapshot delete safety checks
+- [done] advisory snapshot names
+- [done] human-friendly CLI output
+- [todo] CI examples and operational docs
+- [todo] decide whether to surface snapshot lineage in CLI/API
+
+Definition of done:
+
+- operators can manage snapshot lifecycle without orphaning hidden storage
+- the docs show the intended CI bootstrap and fan-out flow
+
+#### 4. Add `darwin-vz` disk-state support
+
+- [todo] add persistent `darwin-vz` sandboxes
+- [todo] add `apfs` volume-store driver
+- [todo] add `darwin-vz` snapshot, restore, and fork using cloned ext4 image
+  files
+- [todo] keep API and capability semantics identical to Firecracker
 
 Definition of done:
 
@@ -874,33 +891,33 @@ Definition of done:
 - the same CLI and API calls work on both backends, with backend-specific
   runtime config
 
-### Slice 7: optional boot accelerator
+#### 5. Optional boot accelerator
 
-- investigate a mount-namespace or jailer-based path virtualization layer
-- capture boot-ready Firecracker snapshots
-- resume forks from a boot checkpoint when compatible
+- [todo] investigate a mount-namespace or jailer-based path virtualization layer
+- [todo] capture boot-ready Firecracker snapshots
+- [todo] resume forks from a boot checkpoint when compatible
 
 Definition of done:
 
 - fork latency is reduced further without changing semantics
 
-### Slice 8: portable snapshot distribution
+#### 6. Portable snapshot distribution
 
-- define OCI artifact layout for exported snapshots
-- add export and import commands
-- attach optional hotset or prefetch metadata
-- test registry storage and digest-addressed retrieval
+- [todo] define OCI artifact layout for exported snapshots
+- [todo] add export and import commands
+- [todo] attach optional hotset or prefetch metadata
+- [todo] test registry storage and digest-addressed retrieval
 
 Definition of done:
 
 - snapshots can move between hosts through a standard OCI registry without
   changing local execution semantics
 
-### Slice 9: fleet-scale fan-out
+#### 7. Fleet-scale fan-out
 
-- evaluate chunked payload formats for exported snapshots
-- integrate peer-to-peer or mirror-assisted distribution
-- add preheat support for popular snapshots
+- [todo] evaluate chunked payload formats for exported snapshots
+- [todo] integrate peer-to-peer or mirror-assisted distribution
+- [todo] add preheat support for popular snapshots
 
 Definition of done:
 

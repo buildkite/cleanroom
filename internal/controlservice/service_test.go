@@ -14,21 +14,34 @@ import (
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
+	"github.com/buildkite/cleanroom/internal/snapshotstore"
 	"go.jetify.com/typeid"
 )
 
 type stubAdapter struct {
-	result         *backend.RunResult
-	runFn          func(context.Context, backend.RunRequest) (*backend.RunResult, error)
-	runStreamFn    func(context.Context, backend.RunRequest, backend.OutputStream) (*backend.RunResult, error)
-	provisionFn    func(context.Context, backend.ProvisionRequest) error
-	terminateFn    func(context.Context, string) error
-	downloadFn     func(context.Context, string, string, int64) ([]byte, error)
-	req            backend.RunRequest
-	provisionReq   backend.ProvisionRequest
-	runCalls       int
-	provisionCalls int
-	terminateCalls int
+	result                     *backend.RunResult
+	runFn                      func(context.Context, backend.RunRequest) (*backend.RunResult, error)
+	runStreamFn                func(context.Context, backend.RunRequest, backend.OutputStream) (*backend.RunResult, error)
+	provisionFn                func(context.Context, backend.ProvisionRequest) error
+	provisionFromSnapshotFn    func(context.Context, backend.ProvisionFromSnapshotRequest) error
+	createSnapshotFn           func(context.Context, backend.SnapshotRequest) (*backend.SnapshotResult, error)
+	restoreFn                  func(context.Context, backend.RestoreRequest) error
+	deleteSnapshotFn           func(context.Context, backend.DeleteSnapshotRequest) error
+	terminateFn                func(context.Context, string) error
+	downloadFn                 func(context.Context, string, string, int64) ([]byte, error)
+	req                        backend.RunRequest
+	provisionReq               backend.ProvisionRequest
+	provisionFromSnapshotReq   backend.ProvisionFromSnapshotRequest
+	createSnapshotReq          backend.SnapshotRequest
+	restoreReq                 backend.RestoreRequest
+	deleteSnapshotReq          backend.DeleteSnapshotRequest
+	runCalls                   int
+	provisionCalls             int
+	provisionFromSnapshotCalls int
+	createSnapshotCalls        int
+	restoreCalls               int
+	deleteSnapshotCalls        int
+	terminateCalls             int
 }
 
 func (s *stubAdapter) Name() string { return "stub" }
@@ -102,6 +115,42 @@ func (s *stubAdapter) RunInSandbox(ctx context.Context, req backend.RunRequest, 
 	return s.RunStream(ctx, req, stream)
 }
 
+func (s *stubAdapter) CreateSnapshot(ctx context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
+	s.createSnapshotReq = req
+	s.createSnapshotCalls++
+	if s.createSnapshotFn != nil {
+		return s.createSnapshotFn(ctx, req)
+	}
+	return &backend.SnapshotResult{StorageRef: "/tmp/snapshot.ext4"}, nil
+}
+
+func (s *stubAdapter) ProvisionSandboxFromSnapshot(ctx context.Context, req backend.ProvisionFromSnapshotRequest) error {
+	s.provisionFromSnapshotReq = req
+	s.provisionFromSnapshotCalls++
+	if s.provisionFromSnapshotFn != nil {
+		return s.provisionFromSnapshotFn(ctx, req)
+	}
+	return nil
+}
+
+func (s *stubAdapter) RestoreSandbox(ctx context.Context, req backend.RestoreRequest) error {
+	s.restoreReq = req
+	s.restoreCalls++
+	if s.restoreFn != nil {
+		return s.restoreFn(ctx, req)
+	}
+	return nil
+}
+
+func (s *stubAdapter) DeleteSnapshot(ctx context.Context, req backend.DeleteSnapshotRequest) error {
+	s.deleteSnapshotReq = req
+	s.deleteSnapshotCalls++
+	if s.deleteSnapshotFn != nil {
+		return s.deleteSnapshotFn(ctx, req)
+	}
+	return nil
+}
+
 func (s *stubAdapter) TerminateSandbox(ctx context.Context, sandboxID string) error {
 	s.terminateCalls++
 	if s.terminateFn != nil {
@@ -162,6 +211,10 @@ func testRepositoryPolicy() *cleanroomv1.Policy {
 }
 
 func newTestService(adapter backend.Adapter) *Service {
+	return newTestServiceWithSnapshotStore(adapter, nil)
+}
+
+func newTestServiceWithSnapshotStore(adapter backend.Adapter, store snapshotMetadataStore) *Service {
 	return &Service{
 		Loader: stubLoader{
 			compiled: &policy.CompiledPolicy{
@@ -175,7 +228,8 @@ func newTestService(adapter backend.Adapter) *Service {
 		Config: runtimeconfig.Config{
 			DefaultBackend: "firecracker",
 		},
-		Backends: map[string]backend.Adapter{"firecracker": adapter},
+		Backends:      map[string]backend.Adapter{"firecracker": adapter},
+		SnapshotStore: store,
 	}
 }
 
@@ -186,6 +240,49 @@ func testRepositoryCheckoutProto() *cleanroomv1.RepositoryCheckout {
 		DestinationDir: "/workspace",
 		Submodules:     true,
 	}
+}
+
+type memorySnapshotStore struct {
+	mu      sync.Mutex
+	records map[string]snapshotstore.Record
+}
+
+func newMemorySnapshotStore() *memorySnapshotStore {
+	return &memorySnapshotStore{records: map[string]snapshotstore.Record{}}
+}
+
+func (s *memorySnapshotStore) Create(_ context.Context, record snapshotstore.Record) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, exists := s.records[record.SnapshotID]; exists {
+		return errors.New("snapshot already exists")
+	}
+	s.records[record.SnapshotID] = record
+	return nil
+}
+
+func (s *memorySnapshotStore) Get(_ context.Context, snapshotID string) (snapshotstore.Record, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	record, ok := s.records[snapshotID]
+	return record, ok, nil
+}
+
+func (s *memorySnapshotStore) List(_ context.Context) ([]snapshotstore.Record, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	items := make([]snapshotstore.Record, 0, len(s.records))
+	for _, record := range s.records {
+		items = append(items, record)
+	}
+	return items, nil
+}
+
+func (s *memorySnapshotStore) Delete(_ context.Context, snapshotID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.records, snapshotID)
+	return nil
 }
 
 func TestExecutionStreamIncludesExitEvent(t *testing.T) {
@@ -263,6 +360,183 @@ func TestExecutionStreamIncludesExitEvent(t *testing.T) {
 	}
 	if got, want := exit.GetStatus(), cleanroomv1.ExecutionStatus_EXECUTION_STATUS_FAILED; got != want {
 		t.Fatalf("unexpected exit status: got %v want %v", got, want)
+	}
+}
+
+func TestCreateSnapshotPersistsMetadataAndDeletesIt(t *testing.T) {
+	store := newMemorySnapshotStore()
+	adapter := &stubAdapter{
+		createSnapshotFn: func(_ context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
+			return &backend.SnapshotResult{StorageRef: "/snapshots/" + req.SnapshotID + ".ext4"}, nil
+		},
+	}
+	svc := newTestServiceWithSnapshotStore(adapter, store)
+
+	createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandbox := createResp.GetSandbox()
+
+	snapshotResp, err := svc.CreateSnapshot(context.Background(), &cleanroomv1.CreateSnapshotRequest{
+		SandboxId: sandbox.GetSandboxId(),
+		Name:      "golden",
+	})
+	if err != nil {
+		t.Fatalf("CreateSnapshot returned error: %v", err)
+	}
+
+	snapshot := snapshotResp.GetSnapshot()
+	if snapshot == nil {
+		t.Fatal("expected snapshot in response")
+	}
+	if got, want := snapshot.GetSourceSandboxId(), sandbox.GetSandboxId(); got != want {
+		t.Fatalf("unexpected source sandbox id: got %q want %q", got, want)
+	}
+	if got, want := snapshot.GetBackend(), "firecracker"; got != want {
+		t.Fatalf("unexpected backend: got %q want %q", got, want)
+	}
+	if got, want := snapshot.GetName(), "golden"; got != want {
+		t.Fatalf("unexpected snapshot name: got %q want %q", got, want)
+	}
+	if got, want := adapter.createSnapshotReq.SandboxID, sandbox.GetSandboxId(); got != want {
+		t.Fatalf("unexpected create snapshot sandbox id: got %q want %q", got, want)
+	}
+	if adapter.createSnapshotCalls != 1 {
+		t.Fatalf("expected one snapshot create call, got %d", adapter.createSnapshotCalls)
+	}
+
+	getResp, err := svc.GetSnapshot(context.Background(), &cleanroomv1.GetSnapshotRequest{
+		SnapshotId: snapshot.GetSnapshotId(),
+	})
+	if err != nil {
+		t.Fatalf("GetSnapshot returned error: %v", err)
+	}
+	if got, want := getResp.GetSnapshot().GetSnapshotId(), snapshot.GetSnapshotId(); got != want {
+		t.Fatalf("unexpected snapshot id from get: got %q want %q", got, want)
+	}
+
+	listResp, err := svc.ListSnapshots(context.Background(), &cleanroomv1.ListSnapshotsRequest{})
+	if err != nil {
+		t.Fatalf("ListSnapshots returned error: %v", err)
+	}
+	if got, want := len(listResp.GetSnapshots()), 1; got != want {
+		t.Fatalf("unexpected snapshot count: got %d want %d", got, want)
+	}
+
+	deleteResp, err := svc.DeleteSnapshot(context.Background(), &cleanroomv1.DeleteSnapshotRequest{
+		SnapshotId: snapshot.GetSnapshotId(),
+	})
+	if err != nil {
+		t.Fatalf("DeleteSnapshot returned error: %v", err)
+	}
+	if !deleteResp.GetDeleted() {
+		t.Fatal("expected snapshot delete to report deleted=true")
+	}
+	if got, want := adapter.deleteSnapshotReq.SnapshotID, snapshot.GetSnapshotId(); got != want {
+		t.Fatalf("unexpected deleted snapshot id: got %q want %q", got, want)
+	}
+
+	listResp, err = svc.ListSnapshots(context.Background(), &cleanroomv1.ListSnapshotsRequest{})
+	if err != nil {
+		t.Fatalf("ListSnapshots after delete returned error: %v", err)
+	}
+	if got := len(listResp.GetSnapshots()); got != 0 {
+		t.Fatalf("expected no snapshots after delete, got %d", got)
+	}
+}
+
+func TestCreateSandboxFromSnapshotUsesStoredPolicyAndSnapshotBackend(t *testing.T) {
+	store := newMemorySnapshotStore()
+	adapter := &stubAdapter{
+		createSnapshotFn: func(_ context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
+			return &backend.SnapshotResult{StorageRef: "/snapshots/" + req.SnapshotID + ".ext4"}, nil
+		},
+	}
+	svc := newTestServiceWithSnapshotStore(adapter, store)
+
+	sourceResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sourceSandbox := sourceResp.GetSandbox()
+
+	snapshotResp, err := svc.CreateSnapshot(context.Background(), &cleanroomv1.CreateSnapshotRequest{
+		SandboxId: sourceSandbox.GetSandboxId(),
+		Name:      "deps",
+	})
+	if err != nil {
+		t.Fatalf("CreateSnapshot returned error: %v", err)
+	}
+
+	forkResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Source: &cleanroomv1.CreateSandboxRequest_SnapshotId{
+			SnapshotId: snapshotResp.GetSnapshot().GetSnapshotId(),
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox from snapshot returned error: %v", err)
+	}
+	if got, want := forkResp.GetSandbox().GetBackend(), "firecracker"; got != want {
+		t.Fatalf("unexpected backend: got %q want %q", got, want)
+	}
+	if got, want := adapter.provisionFromSnapshotReq.SnapshotID, snapshotResp.GetSnapshot().GetSnapshotId(); got != want {
+		t.Fatalf("unexpected provision snapshot id: got %q want %q", got, want)
+	}
+	if got, want := adapter.provisionFromSnapshotReq.StorageRef, "/snapshots/"+snapshotResp.GetSnapshot().GetSnapshotId()+".ext4"; got != want {
+		t.Fatalf("unexpected snapshot storage ref: got %q want %q", got, want)
+	}
+	if adapter.provisionFromSnapshotReq.Policy == nil {
+		t.Fatal("expected compiled policy on provision-from-snapshot request")
+	}
+	if got, want := adapter.provisionFromSnapshotReq.Policy.Hash, sourceSandbox.GetPolicyHash(); got != want {
+		t.Fatalf("unexpected policy hash: got %q want %q", got, want)
+	}
+}
+
+func TestRestoreSandboxUsesSnapshotMetadata(t *testing.T) {
+	store := newMemorySnapshotStore()
+	adapter := &stubAdapter{
+		createSnapshotFn: func(_ context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
+			return &backend.SnapshotResult{StorageRef: "/snapshots/" + req.SnapshotID + ".ext4"}, nil
+		},
+	}
+	svc := newTestServiceWithSnapshotStore(adapter, store)
+
+	createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandbox := createResp.GetSandbox()
+
+	snapshotResp, err := svc.CreateSnapshot(context.Background(), &cleanroomv1.CreateSnapshotRequest{
+		SandboxId: sandbox.GetSandboxId(),
+	})
+	if err != nil {
+		t.Fatalf("CreateSnapshot returned error: %v", err)
+	}
+
+	restoreResp, err := svc.RestoreSandbox(context.Background(), &cleanroomv1.RestoreSandboxRequest{
+		SandboxId:  sandbox.GetSandboxId(),
+		SnapshotId: snapshotResp.GetSnapshot().GetSnapshotId(),
+	})
+	if err != nil {
+		t.Fatalf("RestoreSandbox returned error: %v", err)
+	}
+	if got, want := restoreResp.GetSandbox().GetStatus(), cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY; got != want {
+		t.Fatalf("unexpected sandbox status after restore: got %v want %v", got, want)
+	}
+	if got, want := adapter.restoreReq.SandboxID, sandbox.GetSandboxId(); got != want {
+		t.Fatalf("unexpected restore sandbox id: got %q want %q", got, want)
+	}
+	if got, want := adapter.restoreReq.SnapshotID, snapshotResp.GetSnapshot().GetSnapshotId(); got != want {
+		t.Fatalf("unexpected restore snapshot id: got %q want %q", got, want)
+	}
+	if adapter.restoreReq.Policy == nil {
+		t.Fatal("expected compiled policy on restore request")
+	}
+	if got, want := adapter.restoreReq.Policy.Hash, sandbox.GetPolicyHash(); got != want {
+		t.Fatalf("unexpected restore policy hash: got %q want %q", got, want)
 	}
 }
 

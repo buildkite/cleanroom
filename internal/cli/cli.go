@@ -47,6 +47,7 @@ type CLI struct {
 	Policy  PolicyCommand  `cmd:"" help:"Policy commands"`
 	Config  ConfigCommand  `cmd:"" help:"Runtime config commands"`
 	Image   ImageCommand   `cmd:"" help:"Manage OCI image cache artifacts"`
+	Snapshot SnapshotCommand `cmd:"" help:"Manage snapshots"`
 	Create  CreateCommand  `cmd:"" help:"Create a sandbox"`
 	Exec    ExecCommand    `cmd:"" help:"Execute a command in a cleanroom backend"`
 	Console ConsoleCommand `cmd:"" help:"Attach an interactive console to a cleanroom execution"`
