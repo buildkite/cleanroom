@@ -53,10 +53,11 @@ import (
 const defaultBumpRefSource = "ghcr.io/buildkite/cleanroom-base/alpine:latest"
 
 const (
-	systemdServiceName      = "cleanroom.service"
-	launchdServiceName      = "com.buildkite.cleanroom"
-	defaultDaemonListen     = "unix://" + endpoint.DefaultSystemSocketPath
-	sandboxTerminateTimeout = 2 * time.Second
+	systemdServiceName       = "cleanroom.service"
+	launchdServiceName       = "com.buildkite.cleanroom"
+	defaultDaemonListen      = "unix://" + endpoint.DefaultSystemSocketPath
+	sandboxTerminateTimeout  = 2 * time.Second
+	interruptForceExitWindow = 1200 * time.Millisecond
 )
 
 type policyLoader interface {
@@ -1038,10 +1039,18 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 	defer stopSignals(signalCh)
 
 	var interruptCount atomic.Int32
+	var lastInterruptAt atomic.Int64
 	forceLocalExit := make(chan struct{})
 	var forceLocalExitOnce sync.Once
 	requestInterrupt := func(signal int32) {
-		if interruptCount.Add(1) == 1 {
+		now := time.Now()
+		last := time.Unix(0, lastInterruptAt.Load())
+		if !last.IsZero() && now.Sub(last) > interruptForceExitWindow {
+			interruptCount.Store(0)
+		}
+		count := interruptCount.Add(1)
+		lastInterruptAt.Store(now.UnixNano())
+		if count == 1 {
 			go func() {
 				_ = interactiveSession.SendSignal(signal)
 			}()
@@ -1095,17 +1104,23 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 			if n > 0 {
 				payload := append([]byte(nil), buf[:n]...)
 				if rawMode {
+					filtered := payload[:0]
 					for _, b := range payload {
 						if b == 0x03 {
 							requestInterrupt(2)
+							continue
 						}
+						filtered = append(filtered, b)
 					}
+					payload = filtered
 					if isForceLocalExit() {
 						return
 					}
 				}
-				if sendErr := interactiveSession.WriteStdin(payload); sendErr != nil {
-					return
+				if len(payload) > 0 {
+					if sendErr := interactiveSession.WriteStdin(payload); sendErr != nil {
+						return
+					}
 				}
 			}
 			if readErr != nil {

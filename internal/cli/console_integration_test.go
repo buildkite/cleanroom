@@ -194,6 +194,59 @@ func TestConsoleIntegrationSecondInterruptForcesLocalExitWhenExecutionIgnoresCan
 	}
 }
 
+func TestConsoleIntegrationSecondInterruptAfterWindowDoesNotForceLocalExit(t *testing.T) {
+	started := make(chan struct{}, 1)
+	releaseRun := make(chan struct{})
+	adapter := &integrationAdapter{
+		runStreamFn: func(_ context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+			if stream.OnAttach != nil {
+				stream.OnAttach(backend.AttachIO{WriteStdin: func(_ []byte) error { return nil }})
+			}
+			select {
+			case started <- struct{}{}:
+			default:
+			}
+			<-releaseRun
+			return &backend.RunResult{RunID: req.RunID, ExitCode: 0, Message: "released"}, nil
+		},
+	}
+
+	host, _ := startIntegrationServer(t, adapter)
+	signalCh := withTestSignalChannel(t)
+	cwd := t.TempDir()
+
+	done := make(chan execOutcome, 1)
+	go func() {
+		done <- runConsoleWithCapture(ConsoleCommand{
+			clientFlags: clientFlags{Host: host},
+			Chdir:       cwd,
+		}, "", runtimeContext{CWD: cwd, Loader: integrationLoader{}})
+	}()
+
+	_ = mustReceiveWithin(t, started, 2*time.Second, "timed out waiting for console execution to start")
+	signalCh <- os.Interrupt
+	time.Sleep(2*interruptForceExitWindow + 100*time.Millisecond)
+	signalCh <- os.Interrupt
+
+	select {
+	case outcome := <-done:
+		t.Fatalf("unexpected forced local exit after interrupt window elapsed: err=%v cause=%v", outcome.err, outcome.cause)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	close(releaseRun)
+	outcome := mustReceiveWithin(t, done, 2*time.Second, "timed out waiting for console execution to finish after release")
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err == nil {
+		t.Fatal("expected canceled exit after interrupt")
+	}
+	if got, want := ExitCode(outcome.err), 130; got != want {
+		t.Fatalf("unexpected console exit code: got %d want %d (err=%v)", got, want, outcome.err)
+	}
+}
+
 func TestConsoleRejectsUnsupportedHostScheme(t *testing.T) {
 	outcome := runConsoleWithCapture(ConsoleCommand{
 		clientFlags: clientFlags{Host: "tssvc://cleanroom"},
