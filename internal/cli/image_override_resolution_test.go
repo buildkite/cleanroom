@@ -3,8 +3,11 @@ package cli
 import (
 	"context"
 	"errors"
+	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/google/go-containerregistry/pkg/name"
 )
 
 func withImageOverrideResolversForTest(
@@ -15,11 +18,16 @@ func withImageOverrideResolversForTest(
 	t.Helper()
 	prevLocal := importLocalDockerImageForOverrideFn
 	prevRemote := resolveReferenceForPolicyUpdate
+	prevPlatform := resolveReferencePlatformConfig
 	importLocalDockerImageForOverrideFn = localFn
 	resolveReferenceForPolicyUpdate = remoteFn
+	resolveReferencePlatformConfig = func(_ context.Context, _ name.Reference) (string, string, error) {
+		return "linux", runtime.GOARCH, nil
+	}
 	t.Cleanup(func() {
 		importLocalDockerImageForOverrideFn = prevLocal
 		resolveReferenceForPolicyUpdate = prevRemote
+		resolveReferencePlatformConfig = prevPlatform
 	})
 }
 

@@ -304,13 +304,6 @@ var (
 		if err != nil {
 			return "", fmt.Errorf("resolve image digest for %q: %w", resolved, err)
 		}
-		imageOS, imageArch, err := resolveReferencePlatformConfig(ctx, ref)
-		if err != nil {
-			return "", fmt.Errorf("resolve image digest for %q: %w", resolved, err)
-		}
-		if err := imagemgr.ValidateImagePlatformForHost(imageOS, imageArch, runtime.GOARCH); err != nil {
-			return "", fmt.Errorf("resolve image digest for %q: %w", resolved, err)
-		}
 
 		return fmt.Sprintf("%s@%s", ref.Context().Name(), resolvedDigest), nil
 	}
@@ -327,6 +320,19 @@ var (
 
 		resolved, err := resolveReferenceForPolicyUpdate(ctx, source)
 		if err == nil {
+			if allowLocal {
+				resolvedRef, parseErr := name.ParseReference(resolved, name.WeakValidation)
+				if parseErr != nil {
+					return "", fmt.Errorf("resolve image digest for %q: %w", source, parseErr)
+				}
+				imageOS, imageArch, platformErr := resolveReferencePlatformConfig(ctx, resolvedRef)
+				if platformErr != nil {
+					return "", fmt.Errorf("resolve image digest for %q: %w", source, platformErr)
+				}
+				if err := imagemgr.ValidateImagePlatformForHost(imageOS, imageArch, runtime.GOARCH); err != nil {
+					return "", fmt.Errorf("resolve image digest for %q: %w", source, err)
+				}
+			}
 			return resolved, nil
 		}
 		if isExplicitRegistryReference(source) {
