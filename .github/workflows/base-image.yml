@@ -16,32 +16,25 @@ permissions:
   packages: write
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
+  build-alpine:
+    name: build (alpine, ${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    env:
+      IMAGE_NAME: alpine
+      DOCKERFILE: images/Dockerfile.base-image
+      REPOSITORY: ghcr.io/buildkite/cleanroom-base/alpine
     strategy:
       fail-fast: false
       matrix:
         include:
-          - image_name: alpine
-            dockerfile: images/Dockerfile.base-image
-            repository: ghcr.io/buildkite/cleanroom-base/alpine
-          - image_name: alpine-docker
-            dockerfile: images/Dockerfile.base-image-docker
-            repository: ghcr.io/buildkite/cleanroom-base/alpine-docker
-          - image_name: alpine-agents
-            dockerfile: images/Dockerfile.base-image-agents
-            repository: ghcr.io/buildkite/cleanroom-base/alpine-agents
+          - platform: linux/amd64
+            platform_key: linux-amd64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            platform_key: linux-arm64
+            runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
-
-      - name: Compute base image tag
-        id: meta
-        run: |
-          echo "base_tag=$(scripts/base-image-tag.sh '${{ matrix.image_name }}' '${{ matrix.dockerfile }}')" >> "$GITHUB_OUTPUT"
-
-      - uses: docker/setup-qemu-action@v3
-        with:
-          platforms: amd64,arm64
 
       - uses: docker/setup-buildx-action@v3
 
@@ -52,12 +45,300 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: docker/build-push-action@v6
+        id: build
         with:
           context: .
-          file: ${{ matrix.dockerfile }}
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: |
-            ${{ matrix.repository }}:latest
-            ${{ matrix.repository }}:${{ steps.meta.outputs.base_tag }}
-            ${{ matrix.repository }}:${{ github.sha }}
+          file: ${{ env.DOCKERFILE }}
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=${{ env.REPOSITORY }},push-by-digest=true,name-canonical=true,push=true
+
+      - name: Export image digest
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/digests"
+          digest="${{ steps.build.outputs.digest }}"
+          if [[ -z "$digest" ]]; then
+            echo "build digest missing" >&2
+            exit 1
+          fi
+          touch "$RUNNER_TEMP/digests/${digest#sha256:}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ env.IMAGE_NAME }}-${{ matrix.platform_key }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge-alpine:
+    name: merge (alpine)
+    runs-on: ubuntu-24.04
+    needs: build-alpine
+    env:
+      IMAGE_NAME: alpine
+      DOCKERFILE: images/Dockerfile.base-image
+      REPOSITORY: ghcr.io/buildkite/cleanroom-base/alpine
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute base image tag
+        id: meta
+        run: |
+          echo "base_tag=$(scripts/base-image-tag.sh '${{ env.IMAGE_NAME }}' '${{ env.DOCKERFILE }}')" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: digests-${{ env.IMAGE_NAME }}-*
+          path: ${{ runner.temp }}/digests
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create manifest list
+        working-directory: ${{ runner.temp }}/digests
+        env:
+          BASE_TAG: ${{ steps.meta.outputs.base_tag }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          digests=(*)
+          if [[ ${#digests[@]} -eq 0 ]]; then
+            echo "no digests downloaded" >&2
+            exit 1
+          fi
+          refs=()
+          for digest in "${digests[@]}"; do
+            refs+=("${REPOSITORY}@sha256:${digest}")
+          done
+          docker buildx imagetools create \
+            -t "${REPOSITORY}:latest" \
+            -t "${REPOSITORY}:${BASE_TAG}" \
+            -t "${REPOSITORY}:${GITHUB_SHA}" \
+            "${refs[@]}"
+
+      - name: Inspect manifest list
+        run: docker buildx imagetools inspect "${REPOSITORY}:latest"
+
+  build-alpine-docker:
+    name: build (alpine-docker, ${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    env:
+      IMAGE_NAME: alpine-docker
+      DOCKERFILE: images/Dockerfile.base-image-docker
+      REPOSITORY: ghcr.io/buildkite/cleanroom-base/alpine-docker
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            platform_key: linux-amd64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            platform_key: linux-arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        id: build
+        with:
+          context: .
+          file: ${{ env.DOCKERFILE }}
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=${{ env.REPOSITORY }},push-by-digest=true,name-canonical=true,push=true
+
+      - name: Export image digest
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/digests"
+          digest="${{ steps.build.outputs.digest }}"
+          if [[ -z "$digest" ]]; then
+            echo "build digest missing" >&2
+            exit 1
+          fi
+          touch "$RUNNER_TEMP/digests/${digest#sha256:}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ env.IMAGE_NAME }}-${{ matrix.platform_key }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge-alpine-docker:
+    name: merge (alpine-docker)
+    runs-on: ubuntu-24.04
+    needs: build-alpine-docker
+    env:
+      IMAGE_NAME: alpine-docker
+      DOCKERFILE: images/Dockerfile.base-image-docker
+      REPOSITORY: ghcr.io/buildkite/cleanroom-base/alpine-docker
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute base image tag
+        id: meta
+        run: |
+          echo "base_tag=$(scripts/base-image-tag.sh '${{ env.IMAGE_NAME }}' '${{ env.DOCKERFILE }}')" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: digests-${{ env.IMAGE_NAME }}-*
+          path: ${{ runner.temp }}/digests
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create manifest list
+        working-directory: ${{ runner.temp }}/digests
+        env:
+          BASE_TAG: ${{ steps.meta.outputs.base_tag }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          digests=(*)
+          if [[ ${#digests[@]} -eq 0 ]]; then
+            echo "no digests downloaded" >&2
+            exit 1
+          fi
+          refs=()
+          for digest in "${digests[@]}"; do
+            refs+=("${REPOSITORY}@sha256:${digest}")
+          done
+          docker buildx imagetools create \
+            -t "${REPOSITORY}:latest" \
+            -t "${REPOSITORY}:${BASE_TAG}" \
+            -t "${REPOSITORY}:${GITHUB_SHA}" \
+            "${refs[@]}"
+
+      - name: Inspect manifest list
+        run: docker buildx imagetools inspect "${REPOSITORY}:latest"
+
+  build-alpine-agents:
+    name: build (alpine-agents, ${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    env:
+      IMAGE_NAME: alpine-agents
+      DOCKERFILE: images/Dockerfile.base-image-agents
+      REPOSITORY: ghcr.io/buildkite/cleanroom-base/alpine-agents
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            platform_key: linux-amd64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            platform_key: linux-arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        id: build
+        with:
+          context: .
+          file: ${{ env.DOCKERFILE }}
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=${{ env.REPOSITORY }},push-by-digest=true,name-canonical=true,push=true
+
+      - name: Export image digest
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/digests"
+          digest="${{ steps.build.outputs.digest }}"
+          if [[ -z "$digest" ]]; then
+            echo "build digest missing" >&2
+            exit 1
+          fi
+          touch "$RUNNER_TEMP/digests/${digest#sha256:}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ env.IMAGE_NAME }}-${{ matrix.platform_key }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge-alpine-agents:
+    name: merge (alpine-agents)
+    runs-on: ubuntu-24.04
+    needs: build-alpine-agents
+    env:
+      IMAGE_NAME: alpine-agents
+      DOCKERFILE: images/Dockerfile.base-image-agents
+      REPOSITORY: ghcr.io/buildkite/cleanroom-base/alpine-agents
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute base image tag
+        id: meta
+        run: |
+          echo "base_tag=$(scripts/base-image-tag.sh '${{ env.IMAGE_NAME }}' '${{ env.DOCKERFILE }}')" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: digests-${{ env.IMAGE_NAME }}-*
+          path: ${{ runner.temp }}/digests
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create manifest list
+        working-directory: ${{ runner.temp }}/digests
+        env:
+          BASE_TAG: ${{ steps.meta.outputs.base_tag }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          digests=(*)
+          if [[ ${#digests[@]} -eq 0 ]]; then
+            echo "no digests downloaded" >&2
+            exit 1
+          fi
+          refs=()
+          for digest in "${digests[@]}"; do
+            refs+=("${REPOSITORY}@sha256:${digest}")
+          done
+          docker buildx imagetools create \
+            -t "${REPOSITORY}:latest" \
+            -t "${REPOSITORY}:${BASE_TAG}" \
+            -t "${REPOSITORY}:${GITHUB_SHA}" \
+            "${refs[@]}"
+
+      - name: Inspect manifest list
+        run: docker buildx imagetools inspect "${REPOSITORY}:latest"
