@@ -100,6 +100,9 @@ const privilegedModeHelper = "helper"
 const defaultPrivilegedHelperPath = "/usr/local/sbin/cleanroom-root-helper"
 const defaultDownloadMaxBytes int64 = 10 * 1024 * 1024
 const snapshotSyncTimeoutSeconds = 10
+const networkCleanupTimeout = 5 * time.Second
+
+var tapDeleteRetryInterval = 100 * time.Millisecond
 
 var sendProcessSignal = func(proc *os.Process, sig syscall.Signal) error {
 	if proc == nil {
@@ -1892,6 +1895,7 @@ type iptablesForwardRule struct {
 }
 
 type ipLookupFunc func(ctx context.Context, host string) ([]net.IP, error)
+type interfaceLookupFunc func(name string) (*net.Interface, error)
 type rootCommandFunc func(ctx context.Context, args ...string) error
 type rootCommandBatchFunc func(ctx context.Context, commands [][]string) error
 
@@ -1903,20 +1907,15 @@ func setupHostNetwork(ctx context.Context, runID string, allow []policy.AllowRul
 }
 
 func setupHostNetworkWithDeps(ctx context.Context, runID string, allow []policy.AllowRule, gatewayPort int, lookup ipLookupFunc, runCommand rootCommandFunc, runBatchCommand rootCommandBatchFunc) (hostNetworkConfig, func(), error) {
+	return setupHostNetworkWithTapLookup(ctx, runID, allow, gatewayPort, lookup, net.InterfaceByName, runCommand, runBatchCommand)
+}
+
+func setupHostNetworkWithTapLookup(ctx context.Context, runID string, allow []policy.AllowRule, gatewayPort int, lookup ipLookupFunc, interfaceByName interfaceLookupFunc, runCommand rootCommandFunc, runBatchCommand rootCommandBatchFunc) (hostNetworkConfig, func(), error) {
 	tapName := tapNameFromRunID(runID)
 	hostIP, guestIP := hostGuestIPs(runID)
 	hostCIDR := hostIP + "/24"
 	guestCIDR := guestIP + "/32"
 	const dnsServer = "1.1.1.1"
-
-	if runBatchCommand == nil {
-		runBatchCommand = func(ctx context.Context, commands [][]string) error {
-			for _, args := range commands {
-				_ = runCommand(ctx, args...)
-			}
-			return nil
-		}
-	}
 
 	policyResolveStart := time.Now()
 	forwardRules, err := resolveForwardRulesWithLookup(ctx, allow, lookup)
@@ -1928,7 +1927,7 @@ func setupHostNetworkWithDeps(ctx context.Context, runID string, allow []policy.
 	setupRun := func(args ...string) error {
 		return runCommand(ctx, args...)
 	}
-	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), networkCleanupTimeout)
 	cleanupCmds := make([][]string, 0, 16)
 	cleanup := func() {
 		defer cleanupCancel()
@@ -1936,10 +1935,24 @@ func setupHostNetworkWithDeps(ctx context.Context, runID string, allow []policy.
 		for i := len(cleanupCmds) - 1; i >= 0; i-- {
 			reversed = append(reversed, cleanupCmds[i])
 		}
-		_ = runBatchCommand(cleanupCtx, reversed)
+		for _, args := range reversed {
+			if isTapDeleteCommand(args, tapName) {
+				_ = deleteTapDeviceWithRetry(cleanupCtx, tapName, tapDeleteRetryInterval, interfaceByName, runCommand)
+				continue
+			}
+			_ = runCommand(cleanupCtx, args...)
+		}
 	}
 	addCleanup := func(args ...string) {
 		cleanupCmds = append(cleanupCmds, append([]string(nil), args...))
+	}
+
+	staleTapCleanupCtx, staleTapCleanupCancel := context.WithTimeout(context.Background(), networkCleanupTimeout)
+	defer staleTapCleanupCancel()
+	if _, err := interfaceByName(tapName); err == nil {
+		if err := deleteTapDeviceWithRetry(staleTapCleanupCtx, tapName, tapDeleteRetryInterval, interfaceByName, runCommand); err != nil {
+			return hostNetworkConfig{}, func() {}, fmt.Errorf("remove stale tap device %s: %w", tapName, err)
+		}
 	}
 
 	if err := setupRun("ip", "tuntap", "add", "dev", tapName, "mode", "tap", "user", strconv.Itoa(os.Getuid())); err != nil {
@@ -2033,6 +2046,38 @@ func setupHostNetworkWithDeps(ctx context.Context, runID string, allow []policy.
 		GuestIP:         guestIP,
 		PolicyResolveMS: policyResolveMS,
 	}, cleanup, nil
+}
+
+func isTapDeleteCommand(args []string, tapName string) bool {
+	return len(args) == 4 && args[0] == "ip" && args[1] == "link" && args[2] == "del" && args[3] == tapName
+}
+
+func deleteTapDeviceWithRetry(ctx context.Context, tapName string, retryInterval time.Duration, interfaceByName interfaceLookupFunc, runCommand rootCommandFunc) error {
+	if strings.TrimSpace(tapName) == "" {
+		return nil
+	}
+	if retryInterval <= 0 {
+		retryInterval = time.Millisecond
+	}
+
+	ticker := time.NewTicker(retryInterval)
+	defer ticker.Stop()
+
+	for {
+		err := runCommand(ctx, "ip", "link", "del", tapName)
+		if err == nil {
+			return nil
+		}
+		if _, lookupErr := interfaceByName(tapName); lookupErr != nil {
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("delete tap device %s: %w", tapName, err)
+		case <-ticker.C:
+		}
+	}
 }
 
 func installForwardReturnPathRule(setupRun func(args ...string) error, tapName string) ([]string, error) {

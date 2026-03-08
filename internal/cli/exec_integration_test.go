@@ -23,13 +23,25 @@ import (
 	"github.com/buildkite/cleanroom/internal/interactivequic"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
+	"github.com/buildkite/cleanroom/internal/snapshotstore"
 )
 
 type integrationAdapter struct {
 	mu sync.Mutex
 
-	runFn       func(context.Context, backend.RunRequest) (*backend.RunResult, error)
-	runStreamFn func(context.Context, backend.RunRequest, backend.OutputStream) (*backend.RunResult, error)
+	runFn                    func(context.Context, backend.RunRequest) (*backend.RunResult, error)
+	runStreamFn              func(context.Context, backend.RunRequest, backend.OutputStream) (*backend.RunResult, error)
+	provisionFn              func(context.Context, backend.ProvisionRequest) error
+	provisionFromSnapshotFn  func(context.Context, backend.ProvisionFromSnapshotRequest) error
+	createSnapshotFn         func(context.Context, backend.SnapshotRequest) (*backend.SnapshotResult, error)
+	restoreFn                func(context.Context, backend.RestoreRequest) error
+	deleteSnapshotFn         func(context.Context, backend.DeleteSnapshotRequest) error
+	terminateFn              func(context.Context, string) error
+	provisionReq             backend.ProvisionRequest
+	provisionFromSnapshotReq backend.ProvisionFromSnapshotRequest
+	createSnapshotReq        backend.SnapshotRequest
+	restoreReq               backend.RestoreRequest
+	deleteSnapshotReq        backend.DeleteSnapshotRequest
 }
 
 func (a *integrationAdapter) Name() string { return "firecracker" }
@@ -64,6 +76,75 @@ func (a *integrationAdapter) RunStream(ctx context.Context, req backend.RunReque
 	return result, nil
 }
 
+func (a *integrationAdapter) ProvisionSandbox(ctx context.Context, req backend.ProvisionRequest) error {
+	a.mu.Lock()
+	a.provisionReq = req
+	fn := a.provisionFn
+	a.mu.Unlock()
+	if fn != nil {
+		return fn(ctx, req)
+	}
+	return nil
+}
+
+func (a *integrationAdapter) RunInSandbox(ctx context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+	return a.RunStream(ctx, req, stream)
+}
+
+func (a *integrationAdapter) CreateSnapshot(ctx context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
+	a.mu.Lock()
+	a.createSnapshotReq = req
+	fn := a.createSnapshotFn
+	a.mu.Unlock()
+	if fn != nil {
+		return fn(ctx, req)
+	}
+	return &backend.SnapshotResult{StorageRef: "/snapshots/" + req.SnapshotID + ".ext4"}, nil
+}
+
+func (a *integrationAdapter) ProvisionSandboxFromSnapshot(ctx context.Context, req backend.ProvisionFromSnapshotRequest) error {
+	a.mu.Lock()
+	a.provisionFromSnapshotReq = req
+	fn := a.provisionFromSnapshotFn
+	a.mu.Unlock()
+	if fn != nil {
+		return fn(ctx, req)
+	}
+	return nil
+}
+
+func (a *integrationAdapter) RestoreSandbox(ctx context.Context, req backend.RestoreRequest) error {
+	a.mu.Lock()
+	a.restoreReq = req
+	fn := a.restoreFn
+	a.mu.Unlock()
+	if fn != nil {
+		return fn(ctx, req)
+	}
+	return nil
+}
+
+func (a *integrationAdapter) DeleteSnapshot(ctx context.Context, req backend.DeleteSnapshotRequest) error {
+	a.mu.Lock()
+	a.deleteSnapshotReq = req
+	fn := a.deleteSnapshotFn
+	a.mu.Unlock()
+	if fn != nil {
+		return fn(ctx, req)
+	}
+	return nil
+}
+
+func (a *integrationAdapter) TerminateSandbox(ctx context.Context, sandboxID string) error {
+	a.mu.Lock()
+	fn := a.terminateFn
+	a.mu.Unlock()
+	if fn != nil {
+		return fn(ctx, sandboxID)
+	}
+	return nil
+}
+
 type integrationLoader struct{}
 
 func (integrationLoader) LoadAndCompile(_ string) (*policy.CompiledPolicy, string, error) {
@@ -91,11 +172,19 @@ type execOutcome struct {
 func startIntegrationServer(t *testing.T, adapter backend.Adapter) (string, *controlservice.Service) {
 	t.Helper()
 
+	store, err := snapshotstore.New(snapshotstore.Options{
+		MetadataDBPath: filepath.Join(t.TempDir(), "snapshots.db"),
+	})
+	if err != nil {
+		t.Fatalf("create snapshot store: %v", err)
+	}
+
 	svc := &controlservice.Service{
 		Loader: integrationLoader{},
 		Config: runtimeconfig.Config{
 			DefaultBackend: "firecracker",
 		},
+		SnapshotStore: store,
 		Backends: map[string]backend.Adapter{
 			"firecracker": adapter,
 		},
