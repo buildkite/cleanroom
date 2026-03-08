@@ -1051,9 +1051,7 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 		count := interruptCount.Add(1)
 		lastInterruptAt.Store(now.UnixNano())
 		if count == 1 {
-			go func() {
-				_ = interactiveSession.SendSignal(signal)
-			}()
+			_ = interactiveSession.SendSignal(signal)
 			return
 		}
 		forceLocalExitOnce.Do(func() {
