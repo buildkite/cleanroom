@@ -10,7 +10,7 @@ Workloads run in a Linux microVM (`firecracker` on Linux, `darwin-vz` on macOS).
 ## Filesystem persistence
 
 - `firecracker`: rootfs writes persist across executions within a sandbox and are discarded on sandbox termination. Rootfs copy uses clone/reflink when available, with copy fallback.
-- `darwin-vz`: each command runs in a fresh VM with a fresh rootfs copy. Writes are discarded after each run.
+- `darwin-vz`: rootfs writes persist across executions within a sandbox and are discarded on sandbox termination.
 
 ## Observability
 

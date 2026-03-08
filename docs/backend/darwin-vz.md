@@ -18,16 +18,16 @@ Implemented:
 - helper-managed VM lifecycle (`StartVM` / `StopVM`)
 - managed kernel fallback when `kernel_image` is unset or missing
 - rootfs derivation from `sandbox.image.ref` when `rootfs` is unset or missing
+- persistent sandboxes across multiple executions
 - doctor checks for helper availability and entitlement status
 
 Not implemented:
 
 - egress allowlist filtering for `sandbox.network.allow`
-- persistent `darwin-vz` sandboxes across multiple executions
 
 ## Process and Transport Model
 
-Each launched execution starts a dedicated helper process.
+Each provisioned sandbox starts a dedicated helper process and VM that are reused across executions until sandbox termination.
 
 Control plane:
 
@@ -42,19 +42,19 @@ Data plane:
 
 High-level flow:
 
-1. Go resolves kernel and rootfs paths.
-2. Go starts `cleanroom-darwin-vz --socket <run_dir>/vz-helper.sock`.
+1. Go resolves kernel and rootfs paths during sandbox provisioning.
+2. Go starts `cleanroom-darwin-vz --socket <sandbox_run_dir>/vz-helper.sock`.
 3. Go sends `StartVM`.
-4. Helper starts VM and binds proxy socket.
-5. Go dials proxy socket and runs normal `vsockexec` request/stream protocol.
-6. Go sends `StopVM` during teardown.
+4. Helper starts VM and binds a long-lived proxy socket.
+5. Each execution dials the proxy socket and runs normal `vsockexec` request/stream protocol.
+6. Go sends `StopVM` during sandbox teardown.
 
 ## Helper Request Schema
 
 `StartVM` request fields:
 
 - `kernel_path` absolute path to Linux kernel
-- `rootfs_path` absolute path to per-run ext4 rootfs copy
+- `rootfs_path` absolute path to sandbox-scoped ext4 rootfs copy
 - `vcpus`, `memory_mib`, `guest_port`, `launch_seconds`
 - `run_dir`
 - `proxy_socket_path`
@@ -84,7 +84,7 @@ Rootfs:
 - if configured rootfs exists, use it
 - otherwise derive rootfs from `sandbox.image.ref` using image manager
 - inject guest runtime (`cleanroom-guest-agent` and `/sbin/cleanroom-init`) into a prepared cached rootfs image
-- create a per-run copy (`rootfs-ephemeral.ext4`) and attach it read-write to the VM
+- create a per-sandbox copy (`rootfs-persistent.ext4`) and attach it read-write to the VM
 
 Host tools required for derivation/injection:
 
@@ -112,7 +112,7 @@ Backends now expose a machine-readable capability map (visible in `cleanroom doc
 Current `darwin-vz` capability values:
 
 - `exec.streaming=true`
-- `sandbox.persistent=false`
+- `sandbox.persistent=true`
 - `sandbox.file_download=false`
 - `network.default_deny=true`
 - `network.allowlist_egress=false`
@@ -143,8 +143,36 @@ The helper path is resolved in this order:
 
 If missing, runtime fails with an actionable error.
 
+## Testing
+
+Fast path:
+
+- `mise exec -- go test ./internal/backend/darwinvz`
+- `mise exec -- go test ./...`
+
+Real VM persistence e2e:
+
+1. Build the signed helper: `mise run build:darwin`
+2. Ensure the linux guest agent is installed or otherwise discoverable.
+3. If you are not providing `CLEANROOM_DARWIN_VZ_E2E_ROOTFS`, install `e2fsprogs` on macOS so `mkfs.ext4` and `debugfs` are available.
+4. Run the opt-in test:
+
+```bash
+CLEANROOM_DARWIN_VZ_E2E=1 \
+CLEANROOM_DARWIN_VZ_HELPER="$PWD/dist/cleanroom-darwin-vz" \
+CLEANROOM_DARWIN_VZ_E2E_IMAGE_REF="docker.io/library/alpine@sha256:a4f4213abb84c497377b8544c81b3564f313746700372ec4fe84653e4fb03805" \
+mise exec -- go test ./internal/backend/darwinvz -run TestPersistentSandboxE2E -v
+```
+
+Supported e2e overrides:
+
+- `CLEANROOM_DARWIN_VZ_E2E_IMAGE_REF` selects the sandbox image ref used for rootfs derivation.
+- `CLEANROOM_DARWIN_VZ_E2E_KERNEL_IMAGE` forces a specific kernel path instead of the managed kernel asset.
+- `CLEANROOM_DARWIN_VZ_E2E_ROOTFS` points at a prebuilt ext4 rootfs and skips the host `e2fsprogs` requirement.
+
+The e2e test provisions one sandbox, runs two commands against it, asserts that filesystem writes survive across executions, then terminates the sandbox and verifies runtime cleanup.
+
 ## Limitations
 
 - no allowlist egress filtering yet
-- per-run helper/VM lifecycle only (no long-lived helper daemon)
-- no cross-execution mutable sandbox state on `darwin-vz`
+- no sandbox file download support yet

@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -27,6 +28,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/hosttools"
 	"github.com/buildkite/cleanroom/internal/imagemgr"
 	"github.com/buildkite/cleanroom/internal/paths"
+	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/vsockexec"
 	"github.com/charmbracelet/log"
 )
@@ -48,6 +50,12 @@ type Adapter struct {
 
 	runtimeImageMu sync.Mutex
 
+	sandboxMu          sync.Mutex
+	sandboxes          map[string]*sandboxInstance
+	provisioning       map[string]struct{}
+	launchSandboxVMFn  func(context.Context, string, *policy.CompiledPolicy, backend.FirecrackerConfig) (*sandboxInstance, error)
+	executeInSandboxFn func(context.Context, context.Context, *sandboxInstance, backend.RunRequest, backend.OutputStream) (*backend.RunResult, error)
+
 	ensurePreparedRootFSFn func(context.Context, string) (preparedRootFS, error)
 
 	GatewayRegistry gatewayRegistry
@@ -66,6 +74,25 @@ type preparedRootFS struct {
 	Digest string
 	Path   string
 	Hit    bool
+}
+
+type sandboxInstance struct {
+	SandboxID       string
+	RunDir          string
+	ConfigPath      string
+	ProxySocketPath string
+	GuestPort       uint32
+	Policy          *policy.CompiledPolicy
+	ImageRef        string
+	ImageDigest     string
+	CommandTimeout  int64
+	Helper          *helperSession
+	VMID            string
+	vmRootFSPath    string
+	exitedCh        chan struct{}
+	exitMu          sync.RWMutex
+	exitErr         error
+	exitReady       bool
 }
 
 const preparedRuntimeRootFSVersion = "v8-darwin-vz"
@@ -229,6 +256,139 @@ func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.Run
 
 func (a *Adapter) RunStream(ctx context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
 	return a.run(ctx, req, stream)
+}
+
+func (a *Adapter) ProvisionSandbox(ctx context.Context, req backend.ProvisionRequest) error {
+	sandboxID := strings.TrimSpace(req.SandboxID)
+	if sandboxID == "" {
+		return errors.New("missing sandbox_id")
+	}
+	if req.Policy == nil {
+		return errors.New("missing compiled policy")
+	}
+
+	a.sandboxMu.Lock()
+	if a.sandboxes == nil {
+		a.sandboxes = map[string]*sandboxInstance{}
+	}
+	if a.provisioning == nil {
+		a.provisioning = map[string]struct{}{}
+	}
+	if _, exists := a.sandboxes[sandboxID]; exists {
+		a.sandboxMu.Unlock()
+		return fmt.Errorf("sandbox %q already provisioned", sandboxID)
+	}
+	if _, exists := a.provisioning[sandboxID]; exists {
+		a.sandboxMu.Unlock()
+		return fmt.Errorf("sandbox %q is already provisioning", sandboxID)
+	}
+	a.provisioning[sandboxID] = struct{}{}
+	a.sandboxMu.Unlock()
+
+	launch := a.launchSandboxVMFn
+	if launch == nil {
+		launch = a.launchSandboxVM
+	}
+
+	instance, err := launch(ctx, sandboxID, req.Policy, req.FirecrackerConfig)
+	if err != nil {
+		a.sandboxMu.Lock()
+		delete(a.provisioning, sandboxID)
+		a.sandboxMu.Unlock()
+		return err
+	}
+
+	a.sandboxMu.Lock()
+	defer a.sandboxMu.Unlock()
+	delete(a.provisioning, sandboxID)
+	if _, exists := a.sandboxes[sandboxID]; exists {
+		instance.shutdown()
+		return fmt.Errorf("sandbox %q already provisioned", sandboxID)
+	}
+	a.sandboxes[sandboxID] = instance
+	return nil
+}
+
+func (a *Adapter) RunInSandbox(ctx context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+	sandboxID := strings.TrimSpace(req.SandboxID)
+	if sandboxID == "" {
+		return nil, errors.New("missing sandbox_id")
+	}
+	if len(req.Command) == 0 {
+		return nil, errors.New("missing command")
+	}
+	if strings.TrimSpace(req.RunID) == "" {
+		return nil, errors.New("missing run_id")
+	}
+
+	a.sandboxMu.Lock()
+	instance, ok := a.sandboxes[sandboxID]
+	a.sandboxMu.Unlock()
+	if !ok {
+		return nil, fmt.Errorf("unknown sandbox %q", sandboxID)
+	}
+	if err := instance.exitedErrOrNil(); err != nil {
+		return nil, fmt.Errorf("sandbox %q is not running: %w", sandboxID, err)
+	}
+
+	if req.Policy == nil {
+		req.Policy = instance.Policy
+	}
+	if req.Policy == nil {
+		return nil, errors.New("missing compiled policy")
+	}
+	if _, policyErr := evaluateNetworkPolicy(req.Policy.NetworkDefault, len(req.Policy.Allow)); policyErr != nil {
+		return nil, policyErr
+	}
+
+	runDir := strings.TrimSpace(req.RunDir)
+	if runDir == "" {
+		if baseDir, err := paths.RunBaseDir(); err == nil {
+			runDir = filepath.Join(baseDir, req.RunID)
+		}
+	}
+	if runDir != "" {
+		if err := os.MkdirAll(runDir, 0o755); err != nil {
+			return nil, fmt.Errorf("create run directory: %w", err)
+		}
+	}
+	req.RunDir = runDir
+
+	connectSeconds := req.LaunchSeconds
+	if connectSeconds <= 0 {
+		connectSeconds = instance.CommandTimeout
+	}
+	if connectSeconds <= 0 {
+		connectSeconds = 30
+	}
+	bootCtx, cancel := context.WithTimeout(ctx, time.Duration(connectSeconds)*time.Second)
+	defer cancel()
+
+	executeInSandbox := a.executeInSandboxFn
+	if executeInSandbox == nil {
+		executeInSandbox = a.executeInSandbox
+	}
+	return executeInSandbox(bootCtx, ctx, instance, req, stream)
+}
+
+func (a *Adapter) TerminateSandbox(_ context.Context, sandboxID string) error {
+	sandboxID = strings.TrimSpace(sandboxID)
+	if sandboxID == "" {
+		return errors.New("missing sandbox_id")
+	}
+
+	a.sandboxMu.Lock()
+	instance, ok := a.sandboxes[sandboxID]
+	if ok {
+		delete(a.sandboxes, sandboxID)
+	}
+	a.sandboxMu.Unlock()
+	if !ok {
+		return nil
+	}
+
+	instance.shutdown()
+	return nil
 }
 
 func (a *Adapter) Doctor(_ context.Context, req backend.DoctorRequest) (*backend.DoctorReport, error) {
@@ -660,6 +820,438 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 		Stdout:      guestRes.Stdout,
 		Stderr:      stderrPrefix + guestRes.Stderr,
 	}, nil
+}
+
+func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compiled *policy.CompiledPolicy, cfg backend.FirecrackerConfig) (*sandboxInstance, error) {
+	if compiled == nil {
+		return nil, errors.New("missing compiled policy")
+	}
+	if _, policyErr := evaluateNetworkPolicy(compiled.NetworkDefault, len(compiled.Allow)); policyErr != nil {
+		return nil, policyErr
+	}
+	if runtime.GOOS != "darwin" {
+		return nil, fmt.Errorf("darwin-vz backend is darwin-only, current OS is %s", runtime.GOOS)
+	}
+
+	if cfg.VCPUs <= 0 {
+		cfg.VCPUs = 1
+	}
+	if cfg.MemoryMiB <= 0 {
+		cfg.MemoryMiB = 512
+	}
+	if cfg.GuestPort == 0 {
+		cfg.GuestPort = vsockexec.DefaultPort
+	}
+	if cfg.LaunchSeconds <= 0 {
+		cfg.LaunchSeconds = 30
+	}
+
+	kernelPath, _, err := a.resolveKernelPath(ctx, cfg.KernelImagePath)
+	if err != nil {
+		return nil, err
+	}
+	rootFSPath, imageRef, imageDigest, _, err := a.resolveRootFSPath(ctx, backend.RunRequest{
+		Policy:            compiled,
+		FirecrackerConfig: cfg,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	runBaseDir, err := sandboxRuntimeBaseDir()
+	if err != nil {
+		return nil, fmt.Errorf("resolve sandbox runtime base directory: %w", err)
+	}
+	runDir := filepath.Join(runBaseDir, sandboxID)
+	cleanupRunDir := true
+	defer func() {
+		if cleanupRunDir {
+			_ = os.RemoveAll(runDir)
+		}
+	}()
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		return nil, fmt.Errorf("create sandbox runtime directory: %w", err)
+	}
+
+	rootFSPath, err = filepath.Abs(rootFSPath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve rootfs path: %w", err)
+	}
+	if _, err := os.Stat(rootFSPath); err != nil {
+		return nil, fmt.Errorf("rootfs %s: %w", rootFSPath, err)
+	}
+
+	vmRootFSPath := filepath.Join(runDir, "rootfs-persistent.ext4")
+	if err := copyFile(rootFSPath, vmRootFSPath); err != nil {
+		return nil, fmt.Errorf("prepare persistent rootfs: %w", err)
+	}
+
+	guestInitPath, _ := guestInitExecutableForRootFS(vmRootFSPath)
+	bootArgs := fmt.Sprintf(
+		"console=hvc0 root=/dev/vda rw init=%s cleanroom_guest_port=%d %s",
+		guestInitPath,
+		cfg.GuestPort,
+		dockerServiceBootArgs(compiled, cfg),
+	)
+	consolePath := filepath.Join(runDir, "vm.console.log")
+
+	configPath := filepath.Join(runDir, "darwin-vz-config.json")
+	if err := writeJSON(configPath, map[string]any{
+		"backend":      a.Name(),
+		"kernel_image": kernelPath,
+		"rootfs":       vmRootFSPath,
+		"vcpus":        cfg.VCPUs,
+		"memory_mib":   cfg.MemoryMiB,
+		"guest_port":   cfg.GuestPort,
+		"launch_secs":  cfg.LaunchSeconds,
+		"boot_args":    bootArgs,
+	}); err != nil {
+		return nil, err
+	}
+
+	helper, err := startHelperSession(ctx, runDir, cfg.LaunchSeconds)
+	if err != nil {
+		return nil, fmt.Errorf("start darwin-vz helper: %w", err)
+	}
+	helperNeedsClose := true
+	defer func() {
+		if helperNeedsClose {
+			_ = helper.close()
+		}
+	}()
+
+	proxySocketPath := filepath.Join(runDir, helperProxySocketName)
+	if err := ensureUnixSocketPathFits(proxySocketPath); err != nil {
+		return nil, fmt.Errorf("proxy socket path %q is too long: %w", proxySocketPath, err)
+	}
+	_ = os.Remove(proxySocketPath)
+
+	startCtx, cancelStart := context.WithTimeout(ctx, time.Duration(cfg.LaunchSeconds)*time.Second)
+	defer cancelStart()
+	startRes, err := helper.request(startCtx, helperControlRequest{
+		Op:              "StartVM",
+		KernelPath:      kernelPath,
+		RootFSPath:      vmRootFSPath,
+		BootArgs:        bootArgs,
+		VCPUs:           cfg.VCPUs,
+		MemoryMiB:       cfg.MemoryMiB,
+		GuestPort:       cfg.GuestPort,
+		LaunchSeconds:   cfg.LaunchSeconds,
+		RunDir:          runDir,
+		ProxySocketPath: proxySocketPath,
+		ConsoleLogPath:  consolePath,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("start vm via darwin-vz helper: %w", err)
+	}
+
+	vmID := strings.TrimSpace(startRes.VMID)
+	if vmID == "" {
+		return nil, errors.New("darwin-vz helper returned empty vm_id")
+	}
+	if p := strings.TrimSpace(startRes.ProxySocketPath); p != "" {
+		proxySocketPath = p
+	}
+	if strings.TrimSpace(proxySocketPath) == "" {
+		return nil, errors.New("darwin-vz helper returned empty proxy socket path")
+	}
+	if err := ensureUnixSocketPathFits(proxySocketPath); err != nil {
+		return nil, fmt.Errorf("proxy socket path %q is too long: %w", proxySocketPath, err)
+	}
+
+	instance := &sandboxInstance{
+		SandboxID:       sandboxID,
+		RunDir:          runDir,
+		ConfigPath:      configPath,
+		ProxySocketPath: proxySocketPath,
+		GuestPort:       cfg.GuestPort,
+		Policy:          compiled,
+		ImageRef:        imageRef,
+		ImageDigest:     imageDigest,
+		CommandTimeout:  cfg.LaunchSeconds,
+		Helper:          helper,
+		VMID:            vmID,
+		vmRootFSPath:    vmRootFSPath,
+		exitedCh:        make(chan struct{}),
+	}
+	go func() {
+		err, ok := <-helper.done
+		if !ok {
+			err = nil
+		}
+		if normalized := helper.normalizeHelperExitErr(err); normalized != nil {
+			err = fmt.Errorf("sandbox helper exited: %w", normalized)
+		} else {
+			err = nil
+		}
+		instance.setExited(err)
+		close(instance.exitedCh)
+	}()
+
+	bootCtx, cancel := context.WithTimeout(ctx, time.Duration(cfg.LaunchSeconds)*time.Second)
+	defer cancel()
+	if err := probeGuestExecReadyWithExit(bootCtx, helper, proxySocketPath, instance.exitedCh, instance.exitedErrOrNil); err != nil {
+		return nil, err
+	}
+
+	helperNeedsClose = false
+	cleanupRunDir = false
+	return instance, nil
+}
+
+func (a *Adapter) executeInSandbox(bootCtx context.Context, runCtx context.Context, instance *sandboxInstance, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+	if instance == nil {
+		return nil, errors.New("nil sandbox instance")
+	}
+	if len(req.Command) == 0 {
+		return nil, errors.New("missing command")
+	}
+
+	policy := req.Policy
+	if policy == nil {
+		policy = instance.Policy
+	}
+	if policy == nil {
+		return nil, errors.New("missing compiled policy")
+	}
+	policyWarn, policyErr := evaluateNetworkPolicy(policy.NetworkDefault, len(policy.Allow))
+	if policyErr != nil {
+		return nil, policyErr
+	}
+
+	warnings := buildRuntimeWarnings(policyWarn)
+	stderrPrefix := ""
+	for _, warningText := range warnings {
+		warningLine := "warning: " + warningText + "\n"
+		stderrPrefix += warningLine
+		if stream.OnStderr != nil {
+			stream.OnStderr([]byte(warningLine))
+		}
+	}
+
+	helper := instance.Helper
+	if helper == nil {
+		return nil, errors.New("darwin-vz sandbox helper is not available")
+	}
+	proxySocketPath := strings.TrimSpace(instance.ProxySocketPath)
+	if proxySocketPath == "" {
+		return nil, errors.New("darwin-vz sandbox proxy socket path is empty")
+	}
+	if err := instance.exitedErrOrNil(); err != nil {
+		return nil, fmt.Errorf("sandbox %q is not running: %w", instance.SandboxID, err)
+	}
+
+	conn, err := dialUnixSocketWithExit(bootCtx, proxySocketPath, instance.exitedCh, instance.exitedErrOrNil)
+	if err != nil {
+		return nil, helper.decorateError(fmt.Errorf("connect darwin-vz proxy socket %q: %w", proxySocketPath, err))
+	}
+	defer conn.Close()
+
+	if dl, ok := runCtx.Deadline(); ok {
+		if err := conn.SetDeadline(dl); err != nil {
+			return nil, fmt.Errorf("set proxy socket deadline: %w", err)
+		}
+	}
+	go func() {
+		<-runCtx.Done()
+		_ = conn.Close()
+	}()
+
+	gatewayScopeToken := ""
+	if a.GatewayRegistry != nil {
+		token, tokenErr := randomScopeToken()
+		if tokenErr != nil {
+			return nil, fmt.Errorf("generate gateway scope token: %w", tokenErr)
+		}
+		scopeSandboxID := strings.TrimSpace(req.SandboxID)
+		if scopeSandboxID == "" {
+			scopeSandboxID = strings.TrimSpace(instance.SandboxID)
+		}
+		if scopeSandboxID == "" {
+			scopeSandboxID = strings.TrimSpace(req.RunID)
+		}
+		if err := a.GatewayRegistry.RegisterScopeToken(token, scopeSandboxID, policy); err != nil {
+			return nil, fmt.Errorf("register sandbox in gateway: %w", err)
+		}
+		gatewayScopeToken = token
+		defer a.GatewayRegistry.ReleaseScopeToken(gatewayScopeToken)
+	}
+
+	guestReq := vsockexec.ExecRequest{Command: append([]string(nil), req.Command...), TTY: req.TTY}
+	if a.GatewayRegistry != nil && gatewayScopeToken != "" {
+		gwPort := a.GatewayPort
+		if gwPort <= 0 {
+			gwPort = gateway.DefaultPort
+		}
+		gwHost := strings.TrimSpace(a.GatewayHost)
+		if gwHost == "" {
+			gwHost = defaultGatewayHost
+		}
+		guestReq.Env = append(guestReq.Env, gatewayEnvVars(policy, gwHost, gwPort, gatewayScopeToken)...)
+	}
+	seed := make([]byte, 64)
+	if _, err := cryptorand.Read(seed); err == nil {
+		guestReq.EntropySeed = seed
+	}
+	if err := vsockexec.EncodeRequest(conn, guestReq); err != nil {
+		return nil, fmt.Errorf("send guest exec request: %w", err)
+	}
+
+	inputSender := &inputFrameSender{w: conn}
+	if stream.OnAttach != nil {
+		stream.OnAttach(backend.AttachIO{
+			WriteStdin: func(data []byte) error {
+				return inputSender.Send(vsockexec.ExecInputFrame{Type: "stdin", Data: data})
+			},
+			ResizeTTY: func(cols, rows uint32) error {
+				return inputSender.Send(vsockexec.ExecInputFrame{Type: "resize", Cols: cols, Rows: rows})
+			},
+		})
+	}
+	if !req.TTY {
+		_ = inputSender.Send(vsockexec.ExecInputFrame{Type: "eof"})
+	}
+
+	guestRes, err := vsockexec.DecodeStreamResponse(conn, vsockexec.StreamCallbacks{
+		OnStdout: stream.OnStdout,
+		OnStderr: stream.OnStderr,
+	})
+	if err != nil {
+		if ctxErr := runCtx.Err(); ctxErr != nil {
+			return nil, fmt.Errorf("guest exec canceled while waiting for response: %w", ctxErr)
+		}
+		return nil, helper.decorateError(fmt.Errorf("decode guest exec response over darwin-vz proxy: %w", err))
+	}
+
+	return &backend.RunResult{
+		RunID:       req.RunID,
+		ExitCode:    guestRes.ExitCode,
+		LaunchedVM:  false,
+		PlanPath:    instance.ConfigPath,
+		RunDir:      req.RunDir,
+		ImageRef:    instance.ImageRef,
+		ImageDigest: instance.ImageDigest,
+		Message:     darwinVZResultMessage(guestRes.Error),
+		Stdout:      guestRes.Stdout,
+		Stderr:      stderrPrefix + guestRes.Stderr,
+	}, nil
+}
+
+func sandboxRuntimeBaseDir() (string, error) {
+	base, err := paths.StateBaseDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(base, "sandboxes"), nil
+}
+
+func probeGuestExecReady(ctx context.Context, helper *helperSession, socketPath string) error {
+	return probeGuestExecReadyWithExit(ctx, helper, socketPath, nil, nil)
+}
+
+func probeGuestExecReadyWithExit(ctx context.Context, helper *helperSession, socketPath string, exitedCh <-chan struct{}, exitedErrOrNil func() error) error {
+	conn, err := dialUnixSocketWithExit(ctx, socketPath, exitedCh, exitedErrOrNil)
+	if err != nil {
+		if helper != nil {
+			return helper.decorateError(fmt.Errorf("connect darwin-vz proxy socket %q for guest readiness probe: %w", socketPath, err))
+		}
+		return fmt.Errorf("connect darwin-vz proxy socket %q for guest readiness probe: %w", socketPath, err)
+	}
+	defer conn.Close()
+
+	if err := vsockexec.EncodeRequest(conn, vsockexec.ExecRequest{}); err != nil {
+		if helper != nil {
+			return helper.decorateError(fmt.Errorf("send guest readiness probe over darwin-vz proxy: %w", err))
+		}
+		return fmt.Errorf("send guest readiness probe over darwin-vz proxy: %w", err)
+	}
+	if _, err := vsockexec.DecodeResponse(conn); err != nil {
+		if helper != nil {
+			return helper.decorateError(fmt.Errorf("decode guest readiness probe over darwin-vz proxy: %w", err))
+		}
+		return fmt.Errorf("decode guest readiness probe over darwin-vz proxy: %w", err)
+	}
+	return nil
+}
+
+func dialUnixSocketWithExit(ctx context.Context, socketPath string, exitedCh <-chan struct{}, exitedErrOrNil func() error) (net.Conn, error) {
+	dialer := net.Dialer{}
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+
+	exitErr := func() error {
+		if exitedErrOrNil == nil {
+			return nil
+		}
+		return exitedErrOrNil()
+	}
+
+	for {
+		conn, err := dialer.DialContext(ctx, "unix", socketPath)
+		if err == nil {
+			return conn, nil
+		}
+		if err := exitErr(); err != nil {
+			return nil, fmt.Errorf("sandbox exited while waiting for unix socket %q: %w", socketPath, err)
+		}
+
+		select {
+		case <-ctx.Done():
+			if err := exitErr(); err != nil {
+				return nil, fmt.Errorf("sandbox exited while waiting for unix socket %q: %w", socketPath, err)
+			}
+			return nil, fmt.Errorf("timed out waiting for unix socket %q: %w", socketPath, ctx.Err())
+		case <-exitedCh:
+			if err := exitErr(); err != nil {
+				return nil, fmt.Errorf("sandbox exited while waiting for unix socket %q: %w", socketPath, err)
+			}
+			return nil, fmt.Errorf("sandbox exited while waiting for unix socket %q", socketPath)
+		case <-ticker.C:
+		}
+	}
+}
+
+func (s *sandboxInstance) shutdown() {
+	if s == nil {
+		return
+	}
+	if s.Helper != nil {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if strings.TrimSpace(s.VMID) != "" {
+			_, _ = s.Helper.request(stopCtx, helperControlRequest{Op: "StopVM", VMID: s.VMID})
+		}
+		cancel()
+		_ = s.Helper.close()
+	}
+	if strings.TrimSpace(s.RunDir) != "" {
+		_ = os.RemoveAll(s.RunDir)
+		return
+	}
+	if strings.TrimSpace(s.vmRootFSPath) != "" {
+		_ = os.Remove(s.vmRootFSPath)
+	}
+}
+
+func (s *sandboxInstance) setExited(err error) {
+	s.exitMu.Lock()
+	defer s.exitMu.Unlock()
+	if s.exitReady {
+		return
+	}
+	s.exitErr = err
+	s.exitReady = true
+}
+
+func (s *sandboxInstance) exitedErrOrNil() error {
+	s.exitMu.RLock()
+	defer s.exitMu.RUnlock()
+	if !s.exitReady {
+		return nil
+	}
+	if s.exitErr == nil {
+		return errors.New("sandbox exited")
+	}
+	return s.exitErr
 }
 
 func darwinVZResultMessage(guestErr string) string {
