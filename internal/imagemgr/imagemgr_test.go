@@ -132,6 +132,40 @@ func TestEnsureRejectsIncompatibleImagePlatformFromCache(t *testing.T) {
 	}
 }
 
+func TestEnsureUsesLegacyCacheWhenPlatformBackfillUnavailable(t *testing.T) {
+	t.Parallel()
+
+	manager := newTestManager(t, func(_ context.Context, _ string) (io.ReadCloser, OCIConfig, error) {
+		return nil, OCIConfig{}, errors.New("registry unavailable")
+	})
+	cacheRootFS := filepath.Join(t.TempDir(), "cached.ext4")
+	if err := os.WriteFile(cacheRootFS, []byte("fake-ext4"), 0o644); err != nil {
+		t.Fatalf("write cached rootfs: %v", err)
+	}
+	now := time.Unix(1_700_000_005, 0).UTC()
+	record := Record{
+		Digest:     "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+		Ref:        "ghcr.io/buildkite/cleanroom-base/alpine@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+		RootFSPath: cacheRootFS,
+		SizeBytes:  int64(len("fake-ext4")),
+		CreatedAt:  now,
+		LastUsedAt: now,
+		Source:     "registry",
+		OCIConfig:  OCIConfig{},
+	}
+	if err := manager.upsertRecord(context.Background(), record); err != nil {
+		t.Fatalf("upsert cached record: %v", err)
+	}
+
+	result, err := manager.Ensure(context.Background(), record.Ref)
+	if err != nil {
+		t.Fatalf("expected Ensure to reuse legacy cache record when platform backfill is unavailable, got %v", err)
+	}
+	if !result.CacheHit {
+		t.Fatal("expected Ensure to return cache hit for existing rootfs artifact")
+	}
+}
+
 func TestImportAndRemoveByDigestSelector(t *testing.T) {
 	t.Parallel()
 

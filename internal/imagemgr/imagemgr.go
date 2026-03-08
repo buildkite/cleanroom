@@ -202,10 +202,9 @@ func (m *Manager) validateCachedRecordPlatform(ctx context.Context, parsedRef oc
 	}
 	if needsPlatformMetadata(record.OCIConfig) && strings.EqualFold(strings.TrimSpace(record.Source), "registry") {
 		resolvedConfig, err := m.resolveOCIConfigFromRegistry(ctx, parsedRef.Original)
-		if err != nil {
-			return fmt.Errorf("resolve image platform for cached ref %q: %w", parsedRef.Original, err)
+		if err == nil {
+			record.OCIConfig = mergeOCIConfig(record.OCIConfig, resolvedConfig)
 		}
-		record.OCIConfig = mergeOCIConfig(record.OCIConfig, resolvedConfig)
 	}
 	if err := ValidateImagePlatformForHost(record.OCIConfig.OS, record.OCIConfig.Architecture, runtime.GOARCH); err != nil {
 		return fmt.Errorf("image %q platform is incompatible: %w", parsedRef.Original, err)

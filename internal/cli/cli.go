@@ -266,6 +266,30 @@ var (
 	stopSignals = func(ch chan os.Signal) {
 		signal.Stop(ch)
 	}
+	resolveRegistryDigestForReference = func(ctx context.Context, ref name.Reference) (string, error) {
+		desc, err := remote.Head(ref, remote.WithContext(ctx), remote.WithAuthFromKeychain(authn.DefaultKeychain))
+		if err != nil {
+			return "", err
+		}
+		return desc.Digest.String(), nil
+	}
+	resolveReferencePlatformConfig = func(ctx context.Context, ref name.Reference) (string, string, error) {
+		img, err := remote.Image(
+			ref,
+			remote.WithContext(ctx),
+			remote.WithAuthFromKeychain(authn.DefaultKeychain),
+			remote.WithPlatform(imagemgr.HostLinuxPlatformForGOARCH(runtime.GOARCH)),
+		)
+		if err != nil {
+			return "", "", err
+		}
+
+		cfg, err := img.ConfigFile()
+		if err != nil {
+			return "", "", err
+		}
+		return cfg.OS, cfg.Architecture, nil
+	}
 	resolveReferenceForPolicyUpdate = func(ctx context.Context, source string) (string, error) {
 		resolved := strings.TrimSpace(source)
 		if resolved == "" {
@@ -276,30 +300,19 @@ var (
 		if err != nil {
 			return "", fmt.Errorf("parse image ref %q: %w", resolved, err)
 		}
-		img, err := remote.Image(
-			ref,
-			remote.WithContext(ctx),
-			remote.WithAuthFromKeychain(authn.DefaultKeychain),
-			remote.WithPlatform(imagemgr.HostLinuxPlatformForGOARCH(runtime.GOARCH)),
-		)
+		resolvedDigest, err := resolveRegistryDigestForReference(ctx, ref)
 		if err != nil {
 			return "", fmt.Errorf("resolve image digest for %q: %w", resolved, err)
 		}
-
-		cfg, err := img.ConfigFile()
-		if err != nil {
-			return "", fmt.Errorf("read image config for %q: %w", resolved, err)
-		}
-		if err := imagemgr.ValidateImagePlatformForHost(cfg.OS, cfg.Architecture, runtime.GOARCH); err != nil {
-			return "", fmt.Errorf("resolve image digest for %q: %w", resolved, err)
-		}
-
-		digest, err := img.Digest()
+		imageOS, imageArch, err := resolveReferencePlatformConfig(ctx, ref)
 		if err != nil {
 			return "", fmt.Errorf("resolve image digest for %q: %w", resolved, err)
 		}
+		if err := imagemgr.ValidateImagePlatformForHost(imageOS, imageArch, runtime.GOARCH); err != nil {
+			return "", fmt.Errorf("resolve image digest for %q: %w", resolved, err)
+		}
 
-		return fmt.Sprintf("%s@%s", ref.Context().Name(), digest.String()), nil
+		return fmt.Sprintf("%s@%s", ref.Context().Name(), resolvedDigest), nil
 	}
 	importLocalDockerImageForOverrideFn = importLocalDockerImageForOverride
 	resolveReferenceForImageOverride    = func(ctx context.Context, source string, allowLocal bool) (string, error) {
