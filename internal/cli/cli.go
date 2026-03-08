@@ -167,6 +167,2109 @@ func ExitCode(err error) int {
 	return 1
 }
 
+func (c *PolicyValidateCommand) Run(ctx *runtimeContext) error {
+	cwd, err := resolveCWD(ctx.CWD, c.Chdir)
+	if err != nil {
+		return err
+	}
+	compiled, source, err := ctx.Loader.LoadAndCompile(cwd)
+	if err != nil {
+		return err
+	}
+
+	if c.JSON {
+		payload := map[string]any{
+			"source": source,
+			"policy": compiled,
+		}
+		enc := json.NewEncoder(ctx.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(payload)
+	}
+
+	_, err = fmt.Fprintf(ctx.Stdout, "policy valid: %s\npolicy hash: %s\n", source, compiled.Hash)
+	return err
+}
+
+func (c *ConfigInitCommand) Run(ctx *runtimeContext) error {
+	path := strings.TrimSpace(c.Path)
+	if path == "" {
+		resolved, err := runtimeconfig.Path()
+		if err != nil {
+			return err
+		}
+		path = resolved
+	} else if !filepath.IsAbs(path) {
+		path = filepath.Join(ctx.CWD, path)
+	}
+
+	defaultBackend := strings.TrimSpace(c.DefaultBackend)
+	if defaultBackend == "" {
+		defaultBackend = hostDefaultBackend()
+	}
+	switch defaultBackend {
+	case "firecracker", "darwin-vz":
+	default:
+		return fmt.Errorf("unsupported default backend %q (expected firecracker or darwin-vz)", defaultBackend)
+	}
+
+	if st, err := os.Stat(path); err == nil && !st.IsDir() && !c.Force {
+		return fmt.Errorf("runtime config already exists at %s (use --force to overwrite)", path)
+	} else if err == nil && st.IsDir() {
+		return fmt.Errorf("runtime config path %s is a directory", path)
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("stat %s: %w", path, err)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create config directory: %w", err)
+	}
+
+	payload, err := yaml.Marshal(defaultRuntimeConfig(defaultBackend))
+	if err != nil {
+		return fmt.Errorf("marshal runtime config template: %w", err)
+	}
+	if err := os.WriteFile(path, payload, 0o644); err != nil {
+		return fmt.Errorf("write runtime config %s: %w", path, err)
+	}
+
+	_, err = fmt.Fprintf(ctx.Stdout, "runtime config written: %s\n", path)
+	return err
+}
+
+func hostDefaultBackend() string {
+	return runtimeconfig.DefaultBackendForHost()
+}
+
+func defaultRuntimeConfig(defaultBackend string) runtimeconfig.Config {
+	return runtimeconfig.Config{
+		DefaultBackend: defaultBackend,
+		Backends: runtimeconfig.Backends{
+			Firecracker: runtimeconfig.FirecrackerConfig{
+				BinaryPath:  "firecracker",
+				KernelImage: "",
+				RootFS:      "",
+				Services: runtimeconfig.ServicesConfig{
+					Docker: runtimeconfig.DockerServiceConfig{
+						StartupTimeoutSeconds: 20,
+						StorageDriver:         "vfs",
+						IPTables:              false,
+					},
+				},
+				PrivilegedMode:       "sudo",
+				PrivilegedHelperPath: "/usr/local/sbin/cleanroom-root-helper",
+				VCPUs:                2,
+				MemoryMiB:            1024,
+				GuestCID:             3,
+				GuestPort:            10700,
+				LaunchSeconds:        30,
+			},
+			DarwinVZ: runtimeconfig.DarwinVZConfig{
+				KernelImage: "",
+				RootFS:      "",
+				Services: runtimeconfig.ServicesConfig{
+					Docker: runtimeconfig.DockerServiceConfig{
+						StartupTimeoutSeconds: 20,
+						StorageDriver:         "vfs",
+						IPTables:              false,
+					},
+				},
+				VCPUs:         2,
+				MemoryMiB:     1024,
+				GuestPort:     10700,
+				LaunchSeconds: 30,
+			},
+		},
+	}
+}
+
+func newImageManager() (*imagemgr.Manager, error) {
+	return imagemgr.New(imagemgr.Options{})
+}
+
+func (c *ImagePullCommand) Run(ctx *runtimeContext) error {
+	mgr, err := newImageManager()
+	if err != nil {
+		return err
+	}
+	result, err := mgr.Pull(context.Background(), c.Ref)
+	if err != nil {
+		return err
+	}
+
+	status := "pulled"
+	if result.CacheHit {
+		status = "cached"
+	}
+	_, err = fmt.Fprintf(
+		ctx.Stdout,
+		"%s image\nref=%s\ndigest=%s\nrootfs=%s\nsize_bytes=%d\n",
+		status,
+		result.Record.Ref,
+		result.Record.Digest,
+		result.Record.RootFSPath,
+		result.Record.SizeBytes,
+	)
+	return err
+}
+
+func (c *ImageListCommand) Run(ctx *runtimeContext) error {
+	mgr, err := newImageManager()
+	if err != nil {
+		return err
+	}
+	items, err := mgr.List(context.Background())
+	if err != nil {
+		return err
+	}
+
+	if c.JSON {
+		enc := json.NewEncoder(ctx.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(items)
+	}
+
+	if len(items) == 0 {
+		_, err := fmt.Fprintln(ctx.Stdout, "no cached images")
+		return err
+	}
+
+	tw := tabwriter.NewWriter(ctx.Stdout, 0, 2, 2, ' ', 0)
+	if _, err := fmt.Fprintln(tw, "DIGEST\tREF\tSIZE\tLAST_USED\tROOTFS"); err != nil {
+		return err
+	}
+	for _, item := range items {
+		if _, err := fmt.Fprintf(
+			tw,
+			"%s\t%s\t%d\t%s\t%s\n",
+			item.Digest,
+			item.Ref,
+			item.SizeBytes,
+			item.LastUsedAt.Format(time.RFC3339),
+			item.RootFSPath,
+		); err != nil {
+			return err
+		}
+	}
+	return tw.Flush()
+}
+
+func (c *ImageRemoveCommand) Run(ctx *runtimeContext) error {
+	mgr, err := newImageManager()
+	if err != nil {
+		return err
+	}
+	removed, err := mgr.Remove(context.Background(), c.Selector)
+	if err != nil {
+		return err
+	}
+	if len(removed) == 0 {
+		_, err := fmt.Fprintf(ctx.Stdout, "no cached images match %q\n", c.Selector)
+		return err
+	}
+	for _, item := range removed {
+		if _, err := fmt.Fprintf(ctx.Stdout, "removed %s (%s)\n", item.Digest, item.Ref); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *ImageImportCommand) Run(ctx *runtimeContext) error {
+	mgr, err := newImageManager()
+	if err != nil {
+		return err
+	}
+	record, err := mgr.Import(context.Background(), c.Ref, c.TarPath, os.Stdin)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(
+		ctx.Stdout,
+		"imported image\nref=%s\ndigest=%s\nrootfs=%s\nsize_bytes=%d\n",
+		record.Ref,
+		record.Digest,
+		record.RootFSPath,
+		record.SizeBytes,
+	)
+	return err
+}
+
+func (c *ImageBumpRefCommand) Run(ctx *runtimeContext) error {
+	cwd, err := resolveCWD(ctx.CWD, c.Chdir)
+	if err != nil {
+		return err
+	}
+
+	resolvedRef, err := resolveReferenceForPolicyUpdate(context.Background(), c.Source)
+	if err != nil {
+		return err
+	}
+
+	policyPath, err := resolvePolicyPathForUpdate(cwd, c.PolicyPath)
+	if err != nil {
+		return err
+	}
+
+	raw, err := os.ReadFile(policyPath)
+	if err != nil {
+		return fmt.Errorf("read policy %s: %w", policyPath, err)
+	}
+
+	updated, err := setSandboxImageRef(raw, resolvedRef)
+	if err != nil {
+		return fmt.Errorf("update policy %s: %w", policyPath, err)
+	}
+
+	info, err := os.Stat(policyPath)
+	if err != nil {
+		return fmt.Errorf("stat policy %s: %w", policyPath, err)
+	}
+
+	if err := os.WriteFile(policyPath, updated, info.Mode().Perm()); err != nil {
+		return fmt.Errorf("write policy %s: %w", policyPath, err)
+	}
+
+	source := strings.TrimSpace(c.Source)
+	if source == "" {
+		source = defaultBumpRefSource
+	}
+	_, err = fmt.Fprintf(ctx.Stdout, "updated sandbox.image.ref\npolicy=%s\nsource=%s\nref=%s\n", policyPath, source, resolvedRef)
+	return err
+}
+
+func (c *SandboxListCommand) Run(ctx *runtimeContext) error {
+	client, err := c.connect()
+	if err != nil {
+		return err
+	}
+
+	resp, err := client.ListSandboxes(context.Background(), &cleanroomv1.ListSandboxesRequest{})
+	if err != nil {
+		return err
+	}
+
+	if c.JSON {
+		enc := json.NewEncoder(ctx.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(resp.Sandboxes)
+	}
+
+	if len(resp.Sandboxes) == 0 {
+		_, err := fmt.Fprintln(ctx.Stdout, "no active sandboxes")
+		return err
+	}
+
+	tw := tabwriter.NewWriter(ctx.Stdout, 0, 2, 2, ' ', 0)
+	if _, err := fmt.Fprintln(tw, "ID\tSTATUS\tBACKEND\tCREATED"); err != nil {
+		return err
+	}
+	for _, sb := range resp.Sandboxes {
+		status := sandboxStatusString(sb.Status)
+		created := ""
+		if sb.CreatedAt != nil {
+			created = sb.CreatedAt.AsTime().Format(time.RFC3339)
+		}
+		if _, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", sb.SandboxId, status, sb.Backend, created); err != nil {
+			return err
+		}
+	}
+	return tw.Flush()
+}
+
+func (c *SandboxTerminateCommand) Run(ctx *runtimeContext) error {
+	client, err := c.connect()
+	if err != nil {
+		return err
+	}
+
+	resp, err := client.TerminateSandbox(context.Background(), &cleanroomv1.TerminateSandboxRequest{
+		SandboxId: c.SandboxID,
+	})
+	if err != nil {
+		return err
+	}
+
+	_, err = fmt.Fprintln(ctx.Stdout, resp.Message)
+	return err
+}
+
+func runSandboxCreate(ctx *runtimeContext, connectFlags clientFlags, chdir, backend, imageRefOverride string, launchSeconds int64, outputJSON bool) error {
+	client, err := connectFlags.connect()
+	if err != nil {
+		return err
+	}
+
+	cwd, err := resolveCWD(ctx.CWD, chdir)
+	if err != nil {
+		return err
+	}
+	compiled, _, err := ctx.Loader.LoadAndCompile(cwd)
+	if err != nil {
+		return err
+	}
+	allowLocalImageOverride, err := isLocalControlPlaneEndpoint(connectFlags.Host)
+	if err != nil {
+		return err
+	}
+	compiled, err = overrideCompiledPolicyImage(compiled, imageRefOverride, allowLocalImageOverride)
+	if err != nil {
+		return err
+	}
+
+	var (
+		resp      *cleanroomv1.CreateSandboxResponse
+		sandboxID string
+	)
+	if err := withSandboxProgress(os.Stderr, func() error {
+		var createErr error
+		resp, createErr = client.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+			Backend: backend,
+			Options: &cleanroomv1.SandboxOptions{
+				LaunchSeconds: launchSeconds,
+			},
+			Policy: compiled.ToProto(),
+		})
+		if createErr != nil {
+			return createErr
+		}
+
+		sandboxID = strings.TrimSpace(resp.GetSandbox().GetSandboxId())
+		if sandboxID == "" {
+			return errors.New("response missing sandbox id")
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("create sandbox: %w", err)
+	}
+
+	sandbox := resp.GetSandbox()
+
+	if outputJSON {
+		enc := json.NewEncoder(ctx.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(sandbox)
+	}
+
+	_, err = fmt.Fprintln(ctx.Stdout, sandboxID)
+	return err
+}
+
+func (c *SandboxCreateCommand) Run(ctx *runtimeContext) error {
+	return runSandboxCreate(ctx, c.clientFlags, c.Chdir, c.Backend, c.Image, c.LaunchSeconds, c.JSON)
+}
+
+func (c *CreateCommand) Run(ctx *runtimeContext) error {
+	return runSandboxCreate(ctx, c.clientFlags, c.Chdir, c.Backend, c.Image, c.LaunchSeconds, c.JSON)
+}
+
+func (e *ExecCommand) Run(ctx *runtimeContext) error {
+	logger, err := newLogger(e.LogLevel, "client")
+	if err != nil {
+		return err
+	}
+
+	client, err := e.connect()
+	if err != nil {
+		return err
+	}
+	cwd, err := resolveCWD(ctx.CWD, e.Chdir)
+	if err != nil {
+		return err
+	}
+
+	logger.Debug("sending execution request",
+		"host", e.Host,
+		"backend", e.Backend,
+		"sandbox_id", strings.TrimSpace(e.SandboxID),
+		"command_argc", len(e.Command),
+	)
+	sandboxID, err := ensureSandboxID(client, ctx.Loader, cwd, e.Host, e.Backend, strings.TrimSpace(e.SandboxID), e.Image, e.LaunchSeconds)
+	if err != nil {
+		return err
+	}
+	if e.PrintSandboxID {
+		if _, err := fmt.Fprintf(os.Stderr, "sandbox_id=%s\n", sandboxID); err != nil {
+			return err
+		}
+	}
+	detached := false
+	autoTerminateSandbox := e.Remove
+	defer func() {
+		if detached || !autoTerminateSandbox || sandboxID == "" {
+			return
+		}
+		terminateSandboxBestEffort(client, sandboxID, 0, logger, "terminate sandbox after exec failed")
+	}()
+
+	createExecutionResp, err := client.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+		SandboxId: sandboxID,
+		Command:   append([]string(nil), e.Command...),
+		Kind:      cleanroomv1.ExecutionKind_EXECUTION_KIND_BATCH,
+		Options: &cleanroomv1.ExecutionOptions{
+			LaunchSeconds: e.LaunchSeconds,
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("create execution: %w", err)
+	}
+	executionID := createExecutionResp.GetExecution().GetExecutionId()
+
+	logger.Debug("execution started", "sandbox_id", sandboxID, "execution_id", executionID)
+
+	streamCtx, streamCancel := context.WithCancel(context.Background())
+	defer streamCancel()
+	stream, err := client.StreamExecution(streamCtx, &cleanroomv1.StreamExecutionRequest{
+		SandboxId:   sandboxID,
+		ExecutionId: executionID,
+		Follow:      true,
+	})
+	if err != nil {
+		return fmt.Errorf("stream execution: %w", err)
+	}
+
+	signalCh := newSignalChannel()
+	notifySignals(signalCh, os.Interrupt, syscall.SIGTERM)
+	defer stopSignals(signalCh)
+
+	secondInterrupt := make(chan struct{}, 1)
+	go func() {
+		interrupts := 0
+		for range signalCh {
+			interrupts++
+			if interrupts == 1 {
+				cancelResp, cancelErr := client.CancelExecution(context.Background(), &cleanroomv1.CancelExecutionRequest{
+					SandboxId:   sandboxID,
+					ExecutionId: executionID,
+					Signal:      2,
+				})
+				if cancelErr != nil && logger != nil {
+					logger.Warn("cancel execution request failed", "sandbox_id", sandboxID, "execution_id", executionID, "error", cancelErr)
+				} else if logger != nil && cancelResp != nil {
+					logger.Debug("cancel execution requested",
+						"sandbox_id", sandboxID,
+						"execution_id", executionID,
+						"accepted", cancelResp.GetAccepted(),
+						"status", cancelResp.GetStatus().String(),
+					)
+				}
+				continue
+			}
+
+			select {
+			case secondInterrupt <- struct{}{}:
+			default:
+			}
+			streamCancel()
+			return
+		}
+	}()
+
+	var exitCode int
+	haveExitCode := false
+	for stream.Receive() {
+		event := stream.Msg()
+		switch payload := event.Payload.(type) {
+		case *cleanroomv1.ExecutionStreamEvent_Stdout:
+			if _, err := fmt.Fprint(ctx.Stdout, string(payload.Stdout)); err != nil {
+				return err
+			}
+		case *cleanroomv1.ExecutionStreamEvent_Stderr:
+			if _, err := fmt.Fprint(os.Stderr, string(payload.Stderr)); err != nil {
+				return err
+			}
+		case *cleanroomv1.ExecutionStreamEvent_Exit:
+			exitCode = int(payload.Exit.GetExitCode())
+			haveExitCode = true
+		}
+	}
+
+	streamErr := stream.Err()
+	select {
+	case <-secondInterrupt:
+		detached = true
+		if e.Remove {
+			terminateSandboxBestEffort(client, sandboxID, sandboxTerminateTimeout, logger, "terminate sandbox after detach failed")
+		}
+		return exitCodeError{code: 130}
+	default:
+	}
+
+	if streamErr != nil && !isCanceledStreamErr(streamErr) {
+		return fmt.Errorf("stream execution: %w", streamErr)
+	}
+
+	if !haveExitCode {
+		if fetchedExitCode, ok := getFinalExecutionExitCode(client, sandboxID, executionID); ok {
+			exitCode = fetchedExitCode
+			haveExitCode = true
+		}
+	}
+
+	logger.Debug("execution complete",
+		"sandbox_id", sandboxID,
+		"execution_id", executionID,
+		"have_exit_code", haveExitCode,
+		"exit_code", exitCode,
+	)
+
+	if !haveExitCode {
+		return errors.New("execution stream ended without exit status")
+	}
+	if exitCode != 0 {
+		return exitCodeError{code: exitCode}
+	}
+	return nil
+}
+
+func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
+	logger, err := newLogger(c.LogLevel, "client")
+	if err != nil {
+		return err
+	}
+
+	client, err := c.connect()
+	if err != nil {
+		return err
+	}
+	cwd, err := resolveCWD(ctx.CWD, c.Chdir)
+	if err != nil {
+		return err
+	}
+
+	command := append([]string(nil), c.Command...)
+	if len(command) == 0 {
+		command = []string{"sh"}
+	}
+	logger.Debug("starting interactive console",
+		"host", c.Host,
+		"backend", c.Backend,
+		"sandbox_id", strings.TrimSpace(c.SandboxID),
+		"command_argc", len(command),
+	)
+	sandboxID, err := ensureSandboxID(client, ctx.Loader, cwd, c.Host, c.Backend, strings.TrimSpace(c.SandboxID), c.Image, c.LaunchSeconds)
+	if err != nil {
+		return err
+	}
+	autoTerminateSandbox := c.Remove
+	defer func() {
+		if sandboxID == "" || !autoTerminateSandbox {
+			return
+		}
+		terminateSandboxBestEffort(client, sandboxID, 0, logger, "terminate sandbox after console failed")
+	}()
+
+	createExecutionResp, err := client.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+		SandboxId: sandboxID,
+		Command:   command,
+		Kind:      cleanroomv1.ExecutionKind_EXECUTION_KIND_INTERACTIVE,
+		Options: &cleanroomv1.ExecutionOptions{
+			LaunchSeconds: c.LaunchSeconds,
+			Tty:           true,
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("create execution: %w", err)
+	}
+	executionID := createExecutionResp.GetExecution().GetExecutionId()
+	logger.Debug("console execution started", "sandbox_id", sandboxID, "execution_id", executionID)
+
+	stdinFD := int(os.Stdin.Fd())
+	initialCols, initialRows := attachTTYSize(stdinFD)
+	openResp, err := client.OpenInteractiveExecution(context.Background(), &cleanroomv1.OpenInteractiveExecutionRequest{
+		SandboxId:   sandboxID,
+		ExecutionId: executionID,
+		InitialCols: initialCols,
+		InitialRows: initialRows,
+	})
+	if err != nil {
+		if isExecutionNoLongerActiveErr(err) {
+			exitCode, haveExitCode, replayErr := replayExecutionHistory(client, sandboxID, executionID, ctx.Stdout, os.Stderr)
+			if replayErr != nil {
+				return fmt.Errorf("open interactive execution: %w", err)
+			}
+			if !haveExitCode {
+				if fetchedExitCode, ok := getFinalExecutionExitCode(client, sandboxID, executionID); ok {
+					exitCode = fetchedExitCode
+					haveExitCode = true
+				}
+			}
+			if !haveExitCode {
+				return errors.New("console stream ended without exit status")
+			}
+			if exitCode != 0 {
+				return exitCodeError{code: exitCode}
+			}
+			return nil
+		}
+		return fmt.Errorf("open interactive execution: %w", err)
+	}
+	controlEndpoint, err := endpoint.Resolve(c.Host)
+	if err != nil {
+		return err
+	}
+	quicEndpoint := resolveInteractiveDialEndpoint(controlEndpoint, openResp.GetQuicEndpoint())
+	interactiveSession, err := interactivequic.Dial(
+		context.Background(),
+		quicEndpoint,
+		openResp.GetAlpn(),
+		openResp.GetServerCertPinSha256(),
+		openResp.GetSessionId(),
+		openResp.GetSessionToken(),
+	)
+	if err != nil {
+		return resolveConsoleDialFailure(
+			err,
+			func() (int, bool, error) {
+				return replayExecutionHistory(client, sandboxID, executionID, ctx.Stdout, os.Stderr)
+			},
+			func() (int, bool) {
+				return getFinalExecutionExitCode(client, sandboxID, executionID)
+			},
+		)
+	}
+	defer interactiveSession.Close()
+
+	rawMode := false
+	if term.IsTerminal(stdinFD) {
+		oldState, rawErr := term.MakeRaw(stdinFD)
+		if rawErr != nil {
+			logger.Warn("failed to enter raw mode", "error", rawErr)
+		} else {
+			rawMode = true
+			defer func() {
+				_ = term.Restore(stdinFD, oldState)
+			}()
+			if cols, rows, sizeErr := term.GetSize(stdinFD); sizeErr == nil {
+				_ = interactiveSession.SendResize(uint32(cols), uint32(rows))
+			}
+		}
+	}
+
+	signalCh := newSignalChannel()
+	notifySignals(signalCh, os.Interrupt, syscall.SIGTERM)
+	defer stopSignals(signalCh)
+
+	if rawMode {
+		resizeSignalCh := make(chan os.Signal, 4)
+		signal.Notify(resizeSignalCh, syscall.SIGWINCH)
+		defer signal.Stop(resizeSignalCh)
+		go func() {
+			for range resizeSignalCh {
+				cols, rows, sizeErr := term.GetSize(stdinFD)
+				if sizeErr != nil {
+					continue
+				}
+				_ = interactiveSession.SendResize(uint32(cols), uint32(rows))
+			}
+		}()
+	}
+
+	go func() {
+		for sig := range signalCh {
+			num := int32(2)
+			if sig == syscall.SIGTERM {
+				num = 15
+			}
+			_ = interactiveSession.SendSignal(num)
+		}
+	}()
+
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, readErr := os.Stdin.Read(buf)
+			if n > 0 {
+				payload := append([]byte(nil), buf[:n]...)
+				if sendErr := interactiveSession.WriteStdin(payload); sendErr != nil {
+					return
+				}
+			}
+			if readErr != nil {
+				_ = interactiveSession.CloseStdin()
+				return
+			}
+		}
+	}()
+
+	exitCodeCh := make(chan int, 1)
+	controlErrCh := make(chan error, 1)
+	go func() {
+		defer close(controlErrCh)
+		for msg := range interactiveSession.Events() {
+			switch msg.Type {
+			case "exit":
+				select {
+				case exitCodeCh <- int(msg.ExitCode):
+				default:
+				}
+				return
+			case "error":
+				if strings.TrimSpace(msg.Error) == "" {
+					continue
+				}
+				controlErrCh <- errors.New(msg.Error)
+				return
+			}
+		}
+		if err, ok := <-interactiveSession.EventErr(); ok && err != nil {
+			controlErrCh <- err
+		}
+	}()
+
+	var exitCode int
+	haveExitCode := false
+	endedCR := false
+	buf := make([]byte, 4096)
+	for {
+		n, readErr := interactiveSession.ReadPTY(buf)
+		if n > 0 {
+			chunk := append([]byte(nil), buf[:n]...)
+			if rawMode {
+				chunk, endedCR = normalizeLineEndingsForRawTTY(chunk, endedCR)
+			}
+			if _, err := ctx.Stdout.Write(chunk); err != nil {
+				return err
+			}
+		}
+		if polledExitCode, gotExitCode, pollErr := pollInteractiveExitOrControlErr(exitCodeCh, &controlErrCh); pollErr != nil {
+			return pollErr
+		} else if gotExitCode {
+			exitCode = polledExitCode
+			haveExitCode = true
+		}
+		if readErr != nil {
+			if !isInteractiveStreamClosedErr(readErr) {
+				return fmt.Errorf("interactive pty stream: %w", readErr)
+			}
+			break
+		}
+	}
+
+	if !haveExitCode {
+		waitedExitCode, gotExitCode, waitErr := waitForInteractiveExitOrControlErr(exitCodeCh, &controlErrCh, 2*time.Second)
+		if waitErr != nil {
+			return waitErr
+		}
+		if gotExitCode {
+			exitCode = waitedExitCode
+			haveExitCode = true
+		}
+	}
+
+	if !haveExitCode {
+		if fetchedExitCode, ok := getFinalExecutionExitCode(client, sandboxID, executionID); ok {
+			exitCode = fetchedExitCode
+			haveExitCode = true
+		}
+	}
+
+	if !haveExitCode {
+		return errors.New("console stream ended without exit status")
+	}
+	if exitCode != 0 {
+		return exitCodeError{code: exitCode}
+	}
+	return nil
+}
+
+func normalizeLineEndingsForRawTTY(chunk []byte, prevEndedCR bool) ([]byte, bool) {
+	if len(chunk) == 0 {
+		return chunk, prevEndedCR
+	}
+
+	if bytes.IndexByte(chunk, '\n') < 0 {
+		return chunk, chunk[len(chunk)-1] == '\r'
+	}
+
+	out := make([]byte, 0, len(chunk)+4)
+	endedCR := prevEndedCR
+	for _, b := range chunk {
+		if b == '\n' && !endedCR {
+			out = append(out, '\r')
+		}
+		out = append(out, b)
+		endedCR = b == '\r'
+	}
+	return out, endedCR
+}
+
+func attachTTYSize(fd int) (uint32, uint32) {
+	cols, rows, err := term.GetSize(fd)
+	if err != nil {
+		return 80, 24
+	}
+	if cols <= 0 {
+		cols = 80
+	}
+	if rows <= 0 {
+		rows = 24
+	}
+	return uint32(cols), uint32(rows)
+}
+
+func trimPassthroughSeparator(args []string) []string {
+	if len(args) == 0 {
+		return args
+	}
+	if strings.TrimSpace(args[0]) != "--" {
+		return args
+	}
+	out := make([]string, 0, len(args)-1)
+	out = append(out, args[1:]...)
+	return out
+}
+
+func (s *ServeCommand) Run(ctx *runtimeContext) error {
+	switch strings.TrimSpace(strings.ToLower(s.Action)) {
+	case "":
+		if s.Force {
+			return errors.New("--force is only supported with 'cleanroom serve install'")
+		}
+		return s.runServer(ctx)
+	case "install":
+		return s.installDaemon(ctx)
+	case "uninstall":
+		return s.uninstallDaemon(ctx)
+	case "status":
+		return s.daemonStatus(ctx)
+	default:
+		return fmt.Errorf("unsupported serve action %q", s.Action)
+	}
+}
+
+func (s *ServeCommand) daemonRunArgs(cwd string) ([]string, error) {
+	listen := strings.TrimSpace(s.Listen)
+	if listen == "" {
+		listen = defaultDaemonListen
+	}
+
+	args := []string{"serve", "--listen", listen}
+	if value := strings.TrimSpace(s.GatewayListen); value != "" {
+		args = append(args, "--gateway-listen", value)
+	}
+	if value := strings.TrimSpace(s.LogLevel); value != "" {
+		args = append(args, "--log-level", value)
+	}
+	if value := strings.TrimSpace(s.TLSCert); value != "" {
+		resolved, err := resolveDaemonInstallPath(cwd, value)
+		if err != nil {
+			return nil, fmt.Errorf("resolve --tls-cert path: %w", err)
+		}
+		args = append(args, "--tls-cert", resolved)
+	}
+	if value := strings.TrimSpace(s.TLSKey); value != "" {
+		resolved, err := resolveDaemonInstallPath(cwd, value)
+		if err != nil {
+			return nil, fmt.Errorf("resolve --tls-key path: %w", err)
+		}
+		args = append(args, "--tls-key", resolved)
+	}
+	return args, nil
+}
+
+func resolveDaemonInstallPath(cwd, value string) (string, error) {
+	if filepath.IsAbs(value) {
+		return filepath.Clean(value), nil
+	}
+
+	base := strings.TrimSpace(cwd)
+	if base == "" {
+		base = "."
+	}
+	if !filepath.IsAbs(base) {
+		absBase, err := filepath.Abs(base)
+		if err != nil {
+			return "", fmt.Errorf("resolve absolute working directory: %w", err)
+		}
+		base = absBase
+	}
+	return filepath.Clean(filepath.Join(base, value)), nil
+}
+
+func (s *ServeCommand) installDaemon(ctx *runtimeContext) error {
+	var installFn func(io.Writer, string, []string, bool) error
+	switch serveInstallGOOS {
+	case "linux":
+		installFn = installSystemdDaemon
+	case "darwin":
+		installFn = installLaunchdDaemon
+	default:
+		return fmt.Errorf("serve install is unsupported on %s (expected linux or darwin)", serveInstallGOOS)
+	}
+
+	if serveInstallEUID() != 0 {
+		return errors.New("serve install requires root privileges (use sudo cleanroom serve install)")
+	}
+
+	executablePath, err := serveInstallExecutablePath()
+	if err != nil {
+		return fmt.Errorf("resolve cleanroom executable path: %w", err)
+	}
+	if !filepath.IsAbs(executablePath) {
+		executablePath, err = filepath.Abs(executablePath)
+		if err != nil {
+			return fmt.Errorf("resolve absolute executable path: %w", err)
+		}
+	}
+
+	args, err := s.daemonRunArgs(ctx.CWD)
+	if err != nil {
+		return err
+	}
+	return installFn(ctx.Stdout, executablePath, args, s.Force)
+}
+
+func (s *ServeCommand) uninstallDaemon(ctx *runtimeContext) error {
+	var uninstallFn func(io.Writer) error
+	switch serveInstallGOOS {
+	case "linux":
+		uninstallFn = uninstallSystemdDaemon
+	case "darwin":
+		uninstallFn = uninstallLaunchdDaemon
+	default:
+		return fmt.Errorf("serve uninstall is unsupported on %s (expected linux or darwin)", serveInstallGOOS)
+	}
+
+	if serveInstallEUID() != 0 {
+		return errors.New("serve uninstall requires root privileges (use sudo cleanroom serve uninstall)")
+	}
+
+	return uninstallFn(ctx.Stdout)
+}
+
+func uninstallSystemdDaemon(stdout io.Writer) error {
+	if _, err := serveInstallStat(serveInstallSystemdUnitPath); errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("service file %s does not exist", serveInstallSystemdUnitPath)
+	}
+
+	if err := serveInstallRunCommand("systemctl", "stop", systemdServiceName); err != nil {
+		return fmt.Errorf("stop systemd service %s: %w", systemdServiceName, err)
+	}
+	if err := serveInstallRunCommand("systemctl", "disable", systemdServiceName); err != nil {
+		return fmt.Errorf("disable systemd service %s: %w", systemdServiceName, err)
+	}
+
+	if err := serveInstallRemoveFile(serveInstallSystemdUnitPath); err != nil {
+		return fmt.Errorf("remove service file %s: %w", serveInstallSystemdUnitPath, err)
+	}
+	if err := serveInstallRunCommand("systemctl", "daemon-reload"); err != nil {
+		return fmt.Errorf("reload systemd: %w", err)
+	}
+
+	_, err := fmt.Fprintf(stdout, "daemon uninstalled\nmanager=systemd\nservice=%s\n", systemdServiceName)
+	return err
+}
+
+func uninstallLaunchdDaemon(stdout io.Writer) error {
+	if _, err := serveInstallStat(serveInstallLaunchdPath); errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("service file %s does not exist", serveInstallLaunchdPath)
+	}
+
+	if err := serveInstallRunCommand("launchctl", "bootout", "system/"+launchdServiceName); err != nil && !isExitError(err) {
+		return fmt.Errorf("bootout launchd service %s: %w", launchdServiceName, err)
+	}
+
+	if err := serveInstallRemoveFile(serveInstallLaunchdPath); err != nil {
+		return fmt.Errorf("remove service file %s: %w", serveInstallLaunchdPath, err)
+	}
+
+	_, err := fmt.Fprintf(stdout, "daemon uninstalled\nmanager=launchd\nservice=%s\n", launchdServiceName)
+	return err
+}
+
+func (s *ServeCommand) daemonStatus(ctx *runtimeContext) error {
+	var statusFn func(io.Writer) error
+	switch serveInstallGOOS {
+	case "linux":
+		statusFn = systemdDaemonStatus
+	case "darwin":
+		statusFn = launchdDaemonStatus
+	default:
+		return fmt.Errorf("serve status is unsupported on %s (expected linux or darwin)", serveInstallGOOS)
+	}
+
+	return statusFn(ctx.Stdout)
+}
+
+func systemdDaemonStatus(stdout io.Writer) error {
+	installed := "false"
+	if _, err := serveInstallStat(serveInstallSystemdUnitPath); err == nil {
+		installed = "true"
+	}
+
+	active := "inactive"
+	if err := serveInstallRunCommand("systemctl", "is-active", "--quiet", systemdServiceName); err == nil {
+		active = "active"
+	} else if !isExitError(err) {
+		return fmt.Errorf("check systemd service active state: %w", err)
+	}
+
+	enabled := "false"
+	if err := serveInstallRunCommand("systemctl", "is-enabled", "--quiet", systemdServiceName); err == nil {
+		enabled = "true"
+	} else if !isExitError(err) {
+		return fmt.Errorf("check systemd service enabled state: %w", err)
+	}
+
+	_, err := fmt.Fprintf(stdout, "manager=systemd\nservice=%s\ninstalled=%s\nactive=%s\nenabled=%s\n",
+		systemdServiceName, installed, active, enabled)
+	return err
+}
+
+func launchdDaemonStatus(stdout io.Writer) error {
+	installed := "false"
+	if _, err := serveInstallStat(serveInstallLaunchdPath); err == nil {
+		installed = "true"
+	}
+
+	active := "inactive"
+	if err := serveInstallRunCommand("launchctl", "print", "system/"+launchdServiceName); err == nil {
+		active = "active"
+	} else if !isExitError(err) {
+		return fmt.Errorf("check launchd service state: %w", err)
+	}
+
+	_, err := fmt.Fprintf(stdout, "manager=launchd\nservice=%s\ninstalled=%s\nactive=%s\n",
+		launchdServiceName, installed, active)
+	return err
+}
+
+func installSystemdDaemon(stdout io.Writer, executablePath string, args []string, force bool) error {
+	content := renderSystemdService(executablePath, args)
+	if err := writeDaemonFile(serveInstallSystemdUnitPath, content, force, 0o644); err != nil {
+		return err
+	}
+
+	if err := serveInstallRunCommand("systemctl", "daemon-reload"); err != nil {
+		return fmt.Errorf("reload systemd: %w", err)
+	}
+	if err := serveInstallRunCommand("systemctl", "enable", "--now", systemdServiceName); err != nil {
+		return fmt.Errorf("enable systemd service %s: %w", systemdServiceName, err)
+	}
+	if force {
+		if err := serveInstallRunCommand("systemctl", "restart", systemdServiceName); err != nil {
+			return fmt.Errorf("restart systemd service %s: %w", systemdServiceName, err)
+		}
+	}
+
+	_, err := fmt.Fprintf(stdout, "daemon installed\nmanager=systemd\nservice=%s\npath=%s\n", systemdServiceName, serveInstallSystemdUnitPath)
+	return err
+}
+
+func installLaunchdDaemon(stdout io.Writer, executablePath string, args []string, force bool) error {
+	content := renderLaunchdService(executablePath, args)
+	if err := writeDaemonFile(serveInstallLaunchdPath, content, force, 0o644); err != nil {
+		return err
+	}
+
+	if force {
+		_ = serveInstallRunCommand("launchctl", "bootout", "system/"+launchdServiceName)
+	}
+	if err := serveInstallRunCommand("launchctl", "bootstrap", "system", serveInstallLaunchdPath); err != nil {
+		return fmt.Errorf("bootstrap launchd service %s: %w", launchdServiceName, err)
+	}
+	if err := serveInstallRunCommand("launchctl", "enable", "system/"+launchdServiceName); err != nil {
+		return fmt.Errorf("enable launchd service %s: %w", launchdServiceName, err)
+	}
+
+	_, err := fmt.Fprintf(stdout, "daemon installed\nmanager=launchd\nservice=%s\npath=%s\n", launchdServiceName, serveInstallLaunchdPath)
+	return err
+}
+
+func writeDaemonFile(path, content string, force bool, mode os.FileMode) error {
+	if st, err := serveInstallStat(path); err == nil {
+		if st.IsDir() {
+			return fmt.Errorf("daemon service path %s is a directory", path)
+		}
+		if !force {
+			return fmt.Errorf("%s already exists (use --force to overwrite)", path)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("stat %s: %w", path, err)
+	}
+
+	if err := serveInstallMkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create daemon service directory: %w", err)
+	}
+	if err := serveInstallWriteFile(path, []byte(content), mode); err != nil {
+		return fmt.Errorf("write daemon service file %s: %w", path, err)
+	}
+	return nil
+}
+
+func renderSystemdService(executablePath string, args []string) string {
+	cmd := append([]string{executablePath}, args...)
+	return fmt.Sprintf(`[Unit]
+Description=Cleanroom control-plane server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%s
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+`, joinSystemdExecArgs(cmd))
+}
+
+func joinSystemdExecArgs(args []string) string {
+	quoted := make([]string, 0, len(args))
+	for _, arg := range args {
+		if strings.ContainsAny(arg, " \t\"\\'") {
+			quoted = append(quoted, strconv.Quote(arg))
+			continue
+		}
+		quoted = append(quoted, arg)
+	}
+	return strings.Join(quoted, " ")
+}
+
+func renderLaunchdService(executablePath string, args []string) string {
+	cmd := append([]string{executablePath}, args...)
+	var b strings.Builder
+	b.WriteString(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">` + "\n")
+	b.WriteString(`<plist version="1.0">` + "\n")
+	b.WriteString("<dict>\n")
+	b.WriteString("\t<key>Label</key>\n")
+	b.WriteString("\t<string>")
+	b.WriteString(escapePlistValue(launchdServiceName))
+	b.WriteString("</string>\n")
+	b.WriteString("\t<key>ProgramArguments</key>\n")
+	b.WriteString("\t<array>\n")
+	for _, arg := range cmd {
+		b.WriteString("\t\t<string>")
+		b.WriteString(escapePlistValue(arg))
+		b.WriteString("</string>\n")
+	}
+	b.WriteString("\t</array>\n")
+	b.WriteString("\t<key>RunAtLoad</key>\n")
+	b.WriteString("\t<true/>\n")
+	b.WriteString("\t<key>KeepAlive</key>\n")
+	b.WriteString("\t<true/>\n")
+	b.WriteString("</dict>\n")
+	b.WriteString("</plist>\n")
+	return b.String()
+}
+
+func escapePlistValue(value string) string {
+	var b strings.Builder
+	if err := xml.EscapeText(&b, []byte(value)); err != nil {
+		return value
+	}
+	return b.String()
+}
+
+func isExitError(err error) bool {
+	var exitErr *exec.ExitError
+	return errors.As(err, &exitErr)
+}
+
+func runServeInstallCommand(name string, args ...string) error {
+	cmd := exec.Command(name, args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg == "" {
+			msg = "no stderr output"
+		}
+		parts := append([]string{name}, args...)
+		return fmt.Errorf("%s: %w (%s)", strings.Join(parts, " "), err, msg)
+	}
+	return nil
+}
+
+func (s *ServeCommand) runServer(ctx *runtimeContext) error {
+	ep, err := endpoint.ResolveListen(s.Listen)
+	if err != nil {
+		return err
+	}
+	if shouldShowStartupHeader(os.Stderr) {
+		gatewayListen := strings.TrimSpace(s.GatewayListen)
+		if gatewayListen == "" {
+			gatewayListen = fmt.Sprintf(":%d", gateway.DefaultPort)
+		}
+		if err := writeStartupHeader(os.Stderr, startupHeader{
+			Title: "cleanroom serve",
+			Fields: []startupField{
+				{Key: "workspace", Value: ctx.CWD},
+				{Key: "listen", Value: endpointDisplay(ep)},
+				{Key: "gateway_listen", Value: gatewayListen},
+				{Key: "runtime_config", Value: ctx.ConfigPath},
+				{Key: "log_level", Value: effectiveLogLevel(s.LogLevel)},
+			},
+		}, shouldUseANSI(os.Stderr)); err != nil {
+			return err
+		}
+	}
+
+	logger, err := newLogger(s.LogLevel, "server")
+	if err != nil {
+		return err
+	}
+	log.SetDefault(logger)
+
+	gwRegistry := gateway.NewRegistry()
+	gwCredentials := gateway.NewEnvCredentialProvider()
+	gwServer := gateway.NewServer(gateway.ServerConfig{
+		ListenAddr:  s.GatewayListen,
+		Registry:    gwRegistry,
+		Credentials: gwCredentials,
+		Logger:      logger.With("subsystem", "gateway"),
+	})
+	if err := gwServer.Start(); err != nil {
+		return fmt.Errorf("start gateway: %w", err)
+	}
+
+	gwPort := gateway.DefaultPort
+	if _, portStr, err := net.SplitHostPort(gwServer.Addr()); err == nil {
+		if p, err := strconv.Atoi(portStr); err == nil && p > 0 {
+			gwPort = p
+		}
+	}
+
+	if fcAdapter, ok := ctx.Backends["firecracker"].(*firecracker.Adapter); ok {
+		fcAdapter.GatewayRegistry = gwRegistry
+		fcAdapter.GatewayPort = gwPort
+
+		if shouldInstallGatewayFirewall(runtime.GOOS) {
+			fwCfg := backend.FirecrackerConfig{
+				PrivilegedMode:       ctx.Config.Backends.Firecracker.PrivilegedMode,
+				PrivilegedHelperPath: ctx.Config.Backends.Firecracker.PrivilegedHelperPath,
+			}
+			fwCleanup, err := firecracker.SetupGatewayFirewall(context.Background(), gwPort, fwCfg)
+			if err != nil {
+				logger.Warn("failed to install gateway firewall rules", "error", err)
+			} else {
+				defer fwCleanup()
+			}
+		}
+	}
+	if darwinAdapter, ok := ctx.Backends["darwin-vz"].(*darwinvz.Adapter); ok {
+		darwinAdapter.GatewayRegistry = gwRegistry
+		darwinAdapter.GatewayPort = gwPort
+		if host := strings.TrimSpace(os.Getenv("CLEANROOM_DARWIN_GATEWAY_HOST")); host != "" {
+			darwinAdapter.GatewayHost = host
+		}
+	}
+
+	var serverTLS *controlserver.TLSOptions
+	if ep.Scheme == "https" {
+		serverTLS = &controlserver.TLSOptions{
+			CertPath: s.TLSCert,
+			KeyPath:  s.TLSKey,
+		}
+	}
+
+	service := &controlservice.Service{
+		Loader:   ctx.Loader,
+		Config:   ctx.Config,
+		Backends: ctx.Backends,
+		Logger:   logger.With("subsystem", "service"),
+	}
+	server := controlserver.New(service, logger.With("subsystem", "http"))
+
+	runCtx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	interactiveListen, interactiveHost := resolveInteractiveQUICEndpoint(ep)
+	interactiveServer, err := interactivequic.Start(runCtx, interactiveListen, service, logger.With("subsystem", "interactive-quic"))
+	if err != nil {
+		return fmt.Errorf("start interactive quic server: %w", err)
+	}
+	defer interactiveServer.Close()
+
+	interactiveEndpoint := interactiveAdvertiseEndpoint(interactiveServer.Addr(), interactiveHost)
+	service.ConfigureInteractiveTransport(interactiveEndpoint, interactiveServer.ALPN(), interactiveServer.CertPinSHA256())
+	logger.Info(
+		"interactive QUIC server ready",
+		"listen", interactiveServer.Addr().String(),
+		"endpoint", interactiveEndpoint,
+		"alpn", interactiveServer.ALPN(),
+	)
+
+	runErr := controlserver.Serve(runCtx, ep, server.Handler(), logger, serverTLS)
+	gwStopCtx, gwStopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer gwStopCancel()
+	_ = gwServer.Stop(gwStopCtx)
+	return runErr
+}
+
+func resolveInteractiveQUICEndpoint(ep endpoint.Endpoint) (listenAddr, advertiseHost string) {
+	if ep.Scheme == "unix" {
+		return "127.0.0.1:0", "127.0.0.1"
+	}
+
+	address := strings.TrimSpace(ep.Address)
+	address = strings.TrimPrefix(address, "http://")
+	address = strings.TrimPrefix(address, "https://")
+	host, port, err := net.SplitHostPort(address)
+	if err != nil || strings.TrimSpace(port) == "" {
+		return "127.0.0.1:0", "127.0.0.1"
+	}
+
+	normalizedHost := host
+	if normalizedHost == "" {
+		normalizedHost = "0.0.0.0"
+	}
+
+	advertiseHost = strings.TrimSpace(host)
+	return net.JoinHostPort(normalizedHost, port), advertiseHost
+}
+
+func interactiveAdvertiseEndpoint(listenerAddr net.Addr, advertiseHost string) string {
+	if listenerAddr == nil {
+		return ""
+	}
+	host, port, err := net.SplitHostPort(listenerAddr.String())
+	if err != nil || strings.TrimSpace(port) == "" {
+		return listenerAddr.String()
+	}
+	targetHost := strings.TrimSpace(advertiseHost)
+	if targetHost == "" {
+		targetHost = host
+	}
+	return net.JoinHostPort(targetHost, port)
+}
+
+func resolveInteractiveDialEndpoint(controlEP endpoint.Endpoint, quicEndpoint string) string {
+	quicEndpoint = strings.TrimSpace(quicEndpoint)
+	if quicEndpoint == "" {
+		return quicEndpoint
+	}
+	quicHost, quicPort, err := net.SplitHostPort(quicEndpoint)
+	if err != nil || strings.TrimSpace(quicPort) == "" {
+		return quicEndpoint
+	}
+	if !isWildcardOrLoopbackHost(quicHost) {
+		return quicEndpoint
+	}
+
+	controlHost := resolveEndpointDialHost(controlEP)
+	if controlHost == "" || isWildcardHost(controlHost) {
+		return quicEndpoint
+	}
+	return net.JoinHostPort(controlHost, quicPort)
+}
+
+func resolveEndpointDialHost(ep endpoint.Endpoint) string {
+	if ep.Scheme == "unix" {
+		return ""
+	}
+	baseURL := strings.TrimSpace(ep.BaseURL)
+	if baseURL == "" {
+		return ""
+	}
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(parsed.Hostname())
+}
+
+func isWildcardOrLoopbackHost(host string) bool {
+	return isWildcardHost(host) || isLoopbackHost(host)
+}
+
+func isWildcardHost(host string) bool {
+	host = strings.TrimSpace(strings.Trim(host, "[]"))
+	switch host {
+	case "", "0.0.0.0", "::":
+		return true
+	default:
+		return false
+	}
+}
+
+func isLoopbackHost(host string) bool {
+	host = strings.TrimSpace(strings.Trim(host, "[]"))
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func (d *DoctorCommand) Run(ctx *runtimeContext) error {
+	cwd, err := resolveCWD(ctx.CWD, d.Chdir)
+	if err != nil {
+		return err
+	}
+	backendName := resolveBackendName(d.Backend, ctx.Config.DefaultBackend)
+	adapter, ok := ctx.Backends[backendName]
+	if !ok {
+		return fmt.Errorf("unknown backend %q", backendName)
+	}
+	capabilities := backend.CapabilitiesForAdapter(adapter)
+	gwCredentials := gateway.NewEnvCredentialProvider()
+	gwHosts := gwCredentials.ConfiguredHosts()
+	gwRoutes := gateway.Routes()
+	credSummary := "none configured"
+	if len(gwHosts) > 0 {
+		credSummary = strings.Join(gwHosts, ", ")
+	}
+	routeSummary := strings.Join(gwRoutes, ", ")
+
+	checks := []backend.DoctorCheck{
+		{Name: "runtime_config", Status: "pass", Message: fmt.Sprintf("using runtime config path %s", ctx.ConfigPath)},
+		{Name: "backend", Status: "pass", Message: fmt.Sprintf("selected backend %s", backendName)},
+		{
+			Name:    "gateway_listen",
+			Status:  "pass",
+			Message: fmt.Sprintf("default listen %s (port %d; override with cleanroom serve --gateway-listen)", gateway.DefaultListenAddr, gateway.DefaultPort),
+		},
+		{
+			Name:    "gateway_routes",
+			Status:  "pass",
+			Message: fmt.Sprintf("enabled routes: %s", routeSummary),
+		},
+		{
+			Name:    "gateway_credentials",
+			Status:  "pass",
+			Message: fmt.Sprintf("configured credential hosts: %s", credSummary),
+		},
+	}
+	for _, key := range backend.SortedCapabilityKeys(capabilities) {
+		status := "warn"
+		message := fmt.Sprintf("%s: unsupported", key)
+		if capabilities[key] {
+			status = "pass"
+			message = fmt.Sprintf("%s: supported", key)
+		}
+		checks = append(checks, backend.DoctorCheck{
+			Name:    capabilityCheckName(key),
+			Status:  status,
+			Message: message,
+		})
+	}
+
+	compiled, source, err := ctx.Loader.LoadAndCompile(cwd)
+	if err != nil {
+		checks = append(checks, backend.DoctorCheck{
+			Name:    "repository_policy",
+			Status:  "warn",
+			Message: fmt.Sprintf("policy not loaded from %s: %v", cwd, err),
+		})
+	} else {
+		checks = append(checks, backend.DoctorCheck{
+			Name:    "repository_policy",
+			Status:  "pass",
+			Message: fmt.Sprintf("policy loaded from %s (hash %s)", source, compiled.Hash),
+		})
+	}
+
+	type doctorCapable interface {
+		Doctor(context.Context, backend.DoctorRequest) (*backend.DoctorReport, error)
+	}
+	if checker, ok := adapter.(doctorCapable); ok {
+		report, err := checker.Doctor(context.Background(), backend.DoctorRequest{
+			Policy:            compiled,
+			FirecrackerConfig: mergeBackendConfig(backendName, 0, ctx.Config),
+		})
+		if err != nil {
+			return err
+		}
+		checks = append(checks, report.Checks...)
+	} else {
+		checks = append(checks, backend.DoctorCheck{
+			Name:    "backend_doctor",
+			Status:  "warn",
+			Message: "selected backend does not expose doctor diagnostics",
+		})
+	}
+
+	if d.JSON {
+		payload := map[string]any{
+			"backend":      backendName,
+			"capabilities": backend.CloneCapabilities(capabilities),
+			"checks":       checks,
+			"gateway": map[string]any{
+				"default_listen":   gateway.DefaultListenAddr,
+				"default_port":     gateway.DefaultPort,
+				"routes":           gwRoutes,
+				"credential_hosts": gwHosts,
+			},
+		}
+		enc := json.NewEncoder(ctx.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(payload)
+	}
+
+	_, err = fmt.Fprint(ctx.Stdout, renderDoctorReport(backendName, checks, shouldUseANSI(ctx.Stdout)))
+	return err
+}
+
+func resolveBackendName(requested, configuredDefault string) string {
+	if requested != "" {
+		return requested
+	}
+	if configuredDefault != "" {
+		return configuredDefault
+	}
+	return runtimeconfig.DefaultBackendForHost()
+}
+
+func shouldInstallGatewayFirewall(goos string) bool {
+	return strings.EqualFold(strings.TrimSpace(goos), "linux")
+}
+
+var capabilityNameReplacer = strings.NewReplacer(".", "_", "-", "_")
+
+func capabilityCheckName(key string) string {
+	trimmed := strings.TrimSpace(key)
+	if trimmed == "" {
+		return "capability_unknown"
+	}
+	return "capability_" + capabilityNameReplacer.Replace(trimmed)
+}
+
+func mergeBackendConfig(backendName string, launchSeconds int64, cfg runtimeconfig.Config) backend.FirecrackerConfig {
+	out := backend.FirecrackerConfig{
+		BinaryPath:           cfg.Backends.Firecracker.BinaryPath,
+		KernelImagePath:      cfg.Backends.Firecracker.KernelImage,
+		RootFSPath:           cfg.Backends.Firecracker.RootFS,
+		DockerStartupSeconds: cfg.Backends.Firecracker.Services.Docker.StartupTimeoutSeconds,
+		DockerStorageDriver:  cfg.Backends.Firecracker.Services.Docker.StorageDriver,
+		DockerIPTables:       cfg.Backends.Firecracker.Services.Docker.IPTables,
+		PrivilegedMode:       cfg.Backends.Firecracker.PrivilegedMode,
+		PrivilegedHelperPath: cfg.Backends.Firecracker.PrivilegedHelperPath,
+		VCPUs:                cfg.Backends.Firecracker.VCPUs,
+		MemoryMiB:            cfg.Backends.Firecracker.MemoryMiB,
+		GuestCID:             cfg.Backends.Firecracker.GuestCID,
+		GuestPort:            cfg.Backends.Firecracker.GuestPort,
+		LaunchSeconds:        cfg.Backends.Firecracker.LaunchSeconds,
+	}
+	if backendName == "darwin-vz" {
+		out.KernelImagePath = cfg.Backends.DarwinVZ.KernelImage
+		out.RootFSPath = cfg.Backends.DarwinVZ.RootFS
+		out.DockerStartupSeconds = cfg.Backends.DarwinVZ.Services.Docker.StartupTimeoutSeconds
+		out.DockerStorageDriver = cfg.Backends.DarwinVZ.Services.Docker.StorageDriver
+		out.DockerIPTables = cfg.Backends.DarwinVZ.Services.Docker.IPTables
+		out.VCPUs = cfg.Backends.DarwinVZ.VCPUs
+		out.MemoryMiB = cfg.Backends.DarwinVZ.MemoryMiB
+		out.GuestPort = cfg.Backends.DarwinVZ.GuestPort
+		out.LaunchSeconds = cfg.Backends.DarwinVZ.LaunchSeconds
+	}
+
+	out.Launch = true
+	if launchSeconds != 0 {
+		out.LaunchSeconds = launchSeconds
+	}
+	return out
+}
+
+func (s *StatusCommand) Run(ctx *runtimeContext) error {
+	baseDir, err := paths.RunBaseDir()
+	if err != nil {
+		return fmt.Errorf("resolve run base directory: %w", err)
+	}
+	if s.RunID != "" && s.LastRun {
+		return errors.New("choose either --run-id or --last-run")
+	}
+	if s.RunID != "" {
+		return inspectRun(ctx.Stdout, baseDir, s.RunID)
+	}
+	if s.LastRun {
+		entries, err := os.ReadDir(baseDir)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				_, werr := fmt.Fprintf(ctx.Stdout, "no runs found (%s does not exist)\n", baseDir)
+				return werr
+			}
+			return err
+		}
+		var newest string
+		var newestTime time.Time
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			info, err := entry.Info()
+			if err != nil {
+				return err
+			}
+			if newest == "" || info.ModTime().After(newestTime) {
+				newest = entry.Name()
+				newestTime = info.ModTime()
+			}
+		}
+		if newest == "" {
+			_, err := fmt.Fprintf(ctx.Stdout, "no runs found in %s\n", baseDir)
+			return err
+		}
+		return inspectRun(ctx.Stdout, baseDir, newest)
+	}
+
+	entries, err := os.ReadDir(baseDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			_, werr := fmt.Fprintf(ctx.Stdout, "no runs found (%s does not exist)\n", baseDir)
+			return werr
+		}
+		return err
+	}
+
+	if len(entries) == 0 {
+		_, err := fmt.Fprintf(ctx.Stdout, "no runs found in %s\n", baseDir)
+		return err
+	}
+
+	_, err = fmt.Fprintf(ctx.Stdout, "runs in %s:\n", baseDir)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		if _, err := fmt.Fprintf(ctx.Stdout, "- %s\n", entry.Name()); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func inspectRun(stdout *os.File, baseDir, runID string) error {
+	runDir := filepath.Join(baseDir, runID)
+	if _, err := os.Stat(runDir); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("run %q not found in %s", runID, baseDir)
+		}
+		return err
+	}
+	if _, err := fmt.Fprintf(stdout, "run: %s\n", runDir); err != nil {
+		return err
+	}
+	obsPath := filepath.Join(runDir, "run-observability.json")
+	b, err := os.ReadFile(obsPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			_, werr := fmt.Fprintf(stdout, "observability: not found (%s)\n", obsPath)
+			return werr
+		}
+		return err
+	}
+	var obs map[string]any
+	if err := json.Unmarshal(b, &obs); err != nil {
+		return fmt.Errorf("parse %s: %w", obsPath, err)
+	}
+	out, err := json.MarshalIndent(obs, "", "  ")
+	if err != nil {
+		return fmt.Errorf("format %s: %w", obsPath, err)
+	}
+	_, err = fmt.Fprintf(stdout, "observability (%s):\n%s\n", obsPath, out)
+	return err
+}
+
+func ensureSandboxID(client *controlclient.Client, loader policyLoader, cwd, host, backendName, existingSandboxID, imageRefOverride string, launchSeconds int64) (string, error) {
+	sandboxID := strings.TrimSpace(existingSandboxID)
+	if sandboxID != "" {
+		if strings.TrimSpace(imageRefOverride) != "" {
+			return "", errors.New("--image cannot be used with --sandbox-id")
+		}
+		return sandboxID, nil
+	}
+
+	compiled, _, err := loader.LoadAndCompile(cwd)
+	if err != nil {
+		return "", err
+	}
+	allowLocalImageOverride, err := isLocalControlPlaneEndpoint(host)
+	if err != nil {
+		return "", err
+	}
+	compiled, err = overrideCompiledPolicyImage(compiled, imageRefOverride, allowLocalImageOverride)
+	if err != nil {
+		return "", err
+	}
+	if err := withSandboxProgress(os.Stderr, func() error {
+		createSandboxResp, createErr := client.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+			Backend: backendName,
+			Options: &cleanroomv1.SandboxOptions{
+				LaunchSeconds: launchSeconds,
+			},
+			Policy: compiled.ToProto(),
+		})
+		if createErr != nil {
+			return createErr
+		}
+
+		sandboxID = strings.TrimSpace(createSandboxResp.GetSandbox().GetSandboxId())
+		if sandboxID == "" {
+			return errors.New("response missing sandbox id")
+		}
+		return nil
+	}); err != nil {
+		return "", fmt.Errorf("create sandbox: %w", err)
+	}
+	return sandboxID, nil
+}
+
+func isLocalControlPlaneEndpoint(host string) (bool, error) {
+	ep, err := endpoint.Resolve(host)
+	if err != nil {
+		return false, err
+	}
+	return ep.Scheme == "unix", nil
+}
+
+func overrideCompiledPolicyImage(compiled *policy.CompiledPolicy, imageRefOverride string, allowLocal bool) (*policy.CompiledPolicy, error) {
+	imageRefOverride = strings.TrimSpace(imageRefOverride)
+	if imageRefOverride == "" {
+		return compiled, nil
+	}
+
+	resolvedRef, err := resolveReferenceForImageOverride(context.Background(), imageRefOverride, allowLocal)
+	if err != nil {
+		return nil, fmt.Errorf("invalid --image value: %w", err)
+	}
+	parsedRef, err := ociref.ParseDigestReference(resolvedRef)
+	if err != nil {
+		return nil, fmt.Errorf("invalid --image value: %w", err)
+	}
+
+	pb := compiled.ToProto()
+	pb.ImageRef = parsedRef.Original
+	pb.ImageDigest = parsedRef.Digest()
+	pb.Hash = ""
+
+	overridden, err := policy.FromProto(pb)
+	if err != nil {
+		return nil, fmt.Errorf("apply --image override: %w", err)
+	}
+	return overridden, nil
+}
+
+func importLocalDockerImageForOverride(ctx context.Context, source string) (string, error) {
+	source = strings.TrimSpace(source)
+	if source == "" {
+		return "", errors.New("image reference cannot be empty")
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		return "", fmt.Errorf("docker CLI not found in PATH: %w", err)
+	}
+
+	inspectCmd := exec.CommandContext(ctx, "docker", "image", "inspect", "--format", "{{.Id}}", source)
+	var inspectStdout bytes.Buffer
+	var inspectStderr bytes.Buffer
+	inspectCmd.Stdout = &inspectStdout
+	inspectCmd.Stderr = &inspectStderr
+	if err := inspectCmd.Run(); err != nil {
+		errText := strings.TrimSpace(inspectStderr.String())
+		if errText == "" {
+			errText = err.Error()
+		}
+		return "", fmt.Errorf("inspect local docker image %q: %s", source, errText)
+	}
+
+	imageID := strings.TrimSpace(inspectStdout.String())
+	if imageID == "" {
+		return "", fmt.Errorf("inspect local docker image %q returned empty image id", source)
+	}
+	digestRef, err := ociref.ParseDigestReference("local/docker-image@" + imageID)
+	if err != nil {
+		return "", fmt.Errorf("inspect local docker image %q returned invalid image id %q: %w", source, imageID, err)
+	}
+
+	mgr, err := newImageManager()
+	if err != nil {
+		return "", err
+	}
+
+	cachedRecords, err := mgr.List(ctx)
+	if err != nil {
+		return "", err
+	}
+	for _, record := range cachedRecords {
+		if record.Digest != digestRef.Digest() {
+			continue
+		}
+		if _, statErr := os.Stat(record.RootFSPath); statErr == nil {
+			_, _ = fmt.Fprintf(os.Stderr, "using cached local image override %s\n", digestRef.Original)
+			return digestRef.Original, nil
+		}
+	}
+
+	_, _ = fmt.Fprintf(os.Stderr, "importing local docker image %q into cleanroom cache (first run can take a while)\n", source)
+
+	createCmd := exec.CommandContext(ctx, "docker", "create", source)
+	var createStdout bytes.Buffer
+	var createStderr bytes.Buffer
+	createCmd.Stdout = &createStdout
+	createCmd.Stderr = &createStderr
+	if err := createCmd.Run(); err != nil {
+		errText := strings.TrimSpace(createStderr.String())
+		if errText == "" {
+			errText = err.Error()
+		}
+		return "", fmt.Errorf("create container from %q: %s", source, errText)
+	}
+	containerID := strings.TrimSpace(createStdout.String())
+	if containerID == "" {
+		return "", fmt.Errorf("create container from %q returned empty container id", source)
+	}
+	defer func() {
+		_ = exec.Command("docker", "rm", "-f", containerID).Run()
+	}()
+
+	exportFile, err := os.CreateTemp("", "cleanroom-local-image-*.tar")
+	if err != nil {
+		return "", fmt.Errorf("create temporary export file: %w", err)
+	}
+	defer func() {
+		_ = exportFile.Close()
+		_ = os.Remove(exportFile.Name())
+	}()
+
+	exportCmd := exec.CommandContext(ctx, "docker", "export", containerID)
+	var exportStderr bytes.Buffer
+	exportCmd.Stdout = exportFile
+	exportCmd.Stderr = &exportStderr
+	if err := exportCmd.Run(); err != nil {
+		errText := strings.TrimSpace(exportStderr.String())
+		if errText == "" {
+			errText = err.Error()
+		}
+		return "", fmt.Errorf("export container %q from %q: %s", containerID, source, errText)
+	}
+	if _, err := exportFile.Seek(0, io.SeekStart); err != nil {
+		return "", fmt.Errorf("rewind temporary export file: %w", err)
+	}
+
+	if _, err := mgr.Import(ctx, digestRef.Original, "-", exportFile); err != nil {
+		return "", fmt.Errorf("import local docker image %q into cleanroom cache: %w", source, err)
+	}
+
+	_, _ = fmt.Fprintf(os.Stderr, "imported local docker image override as %s\n", digestRef.Original)
+	return digestRef.Original, nil
+}
+
+func getFinalExecutionExitCode(client *controlclient.Client, sandboxID, executionID string) (int, bool) {
+	getResp, err := client.GetExecution(context.Background(), &cleanroomv1.GetExecutionRequest{
+		SandboxId:   sandboxID,
+		ExecutionId: executionID,
+	})
+	if err != nil || getResp.GetExecution() == nil {
+		return 0, false
+	}
+	execution := getResp.GetExecution()
+	if !isFinalExecutionStatus(execution.GetStatus()) {
+		return 0, false
+	}
+	return int(execution.GetExitCode()), true
+}
+
+func replayExecutionHistory(client *controlclient.Client, sandboxID, executionID string, stdout, stderr io.Writer) (int, bool, error) {
+	stream, err := client.StreamExecution(context.Background(), &cleanroomv1.StreamExecutionRequest{
+		SandboxId:   sandboxID,
+		ExecutionId: executionID,
+		Follow:      false,
+	})
+	if err != nil {
+		return 0, false, err
+	}
+
+	exitCode := 0
+	haveExitCode := false
+	for stream.Receive() {
+		event := stream.Msg()
+		switch payload := event.Payload.(type) {
+		case *cleanroomv1.ExecutionStreamEvent_Stdout:
+			if _, err := stdout.Write(payload.Stdout); err != nil {
+				return 0, false, err
+			}
+		case *cleanroomv1.ExecutionStreamEvent_Stderr:
+			if _, err := stderr.Write(payload.Stderr); err != nil {
+				return 0, false, err
+			}
+		case *cleanroomv1.ExecutionStreamEvent_Exit:
+			exitCode = int(payload.Exit.GetExitCode())
+			haveExitCode = true
+		}
+	}
+	if err := stream.Err(); err != nil {
+		return 0, false, err
+	}
+	return exitCode, haveExitCode, nil
+}
+
+func pollInteractiveExitOrControlErr(exitCodeCh <-chan int, controlErrCh *chan error) (int, bool, error) {
+	if exitCodeCh != nil {
+		select {
+		case code := <-exitCodeCh:
+			return code, true, nil
+		default:
+		}
+	}
+
+	if controlErrCh == nil || *controlErrCh == nil {
+		return 0, false, nil
+	}
+
+	select {
+	case controlErr, ok := <-*controlErrCh:
+		if !ok {
+			*controlErrCh = nil
+			return 0, false, nil
+		}
+		if controlErr != nil && !isInteractiveStreamClosedErr(controlErr) {
+			return 0, false, fmt.Errorf("interactive control stream: %w", controlErr)
+		}
+	default:
+	}
+	return 0, false, nil
+}
+
+func waitForInteractiveExitOrControlErr(exitCodeCh <-chan int, controlErrCh *chan error, timeout time.Duration) (int, bool, error) {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+
+	for {
+		if code, haveExitCode, pollErr := pollInteractiveExitOrControlErr(exitCodeCh, controlErrCh); pollErr != nil || haveExitCode {
+			return code, haveExitCode, pollErr
+		}
+
+		if controlErrCh == nil || *controlErrCh == nil {
+			select {
+			case code := <-exitCodeCh:
+				return code, true, nil
+			case <-deadline.C:
+				return 0, false, nil
+			}
+		}
+
+		select {
+		case code := <-exitCodeCh:
+			return code, true, nil
+		case controlErr, ok := <-*controlErrCh:
+			if !ok {
+				*controlErrCh = nil
+				continue
+			}
+			if controlErr != nil && !isInteractiveStreamClosedErr(controlErr) {
+				return 0, false, fmt.Errorf("interactive control stream: %w", controlErr)
+			}
+		case <-deadline.C:
+			return 0, false, nil
+		}
+	}
+}
+
+func resolveConsoleDialFailure(
+	dialErr error,
+	replayFn func() (int, bool, error),
+	getFinalFn func() (int, bool),
+) error {
+	haveExitCode := false
+	exitCode := 0
+	if replayFn != nil {
+		replayedExitCode, replayedHaveExitCode, replayErr := replayFn()
+		if replayErr == nil {
+			haveExitCode = replayedHaveExitCode
+			exitCode = replayedExitCode
+		}
+	}
+
+	if !haveExitCode && getFinalFn != nil {
+		if fetchedExitCode, ok := getFinalFn(); ok {
+			haveExitCode = true
+			exitCode = fetchedExitCode
+		}
+	}
+
+	if haveExitCode {
+		if exitCode != 0 {
+			return exitCodeError{code: exitCode}
+		}
+		return nil
+	}
+	return fmt.Errorf("dial interactive execution: %w", dialErr)
+}
+
+func terminateSandboxBestEffort(client *controlclient.Client, sandboxID string, timeout time.Duration, logger *log.Logger, warnMessage string) {
+	if client == nil || strings.TrimSpace(sandboxID) == "" {
+		return
+	}
+
+	terminateCtx := context.Background()
+	var terminateCancel context.CancelFunc
+	if timeout > 0 {
+		terminateCtx, terminateCancel = context.WithTimeout(context.Background(), timeout)
+		defer terminateCancel()
+	}
+
+	_, err := client.TerminateSandbox(terminateCtx, &cleanroomv1.TerminateSandboxRequest{SandboxId: sandboxID})
+	if err != nil && logger != nil {
+		logger.Warn(warnMessage, "sandbox_id", sandboxID, "error", err)
+	}
+}
+
+func isCanceledStreamErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) {
+		return true
+	}
+	var connectErr *connect.Error
+	if errors.As(err, &connectErr) && connectErr.Code() == connect.CodeCanceled {
+		return true
+	}
+	return false
+}
+
+func isExecutionNoLongerActiveErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "no longer active")
+}
+
+func isInteractiveStreamClosedErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) || errors.Is(err, net.ErrClosed) {
+		return true
+	}
+	var appErr *quic.ApplicationError
+	if errors.As(err, &appErr) && appErr.ErrorCode == 0 {
+		return true
+	}
+	return false
+}
+
+func sandboxStatusString(s cleanroomv1.SandboxStatus) string {
+	switch s {
+	case cleanroomv1.SandboxStatus_SANDBOX_STATUS_PROVISIONING:
+		return "provisioning"
+	case cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY:
+		return "ready"
+	case cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPING:
+		return "stopping"
+	case cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPED:
+		return "stopped"
+	case cleanroomv1.SandboxStatus_SANDBOX_STATUS_FAILED:
+		return "failed"
+	default:
+		return "unknown"
+	}
+}
+
+func isFinalExecutionStatus(status cleanroomv1.ExecutionStatus) bool {
+	switch status {
+	case cleanroomv1.ExecutionStatus_EXECUTION_STATUS_SUCCEEDED,
+		cleanroomv1.ExecutionStatus_EXECUTION_STATUS_FAILED,
+		cleanroomv1.ExecutionStatus_EXECUTION_STATUS_CANCELED,
+		cleanroomv1.ExecutionStatus_EXECUTION_STATUS_TIMED_OUT:
+		return true
+	default:
+		return false
+	}
+}
 func resolveCWD(base, chdir string) (string, error) {
 	if chdir == "" {
 		return base, nil
