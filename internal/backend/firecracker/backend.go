@@ -475,7 +475,7 @@ func (a *Adapter) CreateSnapshot(ctx context.Context, req backend.SnapshotReques
 		return nil, fmt.Errorf("sync sandbox filesystem before snapshot: %w", err)
 	}
 
-	snapshotPath, err := snapshotStoragePath(snapshotID)
+	snapshotPath, err := snapshotStoragePath(req.FirecrackerConfig, snapshotID)
 	if err != nil {
 		return nil, err
 	}
@@ -1670,12 +1670,19 @@ func sandboxRuntimeBaseDir() (string, error) {
 	return filepath.Join(base, "sandboxes"), nil
 }
 
-func snapshotStoragePath(snapshotID string) (string, error) {
-	base, err := paths.SnapshotDir()
+func snapshotStoragePath(cfg backend.FirecrackerConfig, snapshotID string) (string, error) {
+	base, err := snapshotStorageBaseDir(cfg)
 	if err != nil {
 		return "", fmt.Errorf("resolve snapshot base directory: %w", err)
 	}
 	return filepath.Join(base, "firecracker", snapshotID, "rootfs.ext4"), nil
+}
+
+func snapshotStorageBaseDir(cfg backend.FirecrackerConfig) (string, error) {
+	if baseDir := strings.TrimSpace(cfg.Snapshots.BaseDir); baseDir != "" {
+		return filepath.Clean(baseDir), nil
+	}
+	return paths.SnapshotDir()
 }
 
 func pauseSandboxProcess(instance *sandboxInstance) error {

@@ -1229,6 +1229,63 @@ func TestCreateSandboxMergesDarwinVZConfig(t *testing.T) {
 	}
 }
 
+func TestCreateSandboxMergesFirecrackerSnapshotConfig(t *testing.T) {
+	adapter := &stubAdapter{}
+	svc := &Service{
+		Loader: stubLoader{
+			compiled: &policy.CompiledPolicy{
+				Version:        1,
+				NetworkDefault: "deny",
+				ImageRef:       "ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+				ImageDigest:    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+			},
+			source: "/repo/cleanroom.yaml",
+		},
+		Config: runtimeconfig.Config{
+			DefaultBackend: "firecracker",
+			Backends: runtimeconfig.Backends{
+				Firecracker: runtimeconfig.FirecrackerConfig{
+					KernelImage: "/firecracker-kernel",
+					RootFS:      "/firecracker-rootfs",
+					Snapshots: runtimeconfig.SnapshotConfig{
+						Enabled:               true,
+						Driver:                "zfs",
+						BaseDir:               "/var/tmp/cleanroom-snapshots",
+						ZFSDataset:            "tank/cleanroom",
+						QuiesceTimeoutSeconds: 15,
+					},
+				},
+			},
+		},
+		Backends: map[string]backend.Adapter{"firecracker": adapter},
+	}
+
+	_, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	if got, want := adapter.provisionCalls, 1; got != want {
+		t.Fatalf("unexpected provision call count: got %d want %d", got, want)
+	}
+
+	gotCfg := adapter.provisionReq.FirecrackerConfig
+	if !gotCfg.Snapshots.Enabled {
+		t.Fatal("expected snapshots.enabled=true")
+	}
+	if got, want := gotCfg.Snapshots.Driver, "zfs"; got != want {
+		t.Fatalf("unexpected snapshot driver: got %q want %q", got, want)
+	}
+	if got, want := gotCfg.Snapshots.BaseDir, "/var/tmp/cleanroom-snapshots"; got != want {
+		t.Fatalf("unexpected snapshot base_dir: got %q want %q", got, want)
+	}
+	if got, want := gotCfg.Snapshots.ZFSDataset, "tank/cleanroom"; got != want {
+		t.Fatalf("unexpected snapshot zfs_dataset: got %q want %q", got, want)
+	}
+	if got, want := gotCfg.Snapshots.QuiesceTimeoutSeconds, int64(15); got != want {
+		t.Fatalf("unexpected snapshot quiesce timeout: got %d want %d", got, want)
+	}
+}
+
 func TestCreateExecutionRejectsWhenSandboxBusy(t *testing.T) {
 	started := make(chan struct{}, 1)
 	adapter := &stubAdapter{

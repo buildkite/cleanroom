@@ -190,3 +190,56 @@ func TestPathReturnsErrorWhenHomeUnavailableForNonRoot(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestLoadParsesSnapshotConfig(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	configPath := filepath.Join(tmp, "cleanroom", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	content := `backends:
+  firecracker:
+    snapshots:
+      enabled: true
+      driver: zfs
+      base_dir: /var/tmp/cleanroom-snapshots
+      zfs_dataset: tank/cleanroom
+      quiesce_timeout_seconds: 15
+  darwin-vz:
+    snapshots:
+      enabled: false
+      driver: apfs
+      base_dir: /var/tmp/cleanroom-darwin
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, _, err := Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if !cfg.Backends.Firecracker.Snapshots.Enabled {
+		t.Fatal("expected firecracker snapshots to be enabled")
+	}
+	if got, want := cfg.Backends.Firecracker.Snapshots.Driver, "zfs"; got != want {
+		t.Fatalf("unexpected firecracker snapshot driver: got %q want %q", got, want)
+	}
+	if got, want := cfg.Backends.Firecracker.Snapshots.BaseDir, "/var/tmp/cleanroom-snapshots"; got != want {
+		t.Fatalf("unexpected firecracker snapshot base_dir: got %q want %q", got, want)
+	}
+	if got, want := cfg.Backends.Firecracker.Snapshots.ZFSDataset, "tank/cleanroom"; got != want {
+		t.Fatalf("unexpected firecracker snapshot zfs_dataset: got %q want %q", got, want)
+	}
+	if got, want := cfg.Backends.Firecracker.Snapshots.QuiesceTimeoutSeconds, int64(15); got != want {
+		t.Fatalf("unexpected firecracker snapshot quiesce timeout: got %d want %d", got, want)
+	}
+	if got, want := cfg.Backends.DarwinVZ.Snapshots.Driver, "apfs"; got != want {
+		t.Fatalf("unexpected darwin-vz snapshot driver: got %q want %q", got, want)
+	}
+	if got, want := cfg.Backends.DarwinVZ.Snapshots.BaseDir, "/var/tmp/cleanroom-darwin"; got != want {
+		t.Fatalf("unexpected darwin-vz snapshot base_dir: got %q want %q", got, want)
+	}
+}

@@ -461,8 +461,9 @@ func (s *Service) CreateSnapshot(ctx context.Context, req *cleanroomv1.CreateSna
 	s.mu.Unlock()
 
 	result, err := snapshotAdapter.CreateSnapshot(ctx, backend.SnapshotRequest{
-		SandboxID:  sandboxID,
-		SnapshotID: snapshotID,
+		SandboxID:         sandboxID,
+		SnapshotID:        snapshotID,
+		FirecrackerConfig: state.Firecracker,
 	})
 	if err != nil {
 		s.mu.Lock()
@@ -2677,6 +2678,13 @@ func mergeBackendConfig(backendName string, opts executionOptions, cfg runtimeco
 		DockerStartupSeconds: cfg.Backends.Firecracker.Services.Docker.StartupTimeoutSeconds,
 		DockerStorageDriver:  cfg.Backends.Firecracker.Services.Docker.StorageDriver,
 		DockerIPTables:       cfg.Backends.Firecracker.Services.Docker.IPTables,
+		Snapshots: backend.SnapshotConfig{
+			Enabled:               cfg.Backends.Firecracker.Snapshots.Enabled,
+			Driver:                cfg.Backends.Firecracker.Snapshots.Driver,
+			BaseDir:               cfg.Backends.Firecracker.Snapshots.BaseDir,
+			ZFSDataset:            cfg.Backends.Firecracker.Snapshots.ZFSDataset,
+			QuiesceTimeoutSeconds: cfg.Backends.Firecracker.Snapshots.QuiesceTimeoutSeconds,
+		},
 		PrivilegedMode:       cfg.Backends.Firecracker.PrivilegedMode,
 		PrivilegedHelperPath: cfg.Backends.Firecracker.PrivilegedHelperPath,
 		VCPUs:                cfg.Backends.Firecracker.VCPUs,
@@ -2691,6 +2699,13 @@ func mergeBackendConfig(backendName string, opts executionOptions, cfg runtimeco
 		out.DockerStartupSeconds = cfg.Backends.DarwinVZ.Services.Docker.StartupTimeoutSeconds
 		out.DockerStorageDriver = cfg.Backends.DarwinVZ.Services.Docker.StorageDriver
 		out.DockerIPTables = cfg.Backends.DarwinVZ.Services.Docker.IPTables
+		out.Snapshots = backend.SnapshotConfig{
+			Enabled:               cfg.Backends.DarwinVZ.Snapshots.Enabled,
+			Driver:                cfg.Backends.DarwinVZ.Snapshots.Driver,
+			BaseDir:               cfg.Backends.DarwinVZ.Snapshots.BaseDir,
+			ZFSDataset:            cfg.Backends.DarwinVZ.Snapshots.ZFSDataset,
+			QuiesceTimeoutSeconds: cfg.Backends.DarwinVZ.Snapshots.QuiesceTimeoutSeconds,
+		}
 		out.VCPUs = cfg.Backends.DarwinVZ.VCPUs
 		out.MemoryMiB = cfg.Backends.DarwinVZ.MemoryMiB
 		out.GuestPort = cfg.Backends.DarwinVZ.GuestPort

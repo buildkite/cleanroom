@@ -27,6 +27,7 @@ type FirecrackerConfig struct {
 	KernelImage          string         `yaml:"kernel_image"`
 	RootFS               string         `yaml:"rootfs"`
 	Services             ServicesConfig `yaml:"services"`
+	Snapshots            SnapshotConfig `yaml:"snapshots"`
 	PrivilegedMode       string         `yaml:"privileged_mode"`
 	PrivilegedHelperPath string         `yaml:"privileged_helper_path"`
 	VCPUs                int64          `yaml:"vcpus"`
@@ -40,10 +41,19 @@ type DarwinVZConfig struct {
 	KernelImage   string         `yaml:"kernel_image"`
 	RootFS        string         `yaml:"rootfs"`
 	Services      ServicesConfig `yaml:"services"`
+	Snapshots     SnapshotConfig `yaml:"snapshots"`
 	VCPUs         int64          `yaml:"vcpus"`
 	MemoryMiB     int64          `yaml:"memory_mib"`
 	GuestPort     uint32         `yaml:"guest_port"`
 	LaunchSeconds int64          `yaml:"launch_seconds"` // VM boot/guest-agent readiness timeout
+}
+
+type SnapshotConfig struct {
+	Enabled               bool   `yaml:"enabled"`
+	Driver                string `yaml:"driver"`
+	BaseDir               string `yaml:"base_dir"`
+	ZFSDataset            string `yaml:"zfs_dataset"`
+	QuiesceTimeoutSeconds int64  `yaml:"quiesce_timeout_seconds"`
 }
 
 type ServicesConfig struct {
@@ -150,8 +160,17 @@ func darwinVZConfigIsZero(cfg DarwinVZConfig) bool {
 		cfg.Services.Docker.StartupTimeoutSeconds == 0 &&
 		strings.TrimSpace(cfg.Services.Docker.StorageDriver) == "" &&
 		!cfg.Services.Docker.IPTables &&
+		snapshotConfigIsZero(cfg.Snapshots) &&
 		cfg.VCPUs == 0 &&
 		cfg.MemoryMiB == 0 &&
 		cfg.GuestPort == 0 &&
 		cfg.LaunchSeconds == 0
+}
+
+func snapshotConfigIsZero(cfg SnapshotConfig) bool {
+	return !cfg.Enabled &&
+		strings.TrimSpace(cfg.Driver) == "" &&
+		strings.TrimSpace(cfg.BaseDir) == "" &&
+		strings.TrimSpace(cfg.ZFSDataset) == "" &&
+		cfg.QuiesceTimeoutSeconds == 0
 }
