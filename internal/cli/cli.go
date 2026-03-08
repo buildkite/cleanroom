@@ -17,6 +17,8 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"text/tabwriter"
 	"time"
@@ -1035,6 +1037,32 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 	notifySignals(signalCh, os.Interrupt, syscall.SIGTERM)
 	defer stopSignals(signalCh)
 
+	var interruptCount atomic.Int32
+	forceLocalExit := make(chan struct{})
+	var forceLocalExitOnce sync.Once
+	requestInterrupt := func(signal int32) {
+		if interruptCount.Add(1) == 1 {
+			go func() {
+				_ = interactiveSession.SendSignal(signal)
+			}()
+			return
+		}
+		forceLocalExitOnce.Do(func() {
+			close(forceLocalExit)
+			go func() {
+				_ = interactiveSession.Close()
+			}()
+		})
+	}
+	isForceLocalExit := func() bool {
+		select {
+		case <-forceLocalExit:
+			return true
+		default:
+			return false
+		}
+	}
+
 	if rawMode {
 		resizeSignalCh := make(chan os.Signal, 4)
 		signal.Notify(resizeSignalCh, syscall.SIGWINCH)
@@ -1056,7 +1084,7 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 			if sig == syscall.SIGTERM {
 				num = 15
 			}
-			_ = interactiveSession.SendSignal(num)
+			requestInterrupt(num)
 		}
 	}()
 
@@ -1066,6 +1094,16 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 			n, readErr := os.Stdin.Read(buf)
 			if n > 0 {
 				payload := append([]byte(nil), buf[:n]...)
+				if rawMode {
+					for _, b := range payload {
+						if b == 0x03 {
+							requestInterrupt(2)
+						}
+					}
+					if isForceLocalExit() {
+						return
+					}
+				}
 				if sendErr := interactiveSession.WriteStdin(payload); sendErr != nil {
 					return
 				}
@@ -1108,6 +1146,9 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 	buf := make([]byte, 4096)
 	for {
 		n, readErr := interactiveSession.ReadPTY(buf)
+		if isForceLocalExit() {
+			return exitCodeError{code: 130}
+		}
 		if n > 0 {
 			chunk := append([]byte(nil), buf[:n]...)
 			if rawMode {
@@ -1118,6 +1159,9 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 			}
 		}
 		if polledExitCode, gotExitCode, pollErr := pollInteractiveExitOrControlErr(exitCodeCh, &controlErrCh); pollErr != nil {
+			if isForceLocalExit() {
+				return exitCodeError{code: 130}
+			}
 			return pollErr
 		} else if gotExitCode {
 			exitCode = polledExitCode
@@ -1130,16 +1174,25 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 			break
 		}
 	}
+	if isForceLocalExit() {
+		return exitCodeError{code: 130}
+	}
 
 	if !haveExitCode {
 		waitedExitCode, gotExitCode, waitErr := waitForInteractiveExitOrControlErr(exitCodeCh, &controlErrCh, 2*time.Second)
 		if waitErr != nil {
+			if isForceLocalExit() {
+				return exitCodeError{code: 130}
+			}
 			return waitErr
 		}
 		if gotExitCode {
 			exitCode = waitedExitCode
 			haveExitCode = true
 		}
+	}
+	if isForceLocalExit() {
+		return exitCodeError{code: 130}
 	}
 
 	if !haveExitCode {
