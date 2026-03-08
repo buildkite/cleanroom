@@ -17,6 +17,8 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"text/tabwriter"
 	"time"
@@ -51,10 +53,11 @@ import (
 const defaultBumpRefSource = "ghcr.io/buildkite/cleanroom-base/alpine:latest"
 
 const (
-	systemdServiceName      = "cleanroom.service"
-	launchdServiceName      = "com.buildkite.cleanroom"
-	defaultDaemonListen     = "unix://" + endpoint.DefaultSystemSocketPath
-	sandboxTerminateTimeout = 2 * time.Second
+	systemdServiceName       = "cleanroom.service"
+	launchdServiceName       = "com.buildkite.cleanroom"
+	defaultDaemonListen      = "unix://" + endpoint.DefaultSystemSocketPath
+	sandboxTerminateTimeout  = 2 * time.Second
+	interruptForceExitWindow = 1200 * time.Millisecond
 )
 
 type policyLoader interface {
@@ -1106,6 +1109,38 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 	notifySignals(signalCh, os.Interrupt, syscall.SIGTERM)
 	defer stopSignals(signalCh)
 
+	var interruptCount atomic.Int32
+	var lastInterruptAt atomic.Int64
+	forceLocalExit := make(chan struct{})
+	var forceLocalExitOnce sync.Once
+	requestInterrupt := func(signal int32) {
+		now := time.Now()
+		last := time.Unix(0, lastInterruptAt.Load())
+		if !last.IsZero() && now.Sub(last) > interruptForceExitWindow {
+			interruptCount.Store(0)
+		}
+		count := interruptCount.Add(1)
+		lastInterruptAt.Store(now.UnixNano())
+		if count == 1 {
+			_ = interactiveSession.SendSignal(signal)
+			return
+		}
+		forceLocalExitOnce.Do(func() {
+			close(forceLocalExit)
+			go func() {
+				_ = interactiveSession.Close()
+			}()
+		})
+	}
+	isForceLocalExit := func() bool {
+		select {
+		case <-forceLocalExit:
+			return true
+		default:
+			return false
+		}
+	}
+
 	if rawMode {
 		resizeSignalCh := make(chan os.Signal, 4)
 		signal.Notify(resizeSignalCh, syscall.SIGWINCH)
@@ -1127,7 +1162,7 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 			if sig == syscall.SIGTERM {
 				num = 15
 			}
-			_ = interactiveSession.SendSignal(num)
+			requestInterrupt(num)
 		}
 	}()
 
@@ -1137,8 +1172,24 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 			n, readErr := os.Stdin.Read(buf)
 			if n > 0 {
 				payload := append([]byte(nil), buf[:n]...)
-				if sendErr := interactiveSession.WriteStdin(payload); sendErr != nil {
-					return
+				if rawMode {
+					filtered := payload[:0]
+					for _, b := range payload {
+						if b == 0x03 {
+							requestInterrupt(2)
+							continue
+						}
+						filtered = append(filtered, b)
+					}
+					payload = filtered
+					if isForceLocalExit() {
+						return
+					}
+				}
+				if len(payload) > 0 {
+					if sendErr := interactiveSession.WriteStdin(payload); sendErr != nil {
+						return
+					}
 				}
 			}
 			if readErr != nil {
@@ -1179,6 +1230,9 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 	buf := make([]byte, 4096)
 	for {
 		n, readErr := interactiveSession.ReadPTY(buf)
+		if isForceLocalExit() {
+			return exitCodeError{code: 130}
+		}
 		if n > 0 {
 			chunk := append([]byte(nil), buf[:n]...)
 			if rawMode {
@@ -1189,6 +1243,9 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 			}
 		}
 		if polledExitCode, gotExitCode, pollErr := pollInteractiveExitOrControlErr(exitCodeCh, &controlErrCh); pollErr != nil {
+			if isForceLocalExit() {
+				return exitCodeError{code: 130}
+			}
 			return pollErr
 		} else if gotExitCode {
 			exitCode = polledExitCode
@@ -1201,16 +1258,25 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 			break
 		}
 	}
+	if isForceLocalExit() {
+		return exitCodeError{code: 130}
+	}
 
 	if !haveExitCode {
 		waitedExitCode, gotExitCode, waitErr := waitForInteractiveExitOrControlErr(exitCodeCh, &controlErrCh, 2*time.Second)
 		if waitErr != nil {
+			if isForceLocalExit() {
+				return exitCodeError{code: 130}
+			}
 			return waitErr
 		}
 		if gotExitCode {
 			exitCode = waitedExitCode
 			haveExitCode = true
 		}
+	}
+	if isForceLocalExit() {
+		return exitCodeError{code: 130}
 	}
 
 	if !haveExitCode {
