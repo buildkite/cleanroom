@@ -6,6 +6,7 @@ ARG GEMINI_CLI_VERSION=0.31.0
 
 # `gemini` currently needs native build deps on Alpine and GNU `env` for `env -S`.
 RUN apk add --no-cache \
+  bash \
   coreutils \
   g++ \
   git \
