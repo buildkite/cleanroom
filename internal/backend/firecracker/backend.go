@@ -1953,6 +1953,8 @@ func setupHostNetworkWithTapLookup(ctx context.Context, runID string, allow []po
 		if err := deleteTapDeviceWithRetry(staleTapCleanupCtx, tapName, tapDeleteRetryInterval, interfaceByName, runCommand); err != nil {
 			return hostNetworkConfig{}, func() {}, fmt.Errorf("remove stale tap device %s: %w", tapName, err)
 		}
+	} else if !isNoSuchNetworkInterfaceError(err) {
+		return hostNetworkConfig{}, func() {}, fmt.Errorf("lookup tap device %s: %w", tapName, err)
 	}
 
 	if err := setupRun("ip", "tuntap", "add", "dev", tapName, "mode", "tap", "user", strconv.Itoa(os.Getuid())); err != nil {
@@ -2069,7 +2071,10 @@ func deleteTapDeviceWithRetry(ctx context.Context, tapName string, retryInterval
 			return nil
 		}
 		if _, lookupErr := interfaceByName(tapName); lookupErr != nil {
-			return nil
+			if isNoSuchNetworkInterfaceError(lookupErr) {
+				return nil
+			}
+			return fmt.Errorf("lookup tap device %s after delete failure (%v): %w", tapName, err, lookupErr)
 		}
 
 		select {
@@ -2078,6 +2083,17 @@ func deleteTapDeviceWithRetry(ctx context.Context, tapName string, retryInterval
 		case <-ticker.C:
 		}
 	}
+}
+
+func isNoSuchNetworkInterfaceError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) && opErr.Err != nil {
+		return strings.Contains(opErr.Err.Error(), "no such network interface")
+	}
+	return strings.Contains(err.Error(), "no such network interface")
 }
 
 func installForwardReturnPathRule(setupRun func(args ...string) error, tapName string) ([]string, error) {
