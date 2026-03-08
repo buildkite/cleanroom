@@ -210,3 +210,54 @@ func TestSandboxSnapshotIntegrationCreateFromSnapshotAndRestore(t *testing.T) {
 		t.Fatal("expected compiled policy on restore request")
 	}
 }
+
+func TestSnapshotDeleteIntegrationRejectsSnapshotInUse(t *testing.T) {
+	adapter := &integrationAdapter{}
+	host, _ := startIntegrationServer(t, adapter)
+	cwd := t.TempDir()
+
+	client := mustNewControlClient(t, host)
+	sourceSandboxID := mustCreateSandbox(t, client)
+
+	createSnapshotOutcome := runSnapshotCreateWithCapture(SnapshotCreateCommand{
+		clientFlags: clientFlags{Host: host},
+		SandboxID:   sourceSandboxID,
+		Name:        "golden",
+	}, runtimeContext{CWD: cwd})
+	if createSnapshotOutcome.cause != nil {
+		t.Fatalf("capture failure: %v", createSnapshotOutcome.cause)
+	}
+	if createSnapshotOutcome.err != nil {
+		t.Fatalf("SnapshotCreateCommand.Run returned error: %v", createSnapshotOutcome.err)
+	}
+	snapshotID := strings.TrimSpace(createSnapshotOutcome.stdout)
+
+	createOutcome := runSandboxCreateWithCapture(SandboxCreateCommand{
+		clientFlags:  clientFlags{Host: host},
+		FromSnapshot: snapshotID,
+	}, runtimeContext{
+		CWD:    cwd,
+		Loader: failingLoader{},
+	})
+	if createOutcome.cause != nil {
+		t.Fatalf("capture failure: %v", createOutcome.cause)
+	}
+	if createOutcome.err != nil {
+		t.Fatalf("SandboxCreateCommand.Run returned error: %v", createOutcome.err)
+	}
+	forkSandboxID := strings.TrimSpace(createOutcome.stdout)
+
+	deleteOutcome := runSnapshotDeleteWithCapture(SnapshotDeleteCommand{
+		clientFlags: clientFlags{Host: host},
+		SnapshotID:  snapshotID,
+	}, runtimeContext{CWD: cwd})
+	if deleteOutcome.cause != nil {
+		t.Fatalf("capture failure: %v", deleteOutcome.cause)
+	}
+	if deleteOutcome.err == nil {
+		t.Fatal("expected snapshot delete to fail while snapshot is in use")
+	}
+	if !strings.Contains(deleteOutcome.err.Error(), "snapshot_busy") || !strings.Contains(deleteOutcome.err.Error(), forkSandboxID) {
+		t.Fatalf("unexpected snapshot delete error: %v", deleteOutcome.err)
+	}
+}
