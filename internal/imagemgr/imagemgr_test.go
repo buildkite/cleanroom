@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -22,9 +23,11 @@ func TestEnsureCachesAndReusesImage(t *testing.T) {
 	manager := newTestManager(t, func(_ context.Context, _ string) (io.ReadCloser, OCIConfig, error) {
 		pulls++
 		return io.NopCloser(bytes.NewReader(testRootFSTar(t))), OCIConfig{
-			Entrypoint: []string{"/bin/sh"},
-			Cmd:        []string{"-lc", "echo hello"},
-			Workdir:    "/workspace",
+			Entrypoint:   []string{"/bin/sh"},
+			Cmd:          []string{"-lc", "echo hello"},
+			Workdir:      "/workspace",
+			OS:           "linux",
+			Architecture: NormalizePlatformArch(runtime.GOARCH),
 		}, nil
 	})
 
@@ -62,6 +65,104 @@ func TestEnsureCachesAndReusesImage(t *testing.T) {
 	}
 	if got, want := items[0].OCIConfig.Workdir, "/workspace"; got != want {
 		t.Fatalf("unexpected OCI workdir: got %q want %q", got, want)
+	}
+}
+
+func TestEnsureRejectsIncompatibleImagePlatformOnPull(t *testing.T) {
+	t.Parallel()
+
+	incompatibleArch := "amd64"
+	if runtime.GOARCH == "amd64" {
+		incompatibleArch = "arm64"
+	}
+
+	manager := newTestManager(t, func(_ context.Context, _ string) (io.ReadCloser, OCIConfig, error) {
+		return io.NopCloser(bytes.NewReader(testRootFSTar(t))), OCIConfig{
+			OS:           "linux",
+			Architecture: incompatibleArch,
+		}, nil
+	})
+
+	_, err := manager.Ensure(context.Background(), testImageRef)
+	if err == nil {
+		t.Fatal("expected Ensure to reject incompatible image platform")
+	}
+	if got, want := strings.ToLower(err.Error()), "incompatible"; !strings.Contains(got, want) {
+		t.Fatalf("expected incompatibility error, got %v", err)
+	}
+}
+
+func TestEnsureRejectsIncompatibleImagePlatformFromCache(t *testing.T) {
+	t.Parallel()
+
+	incompatibleArch := "amd64"
+	if runtime.GOARCH == "amd64" {
+		incompatibleArch = "arm64"
+	}
+
+	manager := newTestManager(t, nil)
+	cacheRootFS := filepath.Join(t.TempDir(), "cached.ext4")
+	if err := os.WriteFile(cacheRootFS, []byte("fake-ext4"), 0o644); err != nil {
+		t.Fatalf("write cached rootfs: %v", err)
+	}
+	now := time.Unix(1_700_000_004, 0).UTC()
+	record := Record{
+		Digest:     "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+		Ref:        "ghcr.io/buildkite/cleanroom-base/alpine@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+		RootFSPath: cacheRootFS,
+		SizeBytes:  int64(len("fake-ext4")),
+		CreatedAt:  now,
+		LastUsedAt: now,
+		Source:     "registry",
+		OCIConfig: OCIConfig{
+			OS:           "linux",
+			Architecture: incompatibleArch,
+		},
+	}
+	if err := manager.upsertRecord(context.Background(), record); err != nil {
+		t.Fatalf("upsert cached record: %v", err)
+	}
+
+	_, err := manager.Ensure(context.Background(), record.Ref)
+	if err == nil {
+		t.Fatal("expected cached incompatible image platform to be rejected")
+	}
+	if got, want := strings.ToLower(err.Error()), "incompatible"; !strings.Contains(got, want) {
+		t.Fatalf("expected incompatibility error, got %v", err)
+	}
+}
+
+func TestEnsureUsesLegacyCacheWhenPlatformBackfillUnavailable(t *testing.T) {
+	t.Parallel()
+
+	manager := newTestManager(t, func(_ context.Context, _ string) (io.ReadCloser, OCIConfig, error) {
+		return nil, OCIConfig{}, errors.New("registry unavailable")
+	})
+	cacheRootFS := filepath.Join(t.TempDir(), "cached.ext4")
+	if err := os.WriteFile(cacheRootFS, []byte("fake-ext4"), 0o644); err != nil {
+		t.Fatalf("write cached rootfs: %v", err)
+	}
+	now := time.Unix(1_700_000_005, 0).UTC()
+	record := Record{
+		Digest:     "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+		Ref:        "ghcr.io/buildkite/cleanroom-base/alpine@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+		RootFSPath: cacheRootFS,
+		SizeBytes:  int64(len("fake-ext4")),
+		CreatedAt:  now,
+		LastUsedAt: now,
+		Source:     "registry",
+		OCIConfig:  OCIConfig{},
+	}
+	if err := manager.upsertRecord(context.Background(), record); err != nil {
+		t.Fatalf("upsert cached record: %v", err)
+	}
+
+	result, err := manager.Ensure(context.Background(), record.Ref)
+	if err != nil {
+		t.Fatalf("expected Ensure to reuse legacy cache record when platform backfill is unavailable, got %v", err)
+	}
+	if !result.CacheHit {
+		t.Fatal("expected Ensure to return cache hit for existing rootfs artifact")
 	}
 }
 

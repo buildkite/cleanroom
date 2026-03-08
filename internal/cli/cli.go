@@ -267,27 +267,46 @@ var (
 	stopSignals = func(ch chan os.Signal) {
 		signal.Stop(ch)
 	}
+	resolveRegistryDigestForReference = func(ctx context.Context, ref name.Reference) (string, error) {
+		desc, err := remote.Head(ref, remote.WithContext(ctx), remote.WithAuthFromKeychain(authn.DefaultKeychain))
+		if err != nil {
+			return "", err
+		}
+		return desc.Digest.String(), nil
+	}
+	resolveReferencePlatformConfig = func(ctx context.Context, ref name.Reference) (string, string, error) {
+		img, err := remote.Image(
+			ref,
+			remote.WithContext(ctx),
+			remote.WithAuthFromKeychain(authn.DefaultKeychain),
+			remote.WithPlatform(imagemgr.HostLinuxPlatformForGOARCH(runtime.GOARCH)),
+		)
+		if err != nil {
+			return "", "", err
+		}
+
+		cfg, err := img.ConfigFile()
+		if err != nil {
+			return "", "", err
+		}
+		return cfg.OS, cfg.Architecture, nil
+	}
 	resolveReferenceForPolicyUpdate = func(ctx context.Context, source string) (string, error) {
 		resolved := strings.TrimSpace(source)
 		if resolved == "" {
 			resolved = defaultBumpRefSource
 		}
 
-		if parsed, err := ociref.ParseDigestReference(resolved); err == nil {
-			return parsed.Original, nil
-		}
-
-		tag, err := name.NewTag(resolved, name.WeakValidation)
+		ref, err := name.ParseReference(resolved, name.WeakValidation)
 		if err != nil {
 			return "", fmt.Errorf("parse image ref %q: %w", resolved, err)
 		}
-
-		desc, err := remote.Head(tag, remote.WithContext(ctx), remote.WithAuthFromKeychain(authn.DefaultKeychain))
+		resolvedDigest, err := resolveRegistryDigestForReference(ctx, ref)
 		if err != nil {
 			return "", fmt.Errorf("resolve image digest for %q: %w", resolved, err)
 		}
 
-		return fmt.Sprintf("%s@%s", tag.Context().Name(), desc.Digest.String()), nil
+		return fmt.Sprintf("%s@%s", ref.Context().Name(), resolvedDigest), nil
 	}
 	importLocalDockerImageForOverrideFn = importLocalDockerImageForOverride
 	resolveReferenceForImageOverride    = func(ctx context.Context, source string, allowLocal bool) (string, error) {
@@ -302,7 +321,23 @@ var (
 
 		resolved, err := resolveReferenceForPolicyUpdate(ctx, source)
 		if err == nil {
+			if allowLocal {
+				resolvedRef, parseErr := name.ParseReference(resolved, name.WeakValidation)
+				if parseErr != nil {
+					return "", fmt.Errorf("resolve image digest for %q: %w", source, parseErr)
+				}
+				imageOS, imageArch, platformErr := resolveReferencePlatformConfig(ctx, resolvedRef)
+				if platformErr != nil {
+					return "", fmt.Errorf("resolve image digest for %q: %w", source, platformErr)
+				}
+				if err := imagemgr.ValidateImagePlatformForHost(imageOS, imageArch, runtime.GOARCH); err != nil {
+					return "", fmt.Errorf("resolve image digest for %q: %w", source, err)
+				}
+			}
 			return resolved, nil
+		}
+		if isExplicitRegistryReference(source) {
+			return "", err
 		}
 
 		return "", fmt.Errorf("%w; local docker resolution failed: %v", err, localErr)
@@ -318,6 +353,36 @@ var (
 	serveInstallSystemdUnitPath = "/etc/systemd/system/" + systemdServiceName
 	serveInstallLaunchdPath     = "/Library/LaunchDaemons/" + launchdServiceName + ".plist"
 )
+
+func isExplicitRegistryReference(raw string) bool {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return false
+	}
+	if parsed, err := ociref.ParseDigestReference(trimmed); err == nil {
+		return isRegistryHostPrefix(parsed.Repository)
+	}
+	namePart := trimmed
+	if at := strings.Index(namePart, "@"); at >= 0 {
+		namePart = namePart[:at]
+	}
+	if colon := strings.LastIndex(namePart, ":"); colon > strings.LastIndex(namePart, "/") {
+		namePart = namePart[:colon]
+	}
+	first := strings.TrimSpace(strings.SplitN(namePart, "/", 2)[0])
+	return isRegistryHostPrefix(first)
+}
+
+func isRegistryHostPrefix(component string) bool {
+	component = strings.TrimSpace(strings.ToLower(component))
+	if component == "" {
+		return false
+	}
+	if component == "localhost" {
+		return true
+	}
+	return strings.Contains(component, ".") || strings.Contains(component, ":")
+}
 
 func Run(args []string, version string) error {
 	cfg, cfgPath, err := runtimeconfig.Load()

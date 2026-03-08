@@ -3,8 +3,11 @@ package cli
 import (
 	"context"
 	"errors"
+	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/google/go-containerregistry/pkg/name"
 )
 
 func withImageOverrideResolversForTest(
@@ -15,11 +18,16 @@ func withImageOverrideResolversForTest(
 	t.Helper()
 	prevLocal := importLocalDockerImageForOverrideFn
 	prevRemote := resolveReferenceForPolicyUpdate
+	prevPlatform := resolveReferencePlatformConfig
 	importLocalDockerImageForOverrideFn = localFn
 	resolveReferenceForPolicyUpdate = remoteFn
+	resolveReferencePlatformConfig = func(_ context.Context, _ name.Reference) (string, string, error) {
+		return "linux", runtime.GOARCH, nil
+	}
 	t.Cleanup(func() {
 		importLocalDockerImageForOverrideFn = prevLocal
 		resolveReferenceForPolicyUpdate = prevRemote
+		resolveReferencePlatformConfig = prevPlatform
 	})
 }
 
@@ -103,6 +111,29 @@ func TestResolveReferenceForImageOverrideReturnsCombinedError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "local docker resolution failed: local missing") {
 		t.Fatalf("expected local error in returned message, got %v", err)
+	}
+}
+
+func TestResolveReferenceForImageOverrideReturnsRemoteErrorOnlyForExplicitRegistryRef(t *testing.T) {
+	withImageOverrideResolversForTest(
+		t,
+		func(_ context.Context, _ string) (string, error) {
+			return "", errors.New("local missing")
+		},
+		func(_ context.Context, _ string) (string, error) {
+			return "", errors.New("remote unavailable")
+		},
+	)
+
+	_, err := resolveReferenceForImageOverride(context.Background(), "ghcr.io/buildkite/cleanroom-base/alpine:latest", true)
+	if err == nil {
+		t.Fatal("expected resolveReferenceForImageOverride to fail when local and remote resolution fail")
+	}
+	if !strings.Contains(err.Error(), "remote unavailable") {
+		t.Fatalf("expected remote error in returned message, got %v", err)
+	}
+	if strings.Contains(err.Error(), "local docker resolution failed") {
+		t.Fatalf("expected explicit registry refs to omit local docker error details, got %v", err)
 	}
 }
 
