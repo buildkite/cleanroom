@@ -46,7 +46,6 @@ type sandboxState struct {
 	ID                 string
 	Backend            string
 	Policy             *policy.CompiledPolicy
-	SourceSnapshotID   string
 	Firecracker        backend.FirecrackerConfig
 	ActiveExecutionID  string
 	DownloadInProgress bool
@@ -305,7 +304,6 @@ func (s *Service) createSandboxFromSnapshot(ctx context.Context, req *cleanroomv
 		ID:               sandboxID,
 		Backend:          backendName,
 		Policy:           compiled,
-		SourceSnapshotID: snapshotID,
 		Firecracker:      firecrackerCfg,
 		CreatedAt:        now,
 		UpdatedAt:        now,
@@ -611,7 +609,6 @@ func (s *Service) RestoreSandbox(ctx context.Context, req *cleanroomv1.RestoreSa
 		s.mu.Unlock()
 		return nil, fmt.Errorf("unknown sandbox %q", sandboxID)
 	}
-	state.SourceSnapshotID = snapshotID
 	s.recordSandboxEventLocked(state, cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY, fmt.Sprintf("sandbox restored from snapshot %s", snapshotID))
 	resp := &cleanroomv1.RestoreSandboxResponse{
 		Sandbox: cloneSandboxLocked(state),
@@ -1723,14 +1720,6 @@ func (s *Service) beginSnapshotDeleteLocked(snapshotID string) error {
 	}
 	if count := s.snapshotOps[snapshotID]; count > 0 {
 		return fmt.Errorf("snapshot_busy: snapshot %q is currently in use by another operation", snapshotID)
-	}
-	for _, sb := range s.sandboxes {
-		if sb == nil || sb.Status == cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPED {
-			continue
-		}
-		if strings.TrimSpace(sb.SourceSnapshotID) == snapshotID {
-			return fmt.Errorf("snapshot_busy: snapshot %q is in use by sandbox %q", snapshotID, sb.ID)
-		}
 	}
 	s.snapshotDeletions[snapshotID] = struct{}{}
 	return nil

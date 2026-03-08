@@ -505,7 +505,7 @@ func TestRestoreSandboxUsesSnapshotMetadata(t *testing.T) {
 	}
 }
 
-func TestDeleteSnapshotRejectsSnapshotUsedByActiveSandbox(t *testing.T) {
+func TestDeleteSnapshotAllowsDeleteAfterSnapshotBackedSandboxReady(t *testing.T) {
 	store := newMemorySnapshotStore()
 	adapter := &stubAdapter{
 		createSnapshotFn: func(_ context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
@@ -539,33 +539,35 @@ func TestDeleteSnapshotRejectsSnapshotUsedByActiveSandbox(t *testing.T) {
 		t.Fatal("expected fork sandbox id")
 	}
 
-	_, err = svc.DeleteSnapshot(context.Background(), &cleanroomv1.DeleteSnapshotRequest{SnapshotId: snapshotID})
-	if err == nil {
-		t.Fatal("expected delete snapshot to fail while snapshot is in use")
-	}
-	if !strings.Contains(err.Error(), "snapshot_busy") || !strings.Contains(err.Error(), forkSandboxID) {
-		t.Fatalf("unexpected delete snapshot error: %v", err)
-	}
-	if adapter.deleteSnapshotCalls != 0 {
-		t.Fatalf("expected no backend delete calls while snapshot is in use, got %d", adapter.deleteSnapshotCalls)
-	}
-
-	terminateResp, err := svc.TerminateSandbox(context.Background(), &cleanroomv1.TerminateSandboxRequest{
-		SandboxId: forkSandboxID,
+	restoreResp, err := svc.RestoreSandbox(context.Background(), &cleanroomv1.RestoreSandboxRequest{
+		SandboxId:  sourceSandbox.GetSandboxId(),
+		SnapshotId: snapshotID,
 	})
 	if err != nil {
-		t.Fatalf("TerminateSandbox returned error: %v", err)
+		t.Fatalf("RestoreSandbox returned error: %v", err)
 	}
-	if !terminateResp.GetTerminated() {
-		t.Fatal("expected terminated=true")
+	if got, want := restoreResp.GetSandbox().GetStatus(), cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY; got != want {
+		t.Fatalf("unexpected restored sandbox status: got %v want %v", got, want)
 	}
 
 	deleteResp, err := svc.DeleteSnapshot(context.Background(), &cleanroomv1.DeleteSnapshotRequest{SnapshotId: snapshotID})
 	if err != nil {
-		t.Fatalf("DeleteSnapshot returned error after terminate: %v", err)
+		t.Fatalf("DeleteSnapshot returned error: %v", err)
 	}
 	if !deleteResp.GetDeleted() {
-		t.Fatal("expected deleted=true after terminate")
+		t.Fatal("expected deleted=true")
+	}
+	if got, want := adapter.deleteSnapshotCalls, 1; got != want {
+		t.Fatalf("unexpected backend delete call count: got %d want %d", got, want)
+	}
+	for _, sandboxID := range []string{sourceSandbox.GetSandboxId(), forkSandboxID} {
+		getResp, getErr := svc.GetSandbox(context.Background(), &cleanroomv1.GetSandboxRequest{SandboxId: sandboxID})
+		if getErr != nil {
+			t.Fatalf("GetSandbox returned error for %q: %v", sandboxID, getErr)
+		}
+		if got, want := getResp.GetSandbox().GetStatus(), cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY; got != want {
+			t.Fatalf("unexpected sandbox status for %q: got %v want %v", sandboxID, got, want)
+		}
 	}
 }
 
@@ -632,6 +634,81 @@ func TestDeleteSnapshotRejectsSnapshotWithInFlightProvisionFromSnapshot(t *testi
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("expected create-from-snapshot to finish")
+	}
+}
+
+func TestDeleteSnapshotRejectsSnapshotWithInFlightRestore(t *testing.T) {
+	store := newMemorySnapshotStore()
+	restoreStarted := make(chan struct{}, 1)
+	restoreRelease := make(chan struct{})
+	restoreDone := make(chan error, 1)
+	adapter := &stubAdapter{
+		createSnapshotFn: func(_ context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
+			return &backend.SnapshotResult{StorageRef: "/snapshots/" + req.SnapshotID + ".ext4"}, nil
+		},
+		restoreFn: func(_ context.Context, _ backend.RestoreRequest) error {
+			select {
+			case restoreStarted <- struct{}{}:
+			default:
+			}
+			<-restoreRelease
+			return nil
+		},
+	}
+	svc := newTestServiceWithSnapshotStore(adapter, store)
+
+	sourceResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sourceSandbox := sourceResp.GetSandbox()
+
+	snapshotResp, err := svc.CreateSnapshot(context.Background(), &cleanroomv1.CreateSnapshotRequest{
+		SandboxId: sourceSandbox.GetSandboxId(),
+	})
+	if err != nil {
+		t.Fatalf("CreateSnapshot returned error: %v", err)
+	}
+	snapshotID := snapshotResp.GetSnapshot().GetSnapshotId()
+
+	go func() {
+		_, restoreErr := svc.RestoreSandbox(context.Background(), &cleanroomv1.RestoreSandboxRequest{
+			SandboxId:  sourceSandbox.GetSandboxId(),
+			SnapshotId: snapshotID,
+		})
+		restoreDone <- restoreErr
+	}()
+
+	select {
+	case <-restoreStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected restore to start")
+	}
+
+	_, err = svc.DeleteSnapshot(context.Background(), &cleanroomv1.DeleteSnapshotRequest{SnapshotId: snapshotID})
+	if err == nil {
+		t.Fatal("expected delete snapshot to fail while restore is in flight")
+	}
+	if !strings.Contains(err.Error(), "snapshot_busy") || !strings.Contains(err.Error(), "another operation") {
+		t.Fatalf("unexpected delete snapshot error: %v", err)
+	}
+
+	close(restoreRelease)
+	select {
+	case restoreErr := <-restoreDone:
+		if restoreErr != nil {
+			t.Fatalf("RestoreSandbox returned error: %v", restoreErr)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected restore to finish")
+	}
+
+	deleteResp, err := svc.DeleteSnapshot(context.Background(), &cleanroomv1.DeleteSnapshotRequest{SnapshotId: snapshotID})
+	if err != nil {
+		t.Fatalf("DeleteSnapshot returned error after restore: %v", err)
+	}
+	if !deleteResp.GetDeleted() {
+		t.Fatal("expected deleted=true after restore")
 	}
 }
 

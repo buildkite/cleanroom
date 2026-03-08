@@ -178,7 +178,7 @@ func TestSetupHostNetworkWithTapLookupDeletesStaleTapBeforeCreate(t *testing.T) 
 		if staleTapExists {
 			return &net.Interface{Name: name}, nil
 		}
-		return nil, errors.New("not found")
+		return nil, errors.New("no such network interface")
 	}
 
 	_, cleanup, err := setupHostNetworkWithTapLookup(context.Background(), runID, []policy.AllowRule{{Host: "proxy.golang.org", Ports: []int{443}}}, 0, lookup, interfaceByName, run, nil)
@@ -222,13 +222,44 @@ func TestDeleteTapDeviceWithRetryRetriesBusyTapDeletion(t *testing.T) {
 		if tapExists {
 			return &net.Interface{Name: name}, nil
 		}
-		return nil, errors.New("not found")
+		return nil, errors.New("no such network interface")
 	}
 
 	if err := deleteTapDeviceWithRetry(context.Background(), tapName, time.Millisecond, interfaceByName, run); err != nil {
 		t.Fatalf("deleteTapDeviceWithRetry: %v", err)
 	}
 	if got, want := attempts, 2; got != want {
+		t.Fatalf("unexpected delete attempts: got %d want %d", got, want)
+	}
+}
+
+func TestDeleteTapDeviceWithRetryReturnsLookupError(t *testing.T) {
+	t.Parallel()
+
+	tapName := "tap0"
+	attempts := 0
+	run := func(_ context.Context, args ...string) error {
+		if got, want := strings.Join(args, " "), "ip link del "+tapName; got != want {
+			t.Fatalf("unexpected delete command: got %q want %q", got, want)
+		}
+		attempts++
+		return errors.New("device busy")
+	}
+	interfaceByName := func(name string) (*net.Interface, error) {
+		if name != tapName {
+			t.Fatalf("unexpected interface lookup %q", name)
+		}
+		return nil, errors.New("permission denied")
+	}
+
+	err := deleteTapDeviceWithRetry(context.Background(), tapName, time.Millisecond, interfaceByName, run)
+	if err == nil {
+		t.Fatal("expected lookup error")
+	}
+	if !strings.Contains(err.Error(), "lookup tap device") || !strings.Contains(err.Error(), "permission denied") {
+		t.Fatalf("unexpected lookup error: %v", err)
+	}
+	if got, want := attempts, 1; got != want {
 		t.Fatalf("unexpected delete attempts: got %d want %d", got, want)
 	}
 }
