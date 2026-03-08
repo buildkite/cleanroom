@@ -36,6 +36,7 @@ func withSandboxProgress(stderr *os.File, fn func() error) error {
 		return fn()
 	}
 
+	useANSI := shouldUseANSI(stderr)
 	startedAt := time.Now()
 	done := make(chan struct{})
 	stopped := make(chan struct{})
@@ -54,6 +55,12 @@ func withSandboxProgress(stderr *os.File, fn func() error) error {
 		}
 
 		state.markShown()
+		if !useANSI {
+			writeSandboxProgressStart(stderr)
+			<-done
+			return
+		}
+
 		ticker := time.NewTicker(sandboxProgressTickInterval)
 		defer ticker.Stop()
 
@@ -75,9 +82,20 @@ func withSandboxProgress(stderr *os.File, fn func() error) error {
 	<-stopped
 
 	if state.wasShown() {
-		writeSandboxProgressComplete(stderr, err == nil, time.Since(startedAt))
+		if useANSI {
+			writeSandboxProgressComplete(stderr, err == nil, time.Since(startedAt))
+		} else {
+			writeSandboxProgressCompletePlain(stderr, err == nil, time.Since(startedAt))
+		}
 	}
 	return err
+}
+
+func writeSandboxProgressStart(stderr *os.File) {
+	if stderr == nil {
+		return
+	}
+	_, _ = fmt.Fprintln(stderr, "Preparing sandbox (first use may take a bit)...")
 }
 
 func writeSandboxProgressFrame(stderr *os.File, frame string, elapsed time.Duration) {
@@ -96,6 +114,17 @@ func writeSandboxProgressComplete(stderr *os.File, success bool, elapsed time.Du
 		message = "Sandbox creation failed"
 	}
 	_, _ = fmt.Fprintf(stderr, "\r\033[2K%s in %s\n", message, formatSandboxProgressDuration(elapsed))
+}
+
+func writeSandboxProgressCompletePlain(stderr *os.File, success bool, elapsed time.Duration) {
+	if stderr == nil {
+		return
+	}
+	message := "Sandbox ready"
+	if !success {
+		message = "Sandbox creation failed"
+	}
+	_, _ = fmt.Fprintf(stderr, "%s in %s\n", message, formatSandboxProgressDuration(elapsed))
 }
 
 func formatSandboxProgressDuration(elapsed time.Duration) string {
