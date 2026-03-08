@@ -136,6 +136,7 @@ type ProvisionRequest struct {
 type SnapshotRequest struct {
 	SandboxID  string
 	SnapshotID string
+	FirecrackerConfig
 }
 
 type SnapshotResult struct {
@@ -197,6 +198,7 @@ type FirecrackerConfig struct {
 	DockerStartupSeconds int64
 	DockerStorageDriver  string
 	DockerIPTables       bool
+	Snapshots            SnapshotConfig
 	PrivilegedMode       string
 	PrivilegedHelperPath string
 	RunDir               string
@@ -206,6 +208,14 @@ type FirecrackerConfig struct {
 	GuestPort            uint32
 	Launch               bool
 	LaunchSeconds        int64
+}
+
+type SnapshotConfig struct {
+	Enabled               bool
+	Driver                string
+	BaseDir               string
+	ZFSDataset            string
+	QuiesceTimeoutSeconds int64
 }
 
 type RunResult struct {

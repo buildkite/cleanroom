@@ -2518,6 +2518,13 @@ func mergeBackendConfig(backendName string, launchSeconds int64, cfg runtimeconf
 		DockerStartupSeconds: cfg.Backends.Firecracker.Services.Docker.StartupTimeoutSeconds,
 		DockerStorageDriver:  cfg.Backends.Firecracker.Services.Docker.StorageDriver,
 		DockerIPTables:       cfg.Backends.Firecracker.Services.Docker.IPTables,
+		Snapshots: backend.SnapshotConfig{
+			Enabled:               cfg.Backends.Firecracker.Snapshots.Enabled,
+			Driver:                cfg.Backends.Firecracker.Snapshots.Driver,
+			BaseDir:               cfg.Backends.Firecracker.Snapshots.BaseDir,
+			ZFSDataset:            cfg.Backends.Firecracker.Snapshots.ZFSDataset,
+			QuiesceTimeoutSeconds: cfg.Backends.Firecracker.Snapshots.QuiesceTimeoutSeconds,
+		},
 		PrivilegedMode:       cfg.Backends.Firecracker.PrivilegedMode,
 		PrivilegedHelperPath: cfg.Backends.Firecracker.PrivilegedHelperPath,
 		VCPUs:                cfg.Backends.Firecracker.VCPUs,
@@ -2532,6 +2539,13 @@ func mergeBackendConfig(backendName string, launchSeconds int64, cfg runtimeconf
 		out.DockerStartupSeconds = cfg.Backends.DarwinVZ.Services.Docker.StartupTimeoutSeconds
 		out.DockerStorageDriver = cfg.Backends.DarwinVZ.Services.Docker.StorageDriver
 		out.DockerIPTables = cfg.Backends.DarwinVZ.Services.Docker.IPTables
+		out.Snapshots = backend.SnapshotConfig{
+			Enabled:               cfg.Backends.DarwinVZ.Snapshots.Enabled,
+			Driver:                cfg.Backends.DarwinVZ.Snapshots.Driver,
+			BaseDir:               cfg.Backends.DarwinVZ.Snapshots.BaseDir,
+			ZFSDataset:            cfg.Backends.DarwinVZ.Snapshots.ZFSDataset,
+			QuiesceTimeoutSeconds: cfg.Backends.DarwinVZ.Snapshots.QuiesceTimeoutSeconds,
+		}
 		out.VCPUs = cfg.Backends.DarwinVZ.VCPUs
 		out.MemoryMiB = cfg.Backends.DarwinVZ.MemoryMiB
 		out.GuestPort = cfg.Backends.DarwinVZ.GuestPort

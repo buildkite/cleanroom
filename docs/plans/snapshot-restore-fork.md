@@ -838,7 +838,7 @@ and fleet-distribution work is still pending.
   - destroy volume
   - destroy snapshot
 - [todo] add `zfs` driver
-- [todo] add runtime config loading for Firecracker snapshot storage
+- [done] add runtime config loading for Firecracker snapshot storage
 - [todo] add doctor checks for `zfs` availability and configuration
 
 Definition of done:
@@ -865,7 +865,7 @@ Definition of done:
 
 #### 3. Retention and ergonomics
 
-- [todo] snapshot delete safety checks
+- [done] snapshot delete safety checks
 - [done] advisory snapshot names
 - [done] human-friendly CLI output
 - [todo] CI examples and operational docs
