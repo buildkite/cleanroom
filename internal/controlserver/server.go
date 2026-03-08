@@ -44,8 +44,10 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
 	sandboxPath, sandboxHandler := cleanroomv1connect.NewSandboxServiceHandler(s)
+	snapshotPath, snapshotHandler := cleanroomv1connect.NewSnapshotServiceHandler(s)
 	executionPath, executionHandler := cleanroomv1connect.NewExecutionServiceHandler(s)
 	mux.Handle(sandboxPath, sandboxHandler)
+	mux.Handle(snapshotPath, snapshotHandler)
 	mux.Handle(executionPath, executionHandler)
 
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -81,6 +83,14 @@ func (s *Server) ListSandboxes(ctx context.Context, req *connect.Request[cleanro
 
 func (s *Server) DownloadSandboxFile(ctx context.Context, req *connect.Request[cleanroomv1.DownloadSandboxFileRequest]) (*connect.Response[cleanroomv1.DownloadSandboxFileResponse], error) {
 	resp, err := s.service.DownloadSandboxFile(ctx, req.Msg)
+	if err != nil {
+		return nil, toConnectError(err)
+	}
+	return connect.NewResponse(resp), nil
+}
+
+func (s *Server) RestoreSandbox(ctx context.Context, req *connect.Request[cleanroomv1.RestoreSandboxRequest]) (*connect.Response[cleanroomv1.RestoreSandboxResponse], error) {
+	resp, err := s.service.RestoreSandbox(ctx, req.Msg)
 	if err != nil {
 		return nil, toConnectError(err)
 	}
@@ -126,6 +136,38 @@ func (s *Server) StreamSandboxEvents(ctx context.Context, req *connect.Request[c
 			return drainSandboxEvents(stream, updates)
 		}
 	}
+}
+
+func (s *Server) CreateSnapshot(ctx context.Context, req *connect.Request[cleanroomv1.CreateSnapshotRequest]) (*connect.Response[cleanroomv1.CreateSnapshotResponse], error) {
+	resp, err := s.service.CreateSnapshot(ctx, req.Msg)
+	if err != nil {
+		return nil, toConnectError(err)
+	}
+	return connect.NewResponse(resp), nil
+}
+
+func (s *Server) GetSnapshot(ctx context.Context, req *connect.Request[cleanroomv1.GetSnapshotRequest]) (*connect.Response[cleanroomv1.GetSnapshotResponse], error) {
+	resp, err := s.service.GetSnapshot(ctx, req.Msg)
+	if err != nil {
+		return nil, toConnectError(err)
+	}
+	return connect.NewResponse(resp), nil
+}
+
+func (s *Server) ListSnapshots(ctx context.Context, req *connect.Request[cleanroomv1.ListSnapshotsRequest]) (*connect.Response[cleanroomv1.ListSnapshotsResponse], error) {
+	resp, err := s.service.ListSnapshots(ctx, req.Msg)
+	if err != nil {
+		return nil, toConnectError(err)
+	}
+	return connect.NewResponse(resp), nil
+}
+
+func (s *Server) DeleteSnapshot(ctx context.Context, req *connect.Request[cleanroomv1.DeleteSnapshotRequest]) (*connect.Response[cleanroomv1.DeleteSnapshotResponse], error) {
+	resp, err := s.service.DeleteSnapshot(ctx, req.Msg)
+	if err != nil {
+		return nil, toConnectError(err)
+	}
+	return connect.NewResponse(resp), nil
 }
 
 func (s *Server) CreateExecution(ctx context.Context, req *connect.Request[cleanroomv1.CreateExecutionRequest]) (*connect.Response[cleanroomv1.CreateExecutionResponse], error) {

@@ -11,8 +11,16 @@ service SandboxService {
   rpc GetSandbox(GetSandboxRequest) returns (GetSandboxResponse);
   rpc ListSandboxes(ListSandboxesRequest) returns (ListSandboxesResponse);
   rpc DownloadSandboxFile(DownloadSandboxFileRequest) returns (DownloadSandboxFileResponse);
+  rpc RestoreSandbox(RestoreSandboxRequest) returns (RestoreSandboxResponse);
   rpc TerminateSandbox(TerminateSandboxRequest) returns (TerminateSandboxResponse);
   rpc StreamSandboxEvents(StreamSandboxEventsRequest) returns (stream SandboxEvent);
+}
+
+service SnapshotService {
+  rpc CreateSnapshot(CreateSnapshotRequest) returns (CreateSnapshotResponse);
+  rpc GetSnapshot(GetSnapshotRequest) returns (GetSnapshotResponse);
+  rpc ListSnapshots(ListSnapshotsRequest) returns (ListSnapshotsResponse);
+  rpc DeleteSnapshot(DeleteSnapshotRequest) returns (DeleteSnapshotResponse);
 }
 
 service ExecutionService {
@@ -30,6 +38,15 @@ message Sandbox {
   string policy_hash = 4;
   google.protobuf.Timestamp created_at = 5;
   google.protobuf.Timestamp updated_at = 6;
+}
+
+message Snapshot {
+  string snapshot_id = 1;
+  string source_sandbox_id = 2;
+  string backend = 3;
+  string policy_hash = 4;
+  string name = 5;
+  google.protobuf.Timestamp created_at = 6;
 }
 
 enum SandboxStatus {
@@ -76,6 +93,9 @@ message CreateSandboxRequest {
   string backend = 2;
   SandboxOptions options = 3;
   Policy policy = 4;
+  oneof source {
+    string snapshot_id = 5;
+  }
 }
 
 message CreateSandboxResponse {
@@ -111,6 +131,16 @@ message DownloadSandboxFileResponse {
   int64 size_bytes = 4;
 }
 
+message RestoreSandboxRequest {
+  string sandbox_id = 1;
+  string snapshot_id = 2;
+}
+
+message RestoreSandboxResponse {
+  Sandbox sandbox = 1;
+  string message = 2;
+}
+
 message TerminateSandboxRequest {
   string sandbox_id = 1;
 }
@@ -131,6 +161,40 @@ message SandboxEvent {
   SandboxStatus status = 2;
   string message = 3;
   google.protobuf.Timestamp occurred_at = 4;
+}
+
+message CreateSnapshotRequest {
+  string sandbox_id = 1;
+  string name = 2;
+}
+
+message CreateSnapshotResponse {
+  Snapshot snapshot = 1;
+  string message = 2;
+}
+
+message GetSnapshotRequest {
+  string snapshot_id = 1;
+}
+
+message GetSnapshotResponse {
+  Snapshot snapshot = 1;
+}
+
+message ListSnapshotsRequest {}
+
+message ListSnapshotsResponse {
+  repeated Snapshot snapshots = 1;
+}
+
+message DeleteSnapshotRequest {
+  string snapshot_id = 1;
+}
+
+message DeleteSnapshotResponse {
+  string snapshot_id = 1;
+  bool deleted = 2;
+  string message = 3;
 }
 
 message Execution {

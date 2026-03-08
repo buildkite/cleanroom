@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/buildkite/cleanroom/internal/backend"
@@ -53,11 +54,12 @@ type Adapter struct {
 
 	runtimeImageMu sync.Mutex
 
-	sandboxMu         sync.Mutex
-	sandboxes         map[string]*sandboxInstance
-	provisioning      map[string]struct{}
-	launchSandboxVMFn func(context.Context, string, *policy.CompiledPolicy, backend.FirecrackerConfig) (*sandboxInstance, error)
-	runGuestCommandFn func(context.Context, context.Context, <-chan struct{}, func() error, string, uint32, vsockexec.ExecRequest, backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error)
+	sandboxMu                   sync.Mutex
+	sandboxes                   map[string]*sandboxInstance
+	provisioning                map[string]struct{}
+	launchSandboxVMFn           func(context.Context, string, *policy.CompiledPolicy, backend.FirecrackerConfig) (*sandboxInstance, error)
+	launchSandboxVMFromRootFSFn func(context.Context, string, *policy.CompiledPolicy, backend.FirecrackerConfig, string) (*sandboxInstance, error)
+	runGuestCommandFn           func(context.Context, context.Context, <-chan struct{}, func() error, string, uint32, vsockexec.ExecRequest, backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error)
 
 	GatewayRegistry gatewayRegistry
 	GatewayPort     int
@@ -97,6 +99,14 @@ const privilegedModeSudo = "sudo"
 const privilegedModeHelper = "helper"
 const defaultPrivilegedHelperPath = "/usr/local/sbin/cleanroom-root-helper"
 const defaultDownloadMaxBytes int64 = 10 * 1024 * 1024
+const snapshotSyncTimeoutSeconds = 10
+
+var sendProcessSignal = func(proc *os.Process, sig syscall.Signal) error {
+	if proc == nil {
+		return errors.New("missing process")
+	}
+	return proc.Signal(sig)
+}
 
 const guestInitScriptTemplate = `#!/bin/sh
 set -eu
@@ -435,6 +445,173 @@ func (a *Adapter) TerminateSandbox(_ context.Context, sandboxID string) error {
 		a.GatewayRegistry.Release(instance.GuestIP)
 	}
 	instance.shutdown()
+	return nil
+}
+
+func (a *Adapter) CreateSnapshot(ctx context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
+	sandboxID := strings.TrimSpace(req.SandboxID)
+	if sandboxID == "" {
+		return nil, errors.New("missing sandbox_id")
+	}
+	snapshotID := strings.TrimSpace(req.SnapshotID)
+	if snapshotID == "" {
+		return nil, errors.New("missing snapshot_id")
+	}
+
+	a.sandboxMu.Lock()
+	instance, ok := a.sandboxes[sandboxID]
+	a.sandboxMu.Unlock()
+	if !ok {
+		return nil, fmt.Errorf("unknown sandbox %q", sandboxID)
+	}
+	if err := instance.exitedErrOrNil(); err != nil {
+		return nil, fmt.Errorf("sandbox %q is not running: %w", sandboxID, err)
+	}
+
+	if _, _, err := a.executeInSandbox(ctx, instance, snapshotSyncTimeoutSeconds, []string{"sync"}, false, backend.OutputStream{}); err != nil {
+		return nil, fmt.Errorf("sync sandbox filesystem before snapshot: %w", err)
+	}
+
+	snapshotPath, err := snapshotStoragePath(snapshotID)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(filepath.Dir(snapshotPath), 0o755); err != nil {
+		return nil, fmt.Errorf("create snapshot directory: %w", err)
+	}
+	if err := pauseSandboxProcess(instance); err != nil {
+		return nil, err
+	}
+	defer func() {
+		_ = resumeSandboxProcess(instance)
+	}()
+
+	if err := copyFile(instance.vmRootFSPath, snapshotPath); err != nil {
+		_ = os.Remove(snapshotPath)
+		return nil, fmt.Errorf("persist snapshot rootfs: %w", err)
+	}
+
+	return &backend.SnapshotResult{StorageRef: snapshotPath}, nil
+}
+
+func (a *Adapter) ProvisionSandboxFromSnapshot(ctx context.Context, req backend.ProvisionFromSnapshotRequest) error {
+	sandboxID := strings.TrimSpace(req.SandboxID)
+	if sandboxID == "" {
+		return errors.New("missing sandbox_id")
+	}
+	if req.Policy == nil {
+		return errors.New("missing compiled policy")
+	}
+	storageRef := strings.TrimSpace(req.StorageRef)
+	if storageRef == "" {
+		return errors.New("missing snapshot storage_ref")
+	}
+
+	a.sandboxMu.Lock()
+	if a.sandboxes == nil {
+		a.sandboxes = map[string]*sandboxInstance{}
+	}
+	if a.provisioning == nil {
+		a.provisioning = map[string]struct{}{}
+	}
+	if _, exists := a.sandboxes[sandboxID]; exists {
+		a.sandboxMu.Unlock()
+		return fmt.Errorf("sandbox %q already provisioned", sandboxID)
+	}
+	if _, exists := a.provisioning[sandboxID]; exists {
+		a.sandboxMu.Unlock()
+		return fmt.Errorf("sandbox %q is already provisioning", sandboxID)
+	}
+	a.provisioning[sandboxID] = struct{}{}
+	a.sandboxMu.Unlock()
+
+	launch := a.launchSandboxVMFromRootFSFn
+	if launch == nil {
+		launch = a.launchSandboxVMFromRootFS
+	}
+	instance, err := launch(ctx, sandboxID, req.Policy, req.FirecrackerConfig, storageRef)
+	if err != nil {
+		a.sandboxMu.Lock()
+		delete(a.provisioning, sandboxID)
+		a.sandboxMu.Unlock()
+		return err
+	}
+
+	a.sandboxMu.Lock()
+	defer a.sandboxMu.Unlock()
+	delete(a.provisioning, sandboxID)
+	if _, exists := a.sandboxes[sandboxID]; exists {
+		instance.shutdown()
+		return fmt.Errorf("sandbox %q already provisioned", sandboxID)
+	}
+	a.sandboxes[sandboxID] = instance
+	return nil
+}
+
+func (a *Adapter) RestoreSandbox(ctx context.Context, req backend.RestoreRequest) error {
+	sandboxID := strings.TrimSpace(req.SandboxID)
+	if sandboxID == "" {
+		return errors.New("missing sandbox_id")
+	}
+	if req.Policy == nil {
+		return errors.New("missing compiled policy")
+	}
+	storageRef := strings.TrimSpace(req.StorageRef)
+	if storageRef == "" {
+		return errors.New("missing snapshot storage_ref")
+	}
+
+	a.sandboxMu.Lock()
+	if a.sandboxes == nil {
+		a.sandboxes = map[string]*sandboxInstance{}
+	}
+	if a.provisioning == nil {
+		a.provisioning = map[string]struct{}{}
+	}
+	instance, ok := a.sandboxes[sandboxID]
+	if !ok {
+		a.sandboxMu.Unlock()
+		return fmt.Errorf("unknown sandbox %q", sandboxID)
+	}
+	if _, exists := a.provisioning[sandboxID]; exists {
+		a.sandboxMu.Unlock()
+		return fmt.Errorf("sandbox %q is already provisioning", sandboxID)
+	}
+	a.provisioning[sandboxID] = struct{}{}
+	delete(a.sandboxes, sandboxID)
+	a.sandboxMu.Unlock()
+
+	if a.GatewayRegistry != nil && instance.GuestIP != "" {
+		a.GatewayRegistry.Release(instance.GuestIP)
+	}
+	instance.shutdown()
+
+	launch := a.launchSandboxVMFromRootFSFn
+	if launch == nil {
+		launch = a.launchSandboxVMFromRootFS
+	}
+	replacement, err := launch(ctx, sandboxID, req.Policy, req.FirecrackerConfig, storageRef)
+	a.sandboxMu.Lock()
+	defer a.sandboxMu.Unlock()
+	delete(a.provisioning, sandboxID)
+	if err != nil {
+		return err
+	}
+	a.sandboxes[sandboxID] = replacement
+	return nil
+}
+
+func (a *Adapter) DeleteSnapshot(_ context.Context, req backend.DeleteSnapshotRequest) error {
+	storageRef := strings.TrimSpace(req.StorageRef)
+	if storageRef == "" {
+		return errors.New("missing snapshot storage_ref")
+	}
+	if err := os.Remove(storageRef); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove snapshot rootfs %q: %w", storageRef, err)
+	}
+	if dir := filepath.Dir(storageRef); dir != "" {
+		_ = os.Remove(dir)
+	}
 	return nil
 }
 
@@ -1252,13 +1429,33 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 	if compiled == nil {
 		return nil, errors.New("missing compiled policy")
 	}
+	imageArtifact, err := a.ensureImageArtifact(ctx, compiled.ImageRef)
+	if err != nil {
+		return nil, err
+	}
+	preparedRootFSPath, err := a.ensurePreparedRuntimeRootFS(ctx, cfg, imageArtifact)
+	if err != nil {
+		return nil, err
+	}
+	instance, err := a.launchSandboxVMFromRootFS(ctx, sandboxID, compiled, cfg, preparedRootFSPath)
+	if err != nil {
+		return nil, err
+	}
+	instance.ImageRef = imageArtifact.Ref
+	instance.ImageDigest = imageArtifact.Digest
+	return instance, nil
+}
+
+func (a *Adapter) launchSandboxVMFromRootFS(ctx context.Context, sandboxID string, compiled *policy.CompiledPolicy, cfg backend.FirecrackerConfig, sourceRootFSPath string) (*sandboxInstance, error) {
+	if compiled == nil {
+		return nil, errors.New("missing compiled policy")
+	}
 	if compiled.NetworkDefault != "deny" {
 		return nil, fmt.Errorf("firecracker backend requires deny-by-default policy, got %q", compiled.NetworkDefault)
 	}
 	if runtime.GOOS != "linux" {
 		return nil, fmt.Errorf("firecracker backend is linux-only, current OS is %s", runtime.GOOS)
 	}
-
 	if cfg.VCPUs <= 0 {
 		cfg.VCPUs = 1
 	}
@@ -1288,15 +1485,6 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 		return nil, err
 	}
 
-	imageArtifact, err := a.ensureImageArtifact(ctx, compiled.ImageRef)
-	if err != nil {
-		return nil, err
-	}
-	preparedRootFSPath, err := a.ensurePreparedRuntimeRootFS(ctx, cfg, imageArtifact)
-	if err != nil {
-		return nil, err
-	}
-
 	runBaseDir, err := sandboxRuntimeBaseDir()
 	if err != nil {
 		return nil, fmt.Errorf("resolve sandbox runtime base directory: %w", err)
@@ -1312,7 +1500,7 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 		return nil, err
 	}
 
-	rootfsPath, err := filepath.Abs(preparedRootFSPath)
+	rootfsPath, err := filepath.Abs(sourceRootFSPath)
 	if err != nil {
 		return nil, err
 	}
@@ -1434,8 +1622,8 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 		VsockPath:      vsockPath,
 		GuestPort:      cfg.GuestPort,
 		Policy:         compiled,
-		ImageRef:       imageArtifact.Ref,
-		ImageDigest:    imageArtifact.Digest,
+		ImageRef:       compiled.ImageRef,
+		ImageDigest:    compiled.ImageDigest,
 		CommandTimeout: cfg.LaunchSeconds,
 		HostIP:         networkCfg.HostIP,
 		GuestIP:        networkCfg.GuestIP,
@@ -1477,6 +1665,34 @@ func sandboxRuntimeBaseDir() (string, error) {
 		return "", err
 	}
 	return filepath.Join(base, "sandboxes"), nil
+}
+
+func snapshotStoragePath(snapshotID string) (string, error) {
+	base, err := paths.SnapshotDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve snapshot base directory: %w", err)
+	}
+	return filepath.Join(base, "firecracker", snapshotID, "rootfs.ext4"), nil
+}
+
+func pauseSandboxProcess(instance *sandboxInstance) error {
+	if instance == nil || instance.fcCmd == nil || instance.fcCmd.Process == nil {
+		return errors.New("sandbox process is not available")
+	}
+	if err := sendProcessSignal(instance.fcCmd.Process, syscall.SIGSTOP); err != nil {
+		return fmt.Errorf("pause sandbox process: %w", err)
+	}
+	return nil
+}
+
+func resumeSandboxProcess(instance *sandboxInstance) error {
+	if instance == nil || instance.fcCmd == nil || instance.fcCmd.Process == nil {
+		return errors.New("sandbox process is not available")
+	}
+	if err := sendProcessSignal(instance.fcCmd.Process, syscall.SIGCONT); err != nil {
+		return fmt.Errorf("resume sandbox process: %w", err)
+	}
+	return nil
 }
 
 func (s *sandboxInstance) shutdown() {

@@ -10,6 +10,9 @@ import (
 
 const (
 	CapabilityExecStreaming          = "exec.streaming"
+	CapabilitySandboxSnapshot        = "sandbox.snapshot"
+	CapabilitySandboxRestore         = "sandbox.restore"
+	CapabilitySandboxFork            = "sandbox.fork"
 	CapabilitySandboxPersistent      = "sandbox.persistent"
 	CapabilitySandboxFileDownload    = "sandbox.file_download"
 	CapabilityNetworkDefaultDeny     = "network.default_deny"
@@ -19,6 +22,9 @@ const (
 
 var knownCapabilityKeys = []string{
 	CapabilityExecStreaming,
+	CapabilitySandboxSnapshot,
+	CapabilitySandboxRestore,
+	CapabilitySandboxFork,
 	CapabilitySandboxPersistent,
 	CapabilitySandboxFileDownload,
 	CapabilityNetworkDefaultDeny,
@@ -42,6 +48,7 @@ type CapabilityReporter interface {
 // Baseline capabilities are inferred from backend interfaces:
 // - StreamingAdapter => exec.streaming
 // - PersistentSandboxAdapter => sandbox.persistent
+// - SnapshottingAdapter => sandbox.snapshot, sandbox.restore, sandbox.fork
 // - SandboxFileDownloadAdapter => sandbox.file_download
 //
 // Additional backend-specific capabilities can be provided by implementing
@@ -60,6 +67,11 @@ func CapabilitiesForAdapter(adapter Adapter) map[string]bool {
 	}
 	if _, ok := adapter.(PersistentSandboxAdapter); ok {
 		caps[CapabilitySandboxPersistent] = true
+	}
+	if _, ok := adapter.(SnapshottingAdapter); ok {
+		caps[CapabilitySandboxSnapshot] = true
+		caps[CapabilitySandboxRestore] = true
+		caps[CapabilitySandboxFork] = true
 	}
 	if _, ok := adapter.(SandboxFileDownloadAdapter); ok {
 		caps[CapabilitySandboxFileDownload] = true
@@ -100,6 +112,16 @@ type PersistentSandboxAdapter interface {
 	TerminateSandbox(ctx context.Context, sandboxID string) error
 }
 
+// SnapshottingAdapter supports immutable filesystem snapshots of persistent
+// sandboxes, fresh-boot restore, and creating new sandboxes from snapshots.
+type SnapshottingAdapter interface {
+	PersistentSandboxAdapter
+	CreateSnapshot(ctx context.Context, req SnapshotRequest) (*SnapshotResult, error)
+	ProvisionSandboxFromSnapshot(ctx context.Context, req ProvisionFromSnapshotRequest) error
+	RestoreSandbox(ctx context.Context, req RestoreRequest) error
+	DeleteSnapshot(ctx context.Context, req DeleteSnapshotRequest) error
+}
+
 // SandboxFileDownloadAdapter can copy files out of a persistent sandbox.
 type SandboxFileDownloadAdapter interface {
 	DownloadSandboxFile(ctx context.Context, sandboxID, path string, maxBytes int64) ([]byte, error)
@@ -109,6 +131,36 @@ type ProvisionRequest struct {
 	SandboxID string
 	Policy    *policy.CompiledPolicy
 	FirecrackerConfig
+}
+
+type SnapshotRequest struct {
+	SandboxID  string
+	SnapshotID string
+}
+
+type SnapshotResult struct {
+	StorageRef string
+}
+
+type ProvisionFromSnapshotRequest struct {
+	SandboxID  string
+	SnapshotID string
+	StorageRef string
+	Policy     *policy.CompiledPolicy
+	FirecrackerConfig
+}
+
+type RestoreRequest struct {
+	SandboxID  string
+	SnapshotID string
+	StorageRef string
+	Policy     *policy.CompiledPolicy
+	FirecrackerConfig
+}
+
+type DeleteSnapshotRequest struct {
+	SnapshotID string
+	StorageRef string
 }
 
 type AttachIO struct {

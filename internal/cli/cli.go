@@ -40,6 +40,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/paths"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
+	"github.com/buildkite/cleanroom/internal/snapshotstore"
 	"github.com/buildkite/cleanroom/internal/tlsconfig"
 	"github.com/charmbracelet/log"
 	"github.com/google/go-containerregistry/pkg/authn"
@@ -74,17 +75,18 @@ type runtimeContext struct {
 }
 
 type CLI struct {
-	Policy  PolicyCommand  `cmd:"" help:"Policy commands"`
-	Config  ConfigCommand  `cmd:"" help:"Runtime config commands"`
-	Image   ImageCommand   `cmd:"" help:"Manage OCI image cache artifacts"`
-	Create  CreateCommand  `cmd:"" help:"Create a sandbox"`
-	Exec    ExecCommand    `cmd:"" help:"Execute a command in a cleanroom backend"`
-	Console ConsoleCommand `cmd:"" help:"Attach an interactive console to a cleanroom execution"`
-	Serve   ServeCommand   `cmd:"" help:"Run the cleanroom control-plane server"`
-	Doctor  DoctorCommand  `cmd:"" help:"Run environment and backend diagnostics"`
-	Status  StatusCommand  `cmd:"" help:"Inspect run artifacts"`
-	Sandbox SandboxCommand `cmd:"" help:"Manage sandboxes"`
-	Version VersionCommand `cmd:"" help:"Print version information"`
+	Policy   PolicyCommand   `cmd:"" help:"Policy commands"`
+	Config   ConfigCommand   `cmd:"" help:"Runtime config commands"`
+	Image    ImageCommand    `cmd:"" help:"Manage OCI image cache artifacts"`
+	Snapshot SnapshotCommand `cmd:"" help:"Manage snapshots"`
+	Create   CreateCommand   `cmd:"" help:"Create a sandbox"`
+	Exec     ExecCommand     `cmd:"" help:"Execute a command in a cleanroom backend"`
+	Console  ConsoleCommand  `cmd:"" help:"Attach an interactive console to a cleanroom execution"`
+	Serve    ServeCommand    `cmd:"" help:"Run the cleanroom control-plane server"`
+	Doctor   DoctorCommand   `cmd:"" help:"Run environment and backend diagnostics"`
+	Status   StatusCommand   `cmd:"" help:"Inspect run artifacts"`
+	Sandbox  SandboxCommand  `cmd:"" help:"Manage sandboxes"`
+	Version  VersionCommand  `cmd:"" help:"Print version information"`
 }
 
 type VersionCommand struct {
@@ -188,6 +190,7 @@ type SandboxCreateCommand struct {
 	clientFlags
 	Chdir         string `short:"c" help:"Change to this directory before running commands"`
 	Backend       string `help:"Execution backend (defaults to runtime config or host default)"`
+	FromSnapshot  string `name:"from-snapshot" help:"Create the sandbox from an existing snapshot ID"`
 	Image         string `help:"Override sandbox image ref (tag, digest, or local Docker image)"`
 	LaunchSeconds int64  `help:"VM boot/guest-agent readiness timeout in seconds"`
 	JSON          bool   `help:"Print sandbox as JSON"`
@@ -197,6 +200,7 @@ type CreateCommand struct {
 	clientFlags
 	Chdir         string `short:"c" help:"Change to this directory before running commands"`
 	Backend       string `help:"Execution backend (defaults to runtime config or host default)"`
+	FromSnapshot  string `name:"from-snapshot" help:"Create the sandbox from an existing snapshot ID"`
 	Image         string `help:"Override sandbox image ref (tag, digest, or local Docker image)"`
 	LaunchSeconds int64  `help:"VM boot/guest-agent readiness timeout in seconds"`
 	JSON          bool   `help:"Print sandbox as JSON"`
@@ -248,6 +252,7 @@ type DoctorCommand struct {
 type SandboxCommand struct {
 	Create    SandboxCreateCommand    `cmd:"" help:"Create a sandbox"`
 	List      SandboxListCommand      `name:"ls" aliases:"list" cmd:"" help:"List active sandboxes"`
+	Restore   SandboxRestoreCommand   `cmd:"" help:"Restore a sandbox from a snapshot"`
 	Terminate SandboxTerminateCommand `name:"rm" aliases:"terminate" cmd:"" help:"Terminate a sandbox"`
 }
 
@@ -256,9 +261,46 @@ type SandboxListCommand struct {
 	JSON bool `help:"Print sandboxes as JSON"`
 }
 
+type SandboxRestoreCommand struct {
+	clientFlags
+	SandboxID  string `arg:"" required:"" help:"Sandbox ID to restore"`
+	SnapshotID string `name:"snapshot" required:"" help:"Snapshot ID to restore from"`
+	JSON       bool   `help:"Print sandbox as JSON"`
+}
+
 type SandboxTerminateCommand struct {
 	clientFlags
 	SandboxID string `arg:"" required:"" help:"Sandbox ID to terminate"`
+}
+
+type SnapshotCommand struct {
+	Create SnapshotCreateCommand `cmd:"" help:"Create a snapshot from a sandbox"`
+	Get    SnapshotGetCommand    `cmd:"" help:"Get snapshot details"`
+	List   SnapshotListCommand   `name:"ls" aliases:"list" cmd:"" help:"List snapshots"`
+	Delete SnapshotDeleteCommand `name:"rm" aliases:"delete" cmd:"" help:"Delete a snapshot"`
+}
+
+type SnapshotCreateCommand struct {
+	clientFlags
+	SandboxID string `arg:"" required:"" help:"Sandbox ID to snapshot"`
+	Name      string `help:"Optional snapshot label"`
+	JSON      bool   `help:"Print snapshot as JSON"`
+}
+
+type SnapshotGetCommand struct {
+	clientFlags
+	SnapshotID string `arg:"" required:"" help:"Snapshot ID to inspect"`
+	JSON       bool   `help:"Print snapshot as JSON"`
+}
+
+type SnapshotListCommand struct {
+	clientFlags
+	JSON bool `help:"Print snapshots as JSON"`
+}
+
+type SnapshotDeleteCommand struct {
+	clientFlags
+	SnapshotID string `arg:"" required:"" help:"Snapshot ID to delete"`
 }
 
 type exitCodeError struct {
@@ -767,6 +809,28 @@ func (c *SandboxListCommand) Run(ctx *runtimeContext) error {
 	return tw.Flush()
 }
 
+func (c *SandboxRestoreCommand) Run(ctx *runtimeContext) error {
+	client, err := c.connect(ctx)
+	if err != nil {
+		return err
+	}
+
+	resp, err := client.RestoreSandbox(context.Background(), &cleanroomv1.RestoreSandboxRequest{
+		SandboxId:  c.SandboxID,
+		SnapshotId: c.SnapshotID,
+	})
+	if err != nil {
+		return err
+	}
+	if c.JSON {
+		enc := json.NewEncoder(ctx.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(resp.GetSandbox())
+	}
+	_, err = fmt.Fprintln(ctx.Stdout, resp.GetMessage())
+	return err
+}
+
 func (c *SandboxTerminateCommand) Run(ctx *runtimeContext) error {
 	client, err := c.connect(ctx)
 	if err != nil {
@@ -784,37 +848,142 @@ func (c *SandboxTerminateCommand) Run(ctx *runtimeContext) error {
 	return err
 }
 
-func runSandboxCreate(ctx *runtimeContext, connectFlags clientFlags, chdir, backend, imageRefOverride string, launchSeconds int64, outputJSON bool) error {
+func (c *SnapshotCreateCommand) Run(ctx *runtimeContext) error {
+	client, err := c.connect(ctx)
+	if err != nil {
+		return err
+	}
+
+	resp, err := client.CreateSnapshot(context.Background(), &cleanroomv1.CreateSnapshotRequest{
+		SandboxId: c.SandboxID,
+		Name:      c.Name,
+	})
+	if err != nil {
+		return err
+	}
+	if c.JSON {
+		enc := json.NewEncoder(ctx.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(resp.GetSnapshot())
+	}
+	_, err = fmt.Fprintln(ctx.Stdout, resp.GetSnapshot().GetSnapshotId())
+	return err
+}
+
+func (c *SnapshotGetCommand) Run(ctx *runtimeContext) error {
+	client, err := c.connect(ctx)
+	if err != nil {
+		return err
+	}
+
+	resp, err := client.GetSnapshot(context.Background(), &cleanroomv1.GetSnapshotRequest{
+		SnapshotId: c.SnapshotID,
+	})
+	if err != nil {
+		return err
+	}
+	enc := json.NewEncoder(ctx.Stdout)
+	if c.JSON {
+		enc.SetIndent("", "  ")
+	}
+	return enc.Encode(resp.GetSnapshot())
+}
+
+func (c *SnapshotListCommand) Run(ctx *runtimeContext) error {
+	client, err := c.connect(ctx)
+	if err != nil {
+		return err
+	}
+
+	resp, err := client.ListSnapshots(context.Background(), &cleanroomv1.ListSnapshotsRequest{})
+	if err != nil {
+		return err
+	}
+	if c.JSON {
+		enc := json.NewEncoder(ctx.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(resp.GetSnapshots())
+	}
+	if len(resp.GetSnapshots()) == 0 {
+		_, err := fmt.Fprintln(ctx.Stdout, "no snapshots")
+		return err
+	}
+
+	tw := tabwriter.NewWriter(ctx.Stdout, 0, 2, 2, ' ', 0)
+	if _, err := fmt.Fprintln(tw, "ID\tSANDBOX\tBACKEND\tNAME\tCREATED"); err != nil {
+		return err
+	}
+	for _, snapshot := range resp.GetSnapshots() {
+		created := ""
+		if snapshot.GetCreatedAt() != nil {
+			created = snapshot.GetCreatedAt().AsTime().Format(time.RFC3339)
+		}
+		if _, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", snapshot.GetSnapshotId(), snapshot.GetSourceSandboxId(), snapshot.GetBackend(), snapshot.GetName(), created); err != nil {
+			return err
+		}
+	}
+	return tw.Flush()
+}
+
+func (c *SnapshotDeleteCommand) Run(ctx *runtimeContext) error {
+	client, err := c.connect(ctx)
+	if err != nil {
+		return err
+	}
+
+	resp, err := client.DeleteSnapshot(context.Background(), &cleanroomv1.DeleteSnapshotRequest{
+		SnapshotId: c.SnapshotID,
+	})
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(ctx.Stdout, resp.GetMessage())
+	return err
+}
+
+func runSandboxCreate(ctx *runtimeContext, connectFlags clientFlags, chdir, backend, fromSnapshot, imageRefOverride string, launchSeconds int64, outputJSON bool) error {
 	resolvedHost := connectFlags.resolvedHost(ctx.Config)
 	client, err := connectFlags.connect(ctx)
 	if err != nil {
 		return err
 	}
 
-	cwd, err := resolveCWD(ctx.CWD, chdir)
-	if err != nil {
-		return err
-	}
-	compiled, _, err := ctx.Loader.LoadAndCompile(cwd)
-	if err != nil {
-		return err
-	}
-	allowLocalImageOverride, err := isLocalControlPlaneEndpoint(resolvedHost)
-	if err != nil {
-		return err
-	}
-	compiled, err = overrideCompiledPolicyImage(compiled, imageRefOverride, allowLocalImageOverride)
-	if err != nil {
-		return err
-	}
-
-	resp, err := client.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+	createReq := &cleanroomv1.CreateSandboxRequest{
 		Backend: backend,
 		Options: &cleanroomv1.SandboxOptions{
 			LaunchSeconds: launchSeconds,
 		},
-		Policy: compiled.ToProto(),
-	})
+	}
+	fromSnapshot = strings.TrimSpace(fromSnapshot)
+	if fromSnapshot != "" {
+		if strings.TrimSpace(imageRefOverride) != "" {
+			return errors.New("--image cannot be used with --from-snapshot")
+		}
+		if strings.TrimSpace(backend) != "" {
+			return errors.New("--backend cannot be used with --from-snapshot")
+		}
+		createReq.Source = &cleanroomv1.CreateSandboxRequest_SnapshotId{SnapshotId: fromSnapshot}
+	} else {
+		cwd, err := resolveCWD(ctx.CWD, chdir)
+		if err != nil {
+			return err
+		}
+		compiled, _, err := ctx.Loader.LoadAndCompile(cwd)
+		if err != nil {
+			return err
+		}
+		allowLocalImageOverride, err := isLocalControlPlaneEndpoint(resolvedHost)
+		if err != nil {
+			return err
+		}
+		compiled, err = overrideCompiledPolicyImage(compiled, imageRefOverride, allowLocalImageOverride)
+		if err != nil {
+			return err
+		}
+		createReq.Policy = compiled.ToProto()
+	}
+
+	resp, err := client.CreateSandbox(context.Background(), createReq)
 	if err != nil {
 		return fmt.Errorf("create sandbox: %w", err)
 	}
@@ -836,11 +1005,11 @@ func runSandboxCreate(ctx *runtimeContext, connectFlags clientFlags, chdir, back
 }
 
 func (c *SandboxCreateCommand) Run(ctx *runtimeContext) error {
-	return runSandboxCreate(ctx, c.clientFlags, c.Chdir, c.Backend, c.Image, c.LaunchSeconds, c.JSON)
+	return runSandboxCreate(ctx, c.clientFlags, c.Chdir, c.Backend, c.FromSnapshot, c.Image, c.LaunchSeconds, c.JSON)
 }
 
 func (c *CreateCommand) Run(ctx *runtimeContext) error {
-	return runSandboxCreate(ctx, c.clientFlags, c.Chdir, c.Backend, c.Image, c.LaunchSeconds, c.JSON)
+	return runSandboxCreate(ctx, c.clientFlags, c.Chdir, c.Backend, c.FromSnapshot, c.Image, c.LaunchSeconds, c.JSON)
 }
 
 func (e *ExecCommand) Run(ctx *runtimeContext) error {
@@ -2074,11 +2243,17 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 		}
 	}
 
+	snapshotStore, err := snapshotstore.New(snapshotstore.Options{})
+	if err != nil {
+		return fmt.Errorf("initialise snapshot metadata store: %w", err)
+	}
+
 	service := &controlservice.Service{
-		Loader:   ctx.Loader,
-		Config:   ctx.Config,
-		Backends: ctx.Backends,
-		Logger:   logger.With("subsystem", "service"),
+		Loader:        ctx.Loader,
+		Config:        ctx.Config,
+		Backends:      ctx.Backends,
+		Logger:        logger.With("subsystem", "service"),
+		SnapshotStore: snapshotStore,
 	}
 	server := controlserver.New(service, logger.With("subsystem", "http"))
 
