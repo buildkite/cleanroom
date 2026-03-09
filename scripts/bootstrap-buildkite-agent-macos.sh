@@ -87,6 +87,12 @@ AGENT_VERSION="${CLEANROOM_BUILDKITE_AGENT_VERSION:-3.119.1}"
 AGENT_ROOT="/var/lib/buildkite-agent"
 BUILD_PATH="/buildkite/builds"
 CONFIG_DIR="/usr/local/etc/buildkite-agent"
+AGENT_USER="${CLEANROOM_BUILDKITE_AGENT_USER:-ec2-user}"
+
+if ! id "$AGENT_USER" >/dev/null 2>&1; then
+  AGENT_USER="root"
+fi
+AGENT_GROUP="$(id -gn "$AGENT_USER")"
 
 [ -n "$AWS_REGION" ] || die "AWS_REGION (or CLEANROOM_BOOTSTRAP_REGION) must be set"
 [ -n "$BUILDKITE_TOKEN_PARAM" ] || die "BUILDKITE_TOKEN_PARAM must be set"
@@ -102,11 +108,12 @@ log "installing buildkite-agent ${AGENT_VERSION}"
 install_buildkite_agent_binary "$AGENT_VERSION"
 
 install -d -o root -g wheel -m 0755 "$CONFIG_DIR"
-install -d -o root -g wheel -m 0755 "$AGENT_ROOT"
-install -d -o root -g wheel -m 0755 /buildkite
-install -d -o root -g wheel -m 0755 "$BUILD_PATH"
-install -d -o root -g wheel -m 0755 "$AGENT_ROOT/hooks"
-install -d -o root -g wheel -m 0755 "$AGENT_ROOT/plugins"
+install -d -o "$AGENT_USER" -g "$AGENT_GROUP" -m 0755 "$AGENT_ROOT"
+install -d -o "$AGENT_USER" -g "$AGENT_GROUP" -m 0755 "$AGENT_ROOT/logs"
+install -d -o "$AGENT_USER" -g "$AGENT_GROUP" -m 0755 /buildkite
+install -d -o "$AGENT_USER" -g "$AGENT_GROUP" -m 0755 "$BUILD_PATH"
+install -d -o "$AGENT_USER" -g "$AGENT_GROUP" -m 0755 "$AGENT_ROOT/hooks"
+install -d -o "$AGENT_USER" -g "$AGENT_GROUP" -m 0755 "$AGENT_ROOT/plugins"
 
 agent_token="$(aws ssm get-parameter --region "$AWS_REGION" --name "$BUILDKITE_TOKEN_PARAM" --with-decryption --query 'Parameter.Value' --output text)"
 instance_id="$(resolve_instance_id)"
@@ -121,7 +128,8 @@ build-path="${BUILD_PATH}"
 hooks-path="${AGENT_ROOT}/hooks"
 plugins-path="${AGENT_ROOT}/plugins"
 CFG
-chmod 0600 "$config_path"
+chown root:"$AGENT_GROUP" "$config_path"
+chmod 0640 "$config_path"
 
 service_label="com.buildkite.agent.${QUEUE_NAME}"
 plist_path="/Library/LaunchDaemons/${service_label}.plist"
@@ -139,6 +147,8 @@ cat > "$plist_path" <<PLIST
     <string>--config</string>
     <string>${config_path}</string>
   </array>
+  <key>UserName</key>
+  <string>${AGENT_USER}</string>
   <key>WorkingDirectory</key>
   <string>${AGENT_ROOT}</string>
   <key>EnvironmentVariables</key>
@@ -153,9 +163,9 @@ cat > "$plist_path" <<PLIST
   <key>KeepAlive</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>/var/log/buildkite-agent-${QUEUE_NAME}.log</string>
+  <string>${AGENT_ROOT}/logs/buildkite-agent-${QUEUE_NAME}.log</string>
   <key>StandardErrorPath</key>
-  <string>/var/log/buildkite-agent-${QUEUE_NAME}.error.log</string>
+  <string>${AGENT_ROOT}/logs/buildkite-agent-${QUEUE_NAME}.error.log</string>
 </dict>
 </plist>
 PLIST

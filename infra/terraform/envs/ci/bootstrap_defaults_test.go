@@ -101,6 +101,7 @@ func TestMacBootstrapScriptConfiguresBuildkiteAgent(t *testing.T) {
 	requireContains(t, scriptPath, "QUEUE_NAME=\"${CLEANROOM_BUILDKITE_QUEUE:-cleanroom-mac}\"")
 	requireContains(t, scriptPath, "BUILD_PATH=\"/buildkite/builds\"")
 	requireContains(t, scriptPath, "<string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>")
+	requireContains(t, scriptPath, "<key>UserName</key>")
 }
 
 func TestUserDataInstallsAwsCliWithoutAptAwscliDependency(t *testing.T) {
