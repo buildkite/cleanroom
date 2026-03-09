@@ -71,7 +71,7 @@ variable "mac_root_volume_size_gib" {
 variable "mac_buildkite_queue" {
   description = "Buildkite queue tag used by the macOS agent."
   type        = string
-  default     = "mac-small"
+  default     = "cleanroom-mac"
 }
 
 variable "mac_setup_script_path" {

@@ -30,7 +30,7 @@ steps:
       size: "20g"
       name: "mise-cache"
     agents:
-      queue: mac-small
+      queue: cleanroom-mac
 
   - label: ":fire: E2E (Firecracker)"
     command: scripts/ci-cleanroom-e2e.sh

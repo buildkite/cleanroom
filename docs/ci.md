@@ -3,7 +3,7 @@
 This repository uses Buildkite for CI with three queues:
 
 - `hosted`: Linux unit/integration tests (`mise run test`)
-- `mac-small`: macOS unit/integration tests (`mise run test`)
+- `cleanroom-mac`: macOS unit/integration tests (`mise run test`)
 - `cleanroom`: Linux Firecracker end-to-end checks (`scripts/ci-cleanroom-e2e.sh`)
 
 Pipeline config lives in `.buildkite/pipeline.yml`.
@@ -14,7 +14,7 @@ Pipeline config lives in `.buildkite/pipeline.yml`.
 2. Ensure the pipeline reads `.buildkite/pipeline.yml` from the repo.
 3. Ensure all required queues are available:
 - `hosted`
-- `mac-small`
+- `cleanroom-mac`
 - `cleanroom`
 
 ## 2. Hosted and macOS Queues
@@ -26,7 +26,7 @@ For self-hosted macOS capacity, Terraform can provision a private EC2 Mac host a
 Notes:
 
 - `mise` is bootstrapped via repository hooks in `.buildkite/hooks/`.
-- Per-step cache is enabled for `hosted` and `mac-small` steps.
+- Per-step cache is enabled for `hosted` and `cleanroom-mac` steps.
 - Avoid global pipeline `cache:` blocks if self-hosted queues are present.
 
 ## 3. Cleanroom Queue (Firecracker E2E)

@@ -50,7 +50,7 @@ variable "root_volume_size_gib" {
 variable "buildkite_queue" {
   description = "Buildkite queue tag for this macOS host."
   type        = string
-  default     = "mac-small"
+  default     = "cleanroom-mac"
 }
 
 variable "buildkite_token_parameter_name" {

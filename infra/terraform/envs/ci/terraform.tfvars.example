@@ -20,7 +20,7 @@ repo_url          = "git@github.com:buildkite/cleanroom.git"
 repo_ref          = "main"
 setup_script_path = "scripts/bootstrap-buildkite-agent.sh"
 mac_setup_script_path = "scripts/bootstrap-buildkite-agent-macos.sh"
-mac_buildkite_queue   = "mac-small"
+mac_buildkite_queue   = "cleanroom-mac"
 
 tailscale_hostname_prefix = "cleanroom-ci-linux"
 tailscale_advertise_tags  = ""

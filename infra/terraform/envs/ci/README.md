@@ -20,7 +20,7 @@ Network behaviour:
 Bootstrap behaviour:
 
 - defaults to `scripts/bootstrap-buildkite-agent.sh`, which installs and starts a Buildkite agent for the `cleanroom` queue
-- macOS defaults to `scripts/bootstrap-buildkite-agent-macos.sh`, which installs and starts a Buildkite agent for the `mac-small` queue
+- macOS defaults to `scripts/bootstrap-buildkite-agent-macos.sh`, which installs and starts a Buildkite agent for the `cleanroom-mac` queue
 - override `setup_script_path` if you need custom host bootstrap logic
 - override `mac_setup_script_path` if you need custom macOS host bootstrap logic
 

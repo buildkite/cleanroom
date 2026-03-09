@@ -77,8 +77,11 @@ func TestMacCiDefaultsUseBootstrapScript(t *testing.T) {
 	t.Helper()
 
 	requireContains(t, "variables.tf", "default     = \"scripts/bootstrap-buildkite-agent-macos.sh\"")
+	requireContains(t, "variables.tf", "default     = \"cleanroom-mac\"")
 	requireContains(t, filepath.Join("..", "..", "modules", "macos-ci", "variables.tf"), "default     = \"scripts/bootstrap-buildkite-agent-macos.sh\"")
+	requireContains(t, filepath.Join("..", "..", "modules", "macos-ci", "variables.tf"), "default     = \"cleanroom-mac\"")
 	requireContains(t, "terraform.tfvars.example", "mac_setup_script_path = \"scripts/bootstrap-buildkite-agent-macos.sh\"")
+	requireContains(t, "terraform.tfvars.example", "mac_buildkite_queue   = \"cleanroom-mac\"")
 }
 
 func TestBootstrapScriptConfiguresBuildkiteAgent(t *testing.T) {
@@ -95,6 +98,7 @@ func TestMacBootstrapScriptConfiguresBuildkiteAgent(t *testing.T) {
 	scriptPath := filepath.Join("..", "..", "..", "..", "scripts", "bootstrap-buildkite-agent-macos.sh")
 	requireContains(t, scriptPath, "<string>start</string>")
 	requireContains(t, scriptPath, "CLEANROOM_BUILDKITE_QUEUE")
+	requireContains(t, scriptPath, "QUEUE_NAME=\"${CLEANROOM_BUILDKITE_QUEUE:-cleanroom-mac}\"")
 }
 
 func TestUserDataInstallsAwsCliWithoutAptAwscliDependency(t *testing.T) {
