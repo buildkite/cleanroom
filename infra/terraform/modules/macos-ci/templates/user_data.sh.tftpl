@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+exec > >(tee /var/log/user-data.log) 2>&1
+
+AWS_REGION='${aws_region}'
+NAME_PREFIX='${name_prefix}'
+BUILDKITE_QUEUE='${buildkite_queue}'
+BUILDKITE_TOKEN_PARAM='${buildkite_token_parameter_name}'
+DEPLOY_KEY_PARAM='${git_deploy_key_parameter_name}'
+REPO_URL='${repo_url}'
+REPO_REF='${repo_ref}'
+SETUP_SCRIPT_PATH='${setup_script_path}'
+
+if ! command -v aws >/dev/null 2>&1; then
+  aws_tmp_dir="$(mktemp -d)"
+  trap 'rm -rf "$aws_tmp_dir"' EXIT
+  curl -fsSL 'https://awscli.amazonaws.com/AWSCLIV2.pkg' -o "$aws_tmp_dir/AWSCLIV2.pkg"
+  installer -pkg "$aws_tmp_dir/AWSCLIV2.pkg" -target /
+fi
+
+if ! command -v aws >/dev/null 2>&1; then
+  echo "aws CLI is required but not installed" >&2
+  exit 1
+fi
+
+if ! command -v git >/dev/null 2>&1; then
+  echo "git is required but not installed" >&2
+  exit 1
+fi
+
+if ! command -v ssh-keyscan >/dev/null 2>&1; then
+  echo "ssh-keyscan is required but not installed" >&2
+  exit 1
+fi
+
+imds_token="$(curl -fsS -X PUT 'http://169.254.169.254/latest/api/token' -H 'X-aws-ec2-metadata-token-ttl-seconds: 21600')"
+instance_id="$(curl -fsS -H "X-aws-ec2-metadata-token: $imds_token" http://169.254.169.254/latest/meta-data/instance-id)"
+
+# Verify the instance role can read SecureString parameters before handoff.
+aws ssm get-parameter \
+  --region "$AWS_REGION" \
+  --name "$BUILDKITE_TOKEN_PARAM" \
+  --with-decryption \
+  --query 'Parameter.Value' \
+  --output text >/dev/null
+
+install -d -o root -g wheel -m 0700 /var/root/.ssh
+aws ssm get-parameter \
+  --region "$AWS_REGION" \
+  --name "$DEPLOY_KEY_PARAM" \
+  --with-decryption \
+  --query 'Parameter.Value' \
+  --output text > /var/root/.ssh/cleanroom_deploy_key
+chmod 0600 /var/root/.ssh/cleanroom_deploy_key
+touch /var/root/.ssh/known_hosts
+ssh-keyscan -t rsa,ecdsa,ed25519 github.com >> /var/root/.ssh/known_hosts
+chmod 0644 /var/root/.ssh/known_hosts
+
+repo_root='/opt/cleanroom-bootstrap/repo'
+rm -rf "$repo_root"
+install -d -o root -g wheel -m 0755 /opt/cleanroom-bootstrap
+
+export GIT_SSH_COMMAND='ssh -i /var/root/.ssh/cleanroom_deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/var/root/.ssh/known_hosts'
+
+git -c init.defaultBranch=main init "$repo_root" >/dev/null
+git -C "$repo_root" remote add origin "$REPO_URL"
+git -C "$repo_root" fetch --depth=1 origin "$REPO_REF"
+git -C "$repo_root" checkout -f FETCH_HEAD
+
+setup_script="$repo_root/$SETUP_SCRIPT_PATH"
+if [ ! -f "$setup_script" ]; then
+  echo "setup script not found: $SETUP_SCRIPT_PATH" >&2
+  exit 1
+fi
+
+chmod +x "$setup_script"
+
+export AWS_REGION
+export BUILDKITE_TOKEN_PARAM
+export CLEANROOM_BOOTSTRAP_REGION="$AWS_REGION"
+export CLEANROOM_BOOTSTRAP_INSTANCE_ID="$instance_id"
+export CLEANROOM_BOOTSTRAP_NAME_PREFIX="$NAME_PREFIX"
+export CLEANROOM_BUILDKITE_QUEUE="$BUILDKITE_QUEUE"
+
+"$setup_script"

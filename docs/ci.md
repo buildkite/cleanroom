@@ -21,6 +21,8 @@ Pipeline config lives in `.buildkite/pipeline.yml`.
 
 No special setup is required beyond a working Buildkite agent image and internet access.
 
+For self-hosted macOS capacity, Terraform can provision a private EC2 Mac host and dedicated host via `infra/terraform/envs/ci` (`enable_macos_ci = true`, `mac_ami_id` required). This keeps mac queue access private-only (SSM, no inbound public rules).
+
 Notes:
 
 - `mise` is bootstrapped via repository hooks in `.buildkite/hooks/`.

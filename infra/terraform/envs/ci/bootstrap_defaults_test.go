@@ -73,12 +73,28 @@ func TestLinuxCiDefaultsUseBootstrapScript(t *testing.T) {
 	requireContains(t, "terraform.tfvars.example", "setup_script_path = \"scripts/bootstrap-buildkite-agent.sh\"")
 }
 
+func TestMacCiDefaultsUseBootstrapScript(t *testing.T) {
+	t.Helper()
+
+	requireContains(t, "variables.tf", "default     = \"scripts/bootstrap-buildkite-agent-macos.sh\"")
+	requireContains(t, filepath.Join("..", "..", "modules", "macos-ci", "variables.tf"), "default     = \"scripts/bootstrap-buildkite-agent-macos.sh\"")
+	requireContains(t, "terraform.tfvars.example", "mac_setup_script_path = \"scripts/bootstrap-buildkite-agent-macos.sh\"")
+}
+
 func TestBootstrapScriptConfiguresBuildkiteAgent(t *testing.T) {
 	t.Helper()
 
 	scriptPath := filepath.Join("..", "..", "..", "..", "scripts", "bootstrap-buildkite-agent.sh")
 	requireContains(t, scriptPath, "buildkite-agent start")
 	requireContains(t, scriptPath, "BUILDKITE_TOKEN_PARAM")
+}
+
+func TestMacBootstrapScriptConfiguresBuildkiteAgent(t *testing.T) {
+	t.Helper()
+
+	scriptPath := filepath.Join("..", "..", "..", "..", "scripts", "bootstrap-buildkite-agent-macos.sh")
+	requireContains(t, scriptPath, "<string>start</string>")
+	requireContains(t, scriptPath, "CLEANROOM_BUILDKITE_QUEUE")
 }
 
 func TestUserDataInstallsAwsCliWithoutAptAwscliDependency(t *testing.T) {
@@ -96,12 +112,29 @@ func TestLinuxCiEnablesNestedVirtualization(t *testing.T) {
 	requireContains(t, moduleMainPath, "nested_virtualization = \"enabled\"")
 }
 
+func TestMacCiUsesDedicatedHostAndPrivateNetworking(t *testing.T) {
+	t.Helper()
+
+	moduleMainPath := filepath.Join("..", "..", "modules", "macos-ci", "main.tf")
+	requireContains(t, moduleMainPath, "resource \"aws_ec2_host\" \"mac\"")
+	requireContains(t, moduleMainPath, "tenancy                = \"host\"")
+	requireContains(t, moduleMainPath, "associate_public_ip_address = false")
+}
+
+func TestEnvWiresOptionalMacCiModule(t *testing.T) {
+	t.Helper()
+
+	requireContains(t, "main.tf", "module \"mac_ci\"")
+	requireContains(t, "main.tf", "count  = var.enable_macos_ci ? 1 : 0")
+}
+
 func TestGitDeployKeyIsRequired(t *testing.T) {
 	t.Helper()
 
 	files := []string{
 		"variables.tf",
 		filepath.Join("..", "..", "modules", "linux-ci", "variables.tf"),
+		filepath.Join("..", "..", "modules", "macos-ci", "variables.tf"),
 	}
 
 	for _, path := range files {

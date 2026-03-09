@@ -4,11 +4,13 @@ Composition root for cleanroom CI infrastructure:
 
 - `../../modules/network` for VPC/subnet/NAT
 - `../../modules/linux-ci` for the private Linux host bootstrap
+- `../../modules/macos-ci` for optional private macOS host bootstrap
 
 Default AMI behaviour:
 
 - uses latest Ubuntu 24.04 AMI from SSM public parameter
 - set `ami_id` in `terraform.tfvars` if you want to pin an explicit AMI
+- set `enable_macos_ci = true` and `mac_ami_id` to enable the macOS host
 
 Network behaviour:
 
@@ -18,7 +20,9 @@ Network behaviour:
 Bootstrap behaviour:
 
 - defaults to `scripts/bootstrap-buildkite-agent.sh`, which installs and starts a Buildkite agent for the `cleanroom` queue
+- macOS defaults to `scripts/bootstrap-buildkite-agent-macos.sh`, which installs and starts a Buildkite agent for the `mac-small` queue
 - override `setup_script_path` if you need custom host bootstrap logic
+- override `mac_setup_script_path` if you need custom macOS host bootstrap logic
 
 ## Usage
 
@@ -36,3 +40,5 @@ After apply, use outputs:
 
 - `ssm_start_session_command`
 - `tailscale_ssh_pattern` (when tailscale auth key is configured)
+- `mac_ssm_start_session_command` (when `enable_macos_ci` is true)
+- `mac_dedicated_host_id` (when `enable_macos_ci` is true)
