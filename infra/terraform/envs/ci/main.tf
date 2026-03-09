@@ -1,0 +1,34 @@
+module "network" {
+  source = "../../modules/network"
+
+  name_prefix         = var.name_prefix
+  availability_zone   = var.availability_zone
+  vpc_cidr            = var.vpc_cidr
+  public_subnet_cidr  = var.public_subnet_cidr
+  private_subnet_cidr = var.private_subnet_cidr
+  tags                = var.tags
+}
+
+module "linux_ci" {
+  source = "../../modules/linux-ci"
+
+  aws_region                        = var.aws_region
+  name_prefix                       = var.name_prefix
+  vpc_id                            = module.network.vpc_id
+  subnet_id                         = module.network.private_subnet_id
+  ami_id                            = var.ami_id
+  instance_type                     = var.instance_type
+  root_volume_size_gib              = var.root_volume_size_gib
+  buildkite_token_parameter_name    = var.buildkite_token_parameter_name
+  tailscale_auth_key_parameter_name = var.tailscale_auth_key_parameter_name
+  git_deploy_key_parameter_name     = var.git_deploy_key_parameter_name
+  repo_url                          = var.repo_url
+  repo_ref                          = var.repo_ref
+  setup_script_path                 = var.setup_script_path
+  tailscale_version                 = var.tailscale_version
+  tailscale_hostname_prefix         = var.tailscale_hostname_prefix
+  tailscale_advertise_tags          = var.tailscale_advertise_tags
+  tailscale_enable_ssh              = var.tailscale_enable_ssh
+  tailscale_accept_routes           = var.tailscale_accept_routes
+  tags                              = var.tags
+}

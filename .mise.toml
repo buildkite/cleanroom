@@ -1,5 +1,6 @@
 [tools]
 go = "1.23"
+terraform = "1.12"
 shellcheck = "latest"
 hyperfine = "latest"
 svu = "3"
