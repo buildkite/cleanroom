@@ -46,9 +46,13 @@ variable "tailscale_auth_key_parameter_name" {
 }
 
 variable "git_deploy_key_parameter_name" {
-  description = "Optional SSM SecureString parameter name storing an SSH deploy key for cloning."
+  description = "SSM SecureString parameter name storing an SSH deploy key for cloning."
   type        = string
-  default     = ""
+
+  validation {
+    condition     = trimspace(var.git_deploy_key_parameter_name) != ""
+    error_message = "git_deploy_key_parameter_name must be set."
+  }
 }
 
 variable "repo_url" {
