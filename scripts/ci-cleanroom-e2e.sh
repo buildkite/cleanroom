@@ -17,7 +17,7 @@ run_privileged() {
   if [[ -n "${PRIVILEGED_HELPER_PATH:-}" ]]; then
     "$PRIVILEGED_HELPER_PATH" "$@"
   elif command -v sudo >/dev/null 2>&1; then
-    sudo "$@"
+    sudo -n "$@"
   else
     "$@"
   fi
