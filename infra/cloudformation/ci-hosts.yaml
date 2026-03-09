@@ -1,0 +1,881 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Buildkite CI hosts for cleanroom: one Linux host and an optional EC2 Mac host.
+  The stack is reproducible (CloudFormation + user data bootstrap) and avoids
+  storing long-lived host state by hand.
+
+Parameters:
+  AvailabilityZone:
+    Type: AWS::EC2::AvailabilityZone::Name
+    Description: Availability Zone used for both Linux and EC2 Mac hosts.
+  VpcCidr:
+    Type: String
+    Default: 10.42.0.0/24
+    Description: CIDR block for the CI VPC.
+  SubnetCidr:
+    Type: String
+    Default: 10.42.0.0/25
+    Description: CIDR block for the public subnet.
+  LinuxAmiId:
+    Type: AWS::EC2::Image::Id
+    Description: Linux AMI ID for the CI host.
+  LinuxInstanceType:
+    Type: String
+    Default: m8i.large
+    Description: Linux instance type. Choose an instance type with nested virtualization support when enabling cleanroom queue.
+  LinuxRootVolumeSizeGiB:
+    Type: Number
+    Default: 150
+    MinValue: 20
+    Description: Root volume size for the Linux host.
+  LinuxAsgRollingPauseTime:
+    Type: String
+    Default: PT5M
+    Description: ISO-8601 pause after Linux ASG replacement batch (for example PT2M, PT5M, PT10M).
+  LinuxHostedQueueName:
+    Type: String
+    Default: hosted
+    Description: Buildkite queue name for regular Linux tests.
+  EnableCleanroomQueue:
+    Type: String
+    Default: "true"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: Run a second Buildkite agent on Linux for the cleanroom queue.
+  LinuxCleanroomQueueName:
+    Type: String
+    Default: cleanroom
+    Description: Buildkite queue name for Firecracker cleanroom tests.
+  InstallFirecrackerOnLinux:
+    Type: String
+    Default: "true"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: Install Firecracker binary and kernel image on Linux host.
+  FirecrackerVersion:
+    Type: String
+    Default: 1.14.2
+    Description: Firecracker version without leading v.
+  LinuxKernelImageUrl:
+    Type: String
+    Default: https://s3.amazonaws.com/spec.ccfc.min/img/quickstart_guide/x86_64/kernels/vmlinux.bin
+    Description: Kernel image URL saved to /var/lib/buildkite-agent/.local/share/cleanroom/images/vmlinux.bin.
+  CleanroomHelperGitRepositoryUrl:
+    Type: String
+    Default: git@github.com:buildkite/cleanroom.git
+    Description: Git repository URL used to fetch scripts/cleanroom-root-helper.sh.
+  CleanroomHelperGitRef:
+    Type: String
+    Default: main
+    Description: Git ref used to fetch scripts/cleanroom-root-helper.sh.
+  EnableMacHost:
+    Type: String
+    Default: "true"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: Create the EC2 Mac dedicated host and macOS instance.
+  MacAmiId:
+    Type: String
+    Default: ""
+    AllowedPattern: '^$|ami-[0-9a-fA-F]{8,17}$'
+    Description: macOS AMI ID for the EC2 Mac host (required when EnableMacHost=true).
+  MacInstanceType:
+    Type: String
+    Default: mac2.metal
+    Description: EC2 Mac instance type available in the selected AZ.
+  MacRootVolumeSizeGiB:
+    Type: Number
+    Default: 200
+    MinValue: 100
+    Description: Root volume size for the macOS host.
+  MacQueueName:
+    Type: String
+    Default: mac-small
+    Description: Buildkite queue name for macOS tests.
+  MacAgentUser:
+    Type: String
+    Default: ec2-user
+    Description: Local macOS user that runs buildkite-agent.
+  BuildkiteAgentVersion:
+    Type: String
+    Default: 3.119.1
+    Description: Buildkite agent version without leading v.
+  BuildkiteTokenParameterName:
+    Type: AWS::SSM::Parameter::Name
+    Description: SSM SecureString parameter that stores the Buildkite agent token.
+  GitDeployKeyParameterName:
+    Type: String
+    Default: ""
+    Description: Optional SSM SecureString parameter that stores an SSH private key used for git checkout.
+  LinuxHostedAgentExtraTags:
+    Type: String
+    Default: ""
+    Description: Extra comma-separated Buildkite tags appended to Linux hosted agent tags.
+  LinuxHostedAgentExtraConfig:
+    Type: String
+    Default: ""
+    Description: Extra Linux hosted agent config lines separated by semicolons (example key="value";debug=true).
+  LinuxCleanroomAgentExtraTags:
+    Type: String
+    Default: ""
+    Description: Extra comma-separated Buildkite tags appended to Linux cleanroom agent tags.
+  LinuxCleanroomAgentExtraConfig:
+    Type: String
+    Default: ""
+    Description: Extra Linux cleanroom agent config lines separated by semicolons.
+  MacAgentExtraTags:
+    Type: String
+    Default: ""
+    Description: Extra comma-separated Buildkite tags appended to macOS agent tags.
+  MacAgentExtraConfig:
+    Type: String
+    Default: ""
+    Description: Extra macOS agent config lines separated by semicolons.
+  TailscaleAuthKeyParameterName:
+    Type: String
+    Default: ""
+    Description: Optional SSM SecureString parameter that stores a Tailscale auth key. Leave blank to skip Tailscale bootstrap.
+  TailscaleVersion:
+    Type: String
+    Default: 1.82.5
+    Description: Tailscale version for host bootstrap.
+  LinuxTailscaleAdvertiseTags:
+    Type: String
+    Default: ""
+    Description: Optional comma-separated tag list passed as --advertise-tags on Linux only.
+  TailscaleAdvertiseTags:
+    Type: String
+    Default: ""
+    Description: Optional comma-separated tag list passed as --advertise-tags on macOS.
+  TailscaleEnableSsh:
+    Type: String
+    Default: "true"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: Enable Tailscale SSH during tailscale up.
+  TailscaleAcceptRoutes:
+    Type: String
+    Default: "false"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: Enable --accept-routes during tailscale up.
+  LinuxTailscaleHostnamePrefix:
+    Type: String
+    Default: cleanroom-ci-linux
+    Description: Prefix for Linux host Tailscale hostname (<prefix>-<instance-id>).
+  MacTailscaleHostnamePrefix:
+    Type: String
+    Default: cleanroom-ci-mac
+    Description: Prefix for macOS host Tailscale hostname (<prefix>-<instance-id>).
+  ResourceNamePrefix:
+    Type: String
+    Default: cleanroom-ci
+    Description: Prefix used in Name tags.
+
+Rules:
+  RequireMacAmiWhenEnabled:
+    RuleCondition: !Equals [!Ref EnableMacHost, "true"]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref MacAmiId, ""]]
+        AssertDescription: MacAmiId must be set when EnableMacHost=true.
+
+Conditions:
+  UseTailscale: !Not [!Equals [!Ref TailscaleAuthKeyParameterName, ""]]
+  UseGitDeployKey: !Not [!Equals [!Ref GitDeployKeyParameterName, ""]]
+  EnableMac: !Equals [!Ref EnableMacHost, "true"]
+  UseTailscaleOnMac: !And
+    - !Condition UseTailscale
+    - !Condition EnableMac
+
+Resources:
+  CiVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${ResourceNamePrefix}-vpc
+
+  CiInternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub ${ResourceNamePrefix}-igw
+
+  CiVpcIgwAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref CiInternetGateway
+      VpcId: !Ref CiVpc
+
+  CiPublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref CiVpc
+      AvailabilityZone: !Ref AvailabilityZone
+      CidrBlock: !Ref SubnetCidr
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${ResourceNamePrefix}-public
+
+  CiPublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref CiVpc
+      Tags:
+        - Key: Name
+          Value: !Sub ${ResourceNamePrefix}-public
+
+  CiDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: CiVpcIgwAttachment
+    Properties:
+      RouteTableId: !Ref CiPublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref CiInternetGateway
+
+  CiPublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref CiPublicRouteTable
+      SubnetId: !Ref CiPublicSubnet
+
+  CiSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Egress-only security group for Buildkite CI hosts.
+      VpcId: !Ref CiVpc
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub ${ResourceNamePrefix}-egress-only
+
+  CiAgentRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: read-ci-bootstrap-secrets
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ReadBuildkiteToken
+                Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${BuildkiteTokenParameterName}
+              - !If
+                - UseGitDeployKey
+                - Sid: ReadGitDeployKey
+                  Effect: Allow
+                  Action:
+                    - ssm:GetParameter
+                  Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${GitDeployKeyParameterName}
+                - !Ref AWS::NoValue
+              - !If
+                - UseTailscale
+                - Sid: ReadTailscaleAuthKey
+                  Effect: Allow
+                  Action:
+                    - ssm:GetParameter
+                  Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${TailscaleAuthKeyParameterName}
+                - !Ref AWS::NoValue
+              - Sid: DecryptSsmSecureString
+                Effect: Allow
+                Action:
+                  - kms:Decrypt
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    kms:CallerAccount: !Sub ${AWS::AccountId}
+                  StringLike:
+                    kms:ViaService: !Sub ssm.${AWS::Region}.amazonaws.com
+
+  CiAgentInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref CiAgentRole
+
+  LinuxLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        ImageId: !Ref LinuxAmiId
+        InstanceType: !Ref LinuxInstanceType
+        IamInstanceProfile:
+          Arn: !GetAtt CiAgentInstanceProfile.Arn
+        MetadataOptions:
+          HttpEndpoint: enabled
+          HttpTokens: required
+        NetworkInterfaces:
+          - DeviceIndex: 0
+            AssociatePublicIpAddress: true
+            Groups:
+              - !Ref CiSecurityGroup
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs:
+              DeleteOnTermination: true
+              Encrypted: true
+              VolumeSize: !Ref LinuxRootVolumeSizeGiB
+              VolumeType: gp3
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: !Sub ${ResourceNamePrefix}-linux
+          - ResourceType: volume
+            Tags:
+              - Key: Name
+                Value: !Sub ${ResourceNamePrefix}-linux-root
+        UserData:
+          Fn::Base64:
+            !Sub |
+              #!/bin/bash
+              set -euxo pipefail
+              exec > >(tee /var/log/user-data.log | logger -t user-data -s 2>/dev/console) 2>&1
+
+              BUILDKITE_TOKEN_PARAM='${BuildkiteTokenParameterName}'
+              GIT_DEPLOY_KEY_PARAM='${GitDeployKeyParameterName}'
+              AGENT_VERSION='${BuildkiteAgentVersion}'
+              HOSTED_QUEUE='${LinuxHostedQueueName}'
+              HOSTED_EXTRA_TAGS='${LinuxHostedAgentExtraTags}'
+              HOSTED_EXTRA_CONFIG='${LinuxHostedAgentExtraConfig}'
+              CLEANROOM_QUEUE='${LinuxCleanroomQueueName}'
+              CLEANROOM_EXTRA_TAGS='${LinuxCleanroomAgentExtraTags}'
+              CLEANROOM_EXTRA_CONFIG='${LinuxCleanroomAgentExtraConfig}'
+              ENABLE_CLEANROOM='${EnableCleanroomQueue}'
+              INSTALL_FIRECRACKER='${InstallFirecrackerOnLinux}'
+              FIRECRACKER_VERSION='${FirecrackerVersion}'
+              KERNEL_URL='${LinuxKernelImageUrl}'
+              HELPER_GIT_REPO='${CleanroomHelperGitRepositoryUrl}'
+              HELPER_GIT_REF='${CleanroomHelperGitRef}'
+              TAILSCALE_PARAM='${TailscaleAuthKeyParameterName}'
+              TAILSCALE_VERSION='${TailscaleVersion}'
+              TAILSCALE_TAGS='${LinuxTailscaleAdvertiseTags}'
+              TAILSCALE_SSH='${TailscaleEnableSsh}'
+              TAILSCALE_ACCEPT_ROUTES='${TailscaleAcceptRoutes}'
+              TAILSCALE_HOSTNAME_PREFIX='${LinuxTailscaleHostnamePrefix}'
+              STACK_NAME='${AWS::StackName}'
+              REGION='${AWS::Region}'
+
+              install_packages() {
+                if command -v dnf >/dev/null 2>&1; then
+                  dnf install -y --allowerasing awscli curl-minimal git jq tar gzip unzip sudo iproute iptables e2fsprogs shadow-utils
+                  return
+                fi
+                if command -v yum >/dev/null 2>&1; then
+                  yum install -y awscli curl git jq tar gzip unzip sudo iproute iptables e2fsprogs shadow-utils
+                  return
+                fi
+                if command -v apt-get >/dev/null 2>&1; then
+                  export DEBIAN_FRONTEND=noninteractive
+                  apt-get update
+                  apt-get install -y awscli ca-certificates curl git jq tar gzip unzip sudo iproute2 iptables e2fsprogs
+                  return
+                fi
+                echo "Unsupported package manager" >&2
+                exit 1
+              }
+
+              install_packages
+
+              if ! id buildkite-agent >/dev/null 2>&1; then
+                useradd --system --create-home --home-dir /var/lib/buildkite-agent --shell /bin/bash buildkite-agent
+              fi
+              install -d -o buildkite-agent -g buildkite-agent -m 0700 /var/lib/buildkite-agent/.ssh
+              install -d -o buildkite-agent -g buildkite-agent -m 0755 /var/lib/buildkite-agent/builds
+              install -d -o buildkite-agent -g buildkite-agent -m 0755 /var/lib/buildkite-agent/hooks
+              install -d -o buildkite-agent -g buildkite-agent -m 0755 /var/lib/buildkite-agent/plugins
+              install -d -o root -g root -m 0755 /etc/buildkite-agent
+
+              arch_name="$(uname -m)"
+              agent_arch='amd64'
+              firecracker_arch='x86_64'
+              if [ "$arch_name" = 'aarch64' ] || [ "$arch_name" = 'arm64' ]; then
+                agent_arch='arm64'
+                firecracker_arch='aarch64'
+              fi
+
+              agent_url="https://github.com/buildkite/agent/releases/download/v$AGENT_VERSION/buildkite-agent-linux-$agent_arch-$AGENT_VERSION.tar.gz"
+              curl -fsSL "$agent_url" -o /tmp/buildkite-agent.tar.gz
+              tar -xzf /tmp/buildkite-agent.tar.gz -C /tmp
+              install -o root -g root -m 0755 /tmp/buildkite-agent /usr/local/bin/buildkite-agent
+
+              imds_token="$(curl -fsS -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")"
+              instance_id="$(curl -fsS -H "X-aws-ec2-metadata-token: $imds_token" http://169.254.169.254/latest/meta-data/instance-id)"
+              agent_token="$(aws ssm get-parameter --name "$BUILDKITE_TOKEN_PARAM" --with-decryption --query Parameter.Value --output text --region "$REGION")"
+
+              if [ -n "$TAILSCALE_PARAM" ]; then
+                tailscale_auth_key="$(aws ssm get-parameter --name "$TAILSCALE_PARAM" --with-decryption --query Parameter.Value --output text --region "$REGION")"
+                ts_arch='amd64'
+                if [ "$agent_arch" = 'arm64' ]; then
+                  ts_arch='arm64'
+                fi
+                ts_url="https://pkgs.tailscale.com/stable/tailscale_${!TAILSCALE_VERSION}_$ts_arch.tgz"
+                ts_tmp_dir="$(mktemp -d)"
+                curl -fsSL "$ts_url" -o "$ts_tmp_dir/tailscale.tgz"
+                tar -xzf "$ts_tmp_dir/tailscale.tgz" -C "$ts_tmp_dir"
+                ts_extract_dir="$(find "$ts_tmp_dir" -maxdepth 1 -type d -name "tailscale_*" | head -n 1)"
+                install -o root -g root -m 0755 "$ts_extract_dir/tailscale" /usr/local/bin/tailscale
+                install -o root -g root -m 0755 "$ts_extract_dir/tailscaled" /usr/local/bin/tailscaled
+                install -d -o root -g root -m 0755 /var/lib/tailscale
+                cat > /etc/systemd/system/tailscaled.service <<'TAILSCALE_UNIT'
+              [Unit]
+              Description=Tailscale node agent
+              Wants=network-online.target
+              After=network-online.target
+
+              [Service]
+              Type=simple
+              RuntimeDirectory=tailscale
+              ExecStart=/usr/local/bin/tailscaled --state=/var/lib/tailscale/tailscaled.state --socket=/run/tailscale/tailscaled.sock
+              Restart=on-failure
+
+              [Install]
+              WantedBy=multi-user.target
+              TAILSCALE_UNIT
+                rm -rf "$ts_tmp_dir"
+                systemctl daemon-reload
+                systemctl enable --now tailscaled
+
+                tailscale_hostname="$TAILSCALE_HOSTNAME_PREFIX-$instance_id"
+                set -- up --auth-key "$tailscale_auth_key" --hostname "$tailscale_hostname"
+                if [ "$TAILSCALE_SSH" = 'true' ]; then
+                  set -- "$@" --ssh
+                fi
+                if [ "$TAILSCALE_ACCEPT_ROUTES" = 'true' ]; then
+                  set -- "$@" --accept-routes
+                fi
+                if [ -n "$TAILSCALE_TAGS" ]; then
+                  set -- "$@" --advertise-tags "$TAILSCALE_TAGS"
+                fi
+                /usr/local/bin/tailscale "$@"
+              fi
+
+              if [ -n "$GIT_DEPLOY_KEY_PARAM" ]; then
+                aws ssm get-parameter --name "$GIT_DEPLOY_KEY_PARAM" --with-decryption --query Parameter.Value --output text --region "$REGION" > /var/lib/buildkite-agent/.ssh/cleanroom_deploy_key
+                ssh-keyscan github.com > /var/lib/buildkite-agent/.ssh/known_hosts 2>/dev/null
+                chown buildkite-agent:buildkite-agent /var/lib/buildkite-agent/.ssh/cleanroom_deploy_key /var/lib/buildkite-agent/.ssh/known_hosts
+                chmod 0600 /var/lib/buildkite-agent/.ssh/cleanroom_deploy_key /var/lib/buildkite-agent/.ssh/known_hosts
+
+                cat > /var/lib/buildkite-agent/hooks/pre-checkout <<'HOOK'
+              #!/usr/bin/env bash
+              set -euo pipefail
+              export GIT_SSH_COMMAND='ssh -i /var/lib/buildkite-agent/.ssh/cleanroom_deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/var/lib/buildkite-agent/.ssh/known_hosts'
+              HOOK
+                chown buildkite-agent:buildkite-agent /var/lib/buildkite-agent/hooks/pre-checkout
+                chmod 0755 /var/lib/buildkite-agent/hooks/pre-checkout
+              fi
+
+              cat > /etc/systemd/system/buildkite-agent@.service <<'UNIT'
+              [Unit]
+              Description=Buildkite Agent (%i)
+              After=network-online.target
+              Wants=network-online.target
+
+              [Service]
+              Type=simple
+              User=buildkite-agent
+              Group=buildkite-agent
+              Environment=HOME=/var/lib/buildkite-agent
+              ExecStart=/usr/local/bin/buildkite-agent start --config /etc/buildkite-agent/%i.cfg
+              Restart=always
+              RestartSec=5
+              KillSignal=SIGTERM
+              TimeoutStopSec=30
+
+              [Install]
+              WantedBy=multi-user.target
+              UNIT
+
+              hosted_tags="queue=$HOSTED_QUEUE,stack=$STACK_NAME,host=$instance_id,os=linux"
+              if [ -n "$HOSTED_EXTRA_TAGS" ]; then
+                hosted_tags="$hosted_tags,$HOSTED_EXTRA_TAGS"
+              fi
+              cat > "/etc/buildkite-agent/$HOSTED_QUEUE.cfg" <<CFG
+              token="$agent_token"
+              name="$STACK_NAME-$instance_id-$HOSTED_QUEUE"
+              tags="$hosted_tags"
+              build-path="/var/lib/buildkite-agent/builds"
+              hooks-path="/var/lib/buildkite-agent/hooks"
+              plugins-path="/var/lib/buildkite-agent/plugins"
+              CFG
+              if [ -n "$HOSTED_EXTRA_CONFIG" ]; then
+                printf '%s\n' "$HOSTED_EXTRA_CONFIG" | tr ';' '\n' >> "/etc/buildkite-agent/$HOSTED_QUEUE.cfg"
+              fi
+              chown root:buildkite-agent "/etc/buildkite-agent/$HOSTED_QUEUE.cfg"
+              chmod 0640 "/etc/buildkite-agent/$HOSTED_QUEUE.cfg"
+
+              if [ "$ENABLE_CLEANROOM" = 'true' ]; then
+                cleanroom_tags="queue=$CLEANROOM_QUEUE,stack=$STACK_NAME,host=$instance_id,os=linux,role=cleanroom"
+                if [ -n "$CLEANROOM_EXTRA_TAGS" ]; then
+                  cleanroom_tags="$cleanroom_tags,$CLEANROOM_EXTRA_TAGS"
+                fi
+                cat > "/etc/buildkite-agent/$CLEANROOM_QUEUE.cfg" <<CFG
+              token="$agent_token"
+              name="$STACK_NAME-$instance_id-$CLEANROOM_QUEUE"
+              tags="$cleanroom_tags"
+              build-path="/var/lib/buildkite-agent/builds"
+              hooks-path="/var/lib/buildkite-agent/hooks"
+              plugins-path="/var/lib/buildkite-agent/plugins"
+              environment=["CLEANROOM_PRIVILEGED_MODE=helper","CLEANROOM_PRIVILEGED_HELPER_PATH=/usr/local/sbin/cleanroom-root-helper"]
+              CFG
+                if [ -n "$CLEANROOM_EXTRA_CONFIG" ]; then
+                  printf '%s\n' "$CLEANROOM_EXTRA_CONFIG" | tr ';' '\n' >> "/etc/buildkite-agent/$CLEANROOM_QUEUE.cfg"
+                fi
+                chown root:buildkite-agent "/etc/buildkite-agent/$CLEANROOM_QUEUE.cfg"
+                chmod 0640 "/etc/buildkite-agent/$CLEANROOM_QUEUE.cfg"
+
+                if [ "$INSTALL_FIRECRACKER" = 'true' ]; then
+                  firecracker_url="https://github.com/firecracker-microvm/firecracker/releases/download/v$FIRECRACKER_VERSION/firecracker-v$FIRECRACKER_VERSION-$firecracker_arch.tgz"
+                  tmp_fc_dir="$(mktemp -d)"
+                  curl -fsSL "$firecracker_url" -o "$tmp_fc_dir/firecracker.tgz"
+                  tar -xzf "$tmp_fc_dir/firecracker.tgz" -C "$tmp_fc_dir"
+                  firecracker_bin="$(find "$tmp_fc_dir" -type f -name "firecracker-v$FIRECRACKER_VERSION-$firecracker_arch" | head -n 1)"
+                  install -o root -g root -m 0755 "$firecracker_bin" /usr/local/bin/firecracker
+                  rm -rf "$tmp_fc_dir"
+                fi
+
+                install -d -o buildkite-agent -g buildkite-agent -m 0755 /var/lib/buildkite-agent/.local/share/cleanroom/images
+                curl -fsSL "$KERNEL_URL" -o /var/lib/buildkite-agent/.local/share/cleanroom/images/vmlinux.bin
+                chown buildkite-agent:buildkite-agent /var/lib/buildkite-agent/.local/share/cleanroom/images/vmlinux.bin
+                chmod 0644 /var/lib/buildkite-agent/.local/share/cleanroom/images/vmlinux.bin
+
+                cat > /etc/sudoers.d/buildkite-cleanroom <<'SUDOERS'
+              buildkite-agent ALL=(root) NOPASSWD: /usr/local/sbin/cleanroom-root-helper *
+              buildkite-agent ALL=(root) NOPASSWD: /usr/bin/install -o root -g root -m 0755 * /usr/local/sbin/cleanroom-root-helper
+              SUDOERS
+                chmod 0440 /etc/sudoers.d/buildkite-cleanroom
+
+                cat > /usr/local/sbin/refresh-cleanroom-helper <<REFRESH_HELPER
+              #!/usr/bin/env bash
+              set -euo pipefail
+
+              repo_url="$HELPER_GIT_REPO"
+              repo_ref="$HELPER_GIT_REF"
+              helper_rel="scripts/cleanroom-root-helper.sh"
+              helper_target="/usr/local/sbin/cleanroom-root-helper"
+              ssh_key="/var/lib/buildkite-agent/.ssh/cleanroom_deploy_key"
+              known_hosts="/var/lib/buildkite-agent/.ssh/known_hosts"
+
+              tmp_dir="\$(mktemp -d)"
+              tmp_helper="\$(mktemp)"
+              trap 'rm -rf "\$tmp_dir" "\$tmp_helper"' EXIT
+
+              if [ -f "\$ssh_key" ]; then
+                export GIT_SSH_COMMAND="ssh -i \$ssh_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=\$known_hosts"
+              fi
+
+              git -c init.defaultBranch=main init "\$tmp_dir/repo" >/dev/null 2>&1
+              git -C "\$tmp_dir/repo" remote add origin "\$repo_url"
+              git -C "\$tmp_dir/repo" fetch --depth=1 origin "\$repo_ref"
+              git -C "\$tmp_dir/repo" show "FETCH_HEAD:\$helper_rel" > "\$tmp_helper"
+              chmod 0755 "\$tmp_helper"
+              install -o root -g root -m 0755 "\$tmp_helper" "\$helper_target"
+              REFRESH_HELPER
+                chown root:root /usr/local/sbin/refresh-cleanroom-helper
+                chmod 0755 /usr/local/sbin/refresh-cleanroom-helper
+                /usr/local/sbin/refresh-cleanroom-helper
+
+                cat > /var/lib/buildkite-agent/hooks/pre-command <<'HOOK'
+              #!/usr/bin/env bash
+              set -eo pipefail
+
+              if [ "$CLEANROOM_PRIVILEGED_MODE" != "helper" ]; then
+                exit 0
+              fi
+
+              [ -x /usr/local/sbin/cleanroom-root-helper ] || {
+                echo "cleanroom-root-helper missing; run '/usr/local/sbin/refresh-cleanroom-helper' via SSM as root" >&2
+                exit 1
+              }
+              HOOK
+                chown buildkite-agent:buildkite-agent /var/lib/buildkite-agent/hooks/pre-command
+                chmod 0755 /var/lib/buildkite-agent/hooks/pre-command
+
+                if getent group kvm >/dev/null 2>&1; then
+                  usermod -aG kvm buildkite-agent
+                fi
+              fi
+
+              systemctl daemon-reload
+              systemctl enable --now "buildkite-agent@$HOSTED_QUEUE.service"
+              if [ "$ENABLE_CLEANROOM" = 'true' ]; then
+                systemctl enable --now "buildkite-agent@$CLEANROOM_QUEUE.service"
+              fi
+
+  LinuxAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      MinSize: "1"
+      MaxSize: "1"
+      DesiredCapacity: "1"
+      VPCZoneIdentifier:
+        - !Ref CiPublicSubnet
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LinuxLaunchTemplate
+        Version: !GetAtt LinuxLaunchTemplate.LatestVersionNumber
+      Tags:
+        - Key: Name
+          Value: !Sub ${ResourceNamePrefix}-linux
+          PropagateAtLaunch: true
+    UpdatePolicy:
+      AutoScalingRollingUpdate:
+        MinInstancesInService: 0
+        MaxBatchSize: 1
+        PauseTime: !Ref LinuxAsgRollingPauseTime
+        WaitOnResourceSignals: false
+
+  MacDedicatedHost:
+    Type: AWS::EC2::Host
+    Condition: EnableMac
+    Properties:
+      AvailabilityZone: !Ref AvailabilityZone
+      AutoPlacement: "on"
+      InstanceType: !Ref MacInstanceType
+      Tags:
+        - Key: Name
+          Value: !Sub ${ResourceNamePrefix}-mac-host
+
+  MacInstance:
+    Type: AWS::EC2::Instance
+    Condition: EnableMac
+    Properties:
+      AvailabilityZone: !Ref AvailabilityZone
+      Affinity: host
+      HostId: !Ref MacDedicatedHost
+      IamInstanceProfile: !Ref CiAgentInstanceProfile
+      ImageId: !Ref MacAmiId
+      InstanceType: !Ref MacInstanceType
+      MetadataOptions:
+        HttpEndpoint: enabled
+        HttpTokens: required
+      SecurityGroupIds:
+        - !Ref CiSecurityGroup
+      SubnetId: !Ref CiPublicSubnet
+      Tenancy: host
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            DeleteOnTermination: true
+            Encrypted: true
+            VolumeSize: !Ref MacRootVolumeSizeGiB
+            VolumeType: gp3
+      Tags:
+        - Key: Name
+          Value: !Sub ${ResourceNamePrefix}-mac
+      UserData:
+        Fn::Base64:
+          !Sub |
+            #!/bin/bash
+            set -euxo pipefail
+            exec > >(tee /var/log/user-data.log) 2>&1
+
+            BUILDKITE_TOKEN_PARAM='${BuildkiteTokenParameterName}'
+            AGENT_VERSION='${BuildkiteAgentVersion}'
+            MAC_QUEUE='${MacQueueName}'
+            MAC_EXTRA_TAGS='${MacAgentExtraTags}'
+            MAC_EXTRA_CONFIG='${MacAgentExtraConfig}'
+            TAILSCALE_PARAM='${TailscaleAuthKeyParameterName}'
+            TAILSCALE_VERSION='${TailscaleVersion}'
+            TAILSCALE_TAGS='${TailscaleAdvertiseTags}'
+            TAILSCALE_SSH='${TailscaleEnableSsh}'
+            TAILSCALE_ACCEPT_ROUTES='${TailscaleAcceptRoutes}'
+            TAILSCALE_HOSTNAME_PREFIX='${MacTailscaleHostnamePrefix}'
+            STACK_NAME='${AWS::StackName}'
+            REGION='${AWS::Region}'
+            AGENT_USER='${MacAgentUser}'
+
+            if ! id "$AGENT_USER" >/dev/null 2>&1; then
+              AGENT_USER='root'
+            fi
+            AGENT_GROUP="$(id -gn "$AGENT_USER")"
+            AGENT_HOME="$(dscl . -read "/Users/$AGENT_USER" NFSHomeDirectory 2>/dev/null | awk '{print $2}')"
+            if [ -z "$AGENT_HOME" ]; then
+              if [ "$AGENT_USER" = 'root' ]; then
+                AGENT_HOME='/var/root'
+              else
+                AGENT_HOME="/Users/$AGENT_USER"
+              fi
+            fi
+
+            if ! command -v aws >/dev/null 2>&1; then
+              curl -fsSL "https://awscli.amazonaws.com/AWSCLIV2.pkg" -o /tmp/AWSCLIV2.pkg
+              installer -pkg /tmp/AWSCLIV2.pkg -target /
+            fi
+
+            arch_name="$(uname -m)"
+            agent_arch='arm64'
+            if [ "$arch_name" = 'x86_64' ]; then
+              agent_arch='amd64'
+            fi
+
+            agent_url="https://github.com/buildkite/agent/releases/download/v$AGENT_VERSION/buildkite-agent-darwin-$agent_arch-$AGENT_VERSION.tar.gz"
+            curl -fsSL "$agent_url" -o /tmp/buildkite-agent.tar.gz
+            tar -xzf /tmp/buildkite-agent.tar.gz -C /tmp
+            install -o root -g wheel -m 0755 /tmp/buildkite-agent /usr/local/bin/buildkite-agent
+
+            imds_token="$(curl -fsS -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")"
+            instance_id="$(curl -fsS -H "X-aws-ec2-metadata-token: $imds_token" http://169.254.169.254/latest/meta-data/instance-id)"
+            agent_token="$(aws ssm get-parameter --name "$BUILDKITE_TOKEN_PARAM" --with-decryption --query Parameter.Value --output text --region "$REGION")"
+
+            if [ -n "$TAILSCALE_PARAM" ]; then
+              tailscale_auth_key="$(aws ssm get-parameter --name "$TAILSCALE_PARAM" --with-decryption --query Parameter.Value --output text --region "$REGION")"
+              tailscale_pkg_url="https://pkgs.tailscale.com/stable/Tailscale-$TAILSCALE_VERSION-macos.pkg"
+              curl -fsSL "$tailscale_pkg_url" -o /tmp/Tailscale.pkg
+              installer -pkg /tmp/Tailscale.pkg -target /
+              launchctl enable system/com.tailscale.tailscaled || true
+              launchctl kickstart -k system/com.tailscale.tailscaled || true
+
+              tailscale_cli=''
+              if [ -x /usr/local/bin/tailscale ]; then
+                tailscale_cli='/usr/local/bin/tailscale'
+              elif [ -x /opt/homebrew/bin/tailscale ]; then
+                tailscale_cli='/opt/homebrew/bin/tailscale'
+              elif [ -x /Applications/Tailscale.app/Contents/MacOS/Tailscale ]; then
+                tailscale_cli='/Applications/Tailscale.app/Contents/MacOS/Tailscale'
+              fi
+
+              if [ -n "$tailscale_cli" ]; then
+                tailscale_hostname="$TAILSCALE_HOSTNAME_PREFIX-$instance_id"
+                set -- up --auth-key "$tailscale_auth_key" --hostname "$tailscale_hostname"
+                if [ "$TAILSCALE_SSH" = 'true' ]; then
+                  set -- "$@" --ssh
+                fi
+                if [ "$TAILSCALE_ACCEPT_ROUTES" = 'true' ]; then
+                  set -- "$@" --accept-routes
+                fi
+                if [ -n "$TAILSCALE_TAGS" ]; then
+                  set -- "$@" --advertise-tags "$TAILSCALE_TAGS"
+                fi
+                "$tailscale_cli" "$@"
+              else
+                echo "tailscale CLI not found after package install" >&2
+                exit 1
+              fi
+            fi
+
+            install -d -o "$AGENT_USER" -g "$AGENT_GROUP" -m 0755 /opt/buildkite-agent
+            install -d -o "$AGENT_USER" -g "$AGENT_GROUP" -m 0755 /opt/buildkite-agent/builds
+            install -d -o "$AGENT_USER" -g "$AGENT_GROUP" -m 0755 /opt/buildkite-agent/hooks
+            install -d -o "$AGENT_USER" -g "$AGENT_GROUP" -m 0755 /opt/buildkite-agent/plugins
+
+            mac_tags="queue=$MAC_QUEUE,stack=$STACK_NAME,host=$instance_id,os=macos"
+            if [ -n "$MAC_EXTRA_TAGS" ]; then
+              mac_tags="$mac_tags,$MAC_EXTRA_TAGS"
+            fi
+            cat > /opt/buildkite-agent/buildkite-agent.cfg <<CFG
+            token="$agent_token"
+            name="$STACK_NAME-$instance_id-$MAC_QUEUE"
+            tags="$mac_tags"
+            build-path="/opt/buildkite-agent/builds"
+            hooks-path="/opt/buildkite-agent/hooks"
+            plugins-path="/opt/buildkite-agent/plugins"
+            CFG
+            if [ -n "$MAC_EXTRA_CONFIG" ]; then
+              printf '%s\n' "$MAC_EXTRA_CONFIG" | tr ';' '\n' >> /opt/buildkite-agent/buildkite-agent.cfg
+            fi
+            chown "$AGENT_USER:$AGENT_GROUP" /opt/buildkite-agent/buildkite-agent.cfg
+            chmod 0600 /opt/buildkite-agent/buildkite-agent.cfg
+
+            cat > /Library/LaunchDaemons/com.buildkite.agent.plist <<PLIST
+            <?xml version="1.0" encoding="UTF-8"?>
+            <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+            <plist version="1.0">
+              <dict>
+                <key>Label</key>
+                <string>com.buildkite.agent</string>
+                <key>ProgramArguments</key>
+                <array>
+                  <string>/usr/local/bin/buildkite-agent</string>
+                  <string>start</string>
+                  <string>--config</string>
+                  <string>/opt/buildkite-agent/buildkite-agent.cfg</string>
+                </array>
+                <key>UserName</key>
+                <string>$AGENT_USER</string>
+                <key>EnvironmentVariables</key>
+                <dict>
+                  <key>HOME</key>
+                  <string>$AGENT_HOME</string>
+                </dict>
+                <key>RunAtLoad</key>
+                <true/>
+                <key>KeepAlive</key>
+                <true/>
+                <key>StandardOutPath</key>
+                <string>/var/log/buildkite-agent.log</string>
+                <key>StandardErrorPath</key>
+                <string>/var/log/buildkite-agent-error.log</string>
+              </dict>
+            </plist>
+            PLIST
+            chown root:wheel /Library/LaunchDaemons/com.buildkite.agent.plist
+            chmod 0644 /Library/LaunchDaemons/com.buildkite.agent.plist
+
+            launchctl bootout system/com.buildkite.agent || true
+            launchctl bootstrap system /Library/LaunchDaemons/com.buildkite.agent.plist
+            launchctl enable system/com.buildkite.agent
+            launchctl kickstart -k system/com.buildkite.agent
+
+Outputs:
+  VpcId:
+    Description: VPC ID for CI hosts.
+    Value: !Ref CiVpc
+  PublicSubnetId:
+    Description: Public subnet ID for CI hosts.
+    Value: !Ref CiPublicSubnet
+  LinuxAutoScalingGroupName:
+    Description: Linux ASG name.
+    Value: !Ref LinuxAutoScalingGroup
+  MacDedicatedHostId:
+    Condition: EnableMac
+    Description: Dedicated host ID backing the EC2 Mac instance.
+    Value: !Ref MacDedicatedHost
+  MacInstanceId:
+    Condition: EnableMac
+    Description: EC2 Mac instance ID.
+    Value: !Ref MacInstance
+  MacSsmSessionCommand:
+    Condition: EnableMac
+    Description: Command to start SSM session to macOS host.
+    Value: !Sub aws ssm start-session --target ${MacInstance}
+  LinuxTailscaleSshPattern:
+    Condition: UseTailscale
+    Description: Tailscale SSH pattern for Linux host (replace <instance-id> with actual EC2 instance ID).
+    Value: !Join
+      - ""
+      - - "tailscale ssh root@"
+        - !Ref LinuxTailscaleHostnamePrefix
+        - "-<instance-id>"
+  MacTailscaleSshPattern:
+    Condition: UseTailscaleOnMac
+    Description: Tailscale SSH pattern for macOS host (replace <instance-id> with actual EC2 instance ID).
+    Value: !Join
+      - ""
+      - - "tailscale ssh "
+        - !Ref MacAgentUser
+        - "@"
+        - !Ref MacTailscaleHostnamePrefix
+        - "-<instance-id>"

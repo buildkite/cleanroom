@@ -17,9 +17,154 @@ Pipeline config lives in `.buildkite/pipeline.yml`.
 - `mac-small`
 - `cleanroom`
 
-## 2. Hosted and macOS Queues
+## 2. Provision Hosts With CloudFormation
 
-No special setup is required beyond a working Buildkite agent image and internet access.
+Use the stack template at `infra/cloudformation/ci-hosts.yaml` to create reproducible Linux + optional EC2 Mac workers.
+
+What the stack provisions:
+
+- dedicated VPC, subnet, IGW, and an egress-only security group (no inbound SSH rule)
+- Linux host via Auto Scaling Group (`desired=1`) for self-healing replacement
+- optional EC2 Mac dedicated host + macOS instance for `mac-small`
+- IAM instance profile with least-privilege access to your Buildkite token in SSM Parameter Store
+- optional Tailscale bootstrap on both hosts (including `tailscale up --ssh`)
+- host bootstrap in user data (Buildkite agent install + queue registration)
+
+### 2.1 Prerequisites
+
+1. Store your Buildkite agent token in SSM Parameter Store (SecureString):
+
+```bash
+aws ssm put-parameter \
+  --name /buildkite/agent-token \
+  --type SecureString \
+  --value '<BUILDKITE_AGENT_TOKEN>' \
+  --overwrite
+```
+
+2. Store a Tailscale auth key in SSM Parameter Store (SecureString):
+
+```bash
+aws ssm put-parameter \
+  --name /tailscale/authkey/ci \
+  --type SecureString \
+  --value 'tskey-xxxxxxxxxxxxxxxx' \
+  --overwrite
+```
+
+3. Pick pinned AMI IDs for Linux and macOS in your region.
+4. Choose an Availability Zone that supports your selected EC2 Mac type.
+5. (Recommended) Store a read-only git deploy key in SSM:
+
+```bash
+aws ssm put-parameter \
+  --name /buildkite/cleanroom/deploy-key \
+  --type SecureString \
+  --value '<OPENSSH_PRIVATE_KEY>' \
+  --overwrite
+```
+
+### 2.2 Deploy (Linux-first recommended)
+
+```bash
+aws cloudformation deploy \
+  --template-file infra/cloudformation/ci-hosts.yaml \
+  --stack-name cleanroom-ci \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --parameter-overrides \
+    AvailabilityZone=ap-southeast-2a \
+    LinuxAmiId=ami-0123456789abcdef0 \
+    EnableMacHost=false \
+    LinuxAsgRollingPauseTime=PT2M \
+    BuildkiteTokenParameterName=/buildkite/agent-token \
+    GitDeployKeyParameterName=/buildkite/cleanroom/deploy-key \
+    TailscaleAuthKeyParameterName=/tailscale/authkey/ci \
+    LinuxTailscaleAdvertiseTags='' \
+    LinuxHostedAgentExtraTags=env=ci,team=platform \
+    LinuxHostedAgentExtraConfig='priority=5;debug=true' \
+    LinuxCleanroomAgentExtraTags=env=ci,team=platform,role=firecracker \
+    CleanroomHelperGitRepositoryUrl=git@github.com:buildkite/cleanroom.git \
+    CleanroomHelperGitRef=main
+```
+
+Notes:
+
+- Default Linux instance type is `m8i.large` (nested virtualization) for the `cleanroom` queue.
+- `EnableMacHost=false` keeps Mac resources out of updates while you iterate on Linux/bootstrap.
+- `LinuxAsgRollingPauseTime` controls how long CloudFormation waits after Linux instance replacement.
+- `GitDeployKeyParameterName` installs a host-level `pre-checkout` hook that exports `GIT_SSH_COMMAND` for clone/fetch.
+- If you do not run Firecracker E2E, set:
+  - `EnableCleanroomQueue=false`
+  - `InstallFirecrackerOnLinux=false`
+  - a smaller Linux instance type (for example `c7i.large`)
+- EC2 Mac dedicated hosts are billed with a 24-hour minimum allocation window.
+
+### 2.3 Re-enable macOS after Linux is stable
+
+```bash
+aws cloudformation deploy \
+  --template-file infra/cloudformation/ci-hosts.yaml \
+  --stack-name cleanroom-ci \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --parameter-overrides \
+    AvailabilityZone=ap-southeast-2a \
+    LinuxAmiId=ami-0123456789abcdef0 \
+    EnableMacHost=true \
+    LinuxAsgRollingPauseTime=PT5M \
+    MacAmiId=ami-0fedcba9876543210 \
+    MacInstanceType=mac2-m2.metal \
+    BuildkiteTokenParameterName=/buildkite/agent-token \
+    GitDeployKeyParameterName=/buildkite/cleanroom/deploy-key \
+    TailscaleAuthKeyParameterName=/tailscale/authkey/ci \
+    LinuxTailscaleAdvertiseTags='' \
+    TailscaleAdvertiseTags='' \
+    LinuxHostedAgentExtraTags=env=ci,team=platform \
+    LinuxCleanroomAgentExtraTags=env=ci,team=platform,role=firecracker \
+    MacAgentExtraTags=env=ci,team=platform \
+    CleanroomHelperGitRepositoryUrl=git@github.com:buildkite/cleanroom.git \
+    CleanroomHelperGitRef=main
+```
+
+### 2.4 Tailscale SSH access
+
+When `TailscaleAuthKeyParameterName` is set, bootstrap runs `tailscale up` on both hosts with:
+
+- unique hostnames based on instance ID (`<prefix>-<instance-id>`)
+- `--ssh` enabled by default (set `TailscaleEnableSsh=false` to disable)
+- optional `--advertise-tags` via `TailscaleAdvertiseTags`
+
+Useful parameters:
+
+- `LinuxTailscaleHostnamePrefix` (default `cleanroom-ci-linux`)
+- `MacTailscaleHostnamePrefix` (default `cleanroom-ci-mac`)
+- `TailscaleAcceptRoutes` (default `false`)
+- `LinuxTailscaleAdvertiseTags` (Linux only)
+- `TailscaleAdvertiseTags` (macOS only)
+
+The stack outputs `LinuxTailscaleSshPattern` when Tailscale is enabled, and `MacTailscaleSshPattern` only when `EnableMacHost=true`.
+For Linux, replace `<instance-id>` with the active ASG instance ID.
+
+### 2.5 Buildkite agent tags and config
+
+The stack writes Buildkite config files on both hosts and supports extra per-agent tags/config:
+
+- `LinuxHostedAgentExtraTags`
+- `LinuxCleanroomAgentExtraTags`
+- `MacAgentExtraTags`
+- `LinuxHostedAgentExtraConfig`
+- `LinuxCleanroomAgentExtraConfig`
+- `MacAgentExtraConfig`
+
+`*ExtraConfig` values are semicolon-separated lines appended to agent config files.
+Example:
+
+```text
+priority=5;debug=true;no-command-eval=true
+```
+
+## 3. Hosted and macOS Queues
+
+No extra host setup is needed if you use `infra/cloudformation/ci-hosts.yaml`.
 
 Notes:
 
@@ -27,11 +172,11 @@ Notes:
 - Per-step cache is enabled for `hosted` and `mac-small` steps.
 - Avoid global pipeline `cache:` blocks if self-hosted queues are present.
 
-## 3. Cleanroom Queue (Firecracker E2E)
+## 4. Cleanroom Queue (Firecracker E2E)
 
 The `:fire: E2E (Firecracker)` step runs a real launched Firecracker execution and needs host preparation.
 
-### 3.1 Required host capabilities
+### 4.1 Required host capabilities
 
 - Linux host with `/dev/kvm` available
 - Firecracker binary (default `/usr/local/bin/firecracker`)
@@ -40,7 +185,7 @@ The `:fire: E2E (Firecracker)` step runs a real launched Firecracker execution a
 - `mkfs.ext4` available for OCI-to-ext4 materialization
 - Passwordless sudo for required network setup commands
 
-### 3.2 Place runtime kernel image
+### 4.2 Place runtime kernel image
 
 Put kernel assets under the Buildkite agent home so CI can read them:
 
@@ -57,7 +202,7 @@ The pipeline is currently configured to use:
 - `CLEANROOM_KERNEL_IMAGE=/var/lib/buildkite-agent/.local/share/cleanroom/images/vmlinux.bin`
 - `CLEANROOM_FIRECRACKER_BINARY=/usr/local/bin/firecracker`
 
-### 3.3 Privileged command execution modes
+### 4.3 Privileged command execution modes
 
 Firecracker backend supports two modes:
 
@@ -106,7 +251,24 @@ Then set:
 - `CLEANROOM_PRIVILEGED_MODE=helper`
 - `CLEANROOM_PRIVILEGED_HELPER_PATH=/usr/local/sbin/cleanroom-root-helper`
 
-## 4. Optional Agent Environment Hook
+When using `infra/cloudformation/ci-hosts.yaml` with `EnableCleanroomQueue=true`, the Linux bootstrap:
+
+- starts a dedicated Buildkite agent process for the cleanroom queue
+- configures `helper` mode via agent environment
+- installs `/usr/local/sbin/refresh-cleanroom-helper` and downloads `/usr/local/sbin/cleanroom-root-helper` from git at host boot
+- defaults to `CleanroomHelperGitRepositoryUrl=git@github.com:buildkite/cleanroom.git` and `CleanroomHelperGitRef=main`
+- uses sudoers allowlist for `/usr/bin/install ... /usr/local/sbin/cleanroom-root-helper`
+
+You can refresh helper on demand with SSM:
+
+```bash
+aws ssm send-command \
+  --document-name AWS-RunShellScript \
+  --targets "Key=tag:Name,Values=cleanroom-ci-linux" \
+  --parameters commands='["sudo /usr/local/sbin/refresh-cleanroom-helper"]'
+```
+
+## 5. Optional Agent Environment Hook
 
 If you prefer host-level env over pipeline step env, set variables in `/etc/buildkite-agent/hooks/environment`.
 
@@ -118,13 +280,13 @@ export CLEANROOM_KERNEL_IMAGE="/var/lib/buildkite-agent/.local/share/cleanroom/i
 export CLEANROOM_FIRECRACKER_BINARY="/usr/local/bin/firecracker"
 ```
 
-## 5. Collision Safety
+## 6. Collision Safety
 
 `scripts/ci-cleanroom-e2e.sh` isolates CI runtime paths using temporary XDG directories (`XDG_CONFIG_HOME`, `XDG_STATE_HOME`, `XDG_RUNTIME_DIR`, `XDG_DATA_HOME`) and a job-local unix socket.
 
 This prevents collisions with any long-running cleanroom instance on the same host.
 
-## 6. Verification
+## 7. Verification
 
 After setup:
 
