@@ -27,3 +27,22 @@ func TestLinuxBootstrapEnsuresAgentOwnsLocalTree(t *testing.T) {
 		}
 	}
 }
+
+func TestLinuxBootstrapUsesDirectTailscaleVersionExpansion(t *testing.T) {
+	t.Helper()
+
+	templateBytes, err := os.ReadFile("ci-hosts.yaml")
+	if err != nil {
+		t.Fatalf("read ci-hosts template: %v", err)
+	}
+
+	template := string(templateBytes)
+	if strings.Contains(template, "${!TAILSCALE_VERSION}") {
+		t.Fatalf("linux bootstrap must not use indirect expansion for Tailscale version")
+	}
+
+	requiredSnippet := "tailscale_${TAILSCALE_VERSION}_$ts_arch.tgz"
+	if !strings.Contains(template, requiredSnippet) {
+		t.Fatalf("linux bootstrap is missing direct Tailscale version expansion: %q", requiredSnippet)
+	}
+}

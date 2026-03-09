@@ -432,7 +432,7 @@ Resources:
                 if [ "$agent_arch" = 'arm64' ]; then
                   ts_arch='arm64'
                 fi
-                ts_url="https://pkgs.tailscale.com/stable/tailscale_${!TAILSCALE_VERSION}_$ts_arch.tgz"
+                ts_url="https://pkgs.tailscale.com/stable/tailscale_${TAILSCALE_VERSION}_$ts_arch.tgz"
                 ts_tmp_dir="$(mktemp -d)"
                 curl -fsSL "$ts_url" -o "$ts_tmp_dir/tailscale.tgz"
                 tar -xzf "$ts_tmp_dir/tailscale.tgz" -C "$ts_tmp_dir"
