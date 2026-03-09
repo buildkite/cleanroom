@@ -1,9 +1,8 @@
 # CI Setup (Buildkite)
 
-This repository uses Buildkite for CI with three queues:
+This repository uses Buildkite for CI with two Linux queues:
 
 - `hosted`: Linux unit/integration tests (`mise run test`)
-- `mac-small`: macOS unit/integration tests (`mise run test`)
 - `cleanroom`: Linux Firecracker end-to-end checks (`scripts/ci-cleanroom-e2e.sh`)
 
 Pipeline config lives in `.buildkite/pipeline.yml`.
@@ -14,7 +13,6 @@ Pipeline config lives in `.buildkite/pipeline.yml`.
 2. Ensure the pipeline reads `.buildkite/pipeline.yml` from the repo.
 3. Ensure all required queues are available:
 - `hosted`
-- `mac-small`
 - `cleanroom`
 
 ## 2. Provision Hosts With CloudFormation
@@ -135,7 +133,7 @@ No extra host setup is needed if you use `infra/cloudformation/ci-hosts.yaml`.
 Notes:
 
 - `mise` is bootstrapped via repository hooks in `.buildkite/hooks/`.
-- Per-step cache is enabled for `hosted` and `mac-small` steps.
+- Per-step cache is enabled for `hosted`.
 - Avoid global pipeline `cache:` blocks if self-hosted queues are present.
 
 ## 4. Cleanroom Queue (Firecracker E2E)
@@ -257,5 +255,5 @@ This prevents collisions with any long-running cleanroom instance on the same ho
 After setup:
 
 1. Trigger a build.
-2. Confirm `:test_tube: Test (Linux)` and `:test_tube: Test (macOS)` pass.
+2. Confirm `:test_tube: Test (Linux)` passes.
 3. Confirm `:fire: E2E (Firecracker)` passes doctor, launch, exec, and observability checks.
