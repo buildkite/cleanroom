@@ -18,9 +18,24 @@ TAILSCALE_ENABLE_SSH='${tailscale_enable_ssh}'
 TAILSCALE_ACCEPT_ROUTES='${tailscale_accept_routes}'
 
 if command -v dnf >/dev/null 2>&1; then
-  dnf install -y git jq curl tar
+  dnf install -y git jq tar
+  if ! command -v curl >/dev/null 2>&1; then
+    dnf install -y curl-minimal || dnf install -y curl
+  fi
+  if ! command -v aws >/dev/null 2>&1; then
+    dnf install -y awscli
+  fi
+elif command -v apt-get >/dev/null 2>&1; then
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -y
+  apt-get install -y git jq curl tar ca-certificates openssh-client awscli
 else
-  yum install -y git jq curl tar
+  yum install -y git jq curl tar awscli
+fi
+
+if ! command -v aws >/dev/null 2>&1; then
+  echo "aws CLI is required but not installed" >&2
+  exit 1
 fi
 
 imds_token="$(curl -fsS -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")"

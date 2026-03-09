@@ -1,3 +1,11 @@
+data "aws_ssm_parameter" "ubuntu_ami" {
+  name = var.ubuntu_ami_ssm_parameter_name
+}
+
+locals {
+  selected_ami_id = var.ami_id != "" ? var.ami_id : data.aws_ssm_parameter.ubuntu_ami.value
+}
+
 module "network" {
   source = "../../modules/network"
 
@@ -16,7 +24,7 @@ module "linux_ci" {
   name_prefix                       = var.name_prefix
   vpc_id                            = module.network.vpc_id
   subnet_id                         = module.network.private_subnet_id
-  ami_id                            = var.ami_id
+  ami_id                            = local.selected_ami_id
   instance_type                     = var.instance_type
   root_volume_size_gib              = var.root_volume_size_gib
   buildkite_token_parameter_name    = var.buildkite_token_parameter_name
@@ -31,4 +39,6 @@ module "linux_ci" {
   tailscale_enable_ssh              = var.tailscale_enable_ssh
   tailscale_accept_routes           = var.tailscale_accept_routes
   tags                              = var.tags
+
+  depends_on = [module.network]
 }

@@ -35,8 +35,15 @@ variable "private_subnet_cidr" {
 }
 
 variable "ami_id" {
-  description = "Linux AMI ID for the host."
+  description = "Optional AMI override for linux-ci host. Leave empty to use latest Ubuntu AMI from SSM."
   type        = string
+  default     = ""
+}
+
+variable "ubuntu_ami_ssm_parameter_name" {
+  description = "SSM public parameter name for latest Ubuntu AMI."
+  type        = string
+  default     = "/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id"
 }
 
 variable "instance_type" {

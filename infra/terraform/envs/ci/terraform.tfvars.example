@@ -6,8 +6,10 @@ vpc_cidr           = "10.42.0.0/24"
 public_subnet_cidr = "10.42.0.0/26"
 private_subnet_cidr = "10.42.0.64/26"
 
-ami_id        = "ami-0123456789abcdef0"
 instance_type = "m8i.large"
+
+# Optional: pin AMI manually. Leave empty to use latest Ubuntu from SSM parameter.
+# ami_id = "ami-0123456789abcdef0"
 
 buildkite_token_parameter_name    = "/buildkite/agent-token"
 tailscale_auth_key_parameter_name = "/tailscale/authkey/ci"

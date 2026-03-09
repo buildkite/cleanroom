@@ -1,2 +1,9 @@
 /dist
 /release-extra
+
+# Local Terraform environment values (keep *.example committed)
+/infra/terraform/envs/ci/terraform.tfvars
+/infra/terraform/envs/ci/.terraform/
+/infra/terraform/envs/ci/*.tfstate
+/infra/terraform/envs/ci/*.tfstate.*
+/infra/terraform/envs/ci/tfplan*

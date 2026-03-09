@@ -5,6 +5,11 @@ Composition root for cleanroom CI infrastructure:
 - `../../modules/network` for VPC/subnet/NAT
 - `../../modules/linux-ci` for the private Linux host bootstrap
 
+Default AMI behaviour:
+
+- uses latest Ubuntu 24.04 AMI from SSM public parameter
+- set `ami_id` in `terraform.tfvars` if you want to pin an explicit AMI
+
 ## Usage
 
 ```bash
