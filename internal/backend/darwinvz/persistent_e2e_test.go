@@ -178,3 +178,118 @@ func TestPersistentSandboxE2E(t *testing.T) {
 		t.Fatalf("expected run after terminate to fail with unknown sandbox, got %v", err)
 	}
 }
+
+func TestPersistentSandboxE2EExecStreamingDoesNotHang(t *testing.T) {
+	if strings.TrimSpace(os.Getenv(darwinVZE2EEnvEnabled)) == "" {
+		t.Skipf("set %s=1 to run real darwin-vz persistence e2e", darwinVZE2EEnvEnabled)
+	}
+	if testing.Short() {
+		t.Skip("skipping darwin-vz e2e in short mode")
+	}
+
+	helperPath, err := resolveHelperBinaryPath()
+	if err != nil {
+		t.Fatalf("resolve helper binary: %v", err)
+	}
+	hasEntitlement, err := helperHasVirtualizationEntitlement(helperPath)
+	if err != nil {
+		t.Fatalf("verify helper entitlement: %v", err)
+	}
+	if !hasEntitlement {
+		t.Fatalf("helper %q is missing com.apple.security.virtualization entitlement", helperPath)
+	}
+	if _, _, err := New().getGuestAgentBinary(); err != nil {
+		t.Fatalf("resolve guest agent binary: %v", err)
+	}
+
+	rootFSOverride := strings.TrimSpace(os.Getenv(darwinVZE2EEnvRootFS))
+	if rootFSOverride == "" {
+		if _, err := hosttools.ResolveE2FSProgsBinary("mkfs.ext4"); err != nil {
+			t.Fatalf("resolve mkfs.ext4: %v", err)
+		}
+		if _, err := hosttools.ResolveE2FSProgsBinary("debugfs"); err != nil {
+			t.Fatalf("resolve debugfs: %v", err)
+		}
+	}
+
+	imageRef := strings.TrimSpace(os.Getenv(darwinVZE2EEnvImageRef))
+	if imageRef == "" {
+		imageRef = defaultDarwinVZE2EImageRef()
+	}
+
+	cfg := backend.FirecrackerConfig{
+		KernelImagePath: strings.TrimSpace(os.Getenv(darwinVZE2EEnvKernelImage)),
+		RootFSPath:      rootFSOverride,
+		VCPUs:           1,
+		MemoryMiB:       1024,
+		LaunchSeconds:   90,
+	}
+	compiled := &policy.CompiledPolicy{
+		Version:        1,
+		ImageRef:       imageRef,
+		NetworkDefault: "deny",
+	}
+	sandboxID := fmt.Sprintf("cr-e2e-streaming-%d", time.Now().UnixNano())
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	adapter := New()
+	if err := adapter.ProvisionSandbox(ctx, backend.ProvisionRequest{
+		SandboxID:         sandboxID,
+		Policy:            compiled,
+		FirecrackerConfig: cfg,
+	}); err != nil {
+		t.Fatalf("ProvisionSandbox returned error: %v", err)
+	}
+
+	defer func() {
+		if err := adapter.TerminateSandbox(context.Background(), sandboxID); err != nil {
+			t.Fatalf("deferred TerminateSandbox returned error: %v", err)
+		}
+	}()
+
+	// A quick warm-up run that exercises the readiness/proxy path before we
+	// assert repeated non-interactive executions complete promptly.
+	warmupCtx, warmupCancel := context.WithTimeout(ctx, 60*time.Second)
+	warmup, err := adapter.RunInSandbox(warmupCtx, backend.RunRequest{
+		SandboxID: sandboxID,
+		RunID:     "run-warmup",
+		Command:   []string{"sh", "-lc", "echo warmup"},
+		Policy:    compiled,
+		FirecrackerConfig: backend.FirecrackerConfig{
+			LaunchSeconds: cfg.LaunchSeconds,
+		},
+	}, backend.OutputStream{})
+	warmupCancel()
+	if err != nil {
+		t.Fatalf("warm-up RunInSandbox returned error: %v", err)
+	}
+	if warmup.ExitCode != 0 {
+		t.Fatalf("expected warm-up exit code 0, got %d (stderr=%q)", warmup.ExitCode, warmup.Stderr)
+	}
+
+	for i := 0; i < 8; i++ {
+		runID := fmt.Sprintf("run-stream-%d", i)
+		want := fmt.Sprintf("stream-%d", i)
+		runCtx, runCancel := context.WithTimeout(ctx, 30*time.Second)
+		res, err := adapter.RunInSandbox(runCtx, backend.RunRequest{
+			SandboxID: sandboxID,
+			RunID:     runID,
+			Command:   []string{"sh", "-lc", "echo " + want},
+			Policy:    compiled,
+			FirecrackerConfig: backend.FirecrackerConfig{
+				LaunchSeconds: cfg.LaunchSeconds,
+			},
+		}, backend.OutputStream{})
+		runCancel()
+		if err != nil {
+			t.Fatalf("RunInSandbox %q returned error: %v", runID, err)
+		}
+		if res.ExitCode != 0 {
+			t.Fatalf("expected %q exit code 0, got %d (stderr=%q)", runID, res.ExitCode, res.Stderr)
+		}
+		if got := strings.TrimSpace(res.Stdout); got != want {
+			t.Fatalf("unexpected stdout for %q: got %q want %q", runID, got, want)
+		}
+	}
+}

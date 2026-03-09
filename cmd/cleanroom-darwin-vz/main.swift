@@ -219,6 +219,7 @@ private final class GuestChannel {
     let readFD: Int32
     let writeFD: Int32
     private let closeAfterUse: Bool
+    private let lock = NSLock()
     private var closed = false
     private let onClose: () -> Void
 
@@ -236,11 +237,45 @@ private final class GuestChannel {
     }
 
     func close() {
+        lock.lock()
         if closed {
+            lock.unlock()
             return
         }
         closed = true
+        lock.unlock()
         onClose()
+    }
+
+    func duplicate(closeAfterUse: Bool = true) throws -> GuestChannel {
+        let duplicatedReadFD = Darwin.dup(readFD)
+        if duplicatedReadFD < 0 {
+            throw HelperError.posix("dup(guest read fd)", errno)
+        }
+
+        let duplicatedWriteFD: Int32
+        if writeFD == readFD {
+            duplicatedWriteFD = duplicatedReadFD
+        } else {
+            duplicatedWriteFD = Darwin.dup(writeFD)
+            if duplicatedWriteFD < 0 {
+                let code = errno
+                _ = Darwin.close(duplicatedReadFD)
+                throw HelperError.posix("dup(guest write fd)", code)
+            }
+        }
+
+        return GuestChannel(
+            readFD: duplicatedReadFD,
+            writeFD: duplicatedWriteFD,
+            closeAfterUse: closeAfterUse,
+            onClose: {
+                if duplicatedWriteFD != duplicatedReadFD {
+                    _ = Darwin.close(duplicatedWriteFD)
+                }
+                _ = Darwin.close(duplicatedReadFD)
+            }
+        )
     }
 }
 
@@ -308,7 +343,7 @@ private final class ProxyServer {
         activeChannel = guestChannel
         lock.unlock()
 
-        bridge(hostFD: hostFD, guestReadFD: guestChannel.readFD, guestWriteFD: guestChannel.writeFD)
+        bridge(hostFD: hostFD, guestChannel: guestChannel)
         guestChannel.finishSession()
 
         lock.lock()
@@ -319,7 +354,9 @@ private final class ProxyServer {
         return true
     }
 
-    private func bridge(hostFD: Int32, guestReadFD: Int32, guestWriteFD: Int32) {
+    private func bridge(hostFD: Int32, guestChannel: GuestChannel) {
+        let guestReadFD = guestChannel.readFD
+        let guestWriteFD = guestChannel.writeFD
         let group = DispatchGroup()
         let errorLock = NSLock()
         var firstError: Error?
@@ -335,6 +372,11 @@ private final class ProxyServer {
         group.enter()
         DispatchQueue.global(qos: .userInitiated).async {
             defer { group.leave() }
+            defer {
+                // Closing the guest side after host EOF prevents the bridge from
+                // stalling on long-lived transports (for example serial fallback).
+                guestChannel.close()
+            }
             do {
                 try pumpBytes(src: hostFD, dst: guestWriteFD)
             } catch {
@@ -661,7 +703,7 @@ private final class VMRuntime {
         guard let serialChannel else {
             throw HelperError.vm("guest serial channel is not available")
         }
-        return serialChannel
+        return try serialChannel.duplicate()
     }
 }
 
