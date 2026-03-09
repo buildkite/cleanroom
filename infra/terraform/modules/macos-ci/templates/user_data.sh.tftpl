@@ -12,6 +12,26 @@ REPO_URL='${repo_url}'
 REPO_REF='${repo_ref}'
 SETUP_SCRIPT_PATH='${setup_script_path}'
 
+retry() {
+  local attempts="$1"
+  local delay_seconds="$2"
+  shift 2
+
+  local n=1
+  while true; do
+    if "$@"; then
+      return 0
+    fi
+
+    if [ "$n" -ge "$attempts" ]; then
+      return 1
+    fi
+
+    sleep "$delay_seconds"
+    n=$((n + 1))
+  done
+}
+
 if ! command -v aws >/dev/null 2>&1; then
   aws_tmp_dir="$(mktemp -d)"
   trap 'rm -rf "$aws_tmp_dir"' EXIT
@@ -34,11 +54,11 @@ if ! command -v ssh-keyscan >/dev/null 2>&1; then
   exit 1
 fi
 
-imds_token="$(curl -fsS -X PUT 'http://169.254.169.254/latest/api/token' -H 'X-aws-ec2-metadata-token-ttl-seconds: 21600')"
-instance_id="$(curl -fsS -H "X-aws-ec2-metadata-token: $imds_token" http://169.254.169.254/latest/meta-data/instance-id)"
+imds_token="$(retry 10 3 curl -fsS -X PUT 'http://169.254.169.254/latest/api/token' -H 'X-aws-ec2-metadata-token-ttl-seconds: 21600')"
+instance_id="$(retry 10 3 curl -fsS -H "X-aws-ec2-metadata-token: $imds_token" http://169.254.169.254/latest/meta-data/instance-id)"
 
 # Verify the instance role can read SecureString parameters before handoff.
-aws ssm get-parameter \
+retry 10 3 aws ssm get-parameter \
   --region "$AWS_REGION" \
   --name "$BUILDKITE_TOKEN_PARAM" \
   --with-decryption \
@@ -46,7 +66,7 @@ aws ssm get-parameter \
   --output text >/dev/null
 
 install -d -o root -g wheel -m 0700 /var/root/.ssh
-aws ssm get-parameter \
+retry 10 3 aws ssm get-parameter \
   --region "$AWS_REGION" \
   --name "$DEPLOY_KEY_PARAM" \
   --with-decryption \
@@ -65,8 +85,11 @@ export GIT_SSH_COMMAND='ssh -i /var/root/.ssh/cleanroom_deploy_key -o Identities
 
 git -c init.defaultBranch=main init "$repo_root" >/dev/null
 git -C "$repo_root" remote add origin "$REPO_URL"
-git -C "$repo_root" fetch --depth=1 origin "$REPO_REF"
+retry 5 3 git -C "$repo_root" fetch --depth=1 origin "$REPO_REF"
 git -C "$repo_root" checkout -f FETCH_HEAD
+
+unset GIT_SSH_COMMAND
+rm -f /var/root/.ssh/cleanroom_deploy_key /var/root/.ssh/known_hosts
 
 setup_script="$repo_root/$SETUP_SCRIPT_PATH"
 if [ ! -f "$setup_script" ]; then

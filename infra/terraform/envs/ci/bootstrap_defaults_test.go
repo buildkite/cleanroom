@@ -99,6 +99,8 @@ func TestMacBootstrapScriptConfiguresBuildkiteAgent(t *testing.T) {
 	requireContains(t, scriptPath, "<string>start</string>")
 	requireContains(t, scriptPath, "CLEANROOM_BUILDKITE_QUEUE")
 	requireContains(t, scriptPath, "QUEUE_NAME=\"${CLEANROOM_BUILDKITE_QUEUE:-cleanroom-mac}\"")
+	requireContains(t, scriptPath, "BUILD_PATH=\"/buildkite/builds\"")
+	requireContains(t, scriptPath, "<string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>")
 }
 
 func TestUserDataInstallsAwsCliWithoutAptAwscliDependency(t *testing.T) {
@@ -123,6 +125,7 @@ func TestMacCiUsesDedicatedHostAndPrivateNetworking(t *testing.T) {
 	requireContains(t, moduleMainPath, "resource \"aws_ec2_host\" \"mac\"")
 	requireContains(t, moduleMainPath, "tenancy                = \"host\"")
 	requireContains(t, moduleMainPath, "associate_public_ip_address = false")
+	requireContains(t, moduleMainPath, "aws_iam_role_policy.parameter_read")
 }
 
 func TestEnvWiresOptionalMacCiModule(t *testing.T) {

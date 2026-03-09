@@ -85,6 +85,7 @@ NAME_PREFIX="${CLEANROOM_BOOTSTRAP_NAME_PREFIX:-cleanroom-ci-mac}"
 QUEUE_NAME="${CLEANROOM_BUILDKITE_QUEUE:-cleanroom-mac}"
 AGENT_VERSION="${CLEANROOM_BUILDKITE_AGENT_VERSION:-3.119.1}"
 AGENT_ROOT="/var/lib/buildkite-agent"
+BUILD_PATH="/buildkite/builds"
 CONFIG_DIR="/usr/local/etc/buildkite-agent"
 
 [ -n "$AWS_REGION" ] || die "AWS_REGION (or CLEANROOM_BOOTSTRAP_REGION) must be set"
@@ -102,7 +103,8 @@ install_buildkite_agent_binary "$AGENT_VERSION"
 
 install -d -o root -g wheel -m 0755 "$CONFIG_DIR"
 install -d -o root -g wheel -m 0755 "$AGENT_ROOT"
-install -d -o root -g wheel -m 0755 "$AGENT_ROOT/builds"
+install -d -o root -g wheel -m 0755 /buildkite
+install -d -o root -g wheel -m 0755 "$BUILD_PATH"
 install -d -o root -g wheel -m 0755 "$AGENT_ROOT/hooks"
 install -d -o root -g wheel -m 0755 "$AGENT_ROOT/plugins"
 
@@ -115,7 +117,7 @@ cat > "$config_path" <<CFG
 token="$agent_token"
 name="${NAME_PREFIX}-${instance_id}-${QUEUE_NAME}"
 tags="$tags"
-build-path="${AGENT_ROOT}/builds"
+build-path="${BUILD_PATH}"
 hooks-path="${AGENT_ROOT}/hooks"
 plugins-path="${AGENT_ROOT}/plugins"
 CFG
@@ -143,6 +145,8 @@ cat > "$plist_path" <<PLIST
   <dict>
     <key>HOME</key>
     <string>${AGENT_ROOT}</string>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
   </dict>
   <key>RunAtLoad</key>
   <true/>

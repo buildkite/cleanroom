@@ -149,4 +149,9 @@ resource "aws_instance" "host" {
   tags = merge(local.common_tags, {
     Name = "${var.name_prefix}-instance"
   })
+
+  depends_on = [
+    aws_iam_role_policy_attachment.ssm_core,
+    aws_iam_role_policy.parameter_read,
+  ]
 }
