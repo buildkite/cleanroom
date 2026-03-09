@@ -93,6 +93,7 @@ Notes:
 - `EnableMacHost=false` keeps Mac resources out of updates while you iterate on Linux/bootstrap.
 - `LinuxAsgRollingPauseTime` controls how long CloudFormation waits after Linux instance replacement.
 - `GitDeployKeyParameterName` installs a host-level `pre-checkout` hook that exports `GIT_SSH_COMMAND` for clone/fetch.
+- TODO(cleanroom-ci): when CloudFormation supports `LaunchTemplateData.CpuOptions.NestedVirtualization`, move nested virtualization enablement out of the post-deploy EC2/ASG workaround and back into `infra/cloudformation/ci-hosts.yaml`.
 - If you do not run Firecracker E2E, set:
   - `EnableCleanroomQueue=false`
   - `InstallFirecrackerOnLinux=false`

@@ -557,6 +557,9 @@ Resources:
                   rm -rf "$tmp_fc_dir"
                 fi
 
+                install -d -o buildkite-agent -g buildkite-agent -m 0755 /var/lib/buildkite-agent/.local
+                install -d -o buildkite-agent -g buildkite-agent -m 0755 /var/lib/buildkite-agent/.local/share
+                install -d -o buildkite-agent -g buildkite-agent -m 0755 /var/lib/buildkite-agent/.local/share/cleanroom
                 install -d -o buildkite-agent -g buildkite-agent -m 0755 /var/lib/buildkite-agent/.local/share/cleanroom/images
                 curl -fsSL "$KERNEL_URL" -o /var/lib/buildkite-agent/.local/share/cleanroom/images/vmlinux.bin
                 chown buildkite-agent:buildkite-agent /var/lib/buildkite-agent/.local/share/cleanroom/images/vmlinux.bin

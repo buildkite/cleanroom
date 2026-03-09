@@ -3,8 +3,11 @@ set -euo pipefail
 
 KERNEL_IMAGE="${CLEANROOM_KERNEL_IMAGE:-}"
 FIRECRACKER_BINARY="${CLEANROOM_FIRECRACKER_BINARY:-firecracker}"
+PRIVILEGED_HELPER_PATH="${CLEANROOM_PRIVILEGED_HELPER_PATH:-/usr/local/sbin/cleanroom-root-helper}"
 PRIVILEGED_MODE="${CLEANROOM_PRIVILEGED_MODE:-}"
-PRIVILEGED_HELPER_PATH="${CLEANROOM_PRIVILEGED_HELPER_PATH:-}"
+if [[ -z "$PRIVILEGED_MODE" && -x "$PRIVILEGED_HELPER_PATH" ]]; then
+  PRIVILEGED_MODE="helper"
+fi
 
 if [[ -z "$KERNEL_IMAGE" ]]; then
   echo "CLEANROOM_KERNEL_IMAGE is required for Firecracker e2e CI" >&2
@@ -14,10 +17,14 @@ fi
 # run_privileged executes a privileged command via the root helper,
 # falling back to sudo, then direct execution.
 run_privileged() {
-  if [[ -n "${PRIVILEGED_HELPER_PATH:-}" ]]; then
-    "$PRIVILEGED_HELPER_PATH" "$@"
+  if [[ "$PRIVILEGED_MODE" == "helper" && -x "$PRIVILEGED_HELPER_PATH" ]]; then
+    if command -v sudo >/dev/null 2>&1; then
+      sudo -n "$PRIVILEGED_HELPER_PATH" "$@"
+    else
+      "$PRIVILEGED_HELPER_PATH" "$@"
+    fi
   elif command -v sudo >/dev/null 2>&1; then
-    sudo "$@"
+    sudo -n "$@"
   else
     "$@"
   fi
