@@ -837,10 +837,10 @@ and fleet-distribution work is still pending.
   - snapshot volume
   - destroy volume
   - destroy snapshot
-- [todo] add `zfs` driver
+- [done] add `zfs` driver
 - [done] wire Firecracker through the volume driver with a file-backed fallback
 - [done] add runtime config loading for Firecracker snapshot storage
-- [todo] add doctor checks for `zfs` availability and configuration
+- [done] add doctor checks for `zfs` availability and configuration
 
 Definition of done:
 

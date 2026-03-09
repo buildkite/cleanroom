@@ -2,6 +2,7 @@ package firecracker
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,8 +11,62 @@ import (
 
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/policy"
+	"github.com/buildkite/cleanroom/internal/volumestore"
 	"github.com/buildkite/cleanroom/internal/vsockexec"
 )
+
+type testVolumeDriver struct {
+	ensureBaseVolumeFn      func(context.Context, volumestore.EnsureBaseVolumeRequest) (volumestore.BaseVolume, error)
+	createWritableVolumeFn  func(context.Context, volumestore.CreateWritableVolumeRequest) (volumestore.WritableVolume, error)
+	snapshotVolumeFn        func(context.Context, volumestore.SnapshotVolumeRequest) (volumestore.Snapshot, error)
+	cloneSnapshotToVolumeFn func(context.Context, volumestore.CloneSnapshotToVolumeRequest) (volumestore.WritableVolume, error)
+	destroyVolumeFn         func(context.Context, volumestore.DestroyVolumeRequest) error
+	destroySnapshotFn       func(context.Context, volumestore.DestroySnapshotRequest) error
+}
+
+func (d testVolumeDriver) Name() string { return "test" }
+
+func (d testVolumeDriver) EnsureBaseVolume(ctx context.Context, req volumestore.EnsureBaseVolumeRequest) (volumestore.BaseVolume, error) {
+	if d.ensureBaseVolumeFn == nil {
+		return volumestore.BaseVolume{}, errors.New("unexpected EnsureBaseVolume call")
+	}
+	return d.ensureBaseVolumeFn(ctx, req)
+}
+
+func (d testVolumeDriver) CreateWritableVolume(ctx context.Context, req volumestore.CreateWritableVolumeRequest) (volumestore.WritableVolume, error) {
+	if d.createWritableVolumeFn == nil {
+		return volumestore.WritableVolume{}, errors.New("unexpected CreateWritableVolume call")
+	}
+	return d.createWritableVolumeFn(ctx, req)
+}
+
+func (d testVolumeDriver) SnapshotVolume(ctx context.Context, req volumestore.SnapshotVolumeRequest) (volumestore.Snapshot, error) {
+	if d.snapshotVolumeFn == nil {
+		return volumestore.Snapshot{}, errors.New("unexpected SnapshotVolume call")
+	}
+	return d.snapshotVolumeFn(ctx, req)
+}
+
+func (d testVolumeDriver) CloneSnapshotToVolume(ctx context.Context, req volumestore.CloneSnapshotToVolumeRequest) (volumestore.WritableVolume, error) {
+	if d.cloneSnapshotToVolumeFn == nil {
+		return volumestore.WritableVolume{}, errors.New("unexpected CloneSnapshotToVolume call")
+	}
+	return d.cloneSnapshotToVolumeFn(ctx, req)
+}
+
+func (d testVolumeDriver) DestroyVolume(ctx context.Context, req volumestore.DestroyVolumeRequest) error {
+	if d.destroyVolumeFn == nil {
+		return nil
+	}
+	return d.destroyVolumeFn(ctx, req)
+}
+
+func (d testVolumeDriver) DestroySnapshot(ctx context.Context, req volumestore.DestroySnapshotRequest) error {
+	if d.destroySnapshotFn == nil {
+		return nil
+	}
+	return d.destroySnapshotFn(ctx, req)
+}
 
 func TestCreateSnapshotSyncsPausesAndClonesRootFS(t *testing.T) {
 	stateHome := t.TempDir()
@@ -117,6 +172,56 @@ func TestCreateSnapshotUsesConfiguredSnapshotBaseDir(t *testing.T) {
 	}
 }
 
+func TestCreateSnapshotUsesManagedVolumeRef(t *testing.T) {
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+
+	managedVolumePath := filepath.Join(t.TempDir(), "managed-volume.ext4")
+	if err := os.WriteFile(managedVolumePath, []byte("snapshot-bytes"), 0o644); err != nil {
+		t.Fatalf("write managed volume: %v", err)
+	}
+
+	prevSignal := sendProcessSignal
+	sendProcessSignal = func(_ *os.Process, _ syscall.Signal) error { return nil }
+	t.Cleanup(func() { sendProcessSignal = prevSignal })
+
+	adapter := &Adapter{
+		runGuestCommandFn: func(_ context.Context, _ context.Context, _ <-chan struct{}, _ func() error, _ string, _ uint32, req vsockexec.ExecRequest, _ backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error) {
+			if len(req.Command) != 1 || req.Command[0] != "sync" {
+				t.Fatalf("unexpected command: %v", req.Command)
+			}
+			return vsockexec.ExecResponse{ExitCode: 0}, guestExecTiming{}, nil
+		},
+		sandboxes: map[string]*sandboxInstance{
+			"cr-test": {
+				SandboxID:    "cr-test",
+				VsockPath:    "/tmp/fake.sock",
+				GuestPort:    10700,
+				fcCmd:        &exec.Cmd{Process: &os.Process{Pid: 42}},
+				exitedCh:     make(chan struct{}),
+				vmRootFSPath: "/dev/zvol/tank/cleanroom/sandboxes/cr-test",
+				volumeRef:    managedVolumePath,
+			},
+		},
+	}
+
+	result, err := adapter.CreateSnapshot(context.Background(), backend.SnapshotRequest{
+		SandboxID:  "cr-test",
+		SnapshotID: "snap-test",
+	})
+	if err != nil {
+		t.Fatalf("CreateSnapshot returned error: %v", err)
+	}
+
+	data, err := os.ReadFile(result.StorageRef)
+	if err != nil {
+		t.Fatalf("read snapshot rootfs: %v", err)
+	}
+	if got, want := string(data), "snapshot-bytes"; got != want {
+		t.Fatalf("unexpected snapshot contents: got %q want %q", got, want)
+	}
+}
+
 func TestProvisionSandboxFromSnapshotUsesSnapshotRootFS(t *testing.T) {
 	t.Parallel()
 
@@ -199,5 +304,75 @@ func TestRestoreSandboxReplacesRunningInstance(t *testing.T) {
 	}
 	if got, want := adapter.sandboxes["cr-test"], newInstance; got != want {
 		t.Fatalf("expected replacement sandbox instance, got %#v want %#v", got, want)
+	}
+}
+
+func TestPreparePersistentWritableVolumeUsesBaseVolumeForRootFSPath(t *testing.T) {
+	t.Parallel()
+
+	rootfsPath := filepath.Join(t.TempDir(), "runtime-rootfs.ext4")
+	if err := os.WriteFile(rootfsPath, []byte("runtime"), 0o644); err != nil {
+		t.Fatalf("write rootfs: %v", err)
+	}
+
+	var (
+		gotEnsureReq volumestore.EnsureBaseVolumeRequest
+		gotCreateReq volumestore.CreateWritableVolumeRequest
+	)
+	driver := testVolumeDriver{
+		ensureBaseVolumeFn: func(_ context.Context, req volumestore.EnsureBaseVolumeRequest) (volumestore.BaseVolume, error) {
+			gotEnsureReq = req
+			return volumestore.BaseVolume{Ref: "base-ref"}, nil
+		},
+		createWritableVolumeFn: func(_ context.Context, req volumestore.CreateWritableVolumeRequest) (volumestore.WritableVolume, error) {
+			gotCreateReq = req
+			return volumestore.WritableVolume{Ref: "volume-ref", AttachmentPath: req.AttachmentPath}, nil
+		},
+	}
+
+	writable, err := preparePersistentWritableVolume(context.Background(), driver, "sandbox-1", t.TempDir(), rootfsPath)
+	if err != nil {
+		t.Fatalf("preparePersistentWritableVolume returned error: %v", err)
+	}
+	if got, want := gotEnsureReq.SourcePath, rootfsPath; got != want {
+		t.Fatalf("unexpected base source path: got %q want %q", got, want)
+	}
+	if got, want := gotEnsureReq.BaseID, "runtime-rootfs"; got != want {
+		t.Fatalf("unexpected base id: got %q want %q", got, want)
+	}
+	if got, want := gotCreateReq.BaseRef, "base-ref"; got != want {
+		t.Fatalf("unexpected base ref: got %q want %q", got, want)
+	}
+	if got, want := gotCreateReq.VolumeID, "sandbox-1"; got != want {
+		t.Fatalf("unexpected volume id: got %q want %q", got, want)
+	}
+	if got, want := writable.Ref, "volume-ref"; got != want {
+		t.Fatalf("unexpected writable volume ref: got %q want %q", got, want)
+	}
+}
+
+func TestPreparePersistentWritableVolumeUsesSnapshotCloneForSnapshotRef(t *testing.T) {
+	t.Parallel()
+
+	var gotCloneReq volumestore.CloneSnapshotToVolumeRequest
+	driver := testVolumeDriver{
+		cloneSnapshotToVolumeFn: func(_ context.Context, req volumestore.CloneSnapshotToVolumeRequest) (volumestore.WritableVolume, error) {
+			gotCloneReq = req
+			return volumestore.WritableVolume{Ref: "tank/cleanroom/sandboxes/sandbox-1", AttachmentPath: "/dev/zvol/tank/cleanroom/sandboxes/sandbox-1"}, nil
+		},
+	}
+
+	writable, err := preparePersistentWritableVolume(context.Background(), driver, "sandbox-1", t.TempDir(), "tank/cleanroom/sandboxes/source@snap-golden")
+	if err != nil {
+		t.Fatalf("preparePersistentWritableVolume returned error: %v", err)
+	}
+	if got, want := gotCloneReq.SnapshotRef, "tank/cleanroom/sandboxes/source@snap-golden"; got != want {
+		t.Fatalf("unexpected snapshot ref: got %q want %q", got, want)
+	}
+	if got, want := gotCloneReq.VolumeID, "sandbox-1"; got != want {
+		t.Fatalf("unexpected volume id: got %q want %q", got, want)
+	}
+	if got, want := writable.AttachmentPath, "/dev/zvol/tank/cleanroom/sandboxes/sandbox-1"; got != want {
+		t.Fatalf("unexpected attachment path: got %q want %q", got, want)
 	}
 }

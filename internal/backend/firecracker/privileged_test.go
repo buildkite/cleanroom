@@ -10,6 +10,25 @@ import (
 	"github.com/buildkite/cleanroom/internal/backend"
 )
 
+func writeExecutable(t *testing.T, dir, name, content string) string {
+	t.Helper()
+
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+		t.Fatalf("write executable %s: %v", name, err)
+	}
+	return path
+}
+
+func doctorCheck(report *backend.DoctorReport, name string) backend.DoctorCheck {
+	for _, check := range report.Checks {
+		if check.Name == name {
+			return check
+		}
+	}
+	return backend.DoctorCheck{}
+}
+
 func setupFakeSudo(t *testing.T, logPath string) {
 	t.Helper()
 
@@ -108,6 +127,94 @@ func TestRunRootCommandBatchHelperModeInvokesHelperPerCommand(t *testing.T) {
 	sudoLines := strings.Split(strings.TrimSpace(string(sudoLogBytes)), "\n")
 	if len(sudoLines) != 2 {
 		t.Fatalf("expected two sudo invocations, got %d (%q)", len(sudoLines), string(sudoLogBytes))
+	}
+}
+
+func TestRunRootCommandOutputHelperModeInvokesHelper(t *testing.T) {
+	tmpDir := t.TempDir()
+	sudoLogPath := filepath.Join(tmpDir, "sudo.log")
+	logPath := filepath.Join(tmpDir, "helper.log")
+	helperPath := filepath.Join(tmpDir, "cleanroom-root-helper")
+	setupFakeSudo(t, sudoLogPath)
+
+	helperScript := "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$*\" >> \"$HELPER_LOG_PATH\"\nif [ \"$1\" = \"zfs\" ] && [ \"$2\" = \"list\" ] && [ \"$3\" = \"-H\" ] && [ \"$4\" = \"-o\" ] && [ \"$5\" = \"name\" ]; then printf '%s\\n' \"$6\"; fi\n"
+	if err := os.WriteFile(helperPath, []byte(helperScript), 0o755); err != nil {
+		t.Fatalf("write helper script: %v", err)
+	}
+	t.Setenv("HELPER_LOG_PATH", logPath)
+
+	cfg := backend.FirecrackerConfig{
+		PrivilegedMode:       privilegedModeHelper,
+		PrivilegedHelperPath: helperPath,
+	}
+
+	out, err := runRootCommandOutput(context.Background(), cfg, "zfs", "list", "-H", "-o", "name", "tank/cleanroom")
+	if err != nil {
+		t.Fatalf("runRootCommandOutput: %v", err)
+	}
+	if got, want := strings.TrimSpace(string(out)), "tank/cleanroom"; got != want {
+		t.Fatalf("unexpected helper output: got %q want %q", got, want)
+	}
+
+	logBytes, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read helper log: %v", err)
+	}
+	if got := strings.TrimSpace(string(logBytes)); got != "zfs list -H -o name tank/cleanroom" {
+		t.Fatalf("unexpected helper invocation: got %q", got)
+	}
+}
+
+func TestDoctorReportsZFSChecks(t *testing.T) {
+	tmpDir := t.TempDir()
+	sudoLogPath := filepath.Join(tmpDir, "sudo.log")
+	setupFakeSudo(t, sudoLogPath)
+
+	binDir := filepath.Join(tmpDir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir bin dir: %v", err)
+	}
+
+	writeExecutable(t, binDir, "firecracker", "#!/bin/sh\nexit 0\n")
+	writeExecutable(t, binDir, "cleanroom-guest-agent", "#!/bin/sh\nexit 0\n")
+	writeExecutable(t, binDir, "mkfs.ext4", "#!/bin/sh\nexit 0\n")
+	writeExecutable(t, binDir, "iptables", "#!/bin/sh\nexit 0\n")
+	writeExecutable(t, binDir, "sysctl", "#!/bin/sh\nexit 0\n")
+	writeExecutable(t, binDir, "true", "#!/bin/sh\nexit 0\n")
+	writeExecutable(t, binDir, "ip", "#!/bin/sh\nif [ \"$1\" = \"link\" ] && [ \"$2\" = \"show\" ]; then exit 0; fi\nexit 0\n")
+	writeExecutable(t, binDir, "zfs", "#!/bin/sh\nif [ \"$1\" = \"list\" ] && [ \"$2\" = \"-H\" ] && [ \"$3\" = \"-o\" ] && [ \"$4\" = \"name\" ]; then printf '%s\\n' \"$5\"; exit 0; fi\nexit 0\n")
+	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+
+	kernelPath := filepath.Join(tmpDir, "vmlinux")
+	if err := os.WriteFile(kernelPath, []byte("kernel"), 0o644); err != nil {
+		t.Fatalf("write kernel image: %v", err)
+	}
+
+	report, err := (&Adapter{}).Doctor(context.Background(), backend.DoctorRequest{
+		FirecrackerConfig: backend.FirecrackerConfig{
+			BinaryPath:      "firecracker",
+			KernelImagePath: kernelPath,
+			Snapshots: backend.SnapshotConfig{
+				Driver:     "zfs",
+				ZFSDataset: "tank/cleanroom",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Doctor returned error: %v", err)
+	}
+
+	if got := doctorCheck(report, "snapshot_driver"); got.Status != "pass" {
+		t.Fatalf("unexpected snapshot_driver check: %+v", got)
+	}
+	if got := doctorCheck(report, "snapshot_zfs_dataset"); got.Status != "pass" {
+		t.Fatalf("unexpected snapshot_zfs_dataset check: %+v", got)
+	}
+	if got := doctorCheck(report, "snapshot_zfs_binary"); got.Status != "pass" {
+		t.Fatalf("unexpected snapshot_zfs_binary check: %+v", got)
+	}
+	if got := doctorCheck(report, "snapshot_zfs_dataset_access"); got.Status != "pass" {
+		t.Fatalf("unexpected snapshot_zfs_dataset_access check: %+v", got)
 	}
 }
 
