@@ -15,6 +15,11 @@ Network behaviour:
 - env creates its own VPC/subnets via `modules/network`
 - network CIDRs and AZ selection are fixed in env wiring (not user vars)
 
+Bootstrap behaviour:
+
+- defaults to `scripts/bootstrap-buildkite-agent.sh`, which installs and starts a Buildkite agent for the `cleanroom` queue
+- override `setup_script_path` if you need custom host bootstrap logic
+
 ## Usage
 
 ```bash

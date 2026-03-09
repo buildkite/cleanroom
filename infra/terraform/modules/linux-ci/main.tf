@@ -66,6 +66,9 @@ resource "aws_iam_role_policy" "parameter_read" {
           StringEquals = {
             "kms:ViaService" = "ssm.${var.aws_region}.amazonaws.com"
           }
+          "ForAnyValue:StringLike" = {
+            "kms:EncryptionContext:PARAMETER_ARN" = local.parameter_arns
+          }
         }
       },
     ]

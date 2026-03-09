@@ -18,19 +18,35 @@ TAILSCALE_ENABLE_SSH='${tailscale_enable_ssh}'
 TAILSCALE_ACCEPT_ROUTES='${tailscale_accept_routes}'
 
 if command -v dnf >/dev/null 2>&1; then
-  dnf install -y git jq tar
+  dnf install -y git jq tar unzip
   if ! command -v curl >/dev/null 2>&1; then
     dnf install -y curl-minimal || dnf install -y curl
   fi
   if ! command -v aws >/dev/null 2>&1; then
-    dnf install -y awscli
+    dnf install -y awscli || true
   fi
 elif command -v apt-get >/dev/null 2>&1; then
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -y
-  apt-get install -y git jq curl tar ca-certificates openssh-client awscli
+  apt-get install -y git jq curl tar unzip ca-certificates openssh-client
 else
-  yum install -y git jq curl tar awscli
+  yum install -y git jq curl tar unzip
+  if ! command -v aws >/dev/null 2>&1; then
+    yum install -y awscli || true
+  fi
+fi
+
+if ! command -v aws >/dev/null 2>&1; then
+  aws_arch='x86_64'
+  if [ "$(uname -m)" = 'aarch64' ] || [ "$(uname -m)" = 'arm64' ]; then
+    aws_arch='aarch64'
+  fi
+
+  aws_tmp_dir="$(mktemp -d)"
+  trap 'rm -rf "$aws_tmp_dir"' EXIT
+  curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-$aws_arch.zip" -o "$aws_tmp_dir/awscliv2.zip"
+  unzip -q "$aws_tmp_dir/awscliv2.zip" -d "$aws_tmp_dir"
+  "$aws_tmp_dir/aws/install" --bin-dir /usr/local/bin --install-dir /usr/local/aws-cli --update
 fi
 
 if ! command -v aws >/dev/null 2>&1; then
@@ -137,6 +153,8 @@ fi
 
 chmod +x "$setup_script"
 
+export AWS_REGION
+export BUILDKITE_TOKEN_PARAM
 export CLEANROOM_BOOTSTRAP_REGION="$AWS_REGION"
 export CLEANROOM_BOOTSTRAP_INSTANCE_ID="$instance_id"
 export CLEANROOM_BOOTSTRAP_NAME_PREFIX="$NAME_PREFIX"
