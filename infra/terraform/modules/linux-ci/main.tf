@@ -104,6 +104,10 @@ resource "aws_instance" "host" {
   subnet_id              = var.subnet_id
   vpc_security_group_ids = [aws_security_group.host.id]
 
+  cpu_options {
+    nested_virtualization = "enabled"
+  }
+
   associate_public_ip_address = false
   iam_instance_profile        = aws_iam_instance_profile.host.name
 

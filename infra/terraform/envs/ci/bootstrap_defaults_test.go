@@ -56,3 +56,10 @@ func TestUserDataInstallsAwsCliWithoutAptAwscliDependency(t *testing.T) {
 	requireNotContains(t, templatePath, "apt-get install -y git jq curl tar ca-certificates openssh-client awscli")
 	requireContains(t, templatePath, "awscli-exe-linux")
 }
+
+func TestLinuxCiEnablesNestedVirtualization(t *testing.T) {
+	t.Helper()
+
+	moduleMainPath := filepath.Join("..", "..", "modules", "linux-ci", "main.tf")
+	requireContains(t, moduleMainPath, "nested_virtualization = \"enabled\"")
+}
