@@ -1,13 +1,13 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
-  Buildkite CI hosts for cleanroom: one Linux host and an optional EC2 Mac host.
+  Buildkite CI host for cleanroom.
   The stack is reproducible (CloudFormation + user data bootstrap) and avoids
   storing long-lived host state by hand.
 
 Parameters:
   AvailabilityZone:
     Type: AWS::EC2::AvailabilityZone::Name
-    Description: Availability Zone used for both Linux and EC2 Mac hosts.
+    Description: Availability Zone used for the Linux CI host.
   VpcCidr:
     Type: String
     Default: 10.42.0.0/24
@@ -70,35 +70,6 @@ Parameters:
     Type: String
     Default: main
     Description: Git ref used to fetch scripts/cleanroom-root-helper.sh.
-  EnableMacHost:
-    Type: String
-    Default: "true"
-    AllowedValues:
-      - "true"
-      - "false"
-    Description: Create the EC2 Mac dedicated host and macOS instance.
-  MacAmiId:
-    Type: String
-    Default: ""
-    AllowedPattern: '^$|ami-[0-9a-fA-F]{8,17}$'
-    Description: macOS AMI ID for the EC2 Mac host (required when EnableMacHost=true).
-  MacInstanceType:
-    Type: String
-    Default: mac2.metal
-    Description: EC2 Mac instance type available in the selected AZ.
-  MacRootVolumeSizeGiB:
-    Type: Number
-    Default: 200
-    MinValue: 100
-    Description: Root volume size for the macOS host.
-  MacQueueName:
-    Type: String
-    Default: mac-small
-    Description: Buildkite queue name for macOS tests.
-  MacAgentUser:
-    Type: String
-    Default: ec2-user
-    Description: Local macOS user that runs buildkite-agent.
   BuildkiteAgentVersion:
     Type: String
     Default: 3.119.1
@@ -126,14 +97,6 @@ Parameters:
     Type: String
     Default: ""
     Description: Extra Linux cleanroom agent config lines separated by semicolons.
-  MacAgentExtraTags:
-    Type: String
-    Default: ""
-    Description: Extra comma-separated Buildkite tags appended to macOS agent tags.
-  MacAgentExtraConfig:
-    Type: String
-    Default: ""
-    Description: Extra macOS agent config lines separated by semicolons.
   TailscaleAuthKeyParameterName:
     Type: String
     Default: ""
@@ -146,10 +109,6 @@ Parameters:
     Type: String
     Default: ""
     Description: Optional comma-separated tag list passed as --advertise-tags on Linux only.
-  TailscaleAdvertiseTags:
-    Type: String
-    Default: ""
-    Description: Optional comma-separated tag list passed as --advertise-tags on macOS.
   TailscaleEnableSsh:
     Type: String
     Default: "true"
@@ -168,29 +127,14 @@ Parameters:
     Type: String
     Default: cleanroom-ci-linux
     Description: Prefix for Linux host Tailscale hostname (<prefix>-<instance-id>).
-  MacTailscaleHostnamePrefix:
-    Type: String
-    Default: cleanroom-ci-mac
-    Description: Prefix for macOS host Tailscale hostname (<prefix>-<instance-id>).
   ResourceNamePrefix:
     Type: String
     Default: cleanroom-ci
     Description: Prefix used in Name tags.
 
-Rules:
-  RequireMacAmiWhenEnabled:
-    RuleCondition: !Equals [!Ref EnableMacHost, "true"]
-    Assertions:
-      - Assert: !Not [!Equals [!Ref MacAmiId, ""]]
-        AssertDescription: MacAmiId must be set when EnableMacHost=true.
-
 Conditions:
   UseTailscale: !Not [!Equals [!Ref TailscaleAuthKeyParameterName, ""]]
   UseGitDeployKey: !Not [!Equals [!Ref GitDeployKeyParameterName, ""]]
-  EnableMac: !Equals [!Ref EnableMacHost, "true"]
-  UseTailscaleOnMac: !And
-    - !Condition UseTailscale
-    - !Condition EnableMac
 
 Resources:
   CiVpc:
@@ -432,7 +376,7 @@ Resources:
                 if [ "$agent_arch" = 'arm64' ]; then
                   ts_arch='arm64'
                 fi
-                ts_url="https://pkgs.tailscale.com/stable/tailscale_${TAILSCALE_VERSION}_$ts_arch.tgz"
+                ts_url="$(printf 'https://pkgs.tailscale.com/stable/tailscale_%s_%s.tgz' "$TAILSCALE_VERSION" "$ts_arch")"
                 ts_tmp_dir="$(mktemp -d)"
                 curl -fsSL "$ts_url" -o "$ts_tmp_dir/tailscale.tgz"
                 tar -xzf "$ts_tmp_dir/tailscale.tgz" -C "$ts_tmp_dir"
@@ -650,198 +594,6 @@ Resources:
         PauseTime: !Ref LinuxAsgRollingPauseTime
         WaitOnResourceSignals: false
 
-  MacDedicatedHost:
-    Type: AWS::EC2::Host
-    Condition: EnableMac
-    Properties:
-      AvailabilityZone: !Ref AvailabilityZone
-      AutoPlacement: "on"
-      InstanceType: !Ref MacInstanceType
-      Tags:
-        - Key: Name
-          Value: !Sub ${ResourceNamePrefix}-mac-host
-
-  MacInstance:
-    Type: AWS::EC2::Instance
-    Condition: EnableMac
-    Properties:
-      AvailabilityZone: !Ref AvailabilityZone
-      Affinity: host
-      HostId: !Ref MacDedicatedHost
-      IamInstanceProfile: !Ref CiAgentInstanceProfile
-      ImageId: !Ref MacAmiId
-      InstanceType: !Ref MacInstanceType
-      MetadataOptions:
-        HttpEndpoint: enabled
-        HttpTokens: required
-      SecurityGroupIds:
-        - !Ref CiSecurityGroup
-      SubnetId: !Ref CiPublicSubnet
-      Tenancy: host
-      BlockDeviceMappings:
-        - DeviceName: /dev/sda1
-          Ebs:
-            DeleteOnTermination: true
-            Encrypted: true
-            VolumeSize: !Ref MacRootVolumeSizeGiB
-            VolumeType: gp3
-      Tags:
-        - Key: Name
-          Value: !Sub ${ResourceNamePrefix}-mac
-      UserData:
-        Fn::Base64:
-          !Sub |
-            #!/bin/bash
-            set -euxo pipefail
-            exec > >(tee /var/log/user-data.log) 2>&1
-
-            BUILDKITE_TOKEN_PARAM='${BuildkiteTokenParameterName}'
-            AGENT_VERSION='${BuildkiteAgentVersion}'
-            MAC_QUEUE='${MacQueueName}'
-            MAC_EXTRA_TAGS='${MacAgentExtraTags}'
-            MAC_EXTRA_CONFIG='${MacAgentExtraConfig}'
-            TAILSCALE_PARAM='${TailscaleAuthKeyParameterName}'
-            TAILSCALE_VERSION='${TailscaleVersion}'
-            TAILSCALE_TAGS='${TailscaleAdvertiseTags}'
-            TAILSCALE_SSH='${TailscaleEnableSsh}'
-            TAILSCALE_ACCEPT_ROUTES='${TailscaleAcceptRoutes}'
-            TAILSCALE_HOSTNAME_PREFIX='${MacTailscaleHostnamePrefix}'
-            STACK_NAME='${AWS::StackName}'
-            REGION='${AWS::Region}'
-            AGENT_USER='${MacAgentUser}'
-
-            if ! id "$AGENT_USER" >/dev/null 2>&1; then
-              AGENT_USER='root'
-            fi
-            AGENT_GROUP="$(id -gn "$AGENT_USER")"
-            AGENT_HOME="$(dscl . -read "/Users/$AGENT_USER" NFSHomeDirectory 2>/dev/null | awk '{print $2}')"
-            if [ -z "$AGENT_HOME" ]; then
-              if [ "$AGENT_USER" = 'root' ]; then
-                AGENT_HOME='/var/root'
-              else
-                AGENT_HOME="/Users/$AGENT_USER"
-              fi
-            fi
-
-            if ! command -v aws >/dev/null 2>&1; then
-              curl -fsSL "https://awscli.amazonaws.com/AWSCLIV2.pkg" -o /tmp/AWSCLIV2.pkg
-              installer -pkg /tmp/AWSCLIV2.pkg -target /
-            fi
-
-            arch_name="$(uname -m)"
-            agent_arch='arm64'
-            if [ "$arch_name" = 'x86_64' ]; then
-              agent_arch='amd64'
-            fi
-
-            agent_url="https://github.com/buildkite/agent/releases/download/v$AGENT_VERSION/buildkite-agent-darwin-$agent_arch-$AGENT_VERSION.tar.gz"
-            curl -fsSL "$agent_url" -o /tmp/buildkite-agent.tar.gz
-            tar -xzf /tmp/buildkite-agent.tar.gz -C /tmp
-            install -o root -g wheel -m 0755 /tmp/buildkite-agent /usr/local/bin/buildkite-agent
-
-            imds_token="$(curl -fsS -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")"
-            instance_id="$(curl -fsS -H "X-aws-ec2-metadata-token: $imds_token" http://169.254.169.254/latest/meta-data/instance-id)"
-            agent_token="$(aws ssm get-parameter --name "$BUILDKITE_TOKEN_PARAM" --with-decryption --query Parameter.Value --output text --region "$REGION")"
-
-            if [ -n "$TAILSCALE_PARAM" ]; then
-              tailscale_auth_key="$(aws ssm get-parameter --name "$TAILSCALE_PARAM" --with-decryption --query Parameter.Value --output text --region "$REGION")"
-              tailscale_pkg_url="https://pkgs.tailscale.com/stable/Tailscale-$TAILSCALE_VERSION-macos.pkg"
-              curl -fsSL "$tailscale_pkg_url" -o /tmp/Tailscale.pkg
-              installer -pkg /tmp/Tailscale.pkg -target /
-              launchctl enable system/com.tailscale.tailscaled || true
-              launchctl kickstart -k system/com.tailscale.tailscaled || true
-
-              tailscale_cli=''
-              if [ -x /usr/local/bin/tailscale ]; then
-                tailscale_cli='/usr/local/bin/tailscale'
-              elif [ -x /opt/homebrew/bin/tailscale ]; then
-                tailscale_cli='/opt/homebrew/bin/tailscale'
-              elif [ -x /Applications/Tailscale.app/Contents/MacOS/Tailscale ]; then
-                tailscale_cli='/Applications/Tailscale.app/Contents/MacOS/Tailscale'
-              fi
-
-              if [ -n "$tailscale_cli" ]; then
-                tailscale_hostname="$TAILSCALE_HOSTNAME_PREFIX-$instance_id"
-                set -- up --auth-key "$tailscale_auth_key" --hostname "$tailscale_hostname"
-                if [ "$TAILSCALE_SSH" = 'true' ]; then
-                  set -- "$@" --ssh
-                fi
-                if [ "$TAILSCALE_ACCEPT_ROUTES" = 'true' ]; then
-                  set -- "$@" --accept-routes
-                fi
-                if [ -n "$TAILSCALE_TAGS" ]; then
-                  set -- "$@" --advertise-tags "$TAILSCALE_TAGS"
-                fi
-                "$tailscale_cli" "$@"
-              else
-                echo "tailscale CLI not found after package install" >&2
-                exit 1
-              fi
-            fi
-
-            install -d -o "$AGENT_USER" -g "$AGENT_GROUP" -m 0755 /opt/buildkite-agent
-            install -d -o "$AGENT_USER" -g "$AGENT_GROUP" -m 0755 /opt/buildkite-agent/builds
-            install -d -o "$AGENT_USER" -g "$AGENT_GROUP" -m 0755 /opt/buildkite-agent/hooks
-            install -d -o "$AGENT_USER" -g "$AGENT_GROUP" -m 0755 /opt/buildkite-agent/plugins
-
-            mac_tags="queue=$MAC_QUEUE,stack=$STACK_NAME,host=$instance_id,os=macos"
-            if [ -n "$MAC_EXTRA_TAGS" ]; then
-              mac_tags="$mac_tags,$MAC_EXTRA_TAGS"
-            fi
-            cat > /opt/buildkite-agent/buildkite-agent.cfg <<CFG
-            token="$agent_token"
-            name="$STACK_NAME-$instance_id-$MAC_QUEUE"
-            tags="$mac_tags"
-            build-path="/opt/buildkite-agent/builds"
-            hooks-path="/opt/buildkite-agent/hooks"
-            plugins-path="/opt/buildkite-agent/plugins"
-            CFG
-            if [ -n "$MAC_EXTRA_CONFIG" ]; then
-              printf '%s\n' "$MAC_EXTRA_CONFIG" | tr ';' '\n' >> /opt/buildkite-agent/buildkite-agent.cfg
-            fi
-            chown "$AGENT_USER:$AGENT_GROUP" /opt/buildkite-agent/buildkite-agent.cfg
-            chmod 0600 /opt/buildkite-agent/buildkite-agent.cfg
-
-            cat > /Library/LaunchDaemons/com.buildkite.agent.plist <<PLIST
-            <?xml version="1.0" encoding="UTF-8"?>
-            <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-            <plist version="1.0">
-              <dict>
-                <key>Label</key>
-                <string>com.buildkite.agent</string>
-                <key>ProgramArguments</key>
-                <array>
-                  <string>/usr/local/bin/buildkite-agent</string>
-                  <string>start</string>
-                  <string>--config</string>
-                  <string>/opt/buildkite-agent/buildkite-agent.cfg</string>
-                </array>
-                <key>UserName</key>
-                <string>$AGENT_USER</string>
-                <key>EnvironmentVariables</key>
-                <dict>
-                  <key>HOME</key>
-                  <string>$AGENT_HOME</string>
-                </dict>
-                <key>RunAtLoad</key>
-                <true/>
-                <key>KeepAlive</key>
-                <true/>
-                <key>StandardOutPath</key>
-                <string>/var/log/buildkite-agent.log</string>
-                <key>StandardErrorPath</key>
-                <string>/var/log/buildkite-agent-error.log</string>
-              </dict>
-            </plist>
-            PLIST
-            chown root:wheel /Library/LaunchDaemons/com.buildkite.agent.plist
-            chmod 0644 /Library/LaunchDaemons/com.buildkite.agent.plist
-
-            launchctl bootout system/com.buildkite.agent || true
-            launchctl bootstrap system /Library/LaunchDaemons/com.buildkite.agent.plist
-            launchctl enable system/com.buildkite.agent
-            launchctl kickstart -k system/com.buildkite.agent
-
 Outputs:
   VpcId:
     Description: VPC ID for CI hosts.
@@ -852,18 +604,6 @@ Outputs:
   LinuxAutoScalingGroupName:
     Description: Linux ASG name.
     Value: !Ref LinuxAutoScalingGroup
-  MacDedicatedHostId:
-    Condition: EnableMac
-    Description: Dedicated host ID backing the EC2 Mac instance.
-    Value: !Ref MacDedicatedHost
-  MacInstanceId:
-    Condition: EnableMac
-    Description: EC2 Mac instance ID.
-    Value: !Ref MacInstance
-  MacSsmSessionCommand:
-    Condition: EnableMac
-    Description: Command to start SSM session to macOS host.
-    Value: !Sub aws ssm start-session --target ${MacInstance}
   LinuxTailscaleSshPattern:
     Condition: UseTailscale
     Description: Tailscale SSH pattern for Linux host (replace <instance-id> with actual EC2 instance ID).
@@ -871,14 +611,4 @@ Outputs:
       - ""
       - - "tailscale ssh root@"
         - !Ref LinuxTailscaleHostnamePrefix
-        - "-<instance-id>"
-  MacTailscaleSshPattern:
-    Condition: UseTailscaleOnMac
-    Description: Tailscale SSH pattern for macOS host (replace <instance-id> with actual EC2 instance ID).
-    Value: !Join
-      - ""
-      - - "tailscale ssh "
-        - !Ref MacAgentUser
-        - "@"
-        - !Ref MacTailscaleHostnamePrefix
         - "-<instance-id>"

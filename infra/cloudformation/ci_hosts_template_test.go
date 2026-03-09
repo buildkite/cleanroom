@@ -41,8 +41,8 @@ func TestLinuxBootstrapUsesDirectTailscaleVersionExpansion(t *testing.T) {
 		t.Fatalf("linux bootstrap must not use indirect expansion for Tailscale version")
 	}
 
-	requiredSnippet := "tailscale_${TAILSCALE_VERSION}_$ts_arch.tgz"
+	requiredSnippet := "printf 'https://pkgs.tailscale.com/stable/tailscale_%s_%s.tgz' \"$TAILSCALE_VERSION\" \"$ts_arch\""
 	if !strings.Contains(template, requiredSnippet) {
-		t.Fatalf("linux bootstrap is missing direct Tailscale version expansion: %q", requiredSnippet)
+		t.Fatalf("linux bootstrap is missing Tailscale URL rendering via runtime variables: %q", requiredSnippet)
 	}
 }

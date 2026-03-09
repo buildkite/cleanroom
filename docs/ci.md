@@ -19,15 +19,14 @@ Pipeline config lives in `.buildkite/pipeline.yml`.
 
 ## 2. Provision Hosts With CloudFormation
 
-Use the stack template at `infra/cloudformation/ci-hosts.yaml` to create reproducible Linux + optional EC2 Mac workers.
+Use the stack template at `infra/cloudformation/ci-hosts.yaml` to create a reproducible Linux CI worker.
 
 What the stack provisions:
 
 - dedicated VPC, subnet, IGW, and an egress-only security group (no inbound SSH rule)
 - Linux host via Auto Scaling Group (`desired=1`) for self-healing replacement
-- optional EC2 Mac dedicated host + macOS instance for `mac-small`
 - IAM instance profile with least-privilege access to your Buildkite token in SSM Parameter Store
-- optional Tailscale bootstrap on both hosts (including `tailscale up --ssh`)
+- optional Tailscale bootstrap on Linux (including `tailscale up --ssh`)
 - host bootstrap in user data (Buildkite agent install + queue registration)
 
 ### 2.1 Prerequisites
@@ -52,9 +51,8 @@ aws ssm put-parameter \
   --overwrite
 ```
 
-3. Pick pinned AMI IDs for Linux and macOS in your region.
-4. Choose an Availability Zone that supports your selected EC2 Mac type.
-5. (Recommended) Store a read-only git deploy key in SSM:
+3. Pick a pinned Linux AMI ID in your region.
+4. (Recommended) Store a read-only git deploy key in SSM:
 
 ```bash
 aws ssm put-parameter \
@@ -74,7 +72,6 @@ aws cloudformation deploy \
   --parameter-overrides \
     AvailabilityZone=ap-southeast-2a \
     LinuxAmiId=ami-0123456789abcdef0 \
-    EnableMacHost=false \
     LinuxAsgRollingPauseTime=PT2M \
     BuildkiteTokenParameterName=/buildkite/agent-token \
     GitDeployKeyParameterName=/buildkite/cleanroom/deploy-key \
@@ -90,7 +87,6 @@ aws cloudformation deploy \
 Notes:
 
 - Default Linux instance type is `m8i.large` (nested virtualization) for the `cleanroom` queue.
-- `EnableMacHost=false` keeps Mac resources out of updates while you iterate on Linux/bootstrap.
 - `LinuxAsgRollingPauseTime` controls how long CloudFormation waits after Linux instance replacement.
 - `GitDeployKeyParameterName` installs a host-level `pre-checkout` hook that exports `GIT_SSH_COMMAND` for clone/fetch.
 - TODO(cleanroom-ci): when CloudFormation supports `LaunchTemplateData.CpuOptions.NestedVirtualization`, move nested virtualization enablement out of the post-deploy EC2/ASG workaround and back into `infra/cloudformation/ci-hosts.yaml`.
@@ -98,63 +94,32 @@ Notes:
   - `EnableCleanroomQueue=false`
   - `InstallFirecrackerOnLinux=false`
   - a smaller Linux instance type (for example `c7i.large`)
-- EC2 Mac dedicated hosts are billed with a 24-hour minimum allocation window.
 
-### 2.3 Re-enable macOS after Linux is stable
+### 2.3 Tailscale SSH access
 
-```bash
-aws cloudformation deploy \
-  --template-file infra/cloudformation/ci-hosts.yaml \
-  --stack-name cleanroom-ci \
-  --capabilities CAPABILITY_NAMED_IAM \
-  --parameter-overrides \
-    AvailabilityZone=ap-southeast-2a \
-    LinuxAmiId=ami-0123456789abcdef0 \
-    EnableMacHost=true \
-    LinuxAsgRollingPauseTime=PT5M \
-    MacAmiId=ami-0fedcba9876543210 \
-    MacInstanceType=mac2-m2.metal \
-    BuildkiteTokenParameterName=/buildkite/agent-token \
-    GitDeployKeyParameterName=/buildkite/cleanroom/deploy-key \
-    TailscaleAuthKeyParameterName=/tailscale/authkey/ci \
-    LinuxTailscaleAdvertiseTags='' \
-    TailscaleAdvertiseTags='' \
-    LinuxHostedAgentExtraTags=env=ci,team=platform \
-    LinuxCleanroomAgentExtraTags=env=ci,team=platform,role=firecracker \
-    MacAgentExtraTags=env=ci,team=platform \
-    CleanroomHelperGitRepositoryUrl=git@github.com:buildkite/cleanroom.git \
-    CleanroomHelperGitRef=main
-```
-
-### 2.4 Tailscale SSH access
-
-When `TailscaleAuthKeyParameterName` is set, bootstrap runs `tailscale up` on both hosts with:
+When `TailscaleAuthKeyParameterName` is set, bootstrap runs `tailscale up` on Linux with:
 
 - unique hostnames based on instance ID (`<prefix>-<instance-id>`)
 - `--ssh` enabled by default (set `TailscaleEnableSsh=false` to disable)
-- optional `--advertise-tags` via `TailscaleAdvertiseTags`
+- optional `--advertise-tags` via `LinuxTailscaleAdvertiseTags`
 
 Useful parameters:
 
 - `LinuxTailscaleHostnamePrefix` (default `cleanroom-ci-linux`)
-- `MacTailscaleHostnamePrefix` (default `cleanroom-ci-mac`)
 - `TailscaleAcceptRoutes` (default `false`)
 - `LinuxTailscaleAdvertiseTags` (Linux only)
-- `TailscaleAdvertiseTags` (macOS only)
 
-The stack outputs `LinuxTailscaleSshPattern` when Tailscale is enabled, and `MacTailscaleSshPattern` only when `EnableMacHost=true`.
+The stack outputs `LinuxTailscaleSshPattern` when Tailscale is enabled.
 For Linux, replace `<instance-id>` with the active ASG instance ID.
 
-### 2.5 Buildkite agent tags and config
+### 2.4 Buildkite agent tags and config
 
 The stack writes Buildkite config files on both hosts and supports extra per-agent tags/config:
 
 - `LinuxHostedAgentExtraTags`
 - `LinuxCleanroomAgentExtraTags`
-- `MacAgentExtraTags`
 - `LinuxHostedAgentExtraConfig`
 - `LinuxCleanroomAgentExtraConfig`
-- `MacAgentExtraConfig`
 
 `*ExtraConfig` values are semicolon-separated lines appended to agent config files.
 Example:
@@ -163,7 +128,7 @@ Example:
 priority=5;debug=true;no-command-eval=true
 ```
 
-## 3. Hosted and macOS Queues
+## 3. Hosted Queues
 
 No extra host setup is needed if you use `infra/cloudformation/ci-hosts.yaml`.
 
