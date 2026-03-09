@@ -162,6 +162,7 @@ type RestoreRequest struct {
 type DeleteSnapshotRequest struct {
 	SnapshotID string
 	StorageRef string
+	FirecrackerConfig
 }
 
 type AttachIO struct {

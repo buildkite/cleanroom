@@ -477,8 +477,9 @@ func (s *Service) CreateSnapshot(ctx context.Context, req *cleanroomv1.CreateSna
 	record.StorageRef = strings.TrimSpace(result.StorageRef)
 	if err := store.Create(ctx, record); err != nil {
 		deleteErr := snapshotAdapter.DeleteSnapshot(ctx, backend.DeleteSnapshotRequest{
-			SnapshotID: snapshotID,
-			StorageRef: record.StorageRef,
+			SnapshotID:        snapshotID,
+			StorageRef:        record.StorageRef,
+			FirecrackerConfig: state.Firecracker,
 		})
 		if deleteErr != nil && s.Logger != nil {
 			s.Logger.Warn("rollback snapshot after metadata failure failed",
@@ -685,8 +686,9 @@ func (s *Service) DeleteSnapshot(ctx context.Context, req *cleanroomv1.DeleteSna
 		return nil, fmt.Errorf("backend %q does not support snapshot deletion", record.Backend)
 	}
 	if err := snapshotAdapter.DeleteSnapshot(ctx, backend.DeleteSnapshotRequest{
-		SnapshotID: snapshotID,
-		StorageRef: record.StorageRef,
+		SnapshotID:        snapshotID,
+		StorageRef:        record.StorageRef,
+		FirecrackerConfig: mergeBackendConfig(record.Backend, executionOptions{}, s.Config),
 	}); err != nil {
 		return nil, fmt.Errorf("delete snapshot storage: %w", err)
 	}

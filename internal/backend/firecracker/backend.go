@@ -31,6 +31,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/imagemgr"
 	"github.com/buildkite/cleanroom/internal/paths"
 	"github.com/buildkite/cleanroom/internal/policy"
+	"github.com/buildkite/cleanroom/internal/volumestore"
 	"github.com/buildkite/cleanroom/internal/vsockexec"
 	fcvsock "github.com/firecracker-microvm/firecracker-go-sdk/vsock"
 )
@@ -475,12 +476,9 @@ func (a *Adapter) CreateSnapshot(ctx context.Context, req backend.SnapshotReques
 		return nil, fmt.Errorf("sync sandbox filesystem before snapshot: %w", err)
 	}
 
-	snapshotPath, err := snapshotStoragePath(req.FirecrackerConfig, snapshotID)
+	driver, err := volumeStoreDriver(req.FirecrackerConfig)
 	if err != nil {
 		return nil, err
-	}
-	if err := os.MkdirAll(filepath.Dir(snapshotPath), 0o755); err != nil {
-		return nil, fmt.Errorf("create snapshot directory: %w", err)
 	}
 	if err := pauseSandboxProcess(instance); err != nil {
 		return nil, err
@@ -489,12 +487,15 @@ func (a *Adapter) CreateSnapshot(ctx context.Context, req backend.SnapshotReques
 		_ = resumeSandboxProcess(instance)
 	}()
 
-	if err := copyFile(instance.vmRootFSPath, snapshotPath); err != nil {
-		_ = os.Remove(snapshotPath)
+	snapshot, err := driver.SnapshotVolume(ctx, volumestore.SnapshotVolumeRequest{
+		SnapshotID: snapshotID,
+		VolumeRef:  instance.vmRootFSPath,
+	})
+	if err != nil {
 		return nil, fmt.Errorf("persist snapshot rootfs: %w", err)
 	}
 
-	return &backend.SnapshotResult{StorageRef: snapshotPath}, nil
+	return &backend.SnapshotResult{StorageRef: snapshot.StorageRef}, nil
 }
 
 func (a *Adapter) ProvisionSandboxFromSnapshot(ctx context.Context, req backend.ProvisionFromSnapshotRequest) error {
@@ -604,16 +605,19 @@ func (a *Adapter) RestoreSandbox(ctx context.Context, req backend.RestoreRequest
 	return nil
 }
 
-func (a *Adapter) DeleteSnapshot(_ context.Context, req backend.DeleteSnapshotRequest) error {
+func (a *Adapter) DeleteSnapshot(ctx context.Context, req backend.DeleteSnapshotRequest) error {
 	storageRef := strings.TrimSpace(req.StorageRef)
 	if storageRef == "" {
 		return errors.New("missing snapshot storage_ref")
 	}
-	if err := os.Remove(storageRef); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("remove snapshot rootfs %q: %w", storageRef, err)
+	driver, err := volumeStoreDriver(req.FirecrackerConfig)
+	if err != nil {
+		return err
 	}
-	if dir := filepath.Dir(storageRef); dir != "" {
-		_ = os.Remove(dir)
+	if err := driver.DestroySnapshot(ctx, volumestore.DestroySnapshotRequest{
+		SnapshotRef: storageRef,
+	}); err != nil {
+		return fmt.Errorf("remove snapshot rootfs %q: %w", storageRef, err)
 	}
 	return nil
 }
@@ -1511,10 +1515,27 @@ func (a *Adapter) launchSandboxVMFromRootFS(ctx context.Context, sandboxID strin
 		return nil, fmt.Errorf("rootfs %s: %w", rootfsPath, err)
 	}
 
-	vmRootFSPath := filepath.Join(runDir, "rootfs-persistent.ext4")
-	if err := copyFile(rootfsPath, vmRootFSPath); err != nil {
+	driver, err := volumeStoreDriver(cfg)
+	if err != nil {
+		return nil, err
+	}
+	baseVolume, err := driver.EnsureBaseVolume(ctx, volumestore.EnsureBaseVolumeRequest{
+		BaseID:     strings.TrimSuffix(filepath.Base(rootfsPath), filepath.Ext(rootfsPath)),
+		SourcePath: rootfsPath,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("prepare base volume: %w", err)
+	}
+
+	writableVolume, err := driver.CreateWritableVolume(ctx, volumestore.CreateWritableVolumeRequest{
+		VolumeID:       sandboxID,
+		BaseRef:        baseVolume.Ref,
+		AttachmentPath: filepath.Join(runDir, "rootfs-persistent.ext4"),
+	})
+	if err != nil {
 		return nil, fmt.Errorf("prepare persistent rootfs: %w", err)
 	}
+	vmRootFSPath := writableVolume.AttachmentPath
 
 	networkRunCommand := func(ctx context.Context, args ...string) error {
 		return runRootCommand(ctx, cfg, args...)
@@ -1670,19 +1691,34 @@ func sandboxRuntimeBaseDir() (string, error) {
 	return filepath.Join(base, "sandboxes"), nil
 }
 
-func snapshotStoragePath(cfg backend.FirecrackerConfig, snapshotID string) (string, error) {
-	base, err := snapshotStorageBaseDir(cfg)
-	if err != nil {
-		return "", fmt.Errorf("resolve snapshot base directory: %w", err)
-	}
-	return filepath.Join(base, "firecracker", snapshotID, "rootfs.ext4"), nil
-}
-
 func snapshotStorageBaseDir(cfg backend.FirecrackerConfig) (string, error) {
 	if baseDir := strings.TrimSpace(cfg.Snapshots.BaseDir); baseDir != "" {
 		return filepath.Clean(baseDir), nil
 	}
 	return paths.SnapshotDir()
+}
+
+func volumeStoreDriver(cfg backend.FirecrackerConfig) (volumestore.Driver, error) {
+	driverName := strings.ToLower(strings.TrimSpace(cfg.Snapshots.Driver))
+	switch driverName {
+	case "", "file":
+		snapshotBaseDir, err := snapshotStorageBaseDir(cfg)
+		if err != nil {
+			return nil, fmt.Errorf("resolve snapshot base directory: %w", err)
+		}
+		driver, err := volumestore.NewFileDriver(volumestore.FileDriverOptions{
+			SnapshotBaseDir: snapshotBaseDir,
+			Namespace:       "firecracker",
+		})
+		if err != nil {
+			return nil, err
+		}
+		return driver, nil
+	case "zfs":
+		return nil, errors.New("firecracker snapshot driver \"zfs\" is not implemented")
+	default:
+		return nil, fmt.Errorf("unsupported firecracker snapshot driver %q", cfg.Snapshots.Driver)
+	}
 }
 
 func pauseSandboxProcess(instance *sandboxInstance) error {

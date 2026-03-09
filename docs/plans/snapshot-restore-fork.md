@@ -830,14 +830,15 @@ and fleet-distribution work is still pending.
 
 #### 1. Replace file-backed Firecracker storage with a volume-store abstraction
 
-- [todo] add `internal/volumestore`
-- [todo] define driver interface for:
+- [done] add `internal/volumestore`
+- [done] define driver interface for:
   - seed base volume
   - clone writable volume
   - snapshot volume
   - destroy volume
   - destroy snapshot
 - [todo] add `zfs` driver
+- [done] wire Firecracker through the volume driver with a file-backed fallback
 - [done] add runtime config loading for Firecracker snapshot storage
 - [todo] add doctor checks for `zfs` availability and configuration
 
