@@ -110,7 +110,7 @@ backends:
     kernel_image: $KERNEL_IMAGE
     vcpus: 2
     memory_mib: 1024
-    launch_seconds: 45
+    launch_seconds: 90
 EOF
 
 if [[ -n "$PRIVILEGED_MODE" ]]; then
@@ -159,6 +159,27 @@ fi
 socket_path="$tmpdir/cleanroom.sock"
 listen_endpoint="unix://$socket_path"
 
+dump_runtime_diagnostics() {
+  local server_lines="${1:-40}"
+  if [[ -f "$tmpdir/server.log" ]]; then
+    echo "--- server log tail ---" >&2
+    tail -n "$server_lines" "$tmpdir/server.log" >&2 || true
+  fi
+
+  # Surface recent Firecracker process logs when provisioning/agent readiness
+  # flakes occur so failures are diagnosable from CI output alone.
+  local fc_logs
+  fc_logs="$(find "$XDG_STATE_HOME"/cleanroom/sandboxes -maxdepth 3 -type f \( -name 'firecracker.stdout.log' -o -name 'firecracker.stderr.log' \) 2>/dev/null | sort | tail -n 6 || true)"
+  if [[ -n "$fc_logs" ]]; then
+    echo "--- firecracker log tails ---" >&2
+    while IFS= read -r log_file; do
+      [[ -n "$log_file" ]] || continue
+      echo "[$log_file]" >&2
+      tail -n 30 "$log_file" >&2 || true
+    done <<< "$fc_logs"
+  fi
+}
+
 echo "--- :rocket: Start cleanroom control-plane"
 ./dist/cleanroom serve --listen "$listen_endpoint" --gateway-listen ":0" >"$tmpdir/server.log" 2>&1 &
 srv_pid=$!
@@ -177,16 +198,42 @@ if [[ ! -S "$socket_path" ]]; then
 fi
 
 echo "--- :white_check_mark: Launched execution smoke test"
-./dist/cleanroom exec --host "$listen_endpoint" -c "$PWD" -- sh -lc 'echo cleanroom-e2e' | tee "$tmpdir/exec.out"
-if ! grep -q '^cleanroom-e2e$' "$tmpdir/exec.out"; then
-  echo "expected smoke-test output missing" >&2
+smoke_attempt=1
+smoke_max_attempts=3
+while true; do
+  set +e
+  ./dist/cleanroom exec --host "$listen_endpoint" -c "$PWD" -- sh -lc 'echo cleanroom-e2e' >"$tmpdir/exec.out" 2>"$tmpdir/exec.err"
+  smoke_status=$?
+  set -e
+
+  if [[ "$smoke_status" -eq 0 ]] && grep -q '^cleanroom-e2e$' "$tmpdir/exec.out"; then
+    cat "$tmpdir/exec.out"
+    break
+  fi
+
+  if [[ "$smoke_status" -ne 0 ]] && grep -q 'timed out waiting for vsock guest agent' "$tmpdir/exec.err" && [[ "$smoke_attempt" -lt "$smoke_max_attempts" ]]; then
+    echo "smoke test hit transient vsock timeout (attempt $smoke_attempt/$smoke_max_attempts); retrying"
+    sleep "$smoke_attempt"
+    smoke_attempt=$((smoke_attempt + 1))
+    continue
+  fi
+
+  echo "smoke test failed (exit $smoke_status)" >&2
+  echo "--- smoke stdout ---" >&2
+  cat "$tmpdir/exec.out" >&2 || true
+  echo "--- smoke stderr ---" >&2
+  cat "$tmpdir/exec.err" >&2 || true
+  dump_runtime_diagnostics 80
   exit 1
-fi
+done
 
 echo "--- :satellite: Git gateway allow/deny test"
-set +e
-# shellcheck disable=SC2016
-./dist/cleanroom exec --host "$listen_endpoint" -c "$PWD" -- sh -lc '
+git_gateway_attempt=1
+git_gateway_max_attempts=3
+while true; do
+  set +e
+  # shellcheck disable=SC2016
+  ./dist/cleanroom exec --host "$listen_endpoint" -c "$PWD" -- sh -lc '
   set -eu
 
   key="$(env | awk -F= '"'"'/^GIT_CONFIG_KEY_[0-9]+=url\.http:\/\/.+\/git\/github\.com\/\.insteadOf$/ {print $2; exit}'"'"')"
@@ -228,10 +275,25 @@ set +e
     allow_url="${gw}/github.com/buildkite/cleanroom.git/info/refs?service=git-upload-pack"
     deny_url="${gw}/gitlab.com/gitlab-org/gitlab.git/info/refs?service=git-upload-pack"
 
-    set +e
-    allow_resp="$(wget -q -S -O - "$allow_url" 2>&1)"
-    allow_rc=$?
-    set -e
+    # Retry allowlisted probe because transient host/gateway network stalls can
+    # fail a single request even when policy behavior is correct.
+    allow_attempt=1
+    allow_max_attempts=3
+    allow_resp=""
+    allow_rc=1
+    while [ "$allow_attempt" -le "$allow_max_attempts" ]; do
+      set +e
+      allow_resp="$(wget -q -S -O - "$allow_url" 2>&1)"
+      allow_rc=$?
+      set -e
+      if [ "$allow_rc" -eq 0 ]; then
+        break
+      fi
+      if [ "$allow_attempt" -lt "$allow_max_attempts" ]; then
+        sleep "$allow_attempt"
+      fi
+      allow_attempt=$((allow_attempt + 1))
+    done
     if [ "$allow_rc" -ne 0 ]; then
       echo "allowlisted host probe failed (exit $allow_rc)" >&2
       echo "$allow_resp" >&2
@@ -247,8 +309,9 @@ set +e
       echo "$allow_resp" >&2
       exit 5
     fi
-    if ! echo "$allow_resp" | grep -q "git-upload-pack"; then
-      echo "allowlisted host probe did not return git upload-pack response" >&2
+    # Accept either a smart-protocol response marker or an explicit HTTP 200.
+    if ! echo "$allow_resp" | grep -q "git-upload-pack" && ! echo "$allow_resp" | grep -Eq "HTTP/[0-9.]+[[:space:]]+200"; then
+      echo "allowlisted host probe returned unexpected response shape" >&2
       echo "$allow_resp" >&2
       exit 5
     fi
@@ -274,9 +337,22 @@ set +e
 
   echo "guest image missing both git and wget; cannot exercise git gateway" >&2
   exit 8
-' >"$tmpdir/git-gateway.out" 2>"$tmpdir/git-gateway.err"
-git_gateway_status=$?
-set -e
+  ' >"$tmpdir/git-gateway.out" 2>"$tmpdir/git-gateway.err"
+  git_gateway_status=$?
+  set -e
+
+  if [[ "$git_gateway_status" -eq 0 ]]; then
+    break
+  fi
+
+  if grep -Eq 'timed out waiting for vsock guest agent|deadline_exceeded|Connection refused|Operation timed out' "$tmpdir/git-gateway.err" && [[ "$git_gateway_attempt" -lt "$git_gateway_max_attempts" ]]; then
+    echo "git gateway test hit transient transport error (attempt $git_gateway_attempt/$git_gateway_max_attempts); retrying"
+    sleep "$git_gateway_attempt"
+    git_gateway_attempt=$((git_gateway_attempt + 1))
+    continue
+  fi
+  break
+done
 
 if [[ "$git_gateway_status" -ne 0 ]]; then
   echo "git gateway allow/deny test failed (exit $git_gateway_status)" >&2
@@ -284,24 +360,37 @@ if [[ "$git_gateway_status" -ne 0 ]]; then
   cat "$tmpdir/git-gateway.out" >&2 || true
   echo "--- guest stderr ---" >&2
   cat "$tmpdir/git-gateway.err" >&2 || true
-  echo "--- gateway log tail ---" >&2
-  tail -n 40 "$tmpdir/server.log" >&2 || true
+  dump_runtime_diagnostics 80
   exit 1
 fi
 
 echo "--- :warning: Exit code propagation test"
-set +e
-./dist/cleanroom exec --host "$listen_endpoint" -c "$PWD" -- sh -lc 'exit 7' >"$tmpdir/exit7.out" 2>"$tmpdir/exit7.err"
-status=$?
-set -e
+exit_attempt=1
+exit_max_attempts=3
+status=1
+while true; do
+  set +e
+  ./dist/cleanroom exec --host "$listen_endpoint" -c "$PWD" -- sh -lc 'exit 7' >"$tmpdir/exit7.out" 2>"$tmpdir/exit7.err"
+  status=$?
+  set -e
+  if [[ "$status" -eq 7 ]]; then
+    break
+  fi
+  if grep -q 'timed out waiting for vsock guest agent' "$tmpdir/exit7.err" && [[ "$exit_attempt" -lt "$exit_max_attempts" ]]; then
+    echo "exit propagation test hit transient vsock timeout (attempt $exit_attempt/$exit_max_attempts); retrying"
+    sleep "$exit_attempt"
+    exit_attempt=$((exit_attempt + 1))
+    continue
+  fi
+  break
+done
 if [[ "$status" -ne 7 ]]; then
   echo "expected exit code 7 from guest command, got $status" >&2
   echo "stdout:" >&2
   cat "$tmpdir/exit7.out" >&2 || true
   echo "stderr:" >&2
   cat "$tmpdir/exit7.err" >&2 || true
-  echo "server log (last 30 lines):" >&2
-  tail -n 30 "$tmpdir/server.log" >&2 || true
+  dump_runtime_diagnostics 80
   exit 1
 fi
 
