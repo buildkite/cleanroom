@@ -69,7 +69,7 @@ variable "repo_ref" {
 variable "setup_script_path" {
   description = "Path to the setup script inside the cloned repository."
   type        = string
-  default     = "scripts/bootstrap-linux-buildkite-agent.sh"
+  default     = "scripts/install.sh"
 }
 
 variable "tailscale_version" {

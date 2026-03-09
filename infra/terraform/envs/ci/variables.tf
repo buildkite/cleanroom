@@ -10,30 +10,6 @@ variable "name_prefix" {
   default     = "cleanroom-ci"
 }
 
-variable "availability_zone" {
-  description = "Availability zone for subnets. Leave blank to use first available AZ."
-  type        = string
-  default     = ""
-}
-
-variable "vpc_cidr" {
-  description = "CIDR block for the VPC."
-  type        = string
-  default     = "10.42.0.0/24"
-}
-
-variable "public_subnet_cidr" {
-  description = "CIDR block for the public subnet used by NAT gateway."
-  type        = string
-  default     = "10.42.0.0/26"
-}
-
-variable "private_subnet_cidr" {
-  description = "CIDR block for the private subnet used by linux-ci host."
-  type        = string
-  default     = "10.42.0.64/26"
-}
-
 variable "ami_id" {
   description = "Optional AMI override for linux-ci host. Leave empty to use latest Ubuntu AMI from SSM."
   type        = string

@@ -10,6 +10,11 @@ Default AMI behaviour:
 - uses latest Ubuntu 24.04 AMI from SSM public parameter
 - set `ami_id` in `terraform.tfvars` if you want to pin an explicit AMI
 
+Network behaviour:
+
+- env creates its own VPC/subnets via `modules/network`
+- network CIDRs and AZ selection are fixed in env wiring (not user vars)
+
 ## Usage
 
 ```bash

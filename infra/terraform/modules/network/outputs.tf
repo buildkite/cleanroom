@@ -1,8 +1,3 @@
-output "availability_zone" {
-  description = "Availability zone used by the module."
-  value       = local.selected_az
-}
-
 output "vpc_id" {
   description = "VPC ID."
   value       = aws_vpc.this.id

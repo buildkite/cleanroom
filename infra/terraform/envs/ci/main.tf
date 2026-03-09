@@ -4,16 +4,24 @@ data "aws_ssm_parameter" "ubuntu_ami" {
 
 locals {
   selected_ami_id = var.ami_id != "" ? var.ami_id : data.aws_ssm_parameter.ubuntu_ami.value
+
+  # This env owns a fixed minimal private network shape.
+  network = {
+    availability_zone   = ""
+    vpc_cidr            = "10.42.0.0/24"
+    public_subnet_cidr  = "10.42.0.0/26"
+    private_subnet_cidr = "10.42.0.64/26"
+  }
 }
 
 module "network" {
   source = "../../modules/network"
 
   name_prefix         = var.name_prefix
-  availability_zone   = var.availability_zone
-  vpc_cidr            = var.vpc_cidr
-  public_subnet_cidr  = var.public_subnet_cidr
-  private_subnet_cidr = var.private_subnet_cidr
+  availability_zone   = local.network.availability_zone
+  vpc_cidr            = local.network.vpc_cidr
+  public_subnet_cidr  = local.network.public_subnet_cidr
+  private_subnet_cidr = local.network.private_subnet_cidr
   tags                = var.tags
 }
 
@@ -39,6 +47,4 @@ module "linux_ci" {
   tailscale_enable_ssh              = var.tailscale_enable_ssh
   tailscale_accept_routes           = var.tailscale_accept_routes
   tags                              = var.tags
-
-  depends_on = [module.network]
 }
