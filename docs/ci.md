@@ -4,6 +4,7 @@ This repository uses Buildkite for CI with three queues:
 
 - `hosted`: Linux unit/integration tests (`mise run test`)
 - `cleanroom-mac`: macOS unit/integration tests (`mise run test`)
+- `cleanroom-mac`: macOS `darwin-vz` end-to-end checks (`scripts/ci-darwin-vz-e2e.sh`)
 - `cleanroom`: Linux Firecracker end-to-end checks (`scripts/ci-cleanroom-e2e.sh`)
 
 Pipeline config lives in `.buildkite/pipeline.yml`.
@@ -59,11 +60,27 @@ AWS_PROFILE=buildkite-sandbox-pipelines-admin aws ssm send-command \
   --parameters '{"commands":["sudo tail -n 120 /var/log/cleanroom-bootstrap-macos.log","sudo launchctl print system/com.buildkite.agent.cleanroom-mac","sudo tail -n 120 /var/lib/buildkite-agent/logs/buildkite-agent-cleanroom-mac.log","sudo tail -n 120 /var/lib/buildkite-agent/logs/buildkite-agent-cleanroom-mac.error.log"]}'
 ```
 
-## 3. Cleanroom Queue (Firecracker E2E)
+## 3. cleanroom-mac Queue (darwin-vz E2E)
+
+The `:apple: E2E (darwin-vz)` step runs launched execution checks on macOS using `Virtualization.framework`.
+
+### 3.1 Required host capabilities
+
+- macOS host with `Virtualization.framework` available
+- `mkfs.ext4` and `debugfs` available (`brew install e2fsprogs`)
+- signed `cleanroom-darwin-vz` helper from `mise run build`
+- internet egress to pull `sandbox.image.ref` on first run
+
+Notes:
+
+- `scripts/ci-darwin-vz-e2e.sh` builds `dist/cleanroom` and `dist/cleanroom-darwin-vz`, exports `CLEANROOM_DARWIN_VZ_HELPER` to the built helper, and isolates XDG runtime paths.
+- Set `CLEANROOM_DARWIN_VZ_KERNEL_IMAGE` on the worker if you want an explicit kernel path; otherwise the script uses managed-kernel fallback.
+
+## 4. Cleanroom Queue (Firecracker E2E)
 
 The `:fire: E2E (Firecracker)` step runs a real launched Firecracker execution and needs host preparation.
 
-### 3.1 Required host capabilities
+### 4.1 Required host capabilities
 
 - Linux host with `/dev/kvm` available
 - Firecracker binary (default `/usr/local/bin/firecracker`)
@@ -72,7 +89,7 @@ The `:fire: E2E (Firecracker)` step runs a real launched Firecracker execution a
 - `mkfs.ext4` available for OCI-to-ext4 materialization
 - Passwordless sudo for required network setup commands
 
-### 3.2 Place runtime kernel image
+### 4.2 Place runtime kernel image
 
 Put kernel assets under the Buildkite agent home so CI can read them:
 
@@ -89,7 +106,7 @@ The pipeline is currently configured to use:
 - `CLEANROOM_KERNEL_IMAGE=/var/lib/buildkite-agent/.local/share/cleanroom/images/vmlinux.bin`
 - `CLEANROOM_FIRECRACKER_BINARY=/usr/local/bin/firecracker`
 
-### 3.3 Privileged command execution modes
+### 4.3 Privileged command execution modes
 
 Firecracker backend supports two modes:
 
@@ -138,7 +155,7 @@ Then set:
 - `CLEANROOM_PRIVILEGED_MODE=helper`
 - `CLEANROOM_PRIVILEGED_HELPER_PATH=/usr/local/sbin/cleanroom-root-helper`
 
-## 4. Optional Agent Environment Hook
+## 5. Optional Agent Environment Hook
 
 If you prefer host-level env over pipeline step env, set variables in `/etc/buildkite-agent/hooks/environment`.
 
@@ -150,16 +167,17 @@ export CLEANROOM_KERNEL_IMAGE="/var/lib/buildkite-agent/.local/share/cleanroom/i
 export CLEANROOM_FIRECRACKER_BINARY="/usr/local/bin/firecracker"
 ```
 
-## 5. Collision Safety
+## 6. Collision Safety
 
-`scripts/ci-cleanroom-e2e.sh` isolates CI runtime paths using temporary XDG directories (`XDG_CONFIG_HOME`, `XDG_STATE_HOME`, `XDG_RUNTIME_DIR`, `XDG_DATA_HOME`) and a job-local unix socket.
+`scripts/ci-cleanroom-e2e.sh` and `scripts/ci-darwin-vz-e2e.sh` isolate CI runtime paths using temporary XDG directories (`XDG_CONFIG_HOME`, `XDG_STATE_HOME`, `XDG_RUNTIME_DIR`, `XDG_DATA_HOME`) and a job-local unix socket.
 
 This prevents collisions with any long-running cleanroom instance on the same host.
 
-## 6. Verification
+## 7. Verification
 
 After setup:
 
 1. Trigger a build.
 2. Confirm `:test_tube: Test (Linux)` and `:test_tube: Test (macOS)` pass.
-3. Confirm `:fire: E2E (Firecracker)` passes doctor, launch, exec, and observability checks.
+3. Confirm `:apple: E2E (darwin-vz)` passes doctor, launched execution, exit-code, and policy checks.
+4. Confirm `:fire: E2E (Firecracker)` passes doctor, launch, exec, and observability checks.
