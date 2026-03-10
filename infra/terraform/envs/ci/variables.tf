@@ -10,6 +10,12 @@ variable "name_prefix" {
   default     = "cleanroom-ci"
 }
 
+variable "availability_zone" {
+  description = "Optional AZ override for CI subnets and host placement. Leave empty to use the first available AZ in-region."
+  type        = string
+  default     = ""
+}
+
 variable "ami_id" {
   description = "Optional AMI override for linux-ci host. Leave empty to use latest Ubuntu AMI from SSM."
   type        = string

@@ -7,7 +7,7 @@ locals {
 
   # This env owns a fixed minimal private network shape.
   network = {
-    availability_zone   = ""
+    availability_zone   = var.availability_zone
     vpc_cidr            = "10.42.0.0/24"
     public_subnet_cidr  = "10.42.0.0/26"
     private_subnet_cidr = "10.42.0.64/26"

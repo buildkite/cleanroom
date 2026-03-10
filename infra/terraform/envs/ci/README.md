@@ -15,7 +15,8 @@ Default AMI behaviour:
 Network behaviour:
 
 - env creates its own VPC/subnets via `modules/network`
-- network CIDRs and AZ selection are fixed in env wiring (not user vars)
+- network CIDRs are fixed in env wiring
+- `availability_zone` can be set to pin subnet and host placement to a specific AZ (useful for EC2 Mac capacity constraints)
 
 Bootstrap behaviour:
 

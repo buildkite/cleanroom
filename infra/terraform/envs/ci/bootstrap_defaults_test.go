@@ -156,6 +156,14 @@ func TestEnvWiresOptionalMacCiModule(t *testing.T) {
 	requireContains(t, "main.tf", "count  = var.enable_macos_ci ? 1 : 0")
 }
 
+func TestEnvSupportsAvailabilityZoneOverride(t *testing.T) {
+	t.Helper()
+
+	requireContains(t, "variables.tf", "variable \"availability_zone\"")
+	requireContains(t, "main.tf", "availability_zone   = var.availability_zone")
+	requireContains(t, "terraform.tfvars.example", "# availability_zone = \"ap-southeast-2b\"")
+}
+
 func TestGitDeployKeyIsRequired(t *testing.T) {
 	t.Helper()
 
