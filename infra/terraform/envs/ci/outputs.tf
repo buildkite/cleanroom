@@ -9,7 +9,7 @@ output "public_subnet_id" {
 }
 
 output "private_subnet_id" {
-  description = "Private subnet ID containing linux-ci host."
+  description = "Private subnet ID containing CI hosts."
   value       = module.network.private_subnet_id
 }
 
@@ -31,4 +31,24 @@ output "ssm_start_session_command" {
 output "tailscale_ssh_pattern" {
   description = "Tailscale SSH pattern when tailscale auth key is configured."
   value       = module.linux_ci.tailscale_ssh_pattern
+}
+
+output "mac_instance_id" {
+  description = "EC2 instance ID for mac-ci host (null when disabled)."
+  value       = var.enable_macos_ci ? module.mac_ci[0].instance_id : null
+}
+
+output "mac_private_ip" {
+  description = "Private IP address for mac-ci host (null when disabled)."
+  value       = var.enable_macos_ci ? module.mac_ci[0].private_ip : null
+}
+
+output "mac_ssm_start_session_command" {
+  description = "Command to open SSM session to mac-ci host (null when disabled)."
+  value       = var.enable_macos_ci ? module.mac_ci[0].ssm_start_session_command : null
+}
+
+output "mac_dedicated_host_id" {
+  description = "Dedicated host ID backing mac-ci instance (null when disabled)."
+  value       = var.enable_macos_ci ? module.mac_ci[0].dedicated_host_id : null
 }

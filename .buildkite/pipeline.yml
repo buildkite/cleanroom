@@ -30,7 +30,14 @@ steps:
       size: "20g"
       name: "mise-cache"
     agents:
-      queue: mac-small
+      queue: cleanroom-mac
+
+  - label: ":apple: E2E (darwin-vz)"
+    command: scripts/ci-darwin-vz-e2e.sh
+    concurrency: 1
+    concurrency_group: cleanroom-darwin-vz-e2e
+    agents:
+      queue: cleanroom-mac
 
   - label: ":fire: E2E (Firecracker)"
     command: scripts/ci-cleanroom-e2e.sh

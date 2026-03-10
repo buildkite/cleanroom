@@ -7,7 +7,7 @@ locals {
 
   # This env owns a fixed minimal private network shape.
   network = {
-    availability_zone   = ""
+    availability_zone   = var.availability_zone
     vpc_cidr            = "10.42.0.0/24"
     public_subnet_cidr  = "10.42.0.0/26"
     private_subnet_cidr = "10.42.0.64/26"
@@ -47,4 +47,24 @@ module "linux_ci" {
   tailscale_enable_ssh              = var.tailscale_enable_ssh
   tailscale_accept_routes           = var.tailscale_accept_routes
   tags                              = var.tags
+}
+
+module "mac_ci" {
+  count  = var.enable_macos_ci ? 1 : 0
+  source = "../../modules/macos-ci"
+
+  aws_region                     = var.aws_region
+  name_prefix                    = "${var.name_prefix}-mac"
+  vpc_id                         = module.network.vpc_id
+  subnet_id                      = module.network.private_subnet_id
+  ami_id                         = var.mac_ami_id
+  instance_type                  = var.mac_instance_type
+  root_volume_size_gib           = var.mac_root_volume_size_gib
+  buildkite_queue                = var.mac_buildkite_queue
+  buildkite_token_parameter_name = var.buildkite_token_parameter_name
+  git_deploy_key_parameter_name  = var.git_deploy_key_parameter_name
+  repo_url                       = var.repo_url
+  repo_ref                       = var.repo_ref
+  setup_script_path              = var.mac_setup_script_path
+  tags                           = var.tags
 }

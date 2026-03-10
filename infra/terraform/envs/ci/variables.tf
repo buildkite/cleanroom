@@ -10,6 +10,12 @@ variable "name_prefix" {
   default     = "cleanroom-ci"
 }
 
+variable "availability_zone" {
+  description = "Optional AZ override for CI subnets and host placement. Leave empty to use the first available AZ in-region."
+  type        = string
+  default     = ""
+}
+
 variable "ami_id" {
   description = "Optional AMI override for linux-ci host. Leave empty to use latest Ubuntu AMI from SSM."
   type        = string
@@ -32,6 +38,52 @@ variable "root_volume_size_gib" {
   description = "Root EBS volume size in GiB."
   type        = number
   default     = 150
+}
+
+variable "enable_macos_ci" {
+  description = "Create a private macOS CI instance (dedicated host + EC2 Mac)."
+  type        = bool
+  default     = false
+}
+
+variable "mac_ami_id" {
+  description = "AMI ID for macOS CI host. Required when enable_macos_ci is true."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = !var.enable_macos_ci || trimspace(var.mac_ami_id) != ""
+    error_message = "mac_ami_id must be set when enable_macos_ci is true."
+  }
+}
+
+variable "mac_instance_type" {
+  description = "EC2 instance type for macOS CI host. Must be a Mac metal type."
+  type        = string
+  default     = "mac2-m2pro.metal"
+
+  validation {
+    condition     = trimspace(var.mac_instance_type) != "" && endswith(var.mac_instance_type, ".metal")
+    error_message = "mac_instance_type must be a non-empty Mac metal instance type (for example mac2-m2pro.metal)."
+  }
+}
+
+variable "mac_root_volume_size_gib" {
+  description = "Root EBS volume size in GiB for macOS CI host."
+  type        = number
+  default     = 200
+}
+
+variable "mac_buildkite_queue" {
+  description = "Buildkite queue tag used by the macOS agent."
+  type        = string
+  default     = "cleanroom-mac"
+}
+
+variable "mac_setup_script_path" {
+  description = "Path to macOS setup script in cloned repository."
+  type        = string
+  default     = "scripts/bootstrap-buildkite-agent-macos.sh"
 }
 
 variable "buildkite_token_parameter_name" {
