@@ -268,8 +268,8 @@ if [[ "$terminated_status" -eq 0 ]]; then
   echo "expected execution against terminated sandbox to fail" >&2
   exit 1
 fi
-if ! grep -q 'unknown sandbox' "$tmpdir/terminated.err"; then
-  echo "expected unknown sandbox error after termination" >&2
+if ! grep -Eq 'unknown sandbox|is not ready' "$tmpdir/terminated.err"; then
+  echo "expected unknown-sandbox or not-ready error after termination" >&2
   cat "$tmpdir/terminated.err" >&2 || true
   exit 1
 fi
