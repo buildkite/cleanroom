@@ -3,8 +3,7 @@
 This repository uses Buildkite for CI with three queues:
 
 - `hosted`: Linux unit/integration tests (`mise run test`)
-- `cleanroom-mac`: macOS unit/integration tests (`mise run test`)
-- `cleanroom-mac`: macOS `darwin-vz` end-to-end checks (`scripts/ci-darwin-vz-e2e.sh`)
+- `cleanroom-mac`: macOS unit/integration tests (`mise run test`) and `darwin-vz` end-to-end checks (`scripts/ci-darwin-vz-e2e.sh`)
 - `cleanroom`: Linux Firecracker end-to-end checks (`scripts/ci-cleanroom-e2e.sh`)
 
 Pipeline config lives in `.buildkite/pipeline.yml`.
@@ -181,4 +180,4 @@ After setup:
 1. Trigger a build.
 2. Confirm `:test_tube: Test (Linux)` and `:test_tube: Test (macOS)` pass.
 3. Confirm `:apple: E2E (darwin-vz)` passes doctor, launched execution, exit-code, and policy checks.
-4. Confirm `:fire: E2E (Firecracker)` passes doctor, launch, exec, and observability checks.
+4. Confirm `:fire: E2E (Firecracker)` passes doctor, launch, exec, persistent sandbox lifecycle, and observability checks.

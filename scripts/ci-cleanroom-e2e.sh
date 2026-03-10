@@ -227,6 +227,53 @@ while true; do
   exit 1
 done
 
+echo "--- :recycle: Persistent sandbox lifecycle test"
+sandbox_id="$(./dist/cleanroom sandbox create --host "$listen_endpoint" -c "$PWD" | tr -d '\n')"
+if [[ -z "$sandbox_id" ]]; then
+  echo "sandbox create did not return an id" >&2
+  exit 1
+fi
+echo "sandbox id: $sandbox_id"
+
+./dist/cleanroom exec --host "$listen_endpoint" -c "$PWD" --sandbox-id "$sandbox_id" -- sh -lc 'printf persisted-data >/tmp/persist.txt'
+./dist/cleanroom exec --host "$listen_endpoint" -c "$PWD" --sandbox-id "$sandbox_id" -- sh -lc 'cat /tmp/persist.txt' | tee "$tmpdir/persist-read.out"
+if ! grep -q '^persisted-data$' "$tmpdir/persist-read.out"; then
+  echo "expected persisted sandbox file contents from second execution" >&2
+  exit 1
+fi
+
+mise exec -- go run ./scripts/download_sandbox_file \
+  --host "$listen_endpoint" \
+  --sandbox-id "$sandbox_id" \
+  --path /tmp/persist.txt \
+  --max-bytes 4096 >"$tmpdir/persist-download.out"
+if ! grep -q '^persisted-data$' "$tmpdir/persist-download.out"; then
+  echo "expected downloaded sandbox file contents" >&2
+  echo "downloaded payload:" >&2
+  cat "$tmpdir/persist-download.out" >&2 || true
+  exit 1
+fi
+
+./dist/cleanroom sandbox rm --host "$listen_endpoint" "$sandbox_id" | tee "$tmpdir/sandbox-rm.out"
+if ! grep -q 'sandbox terminated' "$tmpdir/sandbox-rm.out"; then
+  echo "expected sandbox terminate acknowledgement" >&2
+  exit 1
+fi
+
+set +e
+./dist/cleanroom exec --host "$listen_endpoint" -c "$PWD" --sandbox-id "$sandbox_id" -- sh -lc 'echo should-not-run' >"$tmpdir/terminated.out" 2>"$tmpdir/terminated.err"
+terminated_status=$?
+set -e
+if [[ "$terminated_status" -eq 0 ]]; then
+  echo "expected execution against terminated sandbox to fail" >&2
+  exit 1
+fi
+if ! grep -Eq 'unknown sandbox|is not ready' "$tmpdir/terminated.err"; then
+  echo "expected unknown-sandbox or not-ready error after termination" >&2
+  cat "$tmpdir/terminated.err" >&2 || true
+  exit 1
+fi
+
 echo "--- :satellite: Git gateway allow/deny test"
 git_gateway_attempt=1
 git_gateway_max_attempts=3
@@ -432,7 +479,15 @@ if ! grep -q 'run-observability.json' "$tmpdir/status.out"; then
   exit 1
 fi
 
-obs_file="$(ls -1t "$XDG_STATE_HOME"/cleanroom/runs/*/run-observability.json 2>/dev/null | head -n 1 || true)"
+obs_file="$(
+  find "$XDG_STATE_HOME"/cleanroom/runs -name run-observability.json -type f -print 2>/dev/null \
+    | while IFS= read -r path; do
+        stat -c '%Y %n' "$path"
+      done \
+    | sort -nr \
+    | head -n 1 \
+    | cut -d' ' -f2-
+)"
 if [[ -n "$obs_file" && -f "$obs_file" ]]; then
   extract_json_number() {
     local key="$1"
