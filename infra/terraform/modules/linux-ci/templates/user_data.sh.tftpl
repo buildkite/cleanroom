@@ -17,23 +17,23 @@ TAILSCALE_ADVERTISE_TAGS='${tailscale_advertise_tags}'
 TAILSCALE_ENABLE_SSH='${tailscale_enable_ssh}'
 TAILSCALE_ACCEPT_ROUTES='${tailscale_accept_routes}'
 
-if command -v dnf >/dev/null 2>&1; then
-  dnf install -y git jq tar unzip
-  if ! command -v curl >/dev/null 2>&1; then
-    dnf install -y curl-minimal || dnf install -y curl
-  fi
-  if ! command -v aws >/dev/null 2>&1; then
-    dnf install -y awscli || true
-  fi
-elif command -v apt-get >/dev/null 2>&1; then
-  export DEBIAN_FRONTEND=noninteractive
-  apt-get update -y
-  apt-get install -y git jq curl tar unzip ca-certificates openssh-client zfsutils-linux
-else
-  yum install -y git jq curl tar unzip
-  if ! command -v aws >/dev/null 2>&1; then
-    yum install -y awscli || true
-  fi
+if ! command -v apt-get >/dev/null 2>&1; then
+  echo "linux CI user_data requires an Ubuntu apt-based AMI" >&2
+  exit 1
+fi
+
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -y
+apt-get install -y git jq curl tar unzip ca-certificates openssh-client linux-headers-$(uname -r) zfsutils-linux
+
+if ! modprobe zfs; then
+  echo "zfs kernel module failed to load" >&2
+  exit 1
+fi
+
+if ! command -v zpool >/dev/null 2>&1; then
+  echo "zpool command is required but missing after zfs install" >&2
+  exit 1
 fi
 
 if ! command -v aws >/dev/null 2>&1; then
