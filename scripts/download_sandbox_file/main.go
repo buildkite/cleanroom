@@ -9,8 +9,8 @@ import (
 
 	"github.com/buildkite/cleanroom/internal/controlclient"
 	"github.com/buildkite/cleanroom/internal/endpoint"
-	"github.com/buildkite/cleanroom/internal/tlsconfig"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
+	"github.com/buildkite/cleanroom/internal/tlsconfig"
 )
 
 func main() {
