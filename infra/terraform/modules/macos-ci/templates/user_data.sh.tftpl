@@ -3,6 +3,13 @@ set -euo pipefail
 
 exec > >(tee /var/log/user-data.log) 2>&1
 
+BOOTSTRAP_ENV_PATH='/usr/local/etc/cleanroom-bootstrap-macos.env'
+BOOTSTRAP_RUNNER_PATH='/usr/local/bin/cleanroom-bootstrap-macos'
+
+install -d -o root -g wheel -m 0755 /usr/local/etc
+install -d -o root -g wheel -m 0755 /usr/local/bin
+
+cat > "$BOOTSTRAP_ENV_PATH" <<EOF
 AWS_REGION='${aws_region}'
 NAME_PREFIX='${name_prefix}'
 BUILDKITE_QUEUE='${buildkite_queue}'
@@ -11,6 +18,24 @@ DEPLOY_KEY_PARAM='${git_deploy_key_parameter_name}'
 REPO_URL='${repo_url}'
 REPO_REF='${repo_ref}'
 SETUP_SCRIPT_PATH='${setup_script_path}'
+EOF
+chmod 0600 "$BOOTSTRAP_ENV_PATH"
+
+cat > "$BOOTSTRAP_RUNNER_PATH" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+BOOTSTRAP_ENV_PATH='/usr/local/etc/cleanroom-bootstrap-macos.env'
+exec > >(tee -a /var/log/cleanroom-bootstrap-macos.log) 2>&1
+
+if [ ! -f "$BOOTSTRAP_ENV_PATH" ]; then
+  echo "bootstrap env file missing: $BOOTSTRAP_ENV_PATH" >&2
+  exit 1
+fi
+
+# shellcheck disable=SC1091
+source "$BOOTSTRAP_ENV_PATH"
+PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$${PATH:-}"
 
 retry() {
   local attempts="$1"
@@ -31,6 +56,15 @@ retry() {
     n=$((n + 1))
   done
 }
+
+: "$${AWS_REGION:?AWS_REGION must be set}"
+: "$${NAME_PREFIX:?NAME_PREFIX must be set}"
+: "$${BUILDKITE_QUEUE:?BUILDKITE_QUEUE must be set}"
+: "$${BUILDKITE_TOKEN_PARAM:?BUILDKITE_TOKEN_PARAM must be set}"
+: "$${DEPLOY_KEY_PARAM:?DEPLOY_KEY_PARAM must be set}"
+: "$${REPO_URL:?REPO_URL must be set}"
+: "$${REPO_REF:?REPO_REF must be set}"
+: "$${SETUP_SCRIPT_PATH:?SETUP_SCRIPT_PATH must be set}"
 
 if ! command -v aws >/dev/null 2>&1; then
   aws_tmp_dir="$(mktemp -d)"
@@ -107,3 +141,7 @@ export CLEANROOM_BOOTSTRAP_NAME_PREFIX="$NAME_PREFIX"
 export CLEANROOM_BUILDKITE_QUEUE="$BUILDKITE_QUEUE"
 
 "$setup_script"
+EOF
+chmod 0755 "$BOOTSTRAP_RUNNER_PATH"
+
+"$BOOTSTRAP_RUNNER_PATH"

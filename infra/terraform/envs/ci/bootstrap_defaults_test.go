@@ -125,9 +125,25 @@ func TestMacCiUsesDedicatedHostAndPrivateNetworking(t *testing.T) {
 
 	moduleMainPath := filepath.Join("..", "..", "modules", "macos-ci", "main.tf")
 	requireContains(t, moduleMainPath, "resource \"aws_ec2_host\" \"mac\"")
+	requireContains(t, moduleMainPath, "prevent_destroy = true")
 	requireContains(t, moduleMainPath, "tenancy                = \"host\"")
 	requireContains(t, moduleMainPath, "associate_public_ip_address = false")
+	requireNotContains(t, moduleMainPath, "user_data_replace_on_change = true")
+	requireContains(t, moduleMainPath, "ignore_changes = [user_data]")
 	requireContains(t, moduleMainPath, "aws_iam_role_policy.parameter_read")
+}
+
+func TestMacUserDataSupportsInPlaceBootstrapRerun(t *testing.T) {
+	t.Helper()
+
+	templatePath := filepath.Join("..", "..", "modules", "macos-ci", "templates", "user_data.sh.tftpl")
+	requireContains(t, templatePath, "BOOTSTRAP_ENV_PATH='/usr/local/etc/cleanroom-bootstrap-macos.env'")
+	requireContains(t, templatePath, "BOOTSTRAP_RUNNER_PATH='/usr/local/bin/cleanroom-bootstrap-macos'")
+	requireContains(t, templatePath, "$${AWS_REGION:?AWS_REGION must be set}")
+	requireContains(t, templatePath, "PATH=\"/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$${PATH:-}\"")
+	requireContains(t, templatePath, "source \"$BOOTSTRAP_ENV_PATH\"")
+	requireContains(t, templatePath, "chmod 0755 \"$BOOTSTRAP_RUNNER_PATH\"")
+	requireContains(t, templatePath, "\"$BOOTSTRAP_RUNNER_PATH\"")
 }
 
 func TestEnvWiresOptionalMacCiModule(t *testing.T) {

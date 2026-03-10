@@ -29,6 +29,36 @@ Notes:
 - Per-step cache is enabled for `hosted` and `cleanroom-mac` steps.
 - Avoid global pipeline `cache:` blocks if self-hosted queues are present.
 
+### 2.1 macOS bootstrap updates and recovery
+
+EC2 Mac dedicated hosts should be treated as long-lived capacity.
+
+- Avoid `terraform apply -replace=module.mac_ci[0].aws_instance.host` for bootstrap-only changes.
+- Use in-place SSM reruns against the existing instance instead.
+- Host-level safeguards in Terraform keep the dedicated host stable and avoid user-data replacement churn.
+
+Rerun bootstrap in-place:
+
+```bash
+instance_id="$(mise x -- terraform -chdir=infra/terraform/envs/ci output -raw mac_instance_id)"
+
+AWS_PROFILE=buildkite-sandbox-pipelines-admin aws ssm send-command \
+  --region ap-southeast-2 \
+  --instance-ids "$instance_id" \
+  --document-name AWS-RunShellScript \
+  --parameters '{"commands":["sudo env PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin /usr/local/bin/cleanroom-bootstrap-macos"]}'
+```
+
+Check bootstrap logs and agent service:
+
+```bash
+AWS_PROFILE=buildkite-sandbox-pipelines-admin aws ssm send-command \
+  --region ap-southeast-2 \
+  --instance-ids "$instance_id" \
+  --document-name AWS-RunShellScript \
+  --parameters '{"commands":["sudo tail -n 120 /var/log/cleanroom-bootstrap-macos.log","sudo launchctl print system/com.buildkite.agent.cleanroom-mac","sudo tail -n 120 /var/lib/buildkite-agent/logs/buildkite-agent-cleanroom-mac.log","sudo tail -n 120 /var/lib/buildkite-agent/logs/buildkite-agent-cleanroom-mac.error.log"]}'
+```
+
 ## 3. Cleanroom Queue (Firecracker E2E)
 
 The `:fire: E2E (Firecracker)` step runs a real launched Firecracker execution and needs host preparation.

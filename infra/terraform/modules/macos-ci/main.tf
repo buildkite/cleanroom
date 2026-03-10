@@ -107,6 +107,10 @@ resource "aws_ec2_host" "mac" {
   host_recovery     = "off"
   instance_type     = var.instance_type
 
+  lifecycle {
+    prevent_destroy = true
+  }
+
   tags = merge(local.common_tags, {
     Name = "${var.name_prefix}-dedicated-host"
   })
@@ -134,7 +138,6 @@ resource "aws_instance" "host" {
     encrypted   = true
   }
 
-  user_data_replace_on_change = true
   user_data = templatefile("${path.module}/templates/user_data.sh.tftpl", {
     aws_region                     = var.aws_region
     name_prefix                    = var.name_prefix
@@ -145,6 +148,10 @@ resource "aws_instance" "host" {
     repo_ref                       = var.repo_ref
     setup_script_path              = var.setup_script_path
   })
+
+  lifecycle {
+    ignore_changes = [user_data]
+  }
 
   tags = merge(local.common_tags, {
     Name = "${var.name_prefix}-instance"

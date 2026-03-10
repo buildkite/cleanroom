@@ -21,8 +21,15 @@ Bootstrap behaviour:
 
 - defaults to `scripts/bootstrap-buildkite-agent.sh`, which installs and starts a Buildkite agent for the `cleanroom` queue
 - macOS defaults to `scripts/bootstrap-buildkite-agent-macos.sh`, which installs and starts a Buildkite agent for the `cleanroom-mac` queue
+- macOS user-data installs a persistent rerunnable bootstrap command at `/usr/local/bin/cleanroom-bootstrap-macos` for in-place recovery via SSM
 - override `setup_script_path` if you need custom host bootstrap logic
 - override `mac_setup_script_path` if you need custom macOS host bootstrap logic
+
+macOS dedicated host lifecycle:
+
+- the dedicated host uses `prevent_destroy = true` to avoid accidental host churn
+- macOS instance `user_data` changes are ignored to avoid replacement/stop-start cycles on dedicated hosts
+- use SSM to rerun `/usr/local/bin/cleanroom-bootstrap-macos` instead of using `terraform apply -replace`
 
 ## Usage
 
@@ -42,3 +49,19 @@ After apply, use outputs:
 - `tailscale_ssh_pattern` (when tailscale auth key is configured)
 - `mac_ssm_start_session_command` (when `enable_macos_ci` is true)
 - `mac_dedicated_host_id` (when `enable_macos_ci` is true)
+
+## macOS Bootstrap Recovery (In-Place)
+
+Rerun bootstrap on the existing macOS instance without replacing infrastructure:
+
+```bash
+# Resolve current mac instance id from Terraform output
+instance_id="$(mise x -- terraform -chdir=infra/terraform/envs/ci output -raw mac_instance_id)"
+
+# Rerun bootstrap in place over SSM
+AWS_PROFILE=buildkite-sandbox-pipelines-admin aws ssm send-command \
+  --region ap-southeast-2 \
+  --instance-ids "$instance_id" \
+  --document-name AWS-RunShellScript \
+  --parameters '{"commands":["sudo env PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin /usr/local/bin/cleanroom-bootstrap-macos"]}'
+```
