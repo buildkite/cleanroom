@@ -116,6 +116,24 @@ func TestUserDataInstallsAwsCliWithoutAptAwscliDependency(t *testing.T) {
 	requireContains(t, templatePath, "awscli-exe-linux")
 }
 
+func TestUserDataIsUbuntuSpecific(t *testing.T) {
+	t.Helper()
+
+	templatePath := filepath.Join("..", "..", "modules", "linux-ci", "templates", "user_data.sh.tftpl")
+	requireContains(t, templatePath, "linux CI user_data requires an Ubuntu apt-based AMI")
+	requireNotContains(t, templatePath, "if command -v dnf >/dev/null 2>&1; then")
+	requireNotContains(t, templatePath, "yum install -y")
+}
+
+func TestUserDataVerifiesZfsAvailability(t *testing.T) {
+	t.Helper()
+
+	templatePath := filepath.Join("..", "..", "modules", "linux-ci", "templates", "user_data.sh.tftpl")
+	requireContains(t, templatePath, "linux-headers-$(uname -r)")
+	requireContains(t, templatePath, "modprobe zfs")
+	requireContains(t, templatePath, "command -v zpool >/dev/null 2>&1")
+}
+
 func TestLinuxCiEnablesNestedVirtualization(t *testing.T) {
 	t.Helper()
 
