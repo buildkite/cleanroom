@@ -99,7 +99,8 @@ func TestMacBootstrapScriptConfiguresBuildkiteAgent(t *testing.T) {
 	requireContains(t, scriptPath, "<string>start</string>")
 	requireContains(t, scriptPath, "CLEANROOM_BUILDKITE_QUEUE")
 	requireContains(t, scriptPath, "QUEUE_NAME=\"${CLEANROOM_BUILDKITE_QUEUE:-cleanroom-mac}\"")
-	requireContains(t, scriptPath, "BUILD_PATH=\"/buildkite/builds\"")
+	requireContains(t, scriptPath, "BUILD_PATH=\"${CLEANROOM_BUILDKITE_BUILD_PATH:-${AGENT_ROOT}/builds}\"")
+	requireNotContains(t, scriptPath, "install -d -o \"$AGENT_USER\" -g \"$AGENT_GROUP\" -m 0755 /buildkite")
 	requireContains(t, scriptPath, "<string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>")
 	requireContains(t, scriptPath, "<key>UserName</key>")
 }
