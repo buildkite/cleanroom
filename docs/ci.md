@@ -74,6 +74,7 @@ The `:apple: E2E (darwin-vz)` step runs launched execution checks on macOS using
 Notes:
 
 - `scripts/ci-darwin-vz-e2e.sh` builds `dist/cleanroom` and `dist/cleanroom-darwin-vz`, exports `CLEANROOM_DARWIN_VZ_HELPER` to the built helper, and isolates XDG runtime paths.
+- the script also builds `dist/cleanroom-guest-agent-linux-<host-arch>` so CI can self-bootstrap the Linux guest agent dependency without a separate `mise run install` step.
 - Set `CLEANROOM_DARWIN_VZ_KERNEL_IMAGE` on the worker if you want an explicit kernel path; otherwise the script uses managed-kernel fallback.
 
 ## 4. Cleanroom Queue (Firecracker E2E)
