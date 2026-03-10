@@ -51,6 +51,83 @@ install_buildkite_agent_binary() {
   install -o root -g wheel -m 0755 "$binary" /usr/local/bin/buildkite-agent
 }
 
+run_as_agent_user() {
+  local command="$1"
+
+  if [ "$AGENT_USER" = "root" ]; then
+    bash -lc "$command"
+    return
+  fi
+
+  su -l "$AGENT_USER" -c "$command"
+}
+
+resolve_brew_binary() {
+  local candidate
+
+  for candidate in /opt/homebrew/bin/brew /usr/local/bin/brew; do
+    if [ -x "$candidate" ]; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+
+  if command -v brew >/dev/null 2>&1; then
+    command -v brew
+    return 0
+  fi
+
+  return 1
+}
+
+install_homebrew_if_missing() {
+  local brew_bin
+
+  brew_bin="$(resolve_brew_binary || true)"
+  if [ -n "$brew_bin" ]; then
+    printf '%s' "$brew_bin"
+    return 0
+  fi
+
+  [ "$AGENT_USER" != "root" ] || die "cannot install Homebrew automatically when AGENT_USER resolves to root"
+
+  log "installing Homebrew"
+  run_as_agent_user "NONINTERACTIVE=1 /bin/bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\""
+
+  brew_bin="$(resolve_brew_binary || true)"
+  [ -n "$brew_bin" ] || die "Homebrew installation completed but brew binary was not found"
+  printf '%s' "$brew_bin"
+}
+
+has_e2fsprogs() {
+  local root
+
+  for root in /opt/homebrew/opt/e2fsprogs /usr/local/opt/e2fsprogs; do
+    if [ -x "$root/sbin/mkfs.ext4" ] && [ -x "$root/sbin/debugfs" ]; then
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+install_e2fsprogs_if_missing() {
+  local brew_bin="$1"
+  local brew_dir
+
+  if has_e2fsprogs; then
+    return
+  fi
+
+  [ "$AGENT_USER" != "root" ] || die "cannot install e2fsprogs automatically when AGENT_USER resolves to root"
+
+  brew_dir="$(dirname "$brew_bin")"
+  log "installing e2fsprogs via Homebrew"
+  run_as_agent_user "PATH=\"${brew_dir}:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin\" HOMEBREW_NO_AUTO_UPDATE=1 \"$brew_bin\" install e2fsprogs"
+
+  has_e2fsprogs || die "e2fsprogs installation completed but mkfs.ext4/debugfs were not found"
+}
+
 resolve_instance_id() {
   if [ -n "${CLEANROOM_BOOTSTRAP_INSTANCE_ID:-}" ]; then
     printf '%s' "$CLEANROOM_BOOTSTRAP_INSTANCE_ID"
@@ -88,6 +165,7 @@ AGENT_ROOT="/var/lib/buildkite-agent"
 BUILD_PATH="${CLEANROOM_BUILDKITE_BUILD_PATH:-${AGENT_ROOT}/builds}"
 CONFIG_DIR="/usr/local/etc/buildkite-agent"
 AGENT_USER="${CLEANROOM_BUILDKITE_AGENT_USER:-ec2-user}"
+AGENT_SERVICE_PATH="/opt/homebrew/opt/e2fsprogs/sbin:/opt/homebrew/opt/e2fsprogs/bin:/usr/local/opt/e2fsprogs/sbin:/usr/local/opt/e2fsprogs/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 if ! id "$AGENT_USER" >/dev/null 2>&1; then
   AGENT_USER="root"
@@ -102,6 +180,9 @@ require_cmd curl
 require_cmd tar
 require_cmd launchctl
 require_cmd plutil
+
+brew_bin="$(install_homebrew_if_missing)"
+install_e2fsprogs_if_missing "$brew_bin"
 
 install -d -o root -g wheel -m 0755 /usr/local/bin
 log "installing buildkite-agent ${AGENT_VERSION}"
@@ -155,7 +236,7 @@ cat > "$plist_path" <<PLIST
     <key>HOME</key>
     <string>${AGENT_ROOT}</string>
     <key>PATH</key>
-    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <string>${AGENT_SERVICE_PATH}</string>
   </dict>
   <key>RunAtLoad</key>
   <true/>
