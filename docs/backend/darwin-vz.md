@@ -83,7 +83,7 @@ Rootfs:
 
 - if configured rootfs exists, use it
 - otherwise derive rootfs from `sandbox.image.ref` using image manager
-- inject guest runtime (`cleanroom-guest-agent` and `/sbin/cleanroom-init`) into a prepared cached rootfs image
+- inject guest runtime (`cleanroom-guest-agent` and `/usr/sbin/cleanroom-init`) into a prepared cached rootfs image
 - create a per-sandbox copy (`rootfs-persistent.ext4`) and attach it read-write to the VM
 
 Host tools required for derivation/injection:
@@ -118,10 +118,9 @@ Current `darwin-vz` capability values:
 - `network.allowlist_egress=false`
 - `network.guest_interface=true`
 
-Gateway access for git rewrite flow:
-
-- darwin guests can access the host gateway through the NAT host address
-- default host is `192.168.64.1`; override with `CLEANROOM_DARWIN_GATEWAY_HOST`
+Repository bootstrap currently uses direct outbound git access from the guest.
+The default server wiring does not route `darwin-vz` guest git traffic through
+the host gateway yet.
 
 ## Entitlements and Signing
 
