@@ -8,7 +8,7 @@ func TestGuestInitExecutableForShellPresenceUsesInitScriptWhenShellExists(t *tes
 	t.Parallel()
 
 	path, notice := guestInitExecutableForShellPresence(true)
-	if got, want := path, "/sbin/cleanroom-init"; got != want {
+	if got, want := path, "/usr/sbin/cleanroom-init"; got != want {
 		t.Fatalf("unexpected init path: got %q want %q", got, want)
 	}
 	if notice != "" {

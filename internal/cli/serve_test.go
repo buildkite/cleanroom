@@ -8,6 +8,11 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/buildkite/cleanroom/internal/backend"
+	"github.com/buildkite/cleanroom/internal/backend/darwinvz"
+	"github.com/buildkite/cleanroom/internal/backend/firecracker"
+	"github.com/buildkite/cleanroom/internal/gateway"
 )
 
 func TestShouldInstallGatewayFirewall(t *testing.T) {
@@ -34,6 +39,36 @@ func TestShouldInstallGatewayFirewall(t *testing.T) {
 				t.Fatalf("shouldInstallGatewayFirewall(%q) = %v, want %v", tc.goos, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestConfigureGatewayBackendsLeavesDarwinVZOnDirectGit(t *testing.T) {
+	t.Parallel()
+
+	gwRegistry := gateway.NewRegistry()
+	fcAdapter := &firecracker.Adapter{}
+	darwinAdapter := &darwinvz.Adapter{}
+	backends := map[string]backend.Adapter{
+		"firecracker": fcAdapter,
+		"darwin-vz":   darwinAdapter,
+	}
+
+	configureGatewayBackends(backends, gwRegistry, 8170, "192.168.64.1")
+
+	if fcAdapter.GatewayRegistry == nil {
+		t.Fatal("expected firecracker adapter to use the host gateway registry")
+	}
+	if got, want := fcAdapter.GatewayPort, 8170; got != want {
+		t.Fatalf("unexpected firecracker gateway port: got %d want %d", got, want)
+	}
+	if darwinAdapter.GatewayRegistry != nil {
+		t.Fatal("expected darwin-vz adapter to avoid host gateway routing")
+	}
+	if got := darwinAdapter.GatewayPort; got != 0 {
+		t.Fatalf("expected darwin-vz gateway port to remain unset, got %d", got)
+	}
+	if got := darwinAdapter.GatewayHost; got != "" {
+		t.Fatalf("expected darwin-vz gateway host to remain unset, got %q", got)
 	}
 }
 

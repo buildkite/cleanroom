@@ -187,6 +187,68 @@ func TestLoadPropagatesPrimaryStatError(t *testing.T) {
 	}
 }
 
+func TestLoadRepositoryDefaultsCurrentRepoSettings(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, PrimaryPolicyPath), []byte(`
+version: 1
+repository:
+  mode: current-repo
+sandbox:
+  image:
+    ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  network:
+    default: deny
+`), 0o644); err != nil {
+		t.Fatalf("write policy: %v", err)
+	}
+
+	cfg, source, err := Loader{}.LoadRepository(dir)
+	if err != nil {
+		t.Fatalf("LoadRepository returned error: %v", err)
+	}
+	if got, want := source, filepath.Join(dir, PrimaryPolicyPath); got != want {
+		t.Fatalf("unexpected source: got %q want %q", got, want)
+	}
+	if got, want := cfg.Mode, "current-repo"; got != want {
+		t.Fatalf("unexpected mode: got %q want %q", got, want)
+	}
+	if got, want := cfg.Remote, "origin"; got != want {
+		t.Fatalf("unexpected remote default: got %q want %q", got, want)
+	}
+	if got, want := cfg.Path, "/workspace"; got != want {
+		t.Fatalf("unexpected path default: got %q want %q", got, want)
+	}
+}
+
+func TestLoadRepositoryRejectsRelativePath(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, PrimaryPolicyPath), []byte(`
+version: 1
+repository:
+  mode: current-repo
+  path: workspace
+sandbox:
+  image:
+    ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  network:
+    default: deny
+`), 0o644); err != nil {
+		t.Fatalf("write policy: %v", err)
+	}
+
+	_, _, err := Loader{}.LoadRepository(dir)
+	if err == nil {
+		t.Fatal("expected LoadRepository to reject relative repository.path")
+	}
+	if !strings.Contains(err.Error(), "repository.path") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestFromProtoRejectsMismatchedImageDigest(t *testing.T) {
 	t.Parallel()
 

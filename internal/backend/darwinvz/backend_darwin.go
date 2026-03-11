@@ -100,7 +100,7 @@ const preparedRuntimeRootFSVersion = "v8-darwin-vz"
 var virtualizationEntitlementPattern = regexp.MustCompile(`(?s)<key>\s*com\.apple\.security\.virtualization\s*</key>\s*<true\s*/?>`)
 
 const (
-	guestInitScriptPath = "/sbin/cleanroom-init"
+	guestInitScriptPath = "/usr/sbin/cleanroom-init"
 	guestAgentPath      = "/usr/local/bin/cleanroom-guest-agent"
 )
 
@@ -1617,7 +1617,7 @@ func (a *Adapter) installGuestRuntimeIntoRootFS(rootFSPath, guestAgentPath strin
 	if err := injectFileIntoExt4(rootFSPath, guestAgentPath, "/usr/local/bin/cleanroom-guest-agent", 0o755); err != nil {
 		return fmt.Errorf("inject guest agent into rootfs image: %w", err)
 	}
-	if err := injectFileIntoExt4(rootFSPath, initScriptPath, "/sbin/cleanroom-init", 0o755); err != nil {
+	if err := injectFileIntoExt4(rootFSPath, initScriptPath, guestInitScriptPath, 0o755); err != nil {
 		return fmt.Errorf("inject cleanroom init into rootfs image: %w", err)
 	}
 	return nil

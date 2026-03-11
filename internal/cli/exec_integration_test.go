@@ -75,10 +75,18 @@ func (integrationLoader) LoadAndCompile(_ string) (*policy.CompiledPolicy, strin
 	}, "/repo/cleanroom.yaml", nil
 }
 
+func (integrationLoader) LoadRepository(_ string) (policy.RepositoryConfig, string, error) {
+	return policy.RepositoryConfig{}, "/repo/cleanroom.yaml", nil
+}
+
 type failingLoader struct{}
 
 func (failingLoader) LoadAndCompile(_ string) (*policy.CompiledPolicy, string, error) {
 	return nil, "", errors.New("loader should not be called")
+}
+
+func (failingLoader) LoadRepository(_ string) (policy.RepositoryConfig, string, error) {
+	return policy.RepositoryConfig{}, "", errors.New("loader should not be called")
 }
 
 type execOutcome struct {
