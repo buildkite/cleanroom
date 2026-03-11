@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -86,7 +88,7 @@ func (failingLoader) LoadAndCompile(_ string) (*policy.CompiledPolicy, string, e
 }
 
 func (failingLoader) LoadRepository(_ string) (policy.RepositoryConfig, string, error) {
-	return policy.RepositoryConfig{}, "", errors.New("loader should not be called")
+	return policy.RepositoryConfig{}, "/repo/cleanroom.yaml", nil
 }
 
 type execOutcome struct {
@@ -128,6 +130,64 @@ func startIntegrationServer(t *testing.T, adapter backend.Adapter) (string, *con
 	)
 
 	return httpServer.URL, svc
+}
+
+func startUnixIntegrationServer(t *testing.T, adapter backend.Adapter) (string, *controlservice.Service) {
+	t.Helper()
+
+	svc := &controlservice.Service{
+		Loader: integrationLoader{},
+		Config: runtimeconfig.Config{
+			DefaultBackend: "firecracker",
+		},
+		Backends: map[string]backend.Adapter{
+			"firecracker": adapter,
+		},
+	}
+
+	socketFile, err := os.CreateTemp("/tmp", "cleanroom-test-*.sock")
+	if err != nil {
+		t.Fatalf("create unix socket path: %v", err)
+	}
+	socketPath := socketFile.Name()
+	if err := socketFile.Close(); err != nil {
+		t.Fatalf("close unix socket temp file: %v", err)
+	}
+	if err := os.Remove(socketPath); err != nil {
+		t.Fatalf("remove unix socket temp file: %v", err)
+	}
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen on unix socket: %v", err)
+	}
+	server := &http.Server{Handler: controlserver.New(svc, nil).Handler()}
+	go func() {
+		_ = server.Serve(listener)
+	}()
+	t.Cleanup(func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = server.Shutdown(shutdownCtx)
+		_ = listener.Close()
+		_ = os.Remove(socketPath)
+	})
+
+	quicCtx, quicCancel := context.WithCancel(context.Background())
+	t.Cleanup(quicCancel)
+	quicServer, err := interactivequic.Start(quicCtx, "127.0.0.1:0", svc, nil)
+	if err != nil {
+		t.Fatalf("start interactive quic server: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = quicServer.Close()
+	})
+	svc.ConfigureInteractiveTransport(
+		quicServer.Addr().String(),
+		quicServer.ALPN(),
+		quicServer.CertPinSHA256(),
+	)
+
+	return "unix://" + socketPath, svc
 }
 
 func runWithCapture(runFn func(*runtimeContext) error, stdinData *string, ctx runtimeContext) execOutcome {

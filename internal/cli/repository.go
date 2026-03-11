@@ -96,9 +96,34 @@ func resolveRepositoryCheckout(cwd string, loader policyLoader) (*resolvedReposi
 
 func maybeResolveRepositoryCheckout(cwd string, loader policyLoader, existingSandboxID string) (*resolvedRepositoryCheckout, error) {
 	if strings.TrimSpace(existingSandboxID) != "" {
-		return nil, nil
+		return resolveRepositoryExecutionContext(cwd, loader)
 	}
 	return resolveRepositoryCheckout(cwd, loader)
+}
+
+func resolveRepositoryExecutionContext(cwd string, loader policyLoader) (*resolvedRepositoryCheckout, error) {
+	if loader == nil {
+		return nil, nil
+	}
+
+	repository, _, err := loader.LoadRepository(cwd)
+	if err != nil {
+		return nil, err
+	}
+	if !repository.Enabled() {
+		return nil, nil
+	}
+
+	switch repository.Mode {
+	case "current-repo":
+	default:
+		return nil, fmt.Errorf("unsupported repository.mode %q", repository.Mode)
+	}
+
+	return &resolvedRepositoryCheckout{
+		DestinationDir: repository.Path,
+		Submodules:     repository.Submodules,
+	}, nil
 }
 
 func canonicalizeGitRemoteURL(raw string) (string, string, error) {

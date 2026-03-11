@@ -2386,6 +2386,13 @@ func backendSupportsRepositoryPersistence(ctx *runtimeContext, host, backendName
 	if ctx == nil {
 		return true
 	}
+	localControlPlane, err := isLocalControlPlaneEndpoint(host)
+	if err != nil {
+		return true
+	}
+	if !localControlPlane {
+		return true
+	}
 	selectedBackend := strings.TrimSpace(backendName)
 	if selectedBackend == "" {
 		selectedBackend = strings.TrimSpace(ctx.Config.DefaultBackend)
@@ -2397,7 +2404,6 @@ func backendSupportsRepositoryPersistence(ctx *runtimeContext, host, backendName
 	if !ok || adapter == nil {
 		return true
 	}
-	_ = host
 	return backend.CapabilitiesForAdapter(adapter)[backend.CapabilitySandboxPersistent]
 }
 

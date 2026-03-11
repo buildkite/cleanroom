@@ -20,6 +20,22 @@ type repositoryIntegrationLoader struct {
 	repository policy.RepositoryConfig
 }
 
+type persistentIntegrationAdapter struct {
+	integrationAdapter
+}
+
+func (a *persistentIntegrationAdapter) ProvisionSandbox(context.Context, backend.ProvisionRequest) error {
+	return nil
+}
+
+func (a *persistentIntegrationAdapter) RunInSandbox(ctx context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+	return a.RunStream(ctx, req, stream)
+}
+
+func (a *persistentIntegrationAdapter) TerminateSandbox(context.Context, string) error {
+	return nil
+}
+
 func (l repositoryIntegrationLoader) LoadAndCompile(_ string) (*policy.CompiledPolicy, string, error) {
 	return l.compiled, "/repo/cleanroom.yaml", nil
 }
@@ -241,6 +257,85 @@ func TestExecCommandRunsInsideRepositoryPathForNewSandbox(t *testing.T) {
 	}
 }
 
+func TestExecCommandRunsInsideRepositoryPathWhenReusingSandboxID(t *testing.T) {
+	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
+	restore := stubGitCredentialFill(t, func(_, _ string) (string, error) { return "", nil })
+	defer restore()
+
+	adapter := &persistentIntegrationAdapter{}
+	host, _ := startIntegrationServer(t, adapter)
+
+	var (
+		mu       sync.Mutex
+		commands [][]string
+	)
+	adapter.runStreamFn = func(_ context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+		mu.Lock()
+		commands = append(commands, append([]string(nil), req.Command...))
+		mu.Unlock()
+		return &backend.RunResult{RunID: req.RunID, ExitCode: 0, Message: "ok"}, nil
+	}
+
+	loader := repositoryIntegrationLoader{
+		compiled: &policy.CompiledPolicy{
+			Version:        1,
+			ImageRef:       "ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+			ImageDigest:    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+			NetworkDefault: "deny",
+			Allow:          []policy.AllowRule{{Host: "github.com", Ports: []int{443}}},
+		},
+		repository: policy.RepositoryConfig{
+			Mode:   "current-repo",
+			Remote: "origin",
+			Path:   "/workspace",
+		},
+	}
+
+	createOutcome := runCreateAliasWithCapture(CreateCommand{
+		clientFlags: clientFlags{Host: host},
+		Chdir:       repoDir,
+	}, runtimeContext{
+		CWD:    repoDir,
+		Loader: loader,
+	})
+	if createOutcome.cause != nil {
+		t.Fatalf("capture failure: %v", createOutcome.cause)
+	}
+	if createOutcome.err != nil {
+		t.Fatalf("CreateCommand.Run returned error: %v", createOutcome.err)
+	}
+	sandboxID := strings.TrimSpace(createOutcome.stdout)
+	if sandboxID == "" {
+		t.Fatalf("expected sandbox id output, got %q", createOutcome.stdout)
+	}
+
+	outcome := runExecWithCapture(ExecCommand{
+		clientFlags: clientFlags{Host: host},
+		Chdir:       repoDir,
+		SandboxID:   sandboxID,
+		Command:     []string{"echo", "ok"},
+	}, runtimeContext{
+		CWD:    repoDir,
+		Loader: loader,
+	})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err != nil {
+		t.Fatalf("ExecCommand.Run returned error: %v", outcome.err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(commands) != 2 {
+		t.Fatalf("expected bootstrap + reused sandbox execution, got %d execution(s)", len(commands))
+	}
+	joined := strings.Join(commands[1], " ")
+	if !strings.Contains(joined, "cd '/workspace' && exec 'echo' 'ok'") {
+		t.Fatalf("expected reused sandbox command to run inside /workspace, got %q", joined)
+	}
+}
+
 func TestResolveRepositoryCheckoutAllowsDirtyCurrentRepoAtHead(t *testing.T) {
 	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
 	wantCommit := headCommit(t, repoDir)
@@ -328,10 +423,9 @@ func TestCreateCommandRejectsRepositoryBootstrapForNonPersistentBackend(t *testi
 	restore := stubGitCredentialFill(t, func(_, _ string) (string, error) { return "", nil })
 	defer restore()
 	adapter := &integrationAdapter{}
-	host, _ := startIntegrationServer(t, adapter)
 
 	outcome := runCreateAliasWithCapture(CreateCommand{
-		clientFlags: clientFlags{Host: host},
+		clientFlags: clientFlags{Host: "unix:///tmp/cleanroom-test.sock"},
 		Chdir:       repoDir,
 	}, runtimeContext{
 		CWD: repoDir,
@@ -372,7 +466,7 @@ func TestExecCommandInlinesRepositoryBootstrapForNonPersistentBackend(t *testing
 	restore := stubGitCredentialFill(t, func(_, _ string) (string, error) { return "", nil })
 	defer restore()
 	adapter := &integrationAdapter{}
-	host, _ := startIntegrationServer(t, adapter)
+	host, _ := startUnixIntegrationServer(t, adapter)
 
 	var (
 		mu       sync.Mutex
@@ -430,6 +524,21 @@ func TestExecCommandInlinesRepositoryBootstrapForNonPersistentBackend(t *testing
 	}
 	if !strings.Contains(joined, "cd '/workspace' && exec 'echo' 'ok'") {
 		t.Fatalf("expected inlined command to run inside /workspace, got %q", joined)
+	}
+}
+
+func TestBackendSupportsRepositoryPersistenceDefersToRemoteControlPlane(t *testing.T) {
+	ctx := &runtimeContext{
+		Config: runtimeconfig.Config{
+			DefaultBackend: "darwin-vz",
+		},
+		Backends: map[string]backend.Adapter{
+			"darwin-vz": &integrationAdapter{},
+		},
+	}
+
+	if !backendSupportsRepositoryPersistence(ctx, "https://cleanroom.example.com", "darwin-vz") {
+		t.Fatal("expected remote control plane to be treated as authoritative for backend persistence")
 	}
 }
 
