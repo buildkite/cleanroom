@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"sync"
 
@@ -43,6 +44,8 @@ const scopeContextKey contextKey = iota
 // ScopeTokenHeader is the request header used for capability-token fallback
 // identity when source-IP identity is unavailable (for example darwin NAT).
 const ScopeTokenHeader = "X-Cleanroom-Scope-Token"
+
+var darwinVZNATPrefix = netip.MustParsePrefix("192.168.64.0/24")
 
 // ScopeFromContext retrieves the SandboxScope injected by identity middleware.
 func ScopeFromContext(ctx context.Context) (*SandboxScope, bool) {
@@ -152,7 +155,7 @@ func (s *Server) identityMiddleware(next http.Handler) http.Handler {
 		}
 
 		scopeToken := strings.TrimSpace(r.Header.Get(ScopeTokenHeader))
-		if scopeToken != "" {
+		if scopeToken != "" && isScopeTokenSourceTrusted(sourceIP) {
 			if scope, ok := s.registry.LookupScopeToken(scopeToken); ok {
 				ctx := context.WithValue(r.Context(), scopeContextKey, scope)
 				next.ServeHTTP(w, r.WithContext(ctx))
@@ -162,6 +165,17 @@ func (s *Server) identityMiddleware(next http.Handler) http.Handler {
 
 		http.Error(w, "forbidden", http.StatusForbidden)
 	})
+}
+
+func isScopeTokenSourceTrusted(sourceIP string) bool {
+	addr, err := netip.ParseAddr(sourceIP)
+	if err != nil {
+		return false
+	}
+	if addr.IsLoopback() {
+		return true
+	}
+	return darwinVZNATPrefix.Contains(addr)
 }
 
 // pathMiddleware validates and canonicalises the request path.
