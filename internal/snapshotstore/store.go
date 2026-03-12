@@ -197,10 +197,7 @@ func (s *Store) Delete(ctx context.Context, snapshotID string) error {
 	return nil
 }
 
-func (s *Store) open(ctx context.Context) (*sql.DB, error) {
-	if err := s.initDB(ctx); err != nil {
-		return nil, err
-	}
+func (s *Store) open(_ context.Context) (*sql.DB, error) {
 	db, err := sql.Open("sqlite", s.metadataDBPath)
 	if err != nil {
 		return nil, fmt.Errorf("open snapshot metadata database %q: %w", s.metadataDBPath, err)

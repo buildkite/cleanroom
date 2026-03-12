@@ -71,6 +71,7 @@ func (d *FileDriver) SnapshotVolume(_ context.Context, req SnapshotVolumeRequest
 	}
 	if err := copyFile(volumeRef, target); err != nil {
 		_ = os.Remove(target)
+		_ = os.Remove(filepath.Dir(target))
 		return Snapshot{}, fmt.Errorf("copy snapshot volume %q: %w", volumeRef, err)
 	}
 	return Snapshot{Ref: target, StorageRef: target}, nil

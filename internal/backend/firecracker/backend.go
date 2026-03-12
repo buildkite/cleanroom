@@ -14,6 +14,7 @@ import (
 	"log"
 	"math"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -32,6 +33,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/paths"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/volumestore"
+	"github.com/buildkite/cleanroom/internal/vsockcontrol"
 	"github.com/buildkite/cleanroom/internal/vsockexec"
 	fcvsock "github.com/firecracker-microvm/firecracker-go-sdk/vsock"
 )
@@ -61,6 +63,7 @@ type Adapter struct {
 	launchSandboxVMFn           func(context.Context, string, *policy.CompiledPolicy, backend.FirecrackerConfig) (*sandboxInstance, error)
 	launchSandboxVMFromRootFSFn func(context.Context, string, *policy.CompiledPolicy, backend.FirecrackerConfig, string) (*sandboxInstance, error)
 	runGuestCommandFn           func(context.Context, context.Context, <-chan struct{}, func() error, string, uint32, vsockexec.ExecRequest, backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error)
+	quiesceGuestFn              func(context.Context, *sandboxInstance, int64) error
 
 	GatewayRegistry gatewayRegistry
 	GatewayPort     int
@@ -93,6 +96,7 @@ type sandboxInstance struct {
 	cleanupVolume  func()
 	vmRootFSPath   string
 	volumeRef      string
+	apiSocketPath  string
 }
 
 const runObservabilityFile = "run-observability.json"
@@ -474,20 +478,34 @@ func (a *Adapter) CreateSnapshot(ctx context.Context, req backend.SnapshotReques
 		return nil, fmt.Errorf("sandbox %q is not running: %w", sandboxID, err)
 	}
 
-	if _, _, err := a.executeInSandbox(ctx, instance, snapshotSyncTimeoutSeconds, []string{"sync"}, false, backend.OutputStream{}); err != nil {
-		return nil, fmt.Errorf("sync sandbox filesystem before snapshot: %w", err)
+	quiesce := a.quiesceGuest
+	if a.quiesceGuestFn != nil {
+		quiesce = a.quiesceGuestFn
+	}
+	if err := quiesce(ctx, instance, req.FirecrackerConfig.Snapshots.QuiesceTimeoutSeconds); err != nil {
+		return nil, fmt.Errorf("quiesce sandbox before snapshot: %w", err)
 	}
 
 	driver, err := volumeStoreDriver(req.FirecrackerConfig)
 	if err != nil {
 		return nil, err
 	}
-	if err := pauseSandboxProcess(instance); err != nil {
-		return nil, err
+
+	if instance.apiSocketPath != "" {
+		if err := pauseVMViaAPI(instance.apiSocketPath); err != nil {
+			return nil, fmt.Errorf("pause VM for snapshot: %w", err)
+		}
+		defer func() {
+			_ = resumeVMViaAPI(instance.apiSocketPath)
+		}()
+	} else {
+		if err := pauseSandboxProcess(instance); err != nil {
+			return nil, err
+		}
+		defer func() {
+			_ = resumeSandboxProcess(instance)
+		}()
 	}
-	defer func() {
-		_ = resumeSandboxProcess(instance)
-	}()
 
 	volumeRef := snapshotVolumeRef(instance)
 	if volumeRef == "" {
@@ -1680,6 +1698,7 @@ func (a *Adapter) launchSandboxVMFromRootFS(ctx context.Context, sandboxID strin
 		cleanupVolume:  cleanupVolume,
 		vmRootFSPath:   vmRootFSPath,
 		volumeRef:      writableVolume.Ref,
+		apiSocketPath:  apiSocket,
 	}
 	go func() {
 		err := fcCmd.Wait()
@@ -1733,7 +1752,7 @@ func preparePersistentWritableVolume(ctx context.Context, driver volumestore.Dri
 		}
 
 		baseVolume, err := driver.EnsureBaseVolume(ctx, volumestore.EnsureBaseVolumeRequest{
-			BaseID:     strings.TrimSuffix(filepath.Base(rootfsPath), filepath.Ext(rootfsPath)),
+			BaseID:     baseVolumeID(rootfsPath),
 			SourcePath: rootfsPath,
 		})
 		if err != nil {
@@ -1751,6 +1770,11 @@ func preparePersistentWritableVolume(ctx context.Context, driver volumestore.Dri
 		SnapshotRef:    sourceRef,
 		AttachmentPath: attachmentPath,
 	})
+}
+
+func baseVolumeID(rootfsPath string) string {
+	sum := sha256.Sum256([]byte(rootfsPath))
+	return hex.EncodeToString(sum[:16])
 }
 
 func snapshotVolumeRef(instance *sandboxInstance) string {
@@ -1828,6 +1852,81 @@ func resumeSandboxProcess(instance *sandboxInstance) error {
 	}
 	if err := sendProcessSignal(instance.fcCmd.Process, syscall.SIGCONT); err != nil {
 		return fmt.Errorf("resume sandbox process: %w", err)
+	}
+	return nil
+}
+
+func pauseVMViaAPI(apiSocketPath string) error {
+	if apiSocketPath == "" {
+		return errors.New("missing firecracker API socket path")
+	}
+	return firecrackerAPIPatch(apiSocketPath, `{"state":"Paused"}`)
+}
+
+func resumeVMViaAPI(apiSocketPath string) error {
+	if apiSocketPath == "" {
+		return errors.New("missing firecracker API socket path")
+	}
+	return firecrackerAPIPatch(apiSocketPath, `{"state":"Resumed"}`)
+}
+
+func firecrackerAPIPatch(socketPath, body string) error {
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+		Transport: &http.Transport{
+			DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
+				return net.Dial("unix", socketPath)
+			},
+		},
+	}
+	req, err := http.NewRequest(http.MethodPatch, "http://localhost/vm", strings.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("create firecracker API request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("firecracker API request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("firecracker API returned %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+	return nil
+}
+
+func (a *Adapter) quiesceGuest(ctx context.Context, instance *sandboxInstance, quiesceTimeoutSeconds int64) error {
+	if quiesceTimeoutSeconds <= 0 {
+		quiesceTimeoutSeconds = 10
+	}
+	connectTimeout := time.Duration(quiesceTimeoutSeconds+5) * time.Second
+	connectCtx, connectCancel := context.WithTimeout(ctx, connectTimeout)
+	defer connectCancel()
+
+	conn, err := dialVsockUntilReady(connectCtx, instance.exitedCh, instance.exitedErrOrNil, instance.VsockPath, instance.GuestPort)
+	if err != nil {
+		return fmt.Errorf("connect to guest for quiesce: %w", err)
+	}
+	defer conn.Close()
+
+	if err := vsockcontrol.EncodeQuiesceRequest(conn, vsockcontrol.QuiesceRequest{
+		Type:           "quiesce",
+		TimeoutSeconds: quiesceTimeoutSeconds,
+	}); err != nil {
+		return fmt.Errorf("send quiesce request: %w", err)
+	}
+
+	resp, err := vsockcontrol.DecodeQuiesceResponse(conn)
+	if err != nil {
+		return fmt.Errorf("read quiesce response: %w", err)
+	}
+	if !resp.OK {
+		errMsg := resp.Error
+		if errMsg == "" {
+			errMsg = "quiesce failed"
+		}
+		return fmt.Errorf("guest quiesce failed: %s", errMsg)
 	}
 	return nil
 }

@@ -8,8 +8,12 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 )
+
+const zvolDeviceWaitTimeout = 10 * time.Second
+const zvolDeviceWaitInterval = 50 * time.Millisecond
 
 const zfsBaseSnapshotName = "seed"
 
@@ -74,6 +78,10 @@ func (d *ZFSDriver) EnsureBaseVolume(ctx context.Context, req EnsureBaseVolumeRe
 	if !baseExists {
 		if err := d.runner.Run(ctx, "zfs", "create", "-p", "-V", strconv.FormatInt(info.Size(), 10), baseDataset); err != nil {
 			return BaseVolume{}, fmt.Errorf("create zfs base volume %q: %w", baseDataset, err)
+		}
+		if err := d.waitForZvolDevice(ctx, baseDataset); err != nil {
+			_ = d.runner.Run(context.Background(), "zfs", "destroy", "-r", baseDataset)
+			return BaseVolume{}, fmt.Errorf("wait for zfs base volume device %q: %w", baseDataset, err)
 		}
 		if err := d.runner.Run(ctx, "dd", "if="+sourcePath, "of="+zvolDevicePath(baseDataset), "bs=4M", "conv=fsync", "status=none"); err != nil {
 			_ = d.runner.Run(context.Background(), "zfs", "destroy", "-r", baseDataset)
@@ -188,6 +196,10 @@ func (d *ZFSDriver) cloneSnapshot(ctx context.Context, snapshotRef, dataset stri
 	if err := d.runner.Run(ctx, "zfs", "clone", "-p", snapshotRef, dataset); err != nil {
 		return WritableVolume{}, fmt.Errorf("clone zfs snapshot %q into %q: %w", snapshotRef, dataset, err)
 	}
+	if err := d.waitForZvolDevice(ctx, dataset); err != nil {
+		_ = d.runner.Run(context.Background(), "zfs", "destroy", "-r", dataset)
+		return WritableVolume{}, fmt.Errorf("wait for cloned zvol device %q: %w", dataset, err)
+	}
 	return WritableVolume{
 		Ref:            dataset,
 		AttachmentPath: zvolDevicePath(dataset),
@@ -233,6 +245,23 @@ func sanitizeZFSDatasetComponent(value string) string {
 
 func zvolDevicePath(dataset string) string {
 	return filepath.Join(append([]string{"/dev/zvol"}, strings.Split(strings.TrimSpace(dataset), "/")...)...)
+}
+
+func (d *ZFSDriver) waitForZvolDevice(ctx context.Context, dataset string) error {
+	devicePath := zvolDevicePath(dataset)
+	deadline := time.Now().Add(zvolDeviceWaitTimeout)
+	for {
+		if _, err := d.stat(devicePath); err == nil {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timed out waiting for zvol device %q", devicePath)
+		}
+		if ctx.Err() != nil {
+			return fmt.Errorf("context canceled waiting for zvol device %q: %w", devicePath, ctx.Err())
+		}
+		time.Sleep(zvolDeviceWaitInterval)
+	}
 }
 
 func isZFSMissingError(err error) bool {

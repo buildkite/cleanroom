@@ -851,11 +851,11 @@ Definition of done:
 
 #### 2. Tighten Firecracker snapshot semantics
 
-- [todo] replace host process `SIGSTOP`/`SIGCONT` with an explicit pause/resume
+- [done] replace host process `SIGSTOP`/`SIGCONT` with an explicit pause/resume
   or equivalent quiesce strategy if needed
-- [todo] add guest-agent cooperative quiesce hook before snapshot
-- [todo] add guest checkpoint request plumbing
-- [todo] define behavior for pending checkpoint requests and safe-point
+- [done] add guest-agent cooperative quiesce hook before snapshot
+- [done] add guest checkpoint request plumbing
+- [done] define behavior for pending checkpoint requests and safe-point
   materialization
 
 Definition of done:

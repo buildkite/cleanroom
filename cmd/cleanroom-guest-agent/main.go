@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -14,8 +15,10 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 	"unsafe"
 
+	"github.com/buildkite/cleanroom/internal/vsockcontrol"
 	"github.com/buildkite/cleanroom/internal/vsockexec"
 	"github.com/creack/pty"
 	"github.com/mdlayher/vsock"
@@ -23,6 +26,11 @@ import (
 )
 
 func main() {
+	if len(os.Args) >= 3 && os.Args[1] == "checkpoint" && os.Args[2] == "request" {
+		checkpointRequest()
+		return
+	}
+
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("CLEANROOM_GUEST_TRANSPORT")), "stdio") {
 		handleConn(stdioConn{})
 		return
@@ -61,8 +69,30 @@ func handleConn(conn io.ReadWriteCloser) {
 	// lost when reading subsequent input frames.
 	dec := json.NewDecoder(conn)
 
+	// Peek at the first JSON object to determine message type.
+	var raw map[string]json.RawMessage
+	if err := dec.Decode(&raw); err != nil {
+		_ = vsockexec.EncodeResponse(conn, vsockexec.ExecResponse{ExitCode: 1, Error: err.Error()})
+		return
+	}
+
+	// Check for quiesce message type.
+	if typeRaw, ok := raw["type"]; ok {
+		var msgType string
+		if err := json.Unmarshal(typeRaw, &msgType); err == nil && msgType == "quiesce" {
+			handleQuiesce(conn, raw)
+			return
+		}
+	}
+
+	// Re-decode as exec request from the raw map.
+	rawBytes, err := json.Marshal(raw)
+	if err != nil {
+		_ = vsockexec.EncodeResponse(conn, vsockexec.ExecResponse{ExitCode: 1, Error: err.Error()})
+		return
+	}
 	var req vsockexec.ExecRequest
-	if err := dec.Decode(&req); err != nil {
+	if err := json.Unmarshal(rawBytes, &req); err != nil {
 		_ = vsockexec.EncodeResponse(conn, vsockexec.ExecResponse{ExitCode: 1, Error: err.Error()})
 		return
 	}
@@ -362,4 +392,85 @@ func injectEntropy(seed []byte) error {
 		return errno
 	}
 	return nil
+}
+
+func handleQuiesce(conn io.ReadWriteCloser, raw map[string]json.RawMessage) {
+	respond := func(ok bool, errMsg string) {
+		_ = vsockcontrol.EncodeQuiesceResponse(conn, vsockcontrol.QuiesceResponse{OK: ok, Error: errMsg})
+	}
+
+	// Parse optional timeout.
+	var timeoutSec int64 = 10
+	if ts, ok := raw["timeout_seconds"]; ok {
+		_ = json.Unmarshal(ts, &timeoutSec)
+	}
+	if timeoutSec <= 0 {
+		timeoutSec = 10
+	}
+	timeout := time.Duration(timeoutSec) * time.Second
+
+	// First sync.
+	if err := exec.Command("sync").Run(); err != nil {
+		respond(false, fmt.Sprintf("sync: %v", err))
+		return
+	}
+
+	// Run quiesce hook if it exists.
+	const hookPath = "/usr/local/bin/cleanroom-quiesce-hook"
+	if _, err := os.Stat(hookPath); err == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		if err := exec.CommandContext(ctx, hookPath).Run(); err != nil {
+			respond(false, fmt.Sprintf("quiesce hook: %v", err))
+			return
+		}
+	}
+
+	// Second sync.
+	if err := exec.Command("sync").Run(); err != nil {
+		respond(false, fmt.Sprintf("sync: %v", err))
+		return
+	}
+
+	respond(true, "")
+}
+
+func checkpointRequest() {
+	var name string
+	args := os.Args[3:]
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--name" && i+1 < len(args) {
+			name = args[i+1]
+			i++
+		}
+	}
+
+	conn, err := vsock.Dial(2, vsockcontrol.DefaultHostControlPort, nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "dial host control port: %v\n", err)
+		os.Exit(1)
+	}
+	defer conn.Close()
+
+	if err := vsockcontrol.EncodeCheckpointRequest(conn, vsockcontrol.CheckpointRequest{Name: name}); err != nil {
+		fmt.Fprintf(os.Stderr, "send checkpoint request: %v\n", err)
+		os.Exit(1)
+	}
+
+	resp, err := vsockcontrol.DecodeCheckpointResponse(conn)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "read checkpoint response: %v\n", err)
+		os.Exit(1)
+	}
+
+	if resp.Error != "" {
+		fmt.Fprintf(os.Stderr, "checkpoint error: %s\n", resp.Error)
+		os.Exit(1)
+	}
+
+	if resp.Accepted {
+		fmt.Println("checkpoint accepted")
+	} else {
+		fmt.Println("checkpoint pending")
+	}
 }

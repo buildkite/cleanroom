@@ -10,6 +10,15 @@ import (
 	"testing"
 )
 
+// fakeZvolStat uses real os.Stat for normal files but returns a fake success
+// for /dev/zvol paths that don't exist in the test environment.
+func fakeZvolStat(name string) (os.FileInfo, error) {
+	if strings.HasPrefix(name, "/dev/zvol/") {
+		return os.Stat("/dev/null")
+	}
+	return os.Stat(name)
+}
+
 type zfsTestRunner struct {
 	commands []string
 	exists   map[string]bool
@@ -63,6 +72,7 @@ func TestZFSDriverEnsureBaseVolumeAndCloneLifecycle(t *testing.T) {
 	driver, err := NewZFSDriver(ZFSDriverOptions{
 		DatasetRoot: "tank/cleanroom",
 		Runner:      runner,
+		Stat:        fakeZvolStat,
 	})
 	if err != nil {
 		t.Fatalf("NewZFSDriver returned error: %v", err)
@@ -116,6 +126,7 @@ func TestZFSDriverSnapshotCloneAndDestroy(t *testing.T) {
 	driver, err := NewZFSDriver(ZFSDriverOptions{
 		DatasetRoot: "tank/cleanroom",
 		Runner:      runner,
+		Stat:        fakeZvolStat,
 	})
 	if err != nil {
 		t.Fatalf("NewZFSDriver returned error: %v", err)

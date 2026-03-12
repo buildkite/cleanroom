@@ -42,6 +42,11 @@ type Service struct {
 	interactiveCertPin  string
 }
 
+type pendingCheckpointState struct {
+	Name        string
+	RequestedAt time.Time
+}
+
 type sandboxState struct {
 	ID                 string
 	Backend            string
@@ -49,6 +54,7 @@ type sandboxState struct {
 	Firecracker        backend.FirecrackerConfig
 	ActiveExecutionID  string
 	DownloadInProgress bool
+	PendingCheckpoint  *pendingCheckpointState
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
 	LastExecutionID    string
@@ -370,55 +376,37 @@ func (s *Service) ListSandboxes(_ context.Context, _ *cleanroomv1.ListSandboxesR
 	return resp, nil
 }
 
-func (s *Service) CreateSnapshot(ctx context.Context, req *cleanroomv1.CreateSnapshotRequest) (*cleanroomv1.CreateSnapshotResponse, error) {
-	if req == nil {
-		return nil, errors.New("missing request")
-	}
-	sandboxID := strings.TrimSpace(req.GetSandboxId())
-	if sandboxID == "" {
-		return nil, errors.New("missing sandbox_id")
-	}
-
+func (s *Service) createSnapshotForSandbox(ctx context.Context, sandboxID, name, trigger string) (string, error) {
 	store, err := s.snapshotStoreOrErr()
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 
 	now := time.Now().UTC()
 	snapshotID := newSnapshotID()
-	name := strings.TrimSpace(req.GetName())
-
-	var (
-		record          snapshotstore.Record
-		snapshotAdapter backend.SnapshottingAdapter
-	)
 
 	s.mu.Lock()
 	s.ensureMapsLocked()
 	state, ok := s.sandboxes[sandboxID]
 	if !ok {
 		s.mu.Unlock()
-		return nil, fmt.Errorf("unknown sandbox %q", sandboxID)
-	}
-	if err := ensureSandboxIdleLocked(sandboxID, state, s.executions); err != nil {
-		s.mu.Unlock()
-		return nil, err
+		return "", fmt.Errorf("unknown sandbox %q", sandboxID)
 	}
 	adapter, ok := s.Backends[state.Backend]
 	if !ok {
 		s.mu.Unlock()
-		return nil, fmt.Errorf("unknown backend %q", state.Backend)
+		return "", fmt.Errorf("unknown backend %q", state.Backend)
 	}
-	snapshotAdapter, ok = adapter.(backend.SnapshottingAdapter)
+	snapshotAdapter, ok := adapter.(backend.SnapshottingAdapter)
 	if !ok {
 		s.mu.Unlock()
-		return nil, fmt.Errorf("backend %q does not support snapshots", state.Backend)
+		return "", fmt.Errorf("backend %q does not support snapshots", state.Backend)
 	}
 	if state.Policy == nil {
 		s.mu.Unlock()
-		return nil, fmt.Errorf("sandbox %q is missing compiled policy", sandboxID)
+		return "", fmt.Errorf("sandbox %q is missing compiled policy", sandboxID)
 	}
-	record = snapshotstore.Record{
+	record := snapshotstore.Record{
 		SnapshotID:      snapshotID,
 		SourceSandboxID: sandboxID,
 		Backend:         state.Backend,
@@ -427,13 +415,14 @@ func (s *Service) CreateSnapshot(ctx context.Context, req *cleanroomv1.CreateSna
 		Policy:          state.Policy.ToProto(),
 		CreatedAt:       now,
 	}
-	s.recordSandboxEventLocked(state, cleanroomv1.SandboxStatus_SANDBOX_STATUS_PROVISIONING, fmt.Sprintf("snapshot %s in progress", snapshotID))
+	s.recordSandboxEventLocked(state, cleanroomv1.SandboxStatus_SANDBOX_STATUS_PROVISIONING, fmt.Sprintf("snapshot %s in progress (%s)", snapshotID, trigger))
+	fcConfig := state.Firecracker
 	s.mu.Unlock()
 
 	result, err := snapshotAdapter.CreateSnapshot(ctx, backend.SnapshotRequest{
 		SandboxID:         sandboxID,
 		SnapshotID:        snapshotID,
-		FirecrackerConfig: state.Firecracker,
+		FirecrackerConfig: fcConfig,
 	})
 	if err != nil {
 		s.mu.Lock()
@@ -441,7 +430,7 @@ func (s *Service) CreateSnapshot(ctx context.Context, req *cleanroomv1.CreateSna
 			s.recordSandboxEventLocked(current, cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY, fmt.Sprintf("snapshot %s failed: %v", snapshotID, err))
 		}
 		s.mu.Unlock()
-		return nil, fmt.Errorf("create snapshot: %w", err)
+		return "", fmt.Errorf("create snapshot: %w", err)
 	}
 
 	record.StorageRef = strings.TrimSpace(result.StorageRef)
@@ -449,7 +438,7 @@ func (s *Service) CreateSnapshot(ctx context.Context, req *cleanroomv1.CreateSna
 		deleteErr := snapshotAdapter.DeleteSnapshot(ctx, backend.DeleteSnapshotRequest{
 			SnapshotID:        snapshotID,
 			StorageRef:        record.StorageRef,
-			FirecrackerConfig: state.Firecracker,
+			FirecrackerConfig: fcConfig,
 		})
 		if deleteErr != nil && s.Logger != nil {
 			s.Logger.Warn("rollback snapshot after metadata failure failed",
@@ -463,20 +452,140 @@ func (s *Service) CreateSnapshot(ctx context.Context, req *cleanroomv1.CreateSna
 			s.recordSandboxEventLocked(current, cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY, fmt.Sprintf("snapshot %s failed: %v", snapshotID, err))
 		}
 		s.mu.Unlock()
-		return nil, fmt.Errorf("persist snapshot metadata: %w", err)
+		return "", fmt.Errorf("persist snapshot metadata: %w", err)
 	}
 
 	s.mu.Lock()
 	if current, ok := s.sandboxes[sandboxID]; ok {
-		s.recordSandboxEventLocked(current, cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY, fmt.Sprintf("snapshot %s created", snapshotID))
+		s.recordSandboxEventLocked(current, cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY, fmt.Sprintf("snapshot %s created (%s)", snapshotID, trigger))
 	}
 	s.mu.Unlock()
 
-	resp := &cleanroomv1.CreateSnapshotResponse{
+	return snapshotID, nil
+}
+
+func (s *Service) CreateSnapshot(ctx context.Context, req *cleanroomv1.CreateSnapshotRequest) (*cleanroomv1.CreateSnapshotResponse, error) {
+	if req == nil {
+		return nil, errors.New("missing request")
+	}
+	sandboxID := strings.TrimSpace(req.GetSandboxId())
+	if sandboxID == "" {
+		return nil, errors.New("missing sandbox_id")
+	}
+	name := strings.TrimSpace(req.GetName())
+
+	// Validate idle state before calling helper.
+	s.mu.Lock()
+	s.ensureMapsLocked()
+	state, ok := s.sandboxes[sandboxID]
+	if !ok {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("unknown sandbox %q", sandboxID)
+	}
+	if err := ensureSandboxIdleLocked(sandboxID, state, s.executions); err != nil {
+		s.mu.Unlock()
+		return nil, err
+	}
+	s.mu.Unlock()
+
+	snapshotID, err := s.createSnapshotForSandbox(ctx, sandboxID, name, "user request")
+	if err != nil {
+		return nil, err
+	}
+
+	store, err := s.snapshotStoreOrErr()
+	if err != nil {
+		return nil, err
+	}
+	record, _, err := store.Get(ctx, snapshotID)
+	if err != nil {
+		return nil, err
+	}
+
+	return &cleanroomv1.CreateSnapshotResponse{
 		Snapshot: cloneSnapshotRecord(record),
 		Message:  "snapshot created",
+	}, nil
+}
+
+func (s *Service) RequestCheckpoint(ctx context.Context, sandboxID, name string) (accepted, pending bool, message string, err error) {
+	s.mu.Lock()
+	s.ensureMapsLocked()
+	state, ok := s.sandboxes[sandboxID]
+	if !ok {
+		s.mu.Unlock()
+		return false, false, "", fmt.Errorf("unknown sandbox %q", sandboxID)
 	}
-	return resp, nil
+	if state.PendingCheckpoint != nil {
+		s.mu.Unlock()
+		return false, false, "", fmt.Errorf("sandbox %q already has a pending checkpoint", sandboxID)
+	}
+
+	// Check if sandbox is idle (no active exec, no download).
+	idleErr := ensureSandboxIdleLocked(sandboxID, state, s.executions)
+	if idleErr != nil {
+		// Sandbox is busy — record as pending.
+		state.PendingCheckpoint = &pendingCheckpointState{
+			Name:        name,
+			RequestedAt: time.Now().UTC(),
+		}
+		s.recordSandboxEventLocked(state, state.Status, fmt.Sprintf("checkpoint requested (pending): %s", name))
+		s.mu.Unlock()
+		return true, true, "checkpoint will be materialized when sandbox becomes idle", nil
+	}
+
+	// Sandbox is idle — we can snapshot immediately. Mark materializing.
+	state.PendingCheckpoint = &pendingCheckpointState{
+		Name:        name,
+		RequestedAt: time.Now().UTC(),
+	}
+	s.recordSandboxEventLocked(state, cleanroomv1.SandboxStatus_SANDBOX_STATUS_PROVISIONING, fmt.Sprintf("checkpoint requested (materializing): %s", name))
+	s.mu.Unlock()
+
+	// Materialize immediately in a goroutine so the guest call returns quickly.
+	go s.materializePendingCheckpoint(sandboxID)
+	return true, false, "checkpoint accepted, materializing now", nil
+}
+
+func (s *Service) materializePendingCheckpoint(sandboxID string) {
+	s.mu.Lock()
+	state, ok := s.sandboxes[sandboxID]
+	if !ok || state.PendingCheckpoint == nil {
+		s.mu.Unlock()
+		return
+	}
+	name := state.PendingCheckpoint.Name
+	s.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	snapshotID, err := s.createSnapshotForSandbox(ctx, sandboxID, name, "guest checkpoint")
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	state, ok = s.sandboxes[sandboxID]
+	if !ok {
+		return
+	}
+	state.PendingCheckpoint = nil
+	if err != nil {
+		s.recordSandboxEventLocked(state, cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY, fmt.Sprintf("guest checkpoint failed: %v", err))
+		if s.Logger != nil {
+			s.Logger.Warn("materialize pending checkpoint failed",
+				"sandbox_id", sandboxID,
+				"error", err,
+			)
+		}
+		return
+	}
+	s.recordSandboxEventLocked(state, cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY, fmt.Sprintf("guest checkpoint materialized: snapshot %s", snapshotID))
+	if s.Logger != nil {
+		s.Logger.Info("guest checkpoint materialized",
+			"sandbox_id", sandboxID,
+			"snapshot_id", snapshotID,
+			"name", name,
+		)
+	}
 }
 
 func (s *Service) GetSnapshot(ctx context.Context, req *cleanroomv1.GetSnapshotRequest) (*cleanroomv1.GetSnapshotResponse, error) {
@@ -1567,6 +1676,17 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 	if sb, ok := s.sandboxes[sandboxID]; ok && sb.ActiveExecutionID == executionID {
 		sb.ActiveExecutionID = ""
 		sb.UpdatedAt = time.Now().UTC()
+	}
+
+	// Check for pending checkpoint after successful execution.
+	if sb, ok := s.sandboxes[sandboxID]; ok && sb.PendingCheckpoint != nil {
+		// Only materialize on successful execution.
+		if err == nil && result != nil && result.ExitCode == 0 {
+			go s.materializePendingCheckpoint(sandboxID)
+		} else {
+			sb.PendingCheckpoint = nil
+			s.recordSandboxEventLocked(sb, sb.Status, "pending checkpoint discarded: execution did not succeed")
+		}
 	}
 
 	if ex.Cancel != nil {

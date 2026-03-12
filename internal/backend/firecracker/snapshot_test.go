@@ -12,7 +12,6 @@ import (
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/volumestore"
-	"github.com/buildkite/cleanroom/internal/vsockexec"
 )
 
 type testVolumeDriver struct {
@@ -85,12 +84,11 @@ func TestCreateSnapshotSyncsPausesAndClonesRootFS(t *testing.T) {
 	}
 	t.Cleanup(func() { sendProcessSignal = prevSignal })
 
+	var quiesceCalled bool
 	adapter := &Adapter{
-		runGuestCommandFn: func(_ context.Context, _ context.Context, _ <-chan struct{}, _ func() error, _ string, _ uint32, req vsockexec.ExecRequest, _ backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error) {
-			if len(req.Command) != 1 || req.Command[0] != "sync" {
-				t.Fatalf("unexpected command: %v", req.Command)
-			}
-			return vsockexec.ExecResponse{ExitCode: 0}, guestExecTiming{}, nil
+		quiesceGuestFn: func(_ context.Context, _ *sandboxInstance, _ int64) error {
+			quiesceCalled = true
+			return nil
 		},
 		sandboxes: map[string]*sandboxInstance{
 			"cr-test": {
@@ -110,6 +108,9 @@ func TestCreateSnapshotSyncsPausesAndClonesRootFS(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("CreateSnapshot returned error: %v", err)
+	}
+	if !quiesceCalled {
+		t.Fatal("expected quiesceGuestFn to be called")
 	}
 	if got, want := result.StorageRef, filepath.Join(stateHome, "cleanroom", "snapshots", "firecracker", "snap-test", "rootfs.ext4"); got != want {
 		t.Fatalf("unexpected snapshot storage ref: got %q want %q", got, want)
@@ -138,11 +139,8 @@ func TestCreateSnapshotUsesConfiguredSnapshotBaseDir(t *testing.T) {
 	t.Cleanup(func() { sendProcessSignal = prevSignal })
 
 	adapter := &Adapter{
-		runGuestCommandFn: func(_ context.Context, _ context.Context, _ <-chan struct{}, _ func() error, _ string, _ uint32, req vsockexec.ExecRequest, _ backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error) {
-			if len(req.Command) != 1 || req.Command[0] != "sync" {
-				t.Fatalf("unexpected command: %v", req.Command)
-			}
-			return vsockexec.ExecResponse{ExitCode: 0}, guestExecTiming{}, nil
+		quiesceGuestFn: func(_ context.Context, _ *sandboxInstance, _ int64) error {
+			return nil
 		},
 		sandboxes: map[string]*sandboxInstance{
 			"cr-test": {
@@ -186,11 +184,8 @@ func TestCreateSnapshotUsesManagedVolumeRef(t *testing.T) {
 	t.Cleanup(func() { sendProcessSignal = prevSignal })
 
 	adapter := &Adapter{
-		runGuestCommandFn: func(_ context.Context, _ context.Context, _ <-chan struct{}, _ func() error, _ string, _ uint32, req vsockexec.ExecRequest, _ backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error) {
-			if len(req.Command) != 1 || req.Command[0] != "sync" {
-				t.Fatalf("unexpected command: %v", req.Command)
-			}
-			return vsockexec.ExecResponse{ExitCode: 0}, guestExecTiming{}, nil
+		quiesceGuestFn: func(_ context.Context, _ *sandboxInstance, _ int64) error {
+			return nil
 		},
 		sandboxes: map[string]*sandboxInstance{
 			"cr-test": {
@@ -337,7 +332,7 @@ func TestPreparePersistentWritableVolumeUsesBaseVolumeForRootFSPath(t *testing.T
 	if got, want := gotEnsureReq.SourcePath, rootfsPath; got != want {
 		t.Fatalf("unexpected base source path: got %q want %q", got, want)
 	}
-	if got, want := gotEnsureReq.BaseID, "runtime-rootfs"; got != want {
+	if got, want := gotEnsureReq.BaseID, baseVolumeID(rootfsPath); got != want {
 		t.Fatalf("unexpected base id: got %q want %q", got, want)
 	}
 	if got, want := gotCreateReq.BaseRef, "base-ref"; got != want {
@@ -348,6 +343,22 @@ func TestPreparePersistentWritableVolumeUsesBaseVolumeForRootFSPath(t *testing.T
 	}
 	if got, want := writable.Ref, "volume-ref"; got != want {
 		t.Fatalf("unexpected writable volume ref: got %q want %q", got, want)
+	}
+}
+
+func TestBaseVolumeIDDistinguishesDifferentPaths(t *testing.T) {
+	t.Parallel()
+
+	idA := baseVolumeID("/cache/firecracker/runtime-rootfs/abc123.ext4")
+	idB := baseVolumeID("/cache/firecracker/runtime-rootfs/def456.ext4")
+	if idA == idB {
+		t.Fatalf("expected different base volume IDs for different paths, got %q", idA)
+	}
+
+	// Same path must produce the same ID.
+	idA2 := baseVolumeID("/cache/firecracker/runtime-rootfs/abc123.ext4")
+	if idA != idA2 {
+		t.Fatalf("expected stable base volume ID, got %q and %q", idA, idA2)
 	}
 }
 
