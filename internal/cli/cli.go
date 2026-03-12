@@ -152,8 +152,16 @@ type clientFlags struct {
 	TLSCA    string `name:"tls-ca" aliases:"tlsca" help:"Path to CA certificate for server verification (auto-discovered from XDG config for https)" env:"CLEANROOM_TLS_CA"`
 }
 
-func (f *clientFlags) connect() (*controlclient.Client, error) {
-	ep, err := endpoint.Resolve(f.Host)
+func (f *clientFlags) resolvedHost(cfg runtimeconfig.Config) string {
+	host := strings.TrimSpace(f.Host)
+	if host != "" {
+		return host
+	}
+	return strings.TrimSpace(cfg.ControlHost)
+}
+
+func (f *clientFlags) connect(ctx *runtimeContext) (*controlclient.Client, error) {
+	ep, err := endpoint.Resolve(f.resolvedHost(ctx.Config))
 	if err != nil {
 		return nil, err
 	}
@@ -210,12 +218,21 @@ type ConsoleCommand struct {
 type ServeCommand struct {
 	Action        string `arg:"" optional:"" help:"Serve action (install, uninstall, status)"`
 	Force         bool   `help:"Overwrite existing daemon service file (serve install only)"`
+	User          bool   `help:"Use user daemon scope (launchd only; install/uninstall/status actions)"`
+	System        bool   `help:"Use system daemon scope (install/uninstall/status actions)"`
 	Listen        string `help:"Listen endpoint for control API (defaults to runtime endpoint)"`
 	GatewayListen string `help:"Listen address for the host gateway (default :8170, use :0 for ephemeral port)"`
 	LogLevel      string `help:"Server log level (debug|info|warn|error)"`
 	TLSCert       string `help:"Path to TLS server certificate (auto-discovered from XDG config for https)" env:"CLEANROOM_TLS_CERT"`
 	TLSKey        string `help:"Path to TLS server private key (auto-discovered from XDG config for https)" env:"CLEANROOM_TLS_KEY"`
 }
+
+type daemonScope string
+
+const (
+	daemonScopeSystem daemonScope = "system"
+	daemonScopeUser   daemonScope = "user"
+)
 
 type StatusCommand struct {
 	RunID   string `help:"Run ID to inspect"`
@@ -345,16 +362,19 @@ var (
 
 		return "", fmt.Errorf("%w; local docker resolution failed: %v", err, localErr)
 	}
-	serveInstallGOOS            = runtime.GOOS
-	serveInstallEUID            = os.Geteuid
-	serveInstallStat            = os.Stat
-	serveInstallMkdirAll        = os.MkdirAll
-	serveInstallWriteFile       = os.WriteFile
-	serveInstallRemoveFile      = os.Remove
-	serveInstallExecutablePath  = os.Executable
-	serveInstallRunCommand      = runServeInstallCommand
-	serveInstallSystemdUnitPath = "/etc/systemd/system/" + systemdServiceName
-	serveInstallLaunchdPath     = "/Library/LaunchDaemons/" + launchdServiceName + ".plist"
+	serveInstallGOOS             = runtime.GOOS
+	serveInstallEUID             = os.Geteuid
+	serveInstallUID              = os.Getuid
+	serveInstallStat             = os.Stat
+	serveInstallMkdirAll         = os.MkdirAll
+	serveInstallWriteFile        = os.WriteFile
+	serveInstallRemoveFile       = os.Remove
+	serveInstallUserHomeDir      = os.UserHomeDir
+	serveInstallExecutablePath   = os.Executable
+	serveInstallRunCommand       = runServeInstallCommand
+	serveInstallRunCommandOutput = runServeInstallCommandOutput
+	serveInstallSystemdUnitPath  = "/etc/systemd/system/" + systemdServiceName
+	serveInstallLaunchdPath      = "/Library/LaunchDaemons/" + launchdServiceName + ".plist"
 )
 
 func isExplicitRegistryReference(raw string) bool {
@@ -709,7 +729,7 @@ func (c *ImageBumpRefCommand) Run(ctx *runtimeContext) error {
 }
 
 func (c *SandboxListCommand) Run(ctx *runtimeContext) error {
-	client, err := c.connect()
+	client, err := c.connect(ctx)
 	if err != nil {
 		return err
 	}
@@ -748,7 +768,7 @@ func (c *SandboxListCommand) Run(ctx *runtimeContext) error {
 }
 
 func (c *SandboxTerminateCommand) Run(ctx *runtimeContext) error {
-	client, err := c.connect()
+	client, err := c.connect(ctx)
 	if err != nil {
 		return err
 	}
@@ -765,7 +785,8 @@ func (c *SandboxTerminateCommand) Run(ctx *runtimeContext) error {
 }
 
 func runSandboxCreate(ctx *runtimeContext, connectFlags clientFlags, chdir, backend, imageRefOverride string, launchSeconds int64, outputJSON bool) error {
-	client, err := connectFlags.connect()
+	resolvedHost := connectFlags.resolvedHost(ctx.Config)
+	client, err := connectFlags.connect(ctx)
 	if err != nil {
 		return err
 	}
@@ -778,7 +799,7 @@ func runSandboxCreate(ctx *runtimeContext, connectFlags clientFlags, chdir, back
 	if err != nil {
 		return err
 	}
-	allowLocalImageOverride, err := isLocalControlPlaneEndpoint(connectFlags.Host)
+	allowLocalImageOverride, err := isLocalControlPlaneEndpoint(resolvedHost)
 	if err != nil {
 		return err
 	}
@@ -828,7 +849,8 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 		return err
 	}
 
-	client, err := e.connect()
+	host := e.resolvedHost(ctx.Config)
+	client, err := e.connect(ctx)
 	if err != nil {
 		return err
 	}
@@ -838,12 +860,12 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 	}
 
 	logger.Debug("sending execution request",
-		"host", e.Host,
+		"host", host,
 		"backend", e.Backend,
 		"sandbox_id", strings.TrimSpace(e.SandboxID),
 		"command_argc", len(e.Command),
 	)
-	sandboxID, err := ensureSandboxID(client, ctx.Loader, cwd, e.Host, e.Backend, strings.TrimSpace(e.SandboxID), e.Image, e.LaunchSeconds)
+	sandboxID, err := ensureSandboxID(client, ctx.Loader, cwd, host, e.Backend, strings.TrimSpace(e.SandboxID), e.Image, e.LaunchSeconds)
 	if err != nil {
 		return err
 	}
@@ -987,7 +1009,8 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 		return err
 	}
 
-	client, err := c.connect()
+	host := c.resolvedHost(ctx.Config)
+	client, err := c.connect(ctx)
 	if err != nil {
 		return err
 	}
@@ -1001,12 +1024,12 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 		command = []string{"sh"}
 	}
 	logger.Debug("starting interactive console",
-		"host", c.Host,
+		"host", host,
 		"backend", c.Backend,
 		"sandbox_id", strings.TrimSpace(c.SandboxID),
 		"command_argc", len(command),
 	)
-	sandboxID, err := ensureSandboxID(client, ctx.Loader, cwd, c.Host, c.Backend, strings.TrimSpace(c.SandboxID), c.Image, c.LaunchSeconds)
+	sandboxID, err := ensureSandboxID(client, ctx.Loader, cwd, host, c.Backend, strings.TrimSpace(c.SandboxID), c.Image, c.LaunchSeconds)
 	if err != nil {
 		return err
 	}
@@ -1063,7 +1086,7 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 		}
 		return fmt.Errorf("open interactive execution: %w", err)
 	}
-	controlEndpoint, err := endpoint.Resolve(c.Host)
+	controlEndpoint, err := endpoint.Resolve(host)
 	if err != nil {
 		return err
 	}
@@ -1348,6 +1371,9 @@ func (s *ServeCommand) Run(ctx *runtimeContext) error {
 		if s.Force {
 			return errors.New("--force is only supported with 'cleanroom serve install'")
 		}
+		if s.User || s.System {
+			return errors.New("--user and --system are only supported with 'cleanroom serve install', 'cleanroom serve uninstall', or 'cleanroom serve status'")
+		}
 		return s.runServer(ctx)
 	case "install":
 		return s.installDaemon(ctx)
@@ -1360,10 +1386,58 @@ func (s *ServeCommand) Run(ctx *runtimeContext) error {
 	}
 }
 
-func (s *ServeCommand) daemonRunArgs(cwd string) ([]string, error) {
+func (s *ServeCommand) requestedDaemonScope() (daemonScope, bool, error) {
+	if s.User && s.System {
+		return "", false, errors.New("--user and --system cannot be used together")
+	}
+	if s.User {
+		return daemonScopeUser, true, nil
+	}
+	if s.System {
+		return daemonScopeSystem, true, nil
+	}
+	return "", false, nil
+}
+
+func (s *ServeCommand) effectiveDaemonScope() (daemonScope, error) {
+	requested, hasScope, err := s.requestedDaemonScope()
+	if err != nil {
+		return "", err
+	}
+
+	switch serveInstallGOOS {
+	case "linux":
+		if hasScope && requested == daemonScopeUser {
+			return "", errors.New("--user is unsupported on linux (systemd user mode is not yet implemented)")
+		}
+		return daemonScopeSystem, nil
+	case "darwin":
+		if hasScope {
+			if requested == daemonScopeUser && serveInstallEUID() == 0 {
+				return "", errors.New("--user cannot be used as root on darwin (run without sudo)")
+			}
+			return requested, nil
+		}
+		if serveInstallEUID() == 0 {
+			return daemonScopeSystem, nil
+		}
+		return daemonScopeUser, nil
+	default:
+		if hasScope && requested == daemonScopeUser {
+			return "", fmt.Errorf("--user is unsupported on %s", serveInstallGOOS)
+		}
+		return daemonScopeSystem, nil
+	}
+}
+
+func (s *ServeCommand) daemonRunArgs(cwd string, scope daemonScope) ([]string, error) {
 	listen := strings.TrimSpace(s.Listen)
 	if listen == "" {
-		listen = defaultDaemonListen
+		if scope == daemonScopeUser {
+			listen = "unix://" + endpoint.Default().Address
+		} else {
+			listen = defaultDaemonListen
+		}
 	}
 
 	args := []string{"serve", "--listen", listen}
@@ -1410,17 +1484,26 @@ func resolveDaemonInstallPath(cwd, value string) (string, error) {
 }
 
 func (s *ServeCommand) installDaemon(ctx *runtimeContext) error {
+	scope, err := s.effectiveDaemonScope()
+	if err != nil {
+		return err
+	}
+
 	var installFn func(io.Writer, string, []string, bool) error
 	switch serveInstallGOOS {
 	case "linux":
 		installFn = installSystemdDaemon
 	case "darwin":
-		installFn = installLaunchdDaemon
+		if scope == daemonScopeUser {
+			installFn = installLaunchdUserDaemon
+		} else {
+			installFn = installLaunchdDaemon
+		}
 	default:
 		return fmt.Errorf("serve install is unsupported on %s (expected linux or darwin)", serveInstallGOOS)
 	}
 
-	if serveInstallEUID() != 0 {
+	if scope == daemonScopeSystem && serveInstallEUID() != 0 {
 		return errors.New("serve install requires root privileges (use sudo cleanroom serve install)")
 	}
 
@@ -1435,7 +1518,7 @@ func (s *ServeCommand) installDaemon(ctx *runtimeContext) error {
 		}
 	}
 
-	args, err := s.daemonRunArgs(ctx.CWD)
+	args, err := s.daemonRunArgs(ctx.CWD, scope)
 	if err != nil {
 		return err
 	}
@@ -1443,17 +1526,26 @@ func (s *ServeCommand) installDaemon(ctx *runtimeContext) error {
 }
 
 func (s *ServeCommand) uninstallDaemon(ctx *runtimeContext) error {
+	scope, err := s.effectiveDaemonScope()
+	if err != nil {
+		return err
+	}
+
 	var uninstallFn func(io.Writer) error
 	switch serveInstallGOOS {
 	case "linux":
 		uninstallFn = uninstallSystemdDaemon
 	case "darwin":
-		uninstallFn = uninstallLaunchdDaemon
+		if scope == daemonScopeUser {
+			uninstallFn = uninstallLaunchdUserDaemon
+		} else {
+			uninstallFn = uninstallLaunchdDaemon
+		}
 	default:
 		return fmt.Errorf("serve uninstall is unsupported on %s (expected linux or darwin)", serveInstallGOOS)
 	}
 
-	if serveInstallEUID() != 0 {
+	if scope == daemonScopeSystem && serveInstallEUID() != 0 {
 		return errors.New("serve uninstall requires root privileges (use sudo cleanroom serve uninstall)")
 	}
 
@@ -1484,16 +1576,28 @@ func uninstallSystemdDaemon(stdout io.Writer) error {
 }
 
 func uninstallLaunchdDaemon(stdout io.Writer) error {
-	if _, err := serveInstallStat(serveInstallLaunchdPath); errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("service file %s does not exist", serveInstallLaunchdPath)
+	return uninstallLaunchdDaemonInDomain(stdout, serveInstallLaunchdPath, "system")
+}
+
+func uninstallLaunchdUserDaemon(stdout io.Writer) error {
+	path, err := launchdUserServicePath()
+	if err != nil {
+		return err
+	}
+	return uninstallLaunchdDaemonInDomain(stdout, path, launchdUserDomain())
+}
+
+func uninstallLaunchdDaemonInDomain(stdout io.Writer, servicePath, domain string) error {
+	if _, err := serveInstallStat(servicePath); errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("service file %s does not exist", servicePath)
 	}
 
-	if err := serveInstallRunCommand("launchctl", "bootout", "system/"+launchdServiceName); err != nil && !isExitError(err) {
+	if err := serveInstallRunCommand("launchctl", "bootout", launchdServiceTarget(domain)); err != nil && !isExitError(err) {
 		return fmt.Errorf("bootout launchd service %s: %w", launchdServiceName, err)
 	}
 
-	if err := serveInstallRemoveFile(serveInstallLaunchdPath); err != nil {
-		return fmt.Errorf("remove service file %s: %w", serveInstallLaunchdPath, err)
+	if err := serveInstallRemoveFile(servicePath); err != nil {
+		return fmt.Errorf("remove service file %s: %w", servicePath, err)
 	}
 
 	_, err := fmt.Fprintf(stdout, "daemon uninstalled\nmanager=launchd\nservice=%s\n", launchdServiceName)
@@ -1501,12 +1605,21 @@ func uninstallLaunchdDaemon(stdout io.Writer) error {
 }
 
 func (s *ServeCommand) daemonStatus(ctx *runtimeContext) error {
+	scope, err := s.effectiveDaemonScope()
+	if err != nil {
+		return err
+	}
+
 	var statusFn func(io.Writer) error
 	switch serveInstallGOOS {
 	case "linux":
 		statusFn = systemdDaemonStatus
 	case "darwin":
-		statusFn = launchdDaemonStatus
+		if scope == daemonScopeUser {
+			statusFn = launchdUserDaemonStatus
+		} else {
+			statusFn = launchdDaemonStatus
+		}
 	default:
 		return fmt.Errorf("serve status is unsupported on %s (expected linux or darwin)", serveInstallGOOS)
 	}
@@ -1540,21 +1653,167 @@ func systemdDaemonStatus(stdout io.Writer) error {
 }
 
 func launchdDaemonStatus(stdout io.Writer) error {
+	return launchdDaemonStatusInDomain(stdout, serveInstallLaunchdPath, "system")
+}
+
+func launchdUserDaemonStatus(stdout io.Writer) error {
+	path, err := launchdUserServicePath()
+	if err != nil {
+		return err
+	}
+	return launchdDaemonStatusInDomain(stdout, path, launchdUserDomain())
+}
+
+func launchdDaemonStatusInDomain(stdout io.Writer, servicePath, domain string) error {
 	installed := "false"
-	if _, err := serveInstallStat(serveInstallLaunchdPath); err == nil {
+	if _, err := serveInstallStat(servicePath); err == nil {
 		installed = "true"
 	}
 
 	active := "inactive"
-	if err := serveInstallRunCommand("launchctl", "print", "system/"+launchdServiceName); err == nil {
-		active = "active"
+	state := ""
+	if output, err := serveInstallRunCommandOutput("launchctl", "print", launchdServiceTarget(domain)); err == nil {
+		state = launchdServiceState(output)
+		if state == "running" {
+			active = "active"
+		}
 	} else if !isExitError(err) {
 		return fmt.Errorf("check launchd service state: %w", err)
 	}
 
+	listen := ""
+	if installed == "true" {
+		if value, err := launchdConfiguredListenEndpoint(servicePath); err == nil {
+			listen = value
+		}
+	}
+
 	_, err := fmt.Fprintf(stdout, "manager=launchd\nservice=%s\ninstalled=%s\nactive=%s\n",
 		launchdServiceName, installed, active)
-	return err
+	if err != nil {
+		return err
+	}
+	if state != "" {
+		if _, err := fmt.Fprintf(stdout, "state=%s\n", state); err != nil {
+			return err
+		}
+	}
+	if listen != "" {
+		if _, err := fmt.Fprintf(stdout, "listen=%s\n", listen); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func launchdServiceState(output string) string {
+	for _, line := range strings.Split(output, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "state =") {
+			continue
+		}
+		return strings.TrimSpace(strings.TrimPrefix(trimmed, "state ="))
+	}
+	return ""
+}
+
+func launchdConfiguredListenEndpoint(plistPath string) (string, error) {
+	raw, err := os.ReadFile(plistPath)
+	if err != nil {
+		return "", err
+	}
+
+	args, err := launchdProgramArguments(raw)
+	if err != nil {
+		return "", err
+	}
+
+	for i := 0; i < len(args)-1; i++ {
+		if strings.TrimSpace(args[i]) == "--listen" {
+			return strings.TrimSpace(args[i+1]), nil
+		}
+	}
+	return "", nil
+}
+
+func launchdProgramArguments(plistContent []byte) ([]string, error) {
+	decoder := xml.NewDecoder(bytes.NewReader(plistContent))
+	for {
+		tok, err := decoder.Token()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return nil, err
+		}
+
+		start, ok := tok.(xml.StartElement)
+		if !ok || start.Name.Local != "key" {
+			continue
+		}
+
+		var key string
+		if err := decoder.DecodeElement(&key, &start); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(key) != "ProgramArguments" {
+			continue
+		}
+
+		for {
+			tok, err = decoder.Token()
+			if err != nil {
+				if errors.Is(err, io.EOF) {
+					return nil, errors.New("ProgramArguments value missing")
+				}
+				return nil, err
+			}
+
+			start, ok = tok.(xml.StartElement)
+			if !ok {
+				continue
+			}
+			if start.Name.Local != "array" {
+				if err := decoder.Skip(); err != nil {
+					return nil, err
+				}
+				continue
+			}
+			return plistStringArray(decoder)
+		}
+	}
+
+	return nil, errors.New("ProgramArguments not found")
+}
+
+func plistStringArray(decoder *xml.Decoder) ([]string, error) {
+	var values []string
+	for {
+		tok, err := decoder.Token()
+		if err != nil {
+			return nil, err
+		}
+
+		switch token := tok.(type) {
+		case xml.StartElement:
+			if token.Name.Local != "string" {
+				if err := decoder.Skip(); err != nil {
+					return nil, err
+				}
+				continue
+			}
+
+			var value string
+			if err := decoder.DecodeElement(&value, &token); err != nil {
+				return nil, err
+			}
+			values = append(values, value)
+		case xml.EndElement:
+			if token.Name.Local == "array" {
+				return values, nil
+			}
+		}
+	}
 }
 
 func installSystemdDaemon(stdout io.Writer, executablePath string, args []string, force bool) error {
@@ -1580,22 +1839,51 @@ func installSystemdDaemon(stdout io.Writer, executablePath string, args []string
 }
 
 func installLaunchdDaemon(stdout io.Writer, executablePath string, args []string, force bool) error {
+	return installLaunchdDaemonInDomain(stdout, executablePath, args, force, serveInstallLaunchdPath, "system")
+}
+
+func installLaunchdUserDaemon(stdout io.Writer, executablePath string, args []string, force bool) error {
+	path, err := launchdUserServicePath()
+	if err != nil {
+		return err
+	}
+	return installLaunchdDaemonInDomain(stdout, executablePath, args, force, path, launchdUserDomain())
+}
+
+func launchdUserServicePath() (string, error) {
+	home, err := serveInstallUserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve user home directory: %w", err)
+	}
+	return filepath.Join(home, "Library", "LaunchAgents", launchdServiceName+".plist"), nil
+}
+
+func launchdUserDomain() string {
+	return fmt.Sprintf("gui/%d", serveInstallUID())
+}
+
+func launchdServiceTarget(domain string) string {
+	return strings.TrimSpace(domain) + "/" + launchdServiceName
+}
+
+func installLaunchdDaemonInDomain(stdout io.Writer, executablePath string, args []string, force bool, servicePath, domain string) error {
 	content := renderLaunchdService(executablePath, args)
-	if err := writeDaemonFile(serveInstallLaunchdPath, content, force, 0o644); err != nil {
+	if err := writeDaemonFile(servicePath, content, force, 0o644); err != nil {
 		return err
 	}
 
+	target := launchdServiceTarget(domain)
 	if force {
-		_ = serveInstallRunCommand("launchctl", "bootout", "system/"+launchdServiceName)
+		_ = serveInstallRunCommand("launchctl", "bootout", target)
 	}
-	if err := serveInstallRunCommand("launchctl", "bootstrap", "system", serveInstallLaunchdPath); err != nil {
+	if err := serveInstallRunCommand("launchctl", "bootstrap", domain, servicePath); err != nil {
 		return fmt.Errorf("bootstrap launchd service %s: %w", launchdServiceName, err)
 	}
-	if err := serveInstallRunCommand("launchctl", "enable", "system/"+launchdServiceName); err != nil {
+	if err := serveInstallRunCommand("launchctl", "enable", target); err != nil {
 		return fmt.Errorf("enable launchd service %s: %w", launchdServiceName, err)
 	}
 
-	_, err := fmt.Fprintf(stdout, "daemon installed\nmanager=launchd\nservice=%s\npath=%s\n", launchdServiceName, serveInstallLaunchdPath)
+	_, err := fmt.Fprintf(stdout, "daemon installed\nmanager=launchd\nservice=%s\npath=%s\n", launchdServiceName, servicePath)
 	return err
 }
 
@@ -1692,6 +1980,11 @@ func isExitError(err error) bool {
 }
 
 func runServeInstallCommand(name string, args ...string) error {
+	_, err := runServeInstallCommandOutput(name, args...)
+	return err
+}
+
+func runServeInstallCommandOutput(name string, args ...string) (string, error) {
 	cmd := exec.Command(name, args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -1700,9 +1993,9 @@ func runServeInstallCommand(name string, args ...string) error {
 			msg = "no stderr output"
 		}
 		parts := append([]string{name}, args...)
-		return fmt.Errorf("%s: %w (%s)", strings.Join(parts, " "), err, msg)
+		return "", fmt.Errorf("%s: %w (%s)", strings.Join(parts, " "), err, msg)
 	}
-	return nil
+	return string(out), nil
 }
 
 func (s *ServeCommand) runServer(ctx *runtimeContext) error {

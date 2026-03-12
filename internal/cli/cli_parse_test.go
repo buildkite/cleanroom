@@ -203,3 +203,27 @@ func TestServeInstallForceParses(t *testing.T) {
 		t.Fatal("expected --force to set Serve.Force")
 	}
 }
+
+func TestServeInstallUserParses(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"serve", "install", "--user"}); err != nil {
+		t.Fatalf("parse serve install --user returned error: %v", err)
+	}
+	if !c.Serve.User {
+		t.Fatal("expected --user to set Serve.User")
+	}
+}
+
+func TestServeInstallSystemParses(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"serve", "install", "--system"}); err != nil {
+		t.Fatalf("parse serve install --system returned error: %v", err)
+	}
+	if !c.Serve.System {
+		t.Fatal("expected --system to set Serve.System")
+	}
+}

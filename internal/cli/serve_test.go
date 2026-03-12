@@ -39,9 +39,12 @@ func TestShouldInstallGatewayFirewall(t *testing.T) {
 
 func TestServeInstallRequiresRoot(t *testing.T) {
 	prevEUID := serveInstallEUID
+	prevGOOS := serveInstallGOOS
 	serveInstallEUID = func() int { return 1000 }
+	serveInstallGOOS = "linux"
 	t.Cleanup(func() {
 		serveInstallEUID = prevEUID
+		serveInstallGOOS = prevGOOS
 	})
 
 	stdout, _ := makeStdoutCapture(t)
@@ -55,6 +58,18 @@ func TestServeInstallRequiresRoot(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "sudo cleanroom serve install") {
 		t.Fatalf("expected sudo guidance, got: %v", err)
+	}
+}
+
+func TestServeRunRejectsScopeFlags(t *testing.T) {
+	stdout, _ := makeStdoutCapture(t)
+	cmd := &ServeCommand{User: true}
+	err := cmd.Run(&runtimeContext{CWD: t.TempDir(), Stdout: stdout})
+	if err == nil {
+		t.Fatal("expected scope-flag validation error")
+	}
+	if !strings.Contains(err.Error(), "only supported with") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -236,6 +251,123 @@ func TestServeInstallUsesProvidedListenInUnit(t *testing.T) {
 	}
 	if strings.Contains(content, "--listen unix:///var/run/cleanroom/cleanroom.sock") {
 		t.Fatalf("did not expect default listen when custom listen is provided, got:\n%s", content)
+	}
+}
+
+func TestServeInstallDarwinDefaultsToUserScopeForNonRoot(t *testing.T) {
+	tmpDir := t.TempDir()
+	plistPath := filepath.Join(tmpDir, "Library", "LaunchAgents", launchdServiceName+".plist")
+
+	prevEUID := serveInstallEUID
+	prevUID := serveInstallUID
+	prevGOOS := serveInstallGOOS
+	prevUserHomeDir := serveInstallUserHomeDir
+	prevExecutable := serveInstallExecutablePath
+	prevRunCommand := serveInstallRunCommand
+	serveInstallEUID = func() int { return 501 }
+	serveInstallUID = func() int { return 501 }
+	serveInstallGOOS = "darwin"
+	serveInstallUserHomeDir = func() (string, error) { return tmpDir, nil }
+	serveInstallExecutablePath = func() (string, error) { return "/usr/local/bin/cleanroom", nil }
+	var calls [][]string
+	serveInstallRunCommand = func(name string, args ...string) error {
+		calls = append(calls, append([]string{name}, args...))
+		return nil
+	}
+	t.Cleanup(func() {
+		serveInstallEUID = prevEUID
+		serveInstallUID = prevUID
+		serveInstallGOOS = prevGOOS
+		serveInstallUserHomeDir = prevUserHomeDir
+		serveInstallExecutablePath = prevExecutable
+		serveInstallRunCommand = prevRunCommand
+	})
+
+	stdout, _ := makeStdoutCapture(t)
+	cmd := &ServeCommand{Action: "install"}
+	if err := cmd.Run(&runtimeContext{CWD: tmpDir, Stdout: stdout}); err != nil {
+		t.Fatalf("ServeCommand.Run returned error: %v", err)
+	}
+
+	wantDomain := "gui/501"
+	if !containsServeInstallCall(calls, []string{"launchctl", "bootstrap", wantDomain}) {
+		t.Fatalf("expected launchctl bootstrap for user domain %q, calls=%v", wantDomain, calls)
+	}
+	if containsServeInstallCall(calls, []string{"launchctl", "bootstrap", "system"}) {
+		t.Fatalf("did not expect launchctl bootstrap for system domain, calls=%v", calls)
+	}
+	if _, err := os.Stat(plistPath); err != nil {
+		t.Fatalf("expected user launchd plist to be written at %s: %v", plistPath, err)
+	}
+	raw, err := os.ReadFile(plistPath)
+	if err != nil {
+		t.Fatalf("read user launchd plist: %v", err)
+	}
+	if strings.Contains(string(raw), "--listen unix:///var/run/cleanroom/cleanroom.sock") {
+		t.Fatalf("did not expect user launchd plist to use system socket:\n%s", raw)
+	}
+}
+
+func TestServeInstallDarwinSystemScopeRequiresRoot(t *testing.T) {
+	prevEUID := serveInstallEUID
+	prevGOOS := serveInstallGOOS
+	serveInstallEUID = func() int { return 501 }
+	serveInstallGOOS = "darwin"
+	t.Cleanup(func() {
+		serveInstallEUID = prevEUID
+		serveInstallGOOS = prevGOOS
+	})
+
+	stdout, _ := makeStdoutCapture(t)
+	cmd := &ServeCommand{Action: "install", System: true}
+	err := cmd.Run(&runtimeContext{CWD: t.TempDir(), Stdout: stdout})
+	if err == nil {
+		t.Fatal("expected root requirement error for --system")
+	}
+	if !strings.Contains(err.Error(), "requires root") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestServeInstallLinuxUserScopeUnsupported(t *testing.T) {
+	prevEUID := serveInstallEUID
+	prevGOOS := serveInstallGOOS
+	serveInstallEUID = func() int { return 1000 }
+	serveInstallGOOS = "linux"
+	t.Cleanup(func() {
+		serveInstallEUID = prevEUID
+		serveInstallGOOS = prevGOOS
+	})
+
+	stdout, _ := makeStdoutCapture(t)
+	cmd := &ServeCommand{Action: "install", User: true}
+	err := cmd.Run(&runtimeContext{CWD: t.TempDir(), Stdout: stdout})
+	if err == nil {
+		t.Fatal("expected unsupported --user error on linux")
+	}
+	if !strings.Contains(err.Error(), "--user is unsupported on linux") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestServeInstallRejectsUserAndSystemTogether(t *testing.T) {
+	prevEUID := serveInstallEUID
+	prevGOOS := serveInstallGOOS
+	serveInstallEUID = func() int { return 501 }
+	serveInstallGOOS = "darwin"
+	t.Cleanup(func() {
+		serveInstallEUID = prevEUID
+		serveInstallGOOS = prevGOOS
+	})
+
+	stdout, _ := makeStdoutCapture(t)
+	cmd := &ServeCommand{Action: "install", User: true, System: true}
+	err := cmd.Run(&runtimeContext{CWD: t.TempDir(), Stdout: stdout})
+	if err == nil {
+		t.Fatal("expected conflicting scope flags error")
+	}
+	if !strings.Contains(err.Error(), "cannot be used together") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -468,7 +600,7 @@ func TestServeStatusSystemdInstalled(t *testing.T) {
 	})
 
 	stdout, readStdout := makeStdoutCapture(t)
-	cmd := &ServeCommand{Action: "status"}
+	cmd := &ServeCommand{Action: "status", System: true}
 	if err := cmd.Run(&runtimeContext{CWD: tmpDir, Stdout: stdout}); err != nil {
 		t.Fatalf("ServeCommand.Run returned error: %v", err)
 	}
@@ -504,7 +636,7 @@ func TestServeStatusSystemdNotInstalled(t *testing.T) {
 	})
 
 	stdout, readStdout := makeStdoutCapture(t)
-	cmd := &ServeCommand{Action: "status"}
+	cmd := &ServeCommand{Action: "status", System: true}
 	if err := cmd.Run(&runtimeContext{CWD: tmpDir, Stdout: stdout}); err != nil {
 		t.Fatalf("ServeCommand.Run returned error: %v", err)
 	}
@@ -529,13 +661,87 @@ func TestServeStatusUnsupportedOS(t *testing.T) {
 	})
 
 	stdout, _ := makeStdoutCapture(t)
-	cmd := &ServeCommand{Action: "status"}
+	cmd := &ServeCommand{Action: "status", System: true}
 	err := cmd.Run(&runtimeContext{CWD: t.TempDir(), Stdout: stdout})
 	if err == nil {
 		t.Fatal("expected unsupported OS error")
 	}
 	if !strings.Contains(err.Error(), "unsupported on windows") {
 		t.Fatalf("expected unsupported OS message, got: %v", err)
+	}
+}
+
+func TestServeStatusLaunchdIncludesListenEndpoint(t *testing.T) {
+	tmpDir := t.TempDir()
+	plistPath := filepath.Join(tmpDir, "com.buildkite.cleanroom.plist")
+	content := renderLaunchdService("/usr/local/bin/cleanroom", []string{"serve", "--listen", "unix:///tmp/custom-cleanroom.sock"})
+	if err := os.WriteFile(plistPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write launchd plist: %v", err)
+	}
+
+	prevGOOS := serveInstallGOOS
+	prevLaunchdPath := serveInstallLaunchdPath
+	prevRunCommand := serveInstallRunCommand
+	prevRunCommandOutput := serveInstallRunCommandOutput
+	serveInstallGOOS = "darwin"
+	serveInstallLaunchdPath = plistPath
+	serveInstallRunCommand = func(name string, args ...string) error { return nil }
+	serveInstallRunCommandOutput = func(name string, args ...string) (string, error) {
+		return "state = running\n", nil
+	}
+	t.Cleanup(func() {
+		serveInstallGOOS = prevGOOS
+		serveInstallLaunchdPath = prevLaunchdPath
+		serveInstallRunCommand = prevRunCommand
+		serveInstallRunCommandOutput = prevRunCommandOutput
+	})
+
+	stdout, readStdout := makeStdoutCapture(t)
+	cmd := &ServeCommand{Action: "status", System: true}
+	if err := cmd.Run(&runtimeContext{CWD: tmpDir, Stdout: stdout}); err != nil {
+		t.Fatalf("ServeCommand.Run returned error: %v", err)
+	}
+
+	out := readStdout()
+	if !strings.Contains(out, "listen=unix:///tmp/custom-cleanroom.sock") {
+		t.Fatalf("expected launchd status to include configured listen endpoint, got: %s", out)
+	}
+}
+
+func TestServeStatusLaunchdReportsInactiveWhenNotRunning(t *testing.T) {
+	tmpDir := t.TempDir()
+	plistPath := filepath.Join(tmpDir, "com.buildkite.cleanroom.plist")
+	content := renderLaunchdService("/usr/local/bin/cleanroom", []string{"serve", "--listen", "unix:///tmp/custom-cleanroom.sock"})
+	if err := os.WriteFile(plistPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write launchd plist: %v", err)
+	}
+
+	prevGOOS := serveInstallGOOS
+	prevLaunchdPath := serveInstallLaunchdPath
+	prevRunCommandOutput := serveInstallRunCommandOutput
+	serveInstallGOOS = "darwin"
+	serveInstallLaunchdPath = plistPath
+	serveInstallRunCommandOutput = func(name string, args ...string) (string, error) {
+		return "state = spawn scheduled\n", nil
+	}
+	t.Cleanup(func() {
+		serveInstallGOOS = prevGOOS
+		serveInstallLaunchdPath = prevLaunchdPath
+		serveInstallRunCommandOutput = prevRunCommandOutput
+	})
+
+	stdout, readStdout := makeStdoutCapture(t)
+	cmd := &ServeCommand{Action: "status", System: true}
+	if err := cmd.Run(&runtimeContext{CWD: tmpDir, Stdout: stdout}); err != nil {
+		t.Fatalf("ServeCommand.Run returned error: %v", err)
+	}
+
+	out := readStdout()
+	if !strings.Contains(out, "active=inactive") {
+		t.Fatalf("expected launchd status to report inactive for non-running state, got: %s", out)
+	}
+	if !strings.Contains(out, "state=spawn scheduled") {
+		t.Fatalf("expected launchd status to include raw launchd state, got: %s", out)
 	}
 }
 
@@ -550,4 +756,30 @@ func TestJoinSystemdExecArgsQuotesSingleQuoteArgs(t *testing.T) {
 	if !strings.Contains(joined, "\"/etc/cleanroom/bob's-key.pem\"") {
 		t.Fatalf("expected single-quote arg to be quoted, got: %q", joined)
 	}
+}
+
+func TestRenderLaunchdServiceOmitsEnvironmentVariables(t *testing.T) {
+	plist := renderLaunchdService("/usr/local/bin/cleanroom", []string{"serve"})
+	if strings.Contains(plist, "EnvironmentVariables") {
+		t.Fatalf("expected launchd plist to omit EnvironmentVariables, got:\n%s", plist)
+	}
+}
+
+func containsServeInstallCall(calls [][]string, wantPrefix []string) bool {
+	for _, call := range calls {
+		if len(call) < len(wantPrefix) {
+			continue
+		}
+		match := true
+		for i := range wantPrefix {
+			if call[i] != wantPrefix[i] {
+				match = false
+				break
+			}
+		}
+		if match {
+			return true
+		}
+	}
+	return false
 }
