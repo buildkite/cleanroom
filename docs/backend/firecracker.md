@@ -31,6 +31,9 @@ Current capability values (visible in `cleanroom doctor --json`):
 - `exec.streaming=true`
 - `sandbox.persistent=true`
 - `sandbox.file_download=true`
+- `sandbox.snapshot=true` (when snapshots are configured)
+- `sandbox.restore=true` (when snapshots are configured)
+- `sandbox.fork=true` (when snapshots are configured)
 - `network.default_deny=true`
 - `network.allowlist_egress=true`
 - `network.guest_interface=true`
@@ -47,4 +50,5 @@ Current capability values (visible in `cleanroom doctor --json`):
 - [darwin-vz.md](darwin-vz.md) -- macOS backend
 - [isolation.md](../isolation.md) -- enforcement and persistence details
 - [research.md](../research.md) -- backend evaluation and comparison
-- [../plans/snapshot-restore-fork.md](../plans/snapshot-restore-fork.md) -- proposed snapshot, restore, and fork design
+- [snapshots.md](../snapshots.md) -- snapshot, restore, and fork usage guide
+- [../plans/snapshot-restore-fork.md](../plans/snapshot-restore-fork.md) -- full snapshot design document

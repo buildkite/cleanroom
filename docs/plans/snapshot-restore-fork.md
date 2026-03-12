@@ -869,8 +869,8 @@ Definition of done:
 - [done] snapshot delete safety checks
 - [done] advisory snapshot names
 - [done] human-friendly CLI output
-- [todo] CI examples and operational docs
-- [todo] decide whether to surface snapshot lineage in CLI/API
+- [done] CI examples and operational docs (docs/snapshots.md)
+- [done] snapshot lineage tracked implicitly via source sandbox provenance; no explicit lineage API in v1
 
 Definition of done:
 
