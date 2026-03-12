@@ -308,7 +308,7 @@ func TestServeInstallDarwinDefaultsToUserScopeForNonRoot(t *testing.T) {
 	}
 }
 
-func TestServeInstallDarwinSystemScopeRequiresRoot(t *testing.T) {
+func TestServeInstallDarwinSystemScopeUnsupported(t *testing.T) {
 	prevEUID := serveInstallEUID
 	prevGOOS := serveInstallGOOS
 	serveInstallEUID = func() int { return 501 }
@@ -322,9 +322,30 @@ func TestServeInstallDarwinSystemScopeRequiresRoot(t *testing.T) {
 	cmd := &ServeCommand{Action: "install", System: true}
 	err := cmd.Run(&runtimeContext{CWD: t.TempDir(), Stdout: stdout})
 	if err == nil {
-		t.Fatal("expected root requirement error for --system")
+		t.Fatal("expected unsupported --system error on darwin")
 	}
-	if !strings.Contains(err.Error(), "requires root") {
+	if !strings.Contains(err.Error(), "--system is unsupported on darwin") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestServeInstallDarwinRejectsRootByDefault(t *testing.T) {
+	prevEUID := serveInstallEUID
+	prevGOOS := serveInstallGOOS
+	serveInstallEUID = func() int { return 0 }
+	serveInstallGOOS = "darwin"
+	t.Cleanup(func() {
+		serveInstallEUID = prevEUID
+		serveInstallGOOS = prevGOOS
+	})
+
+	stdout, _ := makeStdoutCapture(t)
+	cmd := &ServeCommand{Action: "install"}
+	err := cmd.Run(&runtimeContext{CWD: t.TempDir(), Stdout: stdout})
+	if err == nil {
+		t.Fatal("expected root usage error on darwin")
+	}
+	if !strings.Contains(err.Error(), "run 'cleanroom serve' without sudo") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -673,31 +694,40 @@ func TestServeStatusUnsupportedOS(t *testing.T) {
 
 func TestServeStatusLaunchdIncludesListenEndpoint(t *testing.T) {
 	tmpDir := t.TempDir()
-	plistPath := filepath.Join(tmpDir, "com.buildkite.cleanroom.plist")
+	plistPath := filepath.Join(tmpDir, "Library", "LaunchAgents", launchdServiceName+".plist")
 	content := renderLaunchdService("/usr/local/bin/cleanroom", []string{"serve", "--listen", "unix:///tmp/custom-cleanroom.sock"})
+	if err := os.MkdirAll(filepath.Dir(plistPath), 0o755); err != nil {
+		t.Fatalf("mkdir launch agents dir: %v", err)
+	}
 	if err := os.WriteFile(plistPath, []byte(content), 0o644); err != nil {
 		t.Fatalf("write launchd plist: %v", err)
 	}
 
 	prevGOOS := serveInstallGOOS
-	prevLaunchdPath := serveInstallLaunchdPath
+	prevEUID := serveInstallEUID
+	prevUID := serveInstallUID
+	prevUserHomeDir := serveInstallUserHomeDir
 	prevRunCommand := serveInstallRunCommand
 	prevRunCommandOutput := serveInstallRunCommandOutput
 	serveInstallGOOS = "darwin"
-	serveInstallLaunchdPath = plistPath
+	serveInstallEUID = func() int { return 501 }
+	serveInstallUID = func() int { return 501 }
+	serveInstallUserHomeDir = func() (string, error) { return tmpDir, nil }
 	serveInstallRunCommand = func(name string, args ...string) error { return nil }
 	serveInstallRunCommandOutput = func(name string, args ...string) (string, error) {
 		return "state = running\n", nil
 	}
 	t.Cleanup(func() {
 		serveInstallGOOS = prevGOOS
-		serveInstallLaunchdPath = prevLaunchdPath
+		serveInstallEUID = prevEUID
+		serveInstallUID = prevUID
+		serveInstallUserHomeDir = prevUserHomeDir
 		serveInstallRunCommand = prevRunCommand
 		serveInstallRunCommandOutput = prevRunCommandOutput
 	})
 
 	stdout, readStdout := makeStdoutCapture(t)
-	cmd := &ServeCommand{Action: "status", System: true}
+	cmd := &ServeCommand{Action: "status"}
 	if err := cmd.Run(&runtimeContext{CWD: tmpDir, Stdout: stdout}); err != nil {
 		t.Fatalf("ServeCommand.Run returned error: %v", err)
 	}
@@ -710,28 +740,37 @@ func TestServeStatusLaunchdIncludesListenEndpoint(t *testing.T) {
 
 func TestServeStatusLaunchdReportsInactiveWhenNotRunning(t *testing.T) {
 	tmpDir := t.TempDir()
-	plistPath := filepath.Join(tmpDir, "com.buildkite.cleanroom.plist")
+	plistPath := filepath.Join(tmpDir, "Library", "LaunchAgents", launchdServiceName+".plist")
 	content := renderLaunchdService("/usr/local/bin/cleanroom", []string{"serve", "--listen", "unix:///tmp/custom-cleanroom.sock"})
+	if err := os.MkdirAll(filepath.Dir(plistPath), 0o755); err != nil {
+		t.Fatalf("mkdir launch agents dir: %v", err)
+	}
 	if err := os.WriteFile(plistPath, []byte(content), 0o644); err != nil {
 		t.Fatalf("write launchd plist: %v", err)
 	}
 
 	prevGOOS := serveInstallGOOS
-	prevLaunchdPath := serveInstallLaunchdPath
+	prevEUID := serveInstallEUID
+	prevUID := serveInstallUID
+	prevUserHomeDir := serveInstallUserHomeDir
 	prevRunCommandOutput := serveInstallRunCommandOutput
 	serveInstallGOOS = "darwin"
-	serveInstallLaunchdPath = plistPath
+	serveInstallEUID = func() int { return 501 }
+	serveInstallUID = func() int { return 501 }
+	serveInstallUserHomeDir = func() (string, error) { return tmpDir, nil }
 	serveInstallRunCommandOutput = func(name string, args ...string) (string, error) {
 		return "state = spawn scheduled\n", nil
 	}
 	t.Cleanup(func() {
 		serveInstallGOOS = prevGOOS
-		serveInstallLaunchdPath = prevLaunchdPath
+		serveInstallEUID = prevEUID
+		serveInstallUID = prevUID
+		serveInstallUserHomeDir = prevUserHomeDir
 		serveInstallRunCommandOutput = prevRunCommandOutput
 	})
 
 	stdout, readStdout := makeStdoutCapture(t)
-	cmd := &ServeCommand{Action: "status", System: true}
+	cmd := &ServeCommand{Action: "status"}
 	if err := cmd.Run(&runtimeContext{CWD: tmpDir, Stdout: stdout}); err != nil {
 		t.Fatalf("ServeCommand.Run returned error: %v", err)
 	}
@@ -762,6 +801,34 @@ func TestRenderLaunchdServiceOmitsEnvironmentVariables(t *testing.T) {
 	plist := renderLaunchdService("/usr/local/bin/cleanroom", []string{"serve"})
 	if strings.Contains(plist, "EnvironmentVariables") {
 		t.Fatalf("expected launchd plist to omit EnvironmentVariables, got:\n%s", plist)
+	}
+}
+
+func TestLaunchdProgramArgumentsRejectsNonArrayValue(t *testing.T) {
+	plist := `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.buildkite.cleanroom</string>
+	<key>ProgramArguments</key>
+	<dict>
+		<key>unexpected</key>
+		<string>value</string>
+	</dict>
+	<key>EnvironmentVariables</key>
+	<array>
+		<string>SHOULD_NOT_BE_PARSED</string>
+	</array>
+</dict>
+</plist>`
+
+	_, err := launchdProgramArguments([]byte(plist))
+	if err == nil {
+		t.Fatal("expected ProgramArguments parsing error when value is not an array")
+	}
+	if !strings.Contains(err.Error(), "must be an array") {
+		t.Fatalf("expected non-array ProgramArguments error, got: %v", err)
 	}
 }
 

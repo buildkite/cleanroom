@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -18,6 +19,7 @@ const DefaultSystemSocketPath = "/var/run/cleanroom/cleanroom.sock"
 const defaultSystemSocketPath = DefaultSystemSocketPath
 
 var endpointStat = os.Stat
+var endpointGOOS = runtime.GOOS
 
 func defaultListenEndpoint() Endpoint {
 	runtimeDir := strings.TrimSpace(os.Getenv("XDG_RUNTIME_DIR"))
@@ -33,6 +35,10 @@ func defaultListenEndpoint() Endpoint {
 }
 
 func defaultClientEndpoint() Endpoint {
+	if strings.EqualFold(strings.TrimSpace(endpointGOOS), "darwin") {
+		return defaultListenEndpoint()
+	}
+
 	if st, err := endpointStat(defaultSystemSocketPath); err == nil && !st.IsDir() && st.Mode()&os.ModeSocket != 0 {
 		return Endpoint{
 			Scheme:  "unix",

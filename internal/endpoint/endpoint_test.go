@@ -55,11 +55,14 @@ func TestResolveDefaultClientPrefersSystemSocketWhenPresent(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
 
 	prevStat := endpointStat
+	prevGOOS := endpointGOOS
 	endpointStat = func(string) (os.FileInfo, error) {
 		return fakeFileInfo{mode: os.ModeSocket}, nil
 	}
+	endpointGOOS = "linux"
 	t.Cleanup(func() {
 		endpointStat = prevStat
+		endpointGOOS = prevGOOS
 	})
 
 	ep, err := Resolve("")
@@ -71,6 +74,31 @@ func TestResolveDefaultClientPrefersSystemSocketWhenPresent(t *testing.T) {
 	}
 	if ep.Address != defaultSystemSocketPath {
 		t.Fatalf("expected system socket path %q, got %q", defaultSystemSocketPath, ep.Address)
+	}
+}
+
+func TestResolveDefaultClientUsesRuntimeSocketOnDarwinEvenWhenSystemSocketPresent(t *testing.T) {
+	runtimeDir := t.TempDir()
+	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
+
+	prevStat := endpointStat
+	prevGOOS := endpointGOOS
+	endpointStat = func(string) (os.FileInfo, error) {
+		return fakeFileInfo{mode: os.ModeSocket}, nil
+	}
+	endpointGOOS = "darwin"
+	t.Cleanup(func() {
+		endpointStat = prevStat
+		endpointGOOS = prevGOOS
+	})
+
+	ep, err := Resolve("")
+	if err != nil {
+		t.Fatalf("resolve default client endpoint: %v", err)
+	}
+	want := filepath.Join(runtimeDir, "cleanroom", "cleanroom.sock")
+	if ep.Address != want {
+		t.Fatalf("expected runtime socket path %q on darwin, got %q", want, ep.Address)
 	}
 }
 

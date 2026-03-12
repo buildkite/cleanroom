@@ -57,18 +57,15 @@ The server listens on `unix://$XDG_RUNTIME_DIR/cleanroom/cleanroom.sock` by defa
 Install as a daemon:
 
 ```bash
-# macOS (non-root): installs a user LaunchAgent by default
+# macOS: installs a user LaunchAgent (user-scope only)
 cleanroom serve install
-
-# macOS (system scope)
-sudo cleanroom serve install --system
 
 # Linux (systemd)
 sudo cleanroom serve install
 ```
 
-Use `--force` to overwrite an existing service file, and `--user`/`--system`
-to pick scope explicitly on macOS.
+Use `--force` to overwrite an existing service file. On macOS, `--system`
+is unsupported; `--user` is accepted for explicitness.
 
 The system daemon socket is root-owned (`unix:///var/run/cleanroom/cleanroom.sock`),
 so client commands against that daemon should be run with `sudo` unless you
@@ -256,7 +253,7 @@ cleanroom config init
 On macOS this defaults `default_backend` to `darwin-vz`. On Linux it defaults to `firecracker`.
 If `default_backend` is omitted or blank in an existing config, Cleanroom falls back to the same host default at load time.
 
-Optional endpoint override precedence is `--host`, then `CLEANROOM_HOST`, then `control_host` from runtime config, then defaults (system socket when present, otherwise user runtime socket).
+Optional endpoint override precedence is `--host`, then `CLEANROOM_HOST`, then `control_host` from runtime config, then defaults (macOS: user runtime socket; Linux: system socket when present, otherwise user runtime socket).
 
 ```yaml
 default_backend: firecracker

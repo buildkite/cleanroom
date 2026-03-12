@@ -219,7 +219,7 @@ type ServeCommand struct {
 	Action        string `arg:"" optional:"" help:"Serve action (install, uninstall, status)"`
 	Force         bool   `help:"Overwrite existing daemon service file (serve install only)"`
 	User          bool   `help:"Use user daemon scope (launchd only; install/uninstall/status actions)"`
-	System        bool   `help:"Use system daemon scope (install/uninstall/status actions)"`
+	System        bool   `help:"Use system daemon scope (linux only; install/uninstall/status actions)"`
 	Listen        string `help:"Listen endpoint for control API (defaults to runtime endpoint)"`
 	GatewayListen string `help:"Listen address for the host gateway (default :8170, use :0 for ephemeral port)"`
 	LogLevel      string `help:"Server log level (debug|info|warn|error)"`
@@ -1412,14 +1412,11 @@ func (s *ServeCommand) effectiveDaemonScope() (daemonScope, error) {
 		}
 		return daemonScopeSystem, nil
 	case "darwin":
-		if hasScope {
-			if requested == daemonScopeUser && serveInstallEUID() == 0 {
-				return "", errors.New("--user cannot be used as root on darwin (run without sudo)")
-			}
-			return requested, nil
+		if hasScope && requested == daemonScopeSystem {
+			return "", errors.New("--system is unsupported on darwin (macOS supports user launchd daemons only)")
 		}
 		if serveInstallEUID() == 0 {
-			return daemonScopeSystem, nil
+			return "", errors.New("darwin supports user launchd daemons only; run 'cleanroom serve' without sudo")
 		}
 		return daemonScopeUser, nil
 	default:
@@ -1774,10 +1771,7 @@ func launchdProgramArguments(plistContent []byte) ([]string, error) {
 				continue
 			}
 			if start.Name.Local != "array" {
-				if err := decoder.Skip(); err != nil {
-					return nil, err
-				}
-				continue
+				return nil, fmt.Errorf("ProgramArguments must be an array, got <%s>", start.Name.Local)
 			}
 			return plistStringArray(decoder)
 		}
