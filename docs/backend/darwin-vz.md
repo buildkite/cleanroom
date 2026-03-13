@@ -118,9 +118,10 @@ Current `darwin-vz` capability values:
 - `network.allowlist_egress=false`
 - `network.guest_interface=true`
 
-Repository bootstrap currently uses direct outbound git access from the guest.
-The default server wiring does not route `darwin-vz` guest git traffic through
-the host gateway yet.
+Git traffic for allowed HTTPS hosts is routed through the host gateway, using a
+scope-token header for sandbox identity because guests share the NAT source
+address. The default gateway host is `192.168.64.1`; override it for unusual
+host networking setups with `CLEANROOM_DARWIN_GATEWAY_HOST`.
 
 ## Entitlements and Signing
 
@@ -138,9 +139,18 @@ The helper path is resolved in this order:
 
 1. `CLEANROOM_DARWIN_VZ_HELPER`
 2. sibling binary next to `cleanroom`
-3. `PATH`
+3. `dist/` under the current working directory or one of its ancestors
+4. `PATH`
 
 If missing, runtime fails with an actionable error.
+
+The Linux guest agent follows the same general pattern:
+
+1. sibling binary next to `cleanroom`
+2. `dist/cleanroom-guest-agent-linux-$GOARCH` under the current working directory or one of its ancestors
+3. `PATH`
+
+`mise run build` now produces the matching prebuilt set in `dist/` for macOS development.
 
 ## Testing
 
@@ -151,14 +161,13 @@ Fast path:
 
 Real VM persistence e2e:
 
-1. Build the signed helper: `mise run build:darwin`
-2. Ensure the linux guest agent is installed or otherwise discoverable.
+1. Build the matching prebuilt binaries: `mise run build`
+2. If you are not running from the checkout that contains `dist/`, ensure the linux guest agent is installed or otherwise discoverable.
 3. If you are not providing `CLEANROOM_DARWIN_VZ_E2E_ROOTFS`, install `e2fsprogs` on macOS so `mkfs.ext4` and `debugfs` are available.
 4. Run the opt-in test:
 
 ```bash
 CLEANROOM_DARWIN_VZ_E2E=1 \
-CLEANROOM_DARWIN_VZ_HELPER="$PWD/dist/cleanroom-darwin-vz" \
 CLEANROOM_DARWIN_VZ_E2E_IMAGE_REF="docker.io/library/alpine@sha256:a4f4213abb84c497377b8544c81b3564f313746700372ec4fe84653e4fb03805" \
 mise exec -- go test ./internal/backend/darwinvz -run TestPersistentSandboxE2E -v
 ```

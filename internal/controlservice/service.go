@@ -1,6 +1,7 @@
 package controlservice
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -16,16 +17,18 @@ import (
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/paths"
 	"github.com/buildkite/cleanroom/internal/policy"
+	"github.com/buildkite/cleanroom/internal/repositorycheckout"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 	"github.com/charmbracelet/log"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type Service struct {
-	Loader   loader
-	Config   runtimeconfig.Config
-	Backends map[string]backend.Adapter
-	Logger   *log.Logger
+	Loader            loader
+	Config            runtimeconfig.Config
+	Backends          map[string]backend.Adapter
+	Logger            *log.Logger
+	RepositoryMirrors repositoryMirrorStore
 
 	mu                  sync.RWMutex
 	sandboxes           map[string]*sandboxState
@@ -109,6 +112,10 @@ type loader interface {
 	LoadAndCompile(cwd string) (*policy.CompiledPolicy, string, error)
 }
 
+type repositoryMirrorStore interface {
+	EnsureMirrorContains(ctx context.Context, remoteURL, commitSHA string) error
+}
+
 type executionOptions struct {
 	LaunchSeconds int64
 }
@@ -142,6 +149,7 @@ const (
 	attachResizeRegistrationWait       = 250 * time.Millisecond
 	attachPollInterval                 = 10 * time.Millisecond
 	interactiveSessionTokenTTL         = 30 * time.Second
+	bootstrapCleanupTimeout            = 10 * time.Second
 	defaultDownloadMaxBytes      int64 = 10 * 1024 * 1024
 )
 
@@ -163,6 +171,12 @@ func (s *Service) CreateSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	if !ok {
 		return nil, fmt.Errorf("unknown backend %q", backendName)
 	}
+	repository := repositorycheckout.FromProto(req.GetRepositoryCheckout())
+	if repository != nil {
+		if err := validateRepositoryCheckoutForPolicy(compiled, repository); err != nil {
+			return nil, err
+		}
+	}
 
 	opts := req.GetOptions()
 	execOpts := executionOptions{}
@@ -183,6 +197,16 @@ func (s *Service) CreateSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 		}); err != nil {
 			return nil, fmt.Errorf("provision sandbox: %w", err)
 		}
+		if err := s.bootstrapRepositoryInPersistentSandbox(ctx, persistentAdapter, sandboxID, compiled, firecrackerCfg, repository); err != nil {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), bootstrapCleanupTimeout)
+			defer cancel()
+			if terminateErr := persistentAdapter.TerminateSandbox(cleanupCtx, sandboxID); terminateErr != nil {
+				return nil, fmt.Errorf("bootstrap repository checkout: %w; cleanup failed: %v", err, terminateErr)
+			}
+			return nil, fmt.Errorf("bootstrap repository checkout: %w", err)
+		}
+	} else if repository != nil {
+		return nil, errors.New("repository bootstrap for sandbox creation requires a persistent backend")
 	}
 
 	state := &sandboxState{
@@ -439,7 +463,7 @@ func (s *Service) TerminateSandbox(ctx context.Context, req *cleanroomv1.Termina
 	return resp, nil
 }
 
-func (s *Service) CreateExecution(_ context.Context, req *cleanroomv1.CreateExecutionRequest) (*cleanroomv1.CreateExecutionResponse, error) {
+func (s *Service) CreateExecution(ctx context.Context, req *cleanroomv1.CreateExecutionRequest) (*cleanroomv1.CreateExecutionResponse, error) {
 	if req == nil {
 		return nil, errors.New("missing request")
 	}
@@ -450,6 +474,12 @@ func (s *Service) CreateExecution(_ context.Context, req *cleanroomv1.CreateExec
 	command := normalizeCommand(req.GetCommand())
 	if len(command) == 0 {
 		return nil, errors.New("missing command")
+	}
+	repository := repositorycheckout.FromProto(req.GetRepositoryCheckout())
+	if repository != nil {
+		if err := repository.ValidateBootstrap(); err != nil {
+			return nil, err
+		}
 	}
 
 	execOpts := executionOptions{}
@@ -492,19 +522,56 @@ func (s *Service) CreateExecution(_ context.Context, req *cleanroomv1.CreateExec
 			s.mu.Unlock()
 			return nil, fmt.Errorf("sandbox_busy: sandbox %q already has active execution %q", sandboxID, sandbox.ActiveExecutionID)
 		}
+	}
+	if sandbox.DownloadInProgress {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("sandbox_busy: sandbox %q currently has an active file download", sandboxID)
+	}
+	sandboxPolicy := sandbox.Policy
+	imageRef := ""
+	imageDigest := ""
+	if sandboxPolicy != nil {
+		imageRef = sandboxPolicy.ImageRef
+		imageDigest = sandboxPolicy.ImageDigest
+	}
+	s.mu.Unlock()
+
+	if repository != nil {
+		if err := validateRepositoryCheckoutForPolicy(sandboxPolicy, repository); err != nil {
+			return nil, err
+		}
+		if err := s.ensureRepositoryMirrorContains(ctx, repository); err != nil {
+			return nil, fmt.Errorf("prepare repository checkout: %w", err)
+		}
+		command = repositorycheckout.WrapCommandWithBootstrap(command, repository)
+	}
+
+	s.mu.Lock()
+	s.ensureMapsLocked()
+	sandbox, ok = s.sandboxes[sandboxID]
+	if !ok {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("unknown sandbox %q", sandboxID)
+	}
+	if sandbox.Status != cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("sandbox %q is not ready", sandboxID)
+	}
+	if _, ok := s.Backends[sandbox.Backend]; !ok {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("unknown backend %q", sandbox.Backend)
+	}
+	if strings.TrimSpace(sandbox.ActiveExecutionID) != "" {
+		if activeExecution, ok := s.executions[executionKey(sandboxID, sandbox.ActiveExecutionID)]; ok && !isFinalExecutionStatus(activeExecution.Status) {
+			s.mu.Unlock()
+			return nil, fmt.Errorf("sandbox_busy: sandbox %q already has active execution %q", sandboxID, sandbox.ActiveExecutionID)
+		}
 		sandbox.ActiveExecutionID = ""
 	}
 	if sandbox.DownloadInProgress {
 		s.mu.Unlock()
 		return nil, fmt.Errorf("sandbox_busy: sandbox %q currently has an active file download", sandboxID)
 	}
-	imageRef := ""
-	imageDigest := ""
-	if sandbox.Policy != nil {
-		imageRef = sandbox.Policy.ImageRef
-		imageDigest = sandbox.Policy.ImageDigest
-	}
-
 	ex := &executionState{
 		ID:               executionID,
 		SandboxID:        sandboxID,
@@ -1245,6 +1312,93 @@ func (s *Service) executionOutputStream(key string) backend.OutputStream {
 			s.setExecutionAttachIO(key, io)
 		},
 	}
+}
+
+func (s *Service) ensureRepositoryMirrorContains(ctx context.Context, repository *repositorycheckout.Checkout) error {
+	if repository == nil || s.RepositoryMirrors == nil {
+		return nil
+	}
+	return s.RepositoryMirrors.EnsureMirrorContains(ctx, repository.RemoteURL, repository.CommitSHA)
+}
+
+func validateRepositoryCheckoutForPolicy(compiled *policy.CompiledPolicy, repository *repositorycheckout.Checkout) error {
+	if repository == nil {
+		return nil
+	}
+	if err := repository.ValidateBootstrap(); err != nil {
+		return err
+	}
+	host, err := repository.NormalizeRemoteURL()
+	if err != nil {
+		return err
+	}
+	if compiled == nil {
+		return errors.New("repository checkout requires a compiled policy")
+	}
+	if !compiled.Allows(host, 443) {
+		return fmt.Errorf("repository remote host %q is not allowed by sandbox policy", host)
+	}
+	return nil
+}
+
+func (s *Service) bootstrapRepositoryInPersistentSandbox(
+	ctx context.Context,
+	adapter backend.PersistentSandboxAdapter,
+	sandboxID string,
+	compiled *policy.CompiledPolicy,
+	firecrackerCfg backend.FirecrackerConfig,
+	repository *repositorycheckout.Checkout,
+) error {
+	if repository == nil {
+		return nil
+	}
+	if err := s.ensureRepositoryMirrorContains(ctx, repository); err != nil {
+		return err
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	result, err := adapter.RunInSandbox(ctx, backend.RunRequest{
+		SandboxID:         sandboxID,
+		RunID:             newRunID(),
+		Command:           repositorycheckout.BuildBootstrapCommand(repository),
+		Policy:            compiled,
+		FirecrackerConfig: firecrackerCfg,
+	}, backend.OutputStream{
+		OnStdout: func(chunk []byte) {
+			_, _ = stdout.Write(chunk)
+		},
+		OnStderr: func(chunk []byte) {
+			_, _ = stderr.Write(chunk)
+		},
+	})
+	if err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = strings.TrimSpace(stdout.String())
+		}
+		if msg == "" {
+			msg = err.Error()
+		}
+		return fmt.Errorf("%s", msg)
+	}
+	if result == nil {
+		return errors.New("bootstrap execution returned no result")
+	}
+	if result.ExitCode != 0 {
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = strings.TrimSpace(stdout.String())
+		}
+		if msg == "" {
+			msg = strings.TrimSpace(result.Message)
+		}
+		if msg == "" {
+			msg = fmt.Sprintf("bootstrap command failed with exit code %d", result.ExitCode)
+		}
+		return errors.New(msg)
+	}
+	return nil
 }
 
 func executionRunErrorStatus(ex *executionState, runCtx context.Context) (cleanroomv1.ExecutionStatus, int32) {

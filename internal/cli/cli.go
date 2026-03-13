@@ -2289,11 +2289,19 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 	log.SetDefault(logger)
 
 	gwRegistry := gateway.NewRegistry()
-	gwCredentials := gateway.NewEnvCredentialProvider()
+	gwCredentials := gateway.NewChainCredentialProvider(
+		gateway.NewEnvCredentialProvider(),
+		gateway.NewGitCredentialFillProvider(ctx.CWD, nil),
+	)
+	gwMirrors, err := gateway.NewDefaultGitMirrorStore(gwCredentials)
+	if err != nil {
+		return fmt.Errorf("configure git mirror store: %w", err)
+	}
 	gwServer := gateway.NewServer(gateway.ServerConfig{
 		ListenAddr:  s.GatewayListen,
 		Registry:    gwRegistry,
 		Credentials: gwCredentials,
+		GitMirrors:  gwMirrors,
 		Logger:      logger.With("subsystem", "gateway"),
 	})
 	if err := gwServer.Start(); err != nil {
@@ -2332,12 +2340,7 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 		}
 	}
 
-	service := &controlservice.Service{
-		Loader:   ctx.Loader,
-		Config:   ctx.Config,
-		Backends: ctx.Backends,
-		Logger:   logger.With("subsystem", "service"),
-	}
+	service := newControlService(ctx, logger.With("subsystem", "service"), gwMirrors)
 	server := controlserver.New(service, logger.With("subsystem", "http"))
 
 	runCtx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -2371,15 +2374,27 @@ func configureGatewayBackends(backends map[string]backend.Adapter, gwRegistry *g
 		fcAdapter.GatewayPort = gwPort
 	}
 
-	// darwin-vz sandboxes currently reach upstream services directly. The host
-	// gateway is not reliably reachable from the guest on this backend, so
-	// wiring git through it causes repository bootstrap hangs.
 	if darwinAdapter, ok := backends["darwin-vz"].(*darwinvz.Adapter); ok {
-		darwinAdapter.GatewayRegistry = nil
-		darwinAdapter.GatewayPort = 0
-		darwinAdapter.GatewayHost = ""
+		darwinAdapter.GatewayRegistry = gwRegistry
+		darwinAdapter.GatewayPort = gwPort
+		darwinAdapter.GatewayHost = strings.TrimSpace(darwinGatewayHost)
 	}
-	_ = darwinGatewayHost
+}
+
+func newControlService(ctx *runtimeContext, logger *log.Logger, mirrors gateway.GitMirrorStore) *controlservice.Service {
+	if ctx == nil {
+		return &controlservice.Service{
+			Logger:            logger,
+			RepositoryMirrors: mirrors,
+		}
+	}
+	return &controlservice.Service{
+		Loader:            ctx.Loader,
+		Config:            ctx.Config,
+		Backends:          ctx.Backends,
+		Logger:            logger,
+		RepositoryMirrors: mirrors,
+	}
 }
 
 func backendSupportsRepositoryPersistence(ctx *runtimeContext, host, backendName string) bool {
@@ -2416,9 +2431,16 @@ func shouldInlineRepositoryBootstrap(ctx *runtimeContext, host, backendName, exi
 
 func repositoryExecutionCommand(command []string, repository *resolvedRepositoryCheckout, inlineBootstrap bool) []string {
 	if inlineBootstrap {
-		return wrapCommandWithRepositoryBootstrap(command, repository)
+		return normalizePassthroughCommand(command)
 	}
 	return wrapCommandInRepositoryWorkdir(command, repository)
+}
+
+func repositoryExecutionCheckout(repository *resolvedRepositoryCheckout, inlineBootstrap bool) *cleanroomv1.RepositoryCheckout {
+	if !inlineBootstrap {
+		return nil
+	}
+	return repositoryCheckoutProto(repository)
 }
 
 func resolveInteractiveQUICEndpoint(ep endpoint.Endpoint) (listenAddr, advertiseHost string) {

@@ -170,9 +170,37 @@ Implication for Cleanroom architecture:
 
 ### content-cache
 
-[content-cache](https://github.com/wolfeidau/content-cache) is a caching proxy for package registries and git hosting. Cleanroom uses it as the mediation layer between the sandbox and upstream registries. Package and git egress is routed through content-cache on the host side, so the sandbox never talks directly to upstream. This gives Cleanroom a single point for allowlist enforcement, caching, and audit logging of registry traffic.
+[content-cache](https://github.com/wolfeidau/content-cache) is relevant prior art
+for host-side mediation of package and git traffic. The important takeaway for
+Cleanroom is architectural, not dependency choice: keep mediation, caching, and
+credential handling on the host so the sandbox never talks directly to upstream
+with its own secrets.
 
-content-cache also enables offline/hermetic builds when only pre-warmed cached artifacts are permitted.
+Cleanroom is not currently adopting `content-cache` as a direct dependency.
+The active direction is to grow the in-tree Cleanroom gateway so it can enforce
+policy, inject host-side credentials, and eventually cache upstream content.
+
+### git-proxy-cache
+
+[git-proxy-cache](https://github.com/buildkite/git-proxy-cache) is the most
+relevant prior art for repository bootstrap performance. Its strongest ideas
+for Cleanroom are:
+
+- maintain host-side bare mirrors per upstream repository
+- coalesce concurrent refreshes with locking or `singleflight`
+- keep upstream credentials on the host, not in the guest
+
+What Cleanroom should not copy directly:
+
+- the Buildkite OIDC inbound auth model
+- the GitHub-App-specific upstream auth model
+- a freshness model that can return a stale mirror before a requested commit is
+  present
+- pack-response caching as a first step
+
+For Cleanroom, the right first slice is an in-tree mirror-backed git gateway
+that uses Cleanroom's own sandbox identity model and host credential provider
+chain.
 
 ### tokenizer
 
@@ -187,6 +215,9 @@ Key properties of this model:
 ## Research conclusions
 
 1. Use Firecracker as the local sandbox backend (inspired by Matchlock patterns). See [backend/firecracker.md](backend/firecracker.md) for implementation details.
-2. Use `content-cache` as the package/registry and git mediation layer.
-3. Use a tokenizer-like secret-injection model with host-scoped policy and no plaintext propagation.
+2. Use an in-tree host gateway as the package/registry and git mediation layer,
+   borrowing ideas from tools like `content-cache` and `git-proxy-cache` rather
+   than depending on them directly.
+3. Use a tokenizer-like secret-injection model with host-scoped policy and no
+   plaintext propagation.
 4. Keep CLI first: `cleanroom exec` as primary entrypoint and command pattern.

@@ -55,6 +55,7 @@ type ServerConfig struct {
 	ListenAddr  string
 	Registry    *Registry
 	Credentials CredentialProvider
+	GitMirrors  GitMirrorStore
 	Logger      *log.Logger
 }
 
@@ -83,7 +84,7 @@ func NewServer(cfg ServerConfig) *Server {
 	}
 
 	mux := http.NewServeMux()
-	mux.Handle(RouteGit, newGitHandler(cfg.Credentials, cfg.Logger))
+	mux.Handle(RouteGit, newGitHandlerWithMirrors(cfg.Credentials, cfg.GitMirrors, cfg.Logger))
 	mux.HandleFunc(RouteRegistry, stubHandler("registry"))
 	mux.HandleFunc(RouteSecrets, stubHandler("secrets"))
 	mux.HandleFunc(RouteMeta, stubHandler("meta"))

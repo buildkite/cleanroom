@@ -20,6 +20,7 @@ func TestResolveHelperBinaryPathPrefersEnvOverride(t *testing.T) {
 		override,
 		func(string) (string, error) { return "", errors.New("not found") },
 		func() (string, error) { return "", errors.New("no executable") },
+		func() (string, error) { return "", errors.New("no working directory") },
 		os.Stat,
 	)
 	if err != nil {
@@ -47,6 +48,83 @@ func TestResolveHelperBinaryPathUsesSiblingBeforePath(t *testing.T) {
 		"",
 		func(string) (string, error) { return "/usr/local/bin/cleanroom-darwin-vz", nil },
 		func() (string, error) { return self, nil },
+		func() (string, error) { return "", errors.New("no working directory") },
+		os.Stat,
+	)
+	if err != nil {
+		t.Fatalf("resolveHelperBinaryPathWith returned error: %v", err)
+	}
+	if got != sibling {
+		t.Fatalf("unexpected helper path: got %q want %q", got, sibling)
+	}
+}
+
+func TestResolveHelperBinaryPathUsesAncestorDistBeforePATH(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	repoRoot := tmp + "/repo"
+	cwd := repoRoot + "/nested/workdir"
+	prebuilt := repoRoot + "/dist/cleanroom-darwin-vz"
+	if err := os.MkdirAll(cwd, 0o755); err != nil {
+		t.Fatalf("mkdir workdir: %v", err)
+	}
+	if err := os.MkdirAll(repoRoot+"/dist", 0o755); err != nil {
+		t.Fatalf("mkdir dist: %v", err)
+	}
+	if err := os.WriteFile(prebuilt, []byte("binary"), 0o755); err != nil {
+		t.Fatalf("write prebuilt helper: %v", err)
+	}
+
+	got, err := resolveHelperBinaryPathWith(
+		"",
+		func(string) (string, error) { return "/usr/local/bin/cleanroom-darwin-vz", nil },
+		func() (string, error) { return "", errors.New("no executable") },
+		func() (string, error) { return cwd, nil },
+		os.Stat,
+	)
+	if err != nil {
+		t.Fatalf("resolveHelperBinaryPathWith returned error: %v", err)
+	}
+	if got != prebuilt {
+		t.Fatalf("unexpected helper path: got %q want %q", got, prebuilt)
+	}
+}
+
+func TestResolveHelperBinaryPathPrefersSiblingBeforeAncestorDist(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	repoRoot := tmp + "/repo"
+	cwd := repoRoot + "/nested/workdir"
+	prebuilt := repoRoot + "/dist/cleanroom-darwin-vz"
+	selfDir := tmp + "/bin"
+	self := selfDir + "/cleanroom"
+	sibling := selfDir + "/cleanroom-darwin-vz"
+	if err := os.MkdirAll(cwd, 0o755); err != nil {
+		t.Fatalf("mkdir workdir: %v", err)
+	}
+	if err := os.MkdirAll(repoRoot+"/dist", 0o755); err != nil {
+		t.Fatalf("mkdir dist: %v", err)
+	}
+	if err := os.MkdirAll(selfDir, 0o755); err != nil {
+		t.Fatalf("mkdir self dir: %v", err)
+	}
+	if err := os.WriteFile(prebuilt, []byte("binary"), 0o755); err != nil {
+		t.Fatalf("write prebuilt helper: %v", err)
+	}
+	if err := os.WriteFile(self, []byte("binary"), 0o755); err != nil {
+		t.Fatalf("write self binary: %v", err)
+	}
+	if err := os.WriteFile(sibling, []byte("binary"), 0o755); err != nil {
+		t.Fatalf("write sibling helper: %v", err)
+	}
+
+	got, err := resolveHelperBinaryPathWith(
+		"",
+		func(string) (string, error) { return "/usr/local/bin/cleanroom-darwin-vz", nil },
+		func() (string, error) { return self, nil },
+		func() (string, error) { return cwd, nil },
 		os.Stat,
 	)
 	if err != nil {
@@ -64,6 +142,7 @@ func TestResolveHelperBinaryPathFallsBackToPATH(t *testing.T) {
 		"",
 		func(string) (string, error) { return "/usr/local/bin/cleanroom-darwin-vz", nil },
 		func() (string, error) { return "", errors.New("no executable") },
+		func() (string, error) { return "", errors.New("no working directory") },
 		func(string) (os.FileInfo, error) { return nil, os.ErrNotExist },
 	)
 	if err != nil {
@@ -81,12 +160,39 @@ func TestResolveHelperBinaryPathReturnsActionableError(t *testing.T) {
 		"",
 		func(string) (string, error) { return "", errors.New("not found") },
 		func() (string, error) { return "", errors.New("no executable") },
+		func() (string, error) { return "", errors.New("no working directory") },
 		func(string) (os.FileInfo, error) { return nil, os.ErrNotExist },
 	)
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if got := err.Error(); got == "" || !strings.Contains(got, "cleanroom-darwin-vz") || !strings.Contains(got, "CLEANROOM_DARWIN_VZ_HELPER") {
+	if got := err.Error(); got == "" || !strings.Contains(got, "cleanroom-darwin-vz") || !strings.Contains(got, "CLEANROOM_DARWIN_VZ_HELPER") || !strings.Contains(got, "mise run build") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestResolvePrebuiltBinaryPathFromWorkdirUsesAncestorDist(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	repoRoot := tmp + "/repo"
+	cwd := repoRoot + "/a/b/c"
+	prebuilt := repoRoot + "/dist/cleanroom-darwin-vz"
+	if err := os.MkdirAll(cwd, 0o755); err != nil {
+		t.Fatalf("mkdir workdir: %v", err)
+	}
+	if err := os.MkdirAll(repoRoot+"/dist", 0o755); err != nil {
+		t.Fatalf("mkdir dist dir: %v", err)
+	}
+	if err := os.WriteFile(prebuilt, []byte("binary"), 0o755); err != nil {
+		t.Fatalf("write repo dist helper: %v", err)
+	}
+
+	got, err := resolvePrebuiltBinaryPathFromWorkdir(cwd, helperBinaryName, os.Stat)
+	if err != nil {
+		t.Fatalf("resolvePrebuiltBinaryPathFromWorkdir returned error: %v", err)
+	}
+	if got != prebuilt {
+		t.Fatalf("unexpected prebuilt path: got %q want %q", got, prebuilt)
 	}
 }

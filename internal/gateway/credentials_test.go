@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"encoding/base64"
 	"testing"
 )
 
@@ -9,12 +10,12 @@ func TestEnvCredentialProviderResolvesKnownHost(t *testing.T) {
 	t.Setenv("CLEANROOM_GITHUB_TOKEN", "ghp_test123")
 	p := NewEnvCredentialProvider()
 
-	token, err := p.Resolve(context.Background(), "github.com")
+	token, err := p.Resolve(context.Background(), "https://github.com/buildkite/cleanroom.git")
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
-	if token != "ghp_test123" {
-		t.Fatalf("expected ghp_test123, got %q", token)
+	if token != "Bearer ghp_test123" {
+		t.Fatalf("expected Bearer ghp_test123, got %q", token)
 	}
 }
 
@@ -22,7 +23,7 @@ func TestEnvCredentialProviderUnknownHostReturnsEmpty(t *testing.T) {
 	t.Parallel()
 
 	p := NewEnvCredentialProvider()
-	token, err := p.Resolve(context.Background(), "unknown.example.com")
+	token, err := p.Resolve(context.Background(), "https://unknown.example.com/org/repo.git")
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -36,7 +37,7 @@ func TestEnvCredentialProviderMissingEnvReturnsEmpty(t *testing.T) {
 	t.Setenv("CLEANROOM_GITHUB_TOKEN", "")
 	p := NewEnvCredentialProvider()
 
-	token, err := p.Resolve(context.Background(), "github.com")
+	token, err := p.Resolve(context.Background(), "https://github.com/buildkite/cleanroom.git")
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -49,12 +50,12 @@ func TestEnvCredentialProviderCaseInsensitive(t *testing.T) {
 	t.Setenv("CLEANROOM_GITHUB_TOKEN", "ghp_token")
 	p := NewEnvCredentialProvider()
 
-	token, err := p.Resolve(context.Background(), "GitHub.com")
+	token, err := p.Resolve(context.Background(), "https://GitHub.com/buildkite/cleanroom.git")
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
-	if token != "ghp_token" {
-		t.Fatalf("expected ghp_token, got %q", token)
+	if token != "Bearer ghp_token" {
+		t.Fatalf("expected Bearer ghp_token, got %q", token)
 	}
 }
 
@@ -69,5 +70,53 @@ func TestEnvCredentialProviderConfiguredHostsSorted(t *testing.T) {
 	}
 	if hosts[0] != "github.com" || hosts[1] != "gitlab.com" {
 		t.Fatalf("expected sorted hosts [github.com gitlab.com], got %v", hosts)
+	}
+}
+
+func TestGitCredentialFillProviderResolveUsesCanonicalRemoteURL(t *testing.T) {
+	t.Parallel()
+
+	var gotDir string
+	var gotInput string
+	provider := NewGitCredentialFillProvider("/tmp/repo", func(dir, input string) (string, error) {
+		gotDir = dir
+		gotInput = input
+		return "protocol=https\nhost=github.com\npath=buildkite/cleanroom.git\nusername=git\npassword=secret\n", nil
+	})
+
+	header, err := provider.Resolve(context.Background(), "https://github.com/buildkite/cleanroom.git")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if gotDir != "/tmp/repo" {
+		t.Fatalf("expected /tmp/repo lookup dir, got %q", gotDir)
+	}
+	wantInput := "protocol=https\nhost=github.com\npath=buildkite/cleanroom.git\n\n"
+	if gotInput != wantInput {
+		t.Fatalf("unexpected credential fill input: got %q want %q", gotInput, wantInput)
+	}
+	wantHeader := "Basic " + base64.StdEncoding.EncodeToString([]byte("git:secret"))
+	if header != wantHeader {
+		t.Fatalf("unexpected authorization header: got %q want %q", header, wantHeader)
+	}
+}
+
+func TestChainCredentialProviderFallsBackToGitCredentialFill(t *testing.T) {
+	t.Setenv("CLEANROOM_GITHUB_TOKEN", "")
+
+	provider := NewChainCredentialProvider(
+		NewEnvCredentialProvider(),
+		NewGitCredentialFillProvider("/tmp/repo", func(dir, input string) (string, error) {
+			return "protocol=https\nhost=github.com\npath=buildkite/cleanroom.git\nusername=git\npassword=secret\n", nil
+		}),
+	)
+
+	header, err := provider.Resolve(context.Background(), "https://github.com/buildkite/cleanroom.git")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	wantHeader := "Basic " + base64.StdEncoding.EncodeToString([]byte("git:secret"))
+	if header != wantHeader {
+		t.Fatalf("unexpected authorization header: got %q want %q", header, wantHeader)
 	}
 }

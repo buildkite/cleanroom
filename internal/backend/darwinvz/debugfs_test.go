@@ -32,3 +32,21 @@ func TestDebugFSCommandOutputErrorIgnoresSuccessfulOutput(t *testing.T) {
 		t.Fatalf("expected empty error for successful debugfs output, got %q", got)
 	}
 }
+
+func TestDebugFSStatTypeParsesDirectory(t *testing.T) {
+	t.Parallel()
+
+	output := "debugfs 1.47.3 (8-Jul-2025)\nInode: 261   Type: directory    Mode:  0755   Flags: 0x80000\n"
+	if got, want := debugFSStatType(output), ext4PathKindDirectory; got != want {
+		t.Fatalf("unexpected stat type: got %q want %q", got, want)
+	}
+}
+
+func TestDebugFSStatTypeParsesSymlink(t *testing.T) {
+	t.Parallel()
+
+	output := "debugfs 1.47.3 (8-Jul-2025)\nInode: 82   Type: symlink    Mode:  0755   Flags: 0x0\n"
+	if got, want := debugFSStatType(output), ext4PathKindSymlink; got != want {
+		t.Fatalf("unexpected stat type: got %q want %q", got, want)
+	}
+}

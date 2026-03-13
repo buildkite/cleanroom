@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"encoding/base64"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -84,10 +83,8 @@ func headCommit(t *testing.T, dir string) string {
 func TestCreateCommandBootstrapsRepositoryForCurrentRepo(t *testing.T) {
 	repoDir := initGitRepository(t, "git@github.com:buildkite/cleanroom.git")
 	wantCommit := headCommit(t, repoDir)
-	restore := stubGitCredentialFill(t, func(_, _ string) (string, error) { return "", nil })
-	defer restore()
 
-	adapter := &integrationAdapter{}
+	adapter := &persistentIntegrationAdapter{}
 	host, _ := startIntegrationServer(t, adapter)
 
 	var (
@@ -149,11 +146,9 @@ func TestCreateCommandBootstrapsRepositoryForCurrentRepo(t *testing.T) {
 }
 
 func TestSandboxCreateCommandRemainsGenericWithRepositoryConfig(t *testing.T) {
-	adapter := &integrationAdapter{}
+	adapter := &persistentIntegrationAdapter{}
 	host, _ := startIntegrationServer(t, adapter)
 	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
-	restore := stubGitCredentialFill(t, func(_, _ string) (string, error) { return "", nil })
-	defer restore()
 
 	var (
 		mu       sync.Mutex
@@ -201,11 +196,9 @@ func TestSandboxCreateCommandRemainsGenericWithRepositoryConfig(t *testing.T) {
 }
 
 func TestExecCommandRunsInsideRepositoryPathForNewSandbox(t *testing.T) {
-	adapter := &integrationAdapter{}
+	adapter := &persistentIntegrationAdapter{}
 	host, _ := startIntegrationServer(t, adapter)
 	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
-	restore := stubGitCredentialFill(t, func(_, _ string) (string, error) { return "", nil })
-	defer restore()
 
 	var (
 		mu       sync.Mutex
@@ -259,8 +252,6 @@ func TestExecCommandRunsInsideRepositoryPathForNewSandbox(t *testing.T) {
 
 func TestExecCommandRunsInsideRepositoryPathWhenReusingSandboxID(t *testing.T) {
 	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
-	restore := stubGitCredentialFill(t, func(_, _ string) (string, error) { return "", nil })
-	defer restore()
 
 	adapter := &persistentIntegrationAdapter{}
 	host, _ := startIntegrationServer(t, adapter)
@@ -339,8 +330,6 @@ func TestExecCommandRunsInsideRepositoryPathWhenReusingSandboxID(t *testing.T) {
 func TestResolveRepositoryCheckoutAllowsDirtyCurrentRepoAtHead(t *testing.T) {
 	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
 	wantCommit := headCommit(t, repoDir)
-	restore := stubGitCredentialFill(t, func(_, _ string) (string, error) { return "", nil })
-	defer restore()
 	if err := os.WriteFile(filepath.Join(repoDir, "dirty.txt"), []byte("dirty\n"), 0o644); err != nil {
 		t.Fatalf("write dirty file: %v", err)
 	}
@@ -375,13 +364,11 @@ func TestResolveRepositoryCheckoutAllowsDirtyCurrentRepoAtHead(t *testing.T) {
 
 func TestCreateCommandWarnsWhenRepositoryIsDirty(t *testing.T) {
 	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
-	restore := stubGitCredentialFill(t, func(_, _ string) (string, error) { return "", nil })
-	defer restore()
 	if err := os.WriteFile(filepath.Join(repoDir, "dirty.txt"), []byte("dirty\n"), 0o644); err != nil {
 		t.Fatalf("write dirty file: %v", err)
 	}
 
-	adapter := &integrationAdapter{}
+	adapter := &persistentIntegrationAdapter{}
 	host, _ := startIntegrationServer(t, adapter)
 	adapter.runStreamFn = func(_ context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
 		return &backend.RunResult{RunID: req.RunID, ExitCode: 0, Message: "ok"}, nil
@@ -420,8 +407,6 @@ func TestCreateCommandWarnsWhenRepositoryIsDirty(t *testing.T) {
 
 func TestCreateCommandRejectsRepositoryBootstrapForNonPersistentBackend(t *testing.T) {
 	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
-	restore := stubGitCredentialFill(t, func(_, _ string) (string, error) { return "", nil })
-	defer restore()
 	adapter := &integrationAdapter{}
 
 	outcome := runCreateAliasWithCapture(CreateCommand{
@@ -463,8 +448,6 @@ func TestCreateCommandRejectsRepositoryBootstrapForNonPersistentBackend(t *testi
 
 func TestExecCommandInlinesRepositoryBootstrapForNonPersistentBackend(t *testing.T) {
 	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
-	restore := stubGitCredentialFill(t, func(_, _ string) (string, error) { return "", nil })
-	defer restore()
 	adapter := &integrationAdapter{}
 	host, _ := startUnixIntegrationServer(t, adapter)
 
@@ -555,63 +538,6 @@ func TestCanonicalizeGitRemoteURLStripsUserInfo(t *testing.T) {
 	}
 }
 
-func TestResolveRepositoryCheckoutUsesCredentialHelperForHTTPSRemote(t *testing.T) {
-	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
-	restore := stubGitCredentialFill(t, func(dir, input string) (string, error) {
-		gotDir, err := filepath.EvalSymlinks(dir)
-		if err != nil {
-			t.Fatalf("resolve credential dir symlinks: %v", err)
-		}
-		wantDir, err := filepath.EvalSymlinks(repoDir)
-		if err != nil {
-			t.Fatalf("resolve repo dir symlinks: %v", err)
-		}
-		if got, want := gotDir, wantDir; got != want {
-			t.Fatalf("unexpected credential dir: got %q want %q", got, want)
-		}
-		if !strings.Contains(input, "host=github.com\n") {
-			t.Fatalf("expected github host lookup, got %q", input)
-		}
-		return "protocol=https\nhost=github.com\nusername=codex\npassword=top-secret\n", nil
-	})
-	defer restore()
-
-	checkout, err := resolveRepositoryCheckout(repoDir, repositoryIntegrationLoader{
-		compiled: &policy.CompiledPolicy{
-			Version:        1,
-			ImageRef:       "ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-			ImageDigest:    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-			NetworkDefault: "deny",
-			Allow:          []policy.AllowRule{{Host: "github.com", Ports: []int{443}}},
-		},
-		repository: policy.RepositoryConfig{
-			Mode:   "current-repo",
-			Remote: "origin",
-			Path:   "/workspace",
-		},
-	})
-	if err != nil {
-		t.Fatalf("resolveRepositoryCheckout returned error: %v", err)
-	}
-	if checkout == nil {
-		t.Fatal("expected repository checkout result")
-	}
-	if got, want := checkout.GitConfigKey, "http.https://github.com/.extraHeader"; got != want {
-		t.Fatalf("unexpected git config key: got %q want %q", got, want)
-	}
-	const prefix = "Authorization: Basic "
-	if !strings.HasPrefix(checkout.GitConfigValue, prefix) {
-		t.Fatalf("expected basic auth header, got %q", checkout.GitConfigValue)
-	}
-	decoded, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(checkout.GitConfigValue, prefix))
-	if err != nil {
-		t.Fatalf("decode auth header: %v", err)
-	}
-	if got, want := string(decoded), "codex:top-secret"; got != want {
-		t.Fatalf("unexpected decoded auth payload: got %q want %q", got, want)
-	}
-}
-
 func TestWrapCommandWithRepositoryBootstrapStripsCommandSeparator(t *testing.T) {
 	command := wrapCommandWithRepositoryBootstrap([]string{"--", "sh", "-lc", "pwd"}, &resolvedRepositoryCheckout{
 		RemoteURL:      "https://github.com/buildkite/cleanroom.git",
@@ -627,11 +553,17 @@ func TestWrapCommandWithRepositoryBootstrapStripsCommandSeparator(t *testing.T) 
 	}
 }
 
-func stubGitCredentialFill(t *testing.T, fn func(dir, input string) (string, error)) func() {
-	t.Helper()
-	prev := gitCredentialFill
-	gitCredentialFill = fn
-	return func() {
-		gitCredentialFill = prev
+func TestWrapCommandWithRepositoryBootstrapDoesNotEmbedAuthHeaders(t *testing.T) {
+	command := wrapCommandWithRepositoryBootstrap([]string{"sh", "-lc", "pwd"}, &resolvedRepositoryCheckout{
+		RemoteURL:      "https://github.com/buildkite/cleanroom.git",
+		CommitSHA:      "0123456789abcdef0123456789abcdef01234567",
+		DestinationDir: "/workspace",
+	})
+	joined := strings.Join(command, " ")
+	if strings.Contains(joined, ".extraHeader") {
+		t.Fatalf("expected bootstrap command to avoid git extra headers, got %q", joined)
+	}
+	if strings.Contains(joined, "Authorization:") {
+		t.Fatalf("expected bootstrap command to avoid embedding authorization headers, got %q", joined)
 	}
 }

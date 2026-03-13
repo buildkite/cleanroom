@@ -1,10 +1,14 @@
 package gateway
 
 import (
+	"bytes"
+	"compress/gzip"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"os"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -24,13 +28,19 @@ const (
 
 type gitHandler struct {
 	credentials CredentialProvider
+	mirrors     GitMirrorStore
 	logger      *log.Logger
 	client      *http.Client
 }
 
 func newGitHandler(creds CredentialProvider, logger *log.Logger) *gitHandler {
+	return newGitHandlerWithMirrors(creds, nil, logger)
+}
+
+func newGitHandlerWithMirrors(creds CredentialProvider, mirrors GitMirrorStore, logger *log.Logger) *gitHandler {
 	return &gitHandler{
 		credentials: creds,
+		mirrors:     mirrors,
 		logger:      logger,
 		client: &http.Client{
 			Transport: &http.Transport{
@@ -56,21 +66,11 @@ func (h *gitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse: /git/<host>/<remainder>
-	trimmed := strings.TrimPrefix(r.URL.Path, "/git/")
-	if trimmed == "" || trimmed == r.URL.Path {
-		http.Error(w, "bad request: missing upstream host", http.StatusBadRequest)
+	upstreamHost, repoPath, err := splitGitRequestPath(r.URL.Path)
+	if err != nil {
+		http.Error(w, "bad request: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-
-	slashIdx := strings.Index(trimmed, "/")
-	if slashIdx <= 0 {
-		http.Error(w, "bad request: missing repository path", http.StatusBadRequest)
-		return
-	}
-
-	upstreamHost := trimmed[:slashIdx]
-	repoPath := trimmed[slashIdx:] // includes leading /
 
 	if !scope.Policy.Allows(upstreamHost, 443) {
 		h.auditLog(scope.SandboxID, upstreamHost, repoPath, "deny", reasonHostNotAllowed)
@@ -78,37 +78,45 @@ func (h *gitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := h.classifyRequest(r.Method, repoPath, r.URL.RawQuery); err != nil {
+	requestType, err := h.classifyRequest(r.Method, repoPath, r.URL.RawQuery)
+	if err != nil {
 		h.auditLog(scope.SandboxID, upstreamHost, repoPath, "deny", reasonMethodNotAllowed)
 		writeReasonError(w, http.StatusForbidden, reasonMethodNotAllowed, err.Error())
 		return
 	}
 
-	upstreamURL := fmt.Sprintf("https://%s%s", upstreamHost, repoPath)
-	if r.URL.RawQuery != "" {
-		upstreamURL += "?" + r.URL.RawQuery
+	remoteURL, err := canonicalUpstreamRemoteURL(upstreamHost, repoPath)
+	if err != nil {
+		writeReasonError(w, http.StatusBadRequest, reasonMethodNotAllowed, err.Error())
+		return
 	}
 
+	if h.mirrors != nil {
+		if err := h.serveFromMirror(w, r, remoteURL, upstreamHost, repoPath, requestType); err != nil {
+			h.auditLog(scope.SandboxID, upstreamHost, repoPath, "deny", reasonUpstreamError)
+			writeReasonError(w, http.StatusBadGateway, reasonUpstreamError, err.Error())
+			return
+		}
+		h.auditLog(scope.SandboxID, upstreamHost, repoPath, "allow", "mirrored")
+		return
+	}
+
+	upstreamURL := remoteURL + querySuffix(r.URL.RawQuery)
 	upstreamReq, err := http.NewRequestWithContext(r.Context(), r.Method, upstreamURL, r.Body)
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-
-	for _, key := range []string{"Content-Type", "Accept", "Git-Protocol"} {
-		if v := r.Header.Get(key); v != "" {
-			upstreamReq.Header.Set(key, v)
-		}
-	}
+	copyGitUpstreamHeaders(upstreamReq.Header, r.Header)
 
 	if h.credentials != nil {
-		token, err := h.credentials.Resolve(r.Context(), upstreamHost)
+		header, err := h.credentials.Resolve(r.Context(), remoteURL)
 		if err != nil {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
-		if token != "" {
-			upstreamReq.Header.Set("Authorization", "Bearer "+token)
+		if header != "" {
+			upstreamReq.Header.Set("Authorization", header)
 		}
 	}
 
@@ -128,6 +136,189 @@ func (h *gitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(w, resp.Body)
+}
+
+func splitGitRequestPath(rawPath string) (string, string, error) {
+	trimmed := strings.TrimPrefix(rawPath, "/git/")
+	if trimmed == "" || trimmed == rawPath {
+		return "", "", fmt.Errorf("missing upstream host")
+	}
+	slashIdx := strings.Index(trimmed, "/")
+	if slashIdx <= 0 {
+		return "", "", fmt.Errorf("missing repository path")
+	}
+	return trimmed[:slashIdx], trimmed[slashIdx:], nil
+}
+
+func canonicalUpstreamRemoteURL(upstreamHost, repoPath string) (string, error) {
+	repositoryPath := repoPath
+	switch {
+	case strings.HasSuffix(repositoryPath, "/info/refs"):
+		repositoryPath = strings.TrimSuffix(repositoryPath, "/info/refs")
+	case strings.HasSuffix(repositoryPath, "/"+gitUploadPackService):
+		repositoryPath = strings.TrimSuffix(repositoryPath, "/"+gitUploadPackService)
+	case strings.HasSuffix(repositoryPath, "/"+gitReceivePackService):
+		repositoryPath = strings.TrimSuffix(repositoryPath, "/"+gitReceivePackService)
+	default:
+		return "", fmt.Errorf("unsupported git request path %q", repoPath)
+	}
+	if strings.TrimSpace(repositoryPath) == "" || repositoryPath == "/" {
+		return "", fmt.Errorf("missing repository path")
+	}
+	return "https://" + upstreamHost + repositoryPath, nil
+}
+
+func querySuffix(rawQuery string) string {
+	if strings.TrimSpace(rawQuery) == "" {
+		return ""
+	}
+	return "?" + rawQuery
+}
+
+func (h *gitHandler) serveFromMirror(w http.ResponseWriter, r *http.Request, remoteURL, upstreamHost, repoPath, requestType string) error {
+	mirrorDir, err := h.mirrors.EnsureMirror(r.Context(), remoteURL)
+	if err != nil {
+		return fmt.Errorf("ensure mirror %s: %w", remoteURL, err)
+	}
+	switch requestType {
+	case "info-refs":
+		return serveMirrorInfoRefs(r, w, mirrorDir)
+	case "upload-pack":
+		return serveMirrorUploadPack(r, w, mirrorDir)
+	default:
+		return fmt.Errorf("unsupported git request type %q for %s%s", requestType, upstreamHost, repoPath)
+	}
+}
+
+func serveMirrorInfoRefs(r *http.Request, w http.ResponseWriter, mirrorDir string) error {
+	cmd := exec.CommandContext(r.Context(), "git", append(uploadPackConfigArgs(), "upload-pack", "--stateless-rpc", "--http-backend-info-refs", mirrorDir)...)
+	cmd.Env = append(os.Environ(), gitProtocolEnv(r)...)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("git upload-pack --http-backend-info-refs: %s: %w", strings.TrimSpace(stderr.String()), err)
+	}
+
+	w.Header().Set("Content-Type", "application/x-git-upload-pack-advertisement")
+	w.Header().Set("Cache-Control", "no-cache")
+
+	pktLine := "# service=git-upload-pack\n"
+	pktHeader := fmt.Sprintf("%04x", len(pktLine)+4)
+	if _, err := w.Write([]byte(pktHeader)); err != nil {
+		return err
+	}
+	if _, err := w.Write([]byte(pktLine)); err != nil {
+		return err
+	}
+	if _, err := w.Write([]byte("0000")); err != nil {
+		return err
+	}
+	_, err := w.Write(stdout.Bytes())
+	return err
+}
+
+func serveMirrorUploadPack(r *http.Request, w http.ResponseWriter, mirrorDir string) error {
+	body, err := readUploadPackBody(r)
+	if err != nil {
+		return err
+	}
+
+	cmd := exec.CommandContext(r.Context(), "git", append(uploadPackConfigArgs(), "upload-pack", "--stateless-rpc", mirrorDir)...)
+	cmd.Env = append(os.Environ(), gitProtocolEnv(r)...)
+	cmd.Stdin = bytes.NewReader(body)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("git upload-pack --stateless-rpc: %s: %w", strings.TrimSpace(stderr.String()), err)
+	}
+
+	w.Header().Set("Content-Type", "application/x-git-upload-pack-result")
+	w.Header().Set("Cache-Control", "no-cache")
+	_, err = w.Write(stdout.Bytes())
+	return err
+}
+
+func gitProtocolEnv(r *http.Request) []string {
+	proto := strings.TrimSpace(r.Header.Get("Git-Protocol"))
+	if proto == "" {
+		return nil
+	}
+	return []string{"GIT_PROTOCOL=" + proto}
+}
+
+func readUploadPackBody(r *http.Request) ([]byte, error) {
+	reader := io.Reader(r.Body)
+	if strings.Contains(strings.ToLower(r.Header.Get("Content-Encoding")), "gzip") {
+		gz, err := gzip.NewReader(r.Body)
+		if err != nil {
+			return nil, fmt.Errorf("decompress git-upload-pack request: %w", err)
+		}
+		defer gz.Close()
+		reader = gz
+	}
+	body, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, fmt.Errorf("read git-upload-pack request: %w", err)
+	}
+	return body, nil
+}
+
+func uploadPackConfigArgs() []string {
+	return []string{
+		"-c", "uploadpack.allowFilter=true",
+	}
+}
+
+var hopByHopHeaderNames = map[string]struct{}{
+	"Connection":          {},
+	"Keep-Alive":          {},
+	"Proxy-Authenticate":  {},
+	"Proxy-Authorization": {},
+	"Te":                  {},
+	"Trailer":             {},
+	"Transfer-Encoding":   {},
+	"Upgrade":             {},
+}
+
+func copyGitUpstreamHeaders(dst, src http.Header) {
+	if dst == nil || src == nil {
+		return
+	}
+
+	connectionTokens := make(map[string]struct{})
+	for _, value := range src.Values("Connection") {
+		for _, token := range strings.Split(value, ",") {
+			name := http.CanonicalHeaderKey(strings.TrimSpace(token))
+			if name != "" {
+				connectionTokens[name] = struct{}{}
+			}
+		}
+	}
+
+	for key, values := range src {
+		canonicalKey := http.CanonicalHeaderKey(key)
+		if _, skip := hopByHopHeaderNames[canonicalKey]; skip {
+			continue
+		}
+		if _, skip := connectionTokens[canonicalKey]; skip {
+			continue
+		}
+		switch canonicalKey {
+		case ScopeTokenHeader, "Authorization", "Host":
+			continue
+		}
+		for _, value := range values {
+			dst.Add(canonicalKey, value)
+		}
+	}
 }
 
 // classifyRequest determines the git operation and rejects disallowed operations.

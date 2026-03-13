@@ -26,6 +26,12 @@ Under the hood, the server should avoid hitting GitHub for every sandbox by
 serving sandbox git traffic from a host-side mirror cache behind the existing
 gateway.
 
+That mirror cache should be implemented inside Cleanroom rather than by taking
+on a dependency on an external proxy service. The useful precedent is
+Buildkite's [`git-proxy-cache`](https://github.com/buildkite/git-proxy-cache):
+copy the mirror and refresh approach, keep Cleanroom's own gateway identity and
+credential model.
+
 ## Why this is the useful UX
 
 Most users standing in a repo do not want to think about sandbox plumbing. They
@@ -268,18 +274,20 @@ run many commands" is a truthful contract.
 
 ### darwin-vz
 
-Do not advertise persistent repository checkout on `create`.
+Support the same repository checkout model as Firecracker.
 
-Current `darwin-vz` behavior is per-run VM execution, so a checked-out sandbox
-cannot be honestly reused across commands yet.
+The difference from Firecracker is not repository UX. It is gateway identity:
 
-For the first slice:
+- Firecracker can identify sandboxes by guest source IP
+- `darwin-vz` should identify sandboxes with a scope token carried to the host
+  gateway because guests share NAT
 
-- `cleanroom create` should reject repository bootstrap on `darwin-vz`
-- `cleanroom exec` and `cleanroom console` should inline checkout plus command
-  execution into the same run
-- the backend should use direct upstream git access rather than host gateway
-  routing until guest access to the host gateway is reliable
+The git path should still be the same:
+
+- guest clone traffic goes to the Cleanroom host gateway
+- auth stays on the host
+- later in-guest `git fetch` and submodule operations continue to use the same
+  gateway path
 
 Suggested capability name:
 
@@ -302,13 +310,41 @@ checkout, and avoids backend-specific file seeding.
 
 ## Efficient upstream strategy
 
-The right default is not "every sandbox clones from GitHub" and not "copy a
-bare repo into every VM".
+The simplest useful first step is not "every sandbox clones from GitHub" and
+not "copy a bare repo into every VM".
 
-The right design is:
+The right first design is:
 
 - sandboxes talk to the existing host git gateway
+- the host gateway owns upstream auth
 - the host gateway is backed by a local mirror cache
+
+This is the smallest slice that gets:
+
+- auth on the host instead of the guest
+- cheaper repeated sandbox creation
+- the same git semantics inside the guest
+
+without also needing host-side workspace snapshotting.
+
+### Initial slice
+
+For the first performance-oriented slice:
+
+- keep the guest bootstrap flow unchanged
+- keep repository materialization inside the guest
+- move auth fully into the host gateway
+- add a host-side bare mirror cache per canonical upstream remote
+- implement that mirror cache in-tree inside Cleanroom
+- do not add pack-response caching in the first slice
+
+That means sandbox bootstrap still does:
+
+1. `git clone --filter=blob:none --no-checkout`
+2. `git checkout --detach <commit>`
+3. optional submodule materialization
+
+but the clone traffic is served from a host-managed mirror whenever possible.
 
 ### Mirror cache model
 
@@ -321,6 +357,15 @@ $XDG_STATE_HOME/cleanroom/repos/<hash>.git
 The mirror is owned by the host control plane and updated with host-side
 credentials.
 
+For the first slice, the gateway should serve that mirror via `git
+http-backend` rather than trying to hand-roll more of git smart-HTTP.
+
+The mirror store should be keyed by canonical remote URL and must be able to
+block until a requested commit is present. A pure TTL-based "return stale
+mirror and refresh in the background" policy is not enough for Cleanroom,
+because repository bootstrap is pinned to an exact commit and must not race a
+background fetch.
+
 ### Gateway behavior
 
 When a sandbox clones `https://github.com/org/repo.git`, the existing git
@@ -330,9 +375,11 @@ The gateway then:
 
 1. maps the request to the canonical upstream remote
 2. checks policy as it does today
-3. serves from the local mirror when possible
-4. fetches upstream only when the requested commit or ref is missing/stale
-5. coalesces concurrent refreshes with locking or singleflight
+3. resolves host-side credentials for that remote
+4. ensures a local mirror exists for that remote
+5. fetches upstream when the requested repo state is missing or stale
+6. coalesces concurrent refreshes with locking or singleflight
+7. serves the request from the local mirror
 
 That preserves:
 
@@ -345,6 +392,53 @@ And it sharply reduces:
 
 - repeated GitHub API and git smart-HTTP traffic
 - per-sandbox pressure on upstream rate limits
+
+### Gateway auth model
+
+The gateway should be the single source of truth for upstream git auth.
+
+The initial provider chain should be:
+
+1. explicit host env credentials
+2. host `git credential fill`
+3. future service-specific providers such as GitHub App installation tokens
+
+This lookup should key off the canonical HTTPS remote URL, not just the host,
+because host git credentials may be path-scoped.
+
+The guest should not receive upstream credentials. Missing auth should fail
+fast and non-interactively.
+
+This is one of the reasons to keep the implementation in-tree. Cleanroom
+already has the right sandbox identity model for both backends:
+
+- source-IP identity for `firecracker`
+- scope-token identity for `darwin-vz`
+
+An imported proxy with its own inbound auth protocol would be the wrong
+abstraction layer here.
+
+## Why not depend on git-proxy-cache directly
+
+`git-proxy-cache` is useful research and a good source of implementation ideas,
+but it is not the right dependency boundary for Cleanroom.
+
+Reasons:
+
+- it is a standalone service, not a small reusable mirror library
+- its inbound auth is Buildkite OIDC, not Cleanroom sandbox identity
+- its upstream auth is GitHub App specific, not Cleanroom's provider chain
+- its mirror freshness model is request-staleness oriented, not
+  exact-commit-oriented
+- its pack-response cache buffers full request and response bodies, which is
+  more complexity and memory pressure than the first Cleanroom slice needs
+
+Recommended reuse:
+
+- copy the bare-mirror plus singleflight refresh approach
+- keep Cleanroom's current gateway and credential resolution
+- revisit pack-response caching only if profiling shows mirror-backed clones are
+  still too slow
 
 ## Why not copy a bare repo into the VM
 
@@ -365,6 +459,23 @@ Useful future optimizations:
 - shallow mirror refresh when the requested ref allows it
 - archive export mode for CI workloads that only need files, not `.git`
 - mirror GC and retention policies
+- optional pack-response caching if later profiling justifies it
+
+## Next speed stage
+
+If the mirror-backed gateway is still not fast enough, the next stage should be
+commit-addressed workspace seeds.
+
+That means:
+
+- prepare a host-side checkout seed for `(remote, commit, submodules, mode)`
+- clone or copy that seed into new sandboxes
+- keep `origin` pointed at the gateway
+
+That is the step that turns "avoid hammering GitHub" into "new sandboxes start
+close to plain sandbox creation time".
+
+It should be a follow-up stage, not part of the first gateway cache slice.
 
 ## Failure behavior
 
@@ -437,14 +548,17 @@ This is clearer than pretending the checkout is a normal user execution.
    create-sandbox plus create-execution flow so the UX can land without API
    churn.
 3. Break `create` away from being a plain alias of `sandbox create`.
-4. For `darwin-vz`, inline repository bootstrap into `exec` and `console`
-   rather than pretending the sandbox is persistent.
-5. Add resolved repository checkout fields to the API.
-6. Add `sandbox.repository_checkout` capability reporting.
-7. Move checkout orchestration into the control service for persistent
+4. Route repository git traffic for both backends through the host gateway.
+5. Move git auth fully into the gateway using a provider chain that can use
+   host git credentials.
+6. Add the in-tree mirror-backed gateway cache to cut upstream load.
+7. Add resolved repository checkout fields to the API.
+8. Add `sandbox.repository_checkout` capability reporting.
+9. Move checkout orchestration into the control service for persistent
    sandboxes.
-8. Add the mirror-backed gateway cache to cut upstream load.
-9. Add generic explicit `sandbox create` git flags.
+10. Add generic explicit `sandbox create` git flags.
+11. If needed, add commit-addressed workspace seeds as a second-stage startup
+    optimization.
 
 ## Bottom line
 
@@ -456,4 +570,6 @@ The most useful model is:
 - the CLI resolves the local repo into a concrete checkout request
 - the control plane owns checkout orchestration
 - the guest still clones through the gateway
-- the gateway is backed by a host mirror cache so scale does not hammer GitHub
+- the gateway owns auth and is backed by a host mirror cache
+- later, if needed, workspace seeds can make repeated sandbox creation much
+  cheaper than recloning every time
