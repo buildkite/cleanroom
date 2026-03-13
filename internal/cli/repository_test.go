@@ -362,6 +362,32 @@ func TestResolveRepositoryCheckoutAllowsDirtyCurrentRepoAtHead(t *testing.T) {
 	}
 }
 
+func TestResolveRepositoryCheckoutSkipsImplicitDefaultOutsideGitRepo(t *testing.T) {
+	dir := t.TempDir()
+
+	checkout, err := resolveRepositoryCheckout(dir, repositoryIntegrationLoader{
+		compiled: &policy.CompiledPolicy{
+			Version:        1,
+			ImageRef:       "ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+			ImageDigest:    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+			NetworkDefault: "deny",
+			Allow:          []policy.AllowRule{{Host: "github.com", Ports: []int{443}}},
+		},
+		repository: policy.RepositoryConfig{
+			Mode:     "current-repo",
+			Remote:   "origin",
+			Path:     "/workspace",
+			Implicit: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("resolveRepositoryCheckout returned error: %v", err)
+	}
+	if checkout != nil {
+		t.Fatalf("expected implicit repository default to be skipped outside a git repo, got %+v", checkout)
+	}
+}
+
 func TestCreateCommandWarnsWhenRepositoryIsDirty(t *testing.T) {
 	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
 	if err := os.WriteFile(filepath.Join(repoDir, "dirty.txt"), []byte("dirty\n"), 0o644); err != nil {

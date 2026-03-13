@@ -75,11 +75,13 @@ This means `cleanroom create` should stop being just an alias for
 The checked-in config should describe repository behavior, not a concrete
 resolved checkout.
 
-Suggested shape:
+The repo-aware top-level commands should default to the current repository when
+run inside a git checkout.
+
+Implicit defaults:
 
 ```yaml
 repository:
-  mode: current-repo
   remote: origin
   path: /workspace
   submodules: false
@@ -87,15 +89,22 @@ repository:
 
 Meaning:
 
-- `mode: current-repo`
+- default current-repo behavior
   The top-level repo-aware commands should inspect the local git repository in
-  the current working tree.
+  the current working tree unless disabled.
 - `remote: origin`
   Which remote to read the upstream URL from.
 - `path: /workspace`
   Where the checkout should appear inside the guest.
 - `submodules: false`
   Whether submodules should be materialized as part of startup.
+
+Optional override / disable shape:
+
+```yaml
+repository:
+  enabled: false
+```
 
 This belongs in `cleanroom.yaml` because it is repo intent, not host-specific
 runtime state.
@@ -125,7 +134,7 @@ The resolved git checkout should be computed at runtime by the repo-aware CLI.
 The top-level commands should translate the checked-in repo intent into a
 concrete checkout request.
 
-For `repository.mode: current-repo`, the CLI should:
+For the default current-repo behavior, the CLI should:
 
 1. discover the local repository root
 2. read the configured remote URL, for example `remote.origin.url`
@@ -157,7 +166,7 @@ the sandbox silently includes an implicit host snapshot.
 `cleanroom create`, `cleanroom exec`, and `cleanroom console` should:
 
 - load `cleanroom.yaml`
-- inspect the local git repository when `repository.mode` requires it
+- inspect the local git repository when repo-aware bootstrap is enabled
 - resolve a concrete checkout request
 - create or reuse a sandbox whose filesystem already contains that checkout
 - default the guest working directory to `repository.path`
@@ -515,7 +524,7 @@ This is clearer than pretending the checkout is a normal user execution.
 
 ### CLI
 
-- `cleanroom create|exec|console` read `repository.mode: current-repo`
+- `cleanroom create|exec|console` default to the current repository unless disabled
 - local git resolution produces the expected remote URL and commit SHA
 - dirty working tree handling is clear and deterministic
 - `cleanroom sandbox create` explicit git flags serialize correctly

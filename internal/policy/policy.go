@@ -24,8 +24,8 @@ const (
 type Loader struct{}
 
 type rawPolicy struct {
-	Version    int           `yaml:"version"`
-	Repository rawRepository `yaml:"repository"`
+	Version    int            `yaml:"version"`
+	Repository *rawRepository `yaml:"repository"`
 	Sandbox    struct {
 		Image struct {
 			Ref string `yaml:"ref"`
@@ -39,6 +39,7 @@ type rawPolicy struct {
 }
 
 type rawRepository struct {
+	Enabled    *bool  `yaml:"enabled"`
 	Mode       string `yaml:"mode"`
 	Remote     string `yaml:"remote"`
 	Path       string `yaml:"path"`
@@ -69,6 +70,7 @@ type CompiledPolicy struct {
 }
 
 type RepositoryConfig struct {
+	Implicit   bool   `json:"-"`
 	Mode       string `json:"mode"`
 	Remote     string `json:"remote"`
 	Path       string `json:"path"`
@@ -243,12 +245,25 @@ func (c RepositoryConfig) Enabled() bool {
 	return strings.TrimSpace(strings.ToLower(c.Mode)) != "" && strings.TrimSpace(strings.ToLower(c.Mode)) != "none"
 }
 
-func normalizeRepositoryConfig(raw rawRepository) (RepositoryConfig, error) {
+func normalizeRepositoryConfig(raw *rawRepository) (RepositoryConfig, error) {
+	if raw == nil {
+		return RepositoryConfig{
+			Implicit: true,
+			Mode:     "current-repo",
+			Remote:   "origin",
+			Path:     "/workspace",
+		}, nil
+	}
+	if raw.Enabled != nil && !*raw.Enabled {
+		return RepositoryConfig{}, nil
+	}
+
 	mode := strings.TrimSpace(strings.ToLower(raw.Mode))
 	switch mode {
-	case "", "none":
+	case "", "current-repo":
+		mode = "current-repo"
+	case "none":
 		return RepositoryConfig{}, nil
-	case "current-repo":
 	default:
 		return RepositoryConfig{}, fmt.Errorf("unsupported repository.mode %q", raw.Mode)
 	}
@@ -267,6 +282,7 @@ func normalizeRepositoryConfig(raw rawRepository) (RepositoryConfig, error) {
 	}
 
 	return RepositoryConfig{
+		Implicit:   false,
 		Mode:       mode,
 		Remote:     remote,
 		Path:       path,

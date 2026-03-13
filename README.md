@@ -170,17 +170,35 @@ Validate policy without running anything:
 cleanroom policy validate
 ```
 
-Repository-aware bootstrap for the top-level commands:
+Repository-aware bootstrap is the default for the top-level commands when you
+run them from inside a git repository.
+
+The implicit defaults are:
 
 ```yaml
 repository:
-  mode: current-repo
   remote: origin
   path: /workspace
   submodules: false
 ```
 
-With that config:
+Use the optional `repository` block only to override those defaults or disable
+the behavior:
+
+```yaml
+repository:
+  enabled: false
+```
+
+or:
+
+```yaml
+repository:
+  path: /work
+  submodules: true
+```
+
+With the default behavior:
 
 - `cleanroom create` creates a sandbox with the current repo checked out at local `HEAD`
 - `cleanroom exec -- <cmd>` checks out the repo and runs `<cmd>` from `/workspace`

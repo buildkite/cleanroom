@@ -123,20 +123,28 @@ metadata:
 
 ### 5.1.1 Repository bootstrap config
 
-Repository policy may also describe how top-level commands materialize source
-code into the sandbox:
+Top-level commands default to materializing the current git repository into the
+sandbox when run inside a git checkout.
+
+The implicit defaults are:
 
 ```yaml
 repository:
-  mode: current-repo
   remote: origin
   path: /workspace
   submodules: false
 ```
 
+The optional `repository` block is for overrides or disablement:
+
+```yaml
+repository:
+  enabled: false
+```
+
 Meaning:
 
-- `mode: current-repo` resolves the local git repository at runtime
+- `enabled: false` disables the default repo-aware bootstrap for top-level commands
 - `remote` selects which git remote to read, default `origin`
 - `path` is the absolute guest destination, default `/workspace`
 - `submodules` controls whether submodules are initialized after checkout
@@ -144,7 +152,9 @@ Meaning:
 ### 5.2 Schema rules
 - Required: `version`, `sandbox.network.default`.
 - `sandbox.network.default` must be either `deny` or `allow`; v1 default must be `deny`.
-- `repository.mode` may be omitted, `none`, or `current-repo`.
+- If `repository` is omitted, top-level commands default to the current repo with `remote: origin`, `path: /workspace`, and `submodules: false`.
+- `repository.enabled` defaults to `true`; `false` disables repo-aware bootstrap for top-level commands.
+- `repository.mode` is optional and, when set, may be `none` or `current-repo`.
 - `repository.remote` defaults to `origin`.
 - `repository.path` defaults to `/workspace` and must be an absolute guest path.
 - `repository.submodules` defaults to `false`.
@@ -202,8 +212,7 @@ Meaning:
 - Filesystem writes persist across executions within a sandbox and are discarded on sandbox termination.
 - Current API/runtime intent: no host workspace mount input is accepted by `CreateSandbox` or `CreateExecution`.
 - Workloads run against the backend-provided sandbox image filesystem.
-- When `repository.mode` is enabled, `cleanroom create`, `cleanroom exec`, and
-  `cleanroom console` are repo-aware:
+- By default, `cleanroom create`, `cleanroom exec`, and `cleanroom console` are repo-aware when run inside a git repository:
   - they resolve the local repository remote URL and committed `HEAD`
   - they materialize that checkout inside the sandbox before the command runs
   - they start commands in `repository.path`
@@ -214,8 +223,8 @@ Meaning:
 - `cleanroom exec` must:
   1. resolve API endpoint (`--host`, env, context, default unix socket),
   2. resolve and compile policy,
-  3. when `repository.mode: current-repo` is enabled, resolve the current git
-     repository root, remote URL, and committed `HEAD`,
+  3. when repo-aware bootstrap is enabled, resolve the current git repository
+     root, remote URL, and committed `HEAD`,
   4. create or select sandbox,
   5. create execution,
   6. stream output/events to caller,

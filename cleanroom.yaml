@@ -1,9 +1,4 @@
 version: 1
-repository:
-  mode: current-repo
-  remote: origin
-  path: /workspace
-  submodules: false
 sandbox:
   image:
     ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:91a63856cdf97b2e5659660b41d1a131d3b57bfa4cad254018e391ffef6fa4b9

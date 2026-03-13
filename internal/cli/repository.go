@@ -11,6 +11,7 @@ import (
 
 	"github.com/buildkite/cleanroom/internal/controlclient"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
+	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/repositorycheckout"
 )
 
@@ -44,6 +45,9 @@ func resolveRepositoryCheckout(cwd string, loader policyLoader) (*resolvedReposi
 
 	repoRoot, err := gitOutput(cwd, "rev-parse", "--show-toplevel")
 	if err != nil {
+		if shouldSkipImplicitRepository(repository, err) {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("resolve repository root: %w", err)
 	}
 	dirty, err := gitOutput(repoRoot, "status", "--porcelain")
@@ -107,11 +111,26 @@ func resolveRepositoryExecutionContext(cwd string, loader policyLoader) (*resolv
 	default:
 		return nil, fmt.Errorf("unsupported repository.mode %q", repository.Mode)
 	}
+	if repository.Implicit {
+		if _, err := gitOutput(cwd, "rev-parse", "--show-toplevel"); err != nil {
+			if shouldSkipImplicitRepository(repository, err) {
+				return nil, nil
+			}
+			return nil, fmt.Errorf("resolve repository root: %w", err)
+		}
+	}
 
 	return &resolvedRepositoryCheckout{
 		DestinationDir: repository.Path,
 		Submodules:     repository.Submodules,
 	}, nil
+}
+
+func shouldSkipImplicitRepository(repository policy.RepositoryConfig, err error) bool {
+	if !repository.Implicit || err == nil {
+		return false
+	}
+	return isNotAGitRepositoryErr(err)
 }
 
 func canonicalizeGitRemoteURL(raw string) (string, string, error) {
@@ -183,6 +202,14 @@ func gitOutput(dir string, args ...string) (string, error) {
 		return "", errors.New(msg)
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+func isNotAGitRepositoryErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(msg, "not a git repository")
 }
 
 func createTopLevelSandbox(

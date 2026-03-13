@@ -243,8 +243,8 @@ Additional command forms:
 Behavior contract:
 1. Resolve server endpoint (`--host`, `CLEANROOM_HOST`, context, default unix socket).
 2. Resolve and compile repository policy.
-3. If `cleanroom.yaml` contains `repository.mode: current-repo`, resolve the
-   current git remote and committed `HEAD`.
+3. If repo-aware bootstrap is enabled, resolve the current git remote and
+   committed `HEAD`.
 4. Create or reuse sandbox (`--sandbox-id <id>` reuses an existing sandbox).
 5. For repo-aware top-level commands, materialize that checkout in the sandbox
    and default the guest working directory to `repository.path`.
