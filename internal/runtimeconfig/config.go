@@ -13,6 +13,7 @@ import (
 
 type Config struct {
 	DefaultBackend string   `yaml:"default_backend"`
+	ControlHost    string   `yaml:"control_host,omitempty"`
 	Backends       Backends `yaml:"backends"`
 }
 
@@ -55,6 +56,12 @@ type DockerServiceConfig struct {
 	IPTables              bool   `yaml:"iptables"`
 }
 
+var (
+	runtimeconfigUserHomeDir = os.UserHomeDir
+	runtimeconfigGeteuid     = os.Geteuid
+	runtimeconfigGOOS        = runtime.GOOS
+)
+
 func DefaultBackendForGOOS(goos string) string {
 	if strings.EqualFold(strings.TrimSpace(goos), "darwin") {
 		return "darwin-vz"
@@ -72,11 +79,32 @@ func Path() (string, error) {
 		return filepath.Join(configHome, "cleanroom", "config.yaml"), nil
 	}
 
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
+	home, err := runtimeconfigUserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		fallback, fallbackOK := defaultRootHomeDir()
+		if !fallbackOK {
+			if err != nil {
+				return "", err
+			}
+			return "", errors.New("home directory is not available")
+		}
+		home = fallback
 	}
 	return filepath.Join(home, ".config", "cleanroom", "config.yaml"), nil
+}
+
+func defaultRootHomeDir() (string, bool) {
+	if runtimeconfigGeteuid() != 0 {
+		return "", false
+	}
+
+	if strings.EqualFold(strings.TrimSpace(runtimeconfigGOOS), "darwin") {
+		return "/var/root", true
+	}
+	if strings.EqualFold(strings.TrimSpace(runtimeconfigGOOS), "windows") {
+		return "", false
+	}
+	return "/root", true
 }
 
 func Load() (Config, string, error) {
@@ -112,6 +140,7 @@ func Load() (Config, string, error) {
 	if cfg.DefaultBackend == "" {
 		cfg.DefaultBackend = DefaultBackendForHost()
 	}
+	cfg.ControlHost = strings.TrimSpace(cfg.ControlHost)
 	return cfg, path, nil
 }
 

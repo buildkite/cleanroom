@@ -1,8 +1,10 @@
 package runtimeconfig
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -107,5 +109,84 @@ func TestLoadDefaultsBackendWhenMissing(t *testing.T) {
 	}
 	if got, want := cfg.DefaultBackend, DefaultBackendForHost(); got != want {
 		t.Fatalf("unexpected default backend: got %q want %q", got, want)
+	}
+}
+
+func TestLoadTrimsControlHost(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	configPath := filepath.Join(tmp, "cleanroom", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	content := `default_backend: darwin-vz
+control_host: "  unix:///tmp/cleanroom.sock  "
+backends:
+  firecracker:
+    binary_path: firecracker
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, _, err := Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if got, want := cfg.ControlHost, "unix:///tmp/cleanroom.sock"; got != want {
+		t.Fatalf("unexpected control host: got %q want %q", got, want)
+	}
+}
+
+func TestPathFallsBackToRootHomeWhenHomeUnavailable(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "")
+
+	prevUserHome := runtimeconfigUserHomeDir
+	prevEUID := runtimeconfigGeteuid
+	prevGOOS := runtimeconfigGOOS
+	runtimeconfigUserHomeDir = func() (string, error) {
+		return "", errors.New("$HOME is not defined")
+	}
+	runtimeconfigGeteuid = func() int { return 0 }
+	runtimeconfigGOOS = "darwin"
+	t.Cleanup(func() {
+		runtimeconfigUserHomeDir = prevUserHome
+		runtimeconfigGeteuid = prevEUID
+		runtimeconfigGOOS = prevGOOS
+	})
+
+	path, err := Path()
+	if err != nil {
+		t.Fatalf("Path returned error: %v", err)
+	}
+	if got, want := path, filepath.Join("/var/root", ".config", "cleanroom", "config.yaml"); got != want {
+		t.Fatalf("unexpected fallback config path: got %q want %q", got, want)
+	}
+}
+
+func TestPathReturnsErrorWhenHomeUnavailableForNonRoot(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "")
+
+	prevUserHome := runtimeconfigUserHomeDir
+	prevEUID := runtimeconfigGeteuid
+	prevGOOS := runtimeconfigGOOS
+	runtimeconfigUserHomeDir = func() (string, error) {
+		return "", errors.New("$HOME is not defined")
+	}
+	runtimeconfigGeteuid = func() int { return 1000 }
+	runtimeconfigGOOS = "darwin"
+	t.Cleanup(func() {
+		runtimeconfigUserHomeDir = prevUserHome
+		runtimeconfigGeteuid = prevEUID
+		runtimeconfigGOOS = prevGOOS
+	})
+
+	_, err := Path()
+	if err == nil {
+		t.Fatal("expected Path to fail when home is unavailable for non-root")
+	}
+	if !strings.Contains(err.Error(), "$HOME is not defined") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }

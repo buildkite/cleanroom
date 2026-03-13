@@ -55,14 +55,14 @@ func TestResolveDefaultClientPrefersSystemSocketWhenPresent(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
 
 	prevStat := endpointStat
-	prevEUID := endpointGeteuid
+	prevGOOS := endpointGOOS
 	endpointStat = func(string) (os.FileInfo, error) {
 		return fakeFileInfo{mode: os.ModeSocket}, nil
 	}
-	endpointGeteuid = func() int { return 0 }
+	endpointGOOS = "linux"
 	t.Cleanup(func() {
 		endpointStat = prevStat
-		endpointGeteuid = prevEUID
+		endpointGOOS = prevGOOS
 	})
 
 	ep, err := Resolve("")
@@ -77,19 +77,41 @@ func TestResolveDefaultClientPrefersSystemSocketWhenPresent(t *testing.T) {
 	}
 }
 
+func TestResolveDefaultClientUsesRuntimeSocketOnDarwinEvenWhenSystemSocketPresent(t *testing.T) {
+	runtimeDir := t.TempDir()
+	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
+
+	prevStat := endpointStat
+	prevGOOS := endpointGOOS
+	endpointStat = func(string) (os.FileInfo, error) {
+		return fakeFileInfo{mode: os.ModeSocket}, nil
+	}
+	endpointGOOS = "darwin"
+	t.Cleanup(func() {
+		endpointStat = prevStat
+		endpointGOOS = prevGOOS
+	})
+
+	ep, err := Resolve("")
+	if err != nil {
+		t.Fatalf("resolve default client endpoint: %v", err)
+	}
+	want := filepath.Join(runtimeDir, "cleanroom", "cleanroom.sock")
+	if ep.Address != want {
+		t.Fatalf("expected runtime socket path %q on darwin, got %q", want, ep.Address)
+	}
+}
+
 func TestResolveDefaultClientFallsBackToRuntimeSocketWhenSystemPathIsNotSocket(t *testing.T) {
 	runtimeDir := t.TempDir()
 	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
 
 	prevStat := endpointStat
-	prevEUID := endpointGeteuid
 	endpointStat = func(string) (os.FileInfo, error) {
 		return fakeFileInfo{mode: 0}, nil
 	}
-	endpointGeteuid = func() int { return 0 }
 	t.Cleanup(func() {
 		endpointStat = prevStat
-		endpointGeteuid = prevEUID
 	})
 
 	ep, err := Resolve("")
@@ -107,14 +129,11 @@ func TestResolveDefaultClientFallsBackToRuntimeSocketWhenSystemSocketMissing(t *
 	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
 
 	prevStat := endpointStat
-	prevEUID := endpointGeteuid
 	endpointStat = func(string) (os.FileInfo, error) {
 		return nil, errors.New("missing")
 	}
-	endpointGeteuid = func() int { return 0 }
 	t.Cleanup(func() {
 		endpointStat = prevStat
-		endpointGeteuid = prevEUID
 	})
 
 	ep, err := Resolve("")
@@ -124,31 +143,6 @@ func TestResolveDefaultClientFallsBackToRuntimeSocketWhenSystemSocketMissing(t *
 	want := filepath.Join(runtimeDir, "cleanroom", "cleanroom.sock")
 	if ep.Address != want {
 		t.Fatalf("expected runtime socket path %q, got %q", want, ep.Address)
-	}
-}
-
-func TestResolveDefaultClientFallsBackToRuntimeSocketWhenNotRoot(t *testing.T) {
-	runtimeDir := t.TempDir()
-	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
-
-	prevStat := endpointStat
-	prevEUID := endpointGeteuid
-	endpointStat = func(string) (os.FileInfo, error) {
-		return fakeFileInfo{mode: os.ModeSocket}, nil
-	}
-	endpointGeteuid = func() int { return 1000 }
-	t.Cleanup(func() {
-		endpointStat = prevStat
-		endpointGeteuid = prevEUID
-	})
-
-	ep, err := Resolve("")
-	if err != nil {
-		t.Fatalf("resolve default client endpoint: %v", err)
-	}
-	want := filepath.Join(runtimeDir, "cleanroom", "cleanroom.sock")
-	if ep.Address != want {
-		t.Fatalf("expected runtime socket path %q for non-root, got %q", want, ep.Address)
 	}
 }
 

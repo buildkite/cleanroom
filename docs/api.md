@@ -46,14 +46,15 @@ This keeps one code path while still supporting systemd/launchd unit ergonomics 
 
 ## 3.2 Endpoint Model
 
-Default endpoint:
-- `unix://$XDG_RUNTIME_DIR/cleanroom/cleanroom.sock`
+Default endpoint resolution:
+- macOS: user socket `unix://$XDG_RUNTIME_DIR/cleanroom/cleanroom.sock`
+- Linux: system socket when present `unix:///var/run/cleanroom/cleanroom.sock`, otherwise user socket
 
 Fallbacks:
 1. `--host` flag
 2. `CLEANROOM_HOST`
-3. active context config
-4. default unix socket path
+3. runtime config `control_host`
+4. default endpoint resolution
 
 HTTP endpoints are also supported:
 - `http://host:port` for direct HTTP
