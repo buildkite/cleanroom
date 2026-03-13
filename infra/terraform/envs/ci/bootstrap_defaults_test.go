@@ -134,6 +134,40 @@ func TestUserDataVerifiesZfsAvailability(t *testing.T) {
 	requireContains(t, templatePath, "command -v zpool >/dev/null 2>&1")
 }
 
+func TestUserDataCreatesZfsPoolFromEphemeralNVMe(t *testing.T) {
+	t.Helper()
+
+	templatePath := filepath.Join("..", "..", "modules", "linux-ci", "templates", "user_data.sh.tftpl")
+	requireContains(t, templatePath, "zpool create -f")
+	requireContains(t, templatePath, "Amazon Elastic Block Store")
+	requireContains(t, templatePath, "zfs create")
+	requireContains(t, templatePath, "cleanroom-zfs.img")
+}
+
+func TestDefaultInstanceTypeIsNVMeVariant(t *testing.T) {
+	t.Helper()
+
+	for _, path := range []string{
+		"variables.tf",
+		filepath.Join("..", "..", "modules", "linux-ci", "variables.tf"),
+	} {
+		block := readVariableBlock(t, path, "instance_type")
+		if !strings.Contains(block, "m8id.large") {
+			t.Fatalf("expected default instance_type to be m8id.large in %s, got:\n%s", path, block)
+		}
+	}
+}
+
+func TestBootstrapConfiguresZfsSnapshots(t *testing.T) {
+	t.Helper()
+
+	scriptPath := filepath.Join("..", "..", "..", "..", "scripts", "bootstrap-buildkite-agent.sh")
+	requireContains(t, scriptPath, "CLEANROOM_ZFS_DATASET")
+	requireContains(t, scriptPath, "driver: zfs")
+	requireContains(t, scriptPath, "snapshots:")
+	requireContains(t, scriptPath, "enabled: true")
+}
+
 func TestLinuxCiEnablesNestedVirtualization(t *testing.T) {
 	t.Helper()
 

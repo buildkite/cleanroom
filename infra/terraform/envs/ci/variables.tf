@@ -29,9 +29,9 @@ variable "ubuntu_ami_ssm_parameter_name" {
 }
 
 variable "instance_type" {
-  description = "EC2 instance type for the host."
+  description = "EC2 instance type for the host. Use a 'd' variant (m8id, c8id, r8id) for ephemeral NVMe storage used as a ZFS pool."
   type        = string
-  default     = "m8i.large"
+  default     = "m8id.large"
 }
 
 variable "root_volume_size_gib" {

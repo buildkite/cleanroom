@@ -252,6 +252,25 @@ if getent group kvm >/dev/null 2>&1; then
   usermod -aG kvm buildkite-agent
 fi
 
+# Configure cleanroom runtime config with ZFS snapshot support if a pool exists.
+CLEANROOM_ZFS_DATASET="${CLEANROOM_ZFS_DATASET:-cleanroom/data}"
+if command -v zpool >/dev/null 2>&1 && zpool list cleanroom >/dev/null 2>&1; then
+  log "configuring cleanroom runtime config with ZFS snapshot support (dataset: ${CLEANROOM_ZFS_DATASET})"
+  agent_config_dir="/var/lib/buildkite-agent/.config/cleanroom"
+  install -d -o buildkite-agent -g buildkite-agent -m 0755 "$agent_config_dir"
+  cat > "$agent_config_dir/config.yaml" <<RTCFG
+backends:
+  firecracker:
+    snapshots:
+      enabled: true
+      driver: zfs
+      zfs_dataset: ${CLEANROOM_ZFS_DATASET}
+      quiesce_timeout_seconds: 15
+RTCFG
+  chown buildkite-agent:buildkite-agent "$agent_config_dir/config.yaml"
+  chmod 0644 "$agent_config_dir/config.yaml"
+fi
+
 systemctl daemon-reload
 systemctl enable --now "buildkite-agent@${QUEUE_NAME}.service"
 
