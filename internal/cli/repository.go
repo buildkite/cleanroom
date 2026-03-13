@@ -31,6 +31,9 @@ func resolveRepositoryCheckout(cwd string, loader policyLoader) (*resolvedReposi
 
 	repository, _, err := loader.LoadRepository(cwd)
 	if err != nil {
+		if errors.Is(err, policy.ErrPolicyNotFound) {
+			return nil, nil
+		}
 		return nil, err
 	}
 	if !repository.Enabled() {
@@ -100,6 +103,9 @@ func resolveRepositoryExecutionContext(cwd string, loader policyLoader) (*resolv
 
 	repository, _, err := loader.LoadRepository(cwd)
 	if err != nil {
+		if errors.Is(err, policy.ErrPolicyNotFound) {
+			return nil, nil
+		}
 		return nil, err
 	}
 	if !repository.Enabled() {

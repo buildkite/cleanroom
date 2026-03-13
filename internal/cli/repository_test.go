@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,6 +19,8 @@ type repositoryIntegrationLoader struct {
 	compiled   *policy.CompiledPolicy
 	repository policy.RepositoryConfig
 }
+
+type repositoryNotFoundLoader struct{}
 
 type persistentIntegrationAdapter struct {
 	integrationAdapter
@@ -41,6 +44,19 @@ func (l repositoryIntegrationLoader) LoadAndCompile(_ string) (*policy.CompiledP
 
 func (l repositoryIntegrationLoader) LoadRepository(_ string) (policy.RepositoryConfig, string, error) {
 	return l.repository, "/repo/cleanroom.yaml", nil
+}
+
+func (repositoryNotFoundLoader) LoadAndCompile(_ string) (*policy.CompiledPolicy, string, error) {
+	return &policy.CompiledPolicy{
+		Version:        1,
+		ImageRef:       "ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		ImageDigest:    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		NetworkDefault: "deny",
+	}, "", nil
+}
+
+func (repositoryNotFoundLoader) LoadRepository(_ string) (policy.RepositoryConfig, string, error) {
+	return policy.RepositoryConfig{}, "", fmt.Errorf("%w: expected /tmp/cleanroom.yaml or /tmp/.buildkite/cleanroom.yaml", policy.ErrPolicyNotFound)
 }
 
 func initGitRepository(t *testing.T, remoteURL string) string {
@@ -385,6 +401,49 @@ func TestResolveRepositoryCheckoutSkipsImplicitDefaultOutsideGitRepo(t *testing.
 	}
 	if checkout != nil {
 		t.Fatalf("expected implicit repository default to be skipped outside a git repo, got %+v", checkout)
+	}
+}
+
+func TestExecCommandWithSandboxIDAllowsMissingPolicyInCurrentDirectory(t *testing.T) {
+	adapter := &integrationAdapter{}
+	host, _ := startIntegrationServer(t, adapter)
+	client := mustNewControlClient(t, host)
+	sandboxID := mustCreateSandbox(t, client)
+
+	var (
+		mu       sync.Mutex
+		commands [][]string
+	)
+	adapter.runStreamFn = func(_ context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+		mu.Lock()
+		commands = append(commands, append([]string(nil), req.Command...))
+		mu.Unlock()
+		return &backend.RunResult{RunID: req.RunID, ExitCode: 0, Message: "ok"}, nil
+	}
+
+	outcome := runExecWithCapture(ExecCommand{
+		clientFlags: clientFlags{Host: host},
+		SandboxID:   sandboxID,
+		Chdir:       t.TempDir(),
+		Command:     []string{"echo", "ok"},
+	}, runtimeContext{
+		CWD:    t.TempDir(),
+		Loader: repositoryNotFoundLoader{},
+	})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err != nil {
+		t.Fatalf("ExecCommand.Run returned error: %v", outcome.err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(commands) != 1 {
+		t.Fatalf("expected one execution, got %d", len(commands))
+	}
+	if got, want := strings.Join(commands[0], " "), "echo ok"; !strings.Contains(got, want) {
+		t.Fatalf("expected passthrough command, got %q", got)
 	}
 }
 

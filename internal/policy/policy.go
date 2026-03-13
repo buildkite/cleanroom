@@ -21,6 +21,8 @@ const (
 	FallbackPolicyPath = ".buildkite/cleanroom.yaml"
 )
 
+var ErrPolicyNotFound = errors.New("policy not found")
+
 type Loader struct{}
 
 type rawPolicy struct {
@@ -139,7 +141,7 @@ func (l Loader) Load(root string) (rawPolicy, string, error) {
 		return p, fallback, err
 	}
 
-	return rawPolicy{}, "", fmt.Errorf("policy not found: expected %s or %s", primary, fallback)
+	return rawPolicy{}, "", fmt.Errorf("%w: expected %s or %s", ErrPolicyNotFound, primary, fallback)
 }
 
 func Compile(raw rawPolicy) (*CompiledPolicy, error) {
