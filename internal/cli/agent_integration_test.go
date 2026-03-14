@@ -7,8 +7,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"reflect"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/controlclient"
@@ -16,7 +17,7 @@ import (
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 )
 
-func runAgentCodexWithCapture(cmd AgentCodexCommand, stdinData string, ctx runtimeContext) execOutcome {
+func runAgentWithCapture(cmd AgentCommand, stdinData string, ctx runtimeContext) execOutcome {
 	tmpDir, err := os.MkdirTemp("", "cleanroom-agent-codex-test-*")
 	if err != nil {
 		return execOutcome{cause: fmt.Errorf("create temp dir: %w", err)}
@@ -85,10 +86,10 @@ func runAgentCodexWithCapture(cmd AgentCodexCommand, stdinData string, ctx runti
 	}
 }
 
-func TestAgentCodexIntegrationStartsPersistentSandbox(t *testing.T) {
+func TestAgentIntegrationStartsPersistentSandbox(t *testing.T) {
 	var gotCommand []string
 	adapter := &integrationAdapter{
-		runStreamFn: func(_ context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 			if !req.TTY {
 				return nil, errors.New("expected tty execution")
 			}
@@ -96,20 +97,21 @@ func TestAgentCodexIntegrationStartsPersistentSandbox(t *testing.T) {
 			if stream.OnStdout != nil {
 				stream.OnStdout([]byte("codex-ready\n"))
 			}
-			return &backend.RunResult{
-				RunID:    req.RunID,
-				ExitCode: 0,
-				Stdout:   "codex-ready\n",
-				Message:  "ok",
+			return &backend.ExecutionResult{
+				ExecutionID: req.ExecutionID,
+				ExitCode:    0,
+				Stdout:      "codex-ready\n",
+				Message:     "ok",
 			}, nil
 		},
 	}
 
 	host, _ := startIntegrationServer(t, adapter)
 	cwd := t.TempDir()
-	outcome := runAgentCodexWithCapture(AgentCodexCommand{
+	outcome := runAgentWithCapture(AgentCommand{
 		clientFlags: clientFlags{Host: host},
 		Chdir:       cwd,
+		Command:     "amp",
 	}, "", runtimeContext{
 		CWD:    cwd,
 		Loader: integrationLoader{},
@@ -119,11 +121,9 @@ func TestAgentCodexIntegrationStartsPersistentSandbox(t *testing.T) {
 		t.Fatalf("capture failure: %v", outcome.cause)
 	}
 	if outcome.err != nil {
-		t.Fatalf("AgentCodexCommand.Run returned error: %v", outcome.err)
+		t.Fatalf("AgentCommand.Run returned error: %v", outcome.err)
 	}
-	if got, want := gotCommand, []string{"codex"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("unexpected command: got %v want %v", got, want)
-	}
+	assertAgentShellCommand(t, gotCommand, "amp", "exec amp")
 
 	ep, err := endpoint.Resolve(host)
 	if err != nil {
@@ -145,25 +145,30 @@ func TestAgentCodexIntegrationStartsPersistentSandbox(t *testing.T) {
 	}
 }
 
-func TestAgentCodexIntegrationPassesArgsToCodex(t *testing.T) {
+func TestAgentIntegrationUsesPolicyImageForCreatedSandbox(t *testing.T) {
+	imageRefCh := make(chan string, 1)
 	var gotCommand []string
 	adapter := &integrationAdapter{
-		runStreamFn: func(_ context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
+			if req.Policy == nil {
+				return nil, errors.New("expected policy on run request")
+			}
+			imageRefCh <- req.Policy.ImageRef
 			gotCommand = append([]string(nil), req.Command...)
-			return &backend.RunResult{
-				RunID:    req.RunID,
-				ExitCode: 0,
-				Message:  "ok",
+			return &backend.ExecutionResult{
+				ExecutionID: req.ExecutionID,
+				ExitCode:    0,
+				Message:     "ok",
 			}, nil
 		},
 	}
 
 	host, _ := startIntegrationServer(t, adapter)
 	cwd := t.TempDir()
-	outcome := runAgentCodexWithCapture(AgentCodexCommand{
+	outcome := runAgentWithCapture(AgentCommand{
 		clientFlags: clientFlags{Host: host},
 		Chdir:       cwd,
-		Args:        []string{"exec", "--yolo", "fix lint failures"},
+		Command:     "codex",
 	}, "", runtimeContext{
 		CWD:    cwd,
 		Loader: integrationLoader{},
@@ -173,9 +178,93 @@ func TestAgentCodexIntegrationPassesArgsToCodex(t *testing.T) {
 		t.Fatalf("capture failure: %v", outcome.cause)
 	}
 	if outcome.err != nil {
-		t.Fatalf("AgentCodexCommand.Run returned error: %v", outcome.err)
+		t.Fatalf("AgentCommand.Run returned error: %v", outcome.err)
 	}
-	if got, want := gotCommand, []string{"codex", "exec", "--yolo", "fix lint failures"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("unexpected command: got %v want %v", got, want)
+	assertAgentShellCommand(t, gotCommand, "codex", "exec codex")
+
+	gotImageRef := mustReceiveWithin(t, imageRefCh, 2*time.Second, "timed out waiting for run request policy")
+	if got, want := gotImageRef, integrationPolicyImageRef; got != want {
+		t.Fatalf("unexpected image ref: got %q want %q", got, want)
+	}
+}
+
+func TestAgentIntegrationPassesArgsToCommand(t *testing.T) {
+	var gotCommand []string
+	adapter := &integrationAdapter{
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+			gotCommand = append([]string(nil), req.Command...)
+			return &backend.ExecutionResult{
+				ExecutionID: req.ExecutionID,
+				ExitCode:    0,
+				Message:     "ok",
+			}, nil
+		},
+	}
+
+	host, _ := startIntegrationServer(t, adapter)
+	cwd := t.TempDir()
+	outcome := runAgentWithCapture(AgentCommand{
+		clientFlags: clientFlags{Host: host},
+		Chdir:       cwd,
+		Command:     "codex",
+		Args:        []string{"--", "exec", "--yolo", "fix lint failures"},
+	}, "", runtimeContext{
+		CWD:    cwd,
+		Loader: integrationLoader{},
+	})
+
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err != nil {
+		t.Fatalf("AgentCommand.Run returned error: %v", outcome.err)
+	}
+	assertAgentShellCommand(t, gotCommand, "codex", "exec codex 'exec' '--yolo' 'fix lint failures'")
+}
+
+func TestAgentIntegrationReusesProvidedSandboxWithoutLoadingPolicy(t *testing.T) {
+	var gotCommand []string
+	host, _ := startIntegrationServer(t, &integrationAdapter{
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
+			gotCommand = append([]string(nil), req.Command...)
+			return &backend.ExecutionResult{
+				ExecutionID: req.ExecutionID,
+				ExitCode:    0,
+				Message:     "ok",
+			}, nil
+		},
+	})
+	client := mustNewControlClient(t, host)
+	sandboxID := mustCreateSandbox(t, client)
+
+	outcome := runAgentWithCapture(AgentCommand{
+		clientFlags: clientFlags{Host: host},
+		SandboxID:   sandboxID,
+		Command:     "amp",
+	}, "", runtimeContext{
+		CWD:    t.TempDir(),
+		Loader: failingLoader{},
+	})
+
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err != nil {
+		t.Fatalf("AgentCommand.Run returned error: %v", outcome.err)
+	}
+	assertAgentShellCommand(t, gotCommand, "amp", "exec amp")
+}
+
+func assertAgentShellCommand(t *testing.T, got []string, testName, execLine string) {
+	t.Helper()
+	if len(got) != 3 || got[0] != "sh" || got[1] != "-lc" {
+		t.Fatalf("unexpected command wrapper: got %v", got)
+	}
+	script := got[2]
+	if !strings.Contains(script, "command -v '"+testName+"' >/dev/null 2>&1") {
+		t.Fatalf("expected agent test for %q in script:\n%s", testName, script)
+	}
+	if !strings.Contains(script, execLine) {
+		t.Fatalf("expected exec line %q in script:\n%s", execLine, script)
 	}
 }

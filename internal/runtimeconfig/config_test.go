@@ -64,6 +64,44 @@ backends:
 	}
 }
 
+func TestLoadSupportsAgentStringConfig(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	configPath := filepath.Join(tmp, "cleanroom", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	content := `default_backend: darwin-vz
+agents:
+  codex:
+    command: mise exec -- codex
+    test: mise exec -- codex --version >/dev/null 2>&1
+    install: mise use -g npm:@openai/codex
+backends:
+  darwin-vz:
+    rootfs: /tmp/rootfs
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, _, err := Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	agent := cfg.Agents["codex"]
+	if got, want := agent.Command, "mise exec -- codex"; got != want {
+		t.Fatalf("unexpected agent command: got %q want %q", got, want)
+	}
+	if got, want := agent.Test, "mise exec -- codex --version >/dev/null 2>&1"; got != want {
+		t.Fatalf("unexpected agent test: got %q want %q", got, want)
+	}
+	if got, want := agent.Install, "mise use -g npm:@openai/codex"; got != want {
+		t.Fatalf("unexpected agent install: got %q want %q", got, want)
+	}
+}
+
 func TestLoadSupportsDarwinVZMinimumRootFSBytes(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", tmp)

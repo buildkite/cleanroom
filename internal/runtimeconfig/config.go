@@ -22,8 +22,15 @@ type Config struct {
 	DefaultBackend string              `yaml:"default_backend"`
 	ControlHost    string              `yaml:"control_host,omitempty"`
 	Gateway        GatewayConfig       `yaml:"gateway,omitempty"`
+	Agents         map[string]Agent    `yaml:"agents,omitempty"`
 	Observability  ObservabilityConfig `yaml:"observability,omitempty"`
 	Backends       Backends            `yaml:"backends"`
+}
+
+type Agent struct {
+	Command string `yaml:"command,omitempty"`
+	Test    string `yaml:"test,omitempty"`
+	Install string `yaml:"install,omitempty"`
 }
 
 type GatewayConfig struct {
@@ -73,6 +80,7 @@ type configFile struct {
 	DefaultBackend string              `yaml:"default_backend"`
 	ControlHost    string              `yaml:"control_host,omitempty"`
 	Gateway        GatewayConfig       `yaml:"gateway,omitempty"`
+	Agents         map[string]Agent    `yaml:"agents,omitempty"`
 	Observability  ObservabilityConfig `yaml:"observability,omitempty"`
 	Backends       backendsFile        `yaml:"backends"`
 }
@@ -88,6 +96,7 @@ func (f configFile) config() Config {
 		DefaultBackend: f.DefaultBackend,
 		ControlHost:    f.ControlHost,
 		Gateway:        f.Gateway,
+		Agents:         f.Agents,
 		Observability:  f.Observability,
 		Backends: Backends{
 			Firecracker: f.Backends.Firecracker,
@@ -379,6 +388,7 @@ func normalizeConfig(cfg Config, inferredDefaultBackend string) Config {
 	cfg.ControlHost = strings.TrimSpace(cfg.ControlHost)
 	cfg.Gateway.Git.CacheHosts = trimStringSlice(cfg.Gateway.Git.CacheHosts)
 	cfg.Gateway.OCI.Registries = trimStringMap(cfg.Gateway.OCI.Registries)
+	cfg.Agents = normalizeAgents(cfg.Agents)
 	cfg.Observability.DeploymentEnvironment = strings.TrimSpace(cfg.Observability.DeploymentEnvironment)
 	cfg.Observability.Logs.Format = strings.ToLower(strings.TrimSpace(cfg.Observability.Logs.Format))
 	if cfg.Observability.Logs.Format == "" {
@@ -391,6 +401,27 @@ func normalizeConfig(cfg Config, inferredDefaultBackend string) Config {
 	cfg.Observability.Traces.Sampling.Mode = strings.TrimSpace(cfg.Observability.Traces.Sampling.Mode)
 	cfg.Observability.Traces.URLTemplate = strings.TrimSpace(cfg.Observability.Traces.URLTemplate)
 	return cfg
+}
+
+func normalizeAgents(in map[string]Agent) map[string]Agent {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]Agent, len(in))
+	for name, agent := range in {
+		trimmedName := strings.TrimSpace(name)
+		if trimmedName == "" {
+			continue
+		}
+		agent.Command = strings.TrimSpace(agent.Command)
+		agent.Test = strings.TrimSpace(agent.Test)
+		agent.Install = strings.TrimSpace(agent.Install)
+		out[trimmedName] = agent
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func inferredDefaultBackend(hasFirecracker, hasDarwinVZ bool) string {

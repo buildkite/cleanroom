@@ -220,6 +220,54 @@ cleanroom console --dangerously-allow-all -- bash
 cleanroom exec --dangerously-allow-all -- npm test
 ```
 
+Agent command:
+
+```bash
+cleanroom agent codex -- --device-auth --yolo
+cleanroom agent claude
+```
+
+`cleanroom agent` creates a new sandbox from the current policy and runs the requested agent command inside it. It does not switch images: agent sessions use the same `sandbox.image.ref` and network policy as the rest of the repo.
+
+By default Cleanroom checks that the requested command exists in the sandbox before starting it. Runtime config can provide string-based command, test, and install snippets for host-local preferences:
+
+```yaml
+agents:
+  codex:
+    command: sh -lc 'if command -v codex >/dev/null 2>&1; then exec codex "$@"; fi; exec env MISE_YES=1 MISE_TRUSTED_CONFIG_PATHS=/workspace mise --no-config exec -y nodejs@latest npm:@openai/codex@latest -- codex "$@"' sh
+    test: command -v codex >/dev/null 2>&1 || command -v mise >/dev/null 2>&1
+    credentials:
+      - source: ~/.codex/auth.json
+        target: ~/.codex/auth.json
+      - source: ~/.codex/config.toml
+        target: ~/.codex/config.toml
+  claude:
+    command: sh -lc 'if command -v claude >/dev/null 2>&1; then exec claude "$@"; fi; exec env MISE_YES=1 MISE_TRUSTED_CONFIG_PATHS=/workspace mise --no-config exec -y nodejs@latest npm:@anthropic-ai/claude-code@latest -- claude "$@"' sh
+    test: command -v claude >/dev/null 2>&1 || command -v mise >/dev/null 2>&1
+    credentials:
+      - source: ~/.claude
+        target: ~/.claude
+  gemini:
+    command: sh -lc 'if command -v gemini >/dev/null 2>&1; then exec gemini "$@"; fi; exec env MISE_YES=1 MISE_TRUSTED_CONFIG_PATHS=/workspace mise --no-config exec -y nodejs@latest npm:@google/gemini-cli@latest -- gemini "$@"' sh
+    test: command -v gemini >/dev/null 2>&1 || command -v mise >/dev/null 2>&1
+    credentials:
+      - source: ~/.gemini
+        target: ~/.gemini
+  opencode:
+    command: sh -lc 'if command -v opencode >/dev/null 2>&1; then exec opencode "$@"; fi; exec env MISE_YES=1 MISE_TRUSTED_CONFIG_PATHS=/workspace mise --no-config exec -y nodejs@latest npm:opencode-ai@latest -- opencode "$@"' sh
+    test: command -v opencode >/dev/null 2>&1 || command -v mise >/dev/null 2>&1
+    credentials:
+      - source: ~/.config/opencode
+        target: ~/.config/opencode
+```
+
+Credential paths are copied into the sandbox before the agent starts. Missing credential files are skipped, and copied files remain in a kept sandbox until that sandbox is terminated.
+
+The default fallback uses mise-managed Node.js plus the agent npm package so plain Debian images with the required runtime libraries can start agents without preinstalled agent binaries.
+
+For Codex inside cleanroom, prefer device-code auth or API-key auth. Browser/ChatGPT sign-in is not supported in the sandbox yet because it expects a localhost OAuth callback.
+
+
 ## Policy file
 
 A `cleanroom.yaml` in your repo defines the sandbox policy. Cleanroom also checks `.buildkite/cleanroom.yaml` as a fallback.
@@ -435,6 +483,19 @@ Optional endpoint override precedence is `--host`, then `CLEANROOM_HOST`, then `
 ```yaml
 default_backend: firecracker
 control_host: ""             # optional override for client endpoint resolution
+agents:
+  codex:
+    command: mise exec -- codex
+    test: mise exec -- codex --version >/dev/null 2>&1
+    install: mise use -g npm:@openai/codex
+  claude:
+    command: mise exec -- claude
+    test: mise exec -- claude --version >/dev/null 2>&1
+    install: mise use -g npm:@anthropic-ai/claude-code
+  gemini:
+    command: mise exec -- gemini
+    test: mise exec -- gemini --version >/dev/null 2>&1
+    install: mise use -g npm:@google/gemini-cli
 backends:
   firecracker:
     binary_path: firecracker

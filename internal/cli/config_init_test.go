@@ -65,6 +65,15 @@ func TestConfigInitWritesRuntimeConfig(t *testing.T) {
 	if got := strings.TrimSpace(cfg.DefaultBackend); got == "" {
 		t.Fatal("expected default_backend to be populated")
 	}
+	if got, want := cfg.Agents["codex"].Install, "mise use -g npm:@openai/codex"; got != want {
+		t.Fatalf("expected generated config to include codex install command %q, got %q", want, got)
+	}
+	if got, want := cfg.Agents["claude"].Install, "mise use -g npm:@anthropic-ai/claude-code"; got != want {
+		t.Fatalf("expected generated config to include claude install command %q, got %q", want, got)
+	}
+	if got, want := cfg.Agents["gemini"].Install, "mise use -g npm:@google/gemini-cli"; got != want {
+		t.Fatalf("expected generated config to include gemini install command %q, got %q", want, got)
+	}
 	if strings.Contains(string(raw), "default_backend:") {
 		t.Fatalf("expected generated config to omit default_backend when only one backend is defined, got:\n%s", raw)
 	}

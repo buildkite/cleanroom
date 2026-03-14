@@ -224,8 +224,9 @@ func defaultDarwinVZSnapshotConfig(emitRuntimeWarnings bool) (runtimeconfig.Snap
 }
 
 type runtimeConfigTemplate struct {
-	DefaultBackend string                     `yaml:"default_backend,omitempty"`
-	Backends       runtimeConfigTemplateNodes `yaml:"backends"`
+	DefaultBackend string                         `yaml:"default_backend,omitempty"`
+	Agents         map[string]runtimeconfig.Agent `yaml:"agents,omitempty"`
+	Backends       runtimeConfigTemplateNodes     `yaml:"backends"`
 }
 
 type runtimeConfigTemplateNodes struct {
@@ -279,6 +280,7 @@ type runtimeConfigSnapshot struct {
 
 func defaultRuntimeConfig(defaultBackend string, firecrackerSnapshots, darwinVZSnapshots runtimeconfig.SnapshotConfig) runtimeConfigTemplate {
 	tpl := runtimeConfigTemplate{
+		Agents:   defaultRuntimeAgentConfig(),
 		Backends: runtimeConfigTemplateNodes{},
 	}
 
@@ -324,6 +326,26 @@ func defaultRuntimeConfig(defaultBackend string, firecrackerSnapshots, darwinVZS
 	}
 
 	return tpl
+}
+
+func defaultRuntimeAgentConfig() map[string]runtimeconfig.Agent {
+	return map[string]runtimeconfig.Agent{
+		"codex": {
+			Command: "mise exec -- codex",
+			Test:    "mise exec -- codex --version >/dev/null 2>&1",
+			Install: "mise use -g npm:@openai/codex",
+		},
+		"claude": {
+			Command: "mise exec -- claude",
+			Test:    "mise exec -- claude --version >/dev/null 2>&1",
+			Install: "mise use -g npm:@anthropic-ai/claude-code",
+		},
+		"gemini": {
+			Command: "mise exec -- gemini",
+			Test:    "mise exec -- gemini --version >/dev/null 2>&1",
+			Install: "mise use -g npm:@google/gemini-cli",
+		},
+	}
 }
 
 func marshalRuntimeConfigTemplate(cfg runtimeConfigTemplate) ([]byte, error) {

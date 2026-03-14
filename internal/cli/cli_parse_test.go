@@ -141,27 +141,45 @@ func TestConfigValidateParses(t *testing.T) {
 	}
 }
 
-func TestAgentCodexParsesWithoutArgs(t *testing.T) {
+func TestAgentParsesCommandWithoutArgs(t *testing.T) {
 	c := &CLI{}
 	parser := newParserForTest(t, c)
 
-	if _, err := parser.Parse([]string{"agent", "codex"}); err != nil {
-		t.Fatalf("parse agent codex returned error: %v", err)
+	if _, err := parser.Parse([]string{"agent", "amp"}); err != nil {
+		t.Fatalf("parse agent returned error: %v", err)
 	}
-	if got := len(c.Agent.Codex.Args); got != 0 {
-		t.Fatalf("expected no codex args, got %v", c.Agent.Codex.Args)
+	if got, want := c.Agent.Command, "amp"; got != want {
+		t.Fatalf("unexpected agent command: got %q want %q", got, want)
+	}
+	if got := len(c.Agent.Args); got != 0 {
+		t.Fatalf("expected no agent args, got %v", c.Agent.Args)
 	}
 }
 
-func TestAgentCodexPassesThroughArgs(t *testing.T) {
+func TestAgentParsesCommandAfterSeparator(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"agent", "--", "amp"}); err != nil {
+		t.Fatalf("parse agent command after separator returned error: %v", err)
+	}
+	if got, want := c.Agent.Command, "amp"; got != want {
+		t.Fatalf("unexpected agent command: got %q want %q", got, want)
+	}
+}
+
+func TestAgentPassesThroughArgs(t *testing.T) {
 	c := &CLI{}
 	parser := newParserForTest(t, c)
 
 	if _, err := parser.Parse([]string{"agent", "codex", "--yolo", "--model", "gpt-5.3-codex"}); err != nil {
-		t.Fatalf("parse agent codex args returned error: %v", err)
+		t.Fatalf("parse agent args returned error: %v", err)
 	}
-	if got, want := strings.Join(c.Agent.Codex.Args, " "), "--yolo --model gpt-5.3-codex"; got != want {
-		t.Fatalf("unexpected codex args: got %q want %q", got, want)
+	if got, want := c.Agent.Command, "codex"; got != want {
+		t.Fatalf("unexpected agent command: got %q want %q", got, want)
+	}
+	if got, want := strings.Join(c.Agent.Args, " "), "--yolo --model gpt-5.3-codex"; got != want {
+		t.Fatalf("unexpected agent args: got %q want %q", got, want)
 	}
 }
 
