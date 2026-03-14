@@ -209,6 +209,18 @@ func TestExecParsesInFromAndKeep(t *testing.T) {
 	}
 }
 
+func TestExecParsesLegacySandboxIDFlag(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"exec", "--sandbox-id", "cr_123", "--", "echo", "ok"}); err != nil {
+		t.Fatalf("parse exec --sandbox-id returned error: %v", err)
+	}
+	if got, want := c.Exec.In, "cr_123"; got != want {
+		t.Fatalf("unexpected exec in from --sandbox-id: got %q want %q", got, want)
+	}
+}
+
 func TestConsoleParsesImageOverride(t *testing.T) {
 	c := &CLI{}
 	parser := newParserForTest(t, c)
@@ -243,6 +255,18 @@ func TestConsoleParsesInFromAndKeep(t *testing.T) {
 	}
 	if !c.Console.Keep {
 		t.Fatal("expected console keep flag to be set")
+	}
+}
+
+func TestConsoleParsesLegacySandboxIDFlag(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"console", "--sandbox-id", "cr_123"}); err != nil {
+		t.Fatalf("parse console --sandbox-id returned error: %v", err)
+	}
+	if got, want := c.Console.In, "cr_123"; got != want {
+		t.Fatalf("unexpected console in from --sandbox-id: got %q want %q", got, want)
 	}
 }
 
