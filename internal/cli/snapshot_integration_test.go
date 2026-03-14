@@ -16,7 +16,7 @@ func runSnapshotCreateWithCapture(cmd SnapshotCreateCommand, ctx runtimeContext)
 	}, nil, ctx)
 }
 
-func runSnapshotGetWithCapture(cmd SnapshotGetCommand, ctx runtimeContext) execOutcome {
+func runSnapshotInspectWithCapture(cmd SnapshotInspectCommand, ctx runtimeContext) execOutcome {
 	return runWithCapture(func(runCtx *runtimeContext) error {
 		return cmd.Run(runCtx)
 	}, nil, ctx)
@@ -68,20 +68,20 @@ func TestSnapshotCommandsIntegrationLifecycle(t *testing.T) {
 		t.Fatalf("unexpected snapshot sandbox id: got %q want %q", got, want)
 	}
 
-	getOutcome := runSnapshotGetWithCapture(SnapshotGetCommand{
+	inspectOutcome := runSnapshotInspectWithCapture(SnapshotInspectCommand{
 		clientFlags: clientFlags{Host: host},
 		SnapshotID:  snapshotID,
 		JSON:        true,
 	}, runtimeContext{CWD: cwd})
-	if getOutcome.cause != nil {
-		t.Fatalf("capture failure: %v", getOutcome.cause)
+	if inspectOutcome.cause != nil {
+		t.Fatalf("capture failure: %v", inspectOutcome.cause)
 	}
-	if getOutcome.err != nil {
-		t.Fatalf("SnapshotGetCommand.Run returned error: %v", getOutcome.err)
+	if inspectOutcome.err != nil {
+		t.Fatalf("SnapshotInspectCommand.Run returned error: %v", inspectOutcome.err)
 	}
 
 	var snapshot cleanroomv1.Snapshot
-	if err := json.Unmarshal([]byte(getOutcome.stdout), &snapshot); err != nil {
+	if err := json.Unmarshal([]byte(inspectOutcome.stdout), &snapshot); err != nil {
 		t.Fatalf("parse snapshot json: %v", err)
 	}
 	if got, want := snapshot.GetSnapshotId(), snapshotID; got != want {
@@ -89,6 +89,32 @@ func TestSnapshotCommandsIntegrationLifecycle(t *testing.T) {
 	}
 	if got, want := snapshot.GetName(), "golden"; got != want {
 		t.Fatalf("unexpected snapshot name: got %q want %q", got, want)
+	}
+	if got, want := snapshot.GetStorageDriver(), "file"; got != want {
+		t.Fatalf("unexpected snapshot storage driver: got %q want %q", got, want)
+	}
+	if got, want := snapshot.GetStorageRef(), "/snapshots/"+snapshotID+".ext4"; got != want {
+		t.Fatalf("unexpected snapshot storage ref: got %q want %q", got, want)
+	}
+
+	inspectPlainOutcome := runSnapshotInspectWithCapture(SnapshotInspectCommand{
+		clientFlags: clientFlags{Host: host},
+		SnapshotID:  snapshotID,
+	}, runtimeContext{CWD: cwd})
+	if inspectPlainOutcome.cause != nil {
+		t.Fatalf("capture failure: %v", inspectPlainOutcome.cause)
+	}
+	if inspectPlainOutcome.err != nil {
+		t.Fatalf("SnapshotInspectCommand.Run returned error: %v", inspectPlainOutcome.err)
+	}
+	if !strings.Contains(inspectPlainOutcome.stdout, "snapshot_id: "+snapshotID) {
+		t.Fatalf("expected plain inspect output to include snapshot id, got %q", inspectPlainOutcome.stdout)
+	}
+	if !strings.Contains(inspectPlainOutcome.stdout, "storage_driver: file") {
+		t.Fatalf("expected plain inspect output to include storage driver, got %q", inspectPlainOutcome.stdout)
+	}
+	if !strings.Contains(inspectPlainOutcome.stdout, "storage_ref: /snapshots/"+snapshotID+".ext4") {
+		t.Fatalf("expected plain inspect output to include storage ref, got %q", inspectPlainOutcome.stdout)
 	}
 
 	listOutcome := runSnapshotListWithCapture(SnapshotListCommand{

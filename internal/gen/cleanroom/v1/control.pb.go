@@ -275,15 +275,18 @@ func (x *Sandbox) GetUpdatedAt() *timestamppb.Timestamp {
 }
 
 type Snapshot struct {
-	state           protoimpl.MessageState `protogen:"open.v1"`
-	SnapshotId      string                 `protobuf:"bytes,1,opt,name=snapshot_id,json=snapshotId,proto3" json:"snapshot_id,omitempty"`
-	SourceSandboxId string                 `protobuf:"bytes,2,opt,name=source_sandbox_id,json=sourceSandboxId,proto3" json:"source_sandbox_id,omitempty"`
-	Backend         string                 `protobuf:"bytes,3,opt,name=backend,proto3" json:"backend,omitempty"`
-	PolicyHash      string                 `protobuf:"bytes,4,opt,name=policy_hash,json=policyHash,proto3" json:"policy_hash,omitempty"`
-	Name            string                 `protobuf:"bytes,5,opt,name=name,proto3" json:"name,omitempty"`
-	CreatedAt       *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	state              protoimpl.MessageState `protogen:"open.v1"`
+	SnapshotId         string                 `protobuf:"bytes,1,opt,name=snapshot_id,json=snapshotId,proto3" json:"snapshot_id,omitempty"`
+	SourceSandboxId    string                 `protobuf:"bytes,2,opt,name=source_sandbox_id,json=sourceSandboxId,proto3" json:"source_sandbox_id,omitempty"`
+	Backend            string                 `protobuf:"bytes,3,opt,name=backend,proto3" json:"backend,omitempty"`
+	PolicyHash         string                 `protobuf:"bytes,4,opt,name=policy_hash,json=policyHash,proto3" json:"policy_hash,omitempty"`
+	Name               string                 `protobuf:"bytes,5,opt,name=name,proto3" json:"name,omitempty"`
+	CreatedAt          *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	StorageDriver      string                 `protobuf:"bytes,7,opt,name=storage_driver,json=storageDriver,proto3" json:"storage_driver,omitempty"`
+	StorageRef         string                 `protobuf:"bytes,8,opt,name=storage_ref,json=storageRef,proto3" json:"storage_ref,omitempty"`
+	RepositoryCheckout *RepositoryCheckout    `protobuf:"bytes,9,opt,name=repository_checkout,json=repositoryCheckout,proto3" json:"repository_checkout,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *Snapshot) Reset() {
@@ -354,6 +357,27 @@ func (x *Snapshot) GetName() string {
 func (x *Snapshot) GetCreatedAt() *timestamppb.Timestamp {
 	if x != nil {
 		return x.CreatedAt
+	}
+	return nil
+}
+
+func (x *Snapshot) GetStorageDriver() string {
+	if x != nil {
+		return x.StorageDriver
+	}
+	return ""
+}
+
+func (x *Snapshot) GetStorageRef() string {
+	if x != nil {
+		return x.StorageRef
+	}
+	return ""
+}
+
+func (x *Snapshot) GetRepositoryCheckout() *RepositoryCheckout {
+	if x != nil {
+		return x.RepositoryCheckout
 	}
 	return nil
 }
@@ -2829,7 +2853,7 @@ const file_proto_cleanroom_v1_control_proto_rawDesc = "" +
 	"\n" +
 	"created_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
-	"updated_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\"\xe1\x01\n" +
+	"updated_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\"\xfc\x02\n" +
 	"\bSnapshot\x12\x1f\n" +
 	"\vsnapshot_id\x18\x01 \x01(\tR\n" +
 	"snapshotId\x12*\n" +
@@ -2839,7 +2863,11 @@ const file_proto_cleanroom_v1_control_proto_rawDesc = "" +
 	"policyHash\x12\x12\n" +
 	"\x04name\x18\x05 \x01(\tR\x04name\x129\n" +
 	"\n" +
-	"created_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\";\n" +
+	"created_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x12%\n" +
+	"\x0estorage_driver\x18\a \x01(\tR\rstorageDriver\x12\x1f\n" +
+	"\vstorage_ref\x18\b \x01(\tR\n" +
+	"storageRef\x12Q\n" +
+	"\x13repository_checkout\x18\t \x01(\v2 .cleanroom.v1.RepositoryCheckoutR\x12repositoryCheckout\";\n" +
 	"\x0fPolicyAllowRule\x12\x12\n" +
 	"\x04host\x18\x01 \x01(\tR\x04host\x12\x14\n" +
 	"\x05ports\x18\x02 \x03(\x05R\x05ports\"1\n" +
@@ -3142,73 +3170,74 @@ var file_proto_cleanroom_v1_control_proto_depIdxs = []int32{
 	46, // 1: cleanroom.v1.Sandbox.created_at:type_name -> google.protobuf.Timestamp
 	46, // 2: cleanroom.v1.Sandbox.updated_at:type_name -> google.protobuf.Timestamp
 	46, // 3: cleanroom.v1.Snapshot.created_at:type_name -> google.protobuf.Timestamp
-	6,  // 4: cleanroom.v1.PolicyServices.docker:type_name -> cleanroom.v1.PolicyDockerService
-	5,  // 5: cleanroom.v1.Policy.allow:type_name -> cleanroom.v1.PolicyAllowRule
-	7,  // 6: cleanroom.v1.Policy.services:type_name -> cleanroom.v1.PolicyServices
-	9,  // 7: cleanroom.v1.CreateSandboxRequest.options:type_name -> cleanroom.v1.SandboxOptions
-	8,  // 8: cleanroom.v1.CreateSandboxRequest.policy:type_name -> cleanroom.v1.Policy
-	10, // 9: cleanroom.v1.CreateSandboxRequest.repository_checkout:type_name -> cleanroom.v1.RepositoryCheckout
-	3,  // 10: cleanroom.v1.CreateSandboxResponse.sandbox:type_name -> cleanroom.v1.Sandbox
-	3,  // 11: cleanroom.v1.GetSandboxResponse.sandbox:type_name -> cleanroom.v1.Sandbox
-	3,  // 12: cleanroom.v1.ListSandboxesResponse.sandboxes:type_name -> cleanroom.v1.Sandbox
-	3,  // 13: cleanroom.v1.RestoreSandboxResponse.sandbox:type_name -> cleanroom.v1.Sandbox
-	0,  // 14: cleanroom.v1.SandboxEvent.status:type_name -> cleanroom.v1.SandboxStatus
-	46, // 15: cleanroom.v1.SandboxEvent.occurred_at:type_name -> google.protobuf.Timestamp
-	4,  // 16: cleanroom.v1.CreateSnapshotResponse.snapshot:type_name -> cleanroom.v1.Snapshot
-	4,  // 17: cleanroom.v1.GetSnapshotResponse.snapshot:type_name -> cleanroom.v1.Snapshot
-	4,  // 18: cleanroom.v1.ListSnapshotsResponse.snapshots:type_name -> cleanroom.v1.Snapshot
-	1,  // 19: cleanroom.v1.Execution.status:type_name -> cleanroom.v1.ExecutionStatus
-	46, // 20: cleanroom.v1.Execution.started_at:type_name -> google.protobuf.Timestamp
-	46, // 21: cleanroom.v1.Execution.finished_at:type_name -> google.protobuf.Timestamp
-	2,  // 22: cleanroom.v1.Execution.kind:type_name -> cleanroom.v1.ExecutionKind
-	34, // 23: cleanroom.v1.CreateExecutionRequest.options:type_name -> cleanroom.v1.ExecutionOptions
-	2,  // 24: cleanroom.v1.CreateExecutionRequest.kind:type_name -> cleanroom.v1.ExecutionKind
-	10, // 25: cleanroom.v1.CreateExecutionRequest.repository_checkout:type_name -> cleanroom.v1.RepositoryCheckout
-	33, // 26: cleanroom.v1.CreateExecutionResponse.execution:type_name -> cleanroom.v1.Execution
-	46, // 27: cleanroom.v1.OpenInteractiveExecutionResponse.expires_at:type_name -> google.protobuf.Timestamp
-	33, // 28: cleanroom.v1.GetExecutionResponse.execution:type_name -> cleanroom.v1.Execution
-	1,  // 29: cleanroom.v1.CancelExecutionResponse.status:type_name -> cleanroom.v1.ExecutionStatus
-	1,  // 30: cleanroom.v1.ExecutionExit.status:type_name -> cleanroom.v1.ExecutionStatus
-	1,  // 31: cleanroom.v1.ExecutionStreamEvent.status:type_name -> cleanroom.v1.ExecutionStatus
-	44, // 32: cleanroom.v1.ExecutionStreamEvent.exit:type_name -> cleanroom.v1.ExecutionExit
-	46, // 33: cleanroom.v1.ExecutionStreamEvent.occurred_at:type_name -> google.protobuf.Timestamp
-	11, // 34: cleanroom.v1.SandboxService.CreateSandbox:input_type -> cleanroom.v1.CreateSandboxRequest
-	13, // 35: cleanroom.v1.SandboxService.GetSandbox:input_type -> cleanroom.v1.GetSandboxRequest
-	15, // 36: cleanroom.v1.SandboxService.ListSandboxes:input_type -> cleanroom.v1.ListSandboxesRequest
-	17, // 37: cleanroom.v1.SandboxService.DownloadSandboxFile:input_type -> cleanroom.v1.DownloadSandboxFileRequest
-	19, // 38: cleanroom.v1.SandboxService.RestoreSandbox:input_type -> cleanroom.v1.RestoreSandboxRequest
-	21, // 39: cleanroom.v1.SandboxService.TerminateSandbox:input_type -> cleanroom.v1.TerminateSandboxRequest
-	23, // 40: cleanroom.v1.SandboxService.StreamSandboxEvents:input_type -> cleanroom.v1.StreamSandboxEventsRequest
-	25, // 41: cleanroom.v1.SnapshotService.CreateSnapshot:input_type -> cleanroom.v1.CreateSnapshotRequest
-	27, // 42: cleanroom.v1.SnapshotService.GetSnapshot:input_type -> cleanroom.v1.GetSnapshotRequest
-	29, // 43: cleanroom.v1.SnapshotService.ListSnapshots:input_type -> cleanroom.v1.ListSnapshotsRequest
-	31, // 44: cleanroom.v1.SnapshotService.DeleteSnapshot:input_type -> cleanroom.v1.DeleteSnapshotRequest
-	35, // 45: cleanroom.v1.ExecutionService.CreateExecution:input_type -> cleanroom.v1.CreateExecutionRequest
-	37, // 46: cleanroom.v1.ExecutionService.OpenInteractiveExecution:input_type -> cleanroom.v1.OpenInteractiveExecutionRequest
-	39, // 47: cleanroom.v1.ExecutionService.GetExecution:input_type -> cleanroom.v1.GetExecutionRequest
-	41, // 48: cleanroom.v1.ExecutionService.CancelExecution:input_type -> cleanroom.v1.CancelExecutionRequest
-	43, // 49: cleanroom.v1.ExecutionService.StreamExecution:input_type -> cleanroom.v1.StreamExecutionRequest
-	12, // 50: cleanroom.v1.SandboxService.CreateSandbox:output_type -> cleanroom.v1.CreateSandboxResponse
-	14, // 51: cleanroom.v1.SandboxService.GetSandbox:output_type -> cleanroom.v1.GetSandboxResponse
-	16, // 52: cleanroom.v1.SandboxService.ListSandboxes:output_type -> cleanroom.v1.ListSandboxesResponse
-	18, // 53: cleanroom.v1.SandboxService.DownloadSandboxFile:output_type -> cleanroom.v1.DownloadSandboxFileResponse
-	20, // 54: cleanroom.v1.SandboxService.RestoreSandbox:output_type -> cleanroom.v1.RestoreSandboxResponse
-	22, // 55: cleanroom.v1.SandboxService.TerminateSandbox:output_type -> cleanroom.v1.TerminateSandboxResponse
-	24, // 56: cleanroom.v1.SandboxService.StreamSandboxEvents:output_type -> cleanroom.v1.SandboxEvent
-	26, // 57: cleanroom.v1.SnapshotService.CreateSnapshot:output_type -> cleanroom.v1.CreateSnapshotResponse
-	28, // 58: cleanroom.v1.SnapshotService.GetSnapshot:output_type -> cleanroom.v1.GetSnapshotResponse
-	30, // 59: cleanroom.v1.SnapshotService.ListSnapshots:output_type -> cleanroom.v1.ListSnapshotsResponse
-	32, // 60: cleanroom.v1.SnapshotService.DeleteSnapshot:output_type -> cleanroom.v1.DeleteSnapshotResponse
-	36, // 61: cleanroom.v1.ExecutionService.CreateExecution:output_type -> cleanroom.v1.CreateExecutionResponse
-	38, // 62: cleanroom.v1.ExecutionService.OpenInteractiveExecution:output_type -> cleanroom.v1.OpenInteractiveExecutionResponse
-	40, // 63: cleanroom.v1.ExecutionService.GetExecution:output_type -> cleanroom.v1.GetExecutionResponse
-	42, // 64: cleanroom.v1.ExecutionService.CancelExecution:output_type -> cleanroom.v1.CancelExecutionResponse
-	45, // 65: cleanroom.v1.ExecutionService.StreamExecution:output_type -> cleanroom.v1.ExecutionStreamEvent
-	50, // [50:66] is the sub-list for method output_type
-	34, // [34:50] is the sub-list for method input_type
-	34, // [34:34] is the sub-list for extension type_name
-	34, // [34:34] is the sub-list for extension extendee
-	0,  // [0:34] is the sub-list for field type_name
+	10, // 4: cleanroom.v1.Snapshot.repository_checkout:type_name -> cleanroom.v1.RepositoryCheckout
+	6,  // 5: cleanroom.v1.PolicyServices.docker:type_name -> cleanroom.v1.PolicyDockerService
+	5,  // 6: cleanroom.v1.Policy.allow:type_name -> cleanroom.v1.PolicyAllowRule
+	7,  // 7: cleanroom.v1.Policy.services:type_name -> cleanroom.v1.PolicyServices
+	9,  // 8: cleanroom.v1.CreateSandboxRequest.options:type_name -> cleanroom.v1.SandboxOptions
+	8,  // 9: cleanroom.v1.CreateSandboxRequest.policy:type_name -> cleanroom.v1.Policy
+	10, // 10: cleanroom.v1.CreateSandboxRequest.repository_checkout:type_name -> cleanroom.v1.RepositoryCheckout
+	3,  // 11: cleanroom.v1.CreateSandboxResponse.sandbox:type_name -> cleanroom.v1.Sandbox
+	3,  // 12: cleanroom.v1.GetSandboxResponse.sandbox:type_name -> cleanroom.v1.Sandbox
+	3,  // 13: cleanroom.v1.ListSandboxesResponse.sandboxes:type_name -> cleanroom.v1.Sandbox
+	3,  // 14: cleanroom.v1.RestoreSandboxResponse.sandbox:type_name -> cleanroom.v1.Sandbox
+	0,  // 15: cleanroom.v1.SandboxEvent.status:type_name -> cleanroom.v1.SandboxStatus
+	46, // 16: cleanroom.v1.SandboxEvent.occurred_at:type_name -> google.protobuf.Timestamp
+	4,  // 17: cleanroom.v1.CreateSnapshotResponse.snapshot:type_name -> cleanroom.v1.Snapshot
+	4,  // 18: cleanroom.v1.GetSnapshotResponse.snapshot:type_name -> cleanroom.v1.Snapshot
+	4,  // 19: cleanroom.v1.ListSnapshotsResponse.snapshots:type_name -> cleanroom.v1.Snapshot
+	1,  // 20: cleanroom.v1.Execution.status:type_name -> cleanroom.v1.ExecutionStatus
+	46, // 21: cleanroom.v1.Execution.started_at:type_name -> google.protobuf.Timestamp
+	46, // 22: cleanroom.v1.Execution.finished_at:type_name -> google.protobuf.Timestamp
+	2,  // 23: cleanroom.v1.Execution.kind:type_name -> cleanroom.v1.ExecutionKind
+	34, // 24: cleanroom.v1.CreateExecutionRequest.options:type_name -> cleanroom.v1.ExecutionOptions
+	2,  // 25: cleanroom.v1.CreateExecutionRequest.kind:type_name -> cleanroom.v1.ExecutionKind
+	10, // 26: cleanroom.v1.CreateExecutionRequest.repository_checkout:type_name -> cleanroom.v1.RepositoryCheckout
+	33, // 27: cleanroom.v1.CreateExecutionResponse.execution:type_name -> cleanroom.v1.Execution
+	46, // 28: cleanroom.v1.OpenInteractiveExecutionResponse.expires_at:type_name -> google.protobuf.Timestamp
+	33, // 29: cleanroom.v1.GetExecutionResponse.execution:type_name -> cleanroom.v1.Execution
+	1,  // 30: cleanroom.v1.CancelExecutionResponse.status:type_name -> cleanroom.v1.ExecutionStatus
+	1,  // 31: cleanroom.v1.ExecutionExit.status:type_name -> cleanroom.v1.ExecutionStatus
+	1,  // 32: cleanroom.v1.ExecutionStreamEvent.status:type_name -> cleanroom.v1.ExecutionStatus
+	44, // 33: cleanroom.v1.ExecutionStreamEvent.exit:type_name -> cleanroom.v1.ExecutionExit
+	46, // 34: cleanroom.v1.ExecutionStreamEvent.occurred_at:type_name -> google.protobuf.Timestamp
+	11, // 35: cleanroom.v1.SandboxService.CreateSandbox:input_type -> cleanroom.v1.CreateSandboxRequest
+	13, // 36: cleanroom.v1.SandboxService.GetSandbox:input_type -> cleanroom.v1.GetSandboxRequest
+	15, // 37: cleanroom.v1.SandboxService.ListSandboxes:input_type -> cleanroom.v1.ListSandboxesRequest
+	17, // 38: cleanroom.v1.SandboxService.DownloadSandboxFile:input_type -> cleanroom.v1.DownloadSandboxFileRequest
+	19, // 39: cleanroom.v1.SandboxService.RestoreSandbox:input_type -> cleanroom.v1.RestoreSandboxRequest
+	21, // 40: cleanroom.v1.SandboxService.TerminateSandbox:input_type -> cleanroom.v1.TerminateSandboxRequest
+	23, // 41: cleanroom.v1.SandboxService.StreamSandboxEvents:input_type -> cleanroom.v1.StreamSandboxEventsRequest
+	25, // 42: cleanroom.v1.SnapshotService.CreateSnapshot:input_type -> cleanroom.v1.CreateSnapshotRequest
+	27, // 43: cleanroom.v1.SnapshotService.GetSnapshot:input_type -> cleanroom.v1.GetSnapshotRequest
+	29, // 44: cleanroom.v1.SnapshotService.ListSnapshots:input_type -> cleanroom.v1.ListSnapshotsRequest
+	31, // 45: cleanroom.v1.SnapshotService.DeleteSnapshot:input_type -> cleanroom.v1.DeleteSnapshotRequest
+	35, // 46: cleanroom.v1.ExecutionService.CreateExecution:input_type -> cleanroom.v1.CreateExecutionRequest
+	37, // 47: cleanroom.v1.ExecutionService.OpenInteractiveExecution:input_type -> cleanroom.v1.OpenInteractiveExecutionRequest
+	39, // 48: cleanroom.v1.ExecutionService.GetExecution:input_type -> cleanroom.v1.GetExecutionRequest
+	41, // 49: cleanroom.v1.ExecutionService.CancelExecution:input_type -> cleanroom.v1.CancelExecutionRequest
+	43, // 50: cleanroom.v1.ExecutionService.StreamExecution:input_type -> cleanroom.v1.StreamExecutionRequest
+	12, // 51: cleanroom.v1.SandboxService.CreateSandbox:output_type -> cleanroom.v1.CreateSandboxResponse
+	14, // 52: cleanroom.v1.SandboxService.GetSandbox:output_type -> cleanroom.v1.GetSandboxResponse
+	16, // 53: cleanroom.v1.SandboxService.ListSandboxes:output_type -> cleanroom.v1.ListSandboxesResponse
+	18, // 54: cleanroom.v1.SandboxService.DownloadSandboxFile:output_type -> cleanroom.v1.DownloadSandboxFileResponse
+	20, // 55: cleanroom.v1.SandboxService.RestoreSandbox:output_type -> cleanroom.v1.RestoreSandboxResponse
+	22, // 56: cleanroom.v1.SandboxService.TerminateSandbox:output_type -> cleanroom.v1.TerminateSandboxResponse
+	24, // 57: cleanroom.v1.SandboxService.StreamSandboxEvents:output_type -> cleanroom.v1.SandboxEvent
+	26, // 58: cleanroom.v1.SnapshotService.CreateSnapshot:output_type -> cleanroom.v1.CreateSnapshotResponse
+	28, // 59: cleanroom.v1.SnapshotService.GetSnapshot:output_type -> cleanroom.v1.GetSnapshotResponse
+	30, // 60: cleanroom.v1.SnapshotService.ListSnapshots:output_type -> cleanroom.v1.ListSnapshotsResponse
+	32, // 61: cleanroom.v1.SnapshotService.DeleteSnapshot:output_type -> cleanroom.v1.DeleteSnapshotResponse
+	36, // 62: cleanroom.v1.ExecutionService.CreateExecution:output_type -> cleanroom.v1.CreateExecutionResponse
+	38, // 63: cleanroom.v1.ExecutionService.OpenInteractiveExecution:output_type -> cleanroom.v1.OpenInteractiveExecutionResponse
+	40, // 64: cleanroom.v1.ExecutionService.GetExecution:output_type -> cleanroom.v1.GetExecutionResponse
+	42, // 65: cleanroom.v1.ExecutionService.CancelExecution:output_type -> cleanroom.v1.CancelExecutionResponse
+	45, // 66: cleanroom.v1.ExecutionService.StreamExecution:output_type -> cleanroom.v1.ExecutionStreamEvent
+	51, // [51:67] is the sub-list for method output_type
+	35, // [35:51] is the sub-list for method input_type
+	35, // [35:35] is the sub-list for extension type_name
+	35, // [35:35] is the sub-list for extension extendee
+	0,  // [0:35] is the sub-list for field type_name
 }
 
 func init() { file_proto_cleanroom_v1_control_proto_init() }

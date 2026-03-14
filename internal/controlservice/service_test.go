@@ -380,7 +380,10 @@ func TestCreateSnapshotPersistsMetadataAndDeletesIt(t *testing.T) {
 	}
 	svc := newTestServiceWithSnapshotStore(adapter, store)
 
-	createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy:             testRepositoryPolicy(),
+		RepositoryCheckout: testRepositoryCheckoutProto(),
+	})
 	if err != nil {
 		t.Fatalf("CreateSandbox returned error: %v", err)
 	}
@@ -407,6 +410,18 @@ func TestCreateSnapshotPersistsMetadataAndDeletesIt(t *testing.T) {
 	if got, want := snapshot.GetName(), "golden"; got != want {
 		t.Fatalf("unexpected snapshot name: got %q want %q", got, want)
 	}
+	if got, want := snapshot.GetStorageDriver(), "file"; got != want {
+		t.Fatalf("unexpected snapshot storage driver: got %q want %q", got, want)
+	}
+	if got, want := snapshot.GetStorageRef(), "/snapshots/"+snapshot.GetSnapshotId()+".ext4"; got != want {
+		t.Fatalf("unexpected snapshot storage ref: got %q want %q", got, want)
+	}
+	if snapshot.GetRepositoryCheckout() == nil {
+		t.Fatal("expected snapshot repository metadata")
+	}
+	if got, want := snapshot.GetRepositoryCheckout().GetDestinationDir(), "/workspace"; got != want {
+		t.Fatalf("unexpected snapshot repository destination: got %q want %q", got, want)
+	}
 	if got, want := adapter.createSnapshotReq.SandboxID, sandbox.GetSandboxId(); got != want {
 		t.Fatalf("unexpected create snapshot sandbox id: got %q want %q", got, want)
 	}
@@ -422,6 +437,12 @@ func TestCreateSnapshotPersistsMetadataAndDeletesIt(t *testing.T) {
 	}
 	if got, want := getResp.GetSnapshot().GetSnapshotId(), snapshot.GetSnapshotId(); got != want {
 		t.Fatalf("unexpected snapshot id from get: got %q want %q", got, want)
+	}
+	if got, want := getResp.GetSnapshot().GetStorageDriver(), "file"; got != want {
+		t.Fatalf("unexpected snapshot storage driver from get: got %q want %q", got, want)
+	}
+	if got, want := getResp.GetSnapshot().GetRepositoryCheckout().GetCommitSha(), testRepositoryCheckoutProto().GetCommitSha(); got != want {
+		t.Fatalf("unexpected snapshot repository commit from get: got %q want %q", got, want)
 	}
 
 	listResp, err := svc.ListSnapshots(context.Background(), &cleanroomv1.ListSnapshotsRequest{})

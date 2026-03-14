@@ -47,6 +47,9 @@ message Snapshot {
   string policy_hash = 4;
   string name = 5;
   google.protobuf.Timestamp created_at = 6;
+  string storage_driver = 7;
+  string storage_ref = 8;
+  RepositoryCheckout repository_checkout = 9;
 }
 
 enum SandboxStatus {

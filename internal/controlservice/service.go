@@ -21,6 +21,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 	"github.com/buildkite/cleanroom/internal/snapshotstore"
 	"github.com/charmbracelet/log"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -2449,6 +2450,14 @@ func cloneSnapshotRecord(record snapshotstore.Record) *cleanroomv1.Snapshot {
 		PolicyHash:      record.PolicyHash,
 		Name:            record.Name,
 		CreatedAt:       timestamppb.New(record.CreatedAt),
+		StorageDriver:   record.StorageDriver,
+		StorageRef:      record.StorageRef,
+		RepositoryCheckout: func() *cleanroomv1.RepositoryCheckout {
+			if record.Repository == nil {
+				return nil
+			}
+			return proto.Clone(record.Repository).(*cleanroomv1.RepositoryCheckout)
+		}(),
 	}
 }
 

@@ -95,6 +95,15 @@ func TestConfigInitParses(t *testing.T) {
 	}
 }
 
+func TestSnapshotInspectParses(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"snapshot", "inspect", "snap_123"}); err != nil {
+		t.Fatalf("parse snapshot inspect returned error: %v", err)
+	}
+}
+
 func TestSandboxCreateParses(t *testing.T) {
 	c := &CLI{}
 	parser := newParserForTest(t, c)
