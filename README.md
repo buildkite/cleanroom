@@ -222,10 +222,16 @@ sandbox:
 
 | Host OS | Backend | Status | Notes |
 |---------|---------|--------|-------|
-| Linux | `firecracker` | Full support | Persistent sandboxes, file download, egress allowlist enforcement |
-| macOS | `darwin-vz` | Supported with gaps | Persistent sandboxes, no file download, no egress filtering yet |
+| Linux | `firecracker` | Full support | Persistent sandboxes, per-sandbox TAP + guest IP identity, file download, egress allowlist enforcement |
+| macOS | `darwin-vz` | Supported with gaps | Persistent sandboxes, helper-managed NAT outbound networking, no file download, no egress filtering, no host-visible guest IP/TAP identity yet |
 
 Backend capabilities are exposed in `cleanroom doctor --json` under `capabilities`. See [isolation model](docs/isolation.md) for enforcement and persistence details.
+
+Network model differs significantly by backend:
+
+- `firecracker` creates a dedicated TAP interface and host/guest IP pair per sandbox, which enables host-side identity and firewall enforcement.
+- `darwin-vz` currently uses `Virtualization.framework` NAT networking. Guests can reach outbound destinations, but the host does not get a Firecracker-style per-sandbox TAP device or guest IP identity.
+- A future `darwin-vz` vmnet-backed mode is planned in [docs/plans/darwin-vz-vmnet-mode.md](docs/plans/darwin-vz-vmnet-mode.md).
 
 Select a backend explicitly:
 
