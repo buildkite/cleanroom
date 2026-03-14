@@ -2299,12 +2299,14 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 	if err != nil {
 		return fmt.Errorf("configure git mirror store: %w", err)
 	}
+	darwinGatewayHost := strings.TrimSpace(os.Getenv("CLEANROOM_DARWIN_GATEWAY_HOST"))
 	gwServer := gateway.NewServer(gateway.ServerConfig{
-		ListenAddr:  s.GatewayListen,
-		Registry:    gwRegistry,
-		Credentials: gwCredentials,
-		GitMirrors:  gwMirrors,
-		Logger:      logger.With("subsystem", "gateway"),
+		ListenAddr:                      s.GatewayListen,
+		Registry:                        gwRegistry,
+		Credentials:                     gwCredentials,
+		GitMirrors:                      gwMirrors,
+		Logger:                          logger.With("subsystem", "gateway"),
+		ScopeTokenTrustedSourcePrefixes: gateway.ScopeTokenTrustedSourcePrefixesForGatewayHost(darwinGatewayHost),
 	})
 	if err := gwServer.Start(); err != nil {
 		return fmt.Errorf("start gateway: %w", err)
@@ -2317,7 +2319,7 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 		}
 	}
 
-	configureGatewayBackends(ctx.Backends, gwRegistry, gwPort, strings.TrimSpace(os.Getenv("CLEANROOM_DARWIN_GATEWAY_HOST")))
+	configureGatewayBackends(ctx.Backends, gwRegistry, gwPort, darwinGatewayHost)
 
 	if fcAdapter, ok := ctx.Backends["firecracker"].(*firecracker.Adapter); ok && fcAdapter.GatewayRegistry != nil {
 		if shouldInstallGatewayFirewall(runtime.GOOS) {

@@ -45,7 +45,7 @@ const scopeContextKey contextKey = iota
 // identity when source-IP identity is unavailable (for example darwin NAT).
 const ScopeTokenHeader = "X-Cleanroom-Scope-Token"
 
-var darwinVZNATPrefix = netip.MustParsePrefix("192.168.64.0/24")
+var defaultDarwinVZScopeTokenSourcePrefix = netip.MustParsePrefix("192.168.64.0/24")
 
 // ScopeFromContext retrieves the SandboxScope injected by identity middleware.
 func ScopeFromContext(ctx context.Context) (*SandboxScope, bool) {
@@ -53,20 +53,41 @@ func ScopeFromContext(ctx context.Context) (*SandboxScope, bool) {
 	return scope, ok
 }
 
+// ScopeTokenTrustedSourcePrefixesForGatewayHost returns the trusted source
+// prefixes to use for scope-token fallback requests that arrive from darwin-vz
+// guests routed through a gateway host IP.
+func ScopeTokenTrustedSourcePrefixesForGatewayHost(gatewayHost string) []netip.Prefix {
+	gatewayHost = strings.TrimSpace(gatewayHost)
+	if gatewayHost == "" {
+		return []netip.Prefix{defaultDarwinVZScopeTokenSourcePrefix}
+	}
+
+	addr, err := netip.ParseAddr(gatewayHost)
+	if err != nil {
+		return []netip.Prefix{}
+	}
+	if addr.Is4() {
+		return []netip.Prefix{netip.PrefixFrom(addr, 24).Masked()}
+	}
+	return []netip.Prefix{netip.PrefixFrom(addr, 64).Masked()}
+}
+
 // ServerConfig configures a gateway server.
 type ServerConfig struct {
-	ListenAddr  string
-	Registry    *Registry
-	Credentials CredentialProvider
-	GitMirrors  GitMirrorStore
-	Logger      *log.Logger
+	ListenAddr                      string
+	Registry                        *Registry
+	Credentials                     CredentialProvider
+	GitMirrors                      GitMirrorStore
+	Logger                          *log.Logger
+	ScopeTokenTrustedSourcePrefixes []netip.Prefix
 }
 
 // Server is the host gateway HTTP server.
 type Server struct {
-	registry   *Registry
-	logger     *log.Logger
-	httpServer *http.Server
+	registry                        *Registry
+	logger                          *log.Logger
+	httpServer                      *http.Server
+	scopeTokenTrustedSourcePrefixes []netip.Prefix
 
 	mu      sync.Mutex
 	started bool
@@ -80,10 +101,16 @@ func NewServer(cfg ServerConfig) *Server {
 		addr = DefaultListenAddr
 	}
 
+	trustedSourcePrefixes := cloneScopeTokenTrustedSourcePrefixes(cfg.ScopeTokenTrustedSourcePrefixes)
+	if trustedSourcePrefixes == nil {
+		trustedSourcePrefixes = ScopeTokenTrustedSourcePrefixesForGatewayHost("")
+	}
+
 	s := &Server{
-		registry: cfg.Registry,
-		logger:   cfg.Logger,
-		addr:     addr,
+		registry:                        cfg.Registry,
+		logger:                          cfg.Logger,
+		addr:                            addr,
+		scopeTokenTrustedSourcePrefixes: trustedSourcePrefixes,
 	}
 
 	mux := http.NewServeMux()
@@ -155,7 +182,7 @@ func (s *Server) identityMiddleware(next http.Handler) http.Handler {
 		}
 
 		scopeToken := strings.TrimSpace(r.Header.Get(ScopeTokenHeader))
-		if scopeToken != "" && isScopeTokenSourceTrusted(sourceIP) {
+		if scopeToken != "" && s.isScopeTokenSourceTrusted(sourceIP) {
 			if scope, ok := s.registry.LookupScopeToken(scopeToken); ok {
 				ctx := context.WithValue(r.Context(), scopeContextKey, scope)
 				next.ServeHTTP(w, r.WithContext(ctx))
@@ -167,7 +194,7 @@ func (s *Server) identityMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-func isScopeTokenSourceTrusted(sourceIP string) bool {
+func (s *Server) isScopeTokenSourceTrusted(sourceIP string) bool {
 	addr, err := netip.ParseAddr(sourceIP)
 	if err != nil {
 		return false
@@ -175,7 +202,12 @@ func isScopeTokenSourceTrusted(sourceIP string) bool {
 	if addr.IsLoopback() {
 		return true
 	}
-	return darwinVZNATPrefix.Contains(addr)
+	for _, prefix := range s.scopeTokenTrustedSourcePrefixes {
+		if prefix.Contains(addr) {
+			return true
+		}
+	}
+	return false
 }
 
 // pathMiddleware validates and canonicalises the request path.
@@ -206,6 +238,15 @@ func extractSourceIP(remoteAddr string) string {
 		return v4.String()
 	}
 	return ip.String()
+}
+
+func cloneScopeTokenTrustedSourcePrefixes(prefixes []netip.Prefix) []netip.Prefix {
+	if prefixes == nil {
+		return nil
+	}
+	out := make([]netip.Prefix, len(prefixes))
+	copy(out, prefixes)
+	return out
 }
 
 func stubHandler(service string) http.HandlerFunc {
