@@ -812,10 +812,14 @@ func TestDaemonStartLaunchdBootstrapsAndKickstartsUserService(t *testing.T) {
 	prevUID := serveInstallUID
 	prevUserHomeDir := serveInstallUserHomeDir
 	prevRunCommand := serveInstallRunCommand
+	prevRunCommandOutput := serveInstallRunCommandOutput
 	serveInstallGOOS = "darwin"
 	serveInstallEUID = func() int { return 501 }
 	serveInstallUID = func() int { return 501 }
 	serveInstallUserHomeDir = func() (string, error) { return tmpDir, nil }
+	serveInstallRunCommandOutput = func(name string, args ...string) (string, error) {
+		return "", &exec.ExitError{ProcessState: &os.ProcessState{}}
+	}
 	var calls [][]string
 	serveInstallRunCommand = func(name string, args ...string) error {
 		calls = append(calls, append([]string{name}, args...))
@@ -827,6 +831,7 @@ func TestDaemonStartLaunchdBootstrapsAndKickstartsUserService(t *testing.T) {
 		serveInstallUID = prevUID
 		serveInstallUserHomeDir = prevUserHomeDir
 		serveInstallRunCommand = prevRunCommand
+		serveInstallRunCommandOutput = prevRunCommandOutput
 	})
 
 	stdout, readStdout := makeStdoutCapture(t)
@@ -850,6 +855,55 @@ func TestDaemonStartLaunchdBootstrapsAndKickstartsUserService(t *testing.T) {
 	}
 	if !strings.Contains(out, "manager=launchd") {
 		t.Fatalf("expected manager=launchd, got: %s", out)
+	}
+}
+
+func TestDaemonStartLaunchdReturnsKickstartFailure(t *testing.T) {
+	tmpDir := t.TempDir()
+	plistPath := filepath.Join(tmpDir, "Library", "LaunchAgents", launchdServiceName+".plist")
+	if err := os.MkdirAll(filepath.Dir(plistPath), 0o755); err != nil {
+		t.Fatalf("mkdir launch agents dir: %v", err)
+	}
+	if err := os.WriteFile(plistPath, []byte("existing-plist"), 0o644); err != nil {
+		t.Fatalf("write existing plist: %v", err)
+	}
+
+	prevGOOS := serveInstallGOOS
+	prevEUID := serveInstallEUID
+	prevUID := serveInstallUID
+	prevUserHomeDir := serveInstallUserHomeDir
+	prevRunCommand := serveInstallRunCommand
+	prevRunCommandOutput := serveInstallRunCommandOutput
+	serveInstallGOOS = "darwin"
+	serveInstallEUID = func() int { return 501 }
+	serveInstallUID = func() int { return 501 }
+	serveInstallUserHomeDir = func() (string, error) { return tmpDir, nil }
+	serveInstallRunCommandOutput = func(name string, args ...string) (string, error) {
+		return "", &exec.ExitError{ProcessState: &os.ProcessState{}}
+	}
+	serveInstallRunCommand = func(name string, args ...string) error {
+		if len(args) > 0 && args[0] == "kickstart" {
+			return &exec.ExitError{ProcessState: &os.ProcessState{}}
+		}
+		return nil
+	}
+	t.Cleanup(func() {
+		serveInstallGOOS = prevGOOS
+		serveInstallEUID = prevEUID
+		serveInstallUID = prevUID
+		serveInstallUserHomeDir = prevUserHomeDir
+		serveInstallRunCommand = prevRunCommand
+		serveInstallRunCommandOutput = prevRunCommandOutput
+	})
+
+	stdout, _ := makeStdoutCapture(t)
+	cmd := &DaemonCommand{Action: "start"}
+	err := cmd.Run(&runtimeContext{CWD: tmpDir, Stdout: stdout})
+	if err == nil {
+		t.Fatal("expected launchd kickstart failure")
+	}
+	if !strings.Contains(err.Error(), "start launchd service") {
+		t.Fatalf("expected kickstart error context, got: %v", err)
 	}
 }
 
@@ -905,6 +959,51 @@ func TestDaemonStopLaunchdDisablesAndBootsOutUserService(t *testing.T) {
 	}
 	if !strings.Contains(out, "manager=launchd") {
 		t.Fatalf("expected manager=launchd, got: %s", out)
+	}
+}
+
+func TestDaemonStopLaunchdBootsOutWhenPlistIsMissing(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	prevGOOS := serveInstallGOOS
+	prevEUID := serveInstallEUID
+	prevUID := serveInstallUID
+	prevUserHomeDir := serveInstallUserHomeDir
+	prevRunCommand := serveInstallRunCommand
+	serveInstallGOOS = "darwin"
+	serveInstallEUID = func() int { return 501 }
+	serveInstallUID = func() int { return 501 }
+	serveInstallUserHomeDir = func() (string, error) { return tmpDir, nil }
+	var calls [][]string
+	serveInstallRunCommand = func(name string, args ...string) error {
+		calls = append(calls, append([]string{name}, args...))
+		return nil
+	}
+	t.Cleanup(func() {
+		serveInstallGOOS = prevGOOS
+		serveInstallEUID = prevEUID
+		serveInstallUID = prevUID
+		serveInstallUserHomeDir = prevUserHomeDir
+		serveInstallRunCommand = prevRunCommand
+	})
+
+	stdout, readStdout := makeStdoutCapture(t)
+	cmd := &DaemonCommand{Action: "stop"}
+	if err := cmd.Run(&runtimeContext{CWD: tmpDir, Stdout: stdout}); err != nil {
+		t.Fatalf("DaemonCommand.Run returned error: %v", err)
+	}
+
+	wantCalls := [][]string{
+		{"launchctl", "disable", "gui/501/" + launchdServiceName},
+		{"launchctl", "bootout", "gui/501/" + launchdServiceName},
+	}
+	if !reflect.DeepEqual(calls, wantCalls) {
+		t.Fatalf("unexpected launchctl commands: got %v want %v", calls, wantCalls)
+	}
+
+	out := readStdout()
+	if !strings.Contains(out, "daemon stopped") {
+		t.Fatalf("expected stopped message, got: %s", out)
 	}
 }
 

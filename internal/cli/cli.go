@@ -1723,17 +1723,23 @@ func startLaunchdDaemonInDomain(stdout io.Writer, servicePath, domain string) er
 	}
 
 	target := launchdServiceTarget(domain)
-	if err := serveInstallRunCommand("launchctl", "bootstrap", domain, servicePath); err != nil && !isExitError(err) {
-		return fmt.Errorf("bootstrap launchd service %s: %w", launchdServiceName, err)
+	loaded, err := launchdServiceLoaded(target)
+	if err != nil {
+		return err
 	}
-	if err := serveInstallRunCommand("launchctl", "enable", target); err != nil && !isExitError(err) {
+	if !loaded {
+		if err := serveInstallRunCommand("launchctl", "bootstrap", domain, servicePath); err != nil {
+			return fmt.Errorf("bootstrap launchd service %s: %w", launchdServiceName, err)
+		}
+	}
+	if err := serveInstallRunCommand("launchctl", "enable", target); err != nil {
 		return fmt.Errorf("enable launchd service %s: %w", launchdServiceName, err)
 	}
-	if err := serveInstallRunCommand("launchctl", "kickstart", "-k", target); err != nil && !isExitError(err) {
+	if err := serveInstallRunCommand("launchctl", "kickstart", "-k", target); err != nil {
 		return fmt.Errorf("start launchd service %s: %w", launchdServiceName, err)
 	}
 
-	_, err := fmt.Fprintf(stdout, "daemon started\nmanager=launchd\nservice=%s\n", launchdServiceName)
+	_, err = fmt.Fprintf(stdout, "daemon started\nmanager=launchd\nservice=%s\n", launchdServiceName)
 	return err
 }
 
@@ -1750,21 +1756,34 @@ func stopLaunchdUserDaemon(stdout io.Writer) error {
 }
 
 func stopLaunchdDaemonInDomain(stdout io.Writer, servicePath, domain string) error {
-	if _, err := serveInstallStat(servicePath); errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("service file %s does not exist", servicePath)
-	} else if err != nil {
-		return fmt.Errorf("stat service file %s: %w", servicePath, err)
+	serviceFileExists := false
+	statErr := error(nil)
+	if _, err := serveInstallStat(servicePath); err == nil {
+		serviceFileExists = true
+	} else if !errors.Is(err, os.ErrNotExist) {
+		statErr = err
+	}
+	if statErr != nil {
+		return fmt.Errorf("stat service file %s: %w", servicePath, statErr)
 	}
 
 	target := launchdServiceTarget(domain)
 	if err := serveInstallRunCommand("launchctl", "disable", target); err != nil && !isExitError(err) {
 		return fmt.Errorf("disable launchd service %s: %w", launchdServiceName, err)
 	}
-	if err := serveInstallRunCommand("launchctl", "bootout", target); err != nil && !isExitError(err) {
-		return fmt.Errorf("stop launchd service %s: %w", launchdServiceName, err)
+	bootoutFoundService := true
+	if err := serveInstallRunCommand("launchctl", "bootout", target); err != nil {
+		if !isExitError(err) {
+			return fmt.Errorf("stop launchd service %s: %w", launchdServiceName, err)
+		}
+		bootoutFoundService = false
 	}
 
-	_, err := fmt.Fprintf(stdout, "daemon stopped\nmanager=launchd\nservice=%s\n", launchdServiceName)
+	message := "daemon stopped"
+	if !serviceFileExists && !bootoutFoundService {
+		message = "daemon already stopped"
+	}
+	_, err := fmt.Fprintf(stdout, "%s\nmanager=launchd\nservice=%s\n", message, launchdServiceName)
 	return err
 }
 
@@ -1894,6 +1913,16 @@ func launchdServiceState(output string) string {
 		return strings.TrimSpace(strings.TrimPrefix(trimmed, "state ="))
 	}
 	return ""
+}
+
+func launchdServiceLoaded(target string) (bool, error) {
+	if _, err := serveInstallRunCommandOutput("launchctl", "print", target); err == nil {
+		return true, nil
+	} else if isExitError(err) {
+		return false, nil
+	} else {
+		return false, fmt.Errorf("check launchd service %s: %w", target, err)
+	}
 }
 
 func launchdConfiguredListenEndpoint(plistPath string) (string, error) {
