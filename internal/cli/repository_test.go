@@ -12,6 +12,7 @@ import (
 
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/policy"
+	"github.com/buildkite/cleanroom/internal/repositorycheckout"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 )
 
@@ -624,7 +625,7 @@ func TestCanonicalizeGitRemoteURLStripsUserInfo(t *testing.T) {
 }
 
 func TestWrapCommandWithRepositoryBootstrapStripsCommandSeparator(t *testing.T) {
-	command := wrapCommandWithRepositoryBootstrap([]string{"--", "sh", "-lc", "pwd"}, &resolvedRepositoryCheckout{
+	command := repositorycheckout.WrapCommandWithBootstrap([]string{"--", "sh", "-lc", "pwd"}, &repositorycheckout.Checkout{
 		RemoteURL:      "https://github.com/buildkite/cleanroom.git",
 		CommitSHA:      "0123456789abcdef0123456789abcdef01234567",
 		DestinationDir: "/workspace",
@@ -639,7 +640,7 @@ func TestWrapCommandWithRepositoryBootstrapStripsCommandSeparator(t *testing.T) 
 }
 
 func TestWrapCommandWithRepositoryBootstrapDoesNotEmbedAuthHeaders(t *testing.T) {
-	command := wrapCommandWithRepositoryBootstrap([]string{"sh", "-lc", "pwd"}, &resolvedRepositoryCheckout{
+	command := repositorycheckout.WrapCommandWithBootstrap([]string{"sh", "-lc", "pwd"}, &repositorycheckout.Checkout{
 		RemoteURL:      "https://github.com/buildkite/cleanroom.git",
 		CommitSHA:      "0123456789abcdef0123456789abcdef01234567",
 		DestinationDir: "/workspace",

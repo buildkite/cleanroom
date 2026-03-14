@@ -216,21 +216,6 @@ func (s *gitMirrorStore) fetchMirror(ctx context.Context, remoteURL, mirrorDir s
 	return nil
 }
 
-func (s *gitMirrorStore) authConfigEntry(remoteURL string) (string, string) {
-	if s == nil || s.credentials == nil {
-		return "", ""
-	}
-	header, err := s.credentials.Resolve(context.Background(), remoteURL)
-	if err != nil {
-		return "", ""
-	}
-	header = strings.TrimSpace(header)
-	if header == "" {
-		return "", ""
-	}
-	return "http." + remoteURL + "/.extraHeader", "Authorization: " + header
-}
-
 func (s *gitMirrorStore) gitArgsWithAuth(ctx context.Context, remoteURL string, args ...string) []string {
 	key := ""
 	value := ""

@@ -17,7 +17,6 @@ import (
 
 type resolvedRepositoryCheckout struct {
 	RemoteURL      string
-	RemoteHost     string
 	CommitSHA      string
 	DestinationDir string
 	Submodules     bool
@@ -25,33 +24,19 @@ type resolvedRepositoryCheckout struct {
 }
 
 func resolveRepositoryCheckout(cwd string, loader policyLoader) (*resolvedRepositoryCheckout, error) {
-	if loader == nil {
-		return nil, nil
-	}
-
-	repository, _, err := loader.LoadRepository(cwd)
+	repository, err := loadRepositoryConfig(cwd, loader)
 	if err != nil {
-		if errors.Is(err, policy.ErrPolicyNotFound) {
+		if errors.Is(err, errSkipRepositoryCheckout) {
 			return nil, nil
 		}
 		return nil, err
 	}
-	if !repository.Enabled() {
-		return nil, nil
-	}
-
-	switch repository.Mode {
-	case "current-repo":
-	default:
-		return nil, fmt.Errorf("unsupported repository.mode %q", repository.Mode)
-	}
-
-	repoRoot, err := gitOutput(cwd, "rev-parse", "--show-toplevel")
+	repoRoot, err := resolveRepositoryRoot(cwd, repository)
 	if err != nil {
-		if shouldSkipImplicitRepository(repository, err) {
+		if errors.Is(err, errSkipRepositoryCheckout) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("resolve repository root: %w", err)
+		return nil, err
 	}
 	dirty, err := gitOutput(repoRoot, "status", "--porcelain")
 	if err != nil {
@@ -81,7 +66,6 @@ func resolveRepositoryCheckout(cwd string, loader policyLoader) (*resolvedReposi
 
 	return &resolvedRepositoryCheckout{
 		RemoteURL:      canonicalURL,
-		RemoteHost:     remoteHost,
 		CommitSHA:      strings.TrimSpace(commitSHA),
 		DestinationDir: repository.Path,
 		Submodules:     repository.Submodules,
@@ -97,32 +81,19 @@ func maybeResolveRepositoryCheckout(cwd string, loader policyLoader, existingSan
 }
 
 func resolveRepositoryExecutionContext(cwd string, loader policyLoader) (*resolvedRepositoryCheckout, error) {
-	if loader == nil {
-		return nil, nil
-	}
-
-	repository, _, err := loader.LoadRepository(cwd)
+	repository, err := loadRepositoryConfig(cwd, loader)
 	if err != nil {
-		if errors.Is(err, policy.ErrPolicyNotFound) {
+		if errors.Is(err, errSkipRepositoryCheckout) {
 			return nil, nil
 		}
 		return nil, err
 	}
-	if !repository.Enabled() {
-		return nil, nil
-	}
-
-	switch repository.Mode {
-	case "current-repo":
-	default:
-		return nil, fmt.Errorf("unsupported repository.mode %q", repository.Mode)
-	}
 	if repository.Implicit {
-		if _, err := gitOutput(cwd, "rev-parse", "--show-toplevel"); err != nil {
-			if shouldSkipImplicitRepository(repository, err) {
+		if _, err := resolveRepositoryRoot(cwd, repository); err != nil {
+			if errors.Is(err, errSkipRepositoryCheckout) {
 				return nil, nil
 			}
-			return nil, fmt.Errorf("resolve repository root: %w", err)
+			return nil, err
 		}
 	}
 
@@ -130,6 +101,42 @@ func resolveRepositoryExecutionContext(cwd string, loader policyLoader) (*resolv
 		DestinationDir: repository.Path,
 		Submodules:     repository.Submodules,
 	}, nil
+}
+
+var errSkipRepositoryCheckout = errors.New("skip repository checkout")
+
+func loadRepositoryConfig(cwd string, loader policyLoader) (policy.RepositoryConfig, error) {
+	if loader == nil {
+		return policy.RepositoryConfig{}, errSkipRepositoryCheckout
+	}
+
+	repository, _, err := loader.LoadRepository(cwd)
+	if err != nil {
+		if errors.Is(err, policy.ErrPolicyNotFound) {
+			return policy.RepositoryConfig{}, errSkipRepositoryCheckout
+		}
+		return policy.RepositoryConfig{}, err
+	}
+	if !repository.Enabled() {
+		return policy.RepositoryConfig{}, errSkipRepositoryCheckout
+	}
+	switch repository.Mode {
+	case "current-repo":
+		return repository, nil
+	default:
+		return policy.RepositoryConfig{}, fmt.Errorf("unsupported repository.mode %q", repository.Mode)
+	}
+}
+
+func resolveRepositoryRoot(cwd string, repository policy.RepositoryConfig) (string, error) {
+	repoRoot, err := gitOutput(cwd, "rev-parse", "--show-toplevel")
+	if err != nil {
+		if shouldSkipImplicitRepository(repository, err) {
+			return "", errSkipRepositoryCheckout
+		}
+		return "", fmt.Errorf("resolve repository root: %w", err)
+	}
+	return repoRoot, nil
 }
 
 func shouldSkipImplicitRepository(repository policy.RepositoryConfig, err error) bool {
@@ -257,22 +264,6 @@ func createTopLevelSandbox(
 	}
 
 	return sandboxID, sandbox, nil
-}
-
-func buildRepositoryBootstrapCommand(repository *resolvedRepositoryCheckout) []string {
-	return repositorycheckout.BuildBootstrapCommand(toRepositoryCheckout(repository))
-}
-
-func wrapCommandWithRepositoryBootstrap(command []string, repository *resolvedRepositoryCheckout) []string {
-	return repositorycheckout.WrapCommandWithBootstrap(command, toRepositoryCheckout(repository))
-}
-
-func repositoryBootstrapScript(repository *resolvedRepositoryCheckout) []string {
-	command := buildRepositoryBootstrapCommand(repository)
-	if len(command) != 3 {
-		return nil
-	}
-	return strings.Split(command[2], "\n")
 }
 
 func wrapCommandInRepositoryWorkdir(command []string, repository *resolvedRepositoryCheckout) []string {

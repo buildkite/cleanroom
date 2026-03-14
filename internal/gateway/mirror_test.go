@@ -134,12 +134,18 @@ func TestGitMirrorStoreUsesRemoteURLScopedAuthHeader(t *testing.T) {
 			"https://github.com/buildkite/cleanroom.git": "Basic test",
 		},
 	})
-	key, value := store.authConfigEntry("https://github.com/buildkite/cleanroom.git")
-	if got, want := key, "http.https://github.com/buildkite/cleanroom.git/.extraHeader"; got != want {
-		t.Fatalf("unexpected config key: got %q want %q", got, want)
+	args := store.gitArgsWithAuth(context.Background(), "https://github.com/buildkite/cleanroom.git", "fetch", "origin")
+	if len(args) < 3 {
+		t.Fatalf("expected auth config args, got %v", args)
 	}
-	if got, want := value, "Authorization: Basic test"; got != want {
-		t.Fatalf("unexpected config value: got %q want %q", got, want)
+	if got, want := args[0], "-c"; got != want {
+		t.Fatalf("unexpected first arg: got %q want %q", got, want)
+	}
+	if got, want := args[1], "http.https://github.com/buildkite/cleanroom.git/.extraHeader=Authorization: Basic test"; got != want {
+		t.Fatalf("unexpected auth config arg: got %q want %q", got, want)
+	}
+	if got, want := args[2], "fetch"; got != want {
+		t.Fatalf("unexpected command arg after auth config: got %q want %q", got, want)
 	}
 }
 
