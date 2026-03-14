@@ -181,16 +181,16 @@ message RestoreSandboxRequest {
 
 Proposed commands:
 
-- `cleanroom snapshots create <sandbox-id> [--name <name>]`
-- `cleanroom snapshots get <snapshot-id>`
-- `cleanroom snapshots list`
-- `cleanroom snapshots delete <snapshot-id>`
-- `cleanroom sandboxes create --from-snapshot <snapshot-id>`
-- `cleanroom sandboxes restore <sandbox-id> --snapshot <snapshot-id>`
+- `cleanroom snapshot create <sandbox-id> [--name <name>]`
+- `cleanroom snapshot inspect <snapshot-id>`
+- `cleanroom snapshot ls`
+- `cleanroom snapshot rm <snapshot-id>`
+- `cleanroom sandbox create --from <snapshot-id>`
+- `cleanroom sandbox restore <sandbox-id> --from <snapshot-id>`
 
 Useful sugar later:
 
-- `cleanroom exec --from-snapshot <snapshot-id> --rm -- <command>`
+- `cleanroom exec --from <snapshot-id> -- <command>`
 
 ### Guest-cooperative checkpoint trigger
 
@@ -827,9 +827,9 @@ native storage-driver and fleet-distribution work is still pending.
   - `sandbox.fork`
 - [done] persisted snapshot metadata store in SQLite
 - [done] CLI commands:
-  - `cleanroom snapshot create|get|list|delete`
-  - `cleanroom sandbox create --from-snapshot`
-  - `cleanroom sandbox restore --snapshot`
+  - `cleanroom snapshot create|inspect|list|delete`
+  - `cleanroom sandbox create --from`
+  - `cleanroom sandbox restore --from`
 - [done] Firecracker adapter support for snapshot, fork, and restore
 - [done] `darwin-vz` adapter support for snapshot, fork, and restore
 - [done] control-plane concurrency checks:

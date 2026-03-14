@@ -186,8 +186,8 @@ func TestSandboxSnapshotIntegrationCreateFromSnapshotAndRestore(t *testing.T) {
 	}
 
 	createOutcome := runSandboxCreateWithCapture(SandboxCreateCommand{
-		clientFlags:  clientFlags{Host: host},
-		FromSnapshot: snapshotID,
+		clientFlags: clientFlags{Host: host},
+		From:        snapshotID,
 	}, runtimeContext{
 		CWD:    cwd,
 		Loader: failingLoader{},
@@ -217,7 +217,7 @@ func TestSandboxSnapshotIntegrationCreateFromSnapshotAndRestore(t *testing.T) {
 	restoreOutcome := runSandboxRestoreWithCapture(SandboxRestoreCommand{
 		clientFlags: clientFlags{Host: host},
 		SandboxID:   sandboxID,
-		SnapshotID:  snapshotID,
+		From:        snapshotID,
 	}, runtimeContext{CWD: cwd})
 	if restoreOutcome.cause != nil {
 		t.Fatalf("capture failure: %v", restoreOutcome.cause)
@@ -237,6 +237,52 @@ func TestSandboxSnapshotIntegrationCreateFromSnapshotAndRestore(t *testing.T) {
 	if adapter.restoreReq.Policy == nil {
 		t.Fatal("expected compiled policy on restore request")
 	}
+}
+
+func TestExecFromSnapshotIntegrationDefaultsToEphemeralSandbox(t *testing.T) {
+	adapter := &snapshotIntegrationAdapter{}
+	host, _ := startIntegrationServer(t, adapter)
+	cwd := t.TempDir()
+
+	client := mustNewControlClient(t, host)
+	sourceSandboxID := mustCreateSandbox(t, client)
+
+	createSnapshotOutcome := runSnapshotCreateWithCapture(SnapshotCreateCommand{
+		clientFlags: clientFlags{Host: host},
+		SandboxID:   sourceSandboxID,
+		Name:        "golden",
+	}, runtimeContext{CWD: cwd})
+	if createSnapshotOutcome.cause != nil {
+		t.Fatalf("capture failure: %v", createSnapshotOutcome.cause)
+	}
+	if createSnapshotOutcome.err != nil {
+		t.Fatalf("SnapshotCreateCommand.Run returned error: %v", createSnapshotOutcome.err)
+	}
+	snapshotID := strings.TrimSpace(createSnapshotOutcome.stdout)
+
+	execOutcome := runExecWithCapture(ExecCommand{
+		clientFlags:    clientFlags{Host: host},
+		From:           snapshotID,
+		PrintSandboxID: true,
+		Command:        []string{"echo", "ok"},
+	}, runtimeContext{
+		CWD:    cwd,
+		Loader: failingLoader{},
+	})
+	if execOutcome.cause != nil {
+		t.Fatalf("capture failure: %v", execOutcome.cause)
+	}
+	if execOutcome.err != nil {
+		t.Fatalf("ExecCommand.Run returned error: %v", execOutcome.err)
+	}
+	if got, want := adapter.provisionFromSnapshotReq.SnapshotID, snapshotID; got != want {
+		t.Fatalf("unexpected provision snapshot id: got %q want %q", got, want)
+	}
+	sandboxID := parseSandboxID(execOutcome.stderr)
+	if sandboxID == "" {
+		t.Fatalf("expected sandbox id in stderr, got %q", execOutcome.stderr)
+	}
+	requireSandboxStatus(t, client, sandboxID, cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPED)
 }
 
 func TestSnapshotDeleteIntegrationAllowsDeleteAfterSnapshotBackedCreate(t *testing.T) {
@@ -261,8 +307,8 @@ func TestSnapshotDeleteIntegrationAllowsDeleteAfterSnapshotBackedCreate(t *testi
 	snapshotID := strings.TrimSpace(createSnapshotOutcome.stdout)
 
 	createOutcome := runSandboxCreateWithCapture(SandboxCreateCommand{
-		clientFlags:  clientFlags{Host: host},
-		FromSnapshot: snapshotID,
+		clientFlags: clientFlags{Host: host},
+		From:        snapshotID,
 	}, runtimeContext{
 		CWD:    cwd,
 		Loader: failingLoader{},

@@ -229,8 +229,11 @@ Meaning:
   5. create execution,
   6. stream output/events to caller,
   7. return workload exit code.
-- Default mode creates a persistent sandbox that remains `READY` after execution completes. Use `--rm` to terminate the sandbox after execution.
-- Reuse an existing sandbox with `--sandbox-id <id>`.
+- Default mode creates an ephemeral sandbox, runs the command, and terminates
+  the sandbox afterward.
+- `--keep` preserves a newly created sandbox after execution completes.
+- Reuse an existing sandbox with `--in <id>`.
+- Create a new sandbox from a snapshot with `--from <snapshot-id>`.
 - Interactive mode (`-it`) must use bidirectional stream semantics.
 - Non-interactive mode must use server-streaming semantics.
 - First interrupt signal should request execution cancel; second interrupt may detach client stream immediately.

@@ -126,6 +126,18 @@ func TestSandboxCreateParsesImageOverride(t *testing.T) {
 	}
 }
 
+func TestSandboxCreateParsesFromSnapshot(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"sandbox", "create", "--from", "snap_123"}); err != nil {
+		t.Fatalf("parse sandbox create --from returned error: %v", err)
+	}
+	if got, want := c.Sandbox.Create.From, "snap_123"; got != want {
+		t.Fatalf("unexpected sandbox create from: got %q want %q", got, want)
+	}
+}
+
 func TestTopLevelCreateParses(t *testing.T) {
 	c := &CLI{}
 	parser := newParserForTest(t, c)
@@ -148,6 +160,18 @@ func TestTopLevelCreateParsesImageOverride(t *testing.T) {
 	}
 }
 
+func TestTopLevelCreateParsesFromSnapshot(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"create", "--from", "snap_123"}); err != nil {
+		t.Fatalf("parse create --from returned error: %v", err)
+	}
+	if got, want := c.Create.From, "snap_123"; got != want {
+		t.Fatalf("unexpected create from: got %q want %q", got, want)
+	}
+}
+
 func TestExecParsesImageOverride(t *testing.T) {
 	c := &CLI{}
 	parser := newParserForTest(t, c)
@@ -161,6 +185,30 @@ func TestExecParsesImageOverride(t *testing.T) {
 	}
 }
 
+func TestExecParsesInFromAndKeep(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"exec", "--in", "cr_123", "--", "echo", "ok"}); err != nil {
+		t.Fatalf("parse exec --in returned error: %v", err)
+	}
+	if got, want := c.Exec.In, "cr_123"; got != want {
+		t.Fatalf("unexpected exec in: got %q want %q", got, want)
+	}
+
+	c = &CLI{}
+	parser = newParserForTest(t, c)
+	if _, err := parser.Parse([]string{"exec", "--from", "snap_123", "--keep", "--", "echo", "ok"}); err != nil {
+		t.Fatalf("parse exec --from --keep returned error: %v", err)
+	}
+	if got, want := c.Exec.From, "snap_123"; got != want {
+		t.Fatalf("unexpected exec from: got %q want %q", got, want)
+	}
+	if !c.Exec.Keep {
+		t.Fatal("expected exec keep flag to be set")
+	}
+}
+
 func TestConsoleParsesImageOverride(t *testing.T) {
 	c := &CLI{}
 	parser := newParserForTest(t, c)
@@ -171,6 +219,42 @@ func TestConsoleParsesImageOverride(t *testing.T) {
 	}
 	if got, want := c.Console.Image, imageRef; got != want {
 		t.Fatalf("unexpected console image override: got %q want %q", got, want)
+	}
+}
+
+func TestConsoleParsesInFromAndKeep(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"console", "--in", "cr_123"}); err != nil {
+		t.Fatalf("parse console --in returned error: %v", err)
+	}
+	if got, want := c.Console.In, "cr_123"; got != want {
+		t.Fatalf("unexpected console in: got %q want %q", got, want)
+	}
+
+	c = &CLI{}
+	parser = newParserForTest(t, c)
+	if _, err := parser.Parse([]string{"console", "--from", "snap_123", "--keep"}); err != nil {
+		t.Fatalf("parse console --from --keep returned error: %v", err)
+	}
+	if got, want := c.Console.From, "snap_123"; got != want {
+		t.Fatalf("unexpected console from: got %q want %q", got, want)
+	}
+	if !c.Console.Keep {
+		t.Fatal("expected console keep flag to be set")
+	}
+}
+
+func TestSandboxRestoreParsesFromSnapshot(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"sandbox", "restore", "cr_123", "--from", "snap_123"}); err != nil {
+		t.Fatalf("parse sandbox restore --from returned error: %v", err)
+	}
+	if got, want := c.Sandbox.Restore.From, "snap_123"; got != want {
+		t.Fatalf("unexpected restore from: got %q want %q", got, want)
 	}
 }
 

@@ -239,13 +239,18 @@ Default command:
 Additional command forms:
 - `cleanroom create`
 - `cleanroom console -- bash`
+- `cleanroom exec --in <sandbox-id> -- npm test`
+- `cleanroom exec --from <snapshot-id> -- npm test`
 
 Behavior contract:
 1. Resolve server endpoint (`--host`, `CLEANROOM_HOST`, context, default unix socket).
 2. Resolve and compile repository policy.
 3. If repo-aware bootstrap is enabled, resolve the current git remote and
    committed `HEAD`.
-4. Create or reuse sandbox (`--sandbox-id <id>` reuses an existing sandbox).
+4. Select sandbox mode:
+   - `--in <id>` reuses an existing sandbox
+   - `--from <snapshot-id>` creates a sandbox from a snapshot
+   - otherwise create a sandbox from policy
 5. For repo-aware top-level commands, materialize that checkout in the sandbox
    and default the guest working directory to `repository.path`.
 6. Create execution with command and TTY options.
@@ -253,7 +258,8 @@ Behavior contract:
    - non-interactive: `StreamExecution`
    - interactive: `AttachExecution`
 8. Return the command exit code.
-9. Sandbox remains `READY` for further executions. Use `--rm` to terminate after execution.
+9. Newly created `exec` and `console` sandboxes are terminated after the command
+   unless `--keep` is set. Reused sandboxes (`--in`) remain `READY`.
 
 Notes:
 - `cleanroom create`, `cleanroom exec`, and `cleanroom console` are the
