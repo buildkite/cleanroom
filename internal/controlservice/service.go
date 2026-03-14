@@ -207,7 +207,7 @@ func (s *Service) CreateSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	if opts != nil {
 		execOpts.LaunchSeconds = opts.GetLaunchSeconds()
 	}
-	firecrackerCfg := mergeBackendConfig(backendName, execOpts, s.Config)
+	firecrackerCfg := runtimeconfig.MergeBackendConfig(s.Config, backendName, execOpts.LaunchSeconds)
 	firecrackerCfg.RunDir = ""
 
 	now := time.Now().UTC()
@@ -318,10 +318,9 @@ func (s *Service) createSandboxFromSnapshot(ctx context.Context, req *cleanroomv
 	if opts != nil {
 		execOpts.LaunchSeconds = opts.GetLaunchSeconds()
 	}
-	firecrackerCfg := mergeBackendConfig(backendName, execOpts, s.Config)
+	firecrackerCfg := runtimeconfig.MergeBackendConfig(s.Config, backendName, execOpts.LaunchSeconds)
 	firecrackerCfg.RunDir = ""
-	firecrackerCfg.Snapshots.Enabled = true
-	firecrackerCfg.Snapshots.Driver = snapshotDriverForRecord(record)
+	firecrackerCfg = withSnapshotDriver(firecrackerCfg, record.StorageDriver)
 
 	now := time.Now().UTC()
 	sandboxID := newSandboxID()
@@ -457,9 +456,7 @@ func (s *Service) CreateSnapshot(ctx context.Context, req *cleanroomv1.CreateSna
 		s.mu.Unlock()
 		return nil, fmt.Errorf("sandbox %q is missing compiled policy", sandboxID)
 	}
-	snapshotCfg := state.Firecracker
-	snapshotCfg.Snapshots.Enabled = true
-	snapshotCfg.Snapshots.Driver = snapshotDriverForConfig(state.Firecracker.Snapshots)
+	snapshotCfg := withSnapshotDriver(state.Firecracker, state.Firecracker.Snapshots.Driver)
 	record = snapshotstore.Record{
 		SnapshotID:      snapshotID,
 		SourceSandboxID: sandboxID,
@@ -633,9 +630,7 @@ func (s *Service) RestoreSandbox(ctx context.Context, req *cleanroomv1.RestoreSa
 		s.mu.Unlock()
 		return nil, fmt.Errorf("snapshots are not enabled for backend %q", state.Backend)
 	}
-	restoreCfg := state.Firecracker
-	restoreCfg.Snapshots.Enabled = true
-	restoreCfg.Snapshots.Driver = snapshotDriverForRecord(record)
+	restoreCfg := withSnapshotDriver(state.Firecracker, record.StorageDriver)
 	restoreReq = backend.RestoreRequest{
 		SandboxID:         sandboxID,
 		SnapshotID:        snapshotID,
@@ -705,9 +700,7 @@ func (s *Service) DeleteSnapshot(ctx context.Context, req *cleanroomv1.DeleteSna
 	if !ok {
 		return nil, fmt.Errorf("backend %q does not support snapshot deletion", record.Backend)
 	}
-	firecrackerCfg := mergeBackendConfig(record.Backend, executionOptions{}, s.Config)
-	firecrackerCfg.Snapshots.Enabled = true
-	firecrackerCfg.Snapshots.Driver = snapshotDriverForRecord(record)
+	firecrackerCfg := withSnapshotDriver(runtimeconfig.MergeBackendConfig(s.Config, record.Backend, 0), record.StorageDriver)
 	if err := snapshotAdapter.DeleteSnapshot(ctx, backend.DeleteSnapshotRequest{
 		SnapshotID:        snapshotID,
 		StorageRef:        record.StorageRef,
@@ -2458,12 +2451,10 @@ func snapshotOperationsEnabledForBackend(backendName string, cfg runtimeconfig.C
 	return ok && snapshotCfg.Enabled
 }
 
-func snapshotDriverForConfig(cfg backend.SnapshotConfig) string {
-	return runtimeconfig.SnapshotDriverOrDefault(cfg.Driver)
-}
-
-func snapshotDriverForRecord(record snapshotstore.Record) string {
-	return runtimeconfig.SnapshotDriverOrDefault(record.StorageDriver)
+func withSnapshotDriver(cfg backend.FirecrackerConfig, driver string) backend.FirecrackerConfig {
+	cfg.Snapshots.Enabled = true
+	cfg.Snapshots.Driver = runtimeconfig.SnapshotDriverOrDefault(driver)
+	return cfg
 }
 
 func cloneSandboxLocked(state *sandboxState) *cleanroomv1.Sandbox {
@@ -2706,51 +2697,4 @@ func resolveBackendName(requested, configuredDefault string) string {
 		return configuredDefault
 	}
 	return runtimeconfig.DefaultBackendForHost()
-}
-
-func mergeBackendConfig(backendName string, opts executionOptions, cfg runtimeconfig.Config) backend.FirecrackerConfig {
-	out := backend.FirecrackerConfig{
-		BinaryPath:           cfg.Backends.Firecracker.BinaryPath,
-		KernelImagePath:      cfg.Backends.Firecracker.KernelImage,
-		RootFSPath:           cfg.Backends.Firecracker.RootFS,
-		DockerStartupSeconds: cfg.Backends.Firecracker.Services.Docker.StartupTimeoutSeconds,
-		DockerStorageDriver:  cfg.Backends.Firecracker.Services.Docker.StorageDriver,
-		DockerIPTables:       cfg.Backends.Firecracker.Services.Docker.IPTables,
-		Snapshots: backend.SnapshotConfig{
-			Enabled:               cfg.Backends.Firecracker.Snapshots.Enabled,
-			Driver:                cfg.Backends.Firecracker.Snapshots.Driver,
-			BaseDir:               cfg.Backends.Firecracker.Snapshots.BaseDir,
-			QuiesceTimeoutSeconds: cfg.Backends.Firecracker.Snapshots.QuiesceTimeoutSeconds,
-		},
-		PrivilegedMode:       cfg.Backends.Firecracker.PrivilegedMode,
-		PrivilegedHelperPath: cfg.Backends.Firecracker.PrivilegedHelperPath,
-		VCPUs:                cfg.Backends.Firecracker.VCPUs,
-		MemoryMiB:            cfg.Backends.Firecracker.MemoryMiB,
-		GuestCID:             cfg.Backends.Firecracker.GuestCID,
-		GuestPort:            cfg.Backends.Firecracker.GuestPort,
-		LaunchSeconds:        cfg.Backends.Firecracker.LaunchSeconds,
-	}
-	if backendName == "darwin-vz" {
-		out.KernelImagePath = cfg.Backends.DarwinVZ.KernelImage
-		out.RootFSPath = cfg.Backends.DarwinVZ.RootFS
-		out.DockerStartupSeconds = cfg.Backends.DarwinVZ.Services.Docker.StartupTimeoutSeconds
-		out.DockerStorageDriver = cfg.Backends.DarwinVZ.Services.Docker.StorageDriver
-		out.DockerIPTables = cfg.Backends.DarwinVZ.Services.Docker.IPTables
-		out.Snapshots = backend.SnapshotConfig{
-			Enabled:               cfg.Backends.DarwinVZ.Snapshots.Enabled,
-			Driver:                cfg.Backends.DarwinVZ.Snapshots.Driver,
-			BaseDir:               cfg.Backends.DarwinVZ.Snapshots.BaseDir,
-			QuiesceTimeoutSeconds: cfg.Backends.DarwinVZ.Snapshots.QuiesceTimeoutSeconds,
-		}
-		out.VCPUs = cfg.Backends.DarwinVZ.VCPUs
-		out.MemoryMiB = cfg.Backends.DarwinVZ.MemoryMiB
-		out.GuestPort = cfg.Backends.DarwinVZ.GuestPort
-		out.LaunchSeconds = cfg.Backends.DarwinVZ.LaunchSeconds
-	}
-
-	out.Launch = true
-	if opts.LaunchSeconds != 0 {
-		out.LaunchSeconds = opts.LaunchSeconds
-	}
-	return out
 }
