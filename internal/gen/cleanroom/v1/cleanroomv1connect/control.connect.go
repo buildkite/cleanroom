@@ -23,6 +23,8 @@ const _ = connect.IsAtLeastVersion1_13_0
 const (
 	// SandboxServiceName is the fully-qualified name of the SandboxService service.
 	SandboxServiceName = "cleanroom.v1.SandboxService"
+	// SnapshotServiceName is the fully-qualified name of the SnapshotService service.
+	SnapshotServiceName = "cleanroom.v1.SnapshotService"
 	// ExecutionServiceName is the fully-qualified name of the ExecutionService service.
 	ExecutionServiceName = "cleanroom.v1.ExecutionService"
 )
@@ -53,6 +55,18 @@ const (
 	// SandboxServiceStreamSandboxEventsProcedure is the fully-qualified name of the SandboxService's
 	// StreamSandboxEvents RPC.
 	SandboxServiceStreamSandboxEventsProcedure = "/cleanroom.v1.SandboxService/StreamSandboxEvents"
+	// SnapshotServiceCreateSnapshotProcedure is the fully-qualified name of the SnapshotService's
+	// CreateSnapshot RPC.
+	SnapshotServiceCreateSnapshotProcedure = "/cleanroom.v1.SnapshotService/CreateSnapshot"
+	// SnapshotServiceGetSnapshotProcedure is the fully-qualified name of the SnapshotService's
+	// GetSnapshot RPC.
+	SnapshotServiceGetSnapshotProcedure = "/cleanroom.v1.SnapshotService/GetSnapshot"
+	// SnapshotServiceListSnapshotsProcedure is the fully-qualified name of the SnapshotService's
+	// ListSnapshots RPC.
+	SnapshotServiceListSnapshotsProcedure = "/cleanroom.v1.SnapshotService/ListSnapshots"
+	// SnapshotServiceDeleteSnapshotProcedure is the fully-qualified name of the SnapshotService's
+	// DeleteSnapshot RPC.
+	SnapshotServiceDeleteSnapshotProcedure = "/cleanroom.v1.SnapshotService/DeleteSnapshot"
 	// ExecutionServiceCreateExecutionProcedure is the fully-qualified name of the ExecutionService's
 	// CreateExecution RPC.
 	ExecutionServiceCreateExecutionProcedure = "/cleanroom.v1.ExecutionService/CreateExecution"
@@ -268,6 +282,154 @@ func (UnimplementedSandboxServiceHandler) TerminateSandbox(context.Context, *con
 
 func (UnimplementedSandboxServiceHandler) StreamSandboxEvents(context.Context, *connect.Request[v1.StreamSandboxEventsRequest], *connect.ServerStream[v1.SandboxEvent]) error {
 	return connect.NewError(connect.CodeUnimplemented, errors.New("cleanroom.v1.SandboxService.StreamSandboxEvents is not implemented"))
+}
+
+// SnapshotServiceClient is a client for the cleanroom.v1.SnapshotService service.
+type SnapshotServiceClient interface {
+	CreateSnapshot(context.Context, *connect.Request[v1.CreateSnapshotRequest]) (*connect.Response[v1.CreateSnapshotResponse], error)
+	GetSnapshot(context.Context, *connect.Request[v1.GetSnapshotRequest]) (*connect.Response[v1.GetSnapshotResponse], error)
+	ListSnapshots(context.Context, *connect.Request[v1.ListSnapshotsRequest]) (*connect.Response[v1.ListSnapshotsResponse], error)
+	DeleteSnapshot(context.Context, *connect.Request[v1.DeleteSnapshotRequest]) (*connect.Response[v1.DeleteSnapshotResponse], error)
+}
+
+// NewSnapshotServiceClient constructs a client for the cleanroom.v1.SnapshotService service. By
+// default, it uses the Connect protocol with the binary Protobuf Codec, asks for gzipped responses,
+// and sends uncompressed requests. To use the gRPC or gRPC-Web protocols, supply the
+// connect.WithGRPC() or connect.WithGRPCWeb() options.
+//
+// The URL supplied here should be the base URL for the Connect or gRPC server (for example,
+// http://api.acme.com or https://acme.com/grpc).
+func NewSnapshotServiceClient(httpClient connect.HTTPClient, baseURL string, opts ...connect.ClientOption) SnapshotServiceClient {
+	baseURL = strings.TrimRight(baseURL, "/")
+	snapshotServiceMethods := v1.File_proto_cleanroom_v1_control_proto.Services().ByName("SnapshotService").Methods()
+	return &snapshotServiceClient{
+		createSnapshot: connect.NewClient[v1.CreateSnapshotRequest, v1.CreateSnapshotResponse](
+			httpClient,
+			baseURL+SnapshotServiceCreateSnapshotProcedure,
+			connect.WithSchema(snapshotServiceMethods.ByName("CreateSnapshot")),
+			connect.WithClientOptions(opts...),
+		),
+		getSnapshot: connect.NewClient[v1.GetSnapshotRequest, v1.GetSnapshotResponse](
+			httpClient,
+			baseURL+SnapshotServiceGetSnapshotProcedure,
+			connect.WithSchema(snapshotServiceMethods.ByName("GetSnapshot")),
+			connect.WithClientOptions(opts...),
+		),
+		listSnapshots: connect.NewClient[v1.ListSnapshotsRequest, v1.ListSnapshotsResponse](
+			httpClient,
+			baseURL+SnapshotServiceListSnapshotsProcedure,
+			connect.WithSchema(snapshotServiceMethods.ByName("ListSnapshots")),
+			connect.WithClientOptions(opts...),
+		),
+		deleteSnapshot: connect.NewClient[v1.DeleteSnapshotRequest, v1.DeleteSnapshotResponse](
+			httpClient,
+			baseURL+SnapshotServiceDeleteSnapshotProcedure,
+			connect.WithSchema(snapshotServiceMethods.ByName("DeleteSnapshot")),
+			connect.WithClientOptions(opts...),
+		),
+	}
+}
+
+// snapshotServiceClient implements SnapshotServiceClient.
+type snapshotServiceClient struct {
+	createSnapshot *connect.Client[v1.CreateSnapshotRequest, v1.CreateSnapshotResponse]
+	getSnapshot    *connect.Client[v1.GetSnapshotRequest, v1.GetSnapshotResponse]
+	listSnapshots  *connect.Client[v1.ListSnapshotsRequest, v1.ListSnapshotsResponse]
+	deleteSnapshot *connect.Client[v1.DeleteSnapshotRequest, v1.DeleteSnapshotResponse]
+}
+
+// CreateSnapshot calls cleanroom.v1.SnapshotService.CreateSnapshot.
+func (c *snapshotServiceClient) CreateSnapshot(ctx context.Context, req *connect.Request[v1.CreateSnapshotRequest]) (*connect.Response[v1.CreateSnapshotResponse], error) {
+	return c.createSnapshot.CallUnary(ctx, req)
+}
+
+// GetSnapshot calls cleanroom.v1.SnapshotService.GetSnapshot.
+func (c *snapshotServiceClient) GetSnapshot(ctx context.Context, req *connect.Request[v1.GetSnapshotRequest]) (*connect.Response[v1.GetSnapshotResponse], error) {
+	return c.getSnapshot.CallUnary(ctx, req)
+}
+
+// ListSnapshots calls cleanroom.v1.SnapshotService.ListSnapshots.
+func (c *snapshotServiceClient) ListSnapshots(ctx context.Context, req *connect.Request[v1.ListSnapshotsRequest]) (*connect.Response[v1.ListSnapshotsResponse], error) {
+	return c.listSnapshots.CallUnary(ctx, req)
+}
+
+// DeleteSnapshot calls cleanroom.v1.SnapshotService.DeleteSnapshot.
+func (c *snapshotServiceClient) DeleteSnapshot(ctx context.Context, req *connect.Request[v1.DeleteSnapshotRequest]) (*connect.Response[v1.DeleteSnapshotResponse], error) {
+	return c.deleteSnapshot.CallUnary(ctx, req)
+}
+
+// SnapshotServiceHandler is an implementation of the cleanroom.v1.SnapshotService service.
+type SnapshotServiceHandler interface {
+	CreateSnapshot(context.Context, *connect.Request[v1.CreateSnapshotRequest]) (*connect.Response[v1.CreateSnapshotResponse], error)
+	GetSnapshot(context.Context, *connect.Request[v1.GetSnapshotRequest]) (*connect.Response[v1.GetSnapshotResponse], error)
+	ListSnapshots(context.Context, *connect.Request[v1.ListSnapshotsRequest]) (*connect.Response[v1.ListSnapshotsResponse], error)
+	DeleteSnapshot(context.Context, *connect.Request[v1.DeleteSnapshotRequest]) (*connect.Response[v1.DeleteSnapshotResponse], error)
+}
+
+// NewSnapshotServiceHandler builds an HTTP handler from the service implementation. It returns the
+// path on which to mount the handler and the handler itself.
+//
+// By default, handlers support the Connect, gRPC, and gRPC-Web protocols with the binary Protobuf
+// and JSON codecs. They also support gzip compression.
+func NewSnapshotServiceHandler(svc SnapshotServiceHandler, opts ...connect.HandlerOption) (string, http.Handler) {
+	snapshotServiceMethods := v1.File_proto_cleanroom_v1_control_proto.Services().ByName("SnapshotService").Methods()
+	snapshotServiceCreateSnapshotHandler := connect.NewUnaryHandler(
+		SnapshotServiceCreateSnapshotProcedure,
+		svc.CreateSnapshot,
+		connect.WithSchema(snapshotServiceMethods.ByName("CreateSnapshot")),
+		connect.WithHandlerOptions(opts...),
+	)
+	snapshotServiceGetSnapshotHandler := connect.NewUnaryHandler(
+		SnapshotServiceGetSnapshotProcedure,
+		svc.GetSnapshot,
+		connect.WithSchema(snapshotServiceMethods.ByName("GetSnapshot")),
+		connect.WithHandlerOptions(opts...),
+	)
+	snapshotServiceListSnapshotsHandler := connect.NewUnaryHandler(
+		SnapshotServiceListSnapshotsProcedure,
+		svc.ListSnapshots,
+		connect.WithSchema(snapshotServiceMethods.ByName("ListSnapshots")),
+		connect.WithHandlerOptions(opts...),
+	)
+	snapshotServiceDeleteSnapshotHandler := connect.NewUnaryHandler(
+		SnapshotServiceDeleteSnapshotProcedure,
+		svc.DeleteSnapshot,
+		connect.WithSchema(snapshotServiceMethods.ByName("DeleteSnapshot")),
+		connect.WithHandlerOptions(opts...),
+	)
+	return "/cleanroom.v1.SnapshotService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case SnapshotServiceCreateSnapshotProcedure:
+			snapshotServiceCreateSnapshotHandler.ServeHTTP(w, r)
+		case SnapshotServiceGetSnapshotProcedure:
+			snapshotServiceGetSnapshotHandler.ServeHTTP(w, r)
+		case SnapshotServiceListSnapshotsProcedure:
+			snapshotServiceListSnapshotsHandler.ServeHTTP(w, r)
+		case SnapshotServiceDeleteSnapshotProcedure:
+			snapshotServiceDeleteSnapshotHandler.ServeHTTP(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+}
+
+// UnimplementedSnapshotServiceHandler returns CodeUnimplemented from all methods.
+type UnimplementedSnapshotServiceHandler struct{}
+
+func (UnimplementedSnapshotServiceHandler) CreateSnapshot(context.Context, *connect.Request[v1.CreateSnapshotRequest]) (*connect.Response[v1.CreateSnapshotResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cleanroom.v1.SnapshotService.CreateSnapshot is not implemented"))
+}
+
+func (UnimplementedSnapshotServiceHandler) GetSnapshot(context.Context, *connect.Request[v1.GetSnapshotRequest]) (*connect.Response[v1.GetSnapshotResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cleanroom.v1.SnapshotService.GetSnapshot is not implemented"))
+}
+
+func (UnimplementedSnapshotServiceHandler) ListSnapshots(context.Context, *connect.Request[v1.ListSnapshotsRequest]) (*connect.Response[v1.ListSnapshotsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cleanroom.v1.SnapshotService.ListSnapshots is not implemented"))
+}
+
+func (UnimplementedSnapshotServiceHandler) DeleteSnapshot(context.Context, *connect.Request[v1.DeleteSnapshotRequest]) (*connect.Response[v1.DeleteSnapshotResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cleanroom.v1.SnapshotService.DeleteSnapshot is not implemented"))
 }
 
 // ExecutionServiceClient is a client for the cleanroom.v1.ExecutionService service.

@@ -29,6 +29,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/imagemgr"
 	"github.com/buildkite/cleanroom/internal/paths"
 	"github.com/buildkite/cleanroom/internal/policy"
+	"github.com/buildkite/cleanroom/internal/volumestore"
 	"github.com/buildkite/cleanroom/internal/vsockexec"
 	"github.com/charmbracelet/log"
 )
@@ -55,6 +56,7 @@ type Adapter struct {
 	provisioning       map[string]struct{}
 	launchSandboxVMFn  func(context.Context, string, *policy.CompiledPolicy, backend.FirecrackerConfig) (*sandboxInstance, error)
 	executeInSandboxFn func(context.Context, context.Context, *sandboxInstance, backend.RunRequest, backend.OutputStream) (*backend.RunResult, error)
+	helperRequestFn    func(context.Context, *helperSession, helperControlRequest) (helperControlResponse, error)
 
 	ensurePreparedRootFSFn func(context.Context, string) (preparedRootFS, error)
 
@@ -267,47 +269,7 @@ func (a *Adapter) ProvisionSandbox(ctx context.Context, req backend.ProvisionReq
 	if req.Policy == nil {
 		return errors.New("missing compiled policy")
 	}
-
-	a.sandboxMu.Lock()
-	if a.sandboxes == nil {
-		a.sandboxes = map[string]*sandboxInstance{}
-	}
-	if a.provisioning == nil {
-		a.provisioning = map[string]struct{}{}
-	}
-	if _, exists := a.sandboxes[sandboxID]; exists {
-		a.sandboxMu.Unlock()
-		return fmt.Errorf("sandbox %q already provisioned", sandboxID)
-	}
-	if _, exists := a.provisioning[sandboxID]; exists {
-		a.sandboxMu.Unlock()
-		return fmt.Errorf("sandbox %q is already provisioning", sandboxID)
-	}
-	a.provisioning[sandboxID] = struct{}{}
-	a.sandboxMu.Unlock()
-
-	launch := a.launchSandboxVMFn
-	if launch == nil {
-		launch = a.launchSandboxVM
-	}
-
-	instance, err := launch(ctx, sandboxID, req.Policy, req.FirecrackerConfig)
-	if err != nil {
-		a.sandboxMu.Lock()
-		delete(a.provisioning, sandboxID)
-		a.sandboxMu.Unlock()
-		return err
-	}
-
-	a.sandboxMu.Lock()
-	defer a.sandboxMu.Unlock()
-	delete(a.provisioning, sandboxID)
-	if _, exists := a.sandboxes[sandboxID]; exists {
-		instance.shutdown()
-		return fmt.Errorf("sandbox %q already provisioned", sandboxID)
-	}
-	a.sandboxes[sandboxID] = instance
-	return nil
+	return a.provisionSandbox(ctx, sandboxID, req.Policy, req.FirecrackerConfig)
 }
 
 func (a *Adapter) RunInSandbox(ctx context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
@@ -389,6 +351,129 @@ func (a *Adapter) TerminateSandbox(_ context.Context, sandboxID string) error {
 	}
 
 	instance.shutdown()
+	return nil
+}
+
+func (a *Adapter) CreateSnapshot(ctx context.Context, req backend.SnapshotRequest) (result *backend.SnapshotResult, retErr error) {
+	sandboxID := strings.TrimSpace(req.SandboxID)
+	if sandboxID == "" {
+		return nil, errors.New("missing sandbox_id")
+	}
+	snapshotID := strings.TrimSpace(req.SnapshotID)
+	if snapshotID == "" {
+		return nil, errors.New("missing snapshot_id")
+	}
+
+	a.sandboxMu.Lock()
+	instance, ok := a.sandboxes[sandboxID]
+	a.sandboxMu.Unlock()
+	if !ok {
+		return nil, fmt.Errorf("unknown sandbox %q", sandboxID)
+	}
+	if err := instance.exitedErrOrNil(); err != nil {
+		return nil, fmt.Errorf("sandbox %q is not running: %w", sandboxID, err)
+	}
+
+	executeInSandbox := a.executeInSandboxFn
+	if executeInSandbox == nil {
+		executeInSandbox = a.executeInSandbox
+	}
+
+	connectSeconds := req.FirecrackerConfig.LaunchSeconds
+	if connectSeconds <= 0 {
+		connectSeconds = instance.CommandTimeout
+	}
+	if connectSeconds <= 0 {
+		connectSeconds = 30
+	}
+	syncCtx, cancel := context.WithTimeout(ctx, time.Duration(connectSeconds)*time.Second)
+	defer cancel()
+	if _, err := executeInSandbox(syncCtx, ctx, instance, backend.RunRequest{
+		SandboxID: sandboxID,
+		Command:   []string{"sync"},
+		Policy:    instance.Policy,
+	}, backend.OutputStream{}); err != nil {
+		return nil, fmt.Errorf("sync sandbox filesystem before snapshot: %w", err)
+	}
+
+	driver, err := snapshotVolumeDriver(req.FirecrackerConfig)
+	if err != nil {
+		return nil, err
+	}
+	helperRequest := a.helperRequestFn
+	if helperRequest == nil {
+		helperRequest = func(ctx context.Context, helper *helperSession, req helperControlRequest) (helperControlResponse, error) {
+			return helper.request(ctx, req)
+		}
+	}
+	if instance.Helper == nil {
+		return nil, errors.New("darwin-vz sandbox helper is not available")
+	}
+	if strings.TrimSpace(instance.VMID) == "" {
+		return nil, errors.New("darwin-vz sandbox vm id is empty")
+	}
+	if _, err := helperRequest(ctx, instance.Helper, helperControlRequest{Op: "PauseVM", VMID: instance.VMID}); err != nil {
+		return nil, fmt.Errorf("pause darwin-vz sandbox: %w", err)
+	}
+	paused := true
+	defer func() {
+		if !paused {
+			return
+		}
+		resumeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if _, err := helperRequest(resumeCtx, instance.Helper, helperControlRequest{Op: "ResumeVM", VMID: instance.VMID}); err != nil && retErr == nil {
+			result = nil
+			retErr = fmt.Errorf("resume darwin-vz sandbox after snapshot: %w", err)
+		}
+	}()
+
+	snapshot, err := driver.SnapshotVolume(ctx, volumestore.SnapshotVolumeRequest{
+		SnapshotID: snapshotID,
+		VolumeRef:  instance.vmRootFSPath,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("persist snapshot rootfs: %w", err)
+	}
+
+	return &backend.SnapshotResult{StorageRef: snapshot.StorageRef}, nil
+}
+
+func (a *Adapter) ProvisionSandboxFromSnapshot(ctx context.Context, req backend.ProvisionFromSnapshotRequest) error {
+	sandboxID := strings.TrimSpace(req.SandboxID)
+	if sandboxID == "" {
+		return errors.New("missing sandbox_id")
+	}
+	if req.Policy == nil {
+		return errors.New("missing compiled policy")
+	}
+	storageRef := strings.TrimSpace(req.StorageRef)
+	if storageRef == "" {
+		return errors.New("missing snapshot storage_ref")
+	}
+	if _, err := os.Stat(storageRef); err != nil {
+		return fmt.Errorf("snapshot rootfs %q: %w", storageRef, err)
+	}
+
+	cfg := req.FirecrackerConfig
+	cfg.RootFSPath = storageRef
+	return a.provisionSandbox(ctx, sandboxID, req.Policy, cfg)
+}
+
+func (a *Adapter) DeleteSnapshot(ctx context.Context, req backend.DeleteSnapshotRequest) error {
+	storageRef := strings.TrimSpace(req.StorageRef)
+	if storageRef == "" {
+		return errors.New("missing snapshot storage_ref")
+	}
+	driver, err := snapshotVolumeDriver(req.FirecrackerConfig)
+	if err != nil {
+		return err
+	}
+	if err := driver.DestroySnapshot(ctx, volumestore.DestroySnapshotRequest{
+		SnapshotRef: storageRef,
+	}); err != nil {
+		return fmt.Errorf("remove snapshot rootfs %q: %w", storageRef, err)
+	}
 	return nil
 }
 
@@ -1000,6 +1085,52 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 	return instance, nil
 }
 
+func (a *Adapter) provisionSandbox(ctx context.Context, sandboxID string, compiled *policy.CompiledPolicy, cfg backend.FirecrackerConfig) error {
+	a.sandboxMu.Lock()
+	if a.sandboxes == nil {
+		a.sandboxes = map[string]*sandboxInstance{}
+	}
+	if a.provisioning == nil {
+		a.provisioning = map[string]struct{}{}
+	}
+	if _, exists := a.sandboxes[sandboxID]; exists {
+		a.sandboxMu.Unlock()
+		return fmt.Errorf("sandbox %q already provisioned", sandboxID)
+	}
+	if _, exists := a.provisioning[sandboxID]; exists {
+		a.sandboxMu.Unlock()
+		return fmt.Errorf("sandbox %q is already provisioning", sandboxID)
+	}
+	a.provisioning[sandboxID] = struct{}{}
+	a.sandboxMu.Unlock()
+
+	instance, err := a.launchSandbox(ctx, sandboxID, compiled, cfg)
+	if err != nil {
+		a.sandboxMu.Lock()
+		delete(a.provisioning, sandboxID)
+		a.sandboxMu.Unlock()
+		return err
+	}
+
+	a.sandboxMu.Lock()
+	defer a.sandboxMu.Unlock()
+	delete(a.provisioning, sandboxID)
+	if _, exists := a.sandboxes[sandboxID]; exists {
+		instance.shutdown()
+		return fmt.Errorf("sandbox %q already provisioned", sandboxID)
+	}
+	a.sandboxes[sandboxID] = instance
+	return nil
+}
+
+func (a *Adapter) launchSandbox(ctx context.Context, sandboxID string, compiled *policy.CompiledPolicy, cfg backend.FirecrackerConfig) (*sandboxInstance, error) {
+	launch := a.launchSandboxVMFn
+	if launch == nil {
+		launch = a.launchSandboxVM
+	}
+	return launch(ctx, sandboxID, compiled, cfg)
+}
+
 func (a *Adapter) executeInSandbox(bootCtx context.Context, runCtx context.Context, instance *sandboxInstance, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
 	if instance == nil {
 		return nil, errors.New("nil sandbox instance")
@@ -1144,6 +1275,37 @@ func sandboxRuntimeBaseDir() (string, error) {
 		return "", err
 	}
 	return filepath.Join(base, "sandboxes"), nil
+}
+
+func snapshotStorageBaseDir(cfg backend.FirecrackerConfig) (string, error) {
+	if baseDir := strings.TrimSpace(cfg.Snapshots.BaseDir); baseDir != "" {
+		return filepath.Clean(baseDir), nil
+	}
+	return paths.SnapshotDir()
+}
+
+func snapshotVolumeDriver(cfg backend.FirecrackerConfig) (volumestore.Driver, error) {
+	if !cfg.Snapshots.Enabled {
+		return nil, errors.New("darwin-vz snapshots are not enabled")
+	}
+	driverName := strings.ToLower(strings.TrimSpace(cfg.Snapshots.Driver))
+	switch driverName {
+	case "", "file":
+		snapshotBaseDir, err := snapshotStorageBaseDir(cfg)
+		if err != nil {
+			return nil, fmt.Errorf("resolve snapshot base directory: %w", err)
+		}
+		driver, err := volumestore.NewFileDriver(volumestore.FileDriverOptions{
+			SnapshotBaseDir: snapshotBaseDir,
+			Namespace:       "darwin-vz",
+		})
+		if err != nil {
+			return nil, err
+		}
+		return driver, nil
+	default:
+		return nil, fmt.Errorf("unsupported darwin-vz snapshot driver %q", cfg.Snapshots.Driver)
+	}
 }
 
 func probeGuestExecReady(ctx context.Context, helper *helperSession, socketPath string) error {

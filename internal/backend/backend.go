@@ -10,6 +10,7 @@ import (
 
 const (
 	CapabilityExecStreaming          = "exec.streaming"
+	CapabilitySandboxSnapshot        = "sandbox.snapshot"
 	CapabilitySandboxPersistent      = "sandbox.persistent"
 	CapabilitySandboxFileDownload    = "sandbox.file_download"
 	CapabilityNetworkDefaultDeny     = "network.default_deny"
@@ -19,6 +20,7 @@ const (
 
 var knownCapabilityKeys = []string{
 	CapabilityExecStreaming,
+	CapabilitySandboxSnapshot,
 	CapabilitySandboxPersistent,
 	CapabilitySandboxFileDownload,
 	CapabilityNetworkDefaultDeny,
@@ -42,6 +44,7 @@ type CapabilityReporter interface {
 // Baseline capabilities are inferred from backend interfaces:
 // - StreamingAdapter => exec.streaming
 // - PersistentSandboxAdapter => sandbox.persistent
+// - SnapshottingAdapter => sandbox.snapshot
 // - SandboxFileDownloadAdapter => sandbox.file_download
 //
 // Additional backend-specific capabilities can be provided by implementing
@@ -60,6 +63,9 @@ func CapabilitiesForAdapter(adapter Adapter) map[string]bool {
 	}
 	if _, ok := adapter.(PersistentSandboxAdapter); ok {
 		caps[CapabilitySandboxPersistent] = true
+	}
+	if _, ok := adapter.(SnapshottingAdapter); ok {
+		caps[CapabilitySandboxSnapshot] = true
 	}
 	if _, ok := adapter.(SandboxFileDownloadAdapter); ok {
 		caps[CapabilitySandboxFileDownload] = true
@@ -100,6 +106,15 @@ type PersistentSandboxAdapter interface {
 	TerminateSandbox(ctx context.Context, sandboxID string) error
 }
 
+// SnapshottingAdapter supports immutable filesystem snapshots of persistent
+// sandboxes and creating new sandboxes from snapshots.
+type SnapshottingAdapter interface {
+	PersistentSandboxAdapter
+	CreateSnapshot(ctx context.Context, req SnapshotRequest) (*SnapshotResult, error)
+	ProvisionSandboxFromSnapshot(ctx context.Context, req ProvisionFromSnapshotRequest) error
+	DeleteSnapshot(ctx context.Context, req DeleteSnapshotRequest) error
+}
+
 // SandboxFileDownloadAdapter can copy files out of a persistent sandbox.
 type SandboxFileDownloadAdapter interface {
 	DownloadSandboxFile(ctx context.Context, sandboxID, path string, maxBytes int64) ([]byte, error)
@@ -108,6 +123,30 @@ type SandboxFileDownloadAdapter interface {
 type ProvisionRequest struct {
 	SandboxID string
 	Policy    *policy.CompiledPolicy
+	FirecrackerConfig
+}
+
+type SnapshotRequest struct {
+	SandboxID  string
+	SnapshotID string
+	FirecrackerConfig
+}
+
+type SnapshotResult struct {
+	StorageRef string
+}
+
+type ProvisionFromSnapshotRequest struct {
+	SandboxID  string
+	SnapshotID string
+	StorageRef string
+	Policy     *policy.CompiledPolicy
+	FirecrackerConfig
+}
+
+type DeleteSnapshotRequest struct {
+	SnapshotID string
+	StorageRef string
 	FirecrackerConfig
 }
 
@@ -145,6 +184,7 @@ type FirecrackerConfig struct {
 	DockerStartupSeconds int64
 	DockerStorageDriver  string
 	DockerIPTables       bool
+	Snapshots            SnapshotConfig
 	PrivilegedMode       string
 	PrivilegedHelperPath string
 	RunDir               string
@@ -154,6 +194,13 @@ type FirecrackerConfig struct {
 	GuestPort            uint32
 	Launch               bool
 	LaunchSeconds        int64
+}
+
+type SnapshotConfig struct {
+	Enabled               bool
+	Driver                string
+	BaseDir               string
+	QuiesceTimeoutSeconds int64
 }
 
 type RunResult struct {

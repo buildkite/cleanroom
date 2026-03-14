@@ -72,7 +72,7 @@ func TestSandboxCreateIntegrationOverridesImageRefForNewSandbox(t *testing.T) {
 	execOutcome := runExecWithCapture(ExecCommand{
 		clientFlags: clientFlags{Host: host},
 		Chdir:       cwd,
-		SandboxID:   sandboxID,
+		In:          sandboxID,
 		Command:     []string{"echo", "ok"},
 	}, runtimeContext{
 		CWD:    cwd,
@@ -192,7 +192,7 @@ func TestExecIntegrationRejectsImageOverrideWhenSandboxProvided(t *testing.T) {
 
 	outcome := runExecWithCapture(ExecCommand{
 		clientFlags: clientFlags{Host: host},
-		SandboxID:   sandboxID,
+		In:          sandboxID,
 		Image:       testImageOverrideRef,
 		Command:     []string{"echo", "ok"},
 	}, runtimeContext{
@@ -203,9 +203,9 @@ func TestExecIntegrationRejectsImageOverrideWhenSandboxProvided(t *testing.T) {
 		t.Fatalf("capture failure: %v", outcome.cause)
 	}
 	if outcome.err == nil {
-		t.Fatal("expected ExecCommand.Run to fail when both --sandbox-id and --image are set")
+		t.Fatal("expected ExecCommand.Run to fail when both --in and --image are set")
 	}
-	if got, want := outcome.err.Error(), "--image cannot be used with --sandbox-id"; !strings.Contains(got, want) {
+	if got, want := outcome.err.Error(), "--image cannot be used with --in"; !strings.Contains(got, want) {
 		t.Fatalf("expected error to contain %q, got %q", want, got)
 	}
 }
@@ -221,7 +221,7 @@ func TestConsoleIntegrationRejectsImageOverrideWhenSandboxProvided(t *testing.T)
 
 	outcome := runConsoleWithCapture(ConsoleCommand{
 		clientFlags: clientFlags{Host: host},
-		SandboxID:   sandboxID,
+		In:          sandboxID,
 		Image:       testImageOverrideRef,
 		Command:     []string{"sh"},
 	}, "", runtimeContext{
@@ -232,9 +232,9 @@ func TestConsoleIntegrationRejectsImageOverrideWhenSandboxProvided(t *testing.T)
 		t.Fatalf("capture failure: %v", outcome.cause)
 	}
 	if outcome.err == nil {
-		t.Fatal("expected ConsoleCommand.Run to fail when both --sandbox-id and --image are set")
+		t.Fatal("expected ConsoleCommand.Run to fail when both --in and --image are set")
 	}
-	if got, want := outcome.err.Error(), "--image cannot be used with --sandbox-id"; !strings.Contains(got, want) {
+	if got, want := outcome.err.Error(), "--image cannot be used with --in"; !strings.Contains(got, want) {
 		t.Fatalf("expected error to contain %q, got %q", want, got)
 	}
 }

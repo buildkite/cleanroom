@@ -390,7 +390,7 @@ func TestExecCommandRunsInsideRepositoryPathWhenReusingSandboxID(t *testing.T) {
 	outcome := runExecWithCapture(ExecCommand{
 		clientFlags: clientFlags{Host: host},
 		Chdir:       repoDir,
-		SandboxID:   sandboxID,
+		In:          sandboxID,
 		Command:     []string{"echo", "ok"},
 	}, runtimeContext{
 		CWD:    repoDir,
@@ -414,7 +414,7 @@ func TestExecCommandRunsInsideRepositoryPathWhenReusingSandboxID(t *testing.T) {
 	}
 }
 
-func TestExecCommandBootstrapsRepositoryForGenericPersistentSandboxReuse(t *testing.T) {
+func TestExecCommandSkipsRepositoryBootstrapForExistingSandboxID(t *testing.T) {
 	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
 
 	adapter := &persistentIntegrationAdapter{}
@@ -468,7 +468,7 @@ func TestExecCommandBootstrapsRepositoryForGenericPersistentSandboxReuse(t *test
 	outcome := runExecWithCapture(ExecCommand{
 		clientFlags: clientFlags{Host: host},
 		Chdir:       repoDir,
-		SandboxID:   sandboxID,
+		In:          sandboxID,
 		Command:     []string{"echo", "ok"},
 	}, runtimeContext{
 		CWD:    repoDir,
@@ -483,19 +483,15 @@ func TestExecCommandBootstrapsRepositoryForGenericPersistentSandboxReuse(t *test
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(commands) != 2 {
-		t.Fatalf("expected bootstrap + user execution, got %d execution(s)", len(commands))
+	if len(commands) != 1 {
+		t.Fatalf("expected existing sandbox execution only, got %d execution(s)", len(commands))
 	}
-	bootstrap := strings.Join(commands[0], " ")
-	if !strings.Contains(bootstrap, "git clone --filter=blob:none --no-checkout") {
-		t.Fatalf("expected sandbox reuse to bootstrap repository before execution, got %q", bootstrap)
-	}
-	joined := strings.Join(commands[1], " ")
+	joined := strings.Join(commands[0], " ")
 	if strings.Contains(joined, "git clone --filter=blob:none --no-checkout") {
-		t.Fatalf("expected user execution to run after bootstrap, got %q", joined)
+		t.Fatalf("expected existing sandbox execution to avoid repository bootstrap, got %q", joined)
 	}
-	if !strings.Contains(joined, "cd '/workspace' && exec 'echo' 'ok'") {
-		t.Fatalf("expected user command to run inside /workspace, got %q", joined)
+	if strings.Contains(joined, "cd '/workspace' && exec 'echo' 'ok'") {
+		t.Fatalf("expected existing sandbox execution to avoid implicit repository workdir reuse from host cwd, got %q", joined)
 	}
 }
 
@@ -579,7 +575,7 @@ func TestExecCommandWithSandboxIDAllowsMissingPolicyInCurrentDirectory(t *testin
 
 	outcome := runExecWithCapture(ExecCommand{
 		clientFlags: clientFlags{Host: host},
-		SandboxID:   sandboxID,
+		In:          sandboxID,
 		Chdir:       t.TempDir(),
 		Command:     []string{"echo", "ok"},
 	}, runtimeContext{
@@ -751,7 +747,7 @@ func TestExecCommandInlinesRepositoryBootstrapForNonPersistentBackend(t *testing
 	}
 }
 
-func TestExecCommandInlinesRepositoryBootstrapForReusedSandboxOnNonPersistentBackend(t *testing.T) {
+func TestExecCommandSkipsRepositoryBootstrapForExistingSandboxOnNonPersistentBackend(t *testing.T) {
 	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
 	adapter := &integrationAdapter{}
 	host, _ := startUnixIntegrationServer(t, adapter)
@@ -789,7 +785,7 @@ func TestExecCommandInlinesRepositoryBootstrapForReusedSandboxOnNonPersistentBac
 	outcome := runExecWithCapture(ExecCommand{
 		clientFlags: clientFlags{Host: host},
 		Chdir:       repoDir,
-		SandboxID:   sandboxID,
+		In:          sandboxID,
 		Command:     []string{"echo", "ok"},
 	}, runtimeContext{
 		CWD: repoDir,
@@ -824,14 +820,14 @@ func TestExecCommandInlinesRepositoryBootstrapForReusedSandboxOnNonPersistentBac
 	mu.Lock()
 	defer mu.Unlock()
 	if len(commands) != 1 {
-		t.Fatalf("expected a single inlined execution, got %d execution(s)", len(commands))
+		t.Fatalf("expected a single execution, got %d execution(s)", len(commands))
 	}
 	joined := strings.Join(commands[0], " ")
-	if !strings.Contains(joined, "clone --filter=blob:none --no-checkout") {
-		t.Fatalf("expected reused sandbox execution to inline repository clone, got %q", joined)
+	if strings.Contains(joined, "clone --filter=blob:none --no-checkout") {
+		t.Fatalf("expected reused sandbox execution to avoid repository bootstrap, got %q", joined)
 	}
-	if !strings.Contains(joined, "cd '/workspace' && exec 'echo' 'ok'") {
-		t.Fatalf("expected reused sandbox execution to run inside /workspace, got %q", joined)
+	if strings.Contains(joined, "cd '/workspace' && exec 'echo' 'ok'") {
+		t.Fatalf("expected reused sandbox execution to avoid implicit repository workdir reuse from host cwd, got %q", joined)
 	}
 }
 

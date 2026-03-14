@@ -17,6 +17,7 @@ const (
 
 type PolicyAllowRule = cleanroomv1.PolicyAllowRule
 type Policy = cleanroomv1.Policy
+type Snapshot = cleanroomv1.Snapshot
 type SandboxOptions = cleanroomv1.SandboxOptions
 type CreateSandboxRequest = cleanroomv1.CreateSandboxRequest
 type CreateSandboxResponse = cleanroomv1.CreateSandboxResponse
@@ -30,6 +31,14 @@ type TerminateSandboxRequest = cleanroomv1.TerminateSandboxRequest
 type TerminateSandboxResponse = cleanroomv1.TerminateSandboxResponse
 type StreamSandboxEventsRequest = cleanroomv1.StreamSandboxEventsRequest
 type SandboxEvent = cleanroomv1.SandboxEvent
+type CreateSnapshotRequest = cleanroomv1.CreateSnapshotRequest
+type CreateSnapshotResponse = cleanroomv1.CreateSnapshotResponse
+type GetSnapshotRequest = cleanroomv1.GetSnapshotRequest
+type GetSnapshotResponse = cleanroomv1.GetSnapshotResponse
+type ListSnapshotsRequest = cleanroomv1.ListSnapshotsRequest
+type ListSnapshotsResponse = cleanroomv1.ListSnapshotsResponse
+type DeleteSnapshotRequest = cleanroomv1.DeleteSnapshotRequest
+type DeleteSnapshotResponse = cleanroomv1.DeleteSnapshotResponse
 
 type Execution = cleanroomv1.Execution
 

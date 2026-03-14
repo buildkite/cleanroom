@@ -25,13 +25,23 @@ import (
 	"github.com/buildkite/cleanroom/internal/interactivequic"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
+	"github.com/buildkite/cleanroom/internal/snapshotstore"
 )
 
 type integrationAdapter struct {
 	mu sync.Mutex
 
-	runFn       func(context.Context, backend.RunRequest) (*backend.RunResult, error)
-	runStreamFn func(context.Context, backend.RunRequest, backend.OutputStream) (*backend.RunResult, error)
+	runFn                    func(context.Context, backend.RunRequest) (*backend.RunResult, error)
+	runStreamFn              func(context.Context, backend.RunRequest, backend.OutputStream) (*backend.RunResult, error)
+	provisionFn              func(context.Context, backend.ProvisionRequest) error
+	provisionFromSnapshotFn  func(context.Context, backend.ProvisionFromSnapshotRequest) error
+	createSnapshotFn         func(context.Context, backend.SnapshotRequest) (*backend.SnapshotResult, error)
+	deleteSnapshotFn         func(context.Context, backend.DeleteSnapshotRequest) error
+	terminateFn              func(context.Context, string) error
+	provisionReq             backend.ProvisionRequest
+	provisionFromSnapshotReq backend.ProvisionFromSnapshotRequest
+	createSnapshotReq        backend.SnapshotRequest
+	deleteSnapshotReq        backend.DeleteSnapshotRequest
 }
 
 func (a *integrationAdapter) Name() string { return "firecracker" }
@@ -64,6 +74,68 @@ func (a *integrationAdapter) RunStream(ctx context.Context, req backend.RunReque
 		stream.OnStderr([]byte(result.Stderr))
 	}
 	return result, nil
+}
+
+type snapshotIntegrationAdapter struct {
+	integrationAdapter
+}
+
+func (a *snapshotIntegrationAdapter) ProvisionSandbox(ctx context.Context, req backend.ProvisionRequest) error {
+	a.mu.Lock()
+	a.provisionReq = req
+	fn := a.provisionFn
+	a.mu.Unlock()
+	if fn != nil {
+		return fn(ctx, req)
+	}
+	return nil
+}
+
+func (a *snapshotIntegrationAdapter) RunInSandbox(ctx context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+	return a.RunStream(ctx, req, stream)
+}
+
+func (a *snapshotIntegrationAdapter) CreateSnapshot(ctx context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
+	a.mu.Lock()
+	a.createSnapshotReq = req
+	fn := a.createSnapshotFn
+	a.mu.Unlock()
+	if fn != nil {
+		return fn(ctx, req)
+	}
+	return &backend.SnapshotResult{StorageRef: "/snapshots/" + req.SnapshotID + ".ext4"}, nil
+}
+
+func (a *snapshotIntegrationAdapter) ProvisionSandboxFromSnapshot(ctx context.Context, req backend.ProvisionFromSnapshotRequest) error {
+	a.mu.Lock()
+	a.provisionFromSnapshotReq = req
+	fn := a.provisionFromSnapshotFn
+	a.mu.Unlock()
+	if fn != nil {
+		return fn(ctx, req)
+	}
+	return nil
+}
+
+func (a *snapshotIntegrationAdapter) DeleteSnapshot(ctx context.Context, req backend.DeleteSnapshotRequest) error {
+	a.mu.Lock()
+	a.deleteSnapshotReq = req
+	fn := a.deleteSnapshotFn
+	a.mu.Unlock()
+	if fn != nil {
+		return fn(ctx, req)
+	}
+	return nil
+}
+
+func (a *snapshotIntegrationAdapter) TerminateSandbox(ctx context.Context, sandboxID string) error {
+	a.mu.Lock()
+	fn := a.terminateFn
+	a.mu.Unlock()
+	if fn != nil {
+		return fn(ctx, sandboxID)
+	}
+	return nil
 }
 
 type integrationLoader struct{}
@@ -101,11 +173,33 @@ type execOutcome struct {
 func startIntegrationServer(t *testing.T, adapter backend.Adapter) (string, *controlservice.Service) {
 	t.Helper()
 
-	svc := &controlservice.Service{
-		Loader: integrationLoader{},
-		Config: runtimeconfig.Config{
-			DefaultBackend: "firecracker",
+	return startIntegrationServerWithConfig(t, adapter, runtimeconfig.Config{
+		DefaultBackend: "firecracker",
+		Backends: runtimeconfig.Backends{
+			Firecracker: runtimeconfig.FirecrackerConfig{
+				Snapshots: runtimeconfig.SnapshotConfig{
+					Enabled: true,
+					Driver:  "file",
+				},
+			},
 		},
+	})
+}
+
+func startIntegrationServerWithConfig(t *testing.T, adapter backend.Adapter, cfg runtimeconfig.Config) (string, *controlservice.Service) {
+	t.Helper()
+
+	store, err := snapshotstore.New(snapshotstore.Options{
+		MetadataDBPath: filepath.Join(t.TempDir(), "snapshots.db"),
+	})
+	if err != nil {
+		t.Fatalf("create snapshot store: %v", err)
+	}
+
+	svc := &controlservice.Service{
+		Loader:        integrationLoader{},
+		Config:        cfg,
+		SnapshotStore: store,
 		Backends: map[string]backend.Adapter{
 			"firecracker": adapter,
 		},
@@ -517,10 +611,10 @@ func TestExecIntegrationSecondInterruptTerminatesSandboxWithRemove(t *testing.T)
 	done := make(chan execOutcome, 1)
 	go func() {
 		done <- runExecWithCapture(ExecCommand{
-			clientFlags: clientFlags{Host: host, LogLevel: "debug"},
-			Chdir:       cwd,
-			Remove:      true,
-			Command:     []string{"sleep", "300"},
+			clientFlags:    clientFlags{Host: host},
+			Chdir:          cwd,
+			PrintSandboxID: true,
+			Command:        []string{"sleep", "300"},
 		}, runtimeContext{
 			CWD:    cwd,
 			Loader: integrationLoader{},
@@ -592,7 +686,7 @@ func TestExecIntegrationSecondInterruptKeepsSuppliedSandboxWithoutRemove(t *test
 		done <- runExecWithCapture(ExecCommand{
 			clientFlags: clientFlags{Host: host, LogLevel: "debug"},
 			Chdir:       cwd,
-			SandboxID:   sandboxID,
+			In:          sandboxID,
 			Command:     []string{"sleep", "300"},
 		}, runtimeContext{
 			CWD:    cwd,
@@ -698,13 +792,43 @@ func TestExecIntegrationPrintSandboxIDFlag(t *testing.T) {
 	}
 }
 
-func TestExecIntegrationDefaultLeavesSandboxRunning(t *testing.T) {
+func TestExecIntegrationDefaultTerminatesCreatedSandbox(t *testing.T) {
 	host, _ := startIntegrationServer(t, &integrationAdapter{})
 	cwd := t.TempDir()
 	outcome := runExecWithCapture(ExecCommand{
-		clientFlags: clientFlags{Host: host, LogLevel: "debug"},
-		Chdir:       cwd,
-		Command:     []string{"echo", "ok"},
+		clientFlags:    clientFlags{Host: host},
+		Chdir:          cwd,
+		PrintSandboxID: true,
+		Command:        []string{"echo", "ok"},
+	}, runtimeContext{
+		CWD:    cwd,
+		Loader: integrationLoader{},
+	})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err != nil {
+		t.Fatalf("ExecCommand.Run returned error: %v", outcome.err)
+	}
+
+	sandboxID := parseSandboxID(outcome.stderr)
+	if sandboxID == "" {
+		t.Fatalf("missing sandbox_id in stderr output: %q", outcome.stderr)
+	}
+
+	client := mustNewControlClient(t, host)
+	requireSandboxStatus(t, client, sandboxID, cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPED)
+}
+
+func TestExecIntegrationKeepPreservesCreatedSandbox(t *testing.T) {
+	host, _ := startIntegrationServer(t, &integrationAdapter{})
+	cwd := t.TempDir()
+	outcome := runExecWithCapture(ExecCommand{
+		clientFlags:    clientFlags{Host: host},
+		Chdir:          cwd,
+		Keep:           true,
+		PrintSandboxID: true,
+		Command:        []string{"echo", "ok"},
 	}, runtimeContext{
 		CWD:    cwd,
 		Loader: integrationLoader{},
@@ -725,45 +849,17 @@ func TestExecIntegrationDefaultLeavesSandboxRunning(t *testing.T) {
 	requireSandboxStatus(t, client, sandboxID, cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY)
 }
 
-func TestExecIntegrationRemoveTerminatesSandbox(t *testing.T) {
-	host, _ := startIntegrationServer(t, &integrationAdapter{})
-	cwd := t.TempDir()
-	outcome := runExecWithCapture(ExecCommand{
-		clientFlags: clientFlags{Host: host, LogLevel: "debug"},
-		Chdir:       cwd,
-		Remove:      true,
-		Command:     []string{"echo", "ok"},
-	}, runtimeContext{
-		CWD:    cwd,
-		Loader: integrationLoader{},
-	})
-	if outcome.cause != nil {
-		t.Fatalf("capture failure: %v", outcome.cause)
-	}
-	if outcome.err != nil {
-		t.Fatalf("ExecCommand.Run returned error: %v", outcome.err)
-	}
-
-	sandboxID := parseSandboxID(outcome.stderr)
-	if sandboxID == "" {
-		t.Fatalf("missing sandbox_id in stderr output: %q", outcome.stderr)
-	}
-
-	client := mustNewControlClient(t, host)
-	requireSandboxStatus(t, client, sandboxID, cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPED)
-}
-
-func TestExecIntegrationRemoveTerminatesSuppliedSandbox(t *testing.T) {
+func TestExecIntegrationRejectsKeepWhenReusingSandbox(t *testing.T) {
 	host, _ := startIntegrationServer(t, &integrationAdapter{})
 	client := mustNewControlClient(t, host)
 	sandboxID := mustCreateSandbox(t, client)
 
 	cwd := t.TempDir()
 	outcome := runExecWithCapture(ExecCommand{
-		clientFlags: clientFlags{Host: host, LogLevel: "debug"},
+		clientFlags: clientFlags{Host: host},
 		Chdir:       cwd,
-		SandboxID:   sandboxID,
-		Remove:      true,
+		In:          sandboxID,
+		Keep:        true,
 		Command:     []string{"echo", "ok"},
 	}, runtimeContext{
 		CWD:    cwd,
@@ -772,11 +868,12 @@ func TestExecIntegrationRemoveTerminatesSuppliedSandbox(t *testing.T) {
 	if outcome.cause != nil {
 		t.Fatalf("capture failure: %v", outcome.cause)
 	}
-	if outcome.err != nil {
-		t.Fatalf("ExecCommand.Run returned error: %v", outcome.err)
+	if outcome.err == nil {
+		t.Fatal("expected ExecCommand.Run to reject --keep with --in")
 	}
-
-	requireSandboxStatus(t, client, sandboxID, cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPED)
+	if got, want := outcome.err.Error(), "--keep cannot be used with --in"; !strings.Contains(got, want) {
+		t.Fatalf("expected error to contain %q, got %q", want, got)
+	}
 }
 
 func TestExecIntegrationReuseSandboxSkipsPolicyCompile(t *testing.T) {
@@ -786,7 +883,7 @@ func TestExecIntegrationReuseSandboxSkipsPolicyCompile(t *testing.T) {
 
 	outcome := runExecWithCapture(ExecCommand{
 		clientFlags: clientFlags{Host: host},
-		SandboxID:   sandboxID,
+		In:          sandboxID,
 		Command:     []string{"echo", "ok"},
 	}, runtimeContext{
 		CWD:    t.TempDir(),

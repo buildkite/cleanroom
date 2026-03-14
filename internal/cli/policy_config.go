@@ -119,6 +119,10 @@ func defaultRuntimeConfig(defaultBackend string) runtimeconfig.Config {
 						IPTables:              false,
 					},
 				},
+				Snapshots: runtimeconfig.SnapshotConfig{
+					Enabled: false,
+					Driver:  "file",
+				},
 				PrivilegedMode:       "sudo",
 				PrivilegedHelperPath: "/usr/local/sbin/cleanroom-root-helper",
 				VCPUs:                2,
@@ -136,6 +140,10 @@ func defaultRuntimeConfig(defaultBackend string) runtimeconfig.Config {
 						StorageDriver:         "vfs",
 						IPTables:              false,
 					},
+				},
+				Snapshots: runtimeconfig.SnapshotConfig{
+					Enabled: false,
+					Driver:  "file",
 				},
 				VCPUs:         2,
 				MemoryMiB:     1024,

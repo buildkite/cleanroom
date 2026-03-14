@@ -20,6 +20,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/endpoint"
 	"github.com/buildkite/cleanroom/internal/gateway"
 	"github.com/buildkite/cleanroom/internal/interactivequic"
+	"github.com/buildkite/cleanroom/internal/snapshotstore"
 	"github.com/charmbracelet/log"
 )
 
@@ -32,6 +33,7 @@ type ServeCommand struct {
 }
 
 var serveSignalNotifyContext = signal.NotifyContext
+var newSnapshotMetadataStore = snapshotstore.New
 
 func (s *ServeCommand) Run(ctx *runtimeContext) error {
 	return s.runServer(ctx)
@@ -119,7 +121,10 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 		}
 	}
 
-	service := newControlService(ctx, logger.With("subsystem", "service"), gwMirrors)
+	service, err := newControlService(ctx, logger.With("subsystem", "service"), gwMirrors)
+	if err != nil {
+		return err
+	}
 	server := controlserver.New(service, logger.With("subsystem", "http"))
 
 	runCtx, cancel := serveSignalNotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -160,12 +165,18 @@ func configureGatewayBackends(backends map[string]backend.Adapter, gwRegistry *g
 	}
 }
 
-func newControlService(ctx *runtimeContext, logger *log.Logger, mirrors gateway.GitMirrorStore) *controlservice.Service {
+func newControlService(ctx *runtimeContext, logger *log.Logger, mirrors gateway.GitMirrorStore) (*controlservice.Service, error) {
+	snapshotMetadataStore, err := newSnapshotMetadataStore(snapshotstore.Options{})
+	if err != nil {
+		return nil, fmt.Errorf("configure snapshot metadata store: %w", err)
+	}
+
 	if ctx == nil {
 		return &controlservice.Service{
 			Logger:            logger,
 			RepositoryMirrors: mirrors,
-		}
+			SnapshotStore:     snapshotMetadataStore,
+		}, nil
 	}
 	return &controlservice.Service{
 		Loader:            ctx.Loader,
@@ -173,7 +184,8 @@ func newControlService(ctx *runtimeContext, logger *log.Logger, mirrors gateway.
 		Backends:          ctx.Backends,
 		Logger:            logger,
 		RepositoryMirrors: mirrors,
-	}
+		SnapshotStore:     snapshotMetadataStore,
+	}, nil
 }
 
 func shouldInstallGatewayFirewall(goos string) bool {

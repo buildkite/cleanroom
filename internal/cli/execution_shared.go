@@ -30,20 +30,50 @@ var (
 	}
 )
 
-func ensureSandboxID(client *controlclient.Client, loader policyLoader, cwd, host, backendName, existingSandboxID, imageRefOverride string, launchSeconds int64, repository *resolvedRepositoryCheckout) (string, error) {
+func ensureSandboxID(client *controlclient.Client, loader policyLoader, cwd, host, backendName, existingSandboxID, fromSnapshot, imageRefOverride string, launchSeconds int64, repository *resolvedRepositoryCheckout) (string, bool, error) {
 	sandboxID := strings.TrimSpace(existingSandboxID)
+	fromSnapshot = strings.TrimSpace(fromSnapshot)
 	if sandboxID != "" {
-		if strings.TrimSpace(imageRefOverride) != "" {
-			return "", errors.New("--image cannot be used with --sandbox-id")
+		if fromSnapshot != "" {
+			return "", false, errors.New("--from cannot be used with --in")
 		}
-		return sandboxID, nil
+		if strings.TrimSpace(imageRefOverride) != "" {
+			return "", false, errors.New("--image cannot be used with --in")
+		}
+		return sandboxID, false, nil
+	}
+	if fromSnapshot != "" {
+		if repository != nil {
+			return "", false, errors.New("repository bootstrap cannot be used with --from")
+		}
+		if strings.TrimSpace(imageRefOverride) != "" {
+			return "", false, errors.New("--image cannot be used with --from")
+		}
+		if strings.TrimSpace(backendName) != "" {
+			return "", false, errors.New("--backend cannot be used with --from")
+		}
+		createSandboxResp, err := client.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+			Options: &cleanroomv1.SandboxOptions{
+				LaunchSeconds: launchSeconds,
+			},
+			Source: &cleanroomv1.CreateSandboxRequest_SnapshotId{SnapshotId: fromSnapshot},
+		})
+		if err != nil {
+			return "", false, fmt.Errorf("create sandbox: %w", err)
+		}
+		sandbox := createSandboxResp.GetSandbox()
+		sandboxID := strings.TrimSpace(sandbox.GetSandboxId())
+		if sandboxID == "" {
+			return "", false, errors.New("create sandbox: response missing sandbox id")
+		}
+		return sandboxID, true, nil
 	}
 
 	sandboxID, _, err := createTopLevelSandbox(client, loader, cwd, host, backendName, imageRefOverride, launchSeconds, repository)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
-	return sandboxID, nil
+	return sandboxID, true, nil
 }
 
 func getFinalExecutionExitCode(client *controlclient.Client, sandboxID, executionID string) (int, bool) {

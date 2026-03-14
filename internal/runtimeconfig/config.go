@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/buildkite/cleanroom/internal/backend"
 	"gopkg.in/yaml.v3"
 )
 
@@ -27,6 +28,7 @@ type FirecrackerConfig struct {
 	KernelImage          string         `yaml:"kernel_image"`
 	RootFS               string         `yaml:"rootfs"`
 	Services             ServicesConfig `yaml:"services"`
+	Snapshots            SnapshotConfig `yaml:"snapshots"`
 	PrivilegedMode       string         `yaml:"privileged_mode"`
 	PrivilegedHelperPath string         `yaml:"privileged_helper_path"`
 	VCPUs                int64          `yaml:"vcpus"`
@@ -40,10 +42,84 @@ type DarwinVZConfig struct {
 	KernelImage   string         `yaml:"kernel_image"`
 	RootFS        string         `yaml:"rootfs"`
 	Services      ServicesConfig `yaml:"services"`
+	Snapshots     SnapshotConfig `yaml:"snapshots"`
 	VCPUs         int64          `yaml:"vcpus"`
 	MemoryMiB     int64          `yaml:"memory_mib"`
 	GuestPort     uint32         `yaml:"guest_port"`
 	LaunchSeconds int64          `yaml:"launch_seconds"` // VM boot/guest-agent readiness timeout
+}
+
+type SnapshotConfig struct {
+	Enabled               bool   `yaml:"enabled"`
+	Driver                string `yaml:"driver"`
+	BaseDir               string `yaml:"base_dir,omitempty"`
+	QuiesceTimeoutSeconds int64  `yaml:"quiesce_timeout_seconds,omitempty"`
+}
+
+func SnapshotConfigForBackend(cfg Config, backendName string) (SnapshotConfig, bool) {
+	switch strings.TrimSpace(backendName) {
+	case "firecracker":
+		return cfg.Backends.Firecracker.Snapshots, true
+	case "darwin-vz":
+		return cfg.Backends.DarwinVZ.Snapshots, true
+	default:
+		return SnapshotConfig{}, false
+	}
+}
+
+func SnapshotDriverOrDefault(driver string) string {
+	driver = strings.TrimSpace(driver)
+	if driver == "" {
+		return "file"
+	}
+	return driver
+}
+
+func MergeBackendConfig(cfg Config, backendName string, launchSeconds int64) backend.FirecrackerConfig {
+	out := backend.FirecrackerConfig{
+		BinaryPath:           cfg.Backends.Firecracker.BinaryPath,
+		KernelImagePath:      cfg.Backends.Firecracker.KernelImage,
+		RootFSPath:           cfg.Backends.Firecracker.RootFS,
+		DockerStartupSeconds: cfg.Backends.Firecracker.Services.Docker.StartupTimeoutSeconds,
+		DockerStorageDriver:  cfg.Backends.Firecracker.Services.Docker.StorageDriver,
+		DockerIPTables:       cfg.Backends.Firecracker.Services.Docker.IPTables,
+		Snapshots: backend.SnapshotConfig{
+			Enabled:               cfg.Backends.Firecracker.Snapshots.Enabled,
+			Driver:                cfg.Backends.Firecracker.Snapshots.Driver,
+			BaseDir:               cfg.Backends.Firecracker.Snapshots.BaseDir,
+			QuiesceTimeoutSeconds: cfg.Backends.Firecracker.Snapshots.QuiesceTimeoutSeconds,
+		},
+		PrivilegedMode:       cfg.Backends.Firecracker.PrivilegedMode,
+		PrivilegedHelperPath: cfg.Backends.Firecracker.PrivilegedHelperPath,
+		VCPUs:                cfg.Backends.Firecracker.VCPUs,
+		MemoryMiB:            cfg.Backends.Firecracker.MemoryMiB,
+		GuestCID:             cfg.Backends.Firecracker.GuestCID,
+		GuestPort:            cfg.Backends.Firecracker.GuestPort,
+		LaunchSeconds:        cfg.Backends.Firecracker.LaunchSeconds,
+	}
+	if backendName == "darwin-vz" {
+		out.KernelImagePath = cfg.Backends.DarwinVZ.KernelImage
+		out.RootFSPath = cfg.Backends.DarwinVZ.RootFS
+		out.DockerStartupSeconds = cfg.Backends.DarwinVZ.Services.Docker.StartupTimeoutSeconds
+		out.DockerStorageDriver = cfg.Backends.DarwinVZ.Services.Docker.StorageDriver
+		out.DockerIPTables = cfg.Backends.DarwinVZ.Services.Docker.IPTables
+		out.Snapshots = backend.SnapshotConfig{
+			Enabled:               cfg.Backends.DarwinVZ.Snapshots.Enabled,
+			Driver:                cfg.Backends.DarwinVZ.Snapshots.Driver,
+			BaseDir:               cfg.Backends.DarwinVZ.Snapshots.BaseDir,
+			QuiesceTimeoutSeconds: cfg.Backends.DarwinVZ.Snapshots.QuiesceTimeoutSeconds,
+		}
+		out.VCPUs = cfg.Backends.DarwinVZ.VCPUs
+		out.MemoryMiB = cfg.Backends.DarwinVZ.MemoryMiB
+		out.GuestPort = cfg.Backends.DarwinVZ.GuestPort
+		out.LaunchSeconds = cfg.Backends.DarwinVZ.LaunchSeconds
+	}
+
+	out.Launch = true
+	if launchSeconds != 0 {
+		out.LaunchSeconds = launchSeconds
+	}
+	return out
 }
 
 type ServicesConfig struct {
@@ -150,8 +226,16 @@ func darwinVZConfigIsZero(cfg DarwinVZConfig) bool {
 		cfg.Services.Docker.StartupTimeoutSeconds == 0 &&
 		strings.TrimSpace(cfg.Services.Docker.StorageDriver) == "" &&
 		!cfg.Services.Docker.IPTables &&
+		snapshotConfigIsZero(cfg.Snapshots) &&
 		cfg.VCPUs == 0 &&
 		cfg.MemoryMiB == 0 &&
 		cfg.GuestPort == 0 &&
 		cfg.LaunchSeconds == 0
+}
+
+func snapshotConfigIsZero(cfg SnapshotConfig) bool {
+	return !cfg.Enabled &&
+		strings.TrimSpace(cfg.Driver) == "" &&
+		strings.TrimSpace(cfg.BaseDir) == "" &&
+		cfg.QuiesceTimeoutSeconds == 0
 }

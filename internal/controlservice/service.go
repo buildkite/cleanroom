@@ -19,7 +19,9 @@ import (
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/repositorycheckout"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
+	"github.com/buildkite/cleanroom/internal/snapshotstore"
 	"github.com/charmbracelet/log"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -30,9 +32,13 @@ type Service struct {
 	Logger            *log.Logger
 	RepositoryMirrors repositoryMirrorStore
 
+	SnapshotStore snapshotMetadataStore
+
 	mu                  sync.RWMutex
 	sandboxes           map[string]*sandboxState
 	executions          map[string]*executionState
+	snapshotOps         map[string]int
+	snapshotDeletions   map[string]struct{}
 	interactiveSessions map[string]*interactiveSessionState
 	interactiveAttached map[string]struct{}
 	interactiveEndpoint string
@@ -118,6 +124,13 @@ type repositoryMirrorStore interface {
 	EnsureMirrorContains(ctx context.Context, remoteURL, commitSHA string) error
 }
 
+type snapshotMetadataStore interface {
+	Create(context.Context, snapshotstore.Record) error
+	Get(context.Context, string) (snapshotstore.Record, bool, error)
+	List(context.Context) ([]snapshotstore.Record, error)
+	Delete(context.Context, string) error
+}
+
 type executionOptions struct {
 	LaunchSeconds int64
 }
@@ -159,6 +172,16 @@ func (s *Service) CreateSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	if req == nil {
 		return nil, errors.New("missing request")
 	}
+	snapshotID := strings.TrimSpace(req.GetSnapshotId())
+	if snapshotID != "" {
+		if req.GetPolicy() != nil {
+			return nil, errors.New("snapshot-backed sandbox creation cannot include policy")
+		}
+		if req.GetRepositoryCheckout() != nil {
+			return nil, errors.New("snapshot-backed sandbox creation cannot include repository checkout")
+		}
+		return s.createSandboxFromSnapshot(ctx, req, snapshotID)
+	}
 	if req.GetPolicy() == nil {
 		return nil, errors.New("missing policy")
 	}
@@ -185,7 +208,7 @@ func (s *Service) CreateSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	if opts != nil {
 		execOpts.LaunchSeconds = opts.GetLaunchSeconds()
 	}
-	firecrackerCfg := mergeBackendConfig(backendName, execOpts, s.Config)
+	firecrackerCfg := runtimeconfig.MergeBackendConfig(s.Config, backendName, execOpts.LaunchSeconds)
 	firecrackerCfg.RunDir = ""
 
 	now := time.Now().UTC()
@@ -246,6 +269,108 @@ func (s *Service) CreateSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	return resp, nil
 }
 
+func (s *Service) createSandboxFromSnapshot(ctx context.Context, req *cleanroomv1.CreateSandboxRequest, snapshotID string) (*cleanroomv1.CreateSandboxResponse, error) {
+	store, err := s.snapshotStoreOrErr()
+	if err != nil {
+		return nil, err
+	}
+
+	s.mu.Lock()
+	s.ensureMapsLocked()
+	if err := s.beginSnapshotUseLocked(snapshotID); err != nil {
+		s.mu.Unlock()
+		return nil, err
+	}
+	s.mu.Unlock()
+	defer s.finishSnapshotUse(snapshotID)
+
+	record, ok, err := store.Get(ctx, snapshotID)
+	if err != nil {
+		return nil, fmt.Errorf("load snapshot %q: %w", snapshotID, err)
+	}
+	if !ok {
+		return nil, fmt.Errorf("unknown snapshot %q", snapshotID)
+	}
+
+	backendName := record.Backend
+	if requested := strings.TrimSpace(req.GetBackend()); requested != "" && requested != backendName {
+		return nil, fmt.Errorf("snapshot %q requires backend %q, got %q", snapshotID, backendName, requested)
+	}
+
+	adapter, ok := s.Backends[backendName]
+	if !ok {
+		return nil, fmt.Errorf("unknown backend %q", backendName)
+	}
+	snapshotAdapter, ok := adapter.(backend.SnapshottingAdapter)
+	if !ok {
+		return nil, fmt.Errorf("backend %q does not support snapshot-backed sandbox creation", backendName)
+	}
+	if !snapshotOperationsEnabledForBackend(backendName, s.Config) {
+		return nil, fmt.Errorf("snapshots are not enabled for backend %q", backendName)
+	}
+
+	compiled, err := policy.FromProto(record.Policy)
+	if err != nil {
+		return nil, fmt.Errorf("invalid snapshot policy %q: %w", snapshotID, err)
+	}
+
+	opts := req.GetOptions()
+	execOpts := executionOptions{}
+	if opts != nil {
+		execOpts.LaunchSeconds = opts.GetLaunchSeconds()
+	}
+	firecrackerCfg := runtimeconfig.MergeBackendConfig(s.Config, backendName, execOpts.LaunchSeconds)
+	firecrackerCfg.RunDir = ""
+	firecrackerCfg = withSnapshotDriver(firecrackerCfg, record.StorageDriver)
+
+	now := time.Now().UTC()
+	sandboxID := newSandboxID()
+	if err := snapshotAdapter.ProvisionSandboxFromSnapshot(ctx, backend.ProvisionFromSnapshotRequest{
+		SandboxID:         sandboxID,
+		SnapshotID:        record.SnapshotID,
+		StorageRef:        record.StorageRef,
+		Policy:            compiled,
+		FirecrackerConfig: firecrackerCfg,
+	}); err != nil {
+		return nil, fmt.Errorf("provision sandbox from snapshot: %w", err)
+	}
+
+	state := &sandboxState{
+		ID:               sandboxID,
+		Backend:          backendName,
+		Policy:           compiled,
+		Firecracker:      firecrackerCfg,
+		Repository:       repositorycheckout.FromProto(record.Repository),
+		CreatedAt:        now,
+		UpdatedAt:        now,
+		Status:           cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY,
+		EventSubscribers: map[int]chan *cleanroomv1.SandboxEvent{},
+		Done:             make(chan struct{}),
+	}
+
+	s.mu.Lock()
+	s.ensureMapsLocked()
+	s.sandboxes[sandboxID] = state
+	s.recordSandboxEventLocked(state, cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY, fmt.Sprintf("sandbox created from snapshot %s and ready", snapshotID))
+	s.pruneStateLocked(now)
+	resp := &cleanroomv1.CreateSandboxResponse{
+		Sandbox: cloneSandboxLocked(state),
+		Message: "sandbox created from snapshot and ready",
+	}
+	s.mu.Unlock()
+
+	if s.Logger != nil {
+		s.Logger.Info("sandbox created from snapshot",
+			"sandbox_id", sandboxID,
+			"snapshot_id", snapshotID,
+			"backend", backendName,
+			"policy_hash", compiled.Hash,
+		)
+	}
+
+	return resp, nil
+}
+
 func (s *Service) GetSandbox(_ context.Context, req *cleanroomv1.GetSandboxRequest) (*cleanroomv1.GetSandboxResponse, error) {
 	if req == nil || strings.TrimSpace(req.GetSandboxId()) == "" {
 		return nil, errors.New("missing sandbox_id")
@@ -279,6 +404,221 @@ func (s *Service) ListSandboxes(_ context.Context, _ *cleanroomv1.ListSandboxesR
 		resp.Sandboxes = append(resp.Sandboxes, cloneSandboxLocked(sb))
 	}
 	return resp, nil
+}
+
+func (s *Service) CreateSnapshot(ctx context.Context, req *cleanroomv1.CreateSnapshotRequest) (*cleanroomv1.CreateSnapshotResponse, error) {
+	if req == nil {
+		return nil, errors.New("missing request")
+	}
+	sandboxID := strings.TrimSpace(req.GetSandboxId())
+	if sandboxID == "" {
+		return nil, errors.New("missing sandbox_id")
+	}
+
+	store, err := s.snapshotStoreOrErr()
+	if err != nil {
+		return nil, err
+	}
+
+	now := time.Now().UTC()
+	snapshotID := newSnapshotID()
+	name := strings.TrimSpace(req.GetName())
+
+	var (
+		record          snapshotstore.Record
+		snapshotAdapter backend.SnapshottingAdapter
+	)
+
+	s.mu.Lock()
+	s.ensureMapsLocked()
+	state, ok := s.sandboxes[sandboxID]
+	if !ok {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("unknown sandbox %q", sandboxID)
+	}
+	if err := ensureSandboxIdleLocked(sandboxID, state, s.executions); err != nil {
+		s.mu.Unlock()
+		return nil, err
+	}
+	adapter, ok := s.Backends[state.Backend]
+	if !ok {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("unknown backend %q", state.Backend)
+	}
+	snapshotAdapter, ok = adapter.(backend.SnapshottingAdapter)
+	if !ok {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("backend %q does not support snapshots", state.Backend)
+	}
+	if !snapshotOperationsEnabledForBackend(state.Backend, s.Config) {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("snapshots are not enabled for backend %q", state.Backend)
+	}
+	if state.Policy == nil {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("sandbox %q is missing compiled policy", sandboxID)
+	}
+	snapshotCfg := withSnapshotDriver(state.Firecracker, state.Firecracker.Snapshots.Driver)
+	record = snapshotstore.Record{
+		SnapshotID:      snapshotID,
+		SourceSandboxID: sandboxID,
+		Backend:         state.Backend,
+		Name:            name,
+		PolicyHash:      state.Policy.Hash,
+		Policy:          state.Policy.ToProto(),
+		Repository:      cloneRepositoryCheckout(state.Repository).ToProto(),
+		StorageDriver:   snapshotCfg.Snapshots.Driver,
+		CreatedAt:       now,
+	}
+	s.recordSandboxEventLocked(state, cleanroomv1.SandboxStatus_SANDBOX_STATUS_PROVISIONING, fmt.Sprintf("snapshot %s in progress", snapshotID))
+	s.mu.Unlock()
+
+	result, err := snapshotAdapter.CreateSnapshot(ctx, backend.SnapshotRequest{
+		SandboxID:         sandboxID,
+		SnapshotID:        snapshotID,
+		FirecrackerConfig: snapshotCfg,
+	})
+	if err != nil {
+		s.mu.Lock()
+		if current, ok := s.sandboxes[sandboxID]; ok {
+			s.completeSnapshotLocked(current, fmt.Sprintf("snapshot %s failed: %v", snapshotID, err))
+		}
+		s.mu.Unlock()
+		return nil, fmt.Errorf("create snapshot: %w", err)
+	}
+
+	record.StorageRef = strings.TrimSpace(result.StorageRef)
+	if err := store.Create(ctx, record); err != nil {
+		deleteErr := snapshotAdapter.DeleteSnapshot(ctx, backend.DeleteSnapshotRequest{
+			SnapshotID:        snapshotID,
+			StorageRef:        record.StorageRef,
+			FirecrackerConfig: snapshotCfg,
+		})
+		if deleteErr != nil && s.Logger != nil {
+			s.Logger.Warn("rollback snapshot after metadata failure failed",
+				"snapshot_id", snapshotID,
+				"storage_ref", record.StorageRef,
+				"error", deleteErr,
+			)
+		}
+		s.mu.Lock()
+		if current, ok := s.sandboxes[sandboxID]; ok {
+			s.completeSnapshotLocked(current, fmt.Sprintf("snapshot %s failed: %v", snapshotID, err))
+		}
+		s.mu.Unlock()
+		return nil, fmt.Errorf("persist snapshot metadata: %w", err)
+	}
+
+	s.mu.Lock()
+	if current, ok := s.sandboxes[sandboxID]; ok {
+		s.completeSnapshotLocked(current, fmt.Sprintf("snapshot %s created", snapshotID))
+	}
+	s.mu.Unlock()
+
+	resp := &cleanroomv1.CreateSnapshotResponse{
+		Snapshot: cloneSnapshotRecord(record),
+		Message:  "snapshot created",
+	}
+	return resp, nil
+}
+
+func (s *Service) completeSnapshotLocked(sb *sandboxState, message string) {
+	if sb == nil {
+		return
+	}
+	if sb.Status != cleanroomv1.SandboxStatus_SANDBOX_STATUS_PROVISIONING {
+		return
+	}
+	s.recordSandboxEventLocked(sb, cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY, message)
+}
+
+func (s *Service) GetSnapshot(ctx context.Context, req *cleanroomv1.GetSnapshotRequest) (*cleanroomv1.GetSnapshotResponse, error) {
+	if req == nil || strings.TrimSpace(req.GetSnapshotId()) == "" {
+		return nil, errors.New("missing snapshot_id")
+	}
+
+	store, err := s.snapshotStoreOrErr()
+	if err != nil {
+		return nil, err
+	}
+	record, ok, err := store.Get(ctx, strings.TrimSpace(req.GetSnapshotId()))
+	if err != nil {
+		return nil, fmt.Errorf("load snapshot %q: %w", req.GetSnapshotId(), err)
+	}
+	if !ok {
+		return nil, fmt.Errorf("unknown snapshot %q", req.GetSnapshotId())
+	}
+	return &cleanroomv1.GetSnapshotResponse{Snapshot: cloneSnapshotRecord(record)}, nil
+}
+
+func (s *Service) ListSnapshots(ctx context.Context, _ *cleanroomv1.ListSnapshotsRequest) (*cleanroomv1.ListSnapshotsResponse, error) {
+	store, err := s.snapshotStoreOrErr()
+	if err != nil {
+		return nil, err
+	}
+	records, err := store.List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list snapshots: %w", err)
+	}
+
+	resp := &cleanroomv1.ListSnapshotsResponse{Snapshots: make([]*cleanroomv1.Snapshot, 0, len(records))}
+	for _, record := range records {
+		resp.Snapshots = append(resp.Snapshots, cloneSnapshotRecord(record))
+	}
+	return resp, nil
+}
+
+func (s *Service) DeleteSnapshot(ctx context.Context, req *cleanroomv1.DeleteSnapshotRequest) (*cleanroomv1.DeleteSnapshotResponse, error) {
+	if req == nil || strings.TrimSpace(req.GetSnapshotId()) == "" {
+		return nil, errors.New("missing snapshot_id")
+	}
+	snapshotID := strings.TrimSpace(req.GetSnapshotId())
+
+	s.mu.Lock()
+	s.ensureMapsLocked()
+	if err := s.beginSnapshotDeleteLocked(snapshotID); err != nil {
+		s.mu.Unlock()
+		return nil, err
+	}
+	s.mu.Unlock()
+	defer s.finishSnapshotDelete(snapshotID)
+
+	store, err := s.snapshotStoreOrErr()
+	if err != nil {
+		return nil, err
+	}
+	record, ok, err := store.Get(ctx, snapshotID)
+	if err != nil {
+		return nil, fmt.Errorf("load snapshot %q: %w", snapshotID, err)
+	}
+	if !ok {
+		return nil, fmt.Errorf("unknown snapshot %q", snapshotID)
+	}
+
+	adapter, ok := s.Backends[record.Backend]
+	if !ok {
+		return nil, fmt.Errorf("unknown backend %q", record.Backend)
+	}
+	snapshotAdapter, ok := adapter.(backend.SnapshottingAdapter)
+	if !ok {
+		return nil, fmt.Errorf("backend %q does not support snapshot deletion", record.Backend)
+	}
+	firecrackerCfg := withSnapshotDriver(runtimeconfig.MergeBackendConfig(s.Config, record.Backend, 0), record.StorageDriver)
+	if err := snapshotAdapter.DeleteSnapshot(ctx, backend.DeleteSnapshotRequest{
+		SnapshotID:        snapshotID,
+		StorageRef:        record.StorageRef,
+		FirecrackerConfig: firecrackerCfg,
+	}); err != nil {
+		return nil, fmt.Errorf("delete snapshot storage: %w", err)
+	}
+	if err := store.Delete(ctx, snapshotID); err != nil {
+		return nil, fmt.Errorf("delete snapshot metadata: %w", err)
+	}
+	return &cleanroomv1.DeleteSnapshotResponse{
+		SnapshotId: snapshotID,
+		Deleted:    true,
+		Message:    "snapshot deleted",
+	}, nil
 }
 
 func (s *Service) DownloadSandboxFile(ctx context.Context, req *cleanroomv1.DownloadSandboxFileRequest) (*cleanroomv1.DownloadSandboxFileResponse, error) {
@@ -541,6 +881,7 @@ func (s *Service) CreateExecution(ctx context.Context, req *cleanroomv1.CreateEx
 	}
 	sandboxPolicy := sandbox.Policy
 	firecrackerCfg := sandbox.Firecracker
+	sandboxRepository := cloneRepositoryCheckout(sandbox.Repository)
 	imageRef := ""
 	imageDigest := ""
 	if sandboxPolicy != nil {
@@ -564,6 +905,8 @@ func (s *Service) CreateExecution(ctx context.Context, req *cleanroomv1.CreateEx
 			}
 			command = repositorycheckout.WrapCommandWithBootstrap(command, repository)
 		}
+	} else if sandboxRepository != nil {
+		command = repositorycheckout.WrapCommandInWorkdir(command, sandboxRepository)
 	}
 
 	s.mu.Lock()
@@ -1536,12 +1879,53 @@ func (s *Service) ensureMapsLocked() {
 	if s.executions == nil {
 		s.executions = map[string]*executionState{}
 	}
+	if s.snapshotOps == nil {
+		s.snapshotOps = map[string]int{}
+	}
+	if s.snapshotDeletions == nil {
+		s.snapshotDeletions = map[string]struct{}{}
+	}
 	if s.interactiveSessions == nil {
 		s.interactiveSessions = map[string]*interactiveSessionState{}
 	}
 	if s.interactiveAttached == nil {
 		s.interactiveAttached = map[string]struct{}{}
 	}
+}
+
+func (s *Service) beginSnapshotUseLocked(snapshotID string) error {
+	if _, deleting := s.snapshotDeletions[snapshotID]; deleting {
+		return fmt.Errorf("snapshot_busy: snapshot %q is being deleted", snapshotID)
+	}
+	s.snapshotOps[snapshotID]++
+	return nil
+}
+
+func (s *Service) finishSnapshotUse(snapshotID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if count := s.snapshotOps[snapshotID]; count > 1 {
+		s.snapshotOps[snapshotID] = count - 1
+		return
+	}
+	delete(s.snapshotOps, snapshotID)
+}
+
+func (s *Service) beginSnapshotDeleteLocked(snapshotID string) error {
+	if _, deleting := s.snapshotDeletions[snapshotID]; deleting {
+		return fmt.Errorf("snapshot_busy: snapshot %q is already being deleted", snapshotID)
+	}
+	if count := s.snapshotOps[snapshotID]; count > 0 {
+		return fmt.Errorf("snapshot_busy: snapshot %q is currently in use by another operation", snapshotID)
+	}
+	s.snapshotDeletions[snapshotID] = struct{}{}
+	return nil
+}
+
+func (s *Service) finishSnapshotDelete(snapshotID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.snapshotDeletions, snapshotID)
 }
 
 func (s *Service) pruneExpiredInteractiveSessionsLocked(now time.Time) {
@@ -1932,6 +2316,64 @@ func executionKey(sandboxID, executionID string) string {
 	return sandboxID + "/" + executionID
 }
 
+func ensureSandboxIdleLocked(sandboxID string, sb *sandboxState, executions map[string]*executionState) error {
+	if sb == nil {
+		return fmt.Errorf("unknown sandbox %q", sandboxID)
+	}
+	if sb.Status != cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY {
+		return fmt.Errorf("sandbox %q is not ready", sandboxID)
+	}
+	if sb.DownloadInProgress {
+		return fmt.Errorf("sandbox_busy: sandbox %q currently has an active file download", sandboxID)
+	}
+	if sb.RepositoryBusy {
+		return fmt.Errorf("sandbox_busy: sandbox %q is preparing repository state", sandboxID)
+	}
+	if activeID := strings.TrimSpace(sb.ActiveExecutionID); activeID != "" {
+		if activeExecution, ok := executions[executionKey(sandboxID, activeID)]; ok && !isFinalExecutionStatus(activeExecution.Status) {
+			return fmt.Errorf("sandbox_busy: sandbox %q already has active execution %q", sandboxID, activeID)
+		}
+	}
+	return nil
+}
+
+func (s *Service) snapshotStoreOrErr() (snapshotMetadataStore, error) {
+	if s.SnapshotStore == nil {
+		return nil, errors.New("snapshot metadata store is not configured")
+	}
+	return s.SnapshotStore, nil
+}
+
+func cloneSnapshotRecord(record snapshotstore.Record) *cleanroomv1.Snapshot {
+	return &cleanroomv1.Snapshot{
+		SnapshotId:      record.SnapshotID,
+		SourceSandboxId: record.SourceSandboxID,
+		Backend:         record.Backend,
+		PolicyHash:      record.PolicyHash,
+		Name:            record.Name,
+		CreatedAt:       timestamppb.New(record.CreatedAt),
+		StorageDriver:   record.StorageDriver,
+		StorageRef:      record.StorageRef,
+		RepositoryCheckout: func() *cleanroomv1.RepositoryCheckout {
+			if record.Repository == nil {
+				return nil
+			}
+			return proto.Clone(record.Repository).(*cleanroomv1.RepositoryCheckout)
+		}(),
+	}
+}
+
+func snapshotOperationsEnabledForBackend(backendName string, cfg runtimeconfig.Config) bool {
+	snapshotCfg, ok := runtimeconfig.SnapshotConfigForBackend(cfg, backendName)
+	return ok && snapshotCfg.Enabled
+}
+
+func withSnapshotDriver(cfg backend.FirecrackerConfig, driver string) backend.FirecrackerConfig {
+	cfg.Snapshots.Enabled = true
+	cfg.Snapshots.Driver = runtimeconfig.SnapshotDriverOrDefault(driver)
+	return cfg
+}
+
 func cloneSandboxLocked(state *sandboxState) *cleanroomv1.Sandbox {
 	if state == nil {
 		return nil
@@ -2172,39 +2614,4 @@ func resolveBackendName(requested, configuredDefault string) string {
 		return configuredDefault
 	}
 	return runtimeconfig.DefaultBackendForHost()
-}
-
-func mergeBackendConfig(backendName string, opts executionOptions, cfg runtimeconfig.Config) backend.FirecrackerConfig {
-	out := backend.FirecrackerConfig{
-		BinaryPath:           cfg.Backends.Firecracker.BinaryPath,
-		KernelImagePath:      cfg.Backends.Firecracker.KernelImage,
-		RootFSPath:           cfg.Backends.Firecracker.RootFS,
-		DockerStartupSeconds: cfg.Backends.Firecracker.Services.Docker.StartupTimeoutSeconds,
-		DockerStorageDriver:  cfg.Backends.Firecracker.Services.Docker.StorageDriver,
-		DockerIPTables:       cfg.Backends.Firecracker.Services.Docker.IPTables,
-		PrivilegedMode:       cfg.Backends.Firecracker.PrivilegedMode,
-		PrivilegedHelperPath: cfg.Backends.Firecracker.PrivilegedHelperPath,
-		VCPUs:                cfg.Backends.Firecracker.VCPUs,
-		MemoryMiB:            cfg.Backends.Firecracker.MemoryMiB,
-		GuestCID:             cfg.Backends.Firecracker.GuestCID,
-		GuestPort:            cfg.Backends.Firecracker.GuestPort,
-		LaunchSeconds:        cfg.Backends.Firecracker.LaunchSeconds,
-	}
-	if backendName == "darwin-vz" {
-		out.KernelImagePath = cfg.Backends.DarwinVZ.KernelImage
-		out.RootFSPath = cfg.Backends.DarwinVZ.RootFS
-		out.DockerStartupSeconds = cfg.Backends.DarwinVZ.Services.Docker.StartupTimeoutSeconds
-		out.DockerStorageDriver = cfg.Backends.DarwinVZ.Services.Docker.StorageDriver
-		out.DockerIPTables = cfg.Backends.DarwinVZ.Services.Docker.IPTables
-		out.VCPUs = cfg.Backends.DarwinVZ.VCPUs
-		out.MemoryMiB = cfg.Backends.DarwinVZ.MemoryMiB
-		out.GuestPort = cfg.Backends.DarwinVZ.GuestPort
-		out.LaunchSeconds = cfg.Backends.DarwinVZ.LaunchSeconds
-	}
-
-	out.Launch = true
-	if opts.LaunchSeconds != 0 {
-		out.LaunchSeconds = opts.LaunchSeconds
-	}
-	return out
 }
