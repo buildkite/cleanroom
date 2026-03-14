@@ -45,6 +45,8 @@ type sandboxState struct {
 	Backend            string
 	Policy             *policy.CompiledPolicy
 	Firecracker        backend.FirecrackerConfig
+	Repository         *repositorycheckout.Checkout
+	RepositoryBusy     bool
 	ActiveExecutionID  string
 	DownloadInProgress bool
 	CreatedAt          time.Time
@@ -214,6 +216,7 @@ func (s *Service) CreateSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 		Backend:          backendName,
 		Policy:           compiled,
 		Firecracker:      firecrackerCfg,
+		Repository:       cloneRepositoryCheckout(repository),
 		CreatedAt:        now,
 		UpdatedAt:        now,
 		Status:           cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY,
@@ -322,6 +325,10 @@ func (s *Service) DownloadSandboxFile(ctx context.Context, req *cleanroomv1.Down
 	if state.DownloadInProgress {
 		s.mu.Unlock()
 		return nil, fmt.Errorf("sandbox_busy: sandbox %q already has an active file download", sandboxID)
+	}
+	if state.RepositoryBusy {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("sandbox_busy: sandbox %q is preparing repository state", sandboxID)
 	}
 	if activeID := strings.TrimSpace(state.ActiveExecutionID); activeID != "" {
 		if activeExecution, ok := s.executions[executionKey(sandboxID, activeID)]; ok && !isFinalExecutionStatus(activeExecution.Status) {
@@ -513,7 +520,8 @@ func (s *Service) CreateExecution(ctx context.Context, req *cleanroomv1.CreateEx
 		s.mu.Unlock()
 		return nil, fmt.Errorf("sandbox %q is not ready", sandboxID)
 	}
-	if _, ok := s.Backends[sandbox.Backend]; !ok {
+	adapter, ok := s.Backends[sandbox.Backend]
+	if !ok {
 		s.mu.Unlock()
 		return nil, fmt.Errorf("unknown backend %q", sandbox.Backend)
 	}
@@ -527,7 +535,12 @@ func (s *Service) CreateExecution(ctx context.Context, req *cleanroomv1.CreateEx
 		s.mu.Unlock()
 		return nil, fmt.Errorf("sandbox_busy: sandbox %q currently has an active file download", sandboxID)
 	}
+	if sandbox.RepositoryBusy {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("sandbox_busy: sandbox %q is preparing repository state", sandboxID)
+	}
 	sandboxPolicy := sandbox.Policy
+	firecrackerCfg := sandbox.Firecracker
 	imageRef := ""
 	imageDigest := ""
 	if sandboxPolicy != nil {
@@ -540,10 +553,17 @@ func (s *Service) CreateExecution(ctx context.Context, req *cleanroomv1.CreateEx
 		if err := validateRepositoryCheckoutForPolicy(sandboxPolicy, repository); err != nil {
 			return nil, err
 		}
-		if err := s.ensureRepositoryMirrorContains(ctx, repository); err != nil {
-			return nil, fmt.Errorf("prepare repository checkout: %w", err)
+		if persistentAdapter, ok := adapter.(backend.PersistentSandboxAdapter); ok {
+			if err := s.preparePersistentSandboxRepository(ctx, sandboxID, sandboxPolicy, firecrackerCfg, persistentAdapter, repository); err != nil {
+				return nil, err
+			}
+			command = repositorycheckout.WrapCommandInWorkdir(command, repository)
+		} else {
+			if err := s.ensureRepositoryMirrorContains(ctx, repository); err != nil {
+				return nil, fmt.Errorf("prepare repository checkout: %w", err)
+			}
+			command = repositorycheckout.WrapCommandWithBootstrap(command, repository)
 		}
-		command = repositorycheckout.WrapCommandWithBootstrap(command, repository)
 	}
 
 	s.mu.Lock()
@@ -571,6 +591,10 @@ func (s *Service) CreateExecution(ctx context.Context, req *cleanroomv1.CreateEx
 	if sandbox.DownloadInProgress {
 		s.mu.Unlock()
 		return nil, fmt.Errorf("sandbox_busy: sandbox %q currently has an active file download", sandboxID)
+	}
+	if sandbox.RepositoryBusy {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("sandbox_busy: sandbox %q is preparing repository state", sandboxID)
 	}
 	ex := &executionState{
 		ID:               executionID,
@@ -1319,6 +1343,97 @@ func (s *Service) ensureRepositoryMirrorContains(ctx context.Context, repository
 		return nil
 	}
 	return s.RepositoryMirrors.EnsureMirrorContains(ctx, repository.RemoteURL, repository.CommitSHA)
+}
+
+func (s *Service) preparePersistentSandboxRepository(
+	ctx context.Context,
+	sandboxID string,
+	compiled *policy.CompiledPolicy,
+	firecrackerCfg backend.FirecrackerConfig,
+	adapter backend.PersistentSandboxAdapter,
+	repository *repositorycheckout.Checkout,
+) error {
+	if repository == nil {
+		return nil
+	}
+
+	s.mu.Lock()
+	sandbox, ok := s.sandboxes[sandboxID]
+	if !ok {
+		s.mu.Unlock()
+		return fmt.Errorf("unknown sandbox %q", sandboxID)
+	}
+	if sandbox.Status != cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY {
+		s.mu.Unlock()
+		return fmt.Errorf("sandbox %q is not ready", sandboxID)
+	}
+	if sandbox.DownloadInProgress {
+		s.mu.Unlock()
+		return fmt.Errorf("sandbox_busy: sandbox %q currently has an active file download", sandboxID)
+	}
+	if sandbox.RepositoryBusy {
+		s.mu.Unlock()
+		return fmt.Errorf("sandbox_busy: sandbox %q is preparing repository state", sandboxID)
+	}
+	if activeID := strings.TrimSpace(sandbox.ActiveExecutionID); activeID != "" {
+		if activeExecution, ok := s.executions[executionKey(sandboxID, activeID)]; ok && !isFinalExecutionStatus(activeExecution.Status) {
+			s.mu.Unlock()
+			return fmt.Errorf("sandbox_busy: sandbox %q already has active execution %q", sandboxID, activeID)
+		}
+	}
+	switch {
+	case sandbox.Repository == nil:
+		sandbox.RepositoryBusy = true
+	case repositoryCheckoutsEqual(sandbox.Repository, repository):
+		s.mu.Unlock()
+		return nil
+	default:
+		s.mu.Unlock()
+		return fmt.Errorf("sandbox %q already has a different repository checkout", sandboxID)
+	}
+	s.mu.Unlock()
+
+	err := s.bootstrapRepositoryInPersistentSandbox(ctx, adapter, sandboxID, compiled, firecrackerCfg, repository)
+
+	s.mu.Lock()
+	if sandbox, ok := s.sandboxes[sandboxID]; ok {
+		sandbox.RepositoryBusy = false
+		if err == nil {
+			sandbox.Repository = cloneRepositoryCheckout(repository)
+		}
+	}
+	s.mu.Unlock()
+
+	if err != nil {
+		return fmt.Errorf("prepare repository checkout: %w", err)
+	}
+	return nil
+}
+
+func cloneRepositoryCheckout(repository *repositorycheckout.Checkout) *repositorycheckout.Checkout {
+	if repository == nil {
+		return nil
+	}
+	return &repositorycheckout.Checkout{
+		RemoteURL:      repository.RemoteURL,
+		CommitSHA:      repository.CommitSHA,
+		DestinationDir: repository.DestinationDir,
+		Submodules:     repository.Submodules,
+		Branch:         repository.Branch,
+	}
+}
+
+func repositoryCheckoutsEqual(a, b *repositorycheckout.Checkout) bool {
+	switch {
+	case a == nil || b == nil:
+		return a == nil && b == nil
+	default:
+		return a.RemoteURL == b.RemoteURL &&
+			a.CommitSHA == b.CommitSHA &&
+			a.DestinationDir == b.DestinationDir &&
+			a.Submodules == b.Submodules &&
+			a.Branch == b.Branch
+	}
 }
 
 func validateRepositoryCheckoutForPolicy(compiled *policy.CompiledPolicy, repository *repositorycheckout.Checkout) error {

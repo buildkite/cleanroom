@@ -2432,16 +2432,13 @@ func shouldInlineRepositoryBootstrap(ctx *runtimeContext, host, backendName stri
 }
 
 func repositoryExecutionCommand(command []string, repository *resolvedRepositoryCheckout, inlineBootstrap bool) []string {
-	if inlineBootstrap {
-		return normalizePassthroughCommand(command)
-	}
-	return wrapCommandInRepositoryWorkdir(command, repository)
+	_ = repository
+	_ = inlineBootstrap
+	return normalizePassthroughCommand(command)
 }
 
 func repositoryExecutionCheckout(repository *resolvedRepositoryCheckout, inlineBootstrap bool) *cleanroomv1.RepositoryCheckout {
-	if !inlineBootstrap {
-		return nil
-	}
+	_ = inlineBootstrap
 	return repositoryCheckoutProto(repository)
 }
 

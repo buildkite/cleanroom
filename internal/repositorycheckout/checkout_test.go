@@ -56,3 +56,22 @@ func TestBuildBootstrapCommandAllowsExistingEmptyDestination(t *testing.T) {
 		t.Fatalf("expected bootstrap command to reject only non-empty directories, got %q", joined)
 	}
 }
+
+func TestNormalizeRemoteURLPreservesIPv6Brackets(t *testing.T) {
+	checkout := &Checkout{
+		RemoteURL:      "https://[2001:db8::1]/buildkite/cleanroom.git",
+		CommitSHA:      "0123456789abcdef0123456789abcdef01234567",
+		DestinationDir: "/workspace",
+	}
+
+	host, err := checkout.NormalizeRemoteURL()
+	if err != nil {
+		t.Fatalf("NormalizeRemoteURL returned error: %v", err)
+	}
+	if got, want := host, "2001:db8::1"; got != want {
+		t.Fatalf("unexpected host: got %q want %q", got, want)
+	}
+	if got, want := checkout.RemoteURL, "https://[2001:db8::1]/buildkite/cleanroom.git"; got != want {
+		t.Fatalf("unexpected normalized URL: got %q want %q", got, want)
+	}
+}

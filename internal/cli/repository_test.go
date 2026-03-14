@@ -414,6 +414,91 @@ func TestExecCommandRunsInsideRepositoryPathWhenReusingSandboxID(t *testing.T) {
 	}
 }
 
+func TestExecCommandBootstrapsRepositoryForGenericPersistentSandboxReuse(t *testing.T) {
+	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
+
+	adapter := &persistentIntegrationAdapter{}
+	host, _ := startIntegrationServer(t, adapter)
+	client := mustNewControlClient(t, host)
+	createSandboxResp, err := client.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy: &cleanroomv1.Policy{
+			Version:        1,
+			ImageRef:       "ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+			ImageDigest:    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+			NetworkDefault: "deny",
+			Allow: []*cleanroomv1.PolicyAllowRule{
+				{Host: "github.com", Ports: []int32{443}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createSandboxResp.GetSandbox().GetSandboxId()
+	if sandboxID == "" {
+		t.Fatal("expected sandbox id")
+	}
+
+	var (
+		mu       sync.Mutex
+		commands [][]string
+	)
+	adapter.runStreamFn = func(_ context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+		mu.Lock()
+		commands = append(commands, append([]string(nil), req.Command...))
+		mu.Unlock()
+		return &backend.RunResult{RunID: req.RunID, ExitCode: 0, Message: "ok"}, nil
+	}
+
+	loader := repositoryIntegrationLoader{
+		compiled: &policy.CompiledPolicy{
+			Version:        1,
+			ImageRef:       "ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+			ImageDigest:    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+			NetworkDefault: "deny",
+			Allow:          []policy.AllowRule{{Host: "github.com", Ports: []int{443}}},
+		},
+		repository: policy.RepositoryConfig{
+			Mode:   "current-repo",
+			Remote: "origin",
+			Path:   "/workspace",
+		},
+	}
+
+	outcome := runExecWithCapture(ExecCommand{
+		clientFlags: clientFlags{Host: host},
+		Chdir:       repoDir,
+		SandboxID:   sandboxID,
+		Command:     []string{"echo", "ok"},
+	}, runtimeContext{
+		CWD:    repoDir,
+		Loader: loader,
+	})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err != nil {
+		t.Fatalf("ExecCommand.Run returned error: %v", outcome.err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(commands) != 2 {
+		t.Fatalf("expected bootstrap + user execution, got %d execution(s)", len(commands))
+	}
+	bootstrap := strings.Join(commands[0], " ")
+	if !strings.Contains(bootstrap, "git clone --filter=blob:none --no-checkout") {
+		t.Fatalf("expected sandbox reuse to bootstrap repository before execution, got %q", bootstrap)
+	}
+	joined := strings.Join(commands[1], " ")
+	if strings.Contains(joined, "git clone --filter=blob:none --no-checkout") {
+		t.Fatalf("expected user execution to run after bootstrap, got %q", joined)
+	}
+	if !strings.Contains(joined, "cd '/workspace' && exec 'echo' 'ok'") {
+		t.Fatalf("expected user command to run inside /workspace, got %q", joined)
+	}
+}
+
 func TestResolveRepositoryCheckoutAllowsDirtyCurrentRepoAtHead(t *testing.T) {
 	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
 	wantCommit := headCommit(t, repoDir)
@@ -787,6 +872,19 @@ func TestCanonicalizeGitRemoteURLAllowsExplicitDefaultSSHPort(t *testing.T) {
 		t.Fatalf("unexpected canonical URL: got %q want %q", got, want)
 	}
 	if got, want := gotHost, "github.com"; got != want {
+		t.Fatalf("unexpected host: got %q want %q", got, want)
+	}
+}
+
+func TestCanonicalizeGitRemoteURLPreservesIPv6Brackets(t *testing.T) {
+	gotURL, gotHost, err := canonicalizeGitRemoteURL("https://[2001:db8::1]/buildkite/cleanroom.git")
+	if err != nil {
+		t.Fatalf("canonicalizeGitRemoteURL returned error: %v", err)
+	}
+	if got, want := gotURL, "https://[2001:db8::1]/buildkite/cleanroom.git"; got != want {
+		t.Fatalf("unexpected canonical URL: got %q want %q", got, want)
+	}
+	if got, want := gotHost, "2001:db8::1"; got != want {
 		t.Fatalf("unexpected host: got %q want %q", got, want)
 	}
 }

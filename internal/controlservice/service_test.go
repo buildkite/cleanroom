@@ -5,6 +5,7 @@ import (
 	"errors"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unsafe"
@@ -425,8 +426,15 @@ func TestCreateExecutionWrapsRepositoryBootstrapInService(t *testing.T) {
 	mirrors := &stubRepositoryMirrorStore{}
 	svc := newTestService(adapter)
 	svc.RepositoryMirrors = mirrors
-	runCalled := make(chan struct{}, 1)
+	runCalled := make(chan struct{}, 4)
+	var (
+		mu       sync.Mutex
+		commands [][]string
+	)
 	adapter.runStreamFn = func(_ context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+		mu.Lock()
+		commands = append(commands, append([]string(nil), req.Command...))
+		mu.Unlock()
 		select {
 		case runCalled <- struct{}{}:
 		default:
@@ -451,26 +459,106 @@ func TestCreateExecutionWrapsRepositoryBootstrapInService(t *testing.T) {
 	if createExecutionResp.GetExecution().GetExecutionId() == "" {
 		t.Fatal("expected execution id")
 	}
-	select {
-	case <-runCalled:
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for repository bootstrap execution")
+	for i := 0; i < 2; i++ {
+		select {
+		case <-runCalled:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for repository bootstrap execution")
+		}
 	}
 	if got, want := mirrors.calls, 1; got != want {
 		t.Fatalf("unexpected mirror prewarm call count: got %d want %d", got, want)
 	}
-	joined := strings.Join(adapter.req.Command, " ")
-	if !strings.Contains(joined, "git clone --filter=blob:none --no-checkout") {
-		t.Fatalf("expected repository bootstrap clone in command, got %q", joined)
+	mu.Lock()
+	defer mu.Unlock()
+	if got, want := len(commands), 2; got != want {
+		t.Fatalf("expected bootstrap + user execution, got %d command(s)", got)
+	}
+	bootstrap := strings.Join(commands[0], " ")
+	if !strings.Contains(bootstrap, "git clone --filter=blob:none --no-checkout") {
+		t.Fatalf("expected repository bootstrap clone in command, got %q", bootstrap)
+	}
+	joined := strings.Join(commands[1], " ")
+	if strings.Contains(joined, "git clone --filter=blob:none --no-checkout") {
+		t.Fatalf("expected execution command to run after bootstrap, got %q", joined)
 	}
 	if !strings.Contains(joined, "cd '/workspace' && exec 'sh' '-lc' 'pwd'") {
 		t.Fatalf("expected wrapped user command in repository workdir, got %q", joined)
+	}
+	if strings.Contains(bootstrap, "Authorization:") || strings.Contains(bootstrap, ".extraHeader") {
+		t.Fatalf("expected bootstrap command to avoid embedded auth, got %q", bootstrap)
 	}
 	if strings.Contains(joined, "Authorization:") || strings.Contains(joined, ".extraHeader") {
 		t.Fatalf("expected wrapped command to avoid embedded auth, got %q", joined)
 	}
 	if got := strings.Join(createExecutionResp.GetExecution().GetCommand(), " "); strings.Contains(got, "Authorization:") || strings.Contains(got, ".extraHeader") {
 		t.Fatalf("expected execution command snapshot to avoid embedded auth, got %q", got)
+	}
+}
+
+func TestCreateExecutionSkipsBootstrapForMatchingPersistentRepository(t *testing.T) {
+	adapter := &stubAdapter{}
+	mirrors := &stubRepositoryMirrorStore{}
+	svc := newTestService(adapter)
+	svc.RepositoryMirrors = mirrors
+
+	var (
+		mu       sync.Mutex
+		commands [][]string
+	)
+	runCalled := make(chan struct{}, 4)
+	adapter.runStreamFn = func(_ context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+		mu.Lock()
+		commands = append(commands, append([]string(nil), req.Command...))
+		mu.Unlock()
+		select {
+		case runCalled <- struct{}{}:
+		default:
+		}
+		return &backend.RunResult{RunID: req.RunID, ExitCode: 0, Message: "ok"}, nil
+	}
+
+	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy:             testRepositoryPolicy(),
+		RepositoryCheckout: testRepositoryCheckoutProto(),
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createSandboxResp.GetSandbox().GetSandboxId()
+	select {
+	case <-runCalled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for sandbox bootstrap")
+	}
+
+	_, err = svc.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+		SandboxId:          sandboxID,
+		Command:            []string{"sh", "-lc", "pwd"},
+		RepositoryCheckout: testRepositoryCheckoutProto(),
+	})
+	if err != nil {
+		t.Fatalf("CreateExecution returned error: %v", err)
+	}
+	select {
+	case <-runCalled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for execution")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if got, want := len(commands), 2; got != want {
+		t.Fatalf("expected create bootstrap + execution, got %d command(s)", got)
+	}
+	joined := strings.Join(commands[1], " ")
+	if strings.Contains(joined, "git clone --filter=blob:none --no-checkout") {
+		t.Fatalf("expected matching repository execution to reuse existing checkout, got %q", joined)
+	}
+	if !strings.Contains(joined, "cd '/workspace' && exec 'sh' '-lc' 'pwd'") {
+		t.Fatalf("expected matching repository execution to run inside repository workdir, got %q", joined)
+	}
+	if got, want := mirrors.calls, 1; got != want {
+		t.Fatalf("expected mirror prewarm only during sandbox create, got %d call(s)", got)
 	}
 }
 

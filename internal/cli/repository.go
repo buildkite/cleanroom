@@ -79,34 +79,8 @@ func resolveRepositoryCheckout(cwd string, loader policyLoader) (*resolvedReposi
 	}, nil
 }
 
-func maybeResolveRepositoryCheckout(cwd string, loader policyLoader, existingSandboxID string, requireBootstrap bool) (*resolvedRepositoryCheckout, error) {
-	if strings.TrimSpace(existingSandboxID) != "" && !requireBootstrap {
-		return resolveRepositoryExecutionContext(cwd, loader)
-	}
+func maybeResolveRepositoryCheckout(cwd string, loader policyLoader, _ string, _ bool) (*resolvedRepositoryCheckout, error) {
 	return resolveRepositoryCheckout(cwd, loader)
-}
-
-func resolveRepositoryExecutionContext(cwd string, loader policyLoader) (*resolvedRepositoryCheckout, error) {
-	repository, err := loadRepositoryConfig(cwd, loader)
-	if err != nil {
-		if errors.Is(err, errSkipRepositoryCheckout) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	if repository.Implicit {
-		if _, err := resolveRepositoryRoot(cwd, repository); err != nil {
-			if errors.Is(err, errSkipRepositoryCheckout) {
-				return nil, nil
-			}
-			return nil, err
-		}
-	}
-
-	return &resolvedRepositoryCheckout{
-		DestinationDir: repository.Path,
-		Submodules:     repository.Submodules,
-	}, nil
 }
 
 var errSkipRepositoryCheckout = errors.New("skip repository checkout")
@@ -171,7 +145,7 @@ func canonicalizeGitRemoteURL(raw string) (string, string, error) {
 			return "", "", fmt.Errorf("repository remote URL %q uses unsupported non-default HTTPS port", trimmed)
 		}
 		parsed.User = nil
-		parsed.Host = host
+		parsed.Host = normalizedURLHost(host, parsed.Port())
 		parsed.RawQuery = ""
 		parsed.Fragment = ""
 		return parsed.String(), host, nil
@@ -207,6 +181,19 @@ func canonicalizeGitRemoteURL(raw string) (string, string, error) {
 	}
 
 	return "", "", fmt.Errorf("repository remote URL %q must use https or a canonicalizable ssh form", trimmed)
+}
+
+func normalizedURLHost(host, port string) string {
+	if strings.Contains(host, ":") {
+		if port != "" {
+			return "[" + host + "]:" + port
+		}
+		return "[" + host + "]"
+	}
+	if port != "" {
+		return host + ":" + port
+	}
+	return host
 }
 
 func gitOutput(dir string, args ...string) (string, error) {
@@ -270,10 +257,6 @@ func createTopLevelSandbox(
 	}
 
 	return sandboxID, sandbox, nil
-}
-
-func wrapCommandInRepositoryWorkdir(command []string, repository *resolvedRepositoryCheckout) []string {
-	return repositorycheckout.WrapCommandInWorkdir(command, toRepositoryCheckout(repository))
 }
 
 func normalizePassthroughCommand(command []string) []string {

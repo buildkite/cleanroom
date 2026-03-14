@@ -103,11 +103,24 @@ func (c *Checkout) NormalizeRemoteURL() (string, error) {
 	if parsed.RawQuery != "" || parsed.Fragment != "" {
 		return "", fmt.Errorf("repository remote_url %q must not include query or fragment", trimmed)
 	}
-	parsed.Host = host
+	parsed.Host = normalizedURLHost(host, parsed.Port())
 	parsed.RawQuery = ""
 	parsed.Fragment = ""
 	c.RemoteURL = parsed.String()
 	return host, nil
+}
+
+func normalizedURLHost(host, port string) string {
+	if strings.Contains(host, ":") {
+		if port != "" {
+			return "[" + host + "]:" + port
+		}
+		return "[" + host + "]"
+	}
+	if port != "" {
+		return host + ":" + port
+	}
+	return host
 }
 
 func BuildBootstrapCommand(checkout *Checkout) []string {
