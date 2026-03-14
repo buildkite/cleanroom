@@ -24,6 +24,7 @@ Implemented:
 Not implemented:
 
 - egress allowlist filtering for `sandbox.network.allow`
+- host-visible per-sandbox guest IP / TAP identity
 
 ## Process and Transport Model
 
@@ -99,11 +100,19 @@ On macOS, cleanroom also probes common Homebrew `e2fsprogs` locations.
 
 - `network.default` must be `deny`
 - `network.allow` entries are ignored and produce a warning
-- a virtual NIC is attached (NAT), so guest outbound networking is available
+- a virtual NIC is attached with `Virtualization.framework` NAT networking, so guest outbound networking is available
 
 The backend currently has no allowlist egress enforcement equivalent to Linux Firecracker iptables rules.
 
 At runtime, `darwin-vz` emits an explicit stderr warning for this so it is visible during `exec`/`console`.
+
+This is not equivalent to Firecracker's network model:
+
+- the host does not get a dedicated per-sandbox TAP device
+- the host does not get a stable per-sandbox guest IP identity to key firewall or gateway policy on
+- there is no general host-to-guest inbound network path today beyond the existing helper-mediated control/exec path
+
+The current helper-managed NAT model is intentionally simpler, but it leaves `darwin-vz` behind Firecracker in network identity and enforcement. Planned vmnet-backed work is tracked in [../plans/darwin-vz-vmnet-mode.md](../plans/darwin-vz-vmnet-mode.md).
 
 ## Capability Surface
 
@@ -118,10 +127,12 @@ Current `darwin-vz` capability values:
 - `network.allowlist_egress=false`
 - `network.guest_interface=true`
 
-Git traffic for allowed HTTPS hosts is routed through the host gateway, using a
-scope-token header for sandbox identity because guests share the NAT source
-address. The default gateway host is `192.168.64.1`; override it for unusual
-host networking setups with `CLEANROOM_DARWIN_GATEWAY_HOST`.
+Git traffic for allowed HTTPS hosts is routed through the host gateway over the
+NAT host address. The default gateway host is `192.168.64.1`; override it for
+unusual host networking setups with `CLEANROOM_DARWIN_GATEWAY_HOST`. Because
+the host lacks a stable per-sandbox guest IP identity in this mode, gateway
+scoping currently relies on helper-managed scope-token headers rather than
+Firecracker-style source-IP identity.
 
 ## Entitlements and Signing
 
@@ -184,3 +195,4 @@ The e2e test provisions one sandbox, runs two commands against it, asserts that 
 
 - no allowlist egress filtering yet
 - no sandbox file download support yet
+- no host-visible per-sandbox guest IP / TAP identity yet
