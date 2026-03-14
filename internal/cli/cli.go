@@ -80,7 +80,8 @@ type CLI struct {
 	Create  CreateCommand  `cmd:"" help:"Create a sandbox"`
 	Exec    ExecCommand    `cmd:"" help:"Execute a command in a cleanroom backend"`
 	Console ConsoleCommand `cmd:"" help:"Attach an interactive console to a cleanroom execution"`
-	Serve   ServeCommand   `cmd:"" help:"Run the cleanroom control-plane server"`
+	Serve   ServeCommand   `cmd:"" help:"Run the cleanroom control-plane server in the foreground"`
+	Daemon  DaemonCommand  `cmd:"" help:"Manage daemon/service lifecycle"`
 	Doctor  DoctorCommand  `cmd:"" help:"Run environment and backend diagnostics"`
 	Status  StatusCommand  `cmd:"" help:"Inspect run artifacts"`
 	Sandbox SandboxCommand `cmd:"" help:"Manage sandboxes"`
@@ -216,10 +217,18 @@ type ConsoleCommand struct {
 }
 
 type ServeCommand struct {
-	Action        string `arg:"" optional:"" help:"Serve action (install, uninstall, status)"`
-	Force         bool   `help:"Overwrite existing daemon service file (serve install only)"`
-	User          bool   `help:"Use user daemon scope (launchd only; install/uninstall/status actions)"`
-	System        bool   `help:"Use system daemon scope (linux only; install/uninstall/status actions)"`
+	Listen        string `help:"Listen endpoint for control API (defaults to runtime endpoint)"`
+	GatewayListen string `help:"Listen address for the host gateway (default :8170, use :0 for ephemeral port)"`
+	LogLevel      string `help:"Server log level (debug|info|warn|error)"`
+	TLSCert       string `help:"Path to TLS server certificate (auto-discovered from XDG config for https)" env:"CLEANROOM_TLS_CERT"`
+	TLSKey        string `help:"Path to TLS server private key (auto-discovered from XDG config for https)" env:"CLEANROOM_TLS_KEY"`
+}
+
+type DaemonCommand struct {
+	Action        string `arg:"" required:"" help:"Daemon action (install, uninstall, status, start, stop)"`
+	Force         bool   `help:"Overwrite existing daemon service file (daemon install only)"`
+	User          bool   `help:"Use user daemon scope (launchd only; install/uninstall/status/start/stop actions)"`
+	System        bool   `help:"Use system daemon scope (linux only; install/uninstall/status/start/stop actions)"`
 	Listen        string `help:"Listen endpoint for control API (defaults to runtime endpoint)"`
 	GatewayListen string `help:"Listen address for the host gateway (default :8170, use :0 for ephemeral port)"`
 	LogLevel      string `help:"Server log level (debug|info|warn|error)"`
@@ -1366,27 +1375,27 @@ func trimPassthroughSeparator(args []string) []string {
 }
 
 func (s *ServeCommand) Run(ctx *runtimeContext) error {
+	return s.runServer(ctx)
+}
+
+func (s *DaemonCommand) Run(ctx *runtimeContext) error {
 	switch strings.TrimSpace(strings.ToLower(s.Action)) {
-	case "":
-		if s.Force {
-			return errors.New("--force is only supported with 'cleanroom serve install'")
-		}
-		if s.User || s.System {
-			return errors.New("--user and --system are only supported with 'cleanroom serve install', 'cleanroom serve uninstall', or 'cleanroom serve status'")
-		}
-		return s.runServer(ctx)
 	case "install":
 		return s.installDaemon(ctx)
 	case "uninstall":
 		return s.uninstallDaemon(ctx)
 	case "status":
 		return s.daemonStatus(ctx)
+	case "start":
+		return s.startDaemon(ctx)
+	case "stop":
+		return s.stopDaemon(ctx)
 	default:
-		return fmt.Errorf("unsupported serve action %q", s.Action)
+		return fmt.Errorf("unsupported daemon action %q", s.Action)
 	}
 }
 
-func (s *ServeCommand) requestedDaemonScope() (daemonScope, bool, error) {
+func (s *DaemonCommand) requestedDaemonScope() (daemonScope, bool, error) {
 	if s.User && s.System {
 		return "", false, errors.New("--user and --system cannot be used together")
 	}
@@ -1399,7 +1408,7 @@ func (s *ServeCommand) requestedDaemonScope() (daemonScope, bool, error) {
 	return "", false, nil
 }
 
-func (s *ServeCommand) effectiveDaemonScope() (daemonScope, error) {
+func (s *DaemonCommand) effectiveDaemonScope() (daemonScope, error) {
 	requested, hasScope, err := s.requestedDaemonScope()
 	if err != nil {
 		return "", err
@@ -1416,7 +1425,7 @@ func (s *ServeCommand) effectiveDaemonScope() (daemonScope, error) {
 			return "", errors.New("--system is unsupported on darwin (macOS supports user launchd daemons only)")
 		}
 		if serveInstallEUID() == 0 {
-			return "", errors.New("darwin supports user launchd daemons only; run 'cleanroom serve' without sudo")
+			return "", errors.New("darwin supports user launchd daemons only; run 'cleanroom daemon' without sudo")
 		}
 		return daemonScopeUser, nil
 	default:
@@ -1427,7 +1436,7 @@ func (s *ServeCommand) effectiveDaemonScope() (daemonScope, error) {
 	}
 }
 
-func (s *ServeCommand) daemonRunArgs(cwd string, scope daemonScope) ([]string, error) {
+func (s *DaemonCommand) daemonRunArgs(cwd string, scope daemonScope) ([]string, error) {
 	listen := strings.TrimSpace(s.Listen)
 	if listen == "" {
 		if scope == daemonScopeUser {
@@ -1480,7 +1489,7 @@ func resolveDaemonInstallPath(cwd, value string) (string, error) {
 	return filepath.Clean(filepath.Join(base, value)), nil
 }
 
-func (s *ServeCommand) installDaemon(ctx *runtimeContext) error {
+func (s *DaemonCommand) installDaemon(ctx *runtimeContext) error {
 	scope, err := s.effectiveDaemonScope()
 	if err != nil {
 		return err
@@ -1497,11 +1506,11 @@ func (s *ServeCommand) installDaemon(ctx *runtimeContext) error {
 			installFn = installLaunchdDaemon
 		}
 	default:
-		return fmt.Errorf("serve install is unsupported on %s (expected linux or darwin)", serveInstallGOOS)
+		return fmt.Errorf("daemon install is unsupported on %s (expected linux or darwin)", serveInstallGOOS)
 	}
 
 	if scope == daemonScopeSystem && serveInstallEUID() != 0 {
-		return errors.New("serve install requires root privileges (use sudo cleanroom serve install)")
+		return errors.New("daemon install requires root privileges (use sudo cleanroom daemon install)")
 	}
 
 	executablePath, err := serveInstallExecutablePath()
@@ -1522,7 +1531,7 @@ func (s *ServeCommand) installDaemon(ctx *runtimeContext) error {
 	return installFn(ctx.Stdout, executablePath, args, s.Force)
 }
 
-func (s *ServeCommand) uninstallDaemon(ctx *runtimeContext) error {
+func (s *DaemonCommand) uninstallDaemon(ctx *runtimeContext) error {
 	scope, err := s.effectiveDaemonScope()
 	if err != nil {
 		return err
@@ -1539,14 +1548,68 @@ func (s *ServeCommand) uninstallDaemon(ctx *runtimeContext) error {
 			uninstallFn = uninstallLaunchdDaemon
 		}
 	default:
-		return fmt.Errorf("serve uninstall is unsupported on %s (expected linux or darwin)", serveInstallGOOS)
+		return fmt.Errorf("daemon uninstall is unsupported on %s (expected linux or darwin)", serveInstallGOOS)
 	}
 
 	if scope == daemonScopeSystem && serveInstallEUID() != 0 {
-		return errors.New("serve uninstall requires root privileges (use sudo cleanroom serve uninstall)")
+		return errors.New("daemon uninstall requires root privileges (use sudo cleanroom daemon uninstall)")
 	}
 
 	return uninstallFn(ctx.Stdout)
+}
+
+func (s *DaemonCommand) startDaemon(ctx *runtimeContext) error {
+	scope, err := s.effectiveDaemonScope()
+	if err != nil {
+		return err
+	}
+
+	var startFn func(io.Writer) error
+	switch serveInstallGOOS {
+	case "linux":
+		startFn = startSystemdDaemon
+	case "darwin":
+		if scope == daemonScopeUser {
+			startFn = startLaunchdUserDaemon
+		} else {
+			startFn = startLaunchdDaemon
+		}
+	default:
+		return fmt.Errorf("daemon start is unsupported on %s (expected linux or darwin)", serveInstallGOOS)
+	}
+
+	if scope == daemonScopeSystem && serveInstallEUID() != 0 {
+		return errors.New("daemon start requires root privileges (use sudo cleanroom daemon start)")
+	}
+
+	return startFn(ctx.Stdout)
+}
+
+func (s *DaemonCommand) stopDaemon(ctx *runtimeContext) error {
+	scope, err := s.effectiveDaemonScope()
+	if err != nil {
+		return err
+	}
+
+	var stopFn func(io.Writer) error
+	switch serveInstallGOOS {
+	case "linux":
+		stopFn = stopSystemdDaemon
+	case "darwin":
+		if scope == daemonScopeUser {
+			stopFn = stopLaunchdUserDaemon
+		} else {
+			stopFn = stopLaunchdDaemon
+		}
+	default:
+		return fmt.Errorf("daemon stop is unsupported on %s (expected linux or darwin)", serveInstallGOOS)
+	}
+
+	if scope == daemonScopeSystem && serveInstallEUID() != 0 {
+		return errors.New("daemon stop requires root privileges (use sudo cleanroom daemon stop)")
+	}
+
+	return stopFn(ctx.Stdout)
 }
 
 func uninstallSystemdDaemon(stdout io.Writer) error {
@@ -1585,29 +1648,133 @@ func uninstallLaunchdUserDaemon(stdout io.Writer) error {
 }
 
 func uninstallLaunchdDaemonInDomain(stdout io.Writer, servicePath, domain string) error {
-	if _, err := serveInstallStat(servicePath); errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("service file %s does not exist", servicePath)
+	serviceFileExists := false
+	if _, err := serveInstallStat(servicePath); err == nil {
+		serviceFileExists = true
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("stat service file %s: %w", servicePath, err)
 	}
 
-	if err := serveInstallRunCommand("launchctl", "bootout", launchdServiceTarget(domain)); err != nil && !isExitError(err) {
-		return fmt.Errorf("bootout launchd service %s: %w", launchdServiceName, err)
+	bootoutFoundService := true
+	if err := serveInstallRunCommand("launchctl", "bootout", launchdServiceTarget(domain)); err != nil {
+		if !isExitError(err) {
+			return fmt.Errorf("bootout launchd service %s: %w", launchdServiceName, err)
+		}
+		bootoutFoundService = false
 	}
 
-	if err := serveInstallRemoveFile(servicePath); err != nil {
-		return fmt.Errorf("remove service file %s: %w", servicePath, err)
+	if serviceFileExists {
+		if err := serveInstallRemoveFile(servicePath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove service file %s: %w", servicePath, err)
+		}
 	}
 
-	_, err := fmt.Fprintf(stdout, "daemon uninstalled\nmanager=launchd\nservice=%s\n", launchdServiceName)
+	message := "daemon uninstalled"
+	if !serviceFileExists && !bootoutFoundService {
+		message = "daemon already uninstalled"
+	}
+	_, err := fmt.Fprintf(stdout, "%s\nmanager=launchd\nservice=%s\n", message, launchdServiceName)
 	return err
 }
 
-func (s *ServeCommand) daemonStatus(ctx *runtimeContext) error {
+func startSystemdDaemon(stdout io.Writer) error {
+	if _, err := serveInstallStat(serveInstallSystemdUnitPath); errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("service file %s does not exist", serveInstallSystemdUnitPath)
+	}
+
+	if err := serveInstallRunCommand("systemctl", "start", systemdServiceName); err != nil {
+		return fmt.Errorf("start systemd service %s: %w", systemdServiceName, err)
+	}
+
+	_, err := fmt.Fprintf(stdout, "daemon started\nmanager=systemd\nservice=%s\n", systemdServiceName)
+	return err
+}
+
+func stopSystemdDaemon(stdout io.Writer) error {
+	if _, err := serveInstallStat(serveInstallSystemdUnitPath); errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("service file %s does not exist", serveInstallSystemdUnitPath)
+	}
+
+	if err := serveInstallRunCommand("systemctl", "stop", systemdServiceName); err != nil {
+		return fmt.Errorf("stop systemd service %s: %w", systemdServiceName, err)
+	}
+
+	_, err := fmt.Fprintf(stdout, "daemon stopped\nmanager=systemd\nservice=%s\n", systemdServiceName)
+	return err
+}
+
+func startLaunchdDaemon(stdout io.Writer) error {
+	return startLaunchdDaemonInDomain(stdout, serveInstallLaunchdPath, "system")
+}
+
+func startLaunchdUserDaemon(stdout io.Writer) error {
+	path, err := launchdUserServicePath()
+	if err != nil {
+		return err
+	}
+	return startLaunchdDaemonInDomain(stdout, path, launchdUserDomain())
+}
+
+func startLaunchdDaemonInDomain(stdout io.Writer, servicePath, domain string) error {
+	if _, err := serveInstallStat(servicePath); errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("service file %s does not exist", servicePath)
+	} else if err != nil {
+		return fmt.Errorf("stat service file %s: %w", servicePath, err)
+	}
+
+	target := launchdServiceTarget(domain)
+	if err := serveInstallRunCommand("launchctl", "bootstrap", domain, servicePath); err != nil && !isExitError(err) {
+		return fmt.Errorf("bootstrap launchd service %s: %w", launchdServiceName, err)
+	}
+	if err := serveInstallRunCommand("launchctl", "enable", target); err != nil && !isExitError(err) {
+		return fmt.Errorf("enable launchd service %s: %w", launchdServiceName, err)
+	}
+	if err := serveInstallRunCommand("launchctl", "kickstart", "-k", target); err != nil && !isExitError(err) {
+		return fmt.Errorf("start launchd service %s: %w", launchdServiceName, err)
+	}
+
+	_, err := fmt.Fprintf(stdout, "daemon started\nmanager=launchd\nservice=%s\n", launchdServiceName)
+	return err
+}
+
+func stopLaunchdDaemon(stdout io.Writer) error {
+	return stopLaunchdDaemonInDomain(stdout, serveInstallLaunchdPath, "system")
+}
+
+func stopLaunchdUserDaemon(stdout io.Writer) error {
+	path, err := launchdUserServicePath()
+	if err != nil {
+		return err
+	}
+	return stopLaunchdDaemonInDomain(stdout, path, launchdUserDomain())
+}
+
+func stopLaunchdDaemonInDomain(stdout io.Writer, servicePath, domain string) error {
+	if _, err := serveInstallStat(servicePath); errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("service file %s does not exist", servicePath)
+	} else if err != nil {
+		return fmt.Errorf("stat service file %s: %w", servicePath, err)
+	}
+
+	target := launchdServiceTarget(domain)
+	if err := serveInstallRunCommand("launchctl", "disable", target); err != nil && !isExitError(err) {
+		return fmt.Errorf("disable launchd service %s: %w", launchdServiceName, err)
+	}
+	if err := serveInstallRunCommand("launchctl", "bootout", target); err != nil && !isExitError(err) {
+		return fmt.Errorf("stop launchd service %s: %w", launchdServiceName, err)
+	}
+
+	_, err := fmt.Fprintf(stdout, "daemon stopped\nmanager=launchd\nservice=%s\n", launchdServiceName)
+	return err
+}
+
+func (s *DaemonCommand) daemonStatus(ctx *runtimeContext) error {
 	scope, err := s.effectiveDaemonScope()
 	if err != nil {
 		return err
 	}
 
-	var statusFn func(io.Writer) error
+	var statusFn func(*os.File) error
 	switch serveInstallGOOS {
 	case "linux":
 		statusFn = systemdDaemonStatus
@@ -1618,42 +1785,52 @@ func (s *ServeCommand) daemonStatus(ctx *runtimeContext) error {
 			statusFn = launchdDaemonStatus
 		}
 	default:
-		return fmt.Errorf("serve status is unsupported on %s (expected linux or darwin)", serveInstallGOOS)
+		return fmt.Errorf("daemon status is unsupported on %s (expected linux or darwin)", serveInstallGOOS)
 	}
 
 	return statusFn(ctx.Stdout)
 }
 
-func systemdDaemonStatus(stdout io.Writer) error {
-	installed := "false"
+func systemdDaemonStatus(stdout *os.File) error {
+	installed := false
 	if _, err := serveInstallStat(serveInstallSystemdUnitPath); err == nil {
-		installed = "true"
+		installed = true
 	}
 
-	active := "inactive"
+	active := false
 	if err := serveInstallRunCommand("systemctl", "is-active", "--quiet", systemdServiceName); err == nil {
-		active = "active"
+		active = true
 	} else if !isExitError(err) {
 		return fmt.Errorf("check systemd service active state: %w", err)
 	}
 
-	enabled := "false"
+	enabled := false
 	if err := serveInstallRunCommand("systemctl", "is-enabled", "--quiet", systemdServiceName); err == nil {
-		enabled = "true"
+		enabled = true
 	} else if !isExitError(err) {
 		return fmt.Errorf("check systemd service enabled state: %w", err)
 	}
 
-	_, err := fmt.Fprintf(stdout, "manager=systemd\nservice=%s\ninstalled=%s\nactive=%s\nenabled=%s\n",
-		systemdServiceName, installed, active, enabled)
+	_, err := fmt.Fprint(stdout, renderDaemonStatusReport(daemonStatusReport{
+		Manager:   "systemd",
+		Service:   systemdServiceName,
+		Installed: installed,
+		Active:    active,
+		Fields: []startupField{
+			{Key: "install", Value: daemonInstalledLabel(installed)},
+			{Key: "runtime", Value: daemonRuntimeLabel(active)},
+			{Key: "enabled", Value: daemonEnabledLabel(enabled)},
+			{Key: "path", Value: serveInstallSystemdUnitPath},
+		},
+	}, shouldUseANSI(stdout)))
 	return err
 }
 
-func launchdDaemonStatus(stdout io.Writer) error {
+func launchdDaemonStatus(stdout *os.File) error {
 	return launchdDaemonStatusInDomain(stdout, serveInstallLaunchdPath, "system")
 }
 
-func launchdUserDaemonStatus(stdout io.Writer) error {
+func launchdUserDaemonStatus(stdout *os.File) error {
 	path, err := launchdUserServicePath()
 	if err != nil {
 		return err
@@ -1661,46 +1838,51 @@ func launchdUserDaemonStatus(stdout io.Writer) error {
 	return launchdDaemonStatusInDomain(stdout, path, launchdUserDomain())
 }
 
-func launchdDaemonStatusInDomain(stdout io.Writer, servicePath, domain string) error {
-	installed := "false"
+func launchdDaemonStatusInDomain(stdout *os.File, servicePath, domain string) error {
+	installed := false
 	if _, err := serveInstallStat(servicePath); err == nil {
-		installed = "true"
+		installed = true
 	}
 
-	active := "inactive"
+	active := false
 	state := ""
 	if output, err := serveInstallRunCommandOutput("launchctl", "print", launchdServiceTarget(domain)); err == nil {
 		state = launchdServiceState(output)
 		if state == "running" {
-			active = "active"
+			active = true
 		}
 	} else if !isExitError(err) {
 		return fmt.Errorf("check launchd service state: %w", err)
 	}
 
 	listen := ""
-	if installed == "true" {
+	if installed {
 		if value, err := launchdConfiguredListenEndpoint(servicePath); err == nil {
 			listen = value
 		}
 	}
 
-	_, err := fmt.Fprintf(stdout, "manager=launchd\nservice=%s\ninstalled=%s\nactive=%s\n",
-		launchdServiceName, installed, active)
-	if err != nil {
-		return err
+	fields := []startupField{
+		{Key: "install", Value: daemonInstalledLabel(installed)},
+		{Key: "runtime", Value: daemonRuntimeLabel(active)},
+		{Key: "domain", Value: domain},
+		{Key: "path", Value: servicePath},
 	}
 	if state != "" {
-		if _, err := fmt.Fprintf(stdout, "state=%s\n", state); err != nil {
-			return err
-		}
+		fields = append(fields, startupField{Key: "state", Value: state})
 	}
 	if listen != "" {
-		if _, err := fmt.Fprintf(stdout, "listen=%s\n", listen); err != nil {
-			return err
-		}
+		fields = append(fields, startupField{Key: "listen", Value: listen})
 	}
-	return nil
+
+	_, err := fmt.Fprint(stdout, renderDaemonStatusReport(daemonStatusReport{
+		Manager:   "launchd",
+		Service:   launchdServiceName,
+		Installed: installed,
+		Active:    active,
+		Fields:    fields,
+	}, shouldUseANSI(stdout)))
+	return err
 }
 
 func launchdServiceState(output string) string {

@@ -115,6 +115,65 @@ func TestRenderDoctorReportColor(t *testing.T) {
 	}
 }
 
+func TestRenderDaemonStatusReportPlain(t *testing.T) {
+	out := renderDaemonStatusReport(daemonStatusReport{
+		Manager:   "launchd",
+		Service:   "com.buildkite.cleanroom",
+		Installed: false,
+		Active:    false,
+		Fields: []startupField{
+			{Key: "install", Value: "missing"},
+			{Key: "runtime", Value: "inactive"},
+			{Key: "domain", Value: "gui/501"},
+			{Key: "path", Value: "/Users/alice/Library/LaunchAgents/com.buildkite.cleanroom.plist"},
+		},
+	}, false)
+
+	if !strings.Contains(out, "daemon status (launchd)") {
+		t.Fatalf("missing status title: %q", out)
+	}
+	if !strings.Contains(out, "! [not installed] com.buildkite.cleanroom") {
+		t.Fatalf("missing summary line: %q", out)
+	}
+	if !strings.Contains(out, "  install: missing") {
+		t.Fatalf("missing install line: %q", out)
+	}
+	if !strings.Contains(out, "  runtime: inactive") {
+		t.Fatalf("missing runtime line: %q", out)
+	}
+	if strings.Contains(out, "\x1b[") {
+		t.Fatalf("plain output should not contain ANSI escapes: %q", out)
+	}
+}
+
+func TestRenderDaemonStatusReportColor(t *testing.T) {
+	out := renderDaemonStatusReport(daemonStatusReport{
+		Manager:   "systemd",
+		Service:   "cleanroom.service",
+		Installed: true,
+		Active:    true,
+		Fields: []startupField{
+			{Key: "install", Value: "installed"},
+			{Key: "runtime", Value: "active"},
+			{Key: "enabled", Value: "enabled"},
+		},
+	}, true)
+	plain := stripANSI(out)
+
+	if !strings.Contains(out, "\x1b[") {
+		t.Fatalf("expected ANSI escapes in color output: %q", out)
+	}
+	if !strings.Contains(plain, "daemon status (systemd)") {
+		t.Fatalf("missing status title: %q", out)
+	}
+	if !strings.Contains(plain, "✓ [running] cleanroom.service") {
+		t.Fatalf("missing summary line: %q", out)
+	}
+	if !strings.Contains(plain, "  enabled: enabled") {
+		t.Fatalf("missing enabled line: %q", out)
+	}
+}
+
 func stripANSI(value string) string {
 	ansi := regexp.MustCompile(`\x1b\[[0-9;]*m`)
 	return ansi.ReplaceAllString(value, "")

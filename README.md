@@ -58,14 +58,23 @@ Install as a daemon:
 
 ```bash
 # macOS: installs a user LaunchAgent (user-scope only)
-cleanroom serve install
+cleanroom daemon install
 
 # Linux (systemd)
-sudo cleanroom serve install
+sudo cleanroom daemon install
 ```
 
 Use `--force` to overwrite an existing service file. On macOS, `--system`
 is unsupported; `--user` is accepted for explicitness.
+
+Manage the daemon lifecycle:
+
+```bash
+cleanroom daemon status
+cleanroom daemon start
+cleanroom daemon stop
+cleanroom daemon uninstall
+```
 
 The system daemon socket is root-owned (`unix:///var/run/cleanroom/cleanroom.sock`),
 so client commands against that daemon should be run with `sudo` unless you

@@ -165,65 +165,72 @@ func TestConsoleParsesImageOverride(t *testing.T) {
 	}
 }
 
-func TestServeCommandParsesWithoutAction(t *testing.T) {
+func TestServeCommandParses(t *testing.T) {
 	c := &CLI{}
 	parser := newParserForTest(t, c)
 
 	if _, err := parser.Parse([]string{"serve"}); err != nil {
 		t.Fatalf("parse serve returned error: %v", err)
 	}
-	if got := c.Serve.Action; got != "" {
-		t.Fatalf("expected empty serve action, got %q", got)
-	}
 }
 
-func TestServeInstallParses(t *testing.T) {
+func TestServeInstallIsRejected(t *testing.T) {
 	c := &CLI{}
 	parser := newParserForTest(t, c)
 
-	if _, err := parser.Parse([]string{"serve", "install"}); err != nil {
-		t.Fatalf("parse serve install returned error: %v", err)
-	}
-	if got := c.Serve.Action; got != "install" {
-		t.Fatalf("expected serve action install, got %q", got)
+	_, err := parser.Parse([]string{"serve", "install"})
+	if err == nil {
+		t.Fatal("expected parse error for unexpected serve action")
 	}
 }
 
-func TestServeInstallForceParses(t *testing.T) {
+func TestDaemonInstallParses(t *testing.T) {
 	c := &CLI{}
 	parser := newParserForTest(t, c)
 
-	if _, err := parser.Parse([]string{"serve", "install", "--force"}); err != nil {
-		t.Fatalf("parse serve install --force returned error: %v", err)
+	if _, err := parser.Parse([]string{"daemon", "install"}); err != nil {
+		t.Fatalf("parse daemon install returned error: %v", err)
 	}
-	if got := c.Serve.Action; got != "install" {
-		t.Fatalf("expected serve action install, got %q", got)
-	}
-	if !c.Serve.Force {
-		t.Fatal("expected --force to set Serve.Force")
+	if got := c.Daemon.Action; got != "install" {
+		t.Fatalf("expected daemon action install, got %q", got)
 	}
 }
 
-func TestServeInstallUserParses(t *testing.T) {
+func TestDaemonInstallForceParses(t *testing.T) {
 	c := &CLI{}
 	parser := newParserForTest(t, c)
 
-	if _, err := parser.Parse([]string{"serve", "install", "--user"}); err != nil {
-		t.Fatalf("parse serve install --user returned error: %v", err)
+	if _, err := parser.Parse([]string{"daemon", "install", "--force"}); err != nil {
+		t.Fatalf("parse daemon install --force returned error: %v", err)
 	}
-	if !c.Serve.User {
-		t.Fatal("expected --user to set Serve.User")
+	if got := c.Daemon.Action; got != "install" {
+		t.Fatalf("expected daemon action install, got %q", got)
+	}
+	if !c.Daemon.Force {
+		t.Fatal("expected --force to set Daemon.Force")
 	}
 }
 
-func TestServeInstallSystemParses(t *testing.T) {
+func TestDaemonStatusUserParses(t *testing.T) {
 	c := &CLI{}
 	parser := newParserForTest(t, c)
 
-	if _, err := parser.Parse([]string{"serve", "install", "--system"}); err != nil {
-		t.Fatalf("parse serve install --system returned error: %v", err)
+	if _, err := parser.Parse([]string{"daemon", "status", "--user"}); err != nil {
+		t.Fatalf("parse daemon status --user returned error: %v", err)
 	}
-	if !c.Serve.System {
-		t.Fatal("expected --system to set Serve.System")
+	if !c.Daemon.User {
+		t.Fatal("expected --user to set Daemon.User")
+	}
+}
+
+func TestDaemonStartSystemParses(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"daemon", "start", "--system"}); err != nil {
+		t.Fatalf("parse daemon start --system returned error: %v", err)
+	}
+	if !c.Daemon.System {
+		t.Fatal("expected --system to set Daemon.System")
 	}
 }
