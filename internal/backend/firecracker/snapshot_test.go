@@ -167,46 +167,6 @@ func TestProvisionSandboxFromSnapshotUsesSnapshotRootFS(t *testing.T) {
 	}
 }
 
-func TestRestoreSandboxReplacesRunningInstance(t *testing.T) {
-	t.Parallel()
-
-	compiled := &policy.CompiledPolicy{
-		NetworkDefault: "deny",
-		ImageRef:       "ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-		ImageDigest:    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-		Hash:           "policy-hash",
-	}
-	oldInstance := &sandboxInstance{SandboxID: "cr-test"}
-	newInstance := &sandboxInstance{SandboxID: "cr-test", RunDir: "/tmp/new"}
-	adapter := &Adapter{
-		sandboxes: map[string]*sandboxInstance{"cr-test": oldInstance},
-		launchSandboxVMFromRootFSFn: func(_ context.Context, sandboxID string, gotPolicy *policy.CompiledPolicy, _ backend.FirecrackerConfig, sourceRootFSPath string) (*sandboxInstance, error) {
-			if sandboxID != "cr-test" {
-				t.Fatalf("unexpected sandbox id: %q", sandboxID)
-			}
-			if gotPolicy != compiled {
-				t.Fatal("expected compiled policy to be reused during restore")
-			}
-			if got, want := sourceRootFSPath, "/tmp/snap-test.ext4"; got != want {
-				t.Fatalf("unexpected source rootfs: got %q want %q", got, want)
-			}
-			return newInstance, nil
-		},
-	}
-
-	if err := adapter.RestoreSandbox(context.Background(), backend.RestoreRequest{
-		SandboxID:  "cr-test",
-		SnapshotID: "snap-test",
-		StorageRef: "/tmp/snap-test.ext4",
-		Policy:     compiled,
-	}); err != nil {
-		t.Fatalf("RestoreSandbox returned error: %v", err)
-	}
-	if got, want := adapter.sandboxes["cr-test"], newInstance; got != want {
-		t.Fatalf("expected replacement sandbox instance, got %#v want %#v", got, want)
-	}
-}
-
 func TestRootFSVolumeStoreDriverAllowsWritableVolumesWhenSnapshotsDisabled(t *testing.T) {
 	t.Parallel()
 

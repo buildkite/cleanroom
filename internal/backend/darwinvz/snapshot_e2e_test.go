@@ -94,7 +94,7 @@ func TestSnapshotLifecycleE2E(t *testing.T) {
 	}
 
 	sandboxID := fmt.Sprintf("cr-snapshot-%d", time.Now().UnixNano())
-	forkSandboxID := sandboxID + "-fork"
+	fromSnapshotSandboxID := sandboxID + "-from-snapshot"
 	snapshotID := fmt.Sprintf("snap-%d", time.Now().UnixNano())
 	markerPath := fmt.Sprintf("/snapshot-%s-marker.txt", sandboxID)
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
@@ -122,14 +122,14 @@ func TestSnapshotLifecycleE2E(t *testing.T) {
 		if terminatedFork {
 			return
 		}
-		if err := adapter.TerminateSandbox(context.Background(), forkSandboxID); err != nil && !strings.Contains(err.Error(), "unknown sandbox") {
-			t.Fatalf("deferred TerminateSandbox for fork returned error: %v", err)
+		if err := adapter.TerminateSandbox(context.Background(), fromSnapshotSandboxID); err != nil && !strings.Contains(err.Error(), "unknown sandbox") {
+			t.Fatalf("deferred TerminateSandbox for snapshot-backed sandbox returned error: %v", err)
 		}
 	}()
 
 	beforeValue := "snapshot-before"
 	afterValue := "snapshot-after"
-	forkValue := "fork-updated"
+	fromSnapshotValue := "snapshot-backed-updated"
 
 	runCommand(ctx, adapter, sandboxID, "run-before", "sh", "-lc", fmt.Sprintf("printf '%%s' %s > %s", beforeValue, markerPath))
 
@@ -150,21 +150,8 @@ func TestSnapshotLifecycleE2E(t *testing.T) {
 		t.Fatalf("unexpected post-snapshot marker: got %q want %q", got, want)
 	}
 
-	if err := adapter.RestoreSandbox(ctx, backend.RestoreRequest{
-		SandboxID:         sandboxID,
-		SnapshotID:        snapshotID,
-		StorageRef:        snapshot.StorageRef,
-		Policy:            compiled,
-		FirecrackerConfig: cfg,
-	}); err != nil {
-		t.Fatalf("RestoreSandbox returned error: %v", err)
-	}
-	if got, want := runCommand(ctx, adapter, sandboxID, "cat-restored", "sh", "-lc", "cat "+markerPath), beforeValue; got != want {
-		t.Fatalf("unexpected restored marker: got %q want %q", got, want)
-	}
-
 	if err := adapter.ProvisionSandboxFromSnapshot(ctx, backend.ProvisionFromSnapshotRequest{
-		SandboxID:         forkSandboxID,
+		SandboxID:         fromSnapshotSandboxID,
 		SnapshotID:        snapshotID,
 		StorageRef:        snapshot.StorageRef,
 		Policy:            compiled,
@@ -172,16 +159,16 @@ func TestSnapshotLifecycleE2E(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("ProvisionSandboxFromSnapshot returned error: %v", err)
 	}
-	if got, want := runCommand(ctx, adapter, forkSandboxID, "cat-fork", "sh", "-lc", "cat "+markerPath), beforeValue; got != want {
-		t.Fatalf("unexpected fork marker: got %q want %q", got, want)
+	if got, want := runCommand(ctx, adapter, fromSnapshotSandboxID, "cat-from-snapshot", "sh", "-lc", "cat "+markerPath), beforeValue; got != want {
+		t.Fatalf("unexpected snapshot-backed marker: got %q want %q", got, want)
 	}
 
-	runCommand(ctx, adapter, forkSandboxID, "run-fork", "sh", "-lc", fmt.Sprintf("printf '%%s' %s > %s", forkValue, markerPath))
-	if got, want := runCommand(ctx, adapter, forkSandboxID, "cat-fork-updated", "sh", "-lc", "cat "+markerPath), forkValue; got != want {
-		t.Fatalf("unexpected updated fork marker: got %q want %q", got, want)
+	runCommand(ctx, adapter, fromSnapshotSandboxID, "run-from-snapshot", "sh", "-lc", fmt.Sprintf("printf '%%s' %s > %s", fromSnapshotValue, markerPath))
+	if got, want := runCommand(ctx, adapter, fromSnapshotSandboxID, "cat-from-snapshot-updated", "sh", "-lc", "cat "+markerPath), fromSnapshotValue; got != want {
+		t.Fatalf("unexpected updated snapshot-backed marker: got %q want %q", got, want)
 	}
-	if got, want := runCommand(ctx, adapter, sandboxID, "cat-restored-again", "sh", "-lc", "cat "+markerPath), beforeValue; got != want {
-		t.Fatalf("unexpected restored sandbox marker after fork mutation: got %q want %q", got, want)
+	if got, want := runCommand(ctx, adapter, sandboxID, "cat-source-again", "sh", "-lc", "cat "+markerPath), afterValue; got != want {
+		t.Fatalf("unexpected source sandbox marker after snapshot-backed mutation: got %q want %q", got, want)
 	}
 
 	if err := adapter.DeleteSnapshot(ctx, backend.DeleteSnapshotRequest{
@@ -195,8 +182,8 @@ func TestSnapshotLifecycleE2E(t *testing.T) {
 		t.Fatalf("expected snapshot to be removed, got err=%v", err)
 	}
 
-	if err := adapter.TerminateSandbox(ctx, forkSandboxID); err != nil {
-		t.Fatalf("TerminateSandbox for fork returned error: %v", err)
+	if err := adapter.TerminateSandbox(ctx, fromSnapshotSandboxID); err != nil {
+		t.Fatalf("TerminateSandbox for snapshot-backed sandbox returned error: %v", err)
 	}
 	terminatedFork = true
 	if err := adapter.TerminateSandbox(ctx, sandboxID); err != nil {

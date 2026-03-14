@@ -15,9 +15,10 @@ type ExecCommand struct {
 	clientFlags
 	Chdir          string `short:"c" help:"Change to this directory before running commands"`
 	Backend        string `help:"Execution backend (defaults to runtime config or host default)"`
-	SandboxID      string `help:"Reuse an existing sandbox instead of creating a new one"`
+	In             string `name:"in" help:"Run in an existing sandbox ID instead of creating a new one"`
+	From           string `name:"from" help:"Create the sandbox from an existing snapshot ID"`
 	Image          string `help:"Override sandbox image ref for newly created sandboxes (tag, digest, or local Docker image)"`
-	Remove         bool   `name:"rm" help:"Terminate the sandbox after command completion"`
+	Keep           bool   `help:"Keep a newly created sandbox after the command completes"`
 	PrintSandboxID bool   `name:"print-sandbox-id" help:"Print resolved sandbox_id=<id> to stderr before streaming output"`
 
 	LaunchSeconds int64 `help:"VM boot/guest-agent readiness timeout in seconds"`
@@ -44,11 +45,11 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 	logger.Debug("sending execution request",
 		"host", host,
 		"backend", e.Backend,
-		"sandbox_id", strings.TrimSpace(e.SandboxID),
+		"sandbox_id", strings.TrimSpace(e.In),
 		"command_argc", len(e.Command),
 	)
 	persistentRepositoryBackend := backendSupportsRepositoryPersistence(ctx, host, e.Backend)
-	repository, err := maybeResolveRepositoryCheckout(cwd, ctx.Loader, strings.TrimSpace(e.SandboxID), !persistentRepositoryBackend)
+	repository, err := maybeResolveRepositoryCheckout(cwd, ctx.Loader, strings.TrimSpace(e.In), strings.TrimSpace(e.From), !persistentRepositoryBackend)
 	if err != nil {
 		return err
 	}
@@ -58,8 +59,14 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 	if inlineRepositoryBootstrap {
 		repositoryForCreate = nil
 	}
-	sandboxID, err := ensureSandboxID(client, ctx.Loader, cwd, host, e.Backend, strings.TrimSpace(e.SandboxID), e.Image, e.LaunchSeconds, repositoryForCreate)
+	if strings.TrimSpace(e.In) != "" && e.Keep {
+		return errors.New("--keep cannot be used with --in")
+	}
+	sandboxID, createdSandbox, err := ensureSandboxID(client, ctx.Loader, cwd, host, e.Backend, strings.TrimSpace(e.In), strings.TrimSpace(e.From), e.Image, e.LaunchSeconds, repositoryForCreate)
 	if err != nil {
+		if strings.TrimSpace(e.From) != "" {
+			err = explainSnapshotRuntimeDisabledError(err, ctx)
+		}
 		return err
 	}
 	if e.PrintSandboxID {
@@ -68,7 +75,7 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 		}
 	}
 	detached := false
-	autoTerminateSandbox := e.Remove
+	autoTerminateSandbox := createdSandbox && !e.Keep
 	defer func() {
 		if detached || !autoTerminateSandbox || sandboxID == "" {
 			return
@@ -163,7 +170,7 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 	select {
 	case <-secondInterrupt:
 		detached = true
-		if e.Remove {
+		if autoTerminateSandbox {
 			terminateSandboxBestEffort(client, sandboxID, sandboxTerminateTimeout, logger, "terminate sandbox after detach failed")
 		}
 		return exitCodeError{code: 130}

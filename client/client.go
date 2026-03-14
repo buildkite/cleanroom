@@ -113,13 +113,6 @@ func (c *Client) DownloadSandboxFile(ctx context.Context, req *DownloadSandboxFi
 	return c.inner.DownloadSandboxFile(ctx, req)
 }
 
-func (c *Client) RestoreSandbox(ctx context.Context, req *RestoreSandboxRequest) (*RestoreSandboxResponse, error) {
-	if c == nil || c.inner == nil {
-		return nil, errors.New("nil client")
-	}
-	return c.inner.RestoreSandbox(ctx, req)
-}
-
 func (c *Client) TerminateSandbox(ctx context.Context, req *TerminateSandboxRequest) (*TerminateSandboxResponse, error) {
 	if c == nil || c.inner == nil {
 		return nil, errors.New("nil client")

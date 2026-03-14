@@ -290,7 +290,6 @@ Failure UX:
 
 ## 11) Out of Scope for Minimal v1
 
-- Checkpoint/restore API
 - Artifact upload API
 - Multi-tenant org/authz policy model
 - Cross-sandbox workflow orchestration

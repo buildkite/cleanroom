@@ -89,14 +89,6 @@ func (s *Server) DownloadSandboxFile(ctx context.Context, req *connect.Request[c
 	return connect.NewResponse(resp), nil
 }
 
-func (s *Server) RestoreSandbox(ctx context.Context, req *connect.Request[cleanroomv1.RestoreSandboxRequest]) (*connect.Response[cleanroomv1.RestoreSandboxResponse], error) {
-	resp, err := s.service.RestoreSandbox(ctx, req.Msg)
-	if err != nil {
-		return nil, toConnectError(err)
-	}
-	return connect.NewResponse(resp), nil
-}
-
 func (s *Server) TerminateSandbox(ctx context.Context, req *connect.Request[cleanroomv1.TerminateSandboxRequest]) (*connect.Response[cleanroomv1.TerminateSandboxResponse], error) {
 	resp, err := s.service.TerminateSandbox(ctx, req.Msg)
 	if err != nil {

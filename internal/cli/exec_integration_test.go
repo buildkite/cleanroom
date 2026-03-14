@@ -36,13 +36,11 @@ type integrationAdapter struct {
 	provisionFn              func(context.Context, backend.ProvisionRequest) error
 	provisionFromSnapshotFn  func(context.Context, backend.ProvisionFromSnapshotRequest) error
 	createSnapshotFn         func(context.Context, backend.SnapshotRequest) (*backend.SnapshotResult, error)
-	restoreFn                func(context.Context, backend.RestoreRequest) error
 	deleteSnapshotFn         func(context.Context, backend.DeleteSnapshotRequest) error
 	terminateFn              func(context.Context, string) error
 	provisionReq             backend.ProvisionRequest
 	provisionFromSnapshotReq backend.ProvisionFromSnapshotRequest
 	createSnapshotReq        backend.SnapshotRequest
-	restoreReq               backend.RestoreRequest
 	deleteSnapshotReq        backend.DeleteSnapshotRequest
 }
 
@@ -112,17 +110,6 @@ func (a *snapshotIntegrationAdapter) ProvisionSandboxFromSnapshot(ctx context.Co
 	a.mu.Lock()
 	a.provisionFromSnapshotReq = req
 	fn := a.provisionFromSnapshotFn
-	a.mu.Unlock()
-	if fn != nil {
-		return fn(ctx, req)
-	}
-	return nil
-}
-
-func (a *snapshotIntegrationAdapter) RestoreSandbox(ctx context.Context, req backend.RestoreRequest) error {
-	a.mu.Lock()
-	a.restoreReq = req
-	fn := a.restoreFn
 	a.mu.Unlock()
 	if fn != nil {
 		return fn(ctx, req)

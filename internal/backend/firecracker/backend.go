@@ -552,59 +552,6 @@ func (a *Adapter) ProvisionSandboxFromSnapshot(ctx context.Context, req backend.
 	return nil
 }
 
-func (a *Adapter) RestoreSandbox(ctx context.Context, req backend.RestoreRequest) error {
-	sandboxID := strings.TrimSpace(req.SandboxID)
-	if sandboxID == "" {
-		return errors.New("missing sandbox_id")
-	}
-	if req.Policy == nil {
-		return errors.New("missing compiled policy")
-	}
-	storageRef := strings.TrimSpace(req.StorageRef)
-	if storageRef == "" {
-		return errors.New("missing snapshot storage_ref")
-	}
-
-	a.sandboxMu.Lock()
-	if a.sandboxes == nil {
-		a.sandboxes = map[string]*sandboxInstance{}
-	}
-	if a.provisioning == nil {
-		a.provisioning = map[string]struct{}{}
-	}
-	instance, ok := a.sandboxes[sandboxID]
-	if !ok {
-		a.sandboxMu.Unlock()
-		return fmt.Errorf("unknown sandbox %q", sandboxID)
-	}
-	if _, exists := a.provisioning[sandboxID]; exists {
-		a.sandboxMu.Unlock()
-		return fmt.Errorf("sandbox %q is already provisioning", sandboxID)
-	}
-	a.provisioning[sandboxID] = struct{}{}
-	delete(a.sandboxes, sandboxID)
-	a.sandboxMu.Unlock()
-
-	if a.GatewayRegistry != nil && instance.GuestIP != "" {
-		a.GatewayRegistry.Release(instance.GuestIP)
-	}
-	instance.shutdown()
-
-	launch := a.launchSandboxVMFromRootFSFn
-	if launch == nil {
-		launch = a.launchSandboxVMFromRootFS
-	}
-	replacement, err := launch(ctx, sandboxID, req.Policy, req.FirecrackerConfig, storageRef)
-	a.sandboxMu.Lock()
-	defer a.sandboxMu.Unlock()
-	delete(a.provisioning, sandboxID)
-	if err != nil {
-		return err
-	}
-	a.sandboxes[sandboxID] = replacement
-	return nil
-}
-
 func (a *Adapter) DeleteSnapshot(ctx context.Context, req backend.DeleteSnapshotRequest) error {
 	storageRef := strings.TrimSpace(req.StorageRef)
 	if storageRef == "" {

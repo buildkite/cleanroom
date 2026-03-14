@@ -59,10 +59,6 @@ func (snapshotIntegrationAdapter) ProvisionSandboxFromSnapshot(context.Context, 
 	return nil
 }
 
-func (snapshotIntegrationAdapter) RestoreSandbox(context.Context, backend.RestoreRequest) error {
-	return nil
-}
-
 func (snapshotIntegrationAdapter) DeleteSnapshot(context.Context, backend.DeleteSnapshotRequest) error {
 	return nil
 }
@@ -278,25 +274,14 @@ func TestClientSnapshotLifecycle(t *testing.T) {
 		t.Fatalf("unexpected snapshot count: got %d want %d", got, want)
 	}
 
-	forkResp, err := client.CreateSandbox(ctx, &CreateSandboxRequest{
+	fromSnapshotResp, err := client.CreateSandbox(ctx, &CreateSandboxRequest{
 		Source: &cleanroomv1.CreateSandboxRequest_SnapshotId{SnapshotId: snapshotID},
 	})
 	if err != nil {
 		t.Fatalf("CreateSandbox from snapshot returned error: %v", err)
 	}
-	if got := forkResp.GetSandbox().GetSandboxId(); got == "" {
-		t.Fatal("expected forked sandbox_id")
-	}
-
-	restoreResp, err := client.RestoreSandbox(ctx, &RestoreSandboxRequest{
-		SandboxId:  sandboxID,
-		SnapshotId: snapshotID,
-	})
-	if err != nil {
-		t.Fatalf("RestoreSandbox returned error: %v", err)
-	}
-	if got := restoreResp.GetSandbox().GetStatus(); got != SandboxStatus_SANDBOX_STATUS_READY {
-		t.Fatalf("unexpected restored sandbox status: %v", got)
+	if got := fromSnapshotResp.GetSandbox().GetSandboxId(); got == "" {
+		t.Fatal("expected snapshot-backed sandbox_id")
 	}
 
 	deleteSnapshotResp, err := client.DeleteSnapshot(ctx, &DeleteSnapshotRequest{SnapshotId: snapshotID})
@@ -307,7 +292,7 @@ func TestClientSnapshotLifecycle(t *testing.T) {
 		t.Fatal("expected deleted=true")
 	}
 
-	for _, id := range []string{forkResp.GetSandbox().GetSandboxId(), sandboxID} {
+	for _, id := range []string{fromSnapshotResp.GetSandbox().GetSandboxId(), sandboxID} {
 		terminateResp, terminateErr := client.TerminateSandbox(ctx, &TerminateSandboxRequest{SandboxId: id})
 		if terminateErr != nil {
 			t.Fatalf("TerminateSandbox returned error for %q: %v", id, terminateErr)

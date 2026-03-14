@@ -20,11 +20,13 @@ import (
 
 type ConsoleCommand struct {
 	clientFlags
-	Chdir     string `short:"c" help:"Change to this directory before running commands"`
-	Backend   string `help:"Execution backend (defaults to runtime config or host default)"`
-	SandboxID string `help:"Reuse an existing sandbox instead of creating a new one"`
-	Image     string `help:"Override sandbox image ref for newly created sandboxes (tag, digest, or local Docker image)"`
-	Remove    bool   `name:"rm" help:"Terminate the sandbox after console exits"`
+	Chdir          string `short:"c" help:"Change to this directory before running commands"`
+	Backend        string `help:"Execution backend (defaults to runtime config or host default)"`
+	In             string `name:"in" help:"Run in an existing sandbox ID instead of creating a new one"`
+	From           string `name:"from" help:"Create the sandbox from an existing snapshot ID"`
+	Image          string `help:"Override sandbox image ref for newly created sandboxes (tag, digest, or local Docker image)"`
+	Keep           bool   `help:"Keep a newly created sandbox after the console exits"`
+	PrintSandboxID bool   `name:"print-sandbox-id" help:"Print resolved sandbox_id=<id> to stderr before attaching"`
 
 	LaunchSeconds int64 `help:"VM boot/guest-agent readiness timeout in seconds"`
 
@@ -54,11 +56,11 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 	logger.Debug("starting interactive console",
 		"host", host,
 		"backend", c.Backend,
-		"sandbox_id", strings.TrimSpace(c.SandboxID),
+		"sandbox_id", strings.TrimSpace(c.In),
 		"command_argc", len(command),
 	)
 	persistentRepositoryBackend := backendSupportsRepositoryPersistence(ctx, host, c.Backend)
-	repository, err := maybeResolveRepositoryCheckout(cwd, ctx.Loader, strings.TrimSpace(c.SandboxID), !persistentRepositoryBackend)
+	repository, err := maybeResolveRepositoryCheckout(cwd, ctx.Loader, strings.TrimSpace(c.In), strings.TrimSpace(c.From), !persistentRepositoryBackend)
 	if err != nil {
 		return err
 	}
@@ -68,11 +70,22 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 	if inlineRepositoryBootstrap {
 		repositoryForCreate = nil
 	}
-	sandboxID, err := ensureSandboxID(client, ctx.Loader, cwd, host, c.Backend, strings.TrimSpace(c.SandboxID), c.Image, c.LaunchSeconds, repositoryForCreate)
+	if strings.TrimSpace(c.In) != "" && c.Keep {
+		return errors.New("--keep cannot be used with --in")
+	}
+	sandboxID, createdSandbox, err := ensureSandboxID(client, ctx.Loader, cwd, host, c.Backend, strings.TrimSpace(c.In), strings.TrimSpace(c.From), c.Image, c.LaunchSeconds, repositoryForCreate)
 	if err != nil {
+		if strings.TrimSpace(c.From) != "" {
+			err = explainSnapshotRuntimeDisabledError(err, ctx)
+		}
 		return err
 	}
-	autoTerminateSandbox := c.Remove
+	if c.PrintSandboxID {
+		if _, err := fmt.Fprintf(os.Stderr, "sandbox_id=%s\n", sandboxID); err != nil {
+			return err
+		}
+	}
+	autoTerminateSandbox := createdSandbox && !c.Keep
 	defer func() {
 		if sandboxID == "" || !autoTerminateSandbox {
 			return

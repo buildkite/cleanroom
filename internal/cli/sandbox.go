@@ -23,6 +23,7 @@ type SandboxCreateCommand struct {
 	clientFlags
 	Chdir         string `short:"c" help:"Change to this directory before running commands"`
 	Backend       string `help:"Execution backend (defaults to runtime config or host default)"`
+	From          string `name:"from" help:"Create the sandbox from an existing snapshot ID"`
 	Image         string `help:"Override sandbox image ref (tag, digest, or local Docker image)"`
 	LaunchSeconds int64  `help:"VM boot/guest-agent readiness timeout in seconds"`
 	JSON          bool   `help:"Print sandbox as JSON"`
@@ -42,6 +43,7 @@ type CreateCommand struct {
 	clientFlags
 	Chdir         string `short:"c" help:"Change to this directory before running commands"`
 	Backend       string `help:"Execution backend (defaults to runtime config or host default)"`
+	From          string `name:"from" help:"Create the sandbox from an existing snapshot ID"`
 	Image         string `help:"Override sandbox image ref (tag, digest, or local Docker image)"`
 	LaunchSeconds int64  `help:"VM boot/guest-agent readiness timeout in seconds"`
 	JSON          bool   `help:"Print sandbox as JSON"`
@@ -103,38 +105,53 @@ func (c *SandboxTerminateCommand) Run(ctx *runtimeContext) error {
 	return err
 }
 
-func runSandboxCreate(ctx *runtimeContext, connectFlags clientFlags, chdir, backend, imageRefOverride string, launchSeconds int64, outputJSON bool) error {
+func runSandboxCreate(ctx *runtimeContext, connectFlags clientFlags, chdir, backend, from, imageRefOverride string, launchSeconds int64, outputJSON bool) error {
 	resolvedHost := connectFlags.resolvedHost(ctx.Config)
 	client, err := connectFlags.connect(ctx)
 	if err != nil {
 		return err
 	}
 
-	cwd, err := resolveCWD(ctx.CWD, chdir)
-	if err != nil {
-		return err
-	}
-	compiled, _, err := ctx.Loader.LoadAndCompile(cwd)
-	if err != nil {
-		return err
-	}
-	allowLocalImageOverride, err := isLocalControlPlaneEndpoint(resolvedHost)
-	if err != nil {
-		return err
-	}
-	compiled, err = overrideCompiledPolicyImage(compiled, imageRefOverride, allowLocalImageOverride)
-	if err != nil {
-		return err
-	}
-
-	resp, err := client.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+	createReq := &cleanroomv1.CreateSandboxRequest{
 		Backend: backend,
 		Options: &cleanroomv1.SandboxOptions{
 			LaunchSeconds: launchSeconds,
 		},
-		Policy: compiled.ToProto(),
-	})
+	}
+	from = strings.TrimSpace(from)
+	if from != "" {
+		if strings.TrimSpace(imageRefOverride) != "" {
+			return errors.New("--image cannot be used with --from")
+		}
+		if strings.TrimSpace(backend) != "" {
+			return errors.New("--backend cannot be used with --from")
+		}
+		createReq.Source = &cleanroomv1.CreateSandboxRequest_SnapshotId{SnapshotId: from}
+	} else {
+		cwd, err := resolveCWD(ctx.CWD, chdir)
+		if err != nil {
+			return err
+		}
+		compiled, _, err := ctx.Loader.LoadAndCompile(cwd)
+		if err != nil {
+			return err
+		}
+		allowLocalImageOverride, err := isLocalControlPlaneEndpoint(resolvedHost)
+		if err != nil {
+			return err
+		}
+		compiled, err = overrideCompiledPolicyImage(compiled, imageRefOverride, allowLocalImageOverride)
+		if err != nil {
+			return err
+		}
+		createReq.Policy = compiled.ToProto()
+	}
+
+	resp, err := client.CreateSandbox(context.Background(), createReq)
 	if err != nil {
+		if from != "" {
+			err = explainSnapshotRuntimeDisabledError(err, ctx)
+		}
 		return fmt.Errorf("create sandbox: %w", err)
 	}
 
@@ -155,10 +172,13 @@ func runSandboxCreate(ctx *runtimeContext, connectFlags clientFlags, chdir, back
 }
 
 func (c *SandboxCreateCommand) Run(ctx *runtimeContext) error {
-	return runSandboxCreate(ctx, c.clientFlags, c.Chdir, c.Backend, c.Image, c.LaunchSeconds, c.JSON)
+	return runSandboxCreate(ctx, c.clientFlags, c.Chdir, c.Backend, c.From, c.Image, c.LaunchSeconds, c.JSON)
 }
 
 func (c *CreateCommand) Run(ctx *runtimeContext) error {
+	if strings.TrimSpace(c.From) != "" {
+		return runSandboxCreate(ctx, c.clientFlags, c.Chdir, c.Backend, c.From, c.Image, c.LaunchSeconds, c.JSON)
+	}
 	host := c.resolvedHost(ctx.Config)
 	client, err := c.connect(ctx)
 	if err != nil {

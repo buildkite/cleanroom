@@ -19,7 +19,7 @@ Implemented:
 - managed kernel fallback when `kernel_image` is unset or missing
 - rootfs derivation from `sandbox.image.ref` when `rootfs` is unset or missing
 - persistent sandboxes across multiple executions
-- file-backed snapshot, restore, and fork for persistent sandboxes
+- file-backed snapshot and create-from-snapshot for persistent sandboxes
 - doctor checks for helper availability and entitlement status
 
 Not implemented:
@@ -129,8 +129,6 @@ Current `darwin-vz` capability values when snapshot support is enabled:
 - `exec.streaming=true`
 - `sandbox.persistent=true`
 - `sandbox.snapshot=true`
-- `sandbox.restore=true`
-- `sandbox.fork=true`
 - `sandbox.file_download=false`
 - `network.default_deny=true`
 - `network.allowlist_egress=false`

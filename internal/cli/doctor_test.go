@@ -61,10 +61,6 @@ func (doctorSnapshotAdapter) ProvisionSandboxFromSnapshot(context.Context, backe
 	return nil
 }
 
-func (doctorSnapshotAdapter) RestoreSandbox(context.Context, backend.RestoreRequest) error {
-	return nil
-}
-
 func (doctorSnapshotAdapter) DeleteSnapshot(context.Context, backend.DeleteSnapshotRequest) error {
 	return nil
 }
@@ -271,12 +267,16 @@ func TestDoctorCommandHonorsRuntimeSnapshotCapabilityConfig(t *testing.T) {
 
 	for _, key := range []string{
 		backend.CapabilitySandboxSnapshot,
-		backend.CapabilitySandboxRestore,
-		backend.CapabilitySandboxFork,
 	} {
 		if payload.Capabilities[key] {
 			t.Fatalf("expected %s=false when runtime config disables snapshots", key)
 		}
+	}
+	if _, ok := payload.Capabilities["sandbox.restore"]; ok {
+		t.Fatalf("did not expect sandbox.restore capability key in doctor payload")
+	}
+	if _, ok := payload.Capabilities["sandbox.fork"]; ok {
+		t.Fatalf("did not expect sandbox.fork capability key in doctor payload")
 	}
 
 	foundSnapshotCheck := false

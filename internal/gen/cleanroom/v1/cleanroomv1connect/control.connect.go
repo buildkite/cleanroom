@@ -49,9 +49,6 @@ const (
 	// SandboxServiceDownloadSandboxFileProcedure is the fully-qualified name of the SandboxService's
 	// DownloadSandboxFile RPC.
 	SandboxServiceDownloadSandboxFileProcedure = "/cleanroom.v1.SandboxService/DownloadSandboxFile"
-	// SandboxServiceRestoreSandboxProcedure is the fully-qualified name of the SandboxService's
-	// RestoreSandbox RPC.
-	SandboxServiceRestoreSandboxProcedure = "/cleanroom.v1.SandboxService/RestoreSandbox"
 	// SandboxServiceTerminateSandboxProcedure is the fully-qualified name of the SandboxService's
 	// TerminateSandbox RPC.
 	SandboxServiceTerminateSandboxProcedure = "/cleanroom.v1.SandboxService/TerminateSandbox"
@@ -93,7 +90,6 @@ type SandboxServiceClient interface {
 	GetSandbox(context.Context, *connect.Request[v1.GetSandboxRequest]) (*connect.Response[v1.GetSandboxResponse], error)
 	ListSandboxes(context.Context, *connect.Request[v1.ListSandboxesRequest]) (*connect.Response[v1.ListSandboxesResponse], error)
 	DownloadSandboxFile(context.Context, *connect.Request[v1.DownloadSandboxFileRequest]) (*connect.Response[v1.DownloadSandboxFileResponse], error)
-	RestoreSandbox(context.Context, *connect.Request[v1.RestoreSandboxRequest]) (*connect.Response[v1.RestoreSandboxResponse], error)
 	TerminateSandbox(context.Context, *connect.Request[v1.TerminateSandboxRequest]) (*connect.Response[v1.TerminateSandboxResponse], error)
 	StreamSandboxEvents(context.Context, *connect.Request[v1.StreamSandboxEventsRequest]) (*connect.ServerStreamForClient[v1.SandboxEvent], error)
 }
@@ -133,12 +129,6 @@ func NewSandboxServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(sandboxServiceMethods.ByName("DownloadSandboxFile")),
 			connect.WithClientOptions(opts...),
 		),
-		restoreSandbox: connect.NewClient[v1.RestoreSandboxRequest, v1.RestoreSandboxResponse](
-			httpClient,
-			baseURL+SandboxServiceRestoreSandboxProcedure,
-			connect.WithSchema(sandboxServiceMethods.ByName("RestoreSandbox")),
-			connect.WithClientOptions(opts...),
-		),
 		terminateSandbox: connect.NewClient[v1.TerminateSandboxRequest, v1.TerminateSandboxResponse](
 			httpClient,
 			baseURL+SandboxServiceTerminateSandboxProcedure,
@@ -160,7 +150,6 @@ type sandboxServiceClient struct {
 	getSandbox          *connect.Client[v1.GetSandboxRequest, v1.GetSandboxResponse]
 	listSandboxes       *connect.Client[v1.ListSandboxesRequest, v1.ListSandboxesResponse]
 	downloadSandboxFile *connect.Client[v1.DownloadSandboxFileRequest, v1.DownloadSandboxFileResponse]
-	restoreSandbox      *connect.Client[v1.RestoreSandboxRequest, v1.RestoreSandboxResponse]
 	terminateSandbox    *connect.Client[v1.TerminateSandboxRequest, v1.TerminateSandboxResponse]
 	streamSandboxEvents *connect.Client[v1.StreamSandboxEventsRequest, v1.SandboxEvent]
 }
@@ -185,11 +174,6 @@ func (c *sandboxServiceClient) DownloadSandboxFile(ctx context.Context, req *con
 	return c.downloadSandboxFile.CallUnary(ctx, req)
 }
 
-// RestoreSandbox calls cleanroom.v1.SandboxService.RestoreSandbox.
-func (c *sandboxServiceClient) RestoreSandbox(ctx context.Context, req *connect.Request[v1.RestoreSandboxRequest]) (*connect.Response[v1.RestoreSandboxResponse], error) {
-	return c.restoreSandbox.CallUnary(ctx, req)
-}
-
 // TerminateSandbox calls cleanroom.v1.SandboxService.TerminateSandbox.
 func (c *sandboxServiceClient) TerminateSandbox(ctx context.Context, req *connect.Request[v1.TerminateSandboxRequest]) (*connect.Response[v1.TerminateSandboxResponse], error) {
 	return c.terminateSandbox.CallUnary(ctx, req)
@@ -206,7 +190,6 @@ type SandboxServiceHandler interface {
 	GetSandbox(context.Context, *connect.Request[v1.GetSandboxRequest]) (*connect.Response[v1.GetSandboxResponse], error)
 	ListSandboxes(context.Context, *connect.Request[v1.ListSandboxesRequest]) (*connect.Response[v1.ListSandboxesResponse], error)
 	DownloadSandboxFile(context.Context, *connect.Request[v1.DownloadSandboxFileRequest]) (*connect.Response[v1.DownloadSandboxFileResponse], error)
-	RestoreSandbox(context.Context, *connect.Request[v1.RestoreSandboxRequest]) (*connect.Response[v1.RestoreSandboxResponse], error)
 	TerminateSandbox(context.Context, *connect.Request[v1.TerminateSandboxRequest]) (*connect.Response[v1.TerminateSandboxResponse], error)
 	StreamSandboxEvents(context.Context, *connect.Request[v1.StreamSandboxEventsRequest], *connect.ServerStream[v1.SandboxEvent]) error
 }
@@ -242,12 +225,6 @@ func NewSandboxServiceHandler(svc SandboxServiceHandler, opts ...connect.Handler
 		connect.WithSchema(sandboxServiceMethods.ByName("DownloadSandboxFile")),
 		connect.WithHandlerOptions(opts...),
 	)
-	sandboxServiceRestoreSandboxHandler := connect.NewUnaryHandler(
-		SandboxServiceRestoreSandboxProcedure,
-		svc.RestoreSandbox,
-		connect.WithSchema(sandboxServiceMethods.ByName("RestoreSandbox")),
-		connect.WithHandlerOptions(opts...),
-	)
 	sandboxServiceTerminateSandboxHandler := connect.NewUnaryHandler(
 		SandboxServiceTerminateSandboxProcedure,
 		svc.TerminateSandbox,
@@ -270,8 +247,6 @@ func NewSandboxServiceHandler(svc SandboxServiceHandler, opts ...connect.Handler
 			sandboxServiceListSandboxesHandler.ServeHTTP(w, r)
 		case SandboxServiceDownloadSandboxFileProcedure:
 			sandboxServiceDownloadSandboxFileHandler.ServeHTTP(w, r)
-		case SandboxServiceRestoreSandboxProcedure:
-			sandboxServiceRestoreSandboxHandler.ServeHTTP(w, r)
 		case SandboxServiceTerminateSandboxProcedure:
 			sandboxServiceTerminateSandboxHandler.ServeHTTP(w, r)
 		case SandboxServiceStreamSandboxEventsProcedure:
@@ -299,10 +274,6 @@ func (UnimplementedSandboxServiceHandler) ListSandboxes(context.Context, *connec
 
 func (UnimplementedSandboxServiceHandler) DownloadSandboxFile(context.Context, *connect.Request[v1.DownloadSandboxFileRequest]) (*connect.Response[v1.DownloadSandboxFileResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cleanroom.v1.SandboxService.DownloadSandboxFile is not implemented"))
-}
-
-func (UnimplementedSandboxServiceHandler) RestoreSandbox(context.Context, *connect.Request[v1.RestoreSandboxRequest]) (*connect.Response[v1.RestoreSandboxResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cleanroom.v1.SandboxService.RestoreSandbox is not implemented"))
 }
 
 func (UnimplementedSandboxServiceHandler) TerminateSandbox(context.Context, *connect.Request[v1.TerminateSandboxRequest]) (*connect.Response[v1.TerminateSandboxResponse], error) {

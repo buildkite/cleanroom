@@ -131,14 +131,6 @@ func (c *Client) DownloadSandboxFile(ctx context.Context, req *cleanroomv1.Downl
 	return resp.Msg, nil
 }
 
-func (c *Client) RestoreSandbox(ctx context.Context, req *cleanroomv1.RestoreSandboxRequest) (*cleanroomv1.RestoreSandboxResponse, error) {
-	resp, err := c.sandboxClient.RestoreSandbox(ctx, connect.NewRequest(req))
-	if err != nil {
-		return nil, err
-	}
-	return resp.Msg, nil
-}
-
 func (c *Client) TerminateSandbox(ctx context.Context, req *cleanroomv1.TerminateSandboxRequest) (*cleanroomv1.TerminateSandboxResponse, error) {
 	resp, err := c.sandboxClient.TerminateSandbox(ctx, connect.NewRequest(req))
 	if err != nil {

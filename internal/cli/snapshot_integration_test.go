@@ -34,12 +34,6 @@ func runSnapshotDeleteWithCapture(cmd SnapshotDeleteCommand, ctx runtimeContext)
 	}, nil, ctx)
 }
 
-func runSandboxRestoreWithCapture(cmd SandboxRestoreCommand, ctx runtimeContext) execOutcome {
-	return runWithCapture(func(runCtx *runtimeContext) error {
-		return cmd.Run(runCtx)
-	}, nil, ctx)
-}
-
 func TestSnapshotCommandsIntegrationLifecycle(t *testing.T) {
 	adapter := &snapshotIntegrationAdapter{}
 	host, _ := startIntegrationServer(t, adapter)
@@ -161,7 +155,7 @@ func TestSnapshotCommandsIntegrationLifecycle(t *testing.T) {
 	}
 }
 
-func TestSandboxSnapshotIntegrationCreateFromSnapshotAndRestore(t *testing.T) {
+func TestSandboxSnapshotIntegrationCreateFromSnapshot(t *testing.T) {
 	adapter := &snapshotIntegrationAdapter{}
 	host, _ := startIntegrationServer(t, adapter)
 	cwd := t.TempDir()
@@ -199,11 +193,11 @@ func TestSandboxSnapshotIntegrationCreateFromSnapshotAndRestore(t *testing.T) {
 		t.Fatalf("SandboxCreateCommand.Run returned error: %v", createOutcome.err)
 	}
 
-	forkSandboxID := strings.TrimSpace(createOutcome.stdout)
-	if forkSandboxID == "" {
+	fromSnapshotSandboxID := strings.TrimSpace(createOutcome.stdout)
+	if fromSnapshotSandboxID == "" {
 		t.Fatalf("expected sandbox id output, got %q", createOutcome.stdout)
 	}
-	requireSandboxStatus(t, client, forkSandboxID, cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY)
+	requireSandboxStatus(t, client, fromSnapshotSandboxID, cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY)
 	if got, want := adapter.provisionFromSnapshotReq.SnapshotID, snapshotID; got != want {
 		t.Fatalf("unexpected provision snapshot id: got %q want %q", got, want)
 	}
@@ -212,30 +206,6 @@ func TestSandboxSnapshotIntegrationCreateFromSnapshotAndRestore(t *testing.T) {
 	}
 	if adapter.provisionFromSnapshotReq.Policy == nil {
 		t.Fatal("expected compiled policy on provision-from-snapshot request")
-	}
-
-	restoreOutcome := runSandboxRestoreWithCapture(SandboxRestoreCommand{
-		clientFlags: clientFlags{Host: host},
-		SandboxID:   sandboxID,
-		From:        snapshotID,
-	}, runtimeContext{CWD: cwd})
-	if restoreOutcome.cause != nil {
-		t.Fatalf("capture failure: %v", restoreOutcome.cause)
-	}
-	if restoreOutcome.err != nil {
-		t.Fatalf("SandboxRestoreCommand.Run returned error: %v", restoreOutcome.err)
-	}
-	if !strings.Contains(restoreOutcome.stdout, "sandbox restored from snapshot") {
-		t.Fatalf("expected restore output, got %q", restoreOutcome.stdout)
-	}
-	if got, want := adapter.restoreReq.SandboxID, sandboxID; got != want {
-		t.Fatalf("unexpected restore sandbox id: got %q want %q", got, want)
-	}
-	if got, want := adapter.restoreReq.SnapshotID, snapshotID; got != want {
-		t.Fatalf("unexpected restore snapshot id: got %q want %q", got, want)
-	}
-	if adapter.restoreReq.Policy == nil {
-		t.Fatal("expected compiled policy on restore request")
 	}
 }
 
@@ -320,7 +290,7 @@ func TestSnapshotDeleteIntegrationAllowsDeleteAfterSnapshotBackedCreate(t *testi
 		t.Fatalf("SandboxCreateCommand.Run returned error: %v", createOutcome.err)
 	}
 	if got := strings.TrimSpace(createOutcome.stdout); got == "" {
-		t.Fatal("expected forked sandbox id output")
+		t.Fatal("expected snapshot-backed sandbox id output")
 	}
 
 	deleteOutcome := runSnapshotDeleteWithCapture(SnapshotDeleteCommand{

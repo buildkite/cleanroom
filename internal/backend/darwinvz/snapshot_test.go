@@ -121,57 +121,6 @@ func TestProvisionSandboxFromSnapshotUsesSnapshotRootFS(t *testing.T) {
 	}
 }
 
-func TestRestoreSandboxReplacesRunningInstance(t *testing.T) {
-	t.Parallel()
-
-	oldRunDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(oldRunDir, "artifact.txt"), []byte("old"), 0o644); err != nil {
-		t.Fatalf("write old artifact: %v", err)
-	}
-
-	compiled := &policy.CompiledPolicy{
-		NetworkDefault: "deny",
-		ImageRef:       "ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-		ImageDigest:    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-		Hash:           "policy-hash",
-	}
-	oldInstance := &sandboxInstance{SandboxID: "cr-test", RunDir: oldRunDir}
-	newInstance := &sandboxInstance{SandboxID: "cr-test", RunDir: filepath.Join(t.TempDir(), "replacement")}
-
-	var gotCfg backend.FirecrackerConfig
-	adapter := &Adapter{
-		sandboxes: map[string]*sandboxInstance{"cr-test": oldInstance},
-		launchSandboxVMFn: func(_ context.Context, sandboxID string, gotPolicy *policy.CompiledPolicy, cfg backend.FirecrackerConfig) (*sandboxInstance, error) {
-			if sandboxID != "cr-test" {
-				t.Fatalf("unexpected sandbox id: %q", sandboxID)
-			}
-			if gotPolicy != compiled {
-				t.Fatal("expected compiled policy to be reused during restore")
-			}
-			gotCfg = cfg
-			return newInstance, nil
-		},
-	}
-
-	if err := adapter.RestoreSandbox(context.Background(), backend.RestoreRequest{
-		SandboxID:  "cr-test",
-		SnapshotID: "snap-test",
-		StorageRef: "/tmp/snap-test.ext4",
-		Policy:     compiled,
-	}); err != nil {
-		t.Fatalf("RestoreSandbox returned error: %v", err)
-	}
-	if got, want := adapter.sandboxes["cr-test"], newInstance; got != want {
-		t.Fatalf("expected replacement sandbox instance, got %#v want %#v", got, want)
-	}
-	if got, want := gotCfg.RootFSPath, "/tmp/snap-test.ext4"; got != want {
-		t.Fatalf("unexpected restore rootfs path: got %q want %q", got, want)
-	}
-	if _, err := os.Stat(oldRunDir); !os.IsNotExist(err) {
-		t.Fatalf("expected old sandbox run dir to be removed, got err=%v", err)
-	}
-}
-
 func TestDeleteSnapshotRemovesSnapshotRootFS(t *testing.T) {
 	t.Parallel()
 

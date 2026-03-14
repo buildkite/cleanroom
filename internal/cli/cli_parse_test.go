@@ -246,15 +246,16 @@ func TestConsoleParsesInFromAndKeep(t *testing.T) {
 	}
 }
 
-func TestSandboxRestoreParsesFromSnapshot(t *testing.T) {
+func TestSandboxRestoreCommandRemoved(t *testing.T) {
 	c := &CLI{}
 	parser := newParserForTest(t, c)
 
-	if _, err := parser.Parse([]string{"sandbox", "restore", "cr_123", "--from", "snap_123"}); err != nil {
-		t.Fatalf("parse sandbox restore --from returned error: %v", err)
+	_, err := parser.Parse([]string{"sandbox", "restore", "cr_123", "--from", "snap_123"})
+	if err == nil {
+		t.Fatal("expected parse error for removed sandbox restore command")
 	}
-	if got, want := c.Sandbox.Restore.From, "snap_123"; got != want {
-		t.Fatalf("unexpected restore from: got %q want %q", got, want)
+	if !strings.Contains(err.Error(), "restore") {
+		t.Fatalf("expected parse error to mention restore, got %v", err)
 	}
 }
 
