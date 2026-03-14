@@ -121,9 +121,43 @@ metadata:
   risk_class: low
 ```
 
+### 5.1.1 Repository bootstrap config
+
+Top-level commands default to materializing the current git repository into the
+sandbox when run inside a git checkout.
+
+The implicit defaults are:
+
+```yaml
+repository:
+  remote: origin
+  path: /workspace
+  submodules: false
+```
+
+The optional `repository` block is for overrides or disablement:
+
+```yaml
+repository:
+  enabled: false
+```
+
+Meaning:
+
+- `enabled: false` disables the default repo-aware bootstrap for top-level commands
+- `remote` selects which git remote to read, default `origin`
+- `path` is the absolute guest destination, default `/workspace`
+- `submodules` controls whether submodules are initialized after checkout
+
 ### 5.2 Schema rules
 - Required: `version`, `sandbox.network.default`.
 - `sandbox.network.default` must be either `deny` or `allow`; v1 default must be `deny`.
+- If `repository` is omitted, top-level commands default to the current repo with `remote: origin`, `path: /workspace`, and `submodules: false`.
+- `repository.enabled` defaults to `true`; `false` disables repo-aware bootstrap for top-level commands.
+- `repository.mode` is optional and, when set, may be `none` or `current-repo`.
+- `repository.remote` defaults to `origin`.
+- `repository.path` defaults to `/workspace` and must be an absolute guest path.
+- `repository.submodules` defaults to `false`.
 - Host matching supports:
   - exact host (`registry.npmjs.org`)
   - wildcard subdomains (`*.example.com`)
@@ -178,20 +212,30 @@ metadata:
 - Filesystem writes persist across executions within a sandbox and are discarded on sandbox termination.
 - Current API/runtime intent: no host workspace mount input is accepted by `CreateSandbox` or `CreateExecution`.
 - Workloads run against the backend-provided sandbox image filesystem.
+- By default, `cleanroom create`, `cleanroom exec`, and `cleanroom console` are repo-aware when run inside a git repository:
+  - they resolve the local repository remote URL and committed `HEAD`
+  - they materialize that checkout inside the sandbox before the command runs
+  - they start commands in `repository.path`
+- `cleanroom sandbox create` remains the generic low-level surface and does not
+  infer repository state from the current working tree.
 
 ### 5.4.1 `cleanroom exec` behavior contract (normative)
 - `cleanroom exec` must:
   1. resolve API endpoint (`--host`, env, context, default unix socket),
   2. resolve and compile policy,
-  3. create or select sandbox,
-  4. create execution,
-  5. stream output/events to caller,
-  6. return workload exit code.
+  3. when repo-aware bootstrap is enabled, resolve the current git repository
+     root, remote URL, and committed `HEAD`,
+  4. create or select sandbox,
+  5. create execution,
+  6. stream output/events to caller,
+  7. return workload exit code.
 - Default mode creates a persistent sandbox that remains `READY` after execution completes. Use `--rm` to terminate the sandbox after execution.
 - Reuse an existing sandbox with `--sandbox-id <id>`.
 - Interactive mode (`-it`) must use bidirectional stream semantics.
 - Non-interactive mode must use server-streaming semantics.
 - First interrupt signal should request execution cancel; second interrupt may detach client stream immediately.
+- If the local repository is dirty, Cleanroom should warn and continue using
+  committed `HEAD`; uncommitted changes must not be copied into the sandbox.
 
 ### 5.5 Compiled policy payload (normative)
 Cleanroom compiles repository policy into an immutable `CompiledPolicy` payload for run creation. This payload is the only policy input to backend adapters.

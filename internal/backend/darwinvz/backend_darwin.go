@@ -95,13 +95,14 @@ type sandboxInstance struct {
 	exitReady       bool
 }
 
-const preparedRuntimeRootFSVersion = "v8-darwin-vz"
+const preparedRuntimeRootFSVersion = "v9-darwin-vz"
 
 var virtualizationEntitlementPattern = regexp.MustCompile(`(?s)<key>\s*com\.apple\.security\.virtualization\s*</key>\s*<true\s*/?>`)
 
 const (
-	guestInitScriptPath = "/sbin/cleanroom-init"
-	guestAgentPath      = "/usr/local/bin/cleanroom-guest-agent"
+	guestInitScriptPathSbin    = "/sbin/cleanroom-init"
+	guestInitScriptPathUsrSbin = "/usr/sbin/cleanroom-init"
+	guestAgentPath             = "/usr/local/bin/cleanroom-guest-agent"
 )
 
 const guestInitScriptTemplate = `#!/bin/sh
@@ -1407,7 +1408,6 @@ func (a *Adapter) ensurePreparedRuntimeRootFSFromImage(ctx context.Context, imag
 
 var preparedRuntimeRootFSRequiredPaths = []string{
 	guestAgentPath,
-	guestInitScriptPath,
 }
 
 func validatePreparedRuntimeRootFS(path string) error {
@@ -1416,18 +1416,58 @@ func validatePreparedRuntimeRootFS(path string) error {
 			return fmt.Errorf("required runtime file %q is missing or unreadable: %w", requiredPath, err)
 		}
 	}
-	return nil
+	return validatePreparedRuntimeRootFSInitPathForLayout(
+		ext4PathExists(path, "/bin/sh"),
+		ext4PathType(path, "/sbin"),
+		func(requiredPath string) bool {
+			return ext4PathExists(path, requiredPath)
+		},
+	)
 }
+
+type ext4PathKind string
+
+const (
+	ext4PathKindUnknown   ext4PathKind = ""
+	ext4PathKindDirectory ext4PathKind = "directory"
+	ext4PathKindRegular   ext4PathKind = "regular"
+	ext4PathKindSymlink   ext4PathKind = "symlink"
+)
 
 func guestInitExecutableForRootFS(rootFSPath string) (path, notice string) {
-	return guestInitExecutableForShellPresence(ext4PathExists(rootFSPath, "/bin/sh"))
+	return guestInitExecutableForRootFSLayout(ext4PathExists(rootFSPath, "/bin/sh"), ext4PathType(rootFSPath, "/sbin"))
 }
 
-func guestInitExecutableForShellPresence(hasShell bool) (path, notice string) {
+func guestInitExecutableForRootFSLayout(hasShell bool, sbinKind ext4PathKind) (path, notice string) {
+	return guestInitExecutableForShellPresence(hasShell, preferredGuestInitScriptPathForSbinKind(sbinKind))
+}
+
+func guestInitExecutableForShellPresence(hasShell bool, initScriptPath string) (path, notice string) {
 	if hasShell {
-		return guestInitScriptPath, ""
+		if strings.TrimSpace(initScriptPath) == "" {
+			initScriptPath = guestInitScriptPathUsrSbin
+		}
+		return initScriptPath, ""
 	}
 	return guestAgentPath, fmt.Sprintf("rootfs is shell-less; using %s as init", guestAgentPath)
+}
+
+func preferredGuestInitScriptPathForSbinKind(kind ext4PathKind) string {
+	if kind == ext4PathKindDirectory {
+		return guestInitScriptPathSbin
+	}
+	return guestInitScriptPathUsrSbin
+}
+
+func validatePreparedRuntimeRootFSInitPathForLayout(hasShell bool, sbinKind ext4PathKind, pathExists func(string) bool) error {
+	initPath, _ := guestInitExecutableForRootFSLayout(hasShell, sbinKind)
+	if initPath == guestAgentPath {
+		return nil
+	}
+	if pathExists != nil && pathExists(initPath) {
+		return nil
+	}
+	return fmt.Errorf("required runtime file %q is missing or unreadable", initPath)
 }
 
 func preparedRuntimeRootFSPath(imageDigest, guestAgentHash string) (string, error) {
@@ -1501,14 +1541,38 @@ func (a *Adapter) getGuestAgentBinary() (string, string, error) {
 }
 
 func discoverGuestAgentBinary() (string, error) {
-	linuxName := fmt.Sprintf("cleanroom-guest-agent-linux-%s", runtime.GOARCH)
-	candidates := []string{linuxName, "cleanroom-guest-agent"}
+	return discoverGuestAgentBinaryWith(
+		runtime.GOARCH,
+		exec.LookPath,
+		os.Executable,
+		os.Getwd,
+		os.Stat,
+		isLinuxGuestAgentBinary,
+	)
+}
 
-	self, err := os.Executable()
-	if err == nil {
+func discoverGuestAgentBinaryWith(
+	goarch string,
+	lookPath func(string) (string, error),
+	executable func() (string, error),
+	getwd func() (string, error),
+	stat func(string) (os.FileInfo, error),
+	validate func(string) (bool, error),
+) (string, error) {
+	linuxName := fmt.Sprintf("cleanroom-guest-agent-linux-%s", goarch)
+	candidates := []string{}
+	if self, err := executable(); err == nil {
 		candidates = append(candidates, filepath.Join(filepath.Dir(self), linuxName))
 		candidates = append(candidates, filepath.Join(filepath.Dir(self), "cleanroom-guest-agent"))
 	}
+	if getwd != nil {
+		if cwd, err := getwd(); err == nil {
+			if path, err := resolvePrebuiltBinaryPathFromWorkdir(cwd, linuxName, stat); err == nil {
+				candidates = append(candidates, path)
+			}
+		}
+	}
+	candidates = append(candidates, linuxName, "cleanroom-guest-agent")
 
 	for _, candidate := range candidates {
 		if strings.TrimSpace(candidate) == "" {
@@ -1516,17 +1580,17 @@ func discoverGuestAgentBinary() (string, error) {
 		}
 		resolved := candidate
 		if !filepath.IsAbs(candidate) {
-			p, lookErr := exec.LookPath(candidate)
+			p, lookErr := lookPath(candidate)
 			if lookErr != nil {
 				continue
 			}
 			resolved = p
 		}
-		info, statErr := os.Stat(resolved)
+		info, statErr := stat(resolved)
 		if statErr != nil || info.IsDir() {
 			continue
 		}
-		ok, validateErr := isLinuxGuestAgentBinary(resolved)
+		ok, validateErr := validate(resolved)
 		if validateErr != nil {
 			return "", fmt.Errorf("validate guest agent binary %q: %w", resolved, validateErr)
 		}
@@ -1534,7 +1598,7 @@ func discoverGuestAgentBinary() (string, error) {
 			return resolved, nil
 		}
 	}
-	return "", fmt.Errorf("linux guest-agent binary not found for architecture %s; run `mise run install` to build and install cleanroom-guest-agent-linux-%s", runtime.GOARCH, runtime.GOARCH)
+	return "", fmt.Errorf("linux guest-agent binary not found for architecture %s; run `mise run build` or `mise run install` to make cleanroom-guest-agent-linux-%s discoverable", goarch, goarch)
 }
 
 func isLinuxGuestAgentBinary(path string) (bool, error) {
@@ -1617,8 +1681,13 @@ func (a *Adapter) installGuestRuntimeIntoRootFS(rootFSPath, guestAgentPath strin
 	if err := injectFileIntoExt4(rootFSPath, guestAgentPath, "/usr/local/bin/cleanroom-guest-agent", 0o755); err != nil {
 		return fmt.Errorf("inject guest agent into rootfs image: %w", err)
 	}
-	if err := injectFileIntoExt4(rootFSPath, initScriptPath, "/sbin/cleanroom-init", 0o755); err != nil {
-		return fmt.Errorf("inject cleanroom init into rootfs image: %w", err)
+	if err := injectFileIntoExt4(rootFSPath, initScriptPath, guestInitScriptPathUsrSbin, 0o755); err != nil {
+		return fmt.Errorf("inject cleanroom init into rootfs image (%s): %w", guestInitScriptPathUsrSbin, err)
+	}
+	if ext4PathType(rootFSPath, "/sbin") == ext4PathKindDirectory {
+		if err := injectFileIntoExt4(rootFSPath, initScriptPath, guestInitScriptPathSbin, 0o755); err != nil {
+			return fmt.Errorf("inject cleanroom init into rootfs image (%s): %w", guestInitScriptPathSbin, err)
+		}
 	}
 	return nil
 }
@@ -1693,10 +1762,23 @@ func ext4PathExists(imagePath, path string) bool {
 	return runDebugFS(imagePath, false, fmt.Sprintf("stat %s", path)) == nil
 }
 
+func ext4PathType(imagePath, path string) ext4PathKind {
+	output, err := runDebugFSOutput(imagePath, false, fmt.Sprintf("stat %s", path))
+	if err != nil {
+		return ext4PathKindUnknown
+	}
+	return debugFSStatType(output)
+}
+
 func runDebugFS(imagePath string, writable bool, command string) error {
+	_, err := runDebugFSOutput(imagePath, writable, command)
+	return err
+}
+
+func runDebugFSOutput(imagePath string, writable bool, command string) (string, error) {
 	debugfsBinary, err := hosttools.ResolveE2FSProgsBinary("debugfs")
 	if err != nil {
-		return fmt.Errorf("find debugfs for runtime rootfs preparation: %w", err)
+		return "", fmt.Errorf("find debugfs for runtime rootfs preparation: %w", err)
 	}
 
 	args := make([]string, 0, 4)
@@ -1708,12 +1790,12 @@ func runDebugFS(imagePath string, writable bool, command string) error {
 	output, err := cmd.CombinedOutput()
 	trimmedOutput := strings.TrimSpace(string(output))
 	if err != nil {
-		return fmt.Errorf("debugfs command %q failed: %w: %s", command, err, trimmedOutput)
+		return "", fmt.Errorf("debugfs command %q failed: %w: %s", command, err, trimmedOutput)
 	}
 	if outputErr := debugFSCommandOutputError(trimmedOutput); outputErr != "" {
-		return fmt.Errorf("debugfs command %q reported error: %s", command, outputErr)
+		return "", fmt.Errorf("debugfs command %q reported error: %s", command, outputErr)
 	}
-	return nil
+	return trimmedOutput, nil
 }
 
 func debugFSCommandOutputError(output string) string {
@@ -1740,6 +1822,31 @@ func debugFSCommandOutputError(output string) string {
 		}
 	}
 	return ""
+}
+
+func debugFSStatType(output string) ext4PathKind {
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.Contains(line, "Type:") {
+			continue
+		}
+		rest := line[strings.Index(line, "Type:")+len("Type:"):]
+		fields := strings.Fields(rest)
+		if len(fields) == 0 {
+			return ext4PathKindUnknown
+		}
+		switch strings.ToLower(fields[0]) {
+		case string(ext4PathKindDirectory):
+			return ext4PathKindDirectory
+		case string(ext4PathKindRegular):
+			return ext4PathKindRegular
+		case string(ext4PathKindSymlink):
+			return ext4PathKindSymlink
+		default:
+			return ext4PathKindUnknown
+		}
+	}
+	return ext4PathKindUnknown
 }
 
 func (a *Adapter) resolveKernelPath(ctx context.Context, configuredPath string) (path, notice string, err error) {

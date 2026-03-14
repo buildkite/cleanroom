@@ -15,13 +15,14 @@ const (
 )
 
 func resolveHelperBinaryPath() (string, error) {
-	return resolveHelperBinaryPathWith(os.Getenv(helperEnvVar), exec.LookPath, os.Executable, os.Stat)
+	return resolveHelperBinaryPathWith(os.Getenv(helperEnvVar), exec.LookPath, os.Executable, os.Getwd, os.Stat)
 }
 
 func resolveHelperBinaryPathWith(
 	envOverride string,
 	lookPath func(string) (string, error),
 	executable func() (string, error),
+	getwd func() (string, error),
 	stat func(string) (os.FileInfo, error),
 ) (string, error) {
 	if override := strings.TrimSpace(envOverride); override != "" {
@@ -39,16 +40,51 @@ func resolveHelperBinaryPathWith(
 		}
 	}
 
+	if getwd != nil {
+		if cwd, err := getwd(); err == nil {
+			if path, err := resolvePrebuiltBinaryPathFromWorkdir(cwd, helperBinaryName, stat); err == nil {
+				return path, nil
+			}
+		}
+	}
+
 	if path, err := lookPath(helperBinaryName); err == nil {
 		return path, nil
 	}
 
 	return "", fmt.Errorf(
-		"%s helper binary was not found (set %s or install %s in PATH)",
+		"%s helper binary was not found (set %s, build prebuilt binaries with `mise run build`, or install %s in PATH)",
 		helperBinaryName,
 		helperEnvVar,
 		helperBinaryName,
 	)
+}
+
+func resolvePrebuiltBinaryPathFromWorkdir(startDir, binaryName string, stat func(string) (os.FileInfo, error)) (string, error) {
+	trimmedDir := strings.TrimSpace(startDir)
+	if trimmedDir == "" {
+		return "", errors.New("working directory is empty")
+	}
+	absStartDir, err := filepath.Abs(trimmedDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve working directory: %w", err)
+	}
+	trimmedName := strings.TrimSpace(binaryName)
+	if trimmedName == "" {
+		return "", errors.New("binary name is empty")
+	}
+
+	for dir := absStartDir; ; dir = filepath.Dir(dir) {
+		candidate := filepath.Join(dir, "dist", trimmedName)
+		if path, err := resolveHelperCandidatePath(candidate, stat); err == nil {
+			return path, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+	}
+	return "", fmt.Errorf("prebuilt binary %q not found under dist/ from %s", trimmedName, absStartDir)
 }
 
 func resolveHelperCandidatePath(path string, stat func(string) (os.FileInfo, error)) (string, error) {

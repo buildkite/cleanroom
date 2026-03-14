@@ -217,11 +217,9 @@ Expose a server mode and API-driven commands in the same binary.
 
 ### 9.2 Sandbox commands
 
-- `cleanroom --host unix:///run/user/1000/cleanroom/cleanroom.sock sandboxes create --backend local --policy ./cleanroom.yaml --repo .`
-- `cleanroom sandboxes get <sandbox-id>`
-- `cleanroom sandboxes list`
-- `cleanroom sandboxes terminate <sandbox-id>`
-- `cleanroom sandboxes events <sandbox-id> [--follow]`
+- `cleanroom sandbox create`
+- `cleanroom sandbox ls`
+- `cleanroom sandbox rm <sandbox-id>`
 
 ### 9.3 Execution commands
 
@@ -236,21 +234,34 @@ Expose a server mode and API-driven commands in the same binary.
 `cleanroom exec` remains the primary developer UX, but it is implemented as client/server RPC.
 
 Default command:
-- `cleanroom exec -- "npm test"`
+- `cleanroom exec -- npm test`
 
 Additional command forms:
-- `cleanroom exec -it -- bash`
+- `cleanroom create`
+- `cleanroom console -- bash`
 
 Behavior contract:
 1. Resolve server endpoint (`--host`, `CLEANROOM_HOST`, context, default unix socket).
 2. Resolve and compile repository policy.
-3. Create or reuse sandbox (`--sandbox-id <id>` reuses an existing sandbox).
-4. Create execution with command and TTY options.
-5. Stream output:
+3. If repo-aware bootstrap is enabled, resolve the current git remote and
+   committed `HEAD`.
+4. Create or reuse sandbox (`--sandbox-id <id>` reuses an existing sandbox).
+5. For repo-aware top-level commands, materialize that checkout in the sandbox
+   and default the guest working directory to `repository.path`.
+6. Create execution with command and TTY options.
+7. Stream output:
    - non-interactive: `StreamExecution`
    - interactive: `AttachExecution`
-6. Return the command exit code.
-7. Sandbox remains `READY` for further executions. Use `--rm` to terminate after execution.
+8. Return the command exit code.
+9. Sandbox remains `READY` for further executions. Use `--rm` to terminate after execution.
+
+Notes:
+- `cleanroom create`, `cleanroom exec`, and `cleanroom console` are the
+  repo-aware UX layer.
+- `cleanroom sandbox create` stays generic and does not inspect the local git
+  repository.
+- Dirty working trees warn and use committed `HEAD`; uncommitted changes are
+  not copied into the sandbox.
 
 Signal behavior:
 1. First `Ctrl-C`: `CancelExecution`.

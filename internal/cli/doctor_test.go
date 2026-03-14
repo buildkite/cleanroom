@@ -45,6 +45,10 @@ func (doctorFailingLoader) LoadAndCompile(string) (*policy.CompiledPolicy, strin
 	return nil, "", errors.New("policy unavailable")
 }
 
+func (doctorFailingLoader) LoadRepository(string) (policy.RepositoryConfig, string, error) {
+	return policy.RepositoryConfig{}, "", errors.New("policy unavailable")
+}
+
 func TestDoctorCommandJSONIncludesCapabilities(t *testing.T) {
 	t.Setenv("CLEANROOM_GITHUB_TOKEN", "ghp_testtoken")
 	t.Setenv("CLEANROOM_GITLAB_TOKEN", "")

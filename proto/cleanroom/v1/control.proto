@@ -70,12 +70,23 @@ message SandboxOptions {
   int64 launch_seconds = 3;
 }
 
+message RepositoryCheckout {
+  string remote_url = 1;
+  string commit_sha = 2;
+  string destination_dir = 3;
+  bool submodules = 4;
+  string branch = 7;
+  reserved 5, 6;
+  reserved "git_config_key", "git_config_value";
+}
+
 message CreateSandboxRequest {
   reserved 1;
   reserved "cwd";
   string backend = 2;
   SandboxOptions options = 3;
   Policy policy = 4;
+  RepositoryCheckout repository_checkout = 5;
 }
 
 message CreateSandboxResponse {
@@ -174,6 +185,7 @@ message CreateExecutionRequest {
   repeated string command = 2;
   ExecutionOptions options = 3;
   ExecutionKind kind = 4;
+  RepositoryCheckout repository_checkout = 5;
 }
 
 message CreateExecutionResponse {

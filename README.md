@@ -87,6 +87,11 @@ Run a command in a sandbox:
 cleanroom exec -- npm test
 ```
 
+When `cleanroom.yaml` includes a repository bootstrap block, the top-level
+commands become repo-aware: Cleanroom resolves the current git remote and local
+`HEAD`, materializes that checkout in the sandbox, and starts commands in the
+configured guest path.
+
 Pre-create a long-running sandbox without running a command:
 
 ```bash
@@ -107,6 +112,9 @@ Equivalent namespaced command:
 ```bash
 cleanroom sandbox create
 ```
+
+`cleanroom sandbox create` stays generic. It does not inspect the local git
+repository or infer a checkout from `cleanroom.yaml`.
 
 The sandbox stays running after the command completes. List sandboxes and run more commands:
 
@@ -160,6 +168,54 @@ Validate policy without running anything:
 
 ```bash
 cleanroom policy validate
+```
+
+Repository-aware bootstrap is the default for the top-level commands when you
+run them from inside a git repository.
+
+The implicit defaults are:
+
+```yaml
+repository:
+  remote: origin
+  path: /workspace
+  submodules: false
+```
+
+Use the optional `repository` block only to override those defaults or disable
+the behavior:
+
+```yaml
+repository:
+  enabled: false
+```
+
+or:
+
+```yaml
+repository:
+  path: /work
+  submodules: true
+```
+
+With the default behavior:
+
+- `cleanroom create` creates a sandbox with the current repo checked out at local `HEAD`
+- `cleanroom exec -- <cmd>` checks out the repo and runs `<cmd>` from `/workspace`
+- `cleanroom console -- bash` opens a shell in `/workspace`
+- dirty working trees print a warning and use committed `HEAD`; uncommitted changes are not copied in
+- `cleanroom sandbox create` remains explicit and repo-agnostic
+
+Repository bootstrap needs the remote host in `sandbox.network.allow`, for
+example:
+
+```yaml
+sandbox:
+  network:
+    default: deny
+    allow:
+      - host: github.com
+        ports: [443]
 ```
 
 ## Backend support

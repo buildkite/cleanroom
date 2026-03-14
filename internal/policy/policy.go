@@ -21,11 +21,14 @@ const (
 	FallbackPolicyPath = ".buildkite/cleanroom.yaml"
 )
 
+var ErrPolicyNotFound = errors.New("policy not found")
+
 type Loader struct{}
 
 type rawPolicy struct {
-	Version int `yaml:"version"`
-	Sandbox struct {
+	Version    int            `yaml:"version"`
+	Repository *rawRepository `yaml:"repository"`
+	Sandbox    struct {
 		Image struct {
 			Ref string `yaml:"ref"`
 		} `yaml:"image"`
@@ -35,6 +38,14 @@ type rawPolicy struct {
 			Allow   []rawAllowRule `yaml:"allow"`
 		} `yaml:"network"`
 	} `yaml:"sandbox"`
+}
+
+type rawRepository struct {
+	Enabled    *bool  `yaml:"enabled"`
+	Mode       string `yaml:"mode"`
+	Remote     string `yaml:"remote"`
+	Path       string `yaml:"path"`
+	Submodules bool   `yaml:"submodules"`
 }
 
 type rawServices struct {
@@ -58,6 +69,14 @@ type CompiledPolicy struct {
 	NetworkDefault string      `json:"network_default"`
 	Allow          []AllowRule `json:"allow"`
 	Hash           string      `json:"hash"`
+}
+
+type RepositoryConfig struct {
+	Implicit   bool   `json:"-"`
+	Mode       string `json:"mode"`
+	Remote     string `json:"remote"`
+	Path       string `json:"path"`
+	Submodules bool   `json:"submodules"`
 }
 
 type Services struct {
@@ -87,6 +106,19 @@ func (l Loader) LoadAndCompile(root string) (*CompiledPolicy, string, error) {
 	return compiled, source, nil
 }
 
+func (l Loader) LoadRepository(root string) (RepositoryConfig, string, error) {
+	raw, source, err := l.Load(root)
+	if err != nil {
+		return RepositoryConfig{}, "", err
+	}
+
+	cfg, err := normalizeRepositoryConfig(raw.Repository)
+	if err != nil {
+		return RepositoryConfig{}, source, err
+	}
+	return cfg, source, nil
+}
+
 func (l Loader) Load(root string) (rawPolicy, string, error) {
 	primary := filepath.Join(root, PrimaryPolicyPath)
 	fallback := filepath.Join(root, FallbackPolicyPath)
@@ -109,7 +141,7 @@ func (l Loader) Load(root string) (rawPolicy, string, error) {
 		return p, fallback, err
 	}
 
-	return rawPolicy{}, "", fmt.Errorf("policy not found: expected %s or %s", primary, fallback)
+	return rawPolicy{}, "", fmt.Errorf("%w: expected %s or %s", ErrPolicyNotFound, primary, fallback)
 }
 
 func Compile(raw rawPolicy) (*CompiledPolicy, error) {
@@ -209,6 +241,55 @@ func (p *CompiledPolicy) RequiresDockerService() bool {
 		return false
 	}
 	return p.Services.Docker.Required
+}
+
+func (c RepositoryConfig) Enabled() bool {
+	return strings.TrimSpace(strings.ToLower(c.Mode)) != "" && strings.TrimSpace(strings.ToLower(c.Mode)) != "none"
+}
+
+func normalizeRepositoryConfig(raw *rawRepository) (RepositoryConfig, error) {
+	if raw == nil {
+		return RepositoryConfig{
+			Implicit: true,
+			Mode:     "current-repo",
+			Remote:   "origin",
+			Path:     "/workspace",
+		}, nil
+	}
+	if raw.Enabled != nil && !*raw.Enabled {
+		return RepositoryConfig{}, nil
+	}
+
+	mode := strings.TrimSpace(strings.ToLower(raw.Mode))
+	switch mode {
+	case "", "current-repo":
+		mode = "current-repo"
+	case "none":
+		return RepositoryConfig{}, nil
+	default:
+		return RepositoryConfig{}, fmt.Errorf("unsupported repository.mode %q", raw.Mode)
+	}
+
+	remote := strings.TrimSpace(raw.Remote)
+	if remote == "" {
+		remote = "origin"
+	}
+
+	path := strings.TrimSpace(raw.Path)
+	if path == "" {
+		path = "/workspace"
+	}
+	if !strings.HasPrefix(path, "/") {
+		return RepositoryConfig{}, fmt.Errorf("repository.path %q must be absolute", raw.Path)
+	}
+
+	return RepositoryConfig{
+		Implicit:   false,
+		Mode:       mode,
+		Remote:     remote,
+		Path:       path,
+		Submodules: raw.Submodules,
+	}, nil
 }
 
 func readPolicy(path string) (rawPolicy, error) {

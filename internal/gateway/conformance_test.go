@@ -180,7 +180,7 @@ func TestCredentialNotLeakedToClient(t *testing.T) {
 		},
 	}
 
-	creds := &staticCredentialProvider{tokens: map[string]string{upstreamHost: secretToken}}
+	creds := &staticCredentialProvider{headers: map[string]string{"https://" + upstreamHost + "/org/repo.git": "Bearer " + secretToken}}
 
 	// Capture log output.
 	var logBuf bytes.Buffer

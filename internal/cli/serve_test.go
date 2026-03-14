@@ -2,12 +2,20 @@ package cli
 
 import (
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/buildkite/cleanroom/internal/backend"
+	"github.com/buildkite/cleanroom/internal/backend/darwinvz"
+	"github.com/buildkite/cleanroom/internal/backend/firecracker"
+	"github.com/buildkite/cleanroom/internal/gateway"
+	"github.com/buildkite/cleanroom/internal/runtimeconfig"
+	"github.com/charmbracelet/log"
 )
 
 func TestShouldInstallGatewayFirewall(t *testing.T) {
@@ -34,6 +42,55 @@ func TestShouldInstallGatewayFirewall(t *testing.T) {
 				t.Fatalf("shouldInstallGatewayFirewall(%q) = %v, want %v", tc.goos, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestConfigureGatewayBackendsConfiguresDarwinVZGateway(t *testing.T) {
+	t.Parallel()
+
+	gwRegistry := gateway.NewRegistry()
+	fcAdapter := &firecracker.Adapter{}
+	darwinAdapter := &darwinvz.Adapter{}
+	backends := map[string]backend.Adapter{
+		"firecracker": fcAdapter,
+		"darwin-vz":   darwinAdapter,
+	}
+
+	configureGatewayBackends(backends, gwRegistry, 8170, "192.168.64.1")
+
+	if fcAdapter.GatewayRegistry == nil {
+		t.Fatal("expected firecracker adapter to use the host gateway registry")
+	}
+	if got, want := fcAdapter.GatewayPort, 8170; got != want {
+		t.Fatalf("unexpected firecracker gateway port: got %d want %d", got, want)
+	}
+	if darwinAdapter.GatewayRegistry == nil {
+		t.Fatal("expected darwin-vz adapter to use the host gateway registry")
+	}
+	if got, want := darwinAdapter.GatewayPort, 8170; got != want {
+		t.Fatalf("unexpected darwin-vz gateway port: got %d want %d", got, want)
+	}
+	if got, want := darwinAdapter.GatewayHost, "192.168.64.1"; got != want {
+		t.Fatalf("unexpected darwin-vz gateway host: got %q want %q", got, want)
+	}
+}
+
+func TestNewControlServiceWiresRepositoryMirrors(t *testing.T) {
+	t.Parallel()
+
+	mirrors := gateway.NewGitMirrorStore(t.TempDir(), 0, nil)
+
+	ctx := &runtimeContext{
+		CWD: t.TempDir(),
+		Config: runtimeconfig.Config{
+			DefaultBackend: "darwin-vz",
+		},
+	}
+	logger := log.New(io.Discard)
+
+	service := newControlService(ctx, logger, mirrors)
+	if service.RepositoryMirrors != mirrors {
+		t.Fatal("expected control service to use the gateway mirror store")
 	}
 }
 

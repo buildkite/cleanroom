@@ -62,6 +62,7 @@ const (
 
 type policyLoader interface {
 	LoadAndCompile(cwd string) (*policy.CompiledPolicy, string, error)
+	LoadRepository(cwd string) (policy.RepositoryConfig, string, error)
 }
 
 type runtimeContext struct {
@@ -849,7 +850,36 @@ func (c *SandboxCreateCommand) Run(ctx *runtimeContext) error {
 }
 
 func (c *CreateCommand) Run(ctx *runtimeContext) error {
-	return runSandboxCreate(ctx, c.clientFlags, c.Chdir, c.Backend, c.Image, c.LaunchSeconds, c.JSON)
+	host := c.resolvedHost(ctx.Config)
+	client, err := c.connect(ctx)
+	if err != nil {
+		return err
+	}
+
+	cwd, err := resolveCWD(ctx.CWD, c.Chdir)
+	if err != nil {
+		return err
+	}
+	repository, err := resolveRepositoryCheckout(cwd, ctx.Loader)
+	if err != nil {
+		return err
+	}
+	warnDirtyRepositoryCheckout(repository)
+	if repository != nil && !backendSupportsRepositoryPersistence(ctx, host, c.Backend) {
+		return errors.New("repository bootstrap for cleanroom create requires a persistent backend; use cleanroom exec, cleanroom console, or select a persistent backend")
+	}
+
+	sandboxID, sandbox, err := createTopLevelSandbox(client, ctx.Loader, cwd, host, c.Backend, c.Image, c.LaunchSeconds, repository)
+	if err != nil {
+		return err
+	}
+	if c.JSON {
+		enc := json.NewEncoder(ctx.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(sandbox)
+	}
+	_, err = fmt.Fprintln(ctx.Stdout, sandboxID)
+	return err
 }
 
 func (e *ExecCommand) Run(ctx *runtimeContext) error {
@@ -874,7 +904,18 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 		"sandbox_id", strings.TrimSpace(e.SandboxID),
 		"command_argc", len(e.Command),
 	)
-	sandboxID, err := ensureSandboxID(client, ctx.Loader, cwd, host, e.Backend, strings.TrimSpace(e.SandboxID), e.Image, e.LaunchSeconds)
+	persistentRepositoryBackend := backendSupportsRepositoryPersistence(ctx, host, e.Backend)
+	repository, err := maybeResolveRepositoryCheckout(cwd, ctx.Loader, strings.TrimSpace(e.SandboxID), !persistentRepositoryBackend)
+	if err != nil {
+		return err
+	}
+	warnDirtyRepositoryCheckout(repository)
+	inlineRepositoryBootstrap := shouldInlineRepositoryBootstrap(ctx, host, e.Backend, repository)
+	repositoryForCreate := repository
+	if inlineRepositoryBootstrap {
+		repositoryForCreate = nil
+	}
+	sandboxID, err := ensureSandboxID(client, ctx.Loader, cwd, host, e.Backend, strings.TrimSpace(e.SandboxID), e.Image, e.LaunchSeconds, repositoryForCreate)
 	if err != nil {
 		return err
 	}
@@ -893,9 +934,10 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 	}()
 
 	createExecutionResp, err := client.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
-		SandboxId: sandboxID,
-		Command:   append([]string(nil), e.Command...),
-		Kind:      cleanroomv1.ExecutionKind_EXECUTION_KIND_BATCH,
+		SandboxId:          sandboxID,
+		Command:            repositoryExecutionCommand(e.Command, repository, inlineRepositoryBootstrap),
+		Kind:               cleanroomv1.ExecutionKind_EXECUTION_KIND_BATCH,
+		RepositoryCheckout: repositoryExecutionCheckout(repository, inlineRepositoryBootstrap),
 		Options: &cleanroomv1.ExecutionOptions{
 			LaunchSeconds: e.LaunchSeconds,
 		},
@@ -1038,7 +1080,18 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 		"sandbox_id", strings.TrimSpace(c.SandboxID),
 		"command_argc", len(command),
 	)
-	sandboxID, err := ensureSandboxID(client, ctx.Loader, cwd, host, c.Backend, strings.TrimSpace(c.SandboxID), c.Image, c.LaunchSeconds)
+	persistentRepositoryBackend := backendSupportsRepositoryPersistence(ctx, host, c.Backend)
+	repository, err := maybeResolveRepositoryCheckout(cwd, ctx.Loader, strings.TrimSpace(c.SandboxID), !persistentRepositoryBackend)
+	if err != nil {
+		return err
+	}
+	warnDirtyRepositoryCheckout(repository)
+	inlineRepositoryBootstrap := shouldInlineRepositoryBootstrap(ctx, host, c.Backend, repository)
+	repositoryForCreate := repository
+	if inlineRepositoryBootstrap {
+		repositoryForCreate = nil
+	}
+	sandboxID, err := ensureSandboxID(client, ctx.Loader, cwd, host, c.Backend, strings.TrimSpace(c.SandboxID), c.Image, c.LaunchSeconds, repositoryForCreate)
 	if err != nil {
 		return err
 	}
@@ -1051,9 +1104,10 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 	}()
 
 	createExecutionResp, err := client.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
-		SandboxId: sandboxID,
-		Command:   command,
-		Kind:      cleanroomv1.ExecutionKind_EXECUTION_KIND_INTERACTIVE,
+		SandboxId:          sandboxID,
+		Command:            repositoryExecutionCommand(command, repository, inlineRepositoryBootstrap),
+		Kind:               cleanroomv1.ExecutionKind_EXECUTION_KIND_INTERACTIVE,
+		RepositoryCheckout: repositoryExecutionCheckout(repository, inlineRepositoryBootstrap),
 		Options: &cleanroomv1.ExecutionOptions{
 			LaunchSeconds: c.LaunchSeconds,
 			Tty:           true,
@@ -2237,11 +2291,19 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 	log.SetDefault(logger)
 
 	gwRegistry := gateway.NewRegistry()
-	gwCredentials := gateway.NewEnvCredentialProvider()
+	gwCredentials := gateway.NewChainCredentialProvider(
+		gateway.NewEnvCredentialProvider(),
+		gateway.NewGitCredentialFillProvider(ctx.CWD, nil),
+	)
+	gwMirrors, err := gateway.NewDefaultGitMirrorStore(gwCredentials)
+	if err != nil {
+		return fmt.Errorf("configure git mirror store: %w", err)
+	}
 	gwServer := gateway.NewServer(gateway.ServerConfig{
 		ListenAddr:  s.GatewayListen,
 		Registry:    gwRegistry,
 		Credentials: gwCredentials,
+		GitMirrors:  gwMirrors,
 		Logger:      logger.With("subsystem", "gateway"),
 	})
 	if err := gwServer.Start(); err != nil {
@@ -2255,10 +2317,9 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 		}
 	}
 
-	if fcAdapter, ok := ctx.Backends["firecracker"].(*firecracker.Adapter); ok {
-		fcAdapter.GatewayRegistry = gwRegistry
-		fcAdapter.GatewayPort = gwPort
+	configureGatewayBackends(ctx.Backends, gwRegistry, gwPort, strings.TrimSpace(os.Getenv("CLEANROOM_DARWIN_GATEWAY_HOST")))
 
+	if fcAdapter, ok := ctx.Backends["firecracker"].(*firecracker.Adapter); ok && fcAdapter.GatewayRegistry != nil {
 		if shouldInstallGatewayFirewall(runtime.GOOS) {
 			fwCfg := backend.FirecrackerConfig{
 				PrivilegedMode:       ctx.Config.Backends.Firecracker.PrivilegedMode,
@@ -2272,13 +2333,6 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 			}
 		}
 	}
-	if darwinAdapter, ok := ctx.Backends["darwin-vz"].(*darwinvz.Adapter); ok {
-		darwinAdapter.GatewayRegistry = gwRegistry
-		darwinAdapter.GatewayPort = gwPort
-		if host := strings.TrimSpace(os.Getenv("CLEANROOM_DARWIN_GATEWAY_HOST")); host != "" {
-			darwinAdapter.GatewayHost = host
-		}
-	}
 
 	var serverTLS *controlserver.TLSOptions
 	if ep.Scheme == "https" {
@@ -2288,12 +2342,7 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 		}
 	}
 
-	service := &controlservice.Service{
-		Loader:   ctx.Loader,
-		Config:   ctx.Config,
-		Backends: ctx.Backends,
-		Logger:   logger.With("subsystem", "service"),
-	}
+	service := newControlService(ctx, logger.With("subsystem", "service"), gwMirrors)
 	server := controlserver.New(service, logger.With("subsystem", "http"))
 
 	runCtx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -2319,6 +2368,78 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 	defer gwStopCancel()
 	_ = gwServer.Stop(gwStopCtx)
 	return runErr
+}
+
+func configureGatewayBackends(backends map[string]backend.Adapter, gwRegistry *gateway.Registry, gwPort int, darwinGatewayHost string) {
+	if fcAdapter, ok := backends["firecracker"].(*firecracker.Adapter); ok {
+		fcAdapter.GatewayRegistry = gwRegistry
+		fcAdapter.GatewayPort = gwPort
+	}
+
+	if darwinAdapter, ok := backends["darwin-vz"].(*darwinvz.Adapter); ok {
+		darwinAdapter.GatewayRegistry = gwRegistry
+		darwinAdapter.GatewayPort = gwPort
+		darwinAdapter.GatewayHost = strings.TrimSpace(darwinGatewayHost)
+	}
+}
+
+func newControlService(ctx *runtimeContext, logger *log.Logger, mirrors gateway.GitMirrorStore) *controlservice.Service {
+	if ctx == nil {
+		return &controlservice.Service{
+			Logger:            logger,
+			RepositoryMirrors: mirrors,
+		}
+	}
+	return &controlservice.Service{
+		Loader:            ctx.Loader,
+		Config:            ctx.Config,
+		Backends:          ctx.Backends,
+		Logger:            logger,
+		RepositoryMirrors: mirrors,
+	}
+}
+
+func backendSupportsRepositoryPersistence(ctx *runtimeContext, host, backendName string) bool {
+	if ctx == nil {
+		return true
+	}
+	localControlPlane, err := isLocalControlPlaneEndpoint(host)
+	if err != nil {
+		return true
+	}
+	if !localControlPlane {
+		return true
+	}
+	selectedBackend := strings.TrimSpace(backendName)
+	if selectedBackend == "" {
+		selectedBackend = strings.TrimSpace(ctx.Config.DefaultBackend)
+	}
+	if selectedBackend == "" {
+		return true
+	}
+	adapter, ok := ctx.Backends[selectedBackend]
+	if !ok || adapter == nil {
+		return true
+	}
+	return backend.CapabilitiesForAdapter(adapter)[backend.CapabilitySandboxPersistent]
+}
+
+func shouldInlineRepositoryBootstrap(ctx *runtimeContext, host, backendName string, repository *resolvedRepositoryCheckout) bool {
+	if repository == nil {
+		return false
+	}
+	return !backendSupportsRepositoryPersistence(ctx, host, backendName)
+}
+
+func repositoryExecutionCommand(command []string, repository *resolvedRepositoryCheckout, inlineBootstrap bool) []string {
+	_ = repository
+	_ = inlineBootstrap
+	return normalizePassthroughCommand(command)
+}
+
+func repositoryExecutionCheckout(repository *resolvedRepositoryCheckout, inlineBootstrap bool) *cleanroomv1.RepositoryCheckout {
+	_ = inlineBootstrap
+	return repositoryCheckoutProto(repository)
 }
 
 func resolveInteractiveQUICEndpoint(ep endpoint.Endpoint) (listenAddr, advertiseHost string) {
@@ -2687,7 +2808,7 @@ func inspectRun(stdout *os.File, baseDir, runID string) error {
 	return err
 }
 
-func ensureSandboxID(client *controlclient.Client, loader policyLoader, cwd, host, backendName, existingSandboxID, imageRefOverride string, launchSeconds int64) (string, error) {
+func ensureSandboxID(client *controlclient.Client, loader policyLoader, cwd, host, backendName, existingSandboxID, imageRefOverride string, launchSeconds int64, repository *resolvedRepositoryCheckout) (string, error) {
 	sandboxID := strings.TrimSpace(existingSandboxID)
 	if sandboxID != "" {
 		if strings.TrimSpace(imageRefOverride) != "" {
@@ -2696,29 +2817,11 @@ func ensureSandboxID(client *controlclient.Client, loader policyLoader, cwd, hos
 		return sandboxID, nil
 	}
 
-	compiled, _, err := loader.LoadAndCompile(cwd)
+	sandboxID, _, err := createTopLevelSandbox(client, loader, cwd, host, backendName, imageRefOverride, launchSeconds, repository)
 	if err != nil {
 		return "", err
 	}
-	allowLocalImageOverride, err := isLocalControlPlaneEndpoint(host)
-	if err != nil {
-		return "", err
-	}
-	compiled, err = overrideCompiledPolicyImage(compiled, imageRefOverride, allowLocalImageOverride)
-	if err != nil {
-		return "", err
-	}
-	createSandboxResp, err := client.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
-		Backend: backendName,
-		Options: &cleanroomv1.SandboxOptions{
-			LaunchSeconds: launchSeconds,
-		},
-		Policy: compiled.ToProto(),
-	})
-	if err != nil {
-		return "", fmt.Errorf("create sandbox: %w", err)
-	}
-	return strings.TrimSpace(createSandboxResp.GetSandbox().GetSandboxId()), nil
+	return sandboxID, nil
 }
 
 func isLocalControlPlaneEndpoint(host string) (bool, error) {

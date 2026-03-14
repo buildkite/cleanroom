@@ -5,6 +5,7 @@ import (
 	"errors"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unsafe"
@@ -121,6 +122,20 @@ type stubLoader struct {
 	source   string
 }
 
+type stubRepositoryMirrorStore struct {
+	remoteURL string
+	commitSHA string
+	calls     int
+	err       error
+}
+
+func (s *stubRepositoryMirrorStore) EnsureMirrorContains(_ context.Context, remoteURL, commitSHA string) error {
+	s.remoteURL = remoteURL
+	s.commitSHA = commitSHA
+	s.calls++
+	return s.err
+}
+
 func (l stubLoader) LoadAndCompile(_ string) (*policy.CompiledPolicy, string, error) {
 	return l.compiled, l.source, nil
 }
@@ -131,6 +146,18 @@ func testPolicy() *cleanroomv1.Policy {
 		ImageRef:       "ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 		ImageDigest:    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 		NetworkDefault: "deny",
+	}
+}
+
+func testRepositoryPolicy() *cleanroomv1.Policy {
+	return &cleanroomv1.Policy{
+		Version:        1,
+		ImageRef:       "ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		ImageDigest:    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		NetworkDefault: "deny",
+		Allow: []*cleanroomv1.PolicyAllowRule{
+			{Host: "github.com", Ports: []int32{443}},
+		},
 	}
 }
 
@@ -149,6 +176,15 @@ func newTestService(adapter backend.Adapter) *Service {
 			DefaultBackend: "firecracker",
 		},
 		Backends: map[string]backend.Adapter{"firecracker": adapter},
+	}
+}
+
+func testRepositoryCheckoutProto() *cleanroomv1.RepositoryCheckout {
+	return &cleanroomv1.RepositoryCheckout{
+		RemoteUrl:      "https://github.com/buildkite/cleanroom.git",
+		CommitSha:      "0123456789abcdef0123456789abcdef01234567",
+		DestinationDir: "/workspace",
+		Submodules:     true,
 	}
 }
 
@@ -345,6 +381,286 @@ func TestCreateSandboxProvisionsPersistentBackend(t *testing.T) {
 	}
 	if got, want := adapter.terminateCalls, 1; got != want {
 		t.Fatalf("unexpected terminate call count: got %d want %d", got, want)
+	}
+}
+
+func TestCreateSandboxBootstrapsRepositoryInService(t *testing.T) {
+	adapter := &stubAdapter{}
+	mirrors := &stubRepositoryMirrorStore{}
+	svc := newTestService(adapter)
+	svc.RepositoryMirrors = mirrors
+
+	createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy:             testRepositoryPolicy(),
+		RepositoryCheckout: testRepositoryCheckoutProto(),
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	if createResp.GetSandbox().GetSandboxId() == "" {
+		t.Fatal("expected sandbox id")
+	}
+	if got, want := mirrors.calls, 1; got != want {
+		t.Fatalf("unexpected mirror prewarm call count: got %d want %d", got, want)
+	}
+	if got, want := mirrors.remoteURL, "https://github.com/buildkite/cleanroom.git"; got != want {
+		t.Fatalf("unexpected prewarmed remote URL: got %q want %q", got, want)
+	}
+	if got, want := mirrors.commitSHA, "0123456789abcdef0123456789abcdef01234567"; got != want {
+		t.Fatalf("unexpected prewarmed commit SHA: got %q want %q", got, want)
+	}
+	joined := strings.Join(adapter.req.Command, " ")
+	if !strings.Contains(joined, "git clone --filter=blob:none --no-checkout") {
+		t.Fatalf("expected repository bootstrap clone in command, got %q", joined)
+	}
+	if !strings.Contains(joined, "git -C \"$dest\" checkout --detach \"$commit\"") {
+		t.Fatalf("expected repository checkout command, got %q", joined)
+	}
+	if strings.Contains(joined, "Authorization:") || strings.Contains(joined, ".extraHeader") {
+		t.Fatalf("expected bootstrap command to avoid embedded auth, got %q", joined)
+	}
+}
+
+func TestCreateExecutionWrapsRepositoryBootstrapInService(t *testing.T) {
+	adapter := &stubAdapter{}
+	mirrors := &stubRepositoryMirrorStore{}
+	svc := newTestService(adapter)
+	svc.RepositoryMirrors = mirrors
+	runCalled := make(chan struct{}, 4)
+	var (
+		mu       sync.Mutex
+		commands [][]string
+	)
+	adapter.runStreamFn = func(_ context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+		mu.Lock()
+		commands = append(commands, append([]string(nil), req.Command...))
+		mu.Unlock()
+		select {
+		case runCalled <- struct{}{}:
+		default:
+		}
+		return &backend.RunResult{RunID: req.RunID, ExitCode: 0, Message: "ok"}, nil
+	}
+
+	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testRepositoryPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createSandboxResp.GetSandbox().GetSandboxId()
+
+	createExecutionResp, err := svc.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+		SandboxId:          sandboxID,
+		Command:            []string{"sh", "-lc", "pwd"},
+		RepositoryCheckout: testRepositoryCheckoutProto(),
+	})
+	if err != nil {
+		t.Fatalf("CreateExecution returned error: %v", err)
+	}
+	if createExecutionResp.GetExecution().GetExecutionId() == "" {
+		t.Fatal("expected execution id")
+	}
+	for i := 0; i < 2; i++ {
+		select {
+		case <-runCalled:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for repository bootstrap execution")
+		}
+	}
+	if got, want := mirrors.calls, 1; got != want {
+		t.Fatalf("unexpected mirror prewarm call count: got %d want %d", got, want)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if got, want := len(commands), 2; got != want {
+		t.Fatalf("expected bootstrap + user execution, got %d command(s)", got)
+	}
+	bootstrap := strings.Join(commands[0], " ")
+	if !strings.Contains(bootstrap, "git clone --filter=blob:none --no-checkout") {
+		t.Fatalf("expected repository bootstrap clone in command, got %q", bootstrap)
+	}
+	joined := strings.Join(commands[1], " ")
+	if strings.Contains(joined, "git clone --filter=blob:none --no-checkout") {
+		t.Fatalf("expected execution command to run after bootstrap, got %q", joined)
+	}
+	if !strings.Contains(joined, "cd '/workspace' && exec 'sh' '-lc' 'pwd'") {
+		t.Fatalf("expected wrapped user command in repository workdir, got %q", joined)
+	}
+	if strings.Contains(bootstrap, "Authorization:") || strings.Contains(bootstrap, ".extraHeader") {
+		t.Fatalf("expected bootstrap command to avoid embedded auth, got %q", bootstrap)
+	}
+	if strings.Contains(joined, "Authorization:") || strings.Contains(joined, ".extraHeader") {
+		t.Fatalf("expected wrapped command to avoid embedded auth, got %q", joined)
+	}
+	if got := strings.Join(createExecutionResp.GetExecution().GetCommand(), " "); strings.Contains(got, "Authorization:") || strings.Contains(got, ".extraHeader") {
+		t.Fatalf("expected execution command snapshot to avoid embedded auth, got %q", got)
+	}
+}
+
+func TestCreateExecutionSkipsBootstrapForMatchingPersistentRepository(t *testing.T) {
+	adapter := &stubAdapter{}
+	mirrors := &stubRepositoryMirrorStore{}
+	svc := newTestService(adapter)
+	svc.RepositoryMirrors = mirrors
+
+	var (
+		mu       sync.Mutex
+		commands [][]string
+	)
+	runCalled := make(chan struct{}, 4)
+	adapter.runStreamFn = func(_ context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+		mu.Lock()
+		commands = append(commands, append([]string(nil), req.Command...))
+		mu.Unlock()
+		select {
+		case runCalled <- struct{}{}:
+		default:
+		}
+		return &backend.RunResult{RunID: req.RunID, ExitCode: 0, Message: "ok"}, nil
+	}
+
+	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy:             testRepositoryPolicy(),
+		RepositoryCheckout: testRepositoryCheckoutProto(),
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createSandboxResp.GetSandbox().GetSandboxId()
+	select {
+	case <-runCalled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for sandbox bootstrap")
+	}
+
+	_, err = svc.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+		SandboxId:          sandboxID,
+		Command:            []string{"sh", "-lc", "pwd"},
+		RepositoryCheckout: testRepositoryCheckoutProto(),
+	})
+	if err != nil {
+		t.Fatalf("CreateExecution returned error: %v", err)
+	}
+	select {
+	case <-runCalled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for execution")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if got, want := len(commands), 2; got != want {
+		t.Fatalf("expected create bootstrap + execution, got %d command(s)", got)
+	}
+	joined := strings.Join(commands[1], " ")
+	if strings.Contains(joined, "git clone --filter=blob:none --no-checkout") {
+		t.Fatalf("expected matching repository execution to reuse existing checkout, got %q", joined)
+	}
+	if !strings.Contains(joined, "cd '/workspace' && exec 'sh' '-lc' 'pwd'") {
+		t.Fatalf("expected matching repository execution to run inside repository workdir, got %q", joined)
+	}
+	if got, want := mirrors.calls, 1; got != want {
+		t.Fatalf("expected mirror prewarm only during sandbox create, got %d call(s)", got)
+	}
+}
+
+func TestCreateSandboxRejectsRepositoryRemoteOutsidePolicy(t *testing.T) {
+	adapter := &stubAdapter{}
+	svc := newTestService(adapter)
+
+	repository := testRepositoryCheckoutProto()
+	repository.RemoteUrl = "https://example.com/buildkite/cleanroom.git"
+	_, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy:             testRepositoryPolicy(),
+		RepositoryCheckout: repository,
+	})
+	if err == nil {
+		t.Fatal("expected repository bootstrap to reject disallowed host")
+	}
+	if !strings.Contains(err.Error(), `repository remote host "example.com" is not allowed`) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := adapter.provisionCalls; got != 0 {
+		t.Fatalf("expected no provision call on invalid repository remote, got %d", got)
+	}
+}
+
+func TestCreateSandboxRejectsRepositoryFileRemote(t *testing.T) {
+	adapter := &stubAdapter{}
+	svc := newTestService(adapter)
+
+	repository := testRepositoryCheckoutProto()
+	repository.RemoteUrl = "file:///tmp/evil.git"
+	_, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy:             testRepositoryPolicy(),
+		RepositoryCheckout: repository,
+	})
+	if err == nil {
+		t.Fatal("expected repository bootstrap to reject non-https remote")
+	}
+	if !strings.Contains(err.Error(), "must use https") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := adapter.provisionCalls; got != 0 {
+		t.Fatalf("expected no provision call on invalid repository remote, got %d", got)
+	}
+}
+
+func TestCreateExecutionRejectsRepositoryRemoteOutsidePolicy(t *testing.T) {
+	adapter := &stubAdapter{}
+	mirrors := &stubRepositoryMirrorStore{}
+	svc := newTestService(adapter)
+	svc.RepositoryMirrors = mirrors
+
+	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testRepositoryPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createSandboxResp.GetSandbox().GetSandboxId()
+
+	repository := testRepositoryCheckoutProto()
+	repository.RemoteUrl = "https://example.com/buildkite/cleanroom.git"
+	_, err = svc.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+		SandboxId:          sandboxID,
+		Command:            []string{"sh", "-lc", "pwd"},
+		RepositoryCheckout: repository,
+	})
+	if err == nil {
+		t.Fatal("expected repository bootstrap to reject disallowed host")
+	}
+	if !strings.Contains(err.Error(), `repository remote host "example.com" is not allowed`) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := mirrors.calls; got != 0 {
+		t.Fatalf("expected no mirror prewarm call on invalid repository remote, got %d", got)
+	}
+}
+
+func TestCreateSandboxBootstrapCleanupUsesFreshContext(t *testing.T) {
+	adapter := &stubAdapter{}
+	svc := newTestService(adapter)
+	adapter.runStreamFn = func(ctx context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+		return nil, ctx.Err()
+	}
+	adapter.terminateFn = func(ctx context.Context, sandboxID string) error {
+		if sandboxID == "" {
+			t.Fatal("expected sandbox id during cleanup")
+		}
+		if err := ctx.Err(); err != nil {
+			t.Fatalf("expected cleanup context to remain usable, got %v", err)
+		}
+		return nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := svc.CreateSandbox(ctx, &cleanroomv1.CreateSandboxRequest{
+		Policy:             testRepositoryPolicy(),
+		RepositoryCheckout: testRepositoryCheckoutProto(),
+	})
+	if err == nil {
+		t.Fatal("expected repository bootstrap to fail")
+	}
+	if got := adapter.terminateCalls; got != 1 {
+		t.Fatalf("expected a single cleanup terminate call, got %d", got)
 	}
 }
 

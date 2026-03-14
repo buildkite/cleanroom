@@ -5,7 +5,7 @@ external services for sandboxes. The gateway handles git clones, package
 registry requests, secret injection, and metadata. Credentials are held
 host-side and injected on the upstream leg, so tokens never enter the sandbox.
 
-Currently supported on the `firecracker` backend.
+Currently supported on the `firecracker` and `darwin-vz` backends.
 
 ## Endpoints
 
@@ -27,6 +27,10 @@ cleanroom exec -- git clone https://github.com/org/repo.git
 
 The gateway resolves the target host from the request path, validates it against
 the sandbox's compiled policy, and proxies the git smart-HTTP protocol upstream.
+
+On `darwin-vz`, sandbox identity is carried with the
+`X-Cleanroom-Scope-Token` request header because guests use shared NAT rather
+than unique source IPs.
 
 Allowed host example (from this repo's policy):
 
