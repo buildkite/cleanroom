@@ -1,7 +1,9 @@
 package gateway
 
 import (
+	"context"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -232,6 +234,39 @@ func TestScopeTokenTrustedSourcePrefixesForGatewayHost(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestScopeTokenTrustedSourcePrefixesForGatewayHostResolvesHostnames(t *testing.T) {
+	t.Parallel()
+
+	lookupCalls := 0
+	got := scopeTokenTrustedSourcePrefixesForGatewayHost(context.Background(), "gateway.local", func(_ context.Context, host string) ([]net.IP, error) {
+		lookupCalls++
+		if host != "gateway.local" {
+			t.Fatalf("unexpected host lookup: %q", host)
+		}
+		return []net.IP{
+			net.ParseIP("10.24.7.1"),
+			net.ParseIP("10.24.7.44"),
+			net.ParseIP("fd00::1"),
+		}, nil
+	})
+
+	if lookupCalls != 1 {
+		t.Fatalf("lookupCalls = %d, want 1", lookupCalls)
+	}
+	want := []netip.Prefix{
+		netip.MustParsePrefix("10.24.7.0/24"),
+		netip.MustParsePrefix("fd00::/64"),
+	}
+	if len(got) != len(want) {
+		t.Fatalf("len(prefixes) = %d, want %d", len(got), len(want))
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Fatalf("prefix[%d] = %s, want %s", i, got[i], want[i])
+		}
 	}
 }
 

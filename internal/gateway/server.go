@@ -30,6 +30,12 @@ var serviceRoutes = []string{
 	RouteMeta,
 }
 
+type gatewayHostLookupFunc func(context.Context, string) ([]net.IP, error)
+
+var defaultGatewayHostLookup gatewayHostLookupFunc = func(ctx context.Context, host string) ([]net.IP, error) {
+	return net.DefaultResolver.LookupIP(ctx, "ip", host)
+}
+
 // Routes returns the configured gateway service route prefixes.
 func Routes() []string {
 	out := make([]string, len(serviceRoutes))
@@ -57,19 +63,52 @@ func ScopeFromContext(ctx context.Context) (*SandboxScope, bool) {
 // prefixes to use for scope-token fallback requests that arrive from darwin-vz
 // guests routed through a gateway host IP.
 func ScopeTokenTrustedSourcePrefixesForGatewayHost(gatewayHost string) []netip.Prefix {
+	return scopeTokenTrustedSourcePrefixesForGatewayHost(context.Background(), gatewayHost, defaultGatewayHostLookup)
+}
+
+func scopeTokenTrustedSourcePrefixesForGatewayHost(ctx context.Context, gatewayHost string, lookup gatewayHostLookupFunc) []netip.Prefix {
 	gatewayHost = strings.TrimSpace(gatewayHost)
 	if gatewayHost == "" {
 		return []netip.Prefix{defaultDarwinVZScopeTokenSourcePrefix}
 	}
 
-	addr, err := netip.ParseAddr(gatewayHost)
+	if addr, err := netip.ParseAddr(gatewayHost); err == nil {
+		return []netip.Prefix{scopeTokenTrustedSourcePrefixForAddr(addr)}
+	}
+	if lookup == nil {
+		return []netip.Prefix{}
+	}
+
+	resolved, err := lookup(ctx, gatewayHost)
 	if err != nil {
 		return []netip.Prefix{}
 	}
-	if addr.Is4() {
-		return []netip.Prefix{netip.PrefixFrom(addr, 24).Masked()}
+
+	prefixes := make([]netip.Prefix, 0, len(resolved))
+	seen := make(map[netip.Prefix]struct{}, len(resolved))
+	for _, ip := range resolved {
+		addr, ok := netip.AddrFromSlice(ip)
+		if !ok {
+			continue
+		}
+		if addr.Is4In6() {
+			addr = addr.Unmap()
+		}
+		prefix := scopeTokenTrustedSourcePrefixForAddr(addr)
+		if _, exists := seen[prefix]; exists {
+			continue
+		}
+		seen[prefix] = struct{}{}
+		prefixes = append(prefixes, prefix)
 	}
-	return []netip.Prefix{netip.PrefixFrom(addr, 64).Masked()}
+	return prefixes
+}
+
+func scopeTokenTrustedSourcePrefixForAddr(addr netip.Addr) netip.Prefix {
+	if addr.Is4() {
+		return netip.PrefixFrom(addr, 24).Masked()
+	}
+	return netip.PrefixFrom(addr, 64).Masked()
 }
 
 // ServerConfig configures a gateway server.
