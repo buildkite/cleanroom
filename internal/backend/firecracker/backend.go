@@ -491,12 +491,23 @@ func (a *Adapter) CreateSnapshot(ctx context.Context, req backend.SnapshotReques
 	if err := pauseSandboxProcess(instance); err != nil {
 		return nil, err
 	}
+	snapshotStorageRef := ""
 	paused := true
 	defer func() {
 		if !paused {
 			return
 		}
 		if err := resumeSandboxProcess(instance); err != nil && retErr == nil {
+			if strings.TrimSpace(snapshotStorageRef) != "" {
+				cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				cleanupErr := driver.DestroySnapshot(cleanupCtx, volumestore.DestroySnapshotRequest{SnapshotRef: snapshotStorageRef})
+				cancel()
+				if cleanupErr != nil {
+					result = nil
+					retErr = fmt.Errorf("resume firecracker sandbox after snapshot: %w (cleanup snapshot %q failed: %v)", err, snapshotStorageRef, cleanupErr)
+					return
+				}
+			}
 			result = nil
 			retErr = fmt.Errorf("resume firecracker sandbox after snapshot: %w", err)
 		}
@@ -509,6 +520,7 @@ func (a *Adapter) CreateSnapshot(ctx context.Context, req backend.SnapshotReques
 	if err != nil {
 		return nil, fmt.Errorf("persist snapshot rootfs: %w", err)
 	}
+	snapshotStorageRef = snapshot.StorageRef
 
 	return &backend.SnapshotResult{StorageRef: snapshot.StorageRef}, nil
 }

@@ -219,6 +219,10 @@ func TestCreateSnapshotReturnsErrorWhenSandboxResumeFails(t *testing.T) {
 	if !strings.Contains(strings.ToLower(err.Error()), "resume") {
 		t.Fatalf("expected resume error, got %v", err)
 	}
+	snapshotPath := filepath.Join(stateHome, "cleanroom", "snapshots", "firecracker", "snap-test", "rootfs.ext4")
+	if _, statErr := os.Stat(snapshotPath); !os.IsNotExist(statErr) {
+		t.Fatalf("expected failed snapshot to be cleaned up, stat error = %v", statErr)
+	}
 }
 
 func TestProvisionSandboxFromSnapshotUsesSnapshotRootFS(t *testing.T) {
