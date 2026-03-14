@@ -78,7 +78,11 @@ func (a *integrationAdapter) RunStream(ctx context.Context, req backend.RunReque
 	return result, nil
 }
 
-func (a *integrationAdapter) ProvisionSandbox(ctx context.Context, req backend.ProvisionRequest) error {
+type snapshotIntegrationAdapter struct {
+	integrationAdapter
+}
+
+func (a *snapshotIntegrationAdapter) ProvisionSandbox(ctx context.Context, req backend.ProvisionRequest) error {
 	a.mu.Lock()
 	a.provisionReq = req
 	fn := a.provisionFn
@@ -89,11 +93,11 @@ func (a *integrationAdapter) ProvisionSandbox(ctx context.Context, req backend.P
 	return nil
 }
 
-func (a *integrationAdapter) RunInSandbox(ctx context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+func (a *snapshotIntegrationAdapter) RunInSandbox(ctx context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
 	return a.RunStream(ctx, req, stream)
 }
 
-func (a *integrationAdapter) CreateSnapshot(ctx context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
+func (a *snapshotIntegrationAdapter) CreateSnapshot(ctx context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
 	a.mu.Lock()
 	a.createSnapshotReq = req
 	fn := a.createSnapshotFn
@@ -104,7 +108,7 @@ func (a *integrationAdapter) CreateSnapshot(ctx context.Context, req backend.Sna
 	return &backend.SnapshotResult{StorageRef: "/snapshots/" + req.SnapshotID + ".ext4"}, nil
 }
 
-func (a *integrationAdapter) ProvisionSandboxFromSnapshot(ctx context.Context, req backend.ProvisionFromSnapshotRequest) error {
+func (a *snapshotIntegrationAdapter) ProvisionSandboxFromSnapshot(ctx context.Context, req backend.ProvisionFromSnapshotRequest) error {
 	a.mu.Lock()
 	a.provisionFromSnapshotReq = req
 	fn := a.provisionFromSnapshotFn
@@ -115,7 +119,7 @@ func (a *integrationAdapter) ProvisionSandboxFromSnapshot(ctx context.Context, r
 	return nil
 }
 
-func (a *integrationAdapter) RestoreSandbox(ctx context.Context, req backend.RestoreRequest) error {
+func (a *snapshotIntegrationAdapter) RestoreSandbox(ctx context.Context, req backend.RestoreRequest) error {
 	a.mu.Lock()
 	a.restoreReq = req
 	fn := a.restoreFn
@@ -126,7 +130,7 @@ func (a *integrationAdapter) RestoreSandbox(ctx context.Context, req backend.Res
 	return nil
 }
 
-func (a *integrationAdapter) DeleteSnapshot(ctx context.Context, req backend.DeleteSnapshotRequest) error {
+func (a *snapshotIntegrationAdapter) DeleteSnapshot(ctx context.Context, req backend.DeleteSnapshotRequest) error {
 	a.mu.Lock()
 	a.deleteSnapshotReq = req
 	fn := a.deleteSnapshotFn
@@ -137,7 +141,7 @@ func (a *integrationAdapter) DeleteSnapshot(ctx context.Context, req backend.Del
 	return nil
 }
 
-func (a *integrationAdapter) TerminateSandbox(ctx context.Context, sandboxID string) error {
+func (a *snapshotIntegrationAdapter) TerminateSandbox(ctx context.Context, sandboxID string) error {
 	a.mu.Lock()
 	fn := a.terminateFn
 	a.mu.Unlock()

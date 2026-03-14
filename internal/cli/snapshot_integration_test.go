@@ -39,7 +39,7 @@ func runSandboxRestoreWithCapture(cmd SandboxRestoreCommand, ctx runtimeContext)
 }
 
 func TestSnapshotCommandsIntegrationLifecycle(t *testing.T) {
-	adapter := &integrationAdapter{}
+	adapter := &snapshotIntegrationAdapter{}
 	host, _ := startIntegrationServer(t, adapter)
 	cwd := t.TempDir()
 
@@ -134,7 +134,7 @@ func TestSnapshotCommandsIntegrationLifecycle(t *testing.T) {
 }
 
 func TestSandboxSnapshotIntegrationCreateFromSnapshotAndRestore(t *testing.T) {
-	adapter := &integrationAdapter{}
+	adapter := &snapshotIntegrationAdapter{}
 	host, _ := startIntegrationServer(t, adapter)
 	cwd := t.TempDir()
 
@@ -212,7 +212,7 @@ func TestSandboxSnapshotIntegrationCreateFromSnapshotAndRestore(t *testing.T) {
 }
 
 func TestSnapshotDeleteIntegrationAllowsDeleteAfterSnapshotBackedCreate(t *testing.T) {
-	adapter := &integrationAdapter{}
+	adapter := &snapshotIntegrationAdapter{}
 	host, _ := startIntegrationServer(t, adapter)
 	cwd := t.TempDir()
 
