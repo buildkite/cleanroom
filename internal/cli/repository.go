@@ -79,8 +79,8 @@ func resolveRepositoryCheckout(cwd string, loader policyLoader) (*resolvedReposi
 	}, nil
 }
 
-func maybeResolveRepositoryCheckout(cwd string, loader policyLoader, existingSandboxID string) (*resolvedRepositoryCheckout, error) {
-	if strings.TrimSpace(existingSandboxID) != "" {
+func maybeResolveRepositoryCheckout(cwd string, loader policyLoader, existingSandboxID string, requireBootstrap bool) (*resolvedRepositoryCheckout, error) {
+	if strings.TrimSpace(existingSandboxID) != "" && !requireBootstrap {
 		return resolveRepositoryExecutionContext(cwd, loader)
 	}
 	return resolveRepositoryCheckout(cwd, loader)

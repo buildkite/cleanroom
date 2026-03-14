@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/buildkite/cleanroom/internal/backend"
+	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/repositorycheckout"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
@@ -662,6 +663,90 @@ func TestExecCommandInlinesRepositoryBootstrapForNonPersistentBackend(t *testing
 	}
 	if !strings.Contains(joined, "cd '/workspace' && exec 'echo' 'ok'") {
 		t.Fatalf("expected inlined command to run inside /workspace, got %q", joined)
+	}
+}
+
+func TestExecCommandInlinesRepositoryBootstrapForReusedSandboxOnNonPersistentBackend(t *testing.T) {
+	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
+	adapter := &integrationAdapter{}
+	host, _ := startUnixIntegrationServer(t, adapter)
+	client := mustNewControlClient(t, host)
+	createSandboxResp, err := client.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy: &cleanroomv1.Policy{
+			Version:        1,
+			ImageRef:       "ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+			ImageDigest:    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+			NetworkDefault: "deny",
+			Allow: []*cleanroomv1.PolicyAllowRule{
+				{Host: "github.com", Ports: []int32{443}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createSandboxResp.GetSandbox().GetSandboxId()
+	if sandboxID == "" {
+		t.Fatal("expected sandbox id")
+	}
+
+	var (
+		mu       sync.Mutex
+		commands [][]string
+	)
+	adapter.runStreamFn = func(_ context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+		mu.Lock()
+		commands = append(commands, append([]string(nil), req.Command...))
+		mu.Unlock()
+		return &backend.RunResult{RunID: req.RunID, ExitCode: 0, Message: "ok"}, nil
+	}
+
+	outcome := runExecWithCapture(ExecCommand{
+		clientFlags: clientFlags{Host: host},
+		Chdir:       repoDir,
+		SandboxID:   sandboxID,
+		Command:     []string{"echo", "ok"},
+	}, runtimeContext{
+		CWD: repoDir,
+		Loader: repositoryIntegrationLoader{
+			compiled: &policy.CompiledPolicy{
+				Version:        1,
+				ImageRef:       "ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+				ImageDigest:    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+				NetworkDefault: "deny",
+				Allow:          []policy.AllowRule{{Host: "github.com", Ports: []int{443}}},
+			},
+			repository: policy.RepositoryConfig{
+				Mode:   "current-repo",
+				Remote: "origin",
+				Path:   "/workspace",
+			},
+		},
+		Config: runtimeconfig.Config{
+			DefaultBackend: "firecracker",
+		},
+		Backends: map[string]backend.Adapter{
+			"firecracker": adapter,
+		},
+	})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err != nil {
+		t.Fatalf("ExecCommand.Run returned error: %v", outcome.err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(commands) != 1 {
+		t.Fatalf("expected a single inlined execution, got %d execution(s)", len(commands))
+	}
+	joined := strings.Join(commands[0], " ")
+	if !strings.Contains(joined, "clone --filter=blob:none --no-checkout") {
+		t.Fatalf("expected reused sandbox execution to inline repository clone, got %q", joined)
+	}
+	if !strings.Contains(joined, "cd '/workspace' && exec 'echo' 'ok'") {
+		t.Fatalf("expected reused sandbox execution to run inside /workspace, got %q", joined)
 	}
 }
 

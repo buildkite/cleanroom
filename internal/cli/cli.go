@@ -904,12 +904,13 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 		"sandbox_id", strings.TrimSpace(e.SandboxID),
 		"command_argc", len(e.Command),
 	)
-	repository, err := maybeResolveRepositoryCheckout(cwd, ctx.Loader, strings.TrimSpace(e.SandboxID))
+	persistentRepositoryBackend := backendSupportsRepositoryPersistence(ctx, host, e.Backend)
+	repository, err := maybeResolveRepositoryCheckout(cwd, ctx.Loader, strings.TrimSpace(e.SandboxID), !persistentRepositoryBackend)
 	if err != nil {
 		return err
 	}
 	warnDirtyRepositoryCheckout(repository)
-	inlineRepositoryBootstrap := shouldInlineRepositoryBootstrap(ctx, host, e.Backend, strings.TrimSpace(e.SandboxID), repository)
+	inlineRepositoryBootstrap := shouldInlineRepositoryBootstrap(ctx, host, e.Backend, repository)
 	repositoryForCreate := repository
 	if inlineRepositoryBootstrap {
 		repositoryForCreate = nil
@@ -1079,12 +1080,13 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 		"sandbox_id", strings.TrimSpace(c.SandboxID),
 		"command_argc", len(command),
 	)
-	repository, err := maybeResolveRepositoryCheckout(cwd, ctx.Loader, strings.TrimSpace(c.SandboxID))
+	persistentRepositoryBackend := backendSupportsRepositoryPersistence(ctx, host, c.Backend)
+	repository, err := maybeResolveRepositoryCheckout(cwd, ctx.Loader, strings.TrimSpace(c.SandboxID), !persistentRepositoryBackend)
 	if err != nil {
 		return err
 	}
 	warnDirtyRepositoryCheckout(repository)
-	inlineRepositoryBootstrap := shouldInlineRepositoryBootstrap(ctx, host, c.Backend, strings.TrimSpace(c.SandboxID), repository)
+	inlineRepositoryBootstrap := shouldInlineRepositoryBootstrap(ctx, host, c.Backend, repository)
 	repositoryForCreate := repository
 	if inlineRepositoryBootstrap {
 		repositoryForCreate = nil
@@ -2422,8 +2424,8 @@ func backendSupportsRepositoryPersistence(ctx *runtimeContext, host, backendName
 	return backend.CapabilitiesForAdapter(adapter)[backend.CapabilitySandboxPersistent]
 }
 
-func shouldInlineRepositoryBootstrap(ctx *runtimeContext, host, backendName, existingSandboxID string, repository *resolvedRepositoryCheckout) bool {
-	if repository == nil || strings.TrimSpace(existingSandboxID) != "" {
+func shouldInlineRepositoryBootstrap(ctx *runtimeContext, host, backendName string, repository *resolvedRepositoryCheckout) bool {
+	if repository == nil {
 		return false
 	}
 	return !backendSupportsRepositoryPersistence(ctx, host, backendName)
