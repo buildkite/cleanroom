@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"strings"
@@ -101,7 +102,11 @@ func (h *gitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	upstreamURL := remoteURL + querySuffix(r.URL.RawQuery)
+	upstreamURL, err := upstreamRequestURL(upstreamHost, repoPath, r.URL.RawQuery)
+	if err != nil {
+		http.Error(w, "bad request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
 	upstreamReq, err := http.NewRequestWithContext(r.Context(), r.Method, upstreamURL, r.Body)
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -173,6 +178,21 @@ func querySuffix(rawQuery string) string {
 		return ""
 	}
 	return "?" + rawQuery
+}
+
+func upstreamRequestURL(upstreamHost, repoPath, rawQuery string) (string, error) {
+	if strings.TrimSpace(upstreamHost) == "" {
+		return "", fmt.Errorf("missing upstream host")
+	}
+	if strings.TrimSpace(repoPath) == "" || !strings.HasPrefix(repoPath, "/") {
+		return "", fmt.Errorf("missing repository path")
+	}
+	return (&url.URL{
+		Scheme:   "https",
+		Host:     upstreamHost,
+		Path:     repoPath,
+		RawQuery: rawQuery,
+	}).String(), nil
 }
 
 func (h *gitHandler) serveFromMirror(w http.ResponseWriter, r *http.Request, remoteURL, upstreamHost, repoPath, requestType string) error {

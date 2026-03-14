@@ -124,6 +124,12 @@ func TestGitHandlerProxiesUpstream(t *testing.T) {
 		if auth := r.Header.Get("Authorization"); auth != "Bearer test-token" {
 			t.Errorf("expected Bearer test-token, got %q", auth)
 		}
+		if got, want := r.URL.Path, "/org/repo.git/info/refs"; got != want {
+			t.Fatalf("unexpected upstream path: got %q want %q", got, want)
+		}
+		if got, want := r.URL.RawQuery, "service=git-upload-pack"; got != want {
+			t.Fatalf("unexpected upstream query: got %q want %q", got, want)
+		}
 		w.Header().Set("Content-Type", "application/x-git-upload-pack-advertisement")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("git-refs-data"))
@@ -167,6 +173,12 @@ func TestGitHandlerForwardsEndToEndHeadersAndStripsGatewayHeaders(t *testing.T) 
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got, want := r.Header.Get("Authorization"), "Bearer test-token"; got != want {
 			t.Fatalf("unexpected Authorization header: got %q want %q", got, want)
+		}
+		if got, want := r.URL.Path, "/org/repo.git/git-upload-pack"; got != want {
+			t.Fatalf("unexpected upstream path: got %q want %q", got, want)
+		}
+		if got := r.URL.RawQuery; got != "" {
+			t.Fatalf("unexpected upstream query: got %q want empty", got)
 		}
 		if got, want := r.Header.Get("User-Agent"), "git/2.49.0"; got != want {
 			t.Fatalf("unexpected User-Agent header: got %q want %q", got, want)
