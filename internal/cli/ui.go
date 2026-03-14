@@ -166,7 +166,7 @@ func renderDaemonStatusReport(report daemonStatusReport, color bool) string {
 	icon := "!"
 	colorCode := "1;33"
 	switch {
-	case report.Installed && report.Active:
+	case report.Active:
 		summary = "running"
 		icon = "✓"
 		colorCode = "1;32"

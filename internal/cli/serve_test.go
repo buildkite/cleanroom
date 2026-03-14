@@ -1210,6 +1210,47 @@ func TestDaemonStatusLaunchdNotInstalled(t *testing.T) {
 	}
 }
 
+func TestDaemonStatusLaunchdRunningWithoutPlistShowsRunning(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	prevGOOS := serveInstallGOOS
+	prevEUID := serveInstallEUID
+	prevUID := serveInstallUID
+	prevUserHomeDir := serveInstallUserHomeDir
+	prevRunCommandOutput := serveInstallRunCommandOutput
+	serveInstallGOOS = "darwin"
+	serveInstallEUID = func() int { return 501 }
+	serveInstallUID = func() int { return 501 }
+	serveInstallUserHomeDir = func() (string, error) { return tmpDir, nil }
+	serveInstallRunCommandOutput = func(name string, args ...string) (string, error) {
+		return "state = running\n", nil
+	}
+	t.Cleanup(func() {
+		serveInstallGOOS = prevGOOS
+		serveInstallEUID = prevEUID
+		serveInstallUID = prevUID
+		serveInstallUserHomeDir = prevUserHomeDir
+		serveInstallRunCommandOutput = prevRunCommandOutput
+	})
+
+	stdout, readStdout := makeStdoutCapture(t)
+	cmd := &DaemonCommand{Action: "status"}
+	if err := cmd.Run(&runtimeContext{CWD: tmpDir, Stdout: stdout}); err != nil {
+		t.Fatalf("DaemonCommand.Run returned error: %v", err)
+	}
+
+	out := readStdout()
+	if !strings.Contains(out, "✓ [running] "+launchdServiceName) {
+		t.Fatalf("expected running summary, got: %s", out)
+	}
+	if !strings.Contains(out, "install: missing") {
+		t.Fatalf("expected install field, got: %s", out)
+	}
+	if !strings.Contains(out, "runtime: active") {
+		t.Fatalf("expected runtime field, got: %s", out)
+	}
+}
+
 func TestDaemonStatusUnsupportedOS(t *testing.T) {
 	prevGOOS := serveInstallGOOS
 	serveInstallGOOS = "windows"

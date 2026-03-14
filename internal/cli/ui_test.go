@@ -174,6 +174,26 @@ func TestRenderDaemonStatusReportColor(t *testing.T) {
 	}
 }
 
+func TestRenderDaemonStatusReportShowsRunningWhenActiveWithoutInstall(t *testing.T) {
+	out := renderDaemonStatusReport(daemonStatusReport{
+		Manager:   "launchd",
+		Service:   "com.buildkite.cleanroom",
+		Installed: false,
+		Active:    true,
+		Fields: []startupField{
+			{Key: "install", Value: "missing"},
+			{Key: "runtime", Value: "active"},
+		},
+	}, false)
+
+	if !strings.Contains(out, "✓ [running] com.buildkite.cleanroom") {
+		t.Fatalf("expected running summary when runtime is active, got: %q", out)
+	}
+	if !strings.Contains(out, "  install: missing") {
+		t.Fatalf("missing install line: %q", out)
+	}
+}
+
 func stripANSI(value string) string {
 	ansi := regexp.MustCompile(`\x1b\[[0-9;]*m`)
 	return ansi.ReplaceAllString(value, "")
