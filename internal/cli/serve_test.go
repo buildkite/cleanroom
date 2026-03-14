@@ -922,10 +922,14 @@ func TestDaemonStopLaunchdDisablesAndBootsOutUserService(t *testing.T) {
 	prevUID := serveInstallUID
 	prevUserHomeDir := serveInstallUserHomeDir
 	prevRunCommand := serveInstallRunCommand
+	prevRunCommandOutput := serveInstallRunCommandOutput
 	serveInstallGOOS = "darwin"
 	serveInstallEUID = func() int { return 501 }
 	serveInstallUID = func() int { return 501 }
 	serveInstallUserHomeDir = func() (string, error) { return tmpDir, nil }
+	serveInstallRunCommandOutput = func(name string, args ...string) (string, error) {
+		return "state = running\n", nil
+	}
 	var calls [][]string
 	serveInstallRunCommand = func(name string, args ...string) error {
 		calls = append(calls, append([]string{name}, args...))
@@ -937,6 +941,7 @@ func TestDaemonStopLaunchdDisablesAndBootsOutUserService(t *testing.T) {
 		serveInstallUID = prevUID
 		serveInstallUserHomeDir = prevUserHomeDir
 		serveInstallRunCommand = prevRunCommand
+		serveInstallRunCommandOutput = prevRunCommandOutput
 	})
 
 	stdout, readStdout := makeStdoutCapture(t)
@@ -970,10 +975,14 @@ func TestDaemonStopLaunchdBootsOutWhenPlistIsMissing(t *testing.T) {
 	prevUID := serveInstallUID
 	prevUserHomeDir := serveInstallUserHomeDir
 	prevRunCommand := serveInstallRunCommand
+	prevRunCommandOutput := serveInstallRunCommandOutput
 	serveInstallGOOS = "darwin"
 	serveInstallEUID = func() int { return 501 }
 	serveInstallUID = func() int { return 501 }
 	serveInstallUserHomeDir = func() (string, error) { return tmpDir, nil }
+	serveInstallRunCommandOutput = func(name string, args ...string) (string, error) {
+		return "state = running\n", nil
+	}
 	var calls [][]string
 	serveInstallRunCommand = func(name string, args ...string) error {
 		calls = append(calls, append([]string{name}, args...))
@@ -985,6 +994,7 @@ func TestDaemonStopLaunchdBootsOutWhenPlistIsMissing(t *testing.T) {
 		serveInstallUID = prevUID
 		serveInstallUserHomeDir = prevUserHomeDir
 		serveInstallRunCommand = prevRunCommand
+		serveInstallRunCommandOutput = prevRunCommandOutput
 	})
 
 	stdout, readStdout := makeStdoutCapture(t)
@@ -1004,6 +1014,55 @@ func TestDaemonStopLaunchdBootsOutWhenPlistIsMissing(t *testing.T) {
 	out := readStdout()
 	if !strings.Contains(out, "daemon stopped") {
 		t.Fatalf("expected stopped message, got: %s", out)
+	}
+}
+
+func TestDaemonStopLaunchdReturnsBootoutFailure(t *testing.T) {
+	tmpDir := t.TempDir()
+	plistPath := filepath.Join(tmpDir, "Library", "LaunchAgents", launchdServiceName+".plist")
+	if err := os.MkdirAll(filepath.Dir(plistPath), 0o755); err != nil {
+		t.Fatalf("mkdir launch agents dir: %v", err)
+	}
+	if err := os.WriteFile(plistPath, []byte("existing-plist"), 0o644); err != nil {
+		t.Fatalf("write existing plist: %v", err)
+	}
+
+	prevGOOS := serveInstallGOOS
+	prevEUID := serveInstallEUID
+	prevUID := serveInstallUID
+	prevUserHomeDir := serveInstallUserHomeDir
+	prevRunCommand := serveInstallRunCommand
+	prevRunCommandOutput := serveInstallRunCommandOutput
+	serveInstallGOOS = "darwin"
+	serveInstallEUID = func() int { return 501 }
+	serveInstallUID = func() int { return 501 }
+	serveInstallUserHomeDir = func() (string, error) { return tmpDir, nil }
+	serveInstallRunCommandOutput = func(name string, args ...string) (string, error) {
+		return "state = running\n", nil
+	}
+	serveInstallRunCommand = func(name string, args ...string) error {
+		if len(args) > 0 && args[0] == "bootout" {
+			return &exec.ExitError{ProcessState: &os.ProcessState{}}
+		}
+		return nil
+	}
+	t.Cleanup(func() {
+		serveInstallGOOS = prevGOOS
+		serveInstallEUID = prevEUID
+		serveInstallUID = prevUID
+		serveInstallUserHomeDir = prevUserHomeDir
+		serveInstallRunCommand = prevRunCommand
+		serveInstallRunCommandOutput = prevRunCommandOutput
+	})
+
+	stdout, _ := makeStdoutCapture(t)
+	cmd := &DaemonCommand{Action: "stop"}
+	err := cmd.Run(&runtimeContext{CWD: tmpDir, Stdout: stdout})
+	if err == nil {
+		t.Fatal("expected launchd bootout failure")
+	}
+	if !strings.Contains(err.Error(), "stop launchd service") {
+		t.Fatalf("expected bootout error context, got: %v", err)
 	}
 }
 
