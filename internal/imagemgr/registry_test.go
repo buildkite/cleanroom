@@ -13,7 +13,7 @@ func TestHostLinuxPlatformForGOARCH(t *testing.T) {
 		wantVariant string
 	}{
 		{name: "amd64", goArch: "amd64", wantOS: "linux", wantArch: "amd64", wantVariant: ""},
-		{name: "arm64", goArch: "arm64", wantOS: "linux", wantArch: "arm64", wantVariant: "v8"},
+		{name: "arm64", goArch: "arm64", wantOS: "linux", wantArch: "arm64", wantVariant: ""},
 		{name: "fallback", goArch: "ppc64le", wantOS: "linux", wantArch: "ppc64le", wantVariant: ""},
 	}
 

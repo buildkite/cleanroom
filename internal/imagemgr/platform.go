@@ -12,7 +12,9 @@ func HostLinuxPlatformForGOARCH(goarch string) v1.Platform {
 	case "amd64":
 		return v1.Platform{OS: "linux", Architecture: "amd64"}
 	case "arm64":
-		return v1.Platform{OS: "linux", Architecture: "arm64", Variant: "v8"}
+		// Many published arm64 OCI indexes omit variant metadata entirely.
+		// Keep selection broad enough to match standard linux/arm64 manifests.
+		return v1.Platform{OS: "linux", Architecture: "arm64"}
 	default:
 		return v1.Platform{OS: "linux", Architecture: strings.TrimSpace(goarch)}
 	}
