@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"net/url"
@@ -9,7 +8,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/buildkite/cleanroom/internal/controlclient"
+	"github.com/buildkite/cleanroom/internal/backend"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/repositorycheckout"
@@ -218,45 +217,47 @@ func isNotAGitRepositoryErr(err error) bool {
 	return strings.Contains(msg, "not a git repository")
 }
 
-func createTopLevelSandbox(
-	client *controlclient.Client,
-	loader policyLoader,
-	cwd, host, backendName, imageRefOverride string,
-	launchSeconds int64,
-	repository *resolvedRepositoryCheckout,
-) (string, *cleanroomv1.Sandbox, error) {
-	compiled, _, err := loader.LoadAndCompile(cwd)
-	if err != nil {
-		return "", nil, err
+func backendSupportsRepositoryPersistence(ctx *runtimeContext, host, backendName string) bool {
+	if ctx == nil {
+		return true
 	}
-	allowLocalImageOverride, err := isLocalControlPlaneEndpoint(host)
+	localControlPlane, err := isLocalControlPlaneEndpoint(host)
 	if err != nil {
-		return "", nil, err
+		return true
 	}
-	compiled, err = overrideCompiledPolicyImage(compiled, imageRefOverride, allowLocalImageOverride)
-	if err != nil {
-		return "", nil, err
+	if !localControlPlane {
+		return true
 	}
+	selectedBackend := strings.TrimSpace(backendName)
+	if selectedBackend == "" {
+		selectedBackend = strings.TrimSpace(ctx.Config.DefaultBackend)
+	}
+	if selectedBackend == "" {
+		return true
+	}
+	adapter, ok := ctx.Backends[selectedBackend]
+	if !ok || adapter == nil {
+		return true
+	}
+	return backend.CapabilitiesForAdapter(adapter)[backend.CapabilitySandboxPersistent]
+}
 
-	createSandboxResp, err := client.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
-		Backend: backendName,
-		Options: &cleanroomv1.SandboxOptions{
-			LaunchSeconds: launchSeconds,
-		},
-		Policy:             compiled.ToProto(),
-		RepositoryCheckout: repositoryCheckoutProto(repository),
-	})
-	if err != nil {
-		return "", nil, fmt.Errorf("create sandbox: %w", err)
+func shouldInlineRepositoryBootstrap(ctx *runtimeContext, host, backendName string, repository *resolvedRepositoryCheckout) bool {
+	if repository == nil {
+		return false
 	}
+	return !backendSupportsRepositoryPersistence(ctx, host, backendName)
+}
 
-	sandbox := createSandboxResp.GetSandbox()
-	sandboxID := strings.TrimSpace(sandbox.GetSandboxId())
-	if sandboxID == "" {
-		return "", nil, errors.New("create sandbox: response missing sandbox id")
-	}
+func repositoryExecutionCommand(command []string, repository *resolvedRepositoryCheckout, inlineBootstrap bool) []string {
+	_ = repository
+	_ = inlineBootstrap
+	return normalizePassthroughCommand(command)
+}
 
-	return sandboxID, sandbox, nil
+func repositoryExecutionCheckout(repository *resolvedRepositoryCheckout, inlineBootstrap bool) *cleanroomv1.RepositoryCheckout {
+	_ = inlineBootstrap
+	return repositoryCheckoutProto(repository)
 }
 
 func normalizePassthroughCommand(command []string) []string {
