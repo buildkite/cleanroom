@@ -11,6 +11,7 @@ import (
 
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/policy"
+	"github.com/buildkite/cleanroom/internal/volumestore"
 	"github.com/buildkite/cleanroom/internal/vsockexec"
 )
 
@@ -206,12 +207,55 @@ func TestRestoreSandboxReplacesRunningInstance(t *testing.T) {
 	}
 }
 
-func TestVolumeStoreDriverRejectsDisabledSnapshots(t *testing.T) {
+func TestRootFSVolumeStoreDriverAllowsWritableVolumesWhenSnapshotsDisabled(t *testing.T) {
 	t.Parallel()
 
-	_, err := volumeStoreDriver(backend.FirecrackerConfig{})
+	sourcePath := filepath.Join(t.TempDir(), "base.ext4")
+	if err := os.WriteFile(sourcePath, []byte("rootfs-bytes"), 0o644); err != nil {
+		t.Fatalf("write base volume: %v", err)
+	}
+
+	driver, err := rootFSVolumeStoreDriver(backend.FirecrackerConfig{})
+	if err != nil {
+		t.Fatalf("rootFSVolumeStoreDriver returned error: %v", err)
+	}
+
+	base, err := driver.EnsureBaseVolume(context.Background(), volumestore.EnsureBaseVolumeRequest{
+		BaseID:     "base",
+		SourcePath: sourcePath,
+	})
+	if err != nil {
+		t.Fatalf("EnsureBaseVolume returned error: %v", err)
+	}
+
+	attachmentPath := filepath.Join(t.TempDir(), "writable.ext4")
+	volume, err := driver.CreateWritableVolume(context.Background(), volumestore.CreateWritableVolumeRequest{
+		VolumeID:       "sandbox",
+		BaseRef:        base.Ref,
+		AttachmentPath: attachmentPath,
+	})
+	if err != nil {
+		t.Fatalf("CreateWritableVolume returned error: %v", err)
+	}
+	if got, want := volume.AttachmentPath, attachmentPath; got != want {
+		t.Fatalf("unexpected attachment path: got %q want %q", got, want)
+	}
+
+	data, err := os.ReadFile(attachmentPath)
+	if err != nil {
+		t.Fatalf("read writable volume: %v", err)
+	}
+	if got, want := string(data), "rootfs-bytes"; got != want {
+		t.Fatalf("unexpected writable volume contents: got %q want %q", got, want)
+	}
+}
+
+func TestSnapshotVolumeStoreDriverRejectsDisabledSnapshots(t *testing.T) {
+	t.Parallel()
+
+	_, err := snapshotVolumeStoreDriver(backend.FirecrackerConfig{})
 	if err == nil {
-		t.Fatal("expected volumeStoreDriver to reject disabled snapshots")
+		t.Fatal("expected snapshotVolumeStoreDriver to reject disabled snapshots")
 	}
 	if got := err.Error(); got == "" || !strings.Contains(got, "not enabled") {
 		t.Fatalf("unexpected error: %v", err)

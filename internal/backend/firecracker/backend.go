@@ -476,7 +476,7 @@ func (a *Adapter) CreateSnapshot(ctx context.Context, req backend.SnapshotReques
 		return nil, fmt.Errorf("sync sandbox filesystem before snapshot: %w", err)
 	}
 
-	driver, err := volumeStoreDriver(req.FirecrackerConfig)
+	driver, err := snapshotVolumeStoreDriver(req.FirecrackerConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -610,7 +610,7 @@ func (a *Adapter) DeleteSnapshot(ctx context.Context, req backend.DeleteSnapshot
 	if storageRef == "" {
 		return errors.New("missing snapshot storage_ref")
 	}
-	driver, err := volumeStoreDriver(req.FirecrackerConfig)
+	driver, err := snapshotVolumeStoreDriver(req.FirecrackerConfig)
 	if err != nil {
 		return err
 	}
@@ -1515,7 +1515,7 @@ func (a *Adapter) launchSandboxVMFromRootFS(ctx context.Context, sandboxID strin
 		return nil, fmt.Errorf("rootfs %s: %w", rootfsPath, err)
 	}
 
-	driver, err := volumeStoreDriver(cfg)
+	driver, err := rootFSVolumeStoreDriver(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -1698,10 +1698,7 @@ func snapshotStorageBaseDir(cfg backend.FirecrackerConfig) (string, error) {
 	return paths.SnapshotDir()
 }
 
-func volumeStoreDriver(cfg backend.FirecrackerConfig) (volumestore.Driver, error) {
-	if !cfg.Snapshots.Enabled {
-		return nil, errors.New("firecracker snapshots are not enabled")
-	}
+func rootFSVolumeStoreDriver(cfg backend.FirecrackerConfig) (volumestore.Driver, error) {
 	driverName := strings.ToLower(strings.TrimSpace(cfg.Snapshots.Driver))
 	switch driverName {
 	case "", "file":
@@ -1720,6 +1717,13 @@ func volumeStoreDriver(cfg backend.FirecrackerConfig) (volumestore.Driver, error
 	default:
 		return nil, fmt.Errorf("unsupported firecracker snapshot driver %q", cfg.Snapshots.Driver)
 	}
+}
+
+func snapshotVolumeStoreDriver(cfg backend.FirecrackerConfig) (volumestore.Driver, error) {
+	if !cfg.Snapshots.Enabled {
+		return nil, errors.New("firecracker snapshots are not enabled")
+	}
+	return rootFSVolumeStoreDriver(cfg)
 }
 
 func pauseSandboxProcess(instance *sandboxInstance) error {
