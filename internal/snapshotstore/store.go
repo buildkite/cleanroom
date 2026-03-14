@@ -22,6 +22,7 @@ type Record struct {
 	Name            string
 	PolicyHash      string
 	Policy          *cleanroomv1.Policy
+	Repository      *cleanroomv1.RepositoryCheckout
 	StorageDriver   string
 	StorageRef      string
 	CreatedAt       time.Time
@@ -85,6 +86,13 @@ func (s *Store) Create(ctx context.Context, record Record) error {
 	if err != nil {
 		return fmt.Errorf("marshal snapshot policy %q: %w", record.SnapshotID, err)
 	}
+	var repositoryBytes []byte
+	if record.Repository != nil {
+		repositoryBytes, err = proto.Marshal(record.Repository)
+		if err != nil {
+			return fmt.Errorf("marshal snapshot repository %q: %w", record.SnapshotID, err)
+		}
+	}
 
 	db, err := s.open(ctx)
 	if err != nil {
@@ -100,10 +108,11 @@ func (s *Store) Create(ctx context.Context, record Record) error {
 			name,
 			policy_hash,
 			policy_proto,
+			repository_proto,
 			storage_driver,
 			storage_ref,
 			created_at_unix
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		record.SnapshotID,
 		record.SourceSandboxID,
@@ -111,6 +120,7 @@ func (s *Store) Create(ctx context.Context, record Record) error {
 		record.Name,
 		record.PolicyHash,
 		policyBytes,
+		repositoryBytes,
 		record.StorageDriver,
 		record.StorageRef,
 		record.CreatedAt.UTC().Unix(),
@@ -135,6 +145,7 @@ func (s *Store) Get(ctx context.Context, snapshotID string) (Record, bool, error
 			name,
 			policy_hash,
 			policy_proto,
+			repository_proto,
 			storage_driver,
 			storage_ref,
 			created_at_unix
@@ -167,6 +178,7 @@ func (s *Store) List(ctx context.Context) ([]Record, error) {
 			name,
 			policy_hash,
 			policy_proto,
+			repository_proto,
 			storage_driver,
 			storage_ref,
 			created_at_unix
@@ -231,6 +243,7 @@ func (s *Store) initDB(ctx context.Context) error {
 			name TEXT NOT NULL,
 			policy_hash TEXT NOT NULL,
 			policy_proto BLOB NOT NULL,
+			repository_proto BLOB,
 			storage_driver TEXT NOT NULL DEFAULT 'file',
 			storage_ref TEXT NOT NULL,
 			created_at_unix INTEGER NOT NULL
@@ -243,6 +256,9 @@ func (s *Store) initDB(ctx context.Context) error {
 	if _, err := db.ExecContext(ctx, `ALTER TABLE snapshots ADD COLUMN storage_driver TEXT NOT NULL DEFAULT 'file'`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
 		return fmt.Errorf("ensure snapshot metadata storage_driver column: %w", err)
 	}
+	if _, err := db.ExecContext(ctx, `ALTER TABLE snapshots ADD COLUMN repository_proto BLOB`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		return fmt.Errorf("ensure snapshot metadata repository_proto column: %w", err)
+	}
 	return nil
 }
 
@@ -252,9 +268,10 @@ type recordScanner interface {
 
 func scanRecord(row recordScanner) (Record, error) {
 	var (
-		record      Record
-		policyBytes []byte
-		createdAt   int64
+		record          Record
+		policyBytes     []byte
+		repositoryBytes []byte
+		createdAt       int64
 	)
 	if err := row.Scan(
 		&record.SnapshotID,
@@ -263,6 +280,7 @@ func scanRecord(row recordScanner) (Record, error) {
 		&record.Name,
 		&record.PolicyHash,
 		&policyBytes,
+		&repositoryBytes,
 		&record.StorageDriver,
 		&record.StorageRef,
 		&createdAt,
@@ -273,6 +291,12 @@ func scanRecord(row recordScanner) (Record, error) {
 	record.Policy = &cleanroomv1.Policy{}
 	if err := proto.Unmarshal(policyBytes, record.Policy); err != nil {
 		return Record{}, fmt.Errorf("decode snapshot policy %q: %w", record.SnapshotID, err)
+	}
+	if len(repositoryBytes) > 0 {
+		record.Repository = &cleanroomv1.RepositoryCheckout{}
+		if err := proto.Unmarshal(repositoryBytes, record.Repository); err != nil {
+			return Record{}, fmt.Errorf("decode snapshot repository %q: %w", record.SnapshotID, err)
+		}
 	}
 	record.CreatedAt = time.Unix(createdAt, 0).UTC()
 	return record, nil

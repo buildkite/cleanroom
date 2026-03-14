@@ -30,6 +30,13 @@ func TestStoreCreateGetListDelete(t *testing.T) {
 			NetworkDefault: "deny",
 			Hash:           "policy-hash",
 		},
+		Repository: &cleanroomv1.RepositoryCheckout{
+			RemoteUrl:      "https://github.com/buildkite/cleanroom.git",
+			CommitSha:      "0123456789abcdef0123456789abcdef01234567",
+			DestinationDir: "/workspace",
+			Submodules:     true,
+			Branch:         "main",
+		},
 		StorageRef:    "/tmp/snap-test.ext4",
 		StorageDriver: "file",
 		CreatedAt:     time.Unix(1700000000, 0).UTC(),
@@ -50,6 +57,9 @@ func TestStoreCreateGetListDelete(t *testing.T) {
 	}
 	if got.Policy == nil || got.Policy.GetImageRef() != record.Policy.GetImageRef() {
 		t.Fatalf("unexpected stored policy: %#v", got.Policy)
+	}
+	if got.Repository == nil || got.Repository.GetDestinationDir() != record.Repository.GetDestinationDir() || got.Repository.GetCommitSha() != record.Repository.GetCommitSha() {
+		t.Fatalf("unexpected stored repository: %#v", got.Repository)
 	}
 
 	items, err := store.List(context.Background())

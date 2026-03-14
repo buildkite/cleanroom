@@ -339,6 +339,7 @@ func (s *Service) createSandboxFromSnapshot(ctx context.Context, req *cleanroomv
 		Backend:          backendName,
 		Policy:           compiled,
 		Firecracker:      firecrackerCfg,
+		Repository:       repositorycheckout.FromProto(record.Repository),
 		CreatedAt:        now,
 		UpdatedAt:        now,
 		Status:           cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY,
@@ -464,6 +465,7 @@ func (s *Service) CreateSnapshot(ctx context.Context, req *cleanroomv1.CreateSna
 		Name:            name,
 		PolicyHash:      state.Policy.Hash,
 		Policy:          state.Policy.ToProto(),
+		Repository:      cloneRepositoryCheckout(state.Repository).ToProto(),
 		StorageDriver:   snapshotCfg.Snapshots.Driver,
 		CreatedAt:       now,
 	}
@@ -656,6 +658,7 @@ func (s *Service) RestoreSandbox(ctx context.Context, req *cleanroomv1.RestoreSa
 		s.mu.Unlock()
 		return nil, fmt.Errorf("unknown sandbox %q", sandboxID)
 	}
+	state.Repository = cloneRepositoryCheckout(repositorycheckout.FromProto(record.Repository))
 	s.recordSandboxEventLocked(state, cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY, fmt.Sprintf("sandbox restored from snapshot %s", snapshotID))
 	resp := &cleanroomv1.RestoreSandboxResponse{
 		Sandbox: cloneSandboxLocked(state),
@@ -978,6 +981,7 @@ func (s *Service) CreateExecution(ctx context.Context, req *cleanroomv1.CreateEx
 	}
 	sandboxPolicy := sandbox.Policy
 	firecrackerCfg := sandbox.Firecracker
+	sandboxRepository := cloneRepositoryCheckout(sandbox.Repository)
 	imageRef := ""
 	imageDigest := ""
 	if sandboxPolicy != nil {
@@ -1001,6 +1005,8 @@ func (s *Service) CreateExecution(ctx context.Context, req *cleanroomv1.CreateEx
 			}
 			command = repositorycheckout.WrapCommandWithBootstrap(command, repository)
 		}
+	} else if sandboxRepository != nil {
+		command = repositorycheckout.WrapCommandInWorkdir(command, sandboxRepository)
 	}
 
 	s.mu.Lock()
