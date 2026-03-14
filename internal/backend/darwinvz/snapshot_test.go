@@ -100,11 +100,15 @@ func TestProvisionSandboxFromSnapshotUsesSnapshotRootFS(t *testing.T) {
 		ImageDigest:    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 		Hash:           "policy-hash",
 	}
+	snapshotRootFSPath := filepath.Join(t.TempDir(), "snap-test.ext4")
+	if err := os.WriteFile(snapshotRootFSPath, []byte("snapshot-rootfs"), 0o644); err != nil {
+		t.Fatalf("write snapshot rootfs: %v", err)
+	}
 
 	if err := adapter.ProvisionSandboxFromSnapshot(context.Background(), backend.ProvisionFromSnapshotRequest{
 		SandboxID:  "cr-test",
 		SnapshotID: "snap-test",
-		StorageRef: "/tmp/snap-test.ext4",
+		StorageRef: snapshotRootFSPath,
 		Policy:     compiled,
 	}); err != nil {
 		t.Fatalf("ProvisionSandboxFromSnapshot returned error: %v", err)
@@ -115,11 +119,40 @@ func TestProvisionSandboxFromSnapshotUsesSnapshotRootFS(t *testing.T) {
 	if gotPolicy != compiled {
 		t.Fatal("expected compiled policy to be forwarded")
 	}
-	if got, want := gotCfg.RootFSPath, "/tmp/snap-test.ext4"; got != want {
+	if got, want := gotCfg.RootFSPath, snapshotRootFSPath; got != want {
 		t.Fatalf("unexpected snapshot rootfs path: got %q want %q", got, want)
 	}
 	if _, ok := adapter.sandboxes["cr-test"]; !ok {
 		t.Fatal("expected provisioned sandbox to be stored")
+	}
+}
+
+func TestProvisionSandboxFromSnapshotRejectsMissingSnapshotRootFS(t *testing.T) {
+	t.Parallel()
+
+	missingSnapshotPath := filepath.Join(t.TempDir(), "missing-rootfs.ext4")
+	launchCalled := false
+	adapter := &Adapter{
+		launchSandboxVMFn: func(_ context.Context, sandboxID string, _ *policy.CompiledPolicy, _ backend.FirecrackerConfig) (*sandboxInstance, error) {
+			launchCalled = true
+			return &sandboxInstance{SandboxID: sandboxID}, nil
+		},
+	}
+
+	err := adapter.ProvisionSandboxFromSnapshot(context.Background(), backend.ProvisionFromSnapshotRequest{
+		SandboxID:  "cr-test",
+		SnapshotID: "snap-test",
+		StorageRef: missingSnapshotPath,
+		Policy: &policy.CompiledPolicy{
+			NetworkDefault: "deny",
+			ImageRef:       "ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		},
+	})
+	if err == nil {
+		t.Fatal("expected ProvisionSandboxFromSnapshot to fail when snapshot rootfs is missing")
+	}
+	if launchCalled {
+		t.Fatal("expected missing snapshot rootfs to fail before launching sandbox")
 	}
 }
 

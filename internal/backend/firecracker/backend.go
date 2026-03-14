@@ -472,8 +472,16 @@ func (a *Adapter) CreateSnapshot(ctx context.Context, req backend.SnapshotReques
 		return nil, fmt.Errorf("sandbox %q is not running: %w", sandboxID, err)
 	}
 
-	if _, _, err := a.executeInSandbox(ctx, instance, snapshotSyncTimeoutSeconds, []string{"sync"}, false, backend.OutputStream{}); err != nil {
+	syncResp, _, err := a.executeInSandbox(ctx, instance, snapshotSyncTimeoutSeconds, []string{"sync"}, false, backend.OutputStream{})
+	if err != nil {
 		return nil, fmt.Errorf("sync sandbox filesystem before snapshot: %w", err)
+	}
+	if syncResp.ExitCode != 0 {
+		guestErr := strings.TrimSpace(syncResp.Error)
+		if guestErr != "" {
+			return nil, fmt.Errorf("sync sandbox filesystem before snapshot: guest sync command exited with code %d: %s", syncResp.ExitCode, guestErr)
+		}
+		return nil, fmt.Errorf("sync sandbox filesystem before snapshot: guest sync command exited with code %d", syncResp.ExitCode)
 	}
 
 	driver, err := snapshotVolumeStoreDriver(req.FirecrackerConfig)

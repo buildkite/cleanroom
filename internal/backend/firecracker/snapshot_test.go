@@ -77,6 +77,50 @@ func TestCreateSnapshotSyncsPausesAndClonesRootFS(t *testing.T) {
 	}
 }
 
+func TestCreateSnapshotReturnsErrorWhenGuestSyncExitsNonZero(t *testing.T) {
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+
+	rootfsPath := filepath.Join(t.TempDir(), "rootfs.ext4")
+	if err := os.WriteFile(rootfsPath, []byte("snapshot-bytes"), 0o644); err != nil {
+		t.Fatalf("write rootfs: %v", err)
+	}
+
+	prevSignal := sendProcessSignal
+	sendProcessSignal = func(_ *os.Process, _ syscall.Signal) error { return nil }
+	t.Cleanup(func() { sendProcessSignal = prevSignal })
+
+	adapter := &Adapter{
+		runGuestCommandFn: func(_ context.Context, _ context.Context, _ <-chan struct{}, _ func() error, _ string, _ uint32, req vsockexec.ExecRequest, _ backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error) {
+			if len(req.Command) != 1 || req.Command[0] != "sync" {
+				t.Fatalf("unexpected command: %v", req.Command)
+			}
+			return vsockexec.ExecResponse{ExitCode: 42, Error: "sync failed"}, guestExecTiming{}, nil
+		},
+		sandboxes: map[string]*sandboxInstance{
+			"cr-test": {
+				SandboxID:    "cr-test",
+				VsockPath:    "/tmp/fake.sock",
+				GuestPort:    10700,
+				fcCmd:        &exec.Cmd{Process: &os.Process{Pid: 42}},
+				exitedCh:     make(chan struct{}),
+				vmRootFSPath: rootfsPath,
+			},
+		},
+	}
+
+	_, err := adapter.CreateSnapshot(context.Background(), backend.SnapshotRequest{
+		SandboxID:  "cr-test",
+		SnapshotID: "snap-test",
+		FirecrackerConfig: backend.FirecrackerConfig{
+			Snapshots: backend.SnapshotConfig{Enabled: true},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected CreateSnapshot to fail when guest sync exits non-zero")
+	}
+}
+
 func TestCreateSnapshotUsesConfiguredSnapshotBaseDir(t *testing.T) {
 	rootfsPath := filepath.Join(t.TempDir(), "rootfs.ext4")
 	if err := os.WriteFile(rootfsPath, []byte("snapshot-bytes"), 0o644); err != nil {

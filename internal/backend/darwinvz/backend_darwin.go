@@ -451,6 +451,9 @@ func (a *Adapter) ProvisionSandboxFromSnapshot(ctx context.Context, req backend.
 	if storageRef == "" {
 		return errors.New("missing snapshot storage_ref")
 	}
+	if _, err := os.Stat(storageRef); err != nil {
+		return fmt.Errorf("snapshot rootfs %q: %w", storageRef, err)
+	}
 
 	cfg := req.FirecrackerConfig
 	cfg.RootFSPath = storageRef
