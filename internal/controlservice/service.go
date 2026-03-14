@@ -2326,6 +2326,9 @@ func ensureSandboxIdleLocked(sandboxID string, sb *sandboxState, executions map[
 	if sb.DownloadInProgress {
 		return fmt.Errorf("sandbox_busy: sandbox %q currently has an active file download", sandboxID)
 	}
+	if sb.RepositoryBusy {
+		return fmt.Errorf("sandbox_busy: sandbox %q is preparing repository state", sandboxID)
+	}
 	if activeID := strings.TrimSpace(sb.ActiveExecutionID); activeID != "" {
 		if activeExecution, ok := executions[executionKey(sandboxID, activeID)]; ok && !isFinalExecutionStatus(activeExecution.Status) {
 			return fmt.Errorf("sandbox_busy: sandbox %q already has active execution %q", sandboxID, activeID)

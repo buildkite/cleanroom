@@ -488,6 +488,35 @@ func TestCreateSnapshotRejectsDisabledSnapshots(t *testing.T) {
 	}
 }
 
+func TestCreateSnapshotRejectsRepositoryBusySandbox(t *testing.T) {
+	store := newMemorySnapshotStore()
+	adapter := &stubAdapter{}
+	svc := newTestServiceWithSnapshotStore(adapter, store)
+
+	createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createResp.GetSandbox().GetSandboxId()
+
+	svc.mu.Lock()
+	svc.sandboxes[sandboxID].RepositoryBusy = true
+	svc.mu.Unlock()
+
+	_, err = svc.CreateSnapshot(context.Background(), &cleanroomv1.CreateSnapshotRequest{
+		SandboxId: sandboxID,
+	})
+	if err == nil {
+		t.Fatal("expected CreateSnapshot to fail while repository bootstrap is in progress")
+	}
+	if !strings.Contains(err.Error(), "preparing repository state") {
+		t.Fatalf("unexpected CreateSnapshot error: %v", err)
+	}
+	if adapter.createSnapshotCalls != 0 {
+		t.Fatalf("expected no backend snapshot calls, got %d", adapter.createSnapshotCalls)
+	}
+}
+
 func TestCreateSandboxFromSnapshotRejectsDisabledSnapshots(t *testing.T) {
 	store := newMemorySnapshotStore()
 	adapter := &stubAdapter{

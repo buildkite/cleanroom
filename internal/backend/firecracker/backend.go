@@ -452,7 +452,7 @@ func (a *Adapter) TerminateSandbox(_ context.Context, sandboxID string) error {
 	return nil
 }
 
-func (a *Adapter) CreateSnapshot(ctx context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
+func (a *Adapter) CreateSnapshot(ctx context.Context, req backend.SnapshotRequest) (result *backend.SnapshotResult, retErr error) {
 	sandboxID := strings.TrimSpace(req.SandboxID)
 	if sandboxID == "" {
 		return nil, errors.New("missing sandbox_id")
@@ -483,8 +483,15 @@ func (a *Adapter) CreateSnapshot(ctx context.Context, req backend.SnapshotReques
 	if err := pauseSandboxProcess(instance); err != nil {
 		return nil, err
 	}
+	paused := true
 	defer func() {
-		_ = resumeSandboxProcess(instance)
+		if !paused {
+			return
+		}
+		if err := resumeSandboxProcess(instance); err != nil && retErr == nil {
+			result = nil
+			retErr = fmt.Errorf("resume firecracker sandbox after snapshot: %w", err)
+		}
 	}()
 
 	snapshot, err := driver.SnapshotVolume(ctx, volumestore.SnapshotVolumeRequest{

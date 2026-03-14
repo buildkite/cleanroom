@@ -122,6 +122,61 @@ func TestCreateSnapshotUsesConfiguredSnapshotBaseDir(t *testing.T) {
 	}
 }
 
+func TestCreateSnapshotReturnsErrorWhenSandboxResumeFails(t *testing.T) {
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+
+	rootfsPath := filepath.Join(t.TempDir(), "rootfs.ext4")
+	if err := os.WriteFile(rootfsPath, []byte("snapshot-bytes"), 0o644); err != nil {
+		t.Fatalf("write rootfs: %v", err)
+	}
+
+	prevSignal := sendProcessSignal
+	sendProcessSignal = func(_ *os.Process, sig syscall.Signal) error {
+		if sig == syscall.SIGCONT {
+			return os.ErrPermission
+		}
+		return nil
+	}
+	t.Cleanup(func() { sendProcessSignal = prevSignal })
+
+	adapter := &Adapter{
+		runGuestCommandFn: func(_ context.Context, _ context.Context, _ <-chan struct{}, _ func() error, _ string, _ uint32, req vsockexec.ExecRequest, _ backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error) {
+			if len(req.Command) != 1 || req.Command[0] != "sync" {
+				t.Fatalf("unexpected command: %v", req.Command)
+			}
+			return vsockexec.ExecResponse{ExitCode: 0}, guestExecTiming{}, nil
+		},
+		sandboxes: map[string]*sandboxInstance{
+			"cr-test": {
+				SandboxID:    "cr-test",
+				VsockPath:    "/tmp/fake.sock",
+				GuestPort:    10700,
+				fcCmd:        &exec.Cmd{Process: &os.Process{Pid: 42}},
+				exitedCh:     make(chan struct{}),
+				vmRootFSPath: rootfsPath,
+			},
+		},
+	}
+
+	result, err := adapter.CreateSnapshot(context.Background(), backend.SnapshotRequest{
+		SandboxID:  "cr-test",
+		SnapshotID: "snap-test",
+		FirecrackerConfig: backend.FirecrackerConfig{
+			Snapshots: backend.SnapshotConfig{Enabled: true},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected CreateSnapshot to fail when sandbox resume fails")
+	}
+	if result != nil {
+		t.Fatalf("expected nil snapshot result, got %#v", result)
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "resume") {
+		t.Fatalf("expected resume error, got %v", err)
+	}
+}
+
 func TestProvisionSandboxFromSnapshotUsesSnapshotRootFS(t *testing.T) {
 	t.Parallel()
 
