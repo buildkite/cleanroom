@@ -481,7 +481,7 @@ func (s *Service) CreateSnapshot(ctx context.Context, req *cleanroomv1.CreateSna
 	if err != nil {
 		s.mu.Lock()
 		if current, ok := s.sandboxes[sandboxID]; ok {
-			s.recordSandboxEventLocked(current, cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY, fmt.Sprintf("snapshot %s failed: %v", snapshotID, err))
+			s.completeSnapshotLocked(current, fmt.Sprintf("snapshot %s failed: %v", snapshotID, err))
 		}
 		s.mu.Unlock()
 		return nil, fmt.Errorf("create snapshot: %w", err)
@@ -503,7 +503,7 @@ func (s *Service) CreateSnapshot(ctx context.Context, req *cleanroomv1.CreateSna
 		}
 		s.mu.Lock()
 		if current, ok := s.sandboxes[sandboxID]; ok {
-			s.recordSandboxEventLocked(current, cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY, fmt.Sprintf("snapshot %s failed: %v", snapshotID, err))
+			s.completeSnapshotLocked(current, fmt.Sprintf("snapshot %s failed: %v", snapshotID, err))
 		}
 		s.mu.Unlock()
 		return nil, fmt.Errorf("persist snapshot metadata: %w", err)
@@ -511,7 +511,7 @@ func (s *Service) CreateSnapshot(ctx context.Context, req *cleanroomv1.CreateSna
 
 	s.mu.Lock()
 	if current, ok := s.sandboxes[sandboxID]; ok {
-		s.recordSandboxEventLocked(current, cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY, fmt.Sprintf("snapshot %s created", snapshotID))
+		s.completeSnapshotLocked(current, fmt.Sprintf("snapshot %s created", snapshotID))
 	}
 	s.mu.Unlock()
 
@@ -520,6 +520,16 @@ func (s *Service) CreateSnapshot(ctx context.Context, req *cleanroomv1.CreateSna
 		Message:  "snapshot created",
 	}
 	return resp, nil
+}
+
+func (s *Service) completeSnapshotLocked(sb *sandboxState, message string) {
+	if sb == nil {
+		return
+	}
+	if sb.Status != cleanroomv1.SandboxStatus_SANDBOX_STATUS_PROVISIONING {
+		return
+	}
+	s.recordSandboxEventLocked(sb, cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY, message)
 }
 
 func (s *Service) GetSnapshot(ctx context.Context, req *cleanroomv1.GetSnapshotRequest) (*cleanroomv1.GetSnapshotResponse, error) {

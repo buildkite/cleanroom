@@ -760,6 +760,78 @@ func TestDeleteSnapshotRejectsSnapshotWithInFlightProvisionFromSnapshot(t *testi
 	}
 }
 
+func TestCreateSnapshotDoesNotResurrectTerminatedSandbox(t *testing.T) {
+	store := newMemorySnapshotStore()
+	snapshotStarted := make(chan struct{}, 1)
+	releaseSnapshot := make(chan struct{})
+	createDone := make(chan error, 1)
+	adapter := &stubAdapter{
+		createSnapshotFn: func(_ context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
+			select {
+			case snapshotStarted <- struct{}{}:
+			default:
+			}
+			<-releaseSnapshot
+			return &backend.SnapshotResult{StorageRef: "/snapshots/" + req.SnapshotID + ".ext4"}, nil
+		},
+	}
+	svc := newTestServiceWithSnapshotStore(adapter, store)
+
+	createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createResp.GetSandbox().GetSandboxId()
+
+	go func() {
+		_, createErr := svc.CreateSnapshot(context.Background(), &cleanroomv1.CreateSnapshotRequest{
+			SandboxId: sandboxID,
+		})
+		createDone <- createErr
+	}()
+
+	select {
+	case <-snapshotStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected snapshot creation to start")
+	}
+
+	if _, err := svc.TerminateSandbox(context.Background(), &cleanroomv1.TerminateSandboxRequest{
+		SandboxId: sandboxID,
+	}); err != nil {
+		t.Fatalf("TerminateSandbox returned error: %v", err)
+	}
+
+	close(releaseSnapshot)
+	select {
+	case createErr := <-createDone:
+		if createErr != nil {
+			t.Fatalf("CreateSnapshot returned error: %v", createErr)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected snapshot creation to finish")
+	}
+
+	getResp, err := svc.GetSandbox(context.Background(), &cleanroomv1.GetSandboxRequest{SandboxId: sandboxID})
+	if err != nil {
+		t.Fatalf("GetSandbox returned error: %v", err)
+	}
+	if got, want := getResp.GetSandbox().GetStatus(), cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPED; got != want {
+		t.Fatalf("unexpected sandbox status after terminate+racing snapshot: got %v want %v", got, want)
+	}
+
+	_, err = svc.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+		SandboxId: sandboxID,
+		Command:   []string{"true"},
+	})
+	if err == nil {
+		t.Fatal("expected CreateExecution to fail for terminated sandbox")
+	}
+	if !strings.Contains(err.Error(), "not ready") {
+		t.Fatalf("unexpected CreateExecution error: %v", err)
+	}
+}
+
 func TestCancelExecutionTransitionsToCanceled(t *testing.T) {
 	started := make(chan struct{}, 1)
 	adapter := &stubAdapter{
