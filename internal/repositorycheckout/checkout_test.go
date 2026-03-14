@@ -37,3 +37,22 @@ func TestBuildBootstrapCommandDetachesHeadWithoutBranch(t *testing.T) {
 		t.Fatalf("expected bootstrap command to detach HEAD without branch, got %q", joined)
 	}
 }
+
+func TestBuildBootstrapCommandAllowsExistingEmptyDestination(t *testing.T) {
+	command := BuildBootstrapCommand(&Checkout{
+		RemoteURL:      "https://github.com/buildkite/cleanroom.git",
+		CommitSHA:      "0123456789abcdef0123456789abcdef01234567",
+		DestinationDir: "/workspace",
+	})
+
+	joined := strings.Join(command, " ")
+	if strings.Contains(joined, `if [ -e "$dest" ]; then echo "repository destination already exists: $dest" >&2; exit 1; fi`) {
+		t.Fatalf("expected bootstrap command to allow existing empty destination, got %q", joined)
+	}
+	if !strings.Contains(joined, `if [ -e "$dest" ] && [ ! -d "$dest" ]; then`) {
+		t.Fatalf("expected bootstrap command to reject non-directory destinations explicitly, got %q", joined)
+	}
+	if !strings.Contains(joined, `if [ -d "$dest" ] && [ -n "$(ls -A "$dest")" ]; then`) {
+		t.Fatalf("expected bootstrap command to reject only non-empty directories, got %q", joined)
+	}
+}

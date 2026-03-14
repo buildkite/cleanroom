@@ -693,6 +693,19 @@ func TestCanonicalizeGitRemoteURLStripsUserInfo(t *testing.T) {
 	}
 }
 
+func TestCanonicalizeGitRemoteURLAllowsExplicitDefaultSSHPort(t *testing.T) {
+	gotURL, gotHost, err := canonicalizeGitRemoteURL("ssh://git@github.com:22/buildkite/cleanroom.git")
+	if err != nil {
+		t.Fatalf("canonicalizeGitRemoteURL returned error: %v", err)
+	}
+	if got, want := gotURL, "https://github.com/buildkite/cleanroom.git"; got != want {
+		t.Fatalf("unexpected canonical URL: got %q want %q", got, want)
+	}
+	if got, want := gotHost, "github.com"; got != want {
+		t.Fatalf("unexpected host: got %q want %q", got, want)
+	}
+}
+
 func TestWrapCommandWithRepositoryBootstrapStripsCommandSeparator(t *testing.T) {
 	command := repositorycheckout.WrapCommandWithBootstrap([]string{"--", "sh", "-lc", "pwd"}, &repositorycheckout.Checkout{
 		RemoteURL:      "https://github.com/buildkite/cleanroom.git",

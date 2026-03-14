@@ -186,7 +186,7 @@ func canonicalizeGitRemoteURL(raw string) (string, string, error) {
 		if host == "" {
 			return "", "", fmt.Errorf("repository remote URL %q has no host", trimmed)
 		}
-		if parsed.Port() != "" {
+		if parsed.Port() != "" && parsed.Port() != "22" {
 			return "", "", fmt.Errorf("repository remote URL %q uses unsupported non-default SSH port", trimmed)
 		}
 		path := strings.TrimPrefix(parsed.Path, "/")
