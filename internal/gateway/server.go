@@ -67,21 +67,22 @@ func ScopeTokenTrustedSourcePrefixesForGatewayHost(gatewayHost string) []netip.P
 }
 
 func scopeTokenTrustedSourcePrefixesForGatewayHost(ctx context.Context, gatewayHost string, lookup gatewayHostLookupFunc) []netip.Prefix {
+	defaultPrefixes := []netip.Prefix{defaultDarwinVZScopeTokenSourcePrefix}
 	gatewayHost = strings.TrimSpace(gatewayHost)
 	if gatewayHost == "" {
-		return []netip.Prefix{defaultDarwinVZScopeTokenSourcePrefix}
+		return defaultPrefixes
 	}
 
 	if addr, err := netip.ParseAddr(gatewayHost); err == nil {
 		return []netip.Prefix{scopeTokenTrustedSourcePrefixForAddr(addr)}
 	}
 	if lookup == nil {
-		return []netip.Prefix{}
+		return defaultPrefixes
 	}
 
 	resolved, err := lookup(ctx, gatewayHost)
 	if err != nil {
-		return []netip.Prefix{}
+		return defaultPrefixes
 	}
 
 	prefixes := make([]netip.Prefix, 0, len(resolved))
@@ -100,6 +101,9 @@ func scopeTokenTrustedSourcePrefixesForGatewayHost(ctx context.Context, gatewayH
 		}
 		seen[prefix] = struct{}{}
 		prefixes = append(prefixes, prefix)
+	}
+	if len(prefixes) == 0 {
+		return defaultPrefixes
 	}
 	return prefixes
 }
