@@ -97,6 +97,16 @@ func headCommit(t *testing.T, dir string) string {
 	return strings.TrimSpace(string(out))
 }
 
+func checkoutGitBranch(t *testing.T, dir, branch string) {
+	t.Helper()
+	cmd := exec.Command("git", "checkout", "-b", branch)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git checkout -b %q failed: %v\n%s", branch, err, string(out))
+	}
+}
+
 func TestCreateCommandBootstrapsRepositoryForCurrentRepo(t *testing.T) {
 	repoDir := initGitRepository(t, "git@github.com:buildkite/cleanroom.git")
 	wantCommit := headCommit(t, repoDir)
@@ -159,6 +169,65 @@ func TestCreateCommandBootstrapsRepositoryForCurrentRepo(t *testing.T) {
 	}
 	if !strings.Contains(joined, wantCommit) {
 		t.Fatalf("expected bootstrap command to include head commit %q, got %q", wantCommit, joined)
+	}
+}
+
+func TestCreateCommandBootstrapsRepositoryOnCurrentBranch(t *testing.T) {
+	repoDir := initGitRepository(t, "git@github.com:buildkite/cleanroom.git")
+	checkoutGitBranch(t, repoDir, "feature/console-branch")
+
+	adapter := &persistentIntegrationAdapter{}
+	host, _ := startIntegrationServer(t, adapter)
+
+	var (
+		mu       sync.Mutex
+		commands [][]string
+	)
+	adapter.runStreamFn = func(_ context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+		mu.Lock()
+		commands = append(commands, append([]string(nil), req.Command...))
+		mu.Unlock()
+		return &backend.RunResult{RunID: req.RunID, ExitCode: 0, Message: "ok"}, nil
+	}
+
+	outcome := runCreateAliasWithCapture(CreateCommand{
+		clientFlags: clientFlags{Host: host},
+		Chdir:       repoDir,
+	}, runtimeContext{
+		CWD: repoDir,
+		Loader: repositoryIntegrationLoader{
+			compiled: &policy.CompiledPolicy{
+				Version:        1,
+				ImageRef:       "ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+				ImageDigest:    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+				NetworkDefault: "deny",
+				Allow:          []policy.AllowRule{{Host: "github.com", Ports: []int{443}}},
+			},
+			repository: policy.RepositoryConfig{
+				Mode:   "current-repo",
+				Remote: "origin",
+				Path:   "/workspace",
+			},
+		},
+	})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err != nil {
+		t.Fatalf("CreateCommand.Run returned error: %v", outcome.err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(commands) != 1 {
+		t.Fatalf("expected one bootstrap execution, got %d", len(commands))
+	}
+	joined := strings.Join(commands[0], " ")
+	if !strings.Contains(joined, "feature/console-branch") {
+		t.Fatalf("expected bootstrap command to include current branch name, got %q", joined)
+	}
+	if !strings.Contains(joined, "checkout -B") {
+		t.Fatalf("expected bootstrap command to create the branch at the pinned commit, got %q", joined)
 	}
 }
 

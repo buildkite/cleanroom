@@ -20,6 +20,7 @@ type resolvedRepositoryCheckout struct {
 	CommitSHA      string
 	DestinationDir string
 	Submodules     bool
+	Branch         string
 	Dirty          bool
 }
 
@@ -47,6 +48,10 @@ func resolveRepositoryCheckout(cwd string, loader policyLoader) (*resolvedReposi
 	if err != nil {
 		return nil, fmt.Errorf("resolve repository HEAD: %w", err)
 	}
+	branch, err := gitOutput(repoRoot, "branch", "--show-current")
+	if err != nil {
+		return nil, fmt.Errorf("resolve repository branch: %w", err)
+	}
 	remoteURL, err := gitOutput(repoRoot, "remote", "get-url", repository.Remote)
 	if err != nil {
 		return nil, fmt.Errorf("resolve repository remote %q: %w", repository.Remote, err)
@@ -69,6 +74,7 @@ func resolveRepositoryCheckout(cwd string, loader policyLoader) (*resolvedReposi
 		CommitSHA:      strings.TrimSpace(commitSHA),
 		DestinationDir: repository.Path,
 		Submodules:     repository.Submodules,
+		Branch:         strings.TrimSpace(branch),
 		Dirty:          strings.TrimSpace(dirty) != "",
 	}, nil
 }
@@ -287,6 +293,7 @@ func toRepositoryCheckout(repository *resolvedRepositoryCheckout) *repositoryche
 		CommitSHA:      repository.CommitSHA,
 		DestinationDir: repository.DestinationDir,
 		Submodules:     repository.Submodules,
+		Branch:         repository.Branch,
 	}
 }
 

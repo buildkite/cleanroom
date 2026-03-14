@@ -75,6 +75,7 @@ message RepositoryCheckout {
   string commit_sha = 2;
   string destination_dir = 3;
   bool submodules = 4;
+  string branch = 7;
   reserved 5, 6;
   reserved "git_config_key", "git_config_value";
 }

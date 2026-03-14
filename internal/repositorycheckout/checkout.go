@@ -13,6 +13,7 @@ type Checkout struct {
 	CommitSHA      string
 	DestinationDir string
 	Submodules     bool
+	Branch         string
 }
 
 func FromProto(proto *cleanroomv1.RepositoryCheckout) *Checkout {
@@ -24,6 +25,7 @@ func FromProto(proto *cleanroomv1.RepositoryCheckout) *Checkout {
 		CommitSHA:      strings.TrimSpace(proto.GetCommitSha()),
 		DestinationDir: strings.TrimSpace(proto.GetDestinationDir()),
 		Submodules:     proto.GetSubmodules(),
+		Branch:         strings.TrimSpace(proto.GetBranch()),
 	}
 }
 
@@ -36,6 +38,7 @@ func (c *Checkout) ToProto() *cleanroomv1.RepositoryCheckout {
 		CommitSha:      c.CommitSHA,
 		DestinationDir: c.DestinationDir,
 		Submodules:     c.Submodules,
+		Branch:         c.Branch,
 	}
 }
 
@@ -143,6 +146,9 @@ func NormalizeCommand(command []string) []string {
 func bootstrapScript(checkout *Checkout) []string {
 	cloneCommand := `git clone --filter=blob:none --no-checkout "$remote" "$dest"`
 	checkoutCommand := `git -C "$dest" checkout --detach "$commit"`
+	if strings.TrimSpace(checkout.Branch) != "" {
+		checkoutCommand = `git -C "$dest" checkout -B "$branch" "$commit"`
+	}
 	submoduleCommand := `git -C "$dest" submodule update --init --recursive`
 
 	script := []string{
@@ -150,6 +156,7 @@ func bootstrapScript(checkout *Checkout) []string {
 		"dest=" + shellQuote(checkout.DestinationDir),
 		"remote=" + shellQuote(checkout.RemoteURL),
 		"commit=" + shellQuote(checkout.CommitSHA),
+		"branch=" + shellQuote(checkout.Branch),
 		`if [ -e "$dest" ]; then echo "repository destination already exists: $dest" >&2; exit 1; fi`,
 		`mkdir -p "$(dirname "$dest")"`,
 		cloneCommand,
