@@ -24,6 +24,14 @@ type startupField struct {
 	Value string
 }
 
+type daemonStatusReport struct {
+	Manager   string
+	Service   string
+	Installed bool
+	Active    bool
+	Fields    []startupField
+}
+
 func renderStartupHeader(h startupHeader, color bool) string {
 	title := strings.TrimSpace(h.Title)
 	if title == "" {
@@ -141,6 +149,81 @@ func renderDoctorReport(backendName string, checks []backend.DoctorCheck, color 
 	out.WriteByte('\n')
 
 	return out.String()
+}
+
+func renderDaemonStatusReport(report daemonStatusReport, color bool) string {
+	manager := strings.TrimSpace(report.Manager)
+	if manager == "" {
+		manager = "unknown"
+	}
+
+	service := strings.TrimSpace(report.Service)
+	if service == "" {
+		service = "unknown"
+	}
+
+	summary := "not installed"
+	icon := "!"
+	colorCode := "1;33"
+	switch {
+	case report.Active:
+		summary = "running"
+		icon = "✓"
+		colorCode = "1;32"
+	case report.Installed:
+		summary = "installed"
+	}
+
+	title := fmt.Sprintf("daemon status (%s)", manager)
+	statusLine := fmt.Sprintf("%s [%s] %s", icon, summary, service)
+	if color {
+		title = ansiWrap("1;36", title)
+		statusLine = ansiWrap(colorCode, statusLine)
+	}
+
+	var out strings.Builder
+	out.WriteString(title)
+	out.WriteByte('\n')
+	out.WriteString(statusLine)
+	out.WriteByte('\n')
+
+	for _, field := range report.Fields {
+		key := strings.TrimSpace(field.Key)
+		value := strings.TrimSpace(field.Value)
+		if key == "" || value == "" {
+			continue
+		}
+
+		line := fmt.Sprintf("  %s: %s", key, value)
+		if color {
+			line = "  " + ansiWrap("38;5;246", key+":") + " " + value
+		}
+		out.WriteString(line)
+		out.WriteByte('\n')
+	}
+
+	return out.String()
+}
+
+func daemonInstalledLabel(installed bool) string {
+	if installed {
+		return "installed"
+	}
+	return "missing"
+}
+
+func daemonRuntimeLabel(active bool) string {
+	if active {
+		return "active"
+	}
+	return "inactive"
+}
+
+func daemonEnabledLabel(enabled bool) string {
+	if enabled {
+		return "enabled"
+	}
+	return "disabled"
 }
 
 func writeStartupHeader(w io.Writer, h startupHeader, color bool) error {

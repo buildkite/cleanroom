@@ -477,7 +477,7 @@ Minimum v1 codes:
 - Core policy compiler to normalized allowlist + registry map
 - Local backend (Firecracker) implementation
 - content-cache wrapper integration for npm and one additional manager
-- `cleanroom serve` daemon plus CLI client command set (`exec`, `sandboxes`, `executions`)
+- `cleanroom serve` foreground server plus `cleanroom daemon` lifecycle management and CLI client command set (`exec`, `sandboxes`, `executions`)
 - `cleanroom exec` RPC wrapper flow
 
 ### Phase 2
