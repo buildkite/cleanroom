@@ -193,6 +193,14 @@ func startIntegrationServer(t *testing.T, adapter backend.Adapter) (string, *con
 		Loader: integrationLoader{},
 		Config: runtimeconfig.Config{
 			DefaultBackend: "firecracker",
+			Backends: runtimeconfig.Backends{
+				Firecracker: runtimeconfig.FirecrackerConfig{
+					Snapshots: runtimeconfig.SnapshotConfig{
+						Enabled: true,
+						Driver:  "file",
+					},
+				},
+			},
 		},
 		SnapshotStore: store,
 		Backends: map[string]backend.Adapter{

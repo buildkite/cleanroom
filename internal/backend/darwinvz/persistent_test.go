@@ -26,6 +26,15 @@ func TestCapabilitiesExposePersistentSandboxWithoutFileDownload(t *testing.T) {
 	if !caps[backend.CapabilitySandboxPersistent] {
 		t.Fatalf("expected %s=true", backend.CapabilitySandboxPersistent)
 	}
+	if !caps[backend.CapabilitySandboxSnapshot] {
+		t.Fatalf("expected %s=true", backend.CapabilitySandboxSnapshot)
+	}
+	if !caps[backend.CapabilitySandboxRestore] {
+		t.Fatalf("expected %s=true", backend.CapabilitySandboxRestore)
+	}
+	if !caps[backend.CapabilitySandboxFork] {
+		t.Fatalf("expected %s=true", backend.CapabilitySandboxFork)
+	}
 	if caps[backend.CapabilitySandboxFileDownload] {
 		t.Fatalf("expected %s=false", backend.CapabilitySandboxFileDownload)
 	}

@@ -52,8 +52,26 @@ type SnapshotConfig struct {
 	Enabled               bool   `yaml:"enabled"`
 	Driver                string `yaml:"driver"`
 	BaseDir               string `yaml:"base_dir"`
-	ZFSDataset            string `yaml:"zfs_dataset"`
 	QuiesceTimeoutSeconds int64  `yaml:"quiesce_timeout_seconds"`
+}
+
+func SnapshotConfigForBackend(cfg Config, backendName string) (SnapshotConfig, bool) {
+	switch strings.TrimSpace(backendName) {
+	case "firecracker":
+		return cfg.Backends.Firecracker.Snapshots, true
+	case "darwin-vz":
+		return cfg.Backends.DarwinVZ.Snapshots, true
+	default:
+		return SnapshotConfig{}, false
+	}
+}
+
+func SnapshotDriverOrDefault(driver string) string {
+	driver = strings.TrimSpace(driver)
+	if driver == "" {
+		return "file"
+	}
+	return driver
 }
 
 type ServicesConfig struct {
@@ -171,6 +189,5 @@ func snapshotConfigIsZero(cfg SnapshotConfig) bool {
 	return !cfg.Enabled &&
 		strings.TrimSpace(cfg.Driver) == "" &&
 		strings.TrimSpace(cfg.BaseDir) == "" &&
-		strings.TrimSpace(cfg.ZFSDataset) == "" &&
 		cfg.QuiesceTimeoutSeconds == 0
 }

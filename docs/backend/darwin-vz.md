@@ -15,10 +15,11 @@ Implemented:
 
 - launched execution on macOS via `Virtualization.framework`
 - interactive and non-interactive command execution via existing `internal/vsockexec` protocol
-- helper-managed VM lifecycle (`StartVM` / `StopVM`)
+- helper-managed VM lifecycle (`StartVM` / `StopVM` / `PauseVM` / `ResumeVM`)
 - managed kernel fallback when `kernel_image` is unset or missing
 - rootfs derivation from `sandbox.image.ref` when `rootfs` is unset or missing
 - persistent sandboxes across multiple executions
+- file-backed snapshot, restore, and fork for persistent sandboxes
 - doctor checks for helper availability and entitlement status
 
 Not implemented:
@@ -34,7 +35,7 @@ Control plane:
 
 - socket: `<run_dir>/vz-helper.sock`
 - protocol: newline-delimited JSON request/response
-- operations: `StartVM`, `StopVM`, `Ping`
+- operations: `StartVM`, `StopVM`, `PauseVM`, `ResumeVM`, `Ping`
 
 Data plane:
 
@@ -71,6 +72,11 @@ High-level flow:
 `StopVM` request:
 
 - `op=StopVM`
+- optional `vm_id` (validated when provided)
+
+`PauseVM` / `ResumeVM` request:
+
+- `op=PauseVM` or `op=ResumeVM`
 - optional `vm_id` (validated when provided)
 
 ## Kernel and RootFS Strategy
@@ -118,10 +124,13 @@ The current helper-managed NAT model is intentionally simpler, but it leaves `da
 
 Backends now expose a machine-readable capability map (visible in `cleanroom doctor --json` under `capabilities`).
 
-Current `darwin-vz` capability values:
+Current `darwin-vz` capability values when snapshot support is enabled:
 
 - `exec.streaming=true`
 - `sandbox.persistent=true`
+- `sandbox.snapshot=true`
+- `sandbox.restore=true`
+- `sandbox.fork=true`
 - `sandbox.file_download=false`
 - `network.default_deny=true`
 - `network.allowlist_egress=false`

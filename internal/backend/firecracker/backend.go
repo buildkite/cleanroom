@@ -1699,6 +1699,9 @@ func snapshotStorageBaseDir(cfg backend.FirecrackerConfig) (string, error) {
 }
 
 func volumeStoreDriver(cfg backend.FirecrackerConfig) (volumestore.Driver, error) {
+	if !cfg.Snapshots.Enabled {
+		return nil, errors.New("firecracker snapshots are not enabled")
+	}
 	driverName := strings.ToLower(strings.TrimSpace(cfg.Snapshots.Driver))
 	switch driverName {
 	case "", "file":
@@ -1714,8 +1717,6 @@ func volumeStoreDriver(cfg backend.FirecrackerConfig) (volumestore.Driver, error
 			return nil, err
 		}
 		return driver, nil
-	case "zfs":
-		return nil, errors.New("firecracker snapshot driver \"zfs\" is not implemented")
 	default:
 		return nil, fmt.Errorf("unsupported firecracker snapshot driver %q", cfg.Snapshots.Driver)
 	}

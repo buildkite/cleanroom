@@ -304,6 +304,9 @@ func (s *Service) createSandboxFromSnapshot(ctx context.Context, req *cleanroomv
 	if !ok {
 		return nil, fmt.Errorf("backend %q does not support snapshot-backed sandbox creation", backendName)
 	}
+	if !snapshotOperationsEnabledForBackend(backendName, s.Config) {
+		return nil, fmt.Errorf("snapshots are not enabled for backend %q", backendName)
+	}
 
 	compiled, err := policy.FromProto(record.Policy)
 	if err != nil {
@@ -317,6 +320,8 @@ func (s *Service) createSandboxFromSnapshot(ctx context.Context, req *cleanroomv
 	}
 	firecrackerCfg := mergeBackendConfig(backendName, execOpts, s.Config)
 	firecrackerCfg.RunDir = ""
+	firecrackerCfg.Snapshots.Enabled = true
+	firecrackerCfg.Snapshots.Driver = snapshotDriverForRecord(record)
 
 	now := time.Now().UTC()
 	sandboxID := newSandboxID()
@@ -444,10 +449,17 @@ func (s *Service) CreateSnapshot(ctx context.Context, req *cleanroomv1.CreateSna
 		s.mu.Unlock()
 		return nil, fmt.Errorf("backend %q does not support snapshots", state.Backend)
 	}
+	if !snapshotOperationsEnabledForBackend(state.Backend, s.Config) {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("snapshots are not enabled for backend %q", state.Backend)
+	}
 	if state.Policy == nil {
 		s.mu.Unlock()
 		return nil, fmt.Errorf("sandbox %q is missing compiled policy", sandboxID)
 	}
+	snapshotCfg := state.Firecracker
+	snapshotCfg.Snapshots.Enabled = true
+	snapshotCfg.Snapshots.Driver = snapshotDriverForConfig(state.Firecracker.Snapshots)
 	record = snapshotstore.Record{
 		SnapshotID:      snapshotID,
 		SourceSandboxID: sandboxID,
@@ -455,6 +467,7 @@ func (s *Service) CreateSnapshot(ctx context.Context, req *cleanroomv1.CreateSna
 		Name:            name,
 		PolicyHash:      state.Policy.Hash,
 		Policy:          state.Policy.ToProto(),
+		StorageDriver:   snapshotCfg.Snapshots.Driver,
 		CreatedAt:       now,
 	}
 	s.recordSandboxEventLocked(state, cleanroomv1.SandboxStatus_SANDBOX_STATUS_PROVISIONING, fmt.Sprintf("snapshot %s in progress", snapshotID))
@@ -463,7 +476,7 @@ func (s *Service) CreateSnapshot(ctx context.Context, req *cleanroomv1.CreateSna
 	result, err := snapshotAdapter.CreateSnapshot(ctx, backend.SnapshotRequest{
 		SandboxID:         sandboxID,
 		SnapshotID:        snapshotID,
-		FirecrackerConfig: state.Firecracker,
+		FirecrackerConfig: snapshotCfg,
 	})
 	if err != nil {
 		s.mu.Lock()
@@ -479,7 +492,7 @@ func (s *Service) CreateSnapshot(ctx context.Context, req *cleanroomv1.CreateSna
 		deleteErr := snapshotAdapter.DeleteSnapshot(ctx, backend.DeleteSnapshotRequest{
 			SnapshotID:        snapshotID,
 			StorageRef:        record.StorageRef,
-			FirecrackerConfig: state.Firecracker,
+			FirecrackerConfig: snapshotCfg,
 		})
 		if deleteErr != nil && s.Logger != nil {
 			s.Logger.Warn("rollback snapshot after metadata failure failed",
@@ -616,12 +629,19 @@ func (s *Service) RestoreSandbox(ctx context.Context, req *cleanroomv1.RestoreSa
 		s.mu.Unlock()
 		return nil, fmt.Errorf("backend %q does not support sandbox restore", state.Backend)
 	}
+	if !snapshotOperationsEnabledForBackend(state.Backend, s.Config) {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("snapshots are not enabled for backend %q", state.Backend)
+	}
+	restoreCfg := state.Firecracker
+	restoreCfg.Snapshots.Enabled = true
+	restoreCfg.Snapshots.Driver = snapshotDriverForRecord(record)
 	restoreReq = backend.RestoreRequest{
 		SandboxID:         sandboxID,
 		SnapshotID:        snapshotID,
 		StorageRef:        record.StorageRef,
 		Policy:            state.Policy,
-		FirecrackerConfig: state.Firecracker,
+		FirecrackerConfig: restoreCfg,
 	}
 	s.recordSandboxEventLocked(state, cleanroomv1.SandboxStatus_SANDBOX_STATUS_PROVISIONING, fmt.Sprintf("restore from snapshot %s in progress", snapshotID))
 	s.mu.Unlock()
@@ -685,10 +705,13 @@ func (s *Service) DeleteSnapshot(ctx context.Context, req *cleanroomv1.DeleteSna
 	if !ok {
 		return nil, fmt.Errorf("backend %q does not support snapshot deletion", record.Backend)
 	}
+	firecrackerCfg := mergeBackendConfig(record.Backend, executionOptions{}, s.Config)
+	firecrackerCfg.Snapshots.Enabled = true
+	firecrackerCfg.Snapshots.Driver = snapshotDriverForRecord(record)
 	if err := snapshotAdapter.DeleteSnapshot(ctx, backend.DeleteSnapshotRequest{
 		SnapshotID:        snapshotID,
 		StorageRef:        record.StorageRef,
-		FirecrackerConfig: mergeBackendConfig(record.Backend, executionOptions{}, s.Config),
+		FirecrackerConfig: firecrackerCfg,
 	}); err != nil {
 		return nil, fmt.Errorf("delete snapshot storage: %w", err)
 	}
@@ -2430,6 +2453,19 @@ func cloneSnapshotRecord(record snapshotstore.Record) *cleanroomv1.Snapshot {
 	}
 }
 
+func snapshotOperationsEnabledForBackend(backendName string, cfg runtimeconfig.Config) bool {
+	snapshotCfg, ok := runtimeconfig.SnapshotConfigForBackend(cfg, backendName)
+	return ok && snapshotCfg.Enabled
+}
+
+func snapshotDriverForConfig(cfg backend.SnapshotConfig) string {
+	return runtimeconfig.SnapshotDriverOrDefault(cfg.Driver)
+}
+
+func snapshotDriverForRecord(record snapshotstore.Record) string {
+	return runtimeconfig.SnapshotDriverOrDefault(record.StorageDriver)
+}
+
 func cloneSandboxLocked(state *sandboxState) *cleanroomv1.Sandbox {
 	if state == nil {
 		return nil
@@ -2684,7 +2720,6 @@ func mergeBackendConfig(backendName string, opts executionOptions, cfg runtimeco
 			Enabled:               cfg.Backends.Firecracker.Snapshots.Enabled,
 			Driver:                cfg.Backends.Firecracker.Snapshots.Driver,
 			BaseDir:               cfg.Backends.Firecracker.Snapshots.BaseDir,
-			ZFSDataset:            cfg.Backends.Firecracker.Snapshots.ZFSDataset,
 			QuiesceTimeoutSeconds: cfg.Backends.Firecracker.Snapshots.QuiesceTimeoutSeconds,
 		},
 		PrivilegedMode:       cfg.Backends.Firecracker.PrivilegedMode,
@@ -2705,7 +2740,6 @@ func mergeBackendConfig(backendName string, opts executionOptions, cfg runtimeco
 			Enabled:               cfg.Backends.DarwinVZ.Snapshots.Enabled,
 			Driver:                cfg.Backends.DarwinVZ.Snapshots.Driver,
 			BaseDir:               cfg.Backends.DarwinVZ.Snapshots.BaseDir,
-			ZFSDataset:            cfg.Backends.DarwinVZ.Snapshots.ZFSDataset,
 			QuiesceTimeoutSeconds: cfg.Backends.DarwinVZ.Snapshots.QuiesceTimeoutSeconds,
 		}
 		out.VCPUs = cfg.Backends.DarwinVZ.VCPUs

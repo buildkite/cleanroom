@@ -227,6 +227,14 @@ func newTestServiceWithSnapshotStore(adapter backend.Adapter, store snapshotMeta
 		},
 		Config: runtimeconfig.Config{
 			DefaultBackend: "firecracker",
+			Backends: runtimeconfig.Backends{
+				Firecracker: runtimeconfig.FirecrackerConfig{
+					Snapshots: runtimeconfig.SnapshotConfig{
+						Enabled: true,
+						Driver:  "file",
+					},
+				},
+			},
 		},
 		Backends:      map[string]backend.Adapter{"firecracker": adapter},
 		SnapshotStore: store,
@@ -446,6 +454,65 @@ func TestCreateSnapshotPersistsMetadataAndDeletesIt(t *testing.T) {
 	}
 }
 
+func TestCreateSnapshotRejectsDisabledSnapshots(t *testing.T) {
+	store := newMemorySnapshotStore()
+	adapter := &stubAdapter{}
+	svc := newTestServiceWithSnapshotStore(adapter, store)
+	svc.Config.Backends.Firecracker.Snapshots.Enabled = false
+
+	createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+
+	_, err = svc.CreateSnapshot(context.Background(), &cleanroomv1.CreateSnapshotRequest{
+		SandboxId: createResp.GetSandbox().GetSandboxId(),
+	})
+	if err == nil {
+		t.Fatal("expected CreateSnapshot to fail when snapshots are disabled")
+	}
+	if !strings.Contains(err.Error(), "not enabled") {
+		t.Fatalf("expected disabled snapshots error, got %v", err)
+	}
+	if adapter.createSnapshotCalls != 0 {
+		t.Fatalf("expected no backend snapshot calls, got %d", adapter.createSnapshotCalls)
+	}
+}
+
+func TestCreateSandboxFromSnapshotRejectsDisabledSnapshots(t *testing.T) {
+	store := newMemorySnapshotStore()
+	adapter := &stubAdapter{
+		createSnapshotFn: func(_ context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
+			return &backend.SnapshotResult{StorageRef: "/snapshots/" + req.SnapshotID + ".ext4"}, nil
+		},
+	}
+	svc := newTestServiceWithSnapshotStore(adapter, store)
+
+	createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	snapshotResp, err := svc.CreateSnapshot(context.Background(), &cleanroomv1.CreateSnapshotRequest{
+		SandboxId: createResp.GetSandbox().GetSandboxId(),
+	})
+	if err != nil {
+		t.Fatalf("CreateSnapshot returned error: %v", err)
+	}
+
+	svc.Config.Backends.Firecracker.Snapshots.Enabled = false
+	_, err = svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Source: &cleanroomv1.CreateSandboxRequest_SnapshotId{
+			SnapshotId: snapshotResp.GetSnapshot().GetSnapshotId(),
+		},
+	})
+	if err == nil {
+		t.Fatal("expected CreateSandbox from snapshot to fail when snapshots are disabled")
+	}
+	if !strings.Contains(err.Error(), "not enabled") {
+		t.Fatalf("expected disabled snapshots error, got %v", err)
+	}
+}
+
 func TestCreateSandboxFromSnapshotUsesStoredPolicyAndSnapshotBackend(t *testing.T) {
 	store := newMemorySnapshotStore()
 	adapter := &stubAdapter{
@@ -486,11 +553,48 @@ func TestCreateSandboxFromSnapshotUsesStoredPolicyAndSnapshotBackend(t *testing.
 	if got, want := adapter.provisionFromSnapshotReq.StorageRef, "/snapshots/"+snapshotResp.GetSnapshot().GetSnapshotId()+".ext4"; got != want {
 		t.Fatalf("unexpected snapshot storage ref: got %q want %q", got, want)
 	}
+	if got, want := adapter.provisionFromSnapshotReq.FirecrackerConfig.Snapshots.Driver, "file"; got != want {
+		t.Fatalf("unexpected snapshot driver: got %q want %q", got, want)
+	}
 	if adapter.provisionFromSnapshotReq.Policy == nil {
 		t.Fatal("expected compiled policy on provision-from-snapshot request")
 	}
 	if got, want := adapter.provisionFromSnapshotReq.Policy.Hash, sourceSandbox.GetPolicyHash(); got != want {
 		t.Fatalf("unexpected policy hash: got %q want %q", got, want)
+	}
+}
+
+func TestCreateSandboxFromSnapshotUsesStoredSnapshotDriverWhenConfigChanges(t *testing.T) {
+	store := newMemorySnapshotStore()
+	adapter := &stubAdapter{
+		createSnapshotFn: func(_ context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
+			return &backend.SnapshotResult{StorageRef: "/snapshots/" + req.SnapshotID + ".ext4"}, nil
+		},
+	}
+	svc := newTestServiceWithSnapshotStore(adapter, store)
+
+	sourceResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	snapshotResp, err := svc.CreateSnapshot(context.Background(), &cleanroomv1.CreateSnapshotRequest{
+		SandboxId: sourceResp.GetSandbox().GetSandboxId(),
+	})
+	if err != nil {
+		t.Fatalf("CreateSnapshot returned error: %v", err)
+	}
+
+	svc.Config.Backends.Firecracker.Snapshots.Driver = "zfs"
+	_, err = svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Source: &cleanroomv1.CreateSandboxRequest_SnapshotId{
+			SnapshotId: snapshotResp.GetSnapshot().GetSnapshotId(),
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox from snapshot returned error: %v", err)
+	}
+	if got, want := adapter.provisionFromSnapshotReq.FirecrackerConfig.Snapshots.Driver, "file"; got != want {
+		t.Fatalf("unexpected snapshot driver after config change: got %q want %q", got, want)
 	}
 }
 
@@ -515,6 +619,7 @@ func TestRestoreSandboxUsesSnapshotMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateSnapshot returned error: %v", err)
 	}
+	svc.Config.Backends.Firecracker.Snapshots.Driver = "zfs"
 
 	restoreResp, err := svc.RestoreSandbox(context.Background(), &cleanroomv1.RestoreSandboxRequest{
 		SandboxId:  sandbox.GetSandboxId(),
@@ -532,11 +637,82 @@ func TestRestoreSandboxUsesSnapshotMetadata(t *testing.T) {
 	if got, want := adapter.restoreReq.SnapshotID, snapshotResp.GetSnapshot().GetSnapshotId(); got != want {
 		t.Fatalf("unexpected restore snapshot id: got %q want %q", got, want)
 	}
+	if !adapter.restoreReq.FirecrackerConfig.Snapshots.Enabled {
+		t.Fatal("expected restore request snapshots to be enabled")
+	}
+	if got, want := adapter.restoreReq.FirecrackerConfig.Snapshots.Driver, "file"; got != want {
+		t.Fatalf("unexpected restore snapshot driver: got %q want %q", got, want)
+	}
 	if adapter.restoreReq.Policy == nil {
 		t.Fatal("expected compiled policy on restore request")
 	}
 	if got, want := adapter.restoreReq.Policy.Hash, sandbox.GetPolicyHash(); got != want {
 		t.Fatalf("unexpected restore policy hash: got %q want %q", got, want)
+	}
+}
+
+func TestRestoreSandboxRejectsDisabledSnapshots(t *testing.T) {
+	store := newMemorySnapshotStore()
+	adapter := &stubAdapter{
+		createSnapshotFn: func(_ context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
+			return &backend.SnapshotResult{StorageRef: "/snapshots/" + req.SnapshotID + ".ext4"}, nil
+		},
+	}
+	svc := newTestServiceWithSnapshotStore(adapter, store)
+
+	createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	snapshotResp, err := svc.CreateSnapshot(context.Background(), &cleanroomv1.CreateSnapshotRequest{
+		SandboxId: createResp.GetSandbox().GetSandboxId(),
+	})
+	if err != nil {
+		t.Fatalf("CreateSnapshot returned error: %v", err)
+	}
+
+	svc.Config.Backends.Firecracker.Snapshots.Enabled = false
+	_, err = svc.RestoreSandbox(context.Background(), &cleanroomv1.RestoreSandboxRequest{
+		SandboxId:  createResp.GetSandbox().GetSandboxId(),
+		SnapshotId: snapshotResp.GetSnapshot().GetSnapshotId(),
+	})
+	if err == nil {
+		t.Fatal("expected RestoreSandbox to fail when snapshots are disabled")
+	}
+	if !strings.Contains(err.Error(), "not enabled") {
+		t.Fatalf("expected disabled snapshots error, got %v", err)
+	}
+}
+
+func TestDeleteSnapshotUsesStoredSnapshotDriverWhenConfigChanges(t *testing.T) {
+	store := newMemorySnapshotStore()
+	adapter := &stubAdapter{
+		createSnapshotFn: func(_ context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
+			return &backend.SnapshotResult{StorageRef: "/snapshots/" + req.SnapshotID + ".ext4"}, nil
+		},
+	}
+	svc := newTestServiceWithSnapshotStore(adapter, store)
+
+	createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	snapshotResp, err := svc.CreateSnapshot(context.Background(), &cleanroomv1.CreateSnapshotRequest{
+		SandboxId: createResp.GetSandbox().GetSandboxId(),
+	})
+	if err != nil {
+		t.Fatalf("CreateSnapshot returned error: %v", err)
+	}
+
+	svc.Config.Backends.Firecracker.Snapshots.Driver = "zfs"
+	_, err = svc.DeleteSnapshot(context.Background(), &cleanroomv1.DeleteSnapshotRequest{
+		SnapshotId: snapshotResp.GetSnapshot().GetSnapshotId(),
+	})
+	if err != nil {
+		t.Fatalf("DeleteSnapshot returned error: %v", err)
+	}
+	if got, want := adapter.deleteSnapshotReq.FirecrackerConfig.Snapshots.Driver, "file"; got != want {
+		t.Fatalf("unexpected delete snapshot driver after config change: got %q want %q", got, want)
 	}
 }
 
@@ -1249,9 +1425,8 @@ func TestCreateSandboxMergesFirecrackerSnapshotConfig(t *testing.T) {
 					RootFS:      "/firecracker-rootfs",
 					Snapshots: runtimeconfig.SnapshotConfig{
 						Enabled:               true,
-						Driver:                "zfs",
+						Driver:                "file",
 						BaseDir:               "/var/tmp/cleanroom-snapshots",
-						ZFSDataset:            "tank/cleanroom",
 						QuiesceTimeoutSeconds: 15,
 					},
 				},
@@ -1272,14 +1447,11 @@ func TestCreateSandboxMergesFirecrackerSnapshotConfig(t *testing.T) {
 	if !gotCfg.Snapshots.Enabled {
 		t.Fatal("expected snapshots.enabled=true")
 	}
-	if got, want := gotCfg.Snapshots.Driver, "zfs"; got != want {
+	if got, want := gotCfg.Snapshots.Driver, "file"; got != want {
 		t.Fatalf("unexpected snapshot driver: got %q want %q", got, want)
 	}
 	if got, want := gotCfg.Snapshots.BaseDir, "/var/tmp/cleanroom-snapshots"; got != want {
 		t.Fatalf("unexpected snapshot base_dir: got %q want %q", got, want)
-	}
-	if got, want := gotCfg.Snapshots.ZFSDataset, "tank/cleanroom"; got != want {
-		t.Fatalf("unexpected snapshot zfs_dataset: got %q want %q", got, want)
 	}
 	if got, want := gotCfg.Snapshots.QuiesceTimeoutSeconds, int64(15); got != want {
 		t.Fatalf("unexpected snapshot quiesce timeout: got %d want %d", got, want)

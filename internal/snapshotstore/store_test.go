@@ -30,8 +30,9 @@ func TestStoreCreateGetListDelete(t *testing.T) {
 			NetworkDefault: "deny",
 			Hash:           "policy-hash",
 		},
-		StorageRef: "/tmp/snap-test.ext4",
-		CreatedAt:  time.Unix(1700000000, 0).UTC(),
+		StorageRef:    "/tmp/snap-test.ext4",
+		StorageDriver: "file",
+		CreatedAt:     time.Unix(1700000000, 0).UTC(),
 	}
 	if err := store.Create(context.Background(), record); err != nil {
 		t.Fatalf("Create returned error: %v", err)
@@ -44,7 +45,7 @@ func TestStoreCreateGetListDelete(t *testing.T) {
 	if !ok {
 		t.Fatal("expected stored snapshot")
 	}
-	if got.SnapshotID != record.SnapshotID || got.PolicyHash != record.PolicyHash || got.StorageRef != record.StorageRef {
+	if got.SnapshotID != record.SnapshotID || got.PolicyHash != record.PolicyHash || got.StorageRef != record.StorageRef || got.StorageDriver != record.StorageDriver {
 		t.Fatalf("unexpected snapshot record: %#v", got)
 	}
 	if got.Policy == nil || got.Policy.GetImageRef() != record.Policy.GetImageRef() {

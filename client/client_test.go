@@ -88,7 +88,17 @@ func startSnapshotTestServer(t *testing.T, adapter backend.Adapter) string {
 	}
 
 	svc := &controlservice.Service{
-		Config:        runtimeconfig.Config{DefaultBackend: "firecracker"},
+		Config: runtimeconfig.Config{
+			DefaultBackend: "firecracker",
+			Backends: runtimeconfig.Backends{
+				Firecracker: runtimeconfig.FirecrackerConfig{
+					Snapshots: runtimeconfig.SnapshotConfig{
+						Enabled: true,
+						Driver:  "file",
+					},
+				},
+			},
+		},
 		SnapshotStore: store,
 		Backends: map[string]backend.Adapter{
 			"firecracker": adapter,

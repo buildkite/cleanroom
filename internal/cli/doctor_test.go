@@ -39,6 +39,36 @@ func (doctorTestAdapter) Capabilities() map[string]bool {
 	}
 }
 
+type doctorSnapshotAdapter struct{ doctorTestAdapter }
+
+func (doctorSnapshotAdapter) ProvisionSandbox(context.Context, backend.ProvisionRequest) error {
+	return nil
+}
+
+func (doctorSnapshotAdapter) RunInSandbox(context.Context, backend.RunRequest, backend.OutputStream) (*backend.RunResult, error) {
+	return &backend.RunResult{Message: "ok"}, nil
+}
+
+func (doctorSnapshotAdapter) TerminateSandbox(context.Context, string) error {
+	return nil
+}
+
+func (doctorSnapshotAdapter) CreateSnapshot(context.Context, backend.SnapshotRequest) (*backend.SnapshotResult, error) {
+	return &backend.SnapshotResult{StorageRef: "/tmp/snapshot.ext4"}, nil
+}
+
+func (doctorSnapshotAdapter) ProvisionSandboxFromSnapshot(context.Context, backend.ProvisionFromSnapshotRequest) error {
+	return nil
+}
+
+func (doctorSnapshotAdapter) RestoreSandbox(context.Context, backend.RestoreRequest) error {
+	return nil
+}
+
+func (doctorSnapshotAdapter) DeleteSnapshot(context.Context, backend.DeleteSnapshotRequest) error {
+	return nil
+}
+
 type doctorFailingLoader struct{}
 
 func (doctorFailingLoader) LoadAndCompile(string) (*policy.CompiledPolicy, string, error) {
@@ -188,5 +218,78 @@ func TestDoctorCommandTextUsesPolishedPlainOutput(t *testing.T) {
 	}
 	if strings.Contains(out, "\x1b[") {
 		t.Fatalf("expected plain output without ANSI escapes, got: %q", out)
+	}
+}
+
+func TestDoctorCommandHonorsRuntimeSnapshotCapabilityConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+	stdoutPath := filepath.Join(tmpDir, "doctor.json")
+	stdout, err := os.Create(stdoutPath)
+	if err != nil {
+		t.Fatalf("create stdout file: %v", err)
+	}
+
+	cmd := DoctorCommand{
+		Backend: "firecracker",
+		JSON:    true,
+	}
+	err = cmd.Run(&runtimeContext{
+		CWD:    tmpDir,
+		Stdout: stdout,
+		Loader: doctorFailingLoader{},
+		Config: runtimeconfig.Config{
+			Backends: runtimeconfig.Backends{
+				Firecracker: runtimeconfig.FirecrackerConfig{
+					Snapshots: runtimeconfig.SnapshotConfig{Enabled: false},
+				},
+			},
+		},
+		ConfigPath: filepath.Join(tmpDir, "config.yaml"),
+		Backends: map[string]backend.Adapter{
+			"firecracker": doctorSnapshotAdapter{},
+		},
+	})
+	if closeErr := stdout.Close(); closeErr != nil {
+		t.Fatalf("close stdout file: %v", closeErr)
+	}
+	if err != nil {
+		t.Fatalf("DoctorCommand.Run returned error: %v", err)
+	}
+
+	raw, err := os.ReadFile(stdoutPath)
+	if err != nil {
+		t.Fatalf("read doctor output: %v", err)
+	}
+
+	var payload struct {
+		Capabilities map[string]bool       `json:"capabilities"`
+		Checks       []backend.DoctorCheck `json:"checks"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("unmarshal doctor JSON: %v", err)
+	}
+
+	for _, key := range []string{
+		backend.CapabilitySandboxSnapshot,
+		backend.CapabilitySandboxRestore,
+		backend.CapabilitySandboxFork,
+	} {
+		if payload.Capabilities[key] {
+			t.Fatalf("expected %s=false when runtime config disables snapshots", key)
+		}
+	}
+
+	foundSnapshotCheck := false
+	for _, check := range payload.Checks {
+		if check.Name != "capability_sandbox_snapshot" {
+			continue
+		}
+		foundSnapshotCheck = true
+		if check.Status != "warn" {
+			t.Fatalf("expected disabled snapshot capability check to warn, got %q", check.Status)
+		}
+	}
+	if !foundSnapshotCheck {
+		t.Fatal("expected capability_sandbox_snapshot check in doctor output")
 	}
 }

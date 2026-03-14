@@ -215,7 +215,6 @@ type SnapshotConfig struct {
 	Enabled               bool
 	Driver                string
 	BaseDir               string
-	ZFSDataset            string
 	QuiesceTimeoutSeconds int64
 }
 

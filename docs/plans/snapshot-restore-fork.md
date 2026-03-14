@@ -1,7 +1,7 @@
 # Snapshot, Restore, and Fork Plan
 
-**Status:** Proposed
-**Scope:** Firecracker first, `darwin-vz` later
+**Status:** In progress
+**Scope:** file-backed Firecracker and `darwin-vz` first; native COW drivers later
 
 ## Summary
 
@@ -16,10 +16,10 @@ Every `restore` and `fork` results in a fresh VM boot from the captured state.
 That keeps the primitive deterministic, safe to compose, and compatible with
 Cleanroom's existing network identity and guest-agent model.
 
-On Firecracker, the implementation uses a new copy-on-write volume store with a
-`zfs` driver first. A snapshot is a host-side COW snapshot of the sandbox root
-volume. A fork is a COW clone of that snapshot. Restore replaces the sandbox's
-mutable volume with a fresh clone of the snapshot and boots again.
+The mergeable first slice uses a `file` driver to establish the API, metadata,
+and lifecycle semantics on both Firecracker and `darwin-vz`. Follow-ups add
+native COW drivers (`zfs` for Firecracker and `apfs` for `darwin-vz`) so
+snapshots and forks become host-native clones instead of copied ext4 files.
 
 This gives us a strong base for CI:
 
@@ -66,7 +66,6 @@ The result is a simpler contract:
 
 ## Non-Goals
 
-- `darwin-vz` support in the first implementation.
 - Exposing live process or in-memory checkpoint semantics to users.
 - Cross-backend snapshot portability.
 - Restoring a snapshot under a different compiled policy hash.
@@ -326,8 +325,7 @@ accelerators, but the API semantics stay the same.
 Initial capability rollout:
 
 - Firecracker reports all three as `true` when snapshot support is configured
-- `darwin-vz` reports all three as `false` until its later-stage implementation
-  lands
+- `darwin-vz` reports all three as `true` when snapshot support is configured
 
 Optional later accelerator capabilities can be added separately if needed, but
 they should not be required for the core snapshot, restore, and fork contract.
@@ -340,7 +338,8 @@ Introduce a new internal volume subsystem:
 
 - package: `internal/volumestore`
 - driver interface: backend-agnostic
-- first implementation: `zfs`
+- first implementation: `file`
+- next implementation: `zfs`
 - later implementation: `apfs`
 
 Responsibilities:
@@ -363,7 +362,7 @@ brands:
 - destroy snapshot
 - return the runtime attachment path for the backend
 
-### ZFS layout
+### Planned ZFS layout
 
 Assume a configured dataset root such as `tank/cleanroom`.
 
@@ -387,7 +386,8 @@ Why zvols:
 
 ### Metadata store
 
-ZFS tracks the data plane; Cleanroom still needs control-plane metadata.
+The volume driver tracks the data plane; Cleanroom still needs control-plane
+metadata.
 
 Add a durable metadata store, preferably SQLite under XDG state:
 
@@ -407,10 +407,11 @@ Why not only ZFS properties:
 - we need snapshot listing without shelling out and parsing ZFS output on every
   control-plane request
 
-## Darwin VZ Later-Stage Support
+## Darwin VZ File-Backed Support
 
-`darwin-vz` should adopt the same API and capability semantics later, but with a
-different storage driver and an initial focus on disk-state snapshots.
+`darwin-vz` now adopts the same API and capability semantics with the same
+file-backed snapshot driver used in the mergeable slice. A later `apfs` driver
+can improve clone performance without changing the contract.
 
 ### Core model
 
@@ -425,11 +426,21 @@ from Firecracker.
 
 ### Storage driver
 
-Recommended later driver:
+Current driver:
+
+- `file`
+
+Later optimized driver:
 
 - `apfs`
 
-Recommended mechanism:
+Current mechanism:
+
+- keep using ext4 guest rootfs images as the guest-visible block format
+- keep sandbox and snapshot ext4 images under snapshot storage directories
+- copy snapshot images and writable images with the file volume driver
+
+Later optimized mechanism:
 
 - keep using ext4 guest rootfs images as the guest-visible block format
 - store those ext4 image files on APFS
@@ -448,31 +459,32 @@ same control-plane semantics.
 
 ### Darwin-specific lifecycle
 
-Later `darwin-vz` snapshot flow:
+Current `darwin-vz` snapshot flow:
 
 1. ensure the sandbox is idle
-2. ask the guest agent to quiesce
-3. stop the current VM or otherwise ensure the disk image is at a safe point
-4. create an APFS clone of the working ext4 image as the snapshot artifact
-5. restart or continue according to the chosen implementation path
+2. ask the guest agent to quiesce with `sync`
+3. pause the running VM through the helper
+4. copy the working ext4 image into snapshot storage
+5. resume the VM
 
-Later `darwin-vz` fork flow:
+Later `darwin-vz` snapshot flow can replace step 4 with an APFS clone.
 
-1. APFS-clone the snapshot ext4 image into a new writable working image
+Current `darwin-vz` fork flow:
+
+1. copy the snapshot ext4 image into a new writable working image
 2. start a fresh `darwin-vz` VM from that image
 
-Later `darwin-vz` restore flow:
+Current `darwin-vz` restore flow:
 
 1. stop the current VM
-2. replace the sandbox working image with an APFS clone of the target snapshot
+2. replace the sandbox working image with a copied clone of the target snapshot
 3. start a fresh VM for the sandbox
 
 ### Darwin-specific limits
 
 Expected constraints:
 
-- disk-state snapshots should be the first supported mode
-- persistent sandboxes need to exist before snapshot support is useful
+- disk-state snapshots are the supported mode in this slice
 - host-side egress allowlist enforcement still remains a separate gap to close
 - warm machine-state save and restore should be treated as a same-host
   accelerator, not the baseline primitive
@@ -597,13 +609,13 @@ backends:
   firecracker:
     snapshots:
       enabled: true
-      driver: zfs
-      zfs_dataset: tank/cleanroom
+      driver: file
+      base_dir: /var/tmp/cleanroom-snapshots
       quiesce_timeout_seconds: 15
   darwin-vz:
     snapshots:
       enabled: false
-      driver: apfs
+      driver: file
       base_dir: /var/tmp/cleanroom-snapshots
       quiesce_timeout_seconds: 15
 ```
@@ -611,7 +623,8 @@ backends:
 Notes:
 
 - snapshot support is off by default unless explicitly configured
-- the first implementation only accepts `driver: zfs`
+- the first implementation accepts `driver: file`
+- follow-ups add `driver: zfs` for Firecracker and `driver: apfs` for `darwin-vz`
 - future drivers can slot in later (`apfs`, `lvmthin`, `btrfs`, file-based COW)
 
 ## Future Distribution and Fan-Out
@@ -620,7 +633,8 @@ The execution format and the distribution format should be different concerns.
 
 Recommended split:
 
-- local execution format: host-native volume snapshots and clones (`zfs` in v1)
+- local execution format: host-native volume snapshots and clones (`file` in
+  the mergeable slice, `zfs` planned next for Firecracker)
 - portable distribution format: OCI artifacts stored in a registry
 
 Why:
@@ -798,9 +812,9 @@ If we add this later, the user-visible API does not change. It only makes
 ## Implementation Status
 
 This section tracks what is already implemented and what remains. The current
-branch lands the first functional slice with a file-backed Firecracker
-implementation and a persisted snapshot metadata store. The later storage-driver
-and fleet-distribution work is still pending.
+branch lands the first functional slice with file-backed Firecracker and
+`darwin-vz` implementations plus a persisted snapshot metadata store. The later
+native storage-driver and fleet-distribution work is still pending.
 
 ### Implemented in this branch
 
@@ -817,6 +831,7 @@ and fleet-distribution work is still pending.
   - `cleanroom sandbox create --from-snapshot`
   - `cleanroom sandbox restore --snapshot`
 - [done] Firecracker adapter support for snapshot, fork, and restore
+- [done] `darwin-vz` adapter support for snapshot, fork, and restore
 - [done] control-plane concurrency checks:
   - no snapshot or restore during active exec
   - no snapshot or restore during file download
@@ -825,10 +840,11 @@ and fleet-distribution work is still pending.
   - snapshot metadata store
   - control service snapshot lifecycle
   - Firecracker snapshot/fork/restore adapter flow
+  - `darwin-vz` snapshot/fork/restore adapter flow
 
 ### Remaining implementation list
 
-#### 1. Replace file-backed Firecracker storage with a volume-store abstraction
+#### 1. Add a ZFS driver for the Firecracker volume store
 
 - [done] add `internal/volumestore`
 - [done] define driver interface for:
@@ -838,7 +854,7 @@ and fleet-distribution work is still pending.
   - destroy volume
   - destroy snapshot
 - [todo] add `zfs` driver
-- [done] wire Firecracker through the volume driver with a file-backed fallback
+- [done] wire Firecracker through the volume driver with a file-backed driver
 - [done] add runtime config loading for Firecracker snapshot storage
 - [todo] add doctor checks for `zfs` availability and configuration
 
@@ -846,8 +862,8 @@ Definition of done:
 
 - Firecracker persistent sandboxes can boot from a managed volume instead of a
   copied rootfs image
-- snapshot, restore, and fork use the volume driver instead of direct file
-  cloning
+- snapshot, restore, and fork use native ZFS clone semantics instead of direct
+  file copies
 
 #### 2. Tighten Firecracker snapshot semantics
 
@@ -877,13 +893,14 @@ Definition of done:
 - operators can manage snapshot lifecycle without orphaning hidden storage
 - the docs show the intended CI bootstrap and fan-out flow
 
-#### 4. Add `darwin-vz` disk-state support
+#### 4. Upgrade `darwin-vz` from file copies to APFS clones
 
-- [todo] add persistent `darwin-vz` sandboxes
-- [todo] add `apfs` volume-store driver
-- [todo] add `darwin-vz` snapshot, restore, and fork using cloned ext4 image
+- [done] add persistent `darwin-vz` sandboxes
+- [done] add `darwin-vz` snapshot, restore, and fork using copied ext4 image
   files
-- [todo] keep API and capability semantics identical to Firecracker
+- [todo] add `apfs` volume-store driver
+- [todo] switch `darwin-vz` snapshot, restore, and fork from file copies to
+  APFS clones
 
 Definition of done:
 

@@ -22,6 +22,7 @@ type Record struct {
 	Name            string
 	PolicyHash      string
 	Policy          *cleanroomv1.Policy
+	StorageDriver   string
 	StorageRef      string
 	CreatedAt       time.Time
 }
@@ -73,6 +74,9 @@ func (s *Store) Create(ctx context.Context, record Record) error {
 	if strings.TrimSpace(record.StorageRef) == "" {
 		return fmt.Errorf("snapshot record %q missing storage ref", record.SnapshotID)
 	}
+	if strings.TrimSpace(record.StorageDriver) == "" {
+		return fmt.Errorf("snapshot record %q missing storage driver", record.SnapshotID)
+	}
 	if record.CreatedAt.IsZero() {
 		record.CreatedAt = time.Now().UTC()
 	}
@@ -96,9 +100,10 @@ func (s *Store) Create(ctx context.Context, record Record) error {
 			name,
 			policy_hash,
 			policy_proto,
+			storage_driver,
 			storage_ref,
 			created_at_unix
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		record.SnapshotID,
 		record.SourceSandboxID,
@@ -106,6 +111,7 @@ func (s *Store) Create(ctx context.Context, record Record) error {
 		record.Name,
 		record.PolicyHash,
 		policyBytes,
+		record.StorageDriver,
 		record.StorageRef,
 		record.CreatedAt.UTC().Unix(),
 	); err != nil {
@@ -129,6 +135,7 @@ func (s *Store) Get(ctx context.Context, snapshotID string) (Record, bool, error
 			name,
 			policy_hash,
 			policy_proto,
+			storage_driver,
 			storage_ref,
 			created_at_unix
 		FROM snapshots
@@ -160,6 +167,7 @@ func (s *Store) List(ctx context.Context) ([]Record, error) {
 			name,
 			policy_hash,
 			policy_proto,
+			storage_driver,
 			storage_ref,
 			created_at_unix
 		FROM snapshots
@@ -223,6 +231,7 @@ func (s *Store) initDB(ctx context.Context) error {
 			name TEXT NOT NULL,
 			policy_hash TEXT NOT NULL,
 			policy_proto BLOB NOT NULL,
+			storage_driver TEXT NOT NULL DEFAULT 'file',
 			storage_ref TEXT NOT NULL,
 			created_at_unix INTEGER NOT NULL
 		);
@@ -230,6 +239,9 @@ func (s *Store) initDB(ctx context.Context) error {
 	`)
 	if err != nil {
 		return fmt.Errorf("initialise snapshot metadata schema: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `ALTER TABLE snapshots ADD COLUMN storage_driver TEXT NOT NULL DEFAULT 'file'`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		return fmt.Errorf("ensure snapshot metadata storage_driver column: %w", err)
 	}
 	return nil
 }
@@ -251,6 +263,7 @@ func scanRecord(row recordScanner) (Record, error) {
 		&record.Name,
 		&record.PolicyHash,
 		&policyBytes,
+		&record.StorageDriver,
 		&record.StorageRef,
 		&createdAt,
 	); err != nil {
