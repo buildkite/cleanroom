@@ -2,10 +2,12 @@ package cli
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
+	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 )
 
 func runSnapshotCreateWithCapture(cmd SnapshotCreateCommand, ctx runtimeContext) execOutcome {
@@ -264,5 +266,55 @@ func TestSnapshotDeleteIntegrationAllowsDeleteAfterSnapshotBackedCreate(t *testi
 	}
 	if got, want := adapter.deleteSnapshotReq.SnapshotID, snapshotID; got != want {
 		t.Fatalf("unexpected deleted snapshot id: got %q want %q", got, want)
+	}
+}
+
+func TestSnapshotCreateIntegrationExplainsDisabledRuntimeConfig(t *testing.T) {
+	adapter := &snapshotIntegrationAdapter{}
+	host, _ := startIntegrationServerWithConfig(t, adapter, runtimeconfig.Config{
+		DefaultBackend: "firecracker",
+		Backends: runtimeconfig.Backends{
+			Firecracker: runtimeconfig.FirecrackerConfig{
+				Snapshots: runtimeconfig.SnapshotConfig{
+					Enabled: false,
+					Driver:  "file",
+				},
+			},
+		},
+	})
+	cwd := t.TempDir()
+	configPath := filepath.Join(cwd, "config.yaml")
+
+	client := mustNewControlClient(t, host)
+	sandboxID := mustCreateSandbox(t, client)
+
+	createOutcome := runSnapshotCreateWithCapture(SnapshotCreateCommand{
+		clientFlags: clientFlags{Host: host},
+		SandboxID:   sandboxID,
+	}, runtimeContext{
+		CWD: cwd,
+		Config: runtimeconfig.Config{
+			Backends: runtimeconfig.Backends{
+				Firecracker: runtimeconfig.FirecrackerConfig{
+					Snapshots: runtimeconfig.SnapshotConfig{Enabled: false},
+				},
+			},
+		},
+		ConfigPath: configPath,
+	})
+	if createOutcome.cause != nil {
+		t.Fatalf("capture failure: %v", createOutcome.cause)
+	}
+	if createOutcome.err == nil {
+		t.Fatal("expected snapshot create to fail when snapshots are disabled")
+	}
+	if !strings.Contains(createOutcome.err.Error(), "disabled by runtime config") {
+		t.Fatalf("expected disabled-by-config error, got %v", createOutcome.err)
+	}
+	if !strings.Contains(createOutcome.err.Error(), "backends.firecracker.snapshots.enabled: true") {
+		t.Fatalf("expected config hint in error, got %v", createOutcome.err)
+	}
+	if !strings.Contains(createOutcome.err.Error(), configPath) {
+		t.Fatalf("expected config path in error, got %v", createOutcome.err)
 	}
 }

@@ -288,6 +288,12 @@ func TestDoctorCommandHonorsRuntimeSnapshotCapabilityConfig(t *testing.T) {
 		if check.Status != "warn" {
 			t.Fatalf("expected disabled snapshot capability check to warn, got %q", check.Status)
 		}
+		if !strings.Contains(check.Message, "disabled by runtime config") {
+			t.Fatalf("expected disabled-by-config snapshot message, got %q", check.Message)
+		}
+		if !strings.Contains(check.Message, "backends.firecracker.snapshots.enabled: true") {
+			t.Fatalf("expected snapshot enable hint in message, got %q", check.Message)
+		}
 	}
 	if !foundSnapshotCheck {
 		t.Fatal("expected capability_sandbox_snapshot check in doctor output")

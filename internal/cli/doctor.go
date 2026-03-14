@@ -27,7 +27,8 @@ func (d *DoctorCommand) Run(ctx *runtimeContext) error {
 	if !ok {
 		return fmt.Errorf("unknown backend %q", backendName)
 	}
-	capabilities := backend.CapabilitiesForAdapter(adapter)
+	adapterCapabilities := backend.CapabilitiesForAdapter(adapter)
+	capabilities := applyRuntimeCapabilityOverrides(adapterCapabilities, backendName, ctx.Config)
 	gwCredentials := gateway.NewEnvCredentialProvider()
 	gwHosts := gwCredentials.ConfiguredHosts()
 	gwRoutes := gateway.Routes()
@@ -62,6 +63,8 @@ func (d *DoctorCommand) Run(ctx *runtimeContext) error {
 		if capabilities[key] {
 			status = "pass"
 			message = fmt.Sprintf("%s: supported", key)
+		} else if disabledMessage, ok := disabledSnapshotCapabilityMessage(key, backendName, ctx.Config, ctx.ConfigPath, adapterCapabilities); ok {
+			message = disabledMessage
 		}
 		checks = append(checks, backend.DoctorCheck{
 			Name:    capabilityCheckName(key),
@@ -91,7 +94,7 @@ func (d *DoctorCommand) Run(ctx *runtimeContext) error {
 	if checker, ok := adapter.(doctorCapable); ok {
 		report, err := checker.Doctor(context.Background(), backend.DoctorRequest{
 			Policy:            compiled,
-			FirecrackerConfig: mergeBackendConfig(backendName, 0, ctx.Config),
+			FirecrackerConfig: runtimeconfig.MergeBackendConfig(ctx.Config, backendName, 0),
 		})
 		if err != nil {
 			return err
@@ -146,37 +149,46 @@ func capabilityCheckName(key string) string {
 	return "capability_" + capabilityNameReplacer.Replace(trimmed)
 }
 
-func mergeBackendConfig(backendName string, launchSeconds int64, cfg runtimeconfig.Config) backend.FirecrackerConfig {
-	out := backend.FirecrackerConfig{
-		BinaryPath:           cfg.Backends.Firecracker.BinaryPath,
-		KernelImagePath:      cfg.Backends.Firecracker.KernelImage,
-		RootFSPath:           cfg.Backends.Firecracker.RootFS,
-		DockerStartupSeconds: cfg.Backends.Firecracker.Services.Docker.StartupTimeoutSeconds,
-		DockerStorageDriver:  cfg.Backends.Firecracker.Services.Docker.StorageDriver,
-		DockerIPTables:       cfg.Backends.Firecracker.Services.Docker.IPTables,
-		PrivilegedMode:       cfg.Backends.Firecracker.PrivilegedMode,
-		PrivilegedHelperPath: cfg.Backends.Firecracker.PrivilegedHelperPath,
-		VCPUs:                cfg.Backends.Firecracker.VCPUs,
-		MemoryMiB:            cfg.Backends.Firecracker.MemoryMiB,
-		GuestCID:             cfg.Backends.Firecracker.GuestCID,
-		GuestPort:            cfg.Backends.Firecracker.GuestPort,
-		LaunchSeconds:        cfg.Backends.Firecracker.LaunchSeconds,
+func applyRuntimeCapabilityOverrides(caps map[string]bool, backendName string, cfg runtimeconfig.Config) map[string]bool {
+	out := backend.CloneCapabilities(caps)
+	snapshotCfg, ok := runtimeconfig.SnapshotConfigForBackend(cfg, backendName)
+	if ok && snapshotCfg.Enabled {
+		return out
 	}
-	if backendName == "darwin-vz" {
-		out.KernelImagePath = cfg.Backends.DarwinVZ.KernelImage
-		out.RootFSPath = cfg.Backends.DarwinVZ.RootFS
-		out.DockerStartupSeconds = cfg.Backends.DarwinVZ.Services.Docker.StartupTimeoutSeconds
-		out.DockerStorageDriver = cfg.Backends.DarwinVZ.Services.Docker.StorageDriver
-		out.DockerIPTables = cfg.Backends.DarwinVZ.Services.Docker.IPTables
-		out.VCPUs = cfg.Backends.DarwinVZ.VCPUs
-		out.MemoryMiB = cfg.Backends.DarwinVZ.MemoryMiB
-		out.GuestPort = cfg.Backends.DarwinVZ.GuestPort
-		out.LaunchSeconds = cfg.Backends.DarwinVZ.LaunchSeconds
-	}
-
-	out.Launch = true
-	if launchSeconds != 0 {
-		out.LaunchSeconds = launchSeconds
-	}
+	out[backend.CapabilitySandboxSnapshot] = false
 	return out
+}
+
+func disabledSnapshotCapabilityMessage(capabilityKey, backendName string, cfg runtimeconfig.Config, configPath string, adapterCaps map[string]bool) (string, bool) {
+	if !isSnapshotCapabilityKey(capabilityKey) {
+		return "", false
+	}
+	if !adapterCaps[capabilityKey] {
+		return "", false
+	}
+	snapshotCfg, ok := runtimeconfig.SnapshotConfigForBackend(cfg, backendName)
+	if !ok || snapshotCfg.Enabled {
+		return "", false
+	}
+	return fmt.Sprintf("%s: disabled by runtime config (set %s in %s)", capabilityKey, snapshotConfigEnableHint(backendName), configPath), true
+}
+
+func isSnapshotCapabilityKey(key string) bool {
+	switch strings.TrimSpace(key) {
+	case backend.CapabilitySandboxSnapshot:
+		return true
+	default:
+		return false
+	}
+}
+
+func snapshotConfigEnableHint(backendName string) string {
+	switch strings.TrimSpace(backendName) {
+	case "darwin-vz":
+		return "backends.darwin-vz.snapshots.enabled: true"
+	case "firecracker":
+		return "backends.firecracker.snapshots.enabled: true"
+	default:
+		return "backends.<backend>.snapshots.enabled: true"
+	}
 }

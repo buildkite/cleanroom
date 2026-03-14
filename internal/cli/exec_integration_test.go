@@ -186,6 +186,22 @@ type execOutcome struct {
 func startIntegrationServer(t *testing.T, adapter backend.Adapter) (string, *controlservice.Service) {
 	t.Helper()
 
+	return startIntegrationServerWithConfig(t, adapter, runtimeconfig.Config{
+		DefaultBackend: "firecracker",
+		Backends: runtimeconfig.Backends{
+			Firecracker: runtimeconfig.FirecrackerConfig{
+				Snapshots: runtimeconfig.SnapshotConfig{
+					Enabled: true,
+					Driver:  "file",
+				},
+			},
+		},
+	})
+}
+
+func startIntegrationServerWithConfig(t *testing.T, adapter backend.Adapter, cfg runtimeconfig.Config) (string, *controlservice.Service) {
+	t.Helper()
+
 	store, err := snapshotstore.New(snapshotstore.Options{
 		MetadataDBPath: filepath.Join(t.TempDir(), "snapshots.db"),
 	})
@@ -194,18 +210,8 @@ func startIntegrationServer(t *testing.T, adapter backend.Adapter) (string, *con
 	}
 
 	svc := &controlservice.Service{
-		Loader: integrationLoader{},
-		Config: runtimeconfig.Config{
-			DefaultBackend: "firecracker",
-			Backends: runtimeconfig.Backends{
-				Firecracker: runtimeconfig.FirecrackerConfig{
-					Snapshots: runtimeconfig.SnapshotConfig{
-						Enabled: true,
-						Driver:  "file",
-					},
-				},
-			},
-		},
+		Loader:        integrationLoader{},
+		Config:        cfg,
 		SnapshotStore: store,
 		Backends: map[string]backend.Adapter{
 			"firecracker": adapter,

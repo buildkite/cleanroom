@@ -52,8 +52,8 @@ type DarwinVZConfig struct {
 type SnapshotConfig struct {
 	Enabled               bool   `yaml:"enabled"`
 	Driver                string `yaml:"driver"`
-	BaseDir               string `yaml:"base_dir"`
-	QuiesceTimeoutSeconds int64  `yaml:"quiesce_timeout_seconds"`
+	BaseDir               string `yaml:"base_dir,omitempty"`
+	QuiesceTimeoutSeconds int64  `yaml:"quiesce_timeout_seconds,omitempty"`
 }
 
 func SnapshotConfigForBackend(cfg Config, backendName string) (SnapshotConfig, bool) {

@@ -45,6 +45,18 @@ func TestConfigInitWritesRuntimeConfig(t *testing.T) {
 	if got := strings.TrimSpace(cfg.Backends.DarwinVZ.KernelImage); got != "" {
 		t.Fatalf("expected backends.darwin-vz.kernel_image to default empty, got %q", got)
 	}
+	if got, want := cfg.Backends.Firecracker.Snapshots.Driver, "file"; got != want {
+		t.Fatalf("expected backends.firecracker.snapshots.driver=%q, got %q", want, got)
+	}
+	if cfg.Backends.Firecracker.Snapshots.Enabled {
+		t.Fatal("expected backends.firecracker.snapshots.enabled to default false")
+	}
+	if got, want := cfg.Backends.DarwinVZ.Snapshots.Driver, "file"; got != want {
+		t.Fatalf("expected backends.darwin-vz.snapshots.driver=%q, got %q", want, got)
+	}
+	if cfg.Backends.DarwinVZ.Snapshots.Enabled {
+		t.Fatal("expected backends.darwin-vz.snapshots.enabled to default false")
+	}
 	if got, want := cfg.Backends.Firecracker.Services.Docker.StartupTimeoutSeconds, int64(20); got != want {
 		t.Fatalf("expected backends.firecracker.services.docker.startup_timeout_seconds=%d, got %d", want, got)
 	}
@@ -53,6 +65,21 @@ func TestConfigInitWritesRuntimeConfig(t *testing.T) {
 	}
 	if cfg.Backends.Firecracker.Services.Docker.IPTables {
 		t.Fatal("expected backends.firecracker.services.docker.iptables to default false")
+	}
+	if !strings.Contains(string(raw), "snapshots:") {
+		t.Fatalf("expected generated config to include snapshot defaults, got:\n%s", raw)
+	}
+	if !strings.Contains(string(raw), "enabled: false") {
+		t.Fatalf("expected generated config to include disabled snapshot default, got:\n%s", raw)
+	}
+	if !strings.Contains(string(raw), "driver: file") {
+		t.Fatalf("expected generated config to include snapshot driver default, got:\n%s", raw)
+	}
+	if strings.Contains(string(raw), "base_dir:") {
+		t.Fatalf("expected generated config to omit empty snapshot base_dir, got:\n%s", raw)
+	}
+	if strings.Contains(string(raw), "quiesce_timeout_seconds:") {
+		t.Fatalf("expected generated config to omit empty snapshot quiesce timeout, got:\n%s", raw)
 	}
 }
 
