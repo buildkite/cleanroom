@@ -83,6 +83,26 @@ func (a *immediateStreamingAdapter) RunStream(context.Context, backend.RunReques
 	}, nil
 }
 
+type warningStreamingAdapter struct {
+	integrationAdapter
+	warning string
+}
+
+func (a *warningStreamingAdapter) RunStream(_ context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+	if stream.OnWarning != nil {
+		stream.OnWarning(a.warning)
+	}
+	if stream.OnStdout != nil {
+		stream.OnStdout([]byte("hello from cleanroom\n"))
+	}
+	return &backend.RunResult{
+		RunID:    req.RunID,
+		ExitCode: 0,
+		Stdout:   "hello from cleanroom\n",
+		Message:  "done",
+	}, nil
+}
+
 type integrationExecutionHooks struct {
 	beforeStreamExecution func(context.Context, *StreamExecutionRequest) error
 	overrideStream        func(context.Context, *connect.Request[StreamExecutionRequest], *connect.ServerStream[ExecutionStreamEvent]) error
@@ -581,6 +601,44 @@ func TestExecAndWait(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "hello from cleanroom") {
 		t.Fatalf("expected stdout writer to receive output, got %q", stdout.String())
+	}
+}
+
+func TestExecAndWaitIncludesStructuredWarningsInStderr(t *testing.T) {
+	const warningText = "darwin-vz guest networking is enabled without host-side egress filtering"
+
+	host := startIntegrationServerWithAdapter(t, &warningStreamingAdapter{warning: warningText})
+	c, err := New(host)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	sb, err := c.EnsureSandbox(ctx, "thread:exec-warning", EnsureSandboxOptions{
+		Backend: "firecracker",
+		Policy:  testPolicy(),
+	})
+	if err != nil {
+		t.Fatalf("EnsureSandbox returned error: %v", err)
+	}
+
+	var stderr bytes.Buffer
+	result, err := c.ExecAndWait(ctx, sb.ID, []string{"echo", "hello"}, ExecOptions{Stderr: &stderr})
+	if err != nil {
+		t.Fatalf("ExecAndWait returned error: %v", err)
+	}
+
+	wantWarning := "warning: " + warningText + "\n"
+	if got := result.Stderr; !strings.Contains(got, wantWarning) {
+		t.Fatalf("expected warning in result stderr, got %q want substring %q", got, wantWarning)
+	}
+	if got := stderr.String(); !strings.Contains(got, wantWarning) {
+		t.Fatalf("expected warning in stderr writer, got %q want substring %q", got, wantWarning)
+	}
+	if strings.Contains(result.Stdout, warningText) {
+		t.Fatalf("expected warning to stay out of stdout, got %q", result.Stdout)
 	}
 }
 

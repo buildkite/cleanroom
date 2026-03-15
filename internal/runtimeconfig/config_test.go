@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/buildkite/cleanroom/internal/backend"
 )
 
 func TestLoadSupportsDarwinVZHyphenKey(t *testing.T) {
@@ -188,5 +190,170 @@ func TestPathReturnsErrorWhenHomeUnavailableForNonRoot(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "$HOME is not defined") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestLoadParsesSnapshotConfig(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	configPath := filepath.Join(tmp, "cleanroom", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	content := `backends:
+  firecracker:
+    snapshots:
+      enabled: true
+      driver: file
+      base_dir: /var/tmp/cleanroom-snapshots
+      quiesce_timeout_seconds: 15
+  darwin-vz:
+    snapshots:
+      enabled: false
+      driver: apfs
+      base_dir: /var/tmp/cleanroom-darwin
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, _, err := Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if !cfg.Backends.Firecracker.Snapshots.Enabled {
+		t.Fatal("expected firecracker snapshots to be enabled")
+	}
+	if got, want := cfg.Backends.Firecracker.Snapshots.Driver, "file"; got != want {
+		t.Fatalf("unexpected firecracker snapshot driver: got %q want %q", got, want)
+	}
+	if got, want := cfg.Backends.Firecracker.Snapshots.BaseDir, "/var/tmp/cleanroom-snapshots"; got != want {
+		t.Fatalf("unexpected firecracker snapshot base_dir: got %q want %q", got, want)
+	}
+	if got, want := cfg.Backends.Firecracker.Snapshots.QuiesceTimeoutSeconds, int64(15); got != want {
+		t.Fatalf("unexpected firecracker snapshot quiesce timeout: got %d want %d", got, want)
+	}
+	if got, want := cfg.Backends.DarwinVZ.Snapshots.Driver, "apfs"; got != want {
+		t.Fatalf("unexpected darwin-vz snapshot driver: got %q want %q", got, want)
+	}
+	if got, want := cfg.Backends.DarwinVZ.Snapshots.BaseDir, "/var/tmp/cleanroom-darwin"; got != want {
+		t.Fatalf("unexpected darwin-vz snapshot base_dir: got %q want %q", got, want)
+	}
+}
+
+func TestSnapshotConfigForBackend(t *testing.T) {
+	cfg := Config{
+		Backends: Backends{
+			Firecracker: FirecrackerConfig{
+				Snapshots: SnapshotConfig{Enabled: true, Driver: "file"},
+			},
+			DarwinVZ: DarwinVZConfig{
+				Snapshots: SnapshotConfig{Enabled: false, Driver: "apfs"},
+			},
+		},
+	}
+
+	firecrackerCfg, ok := SnapshotConfigForBackend(cfg, "firecracker")
+	if !ok {
+		t.Fatal("expected firecracker snapshot config to resolve")
+	}
+	if got, want := firecrackerCfg.Driver, "file"; got != want {
+		t.Fatalf("unexpected firecracker snapshot driver: got %q want %q", got, want)
+	}
+
+	darwinCfg, ok := SnapshotConfigForBackend(cfg, "darwin-vz")
+	if !ok {
+		t.Fatal("expected darwin-vz snapshot config to resolve")
+	}
+	if got, want := darwinCfg.Driver, "apfs"; got != want {
+		t.Fatalf("unexpected darwin-vz snapshot driver: got %q want %q", got, want)
+	}
+
+	if _, ok := SnapshotConfigForBackend(cfg, "unknown"); ok {
+		t.Fatal("expected unknown backend lookup to fail")
+	}
+}
+
+func TestSnapshotDriverOrDefault(t *testing.T) {
+	if got, want := SnapshotDriverOrDefault(""), "file"; got != want {
+		t.Fatalf("unexpected default snapshot driver: got %q want %q", got, want)
+	}
+	if got, want := SnapshotDriverOrDefault(" file "), "file"; got != want {
+		t.Fatalf("unexpected trimmed snapshot driver: got %q want %q", got, want)
+	}
+}
+
+func TestMergeBackendConfig(t *testing.T) {
+	cfg := Config{
+		Backends: Backends{
+			Firecracker: FirecrackerConfig{
+				BinaryPath:           "firecracker-bin",
+				KernelImage:          "/firecracker/kernel",
+				RootFS:               "/firecracker/rootfs.ext4",
+				Services:             ServicesConfig{Docker: DockerServiceConfig{StartupTimeoutSeconds: 12, StorageDriver: "overlay2", IPTables: true}},
+				Snapshots:            SnapshotConfig{Enabled: true, Driver: "file", BaseDir: "/firecracker/snapshots", QuiesceTimeoutSeconds: 15},
+				PrivilegedMode:       "helper",
+				PrivilegedHelperPath: "/usr/local/bin/cleanroom-root-helper",
+				VCPUs:                2,
+				MemoryMiB:            1024,
+				GuestCID:             111,
+				GuestPort:            10700,
+				LaunchSeconds:        30,
+			},
+			DarwinVZ: DarwinVZConfig{
+				KernelImage:   "/darwin/kernel",
+				RootFS:        "/darwin/rootfs.ext4",
+				Services:      ServicesConfig{Docker: DockerServiceConfig{StartupTimeoutSeconds: 20, StorageDriver: "vzfs", IPTables: false}},
+				Snapshots:     SnapshotConfig{Enabled: false, Driver: "apfs", BaseDir: "/darwin/snapshots", QuiesceTimeoutSeconds: 22},
+				VCPUs:         4,
+				MemoryMiB:     2048,
+				GuestPort:     10701,
+				LaunchSeconds: 45,
+			},
+		},
+	}
+
+	firecrackerCfg := MergeBackendConfig(cfg, "firecracker", 99)
+	if !firecrackerCfg.Launch {
+		t.Fatal("expected merged firecracker config to enable launch")
+	}
+	if got, want := firecrackerCfg.LaunchSeconds, int64(99); got != want {
+		t.Fatalf("unexpected firecracker launch seconds: got %d want %d", got, want)
+	}
+	if got, want := firecrackerCfg.Snapshots, (backend.SnapshotConfig{Enabled: true, Driver: "file", BaseDir: "/firecracker/snapshots", QuiesceTimeoutSeconds: 15}); got != want {
+		t.Fatalf("unexpected firecracker snapshots config: got %#v want %#v", got, want)
+	}
+
+	darwinCfg := MergeBackendConfig(cfg, "darwin-vz", 0)
+	if !darwinCfg.Launch {
+		t.Fatal("expected merged darwin-vz config to enable launch")
+	}
+	if got, want := darwinCfg.KernelImagePath, "/darwin/kernel"; got != want {
+		t.Fatalf("unexpected darwin-vz kernel image: got %q want %q", got, want)
+	}
+	if got, want := darwinCfg.RootFSPath, "/darwin/rootfs.ext4"; got != want {
+		t.Fatalf("unexpected darwin-vz rootfs: got %q want %q", got, want)
+	}
+	if got, want := darwinCfg.DockerStorageDriver, "vzfs"; got != want {
+		t.Fatalf("unexpected darwin-vz docker storage driver: got %q want %q", got, want)
+	}
+	if got, want := darwinCfg.Snapshots, (backend.SnapshotConfig{Enabled: false, Driver: "apfs", BaseDir: "/darwin/snapshots", QuiesceTimeoutSeconds: 22}); got != want {
+		t.Fatalf("unexpected darwin-vz snapshots config: got %#v want %#v", got, want)
+	}
+	if got, want := darwinCfg.VCPUs, int64(4); got != want {
+		t.Fatalf("unexpected darwin-vz vcpus: got %d want %d", got, want)
+	}
+	if got, want := darwinCfg.MemoryMiB, int64(2048); got != want {
+		t.Fatalf("unexpected darwin-vz memory: got %d want %d", got, want)
+	}
+	if got, want := darwinCfg.GuestPort, uint32(10701); got != want {
+		t.Fatalf("unexpected darwin-vz guest port: got %d want %d", got, want)
+	}
+	if got, want := darwinCfg.LaunchSeconds, int64(45); got != want {
+		t.Fatalf("unexpected darwin-vz launch seconds: got %d want %d", got, want)
+	}
+	if got, want := darwinCfg.BinaryPath, "firecracker-bin"; got != want {
+		t.Fatalf("unexpected retained binary path: got %q want %q", got, want)
 	}
 }

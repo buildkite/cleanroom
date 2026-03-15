@@ -15,6 +15,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/backend/firecracker"
 	"github.com/buildkite/cleanroom/internal/gateway"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
+	"github.com/buildkite/cleanroom/internal/snapshotstore"
 	"github.com/charmbracelet/log"
 )
 
@@ -75,8 +76,30 @@ func TestConfigureGatewayBackendsConfiguresDarwinVZGateway(t *testing.T) {
 	}
 }
 
-func TestNewControlServiceWiresRepositoryMirrors(t *testing.T) {
+func TestGatewayServerConfigUsesDarwinGatewayHostForTrustedPrefixes(t *testing.T) {
 	t.Parallel()
+
+	cfg := gatewayServerConfig(
+		":8170",
+		gateway.NewRegistry(),
+		nil,
+		nil,
+		log.New(io.Discard),
+		"  gateway.local  ",
+	)
+
+	want := gateway.ScopeTokenTrustedSourcePrefixesForGatewayHost("gateway.local")
+	if !reflect.DeepEqual(cfg.ScopeTokenTrustedSourcePrefixes, want) {
+		t.Fatalf("unexpected trusted source prefixes: got %v want %v", cfg.ScopeTokenTrustedSourcePrefixes, want)
+	}
+}
+
+func TestNewControlServiceWiresRepositoryMirrors(t *testing.T) {
+	prevSnapshotStoreFactory := newSnapshotMetadataStore
+	t.Cleanup(func() { newSnapshotMetadataStore = prevSnapshotStoreFactory })
+	newSnapshotMetadataStore = func(snapshotstore.Options) (*snapshotstore.Store, error) {
+		return &snapshotstore.Store{}, nil
+	}
 
 	mirrors := gateway.NewGitMirrorStore(t.TempDir(), 0, nil)
 
@@ -88,9 +111,57 @@ func TestNewControlServiceWiresRepositoryMirrors(t *testing.T) {
 	}
 	logger := log.New(io.Discard)
 
-	service := newControlService(ctx, logger, mirrors)
+	service, err := newControlService(ctx, logger, mirrors)
+	if err != nil {
+		t.Fatalf("newControlService returned error: %v", err)
+	}
 	if service.RepositoryMirrors != mirrors {
 		t.Fatal("expected control service to use the gateway mirror store")
+	}
+}
+
+func TestNewControlServiceWiresSnapshotStore(t *testing.T) {
+	prevSnapshotStoreFactory := newSnapshotMetadataStore
+	t.Cleanup(func() { newSnapshotMetadataStore = prevSnapshotStoreFactory })
+	newSnapshotMetadataStore = func(snapshotstore.Options) (*snapshotstore.Store, error) {
+		return &snapshotstore.Store{}, nil
+	}
+
+	mirrors := gateway.NewGitMirrorStore(t.TempDir(), 0, nil)
+
+	ctx := &runtimeContext{
+		CWD: t.TempDir(),
+		Config: runtimeconfig.Config{
+			DefaultBackend: "darwin-vz",
+		},
+	}
+	logger := log.New(io.Discard)
+
+	service, err := newControlService(ctx, logger, mirrors)
+	if err != nil {
+		t.Fatalf("newControlService returned error: %v", err)
+	}
+	if service.SnapshotStore == nil {
+		t.Fatal("expected control service to configure snapshot metadata store")
+	}
+}
+
+func TestNewControlServiceReturnsSnapshotStoreError(t *testing.T) {
+	prevSnapshotStoreFactory := newSnapshotMetadataStore
+	t.Cleanup(func() { newSnapshotMetadataStore = prevSnapshotStoreFactory })
+	newSnapshotMetadataStore = func(snapshotstore.Options) (*snapshotstore.Store, error) {
+		return nil, errors.New("metadata db unavailable")
+	}
+
+	service, err := newControlService(&runtimeContext{}, log.New(io.Discard), nil)
+	if err == nil {
+		t.Fatal("expected newControlService to return snapshot metadata store error")
+	}
+	if service != nil {
+		t.Fatal("expected nil service when snapshot metadata store setup fails")
+	}
+	if !strings.Contains(err.Error(), "configure snapshot metadata store") {
+		t.Fatalf("expected snapshot metadata store context in error, got: %v", err)
 	}
 }
 

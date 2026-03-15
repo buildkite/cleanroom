@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -146,6 +147,120 @@ func TestSetupHostNetworkWithDepsAddsDenyDefaultAndCleanupIndependentContext(t *
 	}
 	if cleanupCalls == 0 {
 		t.Fatal("expected cleanup commands")
+	}
+}
+
+func TestSetupHostNetworkWithTapLookupDeletesStaleTapBeforeCreate(t *testing.T) {
+	t.Parallel()
+
+	runID := "run-12345"
+	tapName := tapNameFromRunID(runID)
+	staleTapExists := true
+
+	var calls [][]string
+	run := func(_ context.Context, args ...string) error {
+		calls = append(calls, append([]string(nil), args...))
+		if isTapDeleteCommand(args, tapName) {
+			staleTapExists = false
+		}
+		return nil
+	}
+	lookup := func(_ context.Context, host string) ([]net.IP, error) {
+		if host != "proxy.golang.org" {
+			t.Fatalf("unexpected host %q", host)
+		}
+		return []net.IP{net.ParseIP("142.251.41.17")}, nil
+	}
+	interfaceByName := func(name string) (*net.Interface, error) {
+		if name != tapName {
+			t.Fatalf("unexpected interface lookup %q", name)
+		}
+		if staleTapExists {
+			return &net.Interface{Name: name}, nil
+		}
+		return nil, errors.New("no such network interface")
+	}
+
+	_, cleanup, err := setupHostNetworkWithTapLookup(context.Background(), runID, []policy.AllowRule{{Host: "proxy.golang.org", Ports: []int{443}}}, 0, lookup, interfaceByName, run, nil)
+	if err != nil {
+		t.Fatalf("setupHostNetworkWithTapLookup: %v", err)
+	}
+	defer cleanup()
+
+	if len(calls) < 2 {
+		t.Fatalf("expected at least two commands, got %d", len(calls))
+	}
+	if got, want := strings.Join(calls[0], " "), "ip link del "+tapName; got != want {
+		t.Fatalf("unexpected first command: got %q want %q", got, want)
+	}
+	if got, want := strings.Join(calls[1], " "), "ip tuntap add dev "+tapName+" mode tap user "+strconv.Itoa(os.Getuid()); got != want {
+		t.Fatalf("unexpected second command: got %q want %q", got, want)
+	}
+}
+
+func TestDeleteTapDeviceWithRetryRetriesBusyTapDeletion(t *testing.T) {
+	t.Parallel()
+
+	tapName := "tap0"
+	tapExists := true
+	attempts := 0
+	run := func(_ context.Context, args ...string) error {
+		if got, want := strings.Join(args, " "), "ip link del "+tapName; got != want {
+			t.Fatalf("unexpected delete command: got %q want %q", got, want)
+		}
+		attempts++
+		if attempts == 1 {
+			return errors.New("device busy")
+		}
+		tapExists = false
+		return nil
+	}
+	interfaceByName := func(name string) (*net.Interface, error) {
+		if name != tapName {
+			t.Fatalf("unexpected interface lookup %q", name)
+		}
+		if tapExists {
+			return &net.Interface{Name: name}, nil
+		}
+		return nil, errors.New("no such network interface")
+	}
+
+	if err := deleteTapDeviceWithRetry(context.Background(), tapName, time.Millisecond, interfaceByName, run); err != nil {
+		t.Fatalf("deleteTapDeviceWithRetry: %v", err)
+	}
+	if got, want := attempts, 2; got != want {
+		t.Fatalf("unexpected delete attempts: got %d want %d", got, want)
+	}
+}
+
+func TestDeleteTapDeviceWithRetryReturnsLookupError(t *testing.T) {
+	t.Parallel()
+
+	tapName := "tap0"
+	attempts := 0
+	run := func(_ context.Context, args ...string) error {
+		if got, want := strings.Join(args, " "), "ip link del "+tapName; got != want {
+			t.Fatalf("unexpected delete command: got %q want %q", got, want)
+		}
+		attempts++
+		return errors.New("device busy")
+	}
+	interfaceByName := func(name string) (*net.Interface, error) {
+		if name != tapName {
+			t.Fatalf("unexpected interface lookup %q", name)
+		}
+		return nil, errors.New("permission denied")
+	}
+
+	err := deleteTapDeviceWithRetry(context.Background(), tapName, time.Millisecond, interfaceByName, run)
+	if err == nil {
+		t.Fatal("expected lookup error")
+	}
+	if !strings.Contains(err.Error(), "lookup tap device") || !strings.Contains(err.Error(), "permission denied") {
+		t.Fatalf("unexpected lookup error: %v", err)
+	}
+	if got, want := attempts, 1; got != want {
+		t.Fatalf("unexpected delete attempts: got %d want %d", got, want)
 	}
 }
 

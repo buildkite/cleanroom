@@ -16,6 +16,17 @@ Firecracker is purpose-built for secure multi-tenant workloads with a minimal de
 - Route package and git egress through `content-cache`.
 - Keep secret values out of guest env and policy files.
 
+## Network Model
+
+Firecracker networking is built around a dedicated per-sandbox TAP device on the host:
+
+- each sandbox gets a unique host IP / guest IP pair on that TAP-backed subnet
+- the host can identify the sandbox by guest source IP
+- host-side iptables rules enforce default-deny egress and exact allowlist exceptions
+- gateway access is bound to the sandbox's TAP/IP identity rather than a helper-managed token
+
+This is materially different from the current `darwin-vz` backend, which uses helper-managed NAT networking and does not expose a host-visible per-sandbox guest IP. See [darwin-vz.md](darwin-vz.md) for the current macOS model.
+
 ## Implementation slices
 
 1. Slice A: minimal Firecracker runner -- create backend adapter package and run lifecycle. Boot VM, run command over vsock, collect exit code/stdout/stderr.
@@ -47,3 +58,4 @@ Current capability values (visible in `cleanroom doctor --json`):
 - [darwin-vz.md](darwin-vz.md) -- macOS backend
 - [isolation.md](../isolation.md) -- enforcement and persistence details
 - [research.md](../research.md) -- backend evaluation and comparison
+- [../plans/snapshot-restore-fork.md](../plans/snapshot-restore-fork.md) -- proposed snapshot and create-from-snapshot design

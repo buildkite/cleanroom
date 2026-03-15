@@ -96,7 +96,7 @@ Pre-create a long-running sandbox without running a command:
 
 ```bash
 SANDBOX_ID="$(cleanroom create)"
-cleanroom exec --sandbox-id "$SANDBOX_ID" -- npm run lint
+cleanroom exec --in "$SANDBOX_ID" -- npm run lint
 ```
 
 Override the sandbox image per command (remote tag/digest or local Docker image name):
@@ -116,20 +116,30 @@ cleanroom sandbox create
 `cleanroom sandbox create` stays generic. It does not inspect the local git
 repository or infer a checkout from `cleanroom.yaml`.
 
-The sandbox stays running after the command completes. List sandboxes and run more commands:
+`cleanroom exec` and `cleanroom console` create ephemeral sandboxes by default.
+Reuse an existing sandbox with `--in`, or keep a newly created sandbox with
+`--keep`.
+
+List sandboxes and run more commands:
 
 ```bash
 cleanroom sandbox ls
-cleanroom exec --sandbox-id <id> -- npm run lint
-cleanroom exec --sandbox-id <id> -- npm run build
+cleanroom exec --in <id> -- npm run lint
+cleanroom exec --in <id> -- npm run build
 ```
 
-Use `--rm` to tear down the sandbox after the command completes (useful for one-off CI jobs):
+Keep a sandbox created by `exec`:
 
 ```bash
-cleanroom exec --rm -- npm test
+cleanroom exec --keep -- npm test
 ```
 
+Run against a snapshot:
+
+```bash
+cleanroom exec --from snap_... -- npm test
+cleanroom console --from snap_...
+```
 
 Interactive console:
 
@@ -201,8 +211,8 @@ repository:
 With the default behavior:
 
 - `cleanroom create` creates a sandbox with the current repo checked out at local `HEAD`
-- `cleanroom exec -- <cmd>` checks out the repo and runs `<cmd>` from `/workspace`
-- `cleanroom console -- bash` opens a shell in `/workspace`
+- `cleanroom exec -- <cmd>` checks out the repo, runs `<cmd>` from `/workspace`, and tears the sandbox down unless `--keep` is set
+- `cleanroom console -- bash` opens a shell in `/workspace` and tears the sandbox down unless `--keep` is set
 - dirty working trees print a warning and use committed `HEAD`; uncommitted changes are not copied in
 - `cleanroom sandbox create` remains explicit and repo-agnostic
 
@@ -222,10 +232,16 @@ sandbox:
 
 | Host OS | Backend | Status | Notes |
 |---------|---------|--------|-------|
-| Linux | `firecracker` | Full support | Persistent sandboxes, file download, egress allowlist enforcement |
-| macOS | `darwin-vz` | Supported with gaps | Persistent sandboxes, no file download, no egress filtering yet |
+| Linux | `firecracker` | Full support | Persistent sandboxes, per-sandbox TAP + guest IP identity, file download, egress allowlist enforcement |
+| macOS | `darwin-vz` | Supported with gaps | Persistent sandboxes, helper-managed NAT outbound networking, no file download, no egress filtering, no host-visible guest IP/TAP identity yet |
 
 Backend capabilities are exposed in `cleanroom doctor --json` under `capabilities`. See [isolation model](docs/isolation.md) for enforcement and persistence details.
+
+Network model differs significantly by backend:
+
+- `firecracker` creates a dedicated TAP interface and host/guest IP pair per sandbox, which enables host-side identity and firewall enforcement.
+- `darwin-vz` currently uses `Virtualization.framework` NAT networking. Guests can reach outbound destinations, but the host does not get a Firecracker-style per-sandbox TAP device or guest IP identity.
+- A future `darwin-vz` vmnet-backed mode is planned in [docs/plans/darwin-vz-vmnet-mode.md](docs/plans/darwin-vz-vmnet-mode.md).
 
 Select a backend explicitly:
 

@@ -264,6 +264,69 @@ func TestConsoleRejectsUnsupportedHostScheme(t *testing.T) {
 	}
 }
 
+func TestConsoleIntegrationDefaultTerminatesCreatedSandbox(t *testing.T) {
+	host, _ := startIntegrationServer(t, &integrationAdapter{
+		runStreamFn: func(_ context.Context, req backend.RunRequest, _ backend.OutputStream) (*backend.RunResult, error) {
+			return &backend.RunResult{RunID: req.RunID, ExitCode: 0, Stdout: "ok\n", Message: "ok"}, nil
+		},
+	})
+
+	outcome := runConsoleWithCapture(ConsoleCommand{
+		clientFlags:    clientFlags{Host: host},
+		PrintSandboxID: true,
+		Command:        []string{"sh"},
+	}, "", runtimeContext{
+		CWD:    t.TempDir(),
+		Loader: integrationLoader{},
+	})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err != nil {
+		t.Fatalf("ConsoleCommand.Run returned error: %v", outcome.err)
+	}
+
+	sandboxID := parseSandboxID(outcome.stderr)
+	if sandboxID == "" {
+		t.Fatalf("missing sandbox_id in stderr output: %q", outcome.stderr)
+	}
+
+	client := mustNewControlClient(t, host)
+	requireSandboxStatus(t, client, sandboxID, cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPED)
+}
+
+func TestConsoleIntegrationKeepPreservesCreatedSandbox(t *testing.T) {
+	host, _ := startIntegrationServer(t, &integrationAdapter{
+		runStreamFn: func(_ context.Context, req backend.RunRequest, _ backend.OutputStream) (*backend.RunResult, error) {
+			return &backend.RunResult{RunID: req.RunID, ExitCode: 0, Stdout: "ok\n", Message: "ok"}, nil
+		},
+	})
+
+	outcome := runConsoleWithCapture(ConsoleCommand{
+		clientFlags:    clientFlags{Host: host},
+		Keep:           true,
+		PrintSandboxID: true,
+		Command:        []string{"sh"},
+	}, "", runtimeContext{
+		CWD:    t.TempDir(),
+		Loader: integrationLoader{},
+	})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err != nil {
+		t.Fatalf("ConsoleCommand.Run returned error: %v", outcome.err)
+	}
+
+	sandboxID := parseSandboxID(outcome.stderr)
+	if sandboxID == "" {
+		t.Fatalf("missing sandbox_id in stderr output: %q", outcome.stderr)
+	}
+
+	client := mustNewControlClient(t, host)
+	requireSandboxStatus(t, client, sandboxID, cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY)
+}
+
 func TestConsoleIntegrationReuseSandboxSkipsPolicyCompile(t *testing.T) {
 	started := make(chan struct{}, 1)
 	host, _ := startIntegrationServer(t, &integrationAdapter{
@@ -299,7 +362,7 @@ func TestConsoleIntegrationReuseSandboxSkipsPolicyCompile(t *testing.T) {
 
 	outcome := runConsoleWithCapture(ConsoleCommand{
 		clientFlags: clientFlags{Host: host},
-		SandboxID:   sandboxID,
+		In:          sandboxID,
 		Command:     []string{"sh"},
 	}, "exit\n", runtimeContext{
 		CWD:    t.TempDir(),
@@ -317,7 +380,7 @@ func TestConsoleIntegrationReuseSandboxSkipsPolicyCompile(t *testing.T) {
 	}
 }
 
-func TestConsoleIntegrationRemoveTerminatesSuppliedSandbox(t *testing.T) {
+func TestConsoleIntegrationRejectsKeepWhenReusingSandbox(t *testing.T) {
 	host, _ := startIntegrationServer(t, &integrationAdapter{
 		runStreamFn: func(_ context.Context, req backend.RunRequest, _ backend.OutputStream) (*backend.RunResult, error) {
 			return &backend.RunResult{RunID: req.RunID, ExitCode: 0, Stdout: "ok\n", Message: "ok"}, nil
@@ -328,8 +391,8 @@ func TestConsoleIntegrationRemoveTerminatesSuppliedSandbox(t *testing.T) {
 
 	outcome := runConsoleWithCapture(ConsoleCommand{
 		clientFlags: clientFlags{Host: host},
-		SandboxID:   sandboxID,
-		Remove:      true,
+		In:          sandboxID,
+		Keep:        true,
 		Command:     []string{"sh"},
 	}, "", runtimeContext{
 		CWD:    t.TempDir(),
@@ -338,11 +401,12 @@ func TestConsoleIntegrationRemoveTerminatesSuppliedSandbox(t *testing.T) {
 	if outcome.cause != nil {
 		t.Fatalf("capture failure: %v", outcome.cause)
 	}
-	if outcome.err != nil {
-		t.Fatalf("ConsoleCommand.Run returned error: %v", outcome.err)
+	if outcome.err == nil {
+		t.Fatal("expected ConsoleCommand.Run to reject --keep with --in")
 	}
-
-	requireSandboxStatus(t, client, sandboxID, cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPED)
+	if got, want := outcome.err.Error(), "--keep cannot be used with --in"; !strings.Contains(got, want) {
+		t.Fatalf("expected error to contain %q, got %q", want, got)
+	}
 }
 
 func TestConsoleIntegrationRoutesBackendWarningsToStderr(t *testing.T) {

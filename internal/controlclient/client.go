@@ -20,6 +20,7 @@ type Client struct {
 	httpClient      *http.Client
 	baseURL         string
 	sandboxClient   cleanroomv1connect.SandboxServiceClient
+	snapshotClient  cleanroomv1connect.SnapshotServiceClient
 	executionClient cleanroomv1connect.ExecutionServiceClient
 }
 
@@ -53,6 +54,7 @@ func New(ep endpoint.Endpoint, opts ...Option) (*Client, error) {
 		httpClient:      httpClient,
 		baseURL:         baseURL,
 		sandboxClient:   cleanroomv1connect.NewSandboxServiceClient(httpClient, baseURL),
+		snapshotClient:  cleanroomv1connect.NewSnapshotServiceClient(httpClient, baseURL),
 		executionClient: cleanroomv1connect.NewExecutionServiceClient(httpClient, baseURL),
 	}, nil
 }
@@ -139,6 +141,38 @@ func (c *Client) TerminateSandbox(ctx context.Context, req *cleanroomv1.Terminat
 
 func (c *Client) StreamSandboxEvents(ctx context.Context, req *cleanroomv1.StreamSandboxEventsRequest) (*connect.ServerStreamForClient[cleanroomv1.SandboxEvent], error) {
 	return c.sandboxClient.StreamSandboxEvents(ctx, connect.NewRequest(req))
+}
+
+func (c *Client) CreateSnapshot(ctx context.Context, req *cleanroomv1.CreateSnapshotRequest) (*cleanroomv1.CreateSnapshotResponse, error) {
+	resp, err := c.snapshotClient.CreateSnapshot(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
+func (c *Client) GetSnapshot(ctx context.Context, req *cleanroomv1.GetSnapshotRequest) (*cleanroomv1.GetSnapshotResponse, error) {
+	resp, err := c.snapshotClient.GetSnapshot(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
+func (c *Client) ListSnapshots(ctx context.Context, req *cleanroomv1.ListSnapshotsRequest) (*cleanroomv1.ListSnapshotsResponse, error) {
+	resp, err := c.snapshotClient.ListSnapshots(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
+func (c *Client) DeleteSnapshot(ctx context.Context, req *cleanroomv1.DeleteSnapshotRequest) (*cleanroomv1.DeleteSnapshotResponse, error) {
+	resp, err := c.snapshotClient.DeleteSnapshot(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
 }
 
 func (c *Client) CreateExecution(ctx context.Context, req *cleanroomv1.CreateExecutionRequest) (*cleanroomv1.CreateExecutionResponse, error) {

@@ -32,7 +32,262 @@ type daemonStatusReport struct {
 	Fields    []startupField
 }
 
+type summaryBlock struct {
+	Title      string
+	TitleStyle terminalStyle
+	Fields     []startupField
+}
+
+type terminalStyle struct {
+	foregroundCode string
+	bold           bool
+	faint          bool
+}
+
+func (s terminalStyle) wrap(value string, enabled bool) string {
+	if !enabled || value == "" {
+		return value
+	}
+	code := s.ansiCode()
+	if code == "" {
+		return value
+	}
+	return ansiWrap(code, value)
+}
+
+func (s terminalStyle) ansiCode() string {
+	parts := make([]string, 0, 3)
+	if s.bold {
+		parts = append(parts, "1")
+	}
+	if s.faint {
+		parts = append(parts, "2")
+	}
+	if s.foregroundCode != "" {
+		parts = append(parts, s.foregroundCode)
+	}
+	return strings.Join(parts, ";")
+}
+
+func terminalStyleFromLipgloss(style lipgloss.Style) terminalStyle {
+	return terminalStyle{
+		foregroundCode: terminalForegroundCode(style.GetForeground()),
+		bold:           style.GetBold(),
+		faint:          style.GetFaint(),
+	}
+}
+
+type terminalPalette struct {
+	icon      terminalStyle
+	title     terminalStyle
+	text      terminalStyle
+	value     terminalStyle
+	muted     terminalStyle
+	separator terminalStyle
+	key       terminalStyle
+	debug     terminalStyle
+	info      terminalStyle
+	warn      terminalStyle
+	error     terminalStyle
+}
+
+func defaultTerminalPalette() terminalPalette {
+	styles := log.DefaultStyles()
+	return terminalPalette{
+		icon:      terminalStyleFromLipgloss(styles.Levels[log.InfoLevel]),
+		title:     terminalStyleFromLipgloss(styles.Levels[log.InfoLevel]),
+		text:      terminalStyleFromLipgloss(styles.Message),
+		value:     terminalStyleFromLipgloss(styles.Value),
+		muted:     terminalStyleFromLipgloss(styles.Separator),
+		separator: terminalStyleFromLipgloss(styles.Separator),
+		key:       terminalStyleFromLipgloss(styles.Key),
+		debug:     terminalStyleFromLipgloss(styles.Levels[log.DebugLevel]),
+		info:      terminalStyleFromLipgloss(styles.Levels[log.InfoLevel]),
+		warn:      terminalStyleFromLipgloss(styles.Levels[log.WarnLevel]),
+		error:     terminalStyleFromLipgloss(styles.Levels[log.ErrorLevel]),
+	}
+}
+
+func terminalForegroundCode(color lipgloss.TerminalColor) string {
+	switch c := color.(type) {
+	case lipgloss.NoColor:
+		return ""
+	case lipgloss.Color:
+		return terminalForegroundCodeFromString(string(c))
+	case lipgloss.ANSIColor:
+		return "38;5;" + strconv.FormatUint(uint64(c), 10)
+	case lipgloss.CompleteColor:
+		if code := terminalForegroundCodeFromString(c.ANSI256); code != "" {
+			return code
+		}
+		if code := terminalForegroundCodeFromString(c.TrueColor); code != "" {
+			return code
+		}
+		return terminalForegroundCodeFromString(c.ANSI)
+	case lipgloss.AdaptiveColor:
+		if code := terminalForegroundCodeFromString(c.Dark); code != "" {
+			return code
+		}
+		return terminalForegroundCodeFromString(c.Light)
+	case lipgloss.CompleteAdaptiveColor:
+		if code := terminalForegroundCode(lipgloss.CompleteColor(c.Dark)); code != "" {
+			return code
+		}
+		return terminalForegroundCode(lipgloss.CompleteColor(c.Light))
+	default:
+		return ""
+	}
+}
+
+func terminalForegroundCodeFromString(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if strings.HasPrefix(value, "#") {
+		r, g, b, ok := parseHexColor(value)
+		if !ok {
+			return ""
+		}
+		return fmt.Sprintf("38;2;%d;%d;%d", r, g, b)
+	}
+	if _, err := strconv.Atoi(value); err == nil {
+		return "38;5;" + value
+	}
+	return ""
+}
+
+func parseHexColor(value string) (int, int, int, bool) {
+	trimmed := strings.TrimPrefix(value, "#")
+	switch len(trimmed) {
+	case 3:
+		r, err := strconv.ParseUint(strings.Repeat(string(trimmed[0]), 2), 16, 8)
+		if err != nil {
+			return 0, 0, 0, false
+		}
+		g, err := strconv.ParseUint(strings.Repeat(string(trimmed[1]), 2), 16, 8)
+		if err != nil {
+			return 0, 0, 0, false
+		}
+		b, err := strconv.ParseUint(strings.Repeat(string(trimmed[2]), 2), 16, 8)
+		if err != nil {
+			return 0, 0, 0, false
+		}
+		return int(r), int(g), int(b), true
+	case 6:
+		r, err := strconv.ParseUint(trimmed[0:2], 16, 8)
+		if err != nil {
+			return 0, 0, 0, false
+		}
+		g, err := strconv.ParseUint(trimmed[2:4], 16, 8)
+		if err != nil {
+			return 0, 0, 0, false
+		}
+		b, err := strconv.ParseUint(trimmed[4:6], 16, 8)
+		if err != nil {
+			return 0, 0, 0, false
+		}
+		return int(r), int(g), int(b), true
+	default:
+		return 0, 0, 0, false
+	}
+}
+
+func renderStyledFieldLine(
+	indent, key, separator, value string,
+	pad bool,
+	color bool,
+	keyStyle, separatorStyle, valueStyle terminalStyle,
+) string {
+	spacer := ""
+	if pad {
+		spacer = " "
+	}
+	if !color {
+		return indent + key + separator + spacer + value
+	}
+	return indent +
+		keyStyle.wrap(key, true) +
+		separatorStyle.wrap(separator, true) +
+		spacer +
+		valueStyle.wrap(value, true)
+}
+
+func renderKeyValueLine(indent, key, value string, color bool, palette terminalPalette) string {
+	return renderStyledFieldLine(indent, key, ":", value, true, color, palette.key, palette.separator, palette.value)
+}
+
+func renderAssignmentLine(indent, key, value string, color bool, palette terminalPalette) string {
+	return renderStyledFieldLine(indent, key, "=", value, false, color, palette.key, palette.separator, palette.value)
+}
+
+func renderStatusValueLine(label, value string, labelStyle terminalStyle, color bool) string {
+	palette := defaultTerminalPalette()
+	return renderStyledFieldLine("", label, ":", value, true, color, labelStyle, palette.separator, palette.value)
+}
+
+func renderNoticeLine(prefix, message string, prefixStyle terminalStyle, color bool) string {
+	palette := defaultTerminalPalette()
+	return renderStyledFieldLine("", prefix, ":", message, true, color, prefixStyle, prefixStyle, palette.text) + "\n"
+}
+
+func renderActionLine(action, message string, actionStyle terminalStyle, color bool) string {
+	palette := defaultTerminalPalette()
+	if !color {
+		return action + " " + message
+	}
+	return actionStyle.wrap(action, true) + " " + palette.text.wrap(message, true)
+}
+
+func renderSummaryBlock(block summaryBlock, color bool) string {
+	palette := defaultTerminalPalette()
+	title := strings.TrimSpace(block.Title)
+
+	var out strings.Builder
+	if title != "" {
+		if color {
+			title = block.TitleStyle.wrap(title, true)
+		}
+		out.WriteString(title)
+		out.WriteByte('\n')
+	}
+
+	for _, field := range block.Fields {
+		key := strings.TrimSpace(field.Key)
+		value := strings.TrimSpace(field.Value)
+		if key == "" || value == "" {
+			continue
+		}
+
+		out.WriteString(renderAssignmentLine("", key, value, color, palette))
+		out.WriteByte('\n')
+	}
+
+	return out.String()
+}
+
+func doctorStatusStyle(status string, palette terminalPalette) terminalStyle {
+	switch status {
+	case "pass":
+		return palette.info
+	case "warn":
+		return palette.warn
+	case "fail":
+		return palette.error
+	default:
+		return palette.text
+	}
+}
+
+func daemonSummaryStyle(report daemonStatusReport, palette terminalPalette) terminalStyle {
+	if report.Active {
+		return palette.info
+	}
+	return palette.warn
+}
+
 func renderStartupHeader(h startupHeader, color bool) string {
+	palette := defaultTerminalPalette()
 	title := strings.TrimSpace(h.Title)
 	if title == "" {
 		title = "cleanroom"
@@ -41,8 +296,8 @@ func renderStartupHeader(h startupHeader, color bool) string {
 	var out strings.Builder
 	icon := "🧑‍🔬"
 	if color {
-		icon = ansiWrap("1;33", icon)
-		title = ansiWrap("1;36", title)
+		icon = palette.icon.wrap(icon, true)
+		title = palette.title.wrap(title, true)
 	}
 
 	out.WriteByte('\n')
@@ -58,12 +313,7 @@ func renderStartupHeader(h startupHeader, color bool) string {
 			continue
 		}
 
-		line := fmt.Sprintf("%s: %s", key, value)
-		if color {
-			line = ansiWrap("38;5;252", line)
-		}
-		out.WriteString("   ")
-		out.WriteString(line)
+		out.WriteString(renderKeyValueLine("   ", key, value, color, palette))
 		out.WriteByte('\n')
 	}
 	out.WriteByte('\n')
@@ -72,6 +322,7 @@ func renderStartupHeader(h startupHeader, color bool) string {
 }
 
 func renderDoctorReport(backendName string, checks []backend.DoctorCheck, color bool) string {
+	palette := defaultTerminalPalette()
 	name := strings.TrimSpace(backendName)
 	if name == "" {
 		name = "unknown"
@@ -80,7 +331,7 @@ func renderDoctorReport(backendName string, checks []backend.DoctorCheck, color 
 	var out strings.Builder
 	title := fmt.Sprintf("doctor report (%s)", name)
 	if color {
-		title = ansiWrap("1;36", title)
+		title = palette.title.wrap(title, true)
 	}
 	out.WriteString(title)
 	out.WriteByte('\n')
@@ -112,16 +363,7 @@ func renderDoctorReport(backendName string, checks []backend.DoctorCheck, color 
 
 		statusBlock := fmt.Sprintf("%s [%s]", icon, status)
 		if color {
-			code := "1;37"
-			switch status {
-			case "pass":
-				code = "1;32"
-			case "warn":
-				code = "1;33"
-			case "fail":
-				code = "1;31"
-			}
-			statusBlock = ansiWrap(code, statusBlock)
+			statusBlock = doctorStatusStyle(status, palette).wrap(statusBlock, true)
 		}
 
 		checkName := strings.TrimSpace(check.Name)
@@ -135,15 +377,22 @@ func renderDoctorReport(backendName string, checks []backend.DoctorCheck, color 
 
 		out.WriteString(statusBlock)
 		out.WriteString(" ")
-		out.WriteString(checkName)
-		out.WriteString(": ")
-		out.WriteString(message)
+		if color {
+			out.WriteString(palette.key.wrap(checkName, true))
+			out.WriteString(palette.separator.wrap(":", true))
+			out.WriteString(" ")
+			out.WriteString(palette.text.wrap(message, true))
+		} else {
+			out.WriteString(checkName)
+			out.WriteString(": ")
+			out.WriteString(message)
+		}
 		out.WriteByte('\n')
 	}
 
 	summary := fmt.Sprintf("summary: %d pass, %d warn, %d fail", passCount, warnCount, failCount)
 	if color {
-		summary = ansiWrap("38;5;246", summary)
+		summary = palette.muted.wrap(summary, true)
 	}
 	out.WriteString(summary)
 	out.WriteByte('\n')
@@ -152,6 +401,7 @@ func renderDoctorReport(backendName string, checks []backend.DoctorCheck, color 
 }
 
 func renderDaemonStatusReport(report daemonStatusReport, color bool) string {
+	palette := defaultTerminalPalette()
 	manager := strings.TrimSpace(report.Manager)
 	if manager == "" {
 		manager = "unknown"
@@ -164,21 +414,20 @@ func renderDaemonStatusReport(report daemonStatusReport, color bool) string {
 
 	summary := "not installed"
 	icon := "!"
-	colorCode := "1;33"
 	switch {
 	case report.Active:
 		summary = "running"
 		icon = "✓"
-		colorCode = "1;32"
 	case report.Installed:
 		summary = "installed"
 	}
 
 	title := fmt.Sprintf("daemon status (%s)", manager)
-	statusLine := fmt.Sprintf("%s [%s] %s", icon, summary, service)
+	statusBlock := fmt.Sprintf("%s [%s]", icon, summary)
+	statusLine := statusBlock + " " + service
 	if color {
-		title = ansiWrap("1;36", title)
-		statusLine = ansiWrap(colorCode, statusLine)
+		title = palette.title.wrap(title, true)
+		statusLine = daemonSummaryStyle(report, palette).wrap(statusBlock, true) + " " + palette.text.wrap(service, true)
 	}
 
 	var out strings.Builder
@@ -194,11 +443,7 @@ func renderDaemonStatusReport(report daemonStatusReport, color bool) string {
 			continue
 		}
 
-		line := fmt.Sprintf("  %s: %s", key, value)
-		if color {
-			line = "  " + ansiWrap("38;5;246", key+":") + " " + value
-		}
-		out.WriteString(line)
+		out.WriteString(renderKeyValueLine("  ", key, value, color, palette))
 		out.WriteByte('\n')
 	}
 
@@ -241,34 +486,18 @@ func shouldShowStartupHeader(stderr *os.File) bool {
 	return term.IsTerminal(int(stderr.Fd()))
 }
 
-func shouldUseANSI(stderr *os.File) bool {
-	if noColorRequested() {
-		return false
-	}
+func shouldUseANSI(w io.Writer) bool {
 	if forceColorRequested() {
 		return true
 	}
-	if stderr == nil {
+	if noColorRequested() {
 		return false
 	}
-	return term.IsTerminal(int(stderr.Fd()))
-}
-
-func applyPolishedLoggerStyles(logger *log.Logger, color bool) {
-	if logger == nil || !color {
-		return
+	file, ok := w.(*os.File)
+	if !ok || file == nil {
+		return false
 	}
-
-	styles := log.DefaultStyles()
-	styles.Message = styles.Message.Foreground(lipgloss.Color("252"))
-	styles.Key = styles.Key.Bold(true).Foreground(lipgloss.Color("75"))
-	styles.Value = styles.Value.Foreground(lipgloss.Color("255"))
-	styles.Separator = styles.Separator.Foreground(lipgloss.Color("240"))
-	styles.Levels[log.DebugLevel] = styles.Levels[log.DebugLevel].Bold(true).Foreground(lipgloss.Color("45"))
-	styles.Levels[log.InfoLevel] = styles.Levels[log.InfoLevel].Bold(true).Foreground(lipgloss.Color("48"))
-	styles.Levels[log.WarnLevel] = styles.Levels[log.WarnLevel].Bold(true).Foreground(lipgloss.Color("214"))
-	styles.Levels[log.ErrorLevel] = styles.Levels[log.ErrorLevel].Bold(true).Foreground(lipgloss.Color("203"))
-	logger.SetStyles(styles)
+	return term.IsTerminal(int(file.Fd()))
 }
 
 func endpointDisplay(ep endpoint.Endpoint) string {

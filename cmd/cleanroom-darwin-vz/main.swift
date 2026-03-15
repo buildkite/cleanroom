@@ -523,6 +523,94 @@ private final class VMRuntime {
         try stopVM(vm, queue: vmQueue)
     }
 
+    func pause(vmID requestedID: String?) throws {
+        lock.lock()
+        let currentID = vmID
+        let vm = self.vm
+        let vmQueue = self.vmQueue
+        lock.unlock()
+
+        if let requestedID, !requestedID.isEmpty, let currentID, requestedID != currentID {
+            throw HelperError.invalidRequest("unknown vm_id \(requestedID)")
+        }
+        guard let vm else {
+            throw HelperError.invalidRequest("vm is not running")
+        }
+        guard let vmQueue else {
+            throw HelperError.vm("vm queue is unavailable")
+        }
+        if vm.state == .paused {
+            return
+        }
+
+        let pauseSem = DispatchSemaphore(value: 0)
+        var pauseError: Error?
+        vmQueue.async {
+            if vm.canPause {
+                vm.pause { result in
+                    if case .failure(let err) = result {
+                        pauseError = err
+                    }
+                    pauseSem.signal()
+                }
+            } else {
+                pauseError = HelperError.invalidRequest("vm cannot be paused in state \(vm.state.rawValue)")
+                pauseSem.signal()
+            }
+        }
+
+        if pauseSem.wait(timeout: .now() + .seconds(5)) == .timedOut {
+            throw HelperError.timeout("timed out waiting for vm to pause")
+        }
+        if let pauseError {
+            throw HelperError.vm("failed to pause vm: \(pauseError)")
+        }
+    }
+
+    func resume(vmID requestedID: String?) throws {
+        lock.lock()
+        let currentID = vmID
+        let vm = self.vm
+        let vmQueue = self.vmQueue
+        lock.unlock()
+
+        if let requestedID, !requestedID.isEmpty, let currentID, requestedID != currentID {
+            throw HelperError.invalidRequest("unknown vm_id \(requestedID)")
+        }
+        guard let vm else {
+            throw HelperError.invalidRequest("vm is not running")
+        }
+        guard let vmQueue else {
+            throw HelperError.vm("vm queue is unavailable")
+        }
+        if vm.state == .running {
+            return
+        }
+
+        let resumeSem = DispatchSemaphore(value: 0)
+        var resumeError: Error?
+        vmQueue.async {
+            if vm.canResume {
+                vm.resume { result in
+                    if case .failure(let err) = result {
+                        resumeError = err
+                    }
+                    resumeSem.signal()
+                }
+            } else {
+                resumeError = HelperError.invalidRequest("vm cannot be resumed in state \(vm.state.rawValue)")
+                resumeSem.signal()
+            }
+        }
+
+        if resumeSem.wait(timeout: .now() + .seconds(5)) == .timedOut {
+            throw HelperError.timeout("timed out waiting for vm to resume")
+        }
+        if let resumeError {
+            throw HelperError.vm("failed to resume vm: \(resumeError)")
+        }
+    }
+
     private func buildVM(
         kernelPath: String,
         rootFSPath: String,
@@ -759,6 +847,12 @@ private final class HelperService {
             return try vmRuntime.start(from: req)
         case "StopVM":
             try vmRuntime.stop(vmID: req.vmID)
+            return ControlResponse(ok: true, error: nil, vmID: nil, proxySocketPath: nil, timingMS: nil)
+        case "PauseVM":
+            try vmRuntime.pause(vmID: req.vmID)
+            return ControlResponse(ok: true, error: nil, vmID: nil, proxySocketPath: nil, timingMS: nil)
+        case "ResumeVM":
+            try vmRuntime.resume(vmID: req.vmID)
             return ControlResponse(ok: true, error: nil, vmID: nil, proxySocketPath: nil, timingMS: nil)
         case "Ping":
             return ControlResponse(ok: true, error: nil, vmID: nil, proxySocketPath: nil, timingMS: nil)

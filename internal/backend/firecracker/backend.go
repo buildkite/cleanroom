@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/buildkite/cleanroom/internal/backend"
@@ -30,6 +31,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/imagemgr"
 	"github.com/buildkite/cleanroom/internal/paths"
 	"github.com/buildkite/cleanroom/internal/policy"
+	"github.com/buildkite/cleanroom/internal/volumestore"
 	"github.com/buildkite/cleanroom/internal/vsockexec"
 	fcvsock "github.com/firecracker-microvm/firecracker-go-sdk/vsock"
 )
@@ -53,11 +55,12 @@ type Adapter struct {
 
 	runtimeImageMu sync.Mutex
 
-	sandboxMu         sync.Mutex
-	sandboxes         map[string]*sandboxInstance
-	provisioning      map[string]struct{}
-	launchSandboxVMFn func(context.Context, string, *policy.CompiledPolicy, backend.FirecrackerConfig) (*sandboxInstance, error)
-	runGuestCommandFn func(context.Context, context.Context, <-chan struct{}, func() error, string, uint32, vsockexec.ExecRequest, backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error)
+	sandboxMu                   sync.Mutex
+	sandboxes                   map[string]*sandboxInstance
+	provisioning                map[string]struct{}
+	launchSandboxVMFn           func(context.Context, string, *policy.CompiledPolicy, backend.FirecrackerConfig) (*sandboxInstance, error)
+	launchSandboxVMFromRootFSFn func(context.Context, string, *policy.CompiledPolicy, backend.FirecrackerConfig, string) (*sandboxInstance, error)
+	runGuestCommandFn           func(context.Context, context.Context, <-chan struct{}, func() error, string, uint32, vsockexec.ExecRequest, backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error)
 
 	GatewayRegistry gatewayRegistry
 	GatewayPort     int
@@ -97,6 +100,17 @@ const privilegedModeSudo = "sudo"
 const privilegedModeHelper = "helper"
 const defaultPrivilegedHelperPath = "/usr/local/sbin/cleanroom-root-helper"
 const defaultDownloadMaxBytes int64 = 10 * 1024 * 1024
+const snapshotSyncTimeoutSeconds = 10
+const networkCleanupTimeout = 5 * time.Second
+
+var tapDeleteRetryInterval = 100 * time.Millisecond
+
+var sendProcessSignal = func(proc *os.Process, sig syscall.Signal) error {
+	if proc == nil {
+		return errors.New("missing process")
+	}
+	return proc.Signal(sig)
+}
 
 const guestInitScriptTemplate = `#!/bin/sh
 set -eu
@@ -435,6 +449,150 @@ func (a *Adapter) TerminateSandbox(_ context.Context, sandboxID string) error {
 		a.GatewayRegistry.Release(instance.GuestIP)
 	}
 	instance.shutdown()
+	return nil
+}
+
+func (a *Adapter) CreateSnapshot(ctx context.Context, req backend.SnapshotRequest) (result *backend.SnapshotResult, retErr error) {
+	sandboxID := strings.TrimSpace(req.SandboxID)
+	if sandboxID == "" {
+		return nil, errors.New("missing sandbox_id")
+	}
+	snapshotID := strings.TrimSpace(req.SnapshotID)
+	if snapshotID == "" {
+		return nil, errors.New("missing snapshot_id")
+	}
+
+	a.sandboxMu.Lock()
+	instance, ok := a.sandboxes[sandboxID]
+	a.sandboxMu.Unlock()
+	if !ok {
+		return nil, fmt.Errorf("unknown sandbox %q", sandboxID)
+	}
+	if err := instance.exitedErrOrNil(); err != nil {
+		return nil, fmt.Errorf("sandbox %q is not running: %w", sandboxID, err)
+	}
+
+	syncResp, _, err := a.executeInSandbox(ctx, instance, snapshotSyncTimeoutSeconds, []string{"sync"}, false, backend.OutputStream{})
+	if err != nil {
+		return nil, fmt.Errorf("sync sandbox filesystem before snapshot: %w", err)
+	}
+	if syncResp.ExitCode != 0 {
+		guestErr := strings.TrimSpace(syncResp.Error)
+		if guestErr != "" {
+			return nil, fmt.Errorf("sync sandbox filesystem before snapshot: guest sync command exited with code %d: %s", syncResp.ExitCode, guestErr)
+		}
+		return nil, fmt.Errorf("sync sandbox filesystem before snapshot: guest sync command exited with code %d", syncResp.ExitCode)
+	}
+
+	driver, err := snapshotVolumeStoreDriver(req.FirecrackerConfig)
+	if err != nil {
+		return nil, err
+	}
+	if err := pauseSandboxProcess(instance); err != nil {
+		return nil, err
+	}
+	snapshotStorageRef := ""
+	paused := true
+	defer func() {
+		if !paused {
+			return
+		}
+		if err := resumeSandboxProcess(instance); err != nil && retErr == nil {
+			if strings.TrimSpace(snapshotStorageRef) != "" {
+				cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				cleanupErr := driver.DestroySnapshot(cleanupCtx, volumestore.DestroySnapshotRequest{SnapshotRef: snapshotStorageRef})
+				cancel()
+				if cleanupErr != nil {
+					result = nil
+					retErr = fmt.Errorf("resume firecracker sandbox after snapshot: %w (cleanup snapshot %q failed: %v)", err, snapshotStorageRef, cleanupErr)
+					return
+				}
+			}
+			result = nil
+			retErr = fmt.Errorf("resume firecracker sandbox after snapshot: %w", err)
+		}
+	}()
+
+	snapshot, err := driver.SnapshotVolume(ctx, volumestore.SnapshotVolumeRequest{
+		SnapshotID: snapshotID,
+		VolumeRef:  instance.vmRootFSPath,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("persist snapshot rootfs: %w", err)
+	}
+	snapshotStorageRef = snapshot.StorageRef
+
+	return &backend.SnapshotResult{StorageRef: snapshot.StorageRef}, nil
+}
+
+func (a *Adapter) ProvisionSandboxFromSnapshot(ctx context.Context, req backend.ProvisionFromSnapshotRequest) error {
+	sandboxID := strings.TrimSpace(req.SandboxID)
+	if sandboxID == "" {
+		return errors.New("missing sandbox_id")
+	}
+	if req.Policy == nil {
+		return errors.New("missing compiled policy")
+	}
+	storageRef := strings.TrimSpace(req.StorageRef)
+	if storageRef == "" {
+		return errors.New("missing snapshot storage_ref")
+	}
+
+	a.sandboxMu.Lock()
+	if a.sandboxes == nil {
+		a.sandboxes = map[string]*sandboxInstance{}
+	}
+	if a.provisioning == nil {
+		a.provisioning = map[string]struct{}{}
+	}
+	if _, exists := a.sandboxes[sandboxID]; exists {
+		a.sandboxMu.Unlock()
+		return fmt.Errorf("sandbox %q already provisioned", sandboxID)
+	}
+	if _, exists := a.provisioning[sandboxID]; exists {
+		a.sandboxMu.Unlock()
+		return fmt.Errorf("sandbox %q is already provisioning", sandboxID)
+	}
+	a.provisioning[sandboxID] = struct{}{}
+	a.sandboxMu.Unlock()
+
+	launch := a.launchSandboxVMFromRootFSFn
+	if launch == nil {
+		launch = a.launchSandboxVMFromRootFS
+	}
+	instance, err := launch(ctx, sandboxID, req.Policy, req.FirecrackerConfig, storageRef)
+	if err != nil {
+		a.sandboxMu.Lock()
+		delete(a.provisioning, sandboxID)
+		a.sandboxMu.Unlock()
+		return err
+	}
+
+	a.sandboxMu.Lock()
+	defer a.sandboxMu.Unlock()
+	delete(a.provisioning, sandboxID)
+	if _, exists := a.sandboxes[sandboxID]; exists {
+		instance.shutdown()
+		return fmt.Errorf("sandbox %q already provisioned", sandboxID)
+	}
+	a.sandboxes[sandboxID] = instance
+	return nil
+}
+
+func (a *Adapter) DeleteSnapshot(ctx context.Context, req backend.DeleteSnapshotRequest) error {
+	storageRef := strings.TrimSpace(req.StorageRef)
+	if storageRef == "" {
+		return errors.New("missing snapshot storage_ref")
+	}
+	driver, err := snapshotVolumeStoreDriver(req.FirecrackerConfig)
+	if err != nil {
+		return err
+	}
+	if err := driver.DestroySnapshot(ctx, volumestore.DestroySnapshotRequest{
+		SnapshotRef: storageRef,
+	}); err != nil {
+		return fmt.Errorf("remove snapshot rootfs %q: %w", storageRef, err)
+	}
 	return nil
 }
 
@@ -1252,13 +1410,33 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 	if compiled == nil {
 		return nil, errors.New("missing compiled policy")
 	}
+	imageArtifact, err := a.ensureImageArtifact(ctx, compiled.ImageRef)
+	if err != nil {
+		return nil, err
+	}
+	preparedRootFSPath, err := a.ensurePreparedRuntimeRootFS(ctx, cfg, imageArtifact)
+	if err != nil {
+		return nil, err
+	}
+	instance, err := a.launchSandboxVMFromRootFS(ctx, sandboxID, compiled, cfg, preparedRootFSPath)
+	if err != nil {
+		return nil, err
+	}
+	instance.ImageRef = imageArtifact.Ref
+	instance.ImageDigest = imageArtifact.Digest
+	return instance, nil
+}
+
+func (a *Adapter) launchSandboxVMFromRootFS(ctx context.Context, sandboxID string, compiled *policy.CompiledPolicy, cfg backend.FirecrackerConfig, sourceRootFSPath string) (*sandboxInstance, error) {
+	if compiled == nil {
+		return nil, errors.New("missing compiled policy")
+	}
 	if compiled.NetworkDefault != "deny" {
 		return nil, fmt.Errorf("firecracker backend requires deny-by-default policy, got %q", compiled.NetworkDefault)
 	}
 	if runtime.GOOS != "linux" {
 		return nil, fmt.Errorf("firecracker backend is linux-only, current OS is %s", runtime.GOOS)
 	}
-
 	if cfg.VCPUs <= 0 {
 		cfg.VCPUs = 1
 	}
@@ -1288,15 +1466,6 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 		return nil, err
 	}
 
-	imageArtifact, err := a.ensureImageArtifact(ctx, compiled.ImageRef)
-	if err != nil {
-		return nil, err
-	}
-	preparedRootFSPath, err := a.ensurePreparedRuntimeRootFS(ctx, cfg, imageArtifact)
-	if err != nil {
-		return nil, err
-	}
-
 	runBaseDir, err := sandboxRuntimeBaseDir()
 	if err != nil {
 		return nil, fmt.Errorf("resolve sandbox runtime base directory: %w", err)
@@ -1312,7 +1481,7 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 		return nil, err
 	}
 
-	rootfsPath, err := filepath.Abs(preparedRootFSPath)
+	rootfsPath, err := filepath.Abs(sourceRootFSPath)
 	if err != nil {
 		return nil, err
 	}
@@ -1320,10 +1489,27 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 		return nil, fmt.Errorf("rootfs %s: %w", rootfsPath, err)
 	}
 
-	vmRootFSPath := filepath.Join(runDir, "rootfs-persistent.ext4")
-	if err := copyFile(rootfsPath, vmRootFSPath); err != nil {
+	driver, err := rootFSVolumeStoreDriver(cfg)
+	if err != nil {
+		return nil, err
+	}
+	baseVolume, err := driver.EnsureBaseVolume(ctx, volumestore.EnsureBaseVolumeRequest{
+		BaseID:     strings.TrimSuffix(filepath.Base(rootfsPath), filepath.Ext(rootfsPath)),
+		SourcePath: rootfsPath,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("prepare base volume: %w", err)
+	}
+
+	writableVolume, err := driver.CreateWritableVolume(ctx, volumestore.CreateWritableVolumeRequest{
+		VolumeID:       sandboxID,
+		BaseRef:        baseVolume.Ref,
+		AttachmentPath: filepath.Join(runDir, "rootfs-persistent.ext4"),
+	})
+	if err != nil {
 		return nil, fmt.Errorf("prepare persistent rootfs: %w", err)
 	}
+	vmRootFSPath := writableVolume.AttachmentPath
 
 	networkRunCommand := func(ctx context.Context, args ...string) error {
 		return runRootCommand(ctx, cfg, args...)
@@ -1434,8 +1620,8 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 		VsockPath:      vsockPath,
 		GuestPort:      cfg.GuestPort,
 		Policy:         compiled,
-		ImageRef:       imageArtifact.Ref,
-		ImageDigest:    imageArtifact.Digest,
+		ImageRef:       compiled.ImageRef,
+		ImageDigest:    compiled.ImageDigest,
 		CommandTimeout: cfg.LaunchSeconds,
 		HostIP:         networkCfg.HostIP,
 		GuestIP:        networkCfg.GuestIP,
@@ -1477,6 +1663,61 @@ func sandboxRuntimeBaseDir() (string, error) {
 		return "", err
 	}
 	return filepath.Join(base, "sandboxes"), nil
+}
+
+func snapshotStorageBaseDir(cfg backend.FirecrackerConfig) (string, error) {
+	if baseDir := strings.TrimSpace(cfg.Snapshots.BaseDir); baseDir != "" {
+		return filepath.Clean(baseDir), nil
+	}
+	return paths.SnapshotDir()
+}
+
+func rootFSVolumeStoreDriver(cfg backend.FirecrackerConfig) (volumestore.Driver, error) {
+	driverName := strings.ToLower(strings.TrimSpace(cfg.Snapshots.Driver))
+	switch driverName {
+	case "", "file":
+		snapshotBaseDir, err := snapshotStorageBaseDir(cfg)
+		if err != nil {
+			return nil, fmt.Errorf("resolve snapshot base directory: %w", err)
+		}
+		driver, err := volumestore.NewFileDriver(volumestore.FileDriverOptions{
+			SnapshotBaseDir: snapshotBaseDir,
+			Namespace:       "firecracker",
+		})
+		if err != nil {
+			return nil, err
+		}
+		return driver, nil
+	default:
+		return nil, fmt.Errorf("unsupported firecracker snapshot driver %q", cfg.Snapshots.Driver)
+	}
+}
+
+func snapshotVolumeStoreDriver(cfg backend.FirecrackerConfig) (volumestore.Driver, error) {
+	if !cfg.Snapshots.Enabled {
+		return nil, errors.New("firecracker snapshots are not enabled")
+	}
+	return rootFSVolumeStoreDriver(cfg)
+}
+
+func pauseSandboxProcess(instance *sandboxInstance) error {
+	if instance == nil || instance.fcCmd == nil || instance.fcCmd.Process == nil {
+		return errors.New("sandbox process is not available")
+	}
+	if err := sendProcessSignal(instance.fcCmd.Process, syscall.SIGSTOP); err != nil {
+		return fmt.Errorf("pause sandbox process: %w", err)
+	}
+	return nil
+}
+
+func resumeSandboxProcess(instance *sandboxInstance) error {
+	if instance == nil || instance.fcCmd == nil || instance.fcCmd.Process == nil {
+		return errors.New("sandbox process is not available")
+	}
+	if err := sendProcessSignal(instance.fcCmd.Process, syscall.SIGCONT); err != nil {
+		return fmt.Errorf("resume sandbox process: %w", err)
+	}
+	return nil
 }
 
 func (s *sandboxInstance) shutdown() {
@@ -1676,6 +1917,7 @@ type iptablesForwardRule struct {
 }
 
 type ipLookupFunc func(ctx context.Context, host string) ([]net.IP, error)
+type interfaceLookupFunc func(name string) (*net.Interface, error)
 type rootCommandFunc func(ctx context.Context, args ...string) error
 type rootCommandBatchFunc func(ctx context.Context, commands [][]string) error
 
@@ -1687,20 +1929,15 @@ func setupHostNetwork(ctx context.Context, runID string, allow []policy.AllowRul
 }
 
 func setupHostNetworkWithDeps(ctx context.Context, runID string, allow []policy.AllowRule, gatewayPort int, lookup ipLookupFunc, runCommand rootCommandFunc, runBatchCommand rootCommandBatchFunc) (hostNetworkConfig, func(), error) {
+	return setupHostNetworkWithTapLookup(ctx, runID, allow, gatewayPort, lookup, net.InterfaceByName, runCommand, runBatchCommand)
+}
+
+func setupHostNetworkWithTapLookup(ctx context.Context, runID string, allow []policy.AllowRule, gatewayPort int, lookup ipLookupFunc, interfaceByName interfaceLookupFunc, runCommand rootCommandFunc, runBatchCommand rootCommandBatchFunc) (hostNetworkConfig, func(), error) {
 	tapName := tapNameFromRunID(runID)
 	hostIP, guestIP := hostGuestIPs(runID)
 	hostCIDR := hostIP + "/24"
 	guestCIDR := guestIP + "/32"
 	const dnsServer = "1.1.1.1"
-
-	if runBatchCommand == nil {
-		runBatchCommand = func(ctx context.Context, commands [][]string) error {
-			for _, args := range commands {
-				_ = runCommand(ctx, args...)
-			}
-			return nil
-		}
-	}
 
 	policyResolveStart := time.Now()
 	forwardRules, err := resolveForwardRulesWithLookup(ctx, allow, lookup)
@@ -1712,7 +1949,7 @@ func setupHostNetworkWithDeps(ctx context.Context, runID string, allow []policy.
 	setupRun := func(args ...string) error {
 		return runCommand(ctx, args...)
 	}
-	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), networkCleanupTimeout)
 	cleanupCmds := make([][]string, 0, 16)
 	cleanup := func() {
 		defer cleanupCancel()
@@ -1720,10 +1957,26 @@ func setupHostNetworkWithDeps(ctx context.Context, runID string, allow []policy.
 		for i := len(cleanupCmds) - 1; i >= 0; i-- {
 			reversed = append(reversed, cleanupCmds[i])
 		}
-		_ = runBatchCommand(cleanupCtx, reversed)
+		for _, args := range reversed {
+			if isTapDeleteCommand(args, tapName) {
+				_ = deleteTapDeviceWithRetry(cleanupCtx, tapName, tapDeleteRetryInterval, interfaceByName, runCommand)
+				continue
+			}
+			_ = runCommand(cleanupCtx, args...)
+		}
 	}
 	addCleanup := func(args ...string) {
 		cleanupCmds = append(cleanupCmds, append([]string(nil), args...))
+	}
+
+	staleTapCleanupCtx, staleTapCleanupCancel := context.WithTimeout(context.Background(), networkCleanupTimeout)
+	defer staleTapCleanupCancel()
+	if _, err := interfaceByName(tapName); err == nil {
+		if err := deleteTapDeviceWithRetry(staleTapCleanupCtx, tapName, tapDeleteRetryInterval, interfaceByName, runCommand); err != nil {
+			return hostNetworkConfig{}, func() {}, fmt.Errorf("remove stale tap device %s: %w", tapName, err)
+		}
+	} else if !isNoSuchNetworkInterfaceError(err) {
+		return hostNetworkConfig{}, func() {}, fmt.Errorf("lookup tap device %s: %w", tapName, err)
 	}
 
 	if err := setupRun("ip", "tuntap", "add", "dev", tapName, "mode", "tap", "user", strconv.Itoa(os.Getuid())); err != nil {
@@ -1817,6 +2070,52 @@ func setupHostNetworkWithDeps(ctx context.Context, runID string, allow []policy.
 		GuestIP:         guestIP,
 		PolicyResolveMS: policyResolveMS,
 	}, cleanup, nil
+}
+
+func isTapDeleteCommand(args []string, tapName string) bool {
+	return len(args) == 4 && args[0] == "ip" && args[1] == "link" && args[2] == "del" && args[3] == tapName
+}
+
+func deleteTapDeviceWithRetry(ctx context.Context, tapName string, retryInterval time.Duration, interfaceByName interfaceLookupFunc, runCommand rootCommandFunc) error {
+	if strings.TrimSpace(tapName) == "" {
+		return nil
+	}
+	if retryInterval <= 0 {
+		retryInterval = time.Millisecond
+	}
+
+	ticker := time.NewTicker(retryInterval)
+	defer ticker.Stop()
+
+	for {
+		err := runCommand(ctx, "ip", "link", "del", tapName)
+		if err == nil {
+			return nil
+		}
+		if _, lookupErr := interfaceByName(tapName); lookupErr != nil {
+			if isNoSuchNetworkInterfaceError(lookupErr) {
+				return nil
+			}
+			return fmt.Errorf("lookup tap device %s after delete failure (%v): %w", tapName, err, lookupErr)
+		}
+
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("delete tap device %s: %w", tapName, err)
+		case <-ticker.C:
+		}
+	}
+}
+
+func isNoSuchNetworkInterfaceError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) && opErr.Err != nil {
+		return strings.Contains(opErr.Err.Error(), "no such network interface")
+	}
+	return strings.Contains(err.Error(), "no such network interface")
 }
 
 func installForwardReturnPathRule(setupRun func(args ...string) error, tapName string) ([]string, error) {

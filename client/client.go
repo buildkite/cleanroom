@@ -127,6 +127,34 @@ func (c *Client) StreamSandboxEvents(ctx context.Context, req *StreamSandboxEven
 	return c.inner.StreamSandboxEvents(ctx, req)
 }
 
+func (c *Client) CreateSnapshot(ctx context.Context, req *CreateSnapshotRequest) (*CreateSnapshotResponse, error) {
+	if c == nil || c.inner == nil {
+		return nil, errors.New("nil client")
+	}
+	return c.inner.CreateSnapshot(ctx, req)
+}
+
+func (c *Client) GetSnapshot(ctx context.Context, req *GetSnapshotRequest) (*GetSnapshotResponse, error) {
+	if c == nil || c.inner == nil {
+		return nil, errors.New("nil client")
+	}
+	return c.inner.GetSnapshot(ctx, req)
+}
+
+func (c *Client) ListSnapshots(ctx context.Context, req *ListSnapshotsRequest) (*ListSnapshotsResponse, error) {
+	if c == nil || c.inner == nil {
+		return nil, errors.New("nil client")
+	}
+	return c.inner.ListSnapshots(ctx, req)
+}
+
+func (c *Client) DeleteSnapshot(ctx context.Context, req *DeleteSnapshotRequest) (*DeleteSnapshotResponse, error) {
+	if c == nil || c.inner == nil {
+		return nil, errors.New("nil client")
+	}
+	return c.inner.DeleteSnapshot(ctx, req)
+}
+
 func (c *Client) CreateExecution(ctx context.Context, req *CreateExecutionRequest) (*CreateExecutionResponse, error) {
 	if c == nil || c.inner == nil {
 		return nil, errors.New("nil client")
