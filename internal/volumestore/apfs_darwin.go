@@ -27,6 +27,9 @@ func NewAPFSDriver(opts APFSDriverOptions) (*APFSDriver, error) {
 }
 
 func cloneFile(src, dst string) error {
+	if err := os.Remove(dst); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove existing clone target %q: %w", dst, err)
+	}
 	if err := unix.Clonefile(src, dst, 0); err != nil {
 		return fmt.Errorf("clonefile %q -> %q: %w", src, dst, err)
 	}

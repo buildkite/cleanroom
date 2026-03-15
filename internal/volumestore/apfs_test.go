@@ -116,6 +116,55 @@ func TestAPFSDriverSnapshotLifecycle(t *testing.T) {
 	}
 }
 
+func TestAPFSDriverCreateWritableVolumeOverwritesExistingDestination(t *testing.T) {
+	driver, err := NewAPFSDriver(APFSDriverOptions{
+		SnapshotBaseDir: t.TempDir(),
+		Namespace:       "darwin-vz",
+	})
+	if err != nil {
+		skipIfClonefileUnsupported(t, err)
+		t.Fatalf("NewAPFSDriver returned error: %v", err)
+	}
+
+	sourcePath := filepath.Join(t.TempDir(), "prepared.ext4")
+	if err := os.WriteFile(sourcePath, []byte("fresh-bytes"), 0o644); err != nil {
+		t.Fatalf("write source volume: %v", err)
+	}
+
+	base, err := driver.EnsureBaseVolume(context.Background(), EnsureBaseVolumeRequest{
+		BaseID:     "runtime-key",
+		SourcePath: sourcePath,
+	})
+	if err != nil {
+		t.Fatalf("EnsureBaseVolume returned error: %v", err)
+	}
+
+	attachmentPath := filepath.Join(t.TempDir(), "sandbox-1.ext4")
+	if err := os.WriteFile(attachmentPath, []byte("stale-bytes"), 0o644); err != nil {
+		t.Fatalf("write stale attachment: %v", err)
+	}
+
+	volume, err := driver.CreateWritableVolume(context.Background(), CreateWritableVolumeRequest{
+		VolumeID:       "sandbox-1",
+		BaseRef:        base.Ref,
+		AttachmentPath: attachmentPath,
+	})
+	if err != nil {
+		skipIfClonefileUnsupported(t, err)
+		t.Fatalf("CreateWritableVolume returned error: %v", err)
+	}
+	if got, want := volume.AttachmentPath, attachmentPath; got != want {
+		t.Fatalf("unexpected writable attachment path: got %q want %q", got, want)
+	}
+	data, err := os.ReadFile(attachmentPath)
+	if err != nil {
+		t.Fatalf("read writable volume: %v", err)
+	}
+	if got, want := string(data), "fresh-bytes"; got != want {
+		t.Fatalf("unexpected overwritten writable volume contents: got %q want %q", got, want)
+	}
+}
+
 func skipIfClonefileUnsupported(t *testing.T, err error) {
 	t.Helper()
 
