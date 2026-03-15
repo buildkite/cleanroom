@@ -414,6 +414,12 @@ func (c *Client) ExecAndWait(ctx context.Context, sandboxID string, command []st
 				_, _ = opts.Stderr.Write(chunk)
 			}
 		}
+		if warning := execWarningLine(event.GetWarning()); warning != "" {
+			_, _ = stderrBuf.WriteString(warning)
+			if opts.Stderr != nil {
+				_, _ = io.WriteString(opts.Stderr, warning)
+			}
+		}
 		if exit := event.GetExit(); exit != nil {
 			exitCode = exit.GetExitCode()
 			if exit.GetStatus() != ExecutionStatus_EXECUTION_STATUS_UNSPECIFIED {
@@ -451,6 +457,14 @@ func (c *Client) ExecAndWait(ctx context.Context, sandboxID string, command []st
 		Stdout:      stdoutBuf.String(),
 		Stderr:      stderrBuf.String(),
 	}, nil
+}
+
+func execWarningLine(message string) string {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return ""
+	}
+	return "warning: " + message + "\n"
 }
 
 func (c *Client) cancelExecutionBestEffort(sandboxID, executionID string) {
