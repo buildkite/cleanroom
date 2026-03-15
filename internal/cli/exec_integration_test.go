@@ -845,6 +845,30 @@ func TestExecIntegrationPrintSandboxIDFlag(t *testing.T) {
 	}
 }
 
+func TestExecIntegrationKeepWithPrintSandboxIDPrintsOnce(t *testing.T) {
+	host, _ := startIntegrationServer(t, &integrationAdapter{})
+	cwd := t.TempDir()
+	outcome := runExecWithCapture(ExecCommand{
+		clientFlags:    clientFlags{Host: host},
+		Chdir:          cwd,
+		Keep:           true,
+		PrintSandboxID: true,
+		Command:        []string{"echo", "ok"},
+	}, runtimeContext{
+		CWD:    cwd,
+		Loader: integrationLoader{},
+	})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err != nil {
+		t.Fatalf("ExecCommand.Run returned error: %v", outcome.err)
+	}
+	if got, want := strings.Count(outcome.stderr, "sandbox_id="), 1; got != want {
+		t.Fatalf("expected one sandbox_id marker in stderr, got %d: %q", got, outcome.stderr)
+	}
+}
+
 func TestExecIntegrationDefaultTerminatesCreatedSandbox(t *testing.T) {
 	host, _ := startIntegrationServer(t, &integrationAdapter{})
 	cwd := t.TempDir()

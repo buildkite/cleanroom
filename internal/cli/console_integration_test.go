@@ -326,6 +326,33 @@ func TestConsoleIntegrationKeepPreservesCreatedSandbox(t *testing.T) {
 	requireSandboxStatus(t, client, sandboxID, cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY)
 }
 
+func TestConsoleIntegrationKeepWithPrintSandboxIDPrintsOnce(t *testing.T) {
+	host, _ := startIntegrationServer(t, &integrationAdapter{
+		runStreamFn: func(_ context.Context, req backend.RunRequest, _ backend.OutputStream) (*backend.RunResult, error) {
+			return &backend.RunResult{RunID: req.RunID, ExitCode: 0, Stdout: "ok\n", Message: "ok"}, nil
+		},
+	})
+
+	outcome := runConsoleWithCapture(ConsoleCommand{
+		clientFlags:    clientFlags{Host: host},
+		Keep:           true,
+		PrintSandboxID: true,
+		Command:        []string{"sh"},
+	}, "", runtimeContext{
+		CWD:    t.TempDir(),
+		Loader: integrationLoader{},
+	})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err != nil {
+		t.Fatalf("ConsoleCommand.Run returned error: %v", outcome.err)
+	}
+	if got, want := strings.Count(outcome.stderr, "sandbox_id="), 1; got != want {
+		t.Fatalf("expected one sandbox_id marker in stderr, got %d: %q", got, outcome.stderr)
+	}
+}
+
 func TestConsoleIntegrationReuseSandboxSkipsPolicyCompile(t *testing.T) {
 	started := make(chan struct{}, 1)
 	host, _ := startIntegrationServer(t, &integrationAdapter{

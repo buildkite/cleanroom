@@ -80,11 +80,22 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) (runErr error) {
 		}
 		return err
 	}
+	printedSandboxID := false
+	printSandboxID := func() error {
+		if printedSandboxID {
+			return nil
+		}
+		if err := writeSandboxID(os.Stderr, sandboxID); err != nil {
+			return err
+		}
+		printedSandboxID = true
+		return nil
+	}
 	defer func() {
 		if !createdSandbox || !c.Keep {
 			return
 		}
-		if err := writeSandboxID(os.Stderr, sandboxID); err != nil {
+		if err := printSandboxID(); err != nil {
 			if runErr == nil {
 				runErr = err
 				return
@@ -93,7 +104,7 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) (runErr error) {
 		}
 	}()
 	if c.PrintSandboxID {
-		if err := writeSandboxID(os.Stderr, sandboxID); err != nil {
+		if err := printSandboxID(); err != nil {
 			return err
 		}
 	}
