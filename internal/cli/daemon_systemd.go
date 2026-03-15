@@ -28,7 +28,14 @@ func uninstallSystemdDaemon(stdout io.Writer) error {
 		return fmt.Errorf("reload systemd: %w", err)
 	}
 
-	_, err := fmt.Fprintf(stdout, "daemon uninstalled\nmanager=systemd\nservice=%s\n", systemdServiceName)
+	_, err := fmt.Fprint(stdout, renderSummaryBlock(summaryBlock{
+		Title:      "daemon uninstalled",
+		TitleStyle: defaultTerminalPalette().info,
+		Fields: []startupField{
+			{Key: "manager", Value: "systemd"},
+			{Key: "service", Value: systemdServiceName},
+		},
+	}, shouldUseANSI(stdout)))
 	return err
 }
 
@@ -41,7 +48,14 @@ func startSystemdDaemon(stdout io.Writer) error {
 		return fmt.Errorf("start systemd service %s: %w", systemdServiceName, err)
 	}
 
-	_, err := fmt.Fprintf(stdout, "daemon started\nmanager=systemd\nservice=%s\n", systemdServiceName)
+	_, err := fmt.Fprint(stdout, renderSummaryBlock(summaryBlock{
+		Title:      "daemon started",
+		TitleStyle: defaultTerminalPalette().info,
+		Fields: []startupField{
+			{Key: "manager", Value: "systemd"},
+			{Key: "service", Value: systemdServiceName},
+		},
+	}, shouldUseANSI(stdout)))
 	return err
 }
 
@@ -54,7 +68,14 @@ func stopSystemdDaemon(stdout io.Writer) error {
 		return fmt.Errorf("stop systemd service %s: %w", systemdServiceName, err)
 	}
 
-	_, err := fmt.Fprintf(stdout, "daemon stopped\nmanager=systemd\nservice=%s\n", systemdServiceName)
+	_, err := fmt.Fprint(stdout, renderSummaryBlock(summaryBlock{
+		Title:      "daemon stopped",
+		TitleStyle: defaultTerminalPalette().info,
+		Fields: []startupField{
+			{Key: "manager", Value: "systemd"},
+			{Key: "service", Value: systemdServiceName},
+		},
+	}, shouldUseANSI(stdout)))
 	return err
 }
 
@@ -111,7 +132,15 @@ func installSystemdDaemon(stdout io.Writer, executablePath string, args []string
 		}
 	}
 
-	_, err := fmt.Fprintf(stdout, "daemon installed\nmanager=systemd\nservice=%s\npath=%s\n", systemdServiceName, serveInstallSystemdUnitPath)
+	_, err := fmt.Fprint(stdout, renderSummaryBlock(summaryBlock{
+		Title:      "daemon installed",
+		TitleStyle: defaultTerminalPalette().info,
+		Fields: []startupField{
+			{Key: "manager", Value: "systemd"},
+			{Key: "service", Value: systemdServiceName},
+			{Key: "path", Value: serveInstallSystemdUnitPath},
+		},
+	}, shouldUseANSI(stdout)))
 	return err
 }
 

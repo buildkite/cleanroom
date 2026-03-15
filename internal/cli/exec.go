@@ -160,6 +160,10 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 			if _, err := fmt.Fprint(os.Stderr, string(payload.Stderr)); err != nil {
 				return err
 			}
+		case *cleanroomv1.ExecutionStreamEvent_Warning:
+			if err := writeExecutionWarning(os.Stderr, payload.Warning); err != nil {
+				return err
+			}
 		case *cleanroomv1.ExecutionStreamEvent_Exit:
 			exitCode = int(payload.Exit.GetExitCode())
 			haveExitCode = true

@@ -49,7 +49,18 @@ func uninstallLaunchdDaemonInDomain(stdout io.Writer, servicePath, domain string
 	if !serviceFileExists && !bootoutFoundService {
 		message = "daemon already uninstalled"
 	}
-	_, err := fmt.Fprintf(stdout, "%s\nmanager=launchd\nservice=%s\n", message, launchdServiceName)
+	titleStyle := defaultTerminalPalette().info
+	if strings.Contains(message, "already") {
+		titleStyle = defaultTerminalPalette().warn
+	}
+	_, err := fmt.Fprint(stdout, renderSummaryBlock(summaryBlock{
+		Title:      message,
+		TitleStyle: titleStyle,
+		Fields: []startupField{
+			{Key: "manager", Value: "launchd"},
+			{Key: "service", Value: launchdServiceName},
+		},
+	}, shouldUseANSI(stdout)))
 	return err
 }
 
@@ -89,7 +100,14 @@ func startLaunchdDaemonInDomain(stdout io.Writer, servicePath, domain string) er
 		return fmt.Errorf("start launchd service %s: %w", launchdServiceName, err)
 	}
 
-	_, err = fmt.Fprintf(stdout, "daemon started\nmanager=launchd\nservice=%s\n", launchdServiceName)
+	_, err = fmt.Fprint(stdout, renderSummaryBlock(summaryBlock{
+		Title:      "daemon started",
+		TitleStyle: defaultTerminalPalette().info,
+		Fields: []startupField{
+			{Key: "manager", Value: "launchd"},
+			{Key: "service", Value: launchdServiceName},
+		},
+	}, shouldUseANSI(stdout)))
 	return err
 }
 
@@ -123,7 +141,14 @@ func stopLaunchdDaemonInDomain(stdout io.Writer, servicePath, domain string) err
 		return err
 	}
 	if !serviceFileExists && !loaded {
-		_, err := fmt.Fprintf(stdout, "daemon already stopped\nmanager=launchd\nservice=%s\n", launchdServiceName)
+		_, err := fmt.Fprint(stdout, renderSummaryBlock(summaryBlock{
+			Title:      "daemon already stopped",
+			TitleStyle: defaultTerminalPalette().warn,
+			Fields: []startupField{
+				{Key: "manager", Value: "launchd"},
+				{Key: "service", Value: launchdServiceName},
+			},
+		}, shouldUseANSI(stdout)))
 		return err
 	}
 
@@ -136,7 +161,14 @@ func stopLaunchdDaemonInDomain(stdout io.Writer, servicePath, domain string) err
 		}
 	}
 
-	_, err = fmt.Fprintf(stdout, "daemon stopped\nmanager=launchd\nservice=%s\n", launchdServiceName)
+	_, err = fmt.Fprint(stdout, renderSummaryBlock(summaryBlock{
+		Title:      "daemon stopped",
+		TitleStyle: defaultTerminalPalette().info,
+		Fields: []startupField{
+			{Key: "manager", Value: "launchd"},
+			{Key: "service", Value: launchdServiceName},
+		},
+	}, shouldUseANSI(stdout)))
 	return err
 }
 
@@ -361,7 +393,15 @@ func installLaunchdDaemonInDomain(stdout io.Writer, executablePath string, args 
 		return fmt.Errorf("enable launchd service %s: %w", launchdServiceName, err)
 	}
 
-	_, err := fmt.Fprintf(stdout, "daemon installed\nmanager=launchd\nservice=%s\npath=%s\n", launchdServiceName, servicePath)
+	_, err := fmt.Fprint(stdout, renderSummaryBlock(summaryBlock{
+		Title:      "daemon installed",
+		TitleStyle: defaultTerminalPalette().info,
+		Fields: []startupField{
+			{Key: "manager", Value: "launchd"},
+			{Key: "service", Value: launchdServiceName},
+			{Key: "path", Value: servicePath},
+		},
+	}, shouldUseANSI(stdout)))
 	return err
 }
 

@@ -50,7 +50,13 @@ func (c *PolicyValidateCommand) Run(ctx *runtimeContext) error {
 		return enc.Encode(payload)
 	}
 
-	_, err = fmt.Fprintf(ctx.Stdout, "policy valid: %s\npolicy hash: %s\n", source, compiled.Hash)
+	color := shouldUseANSI(ctx.Stdout)
+	var out strings.Builder
+	out.WriteString(renderStatusValueLine("policy valid", source, defaultTerminalPalette().info, color))
+	out.WriteByte('\n')
+	out.WriteString(renderKeyValueLine("", "policy hash", compiled.Hash, color, defaultTerminalPalette()))
+	out.WriteByte('\n')
+	_, err = fmt.Fprint(ctx.Stdout, out.String())
 	return err
 }
 
@@ -96,7 +102,7 @@ func (c *ConfigInitCommand) Run(ctx *runtimeContext) error {
 		return fmt.Errorf("write runtime config %s: %w", path, err)
 	}
 
-	_, err = fmt.Fprintf(ctx.Stdout, "runtime config written: %s\n", path)
+	_, err = fmt.Fprintln(ctx.Stdout, renderStatusValueLine("runtime config written", path, defaultTerminalPalette().info, shouldUseANSI(ctx.Stdout)))
 	return err
 }
 

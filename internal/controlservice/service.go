@@ -1675,6 +1675,9 @@ func (s *Service) executionOutputStream(key string) backend.OutputStream {
 		OnStderr: func(chunk []byte) {
 			s.recordExecutionOutputChunk(key, false, chunk)
 		},
+		OnWarning: func(message string) {
+			s.recordExecutionWarning(key, message)
+		},
 		OnAttach: func(io backend.AttachIO) {
 			s.setExecutionAttachIO(key, io)
 		},
@@ -2000,6 +2003,34 @@ func (s *Service) recordExecutionOutputChunk(key string, isStdout bool, chunk []
 	}
 
 	s.appendExecutionStderrLocked(ex, status, chunk)
+}
+
+func (s *Service) recordExecutionWarning(key, message string) {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	ex, ok := s.executions[key]
+	if !ok {
+		return
+	}
+
+	status := ex.Status
+	if isFinalExecutionStatus(status) {
+		return
+	}
+
+	s.recordExecutionEventLocked(ex, &cleanroomv1.ExecutionStreamEvent{
+		SandboxId:   ex.SandboxID,
+		ExecutionId: ex.ID,
+		Status:      status,
+		Payload:     &cleanroomv1.ExecutionStreamEvent_Warning{Warning: message},
+		OccurredAt:  timestamppb.Now(),
+	})
 }
 
 func (s *Service) appendExecutionStdoutLocked(ex *executionState, status cleanroomv1.ExecutionStatus, chunk []byte) {

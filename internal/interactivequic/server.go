@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -423,6 +424,11 @@ func (s *Server) forwardEventToPTY(event *cleanroomv1.ExecutionStreamEvent, stre
 		_, _ = stream.Write(payload.Stdout)
 	case *cleanroomv1.ExecutionStreamEvent_Stderr:
 		_, _ = stream.Write(payload.Stderr)
+	case *cleanroomv1.ExecutionStreamEvent_Warning:
+		text := strings.TrimSpace(payload.Warning)
+		if text != "" {
+			_, _ = stream.Write([]byte("warning: " + text + "\n"))
+		}
 	case *cleanroomv1.ExecutionStreamEvent_Exit:
 		return true
 	}

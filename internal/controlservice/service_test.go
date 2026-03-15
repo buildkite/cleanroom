@@ -861,6 +861,71 @@ func TestCreateSnapshotDoesNotResurrectTerminatedSandbox(t *testing.T) {
 	}
 }
 
+func TestExecutionStreamIncludesStructuredWarnings(t *testing.T) {
+	const warningText = "darwin-vz guest networking is enabled without host-side egress filtering"
+
+	adapter := &stubAdapter{
+		runStreamFn: func(_ context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+			if stream.OnWarning != nil {
+				stream.OnWarning(warningText)
+			}
+			if stream.OnStdout != nil {
+				stream.OnStdout([]byte("hello stdout\n"))
+			}
+			return &backend.RunResult{
+				RunID:    req.RunID,
+				ExitCode: 0,
+				Stdout:   "hello stdout\n",
+				Message:  "done",
+			}, nil
+		},
+	}
+	svc := newTestService(adapter)
+
+	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createSandboxResp.GetSandbox().GetSandboxId()
+
+	createExecutionResp, err := svc.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+		SandboxId: sandboxID,
+		Command:   []string{"--", "echo", "hi"},
+	})
+	if err != nil {
+		t.Fatalf("CreateExecution returned error: %v", err)
+	}
+	executionID := createExecutionResp.GetExecution().GetExecutionId()
+
+	history, updates, done, unsubscribe, err := svc.SubscribeExecutionEvents(sandboxID, executionID)
+	if err != nil {
+		t.Fatalf("SubscribeExecutionEvents returned error: %v", err)
+	}
+	defer unsubscribe()
+
+	events := collectExecutionEvents(t, history, updates, done)
+	var sawWarning bool
+	var sawStderr bool
+	for _, event := range events {
+		switch payload := event.Payload.(type) {
+		case *cleanroomv1.ExecutionStreamEvent_Warning:
+			if payload.Warning == warningText {
+				sawWarning = true
+			}
+		case *cleanroomv1.ExecutionStreamEvent_Stderr:
+			if strings.Contains(string(payload.Stderr), warningText) {
+				sawStderr = true
+			}
+		}
+	}
+	if !sawWarning {
+		t.Fatalf("expected warning event in stream, events=%d", len(events))
+	}
+	if sawStderr {
+		t.Fatalf("expected structured warning to stay out of stderr events, events=%d", len(events))
+	}
+}
+
 func TestCancelExecutionTransitionsToCanceled(t *testing.T) {
 	started := make(chan struct{}, 1)
 	adapter := &stubAdapter{

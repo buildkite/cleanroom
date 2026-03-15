@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/buildkite/cleanroom/internal/policy"
@@ -87,6 +88,37 @@ func TestPolicyValidateCommandRunText(t *testing.T) {
 
 	output := readStdout()
 	assertContainsAll(t, output,
+		"policy valid: "+loader.source,
+		"policy hash: "+loader.compiled.Hash,
+	)
+}
+
+func TestPolicyValidateCommandRunTextUsesANSIWhenForced(t *testing.T) {
+	t.Setenv("CLICOLOR_FORCE", "1")
+
+	loader := &policyValidateLoader{
+		compiled: &policy.CompiledPolicy{Hash: "policy-hash-text"},
+		source:   "/repo/cleanroom.yaml",
+	}
+
+	stdout, readStdout := makeStdoutCapture(t)
+	t.Cleanup(func() { _ = stdout.Close() })
+
+	err := (&PolicyValidateCommand{}).Run(&runtimeContext{
+		CWD:    t.TempDir(),
+		Stdout: stdout,
+		Loader: loader,
+	})
+	if err != nil {
+		t.Fatalf("PolicyValidateCommand.Run returned error: %v", err)
+	}
+
+	output := readStdout()
+	plain := stripANSI(output)
+	if !strings.Contains(output, "\x1b[") {
+		t.Fatalf("expected ANSI escapes in color output: %q", output)
+	}
+	assertContainsAll(t, plain,
 		"policy valid: "+loader.source,
 		"policy hash: "+loader.compiled.Hash,
 	)

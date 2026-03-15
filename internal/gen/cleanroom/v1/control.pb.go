@@ -2583,6 +2583,7 @@ type ExecutionStreamEvent struct {
 	//	*ExecutionStreamEvent_Stderr
 	//	*ExecutionStreamEvent_Exit
 	//	*ExecutionStreamEvent_Message
+	//	*ExecutionStreamEvent_Warning
 	Payload       isExecutionStreamEvent_Payload `protobuf_oneof:"payload"`
 	OccurredAt    *timestamppb.Timestamp         `protobuf:"bytes,8,opt,name=occurred_at,json=occurredAt,proto3" json:"occurred_at,omitempty"`
 	ImageRef      string                         `protobuf:"bytes,9,opt,name=image_ref,json=imageRef,proto3" json:"image_ref,omitempty"`
@@ -2685,6 +2686,15 @@ func (x *ExecutionStreamEvent) GetMessage() string {
 	return ""
 }
 
+func (x *ExecutionStreamEvent) GetWarning() string {
+	if x != nil {
+		if x, ok := x.Payload.(*ExecutionStreamEvent_Warning); ok {
+			return x.Warning
+		}
+	}
+	return ""
+}
+
 func (x *ExecutionStreamEvent) GetOccurredAt() *timestamppb.Timestamp {
 	if x != nil {
 		return x.OccurredAt
@@ -2726,6 +2736,10 @@ type ExecutionStreamEvent_Message struct {
 	Message string `protobuf:"bytes,7,opt,name=message,proto3,oneof"`
 }
 
+type ExecutionStreamEvent_Warning struct {
+	Warning string `protobuf:"bytes,11,opt,name=warning,proto3,oneof"`
+}
+
 func (*ExecutionStreamEvent_Stdout) isExecutionStreamEvent_Payload() {}
 
 func (*ExecutionStreamEvent_Stderr) isExecutionStreamEvent_Payload() {}
@@ -2733,6 +2747,8 @@ func (*ExecutionStreamEvent_Stderr) isExecutionStreamEvent_Payload() {}
 func (*ExecutionStreamEvent_Exit) isExecutionStreamEvent_Payload() {}
 
 func (*ExecutionStreamEvent_Message) isExecutionStreamEvent_Payload() {}
+
+func (*ExecutionStreamEvent_Warning) isExecutionStreamEvent_Payload() {}
 
 var File_proto_cleanroom_v1_control_proto protoreflect.FileDescriptor
 
@@ -2934,7 +2950,7 @@ const file_proto_cleanroom_v1_control_proto_rawDesc = "" +
 	"\rExecutionExit\x12\x1b\n" +
 	"\texit_code\x18\x01 \x01(\x05R\bexitCode\x125\n" +
 	"\x06status\x18\x02 \x01(\x0e2\x1d.cleanroom.v1.ExecutionStatusR\x06status\x12\x18\n" +
-	"\amessage\x18\x03 \x01(\tR\amessage\"\x9a\x03\n" +
+	"\amessage\x18\x03 \x01(\tR\amessage\"\xb6\x03\n" +
 	"\x14ExecutionStreamEvent\x12\x1d\n" +
 	"\n" +
 	"sandbox_id\x18\x01 \x01(\tR\tsandboxId\x12!\n" +
@@ -2943,7 +2959,8 @@ const file_proto_cleanroom_v1_control_proto_rawDesc = "" +
 	"\x06stdout\x18\x04 \x01(\fH\x00R\x06stdout\x12\x18\n" +
 	"\x06stderr\x18\x05 \x01(\fH\x00R\x06stderr\x121\n" +
 	"\x04exit\x18\x06 \x01(\v2\x1b.cleanroom.v1.ExecutionExitH\x00R\x04exit\x12\x1a\n" +
-	"\amessage\x18\a \x01(\tH\x00R\amessage\x12;\n" +
+	"\amessage\x18\a \x01(\tH\x00R\amessage\x12\x1a\n" +
+	"\awarning\x18\v \x01(\tH\x00R\awarning\x12;\n" +
 	"\voccurred_at\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\n" +
 	"occurredAt\x12\x1b\n" +
 	"\timage_ref\x18\t \x01(\tR\bimageRef\x12!\n" +
@@ -3135,6 +3152,7 @@ func file_proto_cleanroom_v1_control_proto_init() {
 		(*ExecutionStreamEvent_Stderr)(nil),
 		(*ExecutionStreamEvent_Exit)(nil),
 		(*ExecutionStreamEvent_Message)(nil),
+		(*ExecutionStreamEvent_Warning)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{

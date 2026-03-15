@@ -57,7 +57,15 @@ func (c *ImageBumpRefCommand) Run(ctx *runtimeContext) error {
 	if source == "" {
 		source = defaultBumpRefSource
 	}
-	_, err = fmt.Fprintf(ctx.Stdout, "updated sandbox.image.ref\npolicy=%s\nsource=%s\nref=%s\n", policyPath, source, resolvedRef)
+	_, err = fmt.Fprint(ctx.Stdout, renderSummaryBlock(summaryBlock{
+		Title:      "updated sandbox.image.ref",
+		TitleStyle: defaultTerminalPalette().info,
+		Fields: []startupField{
+			{Key: "policy", Value: policyPath},
+			{Key: "source", Value: source},
+			{Key: "ref", Value: resolvedRef},
+		},
+	}, shouldUseANSI(ctx.Stdout)))
 	return err
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -99,6 +100,41 @@ func TestImagePullCommandRunPrintsResult(t *testing.T) {
 		"digest="+mgr.pullResult.Record.Digest,
 		"rootfs="+mgr.pullResult.Record.RootFSPath,
 		"size_bytes=1234",
+	)
+}
+
+func TestImagePullCommandRunPrintsColorSummaryWhenForced(t *testing.T) {
+	t.Setenv("CLICOLOR_FORCE", "1")
+
+	mgr := &stubImageManager{
+		pullResult: imagemgr.EnsureResult{
+			Record: imagemgr.Record{
+				Ref:        "ghcr.io/buildkite/cleanroom-base/alpine@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				Digest:     "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				RootFSPath: "/tmp/rootfs.ext4",
+				SizeBytes:  1234,
+			},
+		},
+	}
+	replaceImageManagerFactory(t, mgr, nil)
+
+	stdout, readStdout := makeStdoutCapture(t)
+	t.Cleanup(func() { _ = stdout.Close() })
+
+	err := (&ImagePullCommand{Ref: mgr.pullResult.Record.Ref}).Run(&runtimeContext{Stdout: stdout})
+	if err != nil {
+		t.Fatalf("ImagePullCommand.Run returned error: %v", err)
+	}
+
+	output := readStdout()
+	plain := stripANSI(output)
+	if !strings.Contains(output, "\x1b[") {
+		t.Fatalf("expected ANSI escapes in color output: %q", output)
+	}
+	assertContainsAll(t, plain,
+		"pulled image",
+		"ref="+mgr.pullResult.Record.Ref,
+		"digest="+mgr.pullResult.Record.Digest,
 	)
 }
 

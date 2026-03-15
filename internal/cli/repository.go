@@ -288,9 +288,13 @@ func warnDirtyRepositoryCheckout(repository *resolvedRepositoryCheckout) {
 	if repository == nil || !repository.Dirty {
 		return
 	}
-	_, _ = fmt.Fprintf(
+	_, _ = fmt.Fprint(
 		os.Stderr,
-		"warning: repository has local modifications; sandbox will use HEAD %s and ignore local changes\n",
-		repository.CommitSHA,
+		renderNoticeLine(
+			"warning",
+			fmt.Sprintf("repository has local modifications; sandbox will use HEAD %s and ignore local changes", repository.CommitSHA),
+			defaultTerminalPalette().warn,
+			shouldUseANSI(os.Stderr),
+		),
 	)
 }
