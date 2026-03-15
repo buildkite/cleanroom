@@ -26,7 +26,7 @@ variable "ami_id" {
 }
 
 variable "instance_type" {
-  description = "EC2 instance type for the host. Must support nested virtualization for Firecracker; bootstrap uses ephemeral NVMe for ZFS when available and falls back to a loopback file otherwise."
+  description = "EC2 instance type for the host. Must support nested virtualization for Firecracker. Defaults to m8i.large for broad nested-virtualization availability; use a '*d' variant where your region/account supports nested virtualization on that type to place snapshots on local NVMe."
   type        = string
   default     = "m8i.large"
 }

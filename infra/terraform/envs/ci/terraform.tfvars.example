@@ -1,7 +1,7 @@
 aws_region  = "us-west-2"
 name_prefix = "cleanroom-ci"
 
-# Must support nested virtualization (Firecracker). ZFS uses local NVMe when available.
+# Must support nested virtualization (Firecracker). Default m8i.large falls back to loopback; use a '*d' type where nested virtualization is available to use local NVMe.
 instance_type = "m8i.large"
 
 enable_macos_ci   = false
