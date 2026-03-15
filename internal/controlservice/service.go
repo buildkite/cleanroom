@@ -3,8 +3,6 @@ package controlservice
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -31,19 +29,19 @@ type Service struct {
 	Backends          map[string]backend.Adapter
 	Logger            *log.Logger
 	RepositoryMirrors repositoryMirrorStore
-
+	runtime           serviceRuntime
+	interactive       interactiveSessionBroker
+	// Snapshot lifecycle still lives on Service because it coordinates backend
+	// adapters, sandbox state, and metadata persistence in one operation chain.
+	// If this grows again, extract a dedicated snapshot manager rather than
+	// adding more snapshot-specific branching here.
 	SnapshotStore snapshotMetadataStore
 
-	mu                  sync.RWMutex
-	sandboxes           map[string]*sandboxState
-	executions          map[string]*executionState
-	snapshotOps         map[string]int
-	snapshotDeletions   map[string]struct{}
-	interactiveSessions map[string]*interactiveSessionState
-	interactiveAttached map[string]struct{}
-	interactiveEndpoint string
-	interactiveALPN     string
-	interactiveCertPin  string
+	mu                sync.RWMutex
+	sandboxes         map[string]*sandboxState
+	executions        map[string]*executionState
+	snapshotOps       map[string]int
+	snapshotDeletions map[string]struct{}
 }
 
 type sandboxState struct {
@@ -59,43 +57,39 @@ type sandboxState struct {
 	UpdatedAt          time.Time
 	LastExecutionID    string
 	Status             cleanroomv1.SandboxStatus
-	EventHistory       []*cleanroomv1.SandboxEvent
-	EventSubscribers   map[int]chan *cleanroomv1.SandboxEvent
-	NextSubID          int
+	events             eventFeed[*cleanroomv1.SandboxEvent]
 	Done               chan struct{}
 	DoneClosed         bool
 }
 
 type executionState struct {
-	ID               string
-	SandboxID        string
-	RunID            string
-	ImageRef         string
-	ImageDigest      string
-	Command          []string
-	Options          executionOptions
-	TTY              bool
-	Kind             cleanroomv1.ExecutionKind
-	Status           cleanroomv1.ExecutionStatus
-	ExitCode         int32
-	StartedAt        *time.Time
-	FinishedAt       *time.Time
-	Message          string
-	Stdout           string
-	Stderr           string
-	LaunchedVM       bool
-	PlanPath         string
-	RunDir           string
-	CancelRequested  bool
-	CancelSignal     int32
-	Cancel           context.CancelFunc
-	AttachStdin      func([]byte) error
-	AttachResize     func(cols, rows uint32) error
-	EventHistory     []*cleanroomv1.ExecutionStreamEvent
-	EventSubscribers map[int]chan *cleanroomv1.ExecutionStreamEvent
-	NextSubID        int
-	Done             chan struct{}
-	DoneClosed       bool
+	ID              string
+	SandboxID       string
+	RunID           string
+	ImageRef        string
+	ImageDigest     string
+	Command         []string
+	Options         executionOptions
+	TTY             bool
+	Kind            cleanroomv1.ExecutionKind
+	Status          cleanroomv1.ExecutionStatus
+	ExitCode        int32
+	StartedAt       *time.Time
+	FinishedAt      *time.Time
+	Message         string
+	Stdout          string
+	Stderr          string
+	LaunchedVM      bool
+	PlanPath        string
+	RunDir          string
+	CancelRequested bool
+	CancelSignal    int32
+	Cancel          context.CancelFunc
+	AttachStdin     func([]byte) error
+	AttachResize    func(cols, rows uint32) error
+	events          eventFeed[*cleanroomv1.ExecutionStreamEvent]
+	Done            chan struct{}
+	DoneClosed      bool
 }
 
 type interactiveSessionState struct {
@@ -148,24 +142,8 @@ type executionSnapshot struct {
 }
 
 var (
-	maxRetainedStoppedSandboxes     = 256
-	maxRetainedFinishedExecutions   = 2048
-	maxRetainedSandboxEvents        = 256
-	maxRetainedExecutionEvents      = 2048
-	maxRetainedExecutionOutputBytes = 1 * 1024 * 1024
-	retainedStateMaxAge             = 24 * time.Hour
-
 	ErrExecutionStdinUnsupported  = errors.New("execution stdin attach is not supported by the current backend")
 	ErrExecutionResizeUnsupported = errors.New("execution resize is not supported by the current backend")
-)
-
-const (
-	attachStdinRegistrationWait        = 2 * time.Second
-	attachResizeRegistrationWait       = 250 * time.Millisecond
-	attachPollInterval                 = 10 * time.Millisecond
-	interactiveSessionTokenTTL         = 30 * time.Second
-	bootstrapCleanupTimeout            = 10 * time.Second
-	defaultDownloadMaxBytes      int64 = 10 * 1024 * 1024
 )
 
 func (s *Service) CreateSandbox(ctx context.Context, req *cleanroomv1.CreateSandboxRequest) (*cleanroomv1.CreateSandboxResponse, error) {
@@ -211,8 +189,8 @@ func (s *Service) CreateSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	firecrackerCfg := runtimeconfig.MergeBackendConfig(s.Config, backendName, execOpts.LaunchSeconds)
 	firecrackerCfg.RunDir = ""
 
-	now := time.Now().UTC()
-	sandboxID := newSandboxID()
+	now := s.clock().Now()
+	sandboxID := s.ids().NewSandboxID()
 
 	if persistentAdapter, ok := adapter.(backend.PersistentSandboxAdapter); ok {
 		if err := persistentAdapter.ProvisionSandbox(ctx, backend.ProvisionRequest{
@@ -223,7 +201,7 @@ func (s *Service) CreateSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 			return nil, fmt.Errorf("provision sandbox: %w", err)
 		}
 		if err := s.bootstrapRepositoryInPersistentSandbox(ctx, persistentAdapter, sandboxID, compiled, firecrackerCfg, repository); err != nil {
-			cleanupCtx, cancel := context.WithTimeout(context.Background(), bootstrapCleanupTimeout)
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), s.timeouts().bootstrapCleanupTimeout)
 			defer cancel()
 			if terminateErr := persistentAdapter.TerminateSandbox(cleanupCtx, sandboxID); terminateErr != nil {
 				return nil, fmt.Errorf("bootstrap repository checkout: %w; cleanup failed: %v", err, terminateErr)
@@ -235,16 +213,16 @@ func (s *Service) CreateSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	}
 
 	state := &sandboxState{
-		ID:               sandboxID,
-		Backend:          backendName,
-		Policy:           compiled,
-		Firecracker:      firecrackerCfg,
-		Repository:       cloneRepositoryCheckout(repository),
-		CreatedAt:        now,
-		UpdatedAt:        now,
-		Status:           cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY,
-		EventSubscribers: map[int]chan *cleanroomv1.SandboxEvent{},
-		Done:             make(chan struct{}),
+		ID:          sandboxID,
+		Backend:     backendName,
+		Policy:      compiled,
+		Firecracker: firecrackerCfg,
+		Repository:  cloneRepositoryCheckout(repository),
+		CreatedAt:   now,
+		UpdatedAt:   now,
+		Status:      cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY,
+		events:      newEventFeed[*cleanroomv1.SandboxEvent](s.retention().maxRetainedSandboxEvents),
+		Done:        make(chan struct{}),
 	}
 
 	s.mu.Lock()
@@ -323,8 +301,8 @@ func (s *Service) createSandboxFromSnapshot(ctx context.Context, req *cleanroomv
 	firecrackerCfg.RunDir = ""
 	firecrackerCfg = withSnapshotDriver(firecrackerCfg, record.StorageDriver)
 
-	now := time.Now().UTC()
-	sandboxID := newSandboxID()
+	now := s.clock().Now()
+	sandboxID := s.ids().NewSandboxID()
 	if err := snapshotAdapter.ProvisionSandboxFromSnapshot(ctx, backend.ProvisionFromSnapshotRequest{
 		SandboxID:         sandboxID,
 		SnapshotID:        record.SnapshotID,
@@ -336,16 +314,16 @@ func (s *Service) createSandboxFromSnapshot(ctx context.Context, req *cleanroomv
 	}
 
 	state := &sandboxState{
-		ID:               sandboxID,
-		Backend:          backendName,
-		Policy:           compiled,
-		Firecracker:      firecrackerCfg,
-		Repository:       repositorycheckout.FromProto(record.Repository),
-		CreatedAt:        now,
-		UpdatedAt:        now,
-		Status:           cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY,
-		EventSubscribers: map[int]chan *cleanroomv1.SandboxEvent{},
-		Done:             make(chan struct{}),
+		ID:          sandboxID,
+		Backend:     backendName,
+		Policy:      compiled,
+		Firecracker: firecrackerCfg,
+		Repository:  repositorycheckout.FromProto(record.Repository),
+		CreatedAt:   now,
+		UpdatedAt:   now,
+		Status:      cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY,
+		events:      newEventFeed[*cleanroomv1.SandboxEvent](s.retention().maxRetainedSandboxEvents),
+		Done:        make(chan struct{}),
 	}
 
 	s.mu.Lock()
@@ -639,7 +617,7 @@ func (s *Service) DownloadSandboxFile(ctx context.Context, req *cleanroomv1.Down
 
 	maxBytes := req.GetMaxBytes()
 	if maxBytes <= 0 {
-		maxBytes = defaultDownloadMaxBytes
+		maxBytes = s.downloadMaxBytesDefault()
 	}
 
 	s.mu.Lock()
@@ -735,7 +713,7 @@ func (s *Service) TerminateSandbox(ctx context.Context, req *cleanroomv1.Termina
 			s.recordSandboxEventLocked(state, cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPING, "sandbox termination requested")
 		}
 
-		terminatedAt := time.Now().UTC()
+		terminatedAt := s.clock().Now()
 		for key, ex := range s.executions {
 			if ex.SandboxID != sandboxID {
 				continue
@@ -750,7 +728,7 @@ func (s *Service) TerminateSandbox(ctx context.Context, req *cleanroomv1.Termina
 				ExecutionId: ex.ID,
 				Status:      ex.Status,
 				Payload:     &cleanroomv1.ExecutionStreamEvent_Message{Message: "execution canceled due to sandbox termination"},
-				OccurredAt:  timestamppb.Now(),
+				OccurredAt:  timestamppb.New(s.clock().Now()),
 			})
 			if ex.Status == cleanroomv1.ExecutionStatus_EXECUTION_STATUS_QUEUED {
 				finished := terminatedAt
@@ -784,7 +762,7 @@ func (s *Service) TerminateSandbox(ctx context.Context, req *cleanroomv1.Termina
 		}
 	}
 
-	now := time.Now().UTC()
+	now := s.clock().Now()
 	s.mu.Lock()
 	state, ok = s.sandboxes[sandboxID]
 	if ok && state.Status != cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPED {
@@ -845,8 +823,8 @@ func (s *Service) CreateExecution(ctx context.Context, req *cleanroomv1.CreateEx
 		tty = true
 	}
 
-	now := time.Now().UTC()
-	executionID := newExecutionID()
+	now := s.clock().Now()
+	executionID := s.ids().NewExecutionID()
 
 	s.mu.Lock()
 	s.ensureMapsLocked()
@@ -940,17 +918,17 @@ func (s *Service) CreateExecution(ctx context.Context, req *cleanroomv1.CreateEx
 		return nil, fmt.Errorf("sandbox_busy: sandbox %q is preparing repository state", sandboxID)
 	}
 	ex := &executionState{
-		ID:               executionID,
-		SandboxID:        sandboxID,
-		ImageRef:         imageRef,
-		ImageDigest:      imageDigest,
-		Command:          append([]string(nil), command...),
-		Options:          execOpts,
-		TTY:              tty,
-		Kind:             kind,
-		Status:           cleanroomv1.ExecutionStatus_EXECUTION_STATUS_QUEUED,
-		EventSubscribers: map[int]chan *cleanroomv1.ExecutionStreamEvent{},
-		Done:             make(chan struct{}),
+		ID:          executionID,
+		SandboxID:   sandboxID,
+		ImageRef:    imageRef,
+		ImageDigest: imageDigest,
+		Command:     append([]string(nil), command...),
+		Options:     execOpts,
+		TTY:         tty,
+		Kind:        kind,
+		Status:      cleanroomv1.ExecutionStatus_EXECUTION_STATUS_QUEUED,
+		events:      newEventFeed[*cleanroomv1.ExecutionStreamEvent](s.retention().maxRetainedExecutionEvents),
+		Done:        make(chan struct{}),
 	}
 	s.executions[executionKey(sandboxID, executionID)] = ex
 	sandbox.LastExecutionID = executionID
@@ -995,67 +973,45 @@ func (s *Service) OpenInteractiveExecution(_ context.Context, req *cleanroomv1.O
 		return nil, errors.New("missing execution_id")
 	}
 
-	now := time.Now().UTC()
-	token, err := newSessionToken()
+	now := s.clock().Now()
+	token, err := s.ids().NewSessionToken()
 	if err != nil {
 		return nil, fmt.Errorf("generate session token: %w", err)
 	}
-	sessionID := newInteractiveSessionID()
-	expiresAt := now.Add(interactiveSessionTokenTTL)
+	sessionID := s.ids().NewInteractiveSessionID()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if strings.TrimSpace(s.interactiveEndpoint) == "" || strings.TrimSpace(s.interactiveALPN) == "" {
-		return nil, errors.New("interactive transport is not configured")
-	}
-
-	ex, ok := s.executions[executionKey(sandboxID, executionID)]
-	if !ok {
-		return nil, fmt.Errorf("unknown execution %q in sandbox %q", executionID, sandboxID)
-	}
-	if ex.Kind != cleanroomv1.ExecutionKind_EXECUTION_KIND_INTERACTIVE {
-		return nil, fmt.Errorf("execution %q is not interactive", executionID)
-	}
-	if isFinalExecutionStatus(ex.Status) {
-		return nil, fmt.Errorf("execution %q is no longer active", executionID)
-	}
-
-	s.ensureMapsLocked()
-	s.pruneExpiredInteractiveSessionsLocked(now)
-	execKey := executionKey(sandboxID, executionID)
-	if _, attached := s.interactiveAttached[execKey]; attached {
-		return nil, fmt.Errorf("execution %q already has an active interactive session", executionID)
-	}
-	if s.hasPendingInteractiveSessionLocked(execKey) {
-		return nil, fmt.Errorf("execution %q already has a pending interactive session", executionID)
-	}
-	s.interactiveSessions[sessionID] = &interactiveSessionState{
-		SessionID:   sessionID,
-		SandboxID:   sandboxID,
-		ExecutionID: executionID,
-		Token:       token,
-		ExpiresAt:   expiresAt,
-		InitialCols: req.GetInitialCols(),
-		InitialRows: req.GetInitialRows(),
+	grant, err := s.interactive.open(
+		s.executions,
+		now,
+		s.timeouts().interactiveSessionTokenTTL,
+		sessionID,
+		token,
+		sandboxID,
+		executionID,
+		req.GetInitialCols(),
+		req.GetInitialRows(),
+	)
+	if err != nil {
+		return nil, err
 	}
 
 	return &cleanroomv1.OpenInteractiveExecutionResponse{
-		SessionId:           sessionID,
-		SessionToken:        token,
-		ExpiresAt:           timestamppb.New(expiresAt),
-		QuicEndpoint:        s.interactiveEndpoint,
-		Alpn:                s.interactiveALPN,
-		ServerCertPinSha256: s.interactiveCertPin,
+		SessionId:           grant.SessionID,
+		SessionToken:        grant.SessionToken,
+		ExpiresAt:           timestamppb.New(grant.ExpiresAt),
+		QuicEndpoint:        grant.QuicEndpoint,
+		Alpn:                grant.Alpn,
+		ServerCertPinSha256: grant.ServerCertPinSHA256,
 	}, nil
 }
 
 func (s *Service) ConfigureInteractiveTransport(endpoint, alpn, certPinSHA256 string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.interactiveEndpoint = strings.TrimSpace(endpoint)
-	s.interactiveALPN = strings.TrimSpace(alpn)
-	s.interactiveCertPin = strings.TrimSpace(certPinSHA256)
+	s.interactive.configureTransport(endpoint, alpn, certPinSHA256)
 }
 
 func (s *Service) ConsumeInteractiveSession(sessionID, token string) (*InteractiveSession, error) {
@@ -1068,49 +1024,13 @@ func (s *Service) ConsumeInteractiveSession(sessionID, token string) (*Interacti
 		return nil, errors.New("missing session_token")
 	}
 
-	now := time.Now().UTC()
+	now := s.clock().Now()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.ensureMapsLocked()
 
-	s.pruneExpiredInteractiveSessionsLocked(now)
-
-	session, ok := s.interactiveSessions[id]
-	if !ok || session == nil {
-		return nil, fmt.Errorf("unknown interactive session %q", id)
-	}
-	if session.Token != tok {
-		return nil, errors.New("invalid session token")
-	}
-	execKey := executionKey(session.SandboxID, session.ExecutionID)
-	ex, ok := s.executions[execKey]
-	if !ok {
-		delete(s.interactiveSessions, id)
-		return nil, fmt.Errorf("unknown execution %q in sandbox %q", session.ExecutionID, session.SandboxID)
-	}
-	if ex.Kind != cleanroomv1.ExecutionKind_EXECUTION_KIND_INTERACTIVE {
-		delete(s.interactiveSessions, id)
-		return nil, fmt.Errorf("execution %q is not interactive", session.ExecutionID)
-	}
-	if isFinalExecutionStatus(ex.Status) {
-		delete(s.interactiveSessions, id)
-		return nil, fmt.Errorf("execution %q is no longer active", session.ExecutionID)
-	}
-	if _, attached := s.interactiveAttached[execKey]; attached {
-		delete(s.interactiveSessions, id)
-		return nil, fmt.Errorf("execution %q already has an active interactive session", session.ExecutionID)
-	}
-
-	delete(s.interactiveSessions, id)
-	s.interactiveAttached[execKey] = struct{}{}
-	return &InteractiveSession{
-		SessionID:   session.SessionID,
-		SandboxID:   session.SandboxID,
-		ExecutionID: session.ExecutionID,
-		InitialCols: session.InitialCols,
-		InitialRows: session.InitialRows,
-	}, nil
+	return s.interactive.consume(s.executions, now, id, tok)
 }
 
 func (s *Service) ReleaseInteractiveExecution(sandboxID, executionID string) {
@@ -1119,11 +1039,10 @@ func (s *Service) ReleaseInteractiveExecution(sandboxID, executionID string) {
 	if sandboxID == "" || executionID == "" {
 		return
 	}
-	execKey := executionKey(sandboxID, executionID)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.ensureMapsLocked()
-	delete(s.interactiveAttached, execKey)
+	s.interactive.release(sandboxID, executionID)
 }
 
 func (s *Service) GetExecution(_ context.Context, req *cleanroomv1.GetExecutionRequest) (*cleanroomv1.GetExecutionResponse, error) {
@@ -1171,7 +1090,7 @@ func (s *Service) CancelExecution(_ context.Context, req *cleanroomv1.CancelExec
 		signalNum = 2
 	}
 
-	now := time.Now().UTC()
+	now := s.clock().Now()
 	s.mu.Lock()
 	ex, ok := s.executions[executionKey(sandboxID, executionID)]
 	if !ok {
@@ -1252,7 +1171,8 @@ func (s *Service) WriteExecutionStdin(sandboxID, executionID string, data []byte
 	}
 
 	payload := append([]byte(nil), data...)
-	deadline := time.Now().Add(attachStdinRegistrationWait)
+	clock := s.clock()
+	deadline := clock.Now().Add(s.timeouts().attachStdinRegistrationWait)
 	for {
 		var (
 			writeFn func([]byte) error
@@ -1275,12 +1195,12 @@ func (s *Service) WriteExecutionStdin(sandboxID, executionID string, data []byte
 		if writeFn != nil {
 			return writeFn(payload)
 		}
-		if time.Now().After(deadline) {
+		if clock.Now().After(deadline) {
 			return ErrExecutionStdinUnsupported
 		}
 		select {
 		case <-done:
-		case <-time.After(attachPollInterval):
+		case <-clock.After(s.timeouts().attachPollInterval):
 		}
 	}
 }
@@ -1295,7 +1215,8 @@ func (s *Service) ResizeExecutionTTY(sandboxID, executionID string, cols, rows u
 		return errors.New("missing execution_id")
 	}
 
-	deadline := time.Now().Add(attachResizeRegistrationWait)
+	clock := s.clock()
+	deadline := clock.Now().Add(s.timeouts().attachResizeRegistrationWait)
 	for {
 		var (
 			resizeFn func(cols, rows uint32) error
@@ -1318,12 +1239,12 @@ func (s *Service) ResizeExecutionTTY(sandboxID, executionID string, cols, rows u
 		if resizeFn != nil {
 			return resizeFn(cols, rows)
 		}
-		if time.Now().After(deadline) {
+		if clock.Now().After(deadline) {
 			return ErrExecutionResizeUnsupported
 		}
 		select {
 		case <-done:
-		case <-time.After(attachPollInterval):
+		case <-clock.After(s.timeouts().attachPollInterval):
 		}
 	}
 }
@@ -1342,22 +1263,8 @@ func (s *Service) SubscribeSandboxEvents(sandboxID string) ([]*cleanroomv1.Sandb
 		return nil, nil, nil, nil, fmt.Errorf("unknown sandbox %q", sandboxID)
 	}
 
-	history := append([]*cleanroomv1.SandboxEvent(nil), sb.EventHistory...)
-	updates := make(chan *cleanroomv1.SandboxEvent, 64)
+	history, updates, subID := sb.events.subscribe(sb.Done, 64)
 	done := sb.Done
-
-	subID := sb.NextSubID
-	sb.NextSubID++
-	if sb.EventSubscribers == nil {
-		sb.EventSubscribers = map[int]chan *cleanroomv1.SandboxEvent{}
-	}
-
-	select {
-	case <-done:
-		close(updates)
-	default:
-		sb.EventSubscribers[subID] = updates
-	}
 
 	unsubscribe := func() {
 		s.mu.Lock()
@@ -1366,12 +1273,7 @@ func (s *Service) SubscribeSandboxEvents(sandboxID string) ([]*cleanroomv1.Sandb
 		if !ok {
 			return
 		}
-		ch, ok := subSB.EventSubscribers[subID]
-		if !ok {
-			return
-		}
-		delete(subSB.EventSubscribers, subID)
-		close(ch)
+		subSB.events.unsubscribe(subID)
 	}
 
 	return history, updates, done, unsubscribe, nil
@@ -1395,22 +1297,8 @@ func (s *Service) SubscribeExecutionEvents(sandboxID, executionID string) ([]*cl
 		return nil, nil, nil, nil, fmt.Errorf("unknown execution %q in sandbox %q", executionID, sandboxID)
 	}
 
-	history := append([]*cleanroomv1.ExecutionStreamEvent(nil), ex.EventHistory...)
-	updates := make(chan *cleanroomv1.ExecutionStreamEvent, 2048)
+	history, updates, subID := ex.events.subscribe(ex.Done, 2048)
 	done := ex.Done
-
-	subID := ex.NextSubID
-	ex.NextSubID++
-	if ex.EventSubscribers == nil {
-		ex.EventSubscribers = map[int]chan *cleanroomv1.ExecutionStreamEvent{}
-	}
-
-	select {
-	case <-done:
-		close(updates)
-	default:
-		ex.EventSubscribers[subID] = updates
-	}
 
 	unsubscribe := func() {
 		s.mu.Lock()
@@ -1419,12 +1307,7 @@ func (s *Service) SubscribeExecutionEvents(sandboxID, executionID string) ([]*cl
 		if !ok {
 			return
 		}
-		ch, ok := subEx.EventSubscribers[subID]
-		if !ok {
-			return
-		}
-		delete(subEx.EventSubscribers, subID)
-		close(ch)
+		subEx.events.unsubscribe(subID)
 	}
 
 	return history, updates, done, unsubscribe, nil
@@ -1487,7 +1370,7 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 	}
 	sb, ok := s.sandboxes[sandboxID]
 	if !ok {
-		finished := time.Now().UTC()
+		finished := s.clock().Now()
 		s.finalizeExecutionLocked(
 			ex,
 			cleanroomv1.ExecutionStatus_EXECUTION_STATUS_FAILED,
@@ -1506,7 +1389,7 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 			finalStatus = cleanroomv1.ExecutionStatus_EXECUTION_STATUS_CANCELED
 			exitCode = cancelExitCode(ex.CancelSignal)
 		}
-		finished := time.Now().UTC()
+		finished := s.clock().Now()
 		s.finalizeExecutionLocked(
 			ex,
 			finalStatus,
@@ -1520,7 +1403,7 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 	}
 	adapter, ok := s.Backends[sb.Backend]
 	if !ok {
-		finished := time.Now().UTC()
+		finished := s.clock().Now()
 		s.finalizeExecutionLocked(
 			ex,
 			cleanroomv1.ExecutionStatus_EXECUTION_STATUS_FAILED,
@@ -1536,10 +1419,10 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 	runCtx, cancel := context.WithCancel(context.Background())
 	ex.Cancel = cancel
 
-	started := time.Now().UTC()
+	started := s.clock().Now()
 	ex.StartedAt = &started
 	ex.Status = cleanroomv1.ExecutionStatus_EXECUTION_STATUS_RUNNING
-	ex.RunID = newRunID()
+	ex.RunID = s.ids().NewRunID()
 	if sb.Policy != nil {
 		ex.ImageRef = sb.Policy.ImageRef
 		ex.ImageDigest = sb.Policy.ImageDigest
@@ -1582,7 +1465,7 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 	}
 	if sb, ok := s.sandboxes[sandboxID]; ok && sb.ActiveExecutionID == executionID {
 		sb.ActiveExecutionID = ""
-		sb.UpdatedAt = time.Now().UTC()
+		sb.UpdatedAt = s.clock().Now()
 	}
 
 	if ex.Cancel != nil {
@@ -1595,7 +1478,7 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 		if strings.TrimSpace(err.Error()) != "" {
 			s.appendExecutionStderrLocked(ex, finalStatus, []byte(err.Error()+"\n"))
 		}
-		finished := time.Now().UTC()
+		finished := s.clock().Now()
 		s.finalizeExecutionLocked(ex, finalStatus, exitCode, err.Error(), "", finished)
 		if s.Logger != nil {
 			s.Logger.Warn("execution failed",
@@ -1637,7 +1520,7 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 	} else if result.ExitCode == 0 {
 		finalStatus = cleanroomv1.ExecutionStatus_EXECUTION_STATUS_SUCCEEDED
 	}
-	finished := time.Now().UTC()
+	finished := s.clock().Now()
 	s.finalizeExecutionLocked(ex, finalStatus, finalExitCode, ex.Message, "", finished)
 
 	if s.Logger != nil {
@@ -1756,52 +1639,6 @@ func (s *Service) preparePersistentSandboxRepository(
 	return nil
 }
 
-func cloneRepositoryCheckout(repository *repositorycheckout.Checkout) *repositorycheckout.Checkout {
-	if repository == nil {
-		return nil
-	}
-	return &repositorycheckout.Checkout{
-		RemoteURL:      repository.RemoteURL,
-		CommitSHA:      repository.CommitSHA,
-		DestinationDir: repository.DestinationDir,
-		Submodules:     repository.Submodules,
-		Branch:         repository.Branch,
-	}
-}
-
-func repositoryCheckoutsEqual(a, b *repositorycheckout.Checkout) bool {
-	switch {
-	case a == nil || b == nil:
-		return a == nil && b == nil
-	default:
-		return a.RemoteURL == b.RemoteURL &&
-			a.CommitSHA == b.CommitSHA &&
-			a.DestinationDir == b.DestinationDir &&
-			a.Submodules == b.Submodules &&
-			a.Branch == b.Branch
-	}
-}
-
-func validateRepositoryCheckoutForPolicy(compiled *policy.CompiledPolicy, repository *repositorycheckout.Checkout) error {
-	if repository == nil {
-		return nil
-	}
-	if err := repository.ValidateBootstrap(); err != nil {
-		return err
-	}
-	host, err := repository.NormalizeRemoteURL()
-	if err != nil {
-		return err
-	}
-	if compiled == nil {
-		return errors.New("repository checkout requires a compiled policy")
-	}
-	if !compiled.Allows(host, 443) {
-		return fmt.Errorf("repository remote host %q is not allowed by sandbox policy", host)
-	}
-	return nil
-}
-
 func (s *Service) bootstrapRepositoryInPersistentSandbox(
 	ctx context.Context,
 	adapter backend.PersistentSandboxAdapter,
@@ -1821,7 +1658,7 @@ func (s *Service) bootstrapRepositoryInPersistentSandbox(
 	var stderr bytes.Buffer
 	result, err := adapter.RunInSandbox(ctx, backend.RunRequest{
 		SandboxID:         sandboxID,
-		RunID:             newRunID(),
+		RunID:             s.ids().NewRunID(),
 		Command:           repositorycheckout.BuildBootstrapCommand(repository),
 		Policy:            compiled,
 		FirecrackerConfig: firecrackerCfg,
@@ -1862,19 +1699,6 @@ func (s *Service) bootstrapRepositoryInPersistentSandbox(
 	return nil
 }
 
-func executionRunErrorStatus(ex *executionState, runCtx context.Context) (cleanroomv1.ExecutionStatus, int32) {
-	if ex == nil {
-		return cleanroomv1.ExecutionStatus_EXECUTION_STATUS_FAILED, 1
-	}
-	if ex.CancelRequested || errors.Is(runCtx.Err(), context.Canceled) {
-		return cleanroomv1.ExecutionStatus_EXECUTION_STATUS_CANCELED, cancelExitCode(ex.CancelSignal)
-	}
-	if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
-		return cleanroomv1.ExecutionStatus_EXECUTION_STATUS_TIMED_OUT, 124
-	}
-	return cleanroomv1.ExecutionStatus_EXECUTION_STATUS_FAILED, 1
-}
-
 func (s *Service) ensureMapsLocked() {
 	if s.sandboxes == nil {
 		s.sandboxes = map[string]*sandboxState{}
@@ -1888,14 +1712,11 @@ func (s *Service) ensureMapsLocked() {
 	if s.snapshotDeletions == nil {
 		s.snapshotDeletions = map[string]struct{}{}
 	}
-	if s.interactiveSessions == nil {
-		s.interactiveSessions = map[string]*interactiveSessionState{}
-	}
-	if s.interactiveAttached == nil {
-		s.interactiveAttached = map[string]struct{}{}
-	}
 }
 
+// Snapshot operation bookkeeping is the remaining piece of snapshot coordination
+// still owned by Service. If snapshot behavior expands beyond basic create/load/
+// delete flows, move this state and the snapshot RPC handlers into a collaborator.
 func (s *Service) beginSnapshotUseLocked(snapshotID string) error {
 	if _, deleting := s.snapshotDeletions[snapshotID]; deleting {
 		return fmt.Errorf("snapshot_busy: snapshot %q is being deleted", snapshotID)
@@ -1931,29 +1752,6 @@ func (s *Service) finishSnapshotDelete(snapshotID string) {
 	delete(s.snapshotDeletions, snapshotID)
 }
 
-func (s *Service) pruneExpiredInteractiveSessionsLocked(now time.Time) {
-	if now.IsZero() {
-		now = time.Now().UTC()
-	}
-	for id, session := range s.interactiveSessions {
-		if session == nil || now.After(session.ExpiresAt) {
-			delete(s.interactiveSessions, id)
-		}
-	}
-}
-
-func (s *Service) hasPendingInteractiveSessionLocked(execKey string) bool {
-	for _, session := range s.interactiveSessions {
-		if session == nil {
-			continue
-		}
-		if executionKey(session.SandboxID, session.ExecutionID) == execKey {
-			return true
-		}
-	}
-	return false
-}
-
 func (s *Service) mergeBufferedResultOutputLocked(ex *executionState, result *backend.RunResult, usedStreaming bool) {
 	if ex == nil || result == nil {
 		return
@@ -1963,9 +1761,10 @@ func (s *Service) mergeBufferedResultOutputLocked(ex *executionState, result *ba
 	appendStderr := result.Stderr
 	replaceStdout := false
 	replaceStderr := false
+	retention := s.retention()
 	if usedStreaming {
-		appendStdout, replaceStdout = bufferedResultDelta(ex.Stdout, result.Stdout, maxRetainedExecutionOutputBytes)
-		appendStderr, replaceStderr = bufferedResultDelta(ex.Stderr, result.Stderr, maxRetainedExecutionOutputBytes)
+		appendStdout, replaceStdout = bufferedResultDelta(ex.Stdout, result.Stdout, retention.maxRetainedExecutionOutputBytes)
+		appendStderr, replaceStderr = bufferedResultDelta(ex.Stderr, result.Stderr, retention.maxRetainedExecutionOutputBytes)
 	}
 
 	if replaceStdout {
@@ -2037,13 +1836,13 @@ func (s *Service) appendExecutionStdoutLocked(ex *executionState, status cleanro
 	if ex == nil || len(chunk) == 0 {
 		return
 	}
-	ex.Stdout = appendRetainedOutput(ex.Stdout, string(chunk), maxRetainedExecutionOutputBytes)
+	ex.Stdout = appendRetainedOutput(ex.Stdout, string(chunk), s.retention().maxRetainedExecutionOutputBytes)
 	s.recordExecutionEventLocked(ex, &cleanroomv1.ExecutionStreamEvent{
 		SandboxId:   ex.SandboxID,
 		ExecutionId: ex.ID,
 		Status:      status,
 		Payload:     &cleanroomv1.ExecutionStreamEvent_Stdout{Stdout: append([]byte(nil), chunk...)},
-		OccurredAt:  timestamppb.Now(),
+		OccurredAt:  timestamppb.New(s.clock().Now()),
 	})
 }
 
@@ -2051,13 +1850,13 @@ func (s *Service) appendExecutionStderrLocked(ex *executionState, status cleanro
 	if ex == nil || len(chunk) == 0 {
 		return
 	}
-	ex.Stderr = appendRetainedOutput(ex.Stderr, string(chunk), maxRetainedExecutionOutputBytes)
+	ex.Stderr = appendRetainedOutput(ex.Stderr, string(chunk), s.retention().maxRetainedExecutionOutputBytes)
 	s.recordExecutionEventLocked(ex, &cleanroomv1.ExecutionStreamEvent{
 		SandboxId:   ex.SandboxID,
 		ExecutionId: ex.ID,
 		Status:      status,
 		Payload:     &cleanroomv1.ExecutionStreamEvent_Stderr{Stderr: append([]byte(nil), chunk...)},
-		OccurredAt:  timestamppb.Now(),
+		OccurredAt:  timestamppb.New(s.clock().Now()),
 	})
 }
 
@@ -2065,13 +1864,13 @@ func (s *Service) replaceExecutionStdoutFromBufferedLocked(ex *executionState, s
 	if ex == nil || output == "" {
 		return
 	}
-	ex.Stdout = appendRetainedOutput("", output, maxRetainedExecutionOutputBytes)
+	ex.Stdout = appendRetainedOutput("", output, s.retention().maxRetainedExecutionOutputBytes)
 	s.recordExecutionEventLocked(ex, &cleanroomv1.ExecutionStreamEvent{
 		SandboxId:   ex.SandboxID,
 		ExecutionId: ex.ID,
 		Status:      status,
 		Payload:     &cleanroomv1.ExecutionStreamEvent_Stdout{Stdout: []byte(output)},
-		OccurredAt:  timestamppb.Now(),
+		OccurredAt:  timestamppb.New(s.clock().Now()),
 	})
 }
 
@@ -2079,13 +1878,13 @@ func (s *Service) replaceExecutionStderrFromBufferedLocked(ex *executionState, s
 	if ex == nil || output == "" {
 		return
 	}
-	ex.Stderr = appendRetainedOutput("", output, maxRetainedExecutionOutputBytes)
+	ex.Stderr = appendRetainedOutput("", output, s.retention().maxRetainedExecutionOutputBytes)
 	s.recordExecutionEventLocked(ex, &cleanroomv1.ExecutionStreamEvent{
 		SandboxId:   ex.SandboxID,
 		ExecutionId: ex.ID,
 		Status:      status,
 		Payload:     &cleanroomv1.ExecutionStreamEvent_Stderr{Stderr: []byte(output)},
-		OccurredAt:  timestamppb.Now(),
+		OccurredAt:  timestamppb.New(s.clock().Now()),
 	})
 }
 
@@ -2099,30 +1898,6 @@ func (s *Service) executionDoneChannel(sandboxID, executionID string) (<-chan st
 	return ex.Done, nil
 }
 
-func closeSandboxDoneLocked(sb *sandboxState) {
-	if sb.DoneClosed {
-		return
-	}
-	close(sb.Done)
-	sb.DoneClosed = true
-}
-
-func closeExecutionDoneLocked(ex *executionState) {
-	if ex.DoneClosed {
-		return
-	}
-	close(ex.Done)
-	ex.DoneClosed = true
-}
-
-func clearExecutionAttachIOLocked(ex *executionState) {
-	if ex == nil {
-		return
-	}
-	ex.AttachStdin = nil
-	ex.AttachResize = nil
-}
-
 func (s *Service) setExecutionAttachIO(key string, io backend.AttachIO) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -2133,20 +1908,6 @@ func (s *Service) setExecutionAttachIO(key string, io backend.AttachIO) {
 	}
 	ex.AttachStdin = io.WriteStdin
 	ex.AttachResize = io.ResizeTTY
-}
-
-func closeSandboxSubscribersLocked(sb *sandboxState) {
-	for id, ch := range sb.EventSubscribers {
-		close(ch)
-		delete(sb.EventSubscribers, id)
-	}
-}
-
-func closeExecutionSubscribersLocked(ex *executionState) {
-	for id, ch := range ex.EventSubscribers {
-		close(ch)
-		delete(ex.EventSubscribers, id)
-	}
 }
 
 func (s *Service) dropSandboxLocked(sandboxID string, sb *sandboxState) {
@@ -2164,7 +1925,7 @@ func (s *Service) dropExecutionLocked(key string, ex *executionState) {
 	}
 	closeExecutionSubscribersLocked(ex)
 	closeExecutionDoneLocked(ex)
-	s.clearInteractiveExecutionStateLocked(key)
+	s.interactive.clearExecution(key)
 	delete(s.executions, key)
 }
 
@@ -2177,32 +1938,9 @@ func (s *Service) hasActiveExecutionLocked(sandboxID string) bool {
 	return false
 }
 
-func executionTerminalTime(ex *executionState) time.Time {
-	if ex == nil {
-		return time.Time{}
-	}
-	if ex.FinishedAt != nil {
-		return *ex.FinishedAt
-	}
-	if ex.StartedAt != nil {
-		return *ex.StartedAt
-	}
-	return time.Time{}
-}
-
-func sandboxTerminalTime(sb *sandboxState) time.Time {
-	if sb == nil {
-		return time.Time{}
-	}
-	if !sb.UpdatedAt.IsZero() {
-		return sb.UpdatedAt
-	}
-	return sb.CreatedAt
-}
-
 func (s *Service) pruneStateLocked(now time.Time) {
 	if now.IsZero() {
-		now = time.Now().UTC()
+		now = s.clock().Now()
 	}
 	s.pruneExecutionsLocked(now)
 	s.pruneSandboxesLocked(now)
@@ -2214,6 +1952,7 @@ func (s *Service) pruneExecutionsLocked(now time.Time) {
 		finished time.Time
 	}
 
+	retention := s.retention()
 	candidates := make([]candidate, 0, len(s.executions))
 	for key, ex := range s.executions {
 		if ex == nil || !isFinalExecutionStatus(ex.Status) {
@@ -2221,7 +1960,7 @@ func (s *Service) pruneExecutionsLocked(now time.Time) {
 		}
 
 		finished := executionTerminalTime(ex)
-		if retainedStateMaxAge > 0 && !finished.IsZero() && now.Sub(finished) > retainedStateMaxAge {
+		if retention.retainedStateMaxAge > 0 && !finished.IsZero() && now.Sub(finished) > retention.retainedStateMaxAge {
 			s.dropExecutionLocked(key, ex)
 			continue
 		}
@@ -2229,7 +1968,7 @@ func (s *Service) pruneExecutionsLocked(now time.Time) {
 		candidates = append(candidates, candidate{key: key, finished: finished})
 	}
 
-	limit := maxRetainedFinishedExecutions
+	limit := retention.maxRetainedFinishedExecutions
 	if limit < 0 {
 		limit = 0
 	}
@@ -2269,6 +2008,7 @@ func (s *Service) pruneSandboxesLocked(now time.Time) {
 		stopped time.Time
 	}
 
+	retention := s.retention()
 	candidates := make([]candidate, 0, len(s.sandboxes))
 	for sandboxID, sb := range s.sandboxes {
 		if sb == nil || sb.Status != cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPED {
@@ -2279,7 +2019,7 @@ func (s *Service) pruneSandboxesLocked(now time.Time) {
 		}
 
 		stopped := sandboxTerminalTime(sb)
-		if retainedStateMaxAge > 0 && !stopped.IsZero() && now.Sub(stopped) > retainedStateMaxAge {
+		if retention.retainedStateMaxAge > 0 && !stopped.IsZero() && now.Sub(stopped) > retention.retainedStateMaxAge {
 			s.dropSandboxLocked(sandboxID, sb)
 			continue
 		}
@@ -2287,7 +2027,7 @@ func (s *Service) pruneSandboxesLocked(now time.Time) {
 		candidates = append(candidates, candidate{id: sandboxID, stopped: stopped})
 	}
 
-	limit := maxRetainedStoppedSandboxes
+	limit := retention.maxRetainedStoppedSandboxes
 	if limit < 0 {
 		limit = 0
 	}
@@ -2322,29 +2062,6 @@ func (s *Service) pruneSandboxesLocked(now time.Time) {
 		}
 		s.dropSandboxLocked(sandboxID, sb)
 	}
-}
-
-func isFinalExecutionStatus(status cleanroomv1.ExecutionStatus) bool {
-	switch status {
-	case cleanroomv1.ExecutionStatus_EXECUTION_STATUS_SUCCEEDED,
-		cleanroomv1.ExecutionStatus_EXECUTION_STATUS_FAILED,
-		cleanroomv1.ExecutionStatus_EXECUTION_STATUS_CANCELED,
-		cleanroomv1.ExecutionStatus_EXECUTION_STATUS_TIMED_OUT:
-		return true
-	default:
-		return false
-	}
-}
-
-func cancelExitCode(signal int32) int32 {
-	if signal <= 0 || signal > 127 {
-		return 130
-	}
-	return 128 + signal
-}
-
-func executionKey(sandboxID, executionID string) string {
-	return sandboxID + "/" + executionID
 }
 
 func ensureSandboxIdleLocked(sandboxID string, sb *sandboxState, executions map[string]*executionState) error {
@@ -2404,75 +2121,8 @@ func withSnapshotDriver(cfg backend.FirecrackerConfig, driver string) backend.Fi
 	cfg.Snapshots.Driver = runtimeconfig.SnapshotDriverOrDefault(driver)
 	return cfg
 }
-
-func cloneSandboxLocked(state *sandboxState) *cleanroomv1.Sandbox {
-	if state == nil {
-		return nil
-	}
-	policyHash := ""
-	if state.Policy != nil {
-		policyHash = state.Policy.Hash
-	}
-	return &cleanroomv1.Sandbox{
-		SandboxId:  state.ID,
-		Status:     state.Status,
-		Backend:    state.Backend,
-		PolicyHash: policyHash,
-		CreatedAt:  timestamppb.New(state.CreatedAt),
-		UpdatedAt:  timestamppb.New(state.UpdatedAt),
-	}
-}
-
-func cloneExecutionLocked(state *executionState) *cleanroomv1.Execution {
-	if state == nil {
-		return nil
-	}
-	out := &cleanroomv1.Execution{
-		ExecutionId: state.ID,
-		SandboxId:   state.SandboxID,
-		Status:      state.Status,
-		Command:     append([]string(nil), state.Command...),
-		ExitCode:    state.ExitCode,
-		Tty:         state.TTY,
-		RunId:       state.RunID,
-		Kind:        state.Kind,
-	}
-	if state.StartedAt != nil {
-		out.StartedAt = timestamppb.New(*state.StartedAt)
-	}
-	if state.FinishedAt != nil {
-		out.FinishedAt = timestamppb.New(*state.FinishedAt)
-	}
-	return out
-}
-
-func resolveExecutionKind(kind cleanroomv1.ExecutionKind, tty bool) (cleanroomv1.ExecutionKind, error) {
-	if kind == cleanroomv1.ExecutionKind_EXECUTION_KIND_UNSPECIFIED {
-		if tty {
-			return cleanroomv1.ExecutionKind_EXECUTION_KIND_INTERACTIVE, nil
-		}
-		return cleanroomv1.ExecutionKind_EXECUTION_KIND_BATCH, nil
-	}
-	switch kind {
-	case cleanroomv1.ExecutionKind_EXECUTION_KIND_BATCH:
-		return kind, nil
-	case cleanroomv1.ExecutionKind_EXECUTION_KIND_INTERACTIVE:
-		return kind, nil
-	default:
-		return cleanroomv1.ExecutionKind_EXECUTION_KIND_UNSPECIFIED, fmt.Errorf("unsupported execution kind %q", kind.String())
-	}
-}
-
-func newSessionToken() (string, error) {
-	buf := make([]byte, 24)
-	if _, err := rand.Read(buf); err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(buf), nil
-}
-
 func (s *Service) recordSandboxEventLocked(sb *sandboxState, status cleanroomv1.SandboxStatus, message string) {
-	now := time.Now().UTC()
+	now := s.clock().Now()
 	sb.Status = status
 	sb.UpdatedAt = now
 	event := &cleanroomv1.SandboxEvent{
@@ -2481,16 +2131,7 @@ func (s *Service) recordSandboxEventLocked(sb *sandboxState, status cleanroomv1.
 		Message:    message,
 		OccurredAt: timestamppb.New(now),
 	}
-	sb.EventHistory = appendBounded(sb.EventHistory, event, maxRetainedSandboxEvents)
-
-	for id, ch := range sb.EventSubscribers {
-		select {
-		case ch <- event:
-		default:
-			close(ch)
-			delete(sb.EventSubscribers, id)
-		}
-	}
+	sb.events.publish(event)
 }
 
 func (s *Service) recordExecutionEventLocked(ex *executionState, event *cleanroomv1.ExecutionStreamEvent) {
@@ -2504,18 +2145,9 @@ func (s *Service) recordExecutionEventLocked(ex *executionState, event *cleanroo
 		event.ImageDigest = ex.ImageDigest
 	}
 	if event.GetOccurredAt() == nil {
-		event.OccurredAt = timestamppb.Now()
+		event.OccurredAt = timestamppb.New(s.clock().Now())
 	}
-	ex.EventHistory = appendBounded(ex.EventHistory, event, maxRetainedExecutionEvents)
-
-	for id, ch := range ex.EventSubscribers {
-		select {
-		case ch <- event:
-		default:
-			close(ch)
-			delete(ex.EventSubscribers, id)
-		}
-	}
+	ex.events.publish(event)
 }
 
 func (s *Service) finalizeExecutionLocked(ex *executionState, status cleanroomv1.ExecutionStatus, exitCode int32, message, exitMessage string, finished time.Time) {
@@ -2531,7 +2163,7 @@ func (s *Service) finalizeExecutionInternalLocked(ex *executionState, status cle
 		return
 	}
 	if finished.IsZero() {
-		finished = time.Now().UTC()
+		finished = s.clock().Now()
 	}
 	if exitMessage == "" {
 		exitMessage = message
@@ -2552,97 +2184,8 @@ func (s *Service) finalizeExecutionInternalLocked(ex *executionState, status cle
 		OccurredAt: timestamppb.New(finished),
 	})
 	closeExecutionDoneLocked(ex)
-	s.clearInteractiveExecutionStateLocked(executionKey(ex.SandboxID, ex.ID))
+	s.interactive.clearExecution(executionKey(ex.SandboxID, ex.ID))
 	if prune {
 		s.pruneStateLocked(finished)
 	}
-}
-
-func (s *Service) clearInteractiveExecutionStateLocked(execKey string) {
-	delete(s.interactiveAttached, execKey)
-	for id, session := range s.interactiveSessions {
-		if session == nil {
-			delete(s.interactiveSessions, id)
-			continue
-		}
-		if executionKey(session.SandboxID, session.ExecutionID) == execKey {
-			delete(s.interactiveSessions, id)
-		}
-	}
-}
-
-func normalizeCommand(command []string) []string {
-	if len(command) > 0 && command[0] == "--" {
-		return command[1:]
-	}
-	return command
-}
-
-func bufferedResultDelta(retained, buffered string, retentionLimit int) (string, bool) {
-	if buffered == "" {
-		return "", false
-	}
-	if retained == "" {
-		return buffered, false
-	}
-	if strings.HasSuffix(buffered, retained) {
-		// If retention is saturated, treat suffix-only overlap as a truncation artifact
-		// and avoid replaying duplicate tail bytes from the buffered result.
-		if retentionLimit > 0 && len(retained) >= retentionLimit {
-			return "", false
-		}
-		if strings.HasPrefix(buffered, retained) {
-			return buffered[len(retained):], false
-		}
-		// Stream callbacks likely missed earlier bytes; replace retained output with
-		// the complete buffered output so snapshots/history stay correct.
-		return buffered, true
-	}
-	if strings.HasPrefix(buffered, retained) {
-		return buffered[len(retained):], false
-	}
-	return buffered, true
-}
-
-func appendRetainedOutput(existing, chunk string, limit int) string {
-	if limit <= 0 {
-		return ""
-	}
-	if chunk == "" {
-		if len(existing) <= limit {
-			return existing
-		}
-		return strings.Clone(existing[len(existing)-limit:])
-	}
-	if len(chunk) >= limit {
-		return strings.Clone(chunk[len(chunk)-limit:])
-	}
-	keepExisting := limit - len(chunk)
-	if keepExisting < len(existing) {
-		existing = strings.Clone(existing[len(existing)-keepExisting:])
-	}
-	return existing + chunk
-}
-
-func appendBounded[T any](history []T, item T, limit int) []T {
-	if limit <= 0 {
-		return nil
-	}
-	history = append(history, item)
-	if len(history) <= limit {
-		return history
-	}
-	trimmed := make([]T, limit)
-	copy(trimmed, history[len(history)-limit:])
-	return trimmed
-}
-
-func resolveBackendName(requested, configuredDefault string) string {
-	if requested != "" {
-		return requested
-	}
-	if configuredDefault != "" {
-		return configuredDefault
-	}
-	return runtimeconfig.DefaultBackendForHost()
 }

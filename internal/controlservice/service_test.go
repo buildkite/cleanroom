@@ -229,6 +229,11 @@ func newTestServiceWithSnapshotStore(adapter backend.Adapter, store snapshotMeta
 	}
 }
 
+func testRetentionPolicy() *retentionPolicy {
+	retention := defaultRetentionPolicy
+	return &retention
+}
+
 func testRepositoryCheckoutProto() *cleanroomv1.RepositoryCheckout {
 	return &cleanroomv1.RepositoryCheckout{
 		RemoteUrl:      "https://github.com/buildkite/cleanroom.git",
@@ -2224,14 +2229,14 @@ func TestRunExecutionSkipsAlreadyFinalExecution(t *testing.T) {
 	sb.Status = cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPED
 
 	ex := &executionState{
-		ID:               executionID,
-		SandboxID:        sandboxID,
-		Command:          []string{"echo", "stale"},
-		Status:           cleanroomv1.ExecutionStatus_EXECUTION_STATUS_CANCELED,
-		ExitCode:         143,
-		FinishedAt:       &finished,
-		EventSubscribers: map[int]chan *cleanroomv1.ExecutionStreamEvent{},
-		Done:             make(chan struct{}),
+		ID:         executionID,
+		SandboxID:  sandboxID,
+		Command:    []string{"echo", "stale"},
+		Status:     cleanroomv1.ExecutionStatus_EXECUTION_STATUS_CANCELED,
+		ExitCode:   143,
+		FinishedAt: &finished,
+		events:     newEventFeed[*cleanroomv1.ExecutionStreamEvent](defaultRetentionPolicy.maxRetainedExecutionEvents),
+		Done:       make(chan struct{}),
 	}
 	svc.recordExecutionEventLocked(ex, &cleanroomv1.ExecutionStreamEvent{
 		SandboxId:   sandboxID,
@@ -2245,7 +2250,7 @@ func TestRunExecutionSkipsAlreadyFinalExecution(t *testing.T) {
 	})
 	closeExecutionDoneLocked(ex)
 	svc.executions[key] = ex
-	initialEvents := len(ex.EventHistory)
+	initialEvents := len(ex.events.snapshot())
 	svc.mu.Unlock()
 
 	svc.runExecution(sandboxID, executionID)
@@ -2257,7 +2262,7 @@ func TestRunExecutionSkipsAlreadyFinalExecution(t *testing.T) {
 	if gotEx == nil {
 		t.Fatal("expected execution state to exist")
 	}
-	if got, want := len(gotEx.EventHistory), initialEvents; got != want {
+	if got, want := len(gotEx.events.snapshot()), initialEvents; got != want {
 		t.Fatalf("expected no additional events, got %d want %d", got, want)
 	}
 	if got, want := gotEx.Status, cleanroomv1.ExecutionStatus_EXECUTION_STATUS_CANCELED; got != want {
@@ -2269,13 +2274,10 @@ func TestRunExecutionSkipsAlreadyFinalExecution(t *testing.T) {
 }
 
 func TestFinalizeExecutionWithoutPruneSkipsImmediateStatePruning(t *testing.T) {
-	origLimit := maxRetainedFinishedExecutions
-	maxRetainedFinishedExecutions = 0
-	defer func() {
-		maxRetainedFinishedExecutions = origLimit
-	}()
-
 	svc := newTestService(&stubAdapter{})
+	retention := testRetentionPolicy()
+	retention.maxRetainedFinishedExecutions = 0
+	svc.runtime.retention = retention
 	createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
 	if err != nil {
 		t.Fatalf("CreateSandbox returned error: %v", err)
@@ -2286,12 +2288,12 @@ func TestFinalizeExecutionWithoutPruneSkipsImmediateStatePruning(t *testing.T) {
 
 	now := time.Now().UTC()
 	ex := &executionState{
-		ID:               executionID,
-		SandboxID:        sandboxID,
-		Command:          []string{"echo", "ok"},
-		Status:           cleanroomv1.ExecutionStatus_EXECUTION_STATUS_QUEUED,
-		EventSubscribers: map[int]chan *cleanroomv1.ExecutionStreamEvent{},
-		Done:             make(chan struct{}),
+		ID:        executionID,
+		SandboxID: sandboxID,
+		Command:   []string{"echo", "ok"},
+		Status:    cleanroomv1.ExecutionStatus_EXECUTION_STATUS_QUEUED,
+		events:    newEventFeed[*cleanroomv1.ExecutionStreamEvent](retention.maxRetainedExecutionEvents),
+		Done:      make(chan struct{}),
 	}
 
 	svc.mu.Lock()
@@ -2331,11 +2333,11 @@ func TestBufferedResultDeltaModes(t *testing.T) {
 func TestMergeBufferedResultOutputReplacesMissingStreamPrefix(t *testing.T) {
 	svc := newTestService(&stubAdapter{})
 	ex := &executionState{
-		ID:               "exec-1",
-		SandboxID:        "sb-1",
-		Stdout:           "tail",
-		Status:           cleanroomv1.ExecutionStatus_EXECUTION_STATUS_RUNNING,
-		EventSubscribers: map[int]chan *cleanroomv1.ExecutionStreamEvent{},
+		ID:        "exec-1",
+		SandboxID: "sb-1",
+		Stdout:    "tail",
+		Status:    cleanroomv1.ExecutionStatus_EXECUTION_STATUS_RUNNING,
+		events:    newEventFeed[*cleanroomv1.ExecutionStreamEvent](defaultRetentionPolicy.maxRetainedExecutionEvents),
 	}
 
 	svc.mergeBufferedResultOutputLocked(ex, &backend.RunResult{
@@ -2345,10 +2347,11 @@ func TestMergeBufferedResultOutputReplacesMissingStreamPrefix(t *testing.T) {
 	if got, want := ex.Stdout, "head-tail"; got != want {
 		t.Fatalf("expected buffered replacement to preserve missing prefix: got %q want %q", got, want)
 	}
-	if got, want := len(ex.EventHistory), 1; got != want {
+	history := ex.events.snapshot()
+	if got, want := len(history), 1; got != want {
 		t.Fatalf("expected single buffered stdout event, got %d want %d", got, want)
 	}
-	if got, want := string(ex.EventHistory[0].GetStdout()), "head-tail"; got != want {
+	if got, want := string(history[0].GetStdout()), "head-tail"; got != want {
 		t.Fatalf("unexpected buffered stdout event payload: got %q want %q", got, want)
 	}
 }
@@ -2366,19 +2369,12 @@ func TestAppendRetainedOutputClonesTailSlice(t *testing.T) {
 }
 
 func TestStatePruningBoundsRetainedTerminalState(t *testing.T) {
-	origSandboxes := maxRetainedStoppedSandboxes
-	origExecutions := maxRetainedFinishedExecutions
-	origAge := retainedStateMaxAge
-	maxRetainedStoppedSandboxes = 1
-	maxRetainedFinishedExecutions = 2
-	retainedStateMaxAge = 24 * time.Hour
-	defer func() {
-		maxRetainedStoppedSandboxes = origSandboxes
-		maxRetainedFinishedExecutions = origExecutions
-		retainedStateMaxAge = origAge
-	}()
-
 	svc := newTestService(&stubAdapter{})
+	retention := testRetentionPolicy()
+	retention.maxRetainedStoppedSandboxes = 1
+	retention.maxRetainedFinishedExecutions = 2
+	retention.retainedStateMaxAge = 24 * time.Hour
+	svc.runtime.retention = retention
 
 	runOnce := func() (string, string) {
 		createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
@@ -2442,12 +2438,6 @@ func TestStatePruningBoundsRetainedTerminalState(t *testing.T) {
 }
 
 func TestExecutionRetentionBoundsOutput(t *testing.T) {
-	origOutputLimit := maxRetainedExecutionOutputBytes
-	maxRetainedExecutionOutputBytes = 8
-	defer func() {
-		maxRetainedExecutionOutputBytes = origOutputLimit
-	}()
-
 	adapter := &stubAdapter{
 		runStreamFn: func(_ context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
 			for _, chunk := range []string{"1234", "5678", "90"} {
@@ -2473,6 +2463,9 @@ func TestExecutionRetentionBoundsOutput(t *testing.T) {
 		},
 	}
 	svc := newTestService(adapter)
+	retention := testRetentionPolicy()
+	retention.maxRetainedExecutionOutputBytes = 8
+	svc.runtime.retention = retention
 
 	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
 	if err != nil {
@@ -2506,12 +2499,6 @@ func TestExecutionRetentionBoundsOutput(t *testing.T) {
 }
 
 func TestExecutionRetentionBoundsEventHistory(t *testing.T) {
-	origEventLimit := maxRetainedExecutionEvents
-	maxRetainedExecutionEvents = 3
-	defer func() {
-		maxRetainedExecutionEvents = origEventLimit
-	}()
-
 	adapter := &stubAdapter{
 		runStreamFn: func(_ context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
 			for _, chunk := range []string{"1", "2", "3", "4"} {
@@ -2531,6 +2518,9 @@ func TestExecutionRetentionBoundsEventHistory(t *testing.T) {
 		},
 	}
 	svc := newTestService(adapter)
+	retention := testRetentionPolicy()
+	retention.maxRetainedExecutionEvents = 3
+	svc.runtime.retention = retention
 
 	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
 	if err != nil {
@@ -2557,7 +2547,7 @@ func TestExecutionRetentionBoundsEventHistory(t *testing.T) {
 		svc.mu.RUnlock()
 		t.Fatal("expected execution state to exist")
 	}
-	history := append([]*cleanroomv1.ExecutionStreamEvent(nil), ex.EventHistory...)
+	history := ex.events.snapshot()
 	svc.mu.RUnlock()
 
 	if got, want := len(history), 3; got != want {
@@ -2575,13 +2565,10 @@ func TestExecutionRetentionBoundsEventHistory(t *testing.T) {
 }
 
 func TestSandboxRetentionBoundsEventHistory(t *testing.T) {
-	origEventLimit := maxRetainedSandboxEvents
-	maxRetainedSandboxEvents = 2
-	defer func() {
-		maxRetainedSandboxEvents = origEventLimit
-	}()
-
 	svc := newTestService(&stubAdapter{})
+	retention := testRetentionPolicy()
+	retention.maxRetainedSandboxEvents = 2
+	svc.runtime.retention = retention
 
 	createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
 	if err != nil {
