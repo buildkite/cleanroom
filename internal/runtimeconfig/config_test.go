@@ -276,10 +276,13 @@ func TestSnapshotConfigForBackend(t *testing.T) {
 }
 
 func TestSnapshotDriverOrDefault(t *testing.T) {
-	if got, want := SnapshotDriverOrDefault(""), "file"; got != want {
-		t.Fatalf("unexpected default snapshot driver: got %q want %q", got, want)
+	if got, want := SnapshotDriverOrDefault("firecracker", ""), "file"; got != want {
+		t.Fatalf("unexpected firecracker default snapshot driver: got %q want %q", got, want)
 	}
-	if got, want := SnapshotDriverOrDefault(" file "), "file"; got != want {
+	if got, want := SnapshotDriverOrDefault("darwin-vz", ""), "apfs"; got != want {
+		t.Fatalf("unexpected darwin-vz default snapshot driver: got %q want %q", got, want)
+	}
+	if got, want := SnapshotDriverOrDefault("darwin-vz", " file "), "file"; got != want {
 		t.Fatalf("unexpected trimmed snapshot driver: got %q want %q", got, want)
 	}
 }

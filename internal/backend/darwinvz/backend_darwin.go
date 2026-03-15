@@ -1430,8 +1430,11 @@ func snapshotStorageBaseDir(cfg backend.FirecrackerConfig) (string, error) {
 
 func rootFSVolumeDriver(cfg backend.FirecrackerConfig) (volumestore.Driver, error) {
 	driverName := strings.ToLower(strings.TrimSpace(cfg.Snapshots.Driver))
+	if driverName == "" {
+		driverName = "apfs"
+	}
 	switch driverName {
-	case "", "file":
+	case "file":
 		snapshotBaseDir, err := snapshotStorageBaseDir(cfg)
 		if err != nil {
 			return nil, fmt.Errorf("resolve snapshot base directory: %w", err)

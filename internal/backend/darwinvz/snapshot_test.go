@@ -208,3 +208,15 @@ func TestRootFSVolumeDriverAllowsAPFSDriver(t *testing.T) {
 		t.Fatalf("unexpected rootfs driver name: got %q want %q", got, want)
 	}
 }
+
+func TestRootFSVolumeDriverDefaultsToAPFSWhenUnset(t *testing.T) {
+	t.Parallel()
+
+	driver, err := rootFSVolumeDriver(backend.FirecrackerConfig{})
+	if err != nil {
+		t.Fatalf("rootFSVolumeDriver returned error: %v", err)
+	}
+	if got, want := driver.Name(), "apfs"; got != want {
+		t.Fatalf("unexpected default rootfs driver name: got %q want %q", got, want)
+	}
+}
