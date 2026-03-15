@@ -388,7 +388,7 @@ func (a *Adapter) CreateSnapshot(ctx context.Context, req backend.SnapshotReques
 	}
 	syncCtx, cancel := context.WithTimeout(ctx, time.Duration(connectSeconds)*time.Second)
 	defer cancel()
-	if _, err := executeInSandbox(syncCtx, ctx, instance, backend.RunRequest{
+	if _, err := executeInSandbox(syncCtx, syncCtx, instance, backend.RunRequest{
 		SandboxID: sandboxID,
 		Command:   []string{"sync"},
 		Policy:    instance.Policy,

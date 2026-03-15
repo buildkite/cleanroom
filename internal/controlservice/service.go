@@ -489,11 +489,13 @@ func (s *Service) CreateSnapshot(ctx context.Context, req *cleanroomv1.CreateSna
 
 	record.StorageRef = strings.TrimSpace(result.StorageRef)
 	if err := store.Create(ctx, record); err != nil {
-		deleteErr := snapshotAdapter.DeleteSnapshot(ctx, backend.DeleteSnapshotRequest{
+		rollbackCtx, rollbackCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		deleteErr := snapshotAdapter.DeleteSnapshot(rollbackCtx, backend.DeleteSnapshotRequest{
 			SnapshotID:        snapshotID,
 			StorageRef:        record.StorageRef,
 			FirecrackerConfig: snapshotCfg,
 		})
+		rollbackCancel()
 		if deleteErr != nil && s.Logger != nil {
 			s.Logger.Warn("rollback snapshot after metadata failure failed",
 				"snapshot_id", snapshotID,

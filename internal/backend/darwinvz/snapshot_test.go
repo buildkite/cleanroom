@@ -4,6 +4,7 @@ package darwinvz
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -75,6 +76,47 @@ func TestCreateSnapshotSyncsPausesAndClonesRootFS(t *testing.T) {
 	}
 	if got, want := string(data), "snapshot-bytes"; got != want {
 		t.Fatalf("unexpected snapshot contents: got %q want %q", got, want)
+	}
+}
+
+func TestCreateSnapshotUsesTimeoutContextForSync(t *testing.T) {
+	t.Parallel()
+
+	rootfsPath := filepath.Join(t.TempDir(), "rootfs.ext4")
+	if err := os.WriteFile(rootfsPath, []byte("snapshot-bytes"), 0o644); err != nil {
+		t.Fatalf("write rootfs: %v", err)
+	}
+
+	adapter := &Adapter{
+		executeInSandboxFn: func(bootCtx context.Context, runCtx context.Context, _ *sandboxInstance, req backend.RunRequest, _ backend.OutputStream) (*backend.RunResult, error) {
+			if _, ok := bootCtx.Deadline(); !ok {
+				t.Fatal("expected boot context to include timeout deadline")
+			}
+			if _, ok := runCtx.Deadline(); !ok {
+				t.Fatal("expected run context to include timeout deadline")
+			}
+			if len(req.Command) != 1 || req.Command[0] != "sync" {
+				t.Fatalf("unexpected command: %v", req.Command)
+			}
+			return nil, errors.New("sync failed")
+		},
+		sandboxes: map[string]*sandboxInstance{
+			"cr-test": {
+				SandboxID:      "cr-test",
+				CommandTimeout: 5,
+				Policy:         &policy.CompiledPolicy{NetworkDefault: "deny"},
+				exitedCh:       make(chan struct{}),
+				vmRootFSPath:   rootfsPath,
+			},
+		},
+	}
+
+	_, err := adapter.CreateSnapshot(context.Background(), backend.SnapshotRequest{
+		SandboxID:  "cr-test",
+		SnapshotID: "snap-test",
+	})
+	if err == nil {
+		t.Fatal("expected CreateSnapshot to fail when sync command fails")
 	}
 }
 

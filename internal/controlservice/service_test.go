@@ -243,6 +243,8 @@ type memorySnapshotStore struct {
 	records map[string]snapshotstore.Record
 }
 
+type contextErrorSnapshotStore struct{}
+
 func newMemorySnapshotStore() *memorySnapshotStore {
 	return &memorySnapshotStore{records: map[string]snapshotstore.Record{}}
 }
@@ -278,6 +280,25 @@ func (s *memorySnapshotStore) Delete(_ context.Context, snapshotID string) error
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.records, snapshotID)
+	return nil
+}
+
+func (s *contextErrorSnapshotStore) Create(ctx context.Context, _ snapshotstore.Record) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return errors.New("expected canceled context")
+}
+
+func (s *contextErrorSnapshotStore) Get(_ context.Context, _ string) (snapshotstore.Record, bool, error) {
+	return snapshotstore.Record{}, false, nil
+}
+
+func (s *contextErrorSnapshotStore) List(_ context.Context) ([]snapshotstore.Record, error) {
+	return nil, nil
+}
+
+func (s *contextErrorSnapshotStore) Delete(_ context.Context, _ string) error {
 	return nil
 }
 
@@ -460,6 +481,40 @@ func TestCreateSnapshotPersistsMetadataAndDeletesIt(t *testing.T) {
 	}
 	if got := len(listResp.GetSnapshots()); got != 0 {
 		t.Fatalf("expected no snapshots after delete, got %d", got)
+	}
+}
+
+func TestCreateSnapshotRollbackUsesFreshContextAfterMetadataFailure(t *testing.T) {
+	store := &contextErrorSnapshotStore{}
+	deleteCtxWasCanceled := false
+	adapter := &stubAdapter{
+		createSnapshotFn: func(_ context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
+			return &backend.SnapshotResult{StorageRef: "/snapshots/" + req.SnapshotID + ".ext4"}, nil
+		},
+		deleteSnapshotFn: func(ctx context.Context, _ backend.DeleteSnapshotRequest) error {
+			deleteCtxWasCanceled = ctx.Err() != nil
+			return nil
+		},
+	}
+	svc := newTestServiceWithSnapshotStore(adapter, store)
+
+	createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+
+	canceledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err = svc.CreateSnapshot(canceledCtx, &cleanroomv1.CreateSnapshotRequest{SandboxId: createResp.GetSandbox().GetSandboxId()})
+	if err == nil {
+		t.Fatal("expected CreateSnapshot to fail when metadata persistence context is canceled")
+	}
+	if adapter.deleteSnapshotCalls != 1 {
+		t.Fatalf("expected rollback delete to run once, got %d", adapter.deleteSnapshotCalls)
+	}
+	if deleteCtxWasCanceled {
+		t.Fatal("expected rollback delete to run with a fresh non-canceled context")
 	}
 }
 
