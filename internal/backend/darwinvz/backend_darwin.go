@@ -661,11 +661,7 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 
 	stderrPrefix := ""
 	for _, warningText := range warnings {
-		warningLine := "warning: " + warningText + "\n"
-		stderrPrefix += warningLine
-		if stream.OnStderr != nil {
-			stream.OnStderr([]byte(warningLine))
-		}
+		stderrPrefix += emitExecutionWarning(stream, warningText)
 	}
 
 	resolvedImageRef := req.Policy.ImageRef
@@ -1154,11 +1150,7 @@ func (a *Adapter) executeInSandbox(bootCtx context.Context, runCtx context.Conte
 	warnings := buildRuntimeWarnings(policyWarn)
 	stderrPrefix := ""
 	for _, warningText := range warnings {
-		warningLine := "warning: " + warningText + "\n"
-		stderrPrefix += warningLine
-		if stream.OnStderr != nil {
-			stream.OnStderr([]byte(warningLine))
-		}
+		stderrPrefix += emitExecutionWarning(stream, warningText)
 	}
 
 	helper := instance.Helper
@@ -1432,6 +1424,22 @@ func buildRuntimeWarnings(policyWarning string) []string {
 	}
 	warnings = append(warnings, guestNetworkUnavailableWarning)
 	return warnings
+}
+
+func emitExecutionWarning(stream backend.OutputStream, warningText string) string {
+	warningText = strings.TrimSpace(warningText)
+	if warningText == "" {
+		return ""
+	}
+	if stream.OnWarning != nil {
+		stream.OnWarning(warningText)
+		return ""
+	}
+	warningLine := "warning: " + warningText + "\n"
+	if stream.OnStderr != nil {
+		stream.OnStderr([]byte(warningLine))
+	}
+	return warningLine
 }
 
 type imageArtifact struct {

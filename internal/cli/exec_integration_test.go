@@ -534,6 +534,59 @@ func TestExecIntegrationPropagatesExitAndStderr(t *testing.T) {
 	}
 }
 
+func TestExecIntegrationRendersStructuredWarnings(t *testing.T) {
+	t.Setenv("CLICOLOR_FORCE", "1")
+
+	const warningText = "darwin-vz guest networking is enabled without host-side egress filtering"
+
+	adapter := &integrationAdapter{
+		runStreamFn: func(_ context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+			if stream.OnWarning != nil {
+				stream.OnWarning(warningText)
+			}
+			if stream.OnStdout != nil {
+				stream.OnStdout([]byte("hello world\n"))
+			}
+			return &backend.RunResult{
+				RunID:    req.RunID,
+				ExitCode: 0,
+				Stdout:   "hello world\n",
+				Message:  "ok",
+			}, nil
+		},
+	}
+
+	host, _ := startIntegrationServer(t, adapter)
+	cwd := t.TempDir()
+	outcome := runExecWithCapture(ExecCommand{
+		clientFlags: clientFlags{Host: host},
+		Chdir:       cwd,
+		Command:     []string{"echo", "ignored-by-adapter"},
+	}, runtimeContext{
+		CWD:    cwd,
+		Loader: integrationLoader{},
+	})
+
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err != nil {
+		t.Fatalf("ExecCommand.Run returned error: %v", outcome.err)
+	}
+	if !strings.Contains(stripANSI(outcome.stderr), "warning: "+warningText) {
+		t.Fatalf("expected structured warning in stderr, got %q", stripANSI(outcome.stderr))
+	}
+	if !strings.Contains(outcome.stderr, "\x1b[") {
+		t.Fatalf("expected ANSI styling in warning output, got %q", outcome.stderr)
+	}
+	if !strings.Contains(outcome.stdout, "hello world\n") {
+		t.Fatalf("expected stdout output, got %q", outcome.stdout)
+	}
+	if strings.Contains(outcome.stdout, warningText) {
+		t.Fatalf("expected warning to stay out of stdout, got %q", outcome.stdout)
+	}
+}
+
 func TestExecIntegrationFirstInterruptCancelsExecution(t *testing.T) {
 	started := make(chan struct{}, 1)
 	adapter := &integrationAdapter{

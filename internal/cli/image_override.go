@@ -250,12 +250,12 @@ func importLocalDockerImageForOverride(ctx context.Context, source string) (stri
 			continue
 		}
 		if _, statErr := os.Stat(record.RootFSPath); statErr == nil {
-			_, _ = fmt.Fprintf(os.Stderr, "using cached local image override %s\n", digestRef.Original)
+			_, _ = fmt.Fprintln(os.Stderr, renderActionLine("using", "cached local image override "+digestRef.Original, defaultTerminalPalette().info, shouldUseANSI(os.Stderr)))
 			return digestRef.Original, nil
 		}
 	}
 
-	_, _ = fmt.Fprintf(os.Stderr, "importing local docker image %q into cleanroom cache (first run can take a while)\n", source)
+	_, _ = fmt.Fprintln(os.Stderr, renderActionLine("importing", fmt.Sprintf("local docker image %q into cleanroom cache (first run can take a while)", source), defaultTerminalPalette().info, shouldUseANSI(os.Stderr)))
 
 	containerID, err := dockerCreateContainer(ctx, source)
 	if err != nil {
@@ -288,6 +288,6 @@ func importLocalDockerImageForOverride(ctx context.Context, source string) (stri
 		return "", fmt.Errorf("import local docker image %q into cleanroom cache: %w", source, err)
 	}
 
-	_, _ = fmt.Fprintf(os.Stderr, "imported local docker image override as %s\n", digestRef.Original)
+	_, _ = fmt.Fprintln(os.Stderr, renderActionLine("imported", "local docker image override as "+digestRef.Original, defaultTerminalPalette().info, shouldUseANSI(os.Stderr)))
 	return digestRef.Original, nil
 }

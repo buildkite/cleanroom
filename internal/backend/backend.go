@@ -156,9 +156,10 @@ type AttachIO struct {
 }
 
 type OutputStream struct {
-	OnStdout func([]byte)
-	OnStderr func([]byte)
-	OnAttach func(AttachIO)
+	OnStdout  func([]byte)
+	OnStderr  func([]byte)
+	OnWarning func(string)
+	OnAttach  func(AttachIO)
 }
 
 // StreamingAdapter can push stdout/stderr chunks while a command is running.

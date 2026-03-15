@@ -17,6 +17,5 @@ func newLogger(rawLevel, component string) (*log.Logger, error) {
 		Level:     level,
 		Formatter: log.TextFormatter,
 	})
-	applyPolishedLoggerStyles(logger, shouldUseANSI(os.Stderr))
 	return logger.With("component", component), nil
 }

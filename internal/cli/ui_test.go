@@ -1,11 +1,11 @@
 package cli
 
 import (
-	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/buildkite/cleanroom/internal/backend"
+	"github.com/charmbracelet/log"
 )
 
 func TestRenderStartupHeaderPlain(t *testing.T) {
@@ -33,17 +33,18 @@ func TestRenderStartupHeaderColor(t *testing.T) {
 			{Key: "workspace", Value: "/tmp/repo"},
 		},
 	}, true)
+	plain := stripANSI(out)
 
 	if !strings.Contains(out, "\x1b[") {
 		t.Fatalf("expected ANSI escapes in color output: %q", out)
 	}
-	if !strings.Contains(out, "cleanroom console") {
+	if !strings.Contains(plain, "cleanroom console") {
 		t.Fatalf("missing title in header output: %q", out)
 	}
-	if !strings.Contains(out, "🧑‍🔬") {
+	if !strings.Contains(plain, "🧑‍🔬") {
 		t.Fatalf("missing icon in header output: %q", out)
 	}
-	if !strings.Contains(out, "workspace: /tmp/repo") {
+	if !strings.Contains(plain, "workspace: /tmp/repo") {
 		t.Fatalf("missing field in header output: %q", out)
 	}
 	if !strings.HasPrefix(out, "\n") {
@@ -115,6 +116,25 @@ func TestRenderDoctorReportColor(t *testing.T) {
 	}
 }
 
+func TestRenderDoctorReportColorUsesLoggerPalette(t *testing.T) {
+	out := renderDoctorReport("darwin-vz", []backend.DoctorCheck{
+		{Name: "runtime_config", Status: "pass", Message: "using /tmp/config.yaml"},
+		{Name: "network_guest_interface", Status: "warn", Message: "unsupported"},
+		{Name: "backend_doctor", Status: "fail", Message: "missing helper"},
+	}, true)
+	palette := defaultTerminalPalette()
+
+	if !strings.Contains(out, palette.info.wrap("✓ [pass]", true)) {
+		t.Fatalf("expected pass status to use info palette, got: %q", out)
+	}
+	if !strings.Contains(out, palette.warn.wrap("! [warn]", true)) {
+		t.Fatalf("expected warn status to use warn palette, got: %q", out)
+	}
+	if !strings.Contains(out, palette.error.wrap("✗ [fail]", true)) {
+		t.Fatalf("expected fail status to use error palette, got: %q", out)
+	}
+}
+
 func TestRenderDaemonStatusReportPlain(t *testing.T) {
 	out := renderDaemonStatusReport(daemonStatusReport{
 		Manager:   "launchd",
@@ -174,6 +194,55 @@ func TestRenderDaemonStatusReportColor(t *testing.T) {
 	}
 }
 
+func TestRenderDaemonStatusReportColorUsesLoggerPalette(t *testing.T) {
+	out := renderDaemonStatusReport(daemonStatusReport{
+		Manager:   "launchd",
+		Service:   "com.buildkite.cleanroom",
+		Installed: false,
+		Active:    false,
+		Fields: []startupField{
+			{Key: "install", Value: "missing"},
+			{Key: "runtime", Value: "inactive"},
+		},
+	}, true)
+	palette := defaultTerminalPalette()
+	expectedField := "  " + palette.key.wrap("install", true) + palette.separator.wrap(":", true) + " " + palette.value.wrap("missing", true)
+
+	if !strings.Contains(out, palette.warn.wrap("! [not installed]", true)) {
+		t.Fatalf("expected daemon summary to use warn palette, got: %q", out)
+	}
+	if !strings.Contains(out, expectedField) {
+		t.Fatalf("expected daemon fields to use shared key/value palette, got: %q", out)
+	}
+}
+
+func TestDefaultTerminalPaletteUsesLoggerDefaults(t *testing.T) {
+	styles := log.DefaultStyles()
+	palette := defaultTerminalPalette()
+
+	if got, want := palette.text, terminalStyleFromLipgloss(styles.Message); got != want {
+		t.Fatalf("message style mismatch: got %+v want %+v", got, want)
+	}
+	if got, want := palette.value, terminalStyleFromLipgloss(styles.Value); got != want {
+		t.Fatalf("value style mismatch: got %+v want %+v", got, want)
+	}
+	if got, want := palette.separator, terminalStyleFromLipgloss(styles.Separator); got != want {
+		t.Fatalf("separator style mismatch: got %+v want %+v", got, want)
+	}
+	if got, want := palette.key, terminalStyleFromLipgloss(styles.Key); got != want {
+		t.Fatalf("key style mismatch: got %+v want %+v", got, want)
+	}
+	if got, want := palette.info, terminalStyleFromLipgloss(styles.Levels[log.InfoLevel]); got != want {
+		t.Fatalf("info style mismatch: got %+v want %+v", got, want)
+	}
+	if got, want := palette.warn, terminalStyleFromLipgloss(styles.Levels[log.WarnLevel]); got != want {
+		t.Fatalf("warn style mismatch: got %+v want %+v", got, want)
+	}
+	if got, want := palette.error, terminalStyleFromLipgloss(styles.Levels[log.ErrorLevel]); got != want {
+		t.Fatalf("error style mismatch: got %+v want %+v", got, want)
+	}
+}
+
 func TestRenderDaemonStatusReportShowsRunningWhenActiveWithoutInstall(t *testing.T) {
 	out := renderDaemonStatusReport(daemonStatusReport{
 		Manager:   "launchd",
@@ -194,7 +263,37 @@ func TestRenderDaemonStatusReportShowsRunningWhenActiveWithoutInstall(t *testing
 	}
 }
 
-func stripANSI(value string) string {
-	ansi := regexp.MustCompile(`\x1b\[[0-9;]*m`)
-	return ansi.ReplaceAllString(value, "")
+func TestRenderSummaryBlockColorUsesSharedPalette(t *testing.T) {
+	out := renderSummaryBlock(summaryBlock{
+		Title:      "pulled image",
+		TitleStyle: defaultTerminalPalette().info,
+		Fields: []startupField{
+			{Key: "ref", Value: "ghcr.io/buildkite/cleanroom-base/alpine@sha256:1234"},
+			{Key: "digest", Value: "sha256:1234"},
+		},
+	}, true)
+	plain := stripANSI(out)
+	palette := defaultTerminalPalette()
+
+	if !strings.Contains(out, palette.info.wrap("pulled image", true)) {
+		t.Fatalf("expected summary title to use info palette, got: %q", out)
+	}
+	if !strings.Contains(out, "ref") || !strings.Contains(out, palette.separator.wrap("=", true)) {
+		t.Fatalf("expected assignment fields to be rendered with shared separator styling, got: %q", out)
+	}
+	if !strings.Contains(plain, "pulled image\nref=ghcr.io/buildkite/cleanroom-base/alpine@sha256:1234\ndigest=sha256:1234\n") {
+		t.Fatalf("unexpected plain summary output: %q", plain)
+	}
+}
+
+func TestRenderNoticeLineColorUsesSharedPalette(t *testing.T) {
+	out := renderNoticeLine("warning", "repository has local modifications", defaultTerminalPalette().warn, true)
+	plain := stripANSI(out)
+
+	if !strings.Contains(out, defaultTerminalPalette().warn.wrap("warning", true)) {
+		t.Fatalf("expected notice prefix to use warn palette, got: %q", out)
+	}
+	if plain != "warning: repository has local modifications\n" {
+		t.Fatalf("unexpected plain notice output: %q", plain)
+	}
 }

@@ -62,15 +62,16 @@ func (c *ImagePullCommand) Run(ctx *runtimeContext) error {
 	if result.CacheHit {
 		status = "cached"
 	}
-	_, err = fmt.Fprintf(
-		ctx.Stdout,
-		"%s image\nref=%s\ndigest=%s\nrootfs=%s\nsize_bytes=%d\n",
-		status,
-		result.Record.Ref,
-		result.Record.Digest,
-		result.Record.RootFSPath,
-		result.Record.SizeBytes,
-	)
+	_, err = fmt.Fprint(ctx.Stdout, renderSummaryBlock(summaryBlock{
+		Title:      status + " image",
+		TitleStyle: defaultTerminalPalette().info,
+		Fields: []startupField{
+			{Key: "ref", Value: result.Record.Ref},
+			{Key: "digest", Value: result.Record.Digest},
+			{Key: "rootfs", Value: result.Record.RootFSPath},
+			{Key: "size_bytes", Value: fmt.Sprintf("%d", result.Record.SizeBytes)},
+		},
+	}, shouldUseANSI(ctx.Stdout)))
 	return err
 }
 
@@ -128,8 +129,10 @@ func (c *ImageRemoveCommand) Run(ctx *runtimeContext) error {
 		_, err := fmt.Fprintf(ctx.Stdout, "no cached images match %q\n", c.Selector)
 		return err
 	}
+	color := shouldUseANSI(ctx.Stdout)
 	for _, item := range removed {
-		if _, err := fmt.Fprintf(ctx.Stdout, "removed %s (%s)\n", item.Digest, item.Ref); err != nil {
+		line := renderActionLine("removed", fmt.Sprintf("%s (%s)", item.Digest, item.Ref), defaultTerminalPalette().info, color)
+		if _, err := fmt.Fprintln(ctx.Stdout, line); err != nil {
 			return err
 		}
 	}
@@ -145,13 +148,15 @@ func (c *ImageImportCommand) Run(ctx *runtimeContext) error {
 	if err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(
-		ctx.Stdout,
-		"imported image\nref=%s\ndigest=%s\nrootfs=%s\nsize_bytes=%d\n",
-		record.Ref,
-		record.Digest,
-		record.RootFSPath,
-		record.SizeBytes,
-	)
+	_, err = fmt.Fprint(ctx.Stdout, renderSummaryBlock(summaryBlock{
+		Title:      "imported image",
+		TitleStyle: defaultTerminalPalette().info,
+		Fields: []startupField{
+			{Key: "ref", Value: record.Ref},
+			{Key: "digest", Value: record.Digest},
+			{Key: "rootfs", Value: record.RootFSPath},
+			{Key: "size_bytes", Value: fmt.Sprintf("%d", record.SizeBytes)},
+		},
+	}, shouldUseANSI(ctx.Stdout)))
 	return err
 }

@@ -91,6 +91,16 @@ func getFinalExecutionExitCode(client *controlclient.Client, sandboxID, executio
 	return int(execution.GetExitCode()), true
 }
 
+func writeExecutionWarning(stderr io.Writer, message string) error {
+	message = strings.TrimSpace(message)
+	if stderr == nil || message == "" {
+		return nil
+	}
+	palette := defaultTerminalPalette()
+	_, err := io.WriteString(stderr, renderNoticeLine("warning", message, palette.warn, shouldUseANSI(stderr)))
+	return err
+}
+
 func replayExecutionHistory(client *controlclient.Client, sandboxID, executionID string, stdout, stderr io.Writer) (int, bool, error) {
 	stream, err := client.StreamExecution(context.Background(), &cleanroomv1.StreamExecutionRequest{
 		SandboxId:   sandboxID,
@@ -112,6 +122,10 @@ func replayExecutionHistory(client *controlclient.Client, sandboxID, executionID
 			}
 		case *cleanroomv1.ExecutionStreamEvent_Stderr:
 			if _, err := stderr.Write(payload.Stderr); err != nil {
+				return 0, false, err
+			}
+		case *cleanroomv1.ExecutionStreamEvent_Warning:
+			if err := writeExecutionWarning(stderr, payload.Warning); err != nil {
 				return 0, false, err
 			}
 		case *cleanroomv1.ExecutionStreamEvent_Exit:

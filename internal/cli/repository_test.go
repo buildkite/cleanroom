@@ -642,6 +642,54 @@ func TestCreateCommandWarnsWhenRepositoryIsDirty(t *testing.T) {
 	}
 }
 
+func TestCreateCommandWarnsWhenRepositoryIsDirtyUsesANSIWhenForced(t *testing.T) {
+	t.Setenv("CLICOLOR_FORCE", "1")
+
+	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
+	if err := os.WriteFile(filepath.Join(repoDir, "dirty.txt"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatalf("write dirty file: %v", err)
+	}
+
+	adapter := &persistentIntegrationAdapter{}
+	host, _ := startIntegrationServer(t, adapter)
+	adapter.runStreamFn = func(_ context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+		return &backend.RunResult{RunID: req.RunID, ExitCode: 0, Message: "ok"}, nil
+	}
+
+	outcome := runCreateAliasWithCapture(CreateCommand{
+		clientFlags: clientFlags{Host: host},
+		Chdir:       repoDir,
+	}, runtimeContext{
+		CWD: repoDir,
+		Loader: repositoryIntegrationLoader{
+			compiled: &policy.CompiledPolicy{
+				Version:        1,
+				ImageRef:       "ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+				ImageDigest:    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+				NetworkDefault: "deny",
+				Allow:          []policy.AllowRule{{Host: "github.com", Ports: []int{443}}},
+			},
+			repository: policy.RepositoryConfig{
+				Mode:   "current-repo",
+				Remote: "origin",
+				Path:   "/workspace",
+			},
+		},
+	})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err != nil {
+		t.Fatalf("CreateCommand.Run returned error: %v", outcome.err)
+	}
+	if !strings.Contains(outcome.stderr, "\x1b[") {
+		t.Fatalf("expected ANSI escapes in color output: %q", outcome.stderr)
+	}
+	if !strings.Contains(stripANSI(outcome.stderr), "repository has local modifications") {
+		t.Fatalf("expected dirty repository warning, got %q", outcome.stderr)
+	}
+}
+
 func TestCreateCommandRejectsRepositoryBootstrapForNonPersistentBackend(t *testing.T) {
 	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
 	adapter := &integrationAdapter{}

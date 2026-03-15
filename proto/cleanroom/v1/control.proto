@@ -308,6 +308,7 @@ message ExecutionStreamEvent {
     bytes stderr = 5;
     ExecutionExit exit = 6;
     string message = 7;
+    string warning = 11;
   }
 
   google.protobuf.Timestamp occurred_at = 8;
