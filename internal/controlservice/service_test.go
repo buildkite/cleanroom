@@ -2229,14 +2229,14 @@ func TestRunExecutionSkipsAlreadyFinalExecution(t *testing.T) {
 	sb.Status = cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPED
 
 	ex := &executionState{
-		ID:               executionID,
-		SandboxID:        sandboxID,
-		Command:          []string{"echo", "stale"},
-		Status:           cleanroomv1.ExecutionStatus_EXECUTION_STATUS_CANCELED,
-		ExitCode:         143,
-		FinishedAt:       &finished,
-		events:           newEventFeed[*cleanroomv1.ExecutionStreamEvent](defaultRetentionPolicy.maxRetainedExecutionEvents),
-		Done:             make(chan struct{}),
+		ID:         executionID,
+		SandboxID:  sandboxID,
+		Command:    []string{"echo", "stale"},
+		Status:     cleanroomv1.ExecutionStatus_EXECUTION_STATUS_CANCELED,
+		ExitCode:   143,
+		FinishedAt: &finished,
+		events:     newEventFeed[*cleanroomv1.ExecutionStreamEvent](defaultRetentionPolicy.maxRetainedExecutionEvents),
+		Done:       make(chan struct{}),
 	}
 	svc.recordExecutionEventLocked(ex, &cleanroomv1.ExecutionStreamEvent{
 		SandboxId:   sandboxID,
@@ -2288,12 +2288,12 @@ func TestFinalizeExecutionWithoutPruneSkipsImmediateStatePruning(t *testing.T) {
 
 	now := time.Now().UTC()
 	ex := &executionState{
-		ID:               executionID,
-		SandboxID:        sandboxID,
-		Command:          []string{"echo", "ok"},
-		Status:           cleanroomv1.ExecutionStatus_EXECUTION_STATUS_QUEUED,
-		events:           newEventFeed[*cleanroomv1.ExecutionStreamEvent](retention.maxRetainedExecutionEvents),
-		Done:             make(chan struct{}),
+		ID:        executionID,
+		SandboxID: sandboxID,
+		Command:   []string{"echo", "ok"},
+		Status:    cleanroomv1.ExecutionStatus_EXECUTION_STATUS_QUEUED,
+		events:    newEventFeed[*cleanroomv1.ExecutionStreamEvent](retention.maxRetainedExecutionEvents),
+		Done:      make(chan struct{}),
 	}
 
 	svc.mu.Lock()
@@ -2333,11 +2333,11 @@ func TestBufferedResultDeltaModes(t *testing.T) {
 func TestMergeBufferedResultOutputReplacesMissingStreamPrefix(t *testing.T) {
 	svc := newTestService(&stubAdapter{})
 	ex := &executionState{
-		ID:               "exec-1",
-		SandboxID:        "sb-1",
-		Stdout:           "tail",
-		Status:           cleanroomv1.ExecutionStatus_EXECUTION_STATUS_RUNNING,
-		events:           newEventFeed[*cleanroomv1.ExecutionStreamEvent](defaultRetentionPolicy.maxRetainedExecutionEvents),
+		ID:        "exec-1",
+		SandboxID: "sb-1",
+		Stdout:    "tail",
+		Status:    cleanroomv1.ExecutionStatus_EXECUTION_STATUS_RUNNING,
+		events:    newEventFeed[*cleanroomv1.ExecutionStreamEvent](defaultRetentionPolicy.maxRetainedExecutionEvents),
 	}
 
 	svc.mergeBufferedResultOutputLocked(ex, &backend.RunResult{

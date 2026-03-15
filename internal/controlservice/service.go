@@ -31,7 +31,7 @@ type Service struct {
 	RepositoryMirrors repositoryMirrorStore
 	runtime           serviceRuntime
 	interactive       interactiveSessionBroker
-	SnapshotStore snapshotMetadataStore
+	SnapshotStore     snapshotMetadataStore
 
 	mu                sync.RWMutex
 	sandboxes         map[string]*sandboxState
@@ -297,8 +297,8 @@ func (s *Service) createSandboxFromSnapshot(ctx context.Context, req *cleanroomv
 	firecrackerCfg.RunDir = ""
 	firecrackerCfg = withSnapshotDriver(firecrackerCfg, record.StorageDriver)
 
-	now := time.Now().UTC()
-	sandboxID := newSandboxID()
+	now := s.clock().Now()
+	sandboxID := s.ids().NewSandboxID()
 	if err := snapshotAdapter.ProvisionSandboxFromSnapshot(ctx, backend.ProvisionFromSnapshotRequest{
 		SandboxID:         sandboxID,
 		SnapshotID:        record.SnapshotID,
@@ -310,16 +310,16 @@ func (s *Service) createSandboxFromSnapshot(ctx context.Context, req *cleanroomv
 	}
 
 	state := &sandboxState{
-		ID:               sandboxID,
-		Backend:          backendName,
-		Policy:           compiled,
-		Firecracker:      firecrackerCfg,
-		Repository:       repositorycheckout.FromProto(record.Repository),
-		CreatedAt:        now,
-		UpdatedAt:        now,
-		Status:           cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY,
-		EventSubscribers: map[int]chan *cleanroomv1.SandboxEvent{},
-		Done:             make(chan struct{}),
+		ID:          sandboxID,
+		Backend:     backendName,
+		Policy:      compiled,
+		Firecracker: firecrackerCfg,
+		Repository:  repositorycheckout.FromProto(record.Repository),
+		CreatedAt:   now,
+		UpdatedAt:   now,
+		Status:      cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY,
+		events:      newEventFeed[*cleanroomv1.SandboxEvent](s.retention().maxRetainedSandboxEvents),
+		Done:        make(chan struct{}),
 	}
 
 	s.mu.Lock()
@@ -1743,7 +1743,6 @@ func (s *Service) finishSnapshotDelete(snapshotID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.snapshotDeletions, snapshotID)
-}
 }
 
 func (s *Service) mergeBufferedResultOutputLocked(ex *executionState, result *backend.RunResult, usedStreaming bool) {
