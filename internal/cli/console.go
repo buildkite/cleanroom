@@ -30,7 +30,7 @@ type ConsoleCommand struct {
 
 	LaunchSeconds int64 `help:"VM boot/guest-agent readiness timeout in seconds"`
 
-	Command []string `arg:"" passthrough:"" optional:"" help:"Command to run in the console (default: sh)"`
+	Command []string `arg:"" passthrough:"partial" optional:"" help:"Command to run in the console (default: sh)"`
 }
 
 func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
