@@ -258,6 +258,79 @@ func TestConsoleParsesInFromAndKeep(t *testing.T) {
 	}
 }
 
+func TestExecRejectsUnknownFlagBeforeSeparator(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	_, err := parser.Parse([]string{"exec", "--with", "snap_123", "--", "echo", "ok"})
+	if err == nil {
+		t.Fatal("expected unknown exec flag to be rejected")
+	}
+	if !strings.Contains(err.Error(), "unknown flag --with") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestExecAllowsOptionLikeArgsAfterCommandStart(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"exec", "echo", "--with", "snap_123"}); err != nil {
+		t.Fatalf("expected option-like args after command start to be allowed, got %v", err)
+	}
+	if got, want := strings.Join(c.Exec.Command, " "), "echo --with snap_123"; got != want {
+		t.Fatalf("unexpected exec command: got %q want %q", got, want)
+	}
+}
+
+func TestExecAllowsOptionLikeArgsAfterSeparator(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"exec", "--", "--with", "snap_123"}); err != nil {
+		t.Fatalf("expected option-like command after separator to be allowed, got %v", err)
+	}
+	if got, want := strings.Join(c.Exec.Command, " "), "-- --with snap_123"; got != want {
+		t.Fatalf("unexpected exec command after separator: got %q want %q", got, want)
+	}
+}
+
+func TestConsoleRejectsUnknownFlagBeforeSeparator(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	_, err := parser.Parse([]string{"console", "--with", "snap_123"})
+	if err == nil {
+		t.Fatal("expected unknown console flag to be rejected")
+	}
+	if !strings.Contains(err.Error(), "unknown flag --with") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestConsoleAllowsOptionLikeArgsAfterCommandStart(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"console", "sh", "--with"}); err != nil {
+		t.Fatalf("expected option-like console args after command start to be allowed, got %v", err)
+	}
+	if got, want := strings.Join(c.Console.Command, " "), "sh --with"; got != want {
+		t.Fatalf("unexpected console command: got %q want %q", got, want)
+	}
+}
+
+func TestConsoleAllowsOptionLikeArgsAfterSeparator(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"console", "--", "--with"}); err != nil {
+		t.Fatalf("expected console option-like command after separator to be allowed, got %v", err)
+	}
+	if got, want := strings.Join(c.Console.Command, " "), "-- --with"; got != want {
+		t.Fatalf("unexpected console command after separator: got %q want %q", got, want)
+	}
+}
 func TestConsoleParsesLegacySandboxIDFlag(t *testing.T) {
 	c := &CLI{}
 	parser := newParserForTest(t, c)

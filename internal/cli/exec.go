@@ -23,7 +23,7 @@ type ExecCommand struct {
 
 	LaunchSeconds int64 `help:"VM boot/guest-agent readiness timeout in seconds"`
 
-	Command []string `arg:"" passthrough:"" required:"" help:"Command to execute"`
+	Command []string `arg:"" passthrough:"partial" required:"" help:"Command to execute"`
 }
 
 func (e *ExecCommand) Run(ctx *runtimeContext) error {
