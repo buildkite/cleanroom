@@ -246,6 +246,7 @@ mise exec -- go run ./scripts/download_sandbox_file \
   --host "$listen_endpoint" \
   --sandbox-id "$sandbox_id" \
   --path /tmp/persist.txt \
+  --timeout 45s \
   --max-bytes 4096 >"$tmpdir/persist-download.out"
 if ! grep -q '^persisted-data$' "$tmpdir/persist-download.out"; then
   echo "expected downloaded sandbox file contents" >&2
