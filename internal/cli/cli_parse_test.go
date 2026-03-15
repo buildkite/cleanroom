@@ -113,6 +113,18 @@ func TestSandboxCreateParses(t *testing.T) {
 	}
 }
 
+func TestSandboxListParsesAllFlag(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"sandbox", "ls", "--all"}); err != nil {
+		t.Fatalf("parse sandbox ls --all returned error: %v", err)
+	}
+	if !c.Sandbox.List.All {
+		t.Fatal("expected sandbox list all flag to be set")
+	}
+}
+
 func TestSandboxCreateParsesImageOverride(t *testing.T) {
 	c := &CLI{}
 	parser := newParserForTest(t, c)
