@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-const miseBuildkitePluginRef = "lox/mise#d082f6e5ace50c61e723d980b0286478a0d62dae"
+const miseBuildkitePluginRef = "github.com/lox/mise-buildkite-plugin#d082f6e5ace50c61e723d980b0286478a0d62dae"
 
 func TestBuildkitePipelineUsesMisePlugin(t *testing.T) {
 	t.Parallel()
