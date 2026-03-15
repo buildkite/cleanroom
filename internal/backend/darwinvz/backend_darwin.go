@@ -804,15 +804,32 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 		return nil, fmt.Errorf("rootfs %s: %w", rootFSPath, err)
 	}
 
+	driver, err := rootFSVolumeDriver(req.FirecrackerConfig)
+	if err != nil {
+		return nil, err
+	}
+	baseVolume, err := driver.EnsureBaseVolume(ctx, volumestore.EnsureBaseVolumeRequest{
+		BaseID:     strings.TrimSuffix(filepath.Base(rootFSPath), filepath.Ext(rootFSPath)),
+		SourcePath: rootFSPath,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("prepare base volume: %w", err)
+	}
 	vmRootFSPath := filepath.Join(runDir, "rootfs-ephemeral.ext4")
 	copyStart := time.Now()
-	if err := copyFile(rootFSPath, vmRootFSPath); err != nil {
+	writableVolume, err := driver.CreateWritableVolume(ctx, volumestore.CreateWritableVolumeRequest{
+		VolumeID:       req.RunID,
+		BaseRef:        baseVolume.Ref,
+		AttachmentPath: vmRootFSPath,
+	})
+	if err != nil {
 		observation.Error = err.Error()
 		return nil, fmt.Errorf("prepare per-run rootfs: %w", err)
 	}
+	vmRootFSPath = writableVolume.AttachmentPath
 	observation.RootFSCopyMS = time.Since(copyStart).Milliseconds()
 	defer func() {
-		_ = os.Remove(vmRootFSPath)
+		_ = driver.DestroyVolume(context.Background(), volumestore.DestroyVolumeRequest{VolumeRef: vmRootFSPath})
 	}()
 
 	guestInitPath, guestInitNotice := guestInitExecutableForRootFS(vmRootFSPath)
@@ -1075,11 +1092,28 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 		return nil, fmt.Errorf("rootfs %s: %w", rootFSPath, err)
 	}
 
+	driver, err := rootFSVolumeDriver(cfg)
+	if err != nil {
+		return nil, err
+	}
+	baseVolume, err := driver.EnsureBaseVolume(ctx, volumestore.EnsureBaseVolumeRequest{
+		BaseID:     strings.TrimSuffix(filepath.Base(rootFSPath), filepath.Ext(rootFSPath)),
+		SourcePath: rootFSPath,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("prepare base volume: %w", err)
+	}
 	vmRootFSPath := filepath.Join(runDir, "rootfs-persistent.ext4")
 	copyStart := time.Now()
-	if err := copyFile(rootFSPath, vmRootFSPath); err != nil {
+	writableVolume, err := driver.CreateWritableVolume(ctx, volumestore.CreateWritableVolumeRequest{
+		VolumeID:       sandboxID,
+		BaseRef:        baseVolume.Ref,
+		AttachmentPath: vmRootFSPath,
+	})
+	if err != nil {
 		return nil, fmt.Errorf("prepare persistent rootfs: %w", err)
 	}
+	vmRootFSPath = writableVolume.AttachmentPath
 	rootFSCopyMS := time.Since(copyStart).Milliseconds()
 
 	guestInitPath, _ := guestInitExecutableForRootFS(vmRootFSPath)
@@ -1394,10 +1428,7 @@ func snapshotStorageBaseDir(cfg backend.FirecrackerConfig) (string, error) {
 	return paths.SnapshotDir()
 }
 
-func snapshotVolumeDriver(cfg backend.FirecrackerConfig) (volumestore.Driver, error) {
-	if !cfg.Snapshots.Enabled {
-		return nil, errors.New("darwin-vz snapshots are not enabled")
-	}
+func rootFSVolumeDriver(cfg backend.FirecrackerConfig) (volumestore.Driver, error) {
 	driverName := strings.ToLower(strings.TrimSpace(cfg.Snapshots.Driver))
 	switch driverName {
 	case "", "file":
@@ -1413,9 +1444,29 @@ func snapshotVolumeDriver(cfg backend.FirecrackerConfig) (volumestore.Driver, er
 			return nil, err
 		}
 		return driver, nil
+	case "apfs":
+		snapshotBaseDir, err := snapshotStorageBaseDir(cfg)
+		if err != nil {
+			return nil, fmt.Errorf("resolve snapshot base directory: %w", err)
+		}
+		driver, err := volumestore.NewAPFSDriver(volumestore.APFSDriverOptions{
+			SnapshotBaseDir: snapshotBaseDir,
+			Namespace:       "darwin-vz",
+		})
+		if err != nil {
+			return nil, err
+		}
+		return driver, nil
 	default:
 		return nil, fmt.Errorf("unsupported darwin-vz snapshot driver %q", cfg.Snapshots.Driver)
 	}
+}
+
+func snapshotVolumeDriver(cfg backend.FirecrackerConfig) (volumestore.Driver, error) {
+	if !cfg.Snapshots.Enabled {
+		return nil, errors.New("darwin-vz snapshots are not enabled")
+	}
+	return rootFSVolumeDriver(cfg)
 }
 
 func probeGuestExecReady(ctx context.Context, helper *helperSession, socketPath string) error {

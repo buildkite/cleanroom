@@ -333,7 +333,7 @@ snapshot semantics.
 - [done] snapshot inspect output with stored metadata
 - [todo] guest-cooperative checkpoint request flow
 - [todo] ZFS volume store for Firecracker
-- [todo] APFS volume store for `darwin-vz`
+- [done] APFS volume store for `darwin-vz`
 - [todo] OCI export/import for cross-host distribution
 - [todo] chunked/lazy fleet fan-out
 - [todo] optional same-host machine-state acceleration

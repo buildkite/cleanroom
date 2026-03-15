@@ -19,7 +19,7 @@ Implemented:
 - managed kernel fallback when `kernel_image` is unset or missing
 - rootfs derivation from `sandbox.image.ref` when `rootfs` is unset or missing
 - persistent sandboxes across multiple executions
-- file-backed snapshot and create-from-snapshot for persistent sandboxes
+- `file` and `apfs` snapshot drivers for snapshot and create-from-snapshot flows
 - doctor checks for helper availability and entitlement status
 
 Not implemented:
@@ -92,6 +92,12 @@ Rootfs:
 - otherwise derive rootfs from `sandbox.image.ref` using image manager
 - inject guest runtime (`cleanroom-guest-agent` and `/usr/sbin/cleanroom-init`) into a prepared cached rootfs image
 - create a per-sandbox copy (`rootfs-persistent.ext4`) and attach it read-write to the VM
+
+Snapshot/rootfs volume drivers:
+
+- `snapshots.driver: file` copies ext4 images with standard file I/O
+- `snapshots.driver: apfs` uses macOS `clonefile(2)` for same-filesystem APFS copy-on-write clones
+- the selected driver is used for snapshot capture, snapshot-backed sandbox creation, and writable per-run/per-sandbox rootfs preparation
 
 Host tools required for derivation/injection:
 
@@ -176,6 +182,7 @@ Fast path:
 
 - `mise exec -- go test ./internal/backend/darwinvz`
 - `mise exec -- go test ./...`
+- `mise exec -- go test -run '^$' -bench BenchmarkDarwinSnapshotDrivers -benchmem -benchtime=5x ./internal/volumestore`
 
 Real VM persistence e2e:
 
