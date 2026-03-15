@@ -21,8 +21,8 @@ func TestBuildkitePipelineUsesMisePlugin(t *testing.T) {
 	if !strings.Contains(pipeline, miseBuildkitePluginRef) {
 		t.Fatalf("expected .buildkite/pipeline.yml to use %q", miseBuildkitePluginRef)
 	}
-	if !strings.Contains(pipeline, "add_shims_to_path: false") {
-		t.Fatalf("expected .buildkite/pipeline.yml to disable mise shims in CI")
+	if strings.Contains(pipeline, "add_shims_to_path: false") {
+		t.Fatalf("expected .buildkite/pipeline.yml to keep mise shims enabled in CI")
 	}
 	if strings.Contains(pipeline, "command: mise run") {
 		t.Fatalf("expected .buildkite/pipeline.yml to avoid direct `mise run` step commands")
