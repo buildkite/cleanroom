@@ -120,6 +120,56 @@ func TestCreateSnapshotUsesTimeoutContextForSync(t *testing.T) {
 	}
 }
 
+func TestCreateSnapshotCleansUpSnapshotWhenResumeFails(t *testing.T) {
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+
+	rootfsPath := filepath.Join(t.TempDir(), "rootfs.ext4")
+	if err := os.WriteFile(rootfsPath, []byte("snapshot-bytes"), 0o644); err != nil {
+		t.Fatalf("write rootfs: %v", err)
+	}
+
+	adapter := &Adapter{
+		executeInSandboxFn: func(_ context.Context, _ context.Context, _ *sandboxInstance, req backend.RunRequest, _ backend.OutputStream) (*backend.RunResult, error) {
+			if len(req.Command) != 1 || req.Command[0] != "sync" {
+				t.Fatalf("unexpected command: %v", req.Command)
+			}
+			return &backend.RunResult{ExitCode: 0}, nil
+		},
+		helperRequestFn: func(_ context.Context, _ *helperSession, req helperControlRequest) (helperControlResponse, error) {
+			if req.Op == "ResumeVM" {
+				return helperControlResponse{}, errors.New("resume failed")
+			}
+			return helperControlResponse{OK: true}, nil
+		},
+		sandboxes: map[string]*sandboxInstance{
+			"cr-test": {
+				SandboxID:    "cr-test",
+				Helper:       &helperSession{},
+				VMID:         "vm-test",
+				Policy:       &policy.CompiledPolicy{NetworkDefault: "deny"},
+				vmRootFSPath: rootfsPath,
+				exitedCh:     make(chan struct{}),
+			},
+		},
+	}
+
+	_, err := adapter.CreateSnapshot(context.Background(), backend.SnapshotRequest{
+		SandboxID:  "cr-test",
+		SnapshotID: "snap-test",
+		FirecrackerConfig: backend.FirecrackerConfig{
+			Snapshots: backend.SnapshotConfig{Enabled: true},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected CreateSnapshot to fail when resume fails")
+	}
+	snapshotPath := filepath.Join(stateHome, "cleanroom", "snapshots", "darwin-vz", "snap-test", "rootfs.ext4")
+	if _, statErr := os.Stat(snapshotPath); !os.IsNotExist(statErr) {
+		t.Fatalf("expected failed snapshot to be cleaned up, stat error = %v", statErr)
+	}
+}
+
 func TestProvisionSandboxFromSnapshotUsesSnapshotRootFS(t *testing.T) {
 	t.Parallel()
 

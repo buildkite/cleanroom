@@ -415,6 +415,7 @@ func (a *Adapter) CreateSnapshot(ctx context.Context, req backend.SnapshotReques
 	if _, err := helperRequest(ctx, instance.Helper, helperControlRequest{Op: "PauseVM", VMID: instance.VMID}); err != nil {
 		return nil, fmt.Errorf("pause darwin-vz sandbox: %w", err)
 	}
+	snapshotStorageRef := ""
 	paused := true
 	defer func() {
 		if !paused {
@@ -422,9 +423,22 @@ func (a *Adapter) CreateSnapshot(ctx context.Context, req backend.SnapshotReques
 		}
 		resumeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		if _, err := helperRequest(resumeCtx, instance.Helper, helperControlRequest{Op: "ResumeVM", VMID: instance.VMID}); err != nil && retErr == nil {
+		if _, err := helperRequest(resumeCtx, instance.Helper, helperControlRequest{Op: "ResumeVM", VMID: instance.VMID}); err != nil {
+			resumeErr := fmt.Errorf("resume darwin-vz sandbox after snapshot: %w", err)
+			if strings.TrimSpace(snapshotStorageRef) != "" {
+				cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				cleanupErr := driver.DestroySnapshot(cleanupCtx, volumestore.DestroySnapshotRequest{SnapshotRef: snapshotStorageRef})
+				cleanupCancel()
+				if cleanupErr != nil {
+					resumeErr = fmt.Errorf("%w (cleanup snapshot %q failed: %v)", resumeErr, snapshotStorageRef, cleanupErr)
+				}
+			}
 			result = nil
-			retErr = fmt.Errorf("resume darwin-vz sandbox after snapshot: %w", err)
+			if retErr == nil {
+				retErr = resumeErr
+				return
+			}
+			retErr = errors.Join(retErr, resumeErr)
 		}
 	}()
 
@@ -435,6 +449,7 @@ func (a *Adapter) CreateSnapshot(ctx context.Context, req backend.SnapshotReques
 	if err != nil {
 		return nil, fmt.Errorf("persist snapshot rootfs: %w", err)
 	}
+	snapshotStorageRef = snapshot.StorageRef
 
 	return &backend.SnapshotResult{StorageRef: snapshot.StorageRef}, nil
 }
