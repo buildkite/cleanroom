@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -79,25 +80,49 @@ type preparedRootFS struct {
 }
 
 type sandboxInstance struct {
-	SandboxID       string
-	RunDir          string
-	ConfigPath      string
-	ProxySocketPath string
-	GuestPort       uint32
-	Policy          *policy.CompiledPolicy
-	ImageRef        string
-	ImageDigest     string
-	CommandTimeout  int64
-	Helper          *helperSession
-	VMID            string
-	vmRootFSPath    string
-	exitedCh        chan struct{}
-	exitMu          sync.RWMutex
-	exitErr         error
-	exitReady       bool
+	SandboxID           string
+	RunDir              string
+	ConfigPath          string
+	ProxySocketPath     string
+	GuestPort           uint32
+	Policy              *policy.CompiledPolicy
+	ImageRef            string
+	ImageDigest         string
+	LaunchObservability *darwinVZLaunchObservability
+	CommandTimeout      int64
+	Helper              *helperSession
+	VMID                string
+	vmRootFSPath        string
+	exitedCh            chan struct{}
+	exitMu              sync.RWMutex
+	exitErr             error
+	exitReady           bool
 }
 
 const preparedRuntimeRootFSVersion = "v9-darwin-vz"
+const runObservabilityFile = "run-observability.json"
+
+type darwinVZRunObservation struct {
+	RunID          string           `json:"run_id"`
+	Backend        string           `json:"backend"`
+	LaunchedVM     bool             `json:"launched_vm"`
+	ImageRef       string           `json:"image_ref,omitempty"`
+	ImageDigest    string           `json:"image_digest,omitempty"`
+	PlanPath       string           `json:"plan_path,omitempty"`
+	RunDir         string           `json:"run_dir,omitempty"`
+	ExitCode       int              `json:"exit_code,omitempty"`
+	Error          string           `json:"error,omitempty"`
+	GuestError     string           `json:"guest_error,omitempty"`
+	RootFSCopyMS   int64            `json:"rootfs_copy_ms,omitempty"`
+	VMReadyMS      int64            `json:"vm_ready_ms,omitempty"`
+	HelperTimingMS map[string]int64 `json:"helper_timing_ms,omitempty"`
+	TotalMS        int64            `json:"total_ms,omitempty"`
+}
+
+type darwinVZLaunchObservability struct {
+	RootFSCopyMS   int64
+	HelperTimingMS map[string]int64
+}
 
 var virtualizationEntitlementPattern = regexp.MustCompile(`(?s)<key>\s*com\.apple\.security\.virtualization\s*</key>\s*<true\s*/?>`)
 
@@ -316,6 +341,26 @@ func (a *Adapter) RunInSandbox(ctx context.Context, req backend.RunRequest, stre
 		}
 	}
 	req.RunDir = runDir
+	observation := darwinVZRunObservation{
+		RunID:       req.RunID,
+		Backend:     a.Name(),
+		RunDir:      runDir,
+		ImageRef:    instance.ImageRef,
+		ImageDigest: instance.ImageDigest,
+		PlanPath:    instance.ConfigPath,
+	}
+	a.sandboxMu.Lock()
+	if current, ok := a.sandboxes[sandboxID]; ok && current == instance {
+		applyDarwinVZLaunchObservability(&observation, current.LaunchObservability)
+		current.LaunchObservability = nil
+	}
+	a.sandboxMu.Unlock()
+	runStart := time.Now()
+	defer func() {
+		if err := writeDarwinVZRunObservation(runDir, &observation, time.Since(runStart).Milliseconds()); err != nil {
+			log.Warn("write darwin-vz run observability failed", "run_id", req.RunID, "error", err)
+		}
+	}()
 
 	connectSeconds := req.LaunchSeconds
 	if connectSeconds <= 0 {
@@ -331,7 +376,25 @@ func (a *Adapter) RunInSandbox(ctx context.Context, req backend.RunRequest, stre
 	if executeInSandbox == nil {
 		executeInSandbox = a.executeInSandbox
 	}
-	return executeInSandbox(bootCtx, ctx, instance, req, stream)
+	result, err := executeInSandbox(bootCtx, ctx, instance, req, stream)
+	if err != nil {
+		observation.Error = err.Error()
+		return nil, err
+	}
+	if result != nil {
+		observation.ExitCode = result.ExitCode
+		observation.GuestError = result.Message
+		if strings.TrimSpace(result.PlanPath) != "" {
+			observation.PlanPath = result.PlanPath
+		}
+		if strings.TrimSpace(result.ImageRef) != "" {
+			observation.ImageRef = result.ImageRef
+		}
+		if strings.TrimSpace(result.ImageDigest) != "" {
+			observation.ImageDigest = result.ImageDigest
+		}
+	}
+	return result, nil
 }
 
 func (a *Adapter) TerminateSandbox(_ context.Context, sandboxID string) error {
@@ -612,7 +675,9 @@ func (a *Adapter) Doctor(_ context.Context, req backend.DoctorRequest) (*backend
 	return report, nil
 }
 
-func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backend.OutputStream) (result *backend.RunResult, err error) {
+	runStart := time.Now()
+
 	if req.Policy == nil {
 		return nil, errors.New("missing compiled policy")
 	}
@@ -638,6 +703,21 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create run directory: %w", err)
 	}
+	observation := darwinVZRunObservation{
+		RunID:       req.RunID,
+		Backend:     a.Name(),
+		RunDir:      runDir,
+		ImageRef:    req.Policy.ImageRef,
+		ImageDigest: req.Policy.ImageDigest,
+	}
+	defer func() {
+		if err != nil && strings.TrimSpace(observation.Error) == "" {
+			observation.Error = err.Error()
+		}
+		if err := writeDarwinVZRunObservation(runDir, &observation, time.Since(runStart).Milliseconds()); err != nil {
+			log.Warn("write darwin-vz run observability failed", "run_id", req.RunID, "error", err)
+		}
+	}()
 
 	if req.VCPUs <= 0 {
 		req.VCPUs = 1
@@ -675,8 +755,10 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 			"command_path": cmdPath,
 		}
 		if err := writeJSON(planPath, plan); err != nil {
+			observation.Error = err.Error()
 			return nil, err
 		}
+		observation.PlanPath = planPath
 		return &backend.RunResult{
 			RunID:       req.RunID,
 			ExitCode:    0,
@@ -692,12 +774,14 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 
 	kernelPath, kernelNotice, err := a.resolveKernelPath(ctx, req.KernelImagePath)
 	if err != nil {
+		observation.Error = err.Error()
 		return nil, err
 	}
 	logRunNotice(a.Name(), req.RunID, kernelNotice)
 
 	rootFSPath, imageRef, imageDigest, rootFSNotice, err := a.resolveRootFSPath(ctx, req)
 	if err != nil {
+		observation.Error = err.Error()
 		return nil, err
 	}
 	logRunNotice(a.Name(), req.RunID, rootFSNotice)
@@ -707,19 +791,26 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 	if strings.TrimSpace(imageDigest) != "" {
 		resolvedImageDigest = imageDigest
 	}
+	observation.ImageRef = resolvedImageRef
+	observation.ImageDigest = resolvedImageDigest
 
 	rootFSPath, err = filepath.Abs(rootFSPath)
 	if err != nil {
+		observation.Error = err.Error()
 		return nil, fmt.Errorf("resolve rootfs path: %w", err)
 	}
 	if _, err := os.Stat(rootFSPath); err != nil {
+		observation.Error = err.Error()
 		return nil, fmt.Errorf("rootfs %s: %w", rootFSPath, err)
 	}
 
 	vmRootFSPath := filepath.Join(runDir, "rootfs-ephemeral.ext4")
+	copyStart := time.Now()
 	if err := copyFile(rootFSPath, vmRootFSPath); err != nil {
+		observation.Error = err.Error()
 		return nil, fmt.Errorf("prepare per-run rootfs: %w", err)
 	}
+	observation.RootFSCopyMS = time.Since(copyStart).Milliseconds()
 	defer func() {
 		_ = os.Remove(vmRootFSPath)
 	}()
@@ -745,11 +836,14 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 		"launch_secs":  req.LaunchSeconds,
 		"boot_args":    bootArgs,
 	}); err != nil {
+		observation.Error = err.Error()
 		return nil, err
 	}
+	observation.PlanPath = vmPlanPath
 
 	helper, err := startHelperSession(ctx, runDir, req.LaunchSeconds)
 	if err != nil {
+		observation.Error = err.Error()
 		return nil, fmt.Errorf("start darwin-vz helper: %w", err)
 	}
 	defer func() {
@@ -780,20 +874,26 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 		ConsoleLogPath:  consolePath,
 	})
 	if err != nil {
+		observation.Error = err.Error()
 		return nil, fmt.Errorf("start vm via darwin-vz helper: %w", err)
 	}
+	observation.LaunchedVM = true
+	applyDarwinVZHelperTimings(&observation, startRes.TimingMS)
 
 	vmID := strings.TrimSpace(startRes.VMID)
 	if vmID == "" {
+		observation.Error = "darwin-vz helper returned empty vm_id"
 		return nil, errors.New("darwin-vz helper returned empty vm_id")
 	}
 	if p := strings.TrimSpace(startRes.ProxySocketPath); p != "" {
 		proxySocketPath = p
 	}
 	if strings.TrimSpace(proxySocketPath) == "" {
+		observation.Error = "darwin-vz helper returned empty proxy socket path"
 		return nil, errors.New("darwin-vz helper returned empty proxy socket path")
 	}
 	if err := ensureUnixSocketPathFits(proxySocketPath); err != nil {
+		observation.Error = err.Error()
 		return nil, fmt.Errorf("proxy socket path %q is too long: %w", proxySocketPath, err)
 	}
 	defer func() {
@@ -808,6 +908,7 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 	defer cancelConn()
 	conn, err := dialUnixSocketWithRetry(connCtx, proxySocketPath)
 	if err != nil {
+		observation.Error = err.Error()
 		return nil, fmt.Errorf("connect darwin-vz proxy socket %q: %w", proxySocketPath, err)
 	}
 	defer conn.Close()
@@ -859,6 +960,7 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 		guestReq.EntropySeed = seed
 	}
 	if err := vsockexec.EncodeRequest(conn, guestReq); err != nil {
+		observation.Error = err.Error()
 		return nil, fmt.Errorf("send guest exec request: %w", err)
 	}
 
@@ -883,12 +985,22 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 	})
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
+			observation.Error = ctxErr.Error()
 			return nil, fmt.Errorf("guest exec canceled while waiting for response: %w", ctxErr)
 		}
+		observation.Error = err.Error()
 		return nil, helper.decorateError(fmt.Errorf("decode guest exec response over darwin-vz proxy: %w", err))
 	}
 
 	message := darwinVZResultMessage(guestRes.Error)
+	if timingSummary := darwinVZTimingSummary(startRes.TimingMS); timingSummary != "" {
+		if message != "" {
+			message += "; "
+		}
+		message += timingSummary
+	}
+	observation.ExitCode = guestRes.ExitCode
+	observation.GuestError = guestRes.Error
 
 	return &backend.RunResult{
 		RunID:       req.RunID,
@@ -964,9 +1076,11 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 	}
 
 	vmRootFSPath := filepath.Join(runDir, "rootfs-persistent.ext4")
+	copyStart := time.Now()
 	if err := copyFile(rootFSPath, vmRootFSPath); err != nil {
 		return nil, fmt.Errorf("prepare persistent rootfs: %w", err)
 	}
+	rootFSCopyMS := time.Since(copyStart).Milliseconds()
 
 	guestInitPath, _ := guestInitExecutableForRootFS(vmRootFSPath)
 	bootArgs := fmt.Sprintf(
@@ -1050,11 +1164,15 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 		Policy:          compiled,
 		ImageRef:        imageRef,
 		ImageDigest:     imageDigest,
-		CommandTimeout:  cfg.LaunchSeconds,
-		Helper:          helper,
-		VMID:            vmID,
-		vmRootFSPath:    vmRootFSPath,
-		exitedCh:        make(chan struct{}),
+		LaunchObservability: &darwinVZLaunchObservability{
+			RootFSCopyMS:   rootFSCopyMS,
+			HelperTimingMS: cloneHelperTimingMS(startRes.TimingMS),
+		},
+		CommandTimeout: cfg.LaunchSeconds,
+		Helper:         helper,
+		VMID:           vmID,
+		vmRootFSPath:   vmRootFSPath,
+		exitedCh:       make(chan struct{}),
 	}
 	go func() {
 		err, ok := <-helper.done
@@ -2044,6 +2162,69 @@ func writeJSON(path string, v any) error {
 		return err
 	}
 	return os.WriteFile(path, append(b, '\n'), 0o644)
+}
+
+func writeDarwinVZRunObservation(runDir string, observation *darwinVZRunObservation, totalMS int64) error {
+	if strings.TrimSpace(runDir) == "" || observation == nil {
+		return nil
+	}
+	obsCopy := *observation
+	obsCopy.TotalMS = totalMS
+	if len(observation.HelperTimingMS) > 0 {
+		obsCopy.HelperTimingMS = cloneHelperTimingMS(observation.HelperTimingMS)
+	}
+	return writeJSON(filepath.Join(runDir, runObservabilityFile), obsCopy)
+}
+
+func applyDarwinVZHelperTimings(observation *darwinVZRunObservation, timingMS map[string]int64) {
+	if observation == nil || len(timingMS) == 0 {
+		return
+	}
+	observation.HelperTimingMS = cloneHelperTimingMS(timingMS)
+	if vmReadyMS, ok := timingMS["vm_ready"]; ok {
+		observation.VMReadyMS = vmReadyMS
+	}
+}
+
+func applyDarwinVZLaunchObservability(observation *darwinVZRunObservation, launch *darwinVZLaunchObservability) {
+	if observation == nil || launch == nil {
+		return
+	}
+	if launch.RootFSCopyMS > 0 {
+		observation.RootFSCopyMS = launch.RootFSCopyMS
+	}
+	applyDarwinVZHelperTimings(observation, launch.HelperTimingMS)
+	if launch.RootFSCopyMS > 0 || len(launch.HelperTimingMS) > 0 {
+		observation.LaunchedVM = true
+	}
+}
+
+func cloneHelperTimingMS(timingMS map[string]int64) map[string]int64 {
+	if len(timingMS) == 0 {
+		return nil
+	}
+	out := make(map[string]int64, len(timingMS))
+	for key, value := range timingMS {
+		out[key] = value
+	}
+	return out
+}
+
+func darwinVZTimingSummary(timingMS map[string]int64) string {
+	if len(timingMS) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(timingMS))
+	for key := range timingMS {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%dms", key, timingMS[key]))
+	}
+	return "timings " + strings.Join(parts, " ")
 }
 
 func copyFile(src, dst string) error {
