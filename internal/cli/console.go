@@ -33,7 +33,7 @@ type ConsoleCommand struct {
 	Command []string `arg:"" passthrough:"" optional:"" help:"Command to run in the console (default: sh)"`
 }
 
-func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
+func (c *ConsoleCommand) Run(ctx *runtimeContext) (runErr error) {
 	logger, err := newLogger(c.LogLevel, "client")
 	if err != nil {
 		return err
@@ -80,8 +80,20 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) error {
 		}
 		return err
 	}
+	defer func() {
+		if !createdSandbox || !c.Keep {
+			return
+		}
+		if err := writeSandboxID(os.Stderr, sandboxID); err != nil {
+			if runErr == nil {
+				runErr = err
+				return
+			}
+			runErr = errors.Join(runErr, err)
+		}
+	}()
 	if c.PrintSandboxID {
-		if _, err := fmt.Fprintf(os.Stderr, "sandbox_id=%s\n", sandboxID); err != nil {
+		if err := writeSandboxID(os.Stderr, sandboxID); err != nil {
 			return err
 		}
 	}

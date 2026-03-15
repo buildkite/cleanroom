@@ -877,11 +877,10 @@ func TestExecIntegrationKeepPreservesCreatedSandbox(t *testing.T) {
 	host, _ := startIntegrationServer(t, &integrationAdapter{})
 	cwd := t.TempDir()
 	outcome := runExecWithCapture(ExecCommand{
-		clientFlags:    clientFlags{Host: host},
-		Chdir:          cwd,
-		Keep:           true,
-		PrintSandboxID: true,
-		Command:        []string{"echo", "ok"},
+		clientFlags: clientFlags{Host: host},
+		Chdir:       cwd,
+		Keep:        true,
+		Command:     []string{"echo", "ok"},
 	}, runtimeContext{
 		CWD:    cwd,
 		Loader: integrationLoader{},

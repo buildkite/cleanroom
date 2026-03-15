@@ -101,6 +101,15 @@ func writeExecutionWarning(stderr io.Writer, message string) error {
 	return err
 }
 
+func writeSandboxID(stderr io.Writer, sandboxID string) error {
+	sandboxID = strings.TrimSpace(sandboxID)
+	if stderr == nil || sandboxID == "" {
+		return nil
+	}
+	_, err := fmt.Fprintf(stderr, "sandbox_id=%s\n", sandboxID)
+	return err
+}
+
 func replayExecutionHistory(client *controlclient.Client, sandboxID, executionID string, stdout, stderr io.Writer) (int, bool, error) {
 	stream, err := client.StreamExecution(context.Background(), &cleanroomv1.StreamExecutionRequest{
 		SandboxId:   sandboxID,

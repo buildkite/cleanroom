@@ -26,7 +26,7 @@ type ExecCommand struct {
 	Command []string `arg:"" passthrough:"" required:"" help:"Command to execute"`
 }
 
-func (e *ExecCommand) Run(ctx *runtimeContext) error {
+func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 	logger, err := newLogger(e.LogLevel, "client")
 	if err != nil {
 		return err
@@ -69,8 +69,20 @@ func (e *ExecCommand) Run(ctx *runtimeContext) error {
 		}
 		return err
 	}
+	defer func() {
+		if !createdSandbox || !e.Keep {
+			return
+		}
+		if err := writeSandboxID(os.Stderr, sandboxID); err != nil {
+			if runErr == nil {
+				runErr = err
+				return
+			}
+			runErr = errors.Join(runErr, err)
+		}
+	}()
 	if e.PrintSandboxID {
-		if _, err := fmt.Fprintf(os.Stderr, "sandbox_id=%s\n", sandboxID); err != nil {
+		if err := writeSandboxID(os.Stderr, sandboxID); err != nil {
 			return err
 		}
 	}

@@ -303,10 +303,9 @@ func TestConsoleIntegrationKeepPreservesCreatedSandbox(t *testing.T) {
 	})
 
 	outcome := runConsoleWithCapture(ConsoleCommand{
-		clientFlags:    clientFlags{Host: host},
-		Keep:           true,
-		PrintSandboxID: true,
-		Command:        []string{"sh"},
+		clientFlags: clientFlags{Host: host},
+		Keep:        true,
+		Command:     []string{"sh"},
 	}, "", runtimeContext{
 		CWD:    t.TempDir(),
 		Loader: integrationLoader{},
