@@ -174,8 +174,8 @@ run_mise() {
 install_mise() {
   local version="$1"
   local platform="$2"
-  local archive
-  local extracted
+  local archive=""
+  local extracted=""
   local url
 
   require_cmd curl
@@ -186,7 +186,7 @@ install_mise() {
   extracted="$(mktemp -d)"
   echo "Downloading mise v${version} for ${platform}"
 
-  trap 'rm -f "$archive"; rm -rf "$extracted"' RETURN
+  trap 'rm -f "${archive:-}"; rm -rf "${extracted:-}"' RETURN
 
   curl -fsSL "$url" > "$archive"
   tar -xzf "$archive" -C "$extracted"
@@ -200,6 +200,10 @@ install_mise() {
     echo "Could not find mise binary in ${url}" >&2
     exit 1
   fi
+
+  trap - RETURN
+  rm -f "$archive"
+  rm -rf "$extracted"
 }
 
 required_version_raw="$(plugin_cfg_default version latest)"
