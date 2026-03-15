@@ -299,3 +299,109 @@ func TestDoctorCommandHonorsRuntimeSnapshotCapabilityConfig(t *testing.T) {
 		t.Fatal("expected capability_sandbox_snapshot check in doctor output")
 	}
 }
+
+func TestDoctorCommandJSONIncludesEffectiveSnapshotConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", filepath.Join(tmpDir, "state"))
+
+	stdoutPath := filepath.Join(tmpDir, "doctor.json")
+	stdout, err := os.Create(stdoutPath)
+	if err != nil {
+		t.Fatalf("create stdout file: %v", err)
+	}
+
+	cmd := DoctorCommand{
+		Backend: "darwin-vz",
+		JSON:    true,
+	}
+	err = cmd.Run(&runtimeContext{
+		CWD:    tmpDir,
+		Stdout: stdout,
+		Loader: doctorFailingLoader{},
+		Config: runtimeconfig.Config{
+			Backends: runtimeconfig.Backends{
+				DarwinVZ: runtimeconfig.DarwinVZConfig{
+					Snapshots: runtimeconfig.SnapshotConfig{Enabled: true},
+				},
+			},
+		},
+		ConfigPath: filepath.Join(tmpDir, "config.yaml"),
+		Backends: map[string]backend.Adapter{
+			"darwin-vz": doctorSnapshotAdapter{},
+		},
+	})
+	if closeErr := stdout.Close(); closeErr != nil {
+		t.Fatalf("close stdout file: %v", closeErr)
+	}
+	if err != nil {
+		t.Fatalf("DoctorCommand.Run returned error: %v", err)
+	}
+
+	raw, err := os.ReadFile(stdoutPath)
+	if err != nil {
+		t.Fatalf("read doctor output: %v", err)
+	}
+
+	var payload struct {
+		Snapshot struct {
+			Enabled   bool   `json:"enabled"`
+			Driver    string `json:"driver"`
+			BaseDir   string `json:"base_dir"`
+			Defaulted bool   `json:"defaulted"`
+		} `json:"snapshot"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("unmarshal doctor JSON: %v", err)
+	}
+
+	if !payload.Snapshot.Enabled {
+		t.Fatal("expected snapshot config enabled=true")
+	}
+	if got, want := payload.Snapshot.Driver, "apfs"; got != want {
+		t.Fatalf("unexpected effective snapshot driver: got %q want %q", got, want)
+	}
+	if !payload.Snapshot.Defaulted {
+		t.Fatal("expected darwin-vz snapshot driver to be marked defaulted")
+	}
+	if got, want := payload.Snapshot.BaseDir, filepath.Join(tmpDir, "state", "cleanroom", "snapshots"); got != want {
+		t.Fatalf("unexpected effective snapshot base dir: got %q want %q", got, want)
+	}
+}
+
+func TestDoctorCommandTextIncludesEffectiveSnapshotConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", filepath.Join(tmpDir, "state"))
+
+	stdout, readStdout := makeStdoutCapture(t)
+
+	cmd := DoctorCommand{
+		Backend: "darwin-vz",
+	}
+	err := cmd.Run(&runtimeContext{
+		CWD:    tmpDir,
+		Stdout: stdout,
+		Loader: doctorFailingLoader{},
+		Config: runtimeconfig.Config{
+			Backends: runtimeconfig.Backends{
+				DarwinVZ: runtimeconfig.DarwinVZConfig{
+					Snapshots: runtimeconfig.SnapshotConfig{Enabled: false},
+				},
+			},
+		},
+		ConfigPath: filepath.Join(tmpDir, "config.yaml"),
+		Backends: map[string]backend.Adapter{
+			"darwin-vz": doctorSnapshotAdapter{},
+		},
+	})
+	if err != nil {
+		t.Fatalf("DoctorCommand.Run returned error: %v", err)
+	}
+
+	out := readStdout()
+	if !strings.Contains(out, "snapshot_config: enabled=false driver=apfs (defaulted)") {
+		t.Fatalf("expected snapshot config line in doctor output, got: %q", out)
+	}
+	if !strings.Contains(out, filepath.Join(tmpDir, "state", "cleanroom", "snapshots")) {
+		t.Fatalf("expected snapshot base dir in doctor output, got: %q", out)
+	}
+}

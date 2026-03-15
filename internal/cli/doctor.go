@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/gateway"
+	"github.com/buildkite/cleanroom/internal/paths"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 )
 
@@ -15,6 +17,13 @@ type DoctorCommand struct {
 	Chdir   string `short:"c" help:"Change to this directory before running commands"`
 	Backend string `help:"Execution backend to diagnose (defaults to runtime config or host default)"`
 	JSON    bool   `help:"Print doctor report as JSON"`
+}
+
+type snapshotDoctorConfig struct {
+	Enabled   bool   `json:"enabled"`
+	Driver    string `json:"driver"`
+	BaseDir   string `json:"base_dir"`
+	Defaulted bool   `json:"defaulted"`
 }
 
 func (d *DoctorCommand) Run(ctx *runtimeContext) error {
@@ -37,26 +46,32 @@ func (d *DoctorCommand) Run(ctx *runtimeContext) error {
 		credSummary = strings.Join(gwHosts, ", ")
 	}
 	routeSummary := strings.Join(gwRoutes, ", ")
+	snapshotCfg, snapshotCheck, hasSnapshotCfg := snapshotDoctorConfigForBackend(backendName, ctx.Config)
 
 	checks := []backend.DoctorCheck{
 		{Name: "runtime_config", Status: "pass", Message: fmt.Sprintf("using runtime config path %s", ctx.ConfigPath)},
 		{Name: "backend", Status: "pass", Message: fmt.Sprintf("selected backend %s", backendName)},
-		{
+	}
+	if hasSnapshotCfg {
+		checks = append(checks, snapshotCheck)
+	}
+	checks = append(checks,
+		backend.DoctorCheck{
 			Name:    "gateway_listen",
 			Status:  "pass",
 			Message: fmt.Sprintf("default listen %s (port %d; override with cleanroom serve --gateway-listen)", gateway.DefaultListenAddr, gateway.DefaultPort),
 		},
-		{
+		backend.DoctorCheck{
 			Name:    "gateway_routes",
 			Status:  "pass",
 			Message: fmt.Sprintf("enabled routes: %s", routeSummary),
 		},
-		{
+		backend.DoctorCheck{
 			Name:    "gateway_credentials",
 			Status:  "pass",
 			Message: fmt.Sprintf("configured credential hosts: %s", credSummary),
 		},
-	}
+	)
 	for _, key := range backend.SortedCapabilityKeys(capabilities) {
 		status := "warn"
 		message := fmt.Sprintf("%s: unsupported", key)
@@ -120,6 +135,9 @@ func (d *DoctorCommand) Run(ctx *runtimeContext) error {
 				"credential_hosts": gwHosts,
 			},
 		}
+		if hasSnapshotCfg {
+			payload["snapshot"] = snapshotCfg
+		}
 		enc := json.NewEncoder(ctx.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(payload)
@@ -137,6 +155,44 @@ func resolveBackendName(requested, configuredDefault string) string {
 		return configuredDefault
 	}
 	return runtimeconfig.DefaultBackendForHost()
+}
+
+func snapshotDoctorConfigForBackend(backendName string, cfg runtimeconfig.Config) (snapshotDoctorConfig, backend.DoctorCheck, bool) {
+	snapshotCfg, ok := runtimeconfig.SnapshotConfigForBackend(cfg, backendName)
+	if !ok {
+		return snapshotDoctorConfig{}, backend.DoctorCheck{}, false
+	}
+
+	driver := runtimeconfig.SnapshotDriverOrDefault(backendName, snapshotCfg.Driver)
+	defaulted := strings.TrimSpace(snapshotCfg.Driver) == ""
+	baseDir := strings.TrimSpace(snapshotCfg.BaseDir)
+	if baseDir != "" {
+		baseDir = filepath.Clean(baseDir)
+	} else if resolved, err := paths.SnapshotDir(); err == nil {
+		baseDir = resolved
+	} else {
+		baseDir = fmt.Sprintf("<unresolved: %v>", err)
+	}
+
+	info := snapshotDoctorConfig{
+		Enabled:   snapshotCfg.Enabled,
+		Driver:    driver,
+		BaseDir:   baseDir,
+		Defaulted: defaulted,
+	}
+	return info, backend.DoctorCheck{
+		Name:    "snapshot_config",
+		Status:  "pass",
+		Message: formatSnapshotDoctorCheck(info),
+	}, true
+}
+
+func formatSnapshotDoctorCheck(cfg snapshotDoctorConfig) string {
+	driver := cfg.Driver
+	if cfg.Defaulted {
+		driver += " (defaulted)"
+	}
+	return fmt.Sprintf("enabled=%t driver=%s base_dir=%s", cfg.Enabled, driver, cfg.BaseDir)
 }
 
 var capabilityNameReplacer = strings.NewReplacer(".", "_", "-", "_")
