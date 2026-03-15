@@ -1,14 +1,14 @@
 steps:
   - label: ":shell: Shellcheck"
     plugins:
-      - ./.buildkite/plugins/mise:
+      - github.com/lox/mise-buildkite-plugin#388b8f3a8d0fcd78517d7f5786c19e3bef82c7b4:
     command: shellcheck -x scripts/bootstrap-buildkite-agent.sh scripts/bootstrap-buildkite-agent-macos.sh scripts/cleanroom-root-helper.sh scripts/benchmark-tti.sh scripts/build-go.sh scripts/install-go.sh scripts/install.sh scripts/release.sh scripts/ci-cleanroom-e2e.sh scripts/ci-darwin-vz-e2e.sh
     agents:
       queue: hosted
 
   - label: ":test_tube: Test (Linux)"
     plugins:
-      - ./.buildkite/plugins/mise:
+      - github.com/lox/mise-buildkite-plugin#388b8f3a8d0fcd78517d7f5786c19e3bef82c7b4:
     command: go test ./...
     cache:
       paths:
@@ -22,7 +22,7 @@ steps:
 
   - label: ":test_tube: Test (macOS)"
     plugins:
-      - ./.buildkite/plugins/mise:
+      - github.com/lox/mise-buildkite-plugin#388b8f3a8d0fcd78517d7f5786c19e3bef82c7b4:
     command: go test ./...
     cache:
       paths:
@@ -36,7 +36,7 @@ steps:
 
   - label: ":apple: E2E (darwin-vz)"
     plugins:
-      - ./.buildkite/plugins/mise:
+      - github.com/lox/mise-buildkite-plugin#388b8f3a8d0fcd78517d7f5786c19e3bef82c7b4:
     command: scripts/ci-darwin-vz-e2e.sh
     concurrency: 1
     concurrency_group: cleanroom-darwin-vz-e2e
@@ -45,7 +45,7 @@ steps:
 
   - label: ":fire: E2E (Firecracker)"
     plugins:
-      - ./.buildkite/plugins/mise:
+      - github.com/lox/mise-buildkite-plugin#388b8f3a8d0fcd78517d7f5786c19e3bef82c7b4:
     command: scripts/ci-cleanroom-e2e.sh
     concurrency: 1
     concurrency_group: cleanroom-e2e

@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-const miseBuildkitePluginRef = "./.buildkite/plugins/mise"
+const miseBuildkitePluginRef = "github.com/lox/mise-buildkite-plugin#388b8f3a8d0fcd78517d7f5786c19e3bef82c7b4"
 
 func TestBuildkitePipelineUsesMisePlugin(t *testing.T) {
 	t.Parallel()
@@ -35,7 +35,7 @@ func TestBuildkiteCommandHookIsRemoved(t *testing.T) {
 	}
 }
 
-func TestBuildkiteVendoredMisePluginExists(t *testing.T) {
+func TestBuildkiteVendoredMisePluginIsRemoved(t *testing.T) {
 	t.Parallel()
 
 	for _, path := range []string{
@@ -46,8 +46,9 @@ func TestBuildkiteVendoredMisePluginExists(t *testing.T) {
 		t.Run(path, func(t *testing.T) {
 			t.Parallel()
 
-			if _, err := os.Stat(path); err != nil {
-				t.Fatalf("expected %s to exist: %v", path, err)
+			_, err := os.Stat(path)
+			if !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("expected %s to be removed, got err=%v", path, err)
 			}
 		})
 	}
