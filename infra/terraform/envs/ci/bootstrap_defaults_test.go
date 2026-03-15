@@ -142,6 +142,8 @@ func TestUserDataCreatesZfsPoolFromEphemeralNVMe(t *testing.T) {
 	requireContains(t, templatePath, "Amazon Elastic Block Store")
 	requireContains(t, templatePath, "zfs create")
 	requireContains(t, templatePath, "cleanroom-zfs.img")
+	requireContains(t, templatePath, "CLEANROOM_ZFS_LOOPBACK_SIZE")
+	requireContains(t, templatePath, "truncate -s \"$CLEANROOM_ZFS_LOOPBACK_SIZE\"")
 }
 
 func TestDefaultInstanceTypeSupportsNestedVirtualization(t *testing.T) {

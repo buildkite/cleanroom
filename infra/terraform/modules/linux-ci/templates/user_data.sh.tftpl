@@ -41,6 +41,7 @@ fi
 # that appears as /dev/nvme1n1 (the root EBS volume is /dev/nvme0n1).
 CLEANROOM_ZFS_POOL='cleanroom'
 CLEANROOM_ZFS_DATASET="$CLEANROOM_ZFS_POOL/data"
+CLEANROOM_ZFS_LOOPBACK_SIZE="$${CLEANROOM_ZFS_LOOPBACK_SIZE:-40G}"
 if ! zpool list "$CLEANROOM_ZFS_POOL" >/dev/null 2>&1; then
   ephemeral_dev=''
   for dev in /dev/nvme1n1 /dev/nvme2n1; do
@@ -59,9 +60,9 @@ if ! zpool list "$CLEANROOM_ZFS_POOL" >/dev/null 2>&1; then
     zpool create -f "$CLEANROOM_ZFS_POOL" "$ephemeral_dev"
     zfs create "$CLEANROOM_ZFS_DATASET"
   else
-    echo "no ephemeral NVMe found, creating ZFS pool on loopback file"
+    echo "no ephemeral NVMe found, creating $CLEANROOM_ZFS_LOOPBACK_SIZE ZFS pool on loopback file"
     loopback_path='/var/lib/cleanroom-zfs.img'
-    truncate -s 2G "$loopback_path"
+    truncate -s "$CLEANROOM_ZFS_LOOPBACK_SIZE" "$loopback_path"
     zpool create -f "$CLEANROOM_ZFS_POOL" "$loopback_path"
     zfs create "$CLEANROOM_ZFS_DATASET"
   fi
