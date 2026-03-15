@@ -31,7 +31,11 @@ type Service struct {
 	RepositoryMirrors repositoryMirrorStore
 	runtime           serviceRuntime
 	interactive       interactiveSessionBroker
-	SnapshotStore     snapshotMetadataStore
+	// Snapshot lifecycle still lives on Service because it coordinates backend
+	// adapters, sandbox state, and metadata persistence in one operation chain.
+	// If this grows again, extract a dedicated snapshot manager rather than
+	// adding more snapshot-specific branching here.
+	SnapshotStore snapshotMetadataStore
 
 	mu                sync.RWMutex
 	sandboxes         map[string]*sandboxState
@@ -1710,6 +1714,9 @@ func (s *Service) ensureMapsLocked() {
 	}
 }
 
+// Snapshot operation bookkeeping is the remaining piece of snapshot coordination
+// still owned by Service. If snapshot behavior expands beyond basic create/load/
+// delete flows, move this state and the snapshot RPC handlers into a collaborator.
 func (s *Service) beginSnapshotUseLocked(snapshotID string) error {
 	if _, deleting := s.snapshotDeletions[snapshotID]; deleting {
 		return fmt.Errorf("snapshot_busy: snapshot %q is being deleted", snapshotID)
