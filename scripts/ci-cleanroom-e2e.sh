@@ -242,7 +242,7 @@ if ! grep -q '^persisted-data$' "$tmpdir/persist-read.out"; then
   exit 1
 fi
 
-go run ./scripts/download_sandbox_file \
+./dist/download-sandbox-file \
   --host "$listen_endpoint" \
   --sandbox-id "$sandbox_id" \
   --path /tmp/persist.txt \

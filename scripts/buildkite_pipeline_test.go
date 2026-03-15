@@ -21,6 +21,9 @@ func TestBuildkitePipelineUsesMisePlugin(t *testing.T) {
 	if !strings.Contains(pipeline, miseBuildkitePluginRef) {
 		t.Fatalf("expected .buildkite/pipeline.yml to use %q", miseBuildkitePluginRef)
 	}
+	if !strings.Contains(pipeline, "add_shims_to_path: false") {
+		t.Fatalf("expected .buildkite/pipeline.yml to disable mise shims in CI")
+	}
 	if strings.Contains(pipeline, "command: mise run") {
 		t.Fatalf("expected .buildkite/pipeline.yml to avoid direct `mise run` step commands")
 	}
@@ -73,6 +76,9 @@ func TestBuildkiteCIScriptsDoNotInvokeMiseDirectly(t *testing.T) {
 			script := string(content)
 			if strings.Contains(script, "mise run ") || strings.Contains(script, "mise exec ") {
 				t.Fatalf("expected %s to use the Buildkite plugin environment instead of invoking mise directly", path)
+			}
+			if path == "ci-cleanroom-e2e.sh" && strings.Contains(script, "go run ./scripts/download_sandbox_file") {
+				t.Fatalf("expected %s to use the prebuilt download helper instead of `go run`", path)
 			}
 		})
 	}
