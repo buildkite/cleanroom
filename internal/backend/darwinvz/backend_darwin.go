@@ -675,7 +675,7 @@ func (a *Adapter) Doctor(_ context.Context, req backend.DoctorRequest) (*backend
 	return report, nil
 }
 
-func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backend.OutputStream) (result *backend.RunResult, err error) {
 	runStart := time.Now()
 
 	if req.Policy == nil {
@@ -711,6 +711,9 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 		ImageDigest: req.Policy.ImageDigest,
 	}
 	defer func() {
+		if err != nil && strings.TrimSpace(observation.Error) == "" {
+			observation.Error = err.Error()
+		}
 		if err := writeDarwinVZRunObservation(runDir, &observation, time.Since(runStart).Milliseconds()); err != nil {
 			log.Warn("write darwin-vz run observability failed", "run_id", req.RunID, "error", err)
 		}

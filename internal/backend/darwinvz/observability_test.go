@@ -143,3 +143,38 @@ func TestRunInSandboxWritesObservabilityWithPendingLaunchTimings(t *testing.T) {
 		t.Fatalf("unexpected rootfs_copy_ms: got %v want %v", got, want)
 	}
 }
+
+func TestRunWritesObservabilityErrorWhenRequestedCommandWriteFails(t *testing.T) {
+	t.Parallel()
+
+	runDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(runDir, "requested-command.json"), 0o755); err != nil {
+		t.Fatalf("mkdir requested-command.json: %v", err)
+	}
+
+	adapter := &Adapter{}
+	_, err := adapter.run(context.Background(), backend.RunRequest{
+		RunID:   "run-write-fail",
+		Command: []string{"echo", "hello"},
+		Policy:  &policy.CompiledPolicy{NetworkDefault: "deny"},
+		FirecrackerConfig: backend.FirecrackerConfig{
+			RunDir: runDir,
+			Launch: false,
+		},
+	}, backend.OutputStream{})
+	if err == nil {
+		t.Fatal("expected run to fail")
+	}
+
+	b, readErr := os.ReadFile(filepath.Join(runDir, runObservabilityFile))
+	if readErr != nil {
+		t.Fatalf("read observability file: %v", readErr)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(b, &payload); err != nil {
+		t.Fatalf("parse observability file: %v", err)
+	}
+	if got := payload["error"]; got == nil || got == "" {
+		t.Fatalf("expected error in observability payload, got %v", got)
+	}
+}
