@@ -31,6 +31,7 @@ type SandboxCreateCommand struct {
 
 type SandboxListCommand struct {
 	clientFlags
+	All  bool `help:"Include stopped sandboxes"`
 	JSON bool `help:"Print sandboxes as JSON"`
 }
 
@@ -59,15 +60,20 @@ func (c *SandboxListCommand) Run(ctx *runtimeContext) error {
 	if err != nil {
 		return err
 	}
+	sandboxes := filterSandboxList(resp.Sandboxes, c.All)
 
 	if c.JSON {
 		enc := json.NewEncoder(ctx.Stdout)
 		enc.SetIndent("", "  ")
-		return enc.Encode(resp.Sandboxes)
+		return enc.Encode(sandboxes)
 	}
 
-	if len(resp.Sandboxes) == 0 {
-		_, err := fmt.Fprintln(ctx.Stdout, "no active sandboxes")
+	if len(sandboxes) == 0 {
+		message := "no active sandboxes"
+		if c.All {
+			message = "no sandboxes"
+		}
+		_, err := fmt.Fprintln(ctx.Stdout, message)
 		return err
 	}
 
@@ -75,7 +81,7 @@ func (c *SandboxListCommand) Run(ctx *runtimeContext) error {
 	if _, err := fmt.Fprintln(tw, "ID\tSTATUS\tBACKEND\tCREATED"); err != nil {
 		return err
 	}
-	for _, sb := range resp.Sandboxes {
+	for _, sb := range sandboxes {
 		status := sandboxStatusString(sb.Status)
 		created := ""
 		if sb.CreatedAt != nil {
@@ -86,6 +92,20 @@ func (c *SandboxListCommand) Run(ctx *runtimeContext) error {
 		}
 	}
 	return tw.Flush()
+}
+
+func filterSandboxList(sandboxes []*cleanroomv1.Sandbox, includeStopped bool) []*cleanroomv1.Sandbox {
+	filtered := make([]*cleanroomv1.Sandbox, 0, len(sandboxes))
+	for _, sandbox := range sandboxes {
+		if sandbox == nil {
+			continue
+		}
+		if !includeStopped && sandbox.Status == cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPED {
+			continue
+		}
+		filtered = append(filtered, sandbox)
+	}
+	return filtered
 }
 
 func (c *SandboxTerminateCommand) Run(ctx *runtimeContext) error {
