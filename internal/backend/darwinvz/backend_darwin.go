@@ -1437,7 +1437,6 @@ type volumeDriverFactory func(string) (volumestore.Driver, error)
 
 func newRootFSVolumeDriver(cfg backend.FirecrackerConfig, newFileDriver, newAPFSDriver volumeDriverFactory) (volumestore.Driver, error) {
 	driverName := strings.ToLower(strings.TrimSpace(cfg.Snapshots.Driver))
-	defaulted := driverName == ""
 	if driverName == "" {
 		driverName = "apfs"
 	}
@@ -1457,9 +1456,6 @@ func newRootFSVolumeDriver(cfg backend.FirecrackerConfig, newFileDriver, newAPFS
 		if err != nil {
 			return nil, err
 		}
-		if !defaulted {
-			return driver, nil
-		}
 		fileDriver, err := newFileDriver(snapshotBaseDir)
 		if err != nil {
 			return nil, err
@@ -1467,7 +1463,7 @@ func newRootFSVolumeDriver(cfg backend.FirecrackerConfig, newFileDriver, newAPFS
 		return &fallbackVolumeDriver{
 			primary:        driver,
 			fallback:       fileDriver,
-			shouldFallback: shouldFallbackFromDefaultAPFS,
+			shouldFallback: shouldFallbackFromAPFS,
 		}, nil
 	default:
 		return nil, fmt.Errorf("unsupported darwin-vz snapshot driver %q", cfg.Snapshots.Driver)
@@ -1496,7 +1492,7 @@ func newDarwinVZAPFSVolumeDriver(snapshotBaseDir string) (volumestore.Driver, er
 	return driver, nil
 }
 
-func shouldFallbackFromDefaultAPFS(err error) bool {
+func shouldFallbackFromAPFS(err error) bool {
 	return errors.Is(err, unix.EXDEV) || errors.Is(err, unix.ENOTSUP) || errors.Is(err, unix.ENOSYS)
 }
 

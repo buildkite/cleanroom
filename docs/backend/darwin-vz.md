@@ -97,7 +97,7 @@ Snapshot/rootfs volume drivers:
 
 - omitted `snapshots.driver` defaults to `apfs` for `darwin-vz`
 - `snapshots.driver: file` copies ext4 images with standard file I/O
-- `snapshots.driver: apfs` uses macOS `clonefile(2)` for same-filesystem APFS copy-on-write clones
+- `snapshots.driver: apfs` uses macOS `clonefile(2)` for same-filesystem APFS copy-on-write clones and falls back to standard file copies when `clonefile(2)` is unavailable for the selected source/destination
 - the selected driver is used for snapshot capture, snapshot-backed sandbox creation, and writable per-run/per-sandbox rootfs preparation
 
 Host tools required for derivation/injection:
