@@ -1,15 +1,14 @@
-env:
-  MISE_YES: "1"
-  MISE_TRUSTED_CONFIG_PATHS: /buildkite/builds
-
 steps:
   - label: ":shell: Shellcheck"
-    command: mise run lint-shell
+    plugins: &mise_plugin
+      - lox/mise#d082f6e5ace50c61e723d980b0286478a0d62dae:
+    command: shellcheck -x scripts/bootstrap-buildkite-agent.sh scripts/bootstrap-buildkite-agent-macos.sh scripts/cleanroom-root-helper.sh scripts/benchmark-tti.sh scripts/build-go.sh scripts/install-go.sh scripts/install.sh scripts/release.sh scripts/ci-cleanroom-e2e.sh scripts/ci-darwin-vz-e2e.sh
     agents:
       queue: hosted
 
   - label: ":test_tube: Test (Linux)"
-    command: mise run test
+    plugins: *mise_plugin
+    command: go test ./...
     cache:
       paths:
         - "~/.local/share/mise"
@@ -21,7 +20,8 @@ steps:
       queue: hosted
 
   - label: ":test_tube: Test (macOS)"
-    command: mise run test
+    plugins: *mise_plugin
+    command: go test ./...
     cache:
       paths:
         - "~/.local/share/mise"
@@ -33,6 +33,7 @@ steps:
       queue: cleanroom-mac
 
   - label: ":apple: E2E (darwin-vz)"
+    plugins: *mise_plugin
     command: scripts/ci-darwin-vz-e2e.sh
     concurrency: 1
     concurrency_group: cleanroom-darwin-vz-e2e
@@ -40,6 +41,7 @@ steps:
       queue: cleanroom-mac
 
   - label: ":fire: E2E (Firecracker)"
+    plugins: *mise_plugin
     command: scripts/ci-cleanroom-e2e.sh
     concurrency: 1
     concurrency_group: cleanroom-e2e

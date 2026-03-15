@@ -79,7 +79,7 @@ echo "--- :broom: Pre-build cleanup"
 purge_stale_cleanroom_resources
 
 echo "--- :hammer: Building binaries"
-mise run build
+scripts/build-go.sh
 
 tmpdir="$(mktemp -d)"
 cleanup() {
@@ -242,7 +242,7 @@ if ! grep -q '^persisted-data$' "$tmpdir/persist-read.out"; then
   exit 1
 fi
 
-mise exec -- go run ./scripts/download_sandbox_file \
+go run ./scripts/download_sandbox_file \
   --host "$listen_endpoint" \
   --sandbox-id "$sandbox_id" \
   --path /tmp/persist.txt \
