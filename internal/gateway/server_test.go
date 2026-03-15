@@ -1,9 +1,13 @@
 package gateway
 
 import (
+	"context"
+	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"testing"
 
 	"github.com/buildkite/cleanroom/internal/policy"
@@ -88,7 +92,73 @@ func TestIdentityMiddlewareFallsBackToScopeToken(t *testing.T) {
 		t.Fatalf("register scope token: %v", err)
 	}
 
-	srv := &Server{registry: reg}
+	srv := NewServer(ServerConfig{Registry: reg})
+	var gotScope *SandboxScope
+	inner := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		gotScope, _ = ScopeFromContext(r.Context())
+	})
+	handler := srv.identityMiddleware(inner)
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	req.RemoteAddr = "192.168.64.10:12345"
+	req.Header.Set(ScopeTokenHeader, "token-1")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if gotScope == nil {
+		t.Fatal("expected scope in context")
+	}
+	if gotScope.SandboxID != "sandbox-token" {
+		t.Fatalf("expected sandbox-token, got %s", gotScope.SandboxID)
+	}
+}
+
+func TestIdentityMiddlewareFallsBackToScopeTokenFromConfiguredTrustedSubnet(t *testing.T) {
+	t.Parallel()
+
+	reg := NewRegistry()
+	p := &policy.CompiledPolicy{Version: 1, NetworkDefault: "deny"}
+	if err := reg.RegisterScopeToken("token-1", "sandbox-token", p); err != nil {
+		t.Fatalf("register scope token: %v", err)
+	}
+
+	srv := NewServer(ServerConfig{
+		Registry:                        reg,
+		ScopeTokenTrustedSourcePrefixes: ScopeTokenTrustedSourcePrefixesForGatewayHost("10.24.7.1"),
+	})
+	var gotScope *SandboxScope
+	inner := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		gotScope, _ = ScopeFromContext(r.Context())
+	})
+	handler := srv.identityMiddleware(inner)
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	req.RemoteAddr = "10.24.7.42:12345"
+	req.Header.Set(ScopeTokenHeader, "token-1")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if gotScope == nil {
+		t.Fatal("expected scope in context")
+	}
+	if gotScope.SandboxID != "sandbox-token" {
+		t.Fatalf("expected sandbox-token, got %s", gotScope.SandboxID)
+	}
+}
+
+func TestIdentityMiddlewareFallsBackToScopeTokenWhenSourceTrustIsDisabled(t *testing.T) {
+	t.Parallel()
+
+	reg := NewRegistry()
+	p := &policy.CompiledPolicy{Version: 1, NetworkDefault: "deny"}
+	if err := reg.RegisterScopeToken("token-1", "sandbox-token", p); err != nil {
+		t.Fatalf("register scope token: %v", err)
+	}
+
+	srv := NewServer(ServerConfig{
+		Registry:                     reg,
+		AllowScopeTokenFromAnySource: true,
+	})
 	var gotScope *SandboxScope
 	inner := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		gotScope, _ = ScopeFromContext(r.Context())
@@ -109,11 +179,38 @@ func TestIdentityMiddlewareFallsBackToScopeToken(t *testing.T) {
 	}
 }
 
+func TestIdentityMiddlewareRejectsScopeTokenFromUntrustedSource(t *testing.T) {
+	t.Parallel()
+
+	reg := NewRegistry()
+	p := &policy.CompiledPolicy{Version: 1, NetworkDefault: "deny"}
+	if err := reg.RegisterScopeToken("token-1", "sandbox-token", p); err != nil {
+		t.Fatalf("register scope token: %v", err)
+	}
+
+	srv := NewServer(ServerConfig{Registry: reg})
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := srv.identityMiddleware(inner)
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	req.RemoteAddr = "172.16.1.100:12345"
+	req.Header.Set(ScopeTokenHeader, "token-1")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", w.Code)
+	}
+}
+
 func TestIdentityMiddlewareRejectsUnknownScopeToken(t *testing.T) {
 	t.Parallel()
 
 	reg := NewRegistry()
-	srv := &Server{registry: reg}
+	srv := NewServer(ServerConfig{Registry: reg})
 
 	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -128,6 +225,92 @@ func TestIdentityMiddlewareRejectsUnknownScopeToken(t *testing.T) {
 
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("expected 403, got %d", w.Code)
+	}
+}
+
+func TestScopeTokenTrustedSourcePrefixesForGatewayHost(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		host string
+		want []netip.Prefix
+	}{
+		{
+			name: "default host",
+			host: "",
+			want: []netip.Prefix{netip.MustParsePrefix("192.168.64.0/24")},
+		},
+		{
+			name: "configured ipv4 host",
+			host: "10.24.7.1",
+			want: []netip.Prefix{netip.MustParsePrefix("10.24.7.0/24")},
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := ScopeTokenTrustedSourcePrefixesForGatewayHost(tt.host)
+			if len(got) != len(tt.want) {
+				t.Fatalf("len(prefixes) = %d, want %d", len(got), len(tt.want))
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Fatalf("prefix[%d] = %s, want %s", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestScopeTokenTrustedSourcePrefixesForGatewayHostResolvesHostnames(t *testing.T) {
+	t.Parallel()
+
+	lookupCalls := 0
+	got := scopeTokenSourcePolicyForGatewayHost(context.Background(), "gateway.local", func(_ context.Context, host string) ([]net.IP, error) {
+		lookupCalls++
+		if host != "gateway.local" {
+			t.Fatalf("unexpected host lookup: %q", host)
+		}
+		return []net.IP{
+			net.ParseIP("10.24.7.1"),
+			net.ParseIP("10.24.7.44"),
+			net.ParseIP("fd00::1"),
+		}, nil
+	})
+
+	if lookupCalls != 1 {
+		t.Fatalf("lookupCalls = %d, want 1", lookupCalls)
+	}
+	want := []netip.Prefix{
+		netip.MustParsePrefix("10.24.7.0/24"),
+		netip.MustParsePrefix("fd00::/64"),
+	}
+	if len(got.TrustedSourcePrefixes) != len(want) {
+		t.Fatalf("len(prefixes) = %d, want %d", len(got.TrustedSourcePrefixes), len(want))
+	}
+	for i := range got.TrustedSourcePrefixes {
+		if got.TrustedSourcePrefixes[i] != want[i] {
+			t.Fatalf("prefix[%d] = %s, want %s", i, got.TrustedSourcePrefixes[i], want[i])
+		}
+	}
+}
+
+func TestScopeTokenSourcePolicyForGatewayHostAllowsAnySourceOnLookupFailure(t *testing.T) {
+	t.Parallel()
+
+	got := scopeTokenSourcePolicyForGatewayHost(context.Background(), "gateway.local", func(context.Context, string) ([]net.IP, error) {
+		return nil, errors.New("lookup failed")
+	})
+
+	if !got.AllowScopeTokenFromAnySource {
+		t.Fatal("expected source trust to be disabled on lookup failure")
+	}
+	if len(got.TrustedSourcePrefixes) != 0 {
+		t.Fatalf("expected no trusted source prefixes when trust is disabled, got %v", got.TrustedSourcePrefixes)
 	}
 }
 

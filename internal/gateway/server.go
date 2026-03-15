@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"sync"
 
@@ -29,6 +30,12 @@ var serviceRoutes = []string{
 	RouteMeta,
 }
 
+type gatewayHostLookupFunc func(context.Context, string) ([]net.IP, error)
+
+var defaultGatewayHostLookup gatewayHostLookupFunc = func(ctx context.Context, host string) ([]net.IP, error) {
+	return net.DefaultResolver.LookupIP(ctx, "ip", host)
+}
+
 // Routes returns the configured gateway service route prefixes.
 func Routes() []string {
 	out := make([]string, len(serviceRoutes))
@@ -44,26 +51,104 @@ const scopeContextKey contextKey = iota
 // identity when source-IP identity is unavailable (for example darwin NAT).
 const ScopeTokenHeader = "X-Cleanroom-Scope-Token"
 
+var defaultDarwinVZScopeTokenSourcePrefix = netip.MustParsePrefix("192.168.64.0/24")
+
 // ScopeFromContext retrieves the SandboxScope injected by identity middleware.
 func ScopeFromContext(ctx context.Context) (*SandboxScope, bool) {
 	scope, ok := ctx.Value(scopeContextKey).(*SandboxScope)
 	return scope, ok
 }
 
+// ScopeTokenTrustedSourcePrefixesForGatewayHost returns the trusted source
+// prefixes to use for scope-token fallback requests that arrive from darwin-vz
+// guests routed through a gateway host IP.
+func ScopeTokenTrustedSourcePrefixesForGatewayHost(gatewayHost string) []netip.Prefix {
+	return ScopeTokenSourcePolicyForGatewayHost(gatewayHost).TrustedSourcePrefixes
+}
+
+// ScopeTokenSourcePolicy describes how the gateway should validate scope-token
+// requests for a given darwin-vz gateway host configuration.
+type ScopeTokenSourcePolicy struct {
+	TrustedSourcePrefixes        []netip.Prefix
+	AllowScopeTokenFromAnySource bool
+}
+
+// ScopeTokenSourcePolicyForGatewayHost derives the source-trust policy for
+// scope-token requests that arrive from darwin-vz guests routed through the
+// configured gateway host.
+func ScopeTokenSourcePolicyForGatewayHost(gatewayHost string) ScopeTokenSourcePolicy {
+	return scopeTokenSourcePolicyForGatewayHost(context.Background(), gatewayHost, defaultGatewayHostLookup)
+}
+
+func scopeTokenSourcePolicyForGatewayHost(ctx context.Context, gatewayHost string, lookup gatewayHostLookupFunc) ScopeTokenSourcePolicy {
+	defaultPrefixes := []netip.Prefix{defaultDarwinVZScopeTokenSourcePrefix}
+	gatewayHost = strings.TrimSpace(gatewayHost)
+	if gatewayHost == "" {
+		return ScopeTokenSourcePolicy{TrustedSourcePrefixes: defaultPrefixes}
+	}
+
+	if addr, err := netip.ParseAddr(gatewayHost); err == nil {
+		return ScopeTokenSourcePolicy{
+			TrustedSourcePrefixes: []netip.Prefix{scopeTokenTrustedSourcePrefixForAddr(addr)},
+		}
+	}
+	if lookup == nil {
+		return ScopeTokenSourcePolicy{AllowScopeTokenFromAnySource: true}
+	}
+
+	resolved, err := lookup(ctx, gatewayHost)
+	if err != nil {
+		return ScopeTokenSourcePolicy{AllowScopeTokenFromAnySource: true}
+	}
+
+	prefixes := make([]netip.Prefix, 0, len(resolved))
+	seen := make(map[netip.Prefix]struct{}, len(resolved))
+	for _, ip := range resolved {
+		addr, ok := netip.AddrFromSlice(ip)
+		if !ok {
+			continue
+		}
+		if addr.Is4In6() {
+			addr = addr.Unmap()
+		}
+		prefix := scopeTokenTrustedSourcePrefixForAddr(addr)
+		if _, exists := seen[prefix]; exists {
+			continue
+		}
+		seen[prefix] = struct{}{}
+		prefixes = append(prefixes, prefix)
+	}
+	if len(prefixes) == 0 {
+		return ScopeTokenSourcePolicy{AllowScopeTokenFromAnySource: true}
+	}
+	return ScopeTokenSourcePolicy{TrustedSourcePrefixes: prefixes}
+}
+
+func scopeTokenTrustedSourcePrefixForAddr(addr netip.Addr) netip.Prefix {
+	if addr.Is4() {
+		return netip.PrefixFrom(addr, 24).Masked()
+	}
+	return netip.PrefixFrom(addr, 64).Masked()
+}
+
 // ServerConfig configures a gateway server.
 type ServerConfig struct {
-	ListenAddr  string
-	Registry    *Registry
-	Credentials CredentialProvider
-	GitMirrors  GitMirrorStore
-	Logger      *log.Logger
+	ListenAddr                      string
+	Registry                        *Registry
+	Credentials                     CredentialProvider
+	GitMirrors                      GitMirrorStore
+	Logger                          *log.Logger
+	ScopeTokenTrustedSourcePrefixes []netip.Prefix
+	AllowScopeTokenFromAnySource    bool
 }
 
 // Server is the host gateway HTTP server.
 type Server struct {
-	registry   *Registry
-	logger     *log.Logger
-	httpServer *http.Server
+	registry                        *Registry
+	logger                          *log.Logger
+	httpServer                      *http.Server
+	scopeTokenTrustedSourcePrefixes []netip.Prefix
+	allowScopeTokenFromAnySource    bool
 
 	mu      sync.Mutex
 	started bool
@@ -77,10 +162,17 @@ func NewServer(cfg ServerConfig) *Server {
 		addr = DefaultListenAddr
 	}
 
+	trustedSourcePrefixes := cloneScopeTokenTrustedSourcePrefixes(cfg.ScopeTokenTrustedSourcePrefixes)
+	if trustedSourcePrefixes == nil && !cfg.AllowScopeTokenFromAnySource {
+		trustedSourcePrefixes = ScopeTokenTrustedSourcePrefixesForGatewayHost("")
+	}
+
 	s := &Server{
-		registry: cfg.Registry,
-		logger:   cfg.Logger,
-		addr:     addr,
+		registry:                        cfg.Registry,
+		logger:                          cfg.Logger,
+		addr:                            addr,
+		scopeTokenTrustedSourcePrefixes: trustedSourcePrefixes,
+		allowScopeTokenFromAnySource:    cfg.AllowScopeTokenFromAnySource,
 	}
 
 	mux := http.NewServeMux()
@@ -152,7 +244,7 @@ func (s *Server) identityMiddleware(next http.Handler) http.Handler {
 		}
 
 		scopeToken := strings.TrimSpace(r.Header.Get(ScopeTokenHeader))
-		if scopeToken != "" {
+		if scopeToken != "" && s.isScopeTokenSourceTrusted(sourceIP) {
 			if scope, ok := s.registry.LookupScopeToken(scopeToken); ok {
 				ctx := context.WithValue(r.Context(), scopeContextKey, scope)
 				next.ServeHTTP(w, r.WithContext(ctx))
@@ -162,6 +254,25 @@ func (s *Server) identityMiddleware(next http.Handler) http.Handler {
 
 		http.Error(w, "forbidden", http.StatusForbidden)
 	})
+}
+
+func (s *Server) isScopeTokenSourceTrusted(sourceIP string) bool {
+	if s.allowScopeTokenFromAnySource {
+		return true
+	}
+	addr, err := netip.ParseAddr(sourceIP)
+	if err != nil {
+		return false
+	}
+	if addr.IsLoopback() {
+		return true
+	}
+	for _, prefix := range s.scopeTokenTrustedSourcePrefixes {
+		if prefix.Contains(addr) {
+			return true
+		}
+	}
+	return false
 }
 
 // pathMiddleware validates and canonicalises the request path.
@@ -192,6 +303,15 @@ func extractSourceIP(remoteAddr string) string {
 		return v4.String()
 	}
 	return ip.String()
+}
+
+func cloneScopeTokenTrustedSourcePrefixes(prefixes []netip.Prefix) []netip.Prefix {
+	if prefixes == nil {
+		return nil
+	}
+	out := make([]netip.Prefix, len(prefixes))
+	copy(out, prefixes)
+	return out
 }
 
 func stubHandler(service string) http.HandlerFunc {

@@ -34,6 +34,7 @@ type ServeCommand struct {
 
 var serveSignalNotifyContext = signal.NotifyContext
 var newSnapshotMetadataStore = snapshotstore.New
+var gatewayScopeTokenSourcePolicyForGatewayHost = gateway.ScopeTokenSourcePolicyForGatewayHost
 
 func (s *ServeCommand) Run(ctx *runtimeContext) error {
 	return s.runServer(ctx)
@@ -78,13 +79,15 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 	if err != nil {
 		return fmt.Errorf("configure git mirror store: %w", err)
 	}
-	gwServer := gateway.NewServer(gateway.ServerConfig{
-		ListenAddr:  s.GatewayListen,
-		Registry:    gwRegistry,
-		Credentials: gwCredentials,
-		GitMirrors:  gwMirrors,
-		Logger:      logger.With("subsystem", "gateway"),
-	})
+	darwinGatewayHost := strings.TrimSpace(os.Getenv("CLEANROOM_DARWIN_GATEWAY_HOST"))
+	gwServer := gateway.NewServer(gatewayServerConfig(
+		s.GatewayListen,
+		gwRegistry,
+		gwCredentials,
+		gwMirrors,
+		logger.With("subsystem", "gateway"),
+		darwinGatewayHost,
+	))
 	if err := gwServer.Start(); err != nil {
 		return fmt.Errorf("start gateway: %w", err)
 	}
@@ -96,7 +99,7 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 		}
 	}
 
-	configureGatewayBackends(ctx.Backends, gwRegistry, gwPort, strings.TrimSpace(os.Getenv("CLEANROOM_DARWIN_GATEWAY_HOST")))
+	configureGatewayBackends(ctx.Backends, gwRegistry, gwPort, darwinGatewayHost)
 
 	if fcAdapter, ok := ctx.Backends["firecracker"].(*firecracker.Adapter); ok && fcAdapter.GatewayRegistry != nil {
 		if shouldInstallGatewayFirewall(runtime.GOOS) {
@@ -150,6 +153,19 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 	defer gwStopCancel()
 	_ = gwServer.Stop(gwStopCtx)
 	return runErr
+}
+
+func gatewayServerConfig(listen string, registry *gateway.Registry, credentials gateway.CredentialProvider, mirrors gateway.GitMirrorStore, logger *log.Logger, darwinGatewayHost string) gateway.ServerConfig {
+	sourcePolicy := gatewayScopeTokenSourcePolicyForGatewayHost(strings.TrimSpace(darwinGatewayHost))
+	return gateway.ServerConfig{
+		ListenAddr:                      listen,
+		Registry:                        registry,
+		Credentials:                     credentials,
+		GitMirrors:                      mirrors,
+		Logger:                          logger,
+		ScopeTokenTrustedSourcePrefixes: sourcePolicy.TrustedSourcePrefixes,
+		AllowScopeTokenFromAnySource:    sourcePolicy.AllowScopeTokenFromAnySource,
+	}
 }
 
 func configureGatewayBackends(backends map[string]backend.Adapter, gwRegistry *gateway.Registry, gwPort int, darwinGatewayHost string) {
