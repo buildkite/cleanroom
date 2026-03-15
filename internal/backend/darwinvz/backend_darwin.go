@@ -33,6 +33,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/volumestore"
 	"github.com/buildkite/cleanroom/internal/vsockexec"
 	"github.com/charmbracelet/log"
+	"golang.org/x/sys/unix"
 )
 
 // Adapter runs single-execution Linux VMs on macOS via Virtualization.framework.
@@ -1429,40 +1430,118 @@ func snapshotStorageBaseDir(cfg backend.FirecrackerConfig) (string, error) {
 }
 
 func rootFSVolumeDriver(cfg backend.FirecrackerConfig) (volumestore.Driver, error) {
+	return newRootFSVolumeDriver(cfg, newDarwinVZFileVolumeDriver, newDarwinVZAPFSVolumeDriver)
+}
+
+type volumeDriverFactory func(string) (volumestore.Driver, error)
+
+func newRootFSVolumeDriver(cfg backend.FirecrackerConfig, newFileDriver, newAPFSDriver volumeDriverFactory) (volumestore.Driver, error) {
 	driverName := strings.ToLower(strings.TrimSpace(cfg.Snapshots.Driver))
+	defaulted := driverName == ""
 	if driverName == "" {
 		driverName = "apfs"
 	}
+	snapshotBaseDir, err := snapshotStorageBaseDir(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("resolve snapshot base directory: %w", err)
+	}
 	switch driverName {
 	case "file":
-		snapshotBaseDir, err := snapshotStorageBaseDir(cfg)
-		if err != nil {
-			return nil, fmt.Errorf("resolve snapshot base directory: %w", err)
-		}
-		driver, err := volumestore.NewFileDriver(volumestore.FileDriverOptions{
-			SnapshotBaseDir: snapshotBaseDir,
-			Namespace:       "darwin-vz",
-		})
+		driver, err := newFileDriver(snapshotBaseDir)
 		if err != nil {
 			return nil, err
 		}
 		return driver, nil
 	case "apfs":
-		snapshotBaseDir, err := snapshotStorageBaseDir(cfg)
-		if err != nil {
-			return nil, fmt.Errorf("resolve snapshot base directory: %w", err)
-		}
-		driver, err := volumestore.NewAPFSDriver(volumestore.APFSDriverOptions{
-			SnapshotBaseDir: snapshotBaseDir,
-			Namespace:       "darwin-vz",
-		})
+		driver, err := newAPFSDriver(snapshotBaseDir)
 		if err != nil {
 			return nil, err
 		}
-		return driver, nil
+		if !defaulted {
+			return driver, nil
+		}
+		fileDriver, err := newFileDriver(snapshotBaseDir)
+		if err != nil {
+			return nil, err
+		}
+		return &fallbackVolumeDriver{
+			primary:        driver,
+			fallback:       fileDriver,
+			shouldFallback: shouldFallbackFromDefaultAPFS,
+		}, nil
 	default:
 		return nil, fmt.Errorf("unsupported darwin-vz snapshot driver %q", cfg.Snapshots.Driver)
 	}
+}
+
+func newDarwinVZFileVolumeDriver(snapshotBaseDir string) (volumestore.Driver, error) {
+	driver, err := volumestore.NewFileDriver(volumestore.FileDriverOptions{
+		SnapshotBaseDir: snapshotBaseDir,
+		Namespace:       "darwin-vz",
+	})
+	if err != nil {
+		return nil, err
+	}
+	return driver, nil
+}
+
+func newDarwinVZAPFSVolumeDriver(snapshotBaseDir string) (volumestore.Driver, error) {
+	driver, err := volumestore.NewAPFSDriver(volumestore.APFSDriverOptions{
+		SnapshotBaseDir: snapshotBaseDir,
+		Namespace:       "darwin-vz",
+	})
+	if err != nil {
+		return nil, err
+	}
+	return driver, nil
+}
+
+func shouldFallbackFromDefaultAPFS(err error) bool {
+	return errors.Is(err, unix.EXDEV) || errors.Is(err, unix.ENOTSUP) || errors.Is(err, unix.ENOSYS)
+}
+
+type fallbackVolumeDriver struct {
+	primary        volumestore.Driver
+	fallback       volumestore.Driver
+	shouldFallback func(error) bool
+}
+
+func (d *fallbackVolumeDriver) Name() string { return d.primary.Name() }
+
+func (d *fallbackVolumeDriver) EnsureBaseVolume(ctx context.Context, req volumestore.EnsureBaseVolumeRequest) (volumestore.BaseVolume, error) {
+	return d.primary.EnsureBaseVolume(ctx, req)
+}
+
+func (d *fallbackVolumeDriver) CreateWritableVolume(ctx context.Context, req volumestore.CreateWritableVolumeRequest) (volumestore.WritableVolume, error) {
+	writable, err := d.primary.CreateWritableVolume(ctx, req)
+	if err == nil || !d.shouldFallback(err) {
+		return writable, err
+	}
+	return d.fallback.CreateWritableVolume(ctx, req)
+}
+
+func (d *fallbackVolumeDriver) SnapshotVolume(ctx context.Context, req volumestore.SnapshotVolumeRequest) (volumestore.Snapshot, error) {
+	snapshot, err := d.primary.SnapshotVolume(ctx, req)
+	if err == nil || !d.shouldFallback(err) {
+		return snapshot, err
+	}
+	return d.fallback.SnapshotVolume(ctx, req)
+}
+
+func (d *fallbackVolumeDriver) CloneSnapshotToVolume(ctx context.Context, req volumestore.CloneSnapshotToVolumeRequest) (volumestore.WritableVolume, error) {
+	volume, err := d.primary.CloneSnapshotToVolume(ctx, req)
+	if err == nil || !d.shouldFallback(err) {
+		return volume, err
+	}
+	return d.fallback.CloneSnapshotToVolume(ctx, req)
+}
+
+func (d *fallbackVolumeDriver) DestroyVolume(ctx context.Context, req volumestore.DestroyVolumeRequest) error {
+	return d.primary.DestroyVolume(ctx, req)
+}
+
+func (d *fallbackVolumeDriver) DestroySnapshot(ctx context.Context, req volumestore.DestroySnapshotRequest) error {
+	return d.primary.DestroySnapshot(ctx, req)
 }
 
 func snapshotVolumeDriver(cfg backend.FirecrackerConfig) (volumestore.Driver, error) {
