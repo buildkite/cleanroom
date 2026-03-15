@@ -138,6 +138,18 @@ func TestSandboxCreateParsesFromSnapshot(t *testing.T) {
 	}
 }
 
+func TestSandboxCreateParsesWithSnapshotAlias(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"sandbox", "create", "--with", "snap_123"}); err != nil {
+		t.Fatalf("parse sandbox create --with returned error: %v", err)
+	}
+	if got, want := c.Sandbox.Create.From, "snap_123"; got != want {
+		t.Fatalf("unexpected sandbox create from alias: got %q want %q", got, want)
+	}
+}
+
 func TestTopLevelCreateParses(t *testing.T) {
 	c := &CLI{}
 	parser := newParserForTest(t, c)
@@ -169,6 +181,18 @@ func TestTopLevelCreateParsesFromSnapshot(t *testing.T) {
 	}
 	if got, want := c.Create.From, "snap_123"; got != want {
 		t.Fatalf("unexpected create from: got %q want %q", got, want)
+	}
+}
+
+func TestTopLevelCreateParsesWithSnapshotAlias(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"create", "--with", "snap_123"}); err != nil {
+		t.Fatalf("parse create --with returned error: %v", err)
+	}
+	if got, want := c.Create.From, "snap_123"; got != want {
+		t.Fatalf("unexpected create from alias: got %q want %q", got, want)
 	}
 }
 
@@ -206,6 +230,18 @@ func TestExecParsesInFromAndKeep(t *testing.T) {
 	}
 	if !c.Exec.Keep {
 		t.Fatal("expected exec keep flag to be set")
+	}
+}
+
+func TestExecParsesWithSnapshotAlias(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"exec", "--with", "snap_123", "--", "echo", "ok"}); err != nil {
+		t.Fatalf("parse exec --with returned error: %v", err)
+	}
+	if got, want := c.Exec.From, "snap_123"; got != want {
+		t.Fatalf("unexpected exec from alias: got %q want %q", got, want)
 	}
 }
 
@@ -255,6 +291,18 @@ func TestConsoleParsesInFromAndKeep(t *testing.T) {
 	}
 	if !c.Console.Keep {
 		t.Fatal("expected console keep flag to be set")
+	}
+}
+
+func TestConsoleParsesWithSnapshotAlias(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"console", "--with", "snap_123"}); err != nil {
+		t.Fatalf("parse console --with returned error: %v", err)
+	}
+	if got, want := c.Console.From, "snap_123"; got != want {
+		t.Fatalf("unexpected console from alias: got %q want %q", got, want)
 	}
 }
 
