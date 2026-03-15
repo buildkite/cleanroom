@@ -51,17 +51,11 @@ func clearExecutionAttachIOLocked(ex *executionState) {
 }
 
 func closeSandboxSubscribersLocked(sb *sandboxState) {
-	for id, ch := range sb.EventSubscribers {
-		close(ch)
-		delete(sb.EventSubscribers, id)
-	}
+	sb.events.closeSubscribers()
 }
 
 func closeExecutionSubscribersLocked(ex *executionState) {
-	for id, ch := range ex.EventSubscribers {
-		close(ch)
-		delete(ex.EventSubscribers, id)
-	}
+	ex.events.closeSubscribers()
 }
 
 func executionTerminalTime(ex *executionState) time.Time {
