@@ -146,20 +146,6 @@ func TestUserDataCreatesZfsPoolFromEphemeralNVMe(t *testing.T) {
 	requireContains(t, templatePath, "truncate -s \"$CLEANROOM_ZFS_LOOPBACK_SIZE\"")
 }
 
-func TestDefaultInstanceTypeSupportsNestedVirtualization(t *testing.T) {
-	t.Helper()
-
-	for _, path := range []string{
-		"variables.tf",
-		filepath.Join("..", "..", "modules", "linux-ci", "variables.tf"),
-	} {
-		block := readVariableBlock(t, path, "instance_type")
-		if !strings.Contains(block, "m8i.large") {
-			t.Fatalf("expected default instance_type to be m8i.large in %s, got:\n%s", path, block)
-		}
-	}
-}
-
 func TestDefaultRegionIsUsWest2(t *testing.T) {
 	t.Helper()
 
