@@ -23,7 +23,7 @@ type SandboxCreateCommand struct {
 	clientFlags
 	Chdir         string `short:"c" help:"Change to this directory before running commands"`
 	Backend       string `help:"Execution backend (defaults to runtime config or host default)"`
-	From          string `name:"from" aliases:"with" help:"Create the sandbox from an existing snapshot ID"`
+	From          string `name:"from" help:"Create the sandbox from an existing snapshot ID"`
 	Image         string `help:"Override sandbox image ref (tag, digest, or local Docker image)"`
 	LaunchSeconds int64  `help:"VM boot/guest-agent readiness timeout in seconds"`
 	JSON          bool   `help:"Print sandbox as JSON"`
@@ -43,7 +43,7 @@ type CreateCommand struct {
 	clientFlags
 	Chdir         string `short:"c" help:"Change to this directory before running commands"`
 	Backend       string `help:"Execution backend (defaults to runtime config or host default)"`
-	From          string `name:"from" aliases:"with" help:"Create the sandbox from an existing snapshot ID"`
+	From          string `name:"from" help:"Create the sandbox from an existing snapshot ID"`
 	Image         string `help:"Override sandbox image ref (tag, digest, or local Docker image)"`
 	LaunchSeconds int64  `help:"VM boot/guest-agent readiness timeout in seconds"`
 	JSON          bool   `help:"Print sandbox as JSON"`

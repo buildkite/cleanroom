@@ -109,6 +109,10 @@ type hasExitCode interface {
 }
 
 func Run(args []string, version string) error {
+	if err := validatePassthroughFlagSyntax(args); err != nil {
+		return err
+	}
+
 	cfg, cfgPath, err := runtimeconfig.Load()
 	if err != nil {
 		return err
@@ -148,6 +152,82 @@ func Run(args []string, version string) error {
 	runtimeCtx.CWD = cwd
 
 	return ctx.Run(runtimeCtx)
+}
+
+type passthroughFlagSpec struct {
+	takesValue bool
+}
+
+var (
+	passthroughCommandFlagSpecs = map[string]passthroughFlagSpec{
+		"-h":                 {},
+		"--help":             {},
+		"--host":             {takesValue: true},
+		"--log-level":        {takesValue: true},
+		"--tls-ca":           {takesValue: true},
+		"--tlsca":            {takesValue: true},
+		"-c":                 {takesValue: true},
+		"--chdir":            {takesValue: true},
+		"--backend":          {takesValue: true},
+		"--in":               {takesValue: true},
+		"--sandbox-id":       {takesValue: true},
+		"--from":             {takesValue: true},
+		"--image":            {takesValue: true},
+		"--keep":             {},
+		"--print-sandbox-id": {},
+		"--launch-seconds":   {takesValue: true},
+	}
+)
+
+func validatePassthroughFlagSyntax(args []string) error {
+	if len(args) == 0 {
+		return nil
+	}
+
+	switch args[0] {
+	case "exec":
+		return validatePassthroughSubcommandArgs(args[1:], passthroughCommandFlagSpecs)
+	case "console":
+		return validatePassthroughSubcommandArgs(args[1:], passthroughCommandFlagSpecs)
+	default:
+		return nil
+	}
+}
+
+func validatePassthroughSubcommandArgs(args []string, specs map[string]passthroughFlagSpec) error {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			return nil
+		}
+		if arg == "-" || !strings.HasPrefix(arg, "-") {
+			return nil
+		}
+
+		name, inlineValue := splitPassthroughFlagToken(arg)
+		spec, ok := specs[name]
+		if !ok {
+			return fmt.Errorf("unknown flag %s", arg)
+		}
+		if inlineValue || !spec.takesValue {
+			continue
+		}
+		if i+1 >= len(args) {
+			return nil
+		}
+		i++
+	}
+	return nil
+}
+
+func splitPassthroughFlagToken(arg string) (string, bool) {
+	if idx := strings.IndexRune(arg, '='); idx >= 0 {
+		return arg[:idx], true
+	}
+	if strings.HasPrefix(arg, "-c") && !strings.HasPrefix(arg, "--") && len(arg) > 2 {
+		return "-c", true
+	}
+	return arg, false
 }
 
 func ExitCode(err error) int {

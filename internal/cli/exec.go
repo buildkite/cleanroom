@@ -16,7 +16,7 @@ type ExecCommand struct {
 	Chdir          string `short:"c" help:"Change to this directory before running commands"`
 	Backend        string `help:"Execution backend (defaults to runtime config or host default)"`
 	In             string `name:"in" aliases:"sandbox-id" help:"Run in an existing sandbox ID instead of creating a new one"`
-	From           string `name:"from" aliases:"with" help:"Create the sandbox from an existing snapshot ID"`
+	From           string `name:"from" help:"Create the sandbox from an existing snapshot ID"`
 	Image          string `help:"Override sandbox image ref for newly created sandboxes (tag, digest, or local Docker image)"`
 	Keep           bool   `help:"Keep a newly created sandbox after the command completes"`
 	PrintSandboxID bool   `name:"print-sandbox-id" help:"Print resolved sandbox_id=<id> to stderr before streaming output"`
