@@ -1,0 +1,346 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "~~~ Setup mise"
+
+plugin_cfg() {
+  local key
+  local normalized_key
+  local var_name
+
+  key="$1"
+  normalized_key="$(printf '%s' "$key" | tr '[:lower:]' '[:upper:]' | tr '-' '_')"
+  var_name="BUILDKITE_PLUGIN_MISE_${normalized_key}"
+  printf '%s' "${!var_name:-}"
+}
+
+plugin_cfg_default() {
+  local value
+  value="$(plugin_cfg "$1")"
+  if [ -n "$value" ]; then
+    printf '%s' "$value"
+  else
+    printf '%s' "$2"
+  fi
+}
+
+plugin_cfg_bool() {
+  local value
+  local default_value
+  local normalized
+
+  value="$(plugin_cfg "$1")"
+  default_value="$2"
+  if [ -z "$value" ]; then
+    printf '%s' "$default_value"
+    return
+  fi
+
+  normalized="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
+  case "$normalized" in
+    1|true|yes|on)
+      printf '%s' true
+      ;;
+    0|false|no|off)
+      printf '%s' false
+      ;;
+    *)
+      printf '%s' "$default_value"
+      ;;
+  esac
+}
+
+require_cmd() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    echo "Required command missing: $1" >&2
+    exit 1
+  fi
+}
+
+append_to_buildkite_env() {
+  local line="$1"
+  if [ -z "${BUILDKITE_ENV_FILE:-}" ]; then
+    return
+  fi
+  printf '%s\n' "$line" >> "$BUILDKITE_ENV_FILE"
+}
+
+write_if_non_empty() {
+  local file="$1"
+  local content="$2"
+  if [ -z "$content" ]; then
+    return
+  fi
+
+  mkdir -p "$(dirname "$file")"
+  printf '%s\n' "$content" > "$file"
+  echo "Wrote $file"
+}
+
+hash_sha256() {
+  local file="$1"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$file" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$file" | awk '{print $1}'
+  else
+    echo ""
+  fi
+}
+
+detect_platform() {
+  local os
+  local arch
+  local musl_suffix
+
+  os=""
+  arch=""
+  musl_suffix=""
+
+  case "$(uname -s)" in
+    Linux)
+      os="linux"
+      ;;
+    Darwin)
+      os="macos"
+      ;;
+    *)
+      echo "Unsupported OS: $(uname -s)" >&2
+      exit 1
+      ;;
+  esac
+
+  case "$(uname -m)" in
+    x86_64|amd64)
+      arch="x64"
+      ;;
+    arm64|aarch64)
+      arch="arm64"
+      ;;
+    armv7l|armv7)
+      arch="armv7"
+      ;;
+    *)
+      echo "Unsupported architecture: $(uname -m)" >&2
+      exit 1
+      ;;
+  esac
+
+  if [ "$os" = linux ] && command -v ldd >/dev/null 2>&1; then
+    if ldd --version 2>&1 | grep -qi musl; then
+      musl_suffix="-musl"
+    fi
+  fi
+
+  printf '%s' "${os}-${arch}${musl_suffix}"
+}
+
+latest_version() {
+  curl -fsSL https://mise.jdx.dev/VERSION | tr -d '\r\n'
+}
+
+run_mise() {
+  local -a args
+  local -a mise_env
+
+  args=("$@")
+  if [ ! -x "$MISE_BINARY" ]; then
+    echo "mise binary not found at $MISE_BINARY" >&2
+    exit 1
+  fi
+
+  if [ ! -d "$WORKING_DIRECTORY" ]; then
+    echo "working_directory does not exist: $WORKING_DIRECTORY" >&2
+    exit 1
+  fi
+
+  mise_env=(
+    "MISE_DATA_DIR=$MISE_DIR"
+    "PATH=$MISE_BIN:$PATH"
+    "MISE_YES=1"
+    "MISE_TRUSTED_CONFIG_PATHS=$WORKING_DIRECTORY"
+  )
+  [ -n "${MISE_LOG_LEVEL:-}" ] && mise_env+=("MISE_LOG_LEVEL=$MISE_LOG_LEVEL")
+  [ -n "${MISE_EXPERIMENTAL:-}" ] && mise_env+=("MISE_EXPERIMENTAL=$MISE_EXPERIMENTAL")
+  [ -n "${MISE_GITHUB_TOKEN:-}" ] && mise_env+=("MISE_GITHUB_TOKEN=$MISE_GITHUB_TOKEN")
+
+  (
+    set -euo pipefail
+    cd "$WORKING_DIRECTORY"
+    env "${mise_env[@]}" "$MISE_BINARY" "${args[@]}"
+  )
+}
+
+install_mise() {
+  local version="$1"
+  local platform="$2"
+  local archive
+  local extracted
+  local url
+
+  require_cmd curl
+  require_cmd tar
+
+  url="https://github.com/jdx/mise/releases/download/v${version}/mise-v${version}-${platform}.tar.gz"
+  archive="$(mktemp)"
+  extracted="$(mktemp -d)"
+  echo "Downloading mise v${version} for ${platform}"
+
+  trap 'rm -f "$archive"; rm -rf "$extracted"' RETURN
+
+  curl -fsSL "$url" > "$archive"
+  tar -xzf "$archive" -C "$extracted"
+
+  mkdir -p "$MISE_BIN"
+  if [ -x "$extracted/mise/bin/mise" ]; then
+    mv "$extracted/mise/bin/mise" "$MISE_BINARY"
+  elif [ -x "$extracted/bin/mise" ]; then
+    mv "$extracted/bin/mise" "$MISE_BINARY"
+  else
+    echo "Could not find mise binary in ${url}" >&2
+    exit 1
+  fi
+}
+
+required_version_raw="$(plugin_cfg_default version latest)"
+tool_versions="$(plugin_cfg tool_versions)"
+mise_toml="$(plugin_cfg mise_toml)"
+install="$(plugin_cfg_bool install true)"
+install_args="$(plugin_cfg install_args)"
+experimental="$(plugin_cfg_bool experimental false)"
+log_level="$(plugin_cfg log_level)"
+reshim="$(plugin_cfg_bool reshim false)"
+add_shims_to_path="$(plugin_cfg_bool add_shims_to_path true)"
+github_token="$(plugin_cfg github_token)"
+load_env="$(plugin_cfg_bool env true)"
+mise_dir_cfg="$(plugin_cfg mise_dir)"
+working_directory_cfg="$(plugin_cfg working_directory)"
+sha256_expected="$(plugin_cfg sha256)"
+
+if [ -n "$working_directory_cfg" ]; then
+  WORKING_DIRECTORY="$working_directory_cfg"
+else
+  WORKING_DIRECTORY="${BUILDKITE_BUILD_CHECKOUT_PATH:-${PWD}}"
+fi
+
+if [ -n "$mise_dir_cfg" ]; then
+  MISE_DIR="$mise_dir_cfg"
+elif [ -n "${MISE_DATA_DIR:-}" ]; then
+  MISE_DIR="$MISE_DATA_DIR"
+elif [ -n "${XDG_DATA_HOME:-}" ]; then
+  MISE_DIR="${XDG_DATA_HOME}/mise"
+else
+  MISE_DIR="${HOME}/.local/share/mise"
+fi
+
+MISE_BIN="${MISE_DIR}/bin"
+MISE_SHIMS="${MISE_DIR}/shims"
+MISE_BINARY="${MISE_BIN}/mise"
+
+if [ "$required_version_raw" = latest ]; then
+  VERSION="$(latest_version)"
+else
+  VERSION="${required_version_raw#v}"
+fi
+VERSION="${VERSION#v}"
+
+if [ -z "$VERSION" ] || [ "$VERSION" = latest ]; then
+  VERSION="$(latest_version)"
+  VERSION="${VERSION#v}"
+fi
+
+if [ -n "$github_token" ]; then
+  MISE_GITHUB_TOKEN="$github_token"
+else
+  unset MISE_GITHUB_TOKEN || true
+fi
+
+if [ -n "$log_level" ]; then
+  MISE_LOG_LEVEL="$log_level"
+else
+  unset MISE_LOG_LEVEL || true
+fi
+
+if [ "$experimental" = true ]; then
+  MISE_EXPERIMENTAL=1
+else
+  unset MISE_EXPERIMENTAL || true
+fi
+
+PLATFORM="$(detect_platform)"
+require_cmd curl
+require_cmd tar
+if [ ! -x "$MISE_BINARY" ]; then
+  install_mise "$VERSION" "$PLATFORM"
+fi
+
+if [ ! -x "$MISE_BINARY" ]; then
+  echo "Failed to install mise binary at $MISE_BINARY" >&2
+  exit 1
+fi
+
+installed_version="$("$MISE_BINARY" --version 2>/dev/null | awk '{print $2}' | tr -d 'v')"
+if [ "$required_version_raw" != latest ] && [ -n "$required_version_raw" ] && [ -n "$installed_version" ] && [ "$installed_version" != "${VERSION}" ]; then
+  echo "Existing mise is v${installed_version}; updating to v${VERSION}"
+  "$MISE_BINARY" self-update "$VERSION" -y
+fi
+
+if [ -n "$sha256_expected" ]; then
+  actual_sha="$(hash_sha256 "$MISE_BINARY")"
+  if [ -z "$actual_sha" ]; then
+    echo "Could not verify SHA256 (missing sha256sum or shasum)" >&2
+    exit 1
+  fi
+  if [ "$(printf '%s' "$actual_sha" | tr '[:upper:]' '[:lower:]')" != "$(printf '%s' "$sha256_expected" | tr '[:upper:]' '[:lower:]')" ]; then
+    echo "SHA256 mismatch for ${MISE_BINARY}. expected=${sha256_expected} actual=${actual_sha}" >&2
+    exit 1
+  fi
+fi
+
+chmod +x "$MISE_BINARY"
+
+write_if_non_empty "$WORKING_DIRECTORY/.tool-versions" "$tool_versions"
+write_if_non_empty "$WORKING_DIRECTORY/mise.toml" "$mise_toml"
+
+run_mise --version
+
+if [ "$install" = true ]; then
+  if [ -n "$install_args" ]; then
+    read -r -a install_args_array <<< "$install_args"
+    run_mise install "${install_args_array[@]}"
+  else
+    run_mise install
+  fi
+fi
+
+if [ "$reshim" = true ]; then
+  run_mise reshim -f
+fi
+
+if [ "$load_env" = true ]; then
+  if [ -n "${BUILDKITE_ENV_FILE:-}" ]; then
+    temp_env_file="$(mktemp)"
+    if run_mise env --dotenv > "$temp_env_file"; then
+      cat "$temp_env_file" >> "$BUILDKITE_ENV_FILE"
+    else
+      echo "mise env --dotenv failed, env export skipped"
+    fi
+    rm -f "$temp_env_file"
+  else
+    echo "BUILDKITE_ENV_FILE is not set, skipping env export"
+  fi
+fi
+
+append_to_buildkite_env "export MISE_DATA_DIR=$MISE_DIR"
+append_to_buildkite_env "export MISE_TRUSTED_CONFIG_PATHS=$WORKING_DIRECTORY"
+append_to_buildkite_env "export MISE_YES=1"
+[ -n "${MISE_LOG_LEVEL:-}" ] && append_to_buildkite_env "export MISE_LOG_LEVEL=${MISE_LOG_LEVEL}"
+[ -n "${MISE_EXPERIMENTAL:-}" ] && append_to_buildkite_env "export MISE_EXPERIMENTAL=${MISE_EXPERIMENTAL}"
+[ -n "${MISE_GITHUB_TOKEN:-}" ] && append_to_buildkite_env "export MISE_GITHUB_TOKEN=${MISE_GITHUB_TOKEN}"
+
+if [ "$add_shims_to_path" = true ]; then
+  append_to_buildkite_env "export PATH=\"${MISE_SHIMS}:\$PATH\""
+  export PATH="$MISE_SHIMS:$PATH"
+fi
+
+echo "~~~ :white_check_mark: mise setup complete"

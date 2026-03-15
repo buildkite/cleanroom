@@ -1,0 +1,57 @@
+name: Mise Buildkite Plugin
+description: Install and configure mise for Buildkite steps.
+author: https://github.com/buildkite-plugins
+requirements:
+  - curl
+  - tar
+configuration:
+  additionalProperties: false
+  properties:
+    version:
+      type: string
+      default: latest
+      description: Version of mise to install (for example, 2026.2.11).
+    sha256:
+      type: string
+      description: Optional SHA256 checksum for downloaded mise archive.
+    mise_dir:
+      type: string
+      description: Override mise data directory (default to $MISE_DATA_DIR, $XDG_DATA_HOME/mise, then ~/.local/share/mise).
+    working_directory:
+      type: string
+      description: Directory where `mise` commands run.
+    tool_versions:
+      type: string
+      description: Write this content to .tool-versions before install.
+    mise_toml:
+      type: string
+      description: Write this content to mise.toml before install.
+    install:
+      type: boolean
+      default: true
+      description: Run `mise install`.
+    install_args:
+      type: string
+      description: Additional args passed to `mise install`.
+    experimental:
+      type: boolean
+      default: false
+      description: Set MISE_EXPERIMENTAL=1.
+    log_level:
+      type: string
+      description: Set MISE_LOG_LEVEL.
+    reshim:
+      type: boolean
+      default: false
+      description: Run `mise reshim -f`.
+    add_shims_to_path:
+      type: boolean
+      default: true
+      description: Add `${mise_dir}/shims` to PATH.
+    github_token:
+      type: string
+      description: Set MISE_GITHUB_TOKEN.
+    env:
+      type: boolean
+      default: true
+      description: Export variables from `mise env --dotenv` into the step environment file.
