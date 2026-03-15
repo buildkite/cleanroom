@@ -36,6 +36,38 @@ if ! command -v zpool >/dev/null 2>&1; then
   exit 1
 fi
 
+# Create a ZFS pool on the ephemeral NVMe instance store if available.
+# The 'd' instance variants (for example m6id, c6id, r6id) have local NVMe storage
+# that appears as /dev/nvme1n1 (the root EBS volume is /dev/nvme0n1).
+CLEANROOM_ZFS_POOL='cleanroom'
+CLEANROOM_ZFS_DATASET="$CLEANROOM_ZFS_POOL/data"
+CLEANROOM_ZFS_LOOPBACK_SIZE="$${CLEANROOM_ZFS_LOOPBACK_SIZE:-40G}"
+if ! zpool list "$CLEANROOM_ZFS_POOL" >/dev/null 2>&1; then
+  ephemeral_dev=''
+  for dev in /dev/nvme1n1 /dev/nvme2n1; do
+    if [ -b "$dev" ]; then
+      # Verify this is NOT an EBS volume (EBS volumes have model 'Amazon Elastic Block Store').
+      dev_model="$(cat "/sys/block/$(basename "$dev")/device/model" 2>/dev/null | xargs || true)"
+      if [ "$dev_model" != 'Amazon Elastic Block Store' ]; then
+        ephemeral_dev="$dev"
+        break
+      fi
+    fi
+  done
+
+  if [ -n "$ephemeral_dev" ]; then
+    echo "creating ZFS pool $CLEANROOM_ZFS_POOL on ephemeral NVMe $ephemeral_dev"
+    zpool create -f "$CLEANROOM_ZFS_POOL" "$ephemeral_dev"
+    zfs create "$CLEANROOM_ZFS_DATASET"
+  else
+    echo "no ephemeral NVMe found, creating $CLEANROOM_ZFS_LOOPBACK_SIZE ZFS pool on loopback file"
+    loopback_path='/var/lib/cleanroom-zfs.img'
+    truncate -s "$CLEANROOM_ZFS_LOOPBACK_SIZE" "$loopback_path"
+    zpool create -f "$CLEANROOM_ZFS_POOL" "$loopback_path"
+    zfs create "$CLEANROOM_ZFS_DATASET"
+  fi
+fi
+
 if ! command -v aws >/dev/null 2>&1; then
   aws_arch='x86_64'
   if [ "$(uname -m)" = 'aarch64' ] || [ "$(uname -m)" = 'arm64' ]; then

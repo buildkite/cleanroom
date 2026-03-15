@@ -252,6 +252,40 @@ if getent group kvm >/dev/null 2>&1; then
   usermod -aG kvm buildkite-agent
 fi
 
+# Configure cleanroom runtime config with the supported file snapshot driver.
+# When a cleanroom ZFS dataset exists, snapshot files are stored under that
+# dataset mountpoint.
+CLEANROOM_ZFS_DATASET="${CLEANROOM_ZFS_DATASET:-cleanroom/data}"
+if command -v zpool >/dev/null 2>&1 && zpool list cleanroom >/dev/null 2>&1; then
+  snapshot_base_dir='/var/lib/buildkite-agent/.local/state/cleanroom/snapshots'
+  if command -v zfs >/dev/null 2>&1; then
+    dataset_mountpoint="$(zfs get -H -o value mountpoint "$CLEANROOM_ZFS_DATASET" 2>/dev/null || true)"
+    case "$dataset_mountpoint" in
+      ""|none|legacy|-)
+        ;;
+      *)
+        snapshot_base_dir="$dataset_mountpoint/snapshots"
+        ;;
+    esac
+  fi
+
+  log "configuring cleanroom runtime config with file snapshots (base_dir: ${snapshot_base_dir})"
+  agent_config_dir="/var/lib/buildkite-agent/.config/cleanroom"
+  install -d -o buildkite-agent -g buildkite-agent -m 0755 "$agent_config_dir"
+  install -d -o buildkite-agent -g buildkite-agent -m 0755 "$snapshot_base_dir"
+  cat > "$agent_config_dir/config.yaml" <<RTCFG
+backends:
+  firecracker:
+    snapshots:
+      enabled: true
+      driver: file
+      base_dir: ${snapshot_base_dir}
+      quiesce_timeout_seconds: 15
+RTCFG
+  chown buildkite-agent:buildkite-agent "$agent_config_dir/config.yaml"
+  chmod 0644 "$agent_config_dir/config.yaml"
+fi
+
 systemctl daemon-reload
 systemctl enable --now "buildkite-agent@${QUEUE_NAME}.service"
 

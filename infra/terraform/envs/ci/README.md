@@ -8,6 +8,7 @@ Composition root for cleanroom CI infrastructure:
 
 Default AMI behaviour:
 
+- defaults to `us-west-2` for `aws_region`
 - uses latest Ubuntu 24.04 AMI from SSM public parameter
 - set `ami_id` in `terraform.tfvars` if you want to pin an explicit AMI
 - set `enable_macos_ci = true` and `mac_ami_id` to enable the macOS host
@@ -61,7 +62,7 @@ instance_id="$(mise x -- terraform -chdir=infra/terraform/envs/ci output -raw ma
 
 # Rerun bootstrap in place over SSM
 AWS_PROFILE=buildkite-sandbox-pipelines-admin aws ssm send-command \
-  --region ap-southeast-2 \
+  --region us-west-2 \
   --instance-ids "$instance_id" \
   --document-name AWS-RunShellScript \
   --parameters '{"commands":["sudo env PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin /usr/local/bin/cleanroom-bootstrap-macos"]}'

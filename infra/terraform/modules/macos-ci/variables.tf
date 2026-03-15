@@ -1,7 +1,7 @@
 variable "aws_region" {
   description = "AWS region for the host."
   type        = string
-  default     = "ap-southeast-2"
+  default     = "us-west-2"
 }
 
 variable "name_prefix" {

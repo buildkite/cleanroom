@@ -1,7 +1,7 @@
 variable "aws_region" {
   description = "AWS region for the host."
   type        = string
-  default     = "ap-southeast-2"
+  default     = "us-west-2"
 }
 
 variable "name_prefix" {
@@ -26,7 +26,7 @@ variable "ami_id" {
 }
 
 variable "instance_type" {
-  description = "EC2 instance type for the host."
+  description = "EC2 instance type for the host. Must support nested virtualization for Firecracker. Defaults to m8i.large for broad nested-virtualization availability; use a '*d' variant where your region/account supports nested virtualization on that type to place snapshots on local NVMe."
   type        = string
   default     = "m8i.large"
 }
