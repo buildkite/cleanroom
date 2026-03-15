@@ -4,6 +4,7 @@ package darwinvz
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,8 @@ import (
 
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/policy"
+	"github.com/buildkite/cleanroom/internal/volumestore"
+	"golang.org/x/sys/unix"
 )
 
 func TestCreateSnapshotSyncsPausesAndClonesRootFS(t *testing.T) {
@@ -193,4 +196,278 @@ func TestSnapshotVolumeDriverRejectsDisabledSnapshots(t *testing.T) {
 	if got := err.Error(); got == "" || !strings.Contains(got, "not enabled") {
 		t.Fatalf("unexpected error: %v", err)
 	}
+}
+
+func TestRootFSVolumeDriverAllowsAPFSDriver(t *testing.T) {
+	t.Parallel()
+
+	driver, err := rootFSVolumeDriver(backend.FirecrackerConfig{
+		Snapshots: backend.SnapshotConfig{Driver: "apfs"},
+	})
+	if err != nil {
+		t.Fatalf("rootFSVolumeDriver returned error: %v", err)
+	}
+	if got, want := driver.Name(), "apfs"; got != want {
+		t.Fatalf("unexpected rootfs driver name: got %q want %q", got, want)
+	}
+}
+
+func TestRootFSVolumeDriverDefaultsToAPFSWhenUnset(t *testing.T) {
+	t.Parallel()
+
+	driver, err := rootFSVolumeDriver(backend.FirecrackerConfig{})
+	if err != nil {
+		t.Fatalf("rootFSVolumeDriver returned error: %v", err)
+	}
+	if got, want := driver.Name(), "apfs"; got != want {
+		t.Fatalf("unexpected default rootfs driver name: got %q want %q", got, want)
+	}
+}
+
+func TestRootFSVolumeDriverDefaultedAPFSFallsBackToFileSemantics(t *testing.T) {
+	apfs := &stubVolumeDriver{
+		name:             "apfs",
+		baseVolume:       volumestore.BaseVolume{Ref: "base-ref"},
+		writableErr:      fmt.Errorf("clonefile create writable volume: %w", unix.EXDEV),
+		snapshotErr:      fmt.Errorf("clonefile snapshot volume: %w", unix.ENOTSUP),
+		cloneSnapshotErr: fmt.Errorf("clonefile clone snapshot: %w", unix.ENOSYS),
+	}
+	file := &stubVolumeDriver{
+		name:           "file",
+		baseVolume:     volumestore.BaseVolume{Ref: "base-ref"},
+		writableVolume: volumestore.WritableVolume{Ref: "writable-ref", AttachmentPath: "writable-path"},
+		snapshot:       volumestore.Snapshot{Ref: "snapshot-ref", StorageRef: "snapshot-storage"},
+		clonedVolume:   volumestore.WritableVolume{Ref: "clone-ref", AttachmentPath: "clone-path"},
+	}
+
+	driver, err := newRootFSVolumeDriver(backend.FirecrackerConfig{}, func(string) (volumestore.Driver, error) {
+		return file, nil
+	}, func(string) (volumestore.Driver, error) {
+		return apfs, nil
+	})
+	if err != nil {
+		t.Fatalf("newRootFSVolumeDriver returned error: %v", err)
+	}
+	if got, want := driver.Name(), "apfs"; got != want {
+		t.Fatalf("unexpected default rootfs driver name: got %q want %q", got, want)
+	}
+
+	base, err := driver.EnsureBaseVolume(context.Background(), volumestore.EnsureBaseVolumeRequest{
+		BaseID:     "runtime-key",
+		SourcePath: "/tmp/source.ext4",
+	})
+	if err != nil {
+		t.Fatalf("EnsureBaseVolume returned error: %v", err)
+	}
+	if got, want := base.Ref, "base-ref"; got != want {
+		t.Fatalf("unexpected base ref: got %q want %q", got, want)
+	}
+
+	writable, err := driver.CreateWritableVolume(context.Background(), volumestore.CreateWritableVolumeRequest{
+		VolumeID:       "sandbox-1",
+		BaseRef:        base.Ref,
+		AttachmentPath: "/tmp/writable.ext4",
+	})
+	if err != nil {
+		t.Fatalf("CreateWritableVolume returned error: %v", err)
+	}
+	if got, want := writable.Ref, "writable-ref"; got != want {
+		t.Fatalf("unexpected fallback writable ref: got %q want %q", got, want)
+	}
+
+	snapshot, err := driver.SnapshotVolume(context.Background(), volumestore.SnapshotVolumeRequest{
+		SnapshotID: "snap-1",
+		VolumeRef:  writable.Ref,
+	})
+	if err != nil {
+		t.Fatalf("SnapshotVolume returned error: %v", err)
+	}
+	if got, want := snapshot.Ref, "snapshot-ref"; got != want {
+		t.Fatalf("unexpected fallback snapshot ref: got %q want %q", got, want)
+	}
+
+	clone, err := driver.CloneSnapshotToVolume(context.Background(), volumestore.CloneSnapshotToVolumeRequest{
+		VolumeID:       "sandbox-2",
+		SnapshotRef:    snapshot.Ref,
+		AttachmentPath: "/tmp/clone.ext4",
+	})
+	if err != nil {
+		t.Fatalf("CloneSnapshotToVolume returned error: %v", err)
+	}
+	if got, want := clone.Ref, "clone-ref"; got != want {
+		t.Fatalf("unexpected fallback clone ref: got %q want %q", got, want)
+	}
+
+	if got, want := apfs.ensureBaseCalls, 1; got != want {
+		t.Fatalf("unexpected apfs ensure base call count: got %d want %d", got, want)
+	}
+	if got, want := apfs.writableCalls, 1; got != want {
+		t.Fatalf("unexpected apfs writable call count: got %d want %d", got, want)
+	}
+	if got, want := apfs.snapshotCalls, 1; got != want {
+		t.Fatalf("unexpected apfs snapshot call count: got %d want %d", got, want)
+	}
+	if got, want := apfs.cloneSnapshotCalls, 1; got != want {
+		t.Fatalf("unexpected apfs clone call count: got %d want %d", got, want)
+	}
+	if got, want := file.ensureBaseCalls, 0; got != want {
+		t.Fatalf("unexpected file ensure base call count: got %d want %d", got, want)
+	}
+	if got, want := file.writableCalls, 1; got != want {
+		t.Fatalf("unexpected file writable call count: got %d want %d", got, want)
+	}
+	if got, want := file.snapshotCalls, 1; got != want {
+		t.Fatalf("unexpected file snapshot call count: got %d want %d", got, want)
+	}
+	if got, want := file.cloneSnapshotCalls, 1; got != want {
+		t.Fatalf("unexpected file clone call count: got %d want %d", got, want)
+	}
+}
+
+func TestRootFSVolumeDriverExplicitAPFSFallsBackToFileSemantics(t *testing.T) {
+	apfs := &stubVolumeDriver{
+		name:             "apfs",
+		baseVolume:       volumestore.BaseVolume{Ref: "base-ref"},
+		writableErr:      fmt.Errorf("clonefile create writable volume: %w", unix.EXDEV),
+		snapshotErr:      fmt.Errorf("clonefile snapshot volume: %w", unix.ENOTSUP),
+		cloneSnapshotErr: fmt.Errorf("clonefile clone snapshot: %w", unix.ENOSYS),
+	}
+	file := &stubVolumeDriver{
+		name:           "file",
+		baseVolume:     volumestore.BaseVolume{Ref: "base-ref"},
+		writableVolume: volumestore.WritableVolume{Ref: "writable-ref", AttachmentPath: "writable-path"},
+		snapshot:       volumestore.Snapshot{Ref: "snapshot-ref", StorageRef: "snapshot-storage"},
+		clonedVolume:   volumestore.WritableVolume{Ref: "clone-ref", AttachmentPath: "clone-path"},
+	}
+
+	driver, err := newRootFSVolumeDriver(backend.FirecrackerConfig{
+		Snapshots: backend.SnapshotConfig{Driver: "apfs"},
+	}, func(string) (volumestore.Driver, error) {
+		return file, nil
+	}, func(string) (volumestore.Driver, error) {
+		return apfs, nil
+	})
+	if err != nil {
+		t.Fatalf("newRootFSVolumeDriver returned error: %v", err)
+	}
+
+	base, err := driver.EnsureBaseVolume(context.Background(), volumestore.EnsureBaseVolumeRequest{
+		BaseID:     "runtime-key",
+		SourcePath: "/tmp/source.ext4",
+	})
+	if err != nil {
+		t.Fatalf("EnsureBaseVolume returned error: %v", err)
+	}
+
+	writable, err := driver.CreateWritableVolume(context.Background(), volumestore.CreateWritableVolumeRequest{
+		VolumeID:       "sandbox-1",
+		BaseRef:        base.Ref,
+		AttachmentPath: "/tmp/writable.ext4",
+	})
+	if err != nil {
+		t.Fatalf("CreateWritableVolume returned error: %v", err)
+	}
+	if got, want := writable.Ref, "writable-ref"; got != want {
+		t.Fatalf("unexpected fallback writable ref: got %q want %q", got, want)
+	}
+
+	snapshot, err := driver.SnapshotVolume(context.Background(), volumestore.SnapshotVolumeRequest{
+		SnapshotID: "snap-1",
+		VolumeRef:  writable.Ref,
+	})
+	if err != nil {
+		t.Fatalf("SnapshotVolume returned error: %v", err)
+	}
+	if got, want := snapshot.Ref, "snapshot-ref"; got != want {
+		t.Fatalf("unexpected fallback snapshot ref: got %q want %q", got, want)
+	}
+
+	clone, err := driver.CloneSnapshotToVolume(context.Background(), volumestore.CloneSnapshotToVolumeRequest{
+		VolumeID:       "sandbox-2",
+		SnapshotRef:    snapshot.Ref,
+		AttachmentPath: "/tmp/clone.ext4",
+	})
+	if err != nil {
+		t.Fatalf("CloneSnapshotToVolume returned error: %v", err)
+	}
+	if got, want := clone.Ref, "clone-ref"; got != want {
+		t.Fatalf("unexpected fallback clone ref: got %q want %q", got, want)
+	}
+
+	if got, want := apfs.writableCalls, 1; got != want {
+		t.Fatalf("unexpected apfs writable call count: got %d want %d", got, want)
+	}
+	if got, want := apfs.snapshotCalls, 1; got != want {
+		t.Fatalf("unexpected apfs snapshot call count: got %d want %d", got, want)
+	}
+	if got, want := apfs.cloneSnapshotCalls, 1; got != want {
+		t.Fatalf("unexpected apfs clone call count: got %d want %d", got, want)
+	}
+	if got, want := file.writableCalls, 1; got != want {
+		t.Fatalf("unexpected file writable call count: got %d want %d", got, want)
+	}
+	if got, want := file.snapshotCalls, 1; got != want {
+		t.Fatalf("unexpected file snapshot call count: got %d want %d", got, want)
+	}
+	if got, want := file.cloneSnapshotCalls, 1; got != want {
+		t.Fatalf("unexpected file clone call count: got %d want %d", got, want)
+	}
+}
+
+type stubVolumeDriver struct {
+	name               string
+	baseVolume         volumestore.BaseVolume
+	baseErr            error
+	writableVolume     volumestore.WritableVolume
+	writableErr        error
+	snapshot           volumestore.Snapshot
+	snapshotErr        error
+	clonedVolume       volumestore.WritableVolume
+	cloneSnapshotErr   error
+	ensureBaseCalls    int
+	writableCalls      int
+	snapshotCalls      int
+	cloneSnapshotCalls int
+}
+
+func (d *stubVolumeDriver) Name() string { return d.name }
+
+func (d *stubVolumeDriver) EnsureBaseVolume(context.Context, volumestore.EnsureBaseVolumeRequest) (volumestore.BaseVolume, error) {
+	d.ensureBaseCalls++
+	if d.baseErr != nil {
+		return volumestore.BaseVolume{}, d.baseErr
+	}
+	return d.baseVolume, nil
+}
+
+func (d *stubVolumeDriver) CreateWritableVolume(context.Context, volumestore.CreateWritableVolumeRequest) (volumestore.WritableVolume, error) {
+	d.writableCalls++
+	if d.writableErr != nil {
+		return volumestore.WritableVolume{}, d.writableErr
+	}
+	return d.writableVolume, nil
+}
+
+func (d *stubVolumeDriver) SnapshotVolume(context.Context, volumestore.SnapshotVolumeRequest) (volumestore.Snapshot, error) {
+	d.snapshotCalls++
+	if d.snapshotErr != nil {
+		return volumestore.Snapshot{}, d.snapshotErr
+	}
+	return d.snapshot, nil
+}
+
+func (d *stubVolumeDriver) CloneSnapshotToVolume(context.Context, volumestore.CloneSnapshotToVolumeRequest) (volumestore.WritableVolume, error) {
+	d.cloneSnapshotCalls++
+	if d.cloneSnapshotErr != nil {
+		return volumestore.WritableVolume{}, d.cloneSnapshotErr
+	}
+	return d.clonedVolume, nil
+}
+
+func (*stubVolumeDriver) DestroyVolume(context.Context, volumestore.DestroyVolumeRequest) error {
+	return nil
+}
+
+func (*stubVolumeDriver) DestroySnapshot(context.Context, volumestore.DestroySnapshotRequest) error {
+	return nil
 }

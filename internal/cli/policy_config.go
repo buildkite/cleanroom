@@ -149,7 +149,7 @@ func defaultRuntimeConfig(defaultBackend string) runtimeconfig.Config {
 				},
 				Snapshots: runtimeconfig.SnapshotConfig{
 					Enabled: false,
-					Driver:  "file",
+					Driver:  "apfs",
 				},
 				VCPUs:         2,
 				MemoryMiB:     1024,

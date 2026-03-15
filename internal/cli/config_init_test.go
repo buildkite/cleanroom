@@ -51,7 +51,7 @@ func TestConfigInitWritesRuntimeConfig(t *testing.T) {
 	if cfg.Backends.Firecracker.Snapshots.Enabled {
 		t.Fatal("expected backends.firecracker.snapshots.enabled to default false")
 	}
-	if got, want := cfg.Backends.DarwinVZ.Snapshots.Driver, "file"; got != want {
+	if got, want := cfg.Backends.DarwinVZ.Snapshots.Driver, "apfs"; got != want {
 		t.Fatalf("expected backends.darwin-vz.snapshots.driver=%q, got %q", want, got)
 	}
 	if cfg.Backends.DarwinVZ.Snapshots.Enabled {
@@ -73,7 +73,10 @@ func TestConfigInitWritesRuntimeConfig(t *testing.T) {
 		t.Fatalf("expected generated config to include disabled snapshot default, got:\n%s", raw)
 	}
 	if !strings.Contains(string(raw), "driver: file") {
-		t.Fatalf("expected generated config to include snapshot driver default, got:\n%s", raw)
+		t.Fatalf("expected generated config to include firecracker snapshot driver default, got:\n%s", raw)
+	}
+	if !strings.Contains(string(raw), "driver: apfs") {
+		t.Fatalf("expected generated config to include darwin-vz snapshot driver default, got:\n%s", raw)
 	}
 	if strings.Contains(string(raw), "base_dir:") {
 		t.Fatalf("expected generated config to omit empty snapshot base_dir, got:\n%s", raw)

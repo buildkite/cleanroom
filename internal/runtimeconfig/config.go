@@ -67,12 +67,18 @@ func SnapshotConfigForBackend(cfg Config, backendName string) (SnapshotConfig, b
 	}
 }
 
-func SnapshotDriverOrDefault(driver string) string {
+func SnapshotDriverOrDefault(backendName, driver string) string {
 	driver = strings.TrimSpace(driver)
-	if driver == "" {
+	if driver != "" {
+		return driver
+	}
+
+	switch strings.TrimSpace(backendName) {
+	case "darwin-vz":
+		return "apfs"
+	default:
 		return "file"
 	}
-	return driver
 }
 
 func MergeBackendConfig(cfg Config, backendName string, launchSeconds int64) backend.FirecrackerConfig {

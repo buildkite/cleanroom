@@ -299,7 +299,7 @@ func (s *Service) createSandboxFromSnapshot(ctx context.Context, req *cleanroomv
 	}
 	firecrackerCfg := runtimeconfig.MergeBackendConfig(s.Config, backendName, execOpts.LaunchSeconds)
 	firecrackerCfg.RunDir = ""
-	firecrackerCfg = withSnapshotDriver(firecrackerCfg, record.StorageDriver)
+	firecrackerCfg = withSnapshotDriver(backendName, firecrackerCfg, record.StorageDriver)
 
 	now := s.clock().Now()
 	sandboxID := s.ids().NewSandboxID()
@@ -436,7 +436,7 @@ func (s *Service) CreateSnapshot(ctx context.Context, req *cleanroomv1.CreateSna
 		s.mu.Unlock()
 		return nil, fmt.Errorf("sandbox %q is missing compiled policy", sandboxID)
 	}
-	snapshotCfg := withSnapshotDriver(state.Firecracker, state.Firecracker.Snapshots.Driver)
+	snapshotCfg := withSnapshotDriver(state.Backend, state.Firecracker, state.Firecracker.Snapshots.Driver)
 	record = snapshotstore.Record{
 		SnapshotID:      snapshotID,
 		SourceSandboxID: sandboxID,
@@ -581,7 +581,7 @@ func (s *Service) DeleteSnapshot(ctx context.Context, req *cleanroomv1.DeleteSna
 	if !ok {
 		return nil, fmt.Errorf("backend %q does not support snapshot deletion", record.Backend)
 	}
-	firecrackerCfg := withSnapshotDriver(runtimeconfig.MergeBackendConfig(s.Config, record.Backend, 0), record.StorageDriver)
+	firecrackerCfg := withSnapshotDriver(record.Backend, runtimeconfig.MergeBackendConfig(s.Config, record.Backend, 0), record.StorageDriver)
 	if err := snapshotAdapter.DeleteSnapshot(ctx, backend.DeleteSnapshotRequest{
 		SnapshotID:        snapshotID,
 		StorageRef:        record.StorageRef,
@@ -2116,9 +2116,9 @@ func snapshotOperationsEnabledForBackend(backendName string, cfg runtimeconfig.C
 	return ok && snapshotCfg.Enabled
 }
 
-func withSnapshotDriver(cfg backend.FirecrackerConfig, driver string) backend.FirecrackerConfig {
+func withSnapshotDriver(backendName string, cfg backend.FirecrackerConfig, driver string) backend.FirecrackerConfig {
 	cfg.Snapshots.Enabled = true
-	cfg.Snapshots.Driver = runtimeconfig.SnapshotDriverOrDefault(driver)
+	cfg.Snapshots.Driver = runtimeconfig.SnapshotDriverOrDefault(backendName, driver)
 	return cfg
 }
 func (s *Service) recordSandboxEventLocked(sb *sandboxState, status cleanroomv1.SandboxStatus, message string) {
