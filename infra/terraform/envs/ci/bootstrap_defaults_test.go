@@ -144,7 +144,7 @@ func TestUserDataCreatesZfsPoolFromEphemeralNVMe(t *testing.T) {
 	requireContains(t, templatePath, "cleanroom-zfs.img")
 }
 
-func TestDefaultInstanceTypeIsNVMeVariant(t *testing.T) {
+func TestDefaultInstanceTypeSupportsNestedVirtualization(t *testing.T) {
 	t.Helper()
 
 	for _, path := range []string{
@@ -152,10 +152,27 @@ func TestDefaultInstanceTypeIsNVMeVariant(t *testing.T) {
 		filepath.Join("..", "..", "modules", "linux-ci", "variables.tf"),
 	} {
 		block := readVariableBlock(t, path, "instance_type")
-		if !strings.Contains(block, "m8id.large") {
-			t.Fatalf("expected default instance_type to be m8id.large in %s, got:\n%s", path, block)
+		if !strings.Contains(block, "m8i.large") {
+			t.Fatalf("expected default instance_type to be m8i.large in %s, got:\n%s", path, block)
 		}
 	}
+}
+
+func TestDefaultRegionIsUsWest2(t *testing.T) {
+	t.Helper()
+
+	for _, path := range []string{
+		"variables.tf",
+		filepath.Join("..", "..", "modules", "linux-ci", "variables.tf"),
+		filepath.Join("..", "..", "modules", "macos-ci", "variables.tf"),
+	} {
+		block := readVariableBlock(t, path, "aws_region")
+		if !strings.Contains(block, "us-west-2") {
+			t.Fatalf("expected default aws_region to be us-west-2 in %s, got:\n%s", path, block)
+		}
+	}
+
+	requireContains(t, "terraform.tfvars.example", "aws_region  = \"us-west-2\"")
 }
 
 func TestBootstrapConfiguresZfsSnapshots(t *testing.T) {
@@ -163,7 +180,8 @@ func TestBootstrapConfiguresZfsSnapshots(t *testing.T) {
 
 	scriptPath := filepath.Join("..", "..", "..", "..", "scripts", "bootstrap-buildkite-agent.sh")
 	requireContains(t, scriptPath, "CLEANROOM_ZFS_DATASET")
-	requireContains(t, scriptPath, "driver: zfs")
+	requireContains(t, scriptPath, "driver: file")
+	requireNotContains(t, scriptPath, "driver: zfs")
 	requireContains(t, scriptPath, "snapshots:")
 	requireContains(t, scriptPath, "enabled: true")
 }
@@ -213,7 +231,7 @@ func TestEnvSupportsAvailabilityZoneOverride(t *testing.T) {
 
 	requireContains(t, "variables.tf", "variable \"availability_zone\"")
 	requireContains(t, "main.tf", "availability_zone   = var.availability_zone")
-	requireContains(t, "terraform.tfvars.example", "# availability_zone = \"ap-southeast-2b\"")
+	requireContains(t, "terraform.tfvars.example", "# availability_zone = \"us-west-2b\"")
 }
 
 func TestGitDeployKeyIsRequired(t *testing.T) {

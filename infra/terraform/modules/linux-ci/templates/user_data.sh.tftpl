@@ -37,7 +37,7 @@ if ! command -v zpool >/dev/null 2>&1; then
 fi
 
 # Create a ZFS pool on the ephemeral NVMe instance store if available.
-# The 'd' instance variants (m8id, c8id, r8id) have local NVMe storage
+# The 'd' instance variants (for example m6id, c6id, r6id) have local NVMe storage
 # that appears as /dev/nvme1n1 (the root EBS volume is /dev/nvme0n1).
 CLEANROOM_ZFS_POOL='cleanroom'
 CLEANROOM_ZFS_DATASET="$CLEANROOM_ZFS_POOL/data"

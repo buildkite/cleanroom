@@ -1,7 +1,7 @@
 variable "aws_region" {
   description = "AWS region for the host."
   type        = string
-  default     = "ap-southeast-2"
+  default     = "us-west-2"
 }
 
 variable "name_prefix" {
@@ -29,9 +29,9 @@ variable "ubuntu_ami_ssm_parameter_name" {
 }
 
 variable "instance_type" {
-  description = "EC2 instance type for the host. Use a 'd' variant (m8id, c8id, r8id) for ephemeral NVMe storage used as a ZFS pool."
+  description = "EC2 instance type for the host. Must support nested virtualization for Firecracker; bootstrap uses ephemeral NVMe for ZFS when available and falls back to a loopback file otherwise."
   type        = string
-  default     = "m8id.large"
+  default     = "m8i.large"
 }
 
 variable "root_volume_size_gib" {
