@@ -3,8 +3,6 @@ package controlservice
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -1756,52 +1754,6 @@ func (s *Service) preparePersistentSandboxRepository(
 	return nil
 }
 
-func cloneRepositoryCheckout(repository *repositorycheckout.Checkout) *repositorycheckout.Checkout {
-	if repository == nil {
-		return nil
-	}
-	return &repositorycheckout.Checkout{
-		RemoteURL:      repository.RemoteURL,
-		CommitSHA:      repository.CommitSHA,
-		DestinationDir: repository.DestinationDir,
-		Submodules:     repository.Submodules,
-		Branch:         repository.Branch,
-	}
-}
-
-func repositoryCheckoutsEqual(a, b *repositorycheckout.Checkout) bool {
-	switch {
-	case a == nil || b == nil:
-		return a == nil && b == nil
-	default:
-		return a.RemoteURL == b.RemoteURL &&
-			a.CommitSHA == b.CommitSHA &&
-			a.DestinationDir == b.DestinationDir &&
-			a.Submodules == b.Submodules &&
-			a.Branch == b.Branch
-	}
-}
-
-func validateRepositoryCheckoutForPolicy(compiled *policy.CompiledPolicy, repository *repositorycheckout.Checkout) error {
-	if repository == nil {
-		return nil
-	}
-	if err := repository.ValidateBootstrap(); err != nil {
-		return err
-	}
-	host, err := repository.NormalizeRemoteURL()
-	if err != nil {
-		return err
-	}
-	if compiled == nil {
-		return errors.New("repository checkout requires a compiled policy")
-	}
-	if !compiled.Allows(host, 443) {
-		return fmt.Errorf("repository remote host %q is not allowed by sandbox policy", host)
-	}
-	return nil
-}
-
 func (s *Service) bootstrapRepositoryInPersistentSandbox(
 	ctx context.Context,
 	adapter backend.PersistentSandboxAdapter,
@@ -1860,19 +1812,6 @@ func (s *Service) bootstrapRepositoryInPersistentSandbox(
 		return errors.New(msg)
 	}
 	return nil
-}
-
-func executionRunErrorStatus(ex *executionState, runCtx context.Context) (cleanroomv1.ExecutionStatus, int32) {
-	if ex == nil {
-		return cleanroomv1.ExecutionStatus_EXECUTION_STATUS_FAILED, 1
-	}
-	if ex.CancelRequested || errors.Is(runCtx.Err(), context.Canceled) {
-		return cleanroomv1.ExecutionStatus_EXECUTION_STATUS_CANCELED, cancelExitCode(ex.CancelSignal)
-	}
-	if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
-		return cleanroomv1.ExecutionStatus_EXECUTION_STATUS_TIMED_OUT, 124
-	}
-	return cleanroomv1.ExecutionStatus_EXECUTION_STATUS_FAILED, 1
 }
 
 func (s *Service) ensureMapsLocked() {
@@ -2099,30 +2038,6 @@ func (s *Service) executionDoneChannel(sandboxID, executionID string) (<-chan st
 	return ex.Done, nil
 }
 
-func closeSandboxDoneLocked(sb *sandboxState) {
-	if sb.DoneClosed {
-		return
-	}
-	close(sb.Done)
-	sb.DoneClosed = true
-}
-
-func closeExecutionDoneLocked(ex *executionState) {
-	if ex.DoneClosed {
-		return
-	}
-	close(ex.Done)
-	ex.DoneClosed = true
-}
-
-func clearExecutionAttachIOLocked(ex *executionState) {
-	if ex == nil {
-		return
-	}
-	ex.AttachStdin = nil
-	ex.AttachResize = nil
-}
-
 func (s *Service) setExecutionAttachIO(key string, io backend.AttachIO) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -2133,20 +2048,6 @@ func (s *Service) setExecutionAttachIO(key string, io backend.AttachIO) {
 	}
 	ex.AttachStdin = io.WriteStdin
 	ex.AttachResize = io.ResizeTTY
-}
-
-func closeSandboxSubscribersLocked(sb *sandboxState) {
-	for id, ch := range sb.EventSubscribers {
-		close(ch)
-		delete(sb.EventSubscribers, id)
-	}
-}
-
-func closeExecutionSubscribersLocked(ex *executionState) {
-	for id, ch := range ex.EventSubscribers {
-		close(ch)
-		delete(ex.EventSubscribers, id)
-	}
 }
 
 func (s *Service) dropSandboxLocked(sandboxID string, sb *sandboxState) {
@@ -2175,29 +2076,6 @@ func (s *Service) hasActiveExecutionLocked(sandboxID string) bool {
 		}
 	}
 	return false
-}
-
-func executionTerminalTime(ex *executionState) time.Time {
-	if ex == nil {
-		return time.Time{}
-	}
-	if ex.FinishedAt != nil {
-		return *ex.FinishedAt
-	}
-	if ex.StartedAt != nil {
-		return *ex.StartedAt
-	}
-	return time.Time{}
-}
-
-func sandboxTerminalTime(sb *sandboxState) time.Time {
-	if sb == nil {
-		return time.Time{}
-	}
-	if !sb.UpdatedAt.IsZero() {
-		return sb.UpdatedAt
-	}
-	return sb.CreatedAt
 }
 
 func (s *Service) pruneStateLocked(now time.Time) {
@@ -2324,29 +2202,6 @@ func (s *Service) pruneSandboxesLocked(now time.Time) {
 	}
 }
 
-func isFinalExecutionStatus(status cleanroomv1.ExecutionStatus) bool {
-	switch status {
-	case cleanroomv1.ExecutionStatus_EXECUTION_STATUS_SUCCEEDED,
-		cleanroomv1.ExecutionStatus_EXECUTION_STATUS_FAILED,
-		cleanroomv1.ExecutionStatus_EXECUTION_STATUS_CANCELED,
-		cleanroomv1.ExecutionStatus_EXECUTION_STATUS_TIMED_OUT:
-		return true
-	default:
-		return false
-	}
-}
-
-func cancelExitCode(signal int32) int32 {
-	if signal <= 0 || signal > 127 {
-		return 130
-	}
-	return 128 + signal
-}
-
-func executionKey(sandboxID, executionID string) string {
-	return sandboxID + "/" + executionID
-}
-
 func ensureSandboxIdleLocked(sandboxID string, sb *sandboxState, executions map[string]*executionState) error {
 	if sb == nil {
 		return fmt.Errorf("unknown sandbox %q", sandboxID)
@@ -2404,73 +2259,6 @@ func withSnapshotDriver(cfg backend.FirecrackerConfig, driver string) backend.Fi
 	cfg.Snapshots.Driver = runtimeconfig.SnapshotDriverOrDefault(driver)
 	return cfg
 }
-
-func cloneSandboxLocked(state *sandboxState) *cleanroomv1.Sandbox {
-	if state == nil {
-		return nil
-	}
-	policyHash := ""
-	if state.Policy != nil {
-		policyHash = state.Policy.Hash
-	}
-	return &cleanroomv1.Sandbox{
-		SandboxId:  state.ID,
-		Status:     state.Status,
-		Backend:    state.Backend,
-		PolicyHash: policyHash,
-		CreatedAt:  timestamppb.New(state.CreatedAt),
-		UpdatedAt:  timestamppb.New(state.UpdatedAt),
-	}
-}
-
-func cloneExecutionLocked(state *executionState) *cleanroomv1.Execution {
-	if state == nil {
-		return nil
-	}
-	out := &cleanroomv1.Execution{
-		ExecutionId: state.ID,
-		SandboxId:   state.SandboxID,
-		Status:      state.Status,
-		Command:     append([]string(nil), state.Command...),
-		ExitCode:    state.ExitCode,
-		Tty:         state.TTY,
-		RunId:       state.RunID,
-		Kind:        state.Kind,
-	}
-	if state.StartedAt != nil {
-		out.StartedAt = timestamppb.New(*state.StartedAt)
-	}
-	if state.FinishedAt != nil {
-		out.FinishedAt = timestamppb.New(*state.FinishedAt)
-	}
-	return out
-}
-
-func resolveExecutionKind(kind cleanroomv1.ExecutionKind, tty bool) (cleanroomv1.ExecutionKind, error) {
-	if kind == cleanroomv1.ExecutionKind_EXECUTION_KIND_UNSPECIFIED {
-		if tty {
-			return cleanroomv1.ExecutionKind_EXECUTION_KIND_INTERACTIVE, nil
-		}
-		return cleanroomv1.ExecutionKind_EXECUTION_KIND_BATCH, nil
-	}
-	switch kind {
-	case cleanroomv1.ExecutionKind_EXECUTION_KIND_BATCH:
-		return kind, nil
-	case cleanroomv1.ExecutionKind_EXECUTION_KIND_INTERACTIVE:
-		return kind, nil
-	default:
-		return cleanroomv1.ExecutionKind_EXECUTION_KIND_UNSPECIFIED, fmt.Errorf("unsupported execution kind %q", kind.String())
-	}
-}
-
-func newSessionToken() (string, error) {
-	buf := make([]byte, 24)
-	if _, err := rand.Read(buf); err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(buf), nil
-}
-
 func (s *Service) recordSandboxEventLocked(sb *sandboxState, status cleanroomv1.SandboxStatus, message string) {
 	now := time.Now().UTC()
 	sb.Status = status
@@ -2569,80 +2357,4 @@ func (s *Service) clearInteractiveExecutionStateLocked(execKey string) {
 			delete(s.interactiveSessions, id)
 		}
 	}
-}
-
-func normalizeCommand(command []string) []string {
-	if len(command) > 0 && command[0] == "--" {
-		return command[1:]
-	}
-	return command
-}
-
-func bufferedResultDelta(retained, buffered string, retentionLimit int) (string, bool) {
-	if buffered == "" {
-		return "", false
-	}
-	if retained == "" {
-		return buffered, false
-	}
-	if strings.HasSuffix(buffered, retained) {
-		// If retention is saturated, treat suffix-only overlap as a truncation artifact
-		// and avoid replaying duplicate tail bytes from the buffered result.
-		if retentionLimit > 0 && len(retained) >= retentionLimit {
-			return "", false
-		}
-		if strings.HasPrefix(buffered, retained) {
-			return buffered[len(retained):], false
-		}
-		// Stream callbacks likely missed earlier bytes; replace retained output with
-		// the complete buffered output so snapshots/history stay correct.
-		return buffered, true
-	}
-	if strings.HasPrefix(buffered, retained) {
-		return buffered[len(retained):], false
-	}
-	return buffered, true
-}
-
-func appendRetainedOutput(existing, chunk string, limit int) string {
-	if limit <= 0 {
-		return ""
-	}
-	if chunk == "" {
-		if len(existing) <= limit {
-			return existing
-		}
-		return strings.Clone(existing[len(existing)-limit:])
-	}
-	if len(chunk) >= limit {
-		return strings.Clone(chunk[len(chunk)-limit:])
-	}
-	keepExisting := limit - len(chunk)
-	if keepExisting < len(existing) {
-		existing = strings.Clone(existing[len(existing)-keepExisting:])
-	}
-	return existing + chunk
-}
-
-func appendBounded[T any](history []T, item T, limit int) []T {
-	if limit <= 0 {
-		return nil
-	}
-	history = append(history, item)
-	if len(history) <= limit {
-		return history
-	}
-	trimmed := make([]T, limit)
-	copy(trimmed, history[len(history)-limit:])
-	return trimmed
-}
-
-func resolveBackendName(requested, configuredDefault string) string {
-	if requested != "" {
-		return requested
-	}
-	if configuredDefault != "" {
-		return configuredDefault
-	}
-	return runtimeconfig.DefaultBackendForHost()
 }
