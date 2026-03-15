@@ -2,8 +2,8 @@
 
 This repository uses Buildkite for CI with three queues:
 
-- `hosted`: Linux unit/integration tests (`mise run test`)
-- `cleanroom-mac`: macOS unit/integration tests (`mise run test`) and `darwin-vz` end-to-end checks (`scripts/ci-darwin-vz-e2e.sh`)
+- `hosted`: Linux unit/integration tests (`go test ./...`)
+- `cleanroom-mac`: macOS unit/integration tests (`go test ./...`) and `darwin-vz` end-to-end checks (`scripts/ci-darwin-vz-e2e.sh`)
 - `cleanroom`: Linux Firecracker end-to-end checks (`scripts/ci-cleanroom-e2e.sh`)
 
 Pipeline config lives in `.buildkite/pipeline.yml`.
@@ -25,7 +25,8 @@ For self-hosted macOS capacity, Terraform can provision a private EC2 Mac host a
 
 Notes:
 
-- `mise` is bootstrapped via repository hooks in `.buildkite/hooks/`.
+- `mise` is bootstrapped per-step via the pinned `lox/mise-buildkite-plugin` reference in `.buildkite/pipeline.yml`.
+- Self-hosted agents need `curl` and `tar` available so the plugin can install `mise`.
 - Per-step cache is enabled for `hosted` and `cleanroom-mac` steps.
 - Avoid global pipeline `cache:` blocks if self-hosted queues are present.
 
@@ -67,13 +68,13 @@ The `:apple: E2E (darwin-vz)` step runs launched execution checks on macOS using
 
 - macOS host with `Virtualization.framework` available
 - `mkfs.ext4` and `debugfs` available (`brew install e2fsprogs`)
-- signed `cleanroom-darwin-vz` helper from `mise run build`
+- ability to build and ad-hoc sign `cleanroom-darwin-vz` during the CI step
 - internet egress to pull `sandbox.image.ref` on first run
 
 Notes:
 
 - `scripts/ci-darwin-vz-e2e.sh` builds `dist/cleanroom` and `dist/cleanroom-darwin-vz`, exports `CLEANROOM_DARWIN_VZ_HELPER` to the built helper, and isolates XDG runtime paths.
-- the script also builds `dist/cleanroom-guest-agent-linux-<host-arch>` so CI can self-bootstrap the Linux guest agent dependency without a separate `mise run install` step.
+- the script also builds `dist/cleanroom-guest-agent-linux-<host-arch>` so CI can self-bootstrap the Linux guest agent dependency without a separate install step.
 - Set `CLEANROOM_DARWIN_VZ_KERNEL_IMAGE` on the worker if you want an explicit kernel path; otherwise the script uses managed-kernel fallback.
 
 ## 4. Cleanroom Queue (Firecracker E2E)
