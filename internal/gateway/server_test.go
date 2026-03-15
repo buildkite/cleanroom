@@ -146,6 +146,39 @@ func TestIdentityMiddlewareFallsBackToScopeTokenFromConfiguredTrustedSubnet(t *t
 	}
 }
 
+func TestIdentityMiddlewareFallsBackToScopeTokenWhenSourceTrustIsDisabled(t *testing.T) {
+	t.Parallel()
+
+	reg := NewRegistry()
+	p := &policy.CompiledPolicy{Version: 1, NetworkDefault: "deny"}
+	if err := reg.RegisterScopeToken("token-1", "sandbox-token", p); err != nil {
+		t.Fatalf("register scope token: %v", err)
+	}
+
+	srv := NewServer(ServerConfig{
+		Registry:                     reg,
+		AllowScopeTokenFromAnySource: true,
+	})
+	var gotScope *SandboxScope
+	inner := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		gotScope, _ = ScopeFromContext(r.Context())
+	})
+	handler := srv.identityMiddleware(inner)
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	req.RemoteAddr = "172.16.1.100:12345"
+	req.Header.Set(ScopeTokenHeader, "token-1")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if gotScope == nil {
+		t.Fatal("expected scope in context")
+	}
+	if gotScope.SandboxID != "sandbox-token" {
+		t.Fatalf("expected sandbox-token, got %s", gotScope.SandboxID)
+	}
+}
+
 func TestIdentityMiddlewareRejectsScopeTokenFromUntrustedSource(t *testing.T) {
 	t.Parallel()
 
@@ -237,7 +270,7 @@ func TestScopeTokenTrustedSourcePrefixesForGatewayHostResolvesHostnames(t *testi
 	t.Parallel()
 
 	lookupCalls := 0
-	got := scopeTokenTrustedSourcePrefixesForGatewayHost(context.Background(), "gateway.local", func(_ context.Context, host string) ([]net.IP, error) {
+	got := scopeTokenSourcePolicyForGatewayHost(context.Background(), "gateway.local", func(_ context.Context, host string) ([]net.IP, error) {
 		lookupCalls++
 		if host != "gateway.local" {
 			t.Fatalf("unexpected host lookup: %q", host)
@@ -256,31 +289,28 @@ func TestScopeTokenTrustedSourcePrefixesForGatewayHostResolvesHostnames(t *testi
 		netip.MustParsePrefix("10.24.7.0/24"),
 		netip.MustParsePrefix("fd00::/64"),
 	}
-	if len(got) != len(want) {
-		t.Fatalf("len(prefixes) = %d, want %d", len(got), len(want))
+	if len(got.TrustedSourcePrefixes) != len(want) {
+		t.Fatalf("len(prefixes) = %d, want %d", len(got.TrustedSourcePrefixes), len(want))
 	}
-	for i := range got {
-		if got[i] != want[i] {
-			t.Fatalf("prefix[%d] = %s, want %s", i, got[i], want[i])
+	for i := range got.TrustedSourcePrefixes {
+		if got.TrustedSourcePrefixes[i] != want[i] {
+			t.Fatalf("prefix[%d] = %s, want %s", i, got.TrustedSourcePrefixes[i], want[i])
 		}
 	}
 }
 
-func TestScopeTokenTrustedSourcePrefixesForGatewayHostFallsBackToDefaultOnLookupFailure(t *testing.T) {
+func TestScopeTokenSourcePolicyForGatewayHostAllowsAnySourceOnLookupFailure(t *testing.T) {
 	t.Parallel()
 
-	got := scopeTokenTrustedSourcePrefixesForGatewayHost(context.Background(), "gateway.local", func(context.Context, string) ([]net.IP, error) {
+	got := scopeTokenSourcePolicyForGatewayHost(context.Background(), "gateway.local", func(context.Context, string) ([]net.IP, error) {
 		return nil, errors.New("lookup failed")
 	})
 
-	want := []netip.Prefix{netip.MustParsePrefix("192.168.64.0/24")}
-	if len(got) != len(want) {
-		t.Fatalf("len(prefixes) = %d, want %d", len(got), len(want))
+	if !got.AllowScopeTokenFromAnySource {
+		t.Fatal("expected source trust to be disabled on lookup failure")
 	}
-	for i := range got {
-		if got[i] != want[i] {
-			t.Fatalf("prefix[%d] = %s, want %s", i, got[i], want[i])
-		}
+	if len(got.TrustedSourcePrefixes) != 0 {
+		t.Fatalf("expected no trusted source prefixes when trust is disabled, got %v", got.TrustedSourcePrefixes)
 	}
 }
 

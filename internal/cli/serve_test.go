@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"io"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -79,6 +80,23 @@ func TestConfigureGatewayBackendsConfiguresDarwinVZGateway(t *testing.T) {
 func TestGatewayServerConfigUsesDarwinGatewayHostForTrustedPrefixes(t *testing.T) {
 	t.Parallel()
 
+	prevScopeTokenPolicyResolver := gatewayScopeTokenSourcePolicyForGatewayHost
+	t.Cleanup(func() { gatewayScopeTokenSourcePolicyForGatewayHost = prevScopeTokenPolicyResolver })
+
+	want := []netip.Prefix{
+		netip.MustParsePrefix("10.24.7.0/24"),
+		netip.MustParsePrefix("fd00::/64"),
+	}
+	gatewayScopeTokenSourcePolicyForGatewayHost = func(host string) gateway.ScopeTokenSourcePolicy {
+		if host != "gateway.local" {
+			t.Fatalf("unexpected gateway host: %q", host)
+		}
+		return gateway.ScopeTokenSourcePolicy{
+			TrustedSourcePrefixes:        want,
+			AllowScopeTokenFromAnySource: true,
+		}
+	}
+
 	cfg := gatewayServerConfig(
 		":8170",
 		gateway.NewRegistry(),
@@ -88,9 +106,11 @@ func TestGatewayServerConfigUsesDarwinGatewayHostForTrustedPrefixes(t *testing.T
 		"  gateway.local  ",
 	)
 
-	want := gateway.ScopeTokenTrustedSourcePrefixesForGatewayHost("gateway.local")
 	if !reflect.DeepEqual(cfg.ScopeTokenTrustedSourcePrefixes, want) {
 		t.Fatalf("unexpected trusted source prefixes: got %v want %v", cfg.ScopeTokenTrustedSourcePrefixes, want)
+	}
+	if !cfg.AllowScopeTokenFromAnySource {
+		t.Fatal("expected allow-any-source fallback to be preserved in server config")
 	}
 }
 

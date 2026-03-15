@@ -34,6 +34,7 @@ type ServeCommand struct {
 
 var serveSignalNotifyContext = signal.NotifyContext
 var newSnapshotMetadataStore = snapshotstore.New
+var gatewayScopeTokenSourcePolicyForGatewayHost = gateway.ScopeTokenSourcePolicyForGatewayHost
 
 func (s *ServeCommand) Run(ctx *runtimeContext) error {
 	return s.runServer(ctx)
@@ -155,13 +156,15 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 }
 
 func gatewayServerConfig(listen string, registry *gateway.Registry, credentials gateway.CredentialProvider, mirrors gateway.GitMirrorStore, logger *log.Logger, darwinGatewayHost string) gateway.ServerConfig {
+	sourcePolicy := gatewayScopeTokenSourcePolicyForGatewayHost(strings.TrimSpace(darwinGatewayHost))
 	return gateway.ServerConfig{
 		ListenAddr:                      listen,
 		Registry:                        registry,
 		Credentials:                     credentials,
 		GitMirrors:                      mirrors,
 		Logger:                          logger,
-		ScopeTokenTrustedSourcePrefixes: gateway.ScopeTokenTrustedSourcePrefixesForGatewayHost(strings.TrimSpace(darwinGatewayHost)),
+		ScopeTokenTrustedSourcePrefixes: sourcePolicy.TrustedSourcePrefixes,
+		AllowScopeTokenFromAnySource:    sourcePolicy.AllowScopeTokenFromAnySource,
 	}
 }
 

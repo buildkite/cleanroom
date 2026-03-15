@@ -63,26 +63,42 @@ func ScopeFromContext(ctx context.Context) (*SandboxScope, bool) {
 // prefixes to use for scope-token fallback requests that arrive from darwin-vz
 // guests routed through a gateway host IP.
 func ScopeTokenTrustedSourcePrefixesForGatewayHost(gatewayHost string) []netip.Prefix {
-	return scopeTokenTrustedSourcePrefixesForGatewayHost(context.Background(), gatewayHost, defaultGatewayHostLookup)
+	return ScopeTokenSourcePolicyForGatewayHost(gatewayHost).TrustedSourcePrefixes
 }
 
-func scopeTokenTrustedSourcePrefixesForGatewayHost(ctx context.Context, gatewayHost string, lookup gatewayHostLookupFunc) []netip.Prefix {
+// ScopeTokenSourcePolicy describes how the gateway should validate scope-token
+// requests for a given darwin-vz gateway host configuration.
+type ScopeTokenSourcePolicy struct {
+	TrustedSourcePrefixes        []netip.Prefix
+	AllowScopeTokenFromAnySource bool
+}
+
+// ScopeTokenSourcePolicyForGatewayHost derives the source-trust policy for
+// scope-token requests that arrive from darwin-vz guests routed through the
+// configured gateway host.
+func ScopeTokenSourcePolicyForGatewayHost(gatewayHost string) ScopeTokenSourcePolicy {
+	return scopeTokenSourcePolicyForGatewayHost(context.Background(), gatewayHost, defaultGatewayHostLookup)
+}
+
+func scopeTokenSourcePolicyForGatewayHost(ctx context.Context, gatewayHost string, lookup gatewayHostLookupFunc) ScopeTokenSourcePolicy {
 	defaultPrefixes := []netip.Prefix{defaultDarwinVZScopeTokenSourcePrefix}
 	gatewayHost = strings.TrimSpace(gatewayHost)
 	if gatewayHost == "" {
-		return defaultPrefixes
+		return ScopeTokenSourcePolicy{TrustedSourcePrefixes: defaultPrefixes}
 	}
 
 	if addr, err := netip.ParseAddr(gatewayHost); err == nil {
-		return []netip.Prefix{scopeTokenTrustedSourcePrefixForAddr(addr)}
+		return ScopeTokenSourcePolicy{
+			TrustedSourcePrefixes: []netip.Prefix{scopeTokenTrustedSourcePrefixForAddr(addr)},
+		}
 	}
 	if lookup == nil {
-		return defaultPrefixes
+		return ScopeTokenSourcePolicy{AllowScopeTokenFromAnySource: true}
 	}
 
 	resolved, err := lookup(ctx, gatewayHost)
 	if err != nil {
-		return defaultPrefixes
+		return ScopeTokenSourcePolicy{AllowScopeTokenFromAnySource: true}
 	}
 
 	prefixes := make([]netip.Prefix, 0, len(resolved))
@@ -103,9 +119,9 @@ func scopeTokenTrustedSourcePrefixesForGatewayHost(ctx context.Context, gatewayH
 		prefixes = append(prefixes, prefix)
 	}
 	if len(prefixes) == 0 {
-		return defaultPrefixes
+		return ScopeTokenSourcePolicy{AllowScopeTokenFromAnySource: true}
 	}
-	return prefixes
+	return ScopeTokenSourcePolicy{TrustedSourcePrefixes: prefixes}
 }
 
 func scopeTokenTrustedSourcePrefixForAddr(addr netip.Addr) netip.Prefix {
@@ -123,6 +139,7 @@ type ServerConfig struct {
 	GitMirrors                      GitMirrorStore
 	Logger                          *log.Logger
 	ScopeTokenTrustedSourcePrefixes []netip.Prefix
+	AllowScopeTokenFromAnySource    bool
 }
 
 // Server is the host gateway HTTP server.
@@ -131,6 +148,7 @@ type Server struct {
 	logger                          *log.Logger
 	httpServer                      *http.Server
 	scopeTokenTrustedSourcePrefixes []netip.Prefix
+	allowScopeTokenFromAnySource    bool
 
 	mu      sync.Mutex
 	started bool
@@ -145,7 +163,7 @@ func NewServer(cfg ServerConfig) *Server {
 	}
 
 	trustedSourcePrefixes := cloneScopeTokenTrustedSourcePrefixes(cfg.ScopeTokenTrustedSourcePrefixes)
-	if trustedSourcePrefixes == nil {
+	if trustedSourcePrefixes == nil && !cfg.AllowScopeTokenFromAnySource {
 		trustedSourcePrefixes = ScopeTokenTrustedSourcePrefixesForGatewayHost("")
 	}
 
@@ -154,6 +172,7 @@ func NewServer(cfg ServerConfig) *Server {
 		logger:                          cfg.Logger,
 		addr:                            addr,
 		scopeTokenTrustedSourcePrefixes: trustedSourcePrefixes,
+		allowScopeTokenFromAnySource:    cfg.AllowScopeTokenFromAnySource,
 	}
 
 	mux := http.NewServeMux()
@@ -238,6 +257,9 @@ func (s *Server) identityMiddleware(next http.Handler) http.Handler {
 }
 
 func (s *Server) isScopeTokenSourceTrusted(sourceIP string) bool {
+	if s.allowScopeTokenFromAnySource {
+		return true
+	}
 	addr, err := netip.ParseAddr(sourceIP)
 	if err != nil {
 		return false
