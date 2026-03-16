@@ -12,6 +12,9 @@ import (
 )
 
 const zfsBaseSnapshotName = "seed"
+const zfsBaseNamespace = "base"
+const zfsSandboxNamespace = "sandboxes"
+const zfsSnapshotNamespace = "snapshots"
 
 type ZFSCommandRunner interface {
 	Run(ctx context.Context, command string, args ...string) error
@@ -66,7 +69,7 @@ func (d *ZFSDriver) EnsureBaseVolume(ctx context.Context, req EnsureBaseVolumeRe
 		return BaseVolume{}, fmt.Errorf("inspect base volume source %q: empty file", sourcePath)
 	}
 
-	baseDataset := d.datasetPath("base", sanitizeZFSDatasetComponent(req.BaseID))
+	baseDataset := d.datasetPath(zfsBaseNamespace, sanitizeZFSDatasetComponent(req.BaseID))
 	baseSnapshot := d.snapshotRef(baseDataset, zfsBaseSnapshotName)
 
 	baseExists, err := d.refExists(ctx, baseDataset)
@@ -105,7 +108,7 @@ func (d *ZFSDriver) CreateWritableVolume(ctx context.Context, req CreateWritable
 		return WritableVolume{}, fmt.Errorf("zfs base ref %q must be a snapshot", baseRef)
 	}
 
-	dataset := d.datasetPath("sandboxes", sanitizeZFSDatasetComponent(req.VolumeID))
+	dataset := d.datasetPath(zfsSandboxNamespace, sanitizeZFSDatasetComponent(req.VolumeID))
 	return d.cloneSnapshot(ctx, baseRef, dataset)
 }
 
@@ -120,12 +123,46 @@ func (d *ZFSDriver) SnapshotVolume(ctx context.Context, req SnapshotVolumeReques
 		return Snapshot{}, errors.New("zfs volume driver requires snapshot id")
 	}
 
-	snapshotRef := d.snapshotRef(volumeRef, "snap-"+snapshotID)
-	if err := d.runner.Run(ctx, "zfs", "snapshot", snapshotRef); err != nil {
-		return Snapshot{}, fmt.Errorf("create zfs snapshot %q: %w", snapshotRef, err)
+	sourceSnapshotRef := d.snapshotRef(volumeRef, "snap-"+snapshotID)
+	storedDataset := d.datasetPath(zfsSnapshotNamespace, snapshotID)
+	storedSnapshotRef := d.snapshotRef(storedDataset, zfsBaseSnapshotName)
+
+	exists, err := d.refExists(ctx, storedDataset)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	if exists {
+		return Snapshot{}, fmt.Errorf("zfs snapshot dataset %q already exists", storedDataset)
 	}
 
-	return Snapshot{Ref: snapshotRef, StorageRef: snapshotRef}, nil
+	if err := d.runner.Run(ctx, "zfs", "snapshot", sourceSnapshotRef); err != nil {
+		return Snapshot{}, fmt.Errorf("create zfs snapshot %q: %w", sourceSnapshotRef, err)
+	}
+	sourceSnapshotCreated := true
+	defer func() {
+		if !sourceSnapshotCreated {
+			return
+		}
+		_ = d.DestroySnapshot(context.Background(), DestroySnapshotRequest{SnapshotRef: sourceSnapshotRef})
+	}()
+
+	if _, err := d.cloneSnapshot(ctx, sourceSnapshotRef, storedDataset); err != nil {
+		return Snapshot{}, err
+	}
+	storedDatasetCreated := true
+	defer func() {
+		if !storedDatasetCreated {
+			return
+		}
+		_ = d.DestroyVolume(context.Background(), DestroyVolumeRequest{VolumeRef: storedDataset})
+	}()
+
+	if err := d.runner.Run(ctx, "zfs", "snapshot", storedSnapshotRef); err != nil {
+		return Snapshot{}, fmt.Errorf("create zfs snapshot %q: %w", storedSnapshotRef, err)
+	}
+	storedDatasetCreated = false
+
+	return Snapshot{Ref: storedSnapshotRef, StorageRef: storedSnapshotRef}, nil
 }
 
 func (d *ZFSDriver) CloneSnapshotToVolume(ctx context.Context, req CloneSnapshotToVolumeRequest) (WritableVolume, error) {
@@ -137,7 +174,7 @@ func (d *ZFSDriver) CloneSnapshotToVolume(ctx context.Context, req CloneSnapshot
 		return WritableVolume{}, fmt.Errorf("zfs snapshot ref %q must be a snapshot", snapshotRef)
 	}
 
-	dataset := d.datasetPath("sandboxes", sanitizeZFSDatasetComponent(req.VolumeID))
+	dataset := d.datasetPath(zfsSandboxNamespace, sanitizeZFSDatasetComponent(req.VolumeID))
 	return d.cloneSnapshot(ctx, snapshotRef, dataset)
 }
 
@@ -160,7 +197,12 @@ func (d *ZFSDriver) DestroySnapshot(ctx context.Context, req DestroySnapshotRequ
 	if snapshotRef == "" {
 		return nil
 	}
-	if err := d.runner.Run(ctx, "zfs", "destroy", snapshotRef); err != nil {
+
+	command := []string{"zfs", "destroy", snapshotRef}
+	if d.isStoredSnapshot(snapshotRef) {
+		command = []string{"zfs", "destroy", "-r", datasetFromSnapshotRef(snapshotRef)}
+	}
+	if err := d.runner.Run(ctx, command[0], command[1:]...); err != nil {
 		if isZFSMissingError(err) {
 			return nil
 		}
@@ -183,6 +225,15 @@ func (d *ZFSDriver) datasetPath(parts ...string) string {
 
 func (d *ZFSDriver) snapshotRef(dataset, snapshotName string) string {
 	return dataset + "@" + sanitizeZFSDatasetComponent(snapshotName)
+}
+
+func (d *ZFSDriver) isStoredSnapshot(snapshotRef string) bool {
+	dataset := datasetFromSnapshotRef(snapshotRef)
+	if dataset == "" {
+		return false
+	}
+	prefix := d.datasetPath(zfsSnapshotNamespace)
+	return dataset == prefix || strings.HasPrefix(dataset, prefix+"/")
 }
 
 func (d *ZFSDriver) cloneSnapshot(ctx context.Context, snapshotRef, dataset string) (WritableVolume, error) {
@@ -211,6 +262,14 @@ func (d *ZFSDriver) refExists(ctx context.Context, ref string) (bool, error) {
 		return false, fmt.Errorf("inspect zfs ref %q: %w", ref, err)
 	}
 	return strings.TrimSpace(string(out)) != "", nil
+}
+
+func datasetFromSnapshotRef(snapshotRef string) string {
+	dataset, _, ok := strings.Cut(strings.TrimSpace(snapshotRef), "@")
+	if !ok {
+		return ""
+	}
+	return dataset
 }
 
 func sanitizeZFSDatasetComponent(value string) string {

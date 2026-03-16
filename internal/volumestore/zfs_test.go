@@ -36,7 +36,12 @@ func (r *zfsTestRunner) Run(_ context.Context, command string, args ...string) e
 		}
 	case "destroy":
 		if len(args) >= 2 {
-			delete(r.exists, args[len(args)-1])
+			target := args[len(args)-1]
+			for ref := range r.exists {
+				if ref == target || strings.HasPrefix(ref, target+"@") || strings.HasPrefix(ref, target+"/") {
+					delete(r.exists, ref)
+				}
+			}
 		}
 	}
 
@@ -109,7 +114,7 @@ func TestZFSDriverEnsureBaseVolumeAndCloneLifecycle(t *testing.T) {
 	}
 }
 
-func TestZFSDriverSnapshotCloneAndDestroy(t *testing.T) {
+func TestZFSDriverSnapshotSurvivesSourceVolumeDestroy(t *testing.T) {
 	runner := &zfsTestRunner{
 		exists: map[string]bool{
 			"tank/cleanroom/sandboxes/sandbox-1": true,
@@ -130,8 +135,12 @@ func TestZFSDriverSnapshotCloneAndDestroy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SnapshotVolume returned error: %v", err)
 	}
-	if got, want := snapshot.Ref, "tank/cleanroom/sandboxes/sandbox-1@snap-golden"; got != want {
+	if got, want := snapshot.Ref, "tank/cleanroom/snapshots/golden@seed"; got != want {
 		t.Fatalf("unexpected snapshot ref: got %q want %q", got, want)
+	}
+
+	if err := driver.DestroyVolume(context.Background(), DestroyVolumeRequest{VolumeRef: "tank/cleanroom/sandboxes/sandbox-1"}); err != nil {
+		t.Fatalf("DestroyVolume returned error: %v", err)
 	}
 
 	clone, err := driver.CloneSnapshotToVolume(context.Background(), CloneSnapshotToVolumeRequest{
@@ -153,10 +162,16 @@ func TestZFSDriverSnapshotCloneAndDestroy(t *testing.T) {
 	}
 
 	wantCommands := []string{
+		"zfs list -H -o name tank/cleanroom/snapshots/golden",
 		"zfs snapshot tank/cleanroom/sandboxes/sandbox-1@snap-golden",
-		"zfs list -H -o name tank/cleanroom/sandboxes/sandbox-2",
-		"zfs clone -p tank/cleanroom/sandboxes/sandbox-1@snap-golden tank/cleanroom/sandboxes/sandbox-2",
+		"zfs list -H -o name tank/cleanroom/snapshots/golden",
+		"zfs clone -p tank/cleanroom/sandboxes/sandbox-1@snap-golden tank/cleanroom/snapshots/golden",
+		"zfs snapshot tank/cleanroom/snapshots/golden@seed",
 		"zfs destroy tank/cleanroom/sandboxes/sandbox-1@snap-golden",
+		"zfs destroy -r tank/cleanroom/sandboxes/sandbox-1",
+		"zfs list -H -o name tank/cleanroom/sandboxes/sandbox-2",
+		"zfs clone -p tank/cleanroom/snapshots/golden@seed tank/cleanroom/sandboxes/sandbox-2",
+		"zfs destroy -r tank/cleanroom/snapshots/golden",
 		"zfs destroy -r tank/cleanroom/sandboxes/sandbox-2",
 	}
 	if got, want := runner.commands, wantCommands; strings.Join(got, "\n") != strings.Join(want, "\n") {
