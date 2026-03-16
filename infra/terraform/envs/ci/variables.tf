@@ -47,14 +47,15 @@ variable "enable_macos_ci" {
 }
 
 variable "mac_ami_id" {
-  description = "AMI ID for macOS CI host. Required when enable_macos_ci is true."
+  description = "Optional AMI override for macOS CI host. Leave empty to use the Tahoe public SSM parameter that matches mac_instance_type."
   type        = string
   default     = ""
+}
 
-  validation {
-    condition     = !var.enable_macos_ci || trimspace(var.mac_ami_id) != ""
-    error_message = "mac_ami_id must be set when enable_macos_ci is true."
-  }
+variable "mac_ami_ssm_parameter_name" {
+  description = "Optional SSM public parameter name for the macOS CI host AMI. Leave empty to use the Tahoe public parameter that matches mac_instance_type."
+  type        = string
+  default     = ""
 }
 
 variable "mac_instance_type" {

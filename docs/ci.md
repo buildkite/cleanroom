@@ -21,7 +21,7 @@ Pipeline config lives in `.buildkite/pipeline.yml`.
 
 No special setup is required beyond a working Buildkite agent image and internet access.
 
-For self-hosted macOS capacity, Terraform can provision a private EC2 Mac host and dedicated host via `infra/terraform/envs/ci` (`enable_macos_ci = true`, `mac_ami_id` required). This keeps mac queue access private-only (SSM, no inbound public rules).
+For self-hosted macOS capacity, Terraform can provision a private EC2 Mac host and dedicated host via `infra/terraform/envs/ci` (`enable_macos_ci = true`). By default it resolves the latest Tahoe AMI from the AWS public SSM parameter that matches `mac_instance_type`, and you can still override that with `mac_ami_id` or `mac_ami_ssm_parameter_name`. This keeps mac queue access private-only (SSM, no inbound public rules).
 
 Notes:
 

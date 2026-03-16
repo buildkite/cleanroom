@@ -2,8 +2,21 @@ data "aws_ssm_parameter" "ubuntu_ami" {
   name = var.ubuntu_ami_ssm_parameter_name
 }
 
+data "aws_ssm_parameter" "mac_ami" {
+  count = var.enable_macos_ci && trimspace(var.mac_ami_id) == "" ? 1 : 0
+  name  = local.selected_mac_ami_ssm_parameter_name
+}
+
 locals {
   selected_ami_id = var.ami_id != "" ? var.ami_id : data.aws_ssm_parameter.ubuntu_ami.value
+  selected_mac_ami_ssm_parameter_name = trimspace(var.mac_ami_ssm_parameter_name) != "" ? var.mac_ami_ssm_parameter_name : (
+    startswith(var.mac_instance_type, "mac1") ?
+    "/aws/service/ec2-macos/tahoe/x86_64_mac/latest/image_id" :
+    "/aws/service/ec2-macos/tahoe/arm64_mac/latest/image_id"
+  )
+  selected_mac_ami_id = !var.enable_macos_ci ? "" : (
+    trimspace(var.mac_ami_id) != "" ? var.mac_ami_id : data.aws_ssm_parameter.mac_ami[0].value
+  )
 
   # This env owns a fixed minimal private network shape.
   network = {
@@ -57,7 +70,7 @@ module "mac_ci" {
   name_prefix                    = "${var.name_prefix}-mac"
   vpc_id                         = module.network.vpc_id
   subnet_id                      = module.network.private_subnet_id
-  ami_id                         = var.mac_ami_id
+  ami_id                         = local.selected_mac_ami_id
   instance_type                  = var.mac_instance_type
   root_volume_size_gib           = var.mac_root_volume_size_gib
   buildkite_queue                = var.mac_buildkite_queue
