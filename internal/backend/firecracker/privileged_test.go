@@ -215,6 +215,7 @@ func TestDoctorReportsZFSChecks(t *testing.T) {
 	writeExecutable(t, binDir, "ip", "#!/bin/sh\nif [ \"$1\" = \"link\" ] && [ \"$2\" = \"show\" ]; then exit 0; fi\nexit 0\n")
 	writeExecutable(t, binDir, "zfs", "#!/bin/sh\nif [ \"$1\" = \"list\" ] && [ \"$2\" = \"-H\" ] && [ \"$3\" = \"-o\" ] && [ \"$4\" = \"name\" ]; then printf '%s\\n' \"$5\"; exit 0; fi\nexit 0\n")
 	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+	helperPath := writeExecutable(t, tmpDir, "cleanroom-root-helper", "#!/bin/sh\nset -eu\ncase \"$1\" in\n  version)\n    printf 'test-helper\\n'\n    ;;\n  capabilities)\n    printf 'firecracker-network\\nfirecracker-rootfs\\nfirecracker-zfs\\n'\n    ;;\n  *)\n    exec \"$@\"\n    ;;\n esac\n")
 
 	kernelPath := filepath.Join(tmpDir, "vmlinux")
 	if err := os.WriteFile(kernelPath, []byte("kernel"), 0o644); err != nil {
@@ -223,8 +224,9 @@ func TestDoctorReportsZFSChecks(t *testing.T) {
 
 	report, err := (&Adapter{}).Doctor(context.Background(), backend.DoctorRequest{
 		FirecrackerConfig: backend.FirecrackerConfig{
-			BinaryPath:      "firecracker",
-			KernelImagePath: kernelPath,
+			BinaryPath:           "firecracker",
+			KernelImagePath:      kernelPath,
+			PrivilegedHelperPath: helperPath,
 			Snapshots: backend.SnapshotConfig{
 				Driver:     "zfs",
 				ZFSDataset: "tank/cleanroom",

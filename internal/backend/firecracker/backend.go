@@ -2416,25 +2416,6 @@ func runRootCommandOutput(ctx context.Context, cfg backend.FirecrackerConfig, ar
 	return runCombinedCommandOutput(ctx, append([]string{"sudo", "-n", helperPath}, args...), append([]string{"helper"}, args...))
 }
 
-func runRootCommandOutput(ctx context.Context, cfg backend.FirecrackerConfig, args ...string) ([]byte, error) {
-	if len(args) == 0 {
-		return nil, errors.New("missing privileged command")
-	}
-
-	mode, helperPath := resolvePrivilegedExecution(cfg)
-	switch mode {
-	case privilegedModeSudo:
-		return runCombinedCommandOutput(ctx, append([]string{"sudo", "-n"}, args...), args)
-	case privilegedModeHelper:
-		if strings.TrimSpace(helperPath) == "" {
-			return nil, errors.New("privileged helper mode requires helper path")
-		}
-		return runCombinedCommandOutput(ctx, append([]string{"sudo", "-n", helperPath}, args...), append([]string{"helper"}, args...))
-	default:
-		return nil, fmt.Errorf("unsupported privileged command mode %q", mode)
-	}
-}
-
 func runRootCommandBatch(ctx context.Context, cfg backend.FirecrackerConfig, commands [][]string) error {
 	for _, args := range commands {
 		if len(args) == 0 {
