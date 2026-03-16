@@ -573,6 +573,94 @@ func TestExecIntegrationForwardsStdinByDefault(t *testing.T) {
 	}
 }
 
+func TestExecIntegrationIgnoresLateBenignStdinWriteFailures(t *testing.T) {
+	firstWrite := make(chan struct{}, 1)
+	secondWrite := make(chan struct{}, 1)
+	var (
+		mu         sync.Mutex
+		stdinCalls int
+	)
+	adapter := &integrationAdapter{
+		runStreamFn: func(_ context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+			if stream.OnAttach != nil {
+				stream.OnAttach(backend.AttachIO{
+					WriteStdin: func(data []byte) error {
+						mu.Lock()
+						stdinCalls++
+						call := stdinCalls
+						mu.Unlock()
+						if call == 1 {
+							select {
+							case firstWrite <- struct{}{}:
+							default:
+							}
+							return nil
+						}
+						select {
+						case secondWrite <- struct{}{}:
+						default:
+						}
+						return errors.New("execution is not running")
+					},
+					CloseStdin: func() error {
+						return nil
+					},
+				})
+			}
+			select {
+			case <-firstWrite:
+			case <-time.After(2 * time.Second):
+				return nil, errors.New("timed out waiting for first stdin write")
+			}
+			select {
+			case <-secondWrite:
+			case <-time.After(2 * time.Second):
+				return nil, errors.New("timed out waiting for second stdin write")
+			}
+			if stream.OnStdout != nil {
+				stream.OnStdout([]byte("done\n"))
+			}
+			return &backend.RunResult{
+				RunID:    req.RunID,
+				ExitCode: 0,
+				Stdout:   "done\n",
+				Message:  "ok",
+			}, nil
+		},
+	}
+
+	host, _ := startIntegrationServer(t, adapter)
+	cwd := t.TempDir()
+	stdinData := strings.Repeat("x", 8192)
+	cmd := ExecCommand{
+		clientFlags: clientFlags{Host: host},
+		Chdir:       cwd,
+		Command:     []string{"cat"},
+	}
+	outcome := runWithCapture(func(runCtx *runtimeContext) error {
+		return cmd.Run(runCtx)
+	}, &stdinData, runtimeContext{
+		CWD:    cwd,
+		Loader: integrationLoader{},
+	})
+
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err != nil {
+		t.Fatalf("ExecCommand.Run returned error: %v", outcome.err)
+	}
+	if got := outcome.stdout; got != "done\n" {
+		t.Fatalf("unexpected stdout: got %q want %q", got, "done\n")
+	}
+	mu.Lock()
+	gotCalls := stdinCalls
+	mu.Unlock()
+	if gotCalls < 2 {
+		t.Fatalf("expected multiple stdin write attempts, got %d", gotCalls)
+	}
+}
+
 func TestExecIntegrationNoStdinClosesImmediately(t *testing.T) {
 	stdinWrites := make(chan string, 1)
 	stdinClosed := make(chan struct{}, 1)

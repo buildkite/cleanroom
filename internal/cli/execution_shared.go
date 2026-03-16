@@ -124,6 +124,9 @@ func startExecutionStdinForwarder(
 					if isExecutionStdinUnsupportedErr(err) && !sentInput {
 						return
 					}
+					if isBenignExecutionStdinErr(err) {
+						return
+					}
 					errCh <- fmt.Errorf("write execution stdin: %w", err)
 					return
 				}
