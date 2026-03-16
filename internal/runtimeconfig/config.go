@@ -39,14 +39,20 @@ type FirecrackerConfig struct {
 }
 
 type DarwinVZConfig struct {
-	KernelImage   string         `yaml:"kernel_image"`
-	RootFS        string         `yaml:"rootfs"`
-	Services      ServicesConfig `yaml:"services"`
-	Snapshots     SnapshotConfig `yaml:"snapshots"`
-	VCPUs         int64          `yaml:"vcpus"`
-	MemoryMiB     int64          `yaml:"memory_mib"`
-	GuestPort     uint32         `yaml:"guest_port"`
-	LaunchSeconds int64          `yaml:"launch_seconds"` // VM boot/guest-agent readiness timeout
+	KernelImage   string                `yaml:"kernel_image"`
+	RootFS        string                `yaml:"rootfs"`
+	Network       DarwinVZNetworkConfig `yaml:"network,omitempty"`
+	Services      ServicesConfig        `yaml:"services"`
+	Snapshots     SnapshotConfig        `yaml:"snapshots"`
+	VCPUs         int64                 `yaml:"vcpus"`
+	MemoryMiB     int64                 `yaml:"memory_mib"`
+	GuestPort     uint32                `yaml:"guest_port"`
+	LaunchSeconds int64                 `yaml:"launch_seconds"` // VM boot/guest-agent readiness timeout
+}
+
+type DarwinVZNetworkConfig struct {
+	Mode   string `yaml:"mode,omitempty"`
+	Subnet string `yaml:"subnet,omitempty"`
 }
 
 type SnapshotConfig struct {
@@ -100,6 +106,8 @@ func MergeBackendConfig(cfg Config, backendName string, launchSeconds int64) bac
 	if backendName == "darwin-vz" {
 		out.KernelImagePath = cfg.Backends.DarwinVZ.KernelImage
 		out.RootFSPath = cfg.Backends.DarwinVZ.RootFS
+		out.DarwinVZNetworkMode = cfg.Backends.DarwinVZ.Network.Mode
+		out.DarwinVZNetworkSubnet = cfg.Backends.DarwinVZ.Network.Subnet
 		out.DockerStartupSeconds = cfg.Backends.DarwinVZ.Services.Docker.StartupTimeoutSeconds
 		out.DockerStorageDriver = cfg.Backends.DarwinVZ.Services.Docker.StorageDriver
 		out.DockerIPTables = cfg.Backends.DarwinVZ.Services.Docker.IPTables
@@ -223,6 +231,7 @@ func Load() (Config, string, error) {
 func darwinVZConfigIsZero(cfg DarwinVZConfig) bool {
 	return strings.TrimSpace(cfg.KernelImage) == "" &&
 		strings.TrimSpace(cfg.RootFS) == "" &&
+		darwinVZNetworkConfigIsZero(cfg.Network) &&
 		cfg.Services.Docker.StartupTimeoutSeconds == 0 &&
 		strings.TrimSpace(cfg.Services.Docker.StorageDriver) == "" &&
 		!cfg.Services.Docker.IPTables &&
@@ -231,6 +240,11 @@ func darwinVZConfigIsZero(cfg DarwinVZConfig) bool {
 		cfg.MemoryMiB == 0 &&
 		cfg.GuestPort == 0 &&
 		cfg.LaunchSeconds == 0
+}
+
+func darwinVZNetworkConfigIsZero(cfg DarwinVZNetworkConfig) bool {
+	return strings.TrimSpace(cfg.Mode) == "" &&
+		strings.TrimSpace(cfg.Subnet) == ""
 }
 
 func snapshotConfigIsZero(cfg SnapshotConfig) bool {

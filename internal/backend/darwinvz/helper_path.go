@@ -38,6 +38,10 @@ func resolveHelperBinaryPathWith(
 		if path, err := resolveHelperCandidatePath(sibling, stat); err == nil {
 			return path, nil
 		}
+		siblingAppBundle := sibling + ".app"
+		if path, err := resolveHelperCandidatePath(siblingAppBundle, stat); err == nil {
+			return path, nil
+		}
 	}
 
 	if getwd != nil {
@@ -79,6 +83,9 @@ func resolvePrebuiltBinaryPathFromWorkdir(startDir, binaryName string, stat func
 		if path, err := resolveHelperCandidatePath(candidate, stat); err == nil {
 			return path, nil
 		}
+		if path, err := resolveHelperCandidatePath(candidate+".app", stat); err == nil {
+			return path, nil
+		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
 			break
@@ -102,7 +109,22 @@ func resolveHelperCandidatePath(path string, stat func(string) (os.FileInfo, err
 		return "", err
 	}
 	if info.IsDir() {
+		if strings.EqualFold(filepath.Ext(absPath), ".app") {
+			return resolveHelperBundleExecutablePath(absPath, stat)
+		}
 		return "", fmt.Errorf("%s is a directory", absPath)
 	}
 	return absPath, nil
+}
+
+func resolveHelperBundleExecutablePath(appPath string, stat func(string) (os.FileInfo, error)) (string, error) {
+	bundleExecutablePath := filepath.Join(appPath, "Contents", "MacOS", helperBinaryName)
+	info, err := stat(bundleExecutablePath)
+	if err != nil {
+		return "", err
+	}
+	if info.IsDir() {
+		return "", fmt.Errorf("%s is a directory", bundleExecutablePath)
+	}
+	return bundleExecutablePath, nil
 }

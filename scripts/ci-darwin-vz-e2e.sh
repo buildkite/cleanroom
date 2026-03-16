@@ -6,9 +6,7 @@ DARWIN_VZ_KERNEL_IMAGE="${CLEANROOM_DARWIN_VZ_KERNEL_IMAGE:-}"
 echo "--- :hammer: Building binaries"
 scripts/build-go.sh
 
-mkdir -p dist
-xcrun swiftc -O -framework Virtualization cmd/cleanroom-darwin-vz/main.swift -o dist/cleanroom-darwin-vz
-codesign --force --sign - --entitlements cmd/cleanroom-darwin-vz/entitlements.plist dist/cleanroom-darwin-vz
+scripts/build-darwin-vz-helper.sh dist/cleanroom-darwin-vz
 
 # `scripts/build-go.sh` produces host binaries in dist/, but darwin-vz doctor also
 # requires a Linux guest agent binary named cleanroom-guest-agent-linux-<arch>.

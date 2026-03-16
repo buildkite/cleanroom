@@ -23,6 +23,9 @@ backends:
   darwin-vz:
     kernel_image: /tmp/kernel
     rootfs: /tmp/rootfs
+    network:
+      mode: vmnet-shared
+      subnet: 10.233.0.0/16
     services:
       docker:
         startup_timeout_seconds: 25
@@ -43,6 +46,12 @@ backends:
 	}
 	if got, want := cfg.Backends.DarwinVZ.KernelImage, "/tmp/kernel"; got != want {
 		t.Fatalf("unexpected darwin-vz kernel: got %q want %q", got, want)
+	}
+	if got, want := cfg.Backends.DarwinVZ.Network.Mode, "vmnet-shared"; got != want {
+		t.Fatalf("unexpected darwin-vz network mode: got %q want %q", got, want)
+	}
+	if got, want := cfg.Backends.DarwinVZ.Network.Subnet, "10.233.0.0/16"; got != want {
+		t.Fatalf("unexpected darwin-vz network subnet: got %q want %q", got, want)
 	}
 	if got, want := cfg.Backends.DarwinVZ.Services.Docker.StartupTimeoutSeconds, int64(25); got != want {
 		t.Fatalf("unexpected docker startup timeout: got %d want %d", got, want)
@@ -304,6 +313,7 @@ func TestMergeBackendConfig(t *testing.T) {
 			DarwinVZ: DarwinVZConfig{
 				KernelImage:   "/darwin/kernel",
 				RootFS:        "/darwin/rootfs.ext4",
+				Network:       DarwinVZNetworkConfig{Mode: "vmnet-shared", Subnet: "10.233.0.0/16"},
 				Services:      ServicesConfig{Docker: DockerServiceConfig{StartupTimeoutSeconds: 20, StorageDriver: "vzfs", IPTables: false}},
 				Snapshots:     SnapshotConfig{Enabled: false, Driver: "apfs", BaseDir: "/darwin/snapshots", QuiesceTimeoutSeconds: 22},
 				VCPUs:         4,
@@ -334,6 +344,12 @@ func TestMergeBackendConfig(t *testing.T) {
 	}
 	if got, want := darwinCfg.RootFSPath, "/darwin/rootfs.ext4"; got != want {
 		t.Fatalf("unexpected darwin-vz rootfs: got %q want %q", got, want)
+	}
+	if got, want := darwinCfg.DarwinVZNetworkMode, "vmnet-shared"; got != want {
+		t.Fatalf("unexpected darwin-vz network mode: got %q want %q", got, want)
+	}
+	if got, want := darwinCfg.DarwinVZNetworkSubnet, "10.233.0.0/16"; got != want {
+		t.Fatalf("unexpected darwin-vz network subnet: got %q want %q", got, want)
 	}
 	if got, want := darwinCfg.DockerStorageDriver, "vzfs"; got != want {
 		t.Fatalf("unexpected darwin-vz docker storage driver: got %q want %q", got, want)

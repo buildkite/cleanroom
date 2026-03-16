@@ -25,8 +25,26 @@ func TestGuestInitScriptBootstrapsNetwork(t *testing.T) {
 	if !strings.Contains(guestInitScriptTemplate, "setup_guest_network") {
 		t.Fatal("expected guest network setup function in init script")
 	}
+	if !strings.Contains(guestInitScriptTemplate, "cleanroom_vmnet_guest_ipv4") {
+		t.Fatal("expected vmnet static guest IPv4 boot arg lookup in init script")
+	}
+	if !strings.Contains(guestInitScriptTemplate, "cleanroom_vmnet_gateway_ipv4") {
+		t.Fatal("expected vmnet static gateway boot arg lookup in init script")
+	}
+	if !strings.Contains(guestInitScriptTemplate, "cleanroom_vmnet_prefix_len") {
+		t.Fatal("expected vmnet static prefix length boot arg lookup in init script")
+	}
+	if !strings.Contains(guestInitScriptTemplate, "ip addr add \"$VMNET_GUEST_IPV4/$VMNET_PREFIX_LEN\" dev \"$NET_IFACE\"") {
+		t.Fatal("expected vmnet static address configuration in init script")
+	}
+	if !strings.Contains(guestInitScriptTemplate, "ip route replace default via \"$VMNET_GATEWAY_IPV4\" dev \"$NET_IFACE\"") {
+		t.Fatal("expected vmnet default route configuration in init script")
+	}
+	if !strings.Contains(guestInitScriptTemplate, "printf 'nameserver %s\\n' \"$VMNET_GATEWAY_IPV4\" >/etc/resolv.conf") {
+		t.Fatal("expected vmnet dns configuration in init script")
+	}
 	if !strings.Contains(guestInitScriptTemplate, "udhcpc -q -n -t 3 -T 3 -i") {
-		t.Fatal("expected udhcpc DHCP bootstrap in init script")
+		t.Fatal("expected udhcpc DHCP fallback in init script")
 	}
 }
 
