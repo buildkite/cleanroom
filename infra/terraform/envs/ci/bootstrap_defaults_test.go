@@ -69,7 +69,7 @@ func TestLinuxCiDefaultsUseBootstrapScript(t *testing.T) {
 	t.Helper()
 
 	requireContains(t, "variables.tf", "default     = \"scripts/bootstrap-buildkite-agent.sh\"")
-	requireContains(t, filepath.Join("..", "..", "modules", "linux-ci", "variables.tf"), "default     = \"scripts/bootstrap-buildkite-agent.sh\"")
+	requireContains(t, filepath.Join("..", "..", "modules", "linux-host", "variables.tf"), "default     = \"scripts/bootstrap-buildkite-agent.sh\"")
 	requireContains(t, "terraform.tfvars.example", "setup_script_path = \"scripts/bootstrap-buildkite-agent.sh\"")
 }
 
@@ -111,7 +111,7 @@ func TestMacBootstrapScriptConfiguresBuildkiteAgent(t *testing.T) {
 func TestUserDataInstallsAwsCliWithoutAptAwscliDependency(t *testing.T) {
 	t.Helper()
 
-	templatePath := filepath.Join("..", "..", "modules", "linux-ci", "templates", "user_data.sh.tftpl")
+	templatePath := filepath.Join("..", "..", "modules", "linux-host", "templates", "user_data.sh.tftpl")
 	requireNotContains(t, templatePath, "apt-get install -y git jq curl tar ca-certificates openssh-client awscli")
 	requireContains(t, templatePath, "awscli-exe-linux")
 }
@@ -119,8 +119,8 @@ func TestUserDataInstallsAwsCliWithoutAptAwscliDependency(t *testing.T) {
 func TestUserDataIsUbuntuSpecific(t *testing.T) {
 	t.Helper()
 
-	templatePath := filepath.Join("..", "..", "modules", "linux-ci", "templates", "user_data.sh.tftpl")
-	requireContains(t, templatePath, "linux CI user_data requires an Ubuntu apt-based AMI")
+	templatePath := filepath.Join("..", "..", "modules", "linux-host", "templates", "user_data.sh.tftpl")
+	requireContains(t, templatePath, "linux host user_data requires an Ubuntu apt-based AMI")
 	requireNotContains(t, templatePath, "if command -v dnf >/dev/null 2>&1; then")
 	requireNotContains(t, templatePath, "yum install -y")
 }
@@ -128,7 +128,7 @@ func TestUserDataIsUbuntuSpecific(t *testing.T) {
 func TestUserDataVerifiesZfsAvailability(t *testing.T) {
 	t.Helper()
 
-	templatePath := filepath.Join("..", "..", "modules", "linux-ci", "templates", "user_data.sh.tftpl")
+	templatePath := filepath.Join("..", "..", "modules", "linux-host", "templates", "user_data.sh.tftpl")
 	requireContains(t, templatePath, "linux-headers-$(uname -r)")
 	requireContains(t, templatePath, "modprobe zfs")
 	requireContains(t, templatePath, "command -v zpool >/dev/null 2>&1")
@@ -137,7 +137,7 @@ func TestUserDataVerifiesZfsAvailability(t *testing.T) {
 func TestUserDataCreatesZfsPoolFromEphemeralNVMe(t *testing.T) {
 	t.Helper()
 
-	templatePath := filepath.Join("..", "..", "modules", "linux-ci", "templates", "user_data.sh.tftpl")
+	templatePath := filepath.Join("..", "..", "modules", "linux-host", "templates", "user_data.sh.tftpl")
 	requireContains(t, templatePath, "zpool create -f")
 	requireContains(t, templatePath, "Amazon Elastic Block Store")
 	requireContains(t, templatePath, "zfs create")
@@ -151,7 +151,7 @@ func TestDefaultRegionIsUsWest2(t *testing.T) {
 
 	for _, path := range []string{
 		"variables.tf",
-		filepath.Join("..", "..", "modules", "linux-ci", "variables.tf"),
+		filepath.Join("..", "..", "modules", "linux-host", "variables.tf"),
 		filepath.Join("..", "..", "modules", "macos-ci", "variables.tf"),
 	} {
 		block := readVariableBlock(t, path, "aws_region")
@@ -177,7 +177,7 @@ func TestBootstrapConfiguresZfsSnapshots(t *testing.T) {
 func TestLinuxCiEnablesNestedVirtualization(t *testing.T) {
 	t.Helper()
 
-	moduleMainPath := filepath.Join("..", "..", "modules", "linux-ci", "main.tf")
+	moduleMainPath := filepath.Join("..", "..", "modules", "linux-host", "main.tf")
 	requireContains(t, moduleMainPath, "nested_virtualization = \"enabled\"")
 }
 
@@ -227,7 +227,7 @@ func TestGitDeployKeyIsRequired(t *testing.T) {
 
 	files := []string{
 		"variables.tf",
-		filepath.Join("..", "..", "modules", "linux-ci", "variables.tf"),
+		filepath.Join("..", "..", "modules", "linux-host", "variables.tf"),
 		filepath.Join("..", "..", "modules", "macos-ci", "variables.tf"),
 	}
 

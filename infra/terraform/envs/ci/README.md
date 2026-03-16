@@ -3,7 +3,7 @@
 Composition root for cleanroom CI infrastructure:
 
 - `../../modules/network` for VPC/subnet/NAT
-- `../../modules/linux-ci` for the private Linux host bootstrap
+- `../../modules/linux-host` for the private Linux host bootstrap
 - `../../modules/macos-ci` for optional private macOS host bootstrap
 
 Default AMI behaviour:

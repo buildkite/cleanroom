@@ -5,41 +5,39 @@ variable "aws_region" {
 }
 
 variable "name_prefix" {
-  description = "Name prefix for tags and instance profile resources."
+  description = "Name prefix for tags and resource names."
   type        = string
-  default     = "cleanroom-ci"
+  default     = "cleanroom-prod"
 }
 
-variable "vpc_id" {
-  description = "VPC ID where the host security group is created."
+variable "availability_zone" {
+  description = "Optional AZ override for prod subnets and host placement. Leave empty to use the first available AZ in-region."
   type        = string
-}
-
-variable "subnet_id" {
-  description = "Private subnet ID where the host is launched."
-  type        = string
+  default     = ""
 }
 
 variable "ami_id" {
-  description = "Linux AMI ID for the host."
+  description = "Optional AMI override for the Linux host. Leave empty to use latest Ubuntu AMI from SSM."
   type        = string
+  default     = ""
+}
+
+variable "ubuntu_ami_ssm_parameter_name" {
+  description = "SSM public parameter name for latest Ubuntu AMI."
+  type        = string
+  default     = "/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id"
 }
 
 variable "instance_type" {
-  description = "EC2 instance type for the host. Must support nested virtualization for Firecracker. Defaults to m8i.large for broad nested-virtualization availability; use a '*d' variant where your region/account supports nested virtualization on that type to place snapshots on local NVMe."
+  description = "EC2 instance type for the host. Must support nested virtualization for Firecracker. Defaults to m8i.4xlarge for larger production-oriented interactive workloads."
   type        = string
-  default     = "m8i.large"
+  default     = "m8i.4xlarge"
 }
 
 variable "root_volume_size_gib" {
   description = "Root EBS volume size in GiB."
   type        = number
-  default     = 150
-}
-
-variable "buildkite_token_parameter_name" {
-  description = "SSM SecureString parameter name storing the Buildkite token."
-  type        = string
+  default     = 500
 }
 
 variable "tailscale_auth_key_parameter_name" {
@@ -71,9 +69,9 @@ variable "repo_ref" {
 }
 
 variable "setup_script_path" {
-  description = "Path to the setup script inside the cloned repository."
+  description = "Path to setup script in cloned repository."
   type        = string
-  default     = "scripts/bootstrap-buildkite-agent.sh"
+  default     = "scripts/bootstrap-cleanroom-host.sh"
 }
 
 variable "tailscale_version" {
@@ -85,7 +83,7 @@ variable "tailscale_version" {
 variable "tailscale_hostname_prefix" {
   description = "Tailscale hostname prefix (<prefix>-<instance-id>)."
   type        = string
-  default     = "cleanroom-ci-linux"
+  default     = "cleanroom-prod-linux"
 }
 
 variable "tailscale_advertise_tags" {
