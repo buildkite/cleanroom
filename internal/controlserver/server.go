@@ -194,6 +194,20 @@ func (s *Server) CancelExecution(ctx context.Context, req *connect.Request[clean
 	return connect.NewResponse(resp), nil
 }
 
+func (s *Server) WriteExecutionStdin(_ context.Context, req *connect.Request[cleanroomv1.WriteExecutionStdinRequest]) (*connect.Response[cleanroomv1.WriteExecutionStdinResponse], error) {
+	if err := s.service.WriteExecutionStdin(req.Msg.GetSandboxId(), req.Msg.GetExecutionId(), req.Msg.GetData()); err != nil {
+		return nil, toConnectError(err)
+	}
+	return connect.NewResponse(&cleanroomv1.WriteExecutionStdinResponse{}), nil
+}
+
+func (s *Server) CloseExecutionStdin(_ context.Context, req *connect.Request[cleanroomv1.CloseExecutionStdinRequest]) (*connect.Response[cleanroomv1.CloseExecutionStdinResponse], error) {
+	if err := s.service.CloseExecutionStdin(req.Msg.GetSandboxId(), req.Msg.GetExecutionId()); err != nil {
+		return nil, toConnectError(err)
+	}
+	return connect.NewResponse(&cleanroomv1.CloseExecutionStdinResponse{}), nil
+}
+
 func (s *Server) StreamExecution(ctx context.Context, req *connect.Request[cleanroomv1.StreamExecutionRequest], stream *connect.ServerStream[cleanroomv1.ExecutionStreamEvent]) error {
 	history, updates, done, unsubscribe, err := s.service.SubscribeExecutionEvents(req.Msg.GetSandboxId(), req.Msg.GetExecutionId())
 	if err != nil {

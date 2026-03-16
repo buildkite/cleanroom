@@ -92,6 +92,12 @@ Interactive characteristics:
 4. minimal persisted state only (`running`, `exit`, timestamps, optional tiny tail).
 5. ideal for `cleanroom console` and `cleanroom agent codex`.
 
+Current CLI note:
+
+1. `cleanroom exec` now defaults to attached stdin/stdout/stderr without a PTY.
+2. `cleanroom exec -n` closes stdin immediately for commands that should observe EOF.
+3. `cleanroom console` remains the PTY-oriented transport for human terminal sessions.
+
 ## 4) QUIC data plane v1
 
 ### 4.1 Session bootstrap (control plane)

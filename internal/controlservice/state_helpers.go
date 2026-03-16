@@ -47,6 +47,7 @@ func clearExecutionAttachIOLocked(ex *executionState) {
 		return
 	}
 	ex.AttachStdin = nil
+	ex.AttachCloseStdin = nil
 	ex.AttachResize = nil
 }
 

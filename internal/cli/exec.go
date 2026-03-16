@@ -19,6 +19,7 @@ type ExecCommand struct {
 	From           string `name:"from" help:"Create the sandbox from an existing snapshot ID"`
 	Image          string `help:"Override sandbox image ref for newly created sandboxes (tag, digest, or local Docker image)"`
 	Keep           bool   `help:"Keep a newly created sandbox after the command completes"`
+	NoStdin        bool   `short:"n" name:"no-stdin" aliases:"stdin-eof" help:"Close stdin immediately instead of attaching it"`
 	PrintSandboxID bool   `name:"print-sandbox-id" help:"Print resolved sandbox_id=<id> to stderr before streaming output"`
 
 	LaunchSeconds int64 `help:"VM boot/guest-agent readiness timeout in seconds"`
@@ -133,6 +134,9 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 		return fmt.Errorf("stream execution: %w", err)
 	}
 
+	stdinErrCh := startExecutionStdinForwarder(client, sandboxID, executionID, e.NoStdin)
+	stdinErrCh = monitorExecutionStdinErr(streamCtx, streamCancel, stdinErrCh)
+
 	signalCh := newSignalChannel()
 	notifySignals(signalCh, os.Interrupt, syscall.SIGTERM)
 	defer stopSignals(signalCh)
@@ -191,6 +195,9 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 			exitCode = int(payload.Exit.GetExitCode())
 			haveExitCode = true
 		}
+		if stdinErr := pollExecutionStdinErr(stdinErrCh); stdinErr != nil {
+			return stdinErr
+		}
 	}
 
 	streamErr := stream.Err()
@@ -206,6 +213,10 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 
 	if streamErr != nil && !isCanceledStreamErr(streamErr) {
 		return fmt.Errorf("stream execution: %w", streamErr)
+	}
+
+	if stdinErr := pollExecutionStdinErr(stdinErrCh); stdinErr != nil {
+		return stdinErr
 	}
 
 	if !haveExitCode {

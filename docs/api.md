@@ -158,10 +158,12 @@ service SandboxService {
 
 service ExecutionService {
   rpc CreateExecution(CreateExecutionRequest) returns (CreateExecutionResponse);
+  rpc OpenInteractiveExecution(OpenInteractiveExecutionRequest) returns (OpenInteractiveExecutionResponse);
   rpc GetExecution(GetExecutionRequest) returns (GetExecutionResponse);
   rpc CancelExecution(CancelExecutionRequest) returns (CancelExecutionResponse);
+  rpc WriteExecutionStdin(WriteExecutionStdinRequest) returns (WriteExecutionStdinResponse);
+  rpc CloseExecutionStdin(CloseExecutionStdinRequest) returns (CloseExecutionStdinResponse);
   rpc StreamExecution(StreamExecutionRequest) returns (stream ExecutionStreamEvent);
-  rpc AttachExecution(stream ExecutionAttachFrame) returns (stream ExecutionAttachFrame);
 }
 
 message Sandbox {
@@ -227,7 +229,7 @@ Expose a server mode and API-driven commands in the same binary.
 - `cleanroom executions get <sandbox-id> <execution-id>`
 - `cleanroom executions cancel <sandbox-id> <execution-id>`
 - `cleanroom executions stream <sandbox-id> <execution-id>`
-- `cleanroom executions attach <sandbox-id> <execution-id>`
+- `cleanroom executions attach <sandbox-id> <execution-id>` (PTY-oriented attach/bootstrap)
 
 ### 9.4 Local UX
 
@@ -254,9 +256,12 @@ Behavior contract:
 5. For repo-aware top-level commands, materialize that checkout in the sandbox
    and default the guest working directory to `repository.path`.
 6. Create execution with command and TTY options.
-7. Stream output:
-   - non-interactive: `StreamExecution`
-   - interactive: `AttachExecution`
+7. Attach stdio according to command mode:
+   - `cleanroom exec` defaults to attached stdin plus separate stdout/stderr
+     using `StreamExecution`, `WriteExecutionStdin`, and `CloseExecutionStdin`
+   - `cleanroom exec -n` closes stdin immediately so the command observes EOF
+   - `cleanroom console` uses `OpenInteractiveExecution` for PTY-oriented
+     interactive sessions
 8. Return the command exit code.
 9. Newly created `exec` and `console` sandboxes are terminated after the command
    unless `--keep` is set. Reused sandboxes (`--in`) remain `READY`.
@@ -283,8 +288,10 @@ Failure UX:
 2. Implement `cleanroom serve` with in-process adapter wiring.
 3. Implement unary RPCs first (`Create/Get/List/Terminate`, `Create/Get/Cancel`).
 4. Add `StreamExecution` and `StreamSandboxEvents`.
-5. Add `AttachExecution` bidi stream for interactive sessions.
-6. Implement `cleanroom exec` as an RPC wrapper (`CreateSandbox` -> `CreateExecution` -> stream -> optional `TerminateSandbox`).
+5. Add `OpenInteractiveExecution` plus stdin attach/close RPCs.
+6. Implement `cleanroom exec` as an RPC wrapper (`CreateSandbox` ->
+   `CreateExecution` -> optional stdin attach/close -> stream -> optional
+   `TerminateSandbox`).
 7. Wire remaining CLI subcommands to RPC client.
 8. Add conformance tests for status transitions, error codes, signal handling, and stream termination behavior.
 

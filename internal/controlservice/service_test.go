@@ -1975,6 +1975,7 @@ func TestServiceGeneratedIDsUseTypeIDFormat(t *testing.T) {
 func TestExecutionAttachIOForwarding(t *testing.T) {
 	started := make(chan struct{}, 1)
 	stdinChunks := make(chan string, 1)
+	stdinClosed := make(chan struct{}, 1)
 	resizes := make(chan [2]uint32, 1)
 	adapter := &stubAdapter{
 		runStreamFn: func(ctx context.Context, _ backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
@@ -1982,6 +1983,13 @@ func TestExecutionAttachIOForwarding(t *testing.T) {
 				stream.OnAttach(backend.AttachIO{
 					WriteStdin: func(data []byte) error {
 						stdinChunks <- string(data)
+						return nil
+					},
+					CloseStdin: func() error {
+						select {
+						case stdinClosed <- struct{}{}:
+						default:
+						}
 						return nil
 					},
 					ResizeTTY: func(cols, rows uint32) error {
@@ -2027,6 +2035,9 @@ func TestExecutionAttachIOForwarding(t *testing.T) {
 	if err := svc.WriteExecutionStdin(sandboxID, executionID, []byte("hello\n")); err != nil {
 		t.Fatalf("WriteExecutionStdin returned error: %v", err)
 	}
+	if err := svc.CloseExecutionStdin(sandboxID, executionID); err != nil {
+		t.Fatalf("CloseExecutionStdin returned error: %v", err)
+	}
 	if err := svc.ResizeExecutionTTY(sandboxID, executionID, 120, 40); err != nil {
 		t.Fatalf("ResizeExecutionTTY returned error: %v", err)
 	}
@@ -2038,6 +2049,12 @@ func TestExecutionAttachIOForwarding(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for stdin callback")
+	}
+
+	select {
+	case <-stdinClosed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for stdin close callback")
 	}
 
 	select {
@@ -2064,6 +2081,7 @@ func TestExecutionAttachIOForwarding(t *testing.T) {
 func TestExecutionAttachIOWaitsForDelayedAttachRegistration(t *testing.T) {
 	started := make(chan struct{}, 1)
 	stdinChunks := make(chan string, 1)
+	stdinClosed := make(chan struct{}, 1)
 	resizes := make(chan [2]uint32, 1)
 	adapter := &stubAdapter{
 		runStreamFn: func(ctx context.Context, _ backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
@@ -2071,11 +2089,18 @@ func TestExecutionAttachIOWaitsForDelayedAttachRegistration(t *testing.T) {
 			case started <- struct{}{}:
 			default:
 			}
-			time.Sleep(500 * time.Millisecond)
+			time.Sleep(200 * time.Millisecond)
 			if stream.OnAttach != nil {
 				stream.OnAttach(backend.AttachIO{
 					WriteStdin: func(data []byte) error {
 						stdinChunks <- string(data)
+						return nil
+					},
+					CloseStdin: func() error {
+						select {
+						case stdinClosed <- struct{}{}:
+						default:
+						}
 						return nil
 					},
 					ResizeTTY: func(cols, rows uint32) error {
@@ -2089,6 +2114,10 @@ func TestExecutionAttachIOWaitsForDelayedAttachRegistration(t *testing.T) {
 		},
 	}
 	svc := newTestService(adapter)
+	timeouts := defaultServiceTimeouts
+	timeouts.attachStdinRegistrationWait = 100 * time.Millisecond
+	svc.runtime.timeouts = &timeouts
+	svc.Config.Backends.Firecracker.LaunchSeconds = 1
 
 	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
 	if err != nil {
@@ -2117,6 +2146,9 @@ func TestExecutionAttachIOWaitsForDelayedAttachRegistration(t *testing.T) {
 	if err := svc.WriteExecutionStdin(sandboxID, executionID, []byte("hello\n")); err != nil {
 		t.Fatalf("WriteExecutionStdin returned error: %v", err)
 	}
+	if err := svc.CloseExecutionStdin(sandboxID, executionID); err != nil {
+		t.Fatalf("CloseExecutionStdin returned error: %v", err)
+	}
 	if err := svc.ResizeExecutionTTY(sandboxID, executionID, 120, 40); err != nil {
 		t.Fatalf("ResizeExecutionTTY returned error: %v", err)
 	}
@@ -2128,6 +2160,12 @@ func TestExecutionAttachIOWaitsForDelayedAttachRegistration(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for delayed stdin callback")
+	}
+
+	select {
+	case <-stdinClosed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for delayed stdin close callback")
 	}
 
 	select {
@@ -2191,6 +2229,9 @@ func TestExecutionAttachIOUnsupportedWhenBackendDoesNotExposeHandlers(t *testing
 
 	if err := svc.WriteExecutionStdin(sandboxID, executionID, []byte("hello\n")); !errors.Is(err, ErrExecutionStdinUnsupported) {
 		t.Fatalf("expected ErrExecutionStdinUnsupported, got %v", err)
+	}
+	if err := svc.CloseExecutionStdin(sandboxID, executionID); !errors.Is(err, ErrExecutionStdinUnsupported) {
+		t.Fatalf("expected ErrExecutionStdinUnsupported from CloseExecutionStdin, got %v", err)
 	}
 	if err := svc.ResizeExecutionTTY(sandboxID, executionID, 80, 24); !errors.Is(err, ErrExecutionResizeUnsupported) {
 		t.Fatalf("expected ErrExecutionResizeUnsupported, got %v", err)

@@ -1817,6 +1817,9 @@ func runGuestCommand(bootCtx context.Context, execCtx context.Context, processEx
 					Data: data,
 				})
 			},
+			CloseStdin: func() error {
+				return inputSender.Send(vsockexec.ExecInputFrame{Type: "eof"})
+			},
 			ResizeTTY: func(cols, rows uint32) error {
 				return inputSender.Send(vsockexec.ExecInputFrame{
 					Type: "resize",
@@ -1825,13 +1828,6 @@ func runGuestCommand(bootCtx context.Context, execCtx context.Context, processEx
 				})
 			},
 		})
-	}
-	if !req.TTY {
-		// Non-TTY commands don't expect interactive stdin. Send eof
-		// immediately so the guest process sees stdin EOF rather than
-		// blocking. The control service always sets OnAttach even for
-		// non-interactive exec, so we can't rely on OnAttach == nil.
-		_ = inputSender.Send(vsockexec.ExecInputFrame{Type: "eof"})
 	}
 
 	commandStart := time.Now()

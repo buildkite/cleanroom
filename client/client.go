@@ -183,6 +183,20 @@ func (c *Client) CancelExecution(ctx context.Context, req *CancelExecutionReques
 	return c.inner.CancelExecution(ctx, req)
 }
 
+func (c *Client) WriteExecutionStdin(ctx context.Context, req *WriteExecutionStdinRequest) (*WriteExecutionStdinResponse, error) {
+	if c == nil || c.inner == nil {
+		return nil, errors.New("nil client")
+	}
+	return c.inner.WriteExecutionStdin(ctx, req)
+}
+
+func (c *Client) CloseExecutionStdin(ctx context.Context, req *CloseExecutionStdinRequest) (*CloseExecutionStdinResponse, error) {
+	if c == nil || c.inner == nil {
+		return nil, errors.New("nil client")
+	}
+	return c.inner.CloseExecutionStdin(ctx, req)
+}
+
 func (c *Client) StreamExecution(ctx context.Context, req *StreamExecutionRequest) (*connect.ServerStreamForClient[ExecutionStreamEvent], error) {
 	if c == nil || c.inner == nil {
 		return nil, errors.New("nil client")
