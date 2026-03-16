@@ -158,6 +158,8 @@ Then set:
 
 In `helper` mode, `scripts/ci-cleanroom-e2e.sh` and `cleanroom doctor` probe the installed helper with `version` and `capabilities` before running Firecracker checks. They do not compare helper file hashes and they do not self-update the helper from the checkout.
 
+Older helpers that predate the probe are treated as legacy helpers with the baseline network/rootfs capability set. Branches only fail when they require a newer privileged capability, such as the ZFS helper surface.
+
 If a branch needs a new privileged helper capability, roll out the updated helper on the CI host first, then rerun the branch. The normal path is:
 
 1. Merge the helper change to `main`.

@@ -50,8 +50,11 @@ func TestCiCleanroomE2EProbesHelperCapabilitiesInsteadOfHelperDrift(t *testing.T
 	script := string(content)
 	for _, needle := range []string{
 		"ROOT_HELPER_REQUIRED_CAPABILITIES=(",
+		"ROOT_HELPER_LEGACY_CAPABILITIES=(",
 		"sudo -n \"$PRIVILEGED_HELPER_PATH\" capabilities",
 		"verify_helper_capabilities",
+		"unsupported command 'capabilities'",
+		"assuming baseline helper capabilities",
 		"Roll out the latest helper on the CI host",
 	} {
 		if !strings.Contains(script, needle) {

@@ -146,6 +146,62 @@ func TestRunRootCommandOutputHelperModeInvokesHelper(t *testing.T) {
 	}
 }
 
+func TestHelperCapabilitiesFallsBackToLegacyWhenProbeUnsupported(t *testing.T) {
+	tmpDir := t.TempDir()
+	sudoLogPath := filepath.Join(tmpDir, "sudo.log")
+	helperPath := filepath.Join(tmpDir, "cleanroom-root-helper")
+	setupFakeSudo(t, sudoLogPath)
+
+	helperScript := "#!/bin/sh\nset -eu\necho \"cleanroom-root-helper: unsupported command 'capabilities'\" >&2\nexit 2\n"
+	if err := os.WriteFile(helperPath, []byte(helperScript), 0o755); err != nil {
+		t.Fatalf("write helper script: %v", err)
+	}
+
+	cfg := backend.FirecrackerConfig{
+		PrivilegedMode:       privilegedModeHelper,
+		PrivilegedHelperPath: helperPath,
+	}
+
+	caps, legacy, err := helperCapabilities(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("helperCapabilities: %v", err)
+	}
+	if !legacy {
+		t.Fatal("expected helperCapabilities to report legacy fallback")
+	}
+	if got, want := strings.Join(caps, ","), strings.Join(helperLegacyCapabilities(), ","); got != want {
+		t.Fatalf("unexpected legacy helper capabilities: got %v want %v", caps, helperLegacyCapabilities())
+	}
+}
+
+func TestHelperVersionFallsBackToLegacyWhenProbeUnsupported(t *testing.T) {
+	tmpDir := t.TempDir()
+	sudoLogPath := filepath.Join(tmpDir, "sudo.log")
+	helperPath := filepath.Join(tmpDir, "cleanroom-root-helper")
+	setupFakeSudo(t, sudoLogPath)
+
+	helperScript := "#!/bin/sh\nset -eu\necho \"cleanroom-root-helper: unsupported command 'version'\" >&2\nexit 2\n"
+	if err := os.WriteFile(helperPath, []byte(helperScript), 0o755); err != nil {
+		t.Fatalf("write helper script: %v", err)
+	}
+
+	cfg := backend.FirecrackerConfig{
+		PrivilegedMode:       privilegedModeHelper,
+		PrivilegedHelperPath: helperPath,
+	}
+
+	version, legacy, err := helperVersion(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("helperVersion: %v", err)
+	}
+	if !legacy {
+		t.Fatal("expected helperVersion to report legacy fallback")
+	}
+	if got, want := version, legacyHelperContractVersion; got != want {
+		t.Fatalf("unexpected legacy helper version: got %q want %q", got, want)
+	}
+}
+
 func TestResolvePrivilegedExecutionDefaultsToSudo(t *testing.T) {
 	t.Parallel()
 
@@ -161,10 +217,7 @@ func TestResolvePrivilegedExecutionDefaultsToSudo(t *testing.T) {
 func TestHelperRequiredCapabilitiesIncludesZFSWhenConfigured(t *testing.T) {
 	t.Parallel()
 
-	if got, want := helperRequiredCapabilities(backend.FirecrackerConfig{}), []string{
-		helperCapabilityFirecrackerNetwork,
-		helperCapabilityFirecrackerRootFS,
-	}; strings.Join(got, ",") != strings.Join(want, ",") {
+	if got, want := helperRequiredCapabilities(backend.FirecrackerConfig{}), helperLegacyCapabilities(); strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("unexpected default helper capabilities: got %v want %v", got, want)
 	}
 

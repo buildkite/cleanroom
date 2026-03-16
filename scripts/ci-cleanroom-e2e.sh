@@ -11,6 +11,11 @@ ROOT_HELPER_REQUIRED_CAPABILITIES=(
   firecracker-rootfs
 )
 
+ROOT_HELPER_LEGACY_CAPABILITIES=(
+  firecracker-network
+  firecracker-rootfs
+)
+
 if [[ -z "$KERNEL_IMAGE" ]]; then
   echo "CLEANROOM_KERNEL_IMAGE is required for Firecracker e2e CI" >&2
   exit 1
@@ -64,12 +69,17 @@ verify_helper_capabilities() {
 
   local capabilities
   if ! capabilities="$(sudo -n "$PRIVILEGED_HELPER_PATH" capabilities 2>&1)"; then
-    echo "⚠️  Root helper capability probe failed via $PRIVILEGED_HELPER_PATH" >&2
-    echo "   $capabilities" >&2
-    annotate_root_helper_problem \
-      "### ❌ Root helper is too old" \
-      "The installed root helper (\`$PRIVILEGED_HELPER_PATH\`) does not support the capability probe required by this branch.\n\nRoll out the latest helper on the CI host, for example by rerunning \`scripts/bootstrap-buildkite-agent.sh\`, and then rerun the build."
-    return 1
+    if grep -Fq "unsupported command 'capabilities'" <<<"$capabilities"; then
+      echo "⚠️  Legacy root helper detected at $PRIVILEGED_HELPER_PATH; assuming baseline helper capabilities" >&2
+      capabilities="$(printf '%s\n' "${ROOT_HELPER_LEGACY_CAPABILITIES[@]}")"
+    else
+      echo "⚠️  Root helper capability probe failed via $PRIVILEGED_HELPER_PATH" >&2
+      echo "   $capabilities" >&2
+      annotate_root_helper_problem \
+        "### ❌ Root helper capability probe failed" \
+        "The installed root helper (\`$PRIVILEGED_HELPER_PATH\`) could not be queried for capabilities.\n\nRoll out the latest helper on the CI host, for example by rerunning \`scripts/bootstrap-buildkite-agent.sh\`, and then rerun the build."
+      return 1
+    fi
   fi
 
   local missing=()

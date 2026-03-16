@@ -99,6 +99,7 @@ const preparedRuntimeRootFSVersion = "v1"
 const privilegedModeSudo = "sudo"
 const privilegedModeHelper = "helper"
 const defaultPrivilegedHelperPath = "/usr/local/sbin/cleanroom-root-helper"
+const legacyHelperContractVersion = "legacy"
 const helperCapabilityFirecrackerNetwork = "firecracker-network"
 const helperCapabilityFirecrackerRootFS = "firecracker-rootfs"
 const helperCapabilityFirecrackerZFS = "firecracker-zfs"
@@ -750,14 +751,16 @@ func (a *Adapter) Doctor(_ context.Context, req backend.DoctorRequest) (*backend
 		} else {
 			appendCheck("network_helper", "pass", fmt.Sprintf("using privileged helper %q", privilegedHelperPath))
 
-			version, err := helperVersion(context.Background(), req.FirecrackerConfig)
+			version, legacyVersion, err := helperVersion(context.Background(), req.FirecrackerConfig)
 			if err != nil {
 				appendCheck("network_helper_version", "warn", fmt.Sprintf("privileged helper version probe failed: %v", err))
+			} else if legacyVersion {
+				appendCheck("network_helper_version", "warn", fmt.Sprintf("helper does not expose version; treating host helper as %s", legacyHelperContractVersion))
 			} else {
 				appendCheck("network_helper_version", "pass", fmt.Sprintf("helper contract version %s", version))
 			}
 
-			caps, err := helperCapabilities(context.Background(), req.FirecrackerConfig)
+			caps, legacyCaps, err := helperCapabilities(context.Background(), req.FirecrackerConfig)
 			if err != nil {
 				appendCheck("network_helper_capabilities", "fail", fmt.Sprintf("privileged helper capability probe failed: %v", err))
 			} else {
@@ -765,6 +768,8 @@ func (a *Adapter) Doctor(_ context.Context, req backend.DoctorRequest) (*backend
 				missingCaps := helperMissingCapabilities(caps, requiredCaps)
 				if len(missingCaps) > 0 {
 					appendCheck("network_helper_capabilities", "fail", fmt.Sprintf("helper is missing required capabilities: %s (have: %s)", strings.Join(missingCaps, ", "), strings.Join(caps, ", ")))
+				} else if legacyCaps {
+					appendCheck("network_helper_capabilities", "warn", fmt.Sprintf("helper does not expose capabilities; assuming legacy capabilities: %s", strings.Join(caps, ", ")))
 				} else {
 					appendCheck("network_helper_capabilities", "pass", fmt.Sprintf("helper capabilities: %s", strings.Join(caps, ", ")))
 				}
@@ -2222,6 +2227,13 @@ func helperRequiredCapabilities(cfg backend.FirecrackerConfig) []string {
 	return required
 }
 
+func helperLegacyCapabilities() []string {
+	return []string{
+		helperCapabilityFirecrackerNetwork,
+		helperCapabilityFirecrackerRootFS,
+	}
+}
+
 func helperMissingCapabilities(have, required []string) []string {
 	seen := make(map[string]struct{}, len(have))
 	for _, cap := range have {
@@ -2241,10 +2253,13 @@ func helperMissingCapabilities(have, required []string) []string {
 	return missing
 }
 
-func helperCapabilities(ctx context.Context, cfg backend.FirecrackerConfig) ([]string, error) {
+func helperCapabilities(ctx context.Context, cfg backend.FirecrackerConfig) ([]string, bool, error) {
 	out, err := runRootCommandOutput(ctx, cfg, "capabilities")
 	if err != nil {
-		return nil, err
+		if helperProbeUnsupported(err, "capabilities") {
+			return helperLegacyCapabilities(), true, nil
+		}
+		return nil, false, err
 	}
 
 	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
@@ -2261,15 +2276,25 @@ func helperCapabilities(ctx context.Context, cfg backend.FirecrackerConfig) ([]s
 		seen[cap] = struct{}{}
 		caps = append(caps, cap)
 	}
-	return caps, nil
+	return caps, false, nil
 }
 
-func helperVersion(ctx context.Context, cfg backend.FirecrackerConfig) (string, error) {
+func helperVersion(ctx context.Context, cfg backend.FirecrackerConfig) (string, bool, error) {
 	out, err := runRootCommandOutput(ctx, cfg, "version")
 	if err != nil {
-		return "", err
+		if helperProbeUnsupported(err, "version") {
+			return legacyHelperContractVersion, true, nil
+		}
+		return "", false, err
 	}
-	return strings.TrimSpace(string(out)), nil
+	return strings.TrimSpace(string(out)), false, nil
+}
+
+func helperProbeUnsupported(err error, command string) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), fmt.Sprintf("unsupported command '%s'", command))
 }
 
 func logRunNotice(backendName, runID, notice string) {
