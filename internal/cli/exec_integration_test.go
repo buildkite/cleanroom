@@ -359,9 +359,10 @@ func runWithCapture(runFn func(*runtimeContext) error, stdinData *string, ctx ru
 }
 
 func runExecWithCapture(cmd ExecCommand, ctx runtimeContext) execOutcome {
+	emptyStdin := ""
 	return runWithCapture(func(runCtx *runtimeContext) error {
 		return cmd.Run(runCtx)
-	}, nil, ctx)
+	}, &emptyStdin, ctx)
 }
 
 func withTestSignalChannel(t *testing.T) chan os.Signal {
@@ -490,6 +491,153 @@ func TestExecIntegrationStreamsOutput(t *testing.T) {
 	}
 	if strings.Index(outcome.stdout, "one\n") > strings.Index(outcome.stdout, "two\n") {
 		t.Fatalf("expected ordered stdout chunks, got %q", outcome.stdout)
+	}
+}
+
+func TestExecIntegrationForwardsStdinByDefault(t *testing.T) {
+	var (
+		mu          sync.Mutex
+		stdinBuffer strings.Builder
+	)
+	stdinClosed := make(chan struct{}, 1)
+	adapter := &integrationAdapter{
+		runStreamFn: func(_ context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+			if stream.OnAttach != nil {
+				stream.OnAttach(backend.AttachIO{
+					WriteStdin: func(data []byte) error {
+						mu.Lock()
+						_, _ = stdinBuffer.Write(data)
+						mu.Unlock()
+						return nil
+					},
+					CloseStdin: func() error {
+						select {
+						case stdinClosed <- struct{}{}:
+						default:
+						}
+						return nil
+					},
+				})
+			}
+			select {
+			case <-stdinClosed:
+			case <-time.After(2 * time.Second):
+				return nil, errors.New("timed out waiting for stdin close")
+			}
+
+			mu.Lock()
+			gotStdin := stdinBuffer.String()
+			mu.Unlock()
+			output := "stdin:" + gotStdin
+			if stream.OnStdout != nil {
+				stream.OnStdout([]byte(output))
+			}
+			return &backend.RunResult{
+				RunID:    req.RunID,
+				ExitCode: 0,
+				Stdout:   output,
+				Message:  "ok",
+			}, nil
+		},
+	}
+
+	host, _ := startIntegrationServer(t, adapter)
+	cwd := t.TempDir()
+	stdinData := "hello from stdin\n"
+	cmd := ExecCommand{
+		clientFlags: clientFlags{Host: host},
+		Chdir:       cwd,
+		Command:     []string{"cat"},
+	}
+	outcome := runWithCapture(func(runCtx *runtimeContext) error {
+		return cmd.Run(runCtx)
+	}, &stdinData, runtimeContext{
+		CWD:    cwd,
+		Loader: integrationLoader{},
+	})
+
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err != nil {
+		t.Fatalf("ExecCommand.Run returned error: %v", outcome.err)
+	}
+	if got, want := outcome.stdout, "stdin:"+stdinData; got != want {
+		t.Fatalf("unexpected stdout: got %q want %q", got, want)
+	}
+	mu.Lock()
+	gotStdin := stdinBuffer.String()
+	mu.Unlock()
+	if gotStdin != stdinData {
+		t.Fatalf("unexpected stdin forwarded to backend: got %q want %q", gotStdin, stdinData)
+	}
+}
+
+func TestExecIntegrationNoStdinClosesImmediately(t *testing.T) {
+	stdinWrites := make(chan string, 1)
+	stdinClosed := make(chan struct{}, 1)
+	adapter := &integrationAdapter{
+		runStreamFn: func(_ context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+			if stream.OnAttach != nil {
+				stream.OnAttach(backend.AttachIO{
+					WriteStdin: func(data []byte) error {
+						select {
+						case stdinWrites <- string(data):
+						default:
+						}
+						return nil
+					},
+					CloseStdin: func() error {
+						select {
+						case stdinClosed <- struct{}{}:
+						default:
+						}
+						return nil
+					},
+				})
+			}
+			select {
+			case <-stdinClosed:
+			case <-time.After(2 * time.Second):
+				return nil, errors.New("timed out waiting for stdin close")
+			}
+			if stream.OnStdout != nil {
+				stream.OnStdout([]byte("closed\n"))
+			}
+			return &backend.RunResult{
+				RunID:    req.RunID,
+				ExitCode: 0,
+				Stdout:   "closed\n",
+				Message:  "ok",
+			}, nil
+		},
+	}
+
+	host, _ := startIntegrationServer(t, adapter)
+	cwd := t.TempDir()
+	outcome := runExecWithCapture(ExecCommand{
+		clientFlags: clientFlags{Host: host},
+		Chdir:       cwd,
+		NoStdin:     true,
+		Command:     []string{"cat"},
+	}, runtimeContext{
+		CWD:    cwd,
+		Loader: integrationLoader{},
+	})
+
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err != nil {
+		t.Fatalf("ExecCommand.Run returned error: %v", outcome.err)
+	}
+	if got := outcome.stdout; got != "closed\n" {
+		t.Fatalf("unexpected stdout: got %q want %q", got, "closed\n")
+	}
+	select {
+	case got := <-stdinWrites:
+		t.Fatalf("expected no stdin writes, got %q", got)
+	default:
 	}
 }
 

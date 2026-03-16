@@ -91,6 +91,84 @@ func getFinalExecutionExitCode(client *controlclient.Client, sandboxID, executio
 	return int(execution.GetExitCode()), true
 }
 
+func startExecutionStdinForwarder(
+	client *controlclient.Client,
+	sandboxID, executionID string,
+	closeImmediately bool,
+) <-chan error {
+	errCh := make(chan error, 1)
+	go func() {
+		defer close(errCh)
+		if client == nil || strings.TrimSpace(sandboxID) == "" || strings.TrimSpace(executionID) == "" {
+			return
+		}
+
+		if closeImmediately {
+			if err := closeExecutionStdin(client, sandboxID, executionID); err != nil {
+				errCh <- err
+			}
+			return
+		}
+
+		buf := make([]byte, 4096)
+		sentInput := false
+		for {
+			n, readErr := os.Stdin.Read(buf)
+			if n > 0 {
+				sentInput = true
+				if _, err := client.WriteExecutionStdin(context.Background(), &cleanroomv1.WriteExecutionStdinRequest{
+					SandboxId:   sandboxID,
+					ExecutionId: executionID,
+					Data:        append([]byte(nil), buf[:n]...),
+				}); err != nil {
+					if isExecutionStdinUnsupportedErr(err) && !sentInput {
+						return
+					}
+					errCh <- fmt.Errorf("write execution stdin: %w", err)
+					return
+				}
+			}
+			if readErr != nil {
+				if err := closeExecutionStdin(client, sandboxID, executionID); err != nil &&
+					!(isExecutionStdinUnsupportedErr(err) && !sentInput) {
+					errCh <- err
+				}
+				return
+			}
+		}
+	}()
+	return errCh
+}
+
+func closeExecutionStdin(client *controlclient.Client, sandboxID, executionID string) error {
+	_, err := client.CloseExecutionStdin(context.Background(), &cleanroomv1.CloseExecutionStdinRequest{
+		SandboxId:   sandboxID,
+		ExecutionId: executionID,
+	})
+	if isBenignExecutionStdinErr(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("close execution stdin: %w", err)
+	}
+	return nil
+}
+
+func pollExecutionStdinErr(errCh <-chan error) error {
+	if errCh == nil {
+		return nil
+	}
+	select {
+	case err, ok := <-errCh:
+		if !ok {
+			return nil
+		}
+		return err
+	default:
+		return nil
+	}
+}
+
 func writeExecutionWarning(stderr io.Writer, message string) error {
 	message = strings.TrimSpace(message)
 	if stderr == nil || message == "" {
@@ -185,6 +263,24 @@ func isExecutionNoLongerActiveErr(err error) bool {
 		return false
 	}
 	return strings.Contains(strings.ToLower(err.Error()), "no longer active")
+}
+
+func isExecutionNotRunningErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "execution is not running")
+}
+
+func isExecutionStdinUnsupportedErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "stdin attach is not supported")
+}
+
+func isBenignExecutionStdinErr(err error) bool {
+	return err == nil || isCanceledStreamErr(err) || isExecutionNoLongerActiveErr(err) || isExecutionNotRunningErr(err)
 }
 
 func isInteractiveStreamClosedErr(err error) bool {

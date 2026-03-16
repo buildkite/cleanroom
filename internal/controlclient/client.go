@@ -207,6 +207,22 @@ func (c *Client) CancelExecution(ctx context.Context, req *cleanroomv1.CancelExe
 	return resp.Msg, nil
 }
 
+func (c *Client) WriteExecutionStdin(ctx context.Context, req *cleanroomv1.WriteExecutionStdinRequest) (*cleanroomv1.WriteExecutionStdinResponse, error) {
+	resp, err := c.executionClient.WriteExecutionStdin(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
+func (c *Client) CloseExecutionStdin(ctx context.Context, req *cleanroomv1.CloseExecutionStdinRequest) (*cleanroomv1.CloseExecutionStdinResponse, error) {
+	resp, err := c.executionClient.CloseExecutionStdin(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
 func (c *Client) StreamExecution(ctx context.Context, req *cleanroomv1.StreamExecutionRequest) (*connect.ServerStreamForClient[cleanroomv1.ExecutionStreamEvent], error) {
 	return c.executionClient.StreamExecution(ctx, connect.NewRequest(req))
 }

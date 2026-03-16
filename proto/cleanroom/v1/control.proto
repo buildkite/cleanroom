@@ -27,6 +27,8 @@ service ExecutionService {
   rpc OpenInteractiveExecution(OpenInteractiveExecutionRequest) returns (OpenInteractiveExecutionResponse);
   rpc GetExecution(GetExecutionRequest) returns (GetExecutionResponse);
   rpc CancelExecution(CancelExecutionRequest) returns (CancelExecutionResponse);
+  rpc WriteExecutionStdin(WriteExecutionStdinRequest) returns (WriteExecutionStdinResponse);
+  rpc CloseExecutionStdin(CloseExecutionStdinRequest) returns (CloseExecutionStdinResponse);
   rpc StreamExecution(StreamExecutionRequest) returns (stream ExecutionStreamEvent);
 }
 
@@ -285,6 +287,21 @@ message CancelExecutionResponse {
   bool accepted = 3;
   ExecutionStatus status = 4;
 }
+
+message WriteExecutionStdinRequest {
+  string sandbox_id = 1;
+  string execution_id = 2;
+  bytes data = 3;
+}
+
+message WriteExecutionStdinResponse {}
+
+message CloseExecutionStdinRequest {
+  string sandbox_id = 1;
+  string execution_id = 2;
+}
+
+message CloseExecutionStdinResponse {}
 
 message StreamExecutionRequest {
   string sandbox_id = 1;

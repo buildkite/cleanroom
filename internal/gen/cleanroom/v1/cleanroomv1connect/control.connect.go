@@ -79,6 +79,12 @@ const (
 	// ExecutionServiceCancelExecutionProcedure is the fully-qualified name of the ExecutionService's
 	// CancelExecution RPC.
 	ExecutionServiceCancelExecutionProcedure = "/cleanroom.v1.ExecutionService/CancelExecution"
+	// ExecutionServiceWriteExecutionStdinProcedure is the fully-qualified name of the
+	// ExecutionService's WriteExecutionStdin RPC.
+	ExecutionServiceWriteExecutionStdinProcedure = "/cleanroom.v1.ExecutionService/WriteExecutionStdin"
+	// ExecutionServiceCloseExecutionStdinProcedure is the fully-qualified name of the
+	// ExecutionService's CloseExecutionStdin RPC.
+	ExecutionServiceCloseExecutionStdinProcedure = "/cleanroom.v1.ExecutionService/CloseExecutionStdin"
 	// ExecutionServiceStreamExecutionProcedure is the fully-qualified name of the ExecutionService's
 	// StreamExecution RPC.
 	ExecutionServiceStreamExecutionProcedure = "/cleanroom.v1.ExecutionService/StreamExecution"
@@ -438,6 +444,8 @@ type ExecutionServiceClient interface {
 	OpenInteractiveExecution(context.Context, *connect.Request[v1.OpenInteractiveExecutionRequest]) (*connect.Response[v1.OpenInteractiveExecutionResponse], error)
 	GetExecution(context.Context, *connect.Request[v1.GetExecutionRequest]) (*connect.Response[v1.GetExecutionResponse], error)
 	CancelExecution(context.Context, *connect.Request[v1.CancelExecutionRequest]) (*connect.Response[v1.CancelExecutionResponse], error)
+	WriteExecutionStdin(context.Context, *connect.Request[v1.WriteExecutionStdinRequest]) (*connect.Response[v1.WriteExecutionStdinResponse], error)
+	CloseExecutionStdin(context.Context, *connect.Request[v1.CloseExecutionStdinRequest]) (*connect.Response[v1.CloseExecutionStdinResponse], error)
 	StreamExecution(context.Context, *connect.Request[v1.StreamExecutionRequest]) (*connect.ServerStreamForClient[v1.ExecutionStreamEvent], error)
 }
 
@@ -476,6 +484,18 @@ func NewExecutionServiceClient(httpClient connect.HTTPClient, baseURL string, op
 			connect.WithSchema(executionServiceMethods.ByName("CancelExecution")),
 			connect.WithClientOptions(opts...),
 		),
+		writeExecutionStdin: connect.NewClient[v1.WriteExecutionStdinRequest, v1.WriteExecutionStdinResponse](
+			httpClient,
+			baseURL+ExecutionServiceWriteExecutionStdinProcedure,
+			connect.WithSchema(executionServiceMethods.ByName("WriteExecutionStdin")),
+			connect.WithClientOptions(opts...),
+		),
+		closeExecutionStdin: connect.NewClient[v1.CloseExecutionStdinRequest, v1.CloseExecutionStdinResponse](
+			httpClient,
+			baseURL+ExecutionServiceCloseExecutionStdinProcedure,
+			connect.WithSchema(executionServiceMethods.ByName("CloseExecutionStdin")),
+			connect.WithClientOptions(opts...),
+		),
 		streamExecution: connect.NewClient[v1.StreamExecutionRequest, v1.ExecutionStreamEvent](
 			httpClient,
 			baseURL+ExecutionServiceStreamExecutionProcedure,
@@ -491,6 +511,8 @@ type executionServiceClient struct {
 	openInteractiveExecution *connect.Client[v1.OpenInteractiveExecutionRequest, v1.OpenInteractiveExecutionResponse]
 	getExecution             *connect.Client[v1.GetExecutionRequest, v1.GetExecutionResponse]
 	cancelExecution          *connect.Client[v1.CancelExecutionRequest, v1.CancelExecutionResponse]
+	writeExecutionStdin      *connect.Client[v1.WriteExecutionStdinRequest, v1.WriteExecutionStdinResponse]
+	closeExecutionStdin      *connect.Client[v1.CloseExecutionStdinRequest, v1.CloseExecutionStdinResponse]
 	streamExecution          *connect.Client[v1.StreamExecutionRequest, v1.ExecutionStreamEvent]
 }
 
@@ -514,6 +536,16 @@ func (c *executionServiceClient) CancelExecution(ctx context.Context, req *conne
 	return c.cancelExecution.CallUnary(ctx, req)
 }
 
+// WriteExecutionStdin calls cleanroom.v1.ExecutionService.WriteExecutionStdin.
+func (c *executionServiceClient) WriteExecutionStdin(ctx context.Context, req *connect.Request[v1.WriteExecutionStdinRequest]) (*connect.Response[v1.WriteExecutionStdinResponse], error) {
+	return c.writeExecutionStdin.CallUnary(ctx, req)
+}
+
+// CloseExecutionStdin calls cleanroom.v1.ExecutionService.CloseExecutionStdin.
+func (c *executionServiceClient) CloseExecutionStdin(ctx context.Context, req *connect.Request[v1.CloseExecutionStdinRequest]) (*connect.Response[v1.CloseExecutionStdinResponse], error) {
+	return c.closeExecutionStdin.CallUnary(ctx, req)
+}
+
 // StreamExecution calls cleanroom.v1.ExecutionService.StreamExecution.
 func (c *executionServiceClient) StreamExecution(ctx context.Context, req *connect.Request[v1.StreamExecutionRequest]) (*connect.ServerStreamForClient[v1.ExecutionStreamEvent], error) {
 	return c.streamExecution.CallServerStream(ctx, req)
@@ -525,6 +557,8 @@ type ExecutionServiceHandler interface {
 	OpenInteractiveExecution(context.Context, *connect.Request[v1.OpenInteractiveExecutionRequest]) (*connect.Response[v1.OpenInteractiveExecutionResponse], error)
 	GetExecution(context.Context, *connect.Request[v1.GetExecutionRequest]) (*connect.Response[v1.GetExecutionResponse], error)
 	CancelExecution(context.Context, *connect.Request[v1.CancelExecutionRequest]) (*connect.Response[v1.CancelExecutionResponse], error)
+	WriteExecutionStdin(context.Context, *connect.Request[v1.WriteExecutionStdinRequest]) (*connect.Response[v1.WriteExecutionStdinResponse], error)
+	CloseExecutionStdin(context.Context, *connect.Request[v1.CloseExecutionStdinRequest]) (*connect.Response[v1.CloseExecutionStdinResponse], error)
 	StreamExecution(context.Context, *connect.Request[v1.StreamExecutionRequest], *connect.ServerStream[v1.ExecutionStreamEvent]) error
 }
 
@@ -559,6 +593,18 @@ func NewExecutionServiceHandler(svc ExecutionServiceHandler, opts ...connect.Han
 		connect.WithSchema(executionServiceMethods.ByName("CancelExecution")),
 		connect.WithHandlerOptions(opts...),
 	)
+	executionServiceWriteExecutionStdinHandler := connect.NewUnaryHandler(
+		ExecutionServiceWriteExecutionStdinProcedure,
+		svc.WriteExecutionStdin,
+		connect.WithSchema(executionServiceMethods.ByName("WriteExecutionStdin")),
+		connect.WithHandlerOptions(opts...),
+	)
+	executionServiceCloseExecutionStdinHandler := connect.NewUnaryHandler(
+		ExecutionServiceCloseExecutionStdinProcedure,
+		svc.CloseExecutionStdin,
+		connect.WithSchema(executionServiceMethods.ByName("CloseExecutionStdin")),
+		connect.WithHandlerOptions(opts...),
+	)
 	executionServiceStreamExecutionHandler := connect.NewServerStreamHandler(
 		ExecutionServiceStreamExecutionProcedure,
 		svc.StreamExecution,
@@ -575,6 +621,10 @@ func NewExecutionServiceHandler(svc ExecutionServiceHandler, opts ...connect.Han
 			executionServiceGetExecutionHandler.ServeHTTP(w, r)
 		case ExecutionServiceCancelExecutionProcedure:
 			executionServiceCancelExecutionHandler.ServeHTTP(w, r)
+		case ExecutionServiceWriteExecutionStdinProcedure:
+			executionServiceWriteExecutionStdinHandler.ServeHTTP(w, r)
+		case ExecutionServiceCloseExecutionStdinProcedure:
+			executionServiceCloseExecutionStdinHandler.ServeHTTP(w, r)
 		case ExecutionServiceStreamExecutionProcedure:
 			executionServiceStreamExecutionHandler.ServeHTTP(w, r)
 		default:
@@ -600,6 +650,14 @@ func (UnimplementedExecutionServiceHandler) GetExecution(context.Context, *conne
 
 func (UnimplementedExecutionServiceHandler) CancelExecution(context.Context, *connect.Request[v1.CancelExecutionRequest]) (*connect.Response[v1.CancelExecutionResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cleanroom.v1.ExecutionService.CancelExecution is not implemented"))
+}
+
+func (UnimplementedExecutionServiceHandler) WriteExecutionStdin(context.Context, *connect.Request[v1.WriteExecutionStdinRequest]) (*connect.Response[v1.WriteExecutionStdinResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cleanroom.v1.ExecutionService.WriteExecutionStdin is not implemented"))
+}
+
+func (UnimplementedExecutionServiceHandler) CloseExecutionStdin(context.Context, *connect.Request[v1.CloseExecutionStdinRequest]) (*connect.Response[v1.CloseExecutionStdinResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cleanroom.v1.ExecutionService.CloseExecutionStdin is not implemented"))
 }
 
 func (UnimplementedExecutionServiceHandler) StreamExecution(context.Context, *connect.Request[v1.StreamExecutionRequest], *connect.ServerStream[v1.ExecutionStreamEvent]) error {

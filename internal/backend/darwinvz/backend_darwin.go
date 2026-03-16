@@ -988,13 +988,13 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 			WriteStdin: func(data []byte) error {
 				return inputSender.Send(vsockexec.ExecInputFrame{Type: "stdin", Data: data})
 			},
+			CloseStdin: func() error {
+				return inputSender.Send(vsockexec.ExecInputFrame{Type: "eof"})
+			},
 			ResizeTTY: func(cols, rows uint32) error {
 				return inputSender.Send(vsockexec.ExecInputFrame{Type: "resize", Cols: cols, Rows: rows})
 			},
 		})
-	}
-	if !req.TTY {
-		_ = inputSender.Send(vsockexec.ExecInputFrame{Type: "eof"})
 	}
 
 	guestRes, err := vsockexec.DecodeStreamResponse(conn, vsockexec.StreamCallbacks{
@@ -1380,13 +1380,13 @@ func (a *Adapter) executeInSandbox(bootCtx context.Context, runCtx context.Conte
 			WriteStdin: func(data []byte) error {
 				return inputSender.Send(vsockexec.ExecInputFrame{Type: "stdin", Data: data})
 			},
+			CloseStdin: func() error {
+				return inputSender.Send(vsockexec.ExecInputFrame{Type: "eof"})
+			},
 			ResizeTTY: func(cols, rows uint32) error {
 				return inputSender.Send(vsockexec.ExecInputFrame{Type: "resize", Cols: cols, Rows: rows})
 			},
 		})
-	}
-	if !req.TTY {
-		_ = inputSender.Send(vsockexec.ExecInputFrame{Type: "eof"})
 	}
 
 	guestRes, err := vsockexec.DecodeStreamResponse(conn, vsockexec.StreamCallbacks{

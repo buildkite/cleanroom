@@ -63,33 +63,34 @@ type sandboxState struct {
 }
 
 type executionState struct {
-	ID              string
-	SandboxID       string
-	RunID           string
-	ImageRef        string
-	ImageDigest     string
-	Command         []string
-	Options         executionOptions
-	TTY             bool
-	Kind            cleanroomv1.ExecutionKind
-	Status          cleanroomv1.ExecutionStatus
-	ExitCode        int32
-	StartedAt       *time.Time
-	FinishedAt      *time.Time
-	Message         string
-	Stdout          string
-	Stderr          string
-	LaunchedVM      bool
-	PlanPath        string
-	RunDir          string
-	CancelRequested bool
-	CancelSignal    int32
-	Cancel          context.CancelFunc
-	AttachStdin     func([]byte) error
-	AttachResize    func(cols, rows uint32) error
-	events          eventFeed[*cleanroomv1.ExecutionStreamEvent]
-	Done            chan struct{}
-	DoneClosed      bool
+	ID               string
+	SandboxID        string
+	RunID            string
+	ImageRef         string
+	ImageDigest      string
+	Command          []string
+	Options          executionOptions
+	TTY              bool
+	Kind             cleanroomv1.ExecutionKind
+	Status           cleanroomv1.ExecutionStatus
+	ExitCode         int32
+	StartedAt        *time.Time
+	FinishedAt       *time.Time
+	Message          string
+	Stdout           string
+	Stderr           string
+	LaunchedVM       bool
+	PlanPath         string
+	RunDir           string
+	CancelRequested  bool
+	CancelSignal     int32
+	Cancel           context.CancelFunc
+	AttachStdin      func([]byte) error
+	AttachCloseStdin func() error
+	AttachResize     func(cols, rows uint32) error
+	events           eventFeed[*cleanroomv1.ExecutionStreamEvent]
+	Done             chan struct{}
+	DoneClosed       bool
 }
 
 type interactiveSessionState struct {
@@ -1205,6 +1206,50 @@ func (s *Service) WriteExecutionStdin(sandboxID, executionID string, data []byte
 	}
 }
 
+func (s *Service) CloseExecutionStdin(sandboxID, executionID string) error {
+	sandboxID = strings.TrimSpace(sandboxID)
+	executionID = strings.TrimSpace(executionID)
+	if sandboxID == "" {
+		return errors.New("missing sandbox_id")
+	}
+	if executionID == "" {
+		return errors.New("missing execution_id")
+	}
+
+	clock := s.clock()
+	deadline := clock.Now().Add(s.timeouts().attachStdinRegistrationWait)
+	for {
+		var (
+			closeFn func() error
+			done    <-chan struct{}
+		)
+		s.mu.RLock()
+		ex, ok := s.executions[executionKey(sandboxID, executionID)]
+		if !ok {
+			s.mu.RUnlock()
+			return fmt.Errorf("unknown execution %q in sandbox %q", executionID, sandboxID)
+		}
+		if isFinalExecutionStatus(ex.Status) {
+			s.mu.RUnlock()
+			return errors.New("execution is not running")
+		}
+		closeFn = ex.AttachCloseStdin
+		done = ex.Done
+		s.mu.RUnlock()
+
+		if closeFn != nil {
+			return closeFn()
+		}
+		if clock.Now().After(deadline) {
+			return ErrExecutionStdinUnsupported
+		}
+		select {
+		case <-done:
+		case <-clock.After(s.timeouts().attachPollInterval):
+		}
+	}
+}
+
 func (s *Service) ResizeExecutionTTY(sandboxID, executionID string, cols, rows uint32) error {
 	sandboxID = strings.TrimSpace(sandboxID)
 	executionID = strings.TrimSpace(executionID)
@@ -1907,6 +1952,7 @@ func (s *Service) setExecutionAttachIO(key string, io backend.AttachIO) {
 		return
 	}
 	ex.AttachStdin = io.WriteStdin
+	ex.AttachCloseStdin = io.CloseStdin
 	ex.AttachResize = io.ResizeTTY
 }
 

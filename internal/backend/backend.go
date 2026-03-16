@@ -152,6 +152,7 @@ type DeleteSnapshotRequest struct {
 
 type AttachIO struct {
 	WriteStdin func([]byte) error
+	CloseStdin func() error
 	ResizeTTY  func(cols, rows uint32) error
 }
 
