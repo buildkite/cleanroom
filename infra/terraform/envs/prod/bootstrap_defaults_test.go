@@ -73,6 +73,8 @@ func TestProdBootstrapBuildsAndInstallsCleanroom(t *testing.T) {
 
 	scriptPath := filepath.Join("..", "..", "..", "..", "scripts", "bootstrap-cleanroom-host.sh")
 	requireContains(t, scriptPath, "scripts/build-go.sh")
+	requireContains(t, scriptPath, "export GOPATH=\"${GOPATH:-$HOME/go}\"")
+	requireContains(t, scriptPath, "export GOMODCACHE=\"${GOMODCACHE:-$GOPATH/pkg/mod}\"")
 	requireContains(t, scriptPath, "daemon install --force --log-level info")
 	requireContains(t, scriptPath, "default_backend: firecracker")
 	requireContains(t, scriptPath, "memory_mib: ${CLEANROOM_FIRECRACKER_MEMORY_MIB}")
@@ -118,4 +120,5 @@ func TestSharedLinuxModuleSupportsNonCiBootstrap(t *testing.T) {
 	requireContains(t, moduleVarsPath, "variable \"buildkite_token_parameter_name\"")
 	requireContains(t, moduleVarsPath, "default     = \"\"")
 	requireContains(t, moduleUserDataPath, "if [ -n \"$BUILDKITE_TOKEN_PARAM\" ]; then")
+	requireContains(t, moduleUserDataPath, "warning: tailscale auth key parameter unavailable")
 }
