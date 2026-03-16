@@ -64,6 +64,11 @@ description = "Install all binaries into GOBIN (or GOPATH/bin)"
 depends = ["install:go", "install:darwin"]
 run = "true"
 
+[tasks."install:global"]
+description = "Install all runtime binaries into /usr/local/bin"
+depends = ["build"]
+run = "scripts/install-global.sh"
+
 [tasks.doctor]
 description = "Run cleanroom diagnostics"
 run = "go run ./cmd/cleanroom doctor"

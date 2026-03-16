@@ -37,6 +37,12 @@ curl -fsSL https://raw.githubusercontent.com/buildkite/cleanroom/main/scripts/in
 
 By default this installs to `/usr/local/bin`. Override with `--install-dir` or `CLEANROOM_INSTALL_DIR`.
 
+Install the locally built binaries from this checkout into `/usr/local/bin`:
+
+```bash
+mise run install:global
+```
+
 ## Quick start
 
 Initialize runtime config and check host prerequisites:
