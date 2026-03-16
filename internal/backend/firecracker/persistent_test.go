@@ -76,6 +76,23 @@ func TestSandboxShutdownRemovesRunDir(t *testing.T) {
 	}
 }
 
+func TestSandboxShutdownInvokesCleanupVolume(t *testing.T) {
+	t.Parallel()
+
+	called := false
+	instance := &sandboxInstance{
+		RunDir: t.TempDir(),
+		cleanupVolume: func() {
+			called = true
+		},
+	}
+	instance.shutdown()
+
+	if !called {
+		t.Fatal("expected cleanupVolume to be invoked")
+	}
+}
+
 func TestRunInSandboxUsesRequestLaunchSecondsOverride(t *testing.T) {
 	t.Parallel()
 

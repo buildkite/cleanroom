@@ -52,6 +52,7 @@ type SnapshotConfig struct {
 	Enabled               bool   `yaml:"enabled"`
 	Driver                string `yaml:"driver"`
 	BaseDir               string `yaml:"base_dir,omitempty"`
+	ZFSDataset            string `yaml:"zfs_dataset,omitempty"`
 	QuiesceTimeoutSeconds int64  `yaml:"quiesce_timeout_seconds,omitempty"`
 }
 
@@ -92,6 +93,7 @@ func MergeBackendConfig(cfg Config, backendName string, launchSeconds int64) bac
 			Enabled:               cfg.Backends.Firecracker.Snapshots.Enabled,
 			Driver:                cfg.Backends.Firecracker.Snapshots.Driver,
 			BaseDir:               cfg.Backends.Firecracker.Snapshots.BaseDir,
+			ZFSDataset:            cfg.Backends.Firecracker.Snapshots.ZFSDataset,
 			QuiesceTimeoutSeconds: cfg.Backends.Firecracker.Snapshots.QuiesceTimeoutSeconds,
 		},
 		PrivilegedHelperPath: cfg.Backends.Firecracker.PrivilegedHelperPath,
@@ -111,6 +113,7 @@ func MergeBackendConfig(cfg Config, backendName string, launchSeconds int64) bac
 			Enabled:               cfg.Backends.DarwinVZ.Snapshots.Enabled,
 			Driver:                cfg.Backends.DarwinVZ.Snapshots.Driver,
 			BaseDir:               cfg.Backends.DarwinVZ.Snapshots.BaseDir,
+			ZFSDataset:            cfg.Backends.DarwinVZ.Snapshots.ZFSDataset,
 			QuiesceTimeoutSeconds: cfg.Backends.DarwinVZ.Snapshots.QuiesceTimeoutSeconds,
 		}
 		out.VCPUs = cfg.Backends.DarwinVZ.VCPUs
@@ -241,5 +244,6 @@ func snapshotConfigIsZero(cfg SnapshotConfig) bool {
 	return !cfg.Enabled &&
 		strings.TrimSpace(cfg.Driver) == "" &&
 		strings.TrimSpace(cfg.BaseDir) == "" &&
+		strings.TrimSpace(cfg.ZFSDataset) == "" &&
 		cfg.QuiesceTimeoutSeconds == 0
 }
