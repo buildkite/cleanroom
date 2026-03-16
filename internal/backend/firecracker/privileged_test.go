@@ -24,7 +24,7 @@ func setupFakeSudo(t *testing.T, logPath string) {
 	t.Setenv("PATH", tmpDir+":"+os.Getenv("PATH"))
 }
 
-func TestRunRootCommandHelperModeInvokesHelper(t *testing.T) {
+func TestRunRootCommandInvokesHelper(t *testing.T) {
 	tmpDir := t.TempDir()
 	sudoLogPath := filepath.Join(tmpDir, "sudo.log")
 	logPath := filepath.Join(tmpDir, "helper.log")
@@ -38,7 +38,6 @@ func TestRunRootCommandHelperModeInvokesHelper(t *testing.T) {
 	t.Setenv("HELPER_LOG_PATH", logPath)
 
 	cfg := backend.FirecrackerConfig{
-		PrivilegedMode:       privilegedModeHelper,
 		PrivilegedHelperPath: helperPath,
 	}
 
@@ -59,11 +58,11 @@ func TestRunRootCommandHelperModeInvokesHelper(t *testing.T) {
 		t.Fatalf("read sudo log: %v", err)
 	}
 	if got := strings.TrimSpace(string(sudoLogBytes)); !strings.HasPrefix(got, "-n "+helperPath+" ") {
-		t.Fatalf("expected helper mode to invoke helper via sudo, got %q", got)
+		t.Fatalf("expected helper invocation via sudo, got %q", got)
 	}
 }
 
-func TestRunRootCommandBatchHelperModeInvokesHelperPerCommand(t *testing.T) {
+func TestRunRootCommandBatchInvokesHelperPerCommand(t *testing.T) {
 	tmpDir := t.TempDir()
 	sudoLogPath := filepath.Join(tmpDir, "sudo.log")
 	logPath := filepath.Join(tmpDir, "helper.log")
@@ -77,7 +76,6 @@ func TestRunRootCommandBatchHelperModeInvokesHelperPerCommand(t *testing.T) {
 	t.Setenv("HELPER_LOG_PATH", logPath)
 
 	cfg := backend.FirecrackerConfig{
-		PrivilegedMode:       privilegedModeHelper,
 		PrivilegedHelperPath: helperPath,
 	}
 
@@ -111,7 +109,7 @@ func TestRunRootCommandBatchHelperModeInvokesHelperPerCommand(t *testing.T) {
 	}
 }
 
-func TestRunRootCommandOutputHelperModeInvokesHelper(t *testing.T) {
+func TestRunRootCommandOutputInvokesHelper(t *testing.T) {
 	tmpDir := t.TempDir()
 	sudoLogPath := filepath.Join(tmpDir, "sudo.log")
 	logPath := filepath.Join(tmpDir, "helper.log")
@@ -125,7 +123,6 @@ func TestRunRootCommandOutputHelperModeInvokesHelper(t *testing.T) {
 	t.Setenv("HELPER_LOG_PATH", logPath)
 
 	cfg := backend.FirecrackerConfig{
-		PrivilegedMode:       privilegedModeHelper,
 		PrivilegedHelperPath: helperPath,
 	}
 
@@ -146,7 +143,7 @@ func TestRunRootCommandOutputHelperModeInvokesHelper(t *testing.T) {
 	}
 }
 
-func TestHelperCapabilitiesFallsBackToLegacyWhenProbeUnsupported(t *testing.T) {
+func TestHelperCapabilitiesReturnsProbeError(t *testing.T) {
 	tmpDir := t.TempDir()
 	sudoLogPath := filepath.Join(tmpDir, "sudo.log")
 	helperPath := filepath.Join(tmpDir, "cleanroom-root-helper")
@@ -158,23 +155,19 @@ func TestHelperCapabilitiesFallsBackToLegacyWhenProbeUnsupported(t *testing.T) {
 	}
 
 	cfg := backend.FirecrackerConfig{
-		PrivilegedMode:       privilegedModeHelper,
 		PrivilegedHelperPath: helperPath,
 	}
 
-	caps, legacy, err := helperCapabilities(context.Background(), cfg)
-	if err != nil {
-		t.Fatalf("helperCapabilities: %v", err)
+	_, err := helperCapabilities(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("expected helperCapabilities to fail for unsupported probe")
 	}
-	if !legacy {
-		t.Fatal("expected helperCapabilities to report legacy fallback")
-	}
-	if got, want := strings.Join(caps, ","), strings.Join(helperLegacyCapabilities(), ","); got != want {
-		t.Fatalf("unexpected legacy helper capabilities: got %v want %v", caps, helperLegacyCapabilities())
+	if !strings.Contains(err.Error(), "unsupported command 'capabilities'") {
+		t.Fatalf("unexpected helperCapabilities error: %v", err)
 	}
 }
 
-func TestHelperVersionFallsBackToLegacyWhenProbeUnsupported(t *testing.T) {
+func TestHelperVersionReturnsProbeError(t *testing.T) {
 	tmpDir := t.TempDir()
 	sudoLogPath := filepath.Join(tmpDir, "sudo.log")
 	helperPath := filepath.Join(tmpDir, "cleanroom-root-helper")
@@ -186,30 +179,22 @@ func TestHelperVersionFallsBackToLegacyWhenProbeUnsupported(t *testing.T) {
 	}
 
 	cfg := backend.FirecrackerConfig{
-		PrivilegedMode:       privilegedModeHelper,
 		PrivilegedHelperPath: helperPath,
 	}
 
-	version, legacy, err := helperVersion(context.Background(), cfg)
-	if err != nil {
-		t.Fatalf("helperVersion: %v", err)
+	_, err := helperVersion(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("expected helperVersion to fail for unsupported probe")
 	}
-	if !legacy {
-		t.Fatal("expected helperVersion to report legacy fallback")
-	}
-	if got, want := version, legacyHelperContractVersion; got != want {
-		t.Fatalf("unexpected legacy helper version: got %q want %q", got, want)
+	if !strings.Contains(err.Error(), "unsupported command 'version'") {
+		t.Fatalf("unexpected helperVersion error: %v", err)
 	}
 }
 
-func TestResolvePrivilegedExecutionDefaultsToSudo(t *testing.T) {
+func TestResolvePrivilegedHelperPathDefaultsToInstalledPath(t *testing.T) {
 	t.Parallel()
 
-	mode, helperPath := resolvePrivilegedExecution(backend.FirecrackerConfig{})
-	if got, want := mode, privilegedModeSudo; got != want {
-		t.Fatalf("unexpected mode: got %q want %q", got, want)
-	}
-	if got, want := helperPath, defaultPrivilegedHelperPath; got != want {
+	if got, want := resolvePrivilegedHelperPath(backend.FirecrackerConfig{}), defaultPrivilegedHelperPath; got != want {
 		t.Fatalf("unexpected helper path: got %q want %q", got, want)
 	}
 }
@@ -217,14 +202,19 @@ func TestResolvePrivilegedExecutionDefaultsToSudo(t *testing.T) {
 func TestHelperRequiredCapabilitiesIncludesZFSWhenConfigured(t *testing.T) {
 	t.Parallel()
 
-	if got, want := helperRequiredCapabilities(backend.FirecrackerConfig{}), helperLegacyCapabilities(); strings.Join(got, ",") != strings.Join(want, ",") {
+	got := helperRequiredCapabilities(backend.FirecrackerConfig{})
+	want := []string{
+		helperCapabilityFirecrackerNetwork,
+		helperCapabilityFirecrackerRootFS,
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("unexpected default helper capabilities: got %v want %v", got, want)
 	}
 
-	got := helperRequiredCapabilities(backend.FirecrackerConfig{
+	got = helperRequiredCapabilities(backend.FirecrackerConfig{
 		Snapshots: backend.SnapshotConfig{Driver: "zfs"},
 	})
-	want := []string{
+	want = []string{
 		helperCapabilityFirecrackerNetwork,
 		helperCapabilityFirecrackerRootFS,
 		helperCapabilityFirecrackerZFS,

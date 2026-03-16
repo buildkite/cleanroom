@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestCiCleanroomE2EUsesNonInteractiveSudo(t *testing.T) {
+func TestCiCleanroomE2EUsesHelperViaNonInteractiveSudo(t *testing.T) {
 	t.Helper()
 
 	content, err := os.ReadFile("ci-cleanroom-e2e.sh")
@@ -16,12 +16,20 @@ func TestCiCleanroomE2EUsesNonInteractiveSudo(t *testing.T) {
 
 	script := string(content)
 	for _, needle := range []string{
-		"case \"${PRIVILEGED_MODE:-sudo}\" in",
+		"PRIVILEGED_HELPER_PATH=\"${CLEANROOM_PRIVILEGED_HELPER_PATH:-/usr/local/sbin/cleanroom-root-helper}\"",
 		"sudo -n \"$PRIVILEGED_HELPER_PATH\" \"$@\"",
-		"sudo -n \"$@\"",
 	} {
 		if !strings.Contains(script, needle) {
 			t.Fatalf("expected ci-cleanroom-e2e.sh to contain %q", needle)
+		}
+	}
+
+	for _, needle := range []string{
+		"CLEANROOM_PRIVILEGED_MODE",
+		"sudo -n \"$@\"",
+	} {
+		if strings.Contains(script, needle) {
+			t.Fatalf("expected ci-cleanroom-e2e.sh not to contain %q", needle)
 		}
 	}
 }
@@ -50,11 +58,8 @@ func TestCiCleanroomE2EProbesHelperCapabilitiesInsteadOfHelperDrift(t *testing.T
 	script := string(content)
 	for _, needle := range []string{
 		"ROOT_HELPER_REQUIRED_CAPABILITIES=(",
-		"ROOT_HELPER_LEGACY_CAPABILITIES=(",
 		"sudo -n \"$PRIVILEGED_HELPER_PATH\" capabilities",
 		"verify_helper_capabilities",
-		"unsupported command 'capabilities'",
-		"assuming baseline helper capabilities",
 		"Roll out the latest helper on the CI host",
 	} {
 		if !strings.Contains(script, needle) {
@@ -63,6 +68,9 @@ func TestCiCleanroomE2EProbesHelperCapabilitiesInsteadOfHelperDrift(t *testing.T
 	}
 
 	for _, needle := range []string{
+		"ROOT_HELPER_LEGACY_CAPABILITIES=(",
+		"unsupported command 'capabilities'",
+		"assuming baseline helper capabilities",
 		"sha256sum scripts/cleanroom-root-helper.sh",
 		"Update with: sudo install -o root -g root -m 0755 scripts/cleanroom-root-helper.sh",
 	} {

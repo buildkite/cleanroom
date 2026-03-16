@@ -296,7 +296,6 @@ func TestMergeBackendConfig(t *testing.T) {
 				RootFS:               "/firecracker/rootfs.ext4",
 				Services:             ServicesConfig{Docker: DockerServiceConfig{StartupTimeoutSeconds: 12, StorageDriver: "overlay2", IPTables: true}},
 				Snapshots:            SnapshotConfig{Enabled: true, Driver: "file", BaseDir: "/firecracker/snapshots", QuiesceTimeoutSeconds: 15},
-				PrivilegedMode:       "helper",
 				PrivilegedHelperPath: "/usr/local/bin/cleanroom-root-helper",
 				VCPUs:                2,
 				MemoryMiB:            1024,

@@ -129,7 +129,6 @@ func defaultRuntimeConfig(defaultBackend string) runtimeconfig.Config {
 					Enabled: false,
 					Driver:  "file",
 				},
-				PrivilegedMode:       "sudo",
 				PrivilegedHelperPath: "/usr/local/sbin/cleanroom-root-helper",
 				VCPUs:                2,
 				MemoryMiB:            1024,

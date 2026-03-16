@@ -3,15 +3,9 @@ set -euo pipefail
 
 KERNEL_IMAGE="${CLEANROOM_KERNEL_IMAGE:-}"
 FIRECRACKER_BINARY="${CLEANROOM_FIRECRACKER_BINARY:-firecracker}"
-PRIVILEGED_MODE="${CLEANROOM_PRIVILEGED_MODE:-}"
-PRIVILEGED_HELPER_PATH="${CLEANROOM_PRIVILEGED_HELPER_PATH:-}"
+PRIVILEGED_HELPER_PATH="${CLEANROOM_PRIVILEGED_HELPER_PATH:-/usr/local/sbin/cleanroom-root-helper}"
 
 ROOT_HELPER_REQUIRED_CAPABILITIES=(
-  firecracker-network
-  firecracker-rootfs
-)
-
-ROOT_HELPER_LEGACY_CAPABILITIES=(
   firecracker-network
   firecracker-rootfs
 )
@@ -21,29 +15,13 @@ if [[ -z "$KERNEL_IMAGE" ]]; then
   exit 1
 fi
 
-# run_privileged executes a privileged command via the root helper,
-# falling back to sudo, then direct execution.
+# run_privileged executes a privileged command via the installed root helper.
 run_privileged() {
-  case "${PRIVILEGED_MODE:-sudo}" in
-    helper)
-      if [[ -z "${PRIVILEGED_HELPER_PATH:-}" ]]; then
-        echo "CLEANROOM_PRIVILEGED_HELPER_PATH is required when CLEANROOM_PRIVILEGED_MODE=helper" >&2
-        return 1
-      fi
-      sudo -n "$PRIVILEGED_HELPER_PATH" "$@"
-      ;;
-    ""|sudo)
-      if command -v sudo >/dev/null 2>&1; then
-        sudo -n "$@"
-      else
-        "$@"
-      fi
-      ;;
-    *)
-      echo "unsupported CLEANROOM_PRIVILEGED_MODE: $PRIVILEGED_MODE" >&2
-      return 1
-      ;;
-  esac
+  if [[ -z "${PRIVILEGED_HELPER_PATH:-}" ]]; then
+    echo "CLEANROOM_PRIVILEGED_HELPER_PATH is required for Firecracker e2e CI" >&2
+    return 1
+  fi
+  sudo -n "$PRIVILEGED_HELPER_PATH" "$@"
 }
 
 annotate_root_helper_problem() {
@@ -60,26 +38,19 @@ EOF
 }
 
 verify_helper_capabilities() {
-  [[ "${PRIVILEGED_MODE:-}" == "helper" ]] || return 0
-
   if [[ -z "${PRIVILEGED_HELPER_PATH:-}" ]]; then
-    echo "CLEANROOM_PRIVILEGED_HELPER_PATH is required when CLEANROOM_PRIVILEGED_MODE=helper" >&2
+    echo "CLEANROOM_PRIVILEGED_HELPER_PATH is required for Firecracker e2e CI" >&2
     return 1
   fi
 
   local capabilities
   if ! capabilities="$(sudo -n "$PRIVILEGED_HELPER_PATH" capabilities 2>&1)"; then
-    if grep -Fq "unsupported command 'capabilities'" <<<"$capabilities"; then
-      echo "⚠️  Legacy root helper detected at $PRIVILEGED_HELPER_PATH; assuming baseline helper capabilities" >&2
-      capabilities="$(printf '%s\n' "${ROOT_HELPER_LEGACY_CAPABILITIES[@]}")"
-    else
-      echo "⚠️  Root helper capability probe failed via $PRIVILEGED_HELPER_PATH" >&2
-      echo "   $capabilities" >&2
-      annotate_root_helper_problem \
-        "### ❌ Root helper capability probe failed" \
-        "The installed root helper (\`$PRIVILEGED_HELPER_PATH\`) could not be queried for capabilities.\n\nRoll out the latest helper on the CI host, for example by rerunning \`scripts/bootstrap-buildkite-agent.sh\`, and then rerun the build."
-      return 1
-    fi
+    echo "⚠️  Root helper capability probe failed via $PRIVILEGED_HELPER_PATH" >&2
+    echo "   $capabilities" >&2
+    annotate_root_helper_problem \
+      "### ❌ Root helper capability probe failed" \
+      "The installed root helper (\`$PRIVILEGED_HELPER_PATH\`) could not be queried for capabilities.\n\nRoll out the latest helper on the CI host, for example by rerunning \`scripts/bootstrap-buildkite-agent.sh\`, and then rerun the build."
+    return 1
   fi
 
   local missing=()
@@ -194,12 +165,7 @@ backends:
     launch_seconds: 90
 EOF
 
-if [[ -n "$PRIVILEGED_MODE" ]]; then
-  echo "    privileged_mode: $PRIVILEGED_MODE" >> "$XDG_CONFIG_HOME/cleanroom/config.yaml"
-fi
-if [[ -n "$PRIVILEGED_HELPER_PATH" ]]; then
-  echo "    privileged_helper_path: $PRIVILEGED_HELPER_PATH" >> "$XDG_CONFIG_HOME/cleanroom/config.yaml"
-fi
+echo "    privileged_helper_path: $PRIVILEGED_HELPER_PATH" >> "$XDG_CONFIG_HOME/cleanroom/config.yaml"
 
 echo "--- :stethoscope: Doctor"
 ./dist/cleanroom doctor --json | tee "$tmpdir/doctor.json"

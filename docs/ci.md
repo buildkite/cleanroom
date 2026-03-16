@@ -137,41 +137,19 @@ AWS_PROFILE=buildkite-sandbox-pipelines-admin aws ssm send-command \
   --parameters '{"commands":["sudo tail -n 120 /var/log/cleanroom-bootstrap-linux.log","sudo systemctl status buildkite-agent@cleanroom.service --no-pager","sudo tail -n 120 /var/lib/buildkite-agent/logs/buildkite-agent-cleanroom.log"]}'
 ```
 
-### 4.3 Privileged command execution modes
+### 4.3 Privileged helper execution
 
-Firecracker backend supports two modes:
+Firecracker always executes privileged host operations through a single root-owned helper.
 
-- `sudo` (default): direct `sudo -n <command>` execution
-- `helper`: call a root-owned helper binary instead of direct sudo command execution
+Runtime config key:
 
-Runtime config keys:
-
-- `backends.firecracker.privileged_mode`
 - `backends.firecracker.privileged_helper_path`
 
 For CI script usage, you can also set:
 
-- `CLEANROOM_PRIVILEGED_MODE`
 - `CLEANROOM_PRIVILEGED_HELPER_PATH`
 
-#### Option A: default `sudo` mode
-
-`sudo` mode requires NOPASSWD for commands used by launched execution:
-
-```sudoers
-User_Alias CLEANROOM_CI = buildkite-agent
-Cmnd_Alias CLEANROOM_DOCTOR = /usr/bin/true, /usr/sbin/ip link show
-Cmnd_Alias CLEANROOM_NET = /usr/sbin/ip *, /usr/sbin/iptables *, /usr/sbin/sysctl -w net.ipv4.ip_forward=1
-Cmnd_Alias CLEANROOM_ROOTFS = /usr/bin/mount *, /usr/bin/umount *, /usr/bin/mkdir *, /usr/bin/install *
-
-CLEANROOM_CI ALL=(root) NOPASSWD: CLEANROOM_DOCTOR, CLEANROOM_NET, CLEANROOM_ROOTFS
-```
-
-#### Option B: hardened `helper` mode (recommended)
-
-Use a single root-owned helper binary and only grant sudo access to that helper:
-
-Install helper from this repository:
+Install the helper from this repository and only grant sudo access to that helper:
 
 ```bash
 sudo install -o root -g root -m 0755 scripts/cleanroom-root-helper.sh /usr/local/sbin/cleanroom-root-helper
@@ -181,14 +159,9 @@ sudo install -o root -g root -m 0755 scripts/cleanroom-root-helper.sh /usr/local
 buildkite-agent ALL=(root) NOPASSWD: /usr/local/sbin/cleanroom-root-helper *
 ```
 
-Then set:
+Then set `CLEANROOM_PRIVILEGED_HELPER_PATH=/usr/local/sbin/cleanroom-root-helper` if you need to override the runtime config.
 
-- `CLEANROOM_PRIVILEGED_MODE=helper`
-- `CLEANROOM_PRIVILEGED_HELPER_PATH=/usr/local/sbin/cleanroom-root-helper`
-
-In `helper` mode, `scripts/ci-cleanroom-e2e.sh` and `cleanroom doctor` probe the installed helper with `version` and `capabilities` before running Firecracker checks. They do not compare helper file hashes and they do not self-update the helper from the checkout.
-
-Older helpers that predate the probe are treated as legacy helpers with the baseline network/rootfs capability set. Branches only fail when they require a newer privileged capability, such as the ZFS helper surface.
+`scripts/ci-cleanroom-e2e.sh` probes the installed helper with `capabilities`, and `cleanroom doctor` also records the helper `version`, before running Firecracker checks. They do not compare helper file hashes and they do not self-update the helper from the checkout.
 
 If a branch needs a new privileged helper capability, roll out the updated helper on the CI host first, then rerun the branch. The normal path is:
 

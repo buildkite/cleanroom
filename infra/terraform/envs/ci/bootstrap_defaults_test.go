@@ -97,7 +97,7 @@ func TestLinuxBootstrapScriptInstallsRerunnableBootstrapCommand(t *testing.T) {
 
 	scriptPath := filepath.Join("..", "..", "..", "..", "scripts", "bootstrap-buildkite-agent.sh")
 	requireContains(t, scriptPath, "BOOTSTRAP_ENV_PATH='/usr/local/etc/cleanroom-bootstrap-linux.env'")
-	requireContains(t, scriptPath, "local bootstrap_runner_path=\"${CLEANROOM_BOOTSTRAP_RUNNER_PATH:-/usr/local/bin/cleanroom-bootstrap-linux}\"")
+	requireContains(t, scriptPath, "local bootstrap_runner_path='/usr/local/bin/cleanroom-bootstrap-linux'")
 	requireContains(t, scriptPath, "CLEANROOM_BOOTSTRAP_REPO_URL")
 	requireContains(t, scriptPath, "CLEANROOM_BOOTSTRAP_REPO_REF")
 	requireContains(t, scriptPath, "CLEANROOM_BOOTSTRAP_SETUP_SCRIPT_PATH")

@@ -349,7 +349,7 @@ backends:
   firecracker:
     binary_path: firecracker
     kernel_image: ""    # auto-managed when unset
-    privileged_mode: sudo
+    privileged_helper_path: /usr/local/sbin/cleanroom-root-helper
     vcpus: 2
     memory_mib: 1024
     launch_seconds: 30
@@ -371,7 +371,7 @@ When `rootfs` is unset, Cleanroom derives one from `sandbox.image.ref` and injec
 - `/dev/kvm` available and writable
 - Firecracker binary installed
 - `mkfs.ext4` for OCI-to-ext4 materialization
-- `sudo -n` access for `ip`, `iptables`, `sysctl`
+- `sudo -n` access to `/usr/local/sbin/cleanroom-root-helper`
 
 **macOS ([darwin-vz](docs/backend/darwin-vz.md)):**
 - `cleanroom-darwin-vz` helper signed with `com.apple.security.virtualization` entitlement
