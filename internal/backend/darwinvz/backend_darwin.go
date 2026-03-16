@@ -91,6 +91,7 @@ type sandboxInstance struct {
 	ImageRef            string
 	ImageDigest         string
 	LaunchObservability *darwinVZLaunchObservability
+	NetworkMetadata     *darwinVZNetworkMetadata
 	CommandTimeout      int64
 	Helper              *helperSession
 	VMID                string
@@ -115,6 +116,11 @@ type darwinVZRunObservation struct {
 	ExitCode       int              `json:"exit_code,omitempty"`
 	Error          string           `json:"error,omitempty"`
 	GuestError     string           `json:"guest_error,omitempty"`
+	NetworkMode    string           `json:"network_mode,omitempty"`
+	NetworkSubnetCIDR string        `json:"network_subnet_cidr,omitempty"`
+	NetworkGuestIP string           `json:"network_guest_ip,omitempty"`
+	NetworkGatewayIP string         `json:"network_gateway_ip,omitempty"`
+	NetworkPrefixLen int            `json:"network_prefix_len,omitempty"`
 	RootFSCopyMS   int64            `json:"rootfs_copy_ms,omitempty"`
 	VMReadyMS      int64            `json:"vm_ready_ms,omitempty"`
 	HelperTimingMS map[string]int64 `json:"helper_timing_ms,omitempty"`
@@ -124,9 +130,37 @@ type darwinVZRunObservation struct {
 type darwinVZLaunchObservability struct {
 	RootFSCopyMS   int64
 	HelperTimingMS map[string]int64
+	Network        *darwinVZNetworkMetadata
 }
 
-var virtualizationEntitlementPattern = regexp.MustCompile(`(?s)<key>\s*com\.apple\.security\.virtualization\s*</key>\s*<true\s*/?>`)
+type darwinVZNetworkMetadata struct {
+	Mode       string
+	SubnetCIDR string
+	GuestIP    string
+	GatewayIP  string
+	PrefixLen  int
+}
+
+type darwinVZConfigFile struct {
+	Backend           string `json:"backend"`
+	KernelImage       string `json:"kernel_image"`
+	RootFS            string `json:"rootfs"`
+	VCPUs             int64  `json:"vcpus"`
+	MemoryMiB         int64  `json:"memory_mib"`
+	GuestPort         uint32 `json:"guest_port"`
+	LaunchSeconds     int64  `json:"launch_secs"`
+	NetworkMode       string `json:"network_mode,omitempty"`
+	NetworkSubnetCIDR string `json:"network_subnet_cidr,omitempty"`
+	NetworkGuestIP    string `json:"network_guest_ip,omitempty"`
+	NetworkGatewayIP  string `json:"network_gateway_ip,omitempty"`
+	NetworkPrefixLen  int    `json:"network_prefix_len,omitempty"`
+	BootArgs          string `json:"boot_args"`
+}
+
+var (
+	virtualizationEntitlementPattern = regexp.MustCompile(`(?s)<key>\s*com\.apple\.security\.virtualization\s*</key>\s*<true\s*/?>`)
+	vmNetworkingEntitlementPattern   = regexp.MustCompile(`(?s)<key>\s*com\.apple\.developer\.networking\.vmnet\s*</key>\s*<true\s*/?>`)
+)
 
 const (
 	guestInitScriptPathSbin    = "/sbin/cleanroom-init"
@@ -148,6 +182,73 @@ mount -t tmpfs tmpfs /tmp 2>/dev/null || true
 export HOME=/root
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/root/.local/bin
 
+cmdline="$(cat /proc/cmdline 2>/dev/null || true)"
+arg_value() {
+  key="$1"
+  for token in $cmdline; do
+    case "$token" in
+      "$key"=*) echo "${token#*=}"; return 0 ;;
+    esac
+  done
+  return 1
+}
+
+prefix_to_mask() {
+  prefix="$1"
+  remaining="$prefix"
+  octet_index=0
+  mask=""
+  while [ "$octet_index" -lt 4 ]; do
+    if [ "$remaining" -ge 8 ]; then
+      octet=255
+      remaining=$((remaining - 8))
+    elif [ "$remaining" -gt 0 ]; then
+      octet=$((256 - (1 << (8 - remaining))))
+      remaining=0
+    else
+      octet=0
+    fi
+    if [ -z "$mask" ]; then
+      mask="$octet"
+    else
+      mask="$mask.$octet"
+    fi
+    octet_index=$((octet_index + 1))
+  done
+  printf '%s\n' "$mask"
+}
+
+configure_vmnet_static_network() {
+  NET_IFACE="$1"
+  VMNET_GUEST_IPV4="$(arg_value cleanroom_vmnet_guest_ipv4 || true)"
+  VMNET_GATEWAY_IPV4="$(arg_value cleanroom_vmnet_gateway_ipv4 || true)"
+  VMNET_PREFIX_LEN="$(arg_value cleanroom_vmnet_prefix_len || true)"
+
+  if [ -z "$VMNET_GUEST_IPV4" ] || [ -z "$VMNET_GATEWAY_IPV4" ] || [ -z "$VMNET_PREFIX_LEN" ]; then
+    return 1
+  fi
+
+  if command -v ip >/dev/null 2>&1; then
+    ip link set "$NET_IFACE" up 2>/dev/null || true
+    ip addr flush dev "$NET_IFACE" scope global 2>/dev/null || true
+    ip addr add "$VMNET_GUEST_IPV4/$VMNET_PREFIX_LEN" dev "$NET_IFACE"
+    ip route replace default via "$VMNET_GATEWAY_IPV4" dev "$NET_IFACE"
+  elif command -v ifconfig >/dev/null 2>&1; then
+    VMNET_NETMASK="$(prefix_to_mask "$VMNET_PREFIX_LEN")"
+    ifconfig "$NET_IFACE" "$VMNET_GUEST_IPV4" netmask "$VMNET_NETMASK" up
+    if command -v route >/dev/null 2>&1; then
+      route del default >/dev/null 2>&1 || true
+      route add default gw "$VMNET_GATEWAY_IPV4" >/dev/null 2>&1 || true
+    fi
+  else
+    return 1
+  fi
+
+  mkdir -p /etc 2>/dev/null || true
+  printf 'nameserver %s\n' "$VMNET_GATEWAY_IPV4" >/etc/resolv.conf 2>/dev/null || true
+  return 0
+}
+
 setup_guest_network() {
   NET_IFACE=""
   for cand in /sys/class/net/*; do
@@ -159,6 +260,10 @@ setup_guest_network() {
     break
   done
   if [ -z "$NET_IFACE" ]; then
+    return 0
+  fi
+
+  if configure_vmnet_static_network "$NET_IFACE"; then
     return 0
   fi
 
@@ -175,17 +280,6 @@ setup_guest_network() {
   fi
 }
 setup_guest_network
-
-cmdline="$(cat /proc/cmdline 2>/dev/null || true)"
-arg_value() {
-  key="$1"
-  for token in $cmdline; do
-    case "$token" in
-      "$key"=*) echo "${token#*=}"; return 0 ;;
-    esac
-  done
-  return 1
-}
 
 GUEST_PORT="$(arg_value cleanroom_guest_port || true)"
 if [ -z "$GUEST_PORT" ]; then
@@ -351,6 +445,7 @@ func (a *Adapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest
 		ImageDigest: instance.ImageDigest,
 		PlanPath:    instance.ConfigPath,
 	}
+	applyDarwinVZNetworkMetadata(&observation, instance.NetworkMetadata)
 	a.sandboxMu.Lock()
 	if current, ok := a.sandboxes[sandboxID]; ok && current == instance {
 		applyDarwinVZLaunchObservability(&observation, current.LaunchObservability)
@@ -554,6 +649,15 @@ func (a *Adapter) Doctor(_ context.Context, req backend.DoctorRequest) (*backend
 		appendCheck("os", "fail", fmt.Sprintf("darwin required, current OS is %s", runtime.GOOS))
 	}
 	appendCheck("guest_networking", "warn", guestNetworkUnavailableWarning)
+	networkCfg, networkErr := resolveDarwinVZNetwork(req.FirecrackerConfig)
+	if networkErr != nil {
+		appendCheck("network_mode", "fail", networkErr.Error())
+	} else {
+		appendCheck("network_mode", "pass", fmt.Sprintf("darwin-vz network mode: %s", networkCfg.Mode))
+		if networkCfg.SubnetCIDR != "" {
+			appendCheck("network_subnet", "pass", fmt.Sprintf("darwin-vz vmnet subnet: %s", networkCfg.SubnetCIDR))
+		}
+	}
 
 	if configured := strings.TrimSpace(req.KernelImagePath); configured == "" {
 		if spec, ok := bootassets.LookupManagedKernelForHost(a.Name()); ok {
@@ -672,6 +776,36 @@ func (a *Adapter) Doctor(_ context.Context, req backend.DoctorRequest) (*backend
 				"pass",
 				fmt.Sprintf("%s includes com.apple.security.virtualization entitlement", helperPath),
 			)
+		}
+		if networkErr == nil && networkCfg.Mode == darwinVZNetworkModeVMNetShared {
+			hasVMNetEntitlement, vmnetEntitlementErr := helperHasVMNetworkingEntitlement(helperPath)
+			switch {
+			case vmnetEntitlementErr != nil:
+				appendCheck(
+					"vmnet_entitlement",
+					"warn",
+					fmt.Sprintf(
+						"could not verify com.apple.developer.networking.vmnet entitlement on %s: %v",
+						helperPath,
+						vmnetEntitlementErr,
+					),
+				)
+			case !hasVMNetEntitlement:
+				appendCheck(
+					"vmnet_entitlement",
+					"fail",
+					fmt.Sprintf(
+						"%s is missing com.apple.developer.networking.vmnet entitlement; sign the helper with cmd/cleanroom-darwin-vz/entitlements-vmnet.plist and the matching provisioning profile or identifier",
+						helperPath,
+					),
+				)
+			default:
+				appendCheck(
+					"vmnet_entitlement",
+					"pass",
+					fmt.Sprintf("%s includes com.apple.developer.networking.vmnet entitlement", helperPath),
+				)
+			}
 		}
 	}
 	return report, nil
@@ -840,6 +974,11 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 
 	guestInitPath, guestInitNotice := guestInitExecutableForRootFS(vmRootFSPath)
 	logExecutionNotice(a.Name(), req.ExecutionID, guestInitNotice)
+	networkCfg, err := resolveDarwinVZNetwork(req.FirecrackerConfig)
+	if err != nil {
+		observation.Error = err.Error()
+		return nil, err
+	}
 	bootArgs := fmt.Sprintf(
 		"console=hvc0 root=/dev/vda rw init=%s cleanroom_guest_port=%d %s",
 		guestInitPath,
@@ -849,16 +988,19 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 	consolePath := filepath.Join(runDir, "vm.console.log")
 
 	vmPlanPath := filepath.Join(runDir, "darwin-vz-config.json")
-	if err := writeJSON(vmPlanPath, map[string]any{
-		"backend":      a.Name(),
-		"kernel_image": kernelPath,
-		"rootfs":       vmRootFSPath,
-		"vcpus":        req.VCPUs,
-		"memory_mib":   req.MemoryMiB,
-		"guest_port":   req.GuestPort,
-		"launch_secs":  req.LaunchSeconds,
-		"boot_args":    bootArgs,
-	}); err != nil {
+	if err := writeDarwinVZConfig(
+		vmPlanPath,
+		a.Name(),
+		kernelPath,
+		vmRootFSPath,
+		bootArgs,
+		req.VCPUs,
+		req.MemoryMiB,
+		req.GuestPort,
+		req.LaunchSeconds,
+		networkCfg,
+		nil,
+	); err != nil {
 		observation.Error = err.Error()
 		return nil, err
 	}
@@ -888,6 +1030,8 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 		KernelPath:      kernelPath,
 		RootFSPath:      vmRootFSPath,
 		BootArgs:        bootArgs,
+		NetworkMode:     networkCfg.Mode,
+		VMNetSubnetCIDR: networkCfg.SubnetCIDR,
 		VCPUs:           req.VCPUs,
 		MemoryMiB:       req.MemoryMiB,
 		GuestPort:       req.GuestPort,
@@ -902,6 +1046,24 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 	}
 	observation.LaunchedVM = true
 	applyDarwinVZHelperTimings(&observation, startRes.TimingMS)
+	networkMetadata := helperResponseNetworkMetadata(networkCfg.Mode, startRes)
+	applyDarwinVZNetworkMetadata(&observation, networkMetadata)
+	if err := writeDarwinVZConfig(
+		vmPlanPath,
+		a.Name(),
+		kernelPath,
+		vmRootFSPath,
+		bootArgs,
+		req.VCPUs,
+		req.MemoryMiB,
+		req.GuestPort,
+		req.LaunchSeconds,
+		networkCfg,
+		networkMetadata,
+	); err != nil {
+		observation.Error = err.Error()
+		return nil, err
+	}
 
 	vmID := strings.TrimSpace(startRes.VMID)
 	if vmID == "" {
@@ -1130,6 +1292,10 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 	rootFSCopyMS := time.Since(copyStart).Milliseconds()
 
 	guestInitPath, _ := guestInitExecutableForRootFS(vmRootFSPath)
+	networkCfg, err := resolveDarwinVZNetwork(cfg)
+	if err != nil {
+		return nil, err
+	}
 	bootArgs := fmt.Sprintf(
 		"console=hvc0 root=/dev/vda rw init=%s cleanroom_guest_port=%d %s",
 		guestInitPath,
@@ -1139,16 +1305,19 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 	consolePath := filepath.Join(runDir, "vm.console.log")
 
 	configPath := filepath.Join(runDir, "darwin-vz-config.json")
-	if err := writeJSON(configPath, map[string]any{
-		"backend":      a.Name(),
-		"kernel_image": kernelPath,
-		"rootfs":       vmRootFSPath,
-		"vcpus":        cfg.VCPUs,
-		"memory_mib":   cfg.MemoryMiB,
-		"guest_port":   cfg.GuestPort,
-		"launch_secs":  cfg.LaunchSeconds,
-		"boot_args":    bootArgs,
-	}); err != nil {
+	if err := writeDarwinVZConfig(
+		configPath,
+		a.Name(),
+		kernelPath,
+		vmRootFSPath,
+		bootArgs,
+		cfg.VCPUs,
+		cfg.MemoryMiB,
+		cfg.GuestPort,
+		cfg.LaunchSeconds,
+		networkCfg,
+		nil,
+	); err != nil {
 		return nil, err
 	}
 
@@ -1176,6 +1345,8 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 		KernelPath:      kernelPath,
 		RootFSPath:      vmRootFSPath,
 		BootArgs:        bootArgs,
+		NetworkMode:     networkCfg.Mode,
+		VMNetSubnetCIDR: networkCfg.SubnetCIDR,
 		VCPUs:           cfg.VCPUs,
 		MemoryMiB:       cfg.MemoryMiB,
 		GuestPort:       cfg.GuestPort,
@@ -1186,6 +1357,22 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 	})
 	if err != nil {
 		return nil, fmt.Errorf("start vm via darwin-vz helper: %w", err)
+	}
+	networkMetadata := helperResponseNetworkMetadata(networkCfg.Mode, startRes)
+	if err := writeDarwinVZConfig(
+		configPath,
+		a.Name(),
+		kernelPath,
+		vmRootFSPath,
+		bootArgs,
+		cfg.VCPUs,
+		cfg.MemoryMiB,
+		cfg.GuestPort,
+		cfg.LaunchSeconds,
+		networkCfg,
+		networkMetadata,
+	); err != nil {
+		return nil, err
 	}
 
 	vmID := strings.TrimSpace(startRes.VMID)
@@ -1214,12 +1401,14 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 		LaunchObservability: &darwinVZLaunchObservability{
 			RootFSCopyMS:   rootFSCopyMS,
 			HelperTimingMS: cloneHelperTimingMS(startRes.TimingMS),
+			Network:        networkMetadata,
 		},
-		CommandTimeout: cfg.LaunchSeconds,
-		Helper:         helper,
-		VMID:           vmID,
-		vmRootFSPath:   vmRootFSPath,
-		exitedCh:       make(chan struct{}),
+		NetworkMetadata: networkMetadata,
+		CommandTimeout:  cfg.LaunchSeconds,
+		Helper:          helper,
+		VMID:            vmID,
+		vmRootFSPath:    vmRootFSPath,
+		exitedCh:        make(chan struct{}),
 	}
 	go func() {
 		err, ok := <-helper.done
@@ -2073,6 +2262,19 @@ func helperHasVirtualizationEntitlement(helperPath string) (bool, error) {
 	return hasVirtualizationEntitlement(string(output)), nil
 }
 
+func helperHasVMNetworkingEntitlement(helperPath string) (bool, error) {
+	cmd := exec.Command("codesign", "-d", "--entitlements", ":-", helperPath)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(output))
+		if msg != "" {
+			return false, fmt.Errorf("%w: %s", err, msg)
+		}
+		return false, err
+	}
+	return hasVMNetworkingEntitlement(string(output)), nil
+}
+
 func hasVirtualizationEntitlement(raw string) bool {
 	entitlements := strings.TrimSpace(raw)
 	if entitlements == "" {
@@ -2085,6 +2287,20 @@ func hasVirtualizationEntitlement(raw string) bool {
 		entitlements = entitlements[start:]
 	}
 	return virtualizationEntitlementPattern.MatchString(entitlements)
+}
+
+func hasVMNetworkingEntitlement(raw string) bool {
+	entitlements := strings.TrimSpace(raw)
+	if entitlements == "" {
+		return false
+	}
+
+	if start := strings.Index(entitlements, "<?xml"); start >= 0 {
+		entitlements = entitlements[start:]
+	} else if start := strings.Index(entitlements, "<plist"); start >= 0 {
+		entitlements = entitlements[start:]
+	}
+	return vmNetworkingEntitlementPattern.MatchString(entitlements)
 }
 
 func hashFileSHA256(path string) (string, error) {
@@ -2309,6 +2525,41 @@ func writeJSON(path string, v any) error {
 	return os.WriteFile(path, append(b, '\n'), 0o644)
 }
 
+func writeDarwinVZConfig(
+	path, backendName, kernelPath, rootFSPath, bootArgs string,
+	vcpus int64,
+	memoryMiB int64,
+	guestPort uint32,
+	launchSeconds int64,
+	networkCfg darwinVZNetwork,
+	networkMetadata *darwinVZNetworkMetadata,
+) error {
+	if strings.TrimSpace(path) == "" {
+		return nil
+	}
+	cfg := darwinVZConfigFile{
+		Backend:       backendName,
+		KernelImage:   kernelPath,
+		RootFS:        rootFSPath,
+		VCPUs:         vcpus,
+		MemoryMiB:     memoryMiB,
+		GuestPort:     guestPort,
+		LaunchSeconds: launchSeconds,
+		NetworkMode:   networkCfg.Mode,
+		BootArgs:      bootArgs,
+	}
+	if networkMetadata != nil {
+		cfg.NetworkMode = networkMetadata.Mode
+		cfg.NetworkSubnetCIDR = networkMetadata.SubnetCIDR
+		cfg.NetworkGuestIP = networkMetadata.GuestIP
+		cfg.NetworkGatewayIP = networkMetadata.GatewayIP
+		cfg.NetworkPrefixLen = networkMetadata.PrefixLen
+	} else if networkCfg.SubnetCIDR != "" {
+		cfg.NetworkSubnetCIDR = networkCfg.SubnetCIDR
+	}
+	return writeJSON(path, cfg)
+}
+
 func writeDarwinVZRunObservation(runDir string, observation *darwinVZRunObservation, totalMS int64) error {
 	if strings.TrimSpace(runDir) == "" || observation == nil {
 		return nil
@@ -2331,6 +2582,34 @@ func applyDarwinVZHelperTimings(observation *darwinVZRunObservation, timingMS ma
 	}
 }
 
+func helperResponseNetworkMetadata(mode string, res helperControlResponse) *darwinVZNetworkMetadata {
+	normalizedMode := strings.TrimSpace(mode)
+	subnetCIDR := strings.TrimSpace(res.VMNetSubnetCIDR)
+	guestIP := strings.TrimSpace(res.VMNetGuestIPv4)
+	gatewayIP := strings.TrimSpace(res.VMNetGatewayIPv4)
+	if normalizedMode == "" && subnetCIDR == "" && guestIP == "" && gatewayIP == "" && res.VMNetPrefixLen == 0 {
+		return nil
+	}
+	return &darwinVZNetworkMetadata{
+		Mode:       normalizedMode,
+		SubnetCIDR: subnetCIDR,
+		GuestIP:    guestIP,
+		GatewayIP:  gatewayIP,
+		PrefixLen:  res.VMNetPrefixLen,
+	}
+}
+
+func applyDarwinVZNetworkMetadata(observation *darwinVZRunObservation, metadata *darwinVZNetworkMetadata) {
+	if observation == nil || metadata == nil {
+		return
+	}
+	observation.NetworkMode = metadata.Mode
+	observation.NetworkSubnetCIDR = metadata.SubnetCIDR
+	observation.NetworkGuestIP = metadata.GuestIP
+	observation.NetworkGatewayIP = metadata.GatewayIP
+	observation.NetworkPrefixLen = metadata.PrefixLen
+}
+
 func applyDarwinVZLaunchObservability(observation *darwinVZRunObservation, launch *darwinVZLaunchObservability) {
 	if observation == nil || launch == nil {
 		return
@@ -2338,8 +2617,9 @@ func applyDarwinVZLaunchObservability(observation *darwinVZRunObservation, launc
 	if launch.RootFSCopyMS > 0 {
 		observation.RootFSCopyMS = launch.RootFSCopyMS
 	}
+	applyDarwinVZNetworkMetadata(observation, launch.Network)
 	applyDarwinVZHelperTimings(observation, launch.HelperTimingMS)
-	if launch.RootFSCopyMS > 0 || len(launch.HelperTimingMS) > 0 {
+	if launch.RootFSCopyMS > 0 || len(launch.HelperTimingMS) > 0 || launch.Network != nil {
 		observation.LaunchedVM = true
 	}
 }

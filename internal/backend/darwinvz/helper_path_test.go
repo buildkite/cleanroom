@@ -3,6 +3,7 @@ package darwinvz
 import (
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -59,6 +60,34 @@ func TestResolveHelperBinaryPathUsesSiblingBeforePath(t *testing.T) {
 	}
 }
 
+func TestResolveHelperBinaryPathUsesAppBundleOverride(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	appBundle := tmp + "/cleanroom-darwin-vz.app"
+	executable := appBundle + "/Contents/MacOS/cleanroom-darwin-vz"
+	if err := os.MkdirAll(filepath.Dir(executable), 0o755); err != nil {
+		t.Fatalf("mkdir app bundle: %v", err)
+	}
+	if err := os.WriteFile(executable, []byte("binary"), 0o755); err != nil {
+		t.Fatalf("write app bundle helper: %v", err)
+	}
+
+	got, err := resolveHelperBinaryPathWith(
+		appBundle,
+		func(string) (string, error) { return "", errors.New("not found") },
+		func() (string, error) { return "", errors.New("no executable") },
+		func() (string, error) { return "", errors.New("no working directory") },
+		os.Stat,
+	)
+	if err != nil {
+		t.Fatalf("resolveHelperBinaryPathWith returned error: %v", err)
+	}
+	if got != executable {
+		t.Fatalf("unexpected helper path: got %q want %q", got, executable)
+	}
+}
+
 func TestResolveHelperBinaryPathUsesAncestorDistBeforePATH(t *testing.T) {
 	t.Parallel()
 
@@ -88,6 +117,39 @@ func TestResolveHelperBinaryPathUsesAncestorDistBeforePATH(t *testing.T) {
 	}
 	if got != prebuilt {
 		t.Fatalf("unexpected helper path: got %q want %q", got, prebuilt)
+	}
+}
+
+func TestResolveHelperBinaryPathUsesAncestorDistAppBundleBeforePATH(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	repoRoot := tmp + "/repo"
+	cwd := repoRoot + "/nested/workdir"
+	appBundle := repoRoot + "/dist/cleanroom-darwin-vz.app"
+	executable := appBundle + "/Contents/MacOS/cleanroom-darwin-vz"
+	if err := os.MkdirAll(cwd, 0o755); err != nil {
+		t.Fatalf("mkdir workdir: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(executable), 0o755); err != nil {
+		t.Fatalf("mkdir app bundle: %v", err)
+	}
+	if err := os.WriteFile(executable, []byte("binary"), 0o755); err != nil {
+		t.Fatalf("write app bundle helper: %v", err)
+	}
+
+	got, err := resolveHelperBinaryPathWith(
+		"",
+		func(string) (string, error) { return "/usr/local/bin/cleanroom-darwin-vz", nil },
+		func() (string, error) { return "", errors.New("no executable") },
+		func() (string, error) { return cwd, nil },
+		os.Stat,
+	)
+	if err != nil {
+		t.Fatalf("resolveHelperBinaryPathWith returned error: %v", err)
+	}
+	if got != executable {
+		t.Fatalf("unexpected helper path: got %q want %q", got, executable)
 	}
 }
 

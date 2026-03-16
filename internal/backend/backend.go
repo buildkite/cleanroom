@@ -181,22 +181,25 @@ type ExecutionRequest struct {
 }
 
 type FirecrackerConfig struct {
-	BinaryPath           string
-	KernelImagePath      string
-	RootFSPath           string
-	MinimumRootFSBytes   int64
-	DockerStartupSeconds int64
-	DockerStorageDriver  string
-	DockerIPTables       bool
-	Snapshots            SnapshotConfig
-	PrivilegedHelperPath string
-	RunDir               string
-	VCPUs                int64
-	MemoryMiB            int64
-	GuestCID             uint32
-	GuestPort            uint32
-	Launch               bool
-	LaunchSeconds        int64
+	BinaryPath            string
+	KernelImagePath       string
+	RootFSPath            string
+	MinimumRootFSBytes    int64
+	DarwinVZNetworkMode   string
+	DarwinVZNetworkSubnet string
+	DockerStartupSeconds  int64
+	DockerStorageDriver   string
+	DockerIPTables        bool
+	Snapshots             SnapshotConfig
+	PrivilegedMode        string
+	PrivilegedHelperPath  string
+	RunDir                string
+	VCPUs                 int64
+	MemoryMiB             int64
+	GuestCID              uint32
+	GuestPort             uint32
+	Launch                bool
+	LaunchSeconds         int64
 }
 
 type SnapshotConfig struct {
