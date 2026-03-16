@@ -107,6 +107,36 @@ The pipeline is currently configured to use:
 - `CLEANROOM_KERNEL_IMAGE=/var/lib/buildkite-agent/.local/share/cleanroom/images/vmlinux.bin`
 - `CLEANROOM_FIRECRACKER_BINARY=/usr/local/bin/firecracker`
 
+### 4.2.1 Linux bootstrap updates and recovery
+
+Linux cleanroom hosts should be treated as long-lived capacity.
+
+- Avoid `terraform apply` just to roll the helper or bootstrap scripts forward.
+- Use the host-owned bootstrap runner instead.
+- Hosts provisioned before this runner existed need one trusted bootstrap rerun to install `/usr/local/bin/cleanroom-bootstrap-linux`.
+
+Rerun bootstrap in-place:
+
+```bash
+instance_id="$(mise x -- terraform -chdir=infra/terraform/envs/ci output -raw instance_id)"
+
+AWS_PROFILE=buildkite-sandbox-pipelines-admin aws ssm send-command \
+  --region us-west-2 \
+  --instance-ids "$instance_id" \
+  --document-name AWS-RunShellScript \
+  --parameters '{"commands":["sudo env PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin /usr/local/bin/cleanroom-bootstrap-linux"]}'
+```
+
+Check bootstrap logs and agent service:
+
+```bash
+AWS_PROFILE=buildkite-sandbox-pipelines-admin aws ssm send-command \
+  --region us-west-2 \
+  --instance-ids "$instance_id" \
+  --document-name AWS-RunShellScript \
+  --parameters '{"commands":["sudo tail -n 120 /var/log/cleanroom-bootstrap-linux.log","sudo systemctl status buildkite-agent@cleanroom.service --no-pager","sudo tail -n 120 /var/lib/buildkite-agent/logs/buildkite-agent-cleanroom.log"]}'
+```
+
 ### 4.3 Privileged command execution modes
 
 Firecracker backend supports two modes:

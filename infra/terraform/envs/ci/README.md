@@ -22,6 +22,7 @@ Network behaviour:
 Bootstrap behaviour:
 
 - defaults to `scripts/bootstrap-buildkite-agent.sh`, which installs and starts a Buildkite agent for the `cleanroom` queue
+- linux bootstrap installs a persistent rerunnable bootstrap command at `/usr/local/bin/cleanroom-bootstrap-linux` for in-place recovery via SSM
 - macOS defaults to `scripts/bootstrap-buildkite-agent-macos.sh`, which installs and starts a Buildkite agent for the `cleanroom-mac` queue
 - macOS user-data installs a persistent rerunnable bootstrap command at `/usr/local/bin/cleanroom-bootstrap-macos` for in-place recovery via SSM
 - override `setup_script_path` if you need custom host bootstrap logic
@@ -51,6 +52,32 @@ After apply, use outputs:
 - `tailscale_ssh_pattern` (when tailscale auth key is configured)
 - `mac_ssm_start_session_command` (when `enable_macos_ci` is true)
 - `mac_dedicated_host_id` (when `enable_macos_ci` is true)
+
+## Linux Bootstrap Recovery (In-Place)
+
+Rerun bootstrap on the existing Linux instance without replacing infrastructure:
+
+- Hosts provisioned before this runner existed need one trusted bootstrap rerun to install `/usr/local/bin/cleanroom-bootstrap-linux`.
+
+```bash
+instance_id="$(mise x -- terraform -chdir=infra/terraform/envs/ci output -raw instance_id)"
+
+AWS_PROFILE=buildkite-sandbox-pipelines-admin aws ssm send-command \
+  --region us-west-2 \
+  --instance-ids "$instance_id" \
+  --document-name AWS-RunShellScript \
+  --parameters '{"commands":["sudo env PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin /usr/local/bin/cleanroom-bootstrap-linux"]}'
+```
+
+Check bootstrap logs and the agent service:
+
+```bash
+AWS_PROFILE=buildkite-sandbox-pipelines-admin aws ssm send-command \
+  --region us-west-2 \
+  --instance-ids "$instance_id" \
+  --document-name AWS-RunShellScript \
+  --parameters '{"commands":["sudo tail -n 120 /var/log/cleanroom-bootstrap-linux.log","sudo systemctl status buildkite-agent@cleanroom.service --no-pager","sudo tail -n 120 /var/lib/buildkite-agent/logs/buildkite-agent-cleanroom.log"]}'
+```
 
 ## macOS Bootstrap Recovery (In-Place)
 
