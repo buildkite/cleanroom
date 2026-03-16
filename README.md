@@ -37,6 +37,8 @@ curl -fsSL https://raw.githubusercontent.com/buildkite/cleanroom/main/scripts/in
 
 By default this installs to `/usr/local/bin`. Override with `--install-dir` or `CLEANROOM_INSTALL_DIR`.
 
+macOS releases also publish a signed, notarized `.pkg` on the GitHub releases page. Prefer that artifact when you want the standard macOS installer flow.
+
 ## Quick start
 
 Initialize runtime config and check host prerequisites:

@@ -11,6 +11,7 @@ SIGN_IDENTITY="${CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY:--}"
 SIGN_IDENTIFIER="${CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTIFIER:-}"
 PROVISION_PROFILE="${CLEANROOM_DARWIN_VZ_HELPER_PROVISION_PROFILE:-}"
 BUNDLE_MODE="${CLEANROOM_DARWIN_VZ_HELPER_BUNDLE:-}"
+SIGN_RUNTIME="${CLEANROOM_DARWIN_VZ_HELPER_SIGN_RUNTIME:-}"
 
 [[ -f "${REPO_ROOT}/cmd/cleanroom-darwin-vz/main.swift" ]] || {
   echo "missing helper source: ${REPO_ROOT}/cmd/cleanroom-darwin-vz/main.swift" >&2
@@ -93,6 +94,9 @@ EOF
     --sign "${SIGN_IDENTITY}"
     --entitlements "${ENTITLEMENTS_PATH}"
   )
+  if [[ -n "${SIGN_RUNTIME}" && "${SIGN_IDENTITY}" != "-" ]]; then
+    codesign_args+=(--options runtime --timestamp)
+  fi
   if [[ -n "${SIGN_IDENTIFIER}" ]]; then
     codesign_args+=(-i "${SIGN_IDENTIFIER}")
   fi
@@ -114,6 +118,9 @@ else
     --sign "${SIGN_IDENTITY}"
     --entitlements "${ENTITLEMENTS_PATH}"
   )
+  if [[ -n "${SIGN_RUNTIME}" && "${SIGN_IDENTITY}" != "-" ]]; then
+    codesign_args+=(--options runtime --timestamp)
+  fi
   if [[ -n "${SIGN_IDENTIFIER}" ]]; then
     codesign_args+=(-i "${SIGN_IDENTIFIER}")
   fi
