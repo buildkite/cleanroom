@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Security model:
+# - This script is a root-owned allowlist for privileged cleanroom operations.
+# - Unprivileged callers reach it via `sudo -n /usr/local/sbin/cleanroom-root-helper ...`.
+# - Install or update it only from trusted `main` rollout paths, never from PR checkouts.
+#
+# Sharp edges:
+# - Every new command, flag shape, or path wildcard expands the root execution surface.
+# - Keep validation explicit; do not add generic passthroughs, shell evaluation, or broad writable paths.
+# - Helper changes should land and roll out before dependent PRs; CI should detect drift, not self-update.
+
 die() {
   echo "cleanroom-root-helper: $*" >&2
   exit 2
