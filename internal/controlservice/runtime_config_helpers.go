@@ -23,7 +23,6 @@ func mergeBackendConfig(backendName string, opts executionOptions, cfg runtimeco
 		DockerStartupSeconds: cfg.Backends.Firecracker.Services.Docker.StartupTimeoutSeconds,
 		DockerStorageDriver:  cfg.Backends.Firecracker.Services.Docker.StorageDriver,
 		DockerIPTables:       cfg.Backends.Firecracker.Services.Docker.IPTables,
-		PrivilegedMode:       cfg.Backends.Firecracker.PrivilegedMode,
 		PrivilegedHelperPath: cfg.Backends.Firecracker.PrivilegedHelperPath,
 		VCPUs:                cfg.Backends.Firecracker.VCPUs,
 		MemoryMiB:            cfg.Backends.Firecracker.MemoryMiB,

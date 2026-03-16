@@ -20,8 +20,8 @@ require_cmd() {
 }
 
 install_linux_bootstrap_runner() {
-  local bootstrap_env_path="${CLEANROOM_BOOTSTRAP_ENV_PATH:-/usr/local/etc/cleanroom-bootstrap-linux.env}"
-  local bootstrap_runner_path="${CLEANROOM_BOOTSTRAP_RUNNER_PATH:-/usr/local/bin/cleanroom-bootstrap-linux}"
+  local bootstrap_env_path='/usr/local/etc/cleanroom-bootstrap-linux.env'
+  local bootstrap_runner_path='/usr/local/bin/cleanroom-bootstrap-linux'
   local bootstrap_repo_url="${CLEANROOM_BOOTSTRAP_REPO_URL:-}"
   local bootstrap_repo_ref="${CLEANROOM_BOOTSTRAP_REPO_REF:-main}"
   local bootstrap_setup_script_path="${CLEANROOM_BOOTSTRAP_SETUP_SCRIPT_PATH:-scripts/bootstrap-buildkite-agent.sh}"
@@ -207,11 +207,6 @@ install_sudo_if_missing() {
     return
   fi
 
-  if command -v dnf >/dev/null 2>&1; then
-    dnf install -y sudo
-    return
-  fi
-
   if command -v apt-get >/dev/null 2>&1; then
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -y
@@ -219,12 +214,7 @@ install_sudo_if_missing() {
     return
   fi
 
-  if command -v yum >/dev/null 2>&1; then
-    yum install -y sudo
-    return
-  fi
-
-  die "sudo is required and no supported package manager was found"
+  die "sudo is required and this bootstrap script expects an Ubuntu apt-based host"
 }
 
 resolve_agent_arch() {
@@ -398,7 +388,7 @@ tags="$tags"
 build-path="/var/lib/buildkite-agent/builds"
 hooks-path="/var/lib/buildkite-agent/hooks"
 plugins-path="/var/lib/buildkite-agent/plugins"
-environment=["CLEANROOM_PRIVILEGED_MODE=helper","CLEANROOM_PRIVILEGED_HELPER_PATH=${HELPER_INSTALL_PATH}"]
+environment=["CLEANROOM_PRIVILEGED_HELPER_PATH=${HELPER_INSTALL_PATH}"]
 CFG
 chown root:buildkite-agent "/etc/buildkite-agent/${QUEUE_NAME}.cfg"
 chmod 0640 "/etc/buildkite-agent/${QUEUE_NAME}.cfg"

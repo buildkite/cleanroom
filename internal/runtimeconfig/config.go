@@ -29,7 +29,6 @@ type FirecrackerConfig struct {
 	RootFS               string         `yaml:"rootfs"`
 	Services             ServicesConfig `yaml:"services"`
 	Snapshots            SnapshotConfig `yaml:"snapshots"`
-	PrivilegedMode       string         `yaml:"privileged_mode"`
 	PrivilegedHelperPath string         `yaml:"privileged_helper_path"`
 	VCPUs                int64          `yaml:"vcpus"`
 	MemoryMiB            int64          `yaml:"memory_mib"`
@@ -95,7 +94,6 @@ func MergeBackendConfig(cfg Config, backendName string, launchSeconds int64) bac
 			BaseDir:               cfg.Backends.Firecracker.Snapshots.BaseDir,
 			QuiesceTimeoutSeconds: cfg.Backends.Firecracker.Snapshots.QuiesceTimeoutSeconds,
 		},
-		PrivilegedMode:       cfg.Backends.Firecracker.PrivilegedMode,
 		PrivilegedHelperPath: cfg.Backends.Firecracker.PrivilegedHelperPath,
 		VCPUs:                cfg.Backends.Firecracker.VCPUs,
 		MemoryMiB:            cfg.Backends.Firecracker.MemoryMiB,

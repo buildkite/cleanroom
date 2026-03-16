@@ -188,7 +188,6 @@ type FirecrackerConfig struct {
 	DockerStorageDriver  string
 	DockerIPTables       bool
 	Snapshots            SnapshotConfig
-	PrivilegedMode       string
 	PrivilegedHelperPath string
 	RunDir               string
 	VCPUs                int64

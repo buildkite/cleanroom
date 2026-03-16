@@ -97,10 +97,7 @@ type sandboxInstance struct {
 const runObservabilityFile = "run-observability.json"
 const vsockDialRetryInterval = 50 * time.Millisecond
 const preparedRuntimeRootFSVersion = "v1"
-const privilegedModeSudo = "sudo"
-const privilegedModeHelper = "helper"
 const defaultPrivilegedHelperPath = "/usr/local/sbin/cleanroom-root-helper"
-const legacyHelperContractVersion = "legacy"
 const helperCapabilityFirecrackerNetwork = "firecracker-network"
 const helperCapabilityFirecrackerRootFS = "firecracker-rootfs"
 const helperCapabilityFirecrackerZFS = "firecracker-zfs"
@@ -734,8 +731,7 @@ func (a *Adapter) Doctor(_ context.Context, req backend.DoctorRequest) (*backend
 	}
 	appendCheck("network_policy_rules", policyRulesStatus, policyRulesMessage)
 
-	privilegedMode, privilegedHelperPath := resolvePrivilegedExecution(req.FirecrackerConfig)
-	appendCheck("network_privileged_mode", "pass", fmt.Sprintf("using privileged command mode %q", privilegedMode))
+	privilegedHelperPath := resolvePrivilegedHelperPath(req.FirecrackerConfig)
 
 	requiredCommands := []string{"ip", "iptables", "sysctl", "sudo"}
 	for _, cmd := range requiredCommands {
@@ -746,34 +742,28 @@ func (a *Adapter) Doctor(_ context.Context, req backend.DoctorRequest) (*backend
 		}
 	}
 
-	if privilegedMode == privilegedModeHelper {
-		if _, err := os.Stat(privilegedHelperPath); err != nil {
-			appendCheck("network_helper", "fail", fmt.Sprintf("privileged helper %q is not accessible: %v", privilegedHelperPath, err))
+	if _, err := os.Stat(privilegedHelperPath); err != nil {
+		appendCheck("network_helper", "fail", fmt.Sprintf("privileged helper %q is not accessible: %v", privilegedHelperPath, err))
+	} else {
+		appendCheck("network_helper", "pass", fmt.Sprintf("using privileged helper %q", privilegedHelperPath))
+
+		version, err := helperVersion(context.Background(), req.FirecrackerConfig)
+		if err != nil {
+			appendCheck("network_helper_version", "warn", fmt.Sprintf("privileged helper version probe failed: %v", err))
 		} else {
-			appendCheck("network_helper", "pass", fmt.Sprintf("using privileged helper %q", privilegedHelperPath))
+			appendCheck("network_helper_version", "pass", fmt.Sprintf("helper contract version %s", version))
+		}
 
-			version, legacyVersion, err := helperVersion(context.Background(), req.FirecrackerConfig)
-			if err != nil {
-				appendCheck("network_helper_version", "warn", fmt.Sprintf("privileged helper version probe failed: %v", err))
-			} else if legacyVersion {
-				appendCheck("network_helper_version", "warn", fmt.Sprintf("helper does not expose version; treating host helper as %s", legacyHelperContractVersion))
+		caps, err := helperCapabilities(context.Background(), req.FirecrackerConfig)
+		if err != nil {
+			appendCheck("network_helper_capabilities", "fail", fmt.Sprintf("privileged helper capability probe failed: %v", err))
+		} else {
+			requiredCaps := helperRequiredCapabilities(req.FirecrackerConfig)
+			missingCaps := helperMissingCapabilities(caps, requiredCaps)
+			if len(missingCaps) > 0 {
+				appendCheck("network_helper_capabilities", "fail", fmt.Sprintf("helper is missing required capabilities: %s (have: %s)", strings.Join(missingCaps, ", "), strings.Join(caps, ", ")))
 			} else {
-				appendCheck("network_helper_version", "pass", fmt.Sprintf("helper contract version %s", version))
-			}
-
-			caps, legacyCaps, err := helperCapabilities(context.Background(), req.FirecrackerConfig)
-			if err != nil {
-				appendCheck("network_helper_capabilities", "fail", fmt.Sprintf("privileged helper capability probe failed: %v", err))
-			} else {
-				requiredCaps := helperRequiredCapabilities(req.FirecrackerConfig)
-				missingCaps := helperMissingCapabilities(caps, requiredCaps)
-				if len(missingCaps) > 0 {
-					appendCheck("network_helper_capabilities", "fail", fmt.Sprintf("helper is missing required capabilities: %s (have: %s)", strings.Join(missingCaps, ", "), strings.Join(caps, ", ")))
-				} else if legacyCaps {
-					appendCheck("network_helper_capabilities", "warn", fmt.Sprintf("helper does not expose capabilities; assuming legacy capabilities: %s", strings.Join(caps, ", ")))
-				} else {
-					appendCheck("network_helper_capabilities", "pass", fmt.Sprintf("helper capabilities: %s", strings.Join(caps, ", ")))
-				}
+				appendCheck("network_helper_capabilities", "pass", fmt.Sprintf("helper capabilities: %s", strings.Join(caps, ", ")))
 			}
 		}
 	}
@@ -2206,16 +2196,12 @@ func resolveForwardRulesWithLookup(ctx context.Context, allow []policy.AllowRule
 	return rules, nil
 }
 
-func resolvePrivilegedExecution(cfg backend.FirecrackerConfig) (mode string, helperPath string) {
-	mode = strings.ToLower(strings.TrimSpace(cfg.PrivilegedMode))
-	if mode == "" {
-		mode = privilegedModeSudo
-	}
-	helperPath = strings.TrimSpace(cfg.PrivilegedHelperPath)
+func resolvePrivilegedHelperPath(cfg backend.FirecrackerConfig) string {
+	helperPath := strings.TrimSpace(cfg.PrivilegedHelperPath)
 	if helperPath == "" {
 		helperPath = defaultPrivilegedHelperPath
 	}
-	return mode, helperPath
+	return helperPath
 }
 
 func helperRequiredCapabilities(cfg backend.FirecrackerConfig) []string {
@@ -2229,13 +2215,6 @@ func helperRequiredCapabilities(cfg backend.FirecrackerConfig) []string {
 		required = append(required, helperCapabilityFirecrackerZFS)
 	}
 	return required
-}
-
-func helperLegacyCapabilities() []string {
-	return []string{
-		helperCapabilityFirecrackerNetwork,
-		helperCapabilityFirecrackerRootFS,
-	}
 }
 
 func helperMissingCapabilities(have, required []string) []string {
@@ -2257,13 +2236,10 @@ func helperMissingCapabilities(have, required []string) []string {
 	return missing
 }
 
-func helperCapabilities(ctx context.Context, cfg backend.FirecrackerConfig) ([]string, bool, error) {
+func helperCapabilities(ctx context.Context, cfg backend.FirecrackerConfig) ([]string, error) {
 	out, err := runRootCommandOutput(ctx, cfg, "capabilities")
 	if err != nil {
-		if helperProbeUnsupported(err, "capabilities") {
-			return helperLegacyCapabilities(), true, nil
-		}
-		return nil, false, err
+		return nil, err
 	}
 
 	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
@@ -2280,25 +2256,15 @@ func helperCapabilities(ctx context.Context, cfg backend.FirecrackerConfig) ([]s
 		seen[cap] = struct{}{}
 		caps = append(caps, cap)
 	}
-	return caps, false, nil
+	return caps, nil
 }
 
-func helperVersion(ctx context.Context, cfg backend.FirecrackerConfig) (string, bool, error) {
+func helperVersion(ctx context.Context, cfg backend.FirecrackerConfig) (string, error) {
 	out, err := runRootCommandOutput(ctx, cfg, "version")
 	if err != nil {
-		if helperProbeUnsupported(err, "version") {
-			return legacyHelperContractVersion, true, nil
-		}
-		return "", false, err
+		return "", err
 	}
-	return strings.TrimSpace(string(out)), false, nil
-}
-
-func helperProbeUnsupported(err error, command string) bool {
-	if err == nil {
-		return false
-	}
-	return strings.Contains(err.Error(), fmt.Sprintf("unsupported command '%s'", command))
+	return strings.TrimSpace(string(out)), nil
 }
 
 func logRunNotice(backendName, runID, notice string) {
@@ -2319,18 +2285,11 @@ func runRootCommand(ctx context.Context, cfg backend.FirecrackerConfig, args ...
 		return errors.New("missing privileged command")
 	}
 
-	mode, helperPath := resolvePrivilegedExecution(cfg)
-	switch mode {
-	case privilegedModeSudo:
-		return runCombinedCommand(ctx, append([]string{"sudo", "-n"}, args...), args)
-	case privilegedModeHelper:
-		if strings.TrimSpace(helperPath) == "" {
-			return errors.New("privileged helper mode requires helper path")
-		}
-		return runCombinedCommand(ctx, append([]string{"sudo", "-n", helperPath}, args...), append([]string{"helper"}, args...))
-	default:
-		return fmt.Errorf("unsupported privileged command mode %q", mode)
+	helperPath := resolvePrivilegedHelperPath(cfg)
+	if strings.TrimSpace(helperPath) == "" {
+		return errors.New("missing privileged helper path")
 	}
+	return runCombinedCommand(ctx, append([]string{"sudo", "-n", helperPath}, args...), append([]string{"helper"}, args...))
 }
 
 func runRootCommandOutput(ctx context.Context, cfg backend.FirecrackerConfig, args ...string) ([]byte, error) {
@@ -2338,18 +2297,11 @@ func runRootCommandOutput(ctx context.Context, cfg backend.FirecrackerConfig, ar
 		return nil, errors.New("missing privileged command")
 	}
 
-	mode, helperPath := resolvePrivilegedExecution(cfg)
-	switch mode {
-	case privilegedModeSudo:
-		return runCombinedCommandOutput(ctx, append([]string{"sudo", "-n"}, args...), args)
-	case privilegedModeHelper:
-		if strings.TrimSpace(helperPath) == "" {
-			return nil, errors.New("privileged helper mode requires helper path")
-		}
-		return runCombinedCommandOutput(ctx, append([]string{"sudo", "-n", helperPath}, args...), append([]string{"helper"}, args...))
-	default:
-		return nil, fmt.Errorf("unsupported privileged command mode %q", mode)
+	helperPath := resolvePrivilegedHelperPath(cfg)
+	if strings.TrimSpace(helperPath) == "" {
+		return nil, errors.New("missing privileged helper path")
 	}
+	return runCombinedCommandOutput(ctx, append([]string{"sudo", "-n", helperPath}, args...), append([]string{"helper"}, args...))
 }
 
 func runRootCommandBatch(ctx context.Context, cfg backend.FirecrackerConfig, commands [][]string) error {

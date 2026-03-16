@@ -104,7 +104,6 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 	if fcAdapter, ok := ctx.Backends["firecracker"].(*firecracker.Adapter); ok && fcAdapter.GatewayRegistry != nil {
 		if shouldInstallGatewayFirewall(runtime.GOOS) {
 			fwCfg := backend.FirecrackerConfig{
-				PrivilegedMode:       ctx.Config.Backends.Firecracker.PrivilegedMode,
 				PrivilegedHelperPath: ctx.Config.Backends.Firecracker.PrivilegedHelperPath,
 			}
 			fwCleanup, err := firecracker.SetupGatewayFirewall(context.Background(), gwPort, fwCfg)
