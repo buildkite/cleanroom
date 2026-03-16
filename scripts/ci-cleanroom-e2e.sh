@@ -15,7 +15,7 @@ fi
 # falling back to sudo, then direct execution.
 run_privileged() {
   if [[ -n "${PRIVILEGED_HELPER_PATH:-}" ]]; then
-    "$PRIVILEGED_HELPER_PATH" "$@"
+    sudo -n "$PRIVILEGED_HELPER_PATH" "$@"
   elif command -v sudo >/dev/null 2>&1; then
     sudo -n "$@"
   else
@@ -127,7 +127,8 @@ if [[ -n "$PRIVILEGED_HELPER_PATH" && -f "scripts/cleanroom-root-helper.sh" ]]; 
     echo "⚠️  Root helper on host ($PRIVILEGED_HELPER_PATH) does not match repo (scripts/cleanroom-root-helper.sh)"
     echo "   host: $host_sha"
     echo "   repo: $repo_sha"
-    echo "   Update with: sudo install -o root -g root -m 0755 scripts/cleanroom-root-helper.sh $PRIVILEGED_HELPER_PATH"
+    echo "   Update from a trusted main checkout with:"
+    echo "   sudo CLEANROOM_HELPER_INSTALL_PATH=$PRIVILEGED_HELPER_PATH scripts/update-cleanroom-root-helper.sh"
     if command -v buildkite-agent >/dev/null 2>&1; then
       buildkite-agent annotate --context root-helper-drift --style error <<EOF
 ### ❌ Root helper out of date
@@ -139,9 +140,9 @@ The installed root helper (\`$PRIVILEGED_HELPER_PATH\`) does not match \`scripts
 | Host | \`$host_sha\` |
 | Repo | \`$repo_sha\` |
 
-**Update on the CI host:**
+**Update on the CI host from a trusted \`main\` checkout:**
 \`\`\`
-sudo install -o root -g root -m 0755 scripts/cleanroom-root-helper.sh $PRIVILEGED_HELPER_PATH
+sudo CLEANROOM_HELPER_INSTALL_PATH=$PRIVILEGED_HELPER_PATH scripts/update-cleanroom-root-helper.sh
 \`\`\`
 EOF
     fi

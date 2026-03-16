@@ -156,6 +156,14 @@ Then set:
 - `CLEANROOM_PRIVILEGED_MODE=helper`
 - `CLEANROOM_PRIVILEGED_HELPER_PATH=/usr/local/sbin/cleanroom-root-helper`
 
+Roll out future helper updates from a trusted `main` checkout:
+
+```bash
+sudo scripts/update-cleanroom-root-helper.sh
+```
+
+Only use that updater from trusted `main` automation or an operator-triggered SSM/bootstrap session. PR CI should detect helper drift and fail; it must not replace the installed helper itself.
+
 ## 5. Optional Agent Environment Hook
 
 If you prefer host-level env over pipeline step env, set variables in `/etc/buildkite-agent/hooks/environment`.
