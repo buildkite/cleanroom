@@ -118,24 +118,21 @@ Linux cleanroom hosts should be treated as long-lived capacity.
 Rerun bootstrap in-place:
 
 ```bash
-instance_id="$(mise x -- terraform -chdir=infra/terraform/envs/ci output -raw instance_id)"
-
-AWS_PROFILE=buildkite-sandbox-pipelines-admin aws ssm send-command \
-  --region us-west-2 \
-  --instance-ids "$instance_id" \
-  --document-name AWS-RunShellScript \
-  --parameters '{"commands":["sudo env PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin /usr/local/bin/cleanroom-bootstrap-linux"]}'
+mise run ci:bootstrap:linux
 ```
 
 Check bootstrap logs and agent service:
 
 ```bash
-AWS_PROFILE=buildkite-sandbox-pipelines-admin aws ssm send-command \
-  --region us-west-2 \
-  --instance-ids "$instance_id" \
-  --document-name AWS-RunShellScript \
-  --parameters '{"commands":["sudo tail -n 120 /var/log/cleanroom-bootstrap-linux.log","sudo systemctl status buildkite-agent@cleanroom.service --no-pager","sudo tail -n 120 /var/lib/buildkite-agent/logs/buildkite-agent-cleanroom.log"]}'
+mise run ci:bootstrap:linux:logs
 ```
+
+Task defaults:
+
+- `AWS_PROFILE=buildkite-sandbox-pipelines-admin`
+- `AWS_REGION=us-west-2`
+- `CLEANROOM_CI_INSTANCE_ID` overrides Terraform lookup
+- `CLEANROOM_CI_TERRAFORM_DIR=infra/terraform/envs/ci`
 
 ### 4.3 Privileged helper execution
 
