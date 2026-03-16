@@ -308,6 +308,12 @@ func TestDaemonInstallForceOverwritesAndEnablesService(t *testing.T) {
 	if !strings.Contains(content, "ExecStart=/usr/local/bin/cleanroom serve") {
 		t.Fatalf("expected serve exec start, got:\n%s", content)
 	}
+	if !strings.Contains(content, "Environment=HOME=/root") {
+		t.Fatalf("expected HOME environment in systemd unit, got:\n%s", content)
+	}
+	if !strings.Contains(content, "Environment=XDG_CONFIG_HOME=/root/.config") {
+		t.Fatalf("expected XDG_CONFIG_HOME environment in systemd unit, got:\n%s", content)
+	}
 	if !strings.Contains(content, "--listen unix:///var/run/cleanroom/cleanroom.sock") {
 		t.Fatalf("expected explicit default --listen in unit, got:\n%s", content)
 	}

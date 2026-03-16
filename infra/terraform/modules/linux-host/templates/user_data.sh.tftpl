@@ -100,26 +100,30 @@ if [ -n "$BUILDKITE_TOKEN_PARAM" ]; then
 fi
 
 if [ -n "$TAILSCALE_PARAM" ]; then
-  tailscale_auth_key="$(aws ssm get-parameter --region "$AWS_REGION" --name "$TAILSCALE_PARAM" --with-decryption --query 'Parameter.Value' --output text)"
-
-  arch_name="$(uname -m)"
-  ts_arch='amd64'
-  if [ "$arch_name" = 'aarch64' ] || [ "$arch_name" = 'arm64' ]; then
-    ts_arch='arm64'
+  if ! tailscale_auth_key="$(aws ssm get-parameter --region "$AWS_REGION" --name "$TAILSCALE_PARAM" --with-decryption --query 'Parameter.Value' --output text)"; then
+    echo "warning: tailscale auth key parameter unavailable ($TAILSCALE_PARAM); skipping tailscale bootstrap" >&2
+    tailscale_auth_key=''
   fi
 
-  ts_url="$(printf 'https://pkgs.tailscale.com/stable/tailscale_%s_%s.tgz' "$TAILSCALE_VERSION" "$ts_arch")"
-  ts_tmp_dir="$(mktemp -d)"
-  trap 'rm -rf "$ts_tmp_dir"' EXIT
-  curl -fsSL "$ts_url" -o "$ts_tmp_dir/tailscale.tgz"
-  tar -xzf "$ts_tmp_dir/tailscale.tgz" -C "$ts_tmp_dir"
-  ts_extract_dir="$(find "$ts_tmp_dir" -maxdepth 1 -type d -name 'tailscale_*' | head -n 1)"
+  if [ -n "$tailscale_auth_key" ]; then
+    arch_name="$(uname -m)"
+    ts_arch='amd64'
+    if [ "$arch_name" = 'aarch64' ] || [ "$arch_name" = 'arm64' ]; then
+      ts_arch='arm64'
+    fi
 
-  install -o root -g root -m 0755 "$ts_extract_dir/tailscale" /usr/local/bin/tailscale
-  install -o root -g root -m 0755 "$ts_extract_dir/tailscaled" /usr/local/bin/tailscaled
-  install -d -o root -g root -m 0755 /var/lib/tailscale
+    ts_url="$(printf 'https://pkgs.tailscale.com/stable/tailscale_%s_%s.tgz' "$TAILSCALE_VERSION" "$ts_arch")"
+    ts_tmp_dir="$(mktemp -d)"
+    trap 'rm -rf "$ts_tmp_dir"' EXIT
+    curl -fsSL "$ts_url" -o "$ts_tmp_dir/tailscale.tgz"
+    tar -xzf "$ts_tmp_dir/tailscale.tgz" -C "$ts_tmp_dir"
+    ts_extract_dir="$(find "$ts_tmp_dir" -maxdepth 1 -type d -name 'tailscale_*' | head -n 1)"
 
-  cat > /etc/systemd/system/tailscaled.service <<'TAILSCALE_UNIT'
+    install -o root -g root -m 0755 "$ts_extract_dir/tailscale" /usr/local/bin/tailscale
+    install -o root -g root -m 0755 "$ts_extract_dir/tailscaled" /usr/local/bin/tailscaled
+    install -d -o root -g root -m 0755 /var/lib/tailscale
+
+    cat > /etc/systemd/system/tailscaled.service <<'TAILSCALE_UNIT'
 [Unit]
 Description=Tailscale node agent
 Wants=network-online.target
@@ -135,21 +139,22 @@ Restart=on-failure
 WantedBy=multi-user.target
 TAILSCALE_UNIT
 
-  systemctl daemon-reload
-  systemctl enable --now tailscaled
+    systemctl daemon-reload
+    systemctl enable --now tailscaled
 
-  hostname="$TAILSCALE_HOSTNAME_PREFIX-$instance_id"
-  set -- up --auth-key "$tailscale_auth_key" --hostname "$hostname"
-  if [ "$TAILSCALE_ENABLE_SSH" = 'true' ]; then
-    set -- "$@" --ssh
+    hostname="$TAILSCALE_HOSTNAME_PREFIX-$instance_id"
+    set -- up --auth-key "$tailscale_auth_key" --hostname "$hostname"
+    if [ "$TAILSCALE_ENABLE_SSH" = 'true' ]; then
+      set -- "$@" --ssh
+    fi
+    if [ "$TAILSCALE_ACCEPT_ROUTES" = 'true' ]; then
+      set -- "$@" --accept-routes
+    fi
+    if [ -n "$TAILSCALE_ADVERTISE_TAGS" ]; then
+      set -- "$@" --advertise-tags "$TAILSCALE_ADVERTISE_TAGS"
+    fi
+    /usr/local/bin/tailscale "$@"
   fi
-  if [ "$TAILSCALE_ACCEPT_ROUTES" = 'true' ]; then
-    set -- "$@" --accept-routes
-  fi
-  if [ -n "$TAILSCALE_ADVERTISE_TAGS" ]; then
-    set -- "$@" --advertise-tags "$TAILSCALE_ADVERTISE_TAGS"
-  fi
-  /usr/local/bin/tailscale "$@"
 fi
 
 if [ -n "$DEPLOY_KEY_PARAM" ]; then

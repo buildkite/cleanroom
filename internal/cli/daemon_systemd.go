@@ -153,6 +153,10 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+Environment=HOME=/root
+Environment=XDG_CONFIG_HOME=/root/.config
+Environment=XDG_STATE_HOME=/root/.local/state
+Environment=XDG_DATA_HOME=/root/.local/share
 ExecStart=%s
 Restart=on-failure
 RestartSec=5

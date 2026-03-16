@@ -74,6 +74,14 @@ CLEANROOM_FIRECRACKER_VCPUS="${CLEANROOM_FIRECRACKER_VCPUS:-4}"
 CLEANROOM_FIRECRACKER_MEMORY_MIB="${CLEANROOM_FIRECRACKER_MEMORY_MIB:-8192}"
 CLEANROOM_FIRECRACKER_LAUNCH_SECONDS="${CLEANROOM_FIRECRACKER_LAUNCH_SECONDS:-90}"
 
+HOME="${HOME:-/root}"
+export HOME
+export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+export XDG_STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}"
+export XDG_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
+export GOPATH="${GOPATH:-$HOME/go}"
+export GOMODCACHE="${GOMODCACHE:-$GOPATH/pkg/mod}"
+
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 
@@ -92,6 +100,9 @@ if [ "$INSTALL_FIRECRACKER" = "true" ]; then
   log "installing firecracker ${FIRECRACKER_VERSION}"
   install_firecracker_binary "$FIRECRACKER_VERSION"
 fi
+
+install -d -o root -g root -m 0755 "$XDG_CONFIG_HOME" "$XDG_STATE_HOME" "$XDG_DATA_HOME"
+install -d -o root -g root -m 0755 "$GOPATH" "$GOPATH/pkg" "$GOMODCACHE"
 
 log "building cleanroom binaries from ${REPO_ROOT}"
 export GOTOOLCHAIN=auto
