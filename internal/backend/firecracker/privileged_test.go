@@ -215,7 +215,7 @@ func TestDoctorReportsZFSChecks(t *testing.T) {
 	writeExecutable(t, binDir, "ip", "#!/bin/sh\nif [ \"$1\" = \"link\" ] && [ \"$2\" = \"show\" ]; then exit 0; fi\nexit 0\n")
 	writeExecutable(t, binDir, "zfs", "#!/bin/sh\nif [ \"$1\" = \"list\" ] && [ \"$2\" = \"-H\" ] && [ \"$3\" = \"-o\" ] && [ \"$4\" = \"name\" ]; then printf '%s\\n' \"$5\"; exit 0; fi\nexit 0\n")
 	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
-	helperPath := writeExecutable(t, tmpDir, "cleanroom-root-helper", "#!/bin/sh\nset -eu\ncase \"$1\" in\n  version)\n    printf 'test-helper\\n'\n    ;;\n  capabilities)\n    printf 'firecracker-network\\nfirecracker-rootfs\\nfirecracker-zfs\\n'\n    ;;\n  *)\n    exec \"$@\"\n    ;;\n esac\n")
+	helperPath := writeExecutable(t, tmpDir, "cleanroom-root-helper", "#!/bin/sh\nset -eu\ncase \"$1\" in\n  version)\n    printf 'test-helper\\n'\n    ;;\n  capabilities)\n    printf 'firecracker-network\\nfirecracker-rootfs\\nfirecracker-zfs\\n'\n    ;;\n  true)\n    exec \"$@\"\n    ;;\n  zfs)\n    echo 'unexpected helper zfs probe' >&2\n    exit 2\n    ;;\n  *)\n    exec \"$@\"\n    ;;\n esac\n")
 
 	kernelPath := filepath.Join(tmpDir, "vmlinux")
 	if err := os.WriteFile(kernelPath, []byte("kernel"), 0o644); err != nil {
@@ -248,6 +248,38 @@ func TestDoctorReportsZFSChecks(t *testing.T) {
 	}
 	if got := doctorCheck(report, "snapshot_zfs_dataset_access"); got.Status != "pass" {
 		t.Fatalf("unexpected snapshot_zfs_dataset_access check: %+v", got)
+	}
+}
+
+func TestDeleteSnapshotDerivesZFSDatasetFromStorageRef(t *testing.T) {
+	tmpDir := t.TempDir()
+	sudoLogPath := filepath.Join(tmpDir, "sudo.log")
+	setupFakeSudo(t, sudoLogPath)
+
+	logPath := filepath.Join(tmpDir, "helper.log")
+	helperPath := writeExecutable(t, tmpDir, "cleanroom-root-helper", "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$*\" >> \"$HELPER_LOG_PATH\"\nexit 0\n")
+	t.Setenv("HELPER_LOG_PATH", logPath)
+
+	err := (&Adapter{}).DeleteSnapshot(context.Background(), backend.DeleteSnapshotRequest{
+		StorageRef: "tank/cleanroom/snapshots/snap-test@seed",
+		FirecrackerConfig: backend.FirecrackerConfig{
+			PrivilegedHelperPath: helperPath,
+			Snapshots: backend.SnapshotConfig{
+				Enabled: true,
+				Driver:  "zfs",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("DeleteSnapshot returned error: %v", err)
+	}
+
+	logBytes, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read helper log: %v", err)
+	}
+	if got, want := strings.TrimSpace(string(logBytes)), "zfs destroy -r tank/cleanroom/snapshots/snap-test"; got != want {
+		t.Fatalf("unexpected helper invocation: got %q want %q", got, want)
 	}
 }
 

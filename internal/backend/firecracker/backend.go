@@ -593,7 +593,8 @@ func (a *Adapter) DeleteSnapshot(ctx context.Context, req backend.DeleteSnapshot
 	if storageRef == "" {
 		return errors.New("missing snapshot storage_ref")
 	}
-	driver, err := snapshotVolumeStoreDriver(req.FirecrackerConfig)
+	driverCfg := snapshotConfigForStorageRef(req.FirecrackerConfig, storageRef)
+	driver, err := snapshotVolumeStoreDriver(driverCfg)
 	if err != nil {
 		return err
 	}
@@ -788,20 +789,28 @@ func (a *Adapter) Doctor(_ context.Context, req backend.DoctorRequest) (*backend
 			appendCheck("snapshot_zfs_dataset", "pass", fmt.Sprintf("configured zfs dataset %q", dataset))
 		}
 
+		zfsBinary := ""
 		if path, err := lookPathWithFallback("zfs", "/usr/sbin/zfs", "/sbin/zfs"); err != nil {
 			appendCheck("snapshot_zfs_binary", "fail", fmt.Sprintf("zfs command not available: %v", err))
 		} else {
+			zfsBinary = path
 			appendCheck("snapshot_zfs_binary", "pass", fmt.Sprintf("found zfs command %q", path))
 		}
 
 		if dataset != "" {
-			out, err := runRootCommandOutput(context.Background(), req.FirecrackerConfig, "zfs", "list", "-H", "-o", "name", dataset)
-			if err != nil {
-				appendCheck("snapshot_zfs_dataset_access", "fail", fmt.Sprintf("unable to access zfs dataset %q: %v", dataset, err))
-			} else if strings.TrimSpace(string(out)) != dataset {
-				appendCheck("snapshot_zfs_dataset_access", "fail", fmt.Sprintf("zfs dataset probe for %q returned %q", dataset, strings.TrimSpace(string(out))))
+			if zfsBinary == "" {
+				appendCheck("snapshot_zfs_dataset_access", "fail", fmt.Sprintf("unable to access zfs dataset %q: zfs command not available", dataset))
 			} else {
-				appendCheck("snapshot_zfs_dataset_access", "pass", fmt.Sprintf("zfs dataset %q is accessible", dataset))
+				command := []string{zfsBinary, "list", "-H", "-o", "name", dataset}
+				errorContext := []string{"zfs", "list", "-H", "-o", "name", dataset}
+				out, err := runCombinedCommandOutput(context.Background(), command, errorContext)
+				if err != nil {
+					appendCheck("snapshot_zfs_dataset_access", "fail", fmt.Sprintf("unable to access zfs dataset %q: %v", dataset, err))
+				} else if strings.TrimSpace(string(out)) != dataset {
+					appendCheck("snapshot_zfs_dataset_access", "fail", fmt.Sprintf("zfs dataset probe for %q returned %q", dataset, strings.TrimSpace(string(out))))
+				} else {
+					appendCheck("snapshot_zfs_dataset_access", "pass", fmt.Sprintf("zfs dataset %q is accessible", dataset))
+				}
 			}
 		}
 	default:
@@ -1544,7 +1553,7 @@ func (a *Adapter) launchSandboxVMFromRootFS(ctx context.Context, sandboxID strin
 		return nil, err
 	}
 
-	driver, err := rootFSVolumeStoreDriver(cfg)
+	driver, err := rootFSVolumeStoreDriver(snapshotConfigForStorageRef(cfg, sourceRootFSPath))
 	if err != nil {
 		return nil, err
 	}
@@ -1794,6 +1803,16 @@ func (r rootVolumeCommandRunner) Run(ctx context.Context, command string, args .
 
 func (r rootVolumeCommandRunner) Output(ctx context.Context, command string, args ...string) ([]byte, error) {
 	return runRootCommandOutput(ctx, r.cfg, append([]string{command}, args...)...)
+}
+
+func snapshotConfigForStorageRef(cfg backend.FirecrackerConfig, storageRef string) backend.FirecrackerConfig {
+	if strings.ToLower(strings.TrimSpace(cfg.Snapshots.Driver)) != "zfs" {
+		return cfg
+	}
+	if datasetRoot, ok := volumestore.ZFSDatasetRootFromStoredSnapshotRef(storageRef); ok {
+		cfg.Snapshots.ZFSDataset = datasetRoot
+	}
+	return cfg
 }
 
 func rootFSVolumeStoreDriver(cfg backend.FirecrackerConfig) (volumestore.Driver, error) {

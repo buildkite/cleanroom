@@ -341,6 +341,11 @@ run_zfs() {
     exec "$bin" "$@"
   fi
 
+  if [[ "$#" -eq 2 && "$1" == "promote" ]]; then
+    is_cleanroom_zfs_dataset "$2" || die "zfs promote: unsupported dataset '$2'"
+    exec "$bin" "$@"
+  fi
+
   if [[ "$#" -eq 3 && "$1" == "destroy" && "$2" == "-r" ]]; then
     is_cleanroom_zfs_dataset "$3" || die "zfs destroy -r: unsupported dataset '$3'"
     exec "$bin" "$@"

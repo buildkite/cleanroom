@@ -13,6 +13,7 @@ import (
 type zfsTestRunner struct {
 	commands []string
 	exists   map[string]bool
+	origins  map[string]string
 }
 
 func (r *zfsTestRunner) Run(_ context.Context, command string, args ...string) error {
@@ -33,13 +34,40 @@ func (r *zfsTestRunner) Run(_ context.Context, command string, args ...string) e
 	case "clone":
 		if len(args) == 4 {
 			r.exists[args[3]] = true
+			if r.origins == nil {
+				r.origins = map[string]string{}
+			}
+			r.origins[args[3]] = args[2]
+		}
+	case "promote":
+		if len(args) == 2 {
+			delete(r.origins, args[1])
 		}
 	case "destroy":
 		if len(args) >= 2 {
+			recursive := len(args) >= 3 && args[1] == "-r"
 			target := args[len(args)-1]
+			if recursive {
+				for clone, origin := range r.origins {
+					if strings.HasPrefix(origin, target+"@") && clone != target && !strings.HasPrefix(clone, target+"/") {
+						return fmt.Errorf("cannot destroy %s: snapshot has dependent clones", target)
+					}
+				}
+			} else if strings.Contains(target, "@") {
+				for _, origin := range r.origins {
+					if origin == target {
+						return fmt.Errorf("cannot destroy %s: snapshot has dependent clones", target)
+					}
+				}
+			}
 			for ref := range r.exists {
 				if ref == target || strings.HasPrefix(ref, target+"@") || strings.HasPrefix(ref, target+"/") {
 					delete(r.exists, ref)
+				}
+			}
+			for clone := range r.origins {
+				if clone == target || strings.HasPrefix(clone, target+"/") {
+					delete(r.origins, clone)
 				}
 			}
 		}
@@ -154,11 +182,11 @@ func TestZFSDriverSnapshotSurvivesSourceVolumeDestroy(t *testing.T) {
 		t.Fatalf("unexpected cloned volume ref: got %q want %q", got, want)
 	}
 
-	if err := driver.DestroySnapshot(context.Background(), DestroySnapshotRequest{SnapshotRef: snapshot.Ref}); err != nil {
-		t.Fatalf("DestroySnapshot returned error: %v", err)
-	}
 	if err := driver.DestroyVolume(context.Background(), DestroyVolumeRequest{VolumeRef: clone.Ref}); err != nil {
 		t.Fatalf("DestroyVolume returned error: %v", err)
+	}
+	if err := driver.DestroySnapshot(context.Background(), DestroySnapshotRequest{SnapshotRef: snapshot.Ref}); err != nil {
+		t.Fatalf("DestroySnapshot returned error: %v", err)
 	}
 
 	wantCommands := []string{
@@ -166,13 +194,14 @@ func TestZFSDriverSnapshotSurvivesSourceVolumeDestroy(t *testing.T) {
 		"zfs snapshot tank/cleanroom/sandboxes/sandbox-1@snap-golden",
 		"zfs list -H -o name tank/cleanroom/snapshots/golden",
 		"zfs clone -p tank/cleanroom/sandboxes/sandbox-1@snap-golden tank/cleanroom/snapshots/golden",
+		"zfs promote tank/cleanroom/snapshots/golden",
 		"zfs snapshot tank/cleanroom/snapshots/golden@seed",
 		"zfs destroy tank/cleanroom/sandboxes/sandbox-1@snap-golden",
 		"zfs destroy -r tank/cleanroom/sandboxes/sandbox-1",
 		"zfs list -H -o name tank/cleanroom/sandboxes/sandbox-2",
 		"zfs clone -p tank/cleanroom/snapshots/golden@seed tank/cleanroom/sandboxes/sandbox-2",
-		"zfs destroy -r tank/cleanroom/snapshots/golden",
 		"zfs destroy -r tank/cleanroom/sandboxes/sandbox-2",
+		"zfs destroy -r tank/cleanroom/snapshots/golden",
 	}
 	if got, want := runner.commands, wantCommands; strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("unexpected zfs commands:\n got: %v\nwant: %v", got, want)
@@ -222,5 +251,16 @@ func TestZFSDriverRequiresDatasetRoot(t *testing.T) {
 	_, err := NewZFSDriver(ZFSDriverOptions{})
 	if err == nil || !strings.Contains(err.Error(), "dataset root") {
 		t.Fatalf("expected dataset root error, got %v", err)
+	}
+}
+
+func TestZFSDatasetRootFromStoredSnapshotRef(t *testing.T) {
+	t.Parallel()
+
+	if got, ok := ZFSDatasetRootFromStoredSnapshotRef("tank/cleanroom/snapshots/golden@seed"); !ok || got != "tank/cleanroom" {
+		t.Fatalf("unexpected dataset root: got %q ok=%t", got, ok)
+	}
+	if _, ok := ZFSDatasetRootFromStoredSnapshotRef("tank/cleanroom/sandboxes/sandbox-1@snap-golden"); ok {
+		t.Fatal("expected non-stored snapshot ref to be rejected")
 	}
 }

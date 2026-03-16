@@ -161,6 +161,10 @@ func (d *ZFSDriver) SnapshotVolume(ctx context.Context, req SnapshotVolumeReques
 		_ = d.DestroyVolume(context.Background(), DestroyVolumeRequest{VolumeRef: storedDataset})
 	}()
 
+	if err := d.runner.Run(ctx, "zfs", "promote", storedDataset); err != nil {
+		return Snapshot{}, fmt.Errorf("promote zfs dataset %q: %w", storedDataset, err)
+	}
+
 	if err := d.runner.Run(ctx, "zfs", "snapshot", storedSnapshotRef); err != nil {
 		return Snapshot{}, fmt.Errorf("create zfs snapshot %q: %w", storedSnapshotRef, err)
 	}
@@ -203,8 +207,8 @@ func (d *ZFSDriver) DestroySnapshot(ctx context.Context, req DestroySnapshotRequ
 	}
 
 	command := []string{"zfs", "destroy", snapshotRef}
-	if d.isStoredSnapshot(snapshotRef) {
-		command = []string{"zfs", "destroy", "-r", datasetFromSnapshotRef(snapshotRef)}
+	if dataset, ok := storedZFSSnapshotDataset(snapshotRef); ok {
+		command = []string{"zfs", "destroy", "-r", dataset}
 	}
 	if err := d.runner.Run(ctx, command[0], command[1:]...); err != nil {
 		if isZFSMissingError(err) {
@@ -239,13 +243,38 @@ func (d *ZFSDriver) snapshotRef(dataset, snapshotName string) string {
 	return dataset + "@" + sanitizeZFSDatasetComponent(snapshotName)
 }
 
-func (d *ZFSDriver) isStoredSnapshot(snapshotRef string) bool {
+func storedZFSSnapshotDataset(snapshotRef string) (string, bool) {
 	dataset := datasetFromSnapshotRef(snapshotRef)
 	if dataset == "" {
-		return false
+		return "", false
 	}
-	prefix := d.datasetPath(zfsSnapshotNamespace)
-	return dataset == prefix || strings.HasPrefix(dataset, prefix+"/")
+	marker := "/" + zfsSnapshotNamespace + "/"
+	idx := strings.LastIndex(dataset, marker)
+	if idx <= 0 {
+		return "", false
+	}
+	if strings.TrimSpace(dataset[idx+len(marker):]) == "" {
+		return "", false
+	}
+	return dataset, true
+}
+
+func ZFSDatasetRootFromStoredSnapshotRef(snapshotRef string) (string, bool) {
+	dataset, ok := storedZFSSnapshotDataset(snapshotRef)
+	if !ok {
+		return "", false
+	}
+
+	marker := "/" + zfsSnapshotNamespace + "/"
+	idx := strings.LastIndex(dataset, marker)
+	if idx <= 0 {
+		return "", false
+	}
+	root := strings.TrimSpace(dataset[:idx])
+	if root == "" {
+		return "", false
+	}
+	return root, true
 }
 
 func (d *ZFSDriver) cloneSnapshot(ctx context.Context, snapshotRef, dataset string) (WritableVolume, error) {

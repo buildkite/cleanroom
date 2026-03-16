@@ -377,6 +377,34 @@ func TestProvisionSandboxFromSnapshotUsesSnapshotRootFS(t *testing.T) {
 	}
 }
 
+func TestSnapshotConfigForStorageRefUsesStoredZFSDataset(t *testing.T) {
+	t.Parallel()
+
+	cfg := snapshotConfigForStorageRef(backend.FirecrackerConfig{
+		Snapshots: backend.SnapshotConfig{
+			Driver:     "zfs",
+			ZFSDataset: "tank/other",
+		},
+	}, "tank/cleanroom/snapshots/snap-test@seed")
+	if got, want := cfg.Snapshots.ZFSDataset, "tank/cleanroom"; got != want {
+		t.Fatalf("unexpected zfs dataset root: got %q want %q", got, want)
+	}
+}
+
+func TestSnapshotConfigForStorageRefLeavesConfiguredDatasetForNonStoredRef(t *testing.T) {
+	t.Parallel()
+
+	cfg := snapshotConfigForStorageRef(backend.FirecrackerConfig{
+		Snapshots: backend.SnapshotConfig{
+			Driver:     "zfs",
+			ZFSDataset: "tank/cleanroom",
+		},
+	}, "tank/cleanroom/sandboxes/sandbox-1@snap-golden")
+	if got, want := cfg.Snapshots.ZFSDataset, "tank/cleanroom"; got != want {
+		t.Fatalf("unexpected zfs dataset root: got %q want %q", got, want)
+	}
+}
+
 func TestRootFSVolumeStoreDriverAllowsWritableVolumesWhenSnapshotsDisabled(t *testing.T) {
 	t.Parallel()
 
