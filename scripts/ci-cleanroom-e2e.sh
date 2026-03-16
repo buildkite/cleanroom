@@ -6,6 +6,11 @@ FIRECRACKER_BINARY="${CLEANROOM_FIRECRACKER_BINARY:-firecracker}"
 PRIVILEGED_MODE="${CLEANROOM_PRIVILEGED_MODE:-}"
 PRIVILEGED_HELPER_PATH="${CLEANROOM_PRIVILEGED_HELPER_PATH:-}"
 
+ROOT_HELPER_REQUIRED_CAPABILITIES=(
+  firecracker-network
+  firecracker-rootfs
+)
+
 if [[ -z "$KERNEL_IMAGE" ]]; then
   echo "CLEANROOM_KERNEL_IMAGE is required for Firecracker e2e CI" >&2
   exit 1
@@ -14,12 +19,76 @@ fi
 # run_privileged executes a privileged command via the root helper,
 # falling back to sudo, then direct execution.
 run_privileged() {
-  if [[ -n "${PRIVILEGED_HELPER_PATH:-}" ]]; then
-    "$PRIVILEGED_HELPER_PATH" "$@"
-  elif command -v sudo >/dev/null 2>&1; then
-    sudo -n "$@"
-  else
-    "$@"
+  case "${PRIVILEGED_MODE:-sudo}" in
+    helper)
+      if [[ -z "${PRIVILEGED_HELPER_PATH:-}" ]]; then
+        echo "CLEANROOM_PRIVILEGED_HELPER_PATH is required when CLEANROOM_PRIVILEGED_MODE=helper" >&2
+        return 1
+      fi
+      sudo -n "$PRIVILEGED_HELPER_PATH" "$@"
+      ;;
+    ""|sudo)
+      if command -v sudo >/dev/null 2>&1; then
+        sudo -n "$@"
+      else
+        "$@"
+      fi
+      ;;
+    *)
+      echo "unsupported CLEANROOM_PRIVILEGED_MODE: $PRIVILEGED_MODE" >&2
+      return 1
+      ;;
+  esac
+}
+
+annotate_root_helper_problem() {
+  local heading="$1"
+  local message="$2"
+
+  if command -v buildkite-agent >/dev/null 2>&1; then
+    buildkite-agent annotate --context root-helper-capabilities --style error <<EOF
+$heading
+
+$message
+EOF
+  fi
+}
+
+verify_helper_capabilities() {
+  [[ "${PRIVILEGED_MODE:-}" == "helper" ]] || return 0
+
+  if [[ -z "${PRIVILEGED_HELPER_PATH:-}" ]]; then
+    echo "CLEANROOM_PRIVILEGED_HELPER_PATH is required when CLEANROOM_PRIVILEGED_MODE=helper" >&2
+    return 1
+  fi
+
+  local capabilities
+  if ! capabilities="$(sudo -n "$PRIVILEGED_HELPER_PATH" capabilities 2>&1)"; then
+    echo "⚠️  Root helper capability probe failed via $PRIVILEGED_HELPER_PATH" >&2
+    echo "   $capabilities" >&2
+    annotate_root_helper_problem \
+      "### ❌ Root helper is too old" \
+      "The installed root helper (\`$PRIVILEGED_HELPER_PATH\`) does not support the capability probe required by this branch.\n\nRoll out the latest helper on the CI host, for example by rerunning \`scripts/bootstrap-buildkite-agent.sh\`, and then rerun the build."
+    return 1
+  fi
+
+  local missing=()
+  local capability
+  for capability in "${ROOT_HELPER_REQUIRED_CAPABILITIES[@]}"; do
+    if ! grep -Fxq "$capability" <<<"$capabilities"; then
+      missing+=("$capability")
+    fi
+  done
+
+  if [[ "${#missing[@]}" -gt 0 ]]; then
+    echo "⚠️  Root helper on host ($PRIVILEGED_HELPER_PATH) is missing required capabilities" >&2
+    echo "   missing: ${missing[*]}" >&2
+    echo "   have:" >&2
+    printf '     %s\n' "$capabilities" >&2
+    annotate_root_helper_problem \
+      "### ❌ Root helper is missing required capabilities" \
+      "The installed root helper (\`$PRIVILEGED_HELPER_PATH\`) is missing required capabilities for this branch.\n\nMissing: \`${missing[*]}\`\n\nRoll out the latest helper on the CI host, for example by rerunning \`scripts/bootstrap-buildkite-agent.sh\`, and then rerun the build."
+    return 1
   fi
 }
 
@@ -75,6 +144,8 @@ purge_stale_cleanroom_resources() {
   done
 }
 
+verify_helper_capabilities
+
 echo "--- :broom: Pre-build cleanup"
 purge_stale_cleanroom_resources
 
@@ -118,35 +189,6 @@ if [[ -n "$PRIVILEGED_MODE" ]]; then
 fi
 if [[ -n "$PRIVILEGED_HELPER_PATH" ]]; then
   echo "    privileged_helper_path: $PRIVILEGED_HELPER_PATH" >> "$XDG_CONFIG_HOME/cleanroom/config.yaml"
-fi
-
-if [[ -n "$PRIVILEGED_HELPER_PATH" && -f "scripts/cleanroom-root-helper.sh" ]]; then
-  repo_sha="$(sha256sum scripts/cleanroom-root-helper.sh | awk '{print $1}')"
-  host_sha="$(sha256sum "$PRIVILEGED_HELPER_PATH" 2>/dev/null | awk '{print $1}')" || true
-  if [[ -n "$host_sha" && "$repo_sha" != "$host_sha" ]]; then
-    echo "⚠️  Root helper on host ($PRIVILEGED_HELPER_PATH) does not match repo (scripts/cleanroom-root-helper.sh)"
-    echo "   host: $host_sha"
-    echo "   repo: $repo_sha"
-    echo "   Update with: sudo install -o root -g root -m 0755 scripts/cleanroom-root-helper.sh $PRIVILEGED_HELPER_PATH"
-    if command -v buildkite-agent >/dev/null 2>&1; then
-      buildkite-agent annotate --context root-helper-drift --style error <<EOF
-### ❌ Root helper out of date
-
-The installed root helper (\`$PRIVILEGED_HELPER_PATH\`) does not match \`scripts/cleanroom-root-helper.sh\` from this commit.
-
-| | SHA-256 |
-|---|---|
-| Host | \`$host_sha\` |
-| Repo | \`$repo_sha\` |
-
-**Update on the CI host:**
-\`\`\`
-sudo install -o root -g root -m 0755 scripts/cleanroom-root-helper.sh $PRIVILEGED_HELPER_PATH
-\`\`\`
-EOF
-    fi
-    exit 1
-  fi
 fi
 
 echo "--- :stethoscope: Doctor"

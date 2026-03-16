@@ -156,6 +156,14 @@ Then set:
 - `CLEANROOM_PRIVILEGED_MODE=helper`
 - `CLEANROOM_PRIVILEGED_HELPER_PATH=/usr/local/sbin/cleanroom-root-helper`
 
+In `helper` mode, `scripts/ci-cleanroom-e2e.sh` and `cleanroom doctor` probe the installed helper with `version` and `capabilities` before running Firecracker checks. They do not compare helper file hashes and they do not self-update the helper from the checkout.
+
+If a branch needs a new privileged helper capability, roll out the updated helper on the CI host first, then rerun the branch. The normal path is:
+
+1. Merge the helper change to `main`.
+2. Rerun trusted host provisioning, for example `scripts/bootstrap-buildkite-agent.sh` via SSM.
+3. Rerun dependent PR builds once the host helper has been updated.
+
 ## 5. Optional Agent Environment Hook
 
 If you prefer host-level env over pipeline step env, set variables in `/etc/buildkite-agent/hooks/environment`.

@@ -111,6 +111,41 @@ func TestRunRootCommandBatchHelperModeInvokesHelperPerCommand(t *testing.T) {
 	}
 }
 
+func TestRunRootCommandOutputHelperModeInvokesHelper(t *testing.T) {
+	tmpDir := t.TempDir()
+	sudoLogPath := filepath.Join(tmpDir, "sudo.log")
+	logPath := filepath.Join(tmpDir, "helper.log")
+	helperPath := filepath.Join(tmpDir, "cleanroom-root-helper")
+	setupFakeSudo(t, sudoLogPath)
+
+	helperScript := "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$*\" >> \"$HELPER_LOG_PATH\"\nprintf 'firecracker-network\\nfirecracker-rootfs\\n'\n"
+	if err := os.WriteFile(helperPath, []byte(helperScript), 0o755); err != nil {
+		t.Fatalf("write helper script: %v", err)
+	}
+	t.Setenv("HELPER_LOG_PATH", logPath)
+
+	cfg := backend.FirecrackerConfig{
+		PrivilegedMode:       privilegedModeHelper,
+		PrivilegedHelperPath: helperPath,
+	}
+
+	out, err := runRootCommandOutput(context.Background(), cfg, "capabilities")
+	if err != nil {
+		t.Fatalf("runRootCommandOutput: %v", err)
+	}
+	if got, want := strings.TrimSpace(string(out)), "firecracker-network\nfirecracker-rootfs"; got != want {
+		t.Fatalf("unexpected helper output: got %q want %q", got, want)
+	}
+
+	logBytes, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read helper log: %v", err)
+	}
+	if got := strings.TrimSpace(string(logBytes)); got != "capabilities" {
+		t.Fatalf("unexpected helper invocation: got %q want %q", got, "capabilities")
+	}
+}
+
 func TestResolvePrivilegedExecutionDefaultsToSudo(t *testing.T) {
 	t.Parallel()
 
@@ -120,5 +155,28 @@ func TestResolvePrivilegedExecutionDefaultsToSudo(t *testing.T) {
 	}
 	if got, want := helperPath, defaultPrivilegedHelperPath; got != want {
 		t.Fatalf("unexpected helper path: got %q want %q", got, want)
+	}
+}
+
+func TestHelperRequiredCapabilitiesIncludesZFSWhenConfigured(t *testing.T) {
+	t.Parallel()
+
+	if got, want := helperRequiredCapabilities(backend.FirecrackerConfig{}), []string{
+		helperCapabilityFirecrackerNetwork,
+		helperCapabilityFirecrackerRootFS,
+	}; strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("unexpected default helper capabilities: got %v want %v", got, want)
+	}
+
+	got := helperRequiredCapabilities(backend.FirecrackerConfig{
+		Snapshots: backend.SnapshotConfig{Driver: "zfs"},
+	})
+	want := []string{
+		helperCapabilityFirecrackerNetwork,
+		helperCapabilityFirecrackerRootFS,
+		helperCapabilityFirecrackerZFS,
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("unexpected zfs helper capabilities: got %v want %v", got, want)
 	}
 }
