@@ -100,11 +100,14 @@ is_zfs_snapshot_ref() {
 contains_cleanroom_zfs_namespace() {
   local ref="$1"
   local dataset="${ref%@*}"
-  local component
   local IFS='/'
   read -r -a components <<<"$dataset"
-  for component in "${components[@]}"; do
-    if [[ "$component" == "cleanroom" ]]; then
+  local component_count="${#components[@]}"
+  local i
+
+  # Only allow descendants of the cleanroom namespace, not the namespace root.
+  for ((i = 0; i < component_count - 1; i++)); do
+    if [[ "${components[$i]}" == "cleanroom" ]]; then
       return 0
     fi
   done
