@@ -125,11 +125,6 @@ if ! command -v git >/dev/null 2>&1; then
   exit 1
 fi
 
-if ! command -v ssh-keyscan >/dev/null 2>&1; then
-  echo "ssh-keyscan is required but not installed" >&2
-  exit 1
-fi
-
 imds_token="$(retry 10 3 curl -fsS -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")"
 instance_id="$(retry 10 3 curl -fsS -H "X-aws-ec2-metadata-token: $imds_token" http://169.254.169.254/latest/meta-data/instance-id)"
 
@@ -141,7 +136,13 @@ retry 10 3 aws ssm get-parameter \
   --output text >/dev/null
 
 if [ -n "$DEPLOY_KEY_PARAM" ]; then
+  if ! command -v ssh-keyscan >/dev/null 2>&1; then
+    echo "ssh-keyscan is required when DEPLOY_KEY_PARAM is set" >&2
+    exit 1
+  fi
+
   install -d -o root -g root -m 0700 /root/.ssh
+  deploy_known_hosts='/root/.ssh/cleanroom_known_hosts'
   retry 10 3 aws ssm get-parameter \
     --region "$AWS_REGION" \
     --name "$DEPLOY_KEY_PARAM" \
@@ -149,9 +150,9 @@ if [ -n "$DEPLOY_KEY_PARAM" ]; then
     --query 'Parameter.Value' \
     --output text > /root/.ssh/cleanroom_deploy_key
   chmod 0600 /root/.ssh/cleanroom_deploy_key
-  touch /root/.ssh/known_hosts
-  ssh-keyscan -t rsa,ecdsa,ed25519 github.com >> /root/.ssh/known_hosts
-  chmod 0644 /root/.ssh/known_hosts
+  touch "$deploy_known_hosts"
+  ssh-keyscan -t rsa,ecdsa,ed25519 github.com >> "$deploy_known_hosts"
+  chmod 0644 "$deploy_known_hosts"
 fi
 
 repo_root='/opt/cleanroom-bootstrap/repo'
@@ -159,7 +160,7 @@ rm -rf "$repo_root"
 install -d -o root -g root -m 0755 /opt/cleanroom-bootstrap
 
 if [ -n "$DEPLOY_KEY_PARAM" ]; then
-  export GIT_SSH_COMMAND='ssh -i /root/.ssh/cleanroom_deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/root/.ssh/known_hosts'
+  export GIT_SSH_COMMAND="ssh -i /root/.ssh/cleanroom_deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$deploy_known_hosts"
 fi
 
 git -c init.defaultBranch=main init "$repo_root" >/dev/null
@@ -169,7 +170,7 @@ git -C "$repo_root" checkout -f FETCH_HEAD
 
 if [ -n "$DEPLOY_KEY_PARAM" ]; then
   unset GIT_SSH_COMMAND
-  rm -f /root/.ssh/cleanroom_deploy_key /root/.ssh/known_hosts
+  rm -f /root/.ssh/cleanroom_deploy_key "$deploy_known_hosts"
 fi
 
 setup_script="$repo_root/$SETUP_SCRIPT_PATH"
