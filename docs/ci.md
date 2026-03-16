@@ -127,6 +127,7 @@ The `:fire: E2E (Firecracker)` step runs a real launched Firecracker execution a
 - Readable kernel image for the `buildkite-agent` user (or allow managed kernel auto-download)
 - Internet egress to pull `sandbox.image.ref` from registry on first run
 - `mkfs.ext4` available for OCI-to-ext4 materialization
+- `debugfs` available for runtime rootfs preparation
 - Passwordless sudo for required network setup commands
 
 ### 4.2 Place runtime kernel image
@@ -175,7 +176,9 @@ Task defaults:
 
 ### 4.3 Privileged helper execution
 
-Firecracker always executes privileged host operations through a single root-owned helper.
+Firecracker still uses a single root-owned helper for privileged host networking
+and optional ZFS operations. Runtime rootfs preparation is now unprivileged and
+uses `debugfs` instead.
 
 Runtime config key:
 

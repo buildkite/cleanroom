@@ -51,7 +51,8 @@ Current capability values (visible in `cleanroom doctor --json`):
 - `/dev/kvm` available and writable
 - Firecracker binary installed
 - `mkfs.ext4` for OCI-to-ext4 materialization
-- `sudo -n` access for `ip`, `iptables`, `sysctl`
+- `debugfs` for runtime rootfs preparation
+- `sudo -n` access for privileged host networking (`ip`, `iptables`, `sysctl`)
 
 ## Related
 

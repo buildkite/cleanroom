@@ -1,6 +1,4 @@
-//go:build darwin
-
-package darwinvz
+package ext4edit
 
 import "testing"
 
@@ -8,7 +6,7 @@ func TestDebugFSCommandOutputErrorReportsMissingFile(t *testing.T) {
 	t.Parallel()
 
 	output := "debugfs 1.47.3 (8-Jul-2025)\n/sbin: File not found by ext2_lookup while looking up \"/sbin\"\n"
-	got := debugFSCommandOutputError(output)
+	got := DebugFSCommandOutputError(output)
 	if got == "" {
 		t.Fatal("expected missing-file debugfs output to be treated as an error")
 	}
@@ -18,7 +16,7 @@ func TestDebugFSCommandOutputErrorReportsUnknownCommand(t *testing.T) {
 	t.Parallel()
 
 	output := "debugfs 1.47.3 (8-Jul-2025)\ndebugfs: Command not found writee\n"
-	got := debugFSCommandOutputError(output)
+	got := DebugFSCommandOutputError(output)
 	if got == "" {
 		t.Fatal("expected unknown-command debugfs output to be treated as an error")
 	}
@@ -28,7 +26,7 @@ func TestDebugFSCommandOutputErrorIgnoresSuccessfulOutput(t *testing.T) {
 	t.Parallel()
 
 	output := "debugfs 1.47.3 (8-Jul-2025)\nInode: 531   Type: regular    Mode:  0755   Flags: 0x80000\n"
-	if got := debugFSCommandOutputError(output); got != "" {
+	if got := DebugFSCommandOutputError(output); got != "" {
 		t.Fatalf("expected empty error for successful debugfs output, got %q", got)
 	}
 }
@@ -37,7 +35,7 @@ func TestDebugFSStatTypeParsesDirectory(t *testing.T) {
 	t.Parallel()
 
 	output := "debugfs 1.47.3 (8-Jul-2025)\nInode: 261   Type: directory    Mode:  0755   Flags: 0x80000\n"
-	if got, want := debugFSStatType(output), ext4PathKindDirectory; got != want {
+	if got, want := DebugFSStatType(output), PathKindDirectory; got != want {
 		t.Fatalf("unexpected stat type: got %q want %q", got, want)
 	}
 }
@@ -46,7 +44,7 @@ func TestDebugFSStatTypeParsesSymlink(t *testing.T) {
 	t.Parallel()
 
 	output := "debugfs 1.47.3 (8-Jul-2025)\nInode: 82   Type: symlink    Mode:  0755   Flags: 0x0\n"
-	if got, want := debugFSStatType(output), ext4PathKindSymlink; got != want {
+	if got, want := DebugFSStatType(output), PathKindSymlink; got != want {
 		t.Fatalf("unexpected stat type: got %q want %q", got, want)
 	}
 }

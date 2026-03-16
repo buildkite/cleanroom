@@ -135,7 +135,7 @@ func TestRunRootCommandOutputInvokesHelper(t *testing.T) {
 	helperPath := filepath.Join(tmpDir, "cleanroom-root-helper")
 	setupFakeSudo(t, sudoLogPath)
 
-	helperScript := "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$*\" >> \"$HELPER_LOG_PATH\"\nprintf 'firecracker-network\\nfirecracker-rootfs\\n'\n"
+	helperScript := "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$*\" >> \"$HELPER_LOG_PATH\"\nprintf 'firecracker-network\\n'\n"
 	if err := os.WriteFile(helperPath, []byte(helperScript), 0o755); err != nil {
 		t.Fatalf("write helper script: %v", err)
 	}
@@ -149,7 +149,7 @@ func TestRunRootCommandOutputInvokesHelper(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runRootCommandOutput: %v", err)
 	}
-	if got, want := strings.TrimSpace(string(out)), "firecracker-network\nfirecracker-rootfs"; got != want {
+	if got, want := strings.TrimSpace(string(out)), "firecracker-network"; got != want {
 		t.Fatalf("unexpected helper output: got %q want %q", got, want)
 	}
 
@@ -386,7 +386,6 @@ func TestHelperRequiredCapabilitiesIncludesZFSWhenConfigured(t *testing.T) {
 	got := helperRequiredCapabilities(backend.FirecrackerConfig{})
 	want := []string{
 		helperCapabilityFirecrackerNetwork,
-		helperCapabilityFirecrackerRootFS,
 	}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("unexpected default helper capabilities: got %v want %v", got, want)
@@ -397,7 +396,6 @@ func TestHelperRequiredCapabilitiesIncludesZFSWhenConfigured(t *testing.T) {
 	})
 	want = []string{
 		helperCapabilityFirecrackerNetwork,
-		helperCapabilityFirecrackerRootFS,
 		helperCapabilityFirecrackerZFS,
 	}
 	if strings.Join(got, ",") != strings.Join(want, ",") {

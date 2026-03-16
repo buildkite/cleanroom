@@ -23,6 +23,7 @@ import (
 
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/bootassets"
+	"github.com/buildkite/cleanroom/internal/ext4edit"
 	"github.com/buildkite/cleanroom/internal/ext4image"
 	"github.com/buildkite/cleanroom/internal/gateway"
 	"github.com/buildkite/cleanroom/internal/hosttools"
@@ -1671,8 +1672,8 @@ var preparedRuntimeRootFSRequiredPaths = []string{
 
 func validatePreparedRuntimeRootFS(path string) error {
 	for _, requiredPath := range preparedRuntimeRootFSRequiredPaths {
-		if err := runDebugFS(path, false, fmt.Sprintf("stat %s", requiredPath)); err != nil {
-			return fmt.Errorf("required runtime file %q is missing or unreadable: %w", requiredPath, err)
+		if !ext4PathExists(path, requiredPath) {
+			return fmt.Errorf("required runtime file %q is missing or unreadable", requiredPath)
 		}
 	}
 	return validatePreparedRuntimeRootFSInitPathForLayout(
@@ -1683,7 +1684,6 @@ func validatePreparedRuntimeRootFS(path string) error {
 		},
 	)
 }
-
 func preparedRuntimeRootFSPath(imageDigest, guestAgentHash string) (string, error) {
 	cacheBase, err := paths.CacheBaseDir()
 	if err != nil {
@@ -1856,138 +1856,24 @@ func hashFileSHA256(path string) (string, error) {
 }
 
 func injectFileIntoExt4(imagePath, srcPath, dstPath string, mode os.FileMode) error {
-	cleanDst := filepath.Clean(dstPath)
-	if !strings.HasPrefix(cleanDst, "/") {
-		return fmt.Errorf("destination path %q must be absolute", dstPath)
-	}
-	if err := ensureExt4Dir(imagePath, filepath.Dir(cleanDst)); err != nil {
-		return err
-	}
-
-	if ext4PathExists(imagePath, cleanDst) {
-		_ = runDebugFS(imagePath, true, fmt.Sprintf("rm %s", cleanDst))
-	}
-	if err := runDebugFS(imagePath, true, fmt.Sprintf("write %s %s", srcPath, cleanDst)); err != nil {
-		return err
-	}
-	modeValue := fmt.Sprintf("%#o", uint32(0o100000)|uint32(mode.Perm()))
-	return runDebugFS(imagePath, true, fmt.Sprintf("set_inode_field %s mode %s", cleanDst, modeValue))
-}
-
-func ensureExt4Dir(imagePath, dir string) error {
-	cleanDir := filepath.Clean(dir)
-	if cleanDir == "." || cleanDir == "/" {
-		return nil
-	}
-	if !strings.HasPrefix(cleanDir, "/") {
-		cleanDir = "/" + cleanDir
-	}
-	parts := strings.Split(strings.TrimPrefix(cleanDir, "/"), "/")
-	cur := ""
-	for _, part := range parts {
-		if strings.TrimSpace(part) == "" {
-			continue
-		}
-		cur += "/" + part
-		if ext4PathExists(imagePath, cur) {
-			continue
-		}
-		if err := runDebugFS(imagePath, true, fmt.Sprintf("mkdir %s", cur)); err != nil {
-			return err
-		}
-	}
-	return nil
+	return ext4edit.InjectFile(imagePath, srcPath, dstPath, mode)
 }
 
 func ext4PathExists(imagePath, path string) bool {
-	return runDebugFS(imagePath, false, fmt.Sprintf("stat %s", path)) == nil
+	return ext4edit.PathExists(imagePath, path)
 }
 
 func ext4PathType(imagePath, path string) ext4PathKind {
-	output, err := runDebugFSOutput(imagePath, false, fmt.Sprintf("stat %s", path))
-	if err != nil {
+	switch ext4edit.PathType(imagePath, path) {
+	case ext4edit.PathKindDirectory:
+		return ext4PathKindDirectory
+	case ext4edit.PathKindRegular:
+		return ext4PathKindRegular
+	case ext4edit.PathKindSymlink:
+		return ext4PathKindSymlink
+	default:
 		return ext4PathKindUnknown
 	}
-	return debugFSStatType(output)
-}
-
-func runDebugFS(imagePath string, writable bool, command string) error {
-	_, err := runDebugFSOutput(imagePath, writable, command)
-	return err
-}
-
-func runDebugFSOutput(imagePath string, writable bool, command string) (string, error) {
-	debugfsBinary, err := hosttools.ResolveE2FSProgsBinary("debugfs")
-	if err != nil {
-		return "", fmt.Errorf("find debugfs for runtime rootfs preparation: %w", err)
-	}
-
-	args := make([]string, 0, 4)
-	if writable {
-		args = append(args, "-w")
-	}
-	args = append(args, "-R", command, imagePath)
-	cmd := exec.Command(debugfsBinary, args...)
-	output, err := cmd.CombinedOutput()
-	trimmedOutput := strings.TrimSpace(string(output))
-	if err != nil {
-		return "", fmt.Errorf("debugfs command %q failed: %w: %s", command, err, trimmedOutput)
-	}
-	if outputErr := debugFSCommandOutputError(trimmedOutput); outputErr != "" {
-		return "", fmt.Errorf("debugfs command %q reported error: %s", command, outputErr)
-	}
-	return trimmedOutput, nil
-}
-
-func debugFSCommandOutputError(output string) string {
-	trimmed := strings.TrimSpace(output)
-	if trimmed == "" {
-		return ""
-	}
-	for _, line := range strings.Split(trimmed, "\n") {
-		msg := strings.TrimSpace(line)
-		if msg == "" {
-			continue
-		}
-		lower := strings.ToLower(msg)
-		if strings.HasPrefix(lower, "debugfs ") {
-			// Version banner.
-			continue
-		}
-		if strings.Contains(lower, "file not found") ||
-			strings.Contains(lower, "ext2_lookup") ||
-			strings.Contains(lower, "command not found") ||
-			strings.Contains(lower, "no such file or directory") ||
-			strings.Contains(lower, "not a directory") {
-			return msg
-		}
-	}
-	return ""
-}
-
-func debugFSStatType(output string) ext4PathKind {
-	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
-		line = strings.TrimSpace(line)
-		if !strings.Contains(line, "Type:") {
-			continue
-		}
-		rest := line[strings.Index(line, "Type:")+len("Type:"):]
-		fields := strings.Fields(rest)
-		if len(fields) == 0 {
-			return ext4PathKindUnknown
-		}
-		switch strings.ToLower(fields[0]) {
-		case string(ext4PathKindDirectory):
-			return ext4PathKindDirectory
-		case string(ext4PathKindRegular):
-			return ext4PathKindRegular
-		case string(ext4PathKindSymlink):
-			return ext4PathKindSymlink
-		default:
-			return ext4PathKindUnknown
-		}
-	}
-	return ext4PathKindUnknown
 }
 
 func (a *Adapter) resolveKernelPath(ctx context.Context, configuredPath string) (path, notice string, err error) {
