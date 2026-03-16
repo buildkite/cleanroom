@@ -135,6 +135,7 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 	}
 
 	stdinErrCh := startExecutionStdinForwarder(client, sandboxID, executionID, e.NoStdin)
+	stdinErrCh = monitorExecutionStdinErr(streamCtx, streamCancel, stdinErrCh)
 
 	signalCh := newSignalChannel()
 	notifySignals(signalCh, os.Interrupt, syscall.SIGTERM)

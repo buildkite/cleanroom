@@ -641,6 +641,49 @@ func TestExecIntegrationNoStdinClosesImmediately(t *testing.T) {
 	}
 }
 
+func TestExecIntegrationNoStdinFailureDoesNotHangWhileStreamBlocked(t *testing.T) {
+	started := make(chan struct{}, 1)
+	adapter := &integrationAdapter{
+		runFn: func(ctx context.Context, _ backend.RunRequest) (*backend.RunResult, error) {
+			select {
+			case started <- struct{}{}:
+			default:
+			}
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+
+	host, _ := startIntegrationServer(t, adapter)
+	cwd := t.TempDir()
+
+	done := make(chan execOutcome, 1)
+	go func() {
+		done <- runExecWithCapture(ExecCommand{
+			clientFlags: clientFlags{Host: host},
+			Chdir:       cwd,
+			NoStdin:     true,
+			Command:     []string{"cat"},
+		}, runtimeContext{
+			CWD:    cwd,
+			Loader: integrationLoader{},
+		})
+	}()
+
+	_ = mustReceiveWithin(t, started, 2*time.Second, "timed out waiting for execution to start")
+	outcome := mustReceiveWithin(t, done, 5*time.Second, "timed out waiting for stdin close failure")
+
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err == nil {
+		t.Fatal("expected stdin close error")
+	}
+	if !strings.Contains(outcome.err.Error(), "execution stdin attach is not supported") {
+		t.Fatalf("expected stdin attach error, got %v", outcome.err)
+	}
+}
+
 func TestExecIntegrationPropagatesExitAndStderr(t *testing.T) {
 	adapter := &integrationAdapter{
 		runFn: func(_ context.Context, req backend.RunRequest) (*backend.RunResult, error) {

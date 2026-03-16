@@ -154,6 +154,35 @@ func closeExecutionStdin(client *controlclient.Client, sandboxID, executionID st
 	return nil
 }
 
+func monitorExecutionStdinErr(
+	ctx context.Context,
+	cancel context.CancelFunc,
+	errCh <-chan error,
+) <-chan error {
+	if errCh == nil {
+		return nil
+	}
+
+	monitoredErrCh := make(chan error, 1)
+	go func() {
+		defer close(monitoredErrCh)
+
+		select {
+		case err, ok := <-errCh:
+			if !ok || err == nil {
+				return
+			}
+			monitoredErrCh <- err
+			if cancel != nil {
+				cancel()
+			}
+		case <-ctx.Done():
+		}
+	}()
+
+	return monitoredErrCh
+}
+
 func pollExecutionStdinErr(errCh <-chan error) error {
 	if errCh == nil {
 		return nil
