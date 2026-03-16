@@ -179,6 +179,45 @@ func TestZFSDriverSnapshotSurvivesSourceVolumeDestroy(t *testing.T) {
 	}
 }
 
+func TestZFSDriverEnsureBaseVolumeUsesMinimumBytesNamespace(t *testing.T) {
+	sourcePath := filepath.Join(t.TempDir(), "prepared.ext4")
+	if err := os.WriteFile(sourcePath, []byte("base-bytes"), 0o644); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+
+	runner := &zfsTestRunner{exists: map[string]bool{}}
+	driver, err := NewZFSDriver(ZFSDriverOptions{
+		DatasetRoot: "tank/cleanroom",
+		Runner:      runner,
+	})
+	if err != nil {
+		t.Fatalf("NewZFSDriver returned error: %v", err)
+	}
+
+	base, err := driver.EnsureBaseVolume(context.Background(), EnsureBaseVolumeRequest{
+		BaseID:       "runtime-key",
+		SourcePath:   sourcePath,
+		MinimumBytes: 8 << 20,
+	})
+	if err != nil {
+		t.Fatalf("EnsureBaseVolume returned error: %v", err)
+	}
+	if got, want := base.Ref, "tank/cleanroom/base/runtime-key-min-8388608@seed"; got != want {
+		t.Fatalf("unexpected base ref: got %q want %q", got, want)
+	}
+
+	wantCommands := []string{
+		"zfs list -H -o name tank/cleanroom/base/runtime-key-min-8388608",
+		"zfs create -p -V 8388608 tank/cleanroom/base/runtime-key-min-8388608",
+		"dd if=" + sourcePath + " of=/dev/zvol/tank/cleanroom/base/runtime-key-min-8388608 bs=4M conv=fsync status=none",
+		"zfs list -H -o name tank/cleanroom/base/runtime-key-min-8388608@seed",
+		"zfs snapshot tank/cleanroom/base/runtime-key-min-8388608@seed",
+	}
+	if got, want := runner.commands, wantCommands; strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("unexpected zfs commands:\n got: %v\nwant: %v", got, want)
+	}
+}
+
 func TestZFSDriverRequiresDatasetRoot(t *testing.T) {
 	_, err := NewZFSDriver(ZFSDriverOptions{})
 	if err == nil || !strings.Contains(err.Error(), "dataset root") {

@@ -3,11 +3,13 @@ package ext4image
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestEnsureMinimumSizeNoOpWhenAlreadyLarge(t *testing.T) {
@@ -91,23 +93,124 @@ func TestEnsureMinimumSizePropagatesResolveError(t *testing.T) {
 	}
 }
 
+func TestEnsureMinimumSizeGrowsBlockDeviceWithoutTruncate(t *testing.T) {
+	restore := stubResizeDependencies()
+	defer restore()
+
+	imagePath := "/dev/zvol/tank/cleanroom/sandboxes/sandbox-1"
+	statPath = func(string) (os.FileInfo, error) {
+		return fakeFileInfo{mode: os.ModeDevice}, nil
+	}
+	evalSymlinks = func(string) (string, error) {
+		return "/dev/zd42", nil
+	}
+	readFile = func(path string) ([]byte, error) {
+		wantPath := filepath.Join("/sys/class/block", "zd42", "size")
+		if path != wantPath {
+			return nil, fmt.Errorf("unexpected size path %q", path)
+		}
+		return []byte("24576\n"), nil
+	}
+	truncateCalled := false
+	truncateFile = func(string, int64) error {
+		truncateCalled = true
+		return nil
+	}
+
+	var gotCommands [][]string
+	runCommand = func(_ context.Context, binary string, args []string, allowedExitCodes ...int) error {
+		record := append([]string{binary}, append([]string(nil), args...)...)
+		gotCommands = append(gotCommands, record)
+		return nil
+	}
+
+	if err := EnsureMinimumSize(context.Background(), imagePath, int64((9<<20)+1)); err != nil {
+		t.Fatalf("EnsureMinimumSize returned error: %v", err)
+	}
+
+	wantCommands := [][]string{
+		{"e2fsck-path", "-fy", imagePath},
+		{"resize2fs-path", imagePath},
+	}
+	if !reflect.DeepEqual(gotCommands, wantCommands) {
+		t.Fatalf("unexpected resize commands: got %#v want %#v", gotCommands, wantCommands)
+	}
+	if truncateCalled {
+		t.Fatal("expected block-device resize to avoid truncate")
+	}
+}
+
+func TestEnsureMinimumSizeRejectsTooSmallBlockDevice(t *testing.T) {
+	restore := stubResizeDependencies()
+	defer restore()
+
+	imagePath := "/dev/zvol/tank/cleanroom/sandboxes/sandbox-1"
+	statPath = func(string) (os.FileInfo, error) {
+		return fakeFileInfo{mode: os.ModeDevice}, nil
+	}
+	evalSymlinks = func(string) (string, error) {
+		return "/dev/zd42", nil
+	}
+	readFile = func(string) ([]byte, error) {
+		return []byte("16384\n"), nil
+	}
+
+	var called bool
+	runCommand = func(context.Context, string, []string, ...int) error {
+		called = true
+		return nil
+	}
+
+	err := EnsureMinimumSize(context.Background(), imagePath, int64((9<<20)+1))
+	if err == nil {
+		t.Fatal("expected block-device resize to fail")
+	}
+	if !strings.Contains(err.Error(), "below requested minimum") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if called {
+		t.Fatal("expected resize commands to be skipped")
+	}
+}
+
 func stubResizeDependencies() func() {
 	prevResolve := resolveE2FSProgsBinary
 	prevRun := runCommand
+	prevStat := statPath
 	prevTruncate := truncateFile
+	prevEvalSymlinks := evalSymlinks
+	prevReadFile := readFile
 
 	resolveE2FSProgsBinary = func(binary string) (string, error) {
 		return binary + "-path", nil
 	}
 	runCommand = runCommandWithAllowedExitCodes
+	statPath = os.Stat
 	truncateFile = os.Truncate
+	evalSymlinks = filepath.EvalSymlinks
+	readFile = os.ReadFile
 
 	return func() {
 		resolveE2FSProgsBinary = prevResolve
 		runCommand = prevRun
+		statPath = prevStat
 		truncateFile = prevTruncate
+		evalSymlinks = prevEvalSymlinks
+		readFile = prevReadFile
 	}
 }
+
+type fakeFileInfo struct {
+	mode os.FileMode
+	size int64
+}
+
+func (f fakeFileInfo) Name() string       { return "fake" }
+func (f fakeFileInfo) Size() int64        { return f.size }
+func (f fakeFileInfo) Mode() os.FileMode  { return f.mode }
+func (f fakeFileInfo) ModTime() time.Time { return time.Time{} }
+func (f fakeFileInfo) IsDir() bool        { return false }
+func (f fakeFileInfo) Sys() any           { return nil }
 
 func createSizedTempFile(t *testing.T, size int64) string {
 	t.Helper()

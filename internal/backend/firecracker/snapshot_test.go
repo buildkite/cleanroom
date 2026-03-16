@@ -451,19 +451,31 @@ func TestPreparePersistentWritableVolumeUsesBaseVolumeForRootFSPath(t *testing.T
 		},
 		createWritableVolumeFn: func(_ context.Context, req volumestore.CreateWritableVolumeRequest) (volumestore.WritableVolume, error) {
 			gotCreateReq = req
+			if err := os.WriteFile(req.AttachmentPath, nil, 0o644); err != nil {
+				return volumestore.WritableVolume{}, err
+			}
+			if err := os.Truncate(req.AttachmentPath, 8<<20); err != nil {
+				return volumestore.WritableVolume{}, err
+			}
 			return volumestore.WritableVolume{Ref: "volume-ref", AttachmentPath: req.AttachmentPath}, nil
 		},
 	}
 
-	writable, err := preparePersistentWritableVolume(context.Background(), driver, "sandbox-1", t.TempDir(), rootfsPath)
+	writable, cleanupVolume, err := preparePersistentWritableVolume(context.Background(), driver, "sandbox-1", t.TempDir(), rootfsPath, 8<<20)
 	if err != nil {
 		t.Fatalf("preparePersistentWritableVolume returned error: %v", err)
+	}
+	if cleanupVolume == nil {
+		t.Fatal("expected cleanup function")
 	}
 	if got, want := gotEnsureReq.SourcePath, rootfsPath; got != want {
 		t.Fatalf("unexpected base source path: got %q want %q", got, want)
 	}
 	if got, want := gotEnsureReq.BaseID, "runtime-rootfs"; got != want {
 		t.Fatalf("unexpected base id: got %q want %q", got, want)
+	}
+	if got, want := gotEnsureReq.MinimumBytes, int64(8<<20); got != want {
+		t.Fatalf("unexpected minimum bytes: got %d want %d", got, want)
 	}
 	if got, want := gotCreateReq.BaseRef, "base-ref"; got != want {
 		t.Fatalf("unexpected base ref: got %q want %q", got, want)
@@ -487,9 +499,12 @@ func TestPreparePersistentWritableVolumeUsesSnapshotCloneForSnapshotRef(t *testi
 		},
 	}
 
-	writable, err := preparePersistentWritableVolume(context.Background(), driver, "sandbox-1", t.TempDir(), "tank/cleanroom/sandboxes/source@snap-golden")
+	writable, cleanupVolume, err := preparePersistentWritableVolume(context.Background(), driver, "sandbox-1", t.TempDir(), "tank/cleanroom/sandboxes/source@snap-golden", 0)
 	if err != nil {
 		t.Fatalf("preparePersistentWritableVolume returned error: %v", err)
+	}
+	if cleanupVolume == nil {
+		t.Fatal("expected cleanup function")
 	}
 	if got, want := gotCloneReq.SnapshotRef, "tank/cleanroom/sandboxes/source@snap-golden"; got != want {
 		t.Fatalf("unexpected snapshot ref: got %q want %q", got, want)
@@ -499,5 +514,34 @@ func TestPreparePersistentWritableVolumeUsesSnapshotCloneForSnapshotRef(t *testi
 	}
 	if got, want := writable.AttachmentPath, "/dev/zvol/tank/cleanroom/sandboxes/sandbox-1"; got != want {
 		t.Fatalf("unexpected attachment path: got %q want %q", got, want)
+	}
+}
+
+func TestPreparePersistentWritableVolumeCleansUpOnResizeFailure(t *testing.T) {
+	t.Parallel()
+
+	var destroyed string
+	driver := testVolumeDriver{
+		cloneSnapshotToVolumeFn: func(_ context.Context, req volumestore.CloneSnapshotToVolumeRequest) (volumestore.WritableVolume, error) {
+			return volumestore.WritableVolume{
+				Ref:            "tank/cleanroom/sandboxes/sandbox-1",
+				AttachmentPath: filepath.Join(t.TempDir(), "missing.ext4"),
+			}, nil
+		},
+		destroyVolumeFn: func(_ context.Context, req volumestore.DestroyVolumeRequest) error {
+			destroyed = req.VolumeRef
+			return nil
+		},
+	}
+
+	_, cleanupVolume, err := preparePersistentWritableVolume(context.Background(), driver, "sandbox-1", t.TempDir(), "tank/cleanroom/sandboxes/source@snap-golden", 8<<20)
+	if err == nil {
+		t.Fatal("expected preparePersistentWritableVolume to fail")
+	}
+	if cleanupVolume != nil {
+		t.Fatal("expected cleanup function to be discarded on failure")
+	}
+	if got, want := destroyed, "tank/cleanroom/sandboxes/sandbox-1"; got != want {
+		t.Fatalf("unexpected destroyed volume ref: got %q want %q", got, want)
 	}
 }

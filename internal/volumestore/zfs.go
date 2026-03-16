@@ -69,15 +69,19 @@ func (d *ZFSDriver) EnsureBaseVolume(ctx context.Context, req EnsureBaseVolumeRe
 		return BaseVolume{}, fmt.Errorf("inspect base volume source %q: empty file", sourcePath)
 	}
 
-	baseDataset := d.datasetPath(zfsBaseNamespace, sanitizeZFSDatasetComponent(req.BaseID))
+	baseDataset := d.baseDataset(req.BaseID, req.MinimumBytes)
 	baseSnapshot := d.snapshotRef(baseDataset, zfsBaseSnapshotName)
+	volumeSize := info.Size()
+	if req.MinimumBytes > volumeSize {
+		volumeSize = req.MinimumBytes
+	}
 
 	baseExists, err := d.refExists(ctx, baseDataset)
 	if err != nil {
 		return BaseVolume{}, err
 	}
 	if !baseExists {
-		if err := d.runner.Run(ctx, "zfs", "create", "-p", "-V", strconv.FormatInt(info.Size(), 10), baseDataset); err != nil {
+		if err := d.runner.Run(ctx, "zfs", "create", "-p", "-V", strconv.FormatInt(volumeSize, 10), baseDataset); err != nil {
 			return BaseVolume{}, fmt.Errorf("create zfs base volume %q: %w", baseDataset, err)
 		}
 		if err := d.runner.Run(ctx, "dd", "if="+sourcePath, "of="+zvolDevicePath(baseDataset), "bs=4M", "conv=fsync", "status=none"); err != nil {
@@ -221,6 +225,14 @@ func (d *ZFSDriver) datasetPath(parts ...string) string {
 		items = append(items, part)
 	}
 	return strings.Join(items, "/")
+}
+
+func (d *ZFSDriver) baseDataset(baseID string, minimumBytes int64) string {
+	baseID = sanitizeZFSDatasetComponent(baseID)
+	if minimumBytes > 0 {
+		baseID = fmt.Sprintf("%s-min-%d", baseID, minimumBytes)
+	}
+	return d.datasetPath(zfsBaseNamespace, baseID)
 }
 
 func (d *ZFSDriver) snapshotRef(dataset, snapshotName string) string {

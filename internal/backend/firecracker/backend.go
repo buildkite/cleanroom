@@ -1548,17 +1548,11 @@ func (a *Adapter) launchSandboxVMFromRootFS(ctx context.Context, sandboxID strin
 	if err != nil {
 		return nil, err
 	}
-	writableVolume, err := preparePersistentWritableVolume(ctx, driver, sandboxID, runDir, sourceRootFSPath)
+	writableVolume, cleanupVolume, err := preparePersistentWritableVolume(ctx, driver, sandboxID, runDir, sourceRootFSPath, cfg.MinimumRootFSBytes)
 	if err != nil {
 		return nil, fmt.Errorf("prepare persistent rootfs: %w", err)
 	}
 	vmRootFSPath := writableVolume.AttachmentPath
-	if err := ext4image.EnsureMinimumSize(ctx, vmRootFSPath, cfg.MinimumRootFSBytes); err != nil {
-		return nil, fmt.Errorf("resize persistent rootfs: %w", err)
-	}
-	cleanupVolume := func() {
-		_ = driver.DestroyVolume(context.Background(), volumestore.DestroyVolumeRequest{VolumeRef: writableVolume.Ref})
-	}
 
 	networkRunCommand := func(ctx context.Context, args ...string) error {
 		return runRootCommand(ctx, cfg, args...)
@@ -1716,41 +1710,61 @@ func sandboxRuntimeBaseDir() (string, error) {
 	return filepath.Join(base, "sandboxes"), nil
 }
 
-func preparePersistentWritableVolume(ctx context.Context, driver volumestore.Driver, sandboxID, runDir, sourceRef string) (volumestore.WritableVolume, error) {
+func preparePersistentWritableVolume(ctx context.Context, driver volumestore.Driver, sandboxID, runDir, sourceRef string, minimumBytes int64) (volumestore.WritableVolume, func(), error) {
 	sourceRef = strings.TrimSpace(sourceRef)
 	if sourceRef == "" {
-		return volumestore.WritableVolume{}, errors.New("missing persistent rootfs source")
+		return volumestore.WritableVolume{}, nil, errors.New("missing persistent rootfs source")
 	}
 
 	attachmentPath := filepath.Join(runDir, "rootfs-persistent.ext4")
+	resizeVolume := func(volume volumestore.WritableVolume) (volumestore.WritableVolume, func(), error) {
+		cleanupVolume := func() {
+			_ = driver.DestroyVolume(context.Background(), volumestore.DestroyVolumeRequest{VolumeRef: volume.Ref})
+		}
+		if err := volumestore.EnsureWritableVolumeMinimumSize(ctx, volume, minimumBytes); err != nil {
+			cleanupVolume()
+			return volumestore.WritableVolume{}, nil, fmt.Errorf("resize persistent rootfs: %w", err)
+		}
+		return volume, cleanupVolume, nil
+	}
+
 	if filepath.IsAbs(sourceRef) {
 		rootfsPath, err := filepath.Abs(sourceRef)
 		if err != nil {
-			return volumestore.WritableVolume{}, err
+			return volumestore.WritableVolume{}, nil, err
 		}
 		if _, err := os.Stat(rootfsPath); err != nil {
-			return volumestore.WritableVolume{}, fmt.Errorf("rootfs %s: %w", rootfsPath, err)
+			return volumestore.WritableVolume{}, nil, fmt.Errorf("rootfs %s: %w", rootfsPath, err)
 		}
 
 		baseVolume, err := driver.EnsureBaseVolume(ctx, volumestore.EnsureBaseVolumeRequest{
-			BaseID:     strings.TrimSuffix(filepath.Base(rootfsPath), filepath.Ext(rootfsPath)),
-			SourcePath: rootfsPath,
+			BaseID:       strings.TrimSuffix(filepath.Base(rootfsPath), filepath.Ext(rootfsPath)),
+			SourcePath:   rootfsPath,
+			MinimumBytes: minimumBytes,
 		})
 		if err != nil {
-			return volumestore.WritableVolume{}, fmt.Errorf("prepare base volume: %w", err)
+			return volumestore.WritableVolume{}, nil, fmt.Errorf("prepare base volume: %w", err)
 		}
-		return driver.CreateWritableVolume(ctx, volumestore.CreateWritableVolumeRequest{
+		volume, err := driver.CreateWritableVolume(ctx, volumestore.CreateWritableVolumeRequest{
 			VolumeID:       sandboxID,
 			BaseRef:        baseVolume.Ref,
 			AttachmentPath: attachmentPath,
 		})
+		if err != nil {
+			return volumestore.WritableVolume{}, nil, err
+		}
+		return resizeVolume(volume)
 	}
 
-	return driver.CloneSnapshotToVolume(ctx, volumestore.CloneSnapshotToVolumeRequest{
+	volume, err := driver.CloneSnapshotToVolume(ctx, volumestore.CloneSnapshotToVolumeRequest{
 		VolumeID:       sandboxID,
 		SnapshotRef:    sourceRef,
 		AttachmentPath: attachmentPath,
 	})
+	if err != nil {
+		return volumestore.WritableVolume{}, nil, err
+	}
+	return resizeVolume(volume)
 }
 
 func snapshotVolumeRef(instance *sandboxInstance) string {
