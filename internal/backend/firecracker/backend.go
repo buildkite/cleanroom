@@ -100,6 +100,10 @@ const preparedRuntimeRootFSVersion = "v1"
 const privilegedModeSudo = "sudo"
 const privilegedModeHelper = "helper"
 const defaultPrivilegedHelperPath = "/usr/local/sbin/cleanroom-root-helper"
+const legacyHelperContractVersion = "legacy"
+const helperCapabilityFirecrackerNetwork = "firecracker-network"
+const helperCapabilityFirecrackerRootFS = "firecracker-rootfs"
+const helperCapabilityFirecrackerZFS = "firecracker-zfs"
 const defaultDownloadMaxBytes int64 = 10 * 1024 * 1024
 const snapshotSyncTimeoutSeconds = 10
 const networkCleanupTimeout = 5 * time.Second
@@ -747,6 +751,30 @@ func (a *Adapter) Doctor(_ context.Context, req backend.DoctorRequest) (*backend
 			appendCheck("network_helper", "fail", fmt.Sprintf("privileged helper %q is not accessible: %v", privilegedHelperPath, err))
 		} else {
 			appendCheck("network_helper", "pass", fmt.Sprintf("using privileged helper %q", privilegedHelperPath))
+
+			version, legacyVersion, err := helperVersion(context.Background(), req.FirecrackerConfig)
+			if err != nil {
+				appendCheck("network_helper_version", "warn", fmt.Sprintf("privileged helper version probe failed: %v", err))
+			} else if legacyVersion {
+				appendCheck("network_helper_version", "warn", fmt.Sprintf("helper does not expose version; treating host helper as %s", legacyHelperContractVersion))
+			} else {
+				appendCheck("network_helper_version", "pass", fmt.Sprintf("helper contract version %s", version))
+			}
+
+			caps, legacyCaps, err := helperCapabilities(context.Background(), req.FirecrackerConfig)
+			if err != nil {
+				appendCheck("network_helper_capabilities", "fail", fmt.Sprintf("privileged helper capability probe failed: %v", err))
+			} else {
+				requiredCaps := helperRequiredCapabilities(req.FirecrackerConfig)
+				missingCaps := helperMissingCapabilities(caps, requiredCaps)
+				if len(missingCaps) > 0 {
+					appendCheck("network_helper_capabilities", "fail", fmt.Sprintf("helper is missing required capabilities: %s (have: %s)", strings.Join(missingCaps, ", "), strings.Join(caps, ", ")))
+				} else if legacyCaps {
+					appendCheck("network_helper_capabilities", "warn", fmt.Sprintf("helper does not expose capabilities; assuming legacy capabilities: %s", strings.Join(caps, ", ")))
+				} else {
+					appendCheck("network_helper_capabilities", "pass", fmt.Sprintf("helper capabilities: %s", strings.Join(caps, ", ")))
+				}
+			}
 		}
 	}
 
@@ -2190,6 +2218,89 @@ func resolvePrivilegedExecution(cfg backend.FirecrackerConfig) (mode string, hel
 	return mode, helperPath
 }
 
+func helperRequiredCapabilities(cfg backend.FirecrackerConfig) []string {
+	required := []string{
+		helperCapabilityFirecrackerNetwork,
+		helperCapabilityFirecrackerRootFS,
+	}
+
+	snapshotDriver := strings.ToLower(strings.TrimSpace(cfg.Snapshots.Driver))
+	if snapshotDriver == "zfs" {
+		required = append(required, helperCapabilityFirecrackerZFS)
+	}
+	return required
+}
+
+func helperLegacyCapabilities() []string {
+	return []string{
+		helperCapabilityFirecrackerNetwork,
+		helperCapabilityFirecrackerRootFS,
+	}
+}
+
+func helperMissingCapabilities(have, required []string) []string {
+	seen := make(map[string]struct{}, len(have))
+	for _, cap := range have {
+		cap = strings.TrimSpace(cap)
+		if cap == "" {
+			continue
+		}
+		seen[cap] = struct{}{}
+	}
+
+	missing := make([]string, 0, len(required))
+	for _, cap := range required {
+		if _, ok := seen[cap]; !ok {
+			missing = append(missing, cap)
+		}
+	}
+	return missing
+}
+
+func helperCapabilities(ctx context.Context, cfg backend.FirecrackerConfig) ([]string, bool, error) {
+	out, err := runRootCommandOutput(ctx, cfg, "capabilities")
+	if err != nil {
+		if helperProbeUnsupported(err, "capabilities") {
+			return helperLegacyCapabilities(), true, nil
+		}
+		return nil, false, err
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	caps := make([]string, 0, len(lines))
+	seen := make(map[string]struct{}, len(lines))
+	for _, line := range lines {
+		cap := strings.TrimSpace(line)
+		if cap == "" {
+			continue
+		}
+		if _, ok := seen[cap]; ok {
+			continue
+		}
+		seen[cap] = struct{}{}
+		caps = append(caps, cap)
+	}
+	return caps, false, nil
+}
+
+func helperVersion(ctx context.Context, cfg backend.FirecrackerConfig) (string, bool, error) {
+	out, err := runRootCommandOutput(ctx, cfg, "version")
+	if err != nil {
+		if helperProbeUnsupported(err, "version") {
+			return legacyHelperContractVersion, true, nil
+		}
+		return "", false, err
+	}
+	return strings.TrimSpace(string(out)), false, nil
+}
+
+func helperProbeUnsupported(err error, command string) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), fmt.Sprintf("unsupported command '%s'", command))
+}
+
 func logRunNotice(backendName, runID, notice string) {
 	msg := strings.TrimSpace(notice)
 	if msg == "" {
@@ -2222,6 +2333,25 @@ func runRootCommand(ctx context.Context, cfg backend.FirecrackerConfig, args ...
 	}
 }
 
+func runRootCommandOutput(ctx context.Context, cfg backend.FirecrackerConfig, args ...string) ([]byte, error) {
+	if len(args) == 0 {
+		return nil, errors.New("missing privileged command")
+	}
+
+	mode, helperPath := resolvePrivilegedExecution(cfg)
+	switch mode {
+	case privilegedModeSudo:
+		return runCombinedCommandOutput(ctx, append([]string{"sudo", "-n"}, args...), args)
+	case privilegedModeHelper:
+		if strings.TrimSpace(helperPath) == "" {
+			return nil, errors.New("privileged helper mode requires helper path")
+		}
+		return runCombinedCommandOutput(ctx, append([]string{"sudo", "-n", helperPath}, args...), append([]string{"helper"}, args...))
+	default:
+		return nil, fmt.Errorf("unsupported privileged command mode %q", mode)
+	}
+}
+
 func runRootCommandBatch(ctx context.Context, cfg backend.FirecrackerConfig, commands [][]string) error {
 	for _, args := range commands {
 		if len(args) == 0 {
@@ -2233,6 +2363,11 @@ func runRootCommandBatch(ctx context.Context, cfg backend.FirecrackerConfig, com
 }
 
 func runCombinedCommand(ctx context.Context, command []string, errorContext []string) error {
+	_, err := runCombinedCommandOutput(ctx, command, errorContext)
+	return err
+}
+
+func runCombinedCommandOutput(ctx context.Context, command []string, errorContext []string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, command[0], command[1:]...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -2240,9 +2375,9 @@ func runCombinedCommand(ctx context.Context, command []string, errorContext []st
 		if msg == "" {
 			msg = "no stderr output"
 		}
-		return fmt.Errorf("%s: %w (%s)", strings.Join(errorContext, " "), err, msg)
+		return nil, fmt.Errorf("%s: %w (%s)", strings.Join(errorContext, " "), err, msg)
 	}
-	return nil
+	return out, nil
 }
 
 func durationMillisCeil(d time.Duration) int64 {

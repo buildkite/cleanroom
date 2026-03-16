@@ -1,6 +1,36 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Security model:
+# - This script is a root-owned allowlist for privileged cleanroom operations.
+# - Unprivileged callers reach it via `sudo -n /usr/local/sbin/cleanroom-root-helper ...`.
+# - Roll it out from trusted host administration paths such as bootstrap or SSM, not PR CI.
+#
+# Sharp edges:
+# - Every new command, flag shape, or wildcard expands the root execution surface.
+# - Keep validation explicit; do not add generic passthroughs, shell evaluation, or broad writable paths.
+# - Helper updates must land on hosts before branches that depend on new capabilities can pass.
+
+helper_contract_version() {
+  echo "2"
+}
+
+helper_has_zfs() {
+  [[ -x /usr/sbin/zfs || -x /sbin/zfs ]] && return 0
+  command -v zfs >/dev/null 2>&1
+}
+
+helper_capabilities() {
+  cat <<'EOF'
+firecracker-network
+firecracker-rootfs
+EOF
+
+  if helper_has_zfs; then
+    echo "firecracker-zfs"
+  fi
+}
+
 die() {
   echo "cleanroom-root-helper: $*" >&2
   exit 2
@@ -20,6 +50,11 @@ is_tmp_mount_dir() {
 is_runtime_rootfs_tmp() {
   local p="$1"
   [[ "$p" == /var/lib/buildkite-agent/.cache/cleanroom/firecracker/runtime-rootfs/*.ext4.tmp-* ]]
+}
+
+is_runtime_rootfs_image() {
+  local p="$1"
+  [[ "$p" == */cleanroom/firecracker/runtime-rootfs/*.ext4 ]]
 }
 
 is_mounted_rootfs_dest() {
@@ -50,6 +85,75 @@ is_cidr() {
 is_install_source() {
   local p="$1"
   [[ "$p" == /var/lib/buildkite-agent/builds/*/buildkite/cleanroom/dist/cleanroom-guest-agent || "$p" == /tmp/cleanroom-init-* ]]
+}
+
+is_zfs_dataset() {
+  local v="$1"
+  [[ "$v" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]*(/[A-Za-z0-9][A-Za-z0-9._:-]*)*$ ]]
+}
+
+is_zfs_snapshot_ref() {
+  local v="$1"
+  [[ "$v" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]*(/[A-Za-z0-9][A-Za-z0-9._:-]*)*@[A-Za-z0-9][A-Za-z0-9._:-]*$ ]]
+}
+
+contains_cleanroom_zfs_namespace() {
+  local ref="$1"
+  local dataset="${ref%@*}"
+  local IFS='/'
+  read -r -a components <<<"$dataset"
+  local component_count="${#components[@]}"
+  local i
+
+  # Only allow descendants of the cleanroom namespace, not the namespace root.
+  for ((i = 0; i < component_count - 1; i++)); do
+    if [[ "${components[$i]}" == "cleanroom" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+is_cleanroom_zfs_dataset() {
+  local v="$1"
+  is_zfs_dataset "$v" || return 1
+  contains_cleanroom_zfs_namespace "$v"
+}
+
+is_cleanroom_zfs_snapshot_ref() {
+  local v="$1"
+  is_zfs_snapshot_ref "$v" || return 1
+  contains_cleanroom_zfs_namespace "$v"
+}
+
+is_zvol_device_path() {
+  local p="$1"
+  [[ "$p" == /dev/zvol/* ]] || return 1
+  is_cleanroom_zfs_dataset "${p#/dev/zvol/}"
+}
+
+zfs_bin() {
+  if [[ -x /usr/sbin/zfs ]]; then
+    echo /usr/sbin/zfs
+    return
+  fi
+  if [[ -x /sbin/zfs ]]; then
+    echo /sbin/zfs
+    return
+  fi
+  command -v zfs || die "zfs: binary not found"
+}
+
+dd_bin() {
+  if [[ -x /usr/bin/dd ]]; then
+    echo /usr/bin/dd
+    return
+  fi
+  if [[ -x /bin/dd ]]; then
+    echo /bin/dd
+    return
+  fi
+  command -v dd || die "dd: binary not found"
 }
 
 run_ip() {
@@ -210,6 +314,62 @@ run_install() {
   exec /usr/bin/install -m 0755 "$src" "$dst"
 }
 
+run_zfs() {
+  [[ "$#" -ge 1 ]] || die "zfs: missing arguments"
+  local bin
+  bin="$(zfs_bin)"
+
+  if [[ "$#" -eq 5 && "$1" == "list" && "$2" == "-H" && "$3" == "-o" && "$4" == "name" ]]; then
+    is_cleanroom_zfs_dataset "$5" || is_cleanroom_zfs_snapshot_ref "$5" || die "zfs list: unsupported ref '$5'"
+    exec "$bin" "$@"
+  fi
+
+  if [[ "$#" -eq 5 && "$1" == "create" && "$2" == "-p" && "$3" == "-V" ]]; then
+    is_numeric "$4" || die "zfs create: invalid size '$4'"
+    is_cleanroom_zfs_dataset "$5" || die "zfs create: unsupported dataset '$5'"
+    exec "$bin" "$@"
+  fi
+
+  if [[ "$#" -eq 2 && "$1" == "snapshot" ]]; then
+    is_cleanroom_zfs_snapshot_ref "$2" || die "zfs snapshot: unsupported ref '$2'"
+    exec "$bin" "$@"
+  fi
+
+  if [[ "$#" -eq 4 && "$1" == "clone" && "$2" == "-p" ]]; then
+    is_cleanroom_zfs_snapshot_ref "$3" || die "zfs clone: unsupported snapshot '$3'"
+    is_cleanroom_zfs_dataset "$4" || die "zfs clone: unsupported dataset '$4'"
+    exec "$bin" "$@"
+  fi
+
+  if [[ "$#" -eq 3 && "$1" == "destroy" && "$2" == "-r" ]]; then
+    is_cleanroom_zfs_dataset "$3" || die "zfs destroy -r: unsupported dataset '$3'"
+    exec "$bin" "$@"
+  fi
+
+  if [[ "$#" -eq 2 && "$1" == "destroy" ]]; then
+    is_cleanroom_zfs_snapshot_ref "$2" || die "zfs destroy: unsupported ref '$2'"
+    exec "$bin" "$@"
+  fi
+
+  die "zfs: unsupported arguments"
+}
+
+run_dd() {
+  [[ "$#" -eq 5 ]] || die "dd: unsupported arguments"
+  [[ "$1" == if=* ]] || die "dd: missing input file"
+  [[ "$2" == of=* ]] || die "dd: missing output file"
+  [[ "$3" == "bs=4M" ]] || die "dd: unsupported block size"
+  [[ "$4" == "conv=fsync" ]] || die "dd: unsupported conv mode"
+  [[ "$5" == "status=none" ]] || die "dd: unsupported status mode"
+
+  local src="${1#if=}"
+  local dst="${2#of=}"
+  is_runtime_rootfs_image "$src" || die "dd: unsupported source path '$src'"
+  is_zvol_device_path "$dst" || die "dd: unsupported destination path '$dst'"
+
+  exec "$(dd_bin)" "$@"
+}
+
 main() {
   require_root
   [[ "$#" -ge 1 ]] || die "missing command"
@@ -218,6 +378,14 @@ main() {
   shift
 
   case "$command" in
+    version)
+      [[ "$#" -eq 0 ]] || die "version: unexpected arguments"
+      helper_contract_version
+      ;;
+    capabilities)
+      [[ "$#" -eq 0 ]] || die "capabilities: unexpected arguments"
+      helper_capabilities
+      ;;
     true)
       [[ "$#" -eq 0 ]] || die "true: unexpected arguments"
       exec /usr/bin/true
@@ -242,6 +410,12 @@ main() {
       ;;
     install)
       run_install "$@"
+      ;;
+    zfs)
+      run_zfs "$@"
+      ;;
+    dd)
+      run_dd "$@"
       ;;
     *)
       die "unsupported command '$command'"

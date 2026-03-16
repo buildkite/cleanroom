@@ -19,6 +19,189 @@ require_cmd() {
   command -v "$cmd" >/dev/null 2>&1 || die "required command not found: ${cmd}"
 }
 
+install_linux_bootstrap_runner() {
+  local bootstrap_env_path="${CLEANROOM_BOOTSTRAP_ENV_PATH:-/usr/local/etc/cleanroom-bootstrap-linux.env}"
+  local bootstrap_runner_path="${CLEANROOM_BOOTSTRAP_RUNNER_PATH:-/usr/local/bin/cleanroom-bootstrap-linux}"
+  local bootstrap_repo_url="${CLEANROOM_BOOTSTRAP_REPO_URL:-}"
+  local bootstrap_repo_ref="${CLEANROOM_BOOTSTRAP_REPO_REF:-main}"
+  local bootstrap_setup_script_path="${CLEANROOM_BOOTSTRAP_SETUP_SCRIPT_PATH:-scripts/bootstrap-buildkite-agent.sh}"
+  local bootstrap_deploy_key_param="${CLEANROOM_BOOTSTRAP_DEPLOY_KEY_PARAM:-}"
+  local bootstrap_zfs_dataset="${CLEANROOM_ZFS_DATASET:-cleanroom/data}"
+
+  if [ -z "$bootstrap_repo_url" ]; then
+    warn "skipping linux bootstrap runner install because CLEANROOM_BOOTSTRAP_REPO_URL is not set"
+    return
+  fi
+
+  install -d -o root -g root -m 0755 /usr/local/etc
+  install -d -o root -g root -m 0755 /usr/local/bin
+
+  cat > "$bootstrap_env_path" <<EOF
+AWS_REGION='$AWS_REGION'
+NAME_PREFIX='$NAME_PREFIX'
+BUILDKITE_QUEUE='$QUEUE_NAME'
+BUILDKITE_TOKEN_PARAM='$BUILDKITE_TOKEN_PARAM'
+DEPLOY_KEY_PARAM='$bootstrap_deploy_key_param'
+REPO_URL='$bootstrap_repo_url'
+REPO_REF='$bootstrap_repo_ref'
+SETUP_SCRIPT_PATH='$bootstrap_setup_script_path'
+INSTALL_FIRECRACKER='$INSTALL_FIRECRACKER'
+FIRECRACKER_VERSION='$FIRECRACKER_VERSION'
+KERNEL_IMAGE_URL='$KERNEL_IMAGE_URL'
+HELPER_INSTALL_PATH='$HELPER_INSTALL_PATH'
+ZFS_DATASET='$bootstrap_zfs_dataset'
+EOF
+  chmod 0600 "$bootstrap_env_path"
+
+  cat > "$bootstrap_runner_path" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+BOOTSTRAP_ENV_PATH='/usr/local/etc/cleanroom-bootstrap-linux.env'
+exec > >(tee -a /var/log/cleanroom-bootstrap-linux.log) 2>&1
+
+if [ ! -f "$BOOTSTRAP_ENV_PATH" ]; then
+  echo "bootstrap env file missing: $BOOTSTRAP_ENV_PATH" >&2
+  exit 1
+fi
+
+# shellcheck disable=SC1091
+source "$BOOTSTRAP_ENV_PATH"
+PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
+
+retry() {
+  local attempts="$1"
+  local delay_seconds="$2"
+  shift 2
+
+  local n=1
+  while true; do
+    if "$@"; then
+      return 0
+    fi
+
+    if [ "$n" -ge "$attempts" ]; then
+      return 1
+    fi
+
+    sleep "$delay_seconds"
+    n=$((n + 1))
+  done
+}
+
+: "${AWS_REGION:?AWS_REGION must be set}"
+: "${NAME_PREFIX:?NAME_PREFIX must be set}"
+: "${BUILDKITE_QUEUE:?BUILDKITE_QUEUE must be set}"
+: "${BUILDKITE_TOKEN_PARAM:?BUILDKITE_TOKEN_PARAM must be set}"
+: "${REPO_URL:?REPO_URL must be set}"
+: "${REPO_REF:?REPO_REF must be set}"
+: "${SETUP_SCRIPT_PATH:?SETUP_SCRIPT_PATH must be set}"
+: "${INSTALL_FIRECRACKER:?INSTALL_FIRECRACKER must be set}"
+: "${FIRECRACKER_VERSION:?FIRECRACKER_VERSION must be set}"
+: "${KERNEL_IMAGE_URL:?KERNEL_IMAGE_URL must be set}"
+: "${HELPER_INSTALL_PATH:?HELPER_INSTALL_PATH must be set}"
+: "${ZFS_DATASET:?ZFS_DATASET must be set}"
+
+if ! command -v aws >/dev/null 2>&1; then
+  aws_arch='x86_64'
+  if [ "$(uname -m)" = 'aarch64' ] || [ "$(uname -m)" = 'arm64' ]; then
+    aws_arch='aarch64'
+  fi
+
+  aws_tmp_dir="$(mktemp -d)"
+  trap 'rm -rf "$aws_tmp_dir"' EXIT
+  curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-$aws_arch.zip" -o "$aws_tmp_dir/awscliv2.zip"
+  unzip -q "$aws_tmp_dir/awscliv2.zip" -d "$aws_tmp_dir"
+  "$aws_tmp_dir/aws/install" --bin-dir /usr/local/bin --install-dir /usr/local/aws-cli --update
+fi
+
+if ! command -v aws >/dev/null 2>&1; then
+  echo "aws CLI is required but not installed" >&2
+  exit 1
+fi
+
+if ! command -v git >/dev/null 2>&1; then
+  echo "git is required but not installed" >&2
+  exit 1
+fi
+
+imds_token="$(retry 10 3 curl -fsS -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")"
+instance_id="$(retry 10 3 curl -fsS -H "X-aws-ec2-metadata-token: $imds_token" http://169.254.169.254/latest/meta-data/instance-id)"
+
+retry 10 3 aws ssm get-parameter \
+  --region "$AWS_REGION" \
+  --name "$BUILDKITE_TOKEN_PARAM" \
+  --with-decryption \
+  --query 'Parameter.Value' \
+  --output text >/dev/null
+
+if [ -n "$DEPLOY_KEY_PARAM" ]; then
+  if ! command -v ssh-keyscan >/dev/null 2>&1; then
+    echo "ssh-keyscan is required when DEPLOY_KEY_PARAM is set" >&2
+    exit 1
+  fi
+
+  install -d -o root -g root -m 0700 /root/.ssh
+  deploy_known_hosts='/root/.ssh/cleanroom_known_hosts'
+  retry 10 3 aws ssm get-parameter \
+    --region "$AWS_REGION" \
+    --name "$DEPLOY_KEY_PARAM" \
+    --with-decryption \
+    --query 'Parameter.Value' \
+    --output text > /root/.ssh/cleanroom_deploy_key
+  chmod 0600 /root/.ssh/cleanroom_deploy_key
+  touch "$deploy_known_hosts"
+  ssh-keyscan -t rsa,ecdsa,ed25519 github.com >> "$deploy_known_hosts"
+  chmod 0644 "$deploy_known_hosts"
+fi
+
+repo_root='/opt/cleanroom-bootstrap/repo'
+rm -rf "$repo_root"
+install -d -o root -g root -m 0755 /opt/cleanroom-bootstrap
+
+if [ -n "$DEPLOY_KEY_PARAM" ]; then
+  export GIT_SSH_COMMAND="ssh -i /root/.ssh/cleanroom_deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$deploy_known_hosts"
+fi
+
+git -c init.defaultBranch=main init "$repo_root" >/dev/null
+git -C "$repo_root" remote add origin "$REPO_URL"
+retry 5 3 git -C "$repo_root" fetch --depth=1 origin "$REPO_REF"
+git -C "$repo_root" checkout -f FETCH_HEAD
+
+if [ -n "$DEPLOY_KEY_PARAM" ]; then
+  unset GIT_SSH_COMMAND
+  rm -f /root/.ssh/cleanroom_deploy_key "$deploy_known_hosts"
+fi
+
+setup_script="$repo_root/$SETUP_SCRIPT_PATH"
+if [ ! -f "$setup_script" ]; then
+  echo "setup script not found: $SETUP_SCRIPT_PATH" >&2
+  exit 1
+fi
+
+chmod +x "$setup_script"
+
+export AWS_REGION
+export BUILDKITE_TOKEN_PARAM
+export CLEANROOM_BOOTSTRAP_REGION="$AWS_REGION"
+export CLEANROOM_BOOTSTRAP_INSTANCE_ID="$instance_id"
+export CLEANROOM_BOOTSTRAP_NAME_PREFIX="$NAME_PREFIX"
+export CLEANROOM_BUILDKITE_QUEUE="$BUILDKITE_QUEUE"
+export CLEANROOM_BOOTSTRAP_REPO_URL="$REPO_URL"
+export CLEANROOM_BOOTSTRAP_REPO_REF="$REPO_REF"
+export CLEANROOM_BOOTSTRAP_SETUP_SCRIPT_PATH="$SETUP_SCRIPT_PATH"
+export CLEANROOM_BOOTSTRAP_DEPLOY_KEY_PARAM="$DEPLOY_KEY_PARAM"
+export CLEANROOM_INSTALL_FIRECRACKER="$INSTALL_FIRECRACKER"
+export CLEANROOM_FIRECRACKER_VERSION="$FIRECRACKER_VERSION"
+export CLEANROOM_KERNEL_IMAGE_URL="$KERNEL_IMAGE_URL"
+export CLEANROOM_HELPER_INSTALL_PATH="$HELPER_INSTALL_PATH"
+export CLEANROOM_ZFS_DATASET="$ZFS_DATASET"
+
+"$setup_script"
+EOF
+  chmod 0755 "$bootstrap_runner_path"
+}
+
 install_sudo_if_missing() {
   if command -v sudo >/dev/null 2>&1; then
     return
@@ -224,6 +407,8 @@ if [ ! -f "$HELPER_SOURCE_PATH" ]; then
   die "cleanroom helper script not found at ${HELPER_SOURCE_PATH}"
 fi
 install -o root -g root -m 0755 "$HELPER_SOURCE_PATH" "$HELPER_INSTALL_PATH"
+
+install_linux_bootstrap_runner
 
 printf 'buildkite-agent ALL=(root) NOPASSWD: %s *\n' "$HELPER_INSTALL_PATH" > /etc/sudoers.d/buildkite-cleanroom
 chmod 0440 /etc/sudoers.d/buildkite-cleanroom

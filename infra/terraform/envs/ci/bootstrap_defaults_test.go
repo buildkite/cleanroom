@@ -92,6 +92,19 @@ func TestBootstrapScriptConfiguresBuildkiteAgent(t *testing.T) {
 	requireContains(t, scriptPath, "BUILDKITE_TOKEN_PARAM")
 }
 
+func TestLinuxBootstrapScriptInstallsRerunnableBootstrapCommand(t *testing.T) {
+	t.Helper()
+
+	scriptPath := filepath.Join("..", "..", "..", "..", "scripts", "bootstrap-buildkite-agent.sh")
+	requireContains(t, scriptPath, "BOOTSTRAP_ENV_PATH='/usr/local/etc/cleanroom-bootstrap-linux.env'")
+	requireContains(t, scriptPath, "local bootstrap_runner_path=\"${CLEANROOM_BOOTSTRAP_RUNNER_PATH:-/usr/local/bin/cleanroom-bootstrap-linux}\"")
+	requireContains(t, scriptPath, "CLEANROOM_BOOTSTRAP_REPO_URL")
+	requireContains(t, scriptPath, "CLEANROOM_BOOTSTRAP_REPO_REF")
+	requireContains(t, scriptPath, "CLEANROOM_BOOTSTRAP_SETUP_SCRIPT_PATH")
+	requireContains(t, scriptPath, "CLEANROOM_BOOTSTRAP_DEPLOY_KEY_PARAM")
+	requireContains(t, scriptPath, "chmod 0755 \"$bootstrap_runner_path\"")
+}
+
 func TestMacBootstrapScriptConfiguresBuildkiteAgent(t *testing.T) {
 	t.Helper()
 
@@ -205,6 +218,17 @@ func TestMacUserDataSupportsInPlaceBootstrapRerun(t *testing.T) {
 	requireContains(t, templatePath, "source \"$BOOTSTRAP_ENV_PATH\"")
 	requireContains(t, templatePath, "chmod 0755 \"$BOOTSTRAP_RUNNER_PATH\"")
 	requireContains(t, templatePath, "\"$BOOTSTRAP_RUNNER_PATH\"")
+}
+
+func TestLinuxUserDataSupportsInPlaceBootstrapRerun(t *testing.T) {
+	t.Helper()
+
+	templatePath := filepath.Join("..", "..", "modules", "linux-host", "templates", "user_data.sh.tftpl")
+	requireContains(t, templatePath, "export CLEANROOM_BOOTSTRAP_REPO_URL=\"$REPO_URL\"")
+	requireContains(t, templatePath, "export CLEANROOM_BOOTSTRAP_REPO_REF=\"$REPO_REF\"")
+	requireContains(t, templatePath, "export CLEANROOM_BOOTSTRAP_SETUP_SCRIPT_PATH=\"$SETUP_SCRIPT_PATH\"")
+	requireContains(t, templatePath, "export CLEANROOM_BOOTSTRAP_DEPLOY_KEY_PARAM=\"$DEPLOY_KEY_PARAM\"")
+	requireContains(t, templatePath, "export CLEANROOM_ZFS_DATASET")
 }
 
 func TestEnvWiresOptionalMacCiModule(t *testing.T) {
