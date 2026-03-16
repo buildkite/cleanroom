@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -221,6 +222,18 @@ func TestExecParsesInFromAndKeep(t *testing.T) {
 	}
 }
 
+func TestExecParsesRepeatedEnvFlags(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"exec", "--env", "OPENAI_API_KEY", "--env", "DEBUG=1", "--", "echo", "ok"}); err != nil {
+		t.Fatalf("parse exec --env returned error: %v", err)
+	}
+	if got, want := c.Exec.Env, []string{"OPENAI_API_KEY", "DEBUG=1"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected exec env flags: got %v want %v", got, want)
+	}
+}
+
 func TestExecParsesLegacySandboxIDFlag(t *testing.T) {
 	c := &CLI{}
 	parser := newParserForTest(t, c)
@@ -243,6 +256,18 @@ func TestConsoleParsesImageOverride(t *testing.T) {
 	}
 	if got, want := c.Console.Image, imageRef; got != want {
 		t.Fatalf("unexpected console image override: got %q want %q", got, want)
+	}
+}
+
+func TestConsoleParsesRepeatedEnvFlags(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"console", "--env", "OPENAI_API_KEY", "--env", "DEBUG=1", "--", "sh"}); err != nil {
+		t.Fatalf("parse console --env returned error: %v", err)
+	}
+	if got, want := c.Console.Env, []string{"OPENAI_API_KEY", "DEBUG=1"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected console env flags: got %v want %v", got, want)
 	}
 }
 

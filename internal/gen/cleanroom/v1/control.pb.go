@@ -1972,6 +1972,7 @@ type CreateExecutionRequest struct {
 	Options            *ExecutionOptions      `protobuf:"bytes,3,opt,name=options,proto3" json:"options,omitempty"`
 	Kind               ExecutionKind          `protobuf:"varint,4,opt,name=kind,proto3,enum=cleanroom.v1.ExecutionKind" json:"kind,omitempty"`
 	RepositoryCheckout *RepositoryCheckout    `protobuf:"bytes,5,opt,name=repository_checkout,json=repositoryCheckout,proto3" json:"repository_checkout,omitempty"`
+	Env                []string               `protobuf:"bytes,6,rep,name=env,proto3" json:"env,omitempty"`
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
 }
@@ -2037,6 +2038,13 @@ func (x *CreateExecutionRequest) GetKind() ExecutionKind {
 func (x *CreateExecutionRequest) GetRepositoryCheckout() *RepositoryCheckout {
 	if x != nil {
 		return x.RepositoryCheckout
+	}
+	return nil
+}
+
+func (x *CreateExecutionRequest) GetEnv() []string {
+	if x != nil {
+		return x.Env
 	}
 	return nil
 }
@@ -3263,14 +3271,15 @@ const file_proto_cleanroom_v1_control_proto_rawDesc = "" +
 	"R\x06run_id\"q\n" +
 	"\x10ExecutionOptions\x12%\n" +
 	"\x0elaunch_seconds\x18\x05 \x01(\x03R\rlaunchSeconds\x12\x10\n" +
-	"\x03tty\x18\x06 \x01(\bR\x03ttyJ\x04\b\x02\x10\x03J\x04\b\a\x10\bR\x13read_only_workspaceR\x03cwd\"\x8f\x02\n" +
+	"\x03tty\x18\x06 \x01(\bR\x03ttyJ\x04\b\x02\x10\x03J\x04\b\a\x10\bR\x13read_only_workspaceR\x03cwd\"\xa1\x02\n" +
 	"\x16CreateExecutionRequest\x12\x1d\n" +
 	"\n" +
 	"sandbox_id\x18\x01 \x01(\tR\tsandboxId\x12\x18\n" +
 	"\acommand\x18\x02 \x03(\tR\acommand\x128\n" +
 	"\aoptions\x18\x03 \x01(\v2\x1e.cleanroom.v1.ExecutionOptionsR\aoptions\x12/\n" +
 	"\x04kind\x18\x04 \x01(\x0e2\x1b.cleanroom.v1.ExecutionKindR\x04kind\x12Q\n" +
-	"\x13repository_checkout\x18\x05 \x01(\v2 .cleanroom.v1.RepositoryCheckoutR\x12repositoryCheckout\"P\n" +
+	"\x13repository_checkout\x18\x05 \x01(\v2 .cleanroom.v1.RepositoryCheckoutR\x12repositoryCheckout\x12\x10\n" +
+	"\x03env\x18\x06 \x03(\tR\x03env\"P\n" +
 	"\x17CreateExecutionResponse\x125\n" +
 	"\texecution\x18\x01 \x01(\v2\x17.cleanroom.v1.ExecutionR\texecution\"\xa0\x01\n" +
 	"\x16AttachExecutionRequest\x12\x1d\n" +

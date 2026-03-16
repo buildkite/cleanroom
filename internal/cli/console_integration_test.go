@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -91,6 +92,44 @@ func TestConsoleIntegrationForwardsStdinAndStreamsOutput(t *testing.T) {
 		t.Fatalf("expected streamed output to include echoed stdin, got %q", outcome.stdout)
 	}
 	_ = mustReceiveWithin(t, started, 2*time.Second, "timed out waiting for console execution to start")
+}
+
+func TestConsoleIntegrationPassesResolvedEnv(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "host-secret")
+
+	var captured backend.ExecutionRequest
+	adapter := &integrationAdapter{
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+			captured = req
+			return &backend.ExecutionResult{
+				ExecutionID: req.ExecutionID,
+				ExitCode:    0,
+				Message:     "ok",
+			}, nil
+		},
+	}
+
+	host, _ := startIntegrationServer(t, adapter)
+	cwd := t.TempDir()
+	outcome := runConsoleWithCapture(ConsoleCommand{
+		clientFlags: clientFlags{Host: host},
+		Chdir:       cwd,
+		Env:         []string{"OPENAI_API_KEY", "DEBUG=1", "EMPTY="},
+		Command:     []string{"sh"},
+	}, "", runtimeContext{
+		CWD:    cwd,
+		Loader: integrationLoader{},
+	})
+
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err != nil {
+		t.Fatalf("ConsoleCommand.Run returned error: %v", outcome.err)
+	}
+	if got, want := captured.Env, []string{"OPENAI_API_KEY=host-secret", "DEBUG=1", "EMPTY="}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected console env: got %v want %v", got, want)
+	}
 }
 
 func TestConsoleIntegrationInterruptCancelsExecution(t *testing.T) {

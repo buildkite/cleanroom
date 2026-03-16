@@ -174,6 +174,7 @@ type ExecutionRequest struct {
 	SandboxID   string
 	ExecutionID string
 	Command     []string
+	Env         []string
 	TTY         bool
 	Policy      *policy.CompiledPolicy
 	FirecrackerConfig

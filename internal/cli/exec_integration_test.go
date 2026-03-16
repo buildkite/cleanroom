@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"sync"
@@ -578,6 +579,44 @@ func TestExecIntegrationForwardsStdinByDefault(t *testing.T) {
 	mu.Unlock()
 	if gotStdin != stdinData {
 		t.Fatalf("unexpected stdin forwarded to backend: got %q want %q", gotStdin, stdinData)
+	}
+}
+
+func TestExecIntegrationPassesResolvedEnv(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "host-secret")
+
+	var captured backend.ExecutionRequest
+	adapter := &integrationAdapter{
+		runFn: func(_ context.Context, req backend.ExecutionRequest) (*backend.ExecutionResult, error) {
+			captured = req
+			return &backend.ExecutionResult{
+				ExecutionID: req.ExecutionID,
+				ExitCode:    0,
+				Message:     "ok",
+			}, nil
+		},
+	}
+
+	host, _ := startIntegrationServer(t, adapter)
+	cwd := t.TempDir()
+	outcome := runExecWithCapture(ExecCommand{
+		clientFlags: clientFlags{Host: host},
+		Chdir:       cwd,
+		Env:         []string{"OPENAI_API_KEY", "DEBUG=1", "EMPTY="},
+		Command:     []string{"echo", "ok"},
+	}, runtimeContext{
+		CWD:    cwd,
+		Loader: integrationLoader{},
+	})
+
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err != nil {
+		t.Fatalf("ExecCommand.Run returned error: %v", outcome.err)
+	}
+	if got, want := captured.Env, []string{"OPENAI_API_KEY=host-secret", "DEBUG=1", "EMPTY="}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected exec env: got %v want %v", got, want)
 	}
 }
 
