@@ -35,11 +35,11 @@ func resolveHelperBinaryPathWith(
 
 	if self, err := executable(); err == nil {
 		sibling := filepath.Join(filepath.Dir(self), helperBinaryName)
-		if path, err := resolveHelperCandidatePath(sibling, stat); err == nil {
-			return path, nil
-		}
 		siblingAppBundle := sibling + ".app"
 		if path, err := resolveHelperCandidatePath(siblingAppBundle, stat); err == nil {
+			return path, nil
+		}
+		if path, err := resolveHelperCandidatePath(sibling, stat); err == nil {
 			return path, nil
 		}
 	}
@@ -80,10 +80,10 @@ func resolvePrebuiltBinaryPathFromWorkdir(startDir, binaryName string, stat func
 
 	for dir := absStartDir; ; dir = filepath.Dir(dir) {
 		candidate := filepath.Join(dir, "dist", trimmedName)
-		if path, err := resolveHelperCandidatePath(candidate, stat); err == nil {
+		if path, err := resolveHelperCandidatePath(candidate+".app", stat); err == nil {
 			return path, nil
 		}
-		if path, err := resolveHelperCandidatePath(candidate+".app", stat); err == nil {
+		if path, err := resolveHelperCandidatePath(candidate, stat); err == nil {
 			return path, nil
 		}
 		parent := filepath.Dir(dir)

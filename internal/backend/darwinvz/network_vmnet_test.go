@@ -9,7 +9,11 @@ import (
 )
 
 func TestResolveDarwinVZNetworkDefaultsToVMNetShared(t *testing.T) {
-	t.Parallel()
+	prev := darwinVZVMNetSharedSupported
+	darwinVZVMNetSharedSupported = func() bool { return true }
+	t.Cleanup(func() {
+		darwinVZVMNetSharedSupported = prev
+	})
 
 	got, err := resolveDarwinVZNetwork(backend.FirecrackerConfig{})
 	if err != nil {
@@ -20,6 +24,25 @@ func TestResolveDarwinVZNetworkDefaultsToVMNetShared(t *testing.T) {
 	}
 	if got.SubnetCIDR != "" {
 		t.Fatalf("expected default vmnet-shared mode to omit subnet, got %q", got.SubnetCIDR)
+	}
+}
+
+func TestResolveDarwinVZNetworkDefaultsToNATWhenVMNetSharedUnsupported(t *testing.T) {
+	prev := darwinVZVMNetSharedSupported
+	darwinVZVMNetSharedSupported = func() bool { return false }
+	t.Cleanup(func() {
+		darwinVZVMNetSharedSupported = prev
+	})
+
+	got, err := resolveDarwinVZNetwork(backend.FirecrackerConfig{})
+	if err != nil {
+		t.Fatalf("resolveDarwinVZNetwork returned error: %v", err)
+	}
+	if got.Mode != darwinVZNetworkModeNAT {
+		t.Fatalf("unexpected network mode: got %q want %q", got.Mode, darwinVZNetworkModeNAT)
+	}
+	if got.SubnetCIDR != "" {
+		t.Fatalf("expected default nat mode to omit subnet, got %q", got.SubnetCIDR)
 	}
 }
 

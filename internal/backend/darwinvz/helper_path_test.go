@@ -60,6 +60,42 @@ func TestResolveHelperBinaryPathUsesSiblingBeforePath(t *testing.T) {
 	}
 }
 
+func TestResolveHelperBinaryPathPrefersSiblingAppBundleOverLooseBinary(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	self := tmp + "/cleanroom"
+	sibling := tmp + "/cleanroom-darwin-vz"
+	appBundle := sibling + ".app"
+	appExecutable := appBundle + "/Contents/MacOS/cleanroom-darwin-vz"
+	if err := os.WriteFile(self, []byte("binary"), 0o755); err != nil {
+		t.Fatalf("write self binary: %v", err)
+	}
+	if err := os.WriteFile(sibling, []byte("binary"), 0o755); err != nil {
+		t.Fatalf("write sibling helper: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(appExecutable), 0o755); err != nil {
+		t.Fatalf("mkdir app bundle: %v", err)
+	}
+	if err := os.WriteFile(appExecutable, []byte("binary"), 0o755); err != nil {
+		t.Fatalf("write app bundle helper: %v", err)
+	}
+
+	got, err := resolveHelperBinaryPathWith(
+		"",
+		func(string) (string, error) { return "/usr/local/bin/cleanroom-darwin-vz", nil },
+		func() (string, error) { return self, nil },
+		func() (string, error) { return "", errors.New("no working directory") },
+		os.Stat,
+	)
+	if err != nil {
+		t.Fatalf("resolveHelperBinaryPathWith returned error: %v", err)
+	}
+	if got != appExecutable {
+		t.Fatalf("unexpected helper path: got %q want %q", got, appExecutable)
+	}
+}
+
 func TestResolveHelperBinaryPathUsesAppBundleOverride(t *testing.T) {
 	t.Parallel()
 
@@ -150,6 +186,43 @@ func TestResolveHelperBinaryPathUsesAncestorDistAppBundleBeforePATH(t *testing.T
 	}
 	if got != executable {
 		t.Fatalf("unexpected helper path: got %q want %q", got, executable)
+	}
+}
+
+func TestResolveHelperBinaryPathPrefersAncestorDistAppBundleOverLooseBinary(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	repoRoot := tmp + "/repo"
+	cwd := repoRoot + "/nested/workdir"
+	looseBinary := repoRoot + "/dist/cleanroom-darwin-vz"
+	appBundle := repoRoot + "/dist/cleanroom-darwin-vz.app"
+	appExecutable := appBundle + "/Contents/MacOS/cleanroom-darwin-vz"
+	if err := os.MkdirAll(cwd, 0o755); err != nil {
+		t.Fatalf("mkdir workdir: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(appExecutable), 0o755); err != nil {
+		t.Fatalf("mkdir app bundle: %v", err)
+	}
+	if err := os.WriteFile(looseBinary, []byte("binary"), 0o755); err != nil {
+		t.Fatalf("write loose helper: %v", err)
+	}
+	if err := os.WriteFile(appExecutable, []byte("binary"), 0o755); err != nil {
+		t.Fatalf("write app bundle helper: %v", err)
+	}
+
+	got, err := resolveHelperBinaryPathWith(
+		"",
+		func(string) (string, error) { return "/usr/local/bin/cleanroom-darwin-vz", nil },
+		func() (string, error) { return "", errors.New("no executable") },
+		func() (string, error) { return cwd, nil },
+		os.Stat,
+	)
+	if err != nil {
+		t.Fatalf("resolveHelperBinaryPathWith returned error: %v", err)
+	}
+	if got != appExecutable {
+		t.Fatalf("unexpected helper path: got %q want %q", got, appExecutable)
 	}
 }
 

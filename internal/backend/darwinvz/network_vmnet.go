@@ -5,9 +5,11 @@ package darwinvz
 import (
 	"fmt"
 	"net/netip"
+	"strconv"
 	"strings"
 
 	"github.com/buildkite/cleanroom/internal/backend"
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -26,10 +28,32 @@ var darwinVZRFC1918Prefixes = []netip.Prefix{
 	netip.MustParsePrefix("192.168.0.0/16"),
 }
 
+var darwinVZVMNetSharedSupported = hostSupportsVMNetShared
+
+func hostSupportsVMNetShared() bool {
+	version, err := unix.Sysctl("kern.osproductversion")
+	if err != nil {
+		return false
+	}
+	parts := strings.SplitN(strings.TrimSpace(version), ".", 2)
+	major, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return false
+	}
+	return major >= 26
+}
+
+func darwinVZDefaultNetworkMode() string {
+	if darwinVZVMNetSharedSupported() {
+		return darwinVZNetworkModeVMNetShared
+	}
+	return darwinVZNetworkModeNAT
+}
+
 func resolveDarwinVZNetwork(cfg backend.FirecrackerConfig) (darwinVZNetwork, error) {
 	mode := strings.ToLower(strings.TrimSpace(cfg.DarwinVZNetworkMode))
 	if mode == "" {
-		mode = darwinVZNetworkModeVMNetShared
+		mode = darwinVZDefaultNetworkMode()
 	}
 
 	subnet := strings.TrimSpace(cfg.DarwinVZNetworkSubnet)
