@@ -2061,7 +2061,7 @@ func TestExecutionAttachIOWaitsForDelayedAttachRegistration(t *testing.T) {
 			case started <- struct{}{}:
 			default:
 			}
-			time.Sleep(500 * time.Millisecond)
+			time.Sleep(200 * time.Millisecond)
 			if stream.OnAttach != nil {
 				stream.OnAttach(backend.AttachIO{
 					WriteStdin: func(data []byte) error {
@@ -2086,6 +2086,10 @@ func TestExecutionAttachIOWaitsForDelayedAttachRegistration(t *testing.T) {
 		},
 	}
 	svc := newTestService(adapter)
+	timeouts := defaultServiceTimeouts
+	timeouts.attachStdinRegistrationWait = 100 * time.Millisecond
+	svc.runtime.timeouts = &timeouts
+	svc.Config.Backends.Firecracker.LaunchSeconds = 1
 
 	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
 	if err != nil {

@@ -1173,7 +1173,7 @@ func (s *Service) WriteExecutionStdin(sandboxID, executionID string, data []byte
 
 	payload := append([]byte(nil), data...)
 	clock := s.clock()
-	deadline := clock.Now().Add(s.timeouts().attachStdinRegistrationWait)
+	var deadline time.Time
 	for {
 		var (
 			writeFn func([]byte) error
@@ -1188,6 +1188,9 @@ func (s *Service) WriteExecutionStdin(sandboxID, executionID string, data []byte
 		if isFinalExecutionStatus(ex.Status) {
 			s.mu.RUnlock()
 			return errors.New("execution is not running")
+		}
+		if deadline.IsZero() {
+			deadline = clock.Now().Add(s.executionAttachStdinWaitLocked(sandboxID, ex))
 		}
 		writeFn = ex.AttachStdin
 		done = ex.Done
@@ -1217,7 +1220,7 @@ func (s *Service) CloseExecutionStdin(sandboxID, executionID string) error {
 	}
 
 	clock := s.clock()
-	deadline := clock.Now().Add(s.timeouts().attachStdinRegistrationWait)
+	var deadline time.Time
 	for {
 		var (
 			closeFn func() error
@@ -1232,6 +1235,9 @@ func (s *Service) CloseExecutionStdin(sandboxID, executionID string) error {
 		if isFinalExecutionStatus(ex.Status) {
 			s.mu.RUnlock()
 			return errors.New("execution is not running")
+		}
+		if deadline.IsZero() {
+			deadline = clock.Now().Add(s.executionAttachStdinWaitLocked(sandboxID, ex))
 		}
 		closeFn = ex.AttachCloseStdin
 		done = ex.Done
@@ -1248,6 +1254,24 @@ func (s *Service) CloseExecutionStdin(sandboxID, executionID string) error {
 		case <-clock.After(s.timeouts().attachPollInterval):
 		}
 	}
+}
+
+func (s *Service) executionAttachStdinWaitLocked(sandboxID string, ex *executionState) time.Duration {
+	wait := s.timeouts().attachStdinRegistrationWait
+	launchSeconds := int64(0)
+	if ex != nil && ex.Options.LaunchSeconds > 0 {
+		launchSeconds = ex.Options.LaunchSeconds
+	} else if sandbox, ok := s.sandboxes[sandboxID]; ok && sandbox.Firecracker.LaunchSeconds > 0 {
+		launchSeconds = sandbox.Firecracker.LaunchSeconds
+	}
+	if launchSeconds <= 0 {
+		return wait
+	}
+	launchWait := time.Duration(launchSeconds) * time.Second
+	if launchWait > wait {
+		return launchWait
+	}
+	return wait
 }
 
 func (s *Service) ResizeExecutionTTY(sandboxID, executionID string, cols, rows uint32) error {
