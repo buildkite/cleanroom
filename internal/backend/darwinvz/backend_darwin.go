@@ -25,6 +25,7 @@ import (
 
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/bootassets"
+	"github.com/buildkite/cleanroom/internal/ext4image"
 	"github.com/buildkite/cleanroom/internal/gateway"
 	"github.com/buildkite/cleanroom/internal/hosttools"
 	"github.com/buildkite/cleanroom/internal/imagemgr"
@@ -828,6 +829,10 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 		return nil, fmt.Errorf("prepare per-run rootfs: %w", err)
 	}
 	vmRootFSPath = writableVolume.AttachmentPath
+	if err := ext4image.EnsureMinimumSize(ctx, vmRootFSPath, req.MinimumRootFSBytes); err != nil {
+		observation.Error = err.Error()
+		return nil, fmt.Errorf("resize writable rootfs: %w", err)
+	}
 	observation.RootFSCopyMS = time.Since(copyStart).Milliseconds()
 	defer func() {
 		_ = driver.DestroyVolume(context.Background(), volumestore.DestroyVolumeRequest{VolumeRef: vmRootFSPath})
@@ -1115,6 +1120,9 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 		return nil, fmt.Errorf("prepare persistent rootfs: %w", err)
 	}
 	vmRootFSPath = writableVolume.AttachmentPath
+	if err := ext4image.EnsureMinimumSize(ctx, vmRootFSPath, cfg.MinimumRootFSBytes); err != nil {
+		return nil, fmt.Errorf("resize persistent rootfs: %w", err)
+	}
 	rootFSCopyMS := time.Since(copyStart).Milliseconds()
 
 	guestInitPath, _ := guestInitExecutableForRootFS(vmRootFSPath)

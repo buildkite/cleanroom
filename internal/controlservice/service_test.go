@@ -1552,6 +1552,34 @@ func TestCreateSandboxMergesFirecrackerSnapshotConfig(t *testing.T) {
 	}
 }
 
+func TestCreateSandboxSetsRepositoryBootstrapRootFSMinimum(t *testing.T) {
+	adapter := &stubAdapter{}
+	svc := &Service{
+		Config: runtimeconfig.Config{
+			DefaultBackend: "darwin-vz",
+		},
+		Backends: map[string]backend.Adapter{"darwin-vz": adapter},
+	}
+
+	policyProto := testRepositoryPolicy()
+	policyProto.Services = &cleanroomv1.PolicyServices{
+		Docker: &cleanroomv1.PolicyDockerService{Required: true},
+	}
+
+	_, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Backend:            "darwin-vz",
+		Policy:             policyProto,
+		RepositoryCheckout: testRepositoryCheckoutProto(),
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+
+	if got, want := adapter.provisionReq.FirecrackerConfig.MinimumRootFSBytes, repositoryBootstrapDockerMinimumRootFSBytes; got != want {
+		t.Fatalf("unexpected minimum_rootfs_bytes: got %d want %d", got, want)
+	}
+}
+
 func TestCreateExecutionRejectsWhenSandboxBusy(t *testing.T) {
 	started := make(chan struct{}, 1)
 	adapter := &stubAdapter{

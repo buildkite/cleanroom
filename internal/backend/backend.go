@@ -182,6 +182,7 @@ type FirecrackerConfig struct {
 	BinaryPath           string
 	KernelImagePath      string
 	RootFSPath           string
+	MinimumRootFSBytes   int64
 	DockerStartupSeconds int64
 	DockerStorageDriver  string
 	DockerIPTables       bool
