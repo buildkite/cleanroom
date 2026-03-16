@@ -11,7 +11,10 @@ Default AMI behaviour:
 - defaults to `us-west-2` for `aws_region`
 - uses latest Ubuntu 24.04 AMI from SSM public parameter
 - set `ami_id` in `terraform.tfvars` if you want to pin an explicit AMI
-- set `enable_macos_ci = true` and `mac_ami_id` to enable the macOS host
+- set `enable_macos_ci = true` to enable the macOS host
+- macOS defaults to the latest Tahoe AMI from the public SSM parameter that matches `mac_instance_type`
+- set `mac_ami_id` in `terraform.tfvars` if you want to pin an explicit macOS AMI
+- set `mac_ami_ssm_parameter_name` if you want a different public SSM parameter than the Tahoe default
 
 Network behaviour:
 

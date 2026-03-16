@@ -13,8 +13,10 @@ mac_instance_type = "mac2-m2pro.metal"
 # Optional: pin AMI manually. Leave empty to use latest Ubuntu from SSM parameter.
 # ami_id = "ami-0123456789abcdef0"
 
-# Required when enable_macos_ci is true.
+# Optional: pin the macOS AMI manually. Leave empty to use the latest Tahoe AMI
+# from the public SSM parameter that matches mac_instance_type.
 # mac_ami_id = "ami-0123456789abcdef0"
+# mac_ami_ssm_parameter_name = "/aws/service/ec2-macos/tahoe/arm64_mac/latest/image_id"
 
 buildkite_token_parameter_name    = "/buildkite/agent-token"
 tailscale_auth_key_parameter_name = "/tailscale/authkey/ci"

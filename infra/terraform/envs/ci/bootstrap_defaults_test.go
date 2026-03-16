@@ -84,6 +84,17 @@ func TestMacCiDefaultsUseBootstrapScript(t *testing.T) {
 	requireContains(t, "terraform.tfvars.example", "mac_buildkite_queue   = \"cleanroom-mac\"")
 }
 
+func TestMacCiDefaultsUseTahoePublicSsmParameter(t *testing.T) {
+	t.Helper()
+
+	requireContains(t, "main.tf", "/aws/service/ec2-macos/tahoe/x86_64_mac/latest/image_id")
+	requireContains(t, "main.tf", "/aws/service/ec2-macos/tahoe/arm64_mac/latest/image_id")
+	requireContains(t, "main.tf", "data \"aws_ssm_parameter\" \"mac_ami\"")
+	requireContains(t, "main.tf", "trimspace(var.mac_ami_id) == \"\" ? 1 : 0")
+	requireContains(t, "main.tf", "trimspace(var.mac_ami_id) != \"\" ? var.mac_ami_id : data.aws_ssm_parameter.mac_ami[0].value")
+	requireContains(t, "terraform.tfvars.example", "# mac_ami_ssm_parameter_name = \"/aws/service/ec2-macos/tahoe/arm64_mac/latest/image_id\"")
+}
+
 func TestBootstrapScriptConfiguresBuildkiteAgent(t *testing.T) {
 	t.Helper()
 
