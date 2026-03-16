@@ -17,8 +17,8 @@ func TestCIBootstrapLinuxSSMScriptSupportsRunAndLogs(t *testing.T) {
 	script := string(content)
 	for _, needle := range []string{
 		"usage: scripts/ci-bootstrap-linux-ssm.sh <run|logs>",
-		"AWS_PROFILE",
-		"AWS_REGION",
+		"CLEANROOM_CI_AWS_PROFILE",
+		"CLEANROOM_CI_AWS_REGION",
 		"CLEANROOM_CI_INSTANCE_ID",
 		"CLEANROOM_CI_TERRAFORM_DIR",
 		"terraform -chdir=\"$terraform_dir\" output -raw instance_id",

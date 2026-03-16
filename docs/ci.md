@@ -129,8 +129,8 @@ mise run ci:bootstrap:linux:logs
 
 Task defaults:
 
-- `AWS_PROFILE=buildkite-sandbox-pipelines-admin`
-- `AWS_REGION=us-west-2`
+- `CLEANROOM_CI_AWS_PROFILE=buildkite-sandbox-pipelines-admin`
+- `CLEANROOM_CI_AWS_REGION=us-west-2`
 - `CLEANROOM_CI_INSTANCE_ID` overrides Terraform lookup
 - `CLEANROOM_CI_TERRAFORM_DIR=infra/terraform/envs/ci`
 
