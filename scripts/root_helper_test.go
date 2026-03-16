@@ -17,6 +17,7 @@ func TestCleanroomRootHelperDeclaresCapabilitiesAndZFSSupport(t *testing.T) {
 	script := string(content)
 	for _, needle := range []string{
 		"helper_contract_version()",
+		"helper_has_zfs()",
 		"helper_capabilities()",
 		"firecracker-network",
 		"firecracker-rootfs",

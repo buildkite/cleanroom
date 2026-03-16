@@ -15,12 +15,20 @@ helper_contract_version() {
   echo "2"
 }
 
+helper_has_zfs() {
+  [[ -x /usr/sbin/zfs || -x /sbin/zfs ]] && return 0
+  command -v zfs >/dev/null 2>&1
+}
+
 helper_capabilities() {
   cat <<'EOF'
 firecracker-network
 firecracker-rootfs
-firecracker-zfs
 EOF
+
+  if helper_has_zfs; then
+    echo "firecracker-zfs"
+  fi
 }
 
 die() {
