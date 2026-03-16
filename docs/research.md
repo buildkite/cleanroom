@@ -212,12 +212,55 @@ Key properties of this model:
 - Secret injection is scoped by destination host -- a secret bound to `api.github.com` cannot be injected into requests to other hosts.
 - All injection events are logged with secret ID and destination, never with secret values.
 
-## Research conclusions
+## Agent and inference credentials
 
-1. Use Firecracker as the local sandbox backend (inspired by Matchlock patterns). See [backend/firecracker.md](backend/firecracker.md) for implementation details.
-2. Use an in-tree host gateway as the package/registry and git mediation layer,
-   borrowing ideas from tools like `content-cache` and `git-proxy-cache` rather
-   than depending on them directly.
-3. Use a tokenizer-like secret-injection model with host-scoped policy and no
-   plaintext propagation.
-4. Keep CLI first: `cleanroom exec` as primary entrypoint and command pattern.
+Validation snapshot date: 2026-03-17.
+
+This section records what auth surfaces these tools expose, what host-side
+state is present locally, and what material would become visible if that state
+were projected into a guest sandbox.
+
+### Provider auth surface snapshot
+
+| Tool | Auth surfaces observed | Helper or endpoint hooks observed | Host-side persisted state observed | Notes |
+|---|---|---|---|---|
+| Codex CLI | ChatGPT account login; API key login via `codex login --with-api-key` | Official config/auth docs; local CLI exposes login surfaces; local binary strings reference `OPENAI_BASE_URL` | `~/.codex/auth.json` with `auth_mode`, `access_token`, `refresh_token`, `id_token` fields | On this host, `codex login status` returned `Logged in using ChatGPT` |
+| Claude Code | Anthropic docs describe API-key auth plus IAM-backed options | `apiKeyHelper`; custom base URL; LLM gateway docs | Not observed locally in this environment (`claude` CLI not installed) | Docs present a first-class helper-based credential retrieval surface |
+| Amp CLI | `AMP_API_KEY`; `AMP_URL` | CLI help exposes URL override; no helper-style credential hook was found in local help output | `~/.local/share/amp/secrets.json`; `~/.local/share/amp/session.json` | Amp docs describe stored OAuth/local secret state; owner manual says self-hosted/BYOK is not currently supported |
+
+### Security-relevant observations
+
+- The local Codex auth store contains token-bearing fields, including
+  `access_token` and `refresh_token`.
+- The local Amp installation stores credential-related state under the user's
+  home directory rather than relying only on ephemeral process env.
+- Claude Code's published settings include an explicit credential helper hook
+  (`apiKeyHelper`) rather than requiring a static key in config.
+- Codex and Amp both show evidence of host-persisted login state in this
+  environment.
+- Projecting host auth files such as `~/.codex/auth.json` or
+  `~/.local/share/amp/secrets.json` into a guest would expose their contents to
+  guest processes.
+
+### Relevant references
+
+- [Codex configuration/auth docs](https://developers.openai.com/codex/config-advanced/)
+- local CLI `codex login --help` and `codex login status`
+- [Claude Code settings](https://docs.anthropic.com/en/docs/claude-code/settings)
+- [Claude Code IAM and auth guide](https://docs.anthropic.com/en/docs/claude-code/iam)
+- [Claude Code LLM gateway guide](https://docs.anthropic.com/en/docs/claude-code/llm-gateway)
+- [Amp security reference](https://ampcode.com/security)
+- [Amp owner manual](https://ampcode.com/manual)
+- local CLI `amp --help`, `amp usage`, and local config layout
+
+## Research summary
+
+1. Hosted sandbox providers generally default to full internet access and do
+   not provide repository-scoped egress control or credential isolation.
+2. Among the self-hosted tools reviewed, Matchlock is the closest structural
+   prior art to Cleanroom, while still differing on default allow behavior,
+   policy mutability, image pinning, and TLS proxying.
+3. Firecracker maps directly to TAP plus host-firewall enforcement on Linux;
+   macOS requires different enforcement primitives and capability scoping.
+4. Existing prior art for host-side mediation and caching exists in
+   `content-cache`, `git-proxy-cache`, and `tokenizer`.
