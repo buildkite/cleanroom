@@ -18,7 +18,7 @@ TAILSCALE_ENABLE_SSH='${tailscale_enable_ssh}'
 TAILSCALE_ACCEPT_ROUTES='${tailscale_accept_routes}'
 
 if ! command -v apt-get >/dev/null 2>&1; then
-  echo "linux CI user_data requires an Ubuntu apt-based AMI" >&2
+  echo "linux host user_data requires an Ubuntu apt-based AMI" >&2
   exit 1
 fi
 
@@ -90,12 +90,14 @@ imds_token="$(curl -fsS -X PUT "http://169.254.169.254/latest/api/token" -H "X-a
 instance_id="$(curl -fsS -H "X-aws-ec2-metadata-token: $imds_token" http://169.254.169.254/latest/meta-data/instance-id)"
 
 # Verify the instance role can read SecureString parameters before handoff.
-aws ssm get-parameter \
-  --region "$AWS_REGION" \
-  --name "$BUILDKITE_TOKEN_PARAM" \
-  --with-decryption \
-  --query 'Parameter.Value' \
-  --output text >/dev/null
+if [ -n "$BUILDKITE_TOKEN_PARAM" ]; then
+  aws ssm get-parameter \
+    --region "$AWS_REGION" \
+    --name "$BUILDKITE_TOKEN_PARAM" \
+    --with-decryption \
+    --query 'Parameter.Value' \
+    --output text >/dev/null
+fi
 
 if [ -n "$TAILSCALE_PARAM" ]; then
   tailscale_auth_key="$(aws ssm get-parameter --region "$AWS_REGION" --name "$TAILSCALE_PARAM" --with-decryption --query 'Parameter.Value' --output text)"
