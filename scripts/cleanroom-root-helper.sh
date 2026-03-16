@@ -89,10 +89,36 @@ is_zfs_snapshot_ref() {
   [[ "$v" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]*(/[A-Za-z0-9][A-Za-z0-9._:-]*)*@[A-Za-z0-9][A-Za-z0-9._:-]*$ ]]
 }
 
+contains_cleanroom_zfs_namespace() {
+  local ref="$1"
+  local dataset="${ref%@*}"
+  local component
+  local IFS='/'
+  read -r -a components <<<"$dataset"
+  for component in "${components[@]}"; do
+    if [[ "$component" == "cleanroom" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+is_cleanroom_zfs_dataset() {
+  local v="$1"
+  is_zfs_dataset "$v" || return 1
+  contains_cleanroom_zfs_namespace "$v"
+}
+
+is_cleanroom_zfs_snapshot_ref() {
+  local v="$1"
+  is_zfs_snapshot_ref "$v" || return 1
+  contains_cleanroom_zfs_namespace "$v"
+}
+
 is_zvol_device_path() {
   local p="$1"
   [[ "$p" == /dev/zvol/* ]] || return 1
-  is_zfs_dataset "${p#/dev/zvol/}"
+  is_cleanroom_zfs_dataset "${p#/dev/zvol/}"
 }
 
 zfs_bin() {
@@ -283,34 +309,34 @@ run_zfs() {
   bin="$(zfs_bin)"
 
   if [[ "$#" -eq 5 && "$1" == "list" && "$2" == "-H" && "$3" == "-o" && "$4" == "name" ]]; then
-    is_zfs_dataset "$5" || is_zfs_snapshot_ref "$5" || die "zfs list: unsupported ref '$5'"
+    is_cleanroom_zfs_dataset "$5" || is_cleanroom_zfs_snapshot_ref "$5" || die "zfs list: unsupported ref '$5'"
     exec "$bin" "$@"
   fi
 
   if [[ "$#" -eq 5 && "$1" == "create" && "$2" == "-p" && "$3" == "-V" ]]; then
     is_numeric "$4" || die "zfs create: invalid size '$4'"
-    is_zfs_dataset "$5" || die "zfs create: unsupported dataset '$5'"
+    is_cleanroom_zfs_dataset "$5" || die "zfs create: unsupported dataset '$5'"
     exec "$bin" "$@"
   fi
 
   if [[ "$#" -eq 2 && "$1" == "snapshot" ]]; then
-    is_zfs_snapshot_ref "$2" || die "zfs snapshot: unsupported ref '$2'"
+    is_cleanroom_zfs_snapshot_ref "$2" || die "zfs snapshot: unsupported ref '$2'"
     exec "$bin" "$@"
   fi
 
   if [[ "$#" -eq 4 && "$1" == "clone" && "$2" == "-p" ]]; then
-    is_zfs_snapshot_ref "$3" || die "zfs clone: unsupported snapshot '$3'"
-    is_zfs_dataset "$4" || die "zfs clone: unsupported dataset '$4'"
+    is_cleanroom_zfs_snapshot_ref "$3" || die "zfs clone: unsupported snapshot '$3'"
+    is_cleanroom_zfs_dataset "$4" || die "zfs clone: unsupported dataset '$4'"
     exec "$bin" "$@"
   fi
 
   if [[ "$#" -eq 3 && "$1" == "destroy" && "$2" == "-r" ]]; then
-    is_zfs_dataset "$3" || die "zfs destroy -r: unsupported dataset '$3'"
+    is_cleanroom_zfs_dataset "$3" || die "zfs destroy -r: unsupported dataset '$3'"
     exec "$bin" "$@"
   fi
 
   if [[ "$#" -eq 2 && "$1" == "destroy" ]]; then
-    is_zfs_snapshot_ref "$2" || die "zfs destroy: unsupported ref '$2'"
+    is_cleanroom_zfs_snapshot_ref "$2" || die "zfs destroy: unsupported ref '$2'"
     exec "$bin" "$@"
   fi
 
