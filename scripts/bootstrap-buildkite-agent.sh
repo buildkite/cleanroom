@@ -107,7 +107,12 @@ WantedBy=multi-user.target
 TAILSCALE_UNIT
 
   systemctl daemon-reload
-  systemctl enable --now tailscaled
+  systemctl enable tailscaled
+  if systemctl is-active --quiet tailscaled; then
+    systemctl restart tailscaled
+  else
+    systemctl start tailscaled
+  fi
 
   instance_id="$(resolve_instance_id)"
   tailscale_cmd=(/usr/local/bin/tailscale up --auth-key "$tailscale_auth_key" --hostname "${tailscale_hostname_prefix}-${instance_id}")
