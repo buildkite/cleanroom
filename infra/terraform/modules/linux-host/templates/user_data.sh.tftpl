@@ -17,14 +17,42 @@ TAILSCALE_ADVERTISE_TAGS='${tailscale_advertise_tags}'
 TAILSCALE_ENABLE_SSH='${tailscale_enable_ssh}'
 TAILSCALE_ACCEPT_ROUTES='${tailscale_accept_routes}'
 
+retry() {
+  local attempts="$1"
+  local delay_seconds="$2"
+  shift 2
+
+  local n=1
+  while true; do
+    if "$@"; then
+      return 0
+    fi
+
+    if [ "$n" -ge "$attempts" ]; then
+      return 1
+    fi
+
+    sleep "$delay_seconds"
+    n=$((n + 1))
+  done
+}
+
+configure_apt_ipv4() {
+  install -d -o root -g root -m 0755 /etc/apt/apt.conf.d
+  cat > /etc/apt/apt.conf.d/99force-ipv4 <<'APTCONF'
+Acquire::ForceIPv4 "true";
+APTCONF
+}
+
 if ! command -v apt-get >/dev/null 2>&1; then
   echo "linux host user_data requires an Ubuntu apt-based AMI" >&2
   exit 1
 fi
 
+configure_apt_ipv4
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -y
-apt-get install -y git jq curl tar unzip ca-certificates openssh-client linux-headers-$(uname -r) zfsutils-linux
+retry 5 10 apt-get update -y
+retry 5 10 apt-get install -y git jq curl tar unzip ca-certificates openssh-client linux-headers-$(uname -r) zfsutils-linux
 
 if ! modprobe zfs; then
   echo "zfs kernel module failed to load" >&2
@@ -76,7 +104,7 @@ if ! command -v aws >/dev/null 2>&1; then
 
   aws_tmp_dir="$(mktemp -d)"
   trap 'rm -rf "$aws_tmp_dir"' EXIT
-  curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-$aws_arch.zip" -o "$aws_tmp_dir/awscliv2.zip"
+  retry 5 5 curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-$aws_arch.zip" -o "$aws_tmp_dir/awscliv2.zip"
   unzip -q "$aws_tmp_dir/awscliv2.zip" -d "$aws_tmp_dir"
   "$aws_tmp_dir/aws/install" --bin-dir /usr/local/bin --install-dir /usr/local/aws-cli --update
 fi
@@ -86,12 +114,12 @@ if ! command -v aws >/dev/null 2>&1; then
   exit 1
 fi
 
-imds_token="$(curl -fsS -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")"
-instance_id="$(curl -fsS -H "X-aws-ec2-metadata-token: $imds_token" http://169.254.169.254/latest/meta-data/instance-id)"
+imds_token="$(retry 10 3 curl -fsS -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")"
+instance_id="$(retry 10 3 curl -fsS -H "X-aws-ec2-metadata-token: $imds_token" http://169.254.169.254/latest/meta-data/instance-id)"
 
 # Verify the instance role can read SecureString parameters before handoff.
 if [ -n "$BUILDKITE_TOKEN_PARAM" ]; then
-  aws ssm get-parameter \
+  retry 10 3 aws ssm get-parameter \
     --region "$AWS_REGION" \
     --name "$BUILDKITE_TOKEN_PARAM" \
     --with-decryption \
@@ -100,7 +128,7 @@ if [ -n "$BUILDKITE_TOKEN_PARAM" ]; then
 fi
 
 if [ -n "$TAILSCALE_PARAM" ]; then
-  if ! tailscale_auth_key="$(aws ssm get-parameter --region "$AWS_REGION" --name "$TAILSCALE_PARAM" --with-decryption --query 'Parameter.Value' --output text)"; then
+  if ! tailscale_auth_key="$(retry 10 3 aws ssm get-parameter --region "$AWS_REGION" --name "$TAILSCALE_PARAM" --with-decryption --query 'Parameter.Value' --output text)"; then
     echo "warning: tailscale auth key parameter unavailable ($TAILSCALE_PARAM); skipping tailscale bootstrap" >&2
     tailscale_auth_key=''
   fi
@@ -115,7 +143,7 @@ if [ -n "$TAILSCALE_PARAM" ]; then
     ts_url="$(printf 'https://pkgs.tailscale.com/stable/tailscale_%s_%s.tgz' "$TAILSCALE_VERSION" "$ts_arch")"
     ts_tmp_dir="$(mktemp -d)"
     trap 'rm -rf "$ts_tmp_dir"' EXIT
-    curl -fsSL "$ts_url" -o "$ts_tmp_dir/tailscale.tgz"
+    retry 5 5 curl -fsSL "$ts_url" -o "$ts_tmp_dir/tailscale.tgz"
     tar -xzf "$ts_tmp_dir/tailscale.tgz" -C "$ts_tmp_dir"
     ts_extract_dir="$(find "$ts_tmp_dir" -maxdepth 1 -type d -name 'tailscale_*' | head -n 1)"
 
@@ -153,13 +181,13 @@ TAILSCALE_UNIT
     if [ -n "$TAILSCALE_ADVERTISE_TAGS" ]; then
       set -- "$@" --advertise-tags "$TAILSCALE_ADVERTISE_TAGS"
     fi
-    /usr/local/bin/tailscale "$@"
+    retry 5 5 /usr/local/bin/tailscale "$@"
   fi
 fi
 
 if [ -n "$DEPLOY_KEY_PARAM" ]; then
   install -d -o root -g root -m 0700 /root/.ssh
-  aws ssm get-parameter \
+  retry 10 3 aws ssm get-parameter \
     --region "$AWS_REGION" \
     --name "$DEPLOY_KEY_PARAM" \
     --with-decryption \
@@ -167,7 +195,7 @@ if [ -n "$DEPLOY_KEY_PARAM" ]; then
     --output text > /root/.ssh/cleanroom_deploy_key
   chmod 0600 /root/.ssh/cleanroom_deploy_key
   touch /root/.ssh/known_hosts
-  ssh-keyscan -t rsa,ecdsa,ed25519 github.com >> /root/.ssh/known_hosts
+  retry 5 3 ssh-keyscan -t rsa,ecdsa,ed25519 github.com >> /root/.ssh/known_hosts
   chmod 0644 /root/.ssh/known_hosts
 fi
 
@@ -181,7 +209,7 @@ fi
 
 git -c init.defaultBranch=main init "$repo_root" >/dev/null
 git -C "$repo_root" remote add origin "$REPO_URL"
-git -C "$repo_root" fetch --depth=1 origin "$REPO_REF"
+retry 5 3 git -C "$repo_root" fetch --depth=1 origin "$REPO_REF"
 git -C "$repo_root" checkout -f FETCH_HEAD
 
 setup_script="$repo_root/$SETUP_SCRIPT_PATH"
@@ -201,6 +229,12 @@ export CLEANROOM_BOOTSTRAP_REPO_URL="$REPO_URL"
 export CLEANROOM_BOOTSTRAP_REPO_REF="$REPO_REF"
 export CLEANROOM_BOOTSTRAP_SETUP_SCRIPT_PATH="$SETUP_SCRIPT_PATH"
 export CLEANROOM_BOOTSTRAP_DEPLOY_KEY_PARAM="$DEPLOY_KEY_PARAM"
+export CLEANROOM_TAILSCALE_AUTH_KEY_PARAMETER_NAME="$TAILSCALE_PARAM"
+export CLEANROOM_TAILSCALE_VERSION="$TAILSCALE_VERSION"
+export CLEANROOM_TAILSCALE_HOSTNAME_PREFIX="$TAILSCALE_HOSTNAME_PREFIX"
+export CLEANROOM_TAILSCALE_ADVERTISE_TAGS="$TAILSCALE_ADVERTISE_TAGS"
+export CLEANROOM_TAILSCALE_ENABLE_SSH="$TAILSCALE_ENABLE_SSH"
+export CLEANROOM_TAILSCALE_ACCEPT_ROUTES="$TAILSCALE_ACCEPT_ROUTES"
 export CLEANROOM_ZFS_DATASET
 
 "$setup_script"

@@ -61,11 +61,11 @@ variable "mac_ami_ssm_parameter_name" {
 variable "mac_instance_type" {
   description = "EC2 instance type for macOS CI host. Must be a Mac metal type."
   type        = string
-  default     = "mac2-m2pro.metal"
+  default     = "mac2-m2.metal"
 
   validation {
     condition     = trimspace(var.mac_instance_type) != "" && endswith(var.mac_instance_type, ".metal")
-    error_message = "mac_instance_type must be a non-empty Mac metal instance type (for example mac2-m2pro.metal)."
+    error_message = "mac_instance_type must be a non-empty Mac metal instance type (for example mac2-m2.metal)."
   }
 }
 

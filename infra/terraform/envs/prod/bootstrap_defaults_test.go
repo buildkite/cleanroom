@@ -65,7 +65,7 @@ func TestProdDefaultsUseLargeLinuxHost(t *testing.T) {
 
 	requireContains(t, "variables.tf", "default     = \"m8i.4xlarge\"")
 	requireContains(t, "variables.tf", "default     = 500")
-	requireContains(t, "terraform.tfvars.example", "instance_type         = \"m8i.4xlarge\"")
+	requireContains(t, "terraform.tfvars.example", "instance_type         = \"m8i.xlarge\"")
 }
 
 func TestProdBootstrapBuildsAndInstallsCleanroom(t *testing.T) {
@@ -78,6 +78,9 @@ func TestProdBootstrapBuildsAndInstallsCleanroom(t *testing.T) {
 	requireContains(t, scriptPath, "daemon install --force --log-level info")
 	requireContains(t, scriptPath, "default_backend: firecracker")
 	requireContains(t, scriptPath, "memory_mib: ${CLEANROOM_FIRECRACKER_MEMORY_MIB}")
+	requireContains(t, scriptPath, "install_tailscale_if_configured")
+	requireContains(t, scriptPath, "CLEANROOM_TAILSCALE_AUTH_KEY_PARAMETER_NAME")
+	requireContains(t, scriptPath, "Acquire::ForceIPv4 \"true\";")
 }
 
 func TestProdEnvSupportsAvailabilityZoneOverride(t *testing.T) {
@@ -85,18 +88,22 @@ func TestProdEnvSupportsAvailabilityZoneOverride(t *testing.T) {
 
 	requireContains(t, "variables.tf", "variable \"availability_zone\"")
 	requireContains(t, "main.tf", "availability_zone   = var.availability_zone")
-	requireContains(t, "terraform.tfvars.example", "# availability_zone = \"us-west-2b\"")
+	requireContains(t, "terraform.tfvars.example", "# availability_zone = \"ap-southeast-2b\"")
 }
 
-func TestDefaultRegionIsUsWest2(t *testing.T) {
+func TestVariableDefaultRegionIsUsWest2(t *testing.T) {
 	t.Helper()
 
 	block := readVariableBlock(t, "variables.tf", "aws_region")
 	if !strings.Contains(block, "us-west-2") {
 		t.Fatalf("expected default aws_region to be us-west-2 in variables.tf, got:\n%s", block)
 	}
+}
 
-	requireContains(t, "terraform.tfvars.example", "aws_region  = \"us-west-2\"")
+func TestExampleRegionIsSydney(t *testing.T) {
+	t.Helper()
+
+	requireContains(t, "terraform.tfvars.example", "aws_region  = \"ap-southeast-2\"")
 }
 
 func TestGitDeployKeyIsRequired(t *testing.T) {

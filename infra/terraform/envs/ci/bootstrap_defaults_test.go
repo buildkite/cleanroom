@@ -113,6 +113,10 @@ func TestLinuxBootstrapScriptInstallsRerunnableBootstrapCommand(t *testing.T) {
 	requireContains(t, scriptPath, "CLEANROOM_BOOTSTRAP_REPO_REF")
 	requireContains(t, scriptPath, "CLEANROOM_BOOTSTRAP_SETUP_SCRIPT_PATH")
 	requireContains(t, scriptPath, "CLEANROOM_BOOTSTRAP_DEPLOY_KEY_PARAM")
+	requireContains(t, scriptPath, "TAILSCALE_AUTH_KEY_PARAMETER_NAME='$bootstrap_tailscale_param'")
+	requireContains(t, scriptPath, "export CLEANROOM_TAILSCALE_AUTH_KEY_PARAMETER_NAME=\"$TAILSCALE_AUTH_KEY_PARAMETER_NAME\"")
+	requireContains(t, scriptPath, "export CLEANROOM_TAILSCALE_VERSION=\"$TAILSCALE_VERSION\"")
+	requireContains(t, scriptPath, "export CLEANROOM_TAILSCALE_HOSTNAME_PREFIX=\"$TAILSCALE_HOSTNAME_PREFIX\"")
 	requireContains(t, scriptPath, "chmod 0755 \"$bootstrap_runner_path\"")
 }
 
@@ -138,6 +142,15 @@ func TestUserDataInstallsAwsCliWithoutAptAwscliDependency(t *testing.T) {
 	templatePath := filepath.Join("..", "..", "modules", "linux-host", "templates", "user_data.sh.tftpl")
 	requireNotContains(t, templatePath, "apt-get install -y git jq curl tar ca-certificates openssh-client awscli")
 	requireContains(t, templatePath, "awscli-exe-linux")
+}
+
+func TestUserDataRetriesAptAndForcesIPv4(t *testing.T) {
+	t.Helper()
+
+	templatePath := filepath.Join("..", "..", "modules", "linux-host", "templates", "user_data.sh.tftpl")
+	requireContains(t, templatePath, "Acquire::ForceIPv4 \"true\";")
+	requireContains(t, templatePath, "retry 5 10 apt-get update -y")
+	requireContains(t, templatePath, "retry 5 10 apt-get install -y git jq curl tar unzip ca-certificates openssh-client linux-headers-$(uname -r) zfsutils-linux")
 }
 
 func TestUserDataIsUbuntuSpecific(t *testing.T) {
@@ -170,7 +183,7 @@ func TestUserDataCreatesZfsPoolFromEphemeralNVMe(t *testing.T) {
 	requireContains(t, templatePath, "truncate -s \"$CLEANROOM_ZFS_LOOPBACK_SIZE\"")
 }
 
-func TestDefaultRegionIsUsWest2(t *testing.T) {
+func TestVariableDefaultRegionIsUsWest2(t *testing.T) {
 	t.Helper()
 
 	for _, path := range []string{
@@ -184,7 +197,12 @@ func TestDefaultRegionIsUsWest2(t *testing.T) {
 		}
 	}
 
-	requireContains(t, "terraform.tfvars.example", "aws_region  = \"us-west-2\"")
+}
+
+func TestExampleRegionIsSydney(t *testing.T) {
+	t.Helper()
+
+	requireContains(t, "terraform.tfvars.example", "aws_region  = \"ap-southeast-2\"")
 }
 
 func TestBootstrapConfiguresZfsSnapshots(t *testing.T) {
@@ -239,6 +257,9 @@ func TestLinuxUserDataSupportsInPlaceBootstrapRerun(t *testing.T) {
 	requireContains(t, templatePath, "export CLEANROOM_BOOTSTRAP_REPO_REF=\"$REPO_REF\"")
 	requireContains(t, templatePath, "export CLEANROOM_BOOTSTRAP_SETUP_SCRIPT_PATH=\"$SETUP_SCRIPT_PATH\"")
 	requireContains(t, templatePath, "export CLEANROOM_BOOTSTRAP_DEPLOY_KEY_PARAM=\"$DEPLOY_KEY_PARAM\"")
+	requireContains(t, templatePath, "export CLEANROOM_TAILSCALE_AUTH_KEY_PARAMETER_NAME=\"$TAILSCALE_PARAM\"")
+	requireContains(t, templatePath, "export CLEANROOM_TAILSCALE_VERSION=\"$TAILSCALE_VERSION\"")
+	requireContains(t, templatePath, "export CLEANROOM_TAILSCALE_HOSTNAME_PREFIX=\"$TAILSCALE_HOSTNAME_PREFIX\"")
 	requireContains(t, templatePath, "export CLEANROOM_ZFS_DATASET")
 }
 
@@ -254,7 +275,7 @@ func TestEnvSupportsAvailabilityZoneOverride(t *testing.T) {
 
 	requireContains(t, "variables.tf", "variable \"availability_zone\"")
 	requireContains(t, "main.tf", "availability_zone   = var.availability_zone")
-	requireContains(t, "terraform.tfvars.example", "# availability_zone = \"us-west-2b\"")
+	requireContains(t, "terraform.tfvars.example", "# availability_zone = \"ap-southeast-2b\"")
 }
 
 func TestGitDeployKeyIsRequired(t *testing.T) {

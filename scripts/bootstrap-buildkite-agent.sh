@@ -19,6 +19,111 @@ require_cmd() {
   command -v "$cmd" >/dev/null 2>&1 || die "required command not found: ${cmd}"
 }
 
+retry() {
+  local attempts="$1"
+  local delay_seconds="$2"
+  shift 2
+
+  local n=1
+  while true; do
+    if "$@"; then
+      return 0
+    fi
+
+    if [ "$n" -ge "$attempts" ]; then
+      return 1
+    fi
+
+    sleep "$delay_seconds"
+    n=$((n + 1))
+  done
+}
+
+configure_apt_ipv4() {
+  install -d -o root -g root -m 0755 /etc/apt/apt.conf.d
+  cat > /etc/apt/apt.conf.d/99force-ipv4 <<'APTCONF'
+Acquire::ForceIPv4 "true";
+APTCONF
+}
+
+install_tailscale_if_configured() {
+  local tailscale_param="${TAILSCALE_AUTH_KEY_PARAMETER_NAME:-${CLEANROOM_TAILSCALE_AUTH_KEY_PARAMETER_NAME:-}}"
+  local tailscale_version="${TAILSCALE_VERSION:-${CLEANROOM_TAILSCALE_VERSION:-}}"
+  local tailscale_hostname_prefix="${TAILSCALE_HOSTNAME_PREFIX:-${CLEANROOM_TAILSCALE_HOSTNAME_PREFIX:-}}"
+  local tailscale_advertise_tags="${TAILSCALE_ADVERTISE_TAGS:-${CLEANROOM_TAILSCALE_ADVERTISE_TAGS:-}}"
+  local tailscale_enable_ssh="${TAILSCALE_ENABLE_SSH:-${CLEANROOM_TAILSCALE_ENABLE_SSH:-true}}"
+  local tailscale_accept_routes="${TAILSCALE_ACCEPT_ROUTES:-${CLEANROOM_TAILSCALE_ACCEPT_ROUTES:-false}}"
+  local tailscale_auth_key
+  local arch_name
+  local ts_arch='amd64'
+  local ts_url
+  local ts_tmp_dir
+  local ts_extract_dir
+  local instance_id
+  local -a tailscale_cmd
+
+  if [ -z "$tailscale_param" ]; then
+    return
+  fi
+
+  [ -n "$tailscale_version" ] || die "TAILSCALE_VERSION (or CLEANROOM_TAILSCALE_VERSION) must be set when tailscale bootstrap is enabled"
+  [ -n "$tailscale_hostname_prefix" ] || die "TAILSCALE_HOSTNAME_PREFIX (or CLEANROOM_TAILSCALE_HOSTNAME_PREFIX) must be set when tailscale bootstrap is enabled"
+
+  log "installing tailscale ${tailscale_version}"
+  tailscale_auth_key="$(retry 10 3 aws ssm get-parameter --region "$AWS_REGION" --name "$tailscale_param" --with-decryption --query 'Parameter.Value' --output text)"
+
+  arch_name="$(uname -m)"
+  if [ "$arch_name" = 'aarch64' ] || [ "$arch_name" = 'arm64' ]; then
+    ts_arch='arm64'
+  fi
+
+  ts_url="$(printf 'https://pkgs.tailscale.com/stable/tailscale_%s_%s.tgz' "$tailscale_version" "$ts_arch")"
+  ts_tmp_dir="$(mktemp -d)"
+  trap 'rm -rf "$ts_tmp_dir"' RETURN
+
+  retry 5 5 curl -fsSL "$ts_url" -o "$ts_tmp_dir/tailscale.tgz"
+  tar -xzf "$ts_tmp_dir/tailscale.tgz" -C "$ts_tmp_dir"
+  ts_extract_dir="$(find "$ts_tmp_dir" -maxdepth 1 -type d -name 'tailscale_*' | head -n 1)"
+  [ -n "$ts_extract_dir" ] || die "tailscale archive missing extracted directory"
+
+  install -o root -g root -m 0755 "$ts_extract_dir/tailscale" /usr/local/bin/tailscale
+  install -o root -g root -m 0755 "$ts_extract_dir/tailscaled" /usr/local/bin/tailscaled
+  install -d -o root -g root -m 0755 /var/lib/tailscale
+
+  cat > /etc/systemd/system/tailscaled.service <<'TAILSCALE_UNIT'
+[Unit]
+Description=Tailscale node agent
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+RuntimeDirectory=tailscale
+ExecStart=/usr/local/bin/tailscaled --state=/var/lib/tailscale/tailscaled.state --socket=/run/tailscale/tailscaled.sock
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+TAILSCALE_UNIT
+
+  systemctl daemon-reload
+  systemctl enable --now tailscaled
+
+  instance_id="$(resolve_instance_id)"
+  tailscale_cmd=(/usr/local/bin/tailscale up --auth-key "$tailscale_auth_key" --hostname "${tailscale_hostname_prefix}-${instance_id}")
+  if [ "$tailscale_enable_ssh" = "true" ]; then
+    tailscale_cmd+=(--ssh)
+  fi
+  if [ "$tailscale_accept_routes" = "true" ]; then
+    tailscale_cmd+=(--accept-routes)
+  fi
+  if [ -n "$tailscale_advertise_tags" ]; then
+    tailscale_cmd+=(--advertise-tags "$tailscale_advertise_tags")
+  fi
+
+  retry 5 5 "${tailscale_cmd[@]}"
+}
+
 install_linux_bootstrap_runner() {
   local bootstrap_env_path='/usr/local/etc/cleanroom-bootstrap-linux.env'
   local bootstrap_runner_path='/usr/local/bin/cleanroom-bootstrap-linux'
@@ -27,6 +132,12 @@ install_linux_bootstrap_runner() {
   local bootstrap_setup_script_path="${CLEANROOM_BOOTSTRAP_SETUP_SCRIPT_PATH:-scripts/bootstrap-buildkite-agent.sh}"
   local bootstrap_deploy_key_param="${CLEANROOM_BOOTSTRAP_DEPLOY_KEY_PARAM:-}"
   local bootstrap_zfs_dataset="${CLEANROOM_ZFS_DATASET:-cleanroom/data}"
+  local bootstrap_tailscale_param="${TAILSCALE_AUTH_KEY_PARAMETER_NAME:-${CLEANROOM_TAILSCALE_AUTH_KEY_PARAMETER_NAME:-}}"
+  local bootstrap_tailscale_version="${TAILSCALE_VERSION:-${CLEANROOM_TAILSCALE_VERSION:-}}"
+  local bootstrap_tailscale_hostname_prefix="${TAILSCALE_HOSTNAME_PREFIX:-${CLEANROOM_TAILSCALE_HOSTNAME_PREFIX:-}}"
+  local bootstrap_tailscale_advertise_tags="${TAILSCALE_ADVERTISE_TAGS:-${CLEANROOM_TAILSCALE_ADVERTISE_TAGS:-}}"
+  local bootstrap_tailscale_enable_ssh="${TAILSCALE_ENABLE_SSH:-${CLEANROOM_TAILSCALE_ENABLE_SSH:-true}}"
+  local bootstrap_tailscale_accept_routes="${TAILSCALE_ACCEPT_ROUTES:-${CLEANROOM_TAILSCALE_ACCEPT_ROUTES:-false}}"
 
   if [ -z "$bootstrap_repo_url" ]; then
     warn "skipping linux bootstrap runner install because CLEANROOM_BOOTSTRAP_REPO_URL is not set"
@@ -42,6 +153,12 @@ NAME_PREFIX='$NAME_PREFIX'
 BUILDKITE_QUEUE='$QUEUE_NAME'
 BUILDKITE_TOKEN_PARAM='$BUILDKITE_TOKEN_PARAM'
 DEPLOY_KEY_PARAM='$bootstrap_deploy_key_param'
+TAILSCALE_AUTH_KEY_PARAMETER_NAME='$bootstrap_tailscale_param'
+TAILSCALE_VERSION='$bootstrap_tailscale_version'
+TAILSCALE_HOSTNAME_PREFIX='$bootstrap_tailscale_hostname_prefix'
+TAILSCALE_ADVERTISE_TAGS='$bootstrap_tailscale_advertise_tags'
+TAILSCALE_ENABLE_SSH='$bootstrap_tailscale_enable_ssh'
+TAILSCALE_ACCEPT_ROUTES='$bootstrap_tailscale_accept_routes'
 REPO_URL='$bootstrap_repo_url'
 REPO_REF='$bootstrap_repo_ref'
 SETUP_SCRIPT_PATH='$bootstrap_setup_script_path'
@@ -191,6 +308,12 @@ export CLEANROOM_BOOTSTRAP_REPO_URL="$REPO_URL"
 export CLEANROOM_BOOTSTRAP_REPO_REF="$REPO_REF"
 export CLEANROOM_BOOTSTRAP_SETUP_SCRIPT_PATH="$SETUP_SCRIPT_PATH"
 export CLEANROOM_BOOTSTRAP_DEPLOY_KEY_PARAM="$DEPLOY_KEY_PARAM"
+export CLEANROOM_TAILSCALE_AUTH_KEY_PARAMETER_NAME="$TAILSCALE_AUTH_KEY_PARAMETER_NAME"
+export CLEANROOM_TAILSCALE_VERSION="$TAILSCALE_VERSION"
+export CLEANROOM_TAILSCALE_HOSTNAME_PREFIX="$TAILSCALE_HOSTNAME_PREFIX"
+export CLEANROOM_TAILSCALE_ADVERTISE_TAGS="$TAILSCALE_ADVERTISE_TAGS"
+export CLEANROOM_TAILSCALE_ENABLE_SSH="$TAILSCALE_ENABLE_SSH"
+export CLEANROOM_TAILSCALE_ACCEPT_ROUTES="$TAILSCALE_ACCEPT_ROUTES"
 export CLEANROOM_INSTALL_FIRECRACKER="$INSTALL_FIRECRACKER"
 export CLEANROOM_FIRECRACKER_VERSION="$FIRECRACKER_VERSION"
 export CLEANROOM_KERNEL_IMAGE_URL="$KERNEL_IMAGE_URL"
@@ -208,9 +331,10 @@ install_sudo_if_missing() {
   fi
 
   if command -v apt-get >/dev/null 2>&1; then
+    configure_apt_ipv4
     export DEBIAN_FRONTEND=noninteractive
-    apt-get update -y
-    apt-get install -y sudo
+    retry 5 10 apt-get update -y
+    retry 5 10 apt-get install -y sudo
     return
   fi
 
@@ -258,7 +382,7 @@ install_buildkite_agent_binary() {
   tmp_dir="$(mktemp -d)"
   trap 'rm -rf "$tmp_dir"' RETURN
 
-  curl -fsSL "$url" -o "$tmp_dir/buildkite-agent.tgz"
+  retry 5 5 curl -fsSL "$url" -o "$tmp_dir/buildkite-agent.tgz"
   tar -xzf "$tmp_dir/buildkite-agent.tgz" -C "$tmp_dir"
 
   binary="$(find "$tmp_dir" -maxdepth 2 -type f -name 'buildkite-agent' | head -n 1)"
@@ -280,7 +404,7 @@ install_firecracker_binary() {
   tmp_dir="$(mktemp -d)"
   trap 'rm -rf "$tmp_dir"' RETURN
 
-  curl -fsSL "$url" -o "$tmp_dir/firecracker.tgz"
+  retry 5 5 curl -fsSL "$url" -o "$tmp_dir/firecracker.tgz"
   tar -xzf "$tmp_dir/firecracker.tgz" -C "$tmp_dir"
 
   binary="$(find "$tmp_dir" -type f -name "firecracker-v${version}-${arch}" | head -n 1)"
@@ -329,6 +453,12 @@ HELPER_INSTALL_PATH="${CLEANROOM_HELPER_INSTALL_PATH:-/usr/local/sbin/cleanroom-
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 HELPER_SOURCE_PATH="${CLEANROOM_HELPER_SOURCE_PATH:-$REPO_ROOT/scripts/cleanroom-root-helper.sh}"
+TAILSCALE_AUTH_KEY_PARAMETER_NAME="${TAILSCALE_AUTH_KEY_PARAMETER_NAME:-${CLEANROOM_TAILSCALE_AUTH_KEY_PARAMETER_NAME:-}}"
+TAILSCALE_VERSION="${TAILSCALE_VERSION:-${CLEANROOM_TAILSCALE_VERSION:-1.82.5}}"
+TAILSCALE_HOSTNAME_PREFIX="${TAILSCALE_HOSTNAME_PREFIX:-${CLEANROOM_TAILSCALE_HOSTNAME_PREFIX:-}}"
+TAILSCALE_ADVERTISE_TAGS="${TAILSCALE_ADVERTISE_TAGS:-${CLEANROOM_TAILSCALE_ADVERTISE_TAGS:-}}"
+TAILSCALE_ENABLE_SSH="${TAILSCALE_ENABLE_SSH:-${CLEANROOM_TAILSCALE_ENABLE_SSH:-true}}"
+TAILSCALE_ACCEPT_ROUTES="${TAILSCALE_ACCEPT_ROUTES:-${CLEANROOM_TAILSCALE_ACCEPT_ROUTES:-false}}"
 
 [ -n "$AWS_REGION" ] || die "AWS_REGION (or CLEANROOM_BOOTSTRAP_REGION) must be set"
 [ -n "$BUILDKITE_TOKEN_PARAM" ] || die "BUILDKITE_TOKEN_PARAM must be set"
@@ -338,6 +468,7 @@ require_cmd curl
 require_cmd tar
 require_cmd systemctl
 install_sudo_if_missing
+install_tailscale_if_configured
 
 log "installing buildkite-agent ${AGENT_VERSION}"
 install_buildkite_agent_binary "$AGENT_VERSION"
@@ -356,7 +487,7 @@ install -d -o buildkite-agent -g buildkite-agent -m 0755 /var/lib/buildkite-agen
 install -d -o buildkite-agent -g buildkite-agent -m 0755 /var/lib/buildkite-agent/.local/share/cleanroom/images
 install -d -o root -g root -m 0755 /etc/buildkite-agent
 
-agent_token="$(aws ssm get-parameter --region "$AWS_REGION" --name "$BUILDKITE_TOKEN_PARAM" --with-decryption --query 'Parameter.Value' --output text)"
+agent_token="$(retry 10 3 aws ssm get-parameter --region "$AWS_REGION" --name "$BUILDKITE_TOKEN_PARAM" --with-decryption --query 'Parameter.Value' --output text)"
 instance_id="$(resolve_instance_id)"
 
 cat > /etc/systemd/system/buildkite-agent@.service <<'UNIT'
@@ -418,7 +549,7 @@ chmod 0755 /var/lib/buildkite-agent/hooks/pre-command
 if [ "$INSTALL_FIRECRACKER" = "true" ]; then
   log "installing firecracker ${FIRECRACKER_VERSION}"
   install_firecracker_binary "$FIRECRACKER_VERSION"
-  curl -fsSL "$KERNEL_IMAGE_URL" -o /var/lib/buildkite-agent/.local/share/cleanroom/images/vmlinux.bin
+  retry 5 5 curl -fsSL "$KERNEL_IMAGE_URL" -o /var/lib/buildkite-agent/.local/share/cleanroom/images/vmlinux.bin
   chown buildkite-agent:buildkite-agent /var/lib/buildkite-agent/.local/share/cleanroom/images/vmlinux.bin
   chmod 0644 /var/lib/buildkite-agent/.local/share/cleanroom/images/vmlinux.bin
 fi
