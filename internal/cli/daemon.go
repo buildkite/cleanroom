@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -18,11 +19,29 @@ type DaemonCommand struct {
 	Force         bool   `help:"Overwrite existing daemon service file (daemon install only)"`
 	User          bool   `help:"Use user daemon scope (launchd only; install/uninstall/status/start/stop actions)"`
 	System        bool   `help:"Use system daemon scope (linux only; install/uninstall/status/start/stop actions)"`
+	JSON          bool   `help:"Print daemon status as JSON (status action only)"`
 	Listen        string `help:"Listen endpoint for control API (defaults to runtime endpoint)"`
 	GatewayListen string `help:"Listen address for the host gateway (default :8170, use :0 for ephemeral port)"`
 	LogLevel      string `help:"Server log level (debug|info|warn|error)"`
 	TLSCert       string `help:"Path to TLS server certificate (auto-discovered from XDG config for https)" env:"CLEANROOM_TLS_CERT"`
 	TLSKey        string `help:"Path to TLS server private key (auto-discovered from XDG config for https)" env:"CLEANROOM_TLS_KEY"`
+}
+
+type daemonStatusPayload struct {
+	Manager   string `json:"manager"`
+	Service   string `json:"service"`
+	Installed bool   `json:"installed"`
+	Active    bool   `json:"active"`
+	Path      string `json:"path"`
+	Enabled   *bool  `json:"enabled,omitempty"`
+	Domain    string `json:"domain,omitempty"`
+	State     string `json:"state,omitempty"`
+	Listen    string `json:"listen,omitempty"`
+}
+
+type daemonStatusResult struct {
+	Report  daemonStatusReport
+	Payload daemonStatusPayload
 }
 
 type daemonScope string
@@ -49,7 +68,12 @@ var (
 )
 
 func (s *DaemonCommand) Run(ctx *runtimeContext) error {
-	switch strings.TrimSpace(strings.ToLower(s.Action)) {
+	action := strings.TrimSpace(strings.ToLower(s.Action))
+	if s.JSON && action != "status" {
+		return errors.New("--json is only supported with daemon status")
+	}
+
+	switch action {
 	case "install":
 		return s.installDaemon(ctx)
 	case "uninstall":
@@ -288,7 +312,7 @@ func (s *DaemonCommand) daemonStatus(ctx *runtimeContext) error {
 		return err
 	}
 
-	var statusFn func(*os.File) error
+	var statusFn func() (daemonStatusResult, error)
 	switch serveInstallGOOS {
 	case "linux":
 		statusFn = systemdDaemonStatus
@@ -302,7 +326,17 @@ func (s *DaemonCommand) daemonStatus(ctx *runtimeContext) error {
 		return fmt.Errorf("daemon status is unsupported on %s (expected linux or darwin)", serveInstallGOOS)
 	}
 
-	return statusFn(ctx.Stdout)
+	result, err := statusFn()
+	if err != nil {
+		return err
+	}
+	if s.JSON {
+		enc := json.NewEncoder(ctx.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(result.Payload)
+	}
+	_, err = fmt.Fprint(ctx.Stdout, renderDaemonStatusReport(result.Report, shouldUseANSI(ctx.Stdout)))
+	return err
 }
 
 func isExitError(err error) bool {
