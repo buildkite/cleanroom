@@ -426,6 +426,21 @@ func TestSnapshotConfigForStorageRefInfersZFSDriverFromStoredRef(t *testing.T) {
 	}
 }
 
+func TestSnapshotConfigForStorageRefInfersZFSDriverFromManagedVolumeRef(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := snapshotConfigForStorageRef(backend.FirecrackerConfig{}, "tank/cleanroom/sandboxes/sandbox-1")
+	if err != nil {
+		t.Fatalf("snapshotConfigForStorageRef returned error: %v", err)
+	}
+	if got, want := cfg.Snapshots.Driver, "zfs"; got != want {
+		t.Fatalf("unexpected snapshot driver: got %q want %q", got, want)
+	}
+	if got, want := cfg.Snapshots.ZFSDataset, "tank/cleanroom"; got != want {
+		t.Fatalf("unexpected zfs dataset root: got %q want %q", got, want)
+	}
+}
+
 func TestSnapshotConfigForStorageRefRejectsDriverMismatch(t *testing.T) {
 	t.Parallel()
 

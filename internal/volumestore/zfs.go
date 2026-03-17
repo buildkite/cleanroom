@@ -219,6 +219,24 @@ func (d *ZFSDriver) DestroySnapshot(ctx context.Context, req DestroySnapshotRequ
 	return nil
 }
 
+func (d *ZFSDriver) EnsureWritableVolumeMinimumSize(ctx context.Context, volume WritableVolume, minimumBytes int64) error {
+	if minimumBytes <= 0 {
+		return nil
+	}
+
+	currentBytes, isBlockDevice, err := ext4imagePathSizeBytes(volume.AttachmentPath)
+	if err != nil {
+		return err
+	}
+	if isBlockDevice && currentBytes < minimumBytes {
+		targetBytes := ext4imageAlignBytes(minimumBytes)
+		if err := d.runner.Run(ctx, "zfs", "set", "volsize="+strconv.FormatInt(targetBytes, 10), volume.Ref); err != nil {
+			return fmt.Errorf("grow zfs volume %q to %d bytes: %w", volume.Ref, targetBytes, err)
+		}
+	}
+	return ext4imageEnsureMinimumSize(ctx, volume.AttachmentPath, minimumBytes)
+}
+
 func (d *ZFSDriver) datasetPath(parts ...string) string {
 	items := []string{d.datasetRoot}
 	for _, part := range parts {
@@ -275,6 +293,35 @@ func ZFSDatasetRootFromStoredSnapshotRef(snapshotRef string) (string, bool) {
 		return "", false
 	}
 	return root, true
+}
+
+func ZFSDatasetRootFromManagedRef(ref string) (string, bool) {
+	dataset := strings.TrimSpace(ref)
+	if dataset == "" {
+		return "", false
+	}
+	if strings.Contains(dataset, "@") {
+		dataset = datasetFromSnapshotRef(dataset)
+	}
+	if dataset == "" {
+		return "", false
+	}
+
+	components := strings.Split(strings.Trim(dataset, "/"), "/")
+	for idx, component := range components {
+		switch component {
+		case zfsBaseNamespace, zfsSandboxNamespace, zfsSnapshotNamespace:
+			if idx == 0 {
+				return "", false
+			}
+			root := strings.TrimSpace(strings.Join(components[:idx], "/"))
+			if root == "" {
+				return "", false
+			}
+			return root, true
+		}
+	}
+	return "", false
 }
 
 func (d *ZFSDriver) cloneSnapshot(ctx context.Context, snapshotRef, dataset string) (WritableVolume, error) {

@@ -341,6 +341,12 @@ run_zfs() {
     exec "$bin" "$@"
   fi
 
+  if [[ "$#" -eq 3 && "$1" == "set" && "$2" == volsize=* ]]; then
+    is_numeric "${2#volsize=}" || die "zfs set: invalid volsize '${2#volsize=}'"
+    is_cleanroom_zfs_dataset "$3" || die "zfs set: unsupported dataset '$3'"
+    exec "$bin" "$@"
+  fi
+
   if [[ "$#" -eq 2 && "$1" == "promote" ]]; then
     is_cleanroom_zfs_dataset "$2" || die "zfs promote: unsupported dataset '$2'"
     exec "$bin" "$@"

@@ -264,3 +264,81 @@ func TestZFSDatasetRootFromStoredSnapshotRef(t *testing.T) {
 		t.Fatal("expected non-stored snapshot ref to be rejected")
 	}
 }
+
+func TestZFSDatasetRootFromManagedRef(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]string{
+		"tank/cleanroom/base/runtime-key@seed":        "tank/cleanroom",
+		"tank/cleanroom/sandboxes/sandbox-1":          "tank/cleanroom",
+		"tank/cleanroom/snapshots/golden@seed":        "tank/cleanroom",
+		"tank/cleanroom/sandboxes/source@snap-golden": "tank/cleanroom",
+	}
+	for ref, want := range cases {
+		got, ok := ZFSDatasetRootFromManagedRef(ref)
+		if !ok || got != want {
+			t.Fatalf("unexpected dataset root for %q: got %q ok=%t want %q", ref, got, ok, want)
+		}
+	}
+	if _, ok := ZFSDatasetRootFromManagedRef("/tmp/rootfs.ext4"); ok {
+		t.Fatal("expected non-zfs ref to be rejected")
+	}
+}
+
+func TestZFSDriverEnsureWritableVolumeMinimumSizeGrowsUndersizedZvol(t *testing.T) {
+	runner := &zfsTestRunner{exists: map[string]bool{}}
+	driver, err := NewZFSDriver(ZFSDriverOptions{
+		DatasetRoot: "tank/cleanroom",
+		Runner:      runner,
+	})
+	if err != nil {
+		t.Fatalf("NewZFSDriver returned error: %v", err)
+	}
+
+	prevEnsure := ext4imageEnsureMinimumSize
+	prevPathSize := ext4imagePathSizeBytes
+	prevAlign := ext4imageAlignBytes
+	defer func() {
+		ext4imageEnsureMinimumSize = prevEnsure
+		ext4imagePathSizeBytes = prevPathSize
+		ext4imageAlignBytes = prevAlign
+	}()
+
+	ext4imagePathSizeBytes = func(string) (int64, bool, error) {
+		return 4 << 20, true, nil
+	}
+	ext4imageAlignBytes = func(size int64) int64 {
+		return size + ((4 << 20) - (size % (4 << 20)))
+	}
+
+	var (
+		gotAttachmentPath string
+		gotMinimumBytes   int64
+	)
+	ext4imageEnsureMinimumSize = func(_ context.Context, attachmentPath string, minimumBytes int64) error {
+		gotAttachmentPath = attachmentPath
+		gotMinimumBytes = minimumBytes
+		return nil
+	}
+
+	volume := WritableVolume{
+		Ref:            "tank/cleanroom/sandboxes/sandbox-1",
+		AttachmentPath: "/dev/zvol/tank/cleanroom/sandboxes/sandbox-1",
+	}
+	if err := driver.EnsureWritableVolumeMinimumSize(context.Background(), volume, (8<<20)+1); err != nil {
+		t.Fatalf("EnsureWritableVolumeMinimumSize returned error: %v", err)
+	}
+
+	wantCommands := []string{
+		"zfs set volsize=12582912 tank/cleanroom/sandboxes/sandbox-1",
+	}
+	if got, want := runner.commands, wantCommands; strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("unexpected zfs commands:\n got: %v\nwant: %v", got, want)
+	}
+	if got, want := gotAttachmentPath, volume.AttachmentPath; got != want {
+		t.Fatalf("unexpected attachment path: got %q want %q", got, want)
+	}
+	if got, want := gotMinimumBytes, int64((8<<20)+1); got != want {
+		t.Fatalf("unexpected minimum bytes: got %d want %d", got, want)
+	}
+}

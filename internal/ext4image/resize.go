@@ -103,6 +103,14 @@ func blockDeviceSizeBytes(imagePath string) (int64, error) {
 	return sectors * 512, nil
 }
 
+func PathSizeBytes(imagePath string) (int64, bool, error) {
+	return pathSizeBytes(imagePath)
+}
+
+func AlignBytes(size int64) int64 {
+	return alignBytes(size)
+}
+
 func alignBytes(size int64) int64 {
 	if size <= 0 {
 		return imageSizeAlignBytes

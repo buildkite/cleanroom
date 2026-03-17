@@ -488,7 +488,15 @@ func (a *Adapter) CreateSnapshot(ctx context.Context, req backend.SnapshotReques
 		return nil, fmt.Errorf("sync sandbox filesystem before snapshot: guest sync command exited with code %d", syncResp.ExitCode)
 	}
 
-	driver, err := snapshotVolumeStoreDriver(req.FirecrackerConfig)
+	volumeRef := snapshotVolumeRef(instance)
+	if volumeRef == "" {
+		return nil, fmt.Errorf("sandbox %q has no snapshot-capable rootfs volume", sandboxID)
+	}
+	driverCfg, err := snapshotConfigForStorageRef(req.FirecrackerConfig, volumeRef)
+	if err != nil {
+		return nil, err
+	}
+	driver, err := snapshotVolumeStoreDriver(driverCfg)
 	if err != nil {
 		return nil, err
 	}
@@ -516,11 +524,6 @@ func (a *Adapter) CreateSnapshot(ctx context.Context, req backend.SnapshotReques
 			retErr = fmt.Errorf("resume firecracker sandbox after snapshot: %w", err)
 		}
 	}()
-
-	volumeRef := snapshotVolumeRef(instance)
-	if volumeRef == "" {
-		return nil, fmt.Errorf("sandbox %q has no snapshot-capable rootfs volume", sandboxID)
-	}
 
 	snapshot, err := driver.SnapshotVolume(ctx, volumestore.SnapshotVolumeRequest{
 		SnapshotID: snapshotID,
@@ -1737,7 +1740,7 @@ func preparePersistentWritableVolume(ctx context.Context, driver volumestore.Dri
 		cleanupVolume := func() {
 			_ = driver.DestroyVolume(context.Background(), volumestore.DestroyVolumeRequest{VolumeRef: volume.Ref})
 		}
-		if err := volumestore.EnsureWritableVolumeMinimumSize(ctx, volume, minimumBytes); err != nil {
+		if err := volumestore.EnsureWritableVolumeMinimumSize(ctx, driver, volume, minimumBytes); err != nil {
 			cleanupVolume()
 			return volumestore.WritableVolume{}, nil, fmt.Errorf("resize persistent rootfs: %w", err)
 		}
@@ -1813,7 +1816,7 @@ func (r rootVolumeCommandRunner) Output(ctx context.Context, command string, arg
 }
 
 func snapshotConfigForStorageRef(cfg backend.FirecrackerConfig, storageRef string) (backend.FirecrackerConfig, error) {
-	if datasetRoot, ok := volumestore.ZFSDatasetRootFromStoredSnapshotRef(storageRef); ok {
+	if datasetRoot, ok := volumestore.ZFSDatasetRootFromManagedRef(storageRef); ok {
 		driverName := strings.ToLower(strings.TrimSpace(cfg.Snapshots.Driver))
 		if driverName != "" && driverName != "zfs" {
 			return cfg, fmt.Errorf("snapshot storage_ref %q requires zfs driver, got %q", storageRef, cfg.Snapshots.Driver)
