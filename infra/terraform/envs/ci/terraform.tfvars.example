@@ -5,7 +5,7 @@ name_prefix = "cleanroom-ci-apse2"
 instance_type = "m8i.large"
 
 enable_macos_ci   = false
-mac_instance_type = "mac2-m2pro.metal"
+mac_instance_type = "mac2-m2.metal"
 
 # Optional: pin CI networking/hosts to a specific AZ (needed when Mac capacity is AZ-constrained).
 # availability_zone = "ap-southeast-2b"
