@@ -380,12 +380,15 @@ func TestProvisionSandboxFromSnapshotUsesSnapshotRootFS(t *testing.T) {
 func TestSnapshotConfigForStorageRefUsesStoredZFSDataset(t *testing.T) {
 	t.Parallel()
 
-	cfg := snapshotConfigForStorageRef(backend.FirecrackerConfig{
+	cfg, err := snapshotConfigForStorageRef(backend.FirecrackerConfig{
 		Snapshots: backend.SnapshotConfig{
 			Driver:     "zfs",
 			ZFSDataset: "tank/other",
 		},
 	}, "tank/cleanroom/snapshots/snap-test@seed")
+	if err != nil {
+		t.Fatalf("snapshotConfigForStorageRef returned error: %v", err)
+	}
 	if got, want := cfg.Snapshots.ZFSDataset, "tank/cleanroom"; got != want {
 		t.Fatalf("unexpected zfs dataset root: got %q want %q", got, want)
 	}
@@ -394,14 +397,46 @@ func TestSnapshotConfigForStorageRefUsesStoredZFSDataset(t *testing.T) {
 func TestSnapshotConfigForStorageRefLeavesConfiguredDatasetForNonStoredRef(t *testing.T) {
 	t.Parallel()
 
-	cfg := snapshotConfigForStorageRef(backend.FirecrackerConfig{
+	cfg, err := snapshotConfigForStorageRef(backend.FirecrackerConfig{
 		Snapshots: backend.SnapshotConfig{
 			Driver:     "zfs",
 			ZFSDataset: "tank/cleanroom",
 		},
 	}, "tank/cleanroom/sandboxes/sandbox-1@snap-golden")
+	if err != nil {
+		t.Fatalf("snapshotConfigForStorageRef returned error: %v", err)
+	}
 	if got, want := cfg.Snapshots.ZFSDataset, "tank/cleanroom"; got != want {
 		t.Fatalf("unexpected zfs dataset root: got %q want %q", got, want)
+	}
+}
+
+func TestSnapshotConfigForStorageRefInfersZFSDriverFromStoredRef(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := snapshotConfigForStorageRef(backend.FirecrackerConfig{}, "tank/cleanroom/snapshots/snap-test@seed")
+	if err != nil {
+		t.Fatalf("snapshotConfigForStorageRef returned error: %v", err)
+	}
+	if got, want := cfg.Snapshots.Driver, "zfs"; got != want {
+		t.Fatalf("unexpected snapshot driver: got %q want %q", got, want)
+	}
+	if got, want := cfg.Snapshots.ZFSDataset, "tank/cleanroom"; got != want {
+		t.Fatalf("unexpected zfs dataset root: got %q want %q", got, want)
+	}
+}
+
+func TestSnapshotConfigForStorageRefRejectsDriverMismatch(t *testing.T) {
+	t.Parallel()
+
+	_, err := snapshotConfigForStorageRef(backend.FirecrackerConfig{
+		Snapshots: backend.SnapshotConfig{Driver: "file"},
+	}, "tank/cleanroom/snapshots/snap-test@seed")
+	if err == nil {
+		t.Fatal("expected snapshotConfigForStorageRef to reject driver mismatch")
+	}
+	if !strings.Contains(err.Error(), "requires zfs driver") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
