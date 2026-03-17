@@ -79,7 +79,7 @@ func stopSystemdDaemon(stdout io.Writer) error {
 	return err
 }
 
-func systemdDaemonStatus(stdout *os.File) error {
+func systemdDaemonStatus() (daemonStatusResult, error) {
 	installed := false
 	if _, err := serveInstallStat(serveInstallSystemdUnitPath); err == nil {
 		installed = true
@@ -89,29 +89,38 @@ func systemdDaemonStatus(stdout *os.File) error {
 	if err := serveInstallRunCommand("systemctl", "is-active", "--quiet", systemdServiceName); err == nil {
 		active = true
 	} else if !isExitError(err) {
-		return fmt.Errorf("check systemd service active state: %w", err)
+		return daemonStatusResult{}, fmt.Errorf("check systemd service active state: %w", err)
 	}
 
 	enabled := false
 	if err := serveInstallRunCommand("systemctl", "is-enabled", "--quiet", systemdServiceName); err == nil {
 		enabled = true
 	} else if !isExitError(err) {
-		return fmt.Errorf("check systemd service enabled state: %w", err)
+		return daemonStatusResult{}, fmt.Errorf("check systemd service enabled state: %w", err)
 	}
 
-	_, err := fmt.Fprint(stdout, renderDaemonStatusReport(daemonStatusReport{
-		Manager:   "systemd",
-		Service:   systemdServiceName,
-		Installed: installed,
-		Active:    active,
-		Fields: []startupField{
-			{Key: "install", Value: daemonInstalledLabel(installed)},
-			{Key: "runtime", Value: daemonRuntimeLabel(active)},
-			{Key: "enabled", Value: daemonEnabledLabel(enabled)},
-			{Key: "path", Value: serveInstallSystemdUnitPath},
+	return daemonStatusResult{
+		Report: daemonStatusReport{
+			Manager:   "systemd",
+			Service:   systemdServiceName,
+			Installed: installed,
+			Active:    active,
+			Fields: []startupField{
+				{Key: "install", Value: daemonInstalledLabel(installed)},
+				{Key: "runtime", Value: daemonRuntimeLabel(active)},
+				{Key: "enabled", Value: daemonEnabledLabel(enabled)},
+				{Key: "path", Value: serveInstallSystemdUnitPath},
+			},
 		},
-	}, shouldUseANSI(stdout)))
-	return err
+		Payload: daemonStatusPayload{
+			Manager:   "systemd",
+			Service:   systemdServiceName,
+			Installed: installed,
+			Active:    active,
+			Path:      serveInstallSystemdUnitPath,
+			Enabled:   &enabled,
+		},
+	}, nil
 }
 
 func installSystemdDaemon(stdout io.Writer, executablePath string, args []string, force bool) error {

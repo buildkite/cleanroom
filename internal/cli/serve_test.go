@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"errors"
 	"io"
 	"net/netip"
@@ -396,7 +397,7 @@ func TestDaemonInstallUsesProvidedListenInUnit(t *testing.T) {
 	}
 }
 
-func TestDaemonInstallDarwinDefaultsToUserScopeForNonRoot(t *testing.T) {
+func TestDaemonInstallDarwinEnablesThenBootstrapsUserService(t *testing.T) {
 	tmpDir := t.TempDir()
 	plistPath := filepath.Join(tmpDir, "Library", "LaunchAgents", launchdServiceName+".plist")
 
@@ -431,12 +432,12 @@ func TestDaemonInstallDarwinDefaultsToUserScopeForNonRoot(t *testing.T) {
 		t.Fatalf("DaemonCommand.Run returned error: %v", err)
 	}
 
-	wantDomain := "gui/501"
-	if !containsServeInstallCall(calls, []string{"launchctl", "bootstrap", wantDomain}) {
-		t.Fatalf("expected launchctl bootstrap for user domain %q, calls=%v", wantDomain, calls)
+	wantCalls := [][]string{
+		{"launchctl", "enable", "gui/501/" + launchdServiceName},
+		{"launchctl", "bootstrap", "gui/501", plistPath},
 	}
-	if containsServeInstallCall(calls, []string{"launchctl", "bootstrap", "system"}) {
-		t.Fatalf("did not expect launchctl bootstrap for system domain, calls=%v", calls)
+	if !reflect.DeepEqual(calls, wantCalls) {
+		t.Fatalf("unexpected launchctl commands: got %v want %v", calls, wantCalls)
 	}
 	if _, err := os.Stat(plistPath); err != nil {
 		t.Fatalf("expected user launchd plist to be written at %s: %v", plistPath, err)
@@ -530,6 +531,18 @@ func TestDaemonInstallRejectsUserAndSystemTogether(t *testing.T) {
 		t.Fatal("expected conflicting scope flags error")
 	}
 	if !strings.Contains(err.Error(), "cannot be used together") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestDaemonJSONRejectedForNonStatusActions(t *testing.T) {
+	stdout, _ := makeStdoutCapture(t)
+	cmd := &DaemonCommand{Action: "install", JSON: true}
+	err := cmd.Run(&runtimeContext{CWD: t.TempDir(), Stdout: stdout})
+	if err == nil {
+		t.Fatal("expected --json to be rejected for daemon install")
+	}
+	if !strings.Contains(err.Error(), "--json is only supported with daemon status") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -951,7 +964,7 @@ func TestDaemonStopSystemdStopsService(t *testing.T) {
 	}
 }
 
-func TestDaemonStartLaunchdBootstrapsAndKickstartsUserService(t *testing.T) {
+func TestDaemonStartLaunchdEnablesBootstrapsAndKickstartsUserService(t *testing.T) {
 	tmpDir := t.TempDir()
 	plistPath := filepath.Join(tmpDir, "Library", "LaunchAgents", launchdServiceName+".plist")
 	if err := os.MkdirAll(filepath.Dir(plistPath), 0o755); err != nil {
@@ -995,8 +1008,8 @@ func TestDaemonStartLaunchdBootstrapsAndKickstartsUserService(t *testing.T) {
 	}
 
 	wantCalls := [][]string{
-		{"launchctl", "bootstrap", "gui/501", plistPath},
 		{"launchctl", "enable", "gui/501/" + launchdServiceName},
+		{"launchctl", "bootstrap", "gui/501", plistPath},
 		{"launchctl", "kickstart", "-k", "gui/501/" + launchdServiceName},
 	}
 	if !reflect.DeepEqual(calls, wantCalls) {
@@ -1313,6 +1326,64 @@ func TestDaemonStatusSystemdNotInstalled(t *testing.T) {
 	}
 }
 
+func TestDaemonStatusSystemdJSONIncludesEnabled(t *testing.T) {
+	tmpDir := t.TempDir()
+	unitPath := filepath.Join(tmpDir, "cleanroom.service")
+	if err := os.WriteFile(unitPath, []byte("[Unit]\nDescription=cleanroom\n"), 0o644); err != nil {
+		t.Fatalf("write unit file: %v", err)
+	}
+
+	prevGOOS := serveInstallGOOS
+	prevSystemdPath := serveInstallSystemdUnitPath
+	prevRunCommand := serveInstallRunCommand
+	serveInstallGOOS = "linux"
+	serveInstallSystemdUnitPath = unitPath
+	serveInstallRunCommand = func(name string, args ...string) error {
+		return nil
+	}
+	t.Cleanup(func() {
+		serveInstallGOOS = prevGOOS
+		serveInstallSystemdUnitPath = prevSystemdPath
+		serveInstallRunCommand = prevRunCommand
+	})
+
+	stdout, readStdout := makeStdoutCapture(t)
+	cmd := &DaemonCommand{Action: "status", System: true, JSON: true}
+	if err := cmd.Run(&runtimeContext{CWD: tmpDir, Stdout: stdout}); err != nil {
+		t.Fatalf("DaemonCommand.Run returned error: %v", err)
+	}
+
+	var payload struct {
+		Manager   string `json:"manager"`
+		Service   string `json:"service"`
+		Installed bool   `json:"installed"`
+		Active    bool   `json:"active"`
+		Path      string `json:"path"`
+		Enabled   *bool  `json:"enabled"`
+	}
+	if err := json.Unmarshal([]byte(readStdout()), &payload); err != nil {
+		t.Fatalf("parse daemon status json: %v", err)
+	}
+	if payload.Manager != "systemd" {
+		t.Fatalf("expected systemd manager, got %q", payload.Manager)
+	}
+	if payload.Service != systemdServiceName {
+		t.Fatalf("expected service %q, got %q", systemdServiceName, payload.Service)
+	}
+	if !payload.Installed {
+		t.Fatal("expected installed=true")
+	}
+	if !payload.Active {
+		t.Fatal("expected active=true")
+	}
+	if payload.Path != unitPath {
+		t.Fatalf("expected path %q, got %q", unitPath, payload.Path)
+	}
+	if payload.Enabled == nil || !*payload.Enabled {
+		t.Fatalf("expected enabled=true, got %+v", payload.Enabled)
+	}
+}
+
 func TestDaemonStatusLaunchdNotInstalled(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -1472,6 +1543,82 @@ func TestDaemonStatusLaunchdIncludesListenEndpoint(t *testing.T) {
 	}
 	if !strings.Contains(out, "listen: unix:///tmp/custom-cleanroom.sock") {
 		t.Fatalf("expected launchd status to include configured listen endpoint, got: %s", out)
+	}
+}
+
+func TestDaemonStatusLaunchdJSONIncludesListenEndpoint(t *testing.T) {
+	tmpDir := t.TempDir()
+	plistPath := filepath.Join(tmpDir, "Library", "LaunchAgents", launchdServiceName+".plist")
+	content := renderLaunchdService("/usr/local/bin/cleanroom", []string{"serve", "--listen", "unix:///tmp/custom-cleanroom.sock"})
+	if err := os.MkdirAll(filepath.Dir(plistPath), 0o755); err != nil {
+		t.Fatalf("mkdir launch agents dir: %v", err)
+	}
+	if err := os.WriteFile(plistPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write launchd plist: %v", err)
+	}
+
+	prevGOOS := serveInstallGOOS
+	prevEUID := serveInstallEUID
+	prevUID := serveInstallUID
+	prevUserHomeDir := serveInstallUserHomeDir
+	prevRunCommandOutput := serveInstallRunCommandOutput
+	serveInstallGOOS = "darwin"
+	serveInstallEUID = func() int { return 501 }
+	serveInstallUID = func() int { return 501 }
+	serveInstallUserHomeDir = func() (string, error) { return tmpDir, nil }
+	serveInstallRunCommandOutput = func(name string, args ...string) (string, error) {
+		return "state = running\n", nil
+	}
+	t.Cleanup(func() {
+		serveInstallGOOS = prevGOOS
+		serveInstallEUID = prevEUID
+		serveInstallUID = prevUID
+		serveInstallUserHomeDir = prevUserHomeDir
+		serveInstallRunCommandOutput = prevRunCommandOutput
+	})
+
+	stdout, readStdout := makeStdoutCapture(t)
+	cmd := &DaemonCommand{Action: "status", JSON: true}
+	if err := cmd.Run(&runtimeContext{CWD: tmpDir, Stdout: stdout}); err != nil {
+		t.Fatalf("DaemonCommand.Run returned error: %v", err)
+	}
+
+	var payload struct {
+		Manager   string `json:"manager"`
+		Service   string `json:"service"`
+		Installed bool   `json:"installed"`
+		Active    bool   `json:"active"`
+		Path      string `json:"path"`
+		Domain    string `json:"domain"`
+		State     string `json:"state"`
+		Listen    string `json:"listen"`
+	}
+	if err := json.Unmarshal([]byte(readStdout()), &payload); err != nil {
+		t.Fatalf("parse daemon status json: %v", err)
+	}
+	if payload.Manager != "launchd" {
+		t.Fatalf("expected launchd manager, got %q", payload.Manager)
+	}
+	if payload.Service != launchdServiceName {
+		t.Fatalf("expected service %q, got %q", launchdServiceName, payload.Service)
+	}
+	if !payload.Installed {
+		t.Fatal("expected installed=true")
+	}
+	if !payload.Active {
+		t.Fatal("expected active=true")
+	}
+	if payload.Path != plistPath {
+		t.Fatalf("expected path %q, got %q", plistPath, payload.Path)
+	}
+	if payload.Domain != "gui/501" {
+		t.Fatalf("expected domain gui/501, got %q", payload.Domain)
+	}
+	if payload.State != "running" {
+		t.Fatalf("expected state running, got %q", payload.State)
+	}
+	if payload.Listen != "unix:///tmp/custom-cleanroom.sock" {
+		t.Fatalf("expected listen endpoint, got %q", payload.Listen)
 	}
 }
 
