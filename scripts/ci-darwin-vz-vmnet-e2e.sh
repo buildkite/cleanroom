@@ -40,7 +40,11 @@ setup_buildkite_signing_assets() {
     [[ -n "$keychain" ]] || continue
     original_keychains+=("$keychain")
   done < <(security list-keychains -d user | sed -E 's/^[[:space:]]*"//; s/"$//')
-  original_default_keychain="$(security default-keychain -d user | sed -E 's/^[[:space:]]*"//; s/"$//')"
+  if default_keychain_output="$(security default-keychain -d user 2>/dev/null)"; then
+    original_default_keychain="$(printf '%s' "$default_keychain_output" | sed -E 's/^[[:space:]]*"//; s/"$//')"
+  else
+    original_default_keychain=""
+  fi
 
   security create-keychain -p "$temp_keychain_password" "$temp_keychain_path" >/dev/null
   security unlock-keychain -p "$temp_keychain_password" "$temp_keychain_path" >/dev/null

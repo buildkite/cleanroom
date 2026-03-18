@@ -87,6 +87,7 @@ func TestCiDarwinVZVMNetE2EUsesBuildkiteSecretsAndVMNetEntitlements(t *testing.T
 		"CLEANROOM_DARWIN_VZ_HELPER to a prebuilt signed helper bundle",
 		"CLEANROOM_DARWIN_VZ_HELPER_PROVISION_PROFILE and CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY",
 		"AppleWWDRCAG3.cer",
+		"security default-keychain -d user 2>/dev/null",
 		"CLEANROOM_DARWIN_VZ_HELPER_ENTITLEMENTS=cmd/cleanroom-darwin-vz/entitlements-vmnet.plist",
 		"CLEANROOM_DARWIN_VZ_HELPER_BUNDLE=1",
 		"CLEANROOM_DARWIN_VZ_VMNET_E2E=1",
