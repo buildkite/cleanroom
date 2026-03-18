@@ -455,6 +455,29 @@ func TestSnapshotConfigForStorageRefRejectsDriverMismatch(t *testing.T) {
 	}
 }
 
+func TestSnapshotConfigForStorageRefIgnoresFilesystemPathsWithZFSNamespaceComponents(t *testing.T) {
+	t.Parallel()
+
+	refs := []string{
+		"/var/lib/buildkite-agent/state/cleanroom/snapshots/firecracker/snap-test/rootfs.ext4",
+		"/var/lib/buildkite-agent/state/cleanroom/sandboxes/cr-test/rootfs-persistent.ext4",
+	}
+	for _, ref := range refs {
+		cfg, err := snapshotConfigForStorageRef(backend.FirecrackerConfig{
+			Snapshots: backend.SnapshotConfig{Driver: "file"},
+		}, ref)
+		if err != nil {
+			t.Fatalf("snapshotConfigForStorageRef returned error for %q: %v", ref, err)
+		}
+		if got, want := cfg.Snapshots.Driver, "file"; got != want {
+			t.Fatalf("unexpected snapshot driver for %q: got %q want %q", ref, got, want)
+		}
+		if cfg.Snapshots.ZFSDataset != "" {
+			t.Fatalf("expected no inferred zfs dataset root for %q, got %q", ref, cfg.Snapshots.ZFSDataset)
+		}
+	}
+}
+
 func TestRootFSVolumeStoreDriverAllowsWritableVolumesWhenSnapshotsDisabled(t *testing.T) {
 	t.Parallel()
 

@@ -307,21 +307,27 @@ func ZFSDatasetRootFromManagedRef(ref string) (string, bool) {
 		return "", false
 	}
 
-	components := strings.Split(strings.Trim(dataset, "/"), "/")
-	for idx, component := range components {
-		switch component {
-		case zfsBaseNamespace, zfsSandboxNamespace, zfsSnapshotNamespace:
-			if idx == 0 {
-				return "", false
-			}
-			root := strings.TrimSpace(strings.Join(components[:idx], "/"))
-			if root == "" {
-				return "", false
-			}
-			return root, true
+	components := strings.Split(dataset, "/")
+	if len(components) < 3 {
+		return "", false
+	}
+	for _, component := range components {
+		if strings.TrimSpace(component) == "" {
+			return "", false
 		}
 	}
-	return "", false
+
+	switch components[len(components)-2] {
+	case zfsBaseNamespace, zfsSandboxNamespace, zfsSnapshotNamespace:
+	default:
+		return "", false
+	}
+
+	root := strings.TrimSpace(strings.Join(components[:len(components)-2], "/"))
+	if root == "" {
+		return "", false
+	}
+	return root, true
 }
 
 func (d *ZFSDriver) cloneSnapshot(ctx context.Context, snapshotRef, dataset string) (WritableVolume, error) {

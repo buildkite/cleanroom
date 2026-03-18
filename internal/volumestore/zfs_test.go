@@ -269,10 +269,13 @@ func TestZFSDatasetRootFromManagedRef(t *testing.T) {
 	t.Parallel()
 
 	cases := map[string]string{
-		"tank/cleanroom/base/runtime-key@seed":        "tank/cleanroom",
-		"tank/cleanroom/sandboxes/sandbox-1":          "tank/cleanroom",
-		"tank/cleanroom/snapshots/golden@seed":        "tank/cleanroom",
-		"tank/cleanroom/sandboxes/source@snap-golden": "tank/cleanroom",
+		"tank/cleanroom/base/runtime-key@seed":                  "tank/cleanroom",
+		"tank/cleanroom/sandboxes/sandbox-1":                    "tank/cleanroom",
+		"tank/cleanroom/snapshots/golden@seed":                  "tank/cleanroom",
+		"tank/cleanroom/sandboxes/source@snap-golden":           "tank/cleanroom",
+		"tank/snapshots/cleanroom/sandboxes/sandbox-1":          "tank/snapshots/cleanroom",
+		"tank/base/cleanroom/snapshots/golden@seed":             "tank/base/cleanroom",
+		"tank/sandboxes/cleanroom/base/runtime-key-min-8388608": "tank/sandboxes/cleanroom",
 	}
 	for ref, want := range cases {
 		got, ok := ZFSDatasetRootFromManagedRef(ref)
@@ -280,8 +283,16 @@ func TestZFSDatasetRootFromManagedRef(t *testing.T) {
 			t.Fatalf("unexpected dataset root for %q: got %q ok=%t want %q", ref, got, ok, want)
 		}
 	}
-	if _, ok := ZFSDatasetRootFromManagedRef("/tmp/rootfs.ext4"); ok {
-		t.Fatal("expected non-zfs ref to be rejected")
+
+	rejected := []string{
+		"/tmp/rootfs.ext4",
+		"/var/lib/buildkite-agent/state/cleanroom/snapshots/firecracker/snap-test/rootfs.ext4",
+		"/var/lib/buildkite-agent/state/cleanroom/sandboxes/cr-test/rootfs-persistent.ext4",
+	}
+	for _, ref := range rejected {
+		if _, ok := ZFSDatasetRootFromManagedRef(ref); ok {
+			t.Fatalf("expected non-zfs ref %q to be rejected", ref)
+		}
 	}
 }
 
