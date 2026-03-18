@@ -59,10 +59,18 @@ setup_buildkite_signing_assets() {
   security default-keychain -d user -s "$temp_keychain_path" >/dev/null
   security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$temp_keychain_password" "$temp_keychain_path" >/dev/null
 
+  if ! security find-certificate -a -c "$sign_identity" "$temp_keychain_path" >/dev/null 2>&1; then
+    echo "imported signing certificate not found in temp keychain: $sign_identity" >&2
+    security find-certificate -a -Z "$temp_keychain_path" >&2 || true
+    exit 1
+  fi
+
   local available_identities
-  available_identities="$(security find-identity -v -p codesigning "$temp_keychain_path" 2>&1 || true)"
-  if ! grep -F -- "$sign_identity" <<<"$available_identities" >/dev/null; then
-    echo "imported signing identity not found in temp keychain: $sign_identity" >&2
+  # `security find-identity <keychain>` is not reliable for temp keychains on all
+  # macOS images; query the configured user search list instead.
+  available_identities="$(security find-identity -v -p codesigning 2>&1 || true)"
+  if ! grep -F -- "\"$sign_identity\"" <<<"$available_identities" >/dev/null; then
+    echo "imported signing identity not found in configured keychain search list: $sign_identity" >&2
     printf '%s\n' "$available_identities" >&2
     exit 1
   fi
