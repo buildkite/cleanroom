@@ -41,6 +41,10 @@ cat > "$XDG_CONFIG_HOME/cleanroom/config.yaml" <<EOF
 default_backend: darwin-vz
 backends:
   darwin-vz:
+    network:
+      # Buildkite only ad-hoc signs the helper during CI; vmnet-shared needs a
+      # real vmnet-capable provisioning profile, so keep this job on nat.
+      mode: nat
     vcpus: 2
     memory_mib: 1024
     launch_seconds: 45
