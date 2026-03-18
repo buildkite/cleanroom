@@ -49,8 +49,8 @@ setup_buildkite_signing_assets() {
   security create-keychain -p "$temp_keychain_password" "$temp_keychain_path" >/dev/null
   security unlock-keychain -p "$temp_keychain_password" "$temp_keychain_path" >/dev/null
   security set-keychain-settings -lut 21600 "$temp_keychain_path" >/dev/null
-  security import "$p12_path" -k "$temp_keychain_path" -P "$p12_password" -T /usr/bin/codesign -T /usr/bin/security >/dev/null
-  security import "$wwdr_path" -k "$temp_keychain_path" -T /usr/bin/codesign -T /usr/bin/security >/dev/null
+  security import "$p12_path" -k "$temp_keychain_path" -P "$p12_password" -T /usr/bin/codesign -T /usr/bin/security
+  security import "$wwdr_path" -k "$temp_keychain_path" -T /usr/bin/codesign -T /usr/bin/security
   security list-keychains -d user -s \
     "$temp_keychain_path" \
     "$HOME/Library/Keychains/login.keychain-db" \
@@ -70,9 +70,9 @@ setup_buildkite_signing_assets() {
   # macOS images; query the configured user search list instead.
   available_identities="$(security find-identity -v -p codesigning 2>&1 || true)"
   if ! grep -F -- "\"$sign_identity\"" <<<"$available_identities" >/dev/null; then
-    echo "imported signing identity not found in configured keychain search list: $sign_identity" >&2
+    echo "warning: imported signing identity not found in configured keychain search list: $sign_identity" >&2
     printf '%s\n' "$available_identities" >&2
-    exit 1
+    echo "warning: continuing to codesign with the temp keychain; codesign will be the source of truth" >&2
   fi
 
   sign_keychain="$temp_keychain_path"
