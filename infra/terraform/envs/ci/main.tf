@@ -66,18 +66,23 @@ module "mac_ci" {
   count  = var.enable_macos_ci ? 1 : 0
   source = "../../modules/macos-ci"
 
-  aws_region                     = var.aws_region
-  name_prefix                    = "${var.name_prefix}-mac"
-  vpc_id                         = module.network.vpc_id
-  subnet_id                      = module.network.private_subnet_id
-  ami_id                         = local.selected_mac_ami_id
-  instance_type                  = var.mac_instance_type
-  root_volume_size_gib           = var.mac_root_volume_size_gib
-  buildkite_queue                = var.mac_buildkite_queue
-  buildkite_token_parameter_name = var.buildkite_token_parameter_name
-  git_deploy_key_parameter_name  = var.git_deploy_key_parameter_name
-  repo_url                       = var.repo_url
-  repo_ref                       = var.repo_ref
-  setup_script_path              = var.mac_setup_script_path
-  tags                           = var.tags
+  aws_region                        = var.aws_region
+  name_prefix                       = "${var.name_prefix}-mac"
+  vpc_id                            = module.network.vpc_id
+  subnet_id                         = module.network.private_subnet_id
+  ami_id                            = local.selected_mac_ami_id
+  instance_type                     = var.mac_instance_type
+  root_volume_size_gib              = var.mac_root_volume_size_gib
+  buildkite_queue                   = var.mac_buildkite_queue
+  buildkite_token_parameter_name    = var.buildkite_token_parameter_name
+  tailscale_auth_key_parameter_name = var.tailscale_auth_key_parameter_name
+  git_deploy_key_parameter_name     = var.git_deploy_key_parameter_name
+  repo_url                          = var.repo_url
+  repo_ref                          = var.repo_ref
+  setup_script_path                 = var.mac_setup_script_path
+  tailscale_hostname_prefix         = var.mac_tailscale_hostname_prefix
+  tailscale_advertise_tags          = var.tailscale_advertise_tags
+  tailscale_enable_ssh              = var.tailscale_enable_ssh
+  tailscale_accept_routes           = var.tailscale_accept_routes
+  tags                              = var.tags
 }

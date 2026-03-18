@@ -87,6 +87,12 @@ variable "mac_setup_script_path" {
   default     = "scripts/bootstrap-buildkite-agent-macos.sh"
 }
 
+variable "mac_tailscale_hostname_prefix" {
+  description = "Tailscale hostname prefix for macOS host (<prefix>-<instance-id>)."
+  type        = string
+  default     = "cleanroom-ci-mac"
+}
+
 variable "buildkite_token_parameter_name" {
   description = "SSM SecureString parameter name storing the Buildkite token."
   type        = string

@@ -11,10 +11,11 @@ locals {
     Name = var.name_prefix
   })
 
-  parameter_names = [
+  parameter_names = compact([
     var.buildkite_token_parameter_name,
+    var.tailscale_auth_key_parameter_name,
     var.git_deploy_key_parameter_name,
-  ]
+  ])
 
   parameter_arns = [
     for name in local.parameter_names :
@@ -139,14 +140,19 @@ resource "aws_instance" "host" {
   }
 
   user_data = templatefile("${path.module}/templates/user_data.sh.tftpl", {
-    aws_region                     = var.aws_region
-    name_prefix                    = var.name_prefix
-    buildkite_queue                = var.buildkite_queue
-    buildkite_token_parameter_name = var.buildkite_token_parameter_name
-    git_deploy_key_parameter_name  = var.git_deploy_key_parameter_name
-    repo_url                       = var.repo_url
-    repo_ref                       = var.repo_ref
-    setup_script_path              = var.setup_script_path
+    aws_region                        = var.aws_region
+    name_prefix                       = var.name_prefix
+    buildkite_queue                   = var.buildkite_queue
+    buildkite_token_parameter_name    = var.buildkite_token_parameter_name
+    tailscale_auth_key_parameter_name = var.tailscale_auth_key_parameter_name
+    git_deploy_key_parameter_name     = var.git_deploy_key_parameter_name
+    repo_url                          = var.repo_url
+    repo_ref                          = var.repo_ref
+    setup_script_path                 = var.setup_script_path
+    tailscale_hostname_prefix         = var.tailscale_hostname_prefix
+    tailscale_advertise_tags          = var.tailscale_advertise_tags
+    tailscale_enable_ssh              = var.tailscale_enable_ssh
+    tailscale_accept_routes           = var.tailscale_accept_routes
   })
 
   lifecycle {

@@ -15,6 +15,26 @@ require_cmd() {
   command -v "$cmd" >/dev/null 2>&1 || die "required command not found: ${cmd}"
 }
 
+retry() {
+  local attempts="$1"
+  local delay_seconds="$2"
+  shift 2
+
+  local n=1
+  while true; do
+    if "$@"; then
+      return 0
+    fi
+
+    if [ "$n" -ge "$attempts" ]; then
+      return 1
+    fi
+
+    sleep "$delay_seconds"
+    n=$((n + 1))
+  done
+}
+
 resolve_agent_arch() {
   case "$(uname -m)" in
     x86_64|amd64)
@@ -128,6 +148,67 @@ install_e2fsprogs_if_missing() {
   has_e2fsprogs || die "e2fsprogs installation completed but mkfs.ext4/debugfs were not found"
 }
 
+install_tailscale_if_configured() {
+  local brew_bin="$1"
+  local instance_id="$2"
+  local tailscale_param="${TAILSCALE_AUTH_KEY_PARAM:-${CLEANROOM_TAILSCALE_AUTH_KEY_PARAMETER_NAME:-}}"
+  local tailscale_hostname_prefix="${TAILSCALE_HOSTNAME_PREFIX:-${CLEANROOM_TAILSCALE_HOSTNAME_PREFIX:-}}"
+  local tailscale_advertise_tags="${TAILSCALE_ADVERTISE_TAGS:-${CLEANROOM_TAILSCALE_ADVERTISE_TAGS:-}}"
+  local tailscale_enable_ssh="${TAILSCALE_ENABLE_SSH:-${CLEANROOM_TAILSCALE_ENABLE_SSH:-true}}"
+  local tailscale_accept_routes="${TAILSCALE_ACCEPT_ROUTES:-${CLEANROOM_TAILSCALE_ACCEPT_ROUTES:-false}}"
+  local brew_dir
+  local tailscale_cli
+  local tailscaled_bin
+  local tailscale_auth_key
+  local hostname
+  local -a tailscale_cmd
+
+  if [ -z "$tailscale_param" ]; then
+    return
+  fi
+
+  [ -n "$tailscale_hostname_prefix" ] || die "TAILSCALE_HOSTNAME_PREFIX must be set when Tailscale bootstrap is enabled"
+
+  brew_dir="$(dirname "$brew_bin")"
+  tailscale_cli="${brew_dir}/tailscale"
+  tailscaled_bin="${brew_dir}/tailscaled"
+
+  if [ ! -x "$tailscale_cli" ] || [ ! -x "$tailscaled_bin" ]; then
+    if ! run_as_agent_user "PATH=\"${brew_dir}:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin\" \"$brew_bin\" list --formula tailscale >/dev/null 2>&1"; then
+      [ "$AGENT_USER" != "root" ] || die "cannot install tailscale automatically when AGENT_USER resolves to root"
+      log "installing tailscale via Homebrew"
+      retry 3 5 run_as_agent_user "PATH=\"${brew_dir}:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin\" HOMEBREW_NO_AUTO_UPDATE=1 \"$brew_bin\" install --formula tailscale"
+    fi
+  fi
+
+  [ -x "$tailscale_cli" ] || die "tailscale CLI missing after Homebrew install"
+  [ -x "$tailscaled_bin" ] || die "tailscaled binary missing after Homebrew install"
+
+  tailscale_auth_key="$(retry 10 3 aws ssm get-parameter --region "$AWS_REGION" --name "$tailscale_param" --with-decryption --query 'Parameter.Value' --output text)"
+
+  if launchctl print system/com.tailscale.tailscaled >/dev/null 2>&1 || [ -f /Library/LaunchDaemons/com.tailscale.tailscaled.plist ]; then
+    "$tailscaled_bin" uninstall-system-daemon || true
+  fi
+
+  "$tailscaled_bin" install-system-daemon
+  launchctl enable system/com.tailscale.tailscaled
+  launchctl kickstart -k system/com.tailscale.tailscaled
+
+  hostname="${tailscale_hostname_prefix}-${instance_id}"
+  tailscale_cmd=("$tailscale_cli" up --auth-key "$tailscale_auth_key" --hostname "$hostname")
+  if [ "$tailscale_enable_ssh" = "true" ]; then
+    tailscale_cmd+=(--ssh)
+  fi
+  if [ "$tailscale_accept_routes" = "true" ]; then
+    tailscale_cmd+=(--accept-routes)
+  fi
+  if [ -n "$tailscale_advertise_tags" ]; then
+    tailscale_cmd+=(--advertise-tags "$tailscale_advertise_tags")
+  fi
+
+  retry 5 5 "${tailscale_cmd[@]}"
+}
+
 resolve_instance_id() {
   if [ -n "${CLEANROOM_BOOTSTRAP_INSTANCE_ID:-}" ]; then
     printf '%s' "$CLEANROOM_BOOTSTRAP_INSTANCE_ID"
@@ -195,8 +276,9 @@ install -d -o "$AGENT_USER" -g "$AGENT_GROUP" -m 0755 "$BUILD_PATH"
 install -d -o "$AGENT_USER" -g "$AGENT_GROUP" -m 0755 "$AGENT_ROOT/hooks"
 install -d -o "$AGENT_USER" -g "$AGENT_GROUP" -m 0755 "$AGENT_ROOT/plugins"
 
-agent_token="$(aws ssm get-parameter --region "$AWS_REGION" --name "$BUILDKITE_TOKEN_PARAM" --with-decryption --query 'Parameter.Value' --output text)"
 instance_id="$(resolve_instance_id)"
+install_tailscale_if_configured "$brew_bin" "$instance_id"
+agent_token="$(retry 10 3 aws ssm get-parameter --region "$AWS_REGION" --name "$BUILDKITE_TOKEN_PARAM" --with-decryption --query 'Parameter.Value' --output text)"
 
 tags="queue=${QUEUE_NAME},host=${instance_id},os=macos,role=cleanroom,name_prefix=${NAME_PREFIX}"
 config_path="${CONFIG_DIR}/${QUEUE_NAME}.cfg"

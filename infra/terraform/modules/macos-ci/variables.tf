@@ -58,6 +58,12 @@ variable "buildkite_token_parameter_name" {
   type        = string
 }
 
+variable "tailscale_auth_key_parameter_name" {
+  description = "Optional SSM SecureString parameter name storing Tailscale auth key."
+  type        = string
+  default     = ""
+}
+
 variable "git_deploy_key_parameter_name" {
   description = "SSM SecureString parameter name storing an SSH deploy key for cloning."
   type        = string
@@ -84,6 +90,30 @@ variable "setup_script_path" {
   description = "Path to the setup script inside the cloned repository."
   type        = string
   default     = "scripts/bootstrap-buildkite-agent-macos.sh"
+}
+
+variable "tailscale_hostname_prefix" {
+  description = "Tailscale hostname prefix (<prefix>-<instance-id>) for the macOS host."
+  type        = string
+  default     = "cleanroom-ci-mac"
+}
+
+variable "tailscale_advertise_tags" {
+  description = "Optional comma-separated tags passed to tailscale up --advertise-tags."
+  type        = string
+  default     = ""
+}
+
+variable "tailscale_enable_ssh" {
+  description = "Enable tailscale up --ssh."
+  type        = bool
+  default     = true
+}
+
+variable "tailscale_accept_routes" {
+  description = "Enable tailscale up --accept-routes."
+  type        = bool
+  default     = false
 }
 
 variable "tags" {

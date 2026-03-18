@@ -78,10 +78,13 @@ func TestMacCiDefaultsUseBootstrapScript(t *testing.T) {
 
 	requireContains(t, "variables.tf", "default     = \"scripts/bootstrap-buildkite-agent-macos.sh\"")
 	requireContains(t, "variables.tf", "default     = \"cleanroom-mac\"")
+	requireContains(t, "variables.tf", "default     = \"cleanroom-ci-mac\"")
 	requireContains(t, filepath.Join("..", "..", "modules", "macos-ci", "variables.tf"), "default     = \"scripts/bootstrap-buildkite-agent-macos.sh\"")
 	requireContains(t, filepath.Join("..", "..", "modules", "macos-ci", "variables.tf"), "default     = \"cleanroom-mac\"")
+	requireContains(t, filepath.Join("..", "..", "modules", "macos-ci", "variables.tf"), "default     = \"cleanroom-ci-mac\"")
 	requireContains(t, "terraform.tfvars.example", "mac_setup_script_path = \"scripts/bootstrap-buildkite-agent-macos.sh\"")
 	requireContains(t, "terraform.tfvars.example", "mac_buildkite_queue   = \"cleanroom-mac\"")
+	requireContains(t, "terraform.tfvars.example", "mac_tailscale_hostname_prefix = \"cleanroom-ci-mac\"")
 }
 
 func TestMacCiDefaultsUseTahoePublicSsmParameter(t *testing.T) {
@@ -130,6 +133,20 @@ func TestMacBootstrapScriptConfiguresBuildkiteAgent(t *testing.T) {
 	requireContains(t, scriptPath, "AGENT_SERVICE_PATH=\"/opt/homebrew/opt/e2fsprogs/sbin:/opt/homebrew/opt/e2fsprogs/bin:/usr/local/opt/e2fsprogs/sbin:/usr/local/opt/e2fsprogs/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin\"")
 	requireContains(t, scriptPath, "<string>${AGENT_SERVICE_PATH}</string>")
 	requireContains(t, scriptPath, "<key>UserName</key>")
+	requireContains(t, scriptPath, "install --formula tailscale")
+	requireContains(t, scriptPath, "install-system-daemon")
+	requireContains(t, scriptPath, "tailscale_cmd+=(--ssh)")
+}
+
+func TestMacCiPropagatesTailscaleSettings(t *testing.T) {
+	t.Helper()
+
+	requireContains(t, "main.tf", "tailscale_auth_key_parameter_name = var.tailscale_auth_key_parameter_name")
+	requireContains(t, "main.tf", "tailscale_hostname_prefix         = var.mac_tailscale_hostname_prefix")
+	requireContains(t, filepath.Join("..", "..", "modules", "macos-ci", "main.tf"), "var.tailscale_auth_key_parameter_name")
+	requireContains(t, filepath.Join("..", "..", "modules", "macos-ci", "templates", "user_data.sh.tftpl"), "TAILSCALE_AUTH_KEY_PARAM='${tailscale_auth_key_parameter_name}'")
+	requireContains(t, "outputs.tf", "mac_tailscale_ssh_pattern")
+	requireContains(t, filepath.Join("..", "..", "modules", "macos-ci", "outputs.tf"), "trimspace(var.tailscale_auth_key_parameter_name) != \"\" ? \"tailscale ssh ec2-user@")
 }
 
 func TestUserDataInstallsAwsCliWithoutAptAwscliDependency(t *testing.T) {
