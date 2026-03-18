@@ -80,10 +80,13 @@ func TestCiDarwinVZVMNetE2EUsesBuildkiteSecretsAndVMNetEntitlements(t *testing.T
 	for _, needle := range []string{
 		`if [[ -z "${BUILDKITE:-}" ]]; then`,
 		`buildkite-agent secret get "$key"`,
+		`normalize_secret_value()`,
 		"fetch_secret CLEANROOM_DARWIN_VZ_HELPER_CERT_P12_BASE64",
 		"fetch_secret CLEANROOM_DARWIN_VZ_HELPER_CERT_PASSWORD",
 		"fetch_secret CLEANROOM_DARWIN_VZ_HELPER_PROVISION_PROFILE_BASE64",
 		"fetch_secret CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY",
+		`tr -d '\r\n'`,
+		`tr -d '\r'`,
 		"CLEANROOM_DARWIN_VZ_HELPER to a prebuilt signed helper bundle",
 		"CLEANROOM_DARWIN_VZ_HELPER_PROVISION_PROFILE and CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY",
 		"AppleWWDRCAG3.cer",

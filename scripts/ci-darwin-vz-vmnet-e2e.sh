@@ -17,6 +17,10 @@ fetch_secret() {
   buildkite-agent secret get "$key"
 }
 
+normalize_secret_value() {
+  printf '%s' "$1" | tr -d '\r'
+}
+
 resolve_local_helper_path() {
   local helper="${CLEANROOM_DARWIN_VZ_HELPER:-}"
   if [[ -n "$helper" ]]; then
@@ -29,10 +33,10 @@ resolve_local_helper_path() {
 setup_buildkite_signing_assets() {
   require_command buildkite-agent
 
-  printf '%s' "$(fetch_secret CLEANROOM_DARWIN_VZ_HELPER_CERT_P12_BASE64)" | openssl base64 -d -A -out "$p12_path"
-  printf '%s' "$(fetch_secret CLEANROOM_DARWIN_VZ_HELPER_PROVISION_PROFILE_BASE64)" | openssl base64 -d -A -out "$profile_path"
-  sign_identity="$(fetch_secret CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY)"
-  p12_password="$(fetch_secret CLEANROOM_DARWIN_VZ_HELPER_CERT_PASSWORD)"
+  printf '%s' "$(fetch_secret CLEANROOM_DARWIN_VZ_HELPER_CERT_P12_BASE64 | tr -d '\r\n')" | openssl base64 -d -A -out "$p12_path"
+  printf '%s' "$(fetch_secret CLEANROOM_DARWIN_VZ_HELPER_PROVISION_PROFILE_BASE64 | tr -d '\r\n')" | openssl base64 -d -A -out "$profile_path"
+  sign_identity="$(normalize_secret_value "$(fetch_secret CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY)")"
+  p12_password="$(normalize_secret_value "$(fetch_secret CLEANROOM_DARWIN_VZ_HELPER_CERT_PASSWORD)")"
 
   curl -fsSL https://www.apple.com/certificateauthority/AppleWWDRCAG3.cer -o "$wwdr_path"
 
@@ -80,7 +84,7 @@ setup_buildkite_signing_assets() {
 
 setup_local_signing_assets() {
   profile_path="${CLEANROOM_DARWIN_VZ_HELPER_PROVISION_PROFILE:-}"
-  sign_identity="${CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY:-}"
+  sign_identity="$(normalize_secret_value "${CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY:-}")"
   sign_keychain="${CLEANROOM_DARWIN_VZ_HELPER_SIGN_KEYCHAIN:-}"
 }
 
