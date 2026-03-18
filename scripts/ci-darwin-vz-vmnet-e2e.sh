@@ -21,6 +21,26 @@ normalize_secret_value() {
   printf '%s' "$1" | tr -d '\r'
 }
 
+normalize_p12_for_security_import() {
+  local input_path="$1"
+  local output_path="$2"
+  local bundle_path="$3"
+
+  if ! openssl pkcs12 -help 2>&1 | grep -q -- '-legacy'; then
+    printf '%s\n' "$input_path"
+    return 0
+  fi
+
+  if openssl pkcs12 -legacy -in "$input_path" -passin "pass:${p12_password}" -nodes -out "$bundle_path" >/dev/null 2>&1 \
+    && openssl pkcs12 -export -in "$bundle_path" -passout "pass:${p12_password}" -out "$output_path" >/dev/null 2>&1; then
+    echo "normalized Apple Development PKCS#12 archive for security import" >&2
+    printf '%s\n' "$output_path"
+    return 0
+  fi
+
+  printf '%s\n' "$input_path"
+}
+
 resolve_local_helper_path() {
   local helper="${CLEANROOM_DARWIN_VZ_HELPER:-}"
   if [[ -n "$helper" ]]; then
@@ -38,6 +58,8 @@ setup_buildkite_signing_assets() {
   local requested_sign_identity
   requested_sign_identity="$(normalize_secret_value "$(fetch_secret CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY)")"
   p12_password="$(normalize_secret_value "$(fetch_secret CLEANROOM_DARWIN_VZ_HELPER_CERT_PASSWORD)")"
+  local import_p12_path
+  import_p12_path="$(normalize_p12_for_security_import "$p12_path" "$normalized_p12_path" "$normalized_p12_bundle_path")"
 
   curl -fsSL https://www.apple.com/certificateauthority/AppleWWDRCAG3.cer -o "$wwdr_path"
 
@@ -54,7 +76,7 @@ setup_buildkite_signing_assets() {
   security create-keychain -p "$temp_keychain_password" "$temp_keychain_path" >/dev/null
   security unlock-keychain -p "$temp_keychain_password" "$temp_keychain_path" >/dev/null
   security set-keychain-settings -lut 21600 "$temp_keychain_path" >/dev/null
-  security import "$p12_path" -k "$temp_keychain_path" -P "$p12_password" -T /usr/bin/codesign -T /usr/bin/security
+  security import "$import_p12_path" -k "$temp_keychain_path" -P "$p12_password" -T /usr/bin/codesign -T /usr/bin/security
   security import "$wwdr_path" -k "$temp_keychain_path" -T /usr/bin/codesign -T /usr/bin/security
   security list-keychains -d user -s \
     "$temp_keychain_path" \
@@ -135,6 +157,8 @@ temp_keychain_path="$HOME/Library/Keychains/cleanroom-signing-$(openssl rand -he
 temp_keychain_password="$(openssl rand -hex 16)"
 
 p12_path="$tmpdir/helper-cert.p12"
+normalized_p12_path="$tmpdir/helper-cert-normalized.p12"
+normalized_p12_bundle_path="$tmpdir/helper-cert-normalized.pem"
 profile_path="$tmpdir/helper.provisionprofile"
 wwdr_path="$tmpdir/AppleWWDRCAG3.cer"
 sign_identity=""
