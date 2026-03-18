@@ -75,7 +75,7 @@ mise run ci:bootstrap:linux:logs
 Task defaults:
 
 - `CLEANROOM_CI_AWS_PROFILE=buildkite-sandbox-pipelines-admin`
-- `CLEANROOM_CI_AWS_REGION=us-west-2`
+- `CLEANROOM_CI_AWS_REGION=ap-southeast-2`
 - `CLEANROOM_CI_INSTANCE_ID` overrides Terraform lookup
 - `CLEANROOM_CI_TERRAFORM_DIR=infra/terraform/envs/ci`
 
@@ -89,7 +89,7 @@ instance_id="$(mise x -- terraform -chdir=infra/terraform/envs/ci output -raw ma
 
 # Rerun bootstrap in place over SSM
 AWS_PROFILE=buildkite-sandbox-pipelines-admin aws ssm send-command \
-  --region us-west-2 \
+  --region ap-southeast-2 \
   --instance-ids "$instance_id" \
   --document-name AWS-RunShellScript \
   --parameters '{"commands":["sudo env PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin /usr/local/bin/cleanroom-bootstrap-macos"]}'

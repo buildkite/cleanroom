@@ -21,6 +21,7 @@ func TestCIBootstrapLinuxSSMScriptSupportsRunAndLogs(t *testing.T) {
 		"CLEANROOM_CI_AWS_REGION",
 		"CLEANROOM_CI_INSTANCE_ID",
 		"CLEANROOM_CI_TERRAFORM_DIR",
+		"DEFAULT_CI_AWS_REGION=\"ap-southeast-2\"",
 		"terraform -chdir=\"$terraform_dir\" output -raw instance_id",
 		"aws ssm send-command",
 		"aws ssm wait command-executed",
