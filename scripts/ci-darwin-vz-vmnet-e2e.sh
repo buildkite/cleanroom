@@ -130,7 +130,8 @@ tmpdir="$(mktemp -d /tmp/cleanroom-dvz-vmnet-e2e.XXXXXX)"
 declare -a original_keychains=()
 trap cleanup EXIT
 
-temp_keychain_path="$tmpdir/cleanroom-signing.keychain-db"
+mkdir -p "$HOME/Library/Keychains"
+temp_keychain_path="$HOME/Library/Keychains/cleanroom-signing-$(openssl rand -hex 8).keychain-db"
 temp_keychain_password="$(openssl rand -hex 16)"
 
 p12_path="$tmpdir/helper-cert.p12"
