@@ -15,7 +15,7 @@ output "ssm_start_session_command" {
 
 output "tailscale_ssh_pattern" {
   description = "Tailscale SSH pattern when tailscale_auth_key_parameter_name is set."
-  value       = "tailscale ssh ec2-user@${var.tailscale_hostname_prefix}-<instance-id>"
+  value       = trimspace(var.tailscale_auth_key_parameter_name) != "" ? "tailscale ssh ec2-user@${var.tailscale_hostname_prefix}-<instance-id>" : null
 }
 
 output "dedicated_host_id" {

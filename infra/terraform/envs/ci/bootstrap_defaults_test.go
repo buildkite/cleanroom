@@ -146,7 +146,7 @@ func TestMacCiPropagatesTailscaleSettings(t *testing.T) {
 	requireContains(t, filepath.Join("..", "..", "modules", "macos-ci", "main.tf"), "var.tailscale_auth_key_parameter_name")
 	requireContains(t, filepath.Join("..", "..", "modules", "macos-ci", "templates", "user_data.sh.tftpl"), "TAILSCALE_AUTH_KEY_PARAM='${tailscale_auth_key_parameter_name}'")
 	requireContains(t, "outputs.tf", "mac_tailscale_ssh_pattern")
-	requireContains(t, filepath.Join("..", "..", "modules", "macos-ci", "outputs.tf"), "tailscale ssh ec2-user@")
+	requireContains(t, filepath.Join("..", "..", "modules", "macos-ci", "outputs.tf"), "trimspace(var.tailscale_auth_key_parameter_name) != \"\" ? \"tailscale ssh ec2-user@")
 }
 
 func TestUserDataInstallsAwsCliWithoutAptAwscliDependency(t *testing.T) {
