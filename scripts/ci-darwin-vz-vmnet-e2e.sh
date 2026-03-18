@@ -35,7 +35,8 @@ setup_buildkite_signing_assets() {
 
   printf '%s' "$(fetch_secret CLEANROOM_DARWIN_VZ_HELPER_CERT_P12_BASE64 | tr -d '\r\n')" | openssl base64 -d -A -out "$p12_path"
   printf '%s' "$(fetch_secret CLEANROOM_DARWIN_VZ_HELPER_PROVISION_PROFILE_BASE64 | tr -d '\r\n')" | openssl base64 -d -A -out "$profile_path"
-  sign_identity="$(normalize_secret_value "$(fetch_secret CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY)")"
+  local requested_sign_identity
+  requested_sign_identity="$(normalize_secret_value "$(fetch_secret CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY)")"
   p12_password="$(normalize_secret_value "$(fetch_secret CLEANROOM_DARWIN_VZ_HELPER_CERT_PASSWORD)")"
 
   curl -fsSL https://www.apple.com/certificateauthority/AppleWWDRCAG3.cer -o "$wwdr_path"
@@ -63,8 +64,19 @@ setup_buildkite_signing_assets() {
   security default-keychain -d user -s "$temp_keychain_path" >/dev/null
   security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$temp_keychain_password" "$temp_keychain_path" >/dev/null
 
-  if ! security find-certificate -a -c "$sign_identity" "$temp_keychain_path" >/dev/null 2>&1; then
-    echo "imported signing certificate not found in temp keychain: $sign_identity" >&2
+  if ! security find-certificate -a -c "$requested_sign_identity" "$temp_keychain_path" >/dev/null 2>&1; then
+    echo "imported signing certificate not found in temp keychain: $requested_sign_identity" >&2
+    security find-certificate -a -Z "$temp_keychain_path" >&2 || true
+    exit 1
+  fi
+
+  local imported_sign_identity
+  imported_sign_identity="$(
+    security find-certificate -a -c "$requested_sign_identity" -Z "$temp_keychain_path" 2>/dev/null \
+      | awk '/^SHA-1 hash:/ {print $3; exit}'
+  )"
+  if [[ -z "$imported_sign_identity" ]]; then
+    echo "unable to derive imported signing certificate hash from temp keychain" >&2
     security find-certificate -a -Z "$temp_keychain_path" >&2 || true
     exit 1
   fi
@@ -73,12 +85,13 @@ setup_buildkite_signing_assets() {
   # `security find-identity <keychain>` is not reliable for temp keychains on all
   # macOS images; query the configured user search list instead.
   available_identities="$(security find-identity -v -p codesigning 2>&1 || true)"
-  if ! grep -F -- "\"$sign_identity\"" <<<"$available_identities" >/dev/null; then
-    echo "warning: imported signing identity not found in configured keychain search list: $sign_identity" >&2
+  if ! grep -F -- "\"$requested_sign_identity\"" <<<"$available_identities" >/dev/null; then
+    echo "warning: imported signing identity not found in configured keychain search list: $requested_sign_identity" >&2
     printf '%s\n' "$available_identities" >&2
     echo "warning: continuing to codesign with the temp keychain; codesign will be the source of truth" >&2
   fi
 
+  sign_identity="$imported_sign_identity"
   sign_keychain="$temp_keychain_path"
 }
 
