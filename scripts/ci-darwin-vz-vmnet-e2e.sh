@@ -58,11 +58,22 @@ setup_buildkite_signing_assets() {
     /System/Library/Keychains/SystemRootCertificates.keychain >/dev/null
   security default-keychain -d user -s "$temp_keychain_path" >/dev/null
   security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$temp_keychain_password" "$temp_keychain_path" >/dev/null
+
+  local available_identities
+  available_identities="$(security find-identity -v -p codesigning "$temp_keychain_path" 2>&1 || true)"
+  if ! grep -F -- "$sign_identity" <<<"$available_identities" >/dev/null; then
+    echo "imported signing identity not found in temp keychain: $sign_identity" >&2
+    printf '%s\n' "$available_identities" >&2
+    exit 1
+  fi
+
+  sign_keychain="$temp_keychain_path"
 }
 
 setup_local_signing_assets() {
   profile_path="${CLEANROOM_DARWIN_VZ_HELPER_PROVISION_PROFILE:-}"
   sign_identity="${CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY:-}"
+  sign_keychain="${CLEANROOM_DARWIN_VZ_HELPER_SIGN_KEYCHAIN:-}"
 }
 
 restore_keychains() {
@@ -98,6 +109,7 @@ p12_path="$tmpdir/helper-cert.p12"
 profile_path="$tmpdir/helper.provisionprofile"
 wwdr_path="$tmpdir/AppleWWDRCAG3.cer"
 sign_identity=""
+sign_keychain=""
 p12_password=""
 helper_path="$(resolve_local_helper_path)"
 
@@ -125,6 +137,7 @@ if [[ ! -d "$helper_path" ]]; then
   echo "--- :key: Building vmnet-signed helper"
   CLEANROOM_DARWIN_VZ_HELPER_ENTITLEMENTS=cmd/cleanroom-darwin-vz/entitlements-vmnet.plist \
   CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY="$sign_identity" \
+  CLEANROOM_DARWIN_VZ_HELPER_SIGN_KEYCHAIN="$sign_keychain" \
   CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTIFIER="${CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTIFIER:-com.buildkite.cleanroom.darwin-vz}" \
   CLEANROOM_DARWIN_VZ_HELPER_PROVISION_PROFILE="$profile_path" \
   CLEANROOM_DARWIN_VZ_HELPER_BUNDLE=1 \

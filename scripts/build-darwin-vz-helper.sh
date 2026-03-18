@@ -8,6 +8,7 @@ OUTPUT_PATH="${1:-${REPO_ROOT}/dist/cleanroom-darwin-vz}"
 SWIFT_TARGET="${CLEANROOM_DARWIN_VZ_HELPER_SWIFT_TARGET:-}"
 ENTITLEMENTS_PATH="${CLEANROOM_DARWIN_VZ_HELPER_ENTITLEMENTS:-${REPO_ROOT}/cmd/cleanroom-darwin-vz/entitlements.plist}"
 SIGN_IDENTITY="${CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY:--}"
+SIGN_KEYCHAIN="${CLEANROOM_DARWIN_VZ_HELPER_SIGN_KEYCHAIN:-}"
 SIGN_IDENTIFIER="${CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTIFIER:-}"
 PROVISION_PROFILE="${CLEANROOM_DARWIN_VZ_HELPER_PROVISION_PROFILE:-}"
 BUNDLE_MODE="${CLEANROOM_DARWIN_VZ_HELPER_BUNDLE:-}"
@@ -93,6 +94,9 @@ EOF
     --sign "${SIGN_IDENTITY}"
     --entitlements "${ENTITLEMENTS_PATH}"
   )
+  if [[ -n "${SIGN_KEYCHAIN}" ]]; then
+    codesign_args+=(--keychain "${SIGN_KEYCHAIN}")
+  fi
   if [[ -n "${SIGN_IDENTIFIER}" ]]; then
     codesign_args+=(-i "${SIGN_IDENTIFIER}")
   fi
@@ -114,6 +118,9 @@ else
     --sign "${SIGN_IDENTITY}"
     --entitlements "${ENTITLEMENTS_PATH}"
   )
+  if [[ -n "${SIGN_KEYCHAIN}" ]]; then
+    codesign_args+=(--keychain "${SIGN_KEYCHAIN}")
+  fi
   if [[ -n "${SIGN_IDENTIFIER}" ]]; then
     codesign_args+=(-i "${SIGN_IDENTIFIER}")
   fi

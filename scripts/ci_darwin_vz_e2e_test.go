@@ -88,6 +88,9 @@ func TestCiDarwinVZVMNetE2EUsesBuildkiteSecretsAndVMNetEntitlements(t *testing.T
 		"CLEANROOM_DARWIN_VZ_HELPER_PROVISION_PROFILE and CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY",
 		"AppleWWDRCAG3.cer",
 		"security default-keychain -d user 2>/dev/null",
+		`security find-identity -v -p codesigning "$temp_keychain_path"`,
+		`CLEANROOM_DARWIN_VZ_HELPER_SIGN_KEYCHAIN="$sign_keychain"`,
+		"imported signing identity not found in temp keychain",
 		"CLEANROOM_DARWIN_VZ_HELPER_ENTITLEMENTS=cmd/cleanroom-darwin-vz/entitlements-vmnet.plist",
 		"CLEANROOM_DARWIN_VZ_HELPER_BUNDLE=1",
 		"CLEANROOM_DARWIN_VZ_VMNET_E2E=1",
@@ -95,6 +98,25 @@ func TestCiDarwinVZVMNetE2EUsesBuildkiteSecretsAndVMNetEntitlements(t *testing.T
 	} {
 		if !strings.Contains(script, needle) {
 			t.Fatalf("expected ci-darwin-vz-vmnet-e2e.sh to contain %q", needle)
+		}
+	}
+}
+
+func TestBuildDarwinVZHelperSupportsExplicitSigningKeychain(t *testing.T) {
+	t.Helper()
+
+	content, err := os.ReadFile("build-darwin-vz-helper.sh")
+	if err != nil {
+		t.Fatalf("read build-darwin-vz-helper.sh: %v", err)
+	}
+
+	script := string(content)
+	for _, needle := range []string{
+		"CLEANROOM_DARWIN_VZ_HELPER_SIGN_KEYCHAIN",
+		`codesign_args+=(--keychain "${SIGN_KEYCHAIN}")`,
+	} {
+		if !strings.Contains(script, needle) {
+			t.Fatalf("expected build-darwin-vz-helper.sh to contain %q", needle)
 		}
 	}
 }
