@@ -27,6 +27,7 @@ Bootstrap behaviour:
 - defaults to `scripts/bootstrap-buildkite-agent.sh`, which installs and starts a Buildkite agent for the `cleanroom` queue
 - linux bootstrap installs a persistent rerunnable bootstrap command at `/usr/local/bin/cleanroom-bootstrap-linux` for in-place recovery via SSM
 - macOS defaults to `scripts/bootstrap-buildkite-agent-macos.sh`, which installs and starts a Buildkite agent for the `cleanroom-mac` queue
+- when `tailscale_auth_key_parameter_name` is configured, macOS bootstrap also installs the open-source `tailscaled` daemon and enables Tailscale SSH
 - macOS user-data installs a persistent rerunnable bootstrap command at `/usr/local/bin/cleanroom-bootstrap-macos` for in-place recovery via SSM
 - override `setup_script_path` if you need custom host bootstrap logic
 - override `mac_setup_script_path` if you need custom macOS host bootstrap logic
@@ -54,6 +55,7 @@ After apply, use outputs:
 - `ssm_start_session_command`
 - `tailscale_ssh_pattern` (when tailscale auth key is configured)
 - `mac_ssm_start_session_command` (when `enable_macos_ci` is true)
+- `mac_tailscale_ssh_pattern` (when `enable_macos_ci` is true and tailscale auth key is configured)
 - `mac_dedicated_host_id` (when `enable_macos_ci` is true)
 
 ## Linux Bootstrap Recovery (In-Place)
