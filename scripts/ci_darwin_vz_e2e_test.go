@@ -93,7 +93,7 @@ func TestCiDarwinVZVMNetE2EUsesBuildkiteSecretsAndVMNetEntitlements(t *testing.T
 		`tr -d '\r'`,
 		`dscl . -read "/Users/${username}" NFSHomeDirectory`,
 		`system_profiler SPHardwareDataType`,
-		`security cms -D -i "$profile_path"`,
+		`openssl smime -inform der -verify -noverify -in "$profile_path" -out "$decoded_profile_path"`,
 		"provisioning profile does not allow this Mac's Provisioning UDID",
 		`awk '/^SHA-1 hash:/ {print $3; exit}'`,
 		"CLEANROOM_DARWIN_VZ_HELPER to a prebuilt signed helper bundle",

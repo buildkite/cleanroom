@@ -54,7 +54,7 @@ assert_profile_allows_current_device() {
   provisioning_udid="$(resolve_macos_provisioning_udid)"
   [[ -n "$provisioning_udid" ]] || return 0
 
-  run_with_macos_user_home security cms -D -i "$profile_path" >"$decoded_profile_path"
+  openssl smime -inform der -verify -noverify -in "$profile_path" -out "$decoded_profile_path" >/dev/null
   if ! grep -F "<string>${provisioning_udid}</string>" "$decoded_profile_path" >/dev/null 2>&1; then
     echo "provisioning profile does not allow this Mac's Provisioning UDID: $provisioning_udid" >&2
     echo "regenerate the vmnet development provisioning profile with this device added and update the Buildkite secret" >&2
