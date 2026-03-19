@@ -92,59 +92,42 @@ setup_buildkite_signing_assets() {
   requested_sign_identity="$(normalize_secret_value "$(fetch_secret CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY)")"
   p12_password="$(normalize_secret_value "$(fetch_secret CLEANROOM_DARWIN_VZ_HELPER_CERT_PASSWORD)")"
   curl -fsSL https://www.apple.com/certificateauthority/AppleWWDRCAG3.cer -o "$wwdr_path"
+  wwdr_fingerprint="$(openssl x509 -inform der -in "$wwdr_path" -noout -fingerprint -sha1 | awk -F= '{gsub(":", "", $2); print $2}')"
 
-  while IFS= read -r keychain; do
-    [[ -n "$keychain" ]] || continue
-    original_keychains+=("$keychain")
-  done < <(run_with_macos_user_home security list-keychains -d user | sed -E 's/^[[:space:]]*"//; s/"$//')
-  if default_keychain_output="$(run_with_macos_user_home security default-keychain -d user 2>/dev/null)"; then
-    original_default_keychain="$(printf '%s' "$default_keychain_output" | sed -E 's/^[[:space:]]*"//; s/"$//')"
-  else
-    original_default_keychain=""
+  if ! sudo security import "$p12_path" -k "$system_keychain_path" -P "$p12_password" -T /usr/bin/codesign -T /usr/bin/security >/dev/null; then
+    echo "failed to import signing identity into ${system_keychain_path}" >&2
+    exit 1
   fi
 
-  run_with_macos_user_home security create-keychain -p "$temp_keychain_password" "$temp_keychain_path" >/dev/null
-  run_with_macos_user_home security unlock-keychain -p "$temp_keychain_password" "$temp_keychain_path" >/dev/null
-  run_with_macos_user_home security set-keychain-settings -lut 21600 "$temp_keychain_path" >/dev/null
-  run_with_macos_user_home security import "$p12_path" -k "$temp_keychain_path" -P "$p12_password" -T /usr/bin/codesign -T /usr/bin/security
-  run_with_macos_user_home security add-certificates -k "$temp_keychain_path" "$wwdr_path" >/dev/null
-  run_with_macos_user_home security list-keychains -d user -s \
-    "$temp_keychain_path" \
-    "$macos_user_home/Library/Keychains/login.keychain-db" \
-    /Library/Keychains/System.keychain \
-    /System/Library/Keychains/SystemRootCertificates.keychain >/dev/null
-  run_with_macos_user_home security default-keychain -d user -s "$temp_keychain_path" >/dev/null
-  run_with_macos_user_home security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$temp_keychain_password" "$temp_keychain_path" >/dev/null
-
-  if ! run_with_macos_user_home security find-certificate -a -c "$requested_sign_identity" "$temp_keychain_path" >/dev/null 2>&1; then
-    echo "imported signing certificate not found in temp keychain: $requested_sign_identity" >&2
-    run_with_macos_user_home security find-certificate -a -Z "$temp_keychain_path" >&2 || true
-    exit 1
+  if security find-certificate -a -Z "$system_keychain_path" 2>/dev/null | awk '/^SHA-1 hash:/ {print $3}' | grep -Fx -- "$wwdr_fingerprint" >/dev/null; then
+    wwdr_added_to_system_keychain=0
+  else
+    sudo security add-certificates -k "$system_keychain_path" "$wwdr_path" >/dev/null
+    wwdr_added_to_system_keychain=1
   fi
 
   local imported_sign_identity
   imported_sign_identity="$(
-    run_with_macos_user_home security find-certificate -a -c "$requested_sign_identity" -Z "$temp_keychain_path" 2>/dev/null \
+    security find-certificate -a -c "$requested_sign_identity" -Z "$system_keychain_path" 2>/dev/null \
       | awk '/^SHA-1 hash:/ {print $3; exit}'
   )"
   if [[ -z "$imported_sign_identity" ]]; then
-    echo "unable to derive imported signing certificate hash from temp keychain" >&2
-    run_with_macos_user_home security find-certificate -a -Z "$temp_keychain_path" >&2 || true
+    echo "unable to derive imported signing certificate hash from ${system_keychain_path}" >&2
+    security find-certificate -a -Z "$system_keychain_path" >&2 || true
     exit 1
   fi
 
   local available_identities
-  # `security find-identity <keychain>` is not reliable for temp keychains on all
-  # macOS images; query the configured user search list instead.
-  available_identities="$(run_with_macos_user_home security find-identity -v -p codesigning 2>&1 || true)"
+  available_identities="$(security find-identity -v -p codesigning "$system_keychain_path" 2>&1 || true)"
   if ! grep -F -- "\"$requested_sign_identity\"" <<<"$available_identities" >/dev/null; then
-    echo "warning: imported signing identity not found in configured keychain search list: $requested_sign_identity" >&2
+    echo "imported signing identity not found in ${system_keychain_path}: $requested_sign_identity" >&2
     printf '%s\n' "$available_identities" >&2
-    echo "warning: continuing to codesign with the temp keychain; codesign will be the source of truth" >&2
+    exit 1
   fi
 
-  sign_identity="$imported_sign_identity"
-  sign_keychain="$temp_keychain_path"
+  imported_system_identity_hash="$imported_sign_identity"
+  sign_identity="$requested_sign_identity"
+  sign_keychain="$system_keychain_path"
 }
 
 setup_local_signing_assets() {
@@ -153,19 +136,12 @@ setup_local_signing_assets() {
   sign_keychain="${CLEANROOM_DARWIN_VZ_HELPER_SIGN_KEYCHAIN:-}"
 }
 
-restore_keychains() {
-  if [[ -n "${original_default_keychain:-}" ]]; then
-    run_with_macos_user_home security default-keychain -d user -s "$original_default_keychain" >/dev/null 2>&1 || true
-  fi
-  if ((${#original_keychains[@]} > 0)); then
-    run_with_macos_user_home security list-keychains -d user -s "${original_keychains[@]}" >/dev/null 2>&1 || true
-  fi
-}
-
 cleanup() {
-  restore_keychains
-  if [[ -n "${temp_keychain_path:-}" ]]; then
-    run_with_macos_user_home security delete-keychain "$temp_keychain_path" >/dev/null 2>&1 || true
+  if [[ -n "${imported_system_identity_hash:-}" ]]; then
+    sudo security delete-identity -Z "$imported_system_identity_hash" "$system_keychain_path" >/dev/null 2>&1 || true
+  fi
+  if [[ "${wwdr_added_to_system_keychain:-0}" == "1" && -n "${wwdr_fingerprint:-}" ]]; then
+    sudo security delete-certificate -Z "$wwdr_fingerprint" "$system_keychain_path" >/dev/null 2>&1 || true
   fi
   rm -rf "${tmpdir:-}"
 }
@@ -174,21 +150,22 @@ require_command security
 require_command curl
 require_command openssl
 require_command codesign
+require_command sudo
 
 tmpdir="$(mktemp -d /tmp/cleanroom-dvz-vmnet-e2e.XXXXXX)"
-declare -a original_keychains=()
 trap cleanup EXIT
 
 macos_user_name="$(resolve_macos_user_name)"
 macos_user_home="$(resolve_macos_user_home)"
-mkdir -p "$macos_user_home/Library/Keychains"
-temp_keychain_path="$macos_user_home/Library/Keychains/cleanroom-signing-$(openssl rand -hex 8).keychain-db"
-temp_keychain_password="$(openssl rand -hex 16)"
 
 p12_path="$tmpdir/helper-cert.p12"
 profile_path="$tmpdir/helper.provisionprofile"
 decoded_profile_path="$tmpdir/helper.provisionprofile.plist"
 wwdr_path="$tmpdir/AppleWWDRCAG3.cer"
+wwdr_fingerprint=""
+wwdr_added_to_system_keychain=0
+system_keychain_path="/Library/Keychains/System.keychain"
+imported_system_identity_hash=""
 sign_identity=""
 sign_keychain=""
 p12_password=""
