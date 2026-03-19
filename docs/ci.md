@@ -80,38 +80,19 @@ Notes:
 
 ### 3.2 Upload vmnet signing secrets
 
-If you add a dedicated `vmnet-shared` Buildkite step, upload the signing assets
-with `scripts/sync-darwin-vz-vmnet-buildkite-secrets.sh`.
-
-```bash
-BUILDKITE_CLUSTER_ID=<cluster-id> \
-BUILDKITE_PIPELINE_ID=<pipeline-id> \
-BUILDKITE_CLUSTER_QUEUE_ID=<queue-id> \
-CLEANROOM_DARWIN_VZ_HELPER_CERT_P12_PATH=/path/to/Apple_Development.p12 \
-CLEANROOM_DARWIN_VZ_HELPER_PROVISION_PROFILE_PATH=/path/to/Cleanroom_Darwin_VZ_Development.provisionprofile \
-CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY='Apple Development: ...' \
-scripts/sync-darwin-vz-vmnet-buildkite-secrets.sh
-```
-
-Optional:
-
-- set `CLEANROOM_DARWIN_VZ_HELPER_CERT_PASSWORD` to run non-interactively
-- otherwise the script recreates `CLEANROOM_DARWIN_VZ_HELPER_CERT_PASSWORD` and
-  lets `bk secret create` prompt for the password
-- Buildkite cluster secrets do not accept empty values, so export the `.p12`
-  with a non-empty password
-- set `BUILDKITE_PIPELINE_ID` and `BUILDKITE_CLUSTER_QUEUE_ID` to apply a
-  first-party Buildkite access policy as part of secret creation
-
-The script manages these fixed cluster secret keys:
+The vmnet step expects these Buildkite cluster secrets:
 
 - `CLEANROOM_DARWIN_VZ_HELPER_CERT_P12_BASE64`
 - `CLEANROOM_DARWIN_VZ_HELPER_CERT_PASSWORD`
 - `CLEANROOM_DARWIN_VZ_HELPER_PROVISION_PROFILE_BASE64`
 - `CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY`
 
-Keep `CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTIFIER=com.buildkite.cleanroom.darwin-vz`
-as normal pipeline or step environment, not a secret.
+Recommended setup:
+
+- export the Apple Development identity as a `.p12` with a non-empty password
+- base64-encode the `.p12` and `.provisionprofile` payloads before upload
+- keep `CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTIFIER=com.buildkite.cleanroom.darwin-vz` as normal step environment, not a secret
+- restrict the secrets to the `cleanroom` pipeline and `cleanroom-mac` queue
 
 ### 3.3 vmnet-shared E2E step
 
@@ -120,7 +101,7 @@ and adds a separate vmnet-specific path on the `cleanroom-mac` queue.
 
 It uses `buildkite-agent secret get` inside
 `scripts/ci-darwin-vz-vmnet-e2e.sh` to fetch the four signing secrets at job
-runtime, imports the Apple Development identity into a temporary keychain,
+runtime, imports the Apple Development identity into `System.keychain`,
 downloads the Apple WWDR G3 intermediate, builds a signed helper bundle with
 `cmd/cleanroom-darwin-vz/entitlements-vmnet.plist`, and runs:
 
@@ -132,6 +113,8 @@ go test ./internal/backend/darwinvz -run TestVMNetSharedE2E -v
 
 The vmnet secrets should stay restricted to the `cleanroom` pipeline and the
 `cleanroom-mac` queue.
+The script also forces a short `XDG_STATE_HOME` so the darwin-vz helper socket
+path stays within the macOS UNIX socket length limit.
 
 ## 4. Cleanroom Queue (Firecracker E2E)
 

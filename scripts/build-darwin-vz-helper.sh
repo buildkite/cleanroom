@@ -7,11 +7,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 OUTPUT_PATH="${1:-${REPO_ROOT}/dist/cleanroom-darwin-vz}"
 SWIFT_TARGET="${CLEANROOM_DARWIN_VZ_HELPER_SWIFT_TARGET:-}"
 ENTITLEMENTS_PATH="${CLEANROOM_DARWIN_VZ_HELPER_ENTITLEMENTS:-${REPO_ROOT}/cmd/cleanroom-darwin-vz/entitlements.plist}"
-SIGN_IDENTITY="${CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY:--}"
-SIGN_KEYCHAIN="${CLEANROOM_DARWIN_VZ_HELPER_SIGN_KEYCHAIN:-}"
-SIGN_IDENTIFIER="${CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTIFIER:-}"
 PROVISION_PROFILE="${CLEANROOM_DARWIN_VZ_HELPER_PROVISION_PROFILE:-}"
-BUNDLE_MODE="${CLEANROOM_DARWIN_VZ_HELPER_BUNDLE:-}"
 
 [[ -f "${REPO_ROOT}/cmd/cleanroom-darwin-vz/main.swift" ]] || {
   echo "missing helper source: ${REPO_ROOT}/cmd/cleanroom-darwin-vz/main.swift" >&2
@@ -27,6 +23,9 @@ if [[ -n "${PROVISION_PROFILE}" && ! -f "${PROVISION_PROFILE}" ]]; then
 fi
 
 mkdir -p "$(dirname "${OUTPUT_PATH}")"
+tmpdir="$(mktemp -d /tmp/cleanroom-darwin-vz-build.XXXXXX)"
+trap 'rm -rf "${tmpdir}"' EXIT
+build_output_path="${tmpdir}/cleanroom-darwin-vz"
 
 swiftc_args=(
   -O
@@ -36,100 +35,22 @@ swiftc_args=(
 if [[ -n "${SWIFT_TARGET}" ]]; then
   swiftc_args+=(-target "${SWIFT_TARGET}")
 fi
-if [[ -n "${PROVISION_PROFILE}" ]]; then
-  BUNDLE_MODE="1"
+swiftc_args+=(
+  "${REPO_ROOT}/cmd/cleanroom-darwin-vz/main.swift"
+  -o "${build_output_path}"
+)
+
+xcrun swiftc "${swiftc_args[@]}"
+
+package_env=(
+  "CLEANROOM_DARWIN_VZ_HELPER_ENTITLEMENTS=${ENTITLEMENTS_PATH}"
+  "CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY=${CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY:-}"
+  "CLEANROOM_DARWIN_VZ_HELPER_SIGN_KEYCHAIN=${CLEANROOM_DARWIN_VZ_HELPER_SIGN_KEYCHAIN:-}"
+  "CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTIFIER=${CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTIFIER:-}"
+  "CLEANROOM_DARWIN_VZ_HELPER_PROVISION_PROFILE=${PROVISION_PROFILE}"
+)
+if [[ -n "${PROVISION_PROFILE}" || -n "${CLEANROOM_DARWIN_VZ_HELPER_BUNDLE:-}" ]]; then
+  package_env+=("CLEANROOM_DARWIN_VZ_HELPER_BUNDLE=1")
 fi
 
-if [[ -n "${BUNDLE_MODE}" ]]; then
-  if [[ -n "${PROVISION_PROFILE}" && -z "${SIGN_IDENTIFIER}" ]]; then
-    echo "CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTIFIER is required when embedding a provisioning profile" >&2
-    exit 1
-  fi
-
-  if [[ "${OUTPUT_PATH}" == *.app ]]; then
-    APP_PATH="${OUTPUT_PATH}"
-  else
-    APP_PATH="${OUTPUT_PATH}.app"
-    rm -f "${OUTPUT_PATH}"
-  fi
-  EXECUTABLE_PATH="${APP_PATH}/Contents/MacOS/cleanroom-darwin-vz"
-  INFO_PLIST_PATH="${APP_PATH}/Contents/Info.plist"
-  PROFILE_DEST="${APP_PATH}/Contents/embedded.provisionprofile"
-  BUNDLE_IDENTIFIER="${SIGN_IDENTIFIER:-com.buildkite.cleanroom.darwin-vz}"
-
-  mkdir -p "$(dirname "${EXECUTABLE_PATH}")"
-  cat > "${INFO_PLIST_PATH}" <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>CFBundleExecutable</key>
-  <string>cleanroom-darwin-vz</string>
-  <key>CFBundleIdentifier</key>
-  <string>${BUNDLE_IDENTIFIER}</string>
-  <key>CFBundleName</key>
-  <string>cleanroom-darwin-vz</string>
-  <key>CFBundlePackageType</key>
-  <string>APPL</string>
-  <key>CFBundleShortVersionString</key>
-  <string>0.0.0</string>
-  <key>CFBundleVersion</key>
-  <string>1</string>
-</dict>
-</plist>
-EOF
-  if [[ -n "${PROVISION_PROFILE}" ]]; then
-    install -m 0644 "${PROVISION_PROFILE}" "${PROFILE_DEST}"
-  else
-    rm -f "${PROFILE_DEST}"
-  fi
-  swiftc_args+=(
-    "${REPO_ROOT}/cmd/cleanroom-darwin-vz/main.swift"
-    -o "${EXECUTABLE_PATH}"
-  )
-  xcrun swiftc "${swiftc_args[@]}"
-
-  codesign_args=(
-    --force
-    --sign "${SIGN_IDENTITY}"
-    --entitlements "${ENTITLEMENTS_PATH}"
-  )
-  if [[ -n "${SIGN_KEYCHAIN}" ]]; then
-    codesign_args+=(--keychain "${SIGN_KEYCHAIN}")
-  fi
-  if [[ -n "${SIGN_IDENTIFIER}" ]]; then
-    codesign_args+=(-i "${SIGN_IDENTIFIER}")
-  fi
-  codesign_args+=("${APP_PATH}")
-  codesign "${codesign_args[@]}"
-else
-  APP_PATH="${OUTPUT_PATH}.app"
-  EXECUTABLE_PATH="${OUTPUT_PATH}"
-  PROFILE_DEST="${OUTPUT_PATH}.provisionprofile"
-  rm -rf "${APP_PATH}"
-  swiftc_args+=(
-    "${REPO_ROOT}/cmd/cleanroom-darwin-vz/main.swift"
-    -o "${EXECUTABLE_PATH}"
-  )
-  xcrun swiftc "${swiftc_args[@]}"
-
-  codesign_args=(
-    --force
-    --sign "${SIGN_IDENTITY}"
-    --entitlements "${ENTITLEMENTS_PATH}"
-  )
-  if [[ -n "${SIGN_KEYCHAIN}" ]]; then
-    codesign_args+=(--keychain "${SIGN_KEYCHAIN}")
-  fi
-  if [[ -n "${SIGN_IDENTIFIER}" ]]; then
-    codesign_args+=(-i "${SIGN_IDENTIFIER}")
-  fi
-  codesign_args+=("${EXECUTABLE_PATH}")
-  codesign "${codesign_args[@]}"
-
-  if [[ -n "${PROVISION_PROFILE}" ]]; then
-    install -m 0644 "${PROVISION_PROFILE}" "${PROFILE_DEST}"
-  else
-    rm -f "${PROFILE_DEST}"
-  fi
-fi
+env "${package_env[@]}" "${SCRIPT_DIR}/package-darwin-vz-helper.sh" "${build_output_path}" "${OUTPUT_PATH}"

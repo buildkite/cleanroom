@@ -32,38 +32,24 @@ func TestCiDarwinVZE2EForcesNATNetworkMode(t *testing.T) {
 	}
 }
 
-func TestSyncDarwinVZVmnetBuildkiteSecretsUsesParameterizedInputs(t *testing.T) {
+func TestBuildDarwinVZHelperUsesSharedPackager(t *testing.T) {
 	t.Helper()
 
-	content, err := os.ReadFile("sync-darwin-vz-vmnet-buildkite-secrets.sh")
+	content, err := os.ReadFile("build-darwin-vz-helper.sh")
 	if err != nil {
-		t.Fatalf("read sync-darwin-vz-vmnet-buildkite-secrets.sh: %v", err)
+		t.Fatalf("read build-darwin-vz-helper.sh: %v", err)
 	}
 
 	script := string(content)
 	for _, needle := range []string{
-		"BUILDKITE_CLUSTER_ID",
-		"BK_CLUSTER_ID",
-		"CLEANROOM_DARWIN_VZ_HELPER_CERT_P12_PATH",
-		"CLEANROOM_DARWIN_VZ_HELPER_PROVISION_PROFILE_PATH",
-		"CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY",
-		"CLEANROOM_DARWIN_VZ_HELPER_CERT_PASSWORD",
-		"CLEANROOM_DARWIN_VZ_HELPER_CERT_P12_BASE64",
-		"CLEANROOM_DARWIN_VZ_HELPER_PROVISION_PROFILE_BASE64",
-		"bk secret delete",
-		"bk secret create",
+		`tmpdir="$(mktemp -d /tmp/cleanroom-darwin-vz-build.XXXXXX)"`,
+		`build_output_path="${tmpdir}/cleanroom-darwin-vz"`,
+		`"CLEANROOM_DARWIN_VZ_HELPER_ENTITLEMENTS=${ENTITLEMENTS_PATH}"`,
+		`"CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY=${CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY:-}"`,
+		`env "${package_env[@]}" "${SCRIPT_DIR}/package-darwin-vz-helper.sh" "${build_output_path}" "${OUTPUT_PATH}"`,
 	} {
 		if !strings.Contains(script, needle) {
-			t.Fatalf("expected sync-darwin-vz-vmnet-buildkite-secrets.sh to contain %q", needle)
-		}
-	}
-
-	for _, needle := range []string{
-		"--organization",
-		"ORG_SLUG",
-	} {
-		if strings.Contains(script, needle) {
-			t.Fatalf("expected sync-darwin-vz-vmnet-buildkite-secrets.sh not to contain %q", needle)
+			t.Fatalf("expected build-darwin-vz-helper.sh to contain %q", needle)
 		}
 	}
 }
@@ -128,21 +114,43 @@ func TestCiDarwinVZVMNetE2EUsesBuildkiteSecretsAndVMNetEntitlements(t *testing.T
 	}
 }
 
-func TestBuildDarwinVZHelperSupportsExplicitSigningKeychain(t *testing.T) {
+func TestPackageDarwinVZHelperSupportsExplicitSigningKeychain(t *testing.T) {
 	t.Helper()
 
-	content, err := os.ReadFile("build-darwin-vz-helper.sh")
+	content, err := os.ReadFile("package-darwin-vz-helper.sh")
 	if err != nil {
-		t.Fatalf("read build-darwin-vz-helper.sh: %v", err)
+		t.Fatalf("read package-darwin-vz-helper.sh: %v", err)
 	}
 
 	script := string(content)
 	for _, needle := range []string{
 		"CLEANROOM_DARWIN_VZ_HELPER_SIGN_KEYCHAIN",
-		`codesign_args+=(--keychain "${SIGN_KEYCHAIN}")`,
+		`args+=(--keychain "${SIGN_KEYCHAIN}")`,
 	} {
 		if !strings.Contains(script, needle) {
-			t.Fatalf("expected build-darwin-vz-helper.sh to contain %q", needle)
+			t.Fatalf("expected package-darwin-vz-helper.sh to contain %q", needle)
+		}
+	}
+}
+
+func TestInstallScriptUsesSharedPackagerWhenAvailable(t *testing.T) {
+	t.Helper()
+
+	content, err := os.ReadFile("install.sh")
+	if err != nil {
+		t.Fatalf("read install.sh: %v", err)
+	}
+
+	script := string(content)
+	for _, needle := range []string{
+		`package_darwin_helper_with_repo_script()`,
+		`package_script="${SCRIPT_DIR}/package-darwin-vz-helper.sh"`,
+		`CLEANROOM_DARWIN_VZ_HELPER_SIGN_KEYCHAIN Optional keychain path when using the repo helper packager`,
+		`if ! package_darwin_helper_with_repo_script "${HELPER_BUNDLE_DIR}" "${HELPER_BUNDLE_DIR}"; then`,
+		`if ! package_darwin_helper_with_repo_script "${HELPER_BINARY_SRC}" "${HELPER_SIGN_TARGET}"; then`,
+	} {
+		if !strings.Contains(script, needle) {
+			t.Fatalf("expected install.sh to contain %q", needle)
 		}
 	}
 }

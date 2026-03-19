@@ -2,7 +2,7 @@ steps:
   - label: ":shell: Shellcheck"
     plugins:
       - github.com/lox/mise-buildkite-plugin#a172963b3d34e98601e2a65c7dd08211fb49b7f0:
-    command: shellcheck -x scripts/bootstrap-buildkite-agent.sh scripts/bootstrap-buildkite-agent-macos.sh scripts/cleanroom-root-helper.sh scripts/benchmark-tti.sh scripts/build-go.sh scripts/install-go.sh scripts/install.sh scripts/release.sh scripts/ci-cleanroom-e2e.sh scripts/ci-darwin-vz-e2e.sh scripts/ci-darwin-vz-vmnet-e2e.sh scripts/sync-darwin-vz-vmnet-buildkite-secrets.sh
+    command: shellcheck -x scripts/bootstrap-buildkite-agent.sh scripts/bootstrap-buildkite-agent-macos.sh scripts/cleanroom-root-helper.sh scripts/benchmark-tti.sh scripts/build-go.sh scripts/install-go.sh scripts/install.sh scripts/package-darwin-vz-helper.sh scripts/release.sh scripts/ci-cleanroom-e2e.sh scripts/ci-darwin-vz-e2e.sh scripts/ci-darwin-vz-vmnet-e2e.sh
     agents:
       queue: hosted
 
