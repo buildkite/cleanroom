@@ -133,10 +133,7 @@ setup_buildkite_signing_assets() {
   fi
 
   sign_identity="$imported_sign_identity"
-  # On Buildkite macOS agents, codesign sees the imported identity more
-  # reliably via the configured default/search-list keychains than via
-  # an explicit --keychain override.
-  sign_keychain=""
+  sign_keychain="$temp_keychain_path"
 }
 
 setup_local_signing_assets() {
