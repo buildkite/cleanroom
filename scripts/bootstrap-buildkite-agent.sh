@@ -69,8 +69,12 @@ install_tailscale_if_configured() {
   [ -n "$tailscale_version" ] || die "TAILSCALE_VERSION (or CLEANROOM_TAILSCALE_VERSION) must be set when tailscale bootstrap is enabled"
   [ -n "$tailscale_hostname_prefix" ] || die "TAILSCALE_HOSTNAME_PREFIX (or CLEANROOM_TAILSCALE_HOSTNAME_PREFIX) must be set when tailscale bootstrap is enabled"
 
+  if ! tailscale_auth_key="$(retry 10 3 aws ssm get-parameter --region "$AWS_REGION" --name "$tailscale_param" --with-decryption --query 'Parameter.Value' --output text)"; then
+    warn "tailscale auth key parameter unavailable (${tailscale_param}); skipping tailscale bootstrap"
+    return
+  fi
+
   log "installing tailscale ${tailscale_version}"
-  tailscale_auth_key="$(retry 10 3 aws ssm get-parameter --region "$AWS_REGION" --name "$tailscale_param" --with-decryption --query 'Parameter.Value' --output text)"
 
   arch_name="$(uname -m)"
   if [ "$arch_name" = 'aarch64' ] || [ "$arch_name" = 'arm64' ]; then
