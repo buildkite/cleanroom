@@ -62,6 +62,28 @@ assert_profile_allows_current_device() {
   fi
 }
 
+ensure_wwdr_certificate_available() {
+  local wwdr_common_name="Apple Worldwide Developer Relations Certification Authority"
+  local import_output=""
+
+  if run_with_macos_user_home security add-certificates -k "$temp_keychain_path" "$wwdr_path" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  import_output="$(run_with_macos_user_home security add-certificates -k "$temp_keychain_path" "$wwdr_path" 2>&1 || true)"
+  if run_with_macos_user_home security find-certificate -a -c "$wwdr_common_name" /Library/Keychains/System.keychain >/dev/null 2>&1 \
+    || run_with_macos_user_home security find-certificate -a -c "$wwdr_common_name" /System/Library/Keychains/SystemRootCertificates.keychain >/dev/null 2>&1 \
+    || run_with_macos_user_home security find-certificate -a -c "$wwdr_common_name" "$macos_user_home/Library/Keychains/login.keychain-db" >/dev/null 2>&1; then
+    echo "warning: unable to add WWDR intermediate to temp keychain; relying on existing system/login keychains" >&2
+    [[ -n "$import_output" ]] && printf '%s\n' "$import_output" >&2
+    return 0
+  fi
+
+  echo "failed to add WWDR intermediate certificate to temp keychain" >&2
+  [[ -n "$import_output" ]] && printf '%s\n' "$import_output" >&2
+  exit 1
+}
+
 resolve_local_helper_path() {
   local helper="${CLEANROOM_DARWIN_VZ_HELPER:-}"
   if [[ -n "$helper" ]]; then
@@ -96,7 +118,7 @@ setup_buildkite_signing_assets() {
   run_with_macos_user_home security unlock-keychain -p "$temp_keychain_password" "$temp_keychain_path" >/dev/null
   run_with_macos_user_home security set-keychain-settings -lut 21600 "$temp_keychain_path" >/dev/null
   run_with_macos_user_home security import "$p12_path" -k "$temp_keychain_path" -P "$p12_password" -T /usr/bin/codesign -T /usr/bin/security
-  run_with_macos_user_home security import "$wwdr_path" -k "$temp_keychain_path" -T /usr/bin/codesign -T /usr/bin/security
+  ensure_wwdr_certificate_available
   run_with_macos_user_home security list-keychains -d user -s \
     "$temp_keychain_path" \
     "$macos_user_home/Library/Keychains/login.keychain-db" \
