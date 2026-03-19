@@ -24,7 +24,7 @@ normalize_secret_value() {
 resolve_macos_user_home() {
   local username home_record
 
-  username="$(id -un)"
+  username="$(resolve_macos_user_name)"
   if home_record="$(dscl . -read "/Users/${username}" NFSHomeDirectory 2>/dev/null)" \
     && [[ "$home_record" == NFSHomeDirectory:* ]]; then
     printf '%s\n' "${home_record#NFSHomeDirectory: }"
@@ -34,9 +34,21 @@ resolve_macos_user_home() {
   printf '%s\n' "$HOME"
 }
 
+resolve_macos_user_name() {
+  local console_user
+
+  console_user="$(stat -f '%Su' /dev/console 2>/dev/null || true)"
+  if [[ -n "$console_user" && "$console_user" != "root" ]]; then
+    printf '%s\n' "$console_user"
+    return 0
+  fi
+
+  id -un
+}
+
 run_with_macos_user_home() {
   if [[ -n "${macos_user_home:-}" ]]; then
-    HOME="$macos_user_home" "$@"
+    HOME="$macos_user_home" USER="$macos_user_name" LOGNAME="$macos_user_name" "$@"
     return 0
   fi
 
@@ -167,6 +179,7 @@ tmpdir="$(mktemp -d /tmp/cleanroom-dvz-vmnet-e2e.XXXXXX)"
 declare -a original_keychains=()
 trap cleanup EXIT
 
+macos_user_name="$(resolve_macos_user_name)"
 macos_user_home="$(resolve_macos_user_home)"
 mkdir -p "$macos_user_home/Library/Keychains"
 temp_keychain_path="$macos_user_home/Library/Keychains/cleanroom-signing-$(openssl rand -hex 8).keychain-db"
