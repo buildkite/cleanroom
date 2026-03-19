@@ -1,8 +1,10 @@
 package firecracker
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -67,6 +69,24 @@ func (d testVolumeDriver) DestroySnapshot(ctx context.Context, req volumestore.D
 		return nil
 	}
 	return d.destroySnapshotFn(ctx, req)
+}
+
+func captureFirecrackerLogOutput(t *testing.T) *bytes.Buffer {
+	t.Helper()
+
+	var buf bytes.Buffer
+	prevWriter := log.Writer()
+	prevFlags := log.Flags()
+	prevPrefix := log.Prefix()
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	log.SetPrefix("")
+	t.Cleanup(func() {
+		log.SetOutput(prevWriter)
+		log.SetFlags(prevFlags)
+		log.SetPrefix(prevPrefix)
+	})
+	return &buf
 }
 
 func TestCreateSnapshotSyncsPausesAndClonesRootFS(t *testing.T) {
@@ -644,5 +664,35 @@ func TestPreparePersistentWritableVolumeCleansUpOnResizeFailure(t *testing.T) {
 	}
 	if got, want := destroyed, "tank/cleanroom/sandboxes/sandbox-1"; got != want {
 		t.Fatalf("unexpected destroyed volume ref: got %q want %q", got, want)
+	}
+}
+
+func TestPreparePersistentWritableVolumeLogsDestroyFailure(t *testing.T) {
+	logOutput := captureFirecrackerLogOutput(t)
+
+	driver := testVolumeDriver{
+		cloneSnapshotToVolumeFn: func(_ context.Context, req volumestore.CloneSnapshotToVolumeRequest) (volumestore.WritableVolume, error) {
+			return volumestore.WritableVolume{
+				Ref:            "tank/cleanroom/sandboxes/sandbox-1",
+				AttachmentPath: filepath.Join(t.TempDir(), "writable.ext4"),
+			}, nil
+		},
+		destroyVolumeFn: func(_ context.Context, req volumestore.DestroyVolumeRequest) error {
+			return errors.New("destroy failed")
+		},
+	}
+
+	_, cleanupVolume, err := preparePersistentWritableVolume(context.Background(), driver, "sandbox-1", t.TempDir(), "tank/cleanroom/sandboxes/source@snap-golden", 0)
+	if err != nil {
+		t.Fatalf("preparePersistentWritableVolume returned error: %v", err)
+	}
+	if cleanupVolume == nil {
+		t.Fatal("expected cleanup function")
+	}
+
+	cleanupVolume()
+
+	if got := logOutput.String(); !strings.Contains(got, "firecracker: cleanup persistent volume \"tank/cleanroom/sandboxes/sandbox-1\": destroy failed") {
+		t.Fatalf("expected destroy error to be logged, got %q", got)
 	}
 }

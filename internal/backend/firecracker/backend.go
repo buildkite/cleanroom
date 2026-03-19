@@ -807,9 +807,7 @@ func (a *Adapter) Doctor(_ context.Context, req backend.DoctorRequest) (*backend
 			if zfsBinary == "" {
 				appendCheck("snapshot_zfs_dataset_access", "fail", fmt.Sprintf("unable to access zfs dataset %q: zfs command not available", dataset))
 			} else {
-				command := []string{zfsBinary, "list", "-H", "-d", "0", "-o", "name", dataset}
-				errorContext := []string{"zfs", "list", "-H", "-d", "0", "-o", "name", dataset}
-				out, err := runCombinedCommandOutput(context.Background(), command, errorContext)
+				out, err := runRootCommandOutput(context.Background(), req.FirecrackerConfig, "zfs", "list", "-H", "-d", "0", "-o", "name", dataset)
 				if err != nil {
 					appendCheck("snapshot_zfs_dataset_access", "fail", fmt.Sprintf("unable to access zfs dataset %q: %v", dataset, err))
 				} else if strings.TrimSpace(string(out)) != dataset {
@@ -1738,7 +1736,9 @@ func preparePersistentWritableVolume(ctx context.Context, driver volumestore.Dri
 	attachmentPath := filepath.Join(runDir, "rootfs-persistent.ext4")
 	resizeVolume := func(volume volumestore.WritableVolume) (volumestore.WritableVolume, func(), error) {
 		cleanupVolume := func() {
-			_ = driver.DestroyVolume(context.Background(), volumestore.DestroyVolumeRequest{VolumeRef: volume.Ref})
+			if err := driver.DestroyVolume(context.Background(), volumestore.DestroyVolumeRequest{VolumeRef: volume.Ref}); err != nil {
+				log.Printf("firecracker: cleanup persistent volume %q: %v", volume.Ref, err)
+			}
 		}
 		if err := volumestore.EnsureWritableVolumeMinimumSize(ctx, driver, volume, minimumBytes); err != nil {
 			cleanupVolume()
