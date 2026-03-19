@@ -91,7 +91,9 @@ type sandboxInstance struct {
 	exitErr        error
 	exitReady      bool
 	cleanupNetwork func()
+	cleanupVolume  func()
 	vmRootFSPath   string
+	volumeRef      string
 }
 
 const runObservabilityFile = "run-observability.json"
@@ -486,7 +488,15 @@ func (a *Adapter) CreateSnapshot(ctx context.Context, req backend.SnapshotReques
 		return nil, fmt.Errorf("sync sandbox filesystem before snapshot: guest sync command exited with code %d", syncResp.ExitCode)
 	}
 
-	driver, err := snapshotVolumeStoreDriver(req.FirecrackerConfig)
+	volumeRef := snapshotVolumeRef(instance)
+	if volumeRef == "" {
+		return nil, fmt.Errorf("sandbox %q has no snapshot-capable rootfs volume", sandboxID)
+	}
+	driverCfg, err := snapshotConfigForStorageRef(req.FirecrackerConfig, volumeRef)
+	if err != nil {
+		return nil, err
+	}
+	driver, err := snapshotVolumeStoreDriver(driverCfg)
 	if err != nil {
 		return nil, err
 	}
@@ -517,7 +527,7 @@ func (a *Adapter) CreateSnapshot(ctx context.Context, req backend.SnapshotReques
 
 	snapshot, err := driver.SnapshotVolume(ctx, volumestore.SnapshotVolumeRequest{
 		SnapshotID: snapshotID,
-		VolumeRef:  instance.vmRootFSPath,
+		VolumeRef:  volumeRef,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("persist snapshot rootfs: %w", err)
@@ -586,7 +596,11 @@ func (a *Adapter) DeleteSnapshot(ctx context.Context, req backend.DeleteSnapshot
 	if storageRef == "" {
 		return errors.New("missing snapshot storage_ref")
 	}
-	driver, err := snapshotVolumeStoreDriver(req.FirecrackerConfig)
+	driverCfg, err := snapshotConfigForStorageRef(req.FirecrackerConfig, storageRef)
+	if err != nil {
+		return err
+	}
+	driver, err := snapshotVolumeStoreDriver(driverCfg)
 	if err != nil {
 		return err
 	}
@@ -766,6 +780,45 @@ func (a *Adapter) Doctor(_ context.Context, req backend.DoctorRequest) (*backend
 				appendCheck("network_helper_capabilities", "pass", fmt.Sprintf("helper capabilities: %s", strings.Join(caps, ", ")))
 			}
 		}
+	}
+
+	snapshotDriver := strings.ToLower(strings.TrimSpace(req.FirecrackerConfig.Snapshots.Driver))
+	switch snapshotDriver {
+	case "", "file":
+		appendCheck("snapshot_driver", "pass", "using snapshot driver \"file\"")
+	case "zfs":
+		appendCheck("snapshot_driver", "pass", "using snapshot driver \"zfs\"")
+		dataset := strings.TrimSpace(req.FirecrackerConfig.Snapshots.ZFSDataset)
+		if dataset == "" {
+			appendCheck("snapshot_zfs_dataset", "fail", "zfs snapshot driver requires snapshots.zfs_dataset")
+		} else {
+			appendCheck("snapshot_zfs_dataset", "pass", fmt.Sprintf("configured zfs dataset %q", dataset))
+		}
+
+		zfsBinary := ""
+		if path, err := lookPathWithFallback("zfs", "/usr/sbin/zfs", "/sbin/zfs"); err != nil {
+			appendCheck("snapshot_zfs_binary", "fail", fmt.Sprintf("zfs command not available: %v", err))
+		} else {
+			zfsBinary = path
+			appendCheck("snapshot_zfs_binary", "pass", fmt.Sprintf("found zfs command %q", path))
+		}
+
+		if dataset != "" {
+			if zfsBinary == "" {
+				appendCheck("snapshot_zfs_dataset_access", "fail", fmt.Sprintf("unable to access zfs dataset %q: zfs command not available", dataset))
+			} else {
+				out, err := runRootCommandOutput(context.Background(), req.FirecrackerConfig, "zfs", "list", "-H", "-d", "0", "-o", "name", dataset)
+				if err != nil {
+					appendCheck("snapshot_zfs_dataset_access", "fail", fmt.Sprintf("unable to access zfs dataset %q: %v", dataset, err))
+				} else if strings.TrimSpace(string(out)) != dataset {
+					appendCheck("snapshot_zfs_dataset_access", "fail", fmt.Sprintf("zfs dataset probe for %q returned %q", dataset, strings.TrimSpace(string(out))))
+				} else {
+					appendCheck("snapshot_zfs_dataset_access", "pass", fmt.Sprintf("zfs dataset %q is accessible", dataset))
+				}
+			}
+		}
+	default:
+		appendCheck("snapshot_driver", "fail", fmt.Sprintf("unsupported snapshot driver %q", req.FirecrackerConfig.Snapshots.Driver))
 	}
 
 	if err := runRootCommand(context.Background(), req.FirecrackerConfig, "true"); err != nil {
@@ -1504,38 +1557,19 @@ func (a *Adapter) launchSandboxVMFromRootFS(ctx context.Context, sandboxID strin
 		return nil, err
 	}
 
-	rootfsPath, err := filepath.Abs(sourceRootFSPath)
+	driverCfg, err := snapshotConfigForStorageRef(cfg, sourceRootFSPath)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := os.Stat(rootfsPath); err != nil {
-		return nil, fmt.Errorf("rootfs %s: %w", rootfsPath, err)
-	}
-
-	driver, err := rootFSVolumeStoreDriver(cfg)
+	driver, err := rootFSVolumeStoreDriver(driverCfg)
 	if err != nil {
 		return nil, err
 	}
-	baseVolume, err := driver.EnsureBaseVolume(ctx, volumestore.EnsureBaseVolumeRequest{
-		BaseID:     strings.TrimSuffix(filepath.Base(rootfsPath), filepath.Ext(rootfsPath)),
-		SourcePath: rootfsPath,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("prepare base volume: %w", err)
-	}
-
-	writableVolume, err := driver.CreateWritableVolume(ctx, volumestore.CreateWritableVolumeRequest{
-		VolumeID:       sandboxID,
-		BaseRef:        baseVolume.Ref,
-		AttachmentPath: filepath.Join(runDir, "rootfs-persistent.ext4"),
-	})
+	writableVolume, cleanupVolume, err := preparePersistentWritableVolume(ctx, driver, sandboxID, runDir, sourceRootFSPath, cfg.MinimumRootFSBytes)
 	if err != nil {
 		return nil, fmt.Errorf("prepare persistent rootfs: %w", err)
 	}
 	vmRootFSPath := writableVolume.AttachmentPath
-	if err := ext4image.EnsureMinimumSize(ctx, vmRootFSPath, cfg.MinimumRootFSBytes); err != nil {
-		return nil, fmt.Errorf("resize persistent rootfs: %w", err)
-	}
 
 	networkRunCommand := func(ctx context.Context, args ...string) error {
 		return runRootCommand(ctx, cfg, args...)
@@ -1552,14 +1586,14 @@ func (a *Adapter) launchSandboxVMFromRootFS(ctx context.Context, sandboxID strin
 	}
 	networkCfg, cleanupNetwork, err := setupHostNetwork(ctx, sandboxID, compiled.Allow, gwPort, networkRunCommand, networkRunBatch)
 	if err != nil {
-		_ = os.Remove(vmRootFSPath)
+		cleanupVolume()
 		return nil, fmt.Errorf("setup host network: %w", err)
 	}
 
 	if a.GatewayRegistry != nil {
 		if err := a.GatewayRegistry.Register(networkCfg.GuestIP, sandboxID, compiled); err != nil {
 			cleanupNetwork()
-			_ = os.Remove(vmRootFSPath)
+			cleanupVolume()
 			return nil, fmt.Errorf("register sandbox in gateway: %w", err)
 		}
 	}
@@ -1569,7 +1603,7 @@ func (a *Adapter) launchSandboxVMFromRootFS(ctx context.Context, sandboxID strin
 			a.GatewayRegistry.Release(networkCfg.GuestIP)
 		}
 		cleanupNetwork()
-		_ = os.Remove(vmRootFSPath)
+		cleanupVolume()
 	}
 
 	vsockPath := filepath.Join(runDir, "vsock.sock")
@@ -1654,7 +1688,9 @@ func (a *Adapter) launchSandboxVMFromRootFS(ctx context.Context, sandboxID strin
 		fcCmd:          fcCmd,
 		exitedCh:       make(chan struct{}),
 		cleanupNetwork: cleanupNetwork,
+		cleanupVolume:  cleanupVolume,
 		vmRootFSPath:   vmRootFSPath,
+		volumeRef:      writableVolume.Ref,
 	}
 	go func() {
 		err := fcCmd.Wait()
@@ -1691,11 +1727,104 @@ func sandboxRuntimeBaseDir() (string, error) {
 	return filepath.Join(base, "sandboxes"), nil
 }
 
+func preparePersistentWritableVolume(ctx context.Context, driver volumestore.Driver, sandboxID, runDir, sourceRef string, minimumBytes int64) (volumestore.WritableVolume, func(), error) {
+	sourceRef = strings.TrimSpace(sourceRef)
+	if sourceRef == "" {
+		return volumestore.WritableVolume{}, nil, errors.New("missing persistent rootfs source")
+	}
+
+	attachmentPath := filepath.Join(runDir, "rootfs-persistent.ext4")
+	resizeVolume := func(volume volumestore.WritableVolume) (volumestore.WritableVolume, func(), error) {
+		cleanupVolume := func() {
+			if err := driver.DestroyVolume(context.Background(), volumestore.DestroyVolumeRequest{VolumeRef: volume.Ref}); err != nil {
+				log.Printf("firecracker: cleanup persistent volume %q: %v", volume.Ref, err)
+			}
+		}
+		if err := volumestore.EnsureWritableVolumeMinimumSize(ctx, driver, volume, minimumBytes); err != nil {
+			cleanupVolume()
+			return volumestore.WritableVolume{}, nil, fmt.Errorf("resize persistent rootfs: %w", err)
+		}
+		return volume, cleanupVolume, nil
+	}
+
+	if filepath.IsAbs(sourceRef) {
+		rootfsPath, err := filepath.Abs(sourceRef)
+		if err != nil {
+			return volumestore.WritableVolume{}, nil, err
+		}
+		if _, err := os.Stat(rootfsPath); err != nil {
+			return volumestore.WritableVolume{}, nil, fmt.Errorf("rootfs %s: %w", rootfsPath, err)
+		}
+
+		baseVolume, err := driver.EnsureBaseVolume(ctx, volumestore.EnsureBaseVolumeRequest{
+			BaseID:       strings.TrimSuffix(filepath.Base(rootfsPath), filepath.Ext(rootfsPath)),
+			SourcePath:   rootfsPath,
+			MinimumBytes: minimumBytes,
+		})
+		if err != nil {
+			return volumestore.WritableVolume{}, nil, fmt.Errorf("prepare base volume: %w", err)
+		}
+		volume, err := driver.CreateWritableVolume(ctx, volumestore.CreateWritableVolumeRequest{
+			VolumeID:       sandboxID,
+			BaseRef:        baseVolume.Ref,
+			AttachmentPath: attachmentPath,
+		})
+		if err != nil {
+			return volumestore.WritableVolume{}, nil, err
+		}
+		return resizeVolume(volume)
+	}
+
+	volume, err := driver.CloneSnapshotToVolume(ctx, volumestore.CloneSnapshotToVolumeRequest{
+		VolumeID:       sandboxID,
+		SnapshotRef:    sourceRef,
+		AttachmentPath: attachmentPath,
+	})
+	if err != nil {
+		return volumestore.WritableVolume{}, nil, err
+	}
+	return resizeVolume(volume)
+}
+
+func snapshotVolumeRef(instance *sandboxInstance) string {
+	if instance == nil {
+		return ""
+	}
+	if volumeRef := strings.TrimSpace(instance.volumeRef); volumeRef != "" {
+		return volumeRef
+	}
+	return strings.TrimSpace(instance.vmRootFSPath)
+}
+
 func snapshotStorageBaseDir(cfg backend.FirecrackerConfig) (string, error) {
 	if baseDir := strings.TrimSpace(cfg.Snapshots.BaseDir); baseDir != "" {
 		return filepath.Clean(baseDir), nil
 	}
 	return paths.SnapshotDir()
+}
+
+type rootVolumeCommandRunner struct {
+	cfg backend.FirecrackerConfig
+}
+
+func (r rootVolumeCommandRunner) Run(ctx context.Context, command string, args ...string) error {
+	return runRootCommand(ctx, r.cfg, append([]string{command}, args...)...)
+}
+
+func (r rootVolumeCommandRunner) Output(ctx context.Context, command string, args ...string) ([]byte, error) {
+	return runRootCommandOutput(ctx, r.cfg, append([]string{command}, args...)...)
+}
+
+func snapshotConfigForStorageRef(cfg backend.FirecrackerConfig, storageRef string) (backend.FirecrackerConfig, error) {
+	if datasetRoot, ok := volumestore.ZFSDatasetRootFromManagedRef(storageRef); ok {
+		driverName := strings.ToLower(strings.TrimSpace(cfg.Snapshots.Driver))
+		if driverName != "" && driverName != "zfs" {
+			return cfg, fmt.Errorf("snapshot storage_ref %q requires zfs driver, got %q", storageRef, cfg.Snapshots.Driver)
+		}
+		cfg.Snapshots.Driver = "zfs"
+		cfg.Snapshots.ZFSDataset = datasetRoot
+	}
+	return cfg, nil
 }
 
 func rootFSVolumeStoreDriver(cfg backend.FirecrackerConfig) (volumestore.Driver, error) {
@@ -1709,6 +1838,15 @@ func rootFSVolumeStoreDriver(cfg backend.FirecrackerConfig) (volumestore.Driver,
 		driver, err := volumestore.NewFileDriver(volumestore.FileDriverOptions{
 			SnapshotBaseDir: snapshotBaseDir,
 			Namespace:       "firecracker",
+		})
+		if err != nil {
+			return nil, err
+		}
+		return driver, nil
+	case "zfs":
+		driver, err := volumestore.NewZFSDriver(volumestore.ZFSDriverOptions{
+			DatasetRoot: cfg.Snapshots.ZFSDataset,
+			Runner:      rootVolumeCommandRunner{cfg: cfg},
 		})
 		if err != nil {
 			return nil, err
@@ -1754,11 +1892,14 @@ func (s *sandboxInstance) shutdown() {
 	if s.cleanupNetwork != nil {
 		s.cleanupNetwork()
 	}
+	if s.cleanupVolume != nil {
+		s.cleanupVolume()
+	}
 	if strings.TrimSpace(s.RunDir) != "" {
 		_ = os.RemoveAll(s.RunDir)
 		return
 	}
-	if strings.TrimSpace(s.vmRootFSPath) != "" {
+	if strings.TrimSpace(s.vmRootFSPath) != "" && s.cleanupVolume == nil {
 		_ = os.Remove(s.vmRootFSPath)
 	}
 }
@@ -2280,6 +2421,22 @@ func logRunNotice(backendName, runID, notice string) {
 	log.Printf("%s run_id=%s: %s", backendName, id, msg)
 }
 
+func lookPathWithFallback(binary string, candidates ...string) (string, error) {
+	if path, err := exec.LookPath(binary); err == nil {
+		return path, nil
+	}
+	for _, candidate := range candidates {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			continue
+		}
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("%q not found in PATH or fallback locations", binary)
+}
+
 func runRootCommand(ctx context.Context, cfg backend.FirecrackerConfig, args ...string) error {
 	if len(args) == 0 {
 		return errors.New("missing privileged command")
@@ -2318,7 +2475,6 @@ func runCombinedCommand(ctx context.Context, command []string, errorContext []st
 	_, err := runCombinedCommandOutput(ctx, command, errorContext)
 	return err
 }
-
 func runCombinedCommandOutput(ctx context.Context, command []string, errorContext []string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, command[0], command[1:]...)
 	out, err := cmd.CombinedOutput()

@@ -1,7 +1,10 @@
 package firecracker
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +17,77 @@ import (
 	"github.com/buildkite/cleanroom/internal/volumestore"
 	"github.com/buildkite/cleanroom/internal/vsockexec"
 )
+
+type testVolumeDriver struct {
+	ensureBaseVolumeFn      func(context.Context, volumestore.EnsureBaseVolumeRequest) (volumestore.BaseVolume, error)
+	createWritableVolumeFn  func(context.Context, volumestore.CreateWritableVolumeRequest) (volumestore.WritableVolume, error)
+	snapshotVolumeFn        func(context.Context, volumestore.SnapshotVolumeRequest) (volumestore.Snapshot, error)
+	cloneSnapshotToVolumeFn func(context.Context, volumestore.CloneSnapshotToVolumeRequest) (volumestore.WritableVolume, error)
+	destroyVolumeFn         func(context.Context, volumestore.DestroyVolumeRequest) error
+	destroySnapshotFn       func(context.Context, volumestore.DestroySnapshotRequest) error
+}
+
+func (d testVolumeDriver) Name() string { return "test" }
+
+func (d testVolumeDriver) EnsureBaseVolume(ctx context.Context, req volumestore.EnsureBaseVolumeRequest) (volumestore.BaseVolume, error) {
+	if d.ensureBaseVolumeFn == nil {
+		return volumestore.BaseVolume{}, errors.New("unexpected EnsureBaseVolume call")
+	}
+	return d.ensureBaseVolumeFn(ctx, req)
+}
+
+func (d testVolumeDriver) CreateWritableVolume(ctx context.Context, req volumestore.CreateWritableVolumeRequest) (volumestore.WritableVolume, error) {
+	if d.createWritableVolumeFn == nil {
+		return volumestore.WritableVolume{}, errors.New("unexpected CreateWritableVolume call")
+	}
+	return d.createWritableVolumeFn(ctx, req)
+}
+
+func (d testVolumeDriver) SnapshotVolume(ctx context.Context, req volumestore.SnapshotVolumeRequest) (volumestore.Snapshot, error) {
+	if d.snapshotVolumeFn == nil {
+		return volumestore.Snapshot{}, errors.New("unexpected SnapshotVolume call")
+	}
+	return d.snapshotVolumeFn(ctx, req)
+}
+
+func (d testVolumeDriver) CloneSnapshotToVolume(ctx context.Context, req volumestore.CloneSnapshotToVolumeRequest) (volumestore.WritableVolume, error) {
+	if d.cloneSnapshotToVolumeFn == nil {
+		return volumestore.WritableVolume{}, errors.New("unexpected CloneSnapshotToVolume call")
+	}
+	return d.cloneSnapshotToVolumeFn(ctx, req)
+}
+
+func (d testVolumeDriver) DestroyVolume(ctx context.Context, req volumestore.DestroyVolumeRequest) error {
+	if d.destroyVolumeFn == nil {
+		return nil
+	}
+	return d.destroyVolumeFn(ctx, req)
+}
+
+func (d testVolumeDriver) DestroySnapshot(ctx context.Context, req volumestore.DestroySnapshotRequest) error {
+	if d.destroySnapshotFn == nil {
+		return nil
+	}
+	return d.destroySnapshotFn(ctx, req)
+}
+
+func captureFirecrackerLogOutput(t *testing.T) *bytes.Buffer {
+	t.Helper()
+
+	var buf bytes.Buffer
+	prevWriter := log.Writer()
+	prevFlags := log.Flags()
+	prevPrefix := log.Prefix()
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	log.SetPrefix("")
+	t.Cleanup(func() {
+		log.SetOutput(prevWriter)
+		log.SetFlags(prevFlags)
+		log.SetPrefix(prevPrefix)
+	})
+	return &buf
+}
 
 func TestCreateSnapshotSyncsPausesAndClonesRootFS(t *testing.T) {
 	stateHome := t.TempDir()
@@ -166,6 +240,59 @@ func TestCreateSnapshotUsesConfiguredSnapshotBaseDir(t *testing.T) {
 	}
 }
 
+func TestCreateSnapshotUsesManagedVolumeRef(t *testing.T) {
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+
+	managedVolumePath := filepath.Join(t.TempDir(), "managed-volume.ext4")
+	if err := os.WriteFile(managedVolumePath, []byte("snapshot-bytes"), 0o644); err != nil {
+		t.Fatalf("write managed volume: %v", err)
+	}
+
+	prevSignal := sendProcessSignal
+	sendProcessSignal = func(_ *os.Process, _ syscall.Signal) error { return nil }
+	t.Cleanup(func() { sendProcessSignal = prevSignal })
+
+	adapter := &Adapter{
+		runGuestCommandFn: func(_ context.Context, _ context.Context, _ <-chan struct{}, _ func() error, _ string, _ uint32, req vsockexec.ExecRequest, _ backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error) {
+			if len(req.Command) != 1 || req.Command[0] != "sync" {
+				t.Fatalf("unexpected command: %v", req.Command)
+			}
+			return vsockexec.ExecResponse{ExitCode: 0}, guestExecTiming{}, nil
+		},
+		sandboxes: map[string]*sandboxInstance{
+			"cr-test": {
+				SandboxID:    "cr-test",
+				VsockPath:    "/tmp/fake.sock",
+				GuestPort:    10700,
+				fcCmd:        &exec.Cmd{Process: &os.Process{Pid: 42}},
+				exitedCh:     make(chan struct{}),
+				vmRootFSPath: "/dev/zvol/tank/cleanroom/sandboxes/cr-test",
+				volumeRef:    managedVolumePath,
+			},
+		},
+	}
+
+	result, err := adapter.CreateSnapshot(context.Background(), backend.SnapshotRequest{
+		SandboxID:  "cr-test",
+		SnapshotID: "snap-test",
+		FirecrackerConfig: backend.FirecrackerConfig{
+			Snapshots: backend.SnapshotConfig{Enabled: true},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateSnapshot returned error: %v", err)
+	}
+
+	data, err := os.ReadFile(result.StorageRef)
+	if err != nil {
+		t.Fatalf("read snapshot rootfs: %v", err)
+	}
+	if got, want := string(data), "snapshot-bytes"; got != want {
+		t.Fatalf("unexpected snapshot contents: got %q want %q", got, want)
+	}
+}
+
 func TestCreateSnapshotReturnsErrorWhenSandboxResumeFails(t *testing.T) {
 	stateHome := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", stateHome)
@@ -270,6 +397,107 @@ func TestProvisionSandboxFromSnapshotUsesSnapshotRootFS(t *testing.T) {
 	}
 }
 
+func TestSnapshotConfigForStorageRefUsesStoredZFSDataset(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := snapshotConfigForStorageRef(backend.FirecrackerConfig{
+		Snapshots: backend.SnapshotConfig{
+			Driver:     "zfs",
+			ZFSDataset: "tank/other",
+		},
+	}, "tank/cleanroom/snapshots/snap-test@seed")
+	if err != nil {
+		t.Fatalf("snapshotConfigForStorageRef returned error: %v", err)
+	}
+	if got, want := cfg.Snapshots.ZFSDataset, "tank/cleanroom"; got != want {
+		t.Fatalf("unexpected zfs dataset root: got %q want %q", got, want)
+	}
+}
+
+func TestSnapshotConfigForStorageRefLeavesConfiguredDatasetForNonStoredRef(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := snapshotConfigForStorageRef(backend.FirecrackerConfig{
+		Snapshots: backend.SnapshotConfig{
+			Driver:     "zfs",
+			ZFSDataset: "tank/cleanroom",
+		},
+	}, "tank/cleanroom/sandboxes/sandbox-1@snap-golden")
+	if err != nil {
+		t.Fatalf("snapshotConfigForStorageRef returned error: %v", err)
+	}
+	if got, want := cfg.Snapshots.ZFSDataset, "tank/cleanroom"; got != want {
+		t.Fatalf("unexpected zfs dataset root: got %q want %q", got, want)
+	}
+}
+
+func TestSnapshotConfigForStorageRefInfersZFSDriverFromStoredRef(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := snapshotConfigForStorageRef(backend.FirecrackerConfig{}, "tank/cleanroom/snapshots/snap-test@seed")
+	if err != nil {
+		t.Fatalf("snapshotConfigForStorageRef returned error: %v", err)
+	}
+	if got, want := cfg.Snapshots.Driver, "zfs"; got != want {
+		t.Fatalf("unexpected snapshot driver: got %q want %q", got, want)
+	}
+	if got, want := cfg.Snapshots.ZFSDataset, "tank/cleanroom"; got != want {
+		t.Fatalf("unexpected zfs dataset root: got %q want %q", got, want)
+	}
+}
+
+func TestSnapshotConfigForStorageRefInfersZFSDriverFromManagedVolumeRef(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := snapshotConfigForStorageRef(backend.FirecrackerConfig{}, "tank/cleanroom/sandboxes/sandbox-1")
+	if err != nil {
+		t.Fatalf("snapshotConfigForStorageRef returned error: %v", err)
+	}
+	if got, want := cfg.Snapshots.Driver, "zfs"; got != want {
+		t.Fatalf("unexpected snapshot driver: got %q want %q", got, want)
+	}
+	if got, want := cfg.Snapshots.ZFSDataset, "tank/cleanroom"; got != want {
+		t.Fatalf("unexpected zfs dataset root: got %q want %q", got, want)
+	}
+}
+
+func TestSnapshotConfigForStorageRefRejectsDriverMismatch(t *testing.T) {
+	t.Parallel()
+
+	_, err := snapshotConfigForStorageRef(backend.FirecrackerConfig{
+		Snapshots: backend.SnapshotConfig{Driver: "file"},
+	}, "tank/cleanroom/snapshots/snap-test@seed")
+	if err == nil {
+		t.Fatal("expected snapshotConfigForStorageRef to reject driver mismatch")
+	}
+	if !strings.Contains(err.Error(), "requires zfs driver") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestSnapshotConfigForStorageRefIgnoresFilesystemPathsWithZFSNamespaceComponents(t *testing.T) {
+	t.Parallel()
+
+	refs := []string{
+		"/var/lib/buildkite-agent/state/cleanroom/snapshots/firecracker/snap-test/rootfs.ext4",
+		"/var/lib/buildkite-agent/state/cleanroom/sandboxes/cr-test/rootfs-persistent.ext4",
+	}
+	for _, ref := range refs {
+		cfg, err := snapshotConfigForStorageRef(backend.FirecrackerConfig{
+			Snapshots: backend.SnapshotConfig{Driver: "file"},
+		}, ref)
+		if err != nil {
+			t.Fatalf("snapshotConfigForStorageRef returned error for %q: %v", ref, err)
+		}
+		if got, want := cfg.Snapshots.Driver, "file"; got != want {
+			t.Fatalf("unexpected snapshot driver for %q: got %q want %q", ref, got, want)
+		}
+		if cfg.Snapshots.ZFSDataset != "" {
+			t.Fatalf("expected no inferred zfs dataset root for %q, got %q", ref, cfg.Snapshots.ZFSDataset)
+		}
+	}
+}
+
 func TestRootFSVolumeStoreDriverAllowsWritableVolumesWhenSnapshotsDisabled(t *testing.T) {
 	t.Parallel()
 
@@ -322,5 +550,149 @@ func TestSnapshotVolumeStoreDriverRejectsDisabledSnapshots(t *testing.T) {
 	}
 	if got := err.Error(); got == "" || !strings.Contains(got, "not enabled") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestPreparePersistentWritableVolumeUsesBaseVolumeForRootFSPath(t *testing.T) {
+	t.Parallel()
+
+	rootfsPath := filepath.Join(t.TempDir(), "runtime-rootfs.ext4")
+	if err := os.WriteFile(rootfsPath, []byte("runtime"), 0o644); err != nil {
+		t.Fatalf("write rootfs: %v", err)
+	}
+
+	var (
+		gotEnsureReq volumestore.EnsureBaseVolumeRequest
+		gotCreateReq volumestore.CreateWritableVolumeRequest
+	)
+	driver := testVolumeDriver{
+		ensureBaseVolumeFn: func(_ context.Context, req volumestore.EnsureBaseVolumeRequest) (volumestore.BaseVolume, error) {
+			gotEnsureReq = req
+			return volumestore.BaseVolume{Ref: "base-ref"}, nil
+		},
+		createWritableVolumeFn: func(_ context.Context, req volumestore.CreateWritableVolumeRequest) (volumestore.WritableVolume, error) {
+			gotCreateReq = req
+			if err := os.WriteFile(req.AttachmentPath, nil, 0o644); err != nil {
+				return volumestore.WritableVolume{}, err
+			}
+			if err := os.Truncate(req.AttachmentPath, 8<<20); err != nil {
+				return volumestore.WritableVolume{}, err
+			}
+			return volumestore.WritableVolume{Ref: "volume-ref", AttachmentPath: req.AttachmentPath}, nil
+		},
+	}
+
+	writable, cleanupVolume, err := preparePersistentWritableVolume(context.Background(), driver, "sandbox-1", t.TempDir(), rootfsPath, 8<<20)
+	if err != nil {
+		t.Fatalf("preparePersistentWritableVolume returned error: %v", err)
+	}
+	if cleanupVolume == nil {
+		t.Fatal("expected cleanup function")
+	}
+	if got, want := gotEnsureReq.SourcePath, rootfsPath; got != want {
+		t.Fatalf("unexpected base source path: got %q want %q", got, want)
+	}
+	if got, want := gotEnsureReq.BaseID, "runtime-rootfs"; got != want {
+		t.Fatalf("unexpected base id: got %q want %q", got, want)
+	}
+	if got, want := gotEnsureReq.MinimumBytes, int64(8<<20); got != want {
+		t.Fatalf("unexpected minimum bytes: got %d want %d", got, want)
+	}
+	if got, want := gotCreateReq.BaseRef, "base-ref"; got != want {
+		t.Fatalf("unexpected base ref: got %q want %q", got, want)
+	}
+	if got, want := gotCreateReq.VolumeID, "sandbox-1"; got != want {
+		t.Fatalf("unexpected volume id: got %q want %q", got, want)
+	}
+	if got, want := writable.Ref, "volume-ref"; got != want {
+		t.Fatalf("unexpected writable volume ref: got %q want %q", got, want)
+	}
+}
+
+func TestPreparePersistentWritableVolumeUsesSnapshotCloneForSnapshotRef(t *testing.T) {
+	t.Parallel()
+
+	var gotCloneReq volumestore.CloneSnapshotToVolumeRequest
+	driver := testVolumeDriver{
+		cloneSnapshotToVolumeFn: func(_ context.Context, req volumestore.CloneSnapshotToVolumeRequest) (volumestore.WritableVolume, error) {
+			gotCloneReq = req
+			return volumestore.WritableVolume{Ref: "tank/cleanroom/sandboxes/sandbox-1", AttachmentPath: "/dev/zvol/tank/cleanroom/sandboxes/sandbox-1"}, nil
+		},
+	}
+
+	writable, cleanupVolume, err := preparePersistentWritableVolume(context.Background(), driver, "sandbox-1", t.TempDir(), "tank/cleanroom/sandboxes/source@snap-golden", 0)
+	if err != nil {
+		t.Fatalf("preparePersistentWritableVolume returned error: %v", err)
+	}
+	if cleanupVolume == nil {
+		t.Fatal("expected cleanup function")
+	}
+	if got, want := gotCloneReq.SnapshotRef, "tank/cleanroom/sandboxes/source@snap-golden"; got != want {
+		t.Fatalf("unexpected snapshot ref: got %q want %q", got, want)
+	}
+	if got, want := gotCloneReq.VolumeID, "sandbox-1"; got != want {
+		t.Fatalf("unexpected volume id: got %q want %q", got, want)
+	}
+	if got, want := writable.AttachmentPath, "/dev/zvol/tank/cleanroom/sandboxes/sandbox-1"; got != want {
+		t.Fatalf("unexpected attachment path: got %q want %q", got, want)
+	}
+}
+
+func TestPreparePersistentWritableVolumeCleansUpOnResizeFailure(t *testing.T) {
+	t.Parallel()
+
+	var destroyed string
+	driver := testVolumeDriver{
+		cloneSnapshotToVolumeFn: func(_ context.Context, req volumestore.CloneSnapshotToVolumeRequest) (volumestore.WritableVolume, error) {
+			return volumestore.WritableVolume{
+				Ref:            "tank/cleanroom/sandboxes/sandbox-1",
+				AttachmentPath: filepath.Join(t.TempDir(), "missing.ext4"),
+			}, nil
+		},
+		destroyVolumeFn: func(_ context.Context, req volumestore.DestroyVolumeRequest) error {
+			destroyed = req.VolumeRef
+			return nil
+		},
+	}
+
+	_, cleanupVolume, err := preparePersistentWritableVolume(context.Background(), driver, "sandbox-1", t.TempDir(), "tank/cleanroom/sandboxes/source@snap-golden", 8<<20)
+	if err == nil {
+		t.Fatal("expected preparePersistentWritableVolume to fail")
+	}
+	if cleanupVolume != nil {
+		t.Fatal("expected cleanup function to be discarded on failure")
+	}
+	if got, want := destroyed, "tank/cleanroom/sandboxes/sandbox-1"; got != want {
+		t.Fatalf("unexpected destroyed volume ref: got %q want %q", got, want)
+	}
+}
+
+func TestPreparePersistentWritableVolumeLogsDestroyFailure(t *testing.T) {
+	logOutput := captureFirecrackerLogOutput(t)
+
+	driver := testVolumeDriver{
+		cloneSnapshotToVolumeFn: func(_ context.Context, req volumestore.CloneSnapshotToVolumeRequest) (volumestore.WritableVolume, error) {
+			return volumestore.WritableVolume{
+				Ref:            "tank/cleanroom/sandboxes/sandbox-1",
+				AttachmentPath: filepath.Join(t.TempDir(), "writable.ext4"),
+			}, nil
+		},
+		destroyVolumeFn: func(_ context.Context, req volumestore.DestroyVolumeRequest) error {
+			return errors.New("destroy failed")
+		},
+	}
+
+	_, cleanupVolume, err := preparePersistentWritableVolume(context.Background(), driver, "sandbox-1", t.TempDir(), "tank/cleanroom/sandboxes/source@snap-golden", 0)
+	if err != nil {
+		t.Fatalf("preparePersistentWritableVolume returned error: %v", err)
+	}
+	if cleanupVolume == nil {
+		t.Fatal("expected cleanup function")
+	}
+
+	cleanupVolume()
+
+	if got := logOutput.String(); !strings.Contains(got, "firecracker: cleanup persistent volume \"tank/cleanroom/sandboxes/sandbox-1\": destroy failed") {
+		t.Fatalf("expected destroy error to be logged, got %q", got)
 	}
 }

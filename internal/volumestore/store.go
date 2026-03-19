@@ -13,8 +13,9 @@ type Driver interface {
 }
 
 type EnsureBaseVolumeRequest struct {
-	BaseID     string
-	SourcePath string
+	BaseID       string
+	SourcePath   string
+	MinimumBytes int64
 }
 
 type BaseVolume struct {

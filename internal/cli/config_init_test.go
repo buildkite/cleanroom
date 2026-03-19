@@ -81,6 +81,9 @@ func TestConfigInitWritesRuntimeConfig(t *testing.T) {
 	if strings.Contains(string(raw), "base_dir:") {
 		t.Fatalf("expected generated config to omit empty snapshot base_dir, got:\n%s", raw)
 	}
+	if strings.Contains(string(raw), "zfs_dataset:") {
+		t.Fatalf("expected generated config to omit empty snapshot zfs_dataset, got:\n%s", raw)
+	}
 	if strings.Contains(string(raw), "quiesce_timeout_seconds:") {
 		t.Fatalf("expected generated config to omit empty snapshot quiesce timeout, got:\n%s", raw)
 	}

@@ -205,8 +205,9 @@ func TestLoadParsesSnapshotConfig(t *testing.T) {
   firecracker:
     snapshots:
       enabled: true
-      driver: file
+      driver: zfs
       base_dir: /var/tmp/cleanroom-snapshots
+      zfs_dataset: tank/cleanroom
       quiesce_timeout_seconds: 15
   darwin-vz:
     snapshots:
@@ -225,11 +226,14 @@ func TestLoadParsesSnapshotConfig(t *testing.T) {
 	if !cfg.Backends.Firecracker.Snapshots.Enabled {
 		t.Fatal("expected firecracker snapshots to be enabled")
 	}
-	if got, want := cfg.Backends.Firecracker.Snapshots.Driver, "file"; got != want {
+	if got, want := cfg.Backends.Firecracker.Snapshots.Driver, "zfs"; got != want {
 		t.Fatalf("unexpected firecracker snapshot driver: got %q want %q", got, want)
 	}
 	if got, want := cfg.Backends.Firecracker.Snapshots.BaseDir, "/var/tmp/cleanroom-snapshots"; got != want {
 		t.Fatalf("unexpected firecracker snapshot base_dir: got %q want %q", got, want)
+	}
+	if got, want := cfg.Backends.Firecracker.Snapshots.ZFSDataset, "tank/cleanroom"; got != want {
+		t.Fatalf("unexpected firecracker snapshot zfs_dataset: got %q want %q", got, want)
 	}
 	if got, want := cfg.Backends.Firecracker.Snapshots.QuiesceTimeoutSeconds, int64(15); got != want {
 		t.Fatalf("unexpected firecracker snapshot quiesce timeout: got %d want %d", got, want)
@@ -295,7 +299,7 @@ func TestMergeBackendConfig(t *testing.T) {
 				KernelImage:          "/firecracker/kernel",
 				RootFS:               "/firecracker/rootfs.ext4",
 				Services:             ServicesConfig{Docker: DockerServiceConfig{StartupTimeoutSeconds: 12, StorageDriver: "overlay2", IPTables: true}},
-				Snapshots:            SnapshotConfig{Enabled: true, Driver: "file", BaseDir: "/firecracker/snapshots", QuiesceTimeoutSeconds: 15},
+				Snapshots:            SnapshotConfig{Enabled: true, Driver: "zfs", BaseDir: "/firecracker/snapshots", ZFSDataset: "tank/cleanroom", QuiesceTimeoutSeconds: 15},
 				PrivilegedHelperPath: "/usr/local/bin/cleanroom-root-helper",
 				VCPUs:                2,
 				MemoryMiB:            1024,
@@ -323,7 +327,7 @@ func TestMergeBackendConfig(t *testing.T) {
 	if got, want := firecrackerCfg.LaunchSeconds, int64(99); got != want {
 		t.Fatalf("unexpected firecracker launch seconds: got %d want %d", got, want)
 	}
-	if got, want := firecrackerCfg.Snapshots, (backend.SnapshotConfig{Enabled: true, Driver: "file", BaseDir: "/firecracker/snapshots", QuiesceTimeoutSeconds: 15}); got != want {
+	if got, want := firecrackerCfg.Snapshots, (backend.SnapshotConfig{Enabled: true, Driver: "zfs", BaseDir: "/firecracker/snapshots", ZFSDataset: "tank/cleanroom", QuiesceTimeoutSeconds: 15}); got != want {
 		t.Fatalf("unexpected firecracker snapshots config: got %#v want %#v", got, want)
 	}
 

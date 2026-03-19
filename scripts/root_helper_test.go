@@ -32,6 +32,8 @@ func TestCleanroomRootHelperDeclaresCapabilitiesAndZFSSupport(t *testing.T) {
 		"is_cleanroom_zfs_snapshot_ref()",
 		"is_zvol_device_path()",
 		"run_zfs()",
+		"zfs set: unsupported dataset",
+		"zfs promote: unsupported dataset",
 		"run_dd()",
 		"bin=\"$(zfs_bin)\"",
 		"exec \"$bin\" \"$@\"",
