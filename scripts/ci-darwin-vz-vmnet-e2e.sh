@@ -91,6 +91,7 @@ setup_buildkite_signing_assets() {
   local requested_sign_identity
   requested_sign_identity="$(normalize_secret_value "$(fetch_secret CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY)")"
   p12_password="$(normalize_secret_value "$(fetch_secret CLEANROOM_DARWIN_VZ_HELPER_CERT_PASSWORD)")"
+  curl -fsSL https://www.apple.com/certificateauthority/AppleWWDRCAG3.cer -o "$wwdr_path"
 
   while IFS= read -r keychain; do
     [[ -n "$keychain" ]] || continue
@@ -106,9 +107,7 @@ setup_buildkite_signing_assets() {
   run_with_macos_user_home security unlock-keychain -p "$temp_keychain_password" "$temp_keychain_path" >/dev/null
   run_with_macos_user_home security set-keychain-settings -lut 21600 "$temp_keychain_path" >/dev/null
   run_with_macos_user_home security import "$p12_path" -k "$temp_keychain_path" -P "$p12_password" -T /usr/bin/codesign -T /usr/bin/security
-  # Some CI macOS images reject certificate writes to ad hoc temp keychains.
-  # Rely on the configured search list so codesign can resolve intermediates
-  # from the system/login keychains, and let codesign be the source of truth.
+  run_with_macos_user_home security add-certificates -k "$temp_keychain_path" "$wwdr_path" >/dev/null
   run_with_macos_user_home security list-keychains -d user -s \
     "$temp_keychain_path" \
     "$macos_user_home/Library/Keychains/login.keychain-db" \
@@ -172,6 +171,7 @@ cleanup() {
 }
 
 require_command security
+require_command curl
 require_command openssl
 require_command codesign
 
@@ -188,6 +188,7 @@ temp_keychain_password="$(openssl rand -hex 16)"
 p12_path="$tmpdir/helper-cert.p12"
 profile_path="$tmpdir/helper.provisionprofile"
 decoded_profile_path="$tmpdir/helper.provisionprofile.plist"
+wwdr_path="$tmpdir/AppleWWDRCAG3.cer"
 sign_identity=""
 sign_keychain=""
 p12_password=""

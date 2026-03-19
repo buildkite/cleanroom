@@ -100,6 +100,8 @@ func TestCiDarwinVZVMNetE2EUsesBuildkiteSecretsAndVMNetEntitlements(t *testing.T
 		`awk '/^SHA-1 hash:/ {print $3; exit}'`,
 		"CLEANROOM_DARWIN_VZ_HELPER to a prebuilt signed helper bundle",
 		"CLEANROOM_DARWIN_VZ_HELPER_PROVISION_PROFILE and CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY",
+		"AppleWWDRCAG3.cer",
+		`run_with_macos_user_home security add-certificates -k "$temp_keychain_path" "$wwdr_path" >/dev/null`,
 		`run_with_macos_user_home security default-keychain -d user 2>/dev/null`,
 		`requested_sign_identity`,
 		`run_with_macos_user_home security find-certificate -a -c "$requested_sign_identity" "$temp_keychain_path"`,
