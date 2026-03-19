@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+readonly DEFAULT_CI_AWS_PROFILE="buildkite-sandbox-pipelines-admin"
+readonly DEFAULT_CI_AWS_REGION="ap-southeast-2"
+readonly DEFAULT_CI_TERRAFORM_DIR="infra/terraform/envs/ci"
+
 usage() {
   cat >&2 <<'EOF'
 usage: scripts/ci-bootstrap-linux-ssm.sh <run|logs>
 
 Environment overrides:
   CLEANROOM_CI_AWS_PROFILE   AWS profile for the SSM command (default: buildkite-sandbox-pipelines-admin)
-  CLEANROOM_CI_AWS_REGION    AWS region for the SSM command (default: us-west-2)
+  CLEANROOM_CI_AWS_REGION    AWS region for the SSM command (default: ap-southeast-2)
   CLEANROOM_CI_INSTANCE_ID   Explicit linux CI instance id (default: terraform output)
   CLEANROOM_CI_TERRAFORM_DIR Terraform dir used to resolve instance_id (default: infra/terraform/envs/ci)
 EOF
@@ -118,9 +122,9 @@ run_ssm() {
 
 main() {
   local mode="${1:-}"
-  local aws_profile="${CLEANROOM_CI_AWS_PROFILE:-buildkite-sandbox-pipelines-admin}"
-  local aws_region="${CLEANROOM_CI_AWS_REGION:-us-west-2}"
-  local terraform_dir="${CLEANROOM_CI_TERRAFORM_DIR:-infra/terraform/envs/ci}"
+  local aws_profile="${CLEANROOM_CI_AWS_PROFILE:-$DEFAULT_CI_AWS_PROFILE}"
+  local aws_region="${CLEANROOM_CI_AWS_REGION:-$DEFAULT_CI_AWS_REGION}"
+  local terraform_dir="${CLEANROOM_CI_TERRAFORM_DIR:-$DEFAULT_CI_TERRAFORM_DIR}"
   local instance_id
   local parameters
 

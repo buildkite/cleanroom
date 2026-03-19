@@ -33,11 +33,11 @@ variable "ami_id" {
 variable "instance_type" {
   description = "EC2 instance type for the host (must be a Mac metal type)."
   type        = string
-  default     = "mac2-m2pro.metal"
+  default     = "mac2-m2.metal"
 
   validation {
     condition     = trimspace(var.instance_type) != "" && endswith(var.instance_type, ".metal")
-    error_message = "instance_type must be a non-empty Mac metal instance type (for example mac2-m2pro.metal)."
+    error_message = "instance_type must be a non-empty Mac metal instance type (for example mac2-m2.metal)."
   }
 }
 

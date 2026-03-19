@@ -5,6 +5,10 @@ log() {
   printf '[bootstrap-cleanroom-host] %s\n' "$*"
 }
 
+warn() {
+  printf '[bootstrap-cleanroom-host] warning: %s\n' "$*" >&2
+}
+
 die() {
   printf '[bootstrap-cleanroom-host] error: %s\n' "$*" >&2
   exit 1
@@ -15,14 +19,158 @@ require_cmd() {
   command -v "$cmd" >/dev/null 2>&1 || die "required command not found: ${cmd}"
 }
 
+retry() {
+  local attempts="$1"
+  local delay_seconds="$2"
+  shift 2
+
+  local n=1
+  while true; do
+    if "$@"; then
+      return 0
+    fi
+
+    if [ "$n" -ge "$attempts" ]; then
+      return 1
+    fi
+
+    sleep "$delay_seconds"
+    n=$((n + 1))
+  done
+}
+
+configure_apt_ipv4() {
+  install -d -o root -g root -m 0755 /etc/apt/apt.conf.d
+  cat > /etc/apt/apt.conf.d/99force-ipv4 <<'APTCONF'
+Acquire::ForceIPv4 "true";
+APTCONF
+}
+
 install_sudo_if_missing() {
   if command -v sudo >/dev/null 2>&1; then
     return
   fi
 
+  configure_apt_ipv4
   export DEBIAN_FRONTEND=noninteractive
-  apt-get update -y
-  apt-get install -y sudo
+  retry 5 10 apt-get update -y
+  retry 5 10 apt-get install -y sudo
+}
+
+resolve_instance_id() {
+  if [ -n "${CLEANROOM_BOOTSTRAP_INSTANCE_ID:-}" ]; then
+    printf '%s' "$CLEANROOM_BOOTSTRAP_INSTANCE_ID"
+    return
+  fi
+
+  local imds_token
+  local instance_id
+  imds_token="$(curl -fsS -m 2 -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" || true)"
+  if [ -z "$imds_token" ]; then
+    printf 'unknown-instance'
+    return
+  fi
+
+  instance_id="$(curl -fsS -m 2 -H "X-aws-ec2-metadata-token: $imds_token" http://169.254.169.254/latest/meta-data/instance-id || true)"
+  if [ -z "$instance_id" ]; then
+    printf 'unknown-instance'
+    return
+  fi
+
+  printf '%s' "$instance_id"
+}
+
+install_tailscale_if_configured() {
+  local tailscale_param="${TAILSCALE_AUTH_KEY_PARAMETER_NAME:-${CLEANROOM_TAILSCALE_AUTH_KEY_PARAMETER_NAME:-}}"
+  local tailscale_version="${TAILSCALE_VERSION:-${CLEANROOM_TAILSCALE_VERSION:-}}"
+  local tailscale_hostname_prefix="${TAILSCALE_HOSTNAME_PREFIX:-${CLEANROOM_TAILSCALE_HOSTNAME_PREFIX:-}}"
+  local tailscale_advertise_tags="${TAILSCALE_ADVERTISE_TAGS:-${CLEANROOM_TAILSCALE_ADVERTISE_TAGS:-}}"
+  local tailscale_enable_ssh="${TAILSCALE_ENABLE_SSH:-${CLEANROOM_TAILSCALE_ENABLE_SSH:-true}}"
+  local tailscale_accept_routes="${TAILSCALE_ACCEPT_ROUTES:-${CLEANROOM_TAILSCALE_ACCEPT_ROUTES:-false}}"
+  local tailscale_auth_key
+  local arch_name
+  local ts_arch='amd64'
+  local ts_url
+  local ts_tmp_dir
+  local ts_extract_dir
+  local instance_id
+  local -a tailscale_cmd
+
+  if [ -z "$tailscale_param" ]; then
+    return
+  fi
+
+  if ! command -v aws >/dev/null 2>&1; then
+    warn "skipping tailscale bootstrap because aws CLI is not installed"
+    return
+  fi
+
+  [ -n "$AWS_REGION" ] || die "AWS_REGION (or CLEANROOM_BOOTSTRAP_REGION) must be set when tailscale bootstrap is enabled"
+  [ -n "$tailscale_version" ] || die "TAILSCALE_VERSION (or CLEANROOM_TAILSCALE_VERSION) must be set when tailscale bootstrap is enabled"
+  [ -n "$tailscale_hostname_prefix" ] || die "TAILSCALE_HOSTNAME_PREFIX (or CLEANROOM_TAILSCALE_HOSTNAME_PREFIX) must be set when tailscale bootstrap is enabled"
+
+  if ! tailscale_auth_key="$(retry 10 3 aws ssm get-parameter --region "$AWS_REGION" --name "$tailscale_param" --with-decryption --query 'Parameter.Value' --output text)"; then
+    warn "tailscale auth key parameter unavailable (${tailscale_param}); skipping tailscale bootstrap"
+    return
+  fi
+
+  log "installing tailscale ${tailscale_version}"
+
+  arch_name="$(uname -m)"
+  if [ "$arch_name" = 'aarch64' ] || [ "$arch_name" = 'arm64' ]; then
+    ts_arch='arm64'
+  fi
+
+  ts_url="$(printf 'https://pkgs.tailscale.com/stable/tailscale_%s_%s.tgz' "$tailscale_version" "$ts_arch")"
+  ts_tmp_dir="$(mktemp -d)"
+  trap 'rm -rf "$ts_tmp_dir"' RETURN
+
+  retry 5 5 curl -fsSL "$ts_url" -o "$ts_tmp_dir/tailscale.tgz"
+  tar -xzf "$ts_tmp_dir/tailscale.tgz" -C "$ts_tmp_dir"
+  ts_extract_dir="$(find "$ts_tmp_dir" -maxdepth 1 -type d -name 'tailscale_*' | head -n 1)"
+  [ -n "$ts_extract_dir" ] || die "tailscale archive missing extracted directory"
+
+  install -o root -g root -m 0755 "$ts_extract_dir/tailscale" /usr/local/bin/tailscale
+  install -o root -g root -m 0755 "$ts_extract_dir/tailscaled" /usr/local/bin/tailscaled
+  install -d -o root -g root -m 0755 /var/lib/tailscale
+
+  cat > /etc/systemd/system/tailscaled.service <<'TAILSCALE_UNIT'
+[Unit]
+Description=Tailscale node agent
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+RuntimeDirectory=tailscale
+ExecStart=/usr/local/bin/tailscaled --state=/var/lib/tailscale/tailscaled.state --socket=/run/tailscale/tailscaled.sock
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+TAILSCALE_UNIT
+
+  systemctl daemon-reload
+  systemctl enable tailscaled
+  if systemctl is-active --quiet tailscaled; then
+    systemctl restart tailscaled
+  else
+    systemctl start tailscaled
+  fi
+
+  instance_id="$(resolve_instance_id)"
+  tailscale_cmd=(/usr/local/bin/tailscale up --auth-key "$tailscale_auth_key" --hostname "${tailscale_hostname_prefix}-${instance_id}")
+  if [ "$tailscale_enable_ssh" = "true" ]; then
+    tailscale_cmd+=(--ssh)
+  fi
+  if [ "$tailscale_accept_routes" = "true" ]; then
+    tailscale_cmd+=(--accept-routes)
+  fi
+  if [ -n "$tailscale_advertise_tags" ]; then
+    tailscale_cmd+=(--advertise-tags "$tailscale_advertise_tags")
+  fi
+
+  retry 5 5 "${tailscale_cmd[@]}"
 }
 
 resolve_firecracker_arch() {
@@ -52,7 +200,7 @@ install_firecracker_binary() {
   tmp_dir="$(mktemp -d)"
   trap 'rm -rf "$tmp_dir"' RETURN
 
-  curl -fsSL "$url" -o "$tmp_dir/firecracker.tgz"
+  retry 5 5 curl -fsSL "$url" -o "$tmp_dir/firecracker.tgz"
   tar -xzf "$tmp_dir/firecracker.tgz" -C "$tmp_dir"
 
   binary="$(find "$tmp_dir" -type f -name "firecracker-v${version}-${arch}" | head -n 1)"
@@ -73,6 +221,13 @@ CLEANROOM_CONFIG_DIR="${CLEANROOM_CONFIG_DIR:-/root/.config/cleanroom}"
 CLEANROOM_FIRECRACKER_VCPUS="${CLEANROOM_FIRECRACKER_VCPUS:-4}"
 CLEANROOM_FIRECRACKER_MEMORY_MIB="${CLEANROOM_FIRECRACKER_MEMORY_MIB:-8192}"
 CLEANROOM_FIRECRACKER_LAUNCH_SECONDS="${CLEANROOM_FIRECRACKER_LAUNCH_SECONDS:-90}"
+AWS_REGION="${AWS_REGION:-${CLEANROOM_BOOTSTRAP_REGION:-}}"
+TAILSCALE_AUTH_KEY_PARAMETER_NAME="${TAILSCALE_AUTH_KEY_PARAMETER_NAME:-${CLEANROOM_TAILSCALE_AUTH_KEY_PARAMETER_NAME:-}}"
+TAILSCALE_VERSION="${TAILSCALE_VERSION:-${CLEANROOM_TAILSCALE_VERSION:-1.82.5}}"
+TAILSCALE_HOSTNAME_PREFIX="${TAILSCALE_HOSTNAME_PREFIX:-${CLEANROOM_TAILSCALE_HOSTNAME_PREFIX:-}}"
+TAILSCALE_ADVERTISE_TAGS="${TAILSCALE_ADVERTISE_TAGS:-${CLEANROOM_TAILSCALE_ADVERTISE_TAGS:-}}"
+TAILSCALE_ENABLE_SSH="${TAILSCALE_ENABLE_SSH:-${CLEANROOM_TAILSCALE_ENABLE_SSH:-true}}"
+TAILSCALE_ACCEPT_ROUTES="${TAILSCALE_ACCEPT_ROUTES:-${CLEANROOM_TAILSCALE_ACCEPT_ROUTES:-false}}"
 
 HOME="${HOME:-/root}"
 export HOME
@@ -91,10 +246,12 @@ require_cmd tar
 require_cmd systemctl
 
 install_sudo_if_missing
+install_tailscale_if_configured
 
+configure_apt_ipv4
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -y
-apt-get install -y e2fsprogs golang-go iproute2 iptables
+retry 5 10 apt-get update -y
+retry 5 10 apt-get install -y e2fsprogs golang-go iproute2 iptables
 
 if [ "$INSTALL_FIRECRACKER" = "true" ]; then
   log "installing firecracker ${FIRECRACKER_VERSION}"

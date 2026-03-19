@@ -1,12 +1,12 @@
-aws_region  = "us-west-2"
-name_prefix = "cleanroom-prod"
+aws_region  = "ap-southeast-2"
+name_prefix = "cleanroom-prod-apse2"
 
-# Must support nested virtualization (Firecracker). Default m8i.4xlarge gives a larger host for interactive prod workloads.
-instance_type         = "m8i.4xlarge"
+# Must support nested virtualization (Firecracker). Use m8i.xlarge to match the active prod host size.
+instance_type         = "m8i.xlarge"
 root_volume_size_gib  = 500
 
 # Optional: pin prod networking/host to a specific AZ.
-# availability_zone = "us-west-2b"
+# availability_zone = "ap-southeast-2b"
 
 # Optional: pin AMI manually. Leave empty to use latest Ubuntu from SSM parameter.
 # ami_id = "ami-0123456789abcdef0"
@@ -18,12 +18,13 @@ repo_url          = "git@github.com:buildkite/cleanroom.git"
 repo_ref          = "main"
 setup_script_path = "scripts/bootstrap-cleanroom-host.sh"
 
-tailscale_hostname_prefix = "cleanroom-prod-linux"
+tailscale_hostname_prefix = "cleanroom-prod-apse2-linux"
 tailscale_advertise_tags  = ""
 tailscale_enable_ssh      = true
 tailscale_accept_routes   = false
 
 tags = {
-  env  = "prod"
-  team = "platform"
+  env    = "prod"
+  team   = "platform"
+  region = "ap-southeast-2"
 }

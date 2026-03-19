@@ -1,14 +1,14 @@
-aws_region  = "us-west-2"
-name_prefix = "cleanroom-ci"
+aws_region  = "ap-southeast-2"
+name_prefix = "cleanroom-ci-apse2"
 
 # Must support nested virtualization (Firecracker). Default m8i.large falls back to loopback; use a '*d' type where nested virtualization is available to use local NVMe.
 instance_type = "m8i.large"
 
 enable_macos_ci   = false
-mac_instance_type = "mac2-m2pro.metal"
+mac_instance_type = "mac2-m2.metal"
 
 # Optional: pin CI networking/hosts to a specific AZ (needed when Mac capacity is AZ-constrained).
-# availability_zone = "us-west-2b"
+# availability_zone = "ap-southeast-2b"
 
 # Optional: pin AMI manually. Leave empty to use latest Ubuntu from SSM parameter.
 # ami_id = "ami-0123456789abcdef0"
@@ -29,12 +29,13 @@ mac_setup_script_path = "scripts/bootstrap-buildkite-agent-macos.sh"
 mac_buildkite_queue   = "cleanroom-mac"
 mac_tailscale_hostname_prefix = "cleanroom-ci-mac"
 
-tailscale_hostname_prefix = "cleanroom-ci-linux"
+tailscale_hostname_prefix = "cleanroom-ci-apse2-linux"
 tailscale_advertise_tags  = ""
 tailscale_enable_ssh      = true
 tailscale_accept_routes   = false
 
 tags = {
-  env  = "ci"
-  team = "platform"
+  env    = "ci"
+  team   = "platform"
+  region = "ap-southeast-2"
 }
