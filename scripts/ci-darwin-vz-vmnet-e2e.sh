@@ -21,24 +21,45 @@ normalize_secret_value() {
   printf '%s' "$1" | tr -d '\r'
 }
 
-normalize_p12_for_security_import() {
-  local input_path="$1"
-  local output_path="$2"
-  local bundle_path="$3"
+resolve_macos_user_home() {
+  local username home_record
 
-  if ! openssl pkcs12 -help 2>&1 | grep -q -- '-legacy'; then
-    printf '%s\n' "$input_path"
+  username="$(id -un)"
+  if home_record="$(dscl . -read "/Users/${username}" NFSHomeDirectory 2>/dev/null)" \
+    && [[ "$home_record" == NFSHomeDirectory:* ]]; then
+    printf '%s\n' "${home_record#NFSHomeDirectory: }"
     return 0
   fi
 
-  if openssl pkcs12 -legacy -in "$input_path" -passin "pass:${p12_password}" -nodes -out "$bundle_path" >/dev/null 2>&1 \
-    && openssl pkcs12 -export -in "$bundle_path" -passout "pass:${p12_password}" -out "$output_path" >/dev/null 2>&1; then
-    echo "normalized Apple Development PKCS#12 archive for security import" >&2
-    printf '%s\n' "$output_path"
+  printf '%s\n' "$HOME"
+}
+
+run_with_macos_user_home() {
+  if [[ -n "${macos_user_home:-}" ]]; then
+    HOME="$macos_user_home" "$@"
     return 0
   fi
 
-  printf '%s\n' "$input_path"
+  "$@"
+}
+
+resolve_macos_provisioning_udid() {
+  system_profiler SPHardwareDataType 2>/dev/null | awk -F': ' '/Provisioning UDID/ {print $2; exit}'
+}
+
+assert_profile_allows_current_device() {
+  [[ -n "${profile_path:-}" && -f "$profile_path" ]] || return 0
+
+  local provisioning_udid
+  provisioning_udid="$(resolve_macos_provisioning_udid)"
+  [[ -n "$provisioning_udid" ]] || return 0
+
+  run_with_macos_user_home security cms -D -i "$profile_path" >"$decoded_profile_path"
+  if ! grep -F "<string>${provisioning_udid}</string>" "$decoded_profile_path" >/dev/null 2>&1; then
+    echo "provisioning profile does not allow this Mac's Provisioning UDID: $provisioning_udid" >&2
+    echo "regenerate the vmnet development provisioning profile with this device added and update the Buildkite secret" >&2
+    exit 1
+  fi
 }
 
 resolve_local_helper_path() {
@@ -58,55 +79,53 @@ setup_buildkite_signing_assets() {
   local requested_sign_identity
   requested_sign_identity="$(normalize_secret_value "$(fetch_secret CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY)")"
   p12_password="$(normalize_secret_value "$(fetch_secret CLEANROOM_DARWIN_VZ_HELPER_CERT_PASSWORD)")"
-  local import_p12_path
-  import_p12_path="$(normalize_p12_for_security_import "$p12_path" "$normalized_p12_path" "$normalized_p12_bundle_path")"
 
   curl -fsSL https://www.apple.com/certificateauthority/AppleWWDRCAG3.cer -o "$wwdr_path"
 
   while IFS= read -r keychain; do
     [[ -n "$keychain" ]] || continue
     original_keychains+=("$keychain")
-  done < <(security list-keychains -d user | sed -E 's/^[[:space:]]*"//; s/"$//')
-  if default_keychain_output="$(security default-keychain -d user 2>/dev/null)"; then
+  done < <(run_with_macos_user_home security list-keychains -d user | sed -E 's/^[[:space:]]*"//; s/"$//')
+  if default_keychain_output="$(run_with_macos_user_home security default-keychain -d user 2>/dev/null)"; then
     original_default_keychain="$(printf '%s' "$default_keychain_output" | sed -E 's/^[[:space:]]*"//; s/"$//')"
   else
     original_default_keychain=""
   fi
 
-  security create-keychain -p "$temp_keychain_password" "$temp_keychain_path" >/dev/null
-  security unlock-keychain -p "$temp_keychain_password" "$temp_keychain_path" >/dev/null
-  security set-keychain-settings -lut 21600 "$temp_keychain_path" >/dev/null
-  security import "$import_p12_path" -k "$temp_keychain_path" -P "$p12_password" -T /usr/bin/codesign -T /usr/bin/security
-  security import "$wwdr_path" -k "$temp_keychain_path" -T /usr/bin/codesign -T /usr/bin/security
-  security list-keychains -d user -s \
+  run_with_macos_user_home security create-keychain -p "$temp_keychain_password" "$temp_keychain_path" >/dev/null
+  run_with_macos_user_home security unlock-keychain -p "$temp_keychain_password" "$temp_keychain_path" >/dev/null
+  run_with_macos_user_home security set-keychain-settings -lut 21600 "$temp_keychain_path" >/dev/null
+  run_with_macos_user_home security import "$p12_path" -k "$temp_keychain_path" -P "$p12_password" -T /usr/bin/codesign -T /usr/bin/security
+  run_with_macos_user_home security import "$wwdr_path" -k "$temp_keychain_path" -T /usr/bin/codesign -T /usr/bin/security
+  run_with_macos_user_home security list-keychains -d user -s \
     "$temp_keychain_path" \
-    "$HOME/Library/Keychains/login.keychain-db" \
+    "$macos_user_home/Library/Keychains/login.keychain-db" \
     /Library/Keychains/System.keychain \
     /System/Library/Keychains/SystemRootCertificates.keychain >/dev/null
-  security default-keychain -d user -s "$temp_keychain_path" >/dev/null
-  security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$temp_keychain_password" "$temp_keychain_path" >/dev/null
+  run_with_macos_user_home security default-keychain -d user -s "$temp_keychain_path" >/dev/null
+  run_with_macos_user_home security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$temp_keychain_password" "$temp_keychain_path" >/dev/null
 
-  if ! security find-certificate -a -c "$requested_sign_identity" "$temp_keychain_path" >/dev/null 2>&1; then
+  if ! run_with_macos_user_home security find-certificate -a -c "$requested_sign_identity" "$temp_keychain_path" >/dev/null 2>&1; then
     echo "imported signing certificate not found in temp keychain: $requested_sign_identity" >&2
-    security find-certificate -a -Z "$temp_keychain_path" >&2 || true
+    run_with_macos_user_home security find-certificate -a -Z "$temp_keychain_path" >&2 || true
     exit 1
   fi
 
   local imported_sign_identity
   imported_sign_identity="$(
-    security find-certificate -a -c "$requested_sign_identity" -Z "$temp_keychain_path" 2>/dev/null \
+    run_with_macos_user_home security find-certificate -a -c "$requested_sign_identity" -Z "$temp_keychain_path" 2>/dev/null \
       | awk '/^SHA-1 hash:/ {print $3; exit}'
   )"
   if [[ -z "$imported_sign_identity" ]]; then
     echo "unable to derive imported signing certificate hash from temp keychain" >&2
-    security find-certificate -a -Z "$temp_keychain_path" >&2 || true
+    run_with_macos_user_home security find-certificate -a -Z "$temp_keychain_path" >&2 || true
     exit 1
   fi
 
   local available_identities
   # `security find-identity <keychain>` is not reliable for temp keychains on all
   # macOS images; query the configured user search list instead.
-  available_identities="$(security find-identity -v -p codesigning 2>&1 || true)"
+  available_identities="$(run_with_macos_user_home security find-identity -v -p codesigning 2>&1 || true)"
   if ! grep -F -- "\"$requested_sign_identity\"" <<<"$available_identities" >/dev/null; then
     echo "warning: imported signing identity not found in configured keychain search list: $requested_sign_identity" >&2
     printf '%s\n' "$available_identities" >&2
@@ -128,17 +147,17 @@ setup_local_signing_assets() {
 
 restore_keychains() {
   if [[ -n "${original_default_keychain:-}" ]]; then
-    security default-keychain -d user -s "$original_default_keychain" >/dev/null 2>&1 || true
+    run_with_macos_user_home security default-keychain -d user -s "$original_default_keychain" >/dev/null 2>&1 || true
   fi
   if ((${#original_keychains[@]} > 0)); then
-    security list-keychains -d user -s "${original_keychains[@]}" >/dev/null 2>&1 || true
+    run_with_macos_user_home security list-keychains -d user -s "${original_keychains[@]}" >/dev/null 2>&1 || true
   fi
 }
 
 cleanup() {
   restore_keychains
   if [[ -n "${temp_keychain_path:-}" ]]; then
-    security delete-keychain "$temp_keychain_path" >/dev/null 2>&1 || true
+    run_with_macos_user_home security delete-keychain "$temp_keychain_path" >/dev/null 2>&1 || true
   fi
   rm -rf "${tmpdir:-}"
 }
@@ -152,14 +171,14 @@ tmpdir="$(mktemp -d /tmp/cleanroom-dvz-vmnet-e2e.XXXXXX)"
 declare -a original_keychains=()
 trap cleanup EXIT
 
-mkdir -p "$HOME/Library/Keychains"
-temp_keychain_path="$HOME/Library/Keychains/cleanroom-signing-$(openssl rand -hex 8).keychain-db"
+macos_user_home="$(resolve_macos_user_home)"
+mkdir -p "$macos_user_home/Library/Keychains"
+temp_keychain_path="$macos_user_home/Library/Keychains/cleanroom-signing-$(openssl rand -hex 8).keychain-db"
 temp_keychain_password="$(openssl rand -hex 16)"
 
 p12_path="$tmpdir/helper-cert.p12"
-normalized_p12_path="$tmpdir/helper-cert-normalized.p12"
-normalized_p12_bundle_path="$tmpdir/helper-cert-normalized.pem"
 profile_path="$tmpdir/helper.provisionprofile"
+decoded_profile_path="$tmpdir/helper.provisionprofile.plist"
 wwdr_path="$tmpdir/AppleWWDRCAG3.cer"
 sign_identity=""
 sign_keychain=""
@@ -171,6 +190,7 @@ if [[ -z "${BUILDKITE:-}" ]]; then
 else
   setup_buildkite_signing_assets
 fi
+assert_profile_allows_current_device
 
 echo "--- :hammer: Building binaries"
 cd "$REPO_ROOT"
@@ -188,20 +208,21 @@ if [[ ! -d "$helper_path" ]]; then
   }
 
   echo "--- :key: Building vmnet-signed helper"
-  CLEANROOM_DARWIN_VZ_HELPER_ENTITLEMENTS=cmd/cleanroom-darwin-vz/entitlements-vmnet.plist \
-  CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY="$sign_identity" \
-  CLEANROOM_DARWIN_VZ_HELPER_SIGN_KEYCHAIN="$sign_keychain" \
-  CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTIFIER="${CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTIFIER:-com.buildkite.cleanroom.darwin-vz}" \
-  CLEANROOM_DARWIN_VZ_HELPER_PROVISION_PROFILE="$profile_path" \
-  CLEANROOM_DARWIN_VZ_HELPER_BUNDLE=1 \
-  scripts/build-darwin-vz-helper.sh dist/cleanroom-darwin-vz
+  run_with_macos_user_home env \
+    CLEANROOM_DARWIN_VZ_HELPER_ENTITLEMENTS=cmd/cleanroom-darwin-vz/entitlements-vmnet.plist \
+    CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY="$sign_identity" \
+    CLEANROOM_DARWIN_VZ_HELPER_SIGN_KEYCHAIN="$sign_keychain" \
+    CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTIFIER="${CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTIFIER:-com.buildkite.cleanroom.darwin-vz}" \
+    CLEANROOM_DARWIN_VZ_HELPER_PROVISION_PROFILE="$profile_path" \
+    CLEANROOM_DARWIN_VZ_HELPER_BUNDLE=1 \
+    scripts/build-darwin-vz-helper.sh dist/cleanroom-darwin-vz
 fi
 
 if [[ ! -d "$helper_path" ]]; then
   echo "darwin-vz helper bundle is missing: $helper_path" >&2
   exit 1
 fi
-codesign --verify --strict --verbose=2 "$helper_path"
+run_with_macos_user_home codesign --verify --strict --verbose=2 "$helper_path"
 
 echo "--- :apple: VMNet E2E"
 CLEANROOM_DARWIN_VZ_HELPER="$helper_path" \
