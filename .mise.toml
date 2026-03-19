@@ -26,7 +26,7 @@ run = "scripts/build-go.sh"
 
 [tasks."build:darwin"]
 description = "Build macOS darwin-vz helper into dist/"
-run = "{% if os() == \"macos\" %}scripts/build-darwin-vz-helper.sh dist/cleanroom-darwin-vz{% else %}true{% endif %}"
+run = "{% if os() == \"macos\" %}scripts/build-darwin-vz-helper.sh dist/cleanroom-darwin-vz.app{% else %}true{% endif %}"
 
 [tasks."build:image:alpine"]
 description = "Build local alpine base image"
@@ -57,7 +57,7 @@ run = "scripts/install-go.sh"
 [tasks."install:darwin"]
 description = "Install macOS darwin-vz helper into GOBIN (or GOPATH/bin)"
 depends = ["build:darwin"]
-run = "{% if os() == \"macos\" %}BIN_DIR=\"$(go env GOBIN)\"; if [ -z \"$BIN_DIR\" ]; then BIN_DIR=\"$(go env GOPATH)/bin\"; fi; mkdir -p \"$BIN_DIR\" && scripts/build-darwin-vz-helper.sh \"$BIN_DIR/cleanroom-darwin-vz\"{% else %}true{% endif %}"
+run = "{% if os() == \"macos\" %}BIN_DIR=\"$(go env GOBIN)\"; if [ -z \"$BIN_DIR\" ]; then BIN_DIR=\"$(go env GOPATH)/bin\"; fi; mkdir -p \"$BIN_DIR\" && scripts/build-darwin-vz-helper.sh \"$BIN_DIR/cleanroom-darwin-vz.app\"{% else %}true{% endif %}"
 
 [tasks.install]
 description = "Install all binaries into GOBIN (or GOPATH/bin)"

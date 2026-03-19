@@ -175,10 +175,10 @@ The default `vmnet-shared` path additionally requires:
 The main `cleanroom` Go binary does not require this entitlement for `darwin-vz`.
 
 `scripts/build-darwin-vz-helper.sh` is the canonical helper build/sign path. By
-default it emits a plain signed helper binary. When
-`CLEANROOM_DARWIN_VZ_HELPER_PROVISION_PROFILE` is set it emits a signed
-`cleanroom-darwin-vz.app` bundle with an embedded provisioning profile so the
-helper can carry restricted entitlements.
+default it emits a signed `cleanroom-darwin-vz.app` bundle. When
+`CLEANROOM_DARWIN_VZ_HELPER_PROVISION_PROFILE` is set it embeds that profile in
+the bundle so the helper can carry restricted entitlements. Set
+`CLEANROOM_DARWIN_VZ_HELPER_BUNDLE=0` to emit a loose helper binary instead.
 
 When a prebuilt helper `.app` bundle is available, the install script preserves
 that bundle as-is and only re-signs it when the caller explicitly provides
@@ -203,7 +203,7 @@ CLEANROOM_DARWIN_VZ_HELPER_ENTITLEMENTS=cmd/cleanroom-darwin-vz/entitlements-vmn
 CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY='Apple Development: <you> (<team>)' \
 CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTIFIER='com.buildkite.cleanroom.darwin-vz' \
 CLEANROOM_DARWIN_VZ_HELPER_PROVISION_PROFILE="$HOME/Downloads/Cleanroom_Darwin_VZ_Backend.provisionprofile" \
-scripts/build-darwin-vz-helper.sh dist/cleanroom-darwin-vz
+scripts/build-darwin-vz-helper.sh dist/cleanroom-darwin-vz.app
 ```
 
 ## Runtime Discovery

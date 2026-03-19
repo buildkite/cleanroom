@@ -6,15 +6,21 @@ DARWIN_VZ_KERNEL_IMAGE="${CLEANROOM_DARWIN_VZ_KERNEL_IMAGE:-}"
 echo "--- :hammer: Building binaries"
 scripts/build-go.sh
 
-scripts/build-darwin-vz-helper.sh dist/cleanroom-darwin-vz
+scripts/build-darwin-vz-helper.sh dist/cleanroom-darwin-vz.app
 
 # `scripts/build-go.sh` produces host binaries in dist/, but darwin-vz doctor also
 # requires a Linux guest agent binary named cleanroom-guest-agent-linux-<arch>.
 host_arch="$(go env GOARCH)"
 GOOS=linux GOARCH="$host_arch" CGO_ENABLED=0 go build -trimpath -o "dist/cleanroom-guest-agent-linux-$host_arch" ./cmd/cleanroom-guest-agent
 
-helper_path="${CLEANROOM_DARWIN_VZ_HELPER:-$PWD/dist/cleanroom-darwin-vz}"
-if [[ ! -x "$helper_path" ]]; then
+helper_path="${CLEANROOM_DARWIN_VZ_HELPER:-$PWD/dist/cleanroom-darwin-vz.app}"
+if [[ -d "$helper_path" ]]; then
+  helper_executable="$helper_path/Contents/MacOS/cleanroom-darwin-vz"
+  if [[ ! -x "$helper_executable" ]]; then
+    echo "darwin-vz helper bundle is missing its executable: $helper_executable" >&2
+    exit 1
+  fi
+elif [[ ! -x "$helper_path" ]]; then
   echo "darwin-vz helper is missing or not executable: $helper_path" >&2
   exit 1
 fi

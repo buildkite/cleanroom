@@ -213,7 +213,7 @@ if [[ ! -d "$helper_path" ]]; then
     CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTIFIER="${CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTIFIER:-com.buildkite.cleanroom.darwin-vz}" \
     CLEANROOM_DARWIN_VZ_HELPER_PROVISION_PROFILE="$profile_path" \
     CLEANROOM_DARWIN_VZ_HELPER_BUNDLE=1 \
-    scripts/build-darwin-vz-helper.sh dist/cleanroom-darwin-vz
+    scripts/build-darwin-vz-helper.sh dist/cleanroom-darwin-vz.app
 fi
 
 if [[ ! -d "$helper_path" ]]; then
