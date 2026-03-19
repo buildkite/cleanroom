@@ -136,12 +136,21 @@ setup_local_signing_assets() {
   sign_keychain="${CLEANROOM_DARWIN_VZ_HELPER_SIGN_KEYCHAIN:-}"
 }
 
+setup_buildkite_runtime_paths() {
+  xdg_state_home_path="/tmp/cleanroom-state-$(openssl rand -hex 4)"
+  mkdir -p "$xdg_state_home_path"
+  cleanup_xdg_state_home=1
+}
+
 cleanup() {
   if [[ -n "${imported_system_identity_hash:-}" ]]; then
     sudo security delete-identity -Z "$imported_system_identity_hash" "$system_keychain_path" >/dev/null 2>&1 || true
   fi
   if [[ "${wwdr_added_to_system_keychain:-0}" == "1" && -n "${wwdr_fingerprint:-}" ]]; then
     sudo security delete-certificate -Z "$wwdr_fingerprint" "$system_keychain_path" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "${xdg_state_home_path:-}" && "${cleanup_xdg_state_home:-0}" == "1" ]]; then
+    rm -rf "$xdg_state_home_path"
   fi
   rm -rf "${tmpdir:-}"
 }
@@ -166,6 +175,8 @@ wwdr_fingerprint=""
 wwdr_added_to_system_keychain=0
 system_keychain_path="/Library/Keychains/System.keychain"
 imported_system_identity_hash=""
+xdg_state_home_path="${XDG_STATE_HOME:-$HOME/.local/state}"
+cleanup_xdg_state_home=0
 sign_identity=""
 sign_keychain=""
 p12_password=""
@@ -174,6 +185,7 @@ helper_path="$(resolve_local_helper_path)"
 if [[ -z "${BUILDKITE:-}" ]]; then
   setup_local_signing_assets
 else
+  setup_buildkite_runtime_paths
   setup_buildkite_signing_assets
 fi
 assert_profile_allows_current_device
@@ -211,6 +223,7 @@ fi
 run_with_macos_user_home codesign --verify --strict --verbose=2 "$helper_path"
 
 echo "--- :apple: VMNet E2E"
+XDG_STATE_HOME="$xdg_state_home_path" \
 CLEANROOM_DARWIN_VZ_HELPER="$helper_path" \
 CLEANROOM_DARWIN_VZ_VMNET_E2E=1 \
 go test ./internal/backend/darwinvz -run TestVMNetSharedE2E -v
