@@ -451,15 +451,23 @@ install_cleanroom_release() {
   local release_repo="$3"
   local release_version="$4"
   local install_script_url
+  local tmp_dir
+  local install_script_path
 
   install_script_url="$(raw_github_url "$install_script_repo" "$install_script_ref" "scripts/install.sh")"
   log "installing cleanroom release ${release_repo} (${release_version})"
+  tmp_dir="$(mktemp -d)"
+  trap 'rm -rf "$tmp_dir"' RETURN
+  install_script_path="$tmp_dir/install.sh"
+
+  retry 5 5 curl -fsSL "$install_script_url" -o "$install_script_path"
+  chmod 0755 "$install_script_path"
 
   if [ "$release_version" = "latest" ]; then
     retry 5 5 env \
       CLEANROOM_REPO="$release_repo" \
       CLEANROOM_INSTALL_DIR="$CLEANROOM_BINARY_INSTALL_DIR" \
-      sh -c "curl -fsSL \"\$1\" | bash" sh "$install_script_url"
+      bash "$install_script_path"
     return
   fi
 
@@ -467,7 +475,7 @@ install_cleanroom_release() {
     CLEANROOM_REPO="$release_repo" \
     CLEANROOM_VERSION="$release_version" \
     CLEANROOM_INSTALL_DIR="$CLEANROOM_BINARY_INSTALL_DIR" \
-    sh -c "curl -fsSL \"\$1\" | bash" sh "$install_script_url"
+    bash "$install_script_path"
 }
 
 installed_cleanroom_version() {

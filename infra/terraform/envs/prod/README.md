@@ -28,8 +28,8 @@ Runtime behaviour:
 
 - daemon runs as a systemd service on the root-owned system socket
 - access the host over SSM or Tailscale, then use `sudo cleanroom ...`
-- the shared linux host module ignores `user_data` drift, so host software
-  upgrades are rerun in-place instead of replacing the EC2 instance
+- prod sets `user_data_replace_on_change = false`, so bootstrap changes do not
+  force EC2 replacement and host software upgrades are rerun in-place instead
 - runtime config enables Firecracker snapshots with the file driver
 - when the bootstrap-created ZFS dataset is available, snapshots live under the
   dataset mountpoint; otherwise they fall back to `/var/lib/cleanroom/snapshots`

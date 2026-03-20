@@ -37,6 +37,12 @@ variable "root_volume_size_gib" {
   default     = 150
 }
 
+variable "user_data_replace_on_change" {
+  description = "Whether changes to rendered user_data should replace the host instance."
+  type        = bool
+  default     = true
+}
+
 variable "buildkite_token_parameter_name" {
   description = "Optional SSM SecureString parameter name storing the Buildkite token for CI bootstrap."
   type        = string

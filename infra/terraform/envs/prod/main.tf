@@ -35,6 +35,7 @@ module "host" {
   ami_id                            = local.selected_ami_id
   instance_type                     = var.instance_type
   root_volume_size_gib              = var.root_volume_size_gib
+  user_data_replace_on_change       = false
   tailscale_auth_key_parameter_name = var.tailscale_auth_key_parameter_name
   git_deploy_key_parameter_name     = var.git_deploy_key_parameter_name
   repo_url                          = var.repo_url
