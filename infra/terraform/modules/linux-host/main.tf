@@ -122,7 +122,6 @@ resource "aws_instance" "host" {
     encrypted   = true
   }
 
-  user_data_replace_on_change = true
   user_data = templatefile("${path.module}/templates/user_data.sh.tftpl", {
     aws_region                        = var.aws_region
     name_prefix                       = var.name_prefix
@@ -132,12 +131,18 @@ resource "aws_instance" "host" {
     repo_url                          = var.repo_url
     repo_ref                          = var.repo_ref
     setup_script_path                 = var.setup_script_path
+    cleanroom_version                 = var.cleanroom_version
+    cleanroom_install_script_ref      = var.cleanroom_install_script_ref
     tailscale_version                 = var.tailscale_version
     tailscale_hostname_prefix         = var.tailscale_hostname_prefix
     tailscale_advertise_tags          = var.tailscale_advertise_tags
     tailscale_enable_ssh              = var.tailscale_enable_ssh
     tailscale_accept_routes           = var.tailscale_accept_routes
   })
+
+  lifecycle {
+    ignore_changes = [user_data]
+  }
 
   tags = local.common_tags
 }

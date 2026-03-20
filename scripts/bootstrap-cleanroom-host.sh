@@ -39,6 +39,48 @@ retry() {
   done
 }
 
+normalize_version() {
+  local raw="$1"
+  if [ -z "$raw" ] || [ "$raw" = "latest" ]; then
+    printf 'latest'
+    return
+  fi
+
+  case "$raw" in
+    v*) printf '%s' "$raw" ;;
+    *) printf 'v%s' "$raw" ;;
+  esac
+}
+
+github_repo_slug_from_url() {
+  local raw="$1"
+  raw="${raw%.git}"
+
+  case "$raw" in
+    git@github.com:*)
+      printf '%s' "${raw#git@github.com:}"
+      ;;
+    https://github.com/*)
+      printf '%s' "${raw#https://github.com/}"
+      ;;
+    ssh://git@github.com/*)
+      printf '%s' "${raw#ssh://git@github.com/}"
+      ;;
+    git://github.com/*)
+      printf '%s' "${raw#git://github.com/}"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+raw_github_url() {
+  local repo="$1"
+  local ref="$2"
+  local path="$3"
+  printf 'https://raw.githubusercontent.com/%s/%s/%s' "$repo" "$ref" "$path"
+}
 configure_apt_ipv4() {
   install -d -o root -g root -m 0755 /etc/apt/apt.conf.d
   cat > /etc/apt/apt.conf.d/99force-ipv4 <<'APTCONF'
@@ -80,6 +122,200 @@ resolve_instance_id() {
   printf '%s' "$instance_id"
 }
 
+install_host_bootstrap_runner() {
+  local bootstrap_env_path='/usr/local/etc/cleanroom-bootstrap-host.env'
+  local bootstrap_runner_path='/usr/local/bin/cleanroom-bootstrap-host'
+  local bootstrap_repo_url="${CLEANROOM_BOOTSTRAP_REPO_URL:-}"
+  local bootstrap_repo_ref="${CLEANROOM_BOOTSTRAP_REPO_REF:-main}"
+  local bootstrap_setup_script_path="${CLEANROOM_BOOTSTRAP_SETUP_SCRIPT_PATH:-scripts/bootstrap-cleanroom-host.sh}"
+  local bootstrap_deploy_key_param="${CLEANROOM_BOOTSTRAP_DEPLOY_KEY_PARAM:-}"
+  local bootstrap_tailscale_param="${TAILSCALE_AUTH_KEY_PARAMETER_NAME:-${CLEANROOM_TAILSCALE_AUTH_KEY_PARAMETER_NAME:-}}"
+  local bootstrap_zfs_dataset="${CLEANROOM_ZFS_DATASET:-cleanroom/data}"
+
+  if [ -z "$bootstrap_repo_url" ]; then
+    warn "skipping host bootstrap runner install because CLEANROOM_BOOTSTRAP_REPO_URL is not set"
+    return
+  fi
+
+  install -d -o root -g root -m 0755 /usr/local/etc
+  install -d -o root -g root -m 0755 /usr/local/bin
+
+  cat > "$bootstrap_env_path" <<EOF
+AWS_REGION='$AWS_REGION'
+NAME_PREFIX='$NAME_PREFIX'
+DEPLOY_KEY_PARAM='$bootstrap_deploy_key_param'
+REPO_URL='$bootstrap_repo_url'
+REPO_REF='$bootstrap_repo_ref'
+SETUP_SCRIPT_PATH='$bootstrap_setup_script_path'
+INSTALL_FIRECRACKER='$INSTALL_FIRECRACKER'
+FIRECRACKER_VERSION='$FIRECRACKER_VERSION'
+CLEANROOM_VERSION='$CLEANROOM_VERSION'
+CLEANROOM_INSTALL_SCRIPT_REF='$CLEANROOM_INSTALL_SCRIPT_REF'
+CLEANROOM_REPO='$RELEASE_REPO'
+CLEANROOM_BINARY_INSTALL_DIR='$CLEANROOM_BINARY_INSTALL_DIR'
+CLEANROOM_CONFIG_DIR='$CLEANROOM_CONFIG_DIR'
+HELPER_INSTALL_PATH='$HELPER_INSTALL_PATH'
+TAILSCALE_AUTH_KEY_PARAMETER_NAME='$bootstrap_tailscale_param'
+TAILSCALE_VERSION='$TAILSCALE_VERSION'
+TAILSCALE_HOSTNAME_PREFIX='$TAILSCALE_HOSTNAME_PREFIX'
+TAILSCALE_ADVERTISE_TAGS='$TAILSCALE_ADVERTISE_TAGS'
+TAILSCALE_ENABLE_SSH='$TAILSCALE_ENABLE_SSH'
+TAILSCALE_ACCEPT_ROUTES='$TAILSCALE_ACCEPT_ROUTES'
+ZFS_DATASET='$bootstrap_zfs_dataset'
+EOF
+  chmod 0600 "$bootstrap_env_path"
+
+  cat > "$bootstrap_runner_path" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+BOOTSTRAP_ENV_PATH='/usr/local/etc/cleanroom-bootstrap-host.env'
+BOOTSTRAP_RUNNER_PATH='/usr/local/bin/cleanroom-bootstrap-host'
+exec > >(tee -a /var/log/cleanroom-bootstrap-host.log) 2>&1
+
+if [ ! -f "$BOOTSTRAP_ENV_PATH" ]; then
+  echo "bootstrap env file missing: $BOOTSTRAP_ENV_PATH" >&2
+  exit 1
+fi
+
+# shellcheck disable=SC1091
+source "$BOOTSTRAP_ENV_PATH"
+PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
+
+retry() {
+  local attempts="$1"
+  local delay_seconds="$2"
+  shift 2
+
+  local n=1
+  while true; do
+    if "$@"; then
+      return 0
+    fi
+
+    if [ "$n" -ge "$attempts" ]; then
+      return 1
+    fi
+
+    sleep "$delay_seconds"
+    n=$((n + 1))
+  done
+}
+
+: "${AWS_REGION:?AWS_REGION must be set}"
+: "${NAME_PREFIX:?NAME_PREFIX must be set}"
+: "${REPO_URL:?REPO_URL must be set}"
+: "${REPO_REF:?REPO_REF must be set}"
+: "${SETUP_SCRIPT_PATH:?SETUP_SCRIPT_PATH must be set}"
+: "${INSTALL_FIRECRACKER:?INSTALL_FIRECRACKER must be set}"
+: "${FIRECRACKER_VERSION:?FIRECRACKER_VERSION must be set}"
+: "${CLEANROOM_VERSION:?CLEANROOM_VERSION must be set}"
+: "${CLEANROOM_INSTALL_SCRIPT_REF:?CLEANROOM_INSTALL_SCRIPT_REF must be set}"
+: "${CLEANROOM_BINARY_INSTALL_DIR:?CLEANROOM_BINARY_INSTALL_DIR must be set}"
+: "${CLEANROOM_CONFIG_DIR:?CLEANROOM_CONFIG_DIR must be set}"
+: "${HELPER_INSTALL_PATH:?HELPER_INSTALL_PATH must be set}"
+: "${ZFS_DATASET:?ZFS_DATASET must be set}"
+
+if ! command -v aws >/dev/null 2>&1; then
+  aws_arch='x86_64'
+  if [ "$(uname -m)" = 'aarch64' ] || [ "$(uname -m)" = 'arm64' ]; then
+    aws_arch='aarch64'
+  fi
+
+  aws_tmp_dir="$(mktemp -d)"
+  trap 'rm -rf "$aws_tmp_dir"' EXIT
+  retry 5 5 curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-$aws_arch.zip" -o "$aws_tmp_dir/awscliv2.zip"
+  unzip -q "$aws_tmp_dir/awscliv2.zip" -d "$aws_tmp_dir"
+  "$aws_tmp_dir/aws/install" --bin-dir /usr/local/bin --install-dir /usr/local/aws-cli --update
+fi
+
+if ! command -v aws >/dev/null 2>&1; then
+  echo "aws CLI is required but not installed" >&2
+  exit 1
+fi
+
+if ! command -v git >/dev/null 2>&1; then
+  echo "git is required but not installed" >&2
+  exit 1
+fi
+
+imds_token="$(retry 10 3 curl -fsS -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")"
+instance_id="$(retry 10 3 curl -fsS -H "X-aws-ec2-metadata-token: $imds_token" http://169.254.169.254/latest/meta-data/instance-id)"
+
+if [ -n "$DEPLOY_KEY_PARAM" ]; then
+  if ! command -v ssh-keyscan >/dev/null 2>&1; then
+    echo "ssh-keyscan is required when DEPLOY_KEY_PARAM is set" >&2
+    exit 1
+  fi
+
+  install -d -o root -g root -m 0700 /root/.ssh
+  deploy_known_hosts='/root/.ssh/cleanroom_known_hosts'
+  retry 10 3 aws ssm get-parameter \
+    --region "$AWS_REGION" \
+    --name "$DEPLOY_KEY_PARAM" \
+    --with-decryption \
+    --query 'Parameter.Value' \
+    --output text > /root/.ssh/cleanroom_deploy_key
+  chmod 0600 /root/.ssh/cleanroom_deploy_key
+  touch "$deploy_known_hosts"
+  retry 5 3 ssh-keyscan -t rsa,ecdsa,ed25519 github.com >> "$deploy_known_hosts"
+  chmod 0644 "$deploy_known_hosts"
+fi
+
+repo_root='/opt/cleanroom-bootstrap/repo'
+rm -rf "$repo_root"
+install -d -o root -g root -m 0755 /opt/cleanroom-bootstrap
+
+if [ -n "$DEPLOY_KEY_PARAM" ]; then
+  export GIT_SSH_COMMAND="ssh -i /root/.ssh/cleanroom_deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$deploy_known_hosts"
+fi
+
+git -c init.defaultBranch=main init "$repo_root" >/dev/null
+git -C "$repo_root" remote add origin "$REPO_URL"
+retry 5 3 git -C "$repo_root" fetch --depth=1 origin "$REPO_REF"
+git -C "$repo_root" checkout -f FETCH_HEAD
+
+if [ -n "$DEPLOY_KEY_PARAM" ]; then
+  unset GIT_SSH_COMMAND
+  rm -f /root/.ssh/cleanroom_deploy_key "$deploy_known_hosts"
+fi
+
+setup_script="$repo_root/$SETUP_SCRIPT_PATH"
+if [ ! -f "$setup_script" ]; then
+  echo "setup script not found: $SETUP_SCRIPT_PATH" >&2
+  exit 1
+fi
+
+chmod +x "$setup_script"
+
+export AWS_REGION
+export CLEANROOM_BOOTSTRAP_REGION="$AWS_REGION"
+export CLEANROOM_BOOTSTRAP_INSTANCE_ID="$instance_id"
+export CLEANROOM_BOOTSTRAP_NAME_PREFIX="$NAME_PREFIX"
+export CLEANROOM_BOOTSTRAP_REPO_URL="$REPO_URL"
+export CLEANROOM_BOOTSTRAP_REPO_REF="$REPO_REF"
+export CLEANROOM_BOOTSTRAP_SETUP_SCRIPT_PATH="$SETUP_SCRIPT_PATH"
+export CLEANROOM_BOOTSTRAP_DEPLOY_KEY_PARAM="$DEPLOY_KEY_PARAM"
+export CLEANROOM_INSTALL_FIRECRACKER="$INSTALL_FIRECRACKER"
+export CLEANROOM_FIRECRACKER_VERSION="$FIRECRACKER_VERSION"
+export CLEANROOM_VERSION="$CLEANROOM_VERSION"
+export CLEANROOM_INSTALL_SCRIPT_REF="$CLEANROOM_INSTALL_SCRIPT_REF"
+export CLEANROOM_REPO="$CLEANROOM_REPO"
+export CLEANROOM_BINARY_INSTALL_DIR="$CLEANROOM_BINARY_INSTALL_DIR"
+export CLEANROOM_CONFIG_DIR="$CLEANROOM_CONFIG_DIR"
+export CLEANROOM_HELPER_INSTALL_PATH="$HELPER_INSTALL_PATH"
+export CLEANROOM_TAILSCALE_AUTH_KEY_PARAMETER_NAME="$TAILSCALE_AUTH_KEY_PARAMETER_NAME"
+export CLEANROOM_TAILSCALE_VERSION="$TAILSCALE_VERSION"
+export CLEANROOM_TAILSCALE_HOSTNAME_PREFIX="$TAILSCALE_HOSTNAME_PREFIX"
+export CLEANROOM_TAILSCALE_ADVERTISE_TAGS="$TAILSCALE_ADVERTISE_TAGS"
+export CLEANROOM_TAILSCALE_ENABLE_SSH="$TAILSCALE_ENABLE_SSH"
+export CLEANROOM_TAILSCALE_ACCEPT_ROUTES="$TAILSCALE_ACCEPT_ROUTES"
+export CLEANROOM_ZFS_DATASET="$ZFS_DATASET"
+
+"$setup_script"
+EOF
+  chmod 0755 "$bootstrap_runner_path"
+}
 install_tailscale_if_configured() {
   local tailscale_param="${TAILSCALE_AUTH_KEY_PARAMETER_NAME:-${CLEANROOM_TAILSCALE_AUTH_KEY_PARAMETER_NAME:-}}"
   local tailscale_version="${TAILSCALE_VERSION:-${CLEANROOM_TAILSCALE_VERSION:-}}"
@@ -209,6 +445,57 @@ install_firecracker_binary() {
   install -o root -g root -m 0755 "$binary" /usr/local/bin/firecracker
 }
 
+install_cleanroom_release() {
+  local install_script_repo="$1"
+  local install_script_ref="$2"
+  local release_repo="$3"
+  local release_version="$4"
+  local install_script_url
+
+  install_script_url="$(raw_github_url "$install_script_repo" "$install_script_ref" "scripts/install.sh")"
+  log "installing cleanroom release ${release_repo} (${release_version})"
+
+  if [ "$release_version" = "latest" ]; then
+    retry 5 5 env \
+      CLEANROOM_REPO="$release_repo" \
+      CLEANROOM_INSTALL_DIR="$CLEANROOM_BINARY_INSTALL_DIR" \
+      sh -c "curl -fsSL \"\$1\" | bash" sh "$install_script_url"
+    return
+  fi
+
+  retry 5 5 env \
+    CLEANROOM_REPO="$release_repo" \
+    CLEANROOM_VERSION="$release_version" \
+    CLEANROOM_INSTALL_DIR="$CLEANROOM_BINARY_INSTALL_DIR" \
+    sh -c "curl -fsSL \"\$1\" | bash" sh "$install_script_url"
+}
+
+installed_cleanroom_version() {
+  local version
+  version="$("$CLEANROOM_BINARY_INSTALL_DIR/cleanroom" version | awk '{print $3}')"
+  [ -n "$version" ] || die "failed to determine installed cleanroom version"
+  printf '%s' "$version"
+}
+
+install_cleanroom_root_helper() {
+  local release_repo="$1"
+  local release_version="$2"
+  local helper_url
+  local tmp_dir
+  local helper_source_path
+
+  helper_url="$(raw_github_url "$release_repo" "$release_version" "scripts/cleanroom-root-helper.sh")"
+  log "installing cleanroom-root-helper ${release_version}"
+
+  tmp_dir="$(mktemp -d)"
+  trap 'rm -rf "$tmp_dir"' RETURN
+  helper_source_path="$tmp_dir/cleanroom-root-helper"
+  retry 5 5 curl -fsSL "$helper_url" -o "$helper_source_path"
+
+  install -d -o root -g root -m 0755 "$(dirname "$HELPER_INSTALL_PATH")"
+  install -o root -g root -m 0755 "$helper_source_path" "$HELPER_INSTALL_PATH"
+}
+
 if [ "$(id -u)" -ne 0 ]; then
   die "must run as root"
 fi
@@ -218,10 +505,14 @@ INSTALL_FIRECRACKER="${CLEANROOM_INSTALL_FIRECRACKER:-true}"
 FIRECRACKER_VERSION="${CLEANROOM_FIRECRACKER_VERSION:-1.14.2}"
 CLEANROOM_BINARY_INSTALL_DIR="${CLEANROOM_BINARY_INSTALL_DIR:-/usr/local/bin}"
 CLEANROOM_CONFIG_DIR="${CLEANROOM_CONFIG_DIR:-/root/.config/cleanroom}"
+CLEANROOM_VERSION="${CLEANROOM_VERSION:-v0.3.0}"
+CLEANROOM_INSTALL_SCRIPT_REF="${CLEANROOM_INSTALL_SCRIPT_REF:-main}"
 CLEANROOM_FIRECRACKER_VCPUS="${CLEANROOM_FIRECRACKER_VCPUS:-4}"
 CLEANROOM_FIRECRACKER_MEMORY_MIB="${CLEANROOM_FIRECRACKER_MEMORY_MIB:-8192}"
 CLEANROOM_FIRECRACKER_LAUNCH_SECONDS="${CLEANROOM_FIRECRACKER_LAUNCH_SECONDS:-90}"
+HELPER_INSTALL_PATH="${CLEANROOM_HELPER_INSTALL_PATH:-/usr/local/sbin/cleanroom-root-helper}"
 AWS_REGION="${AWS_REGION:-${CLEANROOM_BOOTSTRAP_REGION:-}}"
+BOOTSTRAP_REPO_URL="${CLEANROOM_BOOTSTRAP_REPO_URL:-git@github.com:buildkite/cleanroom.git}"
 TAILSCALE_AUTH_KEY_PARAMETER_NAME="${TAILSCALE_AUTH_KEY_PARAMETER_NAME:-${CLEANROOM_TAILSCALE_AUTH_KEY_PARAMETER_NAME:-}}"
 TAILSCALE_VERSION="${TAILSCALE_VERSION:-${CLEANROOM_TAILSCALE_VERSION:-1.82.5}}"
 TAILSCALE_HOSTNAME_PREFIX="${TAILSCALE_HOSTNAME_PREFIX:-${CLEANROOM_TAILSCALE_HOSTNAME_PREFIX:-}}"
@@ -234,13 +525,9 @@ export HOME
 export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 export XDG_STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}"
 export XDG_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
-export GOPATH="${GOPATH:-$HOME/go}"
-export GOMODCACHE="${GOMODCACHE:-$GOPATH/pkg/mod}"
-
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 
 require_cmd apt-get
+require_cmd awk
 require_cmd curl
 require_cmd tar
 require_cmd systemctl
@@ -248,10 +535,17 @@ require_cmd systemctl
 install_sudo_if_missing
 install_tailscale_if_configured
 
+RELEASE_REPO="${CLEANROOM_REPO:-}"
+if [ -z "$RELEASE_REPO" ]; then
+  RELEASE_REPO="$(github_repo_slug_from_url "$BOOTSTRAP_REPO_URL" 2>/dev/null || true)"
+fi
+[ -n "$RELEASE_REPO" ] || RELEASE_REPO="buildkite/cleanroom"
+CLEANROOM_VERSION="$(normalize_version "$CLEANROOM_VERSION")"
+
 configure_apt_ipv4
 export DEBIAN_FRONTEND=noninteractive
 retry 5 10 apt-get update -y
-retry 5 10 apt-get install -y e2fsprogs golang-go iproute2 iptables
+retry 5 10 apt-get install -y e2fsprogs iproute2 iptables
 
 if [ "$INSTALL_FIRECRACKER" = "true" ]; then
   log "installing firecracker ${FIRECRACKER_VERSION}"
@@ -259,18 +553,11 @@ if [ "$INSTALL_FIRECRACKER" = "true" ]; then
 fi
 
 install -d -o root -g root -m 0755 "$XDG_CONFIG_HOME" "$XDG_STATE_HOME" "$XDG_DATA_HOME"
-install -d -o root -g root -m 0755 "$GOPATH" "$GOPATH/pkg" "$GOMODCACHE"
-
-log "building cleanroom binaries from ${REPO_ROOT}"
-export GOTOOLCHAIN=auto
-(
-  cd "$REPO_ROOT"
-  scripts/build-go.sh
-)
-
 install -d -o root -g root -m 0755 "$CLEANROOM_BINARY_INSTALL_DIR"
-install -o root -g root -m 0755 "$REPO_ROOT/dist/cleanroom" "$CLEANROOM_BINARY_INSTALL_DIR/cleanroom"
-install -o root -g root -m 0755 "$REPO_ROOT/dist/cleanroom-guest-agent" "$CLEANROOM_BINARY_INSTALL_DIR/cleanroom-guest-agent"
+
+install_cleanroom_release "$RELEASE_REPO" "$CLEANROOM_INSTALL_SCRIPT_REF" "$RELEASE_REPO" "$CLEANROOM_VERSION"
+INSTALLED_CLEANROOM_VERSION="$(installed_cleanroom_version)"
+install_cleanroom_root_helper "$RELEASE_REPO" "$(normalize_version "$INSTALLED_CLEANROOM_VERSION")"
 
 snapshot_base_dir='/var/lib/cleanroom/snapshots'
 CLEANROOM_ZFS_DATASET="${CLEANROOM_ZFS_DATASET:-cleanroom/data}"
@@ -295,6 +582,7 @@ default_backend: firecracker
 backends:
   firecracker:
     binary_path: /usr/local/bin/firecracker
+    privileged_helper_path: ${HELPER_INSTALL_PATH}
     vcpus: ${CLEANROOM_FIRECRACKER_VCPUS}
     memory_mib: ${CLEANROOM_FIRECRACKER_MEMORY_MIB}
     launch_seconds: ${CLEANROOM_FIRECRACKER_LAUNCH_SECONDS}
@@ -306,6 +594,8 @@ backends:
 EOF
 
 chmod 0644 "$CLEANROOM_CONFIG_DIR/config.yaml"
+
+install_host_bootstrap_runner
 
 log "running cleanroom doctor"
 "$CLEANROOM_BINARY_INSTALL_DIR/cleanroom" doctor

@@ -77,6 +77,18 @@ variable "setup_script_path" {
   default     = "scripts/bootstrap-buildkite-agent.sh"
 }
 
+variable "cleanroom_version" {
+  description = "Pinned cleanroom release version installed by prod/bootstrap scripts."
+  type        = string
+  default     = "v0.3.0"
+}
+
+variable "cleanroom_install_script_ref" {
+  description = "Git ref used when downloading scripts/install.sh for cleanroom bootstrap."
+  type        = string
+  default     = "main"
+}
+
 variable "tailscale_version" {
   description = "Tailscale version used for bootstrap when enabled."
   type        = string

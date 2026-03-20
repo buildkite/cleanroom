@@ -1,13 +1,11 @@
 variable "aws_region" {
   description = "AWS region for the host."
   type        = string
-  default     = "us-west-2"
 }
 
 variable "name_prefix" {
   description = "Name prefix for tags and resource names."
   type        = string
-  default     = "cleanroom-prod"
 }
 
 variable "availability_zone" {
@@ -72,6 +70,18 @@ variable "setup_script_path" {
   description = "Path to setup script in cloned repository."
   type        = string
   default     = "scripts/bootstrap-cleanroom-host.sh"
+}
+
+variable "cleanroom_version" {
+  description = "Pinned cleanroom GitHub release version installed on prod hosts."
+  type        = string
+  default     = "v0.3.0"
+}
+
+variable "cleanroom_install_script_ref" {
+  description = "Git ref used to fetch scripts/install.sh during prod bootstrap."
+  type        = string
+  default     = "main"
 }
 
 variable "tailscale_version" {
