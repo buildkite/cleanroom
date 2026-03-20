@@ -95,6 +95,8 @@ func TestProdBootstrapInstallsPinnedReleaseAndBootstrapRunner(t *testing.T) {
 	requireContains(t, scriptPath, "BOOTSTRAP_RUNNER_PATH='/usr/local/bin/cleanroom-bootstrap-host'")
 	requireContains(t, scriptPath, "CLEANROOM_VERSION")
 	requireContains(t, scriptPath, "CLEANROOM_INSTALL_SCRIPT_REF")
+	requireContains(t, scriptPath, "apply_prod_tfvars_overrides \"$repo_root\"")
+	requireContains(t, scriptPath, "prod.${AWS_REGION}.tfvars")
 	requireContains(t, scriptPath, "daemon install --force --log-level info")
 	requireContains(t, scriptPath, "default_backend: firecracker")
 	requireContains(t, scriptPath, "memory_mib: ${CLEANROOM_FIRECRACKER_MEMORY_MIB}")

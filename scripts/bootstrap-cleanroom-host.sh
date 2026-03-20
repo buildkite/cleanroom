@@ -202,6 +202,92 @@ retry() {
   done
 }
 
+read_tfvars_string() {
+  local path="$1"
+  local key="$2"
+
+  awk -v key="$key" '
+    $0 ~ "^[[:space:]]*" key "[[:space:]]*=" {
+      if (match($0, /^[[:space:]]*[A-Za-z0-9_]+[[:space:]]*=[[:space:]]*"([^"]*)"/, m)) {
+        print m[1]
+        found = 1
+      }
+      exit
+    }
+    END { exit(found ? 0 : 1) }
+  ' "$path"
+}
+
+read_tfvars_bool() {
+  local path="$1"
+  local key="$2"
+
+  awk -v key="$key" '
+    $0 ~ "^[[:space:]]*" key "[[:space:]]*=" {
+      if (match($0, /^[[:space:]]*[A-Za-z0-9_]+[[:space:]]*=[[:space:]]*(true|false)/, m)) {
+        print m[1]
+        found = 1
+      }
+      exit
+    }
+    END { exit(found ? 0 : 1) }
+  ' "$path"
+}
+
+apply_prod_tfvars_overrides() {
+  local repo_root="$1"
+  local tfvars_path="${BOOTSTRAP_TERRAFORM_VAR_FILE:-}"
+  local value
+
+  if [ -z "$tfvars_path" ]; then
+    tfvars_path="$repo_root/infra/terraform/envs/prod/prod.${AWS_REGION}.tfvars"
+  elif [ "${tfvars_path#/}" = "$tfvars_path" ]; then
+    tfvars_path="$repo_root/$tfvars_path"
+  fi
+
+  if [ ! -f "$tfvars_path" ]; then
+    echo "warning: bootstrap tfvars not found: $tfvars_path; using persisted runner settings" >&2
+    return
+  fi
+
+  if value="$(read_tfvars_string "$tfvars_path" "repo_url")"; then
+    REPO_URL="$value"
+  fi
+  if value="$(read_tfvars_string "$tfvars_path" "repo_ref")"; then
+    REPO_REF="$value"
+  fi
+  if value="$(read_tfvars_string "$tfvars_path" "setup_script_path")"; then
+    SETUP_SCRIPT_PATH="$value"
+  fi
+  if value="$(read_tfvars_string "$tfvars_path" "git_deploy_key_parameter_name")"; then
+    DEPLOY_KEY_PARAM="$value"
+  fi
+  if value="$(read_tfvars_string "$tfvars_path" "cleanroom_version")"; then
+    CLEANROOM_VERSION="$value"
+  fi
+  if value="$(read_tfvars_string "$tfvars_path" "cleanroom_install_script_ref")"; then
+    CLEANROOM_INSTALL_SCRIPT_REF="$value"
+  fi
+  if value="$(read_tfvars_string "$tfvars_path" "tailscale_auth_key_parameter_name")"; then
+    TAILSCALE_AUTH_KEY_PARAMETER_NAME="$value"
+  fi
+  if value="$(read_tfvars_string "$tfvars_path" "tailscale_version")"; then
+    TAILSCALE_VERSION="$value"
+  fi
+  if value="$(read_tfvars_string "$tfvars_path" "tailscale_hostname_prefix")"; then
+    TAILSCALE_HOSTNAME_PREFIX="$value"
+  fi
+  if value="$(read_tfvars_string "$tfvars_path" "tailscale_advertise_tags")"; then
+    TAILSCALE_ADVERTISE_TAGS="$value"
+  fi
+  if value="$(read_tfvars_bool "$tfvars_path" "tailscale_enable_ssh")"; then
+    TAILSCALE_ENABLE_SSH="$value"
+  fi
+  if value="$(read_tfvars_bool "$tfvars_path" "tailscale_accept_routes")"; then
+    TAILSCALE_ACCEPT_ROUTES="$value"
+  fi
+}
+
 : "${AWS_REGION:?AWS_REGION must be set}"
 : "${NAME_PREFIX:?NAME_PREFIX must be set}"
 : "${REPO_URL:?REPO_URL must be set}"
@@ -209,8 +295,6 @@ retry() {
 : "${SETUP_SCRIPT_PATH:?SETUP_SCRIPT_PATH must be set}"
 : "${INSTALL_FIRECRACKER:?INSTALL_FIRECRACKER must be set}"
 : "${FIRECRACKER_VERSION:?FIRECRACKER_VERSION must be set}"
-: "${CLEANROOM_VERSION:?CLEANROOM_VERSION must be set}"
-: "${CLEANROOM_INSTALL_SCRIPT_REF:?CLEANROOM_INSTALL_SCRIPT_REF must be set}"
 : "${CLEANROOM_BINARY_INSTALL_DIR:?CLEANROOM_BINARY_INSTALL_DIR must be set}"
 : "${CLEANROOM_CONFIG_DIR:?CLEANROOM_CONFIG_DIR must be set}"
 : "${HELPER_INSTALL_PATH:?HELPER_INSTALL_PATH must be set}"
@@ -279,6 +363,8 @@ if [ -n "$DEPLOY_KEY_PARAM" ]; then
   unset GIT_SSH_COMMAND
   rm -f /root/.ssh/cleanroom_deploy_key "$deploy_known_hosts"
 fi
+
+apply_prod_tfvars_overrides "$repo_root"
 
 setup_script="$repo_root/$SETUP_SCRIPT_PATH"
 if [ ! -f "$setup_script" ]; then

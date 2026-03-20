@@ -30,6 +30,8 @@ Runtime behaviour:
 - access the host over SSM or Tailscale, then use `sudo cleanroom ...`
 - prod sets `user_data_replace_on_change = false`, so bootstrap changes do not
   force EC2 replacement and host software upgrades are rerun in-place instead
+- the rerunnable host updater reloads mutable settings from the checked-out
+  region var-file on each run before reinstalling cleanroom
 - runtime config enables Firecracker snapshots with the file driver
 - when the bootstrap-created ZFS dataset is available, snapshots live under the
   dataset mountpoint; otherwise they fall back to `/var/lib/cleanroom/snapshots`
