@@ -132,6 +132,8 @@ func TestPackageDarwinVZHelperSupportsExplicitSigningKeychain(t *testing.T) {
 	for _, needle := range []string{
 		"CLEANROOM_DARWIN_VZ_HELPER_SIGN_KEYCHAIN",
 		`args+=(--keychain "${SIGN_KEYCHAIN}")`,
+		`SOURCE_PROFILE_PATH="${SOURCE_PATH}/Contents/embedded.provisionprofile"`,
+		`elif [[ "${source_is_bundle}" != "1" || ! -f "${SOURCE_PROFILE_PATH}" ]]; then`,
 	} {
 		if !strings.Contains(script, needle) {
 			t.Fatalf("expected package-darwin-vz-helper.sh to contain %q", needle)
@@ -152,6 +154,8 @@ func TestInstallScriptUsesSharedPackagerWhenAvailable(t *testing.T) {
 		`package_darwin_helper_with_repo_script()`,
 		`package_script="${SCRIPT_DIR}/package-darwin-vz-helper.sh"`,
 		`CLEANROOM_DARWIN_VZ_HELPER_SIGN_KEYCHAIN Optional keychain path when using the repo helper packager`,
+		`HELPER_BUNDLE_EMBEDDED_PROFILE_PATH="${HELPER_BUNDLE_SRC}/Contents/embedded.provisionprofile"`,
+		`[ -n "${HELPER_PROVISION_PROFILE}" ] || [ -f "${HELPER_BUNDLE_EMBEDDED_PROFILE_PATH}" ]`,
 		`if ! package_darwin_helper_with_repo_script "${HELPER_BUNDLE_DIR}" "${HELPER_BUNDLE_DIR}"; then`,
 		`if ! package_darwin_helper_with_repo_script "${HELPER_BINARY_SRC}" "${HELPER_SIGN_TARGET}"; then`,
 	} {
