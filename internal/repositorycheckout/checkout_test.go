@@ -75,3 +75,52 @@ func TestNormalizeRemoteURLPreservesIPv6Brackets(t *testing.T) {
 		t.Fatalf("unexpected normalized URL: got %q want %q", got, want)
 	}
 }
+
+func TestBuildBootstrapCommandIncludesSubmoduleUpdateWhenRequested(t *testing.T) {
+	command := BuildBootstrapCommand(&Checkout{
+		RemoteURL:      "https://github.com/buildkite/cleanroom.git",
+		CommitSHA:      "0123456789abcdef0123456789abcdef01234567",
+		DestinationDir: "/workspace",
+		Submodules:     true,
+	})
+
+	joined := strings.Join(command, " ")
+	if !strings.Contains(joined, `git -C "$dest" submodule update --init --recursive`) {
+		t.Fatalf("expected bootstrap command to update submodules, got %q", joined)
+	}
+}
+
+func TestWrapCommandInWorkdirQuotesDestinationAndArguments(t *testing.T) {
+	command := WrapCommandInWorkdir([]string{"printf", "%s", "it's alive"}, &Checkout{
+		DestinationDir: "/tmp/work tree",
+	})
+
+	joined := strings.Join(command, " ")
+	if !strings.Contains(joined, "cd '/tmp/work tree' && exec 'printf' '%s' 'it'\"'\"'s alive'") {
+		t.Fatalf("expected wrapped workdir command to quote args, got %q", joined)
+	}
+}
+
+func TestNormalizeCommandReturnsDetachedCopyWithoutSeparator(t *testing.T) {
+	original := []string{"--", "sh", "-lc", "pwd"}
+	normalized := NormalizeCommand(original)
+	original[1] = "mutated"
+
+	if got, want := strings.Join(normalized, " "), "sh -lc pwd"; got != want {
+		t.Fatalf("unexpected normalized command: got %q want %q", got, want)
+	}
+}
+
+func TestShellJoinQuotesSingleQuotes(t *testing.T) {
+	got := shellJoin([]string{"echo", "it's"})
+	if want := `'echo' 'it'"'"'s'`; got != want {
+		t.Fatalf("unexpected shell join: got %q want %q", got, want)
+	}
+}
+
+func TestWrapCommandWithBootstrapNormalizesPassthroughWithoutCheckout(t *testing.T) {
+	command := WrapCommandWithBootstrap([]string{"--", "echo", "ok"}, nil)
+	if got, want := strings.Join(command, " "), "echo ok"; got != want {
+		t.Fatalf("unexpected normalized command: got %q want %q", got, want)
+	}
+}

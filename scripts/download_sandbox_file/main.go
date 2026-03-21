@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -18,6 +19,10 @@ import (
 const defaultRequestTimeout = 45 * time.Second
 
 func main() {
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+}
+
+func run(args []string, stdout, stderr io.Writer) int {
 	var (
 		host      string
 		tlsCA     string
@@ -27,36 +32,40 @@ func main() {
 		timeout   time.Duration
 	)
 
-	flag.StringVar(&host, "host", "", "Control-plane endpoint")
-	flag.StringVar(&tlsCA, "tls-ca", "", "Path to CA certificate for HTTPS hosts")
-	flag.StringVar(&sandboxID, "sandbox-id", "", "Sandbox ID")
-	flag.StringVar(&path, "path", "", "Absolute guest path to download")
-	flag.Int64Var(&maxBytes, "max-bytes", 10*1024*1024, "Maximum bytes to download")
-	flag.DurationVar(&timeout, "timeout", defaultRequestTimeout, "Request timeout (0 disables timeout)")
-	flag.Parse()
+	flags := flag.NewFlagSet("download-sandbox-file", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	flags.StringVar(&host, "host", "", "Control-plane endpoint")
+	flags.StringVar(&tlsCA, "tls-ca", "", "Path to CA certificate for HTTPS hosts")
+	flags.StringVar(&sandboxID, "sandbox-id", "", "Sandbox ID")
+	flags.StringVar(&path, "path", "", "Absolute guest path to download")
+	flags.Int64Var(&maxBytes, "max-bytes", 10*1024*1024, "Maximum bytes to download")
+	flags.DurationVar(&timeout, "timeout", defaultRequestTimeout, "Request timeout (0 disables timeout)")
+	if err := flags.Parse(args); err != nil {
+		return 2
+	}
 
 	if strings.TrimSpace(host) == "" {
-		fail("missing --host")
+		return failf(stderr, "missing --host")
 	}
 	if strings.TrimSpace(sandboxID) == "" {
-		fail("missing --sandbox-id")
+		return failf(stderr, "missing --sandbox-id")
 	}
 	if strings.TrimSpace(path) == "" {
-		fail("missing --path")
+		return failf(stderr, "missing --path")
 	}
 	if timeout < 0 {
-		fail("invalid --timeout: must be >= 0")
+		return failf(stderr, "invalid --timeout: must be >= 0")
 	}
 
 	ep, err := endpoint.Resolve(host)
 	if err != nil {
-		fail("resolve host: %v", err)
+		return failf(stderr, "resolve host: %v", err)
 	}
 	client, err := controlclient.New(ep, controlclient.WithTLS(tlsconfig.Options{
 		CAPath: tlsCA,
 	}))
 	if err != nil {
-		fail("create control client: %v", err)
+		return failf(stderr, "create control client: %v", err)
 	}
 
 	ctx, cancel := requestContext(timeout)
@@ -69,13 +78,14 @@ func main() {
 	})
 	if err != nil {
 		if timeout > 0 && errors.Is(err, context.DeadlineExceeded) {
-			fail("download sandbox file timed out after %s: %v", timeout, err)
+			return failf(stderr, "download sandbox file timed out after %s: %v", timeout, err)
 		}
-		fail("download sandbox file: %v", err)
+		return failf(stderr, "download sandbox file: %v", err)
 	}
-	if _, err := os.Stdout.Write(resp.GetData()); err != nil {
-		fail("write download payload: %v", err)
+	if _, err := stdout.Write(resp.GetData()); err != nil {
+		return failf(stderr, "write download payload: %v", err)
 	}
+	return 0
 }
 
 func requestContext(timeout time.Duration) (context.Context, context.CancelFunc) {
@@ -85,7 +95,7 @@ func requestContext(timeout time.Duration) (context.Context, context.CancelFunc)
 	return context.WithTimeout(context.Background(), timeout)
 }
 
-func fail(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, format+"\n", args...)
-	os.Exit(1)
+func failf(w io.Writer, format string, args ...any) int {
+	fmt.Fprintf(w, format+"\n", args...)
+	return 1
 }
