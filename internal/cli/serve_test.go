@@ -522,6 +522,71 @@ func TestDaemonInstallDarwinForceBootsOutBeforeRewritingAndKickstartsUserService
 	}
 }
 
+func TestDaemonInstallDarwinForceDoesNotBootoutWhenStagingPlistFails(t *testing.T) {
+	tmpDir := t.TempDir()
+	plistPath := filepath.Join(tmpDir, "Library", "LaunchAgents", launchdServiceName+".plist")
+	if err := os.MkdirAll(filepath.Dir(plistPath), 0o755); err != nil {
+		t.Fatalf("mkdir launch agents dir: %v", err)
+	}
+	if err := os.WriteFile(plistPath, []byte("old-plist"), 0o644); err != nil {
+		t.Fatalf("write existing plist: %v", err)
+	}
+
+	prevEUID := serveInstallEUID
+	prevUID := serveInstallUID
+	prevGOOS := serveInstallGOOS
+	prevUserHomeDir := serveInstallUserHomeDir
+	prevExecutable := serveInstallExecutablePath
+	prevRunCommand := serveInstallRunCommand
+	prevWriteFile := serveInstallWriteFile
+	serveInstallEUID = func() int { return 501 }
+	serveInstallUID = func() int { return 501 }
+	serveInstallGOOS = "darwin"
+	serveInstallUserHomeDir = func() (string, error) { return tmpDir, nil }
+	serveInstallExecutablePath = func() (string, error) { return "/Users/lachlan/bin/cleanroom", nil }
+	var calls [][]string
+	serveInstallRunCommand = func(name string, args ...string) error {
+		calls = append(calls, append([]string{name}, args...))
+		return nil
+	}
+	serveInstallWriteFile = func(path string, data []byte, mode os.FileMode) error {
+		if path == plistPath {
+			return os.WriteFile(path, data, mode)
+		}
+		return errors.New("disk full")
+	}
+	t.Cleanup(func() {
+		serveInstallEUID = prevEUID
+		serveInstallUID = prevUID
+		serveInstallGOOS = prevGOOS
+		serveInstallUserHomeDir = prevUserHomeDir
+		serveInstallExecutablePath = prevExecutable
+		serveInstallRunCommand = prevRunCommand
+		serveInstallWriteFile = prevWriteFile
+	})
+
+	stdout, _ := makeStdoutCapture(t)
+	cmd := &DaemonCommand{Action: "install", Force: true}
+	err := cmd.Run(&runtimeContext{CWD: tmpDir, Stdout: stdout})
+	if err == nil {
+		t.Fatal("expected staged plist write failure")
+	}
+	if !strings.Contains(err.Error(), "stage daemon service file") {
+		t.Fatalf("expected staged plist error context, got: %v", err)
+	}
+	if len(calls) != 0 {
+		t.Fatalf("did not expect launchctl calls when staging plist fails, got: %v", calls)
+	}
+
+	raw, readErr := os.ReadFile(plistPath)
+	if readErr != nil {
+		t.Fatalf("read existing plist after failed force install: %v", readErr)
+	}
+	if got := string(raw); got != "old-plist" {
+		t.Fatalf("expected existing plist to remain unchanged after failed force install, got %q", got)
+	}
+}
+
 func TestDaemonInstallDarwinSystemScopeUnsupported(t *testing.T) {
 	prevEUID := serveInstallEUID
 	prevGOOS := serveInstallGOOS
