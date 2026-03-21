@@ -388,20 +388,37 @@ func launchdServiceTarget(domain string) string {
 }
 
 func installLaunchdDaemonInDomain(stdout io.Writer, executablePath string, args []string, force bool, servicePath, domain string) error {
-	content := renderLaunchdService(executablePath, args)
-	if err := writeDaemonFile(servicePath, content, force, 0o644); err != nil {
-		return err
-	}
-
 	target := launchdServiceTarget(domain)
+	content := renderLaunchdService(executablePath, args)
 	if force {
-		_ = serveInstallRunCommand("launchctl", "bootout", target)
+		if err := validateDaemonFileTarget(servicePath, true); err != nil {
+			return err
+		}
+		stagedPath, cleanup, err := stageDaemonFile(servicePath, content, 0o644)
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+
+		if err := serveInstallRunCommand("launchctl", "bootout", target); err != nil && !isExitError(err) {
+			return fmt.Errorf("bootout launchd service %s: %w", launchdServiceName, err)
+		}
+		if err := serveInstallRename(stagedPath, servicePath); err != nil {
+			return fmt.Errorf("replace daemon service file %s: %w", servicePath, err)
+		}
+	} else {
+		if err := writeDaemonFile(servicePath, content, force, 0o644); err != nil {
+			return err
+		}
 	}
 	if err := serveInstallRunCommand("launchctl", "enable", target); err != nil {
 		return fmt.Errorf("enable launchd service %s: %w", launchdServiceName, err)
 	}
 	if err := serveInstallRunCommand("launchctl", "bootstrap", domain, servicePath); err != nil {
 		return fmt.Errorf("bootstrap launchd service %s: %w", launchdServiceName, err)
+	}
+	if err := serveInstallRunCommand("launchctl", "kickstart", "-k", target); err != nil {
+		return fmt.Errorf("start launchd service %s: %w", launchdServiceName, err)
 	}
 
 	_, err := fmt.Fprint(stdout, renderSummaryBlock(summaryBlock{
@@ -416,7 +433,7 @@ func installLaunchdDaemonInDomain(stdout io.Writer, executablePath string, args 
 	return err
 }
 
-func writeDaemonFile(path, content string, force bool, mode os.FileMode) error {
+func validateDaemonFileTarget(path string, force bool) error {
 	if st, err := serveInstallStat(path); err == nil {
 		if st.IsDir() {
 			return fmt.Errorf("daemon service path %s is a directory", path)
@@ -426,6 +443,39 @@ func writeDaemonFile(path, content string, force bool, mode os.FileMode) error {
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("stat %s: %w", path, err)
+	}
+	return nil
+}
+
+func stageDaemonFile(path, content string, mode os.FileMode) (string, func(), error) {
+	dir := filepath.Dir(path)
+	if err := serveInstallMkdirAll(dir, 0o755); err != nil {
+		return "", nil, fmt.Errorf("create daemon service directory: %w", err)
+	}
+
+	tmpFile, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return "", nil, fmt.Errorf("create staged daemon service file %s: %w", path, err)
+	}
+	tmpPath := tmpFile.Name()
+	if err := tmpFile.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return "", nil, fmt.Errorf("close staged daemon service file %s: %w", path, err)
+	}
+
+	cleanup := func() {
+		_ = serveInstallRemoveFile(tmpPath)
+	}
+	if err := serveInstallWriteFile(tmpPath, []byte(content), mode); err != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("stage daemon service file %s: %w", path, err)
+	}
+	return tmpPath, cleanup, nil
+}
+
+func writeDaemonFile(path, content string, force bool, mode os.FileMode) error {
+	if err := validateDaemonFileTarget(path, force); err != nil {
+		return err
 	}
 
 	if err := serveInstallMkdirAll(filepath.Dir(path), 0o755); err != nil {

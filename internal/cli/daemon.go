@@ -58,6 +58,7 @@ var (
 	serveInstallStat             = os.Stat
 	serveInstallMkdirAll         = os.MkdirAll
 	serveInstallWriteFile        = os.WriteFile
+	serveInstallRename           = os.Rename
 	serveInstallRemoveFile       = os.Remove
 	serveInstallUserHomeDir      = os.UserHomeDir
 	serveInstallExecutablePath   = os.Executable
