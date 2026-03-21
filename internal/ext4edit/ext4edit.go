@@ -2,10 +2,12 @@
 package ext4edit
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/buildkite/cleanroom/internal/hosttools"
@@ -26,18 +28,20 @@ func InjectFile(imagePath, srcPath, dstPath string, mode os.FileMode) error {
 	if !strings.HasPrefix(cleanDst, "/") {
 		return fmt.Errorf("destination path %q must be absolute", dstPath)
 	}
-	if err := ensureDir(imagePath, filepath.Dir(cleanDst)); err != nil {
+	resolvedDir, err := ensureDir(imagePath, filepath.Dir(cleanDst))
+	if err != nil {
 		return err
 	}
+	resolvedDst := filepath.Join(resolvedDir, filepath.Base(cleanDst))
 
-	if PathExists(imagePath, cleanDst) {
-		rmCommand, err := debugFSCommand("rm", cleanDst)
+	if pathExistsDirect(imagePath, resolvedDst) {
+		rmCommand, err := debugFSCommand("rm", resolvedDst)
 		if err != nil {
 			return err
 		}
 		_ = runDebugFS(imagePath, true, rmCommand)
 	}
-	writeCommand, err := debugFSCommand("write", srcPath, cleanDst)
+	writeCommand, err := debugFSCommand("write", srcPath, resolvedDst)
 	if err != nil {
 		return err
 	}
@@ -45,7 +49,7 @@ func InjectFile(imagePath, srcPath, dstPath string, mode os.FileMode) error {
 		return err
 	}
 	modeValue := fmt.Sprintf("%#o", uint32(0o100000)|uint32(mode.Perm()))
-	setModeCommand, err := debugFSSetInodeFieldCommand(cleanDst, "mode", modeValue)
+	setModeCommand, err := debugFSSetInodeFieldCommand(resolvedDst, "mode", modeValue)
 	if err != nil {
 		return err
 	}
@@ -54,20 +58,20 @@ func InjectFile(imagePath, srcPath, dstPath string, mode os.FileMode) error {
 
 // PathExists reports whether the given path can be resolved inside the ext4 image.
 func PathExists(imagePath, path string) bool {
-	command, err := debugFSCommand("stat", path)
+	resolvedPath, err := resolvePath(imagePath, path)
 	if err != nil {
 		return false
 	}
-	return runDebugFS(imagePath, false, command) == nil
+	return pathExistsDirect(imagePath, resolvedPath)
 }
 
 // PathType returns the ext4 inode type for the given path.
 func PathType(imagePath, path string) PathKind {
-	command, err := debugFSCommand("stat", path)
+	resolvedPath, err := resolvePath(imagePath, path)
 	if err != nil {
 		return PathKindUnknown
 	}
-	output, err := runDebugFSOutput(imagePath, false, command)
+	output, err := statPathDirect(imagePath, resolvedPath)
 	if err != nil {
 		return PathKindUnknown
 	}
@@ -127,33 +131,149 @@ func DebugFSStatType(output string) PathKind {
 	return PathKindUnknown
 }
 
-func ensureDir(imagePath, dir string) error {
+// DebugFSStatLinkTarget parses a debugfs `stat` response for a symlink target.
+func DebugFSStatLinkTarget(output string) (string, error) {
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+		line = strings.TrimSpace(line)
+		for _, prefix := range []string{"Fast link dest:", "Long link dest:"} {
+			if !strings.HasPrefix(line, prefix) {
+				continue
+			}
+			target := strings.TrimSpace(strings.TrimPrefix(line, prefix))
+			if target == "" {
+				return "", errors.New("debugfs stat did not include a symlink target")
+			}
+			if unquoted, err := strconv.Unquote(target); err == nil {
+				return unquoted, nil
+			}
+			return strings.Trim(target, `"`), nil
+		}
+	}
+	return "", errors.New("debugfs stat did not include a symlink target")
+}
+
+func ensureDir(imagePath, dir string) (string, error) {
 	cleanDir := filepath.Clean(dir)
 	if cleanDir == "." || cleanDir == "/" {
-		return nil
+		return "/", nil
 	}
 	if !strings.HasPrefix(cleanDir, "/") {
 		cleanDir = "/" + cleanDir
 	}
-	parts := strings.Split(strings.TrimPrefix(cleanDir, "/"), "/")
-	cur := ""
-	for _, part := range parts {
+	return resolveDir(imagePath, cleanDir, true)
+}
+
+func resolvePath(imagePath, path string) (string, error) {
+	cleanPath := filepath.Clean(path)
+	if cleanPath == "." || cleanPath == "/" {
+		return "/", nil
+	}
+	if !strings.HasPrefix(cleanPath, "/") {
+		cleanPath = "/" + cleanPath
+	}
+	resolvedDir, err := resolveDir(imagePath, filepath.Dir(cleanPath), false)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(resolvedDir, filepath.Base(cleanPath)), nil
+}
+
+func resolveDir(imagePath, dir string, createMissing bool) (string, error) {
+	cleanDir := filepath.Clean(dir)
+	if cleanDir == "." || cleanDir == "/" {
+		return "/", nil
+	}
+	if !strings.HasPrefix(cleanDir, "/") {
+		cleanDir = "/" + cleanDir
+	}
+
+	cur := "/"
+	remaining := strings.Split(strings.TrimPrefix(cleanDir, "/"), "/")
+	symlinkDepth := 0
+
+	for len(remaining) > 0 {
+		part := remaining[0]
+		remaining = remaining[1:]
 		if strings.TrimSpace(part) == "" {
 			continue
 		}
-		cur += "/" + part
-		if PathExists(imagePath, cur) {
-			continue
-		}
-		command, err := debugFSCommand("mkdir", cur)
+
+		candidate := filepath.Join(cur, part)
+		output, err := statPathDirect(imagePath, candidate)
 		if err != nil {
-			return err
+			if createMissing && isMissingPathError(err) {
+				command, commandErr := debugFSCommand("mkdir", candidate)
+				if commandErr != nil {
+					return "", commandErr
+				}
+				if err := runDebugFS(imagePath, true, command); err != nil {
+					return "", err
+				}
+				cur = candidate
+				continue
+			}
+			return "", err
 		}
-		if err := runDebugFS(imagePath, true, command); err != nil {
-			return err
+
+		switch DebugFSStatType(output) {
+		case PathKindDirectory:
+			cur = candidate
+		case PathKindSymlink:
+			target, err := DebugFSStatLinkTarget(output)
+			if err != nil {
+				return "", fmt.Errorf("resolve symlink %q: %w", candidate, err)
+			}
+			symlinkDepth++
+			if symlinkDepth > 40 {
+				return "", fmt.Errorf("resolve symlink %q: too many nested symlinks", candidate)
+			}
+
+			resolvedTarget := target
+			if !strings.HasPrefix(resolvedTarget, "/") {
+				resolvedTarget = filepath.Join(filepath.Dir(candidate), resolvedTarget)
+			}
+			cur = "/"
+			remaining = append(splitExt4Path(resolvedTarget), remaining...)
+		default:
+			return "", fmt.Errorf("path %q exists but is not a directory", candidate)
 		}
 	}
-	return nil
+
+	return cur, nil
+}
+
+func splitExt4Path(path string) []string {
+	cleanPath := filepath.Clean(path)
+	if cleanPath == "." || cleanPath == "/" {
+		return nil
+	}
+	if !strings.HasPrefix(cleanPath, "/") {
+		cleanPath = "/" + cleanPath
+	}
+	return strings.Split(strings.TrimPrefix(cleanPath, "/"), "/")
+}
+
+func pathExistsDirect(imagePath, path string) bool {
+	_, err := statPathDirect(imagePath, path)
+	return err == nil
+}
+
+func statPathDirect(imagePath, path string) (string, error) {
+	command, err := debugFSCommand("stat", path)
+	if err != nil {
+		return "", err
+	}
+	return runDebugFSOutput(imagePath, false, command)
+}
+
+func isMissingPathError(err error) bool {
+	if err == nil {
+		return false
+	}
+	lower := strings.ToLower(err.Error())
+	return strings.Contains(lower, "file not found") ||
+		strings.Contains(lower, "ext2_lookup") ||
+		strings.Contains(lower, "no such file or directory")
 }
 
 func debugFSCommand(name string, args ...string) (string, error) {
