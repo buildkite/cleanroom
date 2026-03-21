@@ -246,7 +246,12 @@ while true; do
 done
 
 echo "--- :recycle: Persistent sandbox lifecycle test"
-sandbox_id="$(./dist/cleanroom sandbox create --host "$listen_endpoint" | tr -d '\n')"
+sandbox_image_ref="$(awk '/^[[:space:]]*ref:[[:space:]]*/ { print $2; exit }' cleanroom.yaml)"
+if [[ -z "$sandbox_image_ref" ]]; then
+  echo "failed to resolve sandbox image ref from cleanroom.yaml" >&2
+  exit 1
+fi
+sandbox_id="$(./dist/cleanroom sandbox create --host "$listen_endpoint" --image "$sandbox_image_ref" | tr -d '\n')"
 if [[ -z "$sandbox_id" ]]; then
   echo "sandbox create did not return an id" >&2
   exit 1
