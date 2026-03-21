@@ -143,6 +143,36 @@ func startExecutionStdinForwarder(
 	return errCh
 }
 
+func resolveExecutionEnv(specs []string) ([]string, error) {
+	if len(specs) == 0 {
+		return nil, nil
+	}
+
+	out := make([]string, 0, len(specs))
+	for _, spec := range specs {
+		if strings.Contains(spec, "\x00") {
+			return nil, fmt.Errorf("invalid --env %q: contains NUL", spec)
+		}
+		if key, _, ok := strings.Cut(spec, "="); ok {
+			if key == "" {
+				return nil, fmt.Errorf("invalid --env %q: missing variable name", spec)
+			}
+			out = append(out, spec)
+			continue
+		}
+
+		if spec == "" {
+			return nil, errors.New("invalid --env \"\": missing variable name")
+		}
+		value, ok := os.LookupEnv(spec)
+		if !ok {
+			return nil, fmt.Errorf("environment variable %q is not set", spec)
+		}
+		out = append(out, spec+"="+value)
+	}
+	return out, nil
+}
+
 func closeExecutionStdin(client *controlclient.Client, sandboxID, executionID string) error {
 	_, err := client.CloseExecutionStdin(context.Background(), &cleanroomv1.CloseExecutionStdinRequest{
 		SandboxId:   sandboxID,

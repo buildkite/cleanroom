@@ -71,6 +71,7 @@ type executionState struct {
 	ImageRef         string
 	ImageDigest      string
 	Command          []string
+	Env              []string
 	Options          executionOptions
 	TTY              bool
 	Kind             cleanroomv1.ExecutionKind
@@ -804,6 +805,10 @@ func (s *Service) CreateExecution(ctx context.Context, req *cleanroomv1.CreateEx
 	if len(command) == 0 {
 		return nil, errors.New("missing command")
 	}
+	executionEnv, err := normalizeExecutionEnv(req.GetEnv())
+	if err != nil {
+		return nil, err
+	}
 	repository := repositorycheckout.FromProto(req.GetRepositoryCheckout())
 	if repository != nil {
 		if err := repository.ValidateBootstrap(); err != nil {
@@ -927,6 +932,7 @@ func (s *Service) CreateExecution(ctx context.Context, req *cleanroomv1.CreateEx
 		ImageRef:    imageRef,
 		ImageDigest: imageDigest,
 		Command:     append([]string(nil), command...),
+		Env:         executionEnv,
 		Options:     execOpts,
 		TTY:         tty,
 		Kind:        kind,
@@ -1595,6 +1601,7 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 		SandboxID:         sandboxID,
 		ExecutionID:       ex.ID,
 		Command:           append([]string(nil), ex.Command...),
+		Env:               append([]string(nil), ex.Env...),
 		TTY:               ex.TTY,
 		Policy:            sb.Policy,
 		FirecrackerConfig: firecrackerCfg,

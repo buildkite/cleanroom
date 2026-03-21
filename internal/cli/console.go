@@ -20,13 +20,14 @@ import (
 
 type ConsoleCommand struct {
 	clientFlags
-	Chdir          string `short:"c" help:"Change to this directory before running commands"`
-	Backend        string `help:"Execution backend (defaults to runtime config or host default)"`
-	In             string `name:"in" aliases:"sandbox-id" help:"Run in an existing sandbox ID instead of creating a new one"`
-	From           string `name:"from" help:"Create the sandbox from an existing snapshot ID"`
-	Image          string `help:"Override sandbox image ref for newly created sandboxes (tag, digest, or local Docker image)"`
-	Keep           bool   `help:"Keep a newly created sandbox after the console exits"`
-	PrintSandboxID bool   `name:"print-sandbox-id" help:"Print resolved sandbox_id=<id> to stderr before attaching"`
+	Chdir          string   `short:"c" help:"Change to this directory before running commands"`
+	Backend        string   `help:"Execution backend (defaults to runtime config or host default)"`
+	In             string   `name:"in" aliases:"sandbox-id" help:"Run in an existing sandbox ID instead of creating a new one"`
+	From           string   `name:"from" help:"Create the sandbox from an existing snapshot ID"`
+	Image          string   `help:"Override sandbox image ref for newly created sandboxes (tag, digest, or local Docker image)"`
+	Keep           bool     `help:"Keep a newly created sandbox after the console exits"`
+	Env            []string `short:"e" name:"env" help:"Set guest environment variables; use KEY to inherit from the local environment or KEY=VALUE to set an explicit value"`
+	PrintSandboxID bool     `name:"print-sandbox-id" help:"Print resolved sandbox_id=<id> to stderr before attaching"`
 
 	LaunchSeconds int64 `help:"VM boot/guest-agent readiness timeout in seconds"`
 
@@ -48,6 +49,10 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) (runErr error) {
 	if err != nil {
 		return err
 	}
+	executionEnv, err := resolveExecutionEnv(c.Env)
+	if err != nil {
+		return err
+	}
 
 	command := append([]string(nil), c.Command...)
 	if len(command) == 0 {
@@ -58,6 +63,7 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) (runErr error) {
 		"backend", c.Backend,
 		"sandbox_id", strings.TrimSpace(c.In),
 		"command_argc", len(command),
+		"env_count", len(executionEnv),
 	)
 	persistentRepositoryBackend := backendSupportsRepositoryPersistence(ctx, host, c.Backend)
 	repository, err := maybeResolveRepositoryCheckout(cwd, ctx.Loader, strings.TrimSpace(c.In), strings.TrimSpace(c.From), !persistentRepositoryBackend)
@@ -160,6 +166,7 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) (runErr error) {
 	createExecutionResp, err := client.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
 		SandboxId:          sandboxID,
 		Command:            repositoryExecutionCommand(command, repository, inlineRepositoryBootstrap),
+		Env:                executionEnv,
 		Kind:               cleanroomv1.ExecutionKind_EXECUTION_KIND_INTERACTIVE,
 		RepositoryCheckout: repositoryExecutionCheckout(repository, inlineRepositoryBootstrap),
 		Options: &cleanroomv1.ExecutionOptions{

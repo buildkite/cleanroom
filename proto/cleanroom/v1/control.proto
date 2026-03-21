@@ -249,6 +249,7 @@ message CreateExecutionRequest {
   ExecutionOptions options = 3;
   ExecutionKind kind = 4;
   RepositoryCheckout repository_checkout = 5;
+  repeated string env = 6;
 }
 
 message CreateExecutionResponse {

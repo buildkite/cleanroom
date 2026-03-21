@@ -365,6 +365,29 @@ func TestExecutionStreamIncludesExitEvent(t *testing.T) {
 	}
 }
 
+func TestCreateExecutionRejectsEnvWithoutAssignment(t *testing.T) {
+	adapter := &stubAdapter{}
+	svc := newTestService(adapter)
+
+	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createSandboxResp.GetSandbox().GetSandboxId()
+
+	_, err = svc.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+		SandboxId: sandboxID,
+		Command:   []string{"echo", "hi"},
+		Env:       []string{"OPENAI_API_KEY"},
+	})
+	if err == nil {
+		t.Fatal("expected CreateExecution to reject env entries without KEY=VALUE")
+	}
+	if !strings.Contains(err.Error(), "KEY=VALUE") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestCreateSnapshotPersistsMetadataAndDeletesIt(t *testing.T) {
 	store := newMemorySnapshotStore()
 	adapter := &stubAdapter{

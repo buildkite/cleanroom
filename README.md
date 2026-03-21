@@ -91,6 +91,7 @@ Run a command in a sandbox:
 
 ```bash
 cleanroom exec -- npm test
+cleanroom exec -e OPENAI_API_KEY -- codex app-server
 ```
 
 When `cleanroom.yaml` includes a repository bootstrap block, the top-level
@@ -111,6 +112,7 @@ Override the sandbox image per command (remote tag/digest or local Docker image 
 cleanroom sandbox create --image ghcr.io/buildkite/cleanroom-base/alpine:latest
 cleanroom exec --image ghcr.io/buildkite/cleanroom-base/alpine:latest -- npm test
 cleanroom console --image my-local-image:dev -- sh
+cleanroom exec -e OPENAI_API_KEY -e CODEX_HOME=/workspace/.codex -- codex app-server
 ```
 
 Equivalent namespaced command:

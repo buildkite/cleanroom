@@ -13,14 +13,15 @@ import (
 
 type ExecCommand struct {
 	clientFlags
-	Chdir          string `short:"c" help:"Change to this directory before running commands"`
-	Backend        string `help:"Execution backend (defaults to runtime config or host default)"`
-	In             string `name:"in" aliases:"sandbox-id" help:"Run in an existing sandbox ID instead of creating a new one"`
-	From           string `name:"from" help:"Create the sandbox from an existing snapshot ID"`
-	Image          string `help:"Override sandbox image ref for newly created sandboxes (tag, digest, or local Docker image)"`
-	Keep           bool   `help:"Keep a newly created sandbox after the command completes"`
-	NoStdin        bool   `short:"n" name:"no-stdin" aliases:"stdin-eof" help:"Close stdin immediately instead of attaching it"`
-	PrintSandboxID bool   `name:"print-sandbox-id" help:"Print resolved sandbox_id=<id> to stderr before streaming output"`
+	Chdir          string   `short:"c" help:"Change to this directory before running commands"`
+	Backend        string   `help:"Execution backend (defaults to runtime config or host default)"`
+	In             string   `name:"in" aliases:"sandbox-id" help:"Run in an existing sandbox ID instead of creating a new one"`
+	From           string   `name:"from" help:"Create the sandbox from an existing snapshot ID"`
+	Image          string   `help:"Override sandbox image ref for newly created sandboxes (tag, digest, or local Docker image)"`
+	Keep           bool     `help:"Keep a newly created sandbox after the command completes"`
+	Env            []string `short:"e" name:"env" help:"Set guest environment variables; use KEY to inherit from the local environment or KEY=VALUE to set an explicit value"`
+	NoStdin        bool     `short:"n" name:"no-stdin" aliases:"stdin-eof" help:"Close stdin immediately instead of attaching it"`
+	PrintSandboxID bool     `name:"print-sandbox-id" help:"Print resolved sandbox_id=<id> to stderr before streaming output"`
 
 	LaunchSeconds int64 `help:"VM boot/guest-agent readiness timeout in seconds"`
 
@@ -42,12 +43,17 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 	if err != nil {
 		return err
 	}
+	executionEnv, err := resolveExecutionEnv(e.Env)
+	if err != nil {
+		return err
+	}
 
 	logger.Debug("sending execution request",
 		"host", host,
 		"backend", e.Backend,
 		"sandbox_id", strings.TrimSpace(e.In),
 		"command_argc", len(e.Command),
+		"env_count", len(executionEnv),
 	)
 	persistentRepositoryBackend := backendSupportsRepositoryPersistence(ctx, host, e.Backend)
 	repository, err := maybeResolveRepositoryCheckout(cwd, ctx.Loader, strings.TrimSpace(e.In), strings.TrimSpace(e.From), !persistentRepositoryBackend)
@@ -151,6 +157,7 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 	createExecutionResp, err := client.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
 		SandboxId:          sandboxID,
 		Command:            repositoryExecutionCommand(e.Command, repository, inlineRepositoryBootstrap),
+		Env:                executionEnv,
 		Kind:               cleanroomv1.ExecutionKind_EXECUTION_KIND_BATCH,
 		RepositoryCheckout: repositoryExecutionCheckout(repository, inlineRepositoryBootstrap),
 		Options: &cleanroomv1.ExecutionOptions{

@@ -345,7 +345,7 @@ func (a *Adapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest
 		}
 	}
 
-	guestResult, timing, err := a.executeInSandbox(ctx, instance, req.LaunchSeconds, req.Command, req.TTY, stream)
+	guestResult, timing, err := a.executeInSandbox(ctx, instance, req.LaunchSeconds, req.Command, req.Env, req.TTY, stream)
 	if err != nil {
 		observation.ExitCode = 1
 		observation.GuestError = err.Error()
@@ -406,7 +406,7 @@ func (a *Adapter) DownloadSandboxFile(ctx context.Context, sandboxID, path strin
 		limit = maxBytes
 	}
 	cmd := []string{"head", "-c", strconv.FormatInt(limit, 10), "--", path}
-	result, _, err := a.executeInSandbox(ctx, instance, 0, cmd, false, backend.OutputStream{OnStdout: func(chunk []byte) {
+	result, _, err := a.executeInSandbox(ctx, instance, 0, cmd, nil, false, backend.OutputStream{OnStdout: func(chunk []byte) {
 		_, _ = stdout.Write(chunk)
 	}})
 	if err != nil {
@@ -476,7 +476,7 @@ func (a *Adapter) CreateSnapshot(ctx context.Context, req backend.SnapshotReques
 		return nil, fmt.Errorf("sandbox %q is not running: %w", sandboxID, err)
 	}
 
-	syncResp, _, err := a.executeInSandbox(ctx, instance, snapshotSyncTimeoutSeconds, []string{"sync"}, false, backend.OutputStream{})
+	syncResp, _, err := a.executeInSandbox(ctx, instance, snapshotSyncTimeoutSeconds, []string{"sync"}, nil, false, backend.OutputStream{})
 	if err != nil {
 		return nil, fmt.Errorf("sync sandbox filesystem before snapshot: %w", err)
 	}
@@ -612,8 +612,12 @@ func (a *Adapter) DeleteSnapshot(ctx context.Context, req backend.DeleteSnapshot
 	return nil
 }
 
-func (a *Adapter) executeInSandbox(ctx context.Context, instance *sandboxInstance, launchSeconds int64, command []string, tty bool, stream backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error) {
-	guestReq := vsockexec.ExecRequest{Command: append([]string(nil), command...), TTY: tty}
+func (a *Adapter) executeInSandbox(ctx context.Context, instance *sandboxInstance, launchSeconds int64, command, env []string, tty bool, stream backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error) {
+	guestReq := vsockexec.ExecRequest{
+		Command: append([]string(nil), command...),
+		Env:     append([]string(nil), env...),
+		TTY:     tty,
+	}
 	seed := make([]byte, 64)
 	if _, err := cryptorand.Read(seed); err == nil {
 		guestReq.EntropySeed = seed

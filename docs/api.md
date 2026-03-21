@@ -313,10 +313,12 @@ Behavior contract:
    - otherwise create a sandbox from policy
 5. For repo-aware top-level commands, materialize that checkout in the sandbox
    and default the guest working directory to `repository.path`.
-6. Create execution with explicit kind and TTY options.
+6. Create execution with explicit kind, env, and TTY options.
 7. Attach stdio according to command mode:
    - `cleanroom exec` defaults to attached stdin plus separate stdout/stderr
      using `StreamExecution`, `WriteExecutionStdin`, and `CloseExecutionStdin`
+   - `cleanroom exec --env KEY` inherits `KEY` from the local client
+   - `cleanroom exec --env KEY=VALUE` sends an explicit guest env assignment
    - `cleanroom exec -n` closes stdin immediately so the command observes EOF
    - `cleanroom console` uses `AttachExecution` for PTY-oriented
      interactive sessions

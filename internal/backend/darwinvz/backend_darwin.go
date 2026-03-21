@@ -966,7 +966,11 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 		defer a.GatewayRegistry.ReleaseScopeToken(gatewayScopeToken)
 	}
 
-	guestReq := vsockexec.ExecRequest{Command: append([]string(nil), req.Command...), TTY: req.TTY}
+	guestReq := vsockexec.ExecRequest{
+		Command: append([]string(nil), req.Command...),
+		Env:     append([]string(nil), req.Env...),
+		TTY:     req.TTY,
+	}
 	if a.GatewayRegistry != nil && gatewayScopeToken != "" {
 		gwPort := a.GatewayPort
 		if gwPort <= 0 {
@@ -1362,7 +1366,11 @@ func (a *Adapter) executeInSandbox(bootCtx context.Context, runCtx context.Conte
 		defer a.GatewayRegistry.ReleaseScopeToken(gatewayScopeToken)
 	}
 
-	guestReq := vsockexec.ExecRequest{Command: append([]string(nil), req.Command...), TTY: req.TTY}
+	guestReq := vsockexec.ExecRequest{
+		Command: append([]string(nil), req.Command...),
+		Env:     append([]string(nil), req.Env...),
+		TTY:     req.TTY,
+	}
 	if a.GatewayRegistry != nil && gatewayScopeToken != "" {
 		gwPort := a.GatewayPort
 		if gwPort <= 0 {

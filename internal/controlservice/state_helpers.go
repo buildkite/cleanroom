@@ -179,6 +179,28 @@ func normalizeCommand(command []string) []string {
 	return command
 }
 
+func normalizeExecutionEnv(env []string) ([]string, error) {
+	if len(env) == 0 {
+		return nil, nil
+	}
+
+	out := make([]string, 0, len(env))
+	for _, entry := range env {
+		if strings.Contains(entry, "\x00") {
+			return nil, fmt.Errorf("invalid env entry %q: contains NUL", entry)
+		}
+		key, _, ok := strings.Cut(entry, "=")
+		if !ok {
+			return nil, fmt.Errorf("invalid env entry %q: expected KEY=VALUE", entry)
+		}
+		if key == "" {
+			return nil, fmt.Errorf("invalid env entry %q: missing variable name", entry)
+		}
+		out = append(out, entry)
+	}
+	return out, nil
+}
+
 func bufferedResultDelta(retained, buffered string, retentionLimit int) (string, bool) {
 	if buffered == "" {
 		return "", false
