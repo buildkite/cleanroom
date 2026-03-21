@@ -21,7 +21,6 @@ type serviceIDSource interface {
 	NewSandboxID() string
 	NewExecutionID() string
 	NewInteractiveSessionID() string
-	NewRunID() string
 	NewSessionToken() (string, error)
 }
 
@@ -30,7 +29,6 @@ type defaultServiceIDSource struct{}
 func (defaultServiceIDSource) NewSandboxID() string            { return newSandboxID() }
 func (defaultServiceIDSource) NewExecutionID() string          { return newExecutionID() }
 func (defaultServiceIDSource) NewInteractiveSessionID() string { return newInteractiveSessionID() }
-func (defaultServiceIDSource) NewRunID() string                { return newRunID() }
 func (defaultServiceIDSource) NewSessionToken() (string, error) {
 	return newSessionToken()
 }

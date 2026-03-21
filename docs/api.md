@@ -2,7 +2,7 @@
 
 ## 1) Goal
 
-Define a minimal, functional API for creating and managing Cleanroom sandboxes with streaming execution support.
+Define a minimal, functional control API for creating and managing Cleanroom sandboxes with durable execution streaming and interactive execution bootstrap.
 
 This document is intentionally small-scope:
 - management plane for sandbox lifecycle
@@ -14,7 +14,7 @@ This document is intentionally small-scope:
 - `Execution`: A single command invocation inside a sandbox.
 - `Event`: Structured runtime and policy events emitted during sandbox/execution lifecycle.
 
-`sandbox` is the top-level API noun. `run_id` remains an internal/audit identifier.
+`sandbox` is the top-level lifecycle noun. `execution_id` is the canonical identifier for a command invocation.
 
 ## 3) Transport Choice
 
@@ -22,11 +22,12 @@ Use ConnectRPC with HTTP/2 enabled in server deployments.
 
 Why:
 - unary RPCs for lifecycle operations
-- server-streaming for event/log tails
-- bidirectional stream for interactive exec (`stdin` -> guest, `stdout/stderr/events` <- guest)
+- server-streaming for durable batch execution output and event tails
+- unary interactive bootstrap via `AttachExecution`, with QUIC carrying interactive PTY bytes and control frames after bootstrap
 
 Non-goal for v1:
 - REST endpoint support.
+- ConnectRPC bidirectional streaming for interactive terminal traffic.
 
 ## 3.1 Process Model (Canonical)
 
@@ -79,12 +80,17 @@ Two services are sufficient.
 ### 4.2 ExecutionService
 
 1. `CreateExecution(CreateExecutionRequest) returns (CreateExecutionResponse)` (unary)
-2. `GetExecution(GetExecutionRequest) returns (GetExecutionResponse)` (unary)
-3. `CancelExecution(CancelExecutionRequest) returns (CancelExecutionResponse)` (unary)
-4. `StreamExecution(StreamExecutionRequest) returns (stream ExecutionStreamEvent)` (server-streaming)
-5. `AttachExecution(stream ExecutionAttachFrame) returns (stream ExecutionAttachFrame)` (bidirectional)
+2. `AttachExecution(AttachExecutionRequest) returns (AttachExecutionResponse)` (unary)
+3. `GetExecution(GetExecutionRequest) returns (GetExecutionResponse)` (unary)
+4. `InspectExecution(InspectExecutionRequest) returns (InspectExecutionResponse)` (unary)
+5. `CancelExecution(CancelExecutionRequest) returns (CancelExecutionResponse)` (unary)
+6. `WriteExecutionStdin(WriteExecutionStdinRequest) returns (WriteExecutionStdinResponse)` (unary)
+7. `CloseExecutionStdin(CloseExecutionStdinRequest) returns (CloseExecutionStdinResponse)` (unary)
+8. `StreamExecution(StreamExecutionRequest) returns (stream ExecutionStreamEvent)` (server-streaming)
 
-`AttachExecution` is for interactive sessions and signaling (stdin, resize, heartbeat, close, stdout/stderr, exit).
+`AttachExecution` is a bootstrap RPC for interactive executions. It returns a session token plus QUIC connection parameters. Interactive PTY bytes and control frames do not flow through ConnectRPC after bootstrap.
+
+`StreamExecution` is the durable batch-oriented output stream. `InspectExecution` is the richer diagnostics surface for retained stdout/stderr, message, image metadata, artifacts dir, and observability payload.
 
 ## 5) Resource and State Model
 
@@ -145,6 +151,7 @@ syntax = "proto3";
 
 package cleanroom.v1;
 
+import "google/protobuf/struct.proto";
 import "google/protobuf/timestamp.proto";
 
 service SandboxService {
@@ -158,8 +165,9 @@ service SandboxService {
 
 service ExecutionService {
   rpc CreateExecution(CreateExecutionRequest) returns (CreateExecutionResponse);
-  rpc OpenInteractiveExecution(OpenInteractiveExecutionRequest) returns (OpenInteractiveExecutionResponse);
+  rpc AttachExecution(AttachExecutionRequest) returns (AttachExecutionResponse);
   rpc GetExecution(GetExecutionRequest) returns (GetExecutionResponse);
+  rpc InspectExecution(InspectExecutionRequest) returns (InspectExecutionResponse);
   rpc CancelExecution(CancelExecutionRequest) returns (CancelExecutionResponse);
   rpc WriteExecutionStdin(WriteExecutionStdinRequest) returns (WriteExecutionStdinResponse);
   rpc CloseExecutionStdin(CloseExecutionStdinRequest) returns (CloseExecutionStdinResponse);
@@ -173,6 +181,8 @@ message Sandbox {
   string policy_hash = 4;
   google.protobuf.Timestamp created_at = 5;
   google.protobuf.Timestamp updated_at = 6;
+  string last_execution_id = 7;
+  string active_execution_id = 8;
 }
 
 enum SandboxStatus {
@@ -193,7 +203,41 @@ message Execution {
   google.protobuf.Timestamp started_at = 6;
   google.protobuf.Timestamp finished_at = 7;
   bool tty = 8;
-  string run_id = 9;
+  ExecutionKind kind = 10;
+}
+
+message AttachExecutionRequest {
+  string sandbox_id = 1;
+  string execution_id = 2;
+  uint32 initial_cols = 3;
+  uint32 initial_rows = 4;
+}
+
+message AttachExecutionResponse {
+  string session_id = 1;
+  string session_token = 2;
+  google.protobuf.Timestamp expires_at = 3;
+  string quic_endpoint = 4;
+  string alpn = 5;
+  string server_cert_pin_sha256 = 6;
+}
+
+message InspectExecutionRequest {
+  string sandbox_id = 1;
+  string execution_id = 2;
+}
+
+message InspectExecutionResponse {
+  Execution execution = 1;
+  string message = 2;
+  string stdout = 3;
+  string stderr = 4;
+  string image_ref = 5;
+  string image_digest = 6;
+  string artifacts_dir = 7;
+  string plan_path = 8;
+  bool launched_vm = 9;
+  google.protobuf.Struct observability = 10;
 }
 
 enum ExecutionStatus {
@@ -204,6 +248,12 @@ enum ExecutionStatus {
   EXECUTION_STATUS_FAILED = 4;
   EXECUTION_STATUS_CANCELED = 5;
   EXECUTION_STATUS_TIMED_OUT = 6;
+}
+
+enum ExecutionKind {
+  EXECUTION_KIND_UNSPECIFIED = 0;
+  EXECUTION_KIND_BATCH = 1;
+  EXECUTION_KIND_INTERACTIVE = 2;
 }
 ```
 
@@ -220,16 +270,24 @@ Expose a server mode and API-driven commands in the same binary.
 ### 9.2 Sandbox commands
 
 - `cleanroom sandbox create`
+- `cleanroom sandbox inspect <sandbox-id>`
 - `cleanroom sandbox ls`
 - `cleanroom sandbox rm <sandbox-id>`
 
+`sandbox inspect` is the primary way to discover a sandbox's `last_execution_id` and `active_execution_id`.
+
 ### 9.3 Execution commands
 
-- `cleanroom executions create <sandbox-id> -- "npm test"`
-- `cleanroom executions get <sandbox-id> <execution-id>`
-- `cleanroom executions cancel <sandbox-id> <execution-id>`
-- `cleanroom executions stream <sandbox-id> <execution-id>`
-- `cleanroom executions attach <sandbox-id> <execution-id>` (PTY-oriented attach/bootstrap)
+- `cleanroom execution inspect --sandbox-id <sandbox-id> <execution-id>`
+- `cleanroom execution inspect --sandbox-id <sandbox-id> --last`
+- `cleanroom status --execution-id <execution-id>`
+- `cleanroom status --last`
+
+Notes:
+- `sandbox inspect` is the lookup surface when you only know a sandbox ID.
+- `execution inspect` is the live control-plane inspection surface.
+- `status` is the local retained-artifacts browser under `$XDG_STATE_HOME/cleanroom/executions`.
+- There are no first-class low-level `execution create/get/cancel/stream` CLI verbs; those are API/SDK operations.
 
 ### 9.4 Local UX
 
@@ -255,12 +313,12 @@ Behavior contract:
    - otherwise create a sandbox from policy
 5. For repo-aware top-level commands, materialize that checkout in the sandbox
    and default the guest working directory to `repository.path`.
-6. Create execution with command and TTY options.
+6. Create execution with explicit kind and TTY options.
 7. Attach stdio according to command mode:
    - `cleanroom exec` defaults to attached stdin plus separate stdout/stderr
      using `StreamExecution`, `WriteExecutionStdin`, and `CloseExecutionStdin`
    - `cleanroom exec -n` closes stdin immediately so the command observes EOF
-   - `cleanroom console` uses `OpenInteractiveExecution` for PTY-oriented
+   - `cleanroom console` uses `AttachExecution` for PTY-oriented
      interactive sessions
 8. Return the command exit code.
 9. Newly created `exec` and `console` sandboxes are terminated after the command
@@ -280,7 +338,13 @@ Signal behavior:
 
 Failure UX:
 - Always print `sandbox_id` and `execution_id` when available.
-- On policy/runtime deny, print stable reason code and a follow-up command to inspect events.
+- On `exec` or `console` failure, also print a ready-to-run `cleanroom execution inspect ...` follow-up command and `artifacts_dir` when available.
+- On policy/runtime deny, print stable reason code and a follow-up command to inspect sandbox or execution state.
+
+Debugging flow:
+1. Start with `cleanroom sandbox inspect <sandbox-id>` when you need the sandbox state or do not yet know the execution ID.
+2. Use `cleanroom execution inspect --sandbox-id <sandbox-id> <execution-id>` for the canonical execution view.
+3. Use `cleanroom status --execution-id <execution-id>` for retained local artifacts and raw observability files.
 
 ## 10) Suggested Implementation Plan
 
@@ -288,7 +352,7 @@ Failure UX:
 2. Implement `cleanroom serve` with in-process adapter wiring.
 3. Implement unary RPCs first (`Create/Get/List/Terminate`, `Create/Get/Cancel`).
 4. Add `StreamExecution` and `StreamSandboxEvents`.
-5. Add `OpenInteractiveExecution` plus stdin attach/close RPCs.
+5. Add `AttachExecution`, `InspectExecution`, and stdin attach/close RPCs.
 6. Implement `cleanroom exec` as an RPC wrapper (`CreateSandbox` ->
    `CreateExecution` -> optional stdin attach/close -> stream -> optional
    `TerminateSandbox`).

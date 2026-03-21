@@ -33,11 +33,11 @@ func newHandlerTestAdapter() *handlerTestAdapter {
 
 func (a *handlerTestAdapter) Name() string { return "firecracker" }
 
-func (a *handlerTestAdapter) Run(ctx context.Context, req backend.RunRequest) (*backend.RunResult, error) {
+func (a *handlerTestAdapter) Run(ctx context.Context, req backend.ExecutionRequest) (*backend.ExecutionResult, error) {
 	return a.RunStream(ctx, req, backend.OutputStream{})
 }
 
-func (a *handlerTestAdapter) RunStream(ctx context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+func (a *handlerTestAdapter) RunStream(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 	select {
 	case a.started <- struct{}{}:
 	default:
@@ -57,10 +57,10 @@ func (a *handlerTestAdapter) RunStream(ctx context.Context, req backend.RunReque
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
-	return &backend.RunResult{
-		RunID:    req.RunID,
-		ExitCode: 0,
-		Message:  "ok",
+	return &backend.ExecutionResult{
+		ExecutionID: req.ExecutionID,
+		ExitCode:    0,
+		Message:     "ok",
 	}, nil
 }
 
@@ -68,7 +68,7 @@ func (a *handlerTestAdapter) ProvisionSandbox(context.Context, backend.Provision
 	return nil
 }
 
-func (a *handlerTestAdapter) RunInSandbox(ctx context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+func (a *handlerTestAdapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 	return a.RunStream(ctx, req, stream)
 }
 

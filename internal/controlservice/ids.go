@@ -28,10 +28,6 @@ func newSnapshotID() string {
 	return newID("snap")
 }
 
-func newRunID() string {
-	return newID("run")
-}
-
 func newInteractiveSessionID() string {
 	return newID("isess")
 }

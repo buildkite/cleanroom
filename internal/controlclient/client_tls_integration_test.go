@@ -28,8 +28,8 @@ type tlsTestAdapter struct{}
 
 func (tlsTestAdapter) Name() string { return "firecracker" }
 
-func (tlsTestAdapter) Run(_ context.Context, req backend.RunRequest) (*backend.RunResult, error) {
-	return &backend.RunResult{RunID: req.RunID, ExitCode: 0, Message: "ok"}, nil
+func (tlsTestAdapter) Run(_ context.Context, req backend.ExecutionRequest) (*backend.ExecutionResult, error) {
+	return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
 }
 
 func TestHTTPSControlPlaneDiscoversTLSMaterial(t *testing.T) {

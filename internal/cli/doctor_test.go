@@ -18,8 +18,8 @@ type doctorTestAdapter struct{}
 
 func (doctorTestAdapter) Name() string { return "doctor-test" }
 
-func (doctorTestAdapter) Run(context.Context, backend.RunRequest) (*backend.RunResult, error) {
-	return &backend.RunResult{Message: "ok"}, nil
+func (doctorTestAdapter) Run(context.Context, backend.ExecutionRequest) (*backend.ExecutionResult, error) {
+	return &backend.ExecutionResult{Message: "ok"}, nil
 }
 
 func (doctorTestAdapter) Doctor(context.Context, backend.DoctorRequest) (*backend.DoctorReport, error) {
@@ -45,8 +45,8 @@ func (doctorSnapshotAdapter) ProvisionSandbox(context.Context, backend.Provision
 	return nil
 }
 
-func (doctorSnapshotAdapter) RunInSandbox(context.Context, backend.RunRequest, backend.OutputStream) (*backend.RunResult, error) {
-	return &backend.RunResult{Message: "ok"}, nil
+func (doctorSnapshotAdapter) RunInSandbox(context.Context, backend.ExecutionRequest, backend.OutputStream) (*backend.ExecutionResult, error) {
+	return &backend.ExecutionResult{Message: "ok"}, nil
 }
 
 func (doctorSnapshotAdapter) TerminateSandbox(context.Context, string) error {

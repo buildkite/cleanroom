@@ -38,12 +38,12 @@ func TestSandboxCreateIntegrationOverridesImageRefForNewSandbox(t *testing.T) {
 
 	imageRefCh := make(chan string, 1)
 	adapter := &integrationAdapter{
-		runFn: func(_ context.Context, req backend.RunRequest) (*backend.RunResult, error) {
+		runFn: func(_ context.Context, req backend.ExecutionRequest) (*backend.ExecutionResult, error) {
 			if req.Policy == nil {
 				return nil, errors.New("expected policy on run request")
 			}
 			imageRefCh <- req.Policy.ImageRef
-			return &backend.RunResult{RunID: req.RunID, ExitCode: 0, Message: "ok"}, nil
+			return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
 		},
 	}
 
@@ -105,12 +105,12 @@ func TestExecIntegrationOverridesImageRefForCreatedSandbox(t *testing.T) {
 
 	imageRefCh := make(chan string, 1)
 	adapter := &integrationAdapter{
-		runFn: func(_ context.Context, req backend.RunRequest) (*backend.RunResult, error) {
+		runFn: func(_ context.Context, req backend.ExecutionRequest) (*backend.ExecutionResult, error) {
 			if req.Policy == nil {
 				return nil, errors.New("expected policy on run request")
 			}
 			imageRefCh <- req.Policy.ImageRef
-			return &backend.RunResult{RunID: req.RunID, ExitCode: 0, Message: "ok"}, nil
+			return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
 		},
 	}
 
@@ -152,12 +152,12 @@ func TestConsoleIntegrationOverridesImageRefForCreatedSandbox(t *testing.T) {
 
 	imageRefCh := make(chan string, 1)
 	adapter := &integrationAdapter{
-		runStreamFn: func(_ context.Context, req backend.RunRequest, _ backend.OutputStream) (*backend.RunResult, error) {
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
 			if req.Policy == nil {
 				return nil, errors.New("expected policy on run request")
 			}
 			imageRefCh <- req.Policy.ImageRef
-			return &backend.RunResult{RunID: req.RunID, ExitCode: 0, Message: "ok"}, nil
+			return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
 		},
 	}
 
@@ -212,8 +212,8 @@ func TestExecIntegrationRejectsImageOverrideWhenSandboxProvided(t *testing.T) {
 
 func TestConsoleIntegrationRejectsImageOverrideWhenSandboxProvided(t *testing.T) {
 	host, _ := startIntegrationServer(t, &integrationAdapter{
-		runStreamFn: func(_ context.Context, req backend.RunRequest, _ backend.OutputStream) (*backend.RunResult, error) {
-			return &backend.RunResult{RunID: req.RunID, ExitCode: 0, Message: "ok"}, nil
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
+			return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
 		},
 	})
 	client := mustNewControlClient(t, host)

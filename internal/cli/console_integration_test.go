@@ -23,7 +23,7 @@ func TestConsoleIntegrationForwardsStdinAndStreamsOutput(t *testing.T) {
 	started := make(chan struct{}, 1)
 	var captured bytes.Buffer
 	adapter := &integrationAdapter{
-		runStreamFn: func(ctx context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+		runStreamFn: func(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 			if !req.TTY {
 				return nil, errors.New("expected tty execution")
 			}
@@ -57,11 +57,11 @@ func TestConsoleIntegrationForwardsStdinAndStreamsOutput(t *testing.T) {
 			case <-ctx.Done():
 				return nil, ctx.Err()
 			}
-			return &backend.RunResult{
-				RunID:    req.RunID,
-				ExitCode: 0,
-				Stdout:   captured.String(),
-				Message:  "ok",
+			return &backend.ExecutionResult{
+				ExecutionID: req.ExecutionID,
+				ExitCode:    0,
+				Stdout:      captured.String(),
+				Message:     "ok",
 			}, nil
 		},
 	}
@@ -96,7 +96,7 @@ func TestConsoleIntegrationForwardsStdinAndStreamsOutput(t *testing.T) {
 func TestConsoleIntegrationInterruptCancelsExecution(t *testing.T) {
 	started := make(chan struct{}, 1)
 	adapter := &integrationAdapter{
-		runStreamFn: func(ctx context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+		runStreamFn: func(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 			if stream.OnAttach != nil {
 				stream.OnAttach(backend.AttachIO{
 					WriteStdin: func(_ []byte) error { return nil },
@@ -148,7 +148,7 @@ func TestConsoleIntegrationSecondInterruptForcesLocalExitWhenExecutionIgnoresCan
 		close(releaseRun)
 	})
 	adapter := &integrationAdapter{
-		runStreamFn: func(_ context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 			if stream.OnAttach != nil {
 				stream.OnAttach(backend.AttachIO{
 					WriteStdin: func(_ []byte) error { return nil },
@@ -159,7 +159,7 @@ func TestConsoleIntegrationSecondInterruptForcesLocalExitWhenExecutionIgnoresCan
 			default:
 			}
 			<-releaseRun
-			return &backend.RunResult{RunID: req.RunID, ExitCode: 0, Message: "released"}, nil
+			return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "released"}, nil
 		},
 	}
 
@@ -198,7 +198,7 @@ func TestConsoleIntegrationSecondInterruptAfterWindowDoesNotForceLocalExit(t *te
 	started := make(chan struct{}, 1)
 	releaseRun := make(chan struct{})
 	adapter := &integrationAdapter{
-		runStreamFn: func(_ context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 			if stream.OnAttach != nil {
 				stream.OnAttach(backend.AttachIO{WriteStdin: func(_ []byte) error { return nil }})
 			}
@@ -207,7 +207,7 @@ func TestConsoleIntegrationSecondInterruptAfterWindowDoesNotForceLocalExit(t *te
 			default:
 			}
 			<-releaseRun
-			return &backend.RunResult{RunID: req.RunID, ExitCode: 0, Message: "released"}, nil
+			return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "released"}, nil
 		},
 	}
 
@@ -266,8 +266,8 @@ func TestConsoleRejectsUnsupportedHostScheme(t *testing.T) {
 
 func TestConsoleIntegrationDefaultTerminatesCreatedSandbox(t *testing.T) {
 	host, _ := startIntegrationServer(t, &integrationAdapter{
-		runStreamFn: func(_ context.Context, req backend.RunRequest, _ backend.OutputStream) (*backend.RunResult, error) {
-			return &backend.RunResult{RunID: req.RunID, ExitCode: 0, Stdout: "ok\n", Message: "ok"}, nil
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
+			return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Stdout: "ok\n", Message: "ok"}, nil
 		},
 	})
 
@@ -297,8 +297,8 @@ func TestConsoleIntegrationDefaultTerminatesCreatedSandbox(t *testing.T) {
 
 func TestConsoleIntegrationKeepPreservesCreatedSandbox(t *testing.T) {
 	host, _ := startIntegrationServer(t, &integrationAdapter{
-		runStreamFn: func(_ context.Context, req backend.RunRequest, _ backend.OutputStream) (*backend.RunResult, error) {
-			return &backend.RunResult{RunID: req.RunID, ExitCode: 0, Stdout: "ok\n", Message: "ok"}, nil
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
+			return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Stdout: "ok\n", Message: "ok"}, nil
 		},
 	})
 
@@ -328,8 +328,8 @@ func TestConsoleIntegrationKeepPreservesCreatedSandbox(t *testing.T) {
 
 func TestConsoleIntegrationKeepWithPrintSandboxIDPrintsOnce(t *testing.T) {
 	host, _ := startIntegrationServer(t, &integrationAdapter{
-		runStreamFn: func(_ context.Context, req backend.RunRequest, _ backend.OutputStream) (*backend.RunResult, error) {
-			return &backend.RunResult{RunID: req.RunID, ExitCode: 0, Stdout: "ok\n", Message: "ok"}, nil
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
+			return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Stdout: "ok\n", Message: "ok"}, nil
 		},
 	})
 
@@ -356,7 +356,7 @@ func TestConsoleIntegrationKeepWithPrintSandboxIDPrintsOnce(t *testing.T) {
 func TestConsoleIntegrationReuseSandboxSkipsPolicyCompile(t *testing.T) {
 	started := make(chan struct{}, 1)
 	host, _ := startIntegrationServer(t, &integrationAdapter{
-		runStreamFn: func(_ context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 			done := make(chan struct{})
 			if stream.OnAttach != nil {
 				stream.OnAttach(backend.AttachIO{
@@ -380,7 +380,7 @@ func TestConsoleIntegrationReuseSandboxSkipsPolicyCompile(t *testing.T) {
 			default:
 			}
 			<-done
-			return &backend.RunResult{RunID: req.RunID, ExitCode: 0, Stdout: "ok\n", Message: "ok"}, nil
+			return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Stdout: "ok\n", Message: "ok"}, nil
 		},
 	})
 	client := mustNewControlClient(t, host)
@@ -408,8 +408,8 @@ func TestConsoleIntegrationReuseSandboxSkipsPolicyCompile(t *testing.T) {
 
 func TestConsoleIntegrationRejectsKeepWhenReusingSandbox(t *testing.T) {
 	host, _ := startIntegrationServer(t, &integrationAdapter{
-		runStreamFn: func(_ context.Context, req backend.RunRequest, _ backend.OutputStream) (*backend.RunResult, error) {
-			return &backend.RunResult{RunID: req.RunID, ExitCode: 0, Stdout: "ok\n", Message: "ok"}, nil
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
+			return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Stdout: "ok\n", Message: "ok"}, nil
 		},
 	})
 	client := mustNewControlClient(t, host)
@@ -437,7 +437,7 @@ func TestConsoleIntegrationRejectsKeepWhenReusingSandbox(t *testing.T) {
 
 func TestConsoleIntegrationRoutesBackendWarningsToStderr(t *testing.T) {
 	host, _ := startIntegrationServer(t, &integrationAdapter{
-		runStreamFn: func(_ context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 			if stream.OnAttach != nil {
 				stream.OnAttach(backend.AttachIO{
 					WriteStdin: func([]byte) error { return nil },
@@ -449,11 +449,11 @@ func TestConsoleIntegrationRoutesBackendWarningsToStderr(t *testing.T) {
 			if stream.OnStdout != nil {
 				stream.OnStdout([]byte("/ # "))
 			}
-			return &backend.RunResult{
-				RunID:    req.RunID,
-				ExitCode: 0,
-				Stdout:   "/ # ",
-				Stderr:   "warning: backend warning\n",
+			return &backend.ExecutionResult{
+				ExecutionID: req.ExecutionID,
+				ExitCode:    0,
+				Stdout:      "/ # ",
+				Stderr:      "warning: backend warning\n",
 			}, nil
 		},
 	})
@@ -476,5 +476,47 @@ func TestConsoleIntegrationRoutesBackendWarningsToStderr(t *testing.T) {
 	}
 	if strings.Contains(outcome.stdout, "warning: backend warning\n") {
 		t.Fatalf("unexpected warning in stdout: %q", outcome.stdout)
+	}
+}
+
+func TestConsoleIntegrationPrintsExecutionHintsOnFailure(t *testing.T) {
+	host, _ := startIntegrationServer(t, &integrationAdapter{
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
+			return &backend.ExecutionResult{
+				ExecutionID: req.ExecutionID,
+				ExitCode:    7,
+				Message:     "failed",
+				RunDir:      "/tmp/console-failed",
+			}, nil
+		},
+	})
+
+	outcome := runConsoleWithCapture(ConsoleCommand{
+		clientFlags: clientFlags{Host: host},
+		Command:     []string{"sh"},
+	}, "", runtimeContext{
+		CWD:    t.TempDir(),
+		Loader: integrationLoader{},
+	})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err == nil {
+		t.Fatal("expected non-zero exit from failed console execution")
+	}
+	if got, want := ExitCode(outcome.err), 7; got != want {
+		t.Fatalf("unexpected console exit code: got %d want %d (err=%v)", got, want, outcome.err)
+	}
+	if got := parseSandboxID(outcome.stderr); got == "" {
+		t.Fatalf("expected sandbox_id in failure output, got %q", outcome.stderr)
+	}
+	if got := parseExecutionID(outcome.stderr); got == "" {
+		t.Fatalf("expected execution_id in failure output, got %q", outcome.stderr)
+	}
+	if !strings.Contains(outcome.stderr, "inspect_command=cleanroom execution inspect --sandbox-id ") {
+		t.Fatalf("expected inspect_command in failure output, got %q", outcome.stderr)
+	}
+	if !strings.Contains(outcome.stderr, "artifacts_dir=/tmp/console-failed") {
+		t.Fatalf("expected artifacts_dir in failure output, got %q", outcome.stderr)
 	}
 }

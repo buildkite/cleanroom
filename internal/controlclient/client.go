@@ -183,8 +183,8 @@ func (c *Client) CreateExecution(ctx context.Context, req *cleanroomv1.CreateExe
 	return resp.Msg, nil
 }
 
-func (c *Client) OpenInteractiveExecution(ctx context.Context, req *cleanroomv1.OpenInteractiveExecutionRequest) (*cleanroomv1.OpenInteractiveExecutionResponse, error) {
-	resp, err := c.executionClient.OpenInteractiveExecution(ctx, connect.NewRequest(req))
+func (c *Client) AttachExecution(ctx context.Context, req *cleanroomv1.AttachExecutionRequest) (*cleanroomv1.AttachExecutionResponse, error) {
+	resp, err := c.executionClient.AttachExecution(ctx, connect.NewRequest(req))
 	if err != nil {
 		return nil, err
 	}
@@ -193,6 +193,14 @@ func (c *Client) OpenInteractiveExecution(ctx context.Context, req *cleanroomv1.
 
 func (c *Client) GetExecution(ctx context.Context, req *cleanroomv1.GetExecutionRequest) (*cleanroomv1.GetExecutionResponse, error) {
 	resp, err := c.executionClient.GetExecution(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
+func (c *Client) InspectExecution(ctx context.Context, req *cleanroomv1.InspectExecutionRequest) (*cleanroomv1.InspectExecutionResponse, error) {
+	resp, err := c.executionClient.InspectExecution(ctx, connect.NewRequest(req))
 	if err != nil {
 		return nil, err
 	}

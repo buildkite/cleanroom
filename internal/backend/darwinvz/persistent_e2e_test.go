@@ -112,9 +112,9 @@ func TestPersistentSandboxE2E(t *testing.T) {
 	markerValue := "darwin-vz-persisted-state"
 
 	run1Dir := filepath.Join(t.TempDir(), "run-1")
-	first, err := adapter.RunInSandbox(ctx, backend.RunRequest{
-		SandboxID: sandboxID,
-		RunID:     "run-1",
+	first, err := adapter.RunInSandbox(ctx, backend.ExecutionRequest{
+		SandboxID:   sandboxID,
+		ExecutionID: "run-1",
 		Command: []string{
 			"sh", "-lc", fmt.Sprintf("printf %s > %s", markerValue, markerPath),
 		},
@@ -135,11 +135,11 @@ func TestPersistentSandboxE2E(t *testing.T) {
 	}
 
 	run2Dir := filepath.Join(t.TempDir(), "run-2")
-	second, err := adapter.RunInSandbox(ctx, backend.RunRequest{
-		SandboxID: sandboxID,
-		RunID:     "run-2",
-		Command:   []string{"sh", "-lc", "cat " + markerPath},
-		Policy:    compiled,
+	second, err := adapter.RunInSandbox(ctx, backend.ExecutionRequest{
+		SandboxID:   sandboxID,
+		ExecutionID: "run-2",
+		Command:     []string{"sh", "-lc", "cat " + markerPath},
+		Policy:      compiled,
 		FirecrackerConfig: backend.FirecrackerConfig{
 			RunDir:        run2Dir,
 			LaunchSeconds: cfg.LaunchSeconds,
@@ -169,11 +169,11 @@ func TestPersistentSandboxE2E(t *testing.T) {
 	if _, err := os.Stat(sandboxRunDir); !os.IsNotExist(err) {
 		t.Fatalf("expected sandbox runtime dir to be removed, got err=%v", err)
 	}
-	if _, err := adapter.RunInSandbox(context.Background(), backend.RunRequest{
-		SandboxID: sandboxID,
-		RunID:     "run-after-terminate",
-		Command:   []string{"true"},
-		Policy:    compiled,
+	if _, err := adapter.RunInSandbox(context.Background(), backend.ExecutionRequest{
+		SandboxID:   sandboxID,
+		ExecutionID: "run-after-terminate",
+		Command:     []string{"true"},
+		Policy:      compiled,
 	}, backend.OutputStream{}); err == nil || !strings.Contains(err.Error(), "unknown sandbox") {
 		t.Fatalf("expected run after terminate to fail with unknown sandbox, got %v", err)
 	}
@@ -251,11 +251,11 @@ func TestPersistentSandboxE2EExecStreamingDoesNotHang(t *testing.T) {
 	// A quick warm-up run that exercises the readiness/proxy path before we
 	// assert repeated non-interactive executions complete promptly.
 	warmupCtx, warmupCancel := context.WithTimeout(ctx, 60*time.Second)
-	warmup, err := adapter.RunInSandbox(warmupCtx, backend.RunRequest{
-		SandboxID: sandboxID,
-		RunID:     "run-warmup",
-		Command:   []string{"sh", "-lc", "echo warmup"},
-		Policy:    compiled,
+	warmup, err := adapter.RunInSandbox(warmupCtx, backend.ExecutionRequest{
+		SandboxID:   sandboxID,
+		ExecutionID: "run-warmup",
+		Command:     []string{"sh", "-lc", "echo warmup"},
+		Policy:      compiled,
 		FirecrackerConfig: backend.FirecrackerConfig{
 			LaunchSeconds: cfg.LaunchSeconds,
 		},
@@ -272,11 +272,11 @@ func TestPersistentSandboxE2EExecStreamingDoesNotHang(t *testing.T) {
 		runID := fmt.Sprintf("run-stream-%d", i)
 		want := fmt.Sprintf("stream-%d", i)
 		runCtx, runCancel := context.WithTimeout(ctx, 30*time.Second)
-		res, err := adapter.RunInSandbox(runCtx, backend.RunRequest{
-			SandboxID: sandboxID,
-			RunID:     runID,
-			Command:   []string{"sh", "-lc", "echo " + want},
-			Policy:    compiled,
+		res, err := adapter.RunInSandbox(runCtx, backend.ExecutionRequest{
+			SandboxID:   sandboxID,
+			ExecutionID: runID,
+			Command:     []string{"sh", "-lc", "echo " + want},
+			Policy:      compiled,
 			FirecrackerConfig: backend.FirecrackerConfig{
 				LaunchSeconds: cfg.LaunchSeconds,
 			},

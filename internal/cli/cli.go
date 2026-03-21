@@ -44,19 +44,20 @@ type runtimeContext struct {
 }
 
 type CLI struct {
-	Policy   PolicyCommand   `cmd:"" help:"Policy commands"`
-	Config   ConfigCommand   `cmd:"" help:"Runtime config commands"`
-	Image    ImageCommand    `cmd:"" help:"Manage OCI image cache artifacts"`
-	Snapshot SnapshotCommand `cmd:"" help:"Manage snapshots"`
-	Create   CreateCommand   `cmd:"" help:"Create a sandbox"`
-	Exec     ExecCommand     `cmd:"" help:"Execute a command in a cleanroom backend"`
-	Console  ConsoleCommand  `cmd:"" help:"Attach an interactive console to a cleanroom execution"`
-	Serve    ServeCommand    `cmd:"" help:"Run the cleanroom control-plane server in the foreground"`
-	Daemon   DaemonCommand   `cmd:"" help:"Manage daemon/service lifecycle"`
-	Doctor   DoctorCommand   `cmd:"" help:"Run environment and backend diagnostics"`
-	Status   StatusCommand   `cmd:"" help:"Inspect run artifacts"`
-	Sandbox  SandboxCommand  `cmd:"" help:"Manage sandboxes"`
-	Version  VersionCommand  `cmd:"" help:"Print version information"`
+	Policy    PolicyCommand    `cmd:"" help:"Policy commands"`
+	Config    ConfigCommand    `cmd:"" help:"Runtime config commands"`
+	Image     ImageCommand     `cmd:"" help:"Manage OCI image cache artifacts"`
+	Snapshot  SnapshotCommand  `cmd:"" help:"Manage snapshots"`
+	Create    CreateCommand    `cmd:"" help:"Create a sandbox"`
+	Exec      ExecCommand      `cmd:"" help:"Execute a command in a sandbox"`
+	Console   ConsoleCommand   `cmd:"" help:"Open an interactive console in a sandbox"`
+	Serve     ServeCommand     `cmd:"" help:"Run the cleanroom control-plane server in the foreground"`
+	Daemon    DaemonCommand    `cmd:"" help:"Manage daemon/service lifecycle"`
+	Doctor    DoctorCommand    `cmd:"" help:"Run environment and backend diagnostics"`
+	Execution ExecutionCommand `cmd:"" help:"Inspect command executions and diagnostics"`
+	Status    StatusCommand    `cmd:"" help:"Browse retained execution artifacts"`
+	Sandbox   SandboxCommand   `cmd:"" help:"Manage sandboxes"`
+	Version   VersionCommand   `cmd:"" help:"Print version information"`
 }
 
 type VersionCommand struct {

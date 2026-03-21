@@ -3,8 +3,10 @@ package controlservice
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -20,6 +22,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/snapshotstore"
 	"github.com/charmbracelet/log"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -65,7 +68,6 @@ type sandboxState struct {
 type executionState struct {
 	ID               string
 	SandboxID        string
-	RunID            string
 	ImageRef         string
 	ImageDigest      string
 	Command          []string
@@ -962,7 +964,7 @@ func (s *Service) CreateExecution(ctx context.Context, req *cleanroomv1.CreateEx
 	return resp, nil
 }
 
-func (s *Service) OpenInteractiveExecution(_ context.Context, req *cleanroomv1.OpenInteractiveExecutionRequest) (*cleanroomv1.OpenInteractiveExecutionResponse, error) {
+func (s *Service) AttachExecution(_ context.Context, req *cleanroomv1.AttachExecutionRequest) (*cleanroomv1.AttachExecutionResponse, error) {
 	if req == nil {
 		return nil, errors.New("missing request")
 	}
@@ -1000,7 +1002,7 @@ func (s *Service) OpenInteractiveExecution(_ context.Context, req *cleanroomv1.O
 		return nil, err
 	}
 
-	return &cleanroomv1.OpenInteractiveExecutionResponse{
+	return &cleanroomv1.AttachExecutionResponse{
 		SessionId:           grant.SessionID,
 		SessionToken:        grant.SessionToken,
 		ExpiresAt:           timestamppb.New(grant.ExpiresAt),
@@ -1010,10 +1012,85 @@ func (s *Service) OpenInteractiveExecution(_ context.Context, req *cleanroomv1.O
 	}, nil
 }
 
+func (s *Service) InspectExecution(_ context.Context, req *cleanroomv1.InspectExecutionRequest) (*cleanroomv1.InspectExecutionResponse, error) {
+	if req == nil {
+		return nil, errors.New("missing request")
+	}
+	sandboxID := strings.TrimSpace(req.GetSandboxId())
+	executionID := strings.TrimSpace(req.GetExecutionId())
+	if sandboxID == "" {
+		return nil, errors.New("missing sandbox_id")
+	}
+	if executionID == "" {
+		return nil, errors.New("missing execution_id")
+	}
+
+	snapshot, err := s.ExecutionSnapshot(sandboxID, executionID)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := &cleanroomv1.InspectExecutionResponse{
+		Execution:    snapshot.Execution,
+		Message:      snapshot.Message,
+		Stdout:       snapshot.Stdout,
+		Stderr:       snapshot.Stderr,
+		ImageRef:     snapshot.ImageRef,
+		ImageDigest:  snapshot.ImageDigest,
+		ArtifactsDir: snapshot.RunDir,
+		PlanPath:     snapshot.PlanPath,
+		LaunchedVm:   snapshot.Launched,
+	}
+
+	if obs, err := loadExecutionObservability(snapshot.RunDir); err != nil {
+		return nil, err
+	} else if obs != nil {
+		resp.Observability = obs
+	}
+
+	return resp, nil
+}
+
 func (s *Service) ConfigureInteractiveTransport(endpoint, alpn, certPinSHA256 string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.interactive.configureTransport(endpoint, alpn, certPinSHA256)
+}
+
+func loadExecutionObservability(artifactsDir string) (*structpb.Struct, error) {
+	if strings.TrimSpace(artifactsDir) == "" {
+		return nil, nil
+	}
+	obsPath := filepath.Join(strings.TrimSpace(artifactsDir), "execution-observability.json")
+	b, err := os.ReadFile(obsPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read %s: %w", obsPath, err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(b, &payload); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", obsPath, err)
+	}
+	obs, err := structpb.NewStruct(payload)
+	if err != nil {
+		return nil, fmt.Errorf("convert %s to protobuf struct: %w", obsPath, err)
+	}
+	return obs, nil
+}
+
+func internalBootstrapArtifactsDir(sandboxID, executionID string) string {
+	baseDir, err := paths.StateBaseDir()
+	if err != nil {
+		baseDir = filepath.Join(os.TempDir(), "cleanroom")
+	}
+	return filepath.Join(baseDir, "internal", "bootstrap-executions", sandboxID, executionID)
+}
+
+func withRunDir(cfg backend.FirecrackerConfig, runDir string) backend.FirecrackerConfig {
+	cfg.RunDir = runDir
+	return cfg
 }
 
 func (s *Service) ConsumeInteractiveSession(sessionID, token string) (*InteractiveSession, error) {
@@ -1492,7 +1569,6 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 	started := s.clock().Now()
 	ex.StartedAt = &started
 	ex.Status = cleanroomv1.ExecutionStatus_EXECUTION_STATUS_RUNNING
-	ex.RunID = s.ids().NewRunID()
 	if sb.Policy != nil {
 		ex.ImageRef = sb.Policy.ImageRef
 		ex.ImageDigest = sb.Policy.ImageDigest
@@ -1507,17 +1583,17 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 
 	firecrackerCfg := sb.Firecracker
 	if strings.TrimSpace(firecrackerCfg.RunDir) == "" {
-		if runBaseDir, err := paths.RunBaseDir(); err == nil {
-			firecrackerCfg.RunDir = filepath.Join(runBaseDir, ex.RunID)
+		if executionBaseDir, err := paths.ExecutionBaseDir(); err == nil {
+			firecrackerCfg.RunDir = filepath.Join(executionBaseDir, ex.ID)
 		}
 	}
 	if ex.Options.LaunchSeconds != 0 {
 		firecrackerCfg.LaunchSeconds = ex.Options.LaunchSeconds
 	}
 
-	runReq := backend.RunRequest{
+	executionReq := backend.ExecutionRequest{
 		SandboxID:         sandboxID,
-		RunID:             ex.RunID,
+		ExecutionID:       ex.ID,
 		Command:           append([]string(nil), ex.Command...),
 		TTY:               ex.TTY,
 		Policy:            sb.Policy,
@@ -1525,7 +1601,7 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 	}
 	s.mu.Unlock()
 
-	result, usedStreaming, err := s.runAdapterExecution(runCtx, adapter, runReq, key)
+	result, usedStreaming, err := s.runAdapterExecution(runCtx, adapter, executionReq, key)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1554,7 +1630,6 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 			s.Logger.Warn("execution failed",
 				"sandbox_id", ex.SandboxID,
 				"execution_id", ex.ID,
-				"run_id", ex.RunID,
 				"image_ref", ex.ImageRef,
 				"image_digest", ex.ImageDigest,
 				"status", ex.Status.String(),
@@ -1564,7 +1639,6 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 		return
 	}
 
-	ex.RunID = result.RunID
 	ex.LaunchedVM = result.LaunchedVM
 	ex.PlanPath = result.PlanPath
 	ex.RunDir = result.RunDir
@@ -1597,7 +1671,6 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 		s.Logger.Info("execution completed",
 			"sandbox_id", ex.SandboxID,
 			"execution_id", ex.ID,
-			"run_id", ex.RunID,
 			"image_ref", ex.ImageRef,
 			"image_digest", ex.ImageDigest,
 			"exit_code", ex.ExitCode,
@@ -1606,17 +1679,17 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 	}
 }
 
-func (s *Service) runAdapterExecution(runCtx context.Context, adapter backend.Adapter, runReq backend.RunRequest, key string) (*backend.RunResult, bool, error) {
+func (s *Service) runAdapterExecution(runCtx context.Context, adapter backend.Adapter, executionReq backend.ExecutionRequest, key string) (*backend.ExecutionResult, bool, error) {
 	if persistentAdapter, ok := adapter.(backend.PersistentSandboxAdapter); ok {
-		result, err := persistentAdapter.RunInSandbox(runCtx, runReq, s.executionOutputStream(key))
+		result, err := persistentAdapter.RunInSandbox(runCtx, executionReq, s.executionOutputStream(key))
 		return result, true, err
 	}
 	if streamAdapter, ok := adapter.(backend.StreamingAdapter); ok {
-		result, err := streamAdapter.RunStream(runCtx, runReq, s.executionOutputStream(key))
+		result, err := streamAdapter.RunStream(runCtx, executionReq, s.executionOutputStream(key))
 		return result, true, err
 	}
 
-	result, err := adapter.Run(runCtx, runReq)
+	result, err := adapter.Run(runCtx, executionReq)
 	return result, false, err
 }
 
@@ -1726,12 +1799,13 @@ func (s *Service) bootstrapRepositoryInPersistentSandbox(
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	result, err := adapter.RunInSandbox(ctx, backend.RunRequest{
+	bootstrapExecutionID := s.ids().NewExecutionID()
+	result, err := adapter.RunInSandbox(ctx, backend.ExecutionRequest{
 		SandboxID:         sandboxID,
-		RunID:             s.ids().NewRunID(),
+		ExecutionID:       bootstrapExecutionID,
 		Command:           repositorycheckout.BuildBootstrapCommand(repository),
 		Policy:            compiled,
-		FirecrackerConfig: firecrackerCfg,
+		FirecrackerConfig: withRunDir(firecrackerCfg, internalBootstrapArtifactsDir(sandboxID, bootstrapExecutionID)),
 	}, backend.OutputStream{
 		OnStdout: func(chunk []byte) {
 			_, _ = stdout.Write(chunk)
@@ -1822,7 +1896,7 @@ func (s *Service) finishSnapshotDelete(snapshotID string) {
 	delete(s.snapshotDeletions, snapshotID)
 }
 
-func (s *Service) mergeBufferedResultOutputLocked(ex *executionState, result *backend.RunResult, usedStreaming bool) {
+func (s *Service) mergeBufferedResultOutputLocked(ex *executionState, result *backend.ExecutionResult, usedStreaming bool) {
 	if ex == nil || result == nil {
 		return
 	}
@@ -1998,6 +2072,7 @@ func (s *Service) dropExecutionLocked(key string, ex *executionState) {
 	closeExecutionDoneLocked(ex)
 	s.interactive.clearExecution(key)
 	delete(s.executions, key)
+	s.refreshSandboxExecutionPointersLocked(ex.SandboxID)
 }
 
 func (s *Service) hasActiveExecutionLocked(sandboxID string) bool {
@@ -2007,6 +2082,62 @@ func (s *Service) hasActiveExecutionLocked(sandboxID string) bool {
 		}
 	}
 	return false
+}
+
+func (s *Service) refreshSandboxExecutionPointersLocked(sandboxID string) {
+	sb, ok := s.sandboxes[sandboxID]
+	if !ok || sb == nil {
+		return
+	}
+
+	var latestActive *executionState
+	var latestFinished *executionState
+	for _, ex := range s.executions {
+		if ex == nil || ex.SandboxID != sandboxID {
+			continue
+		}
+		if !isFinalExecutionStatus(ex.Status) {
+			if latestActive == nil || ex.ID > latestActive.ID {
+				latestActive = ex
+			}
+			continue
+		}
+		if latestFinished == nil || newerExecutionState(ex, latestFinished) {
+			latestFinished = ex
+		}
+	}
+
+	if latestActive != nil {
+		sb.ActiveExecutionID = latestActive.ID
+		sb.LastExecutionID = latestActive.ID
+		return
+	}
+
+	sb.ActiveExecutionID = ""
+	if latestFinished != nil {
+		sb.LastExecutionID = latestFinished.ID
+		return
+	}
+	sb.LastExecutionID = ""
+}
+
+func newerExecutionState(left, right *executionState) bool {
+	if left == nil {
+		return false
+	}
+	if right == nil {
+		return true
+	}
+	leftTime := executionTerminalTime(left)
+	rightTime := executionTerminalTime(right)
+	switch {
+	case leftTime.After(rightTime):
+		return true
+	case rightTime.After(leftTime):
+		return false
+	default:
+		return left.ID > right.ID
+	}
 }
 
 func (s *Service) pruneStateLocked(now time.Time) {

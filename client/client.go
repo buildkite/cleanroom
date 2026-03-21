@@ -162,11 +162,11 @@ func (c *Client) CreateExecution(ctx context.Context, req *CreateExecutionReques
 	return c.inner.CreateExecution(ctx, req)
 }
 
-func (c *Client) OpenInteractiveExecution(ctx context.Context, req *OpenInteractiveExecutionRequest) (*OpenInteractiveExecutionResponse, error) {
+func (c *Client) AttachExecution(ctx context.Context, req *AttachExecutionRequest) (*AttachExecutionResponse, error) {
 	if c == nil || c.inner == nil {
 		return nil, errors.New("nil client")
 	}
-	return c.inner.OpenInteractiveExecution(ctx, req)
+	return c.inner.AttachExecution(ctx, req)
 }
 
 func (c *Client) GetExecution(ctx context.Context, req *GetExecutionRequest) (*GetExecutionResponse, error) {
@@ -174,6 +174,13 @@ func (c *Client) GetExecution(ctx context.Context, req *GetExecutionRequest) (*G
 		return nil, errors.New("nil client")
 	}
 	return c.inner.GetExecution(ctx, req)
+}
+
+func (c *Client) InspectExecution(ctx context.Context, req *InspectExecutionRequest) (*InspectExecutionResponse, error) {
+	if c == nil || c.inner == nil {
+		return nil, errors.New("nil client")
+	}
+	return c.inner.InspectExecution(ctx, req)
 }
 
 func (c *Client) CancelExecution(ctx context.Context, req *CancelExecutionRequest) (*CancelExecutionResponse, error) {

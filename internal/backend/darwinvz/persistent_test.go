@@ -91,7 +91,7 @@ func TestRunInSandboxUsesRequestLaunchSecondsOverride(t *testing.T) {
 	block := make(chan struct{})
 	defer close(block)
 	adapter := &Adapter{}
-	adapter.executeInSandboxFn = func(bootCtx context.Context, _ context.Context, instance *sandboxInstance, req backend.RunRequest, _ backend.OutputStream) (*backend.RunResult, error) {
+	adapter.executeInSandboxFn = func(bootCtx context.Context, _ context.Context, instance *sandboxInstance, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
 		if instance == nil || instance.SandboxID != "cr-test" {
 			t.Fatalf("unexpected sandbox instance: %#v", instance)
 		}
@@ -110,10 +110,10 @@ func TestRunInSandboxUsesRequestLaunchSecondsOverride(t *testing.T) {
 	}
 
 	start := time.Now()
-	_, err := adapter.RunInSandbox(context.Background(), backend.RunRequest{
-		SandboxID: "cr-test",
-		RunID:     "run-timeout",
-		Command:   []string{"echo", "hello"},
+	_, err := adapter.RunInSandbox(context.Background(), backend.ExecutionRequest{
+		SandboxID:   "cr-test",
+		ExecutionID: "run-timeout",
+		Command:     []string{"echo", "hello"},
 		Policy: &policy.CompiledPolicy{
 			NetworkDefault: "deny",
 		},
@@ -142,11 +142,11 @@ func TestRunInSandboxRejectsExitedSandbox(t *testing.T) {
 		},
 	}
 
-	_, err := adapter.RunInSandbox(context.Background(), backend.RunRequest{
-		SandboxID: "cr-test",
-		RunID:     "run-dead",
-		Command:   []string{"true"},
-		Policy:    &policy.CompiledPolicy{NetworkDefault: "deny"},
+	_, err := adapter.RunInSandbox(context.Background(), backend.ExecutionRequest{
+		SandboxID:   "cr-test",
+		ExecutionID: "run-dead",
+		Command:     []string{"true"},
+		Policy:      &policy.CompiledPolicy{NetworkDefault: "deny"},
 	}, backend.OutputStream{})
 	if err == nil {
 		t.Fatal("expected dead sandbox run to fail")

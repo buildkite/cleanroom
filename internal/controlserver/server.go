@@ -170,8 +170,8 @@ func (s *Server) CreateExecution(ctx context.Context, req *connect.Request[clean
 	return connect.NewResponse(resp), nil
 }
 
-func (s *Server) OpenInteractiveExecution(ctx context.Context, req *connect.Request[cleanroomv1.OpenInteractiveExecutionRequest]) (*connect.Response[cleanroomv1.OpenInteractiveExecutionResponse], error) {
-	resp, err := s.service.OpenInteractiveExecution(ctx, req.Msg)
+func (s *Server) AttachExecution(ctx context.Context, req *connect.Request[cleanroomv1.AttachExecutionRequest]) (*connect.Response[cleanroomv1.AttachExecutionResponse], error) {
+	resp, err := s.service.AttachExecution(ctx, req.Msg)
 	if err != nil {
 		return nil, toConnectError(err)
 	}
@@ -180,6 +180,14 @@ func (s *Server) OpenInteractiveExecution(ctx context.Context, req *connect.Requ
 
 func (s *Server) GetExecution(ctx context.Context, req *connect.Request[cleanroomv1.GetExecutionRequest]) (*connect.Response[cleanroomv1.GetExecutionResponse], error) {
 	resp, err := s.service.GetExecution(ctx, req.Msg)
+	if err != nil {
+		return nil, toConnectError(err)
+	}
+	return connect.NewResponse(resp), nil
+}
+
+func (s *Server) InspectExecution(ctx context.Context, req *connect.Request[cleanroomv1.InspectExecutionRequest]) (*connect.Response[cleanroomv1.InspectExecutionResponse], error) {
+	resp, err := s.service.InspectExecution(ctx, req.Msg)
 	if err != nil {
 		return nil, toConnectError(err)
 	}

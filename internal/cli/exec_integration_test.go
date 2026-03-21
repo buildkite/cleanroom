@@ -31,8 +31,8 @@ import (
 type integrationAdapter struct {
 	mu sync.Mutex
 
-	runFn                    func(context.Context, backend.RunRequest) (*backend.RunResult, error)
-	runStreamFn              func(context.Context, backend.RunRequest, backend.OutputStream) (*backend.RunResult, error)
+	runFn                    func(context.Context, backend.ExecutionRequest) (*backend.ExecutionResult, error)
+	runStreamFn              func(context.Context, backend.ExecutionRequest, backend.OutputStream) (*backend.ExecutionResult, error)
 	provisionFn              func(context.Context, backend.ProvisionRequest) error
 	provisionFromSnapshotFn  func(context.Context, backend.ProvisionFromSnapshotRequest) error
 	createSnapshotFn         func(context.Context, backend.SnapshotRequest) (*backend.SnapshotResult, error)
@@ -46,17 +46,17 @@ type integrationAdapter struct {
 
 func (a *integrationAdapter) Name() string { return "firecracker" }
 
-func (a *integrationAdapter) Run(ctx context.Context, req backend.RunRequest) (*backend.RunResult, error) {
+func (a *integrationAdapter) Run(ctx context.Context, req backend.ExecutionRequest) (*backend.ExecutionResult, error) {
 	a.mu.Lock()
 	fn := a.runFn
 	a.mu.Unlock()
 	if fn != nil {
 		return fn(ctx, req)
 	}
-	return &backend.RunResult{RunID: req.RunID, ExitCode: 0, Message: "ok"}, nil
+	return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
 }
 
-func (a *integrationAdapter) RunStream(ctx context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+func (a *integrationAdapter) RunStream(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 	a.mu.Lock()
 	fn := a.runStreamFn
 	a.mu.Unlock()
@@ -91,7 +91,7 @@ func (a *snapshotIntegrationAdapter) ProvisionSandbox(ctx context.Context, req b
 	return nil
 }
 
-func (a *snapshotIntegrationAdapter) RunInSandbox(ctx context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+func (a *snapshotIntegrationAdapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 	return a.RunStream(ctx, req, stream)
 }
 
@@ -406,6 +406,14 @@ func parseSandboxID(stderr string) string {
 	return strings.TrimSpace(match[1])
 }
 
+func parseExecutionID(stderr string) string {
+	match := regexp.MustCompile(`execution_id="?([^"\s]+)"?`).FindStringSubmatch(stderr)
+	if len(match) < 2 {
+		return ""
+	}
+	return strings.TrimSpace(match[1])
+}
+
 func mustNewControlClient(t *testing.T, host string) *controlclient.Client {
 	t.Helper()
 
@@ -452,7 +460,7 @@ func requireSandboxStatus(t *testing.T, client *controlclient.Client, sandboxID 
 
 func TestExecIntegrationStreamsOutput(t *testing.T) {
 	adapter := &integrationAdapter{
-		runStreamFn: func(_ context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 			if stream.OnStdout != nil {
 				stream.OnStdout([]byte("one\n"))
 			}
@@ -460,11 +468,11 @@ func TestExecIntegrationStreamsOutput(t *testing.T) {
 			if stream.OnStdout != nil {
 				stream.OnStdout([]byte("two\n"))
 			}
-			return &backend.RunResult{
-				RunID:    req.RunID,
-				ExitCode: 0,
-				Stdout:   "one\ntwo\n",
-				Message:  "ok",
+			return &backend.ExecutionResult{
+				ExecutionID: req.ExecutionID,
+				ExitCode:    0,
+				Stdout:      "one\ntwo\n",
+				Message:     "ok",
 			}, nil
 		},
 	}
@@ -501,7 +509,7 @@ func TestExecIntegrationForwardsStdinByDefault(t *testing.T) {
 	)
 	stdinClosed := make(chan struct{}, 1)
 	adapter := &integrationAdapter{
-		runStreamFn: func(_ context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 			if stream.OnAttach != nil {
 				stream.OnAttach(backend.AttachIO{
 					WriteStdin: func(data []byte) error {
@@ -532,11 +540,11 @@ func TestExecIntegrationForwardsStdinByDefault(t *testing.T) {
 			if stream.OnStdout != nil {
 				stream.OnStdout([]byte(output))
 			}
-			return &backend.RunResult{
-				RunID:    req.RunID,
-				ExitCode: 0,
-				Stdout:   output,
-				Message:  "ok",
+			return &backend.ExecutionResult{
+				ExecutionID: req.ExecutionID,
+				ExitCode:    0,
+				Stdout:      output,
+				Message:     "ok",
 			}, nil
 		},
 	}
@@ -581,7 +589,7 @@ func TestExecIntegrationIgnoresLateBenignStdinWriteFailures(t *testing.T) {
 		stdinCalls int
 	)
 	adapter := &integrationAdapter{
-		runStreamFn: func(_ context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 			if stream.OnAttach != nil {
 				stream.OnAttach(backend.AttachIO{
 					WriteStdin: func(data []byte) error {
@@ -620,11 +628,11 @@ func TestExecIntegrationIgnoresLateBenignStdinWriteFailures(t *testing.T) {
 			if stream.OnStdout != nil {
 				stream.OnStdout([]byte("done\n"))
 			}
-			return &backend.RunResult{
-				RunID:    req.RunID,
-				ExitCode: 0,
-				Stdout:   "done\n",
-				Message:  "ok",
+			return &backend.ExecutionResult{
+				ExecutionID: req.ExecutionID,
+				ExitCode:    0,
+				Stdout:      "done\n",
+				Message:     "ok",
 			}, nil
 		},
 	}
@@ -665,7 +673,7 @@ func TestExecIntegrationNoStdinClosesImmediately(t *testing.T) {
 	stdinWrites := make(chan string, 1)
 	stdinClosed := make(chan struct{}, 1)
 	adapter := &integrationAdapter{
-		runStreamFn: func(_ context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 			if stream.OnAttach != nil {
 				stream.OnAttach(backend.AttachIO{
 					WriteStdin: func(data []byte) error {
@@ -692,11 +700,11 @@ func TestExecIntegrationNoStdinClosesImmediately(t *testing.T) {
 			if stream.OnStdout != nil {
 				stream.OnStdout([]byte("closed\n"))
 			}
-			return &backend.RunResult{
-				RunID:    req.RunID,
-				ExitCode: 0,
-				Stdout:   "closed\n",
-				Message:  "ok",
+			return &backend.ExecutionResult{
+				ExecutionID: req.ExecutionID,
+				ExitCode:    0,
+				Stdout:      "closed\n",
+				Message:     "ok",
 			}, nil
 		},
 	}
@@ -732,7 +740,7 @@ func TestExecIntegrationNoStdinClosesImmediately(t *testing.T) {
 func TestExecIntegrationNoStdinFailureDoesNotHangWhileStreamBlocked(t *testing.T) {
 	started := make(chan struct{}, 1)
 	adapter := &integrationAdapter{
-		runFn: func(ctx context.Context, _ backend.RunRequest) (*backend.RunResult, error) {
+		runFn: func(ctx context.Context, _ backend.ExecutionRequest) (*backend.ExecutionResult, error) {
 			select {
 			case started <- struct{}{}:
 			default:
@@ -774,13 +782,14 @@ func TestExecIntegrationNoStdinFailureDoesNotHangWhileStreamBlocked(t *testing.T
 
 func TestExecIntegrationPropagatesExitAndStderr(t *testing.T) {
 	adapter := &integrationAdapter{
-		runFn: func(_ context.Context, req backend.RunRequest) (*backend.RunResult, error) {
-			return &backend.RunResult{
-				RunID:    req.RunID,
-				ExitCode: 7,
-				Stdout:   "out\n",
-				Stderr:   "err\n",
-				Message:  "failed",
+		runFn: func(_ context.Context, req backend.ExecutionRequest) (*backend.ExecutionResult, error) {
+			return &backend.ExecutionResult{
+				ExecutionID: req.ExecutionID,
+				ExitCode:    7,
+				Stdout:      "out\n",
+				Stderr:      "err\n",
+				RunDir:      "/tmp/exec-failed",
+				Message:     "failed",
 			}, nil
 		},
 	}
@@ -811,6 +820,18 @@ func TestExecIntegrationPropagatesExitAndStderr(t *testing.T) {
 	if !strings.Contains(outcome.stderr, "err\n") {
 		t.Fatalf("expected stderr in stream output, got %q", outcome.stderr)
 	}
+	if got := parseSandboxID(outcome.stderr); got == "" {
+		t.Fatalf("expected sandbox_id in failure output, got %q", outcome.stderr)
+	}
+	if got := parseExecutionID(outcome.stderr); got == "" {
+		t.Fatalf("expected execution_id in failure output, got %q", outcome.stderr)
+	}
+	if !strings.Contains(outcome.stderr, "inspect_command=cleanroom execution inspect --sandbox-id ") {
+		t.Fatalf("expected inspect_command in failure output, got %q", outcome.stderr)
+	}
+	if !strings.Contains(outcome.stderr, "artifacts_dir=/tmp/exec-failed") {
+		t.Fatalf("expected artifacts_dir in failure output, got %q", outcome.stderr)
+	}
 }
 
 func TestExecIntegrationRendersStructuredWarnings(t *testing.T) {
@@ -819,18 +840,18 @@ func TestExecIntegrationRendersStructuredWarnings(t *testing.T) {
 	const warningText = "darwin-vz guest networking is enabled without host-side egress filtering"
 
 	adapter := &integrationAdapter{
-		runStreamFn: func(_ context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 			if stream.OnWarning != nil {
 				stream.OnWarning(warningText)
 			}
 			if stream.OnStdout != nil {
 				stream.OnStdout([]byte("hello world\n"))
 			}
-			return &backend.RunResult{
-				RunID:    req.RunID,
-				ExitCode: 0,
-				Stdout:   "hello world\n",
-				Message:  "ok",
+			return &backend.ExecutionResult{
+				ExecutionID: req.ExecutionID,
+				ExitCode:    0,
+				Stdout:      "hello world\n",
+				Message:     "ok",
 			}, nil
 		},
 	}
@@ -869,7 +890,7 @@ func TestExecIntegrationRendersStructuredWarnings(t *testing.T) {
 func TestExecIntegrationFirstInterruptCancelsExecution(t *testing.T) {
 	started := make(chan struct{}, 1)
 	adapter := &integrationAdapter{
-		runFn: func(ctx context.Context, _ backend.RunRequest) (*backend.RunResult, error) {
+		runFn: func(ctx context.Context, _ backend.ExecutionRequest) (*backend.ExecutionResult, error) {
 			select {
 			case started <- struct{}{}:
 			default:
@@ -922,7 +943,7 @@ func TestExecIntegrationSecondInterruptTerminatesSandboxWithRemove(t *testing.T)
 	}
 	t.Cleanup(release)
 	adapter := &integrationAdapter{
-		runFn: func(ctx context.Context, _ backend.RunRequest) (*backend.RunResult, error) {
+		runFn: func(ctx context.Context, _ backend.ExecutionRequest) (*backend.ExecutionResult, error) {
 			defer close(runReturned)
 			select {
 			case started <- struct{}{}:
@@ -932,7 +953,7 @@ func TestExecIntegrationSecondInterruptTerminatesSandboxWithRemove(t *testing.T)
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
-			return &backend.RunResult{ExitCode: 0, Message: "unexpected success"}, nil
+			return &backend.ExecutionResult{ExitCode: 0, Message: "unexpected success"}, nil
 		},
 	}
 
@@ -993,7 +1014,7 @@ func TestExecIntegrationSecondInterruptKeepsSuppliedSandboxWithoutRemove(t *test
 	t.Cleanup(release)
 
 	adapter := &integrationAdapter{
-		runFn: func(ctx context.Context, _ backend.RunRequest) (*backend.RunResult, error) {
+		runFn: func(ctx context.Context, _ backend.ExecutionRequest) (*backend.ExecutionResult, error) {
 			defer close(runReturned)
 			select {
 			case started <- struct{}{}:
@@ -1003,7 +1024,7 @@ func TestExecIntegrationSecondInterruptKeepsSuppliedSandboxWithoutRemove(t *test
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
-			return &backend.RunResult{ExitCode: 0, Message: "unexpected success"}, nil
+			return &backend.ExecutionResult{ExitCode: 0, Message: "unexpected success"}, nil
 		},
 	}
 
@@ -1049,15 +1070,15 @@ func TestExecIntegrationSecondInterruptKeepsSuppliedSandboxWithoutRemove(t *test
 
 func TestExecIntegrationVmPathUsesShForGuestCompatibility(t *testing.T) {
 	adapter := &integrationAdapter{
-		runFn: func(_ context.Context, req backend.RunRequest) (*backend.RunResult, error) {
+		runFn: func(_ context.Context, req backend.ExecutionRequest) (*backend.ExecutionResult, error) {
 			if len(req.Command) >= 1 && req.Command[0] == "bash" {
 				return nil, errors.New(`exec: "bash": executable file not found in $PATH`)
 			}
-			return &backend.RunResult{
-				RunID:    req.RunID,
-				ExitCode: 0,
-				Stdout:   "guest-ok\n",
-				Message:  "ok",
+			return &backend.ExecutionResult{
+				ExecutionID: req.ExecutionID,
+				ExitCode:    0,
+				Stdout:      "guest-ok\n",
+				Message:     "ok",
 			}, nil
 		},
 	}
@@ -1094,6 +1115,20 @@ func TestParseSandboxID(t *testing.T) {
 	}
 	if got := parseSandboxID("no id here"); got != "" {
 		t.Fatalf("expected empty sandbox id for invalid input, got %q", got)
+	}
+}
+
+func TestParseExecutionID(t *testing.T) {
+	in := "DEBU execution started component=client sandbox_id=cr-123 execution_id=exec-456\n"
+	if got, want := parseExecutionID(in), "exec-456"; got != want {
+		t.Fatalf("unexpected execution id: got %q want %q", got, want)
+	}
+	in = "execution_id=exec_456\n"
+	if got, want := parseExecutionID(in), "exec_456"; got != want {
+		t.Fatalf("unexpected execution id from print output: got %q want %q", got, want)
+	}
+	if got := parseExecutionID("no id here"); got != "" {
+		t.Fatalf("expected empty execution id for invalid input, got %q", got)
 	}
 }
 

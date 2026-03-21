@@ -15,6 +15,7 @@ import (
 
 type SandboxCommand struct {
 	Create    SandboxCreateCommand    `cmd:"" help:"Create a sandbox"`
+	Inspect   SandboxInspectCommand   `name:"inspect" aliases:"show" cmd:"" help:"Inspect sandbox state and related execution IDs"`
 	List      SandboxListCommand      `name:"ls" aliases:"list" cmd:"" help:"List active sandboxes"`
 	Terminate SandboxTerminateCommand `name:"rm" aliases:"terminate" cmd:"" help:"Terminate a sandbox"`
 }
@@ -33,6 +34,12 @@ type SandboxListCommand struct {
 	clientFlags
 	All  bool `help:"Include stopped sandboxes"`
 	JSON bool `help:"Print sandboxes as JSON"`
+}
+
+type SandboxInspectCommand struct {
+	clientFlags
+	SandboxID string `arg:"" required:"" help:"Sandbox ID to inspect"`
+	JSON      bool   `help:"Print sandbox as JSON"`
 }
 
 type SandboxTerminateCommand struct {
@@ -92,6 +99,74 @@ func (c *SandboxListCommand) Run(ctx *runtimeContext) error {
 		}
 	}
 	return tw.Flush()
+}
+
+func (c *SandboxInspectCommand) Run(ctx *runtimeContext) error {
+	client, err := c.connect(ctx)
+	if err != nil {
+		return err
+	}
+
+	resp, err := client.GetSandbox(context.Background(), &cleanroomv1.GetSandboxRequest{
+		SandboxId: c.SandboxID,
+	})
+	if err != nil {
+		return err
+	}
+	sandbox := resp.GetSandbox()
+	if sandbox == nil {
+		return fmt.Errorf("sandbox %q not found", c.SandboxID)
+	}
+
+	if c.JSON {
+		enc := json.NewEncoder(ctx.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(sandbox)
+	}
+
+	if _, err := fmt.Fprintf(ctx.Stdout, "sandbox: %s\n", sandbox.GetSandboxId()); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(ctx.Stdout, "status: %s\n", sandboxStatusString(sandbox.GetStatus())); err != nil {
+		return err
+	}
+	if backend := strings.TrimSpace(sandbox.GetBackend()); backend != "" {
+		if _, err := fmt.Fprintf(ctx.Stdout, "backend: %s\n", backend); err != nil {
+			return err
+		}
+	}
+	if policyHash := strings.TrimSpace(sandbox.GetPolicyHash()); policyHash != "" {
+		if _, err := fmt.Fprintf(ctx.Stdout, "policy_hash: %s\n", policyHash); err != nil {
+			return err
+		}
+	}
+	if created := sandbox.GetCreatedAt(); created != nil {
+		if _, err := fmt.Fprintf(ctx.Stdout, "created_at: %s\n", created.AsTime().Format(time.RFC3339)); err != nil {
+			return err
+		}
+	}
+	if updated := sandbox.GetUpdatedAt(); updated != nil {
+		if _, err := fmt.Fprintf(ctx.Stdout, "updated_at: %s\n", updated.AsTime().Format(time.RFC3339)); err != nil {
+			return err
+		}
+	}
+	if lastExecutionID := strings.TrimSpace(sandbox.GetLastExecutionId()); lastExecutionID != "" {
+		if _, err := fmt.Fprintf(ctx.Stdout, "last_execution_id: %s\n", lastExecutionID); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(ctx.Stdout, "inspect_last_execution: cleanroom execution inspect --sandbox-id %s --last\n", sandbox.GetSandboxId()); err != nil {
+			return err
+		}
+	}
+	if activeExecutionID := strings.TrimSpace(sandbox.GetActiveExecutionId()); activeExecutionID != "" {
+		if _, err := fmt.Fprintf(ctx.Stdout, "active_execution_id: %s\n", activeExecutionID); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(ctx.Stdout, "inspect_active_execution: cleanroom execution inspect --sandbox-id %s %s\n", sandbox.GetSandboxId(), activeExecutionID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func filterSandboxList(sandboxes []*cleanroomv1.Sandbox, includeStopped bool) []*cleanroomv1.Sandbox {

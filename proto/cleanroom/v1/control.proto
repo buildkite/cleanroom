@@ -2,6 +2,7 @@ syntax = "proto3";
 
 package cleanroom.v1;
 
+import "google/protobuf/struct.proto";
 import "google/protobuf/timestamp.proto";
 
 option go_package = "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1;cleanroomv1";
@@ -24,8 +25,9 @@ service SnapshotService {
 
 service ExecutionService {
   rpc CreateExecution(CreateExecutionRequest) returns (CreateExecutionResponse);
-  rpc OpenInteractiveExecution(OpenInteractiveExecutionRequest) returns (OpenInteractiveExecutionResponse);
+  rpc AttachExecution(AttachExecutionRequest) returns (AttachExecutionResponse);
   rpc GetExecution(GetExecutionRequest) returns (GetExecutionResponse);
+  rpc InspectExecution(InspectExecutionRequest) returns (InspectExecutionResponse);
   rpc CancelExecution(CancelExecutionRequest) returns (CancelExecutionResponse);
   rpc WriteExecutionStdin(WriteExecutionStdinRequest) returns (WriteExecutionStdinResponse);
   rpc CloseExecutionStdin(CloseExecutionStdinRequest) returns (CloseExecutionStdinResponse);
@@ -39,6 +41,8 @@ message Sandbox {
   string policy_hash = 4;
   google.protobuf.Timestamp created_at = 5;
   google.protobuf.Timestamp updated_at = 6;
+  string last_execution_id = 7;
+  string active_execution_id = 8;
 }
 
 message Snapshot {
@@ -211,8 +215,9 @@ message Execution {
   google.protobuf.Timestamp started_at = 6;
   google.protobuf.Timestamp finished_at = 7;
   bool tty = 8;
-  string run_id = 9;
   ExecutionKind kind = 10;
+  reserved 9;
+  reserved "run_id";
 }
 
 enum ExecutionStatus {
@@ -250,14 +255,14 @@ message CreateExecutionResponse {
   Execution execution = 1;
 }
 
-message OpenInteractiveExecutionRequest {
+message AttachExecutionRequest {
   string sandbox_id = 1;
   string execution_id = 2;
   uint32 initial_cols = 3;
   uint32 initial_rows = 4;
 }
 
-message OpenInteractiveExecutionResponse {
+message AttachExecutionResponse {
   string session_id = 1;
   string session_token = 2;
   google.protobuf.Timestamp expires_at = 3;
@@ -273,6 +278,24 @@ message GetExecutionRequest {
 
 message GetExecutionResponse {
   Execution execution = 1;
+}
+
+message InspectExecutionRequest {
+  string sandbox_id = 1;
+  string execution_id = 2;
+}
+
+message InspectExecutionResponse {
+  Execution execution = 1;
+  string message = 2;
+  string stdout = 3;
+  string stderr = 4;
+  string image_ref = 5;
+  string image_digest = 6;
+  string artifacts_dir = 7;
+  string plan_path = 8;
+  bool launched_vm = 9;
+  google.protobuf.Struct observability = 10;
 }
 
 message CancelExecutionRequest {

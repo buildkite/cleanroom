@@ -30,7 +30,7 @@ var knownCapabilityKeys = []string{
 
 type Adapter interface {
 	Name() string
-	Run(ctx context.Context, req RunRequest) (*RunResult, error)
+	Run(ctx context.Context, req ExecutionRequest) (*ExecutionResult, error)
 }
 
 // CapabilityReporter allows backend adapters to publish backend-specific
@@ -102,7 +102,7 @@ func CloneCapabilities(caps map[string]bool) map[string]bool {
 type PersistentSandboxAdapter interface {
 	Adapter
 	ProvisionSandbox(ctx context.Context, req ProvisionRequest) error
-	RunInSandbox(ctx context.Context, req RunRequest, stream OutputStream) (*RunResult, error)
+	RunInSandbox(ctx context.Context, req ExecutionRequest, stream OutputStream) (*ExecutionResult, error)
 	TerminateSandbox(ctx context.Context, sandboxID string) error
 }
 
@@ -167,15 +167,15 @@ type OutputStream struct {
 // Adapters that don't implement this continue to work via Run.
 type StreamingAdapter interface {
 	Adapter
-	RunStream(ctx context.Context, req RunRequest, stream OutputStream) (*RunResult, error)
+	RunStream(ctx context.Context, req ExecutionRequest, stream OutputStream) (*ExecutionResult, error)
 }
 
-type RunRequest struct {
-	SandboxID string
-	RunID     string
-	Command   []string
-	TTY       bool
-	Policy    *policy.CompiledPolicy
+type ExecutionRequest struct {
+	SandboxID   string
+	ExecutionID string
+	Command     []string
+	TTY         bool
+	Policy      *policy.CompiledPolicy
 	FirecrackerConfig
 }
 
@@ -206,8 +206,8 @@ type SnapshotConfig struct {
 	QuiesceTimeoutSeconds int64
 }
 
-type RunResult struct {
-	RunID       string
+type ExecutionResult struct {
+	ExecutionID string
 	ExitCode    int
 	LaunchedVM  bool
 	PlanPath    string

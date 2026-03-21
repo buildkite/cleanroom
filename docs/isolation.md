@@ -16,7 +16,7 @@ Workloads run in a Linux microVM (`firecracker` on Linux, `darwin-vz` on macOS).
 
 ## Observability
 
-Per-run timing metrics are written to `run-observability.json`:
+Per-execution timing metrics are written to `execution-observability.json`:
 - rootfs prep
 - network setup
 - VM ready

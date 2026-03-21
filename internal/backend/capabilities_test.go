@@ -9,22 +9,22 @@ type testAdapter struct{}
 
 func (testAdapter) Name() string { return "test" }
 
-func (testAdapter) Run(context.Context, RunRequest) (*RunResult, error) {
-	return &RunResult{}, nil
+func (testAdapter) Run(context.Context, ExecutionRequest) (*ExecutionResult, error) {
+	return &ExecutionResult{}, nil
 }
 
 type testStreamingAdapter struct{ testAdapter }
 
-func (testStreamingAdapter) RunStream(context.Context, RunRequest, OutputStream) (*RunResult, error) {
-	return &RunResult{}, nil
+func (testStreamingAdapter) RunStream(context.Context, ExecutionRequest, OutputStream) (*ExecutionResult, error) {
+	return &ExecutionResult{}, nil
 }
 
 type testPersistentAdapter struct{ testStreamingAdapter }
 
 func (testPersistentAdapter) ProvisionSandbox(context.Context, ProvisionRequest) error { return nil }
 
-func (testPersistentAdapter) RunInSandbox(context.Context, RunRequest, OutputStream) (*RunResult, error) {
-	return &RunResult{}, nil
+func (testPersistentAdapter) RunInSandbox(context.Context, ExecutionRequest, OutputStream) (*ExecutionResult, error) {
+	return &ExecutionResult{}, nil
 }
 
 func (testPersistentAdapter) TerminateSandbox(context.Context, string) error { return nil }

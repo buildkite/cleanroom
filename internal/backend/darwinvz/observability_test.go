@@ -32,7 +32,7 @@ func TestWriteDarwinVZRunObservationIncludesHelperTimings(t *testing.T) {
 
 	runDir := t.TempDir()
 	obs := darwinVZRunObservation{
-		RunID:        "run-123",
+		ExecutionID:  "run-123",
 		Backend:      "darwin-vz",
 		LaunchedVM:   true,
 		RunDir:       runDir,
@@ -57,8 +57,8 @@ func TestWriteDarwinVZRunObservationIncludesHelperTimings(t *testing.T) {
 		t.Fatalf("parse observability file: %v", err)
 	}
 
-	if got, want := payload["run_id"], "run-123"; got != want {
-		t.Fatalf("unexpected run_id: got %v want %v", got, want)
+	if got, want := payload["execution_id"], "run-123"; got != want {
+		t.Fatalf("unexpected execution_id: got %v want %v", got, want)
 	}
 	if got, want := payload["vm_ready_ms"], float64(321); got != want {
 		t.Fatalf("unexpected vm_ready_ms: got %v want %v", got, want)
@@ -87,12 +87,12 @@ func TestRunInSandboxWritesObservabilityWithPendingLaunchTimings(t *testing.T) {
 
 	runDir := t.TempDir()
 	adapter := &Adapter{
-		executeInSandboxFn: func(_ context.Context, _ context.Context, instance *sandboxInstance, req backend.RunRequest, _ backend.OutputStream) (*backend.RunResult, error) {
+		executeInSandboxFn: func(_ context.Context, _ context.Context, instance *sandboxInstance, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
 			if instance == nil || instance.SandboxID != "cr-test" {
 				t.Fatalf("unexpected sandbox instance: %#v", instance)
 			}
-			return &backend.RunResult{
-				RunID:       req.RunID,
+			return &backend.ExecutionResult{
+				ExecutionID: req.ExecutionID,
 				ExitCode:    0,
 				LaunchedVM:  false,
 				PlanPath:    "/tmp/fake-plan.json",
@@ -115,11 +115,11 @@ func TestRunInSandboxWritesObservabilityWithPendingLaunchTimings(t *testing.T) {
 		},
 	}
 
-	_, err := adapter.RunInSandbox(context.Background(), backend.RunRequest{
-		SandboxID: "cr-test",
-		RunID:     "run-123",
-		Command:   []string{"echo", "hello"},
-		Policy:    &policy.CompiledPolicy{NetworkDefault: "deny"},
+	_, err := adapter.RunInSandbox(context.Background(), backend.ExecutionRequest{
+		SandboxID:   "cr-test",
+		ExecutionID: "run-123",
+		Command:     []string{"echo", "hello"},
+		Policy:      &policy.CompiledPolicy{NetworkDefault: "deny"},
 		FirecrackerConfig: backend.FirecrackerConfig{
 			RunDir: runDir,
 		},
@@ -153,10 +153,10 @@ func TestRunWritesObservabilityErrorWhenRequestedCommandWriteFails(t *testing.T)
 	}
 
 	adapter := &Adapter{}
-	_, err := adapter.run(context.Background(), backend.RunRequest{
-		RunID:   "run-write-fail",
-		Command: []string{"echo", "hello"},
-		Policy:  &policy.CompiledPolicy{NetworkDefault: "deny"},
+	_, err := adapter.run(context.Background(), backend.ExecutionRequest{
+		ExecutionID: "run-write-fail",
+		Command:     []string{"echo", "hello"},
+		Policy:      &policy.CompiledPolicy{NetworkDefault: "deny"},
 		FirecrackerConfig: backend.FirecrackerConfig{
 			RunDir: runDir,
 			Launch: false,

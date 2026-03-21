@@ -19,16 +19,16 @@ type integrationAdapter struct{}
 
 func (integrationAdapter) Name() string { return "firecracker" }
 
-func (integrationAdapter) Run(_ context.Context, req backend.RunRequest) (*backend.RunResult, error) {
-	return &backend.RunResult{
-		RunID:    req.RunID,
-		ExitCode: 0,
-		Stdout:   "hello from cleanroom\n",
-		Message:  "ok",
+func (integrationAdapter) Run(_ context.Context, req backend.ExecutionRequest) (*backend.ExecutionResult, error) {
+	return &backend.ExecutionResult{
+		ExecutionID: req.ExecutionID,
+		ExitCode:    0,
+		Stdout:      "hello from cleanroom\n",
+		Message:     "ok",
 	}, nil
 }
 
-func (a integrationAdapter) RunStream(ctx context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+func (a integrationAdapter) RunStream(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 	result, err := a.Run(ctx, req)
 	if err != nil {
 		return nil, err
@@ -47,7 +47,7 @@ func (snapshotIntegrationAdapter) ProvisionSandbox(context.Context, backend.Prov
 	return nil
 }
 
-func (a snapshotIntegrationAdapter) RunInSandbox(ctx context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+func (a snapshotIntegrationAdapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 	return a.RunStream(ctx, req, stream)
 }
 

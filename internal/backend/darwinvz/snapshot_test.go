@@ -27,14 +27,14 @@ func TestCreateSnapshotSyncsPausesAndClonesRootFS(t *testing.T) {
 
 	var helperOps []string
 	adapter := &Adapter{
-		executeInSandboxFn: func(_ context.Context, _ context.Context, instance *sandboxInstance, req backend.RunRequest, _ backend.OutputStream) (*backend.RunResult, error) {
+		executeInSandboxFn: func(_ context.Context, _ context.Context, instance *sandboxInstance, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
 			if instance == nil || instance.SandboxID != "cr-test" {
 				t.Fatalf("unexpected sandbox instance: %#v", instance)
 			}
 			if len(req.Command) != 1 || req.Command[0] != "sync" {
 				t.Fatalf("unexpected command: %v", req.Command)
 			}
-			return &backend.RunResult{ExitCode: 0}, nil
+			return &backend.ExecutionResult{ExitCode: 0}, nil
 		},
 		helperRequestFn: func(_ context.Context, helper *helperSession, req helperControlRequest) (helperControlResponse, error) {
 			if helper == nil {

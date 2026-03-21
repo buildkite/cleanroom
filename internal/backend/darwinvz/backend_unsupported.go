@@ -32,11 +32,11 @@ func (a *Adapter) Capabilities() map[string]bool {
 	}
 }
 
-func (a *Adapter) Run(_ context.Context, _ backend.RunRequest) (*backend.RunResult, error) {
+func (a *Adapter) Run(_ context.Context, _ backend.ExecutionRequest) (*backend.ExecutionResult, error) {
 	return nil, fmt.Errorf("darwin-vz backend requires macOS, current OS is %s", runtime.GOOS)
 }
 
-func (a *Adapter) RunStream(ctx context.Context, req backend.RunRequest, _ backend.OutputStream) (*backend.RunResult, error) {
+func (a *Adapter) RunStream(ctx context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
 	return a.Run(ctx, req)
 }
 

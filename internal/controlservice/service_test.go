@@ -3,7 +3,7 @@ package controlservice
 import (
 	"context"
 	"errors"
-	"regexp"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -12,6 +12,7 @@ import (
 
 	"github.com/buildkite/cleanroom/internal/backend"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
+	"github.com/buildkite/cleanroom/internal/paths"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 	"github.com/buildkite/cleanroom/internal/snapshotstore"
@@ -19,16 +20,16 @@ import (
 )
 
 type stubAdapter struct {
-	result                     *backend.RunResult
-	runFn                      func(context.Context, backend.RunRequest) (*backend.RunResult, error)
-	runStreamFn                func(context.Context, backend.RunRequest, backend.OutputStream) (*backend.RunResult, error)
+	result                     *backend.ExecutionResult
+	runFn                      func(context.Context, backend.ExecutionRequest) (*backend.ExecutionResult, error)
+	runStreamFn                func(context.Context, backend.ExecutionRequest, backend.OutputStream) (*backend.ExecutionResult, error)
 	provisionFn                func(context.Context, backend.ProvisionRequest) error
 	provisionFromSnapshotFn    func(context.Context, backend.ProvisionFromSnapshotRequest) error
 	createSnapshotFn           func(context.Context, backend.SnapshotRequest) (*backend.SnapshotResult, error)
 	deleteSnapshotFn           func(context.Context, backend.DeleteSnapshotRequest) error
 	terminateFn                func(context.Context, string) error
 	downloadFn                 func(context.Context, string, string, int64) ([]byte, error)
-	req                        backend.RunRequest
+	req                        backend.ExecutionRequest
 	provisionReq               backend.ProvisionRequest
 	provisionFromSnapshotReq   backend.ProvisionFromSnapshotRequest
 	createSnapshotReq          backend.SnapshotRequest
@@ -43,7 +44,7 @@ type stubAdapter struct {
 
 func (s *stubAdapter) Name() string { return "stub" }
 
-func (s *stubAdapter) Run(ctx context.Context, req backend.RunRequest) (*backend.RunResult, error) {
+func (s *stubAdapter) Run(ctx context.Context, req backend.ExecutionRequest) (*backend.ExecutionResult, error) {
 	s.req = req
 	s.runCalls++
 	if s.runFn != nil {
@@ -52,24 +53,24 @@ func (s *stubAdapter) Run(ctx context.Context, req backend.RunRequest) (*backend
 	if s.result != nil {
 		return s.result, nil
 	}
-	return &backend.RunResult{
-		RunID:      req.RunID,
-		ExitCode:   0,
-		LaunchedVM: true,
-		PlanPath:   "/tmp/plan",
-		RunDir:     "/tmp/run",
-		Message:    "ok",
+	return &backend.ExecutionResult{
+		ExecutionID: req.ExecutionID,
+		ExitCode:    0,
+		LaunchedVM:  true,
+		PlanPath:    "/tmp/plan",
+		RunDir:      "/tmp/run",
+		Message:     "ok",
 	}, nil
 }
 
-func (s *stubAdapter) RunStream(ctx context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+func (s *stubAdapter) RunStream(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 	s.req = req
 	s.runCalls++
 	if s.runStreamFn != nil {
 		return s.runStreamFn(ctx, req, stream)
 	}
 	var (
-		result *backend.RunResult
+		result *backend.ExecutionResult
 		err    error
 	)
 	if s.runFn != nil {
@@ -81,13 +82,13 @@ func (s *stubAdapter) RunStream(ctx context.Context, req backend.RunRequest, str
 		result = s.result
 	}
 	if result == nil {
-		result = &backend.RunResult{
-			RunID:      req.RunID,
-			ExitCode:   0,
-			LaunchedVM: true,
-			PlanPath:   "/tmp/plan",
-			RunDir:     "/tmp/run",
-			Message:    "ok",
+		result = &backend.ExecutionResult{
+			ExecutionID: req.ExecutionID,
+			ExitCode:    0,
+			LaunchedVM:  true,
+			PlanPath:    "/tmp/plan",
+			RunDir:      "/tmp/run",
+			Message:     "ok",
 		}
 	}
 	if stream.OnStdout != nil && result.Stdout != "" {
@@ -108,7 +109,7 @@ func (s *stubAdapter) ProvisionSandbox(ctx context.Context, req backend.Provisio
 	return nil
 }
 
-func (s *stubAdapter) RunInSandbox(ctx context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+func (s *stubAdapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 	return s.RunStream(ctx, req, stream)
 }
 
@@ -288,9 +289,9 @@ func (s *memorySnapshotStore) Delete(_ context.Context, snapshotID string) error
 
 func TestExecutionStreamIncludesExitEvent(t *testing.T) {
 	adapter := &stubAdapter{
-		runFn: func(_ context.Context, req backend.RunRequest) (*backend.RunResult, error) {
-			return &backend.RunResult{
-				RunID:       req.RunID,
+		runFn: func(_ context.Context, req backend.ExecutionRequest) (*backend.ExecutionResult, error) {
+			return &backend.ExecutionResult{
+				ExecutionID: req.ExecutionID,
 				ExitCode:    7,
 				LaunchedVM:  true,
 				PlanPath:    "/tmp/plan",
@@ -870,18 +871,18 @@ func TestExecutionStreamIncludesStructuredWarnings(t *testing.T) {
 	const warningText = "darwin-vz guest networking is enabled without host-side egress filtering"
 
 	adapter := &stubAdapter{
-		runStreamFn: func(_ context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 			if stream.OnWarning != nil {
 				stream.OnWarning(warningText)
 			}
 			if stream.OnStdout != nil {
 				stream.OnStdout([]byte("hello stdout\n"))
 			}
-			return &backend.RunResult{
-				RunID:    req.RunID,
-				ExitCode: 0,
-				Stdout:   "hello stdout\n",
-				Message:  "done",
+			return &backend.ExecutionResult{
+				ExecutionID: req.ExecutionID,
+				ExitCode:    0,
+				Stdout:      "hello stdout\n",
+				Message:     "done",
 			}, nil
 		},
 	}
@@ -934,7 +935,7 @@ func TestExecutionStreamIncludesStructuredWarnings(t *testing.T) {
 func TestCancelExecutionTransitionsToCanceled(t *testing.T) {
 	started := make(chan struct{}, 1)
 	adapter := &stubAdapter{
-		runFn: func(ctx context.Context, _ backend.RunRequest) (*backend.RunResult, error) {
+		runFn: func(ctx context.Context, _ backend.ExecutionRequest) (*backend.ExecutionResult, error) {
 			select {
 			case started <- struct{}{}:
 			default:
@@ -1050,6 +1051,7 @@ func TestCreateSandboxProvisionsPersistentBackend(t *testing.T) {
 }
 
 func TestCreateSandboxBootstrapsRepositoryInService(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	adapter := &stubAdapter{}
 	mirrors := &stubRepositoryMirrorStore{}
 	svc := newTestService(adapter)
@@ -1084,6 +1086,17 @@ func TestCreateSandboxBootstrapsRepositoryInService(t *testing.T) {
 	if strings.Contains(joined, "Authorization:") || strings.Contains(joined, ".extraHeader") {
 		t.Fatalf("expected bootstrap command to avoid embedded auth, got %q", joined)
 	}
+	wantRunDir := internalBootstrapArtifactsDir(createResp.GetSandbox().GetSandboxId(), adapter.req.ExecutionID)
+	if got := adapter.req.RunDir; got != wantRunDir {
+		t.Fatalf("unexpected bootstrap run dir: got %q want %q", got, wantRunDir)
+	}
+	executionBaseDir, err := paths.ExecutionBaseDir()
+	if err != nil {
+		t.Fatalf("ExecutionBaseDir returned error: %v", err)
+	}
+	if rel, err := filepath.Rel(executionBaseDir, adapter.req.RunDir); err == nil && rel != "." && !strings.HasPrefix(rel, "..") {
+		t.Fatalf("expected bootstrap run dir to stay out of execution artifacts base dir %q, got %q", executionBaseDir, adapter.req.RunDir)
+	}
 }
 
 func TestCreateExecutionWrapsRepositoryBootstrapInService(t *testing.T) {
@@ -1096,7 +1109,7 @@ func TestCreateExecutionWrapsRepositoryBootstrapInService(t *testing.T) {
 		mu       sync.Mutex
 		commands [][]string
 	)
-	adapter.runStreamFn = func(_ context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 		mu.Lock()
 		commands = append(commands, append([]string(nil), req.Command...))
 		mu.Unlock()
@@ -1104,7 +1117,7 @@ func TestCreateExecutionWrapsRepositoryBootstrapInService(t *testing.T) {
 		case runCalled <- struct{}{}:
 		default:
 		}
-		return &backend.RunResult{RunID: req.RunID, ExitCode: 0, Message: "ok"}, nil
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
 	}
 
 	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testRepositoryPolicy()})
@@ -1172,7 +1185,7 @@ func TestCreateExecutionSkipsBootstrapForMatchingPersistentRepository(t *testing
 		commands [][]string
 	)
 	runCalled := make(chan struct{}, 4)
-	adapter.runStreamFn = func(_ context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 		mu.Lock()
 		commands = append(commands, append([]string(nil), req.Command...))
 		mu.Unlock()
@@ -1180,7 +1193,7 @@ func TestCreateExecutionSkipsBootstrapForMatchingPersistentRepository(t *testing
 		case runCalled <- struct{}{}:
 		default:
 		}
-		return &backend.RunResult{RunID: req.RunID, ExitCode: 0, Message: "ok"}, nil
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
 	}
 
 	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
@@ -1243,7 +1256,7 @@ func TestCreateExecutionSkipsBootstrapForSnapshotBackedSandboxWithMatchingReposi
 		commands [][]string
 	)
 	runCalled := make(chan struct{}, 8)
-	adapter.runStreamFn = func(_ context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 		mu.Lock()
 		commands = append(commands, append([]string(nil), req.Command...))
 		mu.Unlock()
@@ -1251,7 +1264,7 @@ func TestCreateExecutionSkipsBootstrapForSnapshotBackedSandboxWithMatchingReposi
 		case runCalled <- struct{}{}:
 		default:
 		}
-		return &backend.RunResult{RunID: req.RunID, ExitCode: 0, Message: "ok"}, nil
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
 	}
 
 	sourceResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
@@ -1388,7 +1401,7 @@ func TestCreateExecutionRejectsRepositoryRemoteOutsidePolicy(t *testing.T) {
 func TestCreateSandboxBootstrapCleanupUsesFreshContext(t *testing.T) {
 	adapter := &stubAdapter{}
 	svc := newTestService(adapter)
-	adapter.runStreamFn = func(ctx context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+	adapter.runStreamFn = func(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 		return nil, ctx.Err()
 	}
 	adapter.terminateFn = func(ctx context.Context, sandboxID string) error {
@@ -1583,7 +1596,7 @@ func TestCreateSandboxSetsRepositoryBootstrapRootFSMinimum(t *testing.T) {
 func TestCreateExecutionRejectsWhenSandboxBusy(t *testing.T) {
 	started := make(chan struct{}, 1)
 	adapter := &stubAdapter{
-		runFn: func(ctx context.Context, req backend.RunRequest) (*backend.RunResult, error) {
+		runFn: func(ctx context.Context, req backend.ExecutionRequest) (*backend.ExecutionResult, error) {
 			select {
 			case started <- struct{}{}:
 			default:
@@ -1681,7 +1694,7 @@ func TestDownloadSandboxFileReturnsData(t *testing.T) {
 func TestDownloadSandboxFileRejectsWhenSandboxBusy(t *testing.T) {
 	started := make(chan struct{}, 1)
 	adapter := &stubAdapter{
-		runFn: func(ctx context.Context, req backend.RunRequest) (*backend.RunResult, error) {
+		runFn: func(ctx context.Context, req backend.ExecutionRequest) (*backend.ExecutionResult, error) {
 			select {
 			case started <- struct{}{}:
 			default:
@@ -1959,16 +1972,19 @@ func TestServiceGeneratedIDsUseTypeIDFormat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetExecution returned error: %v", err)
 	}
-	runID := getResp.GetExecution().GetRunId()
-	parsedRunID, err := typeid.FromString(runID)
+	if got, want := getResp.GetExecution().GetExecutionId(), executionID; got != want {
+		t.Fatalf("unexpected execution id from GetExecution: got %q want %q", got, want)
+	}
+
+	sandboxResp, err := svc.GetSandbox(context.Background(), &cleanroomv1.GetSandboxRequest{SandboxId: sandboxID})
 	if err != nil {
-		t.Fatalf("expected typeid-formatted run id, got %q: %v", runID, err)
+		t.Fatalf("GetSandbox returned error: %v", err)
 	}
-	if got, want := parsedRunID.Prefix(), "run"; got != want {
-		t.Fatalf("unexpected run id prefix: got %q want %q", got, want)
+	if got, want := sandboxResp.GetSandbox().GetLastExecutionId(), executionID; got != want {
+		t.Fatalf("unexpected last execution id: got %q want %q", got, want)
 	}
-	if !regexp.MustCompile(`^run_[0-9a-z]{26}$`).MatchString(runID) {
-		t.Fatalf("unexpected run id shape: %q", runID)
+	if got := sandboxResp.GetSandbox().GetActiveExecutionId(); got != "" {
+		t.Fatalf("expected no active execution after completion, got %q", got)
 	}
 }
 
@@ -1978,7 +1994,7 @@ func TestExecutionAttachIOForwarding(t *testing.T) {
 	stdinClosed := make(chan struct{}, 1)
 	resizes := make(chan [2]uint32, 1)
 	adapter := &stubAdapter{
-		runStreamFn: func(ctx context.Context, _ backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+		runStreamFn: func(ctx context.Context, _ backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 			if stream.OnAttach != nil {
 				stream.OnAttach(backend.AttachIO{
 					WriteStdin: func(data []byte) error {
@@ -2084,7 +2100,7 @@ func TestExecutionAttachIOWaitsForDelayedAttachRegistration(t *testing.T) {
 	stdinClosed := make(chan struct{}, 1)
 	resizes := make(chan [2]uint32, 1)
 	adapter := &stubAdapter{
-		runStreamFn: func(ctx context.Context, _ backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+		runStreamFn: func(ctx context.Context, _ backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 			select {
 			case started <- struct{}{}:
 			default:
@@ -2192,7 +2208,7 @@ func TestExecutionAttachIOWaitsForDelayedAttachRegistration(t *testing.T) {
 func TestExecutionAttachIOUnsupportedWhenBackendDoesNotExposeHandlers(t *testing.T) {
 	started := make(chan struct{}, 1)
 	adapter := &stubAdapter{
-		runStreamFn: func(ctx context.Context, _ backend.RunRequest, _ backend.OutputStream) (*backend.RunResult, error) {
+		runStreamFn: func(ctx context.Context, _ backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
 			select {
 			case started <- struct{}{}:
 			default:
@@ -2387,6 +2403,50 @@ func TestFinalizeExecutionWithoutPruneSkipsImmediateStatePruning(t *testing.T) {
 	svc.mu.Unlock()
 }
 
+func TestPruneFinishedExecutionClearsSandboxExecutionPointers(t *testing.T) {
+	svc := newTestService(&stubAdapter{})
+
+	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createSandboxResp.GetSandbox().GetSandboxId()
+
+	createExecutionResp, err := svc.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+		SandboxId: sandboxID,
+		Command:   []string{"echo", "ok"},
+	})
+	if err != nil {
+		t.Fatalf("CreateExecution returned error: %v", err)
+	}
+	executionID := createExecutionResp.GetExecution().GetExecutionId()
+	if _, err := svc.WaitExecution(context.Background(), sandboxID, executionID); err != nil {
+		t.Fatalf("WaitExecution returned error: %v", err)
+	}
+
+	retention := testRetentionPolicy()
+	retention.maxRetainedFinishedExecutions = 0
+	svc.runtime.retention = retention
+
+	svc.mu.Lock()
+	svc.pruneStateLocked(time.Now().UTC())
+	svc.mu.Unlock()
+
+	getSandboxResp, err := svc.GetSandbox(context.Background(), &cleanroomv1.GetSandboxRequest{SandboxId: sandboxID})
+	if err != nil {
+		t.Fatalf("GetSandbox returned error: %v", err)
+	}
+	if got := getSandboxResp.GetSandbox().GetLastExecutionId(); got != "" {
+		t.Fatalf("expected last_execution_id to clear after pruning, got %q", got)
+	}
+	if got := getSandboxResp.GetSandbox().GetActiveExecutionId(); got != "" {
+		t.Fatalf("expected active_execution_id to remain empty after pruning, got %q", got)
+	}
+	if _, err := svc.ExecutionSnapshot(sandboxID, executionID); err == nil {
+		t.Fatal("expected pruned execution snapshot lookup to fail")
+	}
+}
+
 func TestBufferedResultDeltaModes(t *testing.T) {
 	if got, replace := bufferedResultDelta("abc", "abcabc", 3); got != "" || replace {
 		t.Fatalf("expected saturated suffix overlap to suppress duplicate delta, got delta=%q replace=%t", got, replace)
@@ -2409,7 +2469,7 @@ func TestMergeBufferedResultOutputReplacesMissingStreamPrefix(t *testing.T) {
 		events:    newEventFeed[*cleanroomv1.ExecutionStreamEvent](defaultRetentionPolicy.maxRetainedExecutionEvents),
 	}
 
-	svc.mergeBufferedResultOutputLocked(ex, &backend.RunResult{
+	svc.mergeBufferedResultOutputLocked(ex, &backend.ExecutionResult{
 		Stdout: "head-tail",
 	}, true)
 
@@ -2508,7 +2568,7 @@ func TestStatePruningBoundsRetainedTerminalState(t *testing.T) {
 
 func TestExecutionRetentionBoundsOutput(t *testing.T) {
 	adapter := &stubAdapter{
-		runStreamFn: func(_ context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 			for _, chunk := range []string{"1234", "5678", "90"} {
 				if stream.OnStdout != nil {
 					stream.OnStdout([]byte(chunk))
@@ -2519,15 +2579,15 @@ func TestExecutionRetentionBoundsOutput(t *testing.T) {
 					stream.OnStderr([]byte(chunk))
 				}
 			}
-			return &backend.RunResult{
-				RunID:      req.RunID,
-				ExitCode:   0,
-				LaunchedVM: false,
-				PlanPath:   "/tmp/plan",
-				RunDir:     "/tmp/run",
-				Message:    "ok",
-				Stdout:     "1234567890",
-				Stderr:     "abcdefghij",
+			return &backend.ExecutionResult{
+				ExecutionID: req.ExecutionID,
+				ExitCode:    0,
+				LaunchedVM:  false,
+				PlanPath:    "/tmp/plan",
+				RunDir:      "/tmp/run",
+				Message:     "ok",
+				Stdout:      "1234567890",
+				Stderr:      "abcdefghij",
 			}, nil
 		},
 	}
@@ -2569,20 +2629,20 @@ func TestExecutionRetentionBoundsOutput(t *testing.T) {
 
 func TestExecutionRetentionBoundsEventHistory(t *testing.T) {
 	adapter := &stubAdapter{
-		runStreamFn: func(_ context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 			for _, chunk := range []string{"1", "2", "3", "4"} {
 				if stream.OnStdout != nil {
 					stream.OnStdout([]byte(chunk))
 				}
 			}
-			return &backend.RunResult{
-				RunID:      req.RunID,
-				ExitCode:   0,
-				LaunchedVM: false,
-				PlanPath:   "/tmp/plan",
-				RunDir:     "/tmp/run",
-				Message:    "ok",
-				Stdout:     "1234",
+			return &backend.ExecutionResult{
+				ExecutionID: req.ExecutionID,
+				ExitCode:    0,
+				LaunchedVM:  false,
+				PlanPath:    "/tmp/plan",
+				RunDir:      "/tmp/run",
+				Message:     "ok",
+				Stdout:      "1234",
 			}, nil
 		},
 	}
@@ -2670,7 +2730,7 @@ func TestSandboxRetentionBoundsEventHistory(t *testing.T) {
 
 func TestStreamedOutputArrivesBeforeExecutionExit(t *testing.T) {
 	adapter := &stubAdapter{
-		runStreamFn: func(ctx context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+		runStreamFn: func(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 			if stream.OnStdout != nil {
 				stream.OnStdout([]byte("chunk-1\n"))
 			}
@@ -2683,14 +2743,14 @@ func TestStreamedOutputArrivesBeforeExecutionExit(t *testing.T) {
 				return nil, ctx.Err()
 			default:
 			}
-			return &backend.RunResult{
-				RunID:      req.RunID,
-				ExitCode:   0,
-				LaunchedVM: false,
-				PlanPath:   "/tmp/plan",
-				RunDir:     "/tmp/run",
-				Message:    "ok",
-				Stdout:     "chunk-1\nchunk-2\n",
+			return &backend.ExecutionResult{
+				ExecutionID: req.ExecutionID,
+				ExitCode:    0,
+				LaunchedVM:  false,
+				PlanPath:    "/tmp/plan",
+				RunDir:      "/tmp/run",
+				Message:     "ok",
+				Stdout:      "chunk-1\nchunk-2\n",
 			}, nil
 		},
 	}
@@ -2776,22 +2836,22 @@ func TestCreateExecutionDerivesKindFromTTY(t *testing.T) {
 	}
 }
 
-func TestOpenInteractiveExecutionRejectsBatchExecution(t *testing.T) {
+func TestAttachExecutionRejectsBatchExecution(t *testing.T) {
 	release := make(chan struct{})
 	adapter := &stubAdapter{
-		runFn: func(ctx context.Context, req backend.RunRequest) (*backend.RunResult, error) {
+		runFn: func(ctx context.Context, req backend.ExecutionRequest) (*backend.ExecutionResult, error) {
 			select {
 			case <-release:
 			case <-ctx.Done():
 				return nil, ctx.Err()
 			}
-			return &backend.RunResult{
-				RunID:      req.RunID,
-				ExitCode:   0,
-				LaunchedVM: false,
-				PlanPath:   "/tmp/plan",
-				RunDir:     "/tmp/run",
-				Message:    "ok",
+			return &backend.ExecutionResult{
+				ExecutionID: req.ExecutionID,
+				ExitCode:    0,
+				LaunchedVM:  false,
+				PlanPath:    "/tmp/plan",
+				RunDir:      "/tmp/run",
+				Message:     "ok",
 			}, nil
 		},
 	}
@@ -2813,12 +2873,12 @@ func TestOpenInteractiveExecutionRejectsBatchExecution(t *testing.T) {
 		t.Fatalf("CreateExecution returned error: %v", err)
 	}
 
-	_, err = svc.OpenInteractiveExecution(context.Background(), &cleanroomv1.OpenInteractiveExecutionRequest{
+	_, err = svc.AttachExecution(context.Background(), &cleanroomv1.AttachExecutionRequest{
 		SandboxId:   sandboxID,
 		ExecutionId: execResp.GetExecution().GetExecutionId(),
 	})
 	if err == nil {
-		t.Fatal("expected OpenInteractiveExecution to fail for batch execution")
+		t.Fatal("expected AttachExecution to fail for batch execution")
 	}
 	if !strings.Contains(err.Error(), "not interactive") {
 		t.Fatalf("expected not interactive error, got %v", err)
@@ -2827,22 +2887,22 @@ func TestOpenInteractiveExecutionRejectsBatchExecution(t *testing.T) {
 	close(release)
 }
 
-func TestOpenInteractiveExecutionReturnsSessionToken(t *testing.T) {
+func TestAttachExecutionReturnsSessionToken(t *testing.T) {
 	release := make(chan struct{})
 	adapter := &stubAdapter{
-		runFn: func(ctx context.Context, req backend.RunRequest) (*backend.RunResult, error) {
+		runFn: func(ctx context.Context, req backend.ExecutionRequest) (*backend.ExecutionResult, error) {
 			select {
 			case <-release:
 			case <-ctx.Done():
 				return nil, ctx.Err()
 			}
-			return &backend.RunResult{
-				RunID:      req.RunID,
-				ExitCode:   0,
-				LaunchedVM: false,
-				PlanPath:   "/tmp/plan",
-				RunDir:     "/tmp/run",
-				Message:    "ok",
+			return &backend.ExecutionResult{
+				ExecutionID: req.ExecutionID,
+				ExitCode:    0,
+				LaunchedVM:  false,
+				PlanPath:    "/tmp/plan",
+				RunDir:      "/tmp/run",
+				Message:     "ok",
 			}, nil
 		},
 	}
@@ -2868,14 +2928,14 @@ func TestOpenInteractiveExecutionReturnsSessionToken(t *testing.T) {
 	}
 	executionID := execResp.GetExecution().GetExecutionId()
 
-	openResp, err := svc.OpenInteractiveExecution(context.Background(), &cleanroomv1.OpenInteractiveExecutionRequest{
+	openResp, err := svc.AttachExecution(context.Background(), &cleanroomv1.AttachExecutionRequest{
 		SandboxId:   sandboxID,
 		ExecutionId: executionID,
 		InitialCols: 120,
 		InitialRows: 42,
 	})
 	if err != nil {
-		t.Fatalf("OpenInteractiveExecution returned error: %v", err)
+		t.Fatalf("AttachExecution returned error: %v", err)
 	}
 	if openResp.GetSessionId() == "" {
 		t.Fatal("expected session_id")
@@ -2908,19 +2968,19 @@ func TestOpenInteractiveExecutionReturnsSessionToken(t *testing.T) {
 func TestConsumeInteractiveSessionIsSingleUse(t *testing.T) {
 	release := make(chan struct{})
 	adapter := &stubAdapter{
-		runFn: func(ctx context.Context, req backend.RunRequest) (*backend.RunResult, error) {
+		runFn: func(ctx context.Context, req backend.ExecutionRequest) (*backend.ExecutionResult, error) {
 			select {
 			case <-release:
 			case <-ctx.Done():
 				return nil, ctx.Err()
 			}
-			return &backend.RunResult{
-				RunID:      req.RunID,
-				ExitCode:   0,
-				LaunchedVM: false,
-				PlanPath:   "/tmp/plan",
-				RunDir:     "/tmp/run",
-				Message:    "ok",
+			return &backend.ExecutionResult{
+				ExecutionID: req.ExecutionID,
+				ExitCode:    0,
+				LaunchedVM:  false,
+				PlanPath:    "/tmp/plan",
+				RunDir:      "/tmp/run",
+				Message:     "ok",
 			}, nil
 		},
 	}
@@ -2945,12 +3005,12 @@ func TestConsumeInteractiveSessionIsSingleUse(t *testing.T) {
 		t.Fatalf("CreateExecution returned error: %v", err)
 	}
 
-	openResp, err := svc.OpenInteractiveExecution(context.Background(), &cleanroomv1.OpenInteractiveExecutionRequest{
+	openResp, err := svc.AttachExecution(context.Background(), &cleanroomv1.AttachExecutionRequest{
 		SandboxId:   sandboxID,
 		ExecutionId: execResp.GetExecution().GetExecutionId(),
 	})
 	if err != nil {
-		t.Fatalf("OpenInteractiveExecution returned error: %v", err)
+		t.Fatalf("AttachExecution returned error: %v", err)
 	}
 
 	session, err := svc.ConsumeInteractiveSession(openResp.GetSessionId(), openResp.GetSessionToken())
@@ -2971,22 +3031,22 @@ func TestConsumeInteractiveSessionIsSingleUse(t *testing.T) {
 	}
 }
 
-func TestOpenInteractiveExecutionEnforcesSingleActiveAttach(t *testing.T) {
+func TestAttachExecutionEnforcesSingleActiveAttach(t *testing.T) {
 	release := make(chan struct{})
 	adapter := &stubAdapter{
-		runFn: func(ctx context.Context, req backend.RunRequest) (*backend.RunResult, error) {
+		runFn: func(ctx context.Context, req backend.ExecutionRequest) (*backend.ExecutionResult, error) {
 			select {
 			case <-release:
 			case <-ctx.Done():
 				return nil, ctx.Err()
 			}
-			return &backend.RunResult{
-				RunID:      req.RunID,
-				ExitCode:   0,
-				LaunchedVM: false,
-				PlanPath:   "/tmp/plan",
-				RunDir:     "/tmp/run",
-				Message:    "ok",
+			return &backend.ExecutionResult{
+				ExecutionID: req.ExecutionID,
+				ExitCode:    0,
+				LaunchedVM:  false,
+				PlanPath:    "/tmp/plan",
+				RunDir:      "/tmp/run",
+				Message:     "ok",
 			}, nil
 		},
 	}
@@ -3012,15 +3072,15 @@ func TestOpenInteractiveExecutionEnforcesSingleActiveAttach(t *testing.T) {
 	}
 	executionID := createExecutionResp.GetExecution().GetExecutionId()
 
-	firstOpenResp, err := svc.OpenInteractiveExecution(context.Background(), &cleanroomv1.OpenInteractiveExecutionRequest{
+	firstOpenResp, err := svc.AttachExecution(context.Background(), &cleanroomv1.AttachExecutionRequest{
 		SandboxId:   sandboxID,
 		ExecutionId: executionID,
 	})
 	if err != nil {
-		t.Fatalf("first OpenInteractiveExecution returned error: %v", err)
+		t.Fatalf("first AttachExecution returned error: %v", err)
 	}
 
-	if _, err := svc.OpenInteractiveExecution(context.Background(), &cleanroomv1.OpenInteractiveExecutionRequest{
+	if _, err := svc.AttachExecution(context.Background(), &cleanroomv1.AttachExecutionRequest{
 		SandboxId:   sandboxID,
 		ExecutionId: executionID,
 	}); err == nil || !strings.Contains(err.Error(), "pending interactive session") {
@@ -3031,7 +3091,7 @@ func TestOpenInteractiveExecutionEnforcesSingleActiveAttach(t *testing.T) {
 		t.Fatalf("ConsumeInteractiveSession returned error: %v", err)
 	}
 
-	if _, err := svc.OpenInteractiveExecution(context.Background(), &cleanroomv1.OpenInteractiveExecutionRequest{
+	if _, err := svc.AttachExecution(context.Background(), &cleanroomv1.AttachExecutionRequest{
 		SandboxId:   sandboxID,
 		ExecutionId: executionID,
 	}); err == nil || !strings.Contains(err.Error(), "active interactive session") {
@@ -3040,7 +3100,7 @@ func TestOpenInteractiveExecutionEnforcesSingleActiveAttach(t *testing.T) {
 
 	svc.ReleaseInteractiveExecution(sandboxID, executionID)
 
-	if _, err := svc.OpenInteractiveExecution(context.Background(), &cleanroomv1.OpenInteractiveExecutionRequest{
+	if _, err := svc.AttachExecution(context.Background(), &cleanroomv1.AttachExecutionRequest{
 		SandboxId:   sandboxID,
 		ExecutionId: executionID,
 	}); err != nil {
