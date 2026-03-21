@@ -11,7 +11,7 @@ func TestLegacyCompatibleGuestAgentInstallSourceUsesLegacyDistCopy(t *testing.T)
 
 	repoRoot := t.TempDir()
 	staged := filepath.Join(repoRoot, "dist", "linux-amd64", "libexec", "cleanroom", "cleanroom-guest-agent-linux-amd64")
-	legacy := filepath.Join(repoRoot, "dist", "cleanroom-guest-agent-linux-amd64")
+	legacy := filepath.Join(repoRoot, "dist", "cleanroom-guest-agent")
 	if err := os.MkdirAll(filepath.Dir(staged), 0o755); err != nil {
 		t.Fatalf("mkdir staged guest agent dir: %v", err)
 	}
@@ -28,21 +28,25 @@ func TestLegacyCompatibleGuestAgentInstallSourceUsesLegacyDistCopy(t *testing.T)
 	}
 }
 
-func TestLegacyCompatibleGuestAgentInstallSourceKeepsStagedPathWithoutCompatibilityCopy(t *testing.T) {
+func TestLegacyCompatibleGuestAgentInstallSourceFallsBackToLegacyArchSpecificCopy(t *testing.T) {
 	t.Parallel()
 
 	repoRoot := t.TempDir()
 	staged := filepath.Join(repoRoot, "dist", "linux-amd64", "libexec", "cleanroom", "cleanroom-guest-agent-linux-amd64")
+	legacy := filepath.Join(repoRoot, "dist", "cleanroom-guest-agent-linux-amd64")
 	if err := os.MkdirAll(filepath.Dir(staged), 0o755); err != nil {
 		t.Fatalf("mkdir staged guest agent dir: %v", err)
 	}
 	if err := os.WriteFile(staged, []byte("staged"), 0o755); err != nil {
 		t.Fatalf("write staged guest agent: %v", err)
 	}
+	if err := os.WriteFile(legacy, []byte("legacy"), 0o755); err != nil {
+		t.Fatalf("write legacy guest agent: %v", err)
+	}
 
 	got := legacyCompatibleGuestAgentInstallSource(staged, os.Stat)
-	if got != staged {
-		t.Fatalf("unexpected guest agent install source: got %q want %q", got, staged)
+	if got != legacy {
+		t.Fatalf("unexpected guest agent install source: got %q want %q", got, legacy)
 	}
 }
 

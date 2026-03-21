@@ -30,4 +30,7 @@ func TestBuildGoBootstrapsLinuxGuestAgentBinary(t *testing.T) {
 	if !strings.Contains(script, `install -m 0755 "$LIBEXEC_DIR/$GUEST_AGENT_NAME" "$LEGACY_GUEST_AGENT_PATH"`) {
 		t.Fatalf("expected build-go.sh to keep a legacy dist/cleanroom-guest-agent-linux-$HOST_ARCH compatibility copy")
 	}
+	if !strings.Contains(script, `if [[ "$HOST_OS" == "linux" ]]; then`) || !strings.Contains(script, `install -m 0755 "$LIBEXEC_DIR/$GUEST_AGENT_NAME" "$LEGACY_GENERIC_GUEST_AGENT_PATH"`) {
+		t.Fatalf("expected build-go.sh to keep a legacy dist/cleanroom-guest-agent compatibility copy on linux hosts")
+	}
 }

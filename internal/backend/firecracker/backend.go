@@ -1400,18 +1400,34 @@ func (a *Adapter) installGuestRuntimeIntoRootFS(rootFSPath, guestAgentPath strin
 }
 
 func legacyCompatibleGuestAgentInstallSource(path string, stat func(string) (os.FileInfo, error)) string {
-	legacyPath, ok := stagedDistGuestAgentCompatibilityPath(path)
-	if !ok {
+	legacyPaths := stagedDistGuestAgentCompatibilityPaths(path)
+	if len(legacyPaths) == 0 {
 		return path
 	}
 	if stat == nil {
 		stat = os.Stat
 	}
-	info, err := stat(legacyPath)
-	if err != nil || info.IsDir() {
-		return path
+	for _, legacyPath := range legacyPaths {
+		info, err := stat(legacyPath)
+		if err != nil || info.IsDir() {
+			continue
+		}
+		return legacyPath
 	}
-	return legacyPath
+	return path
+}
+
+func stagedDistGuestAgentCompatibilityPaths(path string) []string {
+	legacyPath, ok := stagedDistGuestAgentCompatibilityPath(path)
+	if !ok {
+		return nil
+	}
+
+	distDir := filepath.Dir(legacyPath)
+	return []string{
+		filepath.Join(distDir, runtimeassets.GuestAgentName),
+		legacyPath,
+	}
 }
 
 func stagedDistGuestAgentCompatibilityPath(path string) (string, bool) {
