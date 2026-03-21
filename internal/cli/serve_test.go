@@ -587,6 +587,52 @@ func TestDaemonInstallDarwinForceDoesNotBootoutWhenStagingPlistFails(t *testing.
 	}
 }
 
+func TestDaemonInstallDarwinForceRejectsDirectoryTargetBeforeBootout(t *testing.T) {
+	tmpDir := t.TempDir()
+	plistPath := filepath.Join(tmpDir, "Library", "LaunchAgents", launchdServiceName+".plist")
+	if err := os.MkdirAll(plistPath, 0o755); err != nil {
+		t.Fatalf("mkdir launchd target dir: %v", err)
+	}
+
+	prevEUID := serveInstallEUID
+	prevUID := serveInstallUID
+	prevGOOS := serveInstallGOOS
+	prevUserHomeDir := serveInstallUserHomeDir
+	prevExecutable := serveInstallExecutablePath
+	prevRunCommand := serveInstallRunCommand
+	serveInstallEUID = func() int { return 501 }
+	serveInstallUID = func() int { return 501 }
+	serveInstallGOOS = "darwin"
+	serveInstallUserHomeDir = func() (string, error) { return tmpDir, nil }
+	serveInstallExecutablePath = func() (string, error) { return "/Users/lachlan/bin/cleanroom", nil }
+	var calls [][]string
+	serveInstallRunCommand = func(name string, args ...string) error {
+		calls = append(calls, append([]string{name}, args...))
+		return nil
+	}
+	t.Cleanup(func() {
+		serveInstallEUID = prevEUID
+		serveInstallUID = prevUID
+		serveInstallGOOS = prevGOOS
+		serveInstallUserHomeDir = prevUserHomeDir
+		serveInstallExecutablePath = prevExecutable
+		serveInstallRunCommand = prevRunCommand
+	})
+
+	stdout, _ := makeStdoutCapture(t)
+	cmd := &DaemonCommand{Action: "install", Force: true}
+	err := cmd.Run(&runtimeContext{CWD: tmpDir, Stdout: stdout})
+	if err == nil {
+		t.Fatal("expected directory target failure")
+	}
+	if !strings.Contains(err.Error(), "is a directory") {
+		t.Fatalf("expected directory target error context, got: %v", err)
+	}
+	if len(calls) != 0 {
+		t.Fatalf("did not expect launchctl calls when target is invalid, got: %v", calls)
+	}
+}
+
 func TestDaemonInstallDarwinSystemScopeUnsupported(t *testing.T) {
 	prevEUID := serveInstallEUID
 	prevGOOS := serveInstallGOOS

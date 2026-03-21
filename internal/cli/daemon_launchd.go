@@ -391,6 +391,9 @@ func installLaunchdDaemonInDomain(stdout io.Writer, executablePath string, args 
 	target := launchdServiceTarget(domain)
 	content := renderLaunchdService(executablePath, args)
 	if force {
+		if err := validateDaemonFileTarget(servicePath, true); err != nil {
+			return err
+		}
 		stagedPath, cleanup, err := stageDaemonFile(servicePath, content, 0o644)
 		if err != nil {
 			return err
@@ -430,6 +433,20 @@ func installLaunchdDaemonInDomain(stdout io.Writer, executablePath string, args 
 	return err
 }
 
+func validateDaemonFileTarget(path string, force bool) error {
+	if st, err := serveInstallStat(path); err == nil {
+		if st.IsDir() {
+			return fmt.Errorf("daemon service path %s is a directory", path)
+		}
+		if !force {
+			return fmt.Errorf("%s already exists (use --force to overwrite)", path)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("stat %s: %w", path, err)
+	}
+	return nil
+}
+
 func stageDaemonFile(path, content string, mode os.FileMode) (string, func(), error) {
 	dir := filepath.Dir(path)
 	if err := serveInstallMkdirAll(dir, 0o755); err != nil {
@@ -457,15 +474,8 @@ func stageDaemonFile(path, content string, mode os.FileMode) (string, func(), er
 }
 
 func writeDaemonFile(path, content string, force bool, mode os.FileMode) error {
-	if st, err := serveInstallStat(path); err == nil {
-		if st.IsDir() {
-			return fmt.Errorf("daemon service path %s is a directory", path)
-		}
-		if !force {
-			return fmt.Errorf("%s already exists (use --force to overwrite)", path)
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("stat %s: %w", path, err)
+	if err := validateDaemonFileTarget(path, force); err != nil {
+		return err
 	}
 
 	if err := serveInstallMkdirAll(filepath.Dir(path), 0o755); err != nil {
