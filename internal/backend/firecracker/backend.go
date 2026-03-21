@@ -26,6 +26,7 @@ import (
 
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/bootassets"
+	"github.com/buildkite/cleanroom/internal/ext4edit"
 	"github.com/buildkite/cleanroom/internal/ext4image"
 	"github.com/buildkite/cleanroom/internal/gateway"
 	"github.com/buildkite/cleanroom/internal/hosttools"
@@ -98,14 +99,15 @@ type sandboxInstance struct {
 
 const runObservabilityFile = "execution-observability.json"
 const vsockDialRetryInterval = 50 * time.Millisecond
-const preparedRuntimeRootFSVersion = "v1"
+const preparedRuntimeRootFSVersion = "v2-debugfs"
 const defaultPrivilegedHelperPath = "/usr/local/sbin/cleanroom-root-helper"
 const helperCapabilityFirecrackerNetwork = "firecracker-network"
-const helperCapabilityFirecrackerRootFS = "firecracker-rootfs"
 const helperCapabilityFirecrackerZFS = "firecracker-zfs"
 const defaultDownloadMaxBytes int64 = 10 * 1024 * 1024
 const snapshotSyncTimeoutSeconds = 10
 const networkCleanupTimeout = 5 * time.Second
+const guestInitScriptPathSbin = "/sbin/cleanroom-init"
+const guestInitScriptPathUsrSbin = "/usr/sbin/cleanroom-init"
 
 var tapDeleteRetryInterval = 100 * time.Millisecond
 
@@ -733,6 +735,15 @@ func (a *Adapter) Doctor(_ context.Context, req backend.DoctorRequest) (*backend
 	} else {
 		appendCheck("mkfs_ext4", "pass", fmt.Sprintf("found mkfs.ext4 (%s) for OCI rootfs materialisation", mkfsPath))
 	}
+	if debugfsPath, err := hosttools.ResolveE2FSProgsBinary("debugfs"); err != nil {
+		status := "fail"
+		if runtime.GOOS == "darwin" {
+			status = "warn"
+		}
+		appendCheck("debugfs", status, fmt.Sprintf("debugfs not available: %v", err))
+	} else {
+		appendCheck("debugfs", "pass", fmt.Sprintf("found debugfs (%s) for runtime rootfs preparation", debugfsPath))
+	}
 
 	if req.GuestPort == 0 {
 		appendCheck("vsock_port", "pass", fmt.Sprintf("using default guest vsock port %d", vsockexec.DefaultPort))
@@ -1006,7 +1017,7 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 		BootSource: bootSource{
 			KernelImagePath: kernelPath,
 			BootArgs: fmt.Sprintf(
-				"console=ttyS0 reboot=k panic=1 pci=off init=/sbin/cleanroom-init random.trust_cpu=on cleanroom_guest_ip=%s cleanroom_guest_gw=%s cleanroom_guest_mask=24 cleanroom_guest_dns=1.1.1.1 cleanroom_guest_port=%d %s",
+				"console=ttyS0 reboot=k panic=1 pci=off init=/usr/sbin/cleanroom-init random.trust_cpu=on cleanroom_guest_ip=%s cleanroom_guest_gw=%s cleanroom_guest_mask=24 cleanroom_guest_dns=1.1.1.1 cleanroom_guest_port=%d %s",
 				networkCfg.GuestIP,
 				networkCfg.HostIP,
 				req.GuestPort,
@@ -1334,7 +1345,7 @@ func (a *Adapter) ensurePreparedRuntimeRootFS(ctx context.Context, cfg backend.F
 	if err := copyFile(sourcePath, tmpPath); err != nil {
 		return "", fmt.Errorf("copy rootfs image for runtime preparation: %w", err)
 	}
-	if err := a.installGuestRuntimeIntoRootFS(ctx, cfg, tmpPath, guestAgentPath); err != nil {
+	if err := a.installGuestRuntimeIntoRootFS(tmpPath, guestAgentPath); err != nil {
 		_ = os.Remove(tmpPath)
 		return "", err
 	}
@@ -1362,24 +1373,10 @@ func runtimeRootFSCacheKey(imageDigest, guestAgentHash string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func (a *Adapter) installGuestRuntimeIntoRootFS(ctx context.Context, cfg backend.FirecrackerConfig, rootFSPath, guestAgentPath string) error {
-	// Keep mount points in /tmp so helper-mode path allowlisting stays stable
-	// regardless of TMPDIR environment overrides.
-	mountDir, err := os.MkdirTemp("/tmp", "cleanroom-firecracker-rootfs-*")
-	if err != nil {
-		return fmt.Errorf("create temporary rootfs mount directory: %w", err)
+func (a *Adapter) installGuestRuntimeIntoRootFS(rootFSPath, guestAgentPath string) error {
+	if _, err := hosttools.ResolveE2FSProgsBinary("debugfs"); err != nil {
+		return fmt.Errorf("find debugfs for runtime rootfs preparation: %w", err)
 	}
-	defer os.RemoveAll(mountDir)
-
-	if err := runRootCommand(ctx, cfg, "mount", "-o", "loop", rootFSPath, mountDir); err != nil {
-		return fmt.Errorf("mount rootfs image for runtime preparation: %w", err)
-	}
-	mounted := true
-	defer func() {
-		if mounted {
-			_ = runRootCommand(context.Background(), cfg, "umount", mountDir)
-		}
-	}()
 
 	initScriptPath, err := createGuestInitScript()
 	if err != nil {
@@ -1387,19 +1384,17 @@ func (a *Adapter) installGuestRuntimeIntoRootFS(ctx context.Context, cfg backend
 	}
 	defer os.Remove(initScriptPath)
 
-	if err := runRootCommand(ctx, cfg, "mkdir", "-p", filepath.Join(mountDir, "usr/local/bin"), filepath.Join(mountDir, "sbin")); err != nil {
-		return fmt.Errorf("prepare runtime directories in mounted rootfs: %w", err)
+	if err := ext4edit.InjectFile(rootFSPath, guestAgentPath, "/usr/local/bin/cleanroom-guest-agent", 0o755); err != nil {
+		return fmt.Errorf("inject guest agent into rootfs image: %w", err)
 	}
-	if err := runRootCommand(ctx, cfg, "install", "-m", "0755", guestAgentPath, filepath.Join(mountDir, "usr/local/bin/cleanroom-guest-agent")); err != nil {
-		return fmt.Errorf("install guest agent into mounted rootfs: %w", err)
+	if err := ext4edit.InjectFile(rootFSPath, initScriptPath, guestInitScriptPathUsrSbin, 0o755); err != nil {
+		return fmt.Errorf("inject cleanroom init into rootfs image (%s): %w", guestInitScriptPathUsrSbin, err)
 	}
-	if err := runRootCommand(ctx, cfg, "install", "-m", "0755", initScriptPath, filepath.Join(mountDir, "sbin/cleanroom-init")); err != nil {
-		return fmt.Errorf("install cleanroom init into mounted rootfs: %w", err)
+	if ext4edit.PathType(rootFSPath, "/sbin") == ext4edit.PathKindDirectory {
+		if err := ext4edit.InjectFile(rootFSPath, initScriptPath, guestInitScriptPathSbin, 0o755); err != nil {
+			return fmt.Errorf("inject cleanroom init into rootfs image (%s): %w", guestInitScriptPathSbin, err)
+		}
 	}
-	if err := runRootCommand(ctx, cfg, "umount", mountDir); err != nil {
-		return fmt.Errorf("unmount prepared rootfs image: %w", err)
-	}
-	mounted = false
 	return nil
 }
 
@@ -1616,7 +1611,7 @@ func (a *Adapter) launchSandboxVMFromRootFS(ctx context.Context, sandboxID strin
 		BootSource: bootSource{
 			KernelImagePath: kernelPath,
 			BootArgs: fmt.Sprintf(
-				"console=ttyS0 reboot=k panic=1 pci=off init=/sbin/cleanroom-init random.trust_cpu=on cleanroom_guest_ip=%s cleanroom_guest_gw=%s cleanroom_guest_mask=24 cleanroom_guest_dns=1.1.1.1 cleanroom_guest_port=%d %s",
+				"console=ttyS0 reboot=k panic=1 pci=off init=/usr/sbin/cleanroom-init random.trust_cpu=on cleanroom_guest_ip=%s cleanroom_guest_gw=%s cleanroom_guest_mask=24 cleanroom_guest_dns=1.1.1.1 cleanroom_guest_port=%d %s",
 				networkCfg.GuestIP,
 				networkCfg.HostIP,
 				cfg.GuestPort,
@@ -2367,7 +2362,6 @@ func resolvePrivilegedHelperPath(cfg backend.FirecrackerConfig) string {
 func helperRequiredCapabilities(cfg backend.FirecrackerConfig) []string {
 	required := []string{
 		helperCapabilityFirecrackerNetwork,
-		helperCapabilityFirecrackerRootFS,
 	}
 
 	snapshotDriver := strings.ToLower(strings.TrimSpace(cfg.Snapshots.Driver))

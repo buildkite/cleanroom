@@ -387,7 +387,8 @@ When `rootfs` is unset, Cleanroom derives one from `sandbox.image.ref` and injec
 - `/dev/kvm` available and writable
 - Firecracker binary installed
 - `mkfs.ext4` for OCI-to-ext4 materialization
-- `sudo -n` access to `/usr/local/sbin/cleanroom-root-helper`
+- `debugfs` for runtime rootfs preparation
+- `sudo -n` access to `/usr/local/sbin/cleanroom-root-helper` for host networking
 
 **macOS ([darwin-vz](docs/backend/darwin-vz.md)):**
 - `cleanroom-darwin-vz` helper signed with `com.apple.security.virtualization` entitlement

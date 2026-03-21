@@ -12,7 +12,7 @@ set -euo pipefail
 # - Helper updates must land on hosts before branches that depend on new capabilities can pass.
 
 helper_contract_version() {
-  echo "2"
+  echo "3"
 }
 
 helper_has_zfs() {
@@ -23,7 +23,6 @@ helper_has_zfs() {
 helper_capabilities() {
   cat <<'EOF'
 firecracker-network
-firecracker-rootfs
 EOF
 
   if helper_has_zfs; then
@@ -42,24 +41,9 @@ require_root() {
   fi
 }
 
-is_tmp_mount_dir() {
-  local p="$1"
-  [[ "$p" == /tmp/cleanroom-firecracker-rootfs-* ]]
-}
-
-is_runtime_rootfs_tmp() {
-  local p="$1"
-  [[ "$p" == /var/lib/buildkite-agent/.cache/cleanroom/firecracker/runtime-rootfs/*.ext4.tmp-* ]]
-}
-
 is_runtime_rootfs_image() {
   local p="$1"
   [[ "$p" == */cleanroom/firecracker/runtime-rootfs/*.ext4 ]]
-}
-
-is_mounted_rootfs_dest() {
-  local p="$1"
-  [[ "$p" == /tmp/cleanroom-firecracker-rootfs-*/usr/local/bin/cleanroom-guest-agent || "$p" == /tmp/cleanroom-firecracker-rootfs-*/sbin/cleanroom-init ]]
 }
 
 is_tap_name() {
@@ -80,11 +64,6 @@ is_ipv4() {
 is_cidr() {
   local v="$1"
   [[ "$v" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$ ]]
-}
-
-is_install_source() {
-  local p="$1"
-  [[ "$p" == /var/lib/buildkite-agent/builds/*/buildkite/cleanroom/dist/cleanroom-guest-agent || "$p" == /tmp/cleanroom-init-* ]]
 }
 
 is_zfs_dataset() {
@@ -281,39 +260,6 @@ run_sysctl() {
   die "sysctl: unsupported arguments"
 }
 
-run_mount() {
-  [[ "$#" -eq 4 ]] || die "mount: expected '-o loop <image> <mount-dir>'"
-  [[ "$1" == "-o" && "$2" == "loop" ]] || die "mount: unsupported flags"
-  is_runtime_rootfs_tmp "$3" || die "mount: unsupported image path"
-  is_tmp_mount_dir "$4" || die "mount: unsupported mount path"
-  exec /usr/bin/mount -o loop "$3" "$4"
-}
-
-run_umount() {
-  [[ "$#" -eq 1 ]] || die "umount: expected '<mount-dir>'"
-  is_tmp_mount_dir "$1" || die "umount: unsupported mount path"
-  exec /usr/bin/umount "$1"
-}
-
-run_mkdir() {
-  [[ "$#" -eq 3 ]] || die "mkdir: expected '-p <path1> <path2>'"
-  [[ "$1" == "-p" ]] || die "mkdir: unsupported arguments"
-  [[ "$2" == /tmp/cleanroom-firecracker-rootfs-*/usr/local/bin ]] || die "mkdir: unsupported path '$2'"
-  [[ "$3" == /tmp/cleanroom-firecracker-rootfs-*/sbin ]] || die "mkdir: unsupported path '$3'"
-  exec /usr/bin/mkdir -p "$2" "$3"
-}
-
-run_install() {
-  [[ "$#" -eq 4 ]] || die "install: expected '-m 0755 <src> <dest>'"
-  [[ "$1" == "-m" && "$2" == "0755" ]] || die "install: unsupported mode"
-  local src="$3"
-  local dst="$4"
-  [[ -f "$src" ]] || die "install: source file not found"
-  is_install_source "$src" || die "install: unsupported source path"
-  is_mounted_rootfs_dest "$dst" || die "install: unsupported destination path"
-  exec /usr/bin/install -m 0755 "$src" "$dst"
-}
-
 run_zfs() {
   [[ "$#" -ge 1 ]] || die "zfs: missing arguments"
   local bin
@@ -409,18 +355,6 @@ main() {
       ;;
     sysctl)
       run_sysctl "$@"
-      ;;
-    mount)
-      run_mount "$@"
-      ;;
-    umount)
-      run_umount "$@"
-      ;;
-    mkdir)
-      run_mkdir "$@"
-      ;;
-    install)
-      run_install "$@"
       ;;
     zfs)
       run_zfs "$@"

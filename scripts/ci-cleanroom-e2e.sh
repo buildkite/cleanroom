@@ -3,7 +3,6 @@ set -euo pipefail
 
 ROOT_HELPER_REQUIRED_CAPABILITIES=(
   firecracker-network
-  firecracker-rootfs
 )
 
 # run_privileged executes a privileged command via the installed root helper.
@@ -65,8 +64,8 @@ verify_helper_capabilities() {
 }
 
 # purge_stale_cleanroom_resources removes TAP devices, iptables rules,
-# firecracker processes, and temp mount dirs left over from a previous
-# run that crashed before cleanup.
+# and firecracker processes left over from a previous run that crashed
+# before cleanup.
 purge_stale_cleanroom_resources() {
   # Kill orphaned firecracker processes owned by the current user.
   local stale_pids
@@ -106,14 +105,6 @@ purge_stale_cleanroom_resources() {
     # shellcheck disable=SC2086
     run_privileged iptables -t nat ${rule/-A/-D} 2>/dev/null || true
   done <<< "$nat_rules"
-
-  # Unmount and remove stale rootfs temp dirs.
-  for mnt in /tmp/cleanroom-firecracker-rootfs-*; do
-    [[ -d "$mnt" ]] || continue
-    echo "cleaning stale mount: $mnt"
-    run_privileged umount "$mnt" 2>/dev/null || true
-    rm -rf "$mnt" 2>/dev/null || true
-  done
 }
 
 cleanup() {
