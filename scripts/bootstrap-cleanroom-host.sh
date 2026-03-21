@@ -270,6 +270,8 @@ apply_prod_tfvars_overrides() {
   fi
   if value="$(read_tfvars_string "$tfvars_path" "cleanroom_release_repo")"; then
     CLEANROOM_RELEASE_REPO="$value"
+  else
+    CLEANROOM_RELEASE_REPO=''
   fi
   if value="$(read_tfvars_string "$tfvars_path" "tailscale_auth_key_parameter_name")"; then
     TAILSCALE_AUTH_KEY_PARAMETER_NAME="$value"
