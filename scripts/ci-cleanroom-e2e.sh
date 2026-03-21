@@ -17,11 +17,6 @@ ROOT_HELPER_REQUIRED_CAPABILITIES=(
   firecracker-network
 )
 
-if [[ -z "$KERNEL_IMAGE" ]]; then
-  echo "CLEANROOM_KERNEL_IMAGE is required for Firecracker e2e CI" >&2
-  exit 1
-fi
-
 # run_privileged executes a privileged command via the installed root helper.
 run_privileged() {
   if [[ -z "${PRIVILEGED_HELPER_PATH:-}" ]]; then
@@ -121,8 +116,6 @@ verify_helper_capabilities() {
   fi
 }
 
-PRIVILEGED_HELPER_PATH="$(resolve_privileged_helper_path)"
-
 # purge_stale_cleanroom_resources removes TAP devices, iptables rules,
 # and firecracker processes left over from a previous run that crashed
 # before cleanup.
@@ -167,36 +160,44 @@ purge_stale_cleanroom_resources() {
   done <<< "$nat_rules"
 }
 
-verify_helper_capabilities
-
-echo "--- :broom: Pre-build cleanup"
-purge_stale_cleanroom_resources
-
-echo "--- :hammer: Building binaries"
-scripts/build-go.sh
-
-tmpdir="$(mktemp -d)"
-cleanup() {
-  if [[ -n "${srv_pid:-}" ]]; then
-    kill "$srv_pid" >/dev/null 2>&1 || true
-    wait "$srv_pid" >/dev/null 2>&1 || true
+main() {
+  if [[ -z "$KERNEL_IMAGE" ]]; then
+    echo "CLEANROOM_KERNEL_IMAGE is required for Firecracker e2e CI" >&2
+    exit 1
   fi
-  # Give the server a moment to clean up sandboxes (TAPs, iptables, VMs).
-  sleep 1
-  # Best-effort cleanup of any resources the server didn't tear down.
-  purge_stale_cleanroom_resources 2>/dev/null || true
-  rm -rf "$tmpdir"
-}
-trap cleanup EXIT
 
-export XDG_CONFIG_HOME="$tmpdir/config"
-export XDG_STATE_HOME="$tmpdir/state"
-export XDG_RUNTIME_DIR="$tmpdir/runtime"
-export XDG_DATA_HOME="$tmpdir/data"
+  PRIVILEGED_HELPER_PATH="$(resolve_privileged_helper_path)"
 
-mkdir -p "$XDG_CONFIG_HOME" "$XDG_STATE_HOME" "$XDG_RUNTIME_DIR" "$XDG_DATA_HOME"
-mkdir -p "$XDG_CONFIG_HOME/cleanroom"
-cat > "$XDG_CONFIG_HOME/cleanroom/config.yaml" <<EOF
+  verify_helper_capabilities
+
+  echo "--- :broom: Pre-build cleanup"
+  purge_stale_cleanroom_resources
+
+  echo "--- :hammer: Building binaries"
+  scripts/build-go.sh
+
+  tmpdir="$(mktemp -d)"
+  cleanup() {
+    if [[ -n "${srv_pid:-}" ]]; then
+      kill "$srv_pid" >/dev/null 2>&1 || true
+      wait "$srv_pid" >/dev/null 2>&1 || true
+    fi
+    # Give the server a moment to clean up sandboxes (TAPs, iptables, VMs).
+    sleep 1
+    # Best-effort cleanup of any resources the server didn't tear down.
+    purge_stale_cleanroom_resources 2>/dev/null || true
+    rm -rf "$tmpdir"
+  }
+  trap cleanup EXIT
+
+  export XDG_CONFIG_HOME="$tmpdir/config"
+  export XDG_STATE_HOME="$tmpdir/state"
+  export XDG_RUNTIME_DIR="$tmpdir/runtime"
+  export XDG_DATA_HOME="$tmpdir/data"
+
+  mkdir -p "$XDG_CONFIG_HOME" "$XDG_STATE_HOME" "$XDG_RUNTIME_DIR" "$XDG_DATA_HOME"
+  mkdir -p "$XDG_CONFIG_HOME/cleanroom"
+  cat > "$XDG_CONFIG_HOME/cleanroom/config.yaml" <<EOF
 default_backend: firecracker
 backends:
   firecracker:
@@ -207,55 +208,55 @@ backends:
     launch_seconds: 90
 EOF
 
-echo "    privileged_helper_path: $PRIVILEGED_HELPER_PATH" >> "$XDG_CONFIG_HOME/cleanroom/config.yaml"
+  echo "    privileged_helper_path: $PRIVILEGED_HELPER_PATH" >> "$XDG_CONFIG_HOME/cleanroom/config.yaml"
 
-echo "--- :stethoscope: Doctor"
-"$CLEANROOM_BIN" doctor --json | tee "$tmpdir/doctor.json"
-if grep -q '"status": "fail"' "$tmpdir/doctor.json"; then
-  echo "doctor checks reported failures" >&2
-  exit 1
-fi
-
-socket_path="$tmpdir/cleanroom.sock"
-listen_endpoint="unix://$socket_path"
-
-dump_runtime_diagnostics() {
-  local server_lines="${1:-40}"
-  if [[ -f "$tmpdir/server.log" ]]; then
-    echo "--- server log tail ---" >&2
-    tail -n "$server_lines" "$tmpdir/server.log" >&2 || true
+  echo "--- :stethoscope: Doctor"
+  "$CLEANROOM_BIN" doctor --json | tee "$tmpdir/doctor.json"
+  if grep -q '"status": "fail"' "$tmpdir/doctor.json"; then
+    echo "doctor checks reported failures" >&2
+    exit 1
   fi
 
-  # Surface recent Firecracker process logs when provisioning/agent readiness
-  # flakes occur so failures are diagnosable from CI output alone.
-  local fc_logs
-  fc_logs="$(find "$XDG_STATE_HOME"/cleanroom/sandboxes -maxdepth 3 -type f \( -name 'firecracker.stdout.log' -o -name 'firecracker.stderr.log' \) 2>/dev/null | sort | tail -n 6 || true)"
-  if [[ -n "$fc_logs" ]]; then
-    echo "--- firecracker log tails ---" >&2
-    while IFS= read -r log_file; do
-      [[ -n "$log_file" ]] || continue
-      echo "[$log_file]" >&2
-      tail -n 30 "$log_file" >&2 || true
-    done <<< "$fc_logs"
-  fi
-}
+  socket_path="$tmpdir/cleanroom.sock"
+  listen_endpoint="unix://$socket_path"
 
-echo "--- :rocket: Start cleanroom control-plane"
-"$CLEANROOM_BIN" serve --listen "$listen_endpoint" --gateway-listen ":0" >"$tmpdir/server.log" 2>&1 &
-srv_pid=$!
+  dump_runtime_diagnostics() {
+    local server_lines="${1:-40}"
+    if [[ -f "$tmpdir/server.log" ]]; then
+      echo "--- server log tail ---" >&2
+      tail -n "$server_lines" "$tmpdir/server.log" >&2 || true
+    fi
 
-for _ in $(seq 1 40); do
-  if [[ -S "$socket_path" ]]; then
-    break
+    # Surface recent Firecracker process logs when provisioning/agent readiness
+    # flakes occur so failures are diagnosable from CI output alone.
+    local fc_logs
+    fc_logs="$(find "$XDG_STATE_HOME"/cleanroom/sandboxes -maxdepth 3 -type f \( -name 'firecracker.stdout.log' -o -name 'firecracker.stderr.log' \) 2>/dev/null | sort | tail -n 6 || true)"
+    if [[ -n "$fc_logs" ]]; then
+      echo "--- firecracker log tails ---" >&2
+      while IFS= read -r log_file; do
+        [[ -n "$log_file" ]] || continue
+        echo "[$log_file]" >&2
+        tail -n 30 "$log_file" >&2 || true
+      done <<< "$fc_logs"
+    fi
+  }
+
+  echo "--- :rocket: Start cleanroom control-plane"
+  "$CLEANROOM_BIN" serve --listen "$listen_endpoint" --gateway-listen ":0" >"$tmpdir/server.log" 2>&1 &
+  srv_pid=$!
+
+  for _ in $(seq 1 40); do
+    if [[ -S "$socket_path" ]]; then
+      break
+    fi
+    sleep 0.25
+  done
+  if [[ ! -S "$socket_path" ]]; then
+    echo "cleanroom server did not create unix socket: $socket_path" >&2
+    echo "server log:" >&2
+    cat "$tmpdir/server.log" >&2
+    exit 1
   fi
-  sleep 0.25
-done
-if [[ ! -S "$socket_path" ]]; then
-  echo "cleanroom server did not create unix socket: $socket_path" >&2
-  echo "server log:" >&2
-  cat "$tmpdir/server.log" >&2
-  exit 1
-fi
 
 echo "--- :white_check_mark: Launched execution smoke test"
 smoke_attempt=1
@@ -288,7 +289,7 @@ while true; do
 done
 
 echo "--- :recycle: Persistent sandbox lifecycle test"
-sandbox_id="$("$CLEANROOM_BIN" sandbox create --host "$listen_endpoint" -c "$PWD" | tr -d '\n')"
+sandbox_id="$("$CLEANROOM_BIN" sandbox create --host "$listen_endpoint" | tr -d '\n')"
 if [[ -z "$sandbox_id" ]]; then
   echo "sandbox create did not return an id" >&2
   exit 1
@@ -598,3 +599,8 @@ EOF
 fi
 
 echo "Firecracker e2e checks passed"
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

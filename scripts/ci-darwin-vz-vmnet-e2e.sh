@@ -164,78 +164,84 @@ cleanup() {
   rm -rf "${tmpdir:-}"
 }
 
-require_command security
-require_command curl
-require_command openssl
-require_command codesign
-require_command sudo
+main() {
+  require_command security
+  require_command curl
+  require_command openssl
+  require_command codesign
+  require_command sudo
 
-tmpdir="$(mktemp -d /tmp/cleanroom-dvz-vmnet-e2e.XXXXXX)"
-trap cleanup EXIT
+  tmpdir="$(mktemp -d /tmp/cleanroom-dvz-vmnet-e2e.XXXXXX)"
+  trap cleanup EXIT
 
-macos_user_name="$(resolve_macos_user_name)"
-macos_user_home="$(resolve_macos_user_home)"
+  macos_user_name="$(resolve_macos_user_name)"
+  macos_user_home="$(resolve_macos_user_home)"
 
-p12_path="$tmpdir/helper-cert.p12"
-profile_path="$tmpdir/helper.provisionprofile"
-decoded_profile_path="$tmpdir/helper.provisionprofile.plist"
-wwdr_path="$tmpdir/AppleWWDRCAG3.cer"
-wwdr_fingerprint=""
-wwdr_added_to_system_keychain=0
-system_keychain_path="/Library/Keychains/System.keychain"
-imported_system_identity_hash=""
-xdg_state_home_path="${XDG_STATE_HOME:-$HOME/.local/state}"
-cleanup_xdg_state_home=0
-sign_identity=""
-sign_keychain=""
-p12_password=""
-helper_path="$(resolve_local_helper_path)"
+  p12_path="$tmpdir/helper-cert.p12"
+  profile_path="$tmpdir/helper.provisionprofile"
+  decoded_profile_path="$tmpdir/helper.provisionprofile.plist"
+  wwdr_path="$tmpdir/AppleWWDRCAG3.cer"
+  wwdr_fingerprint=""
+  wwdr_added_to_system_keychain=0
+  system_keychain_path="/Library/Keychains/System.keychain"
+  imported_system_identity_hash=""
+  xdg_state_home_path="${XDG_STATE_HOME:-$HOME/.local/state}"
+  cleanup_xdg_state_home=0
+  sign_identity=""
+  sign_keychain=""
+  p12_password=""
+  helper_path="$(resolve_local_helper_path)"
 
-if [[ -z "${BUILDKITE:-}" ]]; then
-  setup_local_signing_assets
-else
-  setup_buildkite_runtime_paths
-  setup_buildkite_signing_assets
-fi
-assert_profile_allows_current_device
+  if [[ -z "${BUILDKITE:-}" ]]; then
+    setup_local_signing_assets
+  else
+    setup_buildkite_runtime_paths
+    setup_buildkite_signing_assets
+  fi
+  assert_profile_allows_current_device
 
-echo "--- :hammer: Building binaries"
-cd "$REPO_ROOT"
-scripts/build-go.sh
+  echo "--- :hammer: Building binaries"
+  cd "$REPO_ROOT"
+  scripts/build-go.sh
 
-if [[ ! -d "$helper_path" ]]; then
-  [[ -n "$profile_path" ]] || {
-    echo "vmnet helper bundle is missing: $helper_path" >&2
-    echo "Set CLEANROOM_DARWIN_VZ_HELPER to a prebuilt signed helper bundle or provide CLEANROOM_DARWIN_VZ_HELPER_PROVISION_PROFILE and CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY." >&2
-    exit 1
-  }
-  [[ -n "$sign_identity" ]] || {
-    echo "CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY is required to build a local vmnet helper" >&2
-    exit 1
-  }
+  if [[ ! -d "$helper_path" ]]; then
+    [[ -n "$profile_path" ]] || {
+      echo "vmnet helper bundle is missing: $helper_path" >&2
+      echo "Set CLEANROOM_DARWIN_VZ_HELPER to a prebuilt signed helper bundle or provide CLEANROOM_DARWIN_VZ_HELPER_PROVISION_PROFILE and CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY." >&2
+      exit 1
+    }
+    [[ -n "$sign_identity" ]] || {
+      echo "CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY is required to build a local vmnet helper" >&2
+      exit 1
+    }
 
-  echo "--- :key: Building vmnet-signed helper"
-  if ! run_with_macos_user_home env \
-    CLEANROOM_DARWIN_VZ_HELPER_ENTITLEMENTS=cmd/cleanroom-darwin-vz/entitlements-vmnet.plist \
-    CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY="$sign_identity" \
-    CLEANROOM_DARWIN_VZ_HELPER_SIGN_KEYCHAIN="$sign_keychain" \
-    CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTIFIER="${CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTIFIER:-com.buildkite.cleanroom.darwin-vz}" \
-    CLEANROOM_DARWIN_VZ_HELPER_PROVISION_PROFILE="$profile_path" \
-    CLEANROOM_DARWIN_VZ_HELPER_BUNDLE=1 \
-    bash -x scripts/build-darwin-vz-helper.sh dist/cleanroom-darwin-vz.app; then
-    echo "vmnet helper build failed or timed out; helper target: $helper_path" >&2
+    echo "--- :key: Building vmnet-signed helper"
+    if ! run_with_macos_user_home env \
+      CLEANROOM_DARWIN_VZ_HELPER_ENTITLEMENTS=cmd/cleanroom-darwin-vz/entitlements-vmnet.plist \
+      CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY="$sign_identity" \
+      CLEANROOM_DARWIN_VZ_HELPER_SIGN_KEYCHAIN="$sign_keychain" \
+      CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTIFIER="${CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTIFIER:-com.buildkite.cleanroom.darwin-vz}" \
+      CLEANROOM_DARWIN_VZ_HELPER_PROVISION_PROFILE="$profile_path" \
+      CLEANROOM_DARWIN_VZ_HELPER_BUNDLE=1 \
+      bash -x scripts/build-darwin-vz-helper.sh dist/cleanroom-darwin-vz.app; then
+      echo "vmnet helper build failed or timed out; helper target: $helper_path" >&2
+      exit 1
+    fi
+  fi
+
+  if [[ ! -d "$helper_path" ]]; then
+    echo "darwin-vz helper bundle is missing: $helper_path" >&2
     exit 1
   fi
-fi
+  run_with_macos_user_home codesign --verify --strict --verbose=2 "$helper_path"
 
-if [[ ! -d "$helper_path" ]]; then
-  echo "darwin-vz helper bundle is missing: $helper_path" >&2
-  exit 1
-fi
-run_with_macos_user_home codesign --verify --strict --verbose=2 "$helper_path"
+  echo "--- :apple: VMNet E2E"
+  XDG_STATE_HOME="$xdg_state_home_path" \
+  CLEANROOM_DARWIN_VZ_HELPER="$helper_path" \
+  CLEANROOM_DARWIN_VZ_VMNET_E2E=1 \
+  go test ./internal/backend/darwinvz -run TestVMNetSharedE2E -v
+}
 
-echo "--- :apple: VMNet E2E"
-XDG_STATE_HOME="$xdg_state_home_path" \
-CLEANROOM_DARWIN_VZ_HELPER="$helper_path" \
-CLEANROOM_DARWIN_VZ_VMNET_E2E=1 \
-go test ./internal/backend/darwinvz -run TestVMNetSharedE2E -v
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi
