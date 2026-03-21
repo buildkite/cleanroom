@@ -140,7 +140,6 @@ if [[ -n "${BUNDLE_MODE}" || "${OUTPUT_PATH}" == *.app ]]; then
   INFO_PLIST_PATH="${APP_PATH}/Contents/Info.plist"
   PROFILE_DEST="${APP_PATH}/Contents/embedded.provisionprofile"
   BUNDLE_SOURCE_PATH="${SOURCE_PATH}"
-  SOURCE_PROFILE_PATH="${SOURCE_PATH}/Contents/embedded.provisionprofile"
 
   if [[ "${source_is_bundle}" == "1" && "${SOURCE_PATH}" == "${APP_PATH}" ]]; then
     tmpdir="$(mktemp -d /tmp/cleanroom-darwin-vz-package.XXXXXX)"
@@ -161,7 +160,7 @@ if [[ -n "${BUNDLE_MODE}" || "${OUTPUT_PATH}" == *.app ]]; then
   fi
   if [[ -n "${PROVISION_PROFILE}" ]]; then
     install -m 0644 "${PROVISION_PROFILE}" "${PROFILE_DEST}"
-  elif [[ "${source_is_bundle}" != "1" || ! -f "${SOURCE_PROFILE_PATH}" ]]; then
+  else
     rm -f "${PROFILE_DEST}"
   fi
   codesign_target "${APP_PATH}"

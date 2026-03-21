@@ -9,10 +9,16 @@ import (
 )
 
 func TestResolveDarwinVZNetworkDefaultsToVMNetShared(t *testing.T) {
-	prev := darwinVZVMNetSharedSupported
+	prevSupported := darwinVZVMNetSharedSupported
+	prevResolveHelper := resolveDarwinVZNetworkHelperPath
+	prevHasVMNetEntitlement := helperHasVMNetworkingEntitlementForNetworking
 	darwinVZVMNetSharedSupported = func() bool { return true }
+	resolveDarwinVZNetworkHelperPath = func() (string, error) { return "/tmp/helper", nil }
+	helperHasVMNetworkingEntitlementForNetworking = func(string) (bool, error) { return true, nil }
 	t.Cleanup(func() {
-		darwinVZVMNetSharedSupported = prev
+		darwinVZVMNetSharedSupported = prevSupported
+		resolveDarwinVZNetworkHelperPath = prevResolveHelper
+		helperHasVMNetworkingEntitlementForNetworking = prevHasVMNetEntitlement
 	})
 
 	got, err := resolveDarwinVZNetwork(backend.FirecrackerConfig{})
@@ -28,10 +34,10 @@ func TestResolveDarwinVZNetworkDefaultsToVMNetShared(t *testing.T) {
 }
 
 func TestResolveDarwinVZNetworkDefaultsToNATWhenVMNetSharedUnsupported(t *testing.T) {
-	prev := darwinVZVMNetSharedSupported
+	prevSupported := darwinVZVMNetSharedSupported
 	darwinVZVMNetSharedSupported = func() bool { return false }
 	t.Cleanup(func() {
-		darwinVZVMNetSharedSupported = prev
+		darwinVZVMNetSharedSupported = prevSupported
 	})
 
 	got, err := resolveDarwinVZNetwork(backend.FirecrackerConfig{})
@@ -46,11 +52,33 @@ func TestResolveDarwinVZNetworkDefaultsToNATWhenVMNetSharedUnsupported(t *testin
 	}
 }
 
+func TestResolveDarwinVZNetworkDefaultsToNATWhenHelperLacksVMNetEntitlement(t *testing.T) {
+	prevSupported := darwinVZVMNetSharedSupported
+	prevResolveHelper := resolveDarwinVZNetworkHelperPath
+	prevHasVMNetEntitlement := helperHasVMNetworkingEntitlementForNetworking
+	darwinVZVMNetSharedSupported = func() bool { return true }
+	resolveDarwinVZNetworkHelperPath = func() (string, error) { return "/tmp/helper", nil }
+	helperHasVMNetworkingEntitlementForNetworking = func(string) (bool, error) { return false, nil }
+	t.Cleanup(func() {
+		darwinVZVMNetSharedSupported = prevSupported
+		resolveDarwinVZNetworkHelperPath = prevResolveHelper
+		helperHasVMNetworkingEntitlementForNetworking = prevHasVMNetEntitlement
+	})
+
+	got, err := resolveDarwinVZNetwork(backend.FirecrackerConfig{})
+	if err != nil {
+		t.Fatalf("resolveDarwinVZNetwork returned error: %v", err)
+	}
+	if got.Mode != darwinVZNetworkModeNAT {
+		t.Fatalf("unexpected network mode: got %q want %q", got.Mode, darwinVZNetworkModeNAT)
+	}
+}
+
 func TestResolveDarwinVZNetworkAcceptsVMNetSharedWithDefaultSubnet(t *testing.T) {
-	prev := darwinVZVMNetSharedSupported
+	prevSupported := darwinVZVMNetSharedSupported
 	darwinVZVMNetSharedSupported = func() bool { return true }
 	t.Cleanup(func() {
-		darwinVZVMNetSharedSupported = prev
+		darwinVZVMNetSharedSupported = prevSupported
 	})
 
 	got, err := resolveDarwinVZNetwork(backend.FirecrackerConfig{
@@ -68,10 +96,10 @@ func TestResolveDarwinVZNetworkAcceptsVMNetSharedWithDefaultSubnet(t *testing.T)
 }
 
 func TestResolveDarwinVZNetworkAcceptsRFC1918CustomSubnet(t *testing.T) {
-	prev := darwinVZVMNetSharedSupported
+	prevSupported := darwinVZVMNetSharedSupported
 	darwinVZVMNetSharedSupported = func() bool { return true }
 	t.Cleanup(func() {
-		darwinVZVMNetSharedSupported = prev
+		darwinVZVMNetSharedSupported = prevSupported
 	})
 
 	got, err := resolveDarwinVZNetwork(backend.FirecrackerConfig{
@@ -87,10 +115,10 @@ func TestResolveDarwinVZNetworkAcceptsRFC1918CustomSubnet(t *testing.T) {
 }
 
 func TestResolveDarwinVZNetworkRejectsNonRFC1918Subnet(t *testing.T) {
-	prev := darwinVZVMNetSharedSupported
+	prevSupported := darwinVZVMNetSharedSupported
 	darwinVZVMNetSharedSupported = func() bool { return true }
 	t.Cleanup(func() {
-		darwinVZVMNetSharedSupported = prev
+		darwinVZVMNetSharedSupported = prevSupported
 	})
 
 	_, err := resolveDarwinVZNetwork(backend.FirecrackerConfig{
@@ -103,10 +131,10 @@ func TestResolveDarwinVZNetworkRejectsNonRFC1918Subnet(t *testing.T) {
 }
 
 func TestResolveDarwinVZNetworkRejectsVMNetSharedWhenUnsupported(t *testing.T) {
-	prev := darwinVZVMNetSharedSupported
+	prevSupported := darwinVZVMNetSharedSupported
 	darwinVZVMNetSharedSupported = func() bool { return false }
 	t.Cleanup(func() {
-		darwinVZVMNetSharedSupported = prev
+		darwinVZVMNetSharedSupported = prevSupported
 	})
 
 	_, err := resolveDarwinVZNetwork(backend.FirecrackerConfig{

@@ -28,7 +28,11 @@ var darwinVZRFC1918Prefixes = []netip.Prefix{
 	netip.MustParsePrefix("192.168.0.0/16"),
 }
 
-var darwinVZVMNetSharedSupported = hostSupportsVMNetShared
+var (
+	darwinVZVMNetSharedSupported                  = hostSupportsVMNetShared
+	resolveDarwinVZNetworkHelperPath              = resolveHelperBinaryPath
+	helperHasVMNetworkingEntitlementForNetworking = helperHasVMNetworkingEntitlement
+)
 
 func hostSupportsVMNetShared() bool {
 	version, err := unix.Sysctl("kern.osproductversion")
@@ -44,10 +48,20 @@ func hostSupportsVMNetShared() bool {
 }
 
 func darwinVZDefaultNetworkMode() string {
-	if darwinVZVMNetSharedSupported() {
-		return darwinVZNetworkModeVMNetShared
+	if !darwinVZVMNetSharedSupported() {
+		return darwinVZNetworkModeNAT
 	}
-	return darwinVZNetworkModeNAT
+
+	helperPath, err := resolveDarwinVZNetworkHelperPath()
+	if err != nil {
+		return darwinVZNetworkModeNAT
+	}
+	hasVMNetEntitlement, err := helperHasVMNetworkingEntitlementForNetworking(helperPath)
+	if err != nil || !hasVMNetEntitlement {
+		return darwinVZNetworkModeNAT
+	}
+
+	return darwinVZNetworkModeVMNetShared
 }
 
 func resolveDarwinVZNetwork(cfg backend.FirecrackerConfig) (darwinVZNetwork, error) {

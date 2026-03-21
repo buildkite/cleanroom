@@ -133,8 +133,10 @@ Experimental runtime config:
 - `backends.darwin-vz.network.mode: vmnet-shared|nat`
 - `backends.darwin-vz.network.subnet: 10.233.0.0/16` for custom vmnet shared-mode IPv4 ranges
 
-`vmnet-shared` is now the default on supported macOS 26+ hosts when the network
-block is omitted. Use explicit `nat` only as a compatibility fallback.
+`vmnet-shared` is now the default only when the host supports it and the
+resolved helper declares the vmnet entitlement. Otherwise the implicit default
+falls back to `nat`. Use explicit `vmnet-shared` only when you want an
+unsupported host or unsigned helper to fail fast instead of degrading to `nat`.
 `vmnet-shared` accepts only RFC1918 IPv4 CIDRs. For `vmnet-shared`, the helper
 now mirrors the Apple `containerization` pattern: create the vmnet shared
 network in-helper, disable vmnet DHCP, derive the actual subnet from vmnet, and
@@ -182,7 +184,9 @@ the bundle so the helper can carry restricted entitlements. Set
 
 When a prebuilt helper `.app` bundle is available, the install script preserves
 that bundle as-is and only re-signs it when the caller explicitly provides
-helper signing overrides.
+helper signing overrides. Re-signing without a replacement provisioning profile
+drops any embedded source profile and falls back to the plain virtualization
+entitlements by default.
 
 Relevant env vars:
 
