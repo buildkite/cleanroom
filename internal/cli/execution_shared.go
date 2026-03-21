@@ -362,6 +362,16 @@ func isExecutionNotRunningErr(err error) bool {
 	return strings.Contains(strings.ToLower(err.Error()), "execution is not running")
 }
 
+func isClosedNetworkConnectionErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, net.ErrClosed) {
+		return true
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "closed network connection")
+}
+
 func isExecutionStdinUnsupportedErr(err error) bool {
 	if err == nil {
 		return false
@@ -370,7 +380,11 @@ func isExecutionStdinUnsupportedErr(err error) bool {
 }
 
 func isBenignExecutionStdinErr(err error) bool {
-	return err == nil || isCanceledStreamErr(err) || isExecutionNoLongerActiveErr(err) || isExecutionNotRunningErr(err)
+	return err == nil ||
+		isCanceledStreamErr(err) ||
+		isExecutionNoLongerActiveErr(err) ||
+		isExecutionNotRunningErr(err) ||
+		isClosedNetworkConnectionErr(err)
 }
 
 func isInteractiveStreamClosedErr(err error) bool {
