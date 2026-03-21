@@ -236,6 +236,13 @@ func TestSandboxCreateCommandRemainsGenericWithRepositoryConfig(t *testing.T) {
 	adapter := &persistentIntegrationAdapter{}
 	host, _ := startIntegrationServer(t, adapter)
 	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
+	restore := stubPolicyUpdateResolver(t, func(_ context.Context, source string) (string, error) {
+		if got, want := source, defaultBumpRefSource; got != want {
+			t.Fatalf("unexpected default sandbox image source: got %q want %q", got, want)
+		}
+		return testImageOverrideRef, nil
+	})
+	defer restore()
 
 	var (
 		mu       sync.Mutex
@@ -250,23 +257,9 @@ func TestSandboxCreateCommandRemainsGenericWithRepositoryConfig(t *testing.T) {
 
 	outcome := runSandboxCreateWithCapture(SandboxCreateCommand{
 		clientFlags: clientFlags{Host: host},
-		Chdir:       repoDir,
 	}, runtimeContext{
-		CWD: repoDir,
-		Loader: repositoryIntegrationLoader{
-			compiled: &policy.CompiledPolicy{
-				Version:        1,
-				ImageRef:       "ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-				ImageDigest:    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-				NetworkDefault: "deny",
-				Allow:          []policy.AllowRule{{Host: "github.com", Ports: []int{443}}},
-			},
-			repository: policy.RepositoryConfig{
-				Mode:   "current-repo",
-				Remote: "origin",
-				Path:   "/workspace",
-			},
-		},
+		CWD:    repoDir,
+		Loader: failingLoader{},
 	})
 	if outcome.cause != nil {
 		t.Fatalf("capture failure: %v", outcome.cause)

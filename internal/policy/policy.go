@@ -222,6 +222,12 @@ func Compile(raw rawPolicy) (*CompiledPolicy, error) {
 }
 
 func (p *CompiledPolicy) Allows(host string, port int) bool {
+	if p == nil {
+		return false
+	}
+	if strings.TrimSpace(strings.ToLower(p.NetworkDefault)) == "allow" {
+		return true
+	}
 	host = strings.TrimSpace(strings.ToLower(host))
 	for _, rule := range p.Allow {
 		if rule.Host != host {
@@ -374,8 +380,10 @@ func FromProto(pb *cleanroomv1.Policy) (*CompiledPolicy, error) {
 	if networkDefault == "" {
 		networkDefault = "deny"
 	}
-	if networkDefault != "deny" {
-		return nil, fmt.Errorf("unsupported policy network_default %q: cleanroom requires deny-by-default", networkDefault)
+	switch networkDefault {
+	case "deny", "allow":
+	default:
+		return nil, fmt.Errorf("unsupported policy network_default %q: expected deny or allow", networkDefault)
 	}
 
 	allow := make([]AllowRule, 0, len(pb.GetAllow()))

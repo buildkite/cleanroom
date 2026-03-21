@@ -1,12 +1,22 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
 
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 )
+
+func stubPolicyUpdateResolver(t *testing.T, fn func(context.Context, string) (string, error)) func() {
+	t.Helper()
+	prev := resolveReferenceForPolicyUpdate
+	resolveReferenceForPolicyUpdate = fn
+	return func() {
+		resolveReferenceForPolicyUpdate = prev
+	}
+}
 
 func runSandboxCreateWithCapture(cmd SandboxCreateCommand, ctx runtimeContext) execOutcome {
 	return runWithCapture(func(runCtx *runtimeContext) error {
@@ -21,15 +31,22 @@ func runCreateAliasWithCapture(cmd CreateCommand, ctx runtimeContext) execOutcom
 }
 
 func TestSandboxCreateIntegrationPrintsSandboxID(t *testing.T) {
+	restore := stubPolicyUpdateResolver(t, func(_ context.Context, source string) (string, error) {
+		if got, want := source, defaultBumpRefSource; got != want {
+			t.Fatalf("unexpected default sandbox image source: got %q want %q", got, want)
+		}
+		return testImageOverrideRef, nil
+	})
+	defer restore()
+
 	host, _ := startIntegrationServer(t, &integrationAdapter{})
 	cwd := t.TempDir()
 
 	outcome := runSandboxCreateWithCapture(SandboxCreateCommand{
 		clientFlags: clientFlags{Host: host},
-		Chdir:       cwd,
 	}, runtimeContext{
 		CWD:    cwd,
-		Loader: integrationLoader{},
+		Loader: failingLoader{},
 	})
 	if outcome.cause != nil {
 		t.Fatalf("capture failure: %v", outcome.cause)
@@ -48,16 +65,23 @@ func TestSandboxCreateIntegrationPrintsSandboxID(t *testing.T) {
 }
 
 func TestSandboxCreateIntegrationJSONOutput(t *testing.T) {
+	restore := stubPolicyUpdateResolver(t, func(_ context.Context, source string) (string, error) {
+		if got, want := source, defaultBumpRefSource; got != want {
+			t.Fatalf("unexpected default sandbox image source: got %q want %q", got, want)
+		}
+		return testImageOverrideRef, nil
+	})
+	defer restore()
+
 	host, _ := startIntegrationServer(t, &integrationAdapter{})
 	cwd := t.TempDir()
 
 	outcome := runSandboxCreateWithCapture(SandboxCreateCommand{
 		clientFlags: clientFlags{Host: host},
-		Chdir:       cwd,
 		JSON:        true,
 	}, runtimeContext{
 		CWD:    cwd,
-		Loader: integrationLoader{},
+		Loader: failingLoader{},
 	})
 	if outcome.cause != nil {
 		t.Fatalf("capture failure: %v", outcome.cause)
@@ -73,6 +97,58 @@ func TestSandboxCreateIntegrationJSONOutput(t *testing.T) {
 	rawID, ok := payload["sandbox_id"].(string)
 	if !ok || strings.TrimSpace(rawID) == "" {
 		t.Fatalf("expected sandbox_id in JSON output, got %v", payload)
+	}
+}
+
+func TestSandboxCreateIntegrationDangerouslyAllowAllSetsAllowNetworkDefault(t *testing.T) {
+	restore := stubPolicyUpdateResolver(t, func(_ context.Context, source string) (string, error) {
+		if got, want := source, defaultBumpRefSource; got != want {
+			t.Fatalf("unexpected default sandbox image source: got %q want %q", got, want)
+		}
+		return testImageOverrideRef, nil
+	})
+	defer restore()
+
+	adapter := &snapshotIntegrationAdapter{}
+	host, _ := startIntegrationServer(t, adapter)
+
+	outcome := runSandboxCreateWithCapture(SandboxCreateCommand{
+		clientFlags:         clientFlags{Host: host},
+		DangerouslyAllowAll: true,
+	}, runtimeContext{
+		CWD:    t.TempDir(),
+		Loader: failingLoader{},
+	})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err != nil {
+		t.Fatalf("SandboxCreateCommand.Run returned error: %v", outcome.err)
+	}
+	if got := strings.TrimSpace(outcome.stdout); got == "" {
+		t.Fatalf("expected sandbox id output, got %q", outcome.stdout)
+	}
+	if got, want := adapter.provisionReq.Policy.NetworkDefault, "allow"; got != want {
+		t.Fatalf("unexpected provisioned network default: got %q want %q", got, want)
+	}
+}
+
+func TestSandboxCreateIntegrationRejectsDangerouslyAllowAllWithSnapshot(t *testing.T) {
+	outcome := runSandboxCreateWithCapture(SandboxCreateCommand{
+		From:                "snap_123",
+		DangerouslyAllowAll: true,
+	}, runtimeContext{
+		CWD:    t.TempDir(),
+		Loader: failingLoader{},
+	})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err == nil {
+		t.Fatal("expected SandboxCreateCommand.Run to fail when both --from and --dangerously-allow-all are set")
+	}
+	if got, want := outcome.err.Error(), "--dangerously-allow-all cannot be used with --from"; !strings.Contains(got, want) {
+		t.Fatalf("expected error to contain %q, got %q", want, got)
 	}
 }
 

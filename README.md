@@ -98,7 +98,7 @@ commands become repo-aware: Cleanroom resolves the current git remote and local
 `HEAD`, materializes that checkout in the sandbox, and starts commands in the
 configured guest path.
 
-Pre-create a long-running sandbox without running a command:
+Pre-create a long-running sandbox using repo policy:
 
 ```bash
 SANDBOX_ID="$(cleanroom create)"
@@ -113,14 +113,20 @@ cleanroom exec --image ghcr.io/buildkite/cleanroom-base/alpine:latest -- npm tes
 cleanroom console --image my-local-image:dev -- sh
 ```
 
-Equivalent namespaced command:
+Pre-create a repo-agnostic sandbox without reading `cleanroom.yaml`:
 
 ```bash
 cleanroom sandbox create
 ```
 
 `cleanroom sandbox create` stays generic. It does not inspect the local git
-repository or infer a checkout from `cleanroom.yaml`.
+repository or read `cleanroom.yaml`. It creates a sandbox with a built-in
+deny-by-default policy and resolves
+`ghcr.io/buildkite/cleanroom-base/alpine:latest` to a digest unless `--image`
+is provided.
+
+To disable egress filtering for a repo-agnostic sandbox, pass
+`--dangerously-allow-all`.
 
 `cleanroom exec` and `cleanroom console` create ephemeral sandboxes by default.
 Reuse an existing sandbox with `--in`, or keep a newly created sandbox with
@@ -155,7 +161,10 @@ cleanroom console -- bash
 
 ## Policy file
 
-A `cleanroom.yaml` in your repo defines the sandbox policy. Cleanroom also checks `.buildkite/cleanroom.yaml` as a fallback.
+A `cleanroom.yaml` in your repo defines the sandbox policy for policy-aware
+commands such as `cleanroom create`, `cleanroom exec`, and `cleanroom console`.
+Cleanroom also checks `.buildkite/cleanroom.yaml` as a fallback.
+`cleanroom sandbox create` does not read either path.
 
 ```yaml
 version: 1
@@ -216,11 +225,11 @@ repository:
 
 With the default behavior:
 
-- `cleanroom create` creates a sandbox with the current repo checked out at local `HEAD`
+- `cleanroom create` reads repo policy and creates a sandbox with the current repo checked out at local `HEAD`
 - `cleanroom exec -- <cmd>` checks out the repo, runs `<cmd>` from `/workspace`, and tears the sandbox down unless `--keep` is set
 - `cleanroom console -- bash` opens a shell in `/workspace` and tears the sandbox down unless `--keep` is set
 - dirty working trees print a warning and use committed `HEAD`; uncommitted changes are not copied in
-- `cleanroom sandbox create` remains explicit and repo-agnostic
+- `cleanroom sandbox create` remains explicit and repo-agnostic, using a built-in policy instead of repo policy (deny-by-default unless `--dangerously-allow-all` is set)
 
 Repository bootstrap needs the remote host in `sandbox.network.allow`, for
 example:

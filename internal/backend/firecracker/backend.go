@@ -849,8 +849,8 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 	}
 	observation.ImageRef = req.Policy.ImageRef
 	observation.ImageDigest = req.Policy.ImageDigest
-	if req.Policy.NetworkDefault != "deny" {
-		return nil, fmt.Errorf("firecracker backend requires deny-by-default policy, got %q", req.Policy.NetworkDefault)
+	if req.Policy.NetworkDefault != "deny" && req.Policy.NetworkDefault != "allow" {
+		return nil, fmt.Errorf("firecracker backend requires network.default=deny or allow, got %q", req.Policy.NetworkDefault)
 	}
 	if len(req.Command) == 0 {
 		return nil, errors.New("missing command")
@@ -980,7 +980,7 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 	networkRunBatch := func(ctx context.Context, commands [][]string) error {
 		return runRootCommandBatch(ctx, req.FirecrackerConfig, commands)
 	}
-	networkCfg, cleanupNetwork, err := setupHostNetwork(ctx, req.ExecutionID, req.Policy.Allow, 0, networkRunCommand, networkRunBatch)
+	networkCfg, cleanupNetwork, err := setupHostNetwork(ctx, req.ExecutionID, req.Policy.NetworkDefault == "allow", req.Policy.Allow, 0, networkRunCommand, networkRunBatch)
 	if err != nil {
 		return nil, fmt.Errorf("setup host network: %w", err)
 	}
@@ -1507,8 +1507,8 @@ func (a *Adapter) launchSandboxVMFromRootFS(ctx context.Context, sandboxID strin
 	if compiled == nil {
 		return nil, errors.New("missing compiled policy")
 	}
-	if compiled.NetworkDefault != "deny" {
-		return nil, fmt.Errorf("firecracker backend requires deny-by-default policy, got %q", compiled.NetworkDefault)
+	if compiled.NetworkDefault != "deny" && compiled.NetworkDefault != "allow" {
+		return nil, fmt.Errorf("firecracker backend requires network.default=deny or allow, got %q", compiled.NetworkDefault)
 	}
 	if runtime.GOOS != "linux" {
 		return nil, fmt.Errorf("firecracker backend is linux-only, current OS is %s", runtime.GOOS)
@@ -1584,7 +1584,7 @@ func (a *Adapter) launchSandboxVMFromRootFS(ctx context.Context, sandboxID strin
 			gwPort = gateway.DefaultPort
 		}
 	}
-	networkCfg, cleanupNetwork, err := setupHostNetwork(ctx, sandboxID, compiled.Allow, gwPort, networkRunCommand, networkRunBatch)
+	networkCfg, cleanupNetwork, err := setupHostNetwork(ctx, sandboxID, compiled.NetworkDefault == "allow", compiled.Allow, gwPort, networkRunCommand, networkRunBatch)
 	if err != nil {
 		cleanupVolume()
 		return nil, fmt.Errorf("setup host network: %w", err)
@@ -2084,18 +2084,18 @@ type interfaceLookupFunc func(name string) (*net.Interface, error)
 type rootCommandFunc func(ctx context.Context, args ...string) error
 type rootCommandBatchFunc func(ctx context.Context, commands [][]string) error
 
-func setupHostNetwork(ctx context.Context, runID string, allow []policy.AllowRule, gatewayPort int, runCommand rootCommandFunc, runBatchCommand rootCommandBatchFunc) (hostNetworkConfig, func(), error) {
+func setupHostNetwork(ctx context.Context, runID string, allowAll bool, allow []policy.AllowRule, gatewayPort int, runCommand rootCommandFunc, runBatchCommand rootCommandBatchFunc) (hostNetworkConfig, func(), error) {
 	lookup := func(ctx context.Context, host string) ([]net.IP, error) {
 		return net.DefaultResolver.LookupIP(ctx, "ip4", host)
 	}
-	return setupHostNetworkWithDeps(ctx, runID, allow, gatewayPort, lookup, runCommand, runBatchCommand)
+	return setupHostNetworkWithDeps(ctx, runID, allowAll, allow, gatewayPort, lookup, runCommand, runBatchCommand)
 }
 
-func setupHostNetworkWithDeps(ctx context.Context, runID string, allow []policy.AllowRule, gatewayPort int, lookup ipLookupFunc, runCommand rootCommandFunc, runBatchCommand rootCommandBatchFunc) (hostNetworkConfig, func(), error) {
-	return setupHostNetworkWithTapLookup(ctx, runID, allow, gatewayPort, lookup, net.InterfaceByName, runCommand, runBatchCommand)
+func setupHostNetworkWithDeps(ctx context.Context, runID string, allowAll bool, allow []policy.AllowRule, gatewayPort int, lookup ipLookupFunc, runCommand rootCommandFunc, runBatchCommand rootCommandBatchFunc) (hostNetworkConfig, func(), error) {
+	return setupHostNetworkWithTapLookup(ctx, runID, allowAll, allow, gatewayPort, lookup, net.InterfaceByName, runCommand, runBatchCommand)
 }
 
-func setupHostNetworkWithTapLookup(ctx context.Context, runID string, allow []policy.AllowRule, gatewayPort int, lookup ipLookupFunc, interfaceByName interfaceLookupFunc, runCommand rootCommandFunc, runBatchCommand rootCommandBatchFunc) (hostNetworkConfig, func(), error) {
+func setupHostNetworkWithTapLookup(ctx context.Context, runID string, allowAll bool, allow []policy.AllowRule, gatewayPort int, lookup ipLookupFunc, interfaceByName interfaceLookupFunc, runCommand rootCommandFunc, runBatchCommand rootCommandBatchFunc) (hostNetworkConfig, func(), error) {
 	tapName := tapNameFromExecutionID(runID)
 	hostIP, guestIP := hostGuestIPs(runID)
 	hostCIDR := hostIP + "/24"
@@ -2221,11 +2221,19 @@ func setupHostNetworkWithTapLookup(ctx context.Context, runID string, allow []po
 		}
 		addCleanup("iptables", "-D", "FORWARD", "-i", tapName, "-p", rule.Protocol, "-d", rule.DestIP, "--dport", port, "-j", "ACCEPT")
 	}
-	if err := setupRun("iptables", "-A", "FORWARD", "-i", tapName, "-j", "DROP"); err != nil {
-		cleanup()
-		return hostNetworkConfig{}, func() {}, fmt.Errorf("install default deny forward rule for %s: %w", tapName, err)
+	if allowAll {
+		if err := setupRun("iptables", "-A", "FORWARD", "-i", tapName, "-j", "ACCEPT"); err != nil {
+			cleanup()
+			return hostNetworkConfig{}, func() {}, fmt.Errorf("install allow-all forward rule for %s: %w", tapName, err)
+		}
+		addCleanup("iptables", "-D", "FORWARD", "-i", tapName, "-j", "ACCEPT")
+	} else {
+		if err := setupRun("iptables", "-A", "FORWARD", "-i", tapName, "-j", "DROP"); err != nil {
+			cleanup()
+			return hostNetworkConfig{}, func() {}, fmt.Errorf("install default deny forward rule for %s: %w", tapName, err)
+		}
+		addCleanup("iptables", "-D", "FORWARD", "-i", tapName, "-j", "DROP")
 	}
-	addCleanup("iptables", "-D", "FORWARD", "-i", tapName, "-j", "DROP")
 
 	return hostNetworkConfig{
 		TapName:         tapName,

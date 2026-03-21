@@ -85,7 +85,7 @@ func TestSetupHostNetworkWithDepsAddsDenyDefaultAndCleanupIndependentContext(t *
 	}
 
 	reqCtx, cancel := context.WithCancel(context.Background())
-	cfg, cleanup, err := setupHostNetworkWithDeps(reqCtx, "run-12345", []policy.AllowRule{{Host: "proxy.golang.org", Ports: []int{443}}}, 8170, lookup, run, runBatch)
+	cfg, cleanup, err := setupHostNetworkWithDeps(reqCtx, "run-12345", false, []policy.AllowRule{{Host: "proxy.golang.org", Ports: []int{443}}}, 8170, lookup, run, runBatch)
 	if err != nil {
 		t.Fatalf("setupHostNetworkWithDeps: %v", err)
 	}
@@ -181,7 +181,7 @@ func TestSetupHostNetworkWithTapLookupDeletesStaleTapBeforeCreate(t *testing.T) 
 		return nil, errors.New("no such network interface")
 	}
 
-	_, cleanup, err := setupHostNetworkWithTapLookup(context.Background(), runID, []policy.AllowRule{{Host: "proxy.golang.org", Ports: []int{443}}}, 0, lookup, interfaceByName, run, nil)
+	_, cleanup, err := setupHostNetworkWithTapLookup(context.Background(), runID, false, []policy.AllowRule{{Host: "proxy.golang.org", Ports: []int{443}}}, 0, lookup, interfaceByName, run, nil)
 	if err != nil {
 		t.Fatalf("setupHostNetworkWithTapLookup: %v", err)
 	}
@@ -195,6 +195,43 @@ func TestSetupHostNetworkWithTapLookupDeletesStaleTapBeforeCreate(t *testing.T) 
 	}
 	if got, want := strings.Join(calls[1], " "), "ip tuntap add dev "+tapName+" mode tap user "+strconv.Itoa(os.Getuid()); got != want {
 		t.Fatalf("unexpected second command: got %q want %q", got, want)
+	}
+}
+
+func TestSetupHostNetworkWithDepsAddsAllowAllForwardRule(t *testing.T) {
+	t.Parallel()
+
+	var calls []string
+	run := func(_ context.Context, args ...string) error {
+		calls = append(calls, strings.Join(args, " "))
+		return nil
+	}
+	runBatch := func(_ context.Context, commands [][]string) error {
+		for _, args := range commands {
+			calls = append(calls, strings.Join(args, " "))
+		}
+		return nil
+	}
+	lookup := func(_ context.Context, host string) ([]net.IP, error) {
+		if host != "proxy.golang.org" {
+			t.Fatalf("unexpected host %q", host)
+		}
+		return []net.IP{net.ParseIP("142.251.41.17")}, nil
+	}
+
+	cfg, cleanup, err := setupHostNetworkWithDeps(context.Background(), "run-allow-all", true, []policy.AllowRule{{Host: "proxy.golang.org", Ports: []int{443}}}, 0, lookup, run, runBatch)
+	if err != nil {
+		t.Fatalf("setupHostNetworkWithDeps: %v", err)
+	}
+	defer cleanup()
+
+	joined := strings.Join(calls, "\n")
+	tap := cfg.TapName
+	if !strings.Contains(joined, "iptables -A FORWARD -i "+tap+" -j ACCEPT") {
+		t.Fatalf("expected blanket ACCEPT FORWARD rule for tap %s\ncalls:\n%s", tap, joined)
+	}
+	if strings.Contains(joined, "iptables -A FORWARD -i "+tap+" -j DROP") {
+		t.Fatalf("unexpected default DROP FORWARD rule for tap %s\ncalls:\n%s", tap, joined)
 	}
 }
 

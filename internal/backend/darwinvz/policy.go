@@ -7,13 +7,21 @@ import (
 
 const allowRulesIgnoredWarning = "darwin-vz ignores sandbox.network.allow entries; allowlist egress filtering is not implemented"
 const guestNetworkUnavailableWarning = "darwin-vz guest networking is enabled without host-side egress filtering"
+const allowAllPolicyWarning = "darwin-vz allows outbound networking for network.default=allow; host-side egress filtering is disabled"
 
 func evaluateNetworkPolicy(networkDefault string, allowCount int) (string, error) {
-	if strings.TrimSpace(networkDefault) != "deny" {
-		return "", fmt.Errorf("darwin-vz backend requires deny-by-default policy, got %q", networkDefault)
+	switch strings.TrimSpace(networkDefault) {
+	case "deny":
+		if allowCount > 0 {
+			return allowRulesIgnoredWarning, nil
+		}
+		return "", nil
+	case "allow":
+		if allowCount > 0 {
+			return allowAllPolicyWarning + "; sandbox.network.allow entries are ignored", nil
+		}
+		return allowAllPolicyWarning, nil
+	default:
+		return "", fmt.Errorf("darwin-vz backend requires network.default=deny or allow, got %q", networkDefault)
 	}
-	if allowCount > 0 {
-		return allowRulesIgnoredWarning, nil
-	}
-	return "", nil
 }

@@ -596,7 +596,7 @@ func (a *Adapter) Doctor(_ context.Context, req backend.DoctorRequest) (*backend
 		if policyErr != nil {
 			appendCheck("policy_network_default", "fail", policyErr.Error())
 		} else {
-			appendCheck("policy_network_default", "pass", "deny-by-default policy")
+			appendCheck("policy_network_default", "pass", fmt.Sprintf("network.default=%s", strings.TrimSpace(req.Policy.NetworkDefault)))
 			if policyWarn != "" {
 				appendCheck("policy_network_allow", "warn", policyWarn)
 			} else {

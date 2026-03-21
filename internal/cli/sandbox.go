@@ -11,10 +11,11 @@ import (
 
 	"github.com/buildkite/cleanroom/internal/controlclient"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
+	"github.com/buildkite/cleanroom/internal/policy"
 )
 
 type SandboxCommand struct {
-	Create    SandboxCreateCommand    `cmd:"" help:"Create a sandbox"`
+	Create    SandboxCreateCommand    `cmd:"" help:"Create a repo-agnostic sandbox"`
 	Inspect   SandboxInspectCommand   `name:"inspect" aliases:"show" cmd:"" help:"Inspect sandbox state and related execution IDs"`
 	List      SandboxListCommand      `name:"ls" aliases:"list" cmd:"" help:"List active sandboxes"`
 	Terminate SandboxTerminateCommand `name:"rm" aliases:"terminate" cmd:"" help:"Terminate a sandbox"`
@@ -22,12 +23,12 @@ type SandboxCommand struct {
 
 type SandboxCreateCommand struct {
 	clientFlags
-	Chdir         string `short:"c" help:"Change to this directory before running commands"`
-	Backend       string `help:"Execution backend (defaults to runtime config or host default)"`
-	From          string `name:"from" help:"Create the sandbox from an existing snapshot ID"`
-	Image         string `help:"Override sandbox image ref (tag, digest, or local Docker image)"`
-	LaunchSeconds int64  `help:"VM boot/guest-agent readiness timeout in seconds"`
-	JSON          bool   `help:"Print sandbox as JSON"`
+	Backend             string `help:"Execution backend (defaults to runtime config or host default)"`
+	From                string `name:"from" help:"Create the sandbox from an existing snapshot ID"`
+	Image               string `help:"Override sandbox image ref (tag, digest, or local Docker image)"`
+	DangerouslyAllowAll bool   `name:"dangerously-allow-all" help:"Disable network egress filtering for this repo-agnostic sandbox"`
+	LaunchSeconds       int64  `help:"VM boot/guest-agent readiness timeout in seconds"`
+	JSON                bool   `help:"Print sandbox as JSON"`
 }
 
 type SandboxListCommand struct {
@@ -200,20 +201,15 @@ func (c *SandboxTerminateCommand) Run(ctx *runtimeContext) error {
 	return err
 }
 
-func runSandboxCreate(ctx *runtimeContext, connectFlags clientFlags, chdir, backend, from, imageRefOverride string, launchSeconds int64, outputJSON bool) error {
+func runSandboxCreate(ctx *runtimeContext, connectFlags clientFlags, backend, from, imageRefOverride string, dangerouslyAllowAll bool, launchSeconds int64, outputJSON bool) error {
 	resolvedHost := connectFlags.resolvedHost(ctx.Config)
 	client, err := connectFlags.connect(ctx)
 	if err != nil {
 		return err
 	}
 
-	createReq := &cleanroomv1.CreateSandboxRequest{
-		Backend: backend,
-		Options: &cleanroomv1.SandboxOptions{
-			LaunchSeconds: launchSeconds,
-		},
-	}
 	from = strings.TrimSpace(from)
+	var sandbox *cleanroomv1.Sandbox
 	if from != "" {
 		if strings.TrimSpace(imageRefOverride) != "" {
 			return errors.New("--image cannot be used with --from")
@@ -221,36 +217,32 @@ func runSandboxCreate(ctx *runtimeContext, connectFlags clientFlags, chdir, back
 		if strings.TrimSpace(backend) != "" {
 			return errors.New("--backend cannot be used with --from")
 		}
-		createReq.Source = &cleanroomv1.CreateSandboxRequest_SnapshotId{SnapshotId: from}
-	} else {
-		cwd, err := resolveCWD(ctx.CWD, chdir)
-		if err != nil {
-			return err
+		if dangerouslyAllowAll {
+			return errors.New("--dangerously-allow-all cannot be used with --from")
 		}
-		compiled, _, err := ctx.Loader.LoadAndCompile(cwd)
-		if err != nil {
-			return err
-		}
-		allowLocalImageOverride, err := isLocalControlPlaneEndpoint(resolvedHost)
-		if err != nil {
-			return err
-		}
-		compiled, err = overrideCompiledPolicyImage(compiled, imageRefOverride, allowLocalImageOverride)
-		if err != nil {
-			return err
-		}
-		createReq.Policy = compiled.ToProto()
-	}
 
-	resp, err := client.CreateSandbox(context.Background(), createReq)
-	if err != nil {
-		if from != "" {
+		resp, err := client.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+			Options: &cleanroomv1.SandboxOptions{
+				LaunchSeconds: launchSeconds,
+			},
+			Source: &cleanroomv1.CreateSandboxRequest_SnapshotId{SnapshotId: from},
+		})
+		if err != nil {
 			err = explainSnapshotRuntimeDisabledError(err, ctx)
+			return fmt.Errorf("create sandbox: %w", err)
 		}
-		return fmt.Errorf("create sandbox: %w", err)
+		sandbox = resp.GetSandbox()
+	} else {
+		compiled, err := defaultSandboxCreatePolicy(resolvedHost, imageRefOverride, dangerouslyAllowAll)
+		if err != nil {
+			return err
+		}
+		_, sandbox, err = createSandboxWithPolicy(client, compiled, backend, launchSeconds, nil)
+		if err != nil {
+			return err
+		}
 	}
 
-	sandbox := resp.GetSandbox()
 	sandboxID := strings.TrimSpace(sandbox.GetSandboxId())
 	if sandboxID == "" {
 		return errors.New("create sandbox: response missing sandbox id")
@@ -267,12 +259,12 @@ func runSandboxCreate(ctx *runtimeContext, connectFlags clientFlags, chdir, back
 }
 
 func (c *SandboxCreateCommand) Run(ctx *runtimeContext) error {
-	return runSandboxCreate(ctx, c.clientFlags, c.Chdir, c.Backend, c.From, c.Image, c.LaunchSeconds, c.JSON)
+	return runSandboxCreate(ctx, c.clientFlags, c.Backend, c.From, c.Image, c.DangerouslyAllowAll, c.LaunchSeconds, c.JSON)
 }
 
 func (c *CreateCommand) Run(ctx *runtimeContext) error {
 	if strings.TrimSpace(c.From) != "" {
-		return runSandboxCreate(ctx, c.clientFlags, c.Chdir, c.Backend, c.From, c.Image, c.LaunchSeconds, c.JSON)
+		return runSandboxCreate(ctx, c.clientFlags, c.Backend, c.From, c.Image, false, c.LaunchSeconds, c.JSON)
 	}
 	host := c.resolvedHost(ctx.Config)
 	client, err := c.connect(ctx)
@@ -326,6 +318,20 @@ func createTopLevelSandbox(
 		return "", nil, err
 	}
 
+	return createSandboxWithPolicy(client, compiled, backendName, launchSeconds, repository)
+}
+
+func createSandboxWithPolicy(
+	client *controlclient.Client,
+	compiled *policy.CompiledPolicy,
+	backendName string,
+	launchSeconds int64,
+	repository *resolvedRepositoryCheckout,
+) (string, *cleanroomv1.Sandbox, error) {
+	if compiled == nil {
+		return "", nil, errors.New("create sandbox: missing compiled policy")
+	}
+
 	createSandboxResp, err := client.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
 		Backend: backendName,
 		Options: &cleanroomv1.SandboxOptions{
@@ -345,6 +351,43 @@ func createTopLevelSandbox(
 	}
 
 	return sandboxID, sandbox, nil
+}
+
+func defaultSandboxCreatePolicy(host, imageRefOverride string, dangerouslyAllowAll bool) (*policy.CompiledPolicy, error) {
+	imageRefOverride = strings.TrimSpace(imageRefOverride)
+	resolvedRef := ""
+	if imageRefOverride == "" {
+		ref, err := resolveReferenceForPolicyUpdate(context.Background(), defaultBumpRefSource)
+		if err != nil {
+			return nil, fmt.Errorf("resolve default sandbox image %q: %w", defaultBumpRefSource, err)
+		}
+		resolvedRef = ref
+	} else {
+		allowLocalImageOverride, err := isLocalControlPlaneEndpoint(host)
+		if err != nil {
+			return nil, err
+		}
+		ref, err := resolveReferenceForImageOverride(context.Background(), imageRefOverride, allowLocalImageOverride)
+		if err != nil {
+			return nil, fmt.Errorf("invalid --image value: %w", err)
+		}
+		resolvedRef = ref
+	}
+
+	networkDefault := "deny"
+	if dangerouslyAllowAll {
+		networkDefault = "allow"
+	}
+
+	compiled, err := policy.FromProto(&cleanroomv1.Policy{
+		Version:        1,
+		ImageRef:       resolvedRef,
+		NetworkDefault: networkDefault,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("build sandbox policy: %w", err)
+	}
+	return compiled, nil
 }
 
 func sandboxStatusString(s cleanroomv1.SandboxStatus) string {

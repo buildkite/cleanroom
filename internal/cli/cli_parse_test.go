@@ -150,6 +150,31 @@ func TestSandboxCreateParsesFromSnapshot(t *testing.T) {
 	}
 }
 
+func TestSandboxCreateParsesDangerouslyAllowAll(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"sandbox", "create", "--dangerously-allow-all"}); err != nil {
+		t.Fatalf("parse sandbox create --dangerously-allow-all returned error: %v", err)
+	}
+	if !c.Sandbox.Create.DangerouslyAllowAll {
+		t.Fatal("expected sandbox create dangerously-allow-all flag to be set")
+	}
+}
+
+func TestSandboxCreateRejectsChdirFlag(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	_, err := parser.Parse([]string{"sandbox", "create", "--chdir", "."})
+	if err == nil {
+		t.Fatal("expected sandbox create --chdir to be rejected")
+	}
+	if !strings.Contains(err.Error(), "--chdir") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestTopLevelCreateParses(t *testing.T) {
 	c := &CLI{}
 	parser := newParserForTest(t, c)

@@ -52,11 +52,10 @@ func TestSandboxCreateIntegrationOverridesImageRefForNewSandbox(t *testing.T) {
 
 	createOutcome := runSandboxCreateWithCapture(SandboxCreateCommand{
 		clientFlags: clientFlags{Host: host},
-		Chdir:       cwd,
 		Image:       testImageOverrideTag,
 	}, runtimeContext{
 		CWD:    cwd,
-		Loader: integrationLoader{},
+		Loader: failingLoader{},
 	})
 	if createOutcome.cause != nil {
 		t.Fatalf("capture failure: %v", createOutcome.cause)
