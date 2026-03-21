@@ -220,6 +220,34 @@ func writeSandboxID(stderr io.Writer, sandboxID string) error {
 	return err
 }
 
+func writeExecutionID(stderr io.Writer, executionID string) error {
+	executionID = strings.TrimSpace(executionID)
+	if stderr == nil || executionID == "" {
+		return nil
+	}
+	_, err := fmt.Fprintf(stderr, "execution_id=%s\n", executionID)
+	return err
+}
+
+func writeArtifactsDir(stderr io.Writer, artifactsDir string) error {
+	artifactsDir = strings.TrimSpace(artifactsDir)
+	if stderr == nil || artifactsDir == "" {
+		return nil
+	}
+	_, err := fmt.Fprintf(stderr, "artifacts_dir=%s\n", artifactsDir)
+	return err
+}
+
+func writeExecutionInspectCommand(stderr io.Writer, sandboxID, executionID string) error {
+	sandboxID = strings.TrimSpace(sandboxID)
+	executionID = strings.TrimSpace(executionID)
+	if stderr == nil || sandboxID == "" || executionID == "" {
+		return nil
+	}
+	_, err := fmt.Fprintf(stderr, "inspect_command=cleanroom execution inspect --sandbox-id %s %s\n", sandboxID, executionID)
+	return err
+}
+
 func replayExecutionHistory(client *controlclient.Client, sandboxID, executionID string, stdout, stderr io.Writer) (int, bool, error) {
 	stream, err := client.StreamExecution(context.Background(), &cleanroomv1.StreamExecutionRequest{
 		SandboxId:   sandboxID,

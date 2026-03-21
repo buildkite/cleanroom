@@ -58,7 +58,7 @@ type Adapter struct {
 	sandboxes          map[string]*sandboxInstance
 	provisioning       map[string]struct{}
 	launchSandboxVMFn  func(context.Context, string, *policy.CompiledPolicy, backend.FirecrackerConfig) (*sandboxInstance, error)
-	executeInSandboxFn func(context.Context, context.Context, *sandboxInstance, backend.RunRequest, backend.OutputStream) (*backend.RunResult, error)
+	executeInSandboxFn func(context.Context, context.Context, *sandboxInstance, backend.ExecutionRequest, backend.OutputStream) (*backend.ExecutionResult, error)
 	helperRequestFn    func(context.Context, *helperSession, helperControlRequest) (helperControlResponse, error)
 
 	ensurePreparedRootFSFn func(context.Context, string) (preparedRootFS, error)
@@ -102,10 +102,10 @@ type sandboxInstance struct {
 }
 
 const preparedRuntimeRootFSVersion = "v9-darwin-vz"
-const runObservabilityFile = "run-observability.json"
+const runObservabilityFile = "execution-observability.json"
 
 type darwinVZRunObservation struct {
-	RunID          string           `json:"run_id"`
+	ExecutionID    string           `json:"execution_id"`
 	Backend        string           `json:"backend"`
 	LaunchedVM     bool             `json:"launched_vm"`
 	ImageRef       string           `json:"image_ref,omitempty"`
@@ -280,11 +280,11 @@ func (a *Adapter) Capabilities() map[string]bool {
 	}
 }
 
-func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.RunResult, error) {
+func (a *Adapter) Run(ctx context.Context, req backend.ExecutionRequest) (*backend.ExecutionResult, error) {
 	return a.run(ctx, req, backend.OutputStream{})
 }
 
-func (a *Adapter) RunStream(ctx context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+func (a *Adapter) RunStream(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 	return a.run(ctx, req, stream)
 }
 
@@ -299,7 +299,7 @@ func (a *Adapter) ProvisionSandbox(ctx context.Context, req backend.ProvisionReq
 	return a.provisionSandbox(ctx, sandboxID, req.Policy, req.FirecrackerConfig)
 }
 
-func (a *Adapter) RunInSandbox(ctx context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+func (a *Adapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 	sandboxID := strings.TrimSpace(req.SandboxID)
 	if sandboxID == "" {
 		return nil, errors.New("missing sandbox_id")
@@ -307,8 +307,8 @@ func (a *Adapter) RunInSandbox(ctx context.Context, req backend.RunRequest, stre
 	if len(req.Command) == 0 {
 		return nil, errors.New("missing command")
 	}
-	if strings.TrimSpace(req.RunID) == "" {
-		return nil, errors.New("missing run_id")
+	if strings.TrimSpace(req.ExecutionID) == "" {
+		return nil, errors.New("missing execution_id")
 	}
 
 	a.sandboxMu.Lock()
@@ -333,8 +333,8 @@ func (a *Adapter) RunInSandbox(ctx context.Context, req backend.RunRequest, stre
 
 	runDir := strings.TrimSpace(req.RunDir)
 	if runDir == "" {
-		if baseDir, err := paths.RunBaseDir(); err == nil {
-			runDir = filepath.Join(baseDir, req.RunID)
+		if baseDir, err := paths.ExecutionBaseDir(); err == nil {
+			runDir = filepath.Join(baseDir, req.ExecutionID)
 		}
 	}
 	if runDir != "" {
@@ -344,7 +344,7 @@ func (a *Adapter) RunInSandbox(ctx context.Context, req backend.RunRequest, stre
 	}
 	req.RunDir = runDir
 	observation := darwinVZRunObservation{
-		RunID:       req.RunID,
+		ExecutionID: req.ExecutionID,
 		Backend:     a.Name(),
 		RunDir:      runDir,
 		ImageRef:    instance.ImageRef,
@@ -360,7 +360,7 @@ func (a *Adapter) RunInSandbox(ctx context.Context, req backend.RunRequest, stre
 	runStart := time.Now()
 	defer func() {
 		if err := writeDarwinVZRunObservation(runDir, &observation, time.Since(runStart).Milliseconds()); err != nil {
-			log.Warn("write darwin-vz run observability failed", "run_id", req.RunID, "error", err)
+			log.Warn("write darwin-vz run observability failed", "execution_id", req.ExecutionID, "error", err)
 		}
 	}()
 
@@ -453,7 +453,7 @@ func (a *Adapter) CreateSnapshot(ctx context.Context, req backend.SnapshotReques
 	}
 	syncCtx, cancel := context.WithTimeout(ctx, time.Duration(connectSeconds)*time.Second)
 	defer cancel()
-	if _, err := executeInSandbox(syncCtx, ctx, instance, backend.RunRequest{
+	if _, err := executeInSandbox(syncCtx, ctx, instance, backend.ExecutionRequest{
 		SandboxID: sandboxID,
 		Command:   []string{"sync"},
 		Policy:    instance.Policy,
@@ -677,7 +677,7 @@ func (a *Adapter) Doctor(_ context.Context, req backend.DoctorRequest) (*backend
 	return report, nil
 }
 
-func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backend.OutputStream) (result *backend.RunResult, err error) {
+func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (result *backend.ExecutionResult, err error) {
 	runStart := time.Now()
 
 	if req.Policy == nil {
@@ -696,17 +696,17 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 
 	runDir := req.RunDir
 	if runDir == "" {
-		baseDir, err := paths.RunBaseDir()
+		baseDir, err := paths.ExecutionBaseDir()
 		if err != nil {
 			return nil, fmt.Errorf("resolve run base directory: %w", err)
 		}
-		runDir = filepath.Join(baseDir, req.RunID)
+		runDir = filepath.Join(baseDir, req.ExecutionID)
 	}
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create run directory: %w", err)
 	}
 	observation := darwinVZRunObservation{
-		RunID:       req.RunID,
+		ExecutionID: req.ExecutionID,
 		Backend:     a.Name(),
 		RunDir:      runDir,
 		ImageRef:    req.Policy.ImageRef,
@@ -717,7 +717,7 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 			observation.Error = err.Error()
 		}
 		if err := writeDarwinVZRunObservation(runDir, &observation, time.Since(runStart).Milliseconds()); err != nil {
-			log.Warn("write darwin-vz run observability failed", "run_id", req.RunID, "error", err)
+			log.Warn("write darwin-vz run observability failed", "execution_id", req.ExecutionID, "error", err)
 		}
 	}()
 
@@ -761,8 +761,8 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 			return nil, err
 		}
 		observation.PlanPath = planPath
-		return &backend.RunResult{
-			RunID:       req.RunID,
+		return &backend.ExecutionResult{
+			ExecutionID: req.ExecutionID,
 			ExitCode:    0,
 			LaunchedVM:  false,
 			PlanPath:    planPath,
@@ -779,14 +779,14 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 		observation.Error = err.Error()
 		return nil, err
 	}
-	logRunNotice(a.Name(), req.RunID, kernelNotice)
+	logExecutionNotice(a.Name(), req.ExecutionID, kernelNotice)
 
 	rootFSPath, imageRef, imageDigest, rootFSNotice, err := a.resolveRootFSPath(ctx, req)
 	if err != nil {
 		observation.Error = err.Error()
 		return nil, err
 	}
-	logRunNotice(a.Name(), req.RunID, rootFSNotice)
+	logExecutionNotice(a.Name(), req.ExecutionID, rootFSNotice)
 	if strings.TrimSpace(imageRef) != "" {
 		resolvedImageRef = imageRef
 	}
@@ -820,7 +820,7 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 	vmRootFSPath := filepath.Join(runDir, "rootfs-ephemeral.ext4")
 	copyStart := time.Now()
 	writableVolume, err := driver.CreateWritableVolume(ctx, volumestore.CreateWritableVolumeRequest{
-		VolumeID:       req.RunID,
+		VolumeID:       req.ExecutionID,
 		BaseRef:        baseVolume.Ref,
 		AttachmentPath: vmRootFSPath,
 	})
@@ -839,7 +839,7 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 	}()
 
 	guestInitPath, guestInitNotice := guestInitExecutableForRootFS(vmRootFSPath)
-	logRunNotice(a.Name(), req.RunID, guestInitNotice)
+	logExecutionNotice(a.Name(), req.ExecutionID, guestInitNotice)
 	bootArgs := fmt.Sprintf(
 		"console=hvc0 root=/dev/vda rw init=%s cleanroom_guest_port=%d %s",
 		guestInitPath,
@@ -954,7 +954,7 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 		}
 		scopeSandboxID := strings.TrimSpace(req.SandboxID)
 		if scopeSandboxID == "" {
-			scopeSandboxID = strings.TrimSpace(req.RunID)
+			scopeSandboxID = strings.TrimSpace(req.ExecutionID)
 		}
 		if scopeSandboxID == "" {
 			scopeSandboxID = vmID
@@ -1025,8 +1025,8 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 	observation.ExitCode = guestRes.ExitCode
 	observation.GuestError = guestRes.Error
 
-	return &backend.RunResult{
-		RunID:       req.RunID,
+	return &backend.ExecutionResult{
+		ExecutionID: req.ExecutionID,
 		ExitCode:    guestRes.ExitCode,
 		LaunchedVM:  true,
 		PlanPath:    vmPlanPath,
@@ -1067,7 +1067,7 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 	if err != nil {
 		return nil, err
 	}
-	rootFSPath, imageRef, imageDigest, _, err := a.resolveRootFSPath(ctx, backend.RunRequest{
+	rootFSPath, imageRef, imageDigest, _, err := a.resolveRootFSPath(ctx, backend.ExecutionRequest{
 		Policy:            compiled,
 		FirecrackerConfig: cfg,
 	})
@@ -1288,7 +1288,7 @@ func (a *Adapter) launchSandbox(ctx context.Context, sandboxID string, compiled 
 	return launch(ctx, sandboxID, compiled, cfg)
 }
 
-func (a *Adapter) executeInSandbox(bootCtx context.Context, runCtx context.Context, instance *sandboxInstance, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+func (a *Adapter) executeInSandbox(bootCtx context.Context, runCtx context.Context, instance *sandboxInstance, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 	if instance == nil {
 		return nil, errors.New("nil sandbox instance")
 	}
@@ -1353,7 +1353,7 @@ func (a *Adapter) executeInSandbox(bootCtx context.Context, runCtx context.Conte
 			scopeSandboxID = strings.TrimSpace(instance.SandboxID)
 		}
 		if scopeSandboxID == "" {
-			scopeSandboxID = strings.TrimSpace(req.RunID)
+			scopeSandboxID = strings.TrimSpace(req.ExecutionID)
 		}
 		if err := a.GatewayRegistry.RegisterScopeToken(token, scopeSandboxID, policy); err != nil {
 			return nil, fmt.Errorf("register sandbox in gateway: %w", err)
@@ -1408,8 +1408,8 @@ func (a *Adapter) executeInSandbox(bootCtx context.Context, runCtx context.Conte
 		return nil, helper.decorateError(fmt.Errorf("decode guest exec response over darwin-vz proxy: %w", err))
 	}
 
-	return &backend.RunResult{
-		RunID:       req.RunID,
+	return &backend.ExecutionResult{
+		ExecutionID: req.ExecutionID,
 		ExitCode:    guestRes.ExitCode,
 		LaunchedVM:  false,
 		PlanPath:    instance.ConfigPath,
@@ -1704,7 +1704,7 @@ type imageArtifact struct {
 	CacheHit   bool
 }
 
-func (a *Adapter) resolveRootFSPath(ctx context.Context, req backend.RunRequest) (path, imageRef, imageDigest, notice string, err error) {
+func (a *Adapter) resolveRootFSPath(ctx context.Context, req backend.ExecutionRequest) (path, imageRef, imageDigest, notice string, err error) {
 	configuredPath := strings.TrimSpace(req.RootFSPath)
 	if configuredPath != "" {
 		if _, statErr := os.Stat(configuredPath); statErr == nil {
@@ -2388,7 +2388,7 @@ func copyFile(src, dst string) error {
 	return out.Sync()
 }
 
-func logRunNotice(backendName, runID, notice string) {
+func logExecutionNotice(backendName, runID, notice string) {
 	msg := strings.TrimSpace(notice)
 	if msg == "" {
 		return
@@ -2396,7 +2396,7 @@ func logRunNotice(backendName, runID, notice string) {
 	fields := []any{"backend", strings.TrimSpace(backendName)}
 	id := strings.TrimSpace(runID)
 	if id != "" {
-		fields = append(fields, "run_id", id)
+		fields = append(fields, "execution_id", id)
 	}
 	log.Info(msg, fields...)
 }

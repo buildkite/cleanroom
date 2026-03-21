@@ -70,6 +70,7 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 		}
 		return err
 	}
+	executionID := ""
 	printedSandboxID := false
 	printSandboxID := func() error {
 		if printedSandboxID {
@@ -79,6 +80,17 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 			return err
 		}
 		printedSandboxID = true
+		return nil
+	}
+	printedExecutionID := false
+	printExecutionID := func() error {
+		if printedExecutionID {
+			return nil
+		}
+		if err := writeExecutionID(os.Stderr, executionID); err != nil {
+			return err
+		}
+		printedExecutionID = true
 		return nil
 	}
 	defer func() {
@@ -91,6 +103,35 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 				return
 			}
 			runErr = errors.Join(runErr, err)
+		}
+	}()
+	defer func() {
+		if runErr == nil {
+			return
+		}
+		var extraErr error
+		if err := printSandboxID(); err != nil {
+			extraErr = errors.Join(extraErr, err)
+		}
+		if err := printExecutionID(); err != nil {
+			extraErr = errors.Join(extraErr, err)
+		}
+		if sandboxID != "" && executionID != "" {
+			if err := writeExecutionInspectCommand(os.Stderr, sandboxID, executionID); err != nil {
+				extraErr = errors.Join(extraErr, err)
+			}
+			resp, err := client.InspectExecution(context.Background(), &cleanroomv1.InspectExecutionRequest{
+				SandboxId:   sandboxID,
+				ExecutionId: executionID,
+			})
+			if err == nil {
+				if err := writeArtifactsDir(os.Stderr, resp.GetArtifactsDir()); err != nil {
+					extraErr = errors.Join(extraErr, err)
+				}
+			}
+		}
+		if extraErr != nil {
+			runErr = errors.Join(runErr, extraErr)
 		}
 	}()
 	if e.PrintSandboxID {
@@ -119,7 +160,7 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 	if err != nil {
 		return fmt.Errorf("create execution: %w", err)
 	}
-	executionID := createExecutionResp.GetExecution().GetExecutionId()
+	executionID = createExecutionResp.GetExecution().GetExecutionId()
 
 	logger.Debug("execution started", "sandbox_id", sandboxID, "execution_id", executionID)
 

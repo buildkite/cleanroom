@@ -75,11 +75,11 @@ func TestSnapshotLifecycleE2E(t *testing.T) {
 	runCommand := func(ctx context.Context, adapter *Adapter, sandboxID, runID string, command ...string) string {
 		t.Helper()
 
-		result, err := adapter.RunInSandbox(ctx, backend.RunRequest{
-			SandboxID: sandboxID,
-			RunID:     runID,
-			Command:   command,
-			Policy:    compiled,
+		result, err := adapter.RunInSandbox(ctx, backend.ExecutionRequest{
+			SandboxID:   sandboxID,
+			ExecutionID: runID,
+			Command:     command,
+			Policy:      compiled,
 			FirecrackerConfig: backend.FirecrackerConfig{
 				LaunchSeconds: cfg.LaunchSeconds,
 			},

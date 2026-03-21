@@ -41,7 +41,7 @@ func (a *blockingPersistentAdapter) ProvisionSandbox(context.Context, backend.Pr
 	return nil
 }
 
-func (a *blockingPersistentAdapter) RunInSandbox(ctx context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+func (a *blockingPersistentAdapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 	return a.RunStream(ctx, req, stream)
 }
 
@@ -61,7 +61,7 @@ type cancelAwareStreamingAdapter struct {
 	runCanceled chan struct{}
 }
 
-func (a *cancelAwareStreamingAdapter) RunStream(ctx context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+func (a *cancelAwareStreamingAdapter) RunStream(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 	if a.runEntered != nil {
 		a.runEntered <- struct{}{}
 	}
@@ -76,8 +76,8 @@ type immediateStreamingAdapter struct {
 	integrationAdapter
 }
 
-func (a *immediateStreamingAdapter) RunStream(context.Context, backend.RunRequest, backend.OutputStream) (*backend.RunResult, error) {
-	return &backend.RunResult{
+func (a *immediateStreamingAdapter) RunStream(context.Context, backend.ExecutionRequest, backend.OutputStream) (*backend.ExecutionResult, error) {
+	return &backend.ExecutionResult{
 		ExitCode: 0,
 		Message:  "done",
 	}, nil
@@ -88,18 +88,18 @@ type warningStreamingAdapter struct {
 	warning string
 }
 
-func (a *warningStreamingAdapter) RunStream(_ context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+func (a *warningStreamingAdapter) RunStream(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 	if stream.OnWarning != nil {
 		stream.OnWarning(a.warning)
 	}
 	if stream.OnStdout != nil {
 		stream.OnStdout([]byte("hello from cleanroom\n"))
 	}
-	return &backend.RunResult{
-		RunID:    req.RunID,
-		ExitCode: 0,
-		Stdout:   "hello from cleanroom\n",
-		Message:  "done",
+	return &backend.ExecutionResult{
+		ExecutionID: req.ExecutionID,
+		ExitCode:    0,
+		Stdout:      "hello from cleanroom\n",
+		Message:     "done",
 	}, nil
 }
 

@@ -32,7 +32,7 @@ func (a *persistentIntegrationAdapter) ProvisionSandbox(context.Context, backend
 	return nil
 }
 
-func (a *persistentIntegrationAdapter) RunInSandbox(ctx context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+func (a *persistentIntegrationAdapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 	return a.RunStream(ctx, req, stream)
 }
 
@@ -119,11 +119,11 @@ func TestCreateCommandBootstrapsRepositoryForCurrentRepo(t *testing.T) {
 		mu       sync.Mutex
 		commands [][]string
 	)
-	adapter.runStreamFn = func(_ context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 		mu.Lock()
 		commands = append(commands, append([]string(nil), req.Command...))
 		mu.Unlock()
-		return &backend.RunResult{RunID: req.RunID, ExitCode: 0, Message: "ok"}, nil
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
 	}
 
 	outcome := runCreateAliasWithCapture(CreateCommand{
@@ -184,11 +184,11 @@ func TestCreateCommandBootstrapsRepositoryOnCurrentBranch(t *testing.T) {
 		mu       sync.Mutex
 		commands [][]string
 	)
-	adapter.runStreamFn = func(_ context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 		mu.Lock()
 		commands = append(commands, append([]string(nil), req.Command...))
 		mu.Unlock()
-		return &backend.RunResult{RunID: req.RunID, ExitCode: 0, Message: "ok"}, nil
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
 	}
 
 	outcome := runCreateAliasWithCapture(CreateCommand{
@@ -241,11 +241,11 @@ func TestSandboxCreateCommandRemainsGenericWithRepositoryConfig(t *testing.T) {
 		mu       sync.Mutex
 		commands [][]string
 	)
-	adapter.runStreamFn = func(_ context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 		mu.Lock()
 		commands = append(commands, append([]string(nil), req.Command...))
 		mu.Unlock()
-		return &backend.RunResult{RunID: req.RunID, ExitCode: 0, Message: "ok"}, nil
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
 	}
 
 	outcome := runSandboxCreateWithCapture(SandboxCreateCommand{
@@ -291,11 +291,11 @@ func TestExecCommandRunsInsideRepositoryPathForNewSandbox(t *testing.T) {
 		mu       sync.Mutex
 		commands [][]string
 	)
-	adapter.runStreamFn = func(_ context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 		mu.Lock()
 		commands = append(commands, append([]string(nil), req.Command...))
 		mu.Unlock()
-		return &backend.RunResult{RunID: req.RunID, ExitCode: 0, Message: "ok"}, nil
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
 	}
 
 	outcome := runExecWithCapture(ExecCommand{
@@ -347,11 +347,11 @@ func TestExecCommandRunsInsideRepositoryPathWhenReusingSandboxID(t *testing.T) {
 		mu       sync.Mutex
 		commands [][]string
 	)
-	adapter.runStreamFn = func(_ context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 		mu.Lock()
 		commands = append(commands, append([]string(nil), req.Command...))
 		mu.Unlock()
-		return &backend.RunResult{RunID: req.RunID, ExitCode: 0, Message: "ok"}, nil
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
 	}
 
 	loader := repositoryIntegrationLoader{
@@ -443,11 +443,11 @@ func TestExecCommandSkipsRepositoryBootstrapForExistingSandboxID(t *testing.T) {
 		mu       sync.Mutex
 		commands [][]string
 	)
-	adapter.runStreamFn = func(_ context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 		mu.Lock()
 		commands = append(commands, append([]string(nil), req.Command...))
 		mu.Unlock()
-		return &backend.RunResult{RunID: req.RunID, ExitCode: 0, Message: "ok"}, nil
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
 	}
 
 	loader := repositoryIntegrationLoader{
@@ -566,11 +566,11 @@ func TestExecCommandWithSandboxIDAllowsMissingPolicyInCurrentDirectory(t *testin
 		mu       sync.Mutex
 		commands [][]string
 	)
-	adapter.runStreamFn = func(_ context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 		mu.Lock()
 		commands = append(commands, append([]string(nil), req.Command...))
 		mu.Unlock()
-		return &backend.RunResult{RunID: req.RunID, ExitCode: 0, Message: "ok"}, nil
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
 	}
 
 	outcome := runExecWithCapture(ExecCommand{
@@ -607,8 +607,8 @@ func TestCreateCommandWarnsWhenRepositoryIsDirty(t *testing.T) {
 
 	adapter := &persistentIntegrationAdapter{}
 	host, _ := startIntegrationServer(t, adapter)
-	adapter.runStreamFn = func(_ context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
-		return &backend.RunResult{RunID: req.RunID, ExitCode: 0, Message: "ok"}, nil
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
 	}
 
 	outcome := runCreateAliasWithCapture(CreateCommand{
@@ -652,8 +652,8 @@ func TestCreateCommandWarnsWhenRepositoryIsDirtyUsesANSIWhenForced(t *testing.T)
 
 	adapter := &persistentIntegrationAdapter{}
 	host, _ := startIntegrationServer(t, adapter)
-	adapter.runStreamFn = func(_ context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
-		return &backend.RunResult{RunID: req.RunID, ExitCode: 0, Message: "ok"}, nil
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
 	}
 
 	outcome := runCreateAliasWithCapture(CreateCommand{
@@ -740,11 +740,11 @@ func TestExecCommandInlinesRepositoryBootstrapForNonPersistentBackend(t *testing
 		mu       sync.Mutex
 		commands [][]string
 	)
-	adapter.runStreamFn = func(_ context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 		mu.Lock()
 		commands = append(commands, append([]string(nil), req.Command...))
 		mu.Unlock()
-		return &backend.RunResult{RunID: req.RunID, ExitCode: 0, Message: "ok"}, nil
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
 	}
 
 	outcome := runExecWithCapture(ExecCommand{
@@ -823,11 +823,11 @@ func TestExecCommandSkipsRepositoryBootstrapForExistingSandboxOnNonPersistentBac
 		mu       sync.Mutex
 		commands [][]string
 	)
-	adapter.runStreamFn = func(_ context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 		mu.Lock()
 		commands = append(commands, append([]string(nil), req.Command...))
 		mu.Unlock()
-		return &backend.RunResult{RunID: req.RunID, ExitCode: 0, Message: "ok"}, nil
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
 	}
 
 	outcome := runExecWithCapture(ExecCommand{

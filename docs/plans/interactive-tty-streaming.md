@@ -17,7 +17,7 @@ Keep Connect RPC for control-plane operations and move interactive bytes to a de
 This work lands in a single umbrella PR, using phased commits:
 
 1. phase 0 (done): remove built-in Tailscale listener modes (`tsnet://`, `tssvc://`) and mTLS management/auth paths; keep plain HTTPS + server-auth TLS.
-2. phase 1 (done): add explicit execution kinds + `OpenInteractiveExecution` bootstrap RPC.
+2. phase 1 (done): add explicit execution kinds + `AttachExecution` bootstrap RPC.
 3. phase 2 (done): add server-side QUIC interactive transport and session registry.
 4. phase 3 (in progress): migrate CLI interactive commands to QUIC path (`console` done; `agent codex` pending command implementation in this repo).
 5. phase 4 (done): remove legacy attach stream path; finalize docs/tests/observability follow-ups.
@@ -105,7 +105,7 @@ Current CLI note:
 Use Connect RPC to open interactive sessions, then pivot to QUIC:
 
 1. `CreateExecution(kind=INTERACTIVE, ...)`.
-2. `OpenInteractiveExecution(execution_id, sandbox_id, initial_tty)` returns:
+2. `AttachExecution(execution_id, sandbox_id, initial_tty)` returns:
    - `session_id`
    - `quic_endpoint` (host:port)
    - `alpn` (`cleanroom-interactive-v1`)
@@ -138,7 +138,7 @@ No JSON, no base64, no per-frame event envelopes in the hot byte path.
 
 1. ALPN: `cleanroom-interactive-v1`.
 2. for remote HTTPS deployments: reuse configured server-auth TLS trust chain.
-3. for local unix/http deployments: use certificate pin returned by `OpenInteractiveExecution`.
+3. for local unix/http deployments: use certificate pin returned by `AttachExecution`.
 4. client verifies either PKI trust or pin before sending token.
 
 ### 4.5 `quic-go` defaults for v1
@@ -178,9 +178,9 @@ Client maps these to stable CLI errors.
 ## API changes (breaking, intentional)
 
 1. `CreateExecutionRequest` takes `kind` instead of inferring from `tty`.
-2. add unary `OpenInteractiveExecution`.
+2. add unary `AttachExecution`.
 3. `StreamExecution` remains batch-only durable stream.
-4. remove `AttachExecution` (done in this branch).
+4. remove the legacy interactive attach stream path; keep `AttachExecution` as the live bootstrap RPC (done in this branch).
 
 CLI/API UX expectation:
 
@@ -213,7 +213,7 @@ Adapters keep backend-specific runtime details internal.
 ### Slice 0: API/schema split
 
 1. add `ExecutionKind`.
-2. add `OpenInteractiveExecution` RPC/messages.
+2. add `AttachExecution` RPC/messages.
 3. keep old `tty` field only as temporary shim in the active migration branch.
 
 Definition of done:
@@ -224,7 +224,7 @@ Definition of done:
 
 1. track interactive session metadata (`session_id`, token hash, owner, ttl, execution binding).
 2. enforce single attach owner.
-3. expose `OpenInteractiveExecution` from service layer.
+3. expose `AttachExecution` from service layer.
 
 Definition of done:
 
@@ -245,7 +245,7 @@ Definition of done:
 
 1. add client-side dialer in `internal/controlclient/client.go`.
 2. in `internal/cli/cli.go` console/agent flows:
-   - call `OpenInteractiveExecution`
+   - call `AttachExecution`
    - dial QUIC
    - map local raw terminal to QUIC streams
 3. keep batch path unchanged.
@@ -256,7 +256,7 @@ Definition of done:
 
 ### Slice 4: remove legacy interactive stream (done)
 
-1. delete `AttachExecution` internals and proto fields once cutover is complete.
+1. delete legacy interactive attach-stream internals and compatibility shims once cutover is complete.
 2. keep only batch stream semantics in `StreamExecution`.
 3. update docs (`docs/api.md`, CLI help).
 

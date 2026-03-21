@@ -100,9 +100,9 @@ func TestRunInSandboxUsesRequestLaunchSecondsOverride(t *testing.T) {
 	}
 
 	start := time.Now()
-	_, err := adapter.RunInSandbox(context.Background(), backend.RunRequest{
+	_, err := adapter.RunInSandbox(context.Background(), backend.ExecutionRequest{
 		SandboxID:         "cr-test",
-		RunID:             "run-timeout",
+		ExecutionID:       "run-timeout",
 		Command:           []string{"echo", "hello"},
 		FirecrackerConfig: backend.FirecrackerConfig{LaunchSeconds: 3},
 	}, backend.OutputStream{})
@@ -139,10 +139,10 @@ func TestRunInSandboxWritesRunObservabilityForStatusCommand(t *testing.T) {
 		},
 	}
 
-	result, err := adapter.RunInSandbox(context.Background(), backend.RunRequest{
-		SandboxID: "cr-test",
-		RunID:     "run-123",
-		Command:   []string{"echo", "hello"},
+	result, err := adapter.RunInSandbox(context.Background(), backend.ExecutionRequest{
+		SandboxID:   "cr-test",
+		ExecutionID: "run-123",
+		Command:     []string{"echo", "hello"},
 		FirecrackerConfig: backend.FirecrackerConfig{
 			RunDir: runDir,
 		},
@@ -163,8 +163,8 @@ func TestRunInSandboxWritesRunObservabilityForStatusCommand(t *testing.T) {
 	if err := json.Unmarshal(b, &obs); err != nil {
 		t.Fatalf("parse observability json: %v", err)
 	}
-	if got, want := obs["run_id"], "run-123"; got != want {
-		t.Fatalf("unexpected run_id: got %v want %v", got, want)
+	if got, want := obs["execution_id"], "run-123"; got != want {
+		t.Fatalf("unexpected execution_id: got %v want %v", got, want)
 	}
 }
 
@@ -187,10 +187,10 @@ func TestRunInSandboxWritesRunObservabilityOnError(t *testing.T) {
 		},
 	}
 
-	_, err := adapter.RunInSandbox(context.Background(), backend.RunRequest{
-		SandboxID: "cr-test",
-		RunID:     "run-err",
-		Command:   []string{"echo", "hello"},
+	_, err := adapter.RunInSandbox(context.Background(), backend.ExecutionRequest{
+		SandboxID:   "cr-test",
+		ExecutionID: "run-err",
+		Command:     []string{"echo", "hello"},
 		FirecrackerConfig: backend.FirecrackerConfig{
 			RunDir: runDir,
 		},
@@ -208,8 +208,8 @@ func TestRunInSandboxWritesRunObservabilityOnError(t *testing.T) {
 	if err := json.Unmarshal(b, &obs); err != nil {
 		t.Fatalf("parse observability json: %v", err)
 	}
-	if got, want := obs["run_id"], "run-err"; got != want {
-		t.Fatalf("unexpected run_id: got %v want %v", got, want)
+	if got, want := obs["execution_id"], "run-err"; got != want {
+		t.Fatalf("unexpected execution_id: got %v want %v", got, want)
 	}
 	if got := obs["guest_error"]; got == nil || got == "" {
 		t.Fatalf("expected guest_error to be recorded, got %v", got)

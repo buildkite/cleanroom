@@ -63,7 +63,7 @@ func TestLogRunNoticeUsesCharmLogger(t *testing.T) {
 	})
 	log.SetDefault(logger)
 
-	logRunNotice("darwin-vz", "run-123", "using managed kernel asset my-kernel (cache hit)")
+	logExecutionNotice("darwin-vz", "run-123", "using managed kernel asset my-kernel (cache hit)")
 
 	out := buf.String()
 	if !strings.Contains(out, "using managed kernel asset my-kernel (cache hit)") {
@@ -72,7 +72,7 @@ func TestLogRunNoticeUsesCharmLogger(t *testing.T) {
 	if !strings.Contains(out, "backend=darwin-vz") {
 		t.Fatalf("expected backend field in logger output, got %q", out)
 	}
-	if !strings.Contains(out, "run_id=run-123") {
-		t.Fatalf("expected run_id field in logger output, got %q", out)
+	if !strings.Contains(out, "execution_id=run-123") {
+		t.Fatalf("expected execution_id field in logger output, got %q", out)
 	}
 }

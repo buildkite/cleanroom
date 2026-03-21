@@ -154,7 +154,7 @@ func TestSetupHostNetworkWithTapLookupDeletesStaleTapBeforeCreate(t *testing.T) 
 	t.Parallel()
 
 	runID := "run-12345"
-	tapName := tapNameFromRunID(runID)
+	tapName := tapNameFromExecutionID(runID)
 	staleTapExists := true
 
 	var calls [][]string

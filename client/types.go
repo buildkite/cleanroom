@@ -65,10 +65,12 @@ const (
 type ExecutionOptions = cleanroomv1.ExecutionOptions
 type CreateExecutionRequest = cleanroomv1.CreateExecutionRequest
 type CreateExecutionResponse = cleanroomv1.CreateExecutionResponse
-type OpenInteractiveExecutionRequest = cleanroomv1.OpenInteractiveExecutionRequest
-type OpenInteractiveExecutionResponse = cleanroomv1.OpenInteractiveExecutionResponse
+type AttachExecutionRequest = cleanroomv1.AttachExecutionRequest
+type AttachExecutionResponse = cleanroomv1.AttachExecutionResponse
 type GetExecutionRequest = cleanroomv1.GetExecutionRequest
 type GetExecutionResponse = cleanroomv1.GetExecutionResponse
+type InspectExecutionRequest = cleanroomv1.InspectExecutionRequest
+type InspectExecutionResponse = cleanroomv1.InspectExecutionResponse
 type CancelExecutionRequest = cleanroomv1.CancelExecutionRequest
 type CancelExecutionResponse = cleanroomv1.CancelExecutionResponse
 type WriteExecutionStdinRequest = cleanroomv1.WriteExecutionStdinRequest

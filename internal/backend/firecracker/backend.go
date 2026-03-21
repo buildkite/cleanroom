@@ -94,7 +94,7 @@ type sandboxInstance struct {
 	vmRootFSPath   string
 }
 
-const runObservabilityFile = "run-observability.json"
+const runObservabilityFile = "execution-observability.json"
 const vsockDialRetryInterval = 50 * time.Millisecond
 const preparedRuntimeRootFSVersion = "v1"
 const defaultPrivilegedHelperPath = "/usr/local/sbin/cleanroom-root-helper"
@@ -231,11 +231,11 @@ func (a *Adapter) Capabilities() map[string]bool {
 	}
 }
 
-func (a *Adapter) Run(ctx context.Context, req backend.RunRequest) (*backend.RunResult, error) {
+func (a *Adapter) Run(ctx context.Context, req backend.ExecutionRequest) (*backend.ExecutionResult, error) {
 	return a.run(ctx, req, backend.OutputStream{})
 }
 
-func (a *Adapter) RunStream(ctx context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+func (a *Adapter) RunStream(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 	return a.run(ctx, req, stream)
 }
 
@@ -290,7 +290,7 @@ func (a *Adapter) ProvisionSandbox(ctx context.Context, req backend.ProvisionReq
 	return nil
 }
 
-func (a *Adapter) RunInSandbox(ctx context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+func (a *Adapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 	sandboxID := strings.TrimSpace(req.SandboxID)
 	if sandboxID == "" {
 		return nil, errors.New("missing sandbox_id")
@@ -298,8 +298,8 @@ func (a *Adapter) RunInSandbox(ctx context.Context, req backend.RunRequest, stre
 	if len(req.Command) == 0 {
 		return nil, errors.New("missing command")
 	}
-	if strings.TrimSpace(req.RunID) == "" {
-		return nil, errors.New("missing run_id")
+	if strings.TrimSpace(req.ExecutionID) == "" {
+		return nil, errors.New("missing execution_id")
 	}
 
 	a.sandboxMu.Lock()
@@ -315,12 +315,12 @@ func (a *Adapter) RunInSandbox(ctx context.Context, req backend.RunRequest, stre
 	runStart := time.Now()
 	runDir := strings.TrimSpace(req.RunDir)
 	if runDir == "" {
-		if baseDir, err := paths.RunBaseDir(); err == nil {
-			runDir = filepath.Join(baseDir, req.RunID)
+		if baseDir, err := paths.ExecutionBaseDir(); err == nil {
+			runDir = filepath.Join(baseDir, req.ExecutionID)
 		}
 	}
 	observation := firecrackerRunObservation{
-		RunID:       req.RunID,
+		ExecutionID: req.ExecutionID,
 		Backend:     a.Name(),
 		LaunchedVM:  false,
 		ImageRef:    instance.ImageRef,
@@ -359,8 +359,8 @@ func (a *Adapter) RunInSandbox(ctx context.Context, req backend.RunRequest, stre
 		message = runResultMessage("guest command execution completed with guest-side error detail: " + guestResult.Error)
 	}
 
-	return &backend.RunResult{
-		RunID:       req.RunID,
+	return &backend.ExecutionResult{
+		ExecutionID: req.ExecutionID,
 		ExitCode:    guestResult.ExitCode,
 		LaunchedVM:  false,
 		PlanPath:    instance.ConfigPath,
@@ -782,13 +782,13 @@ func (a *Adapter) Doctor(_ context.Context, req backend.DoctorRequest) (*backend
 	return report, nil
 }
 
-func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
+func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 	runStart := time.Now()
 	observation := firecrackerRunObservation{
-		RunID:      req.RunID,
-		Backend:    a.Name(),
-		LaunchedVM: req.Launch,
-		ExitCode:   1,
+		ExecutionID: req.ExecutionID,
+		Backend:     a.Name(),
+		LaunchedVM:  req.Launch,
+		ExitCode:    1,
 	}
 
 	if req.Policy == nil {
@@ -808,11 +808,11 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 
 	runDir := req.RunDir
 	if runDir == "" {
-		baseDir, err := paths.RunBaseDir()
+		baseDir, err := paths.ExecutionBaseDir()
 		if err != nil {
 			return nil, fmt.Errorf("resolve run base directory: %w", err)
 		}
-		runDir = filepath.Join(baseDir, req.RunID)
+		runDir = filepath.Join(baseDir, req.ExecutionID)
 	}
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
 		return nil, err
@@ -858,8 +858,8 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 
 		observation.PlanPath = planPath
 		observation.RunDir = runDir
-		return &backend.RunResult{
-			RunID:       req.RunID,
+		return &backend.ExecutionResult{
+			ExecutionID: req.ExecutionID,
 			ExitCode:    0,
 			LaunchedVM:  false,
 			PlanPath:    planPath,
@@ -884,7 +884,7 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 	if err != nil {
 		return nil, err
 	}
-	logRunNotice(a.Name(), req.RunID, kernelNotice)
+	logExecutionNotice(a.Name(), req.ExecutionID, kernelNotice)
 
 	imageArtifact, err := a.ensureImageArtifact(ctx, req.Policy.ImageRef)
 	if err != nil {
@@ -927,7 +927,7 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 	networkRunBatch := func(ctx context.Context, commands [][]string) error {
 		return runRootCommandBatch(ctx, req.FirecrackerConfig, commands)
 	}
-	networkCfg, cleanupNetwork, err := setupHostNetwork(ctx, req.RunID, req.Policy.Allow, 0, networkRunCommand, networkRunBatch)
+	networkCfg, cleanupNetwork, err := setupHostNetwork(ctx, req.ExecutionID, req.Policy.Allow, 0, networkRunCommand, networkRunBatch)
 	if err != nil {
 		return nil, fmt.Errorf("setup host network: %w", err)
 	}
@@ -978,7 +978,7 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 			{
 				IfaceID:     "eth0",
 				HostDevName: networkCfg.TapName,
-				GuestMac:    guestMACFromRunID(req.RunID),
+				GuestMac:    guestMACFromExecutionID(req.ExecutionID),
 			},
 		},
 		Entropy: &entropyConfig{},
@@ -1080,8 +1080,8 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 
 	timingSummary := fmt.Sprintf("timings boot=%s vsock_wait=%s exec=%s", vmReady, guestTiming.WaitForAgent, guestTiming.CommandRun)
 
-	return &backend.RunResult{
-		RunID:       req.RunID,
+	return &backend.ExecutionResult{
+		ExecutionID: req.ExecutionID,
 		ExitCode:    guestResult.ExitCode,
 		LaunchedVM:  true,
 		PlanPath:    cfgPath,
@@ -1095,7 +1095,7 @@ func (a *Adapter) run(ctx context.Context, req backend.RunRequest, stream backen
 }
 
 type firecrackerRunObservation struct {
-	RunID              string `json:"run_id"`
+	ExecutionID        string `json:"execution_id"`
 	Backend            string `json:"backend"`
 	LaunchedVM         bool   `json:"launched_vm"`
 	ImageRef           string `json:"image_ref,omitempty"`
@@ -1604,7 +1604,7 @@ func (a *Adapter) launchSandboxVMFromRootFS(ctx context.Context, sandboxID strin
 		NetworkInterfaces: []networkInterface{{
 			IfaceID:     "eth0",
 			HostDevName: networkCfg.TapName,
-			GuestMac:    guestMACFromRunID(sandboxID),
+			GuestMac:    guestMACFromExecutionID(sandboxID),
 		}},
 		Entropy: &entropyConfig{},
 	}
@@ -1955,7 +1955,7 @@ func setupHostNetworkWithDeps(ctx context.Context, runID string, allow []policy.
 }
 
 func setupHostNetworkWithTapLookup(ctx context.Context, runID string, allow []policy.AllowRule, gatewayPort int, lookup ipLookupFunc, interfaceByName interfaceLookupFunc, runCommand rootCommandFunc, runBatchCommand rootCommandBatchFunc) (hostNetworkConfig, func(), error) {
-	tapName := tapNameFromRunID(runID)
+	tapName := tapNameFromExecutionID(runID)
 	hostIP, guestIP := hostGuestIPs(runID)
 	hostCIDR := hostIP + "/24"
 	guestCIDR := guestIP + "/32"
@@ -2267,7 +2267,7 @@ func helperVersion(ctx context.Context, cfg backend.FirecrackerConfig) (string, 
 	return strings.TrimSpace(string(out)), nil
 }
 
-func logRunNotice(backendName, runID, notice string) {
+func logExecutionNotice(backendName, runID, notice string) {
 	msg := strings.TrimSpace(notice)
 	if msg == "" {
 		return
@@ -2277,7 +2277,7 @@ func logRunNotice(backendName, runID, notice string) {
 		log.Printf("%s: %s", backendName, msg)
 		return
 	}
-	log.Printf("%s run_id=%s: %s", backendName, id, msg)
+	log.Printf("%s execution_id=%s: %s", backendName, id, msg)
 }
 
 func runRootCommand(ctx context.Context, cfg backend.FirecrackerConfig, args ...string) error {
@@ -2421,7 +2421,7 @@ func sanitizeKernelArgValue(value string) string {
 	return b.String()
 }
 
-func tapNameFromRunID(runID string) string {
+func tapNameFromExecutionID(runID string) string {
 	filtered := strings.Map(func(r rune) rune {
 		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
 			return r
@@ -2453,7 +2453,7 @@ func hostGuestIPs(runID string) (string, string) {
 	return hostIP, guestIP
 }
 
-func guestMACFromRunID(runID string) string {
+func guestMACFromExecutionID(runID string) string {
 	sum := sha1.Sum([]byte(runID))
 	return fmt.Sprintf("02:fc:%02x:%02x:%02x:%02x", sum[0], sum[1], sum[2], sum[3])
 }

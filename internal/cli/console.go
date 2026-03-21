@@ -91,6 +91,18 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) (runErr error) {
 		printedSandboxID = true
 		return nil
 	}
+	executionID := ""
+	printedExecutionID := false
+	printExecutionID := func() error {
+		if printedExecutionID {
+			return nil
+		}
+		if err := writeExecutionID(os.Stderr, executionID); err != nil {
+			return err
+		}
+		printedExecutionID = true
+		return nil
+	}
 	defer func() {
 		if !createdSandbox || !c.Keep {
 			return
@@ -101,6 +113,35 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) (runErr error) {
 				return
 			}
 			runErr = errors.Join(runErr, err)
+		}
+	}()
+	defer func() {
+		if runErr == nil {
+			return
+		}
+		var extraErr error
+		if err := printSandboxID(); err != nil {
+			extraErr = errors.Join(extraErr, err)
+		}
+		if err := printExecutionID(); err != nil {
+			extraErr = errors.Join(extraErr, err)
+		}
+		if sandboxID != "" && executionID != "" {
+			if err := writeExecutionInspectCommand(os.Stderr, sandboxID, executionID); err != nil {
+				extraErr = errors.Join(extraErr, err)
+			}
+			resp, err := client.InspectExecution(context.Background(), &cleanroomv1.InspectExecutionRequest{
+				SandboxId:   sandboxID,
+				ExecutionId: executionID,
+			})
+			if err == nil {
+				if err := writeArtifactsDir(os.Stderr, resp.GetArtifactsDir()); err != nil {
+					extraErr = errors.Join(extraErr, err)
+				}
+			}
+		}
+		if extraErr != nil {
+			runErr = errors.Join(runErr, extraErr)
 		}
 	}()
 	if c.PrintSandboxID {
@@ -129,12 +170,12 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) (runErr error) {
 	if err != nil {
 		return fmt.Errorf("create execution: %w", err)
 	}
-	executionID := createExecutionResp.GetExecution().GetExecutionId()
+	executionID = createExecutionResp.GetExecution().GetExecutionId()
 	logger.Debug("console execution started", "sandbox_id", sandboxID, "execution_id", executionID)
 
 	stdinFD := int(os.Stdin.Fd())
 	initialCols, initialRows := attachTTYSize(stdinFD)
-	openResp, err := client.OpenInteractiveExecution(context.Background(), &cleanroomv1.OpenInteractiveExecutionRequest{
+	openResp, err := client.AttachExecution(context.Background(), &cleanroomv1.AttachExecutionRequest{
 		SandboxId:   sandboxID,
 		ExecutionId: executionID,
 		InitialCols: initialCols,
@@ -144,7 +185,7 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) (runErr error) {
 		if isExecutionNoLongerActiveErr(err) {
 			exitCode, haveExitCode, replayErr := replayExecutionHistory(client, sandboxID, executionID, ctx.Stdout, os.Stderr)
 			if replayErr != nil {
-				return fmt.Errorf("open interactive execution: %w", err)
+				return fmt.Errorf("attach interactive console: %w", err)
 			}
 			if !haveExitCode {
 				if fetchedExitCode, ok := getFinalExecutionExitCode(client, sandboxID, executionID); ok {
@@ -160,7 +201,7 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) (runErr error) {
 			}
 			return nil
 		}
-		return fmt.Errorf("open interactive execution: %w", err)
+		return fmt.Errorf("attach interactive console: %w", err)
 	}
 	controlEndpoint, err := endpoint.Resolve(host)
 	if err != nil {

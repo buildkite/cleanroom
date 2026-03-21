@@ -96,7 +96,7 @@ The tools above use different isolation technologies. This section covers each b
 
 [Firecracker](https://github.com/firecracker-microvm/firecracker) is a microVM monitor purpose-built for secure multi-tenant workloads. Minimal device model, fast boot, strong isolation boundary. Network model uses per-VM TAP interfaces and host firewall rules, which maps directly to deny-by-default enforcement.
 
-Cleanroom uses Firecracker as the primary Linux backend. The backend is built around per-run TAP interfaces, host iptables FORWARD rules, generated machine JSON, and vsock guest-agent RPC.
+Cleanroom uses Firecracker as the primary Linux backend. The backend is built around per-execution TAP interfaces, host iptables FORWARD rules, generated machine JSON, and vsock guest-agent RPC.
 
 Used by: E2B, Sprites, Matchlock, Cleanroom.
 

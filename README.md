@@ -382,10 +382,20 @@ When `rootfs` is unset, Cleanroom derives one from `sandbox.image.ref` and injec
 ```bash
 cleanroom doctor              # check host prerequisites
 cleanroom doctor --json       # machine-readable with capabilities map
-cleanroom status --last-run   # inspect most recent run
-cleanroom status --run-id <id>
+cleanroom sandbox inspect <sandbox-id>
+cleanroom execution inspect --sandbox-id <sandbox-id> --last
+cleanroom execution inspect --sandbox-id <sandbox-id> <execution-id>
+cleanroom status --last       # browse the newest retained execution artifacts
+cleanroom status --execution-id <execution-id>
 cleanroom version
 ```
+
+Failure flow:
+
+- `cleanroom exec` and `cleanroom console` print `sandbox_id` and `execution_id` on failure when available.
+- `cleanroom sandbox inspect <sandbox-id>` shows sandbox state plus `last_execution_id` and `active_execution_id`.
+- `cleanroom execution inspect ...` is the control-plane view for execution status, retained stdout/stderr, image metadata, and observability.
+- `cleanroom status ...` is the local artifact view under `$XDG_STATE_HOME/cleanroom/executions`.
 
 ## Further reading
 

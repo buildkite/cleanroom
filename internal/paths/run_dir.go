@@ -4,15 +4,15 @@ import (
 	"path/filepath"
 )
 
-// RunBaseDir resolves the default base directory for run artifacts.
+// ExecutionBaseDir resolves the default base directory for execution artifacts.
 // Preference order:
-// 1. $XDG_STATE_HOME/cleanroom/runs
-// 2. ~/.local/state/cleanroom/runs
-// 3. $XDG_RUNTIME_DIR/cleanroom/runs
-func RunBaseDir() (string, error) {
+// 1. $XDG_STATE_HOME/cleanroom/executions
+// 2. ~/.local/state/cleanroom/executions
+// 3. $XDG_RUNTIME_DIR/cleanroom/executions
+func ExecutionBaseDir() (string, error) {
 	base, err := StateBaseDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(base, "runs"), nil
+	return filepath.Join(base, "executions"), nil
 }

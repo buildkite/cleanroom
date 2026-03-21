@@ -491,15 +491,15 @@ else
   echo "gateway server not started (no log entry found) — skipping reachability test"
 fi
 
-echo "--- :bar_chart: Run observability present"
-./dist/cleanroom status --last-run | tee "$tmpdir/status.out"
-if ! grep -q 'run-observability.json' "$tmpdir/status.out"; then
-  echo "expected run-observability.json reference in status output" >&2
+echo "--- :bar_chart: Execution observability present"
+./dist/cleanroom status --last | tee "$tmpdir/status.out"
+if ! grep -q 'execution-observability.json' "$tmpdir/status.out"; then
+  echo "expected execution-observability.json reference in status output" >&2
   exit 1
 fi
 
 obs_file="$(
-  find "$XDG_STATE_HOME"/cleanroom/runs -name run-observability.json -type f -print 2>/dev/null \
+  find "$XDG_STATE_HOME"/cleanroom/executions -name execution-observability.json -type f -print 2>/dev/null \
     | while IFS= read -r path; do
         stat -c '%Y %n' "$path"
       done \
@@ -519,7 +519,7 @@ if [[ -n "$obs_file" && -f "$obs_file" ]]; then
     sed -nE "s/.*\"${key}\"[[:space:]]*:[[:space:]]*\"([^\"]+)\".*/\1/p" "$file" | head -n 1
   }
 
-  run_id="$(extract_json_string run_id "$obs_file")"
+  execution_id="$(extract_json_string execution_id "$obs_file")"
   total_ms="$(extract_json_number total_ms "$obs_file")"
   policy_resolve_ms="$(extract_json_number policy_resolve_ms "$obs_file")"
   rootfs_copy_ms="$(extract_json_number rootfs_copy_ms "$obs_file")"
@@ -535,7 +535,7 @@ if [[ -n "$obs_file" && -f "$obs_file" ]]; then
     cat > "$annotation_file" <<EOF
 ### Firecracker E2E Observability
 
-- run id: ${run_id:-n/a}
+- execution id: ${execution_id:-n/a}
 
 | Metric | Value (ms) |
 | --- | ---: |

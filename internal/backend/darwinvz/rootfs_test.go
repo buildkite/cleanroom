@@ -21,7 +21,7 @@ func TestResolveRootFSPathUsesConfiguredRootFS(t *testing.T) {
 	}
 
 	adapter := New()
-	req := backend.RunRequest{
+	req := backend.ExecutionRequest{
 		Policy: &policy.CompiledPolicy{
 			ImageRef:    "ghcr.io/buildkite/cleanroom-base/alpine@sha256:abc",
 			ImageDigest: "sha256:abc",
@@ -65,7 +65,7 @@ func TestResolveRootFSPathDerivesFromPolicyImageRef(t *testing.T) {
 		}, nil
 	}
 
-	req := backend.RunRequest{
+	req := backend.ExecutionRequest{
 		Policy: &policy.CompiledPolicy{
 			ImageRef: "ghcr.io/buildkite/cleanroom-base/alpine@sha256:def",
 		},
@@ -93,7 +93,7 @@ func TestResolveRootFSPathRequiresImageRefWhenRootFSUnset(t *testing.T) {
 	t.Parallel()
 
 	adapter := New()
-	req := backend.RunRequest{
+	req := backend.ExecutionRequest{
 		Policy: &policy.CompiledPolicy{},
 	}
 	_, _, _, _, err := adapter.resolveRootFSPath(context.Background(), req)
@@ -115,7 +115,7 @@ func TestResolveRootFSPathFallsBackWhenConfiguredRootFSMissing(t *testing.T) {
 		}, nil
 	}
 
-	req := backend.RunRequest{
+	req := backend.ExecutionRequest{
 		Policy: &policy.CompiledPolicy{
 			ImageRef: "ghcr.io/buildkite/cleanroom-base/alpine@sha256:xyz",
 		},
