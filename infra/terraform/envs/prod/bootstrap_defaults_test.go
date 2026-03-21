@@ -97,6 +97,8 @@ func TestProdBootstrapInstallsPinnedReleaseAndBootstrapRunner(t *testing.T) {
 	requireContains(t, scriptPath, "CLEANROOM_INSTALL_SCRIPT_REF")
 	requireContains(t, scriptPath, "apply_prod_tfvars_overrides \"$repo_root\"")
 	requireContains(t, scriptPath, "prod.${AWS_REGION}.tfvars")
+	requireContains(t, scriptPath, "fetch_repo_checkout \"$bootstrap_repo_url\" \"$bootstrap_repo_ref\"")
+	requireContains(t, scriptPath, "if [ \"$REPO_URL\" != \"$bootstrap_repo_url\" ] || [ \"$REPO_REF\" != \"$bootstrap_repo_ref\" ]; then")
 	requireNotContains(t, scriptPath, "CLEANROOM_REPO='$RELEASE_REPO'")
 	requireNotContains(t, scriptPath, "export CLEANROOM_REPO=\"$CLEANROOM_REPO\"")
 	requireContains(t, scriptPath, "daemon install --force --log-level info")
