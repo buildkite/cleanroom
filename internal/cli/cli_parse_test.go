@@ -162,6 +162,18 @@ func TestSandboxCreateParsesDangerouslyAllowAll(t *testing.T) {
 	}
 }
 
+func TestSandboxCreateParsesDocker(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"sandbox", "create", "--docker"}); err != nil {
+		t.Fatalf("parse sandbox create --docker returned error: %v", err)
+	}
+	if !c.Sandbox.Create.Docker {
+		t.Fatal("expected sandbox create docker flag to be set")
+	}
+}
+
 func TestSandboxCreateRejectsChdirFlag(t *testing.T) {
 	c := &CLI{}
 	parser := newParserForTest(t, c)

@@ -26,6 +26,7 @@ type SandboxCreateCommand struct {
 	Backend             string `help:"Execution backend (defaults to runtime config or host default)"`
 	From                string `name:"from" help:"Create the sandbox from an existing snapshot ID"`
 	Image               string `help:"Override sandbox image ref (tag, digest, or local Docker image)"`
+	Docker              bool   `help:"Enable the guest Docker service for this repo-agnostic sandbox"`
 	DangerouslyAllowAll bool   `name:"dangerously-allow-all" help:"Disable network egress filtering for this repo-agnostic sandbox"`
 	LaunchSeconds       int64  `help:"VM boot/guest-agent readiness timeout in seconds"`
 	JSON                bool   `help:"Print sandbox as JSON"`
@@ -201,7 +202,7 @@ func (c *SandboxTerminateCommand) Run(ctx *runtimeContext) error {
 	return err
 }
 
-func runSandboxCreate(ctx *runtimeContext, connectFlags clientFlags, backend, from, imageRefOverride string, dangerouslyAllowAll bool, launchSeconds int64, outputJSON bool) error {
+func runSandboxCreate(ctx *runtimeContext, connectFlags clientFlags, backend, from, imageRefOverride string, requireDockerService, dangerouslyAllowAll bool, launchSeconds int64, outputJSON bool) error {
 	resolvedHost := connectFlags.resolvedHost(ctx.Config)
 	client, err := connectFlags.connect(ctx)
 	if err != nil {
@@ -216,6 +217,9 @@ func runSandboxCreate(ctx *runtimeContext, connectFlags clientFlags, backend, fr
 		}
 		if strings.TrimSpace(backend) != "" {
 			return errors.New("--backend cannot be used with --from")
+		}
+		if requireDockerService {
+			return errors.New("--docker cannot be used with --from")
 		}
 		if dangerouslyAllowAll {
 			return errors.New("--dangerously-allow-all cannot be used with --from")
@@ -233,7 +237,7 @@ func runSandboxCreate(ctx *runtimeContext, connectFlags clientFlags, backend, fr
 		}
 		sandbox = resp.GetSandbox()
 	} else {
-		compiled, err := defaultSandboxCreatePolicy(resolvedHost, imageRefOverride, dangerouslyAllowAll)
+		compiled, err := defaultSandboxCreatePolicy(resolvedHost, imageRefOverride, requireDockerService, dangerouslyAllowAll)
 		if err != nil {
 			return err
 		}
@@ -259,12 +263,12 @@ func runSandboxCreate(ctx *runtimeContext, connectFlags clientFlags, backend, fr
 }
 
 func (c *SandboxCreateCommand) Run(ctx *runtimeContext) error {
-	return runSandboxCreate(ctx, c.clientFlags, c.Backend, c.From, c.Image, c.DangerouslyAllowAll, c.LaunchSeconds, c.JSON)
+	return runSandboxCreate(ctx, c.clientFlags, c.Backend, c.From, c.Image, c.Docker, c.DangerouslyAllowAll, c.LaunchSeconds, c.JSON)
 }
 
 func (c *CreateCommand) Run(ctx *runtimeContext) error {
 	if strings.TrimSpace(c.From) != "" {
-		return runSandboxCreate(ctx, c.clientFlags, c.Backend, c.From, c.Image, false, c.LaunchSeconds, c.JSON)
+		return runSandboxCreate(ctx, c.clientFlags, c.Backend, c.From, c.Image, false, false, c.LaunchSeconds, c.JSON)
 	}
 	host := c.resolvedHost(ctx.Config)
 	client, err := c.connect(ctx)
@@ -353,7 +357,7 @@ func createSandboxWithPolicy(
 	return sandboxID, sandbox, nil
 }
 
-func defaultSandboxCreatePolicy(host, imageRefOverride string, dangerouslyAllowAll bool) (*policy.CompiledPolicy, error) {
+func defaultSandboxCreatePolicy(host, imageRefOverride string, requireDockerService, dangerouslyAllowAll bool) (*policy.CompiledPolicy, error) {
 	imageRefOverride = strings.TrimSpace(imageRefOverride)
 	resolvedRef := ""
 	if imageRefOverride == "" {
@@ -383,6 +387,11 @@ func defaultSandboxCreatePolicy(host, imageRefOverride string, dangerouslyAllowA
 		Version:        1,
 		ImageRef:       resolvedRef,
 		NetworkDefault: networkDefault,
+		Services: &cleanroomv1.PolicyServices{
+			Docker: &cleanroomv1.PolicyDockerService{
+				Required: requireDockerService,
+			},
+		},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("build sandbox policy: %w", err)

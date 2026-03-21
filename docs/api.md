@@ -270,11 +270,19 @@ Expose a server mode and API-driven commands in the same binary.
 ### 9.2 Sandbox commands
 
 - `cleanroom sandbox create`
+- `cleanroom sandbox create --from <snapshot-id>`
 - `cleanroom sandbox inspect <sandbox-id>`
 - `cleanroom sandbox ls`
 - `cleanroom sandbox rm <sandbox-id>`
 
 `sandbox inspect` is the primary way to discover a sandbox's `last_execution_id` and `active_execution_id`.
+
+`cleanroom sandbox create` is repo-agnostic. Without `--from`, it does not
+inspect the local git repository or read `cleanroom.yaml`; it synthesizes a
+built-in policy from the selected image ref, uses deny-by-default networking by
+default, enables the guest Docker service with `--docker`, and disables egress
+filtering only when `--dangerously-allow-all` is set. `--image`, `--docker`,
+and `--dangerously-allow-all` cannot be combined with `--from`.
 
 ### 9.3 Execution commands
 
@@ -304,13 +312,13 @@ Additional command forms:
 
 Behavior contract:
 1. Resolve server endpoint (`--host`, `CLEANROOM_HOST`, context, default unix socket).
-2. Resolve and compile repository policy.
-3. If repo-aware bootstrap is enabled, resolve the current git remote and
-   committed `HEAD`.
-4. Select sandbox mode:
+2. Select sandbox mode:
    - `--in <id>` reuses an existing sandbox
    - `--from <snapshot-id>` creates a sandbox from a snapshot
    - otherwise create a sandbox from policy
+3. When creating a sandbox from policy, resolve and compile repository policy.
+4. If repo-aware bootstrap is enabled for that policy-created sandbox, resolve
+   the current git remote and committed `HEAD`.
 5. For repo-aware top-level commands, materialize that checkout in the sandbox
    and default the guest working directory to `repository.path`.
 6. Create execution with explicit kind and TTY options.
@@ -326,9 +334,11 @@ Behavior contract:
 
 Notes:
 - `cleanroom create`, `cleanroom exec`, and `cleanroom console` are the
-  repo-aware UX layer.
+  repo-aware UX layer by default.
+- `cleanroom create --from <snapshot-id>` follows the snapshot path and does
+  not read repository policy.
 - `cleanroom sandbox create` stays generic and does not inspect the local git
-  repository.
+  repository or read `cleanroom.yaml`.
 - Dirty working trees warn and use committed `HEAD`; uncommitted changes are
   not copied into the sandbox.
 

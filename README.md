@@ -16,7 +16,7 @@ Agent sandboxing tools are [proliferating fast](docs/research.md). Most focus on
 
 **Standard OCI images.** Use any OCI image from any registry as your sandbox base. Digest-pinned in policy for reproducibility. No custom VM image format or vendor-specific base images. Same image works across backends.
 
-**Docker inside the sandbox.** Enable a guest Docker daemon with a single policy flag (`services.docker.required: true`). Build and run containers inside the microVM.
+**Docker inside the sandbox.** Enable a guest Docker daemon with a policy flag (`services.docker.required: true`) or explicitly for a repo-agnostic sandbox with `cleanroom sandbox create --docker`. Build and run containers inside the microVM.
 
 **Coming soon:** package registry proxy with lockfile enforcement, Docker pull caching, content caching for hermetic offline builds, and structured audit logging. See the [spec](docs/spec.md) for the full roadmap.
 
@@ -125,6 +125,8 @@ deny-by-default policy and resolves
 `ghcr.io/buildkite/cleanroom-base/alpine:latest` to a digest unless `--image`
 is provided.
 
+To start the guest Docker service for a repo-agnostic sandbox, pass `--docker`.
+
 To disable egress filtering for a repo-agnostic sandbox, pass
 `--dangerously-allow-all`.
 
@@ -229,7 +231,7 @@ With the default behavior:
 - `cleanroom exec -- <cmd>` checks out the repo, runs `<cmd>` from `/workspace`, and tears the sandbox down unless `--keep` is set
 - `cleanroom console -- bash` opens a shell in `/workspace` and tears the sandbox down unless `--keep` is set
 - dirty working trees print a warning and use committed `HEAD`; uncommitted changes are not copied in
-- `cleanroom sandbox create` remains explicit and repo-agnostic, using a built-in policy instead of repo policy (deny-by-default unless `--dangerously-allow-all` is set)
+- `cleanroom sandbox create` remains explicit and repo-agnostic, using a built-in policy instead of repo policy (default image, deny-by-default networking unless `--dangerously-allow-all` is set, optional guest Docker via `--docker`)
 
 Repository bootstrap needs the remote host in `sandbox.network.allow`, for
 example:

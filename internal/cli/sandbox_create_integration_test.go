@@ -133,6 +133,42 @@ func TestSandboxCreateIntegrationDangerouslyAllowAllSetsAllowNetworkDefault(t *t
 	}
 }
 
+func TestSandboxCreateIntegrationDockerRequiresGuestService(t *testing.T) {
+	restore := stubPolicyUpdateResolver(t, func(_ context.Context, source string) (string, error) {
+		if got, want := source, defaultBumpRefSource; got != want {
+			t.Fatalf("unexpected default sandbox image source: got %q want %q", got, want)
+		}
+		return testImageOverrideRef, nil
+	})
+	defer restore()
+
+	adapter := &snapshotIntegrationAdapter{}
+	host, _ := startIntegrationServer(t, adapter)
+
+	outcome := runSandboxCreateWithCapture(SandboxCreateCommand{
+		clientFlags: clientFlags{Host: host},
+		Docker:      true,
+	}, runtimeContext{
+		CWD:    t.TempDir(),
+		Loader: failingLoader{},
+	})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err != nil {
+		t.Fatalf("SandboxCreateCommand.Run returned error: %v", outcome.err)
+	}
+	if got := strings.TrimSpace(outcome.stdout); got == "" {
+		t.Fatalf("expected sandbox id output, got %q", outcome.stdout)
+	}
+	if adapter.provisionReq.Policy == nil {
+		t.Fatal("expected provisioned policy")
+	}
+	if !adapter.provisionReq.Policy.Services.Docker.Required {
+		t.Fatal("expected provisioned docker service to be required")
+	}
+}
+
 func TestSandboxCreateIntegrationRejectsDangerouslyAllowAllWithSnapshot(t *testing.T) {
 	outcome := runSandboxCreateWithCapture(SandboxCreateCommand{
 		From:                "snap_123",
@@ -148,6 +184,25 @@ func TestSandboxCreateIntegrationRejectsDangerouslyAllowAllWithSnapshot(t *testi
 		t.Fatal("expected SandboxCreateCommand.Run to fail when both --from and --dangerously-allow-all are set")
 	}
 	if got, want := outcome.err.Error(), "--dangerously-allow-all cannot be used with --from"; !strings.Contains(got, want) {
+		t.Fatalf("expected error to contain %q, got %q", want, got)
+	}
+}
+
+func TestSandboxCreateIntegrationRejectsDockerWithSnapshot(t *testing.T) {
+	outcome := runSandboxCreateWithCapture(SandboxCreateCommand{
+		From:   "snap_123",
+		Docker: true,
+	}, runtimeContext{
+		CWD:    t.TempDir(),
+		Loader: failingLoader{},
+	})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err == nil {
+		t.Fatal("expected SandboxCreateCommand.Run to fail when both --from and --docker are set")
+	}
+	if got, want := outcome.err.Error(), "--docker cannot be used with --from"; !strings.Contains(got, want) {
 		t.Fatalf("expected error to contain %q, got %q", want, got)
 	}
 }

@@ -217,7 +217,14 @@ Meaning:
   - they materialize that checkout inside the sandbox before the command runs
   - they start commands in `repository.path`
 - `cleanroom sandbox create` remains the generic low-level surface and does not
-  infer repository state from the current working tree.
+  infer repository state from the current working tree or read `cleanroom.yaml`.
+- Without `--from`, `cleanroom sandbox create` synthesizes a repo-agnostic
+  policy using the selected image ref, deny-by-default networking by default,
+  optional guest Docker service enablement via `--docker`, and optional
+  unrestricted outbound networking via `--dangerously-allow-all`.
+- With `--from <snapshot-id>`, `cleanroom sandbox create` restores a sandbox
+  from the snapshot and does not accept create-time policy override flags such
+  as `--image`, `--docker`, or `--dangerously-allow-all`.
 
 ### 5.4.1 `cleanroom exec` behavior contract (normative)
 - `cleanroom exec` must:
