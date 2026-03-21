@@ -35,11 +35,12 @@ curl -fsSL https://raw.githubusercontent.com/buildkite/cleanroom/main/scripts/in
   bash -s -- --version vX.Y.Z
 ```
 
-By default this installs to `/usr/local/bin`. Override with `--install-dir` or `CLEANROOM_INSTALL_DIR`.
+By default the install prefix is `~/.local` for non-root installs and `/usr/local` for root installs. `cleanroom` is installed to `${prefix}/bin/cleanroom` and runtime assets are installed under `${prefix}/libexec/cleanroom`. Override the prefix with `--prefix` or `CLEANROOM_PREFIX`.
 
-Install the locally built binaries from this checkout into `/usr/local/bin`:
+Install the locally built staged runtime from this checkout:
 
 ```bash
+mise run install        # installs into ~/.local
 mise run install:global
 ```
 
@@ -363,7 +364,7 @@ backends:
   firecracker:
     binary_path: firecracker
     kernel_image: ""    # auto-managed when unset
-    privileged_helper_path: /usr/local/sbin/cleanroom-root-helper
+    privileged_helper_path: /usr/local/libexec/cleanroom/cleanroom-root-helper
     vcpus: 2
     memory_mib: 1024
     launch_seconds: 30
@@ -388,7 +389,7 @@ When `rootfs` is unset, Cleanroom derives one from `sandbox.image.ref` and injec
 - Firecracker binary installed
 - `mkfs.ext4` for OCI-to-ext4 materialization
 - `debugfs` for runtime rootfs preparation
-- `sudo -n` access to `/usr/local/sbin/cleanroom-root-helper` for host networking
+- `sudo -n` access to `/usr/local/libexec/cleanroom/cleanroom-root-helper`
 
 **macOS ([darwin-vz](docs/backend/darwin-vz.md)):**
 - `cleanroom-darwin-vz` helper signed with `com.apple.security.virtualization` entitlement

@@ -457,7 +457,7 @@ AGENT_VERSION="${CLEANROOM_BUILDKITE_AGENT_VERSION:-3.119.1}"
 INSTALL_FIRECRACKER="${CLEANROOM_INSTALL_FIRECRACKER:-true}"
 FIRECRACKER_VERSION="${CLEANROOM_FIRECRACKER_VERSION:-1.14.2}"
 KERNEL_IMAGE_URL="${CLEANROOM_KERNEL_IMAGE_URL:-https://s3.amazonaws.com/spec.ccfc.min/img/quickstart_guide/x86_64/kernels/vmlinux.bin}"
-HELPER_INSTALL_PATH="${CLEANROOM_HELPER_INSTALL_PATH:-/usr/local/sbin/cleanroom-root-helper}"
+HELPER_INSTALL_PATH="${CLEANROOM_HELPER_INSTALL_PATH:-/usr/local/libexec/cleanroom/cleanroom-root-helper}"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"

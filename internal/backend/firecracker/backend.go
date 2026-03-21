@@ -33,6 +33,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/imagemgr"
 	"github.com/buildkite/cleanroom/internal/paths"
 	"github.com/buildkite/cleanroom/internal/policy"
+	"github.com/buildkite/cleanroom/internal/runtimeassets"
 	"github.com/buildkite/cleanroom/internal/volumestore"
 	"github.com/buildkite/cleanroom/internal/vsockexec"
 	fcvsock "github.com/firecracker-microvm/firecracker-go-sdk/vsock"
@@ -100,7 +101,7 @@ type sandboxInstance struct {
 const runObservabilityFile = "execution-observability.json"
 const vsockDialRetryInterval = 50 * time.Millisecond
 const preparedRuntimeRootFSVersion = "v2-debugfs"
-const defaultPrivilegedHelperPath = "/usr/local/sbin/cleanroom-root-helper"
+const defaultPrivilegedHelperPath = "/usr/local/libexec/cleanroom/cleanroom-root-helper"
 const helperCapabilityFirecrackerNetwork = "firecracker-network"
 const helperCapabilityFirecrackerZFS = "firecracker-zfs"
 const defaultDownloadMaxBytes int64 = 10 * 1024 * 1024
@@ -1438,17 +1439,25 @@ func (a *Adapter) getGuestAgentBinary() (string, string, error) {
 }
 
 func discoverGuestAgentBinary() (string, error) {
-	if p, err := exec.LookPath("cleanroom-guest-agent"); err == nil {
-		return p, nil
-	}
-	self, err := os.Executable()
-	if err == nil {
-		candidate := filepath.Join(filepath.Dir(self), "cleanroom-guest-agent")
-		if info, statErr := os.Stat(candidate); statErr == nil && !info.IsDir() {
-			return candidate, nil
-		}
-	}
-	return "", errors.New("cleanroom-guest-agent binary not found in PATH; run `mise run install` first")
+	return discoverGuestAgentBinaryWith(
+		runtime.GOARCH,
+		exec.LookPath,
+		os.Executable,
+		os.Getwd,
+		os.Stat,
+		nil,
+	)
+}
+
+func discoverGuestAgentBinaryWith(
+	goarch string,
+	lookPath func(string) (string, error),
+	executable func() (string, error),
+	getwd func() (string, error),
+	stat func(string) (os.FileInfo, error),
+	validate func(string) (bool, error),
+) (string, error) {
+	return runtimeassets.ResolveLinuxGuestAgentBinaryWith(goarch, lookPath, executable, getwd, stat, validate)
 }
 
 func hashFileSHA256(path string) (string, error) {
@@ -2352,11 +2361,23 @@ func resolveForwardRulesWithLookup(ctx context.Context, allow []policy.AllowRule
 }
 
 func resolvePrivilegedHelperPath(cfg backend.FirecrackerConfig) string {
+	return resolvePrivilegedHelperPathWith(cfg, os.Executable, os.Stat)
+}
+
+func resolvePrivilegedHelperPathWith(
+	cfg backend.FirecrackerConfig,
+	executable func() (string, error),
+	stat func(string) (os.FileInfo, error),
+) string {
 	helperPath := strings.TrimSpace(cfg.PrivilegedHelperPath)
-	if helperPath == "" {
-		helperPath = defaultPrivilegedHelperPath
+	if helperPath != "" {
+		return helperPath
 	}
-	return helperPath
+	candidates := runtimeassets.InstalledLibexecCandidates(executable, runtimeassets.RootHelperName)
+	if path, err := runtimeassets.ResolveFirstCandidate(candidates, stat, nil); err == nil {
+		return path
+	}
+	return defaultPrivilegedHelperPath
 }
 
 func helperRequiredCapabilities(cfg backend.FirecrackerConfig) []string {

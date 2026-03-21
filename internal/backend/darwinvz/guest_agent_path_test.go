@@ -5,7 +5,10 @@ package darwinvz
 import (
 	"errors"
 	"os"
+	"path/filepath"
 	"testing"
+
+	"github.com/buildkite/cleanroom/internal/runtimeassets"
 )
 
 func TestDiscoverGuestAgentBinaryUsesAncestorDistBeforePATH(t *testing.T) {
@@ -41,6 +44,43 @@ func TestDiscoverGuestAgentBinaryUsesAncestorDistBeforePATH(t *testing.T) {
 	}
 }
 
+func TestDiscoverGuestAgentBinaryUsesStagedDistBeforeLegacyDistAndPATH(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	repoRoot := filepath.Join(tmp, "repo")
+	cwd := filepath.Join(repoRoot, "nested", "workdir")
+	staged := filepath.Join(repoRoot, "dist", runtimeassets.HostStageDirName("darwin", "arm64"), "libexec", "cleanroom", "cleanroom-guest-agent-linux-arm64")
+	legacy := filepath.Join(repoRoot, "dist", "cleanroom-guest-agent-linux-arm64")
+	if err := os.MkdirAll(cwd, 0o755); err != nil {
+		t.Fatalf("mkdir workdir: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(staged), 0o755); err != nil {
+		t.Fatalf("mkdir staged dist dir: %v", err)
+	}
+	if err := os.WriteFile(staged, []byte("binary"), 0o755); err != nil {
+		t.Fatalf("write staged guest agent: %v", err)
+	}
+	if err := os.WriteFile(legacy, []byte("binary"), 0o755); err != nil {
+		t.Fatalf("write legacy guest agent: %v", err)
+	}
+
+	got, err := discoverGuestAgentBinaryWith(
+		"arm64",
+		func(string) (string, error) { return "/usr/local/bin/cleanroom-guest-agent-linux-arm64", nil },
+		func() (string, error) { return "", errors.New("no executable") },
+		func() (string, error) { return cwd, nil },
+		os.Stat,
+		func(path string) (bool, error) { return path == staged, nil },
+	)
+	if err != nil {
+		t.Fatalf("discoverGuestAgentBinaryWith returned error: %v", err)
+	}
+	if got != staged {
+		t.Fatalf("unexpected guest agent path: got %q want %q", got, staged)
+	}
+}
+
 func TestDiscoverGuestAgentBinaryUsesSiblingBeforePATH(t *testing.T) {
 	t.Parallel()
 
@@ -67,6 +107,46 @@ func TestDiscoverGuestAgentBinaryUsesSiblingBeforePATH(t *testing.T) {
 	}
 	if got != sibling {
 		t.Fatalf("unexpected guest agent path: got %q want %q", got, sibling)
+	}
+}
+
+func TestDiscoverGuestAgentBinaryPrefersInstalledLibexecBeforeSibling(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	selfDir := filepath.Join(tmp, "prefix", "bin")
+	self := filepath.Join(selfDir, "cleanroom")
+	sibling := filepath.Join(selfDir, "cleanroom-guest-agent-linux-arm64")
+	libexec := filepath.Join(tmp, "prefix", "libexec", "cleanroom", "cleanroom-guest-agent-linux-arm64")
+	if err := os.MkdirAll(selfDir, 0o755); err != nil {
+		t.Fatalf("mkdir self dir: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(libexec), 0o755); err != nil {
+		t.Fatalf("mkdir libexec dir: %v", err)
+	}
+	if err := os.WriteFile(self, []byte("binary"), 0o755); err != nil {
+		t.Fatalf("write self binary: %v", err)
+	}
+	if err := os.WriteFile(sibling, []byte("binary"), 0o755); err != nil {
+		t.Fatalf("write sibling guest agent: %v", err)
+	}
+	if err := os.WriteFile(libexec, []byte("binary"), 0o755); err != nil {
+		t.Fatalf("write libexec guest agent: %v", err)
+	}
+
+	got, err := discoverGuestAgentBinaryWith(
+		"arm64",
+		func(string) (string, error) { return "/usr/local/bin/cleanroom-guest-agent-linux-arm64", nil },
+		func() (string, error) { return self, nil },
+		func() (string, error) { return "", errors.New("no working directory") },
+		os.Stat,
+		func(path string) (bool, error) { return path == libexec, nil },
+	)
+	if err != nil {
+		t.Fatalf("discoverGuestAgentBinaryWith returned error: %v", err)
+	}
+	if got != libexec {
+		t.Fatalf("unexpected guest agent path: got %q want %q", got, libexec)
 	}
 }
 

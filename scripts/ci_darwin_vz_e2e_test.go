@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestCiDarwinVZE2EBootstrapsLinuxGuestAgentBinary(t *testing.T) {
+func TestCiDarwinVZE2EUsesStagedBuildLayout(t *testing.T) {
 	t.Helper()
 
 	content, err := os.ReadFile("ci-darwin-vz-e2e.sh")
@@ -14,8 +14,16 @@ func TestCiDarwinVZE2EBootstrapsLinuxGuestAgentBinary(t *testing.T) {
 		t.Fatalf("read ci-darwin-vz-e2e.sh: %v", err)
 	}
 
-	if !strings.Contains(string(content), "GOOS=linux GOARCH=\"$host_arch\" CGO_ENABLED=0 go build -trimpath -o \"dist/cleanroom-guest-agent-linux-$host_arch\" ./cmd/cleanroom-guest-agent") {
-		t.Fatalf("expected ci-darwin-vz-e2e.sh to bootstrap cleanroom-guest-agent-linux-$host_arch")
+	script := string(content)
+	for _, needle := range []string{
+		`source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/dist-layout.sh"`,
+		`CLEANROOM_BIN="./$(cleanroom_stage_bin_path cleanroom)"`,
+		`helper_path="${CLEANROOM_DARWIN_VZ_HELPER:-$PWD/$(cleanroom_stage_libexec_path cleanroom-darwin-vz.app)}"`,
+		`scripts/build-go.sh`,
+	} {
+		if !strings.Contains(script, needle) {
+			t.Fatalf("expected ci-darwin-vz-e2e.sh to contain %q", needle)
+		}
 	}
 }
 
@@ -30,8 +38,8 @@ func TestCiDarwinVZE2EForcesNATNetworkMode(t *testing.T) {
 	if !strings.Contains(string(content), "mode: nat") {
 		t.Fatalf("expected ci-darwin-vz-e2e.sh to pin darwin-vz CI to nat mode")
 	}
-	if !strings.Contains(string(content), `helper_path="${CLEANROOM_DARWIN_VZ_HELPER:-$PWD/dist/cleanroom-darwin-vz.app}"`) {
-		t.Fatalf("expected ci-darwin-vz-e2e.sh to default to the prebuilt helper app bundle")
+	if !strings.Contains(string(content), `helper_path="${CLEANROOM_DARWIN_VZ_HELPER:-$PWD/$(cleanroom_stage_libexec_path cleanroom-darwin-vz.app)}"`) {
+		t.Fatalf("expected ci-darwin-vz-e2e.sh to default to the staged helper app bundle")
 	}
 }
 
@@ -45,6 +53,7 @@ func TestBuildDarwinVZHelperUsesSharedPackager(t *testing.T) {
 
 	script := string(content)
 	for _, needle := range []string{
+		`OUTPUT_PATH="${1:-${REPO_ROOT}/$(cleanroom_stage_libexec_path cleanroom-darwin-vz.app)}"`,
 		`tmpdir="$(mktemp -d /tmp/cleanroom-darwin-vz-build.XXXXXX)"`,
 		`build_output_path="${tmpdir}/cleanroom-darwin-vz"`,
 		`BUNDLE_MODE="${CLEANROOM_DARWIN_VZ_HELPER_BUNDLE:-1}"`,
@@ -106,14 +115,15 @@ func TestCiDarwinVZVMNetE2EUsesBuildkiteSecretsAndVMNetEntitlements(t *testing.T
 		`requested_sign_identity`,
 		`CLEANROOM_DARWIN_VZ_HELPER_SIGN_KEYCHAIN="$sign_keychain"`,
 		`imported signing identity not found in ${system_keychain_path}`,
-			`run_with_macos_user_home env`,
-			`run_with_macos_user_home codesign --verify --strict --verbose=2 "$helper_path"`,
-			"CLEANROOM_DARWIN_VZ_HELPER_ENTITLEMENTS=cmd/cleanroom-darwin-vz/entitlements-vmnet.plist",
-			"CLEANROOM_DARWIN_VZ_HELPER_BUNDLE=1",
-			`scripts/build-darwin-vz-helper.sh dist/cleanroom-darwin-vz.app`,
-			"CLEANROOM_DARWIN_VZ_VMNET_E2E=1",
-			`go test ./internal/backend/darwinvz -run TestVMNetSharedE2E -v`,
-		} {
+		`run_with_macos_user_home env`,
+		`run_with_macos_user_home codesign --verify --strict --verbose=2 "$helper_path"`,
+		"CLEANROOM_DARWIN_VZ_HELPER_ENTITLEMENTS=cmd/cleanroom-darwin-vz/entitlements-vmnet.plist",
+		"CLEANROOM_DARWIN_VZ_HELPER_BUNDLE=1",
+		`printf '%s\n' "$REPO_ROOT/$(cleanroom_stage_libexec_path cleanroom-darwin-vz.app)"`,
+		`scripts/build-darwin-vz-helper.sh`,
+		"CLEANROOM_DARWIN_VZ_VMNET_E2E=1",
+		`go test ./internal/backend/darwinvz -run TestVMNetSharedE2E -v`,
+	} {
 		if !strings.Contains(script, needle) {
 			t.Fatalf("expected ci-darwin-vz-vmnet-e2e.sh to contain %q", needle)
 		}

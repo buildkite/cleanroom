@@ -1,9 +1,26 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# shellcheck source=scripts/dist-layout.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/dist-layout.sh"
+
+KERNEL_IMAGE="${CLEANROOM_KERNEL_IMAGE:-}"
+FIRECRACKER_BINARY="${CLEANROOM_FIRECRACKER_BINARY:-firecracker}"
+PREFERRED_PRIVILEGED_HELPER_PATH="${CLEANROOM_PRIVILEGED_HELPER_PATH:-}"
+DEFAULT_PRIVILEGED_HELPER_PATH="/usr/local/libexec/cleanroom/cleanroom-root-helper"
+LEGACY_PRIVILEGED_HELPER_PATH="/usr/local/sbin/cleanroom-root-helper"
+PRIVILEGED_HELPER_PATH=""
+CLEANROOM_BIN="./$(cleanroom_stage_bin_path cleanroom)"
+DOWNLOAD_HELPER_BIN="./$(cleanroom_stage_bin_path download-sandbox-file)"
+
 ROOT_HELPER_REQUIRED_CAPABILITIES=(
   firecracker-network
 )
+
+if [[ -z "$KERNEL_IMAGE" ]]; then
+  echo "CLEANROOM_KERNEL_IMAGE is required for Firecracker e2e CI" >&2
+  exit 1
+fi
 
 # run_privileged executes a privileged command via the installed root helper.
 run_privileged() {
@@ -12,6 +29,47 @@ run_privileged() {
     return 1
   fi
   sudo -n "$PRIVILEGED_HELPER_PATH" "$@"
+}
+
+helper_supports_capability_probe() {
+  local helper_path="$1"
+
+  [[ -n "$helper_path" ]] || return 1
+  [[ -x "$helper_path" ]] || return 1
+  sudo -n "$helper_path" capabilities >/dev/null 2>&1
+}
+
+resolve_privileged_helper_path() {
+  local candidates=()
+  local candidate
+  local seen=""
+
+  if [[ -n "${PREFERRED_PRIVILEGED_HELPER_PATH:-}" ]]; then
+    candidates+=("$PREFERRED_PRIVILEGED_HELPER_PATH")
+  fi
+  candidates+=("$DEFAULT_PRIVILEGED_HELPER_PATH" "$LEGACY_PRIVILEGED_HELPER_PATH")
+
+  for candidate in "${candidates[@]}"; do
+    [[ -n "$candidate" ]] || continue
+    if [[ " $seen " == *" $candidate "* ]]; then
+      continue
+    fi
+    seen+=" $candidate"
+
+    if helper_supports_capability_probe "$candidate"; then
+      if [[ -n "${PREFERRED_PRIVILEGED_HELPER_PATH:-}" && "$candidate" != "$PREFERRED_PRIVILEGED_HELPER_PATH" ]]; then
+        echo "falling back from $PREFERRED_PRIVILEGED_HELPER_PATH to $candidate for non-interactive helper access"
+      fi
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+
+  if [[ -n "${PREFERRED_PRIVILEGED_HELPER_PATH:-}" ]]; then
+    printf '%s\n' "$PREFERRED_PRIVILEGED_HELPER_PATH"
+    return 0
+  fi
+  printf '%s\n' "$DEFAULT_PRIVILEGED_HELPER_PATH"
 }
 
 annotate_root_helper_problem() {
@@ -63,6 +121,8 @@ verify_helper_capabilities() {
   fi
 }
 
+PRIVILEGED_HELPER_PATH="$(resolve_privileged_helper_path)"
+
 # purge_stale_cleanroom_resources removes TAP devices, iptables rules,
 # and firecracker processes left over from a previous run that crashed
 # before cleanup.
@@ -107,6 +167,15 @@ purge_stale_cleanroom_resources() {
   done <<< "$nat_rules"
 }
 
+verify_helper_capabilities
+
+echo "--- :broom: Pre-build cleanup"
+purge_stale_cleanroom_resources
+
+echo "--- :hammer: Building binaries"
+scripts/build-go.sh
+
+tmpdir="$(mktemp -d)"
 cleanup() {
   if [[ -n "${srv_pid:-}" ]]; then
     kill "$srv_pid" >/dev/null 2>&1 || true
@@ -118,36 +187,16 @@ cleanup() {
   purge_stale_cleanroom_resources 2>/dev/null || true
   rm -rf "$tmpdir"
 }
+trap cleanup EXIT
 
-main() {
-  KERNEL_IMAGE="${CLEANROOM_KERNEL_IMAGE:-}"
-  FIRECRACKER_BINARY="${CLEANROOM_FIRECRACKER_BINARY:-firecracker}"
-  PRIVILEGED_HELPER_PATH="${CLEANROOM_PRIVILEGED_HELPER_PATH:-/usr/local/sbin/cleanroom-root-helper}"
+export XDG_CONFIG_HOME="$tmpdir/config"
+export XDG_STATE_HOME="$tmpdir/state"
+export XDG_RUNTIME_DIR="$tmpdir/runtime"
+export XDG_DATA_HOME="$tmpdir/data"
 
-  if [[ -z "$KERNEL_IMAGE" ]]; then
-    echo "CLEANROOM_KERNEL_IMAGE is required for Firecracker e2e CI" >&2
-    exit 1
-  fi
-
-  verify_helper_capabilities
-
-  echo "--- :broom: Pre-build cleanup"
-  purge_stale_cleanroom_resources
-
-  echo "--- :hammer: Building binaries"
-  scripts/build-go.sh
-
-  tmpdir="$(mktemp -d)"
-  trap cleanup EXIT
-
-  export XDG_CONFIG_HOME="$tmpdir/config"
-  export XDG_STATE_HOME="$tmpdir/state"
-  export XDG_RUNTIME_DIR="$tmpdir/runtime"
-  export XDG_DATA_HOME="$tmpdir/data"
-
-  mkdir -p "$XDG_CONFIG_HOME" "$XDG_STATE_HOME" "$XDG_RUNTIME_DIR" "$XDG_DATA_HOME"
-  mkdir -p "$XDG_CONFIG_HOME/cleanroom"
-  cat > "$XDG_CONFIG_HOME/cleanroom/config.yaml" <<EOF
+mkdir -p "$XDG_CONFIG_HOME" "$XDG_STATE_HOME" "$XDG_RUNTIME_DIR" "$XDG_DATA_HOME"
+mkdir -p "$XDG_CONFIG_HOME/cleanroom"
+cat > "$XDG_CONFIG_HOME/cleanroom/config.yaml" <<EOF
 default_backend: firecracker
 backends:
   firecracker:
@@ -158,17 +207,17 @@ backends:
     launch_seconds: 90
 EOF
 
-  echo "    privileged_helper_path: $PRIVILEGED_HELPER_PATH" >> "$XDG_CONFIG_HOME/cleanroom/config.yaml"
+echo "    privileged_helper_path: $PRIVILEGED_HELPER_PATH" >> "$XDG_CONFIG_HOME/cleanroom/config.yaml"
 
-  echo "--- :stethoscope: Doctor"
-  ./dist/cleanroom doctor --json | tee "$tmpdir/doctor.json"
-  if grep -q '"status": "fail"' "$tmpdir/doctor.json"; then
-    echo "doctor checks reported failures" >&2
-    exit 1
-  fi
+echo "--- :stethoscope: Doctor"
+"$CLEANROOM_BIN" doctor --json | tee "$tmpdir/doctor.json"
+if grep -q '"status": "fail"' "$tmpdir/doctor.json"; then
+  echo "doctor checks reported failures" >&2
+  exit 1
+fi
 
-  socket_path="$tmpdir/cleanroom.sock"
-  listen_endpoint="unix://$socket_path"
+socket_path="$tmpdir/cleanroom.sock"
+listen_endpoint="unix://$socket_path"
 
 dump_runtime_diagnostics() {
   local server_lines="${1:-40}"
@@ -191,29 +240,29 @@ dump_runtime_diagnostics() {
   fi
 }
 
-  echo "--- :rocket: Start cleanroom control-plane"
-  ./dist/cleanroom serve --listen "$listen_endpoint" --gateway-listen ":0" >"$tmpdir/server.log" 2>&1 &
-  srv_pid=$!
+echo "--- :rocket: Start cleanroom control-plane"
+"$CLEANROOM_BIN" serve --listen "$listen_endpoint" --gateway-listen ":0" >"$tmpdir/server.log" 2>&1 &
+srv_pid=$!
 
-  for _ in $(seq 1 40); do
-    if [[ -S "$socket_path" ]]; then
-      break
-    fi
-    sleep 0.25
-  done
-  if [[ ! -S "$socket_path" ]]; then
-    echo "cleanroom server did not create unix socket: $socket_path" >&2
-    echo "server log:" >&2
-    cat "$tmpdir/server.log" >&2
-    exit 1
+for _ in $(seq 1 40); do
+  if [[ -S "$socket_path" ]]; then
+    break
   fi
+  sleep 0.25
+done
+if [[ ! -S "$socket_path" ]]; then
+  echo "cleanroom server did not create unix socket: $socket_path" >&2
+  echo "server log:" >&2
+  cat "$tmpdir/server.log" >&2
+  exit 1
+fi
 
 echo "--- :white_check_mark: Launched execution smoke test"
 smoke_attempt=1
 smoke_max_attempts=3
 while true; do
   set +e
-  ./dist/cleanroom exec --host "$listen_endpoint" -c "$PWD" -- sh -lc 'echo cleanroom-e2e' >"$tmpdir/exec.out" 2>"$tmpdir/exec.err"
+  "$CLEANROOM_BIN" exec --host "$listen_endpoint" -c "$PWD" -- sh -lc 'echo cleanroom-e2e' >"$tmpdir/exec.out" 2>"$tmpdir/exec.err"
   smoke_status=$?
   set -e
 
@@ -239,21 +288,21 @@ while true; do
 done
 
 echo "--- :recycle: Persistent sandbox lifecycle test"
-sandbox_id="$(./dist/cleanroom create --host "$listen_endpoint" -c "$PWD" | tr -d '\n')"
+sandbox_id="$("$CLEANROOM_BIN" sandbox create --host "$listen_endpoint" -c "$PWD" | tr -d '\n')"
 if [[ -z "$sandbox_id" ]]; then
-  echo "cleanroom create did not return an id" >&2
+  echo "sandbox create did not return an id" >&2
   exit 1
 fi
 echo "sandbox id: $sandbox_id"
 
-./dist/cleanroom exec --host "$listen_endpoint" -c "$PWD" --in "$sandbox_id" -- sh -lc 'printf persisted-data >/tmp/persist.txt'
-./dist/cleanroom exec --host "$listen_endpoint" -c "$PWD" --in "$sandbox_id" -- sh -lc 'cat /tmp/persist.txt' | tee "$tmpdir/persist-read.out"
+"$CLEANROOM_BIN" exec --host "$listen_endpoint" -c "$PWD" --in "$sandbox_id" -- sh -lc 'printf persisted-data >/tmp/persist.txt'
+"$CLEANROOM_BIN" exec --host "$listen_endpoint" -c "$PWD" --in "$sandbox_id" -- sh -lc 'cat /tmp/persist.txt' | tee "$tmpdir/persist-read.out"
 if ! grep -q '^persisted-data$' "$tmpdir/persist-read.out"; then
   echo "expected persisted sandbox file contents from second execution" >&2
   exit 1
 fi
 
-./dist/download-sandbox-file \
+"$DOWNLOAD_HELPER_BIN" \
   --host "$listen_endpoint" \
   --sandbox-id "$sandbox_id" \
   --path /tmp/persist.txt \
@@ -266,14 +315,14 @@ if ! grep -q '^persisted-data$' "$tmpdir/persist-download.out"; then
   exit 1
 fi
 
-./dist/cleanroom sandbox rm --host "$listen_endpoint" "$sandbox_id" | tee "$tmpdir/sandbox-rm.out"
+"$CLEANROOM_BIN" sandbox rm --host "$listen_endpoint" "$sandbox_id" | tee "$tmpdir/sandbox-rm.out"
 if ! grep -q 'sandbox terminated' "$tmpdir/sandbox-rm.out"; then
   echo "expected sandbox terminate acknowledgement" >&2
   exit 1
 fi
 
 set +e
-./dist/cleanroom exec --host "$listen_endpoint" -c "$PWD" --in "$sandbox_id" -- sh -lc 'echo should-not-run' >"$tmpdir/terminated.out" 2>"$tmpdir/terminated.err"
+"$CLEANROOM_BIN" exec --host "$listen_endpoint" -c "$PWD" --in "$sandbox_id" -- sh -lc 'echo should-not-run' >"$tmpdir/terminated.out" 2>"$tmpdir/terminated.err"
 terminated_status=$?
 set -e
 if [[ "$terminated_status" -eq 0 ]]; then
@@ -292,7 +341,7 @@ git_gateway_max_attempts=3
 while true; do
   set +e
   # shellcheck disable=SC2016
-  ./dist/cleanroom exec --host "$listen_endpoint" -c "$PWD" -- sh -lc '
+  "$CLEANROOM_BIN" exec --host "$listen_endpoint" -c "$PWD" -- sh -lc '
   set -eu
 
   key="$(env | awk -F= '"'"'/^GIT_CONFIG_KEY_[0-9]+=url\.http:\/\/.+\/git\/github\.com\/\.insteadOf$/ {print $2; exit}'"'"')"
@@ -429,7 +478,7 @@ exit_max_attempts=3
 status=1
 while true; do
   set +e
-  ./dist/cleanroom exec --host "$listen_endpoint" -c "$PWD" -- sh -lc 'exit 7' >"$tmpdir/exit7.out" 2>"$tmpdir/exit7.err"
+  "$CLEANROOM_BIN" exec --host "$listen_endpoint" -c "$PWD" -- sh -lc 'exit 7' >"$tmpdir/exit7.out" 2>"$tmpdir/exit7.err"
   status=$?
   set -e
   if [[ "$status" -eq 7 ]]; then
@@ -485,7 +534,7 @@ else
 fi
 
 echo "--- :bar_chart: Execution observability present"
-./dist/cleanroom status --last | tee "$tmpdir/status.out"
+"$CLEANROOM_BIN" status --last | tee "$tmpdir/status.out"
 if ! grep -q 'execution-observability.json' "$tmpdir/status.out"; then
   echo "expected execution-observability.json reference in status output" >&2
   exit 1
@@ -548,9 +597,4 @@ EOF
   fi
 fi
 
-  echo "Firecracker e2e checks passed"
-}
-
-if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
-  main "$@"
-fi
+echo "Firecracker e2e checks passed"

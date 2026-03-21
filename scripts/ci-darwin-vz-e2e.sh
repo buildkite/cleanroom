@@ -1,19 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# shellcheck source=scripts/dist-layout.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/dist-layout.sh"
+
 DARWIN_VZ_KERNEL_IMAGE="${CLEANROOM_DARWIN_VZ_KERNEL_IMAGE:-}"
+CLEANROOM_BIN="./$(cleanroom_stage_bin_path cleanroom)"
 
 echo "--- :hammer: Building binaries"
 scripts/build-go.sh
 
-scripts/build-darwin-vz-helper.sh dist/cleanroom-darwin-vz.app
+scripts/build-darwin-vz-helper.sh
 
-# `scripts/build-go.sh` produces host binaries in dist/, but darwin-vz doctor also
-# requires a Linux guest agent binary named cleanroom-guest-agent-linux-<arch>.
-host_arch="$(go env GOARCH)"
-GOOS=linux GOARCH="$host_arch" CGO_ENABLED=0 go build -trimpath -o "dist/cleanroom-guest-agent-linux-$host_arch" ./cmd/cleanroom-guest-agent
-
-helper_path="${CLEANROOM_DARWIN_VZ_HELPER:-$PWD/dist/cleanroom-darwin-vz.app}"
+helper_path="${CLEANROOM_DARWIN_VZ_HELPER:-$PWD/$(cleanroom_stage_libexec_path cleanroom-darwin-vz.app)}"
 if [[ -d "$helper_path" ]]; then
   helper_executable="$helper_path/Contents/MacOS/cleanroom-darwin-vz"
   if [[ ! -x "$helper_executable" ]]; then
@@ -60,7 +59,7 @@ if [[ -n "$DARWIN_VZ_KERNEL_IMAGE" ]]; then
 fi
 
 echo "--- :stethoscope: Doctor"
-./dist/cleanroom doctor --backend darwin-vz --json | tee "$tmpdir/doctor.json"
+"$CLEANROOM_BIN" doctor --backend darwin-vz --json | tee "$tmpdir/doctor.json"
 if grep -q '"status": "fail"' "$tmpdir/doctor.json"; then
   echo "darwin-vz doctor checks reported failures" >&2
   exit 1
@@ -70,7 +69,7 @@ socket_path="$tmpdir/cleanroom.sock"
 listen_endpoint="unix://$socket_path"
 
 echo "--- :rocket: Start cleanroom control-plane"
-./dist/cleanroom serve --listen "$listen_endpoint" --gateway-listen ":0" >"$tmpdir/server.log" 2>&1 &
+"$CLEANROOM_BIN" serve --listen "$listen_endpoint" --gateway-listen ":0" >"$tmpdir/server.log" 2>&1 &
 srv_pid=$!
 
 for _ in $(seq 1 40); do
@@ -87,7 +86,7 @@ if [[ ! -S "$socket_path" ]]; then
 fi
 
 echo "--- :white_check_mark: Launched execution smoke test"
-./dist/cleanroom exec --host "$listen_endpoint" --backend darwin-vz -c "$PWD" -- sh -lc 'echo darwin-vz-e2e' | tee "$tmpdir/exec.out"
+"$CLEANROOM_BIN" exec --host "$listen_endpoint" --backend darwin-vz -c "$PWD" -- sh -lc 'echo darwin-vz-e2e' | tee "$tmpdir/exec.out"
 if ! grep -q '^darwin-vz-e2e$' "$tmpdir/exec.out"; then
   echo "expected darwin-vz smoke-test output missing" >&2
   exit 1
@@ -95,7 +94,7 @@ fi
 
 echo "--- :warning: Exit code propagation test"
 set +e
-./dist/cleanroom exec --host "$listen_endpoint" --backend darwin-vz -c "$PWD" -- sh -lc 'exit 9' >"$tmpdir/exit9.out" 2>"$tmpdir/exit9.err"
+"$CLEANROOM_BIN" exec --host "$listen_endpoint" --backend darwin-vz -c "$PWD" -- sh -lc 'exit 9' >"$tmpdir/exit9.out" 2>"$tmpdir/exit9.err"
 status=$?
 set -e
 if [[ "$status" -ne 9 ]]; then
@@ -122,7 +121,7 @@ sandbox:
 EOF
 
 set +e
-./dist/cleanroom exec --host "$listen_endpoint" --backend darwin-vz -c "$invalid_policy_dir" -- sh -lc 'echo should-not-run' >"$tmpdir/policy.out" 2>"$tmpdir/policy.err"
+"$CLEANROOM_BIN" exec --host "$listen_endpoint" --backend darwin-vz -c "$invalid_policy_dir" -- sh -lc 'echo should-not-run' >"$tmpdir/policy.out" 2>"$tmpdir/policy.err"
 policy_status=$?
 set -e
 if [[ "$policy_status" -eq 0 ]]; then

@@ -6,7 +6,6 @@ import (
 	"context"
 	cryptorand "crypto/rand"
 	"crypto/sha256"
-	"debug/elf"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -30,6 +29,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/imagemgr"
 	"github.com/buildkite/cleanroom/internal/paths"
 	"github.com/buildkite/cleanroom/internal/policy"
+	"github.com/buildkite/cleanroom/internal/runtimeassets"
 	"github.com/buildkite/cleanroom/internal/volumestore"
 	"github.com/buildkite/cleanroom/internal/vsockexec"
 	"github.com/charmbracelet/log"
@@ -1761,7 +1761,7 @@ func discoverGuestAgentBinary() (string, error) {
 		os.Executable,
 		os.Getwd,
 		os.Stat,
-		isLinuxGuestAgentBinary,
+		nil,
 	)
 }
 
@@ -1773,72 +1773,7 @@ func discoverGuestAgentBinaryWith(
 	stat func(string) (os.FileInfo, error),
 	validate func(string) (bool, error),
 ) (string, error) {
-	linuxName := fmt.Sprintf("cleanroom-guest-agent-linux-%s", goarch)
-	candidates := []string{}
-	if self, err := executable(); err == nil {
-		candidates = append(candidates, filepath.Join(filepath.Dir(self), linuxName))
-		candidates = append(candidates, filepath.Join(filepath.Dir(self), "cleanroom-guest-agent"))
-	}
-	if getwd != nil {
-		if cwd, err := getwd(); err == nil {
-			if path, err := resolvePrebuiltBinaryPathFromWorkdir(cwd, linuxName, stat); err == nil {
-				candidates = append(candidates, path)
-			}
-		}
-	}
-	candidates = append(candidates, linuxName, "cleanroom-guest-agent")
-
-	for _, candidate := range candidates {
-		if strings.TrimSpace(candidate) == "" {
-			continue
-		}
-		resolved := candidate
-		if !filepath.IsAbs(candidate) {
-			p, lookErr := lookPath(candidate)
-			if lookErr != nil {
-				continue
-			}
-			resolved = p
-		}
-		info, statErr := stat(resolved)
-		if statErr != nil || info.IsDir() {
-			continue
-		}
-		ok, validateErr := validate(resolved)
-		if validateErr != nil {
-			return "", fmt.Errorf("validate guest agent binary %q: %w", resolved, validateErr)
-		}
-		if ok {
-			return resolved, nil
-		}
-	}
-	return "", fmt.Errorf("linux guest-agent binary not found for architecture %s; run `mise run build` or `mise run install` to make cleanroom-guest-agent-linux-%s discoverable", goarch, goarch)
-}
-
-func isLinuxGuestAgentBinary(path string) (bool, error) {
-	f, err := elf.Open(path)
-	if err != nil {
-		// Non-ELF binaries are not valid guest binaries.
-		return false, nil
-	}
-	defer f.Close()
-
-	expectedMachine, ok := expectedGuestAgentELFMachine(runtime.GOARCH)
-	if !ok {
-		return false, fmt.Errorf("unsupported host architecture %q", runtime.GOARCH)
-	}
-	return f.FileHeader.Machine == expectedMachine, nil
-}
-
-func expectedGuestAgentELFMachine(goarch string) (elf.Machine, bool) {
-	switch goarch {
-	case "arm64":
-		return elf.EM_AARCH64, true
-	case "amd64":
-		return elf.EM_X86_64, true
-	default:
-		return 0, false
-	}
+	return runtimeassets.ResolveLinuxGuestAgentBinaryWith(goarch, lookPath, executable, getwd, stat, validate)
 }
 
 func hashFileSHA256(path string) (string, error) {

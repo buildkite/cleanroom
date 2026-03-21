@@ -3,8 +3,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+# shellcheck source=scripts/dist-layout.sh
+source "${SCRIPT_DIR}/dist-layout.sh"
 
-OUTPUT_PATH="${1:-${REPO_ROOT}/dist/cleanroom-darwin-vz.app}"
+OUTPUT_PATH="${1:-${REPO_ROOT}/$(cleanroom_stage_libexec_path cleanroom-darwin-vz.app)}"
 SWIFT_TARGET="${CLEANROOM_DARWIN_VZ_HELPER_SWIFT_TARGET:-}"
 ENTITLEMENTS_PATH="${CLEANROOM_DARWIN_VZ_HELPER_ENTITLEMENTS:-${REPO_ROOT}/cmd/cleanroom-darwin-vz/entitlements.plist}"
 PROVISION_PROFILE="${CLEANROOM_DARWIN_VZ_HELPER_PROVISION_PROFILE:-}"

@@ -21,12 +21,12 @@ description = "Run full Go test suite"
 run = "go test ./..."
 
 [tasks."build:go"]
-description = "Build Go binaries into dist/"
+description = "Build staged host binaries into dist/<os>-<arch>/"
 run = "scripts/build-go.sh"
 
 [tasks."build:darwin"]
-description = "Build macOS darwin-vz helper into dist/"
-run = "{% if os() == \"macos\" %}scripts/build-darwin-vz-helper.sh dist/cleanroom-darwin-vz.app{% else %}true{% endif %}"
+description = "Build macOS darwin-vz helper into the staged dist layout"
+run = "{% if os() == \"macos\" %}scripts/build-darwin-vz-helper.sh{% else %}true{% endif %}"
 
 [tasks."build:image:alpine"]
 description = "Build local alpine base image"
@@ -46,28 +46,23 @@ depends = ["build:image:alpine", "build:image:alpine-docker", "build:image:alpin
 run = "true"
 
 [tasks.build]
-description = "Build binaries into dist/"
+description = "Build staged binaries into dist/<os>-<arch>/"
 depends = ["build:go", "build:darwin"]
 run = "true"
 
 [tasks."install:go"]
-description = "Install Go binaries into GOBIN (or GOPATH/bin)"
+description = "Install the cleanroom CLI into GOBIN (or GOPATH/bin)"
 run = "scripts/install-go.sh"
 
-[tasks."install:darwin"]
-description = "Install macOS darwin-vz helper into GOBIN (or GOPATH/bin)"
-depends = ["build:darwin"]
-run = "{% if os() == \"macos\" %}BIN_DIR=\"$(go env GOBIN)\"; if [ -z \"$BIN_DIR\" ]; then BIN_DIR=\"$(go env GOPATH)/bin\"; fi; mkdir -p \"$BIN_DIR\" && scripts/build-darwin-vz-helper.sh \"$BIN_DIR/cleanroom-darwin-vz.app\"{% else %}true{% endif %}"
-
 [tasks.install]
-description = "Install all binaries into GOBIN (or GOPATH/bin)"
-depends = ["install:go", "install:darwin"]
-run = "true"
+description = "Install the staged runtime into ~/.local"
+depends = ["build"]
+run = "CLEANROOM_GLOBAL_PREFIX=\"$HOME/.local\" scripts/install-global.sh"
 
 [tasks."install:global"]
-description = "Install all runtime binaries into /usr/local/bin"
+description = "Install the staged runtime into /usr/local"
 depends = ["build"]
-run = "scripts/install-global.sh"
+run = "CLEANROOM_GLOBAL_PREFIX=\"/usr/local\" scripts/install-global.sh"
 
 [tasks.doctor]
 description = "Run cleanroom diagnostics"

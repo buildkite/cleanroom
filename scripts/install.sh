@@ -21,16 +21,16 @@ usage() {
 Install cleanroom from GitHub releases.
 
 Usage:
-  install.sh [--version <version>] [--install-dir <dir>] [--repo <owner/repo>] [--no-darwin-helper]
+  install.sh [--version <version>] [--prefix <prefix>] [--repo <owner/repo>] [--no-darwin-helper]
 
 Examples:
   curl -fsSL https://raw.githubusercontent.com/buildkite/cleanroom/main/scripts/install.sh | bash
   curl -fsSL https://raw.githubusercontent.com/buildkite/cleanroom/main/scripts/install.sh | \
-    bash -s -- --version vX.Y.Z
+    bash -s -- --version vX.Y.Z --prefix "$HOME/.local"
 
 Environment variables:
   CLEANROOM_VERSION               Optional release version (example: vX.Y.Z)
-  CLEANROOM_INSTALL_DIR           Install destination (default: /usr/local/bin)
+  CLEANROOM_PREFIX                Install prefix (default: ~/.local for non-root, /usr/local for root)
   CLEANROOM_REPO                  GitHub repo in owner/repo format (default: buildkite/cleanroom)
   CLEANROOM_INSTALL_DARWIN_HELPER Set to 0 to skip cleanroom-darwin-vz install on macOS
   CLEANROOM_DARWIN_VZ_HELPER_ENTITLEMENTS Optional entitlements plist for cleanroom-darwin-vz signing or re-signing
@@ -38,6 +38,9 @@ Environment variables:
   CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTIFIER Optional codesign identifier for cleanroom-darwin-vz (default: com.buildkite.cleanroom.darwin-vz when embedding a provisioning profile)
   CLEANROOM_DARWIN_VZ_HELPER_PROVISION_PROFILE Optional provisioning profile to embed when building or re-signing a helper bundle
   CLEANROOM_DARWIN_VZ_HELPER_SIGN_KEYCHAIN Optional keychain path when using the repo helper packager
+
+Deprecated compatibility:
+  CLEANROOM_INSTALL_DIR           Legacy alias for a bin dir such as /usr/local/bin; inferred into CLEANROOM_PREFIX
 USAGE
 }
 
@@ -83,6 +86,22 @@ normalize_version() {
   esac
 }
 
+default_prefix() {
+  if [ "$(id -u)" -eq 0 ]; then
+    printf '/usr/local'
+    return
+  fi
+  printf '%s/.local' "$HOME"
+}
+
+infer_prefix_from_install_dir() {
+  local dir="$1"
+  case "$dir" in
+    */bin) printf '%s' "${dir%/bin}" ;;
+    *) die "legacy install dir must end with /bin: ${dir}" ;;
+  esac
+}
+
 lookup_checksum() {
   local asset="$1"
   local checksums_file="$2"
@@ -110,7 +129,7 @@ verify_asset_against_checksums() {
   fi
 }
 
-extract_binary() {
+extract_archive() {
   local archive="$1"
   local output_dir="$2"
   mkdir -p "$output_dir"
@@ -119,23 +138,25 @@ extract_binary() {
 
 declare -a SUDO_CMD=()
 
-prepare_install_dir() {
-  if [ ! -d "$INSTALL_DIR" ]; then
-    if [ "$(id -u)" -eq 0 ]; then
-      mkdir -p "$INSTALL_DIR"
-    else
-      if mkdir -p "$INSTALL_DIR" 2>/dev/null; then
-        :
+prepare_prefix_dirs() {
+  for dir in "$BIN_DIR" "$LIBEXEC_DIR"; do
+    if [ ! -d "$dir" ]; then
+      if [ "$(id -u)" -eq 0 ]; then
+        mkdir -p "$dir"
       else
-        command -v sudo >/dev/null 2>&1 || die "${INSTALL_DIR} does not exist and sudo is unavailable"
-        SUDO_CMD=(sudo)
-        "${SUDO_CMD[@]}" mkdir -p "$INSTALL_DIR"
+        if mkdir -p "$dir" 2>/dev/null; then
+          :
+        else
+          command -v sudo >/dev/null 2>&1 || die "${dir} does not exist and sudo is unavailable"
+          SUDO_CMD=(sudo)
+          "${SUDO_CMD[@]}" mkdir -p "$dir"
+        fi
       fi
     fi
-  fi
+  done
 
-  if [ "$(id -u)" -ne 0 ] && [ ! -w "$INSTALL_DIR" ]; then
-    command -v sudo >/dev/null 2>&1 || die "${INSTALL_DIR} is not writable and sudo is unavailable"
+  if [ "$(id -u)" -ne 0 ] && { [ ! -w "$BIN_DIR" ] || [ ! -w "$LIBEXEC_DIR" ]; }; then
+    command -v sudo >/dev/null 2>&1 || die "${PREFIX} is not writable and sudo is unavailable"
     SUDO_CMD=(sudo)
   fi
 }
@@ -144,6 +165,12 @@ install_binary() {
   local src="$1"
   local dst="$2"
   "${SUDO_CMD[@]}" install -m 0755 "$src" "$dst"
+}
+
+install_file() {
+  local src="$1"
+  local dst="$2"
+  "${SUDO_CMD[@]}" install -m 0644 "$src" "$dst"
 }
 
 install_app_bundle() {
@@ -179,23 +206,41 @@ package_darwin_helper_with_repo_script() {
   "${cmd[@]}"
 }
 
+resolve_archive_path() {
+  local staged="$1"
+  local legacy="$2"
+  if [ -e "$staged" ]; then
+    printf '%s' "$staged"
+    return
+  fi
+  if [ -e "$legacy" ]; then
+    printf '%s' "$legacy"
+    return
+  fi
+  printf '%s' "$staged"
+}
+
 HOST_OS_RAW="$(uname -s)"
 HOST_ARCH_RAW="$(uname -m)"
 
 case "$HOST_OS_RAW" in
-  Linux) HOST_OS="Linux" ;;
-  Darwin) HOST_OS="Darwin" ;;
+  Linux) HOST_OS="Linux"; HOST_GOOS="linux" ;;
+  Darwin) HOST_OS="Darwin"; HOST_GOOS="darwin" ;;
   *) die "unsupported operating system: ${HOST_OS_RAW}" ;;
 esac
 
 case "$HOST_ARCH_RAW" in
-  x86_64|amd64) HOST_ARCH="x86_64" ;;
-  arm64|aarch64) HOST_ARCH="arm64" ;;
+  x86_64|amd64) HOST_ARCH="x86_64"; HOST_GOARCH="amd64" ;;
+  arm64|aarch64) HOST_ARCH="arm64"; HOST_GOARCH="arm64" ;;
   *) die "unsupported architecture: ${HOST_ARCH_RAW}" ;;
 esac
 
 VERSION="${CLEANROOM_VERSION:-}"
-INSTALL_DIR="${CLEANROOM_INSTALL_DIR:-/usr/local/bin}"
+PREFIX="${CLEANROOM_PREFIX:-}"
+if [ -z "$PREFIX" ] && [ -n "${CLEANROOM_INSTALL_DIR:-}" ]; then
+  PREFIX="$(infer_prefix_from_install_dir "$CLEANROOM_INSTALL_DIR")"
+fi
+PREFIX="${PREFIX:-$(default_prefix)}"
 REPO="${CLEANROOM_REPO:-buildkite/cleanroom}"
 INSTALL_DARWIN_HELPER="${CLEANROOM_INSTALL_DARWIN_HELPER:-1}"
 
@@ -206,9 +251,15 @@ while [ "$#" -gt 0 ]; do
       VERSION="$2"
       shift 2
       ;;
+    --prefix)
+      [ "$#" -ge 2 ] || die "--prefix requires a value"
+      PREFIX="$2"
+      shift 2
+      ;;
     --install-dir)
       [ "$#" -ge 2 ] || die "--install-dir requires a value"
-      INSTALL_DIR="$2"
+      PREFIX="$(infer_prefix_from_install_dir "$2")"
+      warn "--install-dir is deprecated; use --prefix instead"
       shift 2
       ;;
     --repo)
@@ -234,6 +285,10 @@ require_cmd curl
 require_cmd tar
 require_cmd awk
 
+PREFIX="${PREFIX%/}"
+BIN_DIR="${PREFIX}/bin"
+LIBEXEC_DIR="${PREFIX}/libexec/cleanroom"
+
 VERSION="$(normalize_version "$VERSION")"
 if [ "$VERSION" = "latest" ]; then
   RELEASE_BASE="https://github.com/${REPO}/releases/latest/download"
@@ -247,7 +302,7 @@ WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 DARWIN_HELPER_INSTALLED=0
 
-log "Installing cleanroom from ${REPO} (${RELEASE_LABEL}) for ${HOST_OS}/${HOST_ARCH}"
+log "Installing cleanroom from ${REPO} (${RELEASE_LABEL}) for ${HOST_OS}/${HOST_ARCH} into ${PREFIX}"
 
 CHECKSUMS_PATH="${WORK_DIR}/checksums.txt"
 download "${RELEASE_BASE}/checksums.txt" "$CHECKSUMS_PATH"
@@ -259,19 +314,23 @@ download "${RELEASE_BASE}/${CLEANROOM_ASSET}" "$CLEANROOM_ARCHIVE_PATH"
 verify_asset_against_checksums "$CLEANROOM_ASSET" "$CLEANROOM_ARCHIVE_PATH" "$CHECKSUMS_PATH"
 
 CLEANROOM_EXTRACT_DIR="${WORK_DIR}/cleanroom"
-extract_binary "$CLEANROOM_ARCHIVE_PATH" "$CLEANROOM_EXTRACT_DIR"
-[ -f "${CLEANROOM_EXTRACT_DIR}/cleanroom" ] || die "cleanroom binary missing in ${CLEANROOM_ASSET}"
-[ -f "${CLEANROOM_EXTRACT_DIR}/cleanroom-guest-agent" ] || die "cleanroom-guest-agent missing in ${CLEANROOM_ASSET}"
+extract_archive "$CLEANROOM_ARCHIVE_PATH" "$CLEANROOM_EXTRACT_DIR"
 
-prepare_install_dir
-install_binary "${CLEANROOM_EXTRACT_DIR}/cleanroom" "${INSTALL_DIR}/cleanroom"
-install_binary "${CLEANROOM_EXTRACT_DIR}/cleanroom-guest-agent" "${INSTALL_DIR}/cleanroom-guest-agent"
+CLEANROOM_BIN_SRC="$(resolve_archive_path "${CLEANROOM_EXTRACT_DIR}/bin/cleanroom" "${CLEANROOM_EXTRACT_DIR}/cleanroom")"
+GUEST_AGENT_LINUX_SRC="$(resolve_archive_path "${CLEANROOM_EXTRACT_DIR}/libexec/cleanroom/cleanroom-guest-agent-linux-${HOST_GOARCH}" "${CLEANROOM_EXTRACT_DIR}/cleanroom-guest-agent")"
+
+[ -f "${CLEANROOM_BIN_SRC}" ] || die "cleanroom binary missing in ${CLEANROOM_ASSET}"
+[ -f "${GUEST_AGENT_LINUX_SRC}" ] || die "cleanroom-guest-agent-linux-${HOST_GOARCH} missing in ${CLEANROOM_ASSET}"
+
+prepare_prefix_dirs
+install_binary "${CLEANROOM_BIN_SRC}" "${BIN_DIR}/cleanroom"
+install_binary "${GUEST_AGENT_LINUX_SRC}" "${LIBEXEC_DIR}/cleanroom-guest-agent-linux-${HOST_GOARCH}"
 
 if [ "$HOST_OS" = "Darwin" ] && [ "$INSTALL_DARWIN_HELPER" != "0" ]; then
-  HELPER_BUNDLE_SRC="${CLEANROOM_EXTRACT_DIR}/cleanroom-darwin-vz.app"
-  HELPER_BINARY_SRC="${CLEANROOM_EXTRACT_DIR}/cleanroom-darwin-vz"
-  HELPER_ENTITLEMENTS_VMNET_PATH="${CLEANROOM_EXTRACT_DIR}/entitlements-vmnet.plist"
-  HELPER_ENTITLEMENTS_DEFAULT_PATH="${CLEANROOM_EXTRACT_DIR}/entitlements.plist"
+  HELPER_BUNDLE_SRC="$(resolve_archive_path "${CLEANROOM_EXTRACT_DIR}/libexec/cleanroom/cleanroom-darwin-vz.app" "${CLEANROOM_EXTRACT_DIR}/cleanroom-darwin-vz.app")"
+  HELPER_BINARY_SRC="$(resolve_archive_path "${CLEANROOM_EXTRACT_DIR}/libexec/cleanroom/cleanroom-darwin-vz" "${CLEANROOM_EXTRACT_DIR}/cleanroom-darwin-vz")"
+  HELPER_ENTITLEMENTS_VMNET_PATH="$(resolve_archive_path "${CLEANROOM_EXTRACT_DIR}/libexec/cleanroom/entitlements-vmnet.plist" "${CLEANROOM_EXTRACT_DIR}/entitlements-vmnet.plist")"
+  HELPER_ENTITLEMENTS_DEFAULT_PATH="$(resolve_archive_path "${CLEANROOM_EXTRACT_DIR}/libexec/cleanroom/entitlements.plist" "${CLEANROOM_EXTRACT_DIR}/entitlements.plist")"
   HELPER_SIGN_IDENTITY="${CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY:-}"
   HELPER_SIGN_IDENTIFIER="${CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTIFIER:-}"
   HELPER_SIGN_KEYCHAIN="${CLEANROOM_DARWIN_VZ_HELPER_SIGN_KEYCHAIN:-}"
@@ -306,7 +365,7 @@ if [ "$HOST_OS" = "Darwin" ] && [ "$INSTALL_DARWIN_HELPER" != "0" ]; then
 
   if [ -d "${HELPER_BUNDLE_SRC}" ]; then
     require_cmd ditto
-    HELPER_BUNDLE_DIR="${INSTALL_DIR}/cleanroom-darwin-vz.app"
+    HELPER_BUNDLE_DIR="${LIBEXEC_DIR}/cleanroom-darwin-vz.app"
     install_app_bundle "${HELPER_BUNDLE_SRC}" "${HELPER_BUNDLE_DIR}"
     HELPER_INSTALL_LOG_PATH="${HELPER_BUNDLE_DIR}"
 
@@ -317,7 +376,7 @@ if [ "$HOST_OS" = "Darwin" ] && [ "$INSTALL_DARWIN_HELPER" != "0" ]; then
         [ -f "${HELPER_ENTITLEMENTS_PATH}" ] || die "entitlements plist missing: ${HELPER_ENTITLEMENTS_PATH}"
         HELPER_BUNDLE_PROFILE_DEST="${HELPER_BUNDLE_DIR}/Contents/embedded.provisionprofile"
         if [ -n "${HELPER_PROVISION_PROFILE}" ]; then
-          install_binary "${HELPER_PROVISION_PROFILE}" "${HELPER_BUNDLE_PROFILE_DEST}"
+          install_file "${HELPER_PROVISION_PROFILE}" "${HELPER_BUNDLE_PROFILE_DEST}"
         else
           "${SUDO_CMD[@]}" rm -f "${HELPER_BUNDLE_PROFILE_DEST}"
         fi
@@ -333,22 +392,28 @@ if [ "$HOST_OS" = "Darwin" ] && [ "$INSTALL_DARWIN_HELPER" != "0" ]; then
       fi
     fi
 
+    if [ -f "${HELPER_ENTITLEMENTS_DEFAULT_PATH}" ]; then
+      install_file "${HELPER_ENTITLEMENTS_DEFAULT_PATH}" "${LIBEXEC_DIR}/entitlements.plist"
+    fi
+    if [ -f "${HELPER_ENTITLEMENTS_VMNET_PATH}" ]; then
+      install_file "${HELPER_ENTITLEMENTS_VMNET_PATH}" "${LIBEXEC_DIR}/entitlements-vmnet.plist"
+    fi
     DARWIN_HELPER_INSTALLED=1
   else
     [ -f "${HELPER_BINARY_SRC}" ] || die "cleanroom-darwin-vz missing in ${CLEANROOM_ASSET}"
 
     HELPER_SIGN_IDENTITY="${HELPER_SIGN_IDENTITY:--}"
     if [ -n "${HELPER_PROVISION_PROFILE}" ]; then
-      HELPER_SIGN_TARGET="${INSTALL_DIR}/cleanroom-darwin-vz.app"
+      HELPER_SIGN_TARGET="${LIBEXEC_DIR}/cleanroom-darwin-vz.app"
     else
-      HELPER_SIGN_TARGET="${INSTALL_DIR}/cleanroom-darwin-vz"
+      HELPER_SIGN_TARGET="${LIBEXEC_DIR}/cleanroom-darwin-vz"
     fi
     HELPER_INSTALL_LOG_PATH="${HELPER_SIGN_TARGET}"
     if ! package_darwin_helper_with_repo_script "${HELPER_BINARY_SRC}" "${HELPER_SIGN_TARGET}"; then
       require_cmd codesign
       [ -f "${HELPER_ENTITLEMENTS_PATH}" ] || die "entitlements plist missing: ${HELPER_ENTITLEMENTS_PATH}"
       if [ -n "${HELPER_PROVISION_PROFILE}" ]; then
-        HELPER_BUNDLE_DIR="${INSTALL_DIR}/cleanroom-darwin-vz.app"
+        HELPER_BUNDLE_DIR="${LIBEXEC_DIR}/cleanroom-darwin-vz.app"
         HELPER_EXECUTABLE_PATH="${HELPER_BUNDLE_DIR}/Contents/MacOS/cleanroom-darwin-vz"
         HELPER_INFO_PLIST_PATH="${HELPER_BUNDLE_DIR}/Contents/Info.plist"
         "${SUDO_CMD[@]}" mkdir -p "$(dirname "${HELPER_EXECUTABLE_PATH}")"
@@ -373,11 +438,11 @@ if [ "$HOST_OS" = "Darwin" ] && [ "$INSTALL_DARWIN_HELPER" != "0" ]; then
 </plist>
 EOF"
         install_binary "${HELPER_BINARY_SRC}" "${HELPER_EXECUTABLE_PATH}"
-        install_binary "${HELPER_PROVISION_PROFILE}" "${HELPER_BUNDLE_DIR}/Contents/embedded.provisionprofile"
+        install_file "${HELPER_PROVISION_PROFILE}" "${HELPER_BUNDLE_DIR}/Contents/embedded.provisionprofile"
         HELPER_SIGN_TARGET="${HELPER_BUNDLE_DIR}"
         HELPER_INSTALL_LOG_PATH="${HELPER_BUNDLE_DIR}"
       else
-        install_binary "${HELPER_BINARY_SRC}" "${INSTALL_DIR}/cleanroom-darwin-vz"
+        install_binary "${HELPER_BINARY_SRC}" "${LIBEXEC_DIR}/cleanroom-darwin-vz"
       fi
       codesign_cmd=("${SUDO_CMD[@]}" codesign --force --sign "${HELPER_SIGN_IDENTITY}" --entitlements "${HELPER_ENTITLEMENTS_PATH}")
       if [ -n "${HELPER_SIGN_KEYCHAIN}" ]; then
@@ -393,13 +458,13 @@ EOF"
   fi
 fi
 
-log "Installed cleanroom to ${INSTALL_DIR}/cleanroom"
-log "Installed cleanroom-guest-agent to ${INSTALL_DIR}/cleanroom-guest-agent"
+log "Installed cleanroom to ${BIN_DIR}/cleanroom"
+log "Installed cleanroom runtime assets to ${LIBEXEC_DIR}"
 if [ "$DARWIN_HELPER_INSTALLED" = "1" ]; then
   log "Installed cleanroom-darwin-vz to ${HELPER_INSTALL_LOG_PATH}"
 fi
 
 case ":${PATH}:" in
-  *":${INSTALL_DIR}:"*) ;;
-  *) warn "${INSTALL_DIR} is not in PATH" ;;
+  *":${BIN_DIR}:"*) ;;
+  *) warn "${BIN_DIR} is not in PATH" ;;
 esac

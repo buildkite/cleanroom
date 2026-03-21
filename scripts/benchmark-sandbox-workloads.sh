@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# shellcheck source=scripts/dist-layout.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/dist-layout.sh"
+
 usage() {
   cat <<'EOF'
 Benchmark sandbox workloads in a single reused sandbox.
@@ -20,7 +23,7 @@ Options:
   -c, --chdir <path>         Repository/policy directory (default: current directory)
   -n, --iterations <count>   Iterations per workload (default: 5)
   --output-dir <path>        Output directory (default: benchmarks/results)
-  --cleanroom-bin <path>     cleanroom binary path (default: cleanroom from PATH, then ./dist/cleanroom)
+  --cleanroom-bin <path>     cleanroom binary path (default: cleanroom from PATH, then the staged dist binary)
   --repo-url <url>           Git repo for clone benchmark (default: https://github.com/kubernetes/kubernetes.git)
   --repo-depth <count>       Git clone depth (default: 1)
   --iops-block-size <bytes>  Block size for IOPS benchmark (default: 4096)
@@ -46,8 +49,8 @@ fi
 
 if command -v cleanroom >/dev/null 2>&1; then
   cleanroom_bin="$(command -v cleanroom)"
-elif [[ -x "./dist/cleanroom" ]]; then
-  cleanroom_bin="./dist/cleanroom"
+elif [[ -x "./$(cleanroom_stage_bin_path cleanroom)" ]]; then
+  cleanroom_bin="./$(cleanroom_stage_bin_path cleanroom)"
 else
   cleanroom_bin="cleanroom"
 fi

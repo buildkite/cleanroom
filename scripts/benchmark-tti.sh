@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# shellcheck source=scripts/dist-layout.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/dist-layout.sh"
+
 usage() {
   cat <<'EOF'
 Benchmark cleanroom TTI (sandbox create -> first successful command) with hyperfine.
@@ -15,7 +18,7 @@ Options:
   --backend <name>          Optional backend override for cleanroom exec
   -c, --chdir <path>        Repository/policy directory (default: current directory)
   --output-dir <path>       JSON output directory (default: benchmarks/results)
-  --cleanroom-bin <path>    cleanroom binary path (default: cleanroom from PATH, then ./dist/cleanroom)
+  --cleanroom-bin <path>    cleanroom binary path (default: cleanroom from PATH, then the staged dist binary)
   -h, --help                Show this help
 
 Environment:
@@ -36,8 +39,8 @@ fi
 
 if command -v cleanroom >/dev/null 2>&1; then
   cleanroom_bin="$(command -v cleanroom)"
-elif [[ -x "./dist/cleanroom" ]]; then
-  cleanroom_bin="./dist/cleanroom"
+elif [[ -x "./$(cleanroom_stage_bin_path cleanroom)" ]]; then
+  cleanroom_bin="./$(cleanroom_stage_bin_path cleanroom)"
 else
   cleanroom_bin="cleanroom"
 fi

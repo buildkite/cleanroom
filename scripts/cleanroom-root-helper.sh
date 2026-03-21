@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Security model:
 # - This script is a root-owned allowlist for privileged cleanroom operations.
-# - Unprivileged callers reach it via `sudo -n /usr/local/sbin/cleanroom-root-helper ...`.
+# - Unprivileged callers reach it via `sudo -n /usr/local/libexec/cleanroom/cleanroom-root-helper ...`.
 # - Roll it out from trusted host administration paths such as bootstrap or SSM, not PR CI.
 #
 # Sharp edges:
@@ -65,7 +65,6 @@ is_cidr() {
   local v="$1"
   [[ "$v" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$ ]]
 }
-
 is_zfs_dataset() {
   local v="$1"
   [[ "$v" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]*(/[A-Za-z0-9][A-Za-z0-9._:-]*)*$ ]]
@@ -259,7 +258,6 @@ run_sysctl() {
   fi
   die "sysctl: unsupported arguments"
 }
-
 run_zfs() {
   [[ "$#" -ge 1 ]] || die "zfs: missing arguments"
   local bin

@@ -380,6 +380,35 @@ func TestResolvePrivilegedHelperPathDefaultsToInstalledPath(t *testing.T) {
 	}
 }
 
+func TestResolvePrivilegedHelperPathPrefersInstalledLibexecPath(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	self := filepath.Join(tmp, "prefix", "bin", "cleanroom")
+	libexec := filepath.Join(tmp, "prefix", "libexec", "cleanroom", "cleanroom-root-helper")
+	if err := os.MkdirAll(filepath.Dir(self), 0o755); err != nil {
+		t.Fatalf("mkdir self dir: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(libexec), 0o755); err != nil {
+		t.Fatalf("mkdir libexec dir: %v", err)
+	}
+	if err := os.WriteFile(self, []byte("binary"), 0o755); err != nil {
+		t.Fatalf("write self binary: %v", err)
+	}
+	if err := os.WriteFile(libexec, []byte("helper"), 0o755); err != nil {
+		t.Fatalf("write helper binary: %v", err)
+	}
+
+	got := resolvePrivilegedHelperPathWith(
+		backend.FirecrackerConfig{},
+		func() (string, error) { return self, nil },
+		os.Stat,
+	)
+	if got != libexec {
+		t.Fatalf("unexpected helper path: got %q want %q", got, libexec)
+	}
+}
+
 func TestHelperRequiredCapabilitiesIncludesZFSWhenConfigured(t *testing.T) {
 	t.Parallel()
 

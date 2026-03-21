@@ -4,8 +4,11 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/buildkite/cleanroom/internal/runtimeassets"
 )
 
 func TestResolveHelperBinaryPathPrefersEnvOverride(t *testing.T) {
@@ -57,6 +60,46 @@ func TestResolveHelperBinaryPathUsesSiblingBeforePath(t *testing.T) {
 	}
 	if got != sibling {
 		t.Fatalf("unexpected helper path: got %q want %q", got, sibling)
+	}
+}
+
+func TestResolveHelperBinaryPathPrefersInstalledLibexecAppBundleBeforeSibling(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	selfDir := filepath.Join(tmp, "prefix", "bin")
+	self := filepath.Join(selfDir, "cleanroom")
+	sibling := filepath.Join(selfDir, "cleanroom-darwin-vz")
+	appBundle := filepath.Join(tmp, "prefix", "libexec", "cleanroom", "cleanroom-darwin-vz.app")
+	appExecutable := filepath.Join(appBundle, "Contents", "MacOS", "cleanroom-darwin-vz")
+	if err := os.MkdirAll(selfDir, 0o755); err != nil {
+		t.Fatalf("mkdir self dir: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(appExecutable), 0o755); err != nil {
+		t.Fatalf("mkdir app bundle: %v", err)
+	}
+	if err := os.WriteFile(self, []byte("binary"), 0o755); err != nil {
+		t.Fatalf("write self binary: %v", err)
+	}
+	if err := os.WriteFile(sibling, []byte("binary"), 0o755); err != nil {
+		t.Fatalf("write sibling helper: %v", err)
+	}
+	if err := os.WriteFile(appExecutable, []byte("binary"), 0o755); err != nil {
+		t.Fatalf("write app bundle helper: %v", err)
+	}
+
+	got, err := resolveHelperBinaryPathWith(
+		"",
+		func(string) (string, error) { return "/usr/local/bin/cleanroom-darwin-vz", nil },
+		func() (string, error) { return self, nil },
+		func() (string, error) { return "", errors.New("no working directory") },
+		os.Stat,
+	)
+	if err != nil {
+		t.Fatalf("resolveHelperBinaryPathWith returned error: %v", err)
+	}
+	if got != appExecutable {
+		t.Fatalf("unexpected helper path: got %q want %q", got, appExecutable)
 	}
 }
 
@@ -153,6 +196,43 @@ func TestResolveHelperBinaryPathUsesAncestorDistBeforePATH(t *testing.T) {
 	}
 	if got != prebuilt {
 		t.Fatalf("unexpected helper path: got %q want %q", got, prebuilt)
+	}
+}
+
+func TestResolveHelperBinaryPathUsesStagedDistBeforeLegacyDistAndPATH(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	repoRoot := filepath.Join(tmp, "repo")
+	cwd := filepath.Join(repoRoot, "nested", "workdir")
+	stageDir := filepath.Join(repoRoot, "dist", runtimeassets.HostStageDirName(runtime.GOOS, runtime.GOARCH), "libexec", "cleanroom", "cleanroom-darwin-vz.app")
+	stagedExecutable := filepath.Join(stageDir, "Contents", "MacOS", "cleanroom-darwin-vz")
+	legacyExecutable := filepath.Join(repoRoot, "dist", "cleanroom-darwin-vz")
+	if err := os.MkdirAll(cwd, 0o755); err != nil {
+		t.Fatalf("mkdir workdir: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(stagedExecutable), 0o755); err != nil {
+		t.Fatalf("mkdir staged app bundle: %v", err)
+	}
+	if err := os.WriteFile(stagedExecutable, []byte("binary"), 0o755); err != nil {
+		t.Fatalf("write staged helper: %v", err)
+	}
+	if err := os.WriteFile(legacyExecutable, []byte("binary"), 0o755); err != nil {
+		t.Fatalf("write legacy helper: %v", err)
+	}
+
+	got, err := resolveHelperBinaryPathWith(
+		"",
+		func(string) (string, error) { return "/usr/local/bin/cleanroom-darwin-vz", nil },
+		func() (string, error) { return "", errors.New("no executable") },
+		func() (string, error) { return cwd, nil },
+		os.Stat,
+	)
+	if err != nil {
+		t.Fatalf("resolveHelperBinaryPathWith returned error: %v", err)
+	}
+	if got != stagedExecutable {
+		t.Fatalf("unexpected helper path: got %q want %q", got, stagedExecutable)
 	}
 }
 
@@ -306,7 +386,7 @@ func TestResolveHelperBinaryPathReturnsActionableError(t *testing.T) {
 	}
 }
 
-func TestResolvePrebuiltBinaryPathFromWorkdirUsesAncestorDist(t *testing.T) {
+func TestDistCandidatesUsesAncestorDist(t *testing.T) {
 	t.Parallel()
 
 	tmp := t.TempDir()
@@ -323,9 +403,10 @@ func TestResolvePrebuiltBinaryPathFromWorkdirUsesAncestorDist(t *testing.T) {
 		t.Fatalf("write repo dist helper: %v", err)
 	}
 
-	got, err := resolvePrebuiltBinaryPathFromWorkdir(cwd, helperBinaryName, os.Stat)
+	candidates := runtimeassets.DistCandidates(func() (string, error) { return cwd, nil }, helperBinaryName)
+	got, err := runtimeassets.ResolveFirstCandidate(candidates, os.Stat, nil)
 	if err != nil {
-		t.Fatalf("resolvePrebuiltBinaryPathFromWorkdir returned error: %v", err)
+		t.Fatalf("ResolveFirstCandidate returned error: %v", err)
 	}
 	if got != prebuilt {
 		t.Fatalf("unexpected prebuilt path: got %q want %q", got, prebuilt)

@@ -13,7 +13,7 @@ Default host behaviour:
 - defaults to `m8i.4xlarge` with a 500 GiB root volume
 - installs `scripts/bootstrap-cleanroom-host.sh`, which installs the pinned
   `cleanroom` GitHub release, installs the matching
-  `/usr/local/sbin/cleanroom-root-helper`, installs Firecracker, writes runtime
+  `/usr/local/libexec/cleanroom/cleanroom-root-helper`, installs Firecracker, writes runtime
   config, installs a rerunnable host bootstrap command, and installs the system
   daemon
   Set `cleanroom_release_repo` when `repo_url` is not a GitHub remote.

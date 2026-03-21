@@ -16,7 +16,7 @@ func TestCiCleanroomE2EUsesHelperViaNonInteractiveSudo(t *testing.T) {
 
 	script := string(content)
 	for _, needle := range []string{
-		"PRIVILEGED_HELPER_PATH=\"${CLEANROOM_PRIVILEGED_HELPER_PATH:-/usr/local/sbin/cleanroom-root-helper}\"",
+		"PRIVILEGED_HELPER_PATH=\"${CLEANROOM_PRIVILEGED_HELPER_PATH:-/usr/local/libexec/cleanroom/cleanroom-root-helper}\"",
 		"sudo -n \"$PRIVILEGED_HELPER_PATH\" \"$@\"",
 	} {
 		if !strings.Contains(script, needle) {

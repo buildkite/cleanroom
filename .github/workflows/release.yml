@@ -40,7 +40,8 @@ jobs:
             fi
           done
 
-          mkdir -p "release-extra/darwin_${{ matrix.arch }}"
+          helper_output_dir="release-extra/darwin_${{ matrix.arch }}/libexec/cleanroom"
+          mkdir -p "${helper_output_dir}"
           CERT_PATH="${RUNNER_TEMP}/cleanroom-darwin-vz-release.p12"
           PROFILE_PATH="${RUNNER_TEMP}/Cleanroom_Darwin_VZ_Backend.provisionprofile"
           KEYCHAIN_PATH="${RUNNER_TEMP}/cleanroom-release-signing.keychain-db"
@@ -81,9 +82,9 @@ jobs:
           CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTIFIER="com.buildkite.cleanroom.darwin-vz" \
           CLEANROOM_DARWIN_VZ_HELPER_PROVISION_PROFILE="${PROFILE_PATH}" \
           CLEANROOM_DARWIN_VZ_HELPER_BUNDLE=1 \
-            scripts/build-darwin-vz-helper.sh "release-extra/darwin_${{ matrix.arch }}/cleanroom-darwin-vz.app"
-          cp cmd/cleanroom-darwin-vz/entitlements.plist "release-extra/darwin_${{ matrix.arch }}/entitlements.plist"
-          cp cmd/cleanroom-darwin-vz/entitlements-vmnet.plist "release-extra/darwin_${{ matrix.arch }}/entitlements-vmnet.plist"
+            scripts/build-darwin-vz-helper.sh "${helper_output_dir}/cleanroom-darwin-vz.app"
+          cp cmd/cleanroom-darwin-vz/entitlements.plist "${helper_output_dir}/entitlements.plist"
+          cp cmd/cleanroom-darwin-vz/entitlements-vmnet.plist "${helper_output_dir}/entitlements-vmnet.plist"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -114,11 +115,11 @@ jobs:
 
       - name: Build release extra binaries
         run: |
-          mkdir -p release-extra/linux_amd64 release-extra/linux_arm64
+          mkdir -p release-extra/linux_amd64/libexec/cleanroom release-extra/linux_arm64/libexec/cleanroom
           GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" \
-            -o release-extra/linux_amd64/cleanroom-guest-agent ./cmd/cleanroom-guest-agent
+            -o release-extra/linux_amd64/libexec/cleanroom/cleanroom-guest-agent-linux-amd64 ./cmd/cleanroom-guest-agent
           GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" \
-            -o release-extra/linux_arm64/cleanroom-guest-agent ./cmd/cleanroom-guest-agent
+            -o release-extra/linux_arm64/libexec/cleanroom/cleanroom-guest-agent-linux-arm64 ./cmd/cleanroom-guest-agent
 
       - uses: goreleaser/goreleaser-action@v6
         with:

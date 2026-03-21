@@ -140,7 +140,7 @@ CLEANROOM_DARWIN_VZ_HELPER_ENTITLEMENTS=cmd/cleanroom-darwin-vz/entitlements-vmn
 CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY='Apple Development: <you> (<team>)' \
 CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTIFIER='com.buildkite.cleanroom.darwin-vz' \
 CLEANROOM_DARWIN_VZ_HELPER_PROVISION_PROFILE="$HOME/Downloads/Cleanroom_Darwin_VZ_Backend.provisionprofile" \
-scripts/build-darwin-vz-helper.sh dist/cleanroom-darwin-vz
+scripts/build-darwin-vz-helper.sh
 ```
 
 The helper should carry:
@@ -221,7 +221,7 @@ binary, not packages expected to exist in the base image.
 Run it with a signed helper bundle:
 
 ```bash
-CLEANROOM_DARWIN_VZ_HELPER="$PWD/dist/cleanroom-darwin-vz.app" \
+CLEANROOM_DARWIN_VZ_HELPER="$PWD/dist/$(go env GOOS)-$(go env GOARCH)/libexec/cleanroom/cleanroom-darwin-vz.app" \
 CLEANROOM_DARWIN_VZ_VMNET_E2E=1 \
 mise exec -- go test ./internal/backend/darwinvz -run TestVMNetSharedE2E -v
 ```

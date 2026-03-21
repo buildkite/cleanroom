@@ -181,6 +181,8 @@ default it emits a signed `cleanroom-darwin-vz.app` bundle. When
 `CLEANROOM_DARWIN_VZ_HELPER_PROVISION_PROFILE` is set it embeds that profile in
 the bundle so the helper can carry restricted entitlements. Set
 `CLEANROOM_DARWIN_VZ_HELPER_BUNDLE=0` to emit a loose helper binary instead.
+Without an explicit output path, the helper is staged at
+`dist/<host-goos>-<host-goarch>/libexec/cleanroom/cleanroom-darwin-vz.app`.
 
 When a prebuilt helper `.app` bundle is available, the install script preserves
 that bundle as-is and only re-signs it when the caller explicitly provides
@@ -207,7 +209,7 @@ CLEANROOM_DARWIN_VZ_HELPER_ENTITLEMENTS=cmd/cleanroom-darwin-vz/entitlements-vmn
 CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY='Apple Development: <you> (<team>)' \
 CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTIFIER='com.buildkite.cleanroom.darwin-vz' \
 CLEANROOM_DARWIN_VZ_HELPER_PROVISION_PROFILE="$HOME/Downloads/Cleanroom_Darwin_VZ_Backend.provisionprofile" \
-scripts/build-darwin-vz-helper.sh dist/cleanroom-darwin-vz.app
+scripts/build-darwin-vz-helper.sh
 ```
 
 ## Runtime Discovery
@@ -215,21 +217,24 @@ scripts/build-darwin-vz-helper.sh dist/cleanroom-darwin-vz.app
 The helper path is resolved in this order:
 
 1. `CLEANROOM_DARWIN_VZ_HELPER`
-2. sibling binary next to `cleanroom`
-3. sibling `cleanroom-darwin-vz.app` bundle next to `cleanroom`
-4. `dist/` under the current working directory or one of its ancestors
-5. `dist/cleanroom-darwin-vz.app` under the current working directory or one of its ancestors
-6. `PATH`
+2. installed `../libexec/cleanroom/cleanroom-darwin-vz.app` relative to `cleanroom`
+3. sibling binary next to `cleanroom`
+4. sibling `cleanroom-darwin-vz.app` bundle next to `cleanroom`
+5. `dist/<host-goos>-<host-goarch>/libexec/cleanroom/cleanroom-darwin-vz.app` under the current working directory or one of its ancestors
+6. legacy `dist/cleanroom-darwin-vz.app` or `dist/cleanroom-darwin-vz` under the current working directory or one of its ancestors
+7. `PATH`
 
 If missing, runtime fails with an actionable error.
 
 The Linux guest agent follows the same general pattern:
 
-1. sibling binary next to `cleanroom`
-2. `dist/cleanroom-guest-agent-linux-$GOARCH` under the current working directory or one of its ancestors
-3. `PATH`
+1. installed `../libexec/cleanroom/cleanroom-guest-agent-linux-$GOARCH` relative to `cleanroom`
+2. sibling binary next to `cleanroom`
+3. `dist/<host-goos>-<host-goarch>/libexec/cleanroom/cleanroom-guest-agent-linux-$GOARCH` under the current working directory or one of its ancestors
+4. legacy `dist/cleanroom-guest-agent-linux-$GOARCH` under the current working directory or one of its ancestors
+5. `PATH`
 
-`mise run build` now produces the matching prebuilt set in `dist/` for macOS development.
+`mise run build` now produces the matching staged runtime under `dist/<host-goos>-<host-goarch>/` for macOS development.
 
 ## Testing
 
@@ -261,7 +266,7 @@ Supported e2e overrides:
 Focused vmnet spike path:
 
 ```bash
-CLEANROOM_DARWIN_VZ_HELPER="$PWD/dist/cleanroom-darwin-vz.app" \
+CLEANROOM_DARWIN_VZ_HELPER="$PWD/dist/$(go env GOOS)-$(go env GOARCH)/libexec/cleanroom/cleanroom-darwin-vz.app" \
 CLEANROOM_DARWIN_VZ_VMNET_E2E=1 \
 mise exec -- go test ./internal/backend/darwinvz -run TestVMNetSharedE2E -v
 ```

@@ -73,9 +73,9 @@ The `:apple: E2E (darwin-vz)` step runs launched execution checks on macOS using
 
 Notes:
 
-- `scripts/ci-darwin-vz-e2e.sh` builds `dist/cleanroom` and `dist/cleanroom-darwin-vz.app`, exports `CLEANROOM_DARWIN_VZ_HELPER` to the built helper, and isolates XDG runtime paths.
+- `scripts/ci-darwin-vz-e2e.sh` builds the staged runtime under `dist/<host-goos>-<host-goarch>/`, exports `CLEANROOM_DARWIN_VZ_HELPER` to the staged helper bundle under `libexec/cleanroom`, and isolates XDG runtime paths.
 - the CI script writes `backends.darwin-vz.network.mode: nat` into its temporary config because Buildkite only ad-hoc signs the helper; `vmnet-shared` needs a vmnet-capable provisioning profile and identifier.
-- the script also builds `dist/cleanroom-guest-agent-linux-<host-arch>` so CI can self-bootstrap the Linux guest agent dependency without a separate install step.
+- the staged build also includes `dist/<host-goos>-<host-goarch>/libexec/cleanroom/cleanroom-guest-agent-linux-<host-arch>` so CI can self-bootstrap the Linux guest agent dependency without a separate install step.
 - Set `CLEANROOM_DARWIN_VZ_KERNEL_IMAGE` on the worker if you want an explicit kernel path; otherwise the script uses managed-kernel fallback.
 
 ### 3.2 Upload vmnet signing secrets
@@ -106,7 +106,7 @@ downloads the Apple WWDR G3 intermediate, builds a signed helper bundle with
 `cmd/cleanroom-darwin-vz/entitlements-vmnet.plist`, and runs:
 
 ```bash
-CLEANROOM_DARWIN_VZ_HELPER="$PWD/dist/cleanroom-darwin-vz.app" \
+CLEANROOM_DARWIN_VZ_HELPER="$PWD/dist/$(go env GOOS)-$(go env GOARCH)/libexec/cleanroom/cleanroom-darwin-vz.app" \
 CLEANROOM_DARWIN_VZ_VMNET_E2E=1 \
 go test ./internal/backend/darwinvz -run TestVMNetSharedE2E -v
 ```
@@ -191,14 +191,15 @@ For CI script usage, you can also set:
 Install the helper from this repository and only grant sudo access to that helper:
 
 ```bash
-sudo install -o root -g root -m 0755 scripts/cleanroom-root-helper.sh /usr/local/sbin/cleanroom-root-helper
+sudo install -d -o root -g root -m 0755 /usr/local/libexec/cleanroom
+sudo install -o root -g root -m 0755 scripts/cleanroom-root-helper.sh /usr/local/libexec/cleanroom/cleanroom-root-helper
 ```
 
 ```sudoers
-buildkite-agent ALL=(root) NOPASSWD: /usr/local/sbin/cleanroom-root-helper *
+buildkite-agent ALL=(root) NOPASSWD: /usr/local/libexec/cleanroom/cleanroom-root-helper *
 ```
 
-Then set `CLEANROOM_PRIVILEGED_HELPER_PATH=/usr/local/sbin/cleanroom-root-helper` if you need to override the runtime config.
+Then set `CLEANROOM_PRIVILEGED_HELPER_PATH=/usr/local/libexec/cleanroom/cleanroom-root-helper` if you need to override the runtime config.
 
 `scripts/ci-cleanroom-e2e.sh` probes the installed helper with `capabilities`, and `cleanroom doctor` also records the helper `version`, before running Firecracker checks. They do not compare helper file hashes and they do not self-update the helper from the checkout.
 

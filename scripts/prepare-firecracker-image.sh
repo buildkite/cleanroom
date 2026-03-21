@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/dist-layout.sh
+source "${SCRIPT_DIR}/dist-layout.sh"
+
 usage() {
   cat <<USAGE
 Prepare a Firecracker rootfs image for Cleanroom launched execution.
@@ -130,10 +134,11 @@ if ! [[ "$AGENT_PORT" =~ ^[0-9]+$ ]] || (( AGENT_PORT < 1 || AGENT_PORT > 65535 
   exit 1
 fi
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 if [[ -z "$AGENT_BINARY" ]]; then
-  AGENT_BINARY="$REPO_ROOT/dist/cleanroom-guest-agent"
+  host_arch="$(cleanroom_host_goarch)"
+  AGENT_BINARY="$REPO_ROOT/$(cleanroom_stage_libexec_path "cleanroom-guest-agent-linux-$host_arch")"
 fi
 
 if [[ ! -x "$AGENT_BINARY" ]]; then

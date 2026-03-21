@@ -3,7 +3,7 @@ version: 2
 builds:
   - id: cleanroom-linux
     main: ./cmd/cleanroom
-    binary: cleanroom
+    binary: bin/cleanroom
     env:
       - CGO_ENABLED=0
     goos: [linux]
@@ -13,7 +13,7 @@ builds:
 
   - id: cleanroom-darwin
     main: ./cmd/cleanroom
-    binary: cleanroom
+    binary: bin/cleanroom
     env:
       - CGO_ENABLED=0
     goos: [darwin]
@@ -26,30 +26,35 @@ archives:
     ids: [cleanroom-linux]
     formats: [tar.gz]
     name_template: >-
-      {{ .Binary }}_
+      {{ .ProjectName }}_
       {{- title .Os }}_
       {{- if eq .Arch "amd64" }}x86_64
       {{- else }}{{ .Arch }}{{ end }}
     files:
-      - src: release-extra/linux_{{ .Arch }}/cleanroom-guest-agent
+      - src: release-extra/linux_{{ .Arch }}/libexec/cleanroom/cleanroom-guest-agent-linux-{{ .Arch }}
+        dst: libexec/cleanroom
         strip_parent: true
 
   - id: cleanroom-darwin
     ids: [cleanroom-darwin]
     formats: [tar.gz]
     name_template: >-
-      {{ .Binary }}_
+      {{ .ProjectName }}_
       {{- title .Os }}_
       {{- if eq .Arch "amd64" }}x86_64
       {{- else }}{{ .Arch }}{{ end }}
     files:
-      - src: release-extra/linux_{{ .Arch }}/cleanroom-guest-agent
+      - src: release-extra/linux_{{ .Arch }}/libexec/cleanroom/cleanroom-guest-agent-linux-{{ .Arch }}
+        dst: libexec/cleanroom
         strip_parent: true
-      - src: release-extra/darwin_{{ .Arch }}/cleanroom-darwin-vz.app
+      - src: release-extra/darwin_{{ .Arch }}/libexec/cleanroom/cleanroom-darwin-vz.app
+        dst: libexec/cleanroom
         strip_parent: true
-      - src: release-extra/darwin_{{ .Arch }}/entitlements-vmnet.plist
+      - src: release-extra/darwin_{{ .Arch }}/libexec/cleanroom/entitlements-vmnet.plist
+        dst: libexec/cleanroom
         strip_parent: true
-      - src: release-extra/darwin_{{ .Arch }}/entitlements.plist
+      - src: release-extra/darwin_{{ .Arch }}/libexec/cleanroom/entitlements.plist
+        dst: libexec/cleanroom
         strip_parent: true
 
 checksum:
