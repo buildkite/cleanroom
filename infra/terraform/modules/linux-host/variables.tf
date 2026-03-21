@@ -37,6 +37,12 @@ variable "root_volume_size_gib" {
   default     = 150
 }
 
+variable "user_data_replace_on_change" {
+  description = "Whether changes to rendered user_data should replace the host instance."
+  type        = bool
+  default     = true
+}
+
 variable "buildkite_token_parameter_name" {
   description = "Optional SSM SecureString parameter name storing the Buildkite token for CI bootstrap."
   type        = string
@@ -75,6 +81,24 @@ variable "setup_script_path" {
   description = "Path to the setup script inside the cloned repository."
   type        = string
   default     = "scripts/bootstrap-buildkite-agent.sh"
+}
+
+variable "cleanroom_version" {
+  description = "Pinned cleanroom release version installed by prod/bootstrap scripts."
+  type        = string
+  default     = "v0.3.0"
+}
+
+variable "cleanroom_install_script_ref" {
+  description = "Git ref used when downloading scripts/install.sh for cleanroom bootstrap."
+  type        = string
+  default     = "main"
+}
+
+variable "cleanroom_release_repo" {
+  description = "Optional GitHub owner/repo slug used for cleanroom release/helper downloads when bootstrap repo_url is not a GitHub remote."
+  type        = string
+  default     = ""
 }
 
 variable "tailscale_version" {

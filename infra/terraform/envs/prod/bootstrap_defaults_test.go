@@ -20,6 +20,19 @@ func requireContains(t *testing.T, path string, want string) {
 	}
 }
 
+func requireNotContains(t *testing.T, path string, want string) {
+	t.Helper()
+
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+
+	if strings.Contains(string(content), want) {
+		t.Fatalf("expected %s not to contain %q", path, want)
+	}
+}
+
 func readVariableBlock(t *testing.T, path string, variableName string) string {
 	t.Helper()
 
@@ -57,7 +70,8 @@ func TestProdDefaultsUseCleanroomBootstrapScript(t *testing.T) {
 
 	requireContains(t, "variables.tf", "default     = \"scripts/bootstrap-cleanroom-host.sh\"")
 	requireContains(t, "terraform.tfvars.example", "setup_script_path = \"scripts/bootstrap-cleanroom-host.sh\"")
-	requireContains(t, "terraform.tfvars", "setup_script_path = \"scripts/bootstrap-cleanroom-host.sh\"")
+	requireContains(t, "prod.ap-southeast-2.tfvars", "setup_script_path            = \"scripts/bootstrap-cleanroom-host.sh\"")
+	requireContains(t, "prod.us-west-2.tfvars", "setup_script_path            = \"scripts/bootstrap-cleanroom-host.sh\"")
 }
 
 func TestProdDefaultsUseLargeLinuxHost(t *testing.T) {
@@ -65,22 +79,40 @@ func TestProdDefaultsUseLargeLinuxHost(t *testing.T) {
 
 	requireContains(t, "variables.tf", "default     = \"m8i.4xlarge\"")
 	requireContains(t, "variables.tf", "default     = 500")
-	requireContains(t, "terraform.tfvars.example", "instance_type         = \"m8i.xlarge\"")
+	requireContains(t, "terraform.tfvars.example", "instance_type        = \"m8i.xlarge\"")
 }
 
-func TestProdBootstrapBuildsAndInstallsCleanroom(t *testing.T) {
+func TestProdBootstrapInstallsPinnedReleaseAndBootstrapRunner(t *testing.T) {
 	t.Helper()
 
 	scriptPath := filepath.Join("..", "..", "..", "..", "scripts", "bootstrap-cleanroom-host.sh")
-	requireContains(t, scriptPath, "scripts/build-go.sh")
-	requireContains(t, scriptPath, "export GOPATH=\"${GOPATH:-$HOME/go}\"")
-	requireContains(t, scriptPath, "export GOMODCACHE=\"${GOMODCACHE:-$GOPATH/pkg/mod}\"")
+	requireContains(t, scriptPath, "installing cleanroom release")
+	requireContains(t, scriptPath, "cleanroom-root-helper")
+	requireContains(t, scriptPath, "retry 5 5 curl -fsSL \"$install_script_url\" -o \"$install_script_path\"")
+	requireContains(t, scriptPath, "retry 5 5 env \\")
+	requireContains(t, scriptPath, "privileged_helper_path: ${HELPER_INSTALL_PATH}")
+	requireContains(t, scriptPath, "BOOTSTRAP_ENV_PATH='/usr/local/etc/cleanroom-bootstrap-host.env'")
+	requireContains(t, scriptPath, "BOOTSTRAP_RUNNER_PATH='/usr/local/bin/cleanroom-bootstrap-host'")
+	requireContains(t, scriptPath, "CLEANROOM_VERSION")
+	requireContains(t, scriptPath, "CLEANROOM_INSTALL_SCRIPT_REF")
+	requireContains(t, scriptPath, "CLEANROOM_RELEASE_REPO")
+	requireContains(t, scriptPath, "CLEANROOM_RELEASE_REPO=''")
+	requireNotContains(t, scriptPath, "match($0, /^[[:space:]]*[A-Za-z0-9_]+[[:space:]]*=[[:space:]]*\"([^\"]*)\"/, m)")
+	requireNotContains(t, scriptPath, "match($0, /^[[:space:]]*[A-Za-z0-9_]+[[:space:]]*=[[:space:]]*(true|false)/, m)")
+	requireContains(t, scriptPath, "apply_prod_tfvars_overrides \"$repo_root\"")
+	requireContains(t, scriptPath, "prod.${AWS_REGION}.tfvars")
+	requireContains(t, scriptPath, "fetch_repo_checkout \"$bootstrap_repo_url\" \"$bootstrap_repo_ref\"")
+	requireContains(t, scriptPath, "if [ \"$REPO_URL\" != \"$bootstrap_repo_url\" ] || [ \"$REPO_REF\" != \"$bootstrap_repo_ref\" ]; then")
+	requireNotContains(t, scriptPath, "CLEANROOM_REPO='$RELEASE_REPO'")
+	requireNotContains(t, scriptPath, "export CLEANROOM_REPO=\"$CLEANROOM_REPO\"")
+	requireNotContains(t, scriptPath, "RELEASE_REPO=\"buildkite/cleanroom\"")
 	requireContains(t, scriptPath, "daemon install --force --log-level info")
 	requireContains(t, scriptPath, "default_backend: firecracker")
 	requireContains(t, scriptPath, "memory_mib: ${CLEANROOM_FIRECRACKER_MEMORY_MIB}")
 	requireContains(t, scriptPath, "install_tailscale_if_configured")
-	requireContains(t, scriptPath, "CLEANROOM_TAILSCALE_AUTH_KEY_PARAMETER_NAME")
 	requireContains(t, scriptPath, "Acquire::ForceIPv4 \"true\";")
+	requireNotContains(t, scriptPath, "curl -fsSL \"\\$1\" | bash")
+	requireNotContains(t, scriptPath, "scripts/build-go.sh")
 }
 
 func TestProdEnvSupportsAvailabilityZoneOverride(t *testing.T) {
@@ -88,22 +120,30 @@ func TestProdEnvSupportsAvailabilityZoneOverride(t *testing.T) {
 
 	requireContains(t, "variables.tf", "variable \"availability_zone\"")
 	requireContains(t, "main.tf", "availability_zone   = var.availability_zone")
-	requireContains(t, "terraform.tfvars.example", "# availability_zone = \"ap-southeast-2b\"")
+	requireContains(t, "terraform.tfvars.example", "availability_zone = \"ap-southeast-2b\"")
 }
 
-func TestVariableDefaultRegionIsUsWest2(t *testing.T) {
+func TestAwsRegionMustBeProvidedExplicitly(t *testing.T) {
 	t.Helper()
 
 	block := readVariableBlock(t, "variables.tf", "aws_region")
-	if !strings.Contains(block, "us-west-2") {
-		t.Fatalf("expected default aws_region to be us-west-2 in variables.tf, got:\n%s", block)
+	if strings.Contains(block, "default") {
+		t.Fatalf("expected aws_region to have no default in variables.tf")
 	}
-}
-
-func TestExampleRegionIsSydney(t *testing.T) {
-	t.Helper()
-
-	requireContains(t, "terraform.tfvars.example", "aws_region  = \"ap-southeast-2\"")
+	requireContains(t, "README.md", "-var-file=prod.ap-southeast-2.tfvars")
+	requireContains(t, "README.md", "terraform workspace select -or-create ap-southeast-2")
+	readmeContent, err := os.ReadFile("README.md")
+	if err != nil {
+		t.Fatalf("read README.md: %v", err)
+	}
+	readme := string(readmeContent)
+	initIndex := strings.Index(readme, "mise x -- terraform init")
+	workspaceIndex := strings.Index(readme, "terraform workspace select -or-create ap-southeast-2")
+	if initIndex == -1 || workspaceIndex == -1 || initIndex > workspaceIndex {
+		t.Fatalf("expected README.md to run terraform init before selecting the workspace")
+	}
+	requireContains(t, "terraform.tfvars", "terraform init")
+	requireContains(t, "terraform.tfvars", "terraform workspace select -or-create ap-southeast-2")
 }
 
 func TestGitDeployKeyIsRequired(t *testing.T) {
@@ -123,9 +163,23 @@ func TestSharedLinuxModuleSupportsNonCiBootstrap(t *testing.T) {
 	t.Helper()
 
 	moduleVarsPath := filepath.Join("..", "..", "modules", "linux-host", "variables.tf")
+	moduleMainPath := filepath.Join("..", "..", "modules", "linux-host", "main.tf")
 	moduleUserDataPath := filepath.Join("..", "..", "modules", "linux-host", "templates", "user_data.sh.tftpl")
 	requireContains(t, moduleVarsPath, "variable \"buildkite_token_parameter_name\"")
 	requireContains(t, moduleVarsPath, "default     = \"\"")
+	requireContains(t, moduleVarsPath, "variable \"user_data_replace_on_change\"")
+	requireContains(t, moduleVarsPath, "default     = true")
+	requireContains(t, moduleVarsPath, "variable \"cleanroom_version\"")
+	requireContains(t, moduleVarsPath, "default     = \"v0.3.0\"")
+	requireContains(t, moduleVarsPath, "variable \"cleanroom_install_script_ref\"")
+	requireContains(t, moduleVarsPath, "variable \"cleanroom_release_repo\"")
+	requireContains(t, moduleMainPath, "user_data_replace_on_change = var.user_data_replace_on_change")
+	requireContains(t, "main.tf", "user_data_replace_on_change       = false")
+	requireNotContains(t, moduleMainPath, "ignore_changes = [user_data]")
+	requireContains(t, moduleUserDataPath, "Acquire::ForceIPv4 \"true\";")
+	requireContains(t, moduleUserDataPath, "export CLEANROOM_VERSION=\"$CLEANROOM_VERSION\"")
+	requireContains(t, moduleUserDataPath, "export CLEANROOM_INSTALL_SCRIPT_REF=\"$CLEANROOM_INSTALL_SCRIPT_REF\"")
+	requireContains(t, moduleUserDataPath, "export CLEANROOM_RELEASE_REPO=\"$CLEANROOM_RELEASE_REPO\"")
 	requireContains(t, moduleUserDataPath, "if [ -n \"$BUILDKITE_TOKEN_PARAM\" ]; then")
 	requireContains(t, moduleUserDataPath, "warning: tailscale auth key parameter unavailable")
 }

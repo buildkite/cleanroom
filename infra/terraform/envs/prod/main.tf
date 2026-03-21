@@ -35,11 +35,15 @@ module "host" {
   ami_id                            = local.selected_ami_id
   instance_type                     = var.instance_type
   root_volume_size_gib              = var.root_volume_size_gib
+  user_data_replace_on_change       = false
   tailscale_auth_key_parameter_name = var.tailscale_auth_key_parameter_name
   git_deploy_key_parameter_name     = var.git_deploy_key_parameter_name
   repo_url                          = var.repo_url
   repo_ref                          = var.repo_ref
   setup_script_path                 = var.setup_script_path
+  cleanroom_version                 = var.cleanroom_version
+  cleanroom_install_script_ref      = var.cleanroom_install_script_ref
+  cleanroom_release_repo            = var.cleanroom_release_repo
   tailscale_version                 = var.tailscale_version
   tailscale_hostname_prefix         = var.tailscale_hostname_prefix
   tailscale_advertise_tags          = var.tailscale_advertise_tags

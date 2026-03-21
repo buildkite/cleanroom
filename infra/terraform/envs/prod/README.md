@@ -8,12 +8,15 @@ production work:
 
 Default host behaviour:
 
-- defaults to `us-west-2` for `aws_region`
+- requires an explicit region-specific var-file
 - uses latest Ubuntu 24.04 AMI from SSM public parameter
 - defaults to `m8i.4xlarge` with a 500 GiB root volume
-- installs `scripts/bootstrap-cleanroom-host.sh`, which builds `cleanroom` from
-  the checked-out repo/ref, installs Firecracker, writes runtime config, and
-  installs the system daemon
+- installs `scripts/bootstrap-cleanroom-host.sh`, which installs the pinned
+  `cleanroom` GitHub release, installs the matching
+  `/usr/local/sbin/cleanroom-root-helper`, installs Firecracker, writes runtime
+  config, installs a rerunnable host bootstrap command, and installs the system
+  daemon
+  Set `cleanroom_release_repo` when `repo_url` is not a GitHub remote.
 
 Network behaviour:
 
@@ -26,6 +29,10 @@ Runtime behaviour:
 
 - daemon runs as a systemd service on the root-owned system socket
 - access the host over SSM or Tailscale, then use `sudo cleanroom ...`
+- prod sets `user_data_replace_on_change = false`, so bootstrap changes do not
+  force EC2 replacement and host software upgrades are rerun in-place instead
+- the rerunnable host updater reloads mutable settings from the checked-out
+  region var-file on each run before reinstalling cleanroom
 - runtime config enables Firecracker snapshots with the file driver
 - when the bootstrap-created ZFS dataset is available, snapshots live under the
   dataset mountpoint; otherwise they fall back to `/var/lib/cleanroom/snapshots`
@@ -35,11 +42,19 @@ Runtime behaviour:
 
 ```bash
 cd infra/terraform/envs/prod
-cp terraform.tfvars.example terraform.tfvars
 mise x -- terraform init
-mise x -- terraform plan
-mise x -- terraform apply
+terraform workspace select -or-create ap-southeast-2
+mise x -- terraform plan -var-file=prod.ap-southeast-2.tfvars
+mise x -- terraform apply -var-file=prod.ap-southeast-2.tfvars
 ```
+
+Available checked-in var-files:
+
+- `prod.ap-southeast-2.tfvars` for the Sydney prod host
+- `prod.us-west-2.tfvars` for the us-west-2 prod host
+
+`terraform.tfvars` is intentionally left empty so the selected workspace must be
+paired with an explicit `-var-file=...`.
 
 ## Access
 
@@ -54,4 +69,5 @@ Once connected to the host:
 sudo cleanroom doctor
 sudo cleanroom daemon status
 sudo cleanroom exec -- <command>
+sudo /usr/local/bin/cleanroom-bootstrap-host
 ```
