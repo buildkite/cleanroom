@@ -104,25 +104,25 @@ const preparedRuntimeRootFSVersion = "v9-darwin-vz"
 const runObservabilityFile = "execution-observability.json"
 
 type darwinVZRunObservation struct {
-	ExecutionID    string           `json:"execution_id"`
-	Backend        string           `json:"backend"`
-	LaunchedVM     bool             `json:"launched_vm"`
-	ImageRef       string           `json:"image_ref,omitempty"`
-	ImageDigest    string           `json:"image_digest,omitempty"`
-	PlanPath       string           `json:"plan_path,omitempty"`
-	RunDir         string           `json:"run_dir,omitempty"`
-	ExitCode       int              `json:"exit_code,omitempty"`
-	Error          string           `json:"error,omitempty"`
-	GuestError     string           `json:"guest_error,omitempty"`
-	NetworkMode    string           `json:"network_mode,omitempty"`
-	NetworkSubnetCIDR string        `json:"network_subnet_cidr,omitempty"`
-	NetworkGuestIP string           `json:"network_guest_ip,omitempty"`
-	NetworkGatewayIP string         `json:"network_gateway_ip,omitempty"`
-	NetworkPrefixLen int            `json:"network_prefix_len,omitempty"`
-	RootFSCopyMS   int64            `json:"rootfs_copy_ms,omitempty"`
-	VMReadyMS      int64            `json:"vm_ready_ms,omitempty"`
-	HelperTimingMS map[string]int64 `json:"helper_timing_ms,omitempty"`
-	TotalMS        int64            `json:"total_ms,omitempty"`
+	ExecutionID       string           `json:"execution_id"`
+	Backend           string           `json:"backend"`
+	LaunchedVM        bool             `json:"launched_vm"`
+	ImageRef          string           `json:"image_ref,omitempty"`
+	ImageDigest       string           `json:"image_digest,omitempty"`
+	PlanPath          string           `json:"plan_path,omitempty"`
+	RunDir            string           `json:"run_dir,omitempty"`
+	ExitCode          int              `json:"exit_code,omitempty"`
+	Error             string           `json:"error,omitempty"`
+	GuestError        string           `json:"guest_error,omitempty"`
+	NetworkMode       string           `json:"network_mode,omitempty"`
+	NetworkSubnetCIDR string           `json:"network_subnet_cidr,omitempty"`
+	NetworkGuestIP    string           `json:"network_guest_ip,omitempty"`
+	NetworkGatewayIP  string           `json:"network_gateway_ip,omitempty"`
+	NetworkPrefixLen  int              `json:"network_prefix_len,omitempty"`
+	RootFSCopyMS      int64            `json:"rootfs_copy_ms,omitempty"`
+	VMReadyMS         int64            `json:"vm_ready_ms,omitempty"`
+	HelperTimingMS    map[string]int64 `json:"helper_timing_ms,omitempty"`
+	TotalMS           int64            `json:"total_ms,omitempty"`
 }
 
 func New() *Adapter {

@@ -198,18 +198,18 @@ func sandboxRunner(
 	sandboxID string,
 	compiled *policy.CompiledPolicy,
 	launchSeconds int64,
-) func(runID, shellCommand string) (*backend.RunResult, error) {
+) func(runID, shellCommand string) (*backend.ExecutionResult, error) {
 	runCounter := 0
-	return func(runID, shellCommand string) (*backend.RunResult, error) {
+	return func(runID, shellCommand string) (*backend.ExecutionResult, error) {
 		runCounter++
 		if strings.TrimSpace(runID) == "" {
 			runID = fmt.Sprintf("run-%d", runCounter)
 		}
-		return adapter.RunInSandbox(ctx, backend.RunRequest{
-			SandboxID: sandboxID,
-			RunID:     runID,
-			Command:   []string{"sh", "-lc", shellCommand},
-			Policy:    compiled,
+		return adapter.RunInSandbox(ctx, backend.ExecutionRequest{
+			SandboxID:   sandboxID,
+			ExecutionID: runID,
+			Command:     []string{"sh", "-lc", shellCommand},
+			Policy:      compiled,
 			FirecrackerConfig: backend.FirecrackerConfig{
 				LaunchSeconds: launchSeconds,
 			},
@@ -217,7 +217,7 @@ func sandboxRunner(
 	}
 }
 
-func waitForGuestIPv4(t *testing.T, run func(string, string) (*backend.RunResult, error)) string {
+func waitForGuestIPv4(t *testing.T, run func(string, string) (*backend.ExecutionResult, error)) string {
 	t.Helper()
 
 	deadline := time.Now().Add(45 * time.Second)
@@ -259,7 +259,7 @@ printf '%s\n' "$ip_addr"`)
 	return ""
 }
 
-func waitForGuestEgress(t *testing.T, run func(string, string) (*backend.RunResult, error)) {
+func waitForGuestEgress(t *testing.T, run func(string, string) (*backend.ExecutionResult, error)) {
 	t.Helper()
 
 	deadline := time.Now().Add(45 * time.Second)

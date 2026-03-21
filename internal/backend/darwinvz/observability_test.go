@@ -87,7 +87,7 @@ func TestWriteDarwinVZRunObservationIncludesNetworkMetadata(t *testing.T) {
 
 	runDir := t.TempDir()
 	obs := darwinVZRunObservation{
-		RunID:             "run-123",
+		ExecutionID:       "run-123",
 		Backend:           "darwin-vz",
 		LaunchedVM:        true,
 		RunDir:            runDir,
