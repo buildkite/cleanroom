@@ -136,6 +136,42 @@ func TestInjectFileFollowsSymlinkedParentDirectories(t *testing.T) {
 	}
 }
 
+func TestInjectFileMakesReadonlyImageOwnerWritable(t *testing.T) {
+	debugfsBinary, mkfsBinary, ok := requireDebugFSTools(t)
+	if !ok {
+		return
+	}
+
+	imagePath := createExt4Image(t, mkfsBinary)
+	createExt4Dir(t, debugfsBinary, imagePath, "/usr")
+	createExt4Dir(t, debugfsBinary, imagePath, "/usr/local")
+	createExt4Dir(t, debugfsBinary, imagePath, "/usr/local/bin")
+
+	if err := os.Chmod(imagePath, 0o444); err != nil {
+		t.Fatalf("chmod readonly image: %v", err)
+	}
+
+	srcPath := filepath.Join(t.TempDir(), "guest-agent")
+	if err := os.WriteFile(srcPath, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+
+	if err := InjectFile(imagePath, srcPath, "/usr/local/bin/cleanroom-guest-agent", 0o755); err != nil {
+		t.Fatalf("InjectFile: %v", err)
+	}
+
+	info, err := os.Stat(imagePath)
+	if err != nil {
+		t.Fatalf("stat image: %v", err)
+	}
+	if info.Mode().Perm()&0o200 == 0 {
+		t.Fatalf("expected image to become owner-writable, got mode %o", info.Mode().Perm())
+	}
+	if !PathExists(imagePath, "/usr/local/bin/cleanroom-guest-agent") {
+		t.Fatal("expected injected file to exist after mutating a readonly image")
+	}
+}
+
 func requireDebugFSTools(t *testing.T) (debugfsBinary, mkfsBinary string, ok bool) {
 	t.Helper()
 

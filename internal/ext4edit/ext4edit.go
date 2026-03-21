@@ -24,6 +24,10 @@ const (
 
 // InjectFile copies a host file into an ext4 image and sets its final mode.
 func InjectFile(imagePath, srcPath, dstPath string, mode os.FileMode) error {
+	if err := ensureOwnerWritable(imagePath); err != nil {
+		return err
+	}
+
 	cleanDst := filepath.Clean(dstPath)
 	if !strings.HasPrefix(cleanDst, "/") {
 		return fmt.Errorf("destination path %q must be absolute", dstPath)
@@ -274,6 +278,21 @@ func isMissingPathError(err error) bool {
 	return strings.Contains(lower, "file not found") ||
 		strings.Contains(lower, "ext2_lookup") ||
 		strings.Contains(lower, "no such file or directory")
+}
+
+func ensureOwnerWritable(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("stat image %q: %w", path, err)
+	}
+	mode := info.Mode().Perm()
+	if mode&0o200 != 0 {
+		return nil
+	}
+	if err := os.Chmod(path, mode|0o200); err != nil {
+		return fmt.Errorf("make image %q owner-writable: %w", path, err)
+	}
+	return nil
 }
 
 func debugFSCommand(name string, args ...string) (string, error) {
