@@ -552,33 +552,8 @@ func (a *Adapter) Doctor(_ context.Context, req backend.DoctorRequest) (*backend
 		}
 		if networkErr == nil && networkCfg.Mode == darwinVZNetworkModeVMNetShared {
 			hasVMNetEntitlement, vmnetEntitlementErr := helperHasVMNetworkingEntitlement(helperPath)
-			switch {
-			case vmnetEntitlementErr != nil:
-				appendCheck(
-					"vmnet_entitlement",
-					"warn",
-					fmt.Sprintf(
-						"could not verify com.apple.developer.networking.vmnet entitlement on %s: %v",
-						helperPath,
-						vmnetEntitlementErr,
-					),
-				)
-			case !hasVMNetEntitlement:
-				appendCheck(
-					"vmnet_entitlement",
-					"fail",
-					fmt.Sprintf(
-						"%s is missing com.apple.developer.networking.vmnet entitlement; sign the helper with cmd/cleanroom-darwin-vz/entitlements-vmnet.plist and the matching provisioning profile or identifier",
-						helperPath,
-					),
-				)
-			default:
-				appendCheck(
-					"vmnet_entitlement",
-					"pass",
-					fmt.Sprintf("%s includes com.apple.developer.networking.vmnet entitlement", helperPath),
-				)
-			}
+			status, message := doctorVMNetEntitlementResult(helperPath, hasVMNetEntitlement, vmnetEntitlementErr)
+			appendCheck("vmnet_entitlement", status, message)
 		}
 	}
 	return report, nil

@@ -2,7 +2,14 @@
 
 package darwinvz
 
-import "testing"
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+
+	"github.com/buildkite/cleanroom/internal/backend"
+)
 
 func TestHasVirtualizationEntitlementHandlesFormattedXML(t *testing.T) {
 	raw := `Executable=/tmp/helper
@@ -67,5 +74,72 @@ func TestHasVMNetworkingEntitlementRejectsMissingOrFalseEntitlement(t *testing.T
 	legacyKey := `<?xml version="1.0"?><plist version="1.0"><dict><key>com.apple.vm.networking</key><true/></dict></plist>`
 	if hasVMNetworkingEntitlement(legacyKey) {
 		t.Fatal("expected legacy vm networking entitlement key to be rejected")
+	}
+}
+
+func TestDoctorVMNetEntitlementResultPassesWhenEntitlementPresent(t *testing.T) {
+	status, message := doctorVMNetEntitlementResult("/tmp/helper", true, nil)
+	if status != "pass" {
+		t.Fatalf("unexpected status: got %q want %q", status, "pass")
+	}
+	if !strings.Contains(message, "includes com.apple.developer.networking.vmnet entitlement") {
+		t.Fatalf("unexpected message: %q", message)
+	}
+}
+
+func TestDoctorVMNetEntitlementResultWarnsWhenEntitlementMissing(t *testing.T) {
+	status, message := doctorVMNetEntitlementResult("/tmp/helper", false, nil)
+	if status != "warn" {
+		t.Fatalf("unexpected status: got %q want %q", status, "warn")
+	}
+	if !strings.Contains(message, "unsandboxed local builds may still work with vmnet-shared") {
+		t.Fatalf("unexpected message: %q", message)
+	}
+	if !strings.Contains(message, "entitlements-vmnet.plist") {
+		t.Fatalf("unexpected message: %q", message)
+	}
+}
+
+func TestDoctorVMNetEntitlementResultWarnsWhenVerificationFails(t *testing.T) {
+	errSentinel := errors.New("boom")
+	status, message := doctorVMNetEntitlementResult("/tmp/helper", false, errSentinel)
+	if status != "warn" {
+		t.Fatalf("unexpected status: got %q want %q", status, "warn")
+	}
+	if !strings.Contains(message, "could not verify com.apple.developer.networking.vmnet entitlement") {
+		t.Fatalf("unexpected message: %q", message)
+	}
+	if !strings.Contains(message, errSentinel.Error()) {
+		t.Fatalf("unexpected message: %q", message)
+	}
+}
+
+func TestDoctorWarnsWhenVMNetEntitlementIsMissing(t *testing.T) {
+	t.Setenv(helperEnvVar, "/usr/bin/true")
+
+	report, err := New().Doctor(context.Background(), backend.DoctorRequest{
+		FirecrackerConfig: backend.FirecrackerConfig{
+			DarwinVZNetworkMode: darwinVZNetworkModeVMNetShared,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Doctor returned error: %v", err)
+	}
+
+	var vmnetCheck *backend.DoctorCheck
+	for i := range report.Checks {
+		if report.Checks[i].Name == "vmnet_entitlement" {
+			vmnetCheck = &report.Checks[i]
+			break
+		}
+	}
+	if vmnetCheck == nil {
+		t.Fatalf("expected vmnet_entitlement check in report: %#v", report.Checks)
+	}
+	if got, want := vmnetCheck.Status, "warn"; got != want {
+		t.Fatalf("unexpected vmnet_entitlement status: got %q want %q (message: %q)", got, want, vmnetCheck.Message)
+	}
+	if !strings.Contains(vmnetCheck.Message, "unsandboxed local builds may still work with vmnet-shared") {
+		t.Fatalf("unexpected vmnet_entitlement message: %q", vmnetCheck.Message)
 	}
 }

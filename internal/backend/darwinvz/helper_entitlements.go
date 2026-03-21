@@ -22,6 +22,24 @@ func helperHasVMNetworkingEntitlement(helperPath string) (bool, error) {
 	return helperHasEntitlement(helperPath, vmNetworkingEntitlementPattern)
 }
 
+func doctorVMNetEntitlementResult(helperPath string, hasEntitlement bool, entitlementErr error) (string, string) {
+	switch {
+	case entitlementErr != nil:
+		return "warn", fmt.Sprintf(
+			"could not verify com.apple.developer.networking.vmnet entitlement on %s: %v",
+			helperPath,
+			entitlementErr,
+		)
+	case hasEntitlement:
+		return "pass", fmt.Sprintf("%s includes com.apple.developer.networking.vmnet entitlement", helperPath)
+	default:
+		return "warn", fmt.Sprintf(
+			"%s does not declare com.apple.developer.networking.vmnet; unsandboxed local builds may still work with vmnet-shared, but signed helpers and CI should use cmd/cleanroom-darwin-vz/entitlements-vmnet.plist and the matching provisioning profile or identifier",
+			helperPath,
+		)
+	}
+}
+
 func helperHasEntitlement(helperPath string, pattern *regexp.Regexp) (bool, error) {
 	entitlements, err := readHelperEntitlements(helperPath)
 	if err != nil {
