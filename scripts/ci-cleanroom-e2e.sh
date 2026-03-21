@@ -1,19 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-KERNEL_IMAGE="${CLEANROOM_KERNEL_IMAGE:-}"
-FIRECRACKER_BINARY="${CLEANROOM_FIRECRACKER_BINARY:-firecracker}"
-PRIVILEGED_HELPER_PATH="${CLEANROOM_PRIVILEGED_HELPER_PATH:-/usr/local/sbin/cleanroom-root-helper}"
-
 ROOT_HELPER_REQUIRED_CAPABILITIES=(
   firecracker-network
   firecracker-rootfs
 )
-
-if [[ -z "$KERNEL_IMAGE" ]]; then
-  echo "CLEANROOM_KERNEL_IMAGE is required for Firecracker e2e CI" >&2
-  exit 1
-fi
 
 # run_privileged executes a privileged command via the installed root helper.
 run_privileged() {
@@ -125,15 +116,6 @@ purge_stale_cleanroom_resources() {
   done
 }
 
-verify_helper_capabilities
-
-echo "--- :broom: Pre-build cleanup"
-purge_stale_cleanroom_resources
-
-echo "--- :hammer: Building binaries"
-scripts/build-go.sh
-
-tmpdir="$(mktemp -d)"
 cleanup() {
   if [[ -n "${srv_pid:-}" ]]; then
     kill "$srv_pid" >/dev/null 2>&1 || true
@@ -145,16 +127,36 @@ cleanup() {
   purge_stale_cleanroom_resources 2>/dev/null || true
   rm -rf "$tmpdir"
 }
-trap cleanup EXIT
 
-export XDG_CONFIG_HOME="$tmpdir/config"
-export XDG_STATE_HOME="$tmpdir/state"
-export XDG_RUNTIME_DIR="$tmpdir/runtime"
-export XDG_DATA_HOME="$tmpdir/data"
+main() {
+  KERNEL_IMAGE="${CLEANROOM_KERNEL_IMAGE:-}"
+  FIRECRACKER_BINARY="${CLEANROOM_FIRECRACKER_BINARY:-firecracker}"
+  PRIVILEGED_HELPER_PATH="${CLEANROOM_PRIVILEGED_HELPER_PATH:-/usr/local/sbin/cleanroom-root-helper}"
 
-mkdir -p "$XDG_CONFIG_HOME" "$XDG_STATE_HOME" "$XDG_RUNTIME_DIR" "$XDG_DATA_HOME"
-mkdir -p "$XDG_CONFIG_HOME/cleanroom"
-cat > "$XDG_CONFIG_HOME/cleanroom/config.yaml" <<EOF
+  if [[ -z "$KERNEL_IMAGE" ]]; then
+    echo "CLEANROOM_KERNEL_IMAGE is required for Firecracker e2e CI" >&2
+    exit 1
+  fi
+
+  verify_helper_capabilities
+
+  echo "--- :broom: Pre-build cleanup"
+  purge_stale_cleanroom_resources
+
+  echo "--- :hammer: Building binaries"
+  scripts/build-go.sh
+
+  tmpdir="$(mktemp -d)"
+  trap cleanup EXIT
+
+  export XDG_CONFIG_HOME="$tmpdir/config"
+  export XDG_STATE_HOME="$tmpdir/state"
+  export XDG_RUNTIME_DIR="$tmpdir/runtime"
+  export XDG_DATA_HOME="$tmpdir/data"
+
+  mkdir -p "$XDG_CONFIG_HOME" "$XDG_STATE_HOME" "$XDG_RUNTIME_DIR" "$XDG_DATA_HOME"
+  mkdir -p "$XDG_CONFIG_HOME/cleanroom"
+  cat > "$XDG_CONFIG_HOME/cleanroom/config.yaml" <<EOF
 default_backend: firecracker
 backends:
   firecracker:
@@ -165,17 +167,17 @@ backends:
     launch_seconds: 90
 EOF
 
-echo "    privileged_helper_path: $PRIVILEGED_HELPER_PATH" >> "$XDG_CONFIG_HOME/cleanroom/config.yaml"
+  echo "    privileged_helper_path: $PRIVILEGED_HELPER_PATH" >> "$XDG_CONFIG_HOME/cleanroom/config.yaml"
 
-echo "--- :stethoscope: Doctor"
-./dist/cleanroom doctor --json | tee "$tmpdir/doctor.json"
-if grep -q '"status": "fail"' "$tmpdir/doctor.json"; then
-  echo "doctor checks reported failures" >&2
-  exit 1
-fi
+  echo "--- :stethoscope: Doctor"
+  ./dist/cleanroom doctor --json | tee "$tmpdir/doctor.json"
+  if grep -q '"status": "fail"' "$tmpdir/doctor.json"; then
+    echo "doctor checks reported failures" >&2
+    exit 1
+  fi
 
-socket_path="$tmpdir/cleanroom.sock"
-listen_endpoint="unix://$socket_path"
+  socket_path="$tmpdir/cleanroom.sock"
+  listen_endpoint="unix://$socket_path"
 
 dump_runtime_diagnostics() {
   local server_lines="${1:-40}"
@@ -198,22 +200,22 @@ dump_runtime_diagnostics() {
   fi
 }
 
-echo "--- :rocket: Start cleanroom control-plane"
-./dist/cleanroom serve --listen "$listen_endpoint" --gateway-listen ":0" >"$tmpdir/server.log" 2>&1 &
-srv_pid=$!
+  echo "--- :rocket: Start cleanroom control-plane"
+  ./dist/cleanroom serve --listen "$listen_endpoint" --gateway-listen ":0" >"$tmpdir/server.log" 2>&1 &
+  srv_pid=$!
 
-for _ in $(seq 1 40); do
-  if [[ -S "$socket_path" ]]; then
-    break
+  for _ in $(seq 1 40); do
+    if [[ -S "$socket_path" ]]; then
+      break
+    fi
+    sleep 0.25
+  done
+  if [[ ! -S "$socket_path" ]]; then
+    echo "cleanroom server did not create unix socket: $socket_path" >&2
+    echo "server log:" >&2
+    cat "$tmpdir/server.log" >&2
+    exit 1
   fi
-  sleep 0.25
-done
-if [[ ! -S "$socket_path" ]]; then
-  echo "cleanroom server did not create unix socket: $socket_path" >&2
-  echo "server log:" >&2
-  cat "$tmpdir/server.log" >&2
-  exit 1
-fi
 
 echo "--- :white_check_mark: Launched execution smoke test"
 smoke_attempt=1
@@ -555,4 +557,9 @@ EOF
   fi
 fi
 
-echo "Firecracker e2e checks passed"
+  echo "Firecracker e2e checks passed"
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi
