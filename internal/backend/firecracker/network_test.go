@@ -213,13 +213,11 @@ func TestSetupHostNetworkWithDepsAddsAllowAllForwardRule(t *testing.T) {
 		return nil
 	}
 	lookup := func(_ context.Context, host string) ([]net.IP, error) {
-		if host != "proxy.golang.org" {
-			t.Fatalf("unexpected host %q", host)
-		}
-		return []net.IP{net.ParseIP("142.251.41.17")}, nil
+		t.Fatalf("allow-all networking should not resolve policy host %q", host)
+		return nil, nil
 	}
 
-	cfg, cleanup, err := setupHostNetworkWithDeps(context.Background(), "run-allow-all", true, []policy.AllowRule{{Host: "proxy.golang.org", Ports: []int{443}}}, 0, lookup, run, runBatch)
+	cfg, cleanup, err := setupHostNetworkWithDeps(context.Background(), "run-allow-all", true, []policy.AllowRule{{Host: "stale.example.invalid", Ports: []int{443}}}, 0, lookup, run, runBatch)
 	if err != nil {
 		t.Fatalf("setupHostNetworkWithDeps: %v", err)
 	}
@@ -232,6 +230,9 @@ func TestSetupHostNetworkWithDepsAddsAllowAllForwardRule(t *testing.T) {
 	}
 	if strings.Contains(joined, "iptables -A FORWARD -i "+tap+" -j DROP") {
 		t.Fatalf("unexpected default DROP FORWARD rule for tap %s\ncalls:\n%s", tap, joined)
+	}
+	if cfg.PolicyResolveMS != 0 {
+		t.Fatalf("expected allow-all networking to skip policy resolution timing, got %d", cfg.PolicyResolveMS)
 	}
 }
 

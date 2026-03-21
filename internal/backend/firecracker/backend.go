@@ -2102,11 +2102,18 @@ func setupHostNetworkWithTapLookup(ctx context.Context, runID string, allowAll b
 	guestCIDR := guestIP + "/32"
 	const dnsServer = "1.1.1.1"
 
-	policyResolveStart := time.Now()
-	forwardRules, err := resolveForwardRulesWithLookup(ctx, allow, lookup)
-	policyResolveMS := durationMillisCeil(time.Since(policyResolveStart))
-	if err != nil {
-		return hostNetworkConfig{}, func() {}, err
+	var (
+		forwardRules    []iptablesForwardRule
+		policyResolveMS int64
+		err             error
+	)
+	if !allowAll {
+		policyResolveStart := time.Now()
+		forwardRules, err = resolveForwardRulesWithLookup(ctx, allow, lookup)
+		policyResolveMS = durationMillisCeil(time.Since(policyResolveStart))
+		if err != nil {
+			return hostNetworkConfig{}, func() {}, err
+		}
 	}
 
 	setupRun := func(args ...string) error {
