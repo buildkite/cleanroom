@@ -1399,6 +1399,44 @@ func (a *Adapter) installGuestRuntimeIntoRootFS(rootFSPath, guestAgentPath strin
 	return nil
 }
 
+func legacyCompatibleGuestAgentInstallSource(path string, stat func(string) (os.FileInfo, error)) string {
+	legacyPath, ok := stagedDistGuestAgentCompatibilityPath(path)
+	if !ok {
+		return path
+	}
+	if stat == nil {
+		stat = os.Stat
+	}
+	info, err := stat(legacyPath)
+	if err != nil || info.IsDir() {
+		return path
+	}
+	return legacyPath
+}
+
+func stagedDistGuestAgentCompatibilityPath(path string) (string, bool) {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" {
+		return "", false
+	}
+
+	cleaned := filepath.Clean(trimmed)
+	if filepath.Base(filepath.Dir(cleaned)) != "cleanroom" {
+		return "", false
+	}
+	if filepath.Base(filepath.Dir(filepath.Dir(cleaned))) != "libexec" {
+		return "", false
+	}
+
+	stageDir := filepath.Dir(filepath.Dir(filepath.Dir(cleaned)))
+	distDir := filepath.Dir(stageDir)
+	if filepath.Base(distDir) != "dist" {
+		return "", false
+	}
+
+	return filepath.Join(distDir, filepath.Base(cleaned)), true
+}
+
 func createGuestInitScript() (string, error) {
 	f, err := os.CreateTemp("", "cleanroom-init-*.sh")
 	if err != nil {

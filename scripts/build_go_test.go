@@ -24,7 +24,10 @@ func TestBuildGoBootstrapsLinuxGuestAgentBinary(t *testing.T) {
 	if !strings.Contains(script, `go build -o "$BIN_DIR/download-sandbox-file" ./scripts/download_sandbox_file`) {
 		t.Fatalf("expected build-go.sh to stage download-sandbox-file under dist/<os>-<arch>/bin")
 	}
-	if !strings.Contains(script, `GOOS=linux GOARCH="$HOST_ARCH" CGO_ENABLED=0 go build -trimpath -o "$LIBEXEC_DIR/cleanroom-guest-agent-linux-$HOST_ARCH" ./cmd/cleanroom-guest-agent`) {
+	if !strings.Contains(script, `GOOS=linux GOARCH="$HOST_ARCH" CGO_ENABLED=0 go build -trimpath -o "$LIBEXEC_DIR/$GUEST_AGENT_NAME" ./cmd/cleanroom-guest-agent`) {
 		t.Fatalf("expected build-go.sh to stage cleanroom-guest-agent-linux-$HOST_ARCH under dist/<os>-<arch>/libexec/cleanroom")
+	}
+	if !strings.Contains(script, `install -m 0755 "$LIBEXEC_DIR/$GUEST_AGENT_NAME" "$LEGACY_GUEST_AGENT_PATH"`) {
+		t.Fatalf("expected build-go.sh to keep a legacy dist/cleanroom-guest-agent-linux-$HOST_ARCH compatibility copy")
 	}
 }
