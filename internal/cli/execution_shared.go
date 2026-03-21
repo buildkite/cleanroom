@@ -178,7 +178,7 @@ func closeExecutionStdin(client *controlclient.Client, sandboxID, executionID st
 		SandboxId:   sandboxID,
 		ExecutionId: executionID,
 	})
-	if isBenignExecutionStdinErr(err) {
+	if isBenignExecutionStdinErr(err) || isClosedNetworkConnectionErr(err) {
 		return nil
 	}
 	if err != nil {
@@ -383,8 +383,7 @@ func isBenignExecutionStdinErr(err error) bool {
 	return err == nil ||
 		isCanceledStreamErr(err) ||
 		isExecutionNoLongerActiveErr(err) ||
-		isExecutionNotRunningErr(err) ||
-		isClosedNetworkConnectionErr(err)
+		isExecutionNotRunningErr(err)
 }
 
 func isInteractiveStreamClosedErr(err error) bool {

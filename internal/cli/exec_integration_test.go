@@ -837,6 +837,67 @@ func TestExecIntegrationIgnoresBenignStdinCloseFailures(t *testing.T) {
 	}
 }
 
+func TestExecIntegrationPropagatesStdinWriteClosedConnectionFailures(t *testing.T) {
+	firstWrite := make(chan struct{}, 1)
+	adapter := &integrationAdapter{
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+			if stream.OnAttach != nil {
+				stream.OnAttach(backend.AttachIO{
+					WriteStdin: func(data []byte) error {
+						select {
+						case firstWrite <- struct{}{}:
+						default:
+						}
+						return errors.New("use of closed network connection")
+					},
+					CloseStdin: func() error {
+						return nil
+					},
+				})
+			}
+			select {
+			case <-firstWrite:
+			case <-time.After(2 * time.Second):
+				return nil, errors.New("timed out waiting for stdin write")
+			}
+			if stream.OnStdout != nil {
+				stream.OnStdout([]byte("done\n"))
+			}
+			return &backend.ExecutionResult{
+				ExecutionID: req.ExecutionID,
+				ExitCode:    0,
+				Stdout:      "done\n",
+				Message:     "ok",
+			}, nil
+		},
+	}
+
+	host, _ := startIntegrationServer(t, adapter)
+	cwd := t.TempDir()
+	stdinData := "input\n"
+	cmd := ExecCommand{
+		clientFlags: clientFlags{Host: host},
+		Chdir:       cwd,
+		Command:     []string{"cat"},
+	}
+	outcome := runWithCapture(func(runCtx *runtimeContext) error {
+		return cmd.Run(runCtx)
+	}, &stdinData, runtimeContext{
+		CWD:    cwd,
+		Loader: integrationLoader{},
+	})
+
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err == nil {
+		t.Fatal("expected stdin write error")
+	}
+	if !strings.Contains(outcome.err.Error(), "write execution stdin") {
+		t.Fatalf("expected stdin write error, got %v", outcome.err)
+	}
+}
+
 func TestExecIntegrationNoStdinFailureDoesNotHangWhileStreamBlocked(t *testing.T) {
 	started := make(chan struct{}, 1)
 	adapter := &integrationAdapter{
