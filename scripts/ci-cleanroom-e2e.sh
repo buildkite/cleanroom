@@ -246,7 +246,7 @@ while true; do
 done
 
 echo "--- :recycle: Persistent sandbox lifecycle test"
-sandbox_id="$(./dist/cleanroom sandbox create --host "$listen_endpoint" -c "$PWD" | tr -d '\n')"
+sandbox_id="$(./dist/cleanroom sandbox create --host "$listen_endpoint" | tr -d '\n')"
 if [[ -z "$sandbox_id" ]]; then
   echo "sandbox create did not return an id" >&2
   exit 1
