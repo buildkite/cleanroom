@@ -31,23 +31,43 @@ func InjectFile(imagePath, srcPath, dstPath string, mode os.FileMode) error {
 	}
 
 	if PathExists(imagePath, cleanDst) {
-		_ = runDebugFS(imagePath, true, fmt.Sprintf("rm %s", cleanDst))
+		rmCommand, err := debugFSCommand("rm", cleanDst)
+		if err != nil {
+			return err
+		}
+		_ = runDebugFS(imagePath, true, rmCommand)
 	}
-	if err := runDebugFS(imagePath, true, fmt.Sprintf("write %s %s", srcPath, cleanDst)); err != nil {
+	writeCommand, err := debugFSCommand("write", srcPath, cleanDst)
+	if err != nil {
+		return err
+	}
+	if err := runDebugFS(imagePath, true, writeCommand); err != nil {
 		return err
 	}
 	modeValue := fmt.Sprintf("%#o", uint32(0o100000)|uint32(mode.Perm()))
-	return runDebugFS(imagePath, true, fmt.Sprintf("set_inode_field %s mode %s", cleanDst, modeValue))
+	setModeCommand, err := debugFSSetInodeFieldCommand(cleanDst, "mode", modeValue)
+	if err != nil {
+		return err
+	}
+	return runDebugFS(imagePath, true, setModeCommand)
 }
 
 // PathExists reports whether the given path can be resolved inside the ext4 image.
 func PathExists(imagePath, path string) bool {
-	return runDebugFS(imagePath, false, fmt.Sprintf("stat %s", path)) == nil
+	command, err := debugFSCommand("stat", path)
+	if err != nil {
+		return false
+	}
+	return runDebugFS(imagePath, false, command) == nil
 }
 
 // PathType returns the ext4 inode type for the given path.
 func PathType(imagePath, path string) PathKind {
-	output, err := runDebugFSOutput(imagePath, false, fmt.Sprintf("stat %s", path))
+	command, err := debugFSCommand("stat", path)
+	if err != nil {
+		return PathKindUnknown
+	}
+	output, err := runDebugFSOutput(imagePath, false, command)
 	if err != nil {
 		return PathKindUnknown
 	}
@@ -125,11 +145,43 @@ func ensureDir(imagePath, dir string) error {
 		if PathExists(imagePath, cur) {
 			continue
 		}
-		if err := runDebugFS(imagePath, true, fmt.Sprintf("mkdir %s", cur)); err != nil {
+		command, err := debugFSCommand("mkdir", cur)
+		if err != nil {
+			return err
+		}
+		if err := runDebugFS(imagePath, true, command); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func debugFSCommand(name string, args ...string) (string, error) {
+	quotedArgs := make([]string, 0, len(args))
+	for _, arg := range args {
+		quoted, err := debugFSQuoteArg(arg)
+		if err != nil {
+			return "", err
+		}
+		quotedArgs = append(quotedArgs, quoted)
+	}
+	return strings.Join(append([]string{name}, quotedArgs...), " "), nil
+}
+
+func debugFSSetInodeFieldCommand(path, field, value string) (string, error) {
+	quotedPath, err := debugFSQuoteArg(path)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("set_inode_field %s %s %s", quotedPath, field, value), nil
+}
+
+func debugFSQuoteArg(arg string) (string, error) {
+	if strings.ContainsAny(arg, "\x00\r\n") {
+		return "", fmt.Errorf("debugfs argument %q contains an unsupported control character", arg)
+	}
+	escaped := strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(arg)
+	return `"` + escaped + `"`, nil
 }
 
 func runDebugFS(imagePath string, writable bool, command string) error {

@@ -2,6 +2,42 @@ package ext4edit
 
 import "testing"
 
+func TestDebugFSCommandQuotesArguments(t *testing.T) {
+	t.Parallel()
+
+	got, err := debugFSCommand("write", `/tmp/src with "quotes"`, `/dir with space/file\name`)
+	if err != nil {
+		t.Fatalf("debugFSCommand: %v", err)
+	}
+
+	want := `write "/tmp/src with \"quotes\"" "/dir with space/file\\name"`
+	if got != want {
+		t.Fatalf("unexpected command: got %q want %q", got, want)
+	}
+}
+
+func TestDebugFSSetInodeFieldCommandQuotesPath(t *testing.T) {
+	t.Parallel()
+
+	got, err := debugFSSetInodeFieldCommand(`/dir with space/file "quoted"`, "mode", "0100755")
+	if err != nil {
+		t.Fatalf("debugFSSetInodeFieldCommand: %v", err)
+	}
+
+	want := `set_inode_field "/dir with space/file \"quoted\"" mode 0100755`
+	if got != want {
+		t.Fatalf("unexpected command: got %q want %q", got, want)
+	}
+}
+
+func TestDebugFSQuoteArgRejectsControlCharacters(t *testing.T) {
+	t.Parallel()
+
+	if _, err := debugFSQuoteArg("/tmp/path\nwith-newline"); err == nil {
+		t.Fatal("expected control characters to be rejected")
+	}
+}
+
 func TestDebugFSCommandOutputErrorReportsMissingFile(t *testing.T) {
 	t.Parallel()
 
