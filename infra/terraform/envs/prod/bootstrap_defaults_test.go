@@ -132,6 +132,17 @@ func TestAwsRegionMustBeProvidedExplicitly(t *testing.T) {
 	}
 	requireContains(t, "README.md", "-var-file=prod.ap-southeast-2.tfvars")
 	requireContains(t, "README.md", "terraform workspace select -or-create ap-southeast-2")
+	readmeContent, err := os.ReadFile("README.md")
+	if err != nil {
+		t.Fatalf("read README.md: %v", err)
+	}
+	readme := string(readmeContent)
+	initIndex := strings.Index(readme, "mise x -- terraform init")
+	workspaceIndex := strings.Index(readme, "terraform workspace select -or-create ap-southeast-2")
+	if initIndex == -1 || workspaceIndex == -1 || initIndex > workspaceIndex {
+		t.Fatalf("expected README.md to run terraform init before selecting the workspace")
+	}
+	requireContains(t, "terraform.tfvars", "terraform init")
 	requireContains(t, "terraform.tfvars", "terraform workspace select -or-create ap-southeast-2")
 }
 
