@@ -224,8 +224,8 @@ HOST_OS_RAW="$(uname -s)"
 HOST_ARCH_RAW="$(uname -m)"
 
 case "$HOST_OS_RAW" in
-  Linux) HOST_OS="Linux"; HOST_GOOS="linux" ;;
-  Darwin) HOST_OS="Darwin"; HOST_GOOS="darwin" ;;
+  Linux) HOST_OS="Linux" ;;
+  Darwin) HOST_OS="Darwin" ;;
   *) die "unsupported operating system: ${HOST_OS_RAW}" ;;
 esac
 

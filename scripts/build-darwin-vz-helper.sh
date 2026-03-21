@@ -43,7 +43,11 @@ swiftc_args+=(
   -o "${build_output_path}"
 )
 
+echo "[build-darwin-vz-helper] compiling helper to ${build_output_path}"
+compile_start="$(date +%s)"
 xcrun swiftc "${swiftc_args[@]}"
+compile_end="$(date +%s)"
+echo "[build-darwin-vz-helper] swiftc completed in $((compile_end - compile_start))s"
 
 package_env=(
   "CLEANROOM_DARWIN_VZ_HELPER_ENTITLEMENTS=${ENTITLEMENTS_PATH}"
@@ -56,4 +60,8 @@ if [[ -n "${PROVISION_PROFILE}" || "${BUNDLE_MODE}" != "0" ]]; then
   package_env+=("CLEANROOM_DARWIN_VZ_HELPER_BUNDLE=1")
 fi
 
+echo "[build-darwin-vz-helper] packaging helper to ${OUTPUT_PATH}"
+package_start="$(date +%s)"
 env "${package_env[@]}" "${SCRIPT_DIR}/package-darwin-vz-helper.sh" "${build_output_path}" "${OUTPUT_PATH}"
+package_end="$(date +%s)"
+echo "[build-darwin-vz-helper] packaging completed in $((package_end - package_start))s"

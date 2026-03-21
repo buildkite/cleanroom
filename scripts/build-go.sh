@@ -7,7 +7,6 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/dist-layout.sh"
 VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo dev)
 HOST_OS=$(go env GOOS)
 HOST_ARCH=$(go env GOARCH)
-STAGE_DIR="$(cleanroom_stage_dir "$HOST_OS" "$HOST_ARCH")"
 BIN_DIR="$(cleanroom_stage_bin_dir "$HOST_OS" "$HOST_ARCH")"
 LIBEXEC_DIR="$(cleanroom_stage_libexec_dir "$HOST_OS" "$HOST_ARCH")"
 mkdir -p "$BIN_DIR" "$LIBEXEC_DIR"

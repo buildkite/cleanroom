@@ -34,8 +34,8 @@ func TestBuildkitePipelineUsesMisePlugin(t *testing.T) {
 	if !strings.Contains(pipeline, "CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTIFIER: com.buildkite.cleanroom.darwin-vz") {
 		t.Fatalf("expected .buildkite/pipeline.yml to set the darwin-vz vmnet helper bundle identifier")
 	}
-	if !strings.Contains(pipeline, "CLEANROOM_PRIVILEGED_HELPER_PATH: /usr/local/libexec/cleanroom/cleanroom-root-helper") {
-		t.Fatalf("expected .buildkite/pipeline.yml to point Firecracker CI at the libexec root helper path")
+	if strings.Contains(pipeline, "CLEANROOM_PRIVILEGED_HELPER_PATH:") {
+		t.Fatalf("expected .buildkite/pipeline.yml to let ci-cleanroom-e2e.sh auto-detect a compatible helper path")
 	}
 }
 

@@ -64,6 +64,5 @@ steps:
       CLEANROOM_KERNEL_IMAGE: /var/lib/buildkite-agent/.local/share/cleanroom/images/vmlinux.bin
       CLEANROOM_FIRECRACKER_BINARY: /usr/local/bin/firecracker
       CLEANROOM_PRIVILEGED_MODE: helper
-      CLEANROOM_PRIVILEGED_HELPER_PATH: /usr/local/libexec/cleanroom/cleanroom-root-helper
     agents:
       queue: cleanroom

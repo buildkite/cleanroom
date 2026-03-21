@@ -18,9 +18,6 @@ func TestBuildGoBootstrapsLinuxGuestAgentBinary(t *testing.T) {
 	if !strings.Contains(script, `source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/dist-layout.sh"`) {
 		t.Fatalf("expected build-go.sh to source the staged dist layout helpers")
 	}
-	if !strings.Contains(script, `STAGE_DIR="$(cleanroom_stage_dir "$HOST_OS" "$HOST_ARCH")"`) {
-		t.Fatalf("expected build-go.sh to stage outputs under dist/<os>-<arch>/")
-	}
 	if !strings.Contains(script, "HOST_ARCH=$(go env GOARCH)") {
 		t.Fatalf("expected build-go.sh to resolve the host architecture for linux guest-agent cross-compiles")
 	}

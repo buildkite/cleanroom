@@ -97,6 +97,7 @@ codesign_target() {
     args+=(-i "${SIGN_IDENTIFIER}")
   fi
   args+=("${target}")
+  echo "[package-darwin-vz-helper] codesigning ${target}"
   codesign "${args[@]}"
 }
 
@@ -163,6 +164,7 @@ if [[ -n "${BUNDLE_MODE}" || "${OUTPUT_PATH}" == *.app ]]; then
   else
     rm -f "${PROFILE_DEST}"
   fi
+  echo "[package-darwin-vz-helper] prepared app bundle at ${APP_PATH}"
   codesign_target "${APP_PATH}"
   exit 0
 fi
@@ -172,6 +174,7 @@ PROFILE_DEST="${OUTPUT_PATH}.provisionprofile"
 rm -rf "${APP_PATH}"
 mkdir -p "$(dirname "${OUTPUT_PATH}")"
 copy_file "${SOURCE_EXECUTABLE_PATH}" "${OUTPUT_PATH}"
+echo "[package-darwin-vz-helper] prepared binary at ${OUTPUT_PATH}"
 codesign_target "${OUTPUT_PATH}"
 if [[ -n "${PROVISION_PROFILE}" ]]; then
   install -m 0644 "${PROVISION_PROFILE}" "${PROFILE_DEST}"
