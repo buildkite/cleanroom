@@ -48,7 +48,7 @@ type CLI struct {
 	Config    ConfigCommand    `cmd:"" help:"Runtime config commands"`
 	Image     ImageCommand     `cmd:"" help:"Manage OCI image cache artifacts"`
 	Snapshot  SnapshotCommand  `cmd:"" help:"Manage snapshots"`
-	Create    CreateCommand    `cmd:"" help:"Create a sandbox"`
+	Create    CreateCommand    `cmd:"" help:"Create a sandbox using repo policy"`
 	Exec      ExecCommand      `cmd:"" help:"Execute a command in a sandbox"`
 	Console   ConsoleCommand   `cmd:"" help:"Open an interactive console in a sandbox"`
 	Serve     ServeCommand     `cmd:"" help:"Run the cleanroom control-plane server in the foreground"`

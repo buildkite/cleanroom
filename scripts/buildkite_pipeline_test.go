@@ -3,6 +3,7 @@ package scripts_test
 import (
 	"errors"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -88,6 +89,21 @@ func TestBuildkiteCIScriptsDoNotInvokeMiseDirectly(t *testing.T) {
 				t.Fatalf("expected %s to use the prebuilt download helper instead of `go run`", path)
 			}
 		})
+	}
+}
+
+func TestFirecrackerE2ESandboxCreateDoesNotUseChdir(t *testing.T) {
+	t.Parallel()
+
+	content, err := os.ReadFile("ci-cleanroom-e2e.sh")
+	if err != nil {
+		t.Fatalf("read ci-cleanroom-e2e.sh: %v", err)
+	}
+
+	script := string(content)
+	pattern := regexp.MustCompile(`sandbox create[^\n]*(?:^|[[:space:]])(?:-c|--chdir)(?:[[:space:]]|=)`)
+	if pattern.MatchString(script) {
+		t.Fatal("expected ci-cleanroom-e2e.sh to avoid passing --chdir/-c to sandbox create")
 	}
 }
 

@@ -110,10 +110,10 @@ On macOS, cleanroom also probes common Homebrew `e2fsprogs` locations.
 
 ## Networking Semantics
 
-`darwin-vz` currently enforces only deny-by-default policy shape:
+`darwin-vz` currently supports only two policy shapes:
 
-- `network.default` must be `deny`
-- `network.allow` entries are ignored and produce a warning
+- `network.default: deny` keeps the existing policy shape; `network.allow` entries are ignored and produce a warning
+- `network.default: allow` disables egress filtering entirely and produces a warning
 - a virtual NIC is attached with `Virtualization.framework` NAT networking, so guest outbound networking is available
 
 The backend currently has no allowlist egress enforcement equivalent to Linux Firecracker iptables rules.

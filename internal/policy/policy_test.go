@@ -378,3 +378,22 @@ func TestFromProtoPropagatesDockerServiceRequirement(t *testing.T) {
 		t.Fatal("expected docker service requirement from proto policy")
 	}
 }
+
+func TestFromProtoAcceptsAllowDefault(t *testing.T) {
+	t.Parallel()
+
+	compiled, err := FromProto(&cleanroomv1.Policy{
+		Version:        1,
+		ImageRef:       validImageRef,
+		NetworkDefault: "allow",
+	})
+	if err != nil {
+		t.Fatalf("FromProto returned error: %v", err)
+	}
+	if got, want := compiled.NetworkDefault, "allow"; got != want {
+		t.Fatalf("unexpected network default: got %q want %q", got, want)
+	}
+	if !compiled.Allows("example.com", 443) {
+		t.Fatal("expected allow-default policy to allow arbitrary host:port")
+	}
+}
