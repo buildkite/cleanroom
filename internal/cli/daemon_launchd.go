@@ -388,20 +388,25 @@ func launchdServiceTarget(domain string) string {
 }
 
 func installLaunchdDaemonInDomain(stdout io.Writer, executablePath string, args []string, force bool, servicePath, domain string) error {
+	target := launchdServiceTarget(domain)
+	if force {
+		if err := serveInstallRunCommand("launchctl", "bootout", target); err != nil && !isExitError(err) {
+			return fmt.Errorf("bootout launchd service %s: %w", launchdServiceName, err)
+		}
+	}
+
 	content := renderLaunchdService(executablePath, args)
 	if err := writeDaemonFile(servicePath, content, force, 0o644); err != nil {
 		return err
-	}
-
-	target := launchdServiceTarget(domain)
-	if force {
-		_ = serveInstallRunCommand("launchctl", "bootout", target)
 	}
 	if err := serveInstallRunCommand("launchctl", "enable", target); err != nil {
 		return fmt.Errorf("enable launchd service %s: %w", launchdServiceName, err)
 	}
 	if err := serveInstallRunCommand("launchctl", "bootstrap", domain, servicePath); err != nil {
 		return fmt.Errorf("bootstrap launchd service %s: %w", launchdServiceName, err)
+	}
+	if err := serveInstallRunCommand("launchctl", "kickstart", "-k", target); err != nil {
+		return fmt.Errorf("start launchd service %s: %w", launchdServiceName, err)
 	}
 
 	_, err := fmt.Fprint(stdout, renderSummaryBlock(summaryBlock{
