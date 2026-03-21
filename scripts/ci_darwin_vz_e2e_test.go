@@ -157,6 +157,8 @@ func TestInstallScriptUsesSharedPackagerWhenAvailable(t *testing.T) {
 		`HELPER_BUNDLE_EMBEDDED_PROFILE_PATH="${HELPER_BUNDLE_SRC}/Contents/embedded.provisionprofile"`,
 		`[ "${HELPER_RESIGN_REQUESTED}" = "0" ] && [ -f "${HELPER_BUNDLE_EMBEDDED_PROFILE_PATH}" ]`,
 		`if ! package_darwin_helper_with_repo_script "${HELPER_BUNDLE_DIR}" "${HELPER_BUNDLE_DIR}"; then`,
+		`HELPER_BUNDLE_PROFILE_DEST="${HELPER_BUNDLE_DIR}/Contents/embedded.provisionprofile"`,
+		`"${SUDO_CMD[@]}" rm -f "${HELPER_BUNDLE_PROFILE_DEST}"`,
 		`if ! package_darwin_helper_with_repo_script "${HELPER_BINARY_SRC}" "${HELPER_SIGN_TARGET}"; then`,
 	} {
 		if !strings.Contains(script, needle) {

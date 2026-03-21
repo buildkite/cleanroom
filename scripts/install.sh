@@ -315,8 +315,11 @@ if [ "$HOST_OS" = "Darwin" ] && [ "$INSTALL_DARWIN_HELPER" != "0" ]; then
       if ! package_darwin_helper_with_repo_script "${HELPER_BUNDLE_DIR}" "${HELPER_BUNDLE_DIR}"; then
         require_cmd codesign
         [ -f "${HELPER_ENTITLEMENTS_PATH}" ] || die "entitlements plist missing: ${HELPER_ENTITLEMENTS_PATH}"
+        HELPER_BUNDLE_PROFILE_DEST="${HELPER_BUNDLE_DIR}/Contents/embedded.provisionprofile"
         if [ -n "${HELPER_PROVISION_PROFILE}" ]; then
-          install_binary "${HELPER_PROVISION_PROFILE}" "${HELPER_BUNDLE_DIR}/Contents/embedded.provisionprofile"
+          install_binary "${HELPER_PROVISION_PROFILE}" "${HELPER_BUNDLE_PROFILE_DEST}"
+        else
+          "${SUDO_CMD[@]}" rm -f "${HELPER_BUNDLE_PROFILE_DEST}"
         fi
         codesign_cmd=("${SUDO_CMD[@]}" codesign --force --sign "${HELPER_SIGN_IDENTITY}" --entitlements "${HELPER_ENTITLEMENTS_PATH}")
         if [ -n "${HELPER_SIGN_KEYCHAIN}" ]; then
