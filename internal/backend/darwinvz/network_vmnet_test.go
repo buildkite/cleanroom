@@ -47,7 +47,11 @@ func TestResolveDarwinVZNetworkDefaultsToNATWhenVMNetSharedUnsupported(t *testin
 }
 
 func TestResolveDarwinVZNetworkAcceptsVMNetSharedWithDefaultSubnet(t *testing.T) {
-	t.Parallel()
+	prev := darwinVZVMNetSharedSupported
+	darwinVZVMNetSharedSupported = func() bool { return true }
+	t.Cleanup(func() {
+		darwinVZVMNetSharedSupported = prev
+	})
 
 	got, err := resolveDarwinVZNetwork(backend.FirecrackerConfig{
 		DarwinVZNetworkMode: darwinVZNetworkModeVMNetShared,
@@ -64,7 +68,11 @@ func TestResolveDarwinVZNetworkAcceptsVMNetSharedWithDefaultSubnet(t *testing.T)
 }
 
 func TestResolveDarwinVZNetworkAcceptsRFC1918CustomSubnet(t *testing.T) {
-	t.Parallel()
+	prev := darwinVZVMNetSharedSupported
+	darwinVZVMNetSharedSupported = func() bool { return true }
+	t.Cleanup(func() {
+		darwinVZVMNetSharedSupported = prev
+	})
 
 	got, err := resolveDarwinVZNetwork(backend.FirecrackerConfig{
 		DarwinVZNetworkMode:   darwinVZNetworkModeVMNetShared,
@@ -79,7 +87,11 @@ func TestResolveDarwinVZNetworkAcceptsRFC1918CustomSubnet(t *testing.T) {
 }
 
 func TestResolveDarwinVZNetworkRejectsNonRFC1918Subnet(t *testing.T) {
-	t.Parallel()
+	prev := darwinVZVMNetSharedSupported
+	darwinVZVMNetSharedSupported = func() bool { return true }
+	t.Cleanup(func() {
+		darwinVZVMNetSharedSupported = prev
+	})
 
 	_, err := resolveDarwinVZNetwork(backend.FirecrackerConfig{
 		DarwinVZNetworkMode:   darwinVZNetworkModeVMNetShared,
@@ -87,6 +99,24 @@ func TestResolveDarwinVZNetworkRejectsNonRFC1918Subnet(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected non-RFC1918 subnet to fail")
+	}
+}
+
+func TestResolveDarwinVZNetworkRejectsVMNetSharedWhenUnsupported(t *testing.T) {
+	prev := darwinVZVMNetSharedSupported
+	darwinVZVMNetSharedSupported = func() bool { return false }
+	t.Cleanup(func() {
+		darwinVZVMNetSharedSupported = prev
+	})
+
+	_, err := resolveDarwinVZNetwork(backend.FirecrackerConfig{
+		DarwinVZNetworkMode: darwinVZNetworkModeVMNetShared,
+	})
+	if err == nil {
+		t.Fatal("expected vmnet-shared to fail when unsupported")
+	}
+	if got, want := err.Error(), `"vmnet-shared" requires macOS 26 or later`; got != want {
+		t.Fatalf("unexpected error: got %q want %q", got, want)
 	}
 }
 

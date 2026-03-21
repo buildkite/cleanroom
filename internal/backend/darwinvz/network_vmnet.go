@@ -64,6 +64,9 @@ func resolveDarwinVZNetwork(cfg backend.FirecrackerConfig) (darwinVZNetwork, err
 		}
 		return darwinVZNetwork{Mode: darwinVZNetworkModeNAT}, nil
 	case darwinVZNetworkModeVMNetShared:
+		if !darwinVZVMNetSharedSupported() {
+			return darwinVZNetwork{}, fmt.Errorf("%q requires macOS 26 or later", darwinVZNetworkModeVMNetShared)
+		}
 		normalizedSubnet, err := normalizeDarwinVZVMNetSubnet(subnet)
 		if err != nil {
 			return darwinVZNetwork{}, err
