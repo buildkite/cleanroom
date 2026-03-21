@@ -84,6 +84,12 @@ variable "cleanroom_install_script_ref" {
   default     = "main"
 }
 
+variable "cleanroom_release_repo" {
+  description = "Optional GitHub owner/repo slug used for release/helper downloads when repo_url is not a GitHub remote."
+  type        = string
+  default     = ""
+}
+
 variable "tailscale_version" {
   description = "Tailscale version used for bootstrap when enabled."
   type        = string

@@ -43,6 +43,7 @@ module "host" {
   setup_script_path                 = var.setup_script_path
   cleanroom_version                 = var.cleanroom_version
   cleanroom_install_script_ref      = var.cleanroom_install_script_ref
+  cleanroom_release_repo            = var.cleanroom_release_repo
   tailscale_version                 = var.tailscale_version
   tailscale_hostname_prefix         = var.tailscale_hostname_prefix
   tailscale_advertise_tags          = var.tailscale_advertise_tags

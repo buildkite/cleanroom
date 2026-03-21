@@ -16,6 +16,7 @@ repo_url          = "git@github.com:buildkite/cleanroom.git"
 repo_ref          = "main"
 setup_script_path = "scripts/bootstrap-cleanroom-host.sh"
 cleanroom_version = "v0.3.0"
+# cleanroom_release_repo = "buildkite/cleanroom"
 
 tailscale_hostname_prefix = "cleanroom-prod-apse2-linux"
 tailscale_advertise_tags  = ""

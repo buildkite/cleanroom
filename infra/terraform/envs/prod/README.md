@@ -16,6 +16,7 @@ Default host behaviour:
   `/usr/local/sbin/cleanroom-root-helper`, installs Firecracker, writes runtime
   config, installs a rerunnable host bootstrap command, and installs the system
   daemon
+  Set `cleanroom_release_repo` when `repo_url` is not a GitHub remote.
 
 Network behaviour:
 
