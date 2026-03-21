@@ -6,17 +6,21 @@ DARWIN_VZ_KERNEL_IMAGE="${CLEANROOM_DARWIN_VZ_KERNEL_IMAGE:-}"
 echo "--- :hammer: Building binaries"
 scripts/build-go.sh
 
-mkdir -p dist
-xcrun swiftc -O -framework Virtualization cmd/cleanroom-darwin-vz/main.swift -o dist/cleanroom-darwin-vz
-codesign --force --sign - --entitlements cmd/cleanroom-darwin-vz/entitlements.plist dist/cleanroom-darwin-vz
+scripts/build-darwin-vz-helper.sh dist/cleanroom-darwin-vz.app
 
 # `scripts/build-go.sh` produces host binaries in dist/, but darwin-vz doctor also
 # requires a Linux guest agent binary named cleanroom-guest-agent-linux-<arch>.
 host_arch="$(go env GOARCH)"
 GOOS=linux GOARCH="$host_arch" CGO_ENABLED=0 go build -trimpath -o "dist/cleanroom-guest-agent-linux-$host_arch" ./cmd/cleanroom-guest-agent
 
-helper_path="${CLEANROOM_DARWIN_VZ_HELPER:-$PWD/dist/cleanroom-darwin-vz}"
-if [[ ! -x "$helper_path" ]]; then
+helper_path="${CLEANROOM_DARWIN_VZ_HELPER:-$PWD/dist/cleanroom-darwin-vz.app}"
+if [[ -d "$helper_path" ]]; then
+  helper_executable="$helper_path/Contents/MacOS/cleanroom-darwin-vz"
+  if [[ ! -x "$helper_executable" ]]; then
+    echo "darwin-vz helper bundle is missing its executable: $helper_executable" >&2
+    exit 1
+  fi
+elif [[ ! -x "$helper_path" ]]; then
   echo "darwin-vz helper is missing or not executable: $helper_path" >&2
   exit 1
 fi
@@ -43,6 +47,10 @@ cat > "$XDG_CONFIG_HOME/cleanroom/config.yaml" <<EOF
 default_backend: darwin-vz
 backends:
   darwin-vz:
+    network:
+      # Buildkite only ad-hoc signs the helper during CI; vmnet-shared needs a
+      # real vmnet-capable provisioning profile, so keep this job on nat.
+      mode: nat
     vcpus: 2
     memory_mib: 1024
     launch_seconds: 45

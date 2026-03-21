@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
 import Virtualization
+import vmnet
 
 private struct CLIOptions {
     let socketPath: String
@@ -11,6 +12,8 @@ private struct ControlRequest: Decodable {
     let kernelPath: String?
     let rootFSPath: String?
     let bootArgs: String?
+    let networkMode: String?
+    let vmnetSubnetCIDR: String?
     let vcpus: Int?
     let memoryMiB: Int64?
     let guestPort: UInt32?
@@ -25,6 +28,8 @@ private struct ControlRequest: Decodable {
         case kernelPath = "kernel_path"
         case rootFSPath = "rootfs_path"
         case bootArgs = "boot_args"
+        case networkMode = "network_mode"
+        case vmnetSubnetCIDR = "vmnet_subnet_cidr"
         case vcpus
         case memoryMiB = "memory_mib"
         case guestPort = "guest_port"
@@ -41,6 +46,10 @@ private struct ControlResponse: Encodable {
     let error: String?
     let vmID: String?
     let proxySocketPath: String?
+    let vmnetSubnetCIDR: String?
+    let vmnetGuestIPv4: String?
+    let vmnetGatewayIPv4: String?
+    let vmnetPrefixLen: Int?
     let timingMS: [String: Int64]?
 
     enum CodingKeys: String, CodingKey {
@@ -48,6 +57,10 @@ private struct ControlResponse: Encodable {
         case error
         case vmID = "vm_id"
         case proxySocketPath = "proxy_socket_path"
+        case vmnetSubnetCIDR = "vmnet_subnet_cidr"
+        case vmnetGuestIPv4 = "vmnet_guest_ipv4"
+        case vmnetGatewayIPv4 = "vmnet_gateway_ipv4"
+        case vmnetPrefixLen = "vmnet_prefix_len"
         case timingMS = "timing_ms"
     }
 }
@@ -409,6 +422,15 @@ private final class ProxyServer {
 }
 
 private final class VMRuntime {
+    @available(macOS 26.0, *)
+    private struct VMNetSharedNetworkDetails {
+        let reference: vmnet_network_ref
+        let subnetCIDR: String
+        let gatewayIPv4: String
+        let guestIPv4: String
+        let prefixLength: Int
+    }
+
     private let lock = NSLock()
     private var vm: VZVirtualMachine?
     private var vmID: String?
@@ -417,6 +439,7 @@ private final class VMRuntime {
     private var launchTimeout: TimeInterval = 30
     private var vmQueue: DispatchQueue?
     private var proxy: ProxyServer?
+    private var vmnetNetwork: vmnet_network_ref?
 
     func start(from req: ControlRequest) throws -> ControlResponse {
         guard VZVirtualMachine.isSupported else {
@@ -458,15 +481,23 @@ private final class VMRuntime {
         let vmID = UUID().uuidString
         let startedAt = Date()
 
-        let (vm, serialChannel) = try buildVM(
+        let (vm, serialChannel, vmnetNetwork, vmnetSharedNetwork) = try buildVM(
             kernelPath: kernelPath,
             rootFSPath: rootFSPath,
             bootArgs: bootArgs,
+            networkMode: req.networkMode?.trimmingCharacters(in: .whitespacesAndNewlines),
+            vmnetSubnetCIDR: req.vmnetSubnetCIDR?.trimmingCharacters(in: .whitespacesAndNewlines),
             vcpus: vcpus,
             memoryMiB: memoryMiB,
             consoleLogPath: consoleLogPath,
             queue: vmQueue
         )
+        var releaseVMNetOnFailure = vmnetNetwork
+        defer {
+            if let releaseVMNetOnFailure {
+                releaseVMNetObject(releaseVMNetOnFailure)
+            }
+        }
 
         try startVM(vm, queue: vmQueue, timeoutSeconds: launchSeconds)
 
@@ -478,6 +509,8 @@ private final class VMRuntime {
         self.vm = vm
         self.vmID = vmID
         self.proxy = proxy
+        self.vmnetNetwork = vmnetNetwork
+        releaseVMNetOnFailure = nil
         proxy.start { [weak self] in
             guard let self else {
                 throw HelperError.vm("vm runtime no longer available")
@@ -491,6 +524,10 @@ private final class VMRuntime {
             error: nil,
             vmID: vmID,
             proxySocketPath: proxySocketPath,
+            vmnetSubnetCIDR: vmnetSharedNetwork?.subnetCIDR,
+            vmnetGuestIPv4: vmnetSharedNetwork?.guestIPv4,
+            vmnetGatewayIPv4: vmnetSharedNetwork?.gatewayIPv4,
+            vmnetPrefixLen: vmnetSharedNetwork?.prefixLength,
             timingMS: ["vm_ready": vmReadyMS]
         )
     }
@@ -506,6 +543,7 @@ private final class VMRuntime {
         let serialChannel = self.serialChannel
         let vmQueue = self.vmQueue
         let proxy = self.proxy
+        let vmnetNetwork = self.vmnetNetwork
         self.vmID = nil
         self.vm = nil
         self.serialChannel = nil
@@ -513,10 +551,16 @@ private final class VMRuntime {
         self.launchTimeout = 30
         self.vmQueue = nil
         self.proxy = nil
+        self.vmnetNetwork = nil
         lock.unlock()
 
         proxy?.stop()
         serialChannel?.close()
+        defer {
+            if let vmnetNetwork {
+                releaseVMNetObject(vmnetNetwork)
+            }
+        }
         guard let vm else {
             return
         }
@@ -611,21 +655,174 @@ private final class VMRuntime {
         }
     }
 
+    @available(macOS 26.0, *)
+    private func createVMNetSharedNetwork(subnetCIDR: String?) throws -> VMNetSharedNetworkDetails {
+        var status: vmnet_return_t = .VMNET_SUCCESS
+        guard let configuration = vmnet_network_configuration_create(.VMNET_SHARED_MODE, &status) else {
+            throw HelperError.vm("create vmnet network configuration: \(vmnetStatusDescription(status))")
+        }
+        defer { releaseVMNetObject(configuration) }
+
+        vmnet_network_configuration_disable_dhcp(configuration)
+
+        if let subnetCIDR, !subnetCIDR.isEmpty {
+            let components = subnetCIDR.split(separator: "/", omittingEmptySubsequences: false)
+            guard components.count == 2, let prefixLength = Int(components[1]), (0...32).contains(prefixLength) else {
+                throw HelperError.invalidRequest("vmnet_subnet_cidr must be a valid IPv4 CIDR")
+            }
+            let subnetAddress = try parseIPv4Address(String(components[0]))
+            let subnetValue = UInt32(bigEndian: subnetAddress.s_addr) & ipv4MaskValue(prefixLength: prefixLength)
+            let gatewayValue = subnetValue + 1
+            var gatewayAddress = in_addr(s_addr: gatewayValue.bigEndian)
+            var subnetMask = ipv4Mask(prefixLength: prefixLength)
+            let subnetStatus = vmnet_network_configuration_set_ipv4_subnet(configuration, &gatewayAddress, &subnetMask)
+            guard subnetStatus == .VMNET_SUCCESS else {
+                throw HelperError.vm("configure vmnet subnet \(subnetCIDR): \(vmnetStatusDescription(subnetStatus))")
+            }
+        }
+
+        guard let network = vmnet_network_create(configuration, &status) else {
+            throw HelperError.vm("create vmnet shared network: \(vmnetStatusDescription(status))")
+        }
+
+        do {
+            var subnetAddress = in_addr()
+            var subnetMask = in_addr()
+            vmnet_network_get_ipv4_subnet(network, &subnetAddress, &subnetMask)
+
+            let maskValue = UInt32(bigEndian: subnetMask.s_addr)
+            let networkValue = UInt32(bigEndian: subnetAddress.s_addr) & maskValue
+            let upperValue = networkValue + ~maskValue
+            let guestValue = networkValue + 2
+            guard guestValue < upperValue else {
+                throw HelperError.vm("vmnet shared subnet does not provide a guest address")
+            }
+
+            let prefixLength = maskValue.nonzeroBitCount
+            let subnetCIDR = "\(try formatIPv4Address(networkValue))/\(prefixLength)"
+            return VMNetSharedNetworkDetails(
+                reference: network,
+                subnetCIDR: subnetCIDR,
+                gatewayIPv4: try formatIPv4Address(networkValue + 1),
+                guestIPv4: try formatIPv4Address(guestValue),
+                prefixLength: prefixLength
+            )
+        } catch {
+            releaseVMNetObject(network)
+            throw error
+        }
+    }
+
+    private func releaseVMNetObject(_ value: OpaquePointer) {
+        Unmanaged<AnyObject>.fromOpaque(UnsafeRawPointer(value)).release()
+    }
+
+    private func parseIPv4Address(_ value: String) throws -> in_addr {
+        var address = in_addr()
+        let result = value.withCString { cs in
+            inet_pton(AF_INET, cs, &address)
+        }
+        guard result == 1 else {
+            throw HelperError.invalidRequest("invalid IPv4 address \(value)")
+        }
+        return address
+    }
+
+    private func ipv4Mask(prefixLength: Int) -> in_addr {
+        in_addr(s_addr: ipv4MaskValue(prefixLength: prefixLength).bigEndian)
+    }
+
+    private func ipv4MaskValue(prefixLength: Int) -> UInt32 {
+        if prefixLength <= 0 {
+            return 0
+        }
+        return UInt32.max << UInt32(32 - prefixLength)
+    }
+
+    private func formatIPv4Address(_ value: UInt32) throws -> String {
+        var address = in_addr(s_addr: value.bigEndian)
+        var buffer = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
+        let result = withUnsafePointer(to: &address) { addrPointer in
+            inet_ntop(AF_INET, addrPointer, &buffer, socklen_t(INET_ADDRSTRLEN))
+        }
+        guard result != nil else {
+            throw HelperError.vm("format IPv4 address \(value)")
+        }
+        return String(cString: buffer)
+    }
+
+    private func vmnetStatusDescription(_ status: vmnet_return_t) -> String {
+        switch status {
+        case .VMNET_SUCCESS:
+            return "success"
+        case .VMNET_FAILURE:
+            return "general failure"
+        case .VMNET_MEM_FAILURE:
+            return "memory allocation failure"
+        case .VMNET_INVALID_ARGUMENT:
+            return "invalid argument"
+        case .VMNET_SETUP_INCOMPLETE:
+            return "setup incomplete"
+        case .VMNET_INVALID_ACCESS:
+            return "invalid access (helper may be missing com.apple.developer.networking.vmnet entitlement)"
+        case .VMNET_PACKET_TOO_BIG:
+            return "packet too big"
+        case .VMNET_BUFFER_EXHAUSTED:
+            return "buffer exhausted"
+        case .VMNET_TOO_MANY_PACKETS:
+            return "too many packets"
+        case .VMNET_SHARING_SERVICE_BUSY:
+            return "sharing service busy"
+        case .VMNET_NOT_AUTHORIZED:
+            return "not authorized (helper may be missing com.apple.developer.networking.vmnet entitlement)"
+        default:
+            return "status \(status.rawValue)"
+        }
+    }
+
     private func buildVM(
         kernelPath: String,
         rootFSPath: String,
         bootArgs: String,
+        networkMode: String?,
+        vmnetSubnetCIDR: String?,
         vcpus: Int,
         memoryMiB: Int64,
         consoleLogPath: String,
         queue: DispatchQueue
-    ) throws -> (VZVirtualMachine, GuestChannel) {
+    ) throws -> (VZVirtualMachine, GuestChannel, vmnet_network_ref?, VMNetSharedNetworkDetails?) {
         let kernelURL = URL(fileURLWithPath: kernelPath)
         let rootFSURL = URL(fileURLWithPath: rootFSPath)
         let consoleURL = URL(fileURLWithPath: consoleLogPath)
 
+        let networkDevice = VZVirtioNetworkDeviceConfiguration()
+        let resolvedNetworkMode = (networkMode?.isEmpty == false ? networkMode! : "nat")
+        let vmnetNetwork: vmnet_network_ref?
+        let vmnetSharedNetwork: VMNetSharedNetworkDetails?
+        var resolvedBootArgs = bootArgs
+        switch resolvedNetworkMode {
+        case "nat":
+            networkDevice.attachment = VZNATNetworkDeviceAttachment()
+            vmnetNetwork = nil
+            vmnetSharedNetwork = nil
+        case "vmnet-shared":
+            guard #available(macOS 26.0, *) else {
+                throw HelperError.vm("vmnet-shared requires macOS 26 or later")
+            }
+            let networkDetails = try createVMNetSharedNetwork(subnetCIDR: vmnetSubnetCIDR)
+            resolvedBootArgs += " cleanroom_vmnet_guest_ipv4=\(networkDetails.guestIPv4)"
+            resolvedBootArgs += " cleanroom_vmnet_gateway_ipv4=\(networkDetails.gatewayIPv4)"
+            resolvedBootArgs += " cleanroom_vmnet_prefix_len=\(networkDetails.prefixLength)"
+            resolvedBootArgs += " cleanroom_vmnet_subnet_cidr=\(networkDetails.subnetCIDR)"
+            networkDevice.attachment = VZVmnetNetworkDeviceAttachment(network: networkDetails.reference)
+            vmnetNetwork = networkDetails.reference
+            vmnetSharedNetwork = networkDetails
+        default:
+            throw HelperError.invalidRequest("unsupported network_mode \(resolvedNetworkMode)")
+        }
+
         let bootLoader = VZLinuxBootLoader(kernelURL: kernelURL)
-        bootLoader.commandLine = bootArgs
+        bootLoader.commandLine = resolvedBootArgs
 
         let config = VZVirtualMachineConfiguration()
         config.bootLoader = bootLoader
@@ -649,16 +846,20 @@ private final class VMRuntime {
         let diskAttachment = try VZDiskImageStorageDeviceAttachment(url: rootFSURL, readOnly: false)
         let blockDevice = VZVirtioBlockDeviceConfiguration(attachment: diskAttachment)
         config.storageDevices = [blockDevice]
-
-        let networkDevice = VZVirtioNetworkDeviceConfiguration()
-        networkDevice.attachment = VZNATNetworkDeviceAttachment()
         config.networkDevices = [networkDevice]
 
         config.entropyDevices = [VZVirtioEntropyDeviceConfiguration()]
         config.memoryBalloonDevices = [VZVirtioTraditionalMemoryBalloonDeviceConfiguration()]
         config.socketDevices = [VZVirtioSocketDeviceConfiguration()]
 
-        try config.validate()
+        do {
+            try config.validate()
+        } catch {
+            if let vmnetNetwork {
+                releaseVMNetObject(vmnetNetwork)
+            }
+            throw error
+        }
         let channel = GuestChannel(
             readFD: guestToHost.fileHandleForReading.fileDescriptor,
             writeFD: hostToGuest.fileHandleForWriting.fileDescriptor,
@@ -668,7 +869,7 @@ private final class VMRuntime {
                 hostToGuest.fileHandleForWriting.closeFile()
             }
         )
-        return (VZVirtualMachine(configuration: config, queue: queue), channel)
+        return (VZVirtualMachine(configuration: config, queue: queue), channel, vmnetNetwork, vmnetSharedNetwork)
     }
 
     private func startVM(_ vm: VZVirtualMachine, queue: DispatchQueue, timeoutSeconds: Int64) throws {
@@ -827,6 +1028,10 @@ private final class HelperService {
                     error: error.localizedDescription,
                     vmID: nil,
                     proxySocketPath: nil,
+                    vmnetSubnetCIDR: nil,
+                    vmnetGuestIPv4: nil,
+                    vmnetGatewayIPv4: nil,
+                    vmnetPrefixLen: nil,
                     timingMS: nil
                 ))
             }
@@ -847,15 +1052,15 @@ private final class HelperService {
             return try vmRuntime.start(from: req)
         case "StopVM":
             try vmRuntime.stop(vmID: req.vmID)
-            return ControlResponse(ok: true, error: nil, vmID: nil, proxySocketPath: nil, timingMS: nil)
+            return ControlResponse(ok: true, error: nil, vmID: nil, proxySocketPath: nil, vmnetSubnetCIDR: nil, vmnetGuestIPv4: nil, vmnetGatewayIPv4: nil, vmnetPrefixLen: nil, timingMS: nil)
         case "PauseVM":
             try vmRuntime.pause(vmID: req.vmID)
-            return ControlResponse(ok: true, error: nil, vmID: nil, proxySocketPath: nil, timingMS: nil)
+            return ControlResponse(ok: true, error: nil, vmID: nil, proxySocketPath: nil, vmnetSubnetCIDR: nil, vmnetGuestIPv4: nil, vmnetGatewayIPv4: nil, vmnetPrefixLen: nil, timingMS: nil)
         case "ResumeVM":
             try vmRuntime.resume(vmID: req.vmID)
-            return ControlResponse(ok: true, error: nil, vmID: nil, proxySocketPath: nil, timingMS: nil)
+            return ControlResponse(ok: true, error: nil, vmID: nil, proxySocketPath: nil, vmnetSubnetCIDR: nil, vmnetGuestIPv4: nil, vmnetGatewayIPv4: nil, vmnetPrefixLen: nil, timingMS: nil)
         case "Ping":
-            return ControlResponse(ok: true, error: nil, vmID: nil, proxySocketPath: nil, timingMS: nil)
+            return ControlResponse(ok: true, error: nil, vmID: nil, proxySocketPath: nil, vmnetSubnetCIDR: nil, vmnetGuestIPv4: nil, vmnetGatewayIPv4: nil, vmnetPrefixLen: nil, timingMS: nil)
         default:
             throw HelperError.invalidRequest("unsupported op \(req.op)")
         }

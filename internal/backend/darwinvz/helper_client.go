@@ -32,6 +32,8 @@ type helperControlRequest struct {
 	KernelPath      string `json:"kernel_path,omitempty"`
 	RootFSPath      string `json:"rootfs_path,omitempty"`
 	BootArgs        string `json:"boot_args,omitempty"`
+	NetworkMode     string `json:"network_mode,omitempty"`
+	VMNetSubnetCIDR string `json:"vmnet_subnet_cidr,omitempty"`
 	VCPUs           int64  `json:"vcpus,omitempty"`
 	MemoryMiB       int64  `json:"memory_mib,omitempty"`
 	GuestPort       uint32 `json:"guest_port,omitempty"`
@@ -43,11 +45,15 @@ type helperControlRequest struct {
 }
 
 type helperControlResponse struct {
-	OK              bool             `json:"ok"`
-	Error           string           `json:"error,omitempty"`
-	VMID            string           `json:"vm_id,omitempty"`
-	ProxySocketPath string           `json:"proxy_socket_path,omitempty"`
-	TimingMS        map[string]int64 `json:"timing_ms,omitempty"`
+	OK               bool             `json:"ok"`
+	Error            string           `json:"error,omitempty"`
+	VMID             string           `json:"vm_id,omitempty"`
+	ProxySocketPath  string           `json:"proxy_socket_path,omitempty"`
+	VMNetSubnetCIDR  string           `json:"vmnet_subnet_cidr,omitempty"`
+	VMNetGuestIPv4   string           `json:"vmnet_guest_ipv4,omitempty"`
+	VMNetGatewayIPv4 string           `json:"vmnet_gateway_ipv4,omitempty"`
+	VMNetPrefixLen   int              `json:"vmnet_prefix_len,omitempty"`
+	TimingMS         map[string]int64 `json:"timing_ms,omitempty"`
 }
 
 type helperSession struct {
@@ -195,6 +201,9 @@ func (s *helperSession) request(ctx context.Context, req helperControlRequest) (
 		}
 		if strings.Contains(msg, "com.apple.security.virtualization") {
 			msg += "; run `mise run install` to install and sign cleanroom-darwin-vz with the virtualization entitlement"
+		}
+		if strings.Contains(msg, "com.apple.developer.networking.vmnet") {
+			msg += "; sign cleanroom-darwin-vz with cmd/cleanroom-darwin-vz/entitlements-vmnet.plist and a provisioning profile or identifier that grants com.apple.developer.networking.vmnet"
 		}
 		return helperControlResponse{}, s.decorateError(fmt.Errorf("helper %s failed: %s", req.Op, msg))
 	}

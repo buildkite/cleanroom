@@ -8,7 +8,6 @@ import (
 	"crypto/sha256"
 	"debug/elf"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -16,7 +15,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -91,6 +89,7 @@ type sandboxInstance struct {
 	ImageRef            string
 	ImageDigest         string
 	LaunchObservability *darwinVZLaunchObservability
+	NetworkMetadata     *darwinVZNetworkMetadata
 	CommandTimeout      int64
 	Helper              *helperSession
 	VMID                string
@@ -105,158 +104,26 @@ const preparedRuntimeRootFSVersion = "v9-darwin-vz"
 const runObservabilityFile = "execution-observability.json"
 
 type darwinVZRunObservation struct {
-	ExecutionID    string           `json:"execution_id"`
-	Backend        string           `json:"backend"`
-	LaunchedVM     bool             `json:"launched_vm"`
-	ImageRef       string           `json:"image_ref,omitempty"`
-	ImageDigest    string           `json:"image_digest,omitempty"`
-	PlanPath       string           `json:"plan_path,omitempty"`
-	RunDir         string           `json:"run_dir,omitempty"`
-	ExitCode       int              `json:"exit_code,omitempty"`
-	Error          string           `json:"error,omitempty"`
-	GuestError     string           `json:"guest_error,omitempty"`
-	RootFSCopyMS   int64            `json:"rootfs_copy_ms,omitempty"`
-	VMReadyMS      int64            `json:"vm_ready_ms,omitempty"`
-	HelperTimingMS map[string]int64 `json:"helper_timing_ms,omitempty"`
-	TotalMS        int64            `json:"total_ms,omitempty"`
+	ExecutionID       string           `json:"execution_id"`
+	Backend           string           `json:"backend"`
+	LaunchedVM        bool             `json:"launched_vm"`
+	ImageRef          string           `json:"image_ref,omitempty"`
+	ImageDigest       string           `json:"image_digest,omitempty"`
+	PlanPath          string           `json:"plan_path,omitempty"`
+	RunDir            string           `json:"run_dir,omitempty"`
+	ExitCode          int              `json:"exit_code,omitempty"`
+	Error             string           `json:"error,omitempty"`
+	GuestError        string           `json:"guest_error,omitempty"`
+	NetworkMode       string           `json:"network_mode,omitempty"`
+	NetworkSubnetCIDR string           `json:"network_subnet_cidr,omitempty"`
+	NetworkGuestIP    string           `json:"network_guest_ip,omitempty"`
+	NetworkGatewayIP  string           `json:"network_gateway_ip,omitempty"`
+	NetworkPrefixLen  int              `json:"network_prefix_len,omitempty"`
+	RootFSCopyMS      int64            `json:"rootfs_copy_ms,omitempty"`
+	VMReadyMS         int64            `json:"vm_ready_ms,omitempty"`
+	HelperTimingMS    map[string]int64 `json:"helper_timing_ms,omitempty"`
+	TotalMS           int64            `json:"total_ms,omitempty"`
 }
-
-type darwinVZLaunchObservability struct {
-	RootFSCopyMS   int64
-	HelperTimingMS map[string]int64
-}
-
-var virtualizationEntitlementPattern = regexp.MustCompile(`(?s)<key>\s*com\.apple\.security\.virtualization\s*</key>\s*<true\s*/?>`)
-
-const (
-	guestInitScriptPathSbin    = "/sbin/cleanroom-init"
-	guestInitScriptPathUsrSbin = "/usr/sbin/cleanroom-init"
-	guestAgentPath             = "/usr/local/bin/cleanroom-guest-agent"
-)
-
-const guestInitScriptTemplate = `#!/bin/sh
-set -eu
-
-mount -t proc proc /proc 2>/dev/null || true
-mount -t sysfs sysfs /sys 2>/dev/null || true
-mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
-mkdir -p /dev/pts /run /tmp
-mount -t devpts devpts /dev/pts 2>/dev/null || true
-mount -t tmpfs tmpfs /run 2>/dev/null || true
-mount -t tmpfs tmpfs /tmp 2>/dev/null || true
-
-export HOME=/root
-export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/root/.local/bin
-
-setup_guest_network() {
-  NET_IFACE=""
-  for cand in /sys/class/net/*; do
-    name="$(basename "$cand")"
-    if [ "$name" = "lo" ]; then
-      continue
-    fi
-    NET_IFACE="$name"
-    break
-  done
-  if [ -z "$NET_IFACE" ]; then
-    return 0
-  fi
-
-  if command -v ip >/dev/null 2>&1; then
-    ip link set "$NET_IFACE" up 2>/dev/null || true
-  elif command -v ifconfig >/dev/null 2>&1; then
-    ifconfig "$NET_IFACE" up 2>/dev/null || true
-  fi
-
-  if command -v udhcpc >/dev/null 2>&1; then
-    udhcpc -q -n -t 3 -T 3 -i "$NET_IFACE" >/dev/null 2>&1 || true
-  elif command -v dhclient >/dev/null 2>&1; then
-    dhclient -1 "$NET_IFACE" >/dev/null 2>&1 || true
-  fi
-}
-setup_guest_network
-
-cmdline="$(cat /proc/cmdline 2>/dev/null || true)"
-arg_value() {
-  key="$1"
-  for token in $cmdline; do
-    case "$token" in
-      "$key"=*) echo "${token#*=}"; return 0 ;;
-    esac
-  done
-  return 1
-}
-
-GUEST_PORT="$(arg_value cleanroom_guest_port || true)"
-if [ -z "$GUEST_PORT" ]; then
-  GUEST_PORT="10700"
-fi
-export CLEANROOM_VSOCK_PORT="$GUEST_PORT"
-
-DOCKER_REQUIRED="$(arg_value cleanroom_service_docker_required || true)"
-if [ "$DOCKER_REQUIRED" = "1" ] && command -v dockerd >/dev/null 2>&1; then
-  DOCKER_STARTUP_TIMEOUT="$(arg_value cleanroom_service_docker_startup_timeout || true)"
-  case "$DOCKER_STARTUP_TIMEOUT" in
-    ''|*[!0-9]*) DOCKER_STARTUP_TIMEOUT="20" ;;
-  esac
-  if [ "$DOCKER_STARTUP_TIMEOUT" -le 0 ]; then
-    DOCKER_STARTUP_TIMEOUT="20"
-  fi
-  DOCKER_STORAGE_DRIVER="$(arg_value cleanroom_service_docker_storage_driver || true)"
-  if [ -z "$DOCKER_STORAGE_DRIVER" ]; then
-    DOCKER_STORAGE_DRIVER="vfs"
-  fi
-  DOCKER_IPTABLES="$(arg_value cleanroom_service_docker_iptables || true)"
-
-  DOCKER_ARGS="--host=unix:///var/run/docker.sock --storage-driver=$DOCKER_STORAGE_DRIVER"
-  if [ "$DOCKER_IPTABLES" = "0" ] || [ "$DOCKER_IPTABLES" = "false" ]; then
-    DOCKER_ARGS="$DOCKER_ARGS --iptables=false"
-  fi
-
-  mkdir -p /var/log /var/lib/docker /etc/docker /var/run /sys/fs/cgroup
-  mount -t cgroup2 none /sys/fs/cgroup 2>/dev/null || true
-  if [ ! -S /var/run/docker.sock ]; then
-    dockerd $DOCKER_ARGS >/var/log/dockerd.log 2>&1 &
-  fi
-  i=0
-  DOCKER_WAIT_TICKS=$((DOCKER_STARTUP_TIMEOUT * 10))
-  while [ "$i" -lt "$DOCKER_WAIT_TICKS" ]; do
-    if [ -S /var/run/docker.sock ]; then
-      if command -v docker >/dev/null 2>&1; then
-        if docker version >/dev/null 2>&1; then
-          break
-        fi
-      else
-        break
-      fi
-    fi
-    sleep 0.1
-    i=$((i + 1))
-  done
-fi
-
-AGENT_DEV=""
-if [ -c /dev/hvc1 ]; then
-  AGENT_DEV="/dev/hvc1"
-elif [ -c /dev/vport1p0 ]; then
-  AGENT_DEV="/dev/vport1p0"
-fi
-
-if [ -n "$AGENT_DEV" ]; then
-  stty raw -echo <"$AGENT_DEV" 2>/dev/null || true
-  (
-    while true; do
-      CLEANROOM_GUEST_TRANSPORT=stdio /usr/local/bin/cleanroom-guest-agent <"$AGENT_DEV" >"$AGENT_DEV" 2>/dev/hvc0 || true
-      sleep 1
-    done
-  ) &
-fi
-
-while true; do
-  /usr/local/bin/cleanroom-guest-agent || true
-  sleep 1
-done
-`
 
 func New() *Adapter {
 	return &Adapter{
@@ -351,6 +218,7 @@ func (a *Adapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest
 		ImageDigest: instance.ImageDigest,
 		PlanPath:    instance.ConfigPath,
 	}
+	applyDarwinVZNetworkMetadata(&observation, instance.NetworkMetadata)
 	a.sandboxMu.Lock()
 	if current, ok := a.sandboxes[sandboxID]; ok && current == instance {
 		applyDarwinVZLaunchObservability(&observation, current.LaunchObservability)
@@ -554,6 +422,15 @@ func (a *Adapter) Doctor(_ context.Context, req backend.DoctorRequest) (*backend
 		appendCheck("os", "fail", fmt.Sprintf("darwin required, current OS is %s", runtime.GOOS))
 	}
 	appendCheck("guest_networking", "warn", guestNetworkUnavailableWarning)
+	networkCfg, networkErr := resolveDarwinVZNetwork(req.FirecrackerConfig)
+	if networkErr != nil {
+		appendCheck("network_mode", "fail", networkErr.Error())
+	} else {
+		appendCheck("network_mode", "pass", fmt.Sprintf("darwin-vz network mode: %s", networkCfg.Mode))
+		if networkCfg.SubnetCIDR != "" {
+			appendCheck("network_subnet", "pass", fmt.Sprintf("darwin-vz vmnet subnet: %s", networkCfg.SubnetCIDR))
+		}
+	}
 
 	if configured := strings.TrimSpace(req.KernelImagePath); configured == "" {
 		if spec, ok := bootassets.LookupManagedKernelForHost(a.Name()); ok {
@@ -672,6 +549,11 @@ func (a *Adapter) Doctor(_ context.Context, req backend.DoctorRequest) (*backend
 				"pass",
 				fmt.Sprintf("%s includes com.apple.security.virtualization entitlement", helperPath),
 			)
+		}
+		if networkErr == nil && networkCfg.Mode == darwinVZNetworkModeVMNetShared {
+			hasVMNetEntitlement, vmnetEntitlementErr := helperHasVMNetworkingEntitlement(helperPath)
+			status, message := doctorVMNetEntitlementResult(helperPath, hasVMNetEntitlement, vmnetEntitlementErr)
+			appendCheck("vmnet_entitlement", status, message)
 		}
 	}
 	return report, nil
@@ -840,6 +722,11 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 
 	guestInitPath, guestInitNotice := guestInitExecutableForRootFS(vmRootFSPath)
 	logExecutionNotice(a.Name(), req.ExecutionID, guestInitNotice)
+	networkCfg, err := resolveDarwinVZNetwork(req.FirecrackerConfig)
+	if err != nil {
+		observation.Error = err.Error()
+		return nil, err
+	}
 	bootArgs := fmt.Sprintf(
 		"console=hvc0 root=/dev/vda rw init=%s cleanroom_guest_port=%d %s",
 		guestInitPath,
@@ -849,19 +736,6 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 	consolePath := filepath.Join(runDir, "vm.console.log")
 
 	vmPlanPath := filepath.Join(runDir, "darwin-vz-config.json")
-	if err := writeJSON(vmPlanPath, map[string]any{
-		"backend":      a.Name(),
-		"kernel_image": kernelPath,
-		"rootfs":       vmRootFSPath,
-		"vcpus":        req.VCPUs,
-		"memory_mib":   req.MemoryMiB,
-		"guest_port":   req.GuestPort,
-		"launch_secs":  req.LaunchSeconds,
-		"boot_args":    bootArgs,
-	}); err != nil {
-		observation.Error = err.Error()
-		return nil, err
-	}
 	observation.PlanPath = vmPlanPath
 
 	helper, err := startHelperSession(ctx, runDir, req.LaunchSeconds)
@@ -875,50 +749,29 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 		}
 	}()
 
-	proxySocketPath := filepath.Join(runDir, helperProxySocketName)
-	if err := ensureUnixSocketPathFits(proxySocketPath); err != nil {
-		return nil, fmt.Errorf("proxy socket path %q is too long: %w", proxySocketPath, err)
-	}
-	_ = os.Remove(proxySocketPath)
-
-	startCtx, cancelStart := context.WithTimeout(ctx, time.Duration(req.LaunchSeconds)*time.Second)
-	defer cancelStart()
-	startRes, err := helper.request(startCtx, helperControlRequest{
-		Op:              "StartVM",
-		KernelPath:      kernelPath,
-		RootFSPath:      vmRootFSPath,
-		BootArgs:        bootArgs,
-		VCPUs:           req.VCPUs,
-		MemoryMiB:       req.MemoryMiB,
-		GuestPort:       req.GuestPort,
-		LaunchSeconds:   req.LaunchSeconds,
-		RunDir:          runDir,
-		ProxySocketPath: proxySocketPath,
-		ConsoleLogPath:  consolePath,
+	startedVM, err := startDarwinVZHelperVM(ctx, helper, darwinVZVMStartRequest{
+		ConfigPath:     vmPlanPath,
+		BackendName:    a.Name(),
+		RunDir:         runDir,
+		KernelPath:     kernelPath,
+		RootFSPath:     vmRootFSPath,
+		BootArgs:       bootArgs,
+		ConsoleLogPath: consolePath,
+		NetworkCfg:     networkCfg,
+		VCPUs:          req.VCPUs,
+		MemoryMiB:      req.MemoryMiB,
+		GuestPort:      req.GuestPort,
+		LaunchSeconds:  req.LaunchSeconds,
 	})
 	if err != nil {
 		observation.Error = err.Error()
-		return nil, fmt.Errorf("start vm via darwin-vz helper: %w", err)
+		return nil, err
 	}
 	observation.LaunchedVM = true
-	applyDarwinVZHelperTimings(&observation, startRes.TimingMS)
-
-	vmID := strings.TrimSpace(startRes.VMID)
-	if vmID == "" {
-		observation.Error = "darwin-vz helper returned empty vm_id"
-		return nil, errors.New("darwin-vz helper returned empty vm_id")
-	}
-	if p := strings.TrimSpace(startRes.ProxySocketPath); p != "" {
-		proxySocketPath = p
-	}
-	if strings.TrimSpace(proxySocketPath) == "" {
-		observation.Error = "darwin-vz helper returned empty proxy socket path"
-		return nil, errors.New("darwin-vz helper returned empty proxy socket path")
-	}
-	if err := ensureUnixSocketPathFits(proxySocketPath); err != nil {
-		observation.Error = err.Error()
-		return nil, fmt.Errorf("proxy socket path %q is too long: %w", proxySocketPath, err)
-	}
+	applyDarwinVZHelperTimings(&observation, startedVM.TimingMS)
+	applyDarwinVZNetworkMetadata(&observation, startedVM.NetworkMetadata)
+	vmID := startedVM.VMID
+	proxySocketPath := startedVM.ProxySocketPath
 	defer func() {
 		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -1020,7 +873,7 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 	}
 
 	message := darwinVZResultMessage(guestRes.Error)
-	if timingSummary := darwinVZTimingSummary(startRes.TimingMS); timingSummary != "" {
+	if timingSummary := darwinVZTimingSummary(startedVM.TimingMS); timingSummary != "" {
 		if message != "" {
 			message += "; "
 		}
@@ -1130,6 +983,10 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 	rootFSCopyMS := time.Since(copyStart).Milliseconds()
 
 	guestInitPath, _ := guestInitExecutableForRootFS(vmRootFSPath)
+	networkCfg, err := resolveDarwinVZNetwork(cfg)
+	if err != nil {
+		return nil, err
+	}
 	bootArgs := fmt.Sprintf(
 		"console=hvc0 root=/dev/vda rw init=%s cleanroom_guest_port=%d %s",
 		guestInitPath,
@@ -1139,18 +996,6 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 	consolePath := filepath.Join(runDir, "vm.console.log")
 
 	configPath := filepath.Join(runDir, "darwin-vz-config.json")
-	if err := writeJSON(configPath, map[string]any{
-		"backend":      a.Name(),
-		"kernel_image": kernelPath,
-		"rootfs":       vmRootFSPath,
-		"vcpus":        cfg.VCPUs,
-		"memory_mib":   cfg.MemoryMiB,
-		"guest_port":   cfg.GuestPort,
-		"launch_secs":  cfg.LaunchSeconds,
-		"boot_args":    bootArgs,
-	}); err != nil {
-		return nil, err
-	}
 
 	helper, err := startHelperSession(ctx, runDir, cfg.LaunchSeconds)
 	if err != nil {
@@ -1163,63 +1008,44 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 		}
 	}()
 
-	proxySocketPath := filepath.Join(runDir, helperProxySocketName)
-	if err := ensureUnixSocketPathFits(proxySocketPath); err != nil {
-		return nil, fmt.Errorf("proxy socket path %q is too long: %w", proxySocketPath, err)
-	}
-	_ = os.Remove(proxySocketPath)
-
-	startCtx, cancelStart := context.WithTimeout(ctx, time.Duration(cfg.LaunchSeconds)*time.Second)
-	defer cancelStart()
-	startRes, err := helper.request(startCtx, helperControlRequest{
-		Op:              "StartVM",
-		KernelPath:      kernelPath,
-		RootFSPath:      vmRootFSPath,
-		BootArgs:        bootArgs,
-		VCPUs:           cfg.VCPUs,
-		MemoryMiB:       cfg.MemoryMiB,
-		GuestPort:       cfg.GuestPort,
-		LaunchSeconds:   cfg.LaunchSeconds,
-		RunDir:          runDir,
-		ProxySocketPath: proxySocketPath,
-		ConsoleLogPath:  consolePath,
+	startedVM, err := startDarwinVZHelperVM(ctx, helper, darwinVZVMStartRequest{
+		ConfigPath:     configPath,
+		BackendName:    a.Name(),
+		RunDir:         runDir,
+		KernelPath:     kernelPath,
+		RootFSPath:     vmRootFSPath,
+		BootArgs:       bootArgs,
+		ConsoleLogPath: consolePath,
+		NetworkCfg:     networkCfg,
+		VCPUs:          cfg.VCPUs,
+		MemoryMiB:      cfg.MemoryMiB,
+		GuestPort:      cfg.GuestPort,
+		LaunchSeconds:  cfg.LaunchSeconds,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("start vm via darwin-vz helper: %w", err)
-	}
-
-	vmID := strings.TrimSpace(startRes.VMID)
-	if vmID == "" {
-		return nil, errors.New("darwin-vz helper returned empty vm_id")
-	}
-	if p := strings.TrimSpace(startRes.ProxySocketPath); p != "" {
-		proxySocketPath = p
-	}
-	if strings.TrimSpace(proxySocketPath) == "" {
-		return nil, errors.New("darwin-vz helper returned empty proxy socket path")
-	}
-	if err := ensureUnixSocketPathFits(proxySocketPath); err != nil {
-		return nil, fmt.Errorf("proxy socket path %q is too long: %w", proxySocketPath, err)
+		return nil, err
 	}
 
 	instance := &sandboxInstance{
 		SandboxID:       sandboxID,
 		RunDir:          runDir,
 		ConfigPath:      configPath,
-		ProxySocketPath: proxySocketPath,
+		ProxySocketPath: startedVM.ProxySocketPath,
 		GuestPort:       cfg.GuestPort,
 		Policy:          compiled,
 		ImageRef:        imageRef,
 		ImageDigest:     imageDigest,
 		LaunchObservability: &darwinVZLaunchObservability{
 			RootFSCopyMS:   rootFSCopyMS,
-			HelperTimingMS: cloneHelperTimingMS(startRes.TimingMS),
+			HelperTimingMS: startedVM.TimingMS,
+			Network:        startedVM.NetworkMetadata,
 		},
-		CommandTimeout: cfg.LaunchSeconds,
-		Helper:         helper,
-		VMID:           vmID,
-		vmRootFSPath:   vmRootFSPath,
-		exitedCh:       make(chan struct{}),
+		NetworkMetadata: startedVM.NetworkMetadata,
+		CommandTimeout:  cfg.LaunchSeconds,
+		Helper:          helper,
+		VMID:            startedVM.VMID,
+		vmRootFSPath:    vmRootFSPath,
+		exitedCh:        make(chan struct{}),
 	}
 	go func() {
 		err, ok := <-helper.done
@@ -1237,7 +1063,7 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 
 	bootCtx, cancel := context.WithTimeout(ctx, time.Duration(cfg.LaunchSeconds)*time.Second)
 	defer cancel()
-	if err := probeGuestExecReadyWithExit(bootCtx, helper, proxySocketPath, instance.exitedCh, instance.exitedErrOrNil); err != nil {
+	if err := probeGuestExecReadyWithExit(bootCtx, helper, startedVM.ProxySocketPath, instance.exitedCh, instance.exitedErrOrNil); err != nil {
 		return nil, err
 	}
 
@@ -1858,51 +1684,6 @@ func validatePreparedRuntimeRootFS(path string) error {
 	)
 }
 
-type ext4PathKind string
-
-const (
-	ext4PathKindUnknown   ext4PathKind = ""
-	ext4PathKindDirectory ext4PathKind = "directory"
-	ext4PathKindRegular   ext4PathKind = "regular"
-	ext4PathKindSymlink   ext4PathKind = "symlink"
-)
-
-func guestInitExecutableForRootFS(rootFSPath string) (path, notice string) {
-	return guestInitExecutableForRootFSLayout(ext4PathExists(rootFSPath, "/bin/sh"), ext4PathType(rootFSPath, "/sbin"))
-}
-
-func guestInitExecutableForRootFSLayout(hasShell bool, sbinKind ext4PathKind) (path, notice string) {
-	return guestInitExecutableForShellPresence(hasShell, preferredGuestInitScriptPathForSbinKind(sbinKind))
-}
-
-func guestInitExecutableForShellPresence(hasShell bool, initScriptPath string) (path, notice string) {
-	if hasShell {
-		if strings.TrimSpace(initScriptPath) == "" {
-			initScriptPath = guestInitScriptPathUsrSbin
-		}
-		return initScriptPath, ""
-	}
-	return guestAgentPath, fmt.Sprintf("rootfs is shell-less; using %s as init", guestAgentPath)
-}
-
-func preferredGuestInitScriptPathForSbinKind(kind ext4PathKind) string {
-	if kind == ext4PathKindDirectory {
-		return guestInitScriptPathSbin
-	}
-	return guestInitScriptPathUsrSbin
-}
-
-func validatePreparedRuntimeRootFSInitPathForLayout(hasShell bool, sbinKind ext4PathKind, pathExists func(string) bool) error {
-	initPath, _ := guestInitExecutableForRootFSLayout(hasShell, sbinKind)
-	if initPath == guestAgentPath {
-		return nil
-	}
-	if pathExists != nil && pathExists(initPath) {
-		return nil
-	}
-	return fmt.Errorf("required runtime file %q is missing or unreadable", initPath)
-}
-
 func preparedRuntimeRootFSPath(imageDigest, guestAgentHash string) (string, error) {
 	cacheBase, err := paths.CacheBaseDir()
 	if err != nil {
@@ -2060,33 +1841,6 @@ func expectedGuestAgentELFMachine(goarch string) (elf.Machine, bool) {
 	}
 }
 
-func helperHasVirtualizationEntitlement(helperPath string) (bool, error) {
-	cmd := exec.Command("codesign", "-d", "--entitlements", ":-", helperPath)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		msg := strings.TrimSpace(string(output))
-		if msg != "" {
-			return false, fmt.Errorf("%w: %s", err, msg)
-		}
-		return false, err
-	}
-	return hasVirtualizationEntitlement(string(output)), nil
-}
-
-func hasVirtualizationEntitlement(raw string) bool {
-	entitlements := strings.TrimSpace(raw)
-	if entitlements == "" {
-		return false
-	}
-
-	if start := strings.Index(entitlements, "<?xml"); start >= 0 {
-		entitlements = entitlements[start:]
-	} else if start := strings.Index(entitlements, "<plist"); start >= 0 {
-		entitlements = entitlements[start:]
-	}
-	return virtualizationEntitlementPattern.MatchString(entitlements)
-}
-
 func hashFileSHA256(path string) (string, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -2099,52 +1853,6 @@ func hashFileSHA256(path string) (string, error) {
 		return "", fmt.Errorf("hash %q: %w", path, err)
 	}
 	return hex.EncodeToString(hash.Sum(nil)), nil
-}
-
-func (a *Adapter) installGuestRuntimeIntoRootFS(rootFSPath, guestAgentPath string) error {
-	if _, err := hosttools.ResolveE2FSProgsBinary("debugfs"); err != nil {
-		return fmt.Errorf("find debugfs for runtime rootfs preparation: %w", err)
-	}
-	initScriptPath, err := createGuestInitScript()
-	if err != nil {
-		return err
-	}
-	defer os.Remove(initScriptPath)
-
-	if err := injectFileIntoExt4(rootFSPath, guestAgentPath, "/usr/local/bin/cleanroom-guest-agent", 0o755); err != nil {
-		return fmt.Errorf("inject guest agent into rootfs image: %w", err)
-	}
-	if err := injectFileIntoExt4(rootFSPath, initScriptPath, guestInitScriptPathUsrSbin, 0o755); err != nil {
-		return fmt.Errorf("inject cleanroom init into rootfs image (%s): %w", guestInitScriptPathUsrSbin, err)
-	}
-	if ext4PathType(rootFSPath, "/sbin") == ext4PathKindDirectory {
-		if err := injectFileIntoExt4(rootFSPath, initScriptPath, guestInitScriptPathSbin, 0o755); err != nil {
-			return fmt.Errorf("inject cleanroom init into rootfs image (%s): %w", guestInitScriptPathSbin, err)
-		}
-	}
-	return nil
-}
-
-func createGuestInitScript() (string, error) {
-	f, err := os.CreateTemp("", "cleanroom-init-*.sh")
-	if err != nil {
-		return "", fmt.Errorf("create guest init script: %w", err)
-	}
-	if _, err := f.WriteString(guestInitScriptTemplate); err != nil {
-		_ = f.Close()
-		_ = os.Remove(f.Name())
-		return "", fmt.Errorf("write guest init script: %w", err)
-	}
-	if err := f.Chmod(0o755); err != nil {
-		_ = f.Close()
-		_ = os.Remove(f.Name())
-		return "", fmt.Errorf("chmod guest init script: %w", err)
-	}
-	if err := f.Close(); err != nil {
-		_ = os.Remove(f.Name())
-		return "", fmt.Errorf("close guest init script: %w", err)
-	}
-	return f.Name(), nil
 }
 
 func injectFileIntoExt4(imagePath, srcPath, dstPath string, mode os.FileMode) error {
@@ -2299,60 +2007,6 @@ func (s *inputFrameSender) Send(frame vsockexec.ExecInputFrame) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return vsockexec.EncodeInputFrame(s.w, frame)
-}
-
-func writeJSON(path string, v any) error {
-	b, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, append(b, '\n'), 0o644)
-}
-
-func writeDarwinVZRunObservation(runDir string, observation *darwinVZRunObservation, totalMS int64) error {
-	if strings.TrimSpace(runDir) == "" || observation == nil {
-		return nil
-	}
-	obsCopy := *observation
-	obsCopy.TotalMS = totalMS
-	if len(observation.HelperTimingMS) > 0 {
-		obsCopy.HelperTimingMS = cloneHelperTimingMS(observation.HelperTimingMS)
-	}
-	return writeJSON(filepath.Join(runDir, runObservabilityFile), obsCopy)
-}
-
-func applyDarwinVZHelperTimings(observation *darwinVZRunObservation, timingMS map[string]int64) {
-	if observation == nil || len(timingMS) == 0 {
-		return
-	}
-	observation.HelperTimingMS = cloneHelperTimingMS(timingMS)
-	if vmReadyMS, ok := timingMS["vm_ready"]; ok {
-		observation.VMReadyMS = vmReadyMS
-	}
-}
-
-func applyDarwinVZLaunchObservability(observation *darwinVZRunObservation, launch *darwinVZLaunchObservability) {
-	if observation == nil || launch == nil {
-		return
-	}
-	if launch.RootFSCopyMS > 0 {
-		observation.RootFSCopyMS = launch.RootFSCopyMS
-	}
-	applyDarwinVZHelperTimings(observation, launch.HelperTimingMS)
-	if launch.RootFSCopyMS > 0 || len(launch.HelperTimingMS) > 0 {
-		observation.LaunchedVM = true
-	}
-}
-
-func cloneHelperTimingMS(timingMS map[string]int64) map[string]int64 {
-	if len(timingMS) == 0 {
-		return nil
-	}
-	out := make(map[string]int64, len(timingMS))
-	for key, value := range timingMS {
-		out[key] = value
-	}
-	return out
 }
 
 func darwinVZTimingSummary(timingMS map[string]int64) string {

@@ -27,6 +27,12 @@ func TestBuildkitePipelineUsesMisePlugin(t *testing.T) {
 	if strings.Contains(pipeline, "command: mise run") {
 		t.Fatalf("expected .buildkite/pipeline.yml to avoid direct `mise run` step commands")
 	}
+	if !strings.Contains(pipeline, "command: scripts/ci-darwin-vz-vmnet-e2e.sh") {
+		t.Fatalf("expected .buildkite/pipeline.yml to include the darwin-vz vmnet e2e step")
+	}
+	if !strings.Contains(pipeline, "CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTIFIER: com.buildkite.cleanroom.darwin-vz") {
+		t.Fatalf("expected .buildkite/pipeline.yml to set the darwin-vz vmnet helper bundle identifier")
+	}
 }
 
 func TestBuildkiteCommandHookIsRemoved(t *testing.T) {
@@ -63,6 +69,7 @@ func TestBuildkiteCIScriptsDoNotInvokeMiseDirectly(t *testing.T) {
 	for _, path := range []string{
 		"ci-cleanroom-e2e.sh",
 		"ci-darwin-vz-e2e.sh",
+		"ci-darwin-vz-vmnet-e2e.sh",
 	} {
 		path := path
 		t.Run(path, func(t *testing.T) {

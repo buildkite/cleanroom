@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 log() {
   printf '[cleanroom-install] %s\n' "$*"
 }
@@ -31,6 +33,11 @@ Environment variables:
   CLEANROOM_INSTALL_DIR           Install destination (default: /usr/local/bin)
   CLEANROOM_REPO                  GitHub repo in owner/repo format (default: buildkite/cleanroom)
   CLEANROOM_INSTALL_DARWIN_HELPER Set to 0 to skip cleanroom-darwin-vz install on macOS
+  CLEANROOM_DARWIN_VZ_HELPER_ENTITLEMENTS Optional entitlements plist for cleanroom-darwin-vz signing or re-signing
+  CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY Optional codesign identity for cleanroom-darwin-vz (default: ad-hoc when re-signing)
+  CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTIFIER Optional codesign identifier for cleanroom-darwin-vz (default: com.buildkite.cleanroom.darwin-vz when embedding a provisioning profile)
+  CLEANROOM_DARWIN_VZ_HELPER_PROVISION_PROFILE Optional provisioning profile to embed when building or re-signing a helper bundle
+  CLEANROOM_DARWIN_VZ_HELPER_SIGN_KEYCHAIN Optional keychain path when using the repo helper packager
 USAGE
 }
 
@@ -139,6 +146,39 @@ install_binary() {
   "${SUDO_CMD[@]}" install -m 0755 "$src" "$dst"
 }
 
+install_app_bundle() {
+  local src="$1"
+  local dst="$2"
+  "${SUDO_CMD[@]}" rm -rf "$dst"
+  if [ "${#SUDO_CMD[@]}" -gt 0 ]; then
+    "${SUDO_CMD[@]}" ditto "$src" "$dst"
+    return
+  fi
+  ditto "$src" "$dst"
+}
+
+package_darwin_helper_with_repo_script() {
+  local src="$1"
+  local dst="$2"
+  local package_script="${SCRIPT_DIR}/package-darwin-vz-helper.sh"
+  local -a cmd
+
+  [ -f "$package_script" ] || return 1
+
+  cmd=("${SUDO_CMD[@]}" env)
+  cmd+=("CLEANROOM_DARWIN_VZ_HELPER_ENTITLEMENTS=${HELPER_ENTITLEMENTS_PATH}")
+  cmd+=("CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY=${HELPER_SIGN_IDENTITY}")
+  cmd+=("CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTIFIER=${HELPER_SIGN_IDENTIFIER}")
+  if [ -n "${HELPER_SIGN_KEYCHAIN:-}" ]; then
+    cmd+=("CLEANROOM_DARWIN_VZ_HELPER_SIGN_KEYCHAIN=${HELPER_SIGN_KEYCHAIN}")
+  fi
+  if [ -n "${HELPER_PROVISION_PROFILE:-}" ]; then
+    cmd+=("CLEANROOM_DARWIN_VZ_HELPER_PROVISION_PROFILE=${HELPER_PROVISION_PROFILE}")
+  fi
+  cmd+=("$package_script" "$src" "$dst")
+  "${cmd[@]}"
+}
+
 HOST_OS_RAW="$(uname -s)"
 HOST_ARCH_RAW="$(uname -m)"
 
@@ -228,21 +268,135 @@ install_binary "${CLEANROOM_EXTRACT_DIR}/cleanroom" "${INSTALL_DIR}/cleanroom"
 install_binary "${CLEANROOM_EXTRACT_DIR}/cleanroom-guest-agent" "${INSTALL_DIR}/cleanroom-guest-agent"
 
 if [ "$HOST_OS" = "Darwin" ] && [ "$INSTALL_DARWIN_HELPER" != "0" ]; then
-  require_cmd codesign
-  [ -f "${CLEANROOM_EXTRACT_DIR}/cleanroom-darwin-vz" ] || die "cleanroom-darwin-vz missing in ${CLEANROOM_ASSET}"
-  [ -f "${CLEANROOM_EXTRACT_DIR}/entitlements.plist" ] || die "entitlements.plist missing in ${CLEANROOM_ASSET}"
+  HELPER_BUNDLE_SRC="${CLEANROOM_EXTRACT_DIR}/cleanroom-darwin-vz.app"
+  HELPER_BINARY_SRC="${CLEANROOM_EXTRACT_DIR}/cleanroom-darwin-vz"
+  HELPER_ENTITLEMENTS_VMNET_PATH="${CLEANROOM_EXTRACT_DIR}/entitlements-vmnet.plist"
+  HELPER_ENTITLEMENTS_DEFAULT_PATH="${CLEANROOM_EXTRACT_DIR}/entitlements.plist"
+  HELPER_SIGN_IDENTITY="${CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY:-}"
+  HELPER_SIGN_IDENTIFIER="${CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTIFIER:-}"
+  HELPER_SIGN_KEYCHAIN="${CLEANROOM_DARWIN_VZ_HELPER_SIGN_KEYCHAIN:-}"
+  HELPER_PROVISION_PROFILE="${CLEANROOM_DARWIN_VZ_HELPER_PROVISION_PROFILE:-}"
+  HELPER_BUNDLE_EMBEDDED_PROFILE_PATH="${HELPER_BUNDLE_SRC}/Contents/embedded.provisionprofile"
+  HELPER_RESIGN_REQUESTED=0
+  if [ "${CLEANROOM_DARWIN_VZ_HELPER_ENTITLEMENTS+x}" = "x" ] || \
+     [ "${CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY+x}" = "x" ] || \
+     [ "${CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTIFIER+x}" = "x" ] || \
+     [ "${CLEANROOM_DARWIN_VZ_HELPER_PROVISION_PROFILE+x}" = "x" ]; then
+    HELPER_RESIGN_REQUESTED=1
+  fi
 
-  install_binary "${CLEANROOM_EXTRACT_DIR}/cleanroom-darwin-vz" "${INSTALL_DIR}/cleanroom-darwin-vz"
-  "${SUDO_CMD[@]}" codesign --force --sign - \
-    --entitlements "${CLEANROOM_EXTRACT_DIR}/entitlements.plist" \
-    "${INSTALL_DIR}/cleanroom-darwin-vz"
-  DARWIN_HELPER_INSTALLED=1
+  HELPER_ENTITLEMENTS_PATH="${CLEANROOM_DARWIN_VZ_HELPER_ENTITLEMENTS:-}"
+  if [ -z "${HELPER_ENTITLEMENTS_PATH}" ]; then
+    if [ -f "${HELPER_ENTITLEMENTS_VMNET_PATH}" ] && { \
+      [ -n "${HELPER_PROVISION_PROFILE}" ] || \
+      { [ "${HELPER_RESIGN_REQUESTED}" = "0" ] && [ -f "${HELPER_BUNDLE_EMBEDDED_PROFILE_PATH}" ]; }; \
+    }; then
+      HELPER_ENTITLEMENTS_PATH="${HELPER_ENTITLEMENTS_VMNET_PATH}"
+    else
+      HELPER_ENTITLEMENTS_PATH="${HELPER_ENTITLEMENTS_DEFAULT_PATH}"
+    fi
+  fi
+
+  if [ -n "${HELPER_PROVISION_PROFILE}" ] && [ ! -f "${HELPER_PROVISION_PROFILE}" ]; then
+    die "provisioning profile missing: ${HELPER_PROVISION_PROFILE}"
+  fi
+  if [ -n "${HELPER_PROVISION_PROFILE}" ] && [ -z "${HELPER_SIGN_IDENTIFIER}" ]; then
+    HELPER_SIGN_IDENTIFIER="com.buildkite.cleanroom.darwin-vz"
+  fi
+
+  if [ -d "${HELPER_BUNDLE_SRC}" ]; then
+    require_cmd ditto
+    HELPER_BUNDLE_DIR="${INSTALL_DIR}/cleanroom-darwin-vz.app"
+    install_app_bundle "${HELPER_BUNDLE_SRC}" "${HELPER_BUNDLE_DIR}"
+    HELPER_INSTALL_LOG_PATH="${HELPER_BUNDLE_DIR}"
+
+    if [ "${HELPER_RESIGN_REQUESTED}" = "1" ]; then
+      HELPER_SIGN_IDENTITY="${HELPER_SIGN_IDENTITY:--}"
+      if ! package_darwin_helper_with_repo_script "${HELPER_BUNDLE_DIR}" "${HELPER_BUNDLE_DIR}"; then
+        require_cmd codesign
+        [ -f "${HELPER_ENTITLEMENTS_PATH}" ] || die "entitlements plist missing: ${HELPER_ENTITLEMENTS_PATH}"
+        HELPER_BUNDLE_PROFILE_DEST="${HELPER_BUNDLE_DIR}/Contents/embedded.provisionprofile"
+        if [ -n "${HELPER_PROVISION_PROFILE}" ]; then
+          install_binary "${HELPER_PROVISION_PROFILE}" "${HELPER_BUNDLE_PROFILE_DEST}"
+        else
+          "${SUDO_CMD[@]}" rm -f "${HELPER_BUNDLE_PROFILE_DEST}"
+        fi
+        codesign_cmd=("${SUDO_CMD[@]}" codesign --force --sign "${HELPER_SIGN_IDENTITY}" --entitlements "${HELPER_ENTITLEMENTS_PATH}")
+        if [ -n "${HELPER_SIGN_KEYCHAIN}" ]; then
+          codesign_cmd+=(--keychain "${HELPER_SIGN_KEYCHAIN}")
+        fi
+        if [ -n "${HELPER_SIGN_IDENTIFIER}" ]; then
+          codesign_cmd+=(-i "${HELPER_SIGN_IDENTIFIER}")
+        fi
+        codesign_cmd+=("${HELPER_BUNDLE_DIR}")
+        "${codesign_cmd[@]}"
+      fi
+    fi
+
+    DARWIN_HELPER_INSTALLED=1
+  else
+    [ -f "${HELPER_BINARY_SRC}" ] || die "cleanroom-darwin-vz missing in ${CLEANROOM_ASSET}"
+
+    HELPER_SIGN_IDENTITY="${HELPER_SIGN_IDENTITY:--}"
+    if [ -n "${HELPER_PROVISION_PROFILE}" ]; then
+      HELPER_SIGN_TARGET="${INSTALL_DIR}/cleanroom-darwin-vz.app"
+    else
+      HELPER_SIGN_TARGET="${INSTALL_DIR}/cleanroom-darwin-vz"
+    fi
+    HELPER_INSTALL_LOG_PATH="${HELPER_SIGN_TARGET}"
+    if ! package_darwin_helper_with_repo_script "${HELPER_BINARY_SRC}" "${HELPER_SIGN_TARGET}"; then
+      require_cmd codesign
+      [ -f "${HELPER_ENTITLEMENTS_PATH}" ] || die "entitlements plist missing: ${HELPER_ENTITLEMENTS_PATH}"
+      if [ -n "${HELPER_PROVISION_PROFILE}" ]; then
+        HELPER_BUNDLE_DIR="${INSTALL_DIR}/cleanroom-darwin-vz.app"
+        HELPER_EXECUTABLE_PATH="${HELPER_BUNDLE_DIR}/Contents/MacOS/cleanroom-darwin-vz"
+        HELPER_INFO_PLIST_PATH="${HELPER_BUNDLE_DIR}/Contents/Info.plist"
+        "${SUDO_CMD[@]}" mkdir -p "$(dirname "${HELPER_EXECUTABLE_PATH}")"
+        "${SUDO_CMD[@]}" sh -c "cat > \"${HELPER_INFO_PLIST_PATH}\" <<'EOF'
+<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">
+<plist version=\"1.0\">
+<dict>
+  <key>CFBundleExecutable</key>
+  <string>cleanroom-darwin-vz</string>
+  <key>CFBundleIdentifier</key>
+  <string>${HELPER_SIGN_IDENTIFIER}</string>
+  <key>CFBundleName</key>
+  <string>cleanroom-darwin-vz</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>0.0.0</string>
+  <key>CFBundleVersion</key>
+  <string>1</string>
+</dict>
+</plist>
+EOF"
+        install_binary "${HELPER_BINARY_SRC}" "${HELPER_EXECUTABLE_PATH}"
+        install_binary "${HELPER_PROVISION_PROFILE}" "${HELPER_BUNDLE_DIR}/Contents/embedded.provisionprofile"
+        HELPER_SIGN_TARGET="${HELPER_BUNDLE_DIR}"
+        HELPER_INSTALL_LOG_PATH="${HELPER_BUNDLE_DIR}"
+      else
+        install_binary "${HELPER_BINARY_SRC}" "${INSTALL_DIR}/cleanroom-darwin-vz"
+      fi
+      codesign_cmd=("${SUDO_CMD[@]}" codesign --force --sign "${HELPER_SIGN_IDENTITY}" --entitlements "${HELPER_ENTITLEMENTS_PATH}")
+      if [ -n "${HELPER_SIGN_KEYCHAIN}" ]; then
+        codesign_cmd+=(--keychain "${HELPER_SIGN_KEYCHAIN}")
+      fi
+      if [ -n "${HELPER_SIGN_IDENTIFIER}" ]; then
+        codesign_cmd+=(-i "${HELPER_SIGN_IDENTIFIER}")
+      fi
+      codesign_cmd+=("${HELPER_SIGN_TARGET}")
+      "${codesign_cmd[@]}"
+    fi
+    DARWIN_HELPER_INSTALLED=1
+  fi
 fi
 
 log "Installed cleanroom to ${INSTALL_DIR}/cleanroom"
 log "Installed cleanroom-guest-agent to ${INSTALL_DIR}/cleanroom-guest-agent"
 if [ "$DARWIN_HELPER_INSTALLED" = "1" ]; then
-  log "Installed cleanroom-darwin-vz to ${INSTALL_DIR}/cleanroom-darwin-vz"
+  log "Installed cleanroom-darwin-vz to ${HELPER_INSTALL_LOG_PATH}"
 fi
 
 case ":${PATH}:" in

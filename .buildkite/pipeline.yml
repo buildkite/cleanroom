@@ -2,7 +2,7 @@ steps:
   - label: ":shell: Shellcheck"
     plugins:
       - github.com/lox/mise-buildkite-plugin#a172963b3d34e98601e2a65c7dd08211fb49b7f0:
-    command: shellcheck -x scripts/bootstrap-buildkite-agent.sh scripts/bootstrap-buildkite-agent-macos.sh scripts/cleanroom-root-helper.sh scripts/benchmark-tti.sh scripts/build-go.sh scripts/install-go.sh scripts/install.sh scripts/release.sh scripts/ci-cleanroom-e2e.sh scripts/ci-darwin-vz-e2e.sh
+    command: shellcheck -x scripts/bootstrap-buildkite-agent.sh scripts/bootstrap-buildkite-agent-macos.sh scripts/cleanroom-root-helper.sh scripts/benchmark-tti.sh scripts/build-go.sh scripts/install-go.sh scripts/install.sh scripts/package-darwin-vz-helper.sh scripts/release.sh scripts/ci-cleanroom-e2e.sh scripts/ci-darwin-vz-e2e.sh scripts/ci-darwin-vz-vmnet-e2e.sh
     agents:
       queue: hosted
 
@@ -40,6 +40,17 @@ steps:
     command: scripts/ci-darwin-vz-e2e.sh
     concurrency: 1
     concurrency_group: cleanroom-darwin-vz-e2e
+    agents:
+      queue: cleanroom-mac
+
+  - label: ":apple: E2E (darwin-vz vmnet)"
+    plugins:
+      - github.com/lox/mise-buildkite-plugin#a172963b3d34e98601e2a65c7dd08211fb49b7f0:
+    command: scripts/ci-darwin-vz-vmnet-e2e.sh
+    concurrency: 1
+    concurrency_group: cleanroom-darwin-vz-e2e
+    env:
+      CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTIFIER: com.buildkite.cleanroom.darwin-vz
     agents:
       queue: cleanroom-mac
 
