@@ -42,7 +42,7 @@ Runtime behaviour:
 
 ```bash
 cd infra/terraform/envs/prod
-terraform workspace select ap-southeast-2
+terraform workspace select -or-create ap-southeast-2
 mise x -- terraform init
 mise x -- terraform plan -var-file=prod.ap-southeast-2.tfvars
 mise x -- terraform apply -var-file=prod.ap-southeast-2.tfvars

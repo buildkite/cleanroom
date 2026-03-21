@@ -97,6 +97,8 @@ func TestProdBootstrapInstallsPinnedReleaseAndBootstrapRunner(t *testing.T) {
 	requireContains(t, scriptPath, "CLEANROOM_INSTALL_SCRIPT_REF")
 	requireContains(t, scriptPath, "CLEANROOM_RELEASE_REPO")
 	requireContains(t, scriptPath, "CLEANROOM_RELEASE_REPO=''")
+	requireNotContains(t, scriptPath, "match($0, /^[[:space:]]*[A-Za-z0-9_]+[[:space:]]*=[[:space:]]*\"([^\"]*)\"/, m)")
+	requireNotContains(t, scriptPath, "match($0, /^[[:space:]]*[A-Za-z0-9_]+[[:space:]]*=[[:space:]]*(true|false)/, m)")
 	requireContains(t, scriptPath, "apply_prod_tfvars_overrides \"$repo_root\"")
 	requireContains(t, scriptPath, "prod.${AWS_REGION}.tfvars")
 	requireContains(t, scriptPath, "fetch_repo_checkout \"$bootstrap_repo_url\" \"$bootstrap_repo_ref\"")
@@ -129,6 +131,8 @@ func TestAwsRegionMustBeProvidedExplicitly(t *testing.T) {
 		t.Fatalf("expected aws_region to have no default in variables.tf")
 	}
 	requireContains(t, "README.md", "-var-file=prod.ap-southeast-2.tfvars")
+	requireContains(t, "README.md", "terraform workspace select -or-create ap-southeast-2")
+	requireContains(t, "terraform.tfvars", "terraform workspace select -or-create ap-southeast-2")
 }
 
 func TestGitDeployKeyIsRequired(t *testing.T) {

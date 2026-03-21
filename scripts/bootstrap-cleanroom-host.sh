@@ -208,8 +208,11 @@ read_tfvars_string() {
 
   awk -v key="$key" '
     $0 ~ "^[[:space:]]*" key "[[:space:]]*=" {
-      if (match($0, /^[[:space:]]*[A-Za-z0-9_]+[[:space:]]*=[[:space:]]*"([^"]*)"/, m)) {
-        print m[1]
+      if ($0 ~ /^[[:space:]]*[A-Za-z0-9_]+[[:space:]]*=[[:space:]]*"[^"]*"/) {
+        line = $0
+        sub(/^[[:space:]]*[A-Za-z0-9_]+[[:space:]]*=[[:space:]]*"/, "", line)
+        sub(/".*$/, "", line)
+        print line
         found = 1
       }
       exit
@@ -224,8 +227,11 @@ read_tfvars_bool() {
 
   awk -v key="$key" '
     $0 ~ "^[[:space:]]*" key "[[:space:]]*=" {
-      if (match($0, /^[[:space:]]*[A-Za-z0-9_]+[[:space:]]*=[[:space:]]*(true|false)/, m)) {
-        print m[1]
+      if ($0 ~ /^[[:space:]]*[A-Za-z0-9_]+[[:space:]]*=[[:space:]]*(true|false)([[:space:]]*#.*)?[[:space:]]*$/) {
+        line = $0
+        sub(/^[[:space:]]*[A-Za-z0-9_]+[[:space:]]*=[[:space:]]*/, "", line)
+        sub(/[[:space:]]*(#.*)?$/, "", line)
+        print line
         found = 1
       }
       exit
