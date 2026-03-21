@@ -42,3 +42,33 @@ func TestBootstrapScriptsSkipTailscaleWhenAuthKeyLookupFails(t *testing.T) {
 		})
 	}
 }
+
+func TestBootstrapBuildkiteAgentCreatesHelperParentDir(t *testing.T) {
+	t.Helper()
+
+	content, err := os.ReadFile("bootstrap-buildkite-agent.sh")
+	if err != nil {
+		t.Fatalf("read bootstrap-buildkite-agent.sh: %v", err)
+	}
+
+	script := string(content)
+	needle := "install -d -o root -g root -m 0755 \"$(dirname \"$HELPER_INSTALL_PATH\")\"\ninstall -o root -g root -m 0755 \"$HELPER_SOURCE_PATH\" \"$HELPER_INSTALL_PATH\""
+	if !strings.Contains(script, needle) {
+		t.Fatal("expected bootstrap-buildkite-agent.sh to create the helper parent directory before installing the helper")
+	}
+}
+
+func TestBootstrapCleanroomHostRejectsLegacyBinaryDirWithoutBinSuffix(t *testing.T) {
+	t.Helper()
+
+	content, err := os.ReadFile("bootstrap-cleanroom-host.sh")
+	if err != nil {
+		t.Fatalf("read bootstrap-cleanroom-host.sh: %v", err)
+	}
+
+	script := string(content)
+	needle := "*) die \"CLEANROOM_BINARY_INSTALL_DIR must end with /bin when CLEANROOM_INSTALL_PREFIX is not set\" ;;"
+	if !strings.Contains(script, needle) {
+		t.Fatal("expected bootstrap-cleanroom-host.sh to reject CLEANROOM_BINARY_INSTALL_DIR values that do not end with /bin when inferring the install prefix")
+	}
+}

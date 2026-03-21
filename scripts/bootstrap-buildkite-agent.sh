@@ -536,6 +536,7 @@ chmod 0640 "/etc/buildkite-agent/${QUEUE_NAME}.cfg"
 if [ ! -f "$HELPER_SOURCE_PATH" ]; then
   die "cleanroom helper script not found at ${HELPER_SOURCE_PATH}"
 fi
+install -d -o root -g root -m 0755 "$(dirname "$HELPER_INSTALL_PATH")"
 install -o root -g root -m 0755 "$HELPER_SOURCE_PATH" "$HELPER_INSTALL_PATH"
 
 install_linux_bootstrap_runner
