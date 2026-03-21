@@ -1080,6 +1080,19 @@ func loadExecutionObservability(artifactsDir string) (*structpb.Struct, error) {
 	return obs, nil
 }
 
+func internalBootstrapArtifactsDir(sandboxID, executionID string) string {
+	baseDir, err := paths.StateBaseDir()
+	if err != nil {
+		baseDir = filepath.Join(os.TempDir(), "cleanroom")
+	}
+	return filepath.Join(baseDir, "internal", "bootstrap-executions", sandboxID, executionID)
+}
+
+func withRunDir(cfg backend.FirecrackerConfig, runDir string) backend.FirecrackerConfig {
+	cfg.RunDir = runDir
+	return cfg
+}
+
 func (s *Service) ConsumeInteractiveSession(sessionID, token string) (*InteractiveSession, error) {
 	id := strings.TrimSpace(sessionID)
 	tok := strings.TrimSpace(token)
@@ -1786,12 +1799,13 @@ func (s *Service) bootstrapRepositoryInPersistentSandbox(
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
+	bootstrapExecutionID := s.ids().NewExecutionID()
 	result, err := adapter.RunInSandbox(ctx, backend.ExecutionRequest{
 		SandboxID:         sandboxID,
-		ExecutionID:       s.ids().NewExecutionID(),
+		ExecutionID:       bootstrapExecutionID,
 		Command:           repositorycheckout.BuildBootstrapCommand(repository),
 		Policy:            compiled,
-		FirecrackerConfig: firecrackerCfg,
+		FirecrackerConfig: withRunDir(firecrackerCfg, internalBootstrapArtifactsDir(sandboxID, bootstrapExecutionID)),
 	}, backend.OutputStream{
 		OnStdout: func(chunk []byte) {
 			_, _ = stdout.Write(chunk)
@@ -2058,6 +2072,7 @@ func (s *Service) dropExecutionLocked(key string, ex *executionState) {
 	closeExecutionDoneLocked(ex)
 	s.interactive.clearExecution(key)
 	delete(s.executions, key)
+	s.refreshSandboxExecutionPointersLocked(ex.SandboxID)
 }
 
 func (s *Service) hasActiveExecutionLocked(sandboxID string) bool {
@@ -2067,6 +2082,62 @@ func (s *Service) hasActiveExecutionLocked(sandboxID string) bool {
 		}
 	}
 	return false
+}
+
+func (s *Service) refreshSandboxExecutionPointersLocked(sandboxID string) {
+	sb, ok := s.sandboxes[sandboxID]
+	if !ok || sb == nil {
+		return
+	}
+
+	var latestActive *executionState
+	var latestFinished *executionState
+	for _, ex := range s.executions {
+		if ex == nil || ex.SandboxID != sandboxID {
+			continue
+		}
+		if !isFinalExecutionStatus(ex.Status) {
+			if latestActive == nil || ex.ID > latestActive.ID {
+				latestActive = ex
+			}
+			continue
+		}
+		if latestFinished == nil || newerExecutionState(ex, latestFinished) {
+			latestFinished = ex
+		}
+	}
+
+	if latestActive != nil {
+		sb.ActiveExecutionID = latestActive.ID
+		sb.LastExecutionID = latestActive.ID
+		return
+	}
+
+	sb.ActiveExecutionID = ""
+	if latestFinished != nil {
+		sb.LastExecutionID = latestFinished.ID
+		return
+	}
+	sb.LastExecutionID = ""
+}
+
+func newerExecutionState(left, right *executionState) bool {
+	if left == nil {
+		return false
+	}
+	if right == nil {
+		return true
+	}
+	leftTime := executionTerminalTime(left)
+	rightTime := executionTerminalTime(right)
+	switch {
+	case leftTime.After(rightTime):
+		return true
+	case rightTime.After(leftTime):
+		return false
+	default:
+		return left.ID > right.ID
+	}
 }
 
 func (s *Service) pruneStateLocked(now time.Time) {

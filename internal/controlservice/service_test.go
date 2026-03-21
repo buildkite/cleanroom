@@ -3,6 +3,7 @@ package controlservice
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/buildkite/cleanroom/internal/backend"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
+	"github.com/buildkite/cleanroom/internal/paths"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 	"github.com/buildkite/cleanroom/internal/snapshotstore"
@@ -1049,6 +1051,7 @@ func TestCreateSandboxProvisionsPersistentBackend(t *testing.T) {
 }
 
 func TestCreateSandboxBootstrapsRepositoryInService(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	adapter := &stubAdapter{}
 	mirrors := &stubRepositoryMirrorStore{}
 	svc := newTestService(adapter)
@@ -1082,6 +1085,17 @@ func TestCreateSandboxBootstrapsRepositoryInService(t *testing.T) {
 	}
 	if strings.Contains(joined, "Authorization:") || strings.Contains(joined, ".extraHeader") {
 		t.Fatalf("expected bootstrap command to avoid embedded auth, got %q", joined)
+	}
+	wantRunDir := internalBootstrapArtifactsDir(createResp.GetSandbox().GetSandboxId(), adapter.req.ExecutionID)
+	if got := adapter.req.RunDir; got != wantRunDir {
+		t.Fatalf("unexpected bootstrap run dir: got %q want %q", got, wantRunDir)
+	}
+	executionBaseDir, err := paths.ExecutionBaseDir()
+	if err != nil {
+		t.Fatalf("ExecutionBaseDir returned error: %v", err)
+	}
+	if rel, err := filepath.Rel(executionBaseDir, adapter.req.RunDir); err == nil && rel != "." && !strings.HasPrefix(rel, "..") {
+		t.Fatalf("expected bootstrap run dir to stay out of execution artifacts base dir %q, got %q", executionBaseDir, adapter.req.RunDir)
 	}
 }
 
@@ -2387,6 +2401,50 @@ func TestFinalizeExecutionWithoutPruneSkipsImmediateStatePruning(t *testing.T) {
 		t.Fatal("execution should be pruned once explicit prune runs")
 	}
 	svc.mu.Unlock()
+}
+
+func TestPruneFinishedExecutionClearsSandboxExecutionPointers(t *testing.T) {
+	svc := newTestService(&stubAdapter{})
+
+	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createSandboxResp.GetSandbox().GetSandboxId()
+
+	createExecutionResp, err := svc.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+		SandboxId: sandboxID,
+		Command:   []string{"echo", "ok"},
+	})
+	if err != nil {
+		t.Fatalf("CreateExecution returned error: %v", err)
+	}
+	executionID := createExecutionResp.GetExecution().GetExecutionId()
+	if _, err := svc.WaitExecution(context.Background(), sandboxID, executionID); err != nil {
+		t.Fatalf("WaitExecution returned error: %v", err)
+	}
+
+	retention := testRetentionPolicy()
+	retention.maxRetainedFinishedExecutions = 0
+	svc.runtime.retention = retention
+
+	svc.mu.Lock()
+	svc.pruneStateLocked(time.Now().UTC())
+	svc.mu.Unlock()
+
+	getSandboxResp, err := svc.GetSandbox(context.Background(), &cleanroomv1.GetSandboxRequest{SandboxId: sandboxID})
+	if err != nil {
+		t.Fatalf("GetSandbox returned error: %v", err)
+	}
+	if got := getSandboxResp.GetSandbox().GetLastExecutionId(); got != "" {
+		t.Fatalf("expected last_execution_id to clear after pruning, got %q", got)
+	}
+	if got := getSandboxResp.GetSandbox().GetActiveExecutionId(); got != "" {
+		t.Fatalf("expected active_execution_id to remain empty after pruning, got %q", got)
+	}
+	if _, err := svc.ExecutionSnapshot(sandboxID, executionID); err == nil {
+		t.Fatal("expected pruned execution snapshot lookup to fail")
+	}
 }
 
 func TestBufferedResultDeltaModes(t *testing.T) {
