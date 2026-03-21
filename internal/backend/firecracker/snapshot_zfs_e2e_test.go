@@ -134,15 +134,15 @@ func TestSnapshotLifecycleZFSE2E(t *testing.T) {
 	runCommand := func(ctx context.Context, sandboxID, runID string, command ...string) string {
 		t.Helper()
 
-	result, err := adapter.RunInSandbox(ctx, backend.ExecutionRequest{
-		SandboxID:   sandboxID,
-		ExecutionID: runID,
-		Command:     command,
-		Policy:      compiled,
-		FirecrackerConfig: backend.FirecrackerConfig{
-			LaunchSeconds: cfg.LaunchSeconds,
-		},
-	}, backend.OutputStream{})
+		result, err := adapter.RunInSandbox(ctx, backend.ExecutionRequest{
+			SandboxID:   sandboxID,
+			ExecutionID: runID,
+			Command:     command,
+			Policy:      compiled,
+			FirecrackerConfig: backend.FirecrackerConfig{
+				LaunchSeconds: cfg.LaunchSeconds,
+			},
+		}, backend.OutputStream{})
 		if err != nil {
 			t.Fatalf("%s returned error: %v", runID, err)
 		}
