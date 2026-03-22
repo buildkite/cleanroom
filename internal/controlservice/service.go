@@ -1024,9 +1024,6 @@ func (s *Service) InspectExecution(_ context.Context, req *cleanroomv1.InspectEx
 	}
 	sandboxID := strings.TrimSpace(req.GetSandboxId())
 	executionID := strings.TrimSpace(req.GetExecutionId())
-	if sandboxID == "" {
-		return nil, errors.New("missing sandbox_id")
-	}
 	if executionID == "" {
 		return nil, errors.New("missing execution_id")
 	}
@@ -1136,18 +1133,15 @@ func (s *Service) GetExecution(_ context.Context, req *cleanroomv1.GetExecutionR
 	}
 	sandboxID := strings.TrimSpace(req.GetSandboxId())
 	executionID := strings.TrimSpace(req.GetExecutionId())
-	if sandboxID == "" {
-		return nil, errors.New("missing sandbox_id")
-	}
 	if executionID == "" {
 		return nil, errors.New("missing execution_id")
 	}
 
 	s.mu.RLock()
-	ex, ok := s.executions[executionKey(sandboxID, executionID)]
-	if !ok {
+	ex, err := s.lookupExecutionLocked(sandboxID, executionID)
+	if err != nil {
 		s.mu.RUnlock()
-		return nil, fmt.Errorf("unknown execution %q in sandbox %q", executionID, sandboxID)
+		return nil, err
 	}
 	resp := &cleanroomv1.GetExecutionResponse{Execution: cloneExecutionLocked(ex)}
 	s.mu.RUnlock()
@@ -1491,9 +1485,9 @@ func (s *Service) WaitExecution(ctx context.Context, sandboxID, executionID stri
 func (s *Service) ExecutionSnapshot(sandboxID, executionID string) (*executionSnapshot, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	ex, ok := s.executions[executionKey(sandboxID, executionID)]
-	if !ok {
-		return nil, fmt.Errorf("unknown execution %q in sandbox %q", executionID, sandboxID)
+	ex, err := s.lookupExecutionLocked(sandboxID, executionID)
+	if err != nil {
+		return nil, err
 	}
 	return &executionSnapshot{
 		Execution:   cloneExecutionLocked(ex),
@@ -1506,6 +1500,31 @@ func (s *Service) ExecutionSnapshot(sandboxID, executionID string) (*executionSn
 		RunDir:      ex.RunDir,
 		Launched:    ex.LaunchedVM,
 	}, nil
+}
+
+func (s *Service) lookupExecutionLocked(sandboxID, executionID string) (*executionState, error) {
+	if strings.TrimSpace(sandboxID) != "" {
+		ex, ok := s.executions[executionKey(sandboxID, executionID)]
+		if !ok {
+			return nil, fmt.Errorf("unknown execution %q in sandbox %q", executionID, sandboxID)
+		}
+		return ex, nil
+	}
+
+	var match *executionState
+	for _, ex := range s.executions {
+		if ex == nil || ex.ID != executionID {
+			continue
+		}
+		if match != nil && match.SandboxID != ex.SandboxID {
+			return nil, fmt.Errorf("execution %q is not globally unique; specify sandbox_id", executionID)
+		}
+		match = ex
+	}
+	if match == nil {
+		return nil, fmt.Errorf("unknown execution %q", executionID)
+	}
+	return match, nil
 }
 
 func (s *Service) runExecution(sandboxID, executionID string) {

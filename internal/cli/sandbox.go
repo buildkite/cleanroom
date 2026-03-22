@@ -156,7 +156,7 @@ func (c *SandboxInspectCommand) Run(ctx *runtimeContext) error {
 		if _, err := fmt.Fprintf(ctx.Stdout, "last_execution_id: %s\n", lastExecutionID); err != nil {
 			return err
 		}
-		if _, err := fmt.Fprintf(ctx.Stdout, "inspect_last_execution: cleanroom execution inspect --sandbox-id %s --last\n", sandbox.GetSandboxId()); err != nil {
+		if _, err := fmt.Fprintf(ctx.Stdout, "inspect_last_execution: cleanroom execution inspect %s\n", lastExecutionID); err != nil {
 			return err
 		}
 	}
@@ -164,7 +164,7 @@ func (c *SandboxInspectCommand) Run(ctx *runtimeContext) error {
 		if _, err := fmt.Fprintf(ctx.Stdout, "active_execution_id: %s\n", activeExecutionID); err != nil {
 			return err
 		}
-		if _, err := fmt.Fprintf(ctx.Stdout, "inspect_active_execution: cleanroom execution inspect --sandbox-id %s %s\n", sandbox.GetSandboxId(), activeExecutionID); err != nil {
+		if _, err := fmt.Fprintf(ctx.Stdout, "inspect_active_execution: cleanroom execution inspect %s\n", activeExecutionID); err != nil {
 			return err
 		}
 	}

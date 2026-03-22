@@ -269,12 +269,11 @@ func writeArtifactsDir(stderr io.Writer, artifactsDir string) error {
 }
 
 func writeExecutionInspectCommand(stderr io.Writer, sandboxID, executionID string) error {
-	sandboxID = strings.TrimSpace(sandboxID)
 	executionID = strings.TrimSpace(executionID)
-	if stderr == nil || sandboxID == "" || executionID == "" {
+	if stderr == nil || executionID == "" {
 		return nil
 	}
-	_, err := fmt.Fprintf(stderr, "inspect_command=cleanroom execution inspect --sandbox-id %s %s\n", sandboxID, executionID)
+	_, err := fmt.Fprintf(stderr, "inspect_command=cleanroom execution inspect %s\n", executionID)
 	return err
 }
 

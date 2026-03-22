@@ -160,6 +160,57 @@ func TestExecutionInspectIntegrationSupportsLastAndJSON(t *testing.T) {
 	}
 }
 
+func TestExecutionInspectIntegrationSupportsGlobalExecutionID(t *testing.T) {
+	t.Helper()
+
+	adapter := &integrationAdapter{
+		runFn: func(_ context.Context, req backend.ExecutionRequest) (*backend.ExecutionResult, error) {
+			return &backend.ExecutionResult{
+				ExecutionID: req.ExecutionID,
+				ExitCode:    0,
+				Stdout:      "hello\n",
+				Message:     "done",
+			}, nil
+		},
+	}
+
+	host, svc := startIntegrationServer(t, adapter)
+	client := mustNewControlClient(t, host)
+	sandboxID := mustCreateSandbox(t, client)
+
+	createResp, err := client.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+		SandboxId: sandboxID,
+		Command:   []string{"echo", "ok"},
+		Kind:      cleanroomv1.ExecutionKind_EXECUTION_KIND_BATCH,
+	})
+	if err != nil {
+		t.Fatalf("CreateExecution returned error: %v", err)
+	}
+	executionID := createResp.GetExecution().GetExecutionId()
+	if _, err := svc.WaitExecution(context.Background(), sandboxID, executionID); err != nil {
+		t.Fatalf("WaitExecution returned error: %v", err)
+	}
+
+	outcome := runExecutionInspectWithCapture(ExecutionInspectCommand{
+		clientFlags: clientFlags{Host: host},
+		ExecutionID: executionID,
+	}, runtimeContext{CWD: t.TempDir()})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err != nil {
+		t.Fatalf("ExecutionInspectCommand.Run returned error: %v", outcome.err)
+	}
+
+	assertContainsAll(
+		t,
+		outcome.stdout,
+		"execution: "+executionID,
+		"sandbox: "+sandboxID,
+		"status: succeeded",
+	)
+}
+
 func TestExecutionInspectCommandRejectsMutuallyExclusiveFlags(t *testing.T) {
 	t.Helper()
 

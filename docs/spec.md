@@ -449,7 +449,8 @@ Policy feature mapping:
   - `cleanroom sandbox inspect <sandbox-id>`
   - `cleanroom sandbox ls`
   - `cleanroom sandbox rm <sandbox-id>`
-  - `cleanroom execution inspect --sandbox-id <sandbox-id> <execution-id>|--last`
+  - `cleanroom execution inspect <execution-id>`
+  - `cleanroom execution inspect --sandbox-id <sandbox-id> --last`
   - `cleanroom doctor`
   - `cleanroom status [--execution-id <execution-id>|--last]`
   - `cleanroom image pull|ls|rm|import|bump-ref`

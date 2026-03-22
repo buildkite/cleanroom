@@ -286,7 +286,7 @@ and `--dangerously-allow-all` cannot be combined with `--from`.
 
 ### 9.3 Execution commands
 
-- `cleanroom execution inspect --sandbox-id <sandbox-id> <execution-id>`
+- `cleanroom execution inspect <execution-id>`
 - `cleanroom execution inspect --sandbox-id <sandbox-id> --last`
 - `cleanroom status --execution-id <execution-id>`
 - `cleanroom status --last`
@@ -355,7 +355,7 @@ Failure UX:
 
 Debugging flow:
 1. Start with `cleanroom sandbox inspect <sandbox-id>` when you need the sandbox state or do not yet know the execution ID.
-2. Use `cleanroom execution inspect --sandbox-id <sandbox-id> <execution-id>` for the canonical execution view.
+2. Use `cleanroom execution inspect <execution-id>` for the canonical execution view.
 3. Use `cleanroom status --execution-id <execution-id>` for retained local artifacts and raw observability files.
 
 ## 10) Suggested Implementation Plan

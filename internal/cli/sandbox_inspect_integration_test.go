@@ -54,7 +54,7 @@ func TestSandboxInspectIntegrationShowsExecutionPointers(t *testing.T) {
 	if !strings.Contains(outcome.stdout, "last_execution_id: "+executionID) {
 		t.Fatalf("expected last execution id in output, got %q", outcome.stdout)
 	}
-	if !strings.Contains(outcome.stdout, "inspect_last_execution: cleanroom execution inspect --sandbox-id "+sandboxID+" --last") {
+	if !strings.Contains(outcome.stdout, "inspect_last_execution: cleanroom execution inspect "+executionID) {
 		t.Fatalf("expected inspect hint in output, got %q", outcome.stdout)
 	}
 }
