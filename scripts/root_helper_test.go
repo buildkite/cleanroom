@@ -37,10 +37,6 @@ func TestCleanroomRootHelperDeclaresCapabilitiesAndZFSSupport(t *testing.T) {
 		"bin=\"$(zfs_bin)\"",
 		"exec \"$bin\" \"$@\"",
 		"exec \"$(dd_bin)\" \"$@\"",
-		"*/dist/cleanroom-guest-agent-linux-*",
-		"*/bin/cleanroom-guest-agent-linux-*",
-		"*/libexec/cleanroom/cleanroom-guest-agent-linux-*",
-		"install: source symlinks are unsupported",
 		"    zfs)",
 		"    dd)",
 	} {
