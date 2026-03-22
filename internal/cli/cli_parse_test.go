@@ -105,6 +105,21 @@ func TestSnapshotInspectParses(t *testing.T) {
 	}
 }
 
+func TestTopLevelInspectParses(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"inspect", "exec_123", "--json"}); err != nil {
+		t.Fatalf("parse inspect returned error: %v", err)
+	}
+	if got, want := c.Inspect.ID, "exec_123"; got != want {
+		t.Fatalf("unexpected inspect id: got %q want %q", got, want)
+	}
+	if !c.Inspect.JSON {
+		t.Fatal("expected inspect --json flag to be set")
+	}
+}
+
 func TestSandboxCreateParses(t *testing.T) {
 	c := &CLI{}
 	parser := newParserForTest(t, c)

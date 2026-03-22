@@ -286,6 +286,7 @@ and `--dangerously-allow-all` cannot be combined with `--from`.
 
 ### 9.3 Execution commands
 
+- `cleanroom inspect <typeid>`
 - `cleanroom execution inspect <execution-id>`
 - `cleanroom execution inspect --sandbox-id <sandbox-id> --last`
 - `cleanroom status --execution-id <execution-id>`

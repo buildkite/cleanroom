@@ -446,6 +446,7 @@ Policy feature mapping:
   - `cleanroom policy validate`
   - `cleanroom exec [--] <command>`
   - `cleanroom console [--] <command>`
+  - `cleanroom inspect <typeid>`
   - `cleanroom sandbox inspect <sandbox-id>`
   - `cleanroom sandbox ls`
   - `cleanroom sandbox rm <sandbox-id>`
