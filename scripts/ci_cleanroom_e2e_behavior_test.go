@@ -59,7 +59,7 @@ func TestCiCleanroomE2EVerifyHelperCapabilitiesDetectsMissingCapabilities(t *tes
 
 	annotationPath := filepath.Join(workDir, "annotation.md")
 	helperPath := filepath.Join(workDir, "helper.sh")
-	writeExecutable(t, helperPath, "#!/usr/bin/env bash\nprintf 'firecracker-network\\n'\n")
+	writeExecutable(t, helperPath, "#!/usr/bin/env bash\nprintf 'unrelated-capability\\n'\n")
 	writeExecutable(t, filepath.Join(binDir, "sudo"), "#!/usr/bin/env bash\n[[ \"$1\" == \"-n\" ]] && shift\nexec \"$@\"\n")
 	writeExecutable(t, filepath.Join(binDir, "buildkite-agent"), "#!/usr/bin/env bash\ncat >\"$ANNOTATION_FILE\"\n")
 
@@ -83,7 +83,7 @@ fi
 	if !strings.Contains(stderr, "missing required capabilities") {
 		t.Fatalf("expected missing capabilities in stderr, got %q", stderr)
 	}
-	if !strings.Contains(stderr, "firecracker-rootfs") {
+	if !strings.Contains(stderr, "firecracker-network") {
 		t.Fatalf("expected missing capability name in stderr, got %q", stderr)
 	}
 

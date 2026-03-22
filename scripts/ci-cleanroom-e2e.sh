@@ -246,8 +246,8 @@ if [[ -z "$sandbox_id" ]]; then
 fi
 echo "sandbox id: $sandbox_id"
 
-./dist/cleanroom exec --host "$listen_endpoint" -c "$PWD" --in "$sandbox_id" -- sh -lc 'printf persisted-data >/tmp/persist.txt'
-./dist/cleanroom exec --host "$listen_endpoint" -c "$PWD" --in "$sandbox_id" -- sh -lc 'cat /tmp/persist.txt' | tee "$tmpdir/persist-read.out"
+./dist/cleanroom exec --host "$listen_endpoint" --in "$sandbox_id" -- sh -lc 'printf persisted-data >/tmp/persist.txt'
+./dist/cleanroom exec --host "$listen_endpoint" --in "$sandbox_id" -- sh -lc 'cat /tmp/persist.txt' | tee "$tmpdir/persist-read.out"
 if ! grep -q '^persisted-data$' "$tmpdir/persist-read.out"; then
   echo "expected persisted sandbox file contents from second execution" >&2
   exit 1
@@ -273,7 +273,7 @@ if ! grep -q 'sandbox terminated' "$tmpdir/sandbox-rm.out"; then
 fi
 
 set +e
-./dist/cleanroom exec --host "$listen_endpoint" -c "$PWD" --in "$sandbox_id" -- sh -lc 'echo should-not-run' >"$tmpdir/terminated.out" 2>"$tmpdir/terminated.err"
+./dist/cleanroom exec --host "$listen_endpoint" --in "$sandbox_id" -- sh -lc 'echo should-not-run' >"$tmpdir/terminated.out" 2>"$tmpdir/terminated.err"
 terminated_status=$?
 set -e
 if [[ "$terminated_status" -eq 0 ]]; then
