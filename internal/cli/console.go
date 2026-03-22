@@ -35,6 +35,10 @@ type ConsoleCommand struct {
 }
 
 func (c *ConsoleCommand) Run(ctx *runtimeContext) (runErr error) {
+	if err := validateExecutionSandboxArgs(c.Chdir, c.In, c.From, c.Keep); err != nil {
+		return err
+	}
+
 	logger, err := newLogger(c.LogLevel, "client")
 	if err != nil {
 		return err
@@ -75,9 +79,6 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) (runErr error) {
 	repositoryForCreate := repository
 	if inlineRepositoryBootstrap {
 		repositoryForCreate = nil
-	}
-	if strings.TrimSpace(c.In) != "" && c.Keep {
-		return errors.New("--keep cannot be used with --in")
 	}
 	sandboxID, createdSandbox, err := ensureSandboxID(client, ctx.Loader, cwd, host, c.Backend, strings.TrimSpace(c.In), strings.TrimSpace(c.From), c.Image, c.LaunchSeconds, repositoryForCreate)
 	if err != nil {

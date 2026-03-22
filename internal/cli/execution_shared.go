@@ -76,6 +76,27 @@ func ensureSandboxID(client *controlclient.Client, loader policyLoader, cwd, hos
 	return sandboxID, true, nil
 }
 
+func validateExecutionSandboxArgs(chdir, existingSandboxID, fromSnapshot string, keep bool) error {
+	sandboxID := strings.TrimSpace(existingSandboxID)
+	snapshotID := strings.TrimSpace(fromSnapshot)
+	hasChdir := strings.TrimSpace(chdir) != ""
+
+	if sandboxID != "" && snapshotID != "" {
+		return errors.New("--from cannot be used with --in")
+	}
+	if sandboxID != "" && keep {
+		return errors.New("--keep cannot be used with --in")
+	}
+	if sandboxID != "" && hasChdir {
+		return errors.New("--chdir cannot be used with --in")
+	}
+	if snapshotID != "" && hasChdir {
+		return errors.New("--chdir cannot be used with --from")
+	}
+
+	return nil
+}
+
 func getFinalExecutionExitCode(client *controlclient.Client, sandboxID, executionID string) (int, bool) {
 	getResp, err := client.GetExecution(context.Background(), &cleanroomv1.GetExecutionRequest{
 		SandboxId:   sandboxID,

@@ -474,6 +474,50 @@ func TestConsoleIntegrationRejectsKeepWhenReusingSandbox(t *testing.T) {
 	}
 }
 
+func TestConsoleIntegrationRejectsChdirWhenReusingSandbox(t *testing.T) {
+	cwd := t.TempDir()
+	outcome := runConsoleWithCapture(ConsoleCommand{
+		clientFlags: clientFlags{Host: "tssvc://cleanroom"},
+		Chdir:       cwd,
+		In:          "cr_123",
+		Command:     []string{"sh"},
+	}, "", runtimeContext{
+		CWD:    cwd,
+		Loader: failingLoader{},
+	})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err == nil {
+		t.Fatal("expected ConsoleCommand.Run to reject --chdir with --in")
+	}
+	if got, want := outcome.err.Error(), "--chdir cannot be used with --in"; !strings.Contains(got, want) {
+		t.Fatalf("expected error to contain %q, got %q", want, got)
+	}
+}
+
+func TestConsoleIntegrationRejectsChdirWhenCreatingFromSnapshot(t *testing.T) {
+	cwd := t.TempDir()
+	outcome := runConsoleWithCapture(ConsoleCommand{
+		clientFlags: clientFlags{Host: "tssvc://cleanroom"},
+		Chdir:       cwd,
+		From:        "snap_123",
+		Command:     []string{"sh"},
+	}, "", runtimeContext{
+		CWD:    cwd,
+		Loader: failingLoader{},
+	})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err == nil {
+		t.Fatal("expected ConsoleCommand.Run to reject --chdir with --from")
+	}
+	if got, want := outcome.err.Error(), "--chdir cannot be used with --from"; !strings.Contains(got, want) {
+		t.Fatalf("expected error to contain %q, got %q", want, got)
+	}
+}
+
 func TestConsoleIntegrationRoutesBackendWarningsToStderr(t *testing.T) {
 	host, _ := startIntegrationServer(t, &integrationAdapter{
 		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
