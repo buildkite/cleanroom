@@ -382,7 +382,6 @@ func TestExecCommandRunsInsideRepositoryPathWhenReusingSandboxID(t *testing.T) {
 
 	outcome := runExecWithCapture(ExecCommand{
 		clientFlags: clientFlags{Host: host},
-		Chdir:       repoDir,
 		In:          sandboxID,
 		Command:     []string{"echo", "ok"},
 	}, runtimeContext{
@@ -460,7 +459,6 @@ func TestExecCommandSkipsRepositoryBootstrapForExistingSandboxID(t *testing.T) {
 
 	outcome := runExecWithCapture(ExecCommand{
 		clientFlags: clientFlags{Host: host},
-		Chdir:       repoDir,
 		In:          sandboxID,
 		Command:     []string{"echo", "ok"},
 	}, runtimeContext{
@@ -569,7 +567,6 @@ func TestExecCommandWithSandboxIDAllowsMissingPolicyInCurrentDirectory(t *testin
 	outcome := runExecWithCapture(ExecCommand{
 		clientFlags: clientFlags{Host: host},
 		In:          sandboxID,
-		Chdir:       t.TempDir(),
 		Command:     []string{"echo", "ok"},
 	}, runtimeContext{
 		CWD:    t.TempDir(),
@@ -825,7 +822,6 @@ func TestExecCommandSkipsRepositoryBootstrapForExistingSandboxOnNonPersistentBac
 
 	outcome := runExecWithCapture(ExecCommand{
 		clientFlags: clientFlags{Host: host},
-		Chdir:       repoDir,
 		In:          sandboxID,
 		Command:     []string{"echo", "ok"},
 	}, runtimeContext{

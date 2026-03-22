@@ -79,3 +79,27 @@ func TestCiCleanroomE2EProbesHelperCapabilitiesInsteadOfHelperDrift(t *testing.T
 		}
 	}
 }
+
+func TestCiCleanroomE2EReusedSandboxExecOmitsChdir(t *testing.T) {
+	t.Helper()
+
+	content, err := os.ReadFile("ci-cleanroom-e2e.sh")
+	if err != nil {
+		t.Fatalf("read ci-cleanroom-e2e.sh: %v", err)
+	}
+
+	script := string(content)
+	for _, needle := range []string{
+		"./dist/cleanroom exec --host \"$listen_endpoint\" --in \"$sandbox_id\" -- sh -lc 'printf persisted-data >/tmp/persist.txt'",
+		"./dist/cleanroom exec --host \"$listen_endpoint\" --in \"$sandbox_id\" -- sh -lc 'cat /tmp/persist.txt' | tee \"$tmpdir/persist-read.out\"",
+		"./dist/cleanroom exec --host \"$listen_endpoint\" --in \"$sandbox_id\" -- sh -lc 'echo should-not-run' >\"$tmpdir/terminated.out\" 2>\"$tmpdir/terminated.err\"",
+	} {
+		if !strings.Contains(script, needle) {
+			t.Fatalf("expected ci-cleanroom-e2e.sh to contain %q", needle)
+		}
+	}
+
+	if strings.Contains(script, "./dist/cleanroom exec --host \"$listen_endpoint\" -c \"$PWD\" --in \"$sandbox_id\"") {
+		t.Fatal("expected ci-cleanroom-e2e.sh not to pass --chdir when reusing a sandbox")
+	}
+}

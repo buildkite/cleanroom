@@ -70,7 +70,6 @@ func TestSandboxCreateIntegrationOverridesImageRefForNewSandbox(t *testing.T) {
 
 	execOutcome := runExecWithCapture(ExecCommand{
 		clientFlags: clientFlags{Host: host},
-		Chdir:       cwd,
 		In:          sandboxID,
 		Command:     []string{"echo", "ok"},
 	}, runtimeContext{

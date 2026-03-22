@@ -1199,7 +1199,6 @@ func TestExecIntegrationSecondInterruptKeepsSuppliedSandboxWithoutRemove(t *test
 	go func() {
 		done <- runExecWithCapture(ExecCommand{
 			clientFlags: clientFlags{Host: host, LogLevel: "debug"},
-			Chdir:       cwd,
 			In:          sandboxID,
 			Command:     []string{"sleep", "300"},
 		}, runtimeContext{
@@ -1408,7 +1407,6 @@ func TestExecIntegrationRejectsKeepWhenReusingSandbox(t *testing.T) {
 	cwd := t.TempDir()
 	outcome := runExecWithCapture(ExecCommand{
 		clientFlags: clientFlags{Host: host},
-		Chdir:       cwd,
 		In:          sandboxID,
 		Keep:        true,
 		Command:     []string{"echo", "ok"},
@@ -1423,6 +1421,50 @@ func TestExecIntegrationRejectsKeepWhenReusingSandbox(t *testing.T) {
 		t.Fatal("expected ExecCommand.Run to reject --keep with --in")
 	}
 	if got, want := outcome.err.Error(), "--keep cannot be used with --in"; !strings.Contains(got, want) {
+		t.Fatalf("expected error to contain %q, got %q", want, got)
+	}
+}
+
+func TestExecIntegrationRejectsChdirWhenReusingSandbox(t *testing.T) {
+	cwd := t.TempDir()
+	outcome := runExecWithCapture(ExecCommand{
+		clientFlags: clientFlags{Host: "tssvc://cleanroom"},
+		Chdir:       cwd,
+		In:          "cr_123",
+		Command:     []string{"echo", "ok"},
+	}, runtimeContext{
+		CWD:    cwd,
+		Loader: failingLoader{},
+	})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err == nil {
+		t.Fatal("expected ExecCommand.Run to reject --chdir with --in")
+	}
+	if got, want := outcome.err.Error(), "--chdir cannot be used with --in"; !strings.Contains(got, want) {
+		t.Fatalf("expected error to contain %q, got %q", want, got)
+	}
+}
+
+func TestExecIntegrationRejectsChdirWhenCreatingFromSnapshot(t *testing.T) {
+	cwd := t.TempDir()
+	outcome := runExecWithCapture(ExecCommand{
+		clientFlags: clientFlags{Host: "tssvc://cleanroom"},
+		Chdir:       cwd,
+		From:        "snap_123",
+		Command:     []string{"echo", "ok"},
+	}, runtimeContext{
+		CWD:    cwd,
+		Loader: failingLoader{},
+	})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err == nil {
+		t.Fatal("expected ExecCommand.Run to reject --chdir with --from")
+	}
+	if got, want := outcome.err.Error(), "--chdir cannot be used with --from"; !strings.Contains(got, want) {
 		t.Fatalf("expected error to contain %q, got %q", want, got)
 	}
 }
