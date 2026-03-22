@@ -1999,6 +1999,14 @@ func TestServiceGeneratedIDsUseTypeIDFormat(t *testing.T) {
 		t.Fatalf("unexpected execution id from GetExecution: got %q want %q", got, want)
 	}
 
+	getResp, err = svc.GetExecution(context.Background(), &cleanroomv1.GetExecutionRequest{ExecutionId: executionID})
+	if err != nil {
+		t.Fatalf("GetExecution without sandbox_id returned error: %v", err)
+	}
+	if got, want := getResp.GetExecution().GetSandboxId(), sandboxID; got != want {
+		t.Fatalf("unexpected sandbox id from global GetExecution lookup: got %q want %q", got, want)
+	}
+
 	sandboxResp, err := svc.GetSandbox(context.Background(), &cleanroomv1.GetSandboxRequest{SandboxId: sandboxID})
 	if err != nil {
 		t.Fatalf("GetSandbox returned error: %v", err)

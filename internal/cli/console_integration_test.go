@@ -552,7 +552,7 @@ func TestConsoleIntegrationPrintsExecutionHintsOnFailure(t *testing.T) {
 	if got := parseExecutionID(outcome.stderr); got == "" {
 		t.Fatalf("expected execution_id in failure output, got %q", outcome.stderr)
 	}
-	if !strings.Contains(outcome.stderr, "inspect_command=cleanroom execution inspect --sandbox-id ") {
+	if !strings.Contains(outcome.stderr, "inspect_command=cleanroom execution inspect ") {
 		t.Fatalf("expected inspect_command in failure output, got %q", outcome.stderr)
 	}
 	if !strings.Contains(outcome.stderr, "artifacts_dir=/tmp/console-failed") {

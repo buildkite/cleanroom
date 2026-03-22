@@ -402,8 +402,8 @@ When `rootfs` is unset, Cleanroom derives one from `sandbox.image.ref` and injec
 cleanroom doctor              # check host prerequisites
 cleanroom doctor --json       # machine-readable with capabilities map
 cleanroom sandbox inspect <sandbox-id>
+cleanroom execution inspect <execution-id>
 cleanroom execution inspect --sandbox-id <sandbox-id> --last
-cleanroom execution inspect --sandbox-id <sandbox-id> <execution-id>
 cleanroom status --last       # browse the newest retained execution artifacts
 cleanroom status --execution-id <execution-id>
 cleanroom version

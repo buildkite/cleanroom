@@ -16,7 +16,7 @@ type ExecutionCommand struct {
 
 type ExecutionInspectCommand struct {
 	clientFlags
-	SandboxID   string `name:"sandbox-id" help:"Sandbox ID that owns the execution"`
+	SandboxID   string `name:"sandbox-id" help:"Sandbox ID that owns the execution (required with --last)"`
 	ExecutionID string `arg:"" optional:"" help:"Execution ID to inspect"`
 	Last        bool   `help:"Inspect the sandbox's last execution (requires --sandbox-id)"`
 	JSON        bool   `help:"Print execution inspection as JSON"`
@@ -50,9 +50,6 @@ func (c *ExecutionInspectCommand) Run(ctx *runtimeContext) error {
 			return fmt.Errorf("sandbox %q has no recorded executions", sandboxID)
 		}
 	} else {
-		if sandboxID == "" {
-			return errors.New("--sandbox-id is required")
-		}
 		if executionID == "" {
 			return errors.New("missing <execution-id> or use --last")
 		}
