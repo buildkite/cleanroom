@@ -13,6 +13,7 @@ locals {
 
   parameter_names = compact([
     var.buildkite_token_parameter_name,
+    var.autologin_password_parameter_name,
     var.tailscale_auth_key_parameter_name,
     var.git_deploy_key_parameter_name,
   ])
@@ -144,6 +145,14 @@ resource "aws_instance" "host" {
     name_prefix                       = var.name_prefix
     buildkite_queue                   = var.buildkite_queue
     buildkite_token_parameter_name    = var.buildkite_token_parameter_name
+    autologin_password_parameter_name = var.autologin_password_parameter_name
+    launchagent_mode                  = var.launchagent_mode
+    signer_mode                       = var.signer_mode
+    signer_require_signing_job        = var.signer_require_signing_job
+    signer_allowed_branches           = var.signer_allowed_branches
+    signer_allowed_branch_prefixes    = var.signer_allowed_branch_prefixes
+    signer_allow_tags                 = var.signer_allow_tags
+    signer_allow_pull_requests        = var.signer_allow_pull_requests
     tailscale_auth_key_parameter_name = var.tailscale_auth_key_parameter_name
     git_deploy_key_parameter_name     = var.git_deploy_key_parameter_name
     repo_url                          = var.repo_url

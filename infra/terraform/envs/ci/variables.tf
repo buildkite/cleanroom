@@ -93,6 +93,101 @@ variable "mac_tailscale_hostname_prefix" {
   default     = "cleanroom-ci-mac"
 }
 
+variable "mac_autologin_password_parameter_name" {
+  description = "Optional SSM SecureString parameter name storing the ec2-user password reused by the dedicated signer LaunchAgent when mac_signer_autologin_password_parameter_name is left empty."
+  type        = string
+  default     = ""
+}
+
+variable "enable_macos_signer_ci" {
+  description = "Create a dedicated private macOS signer instance (separate host + queue) for signing/notarization jobs."
+  type        = bool
+  default     = false
+}
+
+variable "mac_signer_ami_id" {
+  description = "Optional AMI override for the macOS signer host. Leave empty to use the Tahoe public SSM parameter that matches mac_signer_instance_type."
+  type        = string
+  default     = ""
+}
+
+variable "mac_signer_ami_ssm_parameter_name" {
+  description = "Optional SSM public parameter name for the macOS signer host AMI. Leave empty to use the Tahoe public parameter that matches mac_signer_instance_type."
+  type        = string
+  default     = ""
+}
+
+variable "mac_signer_instance_type" {
+  description = "Optional EC2 instance type for the macOS signer host. Leave empty to reuse mac_instance_type."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = trimspace(var.mac_signer_instance_type) == "" || endswith(var.mac_signer_instance_type, ".metal")
+    error_message = "mac_signer_instance_type must be empty or a Mac metal instance type (for example mac2-m2.metal)."
+  }
+}
+
+variable "mac_signer_root_volume_size_gib" {
+  description = "Optional root EBS volume size in GiB for the macOS signer host. Use 0 to reuse mac_root_volume_size_gib."
+  type        = number
+  default     = 0
+}
+
+variable "mac_signer_buildkite_queue" {
+  description = "Buildkite queue tag used by the macOS signer agent."
+  type        = string
+  default     = "cleanroom-mac-signer"
+}
+
+variable "mac_signer_setup_script_path" {
+  description = "Optional path to macOS signer setup script in cloned repository. Leave empty to reuse mac_setup_script_path."
+  type        = string
+  default     = ""
+}
+
+variable "mac_signer_tailscale_hostname_prefix" {
+  description = "Tailscale hostname prefix for the macOS signer host (<prefix>-<instance-id>)."
+  type        = string
+  default     = "cleanroom-ci-mac-signer"
+}
+
+variable "mac_signer_autologin_password_parameter_name" {
+  description = "Optional SSM SecureString parameter name storing the ec2-user password used to enable macOS auto-login for the signer LaunchAgent. Leave empty to reuse mac_autologin_password_parameter_name."
+  type        = string
+  default     = ""
+}
+
+variable "mac_signer_require_signing_job" {
+  description = "Require CLEANROOM_SIGNING_JOB=1 on signer hosts before allowing a Buildkite job to run."
+  type        = bool
+  default     = true
+}
+
+variable "mac_signer_allowed_branches" {
+  description = "Comma-separated branch allowlist enforced by the signer host pre-command hook."
+  type        = string
+  default     = "main"
+}
+
+variable "mac_signer_allowed_branch_prefixes" {
+  description = "Optional comma-separated branch prefixes allowed by the signer host pre-command hook."
+  type        = string
+  default     = ""
+}
+
+variable "mac_signer_allow_tags" {
+  description = "Allow tag builds on the signer host."
+  type        = bool
+  default     = true
+}
+
+variable "mac_signer_allow_pull_requests" {
+  description = "Allow pull request builds on the signer host."
+  type        = bool
+  default     = false
+}
+
 variable "buildkite_token_parameter_name" {
   description = "SSM SecureString parameter name storing the Buildkite token."
   type        = string

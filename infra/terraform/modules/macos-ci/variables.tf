@@ -58,6 +58,54 @@ variable "buildkite_token_parameter_name" {
   type        = string
 }
 
+variable "autologin_password_parameter_name" {
+  description = "Optional SSM SecureString parameter name storing the macOS login password used to configure ec2-user auto-login when launchagent_mode is enabled."
+  type        = string
+  default     = ""
+}
+
+variable "launchagent_mode" {
+  description = "When true, bootstrap the Buildkite agent as a logged-in user LaunchAgent instead of a system LaunchDaemon."
+  type        = bool
+  default     = false
+}
+
+variable "signer_mode" {
+  description = "When true, install a Buildkite pre-command hook that restricts this host to signing jobs."
+  type        = bool
+  default     = false
+}
+
+variable "signer_require_signing_job" {
+  description = "Require CLEANROOM_SIGNING_JOB=1 on signer hosts before allowing a job to run."
+  type        = bool
+  default     = true
+}
+
+variable "signer_allowed_branches" {
+  description = "Comma-separated branch allowlist for signer hosts."
+  type        = string
+  default     = "main"
+}
+
+variable "signer_allowed_branch_prefixes" {
+  description = "Optional comma-separated branch prefixes allowed on signer hosts."
+  type        = string
+  default     = ""
+}
+
+variable "signer_allow_tags" {
+  description = "Allow tag builds on signer hosts."
+  type        = bool
+  default     = true
+}
+
+variable "signer_allow_pull_requests" {
+  description = "Allow pull request builds on signer hosts."
+  type        = bool
+  default     = false
+}
+
 variable "tailscale_auth_key_parameter_name" {
   description = "Optional SSM SecureString parameter name storing Tailscale auth key."
   type        = string

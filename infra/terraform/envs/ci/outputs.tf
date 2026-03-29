@@ -57,3 +57,28 @@ output "mac_dedicated_host_id" {
   description = "Dedicated host ID backing mac-ci instance (null when disabled)."
   value       = var.enable_macos_ci ? module.mac_ci[0].dedicated_host_id : null
 }
+
+output "mac_signer_instance_id" {
+  description = "EC2 instance ID for the macOS signer host (null when disabled)."
+  value       = var.enable_macos_signer_ci ? module.mac_signer[0].instance_id : null
+}
+
+output "mac_signer_private_ip" {
+  description = "Private IP address for the macOS signer host (null when disabled)."
+  value       = var.enable_macos_signer_ci ? module.mac_signer[0].private_ip : null
+}
+
+output "mac_signer_ssm_start_session_command" {
+  description = "Command to open an SSM session to the macOS signer host (null when disabled)."
+  value       = var.enable_macos_signer_ci ? module.mac_signer[0].ssm_start_session_command : null
+}
+
+output "mac_signer_tailscale_ssh_pattern" {
+  description = "Tailscale SSH pattern to connect to the macOS signer host (null when disabled)."
+  value       = var.enable_macos_signer_ci ? module.mac_signer[0].tailscale_ssh_pattern : null
+}
+
+output "mac_signer_dedicated_host_id" {
+  description = "Dedicated host ID backing the macOS signer instance (null when disabled)."
+  value       = var.enable_macos_signer_ci ? module.mac_signer[0].dedicated_host_id : null
+}
