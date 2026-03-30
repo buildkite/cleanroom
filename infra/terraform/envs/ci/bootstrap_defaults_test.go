@@ -164,6 +164,7 @@ func TestMacBootstrapScriptConfiguresBuildkiteAgent(t *testing.T) {
 	requireContains(t, scriptPath, "<string>Interactive</string>")
 	requireContains(t, scriptPath, "sysadminctl did not finish auto-login setup; writing /etc/kcpassword fallback")
 	requireContains(t, scriptPath, "/etc/kcpassword")
+	requireContains(t, scriptPath, "KC_PASSWORD=\"$password\" perl -e")
 	requireContains(t, scriptPath, "install --formula tailscale")
 	requireContains(t, scriptPath, "install-system-daemon")
 	requireContains(t, scriptPath, "tailscale_cmd+=(--ssh)")

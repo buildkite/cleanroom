@@ -262,7 +262,7 @@ configure_autologin_if_configured() {
 
   if ! sysadminctl -autologin status 2>&1 | grep -Fq "Automatic login user: ${user}"; then
     log "sysadminctl did not finish auto-login setup; writing /etc/kcpassword fallback"
-    perl -e '
+    KC_PASSWORD="$password" perl -e '
       use strict;
       use warnings;
 
@@ -276,7 +276,7 @@ configure_autologin_if_configured() {
       open my $fh, ">:raw", "/etc/kcpassword" or die $!;
       print {$fh} pack("C*", @bytes);
       close $fh or die $!;
-    ' KC_PASSWORD="$password"
+    '
     chown root:wheel /etc/kcpassword
     chmod 0600 /etc/kcpassword
   fi
