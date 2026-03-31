@@ -1,10 +1,11 @@
 # CI Setup (Buildkite)
 
-This repository uses Buildkite for CI with three queues:
+This repository uses Buildkite for CI with three standard queues, plus an optional dedicated signer queue:
 
 - `hosted`: Linux unit/integration tests (`go test ./...`)
 - `cleanroom-mac`: macOS unit/integration tests (`go test ./...`) and `darwin-vz` end-to-end checks (`scripts/ci-darwin-vz-e2e.sh`)
 - `cleanroom`: Linux Firecracker end-to-end checks (`scripts/ci-cleanroom-e2e.sh`)
+- `cleanroom-mac-signer`: reserved for macOS signing/notarization jobs on a separate logged-in user session host
 
 Pipeline config lives in `.buildkite/pipeline.yml`.
 
@@ -16,6 +17,7 @@ Pipeline config lives in `.buildkite/pipeline.yml`.
 - `hosted`
 - `cleanroom-mac`
 - `cleanroom`
+- `cleanroom-mac-signer` if you provision dedicated signing capacity
 
 ## 2. Hosted and macOS Queues
 
@@ -23,12 +25,18 @@ No special setup is required beyond a working Buildkite agent image and internet
 
 For self-hosted macOS capacity, Terraform can provision a private EC2 Mac host and dedicated host via `infra/terraform/envs/ci` (`enable_macos_ci = true`). By default it resolves the latest Tahoe AMI from the AWS public SSM parameter that matches `mac_instance_type`, and you can still override that with `mac_ami_id` or `mac_ami_ssm_parameter_name`. This keeps mac queue access private-only (SSM, no inbound public rules).
 
+For dedicated signing capacity, enable `enable_macos_signer_ci = true`. That provisions a second EC2 Mac host/queue, `cleanroom-mac-signer`, with a signer-only `pre-command` hook enforced by bootstrap.
+
 Notes:
 
 - `mise` is bootstrapped per-step via the pinned `lox/mise-buildkite-plugin` reference in `.buildkite/pipeline.yml`.
 - Self-hosted agents need `curl` and `tar` available so the plugin can install `mise`.
 - Per-step cache is enabled for `hosted` and `cleanroom-mac` steps.
 - Avoid global pipeline `cache:` blocks if self-hosted queues are present.
+- The default `cleanroom-mac` host stays on a system LaunchDaemon, matching the pre-existing mac test queue behavior.
+- The optional signer host runs as an `ec2-user` LaunchAgent so code signing and keychain access happen in a real user session.
+- Set `mac_signer_autologin_password_parameter_name` or reuse `mac_autologin_password_parameter_name` if you want bootstrap to enable auto-login and start the signer agent without manual intervention.
+- The signer host bootstrap hook rejects jobs unless they are marked with `CLEANROOM_SIGNING_JOB=1` and come from allowed branches/tags.
 
 ### 2.1 macOS bootstrap updates and recovery
 
@@ -57,8 +65,28 @@ AWS_PROFILE=buildkite-sandbox-pipelines-admin aws ssm send-command \
   --region ap-southeast-2 \
   --instance-ids "$instance_id" \
   --document-name AWS-RunShellScript \
-  --parameters '{"commands":["sudo tail -n 120 /var/log/cleanroom-bootstrap-macos.log","sudo launchctl print system/com.buildkite.agent.cleanroom-mac","sudo tail -n 120 /var/lib/buildkite-agent/logs/buildkite-agent-cleanroom-mac.log","sudo tail -n 120 /var/lib/buildkite-agent/logs/buildkite-agent-cleanroom-mac.error.log"]}'
+  --parameters '{"commands":["sudo tail -n 120 /var/log/cleanroom-bootstrap-macos.log","sudo launchctl print system/com.buildkite.agent.cleanroom-mac || true","sudo tail -n 120 /var/lib/buildkite-agent/logs/buildkite-agent-cleanroom-mac.log","sudo tail -n 120 /var/lib/buildkite-agent/logs/buildkite-agent-cleanroom-mac.error.log"]}'
 ```
+
+### 2.2 `cleanroom-mac-signer` Queue
+
+Use the signer queue only for release signing/notarization jobs. Keep regular tests on `cleanroom-mac`.
+
+Recommended policy:
+
+- route signing steps to `queue: cleanroom-mac-signer`
+- set `CLEANROOM_SIGNING_JOB=1` on those steps
+- scope signing/notary secrets to the signer queue, not the general mac queue
+- keep `mac_signer_allowed_branches = "main"` and `mac_signer_allow_tags = true`
+- use `mac_signer_allowed_branch_prefixes` only for temporary trusted test branches
+
+The signer host bootstrap installs a `pre-command` hook that rejects jobs when:
+
+- `CLEANROOM_SIGNING_JOB=1` is missing and `mac_signer_require_signing_job` is still enabled
+- the build is a pull request and `mac_signer_allow_pull_requests = false`
+- the build is not a tag and the branch is outside `mac_signer_allowed_branches` / `mac_signer_allowed_branch_prefixes`
+
+The signer host uses the LaunchAgent + auto-login flow. If bootstrap logs `waiting for a GUI login session`, the LaunchAgent is installed but the host has not yet entered `gui/<uid>`. On an already-booted signer host, reboot after setting the signer auto-login password parameter, or log in once as `ec2-user`.
 
 ## 3. cleanroom-mac Queue (darwin-vz E2E)
 
