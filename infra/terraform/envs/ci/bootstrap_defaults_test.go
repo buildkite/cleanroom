@@ -159,6 +159,7 @@ func TestMacBootstrapScriptConfiguresBuildkiteAgent(t *testing.T) {
 	requireContains(t, scriptPath, "launchctl bootstrap system \"$plist_path\"")
 	requireContains(t, scriptPath, "gui/${AGENT_UID}")
 	requireContains(t, scriptPath, "${AGENT_HOME}/Library/LaunchAgents/${service_label}.plist")
+	requireContains(t, scriptPath, "install -d -o \"$AGENT_USER\" -g \"$AGENT_GROUP\" -m 0700 \"${AGENT_HOME}/.ssh\"")
 	requireContains(t, scriptPath, "launchctl bootout \"system/${service_label}\" || true")
 	requireContains(t, scriptPath, "<key>ProcessType</key>")
 	requireContains(t, scriptPath, "<string>Interactive</string>")

@@ -433,6 +433,8 @@ install -d -o "$AGENT_USER" -g "$AGENT_GROUP" -m 0755 "$BUILD_PATH"
 install -d -o "$AGENT_USER" -g "$AGENT_GROUP" -m 0755 "$AGENT_ROOT/hooks"
 install -d -o "$AGENT_USER" -g "$AGENT_GROUP" -m 0755 "$AGENT_ROOT/plugins"
 if [ "$LAUNCHAGENT_MODE" = "true" ]; then
+  install -d -o "$AGENT_USER" -g "$AGENT_GROUP" -m 0700 "${AGENT_HOME}/.ssh"
+  chown "$AGENT_USER":"$AGENT_GROUP" "${AGENT_HOME}/.ssh"
   install -d -o "$AGENT_USER" -g "$AGENT_GROUP" -m 0755 "${AGENT_HOME}/Library"
   install -d -o "$AGENT_USER" -g "$AGENT_GROUP" -m 0755 "${AGENT_HOME}/Library/LaunchAgents"
 fi
