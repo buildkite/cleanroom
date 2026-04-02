@@ -81,12 +81,27 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 	if err != nil {
 		return fmt.Errorf("configure git mirror store: %w", err)
 	}
+
+	var contentCache *gateway.ContentCache
+	contentCache, err = gateway.NewContentCache(gateway.ContentCacheConfig{
+		Credentials:     gwCredentials,
+		GitAllowedHosts: []string{"github.com", "gitlab.com"},
+		Logger:          logger.With("subsystem", "content-cache"),
+	})
+	if err != nil {
+		return fmt.Errorf("configure content cache: %w", err)
+	}
+	defer contentCache.Close()
+
+	darwinGatewayHost := strings.TrimSpace(os.Getenv("CLEANROOM_DARWIN_GATEWAY_HOST"))
 	gwServer := gateway.NewServer(gatewayServerConfig(
 		s.GatewayListen,
 		gwRegistry,
 		gwCredentials,
 		gwMirrors,
+		contentCache,
 		logger.With("subsystem", "gateway"),
+		darwinGatewayHost,
 	))
 	if err := gwServer.Start(); err != nil {
 		return fmt.Errorf("start gateway: %w", err)
@@ -99,7 +114,7 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 		}
 	}
 
-	configureGatewayBackends(ctx.Backends, gwRegistry, gwPort, gwServer.Addr())
+	configureGatewayBackends(ctx.Backends, gwRegistry, gwPort, gwServer.Addr(), darwinGatewayHost)
 
 	if fcAdapter, ok := ctx.Backends["firecracker"].(*firecracker.Adapter); ok && fcAdapter.GatewayRegistry != nil {
 		if shouldInstallGatewayFirewall(runtime.GOOS) {
@@ -154,17 +169,21 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 	return runErr
 }
 
-func gatewayServerConfig(listen string, registry *gateway.Registry, credentials gateway.CredentialProvider, mirrors gateway.GitMirrorStore, logger *log.Logger) gateway.ServerConfig {
+func gatewayServerConfig(listen string, registry *gateway.Registry, credentials gateway.CredentialProvider, mirrors gateway.GitMirrorStore, contentCache *gateway.ContentCache, logger *log.Logger, darwinGatewayHost string) gateway.ServerConfig {
+	sourcePolicy := gatewayScopeTokenSourcePolicyForGatewayHost(strings.TrimSpace(darwinGatewayHost))
 	return gateway.ServerConfig{
-		ListenAddr:  listen,
-		Registry:    registry,
-		Credentials: credentials,
-		GitMirrors:  mirrors,
-		Logger:      logger,
+		ListenAddr:                      listen,
+		Registry:                        registry,
+		Credentials:                     credentials,
+		GitMirrors:                      mirrors,
+		ContentCache:                    contentCache,
+		Logger:                          logger,
+		ScopeTokenTrustedSourcePrefixes: sourcePolicy.TrustedSourcePrefixes,
+		AllowScopeTokenFromAnySource:    sourcePolicy.AllowScopeTokenFromAnySource,
 	}
 }
 
-func configureGatewayBackends(backends map[string]backend.Adapter, gwRegistry *gateway.Registry, gwPort int, gwListenAddr string) {
+func configureGatewayBackends(backends map[string]backend.Adapter, gwRegistry *gateway.Registry, gwPort int, gwListenAddr, darwinGatewayHost string) {
 	if fcAdapter, ok := backends["firecracker"].(*firecracker.Adapter); ok {
 		fcAdapter.GatewayRegistry = gwRegistry
 		fcAdapter.GatewayPort = gwPort
@@ -173,6 +192,7 @@ func configureGatewayBackends(backends map[string]backend.Adapter, gwRegistry *g
 	if darwinAdapter, ok := backends["darwin-vz"].(*darwinvz.Adapter); ok {
 		darwinAdapter.GatewayRegistry = gwRegistry
 		darwinAdapter.GatewayPort = gwPort
+		darwinAdapter.GatewayHost = strings.TrimSpace(darwinGatewayHost)
 		darwinAdapter.GatewayBridgeURL = gatewayBridgeURL(gwPort, gwListenAddr)
 	}
 }
