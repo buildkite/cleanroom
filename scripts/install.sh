@@ -231,7 +231,9 @@ try_install_notarized_macos_pkg() {
   fi
 
   verify_asset_against_checksum_file "${pkg_asset}" "${pkg_path}" "${pkg_checksum_path}"
-  install_macos_pkg "${pkg_path}"
+  if ! install_macos_pkg "${pkg_path}"; then
+    die "failed to install notarized macOS package: ${pkg_asset}"
+  fi
 
   log "Installed cleanroom via notarized macOS package"
   log "Installed cleanroom to ${INSTALL_DIR}/cleanroom"
