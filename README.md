@@ -37,7 +37,7 @@ curl -fsSL https://raw.githubusercontent.com/buildkite/cleanroom/main/scripts/in
 
 By default this installs to `/usr/local/bin`. Override with `--install-dir` or `CLEANROOM_INSTALL_DIR`.
 
-macOS releases also publish a signed, notarized `.pkg` on the GitHub releases page. Prefer that artifact when you want the standard macOS installer flow.
+On macOS, `install.sh` now prefers the signed, notarized `.pkg` when using the default install flow. It falls back to the release tarball when you request a custom install directory or helper customization.
 
 Install the locally built binaries from this checkout into `/usr/local/bin`:
 

@@ -70,6 +70,12 @@ download() {
   fi
 }
 
+download_if_exists() {
+  local url="$1"
+  local dest="$2"
+  curl -fsSL --retry 3 --connect-timeout 10 "$url" -o "$dest"
+}
+
 normalize_version() {
   local raw="$1"
   if [ -z "$raw" ] || [ "$raw" = "latest" ]; then
@@ -110,6 +116,23 @@ verify_asset_against_checksums() {
   fi
 }
 
+verify_asset_against_checksum_file() {
+  local asset="$1"
+  local asset_path="$2"
+  local checksum_file="$3"
+  local expected actual
+
+  expected=$(awk -v name="$asset" '$2 == name { print $1 }' "$checksum_file")
+  if [ -z "$expected" ]; then
+    die "checksum for ${asset} not found in ${checksum_file}"
+  fi
+
+  actual=$(sha256_file "$asset_path")
+  if [ "$expected" != "$actual" ]; then
+    die "checksum mismatch for ${asset}"
+  fi
+}
+
 extract_binary() {
   local archive="$1"
   local output_dir="$2"
@@ -118,6 +141,14 @@ extract_binary() {
 }
 
 declare -a SUDO_CMD=()
+
+run_with_optional_sudo() {
+  if [ "${#SUDO_CMD[@]}" -gt 0 ]; then
+    "${SUDO_CMD[@]}" "$@"
+    return
+  fi
+  "$@"
+}
 
 prepare_install_dir() {
   if [ ! -d "$INSTALL_DIR" ]; then
@@ -143,18 +174,73 @@ prepare_install_dir() {
 install_binary() {
   local src="$1"
   local dst="$2"
-  "${SUDO_CMD[@]}" install -m 0755 "$src" "$dst"
+  run_with_optional_sudo install -m 0755 "$src" "$dst"
 }
 
 install_app_bundle() {
   local src="$1"
   local dst="$2"
-  "${SUDO_CMD[@]}" rm -rf "$dst"
-  if [ "${#SUDO_CMD[@]}" -gt 0 ]; then
-    "${SUDO_CMD[@]}" ditto "$src" "$dst"
-    return
+  run_with_optional_sudo rm -rf "$dst"
+  run_with_optional_sudo ditto "$src" "$dst"
+}
+
+install_macos_pkg() {
+  local pkg_path="$1"
+
+  require_cmd installer
+  if [ "$(id -u)" -ne 0 ]; then
+    command -v sudo >/dev/null 2>&1 || die "sudo is required to install ${pkg_path}"
+    SUDO_CMD=(sudo)
   fi
-  ditto "$src" "$dst"
+  run_with_optional_sudo installer -pkg "$pkg_path" -target /
+}
+
+can_use_notarized_macos_pkg() {
+  [ "$HOST_OS" = "Darwin" ] || return 1
+  [ "$INSTALL_DIR" = "/usr/local/bin" ] || return 1
+  [ "$INSTALL_DARWIN_HELPER" != "0" ] || return 1
+
+  for key in \
+    CLEANROOM_DARWIN_VZ_HELPER_ENTITLEMENTS \
+    CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY \
+    CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTIFIER \
+    CLEANROOM_DARWIN_VZ_HELPER_PROVISION_PROFILE \
+    CLEANROOM_DARWIN_VZ_HELPER_SIGN_KEYCHAIN; do
+    if [ "${!key+x}" = "x" ]; then
+      return 1
+    fi
+  done
+
+  return 0
+}
+
+try_install_notarized_macos_pkg() {
+  local pkg_asset pkg_path pkg_checksum_path
+
+  pkg_asset="cleanroom_${HOST_OS}_${HOST_ARCH}.pkg"
+  pkg_path="${WORK_DIR}/${pkg_asset}"
+  pkg_checksum_path="${pkg_path}.sha256"
+
+  if ! download_if_exists "${RELEASE_BASE}/${pkg_asset}" "${pkg_path}"; then
+    warn "no notarized macOS pkg found for ${RELEASE_LABEL}; falling back to archive install"
+    return 1
+  fi
+  if ! download_if_exists "${RELEASE_BASE}/${pkg_asset}.sha256" "${pkg_checksum_path}"; then
+    warn "no pkg checksum found for ${RELEASE_LABEL}; falling back to archive install"
+    return 1
+  fi
+
+  verify_asset_against_checksum_file "${pkg_asset}" "${pkg_path}" "${pkg_checksum_path}"
+  if ! install_macos_pkg "${pkg_path}"; then
+    warn "failed to install notarized macOS package: ${pkg_asset}; falling back to archive install"
+    return 1
+  fi
+
+  log "Installed cleanroom via notarized macOS package"
+  log "Installed cleanroom to ${INSTALL_DIR}/cleanroom"
+  log "Installed cleanroom-guest-agent to ${INSTALL_DIR}/cleanroom-guest-agent"
+  log "Installed cleanroom-darwin-vz to ${INSTALL_DIR}/cleanroom-darwin-vz.app"
+  return 0
 }
 
 package_darwin_helper_with_repo_script() {
@@ -165,7 +251,11 @@ package_darwin_helper_with_repo_script() {
 
   [ -f "$package_script" ] || return 1
 
-  cmd=("${SUDO_CMD[@]}" env)
+  if [ "${#SUDO_CMD[@]}" -gt 0 ]; then
+    cmd=("${SUDO_CMD[@]}" env)
+  else
+    cmd=(env)
+  fi
   cmd+=("CLEANROOM_DARWIN_VZ_HELPER_ENTITLEMENTS=${HELPER_ENTITLEMENTS_PATH}")
   cmd+=("CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY=${HELPER_SIGN_IDENTITY}")
   cmd+=("CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTIFIER=${HELPER_SIGN_IDENTIFIER}")
@@ -249,6 +339,14 @@ DARWIN_HELPER_INSTALLED=0
 
 log "Installing cleanroom from ${REPO} (${RELEASE_LABEL}) for ${HOST_OS}/${HOST_ARCH}"
 
+if can_use_notarized_macos_pkg && try_install_notarized_macos_pkg; then
+  case ":${PATH}:" in
+    *":${INSTALL_DIR}:"*) ;;
+    *) warn "${INSTALL_DIR} is not in PATH" ;;
+  esac
+  exit 0
+fi
+
 CHECKSUMS_PATH="${WORK_DIR}/checksums.txt"
 download "${RELEASE_BASE}/checksums.txt" "$CHECKSUMS_PATH"
 
@@ -319,9 +417,9 @@ if [ "$HOST_OS" = "Darwin" ] && [ "$INSTALL_DARWIN_HELPER" != "0" ]; then
         if [ -n "${HELPER_PROVISION_PROFILE}" ]; then
           install_binary "${HELPER_PROVISION_PROFILE}" "${HELPER_BUNDLE_PROFILE_DEST}"
         else
-          "${SUDO_CMD[@]}" rm -f "${HELPER_BUNDLE_PROFILE_DEST}"
+          run_with_optional_sudo rm -f "${HELPER_BUNDLE_PROFILE_DEST}"
         fi
-        codesign_cmd=("${SUDO_CMD[@]}" codesign --force --sign "${HELPER_SIGN_IDENTITY}" --entitlements "${HELPER_ENTITLEMENTS_PATH}")
+        codesign_cmd=(codesign --force --sign "${HELPER_SIGN_IDENTITY}" --entitlements "${HELPER_ENTITLEMENTS_PATH}")
         if [ -n "${HELPER_SIGN_KEYCHAIN}" ]; then
           codesign_cmd+=(--keychain "${HELPER_SIGN_KEYCHAIN}")
         fi
@@ -329,6 +427,9 @@ if [ "$HOST_OS" = "Darwin" ] && [ "$INSTALL_DARWIN_HELPER" != "0" ]; then
           codesign_cmd+=(-i "${HELPER_SIGN_IDENTIFIER}")
         fi
         codesign_cmd+=("${HELPER_BUNDLE_DIR}")
+        if [ "${#SUDO_CMD[@]}" -gt 0 ]; then
+          codesign_cmd=("${SUDO_CMD[@]}" "${codesign_cmd[@]}")
+        fi
         "${codesign_cmd[@]}"
       fi
     fi
@@ -351,8 +452,8 @@ if [ "$HOST_OS" = "Darwin" ] && [ "$INSTALL_DARWIN_HELPER" != "0" ]; then
         HELPER_BUNDLE_DIR="${INSTALL_DIR}/cleanroom-darwin-vz.app"
         HELPER_EXECUTABLE_PATH="${HELPER_BUNDLE_DIR}/Contents/MacOS/cleanroom-darwin-vz"
         HELPER_INFO_PLIST_PATH="${HELPER_BUNDLE_DIR}/Contents/Info.plist"
-        "${SUDO_CMD[@]}" mkdir -p "$(dirname "${HELPER_EXECUTABLE_PATH}")"
-        "${SUDO_CMD[@]}" sh -c "cat > \"${HELPER_INFO_PLIST_PATH}\" <<'EOF'
+        run_with_optional_sudo mkdir -p "$(dirname "${HELPER_EXECUTABLE_PATH}")"
+        run_with_optional_sudo sh -c "cat > \"${HELPER_INFO_PLIST_PATH}\" <<'EOF'
 <?xml version=\"1.0\" encoding=\"UTF-8\"?>
 <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">
 <plist version=\"1.0\">
@@ -379,7 +480,7 @@ EOF"
       else
         install_binary "${HELPER_BINARY_SRC}" "${INSTALL_DIR}/cleanroom-darwin-vz"
       fi
-      codesign_cmd=("${SUDO_CMD[@]}" codesign --force --sign "${HELPER_SIGN_IDENTITY}" --entitlements "${HELPER_ENTITLEMENTS_PATH}")
+      codesign_cmd=(codesign --force --sign "${HELPER_SIGN_IDENTITY}" --entitlements "${HELPER_ENTITLEMENTS_PATH}")
       if [ -n "${HELPER_SIGN_KEYCHAIN}" ]; then
         codesign_cmd+=(--keychain "${HELPER_SIGN_KEYCHAIN}")
       fi
@@ -387,6 +488,9 @@ EOF"
         codesign_cmd+=(-i "${HELPER_SIGN_IDENTIFIER}")
       fi
       codesign_cmd+=("${HELPER_SIGN_TARGET}")
+      if [ "${#SUDO_CMD[@]}" -gt 0 ]; then
+        codesign_cmd=("${SUDO_CMD[@]}" "${codesign_cmd[@]}")
+      fi
       "${codesign_cmd[@]}"
     fi
     DARWIN_HELPER_INSTALLED=1
