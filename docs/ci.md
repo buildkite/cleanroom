@@ -1,11 +1,10 @@
 # CI Setup (Buildkite)
 
-This repository uses Buildkite for CI with three standard queues, plus an optional dedicated signer queue:
+This repository uses Buildkite for CI with three queues:
 
 - `hosted`: Linux unit/integration tests (`go test ./...`)
 - `cleanroom-mac`: macOS unit/integration tests (`go test ./...`) and `darwin-vz` end-to-end checks (`scripts/ci-darwin-vz-e2e.sh`)
 - `cleanroom`: Linux Firecracker end-to-end checks (`scripts/ci-cleanroom-e2e.sh`)
-- `cleanroom-mac-signer`: reserved for macOS signing/notarization jobs on a separate logged-in user session host
 
 Pipeline config lives in `.buildkite/pipeline.yml`.
 
@@ -17,7 +16,6 @@ Pipeline config lives in `.buildkite/pipeline.yml`.
 - `hosted`
 - `cleanroom-mac`
 - `cleanroom`
-- `cleanroom-mac-signer` if you provision dedicated signing capacity
 
 ## 2. Hosted and macOS Queues
 
@@ -25,18 +23,12 @@ No special setup is required beyond a working Buildkite agent image and internet
 
 For self-hosted macOS capacity, Terraform can provision a private EC2 Mac host and dedicated host via `infra/terraform/envs/ci` (`enable_macos_ci = true`). By default it resolves the latest Tahoe AMI from the AWS public SSM parameter that matches `mac_instance_type`, and you can still override that with `mac_ami_id` or `mac_ami_ssm_parameter_name`. This keeps mac queue access private-only (SSM, no inbound public rules).
 
-For dedicated signing capacity, enable `enable_macos_signer_ci = true`. That provisions a second EC2 Mac host/queue, `cleanroom-mac-signer`, with a signer-only `pre-command` hook enforced by bootstrap.
-
 Notes:
 
 - `mise` is bootstrapped per-step via the pinned `lox/mise-buildkite-plugin` reference in `.buildkite/pipeline.yml`.
 - Self-hosted agents need `curl` and `tar` available so the plugin can install `mise`.
 - Per-step cache is enabled for `hosted` and `cleanroom-mac` steps.
 - Avoid global pipeline `cache:` blocks if self-hosted queues are present.
-- The default `cleanroom-mac` host stays on a system LaunchDaemon, matching the pre-existing mac test queue behavior.
-- The optional signer host runs as an `ec2-user` LaunchAgent so code signing and keychain access happen in a real user session.
-- Set `mac_signer_autologin_password_parameter_name` or reuse `mac_autologin_password_parameter_name` if you want bootstrap to enable auto-login and start the signer agent without manual intervention.
-- The signer host bootstrap hook rejects jobs unless they are marked with `CLEANROOM_SIGNING_JOB=1` and come from allowed branches/tags.
 
 ### 2.1 macOS bootstrap updates and recovery
 
@@ -65,28 +57,8 @@ AWS_PROFILE=buildkite-sandbox-pipelines-admin aws ssm send-command \
   --region ap-southeast-2 \
   --instance-ids "$instance_id" \
   --document-name AWS-RunShellScript \
-  --parameters '{"commands":["sudo tail -n 120 /var/log/cleanroom-bootstrap-macos.log","sudo launchctl print system/com.buildkite.agent.cleanroom-mac || true","sudo tail -n 120 /var/lib/buildkite-agent/logs/buildkite-agent-cleanroom-mac.log","sudo tail -n 120 /var/lib/buildkite-agent/logs/buildkite-agent-cleanroom-mac.error.log"]}'
+  --parameters '{"commands":["sudo tail -n 120 /var/log/cleanroom-bootstrap-macos.log","sudo launchctl print system/com.buildkite.agent.cleanroom-mac","sudo tail -n 120 /var/lib/buildkite-agent/logs/buildkite-agent-cleanroom-mac.log","sudo tail -n 120 /var/lib/buildkite-agent/logs/buildkite-agent-cleanroom-mac.error.log"]}'
 ```
-
-### 2.2 `cleanroom-mac-signer` Queue
-
-Use the signer queue only for release signing/notarization jobs. Keep regular tests on `cleanroom-mac`.
-
-Recommended policy:
-
-- route signing steps to `queue: cleanroom-mac-signer`
-- set `CLEANROOM_SIGNING_JOB=1` on those steps
-- scope signing/notary secrets to the signer queue, not the general mac queue
-- keep `mac_signer_allowed_branches = "main"` and `mac_signer_allow_tags = true`
-- use `mac_signer_allowed_branch_prefixes` only for temporary trusted test branches
-
-The signer host bootstrap installs a `pre-command` hook that rejects jobs when:
-
-- `CLEANROOM_SIGNING_JOB=1` is missing and `mac_signer_require_signing_job` is still enabled
-- the build is a pull request and `mac_signer_allow_pull_requests = false`
-- the build is not a tag and the branch is outside `mac_signer_allowed_branches` / `mac_signer_allowed_branch_prefixes`
-
-The signer host uses the LaunchAgent + auto-login flow. If bootstrap logs `waiting for a GUI login session`, the LaunchAgent is installed but the host has not yet entered `gui/<uid>`. On an already-booted signer host, reboot after setting the signer auto-login password parameter, or log in once as `ec2-user`.
 
 ## 3. cleanroom-mac Queue (darwin-vz E2E)
 
@@ -144,6 +116,49 @@ The vmnet secrets should stay restricted to the `cleanroom` pipeline and the
 The script also forces a short `XDG_STATE_HOME` so the darwin-vz helper socket
 path stays within the macOS UNIX socket length limit.
 
+### 3.4 Notarized macOS release pkg step
+
+The `:package: macOS release pkg` step runs on the dedicated
+`cleanroom-mac-signer` queue for:
+
+- tagged builds (`v*`)
+- the current notarized-release development branch (`codex/macos-notarized-release-pkg`)
+
+It builds both `arm64` and `x86_64` helper bundles with the vmnet-capable
+Developer ID profile, packages them into signed installer pkgs, notarizes them,
+and uploads the `.pkg` plus `.sha256` files as Buildkite artifacts.
+
+Required Buildkite cluster secrets:
+
+- `CLEANROOM_MACOS_RELEASE_HELPER_CERT_P12_BASE64`
+- `CLEANROOM_MACOS_RELEASE_HELPER_CERT_PASSWORD`
+- `CLEANROOM_MACOS_RELEASE_HELPER_PROVISION_PROFILE_BASE64`
+- `CLEANROOM_MACOS_RELEASE_HELPER_SIGN_IDENTITY`
+- `CLEANROOM_MACOS_INSTALLER_CERT_P12_BASE64`
+- `CLEANROOM_MACOS_INSTALLER_CERT_PASSWORD`
+- `CLEANROOM_MACOS_INSTALLER_SIGN_IDENTITY`
+- `CLEANROOM_MACOS_NOTARY_KEY_P8_BASE64`
+- `CLEANROOM_MACOS_NOTARY_KEY_ID`
+- `CLEANROOM_MACOS_NOTARY_ISSUER_ID`
+
+Notes:
+
+- The signer queue expects `CLEANROOM_SIGNING_JOB=1` and should restrict allowed
+  branches/tags at the agent hook layer. The Buildkite step sets that env var so
+  signer hosts can reject non-signing jobs by default.
+- `scripts/ci-macos-release-pkg.sh` imports the two Developer ID identities into
+  a temporary user keychain for the job, so it does not rely on preinstalled
+  host keychain state.
+- These release-helper secrets are intentionally separate from the vmnet e2e
+  helper secrets, which still use Apple Development signing on `cleanroom-mac`.
+- Scope the release/notary secrets to the `cleanroom` pipeline and the
+  `cleanroom-mac-signer` queue rather than the general `cleanroom-mac` queue.
+- The step uses the same helper bundle identifier as vmnet e2e:
+  `com.buildkite.cleanroom.darwin-vz`.
+- Branch builds derive a synthetic package version from the Buildkite build
+  number (`0.0.<build>`). Tag builds use the tag version without the leading
+  `v`.
+
 ## 4. Cleanroom Queue (Firecracker E2E)
 
 The `:fire: E2E (Firecracker)` step runs a real launched Firecracker execution and needs host preparation.
@@ -155,7 +170,6 @@ The `:fire: E2E (Firecracker)` step runs a real launched Firecracker execution a
 - Readable kernel image for the `buildkite-agent` user (or allow managed kernel auto-download)
 - Internet egress to pull `sandbox.image.ref` from registry on first run
 - `mkfs.ext4` available for OCI-to-ext4 materialization
-- `debugfs` available for runtime rootfs preparation
 - Passwordless sudo for required network setup commands
 
 ### 4.2 Place runtime kernel image
@@ -204,9 +218,7 @@ Task defaults:
 
 ### 4.3 Privileged helper execution
 
-Firecracker still uses a single root-owned helper for privileged host networking
-and optional ZFS operations. Runtime rootfs preparation is now unprivileged and
-uses `debugfs` instead.
+Firecracker always executes privileged host operations through a single root-owned helper.
 
 Runtime config key:
 

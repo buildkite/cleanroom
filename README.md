@@ -16,7 +16,7 @@ Agent sandboxing tools are [proliferating fast](docs/research.md). Most focus on
 
 **Standard OCI images.** Use any OCI image from any registry as your sandbox base. Digest-pinned in policy for reproducibility. No custom VM image format or vendor-specific base images. Same image works across backends.
 
-**Docker inside the sandbox.** Enable a guest Docker daemon with a policy flag (`services.docker.required: true`) or explicitly for a repo-agnostic sandbox with `cleanroom sandbox create --docker`. Build and run containers inside the microVM.
+**Docker inside the sandbox.** Enable a guest Docker daemon with a single policy flag (`services.docker.required: true`). Build and run containers inside the microVM.
 
 **Coming soon:** package registry proxy with lockfile enforcement, Docker pull caching, content caching for hermetic offline builds, and structured audit logging. See the [spec](docs/spec.md) for the full roadmap.
 
@@ -36,6 +36,8 @@ curl -fsSL https://raw.githubusercontent.com/buildkite/cleanroom/main/scripts/in
 ```
 
 By default this installs to `/usr/local/bin`. Override with `--install-dir` or `CLEANROOM_INSTALL_DIR`.
+
+macOS releases also publish a signed, notarized `.pkg` on the GitHub releases page. Prefer that artifact when you want the standard macOS installer flow.
 
 Install the locally built binaries from this checkout into `/usr/local/bin`:
 
@@ -99,7 +101,7 @@ commands become repo-aware: Cleanroom resolves the current git remote and local
 `HEAD`, materializes that checkout in the sandbox, and starts commands in the
 configured guest path.
 
-Pre-create a long-running sandbox using repo policy:
+Pre-create a long-running sandbox without running a command:
 
 ```bash
 SANDBOX_ID="$(cleanroom create)"
@@ -115,22 +117,14 @@ cleanroom console --image my-local-image:dev -- sh
 cleanroom exec -e OPENAI_API_KEY -e CODEX_HOME=/workspace/.codex -- codex app-server
 ```
 
-Pre-create a repo-agnostic sandbox without reading `cleanroom.yaml`:
+Equivalent namespaced command:
 
 ```bash
 cleanroom sandbox create
 ```
 
 `cleanroom sandbox create` stays generic. It does not inspect the local git
-repository or read `cleanroom.yaml`. It creates a sandbox with a built-in
-deny-by-default policy and resolves
-`ghcr.io/buildkite/cleanroom-base/alpine:latest` to a digest unless `--image`
-is provided.
-
-To start the guest Docker service for a repo-agnostic sandbox, pass `--docker`.
-
-To disable egress filtering for a repo-agnostic sandbox, pass
-`--dangerously-allow-all`.
+repository or infer a checkout from `cleanroom.yaml`.
 
 `cleanroom exec` and `cleanroom console` create ephemeral sandboxes by default.
 Reuse an existing sandbox with `--in`, or keep a newly created sandbox with
@@ -165,10 +159,7 @@ cleanroom console -- bash
 
 ## Policy file
 
-A `cleanroom.yaml` in your repo defines the sandbox policy for policy-aware
-commands such as `cleanroom create`, `cleanroom exec`, and `cleanroom console`.
-Cleanroom also checks `.buildkite/cleanroom.yaml` as a fallback.
-`cleanroom sandbox create` does not read either path.
+A `cleanroom.yaml` in your repo defines the sandbox policy. Cleanroom also checks `.buildkite/cleanroom.yaml` as a fallback.
 
 ```yaml
 version: 1
@@ -229,11 +220,11 @@ repository:
 
 With the default behavior:
 
-- `cleanroom create` reads repo policy and creates a sandbox with the current repo checked out at local `HEAD`
+- `cleanroom create` creates a sandbox with the current repo checked out at local `HEAD`
 - `cleanroom exec -- <cmd>` checks out the repo, runs `<cmd>` from `/workspace`, and tears the sandbox down unless `--keep` is set
 - `cleanroom console -- bash` opens a shell in `/workspace` and tears the sandbox down unless `--keep` is set
 - dirty working trees print a warning and use committed `HEAD`; uncommitted changes are not copied in
-- `cleanroom sandbox create` remains explicit and repo-agnostic, using a built-in policy instead of repo policy (default image, deny-by-default networking unless `--dangerously-allow-all` is set, optional guest Docker via `--docker`)
+- `cleanroom sandbox create` remains explicit and repo-agnostic
 
 Repository bootstrap needs the remote host in `sandbox.network.allow`, for
 example:
@@ -387,8 +378,7 @@ When `rootfs` is unset, Cleanroom derives one from `sandbox.image.ref` and injec
 - `/dev/kvm` available and writable
 - Firecracker binary installed
 - `mkfs.ext4` for OCI-to-ext4 materialization
-- `debugfs` for runtime rootfs preparation
-- `sudo -n` access to `/usr/local/sbin/cleanroom-root-helper` for host networking
+- `sudo -n` access to `/usr/local/sbin/cleanroom-root-helper`
 
 **macOS ([darwin-vz](docs/backend/darwin-vz.md)):**
 - `cleanroom-darwin-vz` helper signed with `com.apple.security.virtualization` entitlement
@@ -401,10 +391,9 @@ When `rootfs` is unset, Cleanroom derives one from `sandbox.image.ref` and injec
 ```bash
 cleanroom doctor              # check host prerequisites
 cleanroom doctor --json       # machine-readable with capabilities map
-cleanroom inspect <typeid>
 cleanroom sandbox inspect <sandbox-id>
-cleanroom execution inspect <execution-id>
 cleanroom execution inspect --sandbox-id <sandbox-id> --last
+cleanroom execution inspect --sandbox-id <sandbox-id> <execution-id>
 cleanroom status --last       # browse the newest retained execution artifacts
 cleanroom status --execution-id <execution-id>
 cleanroom version

@@ -422,7 +422,6 @@ private final class ProxyServer {
 }
 
 private final class VMRuntime {
-    @available(macOS 26.0, *)
     private struct VMNetSharedNetworkDetails {
         let reference: vmnet_network_ref
         let subnetCIDR: String

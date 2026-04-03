@@ -9,90 +9,160 @@ permissions:
   contents: write
 
 jobs:
-  build-darwin-vz:
+  build-darwin-release:
     runs-on: macos-latest
+    env:
+      CLEANROOM_RELEASE_KEYCHAIN: cleanroom-release-signing
+      CLEANROOM_NOTARY_PROFILE: cleanroom-notary
     strategy:
       fail-fast: false
       matrix:
         include:
           - arch: arm64
+            asset_arch: arm64
+            goarch: arm64
             target: arm64-apple-macosx13.0
           - arch: amd64
+            asset_arch: x86_64
+            goarch: amd64
             target: x86_64-apple-macosx13.0
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build cleanroom-darwin-vz
+      - name: Resolve release metadata
+        run: |
+          release_ref_name="${GITHUB_REF_NAME}"
+          release_version="${GITHUB_REF_NAME#v}"
+          echo "CLEANROOM_RELEASE_REF_NAME=${release_ref_name}" >> "$GITHUB_ENV"
+          echo "CLEANROOM_RELEASE_VERSION=${release_version}" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Validate release secrets
         env:
           CLEANROOM_DARWIN_VZ_HELPER_CERT_P12_BASE64: ${{ secrets.CLEANROOM_DARWIN_VZ_HELPER_CERT_P12_BASE64 }}
           CLEANROOM_DARWIN_VZ_HELPER_CERT_PASSWORD: ${{ secrets.CLEANROOM_DARWIN_VZ_HELPER_CERT_PASSWORD }}
           CLEANROOM_DARWIN_VZ_HELPER_PROVISION_PROFILE_BASE64: ${{ secrets.CLEANROOM_DARWIN_VZ_HELPER_PROVISION_PROFILE_BASE64 }}
           CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY: ${{ secrets.CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY }}
+          CLEANROOM_MACOS_INSTALLER_CERT_P12_BASE64: ${{ secrets.CLEANROOM_MACOS_INSTALLER_CERT_P12_BASE64 }}
+          CLEANROOM_MACOS_INSTALLER_CERT_PASSWORD: ${{ secrets.CLEANROOM_MACOS_INSTALLER_CERT_PASSWORD }}
+          CLEANROOM_MACOS_INSTALLER_SIGN_IDENTITY: ${{ secrets.CLEANROOM_MACOS_INSTALLER_SIGN_IDENTITY }}
+          CLEANROOM_MACOS_NOTARY_KEY_P8_BASE64: ${{ secrets.CLEANROOM_MACOS_NOTARY_KEY_P8_BASE64 }}
+          CLEANROOM_MACOS_NOTARY_KEY_ID: ${{ secrets.CLEANROOM_MACOS_NOTARY_KEY_ID }}
+          CLEANROOM_MACOS_NOTARY_ISSUER_ID: ${{ secrets.CLEANROOM_MACOS_NOTARY_ISSUER_ID }}
         run: |
           for required in \
             CLEANROOM_DARWIN_VZ_HELPER_CERT_P12_BASE64 \
             CLEANROOM_DARWIN_VZ_HELPER_CERT_PASSWORD \
             CLEANROOM_DARWIN_VZ_HELPER_PROVISION_PROFILE_BASE64 \
-            CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY; do
+            CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY \
+            CLEANROOM_MACOS_INSTALLER_CERT_P12_BASE64 \
+            CLEANROOM_MACOS_INSTALLER_CERT_PASSWORD \
+            CLEANROOM_MACOS_INSTALLER_SIGN_IDENTITY \
+            CLEANROOM_MACOS_NOTARY_KEY_P8_BASE64 \
+            CLEANROOM_MACOS_NOTARY_KEY_ID \
+            CLEANROOM_MACOS_NOTARY_ISSUER_ID; do
             if [[ -z "${!required:-}" ]]; then
               echo "::error::missing required release secret ${required}" >&2
               exit 1
             fi
           done
 
+      - name: Generate keychain password
+        run: |
+          echo "CLEANROOM_RELEASE_KEYCHAIN_PASSWORD=$(uuidgen)" >> "$GITHUB_ENV"
+
+      - name: Import Developer ID Application certificate
+        uses: apple-actions/import-codesign-certs@v3
+        with:
+          keychain: ${{ env.CLEANROOM_RELEASE_KEYCHAIN }}
+          keychain-password: ${{ env.CLEANROOM_RELEASE_KEYCHAIN_PASSWORD }}
+          p12-file-base64: ${{ secrets.CLEANROOM_DARWIN_VZ_HELPER_CERT_P12_BASE64 }}
+          p12-password: ${{ secrets.CLEANROOM_DARWIN_VZ_HELPER_CERT_PASSWORD }}
+
+      - name: Import Developer ID Installer certificate
+        uses: apple-actions/import-codesign-certs@v3
+        with:
+          keychain: ${{ env.CLEANROOM_RELEASE_KEYCHAIN }}
+          create-keychain: false
+          keychain-password: ${{ env.CLEANROOM_RELEASE_KEYCHAIN_PASSWORD }}
+          p12-file-base64: ${{ secrets.CLEANROOM_MACOS_INSTALLER_CERT_P12_BASE64 }}
+          p12-password: ${{ secrets.CLEANROOM_MACOS_INSTALLER_CERT_PASSWORD }}
+
+      - name: Build signed macOS helper and package
+        env:
+          CLEANROOM_DARWIN_VZ_HELPER_PROVISION_PROFILE_BASE64: ${{ secrets.CLEANROOM_DARWIN_VZ_HELPER_PROVISION_PROFILE_BASE64 }}
+          CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY: ${{ secrets.CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY }}
+          CLEANROOM_MACOS_INSTALLER_SIGN_IDENTITY: ${{ secrets.CLEANROOM_MACOS_INSTALLER_SIGN_IDENTITY }}
+          CLEANROOM_MACOS_NOTARY_KEY_P8_BASE64: ${{ secrets.CLEANROOM_MACOS_NOTARY_KEY_P8_BASE64 }}
+          CLEANROOM_MACOS_NOTARY_KEY_ID: ${{ secrets.CLEANROOM_MACOS_NOTARY_KEY_ID }}
+          CLEANROOM_MACOS_NOTARY_ISSUER_ID: ${{ secrets.CLEANROOM_MACOS_NOTARY_ISSUER_ID }}
+        run: |
           mkdir -p "release-extra/darwin_${{ matrix.arch }}"
-          CERT_PATH="${RUNNER_TEMP}/cleanroom-darwin-vz-release.p12"
           PROFILE_PATH="${RUNNER_TEMP}/Cleanroom_Darwin_VZ_Backend.provisionprofile"
-          KEYCHAIN_PATH="${RUNNER_TEMP}/cleanroom-release-signing.keychain-db"
-          export CERT_PATH PROFILE_PATH
+          NOTARY_KEY_PATH="${RUNNER_TEMP}/AuthKey_${CLEANROOM_MACOS_NOTARY_KEY_ID}.p8"
+          export PROFILE_PATH NOTARY_KEY_PATH
           python3 - <<'PY'
           import base64
           import os
           from pathlib import Path
 
-          Path(os.environ["CERT_PATH"]).write_bytes(
-              base64.b64decode(os.environ["CLEANROOM_DARWIN_VZ_HELPER_CERT_P12_BASE64"])
-          )
           Path(os.environ["PROFILE_PATH"]).write_bytes(
               base64.b64decode(os.environ["CLEANROOM_DARWIN_VZ_HELPER_PROVISION_PROFILE_BASE64"])
           )
+          Path(os.environ["NOTARY_KEY_PATH"]).write_bytes(
+              base64.b64decode(os.environ["CLEANROOM_MACOS_NOTARY_KEY_P8_BASE64"])
+          )
           PY
 
-          KEYCHAIN_PASSWORD="$(uuidgen)"
-          security create-keychain -p "${KEYCHAIN_PASSWORD}" "${KEYCHAIN_PATH}"
-          security set-keychain-settings -lut 21600 "${KEYCHAIN_PATH}"
-          security unlock-keychain -p "${KEYCHAIN_PASSWORD}" "${KEYCHAIN_PATH}"
-          security import "${CERT_PATH}" \
-            -k "${KEYCHAIN_PATH}" \
-            -P "${CLEANROOM_DARWIN_VZ_HELPER_CERT_PASSWORD}" \
-            -T /usr/bin/codesign \
-            -T /usr/bin/security
-          security list-keychains -d user -s "${KEYCHAIN_PATH}"
-          security default-keychain -d user -s "${KEYCHAIN_PATH}"
-          security set-key-partition-list \
-            -S apple-tool:,apple:,codesign: \
-            -s \
-            -k "${KEYCHAIN_PASSWORD}" \
-            "${KEYCHAIN_PATH}"
+          xcrun notarytool store-credentials "${CLEANROOM_NOTARY_PROFILE}" \
+            --key "${NOTARY_KEY_PATH}" \
+            --key-id "${CLEANROOM_MACOS_NOTARY_KEY_ID}" \
+            --issuer "${CLEANROOM_MACOS_NOTARY_ISSUER_ID}"
 
           CLEANROOM_DARWIN_VZ_HELPER_SWIFT_TARGET="${{ matrix.target }}" \
           CLEANROOM_DARWIN_VZ_HELPER_ENTITLEMENTS="cmd/cleanroom-darwin-vz/entitlements-vmnet.plist" \
           CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY="${CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY}" \
           CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTIFIER="com.buildkite.cleanroom.darwin-vz" \
           CLEANROOM_DARWIN_VZ_HELPER_PROVISION_PROFILE="${PROFILE_PATH}" \
+          CLEANROOM_DARWIN_VZ_HELPER_SIGN_RUNTIME=1 \
           CLEANROOM_DARWIN_VZ_HELPER_BUNDLE=1 \
             scripts/build-darwin-vz-helper.sh "release-extra/darwin_${{ matrix.arch }}/cleanroom-darwin-vz.app"
           cp cmd/cleanroom-darwin-vz/entitlements.plist "release-extra/darwin_${{ matrix.arch }}/entitlements.plist"
           cp cmd/cleanroom-darwin-vz/entitlements-vmnet.plist "release-extra/darwin_${{ matrix.arch }}/entitlements-vmnet.plist"
 
+          GOOS=darwin GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${CLEANROOM_RELEASE_REF_NAME}" \
+            -o "release-extra/darwin_${{ matrix.arch }}/cleanroom" ./cmd/cleanroom
+          GOOS=linux GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" \
+            -o "release-extra/darwin_${{ matrix.arch }}/cleanroom-guest-agent" ./cmd/cleanroom-guest-agent
+
+          CLEANROOM_MACOS_RELEASE_VERSION="${CLEANROOM_RELEASE_VERSION}" \
+          CLEANROOM_MACOS_RELEASE_CLEANROOM_BINARY="release-extra/darwin_${{ matrix.arch }}/cleanroom" \
+          CLEANROOM_MACOS_RELEASE_GUEST_AGENT_BINARY="release-extra/darwin_${{ matrix.arch }}/cleanroom-guest-agent" \
+          CLEANROOM_MACOS_RELEASE_HELPER_BINARY="release-extra/darwin_${{ matrix.arch }}/cleanroom-darwin-vz.app" \
+          CLEANROOM_MACOS_RELEASE_APPLICATION_SIGN_IDENTITY="${CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY}" \
+          CLEANROOM_MACOS_RELEASE_INSTALLER_SIGN_IDENTITY="${CLEANROOM_MACOS_INSTALLER_SIGN_IDENTITY}" \
+            scripts/build-macos-release-pkg.sh "release-extra/darwin_${{ matrix.arch }}/cleanroom_Darwin_${{ matrix.asset_arch }}.pkg"
+
+          CLEANROOM_MACOS_NOTARY_KEYCHAIN_PROFILE="${CLEANROOM_NOTARY_PROFILE}" \
+            scripts/notarize-macos-package.sh "release-extra/darwin_${{ matrix.arch }}/cleanroom_Darwin_${{ matrix.asset_arch }}.pkg"
+
+          pkg_name="cleanroom_Darwin_${{ matrix.asset_arch }}.pkg"
+          shasum -a 256 "release-extra/darwin_${{ matrix.arch }}/${pkg_name}" \
+            | awk -v name="${pkg_name}" '{print $1 "  " name}' \
+            > "release-extra/darwin_${{ matrix.arch }}/${pkg_name}.sha256"
+
       - uses: actions/upload-artifact@v4
         with:
-          name: darwin-vz-${{ matrix.arch }}
-          path: release-extra
+          name: darwin-release-${{ matrix.arch }}
+          path: release-extra/darwin_${{ matrix.arch }}
 
   release:
+    if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ubuntu-latest
-    needs: build-darwin-vz
+    needs: build-darwin-release
     steps:
       - uses: actions/checkout@v4
         with:
@@ -104,13 +174,13 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: darwin-vz-arm64
-          path: release-extra
+          name: darwin-release-arm64
+          path: release-extra/darwin_arm64
 
       - uses: actions/download-artifact@v4
         with:
-          name: darwin-vz-amd64
-          path: release-extra
+          name: darwin-release-amd64
+          path: release-extra/darwin_amd64
 
       - name: Build release extra binaries
         run: |
@@ -126,3 +196,14 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload notarized macOS packages
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${GITHUB_REF_NAME}" \
+            release-extra/darwin_arm64/cleanroom_Darwin_arm64.pkg \
+            release-extra/darwin_arm64/cleanroom_Darwin_arm64.pkg.sha256 \
+            release-extra/darwin_amd64/cleanroom_Darwin_x86_64.pkg \
+            release-extra/darwin_amd64/cleanroom_Darwin_x86_64.pkg.sha256 \
+            --clobber

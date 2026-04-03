@@ -18,9 +18,11 @@ OUTPUT_PATH="${2:-}"
 ENTITLEMENTS_PATH="${CLEANROOM_DARWIN_VZ_HELPER_ENTITLEMENTS:-${REPO_ROOT}/cmd/cleanroom-darwin-vz/entitlements.plist}"
 SIGN_IDENTITY="${CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY:--}"
 SIGN_KEYCHAIN="${CLEANROOM_DARWIN_VZ_HELPER_SIGN_KEYCHAIN:-}"
+SIGN_KEYCHAIN_PASSWORD="${CLEANROOM_DARWIN_VZ_HELPER_SIGN_KEYCHAIN_PASSWORD:-}"
 SIGN_IDENTIFIER="${CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTIFIER:-}"
 PROVISION_PROFILE="${CLEANROOM_DARWIN_VZ_HELPER_PROVISION_PROFILE:-}"
 BUNDLE_MODE="${CLEANROOM_DARWIN_VZ_HELPER_BUNDLE:-}"
+SIGN_RUNTIME="${CLEANROOM_DARWIN_VZ_HELPER_SIGN_RUNTIME:-}"
 
 [[ -n "${SOURCE_PATH}" ]] || {
   echo "usage: package-darwin-vz-helper.sh <source-path> <output-path>" >&2
@@ -93,15 +95,30 @@ codesign_target() {
   if [[ -n "${SIGN_KEYCHAIN}" ]]; then
     args+=(--keychain "${SIGN_KEYCHAIN}")
   fi
+  if [[ -n "${SIGN_RUNTIME}" && "${SIGN_IDENTITY}" != "-" ]]; then
+    args+=(--options runtime --timestamp)
+  fi
   if [[ -n "${SIGN_IDENTIFIER}" ]]; then
     args+=(-i "${SIGN_IDENTIFIER}")
   fi
   args+=("${target}")
+  printf '[package-darwin-vz-helper] codesigning %s\n' "${target}" >&2
   codesign "${args[@]}"
+}
+
+prepare_signing_keychain() {
+  [[ -n "${SIGN_KEYCHAIN}" ]] || return 0
+
+  if [[ -n "${SIGN_KEYCHAIN_PASSWORD}" ]]; then
+    security unlock-keychain -p "${SIGN_KEYCHAIN_PASSWORD}" "${SIGN_KEYCHAIN}" >/dev/null
+  fi
+  printf '[package-darwin-vz-helper] codesigning identities in %s:\n' "${SIGN_KEYCHAIN}" >&2
+  security find-identity -v -p codesigning "${SIGN_KEYCHAIN}" >&2 || true
 }
 
 require_command codesign
 require_command install
+require_command security
 
 source_is_bundle=0
 if [[ -d "${SOURCE_PATH}" ]]; then
@@ -163,6 +180,7 @@ if [[ -n "${BUNDLE_MODE}" || "${OUTPUT_PATH}" == *.app ]]; then
   else
     rm -f "${PROFILE_DEST}"
   fi
+  prepare_signing_keychain
   codesign_target "${APP_PATH}"
   exit 0
 fi
@@ -172,6 +190,7 @@ PROFILE_DEST="${OUTPUT_PATH}.provisionprofile"
 rm -rf "${APP_PATH}"
 mkdir -p "$(dirname "${OUTPUT_PATH}")"
 copy_file "${SOURCE_EXECUTABLE_PATH}" "${OUTPUT_PATH}"
+prepare_signing_keychain
 codesign_target "${OUTPUT_PATH}"
 if [[ -n "${PROVISION_PROFILE}" ]]; then
   install -m 0644 "${PROVISION_PROFILE}" "${PROFILE_DEST}"
