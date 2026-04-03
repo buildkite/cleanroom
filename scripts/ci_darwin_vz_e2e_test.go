@@ -298,8 +298,39 @@ func TestInstallScriptUsesSharedPackagerWhenAvailable(t *testing.T) {
 		`[ "${HELPER_RESIGN_REQUESTED}" = "0" ] && [ -f "${HELPER_BUNDLE_EMBEDDED_PROFILE_PATH}" ]`,
 		`if ! package_darwin_helper_with_repo_script "${HELPER_BUNDLE_DIR}" "${HELPER_BUNDLE_DIR}"; then`,
 		`HELPER_BUNDLE_PROFILE_DEST="${HELPER_BUNDLE_DIR}/Contents/embedded.provisionprofile"`,
-		`"${SUDO_CMD[@]}" rm -f "${HELPER_BUNDLE_PROFILE_DEST}"`,
+		`run_with_optional_sudo rm -f "${HELPER_BUNDLE_PROFILE_DEST}"`,
 		`if ! package_darwin_helper_with_repo_script "${HELPER_BINARY_SRC}" "${HELPER_SIGN_TARGET}"; then`,
+	} {
+		if !strings.Contains(script, needle) {
+			t.Fatalf("expected install.sh to contain %q", needle)
+		}
+	}
+}
+
+func TestInstallScriptPrefersNotarizedMacOSPkgWhenCompatible(t *testing.T) {
+	t.Helper()
+
+	content, err := os.ReadFile("install.sh")
+	if err != nil {
+		t.Fatalf("read install.sh: %v", err)
+	}
+
+	script := string(content)
+	for _, needle := range []string{
+		`can_use_notarized_macos_pkg()`,
+		`[ "$HOST_OS" = "Darwin" ] || return 1`,
+		`[ "$INSTALL_DIR" = "/usr/local/bin" ] || return 1`,
+		`[ "$INSTALL_DARWIN_HELPER" != "0" ] || return 1`,
+		`CLEANROOM_DARWIN_VZ_HELPER_PROVISION_PROFILE`,
+		`try_install_notarized_macos_pkg()`,
+		`pkg_asset="cleanroom_${HOST_OS}_${HOST_ARCH}.pkg"`,
+		`download_if_exists "${RELEASE_BASE}/${pkg_asset}" "${pkg_path}"`,
+		`download_if_exists "${RELEASE_BASE}/${pkg_asset}.sha256" "${pkg_checksum_path}"`,
+		`verify_asset_against_checksum_file "${pkg_asset}" "${pkg_path}" "${pkg_checksum_path}"`,
+		`install_macos_pkg "${pkg_path}"`,
+		`warn "no notarized macOS pkg found for ${RELEASE_LABEL}; falling back to archive install"`,
+		`if can_use_notarized_macos_pkg && try_install_notarized_macos_pkg; then`,
+		`log "Installed cleanroom via notarized macOS package"`,
 	} {
 		if !strings.Contains(script, needle) {
 			t.Fatalf("expected install.sh to contain %q", needle)
