@@ -119,10 +119,9 @@ zvol_device_path_for_dataset() {
 wait_for_zvol_device_path() {
   local dataset="$1"
   local path
-  local attempt
 
   path="$(zvol_device_path_for_dataset "$dataset")"
-  for attempt in {1..50}; do
+  for _ in {1..50}; do
     if [[ -e "$path" ]]; then
       return 0
     fi
