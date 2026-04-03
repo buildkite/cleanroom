@@ -330,6 +330,9 @@ build_release_arch() {
 }
 
 upload_buildkite_artifacts() {
+  tar -C release-extra -czf release-extra/darwin_arm64.tar.gz darwin_arm64
+  tar -C release-extra -czf release-extra/darwin_amd64.tar.gz darwin_amd64
+  buildkite-agent artifact upload "release-extra/darwin_*.tar.gz"
   buildkite-agent artifact upload "release-extra/darwin_*/*.pkg"
   buildkite-agent artifact upload "release-extra/darwin_*/*.pkg.sha256"
 }

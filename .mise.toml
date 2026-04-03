@@ -4,6 +4,7 @@ terraform = "1.12.2"
 shellcheck = "0.11.0"
 hyperfine = "1.20.0"
 svu = "3.4.0"
+goreleaser = "2.15.2"
 
 [env]
 GOTOOLCHAIN = "local"

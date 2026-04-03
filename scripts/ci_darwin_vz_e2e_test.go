@@ -1,6 +1,7 @@
 package scripts_test
 
 import (
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -195,37 +196,40 @@ func TestNotarizeMacOSPackageSupportsKeychainProfile(t *testing.T) {
 	}
 }
 
-func TestReleaseWorkflowBuildsVMNetSignedNotarizedPackages(t *testing.T) {
+func TestGitHubReleaseWorkflowIsRemoved(t *testing.T) {
 	t.Helper()
 
-	content, err := os.ReadFile("../.github/workflows/release.yml")
+	_, err := os.Stat("../.github/workflows/release.yml")
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected release workflow to be removed, got err=%v", err)
+	}
+}
+
+func TestBuildkiteReleaseScriptPublishesGitHubRelease(t *testing.T) {
+	t.Helper()
+
+	content, err := os.ReadFile("ci-buildkite-release.sh")
 	if err != nil {
-		t.Fatalf("read release workflow: %v", err)
+		t.Fatalf("read ci-buildkite-release.sh: %v", err)
 	}
 
-	workflow := string(content)
+	script := string(content)
 	for _, needle := range []string{
-		`tags:`,
-		`- "v*"`,
-		`release_ref_name="${GITHUB_REF_NAME}"`,
-		`release_version="${GITHUB_REF_NAME#v}"`,
-		`echo "CLEANROOM_RELEASE_REF_NAME=${release_ref_name}" >> "$GITHUB_ENV"`,
-		`echo "CLEANROOM_RELEASE_VERSION=${release_version}" >> "$GITHUB_ENV"`,
-		`CLEANROOM_DARWIN_VZ_HELPER_PROVISION_PROFILE_BASE64`,
-		`apple-actions/import-codesign-certs@v3`,
-		`xcrun notarytool store-credentials "${CLEANROOM_NOTARY_PROFILE}"`,
-		`CLEANROOM_DARWIN_VZ_HELPER_ENTITLEMENTS="cmd/cleanroom-darwin-vz/entitlements-vmnet.plist"`,
-		`CLEANROOM_DARWIN_VZ_HELPER_SIGN_RUNTIME=1`,
-		`CLEANROOM_DARWIN_VZ_HELPER_BUNDLE=1`,
-		`main.version=${CLEANROOM_RELEASE_REF_NAME}`,
-		`CLEANROOM_MACOS_RELEASE_VERSION="${CLEANROOM_RELEASE_VERSION}"`,
-		`CLEANROOM_MACOS_RELEASE_HELPER_BINARY="release-extra/darwin_${{ matrix.arch }}/cleanroom-darwin-vz.app"`,
-		`CLEANROOM_MACOS_NOTARY_KEYCHAIN_PROFILE="${CLEANROOM_NOTARY_PROFILE}"`,
-		`if: github.event_name == 'push' && github.ref_type == 'tag'`,
-		`gh release upload "${GITHUB_REF_NAME}"`,
+		`fetch_secret CLEANROOM_GITHUB_RELEASE_TOKEN`,
+		`[[ -n "${BUILDKITE_TAG:-}" ]] || die "BUILDKITE_TAG is required for release publishing"`,
+		`buildkite-agent artifact download "release-extra/darwin_*.tar.gz"`,
+		`tar -xzf "${archive_path}" -C "${RELEASE_EXTRA_DIR}"`,
+		`GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w"`,
+		`GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w"`,
+		`goreleaser release --clean`,
+		`"${GITHUB_API_BASE}/releases/tags/${BUILDKITE_TAG}"`,
+		`"${GITHUB_API_BASE}/releases/assets/${asset_id}"`,
+		`"${upload_url}?name=${asset_name}"`,
+		`export GITHUB_TOKEN="${github_token}"`,
+		`python3 -c 'import json, sys; print(json.load(sys.stdin)["upload_url"].split("{", 1)[0])'`,
 	} {
-		if !strings.Contains(workflow, needle) {
-			t.Fatalf("expected release workflow to contain %q", needle)
+		if !strings.Contains(script, needle) {
+			t.Fatalf("expected ci-buildkite-release.sh to contain %q", needle)
 		}
 	}
 }
@@ -265,6 +269,9 @@ func TestBuildkiteMacOSReleasePkgScriptBuildsNotarizedArtifacts(t *testing.T) {
 		`CLEANROOM_MACOS_RELEASE_INSTALLER_SIGN_KEYCHAIN="${installer_keychain_path}"`,
 		`build_release_arch arm64 arm64 arm64 arm64-apple-macosx13.0`,
 		`build_release_arch amd64 x86_64 amd64 x86_64-apple-macosx13.0`,
+		`tar -C release-extra -czf release-extra/darwin_arm64.tar.gz darwin_arm64`,
+		`tar -C release-extra -czf release-extra/darwin_amd64.tar.gz darwin_amd64`,
+		`buildkite-agent artifact upload "release-extra/darwin_*.tar.gz"`,
 		`buildkite-agent artifact upload "release-extra/darwin_*/*.pkg"`,
 		`buildkite-agent artifact upload "release-extra/darwin_*/*.pkg.sha256"`,
 	} {

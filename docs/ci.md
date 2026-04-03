@@ -126,7 +126,8 @@ The `:package: macOS release pkg` step runs on the dedicated
 
 It builds both `arm64` and `x86_64` helper bundles with the vmnet-capable
 Developer ID profile, packages them into signed installer pkgs, notarizes them,
-and uploads the `.pkg` plus `.sha256` files as Buildkite artifacts.
+and uploads the per-arch Darwin release directories as compressed Buildkite
+artifacts alongside the `.pkg` plus `.sha256` files.
 
 Required Buildkite cluster secrets:
 
@@ -158,6 +159,25 @@ Notes:
 - Branch builds derive a synthetic package version from the Buildkite build
   number (`0.0.<build>`). Tag builds use the tag version without the leading
   `v`.
+
+### 3.5 Buildkite tag release publishing
+
+Tagged builds fan in to a hosted `:rocket: Publish release` step after the test
+and signer work completes.
+
+That step:
+
+- downloads the `release-extra/darwin_*.tar.gz` artifacts from the signer queue
+- rebuilds the Linux guest-agent release extras
+- runs `goreleaser release --clean`
+- uploads the notarized macOS `.pkg` assets to the same GitHub release
+
+Required Buildkite cluster secret:
+
+- `CLEANROOM_GITHUB_RELEASE_TOKEN`
+
+The token must be able to create/update GitHub releases for
+`buildkite/cleanroom`.
 
 ## 4. Cleanroom Queue (Firecracker E2E)
 

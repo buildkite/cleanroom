@@ -33,11 +33,17 @@ func TestBuildkitePipelineUsesMisePlugin(t *testing.T) {
 	if !strings.Contains(pipeline, "command: scripts/ci-macos-release-pkg.sh") {
 		t.Fatalf("expected .buildkite/pipeline.yml to include the macOS release pkg step")
 	}
+	if !strings.Contains(pipeline, "command: scripts/ci-buildkite-release.sh") {
+		t.Fatalf("expected .buildkite/pipeline.yml to include the Buildkite release publish step")
+	}
 	if !strings.Contains(pipeline, "queue: cleanroom-mac-signer") {
 		t.Fatalf("expected .buildkite/pipeline.yml to route the macOS release pkg step to cleanroom-mac-signer")
 	}
 	if !strings.Contains(pipeline, `CLEANROOM_SIGNING_JOB: "1"`) {
 		t.Fatalf("expected .buildkite/pipeline.yml to mark the macOS release pkg step as a signing job")
+	}
+	if !strings.Contains(pipeline, `- wait`) {
+		t.Fatalf("expected .buildkite/pipeline.yml to gate Buildkite release publishing behind a wait step")
 	}
 	if !strings.Contains(pipeline, "CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTIFIER: com.buildkite.cleanroom.darwin-vz") {
 		t.Fatalf("expected .buildkite/pipeline.yml to set the darwin-vz vmnet helper bundle identifier")
@@ -80,6 +86,7 @@ func TestBuildkiteCIScriptsDoNotInvokeMiseDirectly(t *testing.T) {
 		"ci-darwin-vz-e2e.sh",
 		"ci-darwin-vz-vmnet-e2e.sh",
 		"ci-macos-release-pkg.sh",
+		"ci-buildkite-release.sh",
 	} {
 		path := path
 		t.Run(path, func(t *testing.T) {
