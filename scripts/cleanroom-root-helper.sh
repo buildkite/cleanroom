@@ -111,6 +111,26 @@ is_zvol_device_path() {
   is_cleanroom_zfs_dataset "${p#/dev/zvol/}"
 }
 
+zvol_device_path_for_dataset() {
+  local dataset="$1"
+  printf '/dev/zvol/%s\n' "${dataset#/}"
+}
+
+wait_for_zvol_device_path() {
+  local dataset="$1"
+  local path
+  local attempt
+
+  path="$(zvol_device_path_for_dataset "$dataset")"
+  for attempt in {1..50}; do
+    if [[ -e "$path" ]]; then
+      return 0
+    fi
+    sleep 0.1
+  done
+  die "zfs: timed out waiting for zvol device '$path'"
+}
+
 zfs_bin() {
   if [[ -x /usr/sbin/zfs ]]; then
     echo /usr/sbin/zfs
@@ -270,10 +290,17 @@ run_zfs() {
     exec "$bin" "$@"
   fi
 
+  if [[ "$#" -eq 7 && "$1" == "list" && "$2" == "-H" && "$3" == "-d" && "$4" == "0" && "$5" == "-o" && "$6" == "name" ]]; then
+    is_cleanroom_zfs_dataset "$7" || die "zfs list -d 0: unsupported dataset '$7'"
+    exec "$bin" "$@"
+  fi
+
   if [[ "$#" -eq 5 && "$1" == "create" && "$2" == "-p" && "$3" == "-V" ]]; then
     is_numeric "$4" || die "zfs create: invalid size '$4'"
     is_cleanroom_zfs_dataset "$5" || die "zfs create: unsupported dataset '$5'"
-    exec "$bin" "$@"
+    "$bin" "$@"
+    wait_for_zvol_device_path "$5"
+    return
   fi
 
   if [[ "$#" -eq 2 && "$1" == "snapshot" ]]; then
@@ -284,7 +311,9 @@ run_zfs() {
   if [[ "$#" -eq 4 && "$1" == "clone" && "$2" == "-p" ]]; then
     is_cleanroom_zfs_snapshot_ref "$3" || die "zfs clone: unsupported snapshot '$3'"
     is_cleanroom_zfs_dataset "$4" || die "zfs clone: unsupported dataset '$4'"
-    exec "$bin" "$@"
+    "$bin" "$@"
+    wait_for_zvol_device_path "$4"
+    return
   fi
 
   if [[ "$#" -eq 3 && "$1" == "set" && "$2" == volsize=* ]]; then

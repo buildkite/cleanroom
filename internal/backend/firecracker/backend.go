@@ -118,6 +118,10 @@ var sendProcessSignal = func(proc *os.Process, sig syscall.Signal) error {
 	return proc.Signal(sig)
 }
 
+var syncHostFilesystem = defaultSyncHostFilesystem
+
+var snapshotVolumeStoreDriverFn = snapshotVolumeStoreDriver
+
 const guestInitScriptTemplate = `#!/bin/sh
 set -eu
 
@@ -498,11 +502,14 @@ func (a *Adapter) CreateSnapshot(ctx context.Context, req backend.SnapshotReques
 	if err != nil {
 		return nil, err
 	}
-	driver, err := snapshotVolumeStoreDriver(driverCfg)
+	driver, err := snapshotVolumeStoreDriverFn(driverCfg)
 	if err != nil {
 		return nil, err
 	}
 	if err := pauseSandboxProcess(instance); err != nil {
+		return nil, err
+	}
+	if err := flushSnapshotHostFilesystem(ctx, driverCfg.Snapshots.Driver); err != nil {
 		return nil, err
 	}
 	snapshotStorageRef := ""
@@ -1861,6 +1868,26 @@ func snapshotVolumeStoreDriver(cfg backend.FirecrackerConfig) (volumestore.Drive
 		return nil, errors.New("firecracker snapshots are not enabled")
 	}
 	return rootFSVolumeStoreDriver(cfg)
+}
+
+func defaultSyncHostFilesystem(ctx context.Context) error {
+	return runCombinedCommand(ctx, []string{"sync"}, []string{"host", "sync"})
+}
+
+func flushSnapshotHostFilesystem(ctx context.Context, driverName string) error {
+	if !snapshotDriverNeedsHostSync(driverName) {
+		return nil
+	}
+	// ZFS snapshots persist pool state, not the current host page cache.
+	// Flush after the guest is paused so the snapshot captures its latest writes.
+	if err := syncHostFilesystem(ctx); err != nil {
+		return fmt.Errorf("sync host filesystem before snapshot: %w", err)
+	}
+	return nil
+}
+
+func snapshotDriverNeedsHostSync(driverName string) bool {
+	return strings.EqualFold(strings.TrimSpace(driverName), "zfs")
 }
 
 func pauseSandboxProcess(instance *sandboxInstance) error {
