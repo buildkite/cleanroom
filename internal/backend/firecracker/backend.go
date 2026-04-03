@@ -509,9 +509,6 @@ func (a *Adapter) CreateSnapshot(ctx context.Context, req backend.SnapshotReques
 	if err := pauseSandboxProcess(instance); err != nil {
 		return nil, err
 	}
-	if err := flushSnapshotHostFilesystem(ctx, driverCfg.Snapshots.Driver); err != nil {
-		return nil, err
-	}
 	snapshotStorageRef := ""
 	paused := true
 	defer func() {
@@ -533,6 +530,9 @@ func (a *Adapter) CreateSnapshot(ctx context.Context, req backend.SnapshotReques
 			retErr = fmt.Errorf("resume firecracker sandbox after snapshot: %w", err)
 		}
 	}()
+	if err := flushSnapshotHostFilesystem(ctx, driverCfg.Snapshots.Driver); err != nil {
+		return nil, err
+	}
 
 	snapshot, err := driver.SnapshotVolume(ctx, volumestore.SnapshotVolumeRequest{
 		SnapshotID: snapshotID,
