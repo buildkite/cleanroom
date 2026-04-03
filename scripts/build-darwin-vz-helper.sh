@@ -1,5 +1,10 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
+
+die() {
+  printf '[build-darwin-vz-helper] error: %s\n' "$*" >&2
+  exit 1
+}
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -9,18 +14,14 @@ SWIFT_TARGET="${CLEANROOM_DARWIN_VZ_HELPER_SWIFT_TARGET:-}"
 ENTITLEMENTS_PATH="${CLEANROOM_DARWIN_VZ_HELPER_ENTITLEMENTS:-${REPO_ROOT}/cmd/cleanroom-darwin-vz/entitlements.plist}"
 PROVISION_PROFILE="${CLEANROOM_DARWIN_VZ_HELPER_PROVISION_PROFILE:-}"
 BUNDLE_MODE="${CLEANROOM_DARWIN_VZ_HELPER_BUNDLE:-1}"
+SIGN_RUNTIME="${CLEANROOM_DARWIN_VZ_HELPER_SIGN_RUNTIME:-}"
 
 [[ -f "${REPO_ROOT}/cmd/cleanroom-darwin-vz/main.swift" ]] || {
-  echo "missing helper source: ${REPO_ROOT}/cmd/cleanroom-darwin-vz/main.swift" >&2
-  exit 1
+  die "missing helper source: ${REPO_ROOT}/cmd/cleanroom-darwin-vz/main.swift"
 }
-[[ -f "${ENTITLEMENTS_PATH}" ]] || {
-  echo "missing entitlements plist: ${ENTITLEMENTS_PATH}" >&2
-  exit 1
-}
+[[ -f "${ENTITLEMENTS_PATH}" ]] || die "missing entitlements plist: ${ENTITLEMENTS_PATH}"
 if [[ -n "${PROVISION_PROFILE}" && ! -f "${PROVISION_PROFILE}" ]]; then
-  echo "missing provisioning profile: ${PROVISION_PROFILE}" >&2
-  exit 1
+  die "missing provisioning profile: ${PROVISION_PROFILE}"
 fi
 
 mkdir -p "$(dirname "${OUTPUT_PATH}")"
@@ -45,10 +46,12 @@ xcrun swiftc "${swiftc_args[@]}"
 
 package_env=(
   "CLEANROOM_DARWIN_VZ_HELPER_ENTITLEMENTS=${ENTITLEMENTS_PATH}"
-  "CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY=${CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY:-}"
+  "CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY=${CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY:--}"
   "CLEANROOM_DARWIN_VZ_HELPER_SIGN_KEYCHAIN=${CLEANROOM_DARWIN_VZ_HELPER_SIGN_KEYCHAIN:-}"
+  "CLEANROOM_DARWIN_VZ_HELPER_SIGN_KEYCHAIN_PASSWORD=${CLEANROOM_DARWIN_VZ_HELPER_SIGN_KEYCHAIN_PASSWORD:-}"
   "CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTIFIER=${CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTIFIER:-}"
   "CLEANROOM_DARWIN_VZ_HELPER_PROVISION_PROFILE=${PROVISION_PROFILE}"
+  "CLEANROOM_DARWIN_VZ_HELPER_SIGN_RUNTIME=${SIGN_RUNTIME}"
 )
 if [[ -n "${PROVISION_PROFILE}" || "${BUNDLE_MODE}" != "0" ]]; then
   package_env+=("CLEANROOM_DARWIN_VZ_HELPER_BUNDLE=1")

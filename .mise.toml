@@ -1,9 +1,10 @@
 [tools]
 go = "1.23"
 terraform = "1.12.2"
-shellcheck = "latest"
-hyperfine = "latest"
-svu = "3"
+shellcheck = "0.11.0"
+hyperfine = "1.20.0"
+svu = "3.4.0"
+goreleaser = "2.15.2"
 
 [env]
 GOTOOLCHAIN = "local"

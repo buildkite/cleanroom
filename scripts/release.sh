@@ -10,4 +10,4 @@ fi
 echo "Releasing $CURRENT -> $NEXT"
 git tag "$NEXT"
 git push origin "$NEXT"
-echo "Tagged and pushed $NEXT — release workflow will run on GitHub."
+echo "Tagged and pushed $NEXT — Buildkite release pipeline will publish the release."
