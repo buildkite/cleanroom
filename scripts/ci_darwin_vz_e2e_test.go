@@ -292,6 +292,14 @@ func TestInstallScriptUsesSharedPackagerWhenAvailable(t *testing.T) {
 	script := string(content)
 	for _, needle := range []string{
 		`package_darwin_helper_with_repo_script()`,
+		`SCRIPT_SOURCE="${BASH_SOURCE[0]-}"`,
+		`if [ -n "${SCRIPT_SOURCE}" ] && [ -f "${SCRIPT_SOURCE}" ]; then`,
+		`restore_flattened_darwin_helper_bundle()`,
+		`local bundle_dir="${extract_dir}/cleanroom-darwin-vz.app"`,
+		`mv "${executable_path}" "${bundle_contents_dir}/MacOS/cleanroom-darwin-vz"`,
+		`mv "${info_plist_path}" "${bundle_contents_dir}/Info.plist"`,
+		`restore_flattened_darwin_helper_bundle "$CLEANROOM_EXTRACT_DIR"`,
+		`[ -n "${SCRIPT_DIR}" ] || return 1`,
 		`package_script="${SCRIPT_DIR}/package-darwin-vz-helper.sh"`,
 		`CLEANROOM_DARWIN_VZ_HELPER_SIGN_KEYCHAIN Optional keychain path when using the repo helper packager`,
 		`HELPER_BUNDLE_EMBEDDED_PROFILE_PATH="${HELPER_BUNDLE_SRC}/Contents/embedded.provisionprofile"`,
