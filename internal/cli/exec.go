@@ -183,8 +183,7 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 		return fmt.Errorf("stream execution: %w", err)
 	}
 
-	stdinErrCh := startExecutionStdinForwarder(client, sandboxID, executionID, e.NoStdin)
-	stdinErrCh = monitorExecutionStdinErr(streamCtx, streamCancel, stdinErrCh)
+	stdinErrCh := startExecutionStdinForwarder(client, sandboxID, executionID, e.NoStdin, streamCancel)
 
 	signalCh := newSignalChannel()
 	notifySignals(signalCh, os.Interrupt, syscall.SIGTERM)

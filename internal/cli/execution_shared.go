@@ -116,6 +116,7 @@ func startExecutionStdinForwarder(
 	client *controlclient.Client,
 	sandboxID, executionID string,
 	closeImmediately bool,
+	cancel context.CancelFunc,
 ) <-chan error {
 	errCh := make(chan error, 1)
 	go func() {
@@ -124,9 +125,19 @@ func startExecutionStdinForwarder(
 			return
 		}
 
+		reportErr := func(err error) {
+			if err == nil {
+				return
+			}
+			errCh <- err
+			if cancel != nil {
+				cancel()
+			}
+		}
+
 		if closeImmediately {
 			if err := closeExecutionStdin(client, sandboxID, executionID); err != nil {
-				errCh <- err
+				reportErr(err)
 			}
 			return
 		}
@@ -148,14 +159,14 @@ func startExecutionStdinForwarder(
 					if isBenignExecutionStdinErr(err) {
 						return
 					}
-					errCh <- fmt.Errorf("write execution stdin: %w", err)
+					reportErr(fmt.Errorf("write execution stdin: %w", err))
 					return
 				}
 			}
 			if readErr != nil {
 				if err := closeExecutionStdin(client, sandboxID, executionID); err != nil &&
 					!(isExecutionStdinUnsupportedErr(err) && !sentInput) {
-					errCh <- err
+					reportErr(err)
 				}
 				return
 			}
@@ -206,35 +217,6 @@ func closeExecutionStdin(client *controlclient.Client, sandboxID, executionID st
 		return fmt.Errorf("close execution stdin: %w", err)
 	}
 	return nil
-}
-
-func monitorExecutionStdinErr(
-	ctx context.Context,
-	cancel context.CancelFunc,
-	errCh <-chan error,
-) <-chan error {
-	if errCh == nil {
-		return nil
-	}
-
-	monitoredErrCh := make(chan error, 1)
-	go func() {
-		defer close(monitoredErrCh)
-
-		select {
-		case err, ok := <-errCh:
-			if !ok || err == nil {
-				return
-			}
-			monitoredErrCh <- err
-			if cancel != nil {
-				cancel()
-			}
-		case <-ctx.Done():
-		}
-	}()
-
-	return monitoredErrCh
 }
 
 func pollExecutionStdinErr(errCh <-chan error) error {
