@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_SOURCE="${BASH_SOURCE[0]-}"
+SCRIPT_DIR=""
+if [ -n "${SCRIPT_SOURCE}" ] && [ -f "${SCRIPT_SOURCE}" ]; then
+  SCRIPT_DIR="$(cd "$(dirname "${SCRIPT_SOURCE}")" && pwd)"
+fi
 
 log() {
   printf '[cleanroom-install] %s\n' "$*"
@@ -140,6 +144,33 @@ extract_binary() {
   tar -xzf "$archive" -C "$output_dir"
 }
 
+restore_flattened_darwin_helper_bundle() {
+  local extract_dir="$1"
+  local bundle_dir="${extract_dir}/cleanroom-darwin-vz.app"
+  local bundle_contents_dir="${bundle_dir}/Contents"
+  local executable_path="${extract_dir}/cleanroom-darwin-vz"
+  local info_plist_path="${extract_dir}/Info.plist"
+  local code_resources_path="${extract_dir}/CodeResources"
+  local embedded_profile_path="${extract_dir}/embedded.provisionprofile"
+
+  [ -d "${bundle_dir}" ] && return 0
+  [ -f "${executable_path}" ] || return 0
+  [ -f "${info_plist_path}" ] || return 0
+
+  mkdir -p "${bundle_contents_dir}/MacOS"
+  mv "${executable_path}" "${bundle_contents_dir}/MacOS/cleanroom-darwin-vz"
+  mv "${info_plist_path}" "${bundle_contents_dir}/Info.plist"
+
+  if [ -f "${code_resources_path}" ]; then
+    mkdir -p "${bundle_contents_dir}/_CodeSignature"
+    mv "${code_resources_path}" "${bundle_contents_dir}/_CodeSignature/CodeResources"
+  fi
+
+  if [ -f "${embedded_profile_path}" ]; then
+    mv "${embedded_profile_path}" "${bundle_contents_dir}/embedded.provisionprofile"
+  fi
+}
+
 declare -a SUDO_CMD=()
 
 run_with_optional_sudo() {
@@ -246,9 +277,11 @@ try_install_notarized_macos_pkg() {
 package_darwin_helper_with_repo_script() {
   local src="$1"
   local dst="$2"
-  local package_script="${SCRIPT_DIR}/package-darwin-vz-helper.sh"
+  local package_script
   local -a cmd
 
+  [ -n "${SCRIPT_DIR}" ] || return 1
+  package_script="${SCRIPT_DIR}/package-darwin-vz-helper.sh"
   [ -f "$package_script" ] || return 1
 
   if [ "${#SUDO_CMD[@]}" -gt 0 ]; then
@@ -358,6 +391,9 @@ verify_asset_against_checksums "$CLEANROOM_ASSET" "$CLEANROOM_ARCHIVE_PATH" "$CH
 
 CLEANROOM_EXTRACT_DIR="${WORK_DIR}/cleanroom"
 extract_binary "$CLEANROOM_ARCHIVE_PATH" "$CLEANROOM_EXTRACT_DIR"
+if [ "$HOST_OS" = "Darwin" ]; then
+  restore_flattened_darwin_helper_bundle "$CLEANROOM_EXTRACT_DIR"
+fi
 [ -f "${CLEANROOM_EXTRACT_DIR}/cleanroom" ] || die "cleanroom binary missing in ${CLEANROOM_ASSET}"
 [ -f "${CLEANROOM_EXTRACT_DIR}/cleanroom-guest-agent" ] || die "cleanroom-guest-agent missing in ${CLEANROOM_ASSET}"
 
