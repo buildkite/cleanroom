@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -11,6 +12,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/backend/darwinvz"
@@ -20,6 +22,8 @@ import (
 	"github.com/buildkite/cleanroom/internal/snapshotstore"
 	"github.com/charmbracelet/log"
 )
+
+const testLaunchdUserServiceName = "com.buildkite.cleanroom.user"
 
 func TestShouldInstallGatewayFirewall(t *testing.T) {
 	t.Parallel()
@@ -164,6 +168,38 @@ func TestNewControlServiceWiresSnapshotStore(t *testing.T) {
 	}
 	if service.SnapshotStore == nil {
 		t.Fatal("expected control service to configure snapshot metadata store")
+	}
+}
+
+func TestServeRunServerReturnsGatewayBindError(t *testing.T) {
+	t.Parallel()
+
+	gatewayListener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen for occupied gateway port: %v", err)
+	}
+	defer gatewayListener.Close()
+
+	sockPath := filepath.Join(t.TempDir(), "cleanroom.sock")
+	cmd := &ServeCommand{
+		Listen:        "unix://" + sockPath,
+		GatewayListen: gatewayListener.Addr().String(),
+		LogLevel:      "error",
+	}
+
+	err = cmd.runServer(&runtimeContext{
+		CWD:      t.TempDir(),
+		Config:   runtimeconfig.Config{},
+		Backends: map[string]backend.Adapter{},
+	})
+	if err == nil {
+		t.Fatal("expected gateway bind failure")
+	}
+	if !strings.Contains(err.Error(), "start gateway") {
+		t.Fatalf("expected gateway start error context, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "address already in use") {
+		t.Fatalf("expected bind failure details, got: %v", err)
 	}
 }
 
@@ -399,7 +435,7 @@ func TestDaemonInstallUsesProvidedListenInUnit(t *testing.T) {
 
 func TestDaemonInstallDarwinEnablesBootstrapsAndKickstartsUserService(t *testing.T) {
 	tmpDir := t.TempDir()
-	plistPath := filepath.Join(tmpDir, "Library", "LaunchAgents", launchdServiceName+".plist")
+	plistPath := filepath.Join(tmpDir, "Library", "LaunchAgents", testLaunchdUserServiceName+".plist")
 
 	prevEUID := serveInstallEUID
 	prevUID := serveInstallUID
@@ -433,9 +469,8 @@ func TestDaemonInstallDarwinEnablesBootstrapsAndKickstartsUserService(t *testing
 	}
 
 	wantCalls := [][]string{
-		{"launchctl", "enable", "gui/501/" + launchdServiceName},
 		{"launchctl", "bootstrap", "gui/501", plistPath},
-		{"launchctl", "kickstart", "-k", "gui/501/" + launchdServiceName},
+		{"launchctl", "enable", "gui/501/" + testLaunchdUserServiceName},
 	}
 	if !reflect.DeepEqual(calls, wantCalls) {
 		t.Fatalf("unexpected launchctl commands: got %v want %v", calls, wantCalls)
@@ -450,11 +485,14 @@ func TestDaemonInstallDarwinEnablesBootstrapsAndKickstartsUserService(t *testing
 	if strings.Contains(string(raw), "--listen unix:///var/run/cleanroom/cleanroom.sock") {
 		t.Fatalf("did not expect user launchd plist to use system socket:\n%s", raw)
 	}
+	if !strings.Contains(string(raw), "<string>"+testLaunchdUserServiceName+"</string>") {
+		t.Fatalf("expected user launchd plist label %q, got:\n%s", testLaunchdUserServiceName, raw)
+	}
 }
 
-func TestDaemonInstallDarwinForceBootsOutBeforeRewritingAndKickstartsUserService(t *testing.T) {
+func TestDaemonInstallDarwinForceRetriesBootstrapAfterBootout(t *testing.T) {
 	tmpDir := t.TempDir()
-	plistPath := filepath.Join(tmpDir, "Library", "LaunchAgents", launchdServiceName+".plist")
+	plistPath := filepath.Join(tmpDir, "Library", "LaunchAgents", testLaunchdUserServiceName+".plist")
 	if err := os.MkdirAll(filepath.Dir(plistPath), 0o755); err != nil {
 		t.Fatalf("mkdir launch agents dir: %v", err)
 	}
@@ -468,12 +506,15 @@ func TestDaemonInstallDarwinForceBootsOutBeforeRewritingAndKickstartsUserService
 	prevUserHomeDir := serveInstallUserHomeDir
 	prevExecutable := serveInstallExecutablePath
 	prevRunCommand := serveInstallRunCommand
+	prevLaunchdBootstrapRetrySleep := launchdBootstrapRetrySleep
 	serveInstallEUID = func() int { return 501 }
 	serveInstallUID = func() int { return 501 }
 	serveInstallGOOS = "darwin"
 	serveInstallUserHomeDir = func() (string, error) { return tmpDir, nil }
-	serveInstallExecutablePath = func() (string, error) { return "/Users/lachlan/bin/cleanroom", nil }
+	serveInstallExecutablePath = func() (string, error) { return "/usr/local/bin/cleanroom", nil }
+	launchdBootstrapRetrySleep = func(time.Duration) {}
 	var calls [][]string
+	bootstrapCalls := 0
 	serveInstallRunCommand = func(name string, args ...string) error {
 		call := append([]string{name}, args...)
 		calls = append(calls, call)
@@ -486,6 +527,12 @@ func TestDaemonInstallDarwinForceBootsOutBeforeRewritingAndKickstartsUserService
 				t.Fatalf("expected force install to boot out before rewriting plist, got %q", got)
 			}
 		}
+		if len(args) > 0 && args[0] == "bootstrap" {
+			bootstrapCalls++
+			if bootstrapCalls == 1 {
+				return &exec.ExitError{ProcessState: &os.ProcessState{}}
+			}
+		}
 		return nil
 	}
 	t.Cleanup(func() {
@@ -495,6 +542,7 @@ func TestDaemonInstallDarwinForceBootsOutBeforeRewritingAndKickstartsUserService
 		serveInstallUserHomeDir = prevUserHomeDir
 		serveInstallExecutablePath = prevExecutable
 		serveInstallRunCommand = prevRunCommand
+		launchdBootstrapRetrySleep = prevLaunchdBootstrapRetrySleep
 	})
 
 	stdout, _ := makeStdoutCapture(t)
@@ -504,10 +552,10 @@ func TestDaemonInstallDarwinForceBootsOutBeforeRewritingAndKickstartsUserService
 	}
 
 	wantCalls := [][]string{
-		{"launchctl", "bootout", "gui/501/" + launchdServiceName},
-		{"launchctl", "enable", "gui/501/" + launchdServiceName},
+		{"launchctl", "bootout", "gui/501/" + testLaunchdUserServiceName},
 		{"launchctl", "bootstrap", "gui/501", plistPath},
-		{"launchctl", "kickstart", "-k", "gui/501/" + launchdServiceName},
+		{"launchctl", "bootstrap", "gui/501", plistPath},
+		{"launchctl", "enable", "gui/501/" + testLaunchdUserServiceName},
 	}
 	if !reflect.DeepEqual(calls, wantCalls) {
 		t.Fatalf("unexpected launchctl commands: got %v want %v", calls, wantCalls)
@@ -517,14 +565,14 @@ func TestDaemonInstallDarwinForceBootsOutBeforeRewritingAndKickstartsUserService
 	if err != nil {
 		t.Fatalf("read rewritten user launchd plist: %v", err)
 	}
-	if !strings.Contains(string(raw), "/Users/lachlan/bin/cleanroom") {
+	if !strings.Contains(string(raw), "/usr/local/bin/cleanroom") {
 		t.Fatalf("expected force install to rewrite plist with new executable, got:\n%s", raw)
 	}
 }
 
 func TestDaemonInstallDarwinForceDoesNotBootoutWhenStagingPlistFails(t *testing.T) {
 	tmpDir := t.TempDir()
-	plistPath := filepath.Join(tmpDir, "Library", "LaunchAgents", launchdServiceName+".plist")
+	plistPath := filepath.Join(tmpDir, "Library", "LaunchAgents", testLaunchdUserServiceName+".plist")
 	if err := os.MkdirAll(filepath.Dir(plistPath), 0o755); err != nil {
 		t.Fatalf("mkdir launch agents dir: %v", err)
 	}
@@ -589,7 +637,7 @@ func TestDaemonInstallDarwinForceDoesNotBootoutWhenStagingPlistFails(t *testing.
 
 func TestDaemonInstallDarwinForceRejectsDirectoryTargetBeforeBootout(t *testing.T) {
 	tmpDir := t.TempDir()
-	plistPath := filepath.Join(tmpDir, "Library", "LaunchAgents", launchdServiceName+".plist")
+	plistPath := filepath.Join(tmpDir, "Library", "LaunchAgents", testLaunchdUserServiceName+".plist")
 	if err := os.MkdirAll(plistPath, 0o755); err != nil {
 		t.Fatalf("mkdir launchd target dir: %v", err)
 	}
@@ -633,7 +681,7 @@ func TestDaemonInstallDarwinForceRejectsDirectoryTargetBeforeBootout(t *testing.
 	}
 }
 
-func TestDaemonInstallDarwinSystemScopeUnsupported(t *testing.T) {
+func TestDaemonInstallDarwinSystemScopeRequiresRoot(t *testing.T) {
 	prevEUID := serveInstallEUID
 	prevGOOS := serveInstallGOOS
 	serveInstallEUID = func() int { return 501 }
@@ -647,10 +695,139 @@ func TestDaemonInstallDarwinSystemScopeUnsupported(t *testing.T) {
 	cmd := &DaemonCommand{Action: "install", System: true}
 	err := cmd.Run(&runtimeContext{CWD: t.TempDir(), Stdout: stdout})
 	if err == nil {
-		t.Fatal("expected unsupported --system error on darwin")
+		t.Fatal("expected root requirement for darwin system daemon install")
 	}
-	if !strings.Contains(err.Error(), "--system is unsupported on darwin") {
+	if !strings.Contains(err.Error(), "requires root") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestDaemonInstallDarwinNetworkFilterServiceUsesSystemLaunchdService(t *testing.T) {
+	tmpDir := t.TempDir()
+	plistPath := filepath.Join(tmpDir, launchdNetworkServiceName+".plist")
+
+	prevEUID := serveInstallEUID
+	prevGOOS := serveInstallGOOS
+	prevExecutable := serveInstallExecutablePath
+	prevRunCommand := serveInstallRunCommand
+	prevLaunchdPath := serveInstallLaunchdPath
+	prevLaunchdNetworkPath := serveInstallLaunchdNetworkPath
+	serveInstallEUID = func() int { return 0 }
+	serveInstallGOOS = "darwin"
+	serveInstallExecutablePath = func() (string, error) { return "/usr/local/bin/cleanroom", nil }
+	serveInstallLaunchdPath = filepath.Join(tmpDir, launchdSystemServiceName+".plist")
+	serveInstallLaunchdNetworkPath = plistPath
+	var calls [][]string
+	serveInstallRunCommand = func(name string, args ...string) error {
+		calls = append(calls, append([]string{name}, args...))
+		return nil
+	}
+	t.Cleanup(func() {
+		serveInstallEUID = prevEUID
+		serveInstallGOOS = prevGOOS
+		serveInstallExecutablePath = prevExecutable
+		serveInstallRunCommand = prevRunCommand
+		serveInstallLaunchdPath = prevLaunchdPath
+		serveInstallLaunchdNetworkPath = prevLaunchdNetworkPath
+	})
+
+	stdout, _ := makeStdoutCapture(t)
+	cmd := &DaemonCommand{Action: "install", Service: "network-filter", System: true}
+	if err := cmd.Run(&runtimeContext{CWD: tmpDir, Stdout: stdout}); err != nil {
+		t.Fatalf("DaemonCommand.Run returned error: %v", err)
+	}
+
+	wantCalls := [][]string{
+		{"launchctl", "bootstrap", "system", plistPath},
+		{"launchctl", "enable", "system/" + launchdNetworkServiceName},
+	}
+	if !reflect.DeepEqual(calls, wantCalls) {
+		t.Fatalf("unexpected launchctl commands: got %v want %v", calls, wantCalls)
+	}
+
+	raw, err := os.ReadFile(plistPath)
+	if err != nil {
+		t.Fatalf("read generated launchd plist: %v", err)
+	}
+	content := string(raw)
+	if !strings.Contains(content, "<string>"+launchdNetworkServiceName+"</string>") {
+		t.Fatalf("expected network launchd plist label %q, got:\n%s", launchdNetworkServiceName, content)
+	}
+	if !strings.Contains(content, "<string>serve-network-filter</string>") {
+		t.Fatalf("expected network daemon plist to run serve-network-filter, got:\n%s", content)
+	}
+	if strings.Contains(content, "<string>serve</string>") {
+		t.Fatalf("did not expect control-plane serve command in network daemon plist:\n%s", content)
+	}
+}
+
+func TestDaemonInstallDarwinNetworkFilterServiceRejectsUserScope(t *testing.T) {
+	prevEUID := serveInstallEUID
+	prevGOOS := serveInstallGOOS
+	serveInstallEUID = func() int { return 501 }
+	serveInstallGOOS = "darwin"
+	t.Cleanup(func() {
+		serveInstallEUID = prevEUID
+		serveInstallGOOS = prevGOOS
+	})
+
+	stdout, _ := makeStdoutCapture(t)
+	cmd := &DaemonCommand{Action: "install", Service: "network-filter", User: true}
+	err := cmd.Run(&runtimeContext{CWD: t.TempDir(), Stdout: stdout})
+	if err == nil {
+		t.Fatal("expected user-scope error")
+	}
+	if !strings.Contains(err.Error(), "only supports --system") {
+		t.Fatalf("expected user-scope network daemon error, got: %v", err)
+	}
+}
+
+func TestDaemonInstallDarwinSystemScopeWritesSystemLaunchdPlist(t *testing.T) {
+	tmpDir := t.TempDir()
+	plistPath := filepath.Join(tmpDir, launchdSystemServiceName+".plist")
+
+	prevEUID := serveInstallEUID
+	prevGOOS := serveInstallGOOS
+	prevExecutable := serveInstallExecutablePath
+	prevLaunchdPath := serveInstallLaunchdPath
+	prevRunCommand := serveInstallRunCommand
+	serveInstallEUID = func() int { return 0 }
+	serveInstallGOOS = "darwin"
+	serveInstallExecutablePath = func() (string, error) { return "/usr/local/bin/cleanroom", nil }
+	serveInstallLaunchdPath = plistPath
+	var calls [][]string
+	serveInstallRunCommand = func(name string, args ...string) error {
+		calls = append(calls, append([]string{name}, args...))
+		return nil
+	}
+	t.Cleanup(func() {
+		serveInstallEUID = prevEUID
+		serveInstallGOOS = prevGOOS
+		serveInstallExecutablePath = prevExecutable
+		serveInstallLaunchdPath = prevLaunchdPath
+		serveInstallRunCommand = prevRunCommand
+	})
+
+	stdout, _ := makeStdoutCapture(t)
+	cmd := &DaemonCommand{Action: "install", System: true}
+	if err := cmd.Run(&runtimeContext{CWD: tmpDir, Stdout: stdout}); err != nil {
+		t.Fatalf("DaemonCommand.Run returned error: %v", err)
+	}
+
+	wantCalls := [][]string{
+		{"launchctl", "bootstrap", "system", plistPath},
+		{"launchctl", "enable", "system/" + launchdSystemServiceName},
+	}
+	if !reflect.DeepEqual(calls, wantCalls) {
+		t.Fatalf("unexpected launchctl commands: got %v want %v", calls, wantCalls)
+	}
+
+	raw, err := os.ReadFile(plistPath)
+	if err != nil {
+		t.Fatalf("read system launchd plist: %v", err)
+	}
+	if !strings.Contains(string(raw), "<string>"+launchdSystemServiceName+"</string>") {
+		t.Fatalf("expected system launchd plist label %q, got:\n%s", launchdSystemServiceName, raw)
 	}
 }
 
@@ -670,7 +847,7 @@ func TestDaemonInstallDarwinRejectsRootByDefault(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected root usage error on darwin")
 	}
-	if !strings.Contains(err.Error(), "run 'cleanroom daemon' without sudo") {
+	if !strings.Contains(err.Error(), "requires an explicit daemon scope") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -920,7 +1097,7 @@ func TestDaemonUninstallFailsWhenNotInstalled(t *testing.T) {
 
 func TestDaemonUninstallLaunchdRemovesUserServiceAndBootsOut(t *testing.T) {
 	tmpDir := t.TempDir()
-	plistPath := filepath.Join(tmpDir, "Library", "LaunchAgents", launchdServiceName+".plist")
+	plistPath := filepath.Join(tmpDir, "Library", "LaunchAgents", testLaunchdUserServiceName+".plist")
 	if err := os.MkdirAll(filepath.Dir(plistPath), 0o755); err != nil {
 		t.Fatalf("mkdir launch agents dir: %v", err)
 	}
@@ -964,7 +1141,7 @@ func TestDaemonUninstallLaunchdRemovesUserServiceAndBootsOut(t *testing.T) {
 	}
 
 	wantCalls := [][]string{
-		{"launchctl", "bootout", "gui/501/" + launchdServiceName},
+		{"launchctl", "bootout", "gui/501/" + testLaunchdUserServiceName},
 	}
 	if !reflect.DeepEqual(calls, wantCalls) {
 		t.Fatalf("unexpected launchctl commands: got %v want %v", calls, wantCalls)
@@ -1017,7 +1194,7 @@ func TestDaemonUninstallLaunchdSucceedsWhenUserServiceIsAlreadyAbsent(t *testing
 	}
 
 	wantCalls := [][]string{
-		{"launchctl", "bootout", "gui/501/" + launchdServiceName},
+		{"launchctl", "bootout", "gui/501/" + testLaunchdUserServiceName},
 	}
 	if !reflect.DeepEqual(calls, wantCalls) {
 		t.Fatalf("unexpected launchctl commands: got %v want %v", calls, wantCalls)
@@ -1148,7 +1325,7 @@ func TestDaemonStopSystemdStopsService(t *testing.T) {
 
 func TestDaemonStartLaunchdEnablesBootstrapsAndKickstartsUserService(t *testing.T) {
 	tmpDir := t.TempDir()
-	plistPath := filepath.Join(tmpDir, "Library", "LaunchAgents", launchdServiceName+".plist")
+	plistPath := filepath.Join(tmpDir, "Library", "LaunchAgents", testLaunchdUserServiceName+".plist")
 	if err := os.MkdirAll(filepath.Dir(plistPath), 0o755); err != nil {
 		t.Fatalf("mkdir launch agents dir: %v", err)
 	}
@@ -1162,12 +1339,19 @@ func TestDaemonStartLaunchdEnablesBootstrapsAndKickstartsUserService(t *testing.
 	prevUserHomeDir := serveInstallUserHomeDir
 	prevRunCommand := serveInstallRunCommand
 	prevRunCommandOutput := serveInstallRunCommandOutput
+	prevLaunchdStartCheckSleep := launchdStartCheckSleep
 	serveInstallGOOS = "darwin"
 	serveInstallEUID = func() int { return 501 }
 	serveInstallUID = func() int { return 501 }
 	serveInstallUserHomeDir = func() (string, error) { return tmpDir, nil }
+	launchdStartCheckSleep = func(time.Duration) {}
+	printCalls := 0
 	serveInstallRunCommandOutput = func(name string, args ...string) (string, error) {
-		return "", &exec.ExitError{ProcessState: &os.ProcessState{}}
+		printCalls++
+		if printCalls == 1 {
+			return "", &exec.ExitError{ProcessState: &os.ProcessState{}}
+		}
+		return "state = running\n", nil
 	}
 	var calls [][]string
 	serveInstallRunCommand = func(name string, args ...string) error {
@@ -1181,6 +1365,7 @@ func TestDaemonStartLaunchdEnablesBootstrapsAndKickstartsUserService(t *testing.
 		serveInstallUserHomeDir = prevUserHomeDir
 		serveInstallRunCommand = prevRunCommand
 		serveInstallRunCommandOutput = prevRunCommandOutput
+		launchdStartCheckSleep = prevLaunchdStartCheckSleep
 	})
 
 	stdout, readStdout := makeStdoutCapture(t)
@@ -1190,9 +1375,9 @@ func TestDaemonStartLaunchdEnablesBootstrapsAndKickstartsUserService(t *testing.
 	}
 
 	wantCalls := [][]string{
-		{"launchctl", "enable", "gui/501/" + launchdServiceName},
 		{"launchctl", "bootstrap", "gui/501", plistPath},
-		{"launchctl", "kickstart", "-k", "gui/501/" + launchdServiceName},
+		{"launchctl", "enable", "gui/501/" + testLaunchdUserServiceName},
+		{"launchctl", "kickstart", "-k", "gui/501/" + testLaunchdUserServiceName},
 	}
 	if !reflect.DeepEqual(calls, wantCalls) {
 		t.Fatalf("unexpected launchctl commands: got %v want %v", calls, wantCalls)
@@ -1207,9 +1392,66 @@ func TestDaemonStartLaunchdEnablesBootstrapsAndKickstartsUserService(t *testing.
 	}
 }
 
+func TestDaemonStartLaunchdFailsWhenServiceExitsImmediately(t *testing.T) {
+	tmpDir := t.TempDir()
+	plistPath := filepath.Join(tmpDir, "Library", "LaunchAgents", testLaunchdUserServiceName+".plist")
+	if err := os.MkdirAll(filepath.Dir(plistPath), 0o755); err != nil {
+		t.Fatalf("mkdir launch agents dir: %v", err)
+	}
+	if err := os.WriteFile(plistPath, []byte("existing-plist"), 0o644); err != nil {
+		t.Fatalf("write existing plist: %v", err)
+	}
+
+	prevGOOS := serveInstallGOOS
+	prevEUID := serveInstallEUID
+	prevUID := serveInstallUID
+	prevUserHomeDir := serveInstallUserHomeDir
+	prevRunCommand := serveInstallRunCommand
+	prevRunCommandOutput := serveInstallRunCommandOutput
+	prevLaunchdStartCheckSleep := launchdStartCheckSleep
+	serveInstallGOOS = "darwin"
+	serveInstallEUID = func() int { return 501 }
+	serveInstallUID = func() int { return 501 }
+	serveInstallUserHomeDir = func() (string, error) { return tmpDir, nil }
+	launchdStartCheckSleep = func(time.Duration) {}
+	printCalls := 0
+	serveInstallRunCommandOutput = func(name string, args ...string) (string, error) {
+		printCalls++
+		if printCalls == 1 {
+			return "", &exec.ExitError{ProcessState: &os.ProcessState{}}
+		}
+		return "state = exited\n", nil
+	}
+	serveInstallRunCommand = func(name string, args ...string) error {
+		return nil
+	}
+	t.Cleanup(func() {
+		serveInstallGOOS = prevGOOS
+		serveInstallEUID = prevEUID
+		serveInstallUID = prevUID
+		serveInstallUserHomeDir = prevUserHomeDir
+		serveInstallRunCommand = prevRunCommand
+		serveInstallRunCommandOutput = prevRunCommandOutput
+		launchdStartCheckSleep = prevLaunchdStartCheckSleep
+	})
+
+	stdout, _ := makeStdoutCapture(t)
+	cmd := &DaemonCommand{Action: "start"}
+	err := cmd.Run(&runtimeContext{CWD: tmpDir, Stdout: stdout})
+	if err == nil {
+		t.Fatal("expected launchd start verification failure")
+	}
+	if !strings.Contains(err.Error(), "did not reach running state") {
+		t.Fatalf("expected running-state verification error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "state: exited") {
+		t.Fatalf("expected exited state details, got: %v", err)
+	}
+}
+
 func TestDaemonStartLaunchdReturnsKickstartFailure(t *testing.T) {
 	tmpDir := t.TempDir()
-	plistPath := filepath.Join(tmpDir, "Library", "LaunchAgents", launchdServiceName+".plist")
+	plistPath := filepath.Join(tmpDir, "Library", "LaunchAgents", testLaunchdUserServiceName+".plist")
 	if err := os.MkdirAll(filepath.Dir(plistPath), 0o755); err != nil {
 		t.Fatalf("mkdir launch agents dir: %v", err)
 	}
@@ -1256,9 +1498,9 @@ func TestDaemonStartLaunchdReturnsKickstartFailure(t *testing.T) {
 	}
 }
 
-func TestDaemonStopLaunchdDisablesAndBootsOutUserService(t *testing.T) {
+func TestDaemonStopLaunchdBootsOutUserService(t *testing.T) {
 	tmpDir := t.TempDir()
-	plistPath := filepath.Join(tmpDir, "Library", "LaunchAgents", launchdServiceName+".plist")
+	plistPath := filepath.Join(tmpDir, "Library", "LaunchAgents", testLaunchdUserServiceName+".plist")
 	if err := os.MkdirAll(filepath.Dir(plistPath), 0o755); err != nil {
 		t.Fatalf("mkdir launch agents dir: %v", err)
 	}
@@ -1300,8 +1542,7 @@ func TestDaemonStopLaunchdDisablesAndBootsOutUserService(t *testing.T) {
 	}
 
 	wantCalls := [][]string{
-		{"launchctl", "disable", "gui/501/" + launchdServiceName},
-		{"launchctl", "bootout", "gui/501/" + launchdServiceName},
+		{"launchctl", "bootout", "gui/501/" + testLaunchdUserServiceName},
 	}
 	if !reflect.DeepEqual(calls, wantCalls) {
 		t.Fatalf("unexpected launchctl commands: got %v want %v", calls, wantCalls)
@@ -1353,8 +1594,7 @@ func TestDaemonStopLaunchdBootsOutWhenPlistIsMissing(t *testing.T) {
 	}
 
 	wantCalls := [][]string{
-		{"launchctl", "disable", "gui/501/" + launchdServiceName},
-		{"launchctl", "bootout", "gui/501/" + launchdServiceName},
+		{"launchctl", "bootout", "gui/501/" + testLaunchdUserServiceName},
 	}
 	if !reflect.DeepEqual(calls, wantCalls) {
 		t.Fatalf("unexpected launchctl commands: got %v want %v", calls, wantCalls)
@@ -1368,7 +1608,7 @@ func TestDaemonStopLaunchdBootsOutWhenPlistIsMissing(t *testing.T) {
 
 func TestDaemonStopLaunchdReturnsBootoutFailure(t *testing.T) {
 	tmpDir := t.TempDir()
-	plistPath := filepath.Join(tmpDir, "Library", "LaunchAgents", launchdServiceName+".plist")
+	plistPath := filepath.Join(tmpDir, "Library", "LaunchAgents", testLaunchdUserServiceName+".plist")
 	if err := os.MkdirAll(filepath.Dir(plistPath), 0o755); err != nil {
 		t.Fatalf("mkdir launch agents dir: %v", err)
 	}
@@ -1596,11 +1836,11 @@ func TestDaemonStatusLaunchdNotInstalled(t *testing.T) {
 	}
 
 	out := readStdout()
-	plistPath := filepath.Join(tmpDir, "Library", "LaunchAgents", launchdServiceName+".plist")
+	plistPath := filepath.Join(tmpDir, "Library", "LaunchAgents", testLaunchdUserServiceName+".plist")
 	if !strings.Contains(out, "daemon status (launchd)") {
 		t.Fatalf("expected launchd status title, got: %s", out)
 	}
-	if !strings.Contains(out, "! [not installed] "+launchdServiceName) {
+	if !strings.Contains(out, "! [not installed] "+testLaunchdUserServiceName) {
 		t.Fatalf("expected not-installed summary, got: %s", out)
 	}
 	if !strings.Contains(out, "install: missing") {
@@ -1647,7 +1887,7 @@ func TestDaemonStatusLaunchdRunningWithoutPlistShowsRunning(t *testing.T) {
 	}
 
 	out := readStdout()
-	if !strings.Contains(out, "✓ [running] "+launchdServiceName) {
+	if !strings.Contains(out, "✓ [running] "+testLaunchdUserServiceName) {
 		t.Fatalf("expected running summary, got: %s", out)
 	}
 	if !strings.Contains(out, "install: missing") {
@@ -1678,8 +1918,14 @@ func TestDaemonStatusUnsupportedOS(t *testing.T) {
 
 func TestDaemonStatusLaunchdIncludesListenEndpoint(t *testing.T) {
 	tmpDir := t.TempDir()
-	plistPath := filepath.Join(tmpDir, "Library", "LaunchAgents", launchdServiceName+".plist")
-	content := renderLaunchdService("/usr/local/bin/cleanroom", []string{"serve", "--listen", "unix:///tmp/custom-cleanroom.sock"})
+	plistPath := filepath.Join(tmpDir, "Library", "LaunchAgents", testLaunchdUserServiceName+".plist")
+	content := renderLaunchdService(launchdServiceConfig{
+		Label:          testLaunchdUserServiceName,
+		ExecutablePath: "/usr/local/bin/cleanroom",
+		Arguments:      []string{"serve", "--listen", "unix:///tmp/custom-cleanroom.sock"},
+		RunAtLoad:      true,
+		KeepAlive:      true,
+	})
 	if err := os.MkdirAll(filepath.Dir(plistPath), 0o755); err != nil {
 		t.Fatalf("mkdir launch agents dir: %v", err)
 	}
@@ -1720,7 +1966,7 @@ func TestDaemonStatusLaunchdIncludesListenEndpoint(t *testing.T) {
 	if !strings.Contains(out, "daemon status (launchd)") {
 		t.Fatalf("expected launchd status title, got: %s", out)
 	}
-	if !strings.Contains(out, "✓ [running] "+launchdServiceName) {
+	if !strings.Contains(out, "✓ [running] "+testLaunchdUserServiceName) {
 		t.Fatalf("expected running summary, got: %s", out)
 	}
 	if !strings.Contains(out, "listen: unix:///tmp/custom-cleanroom.sock") {
@@ -1730,8 +1976,14 @@ func TestDaemonStatusLaunchdIncludesListenEndpoint(t *testing.T) {
 
 func TestDaemonStatusLaunchdJSONIncludesListenEndpoint(t *testing.T) {
 	tmpDir := t.TempDir()
-	plistPath := filepath.Join(tmpDir, "Library", "LaunchAgents", launchdServiceName+".plist")
-	content := renderLaunchdService("/usr/local/bin/cleanroom", []string{"serve", "--listen", "unix:///tmp/custom-cleanroom.sock"})
+	plistPath := filepath.Join(tmpDir, "Library", "LaunchAgents", testLaunchdUserServiceName+".plist")
+	content := renderLaunchdService(launchdServiceConfig{
+		Label:          testLaunchdUserServiceName,
+		ExecutablePath: "/usr/local/bin/cleanroom",
+		Arguments:      []string{"serve", "--listen", "unix:///tmp/custom-cleanroom.sock"},
+		RunAtLoad:      true,
+		KeepAlive:      true,
+	})
 	if err := os.MkdirAll(filepath.Dir(plistPath), 0o755); err != nil {
 		t.Fatalf("mkdir launch agents dir: %v", err)
 	}
@@ -1781,8 +2033,8 @@ func TestDaemonStatusLaunchdJSONIncludesListenEndpoint(t *testing.T) {
 	if payload.Manager != "launchd" {
 		t.Fatalf("expected launchd manager, got %q", payload.Manager)
 	}
-	if payload.Service != launchdServiceName {
-		t.Fatalf("expected service %q, got %q", launchdServiceName, payload.Service)
+	if payload.Service != testLaunchdUserServiceName {
+		t.Fatalf("expected service %q, got %q", testLaunchdUserServiceName, payload.Service)
 	}
 	if !payload.Installed {
 		t.Fatal("expected installed=true")
@@ -1806,8 +2058,14 @@ func TestDaemonStatusLaunchdJSONIncludesListenEndpoint(t *testing.T) {
 
 func TestDaemonStatusLaunchdReportsInactiveWhenNotRunning(t *testing.T) {
 	tmpDir := t.TempDir()
-	plistPath := filepath.Join(tmpDir, "Library", "LaunchAgents", launchdServiceName+".plist")
-	content := renderLaunchdService("/usr/local/bin/cleanroom", []string{"serve", "--listen", "unix:///tmp/custom-cleanroom.sock"})
+	plistPath := filepath.Join(tmpDir, "Library", "LaunchAgents", testLaunchdUserServiceName+".plist")
+	content := renderLaunchdService(launchdServiceConfig{
+		Label:          testLaunchdUserServiceName,
+		ExecutablePath: "/usr/local/bin/cleanroom",
+		Arguments:      []string{"serve", "--listen", "unix:///tmp/custom-cleanroom.sock"},
+		RunAtLoad:      true,
+		KeepAlive:      true,
+	})
 	if err := os.MkdirAll(filepath.Dir(plistPath), 0o755); err != nil {
 		t.Fatalf("mkdir launch agents dir: %v", err)
 	}
@@ -1845,7 +2103,7 @@ func TestDaemonStatusLaunchdReportsInactiveWhenNotRunning(t *testing.T) {
 	if !strings.Contains(out, "daemon status (launchd)") {
 		t.Fatalf("expected launchd status title, got: %s", out)
 	}
-	if !strings.Contains(out, "! [installed] "+launchdServiceName) {
+	if !strings.Contains(out, "! [installed] "+testLaunchdUserServiceName) {
 		t.Fatalf("expected installed summary, got: %s", out)
 	}
 	if !strings.Contains(out, "runtime: inactive") {
@@ -1869,10 +2127,38 @@ func TestJoinSystemdExecArgsQuotesSingleQuoteArgs(t *testing.T) {
 	}
 }
 
-func TestRenderLaunchdServiceOmitsEnvironmentVariables(t *testing.T) {
-	plist := renderLaunchdService("/usr/local/bin/cleanroom", []string{"serve"})
-	if strings.Contains(plist, "EnvironmentVariables") {
-		t.Fatalf("expected launchd plist to omit EnvironmentVariables, got:\n%s", plist)
+func TestRenderLaunchdServiceIncludesOptionalMetadata(t *testing.T) {
+	plist := renderLaunchdService(launchdServiceConfig{
+		Label:            testLaunchdUserServiceName,
+		ExecutablePath:   "/usr/local/bin/cleanroom",
+		Arguments:        []string{"serve"},
+		RunAtLoad:        false,
+		KeepAlive:        false,
+		WorkingDirectory: "/Users/alice",
+		StdoutPath:       "/Users/alice/Library/Logs/cleanroom-user-server.log",
+		StderrPath:       "/Users/alice/Library/Logs/cleanroom-user-server.log",
+		Environment: map[string]string{
+			"CLEANROOM_NETWORK_FILTER_POLICY_PATH": "/Users/alice/Library/Application Support/Cleanroom/network-filter-policy.json",
+			"CLEANROOM_NETWORK_FILTER_STATUS_PATH": "/Users/alice/Library/Application Support/Cleanroom/network-filter-status.json",
+		},
+	})
+	if !strings.Contains(plist, "<string>"+testLaunchdUserServiceName+"</string>") {
+		t.Fatalf("expected launchd plist label, got:\n%s", plist)
+	}
+	if !strings.Contains(plist, "<false/>") {
+		t.Fatalf("expected launchd plist to encode false boolean values, got:\n%s", plist)
+	}
+	for _, key := range []string{
+		"EnvironmentVariables",
+		"WorkingDirectory",
+		"StandardOutPath",
+		"StandardErrorPath",
+		"CLEANROOM_NETWORK_FILTER_POLICY_PATH",
+		"CLEANROOM_NETWORK_FILTER_STATUS_PATH",
+	} {
+		if !strings.Contains(plist, key) {
+			t.Fatalf("expected launchd plist to contain %q, got:\n%s", key, plist)
+		}
 	}
 }
 

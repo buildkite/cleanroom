@@ -154,6 +154,7 @@ type AttachIO struct {
 	WriteStdin func([]byte) error
 	CloseStdin func() error
 	ResizeTTY  func(cols, rows uint32) error
+	Metadata   map[string]string
 }
 
 type OutputStream struct {
@@ -181,25 +182,30 @@ type ExecutionRequest struct {
 }
 
 type FirecrackerConfig struct {
-	BinaryPath            string
-	KernelImagePath       string
-	RootFSPath            string
-	MinimumRootFSBytes    int64
-	DarwinVZNetworkMode   string
-	DarwinVZNetworkSubnet string
-	DockerStartupSeconds  int64
-	DockerStorageDriver   string
-	DockerIPTables        bool
-	Snapshots             SnapshotConfig
-	PrivilegedMode        string
-	PrivilegedHelperPath  string
-	RunDir                string
-	VCPUs                 int64
-	MemoryMiB             int64
-	GuestCID              uint32
-	GuestPort             uint32
-	Launch                bool
-	LaunchSeconds         int64
+	BinaryPath                                string
+	KernelImagePath                           string
+	RootFSPath                                string
+	MinimumRootFSBytes                        int64
+	DarwinVZNetworkMode                       string
+	DarwinVZNetworkSubnet                     string
+	DarwinVZNetworkExternalInterface          string
+	DarwinVZNetworkDisableNAT44               bool
+	DarwinVZNetworkDisableNAT66               bool
+	DarwinVZNetworkDisableDNSProxy            bool
+	DarwinVZNetworkDisableRouterAdvertisement bool
+	DockerStartupSeconds                      int64
+	DockerStorageDriver                       string
+	DockerIPTables                            bool
+	Snapshots                                 SnapshotConfig
+	PrivilegedMode                            string
+	PrivilegedHelperPath                      string
+	RunDir                                    string
+	VCPUs                                     int64
+	MemoryMiB                                 int64
+	GuestCID                                  uint32
+	GuestPort                                 uint32
+	Launch                                    bool
+	LaunchSeconds                             int64
 }
 
 type SnapshotConfig struct {

@@ -271,6 +271,7 @@ try_install_notarized_macos_pkg() {
   log "Installed cleanroom to ${INSTALL_DIR}/cleanroom"
   log "Installed cleanroom-guest-agent to ${INSTALL_DIR}/cleanroom-guest-agent"
   log "Installed cleanroom-darwin-vz to ${INSTALL_DIR}/cleanroom-darwin-vz.app"
+  log "Installed Cleanroom.app to /Applications/Cleanroom.app"
   return 0
 }
 

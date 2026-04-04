@@ -11,7 +11,7 @@ require_cmd() {
   command -v "$cmd" >/dev/null 2>&1 || die "required command not found: ${cmd}"
 }
 
-helper_component_plist=""
+bundle_component_plist=""
 helper_cleanup_scripts_dir=""
 
 installer_keychain_default_before=""
@@ -76,35 +76,46 @@ prepare_installer_signing_keychain() {
   installer_keychain_default_changed=1
 }
 
-configure_helper_component_plist() {
-  local helper_component_relative_path component_index component_path
-
-  [[ -d "${PAYLOAD_HELPER_PATH}" ]] || return 0
+ensure_bundle_component_plist() {
+  [[ -n "${bundle_component_plist}" ]] && return 0
 
   require_cmd plutil
+  bundle_component_plist="${WORK_DIR}/components.plist"
+  pkgbuild --analyze --root "${PAYLOAD_ROOT}" "${bundle_component_plist}" >/dev/null
+}
 
-  helper_component_relative_path="${PAYLOAD_HELPER_PATH#${PAYLOAD_ROOT}/}"
-  helper_component_plist="${WORK_DIR}/components.plist"
+configure_bundle_component_plist_entry() {
+  local bundle_path="$1"
+  local bundle_relative_path component_index component_path
 
-  printf '[build-macos-release-pkg] configuring helper bundle install behavior\n' >&2
-  pkgbuild --analyze --root "${PAYLOAD_ROOT}" "${helper_component_plist}" >/dev/null
+  [[ -d "${bundle_path}" ]] || return 0
+
+  ensure_bundle_component_plist
+  bundle_relative_path="${bundle_path#${PAYLOAD_ROOT}/}"
+
+  printf '[build-macos-release-pkg] configuring bundle install behavior for %s\n' "${bundle_relative_path}" >&2
 
   component_index=""
   for ((component_index=0; ; component_index++)); do
     component_path="$(
-      plutil -extract "${component_index}.RootRelativeBundlePath" raw -o - "${helper_component_plist}" 2>/dev/null || true
+      plutil -extract "${component_index}.RootRelativeBundlePath" raw -o - "${bundle_component_plist}" 2>/dev/null || true
     )"
     if [[ -z "${component_path}" ]]; then
-      die "unable to find helper bundle entry in component plist: ${helper_component_relative_path}"
+      die "unable to find bundle entry in component plist: ${bundle_relative_path}"
     fi
-    if [[ "${component_path}" == "${helper_component_relative_path}" ]]; then
+    if [[ "${component_path}" == "${bundle_relative_path}" ]]; then
       break
     fi
   done
 
-  plutil -replace "${component_index}.BundleIsRelocatable" -bool NO "${helper_component_plist}"
-  plutil -replace "${component_index}.BundleHasStrictIdentifier" -bool NO "${helper_component_plist}"
-  plutil -replace "${component_index}.BundleIsVersionChecked" -bool NO "${helper_component_plist}"
+  plutil -replace "${component_index}.BundleIsRelocatable" -bool NO "${bundle_component_plist}"
+  plutil -replace "${component_index}.BundleHasStrictIdentifier" -bool NO "${bundle_component_plist}"
+  plutil -replace "${component_index}.BundleIsVersionChecked" -bool NO "${bundle_component_plist}"
+}
+
+configure_bundle_component_plist() {
+  configure_bundle_component_plist_entry "${PAYLOAD_HELPER_PATH}"
+  configure_bundle_component_plist_entry "${PAYLOAD_SUPPORT_APP_PATH}"
 }
 
 configure_helper_cleanup_scripts() {
@@ -145,6 +156,7 @@ Required environment:
   CLEANROOM_MACOS_RELEASE_CLEANROOM_BINARY        Path to the cleanroom macOS binary
   CLEANROOM_MACOS_RELEASE_GUEST_AGENT_BINARY      Path to the Linux cleanroom-guest-agent binary
   CLEANROOM_MACOS_RELEASE_HELPER_BINARY           Path to the cleanroom-darwin-vz macOS binary or .app bundle
+  CLEANROOM_MACOS_RELEASE_SUPPORT_APP             Path to the Cleanroom.app network-filter utility bundle
 
 Optional environment:
   CLEANROOM_MACOS_RELEASE_INSTALL_PREFIX          Install prefix inside the package (default: /usr/local/bin)
@@ -170,6 +182,7 @@ VERSION="${CLEANROOM_MACOS_RELEASE_VERSION:-}"
 CLEANROOM_BINARY="${CLEANROOM_MACOS_RELEASE_CLEANROOM_BINARY:-}"
 GUEST_AGENT_BINARY="${CLEANROOM_MACOS_RELEASE_GUEST_AGENT_BINARY:-}"
 HELPER_BINARY="${CLEANROOM_MACOS_RELEASE_HELPER_BINARY:-}"
+SUPPORT_APP="${CLEANROOM_MACOS_RELEASE_SUPPORT_APP:-}"
 INSTALL_PREFIX="${CLEANROOM_MACOS_RELEASE_INSTALL_PREFIX:-/usr/local/bin}"
 APPLICATION_SIGN_IDENTITY="${CLEANROOM_MACOS_RELEASE_APPLICATION_SIGN_IDENTITY:-}"
 SIGN_KEYCHAIN="${CLEANROOM_MACOS_RELEASE_SIGN_KEYCHAIN:-}"
@@ -184,6 +197,7 @@ fi
 [[ -f "${CLEANROOM_BINARY}" ]] || die "missing cleanroom binary: ${CLEANROOM_BINARY}"
 [[ -f "${GUEST_AGENT_BINARY}" ]] || die "missing cleanroom-guest-agent binary: ${GUEST_AGENT_BINARY}"
 [[ -e "${HELPER_BINARY}" ]] || die "missing cleanroom-darwin-vz helper: ${HELPER_BINARY}"
+[[ -z "${SUPPORT_APP}" ]] || [[ -d "${SUPPORT_APP}" ]] || die "support app must be a .app bundle: ${SUPPORT_APP}"
 [[ "${INSTALL_PREFIX}" = /* ]] || die "install prefix must be absolute: ${INSTALL_PREFIX}"
 
 require_cmd codesign
@@ -197,9 +211,11 @@ trap cleanup EXIT
 
 PAYLOAD_ROOT="${WORK_DIR}/payload"
 PAYLOAD_BIN_DIR="${PAYLOAD_ROOT}${INSTALL_PREFIX}"
+PAYLOAD_APPLICATIONS_DIR="${PAYLOAD_ROOT}/Applications"
 PAYLOAD_CLEANROOM_PATH="${PAYLOAD_BIN_DIR}/cleanroom"
 PAYLOAD_GUEST_AGENT_PATH="${PAYLOAD_BIN_DIR}/cleanroom-guest-agent"
 PAYLOAD_HELPER_PATH="${PAYLOAD_BIN_DIR}/cleanroom-darwin-vz"
+PAYLOAD_SUPPORT_APP_PATH="${PAYLOAD_ROOT}/Applications/Cleanroom.app"
 UNSIGNED_OUTPUT_PATH="${WORK_DIR}/unsigned.pkg"
 
 mkdir -p "${PAYLOAD_BIN_DIR}" "$(dirname "${OUTPUT_PATH}")"
@@ -212,6 +228,11 @@ if [[ -d "${HELPER_BINARY}" ]]; then
   ditto "${HELPER_BINARY}" "${PAYLOAD_HELPER_PATH}"
 else
   install -m 0755 "${HELPER_BINARY}" "${PAYLOAD_HELPER_PATH}"
+fi
+if [[ -n "${SUPPORT_APP}" ]]; then
+  require_cmd ditto
+  mkdir -p "${PAYLOAD_APPLICATIONS_DIR}"
+  ditto "${SUPPORT_APP}" "${PAYLOAD_SUPPORT_APP_PATH}"
 fi
 
 codesign_args=(
@@ -231,8 +252,11 @@ codesign "${codesign_args[@]}"
 printf '[build-macos-release-pkg] verifying signed payloads\n' >&2
 codesign --verify --strict --verbose=2 "${PAYLOAD_CLEANROOM_PATH}"
 codesign --verify --strict --verbose=2 "${PAYLOAD_HELPER_PATH}"
+if [[ -d "${PAYLOAD_SUPPORT_APP_PATH}" ]]; then
+  codesign --verify --strict --verbose=2 "${PAYLOAD_SUPPORT_APP_PATH}"
+fi
 
-configure_helper_component_plist
+configure_bundle_component_plist
 configure_helper_cleanup_scripts
 
 pkgbuild_args=(
@@ -241,8 +265,8 @@ pkgbuild_args=(
   --version "${VERSION}"
   --install-location /
 )
-if [[ -n "${helper_component_plist}" ]]; then
-  pkgbuild_args+=(--component-plist "${helper_component_plist}")
+if [[ -n "${bundle_component_plist}" ]]; then
+  pkgbuild_args+=(--component-plist "${bundle_component_plist}")
 fi
 if [[ -n "${helper_cleanup_scripts_dir}" ]]; then
   pkgbuild_args+=(--scripts "${helper_cleanup_scripts_dir}")

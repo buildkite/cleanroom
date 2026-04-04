@@ -135,6 +135,25 @@ func TestRenderDoctorReportColorUsesLoggerPalette(t *testing.T) {
 	}
 }
 
+func TestRenderStatusCheckReportColorUsesLoggerPalette(t *testing.T) {
+	out := renderStatusCheckReport("network filter telemetry", []statusCheckLine{
+		{Name: "api", Status: "pass", Message: "healthy at http://127.0.0.1:8171"},
+		{Name: "provider", Status: "warn", Message: "inactive"},
+		{Name: "policy", Status: "fail", Message: "query failed"},
+	}, true)
+	palette := defaultTerminalPalette()
+
+	if !strings.Contains(out, palette.info.wrap("✓ [pass]", true)) {
+		t.Fatalf("expected pass status to use info palette, got: %q", out)
+	}
+	if !strings.Contains(out, palette.warn.wrap("! [warn]", true)) {
+		t.Fatalf("expected warn status to use warn palette, got: %q", out)
+	}
+	if !strings.Contains(out, palette.error.wrap("✗ [fail]", true)) {
+		t.Fatalf("expected fail status to use error palette, got: %q", out)
+	}
+}
+
 func TestRenderDaemonStatusReportPlain(t *testing.T) {
 	out := renderDaemonStatusReport(daemonStatusReport{
 		Manager:   "launchd",

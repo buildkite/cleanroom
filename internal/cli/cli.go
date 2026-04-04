@@ -22,11 +22,14 @@ import (
 const defaultBumpRefSource = "ghcr.io/buildkite/cleanroom-base/alpine:latest"
 
 const (
-	systemdServiceName       = "cleanroom.service"
-	launchdServiceName       = "com.buildkite.cleanroom"
-	defaultDaemonListen      = "unix://" + endpoint.DefaultSystemSocketPath
-	sandboxTerminateTimeout  = 2 * time.Second
-	interruptForceExitWindow = 1200 * time.Millisecond
+	systemdServiceName        = "cleanroom.service"
+	launchdSystemServiceName  = "com.buildkite.cleanroom"
+	launchdUserServiceName    = "com.buildkite.cleanroom.user"
+	launchdNetworkServiceName = "com.buildkite.cleanroom.network"
+	launchdServiceName        = launchdSystemServiceName
+	defaultDaemonListen       = "unix://" + endpoint.DefaultSystemSocketPath
+	sandboxTerminateTimeout   = 2 * time.Second
+	interruptForceExitWindow  = 1200 * time.Millisecond
 )
 
 type policyLoader interface {
@@ -44,21 +47,23 @@ type runtimeContext struct {
 }
 
 type CLI struct {
-	Policy    PolicyCommand    `cmd:"" help:"Policy commands"`
-	Config    ConfigCommand    `cmd:"" help:"Runtime config commands"`
-	Image     ImageCommand     `cmd:"" help:"Manage OCI image cache artifacts"`
-	Inspect   InspectCommand   `cmd:"" help:"Inspect a sandbox, execution, or snapshot by ID"`
-	Snapshot  SnapshotCommand  `cmd:"" help:"Manage snapshots"`
-	Create    CreateCommand    `cmd:"" help:"Create a sandbox using repo policy"`
-	Exec      ExecCommand      `cmd:"" help:"Execute a command in a sandbox"`
-	Console   ConsoleCommand   `cmd:"" help:"Open an interactive console in a sandbox"`
-	Serve     ServeCommand     `cmd:"" help:"Run the cleanroom control-plane server in the foreground"`
-	Daemon    DaemonCommand    `cmd:"" help:"Manage daemon/service lifecycle"`
-	Doctor    DoctorCommand    `cmd:"" help:"Run environment and backend diagnostics"`
-	Execution ExecutionCommand `cmd:"" help:"Inspect command executions and diagnostics"`
-	Status    StatusCommand    `cmd:"" help:"Browse retained execution artifacts"`
-	Sandbox   SandboxCommand   `cmd:"" help:"Manage sandboxes"`
-	Version   VersionCommand   `cmd:"" help:"Print version information"`
+	Policy             PolicyCommand             `cmd:"" help:"Policy commands"`
+	Config             ConfigCommand             `cmd:"" help:"Runtime config commands"`
+	Image              ImageCommand              `cmd:"" help:"Manage OCI image cache artifacts"`
+	Inspect            InspectCommand            `cmd:"" help:"Inspect a sandbox, execution, or snapshot by ID"`
+	Snapshot           SnapshotCommand           `cmd:"" help:"Manage snapshots"`
+	Create             CreateCommand             `cmd:"" help:"Create a sandbox using repo policy"`
+	Exec               ExecCommand               `cmd:"" help:"Execute a command in a sandbox"`
+	Console            ConsoleCommand            `cmd:"" help:"Open an interactive console in a sandbox"`
+	Serve              ServeCommand              `cmd:"" help:"Run the cleanroom control-plane server in the foreground"`
+	Daemon             DaemonCommand             `cmd:"" help:"Manage daemon/service lifecycle"`
+	Network            NetworkCommand            `cmd:"" help:"Manage macOS network-filter support"`
+	ServeNetworkFilter ServeNetworkFilterCommand `cmd:"serve-network-filter" hidden:"" help:"Run the macOS network-filter state daemon"`
+	Doctor             DoctorCommand             `cmd:"" help:"Run environment and backend diagnostics"`
+	Execution          ExecutionCommand          `cmd:"" help:"Inspect command executions and diagnostics"`
+	Status             StatusCommand             `cmd:"" help:"Browse retained execution artifacts"`
+	Sandbox            SandboxCommand            `cmd:"" help:"Manage sandboxes"`
+	Version            VersionCommand            `cmd:"" help:"Print version information"`
 }
 
 type VersionCommand struct {
@@ -129,6 +134,7 @@ func Run(args []string, version string) error {
 
 	cli := CLI{}
 	cli.Version.version = version
+	cli.Doctor.version = version
 	parser, err := kong.New(
 		&cli,
 		kong.Name("cleanroom"),
@@ -158,6 +164,14 @@ func ExitCode(err error) int {
 		return codeErr.ExitCode()
 	}
 	return 1
+}
+
+func normalizeVersion(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "dev"
+	}
+	return trimmed
 }
 
 func resolveCWD(base, chdir string) (string, error) {

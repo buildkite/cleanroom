@@ -56,6 +56,8 @@ installer_keychain_path=""
 installer_keychain_password=""
 installer_keychain_cleanup_path=""
 helper_profile_path=""
+app_profile_path=""
+filter_profile_path=""
 notary_key_path=""
 helper_sign_identity=""
 helper_sign_selector=""
@@ -170,6 +172,8 @@ setup_buildkite_signing_assets() {
   helper_p12_path="${tmpdir}/helper-cert.p12"
   installer_p12_path="${tmpdir}/installer-cert.p12"
   helper_profile_path="${tmpdir}/helper.provisionprofile"
+  app_profile_path="${tmpdir}/app.provisionprofile"
+  filter_profile_path="${tmpdir}/filter.provisionprofile"
   notary_key_path="${tmpdir}/AuthKey.p8"
 
   printf '%s' "$(fetch_secret CLEANROOM_MACOS_RELEASE_HELPER_CERT_P12_BASE64 | tr -d '\r\n')" \
@@ -178,6 +182,10 @@ setup_buildkite_signing_assets() {
     | openssl base64 -d -A -out "${installer_p12_path}"
   printf '%s' "$(fetch_secret CLEANROOM_MACOS_RELEASE_HELPER_PROVISION_PROFILE_BASE64 | tr -d '\r\n')" \
     | openssl base64 -d -A -out "${helper_profile_path}"
+  printf '%s' "$(fetch_secret CLEANROOM_MACOS_RELEASE_APP_PROVISION_PROFILE_BASE64 | tr -d '\r\n')" \
+    | openssl base64 -d -A -out "${app_profile_path}"
+  printf '%s' "$(fetch_secret CLEANROOM_MACOS_RELEASE_FILTER_PROVISION_PROFILE_BASE64 | tr -d '\r\n')" \
+    | openssl base64 -d -A -out "${filter_profile_path}"
   printf '%s' "$(fetch_secret CLEANROOM_MACOS_NOTARY_KEY_P8_BASE64 | tr -d '\r\n')" \
     | openssl base64 -d -A -out "${notary_key_path}"
 
@@ -225,6 +233,8 @@ setup_buildkite_signing_assets() {
 
 setup_local_signing_assets() {
   helper_profile_path="${CLEANROOM_MACOS_RELEASE_HELPER_PROVISION_PROFILE:-}"
+  app_profile_path="${CLEANROOM_MACOS_RELEASE_APP_PROVISION_PROFILE:-}"
+  filter_profile_path="${CLEANROOM_MACOS_RELEASE_FILTER_PROVISION_PROFILE:-}"
   helper_sign_identity="${CLEANROOM_MACOS_RELEASE_HELPER_SIGN_IDENTITY:-}"
   helper_sign_selector="${CLEANROOM_MACOS_RELEASE_HELPER_SIGN_SELECTOR:-${helper_sign_identity}}"
   installer_sign_identity="${CLEANROOM_MACOS_INSTALLER_SIGN_IDENTITY:-}"
@@ -236,6 +246,8 @@ setup_local_signing_assets() {
   keychain_path="${CLEANROOM_MACOS_RELEASE_HELPER_SIGN_KEYCHAIN:-}"
 
   [[ -f "${helper_profile_path}" ]] || die "missing helper provisioning profile: ${helper_profile_path}"
+  [[ -f "${app_profile_path}" ]] || die "missing app provisioning profile: ${app_profile_path}"
+  [[ -f "${filter_profile_path}" ]] || die "missing filter provisioning profile: ${filter_profile_path}"
   [[ -n "${helper_sign_identity}" ]] || die "CLEANROOM_MACOS_RELEASE_HELPER_SIGN_IDENTITY is required"
   [[ -n "${installer_sign_identity}" ]] || die "CLEANROOM_MACOS_INSTALLER_SIGN_IDENTITY is required"
   [[ -f "${notary_key_path}" ]] || die "missing notary API key: ${notary_key_path}"
@@ -304,12 +316,25 @@ build_release_arch() {
     -ldflags "-s -w" \
     -o "${release_dir}/cleanroom-guest-agent" ./cmd/cleanroom-guest-agent
 
+  printf '[ci-macos-release-pkg] building Cleanroom.app for %s\n' "${asset_arch}"
+  env \
+    CLEANROOM_MACOS_APP_OUTPUT_PATH="${release_dir}/Cleanroom.app" \
+    CLEANROOM_MACOS_CLEANROOM_BINARY="${release_dir}/cleanroom" \
+    CLEANROOM_MACOS_DARWIN_VZ_HELPER_APP="${release_dir}/cleanroom-darwin-vz.app" \
+    CLEANROOM_MACOS_GUEST_AGENT_BINARY="${release_dir}/cleanroom-guest-agent" \
+    CLEANROOM_MACOS_SWIFT_TARGET="${swift_target}" \
+    CLEANROOM_CODESIGN_IDENTITY="${helper_sign_selector}" \
+    CLEANROOM_MACOS_APP_PROFILE="${app_profile_path}" \
+    CLEANROOM_MACOS_FILTER_PROFILE="${filter_profile_path}" \
+      "${SCRIPT_DIR}/build-macos-app.sh"
+
   printf '[ci-macos-release-pkg] building and signing release pkg for %s\n' "${asset_arch}"
   env \
     CLEANROOM_MACOS_RELEASE_VERSION="${CLEANROOM_RELEASE_VERSION}" \
     CLEANROOM_MACOS_RELEASE_CLEANROOM_BINARY="${release_dir}/cleanroom" \
     CLEANROOM_MACOS_RELEASE_GUEST_AGENT_BINARY="${release_dir}/cleanroom-guest-agent" \
     CLEANROOM_MACOS_RELEASE_HELPER_BINARY="${release_dir}/cleanroom-darwin-vz.app" \
+    CLEANROOM_MACOS_RELEASE_SUPPORT_APP="${release_dir}/Cleanroom.app" \
     CLEANROOM_MACOS_RELEASE_APPLICATION_SIGN_IDENTITY="${helper_sign_selector}" \
     CLEANROOM_MACOS_RELEASE_SIGN_KEYCHAIN="${keychain_path}" \
     CLEANROOM_MACOS_RELEASE_INSTALLER_SIGN_IDENTITY="${installer_sign_identity}" \

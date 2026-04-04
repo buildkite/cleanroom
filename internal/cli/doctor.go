@@ -17,6 +17,7 @@ type DoctorCommand struct {
 	Chdir   string `short:"c" help:"Change to this directory before running commands"`
 	Backend string `help:"Execution backend to diagnose (defaults to runtime config or host default)"`
 	JSON    bool   `help:"Print doctor report as JSON"`
+	version string
 }
 
 type snapshotDoctorConfig struct {
@@ -49,6 +50,7 @@ func (d *DoctorCommand) Run(ctx *runtimeContext) error {
 	snapshotCfg, snapshotCheck, hasSnapshotCfg := snapshotDoctorConfigForBackend(backendName, ctx.Config)
 
 	checks := []backend.DoctorCheck{
+		{Name: "cleanroom_version", Status: "pass", Message: fmt.Sprintf("cleanroom version %s", normalizeVersion(d.version))},
 		{Name: "runtime_config", Status: "pass", Message: fmt.Sprintf("using runtime config path %s", ctx.ConfigPath)},
 		{Name: "backend", Status: "pass", Message: fmt.Sprintf("selected backend %s", backendName)},
 	}
@@ -125,9 +127,10 @@ func (d *DoctorCommand) Run(ctx *runtimeContext) error {
 
 	if d.JSON {
 		payload := map[string]any{
-			"backend":      backendName,
-			"capabilities": backend.CloneCapabilities(capabilities),
-			"checks":       checks,
+			"backend":           backendName,
+			"cleanroom_version": normalizeVersion(d.version),
+			"capabilities":      backend.CloneCapabilities(capabilities),
+			"checks":            checks,
 			"gateway": map[string]any{
 				"default_listen":   gateway.DefaultListenAddr,
 				"default_port":     gateway.DefaultPort,

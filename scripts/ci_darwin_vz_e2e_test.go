@@ -160,13 +160,36 @@ func TestBuildMacOSReleasePkgSupportsHelperBundle(t *testing.T) {
 		`if [[ -d "${HELPER_BINARY}" ]]; then`,
 		`PAYLOAD_HELPER_PATH="${PAYLOAD_BIN_DIR}/cleanroom-darwin-vz.app"`,
 		`ditto "${HELPER_BINARY}" "${PAYLOAD_HELPER_PATH}"`,
-		`configure_helper_component_plist`,
+		`configure_bundle_component_plist`,
 		`configure_helper_cleanup_scripts`,
 		`legacy_helper_path="${INSTALL_PREFIX}/cleanroom-darwin-vz"`,
 		`pkgbuild_args+=(--scripts "${helper_cleanup_scripts_dir}")`,
-		`pkgbuild --analyze --root "${PAYLOAD_ROOT}" "${helper_component_plist}" >/dev/null`,
-		`pkgbuild_args+=(--component-plist "${helper_component_plist}")`,
+		`pkgbuild --analyze --root "${PAYLOAD_ROOT}" "${bundle_component_plist}" >/dev/null`,
+		`pkgbuild_args+=(--component-plist "${bundle_component_plist}")`,
 		`codesign --verify --strict --verbose=2 "${PAYLOAD_HELPER_PATH}"`,
+	} {
+		if !strings.Contains(script, needle) {
+			t.Fatalf("expected build-macos-release-pkg.sh to contain %q", needle)
+		}
+	}
+}
+
+func TestBuildMacOSReleasePkgSupportsNetworkUtilityApp(t *testing.T) {
+	t.Helper()
+
+	content, err := os.ReadFile("build-macos-release-pkg.sh")
+	if err != nil {
+		t.Fatalf("read build-macos-release-pkg.sh: %v", err)
+	}
+
+	script := string(content)
+	for _, needle := range []string{
+		`CLEANROOM_MACOS_RELEASE_SUPPORT_APP`,
+		`Path to the Cleanroom.app network-filter utility bundle`,
+		`PAYLOAD_SUPPORT_APP_PATH="${PAYLOAD_ROOT}/Applications/Cleanroom.app"`,
+		`[[ -z "${SUPPORT_APP}" ]] || [[ -d "${SUPPORT_APP}" ]] || die "support app must be a .app bundle: ${SUPPORT_APP}"`,
+		`ditto "${SUPPORT_APP}" "${PAYLOAD_SUPPORT_APP_PATH}"`,
+		`codesign --verify --strict --verbose=2 "${PAYLOAD_SUPPORT_APP_PATH}"`,
 	} {
 		if !strings.Contains(script, needle) {
 			t.Fatalf("expected build-macos-release-pkg.sh to contain %q", needle)
@@ -252,6 +275,8 @@ func TestBuildkiteMacOSReleasePkgScriptBuildsNotarizedArtifacts(t *testing.T) {
 		`CLEANROOM_MACOS_RELEASE_INSTALLER_CERT_P12_BASE64`,
 		`CLEANROOM_MACOS_RELEASE_INSTALLER_CERT_PASSWORD`,
 		`CLEANROOM_MACOS_INSTALLER_SIGN_IDENTITY`,
+		`CLEANROOM_MACOS_RELEASE_APP_PROVISION_PROFILE_BASE64`,
+		`CLEANROOM_MACOS_RELEASE_FILTER_PROVISION_PROFILE_BASE64`,
 		`CLEANROOM_MACOS_NOTARY_KEY_P8_BASE64`,
 		`system_keychain_path="/Library/Keychains/System.keychain"`,
 		`sudo security import "${p12_path}"`,
@@ -265,7 +290,12 @@ func TestBuildkiteMacOSReleasePkgScriptBuildsNotarizedArtifacts(t *testing.T) {
 		`security set-key-partition-list`,
 		`keychain_path="${system_keychain_path}"`,
 		`CLEANROOM_DARWIN_VZ_HELPER_SIGN_KEYCHAIN="${keychain_path}"`,
+		`CLEANROOM_MACOS_APP_PROFILE="${app_profile_path}"`,
+		`CLEANROOM_MACOS_FILTER_PROFILE="${filter_profile_path}"`,
+		`"${SCRIPT_DIR}/build-macos-app.sh"`,
+		`"${release_dir}/Cleanroom.app"`,
 		`CLEANROOM_MACOS_RELEASE_INSTALLER_SIGN_IDENTITY="${installer_sign_identity}"`,
+		`CLEANROOM_MACOS_RELEASE_SUPPORT_APP="${release_dir}/Cleanroom.app"`,
 		`CLEANROOM_MACOS_RELEASE_INSTALLER_SIGN_KEYCHAIN="${installer_keychain_path}"`,
 		`build_release_arch arm64 arm64 arm64 arm64-apple-macosx13.0`,
 		`build_release_arch amd64 x86_64 amd64 x86_64-apple-macosx13.0`,
@@ -341,6 +371,7 @@ func TestInstallScriptPrefersNotarizedMacOSPkgWhenCompatible(t *testing.T) {
 		`warn "no notarized macOS pkg found for ${RELEASE_LABEL}; falling back to archive install"`,
 		`if can_use_notarized_macos_pkg && try_install_notarized_macos_pkg; then`,
 		`log "Installed cleanroom via notarized macOS package"`,
+		`log "Installed Cleanroom.app to /Applications/Cleanroom.app"`,
 	} {
 		if !strings.Contains(script, needle) {
 			t.Fatalf("expected install.sh to contain %q", needle)

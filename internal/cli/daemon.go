@@ -15,16 +15,23 @@ import (
 )
 
 type DaemonCommand struct {
-	Action        string `arg:"" required:"" help:"Daemon action (install, uninstall, status, start, stop)"`
-	Force         bool   `help:"Overwrite existing daemon service file (daemon install only)"`
-	User          bool   `help:"Use user daemon scope (launchd only; install/uninstall/status/start/stop actions)"`
-	System        bool   `help:"Use system daemon scope (linux only; install/uninstall/status/start/stop actions)"`
-	JSON          bool   `help:"Print daemon status as JSON (status action only)"`
-	Listen        string `help:"Listen endpoint for control API (defaults to runtime endpoint)"`
-	GatewayListen string `help:"Listen address for the host gateway (default :8170, use :0 for ephemeral port)"`
-	LogLevel      string `help:"Server log level (debug|info|warn|error)"`
-	TLSCert       string `help:"Path to TLS server certificate (auto-discovered from XDG config for https)" env:"CLEANROOM_TLS_CERT"`
-	TLSKey        string `help:"Path to TLS server private key (auto-discovered from XDG config for https)" env:"CLEANROOM_TLS_KEY"`
+	Action                 string   `arg:"" required:"" help:"Daemon action (install, uninstall, status, start, stop)"`
+	Service                string   `help:"Daemon service kind (control or network-filter)" hidden:""`
+	Force                  bool     `help:"Overwrite existing daemon service file (daemon install only)"`
+	User                   bool     `help:"Use user daemon scope (launchd only; install/uninstall/status/start/stop actions)"`
+	System                 bool     `help:"Use system daemon scope (install/uninstall/status/start/stop actions)"`
+	JSON                   bool     `help:"Print daemon status as JSON (status action only)"`
+	Listen                 string   `help:"Listen endpoint for control API (defaults to runtime endpoint)"`
+	GatewayListen          string   `help:"Listen address for the host gateway (default :8170, use :0 for ephemeral port)"`
+	LogLevel               string   `help:"Server log level (debug|info|warn|error)"`
+	TLSCert                string   `help:"Path to TLS server certificate (auto-discovered from XDG config for https)" env:"CLEANROOM_TLS_CERT"`
+	TLSKey                 string   `help:"Path to TLS server private key (auto-discovered from XDG config for https)" env:"CLEANROOM_TLS_KEY"`
+	LaunchdRunAtLoad       string   `name:"launchd-run-at-load" hidden:"" help:"Override launchd RunAtLoad for daemon install (darwin only)"`
+	LaunchdKeepAlive       string   `name:"launchd-keep-alive" hidden:"" help:"Override launchd KeepAlive for daemon install (darwin only)"`
+	LaunchdWorkingDir      string   `name:"launchd-working-directory" hidden:"" help:"Override launchd WorkingDirectory for daemon install (darwin only)"`
+	LaunchdStdoutPath      string   `name:"launchd-stdout-path" hidden:"" help:"Override launchd StandardOutPath for daemon install (darwin only)"`
+	LaunchdStderrPath      string   `name:"launchd-stderr-path" hidden:"" help:"Override launchd StandardErrorPath for daemon install (darwin only)"`
+	LaunchdEnvironmentVars []string `name:"launchd-env" hidden:"" help:"Additional launchd environment entry KEY=VALUE for daemon install (darwin only)"`
 }
 
 type daemonStatusPayload struct {
@@ -45,28 +52,44 @@ type daemonStatusResult struct {
 }
 
 type daemonScope string
+type daemonService string
 
 const (
 	daemonScopeSystem daemonScope = "system"
 	daemonScopeUser   daemonScope = "user"
+
+	daemonServiceControl       daemonService = "control"
+	daemonServiceNetworkFilter daemonService = "network-filter"
 )
 
 var (
-	serveInstallGOOS             = runtime.GOOS
-	serveInstallEUID             = os.Geteuid
-	serveInstallUID              = os.Getuid
-	serveInstallStat             = os.Stat
-	serveInstallMkdirAll         = os.MkdirAll
-	serveInstallWriteFile        = os.WriteFile
-	serveInstallRename           = os.Rename
-	serveInstallRemoveFile       = os.Remove
-	serveInstallUserHomeDir      = os.UserHomeDir
-	serveInstallExecutablePath   = os.Executable
-	serveInstallRunCommand       = runServeInstallCommand
-	serveInstallRunCommandOutput = runServeInstallCommandOutput
-	serveInstallSystemdUnitPath  = "/etc/systemd/system/" + systemdServiceName
-	serveInstallLaunchdPath      = "/Library/LaunchDaemons/" + launchdServiceName + ".plist"
+	serveInstallGOOS               = runtime.GOOS
+	serveInstallEUID               = os.Geteuid
+	serveInstallUID                = os.Getuid
+	serveInstallStat               = os.Stat
+	serveInstallMkdirAll           = os.MkdirAll
+	serveInstallWriteFile          = os.WriteFile
+	serveInstallRename             = os.Rename
+	serveInstallRemoveFile         = os.Remove
+	serveInstallUserHomeDir        = os.UserHomeDir
+	serveInstallExecutablePath     = os.Executable
+	serveInstallRunCommand         = runServeInstallCommand
+	serveInstallRunCommandOutput   = runServeInstallCommandOutput
+	serveInstallSystemdUnitPath    = "/etc/systemd/system/" + systemdServiceName
+	serveInstallLaunchdPath        = "/Library/LaunchDaemons/" + launchdSystemServiceName + ".plist"
+	serveInstallLaunchdNetworkPath = "/Library/LaunchDaemons/" + launchdNetworkServiceName + ".plist"
 )
+
+func (s *DaemonCommand) requestedDaemonService() (daemonService, error) {
+	switch strings.TrimSpace(strings.ToLower(s.Service)) {
+	case "", string(daemonServiceControl):
+		return daemonServiceControl, nil
+	case string(daemonServiceNetworkFilter):
+		return daemonServiceNetworkFilter, nil
+	default:
+		return "", fmt.Errorf("unsupported daemon service %q", s.Service)
+	}
+}
 
 func (s *DaemonCommand) Run(ctx *runtimeContext) error {
 	action := strings.TrimSpace(strings.ToLower(s.Action))
@@ -103,10 +126,22 @@ func (s *DaemonCommand) requestedDaemonScope() (daemonScope, bool, error) {
 	return "", false, nil
 }
 
-func (s *DaemonCommand) effectiveDaemonScope() (daemonScope, error) {
+func (s *DaemonCommand) effectiveDaemonScope(service daemonService) (daemonScope, error) {
 	requested, hasScope, err := s.requestedDaemonScope()
 	if err != nil {
 		return "", err
+	}
+
+	if service == daemonServiceNetworkFilter {
+		switch serveInstallGOOS {
+		case "darwin":
+			if hasScope && requested != daemonScopeSystem {
+				return "", errors.New("network-filter daemon only supports --system on darwin")
+			}
+			return daemonScopeSystem, nil
+		default:
+			return "", fmt.Errorf("network-filter daemon is unsupported on %s", serveInstallGOOS)
+		}
 	}
 
 	switch serveInstallGOOS {
@@ -116,13 +151,16 @@ func (s *DaemonCommand) effectiveDaemonScope() (daemonScope, error) {
 		}
 		return daemonScopeSystem, nil
 	case "darwin":
-		if hasScope && requested == daemonScopeSystem {
-			return "", errors.New("--system is unsupported on darwin (macOS supports user launchd daemons only)")
+		if !hasScope {
+			if serveInstallEUID() == 0 {
+				return "", errors.New("darwin requires an explicit daemon scope when running as root; use 'sudo cleanroom daemon <action> --system' or rerun without sudo for the user daemon")
+			}
+			return daemonScopeUser, nil
 		}
-		if serveInstallEUID() == 0 {
-			return "", errors.New("darwin supports user launchd daemons only; run 'cleanroom daemon' without sudo")
+		if requested == daemonScopeUser && serveInstallEUID() == 0 {
+			return "", errors.New("darwin user daemons must be installed without sudo; rerun 'cleanroom daemon <action> --user' as your user")
 		}
-		return daemonScopeUser, nil
+		return requested, nil
 	default:
 		if hasScope && requested == daemonScopeUser {
 			return "", fmt.Errorf("--user is unsupported on %s", serveInstallGOOS)
@@ -131,7 +169,11 @@ func (s *DaemonCommand) effectiveDaemonScope() (daemonScope, error) {
 	}
 }
 
-func (s *DaemonCommand) daemonRunArgs(cwd string, scope daemonScope) ([]string, error) {
+func (s *DaemonCommand) daemonRunArgs(cwd string, scope daemonScope, service daemonService) ([]string, error) {
+	if service == daemonServiceNetworkFilter {
+		return []string{"serve-network-filter"}, nil
+	}
+
 	listen := strings.TrimSpace(s.Listen)
 	if listen == "" {
 		if scope == daemonScopeUser {
@@ -184,22 +226,91 @@ func resolveDaemonInstallPath(cwd, value string) (string, error) {
 	return filepath.Clean(filepath.Join(base, value)), nil
 }
 
+func launchdBoolOverride(raw string, fallback bool) bool {
+	switch strings.TrimSpace(strings.ToLower(raw)) {
+	case "true":
+		return true
+	case "false":
+		return false
+	default:
+		return fallback
+	}
+}
+
+func launchdEnvironmentMap(entries []string) (map[string]string, error) {
+	if len(entries) == 0 {
+		return nil, nil
+	}
+
+	values := make(map[string]string, len(entries))
+	for _, entry := range entries {
+		key, value, ok := strings.Cut(entry, "=")
+		key = strings.TrimSpace(key)
+		if !ok || key == "" {
+			return nil, fmt.Errorf("invalid launchd environment entry %q: expected KEY=VALUE", entry)
+		}
+		values[key] = value
+	}
+	return values, nil
+}
+
+func (s *DaemonCommand) launchdConfig(cwd string, scope daemonScope, service daemonService, executablePath string, args []string) (launchdServiceConfig, error) {
+	spec, err := launchdServiceSpecForScope(scope, service)
+	if err != nil {
+		return launchdServiceConfig{}, err
+	}
+
+	env, err := launchdEnvironmentMap(s.LaunchdEnvironmentVars)
+	if err != nil {
+		return launchdServiceConfig{}, err
+	}
+
+	cfg := launchdServiceConfig{
+		Label:          spec.Name,
+		ExecutablePath: executablePath,
+		Arguments:      append([]string(nil), args...),
+		RunAtLoad:      launchdBoolOverride(s.LaunchdRunAtLoad, true),
+		KeepAlive:      launchdBoolOverride(s.LaunchdKeepAlive, true),
+		Environment:    env,
+	}
+
+	if value := strings.TrimSpace(s.LaunchdWorkingDir); value != "" {
+		resolved, err := resolveDaemonInstallPath(cwd, value)
+		if err != nil {
+			return launchdServiceConfig{}, fmt.Errorf("resolve --launchd-working-directory path: %w", err)
+		}
+		cfg.WorkingDirectory = resolved
+	}
+	if value := strings.TrimSpace(s.LaunchdStdoutPath); value != "" {
+		resolved, err := resolveDaemonInstallPath(cwd, value)
+		if err != nil {
+			return launchdServiceConfig{}, fmt.Errorf("resolve --launchd-stdout-path path: %w", err)
+		}
+		cfg.StdoutPath = resolved
+	}
+	if value := strings.TrimSpace(s.LaunchdStderrPath); value != "" {
+		resolved, err := resolveDaemonInstallPath(cwd, value)
+		if err != nil {
+			return launchdServiceConfig{}, fmt.Errorf("resolve --launchd-stderr-path path: %w", err)
+		}
+		cfg.StderrPath = resolved
+	}
+
+	return cfg, nil
+}
+
 func (s *DaemonCommand) installDaemon(ctx *runtimeContext) error {
-	scope, err := s.effectiveDaemonScope()
+	service, err := s.requestedDaemonService()
+	if err != nil {
+		return err
+	}
+	scope, err := s.effectiveDaemonScope(service)
 	if err != nil {
 		return err
 	}
 
-	var installFn func(io.Writer, string, []string, bool) error
 	switch serveInstallGOOS {
-	case "linux":
-		installFn = installSystemdDaemon
-	case "darwin":
-		if scope == daemonScopeUser {
-			installFn = installLaunchdUserDaemon
-		} else {
-			installFn = installLaunchdDaemon
-		}
+	case "linux", "darwin":
 	default:
 		return fmt.Errorf("daemon install is unsupported on %s (expected linux or darwin)", serveInstallGOOS)
 	}
@@ -219,15 +330,35 @@ func (s *DaemonCommand) installDaemon(ctx *runtimeContext) error {
 		}
 	}
 
-	args, err := s.daemonRunArgs(ctx.CWD, scope)
+	args, err := s.daemonRunArgs(ctx.CWD, scope, service)
 	if err != nil {
 		return err
 	}
-	return installFn(ctx.Stdout, executablePath, args, s.Force)
+
+	switch serveInstallGOOS {
+	case "linux":
+		return installSystemdDaemon(ctx.Stdout, executablePath, args, s.Force)
+	case "darwin":
+		spec, err := launchdServiceSpecForScope(scope, service)
+		if err != nil {
+			return err
+		}
+		cfg, err := s.launchdConfig(ctx.CWD, scope, service, executablePath, args)
+		if err != nil {
+			return err
+		}
+		return installLaunchdService(ctx.Stdout, spec, cfg, s.Force)
+	}
+
+	return fmt.Errorf("daemon install is unsupported on %s (expected linux or darwin)", serveInstallGOOS)
 }
 
 func (s *DaemonCommand) uninstallDaemon(ctx *runtimeContext) error {
-	scope, err := s.effectiveDaemonScope()
+	service, err := s.requestedDaemonService()
+	if err != nil {
+		return err
+	}
+	scope, err := s.effectiveDaemonScope(service)
 	if err != nil {
 		return err
 	}
@@ -237,11 +368,11 @@ func (s *DaemonCommand) uninstallDaemon(ctx *runtimeContext) error {
 	case "linux":
 		uninstallFn = uninstallSystemdDaemon
 	case "darwin":
-		if scope == daemonScopeUser {
-			uninstallFn = uninstallLaunchdUserDaemon
-		} else {
-			uninstallFn = uninstallLaunchdDaemon
+		spec, err := launchdServiceSpecForScope(scope, service)
+		if err != nil {
+			return err
 		}
+		uninstallFn = func(stdout io.Writer) error { return uninstallLaunchdService(stdout, spec) }
 	default:
 		return fmt.Errorf("daemon uninstall is unsupported on %s (expected linux or darwin)", serveInstallGOOS)
 	}
@@ -254,7 +385,11 @@ func (s *DaemonCommand) uninstallDaemon(ctx *runtimeContext) error {
 }
 
 func (s *DaemonCommand) startDaemon(ctx *runtimeContext) error {
-	scope, err := s.effectiveDaemonScope()
+	service, err := s.requestedDaemonService()
+	if err != nil {
+		return err
+	}
+	scope, err := s.effectiveDaemonScope(service)
 	if err != nil {
 		return err
 	}
@@ -264,11 +399,11 @@ func (s *DaemonCommand) startDaemon(ctx *runtimeContext) error {
 	case "linux":
 		startFn = startSystemdDaemon
 	case "darwin":
-		if scope == daemonScopeUser {
-			startFn = startLaunchdUserDaemon
-		} else {
-			startFn = startLaunchdDaemon
+		spec, err := launchdServiceSpecForScope(scope, service)
+		if err != nil {
+			return err
 		}
+		startFn = func(stdout io.Writer) error { return startLaunchdService(stdout, spec) }
 	default:
 		return fmt.Errorf("daemon start is unsupported on %s (expected linux or darwin)", serveInstallGOOS)
 	}
@@ -281,7 +416,11 @@ func (s *DaemonCommand) startDaemon(ctx *runtimeContext) error {
 }
 
 func (s *DaemonCommand) stopDaemon(ctx *runtimeContext) error {
-	scope, err := s.effectiveDaemonScope()
+	service, err := s.requestedDaemonService()
+	if err != nil {
+		return err
+	}
+	scope, err := s.effectiveDaemonScope(service)
 	if err != nil {
 		return err
 	}
@@ -291,11 +430,11 @@ func (s *DaemonCommand) stopDaemon(ctx *runtimeContext) error {
 	case "linux":
 		stopFn = stopSystemdDaemon
 	case "darwin":
-		if scope == daemonScopeUser {
-			stopFn = stopLaunchdUserDaemon
-		} else {
-			stopFn = stopLaunchdDaemon
+		spec, err := launchdServiceSpecForScope(scope, service)
+		if err != nil {
+			return err
 		}
+		stopFn = func(stdout io.Writer) error { return stopLaunchdService(stdout, spec) }
 	default:
 		return fmt.Errorf("daemon stop is unsupported on %s (expected linux or darwin)", serveInstallGOOS)
 	}
@@ -308,7 +447,11 @@ func (s *DaemonCommand) stopDaemon(ctx *runtimeContext) error {
 }
 
 func (s *DaemonCommand) daemonStatus(ctx *runtimeContext) error {
-	scope, err := s.effectiveDaemonScope()
+	service, err := s.requestedDaemonService()
+	if err != nil {
+		return err
+	}
+	scope, err := s.effectiveDaemonScope(service)
 	if err != nil {
 		return err
 	}
@@ -318,11 +461,11 @@ func (s *DaemonCommand) daemonStatus(ctx *runtimeContext) error {
 	case "linux":
 		statusFn = systemdDaemonStatus
 	case "darwin":
-		if scope == daemonScopeUser {
-			statusFn = launchdUserDaemonStatus
-		} else {
-			statusFn = launchdDaemonStatus
+		spec, err := launchdServiceSpecForScope(scope, service)
+		if err != nil {
+			return err
 		}
+		statusFn = func() (daemonStatusResult, error) { return launchdDaemonStatusResult(spec) }
 	default:
 		return fmt.Errorf("daemon status is unsupported on %s (expected linux or darwin)", serveInstallGOOS)
 	}

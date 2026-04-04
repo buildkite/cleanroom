@@ -34,13 +34,15 @@ func resolveHelperBinaryPathWith(
 	}
 
 	if self, err := executable(); err == nil {
-		sibling := filepath.Join(filepath.Dir(self), helperBinaryName)
-		siblingAppBundle := sibling + ".app"
-		if path, err := resolveHelperCandidatePath(siblingAppBundle, stat); err == nil {
-			return path, nil
-		}
-		if path, err := resolveHelperCandidatePath(sibling, stat); err == nil {
-			return path, nil
+		for _, candidateDir := range helperCandidateDirsForExecutable(self) {
+			sibling := filepath.Join(candidateDir, helperBinaryName)
+			siblingAppBundle := sibling + ".app"
+			if path, err := resolveHelperCandidatePath(siblingAppBundle, stat); err == nil {
+				return path, nil
+			}
+			if path, err := resolveHelperCandidatePath(sibling, stat); err == nil {
+				return path, nil
+			}
 		}
 	}
 
@@ -62,6 +64,24 @@ func resolveHelperBinaryPathWith(
 		helperEnvVar,
 		helperBinaryName,
 	)
+}
+
+func helperCandidateDirsForExecutable(self string) []string {
+	trimmed := strings.TrimSpace(self)
+	if trimmed == "" {
+		return nil
+	}
+
+	primaryDir := filepath.Dir(trimmed)
+	dirs := []string{}
+	if resolved, err := filepath.EvalSymlinks(trimmed); err == nil {
+		resolvedDir := filepath.Dir(resolved)
+		if resolvedDir != primaryDir {
+			dirs = append(dirs, resolvedDir)
+		}
+	}
+	dirs = append(dirs, primaryDir)
+	return dirs
 }
 
 func resolvePrebuiltBinaryPathFromWorkdir(startDir, binaryName string, stat func(string) (os.FileInfo, error)) (string, error) {

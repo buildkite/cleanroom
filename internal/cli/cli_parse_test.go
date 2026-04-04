@@ -141,6 +141,60 @@ func TestSandboxListParsesAllFlag(t *testing.T) {
 	}
 }
 
+func TestNetworkInstallParses(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"network", "install"}); err != nil {
+		t.Fatalf("parse network install returned error: %v", err)
+	}
+}
+
+func TestNetworkStatusParses(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"network", "status"}); err != nil {
+		t.Fatalf("parse network status returned error: %v", err)
+	}
+}
+
+func TestNetworkEnableParses(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"network", "enable"}); err != nil {
+		t.Fatalf("parse network enable returned error: %v", err)
+	}
+}
+
+func TestNetworkDisableParses(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"network", "disable"}); err != nil {
+		t.Fatalf("parse network disable returned error: %v", err)
+	}
+}
+
+func TestNetworkResetParses(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"network", "reset"}); err != nil {
+		t.Fatalf("parse network reset returned error: %v", err)
+	}
+}
+
+func TestNetworkUninstallParses(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"network", "uninstall"}); err != nil {
+		t.Fatalf("parse network uninstall returned error: %v", err)
+	}
+}
+
 func TestSandboxCreateParsesImageOverride(t *testing.T) {
 	c := &CLI{}
 	parser := newParserForTest(t, c)
@@ -488,6 +542,49 @@ func TestDaemonInstallForceParses(t *testing.T) {
 	}
 	if !c.Daemon.Force {
 		t.Fatal("expected --force to set Daemon.Force")
+	}
+}
+
+func TestDaemonInstallLaunchdOverridesParse(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{
+		"daemon",
+		"install",
+		"--user",
+		"--launchd-run-at-load=false",
+		"--launchd-keep-alive=false",
+		"--launchd-working-directory",
+		"/Users/alice",
+		"--launchd-stdout-path",
+		"/tmp/cleanroom.log",
+		"--launchd-stderr-path",
+		"/tmp/cleanroom.log",
+		"--launchd-env",
+		"KEY=VALUE",
+		"--launchd-env",
+		"OTHER=two",
+	}); err != nil {
+		t.Fatalf("parse daemon install launchd overrides returned error: %v", err)
+	}
+	if got := c.Daemon.LaunchdRunAtLoad; got != "false" {
+		t.Fatalf("expected launchd run-at-load override, got %q", got)
+	}
+	if got := c.Daemon.LaunchdKeepAlive; got != "false" {
+		t.Fatalf("expected launchd keep-alive override, got %q", got)
+	}
+	if got := c.Daemon.LaunchdWorkingDir; got != "/Users/alice" {
+		t.Fatalf("expected launchd working directory override, got %q", got)
+	}
+	if got := c.Daemon.LaunchdStdoutPath; got != "/tmp/cleanroom.log" {
+		t.Fatalf("expected launchd stdout path override, got %q", got)
+	}
+	if got := c.Daemon.LaunchdStderrPath; got != "/tmp/cleanroom.log" {
+		t.Fatalf("expected launchd stderr path override, got %q", got)
+	}
+	if got, want := c.Daemon.LaunchdEnvironmentVars, []string{"KEY=VALUE", "OTHER=two"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("expected launchd env overrides %v, got %v", want, got)
 	}
 }
 

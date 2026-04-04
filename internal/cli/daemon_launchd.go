@@ -8,40 +8,110 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+	"time"
 )
 
-func uninstallLaunchdDaemon(stdout io.Writer) error {
-	return uninstallLaunchdDaemonInDomain(stdout, serveInstallLaunchdPath, "system")
+var (
+	launchdStartCheckSleep     = time.Sleep
+	launchdBootstrapRetrySleep = time.Sleep
+)
+
+type launchdServiceSpec struct {
+	Name   string
+	Path   string
+	Domain string
 }
 
-func uninstallLaunchdUserDaemon(stdout io.Writer) error {
+type launchdServiceConfig struct {
+	Label            string
+	ExecutablePath   string
+	Arguments        []string
+	RunAtLoad        bool
+	KeepAlive        bool
+	WorkingDirectory string
+	StdoutPath       string
+	StderrPath       string
+	Environment      map[string]string
+}
+
+func launchdServiceSpecForScope(scope daemonScope, service daemonService) (launchdServiceSpec, error) {
+	switch scope {
+	case daemonScopeSystem:
+		return launchdSystemServiceSpec(service), nil
+	case daemonScopeUser:
+		if service != daemonServiceControl {
+			return launchdServiceSpec{}, fmt.Errorf("unsupported launchd user service %q", service)
+		}
+		return launchdUserServiceSpec()
+	default:
+		return launchdServiceSpec{}, fmt.Errorf("unsupported launchd scope %q", scope)
+	}
+}
+
+func launchdSystemServiceSpec(service daemonService) launchdServiceSpec {
+	name := launchdSystemServiceName
+	path := serveInstallLaunchdPath
+	if service == daemonServiceNetworkFilter {
+		name = launchdNetworkServiceName
+		path = serveInstallLaunchdNetworkPath
+	}
+	return launchdServiceSpec{
+		Name:   name,
+		Path:   path,
+		Domain: "system",
+	}
+}
+
+func launchdUserServiceSpec() (launchdServiceSpec, error) {
 	path, err := launchdUserServicePath()
 	if err != nil {
-		return err
+		return launchdServiceSpec{}, err
 	}
-	return uninstallLaunchdDaemonInDomain(stdout, path, launchdUserDomain())
+	return launchdServiceSpec{
+		Name:   launchdUserServiceName,
+		Path:   path,
+		Domain: launchdUserDomain(),
+	}, nil
 }
 
-func uninstallLaunchdDaemonInDomain(stdout io.Writer, servicePath, domain string) error {
+func launchdUserServicePath() (string, error) {
+	home, err := serveInstallUserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve user home directory: %w", err)
+	}
+	return filepath.Join(home, "Library", "LaunchAgents", launchdUserServiceName+".plist"), nil
+}
+
+func launchdUserDomain() string {
+	return fmt.Sprintf("gui/%d", serveInstallUID())
+}
+
+func launchdServiceTarget(domain, serviceName string) string {
+	return strings.TrimSpace(domain) + "/" + strings.TrimSpace(serviceName)
+}
+
+func uninstallLaunchdService(stdout io.Writer, spec launchdServiceSpec) error {
 	serviceFileExists := false
-	if _, err := serveInstallStat(servicePath); err == nil {
+	if _, err := serveInstallStat(spec.Path); err == nil {
 		serviceFileExists = true
 	} else if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("stat service file %s: %w", servicePath, err)
+		return fmt.Errorf("stat service file %s: %w", spec.Path, err)
 	}
 
 	bootoutFoundService := true
-	if err := serveInstallRunCommand("launchctl", "bootout", launchdServiceTarget(domain)); err != nil {
+	target := launchdServiceTarget(spec.Domain, spec.Name)
+	if err := serveInstallRunCommand("launchctl", "bootout", target); err != nil {
 		if !isExitError(err) {
-			return fmt.Errorf("bootout launchd service %s: %w", launchdServiceName, err)
+			return fmt.Errorf("bootout launchd service %s: %w", spec.Name, err)
 		}
 		bootoutFoundService = false
 	}
 
 	if serviceFileExists {
-		if err := serveInstallRemoveFile(servicePath); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("remove service file %s: %w", servicePath, err)
+		if err := serveInstallRemoveFile(spec.Path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove service file %s: %w", spec.Path, err)
 		}
 	}
 
@@ -58,46 +128,37 @@ func uninstallLaunchdDaemonInDomain(stdout io.Writer, servicePath, domain string
 		TitleStyle: titleStyle,
 		Fields: []startupField{
 			{Key: "manager", Value: "launchd"},
-			{Key: "service", Value: launchdServiceName},
+			{Key: "service", Value: spec.Name},
 		},
 	}, shouldUseANSI(stdout)))
 	return err
 }
 
-func startLaunchdDaemon(stdout io.Writer) error {
-	return startLaunchdDaemonInDomain(stdout, serveInstallLaunchdPath, "system")
-}
-
-func startLaunchdUserDaemon(stdout io.Writer) error {
-	path, err := launchdUserServicePath()
-	if err != nil {
-		return err
-	}
-	return startLaunchdDaemonInDomain(stdout, path, launchdUserDomain())
-}
-
-func startLaunchdDaemonInDomain(stdout io.Writer, servicePath, domain string) error {
-	if _, err := serveInstallStat(servicePath); errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("service file %s does not exist", servicePath)
+func startLaunchdService(stdout io.Writer, spec launchdServiceSpec) error {
+	if _, err := serveInstallStat(spec.Path); errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("service file %s does not exist", spec.Path)
 	} else if err != nil {
-		return fmt.Errorf("stat service file %s: %w", servicePath, err)
+		return fmt.Errorf("stat service file %s: %w", spec.Path, err)
 	}
 
-	target := launchdServiceTarget(domain)
-	if err := serveInstallRunCommand("launchctl", "enable", target); err != nil {
-		return fmt.Errorf("enable launchd service %s: %w", launchdServiceName, err)
-	}
+	target := launchdServiceTarget(spec.Domain, spec.Name)
 	loaded, err := launchdServiceLoaded(target)
 	if err != nil {
 		return err
 	}
 	if !loaded {
-		if err := serveInstallRunCommand("launchctl", "bootstrap", domain, servicePath); err != nil {
-			return fmt.Errorf("bootstrap launchd service %s: %w", launchdServiceName, err)
+		if err := serveInstallRunCommand("launchctl", "bootstrap", spec.Domain, spec.Path); err != nil {
+			return fmt.Errorf("bootstrap launchd service %s: %w", spec.Name, err)
 		}
 	}
+	if err := serveInstallRunCommand("launchctl", "enable", target); err != nil {
+		return fmt.Errorf("enable launchd service %s: %w", spec.Name, err)
+	}
 	if err := serveInstallRunCommand("launchctl", "kickstart", "-k", target); err != nil {
-		return fmt.Errorf("start launchd service %s: %w", launchdServiceName, err)
+		return fmt.Errorf("start launchd service %s: %w", spec.Name, err)
+	}
+	if err := waitForLaunchdServiceRunning(target, spec.Name); err != nil {
+		return err
 	}
 
 	_, err = fmt.Fprint(stdout, renderSummaryBlock(summaryBlock{
@@ -105,37 +166,53 @@ func startLaunchdDaemonInDomain(stdout io.Writer, servicePath, domain string) er
 		TitleStyle: defaultTerminalPalette().info,
 		Fields: []startupField{
 			{Key: "manager", Value: "launchd"},
-			{Key: "service", Value: launchdServiceName},
+			{Key: "service", Value: spec.Name},
 		},
 	}, shouldUseANSI(stdout)))
 	return err
 }
 
-func stopLaunchdDaemon(stdout io.Writer) error {
-	return stopLaunchdDaemonInDomain(stdout, serveInstallLaunchdPath, "system")
-}
+func waitForLaunchdServiceRunning(target, serviceName string) error {
+	lastState := ""
+	sawExit := false
 
-func stopLaunchdUserDaemon(stdout io.Writer) error {
-	path, err := launchdUserServicePath()
-	if err != nil {
-		return err
+	for attempt := 0; attempt < 10; attempt++ {
+		output, err := serveInstallRunCommandOutput("launchctl", "print", target)
+		if err == nil {
+			lastState = launchdServiceState(output)
+			if lastState == "running" {
+				return nil
+			}
+		} else if isExitError(err) {
+			sawExit = true
+		} else {
+			return fmt.Errorf("check launchd service %s state after start: %w", serviceName, err)
+		}
+
+		if attempt < 9 {
+			launchdStartCheckSleep(100 * time.Millisecond)
+		}
 	}
-	return stopLaunchdDaemonInDomain(stdout, path, launchdUserDomain())
+
+	switch {
+	case lastState != "":
+		return fmt.Errorf("launchd service %s did not reach running state after start (state: %s)", serviceName, lastState)
+	case sawExit:
+		return fmt.Errorf("launchd service %s exited before reaching running state", serviceName)
+	default:
+		return fmt.Errorf("launchd service %s did not reach running state after start", serviceName)
+	}
 }
 
-func stopLaunchdDaemonInDomain(stdout io.Writer, servicePath, domain string) error {
+func stopLaunchdService(stdout io.Writer, spec launchdServiceSpec) error {
 	serviceFileExists := false
-	statErr := error(nil)
-	if _, err := serveInstallStat(servicePath); err == nil {
+	if _, err := serveInstallStat(spec.Path); err == nil {
 		serviceFileExists = true
 	} else if !errors.Is(err, os.ErrNotExist) {
-		statErr = err
-	}
-	if statErr != nil {
-		return fmt.Errorf("stat service file %s: %w", servicePath, statErr)
+		return fmt.Errorf("stat service file %s: %w", spec.Path, err)
 	}
 
-	target := launchdServiceTarget(domain)
+	target := launchdServiceTarget(spec.Domain, spec.Name)
 	loaded, err := launchdServiceLoaded(target)
 	if err != nil {
 		return err
@@ -146,19 +223,25 @@ func stopLaunchdDaemonInDomain(stdout io.Writer, servicePath, domain string) err
 			TitleStyle: defaultTerminalPalette().warn,
 			Fields: []startupField{
 				{Key: "manager", Value: "launchd"},
-				{Key: "service", Value: launchdServiceName},
+				{Key: "service", Value: spec.Name},
+			},
+		}, shouldUseANSI(stdout)))
+		return err
+	}
+	if !loaded {
+		_, err := fmt.Fprint(stdout, renderSummaryBlock(summaryBlock{
+			Title:      "daemon already stopped",
+			TitleStyle: defaultTerminalPalette().warn,
+			Fields: []startupField{
+				{Key: "manager", Value: "launchd"},
+				{Key: "service", Value: spec.Name},
 			},
 		}, shouldUseANSI(stdout)))
 		return err
 	}
 
-	if err := serveInstallRunCommand("launchctl", "disable", target); err != nil {
-		return fmt.Errorf("disable launchd service %s: %w", launchdServiceName, err)
-	}
-	if loaded {
-		if err := serveInstallRunCommand("launchctl", "bootout", target); err != nil {
-			return fmt.Errorf("stop launchd service %s: %w", launchdServiceName, err)
-		}
+	if err := serveInstallRunCommand("launchctl", "bootout", target); err != nil {
+		return fmt.Errorf("stop launchd service %s: %w", spec.Name, err)
 	}
 
 	_, err = fmt.Fprint(stdout, renderSummaryBlock(summaryBlock{
@@ -166,33 +249,21 @@ func stopLaunchdDaemonInDomain(stdout io.Writer, servicePath, domain string) err
 		TitleStyle: defaultTerminalPalette().info,
 		Fields: []startupField{
 			{Key: "manager", Value: "launchd"},
-			{Key: "service", Value: launchdServiceName},
+			{Key: "service", Value: spec.Name},
 		},
 	}, shouldUseANSI(stdout)))
 	return err
 }
 
-func launchdDaemonStatus() (daemonStatusResult, error) {
-	return launchdDaemonStatusInDomain(serveInstallLaunchdPath, "system")
-}
-
-func launchdUserDaemonStatus() (daemonStatusResult, error) {
-	path, err := launchdUserServicePath()
-	if err != nil {
-		return daemonStatusResult{}, err
-	}
-	return launchdDaemonStatusInDomain(path, launchdUserDomain())
-}
-
-func launchdDaemonStatusInDomain(servicePath, domain string) (daemonStatusResult, error) {
+func launchdDaemonStatusResult(spec launchdServiceSpec) (daemonStatusResult, error) {
 	installed := false
-	if _, err := serveInstallStat(servicePath); err == nil {
+	if _, err := serveInstallStat(spec.Path); err == nil {
 		installed = true
 	}
 
 	active := false
 	state := ""
-	if output, err := serveInstallRunCommandOutput("launchctl", "print", launchdServiceTarget(domain)); err == nil {
+	if output, err := serveInstallRunCommandOutput("launchctl", "print", launchdServiceTarget(spec.Domain, spec.Name)); err == nil {
 		state = launchdServiceState(output)
 		if state == "running" {
 			active = true
@@ -203,7 +274,7 @@ func launchdDaemonStatusInDomain(servicePath, domain string) (daemonStatusResult
 
 	listen := ""
 	if installed {
-		if value, err := launchdConfiguredListenEndpoint(servicePath); err == nil {
+		if value, err := launchdConfiguredListenEndpoint(spec.Path); err == nil {
 			listen = value
 		}
 	}
@@ -211,8 +282,8 @@ func launchdDaemonStatusInDomain(servicePath, domain string) (daemonStatusResult
 	fields := []startupField{
 		{Key: "install", Value: daemonInstalledLabel(installed)},
 		{Key: "runtime", Value: daemonRuntimeLabel(active)},
-		{Key: "domain", Value: domain},
-		{Key: "path", Value: servicePath},
+		{Key: "domain", Value: spec.Domain},
+		{Key: "path", Value: spec.Path},
 	}
 	if state != "" {
 		fields = append(fields, startupField{Key: "state", Value: state})
@@ -224,18 +295,18 @@ func launchdDaemonStatusInDomain(servicePath, domain string) (daemonStatusResult
 	return daemonStatusResult{
 		Report: daemonStatusReport{
 			Manager:   "launchd",
-			Service:   launchdServiceName,
+			Service:   spec.Name,
 			Installed: installed,
 			Active:    active,
 			Fields:    fields,
 		},
 		Payload: daemonStatusPayload{
 			Manager:   "launchd",
-			Service:   launchdServiceName,
+			Service:   spec.Name,
 			Installed: installed,
 			Active:    active,
-			Path:      servicePath,
-			Domain:    domain,
+			Path:      spec.Path,
+			Domain:    spec.Domain,
 			State:     state,
 			Listen:    listen,
 		},
@@ -359,66 +430,37 @@ func plistStringArray(decoder *xml.Decoder) ([]string, error) {
 	}
 }
 
-func installLaunchdDaemon(stdout io.Writer, executablePath string, args []string, force bool) error {
-	return installLaunchdDaemonInDomain(stdout, executablePath, args, force, serveInstallLaunchdPath, "system")
-}
+func installLaunchdService(stdout io.Writer, spec launchdServiceSpec, config launchdServiceConfig, force bool) error {
+	content := renderLaunchdService(config)
+	target := launchdServiceTarget(spec.Domain, spec.Name)
 
-func installLaunchdUserDaemon(stdout io.Writer, executablePath string, args []string, force bool) error {
-	path, err := launchdUserServicePath()
-	if err != nil {
-		return err
-	}
-	return installLaunchdDaemonInDomain(stdout, executablePath, args, force, path, launchdUserDomain())
-}
-
-func launchdUserServicePath() (string, error) {
-	home, err := serveInstallUserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("resolve user home directory: %w", err)
-	}
-	return filepath.Join(home, "Library", "LaunchAgents", launchdServiceName+".plist"), nil
-}
-
-func launchdUserDomain() string {
-	return fmt.Sprintf("gui/%d", serveInstallUID())
-}
-
-func launchdServiceTarget(domain string) string {
-	return strings.TrimSpace(domain) + "/" + launchdServiceName
-}
-
-func installLaunchdDaemonInDomain(stdout io.Writer, executablePath string, args []string, force bool, servicePath, domain string) error {
-	target := launchdServiceTarget(domain)
-	content := renderLaunchdService(executablePath, args)
 	if force {
-		if err := validateDaemonFileTarget(servicePath, true); err != nil {
+		if err := validateDaemonFileTarget(spec.Path, true); err != nil {
 			return err
 		}
-		stagedPath, cleanup, err := stageDaemonFile(servicePath, content, 0o644)
+		stagedPath, cleanup, err := stageDaemonFile(spec.Path, content, 0o644)
 		if err != nil {
 			return err
 		}
 		defer cleanup()
 
 		if err := serveInstallRunCommand("launchctl", "bootout", target); err != nil && !isExitError(err) {
-			return fmt.Errorf("bootout launchd service %s: %w", launchdServiceName, err)
+			return fmt.Errorf("bootout launchd service %s: %w", spec.Name, err)
 		}
-		if err := serveInstallRename(stagedPath, servicePath); err != nil {
-			return fmt.Errorf("replace daemon service file %s: %w", servicePath, err)
+		if err := serveInstallRename(stagedPath, spec.Path); err != nil {
+			return fmt.Errorf("replace daemon service file %s: %w", spec.Path, err)
 		}
 	} else {
-		if err := writeDaemonFile(servicePath, content, force, 0o644); err != nil {
+		if err := writeDaemonFile(spec.Path, content, false, 0o644); err != nil {
 			return err
 		}
 	}
+
+	if err := bootstrapLaunchdService(spec, force); err != nil {
+		return fmt.Errorf("bootstrap launchd service %s: %w", spec.Name, err)
+	}
 	if err := serveInstallRunCommand("launchctl", "enable", target); err != nil {
-		return fmt.Errorf("enable launchd service %s: %w", launchdServiceName, err)
-	}
-	if err := serveInstallRunCommand("launchctl", "bootstrap", domain, servicePath); err != nil {
-		return fmt.Errorf("bootstrap launchd service %s: %w", launchdServiceName, err)
-	}
-	if err := serveInstallRunCommand("launchctl", "kickstart", "-k", target); err != nil {
-		return fmt.Errorf("start launchd service %s: %w", launchdServiceName, err)
+		return fmt.Errorf("enable launchd service %s: %w", spec.Name, err)
 	}
 
 	_, err := fmt.Fprint(stdout, renderSummaryBlock(summaryBlock{
@@ -426,11 +468,31 @@ func installLaunchdDaemonInDomain(stdout io.Writer, executablePath string, args 
 		TitleStyle: defaultTerminalPalette().info,
 		Fields: []startupField{
 			{Key: "manager", Value: "launchd"},
-			{Key: "service", Value: launchdServiceName},
-			{Key: "path", Value: servicePath},
+			{Key: "service", Value: spec.Name},
+			{Key: "path", Value: spec.Path},
 		},
 	}, shouldUseANSI(stdout)))
 	return err
+}
+
+func bootstrapLaunchdService(spec launchdServiceSpec, retry bool) error {
+	attempts := 1
+	if retry {
+		attempts = 3
+	}
+
+	var lastErr error
+	for attempt := 0; attempt < attempts; attempt++ {
+		lastErr = serveInstallRunCommand("launchctl", "bootstrap", spec.Domain, spec.Path)
+		if lastErr == nil {
+			return nil
+		}
+		if !retry || !isExitError(lastErr) || attempt == attempts-1 {
+			return lastErr
+		}
+		launchdBootstrapRetrySleep(100 * time.Millisecond)
+	}
+	return lastErr
 }
 
 func validateDaemonFileTarget(path string, force bool) error {
@@ -443,6 +505,20 @@ func validateDaemonFileTarget(path string, force bool) error {
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("stat %s: %w", path, err)
+	}
+	return nil
+}
+
+func writeDaemonFile(path, content string, force bool, mode os.FileMode) error {
+	if err := validateDaemonFileTarget(path, force); err != nil {
+		return err
+	}
+
+	if err := serveInstallMkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create daemon service directory: %w", err)
+	}
+	if err := serveInstallWriteFile(path, []byte(content), mode); err != nil {
+		return fmt.Errorf("write daemon service file %s: %w", path, err)
 	}
 	return nil
 }
@@ -473,46 +549,85 @@ func stageDaemonFile(path, content string, mode os.FileMode) (string, func(), er
 	return tmpPath, cleanup, nil
 }
 
-func writeDaemonFile(path, content string, force bool, mode os.FileMode) error {
-	if err := validateDaemonFileTarget(path, force); err != nil {
-		return err
-	}
-
-	if err := serveInstallMkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("create daemon service directory: %w", err)
-	}
-	if err := serveInstallWriteFile(path, []byte(content), mode); err != nil {
-		return fmt.Errorf("write daemon service file %s: %w", path, err)
-	}
-	return nil
-}
-
-func renderLaunchdService(executablePath string, args []string) string {
-	cmd := append([]string{executablePath}, args...)
+func renderLaunchdService(config launchdServiceConfig) string {
+	cmd := append([]string{config.ExecutablePath}, config.Arguments...)
 	var b strings.Builder
 	b.WriteString(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">` + "\n")
 	b.WriteString(`<plist version="1.0">` + "\n")
 	b.WriteString("<dict>\n")
-	b.WriteString("\t<key>Label</key>\n")
-	b.WriteString("\t<string>")
-	b.WriteString(escapePlistValue(launchdServiceName))
-	b.WriteString("</string>\n")
-	b.WriteString("\t<key>ProgramArguments</key>\n")
-	b.WriteString("\t<array>\n")
-	for _, arg := range cmd {
-		b.WriteString("\t\t<string>")
-		b.WriteString(escapePlistValue(arg))
-		b.WriteString("</string>\n")
-	}
-	b.WriteString("\t</array>\n")
-	b.WriteString("\t<key>RunAtLoad</key>\n")
-	b.WriteString("\t<true/>\n")
-	b.WriteString("\t<key>KeepAlive</key>\n")
-	b.WriteString("\t<true/>\n")
+	writeLaunchdStringKey(&b, "Label", config.Label)
+	writeLaunchdStringArrayKey(&b, "ProgramArguments", cmd)
+	writeLaunchdBoolKey(&b, "RunAtLoad", config.RunAtLoad)
+	writeLaunchdBoolKey(&b, "KeepAlive", config.KeepAlive)
+	writeLaunchdStringKey(&b, "WorkingDirectory", config.WorkingDirectory)
+	writeLaunchdStringKey(&b, "StandardOutPath", config.StdoutPath)
+	writeLaunchdStringKey(&b, "StandardErrorPath", config.StderrPath)
+	writeLaunchdStringMapKey(&b, "EnvironmentVariables", config.Environment)
 	b.WriteString("</dict>\n")
 	b.WriteString("</plist>\n")
 	return b.String()
+}
+
+func writeLaunchdStringKey(b *strings.Builder, key, value string) {
+	if strings.TrimSpace(value) == "" {
+		return
+	}
+	b.WriteString("\t<key>")
+	b.WriteString(escapePlistValue(key))
+	b.WriteString("</key>\n")
+	b.WriteString("\t<string>")
+	b.WriteString(escapePlistValue(value))
+	b.WriteString("</string>\n")
+}
+
+func writeLaunchdBoolKey(b *strings.Builder, key string, value bool) {
+	b.WriteString("\t<key>")
+	b.WriteString(escapePlistValue(key))
+	b.WriteString("</key>\n")
+	if value {
+		b.WriteString("\t<true/>\n")
+		return
+	}
+	b.WriteString("\t<false/>\n")
+}
+
+func writeLaunchdStringArrayKey(b *strings.Builder, key string, values []string) {
+	b.WriteString("\t<key>")
+	b.WriteString(escapePlistValue(key))
+	b.WriteString("</key>\n")
+	b.WriteString("\t<array>\n")
+	for _, value := range values {
+		b.WriteString("\t\t<string>")
+		b.WriteString(escapePlistValue(value))
+		b.WriteString("</string>\n")
+	}
+	b.WriteString("\t</array>\n")
+}
+
+func writeLaunchdStringMapKey(b *strings.Builder, key string, values map[string]string) {
+	if len(values) == 0 {
+		return
+	}
+	keys := make([]string, 0, len(values))
+	for mapKey := range values {
+		keys = append(keys, mapKey)
+	}
+	sort.Strings(keys)
+
+	b.WriteString("\t<key>")
+	b.WriteString(escapePlistValue(key))
+	b.WriteString("</key>\n")
+	b.WriteString("\t<dict>\n")
+	for _, mapKey := range keys {
+		b.WriteString("\t\t<key>")
+		b.WriteString(escapePlistValue(mapKey))
+		b.WriteString("</key>\n")
+		b.WriteString("\t\t<string>")
+		b.WriteString(escapePlistValue(values[mapKey]))
+		b.WriteString("</string>\n")
+	}
+	b.WriteString("\t</dict>\n")
 }
 
 func escapePlistValue(value string) string {

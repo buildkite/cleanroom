@@ -38,6 +38,12 @@ type summaryBlock struct {
 	Fields     []startupField
 }
 
+type statusCheckLine struct {
+	Name    string
+	Status  string
+	Message string
+}
+
 type terminalStyle struct {
 	foregroundCode string
 	bold           bool
@@ -397,6 +403,72 @@ func renderDoctorReport(backendName string, checks []backend.DoctorCheck, color 
 	out.WriteString(summary)
 	out.WriteByte('\n')
 
+	return out.String()
+}
+
+func renderStatusCheckReport(title string, checks []statusCheckLine, color bool) string {
+	palette := defaultTerminalPalette()
+	trimmedTitle := strings.TrimSpace(title)
+	if trimmedTitle == "" {
+		trimmedTitle = "status"
+	}
+
+	var out strings.Builder
+	if color {
+		out.WriteString(palette.title.wrap(trimmedTitle, true))
+	} else {
+		out.WriteString(trimmedTitle)
+	}
+	out.WriteByte('\n')
+
+	for _, check := range checks {
+		out.WriteString(renderStatusCheckLine(check, color))
+		out.WriteByte('\n')
+	}
+
+	return out.String()
+}
+
+func renderStatusCheckLine(check statusCheckLine, color bool) string {
+	palette := defaultTerminalPalette()
+	status := normalizeDoctorStatus(check.Status)
+	icon := "?"
+	switch status {
+	case "pass":
+		icon = "✓"
+	case "warn":
+		icon = "!"
+	case "fail":
+		icon = "✗"
+	}
+
+	statusBlock := fmt.Sprintf("%s [%s]", icon, status)
+	if color {
+		statusBlock = doctorStatusStyle(status, palette).wrap(statusBlock, true)
+	}
+
+	name := strings.TrimSpace(check.Name)
+	if name == "" {
+		name = "status"
+	}
+	message := strings.TrimSpace(check.Message)
+	if message == "" {
+		message = "(no message)"
+	}
+
+	var out strings.Builder
+	out.WriteString(statusBlock)
+	out.WriteString(" ")
+	if color {
+		out.WriteString(palette.key.wrap(name, true))
+		out.WriteString(palette.separator.wrap(":", true))
+		out.WriteString(" ")
+		out.WriteString(palette.text.wrap(message, true))
+	} else {
+		out.WriteString(name)
+		out.WriteString(": ")
+		out.WriteString(message)
+	}
 	return out.String()
 }
 

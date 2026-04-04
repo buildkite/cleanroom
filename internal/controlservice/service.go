@@ -6,15 +6,19 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/buildkite/cleanroom/internal/backend"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
+	"github.com/buildkite/cleanroom/internal/networkfilterstate"
 	"github.com/buildkite/cleanroom/internal/paths"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/repositorycheckout"
@@ -66,34 +70,36 @@ type sandboxState struct {
 }
 
 type executionState struct {
-	ID               string
-	SandboxID        string
-	ImageRef         string
-	ImageDigest      string
-	Command          []string
-	Env              []string
-	Options          executionOptions
-	TTY              bool
-	Kind             cleanroomv1.ExecutionKind
-	Status           cleanroomv1.ExecutionStatus
-	ExitCode         int32
-	StartedAt        *time.Time
-	FinishedAt       *time.Time
-	Message          string
-	Stdout           string
-	Stderr           string
-	LaunchedVM       bool
-	PlanPath         string
-	RunDir           string
-	CancelRequested  bool
-	CancelSignal     int32
-	Cancel           context.CancelFunc
-	AttachStdin      func([]byte) error
-	AttachCloseStdin func() error
-	AttachResize     func(cols, rows uint32) error
-	events           eventFeed[*cleanroomv1.ExecutionStreamEvent]
-	Done             chan struct{}
-	DoneClosed       bool
+	ID                string
+	SandboxID         string
+	ImageRef          string
+	ImageDigest       string
+	Command           []string
+	Env               []string
+	Options           executionOptions
+	TTY               bool
+	Kind              cleanroomv1.ExecutionKind
+	Status            cleanroomv1.ExecutionStatus
+	ExitCode          int32
+	StartedAt         *time.Time
+	FinishedAt        *time.Time
+	Message           string
+	Stdout            string
+	Stderr            string
+	LaunchedVM        bool
+	PlanPath          string
+	RunDir            string
+	NetworkProcessPID int32
+	NetworkGuestIP    string
+	CancelRequested   bool
+	CancelSignal      int32
+	Cancel            context.CancelFunc
+	AttachStdin       func([]byte) error
+	AttachCloseStdin  func() error
+	AttachResize      func(cols, rows uint32) error
+	events            eventFeed[*cleanroomv1.ExecutionStreamEvent]
+	Done              chan struct{}
+	DoneClosed        bool
 }
 
 type interactiveSessionState struct {
@@ -149,6 +155,34 @@ var (
 	ErrExecutionStdinUnsupported  = errors.New("execution stdin attach is not supported by the current backend")
 	ErrExecutionResizeUnsupported = errors.New("execution resize is not supported by the current backend")
 )
+
+const (
+	attachStdinRegistrationWait  = 2 * time.Second
+	attachResizeRegistrationWait = 250 * time.Millisecond
+	attachPollInterval           = 10 * time.Millisecond
+	interactiveSessionTokenTTL   = 30 * time.Second
+	bootstrapCleanupTimeout      = 10 * time.Second
+
+	networkFilterPolicyPathEnv    = "CLEANROOM_NETWORK_FILTER_POLICY_PATH"
+	networkFilterDaemonURLEnv     = "CLEANROOM_NETWORK_FILTER_DAEMON_URL"
+	networkFilterTargetProcessEnv = "CLEANROOM_NETWORK_FILTER_TARGET_PROCESS"
+	networkFilterMetadataPIDKey   = "network_process_pid"
+	networkFilterMetadataGuestIPKey = "network_guest_ip"
+	networkFilterPolicySchema     = 1
+	networkFilterActionAllow      = "allow"
+	networkFilterActionDeny       = "deny"
+	stoppedSandboxStatus          = cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPED
+	terminatingSandboxStatus      = cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPING
+)
+
+type networkFilterPolicySnapshot = networkfilterstate.PolicySnapshot
+type networkFilterPolicyAllowRule = networkfilterstate.PolicyAllowRule
+type networkFilterProcessRule = networkfilterstate.ProcessRule
+type networkFilterGuestRule = networkfilterstate.GuestRule
+
+var lookupNetworkFilterHostIPs = func(ctx context.Context, host string) ([]netip.Addr, error) {
+	return net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+}
 
 func (s *Service) CreateSandbox(ctx context.Context, req *cleanroomv1.CreateSandboxRequest) (*cleanroomv1.CreateSandboxResponse, error) {
 	if req == nil {
@@ -240,6 +274,7 @@ func (s *Service) CreateSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 		Message: "sandbox created and ready",
 	}
 	s.mu.Unlock()
+	s.SyncNetworkFilterPolicy()
 
 	if s.Logger != nil {
 		s.Logger.Info("sandbox created",
@@ -777,6 +812,7 @@ func (s *Service) TerminateSandbox(ctx context.Context, req *cleanroomv1.Termina
 	}
 	s.pruneStateLocked(now)
 	s.mu.Unlock()
+	s.SyncNetworkFilterPolicy()
 
 	resp := &cleanroomv1.TerminateSandboxResponse{
 		SandboxId:  sandboxID,
@@ -1630,7 +1666,13 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 	result, usedStreaming, err := s.runAdapterExecution(runCtx, adapter, executionReq, key)
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	syncPolicy := false
+	defer func() {
+		s.mu.Unlock()
+		if syncPolicy {
+			s.SyncNetworkFilterPolicy()
+		}
+	}()
 	ex, ok = s.executions[key]
 	if !ok {
 		return
@@ -1652,6 +1694,7 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 		}
 		finished := s.clock().Now()
 		s.finalizeExecutionLocked(ex, finalStatus, exitCode, err.Error(), "", finished)
+		syncPolicy = true
 		if s.Logger != nil {
 			s.Logger.Warn("execution failed",
 				"sandbox_id", ex.SandboxID,
@@ -1692,6 +1735,7 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 	}
 	finished := s.clock().Now()
 	s.finalizeExecutionLocked(ex, finalStatus, finalExitCode, ex.Message, "", finished)
+	syncPolicy = true
 
 	if s.Logger != nil {
 		s.Logger.Info("execution completed",
@@ -1922,6 +1966,271 @@ func (s *Service) finishSnapshotDelete(snapshotID string) {
 	delete(s.snapshotDeletions, snapshotID)
 }
 
+// SyncNetworkFilterPolicy writes a snapshot that can be consumed by the macOS
+// Network Extension provider.
+func (s *Service) SyncNetworkFilterPolicy() {
+	policyPath := strings.TrimSpace(os.Getenv(networkFilterPolicyPathEnv))
+	targetProcessPath := strings.TrimSpace(os.Getenv(networkFilterTargetProcessEnv))
+	snapshot := s.buildNetworkFilterPolicySnapshot(targetProcessPath)
+
+	if policyPath != "" {
+		if err := writeNetworkFilterPolicySnapshot(policyPath, snapshot); err != nil {
+			if s.Logger != nil {
+				s.Logger.Warn("failed to sync network filter policy snapshot", "path", policyPath, "error", err)
+			}
+			return
+		}
+		if s.Logger != nil {
+			s.Logger.Debug("synced network filter policy snapshot", "path", policyPath, "allow_rules", len(snapshot.Allow))
+		}
+		return
+	}
+
+	if err := publishNetworkFilterPolicySnapshot(snapshot); err != nil {
+		if s.Logger != nil {
+			s.Logger.Warn("failed to publish network filter policy snapshot", "error", err)
+		}
+		return
+	}
+	if s.Logger != nil {
+		s.Logger.Debug("published network filter policy snapshot", "allow_rules", len(snapshot.Allow))
+	}
+}
+
+func publishNetworkFilterPolicySnapshot(snapshot networkFilterPolicySnapshot) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	client := networkfilterstate.NewClient(resolveNetworkFilterDaemonURL())
+	return client.PutPolicy(ctx, snapshot)
+}
+
+func resolveNetworkFilterDaemonURL() string {
+	if configured := strings.TrimSpace(os.Getenv(networkFilterDaemonURLEnv)); configured != "" {
+		return configured
+	}
+	return networkfilterstate.DefaultBaseURL
+}
+
+func (s *Service) buildNetworkFilterPolicySnapshot(targetProcessPath string) networkFilterPolicySnapshot {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rules := make(map[string]map[int]struct{})
+	guestRulesByIP := make(map[string]networkFilterGuestRule)
+	processRules := make([]networkFilterProcessRule, 0)
+	defaultAction := networkFilterActionAllow
+
+	for _, sb := range s.sandboxes {
+		if sb == nil || sb.Policy == nil {
+			continue
+		}
+		if sb.Status == stoppedSandboxStatus || sb.Status == terminatingSandboxStatus {
+			continue
+		}
+		if strings.TrimSpace(strings.ToLower(sb.Policy.NetworkDefault)) != networkFilterActionDeny {
+			continue
+		}
+		defaultAction = networkFilterActionDeny
+		for _, allow := range normalizePolicyAllowRules(sb.Policy) {
+			ports, ok := rules[allow.Host]
+			if !ok {
+				ports = make(map[int]struct{}, len(allow.Ports))
+				rules[allow.Host] = ports
+			}
+			for _, port := range allow.Ports {
+				ports[port] = struct{}{}
+			}
+		}
+	}
+
+	for _, ex := range s.executions {
+		if ex == nil || isFinalExecutionStatus(ex.Status) {
+			continue
+		}
+		sb := s.sandboxes[ex.SandboxID]
+		if sb == nil || sb.Policy == nil {
+			continue
+		}
+		if sb.Status == stoppedSandboxStatus || sb.Status == terminatingSandboxStatus {
+			continue
+		}
+		if strings.TrimSpace(strings.ToLower(sb.Policy.NetworkDefault)) != networkFilterActionDeny {
+			continue
+		}
+		defaultAction = networkFilterActionDeny
+		allowRules := normalizePolicyAllowRules(sb.Policy)
+		if ex.NetworkProcessPID > 0 {
+			processRules = append(processRules, networkFilterProcessRule{
+				PID:   ex.NetworkProcessPID,
+				Allow: allowRules,
+			})
+		}
+		if guestIP := strings.TrimSpace(ex.NetworkGuestIP); guestIP != "" {
+			guestRulesByIP[guestIP] = networkFilterGuestRule{
+				GuestIP:       guestIP,
+				DefaultAction: networkFilterActionDeny,
+				AllowDNS:      len(allowRules) > 0,
+				Allow:         resolveNetworkFilterAllowRules(allowRules),
+			}
+		}
+	}
+
+	allow := make([]networkFilterPolicyAllowRule, 0, len(rules))
+	for host, portSet := range rules {
+		ports := make([]int, 0, len(portSet))
+		for port := range portSet {
+			ports = append(ports, port)
+		}
+		sort.Ints(ports)
+		allow = append(allow, networkFilterPolicyAllowRule{
+			Host:  host,
+			Ports: ports,
+		})
+	}
+	sort.Slice(allow, func(i, j int) bool {
+		return allow[i].Host < allow[j].Host
+	})
+	sort.Slice(processRules, func(i, j int) bool {
+		return processRules[i].PID < processRules[j].PID
+	})
+	guestRules := make([]networkFilterGuestRule, 0, len(guestRulesByIP))
+	for _, guestRule := range guestRulesByIP {
+		guestRules = append(guestRules, guestRule)
+	}
+	sort.Slice(guestRules, func(i, j int) bool {
+		return guestRules[i].GuestIP < guestRules[j].GuestIP
+	})
+
+	return networkFilterPolicySnapshot{
+		Version:           networkFilterPolicySchema,
+		UpdatedAt:         time.Now().UTC().Format(time.RFC3339Nano),
+		DefaultAction:     defaultAction,
+		TargetProcessPath: strings.TrimSpace(targetProcessPath),
+		Allow:             allow,
+		GuestRules:        guestRules,
+		ProcessRules:      processRules,
+	}
+}
+
+func normalizePolicyAllowRules(compiled *policy.CompiledPolicy) []networkFilterPolicyAllowRule {
+	if compiled == nil {
+		return nil
+	}
+	byHost := make(map[string]map[int]struct{})
+	for _, allow := range compiled.Allow {
+		host := strings.TrimSpace(strings.ToLower(allow.Host))
+		if host == "" {
+			continue
+		}
+		if len(allow.Ports) == 0 {
+			continue
+		}
+		ports, ok := byHost[host]
+		if !ok {
+			ports = make(map[int]struct{}, len(allow.Ports))
+			byHost[host] = ports
+		}
+		for _, port := range allow.Ports {
+			if port < 1 || port > 65535 {
+				continue
+			}
+			ports[port] = struct{}{}
+		}
+	}
+	out := make([]networkFilterPolicyAllowRule, 0, len(byHost))
+	for host, portsSet := range byHost {
+		ports := make([]int, 0, len(portsSet))
+		for port := range portsSet {
+			ports = append(ports, port)
+		}
+		sort.Ints(ports)
+		out = append(out, networkFilterPolicyAllowRule{
+			Host:  host,
+			Ports: ports,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Host < out[j].Host
+	})
+	return out
+}
+
+func resolveNetworkFilterAllowRules(allowRules []networkFilterPolicyAllowRule) []networkFilterPolicyAllowRule {
+	if len(allowRules) == 0 {
+		return nil
+	}
+
+	out := make([]networkFilterPolicyAllowRule, 0, len(allowRules))
+	for _, allowRule := range allowRules {
+		resolved := allowRule
+		resolved.RemoteIPs = resolveNetworkFilterAllowRuleIPs(allowRule.Host)
+		out = append(out, resolved)
+	}
+	return out
+}
+
+func resolveNetworkFilterAllowRuleIPs(host string) []string {
+	trimmedHost := strings.TrimSpace(strings.ToLower(host))
+	if trimmedHost == "" {
+		return nil
+	}
+	if addr, err := netip.ParseAddr(trimmedHost); err == nil {
+		return []string{addr.String()}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	addrs, err := lookupNetworkFilterHostIPs(ctx, trimmedHost)
+	if err != nil || len(addrs) == 0 {
+		return nil
+	}
+
+	seen := make(map[string]struct{}, len(addrs))
+	out := make([]string, 0, len(addrs))
+	for _, addr := range addrs {
+		if !addr.IsValid() || !addr.Is4() {
+			continue
+		}
+		normalized := addr.String()
+		if _, ok := seen[normalized]; ok {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		out = append(out, normalized)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func writeNetworkFilterPolicySnapshot(path string, snapshot networkFilterPolicySnapshot) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create network filter policy directory: %w", err)
+	}
+
+	data, err := json.MarshalIndent(snapshot, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal network filter policy snapshot: %w", err)
+	}
+	data = append(data, '\n')
+
+	tempPath := path + ".tmp"
+	if err := os.WriteFile(tempPath, data, 0o644); err != nil {
+		return fmt.Errorf("write network filter policy snapshot temp file: %w", err)
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		_ = os.Remove(tempPath)
+		return fmt.Errorf("rename network filter policy snapshot into place: %w", err)
+	}
+	return nil
+}
+
 func (s *Service) mergeBufferedResultOutputLocked(ex *executionState, result *backend.ExecutionResult, usedStreaming bool) {
 	if ex == nil || result == nil {
 		return
@@ -2069,8 +2378,15 @@ func (s *Service) executionDoneChannel(sandboxID, executionID string) (<-chan st
 }
 
 func (s *Service) setExecutionAttachIO(key string, io backend.AttachIO) {
+	needsSync := false
+
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer func() {
+		s.mu.Unlock()
+		if needsSync {
+			s.SyncNetworkFilterPolicy()
+		}
+	}()
 
 	ex, ok := s.executions[key]
 	if !ok || ex == nil || isFinalExecutionStatus(ex.Status) {
@@ -2079,6 +2395,21 @@ func (s *Service) setExecutionAttachIO(key string, io backend.AttachIO) {
 	ex.AttachStdin = io.WriteStdin
 	ex.AttachCloseStdin = io.CloseStdin
 	ex.AttachResize = io.ResizeTTY
+	if rawPID, ok := io.Metadata[networkFilterMetadataPIDKey]; ok {
+		if parsed, err := strconv.ParseInt(strings.TrimSpace(rawPID), 10, 32); err == nil && parsed > 0 {
+			pid := int32(parsed)
+			if ex.NetworkProcessPID != pid {
+				ex.NetworkProcessPID = pid
+				needsSync = true
+			}
+		}
+	}
+	if guestIP := strings.TrimSpace(io.Metadata[networkFilterMetadataGuestIPKey]); guestIP != "" {
+		if ex.NetworkGuestIP != guestIP {
+			ex.NetworkGuestIP = guestIP
+			needsSync = true
+		}
+	}
 }
 
 func (s *Service) dropSandboxLocked(sandboxID string, sb *sandboxState) {

@@ -18,6 +18,9 @@ Near-term target:
 This document is a planning document informed by the March 2026 spike. It
 includes verified findings, current limits, and recommended next slices.
 
+For the follow-on filtering architecture on top of vmnet guest identity, see
+[`darwin-vz-network-filter-packet-mode.md`](./darwin-vz-network-filter-packet-mode.md).
+
 ## Current Status
 
 Validated on March 16, 2026 on macOS 26.1 (25B78):
