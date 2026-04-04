@@ -91,7 +91,9 @@ func TestSnapshotLifecycleZFSE2E(t *testing.T) {
 	sandboxID := fmt.Sprintf("cr-zfs-e2e-%d", time.Now().UnixNano())
 	fromSnapshotSandboxID := sandboxID + "-from-snapshot"
 	snapshotID := fmt.Sprintf("snap-%d", time.Now().UnixNano())
-	markerPath := fmt.Sprintf("/tmp/%s-marker.txt", sandboxID)
+	// The firecracker guest init mounts /tmp as tmpfs, so snapshot durability
+	// checks need a path on the writable root filesystem.
+	markerPath := fmt.Sprintf("/snapshot-%s-marker.txt", sandboxID)
 
 	snapshotStorageRef := ""
 	sourceVolumeRef := ""
