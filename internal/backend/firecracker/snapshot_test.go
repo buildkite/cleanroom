@@ -151,6 +151,159 @@ func TestCreateSnapshotSyncsPausesAndClonesRootFS(t *testing.T) {
 	}
 }
 
+func TestCreateSnapshotFlushesHostFilesystemForZFSSnapshots(t *testing.T) {
+	prevSignal := sendProcessSignal
+	sendProcessSignal = func(_ *os.Process, _ syscall.Signal) error { return nil }
+	t.Cleanup(func() { sendProcessSignal = prevSignal })
+
+	prevSync := syncHostFilesystem
+	prevSnapshotDriver := snapshotVolumeStoreDriverFn
+	t.Cleanup(func() {
+		syncHostFilesystem = prevSync
+		snapshotVolumeStoreDriverFn = prevSnapshotDriver
+	})
+
+	var calls []string
+	syncHostFilesystem = func(context.Context) error {
+		calls = append(calls, "host-sync")
+		return nil
+	}
+	snapshotVolumeStoreDriverFn = func(cfg backend.FirecrackerConfig) (volumestore.Driver, error) {
+		if got, want := cfg.Snapshots.Driver, "zfs"; got != want {
+			t.Fatalf("unexpected snapshot driver: got %q want %q", got, want)
+		}
+		return testVolumeDriver{
+			snapshotVolumeFn: func(_ context.Context, req volumestore.SnapshotVolumeRequest) (volumestore.Snapshot, error) {
+				if got, want := calls, []string{"host-sync"}; strings.Join(got, ",") != strings.Join(want, ",") {
+					t.Fatalf("expected host sync before snapshot, got %v", got)
+				}
+				if got, want := req.VolumeRef, "tank/cleanroom/sandboxes/cr-test"; got != want {
+					t.Fatalf("unexpected volume ref: got %q want %q", got, want)
+				}
+				calls = append(calls, "snapshot")
+				return volumestore.Snapshot{StorageRef: "tank/cleanroom/snapshots/snap-test@seed"}, nil
+			},
+		}, nil
+	}
+
+	adapter := &Adapter{
+		runGuestCommandFn: func(_ context.Context, _ context.Context, _ <-chan struct{}, _ func() error, _ string, _ uint32, req vsockexec.ExecRequest, _ backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error) {
+			if len(req.Command) != 1 || req.Command[0] != "sync" {
+				t.Fatalf("unexpected command: %v", req.Command)
+			}
+			return vsockexec.ExecResponse{ExitCode: 0}, guestExecTiming{}, nil
+		},
+		sandboxes: map[string]*sandboxInstance{
+			"cr-test": {
+				SandboxID:    "cr-test",
+				VsockPath:    "/tmp/fake.sock",
+				GuestPort:    10700,
+				fcCmd:        &exec.Cmd{Process: &os.Process{Pid: 42}},
+				exitedCh:     make(chan struct{}),
+				vmRootFSPath: "/dev/zvol/tank/cleanroom/sandboxes/cr-test",
+				volumeRef:    "tank/cleanroom/sandboxes/cr-test",
+			},
+		},
+	}
+
+	result, err := adapter.CreateSnapshot(context.Background(), backend.SnapshotRequest{
+		SandboxID:  "cr-test",
+		SnapshotID: "snap-test",
+		FirecrackerConfig: backend.FirecrackerConfig{
+			Snapshots: backend.SnapshotConfig{
+				Enabled:    true,
+				Driver:     "zfs",
+				ZFSDataset: "tank/cleanroom",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateSnapshot returned error: %v", err)
+	}
+	if got, want := result.StorageRef, "tank/cleanroom/snapshots/snap-test@seed"; got != want {
+		t.Fatalf("unexpected snapshot storage ref: got %q want %q", got, want)
+	}
+	if got, want := calls, []string{"host-sync", "snapshot"}; strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("unexpected call order: got %v want %v", got, want)
+	}
+}
+
+func TestCreateSnapshotResumesSandboxWhenHostSyncFails(t *testing.T) {
+	prevSync := syncHostFilesystem
+	prevSnapshotDriver := snapshotVolumeStoreDriverFn
+	prevSignal := sendProcessSignal
+	t.Cleanup(func() {
+		syncHostFilesystem = prevSync
+		snapshotVolumeStoreDriverFn = prevSnapshotDriver
+		sendProcessSignal = prevSignal
+	})
+
+	var signals []syscall.Signal
+	sendProcessSignal = func(_ *os.Process, sig syscall.Signal) error {
+		signals = append(signals, sig)
+		return nil
+	}
+
+	syncHostFilesystem = func(context.Context) error {
+		return errors.New("host sync failed")
+	}
+	snapshotVolumeStoreDriverFn = func(cfg backend.FirecrackerConfig) (volumestore.Driver, error) {
+		if got, want := cfg.Snapshots.Driver, "zfs"; got != want {
+			t.Fatalf("unexpected snapshot driver: got %q want %q", got, want)
+		}
+		return testVolumeDriver{
+			snapshotVolumeFn: func(context.Context, volumestore.SnapshotVolumeRequest) (volumestore.Snapshot, error) {
+				t.Fatal("snapshot should not run after host sync failure")
+				return volumestore.Snapshot{}, nil
+			},
+		}, nil
+	}
+
+	adapter := &Adapter{
+		runGuestCommandFn: func(_ context.Context, _ context.Context, _ <-chan struct{}, _ func() error, _ string, _ uint32, req vsockexec.ExecRequest, _ backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error) {
+			if len(req.Command) != 1 || req.Command[0] != "sync" {
+				t.Fatalf("unexpected command: %v", req.Command)
+			}
+			return vsockexec.ExecResponse{ExitCode: 0}, guestExecTiming{}, nil
+		},
+		sandboxes: map[string]*sandboxInstance{
+			"cr-test": {
+				SandboxID:    "cr-test",
+				VsockPath:    "/tmp/fake.sock",
+				GuestPort:    10700,
+				fcCmd:        &exec.Cmd{Process: &os.Process{Pid: 42}},
+				exitedCh:     make(chan struct{}),
+				vmRootFSPath: "/dev/zvol/tank/cleanroom/sandboxes/cr-test",
+				volumeRef:    "tank/cleanroom/sandboxes/cr-test",
+			},
+		},
+	}
+
+	result, err := adapter.CreateSnapshot(context.Background(), backend.SnapshotRequest{
+		SandboxID:  "cr-test",
+		SnapshotID: "snap-test",
+		FirecrackerConfig: backend.FirecrackerConfig{
+			Snapshots: backend.SnapshotConfig{
+				Enabled:    true,
+				Driver:     "zfs",
+				ZFSDataset: "tank/cleanroom",
+			},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected CreateSnapshot to fail when host sync fails")
+	}
+	if result != nil {
+		t.Fatalf("expected nil snapshot result, got %#v", result)
+	}
+	if !strings.Contains(err.Error(), "host sync failed") {
+		t.Fatalf("expected host sync error, got %v", err)
+	}
+	if got, want := signals, []syscall.Signal{syscall.SIGSTOP, syscall.SIGCONT}; strings.Join(signalStrings(got), ",") != strings.Join(signalStrings(want), ",") {
+		t.Fatalf("unexpected signals: got %v want %v", got, want)
+	}
+}
+
 func TestCreateSnapshotReturnsErrorWhenGuestSyncExitsNonZero(t *testing.T) {
 	stateHome := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", stateHome)
@@ -192,6 +345,31 @@ func TestCreateSnapshotReturnsErrorWhenGuestSyncExitsNonZero(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected CreateSnapshot to fail when guest sync exits non-zero")
+	}
+}
+
+func TestSnapshotDriverNeedsHostSync(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name       string
+		driverName string
+		want       bool
+	}{
+		{name: "zfs", driverName: "zfs", want: true},
+		{name: "trimmed zfs", driverName: " ZFS ", want: true},
+		{name: "file", driverName: "file", want: false},
+		{name: "empty", driverName: "", want: false},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := snapshotDriverNeedsHostSync(tc.driverName); got != tc.want {
+				t.Fatalf("snapshotDriverNeedsHostSync(%q) = %t, want %t", tc.driverName, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -350,6 +528,14 @@ func TestCreateSnapshotReturnsErrorWhenSandboxResumeFails(t *testing.T) {
 	if _, statErr := os.Stat(snapshotPath); !os.IsNotExist(statErr) {
 		t.Fatalf("expected failed snapshot to be cleaned up, stat error = %v", statErr)
 	}
+}
+
+func signalStrings(signals []syscall.Signal) []string {
+	out := make([]string, 0, len(signals))
+	for _, sig := range signals {
+		out = append(out, sig.String())
+	}
+	return out
 }
 
 func TestProvisionSandboxFromSnapshotUsesSnapshotRootFS(t *testing.T) {
