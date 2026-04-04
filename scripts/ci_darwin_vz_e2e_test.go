@@ -37,6 +37,15 @@ func TestCiDarwinVZE2EForcesNATNetworkMode(t *testing.T) {
 	if !strings.Contains(string(content), `export XDG_CACHE_HOME="$tmpdir/cache"`) {
 		t.Fatalf("expected ci-darwin-vz-e2e.sh to isolate cleanroom cache under the job tmpdir")
 	}
+	if !strings.Contains(string(content), `smoke_policy_dir="$tmpdir/smoke-policy"`) {
+		t.Fatalf("expected ci-darwin-vz-e2e.sh to create an isolated smoke policy directory")
+	}
+	if !strings.Contains(string(content), `./dist/cleanroom exec --host "$listen_endpoint" --backend darwin-vz -c "$smoke_policy_dir" -- sh -lc 'echo darwin-vz-e2e'`) {
+		t.Fatalf("expected ci-darwin-vz-e2e.sh to use the isolated smoke policy for the smoke test")
+	}
+	if strings.Contains(string(content), `./dist/cleanroom exec --host "$listen_endpoint" --backend darwin-vz -c "$PWD" -- sh -lc 'echo darwin-vz-e2e'`) {
+		t.Fatalf("expected ci-darwin-vz-e2e.sh not to reuse the repository policy for the smoke test")
+	}
 }
 
 func TestBuildDarwinVZHelperUsesSharedPackager(t *testing.T) {

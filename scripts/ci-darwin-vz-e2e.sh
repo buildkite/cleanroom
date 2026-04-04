@@ -35,6 +35,17 @@ cleanup() {
 }
 trap cleanup EXIT
 
+smoke_policy_dir="$tmpdir/smoke-policy"
+mkdir -p "$smoke_policy_dir"
+cat > "$smoke_policy_dir/cleanroom.yaml" <<'EOF'
+version: 1
+sandbox:
+  image:
+    ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:91a63856cdf97b2e5659660b41d1a131d3b57bfa4cad254018e391ffef6fa4b9
+  network:
+    default: deny
+EOF
+
 export XDG_CONFIG_HOME="$tmpdir/c"
 export XDG_CACHE_HOME="$tmpdir/cache"
 export XDG_STATE_HOME="$tmpdir/s"
@@ -88,7 +99,7 @@ if [[ ! -S "$socket_path" ]]; then
 fi
 
 echo "--- :white_check_mark: Launched execution smoke test"
-./dist/cleanroom exec --host "$listen_endpoint" --backend darwin-vz -c "$PWD" -- sh -lc 'echo darwin-vz-e2e' | tee "$tmpdir/exec.out"
+./dist/cleanroom exec --host "$listen_endpoint" --backend darwin-vz -c "$smoke_policy_dir" -- sh -lc 'echo darwin-vz-e2e' | tee "$tmpdir/exec.out"
 if ! grep -q '^darwin-vz-e2e$' "$tmpdir/exec.out"; then
   echo "expected darwin-vz smoke-test output missing" >&2
   exit 1
@@ -96,7 +107,7 @@ fi
 
 echo "--- :warning: Exit code propagation test"
 set +e
-./dist/cleanroom exec --host "$listen_endpoint" --backend darwin-vz -c "$PWD" -- sh -lc 'exit 9' >"$tmpdir/exit9.out" 2>"$tmpdir/exit9.err"
+./dist/cleanroom exec --host "$listen_endpoint" --backend darwin-vz -c "$smoke_policy_dir" -- sh -lc 'exit 9' >"$tmpdir/exit9.out" 2>"$tmpdir/exit9.err"
 status=$?
 set -e
 if [[ "$status" -ne 9 ]]; then
