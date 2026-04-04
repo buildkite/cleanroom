@@ -14,12 +14,20 @@ import (
 
 const (
 	darwinVZNetworkModeNAT         = "nat"
+	darwinVZNetworkModeFileHandle  = "filehandle"
 	darwinVZNetworkModeVMNetShared = "vmnet-shared"
 )
 
+const darwinVZFileHandleDefaultSubnetCIDR = "10.233.0.0/24"
+
 type darwinVZNetwork struct {
-	Mode       string
-	SubnetCIDR string
+	Mode                       string
+	SubnetCIDR                 string
+	ExternalInterface          string
+	DisableNAT44               bool
+	DisableNAT66               bool
+	DisableDNSProxy            bool
+	DisableRouterAdvertisement bool
 }
 
 var darwinVZRFC1918Prefixes = []netip.Prefix{
@@ -71,12 +79,36 @@ func resolveDarwinVZNetwork(cfg backend.FirecrackerConfig) (darwinVZNetwork, err
 	}
 
 	subnet := strings.TrimSpace(cfg.DarwinVZNetworkSubnet)
+	externalInterface := strings.TrimSpace(cfg.DarwinVZNetworkExternalInterface)
+	disableNAT44 := cfg.DarwinVZNetworkDisableNAT44
+	disableNAT66 := cfg.DarwinVZNetworkDisableNAT66
+	disableDNSProxy := cfg.DarwinVZNetworkDisableDNSProxy
+	disableRouterAdvertisement := cfg.DarwinVZNetworkDisableRouterAdvertisement
+	hasVMNetOnlySettings := externalInterface != "" || disableNAT44 || disableNAT66 || disableDNSProxy || disableRouterAdvertisement
 	switch mode {
 	case darwinVZNetworkModeNAT:
 		if subnet != "" {
-			return darwinVZNetwork{}, fmt.Errorf("darwin-vz network subnet requires %q mode", darwinVZNetworkModeVMNetShared)
+			return darwinVZNetwork{}, fmt.Errorf("darwin-vz custom network subnet requires %q or %q mode", darwinVZNetworkModeVMNetShared, darwinVZNetworkModeFileHandle)
+		}
+		if hasVMNetOnlySettings {
+			return darwinVZNetwork{}, fmt.Errorf("darwin-vz vmnet network settings require %q mode", darwinVZNetworkModeVMNetShared)
 		}
 		return darwinVZNetwork{Mode: darwinVZNetworkModeNAT}, nil
+	case darwinVZNetworkModeFileHandle:
+		if hasVMNetOnlySettings {
+			return darwinVZNetwork{}, fmt.Errorf("darwin-vz vmnet network settings require %q mode", darwinVZNetworkModeVMNetShared)
+		}
+		normalizedSubnet, err := normalizeDarwinVZVMNetSubnet(subnet)
+		if err != nil {
+			return darwinVZNetwork{}, err
+		}
+		if normalizedSubnet == "" {
+			normalizedSubnet = darwinVZFileHandleDefaultSubnetCIDR
+		}
+		return darwinVZNetwork{
+			Mode:       darwinVZNetworkModeFileHandle,
+			SubnetCIDR: normalizedSubnet,
+		}, nil
 	case darwinVZNetworkModeVMNetShared:
 		if !darwinVZVMNetSharedSupported() {
 			return darwinVZNetwork{}, fmt.Errorf("%q requires macOS 26 or later", darwinVZNetworkModeVMNetShared)
@@ -85,7 +117,15 @@ func resolveDarwinVZNetwork(cfg backend.FirecrackerConfig) (darwinVZNetwork, err
 		if err != nil {
 			return darwinVZNetwork{}, err
 		}
-		return darwinVZNetwork{Mode: darwinVZNetworkModeVMNetShared, SubnetCIDR: normalizedSubnet}, nil
+		return darwinVZNetwork{
+			Mode:                       darwinVZNetworkModeVMNetShared,
+			SubnetCIDR:                 normalizedSubnet,
+			ExternalInterface:          externalInterface,
+			DisableNAT44:               disableNAT44,
+			DisableNAT66:               disableNAT66,
+			DisableDNSProxy:            disableDNSProxy,
+			DisableRouterAdvertisement: disableRouterAdvertisement,
+		}, nil
 	default:
 		return darwinVZNetwork{}, fmt.Errorf("unsupported darwin-vz network mode %q", cfg.DarwinVZNetworkMode)
 	}

@@ -3,6 +3,7 @@
 package darwinvz
 
 import (
+	"bytes"
 	"context"
 	cryptorand "crypto/rand"
 	"crypto/sha256"
@@ -17,6 +18,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -86,11 +88,14 @@ type sandboxInstance struct {
 	ConfigPath          string
 	ProxySocketPath     string
 	GuestPort           uint32
+	NetworkProcessPID   int
 	Policy              *policy.CompiledPolicy
+	FirecrackerConfig   backend.FirecrackerConfig
 	ImageRef            string
 	ImageDigest         string
 	LaunchObservability *darwinVZLaunchObservability
 	NetworkMetadata     *darwinVZNetworkMetadata
+	FileHandleGateway   *fileHandleGateway
 	CommandTimeout      int64
 	Helper              *helperSession
 	VMID                string
@@ -126,10 +131,105 @@ type darwinVZRunObservation struct {
 	TotalMS           int64            `json:"total_ms,omitempty"`
 }
 
+const virtualizationNetworkProcessPath = "/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine"
+
+var (
+	networkProcessLookPath           = exec.LookPath
+	networkProcessCombinedOutput     = commandCombinedOutput
+	networkProcessLookupTimeout      = 2 * time.Second
+	networkProcessLookupPollInterval = 50 * time.Millisecond
+)
+
 func New() *Adapter {
 	return &Adapter{
 		newImageManager: defaultImageManagerFactory,
 	}
+}
+
+func commandCombinedOutput(ctx context.Context, name string, args ...string) ([]byte, error) {
+	return exec.CommandContext(ctx, name, args...).CombinedOutput()
+}
+
+func resolveVirtualizationProcessPID(ctx context.Context, rootFSPath string) (int, error) {
+	rootFSPath = strings.TrimSpace(rootFSPath)
+	if rootFSPath == "" {
+		return 0, errors.New("rootfs path is empty")
+	}
+
+	lsofPath, err := networkProcessLookPath("lsof")
+	if err != nil {
+		return 0, fmt.Errorf("resolve lsof for virtualization pid lookup: %w", err)
+	}
+	psPath, err := networkProcessLookPath("ps")
+	if err != nil {
+		return 0, fmt.Errorf("resolve ps for virtualization pid lookup: %w", err)
+	}
+
+	deadline := time.Now().Add(networkProcessLookupTimeout)
+	if dl, ok := ctx.Deadline(); ok && dl.Before(deadline) {
+		deadline = dl
+	}
+
+	var lastErr error = fmt.Errorf("no process is holding %s", rootFSPath)
+	for {
+		pids, pidErr := lookupPIDsForOpenFile(ctx, lsofPath, rootFSPath)
+		if pidErr != nil {
+			lastErr = pidErr
+		} else {
+			lastErr = fmt.Errorf("no %s process is holding %s", filepath.Base(virtualizationNetworkProcessPath), rootFSPath)
+			for _, pid := range pids {
+				commandLine, cmdErr := lookupProcessCommandLine(ctx, psPath, pid)
+				if cmdErr != nil {
+					lastErr = cmdErr
+					continue
+				}
+				if strings.Contains(commandLine, virtualizationNetworkProcessPath) {
+					return pid, nil
+				}
+			}
+		}
+
+		if time.Now().After(deadline) {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return 0, fmt.Errorf("resolve virtualization network process pid: %w", ctx.Err())
+		case <-time.After(networkProcessLookupPollInterval):
+		}
+	}
+
+	return 0, fmt.Errorf("resolve virtualization network process pid for %s: %w", rootFSPath, lastErr)
+}
+
+func lookupPIDsForOpenFile(ctx context.Context, lsofPath, filePath string) ([]int, error) {
+	output, err := networkProcessCombinedOutput(ctx, lsofPath, "-t", "--", filePath)
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && len(bytes.TrimSpace(output)) == 0 {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("lsof lookup for %s: %w", filePath, err)
+	}
+
+	lines := strings.Fields(string(output))
+	pids := make([]int, 0, len(lines))
+	for _, line := range lines {
+		pid, convErr := strconv.Atoi(strings.TrimSpace(line))
+		if convErr != nil || pid <= 0 {
+			continue
+		}
+		pids = append(pids, pid)
+	}
+	return pids, nil
+}
+
+func lookupProcessCommandLine(ctx context.Context, psPath string, pid int) (string, error) {
+	output, err := networkProcessCombinedOutput(ctx, psPath, "-p", strconv.Itoa(pid), "-o", "command=")
+	if err != nil {
+		return "", fmt.Errorf("lookup command line for pid %d: %w", pid, err)
+	}
+	return strings.TrimSpace(string(output)), nil
 }
 
 func defaultImageManagerFactory() (imageEnsurer, error) {
@@ -141,9 +241,13 @@ func (a *Adapter) Name() string {
 }
 
 func (a *Adapter) Capabilities() map[string]bool {
+	allowlistSupported, _, _, err := allowlistSupportForConfig(backend.FirecrackerConfig{})
+	if err != nil {
+		allowlistSupported = false
+	}
 	return map[string]bool{
 		backend.CapabilityNetworkDefaultDeny:     true,
-		backend.CapabilityNetworkAllowlistEgress: false,
+		backend.CapabilityNetworkAllowlistEgress: allowlistSupported,
 		backend.CapabilityNetworkGuestInterface:  true,
 	}
 }
@@ -195,7 +299,14 @@ func (a *Adapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest
 	if req.Policy == nil {
 		return nil, errors.New("missing compiled policy")
 	}
-	if _, policyErr := evaluateNetworkPolicy(req.Policy.NetworkDefault, len(req.Policy.Allow)); policyErr != nil {
+	allowlistSupported, allowlistStatusDetail, _, supportErr := allowlistSupportForConfig(instance.FirecrackerConfig)
+	if supportErr != nil {
+		return nil, supportErr
+	}
+	if _, policyErr := evaluateNetworkPolicyForRun(req.Policy.NetworkDefault, len(req.Policy.Allow), allowlistSupported); policyErr != nil {
+		if len(req.Policy.Allow) > 0 && !allowlistSupported && allowlistStatusDetail != "" {
+			return nil, fmt.Errorf("%w (%s)", policyErr, allowlistStatusDetail)
+		}
 		return nil, policyErr
 	}
 
@@ -416,13 +527,23 @@ func (a *Adapter) Doctor(_ context.Context, req backend.DoctorRequest) (*backend
 	appendCheck := func(name, status, message string) {
 		report.Checks = append(report.Checks, backend.DoctorCheck{Name: name, Status: status, Message: message})
 	}
+	allowlistSupported, allowlistStatusDetail, protectionMessage, supportErr := allowlistSupportForConfig(req.FirecrackerConfig)
+	if supportErr != nil {
+		appendCheck("guest_networking", "fail", supportErr.Error())
+		allowlistStatusDetail = ""
+	} else if allowlistSupported {
+		appendCheck("guest_networking", "pass", protectionMessage)
+	} else if allowlistStatusDetail != "" {
+		appendCheck("guest_networking", "warn", fmt.Sprintf("%s (%s)", guestNetworkUnavailableWarning, allowlistStatusDetail))
+	} else {
+		appendCheck("guest_networking", "warn", guestNetworkUnavailableWarning)
+	}
 
 	if runtime.GOOS == "darwin" {
 		appendCheck("os", "pass", "darwin host detected")
 	} else {
 		appendCheck("os", "fail", fmt.Sprintf("darwin required, current OS is %s", runtime.GOOS))
 	}
-	appendCheck("guest_networking", "warn", guestNetworkUnavailableWarning)
 	networkCfg, networkErr := resolveDarwinVZNetwork(req.FirecrackerConfig)
 	if networkErr != nil {
 		appendCheck("network_mode", "fail", networkErr.Error())
@@ -470,13 +591,15 @@ func (a *Adapter) Doctor(_ context.Context, req backend.DoctorRequest) (*backend
 	if req.Policy == nil {
 		appendCheck("policy", "warn", "policy not loaded")
 	} else {
-		policyWarn, policyErr := evaluateNetworkPolicy(req.Policy.NetworkDefault, len(req.Policy.Allow))
+		policyWarn, policyErr := evaluateNetworkPolicyForDoctor(req.Policy.NetworkDefault, len(req.Policy.Allow), allowlistSupported)
 		if policyErr != nil {
 			appendCheck("policy_network_default", "fail", policyErr.Error())
 		} else {
 			appendCheck("policy_network_default", "pass", fmt.Sprintf("network.default=%s", strings.TrimSpace(req.Policy.NetworkDefault)))
 			if policyWarn != "" {
 				appendCheck("policy_network_allow", "warn", policyWarn)
+			} else if len(req.Policy.Allow) > 0 {
+				appendCheck("policy_network_allow", "pass", protectionMessage)
 			} else {
 				appendCheck("policy_network_allow", "pass", "allow list empty")
 			}
@@ -566,8 +689,15 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 	if req.Policy == nil {
 		return nil, errors.New("missing compiled policy")
 	}
-	policyWarn, policyErr := evaluateNetworkPolicy(req.Policy.NetworkDefault, len(req.Policy.Allow))
+	allowlistSupported, allowlistStatusDetail, _, supportErr := allowlistSupportForConfig(req.FirecrackerConfig)
+	if supportErr != nil {
+		return nil, supportErr
+	}
+	policyWarn, policyErr := evaluateNetworkPolicyForRun(req.Policy.NetworkDefault, len(req.Policy.Allow), allowlistSupported)
 	if policyErr != nil {
+		if len(req.Policy.Allow) > 0 && !allowlistSupported && allowlistStatusDetail != "" {
+			return nil, fmt.Errorf("%w (%s)", policyErr, allowlistStatusDetail)
+		}
 		return nil, policyErr
 	}
 	if len(req.Command) == 0 {
@@ -622,7 +752,15 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 		return nil, err
 	}
 
-	warnings := buildRuntimeWarnings(policyWarn)
+	guestNetworkingWarning := ""
+	if !allowlistSupported {
+		guestNetworkingWarning = guestNetworkUnavailableWarning
+		if allowlistStatusDetail != "" {
+			guestNetworkingWarning = fmt.Sprintf("%s (%s)", guestNetworkUnavailableWarning, allowlistStatusDetail)
+		}
+	}
+
+	warnings := buildRuntimeWarnings(policyWarn, guestNetworkingWarning)
 
 	stderrPrefix := ""
 	for _, warningText := range warnings {
@@ -759,6 +897,7 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 		BootArgs:       bootArgs,
 		ConsoleLogPath: consolePath,
 		NetworkCfg:     networkCfg,
+		Policy:         req.Policy,
 		VCPUs:          req.VCPUs,
 		MemoryMiB:      req.MemoryMiB,
 		GuestPort:      req.GuestPort,
@@ -773,6 +912,9 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 	applyDarwinVZNetworkMetadata(&observation, startedVM.NetworkMetadata)
 	vmID := startedVM.VMID
 	proxySocketPath := startedVM.ProxySocketPath
+	if startedVM.FileHandleGW != nil {
+		defer func() { _ = startedVM.FileHandleGW.Close() }()
+	}
 	defer func() {
 		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -780,6 +922,11 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 			stream.OnStderr([]byte("warning: failed to stop darwin-vz vm: " + stopErr.Error() + "\n"))
 		}
 	}()
+
+	networkProcessPID := 0
+	lookupCtx, cancelLookup := context.WithTimeout(ctx, networkProcessLookupTimeout)
+	networkProcessPID, _ = resolveVirtualizationProcessPID(lookupCtx, vmRootFSPath)
+	cancelLookup()
 
 	connCtx, cancelConn := context.WithTimeout(ctx, time.Duration(req.LaunchSeconds)*time.Second)
 	defer cancelConn()
@@ -847,6 +994,18 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 
 	inputSender := &inputFrameSender{w: conn}
 	if stream.OnAttach != nil {
+		var metadata map[string]string
+		if networkProcessPID > 0 || (startedVM.NetworkMetadata != nil && strings.TrimSpace(startedVM.NetworkMetadata.GuestIP) != "") {
+			metadata = map[string]string{}
+			if networkProcessPID > 0 {
+				metadata["network_process_pid"] = strconv.Itoa(networkProcessPID)
+			}
+			if startedVM.NetworkMetadata != nil {
+				if guestIP := strings.TrimSpace(startedVM.NetworkMetadata.GuestIP); guestIP != "" {
+					metadata["network_guest_ip"] = guestIP
+				}
+			}
+		}
 		stream.OnAttach(backend.AttachIO{
 			WriteStdin: func(data []byte) error {
 				return inputSender.Send(vsockexec.ExecInputFrame{Type: "stdin", Data: data})
@@ -857,6 +1016,7 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 			ResizeTTY: func(cols, rows uint32) error {
 				return inputSender.Send(vsockexec.ExecInputFrame{Type: "resize", Cols: cols, Rows: rows})
 			},
+			Metadata: metadata,
 		})
 	}
 
@@ -901,7 +1061,14 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 	if compiled == nil {
 		return nil, errors.New("missing compiled policy")
 	}
-	if _, policyErr := evaluateNetworkPolicy(compiled.NetworkDefault, len(compiled.Allow)); policyErr != nil {
+	allowlistSupported, allowlistStatusDetail, _, supportErr := allowlistSupportForConfig(cfg)
+	if supportErr != nil {
+		return nil, supportErr
+	}
+	if _, policyErr := evaluateNetworkPolicyForRun(compiled.NetworkDefault, len(compiled.Allow), allowlistSupported); policyErr != nil {
+		if len(compiled.Allow) > 0 && !allowlistSupported && allowlistStatusDetail != "" {
+			return nil, fmt.Errorf("%w (%s)", policyErr, allowlistStatusDetail)
+		}
 		return nil, policyErr
 	}
 	if runtime.GOOS != "darwin" {
@@ -1018,6 +1185,7 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 		BootArgs:       bootArgs,
 		ConsoleLogPath: consolePath,
 		NetworkCfg:     networkCfg,
+		Policy:         compiled,
 		VCPUs:          cfg.VCPUs,
 		MemoryMiB:      cfg.MemoryMiB,
 		GuestPort:      cfg.GuestPort,
@@ -1026,27 +1194,41 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 	if err != nil {
 		return nil, err
 	}
+	fileHandleGatewayNeedsClose := startedVM.FileHandleGW != nil
+	defer func() {
+		if fileHandleGatewayNeedsClose {
+			_ = startedVM.FileHandleGW.Close()
+		}
+	}()
+
+	networkProcessPID := 0
+	lookupCtx, cancelLookup := context.WithTimeout(ctx, networkProcessLookupTimeout)
+	networkProcessPID, _ = resolveVirtualizationProcessPID(lookupCtx, vmRootFSPath)
+	cancelLookup()
 
 	instance := &sandboxInstance{
-		SandboxID:       sandboxID,
-		RunDir:          runDir,
-		ConfigPath:      configPath,
-		ProxySocketPath: startedVM.ProxySocketPath,
-		GuestPort:       cfg.GuestPort,
-		Policy:          compiled,
-		ImageRef:        imageRef,
-		ImageDigest:     imageDigest,
+		SandboxID:         sandboxID,
+		RunDir:            runDir,
+		ConfigPath:        configPath,
+		ProxySocketPath:   startedVM.ProxySocketPath,
+		GuestPort:         cfg.GuestPort,
+		NetworkProcessPID: networkProcessPID,
+		Policy:            compiled,
+		FirecrackerConfig: cfg,
+		ImageRef:          imageRef,
+		ImageDigest:       imageDigest,
 		LaunchObservability: &darwinVZLaunchObservability{
 			RootFSCopyMS:   rootFSCopyMS,
 			HelperTimingMS: startedVM.TimingMS,
 			Network:        startedVM.NetworkMetadata,
 		},
-		NetworkMetadata: startedVM.NetworkMetadata,
-		CommandTimeout:  cfg.LaunchSeconds,
-		Helper:          helper,
-		VMID:            startedVM.VMID,
-		vmRootFSPath:    vmRootFSPath,
-		exitedCh:        make(chan struct{}),
+		NetworkMetadata:   startedVM.NetworkMetadata,
+		FileHandleGateway: startedVM.FileHandleGW,
+		CommandTimeout:    cfg.LaunchSeconds,
+		Helper:            helper,
+		VMID:              startedVM.VMID,
+		vmRootFSPath:      vmRootFSPath,
+		exitedCh:          make(chan struct{}),
 	}
 	go func() {
 		err, ok := <-helper.done
@@ -1069,6 +1251,7 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 	}
 
 	helperNeedsClose = false
+	fileHandleGatewayNeedsClose = false
 	cleanupRunDir = false
 	return instance, nil
 }
@@ -1134,12 +1317,27 @@ func (a *Adapter) executeInSandbox(bootCtx context.Context, runCtx context.Conte
 	if policy == nil {
 		return nil, errors.New("missing compiled policy")
 	}
-	policyWarn, policyErr := evaluateNetworkPolicy(policy.NetworkDefault, len(policy.Allow))
+	allowlistSupported, allowlistStatusDetail, _, supportErr := allowlistSupportForConfig(instance.FirecrackerConfig)
+	if supportErr != nil {
+		return nil, supportErr
+	}
+	policyWarn, policyErr := evaluateNetworkPolicyForRun(policy.NetworkDefault, len(policy.Allow), allowlistSupported)
 	if policyErr != nil {
+		if len(policy.Allow) > 0 && !allowlistSupported && allowlistStatusDetail != "" {
+			return nil, fmt.Errorf("%w (%s)", policyErr, allowlistStatusDetail)
+		}
 		return nil, policyErr
 	}
 
-	warnings := buildRuntimeWarnings(policyWarn)
+	guestNetworkingWarning := ""
+	if !allowlistSupported {
+		guestNetworkingWarning = guestNetworkUnavailableWarning
+		if allowlistStatusDetail != "" {
+			guestNetworkingWarning = fmt.Sprintf("%s (%s)", guestNetworkUnavailableWarning, allowlistStatusDetail)
+		}
+	}
+
+	warnings := buildRuntimeWarnings(policyWarn, guestNetworkingWarning)
 	stderrPrefix := ""
 	for _, warningText := range warnings {
 		stderrPrefix += emitExecutionWarning(stream, warningText)
@@ -1219,6 +1417,18 @@ func (a *Adapter) executeInSandbox(bootCtx context.Context, runCtx context.Conte
 
 	inputSender := &inputFrameSender{w: conn}
 	if stream.OnAttach != nil {
+		var metadata map[string]string
+		if instance.NetworkProcessPID > 0 || (instance.NetworkMetadata != nil && strings.TrimSpace(instance.NetworkMetadata.GuestIP) != "") {
+			metadata = map[string]string{}
+			if instance.NetworkProcessPID > 0 {
+				metadata["network_process_pid"] = strconv.Itoa(instance.NetworkProcessPID)
+			}
+			if instance.NetworkMetadata != nil {
+				if guestIP := strings.TrimSpace(instance.NetworkMetadata.GuestIP); guestIP != "" {
+					metadata["network_guest_ip"] = guestIP
+				}
+			}
+		}
 		stream.OnAttach(backend.AttachIO{
 			WriteStdin: func(data []byte) error {
 				return inputSender.Send(vsockexec.ExecInputFrame{Type: "stdin", Data: data})
@@ -1229,6 +1439,7 @@ func (a *Adapter) executeInSandbox(bootCtx context.Context, runCtx context.Conte
 			ResizeTTY: func(cols, rows uint32) error {
 				return inputSender.Send(vsockexec.ExecInputFrame{Type: "resize", Cols: cols, Rows: rows})
 			},
+			Metadata: metadata,
 		})
 	}
 
@@ -1468,6 +1679,9 @@ func (s *sandboxInstance) shutdown() {
 		cancel()
 		_ = s.Helper.close()
 	}
+	if s.FileHandleGateway != nil {
+		_ = s.FileHandleGateway.Close()
+	}
 	if strings.TrimSpace(s.RunDir) != "" {
 		_ = os.RemoveAll(s.RunDir)
 		return
@@ -1507,12 +1721,14 @@ func darwinVZResultMessage(guestErr string) string {
 	return guestErr
 }
 
-func buildRuntimeWarnings(policyWarning string) []string {
+func buildRuntimeWarnings(policyWarning, guestNetworkingWarning string) []string {
 	warnings := make([]string, 0, 2)
 	if trimmed := strings.TrimSpace(policyWarning); trimmed != "" {
 		warnings = append(warnings, trimmed)
 	}
-	warnings = append(warnings, guestNetworkUnavailableWarning)
+	if trimmed := strings.TrimSpace(guestNetworkingWarning); trimmed != "" {
+		warnings = append(warnings, trimmed)
+	}
 	return warnings
 }
 
@@ -1775,9 +1991,14 @@ func discoverGuestAgentBinaryWith(
 ) (string, error) {
 	linuxName := fmt.Sprintf("cleanroom-guest-agent-linux-%s", goarch)
 	candidates := []string{}
-	if self, err := executable(); err == nil {
-		candidates = append(candidates, filepath.Join(filepath.Dir(self), linuxName))
-		candidates = append(candidates, filepath.Join(filepath.Dir(self), "cleanroom-guest-agent"))
+	if executable != nil {
+		if self, err := executable(); err == nil {
+			dirs := executableSearchDirs(self)
+			for _, dir := range dirs {
+				candidates = append(candidates, filepath.Join(dir, linuxName))
+				candidates = append(candidates, filepath.Join(dir, "cleanroom-guest-agent"))
+			}
+		}
 	}
 	if getwd != nil {
 		if cwd, err := getwd(); err == nil {
@@ -1813,6 +2034,41 @@ func discoverGuestAgentBinaryWith(
 		}
 	}
 	return "", fmt.Errorf("linux guest-agent binary not found for architecture %s; run `mise run build` or `mise run install` to make cleanroom-guest-agent-linux-%s discoverable", goarch, goarch)
+}
+
+func executableSearchDirs(self string) []string {
+	trimmed := strings.TrimSpace(self)
+	if trimmed == "" {
+		return nil
+	}
+
+	var dirs []string
+	addDir := func(path string) {
+		if strings.TrimSpace(path) == "" {
+			return
+		}
+		for _, existing := range dirs {
+			if existing == path {
+				return
+			}
+		}
+		dirs = append(dirs, path)
+	}
+	addFromExecutable := func(execPath string) {
+		if strings.TrimSpace(execPath) == "" {
+			return
+		}
+		execDir := filepath.Dir(execPath)
+		addDir(execDir)
+		contentsDir := filepath.Dir(execDir)
+		addDir(filepath.Join(contentsDir, "Resources"))
+	}
+
+	addFromExecutable(trimmed)
+	if resolved, err := filepath.EvalSymlinks(trimmed); err == nil {
+		addFromExecutable(resolved)
+	}
+	return dirs
 }
 
 func isLinuxGuestAgentBinary(path string) (bool, error) {

@@ -3,20 +3,25 @@ package darwinvz
 import (
 	"strings"
 	"testing"
+
+	"github.com/buildkite/cleanroom/internal/backend"
 )
 
-func TestEvaluateNetworkPolicyAllowsAllowDefaultWithWarning(t *testing.T) {
-	warn, err := evaluateNetworkPolicy("allow", 0)
-	if err != nil {
-		t.Fatalf("unexpected error for allow network default: %v", err)
+func TestEvaluateNetworkPolicyRequiresDenyDefault(t *testing.T) {
+	warn, err := evaluateNetworkPolicyForRun("allow", 0, false)
+	if err == nil {
+		t.Fatal("expected error for non-deny network default")
 	}
-	if !strings.Contains(warn, "network.default=allow") {
-		t.Fatalf("unexpected warning: %q", warn)
+	if !strings.Contains(err.Error(), "deny-by-default") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if warn != "" {
+		t.Fatalf("expected empty warning, got %q", warn)
 	}
 }
 
-func TestEvaluateNetworkPolicyWarnsWhenAllowEntriesPresent(t *testing.T) {
-	warn, err := evaluateNetworkPolicy("deny", 2)
+func TestEvaluateNetworkPolicyForDoctorWarnsWhenAllowEntriesPresentWithoutHostFilter(t *testing.T) {
+	warn, err := evaluateNetworkPolicyForDoctor("deny", 2, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -25,8 +30,21 @@ func TestEvaluateNetworkPolicyWarnsWhenAllowEntriesPresent(t *testing.T) {
 	}
 }
 
+func TestEvaluateNetworkPolicyForRunFailsWhenAllowEntriesPresentWithoutHostFilter(t *testing.T) {
+	warn, err := evaluateNetworkPolicyForRun("deny", 2, false)
+	if err == nil {
+		t.Fatal("expected error when allow entries are present without host filter")
+	}
+	if warn != "" {
+		t.Fatalf("expected no warning, got %q", warn)
+	}
+	if !strings.Contains(err.Error(), "requires host-side egress filtering") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestEvaluateNetworkPolicyAcceptsDenyWithNoAllowEntries(t *testing.T) {
-	warn, err := evaluateNetworkPolicy("deny", 0)
+	warn, err := evaluateNetworkPolicyForRun("deny", 0, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -35,8 +53,38 @@ func TestEvaluateNetworkPolicyAcceptsDenyWithNoAllowEntries(t *testing.T) {
 	}
 }
 
+func TestEvaluateNetworkPolicyAcceptsAllowEntriesWhenHostFilterIsEnabled(t *testing.T) {
+	warn, err := evaluateNetworkPolicyForRun("deny", 2, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if warn != "" {
+		t.Fatalf("expected no warning, got %q", warn)
+	}
+}
+
+func TestAllowlistSupportForConfigTreatsFileHandleModeAsSupported(t *testing.T) {
+	t.Parallel()
+
+	supported, detail, protectionMessage, err := allowlistSupportForConfig(backend.FirecrackerConfig{
+		DarwinVZNetworkMode: darwinVZNetworkModeFileHandle,
+	})
+	if err != nil {
+		t.Fatalf("allowlistSupportForConfig returned error: %v", err)
+	}
+	if !supported {
+		t.Fatal("expected filehandle mode to support allowlists")
+	}
+	if detail != "" {
+		t.Fatalf("expected empty detail, got %q", detail)
+	}
+	if got, want := protectionMessage, guestNetworkProtectedByFileHandleMessage; got != want {
+		t.Fatalf("unexpected protection message: got %q want %q", got, want)
+	}
+}
+
 func TestEvaluateNetworkPolicyRejectsUnsupportedDefault(t *testing.T) {
-	warn, err := evaluateNetworkPolicy("bogus", 0)
+	warn, err := evaluateNetworkPolicy("bogus", 0, false, false)
 	if err == nil {
 		t.Fatal("expected error for unsupported network default")
 	}

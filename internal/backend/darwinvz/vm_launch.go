@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/buildkite/cleanroom/internal/policy"
 )
 
 type darwinVZLaunchObservability struct {
@@ -52,6 +54,7 @@ type darwinVZVMStartRequest struct {
 	BootArgs       string
 	ConsoleLogPath string
 	NetworkCfg     darwinVZNetwork
+	Policy         *policy.CompiledPolicy
 	VCPUs          int64
 	MemoryMiB      int64
 	GuestPort      uint32
@@ -63,6 +66,7 @@ type darwinVZVMStartResult struct {
 	ProxySocketPath string
 	NetworkMetadata *darwinVZNetworkMetadata
 	TimingMS        map[string]int64
+	FileHandleGW    *fileHandleGateway
 }
 
 func startDarwinVZHelperVM(ctx context.Context, helper *helperSession, req darwinVZVMStartRequest) (*darwinVZVMStartResult, error) {
@@ -88,22 +92,47 @@ func startDarwinVZHelperVM(ctx context.Context, helper *helperSession, req darwi
 	}
 	_ = os.Remove(proxySocketPath)
 
+	var fileHandleGW *fileHandleGateway
+	if req.NetworkCfg.Mode == darwinVZNetworkModeFileHandle {
+		gateway, err := startFileHandleGateway(ctx, fileHandleGatewayConfig{
+			RunDir:     req.RunDir,
+			SubnetCIDR: req.NetworkCfg.SubnetCIDR,
+			Policy:     req.Policy,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("start file-handle gateway: %w", err)
+		}
+		fileHandleGW = gateway
+	}
+	releaseFileHandleGW := fileHandleGW
+	defer func() {
+		if releaseFileHandleGW != nil {
+			_ = releaseFileHandleGW.Close()
+		}
+	}()
+
 	startCtx, cancelStart := context.WithTimeout(ctx, time.Duration(req.LaunchSeconds)*time.Second)
 	defer cancelStart()
 	startRes, err := helper.request(startCtx, helperControlRequest{
-		Op:              "StartVM",
-		KernelPath:      req.KernelPath,
-		RootFSPath:      req.RootFSPath,
-		BootArgs:        req.BootArgs,
-		NetworkMode:     req.NetworkCfg.Mode,
-		VMNetSubnetCIDR: req.NetworkCfg.SubnetCIDR,
-		VCPUs:           req.VCPUs,
-		MemoryMiB:       req.MemoryMiB,
-		GuestPort:       req.GuestPort,
-		LaunchSeconds:   req.LaunchSeconds,
-		RunDir:          req.RunDir,
-		ProxySocketPath: proxySocketPath,
-		ConsoleLogPath:  req.ConsoleLogPath,
+		Op:                              "StartVM",
+		KernelPath:                      req.KernelPath,
+		RootFSPath:                      req.RootFSPath,
+		BootArgs:                        req.BootArgs,
+		NetworkMode:                     req.NetworkCfg.Mode,
+		VMNetSubnetCIDR:                 req.NetworkCfg.SubnetCIDR,
+		VMNetExternalInterface:          req.NetworkCfg.ExternalInterface,
+		VMNetDisableNAT44:               req.NetworkCfg.DisableNAT44,
+		VMNetDisableNAT66:               req.NetworkCfg.DisableNAT66,
+		VMNetDisableDNSProxy:            req.NetworkCfg.DisableDNSProxy,
+		VMNetDisableRouterAdvertisement: req.NetworkCfg.DisableRouterAdvertisement,
+		VCPUs:                           req.VCPUs,
+		MemoryMiB:                       req.MemoryMiB,
+		GuestPort:                       req.GuestPort,
+		LaunchSeconds:                   req.LaunchSeconds,
+		RunDir:                          req.RunDir,
+		FileHandleSocketPath:            fileHandleGW.SocketPath(),
+		ProxySocketPath:                 proxySocketPath,
+		ConsoleLogPath:                  req.ConsoleLogPath,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("start vm via darwin-vz helper: %w", err)
@@ -139,12 +168,14 @@ func startDarwinVZHelperVM(ctx context.Context, helper *helperSession, req darwi
 	if err := ensureUnixSocketPathFits(proxySocketPath); err != nil {
 		return nil, fmt.Errorf("proxy socket path %q is too long: %w", proxySocketPath, err)
 	}
+	releaseFileHandleGW = nil
 
 	return &darwinVZVMStartResult{
 		VMID:            vmID,
 		ProxySocketPath: proxySocketPath,
 		NetworkMetadata: networkMetadata,
 		TimingMS:        cloneHelperTimingMS(startRes.TimingMS),
+		FileHandleGW:    fileHandleGW,
 	}, nil
 }
 
