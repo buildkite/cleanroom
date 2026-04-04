@@ -156,7 +156,10 @@ raise SystemExit(2)
 	writeLocalExecutable(t, binDir, "zfs", fakeZFS)
 
 	outputDir := filepath.Join(tmpDir, "out")
-	scriptPath := filepath.Join("/Users/lachlan/Develop/cleanroom/scripts", "benchmark-sandbox-create-sequential.py")
+	scriptPath, err := filepath.Abs("benchmark-sandbox-create-sequential.py")
+	if err != nil {
+		t.Fatalf("resolve script path: %v", err)
+	}
 	cmd := exec.Command(
 		python,
 		scriptPath,
