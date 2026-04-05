@@ -62,6 +62,8 @@ func TestCiDarwinVZFileHandleE2EUsesAllowlistPolicy(t *testing.T) {
 		`allowlist_policy_dir="$tmpdir/allowlist-policy"`,
 		`mode: filehandle`,
 		`subnet: 10.233.0.0/24`,
+		`gateway_port="$(sed -n 's/.*gateway server started.* addr=[^:]*:\([0-9][0-9]*\).*/\1/p' "$tmpdir/server.log" | tail -n 1)"`,
+		`./dist/cleanroom exec --host "$listen_endpoint" --backend darwin-vz -c "$smoke_policy_dir" -- sh -lc "wget -T 20 -S -O - http://10.233.0.1:${gateway_port}/meta/health >/dev/null 2>/tmp/meta.err || true; grep -q 'HTTP/1.1 501 Not Implemented' /tmp/meta.err"`,
 		`- host: github.com`,
 		`ports: [443]`,
 		`./dist/cleanroom exec --host "$listen_endpoint" --backend darwin-vz -c "$allowlist_policy_dir" -- sh -lc 'wget -T 20 -q -O /dev/null https://github.com'`,

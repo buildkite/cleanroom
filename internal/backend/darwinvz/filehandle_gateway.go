@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httputil"
 	"net/netip"
 	"net/url"
 	"os"
@@ -15,12 +17,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/buildkite/cleanroom/internal/gateway"
+	"github.com/buildkite/cleanroom/internal/policy"
 	gvdns "github.com/containers/gvisor-tap-vsock/pkg/services/dns"
 	gvtap "github.com/containers/gvisor-tap-vsock/pkg/tap"
 	"github.com/containers/gvisor-tap-vsock/pkg/tcpproxy"
 	gvtransport "github.com/containers/gvisor-tap-vsock/pkg/transport"
 	gvtypes "github.com/containers/gvisor-tap-vsock/pkg/types"
-	"github.com/buildkite/cleanroom/internal/policy"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
 	"gvisor.dev/gvisor/pkg/tcpip/network/arp"
@@ -47,33 +50,45 @@ var defaultFileHandleIPLookup fileHandleIPLookupFunc = func(ctx context.Context,
 }
 
 type fileHandleGatewayConfig struct {
-	RunDir     string
-	SubnetCIDR string
-	GatewayIP  string
-	GatewayMAC string
-	Policy     *policy.CompiledPolicy
-	LookupIP   fileHandleIPLookupFunc
+	RunDir         string
+	SubnetCIDR     string
+	GatewayIP      string
+	GatewayPort    int
+	GatewayMAC     string
+	HostGatewayURL string
+	Policy         *policy.CompiledPolicy
+	LookupIP       fileHandleIPLookupFunc
 }
 
 type fileHandleGatewayPolicy struct {
-	allowAll  bool
+	allowAll   bool
 	allowedTCP map[netip.Addr]map[uint16]struct{}
 }
 
 type fileHandleVirtualNetwork struct {
-	stack         *stack.Stack
-	networkSwitch *gvtap.Switch
-	dnsUDPConn    net.PacketConn
-	dnsTCPLn      net.Listener
+	stack             *stack.Stack
+	networkSwitch     *gvtap.Switch
+	dnsUDPConn        net.PacketConn
+	dnsTCPLn          net.Listener
+	gatewayHTTPLn     net.Listener
+	gatewayHTTPServer *http.Server
 }
 
 type fileHandleGateway struct {
 	socketPath string
 	listener   *net.UnixConn
 	network    *fileHandleVirtualNetwork
+	bridge     *fileHandleGatewayHTTPBridge
 	cancel     context.CancelFunc
 	done       chan error
 	closeOnce  sync.Once
+}
+
+type fileHandleGatewayHTTPBridge struct {
+	reverseProxy *httputil.ReverseProxy
+
+	scopeMu    sync.RWMutex
+	scopeToken string
 }
 
 func startFileHandleGateway(ctx context.Context, cfg fileHandleGatewayConfig) (*fileHandleGateway, error) {
@@ -96,6 +111,9 @@ func startFileHandleGateway(ctx context.Context, cfg fileHandleGatewayConfig) (*
 	if strings.TrimSpace(cfg.GatewayMAC) == "" {
 		cfg.GatewayMAC = fileHandleGatewayDefaultMAC
 	}
+	if cfg.GatewayPort <= 0 {
+		cfg.GatewayPort = gateway.DefaultPort
+	}
 
 	lookup := cfg.LookupIP
 	if lookup == nil {
@@ -106,7 +124,15 @@ func startFileHandleGateway(ctx context.Context, cfg fileHandleGatewayConfig) (*
 		return nil, err
 	}
 
-	network, err := newFileHandleVirtualNetwork(cfg, policyConfig)
+	var bridge *fileHandleGatewayHTTPBridge
+	if strings.TrimSpace(cfg.HostGatewayURL) != "" {
+		bridge, err = newFileHandleGatewayHTTPBridge(cfg.HostGatewayURL)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	network, err := newFileHandleVirtualNetwork(cfg, policyConfig, bridge)
 	if err != nil {
 		return nil, fmt.Errorf("create file-handle virtual network: %w", err)
 	}
@@ -128,6 +154,7 @@ func startFileHandleGateway(ctx context.Context, cfg fileHandleGatewayConfig) (*
 		socketPath: socketPath,
 		listener:   listener,
 		network:    network,
+		bridge:     bridge,
 		cancel:     cancel,
 		done:       make(chan error, 1),
 	}
@@ -183,6 +210,13 @@ func (g *fileHandleGateway) Close() error {
 		}
 	})
 	return closeErr
+}
+
+func (g *fileHandleGateway) SetScopeToken(scopeToken string) {
+	if g == nil || g.bridge == nil {
+		return
+	}
+	g.bridge.SetScopeToken(scopeToken)
 }
 
 func buildFileHandleGatewayPolicy(ctx context.Context, compiled *policy.CompiledPolicy, lookup fileHandleIPLookupFunc) (fileHandleGatewayPolicy, error) {
@@ -256,7 +290,7 @@ func (p fileHandleGatewayPolicy) allowsTCP(destIP netip.Addr, destPort uint16) b
 	return ok
 }
 
-func newFileHandleVirtualNetwork(cfg fileHandleGatewayConfig, policyConfig fileHandleGatewayPolicy) (*fileHandleVirtualNetwork, error) {
+func newFileHandleVirtualNetwork(cfg fileHandleGatewayConfig, policyConfig fileHandleGatewayPolicy, bridge *fileHandleGatewayHTTPBridge) (*fileHandleVirtualNetwork, error) {
 	_, parsedSubnet, err := net.ParseCIDR(cfg.SubnetCIDR)
 	if err != nil {
 		return nil, fmt.Errorf("parse subnet cidr: %w", err)
@@ -328,6 +362,23 @@ func newFileHandleVirtualNetwork(cfg fileHandleGatewayConfig, policyConfig fileH
 	go func() { _ = dnsServer.Serve() }()
 	go func() { _ = dnsServer.ServeTCP() }()
 
+	var gatewayHTTPLn net.Listener
+	var gatewayHTTPServer *http.Server
+	if bridge != nil {
+		gatewayHTTPLn, err = gonet.ListenTCP(s, tcpip.FullAddress{
+			NIC:  1,
+			Addr: tcpip.AddrFrom4Slice(net.ParseIP(cfg.GatewayIP).To4()),
+			Port: uint16(cfg.GatewayPort),
+		}, ipv4.ProtocolNumber)
+		if err != nil {
+			_ = udpConn.Close()
+			_ = tcpLn.Close()
+			return nil, fmt.Errorf("listen file-handle gateway http endpoint: %w", err)
+		}
+		gatewayHTTPServer = &http.Server{Handler: bridge}
+		go func() { _ = gatewayHTTPServer.Serve(gatewayHTTPLn) }()
+	}
+
 	tcpForwarder := tcp.NewForwarder(s, 0, 10, func(r *tcp.ForwarderRequest) {
 		destIP, ok := tcpipAddressAsNetipAddr(r.ID().LocalAddress)
 		if !ok || !policyConfig.allowsTCP(destIP, r.ID().LocalPort) {
@@ -359,10 +410,12 @@ func newFileHandleVirtualNetwork(cfg fileHandleGatewayConfig, policyConfig fileH
 	s.SetTransportProtocolHandler(tcp.ProtocolNumber, tcpForwarder.HandlePacket)
 
 	return &fileHandleVirtualNetwork{
-		stack:         s,
-		networkSwitch: networkSwitch,
-		dnsUDPConn:    udpConn,
-		dnsTCPLn:      tcpLn,
+		stack:             s,
+		networkSwitch:     networkSwitch,
+		dnsUDPConn:        udpConn,
+		dnsTCPLn:          tcpLn,
+		gatewayHTTPLn:     gatewayHTTPLn,
+		gatewayHTTPServer: gatewayHTTPServer,
 	}, nil
 }
 
@@ -386,7 +439,74 @@ func (n *fileHandleVirtualNetwork) Close() error {
 			closeErr = errors.Join(closeErr, fmt.Errorf("close file-handle dns tcp listener: %w", err))
 		}
 	}
+	if n.gatewayHTTPServer != nil {
+		if err := n.gatewayHTTPServer.Close(); err != nil && !errors.Is(err, net.ErrClosed) && !errors.Is(err, http.ErrServerClosed) {
+			closeErr = errors.Join(closeErr, fmt.Errorf("close file-handle gateway http server: %w", err))
+		}
+	}
+	if n.gatewayHTTPLn != nil {
+		if err := n.gatewayHTTPLn.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			closeErr = errors.Join(closeErr, fmt.Errorf("close file-handle gateway http listener: %w", err))
+		}
+	}
 	return closeErr
+}
+
+func newFileHandleGatewayHTTPBridge(targetURL string) (*fileHandleGatewayHTTPBridge, error) {
+	targetURL = strings.TrimSpace(targetURL)
+	if targetURL == "" {
+		return nil, errors.New("file-handle host gateway url is empty")
+	}
+	target, err := url.Parse(targetURL)
+	if err != nil {
+		return nil, fmt.Errorf("parse file-handle host gateway url %q: %w", targetURL, err)
+	}
+	if target.Scheme == "" || target.Host == "" {
+		return nil, fmt.Errorf("file-handle host gateway url %q must include scheme and host", targetURL)
+	}
+
+	bridge := &fileHandleGatewayHTTPBridge{}
+	reverseProxy := httputil.NewSingleHostReverseProxy(target)
+	baseDirector := reverseProxy.Director
+	reverseProxy.Director = func(req *http.Request) {
+		baseDirector(req)
+		req.Header.Del(gateway.ScopeTokenHeader)
+		if scopeToken := bridge.scopeTokenValue(); scopeToken != "" {
+			req.Header.Set(gateway.ScopeTokenHeader, scopeToken)
+		}
+	}
+	bridge.reverseProxy = reverseProxy
+	return bridge, nil
+}
+
+func (b *fileHandleGatewayHTTPBridge) SetScopeToken(scopeToken string) {
+	if b == nil {
+		return
+	}
+	b.scopeMu.Lock()
+	b.scopeToken = strings.TrimSpace(scopeToken)
+	b.scopeMu.Unlock()
+}
+
+func (b *fileHandleGatewayHTTPBridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if b == nil || b.reverseProxy == nil {
+		http.Error(w, "gateway unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	if b.scopeTokenValue() == "" {
+		http.Error(w, "gateway unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	b.reverseProxy.ServeHTTP(w, r)
+}
+
+func (b *fileHandleGatewayHTTPBridge) scopeTokenValue() string {
+	if b == nil {
+		return ""
+	}
+	b.scopeMu.RLock()
+	defer b.scopeMu.RUnlock()
+	return b.scopeToken
 }
 
 func ignoreFileHandleGatewayRunErr(err error) bool {

@@ -54,6 +54,8 @@ type darwinVZVMStartRequest struct {
 	BootArgs       string
 	ConsoleLogPath string
 	NetworkCfg     darwinVZNetwork
+	HostGatewayURL string
+	GatewayPort    int
 	Policy         *policy.CompiledPolicy
 	VCPUs          int64
 	MemoryMiB      int64
@@ -95,9 +97,11 @@ func startDarwinVZHelperVM(ctx context.Context, helper *helperSession, req darwi
 	var fileHandleGW *fileHandleGateway
 	if req.NetworkCfg.Mode == darwinVZNetworkModeFileHandle {
 		gateway, err := startFileHandleGateway(ctx, fileHandleGatewayConfig{
-			RunDir:     req.RunDir,
-			SubnetCIDR: req.NetworkCfg.SubnetCIDR,
-			Policy:     req.Policy,
+			RunDir:         req.RunDir,
+			SubnetCIDR:     req.NetworkCfg.SubnetCIDR,
+			GatewayPort:    req.GatewayPort,
+			HostGatewayURL: req.HostGatewayURL,
+			Policy:         req.Policy,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("start file-handle gateway: %w", err)

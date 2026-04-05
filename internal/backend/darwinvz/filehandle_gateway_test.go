@@ -6,6 +6,8 @@ import (
 	"context"
 	"encoding/hex"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -147,6 +149,44 @@ func TestBuildFileHandleGatewayPolicyRejectsHostWithoutIPv4Resolution(t *testing
 	_, err := buildFileHandleGatewayPolicy(context.Background(), compiled, lookup)
 	if err == nil {
 		t.Fatal("expected unresolved host to fail")
+	}
+}
+
+func TestFileHandleGatewayHTTPBridgeForwardsScopeToken(t *testing.T) {
+	t.Parallel()
+
+	var gotPath string
+	var gotHeader string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotHeader = r.Header.Get("X-Cleanroom-Scope-Token")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+
+	bridge, err := newFileHandleGatewayHTTPBridge(upstream.URL)
+	if err != nil {
+		t.Fatalf("newFileHandleGatewayHTTPBridge returned error: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "http://10.233.0.1:8170/git/github.com/org/repo.git/info/refs", nil)
+	resp := httptest.NewRecorder()
+	bridge.ServeHTTP(resp, req)
+	if got, want := resp.Code, http.StatusServiceUnavailable; got != want {
+		t.Fatalf("unexpected status without scope token: got %d want %d", got, want)
+	}
+
+	bridge.SetScopeToken("scope-token")
+	resp = httptest.NewRecorder()
+	bridge.ServeHTTP(resp, req)
+	if got, want := resp.Code, http.StatusNoContent; got != want {
+		t.Fatalf("unexpected proxied status: got %d want %d", got, want)
+	}
+	if got, want := gotPath, "/git/github.com/org/repo.git/info/refs"; got != want {
+		t.Fatalf("unexpected proxied path: got %q want %q", got, want)
+	}
+	if got, want := gotHeader, "scope-token"; got != want {
+		t.Fatalf("unexpected proxied scope token header: got %q want %q", got, want)
 	}
 }
 

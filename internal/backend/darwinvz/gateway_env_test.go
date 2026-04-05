@@ -66,3 +66,63 @@ func TestGatewayEnvVarsGeneratesGitRewriteAndHeader(t *testing.T) {
 		t.Fatalf("expected %q, got %q", wantHeader, env[6])
 	}
 }
+
+func TestResolveGuestGatewayHost(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		configuredHost string
+		runtimeIP      string
+		want           string
+	}{
+		{
+			name:           "prefers explicit configured host",
+			configuredHost: "gateway.cleanroom.internal",
+			runtimeIP:      "10.233.0.1",
+			want:           "gateway.cleanroom.internal",
+		},
+		{
+			name:      "uses runtime gateway ip when config unset",
+			runtimeIP: "10.233.0.1",
+			want:      "10.233.0.1",
+		},
+		{
+			name: "falls back to default gateway host",
+			want: defaultGatewayHost,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := resolveGuestGatewayHost(tt.configuredHost, tt.runtimeIP); got != tt.want {
+				t.Fatalf("resolveGuestGatewayHost(%q, %q) = %q, want %q", tt.configuredHost, tt.runtimeIP, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestGatewayGitProxyEnvVarsUsesFileHandleGatewayWithoutHeader(t *testing.T) {
+	t.Parallel()
+
+	p := &policy.CompiledPolicy{
+		Version:        1,
+		NetworkDefault: "deny",
+		Allow:          []policy.AllowRule{{Host: "github.com", Ports: []int{443}}},
+	}
+	env := gatewayGitProxyEnvVars(p, darwinVZNetworkModeFileHandle, "10.233.0.1", 8170, "scope-token")
+	if len(env) != 3 {
+		t.Fatalf("expected 3 env vars (count + 1 key/value entry), got %d: %v", len(env), env)
+	}
+	if env[0] != "GIT_CONFIG_COUNT=1" {
+		t.Fatalf("expected GIT_CONFIG_COUNT=1, got %s", env[0])
+	}
+	if !strings.Contains(env[1], "url.http://10.233.0.1:8170/git/github.com/.insteadOf") {
+		t.Fatalf("expected github rewrite key, got %s", env[1])
+	}
+	if env[2] != "GIT_CONFIG_VALUE_0=https://github.com/" {
+		t.Fatalf("expected github rewrite value, got %s", env[2])
+	}
+}

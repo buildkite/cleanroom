@@ -110,6 +110,21 @@ if [[ ! -S "$socket_path" ]]; then
   exit 1
 fi
 
+gateway_port=""
+for _ in $(seq 1 20); do
+  gateway_port="$(sed -n 's/.*gateway server started.* addr=[^:]*:\([0-9][0-9]*\).*/\1/p' "$tmpdir/server.log" | tail -n 1)"
+  if [[ -n "$gateway_port" ]]; then
+    break
+  fi
+  sleep 0.25
+done
+if [[ -z "$gateway_port" ]]; then
+  echo "cleanroom server did not report gateway port" >&2
+  echo "server log:" >&2
+  cat "$tmpdir/server.log" >&2 || true
+  exit 1
+fi
+
 echo "--- :white_check_mark: Launched execution smoke test"
 ./dist/cleanroom exec --host "$listen_endpoint" --backend darwin-vz -c "$smoke_policy_dir" -- sh -lc 'echo darwin-vz-filehandle-e2e' | tee "$tmpdir/exec.out"
 if ! grep -q '^darwin-vz-filehandle-e2e$' "$tmpdir/exec.out"; then
@@ -132,6 +147,9 @@ if [[ "$status" -ne 9 ]]; then
   tail -n 30 "$tmpdir/server.log" >&2 || true
   exit 1
 fi
+
+echo "--- :white_check_mark: Guest gateway bridge smoke test"
+./dist/cleanroom exec --host "$listen_endpoint" --backend darwin-vz -c "$smoke_policy_dir" -- sh -lc "wget -T 20 -S -O - http://10.233.0.1:${gateway_port}/meta/health >/dev/null 2>/tmp/meta.err || true; grep -q 'HTTP/1.1 501 Not Implemented' /tmp/meta.err"
 
 echo "--- :white_check_mark: Allowlisted egress test"
 ./dist/cleanroom exec --host "$listen_endpoint" --backend darwin-vz -c "$allowlist_policy_dir" -- sh -lc 'wget -T 20 -q -O /dev/null https://github.com'

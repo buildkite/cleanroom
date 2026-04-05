@@ -64,9 +64,10 @@ type Adapter struct {
 
 	ensurePreparedRootFSFn func(context.Context, string) (preparedRootFS, error)
 
-	GatewayRegistry gatewayRegistry
-	GatewayPort     int
-	GatewayHost     string
+	GatewayRegistry  gatewayRegistry
+	GatewayPort      int
+	GatewayHost      string
+	GatewayBridgeURL string
 }
 
 type imageEnsurer interface {
@@ -966,6 +967,10 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 		gatewayScopeToken = token
 		defer a.GatewayRegistry.ReleaseScopeToken(gatewayScopeToken)
 	}
+	if startedVM.FileHandleGW != nil {
+		startedVM.FileHandleGW.SetScopeToken(gatewayScopeToken)
+		defer startedVM.FileHandleGW.SetScopeToken("")
+	}
 
 	guestReq := vsockexec.ExecRequest{
 		Command: append([]string(nil), req.Command...),
@@ -977,11 +982,14 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 		if gwPort <= 0 {
 			gwPort = gateway.DefaultPort
 		}
-		gwHost := strings.TrimSpace(a.GatewayHost)
-		if gwHost == "" {
-			gwHost = defaultGatewayHost
+		networkMode := ""
+		gwHost := ""
+		if startedVM.NetworkMetadata != nil {
+			networkMode = startedVM.NetworkMetadata.Mode
+			gwHost = startedVM.NetworkMetadata.GatewayIP
 		}
-		guestReq.Env = append(guestReq.Env, gatewayEnvVars(req.Policy, gwHost, gwPort, gatewayScopeToken)...)
+		gwHost = resolveGuestGatewayHost(a.GatewayHost, gwHost)
+		guestReq.Env = append(guestReq.Env, gatewayGitProxyEnvVars(req.Policy, networkMode, gwHost, gwPort, gatewayScopeToken)...)
 	}
 	seed := make([]byte, 64)
 	if _, err := cryptorand.Read(seed); err == nil {
@@ -1185,6 +1193,8 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 		BootArgs:       bootArgs,
 		ConsoleLogPath: consolePath,
 		NetworkCfg:     networkCfg,
+		HostGatewayURL: a.GatewayBridgeURL,
+		GatewayPort:    a.GatewayPort,
 		Policy:         compiled,
 		VCPUs:          cfg.VCPUs,
 		MemoryMiB:      cfg.MemoryMiB,
@@ -1390,6 +1400,10 @@ func (a *Adapter) executeInSandbox(bootCtx context.Context, runCtx context.Conte
 		gatewayScopeToken = token
 		defer a.GatewayRegistry.ReleaseScopeToken(gatewayScopeToken)
 	}
+	if instance.FileHandleGateway != nil {
+		instance.FileHandleGateway.SetScopeToken(gatewayScopeToken)
+		defer instance.FileHandleGateway.SetScopeToken("")
+	}
 
 	guestReq := vsockexec.ExecRequest{
 		Command: append([]string(nil), req.Command...),
@@ -1401,11 +1415,14 @@ func (a *Adapter) executeInSandbox(bootCtx context.Context, runCtx context.Conte
 		if gwPort <= 0 {
 			gwPort = gateway.DefaultPort
 		}
-		gwHost := strings.TrimSpace(a.GatewayHost)
-		if gwHost == "" {
-			gwHost = defaultGatewayHost
+		networkMode := ""
+		gwHost := ""
+		if instance.NetworkMetadata != nil {
+			networkMode = instance.NetworkMetadata.Mode
+			gwHost = instance.NetworkMetadata.GatewayIP
 		}
-		guestReq.Env = append(guestReq.Env, gatewayEnvVars(policy, gwHost, gwPort, gatewayScopeToken)...)
+		gwHost = resolveGuestGatewayHost(a.GatewayHost, gwHost)
+		guestReq.Env = append(guestReq.Env, gatewayGitProxyEnvVars(policy, networkMode, gwHost, gwPort, gatewayScopeToken)...)
 	}
 	seed := make([]byte, 64)
 	if _, err := cryptorand.Read(seed); err == nil {

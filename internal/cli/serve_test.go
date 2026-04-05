@@ -59,7 +59,7 @@ func TestConfigureGatewayBackendsConfiguresDarwinVZGateway(t *testing.T) {
 		"darwin-vz":   darwinAdapter,
 	}
 
-	configureGatewayBackends(backends, gwRegistry, 8170, "192.168.64.1")
+	configureGatewayBackends(backends, gwRegistry, 8170, "0.0.0.0:8170", "192.168.64.1")
 
 	if fcAdapter.GatewayRegistry == nil {
 		t.Fatal("expected firecracker adapter to use the host gateway registry")
@@ -75,6 +75,9 @@ func TestConfigureGatewayBackendsConfiguresDarwinVZGateway(t *testing.T) {
 	}
 	if got, want := darwinAdapter.GatewayHost, "192.168.64.1"; got != want {
 		t.Fatalf("unexpected darwin-vz gateway host: got %q want %q", got, want)
+	}
+	if got, want := darwinAdapter.GatewayBridgeURL, "http://127.0.0.1:8170"; got != want {
+		t.Fatalf("unexpected darwin-vz gateway bridge url: got %q want %q", got, want)
 	}
 }
 
