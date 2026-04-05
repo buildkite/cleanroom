@@ -1,0 +1,155 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+DARWIN_VZ_KERNEL_IMAGE="${CLEANROOM_DARWIN_VZ_KERNEL_IMAGE:-}"
+
+echo "--- :hammer: Building binaries"
+scripts/build-go.sh
+
+scripts/build-darwin-vz-helper.sh dist/cleanroom-darwin-vz.app
+
+# `scripts/build-go.sh` produces host binaries in dist/, but darwin-vz doctor also
+# requires a Linux guest agent binary named cleanroom-guest-agent-linux-<arch>.
+host_arch="$(go env GOARCH)"
+GOOS=linux GOARCH="$host_arch" CGO_ENABLED=0 go build -trimpath -o "dist/cleanroom-guest-agent-linux-$host_arch" ./cmd/cleanroom-guest-agent
+
+helper_path="${CLEANROOM_DARWIN_VZ_HELPER:-$PWD/dist/cleanroom-darwin-vz.app}"
+if [[ -d "$helper_path" ]]; then
+  helper_executable="$helper_path/Contents/MacOS/cleanroom-darwin-vz"
+  if [[ ! -x "$helper_executable" ]]; then
+    echo "darwin-vz helper bundle is missing its executable: $helper_executable" >&2
+    exit 1
+  fi
+elif [[ ! -x "$helper_path" ]]; then
+  echo "darwin-vz helper is missing or not executable: $helper_path" >&2
+  exit 1
+fi
+
+tmpdir="$(mktemp -d /tmp/cleanroom-dvz-fh-e2e.XXXXXX)"
+cleanup() {
+  if [[ -n "${srv_pid:-}" ]]; then
+    kill "$srv_pid" >/dev/null 2>&1 || true
+    wait "$srv_pid" >/dev/null 2>&1 || true
+  fi
+  rm -rf "$tmpdir"
+}
+trap cleanup EXIT
+
+smoke_policy_dir="$tmpdir/smoke-policy"
+mkdir -p "$smoke_policy_dir"
+cat > "$smoke_policy_dir/cleanroom.yaml" <<'EOF'
+version: 1
+sandbox:
+  image:
+    ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:91a63856cdf97b2e5659660b41d1a131d3b57bfa4cad254018e391ffef6fa4b9
+  network:
+    default: deny
+EOF
+
+allowlist_policy_dir="$tmpdir/allowlist-policy"
+mkdir -p "$allowlist_policy_dir"
+cat > "$allowlist_policy_dir/cleanroom.yaml" <<'EOF'
+version: 1
+sandbox:
+  image:
+    ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:91a63856cdf97b2e5659660b41d1a131d3b57bfa4cad254018e391ffef6fa4b9
+  network:
+    default: deny
+    allow:
+      - host: github.com
+        ports: [443]
+EOF
+
+export XDG_CONFIG_HOME="$tmpdir/c"
+export XDG_STATE_HOME="$tmpdir/s"
+export XDG_RUNTIME_DIR="$tmpdir/r"
+export XDG_DATA_HOME="$tmpdir/d"
+export CLEANROOM_DARWIN_VZ_HELPER="$helper_path"
+
+mkdir -p "$XDG_CONFIG_HOME" "$XDG_STATE_HOME" "$XDG_RUNTIME_DIR" "$XDG_DATA_HOME"
+mkdir -p "$XDG_CONFIG_HOME/cleanroom"
+cat > "$XDG_CONFIG_HOME/cleanroom/config.yaml" <<EOF
+default_backend: darwin-vz
+backends:
+  darwin-vz:
+    network:
+      mode: filehandle
+      subnet: 10.233.0.0/24
+    vcpus: 2
+    memory_mib: 1024
+    launch_seconds: 45
+EOF
+if [[ -n "$DARWIN_VZ_KERNEL_IMAGE" ]]; then
+  echo "    kernel_image: $DARWIN_VZ_KERNEL_IMAGE" >> "$XDG_CONFIG_HOME/cleanroom/config.yaml"
+fi
+
+echo "--- :stethoscope: Doctor"
+./dist/cleanroom doctor --backend darwin-vz --json | tee "$tmpdir/doctor.json"
+if grep -q '"status": "fail"' "$tmpdir/doctor.json"; then
+  echo "darwin-vz doctor checks reported failures" >&2
+  exit 1
+fi
+
+socket_path="$tmpdir/cleanroom.sock"
+listen_endpoint="unix://$socket_path"
+
+echo "--- :rocket: Start cleanroom control-plane"
+./dist/cleanroom serve --listen "$listen_endpoint" --gateway-listen ":0" >"$tmpdir/server.log" 2>&1 &
+srv_pid=$!
+
+for _ in $(seq 1 40); do
+  if [[ -S "$socket_path" ]]; then
+    break
+  fi
+  sleep 0.25
+done
+if [[ ! -S "$socket_path" ]]; then
+  echo "cleanroom server did not create unix socket: $socket_path" >&2
+  echo "server log:" >&2
+  cat "$tmpdir/server.log" >&2 || true
+  exit 1
+fi
+
+echo "--- :white_check_mark: Launched execution smoke test"
+./dist/cleanroom exec --host "$listen_endpoint" --backend darwin-vz -c "$smoke_policy_dir" -- sh -lc 'echo darwin-vz-filehandle-e2e' | tee "$tmpdir/exec.out"
+if ! grep -q '^darwin-vz-filehandle-e2e$' "$tmpdir/exec.out"; then
+  echo "expected darwin-vz filehandle smoke-test output missing" >&2
+  exit 1
+fi
+
+echo "--- :warning: Exit code propagation test"
+set +e
+./dist/cleanroom exec --host "$listen_endpoint" --backend darwin-vz -c "$smoke_policy_dir" -- sh -lc 'exit 9' >"$tmpdir/exit9.out" 2>"$tmpdir/exit9.err"
+status=$?
+set -e
+if [[ "$status" -ne 9 ]]; then
+  echo "expected exit code 9 from darwin-vz guest command, got $status" >&2
+  echo "stdout:" >&2
+  cat "$tmpdir/exit9.out" >&2 || true
+  echo "stderr:" >&2
+  cat "$tmpdir/exit9.err" >&2 || true
+  echo "server log (last 30 lines):" >&2
+  tail -n 30 "$tmpdir/server.log" >&2 || true
+  exit 1
+fi
+
+echo "--- :white_check_mark: Allowlisted egress test"
+./dist/cleanroom exec --host "$listen_endpoint" --backend darwin-vz -c "$allowlist_policy_dir" -- sh -lc 'wget -T 20 -q -O /dev/null https://github.com'
+
+echo "--- :no_entry: Denied egress test"
+set +e
+./dist/cleanroom exec --host "$listen_endpoint" --backend darwin-vz -c "$allowlist_policy_dir" -- sh -lc 'wget -T 20 -q -O /dev/null https://buildkite.com' >"$tmpdir/deny.out" 2>"$tmpdir/deny.err"
+deny_status=$?
+set -e
+if [[ "$deny_status" -eq 0 ]]; then
+  echo "expected non-allowlisted egress to fail in filehandle mode" >&2
+  echo "stdout:" >&2
+  cat "$tmpdir/deny.out" >&2 || true
+  echo "stderr:" >&2
+  cat "$tmpdir/deny.err" >&2 || true
+  echo "server log (last 30 lines):" >&2
+  tail -n 30 "$tmpdir/server.log" >&2 || true
+  exit 1
+fi
+
+echo "darwin-vz filehandle e2e checks passed"

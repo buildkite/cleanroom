@@ -48,6 +48,32 @@ func TestCiDarwinVZE2EForcesNATNetworkMode(t *testing.T) {
 	}
 }
 
+func TestCiDarwinVZFileHandleE2EUsesAllowlistPolicy(t *testing.T) {
+	t.Helper()
+
+	content, err := os.ReadFile("ci-darwin-vz-filehandle-e2e.sh")
+	if err != nil {
+		t.Fatalf("read ci-darwin-vz-filehandle-e2e.sh: %v", err)
+	}
+
+	script := string(content)
+	for _, needle := range []string{
+		`helper_path="${CLEANROOM_DARWIN_VZ_HELPER:-$PWD/dist/cleanroom-darwin-vz.app}"`,
+		`allowlist_policy_dir="$tmpdir/allowlist-policy"`,
+		`mode: filehandle`,
+		`subnet: 10.233.0.0/24`,
+		`- host: github.com`,
+		`ports: [443]`,
+		`./dist/cleanroom exec --host "$listen_endpoint" --backend darwin-vz -c "$allowlist_policy_dir" -- sh -lc 'wget -T 20 -q -O /dev/null https://github.com'`,
+		`./dist/cleanroom exec --host "$listen_endpoint" --backend darwin-vz -c "$allowlist_policy_dir" -- sh -lc 'wget -T 20 -q -O /dev/null https://buildkite.com'`,
+		`expected non-allowlisted egress to fail in filehandle mode`,
+	} {
+		if !strings.Contains(script, needle) {
+			t.Fatalf("expected ci-darwin-vz-filehandle-e2e.sh to contain %q", needle)
+		}
+	}
+}
+
 func TestBuildDarwinVZHelperUsesSharedPackager(t *testing.T) {
 	t.Helper()
 
