@@ -186,6 +186,62 @@ func TestRuntimeHonoursMinimumTTLAcrossCNAMEChainAndKeepsEstablishedConnections(
 	}
 }
 
+func TestRuntimeTreatsZeroAnswerTTLAsImmediateExpiry(t *testing.T) {
+	t.Parallel()
+
+	runtime := NewRuntime(RuntimeConfig{
+		MaxObservationsPerScope:  8,
+		MaxConnectionsPerSandbox: 8,
+	})
+	if err := runtime.RegisterSandbox("sandbox-1", testCompiledPolicy(
+		policy.AllowRule{Host: "service.example", Ports: []int{443}},
+	)); err != nil {
+		t.Fatalf("register sandbox: %v", err)
+	}
+
+	now := time.Date(2026, time.April, 6, 10, 0, 0, 0, time.UTC)
+	sourceIP := netip.MustParseAddr("10.0.0.2")
+	destIP := netip.MustParseAddr("203.0.113.21")
+
+	if err := runtime.ObserveResponse("sandbox-1", sourceIP, testResponse("service.example.",
+		&dns.CNAME{
+			Hdr:    dns.RR_Header{Name: "service.example.", Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: 30},
+			Target: "cdn.example.",
+		},
+		&dns.A{
+			Hdr: dns.RR_Header{Name: "cdn.example.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 0},
+			A:   net.ParseIP("203.0.113.21"),
+		},
+	), now); err != nil {
+		t.Fatalf("observe response: %v", err)
+	}
+
+	observations := runtime.Observations("sandbox-1", now)
+	if len(observations) != 1 {
+		t.Fatalf("unexpected observation count: got %d want 1", len(observations))
+	}
+	if got, want := observations[0].Type, RecordTypeCNAME; got != want {
+		t.Fatalf("unexpected surviving observation type: got %q want %q", got, want)
+	}
+
+	for _, observation := range observations {
+		if observation.Type == RecordTypeA {
+			t.Fatalf("did not expect zero-ttl address observation to remain cached: %+v", observation)
+		}
+	}
+
+	if runtime.AllowConnection(Connection{
+		SandboxID:  "sandbox-1",
+		SourceIP:   sourceIP,
+		SourcePort: 41010,
+		DestIP:     destIP,
+		DestPort:   443,
+		Protocol:   ProtocolTCP,
+	}, now) {
+		t.Fatal("did not expect zero-ttl observation to allow new connections")
+	}
+}
+
 func TestRuntimeScopesObservationsBySandboxAndSourceIP(t *testing.T) {
 	t.Parallel()
 

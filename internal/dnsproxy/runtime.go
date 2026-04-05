@@ -431,9 +431,9 @@ func addressObservations(sandboxID string, sourceIP netip.Addr, questions []stri
 	paths := queryPaths(owner, questions, cnames)
 	observations := make([]Observation, 0, len(paths))
 	for _, path := range paths {
-		effectiveTTL := minPositive(answerTTL, path.cnameTTL)
-		if effectiveTTL == 0 {
-			effectiveTTL = answerTTL
+		effectiveTTL := answerTTL
+		if len(path.names) > 1 {
+			effectiveTTL = minTTL(answerTTL, path.cnameTTL)
 		}
 		observations = append(observations, Observation{
 			SandboxID:  sandboxID,
@@ -522,12 +522,16 @@ func deriveNamePath(question, owner string, cnames map[string]cnameRecord) ([]st
 	current := question
 	names := []string{question}
 	var ttlLimit time.Duration
+	ttlLimitSet := false
 	for i := 0; i < len(cnames)+1; i++ {
 		record, ok := cnames[current]
 		if !ok {
 			return nil, 0, false
 		}
-		ttlLimit = minPositive(ttlLimit, record.ttl)
+		if !ttlLimitSet || record.ttl < ttlLimit {
+			ttlLimit = record.ttl
+			ttlLimitSet = true
+		}
 		current = record.target
 		if _, duplicate := seen[current]; duplicate {
 			return nil, 0, false
@@ -594,4 +598,11 @@ func minPositive(left, right time.Duration) time.Duration {
 	default:
 		return right
 	}
+}
+
+func minTTL(left, right time.Duration) time.Duration {
+	if right < left {
+		return right
+	}
+	return left
 }
