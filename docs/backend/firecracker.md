@@ -4,7 +4,7 @@
 
 ## Summary
 
-Cleanroom's primary Linux backend uses [Firecracker](https://github.com/firecracker-microvm/firecracker) microVMs with per-sandbox TAP networking and host iptables enforcement. Each sandbox gets a dedicated TAP interface, generated machine JSON, and a vsock guest-agent for command execution.
+Cleanroom's primary Linux backend uses [Firecracker](https://github.com/firecracker-microvm/firecracker) microVMs with per-sandbox TAP networking, a host-side trusted DNS forwarder, and host firewall enforcement. Each sandbox gets a dedicated TAP interface, generated machine JSON, and a vsock guest-agent for command execution.
 
 Firecracker is purpose-built for secure multi-tenant workloads with a minimal device model. Its network model (TAP + host firewall) maps directly to Cleanroom's deny-by-default enforcement.
 
@@ -22,7 +22,9 @@ Firecracker networking is built around a dedicated per-sandbox TAP device on the
 
 - each sandbox gets a unique host IP / guest IP pair on that TAP-backed subnet
 - the host can identify the sandbox by guest source IP
-- host-side iptables rules enforce default-deny egress and exact allowlist exceptions
+- guest DNS is redirected to a host-side resolver built on `miekg/dns`
+- DNS answers are observed per sandbox/guest IP and projected into dynamic `ipset`-backed allow rules
+- host-side iptables rules enforce default-deny egress, with established flows surviving DNS TTL expiry
 - gateway access is bound to the sandbox's TAP/IP identity rather than a helper-managed token
 
 This is materially different from the current `darwin-vz` backend, which uses helper-managed NAT networking and does not expose a host-visible per-sandbox guest IP. See [darwin-vz.md](darwin-vz.md) for the current macOS model.
@@ -44,6 +46,7 @@ Current capability values (visible in `cleanroom doctor --json`):
 - `sandbox.file_download=true`
 - `network.default_deny=true`
 - `network.allowlist_egress=true`
+- `dns_control_or_equivalent=true`
 - `network.guest_interface=true`
 
 ## Host requirements
@@ -52,7 +55,7 @@ Current capability values (visible in `cleanroom doctor --json`):
 - Firecracker binary installed
 - `mkfs.ext4` for OCI-to-ext4 materialization
 - `debugfs` for runtime rootfs preparation
-- `sudo -n` access for privileged host networking (`ip`, `iptables`, `sysctl`)
+- `sudo -n` access for privileged host networking (`ip`, `ipset`, `iptables`, `sysctl`)
 
 ## Related
 

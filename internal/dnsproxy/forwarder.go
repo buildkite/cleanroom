@@ -16,6 +16,9 @@ type DNSClient interface {
 // ScopeResolver maps an inbound source IP to a sandbox identity.
 type ScopeResolver func(sourceIP netip.Addr) (sandboxID string, ok bool)
 
+// ObserveHook runs after a scoped response has been recorded in the runtime.
+type ObserveHook func(sandboxID string, sourceIP netip.Addr)
+
 // ForwarderConfig configures a DNS forwarding handler.
 type ForwarderConfig struct {
 	Runtime       *Runtime
@@ -23,6 +26,7 @@ type ForwarderConfig struct {
 	ScopeResolver ScopeResolver
 	Client        DNSClient
 	Now           func() time.Time
+	OnObserve     ObserveHook
 }
 
 // Forwarder forwards DNS requests to an upstream resolver and records the
@@ -33,6 +37,7 @@ type Forwarder struct {
 	scopeResolver ScopeResolver
 	client        DNSClient
 	now           func() time.Time
+	onObserve     ObserveHook
 }
 
 // NewForwarder creates a DNS forwarding handler backed by miekg/dns.
@@ -51,6 +56,7 @@ func NewForwarder(cfg ForwarderConfig) *Forwarder {
 		scopeResolver: cfg.ScopeResolver,
 		client:        client,
 		now:           now,
+		onObserve:     cfg.OnObserve,
 	}
 }
 
@@ -85,7 +91,12 @@ func (f *Forwarder) observeScopedResponse(remoteAddr net.Addr, resp *dns.Msg) {
 	if !ok {
 		return
 	}
-	_ = f.runtime.ObserveResponse(sandboxID, sourceIP, resp.Copy(), f.now().UTC())
+	if err := f.runtime.ObserveResponse(sandboxID, sourceIP, resp.Copy(), f.now().UTC()); err != nil {
+		return
+	}
+	if f.onObserve != nil {
+		f.onObserve(sandboxID, sourceIP)
+	}
 }
 
 func addrFromNetAddr(addr net.Addr) (netip.Addr, bool) {

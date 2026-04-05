@@ -15,6 +15,9 @@ func TestCapabilitiesDeclareNetworkSupport(t *testing.T) {
 	if !caps[backend.CapabilityNetworkAllowlistEgress] {
 		t.Fatalf("expected %s=true", backend.CapabilityNetworkAllowlistEgress)
 	}
+	if !caps[backend.CapabilityDNSControlOrEquivalent] {
+		t.Fatalf("expected %s=true", backend.CapabilityDNSControlOrEquivalent)
+	}
 	if !caps[backend.CapabilityNetworkGuestInterface] {
 		t.Fatalf("expected %s=true", backend.CapabilityNetworkGuestInterface)
 	}

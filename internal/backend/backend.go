@@ -15,6 +15,7 @@ const (
 	CapabilitySandboxFileDownload    = "sandbox.file_download"
 	CapabilityNetworkDefaultDeny     = "network.default_deny"
 	CapabilityNetworkAllowlistEgress = "network.allowlist_egress"
+	CapabilityDNSControlOrEquivalent = "dns_control_or_equivalent"
 	CapabilityNetworkGuestInterface  = "network.guest_interface"
 )
 
@@ -25,6 +26,7 @@ var knownCapabilityKeys = []string{
 	CapabilitySandboxFileDownload,
 	CapabilityNetworkDefaultDeny,
 	CapabilityNetworkAllowlistEgress,
+	CapabilityDNSControlOrEquivalent,
 	CapabilityNetworkGuestInterface,
 }
 

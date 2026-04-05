@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/netip"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -54,6 +55,15 @@ type Observation struct {
 	TTL        time.Duration
 	ObservedAt time.Time
 	ExpiresAt  time.Time
+}
+
+// AllowedDestination is a concrete transport destination derived from current
+// DNS observations plus sandbox allowlist policy.
+type AllowedDestination struct {
+	Protocol  string
+	Address   netip.Addr
+	Port      string
+	ExpiresAt time.Time
 }
 
 // Connection identifies a network flow that is being authorised.
@@ -223,6 +233,83 @@ func (r *Runtime) Observations(sandboxID string, now time.Time) []Observation {
 	return out
 }
 
+// AllowedDestinations returns the currently permitted transport destinations
+// for a sandbox/source pair after applying DNS observation TTLs and policy
+// ports. The result is suitable for backend-specific firewall programming.
+func (r *Runtime) AllowedDestinations(sandboxID string, sourceIP netip.Addr, now time.Time) []AllowedDestination {
+	sourceIP = normalizeAddr(sourceIP)
+	if !sourceIP.IsValid() {
+		return nil
+	}
+
+	now = now.UTC()
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	state, ok := r.sandboxes[strings.TrimSpace(sandboxID)]
+	if !ok {
+		return nil
+	}
+
+	scope, ok := state.scopes[sourceIP]
+	if !ok {
+		return nil
+	}
+	scope.pruneExpired(now)
+
+	type destinationKey struct {
+		protocol string
+		address  netip.Addr
+		port     string
+	}
+
+	destinations := make(map[destinationKey]AllowedDestination)
+	for _, observation := range scope.observations {
+		if !observation.ExpiresAt.After(now) || !observation.Address.IsValid() {
+			continue
+		}
+		for _, port := range state.observationAllowedPorts(observation) {
+			portStr := strconv.Itoa(port)
+			for _, protocol := range []string{ProtocolTCP, ProtocolUDP} {
+				key := destinationKey{
+					protocol: protocol,
+					address:  observation.Address,
+					port:     portStr,
+				}
+				candidate := AllowedDestination{
+					Protocol:  protocol,
+					Address:   observation.Address,
+					Port:      portStr,
+					ExpiresAt: observation.ExpiresAt,
+				}
+				existing, exists := destinations[key]
+				if !exists || existing.ExpiresAt.Before(candidate.ExpiresAt) {
+					destinations[key] = candidate
+				}
+			}
+		}
+	}
+
+	out := make([]AllowedDestination, 0, len(destinations))
+	for _, destination := range destinations {
+		out = append(out, destination)
+	}
+	slices.SortFunc(out, func(a, b AllowedDestination) int {
+		if cmp := compareAddr(a.Address, b.Address); cmp != 0 {
+			return cmp
+		}
+		if cmp := strings.Compare(a.Protocol, b.Protocol); cmp != 0 {
+			return cmp
+		}
+		if cmp := strings.Compare(a.Port, b.Port); cmp != 0 {
+			return cmp
+		}
+		return a.ExpiresAt.Compare(b.ExpiresAt)
+	})
+	return out
+}
+
 // AllowConnection permits an already-established flow or authorises a new flow
 // when there is a still-valid DNS observation that matches sandbox policy.
 func (r *Runtime) AllowConnection(conn Connection, now time.Time) bool {
@@ -329,6 +416,29 @@ func (s *sandboxState) observationAllowsPort(observation Observation, port int) 
 		return true
 	}
 	return false
+}
+
+func (s *sandboxState) observationAllowedPorts(observation Observation) []int {
+	if s.policy == nil {
+		return nil
+	}
+
+	ports := make([]int, 0)
+	seen := make(map[int]struct{})
+	for _, rule := range s.policy.Allow {
+		for _, port := range rule.Ports {
+			if _, exists := seen[port]; exists {
+				continue
+			}
+			if !s.observationAllowsPort(observation, port) {
+				continue
+			}
+			seen[port] = struct{}{}
+			ports = append(ports, port)
+		}
+	}
+	slices.Sort(ports)
+	return ports
 }
 
 func (s *sandboxState) recordConnection(key connectionKey, limit int) {

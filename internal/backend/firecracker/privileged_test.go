@@ -211,6 +211,7 @@ func TestDoctorReportsZFSChecks(t *testing.T) {
 	writeExecutable(t, binDir, "firecracker", "#!/bin/sh\nexit 0\n")
 	writeExecutable(t, binDir, "cleanroom-guest-agent", "#!/bin/sh\nexit 0\n")
 	writeExecutable(t, binDir, "mkfs.ext4", "#!/bin/sh\nexit 0\n")
+	writeExecutable(t, binDir, "ipset", "#!/bin/sh\nexit 0\n")
 	writeExecutable(t, binDir, "iptables", "#!/bin/sh\nexit 0\n")
 	writeExecutable(t, binDir, "sysctl", "#!/bin/sh\nexit 0\n")
 	writeExecutable(t, binDir, "true", "#!/bin/sh\nexit 0\n")
