@@ -12,7 +12,7 @@ set -euo pipefail
 # - Helper updates must land on hosts before branches that depend on new capabilities can pass.
 
 helper_contract_version() {
-  echo "4"
+  echo "5"
 }
 
 helper_has_zfs() {
@@ -23,6 +23,7 @@ helper_has_zfs() {
 helper_capabilities() {
   cat <<'EOF'
 firecracker-network
+firecracker-trusted-dns
 EOF
 
   if helper_has_zfs; then
@@ -67,6 +68,11 @@ is_cidr() {
 }
 
 is_trusted_dns_set_name() {
+  local v="$1"
+  [[ "$v" =~ ^crdns-(tcp|udp)-cr[a-z0-9]{1,13}$ ]]
+}
+
+is_trusted_dns_chain_name() {
   local v="$1"
   [[ "$v" =~ ^crdns-(tcp|udp)-cr[a-z0-9]{1,13}$ ]]
 }
@@ -261,6 +267,29 @@ run_iptables() {
   if [[ "$#" -eq 13 && ( "$1" == "-A" || "$1" == "-D" ) && "$2" == "FORWARD" && "$3" == "-i" && "$5" == "-p" && ( "$6" == "tcp" || "$6" == "udp" ) && "$7" == "-m" && "$8" == "set" && "$9" == "--match-set" && "${11}" == "dst,dst" && "${12}" == "-j" && "${13}" == "ACCEPT" ]]; then
     is_tap_name "$4" || die "iptables FORWARD set allow: unsupported interface '$4'"
     is_trusted_dns_set_name "${10}" || die "iptables FORWARD set allow: unsupported set '${10}'"
+    exec /usr/sbin/iptables "$@"
+  fi
+
+  if [[ "$#" -eq 2 && "$1" == "-N" ]]; then
+    is_trusted_dns_chain_name "$2" || die "iptables chain create: unsupported chain '$2'"
+    exec /usr/sbin/iptables "$@"
+  fi
+
+  if [[ "$#" -eq 2 && ( "$1" == "-F" || "$1" == "-X" ) ]]; then
+    is_trusted_dns_chain_name "$2" || die "iptables chain $1: unsupported chain '$2'"
+    exec /usr/sbin/iptables "$@"
+  fi
+
+  if [[ "$#" -eq 8 && ( "$1" == "-A" || "$1" == "-D" ) && "$2" == "FORWARD" && "$3" == "-i" && "$5" == "-p" && ( "$6" == "tcp" || "$6" == "udp" ) && "$7" == "-j" ]]; then
+    is_tap_name "$4" || die "iptables FORWARD chain jump: unsupported interface '$4'"
+    is_trusted_dns_chain_name "$8" || die "iptables FORWARD chain jump: unsupported chain '$8'"
+    exec /usr/sbin/iptables "$@"
+  fi
+
+  if [[ "$#" -eq 10 && ( "$1" == "-A" || "$1" == "-D" ) && "$3" == "-d" && "$5" == "-p" && ( "$6" == "tcp" || "$6" == "udp" ) && "$7" == "--dport" && "$9" == "-j" && "${10}" == "ACCEPT" ]]; then
+    is_trusted_dns_chain_name "$2" || die "iptables trusted dns allow: unsupported chain '$2'"
+    is_ipv4 "$4" || die "iptables trusted dns allow: invalid destination ip '$4'"
+    is_numeric "$8" || die "iptables trusted dns allow: invalid port '$8'"
     exec /usr/sbin/iptables "$@"
   fi
 

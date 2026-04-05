@@ -16,7 +16,7 @@ import (
 	"github.com/miekg/dns"
 )
 
-func TestTrustedDNSSetSyncerSyncsRuntimeObservationsToIPSets(t *testing.T) {
+func TestTrustedDNSChainSyncerSyncsRuntimeObservationsToIPTablesChains(t *testing.T) {
 	t.Parallel()
 
 	runtime := dnsproxy.NewRuntime(dnsproxy.RuntimeConfig{
@@ -57,28 +57,28 @@ func TestTrustedDNSSetSyncerSyncsRuntimeObservationsToIPSets(t *testing.T) {
 		return nil
 	}
 
-	syncer := trustedDNSSetSyncer{
-		sandboxID:  "sandbox-1",
-		sourceIP:   sourceIP,
-		runtime:    runtime,
-		tcpSetName: trustedDNSTCPSetName("crrun12345"),
-		udpSetName: trustedDNSUDPSetName("crrun12345"),
-		runBatch:   runBatch,
-		now:        func() time.Time { return now },
+	syncer := trustedDNSChainSyncer{
+		sandboxID:    "sandbox-1",
+		sourceIP:     sourceIP,
+		runtime:      runtime,
+		tcpChainName: trustedDNSTCPChainName("crrun12345"),
+		udpChainName: trustedDNSUDPChainName("crrun12345"),
+		runBatch:     runBatch,
+		now:          func() time.Time { return now },
 	}
 
-	if err := syncer.Sync(context.Background()); err != nil {
+	if _, _, err := syncer.Sync(context.Background()); err != nil {
 		t.Fatalf("sync trusted dns sets: %v", err)
 	}
 
 	joined := strings.Join(calls, "\n")
 	for _, line := range []string{
-		"ipset flush " + trustedDNSTCPSetName("crrun12345"),
-		"ipset flush " + trustedDNSUDPSetName("crrun12345"),
-		"ipset add " + trustedDNSTCPSetName("crrun12345") + " 203.0.113.60,tcp:443 timeout 5",
-		"ipset add " + trustedDNSUDPSetName("crrun12345") + " 203.0.113.60,udp:443 timeout 5",
-		"ipset add " + trustedDNSTCPSetName("crrun12345") + " 203.0.113.60,tcp:8443 timeout 5",
-		"ipset add " + trustedDNSUDPSetName("crrun12345") + " 203.0.113.60,udp:8443 timeout 5",
+		"iptables -F " + trustedDNSTCPChainName("crrun12345"),
+		"iptables -F " + trustedDNSUDPChainName("crrun12345"),
+		"iptables -A " + trustedDNSTCPChainName("crrun12345") + " -d 203.0.113.60 -p tcp --dport 443 -j ACCEPT",
+		"iptables -A " + trustedDNSUDPChainName("crrun12345") + " -d 203.0.113.60 -p udp --dport 443 -j ACCEPT",
+		"iptables -A " + trustedDNSTCPChainName("crrun12345") + " -d 203.0.113.60 -p tcp --dport 8443 -j ACCEPT",
+		"iptables -A " + trustedDNSUDPChainName("crrun12345") + " -d 203.0.113.60 -p udp --dport 8443 -j ACCEPT",
 	} {
 		if !strings.Contains(joined, line) {
 			t.Fatalf("missing sync command %q\ncommands:\n%s", line, joined)
@@ -146,13 +146,13 @@ func TestSetupHostNetworkWithTrustedDNSFactoryConfiguresDynamicRulesWithoutStati
 	joined := strings.Join(joinedLines, "\n")
 
 	for _, expected := range []string{
-		"ipset create " + trustedDNSTCPSetName(tap) + " hash:ip,port family inet timeout 1",
-		"ipset create " + trustedDNSUDPSetName(tap) + " hash:ip,port family inet timeout 1",
+		"iptables -N " + trustedDNSTCPChainName(tap),
+		"iptables -N " + trustedDNSUDPChainName(tap),
 		"iptables -t nat -A PREROUTING -i " + tap + " -p udp --dport 53 -j REDIRECT --to-ports " + strconv.Itoa(trustedDNSListenPort),
 		"iptables -t nat -A PREROUTING -i " + tap + " -p tcp --dport 53 -j REDIRECT --to-ports " + strconv.Itoa(trustedDNSListenPort),
 		"iptables -A FORWARD -i " + tap + " -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT",
-		"iptables -A FORWARD -i " + tap + " -p tcp -m set --match-set " + trustedDNSTCPSetName(tap) + " dst,dst -j ACCEPT",
-		"iptables -A FORWARD -i " + tap + " -p udp -m set --match-set " + trustedDNSUDPSetName(tap) + " dst,dst -j ACCEPT",
+		"iptables -A FORWARD -i " + tap + " -p tcp -j " + trustedDNSTCPChainName(tap),
+		"iptables -A FORWARD -i " + tap + " -p udp -j " + trustedDNSUDPChainName(tap),
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("missing command %q\ncalls:\n%s", expected, joined)
@@ -217,11 +217,11 @@ func TestSetupHostNetworkWithDepsAddsDenyDefaultAndCleanupIndependentContext(t *
 	if strings.Contains(joined, "iptables -A FORWARD -i "+tap+" -j ACCEPT") {
 		t.Fatalf("unexpected blanket ACCEPT FORWARD rule for tap %s\ncalls:\n%s", tap, joined)
 	}
-	if !strings.Contains(joined, "iptables -A FORWARD -i "+tap+" -p tcp -m set --match-set "+trustedDNSTCPSetName(tap)+" dst,dst -j ACCEPT") {
-		t.Fatalf("expected dynamic tcp set rule for policy host\ncalls:\n%s", joined)
+	if !strings.Contains(joined, "iptables -A FORWARD -i "+tap+" -p tcp -j "+trustedDNSTCPChainName(tap)) {
+		t.Fatalf("expected dynamic tcp chain jump for policy host\ncalls:\n%s", joined)
 	}
-	if !strings.Contains(joined, "iptables -A FORWARD -i "+tap+" -p udp -m set --match-set "+trustedDNSUDPSetName(tap)+" dst,dst -j ACCEPT") {
-		t.Fatalf("expected dynamic udp set rule for policy host\ncalls:\n%s", joined)
+	if !strings.Contains(joined, "iptables -A FORWARD -i "+tap+" -p udp -j "+trustedDNSUDPChainName(tap)) {
+		t.Fatalf("expected dynamic udp chain jump for policy host\ncalls:\n%s", joined)
 	}
 	if strings.Contains(joined, "142.251.41.17") {
 		t.Fatalf("did not expect static resolved ip rules in setup\ncalls:\n%s", joined)

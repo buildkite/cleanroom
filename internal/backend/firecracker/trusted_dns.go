@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"math"
 	"net"
 	"net/netip"
 	"strconv"
@@ -19,35 +18,43 @@ import (
 )
 
 const trustedDNSListenPort = 1053
+const trustedDNSSyncRetryDelay = time.Second
 
 type trustedDNSFactory func(context.Context, trustedDNSConfig) (func(), error)
 
 type trustedDNSConfig struct {
-	sandboxID  string
-	hostIP     netip.Addr
-	guestIP    netip.Addr
-	policy     *policy.CompiledPolicy
-	runBatch   rootCommandBatchFunc
-	tcpSetName string
-	udpSetName string
-	now        func() time.Time
+	sandboxID    string
+	hostIP       netip.Addr
+	guestIP      netip.Addr
+	policy       *policy.CompiledPolicy
+	runBatch     rootCommandBatchFunc
+	tcpChainName string
+	udpChainName string
+	now          func() time.Time
 }
 
-type trustedDNSSetSyncer struct {
-	sandboxID  string
-	sourceIP   netip.Addr
-	runtime    *dnsproxy.Runtime
-	tcpSetName string
-	udpSetName string
-	runBatch   rootCommandBatchFunc
-	now        func() time.Time
+type trustedDNSChainSyncer struct {
+	sandboxID    string
+	sourceIP     netip.Addr
+	runtime      *dnsproxy.Runtime
+	tcpChainName string
+	udpChainName string
+	runBatch     rootCommandBatchFunc
+	now          func() time.Time
 }
 
-func trustedDNSTCPSetName(tapName string) string {
+type trustedDNSChainManager struct {
+	sandboxID string
+	syncer    *trustedDNSChainSyncer
+	trigger   chan struct{}
+	done      chan struct{}
+}
+
+func trustedDNSTCPChainName(tapName string) string {
 	return "crdns-tcp-" + tapName
 }
 
-func trustedDNSUDPSetName(tapName string) string {
+func trustedDNSUDPChainName(tapName string) string {
 	return "crdns-udp-" + tapName
 }
 
@@ -76,21 +83,21 @@ func newTrustedDNSService(_ context.Context, cfg trustedDNSConfig) (func(), erro
 		return nil, err
 	}
 
-	var syncer *trustedDNSSetSyncer
-	if cfg.tcpSetName != "" || cfg.udpSetName != "" {
+	var chainManager *trustedDNSChainManager
+	if cfg.tcpChainName != "" || cfg.udpChainName != "" {
 		if cfg.runBatch == nil {
 			runtime.ClearSandbox(cfg.sandboxID)
 			return nil, errors.New("trusted dns batch runner is required")
 		}
-		syncer = &trustedDNSSetSyncer{
-			sandboxID:  cfg.sandboxID,
-			sourceIP:   cfg.guestIP,
-			runtime:    runtime,
-			tcpSetName: cfg.tcpSetName,
-			udpSetName: cfg.udpSetName,
-			runBatch:   cfg.runBatch,
-			now:        cfg.now,
-		}
+		chainManager = newTrustedDNSChainManager(cfg.sandboxID, &trustedDNSChainSyncer{
+			sandboxID:    cfg.sandboxID,
+			sourceIP:     cfg.guestIP,
+			runtime:      runtime,
+			tcpChainName: cfg.tcpChainName,
+			udpChainName: cfg.udpChainName,
+			runBatch:     cfg.runBatch,
+			now:          cfg.now,
+		})
 	}
 
 	forwarder := dnsproxy.NewForwarder(dnsproxy.ForwarderConfig{
@@ -103,14 +110,10 @@ func newTrustedDNSService(_ context.Context, cfg trustedDNSConfig) (func(), erro
 			return "", false
 		},
 		OnObserve: func(string, netip.Addr) {
-			if syncer == nil {
+			if chainManager == nil {
 				return
 			}
-			syncCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			if err := syncer.Sync(syncCtx); err != nil {
-				log.Printf("trusted dns sync failed for %s: %v", cfg.sandboxID, err)
-			}
+			chainManager.Trigger()
 		},
 	})
 
@@ -130,6 +133,11 @@ func newTrustedDNSService(_ context.Context, cfg trustedDNSConfig) (func(), erro
 	udpServer := &dns.Server{PacketConn: udpConn, Handler: forwarder}
 	tcpServer := &dns.Server{Listener: tcpListener, Handler: forwarder}
 
+	stopChainManager := func() {}
+	if chainManager != nil {
+		stopChainManager = chainManager.Start()
+	}
+
 	go func() {
 		if err := udpServer.ActivateAndServe(); err != nil && !isTrustedDNSServerClosedError(err) {
 			log.Printf("trusted dns udp server failed for %s: %v", cfg.sandboxID, err)
@@ -144,6 +152,7 @@ func newTrustedDNSService(_ context.Context, cfg trustedDNSConfig) (func(), erro
 	var once sync.Once
 	cleanup := func() {
 		once.Do(func() {
+			stopChainManager()
 			_ = udpServer.Shutdown()
 			_ = tcpServer.Shutdown()
 			runtime.ClearSandbox(cfg.sandboxID)
@@ -172,12 +181,95 @@ func trustedDNSUpstreamAddr() (string, error) {
 	return net.JoinHostPort(server, port), nil
 }
 
-func (s trustedDNSSetSyncer) Sync(ctx context.Context) error {
+func newTrustedDNSChainManager(sandboxID string, syncer *trustedDNSChainSyncer) *trustedDNSChainManager {
+	return &trustedDNSChainManager{
+		sandboxID: sandboxID,
+		syncer:    syncer,
+		trigger:   make(chan struct{}, 1),
+		done:      make(chan struct{}),
+	}
+}
+
+func (m *trustedDNSChainManager) Start() func() {
+	ctx, cancel := context.WithCancel(context.Background())
+	go m.run(ctx)
+
+	return func() {
+		cancel()
+		<-m.done
+	}
+}
+
+func (m *trustedDNSChainManager) Trigger() {
+	select {
+	case m.trigger <- struct{}{}:
+	default:
+	}
+}
+
+func (m *trustedDNSChainManager) run(ctx context.Context) {
+	defer close(m.done)
+
+	var timer *time.Timer
+	var timerCh <-chan time.Time
+
+	for {
+		select {
+		case <-ctx.Done():
+			stopTrustedDNSTimer(timer)
+			return
+		case <-m.trigger:
+		case <-timerCh:
+		}
+
+		nextSync, hasNextSync, err := m.syncOnce()
+		if err != nil {
+			log.Printf("trusted dns sync failed for %s: %v", m.sandboxID, err)
+			nextSync = time.Now().Add(trustedDNSSyncRetryDelay)
+			hasNextSync = true
+		}
+
+		stopTrustedDNSTimer(timer)
+		timer = nil
+		timerCh = nil
+
+		if !hasNextSync {
+			continue
+		}
+
+		delay := time.Until(nextSync)
+		if delay < 0 {
+			delay = 0
+		}
+		timer = time.NewTimer(delay)
+		timerCh = timer.C
+	}
+}
+
+func (m *trustedDNSChainManager) syncOnce() (time.Time, bool, error) {
+	syncCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return m.syncer.Sync(syncCtx)
+}
+
+func stopTrustedDNSTimer(timer *time.Timer) {
+	if timer == nil {
+		return
+	}
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
+}
+
+func (s trustedDNSChainSyncer) Sync(ctx context.Context) (time.Time, bool, error) {
 	if s.runtime == nil {
-		return errors.New("trusted dns runtime is required")
+		return time.Time{}, false, errors.New("trusted dns runtime is required")
 	}
 	if s.runBatch == nil {
-		return errors.New("trusted dns batch runner is required")
+		return time.Time{}, false, errors.New("trusted dns batch runner is required")
 	}
 
 	now := time.Now().UTC()
@@ -185,49 +277,59 @@ func (s trustedDNSSetSyncer) Sync(ctx context.Context) error {
 		now = s.now().UTC()
 	}
 
-	commands := [][]string{
-		{"ipset", "flush", s.tcpSetName},
-		{"ipset", "flush", s.udpSetName},
+	commands := make([][]string, 0, 2)
+	if s.tcpChainName != "" {
+		commands = append(commands, []string{"iptables", "-F", s.tcpChainName})
 	}
+	if s.udpChainName != "" {
+		commands = append(commands, []string{"iptables", "-F", s.udpChainName})
+	}
+
+	var nextSync time.Time
+	hasNextSync := false
 	for _, destination := range s.runtime.AllowedDestinations(s.sandboxID, s.sourceIP, now) {
 		if !destination.Address.Is4() {
 			continue
 		}
-		timeout := trustedDNSDestinationTimeoutSeconds(now, destination.ExpiresAt)
-		if timeout <= 0 {
-			continue
+		if !hasNextSync || destination.ExpiresAt.Before(nextSync) {
+			nextSync = destination.ExpiresAt
+			hasNextSync = true
 		}
 
-		setName := s.tcpSetName
+		chainName := s.tcpChainName
 		switch destination.Protocol {
 		case dnsproxy.ProtocolUDP:
-			setName = s.udpSetName
+			chainName = s.udpChainName
 		case dnsproxy.ProtocolTCP:
-			setName = s.tcpSetName
+			chainName = s.tcpChainName
 		default:
 			continue
 		}
-		if setName == "" {
+		if chainName == "" {
 			continue
 		}
 
 		commands = append(commands, []string{
-			"ipset",
-			"add",
-			setName,
-			destination.Address.String() + "," + destination.Protocol + ":" + destination.Port,
-			"timeout",
-			strconv.FormatInt(timeout, 10),
+			"iptables",
+			"-A",
+			chainName,
+			"-d",
+			destination.Address.String(),
+			"-p",
+			destination.Protocol,
+			"--dport",
+			destination.Port,
+			"-j",
+			"ACCEPT",
 		})
 	}
-	if err := s.runBatch(ctx, commands); err != nil {
-		return fmt.Errorf("sync trusted dns ipsets: %w", err)
+	if len(commands) == 0 {
+		return nextSync, hasNextSync, nil
 	}
-	return nil
-}
-
-func trustedDNSDestinationTimeoutSeconds(now, expiresAt time.Time) int64 {
-	return int64(math.Ceil(expiresAt.Sub(now).Seconds()))
+	if err := s.runBatch(ctx, commands); err != nil {
+		return time.Time{}, false, fmt.Errorf("sync trusted dns chains: %w", err)
+	}
+	return nextSync, hasNextSync, nil
 }
 
 func isTrustedDNSServerClosedError(err error) bool {

@@ -103,6 +103,7 @@ const vsockDialRetryInterval = 50 * time.Millisecond
 const preparedRuntimeRootFSVersion = "v2-debugfs"
 const defaultPrivilegedHelperPath = "/usr/local/sbin/cleanroom-root-helper"
 const helperCapabilityFirecrackerNetwork = "firecracker-network"
+const helperCapabilityFirecrackerTrustedDNS = "firecracker-trusted-dns"
 const helperCapabilityFirecrackerZFS = "firecracker-zfs"
 const defaultDownloadMaxBytes int64 = 10 * 1024 * 1024
 const snapshotSyncTimeoutSeconds = 10
@@ -771,7 +772,7 @@ func (a *Adapter) Doctor(_ context.Context, req backend.DoctorRequest) (*backend
 
 	privilegedHelperPath := resolvePrivilegedHelperPath(req.FirecrackerConfig)
 
-	requiredCommands := []string{"ip", "ipset", "iptables", "sysctl", "sudo"}
+	requiredCommands := []string{"ip", "iptables", "sysctl", "sudo"}
 	for _, cmd := range requiredCommands {
 		if _, err := exec.LookPath(cmd); err != nil {
 			appendCheck("network_cmd_"+cmd, "fail", fmt.Sprintf("missing required host command %q", cmd))
@@ -2251,22 +2252,24 @@ func setupHostNetworkWithTrustedDNSFactory(ctx context.Context, runID string, al
 	}
 	addCleanup(returnPathCleanup...)
 
-	tcpSetName := ""
-	udpSetName := ""
+	tcpChainName := ""
+	udpChainName := ""
 	if !allowAll {
-		tcpSetName = trustedDNSTCPSetName(tapName)
-		udpSetName = trustedDNSUDPSetName(tapName)
+		tcpChainName = trustedDNSTCPChainName(tapName)
+		udpChainName = trustedDNSUDPChainName(tapName)
 
-		if err := setupRun("ipset", "create", tcpSetName, "hash:ip,port", "family", "inet", "timeout", "1"); err != nil {
+		if err := setupRun("iptables", "-N", tcpChainName); err != nil {
 			cleanup()
-			return hostNetworkConfig{}, func() {}, fmt.Errorf("create trusted dns tcp set for %s: %w", tapName, err)
+			return hostNetworkConfig{}, func() {}, fmt.Errorf("create trusted dns tcp chain for %s: %w", tapName, err)
 		}
-		addCleanup("ipset", "destroy", tcpSetName)
-		if err := setupRun("ipset", "create", udpSetName, "hash:ip,port", "family", "inet", "timeout", "1"); err != nil {
+		addCleanup("iptables", "-X", tcpChainName)
+		addCleanup("iptables", "-F", tcpChainName)
+		if err := setupRun("iptables", "-N", udpChainName); err != nil {
 			cleanup()
-			return hostNetworkConfig{}, func() {}, fmt.Errorf("create trusted dns udp set for %s: %w", tapName, err)
+			return hostNetworkConfig{}, func() {}, fmt.Errorf("create trusted dns udp chain for %s: %w", tapName, err)
 		}
-		addCleanup("ipset", "destroy", udpSetName)
+		addCleanup("iptables", "-X", udpChainName)
+		addCleanup("iptables", "-F", udpChainName)
 
 		establishedCleanup, err := installForwardEstablishedEgressRule(setupRun, tapName)
 		if err != nil {
@@ -2275,26 +2278,26 @@ func setupHostNetworkWithTrustedDNSFactory(ctx context.Context, runID string, al
 		}
 		addCleanup(establishedCleanup...)
 
-		if err := setupRun("iptables", "-A", "FORWARD", "-i", tapName, "-p", "tcp", "-m", "set", "--match-set", tcpSetName, "dst,dst", "-j", "ACCEPT"); err != nil {
+		if err := setupRun("iptables", "-A", "FORWARD", "-i", tapName, "-p", "tcp", "-j", tcpChainName); err != nil {
 			cleanup()
-			return hostNetworkConfig{}, func() {}, fmt.Errorf("install trusted dns tcp allow rule for %s: %w", tapName, err)
+			return hostNetworkConfig{}, func() {}, fmt.Errorf("install trusted dns tcp chain jump for %s: %w", tapName, err)
 		}
-		addCleanup("iptables", "-D", "FORWARD", "-i", tapName, "-p", "tcp", "-m", "set", "--match-set", tcpSetName, "dst,dst", "-j", "ACCEPT")
-		if err := setupRun("iptables", "-A", "FORWARD", "-i", tapName, "-p", "udp", "-m", "set", "--match-set", udpSetName, "dst,dst", "-j", "ACCEPT"); err != nil {
+		addCleanup("iptables", "-D", "FORWARD", "-i", tapName, "-p", "tcp", "-j", tcpChainName)
+		if err := setupRun("iptables", "-A", "FORWARD", "-i", tapName, "-p", "udp", "-j", udpChainName); err != nil {
 			cleanup()
-			return hostNetworkConfig{}, func() {}, fmt.Errorf("install trusted dns udp allow rule for %s: %w", tapName, err)
+			return hostNetworkConfig{}, func() {}, fmt.Errorf("install trusted dns udp chain jump for %s: %w", tapName, err)
 		}
-		addCleanup("iptables", "-D", "FORWARD", "-i", tapName, "-p", "udp", "-m", "set", "--match-set", udpSetName, "dst,dst", "-j", "ACCEPT")
+		addCleanup("iptables", "-D", "FORWARD", "-i", tapName, "-p", "udp", "-j", udpChainName)
 	}
 
 	trustedDNSCleanup, err = factory(ctx, trustedDNSConfig{
-		sandboxID:  runID,
-		hostIP:     hostAddr,
-		guestIP:    guestAddr,
-		policy:     trustedDNSPolicy(allow),
-		runBatch:   runBatchCommand,
-		tcpSetName: tcpSetName,
-		udpSetName: udpSetName,
+		sandboxID:    runID,
+		hostIP:       hostAddr,
+		guestIP:      guestAddr,
+		policy:       trustedDNSPolicy(allow),
+		runBatch:     runBatchCommand,
+		tcpChainName: tcpChainName,
+		udpChainName: udpChainName,
 	})
 	if err != nil {
 		cleanup()
@@ -2417,6 +2420,7 @@ func resolvePrivilegedHelperPath(cfg backend.FirecrackerConfig) string {
 func helperRequiredCapabilities(cfg backend.FirecrackerConfig) []string {
 	required := []string{
 		helperCapabilityFirecrackerNetwork,
+		helperCapabilityFirecrackerTrustedDNS,
 	}
 
 	snapshotDriver := strings.ToLower(strings.TrimSpace(cfg.Snapshots.Driver))
