@@ -12,12 +12,6 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const (
-	darwinVZNetworkModeNAT         = "nat"
-	darwinVZNetworkModeFileHandle  = "filehandle"
-	darwinVZNetworkModeVMNetShared = "vmnet-shared"
-)
-
 const darwinVZFileHandleDefaultSubnetCIDR = "10.233.0.0/24"
 
 type darwinVZNetwork struct {
