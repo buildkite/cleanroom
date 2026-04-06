@@ -1,6 +1,7 @@
 package repositorycheckout
 
 import (
+	"encoding/hex"
 	"fmt"
 	"net/url"
 	"strings"
@@ -46,9 +47,17 @@ func (c *Checkout) ValidateBootstrap() error {
 	if c == nil {
 		return nil
 	}
-	if strings.TrimSpace(c.CommitSHA) == "" {
+	normalizedCommitSHA := strings.ToLower(strings.TrimSpace(c.CommitSHA))
+	if normalizedCommitSHA == "" {
 		return fmt.Errorf("repository commit_sha is required")
 	}
+	if len(normalizedCommitSHA) != 40 {
+		return fmt.Errorf("repository commit_sha %q must be a full 40-character hexadecimal commit SHA", strings.TrimSpace(c.CommitSHA))
+	}
+	if _, err := hex.DecodeString(normalizedCommitSHA); err != nil {
+		return fmt.Errorf("repository commit_sha %q must be a full 40-character hexadecimal commit SHA", strings.TrimSpace(c.CommitSHA))
+	}
+	c.CommitSHA = normalizedCommitSHA
 	if _, err := c.NormalizeRemoteURL(); err != nil {
 		return err
 	}

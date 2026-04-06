@@ -1620,6 +1620,27 @@ func TestCreateSandboxRejectsRepositoryFileRemote(t *testing.T) {
 	}
 }
 
+func TestCreateSandboxRejectsMutableRepositoryCommitRef(t *testing.T) {
+	adapter := &stubAdapter{}
+	svc := newTestService(adapter)
+
+	repository := testRepositoryCheckoutProto()
+	repository.CommitSha = "main"
+	_, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy:             testRepositoryPolicy(),
+		RepositoryCheckout: repository,
+	})
+	if err == nil {
+		t.Fatal("expected repository bootstrap to reject mutable commit refs")
+	}
+	if !strings.Contains(err.Error(), "full 40-character hexadecimal commit SHA") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := adapter.provisionCalls; got != 0 {
+		t.Fatalf("expected no provision call on invalid repository commit ref, got %d", got)
+	}
+}
+
 func TestCreateExecutionRejectsRepositoryRemoteOutsidePolicy(t *testing.T) {
 	adapter := &stubAdapter{}
 	mirrors := &stubRepositoryMirrorStore{}
