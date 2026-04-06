@@ -105,6 +105,16 @@ func TestCanonicalizeRemoteURLAllowsExplicitDefaultSSHPort(t *testing.T) {
 	}
 }
 
+func TestCanonicalizeRemoteURLRejectsMalformedHTTPSRemote(t *testing.T) {
+	_, _, err := CanonicalizeRemoteURL("https://token@github.com:bad/org/repo.git")
+	if err == nil {
+		t.Fatal("expected CanonicalizeRemoteURL to reject malformed https remote")
+	}
+	if !strings.Contains(err.Error(), "parse repository remote URL") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestCanonicalizeRemoteURLPreservesIPv6Brackets(t *testing.T) {
 	gotURL, gotHost, err := CanonicalizeRemoteURL("https://[2001:db8::1]/buildkite/cleanroom.git")
 	if err != nil {

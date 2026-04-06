@@ -156,9 +156,10 @@ func CanonicalizeRemoteURL(raw string) (string, string, error) {
 
 func parseCanonicalHTTPSRemoteURL(raw string) (*url.URL, bool, error) {
 	trimmed := strings.TrimSpace(raw)
+	explicitHTTPS := strings.HasPrefix(strings.ToLower(trimmed), "https://")
 	parsed, err := url.Parse(trimmed)
 	if err != nil {
-		return nil, false, fmt.Errorf("parse repository remote URL %q: %w", trimmed, err)
+		return nil, explicitHTTPS, fmt.Errorf("parse repository remote URL %q: %w", trimmed, err)
 	}
 	if !strings.EqualFold(parsed.Scheme, "https") {
 		return nil, false, nil
