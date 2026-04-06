@@ -139,6 +139,8 @@ setup_local_signing_assets() {
 setup_buildkite_runtime_paths() {
   xdg_state_home_path="/tmp/cleanroom-state-$(openssl rand -hex 4)"
   mkdir -p "$xdg_state_home_path"
+  xdg_cache_home_path="$tmpdir/cache"
+  mkdir -p "$xdg_cache_home_path"
   cleanup_xdg_state_home=1
 }
 
@@ -177,6 +179,7 @@ main() {
   system_keychain_path="/Library/Keychains/System.keychain"
   imported_system_identity_hash=""
   xdg_state_home_path="${XDG_STATE_HOME:-$HOME/.local/state}"
+  xdg_cache_home_path="${XDG_CACHE_HOME:-$HOME/.cache}"
   cleanup_xdg_state_home=0
   sign_identity=""
   sign_keychain=""
@@ -224,6 +227,7 @@ main() {
   run_with_macos_user_home codesign --verify --strict --verbose=2 "$helper_path"
 
   echo "--- :apple: VMNet E2E"
+  XDG_CACHE_HOME="$xdg_cache_home_path" \
   XDG_STATE_HOME="$xdg_state_home_path" \
   CLEANROOM_DARWIN_VZ_HELPER="$helper_path" \
   CLEANROOM_DARWIN_VZ_VMNET_E2E=1 \

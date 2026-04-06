@@ -114,7 +114,9 @@ go test ./internal/backend/darwinvz -run TestVMNetSharedE2E -v
 The vmnet secrets should stay restricted to the `cleanroom` pipeline and the
 `cleanroom-mac` queue.
 The script also forces a short `XDG_STATE_HOME` so the darwin-vz helper socket
-path stays within the macOS UNIX socket length limit.
+path stays within the macOS UNIX socket length limit, and in Buildkite it uses
+a temporary `XDG_CACHE_HOME` so prepared runtime rootfs cache does not
+accumulate on the host.
 
 ### 3.4 Notarized macOS release pkg step
 
@@ -282,7 +284,7 @@ export CLEANROOM_FIRECRACKER_BINARY="/usr/local/bin/firecracker"
 
 ## 6. Collision Safety
 
-`scripts/ci-cleanroom-e2e.sh` and `scripts/ci-darwin-vz-e2e.sh` isolate CI runtime paths using temporary XDG directories (`XDG_CONFIG_HOME`, `XDG_STATE_HOME`, `XDG_RUNTIME_DIR`, `XDG_DATA_HOME`) and a job-local unix socket.
+`scripts/ci-cleanroom-e2e.sh`, `scripts/ci-darwin-vz-e2e.sh`, and the Buildkite path in `scripts/ci-darwin-vz-vmnet-e2e.sh` isolate CI runtime paths using temporary XDG directories (`XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, `XDG_STATE_HOME`, `XDG_RUNTIME_DIR`, `XDG_DATA_HOME`) and a job-local unix socket.
 
 This prevents collisions with any long-running cleanroom instance on the same host.
 

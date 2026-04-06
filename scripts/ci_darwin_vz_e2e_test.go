@@ -34,6 +34,9 @@ func TestCiDarwinVZE2EForcesNATNetworkMode(t *testing.T) {
 	if !strings.Contains(string(content), `helper_path="${CLEANROOM_DARWIN_VZ_HELPER:-$PWD/dist/cleanroom-darwin-vz.app}"`) {
 		t.Fatalf("expected ci-darwin-vz-e2e.sh to default to the prebuilt helper app bundle")
 	}
+	if !strings.Contains(string(content), `export XDG_CACHE_HOME="$tmpdir/cache"`) {
+		t.Fatalf("expected ci-darwin-vz-e2e.sh to isolate cleanroom cache under the job tmpdir")
+	}
 }
 
 func TestBuildDarwinVZHelperUsesSharedPackager(t *testing.T) {
@@ -101,6 +104,8 @@ func TestCiDarwinVZVMNetE2EUsesBuildkiteSecretsAndVMNetEntitlements(t *testing.T
 		`sign_identity="$requested_sign_identity"`,
 		`sign_keychain="$system_keychain_path"`,
 		`xdg_state_home_path="/tmp/cleanroom-state-$(openssl rand -hex 4)"`,
+		`xdg_cache_home_path="$tmpdir/cache"`,
+		`XDG_CACHE_HOME="$xdg_cache_home_path"`,
 		`XDG_STATE_HOME="$xdg_state_home_path"`,
 		"CLEANROOM_DARWIN_VZ_HELPER to a prebuilt signed helper bundle",
 		"CLEANROOM_DARWIN_VZ_HELPER_PROVISION_PROFILE and CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY",
