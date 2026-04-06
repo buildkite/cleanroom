@@ -1,12 +1,16 @@
 FROM alpine:3.22
 
+ARG MISE_VERSION=v2026.4.5
+
 RUN apk add --no-cache \
   bash \
+  curl \
   docker \
   git \
   openssh-client-default \
-  strace \
-  mise
+  strace
+
+RUN curl -fsSL https://mise.run | MISE_VERSION="${MISE_VERSION}" MISE_INSTALL_HELP=0 MISE_INSTALL_PATH=/usr/local/bin/mise sh
 
 # Cleanroom checks out repositories into /workspace, so trust repo-local mise
 # configs there and expose shims on PATH for guest commands.

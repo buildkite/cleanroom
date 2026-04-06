@@ -7,14 +7,20 @@ import (
 	"testing"
 )
 
-func TestPublishedBaseImagesInstallBash(t *testing.T) {
-	t.Parallel()
+const expectedMiseVersion = "v2026.4.5"
 
-	for _, relPath := range []string{
+func publishedBaseDockerfiles() []string {
+	return []string{
 		"Dockerfile.base-image",
 		"Dockerfile.base-image-docker",
 		"Dockerfile.base-image-agents",
-	} {
+	}
+}
+
+func TestPublishedBaseImagesInstallBash(t *testing.T) {
+	t.Parallel()
+
+	for _, relPath := range publishedBaseDockerfiles() {
 		relPath := relPath
 		t.Run(relPath, func(t *testing.T) {
 			t.Parallel()
@@ -33,11 +39,7 @@ func TestPublishedBaseImagesInstallBash(t *testing.T) {
 func TestPublishedBaseImagesInstallOpenSSHClientDefault(t *testing.T) {
 	t.Parallel()
 
-	for _, relPath := range []string{
-		"Dockerfile.base-image",
-		"Dockerfile.base-image-docker",
-		"Dockerfile.base-image-agents",
-	} {
+	for _, relPath := range publishedBaseDockerfiles() {
 		relPath := relPath
 		t.Run(relPath, func(t *testing.T) {
 			t.Parallel()
@@ -53,14 +55,44 @@ func TestPublishedBaseImagesInstallOpenSSHClientDefault(t *testing.T) {
 	}
 }
 
+func TestPublishedBaseImagesInstallPinnedMiseRelease(t *testing.T) {
+	t.Parallel()
+
+	for _, relPath := range publishedBaseDockerfiles() {
+		relPath := relPath
+		t.Run(relPath, func(t *testing.T) {
+			t.Parallel()
+
+			raw, err := os.ReadFile(filepath.Join(".", relPath))
+			if err != nil {
+				t.Fatalf("read %s: %v", relPath, err)
+			}
+
+			dockerfile := string(raw)
+			if !strings.Contains(dockerfile, "ARG MISE_VERSION="+expectedMiseVersion) {
+				t.Fatalf("%s does not pin mise to %s", relPath, expectedMiseVersion)
+			}
+			if !strings.Contains(dockerfile, "\n  curl") {
+				t.Fatalf("%s does not install curl for pinned mise bootstrap", relPath)
+			}
+			if !strings.Contains(dockerfile, "curl -fsSL https://mise.run |") {
+				t.Fatalf("%s does not install mise via the official installer", relPath)
+			}
+
+			for _, line := range strings.Split(dockerfile, "\n") {
+				trimmed := strings.TrimSpace(line)
+				if trimmed == "mise" || trimmed == "mise \\" {
+					t.Fatalf("%s still installs mise from apk", relPath)
+				}
+			}
+		})
+	}
+}
+
 func TestPublishedBaseImagesExposeMiseShimsOnPATH(t *testing.T) {
 	t.Parallel()
 
-	for _, relPath := range []string{
-		"Dockerfile.base-image",
-		"Dockerfile.base-image-docker",
-		"Dockerfile.base-image-agents",
-	} {
+	for _, relPath := range publishedBaseDockerfiles() {
 		relPath := relPath
 		t.Run(relPath, func(t *testing.T) {
 			t.Parallel()
@@ -79,11 +111,7 @@ func TestPublishedBaseImagesExposeMiseShimsOnPATH(t *testing.T) {
 func TestPublishedBaseImagesTrustWorkspaceMiseConfig(t *testing.T) {
 	t.Parallel()
 
-	for _, relPath := range []string{
-		"Dockerfile.base-image",
-		"Dockerfile.base-image-docker",
-		"Dockerfile.base-image-agents",
-	} {
+	for _, relPath := range publishedBaseDockerfiles() {
 		relPath := relPath
 		t.Run(relPath, func(t *testing.T) {
 			t.Parallel()
