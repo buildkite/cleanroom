@@ -4,6 +4,7 @@ RUN apk add --no-cache \
   bash \
   docker \
   git \
+  openssh-client-default \
   strace \
   mise
 

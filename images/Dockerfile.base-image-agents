@@ -13,6 +13,7 @@ RUN apk add --no-cache \
   make \
   nodejs \
   npm \
+  openssh-client-default \
   python3 \
   strace \
   mise
