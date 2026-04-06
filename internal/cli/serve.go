@@ -99,7 +99,7 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 		}
 	}
 
-	configureGatewayBackends(ctx.Backends, gwRegistry, gwPort, darwinGatewayHost)
+	configureGatewayBackends(ctx.Backends, gwRegistry, gwPort, gwServer.Addr(), darwinGatewayHost)
 
 	if fcAdapter, ok := ctx.Backends["firecracker"].(*firecracker.Adapter); ok && fcAdapter.GatewayRegistry != nil {
 		if shouldInstallGatewayFirewall(runtime.GOOS) {
@@ -167,7 +167,7 @@ func gatewayServerConfig(listen string, registry *gateway.Registry, credentials 
 	}
 }
 
-func configureGatewayBackends(backends map[string]backend.Adapter, gwRegistry *gateway.Registry, gwPort int, darwinGatewayHost string) {
+func configureGatewayBackends(backends map[string]backend.Adapter, gwRegistry *gateway.Registry, gwPort int, gwListenAddr, darwinGatewayHost string) {
 	if fcAdapter, ok := backends["firecracker"].(*firecracker.Adapter); ok {
 		fcAdapter.GatewayRegistry = gwRegistry
 		fcAdapter.GatewayPort = gwPort
@@ -177,7 +177,24 @@ func configureGatewayBackends(backends map[string]backend.Adapter, gwRegistry *g
 		darwinAdapter.GatewayRegistry = gwRegistry
 		darwinAdapter.GatewayPort = gwPort
 		darwinAdapter.GatewayHost = strings.TrimSpace(darwinGatewayHost)
+		darwinAdapter.GatewayBridgeURL = gatewayBridgeURL(gwPort, gwListenAddr)
 	}
+}
+
+func gatewayBridgeURL(port int, listenAddr string) string {
+	if port <= 0 {
+		port = gateway.DefaultPort
+	}
+	host, _, err := net.SplitHostPort(strings.TrimSpace(listenAddr))
+	if err != nil {
+		host = ""
+	}
+	host = strings.Trim(host, "[]")
+	switch host {
+	case "", "0.0.0.0", "::":
+		host = "127.0.0.1"
+	}
+	return fmt.Sprintf("http://%s:%d", host, port)
 }
 
 func newControlService(ctx *runtimeContext, logger *log.Logger, mirrors gateway.GitMirrorStore) (*controlservice.Service, error) {

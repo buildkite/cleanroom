@@ -17,7 +17,30 @@ type gatewayRegistry interface {
 	ReleaseScopeToken(scopeToken string)
 }
 
+func resolveGuestGatewayHost(configuredHost, runtimeGatewayIP string) string {
+	configuredHost = strings.TrimSpace(configuredHost)
+	if configuredHost != "" {
+		return configuredHost
+	}
+	runtimeGatewayIP = strings.TrimSpace(runtimeGatewayIP)
+	if runtimeGatewayIP != "" {
+		return runtimeGatewayIP
+	}
+	return defaultGatewayHost
+}
+
+func gatewayGitProxyEnvVars(compiled *policy.CompiledPolicy, networkMode, gatewayHost string, gatewayPort int, scopeToken string) []string {
+	if strings.EqualFold(strings.TrimSpace(networkMode), darwinVZNetworkModeFileHandle) {
+		return gatewayEnvVarsWithScope(compiled, gatewayHost, gatewayPort, "")
+	}
+	return gatewayEnvVarsWithScope(compiled, gatewayHost, gatewayPort, scopeToken)
+}
+
 func gatewayEnvVars(compiled *policy.CompiledPolicy, gatewayHost string, gatewayPort int, scopeToken string) []string {
+	return gatewayEnvVarsWithScope(compiled, gatewayHost, gatewayPort, scopeToken)
+}
+
+func gatewayEnvVarsWithScope(compiled *policy.CompiledPolicy, gatewayHost string, gatewayPort int, scopeToken string) []string {
 	if compiled == nil {
 		return nil
 	}
@@ -26,7 +49,7 @@ func gatewayEnvVars(compiled *policy.CompiledPolicy, gatewayHost string, gateway
 	}
 	gatewayHost = strings.TrimSpace(gatewayHost)
 	scopeToken = strings.TrimSpace(scopeToken)
-	if gatewayHost == "" || scopeToken == "" {
+	if gatewayHost == "" {
 		return nil
 	}
 
@@ -57,11 +80,14 @@ func gatewayEnvVars(compiled *policy.CompiledPolicy, gatewayHost string, gateway
 		return nil
 	}
 
-	gatewayAddr := fmt.Sprintf("http://%s:%d", gatewayHost, gatewayPort)
-	entries = append(entries, configEntry{
-		key:   fmt.Sprintf("http.%s/.extraHeader", gatewayAddr),
-		value: fmt.Sprintf("%s: %s", gateway.ScopeTokenHeader, scopeToken),
-	})
+	scopeToken = strings.TrimSpace(scopeToken)
+	if scopeToken != "" {
+		gatewayAddr := fmt.Sprintf("http://%s:%d", gatewayHost, gatewayPort)
+		entries = append(entries, configEntry{
+			key:   fmt.Sprintf("http.%s/.extraHeader", gatewayAddr),
+			value: fmt.Sprintf("%s: %s", gateway.ScopeTokenHeader, scopeToken),
+		})
+	}
 
 	env := make([]string, 0, 1+len(entries)*2)
 	env = append(env, fmt.Sprintf("GIT_CONFIG_COUNT=%d", len(entries)))

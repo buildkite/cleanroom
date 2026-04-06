@@ -11,9 +11,12 @@ import (
 )
 
 type Adapter struct {
-	GatewayRegistry gatewayRegistry
-	GatewayPort     int
-	GatewayHost     string
+	GatewayRegistry  gatewayRegistry
+	GatewayPort      int
+	GatewayHost      string
+	GatewayBridgeURL string
+
+	ConfiguredNetworkMode string
 }
 
 func New() *Adapter {

@@ -16,6 +16,9 @@ Implemented:
 - launched execution on macOS via `Virtualization.framework`
 - interactive and non-interactive command execution via existing `internal/vsockexec` protocol
 - helper-managed VM lifecycle (`StartVM` / `StopVM` / `PauseVM` / `ResumeVM`)
+- `filehandle` network mode with a Cleanroom-owned guest gateway and stable guest IP
+- TCP allowlist egress filtering for `sandbox.network.allow` in `filehandle` mode
+- guest access to the shared host gateway through the filehandle gateway IP
 - `vmnet-shared` network mode on macOS 26+ with optional experimental custom RFC1918 subnet
 - managed kernel fallback when `kernel_image` is unset or missing
 - rootfs derivation from `sandbox.image.ref` when `rootfs` is unset or missing
@@ -25,8 +28,8 @@ Implemented:
 
 Not implemented:
 
-- egress allowlist filtering for `sandbox.network.allow`
-- host-visible per-sandbox guest IP / TAP identity
+- host port publishing / stable hostnames such as `*.cleanroom.internal`
+- general UDP/IPv6 allowlist policy beyond the current DNS + TCP filehandle path
 
 ## Process and Transport Model
 
@@ -114,28 +117,31 @@ On macOS, cleanroom also probes common Homebrew `e2fsprogs` locations.
 
 ## Networking Semantics
 
-`darwin-vz` currently supports only two policy shapes:
+`darwin-vz` now has two materially different networking models:
 
-- `network.default: deny` keeps the existing policy shape; `network.allow` entries are ignored and produce a warning
-- `network.default: allow` disables egress filtering entirely and produces a warning
-- a virtual NIC is attached with `Virtualization.framework` NAT networking, so guest outbound networking is available
+- `filehandle`
+  - attaches the guest NIC with `VZFileHandleNetworkDeviceAttachment`
+  - gives each sandbox a stable private guest IP
+  - runs a Cleanroom-owned guest gateway on the gateway IP, typically `10.233.0.1`
+  - serves guest DNS from that gateway IP
+  - enforces `sandbox.network.allow` for TCP egress in the gateway
+  - exposes the shared host gateway service to the guest through the same gateway IP
+- `nat` / `vmnet-shared`
+  - provide guest outbound networking
+  - do not provide equivalent host-side allowlist enforcement for `sandbox.network.allow`
+  - still emit an explicit warning when allow rules are present
 
-The backend currently has no allowlist egress enforcement equivalent to Linux Firecracker iptables rules.
+Compared to Firecracker:
 
-At runtime, `darwin-vz` emits an explicit stderr warning for this so it is visible during `exec`/`console`.
-
-This is not equivalent to Firecracker's network model:
-
-- the host does not get a dedicated per-sandbox TAP device
-- the host does not get a stable per-sandbox guest IP identity to key firewall or gateway policy on
-- there is no general host-to-guest inbound network path today beyond the existing helper-mediated control/exec path
-
-The current helper-managed NAT model is intentionally simpler, but it leaves `darwin-vz` behind Firecracker in network identity and enforcement. Planned vmnet-backed work is tracked in [../plans/darwin-vz-vmnet-mode.md](../plans/darwin-vz-vmnet-mode.md).
+- `filehandle` gives `darwin-vz` stable guest identity and host-owned filtering semantics
+- `nat` and `vmnet-shared` still do not provide Firecracker-style per-sandbox host interface identity
+- host-to-guest networking beyond the guest gateway path and helper-mediated control/exec path is still not implemented
 
 Experimental runtime config:
 
-- `backends.darwin-vz.network.mode: vmnet-shared|nat`
+- `backends.darwin-vz.network.mode: filehandle|vmnet-shared|nat`
 - `backends.darwin-vz.network.subnet: 10.233.0.0/16` for custom vmnet shared-mode IPv4 ranges
+- `backends.darwin-vz.network.subnet: 10.233.0.0/24` for custom filehandle private ranges
 
 `vmnet-shared` is now the default only when the host supports it and the
 resolved helper declares the vmnet entitlement. Otherwise the implicit default
@@ -150,22 +156,29 @@ pass a static guest IPv4/gateway/prefix to the guest init path via boot args.
 
 Backends now expose a machine-readable capability map (visible in `cleanroom doctor --json` under `capabilities`).
 
-Current `darwin-vz` capability values when snapshot support is enabled:
+Current `darwin-vz` capability values depend on the configured network mode.
+
+In `filehandle` mode:
 
 - `exec.streaming=true`
 - `sandbox.persistent=true`
 - `sandbox.snapshot=true`
 - `sandbox.file_download=false`
 - `network.default_deny=true`
-- `network.allowlist_egress=false`
+- `network.allowlist_egress=true`
 - `network.guest_interface=true`
 
-Git traffic for allowed HTTPS hosts is routed through the host gateway over the
-NAT host address. The default gateway host is `192.168.64.1`; override it for
-unusual host networking setups with `CLEANROOM_DARWIN_GATEWAY_HOST`. Because
-there is still no Firecracker-style source-IP identity in this mode, gateway
-scoping currently relies on helper-managed scope-token headers rather than
-Firecracker-style source-IP identity.
+In `nat` and `vmnet-shared` modes, `network.allowlist_egress` remains `false`.
+
+Git traffic for allowed HTTPS hosts now uses two different paths:
+
+- `filehandle`
+  - the guest talks to the shared host gateway through the filehandle gateway IP
+  - the guest does not need direct scope-token headers; the host bridge injects them
+- `nat` / `vmnet-shared`
+  - Git traffic uses the NAT host address
+  - `CLEANROOM_DARWIN_GATEWAY_HOST` can override the default host address for unusual setups
+  - gateway scoping still relies on helper-managed scope-token headers because these modes do not provide stable guest identity at the host firewall boundary
 
 ## Entitlements and Signing
 

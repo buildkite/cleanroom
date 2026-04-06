@@ -54,8 +54,13 @@ type DarwinVZConfig struct {
 }
 
 type DarwinVZNetworkConfig struct {
-	Mode   string `yaml:"mode,omitempty"`
-	Subnet string `yaml:"subnet,omitempty"`
+	Mode                       string `yaml:"mode,omitempty"`
+	Subnet                     string `yaml:"subnet,omitempty"`
+	ExternalInterface          string `yaml:"external_interface,omitempty"`
+	DisableNAT44               bool   `yaml:"disable_nat44,omitempty"`
+	DisableNAT66               bool   `yaml:"disable_nat66,omitempty"`
+	DisableDNSProxy            bool   `yaml:"disable_dns_proxy,omitempty"`
+	DisableRouterAdvertisement bool   `yaml:"disable_router_advertisement,omitempty"`
 }
 
 type SnapshotConfig struct {
@@ -119,6 +124,11 @@ func MergeBackendConfig(cfg Config, backendName string, launchSeconds int64) bac
 		out.MinimumRootFSBytes = int64(cfg.Backends.DarwinVZ.MinimumRootFSBytes)
 		out.DarwinVZNetworkMode = cfg.Backends.DarwinVZ.Network.Mode
 		out.DarwinVZNetworkSubnet = cfg.Backends.DarwinVZ.Network.Subnet
+		out.DarwinVZNetworkExternalInterface = cfg.Backends.DarwinVZ.Network.ExternalInterface
+		out.DarwinVZNetworkDisableNAT44 = cfg.Backends.DarwinVZ.Network.DisableNAT44
+		out.DarwinVZNetworkDisableNAT66 = cfg.Backends.DarwinVZ.Network.DisableNAT66
+		out.DarwinVZNetworkDisableDNSProxy = cfg.Backends.DarwinVZ.Network.DisableDNSProxy
+		out.DarwinVZNetworkDisableRouterAdvertisement = cfg.Backends.DarwinVZ.Network.DisableRouterAdvertisement
 		out.DockerStartupSeconds = cfg.Backends.DarwinVZ.Services.Docker.StartupTimeoutSeconds
 		out.DockerStorageDriver = cfg.Backends.DarwinVZ.Services.Docker.StorageDriver
 		out.DockerIPTables = cfg.Backends.DarwinVZ.Services.Docker.IPTables

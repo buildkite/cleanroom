@@ -25,7 +25,7 @@ elif [[ ! -x "$helper_path" ]]; then
   exit 1
 fi
 
-tmpdir="$(mktemp -d /tmp/cleanroom-dvz-e2e.XXXXXX)"
+tmpdir="$(mktemp -d /tmp/cleanroom-dvz-fh-e2e.XXXXXX)"
 cleanup() {
   if [[ -n "${srv_pid:-}" ]]; then
     kill "$srv_pid" >/dev/null 2>&1 || true
@@ -46,23 +46,35 @@ sandbox:
     default: deny
 EOF
 
+allowlist_policy_dir="$tmpdir/allowlist-policy"
+mkdir -p "$allowlist_policy_dir"
+cat > "$allowlist_policy_dir/cleanroom.yaml" <<'EOF'
+version: 1
+sandbox:
+  image:
+    ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:91a63856cdf97b2e5659660b41d1a131d3b57bfa4cad254018e391ffef6fa4b9
+  network:
+    default: deny
+    allow:
+      - host: github.com
+        ports: [443]
+EOF
+
 export XDG_CONFIG_HOME="$tmpdir/c"
-export XDG_CACHE_HOME="$tmpdir/cache"
 export XDG_STATE_HOME="$tmpdir/s"
 export XDG_RUNTIME_DIR="$tmpdir/r"
 export XDG_DATA_HOME="$tmpdir/d"
 export CLEANROOM_DARWIN_VZ_HELPER="$helper_path"
 
-mkdir -p "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_STATE_HOME" "$XDG_RUNTIME_DIR" "$XDG_DATA_HOME"
+mkdir -p "$XDG_CONFIG_HOME" "$XDG_STATE_HOME" "$XDG_RUNTIME_DIR" "$XDG_DATA_HOME"
 mkdir -p "$XDG_CONFIG_HOME/cleanroom"
 cat > "$XDG_CONFIG_HOME/cleanroom/config.yaml" <<EOF
 default_backend: darwin-vz
 backends:
   darwin-vz:
     network:
-      # Buildkite only ad-hoc signs the helper during CI; vmnet-shared needs a
-      # real vmnet-capable provisioning profile, so keep this job on nat.
-      mode: nat
+      mode: filehandle
+      subnet: 10.233.0.0/24
     vcpus: 2
     memory_mib: 1024
     launch_seconds: 45
@@ -98,10 +110,25 @@ if [[ ! -S "$socket_path" ]]; then
   exit 1
 fi
 
+gateway_port=""
+for _ in $(seq 1 20); do
+  gateway_port="$(sed -n 's/.*gateway server started.* addr=[^:]*:\([0-9][0-9]*\).*/\1/p' "$tmpdir/server.log" | tail -n 1)"
+  if [[ -n "$gateway_port" ]]; then
+    break
+  fi
+  sleep 0.25
+done
+if [[ -z "$gateway_port" ]]; then
+  echo "cleanroom server did not report gateway port" >&2
+  echo "server log:" >&2
+  cat "$tmpdir/server.log" >&2 || true
+  exit 1
+fi
+
 echo "--- :white_check_mark: Launched execution smoke test"
-./dist/cleanroom exec --host "$listen_endpoint" --backend darwin-vz -c "$smoke_policy_dir" -- sh -lc 'echo darwin-vz-e2e' | tee "$tmpdir/exec.out"
-if ! grep -q '^darwin-vz-e2e$' "$tmpdir/exec.out"; then
-  echo "expected darwin-vz smoke-test output missing" >&2
+./dist/cleanroom exec --host "$listen_endpoint" --backend darwin-vz -c "$smoke_policy_dir" -- sh -lc 'echo darwin-vz-filehandle-e2e' | tee "$tmpdir/exec.out"
+if ! grep -q '^darwin-vz-filehandle-e2e$' "$tmpdir/exec.out"; then
+  echo "expected darwin-vz filehandle smoke-test output missing" >&2
   exit 1
 fi
 
@@ -121,30 +148,26 @@ if [[ "$status" -ne 9 ]]; then
   exit 1
 fi
 
-echo "--- :no_entry: Policy enforcement test"
-invalid_policy_dir="$tmpdir/invalid-policy"
-mkdir -p "$invalid_policy_dir"
-cat > "$invalid_policy_dir/cleanroom.yaml" <<'EOF'
-version: 1
-sandbox:
-  image:
-    ref: docker.io/library/alpine@sha256:a4f4213abb84c497377b8544c81b3564f313746700372ec4fe84653e4fb03805
-  network:
-    default: allow
-EOF
+echo "--- :white_check_mark: Guest gateway bridge smoke test"
+./dist/cleanroom exec --host "$listen_endpoint" --backend darwin-vz -c "$smoke_policy_dir" -- sh -lc "wget -T 20 -S -O - http://10.233.0.1:${gateway_port}/meta/health >/dev/null 2>/tmp/meta.err || true; grep -q 'HTTP/1.1 501 Not Implemented' /tmp/meta.err"
 
+echo "--- :white_check_mark: Allowlisted egress test"
+./dist/cleanroom exec --host "$listen_endpoint" --backend darwin-vz -c "$allowlist_policy_dir" -- sh -lc 'wget -T 20 -q -O /dev/null https://github.com'
+
+echo "--- :no_entry: Denied egress test"
 set +e
-./dist/cleanroom exec --host "$listen_endpoint" --backend darwin-vz -c "$invalid_policy_dir" -- sh -lc 'echo should-not-run' >"$tmpdir/policy.out" 2>"$tmpdir/policy.err"
-policy_status=$?
+./dist/cleanroom exec --host "$listen_endpoint" --backend darwin-vz -c "$allowlist_policy_dir" -- sh -lc 'wget -T 20 -q -O /dev/null https://buildkite.com' >"$tmpdir/deny.out" 2>"$tmpdir/deny.err"
+deny_status=$?
 set -e
-if [[ "$policy_status" -eq 0 ]]; then
-  echo "expected invalid darwin-vz policy execution to fail" >&2
-  exit 1
-fi
-if ! grep -q 'deny-by-default' "$tmpdir/policy.err"; then
-  echo "expected deny-by-default policy error" >&2
-  cat "$tmpdir/policy.err" >&2 || true
+if [[ "$deny_status" -eq 0 ]]; then
+  echo "expected non-allowlisted egress to fail in filehandle mode" >&2
+  echo "stdout:" >&2
+  cat "$tmpdir/deny.out" >&2 || true
+  echo "stderr:" >&2
+  cat "$tmpdir/deny.err" >&2 || true
+  echo "server log (last 30 lines):" >&2
+  tail -n 30 "$tmpdir/server.log" >&2 || true
   exit 1
 fi
 
-echo "darwin-vz e2e checks passed"
+echo "darwin-vz filehandle e2e checks passed"

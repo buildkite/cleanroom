@@ -37,6 +37,43 @@ func TestCiDarwinVZE2EForcesNATNetworkMode(t *testing.T) {
 	if !strings.Contains(string(content), `export XDG_CACHE_HOME="$tmpdir/cache"`) {
 		t.Fatalf("expected ci-darwin-vz-e2e.sh to isolate cleanroom cache under the job tmpdir")
 	}
+	if !strings.Contains(string(content), `smoke_policy_dir="$tmpdir/smoke-policy"`) {
+		t.Fatalf("expected ci-darwin-vz-e2e.sh to create an isolated smoke policy directory")
+	}
+	if !strings.Contains(string(content), `./dist/cleanroom exec --host "$listen_endpoint" --backend darwin-vz -c "$smoke_policy_dir" -- sh -lc 'echo darwin-vz-e2e'`) {
+		t.Fatalf("expected ci-darwin-vz-e2e.sh to use the isolated smoke policy for the smoke test")
+	}
+	if strings.Contains(string(content), `./dist/cleanroom exec --host "$listen_endpoint" --backend darwin-vz -c "$PWD" -- sh -lc 'echo darwin-vz-e2e'`) {
+		t.Fatalf("expected ci-darwin-vz-e2e.sh not to reuse the repository policy for the smoke test")
+	}
+}
+
+func TestCiDarwinVZFileHandleE2EUsesAllowlistPolicy(t *testing.T) {
+	t.Helper()
+
+	content, err := os.ReadFile("ci-darwin-vz-filehandle-e2e.sh")
+	if err != nil {
+		t.Fatalf("read ci-darwin-vz-filehandle-e2e.sh: %v", err)
+	}
+
+	script := string(content)
+	for _, needle := range []string{
+		`helper_path="${CLEANROOM_DARWIN_VZ_HELPER:-$PWD/dist/cleanroom-darwin-vz.app}"`,
+		`allowlist_policy_dir="$tmpdir/allowlist-policy"`,
+		`mode: filehandle`,
+		`subnet: 10.233.0.0/24`,
+		`gateway_port="$(sed -n 's/.*gateway server started.* addr=[^:]*:\([0-9][0-9]*\).*/\1/p' "$tmpdir/server.log" | tail -n 1)"`,
+		`./dist/cleanroom exec --host "$listen_endpoint" --backend darwin-vz -c "$smoke_policy_dir" -- sh -lc "wget -T 20 -S -O - http://10.233.0.1:${gateway_port}/meta/health >/dev/null 2>/tmp/meta.err || true; grep -q 'HTTP/1.1 501 Not Implemented' /tmp/meta.err"`,
+		`- host: github.com`,
+		`ports: [443]`,
+		`./dist/cleanroom exec --host "$listen_endpoint" --backend darwin-vz -c "$allowlist_policy_dir" -- sh -lc 'wget -T 20 -q -O /dev/null https://github.com'`,
+		`./dist/cleanroom exec --host "$listen_endpoint" --backend darwin-vz -c "$allowlist_policy_dir" -- sh -lc 'wget -T 20 -q -O /dev/null https://buildkite.com'`,
+		`expected non-allowlisted egress to fail in filehandle mode`,
+	} {
+		if !strings.Contains(script, needle) {
+			t.Fatalf("expected ci-darwin-vz-filehandle-e2e.sh to contain %q", needle)
+		}
+	}
 }
 
 func TestBuildDarwinVZHelperUsesSharedPackager(t *testing.T) {

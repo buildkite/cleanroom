@@ -3,25 +3,40 @@ package darwinvz
 import (
 	"fmt"
 	"strings"
+
+	"github.com/buildkite/cleanroom/internal/backend"
 )
 
 const allowRulesIgnoredWarning = "darwin-vz ignores sandbox.network.allow entries; allowlist egress filtering is not implemented"
+const allowRulesRequireFilterError = "darwin-vz requires host-side egress filtering for sandbox.network.allow entries; enable the Cleanroom network filter"
 const guestNetworkUnavailableWarning = "darwin-vz guest networking is enabled without host-side egress filtering"
-const allowAllPolicyWarning = "darwin-vz allows outbound networking for network.default=allow; host-side egress filtering is disabled"
+const guestNetworkProtectedMessage = "darwin-vz guest networking is protected by host-side egress filtering"
+const guestNetworkProtectedByFileHandleMessage = "darwin-vz guest networking is protected by file-handle gateway filtering"
 
-func evaluateNetworkPolicy(networkDefault string, allowCount int) (string, error) {
-	switch strings.TrimSpace(networkDefault) {
-	case "deny":
-		if allowCount > 0 {
-			return allowRulesIgnoredWarning, nil
-		}
-		return "", nil
-	case "allow":
-		if allowCount > 0 {
-			return allowAllPolicyWarning + "; sandbox.network.allow entries are ignored", nil
-		}
-		return allowAllPolicyWarning, nil
-	default:
-		return "", fmt.Errorf("darwin-vz backend requires network.default=deny or allow, got %q", networkDefault)
+func evaluateNetworkPolicyForDoctor(networkDefault string, allowCount int, allowlistSupported bool) (string, error) {
+	return evaluateNetworkPolicy(networkDefault, allowCount, allowlistSupported, false)
+}
+
+func evaluateNetworkPolicyForRun(networkDefault string, allowCount int, allowlistSupported bool) (string, error) {
+	return evaluateNetworkPolicy(networkDefault, allowCount, allowlistSupported, true)
+}
+
+func evaluateNetworkPolicy(networkDefault string, allowCount int, allowlistSupported, requireAllowlistEnforcement bool) (string, error) {
+	if strings.TrimSpace(networkDefault) != "deny" {
+		return "", fmt.Errorf("darwin-vz backend requires deny-by-default policy, got %q", networkDefault)
 	}
+	if allowCount > 0 && !allowlistSupported {
+		if requireAllowlistEnforcement {
+			return "", fmt.Errorf("%s", allowRulesRequireFilterError)
+		}
+		return allowRulesIgnoredWarning, nil
+	}
+	return "", nil
+}
+
+func allowlistSupportForConfig(cfg backend.FirecrackerConfig) (supported bool, detail, protectionMessage string, err error) {
+	if strings.EqualFold(strings.TrimSpace(cfg.DarwinVZNetworkMode), darwinVZNetworkModeFileHandle) {
+		return true, "", guestNetworkProtectedByFileHandleMessage, nil
+	}
+	return false, "", "", nil
 }
