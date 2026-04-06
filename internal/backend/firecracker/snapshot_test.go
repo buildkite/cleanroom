@@ -882,3 +882,96 @@ func TestPreparePersistentWritableVolumeLogsDestroyFailure(t *testing.T) {
 		t.Fatalf("expected destroy error to be logged, got %q", got)
 	}
 }
+
+func TestPrepareWritableRootVolumeUsesRootFSVolumeStoreDriver(t *testing.T) {
+	t.Parallel()
+
+	rootfsPath := filepath.Join(t.TempDir(), "runtime-rootfs.ext4")
+	if err := os.WriteFile(rootfsPath, []byte("runtime"), 0o644); err != nil {
+		t.Fatalf("write rootfs: %v", err)
+	}
+
+	prevDriverFn := rootFSVolumeStoreDriverFn
+	t.Cleanup(func() { rootFSVolumeStoreDriverFn = prevDriverFn })
+
+	var gotDriverCfg backend.FirecrackerConfig
+	rootFSVolumeStoreDriverFn = func(cfg backend.FirecrackerConfig) (volumestore.Driver, error) {
+		gotDriverCfg = cfg
+		return testVolumeDriver{
+			ensureBaseVolumeFn: func(_ context.Context, req volumestore.EnsureBaseVolumeRequest) (volumestore.BaseVolume, error) {
+				if got, want := req.SourcePath, rootfsPath; got != want {
+					t.Fatalf("unexpected base source path: got %q want %q", got, want)
+				}
+				if got, want := req.MinimumBytes, int64(8<<20); got != want {
+					t.Fatalf("unexpected minimum bytes: got %d want %d", got, want)
+				}
+				return volumestore.BaseVolume{Ref: "base-ref"}, nil
+			},
+			createWritableVolumeFn: func(_ context.Context, req volumestore.CreateWritableVolumeRequest) (volumestore.WritableVolume, error) {
+				if got, want := req.VolumeID, "exec-1"; got != want {
+					t.Fatalf("unexpected volume id: got %q want %q", got, want)
+				}
+				if err := os.WriteFile(req.AttachmentPath, nil, 0o644); err != nil {
+					return volumestore.WritableVolume{}, err
+				}
+				if err := os.Truncate(req.AttachmentPath, 8<<20); err != nil {
+					return volumestore.WritableVolume{}, err
+				}
+				return volumestore.WritableVolume{Ref: "volume-ref", AttachmentPath: req.AttachmentPath}, nil
+			},
+		}, nil
+	}
+
+	writable, cleanupVolume, err := prepareWritableRootVolume(context.Background(), backend.FirecrackerConfig{
+		MinimumRootFSBytes: 8 << 20,
+	}, "exec-1", t.TempDir(), rootfsPath)
+	if err != nil {
+		t.Fatalf("prepareWritableRootVolume returned error: %v", err)
+	}
+	if cleanupVolume == nil {
+		t.Fatal("expected cleanup function")
+	}
+	if got, want := gotDriverCfg.MinimumRootFSBytes, int64(8<<20); got != want {
+		t.Fatalf("unexpected driver config minimum bytes: got %d want %d", got, want)
+	}
+	if got, want := writable.Ref, "volume-ref"; got != want {
+		t.Fatalf("unexpected writable volume ref: got %q want %q", got, want)
+	}
+}
+
+func TestPrepareWritableRootVolumeNormalizesManagedZFSStorageRefs(t *testing.T) {
+	t.Parallel()
+
+	prevDriverFn := rootFSVolumeStoreDriverFn
+	t.Cleanup(func() { rootFSVolumeStoreDriverFn = prevDriverFn })
+
+	var gotDriverCfg backend.FirecrackerConfig
+	rootFSVolumeStoreDriverFn = func(cfg backend.FirecrackerConfig) (volumestore.Driver, error) {
+		gotDriverCfg = cfg
+		return testVolumeDriver{
+			cloneSnapshotToVolumeFn: func(_ context.Context, req volumestore.CloneSnapshotToVolumeRequest) (volumestore.WritableVolume, error) {
+				return volumestore.WritableVolume{Ref: "tank/cleanroom/sandboxes/exec-1", AttachmentPath: req.AttachmentPath}, nil
+			},
+		}, nil
+	}
+
+	_, cleanupVolume, err := prepareWritableRootVolume(
+		context.Background(),
+		backend.FirecrackerConfig{},
+		"exec-1",
+		t.TempDir(),
+		"tank/cleanroom/sandboxes/source@snap-golden",
+	)
+	if err != nil {
+		t.Fatalf("prepareWritableRootVolume returned error: %v", err)
+	}
+	if cleanupVolume == nil {
+		t.Fatal("expected cleanup function")
+	}
+	if got, want := gotDriverCfg.Snapshots.Driver, "zfs"; got != want {
+		t.Fatalf("unexpected snapshot driver: got %q want %q", got, want)
+	}
+	if got, want := gotDriverCfg.Snapshots.ZFSDataset, "tank/cleanroom"; got != want {
+		t.Fatalf("unexpected zfs dataset: got %q want %q", got, want)
+	}
+}
