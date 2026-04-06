@@ -15,6 +15,8 @@ type Adapter struct {
 	GatewayPort      int
 	GatewayHost      string
 	GatewayBridgeURL string
+
+	ConfiguredNetworkMode string
 }
 
 func New() *Adapter {

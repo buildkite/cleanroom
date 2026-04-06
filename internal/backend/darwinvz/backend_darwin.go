@@ -38,10 +38,11 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// Adapter runs single-execution Linux VMs on macOS via Virtualization.framework.
+// Adapter runs Linux VMs on macOS via Virtualization.framework.
 //
-// Current scope intentionally excludes host/port egress allow rules. Policies
-// with allow entries still run, but those entries are ignored.
+// The file-handle network mode provides a Cleanroom-owned guest gateway with
+// TCP allowlist enforcement. The legacy nat/vmnet paths still lack equivalent
+// host-side allowlist filtering.
 type Adapter struct {
 	imageManagerOnce sync.Once
 	imageManager     imageEnsurer
@@ -68,6 +69,8 @@ type Adapter struct {
 	GatewayPort      int
 	GatewayHost      string
 	GatewayBridgeURL string
+
+	ConfiguredNetworkMode string
 }
 
 type imageEnsurer interface {
@@ -242,7 +245,9 @@ func (a *Adapter) Name() string {
 }
 
 func (a *Adapter) Capabilities() map[string]bool {
-	allowlistSupported, _, _, err := allowlistSupportForConfig(backend.FirecrackerConfig{})
+	allowlistSupported, _, _, err := allowlistSupportForConfig(backend.FirecrackerConfig{
+		DarwinVZNetworkMode: strings.TrimSpace(a.ConfiguredNetworkMode),
+	})
 	if err != nil {
 		allowlistSupported = false
 	}

@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -24,6 +25,7 @@ import (
 	"github.com/containers/gvisor-tap-vsock/pkg/tcpproxy"
 	gvtransport "github.com/containers/gvisor-tap-vsock/pkg/transport"
 	gvtypes "github.com/containers/gvisor-tap-vsock/pkg/types"
+	logrus "github.com/sirupsen/logrus"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
 	"gvisor.dev/gvisor/pkg/tcpip/network/arp"
@@ -82,6 +84,9 @@ type fileHandleGateway struct {
 	cancel     context.CancelFunc
 	done       chan error
 	closeOnce  sync.Once
+
+	restoreDependencyLogs func()
+	restoreLogsOnce       sync.Once
 }
 
 type fileHandleGatewayHTTPBridge struct {
@@ -90,6 +95,12 @@ type fileHandleGatewayHTTPBridge struct {
 	scopeMu    sync.RWMutex
 	scopeToken string
 }
+
+var (
+	fileHandleGatewayDependencyLogMu     sync.Mutex
+	fileHandleGatewayDependencyLogUsers  int
+	fileHandleGatewayDependencyLogOutput io.Writer
+)
 
 func startFileHandleGateway(ctx context.Context, cfg fileHandleGatewayConfig) (*fileHandleGateway, error) {
 	if err := ctx.Err(); err != nil {
@@ -150,6 +161,7 @@ func startFileHandleGateway(ctx context.Context, cfg fileHandleGatewayConfig) (*
 	}
 
 	gatewayCtx, cancel := context.WithCancel(context.Background())
+	restoreDependencyLogs := muteFileHandleGatewayDependencyLogs()
 	gateway := &fileHandleGateway{
 		socketPath: socketPath,
 		listener:   listener,
@@ -157,12 +169,15 @@ func startFileHandleGateway(ctx context.Context, cfg fileHandleGatewayConfig) (*
 		bridge:     bridge,
 		cancel:     cancel,
 		done:       make(chan error, 1),
+
+		restoreDependencyLogs: restoreDependencyLogs,
 	}
 	go gateway.run(gatewayCtx)
 	return gateway, nil
 }
 
 func (g *fileHandleGateway) run(ctx context.Context) {
+	defer g.restoreLogsOnce.Do(g.restoreDependencyLogs)
 	defer close(g.done)
 	conn, err := gvtransport.AcceptVfkit(g.listener)
 	if err != nil {
@@ -208,6 +223,7 @@ func (g *fileHandleGateway) Close() error {
 		if err := os.Remove(g.socketPath); err != nil && !os.IsNotExist(err) {
 			closeErr = errors.Join(closeErr, fmt.Errorf("remove file-handle gateway socket %q: %w", g.socketPath, err))
 		}
+		g.restoreLogsOnce.Do(g.restoreDependencyLogs)
 	})
 	return closeErr
 }
@@ -514,6 +530,32 @@ func ignoreFileHandleGatewayRunErr(err error) bool {
 		return true
 	}
 	return strings.Contains(err.Error(), "use of closed network connection") || strings.Contains(err.Error(), "invalid magic length")
+}
+
+func muteFileHandleGatewayDependencyLogs() func() {
+	fileHandleGatewayDependencyLogMu.Lock()
+	defer fileHandleGatewayDependencyLogMu.Unlock()
+
+	logger := logrus.StandardLogger()
+	if fileHandleGatewayDependencyLogUsers == 0 {
+		fileHandleGatewayDependencyLogOutput = logger.Out
+		logger.SetOutput(io.Discard)
+	}
+	fileHandleGatewayDependencyLogUsers++
+
+	return func() {
+		fileHandleGatewayDependencyLogMu.Lock()
+		defer fileHandleGatewayDependencyLogMu.Unlock()
+
+		if fileHandleGatewayDependencyLogUsers == 0 {
+			return
+		}
+		fileHandleGatewayDependencyLogUsers--
+		if fileHandleGatewayDependencyLogUsers == 0 {
+			logger.SetOutput(fileHandleGatewayDependencyLogOutput)
+			fileHandleGatewayDependencyLogOutput = nil
+		}
+	}
 }
 
 func defaultFileHandleGatewayIP(subnetCIDR string) (string, error) {

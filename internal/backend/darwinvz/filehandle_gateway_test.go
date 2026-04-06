@@ -3,8 +3,10 @@
 package darwinvz
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +17,7 @@ import (
 	"time"
 
 	"github.com/buildkite/cleanroom/internal/policy"
+	logrus "github.com/sirupsen/logrus"
 )
 
 func TestStartFileHandleGatewayRespondsToARP(t *testing.T) {
@@ -187,6 +190,35 @@ func TestFileHandleGatewayHTTPBridgeForwardsScopeToken(t *testing.T) {
 	}
 	if got, want := gotHeader, "scope-token"; got != want {
 		t.Fatalf("unexpected proxied scope token header: got %q want %q", got, want)
+	}
+}
+
+func TestMuteFileHandleGatewayDependencyLogsReferenceCounts(t *testing.T) {
+	logger := logrus.StandardLogger()
+	originalOut := logger.Out
+	originalLevel := logger.Level
+	t.Cleanup(func() {
+		logger.SetOutput(originalOut)
+		logger.SetLevel(originalLevel)
+	})
+
+	var sink bytes.Buffer
+	logger.SetOutput(&sink)
+
+	restoreOne := muteFileHandleGatewayDependencyLogs()
+	if logger.Out != io.Discard {
+		t.Fatalf("expected logrus output to be discarded while muted, got %T", logger.Out)
+	}
+
+	restoreTwo := muteFileHandleGatewayDependencyLogs()
+	restoreOne()
+	if logger.Out != io.Discard {
+		t.Fatalf("expected second mute to keep logrus output discarded, got %T", logger.Out)
+	}
+
+	restoreTwo()
+	if logger.Out != &sink {
+		t.Fatalf("expected logrus output to be restored after final release")
 	}
 }
 

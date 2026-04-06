@@ -81,6 +81,30 @@ func TestConfigureGatewayBackendsConfiguresDarwinVZGateway(t *testing.T) {
 	}
 }
 
+func TestConfigureBackendRuntimeConfigConfiguresDarwinVZCapabilities(t *testing.T) {
+	t.Parallel()
+
+	darwinAdapter := &darwinvz.Adapter{}
+	backends := map[string]backend.Adapter{
+		"darwin-vz": darwinAdapter,
+	}
+	cfg := runtimeconfig.Config{
+		Backends: runtimeconfig.Backends{
+			DarwinVZ: runtimeconfig.DarwinVZConfig{
+				Network: runtimeconfig.DarwinVZNetworkConfig{
+					Mode: " filehandle ",
+				},
+			},
+		},
+	}
+
+	configureBackendRuntimeConfig(backends, cfg)
+
+	if got, want := darwinAdapter.ConfiguredNetworkMode, "filehandle"; got != want {
+		t.Fatalf("unexpected configured darwin-vz network mode: got %q want %q", got, want)
+	}
+}
+
 func TestGatewayServerConfigUsesDarwinGatewayHostForTrustedPrefixes(t *testing.T) {
 	t.Parallel()
 

@@ -126,6 +126,7 @@ func Run(args []string, version string) error {
 			"darwin-vz":   darwinvz.New(),
 		},
 	}
+	configureBackendRuntimeConfig(runtimeCtx.Backends, cfg)
 
 	cli := CLI{}
 	cli.Version.version = version
@@ -150,6 +151,12 @@ func Run(args []string, version string) error {
 	runtimeCtx.CWD = cwd
 
 	return ctx.Run(runtimeCtx)
+}
+
+func configureBackendRuntimeConfig(backends map[string]backend.Adapter, cfg runtimeconfig.Config) {
+	if darwinAdapter, ok := backends["darwin-vz"].(*darwinvz.Adapter); ok {
+		darwinAdapter.ConfiguredNetworkMode = strings.TrimSpace(cfg.Backends.DarwinVZ.Network.Mode)
+	}
 }
 
 func ExitCode(err error) int {
