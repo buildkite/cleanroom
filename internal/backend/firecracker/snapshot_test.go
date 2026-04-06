@@ -884,8 +884,6 @@ func TestPreparePersistentWritableVolumeLogsDestroyFailure(t *testing.T) {
 }
 
 func TestPrepareWritableRootVolumeUsesRootFSVolumeStoreDriver(t *testing.T) {
-	t.Parallel()
-
 	rootfsPath := filepath.Join(t.TempDir(), "runtime-rootfs.ext4")
 	if err := os.WriteFile(rootfsPath, []byte("runtime"), 0o644); err != nil {
 		t.Fatalf("write rootfs: %v", err)
@@ -940,8 +938,6 @@ func TestPrepareWritableRootVolumeUsesRootFSVolumeStoreDriver(t *testing.T) {
 }
 
 func TestPrepareWritableRootVolumeNormalizesManagedZFSStorageRefs(t *testing.T) {
-	t.Parallel()
-
 	prevDriverFn := rootFSVolumeStoreDriverFn
 	t.Cleanup(func() { rootFSVolumeStoreDriverFn = prevDriverFn })
 
