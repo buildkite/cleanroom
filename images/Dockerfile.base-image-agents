@@ -17,6 +17,9 @@ RUN apk add --no-cache \
   strace \
   mise
 
+# Keep repo-local mise configs under /workspace usable in agent containers too.
+RUN mise settings add trusted_config_paths /workspace
+
 # Install common agent CLIs with pinned versions for reproducible builds.
 RUN mise use -g --pin \
   npm:@openai/codex@"${CODEX_VERSION}" \

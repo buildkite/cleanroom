@@ -7,6 +7,12 @@ RUN apk add --no-cache \
   strace \
   mise
 
+# Cleanroom checks out repositories into /workspace, so trust repo-local mise
+# configs there and expose shims on PATH for guest commands.
+RUN mise settings add trusted_config_paths /workspace
+
+ENV PATH="/root/.local/share/mise/shims:${PATH}"
+
 RUN docker --version && mise --version
 
 CMD ["/bin/sh"]
