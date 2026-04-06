@@ -252,6 +252,22 @@ func TestWrapCommandInWorkdirSkipsMiseBootstrapWhenDisabled(t *testing.T) {
 	}
 }
 
+func TestWrapCommandInWorkdirFailsFastWhenWorkdirSetupFails(t *testing.T) {
+	outputPath := filepath.Join(t.TempDir(), "ran")
+	command := WrapCommandInWorkdir([]string{"sh", "-lc", "touch " + shellQuote(outputPath)}, &Checkout{
+		DestinationDir: filepath.Join(t.TempDir(), "missing"),
+	}, false)
+
+	cmd := exec.Command(command[0], command[1:]...)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected wrapped command to fail when cd fails; output=%s", string(out))
+	}
+	if _, statErr := os.Stat(outputPath); !os.IsNotExist(statErr) {
+		t.Fatalf("expected payload not to run when workdir setup fails, stat error=%v", statErr)
+	}
+}
+
 func envWithout(env []string, keys ...string) []string {
 	blocked := make(map[string]struct{}, len(keys))
 	for _, key := range keys {

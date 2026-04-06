@@ -202,6 +202,7 @@ func bootstrapScript(checkout *Checkout) []string {
 func workdirExecutionScript(command []string, checkout *Checkout, autoMiseInstall bool) []string {
 	execCommand := shellJoin(command)
 	script := []string{
+		"set -eu",
 		"dest=" + shellQuote(checkout.DestinationDir),
 		`cd "$dest"`,
 	}
