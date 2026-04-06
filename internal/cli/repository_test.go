@@ -173,6 +173,83 @@ func TestCreateCommandBootstrapsRepositoryForCurrentRepo(t *testing.T) {
 	}
 }
 
+func TestCreateCommandBootstrapsRepositoryForExplicitOverride(t *testing.T) {
+	adapter := &persistentIntegrationAdapter{}
+	host, _ := startIntegrationServer(t, adapter)
+
+	var (
+		mu       sync.Mutex
+		commands [][]string
+	)
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+		mu.Lock()
+		commands = append(commands, append([]string(nil), req.Command...))
+		mu.Unlock()
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+	}
+
+	const wantCommit = "0123456789abcdef0123456789abcdef01234567"
+	outcome := runCreateAliasWithCapture(CreateCommand{
+		clientFlags: clientFlags{Host: host},
+		Chdir:       t.TempDir(),
+		repositoryOverrideFlags: repositoryOverrideFlags{
+			RepoURL:    "https://github.com/buildkite/agent.git",
+			RepoCommit: wantCommit,
+		},
+	}, runtimeContext{
+		CWD: t.TempDir(),
+		Loader: repositoryIntegrationLoader{
+			compiled: &policy.CompiledPolicy{
+				Version:        1,
+				ImageRef:       "ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+				ImageDigest:    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+				NetworkDefault: "deny",
+				Allow:          []policy.AllowRule{{Host: "github.com", Ports: []int{443}}},
+			},
+		},
+	})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err != nil {
+		t.Fatalf("CreateCommand.Run returned error: %v", outcome.err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(commands) != 1 {
+		t.Fatalf("expected one bootstrap execution, got %d", len(commands))
+	}
+	joined := strings.Join(commands[0], " ")
+	if !strings.Contains(joined, "https://github.com/buildkite/agent.git") {
+		t.Fatalf("expected bootstrap command to include override remote, got %q", joined)
+	}
+	if !strings.Contains(joined, wantCommit) {
+		t.Fatalf("expected bootstrap command to include override commit %q, got %q", wantCommit, joined)
+	}
+	if !strings.Contains(joined, "'/workspace'") {
+		t.Fatalf("expected bootstrap command to use default workspace path, got %q", joined)
+	}
+}
+
+func TestCreateCommandRejectsPartialRepositoryOverride(t *testing.T) {
+	outcome := runCreateAliasWithCapture(CreateCommand{
+		repositoryOverrideFlags: repositoryOverrideFlags{
+			RepoURL:    "https://github.com/buildkite/agent.git",
+			RepoCommit: "",
+		},
+	}, runtimeContext{})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err == nil {
+		t.Fatal("expected create command to reject partial repository override")
+	}
+	if !strings.Contains(outcome.err.Error(), "--repo-url and --repo-commit must be used together") {
+		t.Fatalf("unexpected error: %v", outcome.err)
+	}
+}
+
 func TestCreateCommandBootstrapsRepositoryOnCurrentBranch(t *testing.T) {
 	repoDir := initGitRepository(t, "git@github.com:buildkite/cleanroom.git")
 	checkoutGitBranch(t, repoDir, "feature/console-branch")
@@ -779,6 +856,72 @@ func TestExecCommandInlinesRepositoryBootstrapForNonPersistentBackend(t *testing
 	joined := strings.Join(commands[0], " ")
 	if !strings.Contains(joined, "clone --filter=blob:none --no-checkout") {
 		t.Fatalf("expected inlined repository clone, got %q", joined)
+	}
+	if !strings.Contains(joined, "cd '/workspace' && exec 'echo' 'ok'") {
+		t.Fatalf("expected inlined command to run inside /workspace, got %q", joined)
+	}
+}
+
+func TestExecCommandInlinesExplicitRepositoryOverrideForNonPersistentBackend(t *testing.T) {
+	adapter := &integrationAdapter{}
+	host, _ := startUnixIntegrationServer(t, adapter)
+
+	var (
+		mu       sync.Mutex
+		commands [][]string
+	)
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+		mu.Lock()
+		commands = append(commands, append([]string(nil), req.Command...))
+		mu.Unlock()
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+	}
+
+	const wantCommit = "0123456789abcdef0123456789abcdef01234567"
+	outcome := runExecWithCapture(ExecCommand{
+		clientFlags: clientFlags{Host: host},
+		Chdir:       t.TempDir(),
+		repositoryOverrideFlags: repositoryOverrideFlags{
+			RepoURL:    "https://github.com/buildkite/agent.git",
+			RepoCommit: wantCommit,
+		},
+		Command: []string{"echo", "ok"},
+	}, runtimeContext{
+		CWD: t.TempDir(),
+		Loader: repositoryIntegrationLoader{
+			compiled: &policy.CompiledPolicy{
+				Version:        1,
+				ImageRef:       "ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+				ImageDigest:    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+				NetworkDefault: "deny",
+				Allow:          []policy.AllowRule{{Host: "github.com", Ports: []int{443}}},
+			},
+		},
+		Config: runtimeconfig.Config{
+			DefaultBackend: "firecracker",
+		},
+		Backends: map[string]backend.Adapter{
+			"firecracker": adapter,
+		},
+	})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err != nil {
+		t.Fatalf("ExecCommand.Run returned error: %v", outcome.err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(commands) != 1 {
+		t.Fatalf("expected one inlined execution, got %d execution(s)", len(commands))
+	}
+	joined := strings.Join(commands[0], " ")
+	if !strings.Contains(joined, "https://github.com/buildkite/agent.git") {
+		t.Fatalf("expected inlined command to include override remote, got %q", joined)
+	}
+	if !strings.Contains(joined, wantCommit) {
+		t.Fatalf("expected inlined command to include override commit %q, got %q", wantCommit, joined)
 	}
 	if !strings.Contains(joined, "cd '/workspace' && exec 'echo' 'ok'") {
 		t.Fatalf("expected inlined command to run inside /workspace, got %q", joined)

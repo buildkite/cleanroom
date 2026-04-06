@@ -23,7 +23,65 @@ type resolvedRepositoryCheckout struct {
 	Dirty          bool
 }
 
+const defaultRepositoryOverridePath = "/workspace"
+
+type repositoryOverrideFlags struct {
+	RepoURL    string `name:"repo-url" help:"Bootstrap this repository URL instead of inheriting the current repository"`
+	RepoCommit string `name:"repo-commit" help:"Bootstrap this exact repository commit SHA; requires --repo-url"`
+}
+
+func (f repositoryOverrideFlags) resolve(cwd string, loader policyLoader) (*resolvedRepositoryCheckout, error) {
+	repoURL := strings.TrimSpace(f.RepoURL)
+	repoCommit := strings.TrimSpace(f.RepoCommit)
+	switch {
+	case repoURL == "" && repoCommit == "":
+		return nil, nil
+	case repoURL == "" || repoCommit == "":
+		return nil, errors.New("--repo-url and --repo-commit must be used together")
+	}
+
+	checkout := &repositorycheckout.Checkout{
+		RemoteURL:      repoURL,
+		CommitSHA:      repoCommit,
+		DestinationDir: defaultRepositoryOverridePath,
+	}
+	if err := checkout.ValidateBootstrap(); err != nil {
+		return nil, err
+	}
+	remoteHost, err := checkout.NormalizeRemoteURL()
+	if err != nil {
+		return nil, err
+	}
+
+	if loader != nil {
+		compiled, _, err := loader.LoadAndCompile(cwd)
+		if err != nil {
+			return nil, err
+		}
+		if compiled != nil && !compiled.Allows(remoteHost, 443) {
+			return nil, fmt.Errorf("repository remote host %q is not allowed by sandbox policy", remoteHost)
+		}
+	}
+
+	return &resolvedRepositoryCheckout{
+		RemoteURL:      checkout.RemoteURL,
+		CommitSHA:      checkout.CommitSHA,
+		DestinationDir: checkout.DestinationDir,
+	}, nil
+}
+
+func (f repositoryOverrideFlags) hasRepositoryOverride() bool {
+	return strings.TrimSpace(f.RepoURL) != "" || strings.TrimSpace(f.RepoCommit) != ""
+}
+
 func resolveRepositoryCheckout(cwd string, loader policyLoader) (*resolvedRepositoryCheckout, error) {
+	return resolveRepositoryCheckoutWithOverride(cwd, loader, repositoryOverrideFlags{})
+}
+
+func resolveRepositoryCheckoutWithOverride(cwd string, loader policyLoader, override repositoryOverrideFlags) (*resolvedRepositoryCheckout, error) {
+	if checkout, err := override.resolve(cwd, loader); err != nil || checkout != nil {
+		return checkout, err
+	}
 	repository, err := loadRepositoryConfig(cwd, loader)
 	if err != nil {
 		if errors.Is(err, errSkipRepositoryCheckout) {
@@ -79,10 +137,14 @@ func resolveRepositoryCheckout(cwd string, loader policyLoader) (*resolvedReposi
 }
 
 func maybeResolveRepositoryCheckout(cwd string, loader policyLoader, existingSandboxID, fromSnapshot string, _ bool) (*resolvedRepositoryCheckout, error) {
+	return maybeResolveRepositoryCheckoutWithOverride(cwd, loader, existingSandboxID, fromSnapshot, false, repositoryOverrideFlags{})
+}
+
+func maybeResolveRepositoryCheckoutWithOverride(cwd string, loader policyLoader, existingSandboxID, fromSnapshot string, _ bool, override repositoryOverrideFlags) (*resolvedRepositoryCheckout, error) {
 	if strings.TrimSpace(existingSandboxID) != "" || strings.TrimSpace(fromSnapshot) != "" {
 		return nil, nil
 	}
-	return resolveRepositoryCheckout(cwd, loader)
+	return resolveRepositoryCheckoutWithOverride(cwd, loader, override)
 }
 
 var errSkipRepositoryCheckout = errors.New("skip repository checkout")
