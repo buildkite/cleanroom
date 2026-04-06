@@ -499,7 +499,7 @@ func queryPaths(owner string, questions []string, cnames map[string]cnameRecord)
 			cnameTTL: cnameTTL,
 		})
 	}
-	if len(paths) == 0 && owner != "" {
+	if len(paths) == 0 && owner != "" && len(questions) == 0 {
 		paths = append(paths, queryPath{
 			query: owner,
 			names: []string{owner},

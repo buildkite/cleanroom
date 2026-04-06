@@ -1,6 +1,7 @@
 package dnsproxy
 
 import (
+	"errors"
 	"net"
 	"net/netip"
 	"reflect"
@@ -242,6 +243,48 @@ func TestRuntimeTreatsZeroAnswerTTLAsImmediateExpiry(t *testing.T) {
 	}
 }
 
+func TestRuntimeIgnoresUnmatchedAnswerOwnersWhenQuestionPresent(t *testing.T) {
+	t.Parallel()
+
+	runtime := NewRuntime(RuntimeConfig{
+		MaxObservationsPerScope:  8,
+		MaxConnectionsPerSandbox: 8,
+	})
+	if err := runtime.RegisterSandbox("sandbox-1", testCompiledPolicy(
+		policy.AllowRule{Host: "cdn.example", Ports: []int{443}},
+	)); err != nil {
+		t.Fatalf("register sandbox: %v", err)
+	}
+
+	now := time.Date(2026, time.April, 6, 10, 0, 0, 0, time.UTC)
+	sourceIP := netip.MustParseAddr("10.0.0.2")
+	destIP := netip.MustParseAddr("203.0.113.22")
+
+	if err := runtime.ObserveResponse("sandbox-1", sourceIP, testResponse("api.example.com.",
+		&dns.A{
+			Hdr: dns.RR_Header{Name: "cdn.example.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 30},
+			A:   net.ParseIP("203.0.113.22"),
+		},
+	), now); err != nil {
+		t.Fatalf("observe response: %v", err)
+	}
+
+	if observations := runtime.Observations("sandbox-1", now); len(observations) != 0 {
+		t.Fatalf("did not expect unmatched answer owner to be cached: %+v", observations)
+	}
+
+	if runtime.AllowConnection(Connection{
+		SandboxID:  "sandbox-1",
+		SourceIP:   sourceIP,
+		SourcePort: 41011,
+		DestIP:     destIP,
+		DestPort:   443,
+		Protocol:   ProtocolTCP,
+	}, now) {
+		t.Fatal("did not expect unmatched answer owner to authorize a new connection")
+	}
+}
+
 func TestRuntimeScopesObservationsBySandboxAndSourceIP(t *testing.T) {
 	t.Parallel()
 
@@ -433,6 +476,57 @@ func TestForwarderRecordsScopedUpstreamAnswers(t *testing.T) {
 	}
 }
 
+func TestForwarderDoesNotRecordScopedAnswersWhenWriteFails(t *testing.T) {
+	t.Parallel()
+
+	runtime := NewRuntime(RuntimeConfig{
+		MaxObservationsPerScope:  8,
+		MaxConnectionsPerSandbox: 8,
+	})
+	if err := runtime.RegisterSandbox("sandbox-1", testCompiledPolicy(
+		policy.AllowRule{Host: "api.example.com", Ports: []int{443}},
+	)); err != nil {
+		t.Fatalf("register sandbox: %v", err)
+	}
+
+	now := time.Date(2026, time.April, 6, 10, 0, 0, 0, time.UTC)
+	sourceIP := netip.MustParseAddr("10.0.0.2")
+
+	forwarder := NewForwarder(ForwarderConfig{
+		Runtime:      runtime,
+		UpstreamAddr: "127.0.0.1:5300",
+		Now:          func() time.Time { return now },
+		ScopeResolver: func(addr netip.Addr) (string, bool) {
+			if addr == sourceIP {
+				return "sandbox-1", true
+			}
+			return "", false
+		},
+		Client: exchangeFunc(func(msg *dns.Msg, addr string) (*dns.Msg, time.Duration, error) {
+			return testResponse("api.example.com.",
+				&dns.A{
+					Hdr: dns.RR_Header{Name: "api.example.com.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 30},
+					A:   net.ParseIP("203.0.113.44"),
+				},
+			), 5 * time.Millisecond, nil
+		}),
+	})
+
+	writer := &testResponseWriter{
+		remoteAddr:  &net.UDPAddr{IP: net.ParseIP("10.0.0.2"), Port: 53000},
+		localAddr:   &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 1053},
+		writeMsgErr: errors.New("write failed"),
+	}
+	request := new(dns.Msg)
+	request.SetQuestion("api.example.com.", dns.TypeA)
+
+	forwarder.ServeDNS(writer, request)
+
+	if observations := runtime.Observations("sandbox-1", now); len(observations) != 0 {
+		t.Fatalf("did not expect failed response writes to record observations: %+v", observations)
+	}
+}
+
 func testCompiledPolicy(allow ...policy.AllowRule) *policy.CompiledPolicy {
 	return &policy.CompiledPolicy{
 		Version:        1,
@@ -456,16 +550,23 @@ func (f exchangeFunc) Exchange(msg *dns.Msg, addr string) (*dns.Msg, time.Durati
 }
 
 type testResponseWriter struct {
-	remoteAddr net.Addr
-	localAddr  net.Addr
-	message    *dns.Msg
+	remoteAddr  net.Addr
+	localAddr   net.Addr
+	message     *dns.Msg
+	writeMsgErr error
 }
 
-func (w *testResponseWriter) LocalAddr() net.Addr         { return w.localAddr }
-func (w *testResponseWriter) RemoteAddr() net.Addr        { return w.remoteAddr }
-func (w *testResponseWriter) Close() error                { return nil }
-func (w *testResponseWriter) TsigStatus() error           { return nil }
-func (w *testResponseWriter) TsigTimersOnly(bool)         {}
-func (w *testResponseWriter) Hijack()                     {}
-func (w *testResponseWriter) Write([]byte) (int, error)   { return 0, nil }
-func (w *testResponseWriter) WriteMsg(msg *dns.Msg) error { w.message = msg.Copy(); return nil }
+func (w *testResponseWriter) LocalAddr() net.Addr       { return w.localAddr }
+func (w *testResponseWriter) RemoteAddr() net.Addr      { return w.remoteAddr }
+func (w *testResponseWriter) Close() error              { return nil }
+func (w *testResponseWriter) TsigStatus() error         { return nil }
+func (w *testResponseWriter) TsigTimersOnly(bool)       {}
+func (w *testResponseWriter) Hijack()                   {}
+func (w *testResponseWriter) Write([]byte) (int, error) { return 0, nil }
+func (w *testResponseWriter) WriteMsg(msg *dns.Msg) error {
+	if w.writeMsgErr != nil {
+		return w.writeMsgErr
+	}
+	w.message = msg.Copy()
+	return nil
+}

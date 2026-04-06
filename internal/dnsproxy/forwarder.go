@@ -67,8 +67,10 @@ func (f *Forwarder) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		return
 	}
 
+	if err := w.WriteMsg(resp); err != nil {
+		return
+	}
 	f.observeScopedResponse(w.RemoteAddr(), resp)
-	_ = w.WriteMsg(resp)
 }
 
 func (f *Forwarder) observeScopedResponse(remoteAddr net.Addr, resp *dns.Msg) {
