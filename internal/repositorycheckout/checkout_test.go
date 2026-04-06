@@ -90,6 +90,22 @@ func TestBuildBootstrapCommandIncludesSubmoduleUpdateWhenRequested(t *testing.T)
 	}
 }
 
+func TestValidateBootstrapRejectsMutableCommitRef(t *testing.T) {
+	checkout := &Checkout{
+		RemoteURL:      "https://github.com/buildkite/cleanroom.git",
+		CommitSHA:      "main",
+		DestinationDir: "/workspace",
+	}
+
+	err := checkout.ValidateBootstrap()
+	if err == nil {
+		t.Fatal("expected ValidateBootstrap to reject mutable commit refs")
+	}
+	if !strings.Contains(err.Error(), "full 40-character hexadecimal commit SHA") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestWrapCommandInWorkdirQuotesDestinationAndArguments(t *testing.T) {
 	command := WrapCommandInWorkdir([]string{"printf", "%s", "it's alive"}, &Checkout{
 		DestinationDir: "/tmp/work tree",

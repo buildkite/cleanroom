@@ -117,6 +117,12 @@ type SnapshottingAdapter interface {
 	DeleteSnapshot(ctx context.Context, req DeleteSnapshotRequest) error
 }
 
+// RuntimeBaseKeyProvider returns a stable identifier for the backend runtime
+// base that a reusable workspace seed depends on.
+type RuntimeBaseKeyProvider interface {
+	RuntimeBaseKey(ctx context.Context, compiled *policy.CompiledPolicy, cfg FirecrackerConfig) (string, error)
+}
+
 // SandboxFileDownloadAdapter can copy files out of a persistent sandbox.
 type SandboxFileDownloadAdapter interface {
 	DownloadSandboxFile(ctx context.Context, sandboxID, path string, maxBytes int64) ([]byte, error)

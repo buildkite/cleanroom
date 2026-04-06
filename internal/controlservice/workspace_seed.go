@@ -1,0 +1,192 @@
+package controlservice
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"strings"
+
+	"github.com/buildkite/cleanroom/internal/backend"
+	"github.com/buildkite/cleanroom/internal/policy"
+	"github.com/buildkite/cleanroom/internal/repositorycheckout"
+	"github.com/buildkite/cleanroom/internal/snapshotstore"
+)
+
+const workspaceSeedSnapshotNamePrefix = "workspace-seed:"
+
+func isWorkspaceSeedSnapshotName(name string) bool {
+	return strings.HasPrefix(strings.TrimSpace(name), workspaceSeedSnapshotNamePrefix)
+}
+
+func workspaceSeedSnapshotName(backendName, policyHash, runtimeBaseKey string, repository *repositorycheckout.Checkout) string {
+	if repository == nil || strings.TrimSpace(runtimeBaseKey) == "" {
+		return ""
+	}
+	sum := sha256.New()
+	for _, part := range []string{
+		strings.TrimSpace(backendName),
+		strings.TrimSpace(policyHash),
+		strings.TrimSpace(runtimeBaseKey),
+		strings.TrimSpace(repository.RemoteURL),
+		strings.TrimSpace(repository.CommitSHA),
+		strings.TrimSpace(repository.DestinationDir),
+		fmt.Sprintf("%t", repository.Submodules),
+		strings.TrimSpace(repository.Branch),
+	} {
+		_, _ = sum.Write([]byte(part))
+		_, _ = sum.Write([]byte{0})
+	}
+	return workspaceSeedSnapshotNamePrefix + hex.EncodeToString(sum.Sum(nil))
+}
+
+func workspaceSeedSnapshotRecord(records []snapshotstore.Record, backendName, policyHash, runtimeBaseKey string, repository *repositorycheckout.Checkout) (snapshotstore.Record, bool) {
+	expectedName := workspaceSeedSnapshotName(backendName, policyHash, runtimeBaseKey, repository)
+	if expectedName == "" {
+		return snapshotstore.Record{}, false
+	}
+
+	var (
+		best  snapshotstore.Record
+		found bool
+	)
+	for _, record := range records {
+		if strings.TrimSpace(record.Name) != expectedName {
+			continue
+		}
+		if strings.TrimSpace(record.Backend) != strings.TrimSpace(backendName) {
+			continue
+		}
+		if strings.TrimSpace(record.PolicyHash) != strings.TrimSpace(policyHash) {
+			continue
+		}
+		if !repositoryCheckoutsEqual(repositorycheckout.FromProto(record.Repository), repository) {
+			continue
+		}
+		recordSnapshotID := strings.TrimSpace(record.SnapshotID)
+		bestSnapshotID := strings.TrimSpace(best.SnapshotID)
+		if !found || record.CreatedAt.After(best.CreatedAt) || (record.CreatedAt.Equal(best.CreatedAt) && recordSnapshotID > bestSnapshotID) {
+			best = record
+			found = true
+		}
+	}
+	return best, found
+}
+
+func (s *Service) lookupWorkspaceSeedSnapshot(ctx context.Context, backendName string, compiled *policy.CompiledPolicy, runtimeBaseKey string, repository *repositorycheckout.Checkout) (snapshotstore.Record, bool, error) {
+	if compiled == nil || repository == nil || strings.TrimSpace(runtimeBaseKey) == "" {
+		return snapshotstore.Record{}, false, nil
+	}
+	store, err := s.snapshotStoreOrErr()
+	if err != nil {
+		return snapshotstore.Record{}, false, nil
+	}
+	records, err := store.List(ctx)
+	if err != nil {
+		return snapshotstore.Record{}, false, err
+	}
+	record, ok := workspaceSeedSnapshotRecord(records, backendName, compiled.Hash, runtimeBaseKey, repository)
+	return record, ok, nil
+}
+
+func (s *Service) maybePublishWorkspaceSeedSnapshot(
+	ctx context.Context,
+	adapter backend.SnapshottingAdapter,
+	sandboxID, backendName string,
+	compiled *policy.CompiledPolicy,
+	firecrackerCfg backend.FirecrackerConfig,
+	runtimeBaseKey string,
+	repository *repositorycheckout.Checkout,
+	replacedSnapshotID string,
+) {
+	if adapter == nil || compiled == nil || repository == nil || strings.TrimSpace(runtimeBaseKey) == "" {
+		return
+	}
+	if !snapshotOperationsEnabledForBackend(backendName, s.Config) {
+		return
+	}
+
+	store, err := s.snapshotStoreOrErr()
+	if err != nil {
+		return
+	}
+
+	if record, ok, err := s.lookupWorkspaceSeedSnapshot(ctx, backendName, compiled, runtimeBaseKey, repository); err == nil && ok {
+		if strings.TrimSpace(record.SnapshotID) != strings.TrimSpace(replacedSnapshotID) {
+			return
+		}
+	} else if err != nil {
+		s.logWorkspaceSeedWarning("lookup workspace seed snapshot", sandboxID, err)
+		return
+	}
+
+	snapshotID := newSnapshotID()
+	snapshotCfg := withSnapshotDriver(backendName, firecrackerCfg, firecrackerCfg.Snapshots.Driver)
+	result, err := adapter.CreateSnapshot(ctx, backend.SnapshotRequest{
+		SandboxID:         sandboxID,
+		SnapshotID:        snapshotID,
+		FirecrackerConfig: snapshotCfg,
+	})
+	if err != nil {
+		s.logWorkspaceSeedWarning("publish workspace seed snapshot", sandboxID, err)
+		return
+	}
+
+	record := snapshotstore.Record{
+		SnapshotID:      snapshotID,
+		SourceSandboxID: sandboxID,
+		Backend:         backendName,
+		Name:            workspaceSeedSnapshotName(backendName, compiled.Hash, runtimeBaseKey, repository),
+		PolicyHash:      compiled.Hash,
+		Policy:          compiled.ToProto(),
+		Repository:      cloneRepositoryCheckout(repository).ToProto(),
+		StorageDriver:   snapshotCfg.Snapshots.Driver,
+		StorageRef:      strings.TrimSpace(result.StorageRef),
+		CreatedAt:       s.clock().Now(),
+	}
+	if err := store.Create(ctx, record); err != nil {
+		deleteErr := adapter.DeleteSnapshot(ctx, backend.DeleteSnapshotRequest{
+			SnapshotID:        snapshotID,
+			StorageRef:        record.StorageRef,
+			FirecrackerConfig: snapshotCfg,
+		})
+		if deleteErr != nil {
+			s.logWorkspaceSeedWarning("rollback workspace seed snapshot after metadata failure", sandboxID, fmt.Errorf("%w (rollback failed: %v)", err, deleteErr))
+			return
+		}
+		s.logWorkspaceSeedWarning("persist workspace seed snapshot metadata", sandboxID, err)
+	}
+}
+
+func (s *Service) workspaceSeedRuntimeBaseKey(ctx context.Context, adapter backend.Adapter, compiled *policy.CompiledPolicy, firecrackerCfg backend.FirecrackerConfig) (string, bool, error) {
+	if adapter == nil || compiled == nil {
+		return "", false, nil
+	}
+	provider, ok := adapter.(backend.RuntimeBaseKeyProvider)
+	if !ok {
+		return "", false, nil
+	}
+	key, err := provider.RuntimeBaseKey(ctx, compiled, firecrackerCfg)
+	if err != nil {
+		return "", false, err
+	}
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return "", false, nil
+	}
+	return key, true, nil
+}
+
+func (s *Service) logWorkspaceSeedWarning(message, sandboxID string, err error) {
+	if s == nil || s.Logger == nil || err == nil {
+		return
+	}
+	s.Logger.Warn(message, "sandbox_id", sandboxID, "error", err)
+}
+
+func (s *Service) logWorkspaceSeedRestoreWarning(snapshotID string, err error) {
+	if s == nil || s.Logger == nil || err == nil {
+		return
+	}
+	s.Logger.Warn("restore workspace seed snapshot", "snapshot_id", snapshotID, "error", err)
+}

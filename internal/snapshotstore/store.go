@@ -111,8 +111,9 @@ func (s *Store) Create(ctx context.Context, record Record) error {
 			repository_proto,
 			storage_driver,
 			storage_ref,
-			created_at_unix
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			created_at_unix,
+			created_at_unix_nano
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		record.SnapshotID,
 		record.SourceSandboxID,
@@ -124,6 +125,7 @@ func (s *Store) Create(ctx context.Context, record Record) error {
 		record.StorageDriver,
 		record.StorageRef,
 		record.CreatedAt.UTC().Unix(),
+		record.CreatedAt.UTC().UnixNano(),
 	); err != nil {
 		return fmt.Errorf("insert snapshot metadata %q: %w", record.SnapshotID, err)
 	}
@@ -148,7 +150,7 @@ func (s *Store) Get(ctx context.Context, snapshotID string) (Record, bool, error
 			repository_proto,
 			storage_driver,
 			storage_ref,
-			created_at_unix
+			created_at_unix_nano
 		FROM snapshots
 		WHERE snapshot_id = ?
 	`, strings.TrimSpace(snapshotID))
@@ -181,9 +183,9 @@ func (s *Store) List(ctx context.Context) ([]Record, error) {
 			repository_proto,
 			storage_driver,
 			storage_ref,
-			created_at_unix
+			created_at_unix_nano
 		FROM snapshots
-		ORDER BY created_at_unix ASC, snapshot_id ASC
+		ORDER BY created_at_unix_nano ASC, snapshot_id ASC
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("query snapshots: %w", err)
@@ -246,7 +248,8 @@ func (s *Store) initDB(ctx context.Context) error {
 			repository_proto BLOB,
 			storage_driver TEXT NOT NULL DEFAULT 'file',
 			storage_ref TEXT NOT NULL,
-			created_at_unix INTEGER NOT NULL
+			created_at_unix INTEGER NOT NULL,
+			created_at_unix_nano INTEGER NOT NULL DEFAULT 0
 		);
 		CREATE INDEX IF NOT EXISTS idx_snapshots_created_at ON snapshots(created_at_unix);
 	`)
@@ -258,6 +261,15 @@ func (s *Store) initDB(ctx context.Context) error {
 	}
 	if _, err := db.ExecContext(ctx, `ALTER TABLE snapshots ADD COLUMN repository_proto BLOB`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
 		return fmt.Errorf("ensure snapshot metadata repository_proto column: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `ALTER TABLE snapshots ADD COLUMN created_at_unix_nano INTEGER NOT NULL DEFAULT 0`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		return fmt.Errorf("ensure snapshot metadata created_at_unix_nano column: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE snapshots SET created_at_unix_nano = created_at_unix * 1000000000 WHERE created_at_unix_nano = 0`); err != nil {
+		return fmt.Errorf("backfill snapshot metadata created_at_unix_nano column: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_snapshots_created_at_nano ON snapshots(created_at_unix_nano)`); err != nil {
+		return fmt.Errorf("ensure snapshot metadata created_at_unix_nano index: %w", err)
 	}
 	return nil
 }
@@ -271,7 +283,7 @@ func scanRecord(row recordScanner) (Record, error) {
 		record          Record
 		policyBytes     []byte
 		repositoryBytes []byte
-		createdAt       int64
+		createdAtNano   int64
 	)
 	if err := row.Scan(
 		&record.SnapshotID,
@@ -283,7 +295,7 @@ func scanRecord(row recordScanner) (Record, error) {
 		&repositoryBytes,
 		&record.StorageDriver,
 		&record.StorageRef,
-		&createdAt,
+		&createdAtNano,
 	); err != nil {
 		return Record{}, err
 	}
@@ -298,6 +310,6 @@ func scanRecord(row recordScanner) (Record, error) {
 			return Record{}, fmt.Errorf("decode snapshot repository %q: %w", record.SnapshotID, err)
 		}
 	}
-	record.CreatedAt = time.Unix(createdAt, 0).UTC()
+	record.CreatedAt = time.Unix(0, createdAtNano).UTC()
 	return record, nil
 }

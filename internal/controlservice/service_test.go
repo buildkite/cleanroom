@@ -14,6 +14,7 @@ import (
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/paths"
 	"github.com/buildkite/cleanroom/internal/policy"
+	"github.com/buildkite/cleanroom/internal/repositorycheckout"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 	"github.com/buildkite/cleanroom/internal/snapshotstore"
 	"go.jetify.com/typeid"
@@ -40,6 +41,8 @@ type stubAdapter struct {
 	createSnapshotCalls        int
 	deleteSnapshotCalls        int
 	terminateCalls             int
+	workspaceSeedRuntimeKey    string
+	runtimeBaseKeyErr          error
 }
 
 func (s *stubAdapter) Name() string { return "stub" }
@@ -155,6 +158,16 @@ func (s *stubAdapter) DownloadSandboxFile(ctx context.Context, sandboxID, path s
 	return nil, errors.New("download not configured")
 }
 
+func (s *stubAdapter) RuntimeBaseKey(_ context.Context, _ *policy.CompiledPolicy, _ backend.FirecrackerConfig) (string, error) {
+	if s.runtimeBaseKeyErr != nil {
+		return "", s.runtimeBaseKeyErr
+	}
+	if strings.TrimSpace(s.workspaceSeedRuntimeKey) != "" {
+		return s.workspaceSeedRuntimeKey, nil
+	}
+	return "runtime-base:test", nil
+}
+
 type stubLoader struct {
 	compiled *policy.CompiledPolicy
 	source   string
@@ -167,11 +180,25 @@ type stubRepositoryMirrorStore struct {
 	err       error
 }
 
+type stubClock struct {
+	now time.Time
+}
+
 func (s *stubRepositoryMirrorStore) EnsureMirrorContains(_ context.Context, remoteURL, commitSHA string) error {
 	s.remoteURL = remoteURL
 	s.commitSHA = commitSHA
 	s.calls++
 	return s.err
+}
+
+func (c stubClock) Now() time.Time {
+	return c.now
+}
+
+func (c stubClock) After(d time.Duration) <-chan time.Time {
+	ch := make(chan time.Time, 1)
+	ch <- c.now.Add(d)
+	return ch
 }
 
 func (l stubLoader) LoadAndCompile(_ string) (*policy.CompiledPolicy, string, error) {
@@ -442,8 +469,8 @@ func TestCreateSnapshotPersistsMetadataAndDeletesIt(t *testing.T) {
 	if got, want := adapter.createSnapshotReq.SandboxID, sandbox.GetSandboxId(); got != want {
 		t.Fatalf("unexpected create snapshot sandbox id: got %q want %q", got, want)
 	}
-	if adapter.createSnapshotCalls != 1 {
-		t.Fatalf("expected one snapshot create call, got %d", adapter.createSnapshotCalls)
+	if adapter.createSnapshotCalls != 2 {
+		t.Fatalf("expected two snapshot create calls (workspace seed + manual snapshot), got %d", adapter.createSnapshotCalls)
 	}
 
 	getResp, err := svc.GetSnapshot(context.Background(), &cleanroomv1.GetSnapshotRequest{
@@ -466,7 +493,7 @@ func TestCreateSnapshotPersistsMetadataAndDeletesIt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListSnapshots returned error: %v", err)
 	}
-	if got, want := len(listResp.GetSnapshots()), 1; got != want {
+	if got, want := len(listResp.GetSnapshots()), 2; got != want {
 		t.Fatalf("unexpected snapshot count: got %d want %d", got, want)
 	}
 
@@ -487,8 +514,8 @@ func TestCreateSnapshotPersistsMetadataAndDeletesIt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListSnapshots after delete returned error: %v", err)
 	}
-	if got := len(listResp.GetSnapshots()); got != 0 {
-		t.Fatalf("expected no snapshots after delete, got %d", got)
+	if got := len(listResp.GetSnapshots()); got != 1 {
+		t.Fatalf("expected workspace seed snapshot to remain after deleting manual snapshot, got %d snapshots", got)
 	}
 }
 
@@ -514,6 +541,31 @@ func TestCreateSnapshotRejectsDisabledSnapshots(t *testing.T) {
 	}
 	if adapter.createSnapshotCalls != 0 {
 		t.Fatalf("expected no backend snapshot calls, got %d", adapter.createSnapshotCalls)
+	}
+}
+
+func TestCreateSnapshotRejectsReservedWorkspaceSeedName(t *testing.T) {
+	store := newMemorySnapshotStore()
+	adapter := &stubAdapter{}
+	svc := newTestServiceWithSnapshotStore(adapter, store)
+
+	createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+
+	_, err = svc.CreateSnapshot(context.Background(), &cleanroomv1.CreateSnapshotRequest{
+		SandboxId: createResp.GetSandbox().GetSandboxId(),
+		Name:      workspaceSeedSnapshotNamePrefix + "manual",
+	})
+	if err == nil {
+		t.Fatal("expected CreateSnapshot to reject reserved workspace seed snapshot names")
+	}
+	if !strings.Contains(err.Error(), "reserved for managed workspace seed snapshots") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got, want := adapter.createSnapshotCalls, 0; got != want {
+		t.Fatalf("unexpected create snapshot call count: got %d want %d", got, want)
 	}
 }
 
@@ -1122,6 +1174,267 @@ func TestCreateSandboxBootstrapsRepositoryInService(t *testing.T) {
 	}
 }
 
+func TestCreateSandboxPublishesWorkspaceSeedSnapshot(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	store := newMemorySnapshotStore()
+	adapter := &stubAdapter{
+		createSnapshotFn: func(_ context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
+			return &backend.SnapshotResult{StorageRef: "/snapshots/" + req.SnapshotID + ".ext4"}, nil
+		},
+	}
+	mirrors := &stubRepositoryMirrorStore{}
+	svc := newTestServiceWithSnapshotStore(adapter, store)
+	svc.RepositoryMirrors = mirrors
+	publishedAt := time.Unix(1_700_000_123, 0).UTC()
+	svc.runtime.clock = stubClock{now: publishedAt}
+
+	createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy:             testRepositoryPolicy(),
+		RepositoryCheckout: testRepositoryCheckoutProto(),
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+
+	if got, want := adapter.provisionCalls, 1; got != want {
+		t.Fatalf("unexpected provision call count: got %d want %d", got, want)
+	}
+	if got, want := adapter.createSnapshotCalls, 1; got != want {
+		t.Fatalf("unexpected workspace seed snapshot create count: got %d want %d", got, want)
+	}
+	if got, want := adapter.createSnapshotReq.SandboxID, createResp.GetSandbox().GetSandboxId(); got != want {
+		t.Fatalf("unexpected snapshot sandbox id: got %q want %q", got, want)
+	}
+
+	records, err := store.List(context.Background())
+	if err != nil {
+		t.Fatalf("List returned error: %v", err)
+	}
+	if got, want := len(records), 1; got != want {
+		t.Fatalf("unexpected snapshot record count: got %d want %d", got, want)
+	}
+	record := records[0]
+	compiled, err := policy.FromProto(testRepositoryPolicy())
+	if err != nil {
+		t.Fatalf("FromProto returned error: %v", err)
+	}
+	if got, want := record.Name, workspaceSeedSnapshotName("firecracker", compiled.Hash, "runtime-base:test", repositorycheckout.FromProto(testRepositoryCheckoutProto())); got != want {
+		t.Fatalf("unexpected workspace seed snapshot name: got %q want %q", got, want)
+	}
+	if record.Repository == nil {
+		t.Fatal("expected repository metadata on workspace seed snapshot")
+	}
+	if got, want := record.Repository.GetCommitSha(), testRepositoryCheckoutProto().GetCommitSha(); got != want {
+		t.Fatalf("unexpected workspace seed commit: got %q want %q", got, want)
+	}
+	if got, want := record.CreatedAt, publishedAt; !got.Equal(want) {
+		t.Fatalf("unexpected workspace seed created_at: got %s want %s", got.Format(time.RFC3339Nano), want.Format(time.RFC3339Nano))
+	}
+}
+
+func TestWorkspaceSeedSnapshotRecordBreaksCreatedAtTiesBySnapshotID(t *testing.T) {
+	compiled, err := policy.FromProto(testRepositoryPolicy())
+	if err != nil {
+		t.Fatalf("FromProto returned error: %v", err)
+	}
+	repository := repositorycheckout.FromProto(testRepositoryCheckoutProto())
+	createdAt := time.Unix(1_700_000_000, 0).UTC()
+
+	older := snapshotstore.Record{
+		SnapshotID: "snap_00000000000000000000000001",
+		Backend:    "firecracker",
+		Name:       workspaceSeedSnapshotName("firecracker", compiled.Hash, "runtime-base:test", repository),
+		PolicyHash: compiled.Hash,
+		Repository: repository.ToProto(),
+		CreatedAt:  createdAt,
+	}
+	newer := snapshotstore.Record{
+		SnapshotID: "snap_00000000000000000000000002",
+		Backend:    "firecracker",
+		Name:       workspaceSeedSnapshotName("firecracker", compiled.Hash, "runtime-base:test", repository),
+		PolicyHash: compiled.Hash,
+		Repository: repository.ToProto(),
+		CreatedAt:  createdAt,
+	}
+
+	record, ok := workspaceSeedSnapshotRecord([]snapshotstore.Record{older, newer}, "firecracker", compiled.Hash, "runtime-base:test", repository)
+	if !ok {
+		t.Fatal("expected workspace seed snapshot record match")
+	}
+	if got, want := record.SnapshotID, newer.SnapshotID; got != want {
+		t.Fatalf("expected tie-break to prefer newer snapshot id, got %q want %q", got, want)
+	}
+}
+
+func TestCreateSandboxReusesWorkspaceSeedSnapshot(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	store := newMemorySnapshotStore()
+	adapter := &stubAdapter{
+		createSnapshotFn: func(_ context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
+			return &backend.SnapshotResult{StorageRef: "/snapshots/" + req.SnapshotID + ".ext4"}, nil
+		},
+	}
+	mirrors := &stubRepositoryMirrorStore{}
+	svc := newTestServiceWithSnapshotStore(adapter, store)
+	svc.RepositoryMirrors = mirrors
+
+	req := &cleanroomv1.CreateSandboxRequest{
+		Policy:             testRepositoryPolicy(),
+		RepositoryCheckout: testRepositoryCheckoutProto(),
+	}
+
+	if _, err := svc.CreateSandbox(context.Background(), req); err != nil {
+		t.Fatalf("first CreateSandbox returned error: %v", err)
+	}
+	if got, want := adapter.provisionCalls, 1; got != want {
+		t.Fatalf("unexpected initial provision calls: got %d want %d", got, want)
+	}
+	if got, want := adapter.createSnapshotCalls, 1; got != want {
+		t.Fatalf("unexpected initial snapshot create calls: got %d want %d", got, want)
+	}
+	if got, want := adapter.provisionFromSnapshotCalls, 0; got != want {
+		t.Fatalf("unexpected initial snapshot restore calls: got %d want %d", got, want)
+	}
+	if got, want := mirrors.calls, 1; got != want {
+		t.Fatalf("unexpected initial mirror calls: got %d want %d", got, want)
+	}
+
+	secondResp, err := svc.CreateSandbox(context.Background(), req)
+	if err != nil {
+		t.Fatalf("second CreateSandbox returned error: %v", err)
+	}
+	if secondResp.GetSandbox().GetSandboxId() == "" {
+		t.Fatal("expected sandbox id from cache-backed create")
+	}
+	if got, want := adapter.provisionCalls, 1; got != want {
+		t.Fatalf("expected warm hit to avoid reprovision bootstrap path, got provisionCalls=%d want=%d", got, want)
+	}
+	if got, want := adapter.createSnapshotCalls, 1; got != want {
+		t.Fatalf("expected warm hit to avoid publishing another workspace seed, got createSnapshotCalls=%d want=%d", got, want)
+	}
+	if got, want := adapter.provisionFromSnapshotCalls, 1; got != want {
+		t.Fatalf("expected warm hit to provision from snapshot once, got %d want %d", got, want)
+	}
+	if got, want := mirrors.calls, 1; got != want {
+		t.Fatalf("expected warm hit to avoid another mirror prewarm, got %d want %d", got, want)
+	}
+	if got, want := adapter.runCalls, 1; got != want {
+		t.Fatalf("expected warm hit to skip repository bootstrap execution, got runCalls=%d want=%d", got, want)
+	}
+	if got, want := adapter.provisionFromSnapshotReq.StorageRef, "/snapshots/"+adapter.createSnapshotReq.SnapshotID+".ext4"; got != want {
+		t.Fatalf("unexpected snapshot storage ref on warm hit: got %q want %q", got, want)
+	}
+}
+
+func TestCreateSandboxDoesNotReuseWorkspaceSeedWhenRuntimeBaseKeyChanges(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	store := newMemorySnapshotStore()
+	adapter := &stubAdapter{
+		workspaceSeedRuntimeKey: "runtime-base:a",
+		createSnapshotFn: func(_ context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
+			return &backend.SnapshotResult{StorageRef: "/snapshots/" + req.SnapshotID + ".ext4"}, nil
+		},
+	}
+	mirrors := &stubRepositoryMirrorStore{}
+	svc := newTestServiceWithSnapshotStore(adapter, store)
+	svc.RepositoryMirrors = mirrors
+
+	req := &cleanroomv1.CreateSandboxRequest{
+		Policy:             testRepositoryPolicy(),
+		RepositoryCheckout: testRepositoryCheckoutProto(),
+	}
+
+	if _, err := svc.CreateSandbox(context.Background(), req); err != nil {
+		t.Fatalf("first CreateSandbox returned error: %v", err)
+	}
+
+	adapter.workspaceSeedRuntimeKey = "runtime-base:b"
+
+	secondResp, err := svc.CreateSandbox(context.Background(), req)
+	if err != nil {
+		t.Fatalf("second CreateSandbox returned error: %v", err)
+	}
+	if secondResp.GetSandbox().GetSandboxId() == "" {
+		t.Fatal("expected sandbox id after runtime base change")
+	}
+	if got, want := adapter.provisionFromSnapshotCalls, 0; got != want {
+		t.Fatalf("expected runtime base change to avoid snapshot restore, got %d want %d", got, want)
+	}
+	if got, want := adapter.provisionCalls, 2; got != want {
+		t.Fatalf("expected runtime base change to reprovision sandbox, got %d want %d", got, want)
+	}
+	if got, want := adapter.runCalls, 2; got != want {
+		t.Fatalf("expected runtime base change to rerun repository bootstrap, got %d want %d", got, want)
+	}
+	if got, want := adapter.createSnapshotCalls, 2; got != want {
+		t.Fatalf("expected runtime base change to publish a new workspace seed, got %d want %d", got, want)
+	}
+
+	records, err := store.List(context.Background())
+	if err != nil {
+		t.Fatalf("List returned error: %v", err)
+	}
+	if got, want := len(records), 2; got != want {
+		t.Fatalf("expected two workspace seed snapshots after runtime base change, got %d want %d", got, want)
+	}
+}
+
+func TestCreateSandboxFallsBackWhenWorkspaceSeedRestoreFails(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	store := newMemorySnapshotStore()
+	adapter := &stubAdapter{
+		createSnapshotFn: func(_ context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
+			return &backend.SnapshotResult{StorageRef: "/snapshots/" + req.SnapshotID + ".ext4"}, nil
+		},
+		provisionFromSnapshotFn: func(_ context.Context, _ backend.ProvisionFromSnapshotRequest) error {
+			return errors.New("snapshot restore failed")
+		},
+	}
+	mirrors := &stubRepositoryMirrorStore{}
+	svc := newTestServiceWithSnapshotStore(adapter, store)
+	svc.RepositoryMirrors = mirrors
+
+	req := &cleanroomv1.CreateSandboxRequest{
+		Policy:             testRepositoryPolicy(),
+		RepositoryCheckout: testRepositoryCheckoutProto(),
+	}
+
+	if _, err := svc.CreateSandbox(context.Background(), req); err != nil {
+		t.Fatalf("first CreateSandbox returned error: %v", err)
+	}
+
+	secondResp, err := svc.CreateSandbox(context.Background(), req)
+	if err != nil {
+		t.Fatalf("second CreateSandbox returned error: %v", err)
+	}
+	if secondResp.GetSandbox().GetSandboxId() == "" {
+		t.Fatal("expected sandbox id after falling back to cold bootstrap")
+	}
+	if got, want := adapter.provisionFromSnapshotCalls, 1; got != want {
+		t.Fatalf("expected one failed snapshot restore attempt, got %d want %d", got, want)
+	}
+	if got, want := adapter.provisionCalls, 2; got != want {
+		t.Fatalf("expected fallback path to reprovision sandbox, got %d want %d", got, want)
+	}
+	if got, want := adapter.runCalls, 2; got != want {
+		t.Fatalf("expected fallback path to rerun repository bootstrap, got %d want %d", got, want)
+	}
+	if got, want := adapter.createSnapshotCalls, 2; got != want {
+		t.Fatalf("expected fallback path to republish workspace seed snapshot, got %d want %d", got, want)
+	}
+	if got, want := mirrors.calls, 2; got != want {
+		t.Fatalf("expected fallback path to re-prewarm mirror, got %d want %d", got, want)
+	}
+
+	records, err := store.List(context.Background())
+	if err != nil {
+		t.Fatalf("List returned error: %v", err)
+	}
+	if got, want := len(records), 2; got != want {
+		t.Fatalf("expected failed restore fallback to retain old snapshot and publish a new one, got %d want %d", got, want)
+	}
+}
+
 func TestCreateExecutionWrapsRepositoryBootstrapInService(t *testing.T) {
 	adapter := &stubAdapter{}
 	mirrors := &stubRepositoryMirrorStore{}
@@ -1388,6 +1701,27 @@ func TestCreateSandboxRejectsRepositoryFileRemote(t *testing.T) {
 	}
 	if got := adapter.provisionCalls; got != 0 {
 		t.Fatalf("expected no provision call on invalid repository remote, got %d", got)
+	}
+}
+
+func TestCreateSandboxRejectsMutableRepositoryCommitRef(t *testing.T) {
+	adapter := &stubAdapter{}
+	svc := newTestService(adapter)
+
+	repository := testRepositoryCheckoutProto()
+	repository.CommitSha = "main"
+	_, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy:             testRepositoryPolicy(),
+		RepositoryCheckout: repository,
+	})
+	if err == nil {
+		t.Fatal("expected repository bootstrap to reject mutable commit refs")
+	}
+	if !strings.Contains(err.Error(), "full 40-character hexadecimal commit SHA") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := adapter.provisionCalls; got != 0 {
+		t.Fatalf("expected no provision call on invalid repository commit ref, got %d", got)
 	}
 }
 
