@@ -267,6 +267,32 @@ backends:
 	}
 }
 
+func TestLoadRejectsInvalidLegacyDarwinVZMinimumRootFSBytes(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	configPath := filepath.Join(tmp, "cleanroom", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	content := `default_backend: darwin-vz
+backends:
+  darwin_vz:
+    minimum_rootfs_bytes: 2GIBB
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, _, err := Load()
+	if err == nil {
+		t.Fatal("expected Load to reject invalid legacy minimum_rootfs_bytes")
+	}
+	if !strings.Contains(err.Error(), "invalid byte size") {
+		t.Fatalf("expected error to mention invalid byte size, got %v", err)
+	}
+}
+
 func TestLoadSupportsLegacyDarwinVZUnderscoreKey(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", tmp)
