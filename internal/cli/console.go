@@ -25,6 +25,7 @@ type ConsoleCommand struct {
 	In             string   `name:"in" aliases:"sandbox-id" help:"Run in an existing sandbox ID instead of creating a new one"`
 	From           string   `name:"from" help:"Create the sandbox from an existing snapshot ID"`
 	Image          string   `help:"Override sandbox image ref for newly created sandboxes (tag, digest, or local Docker image)"`
+	repositoryOverrideFlags
 	Keep           bool     `help:"Keep a newly created sandbox after the console exits"`
 	Env            []string `short:"e" name:"env" help:"Set guest environment variables; use KEY to inherit from the local environment or KEY=VALUE to set an explicit value"`
 	PrintSandboxID bool     `name:"print-sandbox-id" help:"Print resolved sandbox_id=<id> to stderr before attaching"`
@@ -35,7 +36,7 @@ type ConsoleCommand struct {
 }
 
 func (c *ConsoleCommand) Run(ctx *runtimeContext) (runErr error) {
-	if err := validateExecutionSandboxArgs(c.Chdir, c.In, c.From, c.Keep); err != nil {
+	if err := validateExecutionSandboxArgs(c.Chdir, c.In, c.From, c.Keep, c.repositoryOverrideFlags); err != nil {
 		return err
 	}
 
@@ -70,7 +71,7 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) (runErr error) {
 		"env_count", len(executionEnv),
 	)
 	persistentRepositoryBackend := backendSupportsRepositoryPersistence(ctx, host, c.Backend)
-	repository, err := maybeResolveRepositoryCheckout(cwd, ctx.Loader, strings.TrimSpace(c.In), strings.TrimSpace(c.From), !persistentRepositoryBackend)
+	repository, err := maybeResolveRepositoryCheckoutWithOverride(cwd, ctx.Loader, strings.TrimSpace(c.In), strings.TrimSpace(c.From), !persistentRepositoryBackend, c.repositoryOverrideFlags)
 	if err != nil {
 		return err
 	}

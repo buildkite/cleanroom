@@ -55,6 +55,7 @@ type CreateCommand struct {
 	Backend       string `help:"Execution backend (defaults to runtime config or host default)"`
 	From          string `name:"from" help:"Create the sandbox from an existing snapshot ID"`
 	Image         string `help:"Override sandbox image ref (tag, digest, or local Docker image)"`
+	repositoryOverrideFlags
 	LaunchSeconds int64  `help:"VM boot/guest-agent readiness timeout in seconds"`
 	JSON          bool   `help:"Print sandbox as JSON"`
 }
@@ -267,6 +268,9 @@ func (c *SandboxCreateCommand) Run(ctx *runtimeContext) error {
 }
 
 func (c *CreateCommand) Run(ctx *runtimeContext) error {
+	if err := c.validate(); err != nil {
+		return err
+	}
 	if strings.TrimSpace(c.From) != "" {
 		return runSandboxCreate(ctx, c.clientFlags, c.Backend, c.From, c.Image, false, false, c.LaunchSeconds, c.JSON)
 	}
@@ -280,7 +284,7 @@ func (c *CreateCommand) Run(ctx *runtimeContext) error {
 	if err != nil {
 		return err
 	}
-	repository, err := resolveRepositoryCheckout(cwd, ctx.Loader)
+	repository, err := resolveRepositoryCheckoutWithOverride(cwd, ctx.Loader, c.repositoryOverrideFlags)
 	if err != nil {
 		return err
 	}
@@ -300,6 +304,16 @@ func (c *CreateCommand) Run(ctx *runtimeContext) error {
 	}
 	_, err = fmt.Fprintln(ctx.Stdout, sandboxID)
 	return err
+}
+
+func (c *CreateCommand) validate() error {
+	if _, err := c.repositoryOverrideFlags.resolve(".", nil); err != nil {
+		return err
+	}
+	if c.repositoryOverrideFlags.hasRepositoryOverride() && strings.TrimSpace(c.From) != "" {
+		return errors.New("--repo-url cannot be used with --from")
+	}
+	return nil
 }
 
 func createTopLevelSandbox(

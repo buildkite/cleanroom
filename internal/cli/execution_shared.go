@@ -77,10 +77,14 @@ func ensureSandboxID(client *controlclient.Client, loader policyLoader, cwd, hos
 	return sandboxID, true, nil
 }
 
-func validateExecutionSandboxArgs(chdir, existingSandboxID, fromSnapshot string, keep bool) error {
+func validateExecutionSandboxArgs(chdir, existingSandboxID, fromSnapshot string, keep bool, repositoryOverride repositoryOverrideFlags) error {
 	sandboxID := strings.TrimSpace(existingSandboxID)
 	snapshotID := strings.TrimSpace(fromSnapshot)
 	hasChdir := strings.TrimSpace(chdir) != ""
+
+	if _, err := repositoryOverride.resolve(".", nil); err != nil {
+		return err
+	}
 
 	if sandboxID != "" && snapshotID != "" {
 		return errors.New("--from cannot be used with --in")
@@ -93,6 +97,12 @@ func validateExecutionSandboxArgs(chdir, existingSandboxID, fromSnapshot string,
 	}
 	if snapshotID != "" && hasChdir {
 		return errors.New("--chdir cannot be used with --from")
+	}
+	if sandboxID != "" && repositoryOverride.hasRepositoryOverride() {
+		return errors.New("--repo-url cannot be used with --in")
+	}
+	if snapshotID != "" && repositoryOverride.hasRepositoryOverride() {
+		return errors.New("--repo-url cannot be used with --from")
 	}
 
 	return nil
