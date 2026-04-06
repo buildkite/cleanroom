@@ -218,6 +218,7 @@ func Load() (Config, string, error) {
 	if err := yaml.Unmarshal(b, &cfg); err != nil {
 		return Config{}, path, fmt.Errorf("parse %s: %w", path, err)
 	}
+	darwinVZMinRootFSBytes := cfg.Backends.DarwinVZ.MinimumRootFSBytes
 	if darwinVZConfigIsZero(cfg.Backends.DarwinVZ) {
 		legacyCfg := struct {
 			Backends struct {
@@ -227,6 +228,9 @@ func Load() (Config, string, error) {
 		if err := yaml.Unmarshal(b, &legacyCfg); err == nil && !darwinVZConfigIsZero(legacyCfg.Backends.DarwinVZ) {
 			cfg.Backends.DarwinVZ = legacyCfg.Backends.DarwinVZ
 		}
+	}
+	if darwinVZMinRootFSBytes > 0 {
+		cfg.Backends.DarwinVZ.MinimumRootFSBytes = darwinVZMinRootFSBytes
 	}
 
 	cfg.DefaultBackend = strings.TrimSpace(cfg.DefaultBackend)
@@ -240,7 +244,6 @@ func Load() (Config, string, error) {
 func darwinVZConfigIsZero(cfg DarwinVZConfig) bool {
 	return strings.TrimSpace(cfg.KernelImage) == "" &&
 		strings.TrimSpace(cfg.RootFS) == "" &&
-		cfg.MinimumRootFSBytes == 0 &&
 		darwinVZNetworkConfigIsZero(cfg.Network) &&
 		cfg.Services.Docker.StartupTimeoutSeconds == 0 &&
 		strings.TrimSpace(cfg.Services.Docker.StorageDriver) == "" &&
