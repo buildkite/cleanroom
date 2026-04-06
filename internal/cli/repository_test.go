@@ -844,7 +844,7 @@ func TestExecCommandBootstrapsExplicitRepositoryOverrideOnLocalControlPlane(t *t
 		Config: runtimeconfig.Config{
 			DefaultBackend: "firecracker",
 		},
-		Backends: map[string]backend.SandboxAdapter{
+		Backends: map[string]backend.Adapter{
 			"firecracker": adapter,
 		},
 	})
