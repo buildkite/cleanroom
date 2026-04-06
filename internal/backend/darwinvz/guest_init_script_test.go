@@ -25,6 +25,15 @@ func TestGuestInitScriptBootstrapsNetwork(t *testing.T) {
 	if !strings.Contains(guestInitScriptTemplate, "setup_guest_network") {
 		t.Fatal("expected guest network setup function in init script")
 	}
+	if !strings.Contains(guestInitScriptTemplate, "ip link set lo up") {
+		t.Fatal("expected loopback interface setup in init script")
+	}
+	if !strings.Contains(guestInitScriptTemplate, "ip addr add 127.0.0.1/8 dev lo") {
+		t.Fatal("expected IPv4 loopback address setup in init script")
+	}
+	if !strings.Contains(guestInitScriptTemplate, "ip -6 addr add ::1/128 dev lo") {
+		t.Fatal("expected IPv6 loopback address setup in init script")
+	}
 	if !strings.Contains(guestInitScriptTemplate, "cleanroom_vmnet_guest_ipv4") {
 		t.Fatal("expected vmnet static guest IPv4 boot arg lookup in init script")
 	}
