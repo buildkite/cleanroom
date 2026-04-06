@@ -4,55 +4,162 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/buildkite/cleanroom/internal/dnsproxy"
 	"github.com/buildkite/cleanroom/internal/policy"
+	"github.com/miekg/dns"
 )
 
-func TestResolveForwardRulesWithLookupDeduplicates(t *testing.T) {
+func TestTrustedDNSChainSyncerSyncsRuntimeObservationsToIPTablesChains(t *testing.T) {
 	t.Parallel()
 
-	allow := []policy.AllowRule{
-		{Host: "registry.npmjs.org", Ports: []int{443, 443}},
-	}
-	lookup := func(_ context.Context, host string) ([]net.IP, error) {
-		if host != "registry.npmjs.org" {
-			t.Fatalf("unexpected host lookup %q", host)
-		}
-		return []net.IP{net.ParseIP("203.0.113.7"), net.ParseIP("203.0.113.7")}, nil
+	runtime := dnsproxy.NewRuntime(dnsproxy.RuntimeConfig{
+		MaxObservationsPerScope:  8,
+		MaxConnectionsPerSandbox: 8,
+	})
+	if err := runtime.RegisterSandbox("sandbox-1", &policy.CompiledPolicy{
+		Version:        1,
+		NetworkDefault: "deny",
+		Allow: []policy.AllowRule{
+			{Host: "service.example", Ports: []int{443}},
+			{Host: "cdn.example", Ports: []int{8443}},
+		},
+	}); err != nil {
+		t.Fatalf("register sandbox: %v", err)
 	}
 
-	rules, err := resolveForwardRulesWithLookup(context.Background(), allow, lookup)
-	if err != nil {
-		t.Fatalf("resolve rules: %v", err)
+	now := time.Date(2026, time.April, 6, 10, 0, 0, 0, time.UTC)
+	sourceIP := netip.MustParseAddr("10.0.0.2")
+	if err := runtime.ObserveResponse("sandbox-1", sourceIP, testDNSResponse("service.example.",
+		&dns.CNAME{
+			Hdr:    dns.RR_Header{Name: "service.example.", Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: 5},
+			Target: "cdn.example.",
+		},
+		&dns.A{
+			Hdr: dns.RR_Header{Name: "cdn.example.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 30},
+			A:   net.ParseIP("203.0.113.60"),
+		},
+	), now); err != nil {
+		t.Fatalf("observe response: %v", err)
 	}
-	if len(rules) != 2 {
-		t.Fatalf("expected 2 unique rules (tcp+udp), got %d", len(rules))
+
+	var calls []string
+	runBatch := func(_ context.Context, commands [][]string) error {
+		for _, command := range commands {
+			calls = append(calls, strings.Join(command, " "))
+		}
+		return nil
 	}
-	seen := map[string]struct{}{}
-	for _, r := range rules {
-		seen[r.Protocol+"|"+r.DestIP+"|"+strconv.Itoa(r.DestPort)] = struct{}{}
+
+	syncer := trustedDNSChainSyncer{
+		sandboxID:    "sandbox-1",
+		sourceIP:     sourceIP,
+		runtime:      runtime,
+		tcpChainName: trustedDNSTCPChainName("crrun12345"),
+		udpChainName: trustedDNSUDPChainName("crrun12345"),
+		runBatch:     runBatch,
+		now:          func() time.Time { return now },
 	}
-	for _, k := range []string{"tcp|203.0.113.7|443", "udp|203.0.113.7|443"} {
-		if _, ok := seen[k]; !ok {
-			t.Fatalf("missing rule %s", k)
+
+	if _, _, err := syncer.Sync(context.Background()); err != nil {
+		t.Fatalf("sync trusted dns sets: %v", err)
+	}
+
+	joined := strings.Join(calls, "\n")
+	for _, line := range []string{
+		"iptables -F " + trustedDNSTCPChainName("crrun12345"),
+		"iptables -F " + trustedDNSUDPChainName("crrun12345"),
+		"iptables -A " + trustedDNSTCPChainName("crrun12345") + " -d 203.0.113.60 -p tcp --dport 443 -j ACCEPT",
+		"iptables -A " + trustedDNSUDPChainName("crrun12345") + " -d 203.0.113.60 -p udp --dport 443 -j ACCEPT",
+		"iptables -A " + trustedDNSTCPChainName("crrun12345") + " -d 203.0.113.60 -p tcp --dport 8443 -j ACCEPT",
+		"iptables -A " + trustedDNSUDPChainName("crrun12345") + " -d 203.0.113.60 -p udp --dport 8443 -j ACCEPT",
+	} {
+		if !strings.Contains(joined, line) {
+			t.Fatalf("missing sync command %q\ncommands:\n%s", line, joined)
 		}
 	}
 }
 
-func TestResolveForwardRulesWithLookupReturnsLookupError(t *testing.T) {
+func TestSetupHostNetworkWithTrustedDNSFactoryConfiguresDynamicRulesWithoutStaticResolution(t *testing.T) {
 	t.Parallel()
 
-	lookup := func(_ context.Context, _ string) ([]net.IP, error) {
-		return nil, errors.New("dns down")
+	type call struct {
+		ctxCanceled bool
+		args        []string
 	}
-	_, err := resolveForwardRulesWithLookup(context.Background(), []policy.AllowRule{{Host: "example.com", Ports: []int{443}}}, lookup)
-	if err == nil || !strings.Contains(err.Error(), "dns down") {
-		t.Fatalf("expected dns error, got %v", err)
+	var calls []call
+	run := func(ctx context.Context, args ...string) error {
+		copied := append([]string(nil), args...)
+		calls = append(calls, call{ctxCanceled: ctx.Err() != nil, args: copied})
+		return nil
+	}
+	runBatch := func(ctx context.Context, commands [][]string) error {
+		for _, args := range commands {
+			copied := append([]string(nil), args...)
+			calls = append(calls, call{ctxCanceled: ctx.Err() != nil, args: copied})
+		}
+		return nil
+	}
+	lookup := func(_ context.Context, host string) ([]net.IP, error) {
+		t.Fatalf("trusted dns setup should not resolve policy host %q during network setup", host)
+		return nil, nil
+	}
+
+	var dnsCfg trustedDNSConfig
+	factory := func(_ context.Context, cfg trustedDNSConfig) (func(), error) {
+		dnsCfg = cfg
+		return func() {}, nil
+	}
+
+	reqCtx, cancel := context.WithCancel(context.Background())
+	cfg, cleanup, err := setupHostNetworkWithTrustedDNSFactory(reqCtx, "run-12345", false, []policy.AllowRule{{Host: "proxy.golang.org", Ports: []int{443}}}, 8170, lookup, net.InterfaceByName, run, runBatch, factory)
+	if err != nil {
+		t.Fatalf("setupHostNetworkWithTrustedDNSFactory: %v", err)
+	}
+	cancel()
+	cleanup()
+
+	tap := cfg.TapName
+	if got, want := cfg.GuestDNS, cfg.HostIP; got != want {
+		t.Fatalf("unexpected guest dns target: got %q want %q", got, want)
+	}
+	if got, want := dnsCfg.sandboxID, "run-12345"; got != want {
+		t.Fatalf("unexpected trusted dns sandbox id: got %q want %q", got, want)
+	}
+	if got, want := dnsCfg.hostIP, netip.MustParseAddr(cfg.HostIP); got != want {
+		t.Fatalf("unexpected trusted dns host ip: got %s want %s", got, want)
+	}
+	if got, want := dnsCfg.guestIP, netip.MustParseAddr(cfg.GuestIP); got != want {
+		t.Fatalf("unexpected trusted dns guest ip: got %s want %s", got, want)
+	}
+
+	joinedLines := make([]string, 0, len(calls))
+	for _, call := range calls {
+		joinedLines = append(joinedLines, strings.Join(call.args, " "))
+	}
+	joined := strings.Join(joinedLines, "\n")
+
+	for _, expected := range []string{
+		"iptables -N " + trustedDNSTCPChainName(tap),
+		"iptables -N " + trustedDNSUDPChainName(tap),
+		"iptables -t nat -A PREROUTING -i " + tap + " -p udp --dport 53 -j REDIRECT --to-ports " + strconv.Itoa(trustedDNSListenPort),
+		"iptables -t nat -A PREROUTING -i " + tap + " -p tcp --dport 53 -j REDIRECT --to-ports " + strconv.Itoa(trustedDNSListenPort),
+		"iptables -A FORWARD -i " + tap + " -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT",
+		"iptables -A FORWARD -i " + tap + " -p tcp -j " + trustedDNSTCPChainName(tap),
+		"iptables -A FORWARD -i " + tap + " -p udp -j " + trustedDNSUDPChainName(tap),
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("missing command %q\ncalls:\n%s", expected, joined)
+		}
+	}
+	if strings.Contains(joined, "proxy.golang.org") || strings.Contains(joined, "142.251.") {
+		t.Fatalf("did not expect static host resolution in setup commands\ncalls:\n%s", joined)
 	}
 }
 
@@ -77,17 +184,17 @@ func TestSetupHostNetworkWithDepsAddsDenyDefaultAndCleanupIndependentContext(t *
 		return nil
 	}
 	lookup := func(_ context.Context, host string) ([]net.IP, error) {
-		if host != "proxy.golang.org" {
-			t.Fatalf("unexpected host %q", host)
-		}
-		time.Sleep(2 * time.Millisecond)
-		return []net.IP{net.ParseIP("142.251.41.17")}, nil
+		t.Fatalf("trusted dns setup should not resolve policy host %q during network setup", host)
+		return nil, nil
+	}
+	factory := func(_ context.Context, _ trustedDNSConfig) (func(), error) {
+		return func() {}, nil
 	}
 
 	reqCtx, cancel := context.WithCancel(context.Background())
-	cfg, cleanup, err := setupHostNetworkWithDeps(reqCtx, "run-12345", false, []policy.AllowRule{{Host: "proxy.golang.org", Ports: []int{443}}}, 8170, lookup, run, runBatch)
+	cfg, cleanup, err := setupHostNetworkWithTrustedDNSFactory(reqCtx, "run-12345", false, []policy.AllowRule{{Host: "proxy.golang.org", Ports: []int{443}}}, 8170, lookup, net.InterfaceByName, run, runBatch, factory)
 	if err != nil {
-		t.Fatalf("setupHostNetworkWithDeps: %v", err)
+		t.Fatalf("setupHostNetworkWithTrustedDNSFactory: %v", err)
 	}
 	cancel()
 	cleanup()
@@ -96,8 +203,8 @@ func TestSetupHostNetworkWithDepsAddsDenyDefaultAndCleanupIndependentContext(t *
 	if tap == "" {
 		t.Fatal("expected non-empty tap name")
 	}
-	if cfg.PolicyResolveMS <= 0 {
-		t.Fatalf("expected positive policy resolve timing, got %d", cfg.PolicyResolveMS)
+	if cfg.PolicyResolveMS != 0 {
+		t.Fatalf("expected trusted dns networking to avoid setup-time resolution, got %d", cfg.PolicyResolveMS)
 	}
 	haystack := make([]string, 0, len(calls))
 	for _, c := range calls {
@@ -110,11 +217,14 @@ func TestSetupHostNetworkWithDepsAddsDenyDefaultAndCleanupIndependentContext(t *
 	if strings.Contains(joined, "iptables -A FORWARD -i "+tap+" -j ACCEPT") {
 		t.Fatalf("unexpected blanket ACCEPT FORWARD rule for tap %s\ncalls:\n%s", tap, joined)
 	}
-	if !strings.Contains(joined, "iptables -A FORWARD -i "+tap+" -p tcp -d 142.251.41.17 --dport 443 -j ACCEPT") {
-		t.Fatalf("expected tcp allow rule for policy host\ncalls:\n%s", joined)
+	if !strings.Contains(joined, "iptables -A FORWARD -i "+tap+" -p tcp -j "+trustedDNSTCPChainName(tap)) {
+		t.Fatalf("expected dynamic tcp chain jump for policy host\ncalls:\n%s", joined)
 	}
-	if !strings.Contains(joined, "iptables -A FORWARD -i "+tap+" -p udp -d 142.251.41.17 --dport 443 -j ACCEPT") {
-		t.Fatalf("expected udp allow rule for policy host\ncalls:\n%s", joined)
+	if !strings.Contains(joined, "iptables -A FORWARD -i "+tap+" -p udp -j "+trustedDNSUDPChainName(tap)) {
+		t.Fatalf("expected dynamic udp chain jump for policy host\ncalls:\n%s", joined)
+	}
+	if strings.Contains(joined, "142.251.41.17") {
+		t.Fatalf("did not expect static resolved ip rules in setup\ncalls:\n%s", joined)
 	}
 
 	// Verify anti-spoof INPUT rules.
@@ -166,10 +276,8 @@ func TestSetupHostNetworkWithTapLookupDeletesStaleTapBeforeCreate(t *testing.T) 
 		return nil
 	}
 	lookup := func(_ context.Context, host string) ([]net.IP, error) {
-		if host != "proxy.golang.org" {
-			t.Fatalf("unexpected host %q", host)
-		}
-		return []net.IP{net.ParseIP("142.251.41.17")}, nil
+		t.Fatalf("trusted dns setup should not resolve policy host %q during network setup", host)
+		return nil, nil
 	}
 	interfaceByName := func(name string) (*net.Interface, error) {
 		if name != tapName {
@@ -181,9 +289,12 @@ func TestSetupHostNetworkWithTapLookupDeletesStaleTapBeforeCreate(t *testing.T) 
 		return nil, errors.New("no such network interface")
 	}
 
-	_, cleanup, err := setupHostNetworkWithTapLookup(context.Background(), runID, false, []policy.AllowRule{{Host: "proxy.golang.org", Ports: []int{443}}}, 0, lookup, interfaceByName, run, nil)
+	factory := func(_ context.Context, _ trustedDNSConfig) (func(), error) {
+		return func() {}, nil
+	}
+	_, cleanup, err := setupHostNetworkWithTrustedDNSFactory(context.Background(), runID, false, []policy.AllowRule{{Host: "proxy.golang.org", Ports: []int{443}}}, 0, lookup, interfaceByName, run, nil, factory)
 	if err != nil {
-		t.Fatalf("setupHostNetworkWithTapLookup: %v", err)
+		t.Fatalf("setupHostNetworkWithTrustedDNSFactory: %v", err)
 	}
 	defer cleanup()
 
@@ -217,9 +328,12 @@ func TestSetupHostNetworkWithDepsAddsAllowAllForwardRule(t *testing.T) {
 		return nil, nil
 	}
 
-	cfg, cleanup, err := setupHostNetworkWithDeps(context.Background(), "run-allow-all", true, []policy.AllowRule{{Host: "stale.example.invalid", Ports: []int{443}}}, 0, lookup, run, runBatch)
+	factory := func(_ context.Context, _ trustedDNSConfig) (func(), error) {
+		return func() {}, nil
+	}
+	cfg, cleanup, err := setupHostNetworkWithTrustedDNSFactory(context.Background(), "run-allow-all", true, []policy.AllowRule{{Host: "stale.example.invalid", Ports: []int{443}}}, 0, lookup, net.InterfaceByName, run, runBatch, factory)
 	if err != nil {
-		t.Fatalf("setupHostNetworkWithDeps: %v", err)
+		t.Fatalf("setupHostNetworkWithTrustedDNSFactory: %v", err)
 	}
 	defer cleanup()
 
@@ -234,6 +348,55 @@ func TestSetupHostNetworkWithDepsAddsAllowAllForwardRule(t *testing.T) {
 	if cfg.PolicyResolveMS != 0 {
 		t.Fatalf("expected allow-all networking to skip policy resolution timing, got %d", cfg.PolicyResolveMS)
 	}
+}
+
+func TestSetupHostNetworkWithTrustedDNSFactoryPreservesDirectIPAllowRules(t *testing.T) {
+	t.Parallel()
+
+	var calls []string
+	run := func(_ context.Context, args ...string) error {
+		calls = append(calls, strings.Join(args, " "))
+		return nil
+	}
+	runBatch := func(_ context.Context, commands [][]string) error {
+		for _, args := range commands {
+			calls = append(calls, strings.Join(args, " "))
+		}
+		return nil
+	}
+	lookup := func(_ context.Context, host string) ([]net.IP, error) {
+		t.Fatalf("direct ip allow rules should not trigger setup-time lookup for %q", host)
+		return nil, nil
+	}
+	factory := func(_ context.Context, _ trustedDNSConfig) (func(), error) {
+		return func() {}, nil
+	}
+
+	cfg, cleanup, err := setupHostNetworkWithTrustedDNSFactory(context.Background(), "run-direct-ip", false, []policy.AllowRule{{Host: "203.0.113.10", Ports: []int{443}}}, 0, lookup, net.InterfaceByName, run, runBatch, factory)
+	if err != nil {
+		t.Fatalf("setupHostNetworkWithTrustedDNSFactory: %v", err)
+	}
+	defer cleanup()
+
+	joined := strings.Join(calls, "\n")
+	tap := cfg.TapName
+	for _, expected := range []string{
+		"iptables -A FORWARD -i " + tap + " -d 203.0.113.10 -p tcp --dport 443 -j ACCEPT",
+		"iptables -A FORWARD -i " + tap + " -d 203.0.113.10 -p udp --dport 443 -j ACCEPT",
+		"iptables -A FORWARD -i " + tap + " -j DROP",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("missing command %q\ncalls:\n%s", expected, joined)
+		}
+	}
+}
+
+func testDNSResponse(query string, answers ...dns.RR) *dns.Msg {
+	msg := new(dns.Msg)
+	msg.SetQuestion(query, dns.TypeA)
+	msg.Response = true
+	msg.Answer = append(msg.Answer, answers...)
+	return msg
 }
 
 func TestDeleteTapDeviceWithRetryRetriesBusyTapDeletion(t *testing.T) {

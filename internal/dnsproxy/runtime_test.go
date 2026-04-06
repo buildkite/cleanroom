@@ -617,6 +617,73 @@ func TestForwarderDoesNotRecordScopedAnswersWhenWriteFails(t *testing.T) {
 	}
 }
 
+func TestRuntimeAllowedDestinationsExpandsObservedPortsAndProtocols(t *testing.T) {
+	t.Parallel()
+
+	runtime := NewRuntime(RuntimeConfig{
+		MaxObservationsPerScope:  8,
+		MaxConnectionsPerSandbox: 8,
+	})
+	if err := runtime.RegisterSandbox("sandbox-1", testCompiledPolicy(
+		policy.AllowRule{Host: "service.example", Ports: []int{443}},
+		policy.AllowRule{Host: "cdn.example", Ports: []int{8443}},
+	)); err != nil {
+		t.Fatalf("register sandbox: %v", err)
+	}
+
+	now := time.Date(2026, time.April, 6, 10, 0, 0, 0, time.UTC)
+	sourceIP := netip.MustParseAddr("10.0.0.2")
+	destIP := netip.MustParseAddr("203.0.113.55")
+
+	if err := runtime.ObserveResponse("sandbox-1", sourceIP, testResponse("service.example.",
+		&dns.CNAME{
+			Hdr:    dns.RR_Header{Name: "service.example.", Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: 5},
+			Target: "cdn.example.",
+		},
+		&dns.A{
+			Hdr: dns.RR_Header{Name: "cdn.example.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60},
+			A:   net.ParseIP("203.0.113.55"),
+		},
+	), now); err != nil {
+		t.Fatalf("observe response: %v", err)
+	}
+
+	destinations := runtime.AllowedDestinations("sandbox-1", sourceIP, now)
+	if len(destinations) != 4 {
+		t.Fatalf("unexpected destination count: got %d want 4", len(destinations))
+	}
+
+	seen := map[string]time.Time{}
+	for _, destination := range destinations {
+		seen[destination.Protocol+"|"+destination.Address.String()+"|"+destination.Port] = destination.ExpiresAt
+	}
+	for _, key := range []string{
+		ProtocolTCP + "|203.0.113.55|443",
+		ProtocolUDP + "|203.0.113.55|443",
+		ProtocolTCP + "|203.0.113.55|8443",
+		ProtocolUDP + "|203.0.113.55|8443",
+	} {
+		expiresAt, ok := seen[key]
+		if !ok {
+			t.Fatalf("missing allowed destination %s", key)
+		}
+		if got, want := expiresAt, now.Add(5*time.Second); !got.Equal(want) {
+			t.Fatalf("unexpected expiry for %s: got %s want %s", key, got, want)
+		}
+	}
+
+	if !runtime.AllowConnection(Connection{
+		SandboxID:  "sandbox-1",
+		SourceIP:   sourceIP,
+		SourcePort: 44000,
+		DestIP:     destIP,
+		DestPort:   8443,
+		Protocol:   ProtocolUDP,
+	}, now) {
+		t.Fatal("expected expanded allowed destination to permit connection")
+	}
+}
+
 func TestAddrFromNetAddrHandlesNilValues(t *testing.T) {
 	t.Parallel()
 

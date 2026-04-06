@@ -12,7 +12,7 @@ set -euo pipefail
 # - Helper updates must land on hosts before branches that depend on new capabilities can pass.
 
 helper_contract_version() {
-  echo "3"
+  echo "5"
 }
 
 helper_has_zfs() {
@@ -23,6 +23,7 @@ helper_has_zfs() {
 helper_capabilities() {
   cat <<'EOF'
 firecracker-network
+firecracker-trusted-dns
 EOF
 
   if helper_has_zfs; then
@@ -64,6 +65,21 @@ is_ipv4() {
 is_cidr() {
   local v="$1"
   [[ "$v" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$ ]]
+}
+
+is_trusted_dns_set_name() {
+  local v="$1"
+  [[ "$v" =~ ^crdns-(tcp|udp)-cr[a-z0-9]{1,13}$ ]]
+}
+
+is_trusted_dns_chain_name() {
+  local v="$1"
+  [[ "$v" =~ ^crdns-(tcp|udp)-cr[a-z0-9]{1,13}$ ]]
+}
+
+is_ipset_entry() {
+  local v="$1"
+  [[ "$v" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3},(tcp|udp):[0-9]+$ ]]
 }
 
 is_zfs_dataset() {
@@ -154,6 +170,18 @@ dd_bin() {
   command -v dd || die "dd: binary not found"
 }
 
+ipset_bin() {
+  if [[ -x /usr/sbin/ipset ]]; then
+    echo /usr/sbin/ipset
+    return
+  fi
+  if [[ -x /sbin/ipset ]]; then
+    echo /sbin/ipset
+    return
+  fi
+  command -v ipset || die "ipset: binary not found"
+}
+
 run_ip() {
   [[ "$#" -ge 1 ]] || die "ip: missing arguments"
   case "$1" in
@@ -215,8 +243,14 @@ run_iptables() {
     exec /usr/sbin/iptables "$@"
   fi
 
-  if [[ "$#" -eq 10 && ( "$1" == "-A" || "$1" == "-D" ) && "$2" == "FORWARD" && "$3" == "-o" && "$5" == "-m" && "$9" == "-j" && "${10}" == "ACCEPT" ]]; then
-    is_tap_name "$4" || die "iptables FORWARD -o: unsupported interface '$4'"
+  if [[ "$#" -eq 14 && "$1" == "-t" && "$2" == "nat" && ( "$3" == "-A" || "$3" == "-D" ) && "$4" == "PREROUTING" && "$5" == "-i" && "$7" == "-p" && ( "$8" == "tcp" || "$8" == "udp" ) && "$9" == "--dport" && "${10}" == "53" && "${11}" == "-j" && "${12}" == "REDIRECT" && "${13}" == "--to-ports" ]]; then
+    is_tap_name "$6" || die "iptables PREROUTING redirect: unsupported interface '$6'"
+    is_numeric "${14}" || die "iptables PREROUTING redirect: invalid port '${14}'"
+    exec /usr/sbin/iptables "$@"
+  fi
+
+  if [[ "$#" -eq 10 && ( "$1" == "-A" || "$1" == "-D" ) && "$2" == "FORWARD" && ( "$3" == "-o" || "$3" == "-i" ) && "$5" == "-m" && "$9" == "-j" && "${10}" == "ACCEPT" ]]; then
+    is_tap_name "$4" || die "iptables FORWARD ${3}: unsupported interface '$4'"
     if [[ "$6" == "state" && "$7" == "--state" && "$8" == "RELATED,ESTABLISHED" ]]; then
       exec /usr/sbin/iptables "$@"
     fi
@@ -227,6 +261,35 @@ run_iptables() {
 
   if [[ "$#" -eq 6 && ( "$1" == "-A" || "$1" == "-D" ) && ( "$2" == "FORWARD" || "$2" == "INPUT" ) && "$3" == "-i" && "$5" == "-j" && "$6" == "DROP" ]]; then
     is_tap_name "$4" || die "iptables $2 drop: unsupported interface '$4'"
+    exec /usr/sbin/iptables "$@"
+  fi
+
+  if [[ "$#" -eq 13 && ( "$1" == "-A" || "$1" == "-D" ) && "$2" == "FORWARD" && "$3" == "-i" && "$5" == "-p" && ( "$6" == "tcp" || "$6" == "udp" ) && "$7" == "-m" && "$8" == "set" && "$9" == "--match-set" && "${11}" == "dst,dst" && "${12}" == "-j" && "${13}" == "ACCEPT" ]]; then
+    is_tap_name "$4" || die "iptables FORWARD set allow: unsupported interface '$4'"
+    is_trusted_dns_set_name "${10}" || die "iptables FORWARD set allow: unsupported set '${10}'"
+    exec /usr/sbin/iptables "$@"
+  fi
+
+  if [[ "$#" -eq 2 && "$1" == "-N" ]]; then
+    is_trusted_dns_chain_name "$2" || die "iptables chain create: unsupported chain '$2'"
+    exec /usr/sbin/iptables "$@"
+  fi
+
+  if [[ "$#" -eq 2 && ( "$1" == "-F" || "$1" == "-X" ) ]]; then
+    is_trusted_dns_chain_name "$2" || die "iptables chain $1: unsupported chain '$2'"
+    exec /usr/sbin/iptables "$@"
+  fi
+
+  if [[ "$#" -eq 8 && ( "$1" == "-A" || "$1" == "-D" ) && "$2" == "FORWARD" && "$3" == "-i" && "$5" == "-p" && ( "$6" == "tcp" || "$6" == "udp" ) && "$7" == "-j" ]]; then
+    is_tap_name "$4" || die "iptables FORWARD chain jump: unsupported interface '$4'"
+    is_trusted_dns_chain_name "$8" || die "iptables FORWARD chain jump: unsupported chain '$8'"
+    exec /usr/sbin/iptables "$@"
+  fi
+
+  if [[ "$#" -eq 10 && ( "$1" == "-A" || "$1" == "-D" ) && "$3" == "-d" && "$5" == "-p" && ( "$6" == "tcp" || "$6" == "udp" ) && "$7" == "--dport" && "$9" == "-j" && "${10}" == "ACCEPT" ]]; then
+    is_trusted_dns_chain_name "$2" || die "iptables trusted dns allow: unsupported chain '$2'"
+    is_ipv4 "$4" || die "iptables trusted dns allow: invalid destination ip '$4'"
+    is_numeric "$8" || die "iptables trusted dns allow: invalid port '$8'"
     exec /usr/sbin/iptables "$@"
   fi
 
@@ -244,8 +307,8 @@ run_iptables() {
     exec /usr/sbin/iptables "$@"
   fi
 
-  # Gateway accept: iptables -A INPUT -i <tap> -s <IP> -p tcp --dport <port> -j ACCEPT
-  if [[ "$#" -eq 12 && ( "$1" == "-A" || "$1" == "-D" ) && "$2" == "INPUT" && "$3" == "-i" && "$5" == "-s" && "$7" == "-p" && "$8" == "tcp" && "$9" == "--dport" && "${11}" == "-j" && "${12}" == "ACCEPT" ]]; then
+  # Gateway/trusted-DNS accept: iptables -A INPUT -i <tap> -s <IP> -p tcp|udp --dport <port> -j ACCEPT
+  if [[ "$#" -eq 12 && ( "$1" == "-A" || "$1" == "-D" ) && "$2" == "INPUT" && "$3" == "-i" && "$5" == "-s" && "$7" == "-p" && ( "$8" == "tcp" || "$8" == "udp" ) && "$9" == "--dport" && "${11}" == "-j" && "${12}" == "ACCEPT" ]]; then
     is_tap_name "$4" || die "iptables INPUT accept: unsupported interface '$4'"
     is_ipv4 "$6" || die "iptables INPUT accept: invalid ip '$6'"
     is_numeric "${10}" || die "iptables INPUT accept: invalid port '${10}'"
@@ -265,6 +328,32 @@ run_iptables() {
   fi
 
   die "iptables: unsupported arguments"
+}
+
+run_ipset() {
+  [[ "$#" -ge 1 ]] || die "ipset: missing arguments"
+  local bin
+  bin="$(ipset_bin)"
+
+  if [[ "$#" -eq 7 && "$1" == "create" && "$3" == "hash:ip,port" && "$4" == "family" && "$5" == "inet" && "$6" == "timeout" ]]; then
+    is_trusted_dns_set_name "$2" || die "ipset create: unsupported set '$2'"
+    is_numeric "$7" || die "ipset create: invalid timeout '$7'"
+    exec "$bin" "$@"
+  fi
+
+  if [[ "$#" -eq 2 && ( "$1" == "destroy" || "$1" == "flush" ) ]]; then
+    is_trusted_dns_set_name "$2" || die "ipset $1: unsupported set '$2'"
+    exec "$bin" "$@"
+  fi
+
+  if [[ "$#" -eq 5 && "$1" == "add" && "$4" == "timeout" ]]; then
+    is_trusted_dns_set_name "$2" || die "ipset add: unsupported set '$2'"
+    is_ipset_entry "$3" || die "ipset add: unsupported entry '$3'"
+    is_numeric "$5" || die "ipset add: invalid timeout '$5'"
+    exec "$bin" "$@"
+  fi
+
+  die "ipset: unsupported arguments"
 }
 
 run_sysctl() {
@@ -377,6 +466,9 @@ main() {
       ;;
     ip)
       run_ip "$@"
+      ;;
+    ipset)
+      run_ipset "$@"
       ;;
     iptables)
       run_iptables "$@"

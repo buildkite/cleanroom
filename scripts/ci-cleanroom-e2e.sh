@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT_HELPER_REQUIRED_CAPABILITIES=(
   firecracker-network
+  firecracker-trusted-dns
 )
 
 # run_privileged executes a privileged command via the installed root helper.
@@ -94,6 +95,10 @@ purge_stale_cleanroom_resources() {
         run_privileged iptables ${rule/-A/-D} 2>/dev/null || true
       done <<< "$rules"
     done
+    run_privileged iptables -F "crdns-tcp-${tap}" 2>/dev/null || true
+    run_privileged iptables -X "crdns-tcp-${tap}" 2>/dev/null || true
+    run_privileged iptables -F "crdns-udp-${tap}" 2>/dev/null || true
+    run_privileged iptables -X "crdns-udp-${tap}" 2>/dev/null || true
     run_privileged ip link del "$tap" 2>/dev/null || true
   done
 

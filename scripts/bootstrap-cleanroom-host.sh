@@ -671,7 +671,7 @@ CLEANROOM_VERSION="$(normalize_version "$CLEANROOM_VERSION")"
 configure_apt_ipv4
 export DEBIAN_FRONTEND=noninteractive
 retry 5 10 apt-get update -y
-retry 5 10 apt-get install -y e2fsprogs iproute2 iptables
+retry 5 10 apt-get install -y e2fsprogs iproute2 ipset iptables
 
 if [ "$INSTALL_FIRECRACKER" = "true" ]; then
   log "installing firecracker ${FIRECRACKER_VERSION}"

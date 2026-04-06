@@ -29,6 +29,15 @@ func doctorCheck(report *backend.DoctorReport, name string) backend.DoctorCheck 
 	return backend.DoctorCheck{}
 }
 
+func doctorHasCheck(report *backend.DoctorReport, name string) bool {
+	for _, check := range report.Checks {
+		if check.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 func setupFakeSudo(t *testing.T, logPath string) {
 	t.Helper()
 
@@ -128,6 +137,49 @@ func TestRunRootCommandBatchInvokesHelperPerCommand(t *testing.T) {
 	}
 }
 
+func TestRunRootCommandBatchPropagatesHelperErrors(t *testing.T) {
+	tmpDir := t.TempDir()
+	sudoLogPath := filepath.Join(tmpDir, "sudo.log")
+	logPath := filepath.Join(tmpDir, "helper.log")
+	helperPath := filepath.Join(tmpDir, "cleanroom-root-helper")
+	setupFakeSudo(t, sudoLogPath)
+
+	helperScript := "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$*\" >> \"$HELPER_LOG_PATH\"\nif [ \"$1\" = \"iptables\" ]; then\n  echo 'iptables failed' >&2\n  exit 23\nfi\n"
+	if err := os.WriteFile(helperPath, []byte(helperScript), 0o755); err != nil {
+		t.Fatalf("write helper script: %v", err)
+	}
+	t.Setenv("HELPER_LOG_PATH", logPath)
+
+	cfg := backend.FirecrackerConfig{
+		PrivilegedHelperPath: helperPath,
+	}
+
+	commands := [][]string{
+		{"ip", "link", "del", "tap0"},
+		{"iptables", "-D", "FORWARD", "-j", "DROP"},
+		{"ip", "link", "show"},
+	}
+	err := runRootCommandBatch(context.Background(), cfg, commands)
+	if err == nil {
+		t.Fatal("expected runRootCommandBatch to fail")
+	}
+	if !strings.Contains(err.Error(), "iptables failed") {
+		t.Fatalf("expected helper stderr in error, got %v", err)
+	}
+
+	logBytes, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read helper log: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(logBytes)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected batch execution to stop at the failing command, got %d invocations (%q)", len(lines), string(logBytes))
+	}
+	if got, want := lines[1], "iptables -D FORWARD -j DROP"; got != want {
+		t.Fatalf("unexpected failing helper invocation: got %q want %q", got, want)
+	}
+}
+
 func TestRunRootCommandOutputInvokesHelper(t *testing.T) {
 	tmpDir := t.TempDir()
 	sudoLogPath := filepath.Join(tmpDir, "sudo.log")
@@ -217,7 +269,7 @@ func TestDoctorReportsZFSChecks(t *testing.T) {
 	writeExecutable(t, binDir, "ip", "#!/bin/sh\nif [ \"$1\" = \"link\" ] && [ \"$2\" = \"show\" ]; then exit 0; fi\nexit 0\n")
 	writeExecutable(t, binDir, "zfs", "#!/bin/sh\nif [ \"$1\" = \"list\" ] && [ \"$2\" = \"-H\" ] && [ \"$3\" = \"-d\" ] && [ \"$4\" = \"0\" ] && [ \"$5\" = \"-o\" ] && [ \"$6\" = \"name\" ]; then printf '%s\\n' \"$7\"; exit 0; fi\nif [ \"$1\" = \"list\" ] && [ \"$2\" = \"-H\" ] && [ \"$3\" = \"-o\" ] && [ \"$4\" = \"name\" ]; then printf '%s\\n%s/child\\n' \"$5\" \"$5\"; exit 0; fi\nexit 0\n")
 	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
-	helperPath := writeExecutable(t, tmpDir, "cleanroom-root-helper", "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$*\" >> \"$HELPER_LOG_PATH\"\ncase \"$1\" in\n  version)\n    printf 'test-helper\\n'\n    ;;\n  capabilities)\n    printf 'firecracker-network\\nfirecracker-rootfs\\nfirecracker-zfs\\n'\n    ;;\n  true)\n    exec \"$@\"\n    ;;\n  zfs)\n    if [ \"$2\" = \"list\" ] && [ \"$3\" = \"-H\" ] && [ \"$4\" = \"-d\" ] && [ \"$5\" = \"0\" ] && [ \"$6\" = \"-o\" ] && [ \"$7\" = \"name\" ]; then\n      printf '%s\\n' \"$8\"\n      exit 0\n    fi\n    echo 'unexpected helper zfs args' >&2\n    exit 2\n    ;;\n  *)\n    exec \"$@\"\n    ;;\n esac\n")
+	helperPath := writeExecutable(t, tmpDir, "cleanroom-root-helper", "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$*\" >> \"$HELPER_LOG_PATH\"\ncase \"$1\" in\n  version)\n    printf 'test-helper\\n'\n    ;;\n  capabilities)\n    printf 'firecracker-network\\nfirecracker-trusted-dns\\nfirecracker-rootfs\\nfirecracker-zfs\\n'\n    ;;\n  true)\n    exec \"$@\"\n    ;;\n  zfs)\n    if [ \"$2\" = \"list\" ] && [ \"$3\" = \"-H\" ] && [ \"$4\" = \"-d\" ] && [ \"$5\" = \"0\" ] && [ \"$6\" = \"-o\" ] && [ \"$7\" = \"name\" ]; then\n      printf '%s\\n' \"$8\"\n      exit 0\n    fi\n    echo 'unexpected helper zfs args' >&2\n    exit 2\n    ;;\n  *)\n    exec \"$@\"\n    ;;\n esac\n")
 
 	kernelPath := filepath.Join(tmpDir, "vmlinux")
 	if err := os.WriteFile(kernelPath, []byte("kernel"), 0o644); err != nil {
@@ -250,6 +302,9 @@ func TestDoctorReportsZFSChecks(t *testing.T) {
 	}
 	if got := doctorCheck(report, "snapshot_zfs_dataset_access"); got.Status != "pass" {
 		t.Fatalf("unexpected snapshot_zfs_dataset_access check: %+v", got)
+	}
+	if doctorHasCheck(report, "network_cmd_ipset") {
+		t.Fatalf("doctor unexpectedly requires ipset: %+v", doctorCheck(report, "network_cmd_ipset"))
 	}
 
 	logBytes, err := os.ReadFile(logPath)
@@ -386,6 +441,7 @@ func TestHelperRequiredCapabilitiesIncludesZFSWhenConfigured(t *testing.T) {
 	got := helperRequiredCapabilities(backend.FirecrackerConfig{})
 	want := []string{
 		helperCapabilityFirecrackerNetwork,
+		helperCapabilityFirecrackerTrustedDNS,
 	}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("unexpected default helper capabilities: got %v want %v", got, want)
@@ -396,6 +452,7 @@ func TestHelperRequiredCapabilitiesIncludesZFSWhenConfigured(t *testing.T) {
 	})
 	want = []string{
 		helperCapabilityFirecrackerNetwork,
+		helperCapabilityFirecrackerTrustedDNS,
 		helperCapabilityFirecrackerZFS,
 	}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
