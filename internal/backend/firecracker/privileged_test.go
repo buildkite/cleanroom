@@ -137,6 +137,49 @@ func TestRunRootCommandBatchInvokesHelperPerCommand(t *testing.T) {
 	}
 }
 
+func TestRunRootCommandBatchPropagatesHelperErrors(t *testing.T) {
+	tmpDir := t.TempDir()
+	sudoLogPath := filepath.Join(tmpDir, "sudo.log")
+	logPath := filepath.Join(tmpDir, "helper.log")
+	helperPath := filepath.Join(tmpDir, "cleanroom-root-helper")
+	setupFakeSudo(t, sudoLogPath)
+
+	helperScript := "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$*\" >> \"$HELPER_LOG_PATH\"\nif [ \"$1\" = \"iptables\" ]; then\n  echo 'iptables failed' >&2\n  exit 23\nfi\n"
+	if err := os.WriteFile(helperPath, []byte(helperScript), 0o755); err != nil {
+		t.Fatalf("write helper script: %v", err)
+	}
+	t.Setenv("HELPER_LOG_PATH", logPath)
+
+	cfg := backend.FirecrackerConfig{
+		PrivilegedHelperPath: helperPath,
+	}
+
+	commands := [][]string{
+		{"ip", "link", "del", "tap0"},
+		{"iptables", "-D", "FORWARD", "-j", "DROP"},
+		{"ip", "link", "show"},
+	}
+	err := runRootCommandBatch(context.Background(), cfg, commands)
+	if err == nil {
+		t.Fatal("expected runRootCommandBatch to fail")
+	}
+	if !strings.Contains(err.Error(), "iptables failed") {
+		t.Fatalf("expected helper stderr in error, got %v", err)
+	}
+
+	logBytes, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read helper log: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(logBytes)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected batch execution to stop at the failing command, got %d invocations (%q)", len(lines), string(logBytes))
+	}
+	if got, want := lines[1], "iptables -D FORWARD -j DROP"; got != want {
+		t.Fatalf("unexpected failing helper invocation: got %q want %q", got, want)
+	}
+}
+
 func TestRunRootCommandOutputInvokesHelper(t *testing.T) {
 	tmpDir := t.TempDir()
 	sudoLogPath := filepath.Join(tmpDir, "sudo.log")

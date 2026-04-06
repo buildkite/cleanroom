@@ -77,7 +77,7 @@ func newTrustedDNSService(_ context.Context, cfg trustedDNSConfig) (func(), erro
 		return nil, fmt.Errorf("register trusted dns sandbox: %w", err)
 	}
 
-	upstreamAddr, err := trustedDNSUpstreamAddr()
+	upstreamAddrs, err := trustedDNSUpstreamAddrs()
 	if err != nil {
 		runtime.ClearSandbox(cfg.sandboxID)
 		return nil, err
@@ -102,7 +102,11 @@ func newTrustedDNSService(_ context.Context, cfg trustedDNSConfig) (func(), erro
 
 	forwarder := dnsproxy.NewForwarder(dnsproxy.ForwarderConfig{
 		Runtime:      runtime,
-		UpstreamAddr: upstreamAddr,
+		UpstreamAddr: upstreamAddrs[0],
+		Client: trustedDNSMultiUpstreamClient{
+			upstreamAddrs: upstreamAddrs,
+			client:        &dns.Client{},
+		},
 		ScopeResolver: func(sourceIP netip.Addr) (string, bool) {
 			if sourceIP == cfg.guestIP {
 				return cfg.sandboxID, true
@@ -161,24 +165,36 @@ func newTrustedDNSService(_ context.Context, cfg trustedDNSConfig) (func(), erro
 	return cleanup, nil
 }
 
-func trustedDNSUpstreamAddr() (string, error) {
+func trustedDNSUpstreamAddrs() ([]string, error) {
 	clientCfg, err := dns.ClientConfigFromFile("/etc/resolv.conf")
 	if err != nil {
-		return "", fmt.Errorf("read host dns resolver config: %w", err)
+		return nil, fmt.Errorf("read host dns resolver config: %w", err)
 	}
-	if len(clientCfg.Servers) == 0 {
-		return "", errors.New("read host dns resolver config: no nameservers configured")
+	return trustedDNSUpstreamAddrsFromConfig(clientCfg)
+}
+
+func trustedDNSUpstreamAddrsFromConfig(clientCfg *dns.ClientConfig) ([]string, error) {
+	if clientCfg == nil {
+		return nil, errors.New("read host dns resolver config: no nameservers configured")
 	}
 
-	server := strings.TrimSpace(clientCfg.Servers[0])
-	if server == "" {
-		return "", errors.New("read host dns resolver config: first nameserver is empty")
-	}
 	port := strings.TrimSpace(clientCfg.Port)
 	if port == "" {
 		port = "53"
 	}
-	return net.JoinHostPort(server, port), nil
+
+	upstreamAddrs := make([]string, 0, len(clientCfg.Servers))
+	for _, server := range clientCfg.Servers {
+		server = strings.TrimSpace(server)
+		if server == "" {
+			continue
+		}
+		upstreamAddrs = append(upstreamAddrs, net.JoinHostPort(server, port))
+	}
+	if len(upstreamAddrs) == 0 {
+		return nil, errors.New("read host dns resolver config: no nameservers configured")
+	}
+	return upstreamAddrs, nil
 }
 
 func newTrustedDNSChainManager(sandboxID string, syncer *trustedDNSChainSyncer) *trustedDNSChainManager {
@@ -338,4 +354,39 @@ func isTrustedDNSServerClosedError(err error) bool {
 	}
 	message := strings.ToLower(err.Error())
 	return strings.Contains(message, "server shutdown") || strings.Contains(message, "server closed")
+}
+
+type trustedDNSMultiUpstreamClient struct {
+	upstreamAddrs []string
+	client        dnsproxy.DNSClient
+}
+
+func (c trustedDNSMultiUpstreamClient) Exchange(msg *dns.Msg, _ string) (*dns.Msg, time.Duration, error) {
+	if len(c.upstreamAddrs) == 0 {
+		return nil, 0, errors.New("trusted dns upstream resolvers are required")
+	}
+	if c.client == nil {
+		return nil, 0, errors.New("trusted dns client is required")
+	}
+
+	var failures []string
+	for _, upstreamAddr := range c.upstreamAddrs {
+		req := msg
+		if msg != nil {
+			req = msg.Copy()
+		}
+
+		resp, rtt, err := c.client.Exchange(req, upstreamAddr)
+		if err == nil && resp != nil {
+			return resp, rtt, nil
+		}
+
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("%s: %v", upstreamAddr, err))
+			continue
+		}
+		failures = append(failures, fmt.Sprintf("%s: nil response", upstreamAddr))
+	}
+
+	return nil, 0, fmt.Errorf("exchange with trusted dns upstream resolvers: %s", strings.Join(failures, "; "))
 }

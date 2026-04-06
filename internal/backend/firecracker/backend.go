@@ -2538,7 +2538,9 @@ func runRootCommandBatch(ctx context.Context, cfg backend.FirecrackerConfig, com
 		if len(args) == 0 {
 			continue
 		}
-		_ = runRootCommand(ctx, cfg, args...)
+		if err := runRootCommand(ctx, cfg, args...); err != nil {
+			return err
+		}
 	}
 	return nil
 }
