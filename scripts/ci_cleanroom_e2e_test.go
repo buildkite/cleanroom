@@ -103,3 +103,22 @@ func TestCiCleanroomE2EReusedSandboxExecOmitsChdir(t *testing.T) {
 		t.Fatal("expected ci-cleanroom-e2e.sh not to pass --chdir when reusing a sandbox")
 	}
 }
+
+func TestCiCleanroomE2EIsolatesCacheInTempDir(t *testing.T) {
+	t.Helper()
+
+	content, err := os.ReadFile("ci-cleanroom-e2e.sh")
+	if err != nil {
+		t.Fatalf("read ci-cleanroom-e2e.sh: %v", err)
+	}
+
+	script := string(content)
+	for _, needle := range []string{
+		`export XDG_CACHE_HOME="$tmpdir/cache"`,
+		`mkdir -p "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_STATE_HOME" "$XDG_RUNTIME_DIR" "$XDG_DATA_HOME"`,
+	} {
+		if !strings.Contains(script, needle) {
+			t.Fatalf("expected ci-cleanroom-e2e.sh to contain %q", needle)
+		}
+	}
+}
