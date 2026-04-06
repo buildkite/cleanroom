@@ -137,7 +137,7 @@ resource "aws_instance" "host" {
   root_block_device {
     volume_type = "gp3"
     volume_size = var.root_volume_size_gib
-    encrypted   = true
+    encrypted   = var.root_volume_encrypted
   }
 
   user_data = templatefile("${path.module}/templates/user_data.sh.tftpl", {

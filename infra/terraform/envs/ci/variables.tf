@@ -75,6 +75,12 @@ variable "mac_root_volume_size_gib" {
   default     = 200
 }
 
+variable "mac_root_volume_encrypted" {
+  description = "Whether the macOS CI host root EBS volume is encrypted."
+  type        = bool
+  default     = true
+}
+
 variable "mac_buildkite_queue" {
   description = "Buildkite queue tag used by the macOS agent."
   type        = string
@@ -132,6 +138,12 @@ variable "mac_signer_root_volume_size_gib" {
   description = "Optional root EBS volume size in GiB for the macOS signer host. Use 0 to reuse mac_root_volume_size_gib."
   type        = number
   default     = 0
+}
+
+variable "mac_signer_root_volume_encrypted" {
+  description = "Whether the macOS signer host root EBS volume is encrypted."
+  type        = bool
+  default     = true
 }
 
 variable "mac_signer_buildkite_queue" {

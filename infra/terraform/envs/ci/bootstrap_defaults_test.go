@@ -269,6 +269,7 @@ func TestExampleRegionIsSydney(t *testing.T) {
 	t.Helper()
 
 	requireContains(t, "terraform.tfvars.example", "aws_region  = \"ap-southeast-2\"")
+	requireContains(t, "ci.ap-southeast-2.tfvars", "aws_region  = \"ap-southeast-2\"")
 }
 
 func TestBootstrapConfiguresZfsSnapshots(t *testing.T) {
@@ -342,6 +343,25 @@ func TestEnvSupportsAvailabilityZoneOverride(t *testing.T) {
 	requireContains(t, "variables.tf", "variable \"availability_zone\"")
 	requireContains(t, "main.tf", "availability_zone   = var.availability_zone")
 	requireContains(t, "terraform.tfvars.example", "# availability_zone = \"ap-southeast-2b\"")
+	requireContains(t, "ci.ap-southeast-2.tfvars", "availability_zone = \"ap-southeast-2b\"")
+}
+
+func TestReadmeUsesCheckedInSydneyVarFile(t *testing.T) {
+	t.Helper()
+
+	requireContains(t, "README.md", "terraform workspace select -or-create ap-southeast-2")
+	requireContains(t, "README.md", "terraform plan -var-file=ci.ap-southeast-2.tfvars")
+	requireContains(t, "README.md", "terraform apply -var-file=ci.ap-southeast-2.tfvars")
+	requireContains(t, "README.md", "Available checked-in var-files:")
+	requireContains(t, "README.md", "`ci.ap-southeast-2.tfvars` for the Sydney CI environment")
+}
+
+func TestSydneyCiVarFileReflectsSignerLayout(t *testing.T) {
+	t.Helper()
+
+	requireContains(t, "ci.ap-southeast-2.tfvars", "enable_macos_signer_ci           = true")
+	requireContains(t, "ci.ap-southeast-2.tfvars", "mac_instance_type                = \"mac2-m2pro.metal\"")
+	requireContains(t, "ci.ap-southeast-2.tfvars", "mac_signer_root_volume_encrypted = false")
 }
 
 func TestGitDeployKeyIsRequired(t *testing.T) {

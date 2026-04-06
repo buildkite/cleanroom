@@ -10,11 +10,11 @@ Default AMI behaviour:
 
 - defaults to `us-west-2` for `aws_region`
 - uses latest Ubuntu 24.04 AMI from SSM public parameter
-- set `ami_id` in `terraform.tfvars` if you want to pin an explicit AMI
+- set `ami_id` in your selected var-file if you want to pin an explicit AMI
 - set `enable_macos_ci = true` to enable the macOS host
 - set `enable_macos_signer_ci = true` to enable a second dedicated macOS signer host
 - macOS defaults to the latest Tahoe AMI from the public SSM parameter that matches `mac_instance_type`
-- set `mac_ami_id` in `terraform.tfvars` if you want to pin an explicit macOS AMI
+- set `mac_ami_id` in your selected var-file if you want to pin an explicit macOS AMI
 - set `mac_ami_ssm_parameter_name` if you want a different public SSM parameter than the Tahoe default
 
 Network behaviour:
@@ -48,11 +48,19 @@ macOS dedicated host lifecycle:
 
 ```bash
 cd infra/terraform/envs/ci
-cp terraform.tfvars.example terraform.tfvars
 mise x -- terraform init
-mise x -- terraform plan
-mise x -- terraform apply
+terraform workspace select -or-create ap-southeast-2
+mise x -- terraform plan -var-file=ci.ap-southeast-2.tfvars
+mise x -- terraform apply -var-file=ci.ap-southeast-2.tfvars
 ```
+
+Available checked-in var-files:
+
+- `ci.ap-southeast-2.tfvars` for the Sydney CI environment
+
+`terraform.tfvars` remains ignored for local-only overrides and ad hoc envs. The
+checked-in regional var-files are the shared source of truth for long-lived CI
+workspaces.
 
 ## Access
 
