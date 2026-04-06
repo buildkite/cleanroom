@@ -2,6 +2,7 @@ package snapshotstore
 
 import (
 	"context"
+	"database/sql"
 	"path/filepath"
 	"testing"
 	"time"
@@ -147,5 +148,76 @@ func TestStoreListOrdersByCreatedAtNanoseconds(t *testing.T) {
 	}
 	if got, want := items[1].SnapshotID, second.SnapshotID; got != want {
 		t.Fatalf("unexpected second snapshot in list: got %q want %q", got, want)
+	}
+}
+
+func TestNewMigratesLegacyStoreBeforeCreatingNanoIndex(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "snapshots.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open legacy snapshot db: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	if _, err := db.Exec(`
+		CREATE TABLE snapshots (
+			snapshot_id TEXT PRIMARY KEY,
+			source_sandbox_id TEXT NOT NULL,
+			backend TEXT NOT NULL,
+			name TEXT NOT NULL,
+			policy_hash TEXT NOT NULL,
+			policy_proto BLOB NOT NULL,
+			repository_proto BLOB,
+			storage_driver TEXT NOT NULL DEFAULT 'file',
+			storage_ref TEXT NOT NULL,
+			created_at_unix INTEGER NOT NULL
+		);
+		CREATE INDEX idx_snapshots_created_at ON snapshots(created_at_unix);
+	`); err != nil {
+		t.Fatalf("create legacy snapshot schema: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close legacy snapshot db: %v", err)
+	}
+
+	store, err := New(Options{MetadataDBPath: dbPath})
+	if err != nil {
+		t.Fatalf("New returned error for legacy snapshot db: %v", err)
+	}
+
+	record := Record{
+		SnapshotID:      "snap-test",
+		SourceSandboxID: "cr-test",
+		Backend:         "firecracker",
+		Name:            "golden",
+		PolicyHash:      "policy-hash",
+		Policy: &cleanroomv1.Policy{
+			Version:        1,
+			ImageRef:       "ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+			ImageDigest:    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+			NetworkDefault: "deny",
+			Hash:           "policy-hash",
+		},
+		StorageRef:    "/tmp/snap-test.ext4",
+		StorageDriver: "file",
+		CreatedAt:     time.Unix(1700000000, 123).UTC(),
+	}
+	if err := store.Create(context.Background(), record); err != nil {
+		t.Fatalf("Create returned error after legacy migration: %v", err)
+	}
+
+	got, ok, err := store.Get(context.Background(), record.SnapshotID)
+	if err != nil {
+		t.Fatalf("Get returned error after legacy migration: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected migrated legacy store to return stored snapshot")
+	}
+	if !got.CreatedAt.Equal(record.CreatedAt) {
+		t.Fatalf("unexpected created_at after legacy migration: got %s want %s", got.CreatedAt.Format(time.RFC3339Nano), record.CreatedAt.Format(time.RFC3339Nano))
 	}
 }

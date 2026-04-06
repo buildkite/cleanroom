@@ -252,7 +252,6 @@ func (s *Store) initDB(ctx context.Context) error {
 			created_at_unix_nano INTEGER NOT NULL DEFAULT 0
 		);
 		CREATE INDEX IF NOT EXISTS idx_snapshots_created_at ON snapshots(created_at_unix);
-		CREATE INDEX IF NOT EXISTS idx_snapshots_created_at_nano ON snapshots(created_at_unix_nano);
 	`)
 	if err != nil {
 		return fmt.Errorf("initialise snapshot metadata schema: %w", err)
