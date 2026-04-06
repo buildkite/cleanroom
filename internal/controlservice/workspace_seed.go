@@ -63,7 +63,9 @@ func workspaceSeedSnapshotRecord(records []snapshotstore.Record, backendName, po
 		if !repositoryCheckoutsEqual(repositorycheckout.FromProto(record.Repository), repository) {
 			continue
 		}
-		if !found || record.CreatedAt.After(best.CreatedAt) {
+		recordSnapshotID := strings.TrimSpace(record.SnapshotID)
+		bestSnapshotID := strings.TrimSpace(best.SnapshotID)
+		if !found || record.CreatedAt.After(best.CreatedAt) || (record.CreatedAt.Equal(best.CreatedAt) && recordSnapshotID > bestSnapshotID) {
 			best = record
 			found = true
 		}

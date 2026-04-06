@@ -1201,6 +1201,40 @@ func TestCreateSandboxPublishesWorkspaceSeedSnapshot(t *testing.T) {
 	}
 }
 
+func TestWorkspaceSeedSnapshotRecordBreaksCreatedAtTiesBySnapshotID(t *testing.T) {
+	compiled, err := policy.FromProto(testRepositoryPolicy())
+	if err != nil {
+		t.Fatalf("FromProto returned error: %v", err)
+	}
+	repository := repositorycheckout.FromProto(testRepositoryCheckoutProto())
+	createdAt := time.Unix(1_700_000_000, 0).UTC()
+
+	older := snapshotstore.Record{
+		SnapshotID: "snap_00000000000000000000000001",
+		Backend:    "firecracker",
+		Name:       workspaceSeedSnapshotName("firecracker", compiled.Hash, repository),
+		PolicyHash: compiled.Hash,
+		Repository: repository.ToProto(),
+		CreatedAt:  createdAt,
+	}
+	newer := snapshotstore.Record{
+		SnapshotID: "snap_00000000000000000000000002",
+		Backend:    "firecracker",
+		Name:       workspaceSeedSnapshotName("firecracker", compiled.Hash, repository),
+		PolicyHash: compiled.Hash,
+		Repository: repository.ToProto(),
+		CreatedAt:  createdAt,
+	}
+
+	record, ok := workspaceSeedSnapshotRecord([]snapshotstore.Record{older, newer}, "firecracker", compiled.Hash, repository)
+	if !ok {
+		t.Fatal("expected workspace seed snapshot record match")
+	}
+	if got, want := record.SnapshotID, newer.SnapshotID; got != want {
+		t.Fatalf("expected tie-break to prefer newer snapshot id, got %q want %q", got, want)
+	}
+}
+
 func TestCreateSandboxReusesWorkspaceSeedSnapshot(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	store := newMemorySnapshotStore()
