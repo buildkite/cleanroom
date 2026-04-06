@@ -29,7 +29,7 @@ import (
 type Service struct {
 	Loader            loader
 	Config            runtimeconfig.Config
-	Backends          map[string]backend.SandboxAdapter
+	Backends          map[string]backend.Adapter
 	Logger            *log.Logger
 	RepositoryMirrors repositoryMirrorStore
 	runtime           serviceRuntime
@@ -227,7 +227,7 @@ func (s *Service) CreateSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	now := s.clock().Now()
 	sandboxID := s.ids().NewSandboxID()
 
-	if err := adapter.Provision(ctx, backend.ProvisionRequest{
+	if err := adapter.ProvisionSandbox(ctx, backend.ProvisionRequest{
 		SandboxID:         sandboxID,
 		Policy:            compiled,
 		FirecrackerConfig: firecrackerCfg,
@@ -237,7 +237,7 @@ func (s *Service) CreateSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	if err := s.bootstrapRepositoryInPersistentSandbox(ctx, adapter, sandboxID, compiled, firecrackerCfg, repository); err != nil {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), s.timeouts().bootstrapCleanupTimeout)
 		defer cancel()
-		if terminateErr := adapter.Terminate(cleanupCtx, sandboxID); terminateErr != nil {
+		if terminateErr := adapter.TerminateSandbox(cleanupCtx, sandboxID); terminateErr != nil {
 			return nil, fmt.Errorf("bootstrap repository checkout: %w; cleanup failed: %v", err, terminateErr)
 		}
 		return nil, fmt.Errorf("bootstrap repository checkout: %w", err)
@@ -724,7 +724,7 @@ func (s *Service) TerminateSandbox(ctx context.Context, req *cleanroomv1.Termina
 		cancel context.CancelFunc
 	}
 	cancellations := make([]cancelTarget, 0)
-	var adapter backend.SandboxAdapter
+	var adapter backend.Adapter
 	var backendName string
 	alreadyStopped := false
 
@@ -789,7 +789,7 @@ func (s *Service) TerminateSandbox(ctx context.Context, req *cleanroomv1.Termina
 	}
 
 	if !alreadyStopped && adapter != nil {
-		if err := adapter.Terminate(ctx, sandboxID); err != nil {
+		if err := adapter.TerminateSandbox(ctx, sandboxID); err != nil {
 			if s.Logger != nil {
 				s.Logger.Warn("terminate backend sandbox failed", "sandbox_id", sandboxID, "backend", backendName, "error", err)
 			}
@@ -1730,8 +1730,8 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 	}
 }
 
-func (s *Service) runAdapterExecution(runCtx context.Context, adapter backend.SandboxAdapter, executionReq backend.ExecutionRequest, key string) (*backend.ExecutionResult, error) {
-	return adapter.Run(runCtx, executionReq, s.executionOutputStream(key))
+func (s *Service) runAdapterExecution(runCtx context.Context, adapter backend.Adapter, executionReq backend.ExecutionRequest, key string) (*backend.ExecutionResult, error) {
+	return adapter.RunInSandbox(runCtx, executionReq, s.executionOutputStream(key))
 }
 
 func (s *Service) executionOutputStream(key string) backend.OutputStream {
@@ -1763,7 +1763,7 @@ func (s *Service) preparePersistentSandboxRepository(
 	sandboxID string,
 	compiled *policy.CompiledPolicy,
 	firecrackerCfg backend.FirecrackerConfig,
-	adapter backend.SandboxAdapter,
+	adapter backend.Adapter,
 	repository *repositorycheckout.Checkout,
 ) error {
 	if repository == nil {
@@ -1825,7 +1825,7 @@ func (s *Service) preparePersistentSandboxRepository(
 
 func (s *Service) bootstrapRepositoryInPersistentSandbox(
 	ctx context.Context,
-	adapter backend.SandboxAdapter,
+	adapter backend.Adapter,
 	sandboxID string,
 	compiled *policy.CompiledPolicy,
 	firecrackerCfg backend.FirecrackerConfig,
@@ -1841,7 +1841,7 @@ func (s *Service) bootstrapRepositoryInPersistentSandbox(
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	bootstrapExecutionID := s.ids().NewExecutionID()
-	result, err := adapter.Run(ctx, backend.ExecutionRequest{
+	result, err := adapter.RunInSandbox(ctx, backend.ExecutionRequest{
 		SandboxID:         sandboxID,
 		ExecutionID:       bootstrapExecutionID,
 		Command:           repositorycheckout.BuildBootstrapCommand(repository),

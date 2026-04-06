@@ -56,7 +56,7 @@ func TestProvisionSandboxRejectsConcurrentProvisionForSameID(t *testing.T) {
 	}
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- adapter.Provision(context.Background(), backend.ProvisionRequest{
+		errCh <- adapter.ProvisionSandbox(context.Background(), backend.ProvisionRequest{
 			SandboxID: "cr-test",
 			Policy:    compiled,
 		})
@@ -68,7 +68,7 @@ func TestProvisionSandboxRejectsConcurrentProvisionForSameID(t *testing.T) {
 		t.Fatal("timed out waiting for first provision to start")
 	}
 
-	err := adapter.Provision(context.Background(), backend.ProvisionRequest{
+	err := adapter.ProvisionSandbox(context.Background(), backend.ProvisionRequest{
 		SandboxID: "cr-test",
 		Policy:    compiled,
 	})
@@ -107,7 +107,7 @@ func TestRunInSandboxUsesRequestLaunchSecondsOverride(t *testing.T) {
 	}
 
 	start := time.Now()
-	_, err := adapter.Run(context.Background(), backend.ExecutionRequest{
+	_, err := adapter.RunInSandbox(context.Background(), backend.ExecutionRequest{
 		SandboxID:   "cr-test",
 		ExecutionID: "run-timeout",
 		Command:     []string{"echo", "hello"},
@@ -139,7 +139,7 @@ func TestRunInSandboxRejectsExitedSandbox(t *testing.T) {
 		},
 	}
 
-	_, err := adapter.Run(context.Background(), backend.ExecutionRequest{
+	_, err := adapter.RunInSandbox(context.Background(), backend.ExecutionRequest{
 		SandboxID:   "cr-test",
 		ExecutionID: "run-dead",
 		Command:     []string{"true"},
@@ -227,7 +227,7 @@ func TestTerminateSandboxRemovesRunDir(t *testing.T) {
 		},
 	}
 
-	if err := adapter.Terminate(context.Background(), "cr-test"); err != nil {
+	if err := adapter.TerminateSandbox(context.Background(), "cr-test"); err != nil {
 		t.Fatalf("TerminateSandbox returned error: %v", err)
 	}
 	if _, err := os.Stat(runDir); !errors.Is(err, os.ErrNotExist) {

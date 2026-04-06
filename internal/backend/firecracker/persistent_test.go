@@ -39,7 +39,7 @@ func TestProvisionSandboxRejectsConcurrentProvisionForSameID(t *testing.T) {
 	compiled := &policy.CompiledPolicy{NetworkDefault: "deny", ImageRef: "ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- adapter.Provision(context.Background(), backend.ProvisionRequest{SandboxID: "cr-test", Policy: compiled})
+		errCh <- adapter.ProvisionSandbox(context.Background(), backend.ProvisionRequest{SandboxID: "cr-test", Policy: compiled})
 	}()
 
 	select {
@@ -48,7 +48,7 @@ func TestProvisionSandboxRejectsConcurrentProvisionForSameID(t *testing.T) {
 		t.Fatal("timed out waiting for first provision to start")
 	}
 
-	err := adapter.Provision(context.Background(), backend.ProvisionRequest{SandboxID: "cr-test", Policy: compiled})
+	err := adapter.ProvisionSandbox(context.Background(), backend.ProvisionRequest{SandboxID: "cr-test", Policy: compiled})
 	if err == nil {
 		t.Fatal("expected second provision to fail")
 	}
@@ -117,7 +117,7 @@ func TestRunInSandboxUsesRequestLaunchSecondsOverride(t *testing.T) {
 	}
 
 	start := time.Now()
-	_, err := adapter.Run(context.Background(), backend.ExecutionRequest{
+	_, err := adapter.RunInSandbox(context.Background(), backend.ExecutionRequest{
 		SandboxID:         "cr-test",
 		ExecutionID:       "run-timeout",
 		Command:           []string{"echo", "hello"},
@@ -156,7 +156,7 @@ func TestRunInSandboxWritesRunObservabilityForStatusCommand(t *testing.T) {
 		},
 	}
 
-	result, err := adapter.Run(context.Background(), backend.ExecutionRequest{
+	result, err := adapter.RunInSandbox(context.Background(), backend.ExecutionRequest{
 		SandboxID:   "cr-test",
 		ExecutionID: "run-123",
 		Command:     []string{"echo", "hello"},
@@ -204,7 +204,7 @@ func TestRunInSandboxWritesRunObservabilityOnError(t *testing.T) {
 		},
 	}
 
-	_, err := adapter.Run(context.Background(), backend.ExecutionRequest{
+	_, err := adapter.RunInSandbox(context.Background(), backend.ExecutionRequest{
 		SandboxID:   "cr-test",
 		ExecutionID: "run-err",
 		Command:     []string{"echo", "hello"},

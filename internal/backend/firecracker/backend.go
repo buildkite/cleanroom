@@ -243,7 +243,7 @@ func (a *Adapter) Capabilities() map[string]bool {
 	}
 }
 
-func (a *Adapter) Provision(ctx context.Context, req backend.ProvisionRequest) error {
+func (a *Adapter) ProvisionSandbox(ctx context.Context, req backend.ProvisionRequest) error {
 	sandboxID := strings.TrimSpace(req.SandboxID)
 	if sandboxID == "" {
 		return errors.New("missing sandbox_id")
@@ -294,7 +294,7 @@ func (a *Adapter) Provision(ctx context.Context, req backend.ProvisionRequest) e
 	return nil
 }
 
-func (a *Adapter) Run(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+func (a *Adapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 	sandboxID := strings.TrimSpace(req.SandboxID)
 	if sandboxID == "" {
 		return nil, errors.New("missing sandbox_id")
@@ -435,7 +435,7 @@ func (a *Adapter) DownloadSandboxFile(ctx context.Context, sandboxID, path strin
 	return append([]byte(nil), data...), nil
 }
 
-func (a *Adapter) Terminate(_ context.Context, sandboxID string) error {
+func (a *Adapter) TerminateSandbox(_ context.Context, sandboxID string) error {
 	sandboxID = strings.TrimSpace(sandboxID)
 	if sandboxID == "" {
 		return errors.New("missing sandbox_id")

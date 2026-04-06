@@ -9,13 +9,13 @@ type testAdapter struct{}
 
 func (testAdapter) Name() string { return "test" }
 
-func (testAdapter) Provision(context.Context, ProvisionRequest) error { return nil }
+func (testAdapter) ProvisionSandbox(context.Context, ProvisionRequest) error { return nil }
 
-func (testAdapter) Run(context.Context, ExecutionRequest, OutputStream) (*ExecutionResult, error) {
+func (testAdapter) RunInSandbox(context.Context, ExecutionRequest, OutputStream) (*ExecutionResult, error) {
 	return &ExecutionResult{}, nil
 }
 
-func (testAdapter) Terminate(context.Context, string) error { return nil }
+func (testAdapter) TerminateSandbox(context.Context, string) error { return nil }
 
 type testPersistentAdapter struct{ testAdapter }
 

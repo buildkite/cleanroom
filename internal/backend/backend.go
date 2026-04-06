@@ -28,11 +28,11 @@ var knownCapabilityKeys = []string{
 	CapabilityNetworkGuestInterface,
 }
 
-type SandboxAdapter interface {
+type Adapter interface {
 	Name() string
-	Provision(ctx context.Context, req ProvisionRequest) error
-	Run(ctx context.Context, req ExecutionRequest, stream OutputStream) (*ExecutionResult, error)
-	Terminate(ctx context.Context, sandboxID string) error
+	ProvisionSandbox(ctx context.Context, req ProvisionRequest) error
+	RunInSandbox(ctx context.Context, req ExecutionRequest, stream OutputStream) (*ExecutionResult, error)
+	TerminateSandbox(ctx context.Context, sandboxID string) error
 }
 
 // CapabilityReporter allows backend adapters to publish backend-specific
@@ -44,13 +44,13 @@ type CapabilityReporter interface {
 // CapabilitiesForAdapter returns a merged capability map for the adapter.
 //
 // Baseline capabilities are inferred from backend interfaces:
-// - SandboxAdapter => exec.streaming
+// - Adapter => exec.streaming
 // - SnapshottingAdapter => sandbox.snapshot
 // - SandboxFileDownloadAdapter => sandbox.file_download
 //
 // Additional backend-specific capabilities can be provided by implementing
 // CapabilityReporter.
-func CapabilitiesForAdapter(adapter SandboxAdapter) map[string]bool {
+func CapabilitiesForAdapter(adapter Adapter) map[string]bool {
 	caps := make(map[string]bool, len(knownCapabilityKeys))
 	for _, key := range knownCapabilityKeys {
 		caps[key] = false
@@ -93,13 +93,13 @@ func CloneCapabilities(caps map[string]bool) map[string]bool {
 	return out
 }
 
-// SandboxAdapter supports provisioned sandbox instances that can run multiple
+// Adapter supports provisioned sandbox instances that can run multiple
 // executions before explicit termination.
 
 // SnapshottingAdapter supports immutable filesystem snapshots of persistent
 // sandboxes and creating new sandboxes from snapshots.
 type SnapshottingAdapter interface {
-	SandboxAdapter
+	Adapter
 	CreateSnapshot(ctx context.Context, req SnapshotRequest) (*SnapshotResult, error)
 	ProvisionSandboxFromSnapshot(ctx context.Context, req ProvisionFromSnapshotRequest) error
 	DeleteSnapshot(ctx context.Context, req DeleteSnapshotRequest) error

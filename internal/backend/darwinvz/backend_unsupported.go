@@ -36,15 +36,15 @@ func (a *Adapter) Capabilities() map[string]bool {
 	}
 }
 
-func (a *Adapter) Provision(_ context.Context, _ backend.ProvisionRequest) error {
+func (a *Adapter) ProvisionSandbox(_ context.Context, _ backend.ProvisionRequest) error {
 	return fmt.Errorf("darwin-vz backend requires macOS, current OS is %s", runtime.GOOS)
 }
 
-func (a *Adapter) Run(_ context.Context, _ backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
+func (a *Adapter) RunInSandbox(_ context.Context, _ backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
 	return nil, fmt.Errorf("darwin-vz backend requires macOS, current OS is %s", runtime.GOOS)
 }
 
-func (a *Adapter) Terminate(_ context.Context, _ string) error {
+func (a *Adapter) TerminateSandbox(_ context.Context, _ string) error {
 	return fmt.Errorf("darwin-vz backend requires macOS, current OS is %s", runtime.GOOS)
 }
 

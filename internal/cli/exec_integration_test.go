@@ -52,9 +52,11 @@ type integrationAdapter struct {
 
 func (a *integrationAdapter) Name() string { return "firecracker" }
 
-func (a *integrationAdapter) Provision(context.Context, backend.ProvisionRequest) error { return nil }
+func (a *integrationAdapter) ProvisionSandbox(context.Context, backend.ProvisionRequest) error {
+	return nil
+}
 
-func (a *integrationAdapter) Run(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+func (a *integrationAdapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 	a.mu.Lock()
 	a.runReq = req
 	a.runCalls++
@@ -70,13 +72,13 @@ func (a *integrationAdapter) Run(ctx context.Context, req backend.ExecutionReque
 	return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
 }
 
-func (a *integrationAdapter) Terminate(context.Context, string) error { return nil }
+func (a *integrationAdapter) TerminateSandbox(context.Context, string) error { return nil }
 
 type snapshotIntegrationAdapter struct {
 	integrationAdapter
 }
 
-func (a *snapshotIntegrationAdapter) Provision(ctx context.Context, req backend.ProvisionRequest) error {
+func (a *snapshotIntegrationAdapter) ProvisionSandbox(ctx context.Context, req backend.ProvisionRequest) error {
 	a.mu.Lock()
 	a.provisionCalls++
 	a.provisionReq = req
@@ -88,11 +90,11 @@ func (a *snapshotIntegrationAdapter) Provision(ctx context.Context, req backend.
 	return nil
 }
 
-func (a *snapshotIntegrationAdapter) Run(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+func (a *snapshotIntegrationAdapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 	a.mu.Lock()
 	a.runInSandboxCalls++
 	a.mu.Unlock()
-	return a.integrationAdapter.Run(ctx, req, stream)
+	return a.integrationAdapter.RunInSandbox(ctx, req, stream)
 }
 
 func (a *snapshotIntegrationAdapter) CreateSnapshot(ctx context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
@@ -128,7 +130,7 @@ func (a *snapshotIntegrationAdapter) DeleteSnapshot(ctx context.Context, req bac
 	return nil
 }
 
-func (a *snapshotIntegrationAdapter) Terminate(ctx context.Context, sandboxID string) error {
+func (a *snapshotIntegrationAdapter) TerminateSandbox(ctx context.Context, sandboxID string) error {
 	a.mu.Lock()
 	a.terminateCalls++
 	fn := a.terminateFn
@@ -171,7 +173,7 @@ type execOutcome struct {
 	cause  error
 }
 
-func startIntegrationServer(t *testing.T, adapter backend.SandboxAdapter) (string, *controlservice.Service) {
+func startIntegrationServer(t *testing.T, adapter backend.Adapter) (string, *controlservice.Service) {
 	t.Helper()
 
 	return startIntegrationServerWithConfig(t, adapter, runtimeconfig.Config{
@@ -187,7 +189,7 @@ func startIntegrationServer(t *testing.T, adapter backend.SandboxAdapter) (strin
 	})
 }
 
-func startIntegrationServerWithConfig(t *testing.T, adapter backend.SandboxAdapter, cfg runtimeconfig.Config) (string, *controlservice.Service) {
+func startIntegrationServerWithConfig(t *testing.T, adapter backend.Adapter, cfg runtimeconfig.Config) (string, *controlservice.Service) {
 	t.Helper()
 
 	store, err := snapshotstore.New(snapshotstore.Options{
@@ -201,7 +203,7 @@ func startIntegrationServerWithConfig(t *testing.T, adapter backend.SandboxAdapt
 		Loader:        integrationLoader{},
 		Config:        cfg,
 		SnapshotStore: store,
-		Backends: map[string]backend.SandboxAdapter{
+		Backends: map[string]backend.Adapter{
 			"firecracker": adapter,
 		},
 	}
@@ -227,7 +229,7 @@ func startIntegrationServerWithConfig(t *testing.T, adapter backend.SandboxAdapt
 	return httpServer.URL, svc
 }
 
-func startUnixIntegrationServer(t *testing.T, adapter backend.SandboxAdapter) (string, *controlservice.Service) {
+func startUnixIntegrationServer(t *testing.T, adapter backend.Adapter) (string, *controlservice.Service) {
 	t.Helper()
 
 	svc := &controlservice.Service{
@@ -235,7 +237,7 @@ func startUnixIntegrationServer(t *testing.T, adapter backend.SandboxAdapter) (s
 		Config: runtimeconfig.Config{
 			DefaultBackend: "firecracker",
 		},
-		Backends: map[string]backend.SandboxAdapter{
+		Backends: map[string]backend.Adapter{
 			"firecracker": adapter,
 		},
 	}

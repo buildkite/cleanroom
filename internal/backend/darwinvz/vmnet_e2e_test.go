@@ -93,7 +93,7 @@ func TestVMNetSharedE2E(t *testing.T) {
 
 		adapter := New()
 		sandboxID := fmt.Sprintf("cr-vmnet-default-%d", time.Now().UnixNano())
-		if err := adapter.Provision(ctx, backend.ProvisionRequest{
+		if err := adapter.ProvisionSandbox(ctx, backend.ProvisionRequest{
 			SandboxID:         sandboxID,
 			Policy:            compiled,
 			FirecrackerConfig: baseCfg,
@@ -101,7 +101,7 @@ func TestVMNetSharedE2E(t *testing.T) {
 			t.Fatalf("ProvisionSandbox returned error: %v", err)
 		}
 		t.Cleanup(func() {
-			_ = adapter.Terminate(context.Background(), sandboxID)
+			_ = adapter.TerminateSandbox(context.Background(), sandboxID)
 		})
 
 		run := sandboxRunner(ctx, adapter, sandboxID, compiled, baseCfg.LaunchSeconds)
@@ -120,7 +120,7 @@ func TestVMNetSharedE2E(t *testing.T) {
 		sandboxID := fmt.Sprintf("cr-vmnet-custom-%d", time.Now().UnixNano())
 		cfg := baseCfg
 		cfg.DarwinVZNetworkSubnet = "10.233.0.0/16"
-		if err := adapter.Provision(ctx, backend.ProvisionRequest{
+		if err := adapter.ProvisionSandbox(ctx, backend.ProvisionRequest{
 			SandboxID:         sandboxID,
 			Policy:            compiled,
 			FirecrackerConfig: cfg,
@@ -128,7 +128,7 @@ func TestVMNetSharedE2E(t *testing.T) {
 			t.Fatalf("ProvisionSandbox returned error: %v", err)
 		}
 		t.Cleanup(func() {
-			_ = adapter.Terminate(context.Background(), sandboxID)
+			_ = adapter.TerminateSandbox(context.Background(), sandboxID)
 		})
 
 		run := sandboxRunner(ctx, adapter, sandboxID, compiled, cfg.LaunchSeconds)
@@ -149,7 +149,7 @@ func TestVMNetSharedE2E(t *testing.T) {
 		cfg := baseCfg
 		cfg.RootFSPath = rootFSPath
 		cfg.DarwinVZNetworkSubnet = "10.233.0.0/16"
-		if err := adapter.Provision(ctx, backend.ProvisionRequest{
+		if err := adapter.ProvisionSandbox(ctx, backend.ProvisionRequest{
 			SandboxID:         sandboxID,
 			Policy:            compiled,
 			FirecrackerConfig: cfg,
@@ -157,7 +157,7 @@ func TestVMNetSharedE2E(t *testing.T) {
 			t.Fatalf("ProvisionSandbox returned error: %v", err)
 		}
 		t.Cleanup(func() {
-			_ = adapter.Terminate(context.Background(), sandboxID)
+			_ = adapter.TerminateSandbox(context.Background(), sandboxID)
 		})
 
 		run := sandboxRunner(ctx, adapter, sandboxID, compiled, cfg.LaunchSeconds)
@@ -205,7 +205,7 @@ func sandboxRunner(
 		if strings.TrimSpace(runID) == "" {
 			runID = fmt.Sprintf("run-%d", runCounter)
 		}
-		return adapter.Run(ctx, backend.ExecutionRequest{
+		return adapter.RunInSandbox(ctx, backend.ExecutionRequest{
 			SandboxID:   sandboxID,
 			ExecutionID: runID,
 			Command:     []string{"sh", "-lc", shellCommand},

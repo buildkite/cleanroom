@@ -18,13 +18,15 @@ type doctorTestAdapter struct{}
 
 func (doctorTestAdapter) Name() string { return "doctor-test" }
 
-func (doctorTestAdapter) Provision(context.Context, backend.ProvisionRequest) error { return nil }
+func (doctorTestAdapter) ProvisionSandbox(context.Context, backend.ProvisionRequest) error {
+	return nil
+}
 
-func (doctorTestAdapter) Run(context.Context, backend.ExecutionRequest, backend.OutputStream) (*backend.ExecutionResult, error) {
+func (doctorTestAdapter) RunInSandbox(context.Context, backend.ExecutionRequest, backend.OutputStream) (*backend.ExecutionResult, error) {
 	return &backend.ExecutionResult{Message: "ok"}, nil
 }
 
-func (doctorTestAdapter) Terminate(context.Context, string) error { return nil }
+func (doctorTestAdapter) TerminateSandbox(context.Context, string) error { return nil }
 
 func (doctorTestAdapter) Doctor(context.Context, backend.DoctorRequest) (*backend.DoctorReport, error) {
 	return &backend.DoctorReport{
@@ -88,7 +90,7 @@ func TestDoctorCommandJSONIncludesCapabilities(t *testing.T) {
 		Loader:     doctorFailingLoader{},
 		Config:     runtimeconfig.Config{},
 		ConfigPath: filepath.Join(tmpDir, "config.yaml"),
-		Backends: map[string]backend.SandboxAdapter{
+		Backends: map[string]backend.Adapter{
 			"doctor-test": doctorTestAdapter{},
 		},
 	})
@@ -177,7 +179,7 @@ func TestDoctorCommandTextUsesPolishedPlainOutput(t *testing.T) {
 		Loader:     doctorFailingLoader{},
 		Config:     runtimeconfig.Config{},
 		ConfigPath: filepath.Join(tmpDir, "config.yaml"),
-		Backends: map[string]backend.SandboxAdapter{
+		Backends: map[string]backend.Adapter{
 			"doctor-test": doctorTestAdapter{},
 		},
 	})
@@ -233,7 +235,7 @@ func TestDoctorCommandHonorsRuntimeSnapshotCapabilityConfig(t *testing.T) {
 			},
 		},
 		ConfigPath: filepath.Join(tmpDir, "config.yaml"),
-		Backends: map[string]backend.SandboxAdapter{
+		Backends: map[string]backend.Adapter{
 			"firecracker": doctorSnapshotAdapter{},
 		},
 	})
@@ -318,7 +320,7 @@ func TestDoctorCommandJSONIncludesEffectiveSnapshotConfig(t *testing.T) {
 			},
 		},
 		ConfigPath: filepath.Join(tmpDir, "config.yaml"),
-		Backends: map[string]backend.SandboxAdapter{
+		Backends: map[string]backend.Adapter{
 			"darwin-vz": doctorSnapshotAdapter{},
 		},
 	})
@@ -381,7 +383,7 @@ func TestDoctorCommandTextIncludesEffectiveSnapshotConfig(t *testing.T) {
 			},
 		},
 		ConfigPath: filepath.Join(tmpDir, "config.yaml"),
-		Backends: map[string]backend.SandboxAdapter{
+		Backends: map[string]backend.Adapter{
 			"darwin-vz": doctorSnapshotAdapter{},
 		},
 	})

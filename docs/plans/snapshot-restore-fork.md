@@ -248,7 +248,7 @@ Meaning:
 - `sandbox.snapshot=true` means the backend can create snapshots and create new
   sandboxes from those snapshots
 
-Reusable sandbox IDs are part of the base `SandboxAdapter` contract, so there is
+Reusable sandbox IDs are part of the base `Adapter` contract, so there is
 no separate `sandbox.persistent` capability.
 
 There are no dedicated `sandbox.restore` or `sandbox.fork` capabilities.

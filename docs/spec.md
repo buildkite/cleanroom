@@ -398,13 +398,13 @@ Cleanroom provides a Go adapter interface for backend implementations:
 
 - `Adapter`
   - `Name() string`
-  - `Run(ctx, ExecutionRequest) (*ExecutionResult, error)`
-- `PersistentSandboxAdapter` (extends `Adapter`)
   - `ProvisionSandbox(ctx, ProvisionRequest) error`
   - `RunInSandbox(ctx, ExecutionRequest, OutputStream) (*ExecutionResult, error)`
   - `TerminateSandbox(ctx, sandboxID) error`
-- `StreamingAdapter` (extends `Adapter`)
-  - `RunStream(ctx, ExecutionRequest, OutputStream) (*ExecutionResult, error)`
+- `SnapshottingAdapter` (extends `Adapter`)
+  - `CreateSnapshot(ctx, SnapshotRequest) (*SnapshotResult, error)`
+  - `ProvisionSandboxFromSnapshot(ctx, ProvisionFromSnapshotRequest) error`
+  - `DeleteSnapshot(ctx, DeleteSnapshotRequest) error`
 
 ### 7.1 Backend capability contract (required for launch)
 Each backend must publish a capability map consumed by launch-time validation. Capabilities describe enforcement outcomes, not implementation details.

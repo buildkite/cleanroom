@@ -19,9 +19,11 @@ type integrationAdapter struct{}
 
 func (integrationAdapter) Name() string { return "firecracker" }
 
-func (integrationAdapter) Provision(context.Context, backend.ProvisionRequest) error { return nil }
+func (integrationAdapter) ProvisionSandbox(context.Context, backend.ProvisionRequest) error {
+	return nil
+}
 
-func (integrationAdapter) Run(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+func (integrationAdapter) RunInSandbox(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 	result := &backend.ExecutionResult{
 		ExecutionID: req.ExecutionID,
 		ExitCode:    0,
@@ -34,7 +36,7 @@ func (integrationAdapter) Run(_ context.Context, req backend.ExecutionRequest, s
 	return result, nil
 }
 
-func (integrationAdapter) Terminate(context.Context, string) error { return nil }
+func (integrationAdapter) TerminateSandbox(context.Context, string) error { return nil }
 
 type snapshotIntegrationAdapter struct {
 	integrationAdapter
@@ -58,7 +60,7 @@ func startIntegrationServer(t *testing.T) string {
 	return startSnapshotTestServer(t, integrationAdapter{})
 }
 
-func startSnapshotTestServer(t *testing.T, adapter backend.SandboxAdapter) string {
+func startSnapshotTestServer(t *testing.T, adapter backend.Adapter) string {
 	t.Helper()
 
 	store, err := snapshotstore.New(snapshotstore.Options{
@@ -81,7 +83,7 @@ func startSnapshotTestServer(t *testing.T, adapter backend.SandboxAdapter) strin
 			},
 		},
 		SnapshotStore: store,
-		Backends: map[string]backend.SandboxAdapter{
+		Backends: map[string]backend.Adapter{
 			"firecracker": adapter,
 		},
 	}
