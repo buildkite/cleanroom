@@ -14,6 +14,7 @@ import (
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/paths"
 	"github.com/buildkite/cleanroom/internal/policy"
+	"github.com/buildkite/cleanroom/internal/repositorycheckout"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 	"github.com/buildkite/cleanroom/internal/snapshotstore"
 	"go.jetify.com/typeid"
@@ -442,8 +443,8 @@ func TestCreateSnapshotPersistsMetadataAndDeletesIt(t *testing.T) {
 	if got, want := adapter.createSnapshotReq.SandboxID, sandbox.GetSandboxId(); got != want {
 		t.Fatalf("unexpected create snapshot sandbox id: got %q want %q", got, want)
 	}
-	if adapter.createSnapshotCalls != 1 {
-		t.Fatalf("expected one snapshot create call, got %d", adapter.createSnapshotCalls)
+	if adapter.createSnapshotCalls != 2 {
+		t.Fatalf("expected two snapshot create calls (workspace seed + manual snapshot), got %d", adapter.createSnapshotCalls)
 	}
 
 	getResp, err := svc.GetSnapshot(context.Background(), &cleanroomv1.GetSnapshotRequest{
@@ -466,7 +467,7 @@ func TestCreateSnapshotPersistsMetadataAndDeletesIt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListSnapshots returned error: %v", err)
 	}
-	if got, want := len(listResp.GetSnapshots()), 1; got != want {
+	if got, want := len(listResp.GetSnapshots()), 2; got != want {
 		t.Fatalf("unexpected snapshot count: got %d want %d", got, want)
 	}
 
@@ -487,8 +488,8 @@ func TestCreateSnapshotPersistsMetadataAndDeletesIt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListSnapshots after delete returned error: %v", err)
 	}
-	if got := len(listResp.GetSnapshots()); got != 0 {
-		t.Fatalf("expected no snapshots after delete, got %d", got)
+	if got := len(listResp.GetSnapshots()); got != 1 {
+		t.Fatalf("expected workspace seed snapshot to remain after deleting manual snapshot, got %d snapshots", got)
 	}
 }
 
@@ -1119,6 +1120,119 @@ func TestCreateSandboxBootstrapsRepositoryInService(t *testing.T) {
 	}
 	if rel, err := filepath.Rel(executionBaseDir, adapter.req.RunDir); err == nil && rel != "." && !strings.HasPrefix(rel, "..") {
 		t.Fatalf("expected bootstrap run dir to stay out of execution artifacts base dir %q, got %q", executionBaseDir, adapter.req.RunDir)
+	}
+}
+
+func TestCreateSandboxPublishesWorkspaceSeedSnapshot(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	store := newMemorySnapshotStore()
+	adapter := &stubAdapter{
+		createSnapshotFn: func(_ context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
+			return &backend.SnapshotResult{StorageRef: "/snapshots/" + req.SnapshotID + ".ext4"}, nil
+		},
+	}
+	mirrors := &stubRepositoryMirrorStore{}
+	svc := newTestServiceWithSnapshotStore(adapter, store)
+	svc.RepositoryMirrors = mirrors
+
+	createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy:             testRepositoryPolicy(),
+		RepositoryCheckout: testRepositoryCheckoutProto(),
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+
+	if got, want := adapter.provisionCalls, 1; got != want {
+		t.Fatalf("unexpected provision call count: got %d want %d", got, want)
+	}
+	if got, want := adapter.createSnapshotCalls, 1; got != want {
+		t.Fatalf("unexpected workspace seed snapshot create count: got %d want %d", got, want)
+	}
+	if got, want := adapter.createSnapshotReq.SandboxID, createResp.GetSandbox().GetSandboxId(); got != want {
+		t.Fatalf("unexpected snapshot sandbox id: got %q want %q", got, want)
+	}
+
+	records, err := store.List(context.Background())
+	if err != nil {
+		t.Fatalf("List returned error: %v", err)
+	}
+	if got, want := len(records), 1; got != want {
+		t.Fatalf("unexpected snapshot record count: got %d want %d", got, want)
+	}
+	record := records[0]
+	compiled, err := policy.FromProto(testRepositoryPolicy())
+	if err != nil {
+		t.Fatalf("FromProto returned error: %v", err)
+	}
+	if got, want := record.Name, workspaceSeedSnapshotName("firecracker", compiled.Hash, repositorycheckout.FromProto(testRepositoryCheckoutProto())); got != want {
+		t.Fatalf("unexpected workspace seed snapshot name: got %q want %q", got, want)
+	}
+	if record.Repository == nil {
+		t.Fatal("expected repository metadata on workspace seed snapshot")
+	}
+	if got, want := record.Repository.GetCommitSha(), testRepositoryCheckoutProto().GetCommitSha(); got != want {
+		t.Fatalf("unexpected workspace seed commit: got %q want %q", got, want)
+	}
+}
+
+func TestCreateSandboxReusesWorkspaceSeedSnapshot(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	store := newMemorySnapshotStore()
+	adapter := &stubAdapter{
+		createSnapshotFn: func(_ context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
+			return &backend.SnapshotResult{StorageRef: "/snapshots/" + req.SnapshotID + ".ext4"}, nil
+		},
+	}
+	mirrors := &stubRepositoryMirrorStore{}
+	svc := newTestServiceWithSnapshotStore(adapter, store)
+	svc.RepositoryMirrors = mirrors
+
+	req := &cleanroomv1.CreateSandboxRequest{
+		Policy:             testRepositoryPolicy(),
+		RepositoryCheckout: testRepositoryCheckoutProto(),
+	}
+
+	if _, err := svc.CreateSandbox(context.Background(), req); err != nil {
+		t.Fatalf("first CreateSandbox returned error: %v", err)
+	}
+	if got, want := adapter.provisionCalls, 1; got != want {
+		t.Fatalf("unexpected initial provision calls: got %d want %d", got, want)
+	}
+	if got, want := adapter.createSnapshotCalls, 1; got != want {
+		t.Fatalf("unexpected initial snapshot create calls: got %d want %d", got, want)
+	}
+	if got, want := adapter.provisionFromSnapshotCalls, 0; got != want {
+		t.Fatalf("unexpected initial snapshot restore calls: got %d want %d", got, want)
+	}
+	if got, want := mirrors.calls, 1; got != want {
+		t.Fatalf("unexpected initial mirror calls: got %d want %d", got, want)
+	}
+
+	secondResp, err := svc.CreateSandbox(context.Background(), req)
+	if err != nil {
+		t.Fatalf("second CreateSandbox returned error: %v", err)
+	}
+	if secondResp.GetSandbox().GetSandboxId() == "" {
+		t.Fatal("expected sandbox id from cache-backed create")
+	}
+	if got, want := adapter.provisionCalls, 1; got != want {
+		t.Fatalf("expected warm hit to avoid reprovision bootstrap path, got provisionCalls=%d want=%d", got, want)
+	}
+	if got, want := adapter.createSnapshotCalls, 1; got != want {
+		t.Fatalf("expected warm hit to avoid publishing another workspace seed, got createSnapshotCalls=%d want=%d", got, want)
+	}
+	if got, want := adapter.provisionFromSnapshotCalls, 1; got != want {
+		t.Fatalf("expected warm hit to provision from snapshot once, got %d want %d", got, want)
+	}
+	if got, want := mirrors.calls, 1; got != want {
+		t.Fatalf("expected warm hit to avoid another mirror prewarm, got %d want %d", got, want)
+	}
+	if got, want := adapter.runCalls, 1; got != want {
+		t.Fatalf("expected warm hit to skip repository bootstrap execution, got runCalls=%d want=%d", got, want)
+	}
+	if got, want := adapter.provisionFromSnapshotReq.StorageRef, "/snapshots/"+adapter.createSnapshotReq.SnapshotID+".ext4"; got != want {
+		t.Fatalf("unexpected snapshot storage ref on warm hit: got %q want %q", got, want)
 	}
 }
 
