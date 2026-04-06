@@ -66,6 +66,7 @@ module "linux_ci" {
   ami_id                            = local.selected_ami_id
   instance_type                     = var.instance_type
   root_volume_size_gib              = var.root_volume_size_gib
+  user_data_replace_on_change       = false
   buildkite_token_parameter_name    = var.buildkite_token_parameter_name
   tailscale_auth_key_parameter_name = var.tailscale_auth_key_parameter_name
   git_deploy_key_parameter_name     = var.git_deploy_key_parameter_name
@@ -91,6 +92,7 @@ module "mac_ci" {
   ami_id                            = local.selected_mac_ami_id
   instance_type                     = var.mac_instance_type
   root_volume_size_gib              = var.mac_root_volume_size_gib
+  root_volume_encrypted             = var.mac_root_volume_encrypted
   buildkite_queue                   = var.mac_buildkite_queue
   buildkite_token_parameter_name    = var.buildkite_token_parameter_name
   autologin_password_parameter_name = ""
@@ -118,6 +120,7 @@ module "mac_signer" {
   ami_id                            = local.selected_mac_signer_ami_id
   instance_type                     = local.selected_mac_signer_instance_type
   root_volume_size_gib              = local.selected_mac_signer_root_volume_size_gib
+  root_volume_encrypted             = var.mac_signer_root_volume_encrypted
   buildkite_queue                   = var.mac_signer_buildkite_queue
   buildkite_token_parameter_name    = var.buildkite_token_parameter_name
   autologin_password_parameter_name = local.selected_mac_signer_autologin_password_parameter_name

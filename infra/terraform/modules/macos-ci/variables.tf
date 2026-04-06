@@ -47,6 +47,12 @@ variable "root_volume_size_gib" {
   default     = 200
 }
 
+variable "root_volume_encrypted" {
+  description = "Whether the macOS root EBS volume is encrypted."
+  type        = bool
+  default     = true
+}
+
 variable "buildkite_queue" {
   description = "Buildkite queue tag for this macOS host."
   type        = string
