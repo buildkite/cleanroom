@@ -64,6 +64,287 @@ backends:
 	}
 }
 
+func TestLoadSupportsDarwinVZMinimumRootFSBytes(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	configPath := filepath.Join(tmp, "cleanroom", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	content := `default_backend: darwin-vz
+backends:
+  darwin-vz:
+    rootfs: /tmp/rootfs
+    minimum_rootfs_bytes: 2147483648
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, _, err := Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if got, want := int64(cfg.Backends.DarwinVZ.MinimumRootFSBytes), int64(2147483648); got != want {
+		t.Fatalf("unexpected darwin-vz minimum rootfs bytes: got %d want %d", got, want)
+	}
+}
+
+func TestLoadSupportsDarwinVZMinimumRootFSBytesHumanString(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	configPath := filepath.Join(tmp, "cleanroom", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	content := `default_backend: darwin-vz
+backends:
+  darwin-vz:
+    rootfs: /tmp/rootfs
+    minimum_rootfs_bytes: 2GiB
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, _, err := Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if got, want := int64(cfg.Backends.DarwinVZ.MinimumRootFSBytes), int64(2<<30); got != want {
+		t.Fatalf("unexpected darwin-vz minimum rootfs bytes: got %d want %d", got, want)
+	}
+}
+
+func TestLoadSupportsDarwinVZMinimumRootFSBytesQuotedNumericString(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	configPath := filepath.Join(tmp, "cleanroom", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	content := `default_backend: darwin-vz
+backends:
+  darwin-vz:
+    rootfs: /tmp/rootfs
+    minimum_rootfs_bytes: "2147483648"
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, _, err := Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if got, want := int64(cfg.Backends.DarwinVZ.MinimumRootFSBytes), int64(2147483648); got != want {
+		t.Fatalf("unexpected darwin-vz minimum rootfs bytes: got %d want %d", got, want)
+	}
+}
+
+func TestLoadRejectsInvalidDarwinVZMinimumRootFSBytes(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	configPath := filepath.Join(tmp, "cleanroom", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	content := `default_backend: darwin-vz
+backends:
+  darwin-vz:
+    rootfs: /tmp/rootfs
+    minimum_rootfs_bytes: giant
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, _, err := Load()
+	if err == nil {
+		t.Fatal("expected Load to reject invalid minimum_rootfs_bytes")
+	}
+	if !strings.Contains(err.Error(), "invalid byte size") {
+		t.Fatalf("expected error to mention invalid byte size, got %v", err)
+	}
+}
+
+func TestLoadPreservesLegacyDarwinVZFallbackWhenOnlyMinRootFSIsSet(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	configPath := filepath.Join(tmp, "cleanroom", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	content := `default_backend: darwin-vz
+backends:
+  darwin-vz:
+    minimum_rootfs_bytes: 2147483648
+  darwin_vz:
+    kernel_image: /tmp/legacy-kernel
+    rootfs: /tmp/legacy-rootfs
+    vcpus: 4
+    memory_mib: 2048
+    guest_port: 10701
+    launch_seconds: 45
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, _, err := Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if got, want := cfg.Backends.DarwinVZ.KernelImage, "/tmp/legacy-kernel"; got != want {
+		t.Fatalf("unexpected darwin-vz kernel: got %q want %q", got, want)
+	}
+	if got, want := cfg.Backends.DarwinVZ.RootFS, "/tmp/legacy-rootfs"; got != want {
+		t.Fatalf("unexpected darwin-vz rootfs: got %q want %q", got, want)
+	}
+	if got, want := int64(cfg.Backends.DarwinVZ.MinimumRootFSBytes), int64(2147483648); got != want {
+		t.Fatalf("unexpected darwin-vz minimum rootfs bytes: got %d want %d", got, want)
+	}
+}
+
+func TestLoadAllowsExplicitZeroDarwinVZMinimumRootFSBytesOverride(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	configPath := filepath.Join(tmp, "cleanroom", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	content := `default_backend: darwin-vz
+backends:
+  darwin-vz:
+    minimum_rootfs_bytes: 0
+  darwin_vz:
+    kernel_image: /tmp/legacy-kernel
+    rootfs: /tmp/legacy-rootfs
+    minimum_rootfs_bytes: 2GiB
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, _, err := Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if got, want := int64(cfg.Backends.DarwinVZ.MinimumRootFSBytes), int64(0); got != want {
+		t.Fatalf("unexpected darwin-vz minimum rootfs bytes: got %d want %d", got, want)
+	}
+}
+
+func TestLoadSupportsLegacyDarwinVZMinimumRootFSBytesOnly(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	configPath := filepath.Join(tmp, "cleanroom", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	content := `default_backend: darwin-vz
+backends:
+  darwin_vz:
+    minimum_rootfs_bytes: 2GiB
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, _, err := Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if got, want := int64(cfg.Backends.DarwinVZ.MinimumRootFSBytes), int64(2<<30); got != want {
+		t.Fatalf("unexpected darwin-vz minimum rootfs bytes: got %d want %d", got, want)
+	}
+}
+
+func TestLoadRejectsInvalidLegacyDarwinVZMinimumRootFSBytes(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	configPath := filepath.Join(tmp, "cleanroom", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	content := `default_backend: darwin-vz
+backends:
+  darwin_vz:
+    minimum_rootfs_bytes: 2GIBB
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, _, err := Load()
+	if err == nil {
+		t.Fatal("expected Load to reject invalid legacy minimum_rootfs_bytes")
+	}
+	if !strings.Contains(err.Error(), "invalid byte size") {
+		t.Fatalf("expected error to mention invalid byte size, got %v", err)
+	}
+}
+
+func TestLoadSupportsLargeExactDarwinVZMinimumRootFSBytes(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	configPath := filepath.Join(tmp, "cleanroom", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	content := `default_backend: darwin-vz
+backends:
+  darwin-vz:
+    minimum_rootfs_bytes: 9007199254740993b
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, _, err := Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if got, want := int64(cfg.Backends.DarwinVZ.MinimumRootFSBytes), int64(9007199254740993); got != want {
+		t.Fatalf("unexpected darwin-vz minimum rootfs bytes: got %d want %d", got, want)
+	}
+}
+
+func TestLoadSupportsMaxInt64DarwinVZMinimumRootFSBytes(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	configPath := filepath.Join(tmp, "cleanroom", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	content := `default_backend: darwin-vz
+backends:
+  darwin-vz:
+    minimum_rootfs_bytes: 9223372036854775807b
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, _, err := Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if got, want := int64(cfg.Backends.DarwinVZ.MinimumRootFSBytes), int64(9223372036854775807); got != want {
+		t.Fatalf("unexpected darwin-vz minimum rootfs bytes: got %d want %d", got, want)
+	}
+}
+
 func TestLoadSupportsLegacyDarwinVZUnderscoreKey(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", tmp)
@@ -317,15 +598,16 @@ func TestMergeBackendConfig(t *testing.T) {
 				LaunchSeconds:        30,
 			},
 			DarwinVZ: DarwinVZConfig{
-				KernelImage:   "/darwin/kernel",
-				RootFS:        "/darwin/rootfs.ext4",
-				Network:       DarwinVZNetworkConfig{Mode: "vmnet-shared", Subnet: "10.233.0.0/16"},
-				Services:      ServicesConfig{Docker: DockerServiceConfig{StartupTimeoutSeconds: 20, StorageDriver: "vzfs", IPTables: false}},
-				Snapshots:     SnapshotConfig{Enabled: false, Driver: "apfs", BaseDir: "/darwin/snapshots", QuiesceTimeoutSeconds: 22},
-				VCPUs:         4,
-				MemoryMiB:     2048,
-				GuestPort:     10701,
-				LaunchSeconds: 45,
+				KernelImage:        "/darwin/kernel",
+				RootFS:             "/darwin/rootfs.ext4",
+				MinimumRootFSBytes: 2147483648,
+				Network:            DarwinVZNetworkConfig{Mode: "vmnet-shared", Subnet: "10.233.0.0/16"},
+				Services:           ServicesConfig{Docker: DockerServiceConfig{StartupTimeoutSeconds: 20, StorageDriver: "vzfs", IPTables: false}},
+				Snapshots:          SnapshotConfig{Enabled: false, Driver: "apfs", BaseDir: "/darwin/snapshots", QuiesceTimeoutSeconds: 22},
+				VCPUs:              4,
+				MemoryMiB:          2048,
+				GuestPort:          10701,
+				LaunchSeconds:      45,
 			},
 		},
 	}
@@ -350,6 +632,9 @@ func TestMergeBackendConfig(t *testing.T) {
 	}
 	if got, want := darwinCfg.RootFSPath, "/darwin/rootfs.ext4"; got != want {
 		t.Fatalf("unexpected darwin-vz rootfs: got %q want %q", got, want)
+	}
+	if got, want := darwinCfg.MinimumRootFSBytes, int64(2147483648); got != want {
+		t.Fatalf("unexpected darwin-vz minimum rootfs bytes: got %d want %d", got, want)
 	}
 	if got, want := darwinCfg.DarwinVZNetworkMode, "vmnet-shared"; got != want {
 		t.Fatalf("unexpected darwin-vz network mode: got %q want %q", got, want)

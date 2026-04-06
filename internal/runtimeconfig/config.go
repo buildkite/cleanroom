@@ -3,10 +3,13 @@ package runtimeconfig
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/buildkite/cleanroom/internal/backend"
 	"gopkg.in/yaml.v3"
@@ -38,15 +41,16 @@ type FirecrackerConfig struct {
 }
 
 type DarwinVZConfig struct {
-	KernelImage   string                `yaml:"kernel_image"`
-	RootFS        string                `yaml:"rootfs"`
-	Network       DarwinVZNetworkConfig `yaml:"network,omitempty"`
-	Services      ServicesConfig        `yaml:"services"`
-	Snapshots     SnapshotConfig        `yaml:"snapshots"`
-	VCPUs         int64                 `yaml:"vcpus"`
-	MemoryMiB     int64                 `yaml:"memory_mib"`
-	GuestPort     uint32                `yaml:"guest_port"`
-	LaunchSeconds int64                 `yaml:"launch_seconds"` // VM boot/guest-agent readiness timeout
+	KernelImage        string                `yaml:"kernel_image"`
+	RootFS             string                `yaml:"rootfs"`
+	MinimumRootFSBytes ByteSize              `yaml:"minimum_rootfs_bytes"`
+	Network            DarwinVZNetworkConfig `yaml:"network,omitempty"`
+	Services           ServicesConfig        `yaml:"services"`
+	Snapshots          SnapshotConfig        `yaml:"snapshots"`
+	VCPUs              int64                 `yaml:"vcpus"`
+	MemoryMiB          int64                 `yaml:"memory_mib"`
+	GuestPort          uint32                `yaml:"guest_port"`
+	LaunchSeconds      int64                 `yaml:"launch_seconds"` // VM boot/guest-agent readiness timeout
 }
 
 type DarwinVZNetworkConfig struct {
@@ -112,6 +116,7 @@ func MergeBackendConfig(cfg Config, backendName string, launchSeconds int64) bac
 	if backendName == "darwin-vz" {
 		out.KernelImagePath = cfg.Backends.DarwinVZ.KernelImage
 		out.RootFSPath = cfg.Backends.DarwinVZ.RootFS
+		out.MinimumRootFSBytes = int64(cfg.Backends.DarwinVZ.MinimumRootFSBytes)
 		out.DarwinVZNetworkMode = cfg.Backends.DarwinVZ.Network.Mode
 		out.DarwinVZNetworkSubnet = cfg.Backends.DarwinVZ.Network.Subnet
 		out.DockerStartupSeconds = cfg.Backends.DarwinVZ.Services.Docker.StartupTimeoutSeconds
@@ -145,6 +150,104 @@ type DockerServiceConfig struct {
 	StartupTimeoutSeconds int64  `yaml:"startup_timeout_seconds"`
 	StorageDriver         string `yaml:"storage_driver"`
 	IPTables              bool   `yaml:"iptables"`
+}
+
+type ByteSize int64
+
+func (s *ByteSize) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind != yaml.ScalarNode {
+		return fmt.Errorf("invalid byte size node kind %v", node.Kind)
+	}
+
+	value, err := parseByteSize(node.Value)
+	if err != nil {
+		return fmt.Errorf("invalid byte size %q: %w", node.Value, err)
+	}
+	*s = ByteSize(value)
+	return nil
+}
+
+func parseByteSize(input string) (int64, error) {
+	s := strings.TrimSpace(input)
+	if s == "" {
+		return 0, errors.New("value is empty")
+	}
+
+	if value, err := strconv.ParseInt(s, 10, 64); err == nil {
+		if value < 0 {
+			return 0, errors.New("value must be non-negative")
+		}
+		return value, nil
+	}
+
+	numberEnd := strings.IndexFunc(s, func(r rune) bool {
+		return !(unicode.IsDigit(r) || r == '.')
+	})
+	if numberEnd <= 0 {
+		return 0, errors.New("missing numeric value")
+	}
+
+	numberPart := strings.TrimSpace(s[:numberEnd])
+	unitPart := strings.ToLower(strings.TrimSpace(s[numberEnd:]))
+	if numberPart == "" || unitPart == "" {
+		return 0, errors.New("size must include a number and unit")
+	}
+
+	numberValue, err := strconv.ParseFloat(numberPart, 64)
+	if err != nil {
+		return 0, fmt.Errorf("parse numeric value: %w", err)
+	}
+	if numberValue < 0 {
+		return 0, errors.New("value must be non-negative")
+	}
+
+	multiplier, ok := byteSizeMultipliers[unitPart]
+	if !ok {
+		return 0, fmt.Errorf("unsupported unit %q", unitPart)
+	}
+
+	if !strings.Contains(numberPart, ".") {
+		numberValue, err := strconv.ParseInt(numberPart, 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("parse numeric value: %w", err)
+		}
+		if numberValue < 0 {
+			return 0, errors.New("value must be non-negative")
+		}
+		if multiplier != 0 && numberValue > math.MaxInt64/multiplier {
+			return 0, errors.New("size overflows int64")
+		}
+		return numberValue * multiplier, nil
+	}
+
+	value := numberValue * float64(multiplier)
+	rounded := math.Round(value)
+	if math.Abs(value-rounded) > 1e-9 {
+		return 0, errors.New("size resolves to fractional bytes")
+	}
+	if rounded > math.MaxInt64 {
+		return 0, errors.New("size overflows int64")
+	}
+	return int64(rounded), nil
+}
+
+var byteSizeMultipliers = map[string]int64{
+	"b":   1,
+	"k":   1 << 10,
+	"kb":  1000,
+	"kib": 1 << 10,
+	"m":   1 << 20,
+	"mb":  1000 * 1000,
+	"mib": 1 << 20,
+	"g":   1 << 30,
+	"gb":  1000 * 1000 * 1000,
+	"gib": 1 << 30,
+	"t":   1 << 40,
+	"tb":  1000 * 1000 * 1000 * 1000,
+	"tib": 1 << 40,
+	"p":   1 << 50,
+	"pb":  1000 * 1000 * 1000 * 1000 * 1000,
+	"pib": 1 << 50,
 }
 
 var (
@@ -216,15 +319,36 @@ func Load() (Config, string, error) {
 	if err := yaml.Unmarshal(b, &cfg); err != nil {
 		return Config{}, path, fmt.Errorf("parse %s: %w", path, err)
 	}
+	presenceCfg := struct {
+		Backends struct {
+			DarwinVZ struct {
+				MinimumRootFSBytes *ByteSize `yaml:"minimum_rootfs_bytes"`
+			} `yaml:"darwin-vz"`
+			LegacyDarwinVZ *yaml.Node `yaml:"darwin_vz"`
+		} `yaml:"backends"`
+	}{}
+	if err := yaml.Unmarshal(b, &presenceCfg); err != nil {
+		return Config{}, path, fmt.Errorf("parse %s: %w", path, err)
+	}
+
+	darwinVZMinRootFSBytes := cfg.Backends.DarwinVZ.MinimumRootFSBytes
+	darwinVZMinRootFSBytesSet := presenceCfg.Backends.DarwinVZ.MinimumRootFSBytes != nil
 	if darwinVZConfigIsZero(cfg.Backends.DarwinVZ) {
 		legacyCfg := struct {
 			Backends struct {
 				DarwinVZ DarwinVZConfig `yaml:"darwin_vz"`
 			} `yaml:"backends"`
 		}{}
-		if err := yaml.Unmarshal(b, &legacyCfg); err == nil && !darwinVZConfigIsZero(legacyCfg.Backends.DarwinVZ) {
+		if err := yaml.Unmarshal(b, &legacyCfg); err != nil {
+			if presenceCfg.Backends.LegacyDarwinVZ != nil {
+				return Config{}, path, fmt.Errorf("parse %s: %w", path, err)
+			}
+		} else if darwinVZConfigHasValues(legacyCfg.Backends.DarwinVZ) {
 			cfg.Backends.DarwinVZ = legacyCfg.Backends.DarwinVZ
 		}
+	}
+	if darwinVZMinRootFSBytesSet {
+		cfg.Backends.DarwinVZ.MinimumRootFSBytes = darwinVZMinRootFSBytes
 	}
 
 	cfg.DefaultBackend = strings.TrimSpace(cfg.DefaultBackend)
@@ -247,6 +371,10 @@ func darwinVZConfigIsZero(cfg DarwinVZConfig) bool {
 		cfg.MemoryMiB == 0 &&
 		cfg.GuestPort == 0 &&
 		cfg.LaunchSeconds == 0
+}
+
+func darwinVZConfigHasValues(cfg DarwinVZConfig) bool {
+	return !darwinVZConfigIsZero(cfg) || cfg.MinimumRootFSBytes > 0
 }
 
 func darwinVZNetworkConfigIsZero(cfg DarwinVZNetworkConfig) bool {
