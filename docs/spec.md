@@ -79,6 +79,8 @@ sandbox:
     install: true
     config_files:
       - .mise.toml
+      - mise.toml
+      - .tool-versions
       - .mise/config.toml
   network:
     default: deny
@@ -158,6 +160,9 @@ Meaning:
 - `repository.remote` defaults to `origin`.
 - `repository.path` defaults to `/workspace` and must be an absolute guest path.
 - `repository.submodules` defaults to `false`.
+- `sandbox.mise.enabled` defaults to `true`; `false` disables Cleanroom-managed `mise` detection and install wrapping.
+- `sandbox.mise.install` defaults to `true`; `false` preserves repo-aware checkout but skips automatic `mise install` and `mise exec -- ...` wrapping.
+- `sandbox.mise.config_files` defaults to `.mise.toml`, `mise.toml`, `.tool-versions`, and `.mise/config.toml`.
 - Host matching supports:
   - exact host (`registry.npmjs.org`)
   - wildcard subdomains (`*.example.com`)
