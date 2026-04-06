@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/policy"
@@ -141,7 +140,7 @@ func (s *Service) maybePublishWorkspaceSeedSnapshot(
 		Repository:      cloneRepositoryCheckout(repository).ToProto(),
 		StorageDriver:   snapshotCfg.Snapshots.Driver,
 		StorageRef:      strings.TrimSpace(result.StorageRef),
-		CreatedAt:       time.Now().UTC(),
+		CreatedAt:       s.clock().Now(),
 	}
 	if err := store.Create(ctx, record); err != nil {
 		deleteErr := adapter.DeleteSnapshot(ctx, backend.DeleteSnapshotRequest{

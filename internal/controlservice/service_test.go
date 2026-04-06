@@ -168,11 +168,25 @@ type stubRepositoryMirrorStore struct {
 	err       error
 }
 
+type stubClock struct {
+	now time.Time
+}
+
 func (s *stubRepositoryMirrorStore) EnsureMirrorContains(_ context.Context, remoteURL, commitSHA string) error {
 	s.remoteURL = remoteURL
 	s.commitSHA = commitSHA
 	s.calls++
 	return s.err
+}
+
+func (c stubClock) Now() time.Time {
+	return c.now
+}
+
+func (c stubClock) After(d time.Duration) <-chan time.Time {
+	ch := make(chan time.Time, 1)
+	ch <- c.now.Add(d)
+	return ch
 }
 
 func (l stubLoader) LoadAndCompile(_ string) (*policy.CompiledPolicy, string, error) {
@@ -1159,6 +1173,8 @@ func TestCreateSandboxPublishesWorkspaceSeedSnapshot(t *testing.T) {
 	mirrors := &stubRepositoryMirrorStore{}
 	svc := newTestServiceWithSnapshotStore(adapter, store)
 	svc.RepositoryMirrors = mirrors
+	publishedAt := time.Unix(1_700_000_123, 0).UTC()
+	svc.runtime.clock = stubClock{now: publishedAt}
 
 	createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
 		Policy:             testRepositoryPolicy(),
@@ -1198,6 +1214,9 @@ func TestCreateSandboxPublishesWorkspaceSeedSnapshot(t *testing.T) {
 	}
 	if got, want := record.Repository.GetCommitSha(), testRepositoryCheckoutProto().GetCommitSha(); got != want {
 		t.Fatalf("unexpected workspace seed commit: got %q want %q", got, want)
+	}
+	if got, want := record.CreatedAt, publishedAt; !got.Equal(want) {
+		t.Fatalf("unexpected workspace seed created_at: got %s want %s", got.Format(time.RFC3339Nano), want.Format(time.RFC3339Nano))
 	}
 }
 
