@@ -86,8 +86,89 @@ backends:
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
-	if got, want := cfg.Backends.DarwinVZ.MinimumRootFSBytes, int64(2147483648); got != want {
+	if got, want := int64(cfg.Backends.DarwinVZ.MinimumRootFSBytes), int64(2147483648); got != want {
 		t.Fatalf("unexpected darwin-vz minimum rootfs bytes: got %d want %d", got, want)
+	}
+}
+
+func TestLoadSupportsDarwinVZMinimumRootFSBytesHumanString(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	configPath := filepath.Join(tmp, "cleanroom", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	content := `default_backend: darwin-vz
+backends:
+  darwin-vz:
+    rootfs: /tmp/rootfs
+    minimum_rootfs_bytes: 2GiB
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, _, err := Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if got, want := int64(cfg.Backends.DarwinVZ.MinimumRootFSBytes), int64(2<<30); got != want {
+		t.Fatalf("unexpected darwin-vz minimum rootfs bytes: got %d want %d", got, want)
+	}
+}
+
+func TestLoadSupportsDarwinVZMinimumRootFSBytesQuotedNumericString(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	configPath := filepath.Join(tmp, "cleanroom", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	content := `default_backend: darwin-vz
+backends:
+  darwin-vz:
+    rootfs: /tmp/rootfs
+    minimum_rootfs_bytes: "2147483648"
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, _, err := Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if got, want := int64(cfg.Backends.DarwinVZ.MinimumRootFSBytes), int64(2147483648); got != want {
+		t.Fatalf("unexpected darwin-vz minimum rootfs bytes: got %d want %d", got, want)
+	}
+}
+
+func TestLoadRejectsInvalidDarwinVZMinimumRootFSBytes(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	configPath := filepath.Join(tmp, "cleanroom", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	content := `default_backend: darwin-vz
+backends:
+  darwin-vz:
+    rootfs: /tmp/rootfs
+    minimum_rootfs_bytes: giant
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, _, err := Load()
+	if err == nil {
+		t.Fatal("expected Load to reject invalid minimum_rootfs_bytes")
+	}
+	if !strings.Contains(err.Error(), "invalid byte size") {
+		t.Fatalf("expected error to mention invalid byte size, got %v", err)
 	}
 }
 
@@ -125,7 +206,7 @@ backends:
 	if got, want := cfg.Backends.DarwinVZ.RootFS, "/tmp/legacy-rootfs"; got != want {
 		t.Fatalf("unexpected darwin-vz rootfs: got %q want %q", got, want)
 	}
-	if got, want := cfg.Backends.DarwinVZ.MinimumRootFSBytes, int64(2147483648); got != want {
+	if got, want := int64(cfg.Backends.DarwinVZ.MinimumRootFSBytes), int64(2147483648); got != want {
 		t.Fatalf("unexpected darwin-vz minimum rootfs bytes: got %d want %d", got, want)
 	}
 }
@@ -386,12 +467,12 @@ func TestMergeBackendConfig(t *testing.T) {
 				RootFS:             "/darwin/rootfs.ext4",
 				MinimumRootFSBytes: 2147483648,
 				Network:            DarwinVZNetworkConfig{Mode: "vmnet-shared", Subnet: "10.233.0.0/16"},
-				Services:      ServicesConfig{Docker: DockerServiceConfig{StartupTimeoutSeconds: 20, StorageDriver: "vzfs", IPTables: false}},
-				Snapshots:     SnapshotConfig{Enabled: false, Driver: "apfs", BaseDir: "/darwin/snapshots", QuiesceTimeoutSeconds: 22},
-				VCPUs:         4,
-				MemoryMiB:     2048,
-				GuestPort:     10701,
-				LaunchSeconds: 45,
+				Services:           ServicesConfig{Docker: DockerServiceConfig{StartupTimeoutSeconds: 20, StorageDriver: "vzfs", IPTables: false}},
+				Snapshots:          SnapshotConfig{Enabled: false, Driver: "apfs", BaseDir: "/darwin/snapshots", QuiesceTimeoutSeconds: 22},
+				VCPUs:              4,
+				MemoryMiB:          2048,
+				GuestPort:          10701,
+				LaunchSeconds:      45,
 			},
 		},
 	}
