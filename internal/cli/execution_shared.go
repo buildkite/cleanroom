@@ -28,6 +28,7 @@ var (
 	stopSignals = func(ch chan os.Signal) {
 		signal.Stop(ch)
 	}
+	executionStdinErrDrainTimeout = 100 * time.Millisecond
 )
 
 func ensureSandboxID(client *controlclient.Client, loader policyLoader, cwd, host, backendName, existingSandboxID, fromSnapshot, imageRefOverride string, launchSeconds int64, repository *resolvedRepositoryCheckout) (string, bool, error) {

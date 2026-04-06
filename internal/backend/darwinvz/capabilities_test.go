@@ -1,6 +1,7 @@
 package darwinvz
 
 import (
+	"runtime"
 	"testing"
 
 	"github.com/buildkite/cleanroom/internal/backend"
@@ -21,6 +22,10 @@ func TestCapabilitiesDeclareGuestNetworkInterfaceWithoutAllowlistFilteringByDefa
 }
 
 func TestCapabilitiesDeclareAllowlistFilteringForFileHandleMode(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("filehandle allowlist capability is only supported on darwin")
+	}
+
 	caps := (&Adapter{ConfiguredNetworkMode: darwinVZNetworkModeFileHandle}).Capabilities()
 
 	if !caps[backend.CapabilityNetworkDefaultDeny] {
