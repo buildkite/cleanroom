@@ -213,7 +213,6 @@ func workdirExecutionScript(command []string, checkout *Checkout, autoMiseInstal
 				`  if ! command -v mise >/dev/null 2>&1; then echo "repository declares mise config but 'mise' is not installed in sandbox image" >&2; exit 1; fi`,
 				`  export MISE_YES=1`,
 				`  export MISE_TRUSTED_CONFIG_PATHS="$dest${MISE_TRUSTED_CONFIG_PATHS:+:$MISE_TRUSTED_CONFIG_PATHS}"`,
-				`  mise install`,
 				`  exec mise exec -- `+execCommand,
 				`fi`,
 			)

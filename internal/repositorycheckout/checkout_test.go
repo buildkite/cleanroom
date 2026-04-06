@@ -230,8 +230,8 @@ func TestWrapCommandWithBootstrapIncludesMiseBootstrapLogic(t *testing.T) {
 	if !strings.Contains(joined, "if [ -f '.mise.toml' ] || [ -f 'mise.toml' ] || [ -f '.tool-versions' ] || [ -f '.mise/config.toml' ]; then") {
 		t.Fatalf("expected bootstrap wrapper to detect mise config files, got %q", joined)
 	}
-	if !strings.Contains(joined, `mise install`) {
-		t.Fatalf("expected bootstrap wrapper to run mise install, got %q", joined)
+	if strings.Contains(joined, `mise install`) {
+		t.Fatalf("expected bootstrap wrapper to rely on mise exec auto-install, got %q", joined)
 	}
 	if !strings.Contains(joined, `exec mise exec -- 'sh' '-lc' 'pwd'`) {
 		t.Fatalf("expected bootstrap wrapper to exec through mise, got %q", joined)
@@ -244,9 +244,6 @@ func TestWrapCommandInWorkdirSkipsMiseBootstrapWhenDisabled(t *testing.T) {
 	}, false)
 
 	joined := strings.Join(command, " ")
-	if strings.Contains(joined, "mise install") {
-		t.Fatalf("expected mise bootstrap to be skipped when disabled, got %q", joined)
-	}
 	if strings.Contains(joined, "mise exec --") {
 		t.Fatalf("expected mise exec wrapper to be skipped when disabled, got %q", joined)
 	}

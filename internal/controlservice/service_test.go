@@ -1634,9 +1634,6 @@ func TestCreateExecutionSkipsMiseBootstrapWhenPolicyDisablesInstall(t *testing.T
 		t.Fatalf("expected create bootstrap + execution, got %d command(s)", got)
 	}
 	joined := strings.Join(commands[1], " ")
-	if strings.Contains(joined, "mise install") {
-		t.Fatalf("expected policy-disabled execution to skip mise install, got %q", joined)
-	}
 	if strings.Contains(joined, "mise exec --") {
 		t.Fatalf("expected policy-disabled execution to skip mise exec wrapper, got %q", joined)
 	}

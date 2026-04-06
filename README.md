@@ -101,7 +101,7 @@ commands become repo-aware: Cleanroom resolves the current git remote and local
 `HEAD`, materializes that checkout in the sandbox, and starts commands in the
 configured guest path. If the checked-out repository contains `.mise.toml`,
 `mise.toml`, `.tool-versions`, or `.mise/config.toml`, Cleanroom also runs
-`mise install` and executes the command through `mise exec -- ...` unless
+the command through `mise exec -- ...` unless
 `sandbox.mise.enabled: false` or `sandbox.mise.install: false` is set in
 `cleanroom.yaml`.
 
