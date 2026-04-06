@@ -13,9 +13,13 @@ RUN apk add --no-cache \
   make \
   nodejs \
   npm \
+  openssh-client-default \
   python3 \
   strace \
   mise
+
+# Keep repo-local mise configs under /workspace usable in agent containers too.
+RUN mise settings add trusted_config_paths /workspace
 
 # Install common agent CLIs with pinned versions for reproducible builds.
 RUN mise use -g --pin \
