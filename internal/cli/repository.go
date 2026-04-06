@@ -3,12 +3,10 @@ package cli
 import (
 	"errors"
 	"fmt"
-	"net/url"
 	"os"
 	"os/exec"
 	"strings"
 
-	"github.com/buildkite/cleanroom/internal/backend"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/repositorycheckout"
@@ -113,7 +111,7 @@ func resolveRepositoryCheckoutWithOverride(cwd string, loader policyLoader, over
 	if err != nil {
 		return nil, fmt.Errorf("resolve repository remote %q: %w", repository.Remote, err)
 	}
-	canonicalURL, remoteHost, err := canonicalizeGitRemoteURL(remoteURL)
+	canonicalURL, remoteHost, err := repositorycheckout.CanonicalizeRemoteURL(remoteURL)
 	if err != nil {
 		return nil, err
 	}
@@ -134,17 +132,6 @@ func resolveRepositoryCheckoutWithOverride(cwd string, loader policyLoader, over
 		Branch:         strings.TrimSpace(branch),
 		Dirty:          strings.TrimSpace(dirty) != "",
 	}, nil
-}
-
-func maybeResolveRepositoryCheckout(cwd string, loader policyLoader, existingSandboxID, fromSnapshot string, _ bool) (*resolvedRepositoryCheckout, error) {
-	return maybeResolveRepositoryCheckoutWithOverride(cwd, loader, existingSandboxID, fromSnapshot, false, repositoryOverrideFlags{})
-}
-
-func maybeResolveRepositoryCheckoutWithOverride(cwd string, loader policyLoader, existingSandboxID, fromSnapshot string, _ bool, override repositoryOverrideFlags) (*resolvedRepositoryCheckout, error) {
-	if strings.TrimSpace(existingSandboxID) != "" || strings.TrimSpace(fromSnapshot) != "" {
-		return nil, nil
-	}
-	return resolveRepositoryCheckoutWithOverride(cwd, loader, override)
 }
 
 var errSkipRepositoryCheckout = errors.New("skip repository checkout")
@@ -190,76 +177,6 @@ func shouldSkipImplicitRepository(repository policy.RepositoryConfig, err error)
 	return isNotAGitRepositoryErr(err)
 }
 
-func canonicalizeGitRemoteURL(raw string) (string, string, error) {
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
-		return "", "", errors.New("repository remote URL is empty")
-	}
-
-	if strings.HasPrefix(trimmed, "https://") {
-		parsed, err := url.Parse(trimmed)
-		if err != nil {
-			return "", "", fmt.Errorf("parse repository remote URL %q: %w", trimmed, err)
-		}
-		host := strings.TrimSpace(strings.ToLower(parsed.Hostname()))
-		if host == "" {
-			return "", "", fmt.Errorf("repository remote URL %q has no host", trimmed)
-		}
-		if parsed.Port() != "" && parsed.Port() != "443" {
-			return "", "", fmt.Errorf("repository remote URL %q uses unsupported non-default HTTPS port", trimmed)
-		}
-		parsed.User = nil
-		parsed.Host = normalizedURLHost(host, parsed.Port())
-		parsed.RawQuery = ""
-		parsed.Fragment = ""
-		return parsed.String(), host, nil
-	}
-
-	if strings.HasPrefix(trimmed, "ssh://") {
-		parsed, err := url.Parse(trimmed)
-		if err != nil {
-			return "", "", fmt.Errorf("parse repository remote URL %q: %w", trimmed, err)
-		}
-		host := strings.TrimSpace(strings.ToLower(parsed.Hostname()))
-		if host == "" {
-			return "", "", fmt.Errorf("repository remote URL %q has no host", trimmed)
-		}
-		if parsed.Port() != "" && parsed.Port() != "22" {
-			return "", "", fmt.Errorf("repository remote URL %q uses unsupported non-default SSH port", trimmed)
-		}
-		path := strings.TrimPrefix(parsed.Path, "/")
-		if path == "" {
-			return "", "", fmt.Errorf("repository remote URL %q has no path", trimmed)
-		}
-		return "https://" + host + "/" + path, host, nil
-	}
-
-	if at := strings.Index(trimmed, "@"); at >= 0 {
-		hostAndPath := trimmed[at+1:]
-		host, path, ok := strings.Cut(hostAndPath, ":")
-		host = strings.TrimSpace(strings.ToLower(host))
-		path = strings.TrimPrefix(strings.TrimSpace(path), "/")
-		if ok && host != "" && path != "" {
-			return "https://" + host + "/" + path, host, nil
-		}
-	}
-
-	return "", "", fmt.Errorf("repository remote URL %q must use https or a canonicalizable ssh form", trimmed)
-}
-
-func normalizedURLHost(host, port string) string {
-	if strings.Contains(host, ":") {
-		if port != "" {
-			return "[" + host + "]:" + port
-		}
-		return "[" + host + "]"
-	}
-	if port != "" {
-		return host + ":" + port
-	}
-	return host
-}
-
 func gitOutput(dir string, args ...string) (string, error) {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
@@ -280,53 +197,6 @@ func isNotAGitRepositoryErr(err error) bool {
 	}
 	msg := strings.ToLower(strings.TrimSpace(err.Error()))
 	return strings.Contains(msg, "not a git repository")
-}
-
-func backendSupportsRepositoryPersistence(ctx *runtimeContext, host, backendName string) bool {
-	if ctx == nil {
-		return true
-	}
-	localControlPlane, err := isLocalControlPlaneEndpoint(host)
-	if err != nil {
-		return true
-	}
-	if !localControlPlane {
-		return true
-	}
-	selectedBackend := strings.TrimSpace(backendName)
-	if selectedBackend == "" {
-		selectedBackend = strings.TrimSpace(ctx.Config.DefaultBackend)
-	}
-	if selectedBackend == "" {
-		return true
-	}
-	adapter, ok := ctx.Backends[selectedBackend]
-	if !ok || adapter == nil {
-		return true
-	}
-	return backend.CapabilitiesForAdapter(adapter)[backend.CapabilitySandboxPersistent]
-}
-
-func shouldInlineRepositoryBootstrap(ctx *runtimeContext, host, backendName string, repository *resolvedRepositoryCheckout) bool {
-	if repository == nil {
-		return false
-	}
-	return !backendSupportsRepositoryPersistence(ctx, host, backendName)
-}
-
-func repositoryExecutionCommand(command []string, repository *resolvedRepositoryCheckout, inlineBootstrap bool) []string {
-	_ = repository
-	_ = inlineBootstrap
-	return normalizePassthroughCommand(command)
-}
-
-func repositoryExecutionCheckout(repository *resolvedRepositoryCheckout, inlineBootstrap bool) *cleanroomv1.RepositoryCheckout {
-	_ = inlineBootstrap
-	return repositoryCheckoutProto(repository)
-}
-
-func normalizePassthroughCommand(command []string) []string {
-	return repositorycheckout.NormalizeCommand(command)
 }
 
 func repositoryCheckoutProto(repository *resolvedRepositoryCheckout) *cleanroomv1.RepositoryCheckout {

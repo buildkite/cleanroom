@@ -41,10 +41,6 @@ func (a *blockingPersistentAdapter) ProvisionSandbox(context.Context, backend.Pr
 	return nil
 }
 
-func (a *blockingPersistentAdapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
-	return a.RunStream(ctx, req, stream)
-}
-
 func (a *blockingPersistentAdapter) TerminateSandbox(context.Context, string) error {
 	if a.terminateEntered != nil {
 		a.terminateEntered <- struct{}{}
@@ -61,7 +57,7 @@ type cancelAwareStreamingAdapter struct {
 	runCanceled chan struct{}
 }
 
-func (a *cancelAwareStreamingAdapter) RunStream(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+func (a *cancelAwareStreamingAdapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 	if a.runEntered != nil {
 		a.runEntered <- struct{}{}
 	}
@@ -76,7 +72,7 @@ type immediateStreamingAdapter struct {
 	integrationAdapter
 }
 
-func (a *immediateStreamingAdapter) RunStream(context.Context, backend.ExecutionRequest, backend.OutputStream) (*backend.ExecutionResult, error) {
+func (a *immediateStreamingAdapter) RunInSandbox(context.Context, backend.ExecutionRequest, backend.OutputStream) (*backend.ExecutionResult, error) {
 	return &backend.ExecutionResult{
 		ExitCode: 0,
 		Message:  "done",
@@ -88,7 +84,7 @@ type warningStreamingAdapter struct {
 	warning string
 }
 
-func (a *warningStreamingAdapter) RunStream(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+func (a *warningStreamingAdapter) RunInSandbox(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 	if stream.OnWarning != nil {
 		stream.OnWarning(a.warning)
 	}

@@ -18,14 +18,11 @@ import (
 	"github.com/buildkite/cleanroom/internal/vsockexec"
 )
 
-func TestCapabilitiesExposePersistentSandboxWithoutFileDownload(t *testing.T) {
+func TestCapabilitiesExposeSnapshotWithoutFileDownload(t *testing.T) {
 	t.Parallel()
 
 	caps := backend.CapabilitiesForAdapter(New())
 
-	if !caps[backend.CapabilitySandboxPersistent] {
-		t.Fatalf("expected %s=true", backend.CapabilitySandboxPersistent)
-	}
 	if !caps[backend.CapabilitySandboxSnapshot] {
 		t.Fatalf("expected %s=true", backend.CapabilitySandboxSnapshot)
 	}

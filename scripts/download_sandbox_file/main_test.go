@@ -29,16 +29,12 @@ type downloadTestAdapter struct {
 
 func (a *downloadTestAdapter) Name() string { return "firecracker" }
 
-func (a *downloadTestAdapter) Run(_ context.Context, req backend.ExecutionRequest) (*backend.ExecutionResult, error) {
-	return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0}, nil
-}
-
 func (a *downloadTestAdapter) ProvisionSandbox(context.Context, backend.ProvisionRequest) error {
 	return nil
 }
 
-func (a *downloadTestAdapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
-	return a.Run(ctx, req)
+func (a *downloadTestAdapter) RunInSandbox(_ context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
+	return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0}, nil
 }
 
 func (a *downloadTestAdapter) TerminateSandbox(context.Context, string) error {

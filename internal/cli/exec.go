@@ -9,15 +9,16 @@ import (
 	"syscall"
 
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
+	"github.com/buildkite/cleanroom/internal/repositorycheckout"
 )
 
 type ExecCommand struct {
 	clientFlags
-	Chdir          string   `short:"c" help:"Change to this directory before running commands"`
-	Backend        string   `help:"Execution backend (defaults to runtime config or host default)"`
-	In             string   `name:"in" aliases:"sandbox-id" help:"Run in an existing sandbox ID instead of creating a new one"`
-	From           string   `name:"from" help:"Create the sandbox from an existing snapshot ID"`
-	Image          string   `help:"Override sandbox image ref for newly created sandboxes (tag, digest, or local Docker image)"`
+	Chdir   string `short:"c" help:"Change to this directory before running commands"`
+	Backend string `help:"Execution backend (defaults to runtime config or host default)"`
+	In      string `name:"in" aliases:"sandbox-id" help:"Run in an existing sandbox ID instead of creating a new one"`
+	From    string `name:"from" help:"Create the sandbox from an existing snapshot ID"`
+	Image   string `help:"Override sandbox image ref for newly created sandboxes (tag, digest, or local Docker image)"`
 	repositoryOverrideFlags
 	Keep           bool     `help:"Keep a newly created sandbox after the command completes"`
 	Env            []string `short:"e" name:"env" help:"Set guest environment variables; use KEY to inherit from the local environment or KEY=VALUE to set an explicit value"`
@@ -60,24 +61,16 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 		"command_argc", len(e.Command),
 		"env_count", len(executionEnv),
 	)
-	persistentRepositoryBackend := backendSupportsRepositoryPersistence(ctx, host, e.Backend)
-	repository, err := maybeResolveRepositoryCheckoutWithOverride(cwd, ctx.Loader, strings.TrimSpace(e.In), strings.TrimSpace(e.From), !persistentRepositoryBackend, e.repositoryOverrideFlags)
-	if err != nil {
-		return err
-	}
-	warnDirtyRepositoryCheckout(repository)
-	inlineRepositoryBootstrap := shouldInlineRepositoryBootstrap(ctx, host, e.Backend, repository)
-	repositoryForCreate := repository
-	if inlineRepositoryBootstrap {
-		repositoryForCreate = nil
-	}
-	sandboxID, createdSandbox, err := ensureSandboxID(client, ctx.Loader, cwd, host, e.Backend, strings.TrimSpace(e.In), strings.TrimSpace(e.From), e.Image, e.LaunchSeconds, repositoryForCreate)
+	target, err := resolveExecutionSandbox(client, ctx, cwd, host, e.Backend, e.In, e.From, e.Image, e.LaunchSeconds, e.repositoryOverrideFlags)
 	if err != nil {
 		if strings.TrimSpace(e.From) != "" {
 			err = explainSnapshotRuntimeDisabledError(err, ctx)
 		}
 		return err
 	}
+	sandboxID := target.SandboxID
+	createdSandbox := target.CreatedSandbox
+	repository := target.Repository
 	executionID := ""
 	printedSandboxID := false
 	printSandboxID := func() error {
@@ -158,10 +151,10 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 
 	createExecutionResp, err := client.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
 		SandboxId:          sandboxID,
-		Command:            repositoryExecutionCommand(e.Command, repository, inlineRepositoryBootstrap),
+		Command:            repositorycheckout.NormalizeCommand(e.Command),
 		Env:                executionEnv,
 		Kind:               cleanroomv1.ExecutionKind_EXECUTION_KIND_BATCH,
-		RepositoryCheckout: repositoryExecutionCheckout(repository, inlineRepositoryBootstrap),
+		RepositoryCheckout: repositoryCheckoutProto(repository),
 		Options: &cleanroomv1.ExecutionOptions{
 			LaunchSeconds: e.LaunchSeconds,
 		},

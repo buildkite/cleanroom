@@ -31,6 +31,58 @@ var (
 	executionStdinErrDrainTimeout = 100 * time.Millisecond
 )
 
+type executionSandbox struct {
+	SandboxID      string
+	CreatedSandbox bool
+	Repository     *resolvedRepositoryCheckout
+}
+
+// resolveExecutionSandbox keeps `exec` and `console` on the same sandbox
+// lifecycle shape: resolve repository context, then either reuse the requested
+// sandbox or create one up front with repository bootstrap attached.
+func resolveExecutionSandbox(
+	client *controlclient.Client,
+	ctx *runtimeContext,
+	cwd, host, backendName, existingSandboxID, fromSnapshot, imageRefOverride string,
+	launchSeconds int64,
+	repositoryOverride repositoryOverrideFlags,
+) (*executionSandbox, error) {
+	existingSandboxID = strings.TrimSpace(existingSandboxID)
+	fromSnapshot = strings.TrimSpace(fromSnapshot)
+
+	var repository *resolvedRepositoryCheckout
+	if existingSandboxID == "" && fromSnapshot == "" {
+		var err error
+		repository, err = resolveRepositoryCheckoutWithOverride(cwd, ctx.Loader, repositoryOverride)
+		if err != nil {
+			return nil, err
+		}
+	}
+	warnDirtyRepositoryCheckout(repository)
+
+	sandboxID, createdSandbox, err := ensureSandboxID(
+		client,
+		ctx.Loader,
+		cwd,
+		host,
+		backendName,
+		existingSandboxID,
+		fromSnapshot,
+		imageRefOverride,
+		launchSeconds,
+		repository,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return &executionSandbox{
+		SandboxID:      sandboxID,
+		CreatedSandbox: createdSandbox,
+		Repository:     repository,
+	}, nil
+}
+
 func ensureSandboxID(client *controlclient.Client, loader policyLoader, cwd, host, backendName, existingSandboxID, fromSnapshot, imageRefOverride string, launchSeconds int64, repository *resolvedRepositoryCheckout) (string, bool, error) {
 	sandboxID := strings.TrimSpace(existingSandboxID)
 	fromSnapshot = strings.TrimSpace(fromSnapshot)

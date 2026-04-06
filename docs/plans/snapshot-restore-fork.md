@@ -242,13 +242,14 @@ The quiesce step is guest-cooperative; the snapshot itself is host-executed.
 The portable capability surface is intentionally small:
 
 - `sandbox.snapshot`
-- `sandbox.persistent`
 
 Meaning:
 
 - `sandbox.snapshot=true` means the backend can create snapshots and create new
   sandboxes from those snapshots
-- `sandbox.persistent=true` means the backend supports reusable sandbox IDs
+
+Reusable sandbox IDs are part of the base `Adapter` contract, so there is
+no separate `sandbox.persistent` capability.
 
 There are no dedicated `sandbox.restore` or `sandbox.fork` capabilities.
 

@@ -39,43 +39,40 @@ type integrationAdapter struct {
 	createSnapshotFn         func(context.Context, backend.SnapshotRequest) (*backend.SnapshotResult, error)
 	deleteSnapshotFn         func(context.Context, backend.DeleteSnapshotRequest) error
 	terminateFn              func(context.Context, string) error
+	runReq                   backend.ExecutionRequest
 	provisionReq             backend.ProvisionRequest
 	provisionFromSnapshotReq backend.ProvisionFromSnapshotRequest
 	createSnapshotReq        backend.SnapshotRequest
 	deleteSnapshotReq        backend.DeleteSnapshotRequest
+	runCalls                 int
+	runInSandboxCalls        int
+	provisionCalls           int
+	terminateCalls           int
 }
 
 func (a *integrationAdapter) Name() string { return "firecracker" }
 
-func (a *integrationAdapter) Run(ctx context.Context, req backend.ExecutionRequest) (*backend.ExecutionResult, error) {
+func (a *integrationAdapter) ProvisionSandbox(context.Context, backend.ProvisionRequest) error {
+	return nil
+}
+
+func (a *integrationAdapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 	a.mu.Lock()
+	a.runReq = req
+	a.runCalls++
+	streamFn := a.runStreamFn
 	fn := a.runFn
 	a.mu.Unlock()
+	if streamFn != nil {
+		return streamFn(ctx, req, stream)
+	}
 	if fn != nil {
 		return fn(ctx, req)
 	}
 	return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
 }
 
-func (a *integrationAdapter) RunStream(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
-	a.mu.Lock()
-	fn := a.runStreamFn
-	a.mu.Unlock()
-	if fn != nil {
-		return fn(ctx, req, stream)
-	}
-	result, err := a.Run(ctx, req)
-	if err != nil {
-		return nil, err
-	}
-	if stream.OnStdout != nil && result.Stdout != "" {
-		stream.OnStdout([]byte(result.Stdout))
-	}
-	if stream.OnStderr != nil && result.Stderr != "" {
-		stream.OnStderr([]byte(result.Stderr))
-	}
-	return result, nil
-}
+func (a *integrationAdapter) TerminateSandbox(context.Context, string) error { return nil }
 
 type snapshotIntegrationAdapter struct {
 	integrationAdapter
@@ -83,6 +80,7 @@ type snapshotIntegrationAdapter struct {
 
 func (a *snapshotIntegrationAdapter) ProvisionSandbox(ctx context.Context, req backend.ProvisionRequest) error {
 	a.mu.Lock()
+	a.provisionCalls++
 	a.provisionReq = req
 	fn := a.provisionFn
 	a.mu.Unlock()
@@ -93,7 +91,10 @@ func (a *snapshotIntegrationAdapter) ProvisionSandbox(ctx context.Context, req b
 }
 
 func (a *snapshotIntegrationAdapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
-	return a.RunStream(ctx, req, stream)
+	a.mu.Lock()
+	a.runInSandboxCalls++
+	a.mu.Unlock()
+	return a.integrationAdapter.RunInSandbox(ctx, req, stream)
 }
 
 func (a *snapshotIntegrationAdapter) CreateSnapshot(ctx context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
@@ -131,6 +132,7 @@ func (a *snapshotIntegrationAdapter) DeleteSnapshot(ctx context.Context, req bac
 
 func (a *snapshotIntegrationAdapter) TerminateSandbox(ctx context.Context, sandboxID string) error {
 	a.mu.Lock()
+	a.terminateCalls++
 	fn := a.terminateFn
 	a.mu.Unlock()
 	if fn != nil {
@@ -1397,6 +1399,48 @@ func TestExecIntegrationKeepPreservesCreatedSandbox(t *testing.T) {
 
 	client := mustNewControlClient(t, host)
 	requireSandboxStatus(t, client, sandboxID, cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY)
+}
+
+func TestExecIntegrationUsesCreateExecDestroyLifecycle(t *testing.T) {
+	adapter := &snapshotIntegrationAdapter{}
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+	}
+	host, _ := startIntegrationServer(t, adapter)
+	cwd := t.TempDir()
+
+	outcome := runExecWithCapture(ExecCommand{
+		clientFlags: clientFlags{Host: host},
+		Chdir:       cwd,
+		Command:     []string{"echo", "ok"},
+	}, runtimeContext{
+		CWD:    cwd,
+		Loader: integrationLoader{},
+	})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err != nil {
+		t.Fatalf("ExecCommand.Run returned error: %v", outcome.err)
+	}
+	if got, want := adapter.provisionCalls, 1; got != want {
+		t.Fatalf("expected one sandbox provision, got %d", got)
+	}
+	if got, want := adapter.runInSandboxCalls, 1; got != want {
+		t.Fatalf("expected one sandbox execution, got %d", got)
+	}
+	if got, want := adapter.terminateCalls, 1; got != want {
+		t.Fatalf("expected one sandbox termination, got %d", got)
+	}
+	if got, want := adapter.runCalls, 1; got != want {
+		t.Fatalf("expected one unified backend Run call, got %d", got)
+	}
+	if got := strings.TrimSpace(adapter.provisionReq.SandboxID); got == "" {
+		t.Fatal("expected provisioned sandbox id to be recorded")
+	}
+	if got, want := adapter.runReq.SandboxID, adapter.provisionReq.SandboxID; got != want {
+		t.Fatalf("expected execution to target provisioned sandbox: got %q want %q", got, want)
+	}
 }
 
 func TestExecIntegrationRejectsKeepWhenReusingSandbox(t *testing.T) {

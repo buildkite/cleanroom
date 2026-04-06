@@ -227,27 +227,23 @@ func (s *Service) CreateSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	now := s.clock().Now()
 	sandboxID := s.ids().NewSandboxID()
 
-	if persistentAdapter, ok := adapter.(backend.PersistentSandboxAdapter); ok {
-		if err := persistentAdapter.ProvisionSandbox(ctx, backend.ProvisionRequest{
-			SandboxID:         sandboxID,
-			Policy:            compiled,
-			FirecrackerConfig: firecrackerCfg,
-		}); err != nil {
-			return nil, fmt.Errorf("provision sandbox: %w", err)
+	if err := adapter.ProvisionSandbox(ctx, backend.ProvisionRequest{
+		SandboxID:         sandboxID,
+		Policy:            compiled,
+		FirecrackerConfig: firecrackerCfg,
+	}); err != nil {
+		return nil, fmt.Errorf("provision sandbox: %w", err)
+	}
+	if err := s.bootstrapRepositoryInPersistentSandbox(ctx, adapter, sandboxID, compiled, firecrackerCfg, repository); err != nil {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), s.timeouts().bootstrapCleanupTimeout)
+		defer cancel()
+		if terminateErr := adapter.TerminateSandbox(cleanupCtx, sandboxID); terminateErr != nil {
+			return nil, fmt.Errorf("bootstrap repository checkout: %w; cleanup failed: %v", err, terminateErr)
 		}
-		if err := s.bootstrapRepositoryInPersistentSandbox(ctx, persistentAdapter, sandboxID, compiled, firecrackerCfg, repository); err != nil {
-			cleanupCtx, cancel := context.WithTimeout(context.Background(), s.timeouts().bootstrapCleanupTimeout)
-			defer cancel()
-			if terminateErr := persistentAdapter.TerminateSandbox(cleanupCtx, sandboxID); terminateErr != nil {
-				return nil, fmt.Errorf("bootstrap repository checkout: %w; cleanup failed: %v", err, terminateErr)
-			}
-			return nil, fmt.Errorf("bootstrap repository checkout: %w", err)
-		}
-		if snapshotAdapter, ok := adapter.(backend.SnapshottingAdapter); ok && workspaceSeedCachingEnabled {
-			s.maybePublishWorkspaceSeedSnapshot(ctx, snapshotAdapter, sandboxID, backendName, compiled, firecrackerCfg, workspaceSeedRuntimeBaseKey, repository, replacedWorkspaceSeedSnapshotID)
-		}
-	} else if repository != nil {
-		return nil, errors.New("repository bootstrap for sandbox creation requires a persistent backend")
+		return nil, fmt.Errorf("bootstrap repository checkout: %w", err)
+	}
+	if snapshotAdapter, ok := adapter.(backend.SnapshottingAdapter); ok && workspaceSeedCachingEnabled {
+		s.maybePublishWorkspaceSeedSnapshot(ctx, snapshotAdapter, sandboxID, backendName, compiled, firecrackerCfg, workspaceSeedRuntimeBaseKey, repository, replacedWorkspaceSeedSnapshotID)
 	}
 
 	state := &sandboxState{
@@ -728,7 +724,7 @@ func (s *Service) TerminateSandbox(ctx context.Context, req *cleanroomv1.Termina
 		cancel context.CancelFunc
 	}
 	cancellations := make([]cancelTarget, 0)
-	var persistentAdapter backend.PersistentSandboxAdapter
+	var adapter backend.Adapter
 	var backendName string
 	alreadyStopped := false
 
@@ -743,10 +739,8 @@ func (s *Service) TerminateSandbox(ctx context.Context, req *cleanroomv1.Termina
 	if state.Status == cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPED {
 		alreadyStopped = true
 	} else {
-		if adapter, ok := s.Backends[state.Backend]; ok {
-			if persistent, ok := adapter.(backend.PersistentSandboxAdapter); ok {
-				persistentAdapter = persistent
-			}
+		if currentAdapter, ok := s.Backends[state.Backend]; ok {
+			adapter = currentAdapter
 		}
 
 		if state.Status != cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPING {
@@ -794,8 +788,8 @@ func (s *Service) TerminateSandbox(ctx context.Context, req *cleanroomv1.Termina
 		target.cancel()
 	}
 
-	if !alreadyStopped && persistentAdapter != nil {
-		if err := persistentAdapter.TerminateSandbox(ctx, sandboxID); err != nil {
+	if !alreadyStopped && adapter != nil {
+		if err := adapter.TerminateSandbox(ctx, sandboxID); err != nil {
 			if s.Logger != nil {
 				s.Logger.Warn("terminate backend sandbox failed", "sandbox_id", sandboxID, "backend", backendName, "error", err)
 			}
@@ -918,17 +912,10 @@ func (s *Service) CreateExecution(ctx context.Context, req *cleanroomv1.CreateEx
 			return nil, err
 		}
 		autoMiseInstall := sandboxPolicy == nil || sandboxPolicy.MiseInstall
-		if persistentAdapter, ok := adapter.(backend.PersistentSandboxAdapter); ok {
-			if err := s.preparePersistentSandboxRepository(ctx, sandboxID, sandboxPolicy, firecrackerCfg, persistentAdapter, repository); err != nil {
-				return nil, err
-			}
-			command = repositorycheckout.WrapCommandInWorkdir(command, repository, autoMiseInstall)
-		} else {
-			if err := s.ensureRepositoryMirrorContains(ctx, repository); err != nil {
-				return nil, fmt.Errorf("prepare repository checkout: %w", err)
-			}
-			command = repositorycheckout.WrapCommandWithBootstrap(command, repository, autoMiseInstall)
+		if err := s.preparePersistentSandboxRepository(ctx, sandboxID, sandboxPolicy, firecrackerCfg, adapter, repository); err != nil {
+			return nil, err
 		}
+		command = repositorycheckout.WrapCommandInWorkdir(command, repository, autoMiseInstall)
 	} else if sandboxRepository != nil {
 		autoMiseInstall := sandboxPolicy == nil || sandboxPolicy.MiseInstall
 		command = repositorycheckout.WrapCommandInWorkdir(command, sandboxRepository, autoMiseInstall)
@@ -1665,7 +1652,7 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 	}
 	s.mu.Unlock()
 
-	result, usedStreaming, err := s.runAdapterExecution(runCtx, adapter, executionReq, key)
+	result, err := s.runAdapterExecution(runCtx, adapter, executionReq, key)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1713,7 +1700,7 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 		ex.ImageDigest = result.ImageDigest
 	}
 	ex.Message = result.Message
-	s.mergeBufferedResultOutputLocked(ex, result, usedStreaming)
+	s.mergeBufferedResultOutputLocked(ex, result, true)
 
 	if result.ExitCode != 0 && strings.TrimSpace(result.Message) != "" && !strings.Contains(ex.Stderr, result.Message) {
 		msg := result.Message + "\n"
@@ -1743,18 +1730,8 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 	}
 }
 
-func (s *Service) runAdapterExecution(runCtx context.Context, adapter backend.Adapter, executionReq backend.ExecutionRequest, key string) (*backend.ExecutionResult, bool, error) {
-	if persistentAdapter, ok := adapter.(backend.PersistentSandboxAdapter); ok {
-		result, err := persistentAdapter.RunInSandbox(runCtx, executionReq, s.executionOutputStream(key))
-		return result, true, err
-	}
-	if streamAdapter, ok := adapter.(backend.StreamingAdapter); ok {
-		result, err := streamAdapter.RunStream(runCtx, executionReq, s.executionOutputStream(key))
-		return result, true, err
-	}
-
-	result, err := adapter.Run(runCtx, executionReq)
-	return result, false, err
+func (s *Service) runAdapterExecution(runCtx context.Context, adapter backend.Adapter, executionReq backend.ExecutionRequest, key string) (*backend.ExecutionResult, error) {
+	return adapter.RunInSandbox(runCtx, executionReq, s.executionOutputStream(key))
 }
 
 func (s *Service) executionOutputStream(key string) backend.OutputStream {
@@ -1786,7 +1763,7 @@ func (s *Service) preparePersistentSandboxRepository(
 	sandboxID string,
 	compiled *policy.CompiledPolicy,
 	firecrackerCfg backend.FirecrackerConfig,
-	adapter backend.PersistentSandboxAdapter,
+	adapter backend.Adapter,
 	repository *repositorycheckout.Checkout,
 ) error {
 	if repository == nil {
@@ -1848,7 +1825,7 @@ func (s *Service) preparePersistentSandboxRepository(
 
 func (s *Service) bootstrapRepositoryInPersistentSandbox(
 	ctx context.Context,
-	adapter backend.PersistentSandboxAdapter,
+	adapter backend.Adapter,
 	sandboxID string,
 	compiled *policy.CompiledPolicy,
 	firecrackerCfg backend.FirecrackerConfig,

@@ -36,12 +36,16 @@ func (a *Adapter) Capabilities() map[string]bool {
 	}
 }
 
-func (a *Adapter) Run(_ context.Context, _ backend.ExecutionRequest) (*backend.ExecutionResult, error) {
+func (a *Adapter) ProvisionSandbox(_ context.Context, _ backend.ProvisionRequest) error {
+	return fmt.Errorf("darwin-vz backend requires macOS, current OS is %s", runtime.GOOS)
+}
+
+func (a *Adapter) RunInSandbox(_ context.Context, _ backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
 	return nil, fmt.Errorf("darwin-vz backend requires macOS, current OS is %s", runtime.GOOS)
 }
 
-func (a *Adapter) RunStream(ctx context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
-	return a.Run(ctx, req)
+func (a *Adapter) TerminateSandbox(_ context.Context, _ string) error {
+	return fmt.Errorf("darwin-vz backend requires macOS, current OS is %s", runtime.GOOS)
 }
 
 func (a *Adapter) RuntimeBaseKey(_ context.Context, _ *policy.CompiledPolicy, _ backend.FirecrackerConfig) (string, error) {

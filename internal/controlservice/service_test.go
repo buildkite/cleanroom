@@ -47,26 +47,16 @@ type stubAdapter struct {
 
 func (s *stubAdapter) Name() string { return "stub" }
 
-func (s *stubAdapter) Run(ctx context.Context, req backend.ExecutionRequest) (*backend.ExecutionResult, error) {
-	s.req = req
-	s.runCalls++
-	if s.runFn != nil {
-		return s.runFn(ctx, req)
+func (s *stubAdapter) ProvisionSandbox(ctx context.Context, req backend.ProvisionRequest) error {
+	s.provisionReq = req
+	s.provisionCalls++
+	if s.provisionFn != nil {
+		return s.provisionFn(ctx, req)
 	}
-	if s.result != nil {
-		return s.result, nil
-	}
-	return &backend.ExecutionResult{
-		ExecutionID: req.ExecutionID,
-		ExitCode:    0,
-		LaunchedVM:  true,
-		PlanPath:    "/tmp/plan",
-		RunDir:      "/tmp/run",
-		Message:     "ok",
-	}, nil
+	return nil
 }
 
-func (s *stubAdapter) RunStream(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+func (s *stubAdapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 	s.req = req
 	s.runCalls++
 	if s.runStreamFn != nil {
@@ -101,19 +91,6 @@ func (s *stubAdapter) RunStream(ctx context.Context, req backend.ExecutionReques
 		stream.OnStderr([]byte(result.Stderr))
 	}
 	return result, nil
-}
-
-func (s *stubAdapter) ProvisionSandbox(ctx context.Context, req backend.ProvisionRequest) error {
-	s.provisionReq = req
-	s.provisionCalls++
-	if s.provisionFn != nil {
-		return s.provisionFn(ctx, req)
-	}
-	return nil
-}
-
-func (s *stubAdapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
-	return s.RunStream(ctx, req, stream)
 }
 
 func (s *stubAdapter) CreateSnapshot(ctx context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {

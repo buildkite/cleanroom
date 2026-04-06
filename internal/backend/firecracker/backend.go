@@ -28,7 +28,6 @@ import (
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/bootassets"
 	"github.com/buildkite/cleanroom/internal/ext4edit"
-	"github.com/buildkite/cleanroom/internal/ext4image"
 	"github.com/buildkite/cleanroom/internal/gateway"
 	"github.com/buildkite/cleanroom/internal/hosttools"
 	"github.com/buildkite/cleanroom/internal/imagemgr"
@@ -121,6 +120,8 @@ var sendProcessSignal = func(proc *os.Process, sig syscall.Signal) error {
 }
 
 var syncHostFilesystem = defaultSyncHostFilesystem
+
+var rootFSVolumeStoreDriverFn = rootFSVolumeStoreDriver
 
 var snapshotVolumeStoreDriverFn = snapshotVolumeStoreDriver
 
@@ -240,14 +241,6 @@ func (a *Adapter) Capabilities() map[string]bool {
 		backend.CapabilityDNSControlOrEquivalent: true,
 		backend.CapabilityNetworkGuestInterface:  true,
 	}
-}
-
-func (a *Adapter) Run(ctx context.Context, req backend.ExecutionRequest) (*backend.ExecutionResult, error) {
-	return a.run(ctx, req, backend.OutputStream{})
-}
-
-func (a *Adapter) RunStream(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
-	return a.run(ctx, req, stream)
 }
 
 func (a *Adapter) ProvisionSandbox(ctx context.Context, req backend.ProvisionRequest) error {
@@ -977,26 +970,17 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 		return nil, err
 	}
 
-	rootfsPath, err := filepath.Abs(preparedRootFSPath)
-	if err != nil {
-		return nil, err
-	}
-	if _, err := os.Stat(rootfsPath); err != nil {
-		return nil, fmt.Errorf("rootfs %s: %w", rootfsPath, err)
-	}
-
-	vmRootFSPath := filepath.Join(runDir, "rootfs-ephemeral.ext4")
-	defer os.Remove(vmRootFSPath)
 	rootfsCopyStart := time.Now()
-	if err := copyFile(rootfsPath, vmRootFSPath); err != nil {
+	writableVolume, cleanupVolume, err := prepareWritableRootVolume(ctx, req.FirecrackerConfig, req.ExecutionID, runDir, preparedRootFSPath)
+	if err != nil {
 		observation.RootFSCopyMS = durationMillisCeil(time.Since(rootfsCopyStart))
 		return nil, fmt.Errorf("prepare per-run rootfs: %w", err)
 	}
-	if err := ext4image.EnsureMinimumSize(ctx, vmRootFSPath, req.MinimumRootFSBytes); err != nil {
-		observation.RootFSCopyMS = durationMillisCeil(time.Since(rootfsCopyStart))
-		return nil, fmt.Errorf("resize writable rootfs: %w", err)
+	if cleanupVolume != nil {
+		defer cleanupVolume()
 	}
 	observation.RootFSCopyMS = durationMillisCeil(time.Since(rootfsCopyStart))
+	vmRootFSPath := writableVolume.AttachmentPath
 
 	networkSetupStart := time.Now()
 	networkRunCommand := func(ctx context.Context, args ...string) error {
@@ -1593,15 +1577,7 @@ func (a *Adapter) launchSandboxVMFromRootFS(ctx context.Context, sandboxID strin
 		return nil, err
 	}
 
-	driverCfg, err := snapshotConfigForStorageRef(cfg, sourceRootFSPath)
-	if err != nil {
-		return nil, err
-	}
-	driver, err := rootFSVolumeStoreDriver(driverCfg)
-	if err != nil {
-		return nil, err
-	}
-	writableVolume, cleanupVolume, err := preparePersistentWritableVolume(ctx, driver, sandboxID, runDir, sourceRootFSPath, cfg.MinimumRootFSBytes)
+	writableVolume, cleanupVolume, err := prepareWritableRootVolume(ctx, cfg, sandboxID, runDir, sourceRootFSPath)
 	if err != nil {
 		return nil, fmt.Errorf("prepare persistent rootfs: %w", err)
 	}
@@ -1821,6 +1797,18 @@ func preparePersistentWritableVolume(ctx context.Context, driver volumestore.Dri
 		return volumestore.WritableVolume{}, nil, err
 	}
 	return resizeVolume(volume)
+}
+
+func prepareWritableRootVolume(ctx context.Context, cfg backend.FirecrackerConfig, volumeID, runDir, sourceRef string) (volumestore.WritableVolume, func(), error) {
+	driverCfg, err := snapshotConfigForStorageRef(cfg, sourceRef)
+	if err != nil {
+		return volumestore.WritableVolume{}, nil, err
+	}
+	driver, err := rootFSVolumeStoreDriverFn(driverCfg)
+	if err != nil {
+		return volumestore.WritableVolume{}, nil, err
+	}
+	return preparePersistentWritableVolume(ctx, driver, volumeID, runDir, sourceRef, cfg.MinimumRootFSBytes)
 }
 
 func snapshotVolumeRef(instance *sandboxInstance) string {

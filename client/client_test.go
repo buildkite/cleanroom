@@ -19,19 +19,16 @@ type integrationAdapter struct{}
 
 func (integrationAdapter) Name() string { return "firecracker" }
 
-func (integrationAdapter) Run(_ context.Context, req backend.ExecutionRequest) (*backend.ExecutionResult, error) {
-	return &backend.ExecutionResult{
+func (integrationAdapter) ProvisionSandbox(context.Context, backend.ProvisionRequest) error {
+	return nil
+}
+
+func (integrationAdapter) RunInSandbox(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+	result := &backend.ExecutionResult{
 		ExecutionID: req.ExecutionID,
 		ExitCode:    0,
 		Stdout:      "hello from cleanroom\n",
 		Message:     "ok",
-	}, nil
-}
-
-func (a integrationAdapter) RunStream(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
-	result, err := a.Run(ctx, req)
-	if err != nil {
-		return nil, err
 	}
 	if stream.OnStdout != nil {
 		stream.OnStdout([]byte(result.Stdout))
@@ -39,16 +36,10 @@ func (a integrationAdapter) RunStream(ctx context.Context, req backend.Execution
 	return result, nil
 }
 
+func (integrationAdapter) TerminateSandbox(context.Context, string) error { return nil }
+
 type snapshotIntegrationAdapter struct {
 	integrationAdapter
-}
-
-func (snapshotIntegrationAdapter) ProvisionSandbox(context.Context, backend.ProvisionRequest) error {
-	return nil
-}
-
-func (a snapshotIntegrationAdapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
-	return a.RunStream(ctx, req, stream)
 }
 
 func (snapshotIntegrationAdapter) CreateSnapshot(_ context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
@@ -60,10 +51,6 @@ func (snapshotIntegrationAdapter) ProvisionSandboxFromSnapshot(context.Context, 
 }
 
 func (snapshotIntegrationAdapter) DeleteSnapshot(context.Context, backend.DeleteSnapshotRequest) error {
-	return nil
-}
-
-func (snapshotIntegrationAdapter) TerminateSandbox(context.Context, string) error {
 	return nil
 }
 

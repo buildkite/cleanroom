@@ -28,9 +28,13 @@ type tlsTestAdapter struct{}
 
 func (tlsTestAdapter) Name() string { return "firecracker" }
 
-func (tlsTestAdapter) Run(_ context.Context, req backend.ExecutionRequest) (*backend.ExecutionResult, error) {
+func (tlsTestAdapter) ProvisionSandbox(context.Context, backend.ProvisionRequest) error { return nil }
+
+func (tlsTestAdapter) RunInSandbox(_ context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
 	return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
 }
+
+func (tlsTestAdapter) TerminateSandbox(context.Context, string) error { return nil }
 
 func TestHTTPSControlPlaneDiscoversTLSMaterial(t *testing.T) {
 	configHome := t.TempDir()

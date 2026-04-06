@@ -11,7 +11,6 @@ import (
 const (
 	CapabilityExecStreaming          = "exec.streaming"
 	CapabilitySandboxSnapshot        = "sandbox.snapshot"
-	CapabilitySandboxPersistent      = "sandbox.persistent"
 	CapabilitySandboxFileDownload    = "sandbox.file_download"
 	CapabilityNetworkDefaultDeny     = "network.default_deny"
 	CapabilityNetworkAllowlistEgress = "network.allowlist_egress"
@@ -22,7 +21,6 @@ const (
 var knownCapabilityKeys = []string{
 	CapabilityExecStreaming,
 	CapabilitySandboxSnapshot,
-	CapabilitySandboxPersistent,
 	CapabilitySandboxFileDownload,
 	CapabilityNetworkDefaultDeny,
 	CapabilityNetworkAllowlistEgress,
@@ -32,7 +30,9 @@ var knownCapabilityKeys = []string{
 
 type Adapter interface {
 	Name() string
-	Run(ctx context.Context, req ExecutionRequest) (*ExecutionResult, error)
+	ProvisionSandbox(ctx context.Context, req ProvisionRequest) error
+	RunInSandbox(ctx context.Context, req ExecutionRequest, stream OutputStream) (*ExecutionResult, error)
+	TerminateSandbox(ctx context.Context, sandboxID string) error
 }
 
 // CapabilityReporter allows backend adapters to publish backend-specific
@@ -44,8 +44,7 @@ type CapabilityReporter interface {
 // CapabilitiesForAdapter returns a merged capability map for the adapter.
 //
 // Baseline capabilities are inferred from backend interfaces:
-// - StreamingAdapter => exec.streaming
-// - PersistentSandboxAdapter => sandbox.persistent
+// - Adapter => exec.streaming
 // - SnapshottingAdapter => sandbox.snapshot
 // - SandboxFileDownloadAdapter => sandbox.file_download
 //
@@ -60,12 +59,7 @@ func CapabilitiesForAdapter(adapter Adapter) map[string]bool {
 	if adapter == nil {
 		return caps
 	}
-	if _, ok := adapter.(StreamingAdapter); ok {
-		caps[CapabilityExecStreaming] = true
-	}
-	if _, ok := adapter.(PersistentSandboxAdapter); ok {
-		caps[CapabilitySandboxPersistent] = true
-	}
+	caps[CapabilityExecStreaming] = true
 	if _, ok := adapter.(SnapshottingAdapter); ok {
 		caps[CapabilitySandboxSnapshot] = true
 	}
@@ -99,19 +93,13 @@ func CloneCapabilities(caps map[string]bool) map[string]bool {
 	return out
 }
 
-// PersistentSandboxAdapter supports provisioned sandbox instances that can run
-// multiple executions before explicit termination.
-type PersistentSandboxAdapter interface {
-	Adapter
-	ProvisionSandbox(ctx context.Context, req ProvisionRequest) error
-	RunInSandbox(ctx context.Context, req ExecutionRequest, stream OutputStream) (*ExecutionResult, error)
-	TerminateSandbox(ctx context.Context, sandboxID string) error
-}
+// Adapter supports provisioned sandbox instances that can run multiple
+// executions before explicit termination.
 
 // SnapshottingAdapter supports immutable filesystem snapshots of persistent
 // sandboxes and creating new sandboxes from snapshots.
 type SnapshottingAdapter interface {
-	PersistentSandboxAdapter
+	Adapter
 	CreateSnapshot(ctx context.Context, req SnapshotRequest) (*SnapshotResult, error)
 	ProvisionSandboxFromSnapshot(ctx context.Context, req ProvisionFromSnapshotRequest) error
 	DeleteSnapshot(ctx context.Context, req DeleteSnapshotRequest) error
@@ -170,13 +158,6 @@ type OutputStream struct {
 	OnStderr  func([]byte)
 	OnWarning func(string)
 	OnAttach  func(AttachIO)
-}
-
-// StreamingAdapter can push stdout/stderr chunks while a command is running.
-// Adapters that don't implement this continue to work via Run.
-type StreamingAdapter interface {
-	Adapter
-	RunStream(ctx context.Context, req ExecutionRequest, stream OutputStream) (*ExecutionResult, error)
 }
 
 type ExecutionRequest struct {

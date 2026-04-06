@@ -260,14 +260,6 @@ func (a *Adapter) Capabilities() map[string]bool {
 	}
 }
 
-func (a *Adapter) Run(ctx context.Context, req backend.ExecutionRequest) (*backend.ExecutionResult, error) {
-	return a.run(ctx, req, backend.OutputStream{})
-}
-
-func (a *Adapter) RunStream(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
-	return a.run(ctx, req, stream)
-}
-
 func (a *Adapter) ProvisionSandbox(ctx context.Context, req backend.ProvisionRequest) error {
 	sandboxID := strings.TrimSpace(req.SandboxID)
 	if sandboxID == "" {

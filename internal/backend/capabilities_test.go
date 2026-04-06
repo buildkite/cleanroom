@@ -9,25 +9,15 @@ type testAdapter struct{}
 
 func (testAdapter) Name() string { return "test" }
 
-func (testAdapter) Run(context.Context, ExecutionRequest) (*ExecutionResult, error) {
+func (testAdapter) ProvisionSandbox(context.Context, ProvisionRequest) error { return nil }
+
+func (testAdapter) RunInSandbox(context.Context, ExecutionRequest, OutputStream) (*ExecutionResult, error) {
 	return &ExecutionResult{}, nil
 }
 
-type testStreamingAdapter struct{ testAdapter }
+func (testAdapter) TerminateSandbox(context.Context, string) error { return nil }
 
-func (testStreamingAdapter) RunStream(context.Context, ExecutionRequest, OutputStream) (*ExecutionResult, error) {
-	return &ExecutionResult{}, nil
-}
-
-type testPersistentAdapter struct{ testStreamingAdapter }
-
-func (testPersistentAdapter) ProvisionSandbox(context.Context, ProvisionRequest) error { return nil }
-
-func (testPersistentAdapter) RunInSandbox(context.Context, ExecutionRequest, OutputStream) (*ExecutionResult, error) {
-	return &ExecutionResult{}, nil
-}
-
-func (testPersistentAdapter) TerminateSandbox(context.Context, string) error { return nil }
+type testPersistentAdapter struct{ testAdapter }
 
 func (testPersistentAdapter) DownloadSandboxFile(context.Context, string, string, int64) ([]byte, error) {
 	return []byte("ok"), nil
@@ -48,9 +38,6 @@ func TestCapabilitiesForAdapterInfersInterfaceCapabilities(t *testing.T) {
 
 	if !caps[CapabilityExecStreaming] {
 		t.Fatalf("expected %s=true", CapabilityExecStreaming)
-	}
-	if !caps[CapabilitySandboxPersistent] {
-		t.Fatalf("expected %s=true", CapabilitySandboxPersistent)
 	}
 	if !caps[CapabilitySandboxFileDownload] {
 		t.Fatalf("expected %s=true", CapabilitySandboxFileDownload)

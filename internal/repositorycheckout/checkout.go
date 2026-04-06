@@ -96,34 +96,85 @@ func (c *Checkout) NormalizeRemoteURL() (string, error) {
 	if trimmed == "" {
 		return "", fmt.Errorf("repository remote_url is required")
 	}
+	canonicalURL, host, err := CanonicalizeRemoteURL(trimmed)
+	if err != nil {
+		return "", err
+	}
+	c.RemoteURL = canonicalURL
+	return host, nil
+}
+
+func CanonicalizeRemoteURL(raw string) (string, string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", "", fmt.Errorf("repository remote URL is empty")
+	}
+
+	if parsed, ok, err := parseCanonicalHTTPSRemoteURL(trimmed); ok {
+		if err != nil {
+			return "", "", err
+		}
+		host := strings.TrimSpace(strings.ToLower(parsed.Hostname()))
+		parsed.User = nil
+		parsed.Host = normalizedURLHost(host, parsed.Port())
+		parsed.RawQuery = ""
+		parsed.Fragment = ""
+		return parsed.String(), host, nil
+	}
+
+	if strings.HasPrefix(strings.ToLower(trimmed), "ssh://") {
+		parsed, err := url.Parse(trimmed)
+		if err != nil {
+			return "", "", fmt.Errorf("parse repository remote URL %q: %w", trimmed, err)
+		}
+		host := strings.TrimSpace(strings.ToLower(parsed.Hostname()))
+		if host == "" {
+			return "", "", fmt.Errorf("repository remote URL %q has no host", trimmed)
+		}
+		if parsed.Port() != "" && parsed.Port() != "22" {
+			return "", "", fmt.Errorf("repository remote URL %q uses unsupported non-default SSH port", trimmed)
+		}
+		path := strings.TrimPrefix(parsed.Path, "/")
+		if path == "" {
+			return "", "", fmt.Errorf("repository remote URL %q has no path", trimmed)
+		}
+		return "https://" + normalizedURLHost(host, "") + "/" + path, host, nil
+	}
+
+	if at := strings.Index(trimmed, "@"); at >= 0 {
+		hostAndPath := trimmed[at+1:]
+		host, path, ok := strings.Cut(hostAndPath, ":")
+		host = strings.TrimSpace(strings.ToLower(host))
+		path = strings.TrimPrefix(strings.TrimSpace(path), "/")
+		if ok && host != "" && path != "" {
+			return "https://" + normalizedURLHost(host, "") + "/" + path, host, nil
+		}
+	}
+
+	return "", "", fmt.Errorf("repository remote URL %q must use https or a canonicalizable ssh form", trimmed)
+}
+
+func parseCanonicalHTTPSRemoteURL(raw string) (*url.URL, bool, error) {
+	trimmed := strings.TrimSpace(raw)
+	explicitHTTPS := strings.HasPrefix(strings.ToLower(trimmed), "https://")
 	parsed, err := url.Parse(trimmed)
 	if err != nil {
-		return "", fmt.Errorf("parse repository remote_url %q: %w", trimmed, err)
+		return nil, explicitHTTPS, fmt.Errorf("parse repository remote URL %q: %w", trimmed, err)
 	}
 	if !strings.EqualFold(parsed.Scheme, "https") {
-		return "", fmt.Errorf("repository remote_url %q must use https", trimmed)
-	}
-	if parsed.User != nil {
-		return "", fmt.Errorf("repository remote_url %q must not include userinfo", trimmed)
+		return nil, false, nil
 	}
 	host := strings.TrimSpace(strings.ToLower(parsed.Hostname()))
 	if host == "" {
-		return "", fmt.Errorf("repository remote_url %q has no host", trimmed)
+		return nil, true, fmt.Errorf("repository remote URL %q has no host", trimmed)
 	}
 	if parsed.Port() != "" && parsed.Port() != "443" {
-		return "", fmt.Errorf("repository remote_url %q uses unsupported non-default HTTPS port", trimmed)
+		return nil, true, fmt.Errorf("repository remote URL %q uses unsupported non-default HTTPS port", trimmed)
 	}
 	if strings.TrimSpace(parsed.Path) == "" || parsed.Path == "/" {
-		return "", fmt.Errorf("repository remote_url %q has no path", trimmed)
+		return nil, true, fmt.Errorf("repository remote URL %q has no path", trimmed)
 	}
-	if parsed.RawQuery != "" || parsed.Fragment != "" {
-		return "", fmt.Errorf("repository remote_url %q must not include query or fragment", trimmed)
-	}
-	parsed.Host = normalizedURLHost(host, parsed.Port())
-	parsed.RawQuery = ""
-	parsed.Fragment = ""
-	c.RemoteURL = parsed.String()
-	return host, nil
+	return parsed, true, nil
 }
 
 func normalizedURLHost(host, port string) string {
