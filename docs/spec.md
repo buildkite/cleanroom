@@ -76,7 +76,7 @@ sandbox:
   ttl_minutes: 60
   mise:
     enabled: true
-    auto_bootstrap: true
+    install: true
     config_files:
       - .mise.toml
       - .mise/config.toml
@@ -216,7 +216,7 @@ Meaning:
   - they resolve the local repository remote URL and committed `HEAD`
   - they materialize that checkout inside the sandbox before the command runs
   - they start commands in `repository.path`
-  - when the checkout contains `.mise.toml`, `mise.toml`, `.tool-versions`, or `.mise/config.toml`, they run `mise install` and execute the command through `mise exec -- ...`
+  - when the checkout contains `.mise.toml`, `mise.toml`, `.tool-versions`, or `.mise/config.toml`, they run `mise install` and execute the command through `mise exec -- ...` unless `sandbox.mise.enabled: false` or `sandbox.mise.install: false`
 - `cleanroom sandbox create` remains the generic low-level surface and does not
   infer repository state from the current working tree or read `cleanroom.yaml`.
 - Without `--from`, `cleanroom sandbox create` synthesizes a repo-agnostic

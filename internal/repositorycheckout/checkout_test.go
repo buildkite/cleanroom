@@ -112,7 +112,7 @@ func TestValidateBootstrapRejectsMutableCommitRef(t *testing.T) {
 func TestWrapCommandInWorkdirQuotesDestinationAndArguments(t *testing.T) {
 	command := WrapCommandInWorkdir([]string{"printf", "%s", "it's alive"}, &Checkout{
 		DestinationDir: "/tmp/work tree",
-	})
+	}, true)
 
 	joined := strings.Join(command, " ")
 	if !strings.Contains(joined, "dest='/tmp/work tree'") {
@@ -136,7 +136,7 @@ func TestWrapCommandInWorkdirBootstrapsMiseWhenConfigPresent(t *testing.T) {
 	outputPath := filepath.Join(logDir, "env")
 	command := WrapCommandInWorkdir([]string{"sh", "-lc", "printf '%s\\n%s\\n%s\\n' \"$PWD\" \"${MISE_TRUSTED_CONFIG_PATHS:-}\" \"${MISE_YES:-}\" > " + shellQuote(outputPath)}, &Checkout{
 		DestinationDir: repoDir,
-	})
+	}, true)
 
 	cmd := exec.Command(command[0], command[1:]...)
 	cmd.Env = envWithout(os.Environ(), "MISE_TRUSTED_CONFIG_PATHS", "MISE_YES")
@@ -173,7 +173,7 @@ func TestWrapCommandInWorkdirSkipsMiseWithoutConfig(t *testing.T) {
 	outputPath := filepath.Join(logDir, "env")
 	command := WrapCommandInWorkdir([]string{"sh", "-lc", "printf '%s\\n%s\\n%s\\n' \"$PWD\" \"${MISE_TRUSTED_CONFIG_PATHS:-}\" \"${MISE_YES:-}\" > " + shellQuote(outputPath)}, &Checkout{
 		DestinationDir: repoDir,
-	})
+	}, true)
 
 	cmd := exec.Command(command[0], command[1:]...)
 	cmd.Env = envWithout(os.Environ(), "MISE_TRUSTED_CONFIG_PATHS", "MISE_YES")
@@ -213,7 +213,7 @@ func TestShellJoinQuotesSingleQuotes(t *testing.T) {
 }
 
 func TestWrapCommandWithBootstrapNormalizesPassthroughWithoutCheckout(t *testing.T) {
-	command := WrapCommandWithBootstrap([]string{"--", "echo", "ok"}, nil)
+	command := WrapCommandWithBootstrap([]string{"--", "echo", "ok"}, nil, true)
 	if got, want := strings.Join(command, " "), "echo ok"; got != want {
 		t.Fatalf("unexpected normalized command: got %q want %q", got, want)
 	}
@@ -224,7 +224,7 @@ func TestWrapCommandWithBootstrapIncludesMiseBootstrapLogic(t *testing.T) {
 		RemoteURL:      "https://github.com/buildkite/cleanroom.git",
 		CommitSHA:      "0123456789abcdef0123456789abcdef01234567",
 		DestinationDir: "/workspace",
-	})
+	}, true)
 
 	joined := strings.Join(command, " ")
 	if !strings.Contains(joined, "if [ -f '.mise.toml' ] || [ -f 'mise.toml' ] || [ -f '.tool-versions' ] || [ -f '.mise/config.toml' ]; then") {
@@ -235,6 +235,20 @@ func TestWrapCommandWithBootstrapIncludesMiseBootstrapLogic(t *testing.T) {
 	}
 	if !strings.Contains(joined, `exec mise exec -- 'sh' '-lc' 'pwd'`) {
 		t.Fatalf("expected bootstrap wrapper to exec through mise, got %q", joined)
+	}
+}
+
+func TestWrapCommandInWorkdirSkipsMiseBootstrapWhenDisabled(t *testing.T) {
+	command := WrapCommandInWorkdir([]string{"sh", "-lc", "pwd"}, &Checkout{
+		DestinationDir: "/workspace",
+	}, false)
+
+	joined := strings.Join(command, " ")
+	if strings.Contains(joined, "mise install") {
+		t.Fatalf("expected mise bootstrap to be skipped when disabled, got %q", joined)
+	}
+	if strings.Contains(joined, "mise exec --") {
+		t.Fatalf("expected mise exec wrapper to be skipped when disabled, got %q", joined)
 	}
 }
 

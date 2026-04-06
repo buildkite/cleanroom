@@ -548,6 +548,7 @@ type Policy struct {
 	Allow          []*PolicyAllowRule     `protobuf:"bytes,5,rep,name=allow,proto3" json:"allow,omitempty"`
 	Hash           string                 `protobuf:"bytes,6,opt,name=hash,proto3" json:"hash,omitempty"`
 	Services       *PolicyServices        `protobuf:"bytes,7,opt,name=services,proto3" json:"services,omitempty"`
+	MiseInstall    *bool                  `protobuf:"varint,8,opt,name=mise_install,json=miseInstall,proto3,oneof" json:"mise_install,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -629,6 +630,13 @@ func (x *Policy) GetServices() *PolicyServices {
 		return x.Services
 	}
 	return nil
+}
+
+func (x *Policy) GetMiseInstall() bool {
+	if x != nil && x.MiseInstall != nil {
+		return *x.MiseInstall
+	}
+	return false
 }
 
 type SandboxOptions struct {
@@ -3157,7 +3165,7 @@ const file_proto_cleanroom_v1_control_proto_rawDesc = "" +
 	"\x13PolicyDockerService\x12\x1a\n" +
 	"\brequired\x18\x01 \x01(\bR\brequired\"K\n" +
 	"\x0ePolicyServices\x129\n" +
-	"\x06docker\x18\x01 \x01(\v2!.cleanroom.v1.PolicyDockerServiceR\x06docker\"\x8e\x02\n" +
+	"\x06docker\x18\x01 \x01(\v2!.cleanroom.v1.PolicyDockerServiceR\x06docker\"\xc7\x02\n" +
 	"\x06Policy\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\x05R\aversion\x12\x1b\n" +
 	"\timage_ref\x18\x02 \x01(\tR\bimageRef\x12!\n" +
@@ -3165,7 +3173,9 @@ const file_proto_cleanroom_v1_control_proto_rawDesc = "" +
 	"\x0fnetwork_default\x18\x04 \x01(\tR\x0enetworkDefault\x123\n" +
 	"\x05allow\x18\x05 \x03(\v2\x1d.cleanroom.v1.PolicyAllowRuleR\x05allow\x12\x12\n" +
 	"\x04hash\x18\x06 \x01(\tR\x04hash\x128\n" +
-	"\bservices\x18\a \x01(\v2\x1c.cleanroom.v1.PolicyServicesR\bservices\"R\n" +
+	"\bservices\x18\a \x01(\v2\x1c.cleanroom.v1.PolicyServicesR\bservices\x12&\n" +
+	"\fmise_install\x18\b \x01(\bH\x00R\vmiseInstall\x88\x01\x01B\x0f\n" +
+	"\r_mise_install\"R\n" +
 	"\x0eSandboxOptions\x12%\n" +
 	"\x0elaunch_seconds\x18\x03 \x01(\x03R\rlaunchSecondsJ\x04\b\x02\x10\x03R\x13read_only_workspace\"\xe1\x01\n" +
 	"\x12RepositoryCheckout\x12\x1d\n" +
@@ -3562,6 +3572,7 @@ func file_proto_cleanroom_v1_control_proto_init() {
 	if File_proto_cleanroom_v1_control_proto != nil {
 		return
 	}
+	file_proto_cleanroom_v1_control_proto_msgTypes[5].OneofWrappers = []any{}
 	file_proto_cleanroom_v1_control_proto_msgTypes[8].OneofWrappers = []any{
 		(*CreateSandboxRequest_SnapshotId)(nil),
 	}
