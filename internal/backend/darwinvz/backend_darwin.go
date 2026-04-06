@@ -1570,6 +1570,44 @@ func (a *Adapter) resolveRootFSPath(ctx context.Context, req backend.ExecutionRe
 	return prepared.Path, prepared.Ref, prepared.Digest, notice, nil
 }
 
+func (a *Adapter) RuntimeBaseKey(ctx context.Context, compiled *policy.CompiledPolicy, cfg backend.FirecrackerConfig) (string, error) {
+	configuredPath := strings.TrimSpace(cfg.RootFSPath)
+	if configuredPath != "" {
+		info, err := os.Stat(configuredPath)
+		if err == nil {
+			absPath, err := filepath.Abs(configuredPath)
+			if err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("configured-rootfs:%s|%d|%d", absPath, info.Size(), info.ModTime().UTC().UnixNano()), nil
+		}
+	}
+
+	if compiled == nil {
+		return "", errors.New("missing compiled policy")
+	}
+
+	imageDigest := strings.TrimSpace(compiled.ImageDigest)
+	if imageDigest == "" {
+		artifact, err := a.ensureImageArtifact(ctx, compiled.ImageRef)
+		if err != nil {
+			return "", err
+		}
+		imageDigest = artifact.Digest
+	}
+
+	_, guestAgentHash, err := a.getGuestAgentBinary()
+	if err != nil {
+		return "", err
+	}
+
+	preparedPath, err := preparedRuntimeRootFSPath(imageDigest, guestAgentHash)
+	if err != nil {
+		return "", err
+	}
+	return "prepared-rootfs:" + preparedPath, nil
+}
+
 func (a *Adapter) ensurePreparedRuntimeRootFSFromImage(ctx context.Context, imageRef string) (preparedRootFS, error) {
 	artifact, err := a.ensureImageArtifact(ctx, imageRef)
 	if err != nil {

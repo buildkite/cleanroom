@@ -8,6 +8,7 @@ import (
 	"runtime"
 
 	"github.com/buildkite/cleanroom/internal/backend"
+	"github.com/buildkite/cleanroom/internal/policy"
 )
 
 type Adapter struct {
@@ -38,6 +39,10 @@ func (a *Adapter) Run(_ context.Context, _ backend.ExecutionRequest) (*backend.E
 
 func (a *Adapter) RunStream(ctx context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
 	return a.Run(ctx, req)
+}
+
+func (a *Adapter) RuntimeBaseKey(_ context.Context, _ *policy.CompiledPolicy, _ backend.FirecrackerConfig) (string, error) {
+	return "", fmt.Errorf("darwin-vz backend requires macOS, current OS is %s", runtime.GOOS)
 }
 
 func (a *Adapter) Doctor(_ context.Context, _ backend.DoctorRequest) (*backend.DoctorReport, error) {

@@ -1310,6 +1310,32 @@ func (a *Adapter) ensureImageArtifact(ctx context.Context, imageRef string) (ima
 	}, nil
 }
 
+func (a *Adapter) RuntimeBaseKey(ctx context.Context, compiled *policy.CompiledPolicy, _ backend.FirecrackerConfig) (string, error) {
+	if compiled == nil {
+		return "", errors.New("missing compiled policy")
+	}
+
+	imageDigest := strings.TrimSpace(compiled.ImageDigest)
+	if imageDigest == "" {
+		artifact, err := a.ensureImageArtifact(ctx, compiled.ImageRef)
+		if err != nil {
+			return "", err
+		}
+		imageDigest = artifact.Digest
+	}
+
+	_, guestAgentHash, err := a.getGuestAgentBinary()
+	if err != nil {
+		return "", err
+	}
+
+	preparedPath, err := preparedRuntimeRootFSPath(imageDigest, guestAgentHash)
+	if err != nil {
+		return "", err
+	}
+	return "prepared-rootfs:" + preparedPath, nil
+}
+
 func (a *Adapter) ensurePreparedRuntimeRootFS(ctx context.Context, cfg backend.FirecrackerConfig, image imageArtifact) (string, error) {
 	sourcePath := strings.TrimSpace(image.RootFSPath)
 	if sourcePath == "" {

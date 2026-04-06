@@ -19,14 +19,15 @@ func isWorkspaceSeedSnapshotName(name string) bool {
 	return strings.HasPrefix(strings.TrimSpace(name), workspaceSeedSnapshotNamePrefix)
 }
 
-func workspaceSeedSnapshotName(backendName, policyHash string, repository *repositorycheckout.Checkout) string {
-	if repository == nil {
+func workspaceSeedSnapshotName(backendName, policyHash, runtimeBaseKey string, repository *repositorycheckout.Checkout) string {
+	if repository == nil || strings.TrimSpace(runtimeBaseKey) == "" {
 		return ""
 	}
 	sum := sha256.New()
 	for _, part := range []string{
 		strings.TrimSpace(backendName),
 		strings.TrimSpace(policyHash),
+		strings.TrimSpace(runtimeBaseKey),
 		strings.TrimSpace(repository.RemoteURL),
 		strings.TrimSpace(repository.CommitSHA),
 		strings.TrimSpace(repository.DestinationDir),
@@ -39,8 +40,8 @@ func workspaceSeedSnapshotName(backendName, policyHash string, repository *repos
 	return workspaceSeedSnapshotNamePrefix + hex.EncodeToString(sum.Sum(nil))
 }
 
-func workspaceSeedSnapshotRecord(records []snapshotstore.Record, backendName, policyHash string, repository *repositorycheckout.Checkout) (snapshotstore.Record, bool) {
-	expectedName := workspaceSeedSnapshotName(backendName, policyHash, repository)
+func workspaceSeedSnapshotRecord(records []snapshotstore.Record, backendName, policyHash, runtimeBaseKey string, repository *repositorycheckout.Checkout) (snapshotstore.Record, bool) {
+	expectedName := workspaceSeedSnapshotName(backendName, policyHash, runtimeBaseKey, repository)
 	if expectedName == "" {
 		return snapshotstore.Record{}, false
 	}
@@ -72,8 +73,8 @@ func workspaceSeedSnapshotRecord(records []snapshotstore.Record, backendName, po
 	return best, found
 }
 
-func (s *Service) lookupWorkspaceSeedSnapshot(ctx context.Context, backendName string, compiled *policy.CompiledPolicy, repository *repositorycheckout.Checkout) (snapshotstore.Record, bool, error) {
-	if compiled == nil || repository == nil {
+func (s *Service) lookupWorkspaceSeedSnapshot(ctx context.Context, backendName string, compiled *policy.CompiledPolicy, runtimeBaseKey string, repository *repositorycheckout.Checkout) (snapshotstore.Record, bool, error) {
+	if compiled == nil || repository == nil || strings.TrimSpace(runtimeBaseKey) == "" {
 		return snapshotstore.Record{}, false, nil
 	}
 	store, err := s.snapshotStoreOrErr()
@@ -84,7 +85,7 @@ func (s *Service) lookupWorkspaceSeedSnapshot(ctx context.Context, backendName s
 	if err != nil {
 		return snapshotstore.Record{}, false, err
 	}
-	record, ok := workspaceSeedSnapshotRecord(records, backendName, compiled.Hash, repository)
+	record, ok := workspaceSeedSnapshotRecord(records, backendName, compiled.Hash, runtimeBaseKey, repository)
 	return record, ok, nil
 }
 
@@ -94,10 +95,11 @@ func (s *Service) maybePublishWorkspaceSeedSnapshot(
 	sandboxID, backendName string,
 	compiled *policy.CompiledPolicy,
 	firecrackerCfg backend.FirecrackerConfig,
+	runtimeBaseKey string,
 	repository *repositorycheckout.Checkout,
 	replacedSnapshotID string,
 ) {
-	if adapter == nil || compiled == nil || repository == nil {
+	if adapter == nil || compiled == nil || repository == nil || strings.TrimSpace(runtimeBaseKey) == "" {
 		return
 	}
 	if !snapshotOperationsEnabledForBackend(backendName, s.Config) {
@@ -109,7 +111,7 @@ func (s *Service) maybePublishWorkspaceSeedSnapshot(
 		return
 	}
 
-	if record, ok, err := s.lookupWorkspaceSeedSnapshot(ctx, backendName, compiled, repository); err == nil && ok {
+	if record, ok, err := s.lookupWorkspaceSeedSnapshot(ctx, backendName, compiled, runtimeBaseKey, repository); err == nil && ok {
 		if strings.TrimSpace(record.SnapshotID) != strings.TrimSpace(replacedSnapshotID) {
 			return
 		}
@@ -134,7 +136,7 @@ func (s *Service) maybePublishWorkspaceSeedSnapshot(
 		SnapshotID:      snapshotID,
 		SourceSandboxID: sandboxID,
 		Backend:         backendName,
-		Name:            workspaceSeedSnapshotName(backendName, compiled.Hash, repository),
+		Name:            workspaceSeedSnapshotName(backendName, compiled.Hash, runtimeBaseKey, repository),
 		PolicyHash:      compiled.Hash,
 		Policy:          compiled.ToProto(),
 		Repository:      cloneRepositoryCheckout(repository).ToProto(),
@@ -154,6 +156,25 @@ func (s *Service) maybePublishWorkspaceSeedSnapshot(
 		}
 		s.logWorkspaceSeedWarning("persist workspace seed snapshot metadata", sandboxID, err)
 	}
+}
+
+func (s *Service) workspaceSeedRuntimeBaseKey(ctx context.Context, adapter backend.Adapter, compiled *policy.CompiledPolicy, firecrackerCfg backend.FirecrackerConfig) (string, bool, error) {
+	if adapter == nil || compiled == nil {
+		return "", false, nil
+	}
+	provider, ok := adapter.(backend.RuntimeBaseKeyProvider)
+	if !ok {
+		return "", false, nil
+	}
+	key, err := provider.RuntimeBaseKey(ctx, compiled, firecrackerCfg)
+	if err != nil {
+		return "", false, err
+	}
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return "", false, nil
+	}
+	return key, true, nil
 }
 
 func (s *Service) logWorkspaceSeedWarning(message, sandboxID string, err error) {

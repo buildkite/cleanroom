@@ -41,6 +41,8 @@ type stubAdapter struct {
 	createSnapshotCalls        int
 	deleteSnapshotCalls        int
 	terminateCalls             int
+	workspaceSeedRuntimeKey    string
+	runtimeBaseKeyErr          error
 }
 
 func (s *stubAdapter) Name() string { return "stub" }
@@ -154,6 +156,16 @@ func (s *stubAdapter) DownloadSandboxFile(ctx context.Context, sandboxID, path s
 		return s.downloadFn(ctx, sandboxID, path, maxBytes)
 	}
 	return nil, errors.New("download not configured")
+}
+
+func (s *stubAdapter) RuntimeBaseKey(_ context.Context, _ *policy.CompiledPolicy, _ backend.FirecrackerConfig) (string, error) {
+	if s.runtimeBaseKeyErr != nil {
+		return "", s.runtimeBaseKeyErr
+	}
+	if strings.TrimSpace(s.workspaceSeedRuntimeKey) != "" {
+		return s.workspaceSeedRuntimeKey, nil
+	}
+	return "runtime-base:test", nil
 }
 
 type stubLoader struct {
@@ -1206,7 +1218,7 @@ func TestCreateSandboxPublishesWorkspaceSeedSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FromProto returned error: %v", err)
 	}
-	if got, want := record.Name, workspaceSeedSnapshotName("firecracker", compiled.Hash, repositorycheckout.FromProto(testRepositoryCheckoutProto())); got != want {
+	if got, want := record.Name, workspaceSeedSnapshotName("firecracker", compiled.Hash, "runtime-base:test", repositorycheckout.FromProto(testRepositoryCheckoutProto())); got != want {
 		t.Fatalf("unexpected workspace seed snapshot name: got %q want %q", got, want)
 	}
 	if record.Repository == nil {
@@ -1231,7 +1243,7 @@ func TestWorkspaceSeedSnapshotRecordBreaksCreatedAtTiesBySnapshotID(t *testing.T
 	older := snapshotstore.Record{
 		SnapshotID: "snap_00000000000000000000000001",
 		Backend:    "firecracker",
-		Name:       workspaceSeedSnapshotName("firecracker", compiled.Hash, repository),
+		Name:       workspaceSeedSnapshotName("firecracker", compiled.Hash, "runtime-base:test", repository),
 		PolicyHash: compiled.Hash,
 		Repository: repository.ToProto(),
 		CreatedAt:  createdAt,
@@ -1239,13 +1251,13 @@ func TestWorkspaceSeedSnapshotRecordBreaksCreatedAtTiesBySnapshotID(t *testing.T
 	newer := snapshotstore.Record{
 		SnapshotID: "snap_00000000000000000000000002",
 		Backend:    "firecracker",
-		Name:       workspaceSeedSnapshotName("firecracker", compiled.Hash, repository),
+		Name:       workspaceSeedSnapshotName("firecracker", compiled.Hash, "runtime-base:test", repository),
 		PolicyHash: compiled.Hash,
 		Repository: repository.ToProto(),
 		CreatedAt:  createdAt,
 	}
 
-	record, ok := workspaceSeedSnapshotRecord([]snapshotstore.Record{older, newer}, "firecracker", compiled.Hash, repository)
+	record, ok := workspaceSeedSnapshotRecord([]snapshotstore.Record{older, newer}, "firecracker", compiled.Hash, "runtime-base:test", repository)
 	if !ok {
 		t.Fatal("expected workspace seed snapshot record match")
 	}
@@ -1311,6 +1323,59 @@ func TestCreateSandboxReusesWorkspaceSeedSnapshot(t *testing.T) {
 	}
 	if got, want := adapter.provisionFromSnapshotReq.StorageRef, "/snapshots/"+adapter.createSnapshotReq.SnapshotID+".ext4"; got != want {
 		t.Fatalf("unexpected snapshot storage ref on warm hit: got %q want %q", got, want)
+	}
+}
+
+func TestCreateSandboxDoesNotReuseWorkspaceSeedWhenRuntimeBaseKeyChanges(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	store := newMemorySnapshotStore()
+	adapter := &stubAdapter{
+		workspaceSeedRuntimeKey: "runtime-base:a",
+		createSnapshotFn: func(_ context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
+			return &backend.SnapshotResult{StorageRef: "/snapshots/" + req.SnapshotID + ".ext4"}, nil
+		},
+	}
+	mirrors := &stubRepositoryMirrorStore{}
+	svc := newTestServiceWithSnapshotStore(adapter, store)
+	svc.RepositoryMirrors = mirrors
+
+	req := &cleanroomv1.CreateSandboxRequest{
+		Policy:             testRepositoryPolicy(),
+		RepositoryCheckout: testRepositoryCheckoutProto(),
+	}
+
+	if _, err := svc.CreateSandbox(context.Background(), req); err != nil {
+		t.Fatalf("first CreateSandbox returned error: %v", err)
+	}
+
+	adapter.workspaceSeedRuntimeKey = "runtime-base:b"
+
+	secondResp, err := svc.CreateSandbox(context.Background(), req)
+	if err != nil {
+		t.Fatalf("second CreateSandbox returned error: %v", err)
+	}
+	if secondResp.GetSandbox().GetSandboxId() == "" {
+		t.Fatal("expected sandbox id after runtime base change")
+	}
+	if got, want := adapter.provisionFromSnapshotCalls, 0; got != want {
+		t.Fatalf("expected runtime base change to avoid snapshot restore, got %d want %d", got, want)
+	}
+	if got, want := adapter.provisionCalls, 2; got != want {
+		t.Fatalf("expected runtime base change to reprovision sandbox, got %d want %d", got, want)
+	}
+	if got, want := adapter.runCalls, 2; got != want {
+		t.Fatalf("expected runtime base change to rerun repository bootstrap, got %d want %d", got, want)
+	}
+	if got, want := adapter.createSnapshotCalls, 2; got != want {
+		t.Fatalf("expected runtime base change to publish a new workspace seed, got %d want %d", got, want)
+	}
+
+	records, err := store.List(context.Background())
+	if err != nil {
+		t.Fatalf("List returned error: %v", err)
+	}
+	if got, want := len(records), 2; got != want {
+		t.Fatalf("expected two workspace seed snapshots after runtime base change, got %d want %d", got, want)
 	}
 }
 

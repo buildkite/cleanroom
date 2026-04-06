@@ -195,22 +195,31 @@ func (s *Service) CreateSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	firecrackerCfg = withRepositoryBootstrapRootFSMinimum(firecrackerCfg, compiled, repository)
 
 	replacedWorkspaceSeedSnapshotID := ""
+	workspaceSeedRuntimeBaseKey := ""
+	workspaceSeedCachingEnabled := false
 	if repository != nil {
 		if _, ok := adapter.(backend.SnapshottingAdapter); ok && snapshotOperationsEnabledForBackend(backendName, s.Config) {
-			record, found, err := s.lookupWorkspaceSeedSnapshot(ctx, backendName, compiled, repository)
+			runtimeBaseKey, cacheable, err := s.workspaceSeedRuntimeBaseKey(ctx, adapter, compiled, firecrackerCfg)
 			if err != nil {
-				s.logWorkspaceSeedWarning("lookup workspace seed snapshot", "", err)
-			} else if found {
-				resp, restoreErr := s.createSandboxFromSnapshot(ctx, &cleanroomv1.CreateSandboxRequest{
-					Backend: backendName,
-					Options: req.GetOptions(),
-					Source:  &cleanroomv1.CreateSandboxRequest_SnapshotId{SnapshotId: record.SnapshotID},
-				}, record.SnapshotID)
-				if restoreErr == nil {
-					return resp, nil
+				s.logWorkspaceSeedWarning("resolve workspace seed runtime base key", "", err)
+			} else if cacheable {
+				workspaceSeedRuntimeBaseKey = runtimeBaseKey
+				workspaceSeedCachingEnabled = true
+				record, found, err := s.lookupWorkspaceSeedSnapshot(ctx, backendName, compiled, workspaceSeedRuntimeBaseKey, repository)
+				if err != nil {
+					s.logWorkspaceSeedWarning("lookup workspace seed snapshot", "", err)
+				} else if found {
+					resp, restoreErr := s.createSandboxFromSnapshot(ctx, &cleanroomv1.CreateSandboxRequest{
+						Backend: backendName,
+						Options: req.GetOptions(),
+						Source:  &cleanroomv1.CreateSandboxRequest_SnapshotId{SnapshotId: record.SnapshotID},
+					}, record.SnapshotID)
+					if restoreErr == nil {
+						return resp, nil
+					}
+					replacedWorkspaceSeedSnapshotID = record.SnapshotID
+					s.logWorkspaceSeedRestoreWarning(record.SnapshotID, restoreErr)
 				}
-				replacedWorkspaceSeedSnapshotID = record.SnapshotID
-				s.logWorkspaceSeedRestoreWarning(record.SnapshotID, restoreErr)
 			}
 		}
 	}
@@ -234,8 +243,8 @@ func (s *Service) CreateSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 			}
 			return nil, fmt.Errorf("bootstrap repository checkout: %w", err)
 		}
-		if snapshotAdapter, ok := adapter.(backend.SnapshottingAdapter); ok {
-			s.maybePublishWorkspaceSeedSnapshot(ctx, snapshotAdapter, sandboxID, backendName, compiled, firecrackerCfg, repository, replacedWorkspaceSeedSnapshotID)
+		if snapshotAdapter, ok := adapter.(backend.SnapshottingAdapter); ok && workspaceSeedCachingEnabled {
+			s.maybePublishWorkspaceSeedSnapshot(ctx, snapshotAdapter, sandboxID, backendName, compiled, firecrackerCfg, workspaceSeedRuntimeBaseKey, repository, replacedWorkspaceSeedSnapshotID)
 		}
 	} else if repository != nil {
 		return nil, errors.New("repository bootstrap for sandbox creation requires a persistent backend")
