@@ -93,6 +93,10 @@ Rootfs:
 - otherwise derive rootfs from `sandbox.image.ref` using image manager
 - inject guest runtime (`cleanroom-guest-agent` and `/usr/sbin/cleanroom-init`) into a prepared cached rootfs image
 - create a per-sandbox copy (`rootfs-persistent.ext4`) and attach it read-write to the VM
+- `/workspace` is not a separate volume on `darwin-vz`; it lives on the guest rootfs
+- `backends.darwin-vz.minimum_rootfs_bytes` lets the runtime grow the guest rootfs copy before boot for non-trivial workloads that need more writable space
+- `minimum_rootfs_bytes` accepts either raw bytes (`2147483648`) or human-friendly sizes (`2GiB`, `700MiB`, `"2147483648"`)
+- the same setting is also honored under the legacy underscore config key: `backends.darwin_vz.minimum_rootfs_bytes`
 
 Snapshot/rootfs volume drivers:
 
