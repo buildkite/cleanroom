@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"syscall"
+	"time"
 
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 )
@@ -264,7 +265,7 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 		return fmt.Errorf("stream execution: %w", streamErr)
 	}
 
-	if stdinErr := pollExecutionStdinErr(stdinErrCh); stdinErr != nil {
+	if stdinErr := waitExecutionStdinErr(stdinErrCh, 50*time.Millisecond); stdinErr != nil {
 		return stdinErr
 	}
 

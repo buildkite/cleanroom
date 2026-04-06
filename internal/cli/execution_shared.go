@@ -252,6 +252,25 @@ func pollExecutionStdinErr(errCh <-chan error) error {
 	}
 }
 
+func waitExecutionStdinErr(errCh <-chan error, wait time.Duration) error {
+	if err := pollExecutionStdinErr(errCh); err != nil || errCh == nil || wait <= 0 {
+		return err
+	}
+
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+
+	select {
+	case err, ok := <-errCh:
+		if !ok {
+			return nil
+		}
+		return err
+	case <-timer.C:
+		return nil
+	}
+}
+
 func writeExecutionWarning(stderr io.Writer, message string) error {
 	message = strings.TrimSpace(message)
 	if stderr == nil || message == "" {
