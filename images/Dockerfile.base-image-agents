@@ -1,5 +1,6 @@
 FROM alpine:3.22
 
+ARG MISE_VERSION=v2026.4.5
 ARG CODEX_VERSION=0.106.0
 ARG CLAUDE_CODE_VERSION=2.1.63
 ARG GEMINI_CLI_VERSION=0.31.0
@@ -8,6 +9,7 @@ ARG GEMINI_CLI_VERSION=0.31.0
 RUN apk add --no-cache \
   bash \
   coreutils \
+  curl \
   g++ \
   git \
   make \
@@ -15,8 +17,9 @@ RUN apk add --no-cache \
   npm \
   openssh-client-default \
   python3 \
-  strace \
-  mise
+  strace
+
+RUN curl -fsSL https://mise.run | MISE_VERSION="${MISE_VERSION}" MISE_INSTALL_HELP=0 MISE_INSTALL_PATH=/usr/local/bin/mise sh
 
 # Keep repo-local mise configs under /workspace usable in agent containers too.
 RUN mise settings add trusted_config_paths /workspace
