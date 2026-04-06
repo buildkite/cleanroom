@@ -1496,7 +1496,7 @@ func TestCreateExecutionWrapsRepositoryBootstrapInService(t *testing.T) {
 	if strings.Contains(joined, "git clone --filter=blob:none --no-checkout") {
 		t.Fatalf("expected execution command to run after bootstrap, got %q", joined)
 	}
-	if !strings.Contains(joined, "cd '/workspace' && exec 'sh' '-lc' 'pwd'") {
+	if !repositoryWrappedCommandContains(joined, `exec 'sh' '-lc' 'pwd'`) {
 		t.Fatalf("expected wrapped user command in repository workdir, got %q", joined)
 	}
 	if strings.Contains(bootstrap, "Authorization:") || strings.Contains(bootstrap, ".extraHeader") {
@@ -1568,7 +1568,7 @@ func TestCreateExecutionSkipsBootstrapForMatchingPersistentRepository(t *testing
 	if strings.Contains(joined, "git clone --filter=blob:none --no-checkout") {
 		t.Fatalf("expected matching repository execution to reuse existing checkout, got %q", joined)
 	}
-	if !strings.Contains(joined, "cd '/workspace' && exec 'sh' '-lc' 'pwd'") {
+	if !repositoryWrappedCommandContains(joined, `exec 'sh' '-lc' 'pwd'`) {
 		t.Fatalf("expected matching repository execution to run inside repository workdir, got %q", joined)
 	}
 	if got, want := mirrors.calls, 1; got != want {
@@ -1654,7 +1654,7 @@ func TestCreateExecutionSkipsBootstrapForSnapshotBackedSandboxWithMatchingReposi
 	if strings.Contains(joined, "git clone --filter=blob:none --no-checkout") {
 		t.Fatalf("expected snapshot-backed sandbox execution to reuse existing checkout, got %q", joined)
 	}
-	if !strings.Contains(joined, "cd '/workspace' && exec 'sh' '-lc' 'pwd'") {
+	if !repositoryWrappedCommandContains(joined, `exec 'sh' '-lc' 'pwd'`) {
 		t.Fatalf("expected snapshot-backed sandbox execution to run inside repository workdir, got %q", joined)
 	}
 	if got, want := mirrors.calls, 1; got != want {
@@ -1681,6 +1681,12 @@ func TestCreateSandboxRejectsRepositoryRemoteOutsidePolicy(t *testing.T) {
 	if got := adapter.provisionCalls; got != 0 {
 		t.Fatalf("expected no provision call on invalid repository remote, got %d", got)
 	}
+}
+
+func repositoryWrappedCommandContains(joined, execSnippet string) bool {
+	return strings.Contains(joined, "dest='/workspace'") &&
+		strings.Contains(joined, `cd "$dest"`) &&
+		strings.Contains(joined, execSnippet)
 }
 
 func TestCreateSandboxRejectsRepositoryFileRemote(t *testing.T) {

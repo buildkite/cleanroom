@@ -216,6 +216,7 @@ Meaning:
   - they resolve the local repository remote URL and committed `HEAD`
   - they materialize that checkout inside the sandbox before the command runs
   - they start commands in `repository.path`
+  - when the checkout contains `.mise.toml`, `mise.toml`, `.tool-versions`, or `.mise/config.toml`, they run `mise install` and execute the command through `mise exec -- ...`
 - `cleanroom sandbox create` remains the generic low-level surface and does not
   infer repository state from the current working tree or read `cleanroom.yaml`.
 - Without `--from`, `cleanroom sandbox create` synthesizes a repo-agnostic
