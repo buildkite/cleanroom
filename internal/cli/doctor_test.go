@@ -18,9 +18,13 @@ type doctorTestAdapter struct{}
 
 func (doctorTestAdapter) Name() string { return "doctor-test" }
 
-func (doctorTestAdapter) Run(context.Context, backend.ExecutionRequest) (*backend.ExecutionResult, error) {
+func (doctorTestAdapter) Provision(context.Context, backend.ProvisionRequest) error { return nil }
+
+func (doctorTestAdapter) Run(context.Context, backend.ExecutionRequest, backend.OutputStream) (*backend.ExecutionResult, error) {
 	return &backend.ExecutionResult{Message: "ok"}, nil
 }
+
+func (doctorTestAdapter) Terminate(context.Context, string) error { return nil }
 
 func (doctorTestAdapter) Doctor(context.Context, backend.DoctorRequest) (*backend.DoctorReport, error) {
 	return &backend.DoctorReport{
@@ -40,18 +44,6 @@ func (doctorTestAdapter) Capabilities() map[string]bool {
 }
 
 type doctorSnapshotAdapter struct{ doctorTestAdapter }
-
-func (doctorSnapshotAdapter) ProvisionSandbox(context.Context, backend.ProvisionRequest) error {
-	return nil
-}
-
-func (doctorSnapshotAdapter) RunInSandbox(context.Context, backend.ExecutionRequest, backend.OutputStream) (*backend.ExecutionResult, error) {
-	return &backend.ExecutionResult{Message: "ok"}, nil
-}
-
-func (doctorSnapshotAdapter) TerminateSandbox(context.Context, string) error {
-	return nil
-}
 
 func (doctorSnapshotAdapter) CreateSnapshot(context.Context, backend.SnapshotRequest) (*backend.SnapshotResult, error) {
 	return &backend.SnapshotResult{StorageRef: "/tmp/snapshot.ext4"}, nil
@@ -96,7 +88,7 @@ func TestDoctorCommandJSONIncludesCapabilities(t *testing.T) {
 		Loader:     doctorFailingLoader{},
 		Config:     runtimeconfig.Config{},
 		ConfigPath: filepath.Join(tmpDir, "config.yaml"),
-		Backends: map[string]backend.Adapter{
+		Backends: map[string]backend.SandboxAdapter{
 			"doctor-test": doctorTestAdapter{},
 		},
 	})
@@ -185,7 +177,7 @@ func TestDoctorCommandTextUsesPolishedPlainOutput(t *testing.T) {
 		Loader:     doctorFailingLoader{},
 		Config:     runtimeconfig.Config{},
 		ConfigPath: filepath.Join(tmpDir, "config.yaml"),
-		Backends: map[string]backend.Adapter{
+		Backends: map[string]backend.SandboxAdapter{
 			"doctor-test": doctorTestAdapter{},
 		},
 	})
@@ -241,7 +233,7 @@ func TestDoctorCommandHonorsRuntimeSnapshotCapabilityConfig(t *testing.T) {
 			},
 		},
 		ConfigPath: filepath.Join(tmpDir, "config.yaml"),
-		Backends: map[string]backend.Adapter{
+		Backends: map[string]backend.SandboxAdapter{
 			"firecracker": doctorSnapshotAdapter{},
 		},
 	})
@@ -326,7 +318,7 @@ func TestDoctorCommandJSONIncludesEffectiveSnapshotConfig(t *testing.T) {
 			},
 		},
 		ConfigPath: filepath.Join(tmpDir, "config.yaml"),
-		Backends: map[string]backend.Adapter{
+		Backends: map[string]backend.SandboxAdapter{
 			"darwin-vz": doctorSnapshotAdapter{},
 		},
 	})
@@ -389,7 +381,7 @@ func TestDoctorCommandTextIncludesEffectiveSnapshotConfig(t *testing.T) {
 			},
 		},
 		ConfigPath: filepath.Join(tmpDir, "config.yaml"),
-		Backends: map[string]backend.Adapter{
+		Backends: map[string]backend.SandboxAdapter{
 			"darwin-vz": doctorSnapshotAdapter{},
 		},
 	})

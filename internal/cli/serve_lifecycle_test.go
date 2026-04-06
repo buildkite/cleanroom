@@ -85,7 +85,7 @@ func TestServeCommandRunServerStartsAndStopsOnContextCancel(t *testing.T) {
 		}).Run(&runtimeContext{
 			CWD:        t.TempDir(),
 			ConfigPath: "/tmp/cleanroom-config.yaml",
-			Backends:   map[string]backend.Adapter{},
+			Backends:   map[string]backend.SandboxAdapter{},
 		})
 	}()
 

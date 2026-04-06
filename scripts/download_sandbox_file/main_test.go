@@ -29,19 +29,15 @@ type downloadTestAdapter struct {
 
 func (a *downloadTestAdapter) Name() string { return "firecracker" }
 
-func (a *downloadTestAdapter) Run(_ context.Context, req backend.ExecutionRequest) (*backend.ExecutionResult, error) {
-	return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0}, nil
-}
-
-func (a *downloadTestAdapter) ProvisionSandbox(context.Context, backend.ProvisionRequest) error {
+func (a *downloadTestAdapter) Provision(context.Context, backend.ProvisionRequest) error {
 	return nil
 }
 
-func (a *downloadTestAdapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
-	return a.Run(ctx, req)
+func (a *downloadTestAdapter) Run(_ context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
+	return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0}, nil
 }
 
-func (a *downloadTestAdapter) TerminateSandbox(context.Context, string) error {
+func (a *downloadTestAdapter) Terminate(context.Context, string) error {
 	return nil
 }
 
@@ -189,13 +185,13 @@ func TestRunReportsDownloadErrors(t *testing.T) {
 	}
 }
 
-func startDownloadSandboxServer(t *testing.T, adapter backend.Adapter) string {
+func startDownloadSandboxServer(t *testing.T, adapter backend.SandboxAdapter) string {
 	t.Helper()
 
 	svc := &controlservice.Service{
 		Loader: downloadTestLoader{},
 		Config: runtimeconfig.Config{DefaultBackend: "firecracker"},
-		Backends: map[string]backend.Adapter{
+		Backends: map[string]backend.SandboxAdapter{
 			"firecracker": adapter,
 		},
 	}

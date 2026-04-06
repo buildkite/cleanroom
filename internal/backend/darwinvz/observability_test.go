@@ -167,7 +167,7 @@ func TestRunInSandboxWritesObservabilityWithPendingLaunchTimings(t *testing.T) {
 		},
 	}
 
-	_, err := adapter.RunInSandbox(context.Background(), backend.ExecutionRequest{
+	_, err := adapter.Run(context.Background(), backend.ExecutionRequest{
 		SandboxID:   "cr-test",
 		ExecutionID: "run-123",
 		Command:     []string{"echo", "hello"},

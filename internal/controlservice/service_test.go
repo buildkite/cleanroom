@@ -47,26 +47,16 @@ type stubAdapter struct {
 
 func (s *stubAdapter) Name() string { return "stub" }
 
-func (s *stubAdapter) Run(ctx context.Context, req backend.ExecutionRequest) (*backend.ExecutionResult, error) {
-	s.req = req
-	s.runCalls++
-	if s.runFn != nil {
-		return s.runFn(ctx, req)
+func (s *stubAdapter) Provision(ctx context.Context, req backend.ProvisionRequest) error {
+	s.provisionReq = req
+	s.provisionCalls++
+	if s.provisionFn != nil {
+		return s.provisionFn(ctx, req)
 	}
-	if s.result != nil {
-		return s.result, nil
-	}
-	return &backend.ExecutionResult{
-		ExecutionID: req.ExecutionID,
-		ExitCode:    0,
-		LaunchedVM:  true,
-		PlanPath:    "/tmp/plan",
-		RunDir:      "/tmp/run",
-		Message:     "ok",
-	}, nil
+	return nil
 }
 
-func (s *stubAdapter) RunStream(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+func (s *stubAdapter) Run(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 	s.req = req
 	s.runCalls++
 	if s.runStreamFn != nil {
@@ -103,19 +93,6 @@ func (s *stubAdapter) RunStream(ctx context.Context, req backend.ExecutionReques
 	return result, nil
 }
 
-func (s *stubAdapter) ProvisionSandbox(ctx context.Context, req backend.ProvisionRequest) error {
-	s.provisionReq = req
-	s.provisionCalls++
-	if s.provisionFn != nil {
-		return s.provisionFn(ctx, req)
-	}
-	return nil
-}
-
-func (s *stubAdapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
-	return s.RunStream(ctx, req, stream)
-}
-
 func (s *stubAdapter) CreateSnapshot(ctx context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
 	s.createSnapshotReq = req
 	s.createSnapshotCalls++
@@ -143,7 +120,7 @@ func (s *stubAdapter) DeleteSnapshot(ctx context.Context, req backend.DeleteSnap
 	return nil
 }
 
-func (s *stubAdapter) TerminateSandbox(ctx context.Context, sandboxID string) error {
+func (s *stubAdapter) Terminate(ctx context.Context, sandboxID string) error {
 	s.terminateCalls++
 	if s.terminateFn != nil {
 		return s.terminateFn(ctx, sandboxID)
@@ -226,11 +203,11 @@ func testRepositoryPolicy() *cleanroomv1.Policy {
 	}
 }
 
-func newTestService(adapter backend.Adapter) *Service {
+func newTestService(adapter backend.SandboxAdapter) *Service {
 	return newTestServiceWithSnapshotStore(adapter, nil)
 }
 
-func newTestServiceWithSnapshotStore(adapter backend.Adapter, store snapshotMetadataStore) *Service {
+func newTestServiceWithSnapshotStore(adapter backend.SandboxAdapter, store snapshotMetadataStore) *Service {
 	return &Service{
 		Loader: stubLoader{
 			compiled: &policy.CompiledPolicy{
@@ -252,7 +229,7 @@ func newTestServiceWithSnapshotStore(adapter backend.Adapter, store snapshotMeta
 				},
 			},
 		},
-		Backends:      map[string]backend.Adapter{"firecracker": adapter},
+		Backends:      map[string]backend.SandboxAdapter{"firecracker": adapter},
 		SnapshotStore: store,
 	}
 }
@@ -1893,7 +1870,7 @@ func TestCreateSandboxMergesDarwinVZConfig(t *testing.T) {
 				},
 			},
 		},
-		Backends: map[string]backend.Adapter{"darwin-vz": adapter},
+		Backends: map[string]backend.SandboxAdapter{"darwin-vz": adapter},
 	}
 
 	_, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
@@ -1969,7 +1946,7 @@ func TestCreateSandboxMergesFirecrackerSnapshotConfig(t *testing.T) {
 				},
 			},
 		},
-		Backends: map[string]backend.Adapter{"firecracker": adapter},
+		Backends: map[string]backend.SandboxAdapter{"firecracker": adapter},
 	}
 
 	_, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
@@ -2001,7 +1978,7 @@ func TestCreateSandboxSetsRepositoryBootstrapRootFSMinimum(t *testing.T) {
 		Config: runtimeconfig.Config{
 			DefaultBackend: "darwin-vz",
 		},
-		Backends: map[string]backend.Adapter{"darwin-vz": adapter},
+		Backends: map[string]backend.SandboxAdapter{"darwin-vz": adapter},
 	}
 
 	policyProto := testRepositoryPolicy()

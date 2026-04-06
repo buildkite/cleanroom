@@ -161,7 +161,6 @@ Current `darwin-vz` capability values depend on the configured network mode.
 In `filehandle` mode:
 
 - `exec.streaming=true`
-- `sandbox.persistent=true`
 - `sandbox.snapshot=true`
 - `sandbox.file_download=false`
 - `network.default_deny=true`

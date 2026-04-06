@@ -104,12 +104,12 @@ func TestSnapshotLifecycleZFSE2E(t *testing.T) {
 
 	defer func() {
 		if !terminatedFork {
-			if err := adapter.TerminateSandbox(context.Background(), fromSnapshotSandboxID); err != nil {
+			if err := adapter.Terminate(context.Background(), fromSnapshotSandboxID); err != nil {
 				t.Errorf("deferred TerminateSandbox for snapshot-backed sandbox: %v", err)
 			}
 		}
 		if !terminatedSource {
-			if err := adapter.TerminateSandbox(context.Background(), sandboxID); err != nil {
+			if err := adapter.Terminate(context.Background(), sandboxID); err != nil {
 				t.Errorf("deferred TerminateSandbox for source sandbox: %v", err)
 			}
 		}
@@ -124,7 +124,7 @@ func TestSnapshotLifecycleZFSE2E(t *testing.T) {
 		}
 	}()
 
-	if err := adapter.ProvisionSandbox(ctx, backend.ProvisionRequest{
+	if err := adapter.Provision(ctx, backend.ProvisionRequest{
 		SandboxID:         sandboxID,
 		Policy:            compiled,
 		FirecrackerConfig: cfg,
@@ -136,7 +136,7 @@ func TestSnapshotLifecycleZFSE2E(t *testing.T) {
 	runCommand := func(ctx context.Context, sandboxID, runID string, command ...string) string {
 		t.Helper()
 
-		result, err := adapter.RunInSandbox(ctx, backend.ExecutionRequest{
+		result, err := adapter.Run(ctx, backend.ExecutionRequest{
 			SandboxID:   sandboxID,
 			ExecutionID: runID,
 			Command:     command,
@@ -179,7 +179,7 @@ func TestSnapshotLifecycleZFSE2E(t *testing.T) {
 		t.Fatalf("unexpected post-snapshot marker: got %q want %q", got, want)
 	}
 
-	if err := adapter.TerminateSandbox(ctx, sandboxID); err != nil {
+	if err := adapter.Terminate(ctx, sandboxID); err != nil {
 		t.Fatalf("TerminateSandbox returned error: %v", err)
 	}
 	terminatedSource = true
@@ -208,7 +208,7 @@ func TestSnapshotLifecycleZFSE2E(t *testing.T) {
 	}
 	firecrackerRequireZFSRefState(t, ctx, cfg, snapshotStorageRef, true)
 
-	if err := adapter.TerminateSandbox(ctx, fromSnapshotSandboxID); err != nil {
+	if err := adapter.Terminate(ctx, fromSnapshotSandboxID); err != nil {
 		t.Fatalf("TerminateSandbox for snapshot-backed sandbox returned error: %v", err)
 	}
 	terminatedFork = true

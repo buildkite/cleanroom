@@ -40,7 +40,7 @@ type runtimeContext struct {
 	Loader     policyLoader
 	Config     runtimeconfig.Config
 	ConfigPath string
-	Backends   map[string]backend.Adapter
+	Backends   map[string]backend.SandboxAdapter
 }
 
 type CLI struct {
@@ -121,7 +121,7 @@ func Run(args []string, version string) error {
 		Loader:     policy.Loader{},
 		Config:     cfg,
 		ConfigPath: cfgPath,
-		Backends: map[string]backend.Adapter{
+		Backends: map[string]backend.SandboxAdapter{
 			"firecracker": firecracker.New(),
 			"darwin-vz":   darwinvz.New(),
 		},
@@ -153,7 +153,7 @@ func Run(args []string, version string) error {
 	return ctx.Run(runtimeCtx)
 }
 
-func configureBackendRuntimeConfig(backends map[string]backend.Adapter, cfg runtimeconfig.Config) {
+func configureBackendRuntimeConfig(backends map[string]backend.SandboxAdapter, cfg runtimeconfig.Config) {
 	if darwinAdapter, ok := backends["darwin-vz"].(*darwinvz.Adapter); ok {
 		darwinAdapter.ConfiguredNetworkMode = strings.TrimSpace(cfg.Backends.DarwinVZ.Network.Mode)
 	}

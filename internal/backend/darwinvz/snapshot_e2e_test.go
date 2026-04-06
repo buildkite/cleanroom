@@ -75,7 +75,7 @@ func TestSnapshotLifecycleE2E(t *testing.T) {
 	runCommand := func(ctx context.Context, adapter *Adapter, sandboxID, runID string, command ...string) string {
 		t.Helper()
 
-		result, err := adapter.RunInSandbox(ctx, backend.ExecutionRequest{
+		result, err := adapter.Run(ctx, backend.ExecutionRequest{
 			SandboxID:   sandboxID,
 			ExecutionID: runID,
 			Command:     command,
@@ -101,7 +101,7 @@ func TestSnapshotLifecycleE2E(t *testing.T) {
 	defer cancel()
 
 	adapter := New()
-	if err := adapter.ProvisionSandbox(ctx, backend.ProvisionRequest{
+	if err := adapter.Provision(ctx, backend.ProvisionRequest{
 		SandboxID:         sandboxID,
 		Policy:            compiled,
 		FirecrackerConfig: cfg,
@@ -113,7 +113,7 @@ func TestSnapshotLifecycleE2E(t *testing.T) {
 		if terminatedSandbox {
 			return
 		}
-		if err := adapter.TerminateSandbox(context.Background(), sandboxID); err != nil {
+		if err := adapter.Terminate(context.Background(), sandboxID); err != nil {
 			t.Fatalf("deferred TerminateSandbox returned error: %v", err)
 		}
 	}()
@@ -122,7 +122,7 @@ func TestSnapshotLifecycleE2E(t *testing.T) {
 		if terminatedFork {
 			return
 		}
-		if err := adapter.TerminateSandbox(context.Background(), fromSnapshotSandboxID); err != nil && !strings.Contains(err.Error(), "unknown sandbox") {
+		if err := adapter.Terminate(context.Background(), fromSnapshotSandboxID); err != nil && !strings.Contains(err.Error(), "unknown sandbox") {
 			t.Fatalf("deferred TerminateSandbox for snapshot-backed sandbox returned error: %v", err)
 		}
 	}()
@@ -182,11 +182,11 @@ func TestSnapshotLifecycleE2E(t *testing.T) {
 		t.Fatalf("expected snapshot to be removed, got err=%v", err)
 	}
 
-	if err := adapter.TerminateSandbox(ctx, fromSnapshotSandboxID); err != nil {
+	if err := adapter.Terminate(ctx, fromSnapshotSandboxID); err != nil {
 		t.Fatalf("TerminateSandbox for snapshot-backed sandbox returned error: %v", err)
 	}
 	terminatedFork = true
-	if err := adapter.TerminateSandbox(ctx, sandboxID); err != nil {
+	if err := adapter.Terminate(ctx, sandboxID); err != nil {
 		t.Fatalf("TerminateSandbox returned error: %v", err)
 	}
 	terminatedSandbox = true

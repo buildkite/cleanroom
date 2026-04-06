@@ -79,6 +79,45 @@ func TestNormalizeRemoteURLPreservesIPv6Brackets(t *testing.T) {
 	}
 }
 
+func TestCanonicalizeRemoteURLStripsUserInfo(t *testing.T) {
+	gotURL, gotHost, err := CanonicalizeRemoteURL("https://token@github.com/buildkite/cleanroom.git")
+	if err != nil {
+		t.Fatalf("CanonicalizeRemoteURL returned error: %v", err)
+	}
+	if got, want := gotURL, "https://github.com/buildkite/cleanroom.git"; got != want {
+		t.Fatalf("unexpected canonical URL: got %q want %q", got, want)
+	}
+	if got, want := gotHost, "github.com"; got != want {
+		t.Fatalf("unexpected host: got %q want %q", got, want)
+	}
+}
+
+func TestCanonicalizeRemoteURLAllowsExplicitDefaultSSHPort(t *testing.T) {
+	gotURL, gotHost, err := CanonicalizeRemoteURL("ssh://git@github.com:22/buildkite/cleanroom.git")
+	if err != nil {
+		t.Fatalf("CanonicalizeRemoteURL returned error: %v", err)
+	}
+	if got, want := gotURL, "https://github.com/buildkite/cleanroom.git"; got != want {
+		t.Fatalf("unexpected canonical URL: got %q want %q", got, want)
+	}
+	if got, want := gotHost, "github.com"; got != want {
+		t.Fatalf("unexpected host: got %q want %q", got, want)
+	}
+}
+
+func TestCanonicalizeRemoteURLPreservesIPv6Brackets(t *testing.T) {
+	gotURL, gotHost, err := CanonicalizeRemoteURL("https://[2001:db8::1]/buildkite/cleanroom.git")
+	if err != nil {
+		t.Fatalf("CanonicalizeRemoteURL returned error: %v", err)
+	}
+	if got, want := gotURL, "https://[2001:db8::1]/buildkite/cleanroom.git"; got != want {
+		t.Fatalf("unexpected canonical URL: got %q want %q", got, want)
+	}
+	if got, want := gotHost, "2001:db8::1"; got != want {
+		t.Fatalf("unexpected host: got %q want %q", got, want)
+	}
+}
+
 func TestBuildBootstrapCommandIncludesSubmoduleUpdateWhenRequested(t *testing.T) {
 	command := BuildBootstrapCommand(&Checkout{
 		RemoteURL:      "https://github.com/buildkite/cleanroom.git",

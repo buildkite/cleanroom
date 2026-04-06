@@ -33,11 +33,11 @@ func newHandlerTestAdapter() *handlerTestAdapter {
 
 func (a *handlerTestAdapter) Name() string { return "firecracker" }
 
-func (a *handlerTestAdapter) Run(ctx context.Context, req backend.ExecutionRequest) (*backend.ExecutionResult, error) {
-	return a.RunStream(ctx, req, backend.OutputStream{})
+func (a *handlerTestAdapter) Provision(context.Context, backend.ProvisionRequest) error {
+	return nil
 }
 
-func (a *handlerTestAdapter) RunStream(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+func (a *handlerTestAdapter) Run(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 	select {
 	case a.started <- struct{}{}:
 	default:
@@ -64,22 +64,14 @@ func (a *handlerTestAdapter) RunStream(ctx context.Context, req backend.Executio
 	}, nil
 }
 
-func (a *handlerTestAdapter) ProvisionSandbox(context.Context, backend.ProvisionRequest) error {
+func (a *handlerTestAdapter) Terminate(context.Context, string) error {
 	return nil
 }
 
-func (a *handlerTestAdapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
-	return a.RunStream(ctx, req, stream)
-}
-
-func (a *handlerTestAdapter) TerminateSandbox(context.Context, string) error {
-	return nil
-}
-
-func newHandlerTestService(adapter backend.Adapter) *controlservice.Service {
+func newHandlerTestService(adapter backend.SandboxAdapter) *controlservice.Service {
 	return &controlservice.Service{
 		Config: runtimeconfig.Config{DefaultBackend: "firecracker"},
-		Backends: map[string]backend.Adapter{
+		Backends: map[string]backend.SandboxAdapter{
 			"firecracker": adapter,
 		},
 	}

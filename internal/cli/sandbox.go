@@ -289,9 +289,6 @@ func (c *CreateCommand) Run(ctx *runtimeContext) error {
 		return err
 	}
 	warnDirtyRepositoryCheckout(repository)
-	if repository != nil && !backendSupportsRepositoryPersistence(ctx, host, c.Backend) {
-		return errors.New("repository bootstrap for cleanroom create requires a persistent backend; use cleanroom exec, cleanroom console, or select a persistent backend")
-	}
 
 	sandboxID, sandbox, err := createTopLevelSandbox(client, ctx.Loader, cwd, host, c.Backend, c.Image, c.LaunchSeconds, repository)
 	if err != nil {

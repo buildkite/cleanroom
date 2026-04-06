@@ -24,22 +24,6 @@ type repositoryIntegrationLoader struct {
 
 type repositoryNotFoundLoader struct{}
 
-type persistentIntegrationAdapter struct {
-	integrationAdapter
-}
-
-func (a *persistentIntegrationAdapter) ProvisionSandbox(context.Context, backend.ProvisionRequest) error {
-	return nil
-}
-
-func (a *persistentIntegrationAdapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
-	return a.RunStream(ctx, req, stream)
-}
-
-func (a *persistentIntegrationAdapter) TerminateSandbox(context.Context, string) error {
-	return nil
-}
-
 func (l repositoryIntegrationLoader) LoadAndCompile(_ string) (*policy.CompiledPolicy, string, error) {
 	return l.compiled, "/repo/cleanroom.yaml", nil
 }
@@ -112,7 +96,7 @@ func TestCreateCommandBootstrapsRepositoryForCurrentRepo(t *testing.T) {
 	repoDir := initGitRepository(t, "git@github.com:buildkite/cleanroom.git")
 	wantCommit := headCommit(t, repoDir)
 
-	adapter := &persistentIntegrationAdapter{}
+	adapter := &integrationAdapter{}
 	host, _ := startIntegrationServer(t, adapter)
 
 	var (
@@ -174,7 +158,7 @@ func TestCreateCommandBootstrapsRepositoryForCurrentRepo(t *testing.T) {
 }
 
 func TestCreateCommandBootstrapsRepositoryForExplicitOverride(t *testing.T) {
-	adapter := &persistentIntegrationAdapter{}
+	adapter := &integrationAdapter{}
 	host, _ := startIntegrationServer(t, adapter)
 
 	var (
@@ -254,7 +238,7 @@ func TestCreateCommandBootstrapsRepositoryOnCurrentBranch(t *testing.T) {
 	repoDir := initGitRepository(t, "git@github.com:buildkite/cleanroom.git")
 	checkoutGitBranch(t, repoDir, "feature/console-branch")
 
-	adapter := &persistentIntegrationAdapter{}
+	adapter := &integrationAdapter{}
 	host, _ := startIntegrationServer(t, adapter)
 
 	var (
@@ -310,7 +294,7 @@ func TestCreateCommandBootstrapsRepositoryOnCurrentBranch(t *testing.T) {
 }
 
 func TestSandboxCreateCommandRemainsGenericWithRepositoryConfig(t *testing.T) {
-	adapter := &persistentIntegrationAdapter{}
+	adapter := &integrationAdapter{}
 	host, _ := startIntegrationServer(t, adapter)
 	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
 	restore := stubPolicyUpdateResolver(t, func(_ context.Context, source string) (string, error) {
@@ -353,7 +337,7 @@ func TestSandboxCreateCommandRemainsGenericWithRepositoryConfig(t *testing.T) {
 }
 
 func TestExecCommandRunsInsideRepositoryPathForNewSandbox(t *testing.T) {
-	adapter := &persistentIntegrationAdapter{}
+	adapter := &integrationAdapter{}
 	host, _ := startIntegrationServer(t, adapter)
 	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
 
@@ -410,7 +394,7 @@ func TestExecCommandRunsInsideRepositoryPathForNewSandbox(t *testing.T) {
 func TestExecCommandRunsInsideRepositoryPathWhenReusingSandboxID(t *testing.T) {
 	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
 
-	adapter := &persistentIntegrationAdapter{}
+	adapter := &integrationAdapter{}
 	host, _ := startIntegrationServer(t, adapter)
 
 	var (
@@ -486,7 +470,7 @@ func TestExecCommandRunsInsideRepositoryPathWhenReusingSandboxID(t *testing.T) {
 func TestExecCommandSkipsRepositoryBootstrapForExistingSandboxID(t *testing.T) {
 	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
 
-	adapter := &persistentIntegrationAdapter{}
+	adapter := &integrationAdapter{}
 	host, _ := startIntegrationServer(t, adapter)
 	client := mustNewControlClient(t, host)
 	createSandboxResp, err := client.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
@@ -672,7 +656,7 @@ func TestCreateCommandWarnsWhenRepositoryIsDirty(t *testing.T) {
 		t.Fatalf("write dirty file: %v", err)
 	}
 
-	adapter := &persistentIntegrationAdapter{}
+	adapter := &integrationAdapter{}
 	host, _ := startIntegrationServer(t, adapter)
 	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
@@ -717,7 +701,7 @@ func TestCreateCommandWarnsWhenRepositoryIsDirtyUsesANSIWhenForced(t *testing.T)
 		t.Fatalf("write dirty file: %v", err)
 	}
 
-	adapter := &persistentIntegrationAdapter{}
+	adapter := &integrationAdapter{}
 	host, _ := startIntegrationServer(t, adapter)
 	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
@@ -757,48 +741,7 @@ func TestCreateCommandWarnsWhenRepositoryIsDirtyUsesANSIWhenForced(t *testing.T)
 	}
 }
 
-func TestCreateCommandRejectsRepositoryBootstrapForNonPersistentBackend(t *testing.T) {
-	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
-	adapter := &integrationAdapter{}
-
-	outcome := runCreateAliasWithCapture(CreateCommand{
-		clientFlags: clientFlags{Host: "unix:///tmp/cleanroom-test.sock"},
-		Chdir:       repoDir,
-	}, runtimeContext{
-		CWD: repoDir,
-		Loader: repositoryIntegrationLoader{
-			compiled: &policy.CompiledPolicy{
-				Version:        1,
-				ImageRef:       "ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-				ImageDigest:    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-				NetworkDefault: "deny",
-				Allow:          []policy.AllowRule{{Host: "github.com", Ports: []int{443}}},
-			},
-			repository: policy.RepositoryConfig{
-				Mode:   "current-repo",
-				Remote: "origin",
-				Path:   "/workspace",
-			},
-		},
-		Config: runtimeconfig.Config{
-			DefaultBackend: "firecracker",
-		},
-		Backends: map[string]backend.Adapter{
-			"firecracker": adapter,
-		},
-	})
-	if outcome.cause != nil {
-		t.Fatalf("capture failure: %v", outcome.cause)
-	}
-	if outcome.err == nil {
-		t.Fatal("expected create command to reject repository bootstrap on non-persistent backend")
-	}
-	if !strings.Contains(outcome.err.Error(), "persistent backend") {
-		t.Fatalf("unexpected error: %v", outcome.err)
-	}
-}
-
-func TestExecCommandInlinesRepositoryBootstrapForNonPersistentBackend(t *testing.T) {
+func TestExecCommandBootstrapsRepositoryOnLocalControlPlane(t *testing.T) {
 	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
 	adapter := &integrationAdapter{}
 	host, _ := startUnixIntegrationServer(t, adapter)
@@ -837,7 +780,7 @@ func TestExecCommandInlinesRepositoryBootstrapForNonPersistentBackend(t *testing
 		Config: runtimeconfig.Config{
 			DefaultBackend: "firecracker",
 		},
-		Backends: map[string]backend.Adapter{
+		Backends: map[string]backend.SandboxAdapter{
 			"firecracker": adapter,
 		},
 	})
@@ -850,19 +793,20 @@ func TestExecCommandInlinesRepositoryBootstrapForNonPersistentBackend(t *testing
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(commands) != 1 {
-		t.Fatalf("expected a single inlined execution, got %d execution(s)", len(commands))
+	if len(commands) != 2 {
+		t.Fatalf("expected bootstrap + user execution, got %d execution(s)", len(commands))
 	}
-	joined := strings.Join(commands[0], " ")
-	if !strings.Contains(joined, "clone --filter=blob:none --no-checkout") {
-		t.Fatalf("expected inlined repository clone, got %q", joined)
+	bootstrap := strings.Join(commands[0], " ")
+	if !strings.Contains(bootstrap, "clone --filter=blob:none --no-checkout") {
+		t.Fatalf("expected repository bootstrap clone, got %q", bootstrap)
 	}
+	joined := strings.Join(commands[1], " ")
 	if !repositoryWrappedCommandContains(joined, `exec 'echo' 'ok'`) {
-		t.Fatalf("expected inlined command to run inside /workspace, got %q", joined)
+		t.Fatalf("expected user command to run inside /workspace, got %q", joined)
 	}
 }
 
-func TestExecCommandInlinesExplicitRepositoryOverrideForNonPersistentBackend(t *testing.T) {
+func TestExecCommandBootstrapsExplicitRepositoryOverrideOnLocalControlPlane(t *testing.T) {
 	adapter := &integrationAdapter{}
 	host, _ := startUnixIntegrationServer(t, adapter)
 
@@ -900,7 +844,7 @@ func TestExecCommandInlinesExplicitRepositoryOverrideForNonPersistentBackend(t *
 		Config: runtimeconfig.Config{
 			DefaultBackend: "firecracker",
 		},
-		Backends: map[string]backend.Adapter{
+		Backends: map[string]backend.SandboxAdapter{
 			"firecracker": adapter,
 		},
 	})
@@ -913,22 +857,23 @@ func TestExecCommandInlinesExplicitRepositoryOverrideForNonPersistentBackend(t *
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(commands) != 1 {
-		t.Fatalf("expected one inlined execution, got %d execution(s)", len(commands))
+	if len(commands) != 2 {
+		t.Fatalf("expected bootstrap + user execution, got %d execution(s)", len(commands))
 	}
-	joined := strings.Join(commands[0], " ")
-	if !strings.Contains(joined, "https://github.com/buildkite/agent.git") {
-		t.Fatalf("expected inlined command to include override remote, got %q", joined)
+	bootstrap := strings.Join(commands[0], " ")
+	if !strings.Contains(bootstrap, "https://github.com/buildkite/agent.git") {
+		t.Fatalf("expected bootstrap command to include override remote, got %q", bootstrap)
 	}
-	if !strings.Contains(joined, wantCommit) {
-		t.Fatalf("expected inlined command to include override commit %q, got %q", wantCommit, joined)
+	if !strings.Contains(bootstrap, wantCommit) {
+		t.Fatalf("expected bootstrap command to include override commit %q, got %q", wantCommit, bootstrap)
 	}
+	joined := strings.Join(commands[1], " ")
 	if !repositoryWrappedCommandContains(joined, `exec 'echo' 'ok'`) {
-		t.Fatalf("expected inlined command to run inside /workspace, got %q", joined)
+		t.Fatalf("expected user command to run inside /workspace, got %q", joined)
 	}
 }
 
-func TestExecCommandSkipsRepositoryBootstrapForExistingSandboxOnNonPersistentBackend(t *testing.T) {
+func TestExecCommandSkipsRepositoryBootstrapForExistingSandboxOnLocalControlPlane(t *testing.T) {
 	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
 	adapter := &integrationAdapter{}
 	host, _ := startUnixIntegrationServer(t, adapter)
@@ -986,7 +931,7 @@ func TestExecCommandSkipsRepositoryBootstrapForExistingSandboxOnNonPersistentBac
 		Config: runtimeconfig.Config{
 			DefaultBackend: "firecracker",
 		},
-		Backends: map[string]backend.Adapter{
+		Backends: map[string]backend.SandboxAdapter{
 			"firecracker": adapter,
 		},
 	})
@@ -1008,60 +953,6 @@ func TestExecCommandSkipsRepositoryBootstrapForExistingSandboxOnNonPersistentBac
 	}
 	if strings.Contains(joined, "cd '/workspace' && exec 'echo' 'ok'") {
 		t.Fatalf("expected reused sandbox execution to avoid implicit repository workdir reuse from host cwd, got %q", joined)
-	}
-}
-
-func TestBackendSupportsRepositoryPersistenceDefersToRemoteControlPlane(t *testing.T) {
-	ctx := &runtimeContext{
-		Config: runtimeconfig.Config{
-			DefaultBackend: "darwin-vz",
-		},
-		Backends: map[string]backend.Adapter{
-			"darwin-vz": &integrationAdapter{},
-		},
-	}
-
-	if !backendSupportsRepositoryPersistence(ctx, "https://cleanroom.example.com", "darwin-vz") {
-		t.Fatal("expected remote control plane to be treated as authoritative for backend persistence")
-	}
-}
-
-func TestCanonicalizeGitRemoteURLStripsUserInfo(t *testing.T) {
-	gotURL, gotHost, err := canonicalizeGitRemoteURL("https://token@github.com/buildkite/cleanroom.git")
-	if err != nil {
-		t.Fatalf("canonicalizeGitRemoteURL returned error: %v", err)
-	}
-	if got, want := gotURL, "https://github.com/buildkite/cleanroom.git"; got != want {
-		t.Fatalf("unexpected canonical URL: got %q want %q", got, want)
-	}
-	if got, want := gotHost, "github.com"; got != want {
-		t.Fatalf("unexpected host: got %q want %q", got, want)
-	}
-}
-
-func TestCanonicalizeGitRemoteURLAllowsExplicitDefaultSSHPort(t *testing.T) {
-	gotURL, gotHost, err := canonicalizeGitRemoteURL("ssh://git@github.com:22/buildkite/cleanroom.git")
-	if err != nil {
-		t.Fatalf("canonicalizeGitRemoteURL returned error: %v", err)
-	}
-	if got, want := gotURL, "https://github.com/buildkite/cleanroom.git"; got != want {
-		t.Fatalf("unexpected canonical URL: got %q want %q", got, want)
-	}
-	if got, want := gotHost, "github.com"; got != want {
-		t.Fatalf("unexpected host: got %q want %q", got, want)
-	}
-}
-
-func TestCanonicalizeGitRemoteURLPreservesIPv6Brackets(t *testing.T) {
-	gotURL, gotHost, err := canonicalizeGitRemoteURL("https://[2001:db8::1]/buildkite/cleanroom.git")
-	if err != nil {
-		t.Fatalf("canonicalizeGitRemoteURL returned error: %v", err)
-	}
-	if got, want := gotURL, "https://[2001:db8::1]/buildkite/cleanroom.git"; got != want {
-		t.Fatalf("unexpected canonical URL: got %q want %q", got, want)
-	}
-	if got, want := gotHost, "2001:db8::1"; got != want {
-		t.Fatalf("unexpected host: got %q want %q", got, want)
 	}
 }
 

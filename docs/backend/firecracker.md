@@ -42,7 +42,6 @@ This is materially different from the current `darwin-vz` backend, which uses he
 Current capability values (visible in `cleanroom doctor --json`):
 
 - `exec.streaming=true`
-- `sandbox.persistent=true`
 - `sandbox.file_download=true`
 - `network.default_deny=true`
 - `network.allowlist_egress=true`

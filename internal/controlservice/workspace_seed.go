@@ -158,7 +158,7 @@ func (s *Service) maybePublishWorkspaceSeedSnapshot(
 	}
 }
 
-func (s *Service) workspaceSeedRuntimeBaseKey(ctx context.Context, adapter backend.Adapter, compiled *policy.CompiledPolicy, firecrackerCfg backend.FirecrackerConfig) (string, bool, error) {
+func (s *Service) workspaceSeedRuntimeBaseKey(ctx context.Context, adapter backend.SandboxAdapter, compiled *policy.CompiledPolicy, firecrackerCfg backend.FirecrackerConfig) (string, bool, error) {
 	if adapter == nil || compiled == nil {
 		return "", false, nil
 	}

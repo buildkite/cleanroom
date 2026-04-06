@@ -260,15 +260,7 @@ func (a *Adapter) Capabilities() map[string]bool {
 	}
 }
 
-func (a *Adapter) Run(ctx context.Context, req backend.ExecutionRequest) (*backend.ExecutionResult, error) {
-	return a.run(ctx, req, backend.OutputStream{})
-}
-
-func (a *Adapter) RunStream(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
-	return a.run(ctx, req, stream)
-}
-
-func (a *Adapter) ProvisionSandbox(ctx context.Context, req backend.ProvisionRequest) error {
+func (a *Adapter) Provision(ctx context.Context, req backend.ProvisionRequest) error {
 	sandboxID := strings.TrimSpace(req.SandboxID)
 	if sandboxID == "" {
 		return errors.New("missing sandbox_id")
@@ -279,7 +271,7 @@ func (a *Adapter) ProvisionSandbox(ctx context.Context, req backend.ProvisionReq
 	return a.provisionSandbox(ctx, sandboxID, req.Policy, req.FirecrackerConfig)
 }
 
-func (a *Adapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+func (a *Adapter) Run(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 	sandboxID := strings.TrimSpace(req.SandboxID)
 	if sandboxID == "" {
 		return nil, errors.New("missing sandbox_id")
@@ -387,7 +379,7 @@ func (a *Adapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest
 	return result, nil
 }
 
-func (a *Adapter) TerminateSandbox(_ context.Context, sandboxID string) error {
+func (a *Adapter) Terminate(_ context.Context, sandboxID string) error {
 	sandboxID = strings.TrimSpace(sandboxID)
 	if sandboxID == "" {
 		return errors.New("missing sandbox_id")

@@ -30,7 +30,7 @@ type blockingPersistentAdapter struct {
 	provisionCalls   atomic.Int32
 }
 
-func (a *blockingPersistentAdapter) ProvisionSandbox(context.Context, backend.ProvisionRequest) error {
+func (a *blockingPersistentAdapter) Provision(context.Context, backend.ProvisionRequest) error {
 	a.provisionCalls.Add(1)
 	if a.provisionEntered != nil {
 		a.provisionEntered <- struct{}{}
@@ -41,11 +41,7 @@ func (a *blockingPersistentAdapter) ProvisionSandbox(context.Context, backend.Pr
 	return nil
 }
 
-func (a *blockingPersistentAdapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
-	return a.RunStream(ctx, req, stream)
-}
-
-func (a *blockingPersistentAdapter) TerminateSandbox(context.Context, string) error {
+func (a *blockingPersistentAdapter) Terminate(context.Context, string) error {
 	if a.terminateEntered != nil {
 		a.terminateEntered <- struct{}{}
 	}
@@ -61,7 +57,7 @@ type cancelAwareStreamingAdapter struct {
 	runCanceled chan struct{}
 }
 
-func (a *cancelAwareStreamingAdapter) RunStream(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+func (a *cancelAwareStreamingAdapter) Run(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 	if a.runEntered != nil {
 		a.runEntered <- struct{}{}
 	}
@@ -76,7 +72,7 @@ type immediateStreamingAdapter struct {
 	integrationAdapter
 }
 
-func (a *immediateStreamingAdapter) RunStream(context.Context, backend.ExecutionRequest, backend.OutputStream) (*backend.ExecutionResult, error) {
+func (a *immediateStreamingAdapter) Run(context.Context, backend.ExecutionRequest, backend.OutputStream) (*backend.ExecutionResult, error) {
 	return &backend.ExecutionResult{
 		ExitCode: 0,
 		Message:  "done",
@@ -88,7 +84,7 @@ type warningStreamingAdapter struct {
 	warning string
 }
 
-func (a *warningStreamingAdapter) RunStream(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+func (a *warningStreamingAdapter) Run(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 	if stream.OnWarning != nil {
 		stream.OnWarning(a.warning)
 	}
@@ -143,16 +139,16 @@ func (s *integrationHookedServer) CancelExecution(ctx context.Context, req *conn
 	return s.Server.CancelExecution(ctx, req)
 }
 
-func startIntegrationServerWithAdapter(t *testing.T, adapter backend.Adapter) string {
+func startIntegrationServerWithAdapter(t *testing.T, adapter backend.SandboxAdapter) string {
 	return startIntegrationServerWithAdapterAndExecutionHooks(t, adapter, integrationExecutionHooks{})
 }
 
-func startIntegrationServerWithAdapterAndExecutionHooks(t *testing.T, adapter backend.Adapter, hooks integrationExecutionHooks) string {
+func startIntegrationServerWithAdapterAndExecutionHooks(t *testing.T, adapter backend.SandboxAdapter, hooks integrationExecutionHooks) string {
 	t.Helper()
-	return startIntegrationServerWithBackendsAndExecutionHooks(t, map[string]backend.Adapter{"firecracker": adapter}, hooks)
+	return startIntegrationServerWithBackendsAndExecutionHooks(t, map[string]backend.SandboxAdapter{"firecracker": adapter}, hooks)
 }
 
-func startIntegrationServerWithBackendsAndExecutionHooks(t *testing.T, backends map[string]backend.Adapter, hooks integrationExecutionHooks) string {
+func startIntegrationServerWithBackendsAndExecutionHooks(t *testing.T, backends map[string]backend.SandboxAdapter, hooks integrationExecutionHooks) string {
 	t.Helper()
 
 	if len(backends) == 0 {
@@ -289,7 +285,7 @@ func TestEnsureSandboxReusesKey(t *testing.T) {
 }
 
 func TestEnsureSandboxBackendChangeCreatesNewSandbox(t *testing.T) {
-	host := startIntegrationServerWithBackendsAndExecutionHooks(t, map[string]backend.Adapter{
+	host := startIntegrationServerWithBackendsAndExecutionHooks(t, map[string]backend.SandboxAdapter{
 		"firecracker": integrationAdapter{},
 		"darwin-vz":   integrationAdapter{},
 	}, integrationExecutionHooks{})

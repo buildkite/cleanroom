@@ -167,7 +167,7 @@ func gatewayServerConfig(listen string, registry *gateway.Registry, credentials 
 	}
 }
 
-func configureGatewayBackends(backends map[string]backend.Adapter, gwRegistry *gateway.Registry, gwPort int, gwListenAddr, darwinGatewayHost string) {
+func configureGatewayBackends(backends map[string]backend.SandboxAdapter, gwRegistry *gateway.Registry, gwPort int, gwListenAddr, darwinGatewayHost string) {
 	if fcAdapter, ok := backends["firecracker"].(*firecracker.Adapter); ok {
 		fcAdapter.GatewayRegistry = gwRegistry
 		fcAdapter.GatewayPort = gwPort

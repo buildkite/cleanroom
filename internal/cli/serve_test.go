@@ -54,7 +54,7 @@ func TestConfigureGatewayBackendsConfiguresDarwinVZGateway(t *testing.T) {
 	gwRegistry := gateway.NewRegistry()
 	fcAdapter := &firecracker.Adapter{}
 	darwinAdapter := &darwinvz.Adapter{}
-	backends := map[string]backend.Adapter{
+	backends := map[string]backend.SandboxAdapter{
 		"firecracker": fcAdapter,
 		"darwin-vz":   darwinAdapter,
 	}
@@ -85,7 +85,7 @@ func TestConfigureBackendRuntimeConfigConfiguresDarwinVZCapabilities(t *testing.
 	t.Parallel()
 
 	darwinAdapter := &darwinvz.Adapter{}
-	backends := map[string]backend.Adapter{
+	backends := map[string]backend.SandboxAdapter{
 		"darwin-vz": darwinAdapter,
 	}
 	cfg := runtimeconfig.Config{
