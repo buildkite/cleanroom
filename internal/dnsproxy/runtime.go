@@ -371,11 +371,14 @@ func (s *scopeState) pruneExpired(now time.Time) {
 }
 
 func observationsFromResponse(sandboxID string, sourceIP netip.Addr, msg *dns.Msg, now time.Time) []Observation {
-	if msg == nil {
+	if msg == nil || msg.Rcode != dns.RcodeSuccess {
 		return nil
 	}
 
 	questions := normalizedQuestions(msg.Question)
+	if len(questions) == 0 {
+		return nil
+	}
 	cnames := cnameRecords(msg.Answer)
 
 	observations := make([]Observation, 0, len(msg.Answer))
@@ -497,12 +500,6 @@ func queryPaths(owner string, questions []string, cnames map[string]cnameRecord)
 			query:    question,
 			names:    names,
 			cnameTTL: cnameTTL,
-		})
-	}
-	if len(paths) == 0 && owner != "" && len(questions) == 0 {
-		paths = append(paths, queryPath{
-			query: owner,
-			names: []string{owner},
 		})
 	}
 	return paths

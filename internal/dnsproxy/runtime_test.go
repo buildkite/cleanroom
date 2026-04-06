@@ -285,6 +285,96 @@ func TestRuntimeIgnoresUnmatchedAnswerOwnersWhenQuestionPresent(t *testing.T) {
 	}
 }
 
+func TestRuntimeDoesNotAuthorizeQuestionlessResponses(t *testing.T) {
+	t.Parallel()
+
+	runtime := NewRuntime(RuntimeConfig{
+		MaxObservationsPerScope:  8,
+		MaxConnectionsPerSandbox: 8,
+	})
+	if err := runtime.RegisterSandbox("sandbox-1", testCompiledPolicy(
+		policy.AllowRule{Host: "api.example.com", Ports: []int{443}},
+	)); err != nil {
+		t.Fatalf("register sandbox: %v", err)
+	}
+
+	now := time.Date(2026, time.April, 6, 10, 0, 0, 0, time.UTC)
+	sourceIP := netip.MustParseAddr("10.0.0.2")
+	destIP := netip.MustParseAddr("203.0.113.23")
+
+	msg := testResponse("api.example.com.",
+		&dns.A{
+			Hdr: dns.RR_Header{Name: "api.example.com.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 30},
+			A:   net.ParseIP("203.0.113.23"),
+		},
+	)
+	msg.Question = nil
+
+	if err := runtime.ObserveResponse("sandbox-1", sourceIP, msg, now); err != nil {
+		t.Fatalf("observe response: %v", err)
+	}
+
+	if observations := runtime.Observations("sandbox-1", now); len(observations) != 0 {
+		t.Fatalf("did not expect questionless response to be cached: %+v", observations)
+	}
+
+	if runtime.AllowConnection(Connection{
+		SandboxID:  "sandbox-1",
+		SourceIP:   sourceIP,
+		SourcePort: 41012,
+		DestIP:     destIP,
+		DestPort:   443,
+		Protocol:   ProtocolTCP,
+	}, now) {
+		t.Fatal("did not expect questionless response to authorize a new connection")
+	}
+}
+
+func TestRuntimeDoesNotAuthorizeNonSuccessResponses(t *testing.T) {
+	t.Parallel()
+
+	runtime := NewRuntime(RuntimeConfig{
+		MaxObservationsPerScope:  8,
+		MaxConnectionsPerSandbox: 8,
+	})
+	if err := runtime.RegisterSandbox("sandbox-1", testCompiledPolicy(
+		policy.AllowRule{Host: "api.example.com", Ports: []int{443}},
+	)); err != nil {
+		t.Fatalf("register sandbox: %v", err)
+	}
+
+	now := time.Date(2026, time.April, 6, 10, 0, 0, 0, time.UTC)
+	sourceIP := netip.MustParseAddr("10.0.0.2")
+	destIP := netip.MustParseAddr("203.0.113.24")
+
+	msg := testResponse("api.example.com.",
+		&dns.A{
+			Hdr: dns.RR_Header{Name: "api.example.com.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 30},
+			A:   net.ParseIP("203.0.113.24"),
+		},
+	)
+	msg.Rcode = dns.RcodeNameError
+
+	if err := runtime.ObserveResponse("sandbox-1", sourceIP, msg, now); err != nil {
+		t.Fatalf("observe response: %v", err)
+	}
+
+	if observations := runtime.Observations("sandbox-1", now); len(observations) != 0 {
+		t.Fatalf("did not expect non-success response to be cached: %+v", observations)
+	}
+
+	if runtime.AllowConnection(Connection{
+		SandboxID:  "sandbox-1",
+		SourceIP:   sourceIP,
+		SourcePort: 41013,
+		DestIP:     destIP,
+		DestPort:   443,
+		Protocol:   ProtocolTCP,
+	}, now) {
+		t.Fatal("did not expect non-success response to authorize a new connection")
+	}
+}
+
 func TestRuntimeScopesObservationsBySandboxAndSourceIP(t *testing.T) {
 	t.Parallel()
 
