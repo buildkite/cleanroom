@@ -518,6 +518,31 @@ func TestCreateSnapshotRejectsDisabledSnapshots(t *testing.T) {
 	}
 }
 
+func TestCreateSnapshotRejectsReservedWorkspaceSeedName(t *testing.T) {
+	store := newMemorySnapshotStore()
+	adapter := &stubAdapter{}
+	svc := newTestServiceWithSnapshotStore(adapter, store)
+
+	createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+
+	_, err = svc.CreateSnapshot(context.Background(), &cleanroomv1.CreateSnapshotRequest{
+		SandboxId: createResp.GetSandbox().GetSandboxId(),
+		Name:      workspaceSeedSnapshotNamePrefix + "manual",
+	})
+	if err == nil {
+		t.Fatal("expected CreateSnapshot to reject reserved workspace seed snapshot names")
+	}
+	if !strings.Contains(err.Error(), "reserved for managed workspace seed snapshots") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got, want := adapter.createSnapshotCalls, 0; got != want {
+		t.Fatalf("unexpected create snapshot call count: got %d want %d", got, want)
+	}
+}
+
 func TestCreateSnapshotRejectsRepositoryBusySandbox(t *testing.T) {
 	store := newMemorySnapshotStore()
 	adapter := &stubAdapter{}
@@ -1233,6 +1258,62 @@ func TestCreateSandboxReusesWorkspaceSeedSnapshot(t *testing.T) {
 	}
 	if got, want := adapter.provisionFromSnapshotReq.StorageRef, "/snapshots/"+adapter.createSnapshotReq.SnapshotID+".ext4"; got != want {
 		t.Fatalf("unexpected snapshot storage ref on warm hit: got %q want %q", got, want)
+	}
+}
+
+func TestCreateSandboxFallsBackWhenWorkspaceSeedRestoreFails(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	store := newMemorySnapshotStore()
+	adapter := &stubAdapter{
+		createSnapshotFn: func(_ context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
+			return &backend.SnapshotResult{StorageRef: "/snapshots/" + req.SnapshotID + ".ext4"}, nil
+		},
+		provisionFromSnapshotFn: func(_ context.Context, _ backend.ProvisionFromSnapshotRequest) error {
+			return errors.New("snapshot restore failed")
+		},
+	}
+	mirrors := &stubRepositoryMirrorStore{}
+	svc := newTestServiceWithSnapshotStore(adapter, store)
+	svc.RepositoryMirrors = mirrors
+
+	req := &cleanroomv1.CreateSandboxRequest{
+		Policy:             testRepositoryPolicy(),
+		RepositoryCheckout: testRepositoryCheckoutProto(),
+	}
+
+	if _, err := svc.CreateSandbox(context.Background(), req); err != nil {
+		t.Fatalf("first CreateSandbox returned error: %v", err)
+	}
+
+	secondResp, err := svc.CreateSandbox(context.Background(), req)
+	if err != nil {
+		t.Fatalf("second CreateSandbox returned error: %v", err)
+	}
+	if secondResp.GetSandbox().GetSandboxId() == "" {
+		t.Fatal("expected sandbox id after falling back to cold bootstrap")
+	}
+	if got, want := adapter.provisionFromSnapshotCalls, 1; got != want {
+		t.Fatalf("expected one failed snapshot restore attempt, got %d want %d", got, want)
+	}
+	if got, want := adapter.provisionCalls, 2; got != want {
+		t.Fatalf("expected fallback path to reprovision sandbox, got %d want %d", got, want)
+	}
+	if got, want := adapter.runCalls, 2; got != want {
+		t.Fatalf("expected fallback path to rerun repository bootstrap, got %d want %d", got, want)
+	}
+	if got, want := adapter.createSnapshotCalls, 2; got != want {
+		t.Fatalf("expected fallback path to republish workspace seed snapshot, got %d want %d", got, want)
+	}
+	if got, want := mirrors.calls, 2; got != want {
+		t.Fatalf("expected fallback path to re-prewarm mirror, got %d want %d", got, want)
+	}
+
+	records, err := store.List(context.Background())
+	if err != nil {
+		t.Fatalf("List returned error: %v", err)
+	}
+	if got, want := len(records), 2; got != want {
+		t.Fatalf("expected failed restore fallback to retain old snapshot and publish a new one, got %d want %d", got, want)
 	}
 }
 

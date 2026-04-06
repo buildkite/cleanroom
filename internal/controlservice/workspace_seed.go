@@ -16,6 +16,10 @@ import (
 
 const workspaceSeedSnapshotNamePrefix = "workspace-seed:"
 
+func isWorkspaceSeedSnapshotName(name string) bool {
+	return strings.HasPrefix(strings.TrimSpace(name), workspaceSeedSnapshotNamePrefix)
+}
+
 func workspaceSeedSnapshotName(backendName, policyHash string, repository *repositorycheckout.Checkout) string {
 	if repository == nil {
 		return ""
@@ -90,6 +94,7 @@ func (s *Service) maybePublishWorkspaceSeedSnapshot(
 	compiled *policy.CompiledPolicy,
 	firecrackerCfg backend.FirecrackerConfig,
 	repository *repositorycheckout.Checkout,
+	replacedSnapshotID string,
 ) {
 	if adapter == nil || compiled == nil || repository == nil {
 		return
@@ -103,8 +108,10 @@ func (s *Service) maybePublishWorkspaceSeedSnapshot(
 		return
 	}
 
-	if _, ok, err := s.lookupWorkspaceSeedSnapshot(ctx, backendName, compiled, repository); err == nil && ok {
-		return
+	if record, ok, err := s.lookupWorkspaceSeedSnapshot(ctx, backendName, compiled, repository); err == nil && ok {
+		if strings.TrimSpace(record.SnapshotID) != strings.TrimSpace(replacedSnapshotID) {
+			return
+		}
 	} else if err != nil {
 		s.logWorkspaceSeedWarning("lookup workspace seed snapshot", sandboxID, err)
 		return
@@ -153,4 +160,11 @@ func (s *Service) logWorkspaceSeedWarning(message, sandboxID string, err error) 
 		return
 	}
 	s.Logger.Warn(message, "sandbox_id", sandboxID, "error", err)
+}
+
+func (s *Service) logWorkspaceSeedRestoreWarning(snapshotID string, err error) {
+	if s == nil || s.Logger == nil || err == nil {
+		return
+	}
+	s.Logger.Warn("restore workspace seed snapshot", "snapshot_id", snapshotID, "error", err)
 }

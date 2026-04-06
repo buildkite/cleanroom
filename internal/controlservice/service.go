@@ -194,17 +194,23 @@ func (s *Service) CreateSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	firecrackerCfg.RunDir = ""
 	firecrackerCfg = withRepositoryBootstrapRootFSMinimum(firecrackerCfg, compiled, repository)
 
+	replacedWorkspaceSeedSnapshotID := ""
 	if repository != nil {
 		if _, ok := adapter.(backend.SnapshottingAdapter); ok && snapshotOperationsEnabledForBackend(backendName, s.Config) {
 			record, found, err := s.lookupWorkspaceSeedSnapshot(ctx, backendName, compiled, repository)
 			if err != nil {
 				s.logWorkspaceSeedWarning("lookup workspace seed snapshot", "", err)
 			} else if found {
-				return s.createSandboxFromSnapshot(ctx, &cleanroomv1.CreateSandboxRequest{
+				resp, restoreErr := s.createSandboxFromSnapshot(ctx, &cleanroomv1.CreateSandboxRequest{
 					Backend: backendName,
 					Options: req.GetOptions(),
 					Source:  &cleanroomv1.CreateSandboxRequest_SnapshotId{SnapshotId: record.SnapshotID},
 				}, record.SnapshotID)
+				if restoreErr == nil {
+					return resp, nil
+				}
+				replacedWorkspaceSeedSnapshotID = record.SnapshotID
+				s.logWorkspaceSeedRestoreWarning(record.SnapshotID, restoreErr)
 			}
 		}
 	}
@@ -229,7 +235,7 @@ func (s *Service) CreateSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 			return nil, fmt.Errorf("bootstrap repository checkout: %w", err)
 		}
 		if snapshotAdapter, ok := adapter.(backend.SnapshottingAdapter); ok {
-			s.maybePublishWorkspaceSeedSnapshot(ctx, snapshotAdapter, sandboxID, backendName, compiled, firecrackerCfg, repository)
+			s.maybePublishWorkspaceSeedSnapshot(ctx, snapshotAdapter, sandboxID, backendName, compiled, firecrackerCfg, repository, replacedWorkspaceSeedSnapshotID)
 		}
 	} else if repository != nil {
 		return nil, errors.New("repository bootstrap for sandbox creation requires a persistent backend")
@@ -424,6 +430,9 @@ func (s *Service) CreateSnapshot(ctx context.Context, req *cleanroomv1.CreateSna
 	now := time.Now().UTC()
 	snapshotID := newSnapshotID()
 	name := strings.TrimSpace(req.GetName())
+	if isWorkspaceSeedSnapshotName(name) {
+		return nil, fmt.Errorf("snapshot name %q is reserved for managed workspace seed snapshots", name)
+	}
 
 	var (
 		record          snapshotstore.Record
