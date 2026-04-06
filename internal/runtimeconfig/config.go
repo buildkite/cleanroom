@@ -206,6 +206,20 @@ func parseByteSize(input string) (int64, error) {
 		return 0, fmt.Errorf("unsupported unit %q", unitPart)
 	}
 
+	if !strings.Contains(numberPart, ".") {
+		numberValue, err := strconv.ParseInt(numberPart, 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("parse numeric value: %w", err)
+		}
+		if numberValue < 0 {
+			return 0, errors.New("value must be non-negative")
+		}
+		if multiplier != 0 && numberValue > math.MaxInt64/multiplier {
+			return 0, errors.New("size overflows int64")
+		}
+		return numberValue * multiplier, nil
+	}
+
 	value := numberValue * float64(multiplier)
 	rounded := math.Round(value)
 	if math.Abs(value-rounded) > 1e-9 {
