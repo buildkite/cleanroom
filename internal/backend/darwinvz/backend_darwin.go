@@ -251,9 +251,11 @@ func (a *Adapter) Capabilities() map[string]bool {
 	if err != nil {
 		allowlistSupported = false
 	}
+	dnsControlSupported := strings.TrimSpace(a.ConfiguredNetworkMode) == darwinVZNetworkModeFileHandle
 	return map[string]bool{
 		backend.CapabilityNetworkDefaultDeny:     true,
 		backend.CapabilityNetworkAllowlistEgress: allowlistSupported,
+		backend.CapabilityDNSControlOrEquivalent: dnsControlSupported,
 		backend.CapabilityNetworkGuestInterface:  true,
 	}
 }
@@ -895,6 +897,7 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 	}()
 
 	startedVM, err := startDarwinVZHelperVM(ctx, helper, darwinVZVMStartRequest{
+		SandboxID:      req.SandboxID,
 		ConfigPath:     vmPlanPath,
 		BackendName:    a.Name(),
 		RunDir:         runDir,
@@ -903,6 +906,8 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 		BootArgs:       bootArgs,
 		ConsoleLogPath: consolePath,
 		NetworkCfg:     networkCfg,
+		HostGatewayURL: a.GatewayBridgeURL,
+		GatewayPort:    a.GatewayPort,
 		Policy:         req.Policy,
 		VCPUs:          req.VCPUs,
 		MemoryMiB:      req.MemoryMiB,
@@ -1190,6 +1195,7 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 	}()
 
 	startedVM, err := startDarwinVZHelperVM(ctx, helper, darwinVZVMStartRequest{
+		SandboxID:      sandboxID,
 		ConfigPath:     configPath,
 		BackendName:    a.Name(),
 		RunDir:         runDir,

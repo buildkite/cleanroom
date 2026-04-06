@@ -18,13 +18,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/buildkite/cleanroom/internal/dnsproxy"
 	"github.com/buildkite/cleanroom/internal/gateway"
 	"github.com/buildkite/cleanroom/internal/policy"
-	gvdns "github.com/containers/gvisor-tap-vsock/pkg/services/dns"
 	gvtap "github.com/containers/gvisor-tap-vsock/pkg/tap"
 	"github.com/containers/gvisor-tap-vsock/pkg/tcpproxy"
 	gvtransport "github.com/containers/gvisor-tap-vsock/pkg/transport"
 	gvtypes "github.com/containers/gvisor-tap-vsock/pkg/types"
+	mdns "github.com/miekg/dns"
 	logrus "github.com/sirupsen/logrus"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
@@ -43,28 +44,21 @@ const (
 	fileHandleGatewayShutdownTimeout = 2 * time.Second
 	fileHandleGatewayMTU             = 1500
 	fileHandleGatewayDNSPort         = 53
+	fileHandleGatewayDNSFallbackAddr = "1.1.1.1:53"
 )
 
-type fileHandleIPLookupFunc func(ctx context.Context, host string) ([]netip.Addr, error)
-
-var defaultFileHandleIPLookup fileHandleIPLookupFunc = func(ctx context.Context, host string) ([]netip.Addr, error) {
-	return net.DefaultResolver.LookupNetIP(ctx, "ip4", host)
-}
+var fileHandleDNSClientConfigFromFile = mdns.ClientConfigFromFile
 
 type fileHandleGatewayConfig struct {
-	RunDir         string
-	SubnetCIDR     string
-	GatewayIP      string
-	GatewayPort    int
-	GatewayMAC     string
-	HostGatewayURL string
-	Policy         *policy.CompiledPolicy
-	LookupIP       fileHandleIPLookupFunc
-}
-
-type fileHandleGatewayPolicy struct {
-	allowAll   bool
-	allowedTCP map[netip.Addr]map[uint16]struct{}
+	RunDir          string
+	SandboxID       string
+	SubnetCIDR      string
+	GatewayIP       string
+	GatewayPort     int
+	GatewayMAC      string
+	DNSUpstreamAddr string
+	HostGatewayURL  string
+	Policy          *policy.CompiledPolicy
 }
 
 type fileHandleVirtualNetwork struct {
@@ -72,6 +66,9 @@ type fileHandleVirtualNetwork struct {
 	networkSwitch     *gvtap.Switch
 	dnsUDPConn        net.PacketConn
 	dnsTCPLn          net.Listener
+	dnsUDPServer      *mdns.Server
+	dnsTCPServer      *mdns.Server
+	dnsRuntime        *dnsproxy.Runtime
 	gatewayHTTPLn     net.Listener
 	gatewayHTTPServer *http.Server
 }
@@ -125,12 +122,11 @@ func startFileHandleGateway(ctx context.Context, cfg fileHandleGatewayConfig) (*
 	if cfg.GatewayPort <= 0 {
 		cfg.GatewayPort = gateway.DefaultPort
 	}
-
-	lookup := cfg.LookupIP
-	if lookup == nil {
-		lookup = defaultFileHandleIPLookup
+	dnsRuntime, err := newFileHandleDNSRuntime(cfg.SandboxID, cfg.Policy)
+	if err != nil {
+		return nil, err
 	}
-	policyConfig, err := buildFileHandleGatewayPolicy(ctx, cfg.Policy, lookup)
+	upstreamAddr, err := resolveFileHandleDNSUpstreamAddr(cfg.DNSUpstreamAddr)
 	if err != nil {
 		return nil, err
 	}
@@ -143,7 +139,7 @@ func startFileHandleGateway(ctx context.Context, cfg fileHandleGatewayConfig) (*
 		}
 	}
 
-	network, err := newFileHandleVirtualNetwork(cfg, policyConfig, bridge)
+	network, err := newFileHandleVirtualNetwork(cfg, upstreamAddr, dnsRuntime, bridge)
 	if err != nil {
 		return nil, fmt.Errorf("create file-handle virtual network: %w", err)
 	}
@@ -235,78 +231,68 @@ func (g *fileHandleGateway) SetScopeToken(scopeToken string) {
 	g.bridge.SetScopeToken(scopeToken)
 }
 
-func buildFileHandleGatewayPolicy(ctx context.Context, compiled *policy.CompiledPolicy, lookup fileHandleIPLookupFunc) (fileHandleGatewayPolicy, error) {
+func newFileHandleDNSRuntime(sandboxID string, compiled *policy.CompiledPolicy) (*dnsproxy.Runtime, error) {
 	if compiled == nil {
-		return fileHandleGatewayPolicy{allowAll: true}, nil
+		return nil, nil
 	}
 	if strings.TrimSpace(compiled.NetworkDefault) != "deny" {
-		return fileHandleGatewayPolicy{}, fmt.Errorf("darwin-vz backend requires deny-by-default policy, got %q", compiled.NetworkDefault)
+		return nil, fmt.Errorf("darwin-vz backend requires deny-by-default policy, got %q", compiled.NetworkDefault)
 	}
-	if lookup == nil {
-		lookup = defaultFileHandleIPLookup
-	}
-
-	allowedTCP := make(map[netip.Addr]map[uint16]struct{})
-	for _, entry := range compiled.Allow {
-		host := strings.TrimSpace(strings.ToLower(entry.Host))
-		if host == "" || len(entry.Ports) == 0 {
-			continue
-		}
-
-		var resolvedIPs []netip.Addr
-		if addr, err := netip.ParseAddr(host); err == nil {
-			if addr.Is4() {
-				resolvedIPs = []netip.Addr{addr}
-			}
-		} else {
-			addrs, err := lookup(ctx, host)
-			if err != nil {
-				return fileHandleGatewayPolicy{}, fmt.Errorf("resolve policy host %q: %w", entry.Host, err)
-			}
-			for _, addr := range addrs {
-				if addr.Is4() {
-					resolvedIPs = append(resolvedIPs, addr)
-				}
-			}
-		}
-		if len(resolvedIPs) == 0 {
-			return fileHandleGatewayPolicy{}, fmt.Errorf("resolve policy host %q: no ipv4 addresses", entry.Host)
-		}
-
-		for _, addr := range resolvedIPs {
-			ports := allowedTCP[addr]
-			if ports == nil {
-				ports = make(map[uint16]struct{}, len(entry.Ports))
-				allowedTCP[addr] = ports
-			}
-			for _, port := range entry.Ports {
-				if port < 1 || port > 65535 {
-					continue
-				}
-				ports[uint16(port)] = struct{}{}
-			}
-		}
+	sandboxID = strings.TrimSpace(sandboxID)
+	if sandboxID == "" {
+		return nil, errors.New("file-handle gateway sandbox id is empty")
 	}
 
-	return fileHandleGatewayPolicy{allowedTCP: allowedTCP}, nil
+	runtime := dnsproxy.NewRuntime(dnsproxy.RuntimeConfig{})
+	if err := runtime.RegisterSandbox(sandboxID, compiled); err != nil {
+		return nil, fmt.Errorf("register file-handle dns sandbox %q: %w", sandboxID, err)
+	}
+	return runtime, nil
 }
 
-func (p fileHandleGatewayPolicy) allowsTCP(destIP netip.Addr, destPort uint16) bool {
-	if p.allowAll {
-		return true
+func resolveFileHandleDNSUpstreamAddr(configured string) (string, error) {
+	configured = strings.TrimSpace(configured)
+	if configured != "" {
+		return configured, nil
 	}
-	if !destIP.IsValid() || !destIP.Is4() {
-		return false
+
+	conf, err := fileHandleDNSClientConfigFromFile("/etc/resolv.conf")
+	if err == nil && conf != nil {
+		port := strings.TrimSpace(conf.Port)
+		if port == "" {
+			port = "53"
+		}
+		for _, server := range conf.Servers {
+			server = strings.TrimSpace(server)
+			if server == "" {
+				continue
+			}
+			return net.JoinHostPort(server, port), nil
+		}
 	}
-	ports := p.allowedTCP[destIP]
-	if len(ports) == 0 {
-		return false
-	}
-	_, ok := ports[destPort]
-	return ok
+
+	return fileHandleGatewayDNSFallbackAddr, nil
 }
 
-func newFileHandleVirtualNetwork(cfg fileHandleGatewayConfig, policyConfig fileHandleGatewayPolicy, bridge *fileHandleGatewayHTTPBridge) (*fileHandleVirtualNetwork, error) {
+func newFileHandleScopeResolver(sandboxID, gatewayIP string) dnsproxy.ScopeResolver {
+	sandboxID = strings.TrimSpace(sandboxID)
+	gatewayAddr, _ := netip.ParseAddr(strings.TrimSpace(gatewayIP))
+	return func(sourceIP netip.Addr) (string, bool) {
+		if sandboxID == "" {
+			return "", false
+		}
+		sourceIP = sourceIP.Unmap()
+		if !sourceIP.IsValid() || !sourceIP.Is4() {
+			return "", false
+		}
+		if gatewayAddr.IsValid() && sourceIP == gatewayAddr {
+			return "", false
+		}
+		return sandboxID, true
+	}
+}
+
+func newFileHandleVirtualNetwork(cfg fileHandleGatewayConfig, dnsUpstreamAddr string, dnsRuntime *dnsproxy.Runtime, bridge *fileHandleGatewayHTTPBridge) (*fileHandleVirtualNetwork, error) {
 	_, parsedSubnet, err := net.ParseCIDR(cfg.SubnetCIDR)
 	if err != nil {
 		return nil, fmt.Errorf("parse subnet cidr: %w", err)
@@ -369,14 +355,21 @@ func newFileHandleVirtualNetwork(cfg fileHandleGatewayConfig, policyConfig fileH
 		_ = udpConn.Close()
 		return nil, fmt.Errorf("listen dns tcp endpoint: %w", err)
 	}
-	dnsServer, err := gvdns.New(udpConn, tcpLn, nil)
-	if err != nil {
-		_ = udpConn.Close()
-		_ = tcpLn.Close()
-		return nil, fmt.Errorf("create dns server: %w", err)
+	dnsForwarder := dnsproxy.NewForwarder(dnsproxy.ForwarderConfig{
+		Runtime:       dnsRuntime,
+		UpstreamAddr:  dnsUpstreamAddr,
+		ScopeResolver: newFileHandleScopeResolver(cfg.SandboxID, cfg.GatewayIP),
+	})
+	dnsUDPServer := &mdns.Server{
+		PacketConn: udpConn,
+		Handler:    dnsForwarder,
 	}
-	go func() { _ = dnsServer.Serve() }()
-	go func() { _ = dnsServer.ServeTCP() }()
+	dnsTCPServer := &mdns.Server{
+		Listener: tcpLn,
+		Handler:  dnsForwarder,
+	}
+	go func() { _ = dnsUDPServer.ActivateAndServe() }()
+	go func() { _ = dnsTCPServer.ActivateAndServe() }()
 
 	var gatewayHTTPLn net.Listener
 	var gatewayHTTPServer *http.Server
@@ -396,14 +389,34 @@ func newFileHandleVirtualNetwork(cfg fileHandleGatewayConfig, policyConfig fileH
 	}
 
 	tcpForwarder := tcp.NewForwarder(s, 0, 10, func(r *tcp.ForwarderRequest) {
+		sourceIP, ok := tcpipAddressAsNetipAddr(r.ID().RemoteAddress)
+		if !ok {
+			r.Complete(true)
+			return
+		}
 		destIP, ok := tcpipAddressAsNetipAddr(r.ID().LocalAddress)
-		if !ok || !policyConfig.allowsTCP(destIP, r.ID().LocalPort) {
+		if !ok {
+			r.Complete(true)
+			return
+		}
+		conn := dnsproxy.Connection{
+			SandboxID:  cfg.SandboxID,
+			SourceIP:   sourceIP,
+			SourcePort: r.ID().RemotePort,
+			DestIP:     destIP,
+			DestPort:   r.ID().LocalPort,
+			Protocol:   dnsproxy.ProtocolTCP,
+		}
+		if dnsRuntime != nil && !dnsRuntime.AllowConnection(conn, time.Now()) {
 			r.Complete(true)
 			return
 		}
 
 		outbound, err := net.Dial("tcp", fmt.Sprintf("%s:%d", destIP.String(), r.ID().LocalPort))
 		if err != nil {
+			if dnsRuntime != nil {
+				dnsRuntime.ReleaseConnection(conn)
+			}
 			r.Complete(true)
 			return
 		}
@@ -413,6 +426,9 @@ func newFileHandleVirtualNetwork(cfg fileHandleGatewayConfig, policyConfig fileH
 		r.Complete(false)
 		if tcpErr != nil {
 			_ = outbound.Close()
+			if dnsRuntime != nil {
+				dnsRuntime.ReleaseConnection(conn)
+			}
 			return
 		}
 
@@ -421,7 +437,11 @@ func newFileHandleVirtualNetwork(cfg fileHandleGatewayConfig, policyConfig fileH
 				return outbound, nil
 			},
 		}
-		remote.HandleConn(gonet.NewTCPConn(&wq, ep))
+		guestConn := gonet.NewTCPConn(&wq, ep)
+		remote.HandleConn(guestConn)
+		if dnsRuntime != nil {
+			dnsRuntime.ReleaseConnection(conn)
+		}
 	})
 	s.SetTransportProtocolHandler(tcp.ProtocolNumber, tcpForwarder.HandlePacket)
 
@@ -430,6 +450,9 @@ func newFileHandleVirtualNetwork(cfg fileHandleGatewayConfig, policyConfig fileH
 		networkSwitch:     networkSwitch,
 		dnsUDPConn:        udpConn,
 		dnsTCPLn:          tcpLn,
+		dnsUDPServer:      dnsUDPServer,
+		dnsTCPServer:      dnsTCPServer,
+		dnsRuntime:        dnsRuntime,
 		gatewayHTTPLn:     gatewayHTTPLn,
 		gatewayHTTPServer: gatewayHTTPServer,
 	}, nil
@@ -450,9 +473,19 @@ func (n *fileHandleVirtualNetwork) Close() error {
 			closeErr = errors.Join(closeErr, fmt.Errorf("close file-handle dns udp socket: %w", err))
 		}
 	}
+	if n.dnsUDPServer != nil {
+		if err := n.dnsUDPServer.Shutdown(); err != nil && !ignoreFileHandleDNSServerShutdownErr(err) {
+			closeErr = errors.Join(closeErr, fmt.Errorf("shutdown file-handle dns udp server: %w", err))
+		}
+	}
 	if n.dnsTCPLn != nil {
 		if err := n.dnsTCPLn.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
 			closeErr = errors.Join(closeErr, fmt.Errorf("close file-handle dns tcp listener: %w", err))
+		}
+	}
+	if n.dnsTCPServer != nil {
+		if err := n.dnsTCPServer.Shutdown(); err != nil && !ignoreFileHandleDNSServerShutdownErr(err) {
+			closeErr = errors.Join(closeErr, fmt.Errorf("shutdown file-handle dns tcp server: %w", err))
 		}
 	}
 	if n.gatewayHTTPServer != nil {
@@ -466,6 +499,14 @@ func (n *fileHandleVirtualNetwork) Close() error {
 		}
 	}
 	return closeErr
+}
+
+func ignoreFileHandleDNSServerShutdownErr(err error) bool {
+	if err == nil || errors.Is(err, net.ErrClosed) {
+		return true
+	}
+	var dnsErr *mdns.Error
+	return errors.As(err, &dnsErr) && dnsErr.Error() == "dns: server not started"
 }
 
 func newFileHandleGatewayHTTPBridge(targetURL string) (*fileHandleGatewayHTTPBridge, error) {

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/buildkite/cleanroom/internal/policy"
+	mdns "github.com/miekg/dns"
 	logrus "github.com/sirupsen/logrus"
 )
 
@@ -101,57 +102,83 @@ func TestFileHandleGatewayCloseRemovesSocketPath(t *testing.T) {
 	}
 }
 
-func TestBuildFileHandleGatewayPolicyResolvesAllowRules(t *testing.T) {
+func TestStartFileHandleGatewayDoesNotResolveAllowRulesAtStartup(t *testing.T) {
 	t.Parallel()
 
-	lookup := func(_ context.Context, host string) ([]netip.Addr, error) {
-		switch host {
-		case "github.com":
-			return []netip.Addr{netip.MustParseAddr("140.82.112.4")}, nil
-		default:
-			return nil, nil
-		}
-	}
-
-	compiled := &policy.CompiledPolicy{
-		NetworkDefault: "deny",
-		Allow: []policy.AllowRule{
-			{Host: "github.com", Ports: []int{443, 443}},
+	runDir := mustMkdirShortTempDir(t)
+	gateway, err := startFileHandleGateway(context.Background(), fileHandleGatewayConfig{
+		SandboxID:  "sandbox-1",
+		RunDir:     runDir,
+		SubnetCIDR: "10.233.0.0/24",
+		GatewayIP:  "10.233.0.1",
+		Policy: &policy.CompiledPolicy{
+			NetworkDefault: "deny",
+			Allow: []policy.AllowRule{
+				{Host: "missing.example", Ports: []int{443}},
+			},
 		},
-	}
-
-	got, err := buildFileHandleGatewayPolicy(context.Background(), compiled, lookup)
+	})
 	if err != nil {
-		t.Fatalf("buildFileHandleGatewayPolicy returned error: %v", err)
+		t.Fatalf("startFileHandleGateway returned error: %v", err)
 	}
-	if !got.allowsTCP(netip.MustParseAddr("140.82.112.4"), 443) {
-		t.Fatal("expected github.com:443 to be allowed")
-	}
-	if got.allowsTCP(netip.MustParseAddr("140.82.112.4"), 80) {
-		t.Fatal("expected github.com:80 to be denied")
-	}
-	if got.allowsTCP(netip.MustParseAddr("140.82.112.5"), 443) {
-		t.Fatal("expected non-allowlisted IP to be denied")
+	if err := gateway.Close(); err != nil {
+		t.Fatalf("gateway.Close returned error: %v", err)
 	}
 }
 
-func TestBuildFileHandleGatewayPolicyRejectsHostWithoutIPv4Resolution(t *testing.T) {
+func TestNewFileHandleDNSRuntimeRequiresSandboxIDWhenPolicyPresent(t *testing.T) {
 	t.Parallel()
 
-	lookup := func(_ context.Context, _ string) ([]netip.Addr, error) {
-		return nil, nil
-	}
-
-	compiled := &policy.CompiledPolicy{
+	_, err := newFileHandleDNSRuntime("", &policy.CompiledPolicy{
 		NetworkDefault: "deny",
-		Allow: []policy.AllowRule{
-			{Host: "missing.example", Ports: []int{443}},
-		},
-	}
-
-	_, err := buildFileHandleGatewayPolicy(context.Background(), compiled, lookup)
+	})
 	if err == nil {
-		t.Fatal("expected unresolved host to fail")
+		t.Fatal("expected missing sandbox id to fail")
+	}
+}
+
+func TestResolveFileHandleDNSUpstreamAddrUsesConfiguredValue(t *testing.T) {
+	t.Parallel()
+
+	got, err := resolveFileHandleDNSUpstreamAddr("9.9.9.9:53")
+	if err != nil {
+		t.Fatalf("resolveFileHandleDNSUpstreamAddr returned error: %v", err)
+	}
+	if got != "9.9.9.9:53" {
+		t.Fatalf("unexpected configured upstream addr: got %q want %q", got, "9.9.9.9:53")
+	}
+}
+
+func TestResolveFileHandleDNSUpstreamAddrFallsBackToSystemConfig(t *testing.T) {
+	previous := fileHandleDNSClientConfigFromFile
+	fileHandleDNSClientConfigFromFile = func(string) (*mdns.ClientConfig, error) {
+		return &mdns.ClientConfig{
+			Servers: []string{"192.0.2.53"},
+			Port:    "5353",
+		}, nil
+	}
+	t.Cleanup(func() {
+		fileHandleDNSClientConfigFromFile = previous
+	})
+
+	got, err := resolveFileHandleDNSUpstreamAddr("")
+	if err != nil {
+		t.Fatalf("resolveFileHandleDNSUpstreamAddr returned error: %v", err)
+	}
+	if got != "192.0.2.53:5353" {
+		t.Fatalf("unexpected system upstream addr: got %q want %q", got, "192.0.2.53:5353")
+	}
+}
+
+func TestNewFileHandleScopeResolverRejectsGatewayIP(t *testing.T) {
+	t.Parallel()
+
+	resolver := newFileHandleScopeResolver("sandbox-1", "10.233.0.1")
+	if sandboxID, ok := resolver(netip.MustParseAddr("10.233.0.1")); ok || sandboxID != "" {
+		t.Fatalf("expected gateway ip to be rejected, got sandbox_id=%q ok=%t", sandboxID, ok)
+	}
+	if sandboxID, ok := resolver(netip.MustParseAddr("10.233.0.2")); !ok || sandboxID != "sandbox-1" {
+		t.Fatalf("expected guest ip to resolve sandbox scope, got sandbox_id=%q ok=%t", sandboxID, ok)
 	}
 }
 

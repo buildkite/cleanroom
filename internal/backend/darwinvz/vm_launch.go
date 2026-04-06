@@ -46,6 +46,7 @@ type darwinVZConfigFile struct {
 }
 
 type darwinVZVMStartRequest struct {
+	SandboxID      string
 	ConfigPath     string
 	BackendName    string
 	RunDir         string
@@ -97,6 +98,7 @@ func startDarwinVZHelperVM(ctx context.Context, helper *helperSession, req darwi
 	var fileHandleGW *fileHandleGateway
 	if req.NetworkCfg.Mode == darwinVZNetworkModeFileHandle {
 		gateway, err := startFileHandleGateway(ctx, fileHandleGatewayConfig{
+			SandboxID:      req.SandboxID,
 			RunDir:         req.RunDir,
 			SubnetCIDR:     req.NetworkCfg.SubnetCIDR,
 			GatewayPort:    req.GatewayPort,

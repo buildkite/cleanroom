@@ -19,6 +19,9 @@ func TestCapabilitiesDeclareGuestNetworkInterfaceWithoutAllowlistFilteringByDefa
 	if !caps[backend.CapabilityNetworkGuestInterface] {
 		t.Fatalf("expected %s=true", backend.CapabilityNetworkGuestInterface)
 	}
+	if caps[backend.CapabilityDNSControlOrEquivalent] {
+		t.Fatalf("expected %s=false", backend.CapabilityDNSControlOrEquivalent)
+	}
 }
 
 func TestCapabilitiesDeclareAllowlistFilteringForFileHandleMode(t *testing.T) {
@@ -36,5 +39,8 @@ func TestCapabilitiesDeclareAllowlistFilteringForFileHandleMode(t *testing.T) {
 	}
 	if !caps[backend.CapabilityNetworkGuestInterface] {
 		t.Fatalf("expected %s=true", backend.CapabilityNetworkGuestInterface)
+	}
+	if !caps[backend.CapabilityDNSControlOrEquivalent] {
+		t.Fatalf("expected %s=true", backend.CapabilityDNSControlOrEquivalent)
 	}
 }
