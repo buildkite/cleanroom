@@ -312,7 +312,7 @@ func Load() (Config, string, error) {
 				DarwinVZ DarwinVZConfig `yaml:"darwin_vz"`
 			} `yaml:"backends"`
 		}{}
-		if err := yaml.Unmarshal(b, &legacyCfg); err == nil && !darwinVZConfigIsZero(legacyCfg.Backends.DarwinVZ) {
+		if err := yaml.Unmarshal(b, &legacyCfg); err == nil && darwinVZConfigHasValues(legacyCfg.Backends.DarwinVZ) {
 			cfg.Backends.DarwinVZ = legacyCfg.Backends.DarwinVZ
 		}
 	}
@@ -340,6 +340,10 @@ func darwinVZConfigIsZero(cfg DarwinVZConfig) bool {
 		cfg.MemoryMiB == 0 &&
 		cfg.GuestPort == 0 &&
 		cfg.LaunchSeconds == 0
+}
+
+func darwinVZConfigHasValues(cfg DarwinVZConfig) bool {
+	return !darwinVZConfigIsZero(cfg) || cfg.MinimumRootFSBytes > 0
 }
 
 func darwinVZNetworkConfigIsZero(cfg DarwinVZNetworkConfig) bool {
