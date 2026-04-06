@@ -29,6 +29,36 @@ We need both. Deterministic caches without cheap clone materialization still
 leave startup expensive. Cheap block clones without deterministic cache keys
 still leave reuse unsafe and hard to reason about.
 
+## Delivery Strategy
+
+This plan should land in phases rather than as one large cross-backend change.
+
+### Phase 1: Workspace-seed orchestration
+
+Land the backend-neutral control-plane slice first:
+
+- publish workspace-seed snapshots after exact-commit repository bootstrap
+- look up matching workspace-seed snapshots before repeating bootstrap
+- prove deterministic cache keying and trusted publication semantics
+
+This phase improves warm repo-aware sandbox creation by skipping repeated
+checkout work on snapshot-capable persistent backends.
+
+It does **not** yet deliver the full hot-path performance win for Firecracker,
+because Firecracker's normal execution flow still copies the prepared ext4
+rootfs per run.
+
+### Phase 2: Firecracker hot-path materialization
+
+Follow with a Firecracker-specific runtime change:
+
+- replace the per-run ext4 file copy with clone-based writable root volume
+  preparation
+- consume published cache artifacts through the volume-store clone path
+
+This is the phase that converts workspace-seed hits from "skip git/bootstrap
+work" into "nearly plain sandbox boot time" on Firecracker.
+
 ## Background
 
 The repository already has most of the right primitives in separate slices:
@@ -575,12 +605,12 @@ opaque prose so determinism can be tested directly.
 
 1. Add cache metadata records and canonical key derivation helpers.
 2. Keep the git mirror as the transport cache for exact-commit checkout.
-3. Add lockfile parsing and package artifact CAS for one ecosystem first.
-4. Publish workspace seeds keyed by exact repository inputs.
-5. Publish dependency seeds keyed by lockfiles, toolchains, and bootstrap
-   recipe.
-6. Move Firecracker warm-hit materialization onto clone-based root volume
+3. Publish workspace seeds keyed by exact repository inputs.
+4. Move Firecracker warm-hit materialization onto clone-based root volume
    preparation.
+5. Add lockfile parsing and package artifact CAS for one ecosystem first.
+6. Publish dependency seeds keyed by lockfiles, toolchains, and bootstrap
+   recipe.
 7. Add strict offline warm-cache mode and fail-closed launch checks.
 8. Add garbage collection and retention policies after the key model and
    publication flow are stable.
