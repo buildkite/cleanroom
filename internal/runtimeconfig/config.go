@@ -38,15 +38,16 @@ type FirecrackerConfig struct {
 }
 
 type DarwinVZConfig struct {
-	KernelImage   string                `yaml:"kernel_image"`
-	RootFS        string                `yaml:"rootfs"`
-	Network       DarwinVZNetworkConfig `yaml:"network,omitempty"`
-	Services      ServicesConfig        `yaml:"services"`
-	Snapshots     SnapshotConfig        `yaml:"snapshots"`
-	VCPUs         int64                 `yaml:"vcpus"`
-	MemoryMiB     int64                 `yaml:"memory_mib"`
-	GuestPort     uint32                `yaml:"guest_port"`
-	LaunchSeconds int64                 `yaml:"launch_seconds"` // VM boot/guest-agent readiness timeout
+	KernelImage        string                `yaml:"kernel_image"`
+	RootFS             string                `yaml:"rootfs"`
+	MinimumRootFSBytes int64                 `yaml:"minimum_rootfs_bytes"`
+	Network            DarwinVZNetworkConfig `yaml:"network,omitempty"`
+	Services           ServicesConfig        `yaml:"services"`
+	Snapshots          SnapshotConfig        `yaml:"snapshots"`
+	VCPUs              int64                 `yaml:"vcpus"`
+	MemoryMiB          int64                 `yaml:"memory_mib"`
+	GuestPort          uint32                `yaml:"guest_port"`
+	LaunchSeconds      int64                 `yaml:"launch_seconds"` // VM boot/guest-agent readiness timeout
 }
 
 type DarwinVZNetworkConfig struct {
@@ -112,6 +113,7 @@ func MergeBackendConfig(cfg Config, backendName string, launchSeconds int64) bac
 	if backendName == "darwin-vz" {
 		out.KernelImagePath = cfg.Backends.DarwinVZ.KernelImage
 		out.RootFSPath = cfg.Backends.DarwinVZ.RootFS
+		out.MinimumRootFSBytes = cfg.Backends.DarwinVZ.MinimumRootFSBytes
 		out.DarwinVZNetworkMode = cfg.Backends.DarwinVZ.Network.Mode
 		out.DarwinVZNetworkSubnet = cfg.Backends.DarwinVZ.Network.Subnet
 		out.DockerStartupSeconds = cfg.Backends.DarwinVZ.Services.Docker.StartupTimeoutSeconds
@@ -238,6 +240,7 @@ func Load() (Config, string, error) {
 func darwinVZConfigIsZero(cfg DarwinVZConfig) bool {
 	return strings.TrimSpace(cfg.KernelImage) == "" &&
 		strings.TrimSpace(cfg.RootFS) == "" &&
+		cfg.MinimumRootFSBytes == 0 &&
 		darwinVZNetworkConfigIsZero(cfg.Network) &&
 		cfg.Services.Docker.StartupTimeoutSeconds == 0 &&
 		strings.TrimSpace(cfg.Services.Docker.StorageDriver) == "" &&

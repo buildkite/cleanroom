@@ -64,6 +64,32 @@ backends:
 	}
 }
 
+func TestLoadSupportsDarwinVZMinimumRootFSBytes(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	configPath := filepath.Join(tmp, "cleanroom", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	content := `default_backend: darwin-vz
+backends:
+  darwin-vz:
+    rootfs: /tmp/rootfs
+    minimum_rootfs_bytes: 2147483648
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, _, err := Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if got, want := cfg.Backends.DarwinVZ.MinimumRootFSBytes, int64(2147483648); got != want {
+		t.Fatalf("unexpected darwin-vz minimum rootfs bytes: got %d want %d", got, want)
+	}
+}
 func TestLoadSupportsLegacyDarwinVZUnderscoreKey(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", tmp)
@@ -317,9 +343,10 @@ func TestMergeBackendConfig(t *testing.T) {
 				LaunchSeconds:        30,
 			},
 			DarwinVZ: DarwinVZConfig{
-				KernelImage:   "/darwin/kernel",
-				RootFS:        "/darwin/rootfs.ext4",
-				Network:       DarwinVZNetworkConfig{Mode: "vmnet-shared", Subnet: "10.233.0.0/16"},
+				KernelImage:        "/darwin/kernel",
+				RootFS:             "/darwin/rootfs.ext4",
+				MinimumRootFSBytes: 2147483648,
+				Network:            DarwinVZNetworkConfig{Mode: "vmnet-shared", Subnet: "10.233.0.0/16"},
 				Services:      ServicesConfig{Docker: DockerServiceConfig{StartupTimeoutSeconds: 20, StorageDriver: "vzfs", IPTables: false}},
 				Snapshots:     SnapshotConfig{Enabled: false, Driver: "apfs", BaseDir: "/darwin/snapshots", QuiesceTimeoutSeconds: 22},
 				VCPUs:         4,
@@ -350,6 +377,9 @@ func TestMergeBackendConfig(t *testing.T) {
 	}
 	if got, want := darwinCfg.RootFSPath, "/darwin/rootfs.ext4"; got != want {
 		t.Fatalf("unexpected darwin-vz rootfs: got %q want %q", got, want)
+	}
+	if got, want := darwinCfg.MinimumRootFSBytes, int64(2147483648); got != want {
+		t.Fatalf("unexpected darwin-vz minimum rootfs bytes: got %d want %d", got, want)
 	}
 	if got, want := darwinCfg.DarwinVZNetworkMode, "vmnet-shared"; got != want {
 		t.Fatalf("unexpected darwin-vz network mode: got %q want %q", got, want)
