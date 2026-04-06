@@ -350,6 +350,47 @@ func TestSetupHostNetworkWithDepsAddsAllowAllForwardRule(t *testing.T) {
 	}
 }
 
+func TestSetupHostNetworkWithTrustedDNSFactoryPreservesDirectIPAllowRules(t *testing.T) {
+	t.Parallel()
+
+	var calls []string
+	run := func(_ context.Context, args ...string) error {
+		calls = append(calls, strings.Join(args, " "))
+		return nil
+	}
+	runBatch := func(_ context.Context, commands [][]string) error {
+		for _, args := range commands {
+			calls = append(calls, strings.Join(args, " "))
+		}
+		return nil
+	}
+	lookup := func(_ context.Context, host string) ([]net.IP, error) {
+		t.Fatalf("direct ip allow rules should not trigger setup-time lookup for %q", host)
+		return nil, nil
+	}
+	factory := func(_ context.Context, _ trustedDNSConfig) (func(), error) {
+		return func() {}, nil
+	}
+
+	cfg, cleanup, err := setupHostNetworkWithTrustedDNSFactory(context.Background(), "run-direct-ip", false, []policy.AllowRule{{Host: "203.0.113.10", Ports: []int{443}}}, 0, lookup, net.InterfaceByName, run, runBatch, factory)
+	if err != nil {
+		t.Fatalf("setupHostNetworkWithTrustedDNSFactory: %v", err)
+	}
+	defer cleanup()
+
+	joined := strings.Join(calls, "\n")
+	tap := cfg.TapName
+	for _, expected := range []string{
+		"iptables -A FORWARD -i " + tap + " -d 203.0.113.10 -p tcp --dport 443 -j ACCEPT",
+		"iptables -A FORWARD -i " + tap + " -d 203.0.113.10 -p udp --dport 443 -j ACCEPT",
+		"iptables -A FORWARD -i " + tap + " -j DROP",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("missing command %q\ncalls:\n%s", expected, joined)
+		}
+	}
+}
+
 func testDNSResponse(query string, answers ...dns.RR) *dns.Msg {
 	msg := new(dns.Msg)
 	msg.SetQuestion(query, dns.TypeA)

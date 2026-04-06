@@ -2288,6 +2288,19 @@ func setupHostNetworkWithTrustedDNSFactory(ctx context.Context, runID string, al
 			return hostNetworkConfig{}, func() {}, fmt.Errorf("install trusted dns udp chain jump for %s: %w", tapName, err)
 		}
 		addCleanup("iptables", "-D", "FORWARD", "-i", tapName, "-p", "udp", "-j", udpChainName)
+
+		for _, rule := range literalIPv4AllowRules(allow) {
+			for _, proto := range []string{"tcp", "udp"} {
+				for _, port := range rule.Ports {
+					portText := strconv.Itoa(port)
+					if err := setupRun("iptables", "-A", "FORWARD", "-i", tapName, "-d", rule.Host, "-p", proto, "--dport", portText, "-j", "ACCEPT"); err != nil {
+						cleanup()
+						return hostNetworkConfig{}, func() {}, fmt.Errorf("install direct-ip %s allow rule for %s: %w", proto, rule.Host, err)
+					}
+					addCleanup("iptables", "-D", "FORWARD", "-i", tapName, "-d", rule.Host, "-p", proto, "--dport", portText, "-j", "ACCEPT")
+				}
+			}
+		}
 	}
 
 	trustedDNSCleanup, err = factory(ctx, trustedDNSConfig{
@@ -2407,6 +2420,21 @@ func trustedDNSPolicy(allow []policy.AllowRule) *policy.CompiledPolicy {
 		NetworkDefault: "deny",
 		Allow:          copied,
 	}
+}
+
+func literalIPv4AllowRules(allow []policy.AllowRule) []policy.AllowRule {
+	out := make([]policy.AllowRule, 0, len(allow))
+	for _, rule := range allow {
+		addr, err := netip.ParseAddr(strings.TrimSpace(rule.Host))
+		if err != nil || !addr.Is4() {
+			continue
+		}
+		out = append(out, policy.AllowRule{
+			Host:  addr.String(),
+			Ports: append([]int(nil), rule.Ports...),
+		})
+	}
+	return out
 }
 
 func resolvePrivilegedHelperPath(cfg backend.FirecrackerConfig) string {
