@@ -305,7 +305,19 @@ func Load() (Config, string, error) {
 	if err := yaml.Unmarshal(b, &cfg); err != nil {
 		return Config{}, path, fmt.Errorf("parse %s: %w", path, err)
 	}
+	presenceCfg := struct {
+		Backends struct {
+			DarwinVZ struct {
+				MinimumRootFSBytes *ByteSize `yaml:"minimum_rootfs_bytes"`
+			} `yaml:"darwin-vz"`
+		} `yaml:"backends"`
+	}{}
+	if err := yaml.Unmarshal(b, &presenceCfg); err != nil {
+		return Config{}, path, fmt.Errorf("parse %s: %w", path, err)
+	}
+
 	darwinVZMinRootFSBytes := cfg.Backends.DarwinVZ.MinimumRootFSBytes
+	darwinVZMinRootFSBytesSet := presenceCfg.Backends.DarwinVZ.MinimumRootFSBytes != nil
 	if darwinVZConfigIsZero(cfg.Backends.DarwinVZ) {
 		legacyCfg := struct {
 			Backends struct {
@@ -316,7 +328,7 @@ func Load() (Config, string, error) {
 			cfg.Backends.DarwinVZ = legacyCfg.Backends.DarwinVZ
 		}
 	}
-	if darwinVZMinRootFSBytes > 0 {
+	if darwinVZMinRootFSBytesSet {
 		cfg.Backends.DarwinVZ.MinimumRootFSBytes = darwinVZMinRootFSBytes
 	}
 
