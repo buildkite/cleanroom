@@ -17,6 +17,13 @@ type Checkout struct {
 	Branch         string
 }
 
+var miseConfigCandidates = []string{
+	".mise.toml",
+	"mise.toml",
+	".tool-versions",
+	".mise/config.toml",
+}
+
 func FromProto(proto *cleanroomv1.RepositoryCheckout) *Checkout {
 	if proto == nil {
 		return nil
@@ -139,23 +146,22 @@ func BuildBootstrapCommand(checkout *Checkout) []string {
 	return []string{"sh", "-lc", strings.Join(bootstrapScript(checkout), "\n")}
 }
 
-func WrapCommandWithBootstrap(command []string, checkout *Checkout) []string {
+func WrapCommandWithBootstrap(command []string, checkout *Checkout, autoMiseInstall bool) []string {
 	normalized := NormalizeCommand(command)
 	if checkout == nil || len(normalized) == 0 {
 		return normalized
 	}
 	script := bootstrapScript(checkout)
-	script = append(script, fmt.Sprintf("cd %s && exec %s", shellQuote(checkout.DestinationDir), shellJoin(normalized)))
+	script = append(script, workdirExecutionScript(normalized, checkout, autoMiseInstall)...)
 	return []string{"sh", "-lc", strings.Join(script, "\n")}
 }
 
-func WrapCommandInWorkdir(command []string, checkout *Checkout) []string {
+func WrapCommandInWorkdir(command []string, checkout *Checkout, autoMiseInstall bool) []string {
 	normalized := NormalizeCommand(command)
 	if checkout == nil || len(normalized) == 0 {
 		return normalized
 	}
-	script := fmt.Sprintf("cd %s && exec %s", shellQuote(checkout.DestinationDir), shellJoin(normalized))
-	return []string{"sh", "-lc", script}
+	return []string{"sh", "-lc", strings.Join(workdirExecutionScript(normalized, checkout, autoMiseInstall), "\n")}
 }
 
 func NormalizeCommand(command []string) []string {
@@ -191,6 +197,37 @@ func bootstrapScript(checkout *Checkout) []string {
 		script = append(script, submoduleCommand)
 	}
 	return script
+}
+
+func workdirExecutionScript(command []string, checkout *Checkout, autoMiseInstall bool) []string {
+	execCommand := shellJoin(command)
+	script := []string{
+		"set -eu",
+		"dest=" + shellQuote(checkout.DestinationDir),
+		`cd "$dest"`,
+	}
+	if autoMiseInstall {
+		if condition := miseConfigCondition(); condition != "" {
+			script = append(script,
+				"if "+condition+"; then",
+				`  if ! command -v mise >/dev/null 2>&1; then echo "repository declares mise config but 'mise' is not installed in sandbox image" >&2; exit 1; fi`,
+				`  export MISE_YES=1`,
+				`  export MISE_TRUSTED_CONFIG_PATHS="$dest${MISE_TRUSTED_CONFIG_PATHS:+:$MISE_TRUSTED_CONFIG_PATHS}"`,
+				`  exec mise exec -- `+execCommand,
+				`fi`,
+			)
+		}
+	}
+	script = append(script, `exec `+execCommand)
+	return script
+}
+
+func miseConfigCondition() string {
+	conditions := make([]string, 0, len(miseConfigCandidates))
+	for _, candidate := range miseConfigCandidates {
+		conditions = append(conditions, `[ -f `+shellQuote(candidate)+` ]`)
+	}
+	return strings.Join(conditions, " || ")
 }
 
 func shellJoin(args []string) string {

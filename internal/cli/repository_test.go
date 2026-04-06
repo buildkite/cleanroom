@@ -402,7 +402,7 @@ func TestExecCommandRunsInsideRepositoryPathForNewSandbox(t *testing.T) {
 		t.Fatalf("expected bootstrap + user execution, got %d execution(s)", len(commands))
 	}
 	joined := strings.Join(commands[1], " ")
-	if !strings.Contains(joined, "cd '/workspace' && exec 'echo' 'ok'") {
+	if !repositoryWrappedCommandContains(joined, `exec 'echo' 'ok'`) {
 		t.Fatalf("expected user command to run inside /workspace, got %q", joined)
 	}
 }
@@ -478,7 +478,7 @@ func TestExecCommandRunsInsideRepositoryPathWhenReusingSandboxID(t *testing.T) {
 		t.Fatalf("expected bootstrap + reused sandbox execution, got %d execution(s)", len(commands))
 	}
 	joined := strings.Join(commands[1], " ")
-	if !strings.Contains(joined, "cd '/workspace' && exec 'echo' 'ok'") {
+	if !repositoryWrappedCommandContains(joined, `exec 'echo' 'ok'`) {
 		t.Fatalf("expected reused sandbox command to run inside /workspace, got %q", joined)
 	}
 }
@@ -857,7 +857,7 @@ func TestExecCommandInlinesRepositoryBootstrapForNonPersistentBackend(t *testing
 	if !strings.Contains(joined, "clone --filter=blob:none --no-checkout") {
 		t.Fatalf("expected inlined repository clone, got %q", joined)
 	}
-	if !strings.Contains(joined, "cd '/workspace' && exec 'echo' 'ok'") {
+	if !repositoryWrappedCommandContains(joined, `exec 'echo' 'ok'`) {
 		t.Fatalf("expected inlined command to run inside /workspace, got %q", joined)
 	}
 }
@@ -923,7 +923,7 @@ func TestExecCommandInlinesExplicitRepositoryOverrideForNonPersistentBackend(t *
 	if !strings.Contains(joined, wantCommit) {
 		t.Fatalf("expected inlined command to include override commit %q, got %q", wantCommit, joined)
 	}
-	if !strings.Contains(joined, "cd '/workspace' && exec 'echo' 'ok'") {
+	if !repositoryWrappedCommandContains(joined, `exec 'echo' 'ok'`) {
 		t.Fatalf("expected inlined command to run inside /workspace, got %q", joined)
 	}
 }
@@ -1070,12 +1070,12 @@ func TestWrapCommandWithRepositoryBootstrapStripsCommandSeparator(t *testing.T) 
 		RemoteURL:      "https://github.com/buildkite/cleanroom.git",
 		CommitSHA:      "0123456789abcdef0123456789abcdef01234567",
 		DestinationDir: "/workspace",
-	})
+	}, true)
 	joined := strings.Join(command, " ")
-	if strings.Contains(joined, "exec -- ") {
+	if strings.Contains(joined, `'--'`) {
 		t.Fatalf("expected wrapped command to strip passthrough separator, got %q", joined)
 	}
-	if !strings.Contains(joined, "cd '/workspace' && exec 'sh' '-lc' 'pwd'") {
+	if !repositoryWrappedCommandContains(joined, `exec 'sh' '-lc' 'pwd'`) {
 		t.Fatalf("expected wrapped command to execute normalized command, got %q", joined)
 	}
 }
@@ -1085,7 +1085,7 @@ func TestWrapCommandWithRepositoryBootstrapDoesNotEmbedAuthHeaders(t *testing.T)
 		RemoteURL:      "https://github.com/buildkite/cleanroom.git",
 		CommitSHA:      "0123456789abcdef0123456789abcdef01234567",
 		DestinationDir: "/workspace",
-	})
+	}, true)
 	joined := strings.Join(command, " ")
 	if strings.Contains(joined, ".extraHeader") {
 		t.Fatalf("expected bootstrap command to avoid git extra headers, got %q", joined)
@@ -1093,4 +1093,10 @@ func TestWrapCommandWithRepositoryBootstrapDoesNotEmbedAuthHeaders(t *testing.T)
 	if strings.Contains(joined, "Authorization:") {
 		t.Fatalf("expected bootstrap command to avoid embedding authorization headers, got %q", joined)
 	}
+}
+
+func repositoryWrappedCommandContains(joined, execSnippet string) bool {
+	return strings.Contains(joined, "dest='/workspace'") &&
+		strings.Contains(joined, `cd "$dest"`) &&
+		strings.Contains(joined, execSnippet)
 }

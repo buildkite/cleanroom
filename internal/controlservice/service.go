@@ -917,19 +917,21 @@ func (s *Service) CreateExecution(ctx context.Context, req *cleanroomv1.CreateEx
 		if err := validateRepositoryCheckoutForPolicy(sandboxPolicy, repository); err != nil {
 			return nil, err
 		}
+		autoMiseInstall := sandboxPolicy == nil || sandboxPolicy.MiseInstall
 		if persistentAdapter, ok := adapter.(backend.PersistentSandboxAdapter); ok {
 			if err := s.preparePersistentSandboxRepository(ctx, sandboxID, sandboxPolicy, firecrackerCfg, persistentAdapter, repository); err != nil {
 				return nil, err
 			}
-			command = repositorycheckout.WrapCommandInWorkdir(command, repository)
+			command = repositorycheckout.WrapCommandInWorkdir(command, repository, autoMiseInstall)
 		} else {
 			if err := s.ensureRepositoryMirrorContains(ctx, repository); err != nil {
 				return nil, fmt.Errorf("prepare repository checkout: %w", err)
 			}
-			command = repositorycheckout.WrapCommandWithBootstrap(command, repository)
+			command = repositorycheckout.WrapCommandWithBootstrap(command, repository, autoMiseInstall)
 		}
 	} else if sandboxRepository != nil {
-		command = repositorycheckout.WrapCommandInWorkdir(command, sandboxRepository)
+		autoMiseInstall := sandboxPolicy == nil || sandboxPolicy.MiseInstall
+		command = repositorycheckout.WrapCommandInWorkdir(command, sandboxRepository, autoMiseInstall)
 	}
 
 	s.mu.Lock()

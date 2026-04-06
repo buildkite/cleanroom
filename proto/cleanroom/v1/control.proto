@@ -87,6 +87,7 @@ message Policy {
   repeated PolicyAllowRule allow = 5;
   string hash = 6;
   PolicyServices services = 7;
+  optional bool mise_install = 8;
 }
 
 message SandboxOptions {

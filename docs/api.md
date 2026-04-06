@@ -322,6 +322,10 @@ Behavior contract:
    the current git remote and committed `HEAD`.
 5. For repo-aware top-level commands, materialize that checkout in the sandbox
    and default the guest working directory to `repository.path`.
+   - if the checkout contains `.mise.toml`, `mise.toml`, `.tool-versions`, or
+     `.mise/config.toml`, execute the workload through
+     `mise exec -- ...`, unless `sandbox.mise.enabled: false` or
+     `sandbox.mise.install: false`
 6. Create execution with explicit kind, env, and TTY options.
 7. Attach stdio according to command mode:
    - `cleanroom exec` defaults to attached stdin plus separate stdout/stderr
