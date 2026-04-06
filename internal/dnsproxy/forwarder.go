@@ -89,11 +89,21 @@ func (f *Forwarder) observeScopedResponse(remoteAddr net.Addr, resp *dns.Msg) {
 }
 
 func addrFromNetAddr(addr net.Addr) (netip.Addr, bool) {
+	if addr == nil {
+		return netip.Addr{}, false
+	}
+
 	switch typed := addr.(type) {
 	case *net.TCPAddr:
+		if typed == nil {
+			return netip.Addr{}, false
+		}
 		addr, ok := netip.AddrFromSlice(typed.IP)
 		return normalizeAddr(addr), ok
 	case *net.UDPAddr:
+		if typed == nil {
+			return netip.Addr{}, false
+		}
 		addr, ok := netip.AddrFromSlice(typed.IP)
 		return normalizeAddr(addr), ok
 	default:

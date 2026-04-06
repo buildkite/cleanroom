@@ -527,6 +527,25 @@ func TestForwarderDoesNotRecordScopedAnswersWhenWriteFails(t *testing.T) {
 	}
 }
 
+func TestAddrFromNetAddrHandlesNilValues(t *testing.T) {
+	t.Parallel()
+
+	var nilUDP *net.UDPAddr
+	var nilTCP *net.TCPAddr
+
+	cases := []net.Addr{
+		nil,
+		nilUDP,
+		nilTCP,
+	}
+
+	for _, addr := range cases {
+		if parsed, ok := addrFromNetAddr(addr); ok || parsed.IsValid() {
+			t.Fatalf("expected nil addr %T to be ignored, got %v %v", addr, parsed, ok)
+		}
+	}
+}
+
 func testCompiledPolicy(allow ...policy.AllowRule) *policy.CompiledPolicy {
 	return &policy.CompiledPolicy{
 		Version:        1,
