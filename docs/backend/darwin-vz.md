@@ -143,10 +143,10 @@ Experimental runtime config:
 - `backends.darwin-vz.network.subnet: 10.233.0.0/16` for custom vmnet shared-mode IPv4 ranges
 - `backends.darwin-vz.network.subnet: 10.233.0.0/24` for custom filehandle private ranges
 
-`vmnet-shared` is now the default only when the host supports it and the
-resolved helper declares the vmnet entitlement. Otherwise the implicit default
-falls back to `nat`. Use explicit `vmnet-shared` only when you want an
-unsupported host or unsigned helper to fail fast instead of degrading to `nat`.
+`filehandle` is now the default on macOS because it is the only `darwin-vz`
+network mode that matches Cleanroom's allowlisted egress semantics. Use
+explicit `vmnet-shared` when you want helper-managed shared networking and
+guest IP metadata, or explicit `nat` as a compatibility fallback.
 `vmnet-shared` accepts only RFC1918 IPv4 CIDRs. For `vmnet-shared`, the helper
 now mirrors the Apple `containerization` pattern: create the vmnet shared
 network in-helper, disable vmnet DHCP, derive the actual subnet from vmnet, and
@@ -172,12 +172,11 @@ In `nat` and `vmnet-shared` modes, `network.allowlist_egress` remains `false`.
 Git traffic for allowed HTTPS hosts now uses two different paths:
 
 - `filehandle`
-  - the guest talks to the shared host gateway through the filehandle gateway IP
+  - the guest rewrites allowed HTTPS Git remotes through the shared host gateway using the filehandle gateway IP
   - the guest does not need direct scope-token headers; the host bridge injects them
 - `nat` / `vmnet-shared`
-  - Git traffic uses the NAT host address
-  - `CLEANROOM_DARWIN_GATEWAY_HOST` can override the default host address for unusual setups
-  - gateway scoping still relies on helper-managed scope-token headers because these modes do not provide stable guest identity at the host firewall boundary
+  - Git traffic goes directly to the original remote; Cleanroom does not inject Git rewrite env in these modes
+  - this avoids rewriting bootstrap clones to a host gateway path that the guest cannot reliably reach outside `filehandle`
 
 ## Entitlements and Signing
 
@@ -185,7 +184,7 @@ Git traffic for allowed HTTPS hosts now uses two different paths:
 
 - `com.apple.security.virtualization`
 
-The default `vmnet-shared` path additionally requires:
+The optional `vmnet-shared` path additionally requires:
 
 - `com.apple.developer.networking.vmnet`
 - a matching provisioning profile for the helper identifier

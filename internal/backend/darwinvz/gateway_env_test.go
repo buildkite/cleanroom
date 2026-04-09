@@ -126,3 +126,23 @@ func TestGatewayGitProxyEnvVarsUsesFileHandleGatewayWithoutHeader(t *testing.T) 
 		t.Fatalf("expected github rewrite value, got %s", env[2])
 	}
 }
+
+func TestGatewayGitProxyEnvVarsSkipsUnsupportedNetworkModes(t *testing.T) {
+	t.Parallel()
+
+	p := &policy.CompiledPolicy{
+		Version:        1,
+		NetworkDefault: "deny",
+		Allow:          []policy.AllowRule{{Host: "github.com", Ports: []int{443}}},
+	}
+
+	for _, networkMode := range []string{darwinVZNetworkModeNAT, darwinVZNetworkModeVMNetShared} {
+		networkMode := networkMode
+		t.Run(networkMode, func(t *testing.T) {
+			t.Parallel()
+			if env := gatewayGitProxyEnvVars(p, networkMode, "192.168.64.1", 8170, "scope-token"); env != nil {
+				t.Fatalf("expected no git proxy env for unsupported mode %q, got %v", networkMode, env)
+			}
+		})
+	}
+}

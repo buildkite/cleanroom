@@ -226,13 +226,33 @@ func (s *Service) CreateSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 
 	now := s.clock().Now()
 	sandboxID := s.ids().NewSandboxID()
+	if s.Logger != nil {
+		s.Logger.Debug("create sandbox requested",
+			"sandbox_id", sandboxID,
+			"backend", backendName,
+			"policy_hash", compiled.Hash,
+			"repository_checkout", repository != nil,
+		)
+	}
 
+	if s.Logger != nil {
+		s.Logger.Debug("provisioning sandbox",
+			"sandbox_id", sandboxID,
+			"backend", backendName,
+		)
+	}
 	if err := adapter.ProvisionSandbox(ctx, backend.ProvisionRequest{
 		SandboxID:         sandboxID,
 		Policy:            compiled,
 		FirecrackerConfig: firecrackerCfg,
 	}); err != nil {
 		return nil, fmt.Errorf("provision sandbox: %w", err)
+	}
+	if s.Logger != nil {
+		s.Logger.Debug("sandbox provisioned",
+			"sandbox_id", sandboxID,
+			"backend", backendName,
+		)
 	}
 	if err := s.bootstrapRepositoryInPersistentSandbox(ctx, adapter, sandboxID, compiled, firecrackerCfg, repository); err != nil {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), s.timeouts().bootstrapCleanupTimeout)
@@ -1834,8 +1854,23 @@ func (s *Service) bootstrapRepositoryInPersistentSandbox(
 	if repository == nil {
 		return nil
 	}
+	if s.Logger != nil {
+		s.Logger.Debug("starting repository bootstrap",
+			"sandbox_id", sandboxID,
+			"remote_url", repository.RemoteURL,
+			"commit_sha", repository.CommitSHA,
+			"destination_dir", repository.DestinationDir,
+		)
+	}
 	if err := s.ensureRepositoryMirrorContains(ctx, repository); err != nil {
 		return err
+	}
+	if s.Logger != nil {
+		s.Logger.Debug("repository mirror ready",
+			"sandbox_id", sandboxID,
+			"remote_url", repository.RemoteURL,
+			"commit_sha", repository.CommitSHA,
+		)
 	}
 
 	var stdout bytes.Buffer
@@ -1855,6 +1890,19 @@ func (s *Service) bootstrapRepositoryInPersistentSandbox(
 			_, _ = stderr.Write(chunk)
 		},
 	})
+	if s.Logger != nil {
+		s.Logger.Debug("repository bootstrap execution finished",
+			"sandbox_id", sandboxID,
+			"execution_id", bootstrapExecutionID,
+			"exit_code", func() int {
+				if result == nil {
+					return -1
+				}
+				return result.ExitCode
+			}(),
+			"error", err,
+		)
+	}
 	if err != nil {
 		msg := strings.TrimSpace(stderr.String())
 		if msg == "" {
