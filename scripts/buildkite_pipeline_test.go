@@ -81,6 +81,25 @@ func TestBuildkiteVendoredMisePluginIsRemoved(t *testing.T) {
 	}
 }
 
+func TestDeprecatedRootFSHelperScriptsAreRemoved(t *testing.T) {
+	t.Parallel()
+
+	for _, path := range []string{
+		"create-rootfs-image.sh",
+		"prepare-firecracker-image.sh",
+	} {
+		path := path
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := os.Stat(path)
+			if !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("expected %s to be removed, got err=%v", path, err)
+			}
+		})
+	}
+}
+
 func TestBuildkiteCIScriptsDoNotInvokeMiseDirectly(t *testing.T) {
 	t.Parallel()
 
