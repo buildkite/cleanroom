@@ -105,7 +105,7 @@ func ensureSandboxID(client *controlclient.Client, loader policyLoader, cwd, hos
 		if strings.TrimSpace(backendName) != "" {
 			return "", false, errors.New("--backend cannot be used with --from")
 		}
-		createSandboxResp, err := client.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		_, sandboxID, err := createSandboxWithProgress(os.Stderr, client, &cleanroomv1.CreateSandboxRequest{
 			Options: &cleanroomv1.SandboxOptions{
 				LaunchSeconds: launchSeconds,
 			},
@@ -113,11 +113,6 @@ func ensureSandboxID(client *controlclient.Client, loader policyLoader, cwd, hos
 		})
 		if err != nil {
 			return "", false, fmt.Errorf("create sandbox: %w", err)
-		}
-		sandbox := createSandboxResp.GetSandbox()
-		sandboxID := strings.TrimSpace(sandbox.GetSandboxId())
-		if sandboxID == "" {
-			return "", false, errors.New("create sandbox: response missing sandbox id")
 		}
 		return sandboxID, true, nil
 	}

@@ -11,16 +11,10 @@ import (
 
 type delayedPersistentAdapter struct {
 	provisionDelay time.Duration
-	runResult      backend.RunResult
+	runResult      backend.ExecutionResult
 }
 
 func (a *delayedPersistentAdapter) Name() string { return "firecracker" }
-
-func (a *delayedPersistentAdapter) Run(_ context.Context, req backend.RunRequest) (*backend.RunResult, error) {
-	result := a.runResult
-	result.RunID = req.RunID
-	return &result, nil
-}
 
 func (a *delayedPersistentAdapter) ProvisionSandbox(ctx context.Context, _ backend.ProvisionRequest) error {
 	select {
@@ -31,18 +25,16 @@ func (a *delayedPersistentAdapter) ProvisionSandbox(ctx context.Context, _ backe
 	}
 }
 
-func (a *delayedPersistentAdapter) RunInSandbox(ctx context.Context, req backend.RunRequest, stream backend.OutputStream) (*backend.RunResult, error) {
-	result, err := a.Run(ctx, req)
-	if err != nil {
-		return nil, err
-	}
+func (a *delayedPersistentAdapter) RunInSandbox(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+	result := a.runResult
+	result.ExecutionID = req.ExecutionID
 	if stream.OnStdout != nil && result.Stdout != "" {
 		stream.OnStdout([]byte(result.Stdout))
 	}
 	if stream.OnStderr != nil && result.Stderr != "" {
 		stream.OnStderr([]byte(result.Stderr))
 	}
-	return result, nil
+	return &result, nil
 }
 
 func (a *delayedPersistentAdapter) TerminateSandbox(context.Context, string) error {
@@ -77,7 +69,6 @@ func TestSandboxCreateIntegrationShowsProgressWhileProvisioning(t *testing.T) {
 
 	outcome := runSandboxCreateWithCapture(SandboxCreateCommand{
 		clientFlags: clientFlags{Host: host},
-		Chdir:       cwd,
 	}, runtimeContext{
 		CWD:    cwd,
 		Loader: integrationLoader{},
@@ -104,7 +95,7 @@ func TestExecIntegrationShowsProgressWhenCreatingSandbox(t *testing.T) {
 
 	host, _ := startIntegrationServer(t, &delayedPersistentAdapter{
 		provisionDelay: 25 * time.Millisecond,
-		runResult: backend.RunResult{
+		runResult: backend.ExecutionResult{
 			ExitCode: 0,
 			Stdout:   "ok\n",
 			Message:  "ok",

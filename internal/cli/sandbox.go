@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -51,13 +52,13 @@ type SandboxTerminateCommand struct {
 
 type CreateCommand struct {
 	clientFlags
-	Chdir         string `short:"c" help:"Change to this directory before running commands"`
-	Backend       string `help:"Execution backend (defaults to runtime config or host default)"`
-	From          string `name:"from" help:"Create the sandbox from an existing snapshot ID"`
-	Image         string `help:"Override sandbox image ref (tag, digest, or local Docker image)"`
+	Chdir   string `short:"c" help:"Change to this directory before running commands"`
+	Backend string `help:"Execution backend (defaults to runtime config or host default)"`
+	From    string `name:"from" help:"Create the sandbox from an existing snapshot ID"`
+	Image   string `help:"Override sandbox image ref (tag, digest, or local Docker image)"`
 	repositoryOverrideFlags
-	LaunchSeconds int64  `help:"VM boot/guest-agent readiness timeout in seconds"`
-	JSON          bool   `help:"Print sandbox as JSON"`
+	LaunchSeconds int64 `help:"VM boot/guest-agent readiness timeout in seconds"`
+	JSON          bool  `help:"Print sandbox as JSON"`
 }
 
 func (c *SandboxListCommand) Run(ctx *runtimeContext) error {
@@ -226,7 +227,7 @@ func runSandboxCreate(ctx *runtimeContext, connectFlags clientFlags, backend, fr
 			return errors.New("--dangerously-allow-all cannot be used with --from")
 		}
 
-		resp, err := client.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		resp, _, err := createSandboxWithProgress(os.Stderr, client, &cleanroomv1.CreateSandboxRequest{
 			Options: &cleanroomv1.SandboxOptions{
 				LaunchSeconds: launchSeconds,
 			},
@@ -336,6 +337,33 @@ func createTopLevelSandbox(
 	return createSandboxWithPolicy(client, compiled, backendName, launchSeconds, repository)
 }
 
+func createSandboxWithProgress(
+	stderr *os.File,
+	client *controlclient.Client,
+	req *cleanroomv1.CreateSandboxRequest,
+) (*cleanroomv1.CreateSandboxResponse, string, error) {
+	var (
+		resp      *cleanroomv1.CreateSandboxResponse
+		sandboxID string
+	)
+	if err := withSandboxProgress(stderr, func() error {
+		var createErr error
+		resp, createErr = client.CreateSandbox(context.Background(), req)
+		if createErr != nil {
+			return createErr
+		}
+
+		sandboxID = strings.TrimSpace(resp.GetSandbox().GetSandboxId())
+		if sandboxID == "" {
+			return errors.New("response missing sandbox id")
+		}
+		return nil
+	}); err != nil {
+		return nil, "", err
+	}
+	return resp, sandboxID, nil
+}
+
 func createSandboxWithPolicy(
 	client *controlclient.Client,
 	compiled *policy.CompiledPolicy,
@@ -347,7 +375,7 @@ func createSandboxWithPolicy(
 		return "", nil, errors.New("create sandbox: missing compiled policy")
 	}
 
-	createSandboxResp, err := client.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+	createSandboxResp, sandboxID, err := createSandboxWithProgress(os.Stderr, client, &cleanroomv1.CreateSandboxRequest{
 		Backend: backendName,
 		Options: &cleanroomv1.SandboxOptions{
 			LaunchSeconds: launchSeconds,
@@ -360,11 +388,6 @@ func createSandboxWithPolicy(
 	}
 
 	sandbox := createSandboxResp.GetSandbox()
-	sandboxID := strings.TrimSpace(sandbox.GetSandboxId())
-	if sandboxID == "" {
-		return "", nil, errors.New("create sandbox: response missing sandbox id")
-	}
-
 	return sandboxID, sandbox, nil
 }
 
