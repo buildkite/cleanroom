@@ -8,32 +8,26 @@ import (
 	"github.com/buildkite/cleanroom/internal/backend"
 )
 
-func TestResolveDarwinVZNetworkDefaultsToVMNetShared(t *testing.T) {
+func TestResolveDarwinVZNetworkDefaultsToFileHandle(t *testing.T) {
 	prevSupported := darwinVZVMNetSharedSupported
-	prevResolveHelper := resolveDarwinVZNetworkHelperPath
-	prevHasVMNetEntitlement := helperHasVMNetworkingEntitlementForNetworking
 	darwinVZVMNetSharedSupported = func() bool { return true }
-	resolveDarwinVZNetworkHelperPath = func() (string, error) { return "/tmp/helper", nil }
-	helperHasVMNetworkingEntitlementForNetworking = func(string) (bool, error) { return true, nil }
 	t.Cleanup(func() {
 		darwinVZVMNetSharedSupported = prevSupported
-		resolveDarwinVZNetworkHelperPath = prevResolveHelper
-		helperHasVMNetworkingEntitlementForNetworking = prevHasVMNetEntitlement
 	})
 
 	got, err := resolveDarwinVZNetwork(backend.FirecrackerConfig{})
 	if err != nil {
 		t.Fatalf("resolveDarwinVZNetwork returned error: %v", err)
 	}
-	if got.Mode != darwinVZNetworkModeVMNetShared {
-		t.Fatalf("unexpected network mode: got %q want %q", got.Mode, darwinVZNetworkModeVMNetShared)
+	if got.Mode != darwinVZNetworkModeFileHandle {
+		t.Fatalf("unexpected network mode: got %q want %q", got.Mode, darwinVZNetworkModeFileHandle)
 	}
-	if got.SubnetCIDR != "" {
-		t.Fatalf("expected default vmnet-shared mode to omit subnet, got %q", got.SubnetCIDR)
+	if got.SubnetCIDR != darwinVZFileHandleDefaultSubnetCIDR {
+		t.Fatalf("unexpected default file-handle subnet: got %q want %q", got.SubnetCIDR, darwinVZFileHandleDefaultSubnetCIDR)
 	}
 }
 
-func TestResolveDarwinVZNetworkDefaultsToNATWhenVMNetSharedUnsupported(t *testing.T) {
+func TestResolveDarwinVZNetworkDefaultsToFileHandleWhenVMNetSharedUnsupported(t *testing.T) {
 	prevSupported := darwinVZVMNetSharedSupported
 	darwinVZVMNetSharedSupported = func() bool { return false }
 	t.Cleanup(func() {
@@ -44,33 +38,11 @@ func TestResolveDarwinVZNetworkDefaultsToNATWhenVMNetSharedUnsupported(t *testin
 	if err != nil {
 		t.Fatalf("resolveDarwinVZNetwork returned error: %v", err)
 	}
-	if got.Mode != darwinVZNetworkModeNAT {
-		t.Fatalf("unexpected network mode: got %q want %q", got.Mode, darwinVZNetworkModeNAT)
+	if got.Mode != darwinVZNetworkModeFileHandle {
+		t.Fatalf("unexpected network mode: got %q want %q", got.Mode, darwinVZNetworkModeFileHandle)
 	}
-	if got.SubnetCIDR != "" {
-		t.Fatalf("expected default nat mode to omit subnet, got %q", got.SubnetCIDR)
-	}
-}
-
-func TestResolveDarwinVZNetworkDefaultsToNATWhenHelperLacksVMNetEntitlement(t *testing.T) {
-	prevSupported := darwinVZVMNetSharedSupported
-	prevResolveHelper := resolveDarwinVZNetworkHelperPath
-	prevHasVMNetEntitlement := helperHasVMNetworkingEntitlementForNetworking
-	darwinVZVMNetSharedSupported = func() bool { return true }
-	resolveDarwinVZNetworkHelperPath = func() (string, error) { return "/tmp/helper", nil }
-	helperHasVMNetworkingEntitlementForNetworking = func(string) (bool, error) { return false, nil }
-	t.Cleanup(func() {
-		darwinVZVMNetSharedSupported = prevSupported
-		resolveDarwinVZNetworkHelperPath = prevResolveHelper
-		helperHasVMNetworkingEntitlementForNetworking = prevHasVMNetEntitlement
-	})
-
-	got, err := resolveDarwinVZNetwork(backend.FirecrackerConfig{})
-	if err != nil {
-		t.Fatalf("resolveDarwinVZNetwork returned error: %v", err)
-	}
-	if got.Mode != darwinVZNetworkModeNAT {
-		t.Fatalf("unexpected network mode: got %q want %q", got.Mode, darwinVZNetworkModeNAT)
+	if got.SubnetCIDR != darwinVZFileHandleDefaultSubnetCIDR {
+		t.Fatalf("unexpected default file-handle subnet: got %q want %q", got.SubnetCIDR, darwinVZFileHandleDefaultSubnetCIDR)
 	}
 }
 

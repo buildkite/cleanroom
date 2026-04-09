@@ -30,10 +30,10 @@ func resolveGuestGatewayHost(configuredHost, runtimeGatewayIP string) string {
 }
 
 func gatewayGitProxyEnvVars(compiled *policy.CompiledPolicy, networkMode, gatewayHost string, gatewayPort int, scopeToken string) []string {
-	if strings.EqualFold(strings.TrimSpace(networkMode), darwinVZNetworkModeFileHandle) {
-		return gatewayEnvVarsWithScope(compiled, gatewayHost, gatewayPort, "")
+	if !strings.EqualFold(strings.TrimSpace(networkMode), darwinVZNetworkModeFileHandle) {
+		return nil
 	}
-	return gatewayEnvVarsWithScope(compiled, gatewayHost, gatewayPort, scopeToken)
+	return gatewayEnvVarsWithScope(compiled, gatewayHost, gatewayPort, "")
 }
 
 func gatewayEnvVars(compiled *policy.CompiledPolicy, gatewayHost string, gatewayPort int, scopeToken string) []string {

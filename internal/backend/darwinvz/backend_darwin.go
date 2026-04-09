@@ -245,13 +245,14 @@ func (a *Adapter) Name() string {
 }
 
 func (a *Adapter) Capabilities() map[string]bool {
+	configuredMode := darwinVZConfiguredOrDefaultNetworkMode(a.ConfiguredNetworkMode)
 	allowlistSupported, _, _, err := allowlistSupportForConfig(backend.FirecrackerConfig{
-		DarwinVZNetworkMode: strings.TrimSpace(a.ConfiguredNetworkMode),
+		DarwinVZNetworkMode: configuredMode,
 	})
 	if err != nil {
 		allowlistSupported = false
 	}
-	dnsControlSupported := strings.TrimSpace(a.ConfiguredNetworkMode) == darwinVZNetworkModeFileHandle
+	dnsControlSupported := configuredMode == darwinVZNetworkModeFileHandle
 	return map[string]bool{
 		backend.CapabilityNetworkDefaultDeny:     true,
 		backend.CapabilityNetworkAllowlistEgress: allowlistSupported,
@@ -1097,11 +1098,19 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 	if cfg.LaunchSeconds <= 0 {
 		cfg.LaunchSeconds = 30
 	}
+	log.Debug("darwin-vz launch sandbox vm: resolving kernel",
+		"sandbox_id", sandboxID,
+		"configured_kernel_path", strings.TrimSpace(cfg.KernelImagePath),
+	)
 
 	kernelPath, _, err := a.resolveKernelPath(ctx, cfg.KernelImagePath)
 	if err != nil {
 		return nil, err
 	}
+	log.Debug("darwin-vz launch sandbox vm: resolving rootfs",
+		"sandbox_id", sandboxID,
+		"image_ref", strings.TrimSpace(compiled.ImageRef),
+	)
 	rootFSPath, imageRef, imageDigest, _, err := a.resolveRootFSPath(ctx, backend.ExecutionRequest{
 		Policy:            compiled,
 		FirecrackerConfig: cfg,
@@ -1137,6 +1146,12 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 	if err != nil {
 		return nil, err
 	}
+	log.Debug("darwin-vz launch sandbox vm: preparing writable rootfs",
+		"sandbox_id", sandboxID,
+		"rootfs_path", rootFSPath,
+		"image_ref", imageRef,
+		"image_digest", imageDigest,
+	)
 	baseVolume, err := driver.EnsureBaseVolume(ctx, volumestore.EnsureBaseVolumeRequest{
 		BaseID:     strings.TrimSuffix(filepath.Base(rootFSPath), filepath.Ext(rootFSPath)),
 		SourcePath: rootFSPath,
@@ -1179,6 +1194,10 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 	if err != nil {
 		return nil, fmt.Errorf("start darwin-vz helper: %w", err)
 	}
+	log.Debug("darwin-vz launch sandbox vm: helper session ready",
+		"sandbox_id", sandboxID,
+		"run_dir", runDir,
+	)
 	helperNeedsClose := true
 	defer func() {
 		if helperNeedsClose {
@@ -1186,6 +1205,11 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 		}
 	}()
 
+	log.Debug("darwin-vz launch sandbox vm: starting helper-managed vm",
+		"sandbox_id", sandboxID,
+		"network_mode", strings.TrimSpace(networkCfg.Mode),
+		"launch_seconds", cfg.LaunchSeconds,
+	)
 	startedVM, err := startDarwinVZHelperVM(ctx, helper, darwinVZVMStartRequest{
 		SandboxID:      sandboxID,
 		ConfigPath:     configPath,
@@ -1207,6 +1231,11 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 	if err != nil {
 		return nil, err
 	}
+	log.Debug("darwin-vz launch sandbox vm: vm started",
+		"sandbox_id", sandboxID,
+		"vm_id", startedVM.VMID,
+		"proxy_socket_path", startedVM.ProxySocketPath,
+	)
 	fileHandleGatewayNeedsClose := startedVM.FileHandleGW != nil
 	defer func() {
 		if fileHandleGatewayNeedsClose {

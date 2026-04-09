@@ -25,21 +25,18 @@ func TestEvaluateNetworkPolicyForDoctorWarnsWhenAllowEntriesPresentWithoutHostFi
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(warn, "ignores sandbox.network.allow") {
+	if !strings.Contains(warn, "network.mode=filehandle") {
 		t.Fatalf("unexpected warning: %q", warn)
 	}
 }
 
-func TestEvaluateNetworkPolicyForRunFailsWhenAllowEntriesPresentWithoutHostFilter(t *testing.T) {
+func TestEvaluateNetworkPolicyForRunWarnsWhenAllowEntriesPresentWithoutHostFilter(t *testing.T) {
 	warn, err := evaluateNetworkPolicyForRun("deny", 2, false)
-	if err == nil {
-		t.Fatal("expected error when allow entries are present without host filter")
-	}
-	if warn != "" {
-		t.Fatalf("expected no warning, got %q", warn)
-	}
-	if !strings.Contains(err.Error(), "requires host-side egress filtering") {
+	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(warn, "network.mode=filehandle") {
+		t.Fatalf("unexpected warning: %q", warn)
 	}
 }
 
@@ -74,6 +71,24 @@ func TestAllowlistSupportForConfigTreatsFileHandleModeAsSupported(t *testing.T) 
 	}
 	if !supported {
 		t.Fatal("expected filehandle mode to support allowlists")
+	}
+	if detail != "" {
+		t.Fatalf("expected empty detail, got %q", detail)
+	}
+	if got, want := protectionMessage, guestNetworkProtectedByFileHandleMessage; got != want {
+		t.Fatalf("unexpected protection message: got %q want %q", got, want)
+	}
+}
+
+func TestAllowlistSupportForConfigTreatsImplicitDefaultAsSupported(t *testing.T) {
+	t.Parallel()
+
+	supported, detail, protectionMessage, err := allowlistSupportForConfig(backend.FirecrackerConfig{})
+	if err != nil {
+		t.Fatalf("allowlistSupportForConfig returned error: %v", err)
+	}
+	if !supported {
+		t.Fatal("expected implicit darwin-vz default to support allowlists")
 	}
 	if detail != "" {
 		t.Fatalf("expected empty detail, got %q", detail)

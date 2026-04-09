@@ -7,19 +7,27 @@ import (
 	"github.com/buildkite/cleanroom/internal/backend"
 )
 
-func TestCapabilitiesDeclareGuestNetworkInterfaceWithoutAllowlistFilteringByDefault(t *testing.T) {
+func TestCapabilitiesMatchImplicitDefaultNetworkMode(t *testing.T) {
 	caps := New().Capabilities()
 
 	if !caps[backend.CapabilityNetworkDefaultDeny] {
 		t.Fatalf("expected %s=true", backend.CapabilityNetworkDefaultDeny)
 	}
-	if caps[backend.CapabilityNetworkAllowlistEgress] {
+	if runtime.GOOS == "darwin" {
+		if !caps[backend.CapabilityNetworkAllowlistEgress] {
+			t.Fatalf("expected %s=true on darwin", backend.CapabilityNetworkAllowlistEgress)
+		}
+	} else if caps[backend.CapabilityNetworkAllowlistEgress] {
 		t.Fatalf("expected %s=false", backend.CapabilityNetworkAllowlistEgress)
 	}
 	if !caps[backend.CapabilityNetworkGuestInterface] {
 		t.Fatalf("expected %s=true", backend.CapabilityNetworkGuestInterface)
 	}
-	if caps[backend.CapabilityDNSControlOrEquivalent] {
+	if runtime.GOOS == "darwin" {
+		if !caps[backend.CapabilityDNSControlOrEquivalent] {
+			t.Fatalf("expected %s=true on darwin", backend.CapabilityDNSControlOrEquivalent)
+		}
+	} else if caps[backend.CapabilityDNSControlOrEquivalent] {
 		t.Fatalf("expected %s=false", backend.CapabilityDNSControlOrEquivalent)
 	}
 }

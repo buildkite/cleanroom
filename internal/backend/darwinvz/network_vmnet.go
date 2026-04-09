@@ -31,9 +31,7 @@ var darwinVZRFC1918Prefixes = []netip.Prefix{
 }
 
 var (
-	darwinVZVMNetSharedSupported                  = hostSupportsVMNetShared
-	resolveDarwinVZNetworkHelperPath              = resolveHelperBinaryPath
-	helperHasVMNetworkingEntitlementForNetworking = helperHasVMNetworkingEntitlement
+	darwinVZVMNetSharedSupported = hostSupportsVMNetShared
 )
 
 func hostSupportsVMNetShared() bool {
@@ -49,28 +47,8 @@ func hostSupportsVMNetShared() bool {
 	return major >= 26
 }
 
-func darwinVZDefaultNetworkMode() string {
-	if !darwinVZVMNetSharedSupported() {
-		return darwinVZNetworkModeNAT
-	}
-
-	helperPath, err := resolveDarwinVZNetworkHelperPath()
-	if err != nil {
-		return darwinVZNetworkModeNAT
-	}
-	hasVMNetEntitlement, err := helperHasVMNetworkingEntitlementForNetworking(helperPath)
-	if err != nil || !hasVMNetEntitlement {
-		return darwinVZNetworkModeNAT
-	}
-
-	return darwinVZNetworkModeVMNetShared
-}
-
 func resolveDarwinVZNetwork(cfg backend.FirecrackerConfig) (darwinVZNetwork, error) {
-	mode := strings.ToLower(strings.TrimSpace(cfg.DarwinVZNetworkMode))
-	if mode == "" {
-		mode = darwinVZDefaultNetworkMode()
-	}
+	mode := darwinVZConfiguredOrDefaultNetworkMode(cfg.DarwinVZNetworkMode)
 
 	subnet := strings.TrimSpace(cfg.DarwinVZNetworkSubnet)
 	externalInterface := strings.TrimSpace(cfg.DarwinVZNetworkExternalInterface)
