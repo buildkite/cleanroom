@@ -31,6 +31,9 @@ func resolveGuestGatewayHost(configuredHost, runtimeGatewayIP string) string {
 
 func gatewayGitProxyEnvVars(compiled *policy.CompiledPolicy, networkMode, gatewayHost string, gatewayPort int, scopeToken string) []string {
 	if !strings.EqualFold(strings.TrimSpace(networkMode), darwinVZNetworkModeFileHandle) {
+		// nat and vmnet-shared do not provide a reachable guest path to the
+		// Cleanroom git gateway, so rewriting HTTPS remotes through it breaks
+		// repository bootstrap instead of helping.
 		return nil
 	}
 	return gatewayEnvVarsWithScope(compiled, gatewayHost, gatewayPort, "")
