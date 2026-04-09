@@ -21,6 +21,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/dnsproxy"
 	"github.com/buildkite/cleanroom/internal/gateway"
 	"github.com/buildkite/cleanroom/internal/policy"
+	"github.com/charmbracelet/log"
 	gvtap "github.com/containers/gvisor-tap-vsock/pkg/tap"
 	"github.com/containers/gvisor-tap-vsock/pkg/tcpproxy"
 	gvtransport "github.com/containers/gvisor-tap-vsock/pkg/transport"
@@ -408,6 +409,16 @@ func newFileHandleVirtualNetwork(cfg fileHandleGatewayConfig, dnsUpstreamAddr st
 			Protocol:   dnsproxy.ProtocolTCP,
 		}
 		if dnsRuntime != nil && !dnsRuntime.AllowConnection(conn, time.Now()) {
+			logFields := []interface{}{
+				"sandbox_id", cfg.SandboxID,
+				"dest_ip", destIP.String(),
+				"dest_port", r.ID().LocalPort,
+				"source_ip", sourceIP.String(),
+			}
+			if names := dnsRuntime.NamesForAddress(cfg.SandboxID, sourceIP, destIP, time.Now()); len(names) > 0 {
+				logFields = append(logFields, "dest_host", strings.Join(names, ","))
+			}
+			log.Info("filehandle network connection blocked", logFields...)
 			r.Complete(true)
 			return
 		}
