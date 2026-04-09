@@ -19,7 +19,6 @@ INSTALL_DIR="${CLEANROOM_GLOBAL_INSTALL_DIR:-/usr/local/bin}"
 DIST_DIR="${CLEANROOM_GLOBAL_DIST_DIR:-dist}"
 HOST_OS="$(go env GOOS)"
 HOST_ARCH="$(go env GOARCH)"
-ENTITLEMENTS="cmd/cleanroom-darwin-vz/entitlements.plist"
 
 declare -a SUDO_CMD=()
 
@@ -61,6 +60,15 @@ install_binary() {
   log "installed $(basename "$dst") to $dst"
 }
 
+install_app_bundle() {
+  local src="$1"
+  local dst="$2"
+
+  [ -d "$src" ] || die "missing build artifact: ${src}"
+  run_cmd rm -rf "$dst"
+  run_cmd ditto "$src" "$dst"
+}
+
 require_cmd go
 prepare_install_dir
 
@@ -77,10 +85,9 @@ install_binary "$GUEST_AGENT_LINUX_BIN" "${INSTALL_DIR}/cleanroom-guest-agent-li
 install_binary "$GUEST_AGENT_BIN" "${INSTALL_DIR}/cleanroom-guest-agent"
 
 if [ "$HOST_OS" = "darwin" ]; then
-  require_cmd codesign
-  HELPER_BIN="${DIST_DIR}/cleanroom-darwin-vz"
-  install_binary "$HELPER_BIN" "${INSTALL_DIR}/cleanroom-darwin-vz"
-  [ -f "$ENTITLEMENTS" ] || die "missing entitlements file: ${ENTITLEMENTS}"
-  run_cmd codesign --force --sign - --entitlements "$ENTITLEMENTS" "${INSTALL_DIR}/cleanroom-darwin-vz"
-  log "signed ${INSTALL_DIR}/cleanroom-darwin-vz"
+  HELPER_APP_BUNDLE="${DIST_DIR}/cleanroom-darwin-vz.app"
+
+  require_cmd ditto
+  install_app_bundle "$HELPER_APP_BUNDLE" "${INSTALL_DIR}/cleanroom-darwin-vz.app"
+  log "installed cleanroom-darwin-vz.app to ${INSTALL_DIR}/cleanroom-darwin-vz.app"
 fi
