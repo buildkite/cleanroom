@@ -364,6 +364,51 @@ func (r *Runtime) AllowConnection(conn Connection, now time.Time) bool {
 	return false
 }
 
+// NamesForAddress returns the DNS query names that resolved to the given
+// address within a sandbox scope. It is intended for diagnostic logging of
+// blocked connections.
+func (r *Runtime) NamesForAddress(sandboxID string, sourceIP, destIP netip.Addr, now time.Time) []string {
+	sourceIP = normalizeAddr(sourceIP)
+	destIP = normalizeAddr(destIP)
+	if !sourceIP.IsValid() || !destIP.IsValid() {
+		return nil
+	}
+	now = now.UTC()
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	state, ok := r.sandboxes[strings.TrimSpace(sandboxID)]
+	if !ok {
+		return nil
+	}
+	scope, ok := state.scopes[sourceIP]
+	if !ok {
+		return nil
+	}
+
+	seen := map[string]struct{}{}
+	var names []string
+	for _, obs := range scope.observations {
+		if !obs.ExpiresAt.After(now) || obs.Address != destIP {
+			continue
+		}
+		name := obs.QueryName
+		if name == "" {
+			name = obs.Name
+		}
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+	return names
+}
+
 // ReleaseConnection removes an established flow from the runtime.
 func (r *Runtime) ReleaseConnection(conn Connection) {
 	conn.SourceIP = normalizeAddr(conn.SourceIP)
