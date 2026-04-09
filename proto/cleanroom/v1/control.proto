@@ -242,6 +242,7 @@ message ExecutionOptions {
   reserved "read_only_workspace", "cwd";
   int64 launch_seconds = 5;
   bool tty = 6;
+  bool disable_mise = 8;
 }
 
 message CreateExecutionRequest {

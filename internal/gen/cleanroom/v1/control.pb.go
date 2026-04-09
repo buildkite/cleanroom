@@ -1925,6 +1925,7 @@ type ExecutionOptions struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	LaunchSeconds int64                  `protobuf:"varint,5,opt,name=launch_seconds,json=launchSeconds,proto3" json:"launch_seconds,omitempty"`
 	Tty           bool                   `protobuf:"varint,6,opt,name=tty,proto3" json:"tty,omitempty"`
+	DisableMise   bool                   `protobuf:"varint,8,opt,name=disable_mise,json=disableMise,proto3" json:"disable_mise,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1969,6 +1970,13 @@ func (x *ExecutionOptions) GetLaunchSeconds() int64 {
 func (x *ExecutionOptions) GetTty() bool {
 	if x != nil {
 		return x.Tty
+	}
+	return false
+}
+
+func (x *ExecutionOptions) GetDisableMise() bool {
+	if x != nil {
+		return x.DisableMise
 	}
 	return false
 }
@@ -3278,10 +3286,11 @@ const file_proto_cleanroom_v1_control_proto_rawDesc = "" +
 	"\x03tty\x18\b \x01(\bR\x03tty\x12/\n" +
 	"\x04kind\x18\n" +
 	" \x01(\x0e2\x1b.cleanroom.v1.ExecutionKindR\x04kindJ\x04\b\t\x10\n" +
-	"R\x06run_id\"q\n" +
+	"R\x06run_id\"\x94\x01\n" +
 	"\x10ExecutionOptions\x12%\n" +
 	"\x0elaunch_seconds\x18\x05 \x01(\x03R\rlaunchSeconds\x12\x10\n" +
-	"\x03tty\x18\x06 \x01(\bR\x03ttyJ\x04\b\x02\x10\x03J\x04\b\a\x10\bR\x13read_only_workspaceR\x03cwd\"\xa1\x02\n" +
+	"\x03tty\x18\x06 \x01(\bR\x03tty\x12!\n" +
+	"\fdisable_mise\x18\b \x01(\bR\vdisableMiseJ\x04\b\x02\x10\x03J\x04\b\a\x10\bR\x13read_only_workspaceR\x03cwd\"\xa1\x02\n" +
 	"\x16CreateExecutionRequest\x12\x1d\n" +
 	"\n" +
 	"sandbox_id\x18\x01 \x01(\tR\tsandboxId\x12\x18\n" +
