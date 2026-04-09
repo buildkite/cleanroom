@@ -14,6 +14,8 @@ import (
 	"golang.org/x/term"
 )
 
+var isTerminalFunc = term.IsTerminal
+
 type startupHeader struct {
 	Title  string
 	Fields []startupField
@@ -483,7 +485,7 @@ func shouldShowStartupHeader(stderr *os.File) bool {
 	if stderr == nil {
 		return false
 	}
-	return term.IsTerminal(int(stderr.Fd()))
+	return isTerminalFunc(int(stderr.Fd()))
 }
 
 func shouldUseANSI(w io.Writer) bool {
@@ -497,7 +499,7 @@ func shouldUseANSI(w io.Writer) bool {
 	if !ok || file == nil {
 		return false
 	}
-	return term.IsTerminal(int(file.Fd()))
+	return isTerminalFunc(int(file.Fd()))
 }
 
 func endpointDisplay(ep endpoint.Endpoint) string {
