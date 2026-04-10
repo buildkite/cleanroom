@@ -3,7 +3,6 @@ package gateway
 import (
 	"fmt"
 	"log/slog"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -80,17 +79,7 @@ func NewContentCache(cfg ContentCacheConfig) (*ContentCache, error) {
 	dl := download.New()
 
 	// HTTP client with per-request credential injection.
-	httpClient := &http.Client{
-		Transport: &credentialInjector{
-			base: &http.Transport{
-				DialContext:           (&net.Dialer{Timeout: 30 * time.Second}).DialContext,
-				TLSHandshakeTimeout:   10 * time.Second,
-				ResponseHeaderTimeout: 30 * time.Second,
-				DisableKeepAlives:     true,
-			},
-			credentials: cfg.Credentials,
-		},
-	}
+	httpClient := newContentCacheHTTPClient(cfg.Credentials)
 
 	packIdx, err := metadb.NewEnvelopeIndex(db, "git", "pack", 24*time.Hour)
 	if err != nil {

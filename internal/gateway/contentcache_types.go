@@ -3,9 +3,11 @@ package gateway
 import (
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 )
 
 type gitHandlerFactory func(host string) (http.Handler, error)
@@ -139,6 +141,25 @@ func registryHostname(registryURL string) string {
 type credentialInjector struct {
 	base        http.RoundTripper
 	credentials CredentialProvider
+}
+
+func newContentCacheHTTPClient(credentials CredentialProvider) *http.Client {
+	return &http.Client{
+		Transport: &credentialInjector{
+			base: &http.Transport{
+				DialContext:           (&net.Dialer{Timeout: defaultUpstreamTimeout}).DialContext,
+				TLSHandshakeTimeout:   10 * time.Second,
+				ResponseHeaderTimeout: defaultUpstreamTimeout,
+				// Disable keep-alives to avoid sharing any upstream connection pool
+				// across sandbox identities.
+				DisableKeepAlives: true,
+			},
+			credentials: credentials,
+		},
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 }
 
 func (c *credentialInjector) RoundTrip(r *http.Request) (*http.Response, error) {
