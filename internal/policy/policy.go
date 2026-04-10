@@ -250,6 +250,23 @@ func (p *CompiledPolicy) Allows(host string, port int) bool {
 	return false
 }
 
+// HostAllowed returns true when at least one allow rule references the host,
+// regardless of port.
+func (p *CompiledPolicy) HostAllowed(host string) bool {
+	if p == nil {
+		return false
+	}
+	if p.NetworkDefault == "allow" {
+		return true
+	}
+	for _, rule := range p.Allow {
+		if rule.Host == host {
+			return true
+		}
+	}
+	return false
+}
+
 func (p *CompiledPolicy) RequiresDockerService() bool {
 	if p == nil {
 		return false

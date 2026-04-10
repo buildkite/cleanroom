@@ -409,6 +409,19 @@ func (r *Runtime) NamesForAddress(sandboxID string, sourceIP, destIP netip.Addr,
 	return names
 }
 
+// HostAllowedByPolicy checks whether the given host is in the network allow
+// list for the sandbox.
+func (r *Runtime) HostAllowedByPolicy(sandboxID, host string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	state, ok := r.sandboxes[strings.TrimSpace(sandboxID)]
+	if !ok {
+		return false
+	}
+	return state.policy.HostAllowed(host)
+}
+
 // ReleaseConnection removes an established flow from the runtime.
 func (r *Runtime) ReleaseConnection(conn Connection) {
 	conn.SourceIP = normalizeAddr(conn.SourceIP)

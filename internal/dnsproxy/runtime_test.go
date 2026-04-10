@@ -703,6 +703,77 @@ func TestAddrFromNetAddrHandlesNilValues(t *testing.T) {
 	}
 }
 
+func TestForwarderOnDenyCalledForDisallowedHost(t *testing.T) {
+	t.Parallel()
+
+	runtime := NewRuntime(RuntimeConfig{})
+	if err := runtime.RegisterSandbox("sandbox-1", testCompiledPolicy(
+		policy.AllowRule{Host: "api.example.com", Ports: []int{443}},
+	)); err != nil {
+		t.Fatalf("register sandbox: %v", err)
+	}
+
+	now := time.Date(2026, time.April, 10, 12, 0, 0, 0, time.UTC)
+	sourceIP := netip.MustParseAddr("10.0.0.2")
+
+	var denied []string
+	forwarder := NewForwarder(ForwarderConfig{
+		Runtime:      runtime,
+		UpstreamAddr: "127.0.0.1:5300",
+		Now:          func() time.Time { return now },
+		ScopeResolver: func(addr netip.Addr) (string, bool) {
+			if addr == sourceIP {
+				return "sandbox-1", true
+			}
+			return "", false
+		},
+		Client: exchangeFunc(func(msg *dns.Msg, _ string) (*dns.Msg, time.Duration, error) {
+			return testResponse(msg.Question[0].Name,
+				&dns.A{
+					Hdr: dns.RR_Header{Name: msg.Question[0].Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 30},
+					A:   net.ParseIP("93.184.216.34"),
+				},
+			), 0, nil
+		}),
+		OnDeny: func(_, queryName string) {
+			denied = append(denied, queryName)
+		},
+	})
+
+	writer := &testResponseWriter{
+		remoteAddr: &net.UDPAddr{IP: net.ParseIP("10.0.0.2"), Port: 53000},
+		localAddr:  &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 1053},
+	}
+
+	// Query for a disallowed host should trigger OnDeny.
+	request := new(dns.Msg)
+	request.SetQuestion("example.com.", dns.TypeA)
+	forwarder.ServeDNS(writer, request)
+
+	if len(denied) != 1 || denied[0] != "example.com" {
+		t.Fatalf("expected OnDeny for example.com, got %v", denied)
+	}
+
+	// Query for an allowed host should not trigger OnDeny.
+	denied = nil
+	request2 := new(dns.Msg)
+	request2.SetQuestion("api.example.com.", dns.TypeA)
+	forwarder.ServeDNS(writer, request2)
+
+	if len(denied) != 0 {
+		t.Fatalf("expected no OnDeny for allowed host, got %v", denied)
+	}
+}
+
+func TestHostAllowedByPolicyReturnsFalseForUnregisteredSandbox(t *testing.T) {
+	t.Parallel()
+
+	runtime := NewRuntime(RuntimeConfig{})
+	if runtime.HostAllowedByPolicy("unknown", "example.com") {
+		t.Fatal("expected false for unregistered sandbox")
+	}
+}
+
 func testCompiledPolicy(allow ...policy.AllowRule) *policy.CompiledPolicy {
 	return &policy.CompiledPolicy{
 		Version:        1,
