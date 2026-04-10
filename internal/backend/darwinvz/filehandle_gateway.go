@@ -72,6 +72,10 @@ type fileHandleVirtualNetwork struct {
 	dnsRuntime        *dnsproxy.Runtime
 	gatewayHTTPLn     net.Listener
 	gatewayHTTPServer *http.Server
+
+	warningMu      sync.RWMutex
+	warningHandler func(string)
+	warnedDests    map[string]struct{}
 }
 
 type fileHandleGateway struct {
@@ -232,6 +236,16 @@ func (g *fileHandleGateway) SetScopeToken(scopeToken string) {
 	g.bridge.SetScopeToken(scopeToken)
 }
 
+func (g *fileHandleGateway) SetWarningHandler(handler func(string)) {
+	if g == nil || g.network == nil {
+		return
+	}
+	g.network.warningMu.Lock()
+	g.network.warningHandler = handler
+	g.network.warnedDests = make(map[string]struct{})
+	g.network.warningMu.Unlock()
+}
+
 func newFileHandleDNSRuntime(sandboxID string, compiled *policy.CompiledPolicy) (*dnsproxy.Runtime, error) {
 	if compiled == nil {
 		return nil, nil
@@ -389,6 +403,18 @@ func newFileHandleVirtualNetwork(cfg fileHandleGatewayConfig, dnsUpstreamAddr st
 		go func() { _ = gatewayHTTPServer.Serve(gatewayHTTPLn) }()
 	}
 
+	network := &fileHandleVirtualNetwork{
+		stack:             s,
+		networkSwitch:     networkSwitch,
+		dnsUDPConn:        udpConn,
+		dnsTCPLn:          tcpLn,
+		dnsUDPServer:      dnsUDPServer,
+		dnsTCPServer:      dnsTCPServer,
+		dnsRuntime:        dnsRuntime,
+		gatewayHTTPLn:     gatewayHTTPLn,
+		gatewayHTTPServer: gatewayHTTPServer,
+	}
+
 	tcpForwarder := tcp.NewForwarder(s, 0, 10, func(r *tcp.ForwarderRequest) {
 		sourceIP, ok := tcpipAddressAsNetipAddr(r.ID().RemoteAddress)
 		if !ok {
@@ -409,16 +435,31 @@ func newFileHandleVirtualNetwork(cfg fileHandleGatewayConfig, dnsUpstreamAddr st
 			Protocol:   dnsproxy.ProtocolTCP,
 		}
 		if dnsRuntime != nil && !dnsRuntime.AllowConnection(conn, time.Now()) {
-			logFields := []interface{}{
+			dest := destIP.String()
+			if names := dnsRuntime.NamesForAddress(cfg.SandboxID, sourceIP, destIP, time.Now()); len(names) > 0 {
+				dest = strings.Join(names, ",")
+			}
+			msg := fmt.Sprintf("network connection blocked: %s:%d", dest, r.ID().LocalPort)
+			network.warningMu.Lock()
+			handler := network.warningHandler
+			_, alreadyWarned := network.warnedDests[msg]
+			if handler != nil && !alreadyWarned {
+				network.warnedDests[msg] = struct{}{}
+			}
+			network.warningMu.Unlock()
+			if handler != nil && !alreadyWarned {
+				handler(msg)
+			}
+			logFn := log.Info
+			if handler != nil {
+				logFn = log.Debug
+			}
+			logFn("filehandle network connection blocked",
 				"sandbox_id", cfg.SandboxID,
-				"dest_ip", destIP.String(),
+				"dest_host", dest,
 				"dest_port", r.ID().LocalPort,
 				"source_ip", sourceIP.String(),
-			}
-			if names := dnsRuntime.NamesForAddress(cfg.SandboxID, sourceIP, destIP, time.Now()); len(names) > 0 {
-				logFields = append(logFields, "dest_host", strings.Join(names, ","))
-			}
-			log.Info("filehandle network connection blocked", logFields...)
+			)
 			r.Complete(true)
 			return
 		}
@@ -456,17 +497,7 @@ func newFileHandleVirtualNetwork(cfg fileHandleGatewayConfig, dnsUpstreamAddr st
 	})
 	s.SetTransportProtocolHandler(tcp.ProtocolNumber, tcpForwarder.HandlePacket)
 
-	return &fileHandleVirtualNetwork{
-		stack:             s,
-		networkSwitch:     networkSwitch,
-		dnsUDPConn:        udpConn,
-		dnsTCPLn:          tcpLn,
-		dnsUDPServer:      dnsUDPServer,
-		dnsTCPServer:      dnsTCPServer,
-		dnsRuntime:        dnsRuntime,
-		gatewayHTTPLn:     gatewayHTTPLn,
-		gatewayHTTPServer: gatewayHTTPServer,
-	}, nil
+	return network, nil
 }
 
 func (n *fileHandleVirtualNetwork) AcceptVfkit(ctx context.Context, conn net.Conn) error {
