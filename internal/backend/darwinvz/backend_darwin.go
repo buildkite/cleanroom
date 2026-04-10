@@ -1435,6 +1435,10 @@ func (a *Adapter) executeInSandbox(bootCtx context.Context, runCtx context.Conte
 	if instance.FileHandleGateway != nil {
 		instance.FileHandleGateway.SetScopeToken(gatewayScopeToken)
 		defer instance.FileHandleGateway.SetScopeToken("")
+		if stream.OnWarning != nil {
+			instance.FileHandleGateway.SetWarningHandler(stream.OnWarning)
+			defer instance.FileHandleGateway.SetWarningHandler(nil)
+		}
 	}
 
 	guestReq := vsockexec.ExecRequest{
