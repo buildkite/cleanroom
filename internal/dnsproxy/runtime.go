@@ -422,6 +422,48 @@ func (r *Runtime) HostAllowedByPolicy(sandboxID, host string) bool {
 	return state.policy.HostAllowed(host)
 }
 
+func (r *Runtime) queryAllowedByPolicy(sandboxID string, sourceIP netip.Addr, queryName string, now time.Time) bool {
+	sourceIP = normalizeAddr(sourceIP)
+	queryName = normalizeName(queryName)
+	if !sourceIP.IsValid() || queryName == "" {
+		return false
+	}
+	now = now.UTC()
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	state, ok := r.sandboxes[strings.TrimSpace(sandboxID)]
+	if !ok || state.policy == nil {
+		return false
+	}
+	if state.policy.HostAllowed(queryName) {
+		return true
+	}
+
+	scope, ok := state.scopes[sourceIP]
+	if !ok {
+		return false
+	}
+	scope.pruneExpired(now)
+
+	for _, observation := range scope.observations {
+		if !observation.ExpiresAt.After(now) || observation.QueryName != queryName {
+			continue
+		}
+		for _, name := range observation.Names {
+			if state.policy.HostAllowed(name) {
+				return true
+			}
+		}
+		if observation.Name != "" && state.policy.HostAllowed(observation.Name) {
+			return true
+		}
+	}
+
+	return false
+}
+
 // ReleaseConnection removes an established flow from the runtime.
 func (r *Runtime) ReleaseConnection(conn Connection) {
 	conn.SourceIP = normalizeAddr(conn.SourceIP)

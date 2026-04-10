@@ -2340,7 +2340,7 @@ func setupHostNetworkWithTrustedDNSFactory(ctx context.Context, runID string, al
 		sandboxID:    runID,
 		hostIP:       hostAddr,
 		guestIP:      guestAddr,
-		policy:       trustedDNSPolicy(allow),
+		policy:       trustedDNSPolicy(allowAll, allow),
 		runBatch:     runBatchCommand,
 		tcpChainName: tcpChainName,
 		udpChainName: udpChainName,
@@ -2441,7 +2441,7 @@ func installForwardEstablishedRule(setupRun func(args ...string) error, directio
 	return []string{"iptables", "-D", "FORWARD", directionFlag, tapName, "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"}, nil
 }
 
-func trustedDNSPolicy(allow []policy.AllowRule) *policy.CompiledPolicy {
+func trustedDNSPolicy(allowAll bool, allow []policy.AllowRule) *policy.CompiledPolicy {
 	copied := make([]policy.AllowRule, 0, len(allow))
 	for _, rule := range allow {
 		copied = append(copied, policy.AllowRule{
@@ -2449,9 +2449,13 @@ func trustedDNSPolicy(allow []policy.AllowRule) *policy.CompiledPolicy {
 			Ports: append([]int(nil), rule.Ports...),
 		})
 	}
+	networkDefault := "deny"
+	if allowAll {
+		networkDefault = "allow"
+	}
 	return &policy.CompiledPolicy{
 		Version:        1,
-		NetworkDefault: "deny",
+		NetworkDefault: networkDefault,
 		Allow:          copied,
 	}
 }

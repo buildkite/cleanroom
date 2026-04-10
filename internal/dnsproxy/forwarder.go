@@ -98,7 +98,8 @@ func (f *Forwarder) observeScopedResponse(remoteAddr net.Addr, resp *dns.Msg) {
 	if !ok {
 		return
 	}
-	if err := f.runtime.ObserveResponse(sandboxID, sourceIP, resp.Copy(), f.now().UTC()); err != nil {
+	now := f.now().UTC()
+	if err := f.runtime.ObserveResponse(sandboxID, sourceIP, resp.Copy(), now); err != nil {
 		return
 	}
 	if f.onObserve != nil {
@@ -107,7 +108,7 @@ func (f *Forwarder) observeScopedResponse(remoteAddr net.Addr, resp *dns.Msg) {
 	if f.onDeny != nil {
 		for _, question := range resp.Question {
 			name := normalizeName(question.Name)
-			if name != "" && !f.runtime.HostAllowedByPolicy(sandboxID, name) {
+			if name != "" && !f.runtime.queryAllowedByPolicy(sandboxID, sourceIP, name, now) {
 				f.onDeny(sandboxID, name)
 			}
 		}
