@@ -1,12 +1,29 @@
 package gateway
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/buildkite/cleanroom/internal/policy"
 )
+
+type stubRegistryPrefixHandlerProvider struct {
+	handler      http.Handler
+	policyHost   string
+	upstreamHost string
+	err          error
+	prefix       string
+}
+
+func (s *stubRegistryPrefixHandlerProvider) OCIHandlerForPrefix(prefix string) (http.Handler, string, string, error) {
+	s.prefix = prefix
+	if s.err != nil {
+		return nil, "", "", s.err
+	}
+	return s.handler, s.policyHost, s.upstreamHost, nil
+}
 
 func registryTestScope(allowedHosts ...string) *SandboxScope {
 	allow := make([]policy.AllowRule, 0, len(allowedHosts))
@@ -32,20 +49,26 @@ func TestCachedRegistryHandlerRewritesPathToV2(t *testing.T) {
 		capturedPath = r.URL.Path
 		w.WriteHeader(http.StatusOK)
 	})
-	h := newCachedRegistryHandler(backend, map[string]string{
-		"docker-hub": "registry-1.docker.io",
-	}, nil)
+	provider := &stubRegistryPrefixHandlerProvider{
+		handler:      backend,
+		policyHost:   "docker.io",
+		upstreamHost: "registry-1.docker.io",
+	}
+	h := newCachedRegistryHandler(provider, nil)
 
-	req := httptest.NewRequest("GET", "/registry/docker-hub/library/nginx/manifests/latest", nil)
-	req = withScope(req, registryTestScope("registry-1.docker.io"))
+	req := httptest.NewRequest("GET", "/registry/docker.io/library/nginx/manifests/latest", nil)
+	req = withScope(req, registryTestScope("docker.io"))
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (body: %s)", w.Code, w.Body.String())
 	}
-	if want := "/v2/docker-hub/library/nginx/manifests/latest"; capturedPath != want {
+	if want := "/v2/docker.io/library/nginx/manifests/latest"; capturedPath != want {
 		t.Fatalf("expected backend path %q, got %q", want, capturedPath)
+	}
+	if provider.prefix != "docker.io" {
+		t.Fatalf("expected registry prefix docker.io, got %q", provider.prefix)
 	}
 }
 
@@ -55,12 +78,13 @@ func TestCachedRegistryHandlerPolicyDeniesUnallowedHost(t *testing.T) {
 	backend := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		t.Fatal("backend should not be called for denied host")
 	})
-	h := newCachedRegistryHandler(backend, map[string]string{
-		"docker-hub": "registry-1.docker.io",
+	h := newCachedRegistryHandler(&stubRegistryPrefixHandlerProvider{
+		handler:      backend,
+		policyHost:   "docker.io",
+		upstreamHost: "registry-1.docker.io",
 	}, nil)
 
-	// Scope only allows ghcr.io, not registry-1.docker.io.
-	req := httptest.NewRequest("GET", "/registry/docker-hub/library/nginx/manifests/latest", nil)
+	req := httptest.NewRequest("GET", "/registry/docker.io/library/nginx/manifests/latest", nil)
 	req = withScope(req, registryTestScope("ghcr.io"))
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
@@ -79,8 +103,9 @@ func TestCachedRegistryHandlerUnknownPrefix(t *testing.T) {
 	backend := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		t.Fatal("backend should not be called for unknown prefix")
 	})
-	h := newCachedRegistryHandler(backend, map[string]string{
-		"docker-hub": "registry-1.docker.io",
+	h := newCachedRegistryHandler(&stubRegistryPrefixHandlerProvider{
+		handler: backend,
+		err:     errors.New("unknown prefix"),
 	}, nil)
 
 	req := httptest.NewRequest("GET", "/registry/unknown-prefix/library/nginx/manifests/latest", nil)
@@ -99,9 +124,9 @@ func TestCachedRegistryHandlerNoScope(t *testing.T) {
 	backend := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		t.Fatal("backend should not be called without scope")
 	})
-	h := newCachedRegistryHandler(backend, nil, nil)
+	h := newCachedRegistryHandler(&stubRegistryPrefixHandlerProvider{handler: backend}, nil)
 
-	req := httptest.NewRequest("GET", "/registry/docker-hub/library/nginx/manifests/latest", nil)
+	req := httptest.NewRequest("GET", "/registry/docker.io/library/nginx/manifests/latest", nil)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 
@@ -116,9 +141,9 @@ func TestCachedRegistryHandlerRejectsPost(t *testing.T) {
 	backend := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		t.Fatal("backend should not be called for POST")
 	})
-	h := newCachedRegistryHandler(backend, nil, nil)
+	h := newCachedRegistryHandler(&stubRegistryPrefixHandlerProvider{handler: backend}, nil)
 
-	req := httptest.NewRequest("POST", "/registry/docker-hub/library/nginx/manifests/latest", nil)
+	req := httptest.NewRequest("POST", "/registry/docker.io/library/nginx/manifests/latest", nil)
 	req = withScope(req, registryTestScope("registry-1.docker.io"))
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
@@ -136,11 +161,14 @@ func TestCachedRegistryHandlerBlobsRewritePath(t *testing.T) {
 		capturedPath = r.URL.Path
 		w.WriteHeader(http.StatusOK)
 	})
-	h := newCachedRegistryHandler(backend, map[string]string{
-		"ghcr": "ghcr.io",
-	}, nil)
+	provider := &stubRegistryPrefixHandlerProvider{
+		handler:      backend,
+		policyHost:   "ghcr.io",
+		upstreamHost: "ghcr.io",
+	}
+	h := newCachedRegistryHandler(provider, nil)
 
-	req := httptest.NewRequest("GET", "/registry/ghcr/myorg/myimage/blobs/sha256:abc123", nil)
+	req := httptest.NewRequest("GET", "/registry/ghcr.io/myorg/myimage/blobs/sha256:abc123", nil)
 	req = withScope(req, registryTestScope("ghcr.io"))
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
@@ -148,8 +176,11 @@ func TestCachedRegistryHandlerBlobsRewritePath(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (body: %s)", w.Code, w.Body.String())
 	}
-	if want := "/v2/ghcr/myorg/myimage/blobs/sha256:abc123"; capturedPath != want {
+	if want := "/v2/ghcr.io/myorg/myimage/blobs/sha256:abc123"; capturedPath != want {
 		t.Fatalf("expected backend path %q, got %q", want, capturedPath)
+	}
+	if provider.prefix != "ghcr.io" {
+		t.Fatalf("expected registry prefix ghcr.io, got %q", provider.prefix)
 	}
 }
 
@@ -161,12 +192,14 @@ func TestCachedRegistryHandlerHeadAllowed(t *testing.T) {
 		capturedMethod = r.Method
 		w.WriteHeader(http.StatusOK)
 	})
-	h := newCachedRegistryHandler(backend, map[string]string{
-		"docker-hub": "registry-1.docker.io",
+	h := newCachedRegistryHandler(&stubRegistryPrefixHandlerProvider{
+		handler:      backend,
+		policyHost:   "docker.io",
+		upstreamHost: "registry-1.docker.io",
 	}, nil)
 
-	req := httptest.NewRequest("HEAD", "/registry/docker-hub/library/nginx/manifests/latest", nil)
-	req = withScope(req, registryTestScope("registry-1.docker.io"))
+	req := httptest.NewRequest("HEAD", "/registry/docker.io/library/nginx/manifests/latest", nil)
+	req = withScope(req, registryTestScope("docker.io"))
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 
@@ -184,7 +217,7 @@ func TestCachedRegistryHandlerEmptyPrefix(t *testing.T) {
 	backend := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		t.Fatal("backend should not be called for empty prefix")
 	})
-	h := newCachedRegistryHandler(backend, nil, nil)
+	h := newCachedRegistryHandler(&stubRegistryPrefixHandlerProvider{handler: backend}, nil)
 
 	req := httptest.NewRequest("GET", "/registry/", nil)
 	req = withScope(req, registryTestScope("registry-1.docker.io"))
@@ -214,5 +247,28 @@ func TestRegistryHostname(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("registryHostname(%q) = %q, want %q", tt.input, got, tt.want)
 		}
+	}
+}
+
+func TestResolveOCIRegistryRouteUsesDockerHubAlias(t *testing.T) {
+	t.Parallel()
+
+	routes, err := normalizeOCIRegistryMappings(nil)
+	if err != nil {
+		t.Fatalf("normalizeOCIRegistryMappings returned error: %v", err)
+	}
+
+	route, err := resolveOCIRegistryRoute("docker.io", routes)
+	if err != nil {
+		t.Fatalf("resolveOCIRegistryRoute returned error: %v", err)
+	}
+	if route.policyHost != "docker.io" {
+		t.Fatalf("expected docker.io policy host, got %q", route.policyHost)
+	}
+	if route.upstreamHost != "registry-1.docker.io" {
+		t.Fatalf("expected Docker Hub upstream host, got %q", route.upstreamHost)
+	}
+	if route.upstreamURL != "https://registry-1.docker.io" {
+		t.Fatalf("expected Docker Hub upstream URL, got %q", route.upstreamURL)
 	}
 }

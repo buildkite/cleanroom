@@ -179,19 +179,15 @@ func NewServer(cfg ServerConfig) *Server {
 	mux := http.NewServeMux()
 
 	// Git: prefer content-cache, fall back to mirror-backed proxy.
-	if cfg.ContentCache != nil && cfg.ContentCache.GitHandler() != nil {
-		mux.Handle(RouteGit, newCachedGitHandler(cfg.ContentCache.GitHandler(), cfg.Logger))
+	if cfg.ContentCache != nil && cfg.ContentCache.HasGitHandler() {
+		mux.Handle(RouteGit, newCachedGitHandler(cfg.ContentCache, cfg.Logger))
 	} else {
 		mux.Handle(RouteGit, newGitHandlerWithMirrors(cfg.Credentials, cfg.GitMirrors, cfg.Logger))
 	}
 
 	// Registry: prefer content-cache OCI handler, fall back to stub.
-	if cfg.ContentCache != nil && cfg.ContentCache.OCIHandler() != nil {
-		mux.Handle(RouteRegistry, newCachedRegistryHandler(
-			cfg.ContentCache.OCIHandler(),
-			cfg.ContentCache.PrefixHosts(),
-			cfg.Logger,
-		))
+	if cfg.ContentCache != nil && cfg.ContentCache.HasOCIHandler() {
+		mux.Handle(RouteRegistry, newCachedRegistryHandler(cfg.ContentCache, cfg.Logger))
 	} else {
 		mux.HandleFunc(RouteRegistry, stubHandler("registry"))
 	}

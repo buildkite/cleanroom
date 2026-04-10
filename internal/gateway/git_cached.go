@@ -1,22 +1,27 @@
 package gateway
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 
 	"github.com/charmbracelet/log"
 )
 
+type gitHostHandlerProvider interface {
+	GitHandlerForHost(host string) (http.Handler, error)
+}
+
 // cachedGitHandler wraps a content-cache git handler with cleanroom's
 // identity-based policy enforcement. The content-cache handler handles
 // upstream proxying, caching, and singleflight deduplication; this wrapper
 // handles sandbox scope validation and host allowlisting.
 type cachedGitHandler struct {
-	cache  http.Handler
+	cache  gitHostHandlerProvider
 	logger *log.Logger
 }
 
-func newCachedGitHandler(cache http.Handler, logger *log.Logger) *cachedGitHandler {
+func newCachedGitHandler(cache gitHostHandlerProvider, logger *log.Logger) *cachedGitHandler {
 	return &cachedGitHandler{cache: cache, logger: logger}
 }
 
@@ -48,12 +53,19 @@ func (h *cachedGitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	h.auditLog(scope.SandboxID, upstreamHost, repoPath, "allow", "cached")
 
+	cacheHandler, err := h.cache.GitHandlerForHost(upstreamHost)
+	if err != nil {
+		h.auditLog(scope.SandboxID, upstreamHost, repoPath, "deny", reasonHostNotAllowed)
+		writeReasonError(w, http.StatusForbidden, reasonHostNotAllowed, fmt.Sprintf("git cache is not configured for %s", upstreamHost))
+		return
+	}
+
 	// content-cache's git handler expects paths like /{host}/{repo}.git/...
 	// Strip the /git/ prefix so the cache handler sees the host-rooted path.
 	r = r.Clone(r.Context())
 	r.URL.Path = strings.TrimPrefix(r.URL.Path, "/git")
 	r.URL.RawPath = ""
-	h.cache.ServeHTTP(w, r)
+	cacheHandler.ServeHTTP(w, r)
 }
 
 func (h *cachedGitHandler) auditLog(sandboxID, upstreamHost, repoPath, action, reason string) {

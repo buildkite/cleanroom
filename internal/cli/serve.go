@@ -84,9 +84,8 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 
 	var contentCache *gateway.ContentCache
 	contentCache, err = gateway.NewContentCache(gateway.ContentCacheConfig{
-		Credentials:     gwCredentials,
-		GitAllowedHosts: []string{"github.com", "gitlab.com"},
-		Logger:          logger.With("subsystem", "content-cache"),
+		Credentials: gwCredentials,
+		Logger:      logger.With("subsystem", "content-cache"),
 	})
 	if err != nil {
 		return fmt.Errorf("configure content cache: %w", err)

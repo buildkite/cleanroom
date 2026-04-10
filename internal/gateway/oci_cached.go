@@ -8,24 +8,24 @@ import (
 	"github.com/charmbracelet/log"
 )
 
+type registryPrefixHandlerProvider interface {
+	OCIHandlerForPrefix(prefix string) (http.Handler, string, string, error)
+}
+
 // cachedRegistryHandler wraps a content-cache OCI handler with cleanroom's
 // identity-based policy enforcement. It rewrites the gateway's /registry/
 // path prefix to the /v2/ prefix that the OCI Distribution handler expects,
 // and extracts the upstream registry host from the configured prefix mapping
 // for policy evaluation.
 type cachedRegistryHandler struct {
-	cache http.Handler
-	// prefixHosts maps OCI router prefixes to upstream registry hostnames
-	// for policy evaluation. Example: {"docker-hub": "registry-1.docker.io"}
-	prefixHosts map[string]string
-	logger      *log.Logger
+	cache  registryPrefixHandlerProvider
+	logger *log.Logger
 }
 
-func newCachedRegistryHandler(cache http.Handler, prefixHosts map[string]string, logger *log.Logger) *cachedRegistryHandler {
+func newCachedRegistryHandler(cache registryPrefixHandlerProvider, logger *log.Logger) *cachedRegistryHandler {
 	return &cachedRegistryHandler{
-		cache:       cache,
-		prefixHosts: prefixHosts,
-		logger:      logger,
+		cache:  cache,
+		logger: logger,
 	}
 }
 
@@ -56,34 +56,26 @@ func (h *cachedRegistryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 		http.Error(w, "bad request: missing image path", http.StatusBadRequest)
 		return
 	}
+	rest := strings.TrimPrefix(remainder, prefix+"/")
 
-	// Policy check: resolve the upstream host from the prefix mapping.
-	{
-		upstreamHost := h.resolveHost(prefix)
-		if upstreamHost == "" {
-			h.auditLog(scope.SandboxID, prefix, "deny", "unknown_registry_prefix")
-			writeReasonError(w, http.StatusNotFound, "unknown_registry_prefix", fmt.Sprintf("unknown registry prefix %q", prefix))
-			return
-		}
-		if !scope.Policy.Allows(upstreamHost, 443) {
-			h.auditLog(scope.SandboxID, upstreamHost, "deny", reasonHostNotAllowed)
-			writeReasonError(w, http.StatusForbidden, reasonHostNotAllowed, "upstream registry host is not allowed by sandbox policy")
-			return
-		}
-		h.auditLog(scope.SandboxID, upstreamHost, "allow", "cached")
+	normalizedPrefix := strings.ToLower(strings.TrimSpace(prefix))
+	cacheHandler, policyHost, upstreamHost, err := h.cache.OCIHandlerForPrefix(normalizedPrefix)
+	if err != nil {
+		h.auditLog(scope.SandboxID, normalizedPrefix, "deny", "unknown_registry_prefix")
+		writeReasonError(w, http.StatusNotFound, "unknown_registry_prefix", fmt.Sprintf("unknown registry prefix %q", prefix))
+		return
 	}
+	if !scope.Policy.Allows(policyHost, 443) {
+		h.auditLog(scope.SandboxID, policyHost, "deny", reasonHostNotAllowed)
+		writeReasonError(w, http.StatusForbidden, reasonHostNotAllowed, "upstream registry host is not allowed by sandbox policy")
+		return
+	}
+	h.auditLog(scope.SandboxID, upstreamHost, "allow", "cached")
 
 	r = r.Clone(r.Context())
-	r.URL.Path = "/v2/" + remainder
+	r.URL.Path = "/v2/" + normalizedPrefix + "/" + rest
 	r.URL.RawPath = ""
-	h.cache.ServeHTTP(w, r)
-}
-
-func (h *cachedRegistryHandler) resolveHost(prefix string) string {
-	if h.prefixHosts == nil {
-		return ""
-	}
-	return h.prefixHosts[prefix]
+	cacheHandler.ServeHTTP(w, r)
 }
 
 func (h *cachedRegistryHandler) auditLog(sandboxID, target, action, reason string) {
