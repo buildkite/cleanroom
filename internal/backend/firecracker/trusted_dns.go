@@ -20,7 +20,7 @@ import (
 const trustedDNSListenPort = 1053
 const trustedDNSSyncRetryDelay = time.Second
 
-type trustedDNSFactory func(context.Context, trustedDNSConfig) (func(), error)
+type trustedDNSFactory func(context.Context, trustedDNSConfig) (func(), *dnsproxy.Runtime, error)
 
 type trustedDNSConfig struct {
 	sandboxID    string
@@ -59,36 +59,36 @@ func trustedDNSUDPChainName(tapName string) string {
 	return "crdns-udp-" + tapName
 }
 
-func newTrustedDNSService(_ context.Context, cfg trustedDNSConfig) (func(), error) {
+func newTrustedDNSService(_ context.Context, cfg trustedDNSConfig) (func(), *dnsproxy.Runtime, error) {
 	if strings.TrimSpace(cfg.sandboxID) == "" {
-		return nil, errors.New("trusted dns sandbox id is required")
+		return nil, nil, errors.New("trusted dns sandbox id is required")
 	}
 	if !cfg.hostIP.IsValid() {
-		return nil, errors.New("trusted dns host ip must be valid")
+		return nil, nil, errors.New("trusted dns host ip must be valid")
 	}
 	if !cfg.guestIP.IsValid() {
-		return nil, errors.New("trusted dns guest ip must be valid")
+		return nil, nil, errors.New("trusted dns guest ip must be valid")
 	}
 	if cfg.policy == nil {
-		return nil, errors.New("trusted dns policy is required")
+		return nil, nil, errors.New("trusted dns policy is required")
 	}
 
 	runtime := dnsproxy.NewRuntime(dnsproxy.RuntimeConfig{})
 	if err := runtime.RegisterSandbox(cfg.sandboxID, cfg.policy); err != nil {
-		return nil, fmt.Errorf("register trusted dns sandbox: %w", err)
+		return nil, nil, fmt.Errorf("register trusted dns sandbox: %w", err)
 	}
 
 	upstreamAddrs, err := trustedDNSUpstreamAddrs()
 	if err != nil {
 		runtime.ClearSandbox(cfg.sandboxID)
-		return nil, err
+		return nil, nil, err
 	}
 
 	var chainManager *trustedDNSChainManager
 	if cfg.tcpChainName != "" || cfg.udpChainName != "" {
 		if cfg.runBatch == nil {
 			runtime.ClearSandbox(cfg.sandboxID)
-			return nil, errors.New("trusted dns batch runner is required")
+			return nil, nil, errors.New("trusted dns batch runner is required")
 		}
 		chainManager = newTrustedDNSChainManager(cfg.sandboxID, &trustedDNSChainSyncer{
 			sandboxID:    cfg.sandboxID,
@@ -127,13 +127,13 @@ func newTrustedDNSService(_ context.Context, cfg trustedDNSConfig) (func(), erro
 	udpConn, err := net.ListenPacket("udp4", listenAddr)
 	if err != nil {
 		runtime.ClearSandbox(cfg.sandboxID)
-		return nil, fmt.Errorf("listen for trusted dns udp on %s: %w", listenAddr, err)
+		return nil, nil, fmt.Errorf("listen for trusted dns udp on %s: %w", listenAddr, err)
 	}
 	tcpListener, err := net.Listen("tcp4", listenAddr)
 	if err != nil {
 		_ = udpConn.Close()
 		runtime.ClearSandbox(cfg.sandboxID)
-		return nil, fmt.Errorf("listen for trusted dns tcp on %s: %w", listenAddr, err)
+		return nil, nil, fmt.Errorf("listen for trusted dns tcp on %s: %w", listenAddr, err)
 	}
 
 	udpServer := &dns.Server{PacketConn: udpConn, Handler: forwarder}
@@ -164,7 +164,7 @@ func newTrustedDNSService(_ context.Context, cfg trustedDNSConfig) (func(), erro
 			runtime.ClearSandbox(cfg.sandboxID)
 		})
 	}
-	return cleanup, nil
+	return cleanup, runtime, nil
 }
 
 func trustedDNSUpstreamAddrs() ([]string, error) {

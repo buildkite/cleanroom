@@ -12,7 +12,7 @@ set -euo pipefail
 # - Helper updates must land on hosts before branches that depend on new capabilities can pass.
 
 helper_contract_version() {
-  echo "5"
+  echo "6"
 }
 
 helper_has_zfs() {
@@ -24,6 +24,7 @@ helper_capabilities() {
   cat <<'EOF'
 firecracker-network
 firecracker-trusted-dns
+firecracker-nflog
 EOF
 
   if helper_has_zfs; then
@@ -324,6 +325,13 @@ run_iptables() {
   # Global gateway drop (non-TAP): iptables -A|-D INPUT ! -i cr+ -p tcp --dport <port> -j DROP
   if [[ "$#" -eq 11 && ( "$1" == "-A" || "$1" == "-D" ) && "$2" == "INPUT" && "$3" == "!" && "$4" == "-i" && "$5" == "cr+" && "$6" == "-p" && "$7" == "tcp" && "$8" == "--dport" && "${10}" == "-j" && "${11}" == "DROP" ]]; then
     is_numeric "$9" || die "iptables INPUT gateway drop: invalid port '$9'"
+    exec /usr/sbin/iptables "$@"
+  fi
+
+  # NFLOG: iptables -A|-D FORWARD -i <tap> -j NFLOG --nflog-group <group>
+  if [[ "$#" -eq 8 && ( "$1" == "-A" || "$1" == "-D" ) && "$2" == "FORWARD" && "$3" == "-i" && "$5" == "-j" && "$6" == "NFLOG" && "$7" == "--nflog-group" ]]; then
+    is_tap_name "$4" || die "iptables NFLOG: unsupported interface '$4'"
+    is_numeric "$8" || die "iptables NFLOG: invalid group '$8'"
     exec /usr/sbin/iptables "$@"
   fi
 
