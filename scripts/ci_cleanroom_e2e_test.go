@@ -90,9 +90,9 @@ func TestCiCleanroomE2EReusedSandboxExecOmitsChdir(t *testing.T) {
 
 	script := string(content)
 	for _, needle := range []string{
-		"./dist/cleanroom exec --host \"$listen_endpoint\" --in \"$sandbox_id\" -- sh -lc 'printf persisted-data >/tmp/persist.txt'",
-		"./dist/cleanroom exec --host \"$listen_endpoint\" --in \"$sandbox_id\" -- sh -lc 'cat /tmp/persist.txt' | tee \"$tmpdir/persist-read.out\"",
-		"./dist/cleanroom exec --host \"$listen_endpoint\" --in \"$sandbox_id\" -- sh -lc 'echo should-not-run' >\"$tmpdir/terminated.out\" 2>\"$tmpdir/terminated.err\"",
+		"./dist/cleanroom exec --host \"$listen_endpoint\" --no-mise --in \"$sandbox_id\" -- sh -lc 'printf persisted-data >/tmp/persist.txt'",
+		"./dist/cleanroom exec --host \"$listen_endpoint\" --no-mise --in \"$sandbox_id\" -- sh -lc 'cat /tmp/persist.txt' | tee \"$tmpdir/persist-read.out\"",
+		"./dist/cleanroom exec --host \"$listen_endpoint\" --no-mise --in \"$sandbox_id\" -- sh -lc 'echo should-not-run' >\"$tmpdir/terminated.out\" 2>\"$tmpdir/terminated.err\"",
 	} {
 		if !strings.Contains(script, needle) {
 			t.Fatalf("expected ci-cleanroom-e2e.sh to contain %q", needle)
@@ -116,6 +116,8 @@ func TestCiCleanroomE2EIsolatesCacheInTempDir(t *testing.T) {
 	for _, needle := range []string{
 		`export XDG_CACHE_HOME="$tmpdir/cache"`,
 		`mkdir -p "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_STATE_HOME" "$XDG_RUNTIME_DIR" "$XDG_DATA_HOME"`,
+		`./dist/cleanroom exec --host "$listen_endpoint" --no-mise -c "$PWD" -- sh -lc 'echo cleanroom-e2e'`,
+		`./dist/cleanroom exec --host "$listen_endpoint" --no-mise -c "$PWD" -- sh -lc '`,
 	} {
 		if !strings.Contains(script, needle) {
 			t.Fatalf("expected ci-cleanroom-e2e.sh to contain %q", needle)
