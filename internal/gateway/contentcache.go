@@ -253,7 +253,7 @@ func resolveOCIRegistryRoute(prefix string, registries map[string]string) (ociRo
 		policyHost := upstreamHost
 		policyPort := upstreamPort
 		if isRegistryHostPrefix(normalizedPrefix) {
-			policyHost, _, err = registryHostPort(normalizedPrefix)
+			policyHost, policyPort, err = registryHostPort(normalizedPrefix)
 			if err != nil {
 				return ociRoute{}, fmt.Errorf("invalid registry prefix %q: %w", prefix, err)
 			}

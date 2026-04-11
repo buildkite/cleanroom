@@ -363,17 +363,17 @@ func TestResolveOCIRegistryRouteUsesDockerHubAlias(t *testing.T) {
 	}
 }
 
-func TestResolveOCIRegistryRoutePreservesConfiguredPort(t *testing.T) {
+func TestResolveOCIRegistryRoutePreservesConfiguredPortForSymbolicPrefix(t *testing.T) {
 	t.Parallel()
 
 	routes, err := normalizeOCIRegistryMappings(map[string]string{
-		"registry.internal": "https://registry.internal:5000",
+		"registry-cache": "https://registry.internal:5000",
 	})
 	if err != nil {
 		t.Fatalf("normalizeOCIRegistryMappings returned error: %v", err)
 	}
 
-	route, err := resolveOCIRegistryRoute("registry.internal", routes)
+	route, err := resolveOCIRegistryRoute("registry-cache", routes)
 	if err != nil {
 		t.Fatalf("resolveOCIRegistryRoute returned error: %v", err)
 	}
@@ -385,5 +385,33 @@ func TestResolveOCIRegistryRoutePreservesConfiguredPort(t *testing.T) {
 	}
 	if route.upstreamHost != "registry.internal" {
 		t.Fatalf("expected registry.internal upstream host, got %q", route.upstreamHost)
+	}
+}
+
+func TestResolveOCIRegistryRouteUsesHostStylePrefixPort(t *testing.T) {
+	t.Parallel()
+
+	routes, err := normalizeOCIRegistryMappings(map[string]string{
+		"registry.internal:5000": "https://registry.internal",
+	})
+	if err != nil {
+		t.Fatalf("normalizeOCIRegistryMappings returned error: %v", err)
+	}
+
+	route, err := resolveOCIRegistryRoute("registry.internal:5000", routes)
+	if err != nil {
+		t.Fatalf("resolveOCIRegistryRoute returned error: %v", err)
+	}
+	if route.policyHost != "registry.internal" {
+		t.Fatalf("expected registry.internal policy host, got %q", route.policyHost)
+	}
+	if route.policyPort != 5000 {
+		t.Fatalf("expected registry.internal policy port 5000, got %d", route.policyPort)
+	}
+	if route.upstreamHost != "registry.internal" {
+		t.Fatalf("expected registry.internal upstream host, got %q", route.upstreamHost)
+	}
+	if route.upstreamURL != "https://registry.internal" {
+		t.Fatalf("expected upstream URL https://registry.internal, got %q", route.upstreamURL)
 	}
 }
