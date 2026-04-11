@@ -1615,17 +1615,15 @@ func (a *Adapter) launchSandboxVMFromRootFS(ctx context.Context, sandboxID strin
 			inst.warnings.Emit(fmt.Sprintf("dns query for disallowed host: %s", queryName))
 		}
 	}
-	// A shared WarningEmitter for NFLOG blocked-connection detection. The
-	// handler is set when RunInSandbox attaches the stream, via the sandbox
-	// instance's own warnings field. We bridge via the atomic instance pointer.
-	var nflogWarnings backend.WarningEmitter
-	nflogWarnings.SetHandler(func(msg string) {
+	// NFLOG blocked-connection callback bridges to the sandbox instance's
+	// WarningEmitter which handles per-run deduplication.
+	nflogOnBlocked := func(msg string) {
 		if inst := instanceRef.Load(); inst != nil {
 			inst.warnings.Emit(msg)
 		}
-	})
+	}
 
-	networkCfg, cleanupNetwork, err := setupHostNetwork(ctx, sandboxID, compiled.NetworkDefault == "allow", compiled.Allow, gwPort, networkRunCommand, networkRunBatch, dnsOnDeny, &nflogWarnings)
+	networkCfg, cleanupNetwork, err := setupHostNetwork(ctx, sandboxID, compiled.NetworkDefault == "allow", compiled.Allow, gwPort, networkRunCommand, networkRunBatch, dnsOnDeny, nflogOnBlocked)
 	if err != nil {
 		cleanupVolume()
 		return nil, fmt.Errorf("setup host network: %w", err)
@@ -2154,22 +2152,22 @@ type interfaceLookupFunc func(name string) (*net.Interface, error)
 type rootCommandFunc func(ctx context.Context, args ...string) error
 type rootCommandBatchFunc func(ctx context.Context, commands [][]string) error
 
-func setupHostNetwork(ctx context.Context, runID string, allowAll bool, allow []policy.AllowRule, gatewayPort int, runCommand rootCommandFunc, runBatchCommand rootCommandBatchFunc, onDeny func(sandboxID, queryName string), blockedWarnings *backend.WarningEmitter) (hostNetworkConfig, func(), error) {
+func setupHostNetwork(ctx context.Context, runID string, allowAll bool, allow []policy.AllowRule, gatewayPort int, runCommand rootCommandFunc, runBatchCommand rootCommandBatchFunc, onDeny func(sandboxID, queryName string), onBlocked func(string)) (hostNetworkConfig, func(), error) {
 	lookup := func(ctx context.Context, host string) ([]net.IP, error) {
 		return net.DefaultResolver.LookupIP(ctx, "ip4", host)
 	}
-	return setupHostNetworkWithDeps(ctx, runID, allowAll, allow, gatewayPort, lookup, runCommand, runBatchCommand, onDeny, blockedWarnings)
+	return setupHostNetworkWithDeps(ctx, runID, allowAll, allow, gatewayPort, lookup, runCommand, runBatchCommand, onDeny, onBlocked)
 }
 
-func setupHostNetworkWithDeps(ctx context.Context, runID string, allowAll bool, allow []policy.AllowRule, gatewayPort int, lookup ipLookupFunc, runCommand rootCommandFunc, runBatchCommand rootCommandBatchFunc, onDeny func(sandboxID, queryName string), blockedWarnings *backend.WarningEmitter) (hostNetworkConfig, func(), error) {
-	return setupHostNetworkWithTrustedDNSFactory(ctx, runID, allowAll, allow, gatewayPort, lookup, net.InterfaceByName, runCommand, runBatchCommand, newTrustedDNSService, onDeny, blockedWarnings)
+func setupHostNetworkWithDeps(ctx context.Context, runID string, allowAll bool, allow []policy.AllowRule, gatewayPort int, lookup ipLookupFunc, runCommand rootCommandFunc, runBatchCommand rootCommandBatchFunc, onDeny func(sandboxID, queryName string), onBlocked func(string)) (hostNetworkConfig, func(), error) {
+	return setupHostNetworkWithTrustedDNSFactory(ctx, runID, allowAll, allow, gatewayPort, lookup, net.InterfaceByName, runCommand, runBatchCommand, newTrustedDNSService, onDeny, onBlocked)
 }
 
-func setupHostNetworkWithTapLookup(ctx context.Context, runID string, allowAll bool, allow []policy.AllowRule, gatewayPort int, lookup ipLookupFunc, interfaceByName interfaceLookupFunc, runCommand rootCommandFunc, runBatchCommand rootCommandBatchFunc, onDeny func(sandboxID, queryName string), blockedWarnings *backend.WarningEmitter) (hostNetworkConfig, func(), error) {
-	return setupHostNetworkWithTrustedDNSFactory(ctx, runID, allowAll, allow, gatewayPort, lookup, interfaceByName, runCommand, runBatchCommand, newTrustedDNSService, onDeny, blockedWarnings)
+func setupHostNetworkWithTapLookup(ctx context.Context, runID string, allowAll bool, allow []policy.AllowRule, gatewayPort int, lookup ipLookupFunc, interfaceByName interfaceLookupFunc, runCommand rootCommandFunc, runBatchCommand rootCommandBatchFunc, onDeny func(sandboxID, queryName string), onBlocked func(string)) (hostNetworkConfig, func(), error) {
+	return setupHostNetworkWithTrustedDNSFactory(ctx, runID, allowAll, allow, gatewayPort, lookup, interfaceByName, runCommand, runBatchCommand, newTrustedDNSService, onDeny, onBlocked)
 }
 
-func setupHostNetworkWithTrustedDNSFactory(ctx context.Context, runID string, allowAll bool, allow []policy.AllowRule, gatewayPort int, lookup ipLookupFunc, interfaceByName interfaceLookupFunc, runCommand rootCommandFunc, runBatchCommand rootCommandBatchFunc, factory trustedDNSFactory, onDeny func(sandboxID, queryName string), blockedWarnings *backend.WarningEmitter) (hostNetworkConfig, func(), error) {
+func setupHostNetworkWithTrustedDNSFactory(ctx context.Context, runID string, allowAll bool, allow []policy.AllowRule, gatewayPort int, lookup ipLookupFunc, interfaceByName interfaceLookupFunc, runCommand rootCommandFunc, runBatchCommand rootCommandBatchFunc, factory trustedDNSFactory, onDeny func(sandboxID, queryName string), onBlocked func(string)) (hostNetworkConfig, func(), error) {
 	_ = lookup
 	if factory == nil {
 		factory = newTrustedDNSService
@@ -2380,13 +2378,13 @@ func setupHostNetworkWithTrustedDNSFactory(ctx context.Context, runID string, al
 			} else {
 				addCleanup("iptables", "-D", "FORWARD", "-i", tapName, "-j", "NFLOG", "--nflog-group", groupStr)
 
-				if blockedWarnings != nil && dnsRuntime != nil {
+				if onBlocked != nil && dnsRuntime != nil {
 					listener, nflogErr := newNFLogListener(nflogListenerConfig{
 						group:     nflogGroup,
 						sandboxID: runID,
 						guestIP:   guestAddr,
 						runtime:   dnsRuntime,
-						warnings:  blockedWarnings,
+						onBlocked: onBlocked,
 					})
 					if nflogErr != nil {
 						log.Printf("nflog listener unavailable for %s: %v", runID, nflogErr)

@@ -5,7 +5,6 @@ package firecracker
 import (
 	"net/netip"
 
-	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/dnsproxy"
 )
 
@@ -14,7 +13,7 @@ type nflogListenerConfig struct {
 	sandboxID string
 	guestIP   netip.Addr
 	runtime   *dnsproxy.Runtime
-	warnings  *backend.WarningEmitter
+	onBlocked func(string)
 }
 
 type nflogListener struct{}

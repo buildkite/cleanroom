@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/dnsproxy"
 	nflog "github.com/florianl/go-nflog/v2"
 	"github.com/mdlayher/netlink"
@@ -30,7 +29,7 @@ type nflogListenerConfig struct {
 	sandboxID string
 	guestIP   netip.Addr
 	runtime   *dnsproxy.Runtime
-	warnings  *backend.WarningEmitter
+	onBlocked func(string)
 }
 
 type nflogListener struct {
@@ -80,8 +79,7 @@ func newNFLogListener(cfg nflogListenerConfig) (*nflogListener, error) {
 		}
 
 		msg := fmt.Sprintf("network connection blocked: %s:%d", dest, destPort)
-		cfg.warnings.Emit(msg)
-		log.Printf("[DEBUG] %s", msg)
+		cfg.onBlocked(msg)
 		return 0
 	}
 
