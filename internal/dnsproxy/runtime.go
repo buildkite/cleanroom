@@ -658,17 +658,9 @@ func serviceBindingHintObservations(
 		return nil
 	}
 
-	serviceName := owner
-	if target != "" && target != "." {
-		serviceName = target
-	}
-
 	observations := make([]Observation, 0, len(paths))
 	for _, path := range paths {
 		names := append([]string(nil), path.names...)
-		if target != "" && target != "." && target != owner && !slices.Contains(names, target) {
-			names = append(names, target)
-		}
 
 		effectiveTTL := answerTTL
 		if len(path.names) > 1 {
@@ -683,9 +675,10 @@ func serviceBindingHintObservations(
 				SandboxID:  sandboxID,
 				SourceIP:   sourceIP,
 				QueryName:  path.query,
-				Name:       serviceName,
+				Name:       owner,
 				Type:       recordType,
 				Address:    addr,
+				Target:     target,
 				Names:      append([]string(nil), names...),
 				TTL:        effectiveTTL,
 				ObservedAt: now,

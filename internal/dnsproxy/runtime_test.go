@@ -341,10 +341,13 @@ func TestRuntimeAllowsConnectionFromObservedHTTPSAliasIPv4Hint(t *testing.T) {
 	if len(observations) != 1 {
 		t.Fatalf("unexpected observation count: got %d want 1", len(observations))
 	}
-	if got, want := observations[0].Name, "yarnpkg.netlify.com"; got != want {
+	if got, want := observations[0].Name, "classic.yarnpkg.com"; got != want {
 		t.Fatalf("unexpected observation name: got %q want %q", got, want)
 	}
-	if got, want := observations[0].Names, []string{"classic.yarnpkg.com", "yarnpkg.netlify.com"}; !reflect.DeepEqual(got, want) {
+	if got, want := observations[0].Target, "yarnpkg.netlify.com"; got != want {
+		t.Fatalf("unexpected observation target: got %q want %q", got, want)
+	}
+	if got, want := observations[0].Names, []string{"classic.yarnpkg.com"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("unexpected observation names: got %v want %v", got, want)
 	}
 
@@ -361,6 +364,50 @@ func TestRuntimeAllowsConnectionFromObservedHTTPSAliasIPv4Hint(t *testing.T) {
 
 	if got, want := runtime.NamesForAddress("sandbox-1", sourceIP, destIP, now), []string{"classic.yarnpkg.com"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("unexpected names for address: got %v want %v", got, want)
+	}
+}
+
+func TestRuntimeRejectsObservedHTTPSAliasHintsForUnallowlistedOwner(t *testing.T) {
+	t.Parallel()
+
+	runtime := NewRuntime(RuntimeConfig{
+		MaxObservationsPerScope:  8,
+		MaxConnectionsPerSandbox: 8,
+	})
+	if err := runtime.RegisterSandbox("sandbox-1", testCompiledPolicy(
+		policy.AllowRule{Host: "yarnpkg.netlify.com", Ports: []int{443}},
+	)); err != nil {
+		t.Fatalf("register sandbox: %v", err)
+	}
+
+	now := time.Date(2026, time.April, 6, 10, 0, 0, 0, time.UTC)
+	sourceIP := netip.MustParseAddr("10.0.0.2")
+	destIP := netip.MustParseAddr("54.253.94.210")
+
+	if err := runtime.ObserveResponse("sandbox-1", sourceIP, testResponse("classic.yarnpkg.com.",
+		&dns.HTTPS{
+			SVCB: dns.SVCB{
+				Hdr:      dns.RR_Header{Name: "classic.yarnpkg.com.", Rrtype: dns.TypeHTTPS, Class: dns.ClassINET, Ttl: 30},
+				Priority: 0,
+				Target:   "yarnpkg.netlify.com.",
+				Value: []dns.SVCBKeyValue{
+					&dns.SVCBIPv4Hint{Hint: []net.IP{net.ParseIP("54.253.94.210").To4()}},
+				},
+			},
+		},
+	), now); err != nil {
+		t.Fatalf("observe response: %v", err)
+	}
+
+	if runtime.AllowConnection(Connection{
+		SandboxID:  "sandbox-1",
+		SourceIP:   sourceIP,
+		SourcePort: 41022,
+		DestIP:     destIP,
+		DestPort:   443,
+		Protocol:   ProtocolTCP,
+	}, now) {
+		t.Fatal("expected unallowlisted https owner to remain unauthorized")
 	}
 }
 
