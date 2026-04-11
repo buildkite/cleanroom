@@ -222,6 +222,7 @@ Meaning:
   - they materialize that checkout inside the sandbox before the command runs
   - they start commands in `repository.path`
   - when the checkout contains `.mise.toml`, `mise.toml`, `.tool-versions`, or `.mise/config.toml`, they execute the command through `mise exec -- ...` unless `sandbox.mise.enabled: false` or `sandbox.mise.install: false`
+  - `cleanroom exec --no-mise` and `cleanroom console --no-mise` disable that automatic wrapping for a single execution
 - `cleanroom sandbox create` remains the generic low-level surface and does not
   infer repository state from the current working tree or read `cleanroom.yaml`.
 - Without `--from`, `cleanroom sandbox create` synthesizes a repo-agnostic
@@ -247,6 +248,7 @@ Meaning:
 - `--keep` preserves a newly created sandbox after execution completes.
 - Reuse an existing sandbox with `--in <id>`.
 - Create a new sandbox from a snapshot with `--from <snapshot-id>`.
+- `--no-mise` disables per-execution automatic `mise exec -- ...` wrapping even when policy-level `sandbox.mise.*` settings allow it.
 - Interactive executions must use `AttachExecution` bootstrap plus the dedicated QUIC interactive transport.
 - Non-interactive mode must use server-streaming semantics.
 - First interrupt signal should request execution cancel; second interrupt may detach client stream immediately.

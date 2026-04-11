@@ -103,7 +103,8 @@ configured guest path. If the checked-out repository contains `.mise.toml`,
 `mise.toml`, `.tool-versions`, or `.mise/config.toml`, Cleanroom also runs
 the command through `mise exec -- ...` unless
 `sandbox.mise.enabled: false` or `sandbox.mise.install: false` is set in
-`cleanroom.yaml`.
+`cleanroom.yaml`. Use `cleanroom exec --no-mise -- ...` or
+`cleanroom console --no-mise` to skip that wrapper for a single execution.
 
 Pre-create a long-running sandbox without running a command:
 
@@ -403,6 +404,7 @@ cleanroom version
 Failure flow:
 
 - `cleanroom exec` and `cleanroom console` print `sandbox_id` and `execution_id` on failure when available.
+- Attached `cleanroom exec` and `cleanroom console` streams may print warning notices on stderr for policy observations such as blocked connections or disallowed DNS lookups.
 - `cleanroom sandbox inspect <sandbox-id>` shows sandbox state plus `last_execution_id` and `active_execution_id`.
 - `cleanroom execution inspect ...` is the control-plane view for execution status, retained stdout/stderr, image metadata, and observability.
 - `cleanroom status ...` is the local artifact view under `$XDG_STATE_HOME/cleanroom/executions`.
