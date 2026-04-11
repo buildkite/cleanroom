@@ -366,7 +366,8 @@ workspace_stage_key = H(
   submodule_mode,
   submodule_resolution_digest,
   checkout_mode,
-  repository_destination_dir
+  repository_destination_dir,
+  materialization_recipe_digest
 )
 ```
 
@@ -378,6 +379,11 @@ Notes:
 
 - this is the next speed stage after mirror-backed clone
 - it turns "avoid hammering upstream" into "skip clone and checkout on warm hit"
+- `commit_sha` identifies the repo tree, but it is not enough to identify the
+  full workspace stage by itself
+- workspace-stage identity must also capture repository provenance and checkout
+  behavior such as submodule resolution, destination path, and any explicit
+  materialization recipe details such as sparse checkout or LFS hydration
 - current implementation calls this the workspace-seed flow
 
 ### Stage 2: Dependency
