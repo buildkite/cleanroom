@@ -17,6 +17,8 @@ type gitHandlerFactory func(host string) (http.Handler, error)
 
 type ociHandlerFactory func(prefix string) (ociHandlerEntry, error)
 
+type ociRouteResolver func(prefix string) (ociRoute, error)
+
 type ociHandlerEntry struct {
 	handler      http.Handler
 	policyHost   string
@@ -36,6 +38,7 @@ type ContentCache struct {
 	ociMu           sync.Mutex
 	ociHandlers     map[string]ociHandlerEntry
 	buildOCIHandler ociHandlerFactory
+	resolveOCIRoute ociRouteResolver
 }
 
 // Close releases resources held by the content cache.
@@ -102,31 +105,57 @@ func (c *ContentCache) HasOCIHandler() bool {
 	return c != nil && c.buildOCIHandler != nil
 }
 
-// OCIHandlerForPrefix returns an OCI cache handler and policy/upstream metadata for the
-// requested registry prefix.
-func (c *ContentCache) OCIHandlerForPrefix(prefix string) (http.Handler, string, int, string, error) {
-	if c == nil || c.buildOCIHandler == nil {
-		return nil, "", 0, "", errors.New("oci cache not configured")
+// OCIUpstreamForPrefix returns policy/upstream metadata for the requested
+// registry prefix without allocating a new per-prefix handler.
+func (c *ContentCache) OCIUpstreamForPrefix(prefix string) (string, int, string, error) {
+	if c == nil || c.resolveOCIRoute == nil {
+		return "", 0, "", errors.New("oci cache not configured")
 	}
 
 	prefix = strings.ToLower(strings.TrimSpace(prefix))
 	if prefix == "" {
-		return nil, "", 0, "", errors.New("empty registry prefix")
+		return "", 0, "", errors.New("empty registry prefix")
+	}
+
+	c.ociMu.Lock()
+	if entry, ok := c.ociHandlers[prefix]; ok {
+		c.ociMu.Unlock()
+		return entry.policyHost, entry.policyPort, entry.upstreamHost, nil
+	}
+	c.ociMu.Unlock()
+
+	route, err := c.resolveOCIRoute(prefix)
+	if err != nil {
+		return "", 0, "", err
+	}
+	return route.policyHost, route.policyPort, route.upstreamHost, nil
+}
+
+// OCIHandlerForPrefix returns an OCI cache handler for the requested registry
+// prefix, creating and caching it on first use.
+func (c *ContentCache) OCIHandlerForPrefix(prefix string) (http.Handler, error) {
+	if c == nil || c.buildOCIHandler == nil {
+		return nil, errors.New("oci cache not configured")
+	}
+
+	prefix = strings.ToLower(strings.TrimSpace(prefix))
+	if prefix == "" {
+		return nil, errors.New("empty registry prefix")
 	}
 
 	c.ociMu.Lock()
 	defer c.ociMu.Unlock()
 
 	if entry, ok := c.ociHandlers[prefix]; ok {
-		return entry.handler, entry.policyHost, entry.policyPort, entry.upstreamHost, nil
+		return entry.handler, nil
 	}
 
 	entry, err := c.buildOCIHandler(prefix)
 	if err != nil {
-		return nil, "", 0, "", err
+		return nil, err
 	}
 	c.ociHandlers[prefix] = entry
-	return entry.handler, entry.policyHost, entry.policyPort, entry.upstreamHost, nil
+	return entry.handler, nil
 }
 
 // registryHostname extracts the hostname from a registry URL for policy checks.

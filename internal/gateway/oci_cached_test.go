@@ -16,14 +16,26 @@ type stubRegistryPrefixHandlerProvider struct {
 	upstreamHost string
 	err          error
 	prefix       string
+	handlerCalls int
+	lookupCalls  int
 }
 
-func (s *stubRegistryPrefixHandlerProvider) OCIHandlerForPrefix(prefix string) (http.Handler, string, int, string, error) {
+func (s *stubRegistryPrefixHandlerProvider) OCIUpstreamForPrefix(prefix string) (string, int, string, error) {
 	s.prefix = prefix
+	s.lookupCalls++
 	if s.err != nil {
-		return nil, "", 0, "", s.err
+		return "", 0, "", s.err
 	}
-	return s.handler, s.policyHost, s.policyPort, s.upstreamHost, nil
+	return s.policyHost, s.policyPort, s.upstreamHost, nil
+}
+
+func (s *stubRegistryPrefixHandlerProvider) OCIHandlerForPrefix(prefix string) (http.Handler, error) {
+	s.prefix = prefix
+	s.handlerCalls++
+	if s.err != nil {
+		return nil, s.err
+	}
+	return s.handler, nil
 }
 
 func registryTestScope(allowedHosts ...string) *SandboxScope {
@@ -94,12 +106,13 @@ func TestCachedRegistryHandlerPolicyDeniesUnallowedHost(t *testing.T) {
 	backend := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		t.Fatal("backend should not be called for denied host")
 	})
-	h := newCachedRegistryHandler(&stubRegistryPrefixHandlerProvider{
+	provider := &stubRegistryPrefixHandlerProvider{
 		handler:      backend,
 		policyHost:   "docker.io",
 		policyPort:   443,
 		upstreamHost: "registry-1.docker.io",
-	}, nil)
+	}
+	h := newCachedRegistryHandler(provider, nil)
 
 	req := httptest.NewRequest("GET", "/registry/docker.io/library/nginx/manifests/latest", nil)
 	req = withScope(req, registryTestScope("ghcr.io"))
@@ -111,6 +124,12 @@ func TestCachedRegistryHandlerPolicyDeniesUnallowedHost(t *testing.T) {
 	}
 	if got := w.Header().Get(reasonCodeHeader); got != reasonHostNotAllowed {
 		t.Fatalf("expected reason %s, got %q", reasonHostNotAllowed, got)
+	}
+	if provider.lookupCalls != 1 {
+		t.Fatalf("expected one metadata lookup, got %d", provider.lookupCalls)
+	}
+	if provider.handlerCalls != 0 {
+		t.Fatalf("expected denied request to avoid handler creation, got %d handler calls", provider.handlerCalls)
 	}
 }
 

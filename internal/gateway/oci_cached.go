@@ -9,7 +9,8 @@ import (
 )
 
 type registryPrefixHandlerProvider interface {
-	OCIHandlerForPrefix(prefix string) (http.Handler, string, int, string, error)
+	OCIUpstreamForPrefix(prefix string) (string, int, string, error)
+	OCIHandlerForPrefix(prefix string) (http.Handler, error)
 }
 
 // cachedRegistryHandler wraps a content-cache OCI handler with cleanroom's
@@ -59,7 +60,7 @@ func (h *cachedRegistryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 	rest := strings.TrimPrefix(remainder, prefix+"/")
 
 	normalizedPrefix := strings.ToLower(strings.TrimSpace(prefix))
-	cacheHandler, policyHost, policyPort, upstreamHost, err := h.cache.OCIHandlerForPrefix(normalizedPrefix)
+	policyHost, policyPort, upstreamHost, err := h.cache.OCIUpstreamForPrefix(normalizedPrefix)
 	if err != nil {
 		h.auditLog(scope.SandboxID, normalizedPrefix, "deny", "unknown_registry_prefix")
 		writeReasonError(w, http.StatusNotFound, "unknown_registry_prefix", fmt.Sprintf("unknown registry prefix %q", prefix))
@@ -71,6 +72,13 @@ func (h *cachedRegistryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 		return
 	}
 	h.auditLog(scope.SandboxID, upstreamHost, "allow", "cached")
+
+	cacheHandler, err := h.cache.OCIHandlerForPrefix(normalizedPrefix)
+	if err != nil {
+		h.auditLog(scope.SandboxID, normalizedPrefix, "deny", "unknown_registry_prefix")
+		writeReasonError(w, http.StatusNotFound, "unknown_registry_prefix", fmt.Sprintf("unknown registry prefix %q", prefix))
+		return
+	}
 
 	r = r.Clone(r.Context())
 	r.URL.Path = "/v2/" + normalizedPrefix + "/" + rest

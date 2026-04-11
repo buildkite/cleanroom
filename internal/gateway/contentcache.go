@@ -124,6 +124,9 @@ func NewContentCache(cfg ContentCacheConfig) (*ContentCache, error) {
 		gitHandlers: make(map[string]http.Handler),
 		ociHandlers: make(map[string]ociHandlerEntry),
 	}
+	cache.resolveOCIRoute = func(prefix string) (ociRoute, error) {
+		return resolveOCIRegistryRoute(prefix, registryMappings)
+	}
 	cache.buildGitHandler = func(host string) (http.Handler, error) {
 		host = strings.ToLower(strings.TrimSpace(host))
 		if host == "" {
@@ -147,7 +150,7 @@ func NewContentCache(cfg ContentCacheConfig) (*ContentCache, error) {
 		), nil
 	}
 	cache.buildOCIHandler = func(prefix string) (ociHandlerEntry, error) {
-		route, err := resolveOCIRegistryRoute(prefix, registryMappings)
+		route, err := cache.resolveOCIRoute(prefix)
 		if err != nil {
 			return ociHandlerEntry{}, err
 		}
