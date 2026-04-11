@@ -7,10 +7,9 @@ import (
 	"github.com/buildkite/cleanroom/internal/backend"
 )
 
-const allowRulesIgnoredWarning = "darwin-vz cannot enforce sandbox.network.allow entries in this network mode; use backends.darwin-vz.network.mode=filehandle for allowlist egress filtering"
-const guestNetworkUnavailableWarning = "darwin-vz guest networking is enabled without host-side egress filtering"
 const guestNetworkProtectedMessage = "darwin-vz guest networking is protected by host-side egress filtering"
 const guestNetworkProtectedByFileHandleMessage = "darwin-vz guest networking is protected by file-handle gateway filtering"
+const guestNetworkUnavailableWarning = "darwin-vz guest networking is enabled without host-side egress filtering"
 
 func evaluateNetworkPolicyForDoctor(networkDefault string, allowCount int, allowlistSupported bool) (string, error) {
 	return evaluateNetworkPolicy(networkDefault, allowCount, allowlistSupported, false)
@@ -21,19 +20,16 @@ func evaluateNetworkPolicyForRun(networkDefault string, allowCount int, allowlis
 }
 
 func evaluateNetworkPolicy(networkDefault string, allowCount int, allowlistSupported, requireAllowlistEnforcement bool) (string, error) {
-	_ = requireAllowlistEnforcement
+	_, _ = allowCount, requireAllowlistEnforcement
 	if strings.TrimSpace(networkDefault) != "deny" {
 		return "", fmt.Errorf("darwin-vz backend requires deny-by-default policy, got %q", networkDefault)
-	}
-	if allowCount > 0 && !allowlistSupported {
-		return allowRulesIgnoredWarning, nil
 	}
 	return "", nil
 }
 
 func allowlistSupportForConfig(cfg backend.FirecrackerConfig) (supported bool, detail, protectionMessage string, err error) {
-	if darwinVZConfiguredOrDefaultNetworkMode(cfg.DarwinVZNetworkMode) == darwinVZNetworkModeFileHandle {
-		return true, "", guestNetworkProtectedByFileHandleMessage, nil
+	if err := validateDarwinVZNetworkSelection(cfg); err != nil {
+		return false, "", "", err
 	}
-	return false, "", "", nil
+	return true, "", guestNetworkProtectedByFileHandleMessage, nil
 }

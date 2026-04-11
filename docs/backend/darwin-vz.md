@@ -19,7 +19,6 @@ Implemented:
 - `filehandle` network mode with a Cleanroom-owned guest gateway and stable guest IP
 - TCP allowlist egress filtering for `sandbox.network.allow` in `filehandle` mode
 - guest access to the shared host gateway through the filehandle gateway IP
-- `vmnet-shared` network mode on macOS 26+ with optional experimental custom RFC1918 subnet
 - managed kernel fallback when `kernel_image` is unset or missing
 - rootfs derivation from `sandbox.image.ref` when `rootfs` is unset or missing
 - persistent sandboxes across multiple executions
@@ -117,7 +116,7 @@ On macOS, cleanroom also probes common Homebrew `e2fsprogs` locations.
 
 ## Networking Semantics
 
-`darwin-vz` now has two materially different networking models:
+`darwin-vz` uses a single networking model:
 
 - `filehandle`
   - attaches the guest NIC with `VZFileHandleNetworkDeviceAttachment`
@@ -126,39 +125,25 @@ On macOS, cleanroom also probes common Homebrew `e2fsprogs` locations.
   - serves guest DNS from that gateway IP
   - enforces `sandbox.network.allow` for TCP egress in the gateway
   - exposes the shared host gateway service to the guest through the same gateway IP
-- `nat` / `vmnet-shared`
-  - provide guest outbound networking
-  - do not provide equivalent host-side allowlist enforcement for `sandbox.network.allow`
-  - still emit an explicit warning when allow rules are present
 
 Compared to Firecracker:
 
 - `filehandle` gives `darwin-vz` stable guest identity and host-owned filtering semantics
-- `nat` and `vmnet-shared` still do not provide Firecracker-style per-sandbox host interface identity
 - host-to-guest networking beyond the guest gateway path and helper-mediated control/exec path is still not implemented
 
 Experimental runtime config:
 
-- `backends.darwin-vz.network.mode: filehandle|vmnet-shared|nat`
-- `backends.darwin-vz.network.subnet: 10.233.0.0/16` for custom vmnet shared-mode IPv4 ranges
+- `backends.darwin-vz.network.mode: filehandle`
 - `backends.darwin-vz.network.subnet: 10.233.0.0/24` for custom filehandle private ranges
 
-`filehandle` is now the default on macOS because it is the only `darwin-vz`
-network mode that matches Cleanroom's allowlisted egress semantics. Use
-explicit `vmnet-shared` when you want helper-managed shared networking and
-guest IP metadata, or explicit `nat` as a compatibility fallback.
-`vmnet-shared` accepts only RFC1918 IPv4 CIDRs. For `vmnet-shared`, the helper
-now mirrors the Apple `containerization` pattern: create the vmnet shared
-network in-helper, disable vmnet DHCP, derive the actual subnet from vmnet, and
-pass a static guest IPv4/gateway/prefix to the guest init path via boot args.
+`filehandle` is the default and only supported `darwin-vz` network mode because
+it is the only mode that matches Cleanroom's allowlisted egress semantics.
 
 ## Capability Surface
 
 Backends now expose a machine-readable capability map (visible in `cleanroom doctor --json` under `capabilities`).
 
-Current `darwin-vz` capability values depend on the configured network mode.
-
-In `filehandle` mode:
+Current `darwin-vz` capability values:
 
 - `exec.streaming=true`
 - `sandbox.snapshot=true`
@@ -167,27 +152,17 @@ In `filehandle` mode:
 - `network.allowlist_egress=true`
 - `network.guest_interface=true`
 
-In `nat` and `vmnet-shared` modes, `network.allowlist_egress` remains `false`.
-
-Git traffic for allowed HTTPS hosts now uses two different paths:
+Git traffic for allowed HTTPS hosts uses the filehandle gateway path:
 
 - `filehandle`
   - the guest rewrites allowed HTTPS Git remotes through the shared host gateway using the filehandle gateway IP
   - the guest does not need direct scope-token headers; the host bridge injects them
-- `nat` / `vmnet-shared`
-  - Git traffic goes directly to the original remote; Cleanroom does not inject Git rewrite env in these modes
-  - this avoids rewriting bootstrap clones to a host gateway path that the guest cannot reliably reach outside `filehandle`
 
 ## Entitlements and Signing
 
 `cleanroom-darwin-vz` must include:
 
 - `com.apple.security.virtualization`
-
-The optional `vmnet-shared` path additionally requires:
-
-- `com.apple.developer.networking.vmnet`
-- a matching provisioning profile for the helper identifier
 
 The main `cleanroom` Go binary does not require this entitlement for `darwin-vz`.
 
@@ -209,21 +184,6 @@ Relevant env vars:
 - `CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY`
 - `CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTIFIER` (defaults to `com.buildkite.cleanroom.darwin-vz` when a provisioning profile is embedded)
 - `CLEANROOM_DARWIN_VZ_HELPER_PROVISION_PROFILE`
-
-Known-good local setup for vmnet-shared:
-
-1. Enable the Apple `VMNet` capability for `com.buildkite.cleanroom.darwin-vz`.
-2. Regenerate and install the matching macOS provisioning profile.
-3. Keep the downloaded profile available locally, for example at `~/Downloads/Cleanroom_Darwin_VZ_Backend.provisionprofile`.
-4. Build the helper app with that embedded profile:
-
-```bash
-CLEANROOM_DARWIN_VZ_HELPER_ENTITLEMENTS=cmd/cleanroom-darwin-vz/entitlements-vmnet.plist \
-CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY='Apple Development: <you> (<team>)' \
-CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTIFIER='com.buildkite.cleanroom.darwin-vz' \
-CLEANROOM_DARWIN_VZ_HELPER_PROVISION_PROFILE="$HOME/Downloads/Cleanroom_Darwin_VZ_Backend.provisionprofile" \
-scripts/build-darwin-vz-helper.sh dist/cleanroom-darwin-vz.app
-```
 
 ## Runtime Discovery
 
@@ -273,48 +233,7 @@ Supported e2e overrides:
 - `CLEANROOM_DARWIN_VZ_E2E_KERNEL_IMAGE` forces a specific kernel path instead of the managed kernel asset.
 - `CLEANROOM_DARWIN_VZ_E2E_ROOTFS` points at a prebuilt ext4 rootfs and skips the host `e2fsprogs` requirement.
 
-Focused vmnet spike path:
-
-```bash
-CLEANROOM_DARWIN_VZ_HELPER="$PWD/dist/cleanroom-darwin-vz.app" \
-CLEANROOM_DARWIN_VZ_VMNET_E2E=1 \
-mise exec -- go test ./internal/backend/darwinvz -run TestVMNetSharedE2E -v
-```
-
-The vmnet e2e expects the helper to already be signed with
-`cmd/cleanroom-darwin-vz/entitlements-vmnet.plist` and a provisioning profile
-that actually grants `com.apple.developer.networking.vmnet`.
-
-The current automated vmnet path covers:
-
-- `vmnet-shared` on the default shared network
-- guest IPv4 assignment via helper-provided static config
-- custom RFC1918 shared subnet egress, currently exercised with `10.233.0.0/16`
-- host-to-guest TCP reachability on the custom subnet path
-- guest outbound egress
-
-The host-to-guest check builds a tiny Linux guest test binary from
-`cmd/cleanroom-vmnet-echo`, injects it into a temporary e2e rootfs, runs it
-inside the guest, then verifies the host can connect to the guest IP directly.
-
-Important implementation detail:
-
-- when configuring a custom subnet, the helper must pass the host/gateway
-  address to `vmnet_network_configuration_set_ipv4_subnet`, not the raw network
-  address. Apple’s `containerization` code does this, and matching that
-  behavior fixed the previous custom-subnet bring-up failure in this repo.
-
-Known limits from the macOS 26.1 spike:
-
-- identity persistence across restarts is still not proven
-- guest metadata is now persisted in darwin-vz config/observability files, but
-  it is still derived per launch rather than allocated from a longer-lived
-  identity model
-
 ## Limitations
 
-- no allowlist egress filtering yet
 - no sandbox file download support yet
 - no Firecracker-style TAP identity or host firewall enforcement yet
-- direct host-to-guest routing is only exercised on the experimental custom
-  subnet vmnet path

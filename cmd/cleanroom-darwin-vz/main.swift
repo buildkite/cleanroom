@@ -1354,17 +1354,19 @@ private final class VMRuntime {
         let consoleURL = URL(fileURLWithPath: consoleLogPath)
 
         let networkDevice = VZVirtioNetworkDeviceConfiguration()
-        let resolvedNetworkMode = (networkMode?.isEmpty == false ? networkMode! : "nat")
+        let resolvedNetworkMode = (networkMode?.isEmpty == false ? networkMode! : "filehandle")
         let vmnetNetwork: vmnet_network_ref?
         let networkDetails: NetworkDetails?
         let fileHandleNetworkAttachment: FileHandleNetworkAttachment?
         var resolvedBootArgs = bootArgs
+        if (vmnetExternalInterface?.isEmpty == false)
+            || vmnetDisableNAT44
+            || vmnetDisableNAT66
+            || vmnetDisableDNSProxy
+            || vmnetDisableRouterAdvertisement {
+            throw HelperError.invalidRequest("darwin-vz no longer supports vmnet-specific network settings")
+        }
         switch resolvedNetworkMode {
-        case "nat":
-            networkDevice.attachment = VZNATNetworkDeviceAttachment()
-            vmnetNetwork = nil
-            networkDetails = nil
-            fileHandleNetworkAttachment = nil
         case "filehandle":
             guard let fileHandleSocketPath, !fileHandleSocketPath.isEmpty else {
                 throw HelperError.invalidRequest("missing filehandle_socket_path for filehandle network mode")
@@ -1383,28 +1385,8 @@ private final class VMRuntime {
             vmnetNetwork = nil
             networkDetails = details
             fileHandleNetworkAttachment = attachment
-        case "vmnet-shared":
-            guard #available(macOS 26.0, *) else {
-                throw HelperError.vm("vmnet-shared requires macOS 26 or later")
-            }
-            let sharedNetworkDetails = try createVMNetSharedNetwork(
-                subnetCIDR: vmnetSubnetCIDR,
-                externalInterface: vmnetExternalInterface,
-                disableNAT44: vmnetDisableNAT44,
-                disableNAT66: vmnetDisableNAT66,
-                disableDNSProxy: vmnetDisableDNSProxy,
-                disableRouterAdvertisement: vmnetDisableRouterAdvertisement
-            )
-            resolvedBootArgs += " cleanroom_vmnet_guest_ipv4=\(sharedNetworkDetails.guestIPv4)"
-            resolvedBootArgs += " cleanroom_vmnet_gateway_ipv4=\(sharedNetworkDetails.gatewayIPv4)"
-            resolvedBootArgs += " cleanroom_vmnet_prefix_len=\(sharedNetworkDetails.prefixLength)"
-            resolvedBootArgs += " cleanroom_vmnet_subnet_cidr=\(sharedNetworkDetails.subnetCIDR)"
-            networkDevice.attachment = VZVmnetNetworkDeviceAttachment(network: sharedNetworkDetails.reference!)
-            vmnetNetwork = sharedNetworkDetails.reference
-            networkDetails = sharedNetworkDetails
-            fileHandleNetworkAttachment = nil
         default:
-            throw HelperError.invalidRequest("unsupported network_mode \(resolvedNetworkMode)")
+            throw HelperError.invalidRequest("unsupported network_mode \(resolvedNetworkMode); only filehandle is supported")
         }
 
         let bootLoader = VZLinuxBootLoader(kernelURL: kernelURL)

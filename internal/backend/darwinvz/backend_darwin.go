@@ -41,8 +41,7 @@ import (
 // Adapter runs Linux VMs on macOS via Virtualization.framework.
 //
 // The file-handle network mode provides a Cleanroom-owned guest gateway with
-// TCP allowlist enforcement. The legacy nat/vmnet paths still lack equivalent
-// host-side allowlist filtering.
+// TCP allowlist enforcement.
 type Adapter struct {
 	imageManagerOnce sync.Once
 	imageManager     imageEnsurer
@@ -551,7 +550,7 @@ func (a *Adapter) Doctor(_ context.Context, req backend.DoctorRequest) (*backend
 	} else {
 		appendCheck("network_mode", "pass", fmt.Sprintf("darwin-vz network mode: %s", networkCfg.Mode))
 		if networkCfg.SubnetCIDR != "" {
-			appendCheck("network_subnet", "pass", fmt.Sprintf("darwin-vz vmnet subnet: %s", networkCfg.SubnetCIDR))
+			appendCheck("network_subnet", "pass", fmt.Sprintf("darwin-vz network subnet: %s", networkCfg.SubnetCIDR))
 		}
 	}
 
@@ -674,11 +673,6 @@ func (a *Adapter) Doctor(_ context.Context, req backend.DoctorRequest) (*backend
 				"pass",
 				fmt.Sprintf("%s includes com.apple.security.virtualization entitlement", helperPath),
 			)
-		}
-		if networkErr == nil && networkCfg.Mode == darwinVZNetworkModeVMNetShared {
-			hasVMNetEntitlement, vmnetEntitlementErr := helperHasVMNetworkingEntitlement(helperPath)
-			status, message := doctorVMNetEntitlementResult(helperPath, hasVMNetEntitlement, vmnetEntitlementErr)
-			appendCheck("vmnet_entitlement", status, message)
 		}
 	}
 	return report, nil

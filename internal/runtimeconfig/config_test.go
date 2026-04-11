@@ -24,13 +24,8 @@ backends:
     kernel_image: /tmp/kernel
     rootfs: /tmp/rootfs
     network:
-      mode: vmnet-shared
-      subnet: 10.233.0.0/16
-      external_interface: en0
-      disable_nat44: true
-      disable_nat66: true
-      disable_dns_proxy: true
-      disable_router_advertisement: true
+      mode: filehandle
+      subnet: 10.233.0.0/24
     services:
       docker:
         startup_timeout_seconds: 25
@@ -52,26 +47,11 @@ backends:
 	if got, want := cfg.Backends.DarwinVZ.KernelImage, "/tmp/kernel"; got != want {
 		t.Fatalf("unexpected darwin-vz kernel: got %q want %q", got, want)
 	}
-	if got, want := cfg.Backends.DarwinVZ.Network.Mode, "vmnet-shared"; got != want {
+	if got, want := cfg.Backends.DarwinVZ.Network.Mode, "filehandle"; got != want {
 		t.Fatalf("unexpected darwin-vz network mode: got %q want %q", got, want)
 	}
-	if got, want := cfg.Backends.DarwinVZ.Network.Subnet, "10.233.0.0/16"; got != want {
+	if got, want := cfg.Backends.DarwinVZ.Network.Subnet, "10.233.0.0/24"; got != want {
 		t.Fatalf("unexpected darwin-vz network subnet: got %q want %q", got, want)
-	}
-	if got, want := cfg.Backends.DarwinVZ.Network.ExternalInterface, "en0"; got != want {
-		t.Fatalf("unexpected darwin-vz external interface: got %q want %q", got, want)
-	}
-	if !cfg.Backends.DarwinVZ.Network.DisableNAT44 {
-		t.Fatal("expected darwin-vz disable_nat44 to be enabled")
-	}
-	if !cfg.Backends.DarwinVZ.Network.DisableNAT66 {
-		t.Fatal("expected darwin-vz disable_nat66 to be enabled")
-	}
-	if !cfg.Backends.DarwinVZ.Network.DisableDNSProxy {
-		t.Fatal("expected darwin-vz disable_dns_proxy to be enabled")
-	}
-	if !cfg.Backends.DarwinVZ.Network.DisableRouterAdvertisement {
-		t.Fatal("expected darwin-vz disable_router_advertisement to be enabled")
 	}
 	if got, want := cfg.Backends.DarwinVZ.Services.Docker.StartupTimeoutSeconds, int64(25); got != want {
 		t.Fatalf("unexpected docker startup timeout: got %d want %d", got, want)
@@ -655,13 +635,8 @@ func TestMergeBackendConfig(t *testing.T) {
 				RootFS:             "/darwin/rootfs.ext4",
 				MinimumRootFSBytes: 2147483648,
 				Network: DarwinVZNetworkConfig{
-					Mode:                       "vmnet-shared",
-					Subnet:                     "10.233.0.0/16",
-					ExternalInterface:          "en0",
-					DisableNAT44:               true,
-					DisableNAT66:               true,
-					DisableDNSProxy:            true,
-					DisableRouterAdvertisement: true,
+					Mode:   "filehandle",
+					Subnet: "10.233.0.0/24",
 				},
 				Services:      ServicesConfig{Docker: DockerServiceConfig{StartupTimeoutSeconds: 20, StorageDriver: "vzfs", IPTables: false}},
 				Snapshots:     SnapshotConfig{Enabled: false, Driver: "apfs", BaseDir: "/darwin/snapshots", QuiesceTimeoutSeconds: 22},
@@ -697,26 +672,11 @@ func TestMergeBackendConfig(t *testing.T) {
 	if got, want := darwinCfg.MinimumRootFSBytes, int64(2147483648); got != want {
 		t.Fatalf("unexpected darwin-vz minimum rootfs bytes: got %d want %d", got, want)
 	}
-	if got, want := darwinCfg.DarwinVZNetworkMode, "vmnet-shared"; got != want {
+	if got, want := darwinCfg.DarwinVZNetworkMode, "filehandle"; got != want {
 		t.Fatalf("unexpected darwin-vz network mode: got %q want %q", got, want)
 	}
-	if got, want := darwinCfg.DarwinVZNetworkSubnet, "10.233.0.0/16"; got != want {
+	if got, want := darwinCfg.DarwinVZNetworkSubnet, "10.233.0.0/24"; got != want {
 		t.Fatalf("unexpected darwin-vz network subnet: got %q want %q", got, want)
-	}
-	if got, want := darwinCfg.DarwinVZNetworkExternalInterface, "en0"; got != want {
-		t.Fatalf("unexpected darwin-vz external interface: got %q want %q", got, want)
-	}
-	if !darwinCfg.DarwinVZNetworkDisableNAT44 {
-		t.Fatal("expected darwin-vz disable_nat44 to be enabled")
-	}
-	if !darwinCfg.DarwinVZNetworkDisableNAT66 {
-		t.Fatal("expected darwin-vz disable_nat66 to be enabled")
-	}
-	if !darwinCfg.DarwinVZNetworkDisableDNSProxy {
-		t.Fatal("expected darwin-vz disable_dns_proxy to be enabled")
-	}
-	if !darwinCfg.DarwinVZNetworkDisableRouterAdvertisement {
-		t.Fatal("expected darwin-vz disable_router_advertisement to be enabled")
 	}
 	if got, want := darwinCfg.DockerStorageDriver, "vzfs"; got != want {
 		t.Fatalf("unexpected darwin-vz docker storage driver: got %q want %q", got, want)

@@ -20,23 +20,23 @@ func TestEvaluateNetworkPolicyRequiresDenyDefault(t *testing.T) {
 	}
 }
 
-func TestEvaluateNetworkPolicyForDoctorWarnsWhenAllowEntriesPresentWithoutHostFilter(t *testing.T) {
+func TestEvaluateNetworkPolicyForDoctorAcceptsAllowEntries(t *testing.T) {
 	warn, err := evaluateNetworkPolicyForDoctor("deny", 2, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(warn, "network.mode=filehandle") {
-		t.Fatalf("unexpected warning: %q", warn)
+	if warn != "" {
+		t.Fatalf("expected no warning, got %q", warn)
 	}
 }
 
-func TestEvaluateNetworkPolicyForRunWarnsWhenAllowEntriesPresentWithoutHostFilter(t *testing.T) {
+func TestEvaluateNetworkPolicyForRunAcceptsAllowEntries(t *testing.T) {
 	warn, err := evaluateNetworkPolicyForRun("deny", 2, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(warn, "network.mode=filehandle") {
-		t.Fatalf("unexpected warning: %q", warn)
+	if warn != "" {
+		t.Fatalf("expected no warning, got %q", warn)
 	}
 }
 

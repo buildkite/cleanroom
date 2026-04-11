@@ -208,9 +208,6 @@ func (s *helperSession) request(ctx context.Context, req helperControlRequest) (
 		if strings.Contains(msg, "com.apple.security.virtualization") {
 			msg += "; run `mise run install` to install and sign cleanroom-darwin-vz with the virtualization entitlement"
 		}
-		if strings.Contains(msg, "com.apple.developer.networking.vmnet") {
-			msg += "; sign cleanroom-darwin-vz with cmd/cleanroom-darwin-vz/entitlements-vmnet.plist and a provisioning profile or identifier that grants com.apple.developer.networking.vmnet"
-		}
 		return helperControlResponse{}, s.decorateError(fmt.Errorf("helper %s failed: %s", req.Op, msg))
 	}
 	return res, nil

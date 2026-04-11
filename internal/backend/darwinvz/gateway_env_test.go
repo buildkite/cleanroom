@@ -127,7 +127,7 @@ func TestGatewayGitProxyEnvVarsUsesFileHandleGatewayWithoutHeader(t *testing.T) 
 	}
 }
 
-func TestGatewayGitProxyEnvVarsSkipsUnsupportedNetworkModes(t *testing.T) {
+func TestGatewayGitProxyEnvVarsSkipsNonFileHandleModes(t *testing.T) {
 	t.Parallel()
 
 	p := &policy.CompiledPolicy{
@@ -136,12 +136,12 @@ func TestGatewayGitProxyEnvVarsSkipsUnsupportedNetworkModes(t *testing.T) {
 		Allow:          []policy.AllowRule{{Host: "github.com", Ports: []int{443}}},
 	}
 
-	for _, networkMode := range []string{darwinVZNetworkModeNAT, darwinVZNetworkModeVMNetShared} {
+	for _, networkMode := range []string{"nat", "vmnet-shared", "other"} {
 		networkMode := networkMode
 		t.Run(networkMode, func(t *testing.T) {
 			t.Parallel()
 			if env := gatewayGitProxyEnvVars(p, networkMode, "192.168.64.1", 8170, "scope-token"); env != nil {
-				t.Fatalf("expected no git proxy env for unsupported mode %q, got %v", networkMode, env)
+				t.Fatalf("expected no git proxy env for non-filehandle mode %q, got %v", networkMode, env)
 			}
 		})
 	}
