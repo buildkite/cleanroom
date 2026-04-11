@@ -281,7 +281,6 @@ func TestInstallScriptUsesSharedPackagerWhenAvailable(t *testing.T) {
 		`[ -n "${SCRIPT_DIR}" ] || return 1`,
 		`package_script="${SCRIPT_DIR}/package-darwin-vz-helper.sh"`,
 		`CLEANROOM_DARWIN_VZ_HELPER_SIGN_KEYCHAIN Optional keychain path when using the repo helper packager`,
-		`HELPER_BUNDLE_EMBEDDED_PROFILE_PATH="${HELPER_BUNDLE_SRC}/Contents/embedded.provisionprofile"`,
 		`if ! package_darwin_helper_with_repo_script "${HELPER_BUNDLE_DIR}" "${HELPER_BUNDLE_DIR}"; then`,
 		`HELPER_BUNDLE_PROFILE_DEST="${HELPER_BUNDLE_DIR}/Contents/embedded.provisionprofile"`,
 		`run_with_optional_sudo rm -f "${HELPER_BUNDLE_PROFILE_DEST}"`,

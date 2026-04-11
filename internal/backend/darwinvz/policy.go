@@ -28,12 +28,8 @@ func evaluateNetworkPolicy(networkDefault string, allowCount int, allowlistSuppo
 }
 
 func allowlistSupportForConfig(cfg backend.FirecrackerConfig) (supported bool, detail, protectionMessage string, err error) {
-	networkCfg, err := resolveDarwinVZNetwork(cfg)
-	if err != nil {
+	if err := validateDarwinVZNetworkSelection(cfg); err != nil {
 		return false, "", "", err
 	}
-	if networkCfg.Mode == darwinVZNetworkModeFileHandle {
-		return true, "", guestNetworkProtectedByFileHandleMessage, nil
-	}
-	return true, "", guestNetworkProtectedMessage, nil
+	return true, "", guestNetworkProtectedByFileHandleMessage, nil
 }
