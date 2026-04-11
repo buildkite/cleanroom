@@ -18,6 +18,7 @@ Implemented:
 - helper-managed VM lifecycle (`StartVM` / `StopVM` / `PauseVM` / `ResumeVM`)
 - `filehandle` network mode with a Cleanroom-owned guest gateway and stable guest IP
 - TCP allowlist egress filtering for `sandbox.network.allow` in `filehandle` mode
+- hostname-based allow rules currently use observed DNS answers plus destination IP:port, so co-hosted services on the same IP:port are not distinguished
 - guest access to the shared host gateway through the filehandle gateway IP
 - managed kernel fallback when `kernel_image` is unset or missing
 - rootfs derivation from `sandbox.image.ref` when `rootfs` is unset or missing
@@ -124,6 +125,7 @@ On macOS, cleanroom also probes common Homebrew `e2fsprogs` locations.
   - runs a Cleanroom-owned guest gateway on the gateway IP, typically `10.233.0.1`
   - serves guest DNS from that gateway IP
   - enforces `sandbox.network.allow` for TCP egress in the gateway
+  - authorizes hostname rules from observed DNS answers plus destination IP:port rather than HTTP `Host` or TLS SNI
   - exposes the shared host gateway service to the guest through the same gateway IP
 
 Compared to Firecracker:

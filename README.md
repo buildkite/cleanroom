@@ -6,7 +6,7 @@ Agent sandboxing tools are [proliferating fast](docs/research.md). Most focus on
 
 ## Why Cleanroom?
 
-**Deny-by-default egress.** A `cleanroom.yaml` policy file in your repo controls exactly which hosts the sandbox can reach. Everything else is blocked.
+**Deny-by-default egress.** A `cleanroom.yaml` policy file in your repo controls which hosts the sandbox may reach. Current hostname-based rules are enforced from observed DNS answers plus destination IP:port, so co-hosted services on the same IP:port are not distinguished. Everything else is blocked.
 
 **MicroVM isolation.** Each sandbox is a hardware-virtualized microVM (Firecracker on Linux, Virtualization.framework on macOS), not a container. A VM boundary is stronger than namespaces, seccomp, or gVisor -- a kernel vulnerability in the guest doesn't compromise the host.
 
