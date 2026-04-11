@@ -203,6 +203,22 @@ func registryHostPort(registryURL string) (string, int, error) {
 	return host, 443, nil
 }
 
+func validateRedirectTargetPolicy(req *http.Request) error {
+	scope, ok := ScopeFromContext(req.Context())
+	if !ok || scope == nil || scope.Policy == nil {
+		return errors.New("sandbox scope is required for redirect validation")
+	}
+
+	host, port, err := registryHostPort(req.URL.String())
+	if err != nil {
+		return err
+	}
+	if !scope.Policy.Allows(host, port) {
+		return fmt.Errorf("redirect target %s:%d is not allowed by sandbox policy", host, port)
+	}
+	return nil
+}
+
 // credentialInjector is an http.RoundTripper that resolves per-request
 // credentials via a CredentialProvider before forwarding to the underlying
 // transport.
@@ -220,7 +236,14 @@ func newGitContentCacheHTTPClient(credentials CredentialProvider) *http.Client {
 }
 
 func newOCIContentCacheHTTPClient(credentials CredentialProvider) *http.Client {
-	return newUpstreamContentCacheHTTPClient(credentials)
+	client := newUpstreamContentCacheHTTPClient(credentials)
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) == 0 {
+			return nil
+		}
+		return validateRedirectTargetPolicy(req)
+	}
+	return client
 }
 
 func newUpstreamContentCacheHTTPClient(credentials CredentialProvider) *http.Client {
