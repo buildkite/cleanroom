@@ -12,7 +12,7 @@ Firecracker is purpose-built for secure multi-tenant workloads with a minimal de
 
 - Linux-only local backend using Firecracker + KVM.
 - Enforce `CompiledPolicy` only (no runtime repo policy reload).
-- Deny-by-default egress with explicit host/port allowlist.
+- Deny-by-default egress with explicit allow rules.
 - Route package and git egress through `content-cache`.
 - Keep secret values out of guest env and policy files.
 
@@ -27,12 +27,16 @@ Firecracker networking is built around a dedicated per-sandbox TAP device on the
 - host-side iptables rules enforce default-deny egress, with established flows surviving DNS TTL expiry
 - gateway access is bound to the sandbox's TAP/IP identity rather than a helper-managed token
 
+Current hostname-based allow rules are enforced from observed DNS answers plus
+destination IP:port. Firecracker does not currently distinguish co-hosted
+services that share the same IP:port.
+
 This is materially different from the current `darwin-vz` backend, which uses helper-managed NAT networking and does not expose a host-visible per-sandbox guest IP. See [darwin-vz.md](darwin-vz.md) for the current macOS model.
 
 ## Implementation slices
 
 1. Slice A: minimal Firecracker runner -- create backend adapter package and run lifecycle. Boot VM, run command over vsock, collect exit code/stdout/stderr.
-2. Slice B: deterministic networking -- add TAP/subnet allocator + nftables setup/teardown. Enforce default deny and exact host/port allowlist (no registries yet).
+2. Slice B: deterministic networking -- add TAP/subnet allocator + nftables setup/teardown. Enforce default deny and host/port allowlist (no registries yet).
 3. Slice C: registry and git mediation -- start/attach `content-cache`. Rewrite package/git traffic through cache endpoint and emit deny reasons for bypass attempts.
 4. Slice D: secret proxy -- add tokenizer-style host-scoped injection path. Enforce `secret_scope_violation` and keep secret values out of guest-visible env/args.
 5. Slice E: conformance and hardening -- implement backend capability handshake. Add conformance suite from spec.md section 14 before backend marked supported.
