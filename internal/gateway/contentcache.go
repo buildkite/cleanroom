@@ -175,6 +175,7 @@ func NewContentCache(cfg ContentCacheConfig) (*ContentCache, error) {
 		entry := ociHandlerEntry{
 			handler:      handler,
 			policyHost:   route.policyHost,
+			policyPort:   route.policyPort,
 			upstreamHost: route.upstreamHost,
 		}
 		if closer, ok := any(handler).(interface{ Close() }); ok {
@@ -188,6 +189,7 @@ func NewContentCache(cfg ContentCacheConfig) (*ContentCache, error) {
 type ociRoute struct {
 	prefix       string
 	policyHost   string
+	policyPort   int
 	upstreamURL  string
 	upstreamHost string
 }
@@ -226,7 +228,7 @@ func normalizeOCIRegistryMappings(registries map[string]string) (map[string]stri
 		if !strings.Contains(normalizedURL, "://") {
 			normalizedURL = "https://" + normalizedURL
 		}
-		if host := registryHostname(normalizedURL); host == "" {
+		if host, _, err := registryHostPort(normalizedURL); err != nil || host == "" {
 			return nil, fmt.Errorf("registry mapping for %q has invalid upstream %q", prefix, registryURL)
 		}
 		out[normalizedPrefix] = normalizedURL
@@ -241,14 +243,22 @@ func resolveOCIRegistryRoute(prefix string, registries map[string]string) (ociRo
 	}
 
 	if upstreamURL, ok := registries[normalizedPrefix]; ok {
-		upstreamHost := registryHostname(upstreamURL)
+		upstreamHost, upstreamPort, err := registryHostPort(upstreamURL)
+		if err != nil {
+			return ociRoute{}, fmt.Errorf("invalid registry mapping for %q: %w", prefix, err)
+		}
 		policyHost := upstreamHost
+		policyPort := upstreamPort
 		if isRegistryHostPrefix(normalizedPrefix) {
-			policyHost = normalizedPrefix
+			policyHost, _, err = registryHostPort(normalizedPrefix)
+			if err != nil {
+				return ociRoute{}, fmt.Errorf("invalid registry prefix %q: %w", prefix, err)
+			}
 		}
 		return ociRoute{
 			prefix:       normalizedPrefix,
 			policyHost:   policyHost,
+			policyPort:   policyPort,
 			upstreamURL:  upstreamURL,
 			upstreamHost: upstreamHost,
 		}, nil
@@ -259,10 +269,15 @@ func resolveOCIRegistryRoute(prefix string, registries map[string]string) (ociRo
 	}
 
 	upstreamURL := "https://" + normalizedPrefix
+	upstreamHost, upstreamPort, err := registryHostPort(upstreamURL)
+	if err != nil {
+		return ociRoute{}, fmt.Errorf("invalid registry prefix %q: %w", prefix, err)
+	}
 	return ociRoute{
 		prefix:       normalizedPrefix,
-		policyHost:   normalizedPrefix,
+		policyHost:   upstreamHost,
+		policyPort:   upstreamPort,
 		upstreamURL:  upstreamURL,
-		upstreamHost: registryHostname(upstreamURL),
+		upstreamHost: upstreamHost,
 	}, nil
 }

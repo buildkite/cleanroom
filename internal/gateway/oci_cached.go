@@ -9,7 +9,7 @@ import (
 )
 
 type registryPrefixHandlerProvider interface {
-	OCIHandlerForPrefix(prefix string) (http.Handler, string, string, error)
+	OCIHandlerForPrefix(prefix string) (http.Handler, string, int, string, error)
 }
 
 // cachedRegistryHandler wraps a content-cache OCI handler with cleanroom's
@@ -59,13 +59,13 @@ func (h *cachedRegistryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 	rest := strings.TrimPrefix(remainder, prefix+"/")
 
 	normalizedPrefix := strings.ToLower(strings.TrimSpace(prefix))
-	cacheHandler, policyHost, upstreamHost, err := h.cache.OCIHandlerForPrefix(normalizedPrefix)
+	cacheHandler, policyHost, policyPort, upstreamHost, err := h.cache.OCIHandlerForPrefix(normalizedPrefix)
 	if err != nil {
 		h.auditLog(scope.SandboxID, normalizedPrefix, "deny", "unknown_registry_prefix")
 		writeReasonError(w, http.StatusNotFound, "unknown_registry_prefix", fmt.Sprintf("unknown registry prefix %q", prefix))
 		return
 	}
-	if !scope.Policy.Allows(policyHost, 443) {
+	if !scope.Policy.Allows(policyHost, policyPort) {
 		h.auditLog(scope.SandboxID, policyHost, "deny", reasonHostNotAllowed)
 		writeReasonError(w, http.StatusForbidden, reasonHostNotAllowed, "upstream registry host is not allowed by sandbox policy")
 		return

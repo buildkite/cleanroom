@@ -2,9 +2,12 @@ package gateway
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +20,7 @@ type ociHandlerFactory func(prefix string) (ociHandlerEntry, error)
 type ociHandlerEntry struct {
 	handler      http.Handler
 	policyHost   string
+	policyPort   int
 	upstreamHost string
 	closer       io.Closer
 }
@@ -98,41 +102,76 @@ func (c *ContentCache) HasOCIHandler() bool {
 	return c != nil && c.buildOCIHandler != nil
 }
 
-// OCIHandlerForPrefix returns an OCI cache handler and host metadata for the
+// OCIHandlerForPrefix returns an OCI cache handler and policy/upstream metadata for the
 // requested registry prefix.
-func (c *ContentCache) OCIHandlerForPrefix(prefix string) (http.Handler, string, string, error) {
+func (c *ContentCache) OCIHandlerForPrefix(prefix string) (http.Handler, string, int, string, error) {
 	if c == nil || c.buildOCIHandler == nil {
-		return nil, "", "", errors.New("oci cache not configured")
+		return nil, "", 0, "", errors.New("oci cache not configured")
 	}
 
 	prefix = strings.ToLower(strings.TrimSpace(prefix))
 	if prefix == "" {
-		return nil, "", "", errors.New("empty registry prefix")
+		return nil, "", 0, "", errors.New("empty registry prefix")
 	}
 
 	c.ociMu.Lock()
 	defer c.ociMu.Unlock()
 
 	if entry, ok := c.ociHandlers[prefix]; ok {
-		return entry.handler, entry.policyHost, entry.upstreamHost, nil
+		return entry.handler, entry.policyHost, entry.policyPort, entry.upstreamHost, nil
 	}
 
 	entry, err := c.buildOCIHandler(prefix)
 	if err != nil {
-		return nil, "", "", err
+		return nil, "", 0, "", err
 	}
 	c.ociHandlers[prefix] = entry
-	return entry.handler, entry.policyHost, entry.upstreamHost, nil
+	return entry.handler, entry.policyHost, entry.policyPort, entry.upstreamHost, nil
 }
 
 // registryHostname extracts the hostname from a registry URL for policy checks.
 func registryHostname(registryURL string) string {
+	host, _, err := registryHostPort(registryURL)
+	if err != nil {
+		return ""
+	}
+	return host
+}
+
+func registryHostPort(registryURL string) (string, int, error) {
 	trimmed := strings.TrimSpace(registryURL)
-	trimmed = strings.TrimPrefix(trimmed, "https://")
-	trimmed = strings.TrimPrefix(trimmed, "http://")
-	host, _, _ := strings.Cut(trimmed, "/")
-	hostname, _, _ := strings.Cut(host, ":")
-	return strings.ToLower(hostname)
+	if trimmed == "" {
+		return "", 0, errors.New("empty registry URL")
+	}
+	if !strings.Contains(trimmed, "://") {
+		trimmed = "https://" + trimmed
+	}
+
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return "", 0, fmt.Errorf("parse registry URL: %w", err)
+	}
+	if parsed.Host == "" {
+		return "", 0, errors.New("missing registry host")
+	}
+
+	host := strings.ToLower(parsed.Hostname())
+	if host == "" {
+		return "", 0, errors.New("missing registry host")
+	}
+
+	if portStr := parsed.Port(); portStr != "" {
+		port, err := strconv.Atoi(portStr)
+		if err != nil || port <= 0 || port > 65535 {
+			return "", 0, fmt.Errorf("invalid registry port %q", portStr)
+		}
+		return host, port, nil
+	}
+
+	if strings.EqualFold(parsed.Scheme, "http") {
+		return host, 80, nil
+	}
+	return host, 443, nil
 }
 
 // credentialInjector is an http.RoundTripper that resolves per-request

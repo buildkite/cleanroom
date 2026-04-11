@@ -12,17 +12,18 @@ import (
 type stubRegistryPrefixHandlerProvider struct {
 	handler      http.Handler
 	policyHost   string
+	policyPort   int
 	upstreamHost string
 	err          error
 	prefix       string
 }
 
-func (s *stubRegistryPrefixHandlerProvider) OCIHandlerForPrefix(prefix string) (http.Handler, string, string, error) {
+func (s *stubRegistryPrefixHandlerProvider) OCIHandlerForPrefix(prefix string) (http.Handler, string, int, string, error) {
 	s.prefix = prefix
 	if s.err != nil {
-		return nil, "", "", s.err
+		return nil, "", 0, "", s.err
 	}
-	return s.handler, s.policyHost, s.upstreamHost, nil
+	return s.handler, s.policyHost, s.policyPort, s.upstreamHost, nil
 }
 
 func registryTestScope(allowedHosts ...string) *SandboxScope {
@@ -41,6 +42,20 @@ func registryTestScope(allowedHosts ...string) *SandboxScope {
 	}
 }
 
+func registryTestScopeWithRule(host string, ports ...int) *SandboxScope {
+	return &SandboxScope{
+		SandboxID: "sandbox-registry-test",
+		GuestIP:   "10.1.1.2",
+		Policy: &policy.CompiledPolicy{
+			Version:        1,
+			NetworkDefault: "deny",
+			Allow: []policy.AllowRule{
+				{Host: host, Ports: ports},
+			},
+		},
+	}
+}
+
 func TestCachedRegistryHandlerRewritesPathToV2(t *testing.T) {
 	t.Parallel()
 
@@ -52,6 +67,7 @@ func TestCachedRegistryHandlerRewritesPathToV2(t *testing.T) {
 	provider := &stubRegistryPrefixHandlerProvider{
 		handler:      backend,
 		policyHost:   "docker.io",
+		policyPort:   443,
 		upstreamHost: "registry-1.docker.io",
 	}
 	h := newCachedRegistryHandler(provider, nil)
@@ -81,6 +97,7 @@ func TestCachedRegistryHandlerPolicyDeniesUnallowedHost(t *testing.T) {
 	h := newCachedRegistryHandler(&stubRegistryPrefixHandlerProvider{
 		handler:      backend,
 		policyHost:   "docker.io",
+		policyPort:   443,
 		upstreamHost: "registry-1.docker.io",
 	}, nil)
 
@@ -164,6 +181,7 @@ func TestCachedRegistryHandlerBlobsRewritePath(t *testing.T) {
 	provider := &stubRegistryPrefixHandlerProvider{
 		handler:      backend,
 		policyHost:   "ghcr.io",
+		policyPort:   443,
 		upstreamHost: "ghcr.io",
 	}
 	h := newCachedRegistryHandler(provider, nil)
@@ -195,6 +213,7 @@ func TestCachedRegistryHandlerHeadAllowed(t *testing.T) {
 	h := newCachedRegistryHandler(&stubRegistryPrefixHandlerProvider{
 		handler:      backend,
 		policyHost:   "docker.io",
+		policyPort:   443,
 		upstreamHost: "registry-1.docker.io",
 	}, nil)
 
@@ -229,6 +248,29 @@ func TestCachedRegistryHandlerEmptyPrefix(t *testing.T) {
 	}
 }
 
+func TestCachedRegistryHandlerUsesResolvedPolicyPort(t *testing.T) {
+	t.Parallel()
+
+	backend := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	h := newCachedRegistryHandler(&stubRegistryPrefixHandlerProvider{
+		handler:      backend,
+		policyHost:   "registry.internal",
+		policyPort:   5000,
+		upstreamHost: "registry.internal",
+	}, nil)
+
+	req := httptest.NewRequest("GET", "/registry/internal/library/nginx/manifests/latest", nil)
+	req = withScope(req, registryTestScopeWithRule("registry.internal", 5000))
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body: %s)", w.Code, w.Body.String())
+	}
+}
+
 func TestRegistryHostname(t *testing.T) {
 	t.Parallel()
 
@@ -241,11 +283,37 @@ func TestRegistryHostname(t *testing.T) {
 		{"http://localhost:5000", "localhost"},
 		{"registry-1.docker.io", "registry-1.docker.io"},
 		{"https://GHCR.IO", "ghcr.io"},
+		{"https://[2001:db8::1]:5000/v2/", "2001:db8::1"},
 	}
 	for _, tt := range tests {
 		got := registryHostname(tt.input)
 		if got != tt.want {
 			t.Errorf("registryHostname(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestRegistryHostPort(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		input    string
+		wantHost string
+		wantPort int
+	}{
+		{"https://registry-1.docker.io", "registry-1.docker.io", 443},
+		{"http://localhost:5000", "localhost", 5000},
+		{"https://[2001:db8::1]:5000/v2/", "2001:db8::1", 5000},
+		{"docker.io", "docker.io", 443},
+	}
+
+	for _, tt := range tests {
+		gotHost, gotPort, err := registryHostPort(tt.input)
+		if err != nil {
+			t.Fatalf("registryHostPort(%q) returned error: %v", tt.input, err)
+		}
+		if gotHost != tt.wantHost || gotPort != tt.wantPort {
+			t.Fatalf("registryHostPort(%q) = (%q, %d), want (%q, %d)", tt.input, gotHost, gotPort, tt.wantHost, tt.wantPort)
 		}
 	}
 }
@@ -265,10 +333,38 @@ func TestResolveOCIRegistryRouteUsesDockerHubAlias(t *testing.T) {
 	if route.policyHost != "docker.io" {
 		t.Fatalf("expected docker.io policy host, got %q", route.policyHost)
 	}
+	if route.policyPort != 443 {
+		t.Fatalf("expected docker.io policy port 443, got %d", route.policyPort)
+	}
 	if route.upstreamHost != "registry-1.docker.io" {
 		t.Fatalf("expected Docker Hub upstream host, got %q", route.upstreamHost)
 	}
 	if route.upstreamURL != "https://registry-1.docker.io" {
 		t.Fatalf("expected Docker Hub upstream URL, got %q", route.upstreamURL)
+	}
+}
+
+func TestResolveOCIRegistryRoutePreservesConfiguredPort(t *testing.T) {
+	t.Parallel()
+
+	routes, err := normalizeOCIRegistryMappings(map[string]string{
+		"registry.internal": "https://registry.internal:5000",
+	})
+	if err != nil {
+		t.Fatalf("normalizeOCIRegistryMappings returned error: %v", err)
+	}
+
+	route, err := resolveOCIRegistryRoute("registry.internal", routes)
+	if err != nil {
+		t.Fatalf("resolveOCIRegistryRoute returned error: %v", err)
+	}
+	if route.policyHost != "registry.internal" {
+		t.Fatalf("expected registry.internal policy host, got %q", route.policyHost)
+	}
+	if route.policyPort != 5000 {
+		t.Fatalf("expected registry.internal policy port 5000, got %d", route.policyPort)
+	}
+	if route.upstreamHost != "registry.internal" {
+		t.Fatalf("expected registry.internal upstream host, got %q", route.upstreamHost)
 	}
 }
