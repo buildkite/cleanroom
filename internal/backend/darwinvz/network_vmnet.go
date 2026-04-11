@@ -5,46 +5,22 @@ package darwinvz
 import (
 	"fmt"
 	"net/netip"
-	"strconv"
 	"strings"
 
 	"github.com/buildkite/cleanroom/internal/backend"
-	"golang.org/x/sys/unix"
 )
 
 const darwinVZFileHandleDefaultSubnetCIDR = "10.233.0.0/24"
 
 type darwinVZNetwork struct {
-	Mode                       string
-	SubnetCIDR                 string
-	ExternalInterface          string
-	DisableNAT44               bool
-	DisableNAT66               bool
-	DisableDNSProxy            bool
-	DisableRouterAdvertisement bool
+	Mode       string
+	SubnetCIDR string
 }
 
 var darwinVZRFC1918Prefixes = []netip.Prefix{
 	netip.MustParsePrefix("10.0.0.0/8"),
 	netip.MustParsePrefix("172.16.0.0/12"),
 	netip.MustParsePrefix("192.168.0.0/16"),
-}
-
-var (
-	darwinVZVMNetSharedSupported = hostSupportsVMNetShared
-)
-
-func hostSupportsVMNetShared() bool {
-	version, err := unix.Sysctl("kern.osproductversion")
-	if err != nil {
-		return false
-	}
-	parts := strings.SplitN(strings.TrimSpace(version), ".", 2)
-	major, err := strconv.Atoi(parts[0])
-	if err != nil {
-		return false
-	}
-	return major >= 26
 }
 
 func resolveDarwinVZNetwork(cfg backend.FirecrackerConfig) (darwinVZNetwork, error) {
@@ -56,19 +32,11 @@ func resolveDarwinVZNetwork(cfg backend.FirecrackerConfig) (darwinVZNetwork, err
 	disableNAT66 := cfg.DarwinVZNetworkDisableNAT66
 	disableDNSProxy := cfg.DarwinVZNetworkDisableDNSProxy
 	disableRouterAdvertisement := cfg.DarwinVZNetworkDisableRouterAdvertisement
-	hasVMNetOnlySettings := externalInterface != "" || disableNAT44 || disableNAT66 || disableDNSProxy || disableRouterAdvertisement
+	hasRemovedLegacySettings := externalInterface != "" || disableNAT44 || disableNAT66 || disableDNSProxy || disableRouterAdvertisement
 	switch mode {
-	case darwinVZNetworkModeNAT:
-		if subnet != "" {
-			return darwinVZNetwork{}, fmt.Errorf("darwin-vz custom network subnet requires %q or %q mode", darwinVZNetworkModeVMNetShared, darwinVZNetworkModeFileHandle)
-		}
-		if hasVMNetOnlySettings {
-			return darwinVZNetwork{}, fmt.Errorf("darwin-vz vmnet network settings require %q mode", darwinVZNetworkModeVMNetShared)
-		}
-		return darwinVZNetwork{Mode: darwinVZNetworkModeNAT}, nil
 	case darwinVZNetworkModeFileHandle:
-		if hasVMNetOnlySettings {
-			return darwinVZNetwork{}, fmt.Errorf("darwin-vz vmnet network settings require %q mode", darwinVZNetworkModeVMNetShared)
+		if hasRemovedLegacySettings {
+			return darwinVZNetwork{}, errorsForRemovedDarwinVZNetworkSettings(externalInterface, disableNAT44, disableNAT66, disableDNSProxy, disableRouterAdvertisement)
 		}
 		normalizedSubnet, err := normalizeDarwinVZVMNetSubnet(subnet)
 		if err != nil {
@@ -81,26 +49,29 @@ func resolveDarwinVZNetwork(cfg backend.FirecrackerConfig) (darwinVZNetwork, err
 			Mode:       darwinVZNetworkModeFileHandle,
 			SubnetCIDR: normalizedSubnet,
 		}, nil
-	case darwinVZNetworkModeVMNetShared:
-		if !darwinVZVMNetSharedSupported() {
-			return darwinVZNetwork{}, fmt.Errorf("%q requires macOS 26 or later", darwinVZNetworkModeVMNetShared)
-		}
-		normalizedSubnet, err := normalizeDarwinVZVMNetSubnet(subnet)
-		if err != nil {
-			return darwinVZNetwork{}, err
-		}
-		return darwinVZNetwork{
-			Mode:                       darwinVZNetworkModeVMNetShared,
-			SubnetCIDR:                 normalizedSubnet,
-			ExternalInterface:          externalInterface,
-			DisableNAT44:               disableNAT44,
-			DisableNAT66:               disableNAT66,
-			DisableDNSProxy:            disableDNSProxy,
-			DisableRouterAdvertisement: disableRouterAdvertisement,
-		}, nil
 	default:
-		return darwinVZNetwork{}, fmt.Errorf("unsupported darwin-vz network mode %q", cfg.DarwinVZNetworkMode)
+		return darwinVZNetwork{}, fmt.Errorf("unsupported darwin-vz network mode %q: only %q is supported", cfg.DarwinVZNetworkMode, darwinVZNetworkModeFileHandle)
 	}
+}
+
+func errorsForRemovedDarwinVZNetworkSettings(externalInterface string, disableNAT44, disableNAT66, disableDNSProxy, disableRouterAdvertisement bool) error {
+	removedSettings := make([]string, 0, 5)
+	if externalInterface != "" {
+		removedSettings = append(removedSettings, "external_interface")
+	}
+	if disableNAT44 {
+		removedSettings = append(removedSettings, "disable_nat44")
+	}
+	if disableNAT66 {
+		removedSettings = append(removedSettings, "disable_nat66")
+	}
+	if disableDNSProxy {
+		removedSettings = append(removedSettings, "disable_dns_proxy")
+	}
+	if disableRouterAdvertisement {
+		removedSettings = append(removedSettings, "disable_router_advertisement")
+	}
+	return fmt.Errorf("darwin-vz no longer supports legacy vmnet settings: %s", strings.Join(removedSettings, ", "))
 }
 
 func normalizeDarwinVZVMNetSubnet(value string) (string, error) {

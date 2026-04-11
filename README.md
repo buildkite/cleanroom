@@ -247,16 +247,15 @@ sandbox:
 | Host OS | Backend | Status | Notes |
 |---------|---------|--------|-------|
 | Linux | `firecracker` | Full support | Persistent sandboxes, per-sandbox TAP + guest IP identity, file download, egress allowlist enforcement |
-| macOS | `darwin-vz` | Supported with gaps | Persistent sandboxes, `filehandle` by default with allowlist egress filtering, experimental `vmnet-shared` custom subnet host reachability, no file download, no TAP parity |
+| macOS | `darwin-vz` | Supported with gaps | Persistent sandboxes, `filehandle` networking with allowlist egress filtering, no file download, no TAP parity |
 
 Backend capabilities are exposed in `cleanroom doctor --json` under `capabilities`. See [isolation model](docs/isolation.md) for enforcement and persistence details.
 
 Network model differs significantly by backend:
 
 - `firecracker` creates a dedicated TAP interface and host/guest IP pair per sandbox, which enables host-side identity and firewall enforcement.
-- `darwin-vz` now defaults to `filehandle` on macOS so deny-by-default policies can use the Cleanroom-owned gateway path for allowlisted egress.
-- `darwin-vz` still does not expose Firecracker-style TAP devices or host firewall enforcement semantics. Explicit `vmnet-shared` and `nat` remain available as compatibility and debugging fallbacks.
-- Current vmnet work and remaining gaps are tracked in [docs/plans/darwin-vz-vmnet-mode.md](docs/plans/darwin-vz-vmnet-mode.md).
+- `darwin-vz` uses `filehandle` networking on macOS so deny-by-default policies can use the Cleanroom-owned gateway path for allowlisted egress.
+- `darwin-vz` still does not expose Firecracker-style TAP devices or host firewall enforcement semantics.
 
 Select a backend explicitly:
 
@@ -366,7 +365,7 @@ backends:
     kernel_image: ""    # auto-managed when unset
     rootfs: ""          # derived from sandbox.image.ref when unset
     network:
-      mode: nat         # optional fallback; default is filehandle on macOS
+      mode: filehandle  # optional; this is the only supported darwin-vz mode
     vcpus: 2
     memory_mib: 1024
     launch_seconds: 30
@@ -386,8 +385,6 @@ When `rootfs` is unset, Cleanroom derives one from `sandbox.image.ref` and injec
 
 **macOS ([darwin-vz](docs/backend/darwin-vz.md)):**
 - `cleanroom-darwin-vz` helper signed with `com.apple.security.virtualization` entitlement
-- optional `vmnet-shared` additionally needs `com.apple.developer.networking.vmnet` and a matching provisioning profile
-- explicit `nat` remains available as a compatibility fallback
 - `mkfs.ext4` and `debugfs` (`brew install e2fsprogs`)
 
 ## Diagnostics

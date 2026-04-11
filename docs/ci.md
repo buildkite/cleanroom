@@ -74,51 +74,11 @@ The `:apple: E2E (darwin-vz)` step runs launched execution checks on macOS using
 Notes:
 
 - `scripts/ci-darwin-vz-e2e.sh` builds `dist/cleanroom` and `dist/cleanroom-darwin-vz.app`, exports `CLEANROOM_DARWIN_VZ_HELPER` to the built helper, and isolates XDG runtime paths.
-- the CI script writes `backends.darwin-vz.network.mode: nat` into its temporary config because Buildkite only ad-hoc signs the helper; `vmnet-shared` needs a vmnet-capable provisioning profile and identifier.
+- the CI script writes `backends.darwin-vz.network.mode: filehandle` into its temporary config so CI exercises the supported darwin-vz network path.
 - the script also builds `dist/cleanroom-guest-agent-linux-<host-arch>` so CI can self-bootstrap the Linux guest agent dependency without a separate install step.
 - Set `CLEANROOM_DARWIN_VZ_KERNEL_IMAGE` on the worker if you want an explicit kernel path; otherwise the script uses managed-kernel fallback.
 
-### 3.2 Upload vmnet signing secrets
-
-The vmnet step expects these Buildkite cluster secrets:
-
-- `CLEANROOM_DARWIN_VZ_HELPER_CERT_P12_BASE64`
-- `CLEANROOM_DARWIN_VZ_HELPER_CERT_PASSWORD`
-- `CLEANROOM_DARWIN_VZ_HELPER_PROVISION_PROFILE_BASE64`
-- `CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY`
-
-Recommended setup:
-
-- export the Apple Development identity as a `.p12` with a non-empty password
-- base64-encode the `.p12` and `.provisionprofile` payloads before upload
-- keep `CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTIFIER=com.buildkite.cleanroom.darwin-vz` as normal step environment, not a secret
-- restrict the secrets to the `cleanroom` pipeline and `cleanroom-mac` queue
-
-### 3.3 vmnet-shared E2E step
-
-The `:apple: E2E (darwin-vz vmnet)` step keeps the existing `nat` smoke test
-and adds a separate vmnet-specific path on the `cleanroom-mac` queue.
-
-It uses `buildkite-agent secret get` inside
-`scripts/ci-darwin-vz-vmnet-e2e.sh` to fetch the four signing secrets at job
-runtime, imports the Apple Development identity into `System.keychain`,
-downloads the Apple WWDR G3 intermediate, builds a signed helper bundle with
-`cmd/cleanroom-darwin-vz/entitlements-vmnet.plist`, and runs:
-
-```bash
-CLEANROOM_DARWIN_VZ_HELPER="$PWD/dist/cleanroom-darwin-vz.app" \
-CLEANROOM_DARWIN_VZ_VMNET_E2E=1 \
-go test ./internal/backend/darwinvz -run TestVMNetSharedE2E -v
-```
-
-The vmnet secrets should stay restricted to the `cleanroom` pipeline and the
-`cleanroom-mac` queue.
-The script also forces a short `XDG_STATE_HOME` so the darwin-vz helper socket
-path stays within the macOS UNIX socket length limit, and in Buildkite it uses
-a temporary `XDG_CACHE_HOME` so prepared runtime rootfs cache does not
-accumulate on the host.
-
-### 3.4 Notarized macOS release pkg step
+### 3.2 Notarized macOS release pkg step
 
 The `:package: macOS release pkg` step runs on the dedicated
 `cleanroom-mac-signer` queue for:
@@ -126,10 +86,10 @@ The `:package: macOS release pkg` step runs on the dedicated
 - tagged builds (`v*`)
 - the current notarized-release development branch (`codex/macos-notarized-release-pkg`)
 
-It builds both `arm64` and `x86_64` helper bundles with the vmnet-capable
-Developer ID profile, packages them into signed installer pkgs, notarizes them,
-and uploads the per-arch Darwin release directories as compressed Buildkite
-artifacts alongside the `.pkg` plus `.sha256` files.
+It builds both `arm64` and `x86_64` helper bundles, packages them into signed
+installer pkgs, notarizes them, and uploads the per-arch Darwin release
+directories as compressed Buildkite artifacts alongside the `.pkg` plus
+`.sha256` files.
 
 Required Buildkite cluster secrets:
 
@@ -152,17 +112,14 @@ Notes:
 - `scripts/ci-macos-release-pkg.sh` imports the two Developer ID identities into
   a temporary user keychain for the job, so it does not rely on preinstalled
   host keychain state.
-- These release-helper secrets are intentionally separate from the vmnet e2e
-  helper secrets, which still use Apple Development signing on `cleanroom-mac`.
 - Scope the release/notary secrets to the `cleanroom` pipeline and the
   `cleanroom-mac-signer` queue rather than the general `cleanroom-mac` queue.
-- The step uses the same helper bundle identifier as vmnet e2e:
-  `com.buildkite.cleanroom.darwin-vz`.
+- The step uses helper bundle identifier `com.buildkite.cleanroom.darwin-vz`.
 - Branch builds derive a synthetic package version from the Buildkite build
   number (`0.0.<build>`). Tag builds use the tag version without the leading
   `v`.
 
-### 3.5 Buildkite tag release publishing
+### 3.3 Buildkite tag release publishing
 
 Tagged builds fan in to a hosted `:rocket: Publish release` step after the test
 and signer work completes.
@@ -284,7 +241,7 @@ export CLEANROOM_FIRECRACKER_BINARY="/usr/local/bin/firecracker"
 
 ## 6. Collision Safety
 
-`scripts/ci-cleanroom-e2e.sh`, `scripts/ci-darwin-vz-e2e.sh`, and the Buildkite path in `scripts/ci-darwin-vz-vmnet-e2e.sh` isolate CI runtime paths using temporary XDG directories (`XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, `XDG_STATE_HOME`, `XDG_RUNTIME_DIR`, `XDG_DATA_HOME`) and a job-local unix socket.
+`scripts/ci-cleanroom-e2e.sh` and `scripts/ci-darwin-vz-e2e.sh` isolate CI runtime paths using temporary XDG directories (`XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, `XDG_STATE_HOME`, `XDG_RUNTIME_DIR`, `XDG_DATA_HOME`) and a job-local unix socket.
 
 This prevents collisions with any long-running cleanroom instance on the same host.
 

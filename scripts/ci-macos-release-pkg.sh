@@ -284,7 +284,6 @@ build_release_arch() {
   printf '[ci-macos-release-pkg] packaging signed darwin-vz helper for %s\n' "${asset_arch}"
   env \
     CLEANROOM_DARWIN_VZ_HELPER_SWIFT_TARGET="${swift_target}" \
-    CLEANROOM_DARWIN_VZ_HELPER_ENTITLEMENTS="cmd/cleanroom-darwin-vz/entitlements-vmnet.plist" \
     CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTITY="${helper_sign_selector}" \
     CLEANROOM_DARWIN_VZ_HELPER_SIGN_KEYCHAIN="${keychain_path}" \
     CLEANROOM_DARWIN_VZ_HELPER_SIGN_KEYCHAIN_PASSWORD="${keychain_password}" \
@@ -295,7 +294,6 @@ build_release_arch() {
       "${SCRIPT_DIR}/build-darwin-vz-helper.sh" "${release_dir}/cleanroom-darwin-vz.app"
 
   cp "${REPO_ROOT}/cmd/cleanroom-darwin-vz/entitlements.plist" "${release_dir}/entitlements.plist"
-  cp "${REPO_ROOT}/cmd/cleanroom-darwin-vz/entitlements-vmnet.plist" "${release_dir}/entitlements-vmnet.plist"
 
   GOOS=darwin GOARCH="${goarch}" CGO_ENABLED=0 go build -trimpath \
     -ldflags "-s -w -X main.version=${CLEANROOM_RELEASE_REF_NAME}" \

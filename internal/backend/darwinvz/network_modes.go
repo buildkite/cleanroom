@@ -3,9 +3,7 @@ package darwinvz
 import "strings"
 
 const (
-	darwinVZNetworkModeNAT         = "nat"
-	darwinVZNetworkModeFileHandle  = "filehandle"
-	darwinVZNetworkModeVMNetShared = "vmnet-shared"
+	darwinVZNetworkModeFileHandle = "filehandle"
 )
 
 func darwinVZConfiguredOrDefaultNetworkMode(mode string) string {

@@ -91,11 +91,11 @@ func TestWriteDarwinVZRunObservationIncludesNetworkMetadata(t *testing.T) {
 		Backend:           "darwin-vz",
 		LaunchedVM:        true,
 		RunDir:            runDir,
-		NetworkMode:       darwinVZNetworkModeVMNetShared,
-		NetworkSubnetCIDR: "10.233.0.0/16",
+		NetworkMode:       darwinVZNetworkModeFileHandle,
+		NetworkSubnetCIDR: "10.233.0.0/24",
 		NetworkGuestIP:    "10.233.0.2",
 		NetworkGatewayIP:  "10.233.0.1",
-		NetworkPrefixLen:  16,
+		NetworkPrefixLen:  24,
 	}
 
 	if err := writeDarwinVZRunObservation(runDir, &obs, 1500); err != nil {
@@ -110,10 +110,10 @@ func TestWriteDarwinVZRunObservationIncludesNetworkMetadata(t *testing.T) {
 	if err := json.Unmarshal(b, &payload); err != nil {
 		t.Fatalf("parse observability file: %v", err)
 	}
-	if got, want := payload["network_mode"], darwinVZNetworkModeVMNetShared; got != want {
+	if got, want := payload["network_mode"], darwinVZNetworkModeFileHandle; got != want {
 		t.Fatalf("unexpected network_mode: got %v want %v", got, want)
 	}
-	if got, want := payload["network_subnet_cidr"], "10.233.0.0/16"; got != want {
+	if got, want := payload["network_subnet_cidr"], "10.233.0.0/24"; got != want {
 		t.Fatalf("unexpected network_subnet_cidr: got %v want %v", got, want)
 	}
 	if got, want := payload["network_guest_ip"], "10.233.0.2"; got != want {
@@ -122,7 +122,7 @@ func TestWriteDarwinVZRunObservationIncludesNetworkMetadata(t *testing.T) {
 	if got, want := payload["network_gateway_ip"], "10.233.0.1"; got != want {
 		t.Fatalf("unexpected network_gateway_ip: got %v want %v", got, want)
 	}
-	if got, want := payload["network_prefix_len"], float64(16); got != want {
+	if got, want := payload["network_prefix_len"], float64(24); got != want {
 		t.Fatalf("unexpected network_prefix_len: got %v want %v", got, want)
 	}
 }
@@ -156,11 +156,11 @@ func TestRunInSandboxWritesObservabilityWithPendingLaunchTimings(t *testing.T) {
 						"vm_ready": 321,
 					},
 					Network: &darwinVZNetworkMetadata{
-						Mode:       darwinVZNetworkModeVMNetShared,
-						SubnetCIDR: "10.233.0.0/16",
+						Mode:       darwinVZNetworkModeFileHandle,
+						SubnetCIDR: "10.233.0.0/24",
 						GuestIP:    "10.233.0.2",
 						GatewayIP:  "10.233.0.1",
-						PrefixLen:  16,
+						PrefixLen:  24,
 					},
 				},
 			},

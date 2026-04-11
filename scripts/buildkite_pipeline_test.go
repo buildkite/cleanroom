@@ -27,9 +27,6 @@ func TestBuildkitePipelineUsesMisePlugin(t *testing.T) {
 	if strings.Contains(pipeline, "command: mise run") {
 		t.Fatalf("expected .buildkite/pipeline.yml to avoid direct `mise run` step commands")
 	}
-	if !strings.Contains(pipeline, "command: scripts/ci-darwin-vz-vmnet-e2e.sh") {
-		t.Fatalf("expected .buildkite/pipeline.yml to include the darwin-vz vmnet e2e step")
-	}
 	if !strings.Contains(pipeline, "command: scripts/ci-darwin-vz-filehandle-e2e.sh") {
 		t.Fatalf("expected .buildkite/pipeline.yml to include the darwin-vz filehandle e2e step")
 	}
@@ -107,7 +104,6 @@ func TestBuildkiteCIScriptsDoNotInvokeMiseDirectly(t *testing.T) {
 		"ci-cleanroom-e2e.sh",
 		"ci-darwin-vz-e2e.sh",
 		"ci-darwin-vz-filehandle-e2e.sh",
-		"ci-darwin-vz-vmnet-e2e.sh",
 		"ci-macos-release-pkg.sh",
 		"ci-buildkite-release.sh",
 	} {
