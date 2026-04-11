@@ -422,7 +422,7 @@ func (r *Runtime) HostAllowedByPolicy(sandboxID, host string) bool {
 	return state.policy.HostAllowed(host)
 }
 
-func (r *Runtime) queryAllowedByPolicy(sandboxID string, sourceIP netip.Addr, queryName string, now time.Time) bool {
+func (r *Runtime) queryAllowedByPolicy(sandboxID string, sourceIP netip.Addr, resp *dns.Msg, queryName string, now time.Time) bool {
 	sourceIP = normalizeAddr(sourceIP)
 	queryName = normalizeName(queryName)
 	if !sourceIP.IsValid() || queryName == "" {
@@ -431,32 +431,30 @@ func (r *Runtime) queryAllowedByPolicy(sandboxID string, sourceIP netip.Addr, qu
 	now = now.UTC()
 
 	r.mu.Lock()
-	defer r.mu.Unlock()
-
 	state, ok := r.sandboxes[strings.TrimSpace(sandboxID)]
-	if !ok || state.policy == nil {
+	var compiled *policy.CompiledPolicy
+	if ok {
+		compiled = state.policy
+	}
+	r.mu.Unlock()
+
+	if compiled == nil {
 		return false
 	}
-	if state.policy.HostAllowed(queryName) {
+	if compiled.HostAllowed(queryName) {
 		return true
 	}
 
-	scope, ok := state.scopes[sourceIP]
-	if !ok {
-		return false
-	}
-	scope.pruneExpired(now)
-
-	for _, observation := range scope.observations {
-		if !observation.ExpiresAt.After(now) || observation.QueryName != queryName {
+	for _, observation := range observationsFromResponse(sandboxID, sourceIP, resp, now) {
+		if observation.QueryName != queryName {
 			continue
 		}
 		for _, name := range observation.Names {
-			if state.policy.HostAllowed(name) {
+			if compiled.HostAllowed(name) {
 				return true
 			}
 		}
-		if observation.Name != "" && state.policy.HostAllowed(observation.Name) {
+		if observation.Name != "" && compiled.HostAllowed(observation.Name) {
 			return true
 		}
 	}
