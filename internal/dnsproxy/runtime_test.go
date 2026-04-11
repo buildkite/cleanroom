@@ -243,6 +243,174 @@ func TestRuntimeTreatsZeroAnswerTTLAsImmediateExpiry(t *testing.T) {
 	}
 }
 
+func TestRuntimeAllowsConnectionFromObservedHTTPSIPv4Hint(t *testing.T) {
+	t.Parallel()
+
+	runtime := NewRuntime(RuntimeConfig{
+		MaxObservationsPerScope:  8,
+		MaxConnectionsPerSandbox: 8,
+	})
+	if err := runtime.RegisterSandbox("sandbox-1", testCompiledPolicy(
+		policy.AllowRule{Host: "github.com", Ports: []int{443}},
+	)); err != nil {
+		t.Fatalf("register sandbox: %v", err)
+	}
+
+	now := time.Date(2026, time.April, 6, 10, 0, 0, 0, time.UTC)
+	sourceIP := netip.MustParseAddr("10.0.0.2")
+	destIP := netip.MustParseAddr("4.237.22.38")
+
+	if err := runtime.ObserveResponse("sandbox-1", sourceIP, testResponse("github.com.",
+		&dns.HTTPS{
+			SVCB: dns.SVCB{
+				Hdr:      dns.RR_Header{Name: "github.com.", Rrtype: dns.TypeHTTPS, Class: dns.ClassINET, Ttl: 30},
+				Priority: 1,
+				Target:   ".",
+				Value: []dns.SVCBKeyValue{
+					&dns.SVCBIPv4Hint{Hint: []net.IP{net.ParseIP("4.237.22.38").To4()}},
+				},
+			},
+		},
+	), now); err != nil {
+		t.Fatalf("observe response: %v", err)
+	}
+
+	observations := runtime.Observations("sandbox-1", now)
+	if len(observations) != 1 {
+		t.Fatalf("unexpected observation count: got %d want 1", len(observations))
+	}
+	if got, want := observations[0].Type, RecordTypeHTTPS; got != want {
+		t.Fatalf("unexpected observation type: got %q want %q", got, want)
+	}
+	if got, want := observations[0].Address, destIP; got != want {
+		t.Fatalf("unexpected observation address: got %s want %s", got, want)
+	}
+	if got, want := observations[0].Names, []string{"github.com"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected observation names: got %v want %v", got, want)
+	}
+
+	if !runtime.AllowConnection(Connection{
+		SandboxID:  "sandbox-1",
+		SourceIP:   sourceIP,
+		SourcePort: 41020,
+		DestIP:     destIP,
+		DestPort:   443,
+		Protocol:   ProtocolTCP,
+	}, now) {
+		t.Fatal("expected https ipv4hint observation to authorize a connection")
+	}
+
+	if got, want := runtime.NamesForAddress("sandbox-1", sourceIP, destIP, now), []string{"github.com"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected names for address: got %v want %v", got, want)
+	}
+}
+
+func TestRuntimeAllowsConnectionFromObservedHTTPSAliasIPv4Hint(t *testing.T) {
+	t.Parallel()
+
+	runtime := NewRuntime(RuntimeConfig{
+		MaxObservationsPerScope:  8,
+		MaxConnectionsPerSandbox: 8,
+	})
+	if err := runtime.RegisterSandbox("sandbox-1", testCompiledPolicy(
+		policy.AllowRule{Host: "classic.yarnpkg.com", Ports: []int{443}},
+	)); err != nil {
+		t.Fatalf("register sandbox: %v", err)
+	}
+
+	now := time.Date(2026, time.April, 6, 10, 0, 0, 0, time.UTC)
+	sourceIP := netip.MustParseAddr("10.0.0.2")
+	destIP := netip.MustParseAddr("54.253.94.210")
+
+	if err := runtime.ObserveResponse("sandbox-1", sourceIP, testResponse("classic.yarnpkg.com.",
+		&dns.HTTPS{
+			SVCB: dns.SVCB{
+				Hdr:      dns.RR_Header{Name: "classic.yarnpkg.com.", Rrtype: dns.TypeHTTPS, Class: dns.ClassINET, Ttl: 30},
+				Priority: 0,
+				Target:   "yarnpkg.netlify.com.",
+				Value: []dns.SVCBKeyValue{
+					&dns.SVCBIPv4Hint{Hint: []net.IP{net.ParseIP("54.253.94.210").To4()}},
+				},
+			},
+		},
+	), now); err != nil {
+		t.Fatalf("observe response: %v", err)
+	}
+
+	observations := runtime.Observations("sandbox-1", now)
+	if len(observations) != 1 {
+		t.Fatalf("unexpected observation count: got %d want 1", len(observations))
+	}
+	if got, want := observations[0].Name, "classic.yarnpkg.com"; got != want {
+		t.Fatalf("unexpected observation name: got %q want %q", got, want)
+	}
+	if got, want := observations[0].Target, "yarnpkg.netlify.com"; got != want {
+		t.Fatalf("unexpected observation target: got %q want %q", got, want)
+	}
+	if got, want := observations[0].Names, []string{"classic.yarnpkg.com"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected observation names: got %v want %v", got, want)
+	}
+
+	if !runtime.AllowConnection(Connection{
+		SandboxID:  "sandbox-1",
+		SourceIP:   sourceIP,
+		SourcePort: 41021,
+		DestIP:     destIP,
+		DestPort:   443,
+		Protocol:   ProtocolTCP,
+	}, now) {
+		t.Fatal("expected https alias ipv4hint observation to authorize a connection")
+	}
+
+	if got, want := runtime.NamesForAddress("sandbox-1", sourceIP, destIP, now), []string{"classic.yarnpkg.com"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected names for address: got %v want %v", got, want)
+	}
+}
+
+func TestRuntimeRejectsObservedHTTPSAliasHintsForUnallowlistedOwner(t *testing.T) {
+	t.Parallel()
+
+	runtime := NewRuntime(RuntimeConfig{
+		MaxObservationsPerScope:  8,
+		MaxConnectionsPerSandbox: 8,
+	})
+	if err := runtime.RegisterSandbox("sandbox-1", testCompiledPolicy(
+		policy.AllowRule{Host: "yarnpkg.netlify.com", Ports: []int{443}},
+	)); err != nil {
+		t.Fatalf("register sandbox: %v", err)
+	}
+
+	now := time.Date(2026, time.April, 6, 10, 0, 0, 0, time.UTC)
+	sourceIP := netip.MustParseAddr("10.0.0.2")
+	destIP := netip.MustParseAddr("54.253.94.210")
+
+	if err := runtime.ObserveResponse("sandbox-1", sourceIP, testResponse("classic.yarnpkg.com.",
+		&dns.HTTPS{
+			SVCB: dns.SVCB{
+				Hdr:      dns.RR_Header{Name: "classic.yarnpkg.com.", Rrtype: dns.TypeHTTPS, Class: dns.ClassINET, Ttl: 30},
+				Priority: 0,
+				Target:   "yarnpkg.netlify.com.",
+				Value: []dns.SVCBKeyValue{
+					&dns.SVCBIPv4Hint{Hint: []net.IP{net.ParseIP("54.253.94.210").To4()}},
+				},
+			},
+		},
+	), now); err != nil {
+		t.Fatalf("observe response: %v", err)
+	}
+
+	if runtime.AllowConnection(Connection{
+		SandboxID:  "sandbox-1",
+		SourceIP:   sourceIP,
+		SourcePort: 41022,
+		DestIP:     destIP,
+		DestPort:   443,
+		Protocol:   ProtocolTCP,
+	}, now) {
+		t.Fatal("expected unallowlisted https owner to remain unauthorized")
+	}
+}
+
 func TestRuntimeIgnoresUnmatchedAnswerOwnersWhenQuestionPresent(t *testing.T) {
 	t.Parallel()
 

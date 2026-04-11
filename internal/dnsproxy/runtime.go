@@ -28,6 +28,8 @@ const (
 	RecordTypeA     RecordType = "A"
 	RecordTypeAAAA  RecordType = "AAAA"
 	RecordTypeCNAME RecordType = "CNAME"
+	RecordTypeHTTPS RecordType = "HTTPS"
+	RecordTypeSVCB  RecordType = "SVCB"
 )
 
 // Protocol values describe the transport attached to a connection decision.
@@ -628,6 +630,32 @@ func observationsFromResponse(sandboxID string, sourceIP netip.Addr, msg *dns.Ms
 				addr = addr.Unmap()
 			}
 			observations = append(observations, addressObservations(sandboxID, sourceIP, questions, cnames, normalizeName(record.Hdr.Name), RecordTypeAAAA, addr, ttlSeconds(record.Hdr.Ttl), now)...)
+		case *dns.HTTPS:
+			observations = append(observations, serviceBindingHintObservations(
+				sandboxID,
+				sourceIP,
+				questions,
+				cnames,
+				normalizeName(record.Hdr.Name),
+				normalizeName(record.Target),
+				record.Value,
+				RecordTypeHTTPS,
+				ttlSeconds(record.Hdr.Ttl),
+				now,
+			)...)
+		case *dns.SVCB:
+			observations = append(observations, serviceBindingHintObservations(
+				sandboxID,
+				sourceIP,
+				questions,
+				cnames,
+				normalizeName(record.Hdr.Name),
+				normalizeName(record.Target),
+				record.Value,
+				RecordTypeSVCB,
+				ttlSeconds(record.Hdr.Ttl),
+				now,
+			)...)
 		}
 	}
 
@@ -659,6 +687,81 @@ func addressObservations(sandboxID string, sourceIP netip.Addr, questions []stri
 			ExpiresAt:  now.Add(effectiveTTL),
 		})
 	}
+	return observations
+}
+
+func serviceBindingHintObservations(
+	sandboxID string,
+	sourceIP netip.Addr,
+	questions []string,
+	cnames map[string]cnameRecord,
+	owner string,
+	target string,
+	values []dns.SVCBKeyValue,
+	recordType RecordType,
+	answerTTL time.Duration,
+	now time.Time,
+) []Observation {
+	if owner == "" || len(values) == 0 {
+		return nil
+	}
+
+	paths := queryPaths(owner, questions, cnames)
+	if len(paths) == 0 {
+		return nil
+	}
+
+	observations := make([]Observation, 0, len(paths))
+	for _, path := range paths {
+		names := append([]string(nil), path.names...)
+
+		effectiveTTL := answerTTL
+		if len(path.names) > 1 {
+			effectiveTTL = minTTL(answerTTL, path.cnameTTL)
+		}
+
+		appendObservation := func(addr netip.Addr) {
+			if !addr.IsValid() {
+				return
+			}
+			observations = append(observations, Observation{
+				SandboxID:  sandboxID,
+				SourceIP:   sourceIP,
+				QueryName:  path.query,
+				Name:       owner,
+				Type:       recordType,
+				Address:    addr,
+				Target:     target,
+				Names:      append([]string(nil), names...),
+				TTL:        effectiveTTL,
+				ObservedAt: now,
+				ExpiresAt:  now.Add(effectiveTTL),
+			})
+		}
+
+		for _, value := range values {
+			switch hint := value.(type) {
+			case *dns.SVCBIPv4Hint:
+				for _, ip := range hint.Hint {
+					addr, ok := netip.AddrFromSlice(ip.To4())
+					if ok {
+						appendObservation(addr)
+					}
+				}
+			case *dns.SVCBIPv6Hint:
+				for _, ip := range hint.Hint {
+					addr, ok := netip.AddrFromSlice(ip)
+					if ok {
+						if addr.Is4In6() {
+							addr = addr.Unmap()
+						}
+						appendObservation(addr)
+					}
+				}
+			}
+		}
+	}
+
 	return observations
 }
 
