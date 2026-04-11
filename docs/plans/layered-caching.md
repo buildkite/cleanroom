@@ -186,6 +186,8 @@ identity, lifecycle, and API semantics.
 - Treating moving refs such as branches or tags as reusable cache keys.
 - Solving every ecosystem's lockfile format in the first slice.
 - Unifying user snapshots and system caches into one metadata/API surface.
+- Making system stage caches user-addressable through the normal snapshot
+  restore surface such as `--from`.
 - Guaranteeing zero supply-chain risk in an absolute sense.
 
 ## Design Principles
@@ -203,6 +205,14 @@ mechanisms, but they are different products:
 
 `snapshotstore` should remain the user snapshot store. System-managed stage
 outputs should move into a dedicated `cachestore`.
+
+The user-facing restore/fork surface should remain snapshot-oriented:
+
+- `--from` should refer to user snapshots, not system stage caches
+- normal sandbox creation should resolve system stage caches automatically from
+  request inputs
+- if direct stage-cache selection is ever exposed, it should use a separate
+  operator/debug surface rather than sharing snapshot semantics
 
 ### 2. Keys must be derived from immutable inputs
 
@@ -560,6 +570,10 @@ If only the runtime stage exists:
 1. clone the runtime stage
 2. perform repository checkout
 3. continue upward through the same promotion flow
+
+This stage-cache resolution should remain an internal control-plane behavior for
+normal users. User-facing restore/fork flows should continue to target explicit
+snapshots rather than arbitrary stage-cache entries.
 
 ## Publication State Machine
 
