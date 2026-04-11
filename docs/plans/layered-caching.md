@@ -6,7 +6,8 @@
 
 ## Summary
 
-Build a deterministic, host-local cache pipeline for environment construction,
+Build an input-addressed, host-local cache pipeline for environment
+construction,
 then
 materialize the selected cached environment as a single writable root volume
 per sandbox.
@@ -20,7 +21,8 @@ The system-cache pipeline uses stage terminology:
 
 - runtime stage: prepared runtime rootfs
 - workspace stage: runtime rootfs plus exact repository checkout
-- dependency stage: workspace stage plus deterministic bootstrap/dependencies
+- dependency stage: workspace stage plus policy-constrained bootstrap and
+  dependencies
 
 Each stage output is a full sealed rootfs snapshot. Higher stages subsume lower
 stages. At runtime we do not mount `runtime + workspace + dependency` as a live
@@ -43,9 +45,9 @@ This separates two concerns that are easy to conflate:
 - **materialization design** decides how a selected artifact becomes a fast VM
   root filesystem
 
-We need both. Deterministic caches without cheap clone materialization still
-leave startup expensive. Cheap block clones without deterministic cache keys
-still leave reuse unsafe and hard to reason about.
+We need both. Input-addressed caches without cheap clone materialization still
+leave startup expensive. Cheap block clones without deterministic key
+derivation still leave reuse unsafe and hard to reason about.
 
 ## Terminology
 
@@ -194,7 +196,8 @@ User snapshots and system caches may use the same low-level clone/snapshot
 mechanisms, but they are different products:
 
 - user snapshots are addressed by snapshot ID and user intent
-- system caches are addressed by `(stage, key)` and deterministic inputs
+- system caches are addressed by `(stage, key)` and immutable, replayable
+  inputs
 - user snapshots are explicit and durable
 - system caches are implicit and eligible for automatic garbage collection
 
@@ -381,8 +384,8 @@ Notes:
 
 Purpose:
 
-- capture the environment after deterministic bootstrap such as dependency
-  install, generated fixtures, and language-specific setup
+- capture the environment after policy-constrained bootstrap such as
+  dependency install, generated fixtures, and language-specific setup
 
 Suggested key:
 
@@ -406,6 +409,9 @@ Notes:
 
 - this is the primary "nearly instant environment" target
 - a warm hit should bypass repository clone and dependency install entirely
+- this stage is only reproducible to the extent that the selected ecosystem,
+  toolchain, and bootstrap recipe are actually constrained enough to produce
+  stable outputs
 
 ### Stage 3: Writable execution child
 
@@ -517,7 +523,7 @@ Shared stage-cache publication should be a host-controlled promotion pipeline.
 ### Publish dependency stage
 
 1. Start from a published workspace stage.
-2. Run deterministic bootstrap in a temporary builder sandbox.
+2. Run the constrained bootstrap recipe in a temporary builder sandbox.
 3. Allow package fetches only through the gateway and only for lockfile-derived
    artifacts.
 4. Verify:
@@ -540,7 +546,7 @@ Warm-hit resolution should be simple.
 If no dependency stage exists but a workspace stage does:
 
 1. clone the workspace stage
-2. run deterministic bootstrap
+2. run the constrained bootstrap recipe
 3. optionally publish a dependency stage if the policy allows promotion
 
 If only the runtime stage exists:
