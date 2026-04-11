@@ -19,6 +19,10 @@ type ScopeResolver func(sourceIP netip.Addr) (sandboxID string, ok bool)
 // ObserveHook runs after a scoped response has been recorded in the runtime.
 type ObserveHook func(sandboxID string, sourceIP netip.Addr)
 
+// DenyHook runs when a DNS response is observed for a host that is not in the
+// sandbox's network allow policy.
+type DenyHook func(sandboxID, queryName string)
+
 // ForwarderConfig configures a DNS forwarding handler.
 type ForwarderConfig struct {
 	Runtime       *Runtime
@@ -27,6 +31,7 @@ type ForwarderConfig struct {
 	Client        DNSClient
 	Now           func() time.Time
 	OnObserve     ObserveHook
+	OnDeny        DenyHook
 }
 
 // Forwarder forwards DNS requests to an upstream resolver and records the
@@ -38,6 +43,7 @@ type Forwarder struct {
 	client        DNSClient
 	now           func() time.Time
 	onObserve     ObserveHook
+	onDeny        DenyHook
 }
 
 // NewForwarder creates a DNS forwarding handler backed by miekg/dns.
@@ -57,6 +63,7 @@ func NewForwarder(cfg ForwarderConfig) *Forwarder {
 		client:        client,
 		now:           now,
 		onObserve:     cfg.OnObserve,
+		onDeny:        cfg.OnDeny,
 	}
 }
 
@@ -91,11 +98,20 @@ func (f *Forwarder) observeScopedResponse(remoteAddr net.Addr, resp *dns.Msg) {
 	if !ok {
 		return
 	}
-	if err := f.runtime.ObserveResponse(sandboxID, sourceIP, resp.Copy(), f.now().UTC()); err != nil {
+	now := f.now().UTC()
+	if err := f.runtime.ObserveResponse(sandboxID, sourceIP, resp.Copy(), now); err != nil {
 		return
 	}
 	if f.onObserve != nil {
 		f.onObserve(sandboxID, sourceIP)
+	}
+	if f.onDeny != nil {
+		for _, question := range resp.Question {
+			name := normalizeName(question.Name)
+			if name != "" && !f.runtime.queryAllowedByPolicy(sandboxID, sourceIP, resp, name, now) {
+				f.onDeny(sandboxID, name)
+			}
+		}
 	}
 }
 

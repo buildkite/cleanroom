@@ -118,7 +118,7 @@ func TestSetupHostNetworkWithTrustedDNSFactoryConfiguresDynamicRulesWithoutStati
 	}
 
 	reqCtx, cancel := context.WithCancel(context.Background())
-	cfg, cleanup, err := setupHostNetworkWithTrustedDNSFactory(reqCtx, "run-12345", false, []policy.AllowRule{{Host: "proxy.golang.org", Ports: []int{443}}}, 8170, lookup, net.InterfaceByName, run, runBatch, factory)
+	cfg, cleanup, err := setupHostNetworkWithTrustedDNSFactory(reqCtx, "run-12345", false, []policy.AllowRule{{Host: "proxy.golang.org", Ports: []int{443}}}, 8170, lookup, net.InterfaceByName, run, runBatch, factory, nil)
 	if err != nil {
 		t.Fatalf("setupHostNetworkWithTrustedDNSFactory: %v", err)
 	}
@@ -192,7 +192,7 @@ func TestSetupHostNetworkWithDepsAddsDenyDefaultAndCleanupIndependentContext(t *
 	}
 
 	reqCtx, cancel := context.WithCancel(context.Background())
-	cfg, cleanup, err := setupHostNetworkWithTrustedDNSFactory(reqCtx, "run-12345", false, []policy.AllowRule{{Host: "proxy.golang.org", Ports: []int{443}}}, 8170, lookup, net.InterfaceByName, run, runBatch, factory)
+	cfg, cleanup, err := setupHostNetworkWithTrustedDNSFactory(reqCtx, "run-12345", false, []policy.AllowRule{{Host: "proxy.golang.org", Ports: []int{443}}}, 8170, lookup, net.InterfaceByName, run, runBatch, factory, nil)
 	if err != nil {
 		t.Fatalf("setupHostNetworkWithTrustedDNSFactory: %v", err)
 	}
@@ -292,7 +292,7 @@ func TestSetupHostNetworkWithTapLookupDeletesStaleTapBeforeCreate(t *testing.T) 
 	factory := func(_ context.Context, _ trustedDNSConfig) (func(), error) {
 		return func() {}, nil
 	}
-	_, cleanup, err := setupHostNetworkWithTrustedDNSFactory(context.Background(), runID, false, []policy.AllowRule{{Host: "proxy.golang.org", Ports: []int{443}}}, 0, lookup, interfaceByName, run, nil, factory)
+	_, cleanup, err := setupHostNetworkWithTrustedDNSFactory(context.Background(), runID, false, []policy.AllowRule{{Host: "proxy.golang.org", Ports: []int{443}}}, 0, lookup, interfaceByName, run, nil, factory, nil)
 	if err != nil {
 		t.Fatalf("setupHostNetworkWithTrustedDNSFactory: %v", err)
 	}
@@ -313,6 +313,7 @@ func TestSetupHostNetworkWithDepsAddsAllowAllForwardRule(t *testing.T) {
 	t.Parallel()
 
 	var calls []string
+	var dnsCfg trustedDNSConfig
 	run := func(_ context.Context, args ...string) error {
 		calls = append(calls, strings.Join(args, " "))
 		return nil
@@ -328,10 +329,11 @@ func TestSetupHostNetworkWithDepsAddsAllowAllForwardRule(t *testing.T) {
 		return nil, nil
 	}
 
-	factory := func(_ context.Context, _ trustedDNSConfig) (func(), error) {
+	factory := func(_ context.Context, cfg trustedDNSConfig) (func(), error) {
+		dnsCfg = cfg
 		return func() {}, nil
 	}
-	cfg, cleanup, err := setupHostNetworkWithTrustedDNSFactory(context.Background(), "run-allow-all", true, []policy.AllowRule{{Host: "stale.example.invalid", Ports: []int{443}}}, 0, lookup, net.InterfaceByName, run, runBatch, factory)
+	cfg, cleanup, err := setupHostNetworkWithTrustedDNSFactory(context.Background(), "run-allow-all", true, []policy.AllowRule{{Host: "stale.example.invalid", Ports: []int{443}}}, 0, lookup, net.InterfaceByName, run, runBatch, factory, nil)
 	if err != nil {
 		t.Fatalf("setupHostNetworkWithTrustedDNSFactory: %v", err)
 	}
@@ -347,6 +349,12 @@ func TestSetupHostNetworkWithDepsAddsAllowAllForwardRule(t *testing.T) {
 	}
 	if cfg.PolicyResolveMS != 0 {
 		t.Fatalf("expected allow-all networking to skip policy resolution timing, got %d", cfg.PolicyResolveMS)
+	}
+	if dnsCfg.policy == nil {
+		t.Fatal("expected trusted dns policy to be configured")
+	}
+	if got, want := dnsCfg.policy.NetworkDefault, "allow"; got != want {
+		t.Fatalf("unexpected trusted dns network default: got %q want %q", got, want)
 	}
 }
 
@@ -372,7 +380,7 @@ func TestSetupHostNetworkWithTrustedDNSFactoryPreservesDirectIPAllowRules(t *tes
 		return func() {}, nil
 	}
 
-	cfg, cleanup, err := setupHostNetworkWithTrustedDNSFactory(context.Background(), "run-direct-ip", false, []policy.AllowRule{{Host: "203.0.113.10", Ports: []int{443}}}, 0, lookup, net.InterfaceByName, run, runBatch, factory)
+	cfg, cleanup, err := setupHostNetworkWithTrustedDNSFactory(context.Background(), "run-direct-ip", false, []policy.AllowRule{{Host: "203.0.113.10", Ports: []int{443}}}, 0, lookup, net.InterfaceByName, run, runBatch, factory, nil)
 	if err != nil {
 		t.Fatalf("setupHostNetworkWithTrustedDNSFactory: %v", err)
 	}

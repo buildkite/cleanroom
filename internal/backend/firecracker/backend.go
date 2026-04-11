@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -95,6 +96,8 @@ type sandboxInstance struct {
 	cleanupVolume  func()
 	vmRootFSPath   string
 	volumeRef      string
+
+	warnings backend.WarningEmitter
 }
 
 const runObservabilityFile = "execution-observability.json"
@@ -345,6 +348,11 @@ func (a *Adapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest
 		if err := os.MkdirAll(runDir, 0o755); err != nil {
 			return nil, fmt.Errorf("create run directory: %w", err)
 		}
+	}
+
+	if stream.OnWarning != nil {
+		instance.warnings.SetHandler(stream.OnWarning)
+		defer instance.warnings.SetHandler(nil)
 	}
 
 	guestResult, timing, err := a.executeInSandbox(ctx, instance, req.LaunchSeconds, req.Command, req.Env, req.TTY, stream)
@@ -989,7 +997,7 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 	networkRunBatch := func(ctx context.Context, commands [][]string) error {
 		return runRootCommandBatch(ctx, req.FirecrackerConfig, commands)
 	}
-	networkCfg, cleanupNetwork, err := setupHostNetwork(ctx, req.ExecutionID, req.Policy.NetworkDefault == "allow", req.Policy.Allow, 0, networkRunCommand, networkRunBatch)
+	networkCfg, cleanupNetwork, err := setupHostNetwork(ctx, req.ExecutionID, req.Policy.NetworkDefault == "allow", req.Policy.Allow, 0, networkRunCommand, networkRunBatch, nil)
 	if err != nil {
 		return nil, fmt.Errorf("setup host network: %w", err)
 	}
@@ -1596,7 +1604,17 @@ func (a *Adapter) launchSandboxVMFromRootFS(ctx context.Context, sandboxID strin
 			gwPort = gateway.DefaultPort
 		}
 	}
-	networkCfg, cleanupNetwork, err := setupHostNetwork(ctx, sandboxID, compiled.NetworkDefault == "allow", compiled.Allow, gwPort, networkRunCommand, networkRunBatch)
+	// The DNS deny callback is routed through an atomic pointer to the sandbox
+	// instance which is created after network setup. The instance sets a
+	// concrete warning handler when RunInSandbox is called.
+	var instanceRef atomic.Pointer[sandboxInstance]
+	dnsOnDeny := func(_, queryName string) {
+		if inst := instanceRef.Load(); inst != nil {
+			inst.warnings.Emit(fmt.Sprintf("dns query for disallowed host: %s", queryName))
+		}
+	}
+
+	networkCfg, cleanupNetwork, err := setupHostNetwork(ctx, sandboxID, compiled.NetworkDefault == "allow", compiled.Allow, gwPort, networkRunCommand, networkRunBatch, dnsOnDeny)
 	if err != nil {
 		cleanupVolume()
 		return nil, fmt.Errorf("setup host network: %w", err)
@@ -1705,6 +1723,7 @@ func (a *Adapter) launchSandboxVMFromRootFS(ctx context.Context, sandboxID strin
 		vmRootFSPath:   vmRootFSPath,
 		volumeRef:      writableVolume.Ref,
 	}
+	instanceRef.Store(instance)
 	go func() {
 		err := fcCmd.Wait()
 		instance.setExited(err)
@@ -2124,22 +2143,22 @@ type interfaceLookupFunc func(name string) (*net.Interface, error)
 type rootCommandFunc func(ctx context.Context, args ...string) error
 type rootCommandBatchFunc func(ctx context.Context, commands [][]string) error
 
-func setupHostNetwork(ctx context.Context, runID string, allowAll bool, allow []policy.AllowRule, gatewayPort int, runCommand rootCommandFunc, runBatchCommand rootCommandBatchFunc) (hostNetworkConfig, func(), error) {
+func setupHostNetwork(ctx context.Context, runID string, allowAll bool, allow []policy.AllowRule, gatewayPort int, runCommand rootCommandFunc, runBatchCommand rootCommandBatchFunc, onDeny func(sandboxID, queryName string)) (hostNetworkConfig, func(), error) {
 	lookup := func(ctx context.Context, host string) ([]net.IP, error) {
 		return net.DefaultResolver.LookupIP(ctx, "ip4", host)
 	}
-	return setupHostNetworkWithDeps(ctx, runID, allowAll, allow, gatewayPort, lookup, runCommand, runBatchCommand)
+	return setupHostNetworkWithDeps(ctx, runID, allowAll, allow, gatewayPort, lookup, runCommand, runBatchCommand, onDeny)
 }
 
-func setupHostNetworkWithDeps(ctx context.Context, runID string, allowAll bool, allow []policy.AllowRule, gatewayPort int, lookup ipLookupFunc, runCommand rootCommandFunc, runBatchCommand rootCommandBatchFunc) (hostNetworkConfig, func(), error) {
-	return setupHostNetworkWithTrustedDNSFactory(ctx, runID, allowAll, allow, gatewayPort, lookup, net.InterfaceByName, runCommand, runBatchCommand, newTrustedDNSService)
+func setupHostNetworkWithDeps(ctx context.Context, runID string, allowAll bool, allow []policy.AllowRule, gatewayPort int, lookup ipLookupFunc, runCommand rootCommandFunc, runBatchCommand rootCommandBatchFunc, onDeny func(sandboxID, queryName string)) (hostNetworkConfig, func(), error) {
+	return setupHostNetworkWithTrustedDNSFactory(ctx, runID, allowAll, allow, gatewayPort, lookup, net.InterfaceByName, runCommand, runBatchCommand, newTrustedDNSService, onDeny)
 }
 
-func setupHostNetworkWithTapLookup(ctx context.Context, runID string, allowAll bool, allow []policy.AllowRule, gatewayPort int, lookup ipLookupFunc, interfaceByName interfaceLookupFunc, runCommand rootCommandFunc, runBatchCommand rootCommandBatchFunc) (hostNetworkConfig, func(), error) {
-	return setupHostNetworkWithTrustedDNSFactory(ctx, runID, allowAll, allow, gatewayPort, lookup, interfaceByName, runCommand, runBatchCommand, newTrustedDNSService)
+func setupHostNetworkWithTapLookup(ctx context.Context, runID string, allowAll bool, allow []policy.AllowRule, gatewayPort int, lookup ipLookupFunc, interfaceByName interfaceLookupFunc, runCommand rootCommandFunc, runBatchCommand rootCommandBatchFunc, onDeny func(sandboxID, queryName string)) (hostNetworkConfig, func(), error) {
+	return setupHostNetworkWithTrustedDNSFactory(ctx, runID, allowAll, allow, gatewayPort, lookup, interfaceByName, runCommand, runBatchCommand, newTrustedDNSService, onDeny)
 }
 
-func setupHostNetworkWithTrustedDNSFactory(ctx context.Context, runID string, allowAll bool, allow []policy.AllowRule, gatewayPort int, lookup ipLookupFunc, interfaceByName interfaceLookupFunc, runCommand rootCommandFunc, runBatchCommand rootCommandBatchFunc, factory trustedDNSFactory) (hostNetworkConfig, func(), error) {
+func setupHostNetworkWithTrustedDNSFactory(ctx context.Context, runID string, allowAll bool, allow []policy.AllowRule, gatewayPort int, lookup ipLookupFunc, interfaceByName interfaceLookupFunc, runCommand rootCommandFunc, runBatchCommand rootCommandBatchFunc, factory trustedDNSFactory, onDeny func(sandboxID, queryName string)) (hostNetworkConfig, func(), error) {
 	_ = lookup
 	if factory == nil {
 		factory = newTrustedDNSService
@@ -2321,10 +2340,11 @@ func setupHostNetworkWithTrustedDNSFactory(ctx context.Context, runID string, al
 		sandboxID:    runID,
 		hostIP:       hostAddr,
 		guestIP:      guestAddr,
-		policy:       trustedDNSPolicy(allow),
+		policy:       trustedDNSPolicy(allowAll, allow),
 		runBatch:     runBatchCommand,
 		tcpChainName: tcpChainName,
 		udpChainName: udpChainName,
+		onDeny:       onDeny,
 	})
 	if err != nil {
 		cleanup()
@@ -2421,7 +2441,7 @@ func installForwardEstablishedRule(setupRun func(args ...string) error, directio
 	return []string{"iptables", "-D", "FORWARD", directionFlag, tapName, "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"}, nil
 }
 
-func trustedDNSPolicy(allow []policy.AllowRule) *policy.CompiledPolicy {
+func trustedDNSPolicy(allowAll bool, allow []policy.AllowRule) *policy.CompiledPolicy {
 	copied := make([]policy.AllowRule, 0, len(allow))
 	for _, rule := range allow {
 		copied = append(copied, policy.AllowRule{
@@ -2429,9 +2449,13 @@ func trustedDNSPolicy(allow []policy.AllowRule) *policy.CompiledPolicy {
 			Ports: append([]int(nil), rule.Ports...),
 		})
 	}
+	networkDefault := "deny"
+	if allowAll {
+		networkDefault = "allow"
+	}
 	return &policy.CompiledPolicy{
 		Version:        1,
-		NetworkDefault: "deny",
+		NetworkDefault: networkDefault,
 		Allow:          copied,
 	}
 }

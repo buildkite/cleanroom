@@ -31,6 +31,7 @@ type trustedDNSConfig struct {
 	tcpChainName string
 	udpChainName string
 	now          func() time.Time
+	onDeny       func(sandboxID, queryName string)
 }
 
 type trustedDNSChainSyncer struct {
@@ -119,6 +120,7 @@ func newTrustedDNSService(_ context.Context, cfg trustedDNSConfig) (func(), erro
 			}
 			chainManager.Trigger()
 		},
+		OnDeny: cfg.onDeny,
 	})
 
 	listenAddr := net.JoinHostPort(cfg.hostIP.String(), strconv.Itoa(trustedDNSListenPort))

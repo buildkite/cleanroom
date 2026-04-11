@@ -409,6 +409,59 @@ func (r *Runtime) NamesForAddress(sandboxID string, sourceIP, destIP netip.Addr,
 	return names
 }
 
+// HostAllowedByPolicy checks whether the given host is in the network allow
+// list for the sandbox.
+func (r *Runtime) HostAllowedByPolicy(sandboxID, host string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	state, ok := r.sandboxes[strings.TrimSpace(sandboxID)]
+	if !ok {
+		return false
+	}
+	return state.policy.HostAllowed(host)
+}
+
+func (r *Runtime) queryAllowedByPolicy(sandboxID string, sourceIP netip.Addr, resp *dns.Msg, queryName string, now time.Time) bool {
+	sourceIP = normalizeAddr(sourceIP)
+	queryName = normalizeName(queryName)
+	if !sourceIP.IsValid() || queryName == "" {
+		return false
+	}
+	now = now.UTC()
+
+	r.mu.Lock()
+	state, ok := r.sandboxes[strings.TrimSpace(sandboxID)]
+	var compiled *policy.CompiledPolicy
+	if ok {
+		compiled = state.policy
+	}
+	r.mu.Unlock()
+
+	if compiled == nil {
+		return false
+	}
+	if compiled.HostAllowed(queryName) {
+		return true
+	}
+
+	for _, observation := range observationsFromResponse(sandboxID, sourceIP, resp, now) {
+		if observation.QueryName != queryName {
+			continue
+		}
+		for _, name := range observation.Names {
+			if compiled.HostAllowed(name) {
+				return true
+			}
+		}
+		if observation.Name != "" && compiled.HostAllowed(observation.Name) {
+			return true
+		}
+	}
+
+	return false
+}
+
 // ReleaseConnection removes an established flow from the runtime.
 func (r *Runtime) ReleaseConnection(conn Connection) {
 	conn.SourceIP = normalizeAddr(conn.SourceIP)

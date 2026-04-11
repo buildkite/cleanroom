@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/dnsproxy"
 	"github.com/buildkite/cleanroom/internal/gateway"
 	"github.com/buildkite/cleanroom/internal/policy"
@@ -73,9 +74,7 @@ type fileHandleVirtualNetwork struct {
 	gatewayHTTPLn     net.Listener
 	gatewayHTTPServer *http.Server
 
-	warningMu      sync.RWMutex
-	warningHandler func(string)
-	warnedDests    map[string]struct{}
+	warnings backend.WarningEmitter
 }
 
 type fileHandleGateway struct {
@@ -240,10 +239,7 @@ func (g *fileHandleGateway) SetWarningHandler(handler func(string)) {
 	if g == nil || g.network == nil {
 		return
 	}
-	g.network.warningMu.Lock()
-	g.network.warningHandler = handler
-	g.network.warnedDests = make(map[string]struct{})
-	g.network.warningMu.Unlock()
+	g.network.warnings.SetHandler(handler)
 }
 
 func newFileHandleDNSRuntime(sandboxID string, compiled *policy.CompiledPolicy) (*dnsproxy.Runtime, error) {
@@ -440,18 +436,9 @@ func newFileHandleVirtualNetwork(cfg fileHandleGatewayConfig, dnsUpstreamAddr st
 				dest = strings.Join(names, ",")
 			}
 			msg := fmt.Sprintf("network connection blocked: %s:%d", dest, r.ID().LocalPort)
-			network.warningMu.Lock()
-			handler := network.warningHandler
-			_, alreadyWarned := network.warnedDests[msg]
-			if handler != nil && !alreadyWarned {
-				network.warnedDests[msg] = struct{}{}
-			}
-			network.warningMu.Unlock()
-			if handler != nil && !alreadyWarned {
-				handler(msg)
-			}
+			network.warnings.Emit(msg)
 			logFn := log.Info
-			if handler != nil {
+			if network.warnings.HasHandler() {
 				logFn = log.Debug
 			}
 			logFn("filehandle network connection blocked",
