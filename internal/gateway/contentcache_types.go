@@ -143,7 +143,19 @@ type credentialInjector struct {
 	credentials CredentialProvider
 }
 
-func newContentCacheHTTPClient(credentials CredentialProvider) *http.Client {
+func newGitContentCacheHTTPClient(credentials CredentialProvider) *http.Client {
+	client := newUpstreamContentCacheHTTPClient(credentials)
+	client.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	return client
+}
+
+func newOCIContentCacheHTTPClient(credentials CredentialProvider) *http.Client {
+	return newUpstreamContentCacheHTTPClient(credentials)
+}
+
+func newUpstreamContentCacheHTTPClient(credentials CredentialProvider) *http.Client {
 	return &http.Client{
 		Transport: &credentialInjector{
 			base: &http.Transport{
@@ -155,9 +167,6 @@ func newContentCacheHTTPClient(credentials CredentialProvider) *http.Client {
 				DisableKeepAlives: true,
 			},
 			credentials: credentials,
-		},
-		CheckRedirect: func(*http.Request, []*http.Request) error {
-			return http.ErrUseLastResponse
 		},
 	}
 }

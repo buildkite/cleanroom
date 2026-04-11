@@ -78,8 +78,11 @@ func NewContentCache(cfg ContentCacheConfig) (*ContentCache, error) {
 	cafs := store.NewCAFS(fsBackend, store.WithMetaDB(db))
 	dl := download.New()
 
-	// HTTP client with per-request credential injection.
-	httpClient := newContentCacheHTTPClient(cfg.Credentials)
+	// Git and OCI need different redirect behavior: git must not follow
+	// redirects across policy boundaries, while OCI pulls commonly rely on
+	// registry/CDN redirects for blob downloads.
+	gitHTTPClient := newGitContentCacheHTTPClient(cfg.Credentials)
+	ociHTTPClient := newOCIContentCacheHTTPClient(cfg.Credentials)
 
 	packIdx, err := metadb.NewEnvelopeIndex(db, "git", "pack", 24*time.Hour)
 	if err != nil {
@@ -135,7 +138,7 @@ func NewContentCache(cfg ContentCacheConfig) (*ContentCache, error) {
 			gitIndex,
 			cafs,
 			ccgit.WithUpstream(ccgit.NewUpstream(
-				ccgit.WithHTTPClient(httpClient),
+				ccgit.WithHTTPClient(gitHTTPClient),
 				ccgit.WithUpstreamLogger(logger),
 			)),
 			ccgit.WithAllowedHosts([]string{host}),
@@ -153,7 +156,7 @@ func NewContentCache(cfg ContentCacheConfig) (*ContentCache, error) {
 			Prefix: route.prefix,
 			Upstream: ccoci.NewUpstream(
 				ccoci.WithRegistryURL(route.upstreamURL),
-				ccoci.WithHTTPClient(httpClient),
+				ccoci.WithHTTPClient(ociHTTPClient),
 			),
 			TagTTL: tagTTL,
 		}}, ccoci.WithRouterLogger(logger))

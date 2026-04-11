@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestNewContentCacheHTTPClientDoesNotFollowRedirects(t *testing.T) {
+func TestNewGitContentCacheHTTPClientDoesNotFollowRedirects(t *testing.T) {
 	t.Parallel()
 
 	redirected := false
@@ -21,7 +21,7 @@ func TestNewContentCacheHTTPClientDoesNotFollowRedirects(t *testing.T) {
 	}))
 	defer redirectSource.Close()
 
-	client := newContentCacheHTTPClient(nil)
+	client := newGitContentCacheHTTPClient(nil)
 	resp, err := client.Get(redirectSource.URL)
 	if err != nil {
 		t.Fatalf("get redirected source: %v", err)
@@ -33,5 +33,35 @@ func TestNewContentCacheHTTPClientDoesNotFollowRedirects(t *testing.T) {
 	}
 	if redirected {
 		t.Fatal("expected redirected target to remain unrequested")
+	}
+}
+
+func TestNewOCIContentCacheHTTPClientFollowsRedirects(t *testing.T) {
+	t.Parallel()
+
+	redirected := false
+	redirectTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		redirected = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer redirectTarget.Close()
+
+	redirectSource := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, redirectTarget.URL, http.StatusFound)
+	}))
+	defer redirectSource.Close()
+
+	client := newOCIContentCacheHTTPClient(nil)
+	resp, err := client.Get(redirectSource.URL)
+	if err != nil {
+		t.Fatalf("get redirected source: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected %d, got %d", http.StatusOK, resp.StatusCode)
+	}
+	if !redirected {
+		t.Fatal("expected redirected target to be requested")
 	}
 }
