@@ -1,7 +1,8 @@
 # Layered Cache Plan
 
 **Spec reference:** `spec.md` sections 5.1.1, 5.2, 6.4
-**Status:** Proposed
+**Status:** In progress
+**Last reviewed:** 2026-04-11
 
 ## Summary
 
@@ -35,29 +36,68 @@ This plan should land in phases rather than as one large cross-backend change.
 
 ### Phase 1: Workspace-seed orchestration
 
-Land the backend-neutral control-plane slice first:
+Status: largely landed for snapshot-capable backends.
+
+The backend-neutral control-plane slice is now in place:
 
 - publish workspace-seed snapshots after exact-commit repository bootstrap
 - look up matching workspace-seed snapshots before repeating bootstrap
-- prove deterministic cache keying and trusted publication semantics
+- restore matching workspace-seed snapshots before cold bootstrap
+- republish after runtime-base changes or restore failure fallbacks
 
 This phase improves warm repo-aware sandbox creation by skipping repeated
 checkout work on snapshot-capable persistent backends.
 
-It does **not** yet deliver the full hot-path performance win for Firecracker,
-because Firecracker's normal execution flow still copies the prepared ext4
-rootfs per run.
+Trusted publication semantics are present in a narrow form: the control plane
+creates the snapshot, persists metadata only after snapshot creation succeeds,
+and rolls the snapshot back if metadata persistence fails.
 
 ### Phase 2: Firecracker hot-path materialization
 
-Follow with a Firecracker-specific runtime change:
+Status: partially landed.
 
-- replace the per-run ext4 file copy with clone-based writable root volume
-  preparation
+The Firecracker runtime plumbing now exists:
+
+- route normal execution through writable root volume preparation
 - consume published cache artifacts through the volume-store clone path
+- allow clone-capable drivers such as ZFS to materialize writable child volumes
 
-This is the phase that converts workspace-seed hits from "skip git/bootstrap
-work" into "nearly plain sandbox boot time" on Firecracker.
+The remaining gap is deployment/runtime-dependent rather than architectural:
+the default Firecracker `file` driver still copies ext4 bytes, so the "nearly
+plain sandbox boot time" win only happens on clone-capable storage such as ZFS.
+
+## Current Progress Snapshot
+
+### Landed
+
+- host-side git mirror transport cache keyed by canonical remote URL
+- exact-commit repository bootstrap through the host-controlled flow
+- runtime-base-key derivation for `firecracker` and `darwin-vz`
+- workspace-seed publish, lookup, restore, and fallback republish in the
+  control service
+- one writable-root-volume preparation path for Firecracker normal execution
+  and snapshot restore
+
+### Partial
+
+- Firecracker hot-path materialization is wired through the volume-store path,
+  but clone-based behavior still depends on the configured storage driver
+
+### Not started
+
+- dependency-seed artifacts
+- package artifact CAS and lockfile-keyed environment caching
+- first-class artifact metadata with publication states and lineage
+- strict offline warm-cache mode
+- garbage collection and retention policy
+
+### Current caveats
+
+- workspace-seed identity is currently stored as a managed snapshot name, not a
+  first-class cache artifact record
+- workspace-seed keying currently includes the local checkout branch because
+  repository bootstrap can create either a detached checkout or a named local
+  branch
 
 ## Background
 
@@ -528,13 +568,21 @@ This matches the current backend shape better:
 For Firecracker, the cache plan only pays off if rootfs materialization stops
 doing a full ext4 copy on the hot path.
 
-Recommended direction:
+Current state:
 
-- use the existing volume-store rootfs path for normal execution, not only for
-  persistent sandboxes and snapshot restore
-- treat a published cache artifact's `storage_ref` as the source for
-  `CloneSnapshotToVolume`
-- prefer a clone-capable Linux driver such as ZFS for warm-hit materialization
+- normal execution already uses the volume-store rootfs path
+- snapshot-backed sandbox restore already feeds `storage_ref` through the same
+  writable-root-volume helper
+- clone-based hot hits still require a clone-capable driver such as ZFS
+- the default `file` driver still performs full file copies
+
+Recommended direction from here:
+
+- keep using the shared volume-store rootfs path for all Firecracker launch
+  modes
+- prefer clone-capable Linux storage such as ZFS for warm-hit materialization
+- measure clone latency separately from VM boot latency so driver choice is
+  visible in benchmarks
 
 Desired hot path:
 
@@ -571,13 +619,13 @@ This plan composes with the existing documents rather than replacing them.
 
 | File | Change |
 |---|---|
-| `internal/gateway/mirror.go` | Keep as the host-side git transport cache keyed by canonical remote URL. |
-| `internal/repositorycheckout/checkout.go` | Continue using exact remote URL and commit as the checkout source of truth. |
-| `internal/snapshotstore/store.go` | Extend snapshot-adjacent metadata to record cache layer type, key, parent, inputs, and publication state. |
-| `internal/volumestore/store.go` | Keep the abstract clone/snapshot interface; do not leak cache semantics into the storage driver API. |
-| `internal/backend/firecracker/backend.go` | Move the normal execution hot path onto clone-based root volume preparation. |
-| `internal/backend/darwinvz/backend_darwin.go` | Reuse the same logical cache metadata while keeping APFS-backed clone materialization. |
-| `internal/policy/policy.go` | Extend compiled policy data with lockfile-derived artifact allowlists and strict offline mode requirements. |
+| `internal/gateway/mirror.go` | Already acts as the host-side git transport cache keyed by canonical remote URL. |
+| `internal/repositorycheckout/checkout.go` | Already uses exact remote URL and full commit SHA as the checkout source of truth; `branch` currently affects local checkout mode only. |
+| `internal/snapshotstore/store.go` | Currently stores snapshot metadata only; it still needs expansion for cache artifact type, key, lineage, inputs, and publication state. |
+| `internal/volumestore/store.go` | Already provides the backend-neutral clone/snapshot contract shared by both backends. |
+| `internal/backend/firecracker/backend.go` | Already routes normal execution and snapshot restore through writable root volume preparation; actual clone behavior depends on the configured driver. |
+| `internal/backend/darwinvz/backend_darwin.go` | Already fits the same one-rootfs model and can use APFS clone materialization. |
+| `internal/policy/policy.go` | Still needs lockfile-derived artifact allowlists and strict offline warm-cache requirements. |
 
 ## Suggested Metadata Model
 
@@ -603,16 +651,29 @@ opaque prose so determinism can be tested directly.
 
 ## Implementation Order
 
-1. Add cache metadata records and canonical key derivation helpers.
-2. Keep the git mirror as the transport cache for exact-commit checkout.
-3. Publish workspace seeds keyed by exact repository inputs.
-4. Move Firecracker warm-hit materialization onto clone-based root volume
+### Done
+
+1. Keep the git mirror as the transport cache for exact-commit checkout.
+2. Publish workspace seeds keyed by runtime base plus exact repository inputs.
+
+### Partial
+
+1. Move Firecracker warm-hit materialization onto the shared writable-root
+   volume path.
+2. Use published snapshot `storage_ref` values as the source for writable child
    preparation.
-5. Add lockfile parsing and package artifact CAS for one ecosystem first.
-6. Publish dependency seeds keyed by lockfiles, toolchains, and bootstrap
+
+These are architecturally landed, but the full performance win still depends on
+clone-capable storage instead of the default `file` driver.
+
+### Remaining
+
+1. Add first-class cache metadata records and canonical key derivation helpers.
+2. Add lockfile parsing and package artifact CAS for one ecosystem first.
+3. Publish dependency seeds keyed by lockfiles, toolchains, and bootstrap
    recipe.
-7. Add strict offline warm-cache mode and fail-closed launch checks.
-8. Add garbage collection and retention policies after the key model and
+4. Add strict offline warm-cache mode and fail-closed launch checks.
+5. Add garbage collection and retention policies after the key model and
    publication flow are stable.
 
 ## Testing Plan
@@ -628,6 +689,14 @@ opaque prose so determinism can be tested directly.
 - partially written artifacts are never visible as `ready`
 - failed publishes do not corrupt existing entries
 - concurrent publishes of the same key coalesce correctly
+
+Current coverage already exists for the narrower workspace-seed flow:
+
+- warm workspace-seed hits reuse snapshot-backed sandbox creation
+- runtime-base changes invalidate workspace-seed reuse
+- restore failures fall back to cold bootstrap and republish
+- writable-volume preparation cleans up failed clones and uses the configured
+  volume-store driver
 
 ### Policy enforcement
 
@@ -650,6 +719,9 @@ opaque prose so determinism can be tested directly.
   only when explicitly requested?
 - What retention policy should apply to large dependency seeds relative to
   smaller workspace seeds?
+- Should workspace-seed identity continue to include the local checkout branch,
+  or should branch stay outside reusable cache keys once checkout mode is
+  modeled separately?
 - Do we need a specialized optional read-only guest-visible artifact volume for
   very large immutable datasets, or can the single-rootfs model handle the
   first production slice cleanly?
