@@ -5,7 +5,7 @@ Workloads run in a Linux microVM (`firecracker` on Linux, `darwin-vz` on macOS).
 ## Network model and enforcement
 
 - `firecracker` creates a dedicated TAP interface and host/guest IP pair per sandbox. It enforces policy egress allowlists with host-side iptables rules, and the host can identify a sandbox by its guest IP on that TAP-backed network.
-- `firecracker` learns allowed destinations from observed DNS answers and then authorizes destination IP:port pairs. Current hostname-based rules therefore do not distinguish co-hosted services that share the same IP:port.
+- `firecracker` learns hostname-based allowed destinations from observed DNS answers and then authorizes destination IP:port pairs. Literal IPv4 allow rules are installed directly. Current hostname-based rules therefore do not distinguish co-hosted services that share the same IP:port.
 - `darwin-vz` uses `filehandle` networking with a Cleanroom-owned guest gateway for TCP egress filtering. The host does not get a Firecracker-style per-sandbox TAP device or host-visible guest IP identity.
 - `darwin-vz` also learns allowed destinations from observed DNS answers and then authorizes destination IP:port pairs in the filehandle gateway. Current hostname-based rules therefore do not distinguish co-hosted services that share the same IP:port.
 
