@@ -152,11 +152,40 @@ echo "--- :white_check_mark: Guest gateway bridge smoke test"
 ./dist/cleanroom exec --host "$listen_endpoint" --backend darwin-vz -c "$smoke_policy_dir" -- sh -lc "wget -T 20 -S -O - http://10.233.0.1:${gateway_port}/meta/health >/dev/null 2>/tmp/meta.err || true; grep -q 'HTTP/1.1 501 Not Implemented' /tmp/meta.err"
 
 echo "--- :white_check_mark: Allowlisted egress test"
-./dist/cleanroom exec --host "$listen_endpoint" --backend darwin-vz -c "$allowlist_policy_dir" -- sh -lc 'wget -T 20 -q -O /dev/null https://github.com'
+# Probe the file-handle egress path directly instead of any ambient proxy
+# configuration inherited by the guest image, then retry transient upstream
+# failures from the live GitHub endpoint.
+allow_attempt=1
+allow_max_attempts=3
+allow_status=1
+while [[ "$allow_attempt" -le "$allow_max_attempts" ]]; do
+  set +e
+  ./dist/cleanroom exec --host "$listen_endpoint" --backend darwin-vz -c "$allowlist_policy_dir" -- sh -lc 'http_proxy= https_proxy= HTTP_PROXY= HTTPS_PROXY= ALL_PROXY= all_proxy= NO_PROXY= no_proxy= wget -T 20 -q -O /dev/null https://github.com' >"$tmpdir/allow.out" 2>"$tmpdir/allow.err"
+  allow_status=$?
+  set -e
+  if [[ "$allow_status" -eq 0 ]]; then
+    break
+  fi
+  if [[ "$allow_attempt" -lt "$allow_max_attempts" ]]; then
+    echo "allowlisted host probe failed (attempt $allow_attempt/$allow_max_attempts); retrying"
+    sleep "$allow_attempt"
+  fi
+  allow_attempt=$((allow_attempt + 1))
+done
+if [[ "$allow_status" -ne 0 ]]; then
+  echo "allowlisted host probe failed in filehandle mode" >&2
+  echo "stdout:" >&2
+  cat "$tmpdir/allow.out" >&2 || true
+  echo "stderr:" >&2
+  cat "$tmpdir/allow.err" >&2 || true
+  echo "server log (last 30 lines):" >&2
+  tail -n 30 "$tmpdir/server.log" >&2 || true
+  exit 1
+fi
 
 echo "--- :no_entry: Denied egress test"
 set +e
-./dist/cleanroom exec --host "$listen_endpoint" --backend darwin-vz -c "$allowlist_policy_dir" -- sh -lc 'wget -T 20 -q -O /dev/null https://buildkite.com' >"$tmpdir/deny.out" 2>"$tmpdir/deny.err"
+./dist/cleanroom exec --host "$listen_endpoint" --backend darwin-vz -c "$allowlist_policy_dir" -- sh -lc 'http_proxy= https_proxy= HTTP_PROXY= HTTPS_PROXY= ALL_PROXY= all_proxy= NO_PROXY= no_proxy= wget -T 20 -q -O /dev/null https://buildkite.com' >"$tmpdir/deny.out" 2>"$tmpdir/deny.err"
 deny_status=$?
 set -e
 if [[ "$deny_status" -eq 0 ]]; then
