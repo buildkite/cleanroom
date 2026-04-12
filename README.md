@@ -325,7 +325,7 @@ cleanroom image import ghcr.io/buildkite/cleanroom-base/debian@sha256:... ./root
 cleanroom image bump-ref    # resolve :latest tag to digest and update cleanroom.yaml
 ```
 
-Recommended defaults are the Debian-based images: `ghcr.io/buildkite/cleanroom-base/debian`, `ghcr.io/buildkite/cleanroom-base/debian-docker`, and `ghcr.io/buildkite/cleanroom-base/debian-agents`.
+Recommended defaults are the Debian-based images: `ghcr.io/buildkite/cleanroom-base/debian`, `ghcr.io/buildkite/cleanroom-base/debian-ruby`, `ghcr.io/buildkite/cleanroom-base/debian-docker`, and `ghcr.io/buildkite/cleanroom-base/debian-agents`.
 The Alpine variants remain available as smaller musl-based alternatives: `ghcr.io/buildkite/cleanroom-base/alpine`, `ghcr.io/buildkite/cleanroom-base/alpine-docker`, and `ghcr.io/buildkite/cleanroom-base/alpine-agents`.
 
 Build these locally with `mise`:
@@ -334,6 +334,7 @@ Build these locally with `mise`:
 mise run build:images
 # or individually:
 mise run build:image:debian
+mise run build:image:debian-ruby
 mise run build:image:debian-docker
 mise run build:image:debian-agents
 mise run build:image:alpine

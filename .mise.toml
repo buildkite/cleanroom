@@ -45,6 +45,10 @@ run = "docker build -f images/Dockerfile.base-image-agents -t cleanroom-base:alp
 description = "Build local debian base image"
 run = "docker build -f images/Dockerfile.base-image-debian -t cleanroom-base:debian ."
 
+[tasks."build:image:debian-ruby"]
+description = "Build local debian-ruby base image"
+run = "docker build -f images/Dockerfile.base-image-debian-ruby -t cleanroom-base:debian-ruby ."
+
 [tasks."build:image:debian-docker"]
 description = "Build local debian-docker base image"
 run = "docker build -f images/Dockerfile.base-image-debian-docker -t cleanroom-base:debian-docker ."
@@ -57,6 +61,7 @@ run = "docker build -f images/Dockerfile.base-image-debian-agents -t cleanroom-b
 description = "Build all local base images"
 depends = [
   "build:image:debian",
+  "build:image:debian-ruby",
   "build:image:debian-docker",
   "build:image:debian-agents",
   "build:image:alpine",

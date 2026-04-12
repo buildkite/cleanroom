@@ -1,0 +1,28 @@
+FROM ruby:3.4.9-slim-bookworm
+
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends \
+      bash \
+      build-essential \
+      ca-certificates \
+      curl \
+      git \
+      libffi-dev \
+      libgdbm-dev \
+      libncurses-dev \
+      libpq-dev \
+      libreadline-dev \
+      libsqlite3-dev \
+      libssl-dev \
+      libyaml-dev \
+      openssh-client \
+      patch \
+      pkg-config \
+      strace \
+      xz-utils \
+      zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN ruby --version && gem --version && bundle --version
+
+CMD ["/bin/sh"]

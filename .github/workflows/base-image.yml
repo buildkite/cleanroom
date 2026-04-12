@@ -24,6 +24,9 @@ jobs:
           - name: debian
             dockerfile: images/Dockerfile.base-image-debian
             repository: ghcr.io/buildkite/cleanroom-base/debian
+          - name: debian-ruby
+            dockerfile: images/Dockerfile.base-image-debian-ruby
+            repository: ghcr.io/buildkite/cleanroom-base/debian-ruby
           - name: debian-docker
             dockerfile: images/Dockerfile.base-image-debian-docker
             repository: ghcr.io/buildkite/cleanroom-base/debian-docker
@@ -94,6 +97,9 @@ jobs:
           - name: debian
             dockerfile: images/Dockerfile.base-image-debian
             repository: ghcr.io/buildkite/cleanroom-base/debian
+          - name: debian-ruby
+            dockerfile: images/Dockerfile.base-image-debian-ruby
+            repository: ghcr.io/buildkite/cleanroom-base/debian-ruby
           - name: debian-docker
             dockerfile: images/Dockerfile.base-image-debian-docker
             repository: ghcr.io/buildkite/cleanroom-base/debian-docker
