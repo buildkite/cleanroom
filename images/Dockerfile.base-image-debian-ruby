@@ -1,5 +1,7 @@
 FROM ruby:3.4.9-slim-bookworm
 
+ARG MISE_VERSION=v2026.4.5
+
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
       bash \
@@ -23,6 +25,14 @@ RUN apt-get update \
       zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
-RUN ruby --version && gem --version && bundle --version
+RUN curl -fsSL https://mise.run | MISE_VERSION="${MISE_VERSION}" MISE_INSTALL_HELP=0 MISE_INSTALL_PATH=/usr/local/bin/mise sh
+
+# Cleanroom checks out repositories into /workspace, so trust repo-local mise
+# configs there and expose shims on PATH for guest commands.
+RUN mise settings add trusted_config_paths /workspace
+
+ENV PATH="/root/.local/share/mise/shims:${PATH}"
+
+RUN ruby --version && gem --version && bundle --version && mise --version
 
 CMD ["/bin/sh"]

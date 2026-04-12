@@ -322,7 +322,8 @@ cleanroom image pull ghcr.io/buildkite/cleanroom-base/debian@sha256:...
 cleanroom image ls
 cleanroom image rm sha256:...
 cleanroom image import ghcr.io/buildkite/cleanroom-base/debian@sha256:... ./rootfs.tar.gz
-cleanroom image bump-ref    # resolve :latest tag to digest and update cleanroom.yaml
+cleanroom image bump-ref ghcr.io/buildkite/cleanroom-base/debian:latest
+                           # resolve :latest tag to digest and update cleanroom.yaml
 ```
 
 Recommended defaults are the Debian-based images: `ghcr.io/buildkite/cleanroom-base/debian`, `ghcr.io/buildkite/cleanroom-base/debian-ruby`, `ghcr.io/buildkite/cleanroom-base/debian-docker`, and `ghcr.io/buildkite/cleanroom-base/debian-agents`.
