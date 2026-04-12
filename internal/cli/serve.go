@@ -37,6 +37,7 @@ var serveSignalNotifyContext = signal.NotifyContext
 var newSnapshotMetadataStore = snapshotstore.New
 var newCacheMetadataStore = cachestore.New
 var gatewayScopeTokenSourcePolicyForGatewayHost = gateway.ScopeTokenSourcePolicyForGatewayHost
+var newGatewayContentCache = gateway.NewContentCache
 
 func (s *ServeCommand) Run(ctx *runtimeContext) error {
 	return s.runServer(ctx)
@@ -83,14 +84,15 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 	}
 
 	var contentCache *gateway.ContentCache
-	contentCache, err = gateway.NewContentCache(gateway.ContentCacheConfig{
+	contentCache, err = newGatewayContentCache(gateway.ContentCacheConfig{
 		Credentials: gwCredentials,
 		Logger:      logger.With("subsystem", "content-cache"),
 	})
 	if err != nil {
-		return fmt.Errorf("configure content cache: %w", err)
+		logger.Warn("content cache unavailable; continuing without cache-backed gateway routes", "error", err)
+	} else {
+		defer contentCache.Close()
 	}
-	defer contentCache.Close()
 
 	darwinGatewayHost := strings.TrimSpace(os.Getenv("CLEANROOM_DARWIN_GATEWAY_HOST"))
 	gwServer := gateway.NewServer(gatewayServerConfig(

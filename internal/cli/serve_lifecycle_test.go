@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/buildkite/cleanroom/internal/backend"
+	"github.com/buildkite/cleanroom/internal/gateway"
 )
 
 func reserveLocalTCPAddr(t *testing.T) string {
@@ -75,6 +77,54 @@ func TestServeCommandRunServerStartsAndStopsOnContextCancel(t *testing.T) {
 		runCtx, cancel := context.WithCancel(parent)
 		cancelRun = cancel
 		return runCtx, cancel
+	})
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- (&ServeCommand{
+			Listen:        "http://" + listenAddr,
+			GatewayListen: "127.0.0.1:0",
+		}).Run(&runtimeContext{
+			CWD:        t.TempDir(),
+			ConfigPath: "/tmp/cleanroom-config.yaml",
+			Backends:   map[string]backend.Adapter{},
+		})
+	}()
+
+	waitForHTTPHealthz(t, fmt.Sprintf("http://%s/healthz", listenAddr), 5*time.Second)
+	if cancelRun == nil {
+		t.Fatal("expected serveSignalNotifyContext replacement to capture a cancel func")
+	}
+	cancelRun()
+
+	waitCtx, cancel := context.WithTimeoutCause(context.Background(), 5*time.Second, fmt.Errorf("timed out waiting for ServeCommand.Run to exit after cancellation"))
+	defer cancel()
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("ServeCommand.Run returned error: %v", err)
+		}
+	case <-waitCtx.Done():
+		t.Fatal(context.Cause(waitCtx))
+	}
+}
+
+func TestServeCommandRunServerStartsWithoutContentCache(t *testing.T) {
+	listenAddr := reserveLocalTCPAddr(t)
+	var cancelRun context.CancelFunc
+	stubServeNotifyContext(t, func(parent context.Context, _ ...os.Signal) (context.Context, context.CancelFunc) {
+		runCtx, cancel := context.WithCancel(parent)
+		cancelRun = cancel
+		return runCtx, cancel
+	})
+
+	prevNewGatewayContentCache := newGatewayContentCache
+	newGatewayContentCache = func(gateway.ContentCacheConfig) (*gateway.ContentCache, error) {
+		return nil, errors.New("cache dir unavailable")
+	}
+	t.Cleanup(func() {
+		newGatewayContentCache = prevNewGatewayContentCache
 	})
 
 	errCh := make(chan error, 1)
