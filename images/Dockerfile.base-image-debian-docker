@@ -9,6 +9,7 @@ RUN apt-get update \
       curl \
       docker.io \
       git \
+      iproute2 \
       openssh-client \
       strace \
     && rm -rf /var/lib/apt/lists/*
