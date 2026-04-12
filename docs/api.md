@@ -326,6 +326,8 @@ Behavior contract:
      `.mise/config.toml`, execute the workload through
      `mise exec -- ...`, unless `sandbox.mise.enabled: false` or
      `sandbox.mise.install: false`
+   - `cleanroom exec --no-mise` and `cleanroom console --no-mise` set
+     `ExecutionOptions.disable_mise` for that execution
 6. Create execution with explicit kind, env, and TTY options.
 7. Attach stdio according to command mode:
    - `cleanroom exec` defaults to attached stdin plus separate stdout/stderr
@@ -335,6 +337,8 @@ Behavior contract:
    - `cleanroom exec -n` closes stdin immediately so the command observes EOF
    - `cleanroom console` uses `AttachExecution` for PTY-oriented
      interactive sessions
+   - attached execution streams may emit warning events; the CLI renders them
+     as warning notices on stderr
 8. Return the command exit code.
 9. Newly created `exec` and `console` sandboxes are terminated after the command
    unless `--keep` is set. Reused sandboxes (`--in`) remain `READY`.
