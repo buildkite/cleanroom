@@ -97,6 +97,25 @@ func TestDebianPublishedBaseImagesInstallOpenSSHClient(t *testing.T) {
 	}
 }
 
+func TestDebianPublishedBaseImagesInstallIPRoute2(t *testing.T) {
+	t.Parallel()
+
+	for _, relPath := range debianPublishedBaseDockerfiles() {
+		relPath := relPath
+		t.Run(relPath, func(t *testing.T) {
+			t.Parallel()
+
+			raw, err := os.ReadFile(filepath.Join(".", relPath))
+			if err != nil {
+				t.Fatalf("read %s: %v", relPath, err)
+			}
+			if !dockerfileHasTrimmedLine(string(raw), "iproute2 \\") {
+				t.Fatalf("%s does not install iproute2 for darwin-vz guest routing", relPath)
+			}
+		})
+	}
+}
+
 func TestPublishedBaseImagesInstallPinnedMiseRelease(t *testing.T) {
 	t.Parallel()
 
