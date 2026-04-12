@@ -1,7 +1,6 @@
 import Darwin
 import Foundation
 import Virtualization
-import vmnet
 
 private struct CLIOptions {
     let socketPath: String
@@ -435,7 +434,6 @@ private final class ProxyServer {
 
 private final class VMRuntime {
     private struct NetworkDetails {
-        let reference: vmnet_network_ref?
         let subnetCIDR: String
         let gatewayIPv4: String
         let guestIPv4: String
@@ -469,319 +467,6 @@ private final class VMRuntime {
         }
     }
 
-    @available(macOS 26.0, *)
-    private final class VMNetHostTrace {
-        private struct PacketSample: Encodable {
-            let kind: String
-            let timestamp: String
-            let interfaceID: String?
-            let etherType: String?
-            let ipProtocol: Int?
-            let sourceIP: String?
-            let destinationIP: String?
-            let sourcePort: Int?
-            let destinationPort: Int?
-            let length: Int?
-            let note: String?
-        }
-
-        private static let envVar = "CLEANROOM_VMNET_HOST_TRACE"
-        private static let maxSamples = 256
-
-        private let fileHandle: FileHandle
-        private let queue = DispatchQueue(label: "cleanroom.darwin-vz.vmnet-trace")
-        private let lock = NSLock()
-        private var interface: interface_ref?
-        private var packetSize = 2048
-        private var remainingSamples = maxSamples
-        private var stopped = false
-
-        static func start(network: vmnet_network_ref, runDir: String) throws -> VMNetHostTrace? {
-            let raw = ProcessInfo.processInfo.environment[envVar]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            if raw.isEmpty || raw == "0" || raw.lowercased() == "false" || raw.lowercased() == "no" {
-                return nil
-            }
-
-            let tracePath = (runDir as NSString).appendingPathComponent("vmnet-host-trace.jsonl")
-            FileManager.default.createFile(atPath: tracePath, contents: nil)
-            let handle = try FileHandle(forWritingTo: URL(fileURLWithPath: tracePath))
-            let trace = VMNetHostTrace(fileHandle: handle)
-            do {
-                try trace.startInterface(network: network)
-                return trace
-            } catch {
-                _ = trace.writeSample(PacketSample(
-                    kind: "error",
-                    timestamp: VMNetHostTrace.timestampString(),
-                    interfaceID: nil,
-                    etherType: nil,
-                    ipProtocol: nil,
-                    sourceIP: nil,
-                    destinationIP: nil,
-                    sourcePort: nil,
-                    destinationPort: nil,
-                    length: nil,
-                    note: String(describing: error)
-                ))
-                trace.closeFile()
-                throw error
-            }
-        }
-
-        private init(fileHandle: FileHandle) {
-            self.fileHandle = fileHandle
-        }
-
-        func stop() {
-            let interface: interface_ref?
-            lock.lock()
-            if stopped {
-                lock.unlock()
-                return
-            }
-            stopped = true
-            interface = self.interface
-            self.interface = nil
-            lock.unlock()
-
-            if let interface {
-                _ = vmnet_interface_set_event_callback(interface, interface_event_t(rawValue: 0), nil, nil)
-                let sem = DispatchSemaphore(value: 0)
-                _ = vmnet_stop_interface(interface, queue) { _ in
-                    sem.signal()
-                }
-                _ = sem.wait(timeout: .now() + .seconds(5))
-            }
-            closeFile()
-        }
-
-        private func closeFile() {
-            try? fileHandle.close()
-        }
-
-        private func startInterface(network: vmnet_network_ref) throws {
-            let interfaceDesc = xpc_dictionary_create(nil, nil, 0)
-            xpc_dictionary_set_bool(interfaceDesc, vmnet_allocate_mac_address_key, true)
-
-            let sem = DispatchSemaphore(value: 0)
-            var startStatus: vmnet_return_t = .VMNET_FAILURE
-            var interfaceParams: xpc_object_t?
-            guard let interface = vmnet_interface_start_with_network(network, interfaceDesc, queue, { status, params in
-                startStatus = status
-                interfaceParams = params
-                sem.signal()
-            }) else {
-                throw HelperError.vm("start vmnet host trace interface: returned nil interface")
-            }
-            if sem.wait(timeout: .now() + .seconds(5)) == .timedOut {
-                throw HelperError.timeout("timed out waiting for vmnet host trace interface")
-            }
-            guard startStatus == .VMNET_SUCCESS else {
-                throw HelperError.vm("start vmnet host trace interface: \(Self.vmnetStatusDescription(startStatus))")
-            }
-
-            if let interfaceParams {
-                let maxPacketSize = xpc_dictionary_get_uint64(interfaceParams, vmnet_max_packet_size_key)
-                if maxPacketSize > 0 {
-                    packetSize = Int(maxPacketSize) + 64
-                }
-            }
-
-            lock.lock()
-            self.interface = interface
-            lock.unlock()
-
-            let callbackStatus = vmnet_interface_set_event_callback(interface, interface_event_t(rawValue: 1 << 0), queue) { [weak self] _, _ in
-                self?.drainPackets()
-            }
-            guard callbackStatus == .VMNET_SUCCESS else {
-                throw HelperError.vm("set vmnet host trace callback: \(Self.vmnetStatusDescription(callbackStatus))")
-            }
-
-            _ = writeSample(PacketSample(
-                kind: "start",
-                timestamp: VMNetHostTrace.timestampString(),
-                interfaceID: String(UInt(bitPattern: interface), radix: 16),
-                etherType: nil,
-                ipProtocol: nil,
-                sourceIP: nil,
-                destinationIP: nil,
-                sourcePort: nil,
-                destinationPort: nil,
-                length: packetSize,
-                note: "vmnet host trace started"
-            ))
-        }
-
-        private func drainPackets() {
-            while true {
-                let interface: interface_ref?
-                lock.lock()
-                let remaining = remainingSamples
-                interface = self.interface
-                let shouldStop = stopped
-                lock.unlock()
-
-                guard !shouldStop, remaining > 0, let interface else {
-                    return
-                }
-
-                var buffer = [UInt8](repeating: 0, count: packetSize)
-                var iov = iovec()
-                var packetSizeRead = 0
-                let readStatus: vmnet_return_t = buffer.withUnsafeMutableBytes { rawBuffer in
-                    iov.iov_base = rawBuffer.baseAddress
-                    iov.iov_len = rawBuffer.count
-                    return withUnsafeMutablePointer(to: &iov) { iovPointer in
-                        var packet = vmpktdesc(
-                            vm_pkt_size: rawBuffer.count,
-                            vm_pkt_iov: iovPointer,
-                            vm_pkt_iovcnt: 1,
-                            vm_flags: 0
-                        )
-                        var packetCount: Int32 = 1
-                        let status = vmnet_read(interface, &packet, &packetCount)
-                        if status == .VMNET_SUCCESS && packetCount > 0 {
-                            packetSizeRead = Int(packet.vm_pkt_size)
-                        }
-                        return status
-                    }
-                }
-
-                if readStatus != .VMNET_SUCCESS || packetSizeRead == 0 {
-                    return
-                }
-
-                let sample = parsePacket(Array(buffer.prefix(packetSizeRead)))
-                if writeSample(sample) == false {
-                    return
-                }
-            }
-        }
-
-        @discardableResult
-        private func writeSample(_ sample: PacketSample) -> Bool {
-            lock.lock()
-            if sample.kind == "packet" {
-                if remainingSamples <= 0 || stopped {
-                    lock.unlock()
-                    return false
-                }
-                remainingSamples -= 1
-            } else if stopped {
-                lock.unlock()
-                return false
-            }
-            lock.unlock()
-
-            do {
-                var line = try JSONEncoder().encode(sample)
-                line.append(0x0A)
-                try fileHandle.write(contentsOf: line)
-                return true
-            } catch {
-                return false
-            }
-        }
-
-        private func parsePacket(_ bytes: [UInt8]) -> PacketSample {
-            let timestamp = VMNetHostTrace.timestampString()
-            guard bytes.count >= 14 else {
-                return PacketSample(kind: "packet", timestamp: timestamp, interfaceID: nil, etherType: nil, ipProtocol: nil, sourceIP: nil, destinationIP: nil, sourcePort: nil, destinationPort: nil, length: bytes.count, note: "truncated ethernet frame")
-            }
-
-            let etherTypeValue = UInt16(bytes[12]) << 8 | UInt16(bytes[13])
-            let etherType = String(format: "0x%04x", etherTypeValue)
-            switch etherTypeValue {
-            case 0x0800:
-                return parseIPv4Packet(bytes, timestamp: timestamp, etherType: etherType)
-            case 0x86dd:
-                return parseIPv6Packet(bytes, timestamp: timestamp, etherType: etherType)
-            default:
-                return PacketSample(kind: "packet", timestamp: timestamp, interfaceID: nil, etherType: etherType, ipProtocol: nil, sourceIP: nil, destinationIP: nil, sourcePort: nil, destinationPort: nil, length: bytes.count, note: nil)
-            }
-        }
-
-        private func parseIPv4Packet(_ bytes: [UInt8], timestamp: String, etherType: String) -> PacketSample {
-            guard bytes.count >= 34 else {
-                return PacketSample(kind: "packet", timestamp: timestamp, interfaceID: nil, etherType: etherType, ipProtocol: nil, sourceIP: nil, destinationIP: nil, sourcePort: nil, destinationPort: nil, length: bytes.count, note: "truncated ipv4 frame")
-            }
-            let headerLength = Int(bytes[14] & 0x0f) * 4
-            let protocolNumber = Int(bytes[23])
-            let sourceIP = "\(bytes[26]).\(bytes[27]).\(bytes[28]).\(bytes[29])"
-            let destinationIP = "\(bytes[30]).\(bytes[31]).\(bytes[32]).\(bytes[33])"
-            var sourcePort: Int?
-            var destinationPort: Int?
-            let transportOffset = 14 + headerLength
-            if (protocolNumber == 6 || protocolNumber == 17) && bytes.count >= transportOffset + 4 {
-                sourcePort = Int(UInt16(bytes[transportOffset]) << 8 | UInt16(bytes[transportOffset + 1]))
-                destinationPort = Int(UInt16(bytes[transportOffset + 2]) << 8 | UInt16(bytes[transportOffset + 3]))
-            }
-            return PacketSample(kind: "packet", timestamp: timestamp, interfaceID: nil, etherType: etherType, ipProtocol: protocolNumber, sourceIP: sourceIP, destinationIP: destinationIP, sourcePort: sourcePort, destinationPort: destinationPort, length: bytes.count, note: nil)
-        }
-
-        private func parseIPv6Packet(_ bytes: [UInt8], timestamp: String, etherType: String) -> PacketSample {
-            guard bytes.count >= 54 else {
-                return PacketSample(kind: "packet", timestamp: timestamp, interfaceID: nil, etherType: etherType, ipProtocol: nil, sourceIP: nil, destinationIP: nil, sourcePort: nil, destinationPort: nil, length: bytes.count, note: "truncated ipv6 frame")
-            }
-            let protocolNumber = Int(bytes[20])
-            let sourceIP = formatIPv6Address(Array(bytes[22..<38]))
-            let destinationIP = formatIPv6Address(Array(bytes[38..<54]))
-            var sourcePort: Int?
-            var destinationPort: Int?
-            if (protocolNumber == 6 || protocolNumber == 17) && bytes.count >= 58 {
-                sourcePort = Int(UInt16(bytes[54]) << 8 | UInt16(bytes[55]))
-                destinationPort = Int(UInt16(bytes[56]) << 8 | UInt16(bytes[57]))
-            }
-            return PacketSample(kind: "packet", timestamp: timestamp, interfaceID: nil, etherType: etherType, ipProtocol: protocolNumber, sourceIP: sourceIP, destinationIP: destinationIP, sourcePort: sourcePort, destinationPort: destinationPort, length: bytes.count, note: nil)
-        }
-
-        private func formatIPv6Address(_ bytes: [UInt8]) -> String {
-            bytes.enumerated()
-                .reduce(into: [String]()) { parts, pair in
-                    if pair.offset.isMultiple(of: 2) {
-                        let high = UInt16(pair.element) << 8
-                        let low = UInt16(bytes[pair.offset + 1])
-                        parts.append(String(format: "%x", high | low))
-                    }
-                }
-                .joined(separator: ":")
-        }
-
-        private static func timestampString() -> String {
-            ISO8601DateFormatter().string(from: Date())
-        }
-
-        private static func vmnetStatusDescription(_ status: vmnet_return_t) -> String {
-            switch status {
-            case .VMNET_SUCCESS:
-                return "success"
-            case .VMNET_FAILURE:
-                return "general failure"
-            case .VMNET_MEM_FAILURE:
-                return "memory allocation failure"
-            case .VMNET_INVALID_ARGUMENT:
-                return "invalid argument"
-            case .VMNET_SETUP_INCOMPLETE:
-                return "setup incomplete"
-            case .VMNET_INVALID_ACCESS:
-                return "invalid access"
-            case .VMNET_PACKET_TOO_BIG:
-                return "packet too big"
-            case .VMNET_BUFFER_EXHAUSTED:
-                return "buffer exhausted"
-            case .VMNET_TOO_MANY_PACKETS:
-                return "too many packets"
-            case .VMNET_SHARING_SERVICE_BUSY:
-                return "sharing service busy"
-            case .VMNET_NOT_AUTHORIZED:
-                return "not authorized"
-            default:
-                return "status \(status.rawValue)"
-            }
-        }
-    }
-
     private let lock = NSLock()
     private var vm: VZVirtualMachine?
     private var vmID: String?
@@ -790,8 +475,6 @@ private final class VMRuntime {
     private var launchTimeout: TimeInterval = 30
     private var vmQueue: DispatchQueue?
     private var proxy: ProxyServer?
-    private var vmnetNetwork: vmnet_network_ref?
-    private var vmnetHostTrace: VMNetHostTrace?
     private var fileHandleNetworkAttachment: FileHandleNetworkAttachment?
 
     func start(from req: ControlRequest) throws -> ControlResponse {
@@ -834,7 +517,7 @@ private final class VMRuntime {
         let vmID = UUID().uuidString
         let startedAt = Date()
 
-        let (vm, serialChannel, vmnetNetwork, networkDetails, fileHandleNetworkAttachment) = try buildVM(
+        let (vm, serialChannel, networkDetails, fileHandleNetworkAttachment) = try buildVM(
             runDir: runDir,
             kernelPath: kernelPath,
             rootFSPath: rootFSPath,
@@ -852,19 +535,9 @@ private final class VMRuntime {
             consoleLogPath: consoleLogPath,
             queue: vmQueue
         )
-        var releaseVMNetOnFailure = vmnetNetwork
         var releaseFileHandleAttachmentOnFailure = fileHandleNetworkAttachment
-        var hostTrace: VMNetHostTrace?
         defer {
-            hostTrace?.stop()
             releaseFileHandleAttachmentOnFailure?.stop()
-            if let releaseVMNetOnFailure {
-                releaseVMNetObject(releaseVMNetOnFailure)
-            }
-        }
-
-        if #available(macOS 26.0, *), let vmnetNetwork {
-            hostTrace = try? VMNetHostTrace.start(network: vmnetNetwork, runDir: runDir)
         }
 
         try startVM(vm, queue: vmQueue, timeoutSeconds: launchSeconds)
@@ -877,12 +550,8 @@ private final class VMRuntime {
         self.vm = vm
         self.vmID = vmID
         self.proxy = proxy
-        self.vmnetNetwork = vmnetNetwork
-        self.vmnetHostTrace = hostTrace
         self.fileHandleNetworkAttachment = fileHandleNetworkAttachment
-        releaseVMNetOnFailure = nil
         releaseFileHandleAttachmentOnFailure = nil
-        hostTrace = nil
         proxy.start { [weak self] in
             guard let self else {
                 throw HelperError.vm("vm runtime no longer available")
@@ -915,8 +584,6 @@ private final class VMRuntime {
         let serialChannel = self.serialChannel
         let vmQueue = self.vmQueue
         let proxy = self.proxy
-        let vmnetNetwork = self.vmnetNetwork
-        let vmnetHostTrace = self.vmnetHostTrace
         let fileHandleNetworkAttachment = self.fileHandleNetworkAttachment
         self.vmID = nil
         self.vm = nil
@@ -925,20 +592,12 @@ private final class VMRuntime {
         self.launchTimeout = 30
         self.vmQueue = nil
         self.proxy = nil
-        self.vmnetNetwork = nil
-        self.vmnetHostTrace = nil
         self.fileHandleNetworkAttachment = nil
         lock.unlock()
 
         proxy?.stop()
         serialChannel?.close()
-        vmnetHostTrace?.stop()
         fileHandleNetworkAttachment?.stop()
-        defer {
-            if let vmnetNetwork {
-                releaseVMNetObject(vmnetNetwork)
-            }
-        }
         guard let vm else {
             return
         }
@@ -1033,95 +692,6 @@ private final class VMRuntime {
         }
     }
 
-    @available(macOS 26.0, *)
-    private func createVMNetSharedNetwork(
-        subnetCIDR: String?,
-        externalInterface: String?,
-        disableNAT44: Bool,
-        disableNAT66: Bool,
-        disableDNSProxy: Bool,
-        disableRouterAdvertisement: Bool
-    ) throws -> NetworkDetails {
-        var status: vmnet_return_t = .VMNET_SUCCESS
-        guard let configuration = vmnet_network_configuration_create(.VMNET_SHARED_MODE, &status) else {
-            throw HelperError.vm("create vmnet network configuration: \(vmnetStatusDescription(status))")
-        }
-        defer { releaseVMNetObject(configuration) }
-
-        vmnet_network_configuration_disable_dhcp(configuration)
-        if disableNAT44 {
-            vmnet_network_configuration_disable_nat44(configuration)
-        }
-        if disableNAT66 {
-            vmnet_network_configuration_disable_nat66(configuration)
-        }
-        if disableDNSProxy {
-            vmnet_network_configuration_disable_dns_proxy(configuration)
-        }
-        if disableRouterAdvertisement {
-            vmnet_network_configuration_disable_router_advertisement(configuration)
-        }
-        if let externalInterface, !externalInterface.isEmpty {
-            let interfaceStatus = externalInterface.withCString { interfaceName in
-                vmnet_network_configuration_set_external_interface(configuration, interfaceName)
-            }
-            guard interfaceStatus == .VMNET_SUCCESS else {
-                throw HelperError.vm("configure vmnet external interface \(externalInterface): \(vmnetStatusDescription(interfaceStatus))")
-            }
-        }
-
-        if let subnetCIDR, !subnetCIDR.isEmpty {
-            let components = subnetCIDR.split(separator: "/", omittingEmptySubsequences: false)
-            guard components.count == 2, let prefixLength = Int(components[1]), (0...32).contains(prefixLength) else {
-                throw HelperError.invalidRequest("vmnet_subnet_cidr must be a valid IPv4 CIDR")
-            }
-            let subnetAddress = try parseIPv4Address(String(components[0]))
-            let subnetValue = UInt32(bigEndian: subnetAddress.s_addr) & ipv4MaskValue(prefixLength: prefixLength)
-            let gatewayValue = subnetValue + 1
-            var gatewayAddress = in_addr(s_addr: gatewayValue.bigEndian)
-            var subnetMask = ipv4Mask(prefixLength: prefixLength)
-            let subnetStatus = vmnet_network_configuration_set_ipv4_subnet(configuration, &gatewayAddress, &subnetMask)
-            guard subnetStatus == .VMNET_SUCCESS else {
-                throw HelperError.vm("configure vmnet subnet \(subnetCIDR): \(vmnetStatusDescription(subnetStatus))")
-            }
-        }
-
-        guard let network = vmnet_network_create(configuration, &status) else {
-            throw HelperError.vm("create vmnet shared network: \(vmnetStatusDescription(status))")
-        }
-
-        do {
-            var subnetAddress = in_addr()
-            var subnetMask = in_addr()
-            vmnet_network_get_ipv4_subnet(network, &subnetAddress, &subnetMask)
-
-            let maskValue = UInt32(bigEndian: subnetMask.s_addr)
-            let networkValue = UInt32(bigEndian: subnetAddress.s_addr) & maskValue
-            let upperValue = networkValue + ~maskValue
-            let guestValue = networkValue + 2
-            guard guestValue < upperValue else {
-                throw HelperError.vm("vmnet shared subnet does not provide a guest address")
-            }
-
-            let prefixLength = maskValue.nonzeroBitCount
-            let subnetCIDR = "\(try formatIPv4Address(networkValue))/\(prefixLength)"
-            return NetworkDetails(
-                reference: network,
-                subnetCIDR: subnetCIDR,
-                gatewayIPv4: try formatIPv4Address(networkValue + 1),
-                guestIPv4: try formatIPv4Address(guestValue),
-                prefixLength: prefixLength
-            )
-        } catch {
-            releaseVMNetObject(network)
-            throw error
-        }
-    }
-
-    private func releaseVMNetObject(_ value: OpaquePointer) {
-        Unmanaged<AnyObject>.fromOpaque(UnsafeRawPointer(value)).release()
-    }
-
     private func parseIPv4Address(_ value: String) throws -> in_addr {
         var address = in_addr()
         let result = value.withCString { cs in
@@ -1180,7 +750,6 @@ private final class VMRuntime {
         }
 
         return NetworkDetails(
-            reference: nil,
             subnetCIDR: "\(try formatIPv4Address(networkValue))/\(prefixLength)",
             gatewayIPv4: try formatIPv4Address(gatewayValue),
             guestIPv4: try formatIPv4Address(guestValue),
@@ -1302,35 +871,6 @@ private final class VMRuntime {
         return (addr, addrLen)
     }
 
-    private func vmnetStatusDescription(_ status: vmnet_return_t) -> String {
-        switch status {
-        case .VMNET_SUCCESS:
-            return "success"
-        case .VMNET_FAILURE:
-            return "general failure"
-        case .VMNET_MEM_FAILURE:
-            return "memory allocation failure"
-        case .VMNET_INVALID_ARGUMENT:
-            return "invalid argument"
-        case .VMNET_SETUP_INCOMPLETE:
-            return "setup incomplete"
-        case .VMNET_INVALID_ACCESS:
-            return "invalid access (helper may be missing com.apple.developer.networking.vmnet entitlement)"
-        case .VMNET_PACKET_TOO_BIG:
-            return "packet too big"
-        case .VMNET_BUFFER_EXHAUSTED:
-            return "buffer exhausted"
-        case .VMNET_TOO_MANY_PACKETS:
-            return "too many packets"
-        case .VMNET_SHARING_SERVICE_BUSY:
-            return "sharing service busy"
-        case .VMNET_NOT_AUTHORIZED:
-            return "not authorized (helper may be missing com.apple.developer.networking.vmnet entitlement)"
-        default:
-            return "status \(status.rawValue)"
-        }
-    }
-
     private func buildVM(
         runDir: String,
         kernelPath: String,
@@ -1348,14 +888,13 @@ private final class VMRuntime {
         fileHandleSocketPath: String?,
         consoleLogPath: String,
         queue: DispatchQueue
-    ) throws -> (VZVirtualMachine, GuestChannel, vmnet_network_ref?, NetworkDetails?, FileHandleNetworkAttachment?) {
+    ) throws -> (VZVirtualMachine, GuestChannel, NetworkDetails?, FileHandleNetworkAttachment?) {
         let kernelURL = URL(fileURLWithPath: kernelPath)
         let rootFSURL = URL(fileURLWithPath: rootFSPath)
         let consoleURL = URL(fileURLWithPath: consoleLogPath)
 
         let networkDevice = VZVirtioNetworkDeviceConfiguration()
         let resolvedNetworkMode = (networkMode?.isEmpty == false ? networkMode! : "filehandle")
-        let vmnetNetwork: vmnet_network_ref?
         let networkDetails: NetworkDetails?
         let fileHandleNetworkAttachment: FileHandleNetworkAttachment?
         var resolvedBootArgs = bootArgs
@@ -1382,7 +921,6 @@ private final class VMRuntime {
             resolvedBootArgs += " cleanroom_vmnet_gateway_ipv4=\(details.gatewayIPv4)"
             resolvedBootArgs += " cleanroom_vmnet_prefix_len=\(details.prefixLength)"
             resolvedBootArgs += " cleanroom_vmnet_subnet_cidr=\(details.subnetCIDR)"
-            vmnetNetwork = nil
             networkDetails = details
             fileHandleNetworkAttachment = attachment
         default:
@@ -1424,9 +962,6 @@ private final class VMRuntime {
             try config.validate()
         } catch {
             fileHandleNetworkAttachment?.stop()
-            if let vmnetNetwork {
-                releaseVMNetObject(vmnetNetwork)
-            }
             throw error
         }
         let channel = GuestChannel(
@@ -1438,7 +973,7 @@ private final class VMRuntime {
                 hostToGuest.fileHandleForWriting.closeFile()
             }
         )
-        return (VZVirtualMachine(configuration: config, queue: queue), channel, vmnetNetwork, networkDetails, fileHandleNetworkAttachment)
+        return (VZVirtualMachine(configuration: config, queue: queue), channel, networkDetails, fileHandleNetworkAttachment)
     }
 
     private func startVM(_ vm: VZVirtualMachine, queue: DispatchQueue, timeoutSeconds: Int64) throws {

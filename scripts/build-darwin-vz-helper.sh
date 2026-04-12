@@ -32,7 +32,6 @@ build_output_path="${tmpdir}/cleanroom-darwin-vz"
 swiftc_args=(
   -O
   -framework Virtualization
-  -framework vmnet
 )
 if [[ -n "${SWIFT_TARGET}" ]]; then
   swiftc_args+=(-target "${SWIFT_TARGET}")
