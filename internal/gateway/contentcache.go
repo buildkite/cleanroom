@@ -9,13 +9,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/buildkite/content-cache/backend"
+	"github.com/buildkite/content-cache/download"
+	ccgit "github.com/buildkite/content-cache/protocol/git"
+	ccoci "github.com/buildkite/content-cache/protocol/oci"
+	"github.com/buildkite/content-cache/store"
+	"github.com/buildkite/content-cache/store/metadb"
 	"github.com/charmbracelet/log"
-	"github.com/wolfeidau/content-cache/backend"
-	"github.com/wolfeidau/content-cache/download"
-	ccgit "github.com/wolfeidau/content-cache/protocol/git"
-	ccoci "github.com/wolfeidau/content-cache/protocol/oci"
-	"github.com/wolfeidau/content-cache/store"
-	"github.com/wolfeidau/content-cache/store/metadb"
 
 	"github.com/buildkite/cleanroom/internal/paths"
 )
