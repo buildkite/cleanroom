@@ -193,7 +193,6 @@ func configureGatewayBackends(backends map[string]backend.Adapter, gwRegistry *g
 	if darwinAdapter, ok := backends["darwin-vz"].(*darwinvz.Adapter); ok {
 		darwinAdapter.GatewayRegistry = gwRegistry
 		darwinAdapter.GatewayPort = gwPort
-		darwinAdapter.GatewayHost = strings.TrimSpace(darwinGatewayHost)
 		darwinAdapter.GatewayBridgeURL = gatewayBridgeURL(gwPort, gwListenAddr)
 	}
 }

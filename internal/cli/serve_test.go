@@ -74,9 +74,6 @@ func TestConfigureGatewayBackendsConfiguresDarwinVZGateway(t *testing.T) {
 	if got, want := darwinAdapter.GatewayPort, 8170; got != want {
 		t.Fatalf("unexpected darwin-vz gateway port: got %d want %d", got, want)
 	}
-	if got, want := darwinAdapter.GatewayHost, "192.168.64.1"; got != want {
-		t.Fatalf("unexpected darwin-vz gateway host: got %q want %q", got, want)
-	}
 	if got, want := darwinAdapter.GatewayBridgeURL, "http://127.0.0.1:8170"; got != want {
 		t.Fatalf("unexpected darwin-vz gateway bridge url: got %q want %q", got, want)
 	}
