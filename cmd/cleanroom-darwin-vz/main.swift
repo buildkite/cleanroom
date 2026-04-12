@@ -782,6 +782,30 @@ private final class VMRuntime {
         }
     }
 
+    private final class VMNetHostTraceHandle {
+        private let stopImpl: () -> Void
+
+        private init(stopImpl: @escaping () -> Void) {
+            self.stopImpl = stopImpl
+        }
+
+        static func start(network: vmnet_network_ref, runDir: String) throws -> VMNetHostTraceHandle? {
+            if #available(macOS 26.0, *) {
+                guard let trace = try VMNetHostTrace.start(network: network, runDir: runDir) else {
+                    return nil
+                }
+                return VMNetHostTraceHandle(stopImpl: {
+                    trace.stop()
+                })
+            }
+            return nil
+        }
+
+        func stop() {
+            stopImpl()
+        }
+    }
+
     private let lock = NSLock()
     private var vm: VZVirtualMachine?
     private var vmID: String?
@@ -791,7 +815,7 @@ private final class VMRuntime {
     private var vmQueue: DispatchQueue?
     private var proxy: ProxyServer?
     private var vmnetNetwork: vmnet_network_ref?
-    private var vmnetHostTrace: VMNetHostTrace?
+    private var vmnetHostTrace: VMNetHostTraceHandle?
     private var fileHandleNetworkAttachment: FileHandleNetworkAttachment?
 
     func start(from req: ControlRequest) throws -> ControlResponse {
@@ -854,7 +878,7 @@ private final class VMRuntime {
         )
         var releaseVMNetOnFailure = vmnetNetwork
         var releaseFileHandleAttachmentOnFailure = fileHandleNetworkAttachment
-        var hostTrace: VMNetHostTrace?
+        var hostTrace: VMNetHostTraceHandle?
         defer {
             hostTrace?.stop()
             releaseFileHandleAttachmentOnFailure?.stop()
@@ -863,8 +887,8 @@ private final class VMRuntime {
             }
         }
 
-        if #available(macOS 26.0, *), let vmnetNetwork {
-            hostTrace = try? VMNetHostTrace.start(network: vmnetNetwork, runDir: runDir)
+        if let vmnetNetwork {
+            hostTrace = try? VMNetHostTraceHandle.start(network: vmnetNetwork, runDir: runDir)
         }
 
         try startVM(vm, queue: vmQueue, timeoutSeconds: launchSeconds)
