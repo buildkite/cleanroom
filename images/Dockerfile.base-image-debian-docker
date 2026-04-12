@@ -1,0 +1,26 @@
+FROM debian:bookworm-slim
+
+ARG MISE_VERSION=v2026.4.5
+
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends \
+      bash \
+      ca-certificates \
+      curl \
+      docker.io \
+      git \
+      openssh-client \
+      strace \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL https://mise.run | MISE_VERSION="${MISE_VERSION}" MISE_INSTALL_HELP=0 MISE_INSTALL_PATH=/usr/local/bin/mise sh
+
+# Cleanroom checks out repositories into /workspace, so trust repo-local mise
+# configs there and expose shims on PATH for guest commands.
+RUN mise settings add trusted_config_paths /workspace
+
+ENV PATH="/root/.local/share/mise/shims:${PATH}"
+
+RUN docker --version && mise --version
+
+CMD ["/bin/sh"]

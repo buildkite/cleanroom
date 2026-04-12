@@ -44,7 +44,7 @@ basic-example-ok
 Optional second check:
 
 ```bash
-mise exec -- cleanroom exec --backend darwin-vz -- sh -lc 'cat /etc/alpine-release || cat /etc/os-release'
+mise exec -- cleanroom exec --backend darwin-vz -- sh -lc 'cat /etc/os-release'
 ```
 
 When finished:

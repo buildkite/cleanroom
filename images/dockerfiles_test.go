@@ -17,10 +17,33 @@ func publishedBaseDockerfiles() []string {
 	}
 }
 
+func debianPublishedBaseDockerfiles() []string {
+	return []string{
+		"Dockerfile.base-image-debian",
+		"Dockerfile.base-image-debian-docker",
+		"Dockerfile.base-image-debian-agents",
+		"Dockerfile.base-image-debian-ruby",
+	}
+}
+
+func allPublishedBaseDockerfiles() []string {
+	paths := publishedBaseDockerfiles()
+	return append(paths, debianPublishedBaseDockerfiles()...)
+}
+
+func dockerfileHasTrimmedLine(dockerfile, want string) bool {
+	for _, line := range strings.Split(dockerfile, "\n") {
+		if strings.TrimSpace(line) == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestPublishedBaseImagesInstallBash(t *testing.T) {
 	t.Parallel()
 
-	for _, relPath := range publishedBaseDockerfiles() {
+	for _, relPath := range allPublishedBaseDockerfiles() {
 		relPath := relPath
 		t.Run(relPath, func(t *testing.T) {
 			t.Parallel()
@@ -29,7 +52,7 @@ func TestPublishedBaseImagesInstallBash(t *testing.T) {
 			if err != nil {
 				t.Fatalf("read %s: %v", relPath, err)
 			}
-			if !strings.Contains(string(raw), "\n  bash \\\n") {
+			if !dockerfileHasTrimmedLine(string(raw), "bash \\") {
 				t.Fatalf("%s does not install bash", relPath)
 			}
 		})
@@ -48,8 +71,27 @@ func TestPublishedBaseImagesInstallOpenSSHClientDefault(t *testing.T) {
 			if err != nil {
 				t.Fatalf("read %s: %v", relPath, err)
 			}
-			if !strings.Contains(string(raw), "\n  openssh-client-default \\\n") {
+			if !dockerfileHasTrimmedLine(string(raw), "openssh-client-default \\") {
 				t.Fatalf("%s does not install openssh-client-default", relPath)
+			}
+		})
+	}
+}
+
+func TestDebianPublishedBaseImagesInstallOpenSSHClient(t *testing.T) {
+	t.Parallel()
+
+	for _, relPath := range debianPublishedBaseDockerfiles() {
+		relPath := relPath
+		t.Run(relPath, func(t *testing.T) {
+			t.Parallel()
+
+			raw, err := os.ReadFile(filepath.Join(".", relPath))
+			if err != nil {
+				t.Fatalf("read %s: %v", relPath, err)
+			}
+			if !dockerfileHasTrimmedLine(string(raw), "openssh-client \\") {
+				t.Fatalf("%s does not install openssh-client", relPath)
 			}
 		})
 	}
@@ -58,7 +100,7 @@ func TestPublishedBaseImagesInstallOpenSSHClientDefault(t *testing.T) {
 func TestPublishedBaseImagesInstallPinnedMiseRelease(t *testing.T) {
 	t.Parallel()
 
-	for _, relPath := range publishedBaseDockerfiles() {
+	for _, relPath := range allPublishedBaseDockerfiles() {
 		relPath := relPath
 		t.Run(relPath, func(t *testing.T) {
 			t.Parallel()
@@ -72,7 +114,7 @@ func TestPublishedBaseImagesInstallPinnedMiseRelease(t *testing.T) {
 			if !strings.Contains(dockerfile, "ARG MISE_VERSION="+expectedMiseVersion) {
 				t.Fatalf("%s does not pin mise to %s", relPath, expectedMiseVersion)
 			}
-			if !strings.Contains(dockerfile, "\n  curl") {
+			if !dockerfileHasTrimmedLine(dockerfile, "curl \\") {
 				t.Fatalf("%s does not install curl for pinned mise bootstrap", relPath)
 			}
 			if !strings.Contains(dockerfile, "curl -fsSL https://mise.run |") {
@@ -92,7 +134,7 @@ func TestPublishedBaseImagesInstallPinnedMiseRelease(t *testing.T) {
 func TestPublishedBaseImagesExposeMiseShimsOnPATH(t *testing.T) {
 	t.Parallel()
 
-	for _, relPath := range publishedBaseDockerfiles() {
+	for _, relPath := range allPublishedBaseDockerfiles() {
 		relPath := relPath
 		t.Run(relPath, func(t *testing.T) {
 			t.Parallel()
@@ -111,7 +153,7 @@ func TestPublishedBaseImagesExposeMiseShimsOnPATH(t *testing.T) {
 func TestPublishedBaseImagesTrustWorkspaceMiseConfig(t *testing.T) {
 	t.Parallel()
 
-	for _, relPath := range publishedBaseDockerfiles() {
+	for _, relPath := range allPublishedBaseDockerfiles() {
 		relPath := relPath
 		t.Run(relPath, func(t *testing.T) {
 			t.Parallel()

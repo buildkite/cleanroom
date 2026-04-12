@@ -116,8 +116,8 @@ cleanroom exec --in "$SANDBOX_ID" -- npm run lint
 Override the sandbox image per command (remote tag/digest or local Docker image name):
 
 ```bash
-cleanroom sandbox create --image ghcr.io/buildkite/cleanroom-base/alpine:latest
-cleanroom exec --image ghcr.io/buildkite/cleanroom-base/alpine:latest -- npm test
+cleanroom sandbox create --image ghcr.io/buildkite/cleanroom-base/debian:latest
+cleanroom exec --image ghcr.io/buildkite/cleanroom-base/debian:latest -- npm test
 cleanroom console --image my-local-image:dev -- sh
 cleanroom exec -e OPENAI_API_KEY -e CODEX_HOME=/workspace/.codex -- codex app-server
 ```
@@ -170,7 +170,7 @@ A `cleanroom.yaml` in your repo defines the sandbox policy. Cleanroom also check
 version: 1
 sandbox:
   image:
-    ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    ref: ghcr.io/buildkite/cleanroom-base/debian@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
   network:
     default: deny
     allow:
@@ -290,7 +290,7 @@ func example() error {
   sb, err := c.EnsureSandbox(context.Background(), "thread:abc123", client.EnsureSandboxOptions{
     Backend: "firecracker",
     Policy: client.PolicyFromAllowlist(
-      "ghcr.io/buildkite/cleanroom-base/alpine@sha256:...",
+      "ghcr.io/buildkite/cleanroom-base/debian@sha256:...",
       "sha256:...",
       client.Allow("api.github.com", 443),
       client.Allow("registry.npmjs.org", 443),
@@ -319,20 +319,26 @@ func example() error {
 Cleanroom uses digest-pinned OCI images as sandbox bases. Images are pulled from any OCI registry and materialized into ext4 rootfs files for the VM backend.
 
 ```bash
-cleanroom image pull ghcr.io/buildkite/cleanroom-base/alpine@sha256:...
+cleanroom image pull ghcr.io/buildkite/cleanroom-base/debian@sha256:...
 cleanroom image ls
 cleanroom image rm sha256:...
-cleanroom image import ghcr.io/buildkite/cleanroom-base/alpine@sha256:... ./rootfs.tar.gz
-cleanroom image bump-ref    # resolve :latest tag to digest and update cleanroom.yaml
+cleanroom image import ghcr.io/buildkite/cleanroom-base/debian@sha256:... ./rootfs.tar.gz
+cleanroom image bump-ref ghcr.io/buildkite/cleanroom-base/debian:latest
+                           # resolve :latest tag to digest and update cleanroom.yaml
 ```
 
-`ghcr.io/buildkite/cleanroom-base/alpine`, `ghcr.io/buildkite/cleanroom-base/alpine-docker`, and `ghcr.io/buildkite/cleanroom-base/alpine-agents` are published from this repo on pushes to `main`.
+Recommended defaults are the Debian-based images: `ghcr.io/buildkite/cleanroom-base/debian`, `ghcr.io/buildkite/cleanroom-base/debian-ruby`, `ghcr.io/buildkite/cleanroom-base/debian-docker`, and `ghcr.io/buildkite/cleanroom-base/debian-agents`.
+The Alpine variants remain available as smaller musl-based alternatives: `ghcr.io/buildkite/cleanroom-base/alpine`, `ghcr.io/buildkite/cleanroom-base/alpine-docker`, and `ghcr.io/buildkite/cleanroom-base/alpine-agents`.
 
 Build these locally with `mise`:
 
 ```bash
 mise run build:images
 # or individually:
+mise run build:image:debian
+mise run build:image:debian-ruby
+mise run build:image:debian-docker
+mise run build:image:debian-agents
 mise run build:image:alpine
 mise run build:image:alpine-docker
 mise run build:image:alpine-agents
