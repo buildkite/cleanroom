@@ -240,7 +240,7 @@ func (s *Service) CreateSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 					replacedWorkspaceStageRecord = &recordCopy
 					s.logWorkspaceStageRestoreWarning(record, restoreErr)
 				} else {
-					s.logWorkspaceStageCacheMiss(backendName, workspaceStageCacheKey(workspaceStageRuntimeBaseKey, repository))
+					s.logWorkspaceStageCacheMiss(backendName, workspaceStageCacheKey(backendName, workspaceStageRuntimeBaseKey, compiled.Hash, repository))
 				}
 			}
 		}
