@@ -225,6 +225,39 @@ func TestCachedRegistryHandlerBlobsRewritePath(t *testing.T) {
 	}
 }
 
+func TestCachedRegistryHandlerRegistryProbeRewritesToVersionCheck(t *testing.T) {
+	t.Parallel()
+
+	var capturedPath string
+	backend := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedPath = r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	})
+	provider := &stubRegistryPrefixHandlerProvider{
+		handler:      backend,
+		policyHost:   "docker.io",
+		policyPort:   443,
+		upstreamHost: "registry-1.docker.io",
+		upstreamPort: 443,
+	}
+	h := newCachedRegistryHandler(provider, nil)
+
+	req := httptest.NewRequest("GET", "/registry/docker.io/v2/", nil)
+	req = withScope(req, registryTestScope("docker.io"))
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body: %s)", w.Code, w.Body.String())
+	}
+	if want := "/v2/"; capturedPath != want {
+		t.Fatalf("expected backend path %q, got %q", want, capturedPath)
+	}
+	if provider.prefix != "docker.io" {
+		t.Fatalf("expected registry prefix docker.io, got %q", provider.prefix)
+	}
+}
+
 func TestCachedRegistryHandlerHeadAllowed(t *testing.T) {
 	t.Parallel()
 

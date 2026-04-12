@@ -81,7 +81,11 @@ func (h *cachedRegistryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 	}
 
 	r = r.Clone(withOCIUpstreamPolicy(r.Context(), policyHost, policyPort, upstreamHost, upstreamPort))
-	r.URL.Path = "/v2/" + normalizedPrefix + "/" + rest
+	rewrittenPath := "/v2/" + normalizedPrefix + "/" + rest
+	if rest == "v2" || rest == "v2/" {
+		rewrittenPath = "/v2/"
+	}
+	r.URL.Path = rewrittenPath
 	r.URL.RawPath = ""
 	cacheHandler.ServeHTTP(w, r)
 }
