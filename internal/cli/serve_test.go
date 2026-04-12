@@ -14,6 +14,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/backend/darwinvz"
 	"github.com/buildkite/cleanroom/internal/backend/firecracker"
+	"github.com/buildkite/cleanroom/internal/cachestore"
 	"github.com/buildkite/cleanroom/internal/gateway"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 	"github.com/buildkite/cleanroom/internal/snapshotstore"
@@ -169,6 +170,35 @@ func TestNewControlServiceReturnsSnapshotStoreError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "configure snapshot metadata store") {
 		t.Fatalf("expected snapshot metadata store context in error, got: %v", err)
+	}
+}
+
+func TestNewControlServiceIgnoresCacheStoreError(t *testing.T) {
+	prevSnapshotStoreFactory := newSnapshotMetadataStore
+	prevCacheStoreFactory := newCacheMetadataStore
+	t.Cleanup(func() {
+		newSnapshotMetadataStore = prevSnapshotStoreFactory
+		newCacheMetadataStore = prevCacheStoreFactory
+	})
+	newSnapshotMetadataStore = func(snapshotstore.Options) (*snapshotstore.Store, error) {
+		return &snapshotstore.Store{}, nil
+	}
+	newCacheMetadataStore = func(cachestore.Options) (*cachestore.Store, error) {
+		return nil, errors.New("cache metadata unavailable")
+	}
+
+	service, err := newControlService(&runtimeContext{}, log.New(io.Discard), nil)
+	if err != nil {
+		t.Fatalf("newControlService returned error: %v", err)
+	}
+	if service == nil {
+		t.Fatal("expected non-nil service when cache metadata store setup fails")
+	}
+	if service.CacheStore != nil {
+		t.Fatal("expected cache store to remain nil when cache metadata setup fails")
+	}
+	if service.SnapshotStore == nil {
+		t.Fatal("expected snapshot store to remain configured when cache metadata setup fails")
 	}
 }
 

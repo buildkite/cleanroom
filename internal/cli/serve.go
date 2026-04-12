@@ -15,6 +15,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/backend/darwinvz"
 	"github.com/buildkite/cleanroom/internal/backend/firecracker"
+	"github.com/buildkite/cleanroom/internal/cachestore"
 	"github.com/buildkite/cleanroom/internal/controlserver"
 	"github.com/buildkite/cleanroom/internal/controlservice"
 	"github.com/buildkite/cleanroom/internal/endpoint"
@@ -34,6 +35,8 @@ type ServeCommand struct {
 
 var serveSignalNotifyContext = signal.NotifyContext
 var newSnapshotMetadataStore = snapshotstore.New
+var newCacheMetadataStore = cachestore.New
+var gatewayScopeTokenSourcePolicyForGatewayHost = gateway.ScopeTokenSourcePolicyForGatewayHost
 
 func (s *ServeCommand) Run(ctx *runtimeContext) error {
 	return s.runServer(ctx)
@@ -195,22 +198,38 @@ func newControlService(ctx *runtimeContext, logger *log.Logger, mirrors gateway.
 	if err != nil {
 		return nil, fmt.Errorf("configure snapshot metadata store: %w", err)
 	}
+	var cacheMetadataStore *cachestore.Store
+	cacheMetadataStore, err = newCacheMetadataStore(cachestore.Options{})
+	if err != nil {
+		if logger != nil {
+			logger.Warn("cache metadata store unavailable; stage caches disabled", "error", err)
+		}
+		cacheMetadataStore = nil
+	}
 
 	if ctx == nil {
-		return &controlservice.Service{
+		service := &controlservice.Service{
 			Logger:            logger,
 			RepositoryMirrors: mirrors,
 			SnapshotStore:     snapshotMetadataStore,
-		}, nil
+		}
+		if cacheMetadataStore != nil {
+			service.CacheStore = cacheMetadataStore
+		}
+		return service, nil
 	}
-	return &controlservice.Service{
+	service := &controlservice.Service{
 		Loader:            ctx.Loader,
 		Config:            ctx.Config,
 		Backends:          ctx.Backends,
 		Logger:            logger,
 		RepositoryMirrors: mirrors,
 		SnapshotStore:     snapshotMetadataStore,
-	}, nil
+	}
+	if cacheMetadataStore != nil {
+		service.CacheStore = cacheMetadataStore
+	}
+	return service, nil
 }
 
 func shouldInstallGatewayFirewall(goos string) bool {

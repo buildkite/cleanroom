@@ -142,6 +142,37 @@ func TestBuildBootstrapCommandIncludesSubmoduleUpdateWhenRequested(t *testing.T)
 	}
 }
 
+func TestBootstrapRecipeDigestTracksCheckoutBehavior(t *testing.T) {
+	base := &Checkout{
+		RemoteURL:      "https://github.com/buildkite/cleanroom.git",
+		CommitSHA:      "0123456789abcdef0123456789abcdef01234567",
+		DestinationDir: "/workspace",
+	}
+	if got := BootstrapRecipeDigest(base); got == "" {
+		t.Fatal("expected non-empty bootstrap recipe digest")
+	}
+
+	withBranch := &Checkout{
+		RemoteURL:      base.RemoteURL,
+		CommitSHA:      base.CommitSHA,
+		DestinationDir: base.DestinationDir,
+		Branch:         "feature/cache-stage",
+	}
+	if BootstrapRecipeDigest(withBranch) == BootstrapRecipeDigest(base) {
+		t.Fatal("expected bootstrap recipe digest to change when checkout mode changes")
+	}
+
+	withSubmodules := &Checkout{
+		RemoteURL:      base.RemoteURL,
+		CommitSHA:      base.CommitSHA,
+		DestinationDir: base.DestinationDir,
+		Submodules:     true,
+	}
+	if BootstrapRecipeDigest(withSubmodules) == BootstrapRecipeDigest(base) {
+		t.Fatal("expected bootstrap recipe digest to change when submodule bootstrap changes")
+	}
+}
+
 func TestValidateBootstrapRejectsMutableCommitRef(t *testing.T) {
 	checkout := &Checkout{
 		RemoteURL:      "https://github.com/buildkite/cleanroom.git",
