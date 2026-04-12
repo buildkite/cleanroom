@@ -453,7 +453,7 @@ func FromProto(pb *cleanroomv1.Policy) (*CompiledPolicy, error) {
 		},
 		NetworkDefault: networkDefault,
 		Allow:          allow,
-		MiseInstall:    protoBoolOrDefault(pb.MiseInstall, true),
+		MiseInstall:    protoBoolOrDefault(pb.MiseInstall, false),
 	}
 
 	hash, err := hashPolicy(compiled)
@@ -479,7 +479,7 @@ func normalizeMiseInstall(raw rawMiseConfig) bool {
 	if raw.Install != nil {
 		return *raw.Install
 	}
-	return true
+	return false
 }
 
 func protoBoolOrDefault(v *bool, fallback bool) bool {
