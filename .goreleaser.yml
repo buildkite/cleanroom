@@ -47,8 +47,6 @@ archives:
         strip_parent: true
       - src: release-extra/darwin_{{ .Arch }}/cleanroom-darwin-vz.app
         strip_parent: true
-      - src: release-extra/darwin_{{ .Arch }}/entitlements-vmnet.plist
-        strip_parent: true
       - src: release-extra/darwin_{{ .Arch }}/entitlements.plist
         strip_parent: true
 
