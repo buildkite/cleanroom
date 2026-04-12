@@ -17,12 +17,13 @@ type gitHostHandlerProvider interface {
 // upstream proxying, caching, and singleflight deduplication; this wrapper
 // handles sandbox scope validation and host allowlisting.
 type cachedGitHandler struct {
-	cache  gitHostHandlerProvider
-	logger *log.Logger
+	cache    gitHostHandlerProvider
+	fallback http.Handler
+	logger   *log.Logger
 }
 
-func newCachedGitHandler(cache gitHostHandlerProvider, logger *log.Logger) *cachedGitHandler {
-	return &cachedGitHandler{cache: cache, logger: logger}
+func newCachedGitHandler(cache gitHostHandlerProvider, fallback http.Handler, logger *log.Logger) *cachedGitHandler {
+	return &cachedGitHandler{cache: cache, fallback: fallback, logger: logger}
 }
 
 func (h *cachedGitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -35,6 +36,15 @@ func (h *cachedGitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	upstreamHost, repoPath, err := splitGitRequestPath(r.URL.Path)
 	if err != nil {
 		http.Error(w, "bad request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if !gitRequestUsesDotGit(repoPath) {
+		if h.fallback == nil {
+			writeReasonError(w, http.StatusBadGateway, reasonUpstreamError, "git cache fallback is not configured for non-.git remotes")
+			return
+		}
+		h.fallback.ServeHTTP(w, r)
 		return
 	}
 
@@ -80,6 +90,24 @@ func (h *cachedGitHandler) auditLog(sandboxID, upstreamHost, repoPath, action, r
 		"action", action,
 		"reason_code", reason,
 	)
+}
+
+func gitRequestUsesDotGit(repoPath string) bool {
+	repositoryPath, ok := gitRepositoryPath(repoPath)
+	return ok && strings.HasSuffix(repositoryPath, ".git")
+}
+
+func gitRepositoryPath(repoPath string) (string, bool) {
+	switch {
+	case strings.HasSuffix(repoPath, "/info/refs"):
+		return strings.TrimSuffix(repoPath, "/info/refs"), true
+	case strings.HasSuffix(repoPath, "/"+gitUploadPackService):
+		return strings.TrimSuffix(repoPath, "/"+gitUploadPackService), true
+	case strings.HasSuffix(repoPath, "/"+gitReceivePackService):
+		return strings.TrimSuffix(repoPath, "/"+gitReceivePackService), true
+	default:
+		return "", false
+	}
 }
 
 // classifyGitRequest determines the git operation and rejects disallowed

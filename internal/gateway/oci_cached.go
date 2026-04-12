@@ -81,13 +81,18 @@ func (h *cachedRegistryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 	}
 
 	r = r.Clone(withOCIUpstreamPolicy(r.Context(), policyHost, policyPort, upstreamHost, upstreamPort))
-	rewrittenPath := "/v2/" + normalizedPrefix + "/" + rest
-	if rest == "v2" || rest == "v2/" {
-		rewrittenPath = "/v2/"
-	}
-	r.URL.Path = rewrittenPath
+	r.URL.Path = rewriteOCICachePath(normalizedPrefix, rest)
 	r.URL.RawPath = ""
 	cacheHandler.ServeHTTP(w, r)
+}
+
+func rewriteOCICachePath(prefix, rest string) string {
+	switch rest {
+	case "v2", "v2/":
+		return "/v2/"
+	}
+	rest = strings.TrimPrefix(rest, "v2/")
+	return "/v2/" + prefix + "/" + rest
 }
 
 func (h *cachedRegistryHandler) auditLog(sandboxID, target, action, reason string) {

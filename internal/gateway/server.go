@@ -180,7 +180,7 @@ func NewServer(cfg ServerConfig) *Server {
 
 	// Git: prefer content-cache, fall back to mirror-backed proxy.
 	if cfg.ContentCache != nil && cfg.ContentCache.HasGitHandler() {
-		mux.Handle(RouteGit, newCachedGitHandler(cfg.ContentCache, cfg.Logger))
+		mux.Handle(RouteGit, newCachedGitHandler(cfg.ContentCache, newGitHandlerWithMirrors(cfg.Credentials, cfg.GitMirrors, cfg.Logger), cfg.Logger))
 	} else {
 		mux.Handle(RouteGit, newGitHandlerWithMirrors(cfg.Credentials, cfg.GitMirrors, cfg.Logger))
 	}
