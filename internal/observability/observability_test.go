@@ -11,7 +11,12 @@ import (
 	"time"
 
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
+
+func float64Ptr(v float64) *float64 {
+	return &v
+}
 
 func TestStartDisabledReturnsRuntime(t *testing.T) {
 	runtime, err := Start(context.Background(), Options{})
@@ -63,13 +68,50 @@ func TestStartRejectsUnsupportedProtocol(t *testing.T) {
 func TestNewSamplerRejectsOutOfRangeRatio(t *testing.T) {
 	_, err := newSampler(runtimeconfig.TraceSamplingConfig{
 		Mode:  "parentbased_traceidratio",
-		Ratio: 2,
+		Ratio: float64Ptr(2),
 	})
 	if err == nil {
 		t.Fatal("expected newSampler to reject ratio > 1")
 	}
 	if !strings.Contains(err.Error(), "ratio must be between 0 and 1") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestNewSamplerDefaultsUnsetRatioToOne(t *testing.T) {
+	sampler, err := newSampler(runtimeconfig.TraceSamplingConfig{
+		Mode: "parentbased_traceidratio",
+	})
+	if err != nil {
+		t.Fatalf("newSampler returned error: %v", err)
+	}
+
+	result := sampler.ShouldSample(
+		sdktrace.SamplingParameters{
+			Name: "test-default-ratio",
+		},
+	)
+	if result.Decision != sdktrace.RecordAndSample {
+		t.Fatalf("expected unset ratio to sample, got %v", result.Decision)
+	}
+}
+
+func TestNewSamplerPreservesExplicitZeroRatio(t *testing.T) {
+	sampler, err := newSampler(runtimeconfig.TraceSamplingConfig{
+		Mode:  "traceidratio",
+		Ratio: float64Ptr(0),
+	})
+	if err != nil {
+		t.Fatalf("newSampler returned error: %v", err)
+	}
+
+	result := sampler.ShouldSample(
+		sdktrace.SamplingParameters{
+			Name: "test-zero-ratio",
+		},
+	)
+	if result.Decision != sdktrace.Drop {
+		t.Fatalf("expected explicit zero ratio to drop, got %v", result.Decision)
 	}
 }
 

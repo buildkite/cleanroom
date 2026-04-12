@@ -43,8 +43,8 @@ type TraceConfig struct {
 }
 
 type TraceSamplingConfig struct {
-	Mode  string  `yaml:"mode,omitempty"`
-	Ratio float64 `yaml:"ratio,omitempty"`
+	Mode  string   `yaml:"mode,omitempty"`
+	Ratio *float64 `yaml:"ratio,omitempty"`
 }
 
 type ZipkinConfig struct {

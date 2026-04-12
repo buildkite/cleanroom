@@ -327,7 +327,10 @@ func TestLoadTrimsObservabilityConfig(t *testing.T) {
 	if got, want := cfg.Observability.Traces.Sampling.Mode, "parentbased_traceidratio"; got != want {
 		t.Fatalf("unexpected sampling mode: got %q want %q", got, want)
 	}
-	if got, want := cfg.Observability.Traces.Sampling.Ratio, 0.5; got != want {
+	if cfg.Observability.Traces.Sampling.Ratio == nil {
+		t.Fatal("expected sampling ratio to be set")
+	}
+	if got, want := *cfg.Observability.Traces.Sampling.Ratio, 0.5; got != want {
 		t.Fatalf("unexpected sampling ratio: got %v want %v", got, want)
 	}
 	headers := cfg.Observability.OTLP.Headers
@@ -342,6 +345,35 @@ func TestLoadTrimsObservabilityConfig(t *testing.T) {
 	}
 	if got, want := cfg.Observability.Traces.Zipkin.Headers["x-dev-mode"], "true"; got != want {
 		t.Fatalf("unexpected zipkin header: got %q want %q", got, want)
+	}
+}
+
+func TestLoadObservabilitySupportsZeroSamplingRatio(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	configPath := filepath.Join(tmp, "cleanroom", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	content := `observability:
+  traces:
+    sampling:
+      ratio: 0
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, _, err := Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cfg.Observability.Traces.Sampling.Ratio == nil {
+		t.Fatal("expected zero sampling ratio to be preserved")
+	}
+	if got, want := *cfg.Observability.Traces.Sampling.Ratio, 0.0; got != want {
+		t.Fatalf("unexpected zero sampling ratio: got %v want %v", got, want)
 	}
 }
 

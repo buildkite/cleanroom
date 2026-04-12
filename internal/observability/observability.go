@@ -152,12 +152,15 @@ func newZipkinExporter(cfg runtimeconfig.ZipkinConfig) (*zipkin.Exporter, error)
 
 func newSampler(cfg runtimeconfig.TraceSamplingConfig) (sdktrace.Sampler, error) {
 	mode := strings.ToLower(strings.TrimSpace(cfg.Mode))
-	ratio := cfg.Ratio
-	if ratio == 0 {
+	ratio := 1.0
+	if cfg.Ratio != nil {
+		ratio = *cfg.Ratio
+	}
+	if cfg.Ratio == nil {
 		ratio = 1
 	}
 	if ratio < 0 || ratio > 1 {
-		return nil, fmt.Errorf("observability.traces.sampling.ratio must be between 0 and 1, got %v", cfg.Ratio)
+		return nil, fmt.Errorf("observability.traces.sampling.ratio must be between 0 and 1, got %v", ratio)
 	}
 
 	switch mode {
