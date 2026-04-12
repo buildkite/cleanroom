@@ -3,6 +3,7 @@ package dnsproxy
 import (
 	"net"
 	"net/netip"
+	"slices"
 	"time"
 
 	"github.com/miekg/dns"
@@ -23,6 +24,13 @@ type ObserveHook func(sandboxID string, sourceIP netip.Addr)
 // sandbox's network allow policy.
 type DenyHook func(sandboxID, queryName string)
 
+// StaticRecord configures a synthetic DNS record served directly by the
+// forwarder without contacting an upstream resolver.
+type StaticRecord struct {
+	Name      string
+	Addresses []netip.Addr
+}
+
 // ForwarderConfig configures a DNS forwarding handler.
 type ForwarderConfig struct {
 	Runtime       *Runtime
@@ -32,6 +40,7 @@ type ForwarderConfig struct {
 	Now           func() time.Time
 	OnObserve     ObserveHook
 	OnDeny        DenyHook
+	StaticRecords []StaticRecord
 }
 
 // Forwarder forwards DNS requests to an upstream resolver and records the
@@ -44,6 +53,7 @@ type Forwarder struct {
 	now           func() time.Time
 	onObserve     ObserveHook
 	onDeny        DenyHook
+	staticRecords map[string][]netip.Addr
 }
 
 // NewForwarder creates a DNS forwarding handler backed by miekg/dns.
@@ -64,12 +74,21 @@ func NewForwarder(cfg ForwarderConfig) *Forwarder {
 		now:           now,
 		onObserve:     cfg.OnObserve,
 		onDeny:        cfg.OnDeny,
+		staticRecords: normalizeStaticRecords(cfg.StaticRecords),
 	}
 }
 
 // ServeDNS implements dns.Handler.
 func (f *Forwarder) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
-	if req == nil || f.client == nil || f.upstreamAddr == "" {
+	if req == nil {
+		_ = writeServerFailure(w, req)
+		return
+	}
+	if resp, ok := f.staticResponse(req); ok {
+		_ = w.WriteMsg(resp)
+		return
+	}
+	if f.client == nil || f.upstreamAddr == "" {
 		_ = writeServerFailure(w, req)
 		return
 	}
@@ -155,4 +174,105 @@ func writeServerFailure(w dns.ResponseWriter, req *dns.Msg) error {
 		msg.Response = true
 	}
 	return w.WriteMsg(msg)
+}
+
+func normalizeStaticRecords(records []StaticRecord) map[string][]netip.Addr {
+	if len(records) == 0 {
+		return nil
+	}
+
+	out := make(map[string][]netip.Addr, len(records))
+	for _, record := range records {
+		name := normalizeName(record.Name)
+		if name == "" {
+			continue
+		}
+		for _, addr := range record.Addresses {
+			addr = normalizeAddr(addr)
+			if !addr.IsValid() {
+				continue
+			}
+			if slices.Contains(out[name], addr) {
+				continue
+			}
+			out[name] = append(out[name], addr)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func (f *Forwarder) staticResponse(req *dns.Msg) (*dns.Msg, bool) {
+	if req == nil || len(f.staticRecords) == 0 || len(req.Question) == 0 {
+		return nil, false
+	}
+
+	resp := new(dns.Msg)
+	resp.SetReply(req)
+	resp.Authoritative = true
+
+	matched := false
+	for _, question := range req.Question {
+		name := normalizeName(question.Name)
+		addresses := f.staticRecords[name]
+		if len(addresses) == 0 {
+			continue
+		}
+		matched = true
+		for _, addr := range addresses {
+			switch {
+			case question.Qtype == dns.TypeA && addr.Is4():
+				resp.Answer = append(resp.Answer, &dns.A{
+					Hdr: dns.RR_Header{
+						Name:   dns.Fqdn(name),
+						Rrtype: dns.TypeA,
+						Class:  dns.ClassINET,
+						Ttl:    60,
+					},
+					A: net.IP(addr.AsSlice()),
+				})
+			case question.Qtype == dns.TypeAAAA && addr.Is6():
+				resp.Answer = append(resp.Answer, &dns.AAAA{
+					Hdr: dns.RR_Header{
+						Name:   dns.Fqdn(name),
+						Rrtype: dns.TypeAAAA,
+						Class:  dns.ClassINET,
+						Ttl:    60,
+					},
+					AAAA: net.IP(addr.AsSlice()),
+				})
+			case question.Qtype == dns.TypeANY:
+				if addr.Is4() {
+					resp.Answer = append(resp.Answer, &dns.A{
+						Hdr: dns.RR_Header{
+							Name:   dns.Fqdn(name),
+							Rrtype: dns.TypeA,
+							Class:  dns.ClassINET,
+							Ttl:    60,
+						},
+						A: net.IP(addr.AsSlice()),
+					})
+					continue
+				}
+				if addr.Is6() {
+					resp.Answer = append(resp.Answer, &dns.AAAA{
+						Hdr: dns.RR_Header{
+							Name:   dns.Fqdn(name),
+							Rrtype: dns.TypeAAAA,
+							Class:  dns.ClassINET,
+							Ttl:    60,
+						},
+						AAAA: net.IP(addr.AsSlice()),
+					})
+				}
+			}
+		}
+	}
+
+	if !matched {
+		return nil, false
+	}
+	return resp, true
 }

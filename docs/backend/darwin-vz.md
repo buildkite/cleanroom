@@ -19,7 +19,7 @@ Implemented:
 - `filehandle` network mode with a Cleanroom-owned guest gateway and stable guest IP
 - TCP allowlist egress filtering for `sandbox.network.allow` in `filehandle` mode
 - hostname-based allow rules currently use observed DNS answers plus destination IP:port, so co-hosted services on the same IP:port are not distinguished
-- guest access to the shared host gateway through the filehandle gateway IP
+- guest access to the shared host gateway through the stable hostname `gateway.cleanroom.internal`
 - managed kernel fallback when `kernel_image` is unset or missing
 - rootfs derivation from `sandbox.image.ref` when `rootfs` is unset or missing
 - persistent sandboxes across multiple executions
@@ -28,7 +28,7 @@ Implemented:
 
 Not implemented:
 
-- host port publishing / stable hostnames such as `*.cleanroom.internal`
+- host port publishing / additional stable hostnames such as `*.cleanroom.internal`
 - general UDP/IPv6 allowlist policy beyond the current DNS + TCP filehandle path
 
 ## Process and Transport Model
@@ -126,7 +126,7 @@ On macOS, cleanroom also probes common Homebrew `e2fsprogs` locations.
   - serves guest DNS from that gateway IP
   - enforces `sandbox.network.allow` for TCP egress in the gateway
   - authorizes hostname rules from observed DNS answers plus destination IP:port rather than HTTP `Host` or TLS SNI
-  - exposes the shared host gateway service to the guest through the same gateway IP
+  - exposes the shared host gateway service to the guest at `gateway.cleanroom.internal`
 
 Compared to Firecracker:
 
@@ -157,7 +157,7 @@ Current `darwin-vz` capability values:
 Git traffic for allowed HTTPS hosts uses the filehandle gateway path:
 
 - `filehandle`
-  - the guest rewrites allowed HTTPS Git remotes through the shared host gateway using the filehandle gateway IP
+  - the guest rewrites allowed HTTPS Git remotes through the shared host gateway using `gateway.cleanroom.internal`
   - the guest does not need direct scope-token headers; the host bridge injects them
 
 ## Entitlements and Signing

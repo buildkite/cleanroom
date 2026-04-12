@@ -1,14 +1,11 @@
 package darwinvz
 
 import (
-	"fmt"
 	"strings"
 
 	"github.com/buildkite/cleanroom/internal/gateway"
 	"github.com/buildkite/cleanroom/internal/policy"
 )
-
-const defaultGatewayHost = "192.168.64.1"
 
 // gatewayRegistry is the subset of gateway.Registry used by the darwin
 // adapter.
@@ -17,84 +14,14 @@ type gatewayRegistry interface {
 	ReleaseScopeToken(scopeToken string)
 }
 
-func resolveGuestGatewayHost(configuredHost, runtimeGatewayIP string) string {
-	configuredHost = strings.TrimSpace(configuredHost)
-	if configuredHost != "" {
-		return configuredHost
-	}
-	runtimeGatewayIP = strings.TrimSpace(runtimeGatewayIP)
-	if runtimeGatewayIP != "" {
-		return runtimeGatewayIP
-	}
-	return defaultGatewayHost
-}
-
-func gatewayGitProxyEnvVars(compiled *policy.CompiledPolicy, networkMode, gatewayHost string, gatewayPort int, scopeToken string) []string {
+func gatewayGitProxyEnvVars(compiled *policy.CompiledPolicy, networkMode string, gatewayPort int) []string {
 	if !strings.EqualFold(strings.TrimSpace(networkMode), darwinVZNetworkModeFileHandle) {
 		// darwin-vz only supports the file-handle guest gateway path.
 		return nil
 	}
-	return gatewayEnvVarsWithScope(compiled, gatewayHost, gatewayPort, "")
+	return gatewayEnvVars(compiled, gatewayPort, "")
 }
 
-func gatewayEnvVars(compiled *policy.CompiledPolicy, gatewayHost string, gatewayPort int, scopeToken string) []string {
-	return gatewayEnvVarsWithScope(compiled, gatewayHost, gatewayPort, scopeToken)
-}
-
-func gatewayEnvVarsWithScope(compiled *policy.CompiledPolicy, gatewayHost string, gatewayPort int, scopeToken string) []string {
-	if compiled == nil {
-		return nil
-	}
-	if gatewayPort <= 0 {
-		return nil
-	}
-	gatewayHost = strings.TrimSpace(gatewayHost)
-	scopeToken = strings.TrimSpace(scopeToken)
-	if gatewayHost == "" {
-		return nil
-	}
-
-	type configEntry struct {
-		key   string
-		value string
-	}
-
-	entries := make([]configEntry, 0, len(compiled.Allow)+1)
-	for _, rule := range compiled.Allow {
-		host := strings.TrimSpace(rule.Host)
-		if host == "" {
-			continue
-		}
-		for _, port := range rule.Ports {
-			if port != 443 {
-				continue
-			}
-			entries = append(entries, configEntry{
-				key:   fmt.Sprintf("url.http://%s:%d/git/%s/.insteadOf", gatewayHost, gatewayPort, host),
-				value: fmt.Sprintf("https://%s/", host),
-			})
-			break
-		}
-	}
-
-	if len(entries) == 0 {
-		return nil
-	}
-
-	scopeToken = strings.TrimSpace(scopeToken)
-	if scopeToken != "" {
-		gatewayAddr := fmt.Sprintf("http://%s:%d", gatewayHost, gatewayPort)
-		entries = append(entries, configEntry{
-			key:   fmt.Sprintf("http.%s/.extraHeader", gatewayAddr),
-			value: fmt.Sprintf("%s: %s", gateway.ScopeTokenHeader, scopeToken),
-		})
-	}
-
-	env := make([]string, 0, 1+len(entries)*2)
-	env = append(env, fmt.Sprintf("GIT_CONFIG_COUNT=%d", len(entries)))
-	for i, entry := range entries {
-		env = append(env, fmt.Sprintf("GIT_CONFIG_KEY_%d=%s", i, entry.key))
-		env = append(env, fmt.Sprintf("GIT_CONFIG_VALUE_%d=%s", i, entry.value))
-	}
-	return env
+func gatewayEnvVars(compiled *policy.CompiledPolicy, gatewayPort int, scopeToken string) []string {
+	return gateway.GitProxyEnvVars(compiled, gatewayPort, scopeToken)
 }

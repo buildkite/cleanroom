@@ -23,6 +23,7 @@ Firecracker networking is built around a dedicated per-sandbox TAP device on the
 - each sandbox gets a unique host IP / guest IP pair on that TAP-backed subnet
 - the host can identify the sandbox by guest source IP
 - guest DNS is redirected to a host-side resolver built on `miekg/dns`
+- the shared host gateway is exposed inside the guest as `gateway.cleanroom.internal`
 - DNS answers are observed per sandbox/guest IP and projected into dynamic `ipset`-backed allow rules
 - host-side iptables rules enforce default-deny egress, with established flows surviving DNS TTL expiry
 - gateway access is bound to the sandbox's TAP/IP identity rather than a helper-managed token
