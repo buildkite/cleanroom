@@ -203,10 +203,10 @@ func registryHostPort(registryURL string) (string, int, error) {
 	return host, 443, nil
 }
 
-func validateRedirectTargetPolicy(req *http.Request) error {
+func validateUpstreamTargetPolicy(req *http.Request) error {
 	scope, ok := ScopeFromContext(req.Context())
 	if !ok || scope == nil || scope.Policy == nil {
-		return errors.New("sandbox scope is required for redirect validation")
+		return errors.New("sandbox scope is required for upstream policy validation")
 	}
 
 	host, port, err := registryHostPort(req.URL.String())
@@ -214,7 +214,7 @@ func validateRedirectTargetPolicy(req *http.Request) error {
 		return err
 	}
 	if !scope.Policy.Allows(host, port) {
-		return fmt.Errorf("redirect target %s:%d is not allowed by sandbox policy", host, port)
+		return fmt.Errorf("upstream target %s:%d is not allowed by sandbox policy", host, port)
 	}
 	return nil
 }
@@ -227,6 +227,10 @@ type credentialInjector struct {
 	credentials CredentialProvider
 }
 
+type policyValidatingRoundTripper struct {
+	base http.RoundTripper
+}
+
 func newGitContentCacheHTTPClient(credentials CredentialProvider) *http.Client {
 	client := newUpstreamContentCacheHTTPClient(credentials)
 	client.CheckRedirect = func(*http.Request, []*http.Request) error {
@@ -237,11 +241,12 @@ func newGitContentCacheHTTPClient(credentials CredentialProvider) *http.Client {
 
 func newOCIContentCacheHTTPClient(credentials CredentialProvider) *http.Client {
 	client := newUpstreamContentCacheHTTPClient(credentials)
+	client.Transport = &policyValidatingRoundTripper{base: client.Transport}
 	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		if len(via) == 0 {
 			return nil
 		}
-		return validateRedirectTargetPolicy(req)
+		return validateUpstreamTargetPolicy(req)
 	}
 	return client
 }
@@ -272,6 +277,13 @@ func (c *credentialInjector) RoundTrip(r *http.Request) (*http.Response, error) 
 		}
 	}
 	return c.base.RoundTrip(r)
+}
+
+func (p *policyValidatingRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
+	if err := validateUpstreamTargetPolicy(r); err != nil {
+		return nil, err
+	}
+	return p.base.RoundTrip(r)
 }
 
 // canonicalRemoteFromRequest strips Git Smart HTTP path suffixes to recover

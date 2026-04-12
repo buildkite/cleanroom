@@ -4,7 +4,21 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/buildkite/cleanroom/internal/policy"
 )
+
+func registryTestScopeWithRules(rules ...policy.AllowRule) *SandboxScope {
+	return &SandboxScope{
+		SandboxID: "sandbox-registry-test",
+		GuestIP:   "10.1.1.2",
+		Policy: &policy.CompiledPolicy{
+			Version:        1,
+			NetworkDefault: "deny",
+			Allow:          rules,
+		},
+	}
+}
 
 func TestNewGitContentCacheHTTPClientDoesNotFollowRedirects(t *testing.T) {
 	t.Parallel()
@@ -55,13 +69,21 @@ func TestNewOCIContentCacheHTTPClientFollowsAllowedRedirects(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse redirect target: %v", err)
 	}
+	sourceHost, sourcePort, err := registryHostPort(redirectSource.URL)
+	if err != nil {
+		t.Fatalf("parse redirect source: %v", err)
+	}
 
 	client := newOCIContentCacheHTTPClient(nil)
 	req, err := http.NewRequest(http.MethodGet, redirectSource.URL, nil)
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
-	req = withScope(req, registryTestScopeWithRule(targetHost, targetPort))
+	scope := registryTestScopeWithRules(
+		policy.AllowRule{Host: sourceHost, Ports: []int{sourcePort}},
+		policy.AllowRule{Host: targetHost, Ports: []int{targetPort}},
+	)
+	req = withScope(req, scope)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -113,5 +135,34 @@ func TestNewOCIContentCacheHTTPClientRejectsDisallowedRedirects(t *testing.T) {
 	}
 	if redirected {
 		t.Fatal("expected disallowed redirect target to remain unrequested")
+	}
+}
+
+func TestNewOCIContentCacheHTTPClientRejectsDisallowedDirectRequests(t *testing.T) {
+	t.Parallel()
+
+	requested := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requested = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	client := newOCIContentCacheHTTPClient(nil)
+	req, err := http.NewRequest(http.MethodGet, upstream.URL, nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req = withScope(req, registryTestScope("docker.io"))
+
+	resp, err := client.Do(req)
+	if resp != nil {
+		resp.Body.Close()
+	}
+	if err == nil {
+		t.Fatal("expected direct request to disallowed target to fail")
+	}
+	if requested {
+		t.Fatal("expected disallowed direct target to remain unrequested")
 	}
 }
