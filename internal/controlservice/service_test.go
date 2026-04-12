@@ -1774,6 +1774,88 @@ func TestCreateSandboxFallsBackWhenWorkspaceStageRestoreFails(t *testing.T) {
 	}
 }
 
+func TestDeleteWorkspaceStageCacheSnapshotRejectsInFlightRestore(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	store := newMemorySnapshotStore()
+	provisionStarted := make(chan struct{}, 1)
+	provisionRelease := make(chan struct{})
+	adapter := &stubAdapter{
+		provisionFromSnapshotFn: func(_ context.Context, _ backend.ProvisionFromSnapshotRequest) error {
+			select {
+			case provisionStarted <- struct{}{}:
+			default:
+			}
+			<-provisionRelease
+			return nil
+		},
+	}
+	svc := newTestServiceWithSnapshotStore(adapter, store)
+
+	compiled, err := policy.FromProto(testRepositoryPolicy())
+	if err != nil {
+		t.Fatalf("FromProto returned error: %v", err)
+	}
+	repository := repositorycheckout.FromProto(testRepositoryCheckoutProto())
+	record := cachestore.Record{
+		CacheKey:          workspaceStageCacheKey("firecracker", "runtime-base:test", compiled.Hash, repository),
+		Stage:             workspaceStageName,
+		State:             cacheStateReady,
+		BackingSnapshotID: "workspace-stage-backing-snapshot",
+		Backend:           "firecracker",
+		PolicyHash:        compiled.Hash,
+		Policy:            compiled.ToProto(),
+		Repository:        cloneRepositoryCheckout(normalizeRepositoryCheckoutForComparison(repository)).ToProto(),
+		ParentCacheKey:    "runtime-base:test",
+		StorageDriver:     "file",
+		StorageRef:        "/snapshots/workspace-stage-backing-snapshot.ext4",
+		ProducerVersion:   workspaceStageProducerVersion,
+	}
+	cacheStore, ok := svc.CacheStore.(*memoryCacheStore)
+	if !ok {
+		t.Fatalf("expected memory cache store, got %T", svc.CacheStore)
+	}
+	if err := cacheStore.Create(context.Background(), record); err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+
+	createDone := make(chan error, 1)
+	go func() {
+		_, createErr := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+			Policy:             testRepositoryPolicy(),
+			RepositoryCheckout: testRepositoryCheckoutProto(),
+		})
+		createDone <- createErr
+	}()
+
+	select {
+	case <-provisionStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected workspace stage restore to start")
+	}
+
+	firecrackerCfg := runtimeconfig.MergeBackendConfig(svc.Config, "firecracker", 0)
+	err = svc.deleteWorkspaceStageCacheSnapshot(context.Background(), adapter, "firecracker", firecrackerCfg, record)
+	if err == nil {
+		t.Fatal("expected stale workspace stage cleanup to fail while restore is in flight")
+	}
+	if !strings.Contains(err.Error(), "snapshot_busy") || !strings.Contains(err.Error(), "another operation") {
+		t.Fatalf("unexpected stale workspace stage cleanup error: %v", err)
+	}
+	if got, want := adapter.deleteSnapshotCalls, 0; got != want {
+		t.Fatalf("expected no backend delete while restore is in flight, got %d want %d", got, want)
+	}
+
+	close(provisionRelease)
+	select {
+	case createErr := <-createDone:
+		if createErr != nil {
+			t.Fatalf("CreateSandbox returned error: %v", createErr)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected workspace stage restore to finish")
+	}
+}
+
 func TestMemoryCacheStoreRejectsDuplicateStageCacheKey(t *testing.T) {
 	t.Parallel()
 

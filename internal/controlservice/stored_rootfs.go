@@ -167,5 +167,15 @@ func (s *Service) createSandboxFromCacheRecord(ctx context.Context, req *cleanro
 	if err != nil {
 		return nil, err
 	}
+	backingSnapshotID := strings.TrimSpace(source.SnapshotID)
+	if backingSnapshotID == "" {
+		backingSnapshotID = strings.TrimSpace(source.ID)
+	}
+	if backingSnapshotID != "" {
+		if err := s.beginSnapshotUse(backingSnapshotID); err != nil {
+			return nil, err
+		}
+		defer s.finishSnapshotUse(backingSnapshotID)
+	}
 	return s.createSandboxFromStoredRootFS(ctx, req, source, compiled)
 }

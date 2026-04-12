@@ -178,13 +178,13 @@ func (s *Service) maybePublishWorkspaceSeedSnapshot(
 	}
 
 	if replacedRecord != nil && strings.TrimSpace(replacedRecord.CacheKey) == cacheKey {
-		if err := deleteWorkspaceStageCacheSnapshot(ctx, adapter, backendName, firecrackerCfg, *replacedRecord); err != nil {
+		if err := s.deleteWorkspaceStageCacheSnapshot(ctx, adapter, backendName, firecrackerCfg, *replacedRecord); err != nil {
 			s.logWorkspaceSeedWarning("delete replaced workspace stage cache snapshot", sandboxID, err)
 		}
 	}
 }
 
-func deleteWorkspaceStageCacheSnapshot(ctx context.Context, adapter backend.SnapshottingAdapter, backendName string, firecrackerCfg backend.FirecrackerConfig, record cachestore.Record) error {
+func (s *Service) deleteWorkspaceStageCacheSnapshot(ctx context.Context, adapter backend.SnapshottingAdapter, backendName string, firecrackerCfg backend.FirecrackerConfig, record cachestore.Record) error {
 	if adapter == nil {
 		return nil
 	}
@@ -195,6 +195,12 @@ func deleteWorkspaceStageCacheSnapshot(ctx context.Context, adapter backend.Snap
 	snapshotID := strings.TrimSpace(record.BackingSnapshotID)
 	if snapshotID == "" {
 		snapshotID = strings.TrimSpace(record.CacheKey)
+	}
+	if snapshotID != "" {
+		if err := s.beginSnapshotDelete(snapshotID); err != nil {
+			return err
+		}
+		defer s.finishSnapshotDelete(snapshotID)
 	}
 	deleteCfg := withSnapshotDriver(backendName, firecrackerCfg, record.StorageDriver)
 	return adapter.DeleteSnapshot(ctx, backend.DeleteSnapshotRequest{

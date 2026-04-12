@@ -558,13 +558,9 @@ func (s *Service) DeleteSnapshot(ctx context.Context, req *cleanroomv1.DeleteSna
 	}
 	snapshotID := strings.TrimSpace(req.GetSnapshotId())
 
-	s.mu.Lock()
-	s.ensureMapsLocked()
-	if err := s.beginSnapshotDeleteLocked(snapshotID); err != nil {
-		s.mu.Unlock()
+	if err := s.beginSnapshotDelete(snapshotID); err != nil {
 		return nil, err
 	}
-	s.mu.Unlock()
 	defer s.finishSnapshotDelete(snapshotID)
 
 	store, err := s.snapshotStoreOrErr()
@@ -1934,6 +1930,13 @@ func (s *Service) beginSnapshotDeleteLocked(snapshotID string) error {
 	}
 	s.snapshotDeletions[snapshotID] = struct{}{}
 	return nil
+}
+
+func (s *Service) beginSnapshotDelete(snapshotID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ensureMapsLocked()
+	return s.beginSnapshotDeleteLocked(strings.TrimSpace(snapshotID))
 }
 
 func (s *Service) finishSnapshotDelete(snapshotID string) {

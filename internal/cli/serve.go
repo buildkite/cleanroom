@@ -198,28 +198,38 @@ func newControlService(ctx *runtimeContext, logger *log.Logger, mirrors gateway.
 	if err != nil {
 		return nil, fmt.Errorf("configure snapshot metadata store: %w", err)
 	}
-	cacheMetadataStore, err := newCacheMetadataStore(cachestore.Options{})
+	var cacheMetadataStore *cachestore.Store
+	cacheMetadataStore, err = newCacheMetadataStore(cachestore.Options{})
 	if err != nil {
-		return nil, fmt.Errorf("configure cache metadata store: %w", err)
+		if logger != nil {
+			logger.Warn("cache metadata store unavailable; stage caches disabled", "error", err)
+		}
+		cacheMetadataStore = nil
 	}
 
 	if ctx == nil {
-		return &controlservice.Service{
+		service := &controlservice.Service{
 			Logger:            logger,
 			RepositoryMirrors: mirrors,
 			SnapshotStore:     snapshotMetadataStore,
-			CacheStore:        cacheMetadataStore,
-		}, nil
+		}
+		if cacheMetadataStore != nil {
+			service.CacheStore = cacheMetadataStore
+		}
+		return service, nil
 	}
-	return &controlservice.Service{
+	service := &controlservice.Service{
 		Loader:            ctx.Loader,
 		Config:            ctx.Config,
 		Backends:          ctx.Backends,
 		Logger:            logger,
 		RepositoryMirrors: mirrors,
 		SnapshotStore:     snapshotMetadataStore,
-		CacheStore:        cacheMetadataStore,
-	}, nil
+	}
+	if cacheMetadataStore != nil {
+		service.CacheStore = cacheMetadataStore
+	}
+	return service, nil
 }
 
 func shouldInstallGatewayFirewall(goos string) bool {
