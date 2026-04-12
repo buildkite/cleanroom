@@ -2371,26 +2371,23 @@ func setupHostNetworkWithTrustedDNSFactory(ctx context.Context, runID string, al
 		addCleanup("iptables", "-D", "FORWARD", "-i", tapName, "-j", "ACCEPT")
 	} else {
 		nflogGroup := nflogGroupFromTapName(tapName)
-		if nflogGroup > 0 {
+		if nflogGroup > 0 && onBlocked != nil && dnsRuntime != nil {
 			groupStr := strconv.Itoa(int(nflogGroup))
 			if err := setupRun("iptables", "-A", "FORWARD", "-i", tapName, "-j", "NFLOG", "--nflog-group", groupStr); err != nil {
 				log.Printf("nflog iptables rule unavailable for %s: %v", tapName, err)
 			} else {
 				addCleanup("iptables", "-D", "FORWARD", "-i", tapName, "-j", "NFLOG", "--nflog-group", groupStr)
-
-				if onBlocked != nil && dnsRuntime != nil {
-					listener, nflogErr := newNFLogListener(nflogListenerConfig{
-						group:     nflogGroup,
-						sandboxID: runID,
-						guestIP:   guestAddr,
-						runtime:   dnsRuntime,
-						onBlocked: onBlocked,
-					})
-					if nflogErr != nil {
-						log.Printf("nflog listener unavailable for %s: %v", runID, nflogErr)
-					} else if listener != nil {
-						nflogCleanupFn = func() { _ = listener.Close() }
-					}
+				listener, nflogErr := newNFLogListener(nflogListenerConfig{
+					group:     nflogGroup,
+					sandboxID: runID,
+					guestIP:   guestAddr,
+					runtime:   dnsRuntime,
+					onBlocked: onBlocked,
+				})
+				if nflogErr != nil {
+					log.Printf("nflog listener unavailable for %s: %v", runID, nflogErr)
+				} else if listener != nil {
+					nflogCleanupFn = func() { _ = listener.Close() }
 				}
 			}
 		}
