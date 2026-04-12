@@ -1287,7 +1287,7 @@ func TestCreateSandboxPublishesWorkspaceStageCache(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FromProto returned error: %v", err)
 	}
-	if got, want := record.CacheKey, workspaceStageCacheKey("runtime-base:test", repositorycheckout.FromProto(testRepositoryCheckoutProto())); got != want {
+	if got, want := record.CacheKey, workspaceStageCacheKey("runtime-base:test", compiled.Hash, repositorycheckout.FromProto(testRepositoryCheckoutProto())); got != want {
 		t.Fatalf("unexpected workspace cache key: got %q want %q", got, want)
 	}
 	if got, want := record.Stage, workspaceStageName; got != want {
@@ -1377,6 +1377,78 @@ func TestCreateSandboxReusesWorkspaceStageCache(t *testing.T) {
 	}
 	if got, want := adapter.provisionFromSnapshotReq.StorageRef, "/snapshots/"+adapter.createSnapshotReq.SnapshotID+".ext4"; got != want {
 		t.Fatalf("unexpected snapshot storage ref on warm hit: got %q want %q", got, want)
+	}
+}
+
+func TestCreateSandboxDoesNotReuseWorkspaceStageCacheAcrossPolicies(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	store := newMemorySnapshotStore()
+	adapter := &stubAdapter{
+		createSnapshotFn: func(_ context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
+			return &backend.SnapshotResult{StorageRef: "/snapshots/" + req.SnapshotID + ".ext4"}, nil
+		},
+	}
+	mirrors := &stubRepositoryMirrorStore{}
+	svc := newTestServiceWithSnapshotStore(adapter, store)
+	svc.RepositoryMirrors = mirrors
+
+	firstPolicy := testRepositoryPolicy()
+	if _, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy:             firstPolicy,
+		RepositoryCheckout: testRepositoryCheckoutProto(),
+	}); err != nil {
+		t.Fatalf("first CreateSandbox returned error: %v", err)
+	}
+
+	secondPolicy := testRepositoryPolicy()
+	secondPolicy.Allow = append(secondPolicy.Allow, &cleanroomv1.PolicyAllowRule{
+		Host:  "pkg.buildkite.test",
+		Ports: []int32{443},
+	})
+	if _, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy:             secondPolicy,
+		RepositoryCheckout: testRepositoryCheckoutProto(),
+	}); err != nil {
+		t.Fatalf("second CreateSandbox returned error: %v", err)
+	}
+
+	if got, want := adapter.provisionCalls, 2; got != want {
+		t.Fatalf("expected both sandboxes to provision from scratch, got %d want %d", got, want)
+	}
+	if got, want := adapter.provisionFromSnapshotCalls, 0; got != want {
+		t.Fatalf("expected no snapshot restores across policy changes, got %d want %d", got, want)
+	}
+	if got, want := adapter.createSnapshotCalls, 2; got != want {
+		t.Fatalf("expected each policy variant to publish its own workspace stage cache, got %d want %d", got, want)
+	}
+
+	cacheStore, ok := svc.CacheStore.(*memoryCacheStore)
+	if !ok {
+		t.Fatalf("expected memory cache store, got %T", svc.CacheStore)
+	}
+	records, err := cacheStore.List(context.Background())
+	if err != nil {
+		t.Fatalf("List returned error: %v", err)
+	}
+	if got, want := len(records), 2; got != want {
+		t.Fatalf("expected one workspace stage cache per policy, got %d want %d", got, want)
+	}
+
+	firstCompiled, err := policy.FromProto(firstPolicy)
+	if err != nil {
+		t.Fatalf("FromProto(firstPolicy) returned error: %v", err)
+	}
+	secondCompiled, err := policy.FromProto(secondPolicy)
+	if err != nil {
+		t.Fatalf("FromProto(secondPolicy) returned error: %v", err)
+	}
+	if firstCompiled.Hash == secondCompiled.Hash {
+		t.Fatalf("expected distinct compiled policy hashes, got %q", firstCompiled.Hash)
+	}
+	firstKey := workspaceStageCacheKey("runtime-base:test", firstCompiled.Hash, repositorycheckout.FromProto(testRepositoryCheckoutProto()))
+	secondKey := workspaceStageCacheKey("runtime-base:test", secondCompiled.Hash, repositorycheckout.FromProto(testRepositoryCheckoutProto()))
+	if firstKey == secondKey {
+		t.Fatalf("expected workspace stage cache keys to differ across policies, got %q", firstKey)
 	}
 }
 

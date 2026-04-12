@@ -36,6 +36,7 @@ func TestRuntimeStageKey(t *testing.T) {
 func TestWorkspaceStageKey(t *testing.T) {
 	inputs := WorkspaceStageInputs{
 		RuntimeKey:                  "runtime:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		CompiledPolicyHash:          "sha256:1111111111111111111111111111111111111111111111111111111111111111",
 		CanonicalRemoteURL:          "https://github.com/buildkite/cleanroom.git",
 		CommitSHA:                   "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 		SubmoduleMode:               "recursive",
@@ -57,7 +58,7 @@ func TestWorkspaceStageKey(t *testing.T) {
 	}
 
 	mutated := inputs
-	mutated.MaterializationRecipeDigest = "sha256:6666666666666666666666666666666666666666666666666666666666666666"
+	mutated.CompiledPolicyHash = "sha256:6666666666666666666666666666666666666666666666666666666666666666"
 	if gotMutated := WorkspaceStageKey(mutated); got == gotMutated {
 		t.Fatalf("workspace stage key did not change after input mutation: %q", got)
 	}

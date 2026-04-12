@@ -18,12 +18,13 @@ const (
 	workspaceStageProducerVersion = "cleanroom/workspace-stage-v1"
 )
 
-func workspaceStageCacheKey(runtimeBaseKey string, repository *repositorycheckout.Checkout) string {
-	if repository == nil || strings.TrimSpace(runtimeBaseKey) == "" {
+func workspaceStageCacheKey(runtimeBaseKey, compiledPolicyHash string, repository *repositorycheckout.Checkout) string {
+	if repository == nil || strings.TrimSpace(runtimeBaseKey) == "" || strings.TrimSpace(compiledPolicyHash) == "" {
 		return ""
 	}
 	return cachekey.WorkspaceStageKey(cachekey.WorkspaceStageInputs{
 		RuntimeKey:                  strings.TrimSpace(runtimeBaseKey),
+		CompiledPolicyHash:          strings.TrimSpace(compiledPolicyHash),
 		CanonicalRemoteURL:          strings.TrimSpace(repository.RemoteURL),
 		CommitSHA:                   strings.TrimSpace(repository.CommitSHA),
 		SubmoduleMode:               workspaceStageSubmoduleMode(repository),
@@ -66,7 +67,7 @@ func (s *Service) lookupWorkspaceSeedSnapshot(ctx context.Context, backendName s
 	if err != nil {
 		return cachestore.Record{}, false, nil
 	}
-	cacheKey := workspaceStageCacheKey(runtimeBaseKey, repository)
+	cacheKey := workspaceStageCacheKey(runtimeBaseKey, compiled.Hash, repository)
 	if cacheKey == "" {
 		return cachestore.Record{}, false, nil
 	}
@@ -82,6 +83,9 @@ func (s *Service) lookupWorkspaceSeedSnapshot(ctx context.Context, backendName s
 		return cachestore.Record{}, false, nil
 	}
 	if !repositoryCheckoutsEqual(repositorycheckout.FromProto(record.Repository), repository) {
+		return cachestore.Record{}, false, nil
+	}
+	if strings.TrimSpace(record.PolicyHash) != strings.TrimSpace(compiled.Hash) {
 		return cachestore.Record{}, false, nil
 	}
 	return record, true, nil
@@ -109,7 +113,7 @@ func (s *Service) maybePublishWorkspaceSeedSnapshot(
 		return
 	}
 
-	cacheKey := workspaceStageCacheKey(runtimeBaseKey, repository)
+	cacheKey := workspaceStageCacheKey(runtimeBaseKey, compiled.Hash, repository)
 	if cacheKey == "" {
 		return
 	}
