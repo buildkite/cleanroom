@@ -505,6 +505,68 @@ func TestSetupHostNetworkWithTrustedDNSFactoryRemovesNFLogRuleWhenListenerStartu
 	}
 }
 
+func TestSetupHostNetworkWithTrustedDNSFactoryRetriesNFLogRuleCleanupAfterListenerStartupFails(t *testing.T) {
+	oldGroupFn := nflogGroupFromTapNameFn
+	oldListenerFn := newNFLogListenerFn
+	nflogGroupFromTapNameFn = func(string) uint16 { return 321 }
+	newNFLogListenerFn = func(nflogListenerConfig) (*nflogListener, error) {
+		return nil, errors.New("listener unavailable")
+	}
+	t.Cleanup(func() {
+		nflogGroupFromTapNameFn = oldGroupFn
+		newNFLogListenerFn = oldListenerFn
+	})
+
+	var calls []string
+	nflogDeleteAttempts := 0
+	run := func(_ context.Context, args ...string) error {
+		call := strings.Join(args, " ")
+		calls = append(calls, call)
+		if strings.Contains(call, " -j NFLOG --nflog-group 321") && strings.HasPrefix(call, "iptables -D FORWARD -i ") {
+			nflogDeleteAttempts++
+			if nflogDeleteAttempts == 1 {
+				return errors.New("transient cleanup failure")
+			}
+		}
+		return nil
+	}
+	runBatch := func(_ context.Context, commands [][]string) error {
+		for _, args := range commands {
+			calls = append(calls, strings.Join(args, " "))
+		}
+		return nil
+	}
+	lookup := func(_ context.Context, host string) ([]net.IP, error) {
+		t.Fatalf("should not resolve %q during setup", host)
+		return nil, nil
+	}
+	factory := func(_ context.Context, _ trustedDNSConfig) (func(), *dnsproxy.Runtime, error) {
+		return func() {}, dnsproxy.NewRuntime(dnsproxy.RuntimeConfig{}), nil
+	}
+
+	cfg, cleanup, err := setupHostNetworkWithTrustedDNSFactory(context.Background(), "run-nflog-retry-cleanup", false, []policy.AllowRule{{Host: "example.com", Ports: []int{443}}}, 0, lookup, net.InterfaceByName, run, runBatch, factory, nil, func(string) {})
+	if err != nil {
+		t.Fatalf("setupHostNetworkWithTrustedDNSFactory: %v", err)
+	}
+	cleanup()
+
+	tap := cfg.TapName
+	nflogDelete := "iptables -D FORWARD -i " + tap + " -j NFLOG --nflog-group 321"
+	dropDelete := "iptables -D FORWARD -i " + tap + " -j DROP"
+
+	joined := strings.Join(calls, "\n")
+	if strings.Count(joined, nflogDelete) != 2 {
+		t.Fatalf("expected NFLOG delete to be retried during cleanup\ncalls:\n%s", joined)
+	}
+
+	firstDeleteIdx := strings.Index(joined, nflogDelete)
+	secondDeleteIdx := strings.LastIndex(joined, nflogDelete)
+	dropDeleteIdx := strings.Index(joined, dropDelete)
+	if firstDeleteIdx < 0 || secondDeleteIdx <= firstDeleteIdx || dropDeleteIdx < 0 || secondDeleteIdx < dropDeleteIdx {
+		t.Fatalf("expected cleanup retry after DROP cleanup\ncalls:\n%s", joined)
+	}
+}
+
 func testDNSResponse(query string, answers ...dns.RR) *dns.Msg {
 	msg := new(dns.Msg)
 	msg.SetQuestion(query, dns.TypeA)

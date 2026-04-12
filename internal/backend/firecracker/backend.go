@@ -2216,6 +2216,13 @@ func setupHostNetworkWithTrustedDNSFactory(ctx context.Context, runID string, al
 	addCleanup := func(args ...string) {
 		cleanupCmds = append(cleanupCmds, append([]string(nil), args...))
 	}
+	removeNFLogRule := func(tapName, groupStr string) {
+		args := []string{"iptables", "-D", "FORWARD", "-i", tapName, "-j", "NFLOG", "--nflog-group", groupStr}
+		if err := runCommand(cleanupCtx, args...); err != nil {
+			log.Printf("nflog iptables cleanup failed for %s: %v", tapName, err)
+			addCleanup(args...)
+		}
+	}
 
 	staleTapCleanupCtx, staleTapCleanupCancel := context.WithTimeout(context.Background(), networkCleanupTimeout)
 	defer staleTapCleanupCancel()
@@ -2389,13 +2396,9 @@ func setupHostNetworkWithTrustedDNSFactory(ctx context.Context, runID string, al
 				})
 				if nflogErr != nil {
 					log.Printf("nflog listener unavailable for %s: %v", runID, nflogErr)
-					if err := setupRun("iptables", "-D", "FORWARD", "-i", tapName, "-j", "NFLOG", "--nflog-group", groupStr); err != nil {
-						log.Printf("nflog iptables cleanup failed for %s: %v", tapName, err)
-					}
+					removeNFLogRule(tapName, groupStr)
 				} else if listener == nil {
-					if err := setupRun("iptables", "-D", "FORWARD", "-i", tapName, "-j", "NFLOG", "--nflog-group", groupStr); err != nil {
-						log.Printf("nflog iptables cleanup failed for %s: %v", tapName, err)
-					}
+					removeNFLogRule(tapName, groupStr)
 				} else if listener != nil {
 					addCleanup("iptables", "-D", "FORWARD", "-i", tapName, "-j", "NFLOG", "--nflog-group", groupStr)
 					nflogCleanupFn = func() { _ = listener.Close() }
