@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -24,6 +25,7 @@ type ociHandlerEntry struct {
 	policyHost   string
 	policyPort   int
 	upstreamHost string
+	upstreamPort int
 	closer       io.Closer
 }
 
@@ -107,28 +109,28 @@ func (c *ContentCache) HasOCIHandler() bool {
 
 // OCIUpstreamForPrefix returns policy/upstream metadata for the requested
 // registry prefix without allocating a new per-prefix handler.
-func (c *ContentCache) OCIUpstreamForPrefix(prefix string) (string, int, string, error) {
+func (c *ContentCache) OCIUpstreamForPrefix(prefix string) (string, int, string, int, error) {
 	if c == nil || c.resolveOCIRoute == nil {
-		return "", 0, "", errors.New("oci cache not configured")
+		return "", 0, "", 0, errors.New("oci cache not configured")
 	}
 
 	prefix = strings.ToLower(strings.TrimSpace(prefix))
 	if prefix == "" {
-		return "", 0, "", errors.New("empty registry prefix")
+		return "", 0, "", 0, errors.New("empty registry prefix")
 	}
 
 	c.ociMu.Lock()
 	if entry, ok := c.ociHandlers[prefix]; ok {
 		c.ociMu.Unlock()
-		return entry.policyHost, entry.policyPort, entry.upstreamHost, nil
+		return entry.policyHost, entry.policyPort, entry.upstreamHost, entry.upstreamPort, nil
 	}
 	c.ociMu.Unlock()
 
 	route, err := c.resolveOCIRoute(prefix)
 	if err != nil {
-		return "", 0, "", err
+		return "", 0, "", 0, err
 	}
-	return route.policyHost, route.policyPort, route.upstreamHost, nil
+	return route.policyHost, route.policyPort, route.upstreamHost, route.upstreamPort, nil
 }
 
 // OCIHandlerForPrefix returns an OCI cache handler for the requested registry
@@ -203,6 +205,29 @@ func registryHostPort(registryURL string) (string, int, error) {
 	return host, 443, nil
 }
 
+type ociUpstreamPolicyContext struct {
+	policyHost   string
+	policyPort   int
+	upstreamHost string
+	upstreamPort int
+}
+
+type ociUpstreamPolicyContextKey struct{}
+
+func withOCIUpstreamPolicy(ctx context.Context, policyHost string, policyPort int, upstreamHost string, upstreamPort int) context.Context {
+	return context.WithValue(ctx, ociUpstreamPolicyContextKey{}, ociUpstreamPolicyContext{
+		policyHost:   strings.ToLower(strings.TrimSpace(policyHost)),
+		policyPort:   policyPort,
+		upstreamHost: strings.ToLower(strings.TrimSpace(upstreamHost)),
+		upstreamPort: upstreamPort,
+	})
+}
+
+func ociUpstreamPolicyFromContext(ctx context.Context) (ociUpstreamPolicyContext, bool) {
+	policy, ok := ctx.Value(ociUpstreamPolicyContextKey{}).(ociUpstreamPolicyContext)
+	return policy, ok
+}
+
 func validateUpstreamTargetPolicy(req *http.Request) error {
 	scope, ok := ScopeFromContext(req.Context())
 	if !ok || scope == nil || scope.Policy == nil {
@@ -213,8 +238,14 @@ func validateUpstreamTargetPolicy(req *http.Request) error {
 	if err != nil {
 		return err
 	}
-	if !scope.Policy.Allows(host, port) {
-		return fmt.Errorf("upstream target %s:%d is not allowed by sandbox policy", host, port)
+	policyHost := host
+	policyPort := port
+	if mapped, ok := ociUpstreamPolicyFromContext(req.Context()); ok && host == mapped.upstreamHost && port == mapped.upstreamPort {
+		policyHost = mapped.policyHost
+		policyPort = mapped.policyPort
+	}
+	if !scope.Policy.Allows(policyHost, policyPort) {
+		return fmt.Errorf("upstream target %s:%d is not allowed by sandbox policy", policyHost, policyPort)
 	}
 	return nil
 }

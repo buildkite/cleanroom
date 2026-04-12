@@ -166,3 +166,80 @@ func TestNewOCIContentCacheHTTPClientRejectsDisallowedDirectRequests(t *testing.
 		t.Fatal("expected disallowed direct target to remain unrequested")
 	}
 }
+
+func TestNewOCIContentCacheHTTPClientAllowsMappedInitialRequestAgainstResolvedPolicyTarget(t *testing.T) {
+	t.Parallel()
+
+	requested := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requested = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	upstreamHost, upstreamPort, err := registryHostPort(upstream.URL)
+	if err != nil {
+		t.Fatalf("parse upstream target: %v", err)
+	}
+
+	client := newOCIContentCacheHTTPClient(nil)
+	req, err := http.NewRequest(http.MethodGet, upstream.URL, nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req = withScope(req, registryTestScope("docker.io"))
+	req = req.Clone(withOCIUpstreamPolicy(req.Context(), "docker.io", 443, upstreamHost, upstreamPort))
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("mapped request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected %d, got %d", http.StatusOK, resp.StatusCode)
+	}
+	if !requested {
+		t.Fatal("expected mapped upstream target to be requested")
+	}
+}
+
+func TestNewOCIContentCacheHTTPClientRejectsDisallowedRedirectsFromMappedUpstream(t *testing.T) {
+	t.Parallel()
+
+	redirected := false
+	redirectTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		redirected = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer redirectTarget.Close()
+
+	redirectSource := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, redirectTarget.URL, http.StatusFound)
+	}))
+	defer redirectSource.Close()
+
+	sourceHost, sourcePort, err := registryHostPort(redirectSource.URL)
+	if err != nil {
+		t.Fatalf("parse redirect source: %v", err)
+	}
+
+	client := newOCIContentCacheHTTPClient(nil)
+	req, err := http.NewRequest(http.MethodGet, redirectSource.URL, nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req = withScope(req, registryTestScope("docker.io"))
+	req = req.Clone(withOCIUpstreamPolicy(req.Context(), "docker.io", 443, sourceHost, sourcePort))
+
+	resp, err := client.Do(req)
+	if resp != nil {
+		resp.Body.Close()
+	}
+	if err == nil {
+		t.Fatal("expected redirect to disallowed target to fail")
+	}
+	if redirected {
+		t.Fatal("expected disallowed redirect target to remain unrequested")
+	}
+}

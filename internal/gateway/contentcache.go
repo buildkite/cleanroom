@@ -180,6 +180,7 @@ func NewContentCache(cfg ContentCacheConfig) (*ContentCache, error) {
 			policyHost:   route.policyHost,
 			policyPort:   route.policyPort,
 			upstreamHost: route.upstreamHost,
+			upstreamPort: route.upstreamPort,
 		}
 		if closer, ok := any(handler).(interface{ Close() }); ok {
 			entry.closer = closeFunc(closer.Close)
@@ -195,6 +196,7 @@ type ociRoute struct {
 	policyPort   int
 	upstreamURL  string
 	upstreamHost string
+	upstreamPort int
 }
 
 func normalizeAllowedGitHosts(hosts []string) map[string]struct{} {
@@ -264,6 +266,7 @@ func resolveOCIRegistryRoute(prefix string, registries map[string]string) (ociRo
 			policyPort:   policyPort,
 			upstreamURL:  upstreamURL,
 			upstreamHost: upstreamHost,
+			upstreamPort: upstreamPort,
 		}, nil
 	}
 
@@ -282,5 +285,6 @@ func resolveOCIRegistryRoute(prefix string, registries map[string]string) (ociRo
 		policyPort:   upstreamPort,
 		upstreamURL:  upstreamURL,
 		upstreamHost: upstreamHost,
+		upstreamPort: upstreamPort,
 	}, nil
 }

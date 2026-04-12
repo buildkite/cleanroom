@@ -14,19 +14,20 @@ type stubRegistryPrefixHandlerProvider struct {
 	policyHost   string
 	policyPort   int
 	upstreamHost string
+	upstreamPort int
 	err          error
 	prefix       string
 	handlerCalls int
 	lookupCalls  int
 }
 
-func (s *stubRegistryPrefixHandlerProvider) OCIUpstreamForPrefix(prefix string) (string, int, string, error) {
+func (s *stubRegistryPrefixHandlerProvider) OCIUpstreamForPrefix(prefix string) (string, int, string, int, error) {
 	s.prefix = prefix
 	s.lookupCalls++
 	if s.err != nil {
-		return "", 0, "", s.err
+		return "", 0, "", 0, s.err
 	}
-	return s.policyHost, s.policyPort, s.upstreamHost, nil
+	return s.policyHost, s.policyPort, s.upstreamHost, s.upstreamPort, nil
 }
 
 func (s *stubRegistryPrefixHandlerProvider) OCIHandlerForPrefix(prefix string) (http.Handler, error) {
@@ -81,6 +82,7 @@ func TestCachedRegistryHandlerRewritesPathToV2(t *testing.T) {
 		policyHost:   "docker.io",
 		policyPort:   443,
 		upstreamHost: "registry-1.docker.io",
+		upstreamPort: 443,
 	}
 	h := newCachedRegistryHandler(provider, nil)
 
@@ -111,6 +113,7 @@ func TestCachedRegistryHandlerPolicyDeniesUnallowedHost(t *testing.T) {
 		policyHost:   "docker.io",
 		policyPort:   443,
 		upstreamHost: "registry-1.docker.io",
+		upstreamPort: 443,
 	}
 	h := newCachedRegistryHandler(provider, nil)
 
@@ -202,6 +205,7 @@ func TestCachedRegistryHandlerBlobsRewritePath(t *testing.T) {
 		policyHost:   "ghcr.io",
 		policyPort:   443,
 		upstreamHost: "ghcr.io",
+		upstreamPort: 443,
 	}
 	h := newCachedRegistryHandler(provider, nil)
 
@@ -234,6 +238,7 @@ func TestCachedRegistryHandlerHeadAllowed(t *testing.T) {
 		policyHost:   "docker.io",
 		policyPort:   443,
 		upstreamHost: "registry-1.docker.io",
+		upstreamPort: 443,
 	}, nil)
 
 	req := httptest.NewRequest("HEAD", "/registry/docker.io/library/nginx/manifests/latest", nil)
@@ -278,6 +283,7 @@ func TestCachedRegistryHandlerUsesResolvedPolicyPort(t *testing.T) {
 		policyHost:   "registry.internal",
 		policyPort:   5000,
 		upstreamHost: "registry.internal",
+		upstreamPort: 5000,
 	}, nil)
 
 	req := httptest.NewRequest("GET", "/registry/internal/library/nginx/manifests/latest", nil)

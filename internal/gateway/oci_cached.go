@@ -9,7 +9,7 @@ import (
 )
 
 type registryPrefixHandlerProvider interface {
-	OCIUpstreamForPrefix(prefix string) (string, int, string, error)
+	OCIUpstreamForPrefix(prefix string) (string, int, string, int, error)
 	OCIHandlerForPrefix(prefix string) (http.Handler, error)
 }
 
@@ -60,7 +60,7 @@ func (h *cachedRegistryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 	rest := strings.TrimPrefix(remainder, prefix+"/")
 
 	normalizedPrefix := strings.ToLower(strings.TrimSpace(prefix))
-	policyHost, policyPort, upstreamHost, err := h.cache.OCIUpstreamForPrefix(normalizedPrefix)
+	policyHost, policyPort, upstreamHost, upstreamPort, err := h.cache.OCIUpstreamForPrefix(normalizedPrefix)
 	if err != nil {
 		h.auditLog(scope.SandboxID, normalizedPrefix, "deny", "unknown_registry_prefix")
 		writeReasonError(w, http.StatusNotFound, "unknown_registry_prefix", fmt.Sprintf("unknown registry prefix %q", prefix))
@@ -80,7 +80,7 @@ func (h *cachedRegistryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	r = r.Clone(r.Context())
+	r = r.Clone(withOCIUpstreamPolicy(r.Context(), policyHost, policyPort, upstreamHost, upstreamPort))
 	r.URL.Path = "/v2/" + normalizedPrefix + "/" + rest
 	r.URL.RawPath = ""
 	cacheHandler.ServeHTTP(w, r)
