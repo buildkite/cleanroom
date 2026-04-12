@@ -8,85 +8,87 @@ import (
 	"strings"
 
 	"github.com/buildkite/cleanroom/internal/backend"
+	"github.com/buildkite/cleanroom/internal/cachekey"
+	"github.com/buildkite/cleanroom/internal/cachestore"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/repositorycheckout"
-	"github.com/buildkite/cleanroom/internal/snapshotstore"
 )
 
-const workspaceSeedSnapshotNamePrefix = "workspace-seed:"
+const (
+	workspaceStageName                = "workspace"
+	cacheStateReady                   = "ready"
+	workspaceStageMaterializationSpec = "workspace-bootstrap:v1"
+	workspaceStageProducerVersion     = "cleanroom/workspace-stage-v1"
+)
 
-func isWorkspaceSeedSnapshotName(name string) bool {
-	return strings.HasPrefix(strings.TrimSpace(name), workspaceSeedSnapshotNamePrefix)
-}
-
-func workspaceSeedSnapshotName(backendName, policyHash, runtimeBaseKey string, repository *repositorycheckout.Checkout) string {
+func workspaceStageCacheKey(runtimeBaseKey string, repository *repositorycheckout.Checkout) string {
 	if repository == nil || strings.TrimSpace(runtimeBaseKey) == "" {
 		return ""
 	}
-	sum := sha256.New()
-	for _, part := range []string{
-		strings.TrimSpace(backendName),
-		strings.TrimSpace(policyHash),
-		strings.TrimSpace(runtimeBaseKey),
-		strings.TrimSpace(repository.RemoteURL),
-		strings.TrimSpace(repository.CommitSHA),
-		strings.TrimSpace(repository.DestinationDir),
-		fmt.Sprintf("%t", repository.Submodules),
-		strings.TrimSpace(repository.Branch),
-	} {
-		_, _ = sum.Write([]byte(part))
-		_, _ = sum.Write([]byte{0})
-	}
-	return workspaceSeedSnapshotNamePrefix + hex.EncodeToString(sum.Sum(nil))
+	return cachekey.WorkspaceStageKey(cachekey.WorkspaceStageInputs{
+		RuntimeKey:                  strings.TrimSpace(runtimeBaseKey),
+		CanonicalRemoteURL:          strings.TrimSpace(repository.RemoteURL),
+		CommitSHA:                   strings.TrimSpace(repository.CommitSHA),
+		SubmoduleMode:               workspaceStageSubmoduleMode(repository),
+		SubmoduleResolutionDigest:   "",
+		CheckoutMode:                workspaceStageCheckoutMode(repository),
+		DestinationDir:              strings.TrimSpace(repository.DestinationDir),
+		MaterializationRecipeDigest: workspaceStageMaterializationRecipeDigest(),
+	})
 }
 
-func workspaceSeedSnapshotRecord(records []snapshotstore.Record, backendName, policyHash, runtimeBaseKey string, repository *repositorycheckout.Checkout) (snapshotstore.Record, bool) {
-	expectedName := workspaceSeedSnapshotName(backendName, policyHash, runtimeBaseKey, repository)
-	if expectedName == "" {
-		return snapshotstore.Record{}, false
+func workspaceStageCheckoutMode(repository *repositorycheckout.Checkout) string {
+	if repository == nil {
+		return ""
 	}
-
-	var (
-		best  snapshotstore.Record
-		found bool
-	)
-	for _, record := range records {
-		if strings.TrimSpace(record.Name) != expectedName {
-			continue
-		}
-		if strings.TrimSpace(record.Backend) != strings.TrimSpace(backendName) {
-			continue
-		}
-		if strings.TrimSpace(record.PolicyHash) != strings.TrimSpace(policyHash) {
-			continue
-		}
-		if !repositoryCheckoutsEqual(repositorycheckout.FromProto(record.Repository), repository) {
-			continue
-		}
-		recordSnapshotID := strings.TrimSpace(record.SnapshotID)
-		bestSnapshotID := strings.TrimSpace(best.SnapshotID)
-		if !found || record.CreatedAt.After(best.CreatedAt) || (record.CreatedAt.Equal(best.CreatedAt) && recordSnapshotID > bestSnapshotID) {
-			best = record
-			found = true
-		}
+	if branch := strings.TrimSpace(repository.Branch); branch != "" {
+		return "branch:" + branch
 	}
-	return best, found
+	return "detached"
 }
 
-func (s *Service) lookupWorkspaceSeedSnapshot(ctx context.Context, backendName string, compiled *policy.CompiledPolicy, runtimeBaseKey string, repository *repositorycheckout.Checkout) (snapshotstore.Record, bool, error) {
+func workspaceStageSubmoduleMode(repository *repositorycheckout.Checkout) string {
+	if repository == nil {
+		return ""
+	}
+	if repository.Submodules {
+		return "enabled"
+	}
+	return "disabled"
+}
+
+func workspaceStageMaterializationRecipeDigest() string {
+	sum := sha256.Sum256([]byte(workspaceStageMaterializationSpec))
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func (s *Service) lookupWorkspaceSeedSnapshot(ctx context.Context, backendName string, compiled *policy.CompiledPolicy, runtimeBaseKey string, repository *repositorycheckout.Checkout) (cachestore.Record, bool, error) {
 	if compiled == nil || repository == nil || strings.TrimSpace(runtimeBaseKey) == "" {
-		return snapshotstore.Record{}, false, nil
+		return cachestore.Record{}, false, nil
 	}
-	store, err := s.snapshotStoreOrErr()
+	store, err := s.cacheStoreOrErr()
 	if err != nil {
-		return snapshotstore.Record{}, false, nil
+		return cachestore.Record{}, false, nil
 	}
-	records, err := store.List(ctx)
+	cacheKey := workspaceStageCacheKey(runtimeBaseKey, repository)
+	if cacheKey == "" {
+		return cachestore.Record{}, false, nil
+	}
+
+	record, ok, err := store.GetReady(ctx, workspaceStageName, cacheKey)
 	if err != nil {
-		return snapshotstore.Record{}, false, err
+		return cachestore.Record{}, false, err
 	}
-	record, ok := workspaceSeedSnapshotRecord(records, backendName, compiled.Hash, runtimeBaseKey, repository)
-	return record, ok, nil
+	if !ok {
+		return cachestore.Record{}, false, nil
+	}
+	if strings.TrimSpace(record.Backend) != strings.TrimSpace(backendName) {
+		return cachestore.Record{}, false, nil
+	}
+	if !repositoryCheckoutsEqual(repositorycheckout.FromProto(record.Repository), repository) {
+		return cachestore.Record{}, false, nil
+	}
+	return record, true, nil
 }
 
 func (s *Service) maybePublishWorkspaceSeedSnapshot(
@@ -97,7 +99,7 @@ func (s *Service) maybePublishWorkspaceSeedSnapshot(
 	firecrackerCfg backend.FirecrackerConfig,
 	runtimeBaseKey string,
 	repository *repositorycheckout.Checkout,
-	replacedSnapshotID string,
+	replacedRecord *cachestore.Record,
 ) {
 	if adapter == nil || compiled == nil || repository == nil || strings.TrimSpace(runtimeBaseKey) == "" {
 		return
@@ -106,17 +108,22 @@ func (s *Service) maybePublishWorkspaceSeedSnapshot(
 		return
 	}
 
-	store, err := s.snapshotStoreOrErr()
+	store, err := s.cacheStoreOrErr()
 	if err != nil {
 		return
 	}
 
+	cacheKey := workspaceStageCacheKey(runtimeBaseKey, repository)
+	if cacheKey == "" {
+		return
+	}
+
 	if record, ok, err := s.lookupWorkspaceSeedSnapshot(ctx, backendName, compiled, runtimeBaseKey, repository); err == nil && ok {
-		if strings.TrimSpace(record.SnapshotID) != strings.TrimSpace(replacedSnapshotID) {
+		if replacedRecord == nil || strings.TrimSpace(record.CacheKey) != strings.TrimSpace(replacedRecord.CacheKey) {
 			return
 		}
 	} else if err != nil {
-		s.logWorkspaceSeedWarning("lookup workspace seed snapshot", sandboxID, err)
+		s.logWorkspaceSeedWarning("lookup workspace stage cache", sandboxID, err)
 		return
 	}
 
@@ -128,22 +135,42 @@ func (s *Service) maybePublishWorkspaceSeedSnapshot(
 		FirecrackerConfig: snapshotCfg,
 	})
 	if err != nil {
-		s.logWorkspaceSeedWarning("publish workspace seed snapshot", sandboxID, err)
+		s.logWorkspaceSeedWarning("publish workspace stage cache", sandboxID, err)
 		return
 	}
 
-	record := snapshotstore.Record{
-		SnapshotID:      snapshotID,
-		SourceSandboxID: sandboxID,
+	record := cachestore.Record{
+		CacheKey:        cacheKey,
+		Stage:           workspaceStageName,
+		State:           cacheStateReady,
 		Backend:         backendName,
-		Name:            workspaceSeedSnapshotName(backendName, compiled.Hash, runtimeBaseKey, repository),
 		PolicyHash:      compiled.Hash,
 		Policy:          compiled.ToProto(),
 		Repository:      cloneRepositoryCheckout(repository).ToProto(),
+		ParentCacheKey:  strings.TrimSpace(runtimeBaseKey),
 		StorageDriver:   snapshotCfg.Snapshots.Driver,
 		StorageRef:      strings.TrimSpace(result.StorageRef),
 		CreatedAt:       s.clock().Now(),
+		LastUsedAt:      s.clock().Now(),
+		ProducerVersion: workspaceStageProducerVersion,
 	}
+
+	if replacedRecord != nil && strings.TrimSpace(replacedRecord.CacheKey) == cacheKey {
+		if err := store.Delete(ctx, workspaceStageName, cacheKey); err != nil {
+			deleteErr := adapter.DeleteSnapshot(ctx, backend.DeleteSnapshotRequest{
+				SnapshotID:        snapshotID,
+				StorageRef:        record.StorageRef,
+				FirecrackerConfig: snapshotCfg,
+			})
+			if deleteErr != nil {
+				s.logWorkspaceSeedWarning("rollback workspace stage cache after stale cache delete failure", sandboxID, fmt.Errorf("%w (rollback failed: %v)", err, deleteErr))
+				return
+			}
+			s.logWorkspaceSeedWarning("delete stale workspace stage cache metadata", sandboxID, err)
+			return
+		}
+	}
+
 	if err := store.Create(ctx, record); err != nil {
 		deleteErr := adapter.DeleteSnapshot(ctx, backend.DeleteSnapshotRequest{
 			SnapshotID:        snapshotID,
@@ -151,10 +178,10 @@ func (s *Service) maybePublishWorkspaceSeedSnapshot(
 			FirecrackerConfig: snapshotCfg,
 		})
 		if deleteErr != nil {
-			s.logWorkspaceSeedWarning("rollback workspace seed snapshot after metadata failure", sandboxID, fmt.Errorf("%w (rollback failed: %v)", err, deleteErr))
+			s.logWorkspaceSeedWarning("rollback workspace stage cache after metadata failure", sandboxID, fmt.Errorf("%w (rollback failed: %v)", err, deleteErr))
 			return
 		}
-		s.logWorkspaceSeedWarning("persist workspace seed snapshot metadata", sandboxID, err)
+		s.logWorkspaceSeedWarning("persist workspace stage cache metadata", sandboxID, err)
 	}
 }
 
@@ -184,9 +211,13 @@ func (s *Service) logWorkspaceSeedWarning(message, sandboxID string, err error) 
 	s.Logger.Warn(message, "sandbox_id", sandboxID, "error", err)
 }
 
-func (s *Service) logWorkspaceSeedRestoreWarning(snapshotID string, err error) {
+func (s *Service) logWorkspaceSeedRestoreWarning(record cachestore.Record, err error) {
 	if s == nil || s.Logger == nil || err == nil {
 		return
 	}
-	s.Logger.Warn("restore workspace seed snapshot", "snapshot_id", snapshotID, "error", err)
+	s.Logger.Warn("restore workspace stage cache",
+		"cache_key", strings.TrimSpace(record.CacheKey),
+		"storage_ref", strings.TrimSpace(record.StorageRef),
+		"error", err,
+	)
 }

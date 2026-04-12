@@ -15,6 +15,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/backend/darwinvz"
 	"github.com/buildkite/cleanroom/internal/backend/firecracker"
+	"github.com/buildkite/cleanroom/internal/cachestore"
 	"github.com/buildkite/cleanroom/internal/controlserver"
 	"github.com/buildkite/cleanroom/internal/controlservice"
 	"github.com/buildkite/cleanroom/internal/endpoint"
@@ -34,6 +35,8 @@ type ServeCommand struct {
 
 var serveSignalNotifyContext = signal.NotifyContext
 var newSnapshotMetadataStore = snapshotstore.New
+var newCacheMetadataStore = cachestore.New
+var gatewayScopeTokenSourcePolicyForGatewayHost = gateway.ScopeTokenSourcePolicyForGatewayHost
 
 func (s *ServeCommand) Run(ctx *runtimeContext) error {
 	return s.runServer(ctx)
@@ -195,12 +198,17 @@ func newControlService(ctx *runtimeContext, logger *log.Logger, mirrors gateway.
 	if err != nil {
 		return nil, fmt.Errorf("configure snapshot metadata store: %w", err)
 	}
+	cacheMetadataStore, err := newCacheMetadataStore(cachestore.Options{})
+	if err != nil {
+		return nil, fmt.Errorf("configure cache metadata store: %w", err)
+	}
 
 	if ctx == nil {
 		return &controlservice.Service{
 			Logger:            logger,
 			RepositoryMirrors: mirrors,
 			SnapshotStore:     snapshotMetadataStore,
+			CacheStore:        cacheMetadataStore,
 		}, nil
 	}
 	return &controlservice.Service{
@@ -210,6 +218,7 @@ func newControlService(ctx *runtimeContext, logger *log.Logger, mirrors gateway.
 		Logger:            logger,
 		RepositoryMirrors: mirrors,
 		SnapshotStore:     snapshotMetadataStore,
+		CacheStore:        cacheMetadataStore,
 	}, nil
 }
 
