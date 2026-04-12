@@ -27,10 +27,7 @@ func TestProvisionSandboxRejectsConcurrentProvisionForSameID(t *testing.T) {
 			if sandboxID != "cr-test" {
 				t.Fatalf("unexpected sandbox id %q", sandboxID)
 			}
-			select {
-			case started <- struct{}{}:
-			default:
-			}
+			close(started)
 			<-block
 			return &sandboxInstance{SandboxID: sandboxID}, nil
 		},
