@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"connectrpc.com/connect"
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/backend/darwinvz"
 	"github.com/buildkite/cleanroom/internal/backend/firecracker"
@@ -143,7 +144,11 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 	if err != nil {
 		return err
 	}
-	server := controlserver.New(service, logger.With("subsystem", "http"))
+	serverInterceptors := make([]connect.Interceptor, 0, 1)
+	if interceptor := ctx.Observability.ConnectInterceptor(); interceptor != nil {
+		serverInterceptors = append(serverInterceptors, interceptor)
+	}
+	server := controlserver.New(service, logger.With("subsystem", "http"), serverInterceptors...)
 
 	runCtx, cancel := serveSignalNotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -243,6 +248,7 @@ func newControlService(ctx *runtimeContext, logger *log.Logger, mirrors gateway.
 		Config:            ctx.Config,
 		Backends:          ctx.Backends,
 		Logger:            logger,
+		Observability:     ctx.Observability,
 		RepositoryMirrors: mirrors,
 		SnapshotStore:     snapshotMetadataStore,
 	}

@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/e2e-observability.sh
+source "$SCRIPT_DIR/e2e-observability.sh"
+
 DARWIN_VZ_KERNEL_IMAGE="${CLEANROOM_DARWIN_VZ_KERNEL_IMAGE:-}"
+OBSERVABILITY_SUITE_LABEL="darwin-vz E2E"
+OBSERVABILITY_CONTEXT="darwin-vz-e2e-observability"
+OBSERVABILITY_ARCHIVE_NAME="darwin-vz-e2e-observability.tgz"
 
 echo "--- :hammer: Building binaries"
 scripts/build-go.sh
@@ -27,6 +34,13 @@ fi
 
 tmpdir="$(mktemp -d /tmp/cleanroom-dvz-e2e.XXXXXX)"
 cleanup() {
+  publish_buildkite_observability \
+    "$OBSERVABILITY_SUITE_LABEL" \
+    "$OBSERVABILITY_CONTEXT" \
+    "$OBSERVABILITY_ARCHIVE_NAME" \
+    "./dist/cleanroom" \
+    "${listen_endpoint:-}" \
+    "${tmpdir:-}" || true
   if [[ -n "${srv_pid:-}" ]]; then
     kill "$srv_pid" >/dev/null 2>&1 || true
     wait "$srv_pid" >/dev/null 2>&1 || true
@@ -100,6 +114,12 @@ echo "--- :white_check_mark: Launched execution smoke test"
 ./dist/cleanroom exec --host "$listen_endpoint" --backend darwin-vz -c "$smoke_policy_dir" -- sh -lc 'echo darwin-vz-e2e' | tee "$tmpdir/exec.out"
 if ! grep -q '^darwin-vz-e2e$' "$tmpdir/exec.out"; then
   echo "expected darwin-vz smoke-test output missing" >&2
+  exit 1
+fi
+capture_latest_execution_observability "./dist/cleanroom"
+if ! require_launch_observability "$OBSERVABILITY_SUITE_LABEL"; then
+  echo "server log (last 30 lines):" >&2
+  tail -n 30 "$tmpdir/server.log" >&2 || true
   exit 1
 fi
 

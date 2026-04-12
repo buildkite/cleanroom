@@ -16,6 +16,9 @@ import (
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/interactivequic"
 	"github.com/buildkite/cleanroom/internal/repositorycheckout"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/term"
 )
 
@@ -40,6 +43,33 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) (runErr error) {
 	if err := validateExecutionSandboxArgs(c.Chdir, c.In, c.From, c.Keep, c.repositoryOverrideFlags); err != nil {
 		return err
 	}
+
+	sandboxID := ""
+	executionID := ""
+	rootCtx, rootSpan := ctx.Observability.Tracer("github.com/buildkite/cleanroom/internal/cli").Start(
+		context.Background(),
+		"cleanroom.console",
+		trace.WithAttributes(
+			attribute.String("cleanroom.backend.requested", strings.TrimSpace(c.Backend)),
+			attribute.Bool("cleanroom.keep_sandbox", c.Keep),
+			attribute.Int("cleanroom.command.argc", len(c.Command)),
+		),
+	)
+	defer func() {
+		if sandboxID != "" {
+			rootSpan.SetAttributes(attribute.String("cleanroom.sandbox.id", sandboxID))
+		}
+		if executionID != "" {
+			rootSpan.SetAttributes(attribute.String("cleanroom.execution.id", executionID))
+		}
+		if runErr != nil {
+			rootSpan.RecordError(runErr)
+			rootSpan.SetStatus(codes.Error, runErr.Error())
+		} else {
+			rootSpan.SetStatus(codes.Ok, "")
+		}
+		rootSpan.End()
+	}()
 
 	logger, err := newLogger(c.LogLevel, "client")
 	if err != nil {
@@ -71,14 +101,14 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) (runErr error) {
 		"command_argc", len(command),
 		"env_count", len(executionEnv),
 	)
-	target, err := resolveExecutionSandbox(logger, client, ctx, cwd, host, c.Backend, c.In, c.From, c.Image, c.LaunchSeconds, c.repositoryOverrideFlags)
+	target, err := resolveExecutionSandbox(rootCtx, logger, client, ctx, cwd, host, c.Backend, c.In, c.From, c.Image, c.LaunchSeconds, c.repositoryOverrideFlags)
 	if err != nil {
 		if strings.TrimSpace(c.From) != "" {
 			err = explainSnapshotRuntimeDisabledError(err, ctx)
 		}
 		return err
 	}
-	sandboxID := target.SandboxID
+	sandboxID = target.SandboxID
 	createdSandbox := target.CreatedSandbox
 	repository := target.Repository
 	printedSandboxID := false
@@ -92,7 +122,6 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) (runErr error) {
 		printedSandboxID = true
 		return nil
 	}
-	executionID := ""
 	printedExecutionID := false
 	printExecutionID := func() error {
 		if printedExecutionID {
@@ -131,7 +160,7 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) (runErr error) {
 			if err := writeExecutionInspectCommand(os.Stderr, sandboxID, executionID); err != nil {
 				extraErr = errors.Join(extraErr, err)
 			}
-			resp, err := client.InspectExecution(context.Background(), &cleanroomv1.InspectExecutionRequest{
+			resp, err := client.InspectExecution(rootCtx, &cleanroomv1.InspectExecutionRequest{
 				SandboxId:   sandboxID,
 				ExecutionId: executionID,
 			})
@@ -155,10 +184,10 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) (runErr error) {
 		if sandboxID == "" || !autoTerminateSandbox {
 			return
 		}
-		terminateSandboxBestEffort(client, sandboxID, 0, logger, "terminate sandbox after console failed")
+		terminateSandboxBestEffort(rootCtx, client, sandboxID, 0, logger, "terminate sandbox after console failed")
 	}()
 
-	createExecutionResp, err := client.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+	createExecutionResp, err := client.CreateExecution(rootCtx, &cleanroomv1.CreateExecutionRequest{
 		SandboxId:          sandboxID,
 		Command:            repositorycheckout.NormalizeCommand(command),
 		Env:                executionEnv,
@@ -177,7 +206,7 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) (runErr error) {
 
 	stdinFD := int(os.Stdin.Fd())
 	initialCols, initialRows := attachTTYSize(stdinFD)
-	openResp, err := client.AttachExecution(context.Background(), &cleanroomv1.AttachExecutionRequest{
+	openResp, err := client.AttachExecution(rootCtx, &cleanroomv1.AttachExecutionRequest{
 		SandboxId:   sandboxID,
 		ExecutionId: executionID,
 		InitialCols: initialCols,
@@ -185,12 +214,12 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) (runErr error) {
 	})
 	if err != nil {
 		if isExecutionNoLongerActiveErr(err) {
-			exitCode, haveExitCode, replayErr := replayExecutionHistory(client, sandboxID, executionID, ctx.Stdout, os.Stderr)
+			exitCode, haveExitCode, replayErr := replayExecutionHistory(rootCtx, client, sandboxID, executionID, ctx.Stdout, os.Stderr)
 			if replayErr != nil {
 				return fmt.Errorf("attach interactive console: %w", err)
 			}
 			if !haveExitCode {
-				if fetchedExitCode, ok := getFinalExecutionExitCode(client, sandboxID, executionID); ok {
+				if fetchedExitCode, ok := getFinalExecutionExitCode(rootCtx, client, sandboxID, executionID); ok {
 					exitCode = fetchedExitCode
 					haveExitCode = true
 				}
@@ -211,7 +240,7 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) (runErr error) {
 	}
 	quicEndpoint := resolveInteractiveDialEndpoint(controlEndpoint, openResp.GetQuicEndpoint())
 	interactiveSession, err := interactivequic.Dial(
-		context.Background(),
+		rootCtx,
 		quicEndpoint,
 		openResp.GetAlpn(),
 		openResp.GetServerCertPinSha256(),
@@ -222,10 +251,10 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) (runErr error) {
 		return resolveConsoleDialFailure(
 			err,
 			func() (int, bool, error) {
-				return replayExecutionHistory(client, sandboxID, executionID, ctx.Stdout, os.Stderr)
+				return replayExecutionHistory(rootCtx, client, sandboxID, executionID, ctx.Stdout, os.Stderr)
 			},
 			func() (int, bool) {
-				return getFinalExecutionExitCode(client, sandboxID, executionID)
+				return getFinalExecutionExitCode(rootCtx, client, sandboxID, executionID)
 			},
 		)
 	}
@@ -422,7 +451,7 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) (runErr error) {
 	}
 
 	if !haveExitCode {
-		if fetchedExitCode, ok := getFinalExecutionExitCode(client, sandboxID, executionID); ok {
+		if fetchedExitCode, ok := getFinalExecutionExitCode(rootCtx, client, sandboxID, executionID); ok {
 			exitCode = fetchedExitCode
 			haveExitCode = true
 		}

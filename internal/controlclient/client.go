@@ -28,13 +28,25 @@ type Client struct {
 type Option func(*options)
 
 type options struct {
-	tlsOpts tlsconfig.Options
+	tlsOpts             tlsconfig.Options
+	connectInterceptors []connect.Interceptor
 }
 
 // WithTLS configures TLS options for the client.
 func WithTLS(opts tlsconfig.Options) Option {
 	return func(o *options) {
 		o.tlsOpts = opts
+	}
+}
+
+func WithConnectInterceptors(interceptors ...connect.Interceptor) Option {
+	return func(o *options) {
+		for _, interceptor := range interceptors {
+			if interceptor == nil {
+				continue
+			}
+			o.connectInterceptors = append(o.connectInterceptors, interceptor)
+		}
 	}
 }
 
@@ -50,12 +62,16 @@ func New(ep endpoint.Endpoint, opts ...Option) (*Client, error) {
 		return nil, err
 	}
 	httpClient := &http.Client{Transport: transport}
+	clientOptions := make([]connect.ClientOption, 0, 1)
+	if len(o.connectInterceptors) > 0 {
+		clientOptions = append(clientOptions, connect.WithInterceptors(o.connectInterceptors...))
+	}
 	return &Client{
 		httpClient:      httpClient,
 		baseURL:         baseURL,
-		sandboxClient:   cleanroomv1connect.NewSandboxServiceClient(httpClient, baseURL),
-		snapshotClient:  cleanroomv1connect.NewSnapshotServiceClient(httpClient, baseURL),
-		executionClient: cleanroomv1connect.NewExecutionServiceClient(httpClient, baseURL),
+		sandboxClient:   cleanroomv1connect.NewSandboxServiceClient(httpClient, baseURL, clientOptions...),
+		snapshotClient:  cleanroomv1connect.NewSnapshotServiceClient(httpClient, baseURL, clientOptions...),
+		executionClient: cleanroomv1connect.NewExecutionServiceClient(httpClient, baseURL, clientOptions...),
 	}, nil
 }
 

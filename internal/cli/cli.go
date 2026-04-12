@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/backend/firecracker"
 	"github.com/buildkite/cleanroom/internal/controlclient"
 	"github.com/buildkite/cleanroom/internal/endpoint"
+	"github.com/buildkite/cleanroom/internal/observability"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 	"github.com/buildkite/cleanroom/internal/tlsconfig"
@@ -35,13 +37,15 @@ type policyLoader interface {
 }
 
 type runtimeContext struct {
-	CWD        string
-	Stdout     *os.File
-	Stderr     *os.File
-	Loader     policyLoader
-	Config     runtimeconfig.Config
-	ConfigPath string
-	Backends   map[string]backend.Adapter
+	CWD           string
+	Stdout        *os.File
+	Stderr        *os.File
+	Loader        policyLoader
+	Config        runtimeconfig.Config
+	ConfigPath    string
+	Version       string
+	Backends      map[string]backend.Adapter
+	Observability *observability.Runtime
 }
 
 type CLI struct {
@@ -90,9 +94,15 @@ func (f *clientFlags) connect(ctx *runtimeContext) (*controlclient.Client, error
 	if err != nil {
 		return nil, err
 	}
-	return controlclient.New(ep, controlclient.WithTLS(tlsconfig.Options{
+	options := []controlclient.Option{controlclient.WithTLS(tlsconfig.Options{
 		CAPath: f.TLSCA,
-	}))
+	})}
+	if ctx != nil {
+		if interceptor := ctx.Observability.ConnectInterceptor(); interceptor != nil {
+			options = append(options, controlclient.WithConnectInterceptors(interceptor))
+		}
+	}
+	return controlclient.New(ep, options...)
 }
 
 type exitCodeError struct {
@@ -111,7 +121,7 @@ type hasExitCode interface {
 	ExitCode() int
 }
 
-func Run(args []string, version string) error {
+func Run(args []string, version string) (runErr error) {
 	cfg, cfgPath, err := runtimeconfig.Load()
 	if err != nil {
 		return err
@@ -123,6 +133,7 @@ func Run(args []string, version string) error {
 		Loader:     policy.Loader{},
 		Config:     cfg,
 		ConfigPath: cfgPath,
+		Version:    version,
 		Backends: map[string]backend.Adapter{
 			"firecracker": firecracker.New(),
 			"darwin-vz":   darwinvz.New(),
@@ -152,7 +163,28 @@ func Run(args []string, version string) error {
 	}
 	runtimeCtx.CWD = cwd
 
-	return ctx.Run(runtimeCtx)
+	obsRuntime, err := observability.Start(context.Background(), observability.Options{
+		Config:         cfg.Observability,
+		ServiceName:    runtimeServiceName(ctx),
+		ServiceVersion: version,
+	})
+	if err != nil {
+		return fmt.Errorf("configure observability: %w", err)
+	}
+	runtimeCtx.Observability = obsRuntime
+	defer func() {
+		if err := obsRuntime.Shutdown(context.Background()); err != nil {
+			shutdownErr := fmt.Errorf("shutdown observability: %w", err)
+			if runErr == nil {
+				runErr = shutdownErr
+				return
+			}
+			runErr = errors.Join(runErr, shutdownErr)
+		}
+	}()
+
+	runErr = ctx.Run(runtimeCtx)
+	return runErr
 }
 
 func configureBackendRuntimeConfig(backends map[string]backend.Adapter, cfg runtimeconfig.Config) {
@@ -184,4 +216,14 @@ func (ctx *runtimeContext) stderr() *os.File {
 		return ctx.Stderr
 	}
 	return os.Stderr
+}
+
+func runtimeServiceName(ctx *kong.Context) string {
+	if ctx == nil {
+		return "cleanroom-cli"
+	}
+	if strings.HasPrefix(strings.TrimSpace(ctx.Command()), "serve") {
+		return "cleanroom-server"
+	}
+	return "cleanroom-cli"
 }

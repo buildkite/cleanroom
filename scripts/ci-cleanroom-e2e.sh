@@ -1,10 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/e2e-observability.sh
+source "$SCRIPT_DIR/e2e-observability.sh"
+
 ROOT_HELPER_REQUIRED_CAPABILITIES=(
   firecracker-network
   firecracker-trusted-dns
 )
+
+OBSERVABILITY_SUITE_LABEL="Firecracker E2E"
+OBSERVABILITY_CONTEXT="cleanroom-e2e-observability"
+OBSERVABILITY_ARCHIVE_NAME="firecracker-e2e-observability.tgz"
 
 # run_privileged executes a privileged command via the installed root helper.
 run_privileged() {
@@ -113,6 +121,13 @@ purge_stale_cleanroom_resources() {
 }
 
 cleanup() {
+  publish_buildkite_observability \
+    "$OBSERVABILITY_SUITE_LABEL" \
+    "$OBSERVABILITY_CONTEXT" \
+    "$OBSERVABILITY_ARCHIVE_NAME" \
+    "./dist/cleanroom" \
+    "${listen_endpoint:-}" \
+    "${tmpdir:-}" || true
   if [[ -n "${srv_pid:-}" ]]; then
     kill "$srv_pid" >/dev/null 2>&1 || true
     wait "$srv_pid" >/dev/null 2>&1 || true
@@ -225,6 +240,11 @@ while true; do
 
   if [[ "$smoke_status" -eq 0 ]] && grep -q '^cleanroom-e2e$' "$tmpdir/exec.out"; then
     cat "$tmpdir/exec.out"
+    capture_latest_execution_observability "./dist/cleanroom"
+    if ! require_launch_observability "$OBSERVABILITY_SUITE_LABEL"; then
+      dump_runtime_diagnostics 80
+      exit 1
+    fi
     break
   fi
 
@@ -491,67 +511,9 @@ else
 fi
 
 echo "--- :bar_chart: Execution observability present"
-./dist/cleanroom status --last | tee "$tmpdir/status.out"
-if ! grep -q 'execution-observability.json' "$tmpdir/status.out"; then
-  echo "expected execution-observability.json reference in status output" >&2
+if [[ -z "${CLEANROOM_E2E_LAUNCH_OBSERVABILITY_PATH:-}" || ! -f "${CLEANROOM_E2E_LAUNCH_OBSERVABILITY_PATH}" ]]; then
+  echo "expected launched execution observability file to be retained" >&2
   exit 1
-fi
-
-obs_file="$(
-  find "$XDG_STATE_HOME"/cleanroom/executions -name execution-observability.json -type f -print 2>/dev/null \
-    | while IFS= read -r path; do
-        stat -c '%Y %n' "$path"
-      done \
-    | sort -nr \
-    | head -n 1 \
-    | cut -d' ' -f2-
-)"
-if [[ -n "$obs_file" && -f "$obs_file" ]]; then
-  extract_json_number() {
-    local key="$1"
-    local file="$2"
-    sed -nE "s/.*\"${key}\"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p" "$file" | head -n 1
-  }
-  extract_json_string() {
-    local key="$1"
-    local file="$2"
-    sed -nE "s/.*\"${key}\"[[:space:]]*:[[:space:]]*\"([^\"]+)\".*/\1/p" "$file" | head -n 1
-  }
-
-  execution_id="$(extract_json_string execution_id "$obs_file")"
-  total_ms="$(extract_json_number total_ms "$obs_file")"
-  policy_resolve_ms="$(extract_json_number policy_resolve_ms "$obs_file")"
-  rootfs_copy_ms="$(extract_json_number rootfs_copy_ms "$obs_file")"
-  network_setup_ms="$(extract_json_number network_setup_ms "$obs_file")"
-  firecracker_start_ms="$(extract_json_number firecracker_start_ms "$obs_file")"
-  vm_ready_ms="$(extract_json_number vm_ready_ms "$obs_file")"
-  vsock_wait_ms="$(extract_json_number vsock_wait_ms "$obs_file")"
-  guest_exec_ms="$(extract_json_number guest_exec_ms "$obs_file")"
-  cleanup_ms="$(extract_json_number cleanup_ms "$obs_file")"
-
-  if command -v buildkite-agent >/dev/null 2>&1; then
-    annotation_file="$tmpdir/observability-annotation.md"
-    cat > "$annotation_file" <<EOF
-### Firecracker E2E Observability
-
-- execution id: ${execution_id:-n/a}
-
-| Metric | Value (ms) |
-| --- | ---: |
-| total | ${total_ms:-n/a} |
-| policy resolve | ${policy_resolve_ms:-n/a} |
-| rootfs copy | ${rootfs_copy_ms:-n/a} |
-| network setup | ${network_setup_ms:-n/a} |
-| firecracker start | ${firecracker_start_ms:-n/a} |
-| vm ready | ${vm_ready_ms:-n/a} |
-| vsock wait | ${vsock_wait_ms:-n/a} |
-| guest exec | ${guest_exec_ms:-n/a} |
-| cleanup | ${cleanup_ms:-n/a} |
-
-Source: ${obs_file}
-EOF
-    buildkite-agent annotate --context cleanroom-e2e-observability --style info < "$annotation_file"
-  fi
 fi
 
   echo "Firecracker e2e checks passed"

@@ -10,6 +10,9 @@ import (
 
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/repositorycheckout"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type ExecCommand struct {
@@ -34,6 +37,34 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 	if err := validateExecutionSandboxArgs(e.Chdir, e.In, e.From, e.Keep, e.repositoryOverrideFlags); err != nil {
 		return err
 	}
+
+	sandboxID := ""
+	executionID := ""
+	rootCtx, rootSpan := ctx.Observability.Tracer("github.com/buildkite/cleanroom/internal/cli").Start(
+		context.Background(),
+		"cleanroom.exec",
+		trace.WithAttributes(
+			attribute.String("cleanroom.backend.requested", strings.TrimSpace(e.Backend)),
+			attribute.Bool("cleanroom.keep_sandbox", e.Keep),
+			attribute.Bool("cleanroom.stdin.disabled", e.NoStdin),
+			attribute.Int("cleanroom.command.argc", len(e.Command)),
+		),
+	)
+	defer func() {
+		if sandboxID != "" {
+			rootSpan.SetAttributes(attribute.String("cleanroom.sandbox.id", sandboxID))
+		}
+		if executionID != "" {
+			rootSpan.SetAttributes(attribute.String("cleanroom.execution.id", executionID))
+		}
+		if runErr != nil {
+			rootSpan.RecordError(runErr)
+			rootSpan.SetStatus(codes.Error, runErr.Error())
+		} else {
+			rootSpan.SetStatus(codes.Ok, "")
+		}
+		rootSpan.End()
+	}()
 
 	logger, err := newLogger(e.LogLevel, "client")
 	if err != nil {
@@ -61,17 +92,16 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 		"command_argc", len(e.Command),
 		"env_count", len(executionEnv),
 	)
-	target, err := resolveExecutionSandbox(logger, client, ctx, cwd, host, e.Backend, e.In, e.From, e.Image, e.LaunchSeconds, e.repositoryOverrideFlags)
+	target, err := resolveExecutionSandbox(rootCtx, logger, client, ctx, cwd, host, e.Backend, e.In, e.From, e.Image, e.LaunchSeconds, e.repositoryOverrideFlags)
 	if err != nil {
 		if strings.TrimSpace(e.From) != "" {
 			err = explainSnapshotRuntimeDisabledError(err, ctx)
 		}
 		return err
 	}
-	sandboxID := target.SandboxID
+	sandboxID = target.SandboxID
 	createdSandbox := target.CreatedSandbox
 	repository := target.Repository
-	executionID := ""
 	printedSandboxID := false
 	printSandboxID := func() error {
 		if printedSandboxID {
@@ -121,7 +151,7 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 			if err := writeExecutionInspectCommand(os.Stderr, sandboxID, executionID); err != nil {
 				extraErr = errors.Join(extraErr, err)
 			}
-			resp, err := client.InspectExecution(context.Background(), &cleanroomv1.InspectExecutionRequest{
+			resp, err := client.InspectExecution(rootCtx, &cleanroomv1.InspectExecutionRequest{
 				SandboxId:   sandboxID,
 				ExecutionId: executionID,
 			})
@@ -146,10 +176,10 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 		if detached || !autoTerminateSandbox || sandboxID == "" {
 			return
 		}
-		terminateSandboxBestEffort(client, sandboxID, 0, logger, "terminate sandbox after exec failed")
+		terminateSandboxBestEffort(rootCtx, client, sandboxID, 0, logger, "terminate sandbox after exec failed")
 	}()
 
-	createExecutionResp, err := client.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+	createExecutionResp, err := client.CreateExecution(rootCtx, &cleanroomv1.CreateExecutionRequest{
 		SandboxId:          sandboxID,
 		Command:            repositorycheckout.NormalizeCommand(e.Command),
 		Env:                executionEnv,
@@ -166,7 +196,7 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 
 	logger.Debug("execution started", "sandbox_id", sandboxID, "execution_id", executionID)
 
-	streamCtx, streamCancel := context.WithCancel(context.Background())
+	streamCtx, streamCancel := context.WithCancel(rootCtx)
 	defer streamCancel()
 	stream, err := client.StreamExecution(streamCtx, &cleanroomv1.StreamExecutionRequest{
 		SandboxId:   sandboxID,
@@ -177,7 +207,7 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 		return fmt.Errorf("stream execution: %w", err)
 	}
 
-	stdinErrCh := startExecutionStdinForwarder(client, sandboxID, executionID, e.NoStdin, streamCancel)
+	stdinErrCh := startExecutionStdinForwarder(rootCtx, client, sandboxID, executionID, e.NoStdin, streamCancel)
 
 	signalCh := newSignalChannel()
 	notifySignals(signalCh, os.Interrupt, syscall.SIGTERM)
@@ -189,7 +219,7 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 		for range signalCh {
 			interrupts++
 			if interrupts == 1 {
-				cancelResp, cancelErr := client.CancelExecution(context.Background(), &cleanroomv1.CancelExecutionRequest{
+				cancelResp, cancelErr := client.CancelExecution(rootCtx, &cleanroomv1.CancelExecutionRequest{
 					SandboxId:   sandboxID,
 					ExecutionId: executionID,
 					Signal:      2,
@@ -247,7 +277,7 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 	case <-secondInterrupt:
 		detached = true
 		if autoTerminateSandbox {
-			terminateSandboxBestEffort(client, sandboxID, sandboxTerminateTimeout, logger, "terminate sandbox after detach failed")
+			terminateSandboxBestEffort(rootCtx, client, sandboxID, sandboxTerminateTimeout, logger, "terminate sandbox after detach failed")
 		}
 		return exitCodeError{code: 130}
 	default:
@@ -262,7 +292,7 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 	}
 
 	if !haveExitCode {
-		if fetchedExitCode, ok := getFinalExecutionExitCode(client, sandboxID, executionID); ok {
+		if fetchedExitCode, ok := getFinalExecutionExitCode(rootCtx, client, sandboxID, executionID); ok {
 			exitCode = fetchedExitCode
 			haveExitCode = true
 		}
