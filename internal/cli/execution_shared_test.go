@@ -1,9 +1,12 @@
 package cli
 
 import (
+	"context"
 	"reflect"
 	"strings"
 	"testing"
+
+	"go.opentelemetry.io/otel/trace"
 )
 
 func TestResolveExecutionEnv(t *testing.T) {
@@ -37,5 +40,33 @@ func TestResolveExecutionEnvRejectsMissingExplicitKey(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "missing variable name") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestTracePreservingContextRemovesCancellationAndPreservesValues(t *testing.T) {
+	rootCtx := context.WithValue(context.Background(), struct{}{}, "value")
+	rootCtx = trace.ContextWithSpanContext(rootCtx, trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    trace.TraceID{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
+		SpanID:     trace.SpanID{1, 2, 3, 4, 5, 6, 7, 8},
+		TraceFlags: trace.FlagsSampled,
+	}))
+	canceledCtx, cancel := context.WithCancel(rootCtx)
+	cancel()
+
+	rpcCtx := tracePreservingContext(canceledCtx)
+	if err := rpcCtx.Err(); err != nil {
+		t.Fatalf("expected uncanceled context, got %v", err)
+	}
+	if got, want := rpcCtx.Value(struct{}{}), "value"; got != want {
+		t.Fatalf("unexpected context value: got %v want %v", got, want)
+	}
+
+	gotSpanContext := trace.SpanContextFromContext(rpcCtx)
+	wantSpanContext := trace.SpanContextFromContext(rootCtx)
+	if gotSpanContext.TraceID() != wantSpanContext.TraceID() {
+		t.Fatalf("unexpected trace id: got %s want %s", gotSpanContext.TraceID(), wantSpanContext.TraceID())
+	}
+	if gotSpanContext.SpanID() != wantSpanContext.SpanID() {
+		t.Fatalf("unexpected span id: got %s want %s", gotSpanContext.SpanID(), wantSpanContext.SpanID())
 	}
 }

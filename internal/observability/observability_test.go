@@ -100,7 +100,7 @@ func TestStartExportsZipkinSpanOnShutdown(t *testing.T) {
 				},
 			},
 		},
-		ServiceName: "cli",
+		ServiceName: "cleanroom-cli",
 	})
 	if err != nil {
 		t.Fatalf("Start returned error: %v", err)

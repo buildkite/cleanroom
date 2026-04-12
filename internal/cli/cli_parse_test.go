@@ -454,6 +454,31 @@ func TestServeCommandParses(t *testing.T) {
 	}
 }
 
+func TestRuntimeServiceNameUsesDescriptiveNames(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if got, want := runtimeServiceName(nil), "cleanroom-cli"; got != want {
+		t.Fatalf("unexpected nil-context service name: got %q want %q", got, want)
+	}
+
+	execCtx, err := parser.Parse([]string{"exec", "--", "echo", "ok"})
+	if err != nil {
+		t.Fatalf("parse exec returned error: %v", err)
+	}
+	if got, want := runtimeServiceName(execCtx), "cleanroom-cli"; got != want {
+		t.Fatalf("unexpected exec service name: got %q want %q", got, want)
+	}
+
+	serveCtx, err := parser.Parse([]string{"serve"})
+	if err != nil {
+		t.Fatalf("parse serve returned error: %v", err)
+	}
+	if got, want := runtimeServiceName(serveCtx), "cleanroom-server"; got != want {
+		t.Fatalf("unexpected serve service name: got %q want %q", got, want)
+	}
+}
+
 func TestServeInstallIsRejected(t *testing.T) {
 	c := &CLI{}
 	parser := newParserForTest(t, c)
