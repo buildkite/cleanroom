@@ -106,7 +106,7 @@ type SnapshottingAdapter interface {
 }
 
 // RuntimeBaseKeyProvider returns a stable identifier for the backend runtime
-// base that a reusable workspace seed depends on.
+// base that a reusable workspace stage depends on.
 type RuntimeBaseKeyProvider interface {
 	RuntimeBaseKey(ctx context.Context, compiled *policy.CompiledPolicy, cfg FirecrackerConfig) (string, error)
 }

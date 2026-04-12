@@ -43,7 +43,7 @@ type stubAdapter struct {
 	createSnapshotCalls        int
 	deleteSnapshotCalls        int
 	terminateCalls             int
-	workspaceSeedRuntimeKey    string
+	runtimeBaseKeyOverride     string
 	runtimeBaseKeyErr          error
 }
 
@@ -141,8 +141,8 @@ func (s *stubAdapter) RuntimeBaseKey(_ context.Context, _ *policy.CompiledPolicy
 	if s.runtimeBaseKeyErr != nil {
 		return "", s.runtimeBaseKeyErr
 	}
-	if strings.TrimSpace(s.workspaceSeedRuntimeKey) != "" {
-		return s.workspaceSeedRuntimeKey, nil
+	if strings.TrimSpace(s.runtimeBaseKeyOverride) != "" {
+		return s.runtimeBaseKeyOverride, nil
 	}
 	return "runtime-base:test", nil
 }
@@ -554,7 +554,7 @@ func TestCreateSnapshotPersistsMetadataAndDeletesIt(t *testing.T) {
 		t.Fatalf("unexpected create snapshot sandbox id: got %q want %q", got, want)
 	}
 	if adapter.createSnapshotCalls != 2 {
-		t.Fatalf("expected two snapshot create calls (workspace seed + manual snapshot), got %d", adapter.createSnapshotCalls)
+		t.Fatalf("expected two snapshot create calls (workspace stage + manual snapshot), got %d", adapter.createSnapshotCalls)
 	}
 
 	getResp, err := svc.GetSnapshot(context.Background(), &cleanroomv1.GetSnapshotRequest{
@@ -628,7 +628,7 @@ func TestCreateSnapshotRejectsDisabledSnapshots(t *testing.T) {
 	}
 }
 
-func TestCreateSnapshotAllowsWorkspaceSeedLikeNames(t *testing.T) {
+func TestCreateSnapshotAllowsWorkspaceStageLikeNames(t *testing.T) {
 	store := newMemorySnapshotStore()
 	adapter := &stubAdapter{}
 	svc := newTestServiceWithSnapshotStore(adapter, store)
@@ -640,12 +640,12 @@ func TestCreateSnapshotAllowsWorkspaceSeedLikeNames(t *testing.T) {
 
 	resp, err := svc.CreateSnapshot(context.Background(), &cleanroomv1.CreateSnapshotRequest{
 		SandboxId: createResp.GetSandbox().GetSandboxId(),
-		Name:      "workspace-seed:manual",
+		Name:      "workspace-stage:manual",
 	})
 	if err != nil {
 		t.Fatalf("CreateSnapshot returned error: %v", err)
 	}
-	if got, want := resp.GetSnapshot().GetName(), "workspace-seed:manual"; got != want {
+	if got, want := resp.GetSnapshot().GetName(), "workspace-stage:manual"; got != want {
 		t.Fatalf("unexpected snapshot name: got %q want %q", got, want)
 	}
 	if got, want := adapter.createSnapshotCalls, 1; got != want {
@@ -1343,7 +1343,7 @@ func TestCreateSandboxPublishesWorkspaceStageCache(t *testing.T) {
 		t.Fatalf("unexpected provision call count: got %d want %d", got, want)
 	}
 	if got, want := adapter.createSnapshotCalls, 1; got != want {
-		t.Fatalf("unexpected workspace seed snapshot create count: got %d want %d", got, want)
+		t.Fatalf("unexpected workspace stage snapshot create count: got %d want %d", got, want)
 	}
 	if got, want := adapter.createSnapshotReq.SandboxID, createResp.GetSandbox().GetSandboxId(); got != want {
 		t.Fatalf("unexpected snapshot sandbox id: got %q want %q", got, want)
@@ -1442,7 +1442,7 @@ func TestCreateSandboxReusesWorkspaceStageCache(t *testing.T) {
 		t.Fatalf("expected warm hit to avoid reprovision bootstrap path, got provisionCalls=%d want=%d", got, want)
 	}
 	if got, want := adapter.createSnapshotCalls, 1; got != want {
-		t.Fatalf("expected warm hit to avoid publishing another workspace seed, got createSnapshotCalls=%d want=%d", got, want)
+		t.Fatalf("expected warm hit to avoid publishing another workspace stage, got createSnapshotCalls=%d want=%d", got, want)
 	}
 	if got, want := adapter.provisionFromSnapshotCalls, 1; got != want {
 		t.Fatalf("expected warm hit to provision from snapshot once, got %d want %d", got, want)
@@ -1636,11 +1636,11 @@ func TestCreateSandboxPublishesWorkspaceStageCachePerBackend(t *testing.T) {
 	}
 }
 
-func TestCreateSandboxDoesNotReuseWorkspaceSeedWhenRuntimeBaseKeyChanges(t *testing.T) {
+func TestCreateSandboxDoesNotReuseWorkspaceStageWhenRuntimeBaseKeyChanges(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	store := newMemorySnapshotStore()
 	adapter := &stubAdapter{
-		workspaceSeedRuntimeKey: "runtime-base:a",
+		runtimeBaseKeyOverride: "runtime-base:a",
 		createSnapshotFn: func(_ context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
 			return &backend.SnapshotResult{StorageRef: "/snapshots/" + req.SnapshotID + ".ext4"}, nil
 		},
@@ -1658,7 +1658,7 @@ func TestCreateSandboxDoesNotReuseWorkspaceSeedWhenRuntimeBaseKeyChanges(t *test
 		t.Fatalf("first CreateSandbox returned error: %v", err)
 	}
 
-	adapter.workspaceSeedRuntimeKey = "runtime-base:b"
+	adapter.runtimeBaseKeyOverride = "runtime-base:b"
 
 	secondResp, err := svc.CreateSandbox(context.Background(), req)
 	if err != nil {
@@ -1677,7 +1677,7 @@ func TestCreateSandboxDoesNotReuseWorkspaceSeedWhenRuntimeBaseKeyChanges(t *test
 		t.Fatalf("expected runtime base change to rerun repository bootstrap, got %d want %d", got, want)
 	}
 	if got, want := adapter.createSnapshotCalls, 2; got != want {
-		t.Fatalf("expected runtime base change to publish a new workspace seed, got %d want %d", got, want)
+		t.Fatalf("expected runtime base change to publish a new workspace stage, got %d want %d", got, want)
 	}
 
 	cacheStore, ok := svc.CacheStore.(*memoryCacheStore)
@@ -1735,7 +1735,7 @@ func TestCreateSandboxFallsBackWhenWorkspaceStageRestoreFails(t *testing.T) {
 		t.Fatalf("expected fallback path to rerun repository bootstrap, got %d want %d", got, want)
 	}
 	if got, want := adapter.createSnapshotCalls, 2; got != want {
-		t.Fatalf("expected fallback path to republish workspace seed snapshot, got %d want %d", got, want)
+		t.Fatalf("expected fallback path to republish workspace stage snapshot, got %d want %d", got, want)
 	}
 	if got, want := mirrors.calls, 2; got != want {
 		t.Fatalf("expected fallback path to re-prewarm mirror, got %d want %d", got, want)

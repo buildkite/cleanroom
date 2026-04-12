@@ -61,7 +61,7 @@ func workspaceStageMaterializationRecipeDigest(repository *repositorycheckout.Ch
 	return repositorycheckout.BootstrapRecipeDigest(repository)
 }
 
-func (s *Service) lookupWorkspaceSeedSnapshot(ctx context.Context, backendName string, compiled *policy.CompiledPolicy, runtimeBaseKey string, repository *repositorycheckout.Checkout) (cachestore.Record, bool, error) {
+func (s *Service) lookupWorkspaceStageCache(ctx context.Context, backendName string, compiled *policy.CompiledPolicy, runtimeBaseKey string, repository *repositorycheckout.Checkout) (cachestore.Record, bool, error) {
 	if compiled == nil || repository == nil || strings.TrimSpace(runtimeBaseKey) == "" {
 		return cachestore.Record{}, false, nil
 	}
@@ -93,7 +93,7 @@ func (s *Service) lookupWorkspaceSeedSnapshot(ctx context.Context, backendName s
 	return record, true, nil
 }
 
-func (s *Service) maybePublishWorkspaceSeedSnapshot(
+func (s *Service) maybePublishWorkspaceStageCache(
 	ctx context.Context,
 	adapter backend.SnapshottingAdapter,
 	sandboxID, backendName string,
@@ -120,12 +120,13 @@ func (s *Service) maybePublishWorkspaceSeedSnapshot(
 		return
 	}
 
-	if record, ok, err := s.lookupWorkspaceSeedSnapshot(ctx, backendName, compiled, runtimeBaseKey, repository); err == nil && ok {
+	if record, ok, err := s.lookupWorkspaceStageCache(ctx, backendName, compiled, runtimeBaseKey, repository); err == nil && ok {
 		if replacedRecord == nil || strings.TrimSpace(record.CacheKey) != strings.TrimSpace(replacedRecord.CacheKey) {
+			s.logWorkspaceStageAlreadyPublished(record)
 			return
 		}
 	} else if err != nil {
-		s.logWorkspaceSeedWarning("lookup workspace stage cache", sandboxID, err)
+		s.logWorkspaceStageWarning("lookup workspace stage cache", sandboxID, err)
 		return
 	}
 
@@ -137,7 +138,7 @@ func (s *Service) maybePublishWorkspaceSeedSnapshot(
 		FirecrackerConfig: snapshotCfg,
 	})
 	if err != nil {
-		s.logWorkspaceSeedWarning("publish workspace stage cache", sandboxID, err)
+		s.logWorkspaceStageWarning("publish workspace stage cache", sandboxID, err)
 		return
 	}
 
@@ -170,16 +171,18 @@ func (s *Service) maybePublishWorkspaceSeedSnapshot(
 			FirecrackerConfig: snapshotCfg,
 		})
 		if deleteErr != nil {
-			s.logWorkspaceSeedWarning("rollback workspace stage cache after metadata failure", sandboxID, fmt.Errorf("%w (rollback failed: %v)", err, deleteErr))
+			s.logWorkspaceStageWarning("rollback workspace stage cache after metadata failure", sandboxID, fmt.Errorf("%w (rollback failed: %v)", err, deleteErr))
 			return
 		}
-		s.logWorkspaceSeedWarning("persist workspace stage cache metadata", sandboxID, err)
+		s.logWorkspaceStageWarning("persist workspace stage cache metadata", sandboxID, err)
 		return
 	}
 
+	s.logWorkspaceStagePublished(record, sandboxID, replacedRecord != nil && strings.TrimSpace(replacedRecord.CacheKey) == cacheKey)
+
 	if replacedRecord != nil && strings.TrimSpace(replacedRecord.CacheKey) == cacheKey {
 		if err := s.deleteWorkspaceStageCacheSnapshot(ctx, adapter, backendName, firecrackerCfg, *replacedRecord); err != nil {
-			s.logWorkspaceSeedWarning("delete replaced workspace stage cache snapshot", sandboxID, err)
+			s.logWorkspaceStageWarning("delete replaced workspace stage cache snapshot", sandboxID, err)
 		}
 	}
 }
@@ -210,7 +213,7 @@ func (s *Service) deleteWorkspaceStageCacheSnapshot(ctx context.Context, adapter
 	})
 }
 
-func (s *Service) workspaceSeedRuntimeBaseKey(ctx context.Context, adapter backend.Adapter, compiled *policy.CompiledPolicy, firecrackerCfg backend.FirecrackerConfig) (string, bool, error) {
+func (s *Service) workspaceStageRuntimeBaseKey(ctx context.Context, adapter backend.Adapter, compiled *policy.CompiledPolicy, firecrackerCfg backend.FirecrackerConfig) (string, bool, error) {
 	if adapter == nil || compiled == nil {
 		return "", false, nil
 	}
@@ -229,19 +232,81 @@ func (s *Service) workspaceSeedRuntimeBaseKey(ctx context.Context, adapter backe
 	return key, true, nil
 }
 
-func (s *Service) logWorkspaceSeedWarning(message, sandboxID string, err error) {
+func (s *Service) logWorkspaceStageCacheHit(record cachestore.Record) {
+	if s == nil || s.Logger == nil {
+		return
+	}
+	s.Logger.Debug("workspace stage cache hit",
+		"cache_key", strings.TrimSpace(record.CacheKey),
+		"backing_snapshot_id", strings.TrimSpace(record.BackingSnapshotID),
+		"backend", strings.TrimSpace(record.Backend),
+	)
+}
+
+func (s *Service) logWorkspaceStageCacheMiss(backendName, cacheKey string) {
+	if s == nil || s.Logger == nil {
+		return
+	}
+	s.Logger.Debug("workspace stage cache miss",
+		"cache_key", strings.TrimSpace(cacheKey),
+		"backend", strings.TrimSpace(backendName),
+	)
+}
+
+func (s *Service) logWorkspaceStageAlreadyPublished(record cachestore.Record) {
+	if s == nil || s.Logger == nil {
+		return
+	}
+	s.Logger.Debug("workspace stage cache already published",
+		"cache_key", strings.TrimSpace(record.CacheKey),
+		"backing_snapshot_id", strings.TrimSpace(record.BackingSnapshotID),
+		"backend", strings.TrimSpace(record.Backend),
+	)
+}
+
+func (s *Service) logWorkspaceStagePublished(record cachestore.Record, sandboxID string, replaced bool) {
+	if s == nil || s.Logger == nil {
+		return
+	}
+	message := "workspace stage cache published"
+	if replaced {
+		message = "workspace stage cache replaced"
+	}
+	s.Logger.Info(message,
+		"sandbox_id", strings.TrimSpace(sandboxID),
+		"cache_key", strings.TrimSpace(record.CacheKey),
+		"backing_snapshot_id", strings.TrimSpace(record.BackingSnapshotID),
+		"backend", strings.TrimSpace(record.Backend),
+	)
+}
+
+func (s *Service) logWorkspaceStageRestore(record cachestore.Record, sandboxID string) {
+	if s == nil || s.Logger == nil {
+		return
+	}
+	s.Logger.Info("workspace stage cache restored",
+		"sandbox_id", strings.TrimSpace(sandboxID),
+		"cache_key", strings.TrimSpace(record.CacheKey),
+		"backing_snapshot_id", strings.TrimSpace(record.BackingSnapshotID),
+		"backend", strings.TrimSpace(record.Backend),
+	)
+}
+
+func (s *Service) logWorkspaceStageWarning(message, sandboxID string, err error) {
 	if s == nil || s.Logger == nil || err == nil {
 		return
 	}
 	s.Logger.Warn(message, "sandbox_id", sandboxID, "error", err)
 }
 
-func (s *Service) logWorkspaceSeedRestoreWarning(record cachestore.Record, err error) {
+func (s *Service) logWorkspaceStageRestoreWarning(record cachestore.Record, err error) {
 	if s == nil || s.Logger == nil || err == nil {
 		return
 	}
 	s.Logger.Warn("restore workspace stage cache",
 		"cache_key", strings.TrimSpace(record.CacheKey),
+		"backing_snapshot_id", strings.TrimSpace(record.BackingSnapshotID),
+		"backend", strings.TrimSpace(record.Backend),
 		"storage_ref", strings.TrimSpace(record.StorageRef),
 		"error", err,
 	)
