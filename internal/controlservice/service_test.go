@@ -297,6 +297,25 @@ func (s *memorySnapshotStore) Delete(_ context.Context, snapshotID string) error
 	return nil
 }
 
+type blockingSnapshotStore struct {
+	*memorySnapshotStore
+	getStarted chan struct{}
+	getRelease chan struct{}
+}
+
+func (s *blockingSnapshotStore) Get(ctx context.Context, snapshotID string) (snapshotstore.Record, bool, error) {
+	select {
+	case s.getStarted <- struct{}{}:
+	default:
+	}
+	select {
+	case <-s.getRelease:
+	case <-ctx.Done():
+		return snapshotstore.Record{}, false, ctx.Err()
+	}
+	return s.memorySnapshotStore.Get(ctx, snapshotID)
+}
+
 type memoryCacheStore struct {
 	mu      sync.Mutex
 	records map[string]cachestore.Record
@@ -925,6 +944,65 @@ func TestDeleteSnapshotRejectsSnapshotWithInFlightProvisionFromSnapshot(t *testi
 	}
 
 	close(provisionRelease)
+	select {
+	case createErr := <-createDone:
+		if createErr != nil {
+			t.Fatalf("CreateSandbox from snapshot returned error: %v", createErr)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected create-from-snapshot to finish")
+	}
+}
+
+func TestDeleteSnapshotRejectsSnapshotWithMetadataLoadInFlight(t *testing.T) {
+	baseStore := newMemorySnapshotStore()
+	store := &blockingSnapshotStore{
+		memorySnapshotStore: baseStore,
+		getStarted:          make(chan struct{}, 1),
+		getRelease:          make(chan struct{}),
+	}
+	adapter := &stubAdapter{
+		createSnapshotFn: func(_ context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
+			return &backend.SnapshotResult{StorageRef: "/snapshots/" + req.SnapshotID + ".ext4"}, nil
+		},
+	}
+	svc := newTestServiceWithSnapshotStore(adapter, store)
+
+	sourceResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	snapshotResp, err := svc.CreateSnapshot(context.Background(), &cleanroomv1.CreateSnapshotRequest{
+		SandboxId: sourceResp.GetSandbox().GetSandboxId(),
+	})
+	if err != nil {
+		t.Fatalf("CreateSnapshot returned error: %v", err)
+	}
+	snapshotID := snapshotResp.GetSnapshot().GetSnapshotId()
+
+	createDone := make(chan error, 1)
+	go func() {
+		_, createErr := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+			Source: &cleanroomv1.CreateSandboxRequest_SnapshotId{SnapshotId: snapshotID},
+		})
+		createDone <- createErr
+	}()
+
+	select {
+	case <-store.getStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected create-from-snapshot metadata load to start")
+	}
+
+	_, err = svc.DeleteSnapshot(context.Background(), &cleanroomv1.DeleteSnapshotRequest{SnapshotId: snapshotID})
+	if err == nil {
+		t.Fatal("expected delete snapshot to fail while metadata load is in flight")
+	}
+	if !strings.Contains(err.Error(), "snapshot_busy") || !strings.Contains(err.Error(), "another operation") {
+		t.Fatalf("unexpected delete snapshot error: %v", err)
+	}
+
+	close(store.getRelease)
 	select {
 	case createErr := <-createDone:
 		if createErr != nil {

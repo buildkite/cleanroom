@@ -318,6 +318,15 @@ func (s *Service) CreateSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 }
 
 func (s *Service) createSandboxFromSnapshot(ctx context.Context, req *cleanroomv1.CreateSandboxRequest, snapshotID string) (*cleanroomv1.CreateSandboxResponse, error) {
+	snapshotID = strings.TrimSpace(snapshotID)
+	if snapshotID == "" {
+		return nil, errors.New("missing snapshot_id")
+	}
+	if err := s.beginSnapshotUse(snapshotID); err != nil {
+		return nil, err
+	}
+	defer s.finishSnapshotUse(snapshotID)
+
 	store, err := s.snapshotStoreOrErr()
 	if err != nil {
 		return nil, err
@@ -338,10 +347,6 @@ func (s *Service) createSandboxFromSnapshotRecord(ctx context.Context, req *clea
 	if snapshotID == "" {
 		return nil, errors.New("missing snapshot_id")
 	}
-	if err := s.beginSnapshotUse(snapshotID); err != nil {
-		return nil, err
-	}
-	defer s.finishSnapshotUse(snapshotID)
 
 	source, err := storedRootFSRecordFromSnapshot(record)
 	if err != nil {
