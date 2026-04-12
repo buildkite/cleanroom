@@ -7,6 +7,9 @@ host-side and injected on the upstream leg, so tokens never enter the sandbox.
 
 Currently supported on the `firecracker` and `darwin-vz` backends.
 
+Inside sandboxes, the shared gateway is exposed at
+`http://gateway.cleanroom.internal:8170` by default.
+
 ## Endpoints
 
 | Path | Purpose |
@@ -27,6 +30,8 @@ cleanroom exec -- git clone https://github.com/org/repo.git
 
 The gateway resolves the target host from the request path, validates it against
 the sandbox's compiled policy, and proxies the git smart-HTTP protocol upstream.
+Guest-side git rewrites target `gateway.cleanroom.internal` rather than backend-specific
+IP addresses.
 
 On `darwin-vz`, sandbox identity is carried with the
 `X-Cleanroom-Scope-Token` request header because guests use shared NAT rather

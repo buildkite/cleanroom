@@ -366,10 +366,18 @@ func newFileHandleVirtualNetwork(cfg fileHandleGatewayConfig, dnsUpstreamAddr st
 		_ = udpConn.Close()
 		return nil, fmt.Errorf("listen dns tcp endpoint: %w", err)
 	}
+	staticGatewayAddrs := make([]netip.Addr, 0, 1)
+	if gatewayAddr, parseErr := netip.ParseAddr(strings.TrimSpace(cfg.GatewayIP)); parseErr == nil && gatewayAddr.IsValid() {
+		staticGatewayAddrs = append(staticGatewayAddrs, gatewayAddr)
+	}
 	dnsForwarder := dnsproxy.NewForwarder(dnsproxy.ForwarderConfig{
 		Runtime:       dnsRuntime,
 		UpstreamAddr:  dnsUpstreamAddr,
 		ScopeResolver: newFileHandleScopeResolver(cfg.SandboxID, cfg.GatewayIP),
+		StaticRecords: []dnsproxy.StaticRecord{{
+			Name:      gateway.GuestGatewayHostname,
+			Addresses: staticGatewayAddrs,
+		}},
 	})
 	dnsUDPServer := &mdns.Server{
 		PacketConn: udpConn,

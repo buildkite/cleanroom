@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/buildkite/cleanroom/internal/gateway"
 	"github.com/buildkite/cleanroom/internal/policy"
 )
 
@@ -11,7 +12,6 @@ func TestGatewayEnvVarsEmptyWhenNoPolicyHosts(t *testing.T) {
 	t.Parallel()
 
 	instance := &sandboxInstance{
-		HostIP: "10.1.1.1",
 		Policy: &policy.CompiledPolicy{
 			Version:        1,
 			NetworkDefault: "deny",
@@ -28,7 +28,6 @@ func TestGatewayEnvVarsGeneratesGitConfig(t *testing.T) {
 	t.Parallel()
 
 	instance := &sandboxInstance{
-		HostIP: "10.1.1.1",
 		Policy: &policy.CompiledPolicy{
 			Version:        1,
 			NetworkDefault: "deny",
@@ -48,13 +47,13 @@ func TestGatewayEnvVarsGeneratesGitConfig(t *testing.T) {
 		t.Fatalf("expected GIT_CONFIG_COUNT=2, got %s", env[0])
 	}
 
-	if !strings.Contains(env[1], "url.http://10.1.1.1:8170/git/github.com/.insteadOf") {
+	if !strings.Contains(env[1], "url.http://"+gateway.GuestGatewayHostname+":8170/git/github.com/.insteadOf") {
 		t.Fatalf("expected github.com insteadOf key, got %s", env[1])
 	}
 	if env[2] != "GIT_CONFIG_VALUE_0=https://github.com/" {
 		t.Fatalf("expected github.com value, got %s", env[2])
 	}
-	if !strings.Contains(env[3], "url.http://10.1.1.1:8170/git/gitlab.com/.insteadOf") {
+	if !strings.Contains(env[3], "url.http://"+gateway.GuestGatewayHostname+":8170/git/gitlab.com/.insteadOf") {
 		t.Fatalf("expected gitlab.com insteadOf key, got %s", env[3])
 	}
 }
@@ -62,7 +61,7 @@ func TestGatewayEnvVarsGeneratesGitConfig(t *testing.T) {
 func TestGatewayEnvVarsNilPolicy(t *testing.T) {
 	t.Parallel()
 
-	instance := &sandboxInstance{HostIP: "10.1.1.1"}
+	instance := &sandboxInstance{}
 	env := gatewayEnvVars(instance, 8170)
 	if env != nil {
 		t.Fatalf("expected nil for nil policy, got %v", env)

@@ -2650,31 +2650,10 @@ func randomGuestCID() uint32 {
 }
 
 func gatewayEnvVars(instance *sandboxInstance, gwPort int) []string {
-	if instance.Policy == nil {
+	if instance == nil {
 		return nil
 	}
-
-	var gitHosts []string
-	for _, rule := range instance.Policy.Allow {
-		for _, port := range rule.Ports {
-			if port == 443 {
-				gitHosts = append(gitHosts, rule.Host)
-				break
-			}
-		}
-	}
-	if len(gitHosts) == 0 {
-		return nil
-	}
-
-	gatewayAddr := fmt.Sprintf("http://%s:%d", instance.HostIP, gwPort)
-	env := make([]string, 0, 1+len(gitHosts)*2)
-	env = append(env, fmt.Sprintf("GIT_CONFIG_COUNT=%d", len(gitHosts)))
-	for i, host := range gitHosts {
-		env = append(env, fmt.Sprintf("GIT_CONFIG_KEY_%d=url.%s/git/%s/.insteadOf", i, gatewayAddr, host))
-		env = append(env, fmt.Sprintf("GIT_CONFIG_VALUE_%d=https://%s/", i, host))
-	}
-	return env
+	return gateway.GitProxyEnvVars(instance.Policy, gwPort, "")
 }
 
 func dockerServiceBootArgs(compiled *policy.CompiledPolicy, cfg backend.FirecrackerConfig) string {

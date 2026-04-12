@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/buildkite/cleanroom/internal/dnsproxy"
+	"github.com/buildkite/cleanroom/internal/gateway"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/miekg/dns"
 )
@@ -121,6 +122,10 @@ func newTrustedDNSService(_ context.Context, cfg trustedDNSConfig) (func(), erro
 			chainManager.Trigger()
 		},
 		OnDeny: cfg.onDeny,
+		StaticRecords: []dnsproxy.StaticRecord{{
+			Name:      gateway.GuestGatewayHostname,
+			Addresses: []netip.Addr{cfg.hostIP},
+		}},
 	})
 
 	listenAddr := net.JoinHostPort(cfg.hostIP.String(), strconv.Itoa(trustedDNSListenPort))

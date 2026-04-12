@@ -1109,6 +1109,78 @@ func TestForwarderOnDenyUsesCurrentResponseInsteadOfHistoricalObservation(t *tes
 	}
 }
 
+func TestForwarderServesStaticRecordsWithoutUpstreamObservationOrDeny(t *testing.T) {
+	t.Parallel()
+
+	runtime := NewRuntime(RuntimeConfig{})
+	if err := runtime.RegisterSandbox("sandbox-1", testCompiledPolicy(
+		policy.AllowRule{Host: "github.com", Ports: []int{443}},
+	)); err != nil {
+		t.Fatalf("register sandbox: %v", err)
+	}
+
+	now := time.Date(2026, time.April, 12, 8, 0, 0, 0, time.UTC)
+	sourceIP := netip.MustParseAddr("10.0.0.2")
+	staticIP := netip.MustParseAddr("10.0.0.1")
+
+	upstreamCalls := 0
+	denyCalls := 0
+	forwarder := NewForwarder(ForwarderConfig{
+		Runtime:      runtime,
+		UpstreamAddr: "127.0.0.1:5300",
+		Now:          func() time.Time { return now },
+		ScopeResolver: func(addr netip.Addr) (string, bool) {
+			if addr == sourceIP {
+				return "sandbox-1", true
+			}
+			return "", false
+		},
+		Client: exchangeFunc(func(msg *dns.Msg, _ string) (*dns.Msg, time.Duration, error) {
+			upstreamCalls++
+			return testResponse(msg.Question[0].Name), 0, nil
+		}),
+		OnDeny: func(_, _ string) {
+			denyCalls++
+		},
+		StaticRecords: []StaticRecord{{
+			Name:      "gateway.cleanroom.internal",
+			Addresses: []netip.Addr{staticIP},
+		}},
+	})
+
+	writer := &testResponseWriter{
+		remoteAddr: &net.UDPAddr{IP: net.ParseIP("10.0.0.2"), Port: 53000},
+		localAddr:  &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 1053},
+	}
+	request := new(dns.Msg)
+	request.SetQuestion("gateway.cleanroom.internal.", dns.TypeA)
+
+	forwarder.ServeDNS(writer, request)
+
+	if upstreamCalls != 0 {
+		t.Fatalf("expected static record query to skip upstream exchange, got %d calls", upstreamCalls)
+	}
+	if denyCalls != 0 {
+		t.Fatalf("expected static record query to skip deny hooks, got %d calls", denyCalls)
+	}
+	if writer.message == nil {
+		t.Fatal("expected forwarder to write a static response")
+	}
+	if len(writer.message.Answer) != 1 {
+		t.Fatalf("unexpected static answer count: got %d want 1", len(writer.message.Answer))
+	}
+	answer, ok := writer.message.Answer[0].(*dns.A)
+	if !ok {
+		t.Fatalf("expected static A record, got %T", writer.message.Answer[0])
+	}
+	if got, want := answer.A.String(), staticIP.String(); got != want {
+		t.Fatalf("unexpected static record address: got %s want %s", got, want)
+	}
+	if observations := runtime.Observations("sandbox-1", now); len(observations) != 0 {
+		t.Fatalf("did not expect static record query to populate observations: %+v", observations)
+	}
+}
+
 func TestHostAllowedByPolicyReturnsFalseForUnregisteredSandbox(t *testing.T) {
 	t.Parallel()
 
