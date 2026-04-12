@@ -1,6 +1,5 @@
 [tools]
 go = "1.26.2"
-terraform = "1.12.2"
 shellcheck = "0.11.0"
 hyperfine = "1.20.0"
 svu = "3.4.0"
@@ -15,7 +14,7 @@ run = "go test ./..."
 
 [tasks.lint-shell]
 description = "Lint shell scripts"
-run = "shellcheck -x scripts/bootstrap-buildkite-agent.sh scripts/bootstrap-buildkite-agent-macos.sh scripts/bootstrap-cleanroom-host.sh scripts/cleanroom-root-helper.sh scripts/benchmark-tti.sh scripts/build-go.sh scripts/install-go.sh scripts/install.sh scripts/release.sh scripts/ci-bootstrap-linux-ssm.sh scripts/ci-cleanroom-e2e.sh scripts/ci-darwin-vz-e2e.sh"
+run = "shellcheck -x scripts/base-image-tag.sh scripts/cleanroom-root-helper.sh scripts/benchmark-tti.sh scripts/build-go.sh scripts/install-go.sh scripts/install.sh scripts/install-global.sh scripts/package-darwin-vz-helper.sh scripts/release.sh scripts/e2e-observability.sh scripts/ci-cleanroom-e2e.sh scripts/ci-darwin-vz-e2e.sh scripts/ci-darwin-vz-filehandle-e2e.sh scripts/build-macos-release-pkg.sh scripts/notarize-macos-package.sh scripts/ci-macos-release-pkg.sh scripts/ci-buildkite-release.sh"
 
 [tasks.test-full]
 description = "Run full Go test suite"
@@ -101,14 +100,6 @@ run = "go run ./cmd/cleanroom doctor"
 [tasks.doctor-json]
 description = "Run cleanroom diagnostics as JSON"
 run = "go run ./cmd/cleanroom doctor --json"
-
-[tasks."ci:bootstrap:linux"]
-description = "Rerun Linux CI bootstrap over SSM"
-run = "scripts/ci-bootstrap-linux-ssm.sh run"
-
-[tasks."ci:bootstrap:linux:logs"]
-description = "Fetch Linux CI bootstrap logs over SSM"
-run = "scripts/ci-bootstrap-linux-ssm.sh logs"
 
 [tasks.check]
 description = "Run build, test, and lint"

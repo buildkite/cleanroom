@@ -173,12 +173,32 @@ func TestMiseIncludesLinuxBootstrapTasks(t *testing.T) {
 		t.Fatalf("read mise.toml: %v", err)
 	}
 
+	if strings.Contains(string(content), "ci-bootstrap-linux-ssm.sh") {
+		t.Fatalf("expected public mise.toml not to expose private bootstrap rerun tasks")
+	}
+	if strings.Contains(string(content), "bootstrap-buildkite-agent.sh") {
+		t.Fatalf("expected public mise.toml not to lint private bootstrap scripts")
+	}
+}
+
+func TestMiseLintShellCoversSharedE2EObservabilityHelper(t *testing.T) {
+	t.Parallel()
+
+	content, err := os.ReadFile("../mise.toml")
+	if err != nil {
+		t.Fatalf("read mise.toml: %v", err)
+	}
+
 	mise := string(content)
 	for _, needle := range []string{
-		"[tasks.\"ci:bootstrap:linux\"]",
-		"run = \"scripts/ci-bootstrap-linux-ssm.sh run\"",
-		"[tasks.\"ci:bootstrap:linux:logs\"]",
-		"run = \"scripts/ci-bootstrap-linux-ssm.sh logs\"",
+		`[tasks.lint-shell]`,
+		`scripts/base-image-tag.sh`,
+		`scripts/e2e-observability.sh`,
+		`scripts/ci-darwin-vz-filehandle-e2e.sh`,
+		`scripts/build-macos-release-pkg.sh`,
+		`scripts/notarize-macos-package.sh`,
+		`scripts/ci-macos-release-pkg.sh`,
+		`scripts/ci-buildkite-release.sh`,
 	} {
 		if !strings.Contains(mise, needle) {
 			t.Fatalf("expected mise.toml to contain %q", needle)

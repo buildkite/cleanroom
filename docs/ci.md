@@ -21,7 +21,9 @@ Pipeline config lives in `.buildkite/pipeline.yml`.
 
 No special setup is required beyond a working Buildkite agent image and internet access.
 
-For self-hosted macOS capacity, Terraform can provision a private EC2 Mac host and dedicated host via `infra/terraform/envs/ci` (`enable_macos_ci = true`). By default it resolves the latest Tahoe AMI from the AWS public SSM parameter that matches `mac_instance_type`, and you can still override that with `mac_ami_id` or `mac_ami_ssm_parameter_name`. This keeps mac queue access private-only (SSM, no inbound public rules).
+For self-hosted macOS capacity, the private sibling repo `../cleanroom-ops`
+contains the Terraform and bootstrap automation used to provision the EC2 Mac
+host and dedicated host.
 
 Notes:
 
@@ -35,31 +37,11 @@ Notes:
 
 EC2 Mac dedicated hosts should be treated as long-lived capacity.
 
-- Avoid `terraform apply -replace=module.mac_ci[0].aws_instance.host` for bootstrap-only changes.
-- Use in-place SSM reruns against the existing instance instead.
-- Host-level safeguards in Terraform keep the dedicated host stable and avoid user-data replacement churn.
-
-Rerun bootstrap in-place:
-
-```bash
-instance_id="$(mise x -- terraform -chdir=infra/terraform/envs/ci output -raw mac_instance_id)"
-
-AWS_PROFILE=buildkite-sandbox-pipelines-admin aws ssm send-command \
-  --region ap-southeast-2 \
-  --instance-ids "$instance_id" \
-  --document-name AWS-RunShellScript \
-  --parameters '{"commands":["sudo env PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin /usr/local/bin/cleanroom-bootstrap-macos"]}'
-```
-
-Check bootstrap logs and agent service:
-
-```bash
-AWS_PROFILE=buildkite-sandbox-pipelines-admin aws ssm send-command \
-  --region ap-southeast-2 \
-  --instance-ids "$instance_id" \
-  --document-name AWS-RunShellScript \
-  --parameters '{"commands":["sudo tail -n 120 /var/log/cleanroom-bootstrap-macos.log","sudo launchctl print system/com.buildkite.agent.cleanroom-mac","sudo tail -n 120 /var/lib/buildkite-agent/logs/buildkite-agent-cleanroom-mac.log","sudo tail -n 120 /var/lib/buildkite-agent/logs/buildkite-agent-cleanroom-mac.error.log"]}'
-```
+- Avoid replacing the dedicated host just to roll bootstrap changes forward.
+- Use the Terraform outputs and SSM/bootstrap tooling in `../cleanroom-ops`
+  to rerun bootstrap in place against the existing instance.
+- Host-level safeguards in Terraform keep the dedicated host stable and avoid
+  user-data replacement churn.
 
 ## 3. cleanroom-mac Queue (darwin-vz E2E)
 
@@ -176,25 +158,9 @@ Linux cleanroom hosts should be treated as long-lived capacity.
 - Avoid `terraform apply` just to roll the helper or bootstrap scripts forward.
 - Use the host-owned bootstrap runner instead.
 - Hosts provisioned before this runner existed need one trusted bootstrap rerun to install `/usr/local/bin/cleanroom-bootstrap-linux`.
-
-Rerun bootstrap in-place:
-
-```bash
-mise run ci:bootstrap:linux
-```
-
-Check bootstrap logs and agent service:
-
-```bash
-mise run ci:bootstrap:linux:logs
-```
-
-Task defaults:
-
-- `CLEANROOM_CI_AWS_PROFILE=buildkite-sandbox-pipelines-admin`
-- `CLEANROOM_CI_AWS_REGION=ap-southeast-2`
-- `CLEANROOM_CI_INSTANCE_ID` overrides Terraform lookup
-- `CLEANROOM_CI_TERRAFORM_DIR=infra/terraform/envs/ci`
+- Use `../cleanroom-ops/scripts/ci-bootstrap-linux-ssm.sh` and the Terraform
+  config in `../cleanroom-ops/infra/terraform/envs/ci` when you need to rerun
+  bootstrap or fetch bootstrap logs.
 
 ### 4.3 Privileged helper execution
 
@@ -225,7 +191,7 @@ Then set `CLEANROOM_PRIVILEGED_HELPER_PATH=/usr/local/sbin/cleanroom-root-helper
 If a branch needs a new privileged helper capability, roll out the updated helper on the CI host first, then rerun the branch. The normal path is:
 
 1. Merge the helper change to `main`.
-2. Rerun trusted host provisioning, for example `scripts/bootstrap-buildkite-agent.sh` via SSM.
+2. Rerun trusted host provisioning from `../cleanroom-ops`, for example via `scripts/bootstrap-buildkite-agent.sh`.
 3. Rerun dependent PR builds once the host helper has been updated.
 
 ## 5. Optional Agent Environment Hook

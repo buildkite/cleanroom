@@ -417,6 +417,9 @@ Failure flow:
 
 ## Further reading
 
+Terraform provisioning and private host bootstrap automation now live in the
+private sibling repo `../cleanroom-ops`.
+
 - [research.md](docs/research.md) -- backend and tooling evaluation notes
 - [benchmarks.md](docs/benchmarks.md) -- TTI measurement and results
 - [ci.md](docs/ci.md) -- Buildkite pipeline and base image workflow

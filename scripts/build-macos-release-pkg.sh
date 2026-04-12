@@ -83,7 +83,7 @@ configure_helper_component_plist() {
 
   require_cmd plutil
 
-  helper_component_relative_path="${PAYLOAD_HELPER_PATH#${PAYLOAD_ROOT}/}"
+  helper_component_relative_path="${PAYLOAD_HELPER_PATH#"${PAYLOAD_ROOT}"/}"
   helper_component_plist="${WORK_DIR}/components.plist"
 
   printf '[build-macos-release-pkg] configuring helper bundle install behavior\n' >&2
