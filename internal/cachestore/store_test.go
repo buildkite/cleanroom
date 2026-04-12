@@ -19,7 +19,7 @@ func TestStoreCreateGetReadyListDelete(t *testing.T) {
 	}
 
 	record := Record{
-		CacheKey:          "workspace-seed:test",
+		CacheKey:          "workspace-stage:test",
 		Stage:             "workspace",
 		State:             "ready",
 		BackingSnapshotID: "snapshot-workspace-test",
@@ -189,7 +189,7 @@ func TestStoreListOrdersByCreatedAtNanoseconds(t *testing.T) {
 	}
 
 	first := Record{
-		CacheKey:          "workspace-seed:first",
+		CacheKey:          "workspace-stage:first",
 		Stage:             "workspace",
 		State:             "ready",
 		BackingSnapshotID: "snapshot-workspace-first",
@@ -203,7 +203,7 @@ func TestStoreListOrdersByCreatedAtNanoseconds(t *testing.T) {
 		ProducerVersion:   "cleanroom-test/1",
 	}
 	second := Record{
-		CacheKey:          "workspace-seed:second",
+		CacheKey:          "workspace-stage:second",
 		Stage:             "workspace",
 		State:             "ready",
 		BackingSnapshotID: "snapshot-workspace-second",
@@ -247,7 +247,7 @@ func TestStoreCreateRejectsDuplicateStageCacheKey(t *testing.T) {
 	}
 
 	record := Record{
-		CacheKey:          "workspace-seed:test",
+		CacheKey:          "workspace-stage:test",
 		Stage:             "workspace",
 		State:             "ready",
 		BackingSnapshotID: "snapshot-workspace-test",
