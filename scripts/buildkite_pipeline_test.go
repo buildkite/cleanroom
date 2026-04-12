@@ -130,9 +130,9 @@ func TestBuildkiteCIScriptsDoNotInvokeMiseDirectly(t *testing.T) {
 func TestMiseIncludesLinuxBootstrapTasks(t *testing.T) {
 	t.Parallel()
 
-	content, err := os.ReadFile("../.mise.toml")
+	content, err := os.ReadFile("../mise.toml")
 	if err != nil {
-		t.Fatalf("read .mise.toml: %v", err)
+		t.Fatalf("read mise.toml: %v", err)
 	}
 
 	mise := string(content)
@@ -143,7 +143,7 @@ func TestMiseIncludesLinuxBootstrapTasks(t *testing.T) {
 		"run = \"scripts/ci-bootstrap-linux-ssm.sh logs\"",
 	} {
 		if !strings.Contains(mise, needle) {
-			t.Fatalf("expected .mise.toml to contain %q", needle)
+			t.Fatalf("expected mise.toml to contain %q", needle)
 		}
 	}
 }

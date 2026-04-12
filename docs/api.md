@@ -322,7 +322,7 @@ Behavior contract:
    the current git remote and committed `HEAD`.
 5. For repo-aware top-level commands, materialize that checkout in the sandbox
    and default the guest working directory to `repository.path`.
-   - if the checkout contains `.mise.toml`, `mise.toml`, `.tool-versions`, or
+   - if the checkout contains `mise.toml`, `.mise.toml`, `.tool-versions`, or
      `.mise/config.toml`, execute the workload through
      `mise exec -- ...` only when `sandbox.mise.install: true` and
      `sandbox.mise.enabled` is not `false`

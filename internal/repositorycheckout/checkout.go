@@ -18,8 +18,8 @@ type Checkout struct {
 }
 
 var miseConfigCandidates = []string{
-	".mise.toml",
 	"mise.toml",
+	".mise.toml",
 	".tool-versions",
 	".mise/config.toml",
 }

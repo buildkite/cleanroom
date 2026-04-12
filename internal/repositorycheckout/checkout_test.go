@@ -177,8 +177,8 @@ func TestWrapCommandInWorkdirBootstrapsMiseWhenConfigPresent(t *testing.T) {
 		t.Skip("mise not installed")
 	}
 	repoDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(repoDir, ".mise.toml"), []byte("# test config\n"), 0o644); err != nil {
-		t.Fatalf("write .mise.toml: %v", err)
+	if err := os.WriteFile(filepath.Join(repoDir, "mise.toml"), []byte("# test config\n"), 0o644); err != nil {
+		t.Fatalf("write mise.toml: %v", err)
 	}
 
 	logDir := t.TempDir()
@@ -276,7 +276,7 @@ func TestWrapCommandWithBootstrapIncludesMiseBootstrapLogic(t *testing.T) {
 	}, true)
 
 	joined := strings.Join(command, " ")
-	if !strings.Contains(joined, "if [ -f '.mise.toml' ] || [ -f 'mise.toml' ] || [ -f '.tool-versions' ] || [ -f '.mise/config.toml' ]; then") {
+	if !strings.Contains(joined, "if [ -f 'mise.toml' ] || [ -f '.mise.toml' ] || [ -f '.tool-versions' ] || [ -f '.mise/config.toml' ]; then") {
 		t.Fatalf("expected bootstrap wrapper to detect mise config files, got %q", joined)
 	}
 	if strings.Contains(joined, `mise install`) {

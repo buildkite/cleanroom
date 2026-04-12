@@ -99,8 +99,8 @@ cleanroom exec -e OPENAI_API_KEY -- codex app-server
 When `cleanroom.yaml` includes a repository bootstrap block, the top-level
 commands become repo-aware: Cleanroom resolves the current git remote and local
 `HEAD`, materializes that checkout in the sandbox, and starts commands in the
-configured guest path. If the checked-out repository contains `.mise.toml`,
-`mise.toml`, `.tool-versions`, or `.mise/config.toml`, Cleanroom only runs the
+configured guest path. If the checked-out repository contains `mise.toml`,
+`.mise.toml`, `.tool-versions`, or `.mise/config.toml`, Cleanroom only runs the
 command through `mise exec -- ...` when `sandbox.mise.install: true` is set in
 `cleanroom.yaml` and `sandbox.mise.enabled` is not `false`. Use
 `cleanroom exec --no-mise -- ...` or `cleanroom console --no-mise` to skip
