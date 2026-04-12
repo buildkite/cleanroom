@@ -74,6 +74,26 @@ func TestBuildkitePipelineUsesSetupGoForGoSteps(t *testing.T) {
 	if !strings.Contains(pipeline, "command: scripts/ci-buildkite-release.sh") {
 		t.Fatalf("expected .buildkite/pipeline.yml to include the Buildkite release publish step")
 	}
+	for _, needle := range []string{
+		"scripts/base-image-tag.sh",
+		"scripts/install-global.sh",
+		"scripts/e2e-observability.sh",
+		"scripts/build-macos-release-pkg.sh",
+		"scripts/notarize-macos-package.sh",
+	} {
+		if !strings.Contains(pipeline, needle) {
+			t.Fatalf("expected .buildkite/pipeline.yml shellcheck command to include %q", needle)
+		}
+	}
+	for _, needle := range []string{
+		"scripts/bootstrap-buildkite-agent.sh",
+		"scripts/bootstrap-buildkite-agent-macos.sh",
+		"scripts/ci-bootstrap-linux-ssm.sh",
+	} {
+		if strings.Contains(pipeline, needle) {
+			t.Fatalf("expected .buildkite/pipeline.yml shellcheck command not to include %q", needle)
+		}
+	}
 	if !strings.Contains(pipeline, "queue: cleanroom-mac-signer") {
 		t.Fatalf("expected .buildkite/pipeline.yml to route the macOS release pkg step to cleanroom-mac-signer")
 	}
