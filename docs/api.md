@@ -324,8 +324,8 @@ Behavior contract:
    and default the guest working directory to `repository.path`.
    - if the checkout contains `.mise.toml`, `mise.toml`, `.tool-versions`, or
      `.mise/config.toml`, execute the workload through
-     `mise exec -- ...`, unless `sandbox.mise.enabled: false` or
-     `sandbox.mise.install: false`
+     `mise exec -- ...` only when `sandbox.mise.install: true` and
+     `sandbox.mise.enabled` is not `false`
    - `cleanroom exec --no-mise` and `cleanroom console --no-mise` set
      `ExecutionOptions.disable_mise` for that execution
 6. Create execution with explicit kind, env, and TTY options.

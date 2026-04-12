@@ -174,7 +174,7 @@ func TestCompileCapturesDockerServiceRequirement(t *testing.T) {
 	}
 }
 
-func TestCompileDefaultsMiseInstallEnabled(t *testing.T) {
+func TestCompileDefaultsMiseInstallDisabled(t *testing.T) {
 	t.Parallel()
 
 	raw := baseRawPolicy()
@@ -182,8 +182,23 @@ func TestCompileDefaultsMiseInstallEnabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
+	if compiled.MiseInstall {
+		t.Fatal("expected compiled policy to disable mise auto-install by default")
+	}
+}
+
+func TestCompileEnablesMiseInstallWhenSandboxMiseInstallTrue(t *testing.T) {
+	t.Parallel()
+
+	raw := baseRawPolicy()
+	raw.Sandbox.Mise.Install = testBoolPtr(true)
+
+	compiled, err := Compile(raw)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
 	if !compiled.MiseInstall {
-		t.Fatal("expected compiled policy to enable mise auto-install by default")
+		t.Fatal("expected compiled policy to enable mise auto-install when sandbox.mise.install=true")
 	}
 }
 

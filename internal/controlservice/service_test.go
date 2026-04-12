@@ -1616,6 +1616,130 @@ func TestCreateExecutionSkipsMiseBootstrapWhenPolicyDisablesInstall(t *testing.T
 	}
 }
 
+func TestCreateExecutionSkipsMiseBootstrapByDefault(t *testing.T) {
+	adapter := &stubAdapter{}
+	mirrors := &stubRepositoryMirrorStore{}
+	svc := newTestService(adapter)
+	svc.RepositoryMirrors = mirrors
+
+	var (
+		mu       sync.Mutex
+		commands [][]string
+	)
+	runCalled := make(chan struct{}, 4)
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+		mu.Lock()
+		commands = append(commands, append([]string(nil), req.Command...))
+		mu.Unlock()
+		select {
+		case runCalled <- struct{}{}:
+		default:
+		}
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+	}
+
+	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy:             testRepositoryPolicy(),
+		RepositoryCheckout: testRepositoryCheckoutProto(),
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createSandboxResp.GetSandbox().GetSandboxId()
+	select {
+	case <-runCalled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for sandbox bootstrap")
+	}
+
+	_, err = svc.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+		SandboxId:          sandboxID,
+		Command:            []string{"sh", "-lc", "pwd"},
+		RepositoryCheckout: testRepositoryCheckoutProto(),
+	})
+	if err != nil {
+		t.Fatalf("CreateExecution returned error: %v", err)
+	}
+	select {
+	case <-runCalled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for execution")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if got, want := len(commands), 2; got != want {
+		t.Fatalf("expected create bootstrap + execution, got %d command(s)", got)
+	}
+	joined := strings.Join(commands[1], " ")
+	if strings.Contains(joined, "mise exec --") {
+		t.Fatalf("expected default execution to skip mise exec wrapper, got %q", joined)
+	}
+}
+
+func TestCreateExecutionWrapsInMiseWhenPolicyEnablesInstall(t *testing.T) {
+	adapter := &stubAdapter{}
+	mirrors := &stubRepositoryMirrorStore{}
+	svc := newTestService(adapter)
+	svc.RepositoryMirrors = mirrors
+
+	var (
+		mu       sync.Mutex
+		commands [][]string
+	)
+	runCalled := make(chan struct{}, 4)
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+		mu.Lock()
+		commands = append(commands, append([]string(nil), req.Command...))
+		mu.Unlock()
+		select {
+		case runCalled <- struct{}{}:
+		default:
+		}
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+	}
+
+	policyProto := testRepositoryPolicy()
+	policyProto.MiseInstall = boolPtr(true)
+	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy:             policyProto,
+		RepositoryCheckout: testRepositoryCheckoutProto(),
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createSandboxResp.GetSandbox().GetSandboxId()
+	select {
+	case <-runCalled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for sandbox bootstrap")
+	}
+
+	_, err = svc.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+		SandboxId:          sandboxID,
+		Command:            []string{"sh", "-lc", "pwd"},
+		RepositoryCheckout: testRepositoryCheckoutProto(),
+	})
+	if err != nil {
+		t.Fatalf("CreateExecution returned error: %v", err)
+	}
+	select {
+	case <-runCalled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for execution")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if got, want := len(commands), 2; got != want {
+		t.Fatalf("expected create bootstrap + execution, got %d command(s)", got)
+	}
+	joined := strings.Join(commands[1], " ")
+	if !strings.Contains(joined, "mise exec --") {
+		t.Fatalf("expected policy-enabled execution to wrap with mise exec, got %q", joined)
+	}
+}
+
 func TestCreateExecutionSkipsMiseWhenExecutionOptionDisablesMise(t *testing.T) {
 	adapter := &stubAdapter{}
 	mirrors := &stubRepositoryMirrorStore{}

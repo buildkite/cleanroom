@@ -161,7 +161,7 @@ Meaning:
 - `repository.path` defaults to `/workspace` and must be an absolute guest path.
 - `repository.submodules` defaults to `false`.
 - `sandbox.mise.enabled` defaults to `true`; `false` disables Cleanroom-managed `mise` detection and install wrapping.
-- `sandbox.mise.install` defaults to `true`; `false` preserves repo-aware checkout but skips automatic `mise exec -- ...` wrapping.
+- `sandbox.mise.install` defaults to `false`; `true` preserves repo-aware checkout and enables automatic `mise exec -- ...` wrapping.
 - `sandbox.mise.config_files` defaults to `.mise.toml`, `mise.toml`, `.tool-versions`, and `.mise/config.toml`.
 - Host matching supports:
   - exact host (`registry.npmjs.org`)
@@ -221,7 +221,7 @@ Meaning:
   - they resolve the local repository remote URL and committed `HEAD`
   - they materialize that checkout inside the sandbox before the command runs
   - they start commands in `repository.path`
-  - when the checkout contains `.mise.toml`, `mise.toml`, `.tool-versions`, or `.mise/config.toml`, they execute the command through `mise exec -- ...` unless `sandbox.mise.enabled: false` or `sandbox.mise.install: false`
+  - when the checkout contains `.mise.toml`, `mise.toml`, `.tool-versions`, or `.mise/config.toml`, they execute the command through `mise exec -- ...` only when `sandbox.mise.install: true` and `sandbox.mise.enabled` is not `false`
   - `cleanroom exec --no-mise` and `cleanroom console --no-mise` disable that automatic wrapping for a single execution
 - `cleanroom sandbox create` remains the generic low-level surface and does not
   infer repository state from the current working tree or read `cleanroom.yaml`.

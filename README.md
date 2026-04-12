@@ -100,11 +100,11 @@ When `cleanroom.yaml` includes a repository bootstrap block, the top-level
 commands become repo-aware: Cleanroom resolves the current git remote and local
 `HEAD`, materializes that checkout in the sandbox, and starts commands in the
 configured guest path. If the checked-out repository contains `.mise.toml`,
-`mise.toml`, `.tool-versions`, or `.mise/config.toml`, Cleanroom also runs
-the command through `mise exec -- ...` unless
-`sandbox.mise.enabled: false` or `sandbox.mise.install: false` is set in
-`cleanroom.yaml`. Use `cleanroom exec --no-mise -- ...` or
-`cleanroom console --no-mise` to skip that wrapper for a single execution.
+`mise.toml`, `.tool-versions`, or `.mise/config.toml`, Cleanroom only runs the
+command through `mise exec -- ...` when `sandbox.mise.install: true` is set in
+`cleanroom.yaml` and `sandbox.mise.enabled` is not `false`. Use
+`cleanroom exec --no-mise -- ...` or `cleanroom console --no-mise` to skip
+that wrapper for a single execution.
 
 Pre-create a long-running sandbox without running a command:
 

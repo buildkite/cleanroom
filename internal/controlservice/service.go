@@ -933,13 +933,13 @@ func (s *Service) CreateExecution(ctx context.Context, req *cleanroomv1.CreateEx
 		if err := validateRepositoryCheckoutForPolicy(sandboxPolicy, repository); err != nil {
 			return nil, err
 		}
-		autoMiseInstall := (sandboxPolicy == nil || sandboxPolicy.MiseInstall) && !execOpts.DisableMise
+		autoMiseInstall := sandboxPolicy != nil && sandboxPolicy.MiseInstall && !execOpts.DisableMise
 		if err := s.preparePersistentSandboxRepository(ctx, sandboxID, sandboxPolicy, firecrackerCfg, adapter, repository); err != nil {
 			return nil, err
 		}
 		command = repositorycheckout.WrapCommandInWorkdir(command, repository, autoMiseInstall)
 	} else if sandboxRepository != nil {
-		autoMiseInstall := (sandboxPolicy == nil || sandboxPolicy.MiseInstall) && !execOpts.DisableMise
+		autoMiseInstall := sandboxPolicy != nil && sandboxPolicy.MiseInstall && !execOpts.DisableMise
 		command = repositorycheckout.WrapCommandInWorkdir(command, sandboxRepository, autoMiseInstall)
 	}
 
