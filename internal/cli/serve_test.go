@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -59,7 +60,7 @@ func TestConfigureGatewayBackendsConfiguresDarwinVZGateway(t *testing.T) {
 		"darwin-vz":   darwinAdapter,
 	}
 
-	configureGatewayBackends(backends, gwRegistry, 8170, "0.0.0.0:8170")
+	configureGatewayBackends(backends, gwRegistry, 8170, "0.0.0.0:8170", "192.168.64.1")
 
 	if fcAdapter.GatewayRegistry == nil {
 		t.Fatal("expected firecracker adapter to use the host gateway registry")
@@ -102,6 +103,43 @@ func TestConfigureBackendRuntimeConfigConfiguresDarwinVZCapabilities(t *testing.
 	}
 }
 
+func TestGatewayServerConfigUsesDarwinGatewayHostForTrustedPrefixes(t *testing.T) {
+	t.Parallel()
+
+	prevScopeTokenPolicyResolver := gatewayScopeTokenSourcePolicyForGatewayHost
+	t.Cleanup(func() { gatewayScopeTokenSourcePolicyForGatewayHost = prevScopeTokenPolicyResolver })
+
+	want := []netip.Prefix{
+		netip.MustParsePrefix("10.24.7.0/24"),
+		netip.MustParsePrefix("fd00::/64"),
+	}
+	gatewayScopeTokenSourcePolicyForGatewayHost = func(host string) gateway.ScopeTokenSourcePolicy {
+		if host != "gateway.local" {
+			t.Fatalf("unexpected gateway host: %q", host)
+		}
+		return gateway.ScopeTokenSourcePolicy{
+			TrustedSourcePrefixes:        want,
+			AllowScopeTokenFromAnySource: true,
+		}
+	}
+
+	cfg := gatewayServerConfig(
+		":8170",
+		gateway.NewRegistry(),
+		nil,
+		nil,
+		nil,
+		log.New(io.Discard),
+		"  gateway.local  ",
+	)
+
+	if !reflect.DeepEqual(cfg.ScopeTokenTrustedSourcePrefixes, want) {
+		t.Fatalf("unexpected trusted source prefixes: got %v want %v", cfg.ScopeTokenTrustedSourcePrefixes, want)
+	}
+	if !cfg.AllowScopeTokenFromAnySource {
+		t.Fatal("expected allow-any-source fallback to be preserved in server config")
+	}
+}
 func TestNewControlServiceWiresRepositoryMirrors(t *testing.T) {
 	prevSnapshotStoreFactory := newSnapshotMetadataStore
 	t.Cleanup(func() { newSnapshotMetadataStore = prevSnapshotStoreFactory })
