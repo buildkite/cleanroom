@@ -8,8 +8,9 @@ import (
 )
 
 const miseBuildkitePluginRef = "github.com/lox/mise-buildkite-plugin#a172963b3d34e98601e2a65c7dd08211fb49b7f0"
+const setupGoBuildkitePluginRef = "github.com/buildkite-plugins/setup-go-buildkite-plugin#daa7af945245588f85b76ba7fe0a9af3d87dbf91"
 
-func TestBuildkitePipelineUsesMisePlugin(t *testing.T) {
+func TestBuildkitePipelineUsesSetupGoForGoSteps(t *testing.T) {
 	t.Parallel()
 
 	content, err := os.ReadFile("../.buildkite/pipeline.yml")
@@ -18,15 +19,52 @@ func TestBuildkitePipelineUsesMisePlugin(t *testing.T) {
 	}
 
 	pipeline := string(content)
-	if !strings.Contains(pipeline, miseBuildkitePluginRef) {
-		t.Fatalf("expected .buildkite/pipeline.yml to use %q", miseBuildkitePluginRef)
-	}
-	if strings.Contains(pipeline, "add_shims_to_path: false") {
-		t.Fatalf("expected .buildkite/pipeline.yml to keep mise shims enabled in CI")
-	}
 	if strings.Contains(pipeline, "command: mise run") {
 		t.Fatalf("expected .buildkite/pipeline.yml to avoid direct `mise run` step commands")
 	}
+
+	for _, snippet := range []string{
+		`- label: ":shell: Shellcheck"
+    plugins:
+      - ` + miseBuildkitePluginRef + `:
+    command: shellcheck`,
+		`- label: ":test_tube: Test (Linux)"
+    plugins:
+      - ` + setupGoBuildkitePluginRef + `:
+    command: go test ./...`,
+		`- label: ":test_tube: Test (macOS)"
+    plugins:
+      - ` + setupGoBuildkitePluginRef + `:
+    command: go test ./...`,
+		`- label: ":apple: E2E (darwin-vz)"
+    plugins:
+      - ` + setupGoBuildkitePluginRef + `:
+    command: scripts/ci-darwin-vz-e2e.sh`,
+		`- label: ":apple: E2E (darwin-vz filehandle)"
+    plugins:
+      - ` + setupGoBuildkitePluginRef + `:
+    command: scripts/ci-darwin-vz-filehandle-e2e.sh`,
+		`- label: ":package: macOS release pkg"
+    key: macos-release-pkg
+    if: build.tag != null || build.branch == "codex/macos-notarized-release-pkg"
+    plugins:
+      - ` + setupGoBuildkitePluginRef + `:
+    command: scripts/ci-macos-release-pkg.sh`,
+		`- label: ":fire: E2E (Firecracker)"
+    plugins:
+      - ` + setupGoBuildkitePluginRef + `:
+    command: scripts/ci-cleanroom-e2e.sh`,
+		`- label: ":rocket: Publish release"
+    if: build.tag != null
+    plugins:
+      - ` + miseBuildkitePluginRef + `:
+    command: scripts/ci-buildkite-release.sh`,
+	} {
+		if !strings.Contains(pipeline, snippet) {
+			t.Fatalf("expected .buildkite/pipeline.yml to contain step snippet:\n%s", snippet)
+		}
+	}
+
 	if !strings.Contains(pipeline, "command: scripts/ci-darwin-vz-filehandle-e2e.sh") {
 		t.Fatalf("expected .buildkite/pipeline.yml to include the darwin-vz filehandle e2e step")
 	}
