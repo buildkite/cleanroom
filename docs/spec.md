@@ -307,7 +307,7 @@ All runtime launch behavior is initiated by control-plane API calls (for example
 
 ### 6.2 Host gateway
 
-Cleanroom runs a single shared host gateway process that provides mediated access to external services (git, package registries, secrets, metadata) for all sandboxes on the host. Sandbox identity is derived from the network transport layer, not bearer tokens.
+Cleanroom runs a single shared host gateway process that provides mediated access to external services for sandboxes on the host. The current implementation serves Git and OCI registry routes today, while keeping secret and metadata routes reserved for follow-up work. Sandbox identity is derived from the network transport layer, not bearer tokens.
 
 #### 6.2.1 Transport and sandbox identity
 
@@ -343,16 +343,20 @@ These rules are installed during sandbox network setup and torn down during clea
 - Enforcement:
   - deny by default except policy-allowed git hosts.
   - credential injection scoped by upstream host prefix.
-  - gateway may serve as a transparent cache with offline fallback for warm entries (future extension).
+  - `.git` smart-HTTP routes are served through embedded `content-cache`, with Cleanroom policy enforcement wrapped around the cache handler.
+  - gateway may later add offline fallback for warm entries.
 
 #### 6.2.4 Package registry proxy
 
-- All package manager egress is redirected through the host gateway's registry endpoint.
-- The gateway applies the sandbox's registry allowlist before forwarding upstream.
-- Unsupported registry requests are denied with explicit audit reason (`registry_not_allowed`).
-- Cache layer (future extension):
-  - positive cache (hit/miss) for registry metadata and tarballs.
-  - optional metadata signing/validation hooks.
+- The gateway exposes a `/registry/` route backed by embedded `content-cache` OCI handlers.
+- The gateway resolves a registry prefix from the request path, maps it to an upstream registry URL, and applies the sandbox allowlist against the mapped policy host and port before forwarding upstream.
+- Current route scope is OCI pull-style `GET` and `HEAD` traffic.
+- Unsupported registry requests are denied with explicit audit reason (`registry_not_allowed`) or route-specific validation errors.
+- Future work:
+  - guest-side package-manager rewrites through `/registry/`
+  - lockfile enforcement
+  - broader non-OCI package-manager protocol support
+  - optional metadata signing/validation hooks
 
 #### 6.2.5 Secret injection
 
@@ -547,7 +551,7 @@ Minimum v1 codes:
 - Spec schema + validator (`cleanroom.yaml` parser with `.buildkite/cleanroom.yaml` fallback)
 - Core policy compiler to normalized allowlist + registry map
 - Local backend (Firecracker) implementation
-- content-cache wrapper integration for npm and one additional manager
+- embed `content-cache` behind gateway Git and OCI routes
 - `cleanroom serve` foreground server plus `cleanroom daemon` lifecycle management and CLI client command set (`exec`, `console`, `sandbox inspect`, `execution inspect`)
 - `cleanroom exec` RPC wrapper flow
 
@@ -565,7 +569,7 @@ Minimum v1 codes:
 ## 13) Acceptance criteria (v1)
 1. A repo policy can be checked in and parsed by default.
 2. Running `cleanroom exec [--] <command>` creates a sandbox where unlisted hosts are unreachable.
-3. Package fetches work only through content-cache and allowed registries.
+3. Gateway-mediated Git and OCI registry fetches work only through cache-backed routes and allowed destinations.
 4. Unsupported destination attempts are denied and logged.
 5. Lockfile-enabled registries block undeclared package artifacts by default.
 6. Git clones are rewritten to cached smart-HTTP endpoints and private clone auth is provided without plaintext exposure.

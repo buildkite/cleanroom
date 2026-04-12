@@ -13,7 +13,8 @@ Firecracker is purpose-built for secure multi-tenant workloads with a minimal de
 - Linux-only local backend using Firecracker + KVM.
 - Enforce `CompiledPolicy` only (no runtime repo policy reload).
 - Deny-by-default egress with explicit allow rules.
-- Route package and git egress through `content-cache`.
+- Route git egress through the shared host gateway, with embedded
+  `content-cache` for Git and OCI transport caching.
 - Keep secret values out of guest env and policy files.
 
 ## Network Model
@@ -38,7 +39,10 @@ This is materially different from the current `darwin-vz` backend, which uses he
 
 1. Slice A: minimal Firecracker runner -- create backend adapter package and run lifecycle. Boot VM, run command over vsock, collect exit code/stdout/stderr.
 2. Slice B: deterministic networking -- add TAP/subnet allocator + nftables setup/teardown. Enforce default deny and host/port allowlist (no registries yet).
-3. Slice C: registry and git mediation -- start/attach `content-cache`. Rewrite package/git traffic through cache endpoint and emit deny reasons for bypass attempts.
+3. Slice C: registry and git mediation -- start/attach embedded
+   `content-cache`. Rewrite git traffic through cache-backed gateway routes,
+   serve OCI registry pulls through the same cache layer, and emit deny reasons
+   for bypass attempts. Broader package-manager rewrites remain follow-up work.
 4. Slice D: secret proxy -- add tokenizer-style host-scoped injection path. Enforce `secret_scope_violation` and keep secret values out of guest-visible env/args.
 5. Slice E: conformance and hardening -- implement backend capability handshake. Add conformance suite from spec.md section 14 before backend marked supported.
 
