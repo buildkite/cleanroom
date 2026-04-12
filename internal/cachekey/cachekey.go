@@ -25,6 +25,7 @@ type RuntimeStageInputs struct {
 
 // WorkspaceStageInputs are the inputs that define the reusable workspace stage.
 type WorkspaceStageInputs struct {
+	Backend                     string
 	RuntimeKey                  string
 	CompiledPolicyHash          string
 	CanonicalRemoteURL          string
@@ -62,6 +63,7 @@ func RuntimeStageKey(in RuntimeStageInputs) string {
 // WorkspaceStageKey returns the canonical cache key for a workspace stage output.
 func WorkspaceStageKey(in WorkspaceStageInputs) string {
 	return buildStageKey("workspace", []component{
+		{name: "backend", value: canonicalIdentifier(in.Backend)},
 		{name: "runtime_key", value: canonicalReference(in.RuntimeKey)},
 		{name: "compiled_policy_hash", value: canonicalDigest(in.CompiledPolicyHash)},
 		{name: "canonical_remote_url", value: canonicalRemoteURL(in.CanonicalRemoteURL)},

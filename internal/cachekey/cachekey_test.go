@@ -35,6 +35,7 @@ func TestRuntimeStageKey(t *testing.T) {
 
 func TestWorkspaceStageKey(t *testing.T) {
 	inputs := WorkspaceStageInputs{
+		Backend:                     "firecracker",
 		RuntimeKey:                  "runtime:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		CompiledPolicyHash:          "sha256:1111111111111111111111111111111111111111111111111111111111111111",
 		CanonicalRemoteURL:          "https://github.com/buildkite/cleanroom.git",
@@ -58,7 +59,7 @@ func TestWorkspaceStageKey(t *testing.T) {
 	}
 
 	mutated := inputs
-	mutated.CompiledPolicyHash = "sha256:6666666666666666666666666666666666666666666666666666666666666666"
+	mutated.Backend = "darwin-vz"
 	if gotMutated := WorkspaceStageKey(mutated); got == gotMutated {
 		t.Fatalf("workspace stage key did not change after input mutation: %q", got)
 	}

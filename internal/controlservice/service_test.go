@@ -1365,7 +1365,7 @@ func TestCreateSandboxPublishesWorkspaceStageCache(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FromProto returned error: %v", err)
 	}
-	if got, want := record.CacheKey, workspaceStageCacheKey("runtime-base:test", compiled.Hash, repositorycheckout.FromProto(testRepositoryCheckoutProto())); got != want {
+	if got, want := record.CacheKey, workspaceStageCacheKey("firecracker", "runtime-base:test", compiled.Hash, repositorycheckout.FromProto(testRepositoryCheckoutProto())); got != want {
 		t.Fatalf("unexpected workspace cache key: got %q want %q", got, want)
 	}
 	if got, want := record.Stage, workspaceStageName; got != want {
@@ -1523,10 +1523,78 @@ func TestCreateSandboxDoesNotReuseWorkspaceStageCacheAcrossPolicies(t *testing.T
 	if firstCompiled.Hash == secondCompiled.Hash {
 		t.Fatalf("expected distinct compiled policy hashes, got %q", firstCompiled.Hash)
 	}
-	firstKey := workspaceStageCacheKey("runtime-base:test", firstCompiled.Hash, repositorycheckout.FromProto(testRepositoryCheckoutProto()))
-	secondKey := workspaceStageCacheKey("runtime-base:test", secondCompiled.Hash, repositorycheckout.FromProto(testRepositoryCheckoutProto()))
+	firstKey := workspaceStageCacheKey("firecracker", "runtime-base:test", firstCompiled.Hash, repositorycheckout.FromProto(testRepositoryCheckoutProto()))
+	secondKey := workspaceStageCacheKey("firecracker", "runtime-base:test", secondCompiled.Hash, repositorycheckout.FromProto(testRepositoryCheckoutProto()))
 	if firstKey == secondKey {
 		t.Fatalf("expected workspace stage cache keys to differ across policies, got %q", firstKey)
+	}
+}
+
+func TestCreateSandboxPublishesWorkspaceStageCachePerBackend(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	store := newMemorySnapshotStore()
+	firecrackerAdapter := &stubAdapter{
+		createSnapshotFn: func(_ context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
+			return &backend.SnapshotResult{StorageRef: "/snapshots/firecracker/" + req.SnapshotID + ".ext4"}, nil
+		},
+	}
+	darwinAdapter := &stubAdapter{
+		createSnapshotFn: func(_ context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
+			return &backend.SnapshotResult{StorageRef: "/snapshots/darwin-vz/" + req.SnapshotID + ".img"}, nil
+		},
+	}
+	mirrors := &stubRepositoryMirrorStore{}
+	svc := newTestServiceWithSnapshotStore(firecrackerAdapter, store)
+	svc.RepositoryMirrors = mirrors
+	svc.Backends["darwin-vz"] = darwinAdapter
+	svc.Config.Backends.DarwinVZ.Snapshots.Enabled = true
+	svc.Config.Backends.DarwinVZ.Snapshots.Driver = "apfs"
+
+	req := &cleanroomv1.CreateSandboxRequest{
+		Policy:             testRepositoryPolicy(),
+		RepositoryCheckout: testRepositoryCheckoutProto(),
+	}
+	if _, err := svc.CreateSandbox(context.Background(), req); err != nil {
+		t.Fatalf("CreateSandbox firecracker returned error: %v", err)
+	}
+	if _, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Backend:            "darwin-vz",
+		Policy:             testRepositoryPolicy(),
+		RepositoryCheckout: testRepositoryCheckoutProto(),
+	}); err != nil {
+		t.Fatalf("CreateSandbox darwin-vz returned error: %v", err)
+	}
+
+	if got, want := firecrackerAdapter.createSnapshotCalls, 1; got != want {
+		t.Fatalf("expected one firecracker workspace stage publish, got %d want %d", got, want)
+	}
+	if got, want := darwinAdapter.createSnapshotCalls, 1; got != want {
+		t.Fatalf("expected one darwin-vz workspace stage publish, got %d want %d", got, want)
+	}
+	if got := firecrackerAdapter.deleteSnapshotCalls + darwinAdapter.deleteSnapshotCalls; got != 0 {
+		t.Fatalf("expected no snapshot rollback deletes across backends, got %d", got)
+	}
+
+	cacheStore, ok := svc.CacheStore.(*memoryCacheStore)
+	if !ok {
+		t.Fatalf("expected memory cache store, got %T", svc.CacheStore)
+	}
+	records, err := cacheStore.List(context.Background())
+	if err != nil {
+		t.Fatalf("List returned error: %v", err)
+	}
+	if got, want := len(records), 2; got != want {
+		t.Fatalf("expected one workspace stage cache per backend, got %d want %d", got, want)
+	}
+
+	compiled, err := policy.FromProto(testRepositoryPolicy())
+	if err != nil {
+		t.Fatalf("FromProto returned error: %v", err)
+	}
+	firecrackerKey := workspaceStageCacheKey("firecracker", "runtime-base:test", compiled.Hash, repositorycheckout.FromProto(testRepositoryCheckoutProto()))
+	darwinKey := workspaceStageCacheKey("darwin-vz", "runtime-base:test", compiled.Hash, repositorycheckout.FromProto(testRepositoryCheckoutProto()))
+	if firecrackerKey == darwinKey {
+		t.Fatalf("expected backend-specific workspace stage cache keys, got %q", firecrackerKey)
 	}
 }
 

@@ -18,11 +18,12 @@ const (
 	workspaceStageProducerVersion = "cleanroom/workspace-stage-v1"
 )
 
-func workspaceStageCacheKey(runtimeBaseKey, compiledPolicyHash string, repository *repositorycheckout.Checkout) string {
-	if repository == nil || strings.TrimSpace(runtimeBaseKey) == "" || strings.TrimSpace(compiledPolicyHash) == "" {
+func workspaceStageCacheKey(backendName, runtimeBaseKey, compiledPolicyHash string, repository *repositorycheckout.Checkout) string {
+	if repository == nil || strings.TrimSpace(backendName) == "" || strings.TrimSpace(runtimeBaseKey) == "" || strings.TrimSpace(compiledPolicyHash) == "" {
 		return ""
 	}
 	return cachekey.WorkspaceStageKey(cachekey.WorkspaceStageInputs{
+		Backend:                     strings.TrimSpace(backendName),
 		RuntimeKey:                  strings.TrimSpace(runtimeBaseKey),
 		CompiledPolicyHash:          strings.TrimSpace(compiledPolicyHash),
 		CanonicalRemoteURL:          strings.TrimSpace(repository.RemoteURL),
@@ -67,7 +68,7 @@ func (s *Service) lookupWorkspaceSeedSnapshot(ctx context.Context, backendName s
 	if err != nil {
 		return cachestore.Record{}, false, nil
 	}
-	cacheKey := workspaceStageCacheKey(runtimeBaseKey, compiled.Hash, repository)
+	cacheKey := workspaceStageCacheKey(backendName, runtimeBaseKey, compiled.Hash, repository)
 	if cacheKey == "" {
 		return cachestore.Record{}, false, nil
 	}
@@ -113,7 +114,7 @@ func (s *Service) maybePublishWorkspaceSeedSnapshot(
 		return
 	}
 
-	cacheKey := workspaceStageCacheKey(runtimeBaseKey, compiled.Hash, repository)
+	cacheKey := workspaceStageCacheKey(backendName, runtimeBaseKey, compiled.Hash, repository)
 	if cacheKey == "" {
 		return
 	}
