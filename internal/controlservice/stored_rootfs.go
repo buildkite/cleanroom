@@ -17,6 +17,7 @@ import (
 type storedRootFSRecord struct {
 	ID            string
 	Kind          string
+	SnapshotID    string
 	Backend       string
 	Policy        *policy.CompiledPolicy
 	Repository    *repositorycheckout.Checkout
@@ -32,6 +33,7 @@ func storedRootFSRecordFromSnapshot(record snapshotstore.Record) (storedRootFSRe
 	return storedRootFSRecord{
 		ID:            strings.TrimSpace(record.SnapshotID),
 		Kind:          "snapshot",
+		SnapshotID:    strings.TrimSpace(record.SnapshotID),
 		Backend:       strings.TrimSpace(record.Backend),
 		Policy:        compiled,
 		Repository:    repositorycheckout.FromProto(record.Repository),
@@ -54,6 +56,7 @@ func storedRootFSRecordFromCacheEntry(record cachestore.Record) (storedRootFSRec
 	return storedRootFSRecord{
 		ID:            strings.TrimSpace(record.CacheKey),
 		Kind:          sourceKind,
+		SnapshotID:    strings.TrimSpace(record.BackingSnapshotID),
 		Backend:       strings.TrimSpace(record.Backend),
 		Policy:        compiled,
 		Repository:    repositorycheckout.FromProto(record.Repository),
@@ -101,9 +104,13 @@ func (s *Service) createSandboxFromStoredRootFS(ctx context.Context, req *cleanr
 
 	now := s.clock().Now()
 	sandboxID := s.ids().NewSandboxID()
+	provisionSnapshotID := strings.TrimSpace(record.SnapshotID)
+	if provisionSnapshotID == "" {
+		provisionSnapshotID = strings.TrimSpace(record.ID)
+	}
 	if err := snapshotAdapter.ProvisionSandboxFromSnapshot(ctx, backend.ProvisionFromSnapshotRequest{
 		SandboxID:         sandboxID,
-		SnapshotID:        record.ID,
+		SnapshotID:        provisionSnapshotID,
 		StorageRef:        record.StorageRef,
 		Policy:            effectivePolicy,
 		FirecrackerConfig: firecrackerCfg,

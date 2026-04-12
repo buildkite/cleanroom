@@ -19,6 +19,7 @@ type Record struct {
 	CacheKey            string
 	Stage               string
 	State               string
+	BackingSnapshotID   string
 	Backend             string
 	PolicyHash          string
 	Policy              *cleanroomv1.Policy
@@ -61,6 +62,14 @@ func New(opts Options) (*Store, error) {
 }
 
 func (s *Store) Create(ctx context.Context, record Record) error {
+	return s.persist(ctx, record, false)
+}
+
+func (s *Store) Upsert(ctx context.Context, record Record) error {
+	return s.persist(ctx, record, true)
+}
+
+func (s *Store) persist(ctx context.Context, record Record, replace bool) error {
 	if strings.TrimSpace(record.CacheKey) == "" {
 		return fmt.Errorf("cache record missing cache key")
 	}
@@ -72,6 +81,9 @@ func (s *Store) Create(ctx context.Context, record Record) error {
 	}
 	if strings.TrimSpace(record.Backend) == "" {
 		return fmt.Errorf("cache record %q missing backend", record.CacheKey)
+	}
+	if strings.TrimSpace(record.BackingSnapshotID) == "" {
+		return fmt.Errorf("cache record %q missing backing snapshot id", record.CacheKey)
 	}
 	if strings.TrimSpace(record.PolicyHash) == "" {
 		return fmt.Errorf("cache record %q missing policy hash", record.CacheKey)
@@ -113,11 +125,13 @@ func (s *Store) Create(ctx context.Context, record Record) error {
 	}
 	defer db.Close()
 
-	if _, err := db.ExecContext(ctx, `
+	verb := "insert"
+	statement := `
 		INSERT INTO cache_entries (
 			cache_key,
 			stage,
 			state,
+			backing_snapshot_id,
 			backend,
 			policy_hash,
 			policy_proto,
@@ -129,11 +143,50 @@ func (s *Store) Create(ctx context.Context, record Record) error {
 			created_at_unix_nano,
 			last_used_at_unix_nano,
 			producer_version
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`
+	if replace {
+		verb = "upsert"
+		statement = `
+			INSERT INTO cache_entries (
+				cache_key,
+				stage,
+				state,
+				backing_snapshot_id,
+				backend,
+				policy_hash,
+				policy_proto,
+				repository_proto,
+				parent_cache_key,
+				storage_driver,
+				storage_ref,
+				input_manifest_digest,
+				created_at_unix_nano,
+				last_used_at_unix_nano,
+				producer_version
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(stage, cache_key) DO UPDATE SET
+				state = excluded.state,
+				backing_snapshot_id = excluded.backing_snapshot_id,
+				backend = excluded.backend,
+				policy_hash = excluded.policy_hash,
+				policy_proto = excluded.policy_proto,
+				repository_proto = excluded.repository_proto,
+				parent_cache_key = excluded.parent_cache_key,
+				storage_driver = excluded.storage_driver,
+				storage_ref = excluded.storage_ref,
+				input_manifest_digest = excluded.input_manifest_digest,
+				created_at_unix_nano = excluded.created_at_unix_nano,
+				last_used_at_unix_nano = excluded.last_used_at_unix_nano,
+				producer_version = excluded.producer_version
+		`
+	}
+
+	if _, err := db.ExecContext(ctx, statement,
 		record.CacheKey,
 		record.Stage,
 		record.State,
+		record.BackingSnapshotID,
 		record.Backend,
 		record.PolicyHash,
 		policyBytes,
@@ -146,7 +199,7 @@ func (s *Store) Create(ctx context.Context, record Record) error {
 		record.LastUsedAt.UTC().UnixNano(),
 		record.ProducerVersion,
 	); err != nil {
-		return fmt.Errorf("insert cache metadata %q/%q: %w", record.Stage, record.CacheKey, err)
+		return fmt.Errorf("%s cache metadata %q/%q: %w", verb, record.Stage, record.CacheKey, err)
 	}
 	return nil
 }
@@ -163,6 +216,7 @@ func (s *Store) GetReady(ctx context.Context, stage, cacheKey string) (Record, b
 			cache_key,
 			stage,
 			state,
+			backing_snapshot_id,
 			backend,
 			policy_hash,
 			policy_proto,
@@ -229,6 +283,7 @@ func (s *Store) List(ctx context.Context) ([]Record, error) {
 			cache_key,
 			stage,
 			state,
+			backing_snapshot_id,
 			backend,
 			policy_hash,
 			policy_proto,
@@ -320,6 +375,9 @@ func (s *Store) initDB(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("initialise cache metadata schema: %w", err)
 	}
+	if _, err := db.ExecContext(ctx, `ALTER TABLE cache_entries ADD COLUMN backing_snapshot_id TEXT NOT NULL DEFAULT ''`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		return fmt.Errorf("ensure cache metadata backing_snapshot_id column: %w", err)
+	}
 	return nil
 }
 
@@ -341,6 +399,7 @@ func scanRecord(row recordScanner) (Record, error) {
 		&record.CacheKey,
 		&record.Stage,
 		&record.State,
+		&record.BackingSnapshotID,
 		&record.Backend,
 		&record.PolicyHash,
 		&policyBytes,

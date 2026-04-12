@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -308,14 +309,25 @@ func newMemoryCacheStore() *memoryCacheStore {
 func (s *memoryCacheStore) Create(_ context.Context, record cachestore.Record) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.records[record.Stage+"\x00"+record.CacheKey] = record
+	key := cacheStoreKey(record.Stage, record.CacheKey)
+	if _, exists := s.records[key]; exists {
+		return errors.New("cache record already exists")
+	}
+	s.records[key] = record
+	return nil
+}
+
+func (s *memoryCacheStore) Upsert(_ context.Context, record cachestore.Record) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.records[cacheStoreKey(record.Stage, record.CacheKey)] = record
 	return nil
 }
 
 func (s *memoryCacheStore) GetReady(_ context.Context, stage, cacheKey string) (cachestore.Record, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	record, ok := s.records[stage+"\x00"+cacheKey]
+	record, ok := s.records[cacheStoreKey(stage, cacheKey)]
 	if !ok || record.State != cacheStateReady {
 		return cachestore.Record{}, false, nil
 	}
@@ -325,7 +337,7 @@ func (s *memoryCacheStore) GetReady(_ context.Context, stage, cacheKey string) (
 func (s *memoryCacheStore) Touch(_ context.Context, stage, cacheKey string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	key := stage + "\x00" + cacheKey
+	key := cacheStoreKey(stage, cacheKey)
 	record, ok := s.records[key]
 	if !ok {
 		return errors.New("cache record not found")
@@ -348,8 +360,23 @@ func (s *memoryCacheStore) List(_ context.Context) ([]cachestore.Record, error) 
 func (s *memoryCacheStore) Delete(_ context.Context, stage, cacheKey string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.records, stage+"\x00"+cacheKey)
+	delete(s.records, cacheStoreKey(stage, cacheKey))
 	return nil
+}
+
+func cacheStoreKey(stage, cacheKey string) string {
+	return strings.TrimSpace(stage) + "\x00" + strings.TrimSpace(cacheKey)
+}
+
+func cacheRecordBackingSnapshotID(record cachestore.Record) (string, bool) {
+	value := reflect.ValueOf(record)
+	for _, fieldName := range []string{"BackingSnapshotID", "SnapshotID", "BackingSnapshotIdentity"} {
+		field := value.FieldByName(fieldName)
+		if field.IsValid() && field.Kind() == reflect.String {
+			return field.String(), true
+		}
+	}
+	return "", false
 }
 
 func TestExecutionStreamIncludesExitEvent(t *testing.T) {
@@ -1212,7 +1239,7 @@ func TestCreateSandboxBootstrapsRepositoryInService(t *testing.T) {
 	}
 }
 
-func TestCreateSandboxPublishesWorkspaceSeedSnapshot(t *testing.T) {
+func TestCreateSandboxPublishesWorkspaceStageCache(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	store := newMemorySnapshotStore()
 	adapter := &stubAdapter{
@@ -1281,12 +1308,19 @@ func TestCreateSandboxPublishesWorkspaceSeedSnapshot(t *testing.T) {
 	if got, want := record.Repository.GetCommitSha(), testRepositoryCheckoutProto().GetCommitSha(); got != want {
 		t.Fatalf("unexpected workspace stage commit: got %q want %q", got, want)
 	}
+	backingSnapshotID, ok := cacheRecordBackingSnapshotID(record)
+	if !ok {
+		t.Fatal("expected workspace stage cache to include backing snapshot identity")
+	}
+	if got, want := backingSnapshotID, adapter.createSnapshotReq.SnapshotID; got != want {
+		t.Fatalf("unexpected workspace stage backing snapshot identity: got %q want %q", got, want)
+	}
 	if got, want := record.CreatedAt, publishedAt; !got.Equal(want) {
 		t.Fatalf("unexpected workspace stage created_at: got %s want %s", got.Format(time.RFC3339Nano), want.Format(time.RFC3339Nano))
 	}
 }
 
-func TestCreateSandboxReusesWorkspaceSeedSnapshot(t *testing.T) {
+func TestCreateSandboxReusesWorkspaceStageCache(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	store := newMemorySnapshotStore()
 	adapter := &stubAdapter{
@@ -1403,7 +1437,7 @@ func TestCreateSandboxDoesNotReuseWorkspaceSeedWhenRuntimeBaseKeyChanges(t *test
 	}
 }
 
-func TestCreateSandboxFallsBackWhenWorkspaceSeedRestoreFails(t *testing.T) {
+func TestCreateSandboxFallsBackWhenWorkspaceStageRestoreFails(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	store := newMemorySnapshotStore()
 	adapter := &stubAdapter{
@@ -1426,6 +1460,7 @@ func TestCreateSandboxFallsBackWhenWorkspaceSeedRestoreFails(t *testing.T) {
 	if _, err := svc.CreateSandbox(context.Background(), req); err != nil {
 		t.Fatalf("first CreateSandbox returned error: %v", err)
 	}
+	firstSnapshotID := adapter.createSnapshotReq.SnapshotID
 
 	secondResp, err := svc.CreateSandbox(context.Background(), req)
 	if err != nil {
@@ -1449,6 +1484,12 @@ func TestCreateSandboxFallsBackWhenWorkspaceSeedRestoreFails(t *testing.T) {
 	if got, want := mirrors.calls, 2; got != want {
 		t.Fatalf("expected fallback path to re-prewarm mirror, got %d want %d", got, want)
 	}
+	if got, want := adapter.deleteSnapshotCalls, 1; got != want {
+		t.Fatalf("expected fallback replacement cleanup to delete stale snapshot once, got %d want %d", got, want)
+	}
+	if got, want := adapter.deleteSnapshotReq.SnapshotID, firstSnapshotID; got != want {
+		t.Fatalf("unexpected stale snapshot cleanup target: got %q want %q", got, want)
+	}
 	cacheStore, ok := svc.CacheStore.(*memoryCacheStore)
 	if !ok {
 		t.Fatalf("expected memory cache store, got %T", svc.CacheStore)
@@ -1460,6 +1501,13 @@ func TestCreateSandboxFallsBackWhenWorkspaceSeedRestoreFails(t *testing.T) {
 	if got, want := len(records), 1; got != want {
 		t.Fatalf("expected failed restore replacement to leave one workspace stage cache record, got %d want %d", got, want)
 	}
+	backingSnapshotID, ok := cacheRecordBackingSnapshotID(records[0])
+	if !ok {
+		t.Fatal("expected workspace stage cache to include backing snapshot identity")
+	}
+	if got, want := backingSnapshotID, adapter.createSnapshotReq.SnapshotID; got != want {
+		t.Fatalf("unexpected workspace stage backing snapshot identity after replacement: got %q want %q", got, want)
+	}
 
 	snapshotRecords, err := store.List(context.Background())
 	if err != nil {
@@ -1467,6 +1515,38 @@ func TestCreateSandboxFallsBackWhenWorkspaceSeedRestoreFails(t *testing.T) {
 	}
 	if got, want := len(snapshotRecords), 0; got != want {
 		t.Fatalf("expected workspace stage snapshots to stay out of snapshot metadata, got %d want %d", got, want)
+	}
+}
+
+func TestMemoryCacheStoreRejectsDuplicateStageCacheKey(t *testing.T) {
+	t.Parallel()
+
+	store := newMemoryCacheStore()
+	record := cachestore.Record{
+		CacheKey:        "workspace:test",
+		Stage:           workspaceStageName,
+		State:           cacheStateReady,
+		Backend:         "firecracker",
+		PolicyHash:      "policy-hash",
+		Policy:          testRepositoryPolicy(),
+		StorageRef:      "/tmp/workspace-test.ext4",
+		StorageDriver:   "file",
+		ProducerVersion: workspaceStageProducerVersion,
+	}
+
+	if err := store.Create(context.Background(), record); err != nil {
+		t.Fatalf("first Create returned error: %v", err)
+	}
+	if err := store.Create(context.Background(), record); err == nil {
+		t.Fatal("expected duplicate cache insert to fail")
+	}
+
+	items, err := store.List(context.Background())
+	if err != nil {
+		t.Fatalf("List returned error: %v", err)
+	}
+	if got, want := len(items), 1; got != want {
+		t.Fatalf("expected duplicate cache insert to keep one record, got %d want %d", got, want)
 	}
 }
 

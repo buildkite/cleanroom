@@ -2,8 +2,6 @@ package controlservice
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"strings"
 
@@ -15,10 +13,9 @@ import (
 )
 
 const (
-	workspaceStageName                = "workspace"
-	cacheStateReady                   = "ready"
-	workspaceStageMaterializationSpec = "workspace-bootstrap:v1"
-	workspaceStageProducerVersion     = "cleanroom/workspace-stage-v1"
+	workspaceStageName            = "workspace"
+	cacheStateReady               = "ready"
+	workspaceStageProducerVersion = "cleanroom/workspace-stage-v1"
 )
 
 func workspaceStageCacheKey(runtimeBaseKey string, repository *repositorycheckout.Checkout) string {
@@ -33,7 +30,7 @@ func workspaceStageCacheKey(runtimeBaseKey string, repository *repositorycheckou
 		SubmoduleResolutionDigest:   "",
 		CheckoutMode:                workspaceStageCheckoutMode(repository),
 		DestinationDir:              strings.TrimSpace(repository.DestinationDir),
-		MaterializationRecipeDigest: workspaceStageMaterializationRecipeDigest(),
+		MaterializationRecipeDigest: workspaceStageMaterializationRecipeDigest(repository),
 	})
 }
 
@@ -57,9 +54,8 @@ func workspaceStageSubmoduleMode(repository *repositorycheckout.Checkout) string
 	return "disabled"
 }
 
-func workspaceStageMaterializationRecipeDigest() string {
-	sum := sha256.Sum256([]byte(workspaceStageMaterializationSpec))
-	return "sha256:" + hex.EncodeToString(sum[:])
+func workspaceStageMaterializationRecipeDigest(repository *repositorycheckout.Checkout) string {
+	return repositorycheckout.BootstrapRecipeDigest(repository)
 }
 
 func (s *Service) lookupWorkspaceSeedSnapshot(ctx context.Context, backendName string, compiled *policy.CompiledPolicy, runtimeBaseKey string, repository *repositorycheckout.Checkout) (cachestore.Record, bool, error) {
@@ -140,38 +136,28 @@ func (s *Service) maybePublishWorkspaceSeedSnapshot(
 	}
 
 	record := cachestore.Record{
-		CacheKey:        cacheKey,
-		Stage:           workspaceStageName,
-		State:           cacheStateReady,
-		Backend:         backendName,
-		PolicyHash:      compiled.Hash,
-		Policy:          compiled.ToProto(),
-		Repository:      cloneRepositoryCheckout(repository).ToProto(),
-		ParentCacheKey:  strings.TrimSpace(runtimeBaseKey),
-		StorageDriver:   snapshotCfg.Snapshots.Driver,
-		StorageRef:      strings.TrimSpace(result.StorageRef),
-		CreatedAt:       s.clock().Now(),
-		LastUsedAt:      s.clock().Now(),
-		ProducerVersion: workspaceStageProducerVersion,
+		CacheKey:          cacheKey,
+		Stage:             workspaceStageName,
+		State:             cacheStateReady,
+		BackingSnapshotID: strings.TrimSpace(snapshotID),
+		Backend:           backendName,
+		PolicyHash:        compiled.Hash,
+		Policy:            compiled.ToProto(),
+		Repository:        cloneRepositoryCheckout(repository).ToProto(),
+		ParentCacheKey:    strings.TrimSpace(runtimeBaseKey),
+		StorageDriver:     snapshotCfg.Snapshots.Driver,
+		StorageRef:        strings.TrimSpace(result.StorageRef),
+		CreatedAt:         s.clock().Now(),
+		LastUsedAt:        s.clock().Now(),
+		ProducerVersion:   workspaceStageProducerVersion,
 	}
 
+	persist := store.Create
 	if replacedRecord != nil && strings.TrimSpace(replacedRecord.CacheKey) == cacheKey {
-		if err := store.Delete(ctx, workspaceStageName, cacheKey); err != nil {
-			deleteErr := adapter.DeleteSnapshot(ctx, backend.DeleteSnapshotRequest{
-				SnapshotID:        snapshotID,
-				StorageRef:        record.StorageRef,
-				FirecrackerConfig: snapshotCfg,
-			})
-			if deleteErr != nil {
-				s.logWorkspaceSeedWarning("rollback workspace stage cache after stale cache delete failure", sandboxID, fmt.Errorf("%w (rollback failed: %v)", err, deleteErr))
-				return
-			}
-			s.logWorkspaceSeedWarning("delete stale workspace stage cache metadata", sandboxID, err)
-			return
-		}
+		persist = store.Upsert
 	}
 
-	if err := store.Create(ctx, record); err != nil {
+	if err := persist(ctx, record); err != nil {
 		deleteErr := adapter.DeleteSnapshot(ctx, backend.DeleteSnapshotRequest{
 			SnapshotID:        snapshotID,
 			StorageRef:        record.StorageRef,
@@ -182,7 +168,34 @@ func (s *Service) maybePublishWorkspaceSeedSnapshot(
 			return
 		}
 		s.logWorkspaceSeedWarning("persist workspace stage cache metadata", sandboxID, err)
+		return
 	}
+
+	if replacedRecord != nil && strings.TrimSpace(replacedRecord.CacheKey) == cacheKey {
+		if err := deleteWorkspaceStageCacheSnapshot(ctx, adapter, backendName, firecrackerCfg, *replacedRecord); err != nil {
+			s.logWorkspaceSeedWarning("delete replaced workspace stage cache snapshot", sandboxID, err)
+		}
+	}
+}
+
+func deleteWorkspaceStageCacheSnapshot(ctx context.Context, adapter backend.SnapshottingAdapter, backendName string, firecrackerCfg backend.FirecrackerConfig, record cachestore.Record) error {
+	if adapter == nil {
+		return nil
+	}
+	storageRef := strings.TrimSpace(record.StorageRef)
+	if storageRef == "" {
+		return nil
+	}
+	snapshotID := strings.TrimSpace(record.BackingSnapshotID)
+	if snapshotID == "" {
+		snapshotID = strings.TrimSpace(record.CacheKey)
+	}
+	deleteCfg := withSnapshotDriver(backendName, firecrackerCfg, record.StorageDriver)
+	return adapter.DeleteSnapshot(ctx, backend.DeleteSnapshotRequest{
+		SnapshotID:        snapshotID,
+		StorageRef:        storageRef,
+		FirecrackerConfig: deleteCfg,
+	})
 }
 
 func (s *Service) workspaceSeedRuntimeBaseKey(ctx context.Context, adapter backend.Adapter, compiled *policy.CompiledPolicy, firecrackerCfg backend.FirecrackerConfig) (string, bool, error) {

@@ -19,11 +19,12 @@ func TestStoreCreateGetReadyListDelete(t *testing.T) {
 	}
 
 	record := Record{
-		CacheKey:   "workspace-seed:test",
-		Stage:      "workspace",
-		State:      "ready",
-		Backend:    "firecracker",
-		PolicyHash: "policy-hash",
+		CacheKey:          "workspace-seed:test",
+		Stage:             "workspace",
+		State:             "ready",
+		BackingSnapshotID: "snapshot-workspace-test",
+		Backend:           "firecracker",
+		PolicyHash:        "policy-hash",
 		Policy: &cleanroomv1.Policy{
 			Version:        1,
 			ImageRef:       "ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
@@ -100,15 +101,16 @@ func TestStoreGetReadyFiltersNonReadyStates(t *testing.T) {
 	}
 
 	record := Record{
-		CacheKey:        "dependency-seed:test",
-		Stage:           "dependency",
-		State:           "failed",
-		Backend:         "firecracker",
-		PolicyHash:      "policy-hash",
-		Policy:          testPolicy(),
-		StorageRef:      "/tmp/dependency-test.ext4",
-		StorageDriver:   "file",
-		ProducerVersion: "cleanroom-test/1",
+		CacheKey:          "dependency-seed:test",
+		Stage:             "dependency",
+		State:             "failed",
+		BackingSnapshotID: "snapshot-dependency-test",
+		Backend:           "firecracker",
+		PolicyHash:        "policy-hash",
+		Policy:            testPolicy(),
+		StorageRef:        "/tmp/dependency-test.ext4",
+		StorageDriver:     "file",
+		ProducerVersion:   "cleanroom-test/1",
 	}
 	if err := store.Create(context.Background(), record); err != nil {
 		t.Fatalf("Create returned error: %v", err)
@@ -130,17 +132,18 @@ func TestStoreUpdateLastUsedAtAndTouch(t *testing.T) {
 	}
 
 	record := Record{
-		CacheKey:        "runtime:test",
-		Stage:           "runtime",
-		State:           "ready",
-		Backend:         "firecracker",
-		PolicyHash:      "policy-hash",
-		Policy:          testPolicy(),
-		StorageRef:      "/tmp/runtime-test.ext4",
-		StorageDriver:   "file",
-		ProducerVersion: "cleanroom-test/1",
-		CreatedAt:       time.Unix(1700000000, 0).UTC(),
-		LastUsedAt:      time.Unix(1700000000, 0).UTC(),
+		CacheKey:          "runtime:test",
+		Stage:             "runtime",
+		State:             "ready",
+		BackingSnapshotID: "snapshot-runtime-test",
+		Backend:           "firecracker",
+		PolicyHash:        "policy-hash",
+		Policy:            testPolicy(),
+		StorageRef:        "/tmp/runtime-test.ext4",
+		StorageDriver:     "file",
+		ProducerVersion:   "cleanroom-test/1",
+		CreatedAt:         time.Unix(1700000000, 0).UTC(),
+		LastUsedAt:        time.Unix(1700000000, 0).UTC(),
 	}
 	if err := store.Create(context.Background(), record); err != nil {
 		t.Fatalf("Create returned error: %v", err)
@@ -186,30 +189,32 @@ func TestStoreListOrdersByCreatedAtNanoseconds(t *testing.T) {
 	}
 
 	first := Record{
-		CacheKey:        "workspace-seed:first",
-		Stage:           "workspace",
-		State:           "ready",
-		Backend:         "firecracker",
-		PolicyHash:      "policy-hash",
-		Policy:          testPolicy(),
-		StorageRef:      "/tmp/workspace-first.ext4",
-		StorageDriver:   "file",
-		CreatedAt:       time.Unix(1700000000, 100).UTC(),
-		LastUsedAt:      time.Unix(1700000000, 100).UTC(),
-		ProducerVersion: "cleanroom-test/1",
+		CacheKey:          "workspace-seed:first",
+		Stage:             "workspace",
+		State:             "ready",
+		BackingSnapshotID: "snapshot-workspace-first",
+		Backend:           "firecracker",
+		PolicyHash:        "policy-hash",
+		Policy:            testPolicy(),
+		StorageRef:        "/tmp/workspace-first.ext4",
+		StorageDriver:     "file",
+		CreatedAt:         time.Unix(1700000000, 100).UTC(),
+		LastUsedAt:        time.Unix(1700000000, 100).UTC(),
+		ProducerVersion:   "cleanroom-test/1",
 	}
 	second := Record{
-		CacheKey:        "workspace-seed:second",
-		Stage:           "workspace",
-		State:           "ready",
-		Backend:         "firecracker",
-		PolicyHash:      "policy-hash",
-		Policy:          testPolicy(),
-		StorageRef:      "/tmp/workspace-second.ext4",
-		StorageDriver:   "file",
-		CreatedAt:       time.Unix(1700000000, 200).UTC(),
-		LastUsedAt:      time.Unix(1700000000, 200).UTC(),
-		ProducerVersion: "cleanroom-test/1",
+		CacheKey:          "workspace-seed:second",
+		Stage:             "workspace",
+		State:             "ready",
+		BackingSnapshotID: "snapshot-workspace-second",
+		Backend:           "firecracker",
+		PolicyHash:        "policy-hash",
+		Policy:            testPolicy(),
+		StorageRef:        "/tmp/workspace-second.ext4",
+		StorageDriver:     "file",
+		CreatedAt:         time.Unix(1700000000, 200).UTC(),
+		LastUsedAt:        time.Unix(1700000000, 200).UTC(),
+		ProducerVersion:   "cleanroom-test/1",
 	}
 	if err := store.Create(context.Background(), second); err != nil {
 		t.Fatalf("Create second returned error: %v", err)
@@ -230,6 +235,42 @@ func TestStoreListOrdersByCreatedAtNanoseconds(t *testing.T) {
 	}
 	if got, want := items[1].CacheKey, second.CacheKey; got != want {
 		t.Fatalf("unexpected second cache in list: got %q want %q", got, want)
+	}
+}
+
+func TestStoreCreateRejectsDuplicateStageCacheKey(t *testing.T) {
+	t.Parallel()
+
+	store, err := New(Options{MetadataDBPath: filepath.Join(t.TempDir(), "caches.db")})
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	record := Record{
+		CacheKey:          "workspace-seed:test",
+		Stage:             "workspace",
+		State:             "ready",
+		BackingSnapshotID: "snapshot-workspace-test",
+		Backend:           "firecracker",
+		PolicyHash:        "policy-hash",
+		Policy:            testPolicy(),
+		StorageRef:        "/tmp/workspace-test.ext4",
+		StorageDriver:     "file",
+		ProducerVersion:   "cleanroom-test/1",
+	}
+	if err := store.Create(context.Background(), record); err != nil {
+		t.Fatalf("first Create returned error: %v", err)
+	}
+	if err := store.Create(context.Background(), record); err == nil {
+		t.Fatal("expected duplicate cache insert to fail")
+	}
+
+	items, err := store.List(context.Background())
+	if err != nil {
+		t.Fatalf("List returned error: %v", err)
+	}
+	if got, want := len(items), 1; got != want {
+		t.Fatalf("expected duplicate cache insert to keep one record, got %d want %d", got, want)
 	}
 }
 
@@ -254,17 +295,18 @@ func TestNewMigratesLegacySchemalessDatabase(t *testing.T) {
 	}
 
 	record := Record{
-		CacheKey:        "runtime:test",
-		Stage:           "runtime",
-		State:           "ready",
-		Backend:         "firecracker",
-		PolicyHash:      "policy-hash",
-		Policy:          testPolicy(),
-		StorageRef:      "/tmp/runtime-test.ext4",
-		StorageDriver:   "file",
-		CreatedAt:       time.Unix(1700000000, 123).UTC(),
-		LastUsedAt:      time.Unix(1700000000, 456).UTC(),
-		ProducerVersion: "cleanroom-test/1",
+		CacheKey:          "runtime:test",
+		Stage:             "runtime",
+		State:             "ready",
+		BackingSnapshotID: "snapshot-runtime-test",
+		Backend:           "firecracker",
+		PolicyHash:        "policy-hash",
+		Policy:            testPolicy(),
+		StorageRef:        "/tmp/runtime-test.ext4",
+		StorageDriver:     "file",
+		CreatedAt:         time.Unix(1700000000, 123).UTC(),
+		LastUsedAt:        time.Unix(1700000000, 456).UTC(),
+		ProducerVersion:   "cleanroom-test/1",
 	}
 	if err := store.Create(context.Background(), record); err != nil {
 		t.Fatalf("Create returned error after legacy init: %v", err)

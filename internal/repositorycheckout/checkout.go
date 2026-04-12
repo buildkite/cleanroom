@@ -1,6 +1,7 @@
 package repositorycheckout
 
 import (
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"net/url"
@@ -195,6 +196,18 @@ func BuildBootstrapCommand(checkout *Checkout) []string {
 		return nil
 	}
 	return []string{"sh", "-lc", strings.Join(bootstrapScript(checkout), "\n")}
+}
+
+func BootstrapRecipeDigest(checkout *Checkout) string {
+	if checkout == nil {
+		return ""
+	}
+	sum := sha256.New()
+	for _, part := range BuildBootstrapCommand(checkout) {
+		_, _ = sum.Write([]byte(part))
+		_, _ = sum.Write([]byte{0})
+	}
+	return "sha256:" + hex.EncodeToString(sum.Sum(nil))
 }
 
 func WrapCommandWithBootstrap(command []string, checkout *Checkout, autoMiseInstall bool) []string {
