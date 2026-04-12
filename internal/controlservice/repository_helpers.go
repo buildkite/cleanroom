@@ -3,6 +3,8 @@ package controlservice
 import (
 	"errors"
 	"fmt"
+	"path"
+	"strings"
 
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/repositorycheckout"
@@ -26,12 +28,40 @@ func repositoryCheckoutsEqual(a, b *repositorycheckout.Checkout) bool {
 	case a == nil || b == nil:
 		return a == nil && b == nil
 	default:
+		a = normalizeRepositoryCheckoutForComparison(a)
+		b = normalizeRepositoryCheckoutForComparison(b)
 		return a.RemoteURL == b.RemoteURL &&
 			a.CommitSHA == b.CommitSHA &&
 			a.DestinationDir == b.DestinationDir &&
 			a.Submodules == b.Submodules &&
 			a.Branch == b.Branch
 	}
+}
+
+func normalizeRepositoryCheckoutForComparison(repository *repositorycheckout.Checkout) *repositorycheckout.Checkout {
+	if repository == nil {
+		return nil
+	}
+	normalized := cloneRepositoryCheckout(repository)
+	normalized.RemoteURL = strings.TrimSpace(normalized.RemoteURL)
+	if normalizedURL, _, err := repositorycheckout.CanonicalizeRemoteURL(normalized.RemoteURL); err == nil {
+		normalized.RemoteURL = normalizedURL
+	}
+	normalized.CommitSHA = strings.ToLower(strings.TrimSpace(normalized.CommitSHA))
+	normalized.DestinationDir = normalizeRepositoryDestinationDir(normalized.DestinationDir)
+	normalized.Branch = strings.TrimSpace(normalized.Branch)
+	return normalized
+}
+
+func normalizeRepositoryDestinationDir(destinationDir string) string {
+	trimmed := strings.TrimSpace(destinationDir)
+	if trimmed == "" {
+		return ""
+	}
+	if strings.HasPrefix(trimmed, "/") {
+		return path.Clean(trimmed)
+	}
+	return trimmed
 }
 
 func validateRepositoryCheckoutForPolicy(compiled *policy.CompiledPolicy, repository *repositorycheckout.Checkout) error {

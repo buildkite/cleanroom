@@ -19,20 +19,21 @@ const (
 )
 
 func workspaceStageCacheKey(backendName, runtimeBaseKey, compiledPolicyHash string, repository *repositorycheckout.Checkout) string {
-	if repository == nil || strings.TrimSpace(backendName) == "" || strings.TrimSpace(runtimeBaseKey) == "" || strings.TrimSpace(compiledPolicyHash) == "" {
+	normalizedRepository := normalizeRepositoryCheckoutForComparison(repository)
+	if normalizedRepository == nil || strings.TrimSpace(backendName) == "" || strings.TrimSpace(runtimeBaseKey) == "" || strings.TrimSpace(compiledPolicyHash) == "" {
 		return ""
 	}
 	return cachekey.WorkspaceStageKey(cachekey.WorkspaceStageInputs{
 		Backend:                     strings.TrimSpace(backendName),
 		RuntimeKey:                  strings.TrimSpace(runtimeBaseKey),
 		CompiledPolicyHash:          strings.TrimSpace(compiledPolicyHash),
-		CanonicalRemoteURL:          strings.TrimSpace(repository.RemoteURL),
-		CommitSHA:                   strings.TrimSpace(repository.CommitSHA),
-		SubmoduleMode:               workspaceStageSubmoduleMode(repository),
+		CanonicalRemoteURL:          strings.TrimSpace(normalizedRepository.RemoteURL),
+		CommitSHA:                   strings.TrimSpace(normalizedRepository.CommitSHA),
+		SubmoduleMode:               workspaceStageSubmoduleMode(normalizedRepository),
 		SubmoduleResolutionDigest:   "",
-		CheckoutMode:                workspaceStageCheckoutMode(repository),
-		DestinationDir:              strings.TrimSpace(repository.DestinationDir),
-		MaterializationRecipeDigest: workspaceStageMaterializationRecipeDigest(repository),
+		CheckoutMode:                workspaceStageCheckoutMode(normalizedRepository),
+		DestinationDir:              strings.TrimSpace(normalizedRepository.DestinationDir),
+		MaterializationRecipeDigest: workspaceStageMaterializationRecipeDigest(normalizedRepository),
 	})
 }
 
@@ -148,7 +149,7 @@ func (s *Service) maybePublishWorkspaceSeedSnapshot(
 		Backend:           backendName,
 		PolicyHash:        compiled.Hash,
 		Policy:            compiled.ToProto(),
-		Repository:        cloneRepositoryCheckout(repository).ToProto(),
+		Repository:        cloneRepositoryCheckout(normalizeRepositoryCheckoutForComparison(repository)).ToProto(),
 		ParentCacheKey:    strings.TrimSpace(runtimeBaseKey),
 		StorageDriver:     snapshotCfg.Snapshots.Driver,
 		StorageRef:        strings.TrimSpace(result.StorageRef),

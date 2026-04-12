@@ -1458,6 +1458,44 @@ func TestCreateSandboxReusesWorkspaceStageCache(t *testing.T) {
 	}
 }
 
+func TestCreateSandboxReusesWorkspaceStageCacheForNormalizedDestinationDir(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	store := newMemorySnapshotStore()
+	adapter := &stubAdapter{
+		createSnapshotFn: func(_ context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
+			return &backend.SnapshotResult{StorageRef: "/snapshots/" + req.SnapshotID + ".ext4"}, nil
+		},
+	}
+	mirrors := &stubRepositoryMirrorStore{}
+	svc := newTestServiceWithSnapshotStore(adapter, store)
+	svc.RepositoryMirrors = mirrors
+
+	firstRepo := testRepositoryCheckoutProto()
+	firstRepo.DestinationDir = "/workspace/"
+	secondRepo := testRepositoryCheckoutProto()
+	secondRepo.DestinationDir = "/workspace"
+
+	if _, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy:             testRepositoryPolicy(),
+		RepositoryCheckout: firstRepo,
+	}); err != nil {
+		t.Fatalf("first CreateSandbox returned error: %v", err)
+	}
+	if _, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy:             testRepositoryPolicy(),
+		RepositoryCheckout: secondRepo,
+	}); err != nil {
+		t.Fatalf("second CreateSandbox returned error: %v", err)
+	}
+
+	if got, want := adapter.createSnapshotCalls, 1; got != want {
+		t.Fatalf("expected normalized destination dir to reuse existing workspace stage cache, got createSnapshotCalls=%d want=%d", got, want)
+	}
+	if got, want := adapter.provisionFromSnapshotCalls, 1; got != want {
+		t.Fatalf("expected normalized destination dir to warm-hit the workspace stage cache, got provisionFromSnapshotCalls=%d want=%d", got, want)
+	}
+}
+
 func TestCreateSandboxDoesNotReuseWorkspaceStageCacheAcrossPolicies(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	store := newMemorySnapshotStore()
