@@ -112,13 +112,13 @@ func TestSetupHostNetworkWithTrustedDNSFactoryConfiguresDynamicRulesWithoutStati
 	}
 
 	var dnsCfg trustedDNSConfig
-	factory := func(_ context.Context, cfg trustedDNSConfig) (func(), error) {
+	factory := func(_ context.Context, cfg trustedDNSConfig) (func(), *dnsproxy.Runtime, error) {
 		dnsCfg = cfg
-		return func() {}, nil
+		return func() {}, nil, nil
 	}
 
 	reqCtx, cancel := context.WithCancel(context.Background())
-	cfg, cleanup, err := setupHostNetworkWithTrustedDNSFactory(reqCtx, "run-12345", false, []policy.AllowRule{{Host: "proxy.golang.org", Ports: []int{443}}}, 8170, lookup, net.InterfaceByName, run, runBatch, factory, nil)
+	cfg, cleanup, err := setupHostNetworkWithTrustedDNSFactory(reqCtx, "run-12345", false, []policy.AllowRule{{Host: "proxy.golang.org", Ports: []int{443}}}, 8170, lookup, net.InterfaceByName, run, runBatch, factory, nil, nil)
 	if err != nil {
 		t.Fatalf("setupHostNetworkWithTrustedDNSFactory: %v", err)
 	}
@@ -187,12 +187,12 @@ func TestSetupHostNetworkWithDepsAddsDenyDefaultAndCleanupIndependentContext(t *
 		t.Fatalf("trusted dns setup should not resolve policy host %q during network setup", host)
 		return nil, nil
 	}
-	factory := func(_ context.Context, _ trustedDNSConfig) (func(), error) {
-		return func() {}, nil
+	factory := func(_ context.Context, _ trustedDNSConfig) (func(), *dnsproxy.Runtime, error) {
+		return func() {}, nil, nil
 	}
 
 	reqCtx, cancel := context.WithCancel(context.Background())
-	cfg, cleanup, err := setupHostNetworkWithTrustedDNSFactory(reqCtx, "run-12345", false, []policy.AllowRule{{Host: "proxy.golang.org", Ports: []int{443}}}, 8170, lookup, net.InterfaceByName, run, runBatch, factory, nil)
+	cfg, cleanup, err := setupHostNetworkWithTrustedDNSFactory(reqCtx, "run-12345", false, []policy.AllowRule{{Host: "proxy.golang.org", Ports: []int{443}}}, 8170, lookup, net.InterfaceByName, run, runBatch, factory, nil, nil)
 	if err != nil {
 		t.Fatalf("setupHostNetworkWithTrustedDNSFactory: %v", err)
 	}
@@ -289,10 +289,10 @@ func TestSetupHostNetworkWithTapLookupDeletesStaleTapBeforeCreate(t *testing.T) 
 		return nil, errors.New("no such network interface")
 	}
 
-	factory := func(_ context.Context, _ trustedDNSConfig) (func(), error) {
-		return func() {}, nil
+	factory := func(_ context.Context, _ trustedDNSConfig) (func(), *dnsproxy.Runtime, error) {
+		return func() {}, nil, nil
 	}
-	_, cleanup, err := setupHostNetworkWithTrustedDNSFactory(context.Background(), runID, false, []policy.AllowRule{{Host: "proxy.golang.org", Ports: []int{443}}}, 0, lookup, interfaceByName, run, nil, factory, nil)
+	_, cleanup, err := setupHostNetworkWithTrustedDNSFactory(context.Background(), runID, false, []policy.AllowRule{{Host: "proxy.golang.org", Ports: []int{443}}}, 0, lookup, interfaceByName, run, nil, factory, nil, nil)
 	if err != nil {
 		t.Fatalf("setupHostNetworkWithTrustedDNSFactory: %v", err)
 	}
@@ -313,7 +313,6 @@ func TestSetupHostNetworkWithDepsAddsAllowAllForwardRule(t *testing.T) {
 	t.Parallel()
 
 	var calls []string
-	var dnsCfg trustedDNSConfig
 	run := func(_ context.Context, args ...string) error {
 		calls = append(calls, strings.Join(args, " "))
 		return nil
@@ -329,11 +328,10 @@ func TestSetupHostNetworkWithDepsAddsAllowAllForwardRule(t *testing.T) {
 		return nil, nil
 	}
 
-	factory := func(_ context.Context, cfg trustedDNSConfig) (func(), error) {
-		dnsCfg = cfg
-		return func() {}, nil
+	factory := func(_ context.Context, _ trustedDNSConfig) (func(), *dnsproxy.Runtime, error) {
+		return func() {}, nil, nil
 	}
-	cfg, cleanup, err := setupHostNetworkWithTrustedDNSFactory(context.Background(), "run-allow-all", true, []policy.AllowRule{{Host: "stale.example.invalid", Ports: []int{443}}}, 0, lookup, net.InterfaceByName, run, runBatch, factory, nil)
+	cfg, cleanup, err := setupHostNetworkWithTrustedDNSFactory(context.Background(), "run-allow-all", true, []policy.AllowRule{{Host: "stale.example.invalid", Ports: []int{443}}}, 0, lookup, net.InterfaceByName, run, runBatch, factory, nil, nil)
 	if err != nil {
 		t.Fatalf("setupHostNetworkWithTrustedDNSFactory: %v", err)
 	}
@@ -349,12 +347,6 @@ func TestSetupHostNetworkWithDepsAddsAllowAllForwardRule(t *testing.T) {
 	}
 	if cfg.PolicyResolveMS != 0 {
 		t.Fatalf("expected allow-all networking to skip policy resolution timing, got %d", cfg.PolicyResolveMS)
-	}
-	if dnsCfg.policy == nil {
-		t.Fatal("expected trusted dns policy to be configured")
-	}
-	if got, want := dnsCfg.policy.NetworkDefault, "allow"; got != want {
-		t.Fatalf("unexpected trusted dns network default: got %q want %q", got, want)
 	}
 }
 
@@ -376,11 +368,11 @@ func TestSetupHostNetworkWithTrustedDNSFactoryPreservesDirectIPAllowRules(t *tes
 		t.Fatalf("direct ip allow rules should not trigger setup-time lookup for %q", host)
 		return nil, nil
 	}
-	factory := func(_ context.Context, _ trustedDNSConfig) (func(), error) {
-		return func() {}, nil
+	factory := func(_ context.Context, _ trustedDNSConfig) (func(), *dnsproxy.Runtime, error) {
+		return func() {}, nil, nil
 	}
 
-	cfg, cleanup, err := setupHostNetworkWithTrustedDNSFactory(context.Background(), "run-direct-ip", false, []policy.AllowRule{{Host: "203.0.113.10", Ports: []int{443}}}, 0, lookup, net.InterfaceByName, run, runBatch, factory, nil)
+	cfg, cleanup, err := setupHostNetworkWithTrustedDNSFactory(context.Background(), "run-direct-ip", false, []policy.AllowRule{{Host: "203.0.113.10", Ports: []int{443}}}, 0, lookup, net.InterfaceByName, run, runBatch, factory, nil, nil)
 	if err != nil {
 		t.Fatalf("setupHostNetworkWithTrustedDNSFactory: %v", err)
 	}
@@ -396,6 +388,182 @@ func TestSetupHostNetworkWithTrustedDNSFactoryPreservesDirectIPAllowRules(t *tes
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("missing command %q\ncalls:\n%s", expected, joined)
 		}
+	}
+}
+
+func TestSetupHostNetworkWithTrustedDNSFactoryInsertsNFLogBeforeDrop(t *testing.T) {
+	t.Parallel()
+
+	var calls []string
+	run := func(_ context.Context, args ...string) error {
+		calls = append(calls, strings.Join(args, " "))
+		return nil
+	}
+	runBatch := func(_ context.Context, commands [][]string) error {
+		for _, args := range commands {
+			calls = append(calls, strings.Join(args, " "))
+		}
+		return nil
+	}
+	lookup := func(_ context.Context, host string) ([]net.IP, error) {
+		t.Fatalf("should not resolve %q during setup", host)
+		return nil, nil
+	}
+	factory := func(_ context.Context, _ trustedDNSConfig) (func(), *dnsproxy.Runtime, error) {
+		return func() {}, nil, nil
+	}
+
+	cfg, cleanup, err := setupHostNetworkWithTrustedDNSFactory(context.Background(), "run-nflog", false, []policy.AllowRule{{Host: "example.com", Ports: []int{443}}}, 0, lookup, net.InterfaceByName, run, runBatch, factory, nil, nil)
+	if err != nil {
+		t.Fatalf("setupHostNetworkWithTrustedDNSFactory: %v", err)
+	}
+	defer cleanup()
+
+	tap := cfg.TapName
+	joined := strings.Join(calls, "\n")
+
+	// On non-linux the stub returns group 0, so NFLOG rule is skipped.
+	// On linux the NFLOG rule must appear before DROP.
+	nflogIdx := -1
+	dropIdx := -1
+	for i, line := range calls {
+		if strings.Contains(line, "-j NFLOG") && strings.Contains(line, tap) {
+			nflogIdx = i
+		}
+		if line == "iptables -A FORWARD -i "+tap+" -j DROP" {
+			dropIdx = i
+		}
+	}
+
+	if dropIdx < 0 {
+		t.Fatalf("missing DROP rule\ncalls:\n%s", joined)
+	}
+
+	if nflogIdx >= 0 && nflogIdx >= dropIdx {
+		t.Fatalf("NFLOG rule (index %d) must appear before DROP rule (index %d)\ncalls:\n%s", nflogIdx, dropIdx, joined)
+	}
+}
+
+func TestSetupHostNetworkWithTrustedDNSFactoryRemovesNFLogRuleWhenListenerStartupFails(t *testing.T) {
+	oldGroupFn := nflogGroupFromTapNameFn
+	oldListenerFn := newNFLogListenerFn
+	nflogGroupFromTapNameFn = func(string) uint16 { return 321 }
+	newNFLogListenerFn = func(nflogListenerConfig) (*nflogListener, error) {
+		return nil, errors.New("listener unavailable")
+	}
+	t.Cleanup(func() {
+		nflogGroupFromTapNameFn = oldGroupFn
+		newNFLogListenerFn = oldListenerFn
+	})
+
+	var calls []string
+	run := func(_ context.Context, args ...string) error {
+		calls = append(calls, strings.Join(args, " "))
+		return nil
+	}
+	runBatch := func(_ context.Context, commands [][]string) error {
+		for _, args := range commands {
+			calls = append(calls, strings.Join(args, " "))
+		}
+		return nil
+	}
+	lookup := func(_ context.Context, host string) ([]net.IP, error) {
+		t.Fatalf("should not resolve %q during setup", host)
+		return nil, nil
+	}
+	factory := func(_ context.Context, _ trustedDNSConfig) (func(), *dnsproxy.Runtime, error) {
+		return func() {}, dnsproxy.NewRuntime(dnsproxy.RuntimeConfig{}), nil
+	}
+
+	cfg, cleanup, err := setupHostNetworkWithTrustedDNSFactory(context.Background(), "run-nflog-fail", false, []policy.AllowRule{{Host: "example.com", Ports: []int{443}}}, 0, lookup, net.InterfaceByName, run, runBatch, factory, nil, func(string) {})
+	if err != nil {
+		t.Fatalf("setupHostNetworkWithTrustedDNSFactory: %v", err)
+	}
+	cleanup()
+
+	tap := cfg.TapName
+	nflogAdd := "iptables -A FORWARD -i " + tap + " -j NFLOG --nflog-group 321"
+	nflogDelete := "iptables -D FORWARD -i " + tap + " -j NFLOG --nflog-group 321"
+	drop := "iptables -A FORWARD -i " + tap + " -j DROP"
+
+	joined := strings.Join(calls, "\n")
+	if !strings.Contains(joined, nflogAdd) {
+		t.Fatalf("missing NFLOG add rule\ncalls:\n%s", joined)
+	}
+	if !strings.Contains(joined, nflogDelete) {
+		t.Fatalf("missing NFLOG cleanup after listener failure\ncalls:\n%s", joined)
+	}
+
+	nflogAddIdx := strings.Index(joined, nflogAdd)
+	nflogDeleteIdx := strings.Index(joined, nflogDelete)
+	dropIdx := strings.Index(joined, drop)
+	if nflogAddIdx < 0 || nflogDeleteIdx < 0 || dropIdx < 0 || nflogDeleteIdx < nflogAddIdx || dropIdx < nflogDeleteIdx {
+		t.Fatalf("expected NFLOG add, then immediate delete, then DROP\ncalls:\n%s", joined)
+	}
+	if strings.Count(joined, nflogDelete) != 1 {
+		t.Fatalf("expected exactly one NFLOG delete command\ncalls:\n%s", joined)
+	}
+}
+
+func TestSetupHostNetworkWithTrustedDNSFactoryRetriesNFLogRuleCleanupAfterListenerStartupFails(t *testing.T) {
+	oldGroupFn := nflogGroupFromTapNameFn
+	oldListenerFn := newNFLogListenerFn
+	nflogGroupFromTapNameFn = func(string) uint16 { return 321 }
+	newNFLogListenerFn = func(nflogListenerConfig) (*nflogListener, error) {
+		return nil, errors.New("listener unavailable")
+	}
+	t.Cleanup(func() {
+		nflogGroupFromTapNameFn = oldGroupFn
+		newNFLogListenerFn = oldListenerFn
+	})
+
+	var calls []string
+	nflogDeleteAttempts := 0
+	run := func(_ context.Context, args ...string) error {
+		call := strings.Join(args, " ")
+		calls = append(calls, call)
+		if strings.Contains(call, " -j NFLOG --nflog-group 321") && strings.HasPrefix(call, "iptables -D FORWARD -i ") {
+			nflogDeleteAttempts++
+			if nflogDeleteAttempts == 1 {
+				return errors.New("transient cleanup failure")
+			}
+		}
+		return nil
+	}
+	runBatch := func(_ context.Context, commands [][]string) error {
+		for _, args := range commands {
+			calls = append(calls, strings.Join(args, " "))
+		}
+		return nil
+	}
+	lookup := func(_ context.Context, host string) ([]net.IP, error) {
+		t.Fatalf("should not resolve %q during setup", host)
+		return nil, nil
+	}
+	factory := func(_ context.Context, _ trustedDNSConfig) (func(), *dnsproxy.Runtime, error) {
+		return func() {}, dnsproxy.NewRuntime(dnsproxy.RuntimeConfig{}), nil
+	}
+
+	cfg, cleanup, err := setupHostNetworkWithTrustedDNSFactory(context.Background(), "run-nflog-retry-cleanup", false, []policy.AllowRule{{Host: "example.com", Ports: []int{443}}}, 0, lookup, net.InterfaceByName, run, runBatch, factory, nil, func(string) {})
+	if err != nil {
+		t.Fatalf("setupHostNetworkWithTrustedDNSFactory: %v", err)
+	}
+	cleanup()
+
+	tap := cfg.TapName
+	nflogDelete := "iptables -D FORWARD -i " + tap + " -j NFLOG --nflog-group 321"
+	dropDelete := "iptables -D FORWARD -i " + tap + " -j DROP"
+
+	joined := strings.Join(calls, "\n")
+	if strings.Count(joined, nflogDelete) != 2 {
+		t.Fatalf("expected NFLOG delete to be retried during cleanup\ncalls:\n%s", joined)
+	}
+
+	firstDeleteIdx := strings.Index(joined, nflogDelete)
+	secondDeleteIdx := strings.LastIndex(joined, nflogDelete)
+	dropDeleteIdx := strings.Index(joined, dropDelete)
+	if firstDeleteIdx < 0 || secondDeleteIdx <= firstDeleteIdx || dropDeleteIdx < 0 || secondDeleteIdx < dropDeleteIdx {
+		t.Fatalf("expected cleanup retry after DROP cleanup\ncalls:\n%s", joined)
 	}
 }
 

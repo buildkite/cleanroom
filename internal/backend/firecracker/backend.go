@@ -28,6 +28,7 @@ import (
 
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/bootassets"
+	"github.com/buildkite/cleanroom/internal/dnsproxy"
 	"github.com/buildkite/cleanroom/internal/ext4edit"
 	"github.com/buildkite/cleanroom/internal/gateway"
 	"github.com/buildkite/cleanroom/internal/hosttools"
@@ -107,6 +108,7 @@ const defaultPrivilegedHelperPath = "/usr/local/sbin/cleanroom-root-helper"
 const helperCapabilityFirecrackerNetwork = "firecracker-network"
 const helperCapabilityFirecrackerTrustedDNS = "firecracker-trusted-dns"
 const helperCapabilityFirecrackerZFS = "firecracker-zfs"
+const helperCapabilityFirecrackerNFLog = "firecracker-nflog"
 const defaultDownloadMaxBytes int64 = 10 * 1024 * 1024
 const snapshotSyncTimeoutSeconds = 10
 const networkCleanupTimeout = 5 * time.Second
@@ -127,6 +129,10 @@ var syncHostFilesystem = defaultSyncHostFilesystem
 var rootFSVolumeStoreDriverFn = rootFSVolumeStoreDriver
 
 var snapshotVolumeStoreDriverFn = snapshotVolumeStoreDriver
+
+var nflogGroupFromTapNameFn = nflogGroupFromTapName
+
+var newNFLogListenerFn = newNFLogListener
 
 const guestInitScriptTemplate = `#!/bin/sh
 set -eu
@@ -997,7 +1003,7 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 	networkRunBatch := func(ctx context.Context, commands [][]string) error {
 		return runRootCommandBatch(ctx, req.FirecrackerConfig, commands)
 	}
-	networkCfg, cleanupNetwork, err := setupHostNetwork(ctx, req.ExecutionID, req.Policy.NetworkDefault == "allow", req.Policy.Allow, 0, networkRunCommand, networkRunBatch, nil)
+	networkCfg, cleanupNetwork, err := setupHostNetwork(ctx, req.ExecutionID, req.Policy.NetworkDefault == "allow", req.Policy.Allow, 0, networkRunCommand, networkRunBatch, nil, nil)
 	if err != nil {
 		return nil, fmt.Errorf("setup host network: %w", err)
 	}
@@ -1604,17 +1610,24 @@ func (a *Adapter) launchSandboxVMFromRootFS(ctx context.Context, sandboxID strin
 			gwPort = gateway.DefaultPort
 		}
 	}
-	// The DNS deny callback is routed through an atomic pointer to the sandbox
-	// instance which is created after network setup. The instance sets a
-	// concrete warning handler when RunInSandbox is called.
+	// The DNS deny callback and NFLOG listener are routed through an atomic
+	// pointer to the sandbox instance which is created after network setup.
+	// The instance sets a concrete warning handler when RunInSandbox is called.
 	var instanceRef atomic.Pointer[sandboxInstance]
 	dnsOnDeny := func(_, queryName string) {
 		if inst := instanceRef.Load(); inst != nil {
 			inst.warnings.Emit(fmt.Sprintf("dns query for disallowed host: %s", queryName))
 		}
 	}
+	// NFLOG blocked-connection callback bridges to the sandbox instance's
+	// WarningEmitter which handles per-run deduplication.
+	nflogOnBlocked := func(msg string) {
+		if inst := instanceRef.Load(); inst != nil {
+			inst.warnings.Emit(msg)
+		}
+	}
 
-	networkCfg, cleanupNetwork, err := setupHostNetwork(ctx, sandboxID, compiled.NetworkDefault == "allow", compiled.Allow, gwPort, networkRunCommand, networkRunBatch, dnsOnDeny)
+	networkCfg, cleanupNetwork, err := setupHostNetwork(ctx, sandboxID, compiled.NetworkDefault == "allow", compiled.Allow, gwPort, networkRunCommand, networkRunBatch, dnsOnDeny, nflogOnBlocked)
 	if err != nil {
 		cleanupVolume()
 		return nil, fmt.Errorf("setup host network: %w", err)
@@ -2143,22 +2156,22 @@ type interfaceLookupFunc func(name string) (*net.Interface, error)
 type rootCommandFunc func(ctx context.Context, args ...string) error
 type rootCommandBatchFunc func(ctx context.Context, commands [][]string) error
 
-func setupHostNetwork(ctx context.Context, runID string, allowAll bool, allow []policy.AllowRule, gatewayPort int, runCommand rootCommandFunc, runBatchCommand rootCommandBatchFunc, onDeny func(sandboxID, queryName string)) (hostNetworkConfig, func(), error) {
+func setupHostNetwork(ctx context.Context, runID string, allowAll bool, allow []policy.AllowRule, gatewayPort int, runCommand rootCommandFunc, runBatchCommand rootCommandBatchFunc, onDeny func(sandboxID, queryName string), onBlocked func(string)) (hostNetworkConfig, func(), error) {
 	lookup := func(ctx context.Context, host string) ([]net.IP, error) {
 		return net.DefaultResolver.LookupIP(ctx, "ip4", host)
 	}
-	return setupHostNetworkWithDeps(ctx, runID, allowAll, allow, gatewayPort, lookup, runCommand, runBatchCommand, onDeny)
+	return setupHostNetworkWithDeps(ctx, runID, allowAll, allow, gatewayPort, lookup, runCommand, runBatchCommand, onDeny, onBlocked)
 }
 
-func setupHostNetworkWithDeps(ctx context.Context, runID string, allowAll bool, allow []policy.AllowRule, gatewayPort int, lookup ipLookupFunc, runCommand rootCommandFunc, runBatchCommand rootCommandBatchFunc, onDeny func(sandboxID, queryName string)) (hostNetworkConfig, func(), error) {
-	return setupHostNetworkWithTrustedDNSFactory(ctx, runID, allowAll, allow, gatewayPort, lookup, net.InterfaceByName, runCommand, runBatchCommand, newTrustedDNSService, onDeny)
+func setupHostNetworkWithDeps(ctx context.Context, runID string, allowAll bool, allow []policy.AllowRule, gatewayPort int, lookup ipLookupFunc, runCommand rootCommandFunc, runBatchCommand rootCommandBatchFunc, onDeny func(sandboxID, queryName string), onBlocked func(string)) (hostNetworkConfig, func(), error) {
+	return setupHostNetworkWithTrustedDNSFactory(ctx, runID, allowAll, allow, gatewayPort, lookup, net.InterfaceByName, runCommand, runBatchCommand, newTrustedDNSService, onDeny, onBlocked)
 }
 
-func setupHostNetworkWithTapLookup(ctx context.Context, runID string, allowAll bool, allow []policy.AllowRule, gatewayPort int, lookup ipLookupFunc, interfaceByName interfaceLookupFunc, runCommand rootCommandFunc, runBatchCommand rootCommandBatchFunc, onDeny func(sandboxID, queryName string)) (hostNetworkConfig, func(), error) {
-	return setupHostNetworkWithTrustedDNSFactory(ctx, runID, allowAll, allow, gatewayPort, lookup, interfaceByName, runCommand, runBatchCommand, newTrustedDNSService, onDeny)
+func setupHostNetworkWithTapLookup(ctx context.Context, runID string, allowAll bool, allow []policy.AllowRule, gatewayPort int, lookup ipLookupFunc, interfaceByName interfaceLookupFunc, runCommand rootCommandFunc, runBatchCommand rootCommandBatchFunc, onDeny func(sandboxID, queryName string), onBlocked func(string)) (hostNetworkConfig, func(), error) {
+	return setupHostNetworkWithTrustedDNSFactory(ctx, runID, allowAll, allow, gatewayPort, lookup, interfaceByName, runCommand, runBatchCommand, newTrustedDNSService, onDeny, onBlocked)
 }
 
-func setupHostNetworkWithTrustedDNSFactory(ctx context.Context, runID string, allowAll bool, allow []policy.AllowRule, gatewayPort int, lookup ipLookupFunc, interfaceByName interfaceLookupFunc, runCommand rootCommandFunc, runBatchCommand rootCommandBatchFunc, factory trustedDNSFactory, onDeny func(sandboxID, queryName string)) (hostNetworkConfig, func(), error) {
+func setupHostNetworkWithTrustedDNSFactory(ctx context.Context, runID string, allowAll bool, allow []policy.AllowRule, gatewayPort int, lookup ipLookupFunc, interfaceByName interfaceLookupFunc, runCommand rootCommandFunc, runBatchCommand rootCommandBatchFunc, factory trustedDNSFactory, onDeny func(sandboxID, queryName string), onBlocked func(string)) (hostNetworkConfig, func(), error) {
 	_ = lookup
 	if factory == nil {
 		factory = newTrustedDNSService
@@ -2183,8 +2196,10 @@ func setupHostNetworkWithTrustedDNSFactory(ctx context.Context, runID string, al
 	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), networkCleanupTimeout)
 	cleanupCmds := make([][]string, 0, 16)
 	trustedDNSCleanup := func() {}
+	nflogCleanupFn := func() {}
 	cleanup := func() {
 		defer cleanupCancel()
+		nflogCleanupFn()
 		trustedDNSCleanup()
 		reversed := make([][]string, 0, len(cleanupCmds))
 		for i := len(cleanupCmds) - 1; i >= 0; i-- {
@@ -2200,6 +2215,13 @@ func setupHostNetworkWithTrustedDNSFactory(ctx context.Context, runID string, al
 	}
 	addCleanup := func(args ...string) {
 		cleanupCmds = append(cleanupCmds, append([]string(nil), args...))
+	}
+	removeNFLogRule := func(tapName, groupStr string) {
+		args := []string{"iptables", "-D", "FORWARD", "-i", tapName, "-j", "NFLOG", "--nflog-group", groupStr}
+		if err := runCommand(cleanupCtx, args...); err != nil {
+			log.Printf("nflog iptables cleanup failed for %s: %v", tapName, err)
+			addCleanup(args...)
+		}
 	}
 
 	staleTapCleanupCtx, staleTapCleanupCancel := context.WithTimeout(context.Background(), networkCleanupTimeout)
@@ -2336,7 +2358,8 @@ func setupHostNetworkWithTrustedDNSFactory(ctx context.Context, runID string, al
 		}
 	}
 
-	trustedDNSCleanup, err = factory(ctx, trustedDNSConfig{
+	var dnsRuntime *dnsproxy.Runtime
+	trustedDNSCleanup, dnsRuntime, err = factory(ctx, trustedDNSConfig{
 		sandboxID:    runID,
 		hostIP:       hostAddr,
 		guestIP:      guestAddr,
@@ -2358,6 +2381,31 @@ func setupHostNetworkWithTrustedDNSFactory(ctx context.Context, runID string, al
 		}
 		addCleanup("iptables", "-D", "FORWARD", "-i", tapName, "-j", "ACCEPT")
 	} else {
+		nflogGroup := nflogGroupFromTapNameFn(tapName)
+		if nflogGroup > 0 && onBlocked != nil && dnsRuntime != nil {
+			groupStr := strconv.Itoa(int(nflogGroup))
+			if err := setupRun("iptables", "-A", "FORWARD", "-i", tapName, "-j", "NFLOG", "--nflog-group", groupStr); err != nil {
+				log.Printf("nflog iptables rule unavailable for %s: %v", tapName, err)
+			} else {
+				listener, nflogErr := newNFLogListenerFn(nflogListenerConfig{
+					group:     nflogGroup,
+					sandboxID: runID,
+					guestIP:   guestAddr,
+					runtime:   dnsRuntime,
+					onBlocked: onBlocked,
+				})
+				if nflogErr != nil {
+					log.Printf("nflog listener unavailable for %s: %v", runID, nflogErr)
+					removeNFLogRule(tapName, groupStr)
+				} else if listener == nil {
+					removeNFLogRule(tapName, groupStr)
+				} else if listener != nil {
+					addCleanup("iptables", "-D", "FORWARD", "-i", tapName, "-j", "NFLOG", "--nflog-group", groupStr)
+					nflogCleanupFn = func() { _ = listener.Close() }
+				}
+			}
+		}
+
 		if err := setupRun("iptables", "-A", "FORWARD", "-i", tapName, "-j", "DROP"); err != nil {
 			cleanup()
 			return hostNetworkConfig{}, func() {}, fmt.Errorf("install default deny forward rule for %s: %w", tapName, err)
