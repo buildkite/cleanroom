@@ -130,6 +130,10 @@ var rootFSVolumeStoreDriverFn = rootFSVolumeStoreDriver
 
 var snapshotVolumeStoreDriverFn = snapshotVolumeStoreDriver
 
+var nflogGroupFromTapNameFn = nflogGroupFromTapName
+
+var newNFLogListenerFn = newNFLogListener
+
 const guestInitScriptTemplate = `#!/bin/sh
 set -eu
 
@@ -2370,14 +2374,13 @@ func setupHostNetworkWithTrustedDNSFactory(ctx context.Context, runID string, al
 		}
 		addCleanup("iptables", "-D", "FORWARD", "-i", tapName, "-j", "ACCEPT")
 	} else {
-		nflogGroup := nflogGroupFromTapName(tapName)
+		nflogGroup := nflogGroupFromTapNameFn(tapName)
 		if nflogGroup > 0 && onBlocked != nil && dnsRuntime != nil {
 			groupStr := strconv.Itoa(int(nflogGroup))
 			if err := setupRun("iptables", "-A", "FORWARD", "-i", tapName, "-j", "NFLOG", "--nflog-group", groupStr); err != nil {
 				log.Printf("nflog iptables rule unavailable for %s: %v", tapName, err)
 			} else {
-				addCleanup("iptables", "-D", "FORWARD", "-i", tapName, "-j", "NFLOG", "--nflog-group", groupStr)
-				listener, nflogErr := newNFLogListener(nflogListenerConfig{
+				listener, nflogErr := newNFLogListenerFn(nflogListenerConfig{
 					group:     nflogGroup,
 					sandboxID: runID,
 					guestIP:   guestAddr,
@@ -2386,7 +2389,15 @@ func setupHostNetworkWithTrustedDNSFactory(ctx context.Context, runID string, al
 				})
 				if nflogErr != nil {
 					log.Printf("nflog listener unavailable for %s: %v", runID, nflogErr)
+					if err := setupRun("iptables", "-D", "FORWARD", "-i", tapName, "-j", "NFLOG", "--nflog-group", groupStr); err != nil {
+						log.Printf("nflog iptables cleanup failed for %s: %v", tapName, err)
+					}
+				} else if listener == nil {
+					if err := setupRun("iptables", "-D", "FORWARD", "-i", tapName, "-j", "NFLOG", "--nflog-group", groupStr); err != nil {
+						log.Printf("nflog iptables cleanup failed for %s: %v", tapName, err)
+					}
 				} else if listener != nil {
+					addCleanup("iptables", "-D", "FORWARD", "-i", tapName, "-j", "NFLOG", "--nflog-group", groupStr)
 					nflogCleanupFn = func() { _ = listener.Close() }
 				}
 			}

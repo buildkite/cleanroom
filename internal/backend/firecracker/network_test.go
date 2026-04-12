@@ -444,6 +444,67 @@ func TestSetupHostNetworkWithTrustedDNSFactoryInsertsNFLogBeforeDrop(t *testing.
 	}
 }
 
+func TestSetupHostNetworkWithTrustedDNSFactoryRemovesNFLogRuleWhenListenerStartupFails(t *testing.T) {
+	oldGroupFn := nflogGroupFromTapNameFn
+	oldListenerFn := newNFLogListenerFn
+	nflogGroupFromTapNameFn = func(string) uint16 { return 321 }
+	newNFLogListenerFn = func(nflogListenerConfig) (*nflogListener, error) {
+		return nil, errors.New("listener unavailable")
+	}
+	t.Cleanup(func() {
+		nflogGroupFromTapNameFn = oldGroupFn
+		newNFLogListenerFn = oldListenerFn
+	})
+
+	var calls []string
+	run := func(_ context.Context, args ...string) error {
+		calls = append(calls, strings.Join(args, " "))
+		return nil
+	}
+	runBatch := func(_ context.Context, commands [][]string) error {
+		for _, args := range commands {
+			calls = append(calls, strings.Join(args, " "))
+		}
+		return nil
+	}
+	lookup := func(_ context.Context, host string) ([]net.IP, error) {
+		t.Fatalf("should not resolve %q during setup", host)
+		return nil, nil
+	}
+	factory := func(_ context.Context, _ trustedDNSConfig) (func(), *dnsproxy.Runtime, error) {
+		return func() {}, dnsproxy.NewRuntime(dnsproxy.RuntimeConfig{}), nil
+	}
+
+	cfg, cleanup, err := setupHostNetworkWithTrustedDNSFactory(context.Background(), "run-nflog-fail", false, []policy.AllowRule{{Host: "example.com", Ports: []int{443}}}, 0, lookup, net.InterfaceByName, run, runBatch, factory, nil, func(string) {})
+	if err != nil {
+		t.Fatalf("setupHostNetworkWithTrustedDNSFactory: %v", err)
+	}
+	cleanup()
+
+	tap := cfg.TapName
+	nflogAdd := "iptables -A FORWARD -i " + tap + " -j NFLOG --nflog-group 321"
+	nflogDelete := "iptables -D FORWARD -i " + tap + " -j NFLOG --nflog-group 321"
+	drop := "iptables -A FORWARD -i " + tap + " -j DROP"
+
+	joined := strings.Join(calls, "\n")
+	if !strings.Contains(joined, nflogAdd) {
+		t.Fatalf("missing NFLOG add rule\ncalls:\n%s", joined)
+	}
+	if !strings.Contains(joined, nflogDelete) {
+		t.Fatalf("missing NFLOG cleanup after listener failure\ncalls:\n%s", joined)
+	}
+
+	nflogAddIdx := strings.Index(joined, nflogAdd)
+	nflogDeleteIdx := strings.Index(joined, nflogDelete)
+	dropIdx := strings.Index(joined, drop)
+	if nflogAddIdx < 0 || nflogDeleteIdx < 0 || dropIdx < 0 || nflogDeleteIdx < nflogAddIdx || dropIdx < nflogDeleteIdx {
+		t.Fatalf("expected NFLOG add, then immediate delete, then DROP\ncalls:\n%s", joined)
+	}
+	if strings.Count(joined, nflogDelete) != 1 {
+		t.Fatalf("expected exactly one NFLOG delete command\ncalls:\n%s", joined)
+	}
+}
+
 func testDNSResponse(query string, answers ...dns.RR) *dns.Msg {
 	msg := new(dns.Msg)
 	msg.SetQuestion(query, dns.TypeA)
