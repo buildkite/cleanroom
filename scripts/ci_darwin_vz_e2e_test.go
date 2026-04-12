@@ -66,8 +66,11 @@ func TestCiDarwinVZFileHandleE2EUsesAllowlistPolicy(t *testing.T) {
 		`./dist/cleanroom exec --host "$listen_endpoint" --backend darwin-vz -c "$smoke_policy_dir" -- sh -lc "wget -T 20 -S -O - http://10.233.0.1:${gateway_port}/meta/health >/dev/null 2>/tmp/meta.err || true; grep -q 'HTTP/1.1 501 Not Implemented' /tmp/meta.err"`,
 		`- host: github.com`,
 		`ports: [443]`,
-		`./dist/cleanroom exec --host "$listen_endpoint" --backend darwin-vz -c "$allowlist_policy_dir" -- sh -lc 'wget -T 20 -q -O /dev/null https://github.com'`,
-		`./dist/cleanroom exec --host "$listen_endpoint" --backend darwin-vz -c "$allowlist_policy_dir" -- sh -lc 'wget -T 20 -q -O /dev/null https://buildkite.com'`,
+		`allow_attempt=1`,
+		`allow_max_attempts=3`,
+		`allowlisted host probe failed in filehandle mode`,
+		`./dist/cleanroom exec --host "$listen_endpoint" --backend darwin-vz -c "$allowlist_policy_dir" -- sh -lc 'http_proxy= https_proxy= HTTP_PROXY= HTTPS_PROXY= ALL_PROXY= all_proxy= NO_PROXY= no_proxy= wget -T 20 -q -O /dev/null https://github.com'`,
+		`./dist/cleanroom exec --host "$listen_endpoint" --backend darwin-vz -c "$allowlist_policy_dir" -- sh -lc 'http_proxy= https_proxy= HTTP_PROXY= HTTPS_PROXY= ALL_PROXY= all_proxy= NO_PROXY= no_proxy= wget -T 20 -q -O /dev/null https://buildkite.com'`,
 		`expected non-allowlisted egress to fail in filehandle mode`,
 	} {
 		if !strings.Contains(script, needle) {
