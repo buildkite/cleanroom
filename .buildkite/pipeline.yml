@@ -15,7 +15,7 @@ steps:
 
   - label: ":test_tube: Test (Linux)"
     plugins:
-      - github.com/lox/mise-buildkite-plugin#a172963b3d34e98601e2a65c7dd08211fb49b7f0:
+      - github.com/buildkite-plugins/setup-go-buildkite-plugin#daa7af945245588f85b76ba7fe0a9af3d87dbf91:
     command: go test ./...
     cache:
       paths:
@@ -29,7 +29,7 @@ steps:
 
   - label: ":test_tube: Test (macOS)"
     plugins:
-      - github.com/lox/mise-buildkite-plugin#a172963b3d34e98601e2a65c7dd08211fb49b7f0:
+      - github.com/buildkite-plugins/setup-go-buildkite-plugin#daa7af945245588f85b76ba7fe0a9af3d87dbf91:
     command: go test ./...
     cache:
       paths:
@@ -43,7 +43,7 @@ steps:
 
   - label: ":apple: E2E (darwin-vz)"
     plugins:
-      - github.com/lox/mise-buildkite-plugin#a172963b3d34e98601e2a65c7dd08211fb49b7f0:
+      - github.com/buildkite-plugins/setup-go-buildkite-plugin#daa7af945245588f85b76ba7fe0a9af3d87dbf91:
     command: scripts/ci-darwin-vz-e2e.sh
     concurrency: 1
     concurrency_group: cleanroom-darwin-vz-e2e
@@ -52,7 +52,7 @@ steps:
 
   - label: ":apple: E2E (darwin-vz filehandle)"
     plugins:
-      - github.com/lox/mise-buildkite-plugin#a172963b3d34e98601e2a65c7dd08211fb49b7f0:
+      - github.com/buildkite-plugins/setup-go-buildkite-plugin#daa7af945245588f85b76ba7fe0a9af3d87dbf91:
     command: scripts/ci-darwin-vz-filehandle-e2e.sh
     concurrency: 1
     concurrency_group: cleanroom-darwin-vz-e2e
@@ -63,7 +63,7 @@ steps:
     key: macos-release-pkg
     if: build.tag != null || build.branch == "codex/macos-notarized-release-pkg"
     plugins:
-      - github.com/lox/mise-buildkite-plugin#a172963b3d34e98601e2a65c7dd08211fb49b7f0:
+      - github.com/buildkite-plugins/setup-go-buildkite-plugin#daa7af945245588f85b76ba7fe0a9af3d87dbf91:
     command: scripts/ci-macos-release-pkg.sh
     concurrency: 1
     concurrency_group: cleanroom-macos-release-pkg
@@ -75,7 +75,7 @@ steps:
 
   - label: ":fire: E2E (Firecracker)"
     plugins:
-      - github.com/lox/mise-buildkite-plugin#a172963b3d34e98601e2a65c7dd08211fb49b7f0:
+      - github.com/buildkite-plugins/setup-go-buildkite-plugin#daa7af945245588f85b76ba7fe0a9af3d87dbf91:
     command: scripts/ci-cleanroom-e2e.sh
     concurrency: 1
     concurrency_group: cleanroom-e2e

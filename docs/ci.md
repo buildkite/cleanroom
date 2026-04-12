@@ -25,8 +25,9 @@ For self-hosted macOS capacity, Terraform can provision a private EC2 Mac host a
 
 Notes:
 
-- `mise` is bootstrapped per-step via the pinned `lox/mise-buildkite-plugin` reference in `.buildkite/pipeline.yml`.
-- Self-hosted agents need `curl` and `tar` available so the plugin can install `mise`.
+- Go-oriented steps bootstrap the toolchain via the pinned `buildkite-plugins/setup-go-buildkite-plugin` reference in `.buildkite/pipeline.yml`.
+- The `:shell: Shellcheck` and `:rocket: Publish release` steps still use the pinned `lox/mise-buildkite-plugin` because they need non-Go tools (`shellcheck` and `goreleaser`).
+- Self-hosted agents need `curl` and `tar` available so either plugin can install `mise`.
 - Per-step cache is enabled for `hosted` and `cleanroom-mac` steps.
 - Avoid global pipeline `cache:` blocks if self-hosted queues are present.
 
