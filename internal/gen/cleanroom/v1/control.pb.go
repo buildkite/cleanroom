@@ -644,7 +644,6 @@ type Policy struct {
 	Allow          []*PolicyAllowRule     `protobuf:"bytes,5,rep,name=allow,proto3" json:"allow,omitempty"`
 	Hash           string                 `protobuf:"bytes,6,opt,name=hash,proto3" json:"hash,omitempty"`
 	Services       *PolicyServices        `protobuf:"bytes,7,opt,name=services,proto3" json:"services,omitempty"`
-	MiseInstall    *bool                  `protobuf:"varint,8,opt,name=mise_install,json=miseInstall,proto3,oneof" json:"mise_install,omitempty"`
 	Dependencies   *PolicyDependencies    `protobuf:"bytes,9,opt,name=dependencies,proto3" json:"dependencies,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
@@ -727,13 +726,6 @@ func (x *Policy) GetServices() *PolicyServices {
 		return x.Services
 	}
 	return nil
-}
-
-func (x *Policy) GetMiseInstall() bool {
-	if x != nil && x.MiseInstall != nil {
-		return *x.MiseInstall
-	}
-	return false
 }
 
 func (x *Policy) GetDependencies() *PolicyDependencies {
@@ -2029,7 +2021,6 @@ type ExecutionOptions struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	LaunchSeconds int64                  `protobuf:"varint,5,opt,name=launch_seconds,json=launchSeconds,proto3" json:"launch_seconds,omitempty"`
 	Tty           bool                   `protobuf:"varint,6,opt,name=tty,proto3" json:"tty,omitempty"`
-	DisableMise   bool                   `protobuf:"varint,8,opt,name=disable_mise,json=disableMise,proto3" json:"disable_mise,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2074,13 +2065,6 @@ func (x *ExecutionOptions) GetLaunchSeconds() int64 {
 func (x *ExecutionOptions) GetTty() bool {
 	if x != nil {
 		return x.Tty
-	}
-	return false
-}
-
-func (x *ExecutionOptions) GetDisableMise() bool {
-	if x != nil {
-		return x.DisableMise
 	}
 	return false
 }
@@ -3282,7 +3266,7 @@ const file_proto_cleanroom_v1_control_proto_rawDesc = "" +
 	"\x05files\x18\x01 \x03(\tR\x05files\"c\n" +
 	"\x12PolicyDependencies\x12\x18\n" +
 	"\acommand\x18\x01 \x03(\tR\acommand\x123\n" +
-	"\x03key\x18\x02 \x01(\v2!.cleanroom.v1.PolicyDependencyKeyR\x03key\"\x8d\x03\n" +
+	"\x03key\x18\x02 \x01(\v2!.cleanroom.v1.PolicyDependencyKeyR\x03key\"\xe8\x02\n" +
 	"\x06Policy\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\x05R\aversion\x12\x1b\n" +
 	"\timage_ref\x18\x02 \x01(\tR\bimageRef\x12!\n" +
@@ -3290,10 +3274,8 @@ const file_proto_cleanroom_v1_control_proto_rawDesc = "" +
 	"\x0fnetwork_default\x18\x04 \x01(\tR\x0enetworkDefault\x123\n" +
 	"\x05allow\x18\x05 \x03(\v2\x1d.cleanroom.v1.PolicyAllowRuleR\x05allow\x12\x12\n" +
 	"\x04hash\x18\x06 \x01(\tR\x04hash\x128\n" +
-	"\bservices\x18\a \x01(\v2\x1c.cleanroom.v1.PolicyServicesR\bservices\x12&\n" +
-	"\fmise_install\x18\b \x01(\bH\x00R\vmiseInstall\x88\x01\x01\x12D\n" +
-	"\fdependencies\x18\t \x01(\v2 .cleanroom.v1.PolicyDependenciesR\fdependenciesB\x0f\n" +
-	"\r_mise_install\"R\n" +
+	"\bservices\x18\a \x01(\v2\x1c.cleanroom.v1.PolicyServicesR\bservices\x12D\n" +
+	"\fdependencies\x18\t \x01(\v2 .cleanroom.v1.PolicyDependenciesR\fdependenciesJ\x04\b\b\x10\tR\fmise_install\"R\n" +
 	"\x0eSandboxOptions\x12%\n" +
 	"\x0elaunch_seconds\x18\x03 \x01(\x03R\rlaunchSecondsJ\x04\b\x02\x10\x03R\x13read_only_workspace\"\xe1\x01\n" +
 	"\x12RepositoryCheckout\x12\x1d\n" +
@@ -3396,11 +3378,10 @@ const file_proto_cleanroom_v1_control_proto_rawDesc = "" +
 	"\x03tty\x18\b \x01(\bR\x03tty\x12/\n" +
 	"\x04kind\x18\n" +
 	" \x01(\x0e2\x1b.cleanroom.v1.ExecutionKindR\x04kindJ\x04\b\t\x10\n" +
-	"R\x06run_id\"\x94\x01\n" +
+	"R\x06run_id\"\x85\x01\n" +
 	"\x10ExecutionOptions\x12%\n" +
 	"\x0elaunch_seconds\x18\x05 \x01(\x03R\rlaunchSeconds\x12\x10\n" +
-	"\x03tty\x18\x06 \x01(\bR\x03tty\x12!\n" +
-	"\fdisable_mise\x18\b \x01(\bR\vdisableMiseJ\x04\b\x02\x10\x03J\x04\b\a\x10\bR\x13read_only_workspaceR\x03cwd\"\xa1\x02\n" +
+	"\x03tty\x18\x06 \x01(\bR\x03ttyJ\x04\b\x02\x10\x03J\x04\b\a\x10\bJ\x04\b\b\x10\tR\x13read_only_workspaceR\x03cwdR\fdisable_mise\"\xa1\x02\n" +
 	"\x16CreateExecutionRequest\x12\x1d\n" +
 	"\n" +
 	"sandbox_id\x18\x01 \x01(\tR\tsandboxId\x12\x18\n" +
@@ -3695,7 +3676,6 @@ func file_proto_cleanroom_v1_control_proto_init() {
 	if File_proto_cleanroom_v1_control_proto != nil {
 		return
 	}
-	file_proto_cleanroom_v1_control_proto_msgTypes[7].OneofWrappers = []any{}
 	file_proto_cleanroom_v1_control_proto_msgTypes[10].OneofWrappers = []any{
 		(*CreateSandboxRequest_SnapshotId)(nil),
 	}

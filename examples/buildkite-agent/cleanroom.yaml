@@ -4,12 +4,11 @@ repository:
 sandbox:
   image:
     ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:8eb2c1bc27af65d828ab6d93738a1adb1b62ef5b74417a273cedf3e7cec5f18b
-  mise:
-    install: true
   dependencies:
-    command: [go, mod, download]
+    command: [mise, exec, --, go, mod, download]
     key:
       files:
+        - .mise.toml
         - go.mod
         - go.sum
   network:

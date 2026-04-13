@@ -32,7 +32,6 @@ type ConsoleCommand struct {
 	PrintSandboxID bool     `name:"print-sandbox-id" help:"Print resolved sandbox_id=<id> to stderr before attaching"`
 
 	LaunchSeconds int64 `help:"VM boot/guest-agent readiness timeout in seconds"`
-	NoMise        bool  `name:"no-mise" help:"Disable automatic mise tool installation"`
 
 	Command []string `arg:"" passthrough:"partial" optional:"" help:"Command to run in the console (default: sh)"`
 }
@@ -168,7 +167,6 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) (runErr error) {
 		Options: &cleanroomv1.ExecutionOptions{
 			LaunchSeconds: c.LaunchSeconds,
 			Tty:           true,
-			DisableMise:   c.NoMise,
 		},
 	})
 	if err != nil {

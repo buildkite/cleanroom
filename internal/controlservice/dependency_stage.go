@@ -41,8 +41,8 @@ func dependencyStagePlanForRepository(compiled *policy.CompiledPolicy, repositor
 		return dependencyStagePlan{}, false
 	}
 
-	bootstrapCommand := repositorycheckout.WrapCommandInWorkdir(compiled.Dependencies.Command, repository, compiled.MiseInstall)
-	bootstrapRecipeDigest := repositorycheckout.WorkdirRecipeDigest(compiled.Dependencies.Command, repository, compiled.MiseInstall)
+	bootstrapCommand := repositorycheckout.WrapCommandInWorkdir(compiled.Dependencies.Command, repository)
+	bootstrapRecipeDigest := repositorycheckout.WorkdirRecipeDigest(compiled.Dependencies.Command, repository)
 	if len(bootstrapCommand) == 0 || strings.TrimSpace(bootstrapRecipeDigest) == "" {
 		return dependencyStagePlan{}, false
 	}

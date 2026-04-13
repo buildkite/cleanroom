@@ -57,7 +57,7 @@ Deferred past MVP:
 - As a developer, I can run a command that executes my existing test commands inside a compliant sandbox.
 - As a security reviewer, I can see exactly which hosts and registries were allowed for each sandbox execution.
 - As an SRE, I can configure backend selection and runtime options independently of repository policy.
-- As a developer, I can run repository-defined toolchains (for example via `mise`) inside the sandbox with the same command patterns as local tooling.
+- As a developer, I can preinstall repository-defined toolchains (for example via `mise`) with an explicit dependency bootstrap command inside the sandbox.
 
 ## 5) Policy model
 ### 5.1 Repository config
@@ -74,14 +74,13 @@ project:
 
 sandbox:
   ttl_minutes: 60
-  mise:
-    enabled: true
-    install: true
-    config_files:
-      - mise.toml
-      - .mise.toml
-      - .tool-versions
-      - .mise/config.toml
+  dependencies:
+    command: [mise, exec, --, go, mod, download]
+    key:
+      files:
+        - .mise.toml
+        - go.mod
+        - go.sum
   network:
     default: deny
     allow:
@@ -160,11 +159,9 @@ Meaning:
 - `repository.remote` defaults to `origin`.
 - `repository.path` defaults to `/workspace` and must be an absolute guest path.
 - `repository.submodules` defaults to `false`.
-- `sandbox.mise.enabled` defaults to `true`; `false` disables Cleanroom-managed `mise` detection and install wrapping.
-- `sandbox.mise.install` defaults to `false`; `true` preserves repo-aware checkout and enables automatic `mise exec -- ...` wrapping.
 - `sandbox.dependencies.command` defaults to unset; when present, Cleanroom runs that command in the repository workdir during sandbox creation and makes the result eligible for dependency-stage caching.
 - `sandbox.dependencies.key.files` defaults to empty; when present, Cleanroom hashes those repository-relative files from the exact committed checkout and includes them in the dependency-stage cache key.
-- `sandbox.mise.config_files` defaults to `mise.toml`, `.mise.toml`, `.tool-versions`, and `.mise/config.toml`.
+- `sandbox.mise` has been removed. If you want to use `mise`, call it explicitly from `sandbox.dependencies.command` or the workload command itself.
 - Host matching supports:
   - exact host (`registry.npmjs.org`)
   - wildcard subdomains (`*.example.com`)
@@ -223,9 +220,8 @@ Meaning:
   - they resolve the local repository remote URL and committed `HEAD`
   - they materialize that checkout inside the sandbox before the command runs
   - they start commands in `repository.path`
-  - when the checkout contains `mise.toml`, `.mise.toml`, `.tool-versions`, or `.mise/config.toml`, they execute the command through `mise exec -- ...` only when `sandbox.mise.install: true` and `sandbox.mise.enabled` is not `false`
   - when `sandbox.dependencies.command` is set, sandbox creation runs that dependency bootstrap command after repository bootstrap and may publish a reusable dependency stage for later warm hits
-  - `cleanroom exec --no-mise` and `cleanroom console --no-mise` disable that automatic wrapping for a single execution
+  - Cleanroom does not auto-detect or auto-wrap `mise`; use explicit commands such as `mise exec -- ...` when needed
 - `cleanroom sandbox create` remains the generic low-level surface and does not
   infer repository state from the current working tree or read `cleanroom.yaml`.
 - Without `--from`, `cleanroom sandbox create` synthesizes a repo-agnostic
@@ -251,7 +247,6 @@ Meaning:
 - `--keep` preserves a newly created sandbox after execution completes.
 - Reuse an existing sandbox with `--in <id>`.
 - Create a new sandbox from a snapshot with `--from <snapshot-id>`.
-- `--no-mise` disables per-execution automatic `mise exec -- ...` wrapping even when policy-level `sandbox.mise.*` settings allow it.
 - Interactive executions must use `AttachExecution` bootstrap plus the dedicated QUIC interactive transport.
 - Non-interactive mode must use server-streaming semantics.
 - First interrupt signal should request execution cancel; second interrupt may detach client stream immediately.

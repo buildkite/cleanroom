@@ -96,8 +96,9 @@ message Policy {
   repeated PolicyAllowRule allow = 5;
   string hash = 6;
   PolicyServices services = 7;
-  optional bool mise_install = 8;
   PolicyDependencies dependencies = 9;
+  reserved 8;
+  reserved "mise_install";
 }
 
 message SandboxOptions {
@@ -248,11 +249,10 @@ enum ExecutionKind {
 }
 
 message ExecutionOptions {
-  reserved 2, 7;
-  reserved "read_only_workspace", "cwd";
+  reserved 2, 7, 8;
+  reserved "read_only_workspace", "cwd", "disable_mise";
   int64 launch_seconds = 5;
   bool tty = 6;
-  bool disable_mise = 8;
 }
 
 message CreateExecutionRequest {

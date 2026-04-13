@@ -174,61 +174,18 @@ func TestCompileCapturesDockerServiceRequirement(t *testing.T) {
 	}
 }
 
-func TestCompileDefaultsMiseInstallDisabled(t *testing.T) {
-	t.Parallel()
-
-	raw := baseRawPolicy()
-	compiled, err := Compile(raw)
-	if err != nil {
-		t.Fatalf("compile: %v", err)
-	}
-	if compiled.MiseInstall {
-		t.Fatal("expected compiled policy to disable mise auto-install by default")
-	}
-}
-
-func TestCompileEnablesMiseInstallWhenSandboxMiseInstallTrue(t *testing.T) {
-	t.Parallel()
-
-	raw := baseRawPolicy()
-	raw.Sandbox.Mise.Install = testBoolPtr(true)
-
-	compiled, err := Compile(raw)
-	if err != nil {
-		t.Fatalf("compile: %v", err)
-	}
-	if !compiled.MiseInstall {
-		t.Fatal("expected compiled policy to enable mise auto-install when sandbox.mise.install=true")
-	}
-}
-
-func TestCompileDisablesMiseInstallWhenSandboxMiseDisabled(t *testing.T) {
-	t.Parallel()
-
-	raw := baseRawPolicy()
-	raw.Sandbox.Mise.Enabled = testBoolPtr(false)
-
-	compiled, err := Compile(raw)
-	if err != nil {
-		t.Fatalf("compile: %v", err)
-	}
-	if compiled.MiseInstall {
-		t.Fatal("expected compiled policy to disable mise auto-install when sandbox.mise.enabled=false")
-	}
-}
-
-func TestCompileDisablesMiseInstallWhenSandboxMiseInstallFalse(t *testing.T) {
+func TestCompileRejectsRemovedSandboxMiseConfig(t *testing.T) {
 	t.Parallel()
 
 	raw := baseRawPolicy()
 	raw.Sandbox.Mise.Install = testBoolPtr(false)
 
-	compiled, err := Compile(raw)
-	if err != nil {
-		t.Fatalf("compile: %v", err)
+	_, err := Compile(raw)
+	if err == nil {
+		t.Fatal("expected compile to reject sandbox.mise")
 	}
-	if compiled.MiseInstall {
-		t.Fatal("expected compiled policy to disable mise auto-install when sandbox.mise.install=false")
+	if !strings.Contains(err.Error(), "sandbox.mise has been removed") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -500,25 +457,6 @@ func TestFromProtoAcceptsAllowDefault(t *testing.T) {
 	}
 	if !compiled.Allows("example.com", 443) {
 		t.Fatal("expected allow-default policy to allow arbitrary host:port")
-	}
-}
-
-func TestCompiledPolicyProtoRoundTripPreservesMiseInstall(t *testing.T) {
-	t.Parallel()
-
-	raw := baseRawPolicy()
-	raw.Sandbox.Mise.Install = testBoolPtr(false)
-	compiled, err := Compile(raw)
-	if err != nil {
-		t.Fatalf("compile: %v", err)
-	}
-
-	roundTripped, err := FromProto(compiled.ToProto())
-	if err != nil {
-		t.Fatalf("FromProto returned error: %v", err)
-	}
-	if roundTripped.MiseInstall {
-		t.Fatal("expected proto round-trip to preserve mise install=false")
 	}
 }
 
