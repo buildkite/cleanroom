@@ -281,7 +281,7 @@ func (s *Service) CreateSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 						}
 					}
 					s.logWorkspaceStageRestore(record, resp.GetSandbox().GetSandboxId())
-					if !dependencyStageCachingEnabled {
+					if !dependencyStageBootstrapEnabled {
 						return resp, nil
 					}
 					restoredWorkspaceResp = resp
@@ -1176,6 +1176,9 @@ func (s *Service) terminateCreatedSandbox(ctx context.Context, adapter backend.A
 	cleanupCtx, cancel := context.WithTimeout(ctx, s.timeouts().bootstrapCleanupTimeout)
 	defer cancel()
 	err := adapter.TerminateSandbox(cleanupCtx, sandboxID)
+	if err != nil {
+		return err
+	}
 
 	s.mu.Lock()
 	if sandbox, ok := s.sandboxes[sandboxID]; ok {
