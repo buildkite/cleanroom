@@ -39,13 +39,10 @@ type WorkspaceStageInputs struct {
 
 // DependencyStageInputs are the inputs that define the reusable dependency stage.
 type DependencyStageInputs struct {
-	WorkspaceKey               string
-	CompiledPolicyHash         string
-	ToolchainManifestDigest    string
-	ResolvedToolVersionsDigest string
-	LockfileInputsDigest       string
-	LockfileParserVersion      string
-	BootstrapRecipeDigest      string
+	WorkspaceKey          string
+	CompiledPolicyHash    string
+	KeyFilesDigest        string
+	BootstrapRecipeDigest string
 }
 
 // RuntimeStageKey returns the canonical cache key for a runtime stage output.
@@ -81,10 +78,7 @@ func DependencyStageKey(in DependencyStageInputs) string {
 	return buildStageKey("dependency", []component{
 		{name: "workspace_key", value: canonicalReference(in.WorkspaceKey)},
 		{name: "compiled_policy_hash", value: canonicalDigest(in.CompiledPolicyHash)},
-		{name: "toolchain_manifest_digest", value: canonicalDigest(in.ToolchainManifestDigest)},
-		{name: "resolved_tool_versions_digest", value: canonicalDigest(in.ResolvedToolVersionsDigest)},
-		{name: "lockfile_inputs_digest", value: canonicalDigest(in.LockfileInputsDigest)},
-		{name: "lockfile_parser_version", value: canonicalIdentifier(in.LockfileParserVersion)},
+		{name: "key_files_digest", value: canonicalDigest(in.KeyFilesDigest)},
 		{name: "bootstrap_recipe_digest", value: canonicalDigest(in.BootstrapRecipeDigest)},
 	})
 }

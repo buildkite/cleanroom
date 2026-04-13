@@ -121,6 +121,7 @@ type loader interface {
 }
 
 type repositoryMirrorStore interface {
+	EnsureMirror(ctx context.Context, remoteURL string) (string, error)
 	EnsureMirrorContains(ctx context.Context, remoteURL, commitSHA string) error
 }
 
@@ -207,21 +208,40 @@ func (s *Service) CreateSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	firecrackerCfg = withRepositoryBootstrapRootFSMinimum(firecrackerCfg, compiled, repository)
 
 	var replacedWorkspaceStageRecord *cachestore.Record
+	var replacedDependencyStageRecord *cachestore.Record
 	workspaceStageRuntimeBaseKey := ""
+	workspaceStageKey := ""
 	workspaceStageCachingEnabled := false
+	dependencyStagePlan := dependencyStagePlan{}
+	dependencyStageBootstrapEnabled := false
+	dependencyStageCachingEnabled := false
+	var restoredWorkspaceResp *cleanroomv1.CreateSandboxResponse
+	snapshotAdapter, snapshotCapable := adapter.(backend.SnapshottingAdapter)
 	if repository != nil {
-		if _, ok := adapter.(backend.SnapshottingAdapter); ok && snapshotOperationsEnabledForBackend(backendName, s.Config) {
-			runtimeBaseKey, cacheable, err := s.workspaceStageRuntimeBaseKey(ctx, adapter, compiled, firecrackerCfg)
-			if err != nil {
-				s.logWorkspaceStageWarning("resolve workspace stage runtime base key", "", err)
-			} else if cacheable {
-				workspaceStageRuntimeBaseKey = runtimeBaseKey
-				workspaceStageCachingEnabled = true
-				record, found, err := s.lookupWorkspaceStageCache(ctx, backendName, compiled, workspaceStageRuntimeBaseKey, repository)
+		dependencyStagePlan, dependencyStageBootstrapEnabled = dependencyStagePlanForRepository(compiled, repository)
+	}
+	if repository != nil && snapshotCapable && snapshotOperationsEnabledForBackend(backendName, s.Config) {
+		runtimeBaseKey, cacheable, err := s.workspaceStageRuntimeBaseKey(ctx, adapter, compiled, firecrackerCfg)
+		if err != nil {
+			s.logWorkspaceStageWarning("resolve workspace stage runtime base key", "", err)
+		} else if cacheable {
+			workspaceStageRuntimeBaseKey = runtimeBaseKey
+			workspaceStageCachingEnabled = true
+			workspaceStageKey = workspaceStageCacheKey(backendName, workspaceStageRuntimeBaseKey, compiled.Hash, repository)
+			if dependencyStageBootstrapEnabled {
+				dependencyStagePlan, dependencyStageCachingEnabled, err = s.finalizeDependencyStagePlan(ctx, compiled, repository, workspaceStageKey, dependencyStagePlan)
 				if err != nil {
-					s.logWorkspaceStageWarning("lookup workspace stage cache", "", err)
+					dependencyStageCachingEnabled = false
+					s.logDependencyStageWarning("resolve dependency stage cache key", "", err)
+				}
+			}
+
+			if dependencyStageCachingEnabled {
+				record, found, err := s.lookupDependencyStageCache(ctx, backendName, compiled, repository, dependencyStagePlan)
+				if err != nil {
+					s.logDependencyStageWarning("lookup dependency stage cache", "", err)
 				} else if found {
-					s.logWorkspaceStageCacheHit(record)
+					s.logDependencyStageCacheHit(record)
 					restoreReq := &cleanroomv1.CreateSandboxRequest{
 						Backend: backendName,
 						Options: req.GetOptions(),
@@ -230,20 +250,67 @@ func (s *Service) CreateSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 					if restoreErr == nil {
 						if cacheStore, err := s.cacheStoreOrErr(); err == nil {
 							if err := cacheStore.Touch(ctx, record.Stage, record.CacheKey); err != nil {
-								s.logWorkspaceStageWarning("touch workspace stage cache", "", err)
+								s.logDependencyStageWarning("touch dependency stage cache", "", err)
 							}
 						}
-						s.logWorkspaceStageRestore(record, resp.GetSandbox().GetSandboxId())
+						s.logDependencyStageRestore(record, resp.GetSandbox().GetSandboxId())
 						return resp, nil
 					}
 					recordCopy := record
-					replacedWorkspaceStageRecord = &recordCopy
-					s.logWorkspaceStageRestoreWarning(record, restoreErr)
+					replacedDependencyStageRecord = &recordCopy
+					s.logDependencyStageRestoreWarning(record, restoreErr)
 				} else {
-					s.logWorkspaceStageCacheMiss(backendName, workspaceStageCacheKey(backendName, workspaceStageRuntimeBaseKey, compiled.Hash, repository))
+					s.logDependencyStageCacheMiss(backendName, dependencyStagePlan.CacheKey)
 				}
 			}
+
+			record, found, err := s.lookupWorkspaceStageCache(ctx, backendName, compiled, workspaceStageRuntimeBaseKey, repository)
+			if err != nil {
+				s.logWorkspaceStageWarning("lookup workspace stage cache", "", err)
+			} else if found {
+				s.logWorkspaceStageCacheHit(record)
+				restoreReq := &cleanroomv1.CreateSandboxRequest{
+					Backend: backendName,
+					Options: req.GetOptions(),
+				}
+				resp, restoreErr := s.createSandboxFromCacheRecord(ctx, restoreReq, compiled, record)
+				if restoreErr == nil {
+					if cacheStore, err := s.cacheStoreOrErr(); err == nil {
+						if err := cacheStore.Touch(ctx, record.Stage, record.CacheKey); err != nil {
+							s.logWorkspaceStageWarning("touch workspace stage cache", "", err)
+						}
+					}
+					s.logWorkspaceStageRestore(record, resp.GetSandbox().GetSandboxId())
+					if !dependencyStageCachingEnabled {
+						return resp, nil
+					}
+					restoredWorkspaceResp = resp
+				} else {
+					recordCopy := record
+					replacedWorkspaceStageRecord = &recordCopy
+					s.logWorkspaceStageRestoreWarning(record, restoreErr)
+				}
+			} else {
+				s.logWorkspaceStageCacheMiss(backendName, workspaceStageKey)
+			}
 		}
+	}
+
+	if restoredWorkspaceResp != nil {
+		sandboxID := restoredWorkspaceResp.GetSandbox().GetSandboxId()
+		if dependencyStageBootstrapEnabled {
+			if err := s.bootstrapDependencyStageInPersistentSandbox(ctx, adapter, sandboxID, compiled, firecrackerCfg, dependencyStagePlan); err != nil {
+				cleanupErr := s.terminateCreatedSandbox(context.Background(), adapter, sandboxID)
+				if cleanupErr != nil {
+					return nil, fmt.Errorf("bootstrap dependency stage: %w; cleanup failed: %v", err, cleanupErr)
+				}
+				return nil, fmt.Errorf("bootstrap dependency stage: %w", err)
+			}
+			if dependencyStageCachingEnabled {
+				s.maybePublishDependencyStageCache(ctx, snapshotAdapter, sandboxID, backendName, compiled, firecrackerCfg, repository, dependencyStagePlan, replacedDependencyStageRecord)
+			}
+		}
+		return restoredWorkspaceResp, nil
 	}
 
 	now := s.clock().Now()
@@ -277,15 +344,24 @@ func (s *Service) CreateSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 		)
 	}
 	if err := s.bootstrapRepositoryInPersistentSandbox(ctx, adapter, sandboxID, compiled, firecrackerCfg, repository); err != nil {
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), s.timeouts().bootstrapCleanupTimeout)
-		defer cancel()
-		if terminateErr := adapter.TerminateSandbox(cleanupCtx, sandboxID); terminateErr != nil {
+		if terminateErr := s.terminateCreatedSandbox(context.Background(), adapter, sandboxID); terminateErr != nil {
 			return nil, fmt.Errorf("bootstrap repository checkout: %w; cleanup failed: %v", err, terminateErr)
 		}
 		return nil, fmt.Errorf("bootstrap repository checkout: %w", err)
 	}
-	if snapshotAdapter, ok := adapter.(backend.SnapshottingAdapter); ok && workspaceStageCachingEnabled {
+	if snapshotCapable && workspaceStageCachingEnabled {
 		s.maybePublishWorkspaceStageCache(ctx, snapshotAdapter, sandboxID, backendName, compiled, firecrackerCfg, workspaceStageRuntimeBaseKey, repository, replacedWorkspaceStageRecord)
+	}
+	if dependencyStageBootstrapEnabled {
+		if err := s.bootstrapDependencyStageInPersistentSandbox(ctx, adapter, sandboxID, compiled, firecrackerCfg, dependencyStagePlan); err != nil {
+			if terminateErr := s.terminateCreatedSandbox(context.Background(), adapter, sandboxID); terminateErr != nil {
+				return nil, fmt.Errorf("bootstrap dependency stage: %w; cleanup failed: %v", err, terminateErr)
+			}
+			return nil, fmt.Errorf("bootstrap dependency stage: %w", err)
+		}
+		if dependencyStageCachingEnabled && snapshotCapable {
+			s.maybePublishDependencyStageCache(ctx, snapshotAdapter, sandboxID, backendName, compiled, firecrackerCfg, repository, dependencyStagePlan, replacedDependencyStageRecord)
+		}
 	}
 
 	state := &sandboxState{
@@ -1091,6 +1167,23 @@ func internalBootstrapArtifactsDir(sandboxID, executionID string) string {
 func withRunDir(cfg backend.FirecrackerConfig, runDir string) backend.FirecrackerConfig {
 	cfg.RunDir = runDir
 	return cfg
+}
+
+func (s *Service) terminateCreatedSandbox(ctx context.Context, adapter backend.Adapter, sandboxID string) error {
+	if adapter == nil || strings.TrimSpace(sandboxID) == "" {
+		return nil
+	}
+	cleanupCtx, cancel := context.WithTimeout(ctx, s.timeouts().bootstrapCleanupTimeout)
+	defer cancel()
+	err := adapter.TerminateSandbox(cleanupCtx, sandboxID)
+
+	s.mu.Lock()
+	if sandbox, ok := s.sandboxes[sandboxID]; ok {
+		s.dropSandboxLocked(sandboxID, sandbox)
+	}
+	s.mu.Unlock()
+
+	return err
 }
 
 func (s *Service) ConsumeInteractiveSession(sessionID, token string) (*InteractiveSession, error) {

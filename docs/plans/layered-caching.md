@@ -2,7 +2,7 @@
 
 **Spec reference:** `spec.md` sections 5.1.1, 5.2, 6.4
 **Status:** In progress
-**Last reviewed:** 2026-04-11
+**Last reviewed:** 2026-04-13
 
 ## Summary
 
@@ -99,14 +99,22 @@ plain sandbox boot time" win only happens on clone-capable storage such as ZFS.
 
 ### Phase 3: Dedicated cache store and dependency stage
 
-Status: not started.
+Status: started.
 
-The next simplification step should be:
+The dedicated system-cache store is now in place, and the first dependency
+stage slice is beginning with a single configured dependency bootstrap flow.
 
-- add a dedicated `cachestore` for system-managed stage outputs
-- keep `snapshotstore` as the user snapshot store
-- move workspace-stage metadata out of reserved snapshot naming
-- add one strict dependency stage for a single ecosystem first
+This phase now means:
+
+- keep `cachestore` as the system-managed stage store and `snapshotstore` as
+  the user snapshot store
+- keep workspace-stage metadata in `cachestore`, not in reserved snapshot names
+- add one explicit dependency stage with a declared bootstrap command and key
+  files before generalizing further
+- start with `sandbox.dependencies.command` plus
+  `sandbox.dependencies.key.files`, which bootstraps a single dependency
+  command inside the restored workspace stage and publishes the resulting
+  dependency stage
 - keep distribution/export out of scope until the host-local model is proven
 
 ## Current Progress Snapshot
@@ -114,10 +122,14 @@ The next simplification step should be:
 ### Landed
 
 - host-side git mirror transport cache keyed by canonical remote URL
+- gateway Git/OCI transport cache via content-cache
 - exact-commit repository bootstrap through the host-controlled flow
 - runtime-base-key derivation for `firecracker` and `darwin-vz`
+- dedicated `cachestore` for system-managed stage outputs
 - workspace-stage publish, lookup, restore, and fallback republish in the
   control service
+- workspace-stage metadata moved out of reserved snapshot naming and into
+  `cachestore`
 - one writable-root-volume preparation path for Firecracker normal execution
   and snapshot restore
 
@@ -125,23 +137,24 @@ The next simplification step should be:
 
 - Firecracker hot-path materialization is wired through the volume-store path,
   but clone-based behavior still depends on the configured storage driver
+- dependency-stage caching is starting with a single configured dependency
+  bootstrap slice for exact-commit workspaces; toolchain-derived key inputs are
+  still pending
 
 ### Not started
 
-- dedicated `cachestore` for system-managed stage outputs
-- dependency-stage caches
-- lockfile-keyed dependency stage publication for any ecosystem
 - strict offline warm-cache mode
 - garbage collection and retention policy
 - cross-host distribution/export for stage caches
 
 ### Current caveats
 
-- workspace-stage identity is currently stored as a managed snapshot name, not
-  a first-class cache entry record
 - workspace-stage keying currently includes the local checkout branch because
   repository bootstrap can create either a detached checkout or a named local
   branch
+- the initial dependency-stage key intentionally starts from the workspace-stage
+  key plus policy hash, dependency bootstrap recipe digest, and declared key
+  file digests; richer toolchain inputs are still to come
 
 ## Background
 
@@ -428,6 +441,13 @@ Notes:
 - this stage is only reproducible to the extent that the selected ecosystem,
   toolchain, and bootstrap recipe are actually constrained enough to produce
   stable outputs
+- the first implementation slice should be explicit and narrow rather than
+  heuristic; the current target is one configured dependency command and a set
+  of declared repository key files on top of a workspace stage
+- for that initial slice, the dependency-stage key can conservatively start
+  with the workspace-stage key plus policy hash, the concrete bootstrap recipe
+  digest, and declared key-file digests, then grow richer toolchain inputs
+  later
 
 ### Stage 3: Writable execution child
 
@@ -714,13 +734,14 @@ This plan composes with the existing documents rather than replacing them.
 |---|---|
 | `internal/gateway/mirror.go` | Already acts as the host-side git transport cache keyed by canonical remote URL. |
 | `internal/repositorycheckout/checkout.go` | Already uses exact remote URL and full commit SHA as the checkout source of truth; `branch` currently affects local checkout mode only. |
-| `internal/controlservice/workspace_seed.go` | Current workspace-stage orchestration lives here under workspace-seed naming; this should migrate to dedicated stage-cache metadata. |
+| `internal/controlservice/workspace_stage.go` | Current workspace-stage orchestration already lives here using dedicated stage-cache metadata. |
+| `internal/controlservice/dependency_stage.go` | Dependency-stage orchestration entry point for policy-controlled bootstrap, declared key-file hashing, and publication. |
 | `internal/snapshotstore/store.go` | Should remain the user snapshot store rather than being expanded into the system-cache store. |
 | `internal/volumestore/store.go` | Already provides the backend-neutral clone/snapshot contract shared by both backends. |
 | `internal/backend/firecracker/backend.go` | Already routes normal execution and snapshot restore through writable root volume preparation; actual clone behavior depends on the configured driver. |
 | `internal/backend/darwinvz/backend_darwin.go` | Already fits the same one-rootfs model and can use APFS clone materialization. |
-| `internal/policy/policy.go` | Still needs lockfile-derived artifact allowlists and strict offline warm-cache requirements. |
-| `internal/cachestore/*` | Planned new package for system-managed stage-cache metadata, separate from user snapshots. |
+| `internal/policy/policy.go` | Now carries the first dependency-bootstrap surface; still needs richer toolchain inputs, artifact allowlists, and strict offline warm-cache requirements. |
+| `internal/cachestore/*` | Landed package for system-managed stage-cache metadata, separate from user snapshots. |
 
 ## Suggested Cache Metadata Model
 
@@ -752,6 +773,8 @@ opaque prose so determinism can be tested directly.
 1. Keep the git mirror as the transport cache for exact-commit checkout.
 2. Publish workspace-stage caches keyed by runtime stage plus exact repository
    inputs.
+3. Add a dedicated `cachestore` for system-managed stage caches and move
+   workspace-stage metadata off reserved snapshot names.
 
 ### Partial
 
@@ -759,22 +782,26 @@ opaque prose so determinism can be tested directly.
    volume path.
 2. Use published snapshot `storage_ref` values as the source for writable child
    preparation.
+3. Add the first explicit dependency stage using one configured bootstrap
+   command. The current slice is `sandbox.dependencies.command` plus
+   `sandbox.dependencies.key.files`, with `go mod download` as the first
+   example recipe keyed by workspace stage plus policy, command recipe, and
+   declared key-file digests.
 
 These are architecturally landed, but the full performance win still depends on
-clone-capable storage instead of the default `file` driver.
+clone-capable storage instead of the default `file` driver, and the dependency
+stage still needs richer lockfile/toolchain inputs.
 
 ### Remaining
 
-1. Add a dedicated `cachestore` for system-managed stage caches and canonical
-   key derivation helpers.
-2. Move workspace-stage metadata off reserved snapshot names and into
-   `cachestore`.
-3. Add lockfile parsing and one strict dependency stage for a single ecosystem
-   first.
-4. Add strict offline warm-cache mode and fail-closed launch checks.
-5. Add garbage collection and retention policies after the key model and
+1. Add richer toolchain input digests for dependency-stage keys beyond the
+   current workspace-plus-command-plus-key-files slice.
+2. Add additional ecosystems only after the first explicit dependency-stage
+   flow is solid.
+3. Add strict offline warm-cache mode and fail-closed launch checks.
+4. Add garbage collection and retention policies after the key model and
    publication flow are stable.
-6. Revisit cross-host distribution/export only after the local host model is
+5. Revisit cross-host distribution/export only after the local host model is
    proven worthwhile.
 
 ## Testing Plan
