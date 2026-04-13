@@ -1,4 +1,3 @@
 /scripts/cleanroom-root-helper.sh @lox
-/scripts/bootstrap-buildkite-agent.sh @lox
 /scripts/ci-cleanroom-e2e.sh @lox
 /.github/CODEOWNERS @lox

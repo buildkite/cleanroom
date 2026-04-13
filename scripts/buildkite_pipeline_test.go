@@ -74,6 +74,26 @@ func TestBuildkitePipelineUsesSetupGoForGoSteps(t *testing.T) {
 	if !strings.Contains(pipeline, "command: scripts/ci-buildkite-release.sh") {
 		t.Fatalf("expected .buildkite/pipeline.yml to include the Buildkite release publish step")
 	}
+	for _, needle := range []string{
+		"scripts/base-image-tag.sh",
+		"scripts/install-global.sh",
+		"scripts/e2e-observability.sh",
+		"scripts/build-macos-release-pkg.sh",
+		"scripts/notarize-macos-package.sh",
+	} {
+		if !strings.Contains(pipeline, needle) {
+			t.Fatalf("expected .buildkite/pipeline.yml shellcheck command to include %q", needle)
+		}
+	}
+	for _, needle := range []string{
+		"scripts/bootstrap-buildkite-agent.sh",
+		"scripts/bootstrap-buildkite-agent-macos.sh",
+		"scripts/ci-bootstrap-linux-ssm.sh",
+	} {
+		if strings.Contains(pipeline, needle) {
+			t.Fatalf("expected .buildkite/pipeline.yml shellcheck command not to include %q", needle)
+		}
+	}
 	if !strings.Contains(pipeline, "queue: cleanroom-mac-signer") {
 		t.Fatalf("expected .buildkite/pipeline.yml to route the macOS release pkg step to cleanroom-mac-signer")
 	}
@@ -173,12 +193,32 @@ func TestMiseIncludesLinuxBootstrapTasks(t *testing.T) {
 		t.Fatalf("read mise.toml: %v", err)
 	}
 
+	if strings.Contains(string(content), "ci-bootstrap-linux-ssm.sh") {
+		t.Fatalf("expected public mise.toml not to expose private bootstrap rerun tasks")
+	}
+	if strings.Contains(string(content), "bootstrap-buildkite-agent.sh") {
+		t.Fatalf("expected public mise.toml not to lint private bootstrap scripts")
+	}
+}
+
+func TestMiseLintShellCoversSharedE2EObservabilityHelper(t *testing.T) {
+	t.Parallel()
+
+	content, err := os.ReadFile("../mise.toml")
+	if err != nil {
+		t.Fatalf("read mise.toml: %v", err)
+	}
+
 	mise := string(content)
 	for _, needle := range []string{
-		"[tasks.\"ci:bootstrap:linux\"]",
-		"run = \"scripts/ci-bootstrap-linux-ssm.sh run\"",
-		"[tasks.\"ci:bootstrap:linux:logs\"]",
-		"run = \"scripts/ci-bootstrap-linux-ssm.sh logs\"",
+		`[tasks.lint-shell]`,
+		`scripts/base-image-tag.sh`,
+		`scripts/e2e-observability.sh`,
+		`scripts/ci-darwin-vz-filehandle-e2e.sh`,
+		`scripts/build-macos-release-pkg.sh`,
+		`scripts/notarize-macos-package.sh`,
+		`scripts/ci-macos-release-pkg.sh`,
+		`scripts/ci-buildkite-release.sh`,
 	} {
 		if !strings.Contains(mise, needle) {
 			t.Fatalf("expected mise.toml to contain %q", needle)

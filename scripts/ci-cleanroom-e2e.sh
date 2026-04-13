@@ -40,7 +40,7 @@ verify_helper_capabilities() {
     echo "   $capabilities" >&2
     annotate_root_helper_problem \
       "### ❌ Root helper capability probe failed" \
-      "The installed root helper (\`$PRIVILEGED_HELPER_PATH\`) could not be queried for capabilities.\n\nRoll out the latest helper on the CI host, for example by rerunning \`scripts/bootstrap-buildkite-agent.sh\`, and then rerun the build."
+      "The installed root helper (\`$PRIVILEGED_HELPER_PATH\`) could not be queried for capabilities.\n\nRoll out the latest helper on the CI host, for example by rerunning \`../cleanroom-ops/scripts/bootstrap-buildkite-agent.sh\`, and then rerun the build."
     return 1
   fi
 
@@ -59,7 +59,7 @@ verify_helper_capabilities() {
     printf '     %s\n' "$capabilities" >&2
     annotate_root_helper_problem \
       "### ❌ Root helper is missing required capabilities" \
-      "The installed root helper (\`$PRIVILEGED_HELPER_PATH\`) is missing required capabilities for this branch.\n\nMissing: \`${missing[*]}\`\n\nRoll out the latest helper on the CI host, for example by rerunning \`scripts/bootstrap-buildkite-agent.sh\`, and then rerun the build."
+      "The installed root helper (\`$PRIVILEGED_HELPER_PATH\`) is missing required capabilities for this branch.\n\nMissing: \`${missing[*]}\`\n\nRoll out the latest helper on the CI host, for example by rerunning \`../cleanroom-ops/scripts/bootstrap-buildkite-agent.sh\`, and then rerun the build."
     return 1
   fi
 }
