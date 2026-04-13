@@ -25,8 +25,9 @@ Inside sandboxes, the shared gateway is exposed at
 
 On `firecracker`, the gateway identifies the sandbox from the guest source IP.
 On `darwin-vz`, guests share NAT, so requests use the
-`X-Cleanroom-Scope-Token` header and the gateway only trusts that header from
-configured gateway-source prefixes.
+`X-Cleanroom-Scope-Token` header. The gateway normally restricts that header to
+configured gateway-source prefixes, but falls back to allowing it from any
+source if gateway-host resolution is unavailable.
 
 ## Git proxy
 
