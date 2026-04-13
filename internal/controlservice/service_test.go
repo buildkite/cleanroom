@@ -159,6 +159,7 @@ type stubRepositoryMirrorStore struct {
 	commitSHA         string
 	calls             int
 	err               error
+	ensureContainsFn  func(remoteURL, commitSHA string) error
 	mirrorPath        string
 	mirrorPathCalls   int
 	mirrorPathErr     error
@@ -174,6 +175,9 @@ func (s *stubRepositoryMirrorStore) EnsureMirrorContains(_ context.Context, remo
 	s.remoteURL = remoteURL
 	s.commitSHA = commitSHA
 	s.calls++
+	if s.ensureContainsFn != nil {
+		return s.ensureContainsFn(remoteURL, commitSHA)
+	}
 	return s.err
 }
 
@@ -2092,7 +2096,7 @@ func TestCreateSandboxReusesDependencyStageCacheForConfiguredDependencies(t *tes
 		t.Fatalf("expected one workspace and one dependency snapshot publish, got %d want %d", got, want)
 	}
 	if got, want := mirrors.calls, 1; got != want {
-		t.Fatalf("expected warm dependency-stage hit to avoid remote mirror refresh, got %d want %d", got, want)
+		t.Fatalf("expected only the first dependency-stage key resolution to refresh the mirror, got %d want %d", got, want)
 	}
 	if got, want := mirrors.mirrorPathCalls, 2; got != want {
 		t.Fatalf("expected dependency-stage keying to use local mirror paths on both attempts, got %d want %d", got, want)
@@ -2186,6 +2190,72 @@ func TestCreateSandboxBootstrapsDependenciesAfterWorkspaceStageRestoreWithoutDep
 	dependencyBootstrap := strings.Join(runCommands[0], " ")
 	if !repositoryWrappedCommandContains(dependencyBootstrap, `exec mise exec -- 'go' 'mod' 'download'`) {
 		t.Fatalf("expected dependency bootstrap to run go mod download via mise exec, got %q", dependencyBootstrap)
+	}
+}
+
+func TestCreateSandboxPublishesDependencyStageCacheWhenLocalMirrorStartsEmpty(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	store := newMemorySnapshotStore()
+	adapter := &stubAdapter{}
+	var snapshotReqs []backend.SnapshotRequest
+	adapter.createSnapshotFn = func(_ context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
+		snapshotReqs = append(snapshotReqs, req)
+		return &backend.SnapshotResult{StorageRef: "/snapshots/" + req.SnapshotID + ".ext4"}, nil
+	}
+
+	actualMirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"go.mod": "module example.com/test\n\ngo 1.26.2\n",
+		"go.sum": "example.com/test v0.0.0 h1:abc123\n",
+	})
+	emptyMirrorPath := filepath.Join(t.TempDir(), "missing.git")
+	mirrors := &stubRepositoryMirrorStore{mirrorPath: emptyMirrorPath}
+	mirrors.ensureContainsFn = func(remoteURL, commitSHA string) error {
+		mirrors.mirrorPath = actualMirrors.mirrorPath
+		return nil
+	}
+
+	svc := newTestServiceWithSnapshotStore(adapter, store)
+	svc.RepositoryMirrors = mirrors
+
+	if _, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy:             testRepositoryDependencyPolicy(),
+		RepositoryCheckout: repositoryCheckout,
+	}); err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+
+	if got, want := adapter.createSnapshotCalls, 2; got != want {
+		t.Fatalf("expected workspace and dependency stage snapshots after populating mirror, got %d want %d", got, want)
+	}
+	if got, want := len(snapshotReqs), 2; got != want {
+		t.Fatalf("expected one workspace and one dependency stage publish request, got %d want %d", got, want)
+	}
+	if got, want := mirrors.calls, 2; got != want {
+		t.Fatalf("expected dependency keying fallback plus repository bootstrap to ensure the exact commit, got %d want %d", got, want)
+	}
+
+	cacheStore, ok := svc.CacheStore.(*memoryCacheStore)
+	if !ok {
+		t.Fatalf("expected memory cache store, got %T", svc.CacheStore)
+	}
+	records, err := cacheStore.List(context.Background())
+	if err != nil {
+		t.Fatalf("List returned error: %v", err)
+	}
+	if got, want := len(records), 2; got != want {
+		t.Fatalf("expected workspace and dependency cache records, got %d want %d", got, want)
+	}
+
+	var dependencyRecord *cachestore.Record
+	for i := range records {
+		record := records[i]
+		if record.Stage == dependencyStageName {
+			recordCopy := record
+			dependencyRecord = &recordCopy
+		}
+	}
+	if dependencyRecord == nil {
+		t.Fatal("expected published dependency stage cache record")
 	}
 }
 
