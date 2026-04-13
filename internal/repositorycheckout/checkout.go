@@ -202,12 +202,14 @@ func BootstrapRecipeDigest(checkout *Checkout) string {
 	if checkout == nil {
 		return ""
 	}
-	sum := sha256.New()
-	for _, part := range BuildBootstrapCommand(checkout) {
-		_, _ = sum.Write([]byte(part))
-		_, _ = sum.Write([]byte{0})
+	return commandRecipeDigest(BuildBootstrapCommand(checkout))
+}
+
+func WorkdirRecipeDigest(command []string, checkout *Checkout, autoMiseInstall bool) string {
+	if checkout == nil {
+		return ""
 	}
-	return "sha256:" + hex.EncodeToString(sum.Sum(nil))
+	return commandRecipeDigest(WrapCommandInWorkdir(command, checkout, autoMiseInstall))
 }
 
 func WrapCommandWithBootstrap(command []string, checkout *Checkout, autoMiseInstall bool) []string {
@@ -304,4 +306,13 @@ func shellJoin(args []string) string {
 
 func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
+}
+
+func commandRecipeDigest(command []string) string {
+	sum := sha256.New()
+	for _, part := range command {
+		_, _ = sum.Write([]byte(part))
+		_, _ = sum.Write([]byte{0})
+	}
+	return "sha256:" + hex.EncodeToString(sum.Sum(nil))
 }

@@ -79,6 +79,15 @@ message PolicyServices {
   PolicyDockerService docker = 1;
 }
 
+message PolicyDependencyKey {
+  repeated string files = 1;
+}
+
+message PolicyDependencies {
+  repeated string command = 1;
+  PolicyDependencyKey key = 2;
+}
+
 message Policy {
   int32 version = 1;
   string image_ref = 2;
@@ -88,6 +97,7 @@ message Policy {
   string hash = 6;
   PolicyServices services = 7;
   optional bool mise_install = 8;
+  PolicyDependencies dependencies = 9;
 }
 
 message SandboxOptions {

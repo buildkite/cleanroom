@@ -23,6 +23,7 @@ const defaultGitMirrorMaxAge = 30 * time.Second
 // GitMirrorStore ensures a local bare mirror exists for a canonical upstream
 // remote URL and returns its path.
 type GitMirrorStore interface {
+	MirrorPath(remoteURL string) (string, error)
 	EnsureMirror(ctx context.Context, remoteURL string) (string, error)
 	EnsureMirrorContains(ctx context.Context, remoteURL, commitSHA string) error
 }
@@ -53,6 +54,17 @@ func NewDefaultGitMirrorStore(credentials CredentialProvider) (*gitMirrorStore, 
 		return nil, err
 	}
 	return NewGitMirrorStore(filepath.Join(baseDir, "repos"), defaultGitMirrorMaxAge, credentials), nil
+}
+
+func (s *gitMirrorStore) MirrorPath(remoteURL string) (string, error) {
+	if s == nil {
+		return "", fmt.Errorf("mirror store is nil")
+	}
+	parsed, err := normalizeMirrorRemoteURL(remoteURL)
+	if err != nil {
+		return "", err
+	}
+	return s.mirrorPath(parsed.String()), nil
 }
 
 func (s *gitMirrorStore) EnsureMirror(ctx context.Context, remoteURL string) (string, error) {

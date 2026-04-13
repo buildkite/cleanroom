@@ -232,6 +232,53 @@ func TestCompileDisablesMiseInstallWhenSandboxMiseInstallFalse(t *testing.T) {
 	}
 }
 
+func TestCompileDefaultsDependenciesDisabled(t *testing.T) {
+	t.Parallel()
+
+	raw := baseRawPolicy()
+	compiled, err := Compile(raw)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if compiled.Dependencies.Enabled() {
+		t.Fatal("expected compiled policy to disable dependency bootstrap by default")
+	}
+}
+
+func TestCompileNormalizesDependencyBootstrapConfig(t *testing.T) {
+	t.Parallel()
+
+	raw := baseRawPolicy()
+	raw.Sandbox.Dependencies.Command = []string{"go", "mod", "download"}
+	raw.Sandbox.Dependencies.Key.Files = []string{"./go.sum", "go.mod", "go.sum"}
+
+	compiled, err := Compile(raw)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if got, want := compiled.Dependencies.Command, []string{"go", "mod", "download"}; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("unexpected dependency command: got %v want %v", got, want)
+	}
+	if got, want := compiled.Dependencies.KeyFiles, []string{"go.mod", "go.sum"}; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("unexpected dependency key files: got %v want %v", got, want)
+	}
+}
+
+func TestCompileRejectsDependencyKeyFilesWithoutCommand(t *testing.T) {
+	t.Parallel()
+
+	raw := baseRawPolicy()
+	raw.Sandbox.Dependencies.Key.Files = []string{"go.sum"}
+
+	_, err := Compile(raw)
+	if err == nil {
+		t.Fatal("expected compile to reject dependency key files without a command")
+	}
+	if !strings.Contains(err.Error(), "sandbox.dependencies.key.files") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestLoadPropagatesPrimaryStatError(t *testing.T) {
 	t.Parallel()
 
@@ -472,6 +519,29 @@ func TestCompiledPolicyProtoRoundTripPreservesMiseInstall(t *testing.T) {
 	}
 	if roundTripped.MiseInstall {
 		t.Fatal("expected proto round-trip to preserve mise install=false")
+	}
+}
+
+func TestCompiledPolicyProtoRoundTripPreservesDependencies(t *testing.T) {
+	t.Parallel()
+
+	raw := baseRawPolicy()
+	raw.Sandbox.Dependencies.Command = []string{"go", "mod", "download"}
+	raw.Sandbox.Dependencies.Key.Files = []string{"go.mod", "go.sum"}
+	compiled, err := Compile(raw)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	roundTripped, err := FromProto(compiled.ToProto())
+	if err != nil {
+		t.Fatalf("FromProto returned error: %v", err)
+	}
+	if got, want := strings.Join(roundTripped.Dependencies.Command, "\x00"), strings.Join(compiled.Dependencies.Command, "\x00"); got != want {
+		t.Fatalf("unexpected dependency command after round trip: got %q want %q", got, want)
+	}
+	if got, want := strings.Join(roundTripped.Dependencies.KeyFiles, "\x00"), strings.Join(compiled.Dependencies.KeyFiles, "\x00"); got != want {
+		t.Fatalf("unexpected dependency key files after round trip: got %q want %q", got, want)
 	}
 }
 

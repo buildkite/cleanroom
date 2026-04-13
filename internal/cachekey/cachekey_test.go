@@ -67,13 +67,10 @@ func TestWorkspaceStageKey(t *testing.T) {
 
 func TestDependencyStageKey(t *testing.T) {
 	inputs := DependencyStageInputs{
-		WorkspaceKey:               "workspace:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		CompiledPolicyHash:         "sha256:7777777777777777777777777777777777777777777777777777777777777777",
-		ToolchainManifestDigest:    "sha256:8888888888888888888888888888888888888888888888888888888888888888",
-		ResolvedToolVersionsDigest: "sha256:9999999999999999999999999999999999999999999999999999999999999999",
-		LockfileInputsDigest:       "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-		LockfileParserVersion:      "v1",
-		BootstrapRecipeDigest:      "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+		WorkspaceKey:          "workspace:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		CompiledPolicyHash:    "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+		KeyFilesDigest:        "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		BootstrapRecipeDigest: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
 	}
 
 	got := DependencyStageKey(inputs)
@@ -88,7 +85,7 @@ func TestDependencyStageKey(t *testing.T) {
 	}
 
 	mutated := inputs
-	mutated.LockfileParserVersion = "v2"
+	mutated.KeyFilesDigest = "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
 	if gotMutated := DependencyStageKey(mutated); got == gotMutated {
 		t.Fatalf("dependency stage key did not change after input mutation: %q", got)
 	}

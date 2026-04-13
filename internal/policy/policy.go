@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -32,9 +33,10 @@ type rawPolicy struct {
 		Image struct {
 			Ref string `yaml:"ref"`
 		} `yaml:"image"`
-		Mise     rawMiseConfig `yaml:"mise"`
-		Services rawServices   `yaml:"services"`
-		Network  struct {
+		Mise         rawMiseConfig         `yaml:"mise"`
+		Dependencies rawDependenciesConfig `yaml:"dependencies"`
+		Services     rawServices           `yaml:"services"`
+		Network      struct {
 			Default string         `yaml:"default"`
 			Allow   []rawAllowRule `yaml:"allow"`
 		} `yaml:"network"`
@@ -54,6 +56,15 @@ type rawMiseConfig struct {
 	Install *bool `yaml:"install"`
 }
 
+type rawDependencyKey struct {
+	Files []string `yaml:"files"`
+}
+
+type rawDependenciesConfig struct {
+	Command []string         `yaml:"command"`
+	Key     rawDependencyKey `yaml:"key"`
+}
+
 type rawServices struct {
 	Docker rawDockerService `yaml:"docker"`
 }
@@ -68,14 +79,15 @@ type rawAllowRule struct {
 }
 
 type CompiledPolicy struct {
-	Version        int         `json:"version"`
-	ImageRef       string      `json:"image_ref"`
-	ImageDigest    string      `json:"image_digest"`
-	Services       Services    `json:"services"`
-	NetworkDefault string      `json:"network_default"`
-	Allow          []AllowRule `json:"allow"`
-	MiseInstall    bool        `json:"mise_install"`
-	Hash           string      `json:"hash"`
+	Version        int          `json:"version"`
+	ImageRef       string       `json:"image_ref"`
+	ImageDigest    string       `json:"image_digest"`
+	Services       Services     `json:"services"`
+	NetworkDefault string       `json:"network_default"`
+	Allow          []AllowRule  `json:"allow"`
+	MiseInstall    bool         `json:"mise_install"`
+	Dependencies   Dependencies `json:"dependencies"`
+	Hash           string       `json:"hash"`
 }
 
 type RepositoryConfig struct {
@@ -88,6 +100,11 @@ type RepositoryConfig struct {
 
 type Services struct {
 	Docker DockerService `json:"docker"`
+}
+
+type Dependencies struct {
+	Command  []string `json:"command,omitempty"`
+	KeyFiles []string `json:"key_files,omitempty"`
 }
 
 type DockerService struct {
@@ -206,6 +223,11 @@ func Compile(raw rawPolicy) (*CompiledPolicy, error) {
 		return allow[i].Host < allow[j].Host
 	})
 
+	dependencies, err := normalizeDependencies(raw.Sandbox.Dependencies)
+	if err != nil {
+		return nil, err
+	}
+
 	compiled := &CompiledPolicy{
 		Version:     raw.Version,
 		ImageRef:    parsedRef.Original,
@@ -218,6 +240,7 @@ func Compile(raw rawPolicy) (*CompiledPolicy, error) {
 		NetworkDefault: networkDefault,
 		Allow:          allow,
 		MiseInstall:    normalizeMiseInstall(raw.Sandbox.Mise),
+		Dependencies:   dependencies,
 	}
 
 	hash, err := hashPolicy(compiled)
@@ -272,6 +295,10 @@ func (p *CompiledPolicy) RequiresDockerService() bool {
 		return false
 	}
 	return p.Services.Docker.Required
+}
+
+func (d Dependencies) Enabled() bool {
+	return len(d.Command) > 0
 }
 
 func (c RepositoryConfig) Enabled() bool {
@@ -376,7 +403,13 @@ func (p *CompiledPolicy) ToProto() *cleanroomv1.Policy {
 		NetworkDefault: p.NetworkDefault,
 		Allow:          allow,
 		MiseInstall:    boolPtr(p.MiseInstall),
-		Hash:           p.Hash,
+		Dependencies: &cleanroomv1.PolicyDependencies{
+			Command: append([]string(nil), p.Dependencies.Command...),
+			Key: &cleanroomv1.PolicyDependencyKey{
+				Files: append([]string(nil), p.Dependencies.KeyFiles...),
+			},
+		},
+		Hash: p.Hash,
 	}
 }
 
@@ -442,6 +475,11 @@ func FromProto(pb *cleanroomv1.Policy) (*CompiledPolicy, error) {
 		return allow[i].Host < allow[j].Host
 	})
 
+	dependencies, err := dependenciesFromProto(pb.GetDependencies())
+	if err != nil {
+		return nil, err
+	}
+
 	compiled := &CompiledPolicy{
 		Version:     int(pb.GetVersion()),
 		ImageRef:    parsedRef.Original,
@@ -454,6 +492,7 @@ func FromProto(pb *cleanroomv1.Policy) (*CompiledPolicy, error) {
 		NetworkDefault: networkDefault,
 		Allow:          allow,
 		MiseInstall:    protoBoolOrDefault(pb.MiseInstall, false),
+		Dependencies:   dependencies,
 	}
 
 	hash, err := hashPolicy(compiled)
@@ -480,6 +519,94 @@ func normalizeMiseInstall(raw rawMiseConfig) bool {
 		return *raw.Install
 	}
 	return false
+}
+
+func normalizeDependencies(raw rawDependenciesConfig) (Dependencies, error) {
+	command, err := normalizeDependencyCommand(raw.Command)
+	if err != nil {
+		return Dependencies{}, err
+	}
+	keyFiles, err := normalizeDependencyKeyFiles(raw.Key.Files)
+	if err != nil {
+		return Dependencies{}, err
+	}
+	if len(command) == 0 {
+		if len(keyFiles) > 0 {
+			return Dependencies{}, errors.New("sandbox.dependencies.key.files requires sandbox.dependencies.command")
+		}
+		return Dependencies{}, nil
+	}
+	return Dependencies{
+		Command:  command,
+		KeyFiles: keyFiles,
+	}, nil
+}
+
+func dependenciesFromProto(pb *cleanroomv1.PolicyDependencies) (Dependencies, error) {
+	if pb == nil {
+		return Dependencies{}, nil
+	}
+	command, err := normalizeDependencyCommand(pb.GetCommand())
+	if err != nil {
+		return Dependencies{}, err
+	}
+	keyFiles, err := normalizeDependencyKeyFiles(pb.GetKey().GetFiles())
+	if err != nil {
+		return Dependencies{}, err
+	}
+	if len(command) == 0 {
+		if len(keyFiles) > 0 {
+			return Dependencies{}, errors.New("policy dependencies.key.files requires dependencies.command")
+		}
+		return Dependencies{}, nil
+	}
+	return Dependencies{
+		Command:  command,
+		KeyFiles: keyFiles,
+	}, nil
+}
+
+func normalizeDependencyCommand(raw []string) ([]string, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	command := make([]string, 0, len(raw))
+	for i, arg := range raw {
+		trimmed := strings.TrimSpace(arg)
+		if trimmed == "" {
+			return nil, fmt.Errorf("sandbox.dependencies.command[%d] cannot be empty", i)
+		}
+		command = append(command, trimmed)
+	}
+	return command, nil
+}
+
+func normalizeDependencyKeyFiles(raw []string) ([]string, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	seen := make(map[string]struct{}, len(raw))
+	files := make([]string, 0, len(raw))
+	for i, candidate := range raw {
+		trimmed := strings.TrimSpace(candidate)
+		if trimmed == "" {
+			return nil, fmt.Errorf("sandbox.dependencies.key.files[%d] cannot be empty", i)
+		}
+		if strings.HasPrefix(trimmed, "/") {
+			return nil, fmt.Errorf("sandbox.dependencies.key.files[%d] must be relative", i)
+		}
+		cleaned := path.Clean(strings.ReplaceAll(trimmed, "\\", "/"))
+		if cleaned == "." || cleaned == ".." || strings.HasPrefix(cleaned, "../") {
+			return nil, fmt.Errorf("sandbox.dependencies.key.files[%d] must stay within the repository root", i)
+		}
+		if _, ok := seen[cleaned]; ok {
+			continue
+		}
+		seen[cleaned] = struct{}{}
+		files = append(files, cleaned)
+	}
+	sort.Strings(files)
+	return files, nil
 }
 
 func protoBoolOrDefault(v *bool, fallback bool) bool {

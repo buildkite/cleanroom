@@ -2,7 +2,7 @@
 
 Runs the [buildkite/agent](https://github.com/buildkite/agent) test suite
 inside a cleanroom sandbox with deny-by-default egress, mise toolchain
-bootstrap, and Go module resolution.
+bootstrap, Go module resolution, and dependency-stage warmup.
 
 ## Prerequisites
 
@@ -56,4 +56,8 @@ needed for mise tool installation and Go module resolution:
 ## Notes
 
 - First run is slow: git clone, mise tool install, and Go module download
+- The example policy sets `sandbox.dependencies.command: [go, mod, download]`
+  with `sandbox.dependencies.key.files: [go.mod, go.sum]`, so a successful
+  first run can publish a reusable dependency stage for later warm hits on the
+  same exact commit and policy
 - `go test -p 1` avoids OOM kills on constrained guest memory
