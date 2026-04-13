@@ -306,6 +306,11 @@ type staticMirrorStore struct {
 	gotRemoteURL string
 }
 
+func (s *staticMirrorStore) MirrorPath(remoteURL string) (string, error) {
+	s.gotRemoteURL = remoteURL
+	return s.mirrorDir, nil
+}
+
 func (s *staticMirrorStore) EnsureMirror(_ context.Context, remoteURL string) (string, error) {
 	s.gotRemoteURL = remoteURL
 	return s.mirrorDir, nil

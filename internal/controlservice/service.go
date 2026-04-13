@@ -121,6 +121,7 @@ type loader interface {
 }
 
 type repositoryMirrorStore interface {
+	MirrorPath(remoteURL string) (string, error)
 	EnsureMirror(ctx context.Context, remoteURL string) (string, error)
 	EnsureMirrorContains(ctx context.Context, remoteURL, commitSHA string) error
 }

@@ -160,6 +160,8 @@ type stubRepositoryMirrorStore struct {
 	calls             int
 	err               error
 	mirrorPath        string
+	mirrorPathCalls   int
+	mirrorPathErr     error
 	ensureMirrorCalls int
 	ensureMirrorErr   error
 }
@@ -173,6 +175,15 @@ func (s *stubRepositoryMirrorStore) EnsureMirrorContains(_ context.Context, remo
 	s.commitSHA = commitSHA
 	s.calls++
 	return s.err
+}
+
+func (s *stubRepositoryMirrorStore) MirrorPath(remoteURL string) (string, error) {
+	s.remoteURL = remoteURL
+	s.mirrorPathCalls++
+	if s.mirrorPathErr != nil {
+		return "", s.mirrorPathErr
+	}
+	return s.mirrorPath, nil
 }
 
 func (s *stubRepositoryMirrorStore) EnsureMirror(_ context.Context, remoteURL string) (string, error) {
@@ -2060,6 +2071,7 @@ func TestCreateSandboxReusesDependencyStageCacheForConfiguredDependencies(t *tes
 	if _, err := svc.CreateSandbox(context.Background(), req); err != nil {
 		t.Fatalf("first CreateSandbox returned error: %v", err)
 	}
+	mirrors.err = errors.New("offline")
 	if _, err := svc.CreateSandbox(context.Background(), req); err != nil {
 		t.Fatalf("second CreateSandbox returned error: %v", err)
 	}
@@ -2078,6 +2090,12 @@ func TestCreateSandboxReusesDependencyStageCacheForConfiguredDependencies(t *tes
 	}
 	if got, want := len(snapshotReqs), 2; got != want {
 		t.Fatalf("expected one workspace and one dependency snapshot publish, got %d want %d", got, want)
+	}
+	if got, want := mirrors.calls, 1; got != want {
+		t.Fatalf("expected warm dependency-stage hit to avoid remote mirror refresh, got %d want %d", got, want)
+	}
+	if got, want := mirrors.mirrorPathCalls, 2; got != want {
+		t.Fatalf("expected dependency-stage keying to use local mirror paths on both attempts, got %d want %d", got, want)
 	}
 	if got, want := adapter.provisionFromSnapshotReq.StorageRef, "/snapshots/"+snapshotReqs[1].SnapshotID+".ext4"; got != want {
 		t.Fatalf("unexpected dependency stage storage ref on warm hit: got %q want %q", got, want)
@@ -2100,7 +2118,7 @@ func TestCreateSandboxBootstrapsDependenciesAfterWorkspaceStageRestoreWithoutDep
 		"go.mod": "module example.com/test\n\ngo 1.26.2\n",
 		"go.sum": "example.com/test v0.0.0 h1:abc123\n",
 	})
-	mirrors.ensureMirrorErr = errors.New("mirror path unavailable")
+	mirrors.mirrorPathErr = errors.New("mirror path unavailable")
 	svc := newTestServiceWithSnapshotStore(adapter, store)
 	svc.RepositoryMirrors = mirrors
 
@@ -2153,11 +2171,14 @@ func TestCreateSandboxBootstrapsDependenciesAfterWorkspaceStageRestoreWithoutDep
 	if got, want := adapter.createSnapshotCalls, 0; got != want {
 		t.Fatalf("expected dependency cache publish to stay disabled after key resolution failure, got %d want %d", got, want)
 	}
-	if got, want := mirrors.calls, 1; got != want {
-		t.Fatalf("expected one exact-commit mirror check while resolving dependency cache key, got %d want %d", got, want)
+	if got, want := mirrors.calls, 0; got != want {
+		t.Fatalf("expected dependency-stage key resolution to avoid remote mirror refresh, got %d want %d", got, want)
 	}
-	if got, want := mirrors.ensureMirrorCalls, 1; got != want {
-		t.Fatalf("expected one mirror path lookup while resolving dependency cache key, got %d want %d", got, want)
+	if got, want := mirrors.mirrorPathCalls, 1; got != want {
+		t.Fatalf("expected one local mirror path lookup while resolving dependency cache key, got %d want %d", got, want)
+	}
+	if got, want := mirrors.ensureMirrorCalls, 0; got != want {
+		t.Fatalf("expected dependency-stage key resolution to avoid EnsureMirror, got %d want %d", got, want)
 	}
 	if got, want := len(runCommands), 1; got != want {
 		t.Fatalf("expected one dependency bootstrap command, got %d want %d", got, want)
