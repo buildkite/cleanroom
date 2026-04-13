@@ -1,23 +1,33 @@
 # Host gateway
 
-The Cleanroom server runs a host gateway that provides mediated access to
-external services for sandboxes. The gateway handles git clones, package
-registry requests, secret injection, and metadata. Credentials are held
-host-side and injected on the upstream leg, so tokens never enter the sandbox.
+The Cleanroom server runs a shared host gateway that mediates sandbox access to
+selected external services. The current implementation embeds
+`github.com/buildkite/content-cache` behind the gateway for cache-backed Git
+smart-HTTP and OCI registry routes, while keeping sandbox identity, policy
+enforcement, and credential resolution in Cleanroom's own `internal/gateway`
+layer.
 
 Currently supported on the `firecracker` and `darwin-vz` backends.
 
 Inside sandboxes, the shared gateway is exposed at
 `http://gateway.cleanroom.internal:8170` by default.
 
-## Endpoints
+## Route status
 
-| Path | Purpose |
-|------|---------|
-| `/git/` | Git smart-HTTP proxy with policy-scoped URL rewrites |
-| `/registry/` | Package registry proxy |
-| `/secrets/` | Secret injection endpoint |
-| `/meta/` | Sandbox metadata |
+| Path | Status | Purpose |
+|------|--------|---------|
+| `/git/` | Implemented | Cache-backed Git smart-HTTP route. `.git` remotes use embedded `content-cache`; non-cacheable paths fall back to Cleanroom's mirror-backed proxy. |
+| `/registry/` | Implemented | Cache-backed OCI Distribution route for allowlisted registries. |
+| `/secrets/` | Reserved | Not implemented yet. |
+| `/meta/` | Reserved | Not implemented yet. |
+
+## Sandbox identity
+
+On `firecracker`, the gateway identifies the sandbox from the guest source IP.
+On `darwin-vz`, guests share NAT, so requests use the
+`X-Cleanroom-Scope-Token` header. The gateway normally restricts that header to
+configured gateway-source prefixes, but falls back to allowing it from any
+source if gateway-host resolution is unavailable.
 
 ## Git proxy
 
@@ -30,8 +40,10 @@ cleanroom exec -- git clone https://github.com/org/repo.git
 
 The gateway resolves the target host from the request path, validates it against
 the sandbox's compiled policy, and proxies the git smart-HTTP protocol upstream.
-Guest-side git rewrites target `gateway.cleanroom.internal` rather than backend-specific
-IP addresses.
+For `.git` smart-HTTP routes, the request is handed to embedded
+`content-cache`; for non-`.git` paths, the gateway falls back to Cleanroom's
+mirror-backed proxy. Guest-side git rewrites target
+`gateway.cleanroom.internal` rather than backend-specific IP addresses.
 
 On `darwin-vz`, sandbox identity is carried with the
 `X-Cleanroom-Scope-Token` request header because guests use shared NAT rather
@@ -49,6 +61,26 @@ Denied host example (not in `sandbox.network.allow`):
 cleanroom exec -- git ls-remote https://gitlab.com/gitlab-org/gitlab.git HEAD
 ```
 
+## Registry route
+
+`/registry/` is backed by `content-cache`'s OCI handlers rather than a generic
+HTTP forward proxy. Cleanroom resolves the registry prefix from the request
+path, maps it to an upstream registry, checks the mapped host and port against
+the sandbox policy, and only then allows the upstream fetch.
+
+Current scope:
+
+- OCI pull-style `GET` and `HEAD` requests
+- built-in prefix mapping for Docker Hub (`docker.io` ->
+  `https://registry-1.docker.io`)
+- additional registry-prefix mappings configured inside the gateway
+
+Not wired yet:
+
+- guest-wide package-manager rewrites to `/registry/`
+- lockfile enforcement
+- non-OCI package-manager protocol handling
+
 ## Credentials
 
 Host-side credentials are provided via environment variables:
@@ -59,7 +91,8 @@ Host-side credentials are provided via environment variables:
 | `CLEANROOM_GITLAB_TOKEN` | GitLab authentication |
 
 Credentials are injected into upstream requests by the gateway. They are never
-exposed to the guest environment.
+exposed to the guest environment. The same host-side credential provider chain
+is used by the embedded `content-cache` upstream clients.
 
 ## Configuration
 

@@ -228,24 +228,34 @@ type CredentialProvider interface {
 
 ---
 
-### Slice 5: Registry proxy (stub)
+### Slice 5: Registry route
 
-**`internal/gateway/registry.go`** — Handler for `/registry/...`
+**`internal/gateway/oci_cached.go`** — Handler for `/registry/...`
 
-Initial implementation is a passthrough HTTP proxy with policy enforcement:
+The original passthrough-proxy sketch is now superseded by the merged
+`content-cache` integration. The current implementation mounts `/registry/` on
+top of cache-backed OCI handlers and wraps them with Cleanroom policy
+enforcement.
 
-1. Extract upstream registry host from request path.
-2. Validate against sandbox's compiled policy registry allowlist.
-3. Proxy request upstream, injecting credentials if configured.
-4. Return `registry_not_allowed` on deny.
+Current behavior:
 
-This is where content-cache integration can plug in later — the gateway either handles proxying directly or forwards to a content-cache instance for caching and lockfile enforcement.
+1. Extract a registry prefix from the request path.
+2. Resolve that prefix to an upstream registry URL.
+3. Validate the mapped policy host and port against the sandbox policy.
+4. Serve OCI pull traffic through embedded `content-cache`.
+5. Return `host_not_allowed` or `unknown_registry_prefix` on deny.
+
+Follow-up work remains for:
+
+1. guest-side package-manager rewrites through `/registry/`
+2. lockfile enforcement
+3. broader non-OCI package-manager protocol support
 
 **Tests:**
 
 - Policy enforcement: allowed registry host proxied, disallowed host denied with correct reason code.
 
-**Definition of done:** Package manager requests routed through `/registry/` are policy-enforced and proxied upstream.
+**Definition of done:** OCI registry requests routed through `/registry/` are policy-enforced and cache-backed. Broader package-manager proxying is a later slice.
 
 ---
 

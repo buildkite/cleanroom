@@ -313,8 +313,8 @@ These reduce upstream fetch cost but are not runnable environments:
 - gateway OCI/blob cache
 
 The existing git mirror is already in-tree. The gateway Git/OCI content-cache
-work proposed in PR #138 fits here as a transport-cache plane, not as a system
-stage cache.
+layer now lives under `internal/gateway` and fits here as a transport-cache
+plane, not as a system stage cache.
 
 ### C. Runtime materialization
 
@@ -473,7 +473,7 @@ Output:
 Notes:
 
 - the existing git mirror is the current transport cache
-- the gateway git caching work proposed in PR #138 belongs in this plane
+- the merged gateway git/content-cache layer belongs in this plane
 - freshness must still block until the requested commit exists
 
 ### Registry/package transport cache
@@ -504,7 +504,7 @@ Output:
 Notes:
 
 - URL alone is not sufficient
-- the gateway OCI/content-cache work proposed in PR #138 belongs in this plane
+- the merged gateway OCI/content-cache transport layer belongs in this plane
 - if a lockfile does not include strong integrity metadata, that ecosystem does
   not qualify for poisoning-resistant warm reuse in strict mode
 
@@ -704,8 +704,8 @@ This plan composes with the existing documents rather than replacing them.
 - `firecracker-privilege-runtime.md`
   defines the Linux host-runtime direction needed for clone-capable snapshot
   storage and reduced root surface
-- PR #138
-  proposes the gateway Git/OCI content-cache transport plane that should remain
+- `internal/gateway/contentcache.go`
+  implements the gateway Git/OCI transport-cache plane that should remain
   separate from system stage caches
 
 ## Code Touchpoints and Planned Additions

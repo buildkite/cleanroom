@@ -170,15 +170,16 @@ Implication for Cleanroom architecture:
 
 ### content-cache
 
-[content-cache](https://github.com/wolfeidau/content-cache) is relevant prior art
-for host-side mediation of package and git traffic. The important takeaway for
-Cleanroom is architectural, not dependency choice: keep mediation, caching, and
-credential handling on the host so the sandbox never talks directly to upstream
-with its own secrets.
+`content-cache` is now part of Cleanroom's implementation, not just prior art.
+Cleanroom embeds `github.com/buildkite/content-cache` inside the host gateway
+for Git smart-HTTP and OCI registry caching, while keeping sandbox identity,
+policy enforcement, credential resolution, and route shaping in Cleanroom's own
+`internal/gateway` layer.
 
-Cleanroom is not currently adopting `content-cache` as a direct dependency.
-The active direction is to grow the in-tree Cleanroom gateway so it can enforce
-policy, inject host-side credentials, and eventually cache upstream content.
+The architectural takeaway remains the same: keep mediation, caching, and
+credential handling on the host so the sandbox never talks directly to upstream
+with its own secrets. Cleanroom is not exposing `content-cache` as a separate
+user-facing surface; it is using it as an internal transport-cache component.
 
 ### git-proxy-cache
 
@@ -216,8 +217,9 @@ Key properties of this model:
 
 1. Use Firecracker as the local sandbox backend (inspired by Matchlock patterns). See [backend/firecracker.md](backend/firecracker.md) for implementation details.
 2. Use an in-tree host gateway as the package/registry and git mediation layer,
-   borrowing ideas from tools like `content-cache` and `git-proxy-cache` rather
-   than depending on them directly.
+   embedding `content-cache` for Git/OCI transport caching while keeping the
+   user-facing control surface, policy model, and credential handling in
+   Cleanroom.
 3. Use a tokenizer-like secret-injection model with host-scoped policy and no
    plaintext propagation.
 4. Keep CLI first: `cleanroom exec` as primary entrypoint and command pattern.
