@@ -9,6 +9,7 @@ option go_package = "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1;cl
 
 service SandboxService {
   rpc CreateSandbox(CreateSandboxRequest) returns (CreateSandboxResponse);
+  rpc CreateSandboxStream(CreateSandboxRequest) returns (stream CreateSandboxEvent);
   rpc GetSandbox(GetSandboxRequest) returns (GetSandboxResponse);
   rpc ListSandboxes(ListSandboxesRequest) returns (ListSandboxesResponse);
   rpc DownloadSandboxFile(DownloadSandboxFileRequest) returns (DownloadSandboxFileResponse);
@@ -131,6 +132,35 @@ message CreateSandboxResponse {
   Sandbox sandbox = 1;
   string policy_source = 2;
   string message = 3;
+}
+
+enum CreateSandboxPhase {
+  CREATE_SANDBOX_PHASE_UNSPECIFIED = 0;
+  CREATE_SANDBOX_PHASE_RESTORE_SNAPSHOT = 1;
+  CREATE_SANDBOX_PHASE_LOOKUP_DEPENDENCY_STAGE_CACHE = 2;
+  CREATE_SANDBOX_PHASE_RESTORE_DEPENDENCY_STAGE_CACHE = 3;
+  CREATE_SANDBOX_PHASE_LOOKUP_WORKSPACE_STAGE_CACHE = 4;
+  CREATE_SANDBOX_PHASE_RESTORE_WORKSPACE_STAGE_CACHE = 5;
+  CREATE_SANDBOX_PHASE_PROVISION_SANDBOX = 6;
+  CREATE_SANDBOX_PHASE_BOOTSTRAP_REPOSITORY = 7;
+  CREATE_SANDBOX_PHASE_PUBLISH_WORKSPACE_STAGE_CACHE = 8;
+  CREATE_SANDBOX_PHASE_BOOTSTRAP_DEPENDENCIES = 9;
+  CREATE_SANDBOX_PHASE_PUBLISH_DEPENDENCY_STAGE_CACHE = 10;
+  CREATE_SANDBOX_PHASE_READY = 11;
+}
+
+message CreateSandboxEvent {
+  CreateSandboxPhase phase = 1;
+
+  oneof payload {
+    string message = 2;
+    bytes stdout = 3;
+    bytes stderr = 4;
+    string warning = 5;
+    CreateSandboxResponse response = 6;
+  }
+
+  google.protobuf.Timestamp occurred_at = 7;
 }
 
 message GetSandboxRequest {

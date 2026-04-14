@@ -1,7 +1,6 @@
 package controlservice
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -13,6 +12,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/cachekey"
 	"github.com/buildkite/cleanroom/internal/cachestore"
+	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/repositorycheckout"
 )
@@ -287,6 +287,7 @@ func (s *Service) bootstrapDependencyStageInPersistentSandbox(
 	compiled *policy.CompiledPolicy,
 	firecrackerCfg backend.FirecrackerConfig,
 	plan dependencyStagePlan,
+	reporter CreateSandboxReporter,
 ) error {
 	if adapter == nil || compiled == nil || strings.TrimSpace(sandboxID) == "" || len(plan.BootstrapCommand) == 0 {
 		return nil
@@ -298,23 +299,16 @@ func (s *Service) bootstrapDependencyStageInPersistentSandbox(
 		)
 	}
 
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	bootstrapExecutionID := s.ids().NewExecutionID()
-	result, err := adapter.RunInSandbox(ctx, backend.ExecutionRequest{
-		SandboxID:         sandboxID,
-		ExecutionID:       bootstrapExecutionID,
-		Command:           append([]string(nil), plan.BootstrapCommand...),
-		Policy:            compiled,
-		FirecrackerConfig: withRunDir(firecrackerCfg, internalBootstrapArtifactsDir(sandboxID, bootstrapExecutionID)),
-	}, backend.OutputStream{
-		OnStdout: func(chunk []byte) {
-			_, _ = stdout.Write(chunk)
-		},
-		OnStderr: func(chunk []byte) {
-			_, _ = stderr.Write(chunk)
-		},
-	})
+	bootstrapExecutionID, result, stdout, stderr, err := s.runPersistentBootstrapCommand(
+		ctx,
+		adapter,
+		sandboxID,
+		compiled,
+		firecrackerCfg,
+		cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_BOOTSTRAP_DEPENDENCIES,
+		plan.BootstrapCommand,
+		reporter,
+	)
 	if s.Logger != nil {
 		s.Logger.Debug("dependency stage bootstrap execution finished",
 			"sandbox_id", sandboxID,
@@ -329,9 +323,9 @@ func (s *Service) bootstrapDependencyStageInPersistentSandbox(
 		)
 	}
 	if err != nil {
-		msg := strings.TrimSpace(stderr.String())
+		msg := strings.TrimSpace(stderr)
 		if msg == "" {
-			msg = strings.TrimSpace(stdout.String())
+			msg = strings.TrimSpace(stdout)
 		}
 		if msg == "" {
 			msg = err.Error()
@@ -342,9 +336,9 @@ func (s *Service) bootstrapDependencyStageInPersistentSandbox(
 		return fmt.Errorf("dependency stage bootstrap returned no result")
 	}
 	if result.ExitCode != 0 {
-		msg := strings.TrimSpace(stderr.String())
+		msg := strings.TrimSpace(stderr)
 		if msg == "" {
-			msg = strings.TrimSpace(stdout.String())
+			msg = strings.TrimSpace(stdout)
 		}
 		if msg == "" {
 			msg = fmt.Sprintf("dependency stage bootstrap failed with exit code %d", result.ExitCode)

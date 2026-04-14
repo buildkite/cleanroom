@@ -65,7 +65,7 @@ func storedRootFSRecordFromCacheEntry(record cachestore.Record) (storedRootFSRec
 	}, nil
 }
 
-func (s *Service) createSandboxFromStoredRootFS(ctx context.Context, req *cleanroomv1.CreateSandboxRequest, record storedRootFSRecord, overridePolicy *policy.CompiledPolicy) (*cleanroomv1.CreateSandboxResponse, error) {
+func (s *Service) createSandboxFromStoredRootFS(ctx context.Context, req *cleanroomv1.CreateSandboxRequest, record storedRootFSRecord, overridePolicy *policy.CompiledPolicy, reporter CreateSandboxReporter) (*cleanroomv1.CreateSandboxResponse, error) {
 	backendName := record.Backend
 	if backendName == "" {
 		return nil, fmt.Errorf("stored rootfs record %q missing backend", record.ID)
@@ -108,6 +108,15 @@ func (s *Service) createSandboxFromStoredRootFS(ctx context.Context, req *cleanr
 	if provisionSnapshotID == "" {
 		provisionSnapshotID = strings.TrimSpace(record.ID)
 	}
+	sourceKind := strings.TrimSpace(record.Kind)
+	switch sourceKind {
+	case "snapshot":
+		emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_RESTORE_SNAPSHOT, "restoring snapshot")
+	case "dependency stage cache":
+		emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_RESTORE_DEPENDENCY_STAGE_CACHE, "restoring dependency stage cache")
+	case "workspace stage cache":
+		emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_RESTORE_WORKSPACE_STAGE_CACHE, "restoring workspace stage cache")
+	}
 	if err := snapshotAdapter.ProvisionSandboxFromSnapshot(ctx, backend.ProvisionFromSnapshotRequest{
 		SandboxID:         sandboxID,
 		SnapshotID:        provisionSnapshotID,
@@ -131,7 +140,6 @@ func (s *Service) createSandboxFromStoredRootFS(ctx context.Context, req *cleanr
 		Done:        make(chan struct{}),
 	}
 
-	sourceKind := strings.TrimSpace(record.Kind)
 	if sourceKind == "" {
 		sourceKind = "stored rootfs"
 	}
@@ -162,7 +170,7 @@ func (s *Service) createSandboxFromStoredRootFS(ctx context.Context, req *cleanr
 	return resp, nil
 }
 
-func (s *Service) createSandboxFromCacheRecord(ctx context.Context, req *cleanroomv1.CreateSandboxRequest, compiled *policy.CompiledPolicy, record cachestore.Record) (*cleanroomv1.CreateSandboxResponse, error) {
+func (s *Service) createSandboxFromCacheRecord(ctx context.Context, req *cleanroomv1.CreateSandboxRequest, compiled *policy.CompiledPolicy, record cachestore.Record, reporter CreateSandboxReporter) (*cleanroomv1.CreateSandboxResponse, error) {
 	source, err := storedRootFSRecordFromCacheEntry(record)
 	if err != nil {
 		return nil, err
@@ -177,5 +185,5 @@ func (s *Service) createSandboxFromCacheRecord(ctx context.Context, req *cleanro
 		}
 		defer s.finishSnapshotUse(backingSnapshotID)
 	}
-	return s.createSandboxFromStoredRootFS(ctx, req, source, compiled)
+	return s.createSandboxFromStoredRootFS(ctx, req, source, compiled, reporter)
 }

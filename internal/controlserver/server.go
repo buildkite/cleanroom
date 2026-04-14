@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"crypto/tls"
@@ -21,6 +22,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/gen/cleanroom/v1/cleanroomv1connect"
 	"github.com/buildkite/cleanroom/internal/tlsconfig"
 	"github.com/charmbracelet/log"
+	"google.golang.org/protobuf/types/known/timestamppb"
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
 )
@@ -63,6 +65,34 @@ func (s *Server) CreateSandbox(ctx context.Context, req *connect.Request[cleanro
 		return nil, toConnectError(err)
 	}
 	return connect.NewResponse(resp), nil
+}
+
+func (s *Server) CreateSandboxStream(ctx context.Context, req *connect.Request[cleanroomv1.CreateSandboxRequest], stream *connect.ServerStream[cleanroomv1.CreateSandboxEvent]) error {
+	streamCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	reporter := &createSandboxEventStreamReporter{
+		stream: stream,
+		cancel: cancel,
+	}
+	resp, err := s.service.CreateSandboxWithReporter(streamCtx, req.Msg, reporter)
+	if sendErr := reporter.Err(); sendErr != nil {
+		return sendErr
+	}
+	if err != nil {
+		return toConnectError(err)
+	}
+	if resp == nil {
+		return nil
+	}
+	if err := reporter.Send(&cleanroomv1.CreateSandboxEvent{
+		Phase:      cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_READY,
+		Payload:    &cleanroomv1.CreateSandboxEvent_Response{Response: resp},
+		OccurredAt: timestamppb.Now(),
+	}); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (s *Server) GetSandbox(ctx context.Context, req *connect.Request[cleanroomv1.GetSandboxRequest]) (*connect.Response[cleanroomv1.GetSandboxResponse], error) {
@@ -259,6 +289,85 @@ func streamSubscriberDroppedErr(done <-chan struct{}, streamName string) error {
 			fmt.Errorf("%s stream closed because the client could not keep up with event throughput", streamName),
 		)
 	}
+}
+
+type createSandboxEventStreamReporter struct {
+	stream *connect.ServerStream[cleanroomv1.CreateSandboxEvent]
+	cancel context.CancelFunc
+
+	mu  sync.Mutex
+	err error
+}
+
+func (r *createSandboxEventStreamReporter) Send(event *cleanroomv1.CreateSandboxEvent) error {
+	if r == nil || event == nil {
+		return nil
+	}
+	if event.GetOccurredAt() == nil {
+		event.OccurredAt = timestamppb.Now()
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.err != nil {
+		return r.err
+	}
+	if err := r.stream.Send(event); err != nil {
+		r.err = err
+		if r.cancel != nil {
+			r.cancel()
+		}
+		return err
+	}
+	return nil
+}
+
+func (r *createSandboxEventStreamReporter) Err() error {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.err
+}
+
+func (r *createSandboxEventStreamReporter) Message(phase cleanroomv1.CreateSandboxPhase, message string) {
+	if strings.TrimSpace(message) == "" {
+		return
+	}
+	_ = r.Send(&cleanroomv1.CreateSandboxEvent{
+		Phase:   phase,
+		Payload: &cleanroomv1.CreateSandboxEvent_Message{Message: message},
+	})
+}
+
+func (r *createSandboxEventStreamReporter) Stdout(phase cleanroomv1.CreateSandboxPhase, chunk []byte) {
+	if len(chunk) == 0 {
+		return
+	}
+	_ = r.Send(&cleanroomv1.CreateSandboxEvent{
+		Phase:   phase,
+		Payload: &cleanroomv1.CreateSandboxEvent_Stdout{Stdout: append([]byte(nil), chunk...)},
+	})
+}
+
+func (r *createSandboxEventStreamReporter) Stderr(phase cleanroomv1.CreateSandboxPhase, chunk []byte) {
+	if len(chunk) == 0 {
+		return
+	}
+	_ = r.Send(&cleanroomv1.CreateSandboxEvent{
+		Phase:   phase,
+		Payload: &cleanroomv1.CreateSandboxEvent_Stderr{Stderr: append([]byte(nil), chunk...)},
+	})
+}
+
+func (r *createSandboxEventStreamReporter) Warning(phase cleanroomv1.CreateSandboxPhase, warning string) {
+	if strings.TrimSpace(warning) == "" {
+		return
+	}
+	_ = r.Send(&cleanroomv1.CreateSandboxEvent{
+		Phase:   phase,
+		Payload: &cleanroomv1.CreateSandboxEvent_Warning{Warning: warning},
+	})
 }
 
 func drainSandboxEvents(stream *connect.ServerStream[cleanroomv1.SandboxEvent], updates <-chan *cleanroomv1.SandboxEvent) error {

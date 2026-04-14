@@ -107,6 +107,10 @@ func (c *Client) CreateSandbox(ctx context.Context, req *cleanroomv1.CreateSandb
 	return resp.Msg, nil
 }
 
+func (c *Client) CreateSandboxStream(ctx context.Context, req *cleanroomv1.CreateSandboxRequest) (*connect.ServerStreamForClient[cleanroomv1.CreateSandboxEvent], error) {
+	return c.sandboxClient.CreateSandboxStream(ctx, connect.NewRequest(req))
+}
+
 func (c *Client) GetSandbox(ctx context.Context, req *cleanroomv1.GetSandboxRequest) (*cleanroomv1.GetSandboxResponse, error) {
 	resp, err := c.sandboxClient.GetSandbox(ctx, connect.NewRequest(req))
 	if err != nil {

@@ -342,24 +342,48 @@ func createSandboxWithProgress(
 	client *controlclient.Client,
 	req *cleanroomv1.CreateSandboxRequest,
 ) (*cleanroomv1.CreateSandboxResponse, string, error) {
-	var (
-		resp      *cleanroomv1.CreateSandboxResponse
-		sandboxID string
-	)
-	if err := withSandboxProgress(stderr, func() error {
-		var createErr error
-		resp, createErr = client.CreateSandbox(context.Background(), req)
-		if createErr != nil {
-			return createErr
-		}
-
-		sandboxID = strings.TrimSpace(resp.GetSandbox().GetSandboxId())
-		if sandboxID == "" {
-			return errors.New("response missing sandbox id")
-		}
-		return nil
-	}); err != nil {
+	startedAt := time.Now()
+	stream, err := client.CreateSandboxStream(context.Background(), req)
+	if err != nil {
 		return nil, "", err
+	}
+
+	var resp *cleanroomv1.CreateSandboxResponse
+	for stream.Receive() {
+		event := stream.Msg()
+		switch payload := event.Payload.(type) {
+		case *cleanroomv1.CreateSandboxEvent_Message:
+			if stderr != nil && strings.TrimSpace(payload.Message) != "" {
+				_, _ = fmt.Fprintln(stderr, payload.Message)
+			}
+		case *cleanroomv1.CreateSandboxEvent_Stdout:
+			if stderr != nil && len(payload.Stdout) > 0 {
+				_, _ = stderr.Write(payload.Stdout)
+			}
+		case *cleanroomv1.CreateSandboxEvent_Stderr:
+			if stderr != nil && len(payload.Stderr) > 0 {
+				_, _ = stderr.Write(payload.Stderr)
+			}
+		case *cleanroomv1.CreateSandboxEvent_Warning:
+			if stderr != nil && strings.TrimSpace(payload.Warning) != "" {
+				_, _ = fmt.Fprintf(stderr, "warning: %s\n", payload.Warning)
+			}
+		case *cleanroomv1.CreateSandboxEvent_Response:
+			resp = payload.Response
+		}
+	}
+	if err := stream.Err(); err != nil {
+		return nil, "", err
+	}
+	if resp == nil {
+		return nil, "", errors.New("create sandbox stream returned no response")
+	}
+	sandboxID := strings.TrimSpace(resp.GetSandbox().GetSandboxId())
+	if sandboxID == "" {
+		return nil, "", errors.New("response missing sandbox id")
+	}
+	if stderr != nil {
+		_, _ = fmt.Fprintf(stderr, "Sandbox ready in %s\n", formatSandboxProgressDuration(time.Since(startedAt)))
 	}
 	return resp, sandboxID, nil
 }

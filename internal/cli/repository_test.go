@@ -157,6 +157,69 @@ func TestCreateCommandBootstrapsRepositoryForCurrentRepo(t *testing.T) {
 	}
 }
 
+func TestCreateCommandShowsDependencyBootstrapOutputDuringSandboxCreate(t *testing.T) {
+	repoDir := initGitRepository(t, "git@github.com:buildkite/cleanroom.git")
+
+	adapter := &integrationAdapter{}
+	host, _ := startIntegrationServer(t, adapter)
+
+	var callCount int
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+		callCount++
+		switch callCount {
+		case 1:
+			if stream.OnStdout != nil {
+				stream.OnStdout([]byte("repo bootstrap output\n"))
+			}
+		case 2:
+			if stream.OnStdout != nil {
+				stream.OnStdout([]byte("dependency bootstrap output\n"))
+			}
+		}
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+	}
+
+	outcome := runCreateAliasWithCapture(CreateCommand{
+		clientFlags: clientFlags{Host: host},
+		Chdir:       repoDir,
+	}, runtimeContext{
+		CWD: repoDir,
+		Loader: repositoryIntegrationLoader{
+			compiled: &policy.CompiledPolicy{
+				Version:        1,
+				ImageRef:       "ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+				ImageDigest:    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+				NetworkDefault: "deny",
+				Allow:          []policy.AllowRule{{Host: "github.com", Ports: []int{443}}},
+				Dependencies: policy.Dependencies{
+					Command: []string{"go", "mod", "download"},
+				},
+			},
+			repository: policy.RepositoryConfig{
+				Mode:   "current-repo",
+				Remote: "origin",
+				Path:   "/workspace",
+			},
+		},
+	})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err != nil {
+		t.Fatalf("CreateCommand.Run returned error: %v", outcome.err)
+	}
+	assertContainsAll(t, outcome.stderr,
+		"bootstrapping repository checkout",
+		"repo bootstrap output",
+		"running dependency bootstrap",
+		"dependency bootstrap output",
+		"Sandbox ready in",
+	)
+	if got, want := callCount, 2; got != want {
+		t.Fatalf("expected repository and dependency bootstrap executions, got %d want %d", got, want)
+	}
+}
+
 func TestCreateCommandBootstrapsRepositoryForExplicitOverride(t *testing.T) {
 	adapter := &integrationAdapter{}
 	host, _ := startIntegrationServer(t, adapter)
