@@ -86,6 +86,15 @@ func handlerTestPolicy() *cleanroomv1.Policy {
 	}
 }
 
+func handlerTestRepositoryPolicy() *cleanroomv1.Policy {
+	policy := handlerTestPolicy()
+	policy.Allow = []*cleanroomv1.PolicyAllowRule{{
+		Host:  "github.com",
+		Ports: []int32{443},
+	}}
+	return policy
+}
+
 func TestSandboxEventStreamReturnsHistoryThenFollowUpdates(t *testing.T) {
 	service := newHandlerTestService(newHandlerTestAdapter())
 	httpServer := httptest.NewServer(New(service, nil).Handler())
@@ -151,6 +160,68 @@ func TestSandboxEventStreamReturnsHistoryThenFollowUpdates(t *testing.T) {
 		if got := statuses[i]; got != want {
 			t.Fatalf("sandbox event %d status mismatch: got %v want %v", i, got, want)
 		}
+	}
+}
+
+func TestCreateSandboxStreamShowsBootstrapOutputThenResponse(t *testing.T) {
+	adapter := newHandlerTestAdapter()
+	service := newHandlerTestService(adapter)
+	httpServer := httptest.NewServer(New(service, nil).Handler())
+	defer httpServer.Close()
+
+	sandboxClient := cleanroomv1connect.NewSandboxServiceClient(http.DefaultClient, httpServer.URL)
+
+	stream, err := sandboxClient.CreateSandboxStream(context.Background(), connect.NewRequest(&cleanroomv1.CreateSandboxRequest{
+		Backend: "firecracker",
+		Policy:  handlerTestRepositoryPolicy(),
+		RepositoryCheckout: &cleanroomv1.RepositoryCheckout{
+			RemoteUrl:      "https://github.com/buildkite/cleanroom.git",
+			CommitSha:      "0123456789abcdef0123456789abcdef01234567",
+			DestinationDir: "/workspace",
+		},
+	}))
+	if err != nil {
+		t.Fatalf("CreateSandboxStream returned error: %v", err)
+	}
+
+	if !stream.Receive() {
+		t.Fatalf("expected provisioning event, stream err=%v", stream.Err())
+	}
+	if got := stream.Msg().GetMessage(); !strings.Contains(got, "provisioning sandbox") {
+		t.Fatalf("unexpected first create event message: %q", got)
+	}
+
+	if !stream.Receive() {
+		t.Fatalf("expected repository bootstrap event, stream err=%v", stream.Err())
+	}
+	if got := stream.Msg().GetMessage(); !strings.Contains(got, "bootstrapping repository checkout") {
+		t.Fatalf("unexpected repository bootstrap message: %q", got)
+	}
+
+	close(adapter.allowStdout)
+	if !stream.Receive() {
+		t.Fatalf("expected bootstrap stdout event, stream err=%v", stream.Err())
+	}
+	if got, want := string(stream.Msg().GetStdout()), "hello from handler\n"; got != want {
+		t.Fatalf("unexpected bootstrap stdout event: got %q want %q", got, want)
+	}
+
+	close(adapter.allowFinish)
+
+	var sawResponse bool
+	for stream.Receive() {
+		if response := stream.Msg().GetResponse(); response != nil {
+			sawResponse = true
+			if response.GetSandbox().GetStatus() != cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY {
+				t.Fatalf("unexpected streamed sandbox status: %v", response.GetSandbox().GetStatus())
+			}
+		}
+	}
+	if err := stream.Err(); err != nil {
+		t.Fatalf("CreateSandboxStream stream error: %v", err)
+	}
+	if !sawResponse {
+		t.Fatal("expected final create response event")
 	}
 }
 

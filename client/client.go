@@ -92,6 +92,13 @@ func (c *Client) CreateSandbox(ctx context.Context, req *CreateSandboxRequest) (
 	return c.inner.CreateSandbox(ctx, req)
 }
 
+func (c *Client) CreateSandboxStream(ctx context.Context, req *CreateSandboxRequest) (*connect.ServerStreamForClient[CreateSandboxEvent], error) {
+	if c == nil || c.inner == nil {
+		return nil, errors.New("nil client")
+	}
+	return c.inner.CreateSandboxStream(ctx, req)
+}
+
 func (c *Client) GetSandbox(ctx context.Context, req *GetSandboxRequest) (*GetSandboxResponse, error) {
 	if c == nil || c.inner == nil {
 		return nil, errors.New("nil client")
