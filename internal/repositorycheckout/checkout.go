@@ -264,6 +264,8 @@ func workdirExecutionScript(command []string, checkout *Checkout) []string {
 		"set -eu",
 		"dest=" + shellQuote(checkout.DestinationDir),
 		`cd "$dest"`,
+		`export MISE_TRUSTED_CONFIG_PATHS="$dest${MISE_TRUSTED_CONFIG_PATHS:+:$MISE_TRUSTED_CONFIG_PATHS}"`,
+		`export MISE_YES="${MISE_YES:-1}"`,
 	}
 	script = append(script, `exec `+execCommand)
 	return script
