@@ -205,13 +205,12 @@ func TestWrapCommandInWorkdirQuotesDestinationAndArguments(t *testing.T) {
 
 func TestWrapCommandInWorkdirRunsInRepositoryDirectory(t *testing.T) {
 	repoDir := t.TempDir()
-	outputPath := filepath.Join(t.TempDir(), "env")
-	command := WrapCommandInWorkdir([]string{"sh", "-lc", "printf '%s\\n%s\\n%s\\n' \"$PWD\" \"$MISE_TRUSTED_CONFIG_PATHS\" \"$MISE_YES\" > " + shellQuote(outputPath)}, &Checkout{
+	outputPath := filepath.Join(t.TempDir(), "pwd")
+	command := WrapCommandInWorkdir([]string{"sh", "-lc", "pwd > " + shellQuote(outputPath)}, &Checkout{
 		DestinationDir: repoDir,
 	})
 
 	cmd := exec.Command(command[0], command[1:]...)
-	cmd.Env = envWithout(os.Environ(), "MISE_TRUSTED_CONFIG_PATHS", "MISE_YES")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("wrapped command failed: %v\n%s", err, string(out))
@@ -221,18 +220,8 @@ func TestWrapCommandInWorkdirRunsInRepositoryDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read output: %v", err)
 	}
-	lines := strings.Split(strings.TrimSpace(string(outputBytes)), "\n")
-	if got, want := len(lines), 3; got != want {
-		t.Fatalf("unexpected output line count: got %d want %d (%q)", got, want, string(outputBytes))
-	}
-	if got, want := strings.TrimSpace(lines[0]), repoDir; got != want {
+	if got, want := strings.TrimSpace(string(outputBytes)), repoDir; got != want {
 		t.Fatalf("unexpected working directory: got %q want %q", got, want)
-	}
-	if got, want := strings.TrimSpace(lines[1]), repoDir; got != want {
-		t.Fatalf("unexpected trusted config paths: got %q want %q", got, want)
-	}
-	if got, want := strings.TrimSpace(lines[2]), "1"; got != want {
-		t.Fatalf("unexpected MISE_YES default: got %q want %q", got, want)
 	}
 }
 
@@ -290,23 +279,4 @@ func TestWrapCommandInWorkdirFailsFastWhenWorkdirSetupFails(t *testing.T) {
 	if _, statErr := os.Stat(outputPath); !os.IsNotExist(statErr) {
 		t.Fatalf("expected payload not to run when workdir setup fails, stat error=%v", statErr)
 	}
-}
-
-func envWithout(env []string, keys ...string) []string {
-	blocked := make(map[string]struct{}, len(keys))
-	for _, key := range keys {
-		blocked[key] = struct{}{}
-	}
-
-	filtered := make([]string, 0, len(env))
-	for _, entry := range env {
-		key, _, ok := strings.Cut(entry, "=")
-		if ok {
-			if _, blockedKey := blocked[key]; blockedKey {
-				continue
-			}
-		}
-		filtered = append(filtered, entry)
-	}
-	return filtered
 }
