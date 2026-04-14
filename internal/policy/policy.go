@@ -33,7 +33,6 @@ type rawPolicy struct {
 		Image struct {
 			Ref string `yaml:"ref"`
 		} `yaml:"image"`
-		Mise         rawMiseConfig         `yaml:"mise"`
 		Dependencies rawDependenciesConfig `yaml:"dependencies"`
 		Services     rawServices           `yaml:"services"`
 		Network      struct {
@@ -49,11 +48,6 @@ type rawRepository struct {
 	Remote     string `yaml:"remote"`
 	Path       string `yaml:"path"`
 	Submodules bool   `yaml:"submodules"`
-}
-
-type rawMiseConfig struct {
-	Enabled *bool `yaml:"enabled"`
-	Install *bool `yaml:"install"`
 }
 
 type rawDependencyKey struct {
@@ -85,7 +79,6 @@ type CompiledPolicy struct {
 	Services       Services     `json:"services"`
 	NetworkDefault string       `json:"network_default"`
 	Allow          []AllowRule  `json:"allow"`
-	MiseInstall    bool         `json:"mise_install"`
 	Dependencies   Dependencies `json:"dependencies"`
 	Hash           string       `json:"hash"`
 }
@@ -239,7 +232,6 @@ func Compile(raw rawPolicy) (*CompiledPolicy, error) {
 		},
 		NetworkDefault: networkDefault,
 		Allow:          allow,
-		MiseInstall:    normalizeMiseInstall(raw.Sandbox.Mise),
 		Dependencies:   dependencies,
 	}
 
@@ -402,7 +394,6 @@ func (p *CompiledPolicy) ToProto() *cleanroomv1.Policy {
 		},
 		NetworkDefault: p.NetworkDefault,
 		Allow:          allow,
-		MiseInstall:    boolPtr(p.MiseInstall),
 		Dependencies: &cleanroomv1.PolicyDependencies{
 			Command: append([]string(nil), p.Dependencies.Command...),
 			Key: &cleanroomv1.PolicyDependencyKey{
@@ -491,7 +482,6 @@ func FromProto(pb *cleanroomv1.Policy) (*CompiledPolicy, error) {
 		},
 		NetworkDefault: networkDefault,
 		Allow:          allow,
-		MiseInstall:    protoBoolOrDefault(pb.MiseInstall, false),
 		Dependencies:   dependencies,
 	}
 
@@ -505,20 +495,6 @@ func FromProto(pb *cleanroomv1.Policy) (*CompiledPolicy, error) {
 	}
 	compiled.Hash = hash
 	return compiled, nil
-}
-
-func normalizeMiseInstall(raw rawMiseConfig) bool {
-	enabled := true
-	if raw.Enabled != nil {
-		enabled = *raw.Enabled
-	}
-	if !enabled {
-		return false
-	}
-	if raw.Install != nil {
-		return *raw.Install
-	}
-	return false
 }
 
 func normalizeDependencies(raw rawDependenciesConfig) (Dependencies, error) {
@@ -607,17 +583,6 @@ func normalizeDependencyKeyFiles(raw []string) ([]string, error) {
 	}
 	sort.Strings(files)
 	return files, nil
-}
-
-func protoBoolOrDefault(v *bool, fallback bool) bool {
-	if v == nil {
-		return fallback
-	}
-	return *v
-}
-
-func boolPtr(v bool) *bool {
-	return &v
 }
 
 func hashPolicy(p *CompiledPolicy) (string, error) {

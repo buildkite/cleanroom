@@ -219,7 +219,7 @@ smoke_attempt=1
 smoke_max_attempts=3
 while true; do
   set +e
-  ./dist/cleanroom exec --host "$listen_endpoint" --no-mise -c "$PWD" -- sh -lc 'echo cleanroom-e2e' >"$tmpdir/exec.out" 2>"$tmpdir/exec.err"
+  ./dist/cleanroom exec --host "$listen_endpoint" -c "$PWD" -- sh -lc 'echo cleanroom-e2e' >"$tmpdir/exec.out" 2>"$tmpdir/exec.err"
   smoke_status=$?
   set -e
 
@@ -252,8 +252,8 @@ if [[ -z "$sandbox_id" ]]; then
 fi
 echo "sandbox id: $sandbox_id"
 
-./dist/cleanroom exec --host "$listen_endpoint" --no-mise --in "$sandbox_id" -- sh -lc 'printf persisted-data >/tmp/persist.txt'
-./dist/cleanroom exec --host "$listen_endpoint" --no-mise --in "$sandbox_id" -- sh -lc 'cat /tmp/persist.txt' | tee "$tmpdir/persist-read.out"
+./dist/cleanroom exec --host "$listen_endpoint" --in "$sandbox_id" -- sh -lc 'printf persisted-data >/tmp/persist.txt'
+./dist/cleanroom exec --host "$listen_endpoint" --in "$sandbox_id" -- sh -lc 'cat /tmp/persist.txt' | tee "$tmpdir/persist-read.out"
 if ! grep -q '^persisted-data$' "$tmpdir/persist-read.out"; then
   echo "expected persisted sandbox file contents from second execution" >&2
   exit 1
@@ -279,7 +279,7 @@ if ! grep -q 'sandbox terminated' "$tmpdir/sandbox-rm.out"; then
 fi
 
 set +e
-./dist/cleanroom exec --host "$listen_endpoint" --no-mise --in "$sandbox_id" -- sh -lc 'echo should-not-run' >"$tmpdir/terminated.out" 2>"$tmpdir/terminated.err"
+./dist/cleanroom exec --host "$listen_endpoint" --in "$sandbox_id" -- sh -lc 'echo should-not-run' >"$tmpdir/terminated.out" 2>"$tmpdir/terminated.err"
 terminated_status=$?
 set -e
 if [[ "$terminated_status" -eq 0 ]]; then
@@ -298,7 +298,7 @@ git_gateway_max_attempts=3
 while true; do
   set +e
   # shellcheck disable=SC2016
-  ./dist/cleanroom exec --host "$listen_endpoint" --no-mise -c "$PWD" -- sh -lc '
+  ./dist/cleanroom exec --host "$listen_endpoint" -c "$PWD" -- sh -lc '
   set -eu
 
   key="$(env | awk -F= '"'"'/^GIT_CONFIG_KEY_[0-9]+=url\.http:\/\/.+\/git\/github\.com\/\.insteadOf$/ {print $2; exit}'"'"')"

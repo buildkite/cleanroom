@@ -192,7 +192,7 @@ func TestValidateBootstrapRejectsMutableCommitRef(t *testing.T) {
 func TestWrapCommandInWorkdirQuotesDestinationAndArguments(t *testing.T) {
 	command := WrapCommandInWorkdir([]string{"printf", "%s", "it's alive"}, &Checkout{
 		DestinationDir: "/tmp/work tree",
-	}, true)
+	})
 
 	joined := strings.Join(command, " ")
 	if !strings.Contains(joined, "dest='/tmp/work tree'") {
@@ -203,23 +203,14 @@ func TestWrapCommandInWorkdirQuotesDestinationAndArguments(t *testing.T) {
 	}
 }
 
-func TestWrapCommandInWorkdirBootstrapsMiseWhenConfigPresent(t *testing.T) {
-	if _, err := exec.LookPath("mise"); err != nil {
-		t.Skip("mise not installed")
-	}
+func TestWrapCommandInWorkdirRunsInRepositoryDirectory(t *testing.T) {
 	repoDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(repoDir, "mise.toml"), []byte("# test config\n"), 0o644); err != nil {
-		t.Fatalf("write mise.toml: %v", err)
-	}
-
-	logDir := t.TempDir()
-	outputPath := filepath.Join(logDir, "env")
-	command := WrapCommandInWorkdir([]string{"sh", "-lc", "printf '%s\\n%s\\n%s\\n' \"$PWD\" \"${MISE_TRUSTED_CONFIG_PATHS:-}\" \"${MISE_YES:-}\" > " + shellQuote(outputPath)}, &Checkout{
+	outputPath := filepath.Join(t.TempDir(), "pwd")
+	command := WrapCommandInWorkdir([]string{"sh", "-lc", "pwd > " + shellQuote(outputPath)}, &Checkout{
 		DestinationDir: repoDir,
-	}, true)
+	})
 
 	cmd := exec.Command(command[0], command[1:]...)
-	cmd.Env = envWithout(os.Environ(), "MISE_TRUSTED_CONFIG_PATHS", "MISE_YES")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("wrapped command failed: %v\n%s", err, string(out))
@@ -229,48 +220,7 @@ func TestWrapCommandInWorkdirBootstrapsMiseWhenConfigPresent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read output: %v", err)
 	}
-	lines := strings.Split(strings.TrimSpace(string(outputBytes)), "\n")
-	if len(lines) != 3 {
-		t.Fatalf("expected 3 output lines, got %d: %q", len(lines), string(outputBytes))
-	}
-	if got, want := strings.TrimSpace(lines[0]), repoDir; got != want {
-		t.Fatalf("unexpected working directory: got %q want %q", got, want)
-	}
-	if got, want := strings.TrimSpace(lines[1]), repoDir; got != want {
-		t.Fatalf("unexpected trusted config paths: got %q want %q", got, want)
-	}
-	if got, want := strings.TrimSpace(lines[2]), "1"; got != want {
-		t.Fatalf("unexpected MISE_YES value: got %q want %q", got, want)
-	}
-}
-
-func TestWrapCommandInWorkdirSkipsMiseWithoutConfig(t *testing.T) {
-	if _, err := exec.LookPath("mise"); err != nil {
-		t.Skip("mise not installed")
-	}
-	repoDir := t.TempDir()
-	logDir := t.TempDir()
-	outputPath := filepath.Join(logDir, "env")
-	command := WrapCommandInWorkdir([]string{"sh", "-lc", "printf '%s\\n%s\\n%s\\n' \"$PWD\" \"${MISE_TRUSTED_CONFIG_PATHS:-}\" \"${MISE_YES:-}\" > " + shellQuote(outputPath)}, &Checkout{
-		DestinationDir: repoDir,
-	}, true)
-
-	cmd := exec.Command(command[0], command[1:]...)
-	cmd.Env = envWithout(os.Environ(), "MISE_TRUSTED_CONFIG_PATHS", "MISE_YES")
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("wrapped command failed: %v\n%s", err, string(out))
-	}
-
-	outputBytes, err := os.ReadFile(outputPath)
-	if err != nil {
-		t.Fatalf("read output: %v", err)
-	}
-	lines := strings.Split(strings.TrimSpace(string(outputBytes)), "\n")
-	if len(lines) != 1 {
-		t.Fatalf("expected only working-directory output without mise bootstrap, got %q", string(outputBytes))
-	}
-	if got, want := strings.TrimSpace(lines[0]), repoDir; got != want {
+	if got, want := strings.TrimSpace(string(outputBytes)), repoDir; got != want {
 		t.Fatalf("unexpected working directory: got %q want %q", got, want)
 	}
 }
@@ -293,39 +243,25 @@ func TestShellJoinQuotesSingleQuotes(t *testing.T) {
 }
 
 func TestWrapCommandWithBootstrapNormalizesPassthroughWithoutCheckout(t *testing.T) {
-	command := WrapCommandWithBootstrap([]string{"--", "echo", "ok"}, nil, true)
+	command := WrapCommandWithBootstrap([]string{"--", "echo", "ok"}, nil)
 	if got, want := strings.Join(command, " "), "echo ok"; got != want {
 		t.Fatalf("unexpected normalized command: got %q want %q", got, want)
 	}
 }
 
-func TestWrapCommandWithBootstrapIncludesMiseBootstrapLogic(t *testing.T) {
+func TestWrapCommandWithBootstrapIncludesRepositoryWorkdirExecution(t *testing.T) {
 	command := WrapCommandWithBootstrap([]string{"sh", "-lc", "pwd"}, &Checkout{
 		RemoteURL:      "https://github.com/buildkite/cleanroom.git",
 		CommitSHA:      "0123456789abcdef0123456789abcdef01234567",
 		DestinationDir: "/workspace",
-	}, true)
+	})
 
 	joined := strings.Join(command, " ")
-	if !strings.Contains(joined, "if [ -f 'mise.toml' ] || [ -f '.mise.toml' ] || [ -f '.tool-versions' ] || [ -f '.mise/config.toml' ]; then") {
-		t.Fatalf("expected bootstrap wrapper to detect mise config files, got %q", joined)
+	if !strings.Contains(joined, `cd "$dest"`) {
+		t.Fatalf("expected bootstrap wrapper to enter repository workdir, got %q", joined)
 	}
-	if strings.Contains(joined, `mise install`) {
-		t.Fatalf("expected bootstrap wrapper to rely on mise exec auto-install, got %q", joined)
-	}
-	if !strings.Contains(joined, `exec mise exec -- 'sh' '-lc' 'pwd'`) {
-		t.Fatalf("expected bootstrap wrapper to exec through mise, got %q", joined)
-	}
-}
-
-func TestWrapCommandInWorkdirSkipsMiseBootstrapWhenDisabled(t *testing.T) {
-	command := WrapCommandInWorkdir([]string{"sh", "-lc", "pwd"}, &Checkout{
-		DestinationDir: "/workspace",
-	}, false)
-
-	joined := strings.Join(command, " ")
-	if strings.Contains(joined, "mise exec --") {
-		t.Fatalf("expected mise exec wrapper to be skipped when disabled, got %q", joined)
+	if !strings.Contains(joined, `exec 'sh' '-lc' 'pwd'`) {
+		t.Fatalf("expected bootstrap wrapper to execute the requested command, got %q", joined)
 	}
 }
 
@@ -333,7 +269,7 @@ func TestWrapCommandInWorkdirFailsFastWhenWorkdirSetupFails(t *testing.T) {
 	outputPath := filepath.Join(t.TempDir(), "ran")
 	command := WrapCommandInWorkdir([]string{"sh", "-lc", "touch " + shellQuote(outputPath)}, &Checkout{
 		DestinationDir: filepath.Join(t.TempDir(), "missing"),
-	}, false)
+	})
 
 	cmd := exec.Command(command[0], command[1:]...)
 	out, err := cmd.CombinedOutput()
@@ -343,23 +279,4 @@ func TestWrapCommandInWorkdirFailsFastWhenWorkdirSetupFails(t *testing.T) {
 	if _, statErr := os.Stat(outputPath); !os.IsNotExist(statErr) {
 		t.Fatalf("expected payload not to run when workdir setup fails, stat error=%v", statErr)
 	}
-}
-
-func envWithout(env []string, keys ...string) []string {
-	blocked := make(map[string]struct{}, len(keys))
-	for _, key := range keys {
-		blocked[key] = struct{}{}
-	}
-
-	filtered := make([]string, 0, len(env))
-	for _, entry := range env {
-		key, _, ok := strings.Cut(entry, "=")
-		if ok {
-			if _, blockedKey := blocked[key]; blockedKey {
-				continue
-			}
-		}
-		filtered = append(filtered, entry)
-	}
-	return filtered
 }

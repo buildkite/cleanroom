@@ -174,64 +174,6 @@ func TestCompileCapturesDockerServiceRequirement(t *testing.T) {
 	}
 }
 
-func TestCompileDefaultsMiseInstallDisabled(t *testing.T) {
-	t.Parallel()
-
-	raw := baseRawPolicy()
-	compiled, err := Compile(raw)
-	if err != nil {
-		t.Fatalf("compile: %v", err)
-	}
-	if compiled.MiseInstall {
-		t.Fatal("expected compiled policy to disable mise auto-install by default")
-	}
-}
-
-func TestCompileEnablesMiseInstallWhenSandboxMiseInstallTrue(t *testing.T) {
-	t.Parallel()
-
-	raw := baseRawPolicy()
-	raw.Sandbox.Mise.Install = testBoolPtr(true)
-
-	compiled, err := Compile(raw)
-	if err != nil {
-		t.Fatalf("compile: %v", err)
-	}
-	if !compiled.MiseInstall {
-		t.Fatal("expected compiled policy to enable mise auto-install when sandbox.mise.install=true")
-	}
-}
-
-func TestCompileDisablesMiseInstallWhenSandboxMiseDisabled(t *testing.T) {
-	t.Parallel()
-
-	raw := baseRawPolicy()
-	raw.Sandbox.Mise.Enabled = testBoolPtr(false)
-
-	compiled, err := Compile(raw)
-	if err != nil {
-		t.Fatalf("compile: %v", err)
-	}
-	if compiled.MiseInstall {
-		t.Fatal("expected compiled policy to disable mise auto-install when sandbox.mise.enabled=false")
-	}
-}
-
-func TestCompileDisablesMiseInstallWhenSandboxMiseInstallFalse(t *testing.T) {
-	t.Parallel()
-
-	raw := baseRawPolicy()
-	raw.Sandbox.Mise.Install = testBoolPtr(false)
-
-	compiled, err := Compile(raw)
-	if err != nil {
-		t.Fatalf("compile: %v", err)
-	}
-	if compiled.MiseInstall {
-		t.Fatal("expected compiled policy to disable mise auto-install when sandbox.mise.install=false")
-	}
-}
-
 func TestCompileDefaultsDependenciesDisabled(t *testing.T) {
 	t.Parallel()
 
@@ -503,25 +445,6 @@ func TestFromProtoAcceptsAllowDefault(t *testing.T) {
 	}
 }
 
-func TestCompiledPolicyProtoRoundTripPreservesMiseInstall(t *testing.T) {
-	t.Parallel()
-
-	raw := baseRawPolicy()
-	raw.Sandbox.Mise.Install = testBoolPtr(false)
-	compiled, err := Compile(raw)
-	if err != nil {
-		t.Fatalf("compile: %v", err)
-	}
-
-	roundTripped, err := FromProto(compiled.ToProto())
-	if err != nil {
-		t.Fatalf("FromProto returned error: %v", err)
-	}
-	if roundTripped.MiseInstall {
-		t.Fatal("expected proto round-trip to preserve mise install=false")
-	}
-}
-
 func TestCompiledPolicyProtoRoundTripPreservesDependencies(t *testing.T) {
 	t.Parallel()
 
@@ -543,8 +466,4 @@ func TestCompiledPolicyProtoRoundTripPreservesDependencies(t *testing.T) {
 	if got, want := strings.Join(roundTripped.Dependencies.KeyFiles, "\x00"), strings.Join(compiled.Dependencies.KeyFiles, "\x00"); got != want {
 		t.Fatalf("unexpected dependency key files after round trip: got %q want %q", got, want)
 	}
-}
-
-func testBoolPtr(v bool) *bool {
-	return &v
 }

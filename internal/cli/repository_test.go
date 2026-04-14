@@ -961,7 +961,7 @@ func TestWrapCommandWithRepositoryBootstrapStripsCommandSeparator(t *testing.T) 
 		RemoteURL:      "https://github.com/buildkite/cleanroom.git",
 		CommitSHA:      "0123456789abcdef0123456789abcdef01234567",
 		DestinationDir: "/workspace",
-	}, true)
+	})
 	joined := strings.Join(command, " ")
 	if strings.Contains(joined, `'--'`) {
 		t.Fatalf("expected wrapped command to strip passthrough separator, got %q", joined)
@@ -976,7 +976,7 @@ func TestWrapCommandWithRepositoryBootstrapDoesNotEmbedAuthHeaders(t *testing.T)
 		RemoteURL:      "https://github.com/buildkite/cleanroom.git",
 		CommitSHA:      "0123456789abcdef0123456789abcdef01234567",
 		DestinationDir: "/workspace",
-	}, true)
+	})
 	joined := strings.Join(command, " ")
 	if strings.Contains(joined, ".extraHeader") {
 		t.Fatalf("expected bootstrap command to avoid git extra headers, got %q", joined)

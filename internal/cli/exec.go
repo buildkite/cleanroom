@@ -26,7 +26,6 @@ type ExecCommand struct {
 	PrintSandboxID bool     `name:"print-sandbox-id" help:"Print resolved sandbox_id=<id> to stderr before streaming output"`
 
 	LaunchSeconds int64 `help:"VM boot/guest-agent readiness timeout in seconds"`
-	NoMise        bool  `name:"no-mise" help:"Disable automatic mise tool installation"`
 
 	Command []string `arg:"" passthrough:"partial" required:"" help:"Command to execute"`
 }
@@ -158,7 +157,6 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 		RepositoryCheckout: repositoryCheckoutProto(repository),
 		Options: &cleanroomv1.ExecutionOptions{
 			LaunchSeconds: e.LaunchSeconds,
-			DisableMise:   e.NoMise,
 		},
 	})
 	if err != nil {

@@ -96,7 +96,6 @@ message Policy {
   repeated PolicyAllowRule allow = 5;
   string hash = 6;
   PolicyServices services = 7;
-  optional bool mise_install = 8;
   PolicyDependencies dependencies = 9;
 }
 
@@ -252,7 +251,6 @@ message ExecutionOptions {
   reserved "read_only_workspace", "cwd";
   int64 launch_seconds = 5;
   bool tty = 6;
-  bool disable_mise = 8;
 }
 
 message CreateExecutionRequest {
