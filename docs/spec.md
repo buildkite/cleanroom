@@ -161,7 +161,6 @@ Meaning:
 - `repository.submodules` defaults to `false`.
 - `sandbox.dependencies.command` defaults to unset; when present, Cleanroom runs that command in the repository workdir during sandbox creation and makes the result eligible for dependency-stage caching.
 - `sandbox.dependencies.key.files` defaults to empty; when present, Cleanroom hashes those repository-relative files from the exact committed checkout and includes them in the dependency-stage cache key.
-- `sandbox.mise` has been removed. If you want to use `mise`, call it explicitly from `sandbox.dependencies.command` or the workload command itself.
 - Host matching supports:
   - exact host (`registry.npmjs.org`)
   - wildcard subdomains (`*.example.com`)

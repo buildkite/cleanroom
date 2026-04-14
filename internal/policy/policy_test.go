@@ -174,21 +174,6 @@ func TestCompileCapturesDockerServiceRequirement(t *testing.T) {
 	}
 }
 
-func TestCompileRejectsRemovedSandboxMiseConfig(t *testing.T) {
-	t.Parallel()
-
-	raw := baseRawPolicy()
-	raw.Sandbox.Mise.Install = testBoolPtr(false)
-
-	_, err := Compile(raw)
-	if err == nil {
-		t.Fatal("expected compile to reject sandbox.mise")
-	}
-	if !strings.Contains(err.Error(), "sandbox.mise has been removed") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
 func TestCompileDefaultsDependenciesDisabled(t *testing.T) {
 	t.Parallel()
 
@@ -481,8 +466,4 @@ func TestCompiledPolicyProtoRoundTripPreservesDependencies(t *testing.T) {
 	if got, want := strings.Join(roundTripped.Dependencies.KeyFiles, "\x00"), strings.Join(compiled.Dependencies.KeyFiles, "\x00"); got != want {
 		t.Fatalf("unexpected dependency key files after round trip: got %q want %q", got, want)
 	}
-}
-
-func testBoolPtr(v bool) *bool {
-	return &v
 }

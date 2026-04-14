@@ -34,7 +34,6 @@ type rawPolicy struct {
 			Ref string `yaml:"ref"`
 		} `yaml:"image"`
 		Dependencies rawDependenciesConfig `yaml:"dependencies"`
-		Mise         rawMiseConfig         `yaml:"mise"`
 		Services     rawServices           `yaml:"services"`
 		Network      struct {
 			Default string         `yaml:"default"`
@@ -49,12 +48,6 @@ type rawRepository struct {
 	Remote     string `yaml:"remote"`
 	Path       string `yaml:"path"`
 	Submodules bool   `yaml:"submodules"`
-}
-
-type rawMiseConfig struct {
-	Enabled     *bool    `yaml:"enabled"`
-	Install     *bool    `yaml:"install"`
-	ConfigFiles []string `yaml:"config_files"`
 }
 
 type rawDependencyKey struct {
@@ -225,9 +218,6 @@ func Compile(raw rawPolicy) (*CompiledPolicy, error) {
 
 	dependencies, err := normalizeDependencies(raw.Sandbox.Dependencies)
 	if err != nil {
-		return nil, err
-	}
-	if err := validateRemovedMiseConfig(raw.Sandbox.Mise); err != nil {
 		return nil, err
 	}
 
@@ -505,13 +495,6 @@ func FromProto(pb *cleanroomv1.Policy) (*CompiledPolicy, error) {
 	}
 	compiled.Hash = hash
 	return compiled, nil
-}
-
-func validateRemovedMiseConfig(raw rawMiseConfig) error {
-	if raw.Enabled == nil && raw.Install == nil && len(raw.ConfigFiles) == 0 {
-		return nil
-	}
-	return errors.New("sandbox.mise has been removed; use sandbox.dependencies.command to run mise explicitly when needed")
 }
 
 func normalizeDependencies(raw rawDependenciesConfig) (Dependencies, error) {

@@ -97,8 +97,6 @@ message Policy {
   string hash = 6;
   PolicyServices services = 7;
   PolicyDependencies dependencies = 9;
-  reserved 8;
-  reserved "mise_install";
 }
 
 message SandboxOptions {
@@ -249,8 +247,8 @@ enum ExecutionKind {
 }
 
 message ExecutionOptions {
-  reserved 2, 7, 8;
-  reserved "read_only_workspace", "cwd", "disable_mise";
+  reserved 2, 7;
+  reserved "read_only_workspace", "cwd";
   int64 launch_seconds = 5;
   bool tty = 6;
 }
