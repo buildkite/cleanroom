@@ -41,6 +41,7 @@ type executionSandbox struct {
 // lifecycle shape: resolve repository context, then either reuse the requested
 // sandbox or create one up front with repository bootstrap attached.
 func resolveExecutionSandbox(
+	logger *log.Logger,
 	client *controlclient.Client,
 	ctx *runtimeContext,
 	cwd, host, backendName, existingSandboxID, fromSnapshot, imageRefOverride string,
@@ -61,6 +62,7 @@ func resolveExecutionSandbox(
 	warnDirtyRepositoryCheckout(repository)
 
 	sandboxID, createdSandbox, err := ensureSandboxID(
+		logger,
 		client,
 		ctx.Loader,
 		cwd,
@@ -83,7 +85,7 @@ func resolveExecutionSandbox(
 	}, nil
 }
 
-func ensureSandboxID(client *controlclient.Client, loader policyLoader, cwd, host, backendName, existingSandboxID, fromSnapshot, imageRefOverride string, launchSeconds int64, repository *resolvedRepositoryCheckout) (string, bool, error) {
+func ensureSandboxID(logger *log.Logger, client *controlclient.Client, loader policyLoader, cwd, host, backendName, existingSandboxID, fromSnapshot, imageRefOverride string, launchSeconds int64, repository *resolvedRepositoryCheckout) (string, bool, error) {
 	sandboxID := strings.TrimSpace(existingSandboxID)
 	fromSnapshot = strings.TrimSpace(fromSnapshot)
 	if sandboxID != "" {
@@ -105,7 +107,7 @@ func ensureSandboxID(client *controlclient.Client, loader policyLoader, cwd, hos
 		if strings.TrimSpace(backendName) != "" {
 			return "", false, errors.New("--backend cannot be used with --from")
 		}
-		_, sandboxID, err := createSandboxWithProgress(os.Stderr, client, &cleanroomv1.CreateSandboxRequest{
+		_, sandboxID, err := createSandboxWithProgress(logger, os.Stderr, client, &cleanroomv1.CreateSandboxRequest{
 			Options: &cleanroomv1.SandboxOptions{
 				LaunchSeconds: launchSeconds,
 			},
@@ -117,7 +119,7 @@ func ensureSandboxID(client *controlclient.Client, loader policyLoader, cwd, hos
 		return sandboxID, true, nil
 	}
 
-	sandboxID, _, err := createTopLevelSandbox(client, loader, cwd, host, backendName, imageRefOverride, launchSeconds, repository)
+	sandboxID, _, err := createTopLevelSandbox(logger, client, loader, cwd, host, backendName, imageRefOverride, launchSeconds, repository)
 	if err != nil {
 		return "", false, err
 	}

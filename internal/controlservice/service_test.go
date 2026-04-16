@@ -825,8 +825,41 @@ func TestCreateSandboxFromSnapshotUsesStoredPolicyAndSnapshotBackend(t *testing.
 	if err != nil {
 		t.Fatalf("CreateSandbox from snapshot returned error: %v", err)
 	}
-	if got, want := forkResp.GetSandbox().GetBackend(), "firecracker"; got != want {
+	forkSandbox := forkResp.GetSandbox()
+	if got, want := forkSandbox.GetBackend(), "firecracker"; got != want {
 		t.Fatalf("unexpected backend: got %q want %q", got, want)
+	}
+	snapshotID := snapshotResp.GetSnapshot().GetSnapshotId()
+	if got, want := forkResp.GetSourceKind(), "snapshot"; got != want {
+		t.Fatalf("unexpected response source kind: got %q want %q", got, want)
+	}
+	if got, want := forkResp.GetSourceId(), snapshotID; got != want {
+		t.Fatalf("unexpected response source id: got %q want %q", got, want)
+	}
+	if got, want := forkResp.GetBackingSnapshotId(), snapshotID; got != want {
+		t.Fatalf("unexpected response backing snapshot id: got %q want %q", got, want)
+	}
+	if got, want := forkSandbox.GetSourceKind(), "snapshot"; got != want {
+		t.Fatalf("unexpected sandbox source kind: got %q want %q", got, want)
+	}
+	if got, want := forkSandbox.GetSourceId(), snapshotID; got != want {
+		t.Fatalf("unexpected sandbox source id: got %q want %q", got, want)
+	}
+	if got, want := forkSandbox.GetBackingSnapshotId(), snapshotID; got != want {
+		t.Fatalf("unexpected sandbox backing snapshot id: got %q want %q", got, want)
+	}
+	getResp, err := svc.GetSandbox(context.Background(), &cleanroomv1.GetSandboxRequest{SandboxId: forkSandbox.GetSandboxId()})
+	if err != nil {
+		t.Fatalf("GetSandbox returned error: %v", err)
+	}
+	if got, want := getResp.GetSandbox().GetSourceKind(), "snapshot"; got != want {
+		t.Fatalf("unexpected persisted sandbox source kind: got %q want %q", got, want)
+	}
+	if got, want := getResp.GetSandbox().GetSourceId(), snapshotID; got != want {
+		t.Fatalf("unexpected persisted sandbox source id: got %q want %q", got, want)
+	}
+	if got, want := getResp.GetSandbox().GetBackingSnapshotId(), snapshotID; got != want {
+		t.Fatalf("unexpected persisted sandbox backing snapshot id: got %q want %q", got, want)
 	}
 	if got, want := adapter.provisionFromSnapshotReq.SnapshotID, snapshotResp.GetSnapshot().GetSnapshotId(); got != want {
 		t.Fatalf("unexpected provision snapshot id: got %q want %q", got, want)
@@ -2075,8 +2108,41 @@ func TestCreateSandboxReusesDependencyStageCacheForConfiguredDependencies(t *tes
 		t.Fatalf("first CreateSandbox returned error: %v", err)
 	}
 	mirrors.err = errors.New("offline")
-	if _, err := svc.CreateSandbox(context.Background(), req); err != nil {
+	secondResp, err := svc.CreateSandbox(context.Background(), req)
+	if err != nil {
 		t.Fatalf("second CreateSandbox returned error: %v", err)
+	}
+	if got, want := secondResp.GetSourceKind(), "dependency stage cache"; got != want {
+		t.Fatalf("unexpected response source kind: got %q want %q", got, want)
+	}
+	if got, want := secondResp.GetSandbox().GetSourceKind(), "dependency stage cache"; got != want {
+		t.Fatalf("unexpected sandbox source kind: got %q want %q", got, want)
+	}
+	records, err := svc.CacheStore.List(context.Background())
+	if err != nil {
+		t.Fatalf("List cache records returned error: %v", err)
+	}
+	var dependencyRecord *cachestore.Record
+	for i := range records {
+		if records[i].Stage == "dependency" {
+			dependencyRecord = &records[i]
+			break
+		}
+	}
+	if dependencyRecord == nil {
+		t.Fatal("expected published dependency stage cache record")
+	}
+	if got, want := secondResp.GetSourceId(), dependencyRecord.CacheKey; got != want {
+		t.Fatalf("unexpected response source id: got %q want %q", got, want)
+	}
+	if got, want := secondResp.GetBackingSnapshotId(), dependencyRecord.BackingSnapshotID; got != want {
+		t.Fatalf("unexpected response backing snapshot id: got %q want %q", got, want)
+	}
+	if got, want := secondResp.GetSandbox().GetSourceId(), dependencyRecord.CacheKey; got != want {
+		t.Fatalf("unexpected sandbox source id: got %q want %q", got, want)
+	}
+	if got, want := secondResp.GetSandbox().GetBackingSnapshotId(), dependencyRecord.BackingSnapshotID; got != want {
+		t.Fatalf("unexpected sandbox backing snapshot id: got %q want %q", got, want)
 	}
 
 	if got, want := adapter.provisionCalls, 1; got != want {

@@ -85,6 +85,9 @@ func TestSandboxCreateIntegrationShowsProgressWhileProvisioning(t *testing.T) {
 	if !strings.Contains(outcome.stderr, "provisioning sandbox") {
 		t.Fatalf("expected provisioning message in stderr, got %q", outcome.stderr)
 	}
+	if !strings.Contains(outcome.stderr, "component=client") {
+		t.Fatalf("expected structured logger output in stderr, got %q", outcome.stderr)
+	}
 	if !strings.Contains(outcome.stderr, "Sandbox ready in") {
 		t.Fatalf("expected completion message in stderr, got %q", outcome.stderr)
 	}
@@ -122,6 +125,9 @@ func TestExecIntegrationShowsProgressWhenCreatingSandbox(t *testing.T) {
 	}
 	if !strings.Contains(outcome.stderr, "provisioning sandbox") {
 		t.Fatalf("expected provisioning message in stderr, got %q", outcome.stderr)
+	}
+	if !strings.Contains(outcome.stderr, "component=client") {
+		t.Fatalf("expected structured logger output in stderr, got %q", outcome.stderr)
 	}
 	if !strings.Contains(outcome.stderr, "Sandbox ready in") {
 		t.Fatalf("expected completion message in stderr, got %q", outcome.stderr)

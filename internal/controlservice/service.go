@@ -54,6 +54,9 @@ type sandboxState struct {
 	Policy             *policy.CompiledPolicy
 	Firecracker        backend.FirecrackerConfig
 	Repository         *repositorycheckout.Checkout
+	SourceKind         string
+	SourceID           string
+	BackingSnapshotID  string
 	RepositoryBusy     bool
 	ActiveExecutionID  string
 	DownloadInProgress bool
@@ -407,8 +410,11 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	s.recordSandboxEventLocked(state, cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY, "sandbox created and ready")
 	s.pruneStateLocked(now)
 	resp := &cleanroomv1.CreateSandboxResponse{
-		Sandbox: cloneSandboxLocked(state),
-		Message: "sandbox created and ready",
+		Sandbox:           cloneSandboxLocked(state),
+		Message:           "sandbox created and ready",
+		SourceKind:        state.SourceKind,
+		SourceId:          state.SourceID,
+		BackingSnapshotId: state.BackingSnapshotID,
 	}
 	s.mu.Unlock()
 

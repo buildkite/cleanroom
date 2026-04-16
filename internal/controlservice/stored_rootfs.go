@@ -109,6 +109,14 @@ func (s *Service) createSandboxFromStoredRootFS(ctx context.Context, req *cleanr
 		provisionSnapshotID = strings.TrimSpace(record.ID)
 	}
 	sourceKind := strings.TrimSpace(record.Kind)
+	sourceID := strings.TrimSpace(record.ID)
+	if sourceID == "" {
+		sourceID = provisionSnapshotID
+	}
+	backingSnapshotID := strings.TrimSpace(record.SnapshotID)
+	if backingSnapshotID == "" {
+		backingSnapshotID = provisionSnapshotID
+	}
 	switch sourceKind {
 	case "snapshot":
 		emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_RESTORE_SNAPSHOT, "restoring snapshot")
@@ -128,22 +136,25 @@ func (s *Service) createSandboxFromStoredRootFS(ctx context.Context, req *cleanr
 	}
 
 	state := &sandboxState{
-		ID:          sandboxID,
-		Backend:     backendName,
-		Policy:      effectivePolicy,
-		Firecracker: firecrackerCfg,
-		Repository:  cloneRepositoryCheckout(record.Repository),
-		CreatedAt:   now,
-		UpdatedAt:   now,
-		Status:      cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY,
-		events:      newEventFeed[*cleanroomv1.SandboxEvent](s.retention().maxRetainedSandboxEvents),
-		Done:        make(chan struct{}),
+		ID:                sandboxID,
+		Backend:           backendName,
+		Policy:            effectivePolicy,
+		Firecracker:       firecrackerCfg,
+		Repository:        cloneRepositoryCheckout(record.Repository),
+		SourceKind:        sourceKind,
+		SourceID:          sourceID,
+		BackingSnapshotID: backingSnapshotID,
+		CreatedAt:         now,
+		UpdatedAt:         now,
+		Status:            cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY,
+		events:            newEventFeed[*cleanroomv1.SandboxEvent](s.retention().maxRetainedSandboxEvents),
+		Done:              make(chan struct{}),
 	}
 
 	if sourceKind == "" {
 		sourceKind = "stored rootfs"
 	}
-	eventMessage := fmt.Sprintf("sandbox created from %s %s and ready", sourceKind, record.ID)
+	eventMessage := fmt.Sprintf("sandbox created from %s %s and ready", sourceKind, sourceID)
 	responseMessage := fmt.Sprintf("sandbox created from %s and ready", sourceKind)
 
 	s.mu.Lock()
@@ -152,16 +163,20 @@ func (s *Service) createSandboxFromStoredRootFS(ctx context.Context, req *cleanr
 	s.recordSandboxEventLocked(state, cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY, eventMessage)
 	s.pruneStateLocked(now)
 	resp := &cleanroomv1.CreateSandboxResponse{
-		Sandbox: cloneSandboxLocked(state),
-		Message: responseMessage,
+		Sandbox:           cloneSandboxLocked(state),
+		Message:           responseMessage,
+		SourceKind:        state.SourceKind,
+		SourceId:          state.SourceID,
+		BackingSnapshotId: state.BackingSnapshotID,
 	}
 	s.mu.Unlock()
 
 	if s.Logger != nil {
 		s.Logger.Info("sandbox created from stored rootfs",
 			"sandbox_id", sandboxID,
-			"source_id", record.ID,
+			"source_id", sourceID,
 			"source_kind", sourceKind,
+			"backing_snapshot_id", backingSnapshotID,
 			"backend", backendName,
 			"policy_hash", effectivePolicy.Hash,
 		)

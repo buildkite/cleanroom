@@ -61,7 +61,7 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 		"command_argc", len(e.Command),
 		"env_count", len(executionEnv),
 	)
-	target, err := resolveExecutionSandbox(client, ctx, cwd, host, e.Backend, e.In, e.From, e.Image, e.LaunchSeconds, e.repositoryOverrideFlags)
+	target, err := resolveExecutionSandbox(logger, client, ctx, cwd, host, e.Backend, e.In, e.From, e.Image, e.LaunchSeconds, e.repositoryOverrideFlags)
 	if err != nil {
 		if strings.TrimSpace(e.From) != "" {
 			err = explainSnapshotRuntimeDisabledError(err, ctx)
