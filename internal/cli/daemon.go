@@ -15,10 +15,10 @@ import (
 )
 
 type DaemonCommand struct {
-	Action        string `arg:"" required:"" help:"Daemon action (install, uninstall, status, start, stop)"`
-	Force         bool   `help:"Overwrite existing daemon service file (daemon install only)"`
-	User          bool   `help:"Use user daemon scope (launchd only; install/uninstall/status/start/stop actions)"`
-	System        bool   `help:"Use system daemon scope (linux only; install/uninstall/status/start/stop actions)"`
+	Action        string `arg:"" required:"" help:"Daemon action (install, uninstall, status, start, stop, restart)"`
+	Force         bool   `help:"Overwrite an existing daemon service file (daemon install) or start a stopped daemon during restart (daemon restart)"`
+	User          bool   `help:"Use user daemon scope (launchd only; install/uninstall/status/start/stop/restart actions)"`
+	System        bool   `help:"Use system daemon scope (linux only; install/uninstall/status/start/stop/restart actions)"`
 	JSON          bool   `help:"Print daemon status as JSON (status action only)"`
 	Listen        string `help:"Listen endpoint for control API (defaults to runtime endpoint)"`
 	GatewayListen string `help:"Listen address for the host gateway (default :8170, use :0 for ephemeral port)"`
@@ -85,6 +85,8 @@ func (s *DaemonCommand) Run(ctx *runtimeContext) error {
 		return s.startDaemon(ctx)
 	case "stop":
 		return s.stopDaemon(ctx)
+	case "restart":
+		return s.restartDaemon(ctx)
 	default:
 		return fmt.Errorf("unsupported daemon action %q", s.Action)
 	}
@@ -305,6 +307,33 @@ func (s *DaemonCommand) stopDaemon(ctx *runtimeContext) error {
 	}
 
 	return stopFn(ctx.Stdout)
+}
+
+func (s *DaemonCommand) restartDaemon(ctx *runtimeContext) error {
+	scope, err := s.effectiveDaemonScope()
+	if err != nil {
+		return err
+	}
+
+	var restartFn func(io.Writer, bool) error
+	switch serveInstallGOOS {
+	case "linux":
+		restartFn = restartSystemdDaemon
+	case "darwin":
+		if scope == daemonScopeUser {
+			restartFn = restartLaunchdUserDaemon
+		} else {
+			restartFn = restartLaunchdDaemon
+		}
+	default:
+		return fmt.Errorf("daemon restart is unsupported on %s (expected linux or darwin)", serveInstallGOOS)
+	}
+
+	if scope == daemonScopeSystem && serveInstallEUID() != 0 {
+		return errors.New("daemon restart requires root privileges (use sudo cleanroom daemon restart)")
+	}
+
+	return restartFn(ctx.Stdout, s.Force)
 }
 
 func (s *DaemonCommand) daemonStatus(ctx *runtimeContext) error {

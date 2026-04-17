@@ -526,3 +526,18 @@ func TestDaemonStartSystemParses(t *testing.T) {
 		t.Fatal("expected --system to set Daemon.System")
 	}
 }
+
+func TestDaemonRestartForceParses(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"daemon", "restart", "--force"}); err != nil {
+		t.Fatalf("parse daemon restart --force returned error: %v", err)
+	}
+	if got := c.Daemon.Action; got != "restart" {
+		t.Fatalf("expected daemon action restart, got %q", got)
+	}
+	if !c.Daemon.Force {
+		t.Fatal("expected --force to set Daemon.Force")
+	}
+}
