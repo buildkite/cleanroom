@@ -172,6 +172,57 @@ func stopLaunchdDaemonInDomain(stdout io.Writer, servicePath, domain string) err
 	return err
 }
 
+func restartLaunchdDaemon(stdout io.Writer, force bool) error {
+	return restartLaunchdDaemonInDomain(stdout, serveInstallLaunchdPath, "system", force)
+}
+
+func restartLaunchdUserDaemon(stdout io.Writer, force bool) error {
+	path, err := launchdUserServicePath()
+	if err != nil {
+		return err
+	}
+	return restartLaunchdDaemonInDomain(stdout, path, launchdUserDomain(), force)
+}
+
+func restartLaunchdDaemonInDomain(stdout io.Writer, servicePath, domain string, force bool) error {
+	if _, err := serveInstallStat(servicePath); errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("service file %s does not exist", servicePath)
+	} else if err != nil {
+		return fmt.Errorf("stat service file %s: %w", servicePath, err)
+	}
+
+	target := launchdServiceTarget(domain)
+	loaded, state, err := launchdServiceStatus(target)
+	if err != nil {
+		return err
+	}
+	if state != "running" && !force {
+		return errors.New("daemon is not running (use cleanroom daemon restart --force to start it)")
+	}
+
+	if err := serveInstallRunCommand("launchctl", "enable", target); err != nil {
+		return fmt.Errorf("enable launchd service %s: %w", launchdServiceName, err)
+	}
+	if !loaded {
+		if err := serveInstallRunCommand("launchctl", "bootstrap", domain, servicePath); err != nil {
+			return fmt.Errorf("bootstrap launchd service %s: %w", launchdServiceName, err)
+		}
+	}
+	if err := serveInstallRunCommand("launchctl", "kickstart", "-k", target); err != nil {
+		return fmt.Errorf("restart launchd service %s: %w", launchdServiceName, err)
+	}
+
+	_, err = fmt.Fprint(stdout, renderSummaryBlock(summaryBlock{
+		Title:      "daemon restarted",
+		TitleStyle: defaultTerminalPalette().info,
+		Fields: []startupField{
+			{Key: "manager", Value: "launchd"},
+			{Key: "service", Value: launchdServiceName},
+		},
+	}, shouldUseANSI(stdout)))
+	return err
+}
+
 func launchdDaemonStatus() (daemonStatusResult, error) {
 	return launchdDaemonStatusInDomain(serveInstallLaunchdPath, "system")
 }
@@ -190,16 +241,11 @@ func launchdDaemonStatusInDomain(servicePath, domain string) (daemonStatusResult
 		installed = true
 	}
 
-	active := false
-	state := ""
-	if output, err := serveInstallRunCommandOutput("launchctl", "print", launchdServiceTarget(domain)); err == nil {
-		state = launchdServiceState(output)
-		if state == "running" {
-			active = true
-		}
-	} else if !isExitError(err) {
-		return daemonStatusResult{}, fmt.Errorf("check launchd service state: %w", err)
+	_, state, err := launchdServiceStatus(launchdServiceTarget(domain))
+	if err != nil {
+		return daemonStatusResult{}, err
 	}
+	active := state == "running"
 
 	listen := ""
 	if installed {
@@ -254,13 +300,19 @@ func launchdServiceState(output string) string {
 }
 
 func launchdServiceLoaded(target string) (bool, error) {
-	if _, err := serveInstallRunCommandOutput("launchctl", "print", target); err == nil {
-		return true, nil
-	} else if isExitError(err) {
-		return false, nil
-	} else {
-		return false, fmt.Errorf("check launchd service %s: %w", target, err)
+	loaded, _, err := launchdServiceStatus(target)
+	return loaded, err
+}
+
+func launchdServiceStatus(target string) (bool, string, error) {
+	output, err := serveInstallRunCommandOutput("launchctl", "print", target)
+	if err == nil {
+		return true, launchdServiceState(output), nil
 	}
+	if isExitError(err) {
+		return false, "", nil
+	}
+	return false, "", fmt.Errorf("check launchd service %s: %w", target, err)
 }
 
 func launchdConfiguredListenEndpoint(plistPath string) (string, error) {

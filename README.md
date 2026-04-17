@@ -72,8 +72,10 @@ cleanroom daemon install
 sudo cleanroom daemon install
 ```
 
-Use `--force` to overwrite an existing service file. On macOS, `--system`
-is unsupported; `--user` is accepted for explicitness.
+Use `cleanroom daemon install --force` to overwrite an existing service file.
+Use `cleanroom daemon restart --force` to start the daemon again if it is
+currently stopped. On macOS, `--system` is unsupported; `--user` is accepted
+for explicitness.
 
 Manage the daemon lifecycle:
 
@@ -81,6 +83,7 @@ Manage the daemon lifecycle:
 cleanroom daemon status
 cleanroom daemon start
 cleanroom daemon stop
+cleanroom daemon restart
 cleanroom daemon uninstall
 ```
 

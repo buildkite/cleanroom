@@ -79,24 +79,48 @@ func stopSystemdDaemon(stdout io.Writer) error {
 	return err
 }
 
+func restartSystemdDaemon(stdout io.Writer, force bool) error {
+	if _, err := serveInstallStat(serveInstallSystemdUnitPath); errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("service file %s does not exist", serveInstallSystemdUnitPath)
+	}
+
+	active, err := systemdServiceActive()
+	if err != nil {
+		return err
+	}
+	if !active && !force {
+		return errors.New("daemon is not running (use cleanroom daemon restart --force to start it)")
+	}
+
+	if err := serveInstallRunCommand("systemctl", "restart", systemdServiceName); err != nil {
+		return fmt.Errorf("restart systemd service %s: %w", systemdServiceName, err)
+	}
+
+	_, err = fmt.Fprint(stdout, renderSummaryBlock(summaryBlock{
+		Title:      "daemon restarted",
+		TitleStyle: defaultTerminalPalette().info,
+		Fields: []startupField{
+			{Key: "manager", Value: "systemd"},
+			{Key: "service", Value: systemdServiceName},
+		},
+	}, shouldUseANSI(stdout)))
+	return err
+}
+
 func systemdDaemonStatus() (daemonStatusResult, error) {
 	installed := false
 	if _, err := serveInstallStat(serveInstallSystemdUnitPath); err == nil {
 		installed = true
 	}
 
-	active := false
-	if err := serveInstallRunCommand("systemctl", "is-active", "--quiet", systemdServiceName); err == nil {
-		active = true
-	} else if !isExitError(err) {
-		return daemonStatusResult{}, fmt.Errorf("check systemd service active state: %w", err)
+	active, err := systemdServiceActive()
+	if err != nil {
+		return daemonStatusResult{}, err
 	}
 
-	enabled := false
-	if err := serveInstallRunCommand("systemctl", "is-enabled", "--quiet", systemdServiceName); err == nil {
-		enabled = true
-	} else if !isExitError(err) {
-		return daemonStatusResult{}, fmt.Errorf("check systemd service enabled state: %w", err)
+	enabled, err := systemdServiceEnabled()
+	if err != nil {
+		return daemonStatusResult{}, err
 	}
 
 	return daemonStatusResult{
@@ -121,6 +145,26 @@ func systemdDaemonStatus() (daemonStatusResult, error) {
 			Enabled:   &enabled,
 		},
 	}, nil
+}
+
+func systemdServiceActive() (bool, error) {
+	if err := serveInstallRunCommand("systemctl", "is-active", "--quiet", systemdServiceName); err == nil {
+		return true, nil
+	} else if isExitError(err) {
+		return false, nil
+	} else {
+		return false, fmt.Errorf("check systemd service active state: %w", err)
+	}
+}
+
+func systemdServiceEnabled() (bool, error) {
+	if err := serveInstallRunCommand("systemctl", "is-enabled", "--quiet", systemdServiceName); err == nil {
+		return true, nil
+	} else if isExitError(err) {
+		return false, nil
+	} else {
+		return false, fmt.Errorf("check systemd service enabled state: %w", err)
+	}
 }
 
 func installSystemdDaemon(stdout io.Writer, executablePath string, args []string, force bool) error {

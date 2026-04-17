@@ -1200,6 +1200,102 @@ func TestDaemonStopSystemdStopsService(t *testing.T) {
 	}
 }
 
+func TestDaemonRestartSystemdRestartsRunningService(t *testing.T) {
+	tmpDir := t.TempDir()
+	unitPath := filepath.Join(tmpDir, "cleanroom.service")
+	if err := os.WriteFile(unitPath, []byte("existing-unit"), 0o644); err != nil {
+		t.Fatalf("write existing unit: %v", err)
+	}
+
+	prevEUID := serveInstallEUID
+	prevGOOS := serveInstallGOOS
+	prevSystemdPath := serveInstallSystemdUnitPath
+	prevRunCommand := serveInstallRunCommand
+	serveInstallEUID = func() int { return 0 }
+	serveInstallGOOS = "linux"
+	serveInstallSystemdUnitPath = unitPath
+	var calls [][]string
+	serveInstallRunCommand = func(name string, args ...string) error {
+		calls = append(calls, append([]string{name}, args...))
+		return nil
+	}
+	t.Cleanup(func() {
+		serveInstallEUID = prevEUID
+		serveInstallGOOS = prevGOOS
+		serveInstallSystemdUnitPath = prevSystemdPath
+		serveInstallRunCommand = prevRunCommand
+	})
+
+	stdout, readStdout := makeStdoutCapture(t)
+	cmd := &DaemonCommand{Action: "restart"}
+	if err := cmd.Run(&runtimeContext{CWD: tmpDir, Stdout: stdout}); err != nil {
+		t.Fatalf("DaemonCommand.Run returned error: %v", err)
+	}
+
+	wantCalls := [][]string{
+		{"systemctl", "is-active", "--quiet", "cleanroom.service"},
+		{"systemctl", "restart", "cleanroom.service"},
+	}
+	if !reflect.DeepEqual(calls, wantCalls) {
+		t.Fatalf("unexpected systemctl commands: got %v want %v", calls, wantCalls)
+	}
+
+	out := readStdout()
+	if !strings.Contains(out, "daemon restarted") {
+		t.Fatalf("expected restarted message, got: %s", out)
+	}
+	if !strings.Contains(out, "manager=systemd") {
+		t.Fatalf("expected manager=systemd, got: %s", out)
+	}
+}
+
+func TestDaemonRestartSystemdRequiresForceWhenStopped(t *testing.T) {
+	tmpDir := t.TempDir()
+	unitPath := filepath.Join(tmpDir, "cleanroom.service")
+	if err := os.WriteFile(unitPath, []byte("existing-unit"), 0o644); err != nil {
+		t.Fatalf("write existing unit: %v", err)
+	}
+
+	prevEUID := serveInstallEUID
+	prevGOOS := serveInstallGOOS
+	prevSystemdPath := serveInstallSystemdUnitPath
+	prevRunCommand := serveInstallRunCommand
+	serveInstallEUID = func() int { return 0 }
+	serveInstallGOOS = "linux"
+	serveInstallSystemdUnitPath = unitPath
+	var calls [][]string
+	serveInstallRunCommand = func(name string, args ...string) error {
+		calls = append(calls, append([]string{name}, args...))
+		if len(args) > 0 && args[0] == "is-active" {
+			return &exec.ExitError{ProcessState: &os.ProcessState{}}
+		}
+		return nil
+	}
+	t.Cleanup(func() {
+		serveInstallEUID = prevEUID
+		serveInstallGOOS = prevGOOS
+		serveInstallSystemdUnitPath = prevSystemdPath
+		serveInstallRunCommand = prevRunCommand
+	})
+
+	stdout, _ := makeStdoutCapture(t)
+	cmd := &DaemonCommand{Action: "restart"}
+	err := cmd.Run(&runtimeContext{CWD: tmpDir, Stdout: stdout})
+	if err == nil {
+		t.Fatal("expected restart to require --force when daemon is stopped")
+	}
+	if !strings.Contains(err.Error(), "--force") {
+		t.Fatalf("expected --force guidance, got: %v", err)
+	}
+
+	wantCalls := [][]string{
+		{"systemctl", "is-active", "--quiet", "cleanroom.service"},
+	}
+	if !reflect.DeepEqual(calls, wantCalls) {
+		t.Fatalf("unexpected systemctl commands: got %v want %v", calls, wantCalls)
+	}
+}
+
 func TestDaemonStartLaunchdEnablesBootstrapsAndKickstartsUserService(t *testing.T) {
 	tmpDir := t.TempDir()
 	plistPath := filepath.Join(tmpDir, "Library", "LaunchAgents", launchdServiceName+".plist")
@@ -1255,6 +1351,127 @@ func TestDaemonStartLaunchdEnablesBootstrapsAndKickstartsUserService(t *testing.
 	out := readStdout()
 	if !strings.Contains(out, "daemon started") {
 		t.Fatalf("expected started message, got: %s", out)
+	}
+	if !strings.Contains(out, "manager=launchd") {
+		t.Fatalf("expected manager=launchd, got: %s", out)
+	}
+}
+
+func TestDaemonRestartLaunchdKickstartsRunningUserService(t *testing.T) {
+	tmpDir := t.TempDir()
+	plistPath := filepath.Join(tmpDir, "Library", "LaunchAgents", launchdServiceName+".plist")
+	if err := os.MkdirAll(filepath.Dir(plistPath), 0o755); err != nil {
+		t.Fatalf("mkdir launch agents dir: %v", err)
+	}
+	if err := os.WriteFile(plistPath, []byte("existing-plist"), 0o644); err != nil {
+		t.Fatalf("write existing plist: %v", err)
+	}
+
+	prevGOOS := serveInstallGOOS
+	prevEUID := serveInstallEUID
+	prevUID := serveInstallUID
+	prevUserHomeDir := serveInstallUserHomeDir
+	prevRunCommand := serveInstallRunCommand
+	prevRunCommandOutput := serveInstallRunCommandOutput
+	serveInstallGOOS = "darwin"
+	serveInstallEUID = func() int { return 501 }
+	serveInstallUID = func() int { return 501 }
+	serveInstallUserHomeDir = func() (string, error) { return tmpDir, nil }
+	serveInstallRunCommandOutput = func(name string, args ...string) (string, error) {
+		return "state = running\n", nil
+	}
+	var calls [][]string
+	serveInstallRunCommand = func(name string, args ...string) error {
+		calls = append(calls, append([]string{name}, args...))
+		return nil
+	}
+	t.Cleanup(func() {
+		serveInstallGOOS = prevGOOS
+		serveInstallEUID = prevEUID
+		serveInstallUID = prevUID
+		serveInstallUserHomeDir = prevUserHomeDir
+		serveInstallRunCommand = prevRunCommand
+		serveInstallRunCommandOutput = prevRunCommandOutput
+	})
+
+	stdout, readStdout := makeStdoutCapture(t)
+	cmd := &DaemonCommand{Action: "restart"}
+	if err := cmd.Run(&runtimeContext{CWD: tmpDir, Stdout: stdout}); err != nil {
+		t.Fatalf("DaemonCommand.Run returned error: %v", err)
+	}
+
+	wantCalls := [][]string{
+		{"launchctl", "enable", "gui/501/" + launchdServiceName},
+		{"launchctl", "kickstart", "-k", "gui/501/" + launchdServiceName},
+	}
+	if !reflect.DeepEqual(calls, wantCalls) {
+		t.Fatalf("unexpected launchctl commands: got %v want %v", calls, wantCalls)
+	}
+
+	out := readStdout()
+	if !strings.Contains(out, "daemon restarted") {
+		t.Fatalf("expected restarted message, got: %s", out)
+	}
+	if !strings.Contains(out, "manager=launchd") {
+		t.Fatalf("expected manager=launchd, got: %s", out)
+	}
+}
+
+func TestDaemonRestartLaunchdForceBootstrapsStoppedUserService(t *testing.T) {
+	tmpDir := t.TempDir()
+	plistPath := filepath.Join(tmpDir, "Library", "LaunchAgents", launchdServiceName+".plist")
+	if err := os.MkdirAll(filepath.Dir(plistPath), 0o755); err != nil {
+		t.Fatalf("mkdir launch agents dir: %v", err)
+	}
+	if err := os.WriteFile(plistPath, []byte("existing-plist"), 0o644); err != nil {
+		t.Fatalf("write existing plist: %v", err)
+	}
+
+	prevGOOS := serveInstallGOOS
+	prevEUID := serveInstallEUID
+	prevUID := serveInstallUID
+	prevUserHomeDir := serveInstallUserHomeDir
+	prevRunCommand := serveInstallRunCommand
+	prevRunCommandOutput := serveInstallRunCommandOutput
+	serveInstallGOOS = "darwin"
+	serveInstallEUID = func() int { return 501 }
+	serveInstallUID = func() int { return 501 }
+	serveInstallUserHomeDir = func() (string, error) { return tmpDir, nil }
+	serveInstallRunCommandOutput = func(name string, args ...string) (string, error) {
+		return "", &exec.ExitError{ProcessState: &os.ProcessState{}}
+	}
+	var calls [][]string
+	serveInstallRunCommand = func(name string, args ...string) error {
+		calls = append(calls, append([]string{name}, args...))
+		return nil
+	}
+	t.Cleanup(func() {
+		serveInstallGOOS = prevGOOS
+		serveInstallEUID = prevEUID
+		serveInstallUID = prevUID
+		serveInstallUserHomeDir = prevUserHomeDir
+		serveInstallRunCommand = prevRunCommand
+		serveInstallRunCommandOutput = prevRunCommandOutput
+	})
+
+	stdout, readStdout := makeStdoutCapture(t)
+	cmd := &DaemonCommand{Action: "restart", Force: true}
+	if err := cmd.Run(&runtimeContext{CWD: tmpDir, Stdout: stdout}); err != nil {
+		t.Fatalf("DaemonCommand.Run returned error: %v", err)
+	}
+
+	wantCalls := [][]string{
+		{"launchctl", "enable", "gui/501/" + launchdServiceName},
+		{"launchctl", "bootstrap", "gui/501", plistPath},
+		{"launchctl", "kickstart", "-k", "gui/501/" + launchdServiceName},
+	}
+	if !reflect.DeepEqual(calls, wantCalls) {
+		t.Fatalf("unexpected launchctl commands: got %v want %v", calls, wantCalls)
+	}
+
+	out := readStdout()
+	if !strings.Contains(out, "daemon restarted") {
+		t.Fatalf("expected restarted message, got: %s", out)
 	}
 	if !strings.Contains(out, "manager=launchd") {
 		t.Fatalf("expected manager=launchd, got: %s", out)
