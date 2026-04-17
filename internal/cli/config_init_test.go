@@ -1,22 +1,34 @@
 package cli
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/buildkite/cleanroom/internal/backend"
+	backendfirecracker "github.com/buildkite/cleanroom/internal/backend/firecracker"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 	"gopkg.in/yaml.v3"
 )
 
 func TestConfigInitWritesRuntimeConfig(t *testing.T) {
+	stubFirecrackerHostSupport(t, func(context.Context, backend.FirecrackerConfig) backendfirecracker.HostSupport {
+		return backendfirecracker.HostSupport{
+			RuntimeUsable:   false,
+			SnapshotsUsable: false,
+			SnapshotMessage: "machine bootstrap incomplete",
+		}
+	})
+
 	tmpDir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", tmpDir)
 
 	stdout, _ := makeStdoutCapture(t)
+	stderr, _ := makeStdoutCapture(t)
 	cmd := &ConfigInitCommand{}
-	if err := cmd.Run(&runtimeContext{CWD: tmpDir, Stdout: stdout}); err != nil {
+	if err := cmd.Run(&runtimeContext{CWD: tmpDir, Stdout: stdout, Stderr: stderr}); err != nil {
 		t.Fatalf("ConfigInitCommand.Run returned error: %v", err)
 	}
 
@@ -90,6 +102,10 @@ func TestConfigInitWritesRuntimeConfig(t *testing.T) {
 }
 
 func TestConfigInitRefusesOverwriteWithoutForce(t *testing.T) {
+	stubFirecrackerHostSupport(t, func(context.Context, backend.FirecrackerConfig) backendfirecracker.HostSupport {
+		return backendfirecracker.HostSupport{}
+	})
+
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "cleanroom", "config.yaml")
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
@@ -120,6 +136,10 @@ func TestConfigInitRefusesOverwriteWithoutForce(t *testing.T) {
 }
 
 func TestConfigInitForceOverwritesExistingFile(t *testing.T) {
+	stubFirecrackerHostSupport(t, func(context.Context, backend.FirecrackerConfig) backendfirecracker.HostSupport {
+		return backendfirecracker.HostSupport{}
+	})
+
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "runtime", "cleanroom.yaml")
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
@@ -144,5 +164,132 @@ func TestConfigInitForceOverwritesExistingFile(t *testing.T) {
 	}
 	if strings.Contains(string(raw), "existing: true") {
 		t.Fatalf("expected config to be overwritten, got:\n%s", raw)
+	}
+}
+
+func TestConfigInitUsesFileSnapshotsWhenZFSUnavailable(t *testing.T) {
+	stubFirecrackerHostSupport(t, func(context.Context, backend.FirecrackerConfig) backendfirecracker.HostSupport {
+		return backendfirecracker.HostSupport{
+			RuntimeUsable:   true,
+			SnapshotsUsable: true,
+			ZFSUsable:       false,
+			ZFSMessage:      "no existing Cleanroom ZFS dataset root matched cleanroom or */cleanroom",
+		}
+	})
+
+	tmpDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmpDir)
+
+	stdout, _ := makeStdoutCapture(t)
+	stderr, readStderr := makeStdoutCapture(t)
+	cmd := &ConfigInitCommand{DefaultBackend: "firecracker"}
+	if err := cmd.Run(&runtimeContext{CWD: tmpDir, Stdout: stdout, Stderr: stderr}); err != nil {
+		t.Fatalf("ConfigInitCommand.Run returned error: %v", err)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(tmpDir, "cleanroom", "config.yaml"))
+	if err != nil {
+		t.Fatalf("read generated config: %v", err)
+	}
+
+	var cfg runtimeconfig.Config
+	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+		t.Fatalf("parse generated yaml: %v", err)
+	}
+	if !cfg.Backends.Firecracker.Snapshots.Enabled {
+		t.Fatal("expected firecracker snapshots to default enabled when snapshot runtime is usable")
+	}
+	if got, want := cfg.Backends.Firecracker.Snapshots.Driver, "file"; got != want {
+		t.Fatalf("unexpected firecracker snapshot driver: got %q want %q", got, want)
+	}
+	if cfg.Backends.Firecracker.Snapshots.ZFSDataset != "" {
+		t.Fatalf("expected firecracker zfs dataset to be omitted, got %q", cfg.Backends.Firecracker.Snapshots.ZFSDataset)
+	}
+	if out := readStderr(); !strings.Contains(out, "driver=file") || !strings.Contains(out, "no existing Cleanroom ZFS dataset root matched cleanroom or */cleanroom") {
+		t.Fatalf("expected file-driver warning, got %q", out)
+	}
+}
+
+func TestConfigInitUsesZFSWhenCleanroomDatasetDetected(t *testing.T) {
+	stubFirecrackerHostSupport(t, func(context.Context, backend.FirecrackerConfig) backendfirecracker.HostSupport {
+		return backendfirecracker.HostSupport{
+			RuntimeUsable:   true,
+			SnapshotsUsable: true,
+			ZFSUsable:       true,
+			ZFSDatasetRoot:  "cleanroom",
+			ZFSMessage:      "auto-detected Cleanroom ZFS dataset root \"cleanroom\"",
+		}
+	})
+
+	tmpDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmpDir)
+
+	stdout, _ := makeStdoutCapture(t)
+	stderr, readStderr := makeStdoutCapture(t)
+	cmd := &ConfigInitCommand{DefaultBackend: "firecracker"}
+	if err := cmd.Run(&runtimeContext{CWD: tmpDir, Stdout: stdout, Stderr: stderr}); err != nil {
+		t.Fatalf("ConfigInitCommand.Run returned error: %v", err)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(tmpDir, "cleanroom", "config.yaml"))
+	if err != nil {
+		t.Fatalf("read generated config: %v", err)
+	}
+
+	var cfg runtimeconfig.Config
+	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+		t.Fatalf("parse generated yaml: %v", err)
+	}
+	if !cfg.Backends.Firecracker.Snapshots.Enabled {
+		t.Fatal("expected firecracker snapshots enabled for zfs-capable host runtime")
+	}
+	if got, want := cfg.Backends.Firecracker.Snapshots.Driver, "zfs"; got != want {
+		t.Fatalf("unexpected firecracker snapshot driver: got %q want %q", got, want)
+	}
+	if got, want := cfg.Backends.Firecracker.Snapshots.ZFSDataset, "cleanroom"; got != want {
+		t.Fatalf("unexpected firecracker zfs dataset: got %q want %q", got, want)
+	}
+	if out := strings.TrimSpace(readStderr()); out != "" {
+		t.Fatalf("expected no warning output, got %q", out)
+	}
+}
+
+func TestConfigInitWarnsWhenZFSDatasetDetectionIsAmbiguous(t *testing.T) {
+	stubFirecrackerHostSupport(t, func(context.Context, backend.FirecrackerConfig) backendfirecracker.HostSupport {
+		return backendfirecracker.HostSupport{
+			RuntimeUsable:   true,
+			SnapshotsUsable: true,
+			ZFSUsable:       false,
+			ZFSMessage:      "multiple Cleanroom ZFS dataset roots detected: tank/ci/cleanroom, tank/dev/cleanroom",
+		}
+	})
+
+	tmpDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmpDir)
+
+	stdout, _ := makeStdoutCapture(t)
+	stderr, readStderr := makeStdoutCapture(t)
+	cmd := &ConfigInitCommand{DefaultBackend: "firecracker"}
+	if err := cmd.Run(&runtimeContext{CWD: tmpDir, Stdout: stdout, Stderr: stderr}); err != nil {
+		t.Fatalf("ConfigInitCommand.Run returned error: %v", err)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(tmpDir, "cleanroom", "config.yaml"))
+	if err != nil {
+		t.Fatalf("read generated config: %v", err)
+	}
+
+	var cfg runtimeconfig.Config
+	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+		t.Fatalf("parse generated yaml: %v", err)
+	}
+	if got, want := cfg.Backends.Firecracker.Snapshots.Driver, "file"; got != want {
+		t.Fatalf("unexpected firecracker snapshot driver: got %q want %q", got, want)
+	}
+	if !cfg.Backends.Firecracker.Snapshots.Enabled {
+		t.Fatal("expected firecracker snapshots enabled with file fallback when zfs detection is ambiguous")
+	}
+	if out := readStderr(); !strings.Contains(out, "multiple Cleanroom ZFS dataset roots detected") || !strings.Contains(out, "tank/ci/cleanroom") {
+		t.Fatalf("expected ambiguous zfs warning, got %q", out)
 	}
 }

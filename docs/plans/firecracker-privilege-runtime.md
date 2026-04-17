@@ -27,6 +27,18 @@ This proposal splits the problem into two tracks:
   network leases, gateway firewall state, optional snapshot backends, and
   Firecracker `jailer` launches.
 
+Near-term release work is intentionally narrower than this full plan. The
+current supported Linux story still uses the helper-based machine bootstrap.
+That means:
+
+- the helper, sudoers, KVM access, and related host commands are machine-level
+  prerequisites
+- runtime config remains a user-level choice layered on top of that bootstrap
+- ZFS-backed Firecracker is the supported layered-cache path
+- file-backed Firecracker remains functional but degraded for warm restores
+- `cleanroom doctor` is the source of truth for the current support tier on a
+  host while the broader `hostd` plan remains future work
+
 The user-facing CLI and API stay backend-neutral. Backend-specific privilege
 details remain in adapter internals and a small Linux host-runtime convention.
 The target is one supported Linux runtime model with good defaults.

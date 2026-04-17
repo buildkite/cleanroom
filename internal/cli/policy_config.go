@@ -1,15 +1,20 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/buildkite/cleanroom/internal/backend"
+	backendfirecracker "github.com/buildkite/cleanroom/internal/backend/firecracker"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 	"gopkg.in/yaml.v3"
 )
+
+var detectFirecrackerHostSupport = backendfirecracker.DetectHostSupport
 
 type PolicyCommand struct {
 	Validate PolicyValidateCommand `cmd:"" help:"Validate policy configuration"`
@@ -94,12 +99,19 @@ func (c *ConfigInitCommand) Run(ctx *runtimeContext) error {
 		return fmt.Errorf("create config directory: %w", err)
 	}
 
-	payload, err := yaml.Marshal(defaultRuntimeConfig(defaultBackend))
+	firecrackerSnapshots, warnings := defaultFirecrackerSnapshotConfig(context.Background(), defaultBackend == "firecracker" || hostDefaultBackend() == "firecracker")
+
+	payload, err := yaml.Marshal(defaultRuntimeConfig(defaultBackend, firecrackerSnapshots))
 	if err != nil {
 		return fmt.Errorf("marshal runtime config template: %w", err)
 	}
 	if err := os.WriteFile(path, payload, 0o644); err != nil {
 		return fmt.Errorf("write runtime config %s: %w", path, err)
+	}
+	for _, warning := range warnings {
+		if _, err := fmt.Fprint(ctx.stderr(), renderNoticeLine("warning", warning, defaultTerminalPalette().warn, shouldUseANSI(ctx.stderr()))); err != nil {
+			return err
+		}
 	}
 
 	_, err = fmt.Fprintln(ctx.Stdout, renderStatusValueLine("runtime config written", path, defaultTerminalPalette().info, shouldUseANSI(ctx.Stdout)))
@@ -110,7 +122,29 @@ func hostDefaultBackend() string {
 	return runtimeconfig.DefaultBackendForHost()
 }
 
-func defaultRuntimeConfig(defaultBackend string) runtimeconfig.Config {
+func defaultFirecrackerSnapshotConfig(ctx context.Context, emitRuntimeWarnings bool) (runtimeconfig.SnapshotConfig, []string) {
+	support := detectFirecrackerHostSupport(ctx, backend.FirecrackerConfig{})
+	snapshot := runtimeconfig.SnapshotConfig{Enabled: false, Driver: "file"}
+
+	if !support.SnapshotsUsable {
+		warnings := []string{}
+		if emitRuntimeWarnings {
+			warnings = append(warnings, "firecracker snapshots remain disabled: "+support.SnapshotMessage)
+		}
+		return snapshot, warnings
+	}
+
+	snapshot.Enabled = true
+	if support.ZFSUsable {
+		snapshot.Driver = "zfs"
+		snapshot.ZFSDataset = support.ZFSDatasetRoot
+		return snapshot, nil
+	}
+
+	return snapshot, []string{"firecracker snapshots default to driver=file: " + support.ZFSMessage}
+}
+
+func defaultRuntimeConfig(defaultBackend string, firecrackerSnapshots runtimeconfig.SnapshotConfig) runtimeconfig.Config {
 	return runtimeconfig.Config{
 		DefaultBackend: defaultBackend,
 		Backends: runtimeconfig.Backends{
@@ -125,10 +159,7 @@ func defaultRuntimeConfig(defaultBackend string) runtimeconfig.Config {
 						IPTables:              false,
 					},
 				},
-				Snapshots: runtimeconfig.SnapshotConfig{
-					Enabled: false,
-					Driver:  "file",
-				},
+				Snapshots:            firecrackerSnapshots,
 				PrivilegedHelperPath: "/usr/local/sbin/cleanroom-root-helper",
 				VCPUs:                2,
 				MemoryMiB:            1024,

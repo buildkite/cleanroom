@@ -8,6 +8,12 @@ Cleanroom's primary Linux backend uses [Firecracker](https://github.com/firecrac
 
 Firecracker is purpose-built for secure multi-tenant workloads with a minimal device model. Its network model (TAP + host firewall) maps directly to Cleanroom's deny-by-default enforcement.
 
+Today this backend is still a machine-bootstrap model rather than a pure
+unprivileged runtime. The user-facing CLI and runtime config remain
+unprivileged, but Linux hosts must be prepared with the Firecracker helper,
+sudoers access, KVM access, and optionally a dedicated ZFS dataset root for the
+supported layered-cache path.
+
 ## Scope
 
 - Linux-only local backend using Firecracker + KVM.
@@ -63,7 +69,45 @@ Current capability values (visible in `cleanroom doctor --json`):
 - Firecracker binary installed
 - `mkfs.ext4` for OCI-to-ext4 materialization
 - `debugfs` for runtime rootfs preparation
-- `sudo -n` access for privileged host networking (`ip`, `ipset`, `iptables`, `sysctl`)
+- root-owned `cleanroom-root-helper` installed at the configured helper path
+- `sudo -n` access for privileged host networking (`ip`, `ipset`, `iptables`, `sysctl`) through that helper
+- optional existing ZFS dataset root named `cleanroom` or matching
+  `*/cleanroom` for supported
+  Firecracker layered-cache restores
+
+## Machine Bootstrap vs User Config
+
+There are two separate layers to keep in mind on Linux:
+
+- machine bootstrap supplies the host prerequisites: helper install, sudoers,
+  KVM access, host commands, and optional ZFS dataset provisioning
+- user config selects how Cleanroom should use that machine state, including
+  whether Firecracker snapshots are enabled and whether they are file-backed or
+  ZFS-backed
+
+`cleanroom doctor` is the source of truth for the effective support tier on the
+current machine. It reports whether the helper-based Firecracker host runtime is
+usable at all, whether snapshotting is available, and whether the current state
+is on the supported ZFS-backed path or a degraded file-backed path.
+
+`cleanroom config init` uses feature detection, not profiles. On Linux it will:
+
+- enable Firecracker snapshots with `driver: zfs` when it finds one existing,
+  unambiguous Cleanroom dataset root
+- fall back to `driver: file` with a warning when the snapshot runtime is
+  usable but no usable ZFS dataset can be selected conservatively
+- leave snapshots disabled when the helper-based Firecracker snapshot runtime is
+  not usable yet
+
+## Layered Cache Support
+
+The currently supported Linux layered-cache path for Firecracker is ZFS-backed
+snapshot materialisation. That path gives clone-capable warm restores.
+
+File-backed Firecracker snapshots remain functional, but they are degraded for
+warm restores because writable volumes still copy ext4 bytes instead of cloning
+them. Release language should treat ZFS-backed Firecracker as the supported path
+and file-backed Firecracker as a fallback with slower restore behaviour.
 
 ## Related
 
