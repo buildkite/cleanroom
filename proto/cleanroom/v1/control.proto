@@ -44,6 +44,9 @@ message Sandbox {
   google.protobuf.Timestamp updated_at = 6;
   string last_execution_id = 7;
   string active_execution_id = 8;
+  string source_kind = 9;
+  string source_id = 10;
+  string backing_snapshot_id = 11;
 }
 
 message Snapshot {
@@ -132,6 +135,9 @@ message CreateSandboxResponse {
   Sandbox sandbox = 1;
   string policy_source = 2;
   string message = 3;
+  string source_kind = 4;
+  string source_id = 5;
+  string backing_snapshot_id = 6;
 }
 
 enum CreateSandboxPhase {

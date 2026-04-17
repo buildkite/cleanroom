@@ -86,3 +86,42 @@ func TestSandboxInspectIntegrationJSON(t *testing.T) {
 		t.Fatalf("unexpected sandbox id: got %q want %q", got, want)
 	}
 }
+
+func TestSandboxInspectIntegrationShowsProvenance(t *testing.T) {
+	host, _ := startIntegrationServer(t, &snapshotIntegrationAdapter{})
+	cwd := t.TempDir()
+
+	client := mustNewControlClient(t, host)
+	sourceSandboxID := mustCreateSandbox(t, client)
+	snapshotResp, err := client.CreateSnapshot(context.Background(), &cleanroomv1.CreateSnapshotRequest{
+		SandboxId: sourceSandboxID,
+		Name:      "inspect-provenance",
+	})
+	if err != nil {
+		t.Fatalf("CreateSnapshot returned error: %v", err)
+	}
+	snapshotID := snapshotResp.GetSnapshot().GetSnapshotId()
+	createResp, err := client.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Source: &cleanroomv1.CreateSandboxRequest_SnapshotId{SnapshotId: snapshotID},
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox from snapshot returned error: %v", err)
+	}
+	provenanceSandboxID := createResp.GetSandbox().GetSandboxId()
+
+	outcome := runSandboxInspectWithCapture(SandboxInspectCommand{
+		clientFlags: clientFlags{Host: host},
+		SandboxID:   provenanceSandboxID,
+	}, runtimeContext{CWD: cwd})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err != nil {
+		t.Fatalf("SandboxInspectCommand.Run returned error: %v", outcome.err)
+	}
+	assertContainsAll(t, outcome.stdout,
+		"source_kind: snapshot",
+		"source_id: "+snapshotID,
+		"backing_snapshot_id: "+snapshotID,
+	)
+}

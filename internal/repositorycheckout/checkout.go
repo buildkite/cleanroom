@@ -231,7 +231,7 @@ func NormalizeCommand(command []string) []string {
 }
 
 func bootstrapScript(checkout *Checkout) []string {
-	cloneCommand := `git clone --filter=blob:none --no-checkout "$remote" "$dest"`
+	cloneCommand := `git clone --filter=blob:none --no-checkout --progress "$remote" "$dest"`
 	checkoutCommand := `git -C "$dest" checkout --detach "$commit"`
 	if strings.TrimSpace(checkout.Branch) != "" {
 		checkoutCommand = `git -C "$dest" checkout -B "$branch" "$commit"`

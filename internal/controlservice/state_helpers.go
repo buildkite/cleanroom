@@ -122,6 +122,9 @@ func cloneSandboxLocked(state *sandboxState) *cleanroomv1.Sandbox {
 		UpdatedAt:         timestamppb.New(state.UpdatedAt),
 		LastExecutionId:   state.LastExecutionID,
 		ActiveExecutionId: state.ActiveExecutionID,
+		SourceKind:        state.SourceKind,
+		SourceId:          state.SourceID,
+		BackingSnapshotId: state.BackingSnapshotID,
 	}
 }
 

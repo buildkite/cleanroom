@@ -41,6 +41,19 @@ func TestBuildBootstrapCommandDetachesHeadWithoutBranch(t *testing.T) {
 	}
 }
 
+func TestBuildBootstrapCommandForcesCloneProgressWithoutTTY(t *testing.T) {
+	command := BuildBootstrapCommand(&Checkout{
+		RemoteURL:      "https://github.com/buildkite/cleanroom.git",
+		CommitSHA:      "0123456789abcdef0123456789abcdef01234567",
+		DestinationDir: "/workspace",
+	})
+
+	joined := strings.Join(command, " ")
+	if !strings.Contains(joined, `git clone --filter=blob:none --no-checkout --progress "$remote" "$dest"`) {
+		t.Fatalf("expected bootstrap command to force clone progress output, got %q", joined)
+	}
+}
+
 func TestBuildBootstrapCommandAllowsExistingEmptyDestination(t *testing.T) {
 	command := BuildBootstrapCommand(&Checkout{
 		RemoteURL:      "https://github.com/buildkite/cleanroom.git",
