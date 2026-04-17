@@ -29,6 +29,10 @@ type HostSupport struct {
 
 var hostSupportLookPath = exec.LookPath
 
+var hostSupportResolveCommand = resolveHostSupportCommandPath
+
+var hostSupportGOOS = runtime.GOOS
+
 var hostSupportCommandOutput = func(ctx context.Context, binary string, args ...string) ([]byte, error) {
 	return runCombinedCommandOutput(ctx, append([]string{binary}, args...), append([]string{binary}, args...))
 }
@@ -39,8 +43,8 @@ func DetectHostSupport(ctx context.Context, cfg backend.FirecrackerConfig) HostS
 		RequiredCommands: []string{"sudo", "ip", "iptables", "sysctl"},
 	}
 
-	if runtime.GOOS != "linux" {
-		result.RuntimeMessage = fmt.Sprintf("firecracker host runtime bootstrap is only available on linux (current host: %s)", runtime.GOOS)
+	if hostSupportGOOS != "linux" {
+		result.RuntimeMessage = fmt.Sprintf("firecracker host runtime bootstrap is only available on linux (current host: %s)", hostSupportGOOS)
 		result.SnapshotMessage = result.RuntimeMessage
 		result.ZFSMessage = result.RuntimeMessage
 		return result
@@ -48,7 +52,7 @@ func DetectHostSupport(ctx context.Context, cfg backend.FirecrackerConfig) HostS
 
 	missingCommands := make([]string, 0, len(result.RequiredCommands))
 	for _, command := range result.RequiredCommands {
-		if _, err := hostSupportLookPath(command); err != nil {
+		if _, err := hostSupportResolveCommand(command); err != nil {
 			missingCommands = append(missingCommands, command)
 		}
 	}
@@ -213,4 +217,19 @@ func isCleanroomZFSDatasetRoot(dataset string) bool {
 	}
 	parts := strings.Split(dataset, "/")
 	return parts[len(parts)-1] == "cleanroom"
+}
+
+func resolveHostSupportCommandPath(command string) (string, error) {
+	switch strings.TrimSpace(command) {
+	case "sudo":
+		return lookPathWithFallback(command, "/usr/bin/sudo", "/bin/sudo")
+	case "ip":
+		return lookPathWithFallback(command, "/usr/sbin/ip", "/sbin/ip")
+	case "iptables":
+		return lookPathWithFallback(command, "/usr/sbin/iptables", "/sbin/iptables")
+	case "sysctl":
+		return lookPathWithFallback(command, "/usr/sbin/sysctl", "/sbin/sysctl")
+	default:
+		return hostSupportLookPath(command)
+	}
 }

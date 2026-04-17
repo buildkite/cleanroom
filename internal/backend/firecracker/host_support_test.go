@@ -2,8 +2,12 @@ package firecracker
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
+
+	"github.com/buildkite/cleanroom/internal/backend"
 )
 
 func TestDiscoverCleanroomZFSDatasetRootsAcceptsDedicatedCleanroomPool(t *testing.T) {
@@ -43,5 +47,48 @@ func TestIsCleanroomZFSDatasetRoot(t *testing.T) {
 				t.Fatalf("isCleanroomZFSDatasetRoot(%q) = %t, want %t", tt.dataset, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestDetectHostSupportUsesHelperCompatibleCommandFallbacks(t *testing.T) {
+	prevResolveCommand := hostSupportResolveCommand
+	prevGOOS := hostSupportGOOS
+	t.Cleanup(func() {
+		hostSupportResolveCommand = prevResolveCommand
+		hostSupportGOOS = prevGOOS
+	})
+
+	hostSupportGOOS = "linux"
+	hostSupportResolveCommand = func(command string) (string, error) {
+		switch command {
+		case "sudo", "ip", "iptables", "sysctl":
+			return "/fallback/" + command, nil
+		default:
+			return "", nil
+		}
+	}
+
+	tmpDir := t.TempDir()
+	setupFakeSudo(t, filepath.Join(tmpDir, "sudo.log"))
+	helperPath := writeExecutable(t, tmpDir, "cleanroom-root-helper", `#!/bin/sh
+set -eu
+case "$1" in
+  version) printf '6
+' ;;
+  capabilities) printf 'firecracker-network
+firecracker-trusted-dns
+' ;;
+  true) exit 0 ;;
+  ip) exit 0 ;;
+  *) exit 0 ;;
+esac
+`)
+	if _, err := os.Stat(helperPath); err != nil {
+		t.Fatalf("stat helper path: %v", err)
+	}
+
+	support := DetectHostSupport(context.Background(), backend.FirecrackerConfig{PrivilegedHelperPath: helperPath})
+	if !support.RuntimeUsable {
+		t.Fatalf("expected runtime usable with fallback command resolution, got %+v", support)
 	}
 }
