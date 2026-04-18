@@ -13,6 +13,7 @@ import (
 )
 
 type resolvedRepositoryCheckout struct {
+	RootDir        string
 	RemoteURL      string
 	CommitSHA      string
 	DestinationDir string
@@ -125,6 +126,7 @@ func resolveRepositoryCheckoutWithOverride(cwd string, loader policyLoader, over
 	}
 
 	return &resolvedRepositoryCheckout{
+		RootDir:        repoRoot,
 		RemoteURL:      canonicalURL,
 		CommitSHA:      strings.TrimSpace(commitSHA),
 		DestinationDir: repository.Path,
@@ -216,8 +218,8 @@ func toRepositoryCheckout(repository *resolvedRepositoryCheckout) *repositoryche
 	}
 }
 
-func warnDirtyRepositoryCheckout(repository *resolvedRepositoryCheckout) {
-	if repository == nil || !repository.Dirty {
+func warnDirtyRepositoryCheckout(repository *resolvedRepositoryCheckout, includingLocalChanges bool) {
+	if repository == nil || !repository.Dirty || includingLocalChanges {
 		return
 	}
 	_, _ = fmt.Fprint(

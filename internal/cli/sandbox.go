@@ -58,6 +58,7 @@ type CreateCommand struct {
 	From    string `name:"from" help:"Create the sandbox from an existing snapshot ID"`
 	Image   string `help:"Override sandbox image ref (tag, digest, or local Docker image)"`
 	repositoryOverrideFlags
+	repositoryChangesetFlags
 	LaunchSeconds int64 `help:"VM boot/guest-agent readiness timeout in seconds"`
 	JSON          bool  `help:"Print sandbox as JSON"`
 }
@@ -263,7 +264,7 @@ func runSandboxCreate(ctx *runtimeContext, connectFlags clientFlags, backend, fr
 		if err != nil {
 			return err
 		}
-		_, sandbox, err = createSandboxWithPolicy(context.Background(), logger, client, compiled, backend, launchSeconds, nil)
+		_, sandbox, err = createSandboxWithPolicy(context.Background(), logger, client, compiled, backend, launchSeconds, nil, nil)
 		if err != nil {
 			return err
 		}
@@ -309,13 +310,17 @@ func (c *CreateCommand) Run(ctx *runtimeContext) error {
 	if err != nil {
 		return err
 	}
-	warnDirtyRepositoryCheckout(repository)
+	changeset, err := resolveRepositoryChangeset(repository, c.IncludeLocalChanges)
+	if err != nil {
+		return err
+	}
+	warnDirtyRepositoryCheckout(repository, changeset != nil)
 	logger, err := newLogger(c.LogLevel, "client")
 	if err != nil {
 		return err
 	}
 
-	sandboxID, sandbox, err := createTopLevelSandbox(context.Background(), logger, client, ctx.Loader, cwd, host, c.Backend, c.Image, c.LaunchSeconds, repository)
+	sandboxID, sandbox, err := createTopLevelSandbox(context.Background(), logger, client, ctx.Loader, cwd, host, c.Backend, c.Image, c.LaunchSeconds, repository, changeset)
 	if err != nil {
 		return err
 	}
@@ -332,6 +337,9 @@ func (c *CreateCommand) validate() error {
 	if _, err := c.repositoryOverrideFlags.resolve(".", nil); err != nil {
 		return err
 	}
+	if err := c.repositoryChangesetFlags.validate("", c.From, c.repositoryOverrideFlags); err != nil {
+		return err
+	}
 	if c.repositoryOverrideFlags.hasRepositoryOverride() && strings.TrimSpace(c.From) != "" {
 		return errors.New("--repo-url cannot be used with --from")
 	}
@@ -346,6 +354,7 @@ func createTopLevelSandbox(
 	cwd, host, backendName, imageRefOverride string,
 	launchSeconds int64,
 	repository *resolvedRepositoryCheckout,
+	changeset *cleanroomv1.RepositoryChangeset,
 ) (string, *cleanroomv1.Sandbox, error) {
 	compiled, _, err := loader.LoadAndCompile(cwd)
 	if err != nil {
@@ -360,7 +369,7 @@ func createTopLevelSandbox(
 		return "", nil, err
 	}
 
-	return createSandboxWithPolicy(callCtx, logger, client, compiled, backendName, launchSeconds, repository)
+	return createSandboxWithPolicy(callCtx, logger, client, compiled, backendName, launchSeconds, repository, changeset)
 }
 
 func createSandboxWithProgress(
@@ -433,6 +442,7 @@ func createSandboxWithPolicy(
 	backendName string,
 	launchSeconds int64,
 	repository *resolvedRepositoryCheckout,
+	changeset *cleanroomv1.RepositoryChangeset,
 ) (string, *cleanroomv1.Sandbox, error) {
 	if compiled == nil {
 		return "", nil, errors.New("create sandbox: missing compiled policy")
@@ -443,8 +453,9 @@ func createSandboxWithPolicy(
 		Options: &cleanroomv1.SandboxOptions{
 			LaunchSeconds: launchSeconds,
 		},
-		Policy:             compiled.ToProto(),
-		RepositoryCheckout: repositoryCheckoutProto(repository),
+		Policy:              compiled.ToProto(),
+		RepositoryCheckout:  repositoryCheckoutProto(repository),
+		RepositoryChangeset: changeset,
 	})
 	if err != nil {
 		return "", nil, fmt.Errorf("create sandbox: %w", err)

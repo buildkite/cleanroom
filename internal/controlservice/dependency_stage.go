@@ -14,6 +14,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/cachestore"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/policy"
+	"github.com/buildkite/cleanroom/internal/repositorychangeset"
 	"github.com/buildkite/cleanroom/internal/repositorycheckout"
 )
 
@@ -32,8 +33,9 @@ type dependencyStagePlan struct {
 }
 
 type dependencyKeyFileDigest struct {
-	Path   string `json:"path"`
-	SHA256 string `json:"sha256"`
+	Path    string `json:"path"`
+	SHA256  string `json:"sha256,omitempty"`
+	Deleted bool   `json:"deleted,omitempty"`
 }
 
 func dependencyStagePlanForRepository(compiled *policy.CompiledPolicy, repository *repositorycheckout.Checkout) (dependencyStagePlan, bool) {
@@ -58,6 +60,7 @@ func (s *Service) finalizeDependencyStagePlan(
 	ctx context.Context,
 	compiled *policy.CompiledPolicy,
 	repository *repositorycheckout.Checkout,
+	changeset *repositorychangeset.Changeset,
 	workspaceStageKey string,
 	plan dependencyStagePlan,
 ) (dependencyStagePlan, bool, error) {
@@ -65,7 +68,7 @@ func (s *Service) finalizeDependencyStagePlan(
 		return plan, false, nil
 	}
 
-	keyFilesDigest, err := s.dependencyStageKeyFilesDigest(ctx, repository, plan.KeyFiles)
+	keyFilesDigest, err := s.dependencyStageKeyFilesDigest(ctx, repository, changeset, plan.KeyFiles)
 	if err != nil {
 		return plan, false, err
 	}
@@ -86,7 +89,7 @@ func (s *Service) finalizeDependencyStagePlan(
 	return plan, true, nil
 }
 
-func (s *Service) dependencyStageKeyFilesDigest(ctx context.Context, repository *repositorycheckout.Checkout, files []string) (string, error) {
+func (s *Service) dependencyStageKeyFilesDigest(ctx context.Context, repository *repositorycheckout.Checkout, changeset *repositorychangeset.Changeset, files []string) (string, error) {
 	if len(files) == 0 {
 		return "", nil
 	}
@@ -103,7 +106,7 @@ func (s *Service) dependencyStageKeyFilesDigest(ctx context.Context, repository 
 			return "", err
 		}
 	}
-	digest, err := dependencyStageKeyFilesDigestFromMirror(ctx, mirrorPath, repository.CommitSHA, files)
+	digest, err := dependencyStageKeyFilesDigestFromMirror(ctx, mirrorPath, repository.CommitSHA, changeset, files)
 	if err == nil {
 		return digest, nil
 	}
@@ -114,21 +117,41 @@ func (s *Service) dependencyStageKeyFilesDigest(ctx context.Context, repository 
 	if err != nil {
 		return "", err
 	}
-	return dependencyStageKeyFilesDigestFromMirror(ctx, mirrorPath, repository.CommitSHA, files)
+	return dependencyStageKeyFilesDigestFromMirror(ctx, mirrorPath, repository.CommitSHA, changeset, files)
 }
 
-func dependencyStageKeyFilesDigestFromMirror(ctx context.Context, mirrorPath, commitSHA string, files []string) (string, error) {
+func dependencyStageKeyFilesDigestFromMirror(ctx context.Context, mirrorPath, commitSHA string, changeset *repositorychangeset.Changeset, files []string) (string, error) {
 	trimmedMirrorPath := strings.TrimSpace(mirrorPath)
-	if trimmedMirrorPath == "" {
-		return "", fmt.Errorf("dependency key file mirror path is empty")
-	}
 	trimmedCommitSHA := strings.TrimSpace(commitSHA)
 	if trimmedCommitSHA == "" {
 		return "", fmt.Errorf("dependency key file commit SHA is empty")
 	}
 
 	manifest := make([]dependencyKeyFileDigest, 0, len(files))
+	if changeset != nil {
+		digests, err := changeset.DigestPathsFromBase(trimmedMirrorPath, files)
+		if err != nil {
+			return "", fmt.Errorf("read dependency key files from repository changeset: %w", err)
+		}
+		for _, file := range digests {
+			manifest = append(manifest, dependencyKeyFileDigest{
+				Path:    file.Path,
+				SHA256:  file.SHA256,
+				Deleted: file.Deleted,
+			})
+		}
+		payload, err := json.Marshal(manifest)
+		if err != nil {
+			return "", fmt.Errorf("marshal dependency key file manifest: %w", err)
+		}
+
+		sum := sha256.Sum256(payload)
+		return "sha256:" + hex.EncodeToString(sum[:]), nil
+	}
 	for _, file := range files {
+		if trimmedMirrorPath == "" {
+			return "", fmt.Errorf("dependency key file mirror path is empty")
+		}
 		digest, err := gitFileDigestAtCommit(ctx, trimmedMirrorPath, trimmedCommitSHA, file)
 		if err != nil {
 			return "", fmt.Errorf("read dependency key file %q: %w", file, err)
@@ -310,6 +333,7 @@ func (s *Service) bootstrapDependencyStageInPersistentSandbox(
 		firecrackerCfg,
 		cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_BOOTSTRAP_DEPENDENCIES,
 		plan.BootstrapCommand,
+		nil,
 		reporter,
 	)
 	if s.Logger != nil {
@@ -325,30 +349,7 @@ func (s *Service) bootstrapDependencyStageInPersistentSandbox(
 			"error", err,
 		)
 	}
-	if err != nil {
-		msg := strings.TrimSpace(stderr)
-		if msg == "" {
-			msg = strings.TrimSpace(stdout)
-		}
-		if msg == "" {
-			msg = err.Error()
-		}
-		return fmt.Errorf("%s", msg)
-	}
-	if result == nil {
-		return fmt.Errorf("dependency stage bootstrap returned no result")
-	}
-	if result.ExitCode != 0 {
-		msg := strings.TrimSpace(stderr)
-		if msg == "" {
-			msg = strings.TrimSpace(stdout)
-		}
-		if msg == "" {
-			msg = fmt.Sprintf("dependency stage bootstrap failed with exit code %d", result.ExitCode)
-		}
-		return fmt.Errorf("%s", msg)
-	}
-	return nil
+	return persistentBootstrapCommandError(result, stdout, stderr, err, "dependency stage bootstrap returned no result", "dependency stage bootstrap failed with exit code %d")
 }
 
 func (s *Service) logDependencyStageCacheHit(record cachestore.Record) {

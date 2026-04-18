@@ -18,6 +18,7 @@ import (
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/paths"
 	"github.com/buildkite/cleanroom/internal/policy"
+	"github.com/buildkite/cleanroom/internal/repositorychangeset"
 	"github.com/buildkite/cleanroom/internal/repositorycheckout"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 	"github.com/buildkite/cleanroom/internal/snapshotstore"
@@ -1476,7 +1477,7 @@ func TestCreateSandboxPublishesWorkspaceStageCache(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FromProto returned error: %v", err)
 	}
-	if got, want := record.CacheKey, workspaceStageCacheKey("firecracker", "runtime-base:test", compiled.Hash, repositorycheckout.FromProto(testRepositoryCheckoutProto())); got != want {
+	if got, want := record.CacheKey, workspaceStageCacheKey("firecracker", "runtime-base:test", compiled.Hash, repositorycheckout.FromProto(testRepositoryCheckoutProto()), nil); got != want {
 		t.Fatalf("unexpected workspace cache key: got %q want %q", got, want)
 	}
 	if got, want := record.Stage, workspaceStageName; got != want {
@@ -1672,8 +1673,8 @@ func TestCreateSandboxDoesNotReuseWorkspaceStageCacheAcrossPolicies(t *testing.T
 	if firstCompiled.Hash == secondCompiled.Hash {
 		t.Fatalf("expected distinct compiled policy hashes, got %q", firstCompiled.Hash)
 	}
-	firstKey := workspaceStageCacheKey("firecracker", "runtime-base:test", firstCompiled.Hash, repositorycheckout.FromProto(testRepositoryCheckoutProto()))
-	secondKey := workspaceStageCacheKey("firecracker", "runtime-base:test", secondCompiled.Hash, repositorycheckout.FromProto(testRepositoryCheckoutProto()))
+	firstKey := workspaceStageCacheKey("firecracker", "runtime-base:test", firstCompiled.Hash, repositorycheckout.FromProto(testRepositoryCheckoutProto()), nil)
+	secondKey := workspaceStageCacheKey("firecracker", "runtime-base:test", secondCompiled.Hash, repositorycheckout.FromProto(testRepositoryCheckoutProto()), nil)
 	if firstKey == secondKey {
 		t.Fatalf("expected workspace stage cache keys to differ across policies, got %q", firstKey)
 	}
@@ -1740,8 +1741,8 @@ func TestCreateSandboxPublishesWorkspaceStageCachePerBackend(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FromProto returned error: %v", err)
 	}
-	firecrackerKey := workspaceStageCacheKey("firecracker", "runtime-base:test", compiled.Hash, repositorycheckout.FromProto(testRepositoryCheckoutProto()))
-	darwinKey := workspaceStageCacheKey("darwin-vz", "runtime-base:test", compiled.Hash, repositorycheckout.FromProto(testRepositoryCheckoutProto()))
+	firecrackerKey := workspaceStageCacheKey("firecracker", "runtime-base:test", compiled.Hash, repositorycheckout.FromProto(testRepositoryCheckoutProto()), nil)
+	darwinKey := workspaceStageCacheKey("darwin-vz", "runtime-base:test", compiled.Hash, repositorycheckout.FromProto(testRepositoryCheckoutProto()), nil)
 	if firecrackerKey == darwinKey {
 		t.Fatalf("expected backend-specific workspace stage cache keys, got %q", firecrackerKey)
 	}
@@ -1908,7 +1909,7 @@ func TestDeleteWorkspaceStageCacheSnapshotRejectsInFlightRestore(t *testing.T) {
 	}
 	repository := repositorycheckout.FromProto(testRepositoryCheckoutProto())
 	record := cachestore.Record{
-		CacheKey:          workspaceStageCacheKey("firecracker", "runtime-base:test", compiled.Hash, repository),
+		CacheKey:          workspaceStageCacheKey("firecracker", "runtime-base:test", compiled.Hash, repository, nil),
 		Stage:             workspaceStageName,
 		State:             cacheStateReady,
 		BackingSnapshotID: "workspace-stage-backing-snapshot",
@@ -2053,12 +2054,12 @@ func TestCreateSandboxPublishesDependencyStageCacheForConfiguredDependencies(t *
 		t.Fatalf("FromProto returned error: %v", err)
 	}
 	repository := repositorycheckout.FromProto(repositoryCheckout)
-	workspaceKey := workspaceStageCacheKey("firecracker", "runtime-base:test", compiled.Hash, repository)
+	workspaceKey := workspaceStageCacheKey("firecracker", "runtime-base:test", compiled.Hash, repository, nil)
 	plan, ok := dependencyStagePlanForRepository(compiled, repository)
 	if !ok {
 		t.Fatal("expected configured dependency stage plan to be enabled")
 	}
-	plan, ok, err = svc.finalizeDependencyStagePlan(context.Background(), compiled, repository, workspaceKey, plan)
+	plan, ok, err = svc.finalizeDependencyStagePlan(context.Background(), compiled, repository, nil, workspaceKey, plan)
 	if err != nil {
 		t.Fatalf("finalizeDependencyStagePlan returned error: %v", err)
 	}
@@ -2174,7 +2175,65 @@ func TestCreateSandboxReusesDependencyStageCacheForConfiguredDependencies(t *tes
 	}
 }
 
-func TestCreateSandboxPublishesDependencyStageCacheAfterWorkspaceStageRestoreWhenMirrorPathIsMissing(t *testing.T) {
+func TestDependencyStageKeyFilesDigestDerivesHashesFromRepositoryChangesetPatch(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"go.mod": "module example.com/test\n\ngo 1.26.2\n",
+		"go.sum": "example.com/test v0.0.0 h1:abc123\n",
+	})
+	repository := repositorycheckout.FromProto(repositoryCheckout)
+	repoDir := mirrors.mirrorPath
+	if err := os.WriteFile(filepath.Join(repoDir, "go.mod"), []byte("module example.com/test\n\ngo 1.26.2\nrequire example.com/lib v1.0.0\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(go.mod) returned error: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "go.sum"), []byte("example.com/test v0.0.0 h1:abc123\nexample.com/lib v1.0.0 h1:def456\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(go.sum) returned error: %v", err)
+	}
+	changeset, err := repositorychangeset.BuildFromWorkingTree(repoDir, repository)
+	if err != nil {
+		t.Fatalf("BuildFromWorkingTree returned error: %v", err)
+	}
+	if changeset == nil {
+		t.Fatal("expected repository changeset for modified dependency key files")
+	}
+
+	svc := newTestService(&stubAdapter{})
+	svc.RepositoryMirrors = mirrors
+
+	baseDigest, err := svc.dependencyStageKeyFilesDigest(context.Background(), repository, nil, []string{"go.mod", "go.sum"})
+	if err != nil {
+		t.Fatalf("dependencyStageKeyFilesDigest without changeset returned error: %v", err)
+	}
+	changesetDigest, err := svc.dependencyStageKeyFilesDigest(context.Background(), repository, changeset, []string{"go.mod", "go.sum"})
+	if err != nil {
+		t.Fatalf("dependencyStageKeyFilesDigest with changeset returned error: %v", err)
+	}
+	if changesetDigest == "" {
+		t.Fatal("expected dependency key file digest with repository changeset")
+	}
+	if changesetDigest == baseDigest {
+		t.Fatalf("expected changeset-aware dependency key digest to differ from base digest %q", baseDigest)
+	}
+
+	tampered := *changeset
+	tampered.Files = append([]repositorychangeset.File(nil), changeset.Files...)
+	for i := range tampered.Files {
+		if tampered.Files[i].Deleted {
+			continue
+		}
+		tampered.Files[i].SHA256 = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+	}
+
+	tamperedDigest, err := svc.dependencyStageKeyFilesDigest(context.Background(), repository, &tampered, []string{"go.mod", "go.sum"})
+	if err != nil {
+		t.Fatalf("dependencyStageKeyFilesDigest with tampered changeset metadata returned error: %v", err)
+	}
+	if got, want := tamperedDigest, changesetDigest; got != want {
+		t.Fatalf("expected dependency key file digest to ignore tampered file hashes: got %q want %q", got, want)
+	}
+}
+
+func TestCreateSandboxBootstrapsDependenciesAfterWorkspaceStageRestoreWithoutDependencyStageCache(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	store := newMemorySnapshotStore()
 	adapter := &stubAdapter{}
@@ -2202,7 +2261,7 @@ func TestCreateSandboxPublishesDependencyStageCacheAfterWorkspaceStageRestoreWhe
 	}
 	repository := repositorycheckout.FromProto(repositoryCheckout)
 	workspaceRecord := cachestore.Record{
-		CacheKey:          workspaceStageCacheKey("firecracker", "runtime-base:test", compiled.Hash, repository),
+		CacheKey:          workspaceStageCacheKey("firecracker", "runtime-base:test", compiled.Hash, repository, nil),
 		Stage:             workspaceStageName,
 		State:             cacheStateReady,
 		BackingSnapshotID: "workspace-stage-backing-snapshot",

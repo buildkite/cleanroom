@@ -12,9 +12,10 @@ then
 materialize the selected cached environment as a single writable root volume
 per sandbox.
 
-This plan intentionally keeps two systems separate:
+This plan intentionally keeps three systems separate:
 
 - user snapshots are explicit, user-facing savepoints
+- user changesets are explicit, host-local packages of local repository changes
 - system caches are implicit, host-managed stage outputs
 
 The system-cache pipeline uses stage terminology:
@@ -220,25 +221,33 @@ identity, lifecycle, and API semantics.
 
 ## Design Principles
 
-### 1. Keep user snapshots and system caches separate
+### 1. Keep user snapshots, user changesets, and system caches separate
 
-User snapshots and system caches may use the same low-level clone/snapshot
-mechanisms, but they are different products:
+User snapshots, user changesets, and system caches may use the same low-level
+clone/snapshot and content-addressed storage mechanisms, but they are different
+products:
 
 - user snapshots are addressed by snapshot ID and user intent
+- user changesets are addressed by explicit replayable repository inputs such as
+  `(base checkout, changeset digest)`
 - system caches are addressed by `(stage, key)` and immutable, replayable
   inputs
 - user snapshots are explicit and durable
+- user changesets are explicit and replayable, but should remain host-local in
+  the first slice
 - system caches are implicit and eligible for automatic garbage collection
 
 `snapshotstore` should remain the user snapshot store. System-managed stage
-outputs should move into a dedicated `cachestore`.
+outputs should live in a dedicated `cachestore`. Explicit local repository
+changesets should live in a separate `changesetstore`.
 
 The user-facing restore/fork surface should remain snapshot-oriented:
 
 - `--from` should refer to user snapshots, not system stage caches
 - normal sandbox creation should resolve system stage caches automatically from
   request inputs
+- explicit local changes should use a separate changeset surface such as
+  `--changeset` or `--include-local-changes`, not snapshot restore semantics
 - if direct stage-cache selection is ever exposed, it should use a separate
   operator/debug surface rather than sharing snapshot semantics
 
@@ -258,6 +267,8 @@ They must instead be keyed by exact inputs such as:
 - canonical remote URL
 - full commit SHA
 - submodule SHAs or enabled/disabled state
+- explicit changeset digest and resulting tree digest when local changes are
+  included
 - lockfile bytes and lockfile parser version
 - toolchain manifest bytes and resolved tool versions
 - compiled policy hash
@@ -320,7 +331,7 @@ in storage behavior:
 
 ## Cache Types
 
-We should model three distinct things explicitly.
+We should model four distinct things explicitly.
 
 ### A. System stage caches
 
@@ -354,6 +365,26 @@ This is how a selected stage cache becomes one writable VM root disk:
 
 Stage cache selection is backend-neutral. Materialization remains
 backend-specific.
+
+### D. Explicit user changesets
+
+This is the user-facing package for local modifications on top of an exact
+repository checkout:
+
+- base checkout identified by canonical remote URL, full commit SHA, and
+  submodule mode
+- deterministic changeset digest and resulting tree digest
+- versioned transport payload for replay on another sandbox create
+
+These are not runnable environments and should not be addressed through
+snapshot restore or stage-cache selection.
+
+They should:
+
+- be explicit and opt-in
+- remain host-local first
+- participate in workspace-stage and dependency-stage key resolution
+- be applied after exact repository checkout and before dependency bootstrap
 
 ## System Cache Stages
 
@@ -392,7 +423,8 @@ Notes:
 
 Purpose:
 
-- capture an exact checked-out repository state ready for command execution
+- capture an exact checked-out repository state, optionally with an explicit
+  changeset applied, ready for command execution
 
 Suggested key:
 
@@ -403,6 +435,7 @@ workspace_stage_key = H(
   commit_sha,
   submodule_mode,
   submodule_resolution_digest,
+  changeset_digest,
   checkout_mode,
   repository_destination_dir,
   materialization_recipe_digest
@@ -411,7 +444,8 @@ workspace_stage_key = H(
 
 Output:
 
-- sealed rootfs snapshot containing the exact repository checkout
+- sealed rootfs snapshot containing the exact repository checkout, optionally
+  with the requested changeset already applied
 
 Notes:
 
@@ -419,6 +453,9 @@ Notes:
 - it turns "avoid hammering upstream" into "skip clone and checkout on warm hit"
 - `commit_sha` identifies the repo tree, but it is not enough to identify the
   full workspace stage by itself
+- when a changeset is present, workspace-stage identity must include the
+  changeset digest rather than silently treating the dirty worktree as part of
+  the base checkout
 - workspace-stage identity must also capture repository provenance and checkout
   behavior such as submodule resolution, destination path, and any explicit
   materialization recipe details such as sparse checkout or LFS hydration
@@ -459,6 +496,8 @@ Notes:
 - the first implementation slice should be explicit and narrow rather than
   heuristic; the current target is one configured dependency command and a set
   of declared repository key files on top of a workspace stage
+- when a changeset is present, declared dependency key files must be resolved
+  from the post-apply tree rather than only from the base commit mirror
 - for that initial slice, the dependency-stage key can conservatively start
   with the workspace-stage key plus policy hash, the concrete bootstrap recipe
   digest, and declared key-file digests, then grow richer toolchain inputs
@@ -550,30 +589,49 @@ the resolved request inputs.
 
 The control plane can then resolve the highest reusable stage cache it trusts:
 
-1. dependency stage hit
-2. workspace stage hit
-3. runtime stage hit
-4. cold path
+1. dependency stage hit for the exact checkout plus optional changeset
+2. workspace stage hit for the exact checkout plus optional changeset
+3. exact-checkout workspace stage hit, followed by verified changeset apply
+4. runtime stage hit
+5. cold path
 
 ## Production Flow
 
 Shared stage-cache publication should be a host-controlled promotion pipeline.
 
+### Package explicit changeset
+
+1. Resolve the exact base checkout inputs:
+   - canonical remote URL
+   - full commit SHA
+   - submodule mode
+2. Compute a deterministic manifest of local modifications relative to that
+   base checkout.
+3. Build a versioned transport payload that can replay those modifications onto
+   the exact checkout.
+4. Compute a stable changeset identity from the base checkout plus the resulting
+   post-apply tree, not from patch serialization alone.
+5. Persist the immutable changeset record and payload atomically in
+   `changesetstore`.
+
 ### Publish workspace stage
 
-1. Resolve the exact repository checkout inputs.
+1. Resolve the exact repository checkout inputs and any explicit changeset
+   inputs.
 2. Start from the selected runtime stage.
 3. Materialize the repository through the host git gateway.
-4. Verify the checkout:
+4. If a changeset was requested, apply it and verify the resulting tree digest.
+5. Verify the checkout:
    - remote URL canonicalized as expected
    - `HEAD` equals requested commit
    - submodules match requested policy
-5. Snapshot the resulting root volume.
-6. Publish the workspace-stage metadata and storage reference atomically.
+6. Snapshot the resulting root volume.
+7. Publish the workspace-stage metadata and storage reference atomically.
 
 ### Publish dependency stage
 
-1. Start from a published workspace stage.
+1. Start from a published workspace stage that already reflects the requested
+   exact checkout and optional changeset.
 2. Run the constrained bootstrap recipe in a temporary builder sandbox.
 3. Allow package fetches only through the gateway and only for lockfile-derived
    artifacts.
@@ -597,14 +655,16 @@ Warm-hit resolution should be simple.
 If no dependency stage exists but a workspace stage does:
 
 1. clone the workspace stage
-2. run the constrained bootstrap recipe
-3. optionally publish a dependency stage if the policy allows promotion
+2. if needed, apply and verify the requested changeset
+3. run the constrained bootstrap recipe
+4. optionally publish a dependency stage if the policy allows promotion
 
 If only the runtime stage exists:
 
 1. clone the runtime stage
 2. perform repository checkout
-3. continue upward through the same promotion flow
+3. if a changeset was requested, apply and verify it
+4. continue upward through the same promotion flow
 
 This stage-cache resolution should remain an internal control-plane behavior for
 normal users. User-facing restore/fork flows should continue to target explicit
@@ -750,8 +810,9 @@ This plan composes with the existing documents rather than replacing them.
 | `internal/gateway/mirror.go` | Already acts as the host-side git transport cache keyed by canonical remote URL. |
 | `internal/repositorycheckout/checkout.go` | Already uses exact remote URL and full commit SHA as the checkout source of truth; `branch` currently affects local checkout mode only. |
 | `internal/controlservice/workspace_stage.go` | Current workspace-stage orchestration already lives here using dedicated stage-cache metadata. |
-| `internal/controlservice/dependency_stage.go` | Dependency-stage orchestration entry point for policy-controlled bootstrap, declared key-file hashing, and publication. |
+| `internal/controlservice/dependency_stage.go` | Dependency-stage orchestration entry point for policy-controlled bootstrap, declared key-file hashing, post-apply tree keying, and publication. |
 | `internal/snapshotstore/store.go` | Should remain the user snapshot store rather than being expanded into the system-cache store. |
+| `internal/changesetstore/*` | Planned store for explicit local changeset metadata and replay payloads, separate from both snapshots and stage caches. |
 | `internal/volumestore/store.go` | Already provides the backend-neutral clone/snapshot contract shared by both backends. |
 | `internal/backend/firecracker/backend.go` | Already routes normal execution and snapshot restore through writable root volume preparation; actual clone behavior depends on the configured driver. |
 | `internal/backend/darwinvz/backend_darwin.go` | Already fits the same one-rootfs model and can use APFS clone materialization. |
@@ -767,6 +828,7 @@ cache_key
 stage                    // runtime | workspace | dependency
 state                    // ready | failed | garbage
 parent_cache_key
+changeset_digest         // optional, when a workspace/dependency stage includes explicit local changes
 storage_driver
 storage_ref
 policy_hash
@@ -780,6 +842,23 @@ producer_version
 This metadata should live in a dedicated `cachestore`, not in `snapshotstore`.
 Input manifests should be stored as explicit structured metadata rather than as
 opaque prose so determinism can be tested directly.
+
+Suggested changeset record shape:
+
+```text
+changeset_id
+canonical_remote_url
+base_commit_sha
+submodule_mode
+changeset_digest
+final_tree_digest
+transport_format
+transport_ref
+created_at
+```
+
+This metadata should live in a dedicated `changesetstore`, not in
+`snapshotstore` or `cachestore`.
 
 ## Implementation Order
 
@@ -809,14 +888,18 @@ stage still needs richer lockfile/toolchain inputs.
 
 ### Remaining
 
-1. Add richer toolchain input digests for dependency-stage keys beyond the
+1. Add explicit host-local changeset packaging and replay on top of exact-commit
+   workspaces.
+2. Add post-apply dependency key-file hashing so local lockfile changes affect
+   dependency-stage reuse correctly.
+3. Add richer toolchain input digests for dependency-stage keys beyond the
    current workspace-plus-command-plus-key-files slice.
-2. Add additional ecosystems only after the first explicit dependency-stage
+4. Add additional ecosystems only after the first explicit dependency-stage
    flow is solid.
-3. Add strict offline warm-cache mode and fail-closed launch checks.
-4. Add garbage collection and retention policies after the key model and
+5. Add strict offline warm-cache mode and fail-closed launch checks.
+6. Add garbage collection and retention policies after the key model and
    publication flow are stable.
-5. Revisit cross-host distribution/export only after the local host model is
+7. Revisit cross-host distribution/export only after the local host model is
    proven worthwhile.
 
 ## Testing Plan
@@ -824,6 +907,8 @@ stage still needs richer lockfile/toolchain inputs.
 ### Key determinism
 
 - identical inputs produce identical keys
+- identical local worktrees packaged against the same base checkout produce the
+  same changeset digest
 - irrelevant field ordering does not change keys
 - parser version changes do change keys when parser behavior is versioned
 
@@ -848,6 +933,8 @@ implemented today as the workspace-seed flow:
 - offline warm mode fails closed when a required artifact is missing
 - git repository materialization blocks until the requested commit exists in the
   mirror
+- dependency-stage key files resolve from the post-apply tree when a changeset
+  is present
 
 ### Runtime performance
 

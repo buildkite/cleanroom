@@ -23,6 +23,7 @@ type ExecCommand struct {
 	From    string `name:"from" help:"Create the sandbox from an existing snapshot ID"`
 	Image   string `help:"Override sandbox image ref for newly created sandboxes (tag, digest, or local Docker image)"`
 	repositoryOverrideFlags
+	repositoryChangesetFlags
 	Keep           bool     `help:"Keep a newly created sandbox after the command completes"`
 	Env            []string `short:"e" name:"env" help:"Set guest environment variables; use KEY to inherit from the local environment or KEY=VALUE to set an explicit value"`
 	NoStdin        bool     `short:"n" name:"no-stdin" aliases:"stdin-eof" help:"Close stdin immediately instead of attaching it"`
@@ -34,7 +35,7 @@ type ExecCommand struct {
 }
 
 func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
-	if err := validateExecutionSandboxArgs(e.Chdir, e.In, e.From, e.Keep, e.repositoryOverrideFlags); err != nil {
+	if err := validateExecutionSandboxArgs(e.Chdir, e.In, e.From, e.Keep, e.repositoryOverrideFlags, e.repositoryChangesetFlags); err != nil {
 		return err
 	}
 
@@ -92,7 +93,7 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 		"command_argc", len(e.Command),
 		"env_count", len(executionEnv),
 	)
-	target, err := resolveExecutionSandbox(rootCtx, logger, client, ctx, cwd, host, e.Backend, e.In, e.From, e.Image, e.LaunchSeconds, e.repositoryOverrideFlags)
+	target, err := resolveExecutionSandbox(rootCtx, logger, client, ctx, cwd, host, e.Backend, e.In, e.From, e.Image, e.LaunchSeconds, e.repositoryOverrideFlags, e.repositoryChangesetFlags)
 	if err != nil {
 		if strings.TrimSpace(e.From) != "" {
 			err = explainSnapshotRuntimeDisabledError(err, ctx)

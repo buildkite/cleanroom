@@ -32,6 +32,7 @@ type WorkspaceStageInputs struct {
 	CommitSHA                   string
 	SubmoduleMode               string
 	SubmoduleResolutionDigest   string
+	ChangesetDigest             string
 	CheckoutMode                string
 	DestinationDir              string
 	MaterializationRecipeDigest string
@@ -67,6 +68,7 @@ func WorkspaceStageKey(in WorkspaceStageInputs) string {
 		{name: "commit_sha", value: canonicalDigest(in.CommitSHA)},
 		{name: "submodule_mode", value: canonicalIdentifier(in.SubmoduleMode)},
 		{name: "submodule_resolution_digest", value: canonicalDigest(in.SubmoduleResolutionDigest)},
+		{name: "changeset_digest", value: canonicalDigest(in.ChangesetDigest)},
 		{name: "checkout_mode", value: canonicalIdentifier(in.CheckoutMode)},
 		{name: "destination_dir", value: canonicalAbsolutePath(in.DestinationDir)},
 		{name: "materialization_recipe_digest", value: canonicalDigest(in.MaterializationRecipeDigest)},

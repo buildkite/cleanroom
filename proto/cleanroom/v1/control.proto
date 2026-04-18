@@ -119,6 +119,21 @@ message RepositoryCheckout {
   reserved "git_config_key", "git_config_value";
 }
 
+message RepositoryChangesetFile {
+  string path = 1;
+  string sha256 = 2;
+  bool deleted = 3;
+}
+
+message RepositoryChangeset {
+  string format = 1;
+  string base_commit_sha = 2;
+  string digest = 3;
+  string tree_digest = 4;
+  bytes patch = 5;
+  repeated RepositoryChangesetFile files = 6;
+}
+
 message CreateSandboxRequest {
   reserved 1;
   reserved "cwd";
@@ -126,6 +141,7 @@ message CreateSandboxRequest {
   SandboxOptions options = 3;
   Policy policy = 4;
   RepositoryCheckout repository_checkout = 5;
+  RepositoryChangeset repository_changeset = 7;
   oneof source {
     string snapshot_id = 6;
   }
@@ -153,6 +169,7 @@ enum CreateSandboxPhase {
   CREATE_SANDBOX_PHASE_BOOTSTRAP_DEPENDENCIES = 9;
   CREATE_SANDBOX_PHASE_PUBLISH_DEPENDENCY_STAGE_CACHE = 10;
   CREATE_SANDBOX_PHASE_READY = 11;
+  CREATE_SANDBOX_PHASE_APPLY_REPOSITORY_CHANGESET = 12;
 }
 
 message CreateSandboxEvent {
