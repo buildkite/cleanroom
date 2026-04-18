@@ -5,16 +5,18 @@ import (
 	"testing"
 
 	"github.com/buildkite/cleanroom/internal/backend"
-	"github.com/buildkite/cleanroom/internal/volumestore"
 )
 
 type testHostRuntime struct {
-	checkAccessFn            func(context.Context) error
-	checkNetworkingFn        func(context.Context) error
-	setupSandboxNetworkFn    func(context.Context, sandboxNetworkRequest) (sandboxNetworkLease, error)
-	setupGatewayFirewallFn   func(context.Context, gatewayFirewallRequest) (gatewayFirewallLease, error)
-	validateZFSDatasetRootFn func(context.Context, string) error
-	openZFSVolumeStoreFn     func(string) (volumestore.Driver, error)
+	checkAccessFn              func(context.Context) error
+	checkNetworkingFn          func(context.Context) error
+	setupSandboxNetworkFn      func(context.Context, sandboxNetworkRequest) (sandboxNetworkLease, error)
+	setupGatewayFirewallFn     func(context.Context, gatewayFirewallRequest) (gatewayFirewallLease, error)
+	validateZFSDatasetRootFn   func(context.Context, string) error
+	prepareZFSWritableVolumeFn func(context.Context, zfsWritableVolumeRequest) (zfsWritableVolume, error)
+	createZFSSnapshotFn        func(context.Context, zfsSnapshotRequest) (zfsSnapshot, error)
+	destroyZFSVolumeFn         func(context.Context, string) error
+	destroyZFSSnapshotFn       func(context.Context, string) error
 }
 
 func (r testHostRuntime) CheckAccess(ctx context.Context) error {
@@ -52,11 +54,32 @@ func (r testHostRuntime) ValidateZFSDatasetRoot(ctx context.Context, dataset str
 	return r.validateZFSDatasetRootFn(ctx, dataset)
 }
 
-func (r testHostRuntime) OpenZFSVolumeStore(datasetRoot string) (volumestore.Driver, error) {
-	if r.openZFSVolumeStoreFn == nil {
-		return nil, nil
+func (r testHostRuntime) PrepareZFSWritableVolume(ctx context.Context, req zfsWritableVolumeRequest) (zfsWritableVolume, error) {
+	if r.prepareZFSWritableVolumeFn == nil {
+		return zfsWritableVolume{}, nil
 	}
-	return r.openZFSVolumeStoreFn(datasetRoot)
+	return r.prepareZFSWritableVolumeFn(ctx, req)
+}
+
+func (r testHostRuntime) CreateZFSSnapshot(ctx context.Context, req zfsSnapshotRequest) (zfsSnapshot, error) {
+	if r.createZFSSnapshotFn == nil {
+		return zfsSnapshot{}, nil
+	}
+	return r.createZFSSnapshotFn(ctx, req)
+}
+
+func (r testHostRuntime) DestroyZFSVolume(ctx context.Context, volumeRef string) error {
+	if r.destroyZFSVolumeFn == nil {
+		return nil
+	}
+	return r.destroyZFSVolumeFn(ctx, volumeRef)
+}
+
+func (r testHostRuntime) DestroyZFSSnapshot(ctx context.Context, snapshotRef string) error {
+	if r.destroyZFSSnapshotFn == nil {
+		return nil
+	}
+	return r.destroyZFSSnapshotFn(ctx, snapshotRef)
 }
 
 func TestSetupGatewayFirewallUsesHostRuntime(t *testing.T) {
@@ -90,37 +113,58 @@ func TestSetupGatewayFirewallUsesHostRuntime(t *testing.T) {
 	}
 }
 
-func TestRootFSVolumeStoreDriverUsesHostRuntimeForZFS(t *testing.T) {
+func TestPrepareWritableRootVolumeUsesHostRuntimeForZFS(t *testing.T) {
 	prevHostRuntimeFn := newHostRuntimeFn
 	t.Cleanup(func() { newHostRuntimeFn = prevHostRuntimeFn })
 
-	var gotDatasetRoot string
+	var gotReq zfsWritableVolumeRequest
+	destroyedVolume := ""
 	newHostRuntimeFn = func(cfg backend.FirecrackerConfig) hostRuntime {
 		if got, want := cfg.Snapshots.Driver, "zfs"; got != want {
 			t.Fatalf("unexpected snapshot driver: got %q want %q", got, want)
 		}
 		return testHostRuntime{
-			openZFSVolumeStoreFn: func(datasetRoot string) (volumestore.Driver, error) {
-				gotDatasetRoot = datasetRoot
-				return testVolumeDriver{}, nil
+			prepareZFSWritableVolumeFn: func(_ context.Context, req zfsWritableVolumeRequest) (zfsWritableVolume, error) {
+				gotReq = req
+				return zfsWritableVolume{
+					Ref:            "tank/cleanroom/sandboxes/exec-1",
+					AttachmentPath: "/dev/zvol/tank/cleanroom/sandboxes/exec-1",
+				}, nil
+			},
+			destroyZFSVolumeFn: func(_ context.Context, volumeRef string) error {
+				destroyedVolume = volumeRef
+				return nil
 			},
 		}
 	}
 
-	driver, err := rootFSVolumeStoreDriver(backend.FirecrackerConfig{
+	volume, cleanupVolume, err := prepareWritableRootVolume(context.Background(), backend.FirecrackerConfig{
+		MinimumRootFSBytes: 8 << 20,
 		Snapshots: backend.SnapshotConfig{
 			Driver:     "zfs",
 			ZFSDataset: "tank/cleanroom",
 		},
-	})
+	}, "exec-1", t.TempDir(), "/tmp/runtime-rootfs.ext4")
 	if err != nil {
-		t.Fatalf("rootFSVolumeStoreDriver returned error: %v", err)
+		t.Fatalf("prepareWritableRootVolume returned error: %v", err)
 	}
-	if got, want := gotDatasetRoot, "tank/cleanroom"; got != want {
-		t.Fatalf("unexpected zfs dataset root: got %q want %q", got, want)
+	if cleanupVolume == nil {
+		t.Fatal("expected cleanup function")
 	}
-	if _, ok := driver.(testVolumeDriver); !ok {
-		t.Fatalf("unexpected zfs driver type: %T", driver)
+	if got, want := gotReq, (zfsWritableVolumeRequest{
+		VolumeID:     "exec-1",
+		SourcePath:   "/tmp/runtime-rootfs.ext4",
+		MinimumBytes: 8 << 20,
+	}); got != want {
+		t.Fatalf("unexpected zfs writable volume request: got %+v want %+v", got, want)
+	}
+	if got, want := volume.Ref, "tank/cleanroom/sandboxes/exec-1"; got != want {
+		t.Fatalf("unexpected volume ref: got %q want %q", got, want)
+	}
+
+	cleanupVolume()
+	if got, want := destroyedVolume, "tank/cleanroom/sandboxes/exec-1"; got != want {
+		t.Fatalf("unexpected destroyed zfs volume ref: got %q want %q", got, want)
 	}
 }
 
