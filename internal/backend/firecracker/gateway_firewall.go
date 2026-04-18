@@ -24,7 +24,13 @@ func SetupGatewayFirewall(ctx context.Context, port int, cfg backend.Firecracker
 }
 
 func setupGatewayFirewall(ctx context.Context, port int, runtime hostRuntime) (cleanup func(), err error) {
-	return runtime.SetupGatewayFirewall(ctx, gatewayFirewallRequest{Port: port})
+	lease, err := runtime.SetupGatewayFirewall(ctx, gatewayFirewallRequest{Port: port})
+	if err != nil {
+		return nil, err
+	}
+	return func() {
+		_ = lease.Release(context.Background())
+	}, nil
 }
 
 func setupGatewayFirewallWithRunner(ctx context.Context, port int, runner privilegedCommandRunner) (cleanup func(), err error) {
