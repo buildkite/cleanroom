@@ -11,8 +11,8 @@ import (
 type testHostRuntime struct {
 	checkAccessFn            func(context.Context) error
 	checkNetworkingFn        func(context.Context) error
-	setupSandboxNetworkFn    func(context.Context, sandboxNetworkRequest) (hostNetworkConfig, func(), error)
-	setupGatewayFirewallFn   func(context.Context, gatewayFirewallRequest) (func(), error)
+	setupSandboxNetworkFn    func(context.Context, sandboxNetworkRequest) (sandboxNetworkLease, error)
+	setupGatewayFirewallFn   func(context.Context, gatewayFirewallRequest) (gatewayFirewallLease, error)
 	validateZFSDatasetRootFn func(context.Context, string) error
 	openZFSVolumeStoreFn     func(string) (volumestore.Driver, error)
 }
@@ -31,16 +31,16 @@ func (r testHostRuntime) CheckNetworking(ctx context.Context) error {
 	return r.checkNetworkingFn(ctx)
 }
 
-func (r testHostRuntime) SetupSandboxNetwork(ctx context.Context, req sandboxNetworkRequest) (hostNetworkConfig, func(), error) {
+func (r testHostRuntime) SetupSandboxNetwork(ctx context.Context, req sandboxNetworkRequest) (sandboxNetworkLease, error) {
 	if r.setupSandboxNetworkFn == nil {
-		return hostNetworkConfig{}, func() {}, nil
+		return sandboxNetworkLease{}, nil
 	}
 	return r.setupSandboxNetworkFn(ctx, req)
 }
 
-func (r testHostRuntime) SetupGatewayFirewall(ctx context.Context, req gatewayFirewallRequest) (func(), error) {
+func (r testHostRuntime) SetupGatewayFirewall(ctx context.Context, req gatewayFirewallRequest) (gatewayFirewallLease, error) {
 	if r.setupGatewayFirewallFn == nil {
-		return func() {}, nil
+		return gatewayFirewallLease{}, nil
 	}
 	return r.setupGatewayFirewallFn(ctx, req)
 }
@@ -66,12 +66,15 @@ func TestSetupGatewayFirewallUsesHostRuntime(t *testing.T) {
 	cleanedUp := false
 
 	cleanup, err := setupGatewayFirewall(context.Background(), 8170, testHostRuntime{
-		setupGatewayFirewallFn: func(_ context.Context, req gatewayFirewallRequest) (func(), error) {
+		setupGatewayFirewallFn: func(_ context.Context, req gatewayFirewallRequest) (gatewayFirewallLease, error) {
 			called = true
 			if got, want := req.Port, 8170; got != want {
 				t.Fatalf("unexpected gateway firewall port: got %d want %d", got, want)
 			}
-			return func() { cleanedUp = true }, nil
+			return gatewayFirewallLease{release: func(context.Context) error {
+				cleanedUp = true
+				return nil
+			}}, nil
 		},
 	})
 	if err != nil {
@@ -118,5 +121,24 @@ func TestRootFSVolumeStoreDriverUsesHostRuntimeForZFS(t *testing.T) {
 	}
 	if _, ok := driver.(testVolumeDriver); !ok {
 		t.Fatalf("unexpected zfs driver type: %T", driver)
+	}
+}
+
+func TestSandboxNetworkLeaseReleaseRunsCleanup(t *testing.T) {
+	t.Parallel()
+
+	released := false
+	lease := sandboxNetworkLease{
+		release: func(context.Context) error {
+			released = true
+			return nil
+		},
+	}
+
+	if err := lease.Release(context.Background()); err != nil {
+		t.Fatalf("Release returned error: %v", err)
+	}
+	if !released {
+		t.Fatal("expected sandbox network lease release to invoke cleanup")
 	}
 }

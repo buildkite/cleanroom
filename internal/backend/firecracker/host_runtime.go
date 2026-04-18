@@ -13,8 +13,8 @@ import (
 type hostRuntime interface {
 	CheckAccess(context.Context) error
 	CheckNetworking(context.Context) error
-	SetupSandboxNetwork(context.Context, sandboxNetworkRequest) (hostNetworkConfig, func(), error)
-	SetupGatewayFirewall(context.Context, gatewayFirewallRequest) (func(), error)
+	SetupSandboxNetwork(context.Context, sandboxNetworkRequest) (sandboxNetworkLease, error)
+	SetupGatewayFirewall(context.Context, gatewayFirewallRequest) (gatewayFirewallLease, error)
 	ValidateZFSDatasetRoot(context.Context, string) error
 	OpenZFSVolumeStore(string) (volumestore.Driver, error)
 }
@@ -32,6 +32,15 @@ type sandboxNetworkRequest struct {
 
 type gatewayFirewallRequest struct {
 	Port int
+}
+
+type sandboxNetworkLease struct {
+	Config  hostNetworkConfig
+	release func(context.Context) error
+}
+
+type gatewayFirewallLease struct {
+	release func(context.Context) error
 }
 
 type runnerBackedHostRuntime struct {
@@ -67,12 +76,45 @@ func (r runnerBackedHostRuntime) CheckNetworking(ctx context.Context) error {
 	return r.runner.Run(ctx, "ip", "link", "show")
 }
 
-func (r runnerBackedHostRuntime) SetupSandboxNetwork(ctx context.Context, req sandboxNetworkRequest) (hostNetworkConfig, func(), error) {
-	return setupHostNetwork(ctx, req.SandboxID, req.AllowAll, req.Allow, req.GatewayPort, r.runner, req.OnDeny, req.OnBlocked)
+func (l sandboxNetworkLease) Release(ctx context.Context) error {
+	if l.release == nil {
+		return nil
+	}
+	return l.release(ctx)
 }
 
-func (r runnerBackedHostRuntime) SetupGatewayFirewall(ctx context.Context, req gatewayFirewallRequest) (func(), error) {
-	return setupGatewayFirewallWithRunner(ctx, req.Port, r.runner)
+func (l gatewayFirewallLease) Release(ctx context.Context) error {
+	if l.release == nil {
+		return nil
+	}
+	return l.release(ctx)
+}
+
+func (r runnerBackedHostRuntime) SetupSandboxNetwork(ctx context.Context, req sandboxNetworkRequest) (sandboxNetworkLease, error) {
+	config, cleanup, err := setupHostNetwork(ctx, req.SandboxID, req.AllowAll, req.Allow, req.GatewayPort, r.runner, req.OnDeny, req.OnBlocked)
+	if err != nil {
+		return sandboxNetworkLease{}, err
+	}
+	return sandboxNetworkLease{
+		Config: config,
+		release: func(context.Context) error {
+			cleanup()
+			return nil
+		},
+	}, nil
+}
+
+func (r runnerBackedHostRuntime) SetupGatewayFirewall(ctx context.Context, req gatewayFirewallRequest) (gatewayFirewallLease, error) {
+	cleanup, err := setupGatewayFirewallWithRunner(ctx, req.Port, r.runner)
+	if err != nil {
+		return gatewayFirewallLease{}, err
+	}
+	return gatewayFirewallLease{
+		release: func(context.Context) error {
+			cleanup()
+			return nil
+		},
+	}, nil
 }
 
 func (r runnerBackedHostRuntime) ValidateZFSDatasetRoot(ctx context.Context, dataset string) error {
