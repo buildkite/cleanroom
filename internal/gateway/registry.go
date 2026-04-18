@@ -6,13 +6,16 @@ import (
 	"sync"
 
 	"github.com/buildkite/cleanroom/internal/policy"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // SandboxScope holds the identity and policy for a registered sandbox.
 type SandboxScope struct {
-	SandboxID string
-	GuestIP   string
-	Policy    *policy.CompiledPolicy
+	SandboxID    string
+	GuestIP      string
+	Policy       *policy.CompiledPolicy
+	ExecutionID  string
+	TraceContext trace.SpanContext
 }
 
 // Registry is a thread-safe mapping of guest IPs to sandbox scopes.
@@ -58,7 +61,7 @@ func (r *Registry) Lookup(guestIP string) (*SandboxScope, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	scope, ok := r.byGuestIP[guestIP]
-	return scope, ok
+	return cloneSandboxScope(scope), ok
 }
 
 // RegisterScopeToken adds a sandbox scope keyed by a capability token.
@@ -92,5 +95,64 @@ func (r *Registry) LookupScopeToken(scopeToken string) (*SandboxScope, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	scope, ok := r.byScopeToken[scopeToken]
-	return scope, ok
+	return cloneSandboxScope(scope), ok
+}
+
+func (r *Registry) SetActiveExecutionTrace(sandboxID, executionID string, spanContext trace.SpanContext) {
+	sandboxID = strings.TrimSpace(sandboxID)
+	if sandboxID == "" {
+		return
+	}
+	executionID = strings.TrimSpace(executionID)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, scope := range r.byGuestIP {
+		setActiveExecutionTraceForScope(scope, sandboxID, executionID, spanContext)
+	}
+	for _, scope := range r.byScopeToken {
+		setActiveExecutionTraceForScope(scope, sandboxID, executionID, spanContext)
+	}
+}
+
+func (r *Registry) ClearActiveExecutionTrace(sandboxID, executionID string) {
+	sandboxID = strings.TrimSpace(sandboxID)
+	if sandboxID == "" {
+		return
+	}
+	executionID = strings.TrimSpace(executionID)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, scope := range r.byGuestIP {
+		clearActiveExecutionTraceForScope(scope, sandboxID, executionID)
+	}
+	for _, scope := range r.byScopeToken {
+		clearActiveExecutionTraceForScope(scope, sandboxID, executionID)
+	}
+}
+
+func cloneSandboxScope(scope *SandboxScope) *SandboxScope {
+	if scope == nil {
+		return nil
+	}
+	clone := *scope
+	return &clone
+}
+
+func setActiveExecutionTraceForScope(scope *SandboxScope, sandboxID, executionID string, spanContext trace.SpanContext) {
+	if scope == nil || scope.SandboxID != sandboxID {
+		return
+	}
+	scope.ExecutionID = executionID
+	scope.TraceContext = spanContext
+}
+
+func clearActiveExecutionTraceForScope(scope *SandboxScope, sandboxID, executionID string) {
+	if scope == nil || scope.SandboxID != sandboxID {
+		return
+	}
+	if executionID != "" && strings.TrimSpace(scope.ExecutionID) != executionID {
+		return
+	}
+	scope.ExecutionID = ""
+	scope.TraceContext = trace.SpanContext{}
 }

@@ -365,6 +365,8 @@ message InspectExecutionResponse {
   string plan_path = 8;
   bool launched_vm = 9;
   google.protobuf.Struct observability = 10;
+  string trace_id = 11;
+  string trace_url = 12;
 }
 
 message CancelExecutionRequest {

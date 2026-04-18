@@ -2986,6 +2986,8 @@ type InspectExecutionResponse struct {
 	PlanPath      string                 `protobuf:"bytes,8,opt,name=plan_path,json=planPath,proto3" json:"plan_path,omitempty"`
 	LaunchedVm    bool                   `protobuf:"varint,9,opt,name=launched_vm,json=launchedVm,proto3" json:"launched_vm,omitempty"`
 	Observability *structpb.Struct       `protobuf:"bytes,10,opt,name=observability,proto3" json:"observability,omitempty"`
+	TraceId       string                 `protobuf:"bytes,11,opt,name=trace_id,json=traceId,proto3" json:"trace_id,omitempty"`
+	TraceUrl      string                 `protobuf:"bytes,12,opt,name=trace_url,json=traceUrl,proto3" json:"trace_url,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3088,6 +3090,20 @@ func (x *InspectExecutionResponse) GetObservability() *structpb.Struct {
 		return x.Observability
 	}
 	return nil
+}
+
+func (x *InspectExecutionResponse) GetTraceId() string {
+	if x != nil {
+		return x.TraceId
+	}
+	return ""
+}
+
+func (x *InspectExecutionResponse) GetTraceUrl() string {
+	if x != nil {
+		return x.TraceUrl
+	}
+	return ""
 }
 
 type CancelExecutionRequest struct {
@@ -3929,7 +3945,7 @@ const file_proto_cleanroom_v1_control_proto_rawDesc = "" +
 	"\x17InspectExecutionRequest\x12\x1d\n" +
 	"\n" +
 	"sandbox_id\x18\x01 \x01(\tR\tsandboxId\x12!\n" +
-	"\fexecution_id\x18\x02 \x01(\tR\vexecutionId\"\xfd\x02\n" +
+	"\fexecution_id\x18\x02 \x01(\tR\vexecutionId\"\xb5\x03\n" +
 	"\x18InspectExecutionResponse\x125\n" +
 	"\texecution\x18\x01 \x01(\v2\x17.cleanroom.v1.ExecutionR\texecution\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12\x16\n" +
@@ -3942,7 +3958,9 @@ const file_proto_cleanroom_v1_control_proto_rawDesc = "" +
 	"\vlaunched_vm\x18\t \x01(\bR\n" +
 	"launchedVm\x12=\n" +
 	"\robservability\x18\n" +
-	" \x01(\v2\x17.google.protobuf.StructR\robservability\"r\n" +
+	" \x01(\v2\x17.google.protobuf.StructR\robservability\x12\x19\n" +
+	"\btrace_id\x18\v \x01(\tR\atraceId\x12\x1b\n" +
+	"\ttrace_url\x18\f \x01(\tR\btraceUrl\"r\n" +
 	"\x16CancelExecutionRequest\x12\x1d\n" +
 	"\n" +
 	"sandbox_id\x18\x01 \x01(\tR\tsandboxId\x12!\n" +

@@ -11,6 +11,9 @@ import (
 	"testing"
 
 	"github.com/buildkite/cleanroom/internal/policy"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	tracetest "go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
 )
 
 func TestExtractSourceIP(t *testing.T) {
@@ -80,6 +83,59 @@ func TestIdentityMiddlewareInjectsScope(t *testing.T) {
 	}
 	if gotScope.SandboxID != "sandbox-1" {
 		t.Fatalf("expected sandbox-1, got %s", gotScope.SandboxID)
+	}
+}
+
+func TestTracingMiddlewareUsesActiveExecutionTrace(t *testing.T) {
+	t.Parallel()
+
+	reg := NewRegistry()
+	p := &policy.CompiledPolicy{Version: 1, NetworkDefault: "deny"}
+	if err := reg.Register("10.1.1.2", "sandbox-1", p); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	recorder := tracetest.NewSpanRecorder()
+	tracerProvider := sdktrace.NewTracerProvider()
+	tracerProvider.RegisterSpanProcessor(recorder)
+	defer func() {
+		_ = tracerProvider.Shutdown(context.Background())
+	}()
+
+	parentCtx, parentSpan := tracerProvider.Tracer("test").Start(context.Background(), "cleanroom.parent")
+	reg.SetActiveExecutionTrace("sandbox-1", "exec-1", trace.SpanContextFromContext(parentCtx))
+
+	srv := &Server{registry: reg, tracerProvider: tracerProvider}
+	handler := srv.identityMiddleware(srv.pathMiddleware(srv.tracingMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))))
+
+	req := httptest.NewRequest(http.MethodGet, "/git/github.com/org/repo.git/info/refs?service=git-upload-pack", nil)
+	req.RemoteAddr = "10.1.1.2:12345"
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	parentSpan.End()
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", w.Code)
+	}
+
+	spans := recorder.Ended()
+	var gatewaySpan sdktrace.ReadOnlySpan
+	for _, span := range spans {
+		if span.Name() == "cleanroom.gateway.git.request" {
+			gatewaySpan = span
+			break
+		}
+	}
+	if gatewaySpan == nil {
+		t.Fatalf("expected gateway span, got spans %#v", spans)
+	}
+	if got, want := gatewaySpan.SpanContext().TraceID(), parentSpan.SpanContext().TraceID(); got != want {
+		t.Fatalf("unexpected gateway trace id: got %s want %s", got, want)
+	}
+	if got, want := gatewaySpan.Parent().SpanID(), parentSpan.SpanContext().SpanID(); got != want {
+		t.Fatalf("unexpected gateway parent span id: got %s want %s", got, want)
 	}
 }
 

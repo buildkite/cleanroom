@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
+	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 )
 
 type ExecutionCommand struct {
@@ -61,6 +62,17 @@ func (c *ExecutionInspectCommand) Run(ctx *runtimeContext) error {
 	})
 	if err != nil {
 		return fmt.Errorf("inspect execution: %w", err)
+	}
+	resolvedSandboxID := sandboxID
+	if execution := resp.GetExecution(); execution != nil && strings.TrimSpace(resolvedSandboxID) == "" {
+		resolvedSandboxID = execution.GetSandboxId()
+	}
+	if strings.TrimSpace(resp.GetTraceUrl()) == "" {
+		traceURL, err := runtimeconfig.RenderTraceURL(ctx.Config.Observability, resp.GetTraceId(), executionID, resolvedSandboxID)
+		if err != nil {
+			return err
+		}
+		resp.TraceUrl = traceURL
 	}
 
 	if c.JSON {
@@ -121,6 +133,16 @@ func (c *ExecutionInspectCommand) Run(ctx *runtimeContext) error {
 	}
 	if imageDigest := strings.TrimSpace(resp.GetImageDigest()); imageDigest != "" {
 		if _, err := fmt.Fprintf(ctx.Stdout, "image_digest: %s\n", imageDigest); err != nil {
+			return err
+		}
+	}
+	if traceID := strings.TrimSpace(resp.GetTraceId()); traceID != "" {
+		if _, err := fmt.Fprintf(ctx.Stdout, "trace_id: %s\n", traceID); err != nil {
+			return err
+		}
+	}
+	if traceURL := strings.TrimSpace(resp.GetTraceUrl()); traceURL != "" {
+		if _, err := fmt.Fprintf(ctx.Stdout, "trace_url: %s\n", traceURL); err != nil {
 			return err
 		}
 	}

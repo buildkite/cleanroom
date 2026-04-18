@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"reflect"
 	"strings"
@@ -68,5 +69,41 @@ func TestTracePreservingContextRemovesCancellationAndPreservesValues(t *testing.
 	}
 	if gotSpanContext.SpanID() != wantSpanContext.SpanID() {
 		t.Fatalf("unexpected span id: got %s want %s", gotSpanContext.SpanID(), wantSpanContext.SpanID())
+	}
+}
+
+func TestTraceIDFromContextReturnsTraceID(t *testing.T) {
+	ctx := trace.ContextWithSpanContext(context.Background(), trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    trace.TraceID{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
+		SpanID:     trace.SpanID{1, 2, 3, 4, 5, 6, 7, 8},
+		TraceFlags: trace.FlagsSampled,
+	}))
+
+	if got, want := traceIDFromContext(ctx), trace.SpanContextFromContext(ctx).TraceID().String(); got != want {
+		t.Fatalf("unexpected trace id: got %q want %q", got, want)
+	}
+}
+
+func TestWriteTraceID(t *testing.T) {
+	var stderr bytes.Buffer
+
+	if err := writeTraceID(&stderr, " 0123456789abcdef0123456789abcdef "); err != nil {
+		t.Fatalf("writeTraceID returned error: %v", err)
+	}
+
+	if got, want := stderr.String(), "trace_id=0123456789abcdef0123456789abcdef\n"; got != want {
+		t.Fatalf("unexpected trace id output: got %q want %q", got, want)
+	}
+}
+
+func TestWriteTraceURL(t *testing.T) {
+	var stderr bytes.Buffer
+
+	if err := writeTraceURL(&stderr, " https://jaeger.example.test/trace/0123456789abcdef0123456789abcdef "); err != nil {
+		t.Fatalf("writeTraceURL returned error: %v", err)
+	}
+
+	if got, want := stderr.String(), "trace_url=https://jaeger.example.test/trace/0123456789abcdef0123456789abcdef\n"; got != want {
+		t.Fatalf("unexpected trace url output: got %q want %q", got, want)
 	}
 }

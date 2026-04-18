@@ -62,6 +62,26 @@ cleanroom serve &
 ```
 
 The server listens on `unix://$XDG_RUNTIME_DIR/cleanroom/cleanroom.sock` by default.
+When observability is enabled, `cleanroom serve` also prints startup status for
+trace export, sampling, and whether direct trace links are configured.
+
+Enable OTLP tracing in runtime config:
+
+```yaml
+observability:
+  enabled: true
+  otlp:
+    endpoint: http://localhost:4318
+    protocol: http/protobuf
+  traces:
+    sampling:
+      mode: parentbased_traceidratio
+      ratio: 1.0
+    url_template: https://jaeger.example.test/trace/{{.TraceID}}?execution={{.ExecutionID}}
+```
+
+`url_template` is optional. When set, Cleanroom prints `trace_url=...` in
+failure footers and exposes the same URL from `cleanroom execution inspect`.
 
 Install as a daemon:
 
@@ -431,10 +451,11 @@ cleanroom version
 
 Failure flow:
 
-- `cleanroom exec` and `cleanroom console` print `sandbox_id` and `execution_id` on failure when available.
+- `cleanroom exec` and `cleanroom console` print `sandbox_id`, `execution_id`, and `trace_id` on failure when available.
+- When `observability.traces.url_template` is configured, failure footers also print `trace_url`.
 - Attached `cleanroom exec` and `cleanroom console` streams may print warning notices on stderr for policy observations such as blocked connections or disallowed DNS lookups.
 - `cleanroom sandbox inspect <sandbox-id>` shows sandbox state plus `last_execution_id` and `active_execution_id`.
-- `cleanroom execution inspect ...` is the control-plane view for execution status, retained stdout/stderr, image metadata, and observability.
+- `cleanroom execution inspect ...` is the control-plane view for execution status, retained stdout/stderr, image metadata, `trace_id`, optional `trace_url`, and observability.
 - `cleanroom status ...` is the local artifact view under `$XDG_STATE_HOME/cleanroom/executions`.
 
 ## Further reading

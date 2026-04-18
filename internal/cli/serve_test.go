@@ -145,6 +145,7 @@ func TestGatewayServerConfigUsesDarwinGatewayHostForTrustedPrefixes(t *testing.T
 		nil,
 		nil,
 		nil,
+		nil,
 		log.New(io.Discard),
 		"  gateway.local  ",
 	)

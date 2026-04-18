@@ -10,6 +10,10 @@ import (
 	"sync"
 
 	"github.com/charmbracelet/log"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+	tracenoop "go.opentelemetry.io/otel/trace/noop"
 )
 
 // DefaultPort is the default gateway listen port.
@@ -141,6 +145,7 @@ type ServerConfig struct {
 	GitMirrors                      GitMirrorStore
 	ContentCache                    *ContentCache
 	Logger                          *log.Logger
+	TracerProvider                  trace.TracerProvider
 	ScopeTokenTrustedSourcePrefixes []netip.Prefix
 	AllowScopeTokenFromAnySource    bool
 }
@@ -149,6 +154,7 @@ type ServerConfig struct {
 type Server struct {
 	registry                        *Registry
 	logger                          *log.Logger
+	tracerProvider                  trace.TracerProvider
 	httpServer                      *http.Server
 	scopeTokenTrustedSourcePrefixes []netip.Prefix
 	allowScopeTokenFromAnySource    bool
@@ -173,9 +179,13 @@ func NewServer(cfg ServerConfig) *Server {
 	s := &Server{
 		registry:                        cfg.Registry,
 		logger:                          cfg.Logger,
+		tracerProvider:                  cfg.TracerProvider,
 		addr:                            addr,
 		scopeTokenTrustedSourcePrefixes: trustedSourcePrefixes,
 		allowScopeTokenFromAnySource:    cfg.AllowScopeTokenFromAnySource,
+	}
+	if s.tracerProvider == nil {
+		s.tracerProvider = tracenoop.NewTracerProvider()
 	}
 
 	mux := http.NewServeMux()
@@ -204,7 +214,7 @@ func NewServer(cfg ServerConfig) *Server {
 	mux.HandleFunc(RouteMeta, stubHandler("meta"))
 
 	s.httpServer = &http.Server{
-		Handler: s.identityMiddleware(s.pathMiddleware(mux)),
+		Handler: s.identityMiddleware(s.pathMiddleware(s.tracingMiddleware(mux))),
 	}
 
 	return s
@@ -310,6 +320,47 @@ func (s *Server) pathMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+func (s *Server) tracingMiddleware(next http.Handler) http.Handler {
+	tracer := s.tracerProvider.Tracer("github.com/buildkite/cleanroom/internal/gateway")
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		scope, _ := ScopeFromContext(ctx)
+		if scope != nil && scope.TraceContext.IsValid() {
+			ctx = trace.ContextWithRemoteSpanContext(ctx, scope.TraceContext)
+		}
+
+		service := gatewayServiceForPath(r.URL.Path)
+		attributes := []attribute.KeyValue{
+			attribute.String("cleanroom.gateway.service", service),
+			attribute.String("http.request.method", r.Method),
+			attribute.String("url.path", r.URL.Path),
+		}
+		if scope != nil {
+			if scope.SandboxID != "" {
+				attributes = append(attributes, attribute.String("cleanroom.sandbox.id", scope.SandboxID))
+			}
+			if scope.ExecutionID != "" {
+				attributes = append(attributes, attribute.String("cleanroom.execution.id", scope.ExecutionID))
+			}
+		}
+
+		ctx, span := tracer.Start(ctx, "cleanroom.gateway."+service+".request", trace.WithAttributes(attributes...))
+		defer span.End()
+
+		status := &gatewayStatusRecorder{ResponseWriter: w, statusCode: http.StatusOK}
+		next.ServeHTTP(status, r.WithContext(ctx))
+		span.SetAttributes(attribute.Int("http.response.status_code", status.statusCode))
+		if reasonCode := strings.TrimSpace(status.Header().Get(reasonCodeHeader)); reasonCode != "" {
+			span.SetAttributes(attribute.String("cleanroom.reason_code", reasonCode))
+		}
+		if status.statusCode >= http.StatusBadRequest {
+			span.SetStatus(codes.Error, http.StatusText(status.statusCode))
+			return
+		}
+		span.SetStatus(codes.Ok, "")
+	})
+}
+
 // extractSourceIP returns the IP portion of a RemoteAddr, handling both
 // IPv4 ("10.1.1.2:43210") and IPv6-mapped IPv4 ("[::ffff:10.1.1.2]:43210").
 func extractSourceIP(remoteAddr string) string {
@@ -334,6 +385,38 @@ func cloneScopeTokenTrustedSourcePrefixes(prefixes []netip.Prefix) []netip.Prefi
 	out := make([]netip.Prefix, len(prefixes))
 	copy(out, prefixes)
 	return out
+}
+
+type gatewayStatusRecorder struct {
+	http.ResponseWriter
+	statusCode int
+}
+
+func (r *gatewayStatusRecorder) WriteHeader(statusCode int) {
+	r.statusCode = statusCode
+	r.ResponseWriter.WriteHeader(statusCode)
+}
+
+func (r *gatewayStatusRecorder) Write(p []byte) (int, error) {
+	if r.statusCode == 0 {
+		r.statusCode = http.StatusOK
+	}
+	return r.ResponseWriter.Write(p)
+}
+
+func gatewayServiceForPath(path string) string {
+	switch {
+	case strings.HasPrefix(path, RouteGit):
+		return "git"
+	case strings.HasPrefix(path, RouteRegistry):
+		return "registry"
+	case strings.HasPrefix(path, RouteSecrets):
+		return "secrets"
+	case strings.HasPrefix(path, RouteMeta):
+		return "meta"
+	default:
+		return "request"
+	}
 }
 
 func stubHandler(service string) http.HandlerFunc {

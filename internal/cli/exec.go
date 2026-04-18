@@ -10,6 +10,7 @@ import (
 
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/repositorycheckout"
+	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
@@ -51,6 +52,7 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 			attribute.Int("cleanroom.command.argc", len(e.Command)),
 		),
 	)
+	traceID := traceIDFromContext(rootCtx)
 	defer func() {
 		if sandboxID != "" {
 			rootSpan.SetAttributes(attribute.String("cleanroom.sandbox.id", sandboxID))
@@ -125,6 +127,34 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 		printedExecutionID = true
 		return nil
 	}
+	printedTraceID := false
+	printTraceID := func() error {
+		if printedTraceID {
+			return nil
+		}
+		if err := writeTraceID(os.Stderr, traceID); err != nil {
+			return err
+		}
+		printedTraceID = true
+		return nil
+	}
+	printedTraceURL := false
+	printTraceURL := func() error {
+		if printedTraceURL {
+			return nil
+		}
+		traceURL, err := runtimeconfig.RenderTraceURL(ctx.Config.Observability, traceID, executionID, sandboxID)
+		if err != nil {
+			return err
+		}
+		if err := writeTraceURL(os.Stderr, traceURL); err != nil {
+			return err
+		}
+		if strings.TrimSpace(traceURL) != "" {
+			printedTraceURL = true
+		}
+		return nil
+	}
 	defer func() {
 		if !createdSandbox || !e.Keep {
 			return
@@ -146,6 +176,12 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 			extraErr = errors.Join(extraErr, err)
 		}
 		if err := printExecutionID(); err != nil {
+			extraErr = errors.Join(extraErr, err)
+		}
+		if err := printTraceID(); err != nil {
+			extraErr = errors.Join(extraErr, err)
+		}
+		if err := printTraceURL(); err != nil {
 			extraErr = errors.Join(extraErr, err)
 		}
 		if sandboxID != "" && executionID != "" {

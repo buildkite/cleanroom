@@ -238,6 +238,8 @@ message InspectExecutionResponse {
   string plan_path = 8;
   bool launched_vm = 9;
   google.protobuf.Struct observability = 10;
+  string trace_id = 11;
+  string trace_url = 12;
 }
 
 enum ExecutionStatus {
@@ -294,7 +296,8 @@ and `--dangerously-allow-all` cannot be combined with `--from`.
 
 Notes:
 - `sandbox inspect` is the lookup surface when you only know a sandbox ID.
-- `execution inspect` is the live control-plane inspection surface.
+- `execution inspect` is the live control-plane inspection surface and includes
+  trace metadata when available.
 - `status` is the local retained-artifacts browser under `$XDG_STATE_HOME/cleanroom/executions`.
 - There are no first-class low-level `execution create/get/cancel/stream` CLI verbs; those are API/SDK operations.
 
@@ -354,13 +357,14 @@ Signal behavior:
 2. Second `Ctrl-C`: force detach client stream and return immediately.
 
 Failure UX:
-- Always print `sandbox_id` and `execution_id` when available.
+- Always print `sandbox_id`, `execution_id`, and `trace_id` when available.
+- When `observability.traces.url_template` is configured, also print `trace_url`.
 - On `exec` or `console` failure, also print a ready-to-run `cleanroom execution inspect ...` follow-up command and `artifacts_dir` when available.
 - On policy/runtime deny, print stable reason code and a follow-up command to inspect sandbox or execution state.
 
 Debugging flow:
 1. Start with `cleanroom sandbox inspect <sandbox-id>` when you need the sandbox state or do not yet know the execution ID.
-2. Use `cleanroom execution inspect <execution-id>` for the canonical execution view.
+2. Use `cleanroom execution inspect <execution-id>` for the canonical execution view, including `trace_id`, optional `trace_url`, and retained observability payload.
 3. Use `cleanroom status --execution-id <execution-id>` for retained local artifacts and raw observability files.
 
 ## 10) Suggested Implementation Plan

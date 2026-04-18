@@ -16,6 +16,7 @@ import (
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/charmbracelet/log"
 	"github.com/quic-go/quic-go"
+	"go.opentelemetry.io/otel/trace"
 )
 
 var (
@@ -140,6 +141,14 @@ func tracePreservingContext(ctx context.Context) context.Context {
 		return context.Background()
 	}
 	return context.WithoutCancel(ctx)
+}
+
+func traceIDFromContext(ctx context.Context) string {
+	spanContext := trace.SpanContextFromContext(ctx)
+	if !spanContext.IsValid() {
+		return ""
+	}
+	return spanContext.TraceID().String()
 }
 
 func validateExecutionSandboxArgs(chdir, existingSandboxID, fromSnapshot string, keep bool, repositoryOverride repositoryOverrideFlags, changesetFlags repositoryChangesetFlags) error {
@@ -359,6 +368,24 @@ func writeExecutionID(stderr io.Writer, executionID string) error {
 		return nil
 	}
 	_, err := fmt.Fprintf(stderr, "execution_id=%s\n", executionID)
+	return err
+}
+
+func writeTraceID(stderr io.Writer, traceID string) error {
+	traceID = strings.TrimSpace(traceID)
+	if stderr == nil || traceID == "" {
+		return nil
+	}
+	_, err := fmt.Fprintf(stderr, "trace_id=%s\n", traceID)
+	return err
+}
+
+func writeTraceURL(stderr io.Writer, traceURL string) error {
+	traceURL = strings.TrimSpace(traceURL)
+	if stderr == nil || traceURL == "" {
+		return nil
+	}
+	_, err := fmt.Fprintf(stderr, "trace_url=%s\n", traceURL)
 	return err
 }
 

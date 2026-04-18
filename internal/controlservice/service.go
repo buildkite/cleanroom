@@ -163,6 +163,7 @@ type executionSnapshot struct {
 	PlanPath    string
 	RunDir      string
 	Launched    bool
+	TraceID     string
 }
 
 var (
@@ -1184,12 +1185,25 @@ func (s *Service) InspectExecution(_ context.Context, req *cleanroomv1.InspectEx
 		ArtifactsDir: snapshot.RunDir,
 		PlanPath:     snapshot.PlanPath,
 		LaunchedVm:   snapshot.Launched,
+		TraceId:      snapshot.TraceID,
 	}
 
 	if obs, err := loadExecutionObservability(snapshot.RunDir); err != nil {
 		return nil, err
 	} else if obs != nil {
-		resp.Observability = obs
+		resp.Observability = obs.Raw
+		if strings.TrimSpace(resp.GetTraceId()) == "" {
+			resp.TraceId = obs.TraceID
+		}
+	}
+
+	if traceURL, err := runtimeconfig.RenderTraceURL(
+		s.Config.Observability,
+		resp.GetTraceId(),
+		executionID,
+		resp.GetExecution().GetSandboxId(),
+	); err == nil {
+		resp.TraceUrl = traceURL
 	}
 
 	return resp, nil
@@ -1201,7 +1215,12 @@ func (s *Service) ConfigureInteractiveTransport(endpoint, alpn, certPinSHA256 st
 	s.interactive.configureTransport(endpoint, alpn, certPinSHA256)
 }
 
-func loadExecutionObservability(artifactsDir string) (*structpb.Struct, error) {
+type executionObservability struct {
+	Raw     *structpb.Struct
+	TraceID string
+}
+
+func loadExecutionObservability(artifactsDir string) (*executionObservability, error) {
 	if strings.TrimSpace(artifactsDir) == "" {
 		return nil, nil
 	}
@@ -1221,7 +1240,8 @@ func loadExecutionObservability(artifactsDir string) (*structpb.Struct, error) {
 	if err != nil {
 		return nil, fmt.Errorf("convert %s to protobuf struct: %w", obsPath, err)
 	}
-	return obs, nil
+	traceID, _ := payload["trace_id"].(string)
+	return &executionObservability{Raw: obs, TraceID: strings.TrimSpace(traceID)}, nil
 }
 
 func internalBootstrapArtifactsDir(sandboxID, executionID string) string {
@@ -1679,6 +1699,7 @@ func (s *Service) ExecutionSnapshot(sandboxID, executionID string) (*executionSn
 		PlanPath:    ex.PlanPath,
 		RunDir:      ex.RunDir,
 		Launched:    ex.LaunchedVM,
+		TraceID:     observability.TraceIDFromSpanContext(ex.ParentSpanContext),
 	}, nil
 }
 
