@@ -38,7 +38,7 @@ Output:
 
 ### 2) Repository bootstrap benchmark
 
-Script: `scripts/benchmark-repository-bootstrap.sh`
+Tool: `go run ./scripts/benchmark_repository_bootstrap`
 
 - Starts its own isolated `cleanroom serve` process per scenario so host-local
   cache resets are real
@@ -54,7 +54,7 @@ Script: `scripts/benchmark-repository-bootstrap.sh`
 Example:
 
 ```bash
-./scripts/benchmark-repository-bootstrap.sh \
+go run ./scripts/benchmark_repository_bootstrap \
   -c "$PWD" \
   --scenario cold-host \
   --iterations 5 \

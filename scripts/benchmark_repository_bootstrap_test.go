@@ -8,16 +8,13 @@ import (
 	"testing"
 )
 
-func TestBenchmarkRepositoryBootstrapScript(t *testing.T) {
-	bash, err := exec.LookPath("bash")
+func TestBenchmarkRepositoryBootstrapTool(t *testing.T) {
+	goBin, err := exec.LookPath("go")
 	if err != nil {
-		t.Skip("bash not available")
+		t.Skip("go not available")
 	}
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not available")
-	}
-	if _, err := exec.LookPath("jq"); err != nil {
-		t.Skip("jq not available")
 	}
 
 	scenarios := []struct {
@@ -92,14 +89,15 @@ raise SystemExit(2)
 			writeLocalExecutable(t, binDir, "cleanroom", fakeCleanroom)
 
 			outputDir := filepath.Join(tmpDir, "out")
-			scriptPath, err := filepath.Abs("benchmark-repository-bootstrap.sh")
+			toolPath, err := filepath.Abs("benchmark_repository_bootstrap")
 			if err != nil {
-				t.Fatalf("resolve script path: %v", err)
+				t.Fatalf("resolve tool path: %v", err)
 			}
 
 			cmd := exec.Command(
-				bash,
-				scriptPath,
+				goBin,
+				"run",
+				toolPath,
 				"--cleanroom-bin", filepath.Join(binDir, "cleanroom"),
 				"--scenario", scenario.name,
 				"--iterations", "2",
@@ -110,7 +108,7 @@ raise SystemExit(2)
 			cmd.Env = append(os.Environ(), "PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 			out, err := cmd.CombinedOutput()
 			if err != nil {
-				t.Fatalf("benchmark script failed: %v\n%s", err, out)
+				t.Fatalf("benchmark tool failed: %v\n%s", err, out)
 			}
 
 			matches, err := filepath.Glob(filepath.Join(outputDir, "*.json"))
@@ -142,9 +140,10 @@ raise SystemExit(2)
 					Elapsed float64 `json:"elapsed_seconds"`
 				} `json:"runs"`
 				Summary struct {
-					Mean float64 `json:"mean"`
-					Min  float64 `json:"min"`
-					Max  float64 `json:"max"`
+					Mean   float64 `json:"mean"`
+					Median float64 `json:"median"`
+					Min    float64 `json:"min"`
+					Max    float64 `json:"max"`
 				} `json:"summary"`
 			}
 			if err := json.Unmarshal(raw, &payload); err != nil {
@@ -186,7 +185,7 @@ raise SystemExit(2)
 					t.Fatalf("expected non-negative elapsed time, got %f", run.Elapsed)
 				}
 			}
-			if payload.Summary.Mean < 0 || payload.Summary.Min < 0 || payload.Summary.Max < 0 {
+			if payload.Summary.Mean < 0 || payload.Summary.Median < 0 || payload.Summary.Min < 0 || payload.Summary.Max < 0 {
 				t.Fatalf("expected non-negative summary, got %+v", payload.Summary)
 			}
 		})
