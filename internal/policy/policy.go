@@ -56,9 +56,11 @@ type rawDependencyKey struct {
 }
 
 type rawDependenciesConfig struct {
-	Command []string         `yaml:"command"`
-	Key     rawDependencyKey `yaml:"key"`
+	Command rawDependencyCommandSpec `yaml:"command"`
+	Key     rawDependencyKey         `yaml:"key"`
 }
+
+type rawDependencyCommandSpec []string
 
 type rawRunConfig struct {
 	Before rawShellCommandSpec `yaml:"before"`
@@ -329,6 +331,31 @@ func (c *rawShellCommandSpec) UnmarshalYAML(node *yaml.Node) error {
 	script := strings.TrimSpace(node.Value)
 	*c = rawShellCommandSpec{"sh", "-lc", script}
 	return nil
+}
+
+func (c *rawDependencyCommandSpec) UnmarshalYAML(node *yaml.Node) error {
+	if node == nil {
+		*c = nil
+		return nil
+	}
+	switch node.Kind {
+	case yaml.ScalarNode:
+		if node.ShortTag() != "!!str" {
+			return fmt.Errorf("command must be a string or sequence")
+		}
+		script := strings.TrimSpace(node.Value)
+		*c = rawDependencyCommandSpec{"sh", "-lc", script}
+		return nil
+	case yaml.SequenceNode:
+		var command []string
+		if err := node.Decode(&command); err != nil {
+			return err
+		}
+		*c = rawDependencyCommandSpec(command)
+		return nil
+	default:
+		return fmt.Errorf("command must be a string or sequence")
+	}
 }
 
 func normalizeRepositoryConfig(raw *rawRepository) (RepositoryConfig, error) {

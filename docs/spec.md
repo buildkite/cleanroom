@@ -76,7 +76,7 @@ project:
 sandbox:
   ttl_minutes: 60
   dependencies:
-    command: [mise, exec, --, go, mod, download]
+    command: mise exec -- go mod download
     key:
       files:
         - .mise.toml
@@ -166,6 +166,7 @@ explicit request-time changeset input.
 - `repository.path` defaults to `/workspace` and must be an absolute guest path.
 - `repository.submodules` defaults to `false`.
 - `sandbox.dependencies.command` defaults to unset; when present, Cleanroom runs that command in the repository workdir during sandbox creation and makes the result eligible for dependency-stage caching.
+- `sandbox.dependencies.command` accepts either a YAML string or a YAML sequence; strings execute as `sh -lc <value>`, and strings are the preferred form.
 - `sandbox.dependencies.key.files` defaults to empty; when present, Cleanroom hashes those repository-relative files from the exact committed checkout and includes them in the dependency-stage cache key.
 - `sandbox.run.before` defaults to unset; when present, each execution runs that shell command in the repository workdir immediately before the requested command.
 - `sandbox.run.before` must be a YAML string or block string and executes as `sh -lc <value>`.

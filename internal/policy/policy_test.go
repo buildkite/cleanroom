@@ -207,6 +207,37 @@ func TestCompileNormalizesDependencyBootstrapConfig(t *testing.T) {
 	}
 }
 
+func TestCompileNormalizesDependencyCommandString(t *testing.T) {
+	t.Parallel()
+
+	var raw rawPolicy
+	if err := yaml.Unmarshal([]byte(`
+version: 1
+sandbox:
+  image:
+    ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  dependencies:
+    command: bundle install
+    key:
+      files: [Gemfile.lock]
+  network:
+    default: deny
+`), &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	compiled, err := Compile(raw)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if got, want := compiled.Dependencies.Command, []string{"sh", "-lc", "bundle install"}; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("unexpected dependency command: got %v want %v", got, want)
+	}
+	if got, want := compiled.Dependencies.KeyFiles, []string{"Gemfile.lock"}; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("unexpected dependency key files: got %v want %v", got, want)
+	}
+}
+
 func TestCompileRejectsDependencyKeyFilesWithoutCommand(t *testing.T) {
 	t.Parallel()
 
@@ -218,6 +249,28 @@ func TestCompileRejectsDependencyKeyFilesWithoutCommand(t *testing.T) {
 		t.Fatal("expected compile to reject dependency key files without a command")
 	}
 	if !strings.Contains(err.Error(), "sandbox.dependencies.key.files") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestUnmarshalRejectsNonStringOrSequenceDependencyCommand(t *testing.T) {
+	t.Parallel()
+
+	var raw rawPolicy
+	err := yaml.Unmarshal([]byte(`
+version: 1
+sandbox:
+  image:
+    ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  dependencies:
+    command: false
+  network:
+    default: deny
+`), &raw)
+	if err == nil {
+		t.Fatal("expected unmarshal to reject non-string dependency command")
+	}
+	if !strings.Contains(err.Error(), "command must be a string or sequence") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
