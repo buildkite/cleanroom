@@ -54,25 +54,26 @@ type Service struct {
 }
 
 type sandboxState struct {
-	ID                     string
-	Backend                string
-	Policy                 *policy.CompiledPolicy
-	Firecracker            backend.FirecrackerConfig
-	Repository             *repositorycheckout.Checkout
-	RepositoryHasChangeset bool
-	SourceKind             string
-	SourceID               string
-	BackingSnapshotID      string
-	RepositoryBusy         bool
-	ActiveExecutionID      string
-	DownloadInProgress     bool
-	CreatedAt              time.Time
-	UpdatedAt              time.Time
-	LastExecutionID        string
-	Status                 cleanroomv1.SandboxStatus
-	events                 eventFeed[*cleanroomv1.SandboxEvent]
-	Done                   chan struct{}
-	DoneClosed             bool
+	ID                                  string
+	Backend                             string
+	Policy                              *policy.CompiledPolicy
+	Firecracker                         backend.FirecrackerConfig
+	Repository                          *repositorycheckout.Checkout
+	RepositoryHasChangeset              bool
+	RepositoryChangesetPendingExecution bool
+	SourceKind                          string
+	SourceID                            string
+	BackingSnapshotID                   string
+	RepositoryBusy                      bool
+	ActiveExecutionID                   string
+	DownloadInProgress                  bool
+	CreatedAt                           time.Time
+	UpdatedAt                           time.Time
+	LastExecutionID                     string
+	Status                              cleanroomv1.SandboxStatus
+	events                              eventFeed[*cleanroomv1.SandboxEvent]
+	Done                                chan struct{}
+	DoneClosed                          bool
 }
 
 type executionState struct {
@@ -415,17 +416,18 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	}
 
 	state := &sandboxState{
-		ID:                     sandboxID,
-		Backend:                backendName,
-		Policy:                 compiled,
-		Firecracker:            firecrackerCfg,
-		Repository:             cloneRepositoryCheckout(repository),
-		RepositoryHasChangeset: changeset != nil,
-		CreatedAt:              now,
-		UpdatedAt:              now,
-		Status:                 cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY,
-		events:                 newEventFeed[*cleanroomv1.SandboxEvent](s.retention().maxRetainedSandboxEvents),
-		Done:                   make(chan struct{}),
+		ID:                                  sandboxID,
+		Backend:                             backendName,
+		Policy:                              compiled,
+		Firecracker:                         firecrackerCfg,
+		Repository:                          cloneRepositoryCheckout(repository),
+		RepositoryHasChangeset:              changeset != nil,
+		RepositoryChangesetPendingExecution: changeset != nil,
+		CreatedAt:                           now,
+		UpdatedAt:                           now,
+		Status:                              cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY,
+		events:                              newEventFeed[*cleanroomv1.SandboxEvent](s.retention().maxRetainedSandboxEvents),
+		Done:                                make(chan struct{}),
 	}
 
 	s.mu.Lock()
@@ -1050,6 +1052,9 @@ func (s *Service) CreateExecution(ctx context.Context, req *cleanroomv1.CreateEx
 	if sandbox.RepositoryBusy {
 		s.mu.Unlock()
 		return nil, fmt.Errorf("sandbox_busy: sandbox %q is preparing repository state", sandboxID)
+	}
+	if sandbox.RepositoryHasChangeset && sandbox.RepositoryChangesetPendingExecution {
+		sandbox.RepositoryChangesetPendingExecution = false
 	}
 	ex := &executionState{
 		ID:                executionID,
@@ -1946,7 +1951,7 @@ func (s *Service) preparePersistentSandboxRepository(
 	switch {
 	case sandbox.Repository == nil:
 		sandbox.RepositoryBusy = true
-	case repositoryCheckoutsEqual(sandbox.Repository, repository) && !sandbox.RepositoryHasChangeset:
+	case repositoryCheckoutsEqual(sandbox.Repository, repository) && (!sandbox.RepositoryHasChangeset || sandbox.RepositoryChangesetPendingExecution):
 		s.mu.Unlock()
 		return nil
 	case repositoryCheckoutsEqual(sandbox.Repository, repository):
@@ -1965,6 +1970,7 @@ func (s *Service) preparePersistentSandboxRepository(
 		if err == nil {
 			sandbox.Repository = cloneRepositoryCheckout(repository)
 			sandbox.RepositoryHasChangeset = false
+			sandbox.RepositoryChangesetPendingExecution = false
 		}
 	}
 	s.mu.Unlock()

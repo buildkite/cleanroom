@@ -2616,7 +2616,7 @@ func TestCreateExecutionSkipsBootstrapForMatchingPersistentRepository(t *testing
 	}
 }
 
-func TestCreateExecutionRebootstrapsMatchingRepositoryAfterChangesetSandboxCreate(t *testing.T) {
+func TestCreateExecutionPreservesFirstMatchingRepositoryAfterChangesetSandboxCreate(t *testing.T) {
 	adapter := &stubAdapter{}
 	svc := newTestService(adapter)
 
@@ -2677,29 +2677,121 @@ func TestCreateExecutionRebootstrapsMatchingRepositoryAfterChangesetSandboxCreat
 	if err != nil {
 		t.Fatalf("CreateExecution returned error: %v", err)
 	}
+	select {
+	case <-runCalled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for first execution")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if got, want := len(commands), 3; got != want {
+		t.Fatalf("expected create bootstrap + changeset apply + execution, got %d command(s)", got)
+	}
+	joined := strings.Join(commands[2], " ")
+	if strings.Contains(joined, "git clone --filter=blob:none --no-checkout") {
+		t.Fatalf("expected first matching repository execution to preserve created changeset state, got %q", joined)
+	}
+	if !repositoryWrappedCommandContains(joined, `exec 'sh' '-lc' 'pwd'`) {
+		t.Fatalf("expected wrapped user command in repository workdir, got %q", joined)
+	}
+}
+
+func TestCreateExecutionRebootstrapsSecondMatchingRepositoryAfterChangesetSandboxCreate(t *testing.T) {
+	adapter := &stubAdapter{}
+	svc := newTestService(adapter)
+
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"README.md": "hello\n",
+	})
+	svc.RepositoryMirrors = mirrors
+	repository := repositorycheckout.FromProto(repositoryCheckout)
+	if err := os.WriteFile(filepath.Join(mirrors.mirrorPath, "README.md"), []byte("hello from changeset\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(README.md) returned error: %v", err)
+	}
+	changeset, err := repositorychangeset.BuildFromWorkingTree(mirrors.mirrorPath, repository)
+	if err != nil {
+		t.Fatalf("BuildFromWorkingTree returned error: %v", err)
+	}
+	if changeset == nil {
+		t.Fatal("expected repository changeset")
+	}
+
+	var (
+		mu       sync.Mutex
+		commands [][]string
+	)
+	runCalled := make(chan struct{}, 8)
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+		mu.Lock()
+		commands = append(commands, append([]string(nil), req.Command...))
+		mu.Unlock()
+		select {
+		case runCalled <- struct{}{}:
+		default:
+		}
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+	}
+
+	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy:              testRepositoryPolicy(),
+		RepositoryCheckout:  repositoryCheckout,
+		RepositoryChangeset: changeset.ToProto(),
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createSandboxResp.GetSandbox().GetSandboxId()
 	for i := 0; i < 2; i++ {
 		select {
 		case <-runCalled:
 		case <-time.After(2 * time.Second):
-			t.Fatal("timed out waiting for rebootstrap execution")
+			t.Fatal("timed out waiting for changeset sandbox bootstrap")
+		}
+	}
+
+	for i := 0; i < 2; i++ {
+		_, err = svc.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+			SandboxId:          sandboxID,
+			Command:            []string{"sh", "-lc", "pwd"},
+			RepositoryCheckout: repositoryCheckout,
+		})
+		if err != nil {
+			t.Fatalf("CreateExecution #%d returned error: %v", i+1, err)
+		}
+		select {
+		case <-runCalled:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for execution #%d", i+1)
+		}
+		if i == 1 {
+			select {
+			case <-runCalled:
+			case <-time.After(2 * time.Second):
+				t.Fatal("timed out waiting for second execution rebootstrap")
+			}
 		}
 	}
 
 	mu.Lock()
 	defer mu.Unlock()
-	if got, want := len(commands), 4; got != want {
-		t.Fatalf("expected create bootstrap + changeset apply + rebootstrap + execution, got %d command(s)", got)
+	if got, want := len(commands), 5; got != want {
+		t.Fatalf("expected create bootstrap + changeset apply + first execution + second rebootstrap + second execution, got %d command(s)", got)
 	}
-	rebootstrap := strings.Join(commands[2], " ")
+	firstExecution := strings.Join(commands[2], " ")
+	if strings.Contains(firstExecution, "git clone --filter=blob:none --no-checkout") {
+		t.Fatalf("expected first matching repository execution to preserve created changeset state, got %q", firstExecution)
+	}
+	rebootstrap := strings.Join(commands[3], " ")
 	if !strings.Contains(rebootstrap, "git clone --filter=blob:none --no-checkout") {
-		t.Fatalf("expected matching repository execution to re-bootstrap exact checkout after changeset, got %q", rebootstrap)
+		t.Fatalf("expected second matching repository execution to re-bootstrap exact checkout after changeset, got %q", rebootstrap)
 	}
-	joined := strings.Join(commands[3], " ")
-	if strings.Contains(joined, "git clone --filter=blob:none --no-checkout") {
-		t.Fatalf("expected final execution command after rebootstrap, got %q", joined)
+	secondExecution := strings.Join(commands[4], " ")
+	if strings.Contains(secondExecution, "git clone --filter=blob:none --no-checkout") {
+		t.Fatalf("expected final execution command after second rebootstrap, got %q", secondExecution)
 	}
-	if !repositoryWrappedCommandContains(joined, `exec 'sh' '-lc' 'pwd'`) {
-		t.Fatalf("expected wrapped user command in repository workdir, got %q", joined)
+	if !repositoryWrappedCommandContains(secondExecution, `exec 'sh' '-lc' 'pwd'`) {
+		t.Fatalf("expected wrapped user command in repository workdir, got %q", secondExecution)
 	}
 }
 
