@@ -45,6 +45,10 @@ For `.git` smart-HTTP routes, the request is handed to embedded
 mirror-backed proxy. Guest-side git rewrites target
 `gateway.cleanroom.internal` rather than backend-specific IP addresses.
 
+When you want to restrict which Git hosts use the cache layer without denying
+other policy-allowed Git traffic, set `gateway.git.cache_hosts` in runtime
+config. Hosts outside that list fall back to the mirror-backed proxy.
+
 On `darwin-vz`, sandbox identity is carried with the
 `X-Cleanroom-Scope-Token` request header because guests use shared NAT rather
 than unique source IPs.

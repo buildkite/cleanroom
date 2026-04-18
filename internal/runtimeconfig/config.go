@@ -18,8 +18,17 @@ import (
 type Config struct {
 	DefaultBackend string              `yaml:"default_backend"`
 	ControlHost    string              `yaml:"control_host,omitempty"`
+	Gateway        GatewayConfig       `yaml:"gateway,omitempty"`
 	Observability  ObservabilityConfig `yaml:"observability,omitempty"`
 	Backends       Backends            `yaml:"backends"`
+}
+
+type GatewayConfig struct {
+	Git GatewayGitConfig `yaml:"git,omitempty"`
+}
+
+type GatewayGitConfig struct {
+	CacheHosts []string `yaml:"cache_hosts,omitempty"`
 }
 
 type ObservabilityConfig struct {
@@ -397,6 +406,7 @@ func Load() (Config, string, error) {
 		cfg.DefaultBackend = DefaultBackendForHost()
 	}
 	cfg.ControlHost = strings.TrimSpace(cfg.ControlHost)
+	cfg.Gateway.Git.CacheHosts = trimStringSlice(cfg.Gateway.Git.CacheHosts)
 	cfg.Observability.DeploymentEnvironment = strings.TrimSpace(cfg.Observability.DeploymentEnvironment)
 	cfg.Observability.OTLP.Endpoint = strings.TrimSpace(cfg.Observability.OTLP.Endpoint)
 	cfg.Observability.OTLP.Protocol = strings.TrimSpace(cfg.Observability.OTLP.Protocol)
@@ -451,6 +461,25 @@ func trimStringMap(input map[string]string) map[string]string {
 			continue
 		}
 		out[trimmedKey] = strings.TrimSpace(value)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func trimStringSlice(input []string) []string {
+	if len(input) == 0 {
+		return nil
+	}
+
+	out := make([]string, 0, len(input))
+	for _, value := range input {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		out = append(out, trimmed)
 	}
 	if len(out) == 0 {
 		return nil

@@ -86,8 +86,9 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 
 	var contentCache *gateway.ContentCache
 	contentCache, err = newGatewayContentCache(gateway.ContentCacheConfig{
-		Credentials: gwCredentials,
-		Logger:      logger.With("subsystem", "content-cache"),
+		GitAllowedHosts: ctx.Config.Gateway.Git.CacheHosts,
+		Credentials:     gwCredentials,
+		Logger:          logger.With("subsystem", "content-cache"),
 	})
 	if err != nil {
 		logger.Warn("content cache unavailable; continuing without cache-backed gateway routes", "error", err)

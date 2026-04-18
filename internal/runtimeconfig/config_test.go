@@ -348,6 +348,40 @@ func TestLoadTrimsObservabilityConfig(t *testing.T) {
 	}
 }
 
+func TestLoadTrimsGatewayGitCacheHosts(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	configPath := filepath.Join(tmp, "cleanroom", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	content := `gateway:
+  git:
+    cache_hosts:
+      - " github.com "
+      - ""
+      - " gitlab.com "
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, _, err := Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if got, want := len(cfg.Gateway.Git.CacheHosts), 2; got != want {
+		t.Fatalf("unexpected cache host count: got %d want %d", got, want)
+	}
+	if got, want := cfg.Gateway.Git.CacheHosts[0], "github.com"; got != want {
+		t.Fatalf("unexpected first cache host: got %q want %q", got, want)
+	}
+	if got, want := cfg.Gateway.Git.CacheHosts[1], "gitlab.com"; got != want {
+		t.Fatalf("unexpected second cache host: got %q want %q", got, want)
+	}
+}
+
 func TestLoadObservabilitySupportsZeroSamplingRatio(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", tmp)
