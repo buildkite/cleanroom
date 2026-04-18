@@ -131,6 +131,8 @@ func TestBuildFromWorkingTreeRejectsSubmoduleGitlinkChange(t *testing.T) {
 		t.Fatalf("rewrite submodule readme: %v", err)
 	}
 	runGit(t, filepath.Join(superDir, "deps/sub"), "add", "README.md")
+	runGit(t, filepath.Join(superDir, "deps/sub"), "config", "user.name", "Cleanroom Test")
+	runGit(t, filepath.Join(superDir, "deps/sub"), "config", "user.email", "cleanroom-test@example.com")
 	runGit(t, filepath.Join(superDir, "deps/sub"), "commit", "-m", "advance submodule")
 	runGit(t, superDir, "add", "deps/sub")
 
