@@ -9,9 +9,10 @@ The goal is consistency, not perfect synthetic accuracy.
 
 ## Scope
 
-We currently track two benchmark categories:
+We currently track three benchmark categories:
 
 - TTI (time-to-interactive): sandbox create -> first successful command
+- repository bootstrap: repo-aware sandbox create under cold/warm host-cache scenarios
 - in-sandbox workloads: IOPS-like file throughput, git clone latency, CPU hashing throughput
 
 ## Methodology
@@ -35,7 +36,36 @@ Output:
 
 - `benchmarks/results/<timestamp>.json`
 
-### 2) Sandbox workload benchmark
+### 2) Repository bootstrap benchmark
+
+Script: `scripts/benchmark-repository-bootstrap.sh`
+
+- Starts its own isolated `cleanroom serve` process per scenario so host-local
+  cache resets are real
+- Measures repo-aware `cleanroom create --json`
+- Supports distinct scenarios:
+  - `cold-host`: cold repository transport cache and cold stage cache
+  - `warm-repository-store`: warm repository transport cache and cold stage cache
+  - `warm-workspace-stage`: warm workspace-stage cache
+- Uses temporary XDG cache/state/data/runtime roots while preserving the
+  caller's runtime config discovery
+- Terminates the created sandbox after each run
+
+Example:
+
+```bash
+./scripts/benchmark-repository-bootstrap.sh \
+  -c "$PWD" \
+  --scenario cold-host \
+  --iterations 5 \
+  --warmup 1
+```
+
+Output:
+
+- `benchmarks/results/<timestamp>-repository-bootstrap-<scenario>.json`
+
+### 3) Sandbox workload benchmark
 
 Script: `scripts/benchmark-sandbox-workloads.sh`
 
