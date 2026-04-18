@@ -325,6 +325,7 @@ func (c *rawShellCommandSpec) UnmarshalYAML(node *yaml.Node) error {
 		*c = nil
 		return nil
 	}
+	node = dereferenceYAMLAlias(node)
 	if node.Kind != yaml.ScalarNode || node.ShortTag() != "!!str" {
 		return fmt.Errorf("command must be a string")
 	}
@@ -338,6 +339,7 @@ func (c *rawDependencyCommandSpec) UnmarshalYAML(node *yaml.Node) error {
 		*c = nil
 		return nil
 	}
+	node = dereferenceYAMLAlias(node)
 	switch node.Kind {
 	case yaml.ScalarNode:
 		if node.ShortTag() == "!!null" {
@@ -360,6 +362,13 @@ func (c *rawDependencyCommandSpec) UnmarshalYAML(node *yaml.Node) error {
 	default:
 		return fmt.Errorf("command must be a string or sequence")
 	}
+}
+
+func dereferenceYAMLAlias(node *yaml.Node) *yaml.Node {
+	for node != nil && node.Kind == yaml.AliasNode {
+		node = node.Alias
+	}
+	return node
 }
 
 func normalizeRepositoryConfig(raw *rawRepository) (RepositoryConfig, error) {

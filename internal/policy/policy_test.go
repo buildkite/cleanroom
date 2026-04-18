@@ -267,6 +267,35 @@ sandbox:
 	}
 }
 
+func TestCompileAcceptsAliasedDependencyCommandSequence(t *testing.T) {
+	t.Parallel()
+
+	var raw rawPolicy
+	if err := yaml.Unmarshal([]byte(`
+version: 1
+common_cmd: &deps [mise, exec, --, go, mod, download]
+sandbox:
+  image:
+    ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  dependencies:
+    command: *deps
+    key:
+      files: [go.mod, go.sum]
+  network:
+    default: deny
+`), &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	compiled, err := Compile(raw)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if got, want := compiled.Dependencies.Command, []string{"mise", "exec", "--", "go", "mod", "download"}; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("unexpected dependency command: got %v want %v", got, want)
+	}
+}
+
 func TestCompileRejectsDependencyKeyFilesWithoutCommand(t *testing.T) {
 	t.Parallel()
 
