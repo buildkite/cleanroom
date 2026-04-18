@@ -107,6 +107,26 @@ for `mise`; if you want `mise`, run it explicitly in the command you execute or
 in `sandbox.dependencies.command` so it can participate in dependency-stage
 caching.
 
+Repository hooks can run additional setup after dependency bootstrap and before
+each execution:
+
+```yaml
+sandbox:
+  dependencies:
+    command: [bundle, install]
+  hooks:
+    post-dependencies: |
+      bundle exec rake assets:precompile
+      ln -sf .env-sample .env
+      docker compose up -d valkey minio
+    pre-run:
+      - bin/rails
+      - db:prepare
+```
+
+Scalar or block hooks run through `sh -lc`. Sequence hooks execute directly as
+argv. `post-dependencies` requires `sandbox.dependencies.command`.
+
 Pre-create a long-running sandbox without running a command:
 
 ```bash

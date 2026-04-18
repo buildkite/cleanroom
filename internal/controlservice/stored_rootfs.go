@@ -134,6 +134,15 @@ func (s *Service) createSandboxFromStoredRootFS(ctx context.Context, req *cleanr
 	}); err != nil {
 		return nil, fmt.Errorf("provision sandbox from snapshot: %w", err)
 	}
+	if shouldRunPostDependenciesHookOnStoredRootFS(record, effectivePolicy) {
+		if err := s.runPostDependenciesHookInPersistentSandbox(ctx, adapter, sandboxID, effectivePolicy, firecrackerCfg, record.Repository, reporter); err != nil {
+			terminateErr := s.terminateCreatedSandbox(context.Background(), adapter, sandboxID)
+			if terminateErr != nil {
+				return nil, fmt.Errorf("run post-dependencies hook: %w; cleanup failed: %v", err, terminateErr)
+			}
+			return nil, fmt.Errorf("run post-dependencies hook: %w", err)
+		}
+	}
 
 	state := &sandboxState{
 		ID:                sandboxID,

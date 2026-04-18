@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
+	"gopkg.in/yaml.v3"
 )
 
 const validImageRef = "ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -217,6 +218,55 @@ func TestCompileRejectsDependencyKeyFilesWithoutCommand(t *testing.T) {
 		t.Fatal("expected compile to reject dependency key files without a command")
 	}
 	if !strings.Contains(err.Error(), "sandbox.dependencies.key.files") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestCompileNormalizesHookCommands(t *testing.T) {
+	t.Parallel()
+
+	var raw rawPolicy
+	if err := yaml.Unmarshal([]byte(`
+version: 1
+sandbox:
+  image:
+    ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  dependencies:
+    command: [bundle, install]
+  hooks:
+    post-dependencies: |
+      bundle exec rake assets:precompile
+      ln -sf .env-sample .env
+    pre-run: [bin/rails, db:prepare]
+  network:
+    default: deny
+`), &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	compiled, err := Compile(raw)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if got, want := compiled.Hooks.PostDependencies, []string{"sh", "-lc", "bundle exec rake assets:precompile\nln -sf .env-sample .env"}; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("unexpected post-dependencies hook: got %v want %v", got, want)
+	}
+	if got, want := compiled.Hooks.PreRun, []string{"bin/rails", "db:prepare"}; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("unexpected pre-run hook: got %v want %v", got, want)
+	}
+}
+
+func TestCompileRejectsPostDependenciesHookWithoutDependencies(t *testing.T) {
+	t.Parallel()
+
+	raw := baseRawPolicy()
+	raw.Sandbox.Hooks.PostDependencies = rawCommandSpec{"sh", "-lc", "echo hello"}
+
+	_, err := Compile(raw)
+	if err == nil {
+		t.Fatal("expected compile to reject post-dependencies hook without dependencies")
+	}
+	if !strings.Contains(err.Error(), "sandbox.hooks.post-dependencies") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -451,6 +501,8 @@ func TestCompiledPolicyProtoRoundTripPreservesDependencies(t *testing.T) {
 	raw := baseRawPolicy()
 	raw.Sandbox.Dependencies.Command = []string{"go", "mod", "download"}
 	raw.Sandbox.Dependencies.Key.Files = []string{"go.mod", "go.sum"}
+	raw.Sandbox.Hooks.PostDependencies = rawCommandSpec{"sh", "-lc", "echo post"}
+	raw.Sandbox.Hooks.PreRun = rawCommandSpec{"bin/test"}
 	compiled, err := Compile(raw)
 	if err != nil {
 		t.Fatalf("compile: %v", err)
@@ -465,5 +517,11 @@ func TestCompiledPolicyProtoRoundTripPreservesDependencies(t *testing.T) {
 	}
 	if got, want := strings.Join(roundTripped.Dependencies.KeyFiles, "\x00"), strings.Join(compiled.Dependencies.KeyFiles, "\x00"); got != want {
 		t.Fatalf("unexpected dependency key files after round trip: got %q want %q", got, want)
+	}
+	if got, want := strings.Join(roundTripped.Hooks.PostDependencies, "\x00"), strings.Join(compiled.Hooks.PostDependencies, "\x00"); got != want {
+		t.Fatalf("unexpected post-dependencies hook after round trip: got %q want %q", got, want)
+	}
+	if got, want := strings.Join(roundTripped.Hooks.PreRun, "\x00"), strings.Join(compiled.Hooks.PreRun, "\x00"); got != want {
+		t.Fatalf("unexpected pre-run hook after round trip: got %q want %q", got, want)
 	}
 }

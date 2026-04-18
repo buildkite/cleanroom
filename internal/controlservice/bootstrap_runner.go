@@ -9,6 +9,25 @@ import (
 	"github.com/buildkite/cleanroom/internal/policy"
 )
 
+func (s *Service) runPersistentSandboxCommand(
+	ctx context.Context,
+	adapter backend.Adapter,
+	sandboxID string,
+	compiled *policy.CompiledPolicy,
+	firecrackerCfg backend.FirecrackerConfig,
+	executionID string,
+	command []string,
+	stream backend.OutputStream,
+) (*backend.ExecutionResult, error) {
+	return adapter.RunInSandbox(ctx, backend.ExecutionRequest{
+		SandboxID:         sandboxID,
+		ExecutionID:       executionID,
+		Command:           append([]string(nil), command...),
+		Policy:            compiled,
+		FirecrackerConfig: withRunDir(firecrackerCfg, internalBootstrapArtifactsDir(sandboxID, executionID)),
+	}, stream)
+}
+
 func (s *Service) runPersistentBootstrapCommand(
 	ctx context.Context,
 	adapter backend.Adapter,
@@ -22,13 +41,7 @@ func (s *Service) runPersistentBootstrapCommand(
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	bootstrapExecutionID := s.ids().NewExecutionID()
-	result, err := adapter.RunInSandbox(ctx, backend.ExecutionRequest{
-		SandboxID:         sandboxID,
-		ExecutionID:       bootstrapExecutionID,
-		Command:           append([]string(nil), command...),
-		Policy:            compiled,
-		FirecrackerConfig: withRunDir(firecrackerCfg, internalBootstrapArtifactsDir(sandboxID, bootstrapExecutionID)),
-	}, backend.OutputStream{
+	result, err := s.runPersistentSandboxCommand(ctx, adapter, sandboxID, compiled, firecrackerCfg, bootstrapExecutionID, command, backend.OutputStream{
 		OnStdout: func(chunk []byte) {
 			_, _ = stdout.Write(chunk)
 			emitCreateSandboxStdout(reporter, phase, chunk)

@@ -80,6 +80,7 @@ type executionState struct {
 	ImageRef          string
 	ImageDigest       string
 	Command           []string
+	PreRunHook        []string
 	Env               []string
 	Options           executionOptions
 	TTY               bool
@@ -336,6 +337,13 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 				s.maybePublishDependencyStageCache(ctx, snapshotAdapter, sandboxID, backendName, compiled, firecrackerCfg, repository, dependencyStagePlan, replacedDependencyStageRecord)
 			}
 		}
+		if err := s.runPostDependenciesHookInPersistentSandbox(ctx, adapter, sandboxID, compiled, firecrackerCfg, repository, reporter); err != nil {
+			cleanupErr := s.terminateCreatedSandbox(context.Background(), adapter, sandboxID)
+			if cleanupErr != nil {
+				return nil, fmt.Errorf("run post-dependencies hook: %w; cleanup failed: %v", err, cleanupErr)
+			}
+			return nil, fmt.Errorf("run post-dependencies hook: %w", err)
+		}
 		return restoredWorkspaceResp, nil
 	}
 
@@ -395,6 +403,12 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 			emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_PUBLISH_DEPENDENCY_STAGE_CACHE, "publishing dependency stage cache")
 			s.maybePublishDependencyStageCache(ctx, snapshotAdapter, sandboxID, backendName, compiled, firecrackerCfg, repository, dependencyStagePlan, replacedDependencyStageRecord)
 		}
+	}
+	if err := s.runPostDependenciesHookInPersistentSandbox(ctx, adapter, sandboxID, compiled, firecrackerCfg, repository, reporter); err != nil {
+		if terminateErr := s.terminateCreatedSandbox(context.Background(), adapter, sandboxID); terminateErr != nil {
+			return nil, fmt.Errorf("run post-dependencies hook: %w; cleanup failed: %v", err, terminateErr)
+		}
+		return nil, fmt.Errorf("run post-dependencies hook: %w", err)
 	}
 
 	state := &sandboxState{
@@ -1001,6 +1015,14 @@ func (s *Service) CreateExecution(ctx context.Context, req *cleanroomv1.CreateEx
 	} else if sandboxRepository != nil {
 		command = repositorycheckout.WrapCommandInWorkdir(command, sandboxRepository)
 	}
+	hookRepository := repository
+	if hookRepository == nil {
+		hookRepository = sandboxRepository
+	}
+	var preRunHook []string
+	if sandboxPolicy != nil {
+		preRunHook = hookCommand(sandboxPolicy.Hooks.PreRun, hookRepository)
+	}
 
 	s.mu.Lock()
 	s.ensureMapsLocked()
@@ -1038,6 +1060,7 @@ func (s *Service) CreateExecution(ctx context.Context, req *cleanroomv1.CreateEx
 		ImageRef:          imageRef,
 		ImageDigest:       imageDigest,
 		Command:           append([]string(nil), command...),
+		PreRunHook:        append([]string(nil), preRunHook...),
 		Env:               executionEnv,
 		Options:           execOpts,
 		TTY:               tty,
@@ -1746,6 +1769,16 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 	if ex.Options.LaunchSeconds != 0 {
 		firecrackerCfg.LaunchSeconds = ex.Options.LaunchSeconds
 	}
+	preRunHook := append([]string(nil), ex.PreRunHook...)
+	if len(preRunHook) > 0 {
+		s.recordExecutionEventLocked(ex, &cleanroomv1.ExecutionStreamEvent{
+			SandboxId:   sandboxID,
+			ExecutionId: executionID,
+			Status:      ex.Status,
+			Payload:     &cleanroomv1.ExecutionStreamEvent_Message{Message: "running pre-run hook"},
+			OccurredAt:  timestamppb.New(s.clock().Now()),
+		})
+	}
 
 	executionReq := backend.ExecutionRequest{
 		SandboxID:         sandboxID,
@@ -1769,6 +1802,73 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 	)
 	s.mu.Unlock()
 	defer span.End()
+
+	if len(preRunHook) > 0 {
+		preRunExecutionID := s.ids().NewExecutionID()
+		preRunResult, preRunErr := s.runPersistentSandboxCommand(runCtx, adapter, sandboxID, sb.Policy, firecrackerCfg, preRunExecutionID, preRunHook, s.executionAuxOutputStream(key))
+
+		s.mu.Lock()
+		ex, ok = s.executions[key]
+		if !ok {
+			s.mu.Unlock()
+			return
+		}
+		if preRunErr != nil {
+			span.RecordError(preRunErr)
+			span.SetStatus(codes.Error, preRunErr.Error())
+			finalStatus, exitCode := executionRunErrorStatus(ex, runCtx)
+			if strings.TrimSpace(preRunErr.Error()) != "" {
+				s.appendExecutionStderrLocked(ex, finalStatus, []byte(preRunErr.Error()+"\n"))
+			}
+			finished := s.clock().Now()
+			s.finalizeExecutionLocked(ex, finalStatus, exitCode, preRunErr.Error(), "", finished)
+			if sb, ok := s.sandboxes[sandboxID]; ok && sb.ActiveExecutionID == executionID {
+				sb.ActiveExecutionID = ""
+				sb.UpdatedAt = s.clock().Now()
+			}
+			s.mu.Unlock()
+			return
+		}
+		if preRunResult == nil {
+			finished := s.clock().Now()
+			s.finalizeExecutionLocked(ex, cleanroomv1.ExecutionStatus_EXECUTION_STATUS_FAILED, 1, "pre-run hook returned no result", "", finished)
+			if sb, ok := s.sandboxes[sandboxID]; ok && sb.ActiveExecutionID == executionID {
+				sb.ActiveExecutionID = ""
+				sb.UpdatedAt = s.clock().Now()
+			}
+			s.mu.Unlock()
+			return
+		}
+		s.mergeBufferedResultOutputLocked(ex, preRunResult, true)
+		if preRunResult.ExitCode != 0 {
+			msg := strings.TrimSpace(preRunResult.Message)
+			if msg == "" {
+				msg = fmt.Sprintf("pre-run hook failed with exit code %d", preRunResult.ExitCode)
+			}
+			if msg != "" && !strings.Contains(ex.Stderr, msg) {
+				s.appendExecutionStderrLocked(ex, cleanroomv1.ExecutionStatus_EXECUTION_STATUS_RUNNING, []byte(msg+"\n"))
+			}
+			finished := s.clock().Now()
+			s.finalizeExecutionLocked(ex, cleanroomv1.ExecutionStatus_EXECUTION_STATUS_FAILED, int32(preRunResult.ExitCode), msg, "", finished)
+			if sb, ok := s.sandboxes[sandboxID]; ok && sb.ActiveExecutionID == executionID {
+				sb.ActiveExecutionID = ""
+				sb.UpdatedAt = s.clock().Now()
+			}
+			s.mu.Unlock()
+			return
+		}
+		if ex.CancelRequested {
+			finished := s.clock().Now()
+			s.finalizeExecutionLocked(ex, cleanroomv1.ExecutionStatus_EXECUTION_STATUS_CANCELED, cancelExitCode(ex.CancelSignal), ex.Message, "execution canceled before command start", finished)
+			if sb, ok := s.sandboxes[sandboxID]; ok && sb.ActiveExecutionID == executionID {
+				sb.ActiveExecutionID = ""
+				sb.UpdatedAt = s.clock().Now()
+			}
+			s.mu.Unlock()
+			return
+		}
+		s.mu.Unlock()
+	}
 
 	result, err := s.runAdapterExecution(runCtx, adapter, executionReq, key)
 
@@ -1877,6 +1977,20 @@ func (s *Service) executionOutputStream(key string) backend.OutputStream {
 		},
 		OnAttach: func(io backend.AttachIO) {
 			s.setExecutionAttachIO(key, io)
+		},
+	}
+}
+
+func (s *Service) executionAuxOutputStream(key string) backend.OutputStream {
+	return backend.OutputStream{
+		OnStdout: func(chunk []byte) {
+			s.recordExecutionOutputChunk(key, true, chunk)
+		},
+		OnStderr: func(chunk []byte) {
+			s.recordExecutionOutputChunk(key, false, chunk)
+		},
+		OnWarning: func(message string) {
+			s.recordExecutionWarning(key, message)
 		},
 	}
 }
@@ -2007,33 +2121,7 @@ func (s *Service) bootstrapRepositoryInPersistentSandbox(
 			"error", err,
 		)
 	}
-	if err != nil {
-		msg := strings.TrimSpace(stderr)
-		if msg == "" {
-			msg = strings.TrimSpace(stdout)
-		}
-		if msg == "" {
-			msg = err.Error()
-		}
-		return fmt.Errorf("%s", msg)
-	}
-	if result == nil {
-		return errors.New("bootstrap execution returned no result")
-	}
-	if result.ExitCode != 0 {
-		msg := strings.TrimSpace(stderr)
-		if msg == "" {
-			msg = strings.TrimSpace(stdout)
-		}
-		if msg == "" {
-			msg = strings.TrimSpace(result.Message)
-		}
-		if msg == "" {
-			msg = fmt.Sprintf("bootstrap command failed with exit code %d", result.ExitCode)
-		}
-		return errors.New(msg)
-	}
-	return nil
+	return commandFailureError(result, stdout, stderr, err, "bootstrap execution returned no result")
 }
 
 func (s *Service) ensureMapsLocked() {

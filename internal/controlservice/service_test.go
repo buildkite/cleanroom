@@ -245,6 +245,22 @@ func testRepositoryDependencyPolicy() *cleanroomv1.Policy {
 	return policyProto
 }
 
+func testRepositoryDependencyHookPolicy() *cleanroomv1.Policy {
+	policyProto := testRepositoryDependencyPolicy()
+	policyProto.Hooks = &cleanroomv1.PolicyHooks{
+		PostDependencies: []string{"sh", "-lc", "echo post-hook"},
+	}
+	return policyProto
+}
+
+func testRepositoryPreRunHookPolicy() *cleanroomv1.Policy {
+	policyProto := testRepositoryPolicy()
+	policyProto.Hooks = &cleanroomv1.PolicyHooks{
+		PreRun: []string{"sh", "-lc", "echo pre-run"},
+	}
+	return policyProto
+}
+
 func newTestService(adapter backend.Adapter) *Service {
 	return newTestServiceWithSnapshotStore(adapter, nil)
 }
@@ -2174,6 +2190,92 @@ func TestCreateSandboxReusesDependencyStageCacheForConfiguredDependencies(t *tes
 	}
 }
 
+func TestCreateSandboxRunsPostDependenciesHookAfterDependencyBootstrap(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	store := newMemorySnapshotStore()
+	adapter := &stubAdapter{}
+	var runCommands [][]string
+	adapter.createSnapshotFn = func(_ context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
+		return &backend.SnapshotResult{StorageRef: "/snapshots/" + req.SnapshotID + ".ext4"}, nil
+	}
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+		runCommands = append(runCommands, append([]string(nil), req.Command...))
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+	}
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"go.mod": "module example.com/test\n\ngo 1.26.2\n",
+		"go.sum": "example.com/test v0.0.0 h1:abc123\n",
+	})
+	svc := newTestServiceWithSnapshotStore(adapter, store)
+	svc.RepositoryMirrors = mirrors
+
+	if _, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy:             testRepositoryDependencyHookPolicy(),
+		RepositoryCheckout: repositoryCheckout,
+	}); err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+
+	if got, want := adapter.runCalls, 3; got != want {
+		t.Fatalf("expected repository bootstrap, dependency bootstrap, and post-dependencies hook, got %d want %d", got, want)
+	}
+	if got, want := len(runCommands), 3; got != want {
+		t.Fatalf("expected three sandbox commands, got %d want %d", got, want)
+	}
+	if dependencyBootstrap := strings.Join(runCommands[1], " "); !repositoryWrappedCommandContains(dependencyBootstrap, `exec 'mise' 'exec' '--' 'go' 'mod' 'download'`) {
+		t.Fatalf("expected dependency bootstrap command, got %q", dependencyBootstrap)
+	}
+	if postHook := strings.Join(runCommands[2], " "); !repositoryWrappedCommandContains(postHook, `exec 'sh' '-lc' 'echo post-hook'`) {
+		t.Fatalf("expected wrapped post-dependencies hook, got %q", postHook)
+	}
+}
+
+func TestCreateSandboxRunsPostDependenciesHookAfterDependencyStageCacheRestore(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	store := newMemorySnapshotStore()
+	adapter := &stubAdapter{}
+	var runCommands [][]string
+	adapter.createSnapshotFn = func(_ context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
+		return &backend.SnapshotResult{StorageRef: "/snapshots/" + req.SnapshotID + ".ext4"}, nil
+	}
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+		runCommands = append(runCommands, append([]string(nil), req.Command...))
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+	}
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"go.mod": "module example.com/test\n\ngo 1.26.2\n",
+		"go.sum": "example.com/test v0.0.0 h1:abc123\n",
+	})
+	svc := newTestServiceWithSnapshotStore(adapter, store)
+	svc.RepositoryMirrors = mirrors
+
+	req := &cleanroomv1.CreateSandboxRequest{
+		Policy:             testRepositoryDependencyHookPolicy(),
+		RepositoryCheckout: repositoryCheckout,
+	}
+
+	if _, err := svc.CreateSandbox(context.Background(), req); err != nil {
+		t.Fatalf("first CreateSandbox returned error: %v", err)
+	}
+	mirrors.err = errors.New("offline")
+	if _, err := svc.CreateSandbox(context.Background(), req); err != nil {
+		t.Fatalf("second CreateSandbox returned error: %v", err)
+	}
+
+	if got, want := adapter.provisionFromSnapshotCalls, 1; got != want {
+		t.Fatalf("expected one dependency-stage restore on warm hit, got %d want %d", got, want)
+	}
+	if got, want := adapter.runCalls, 4; got != want {
+		t.Fatalf("expected initial repository bootstrap, dependency bootstrap, hook, then warm-hit hook, got %d want %d", got, want)
+	}
+	if got, want := len(runCommands), 4; got != want {
+		t.Fatalf("expected four sandbox commands, got %d want %d", got, want)
+	}
+	if warmHook := strings.Join(runCommands[3], " "); !repositoryWrappedCommandContains(warmHook, `exec 'sh' '-lc' 'echo post-hook'`) {
+		t.Fatalf("expected post-dependencies hook after dependency stage restore, got %q", warmHook)
+	}
+}
+
 func TestCreateSandboxBootstrapsDependenciesAfterWorkspaceStageRestoreWithoutDependencyStageCache(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	store := newMemorySnapshotStore()
@@ -2533,6 +2635,71 @@ func TestCreateExecutionSkipsBootstrapForMatchingPersistentRepository(t *testing
 	}
 	if got, want := mirrors.calls, 1; got != want {
 		t.Fatalf("expected mirror prewarm only during sandbox create, got %d call(s)", got)
+	}
+}
+
+func TestCreateExecutionRunsPreRunHookBeforeUserCommand(t *testing.T) {
+	adapter := &stubAdapter{}
+	svc := newTestService(adapter)
+
+	var (
+		mu       sync.Mutex
+		commands [][]string
+	)
+	runCalled := make(chan struct{}, 4)
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+		mu.Lock()
+		commands = append(commands, append([]string(nil), req.Command...))
+		mu.Unlock()
+		select {
+		case runCalled <- struct{}{}:
+		default:
+		}
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+	}
+
+	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy:             testRepositoryPreRunHookPolicy(),
+		RepositoryCheckout: testRepositoryCheckoutProto(),
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createSandboxResp.GetSandbox().GetSandboxId()
+	select {
+	case <-runCalled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for sandbox bootstrap")
+	}
+
+	createExecutionResp, err := svc.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+		SandboxId: sandboxID,
+		Command:   []string{"sh", "-lc", "pwd"},
+	})
+	if err != nil {
+		t.Fatalf("CreateExecution returned error: %v", err)
+	}
+	if createExecutionResp.GetExecution().GetExecutionId() == "" {
+		t.Fatal("expected execution id")
+	}
+	for i := 0; i < 2; i++ {
+		select {
+		case <-runCalled:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for pre-run hook + user execution")
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if got, want := len(commands), 3; got != want {
+		t.Fatalf("expected create bootstrap, pre-run hook, and user execution, got %d command(s)", got)
+	}
+	if preRunHook := strings.Join(commands[1], " "); !repositoryWrappedCommandContains(preRunHook, `exec 'sh' '-lc' 'echo pre-run'`) {
+		t.Fatalf("expected wrapped pre-run hook, got %q", preRunHook)
+	}
+	if joined := strings.Join(commands[2], " "); !repositoryWrappedCommandContains(joined, `exec 'sh' '-lc' 'pwd'`) {
+		t.Fatalf("expected wrapped user command, got %q", joined)
 	}
 }
 

@@ -92,6 +92,11 @@ message PolicyDependencies {
   PolicyDependencyKey key = 2;
 }
 
+message PolicyHooks {
+  repeated string post_dependencies = 1;
+  repeated string pre_run = 2;
+}
+
 message Policy {
   int32 version = 1;
   string image_ref = 2;
@@ -101,6 +106,7 @@ message Policy {
   string hash = 6;
   PolicyServices services = 7;
   PolicyDependencies dependencies = 9;
+  PolicyHooks hooks = 10;
 }
 
 message SandboxOptions {
@@ -152,7 +158,8 @@ enum CreateSandboxPhase {
   CREATE_SANDBOX_PHASE_PUBLISH_WORKSPACE_STAGE_CACHE = 8;
   CREATE_SANDBOX_PHASE_BOOTSTRAP_DEPENDENCIES = 9;
   CREATE_SANDBOX_PHASE_PUBLISH_DEPENDENCY_STAGE_CACHE = 10;
-  CREATE_SANDBOX_PHASE_READY = 11;
+  CREATE_SANDBOX_PHASE_RUN_POST_DEPENDENCIES_HOOK = 11;
+  CREATE_SANDBOX_PHASE_READY = 12;
 }
 
 message CreateSandboxEvent {

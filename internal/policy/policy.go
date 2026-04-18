@@ -34,6 +34,7 @@ type rawPolicy struct {
 			Ref string `yaml:"ref"`
 		} `yaml:"image"`
 		Dependencies rawDependenciesConfig `yaml:"dependencies"`
+		Hooks        rawHooksConfig        `yaml:"hooks"`
 		Services     rawServices           `yaml:"services"`
 		Network      struct {
 			Default string         `yaml:"default"`
@@ -59,6 +60,13 @@ type rawDependenciesConfig struct {
 	Key     rawDependencyKey `yaml:"key"`
 }
 
+type rawHooksConfig struct {
+	PostDependencies rawCommandSpec `yaml:"post-dependencies"`
+	PreRun           rawCommandSpec `yaml:"pre-run"`
+}
+
+type rawCommandSpec []string
+
 type rawServices struct {
 	Docker rawDockerService `yaml:"docker"`
 }
@@ -80,6 +88,7 @@ type CompiledPolicy struct {
 	NetworkDefault string       `json:"network_default"`
 	Allow          []AllowRule  `json:"allow"`
 	Dependencies   Dependencies `json:"dependencies"`
+	Hooks          Hooks        `json:"hooks"`
 	Hash           string       `json:"hash"`
 }
 
@@ -98,6 +107,11 @@ type Services struct {
 type Dependencies struct {
 	Command  []string `json:"command,omitempty"`
 	KeyFiles []string `json:"key_files,omitempty"`
+}
+
+type Hooks struct {
+	PostDependencies []string `json:"post_dependencies,omitempty"`
+	PreRun           []string `json:"pre_run,omitempty"`
 }
 
 type DockerService struct {
@@ -220,6 +234,10 @@ func Compile(raw rawPolicy) (*CompiledPolicy, error) {
 	if err != nil {
 		return nil, err
 	}
+	hooks, err := normalizeHooks(raw.Sandbox.Hooks, dependencies)
+	if err != nil {
+		return nil, err
+	}
 
 	compiled := &CompiledPolicy{
 		Version:     raw.Version,
@@ -233,6 +251,7 @@ func Compile(raw rawPolicy) (*CompiledPolicy, error) {
 		NetworkDefault: networkDefault,
 		Allow:          allow,
 		Dependencies:   dependencies,
+		Hooks:          hooks,
 	}
 
 	hash, err := hashPolicy(compiled)
@@ -293,8 +312,39 @@ func (d Dependencies) Enabled() bool {
 	return len(d.Command) > 0
 }
 
+func (h Hooks) HasPostDependencies() bool {
+	return len(h.PostDependencies) > 0
+}
+
+func (h Hooks) HasPreRun() bool {
+	return len(h.PreRun) > 0
+}
+
 func (c RepositoryConfig) Enabled() bool {
 	return strings.TrimSpace(strings.ToLower(c.Mode)) != "" && strings.TrimSpace(strings.ToLower(c.Mode)) != "none"
+}
+
+func (c *rawCommandSpec) UnmarshalYAML(node *yaml.Node) error {
+	if node == nil {
+		*c = nil
+		return nil
+	}
+
+	switch node.Kind {
+	case yaml.ScalarNode:
+		script := strings.TrimSpace(node.Value)
+		*c = rawCommandSpec{"sh", "-lc", script}
+		return nil
+	case yaml.SequenceNode:
+		var command []string
+		if err := node.Decode(&command); err != nil {
+			return err
+		}
+		*c = rawCommandSpec(command)
+		return nil
+	default:
+		return fmt.Errorf("command must be a string or sequence")
+	}
 }
 
 func normalizeRepositoryConfig(raw *rawRepository) (RepositoryConfig, error) {
@@ -400,6 +450,10 @@ func (p *CompiledPolicy) ToProto() *cleanroomv1.Policy {
 				Files: append([]string(nil), p.Dependencies.KeyFiles...),
 			},
 		},
+		Hooks: &cleanroomv1.PolicyHooks{
+			PostDependencies: append([]string(nil), p.Hooks.PostDependencies...),
+			PreRun:           append([]string(nil), p.Hooks.PreRun...),
+		},
 		Hash: p.Hash,
 	}
 }
@@ -470,6 +524,10 @@ func FromProto(pb *cleanroomv1.Policy) (*CompiledPolicy, error) {
 	if err != nil {
 		return nil, err
 	}
+	hooks, err := hooksFromProto(pb.GetHooks(), dependencies)
+	if err != nil {
+		return nil, err
+	}
 
 	compiled := &CompiledPolicy{
 		Version:     int(pb.GetVersion()),
@@ -483,6 +541,7 @@ func FromProto(pb *cleanroomv1.Policy) (*CompiledPolicy, error) {
 		NetworkDefault: networkDefault,
 		Allow:          allow,
 		Dependencies:   dependencies,
+		Hooks:          hooks,
 	}
 
 	hash, err := hashPolicy(compiled)
@@ -518,6 +577,24 @@ func normalizeDependencies(raw rawDependenciesConfig) (Dependencies, error) {
 	}, nil
 }
 
+func normalizeHooks(raw rawHooksConfig, dependencies Dependencies) (Hooks, error) {
+	postDependencies, err := normalizeHookCommand(raw.PostDependencies, "sandbox.hooks.post-dependencies")
+	if err != nil {
+		return Hooks{}, err
+	}
+	preRun, err := normalizeHookCommand(raw.PreRun, "sandbox.hooks.pre-run")
+	if err != nil {
+		return Hooks{}, err
+	}
+	if len(postDependencies) > 0 && !dependencies.Enabled() {
+		return Hooks{}, errors.New("sandbox.hooks.post-dependencies requires sandbox.dependencies.command")
+	}
+	return Hooks{
+		PostDependencies: postDependencies,
+		PreRun:           preRun,
+	}, nil
+}
+
 func dependenciesFromProto(pb *cleanroomv1.PolicyDependencies) (Dependencies, error) {
 	if pb == nil {
 		return Dependencies{}, nil
@@ -542,7 +619,36 @@ func dependenciesFromProto(pb *cleanroomv1.PolicyDependencies) (Dependencies, er
 	}, nil
 }
 
+func hooksFromProto(pb *cleanroomv1.PolicyHooks, dependencies Dependencies) (Hooks, error) {
+	if pb == nil {
+		return Hooks{}, nil
+	}
+	postDependencies, err := normalizeCommandVector(pb.GetPostDependencies(), "policy hooks.post_dependencies")
+	if err != nil {
+		return Hooks{}, err
+	}
+	preRun, err := normalizeCommandVector(pb.GetPreRun(), "policy hooks.pre_run")
+	if err != nil {
+		return Hooks{}, err
+	}
+	if len(postDependencies) > 0 && !dependencies.Enabled() {
+		return Hooks{}, errors.New("policy hooks.post_dependencies requires dependencies.command")
+	}
+	return Hooks{
+		PostDependencies: postDependencies,
+		PreRun:           preRun,
+	}, nil
+}
+
 func normalizeDependencyCommand(raw []string) ([]string, error) {
+	return normalizeCommandVector(raw, "sandbox.dependencies.command")
+}
+
+func normalizeHookCommand(raw rawCommandSpec, field string) ([]string, error) {
+	return normalizeCommandVector([]string(raw), field)
+}
+
+func normalizeCommandVector(raw []string, field string) ([]string, error) {
 	if len(raw) == 0 {
 		return nil, nil
 	}
@@ -550,7 +656,7 @@ func normalizeDependencyCommand(raw []string) ([]string, error) {
 	for i, arg := range raw {
 		trimmed := strings.TrimSpace(arg)
 		if trimmed == "" {
-			return nil, fmt.Errorf("sandbox.dependencies.command[%d] cannot be empty", i)
+			return nil, fmt.Errorf("%s[%d] cannot be empty", field, i)
 		}
 		command = append(command, trimmed)
 	}
