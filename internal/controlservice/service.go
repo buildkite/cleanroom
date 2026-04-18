@@ -1819,7 +1819,7 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 
 	if len(preRunBefore) > 0 {
 		preRunExecutionID := s.ids().NewExecutionID()
-		preRunResult, preRunErr := s.runPersistentSandboxCommand(runCtx, adapter, sandboxID, sb.Policy, firecrackerCfg, preRunExecutionID, preRunBefore, s.executionAuxOutputStream(key))
+		preRunResult, preRunErr := s.runPersistentSandboxCommand(runCtx, adapter, sandboxID, sb.Policy, firecrackerCfg, preRunExecutionID, preRunBefore, ex.Env, s.executionAuxOutputStream(key))
 
 		s.mu.Lock()
 		ex, ok = s.executions[key]

@@ -2789,6 +2789,68 @@ func TestCreateExecutionRunsRunBeforeBeforeUserCommand(t *testing.T) {
 	}
 }
 
+func TestCreateExecutionPassesEnvToRunBefore(t *testing.T) {
+	adapter := &stubAdapter{}
+	svc := newTestService(adapter)
+
+	var (
+		mu   sync.Mutex
+		envs [][]string
+	)
+	runCalled := make(chan struct{}, 4)
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+		mu.Lock()
+		envs = append(envs, append([]string(nil), req.Env...))
+		mu.Unlock()
+		select {
+		case runCalled <- struct{}{}:
+		default:
+		}
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+	}
+
+	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy:             testRepositoryRunBeforePolicy(),
+		RepositoryCheckout: testRepositoryCheckoutProto(),
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createSandboxResp.GetSandbox().GetSandboxId()
+	select {
+	case <-runCalled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for sandbox bootstrap")
+	}
+
+	_, err = svc.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+		SandboxId: sandboxID,
+		Command:   []string{"sh", "-lc", "pwd"},
+		Env:       []string{"DATABASE_URL=postgres://example", "REDIS_URL=redis://example"},
+	})
+	if err != nil {
+		t.Fatalf("CreateExecution returned error: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		select {
+		case <-runCalled:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for run.before + user execution")
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if got, want := len(envs), 3; got != want {
+		t.Fatalf("expected create bootstrap, run.before, and user execution env captures, got %d", got)
+	}
+	for i, got := range envs[1:] {
+		if want := []string{"DATABASE_URL=postgres://example", "REDIS_URL=redis://example"}; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+			t.Fatalf("unexpected env on command #%d: got %v want %v", i+2, got, want)
+		}
+	}
+}
+
 func TestCancelExecutionDuringRunBeforeTransitionsToCanceled(t *testing.T) {
 	started := make(chan struct{}, 1)
 	adapter := &stubAdapter{
