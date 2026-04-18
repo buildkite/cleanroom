@@ -459,9 +459,13 @@ func patchHasGitlinkChanges(patch []byte) bool {
 		switch {
 		case strings.HasPrefix(line, "index ") && strings.HasSuffix(line, " 160000"):
 			return true
-		case strings.HasPrefix(line, "-Subproject commit "):
+		case strings.HasPrefix(line, "new file mode 160000"):
 			return true
-		case strings.HasPrefix(line, "+Subproject commit "):
+		case strings.HasPrefix(line, "deleted file mode 160000"):
+			return true
+		case line == "old mode 160000":
+			return true
+		case line == "new mode 160000":
 			return true
 		}
 	}
@@ -505,14 +509,13 @@ func sha256Digest(data []byte) string {
 }
 
 func normalizePath(value string) string {
-	trimmed := strings.TrimSpace(value)
-	if trimmed == "" {
+	if value == "" {
 		return ""
 	}
-	if strings.Contains(trimmed, "\x00") {
+	if strings.Contains(value, "\x00") {
 		return ""
 	}
-	cleaned := path.Clean(trimmed)
+	cleaned := path.Clean(value)
 	if cleaned == "." || cleaned == "" || strings.HasPrefix(cleaned, "/") || strings.HasPrefix(cleaned, "../") {
 		return ""
 	}

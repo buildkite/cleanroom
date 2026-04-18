@@ -212,6 +212,59 @@ func TestValidateContentAllowsContextLineResemblingGitlinkIndex(t *testing.T) {
 	}
 }
 
+func TestValidateContentAllowsOrdinarySubprojectCommitText(t *testing.T) {
+	patch := []byte(strings.Join([]string{
+		"diff --git a/README.md b/README.md",
+		"index 1111111111111111111111111111111111111111..2222222222222222222222222222222222222222 100644",
+		"--- a/README.md",
+		"+++ b/README.md",
+		"@@ -1 +1,2 @@",
+		" existing",
+		"+Subproject commit 2222222222222222222222222222222222222222",
+		"",
+	}, "\n"))
+	changeset := &Changeset{
+		Format:        FormatGitDiffV1,
+		BaseCommitSHA: "0123456789abcdef0123456789abcdef01234567",
+		TreeDigest:    "89abcdef0123456789abcdef0123456789abcdef",
+		Patch:         patch,
+		Files: []File{{
+			Path:   "README.md",
+			SHA256: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		}},
+	}
+	changeset.Digest = buildDigest(changeset.BaseCommitSHA, changeset.TreeDigest, changeset.Patch, changeset.Files)
+
+	if err := changeset.ValidateContent(); err != nil {
+		t.Fatalf("expected ValidateContent to allow ordinary added text, got %v", err)
+	}
+}
+
+func TestBuildFromWorkingTreePreservesSignificantWhitespaceInPaths(t *testing.T) {
+	repoDir := initGitRepository(t)
+	pathWithSpaces := " file.txt "
+	if err := os.WriteFile(filepath.Join(repoDir, pathWithSpaces), []byte("spaced path\n"), 0o644); err != nil {
+		t.Fatalf("write spaced file: %v", err)
+	}
+
+	checkout := &repositorycheckout.Checkout{
+		RemoteURL:      "https://github.com/buildkite/cleanroom.git",
+		CommitSHA:      headCommit(t, repoDir),
+		DestinationDir: "/workspace",
+	}
+
+	changeset, err := BuildFromWorkingTree(repoDir, checkout)
+	if err != nil {
+		t.Fatalf("BuildFromWorkingTree returned error: %v", err)
+	}
+	if changeset == nil {
+		t.Fatal("expected changeset")
+	}
+	if digest, deleted, ok := changeset.ChangedFileDigest(pathWithSpaces); !ok || deleted || digest == "" {
+		t.Fatalf("expected spaced path digest, got digest=%q deleted=%v ok=%v", digest, deleted, ok)
+	}
+}
+
 func TestDigestPathsFromBaseUsesPatchedContents(t *testing.T) {
 	repoDir := initGitRepository(t)
 	if err := os.WriteFile(filepath.Join(repoDir, "README.md"), []byte("patched\n"), 0o644); err != nil {
