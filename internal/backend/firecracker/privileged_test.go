@@ -48,6 +48,16 @@ func stubPrivilegedCommandEUID(t *testing.T, uid int) {
 	})
 }
 
+func stubDirectPrivilegedCommandPathResolver(t *testing.T, fn func(string) (string, error)) {
+	t.Helper()
+
+	prev := directPrivilegedCommandPathResolver
+	directPrivilegedCommandPathResolver = fn
+	t.Cleanup(func() {
+		directPrivilegedCommandPathResolver = prev
+	})
+}
+
 func setupFakeSudo(t *testing.T, logPath string) {
 	t.Helper()
 	stubPrivilegedCommandEUID(t, 1000)
@@ -106,9 +116,14 @@ func TestRunRootCommandExecutesDirectlyWhenRoot(t *testing.T) {
 
 	tmpDir := t.TempDir()
 	logPath := filepath.Join(tmpDir, "ip.log")
-	writeExecutable(t, tmpDir, "ip", "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$*\" >> \"$IP_LOG_PATH\"\n")
+	ipPath := writeExecutable(t, tmpDir, "ip", "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$*\" >> \"$IP_LOG_PATH\"\n")
 	t.Setenv("IP_LOG_PATH", logPath)
-	t.Setenv("PATH", tmpDir+":"+os.Getenv("PATH"))
+	stubDirectPrivilegedCommandPathResolver(t, func(command string) (string, error) {
+		if command == "ip" {
+			return ipPath, nil
+		}
+		return resolveDirectPrivilegedCommandPath(command)
+	})
 
 	cfg := backend.FirecrackerConfig{
 		PrivilegedHelperPath: filepath.Join(tmpDir, "missing-helper"),
@@ -127,24 +142,40 @@ func TestRunRootCommandExecutesDirectlyWhenRoot(t *testing.T) {
 	}
 }
 
-func TestRunRootCommandUsesResolvedCommandPathWhenRoot(t *testing.T) {
+func TestRunRootCommandDoesNotUsePATHShadowedBinaryWhenRoot(t *testing.T) {
 	stubPrivilegedCommandEUID(t, 0)
 
-	prevResolveCommand := hostSupportResolveCommand
-	t.Cleanup(func() {
-		hostSupportResolveCommand = prevResolveCommand
-	})
+	tmpDir := t.TempDir()
+	shadowLogPath := filepath.Join(tmpDir, "shadow.log")
+	writeExecutable(t, tmpDir, "true", "#!/bin/sh\nset -eu\nprintf 'shadowed true executed\\n' >> \"$SHADOW_LOG_PATH\"\nexit 23\n")
+	t.Setenv("SHADOW_LOG_PATH", shadowLogPath)
+	t.Setenv("PATH", tmpDir+":"+os.Getenv("PATH"))
+
+	cfg := backend.FirecrackerConfig{
+		PrivilegedHelperPath: filepath.Join(tmpDir, "missing-helper"),
+	}
+
+	if err := runRootCommand(context.Background(), cfg, "true"); err != nil {
+		t.Fatalf("runRootCommand: %v", err)
+	}
+	if _, err := os.Stat(shadowLogPath); !os.IsNotExist(err) {
+		t.Fatalf("expected shadowed PATH binary to be ignored, got stat err=%v", err)
+	}
+}
+
+func TestRunRootCommandUsesResolvedCommandPathWhenRoot(t *testing.T) {
+	stubPrivilegedCommandEUID(t, 0)
 
 	tmpDir := t.TempDir()
 	logPath := filepath.Join(tmpDir, "ip.log")
 	ipPath := writeExecutable(t, tmpDir, "ip-root", "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$*\" >> \"$IP_LOG_PATH\"\n")
 	t.Setenv("IP_LOG_PATH", logPath)
-	hostSupportResolveCommand = func(command string) (string, error) {
+	stubDirectPrivilegedCommandPathResolver(t, func(command string) (string, error) {
 		if command == "ip" {
 			return ipPath, nil
 		}
-		return prevResolveCommand(command)
-	}
+		return resolveDirectPrivilegedCommandPath(command)
+	})
 
 	cfg := backend.FirecrackerConfig{
 		PrivilegedHelperPath: filepath.Join(tmpDir, "missing-helper"),
@@ -167,8 +198,13 @@ func TestRunRootCommandOutputExecutesDirectlyWhenRoot(t *testing.T) {
 	stubPrivilegedCommandEUID(t, 0)
 
 	tmpDir := t.TempDir()
-	writeExecutable(t, tmpDir, "zfs", "#!/bin/sh\nset -eu\nprintf 'tank/cleanroom\\n'\n")
-	t.Setenv("PATH", tmpDir+":"+os.Getenv("PATH"))
+	zfsPath := writeExecutable(t, tmpDir, "zfs", "#!/bin/sh\nset -eu\nprintf 'tank/cleanroom\\n'\n")
+	stubDirectPrivilegedCommandPathResolver(t, func(command string) (string, error) {
+		if command == "zfs" {
+			return zfsPath, nil
+		}
+		return resolveDirectPrivilegedCommandPath(command)
+	})
 
 	cfg := backend.FirecrackerConfig{
 		PrivilegedHelperPath: filepath.Join(tmpDir, "missing-helper"),

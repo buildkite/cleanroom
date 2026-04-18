@@ -132,6 +132,8 @@ var snapshotVolumeStoreDriverFn = snapshotVolumeStoreDriver
 
 var privilegedCommandEUID = os.Geteuid
 
+var directPrivilegedCommandPathResolver = resolveDirectPrivilegedCommandPath
+
 var nflogGroupFromTapNameFn = nflogGroupFromTapName
 
 var newNFLogListenerFn = newNFLogListener
@@ -2622,12 +2624,35 @@ func lookPathWithFallback(binary string, candidates ...string) (string, error) {
 	return "", fmt.Errorf("%q not found in PATH or fallback locations", binary)
 }
 
+func resolveTrustedCommandPath(command string, candidates ...string) (string, error) {
+	for _, candidate := range candidates {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			continue
+		}
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("%q not found in trusted locations", command)
+}
+
 func resolveDirectPrivilegedCommandPath(command string) (string, error) {
 	switch strings.TrimSpace(command) {
+	case "true":
+		return resolveTrustedCommandPath(command, "/usr/bin/true", "/bin/true")
+	case "dd":
+		return resolveTrustedCommandPath(command, "/usr/bin/dd", "/bin/dd")
+	case "ip":
+		return resolveTrustedCommandPath(command, "/usr/sbin/ip", "/sbin/ip")
+	case "iptables":
+		return resolveTrustedCommandPath(command, "/usr/sbin/iptables", "/sbin/iptables")
+	case "sysctl":
+		return resolveTrustedCommandPath(command, "/usr/sbin/sysctl", "/sbin/sysctl")
 	case "zfs":
-		return lookPathWithFallback(command, "/usr/sbin/zfs", "/sbin/zfs")
+		return resolveTrustedCommandPath(command, "/usr/sbin/zfs", "/sbin/zfs")
 	default:
-		return hostSupportResolveCommand(command)
+		return "", fmt.Errorf("unsupported direct privileged command %q", command)
 	}
 }
 
@@ -2635,7 +2660,7 @@ func runDirectPrivilegedCommand(ctx context.Context, args ...string) error {
 	if len(args) == 0 {
 		return errors.New("missing privileged command")
 	}
-	binary, err := resolveDirectPrivilegedCommandPath(args[0])
+	binary, err := directPrivilegedCommandPathResolver(args[0])
 	if err != nil {
 		return err
 	}
@@ -2646,7 +2671,7 @@ func runDirectPrivilegedCommandOutput(ctx context.Context, args ...string) ([]by
 	if len(args) == 0 {
 		return nil, errors.New("missing privileged command")
 	}
-	binary, err := resolveDirectPrivilegedCommandPath(args[0])
+	binary, err := directPrivilegedCommandPathResolver(args[0])
 	if err != nil {
 		return nil, err
 	}
