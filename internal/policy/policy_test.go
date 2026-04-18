@@ -238,6 +238,35 @@ sandbox:
 	}
 }
 
+func TestCompileTreatsNullDependencyCommandAsUnset(t *testing.T) {
+	t.Parallel()
+
+	var raw rawPolicy
+	if err := yaml.Unmarshal([]byte(`
+version: 1
+sandbox:
+  image:
+    ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  dependencies:
+    command: null
+  network:
+    default: deny
+`), &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	compiled, err := Compile(raw)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if compiled.Dependencies.Enabled() {
+		t.Fatal("expected null dependency command to disable dependency bootstrap")
+	}
+	if len(compiled.Dependencies.Command) != 0 {
+		t.Fatalf("expected null dependency command to normalize to empty, got %v", compiled.Dependencies.Command)
+	}
+}
+
 func TestCompileRejectsDependencyKeyFilesWithoutCommand(t *testing.T) {
 	t.Parallel()
 

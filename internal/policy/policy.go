@@ -340,6 +340,10 @@ func (c *rawDependencyCommandSpec) UnmarshalYAML(node *yaml.Node) error {
 	}
 	switch node.Kind {
 	case yaml.ScalarNode:
+		if node.ShortTag() == "!!null" {
+			*c = nil
+			return nil
+		}
 		if node.ShortTag() != "!!str" {
 			return fmt.Errorf("command must be a string or sequence")
 		}
