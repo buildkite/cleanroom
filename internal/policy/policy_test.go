@@ -271,6 +271,28 @@ func TestCompileRejectsPostDependenciesHookWithoutDependencies(t *testing.T) {
 	}
 }
 
+func TestUnmarshalRejectsNonStringHookScalar(t *testing.T) {
+	t.Parallel()
+
+	var raw rawPolicy
+	err := yaml.Unmarshal([]byte(`
+version: 1
+sandbox:
+  image:
+    ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  hooks:
+    pre-run: false
+  network:
+    default: deny
+`), &raw)
+	if err == nil {
+		t.Fatal("expected unmarshal to reject non-string hook scalar")
+	}
+	if !strings.Contains(err.Error(), "command scalar must be a string") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestLoadPropagatesPrimaryStatError(t *testing.T) {
 	t.Parallel()
 

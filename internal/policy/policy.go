@@ -332,6 +332,9 @@ func (c *rawCommandSpec) UnmarshalYAML(node *yaml.Node) error {
 
 	switch node.Kind {
 	case yaml.ScalarNode:
+		if node.ShortTag() != "!!str" {
+			return fmt.Errorf("command scalar must be a string")
+		}
 		script := strings.TrimSpace(node.Value)
 		*c = rawCommandSpec{"sh", "-lc", script}
 		return nil

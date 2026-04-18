@@ -2768,6 +2768,110 @@ func TestCreateExecutionRunsPreRunHookBeforeUserCommand(t *testing.T) {
 	}
 }
 
+func TestCancelExecutionDuringPreRunHookTransitionsToCanceled(t *testing.T) {
+	started := make(chan struct{}, 1)
+	adapter := &stubAdapter{
+		runStreamFn: func(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+			if strings.Join(req.Command, " ") == "sh -lc echo pre-run" {
+				select {
+				case started <- struct{}{}:
+				default:
+				}
+				<-ctx.Done()
+				return &backend.ExecutionResult{
+					ExecutionID: req.ExecutionID,
+					ExitCode:    1,
+					Message:     "terminated",
+				}, nil
+			}
+			t.Fatalf("expected user command not to run after pre-run cancel, got %v", req.Command)
+			return nil, nil
+		},
+	}
+	svc := newTestService(adapter)
+
+	policyProto := testPolicy()
+	policyProto.Hooks = &cleanroomv1.PolicyHooks{
+		PreRun: []string{"sh", "-lc", "echo pre-run"},
+	}
+
+	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: policyProto})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createSandboxResp.GetSandbox().GetSandboxId()
+
+	createExecutionResp, err := svc.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+		SandboxId: sandboxID,
+		Command:   []string{"sleep", "10"},
+	})
+	if err != nil {
+		t.Fatalf("CreateExecution returned error: %v", err)
+	}
+	executionID := createExecutionResp.GetExecution().GetExecutionId()
+
+	history, updates, done, unsubscribe, err := svc.SubscribeExecutionEvents(sandboxID, executionID)
+	if err != nil {
+		t.Fatalf("SubscribeExecutionEvents returned error: %v", err)
+	}
+	defer unsubscribe()
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for pre-run hook to start")
+	}
+
+	cancelResp, err := svc.CancelExecution(context.Background(), &cleanroomv1.CancelExecutionRequest{
+		SandboxId:   sandboxID,
+		ExecutionId: executionID,
+		Signal:      15,
+	})
+	if err != nil {
+		t.Fatalf("CancelExecution returned error: %v", err)
+	}
+	if !cancelResp.GetAccepted() {
+		t.Fatal("expected cancel request to be accepted")
+	}
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for canceled execution to finish")
+	}
+
+	getResp, err := svc.GetExecution(context.Background(), &cleanroomv1.GetExecutionRequest{
+		SandboxId:   sandboxID,
+		ExecutionId: executionID,
+	})
+	if err != nil {
+		t.Fatalf("GetExecution returned error: %v", err)
+	}
+	if got, want := getResp.GetExecution().GetStatus(), cleanroomv1.ExecutionStatus_EXECUTION_STATUS_CANCELED; got != want {
+		t.Fatalf("unexpected execution status: got %v want %v", got, want)
+	}
+
+	events := collectExecutionEvents(t, history, updates, done)
+	var exit *cleanroomv1.ExecutionExit
+	for _, event := range events {
+		if payload, ok := event.Payload.(*cleanroomv1.ExecutionStreamEvent_Exit); ok {
+			exit = payload.Exit
+		}
+	}
+	if exit == nil {
+		t.Fatalf("expected exit event after cancel, events=%d", len(events))
+	}
+	if got, want := exit.GetStatus(), cleanroomv1.ExecutionStatus_EXECUTION_STATUS_CANCELED; got != want {
+		t.Fatalf("unexpected exit status: got %v want %v", got, want)
+	}
+	if got, want := exit.GetExitCode(), int32(143); got != want {
+		t.Fatalf("unexpected exit code: got %d want %d", got, want)
+	}
+	if got, want := adapter.runCalls, 1; got != want {
+		t.Fatalf("expected only pre-run hook execution, got %d want %d", got, want)
+	}
+}
+
 func TestCreateExecutionSkipsBootstrapForSnapshotBackedSandboxWithMatchingRepository(t *testing.T) {
 	adapter := &stubAdapter{
 		createSnapshotFn: func(_ context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {

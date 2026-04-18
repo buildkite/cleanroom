@@ -1843,13 +1843,23 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 		if preRunResult.ExitCode != 0 {
 			msg := strings.TrimSpace(preRunResult.Message)
 			if msg == "" {
-				msg = fmt.Sprintf("pre-run hook failed with exit code %d", preRunResult.ExitCode)
+				if ex.CancelRequested {
+					msg = "execution canceled before command start"
+				} else {
+					msg = fmt.Sprintf("pre-run hook failed with exit code %d", preRunResult.ExitCode)
+				}
 			}
 			if msg != "" && !strings.Contains(ex.Stderr, msg) {
 				s.appendExecutionStderrLocked(ex, cleanroomv1.ExecutionStatus_EXECUTION_STATUS_RUNNING, []byte(msg+"\n"))
 			}
 			finished := s.clock().Now()
-			s.finalizeExecutionLocked(ex, cleanroomv1.ExecutionStatus_EXECUTION_STATUS_FAILED, int32(preRunResult.ExitCode), msg, "", finished)
+			finalStatus := cleanroomv1.ExecutionStatus_EXECUTION_STATUS_FAILED
+			finalExitCode := int32(preRunResult.ExitCode)
+			if ex.CancelRequested {
+				finalStatus = cleanroomv1.ExecutionStatus_EXECUTION_STATUS_CANCELED
+				finalExitCode = cancelExitCode(ex.CancelSignal)
+			}
+			s.finalizeExecutionLocked(ex, finalStatus, finalExitCode, msg, "", finished)
 			if sb, ok := s.sandboxes[sandboxID]; ok && sb.ActiveExecutionID == executionID {
 				sb.ActiveExecutionID = ""
 				sb.UpdatedAt = s.clock().Now()
