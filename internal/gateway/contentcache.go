@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -19,6 +20,8 @@ import (
 
 	"github.com/buildkite/cleanroom/internal/paths"
 )
+
+var errGitHostNotConfiguredForCaching = errors.New("git host not configured for caching")
 
 // ContentCacheConfig configures the embedded content-cache layer.
 type ContentCacheConfig struct {
@@ -134,7 +137,7 @@ func NewContentCache(cfg ContentCacheConfig) (*ContentCache, error) {
 		}
 		if len(allowedGitHosts) > 0 {
 			if _, ok := allowedGitHosts[host]; !ok {
-				return nil, fmt.Errorf("git host %q is not configured for caching", host)
+				return nil, fmt.Errorf("%w: %s", errGitHostNotConfiguredForCaching, host)
 			}
 		}
 		return ccgit.NewHandler(

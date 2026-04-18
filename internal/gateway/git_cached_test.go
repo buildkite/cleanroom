@@ -1,7 +1,7 @@
 package gateway
 
 import (
-	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -151,13 +151,19 @@ func TestCachedGitHandlerUploadPackDelegates(t *testing.T) {
 	}
 }
 
-func TestCachedGitHandlerRejectsUnconfiguredCacheHost(t *testing.T) {
+func TestCachedGitHandlerFallsBackForUnconfiguredCacheHost(t *testing.T) {
 	t.Parallel()
 
+	var capturedPath, capturedQuery string
+	fallback := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedPath = r.URL.Path
+		capturedQuery = r.URL.RawQuery
+		w.WriteHeader(http.StatusOK)
+	})
 	provider := &stubGitHostHandlerProvider{
-		err: errors.New("not configured"),
+		err: fmt.Errorf("%w: github.enterprise.test", errGitHostNotConfiguredForCaching),
 	}
-	h := newCachedGitHandler(provider, nil, nil)
+	h := newCachedGitHandler(provider, fallback, nil)
 
 	req := httptest.NewRequest("GET", "/git/github.enterprise.test/org/repo.git/info/refs?service=git-upload-pack", nil)
 	req = withScope(req, &SandboxScope{
@@ -174,11 +180,17 @@ func TestCachedGitHandlerRejectsUnconfiguredCacheHost(t *testing.T) {
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("expected 403, got %d", w.Code)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
 	}
-	if got := w.Header().Get(reasonCodeHeader); got != reasonHostNotAllowed {
-		t.Fatalf("expected reason %s, got %q", reasonHostNotAllowed, got)
+	if want := "/git/github.enterprise.test/org/repo.git/info/refs"; capturedPath != want {
+		t.Fatalf("expected fallback path %q, got %q", want, capturedPath)
+	}
+	if want := "service=git-upload-pack"; capturedQuery != want {
+		t.Fatalf("expected fallback query %q, got %q", want, capturedQuery)
+	}
+	if provider.host != "github.enterprise.test" {
+		t.Fatalf("expected cache host lookup for github.enterprise.test, got %q", provider.host)
 	}
 }
 

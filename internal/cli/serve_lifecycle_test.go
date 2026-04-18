@@ -13,6 +13,7 @@ import (
 
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/gateway"
+	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 )
 
 func reserveLocalTCPAddr(t *testing.T) string {
@@ -140,6 +141,66 @@ func TestServeCommandRunServerStartsWithoutContentCache(t *testing.T) {
 	}()
 
 	waitForHTTPHealthz(t, fmt.Sprintf("http://%s/healthz", listenAddr), 5*time.Second)
+	if cancelRun == nil {
+		t.Fatal("expected serveSignalNotifyContext replacement to capture a cancel func")
+	}
+	cancelRun()
+
+	waitCtx, cancel := context.WithTimeoutCause(context.Background(), 5*time.Second, fmt.Errorf("timed out waiting for ServeCommand.Run to exit after cancellation"))
+	defer cancel()
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("ServeCommand.Run returned error: %v", err)
+		}
+	case <-waitCtx.Done():
+		t.Fatal(context.Cause(waitCtx))
+	}
+}
+
+func TestServeCommandRunServerPassesGatewayGitCacheHostsToContentCache(t *testing.T) {
+	listenAddr := reserveLocalTCPAddr(t)
+	var cancelRun context.CancelFunc
+	stubServeNotifyContext(t, func(parent context.Context, _ ...os.Signal) (context.Context, context.CancelFunc) {
+		runCtx, cancel := context.WithCancel(parent)
+		cancelRun = cancel
+		return runCtx, cancel
+	})
+
+	var captured gateway.ContentCacheConfig
+	prevNewGatewayContentCache := newGatewayContentCache
+	newGatewayContentCache = func(cfg gateway.ContentCacheConfig) (*gateway.ContentCache, error) {
+		captured = cfg
+		return nil, errors.New("cache dir unavailable")
+	}
+	t.Cleanup(func() {
+		newGatewayContentCache = prevNewGatewayContentCache
+	})
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- (&ServeCommand{
+			Listen:        "http://" + listenAddr,
+			GatewayListen: "127.0.0.1:0",
+		}).Run(&runtimeContext{
+			CWD:        t.TempDir(),
+			ConfigPath: "/tmp/cleanroom-config.yaml",
+			Config: runtimeconfig.Config{
+				Gateway: runtimeconfig.GatewayConfig{
+					Git: runtimeconfig.GatewayGitConfig{
+						CacheHosts: []string{"github.com", "gitlab.com"},
+					},
+				},
+			},
+			Backends: map[string]backend.Adapter{},
+		})
+	}()
+
+	waitForHTTPHealthz(t, fmt.Sprintf("http://%s/healthz", listenAddr), 5*time.Second)
+	if got, want := captured.GitAllowedHosts, []string{"github.com", "gitlab.com"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("unexpected git cache hosts: got %v want %v", got, want)
+	}
 	if cancelRun == nil {
 		t.Fatal("expected serveSignalNotifyContext replacement to capture a cancel func")
 	}

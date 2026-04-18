@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -61,14 +62,23 @@ func (h *cachedGitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.auditLog(scope.SandboxID, upstreamHost, repoPath, "allow", "cached")
-
 	cacheHandler, err := h.cache.GitHandlerForHost(upstreamHost)
 	if err != nil {
-		h.auditLog(scope.SandboxID, upstreamHost, repoPath, "deny", reasonHostNotAllowed)
-		writeReasonError(w, http.StatusForbidden, reasonHostNotAllowed, fmt.Sprintf("git cache is not configured for %s", upstreamHost))
+		if errors.Is(err, errGitHostNotConfiguredForCaching) {
+			if h.fallback == nil {
+				h.auditLog(scope.SandboxID, upstreamHost, repoPath, "deny", reasonUpstreamError)
+				writeReasonError(w, http.StatusBadGateway, reasonUpstreamError, fmt.Sprintf("git cache fallback is not configured for %s", upstreamHost))
+				return
+			}
+			h.auditLog(scope.SandboxID, upstreamHost, repoPath, "allow", "fallback")
+			h.fallback.ServeHTTP(w, r)
+			return
+		}
+		h.auditLog(scope.SandboxID, upstreamHost, repoPath, "deny", reasonUpstreamError)
+		writeReasonError(w, http.StatusBadGateway, reasonUpstreamError, fmt.Sprintf("git cache handler unavailable for %s: %v", upstreamHost, err))
 		return
 	}
+	h.auditLog(scope.SandboxID, upstreamHost, repoPath, "allow", "cached")
 
 	// content-cache's git handler expects paths like /{host}/{repo}.git/...
 	// Strip the /git/ prefix so the cache handler sees the host-rooted path.
