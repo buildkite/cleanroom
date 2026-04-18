@@ -455,7 +455,7 @@ func ensureNoDirtySubmoduleWorktrees(repoRoot string) error {
 
 func patchHasGitlinkChanges(patch []byte) bool {
 	for _, line := range strings.Split(string(patch), "\n") {
-		line = strings.TrimSpace(line)
+		line = strings.TrimSuffix(line, "\r")
 		switch {
 		case strings.HasPrefix(line, "index ") && strings.HasSuffix(line, " 160000"):
 			return true

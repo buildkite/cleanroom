@@ -1570,6 +1570,106 @@ func TestCreateSandboxReusesWorkspaceStageCache(t *testing.T) {
 	}
 }
 
+func TestCreateExecutionPreservesFirstMatchingRepositoryAfterChangesetWorkspaceStageCacheRestore(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	store := newMemorySnapshotStore()
+	adapter := &stubAdapter{
+		createSnapshotFn: func(_ context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
+			return &backend.SnapshotResult{StorageRef: "/snapshots/" + req.SnapshotID + ".ext4"}, nil
+		},
+	}
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"README.md": "hello\n",
+	})
+	svc := newTestServiceWithSnapshotStore(adapter, store)
+	svc.RepositoryMirrors = mirrors
+
+	repository := repositorycheckout.FromProto(repositoryCheckout)
+	if err := os.WriteFile(filepath.Join(mirrors.mirrorPath, "README.md"), []byte("hello from changeset\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(README.md) returned error: %v", err)
+	}
+	changeset, err := repositorychangeset.BuildFromWorkingTree(mirrors.mirrorPath, repository)
+	if err != nil {
+		t.Fatalf("BuildFromWorkingTree returned error: %v", err)
+	}
+	if changeset == nil {
+		t.Fatal("expected repository changeset")
+	}
+
+	var (
+		mu       sync.Mutex
+		commands [][]string
+	)
+	runCalled := make(chan struct{}, 8)
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+		mu.Lock()
+		commands = append(commands, append([]string(nil), req.Command...))
+		mu.Unlock()
+		select {
+		case runCalled <- struct{}{}:
+		default:
+		}
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+	}
+
+	req := &cleanroomv1.CreateSandboxRequest{
+		Policy:              testRepositoryPolicy(),
+		RepositoryCheckout:  repositoryCheckout,
+		RepositoryChangeset: changeset.ToProto(),
+	}
+	if _, err := svc.CreateSandbox(context.Background(), req); err != nil {
+		t.Fatalf("first CreateSandbox returned error: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		select {
+		case <-runCalled:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for cold changeset bootstrap")
+		}
+	}
+
+	secondResp, err := svc.CreateSandbox(context.Background(), req)
+	if err != nil {
+		t.Fatalf("second CreateSandbox returned error: %v", err)
+	}
+	if got, want := secondResp.GetSourceKind(), "workspace stage cache"; got != want {
+		t.Fatalf("unexpected response source kind: got %q want %q", got, want)
+	}
+	if got, want := secondResp.GetSandbox().GetSourceKind(), "workspace stage cache"; got != want {
+		t.Fatalf("unexpected sandbox source kind: got %q want %q", got, want)
+	}
+	if got, want := adapter.provisionFromSnapshotCalls, 1; got != want {
+		t.Fatalf("expected warm changeset workspace-stage restore once, got %d want %d", got, want)
+	}
+
+	_, err = svc.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+		SandboxId:          secondResp.GetSandbox().GetSandboxId(),
+		Command:            []string{"sh", "-lc", "pwd"},
+		RepositoryCheckout: repositoryCheckout,
+	})
+	if err != nil {
+		t.Fatalf("CreateExecution returned error: %v", err)
+	}
+	select {
+	case <-runCalled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for warm-cache execution")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if got, want := len(commands), 3; got != want {
+		t.Fatalf("expected create bootstrap + changeset apply + warm-cache execution, got %d command(s)", got)
+	}
+	joined := strings.Join(commands[2], " ")
+	if strings.Contains(joined, "git clone --filter=blob:none --no-checkout") {
+		t.Fatalf("expected first matching repository execution after workspace stage cache restore to preserve changeset state, got %q", joined)
+	}
+	if !repositoryWrappedCommandContains(joined, `exec 'sh' '-lc' 'pwd'`) {
+		t.Fatalf("expected wrapped user command in repository workdir, got %q", joined)
+	}
+}
+
 func TestCreateSandboxReusesWorkspaceStageCacheForNormalizedDestinationDir(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	store := newMemorySnapshotStore()

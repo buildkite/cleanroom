@@ -182,6 +182,36 @@ func TestValidateContentRejectsSubmoduleGitlinkPatch(t *testing.T) {
 	}
 }
 
+func TestValidateContentAllowsContextLineResemblingGitlinkIndex(t *testing.T) {
+	patch := []byte(strings.Join([]string{
+		"diff --git a/README.md b/README.md",
+		"index 1111111111111111111111111111111111111111..2222222222222222222222222222222222222222 100644",
+		"--- a/README.md",
+		"+++ b/README.md",
+		"@@ -1,3 +1,3 @@",
+		" index 3333333333333333333333333333333333333333 160000",
+		"-before",
+		"+after",
+		" unchanged",
+		"",
+	}, "\n"))
+	changeset := &Changeset{
+		Format:        FormatGitDiffV1,
+		BaseCommitSHA: "0123456789abcdef0123456789abcdef01234567",
+		TreeDigest:    "89abcdef0123456789abcdef0123456789abcdef",
+		Patch:         patch,
+		Files: []File{{
+			Path:   "README.md",
+			SHA256: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		}},
+	}
+	changeset.Digest = buildDigest(changeset.BaseCommitSHA, changeset.TreeDigest, changeset.Patch, changeset.Files)
+
+	if err := changeset.ValidateContent(); err != nil {
+		t.Fatalf("expected ValidateContent to allow ordinary patch context line, got %v", err)
+	}
+}
+
 func TestDigestPathsFromBaseUsesPatchedContents(t *testing.T) {
 	repoDir := initGitRepository(t)
 	if err := os.WriteFile(filepath.Join(repoDir, "README.md"), []byte("patched\n"), 0o644); err != nil {
