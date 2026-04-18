@@ -190,21 +190,7 @@ func discoverCleanroomZFSDatasetRoots(ctx context.Context, zfsPath string) ([]st
 }
 
 func validateZFSDatasetRoot(ctx context.Context, cfg backend.FirecrackerConfig, dataset string) error {
-	dataset = strings.TrimSpace(dataset)
-	if dataset == "" {
-		return fmt.Errorf("zfs dataset root is empty")
-	}
-	if !isCleanroomZFSDatasetRoot(dataset) {
-		return fmt.Errorf("zfs dataset root %q must be cleanroom or */cleanroom", dataset)
-	}
-	out, err := runRootCommandOutput(ctx, cfg, "zfs", "list", "-H", "-d", "0", "-o", "name", dataset)
-	if err != nil {
-		return fmt.Errorf("unable to access zfs dataset root %q: %v", dataset, err)
-	}
-	if strings.TrimSpace(string(out)) != dataset {
-		return fmt.Errorf("zfs dataset probe for %q returned %q", dataset, strings.TrimSpace(string(out)))
-	}
-	return nil
+	return validateZFSDatasetRootWithRunner(ctx, newPrivilegedCommandRunner(cfg), dataset)
 }
 
 func isCleanroomZFSDatasetRoot(dataset string) bool {

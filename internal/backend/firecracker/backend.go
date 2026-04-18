@@ -778,6 +778,7 @@ func (a *Adapter) Doctor(_ context.Context, req backend.DoctorRequest) (*backend
 	appendCheck("network_policy_rules", policyRulesStatus, policyRulesMessage)
 
 	privilegedHelperPath := resolvePrivilegedHelperPath(req.FirecrackerConfig)
+	hostRuntime := hostRuntimeForConfig(req.FirecrackerConfig)
 
 	requiredCommands := []string{"ip", "iptables", "sysctl", "sudo"}
 	for _, cmd := range requiredCommands {
@@ -839,7 +840,7 @@ func (a *Adapter) Doctor(_ context.Context, req backend.DoctorRequest) (*backend
 			if zfsBinary == "" {
 				appendCheck("snapshot_zfs_dataset_access", "fail", fmt.Sprintf("unable to access zfs dataset %q: zfs command not available", dataset))
 			} else {
-				if err := validateZFSDatasetRoot(context.Background(), req.FirecrackerConfig, dataset); err != nil {
+				if err := hostRuntime.ValidateZFSDatasetRoot(context.Background(), dataset); err != nil {
 					appendCheck("snapshot_zfs_dataset_access", "fail", err.Error())
 				} else {
 					appendCheck("snapshot_zfs_dataset_access", "pass", fmt.Sprintf("zfs dataset root %q is accessible", dataset))
@@ -850,12 +851,12 @@ func (a *Adapter) Doctor(_ context.Context, req backend.DoctorRequest) (*backend
 		appendCheck("snapshot_driver", "fail", fmt.Sprintf("unsupported snapshot driver %q", req.FirecrackerConfig.Snapshots.Driver))
 	}
 
-	if err := runRootCommand(context.Background(), req.FirecrackerConfig, "true"); err != nil {
+	if err := hostRuntime.CheckAccess(context.Background()); err != nil {
 		appendCheck("network_privileged_probe", "warn", fmt.Sprintf("privileged command probe failed: %v", err))
 	} else {
 		appendCheck("network_privileged_probe", "pass", "privileged command probe succeeded")
 	}
-	if err := runRootCommand(context.Background(), req.FirecrackerConfig, "ip", "link", "show"); err != nil {
+	if err := hostRuntime.CheckNetworking(context.Background()); err != nil {
 		appendCheck("network_privileged_ip", "warn", fmt.Sprintf("privileged ip link show failed: %v", err))
 	} else {
 		appendCheck("network_privileged_ip", "pass", "privileged ip command execution succeeded")
@@ -994,8 +995,12 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 	vmRootFSPath := writableVolume.AttachmentPath
 
 	networkSetupStart := time.Now()
-	runner := newPrivilegedCommandRunner(req.FirecrackerConfig)
-	networkCfg, cleanupNetwork, err := setupHostNetwork(ctx, req.ExecutionID, req.Policy.NetworkDefault == "allow", req.Policy.Allow, 0, runner, nil, nil)
+	hostRuntime := hostRuntimeForConfig(req.FirecrackerConfig)
+	networkCfg, cleanupNetwork, err := hostRuntime.SetupSandboxNetwork(ctx, sandboxNetworkRequest{
+		SandboxID: req.ExecutionID,
+		AllowAll:  req.Policy.NetworkDefault == "allow",
+		Allow:     req.Policy.Allow,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("setup host network: %w", err)
 	}
@@ -1589,7 +1594,7 @@ func (a *Adapter) launchSandboxVMFromRootFS(ctx context.Context, sandboxID strin
 	}
 	vmRootFSPath := writableVolume.AttachmentPath
 
-	runner := newPrivilegedCommandRunner(cfg)
+	hostRuntime := hostRuntimeForConfig(cfg)
 	gwPort := 0
 	if a.GatewayRegistry != nil {
 		gwPort = a.GatewayPort
@@ -1614,7 +1619,14 @@ func (a *Adapter) launchSandboxVMFromRootFS(ctx context.Context, sandboxID strin
 		}
 	}
 
-	networkCfg, cleanupNetwork, err := setupHostNetwork(ctx, sandboxID, compiled.NetworkDefault == "allow", compiled.Allow, gwPort, runner, dnsOnDeny, nflogOnBlocked)
+	networkCfg, cleanupNetwork, err := hostRuntime.SetupSandboxNetwork(ctx, sandboxNetworkRequest{
+		SandboxID:   sandboxID,
+		AllowAll:    compiled.NetworkDefault == "allow",
+		Allow:       compiled.Allow,
+		GatewayPort: gwPort,
+		OnDeny:      dnsOnDeny,
+		OnBlocked:   nflogOnBlocked,
+	})
 	if err != nil {
 		cleanupVolume()
 		return nil, fmt.Errorf("setup host network: %w", err)
@@ -1847,18 +1859,6 @@ func snapshotStorageBaseDir(cfg backend.FirecrackerConfig) (string, error) {
 	return paths.SnapshotDir()
 }
 
-type rootVolumeCommandRunner struct {
-	runner privilegedCommandRunner
-}
-
-func (r rootVolumeCommandRunner) Run(ctx context.Context, command string, args ...string) error {
-	return r.runner.Run(ctx, append([]string{command}, args...)...)
-}
-
-func (r rootVolumeCommandRunner) Output(ctx context.Context, command string, args ...string) ([]byte, error) {
-	return r.runner.Output(ctx, append([]string{command}, args...)...)
-}
-
 func snapshotConfigForStorageRef(cfg backend.FirecrackerConfig, storageRef string) (backend.FirecrackerConfig, error) {
 	if datasetRoot, ok := volumestore.ZFSDatasetRootFromManagedRef(storageRef); ok {
 		driverName := strings.ToLower(strings.TrimSpace(cfg.Snapshots.Driver))
@@ -1888,10 +1888,7 @@ func rootFSVolumeStoreDriver(cfg backend.FirecrackerConfig) (volumestore.Driver,
 		}
 		return driver, nil
 	case "zfs":
-		driver, err := volumestore.NewZFSDriver(volumestore.ZFSDriverOptions{
-			DatasetRoot: cfg.Snapshots.ZFSDataset,
-			Runner:      rootVolumeCommandRunner{runner: newPrivilegedCommandRunner(cfg)},
-		})
+		driver, err := hostRuntimeForConfig(cfg).OpenZFSVolumeStore(cfg.Snapshots.ZFSDataset)
 		if err != nil {
 			return nil, err
 		}
