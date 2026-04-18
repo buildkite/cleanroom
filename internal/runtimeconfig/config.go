@@ -415,7 +415,33 @@ func Load() (Config, string, error) {
 	cfg.Observability.Traces.Sampling.Mode = strings.TrimSpace(cfg.Observability.Traces.Sampling.Mode)
 	cfg.Observability.Traces.Zipkin.Endpoint = strings.TrimSpace(cfg.Observability.Traces.Zipkin.Endpoint)
 	cfg.Observability.Traces.Zipkin.Headers = trimStringMap(cfg.Observability.Traces.Zipkin.Headers)
+	if err := validateObservabilityConfig(cfg.Observability); err != nil {
+		return Config{}, path, err
+	}
 	return cfg, path, nil
+}
+
+func validateObservabilityConfig(cfg ObservabilityConfig) error {
+	exporter := strings.ToLower(strings.TrimSpace(cfg.Traces.Exporter))
+	if hasUnsupportedOTLPConfig(cfg.OTLP) {
+		return errors.New("observability.otlp is not supported in this build; use observability.traces.exporter=zipkin and observability.traces.zipkin")
+	}
+
+	switch exporter {
+	case "", "zipkin":
+		return nil
+	case "otlp", "otlp_http", "otlp/http", "http", "http/protobuf", "grpc":
+		return fmt.Errorf("trace exporter %q is not supported in this build; use observability.traces.exporter=zipkin", exporter)
+	default:
+		return fmt.Errorf("unsupported observability.traces.exporter %q", cfg.Traces.Exporter)
+	}
+}
+
+func hasUnsupportedOTLPConfig(cfg OTLPConfig) bool {
+	return strings.TrimSpace(cfg.Endpoint) != "" ||
+		strings.TrimSpace(cfg.Protocol) != "" ||
+		cfg.Insecure ||
+		len(cfg.Headers) > 0
 }
 
 func darwinVZConfigIsZero(cfg DarwinVZConfig) bool {
