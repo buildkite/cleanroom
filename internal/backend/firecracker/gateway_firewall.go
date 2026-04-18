@@ -20,33 +20,30 @@ import (
 // Returns a cleanup function that removes the rules. The caller must invoke
 // cleanup on shutdown.
 func SetupGatewayFirewall(ctx context.Context, port int, cfg backend.FirecrackerConfig) (cleanup func(), err error) {
-	run := func(ctx context.Context, args ...string) error {
-		return runRootCommand(ctx, cfg, args...)
-	}
-	return setupGatewayFirewall(ctx, port, run)
+	return setupGatewayFirewall(ctx, port, newPrivilegedCommandRunner(cfg))
 }
 
-func setupGatewayFirewall(ctx context.Context, port int, run rootCommandFunc) (cleanup func(), err error) {
+func setupGatewayFirewall(ctx context.Context, port int, runner privilegedCommandRunner) (cleanup func(), err error) {
 	portStr := strconv.Itoa(port)
 
 	// Allow loopback access to gateway port.
-	if err := run(ctx, "iptables", "-A", "INPUT", "-i", "lo", "-p", "tcp", "--dport", portStr, "-j", "ACCEPT"); err != nil {
+	if err := runner.Run(ctx, "iptables", "-A", "INPUT", "-i", "lo", "-p", "tcp", "--dport", portStr, "-j", "ACCEPT"); err != nil {
 		return nil, fmt.Errorf("install gateway loopback rule: %w", err)
 	}
 
 	// Drop gateway traffic from non-TAP interfaces (eth0, docker0, etc.).
 	// TAP traffic (cr*) is intentionally NOT matched here so it falls through
 	// to the per-TAP anti-spoof rules installed by setupHostNetwork.
-	if err := run(ctx, "iptables", "-A", "INPUT", "!", "-i", "cr+", "-p", "tcp", "--dport", portStr, "-j", "DROP"); err != nil {
-		_ = run(ctx, "iptables", "-D", "INPUT", "-i", "lo", "-p", "tcp", "--dport", portStr, "-j", "ACCEPT")
+	if err := runner.Run(ctx, "iptables", "-A", "INPUT", "!", "-i", "cr+", "-p", "tcp", "--dport", portStr, "-j", "DROP"); err != nil {
+		_ = runner.Run(ctx, "iptables", "-D", "INPUT", "-i", "lo", "-p", "tcp", "--dport", portStr, "-j", "ACCEPT")
 		return nil, fmt.Errorf("install gateway drop rule: %w", err)
 	}
 
 	cleanup = func() {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_ = run(cleanupCtx, "iptables", "-D", "INPUT", "!", "-i", "cr+", "-p", "tcp", "--dport", portStr, "-j", "DROP")
-		_ = run(cleanupCtx, "iptables", "-D", "INPUT", "-i", "lo", "-p", "tcp", "--dport", portStr, "-j", "ACCEPT")
+		_ = runner.Run(cleanupCtx, "iptables", "-D", "INPUT", "!", "-i", "cr+", "-p", "tcp", "--dport", portStr, "-j", "DROP")
+		_ = runner.Run(cleanupCtx, "iptables", "-D", "INPUT", "-i", "lo", "-p", "tcp", "--dport", portStr, "-j", "ACCEPT")
 	}
 	return cleanup, nil
 }

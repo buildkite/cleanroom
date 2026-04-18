@@ -58,6 +58,33 @@ func stubDirectPrivilegedCommandPathResolver(t *testing.T, fn func(string) (stri
 	})
 }
 
+type testPrivilegedCommandRunner struct {
+	run      func(context.Context, ...string) error
+	output   func(context.Context, ...string) ([]byte, error)
+	runBatch func(context.Context, [][]string) error
+}
+
+func (r testPrivilegedCommandRunner) Run(ctx context.Context, args ...string) error {
+	if r.run == nil {
+		return nil
+	}
+	return r.run(ctx, args...)
+}
+
+func (r testPrivilegedCommandRunner) Output(ctx context.Context, args ...string) ([]byte, error) {
+	if r.output == nil {
+		return nil, nil
+	}
+	return r.output(ctx, args...)
+}
+
+func (r testPrivilegedCommandRunner) RunBatch(ctx context.Context, commands [][]string) error {
+	if r.runBatch == nil {
+		return nil
+	}
+	return r.runBatch(ctx, commands)
+}
+
 func setupFakeSudo(t *testing.T, logPath string) {
 	t.Helper()
 	stubPrivilegedCommandEUID(t, 1000)

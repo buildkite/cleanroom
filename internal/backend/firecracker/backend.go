@@ -130,10 +130,6 @@ var rootFSVolumeStoreDriverFn = rootFSVolumeStoreDriver
 
 var snapshotVolumeStoreDriverFn = snapshotVolumeStoreDriver
 
-var privilegedCommandEUID = os.Geteuid
-
-var directPrivilegedCommandPathResolver = resolveDirectPrivilegedCommandPath
-
 var nflogGroupFromTapNameFn = nflogGroupFromTapName
 
 var newNFLogListenerFn = newNFLogListener
@@ -998,13 +994,8 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 	vmRootFSPath := writableVolume.AttachmentPath
 
 	networkSetupStart := time.Now()
-	networkRunCommand := func(ctx context.Context, args ...string) error {
-		return runRootCommand(ctx, req.FirecrackerConfig, args...)
-	}
-	networkRunBatch := func(ctx context.Context, commands [][]string) error {
-		return runRootCommandBatch(ctx, req.FirecrackerConfig, commands)
-	}
-	networkCfg, cleanupNetwork, err := setupHostNetwork(ctx, req.ExecutionID, req.Policy.NetworkDefault == "allow", req.Policy.Allow, 0, networkRunCommand, networkRunBatch, nil, nil)
+	runner := newPrivilegedCommandRunner(req.FirecrackerConfig)
+	networkCfg, cleanupNetwork, err := setupHostNetwork(ctx, req.ExecutionID, req.Policy.NetworkDefault == "allow", req.Policy.Allow, 0, runner, nil, nil)
 	if err != nil {
 		return nil, fmt.Errorf("setup host network: %w", err)
 	}
@@ -1598,12 +1589,7 @@ func (a *Adapter) launchSandboxVMFromRootFS(ctx context.Context, sandboxID strin
 	}
 	vmRootFSPath := writableVolume.AttachmentPath
 
-	networkRunCommand := func(ctx context.Context, args ...string) error {
-		return runRootCommand(ctx, cfg, args...)
-	}
-	networkRunBatch := func(ctx context.Context, commands [][]string) error {
-		return runRootCommandBatch(ctx, cfg, commands)
-	}
+	runner := newPrivilegedCommandRunner(cfg)
 	gwPort := 0
 	if a.GatewayRegistry != nil {
 		gwPort = a.GatewayPort
@@ -1628,7 +1614,7 @@ func (a *Adapter) launchSandboxVMFromRootFS(ctx context.Context, sandboxID strin
 		}
 	}
 
-	networkCfg, cleanupNetwork, err := setupHostNetwork(ctx, sandboxID, compiled.NetworkDefault == "allow", compiled.Allow, gwPort, networkRunCommand, networkRunBatch, dnsOnDeny, nflogOnBlocked)
+	networkCfg, cleanupNetwork, err := setupHostNetwork(ctx, sandboxID, compiled.NetworkDefault == "allow", compiled.Allow, gwPort, runner, dnsOnDeny, nflogOnBlocked)
 	if err != nil {
 		cleanupVolume()
 		return nil, fmt.Errorf("setup host network: %w", err)
@@ -1862,15 +1848,15 @@ func snapshotStorageBaseDir(cfg backend.FirecrackerConfig) (string, error) {
 }
 
 type rootVolumeCommandRunner struct {
-	cfg backend.FirecrackerConfig
+	runner privilegedCommandRunner
 }
 
 func (r rootVolumeCommandRunner) Run(ctx context.Context, command string, args ...string) error {
-	return runRootCommand(ctx, r.cfg, append([]string{command}, args...)...)
+	return r.runner.Run(ctx, append([]string{command}, args...)...)
 }
 
 func (r rootVolumeCommandRunner) Output(ctx context.Context, command string, args ...string) ([]byte, error) {
-	return runRootCommandOutput(ctx, r.cfg, append([]string{command}, args...)...)
+	return r.runner.Output(ctx, append([]string{command}, args...)...)
 }
 
 func snapshotConfigForStorageRef(cfg backend.FirecrackerConfig, storageRef string) (backend.FirecrackerConfig, error) {
@@ -1904,7 +1890,7 @@ func rootFSVolumeStoreDriver(cfg backend.FirecrackerConfig) (volumestore.Driver,
 	case "zfs":
 		driver, err := volumestore.NewZFSDriver(volumestore.ZFSDriverOptions{
 			DatasetRoot: cfg.Snapshots.ZFSDataset,
-			Runner:      rootVolumeCommandRunner{cfg: cfg},
+			Runner:      rootVolumeCommandRunner{runner: newPrivilegedCommandRunner(cfg)},
 		})
 		if err != nil {
 			return nil, err
@@ -2154,25 +2140,24 @@ type hostNetworkConfig struct {
 
 type ipLookupFunc func(ctx context.Context, host string) ([]net.IP, error)
 type interfaceLookupFunc func(name string) (*net.Interface, error)
-type rootCommandFunc func(ctx context.Context, args ...string) error
 type rootCommandBatchFunc func(ctx context.Context, commands [][]string) error
 
-func setupHostNetwork(ctx context.Context, runID string, allowAll bool, allow []policy.AllowRule, gatewayPort int, runCommand rootCommandFunc, runBatchCommand rootCommandBatchFunc, onDeny func(sandboxID, queryName string), onBlocked func(string)) (hostNetworkConfig, func(), error) {
+func setupHostNetwork(ctx context.Context, runID string, allowAll bool, allow []policy.AllowRule, gatewayPort int, runner privilegedCommandRunner, onDeny func(sandboxID, queryName string), onBlocked func(string)) (hostNetworkConfig, func(), error) {
 	lookup := func(ctx context.Context, host string) ([]net.IP, error) {
 		return net.DefaultResolver.LookupIP(ctx, "ip4", host)
 	}
-	return setupHostNetworkWithDeps(ctx, runID, allowAll, allow, gatewayPort, lookup, runCommand, runBatchCommand, onDeny, onBlocked)
+	return setupHostNetworkWithDeps(ctx, runID, allowAll, allow, gatewayPort, lookup, runner, onDeny, onBlocked)
 }
 
-func setupHostNetworkWithDeps(ctx context.Context, runID string, allowAll bool, allow []policy.AllowRule, gatewayPort int, lookup ipLookupFunc, runCommand rootCommandFunc, runBatchCommand rootCommandBatchFunc, onDeny func(sandboxID, queryName string), onBlocked func(string)) (hostNetworkConfig, func(), error) {
-	return setupHostNetworkWithTrustedDNSFactory(ctx, runID, allowAll, allow, gatewayPort, lookup, net.InterfaceByName, runCommand, runBatchCommand, newTrustedDNSService, onDeny, onBlocked)
+func setupHostNetworkWithDeps(ctx context.Context, runID string, allowAll bool, allow []policy.AllowRule, gatewayPort int, lookup ipLookupFunc, runner privilegedCommandRunner, onDeny func(sandboxID, queryName string), onBlocked func(string)) (hostNetworkConfig, func(), error) {
+	return setupHostNetworkWithTrustedDNSFactory(ctx, runID, allowAll, allow, gatewayPort, lookup, net.InterfaceByName, runner, newTrustedDNSService, onDeny, onBlocked)
 }
 
-func setupHostNetworkWithTapLookup(ctx context.Context, runID string, allowAll bool, allow []policy.AllowRule, gatewayPort int, lookup ipLookupFunc, interfaceByName interfaceLookupFunc, runCommand rootCommandFunc, runBatchCommand rootCommandBatchFunc, onDeny func(sandboxID, queryName string), onBlocked func(string)) (hostNetworkConfig, func(), error) {
-	return setupHostNetworkWithTrustedDNSFactory(ctx, runID, allowAll, allow, gatewayPort, lookup, interfaceByName, runCommand, runBatchCommand, newTrustedDNSService, onDeny, onBlocked)
+func setupHostNetworkWithTapLookup(ctx context.Context, runID string, allowAll bool, allow []policy.AllowRule, gatewayPort int, lookup ipLookupFunc, interfaceByName interfaceLookupFunc, runner privilegedCommandRunner, onDeny func(sandboxID, queryName string), onBlocked func(string)) (hostNetworkConfig, func(), error) {
+	return setupHostNetworkWithTrustedDNSFactory(ctx, runID, allowAll, allow, gatewayPort, lookup, interfaceByName, runner, newTrustedDNSService, onDeny, onBlocked)
 }
 
-func setupHostNetworkWithTrustedDNSFactory(ctx context.Context, runID string, allowAll bool, allow []policy.AllowRule, gatewayPort int, lookup ipLookupFunc, interfaceByName interfaceLookupFunc, runCommand rootCommandFunc, runBatchCommand rootCommandBatchFunc, factory trustedDNSFactory, onDeny func(sandboxID, queryName string), onBlocked func(string)) (hostNetworkConfig, func(), error) {
+func setupHostNetworkWithTrustedDNSFactory(ctx context.Context, runID string, allowAll bool, allow []policy.AllowRule, gatewayPort int, lookup ipLookupFunc, interfaceByName interfaceLookupFunc, runner privilegedCommandRunner, factory trustedDNSFactory, onDeny func(sandboxID, queryName string), onBlocked func(string)) (hostNetworkConfig, func(), error) {
 	_ = lookup
 	if factory == nil {
 		factory = newTrustedDNSService
@@ -2192,7 +2177,7 @@ func setupHostNetworkWithTrustedDNSFactory(ctx context.Context, runID string, al
 	}
 
 	setupRun := func(args ...string) error {
-		return runCommand(ctx, args...)
+		return runner.Run(ctx, args...)
 	}
 	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), networkCleanupTimeout)
 	cleanupCmds := make([][]string, 0, 16)
@@ -2208,10 +2193,10 @@ func setupHostNetworkWithTrustedDNSFactory(ctx context.Context, runID string, al
 		}
 		for _, args := range reversed {
 			if isTapDeleteCommand(args, tapName) {
-				_ = deleteTapDeviceWithRetry(cleanupCtx, tapName, tapDeleteRetryInterval, interfaceByName, runCommand)
+				_ = deleteTapDeviceWithRetry(cleanupCtx, tapName, tapDeleteRetryInterval, interfaceByName, runner)
 				continue
 			}
-			_ = runCommand(cleanupCtx, args...)
+			_ = runner.Run(cleanupCtx, args...)
 		}
 	}
 	addCleanup := func(args ...string) {
@@ -2219,7 +2204,7 @@ func setupHostNetworkWithTrustedDNSFactory(ctx context.Context, runID string, al
 	}
 	removeNFLogRule := func(tapName, groupStr string) {
 		args := []string{"iptables", "-D", "FORWARD", "-i", tapName, "-j", "NFLOG", "--nflog-group", groupStr}
-		if err := runCommand(cleanupCtx, args...); err != nil {
+		if err := runner.Run(cleanupCtx, args...); err != nil {
 			log.Printf("nflog iptables cleanup failed for %s: %v", tapName, err)
 			addCleanup(args...)
 		}
@@ -2228,7 +2213,7 @@ func setupHostNetworkWithTrustedDNSFactory(ctx context.Context, runID string, al
 	staleTapCleanupCtx, staleTapCleanupCancel := context.WithTimeout(context.Background(), networkCleanupTimeout)
 	defer staleTapCleanupCancel()
 	if _, err := interfaceByName(tapName); err == nil {
-		if err := deleteTapDeviceWithRetry(staleTapCleanupCtx, tapName, tapDeleteRetryInterval, interfaceByName, runCommand); err != nil {
+		if err := deleteTapDeviceWithRetry(staleTapCleanupCtx, tapName, tapDeleteRetryInterval, interfaceByName, runner); err != nil {
 			return hostNetworkConfig{}, func() {}, fmt.Errorf("remove stale tap device %s: %w", tapName, err)
 		}
 	} else if !isNoSuchNetworkInterfaceError(err) {
@@ -2365,7 +2350,7 @@ func setupHostNetworkWithTrustedDNSFactory(ctx context.Context, runID string, al
 		hostIP:       hostAddr,
 		guestIP:      guestAddr,
 		policy:       trustedDNSPolicy(allowAll, allow),
-		runBatch:     runBatchCommand,
+		runBatch:     runner.RunBatch,
 		tcpChainName: tcpChainName,
 		udpChainName: udpChainName,
 		onDeny:       onDeny,
@@ -2427,7 +2412,7 @@ func isTapDeleteCommand(args []string, tapName string) bool {
 	return len(args) == 4 && args[0] == "ip" && args[1] == "link" && args[2] == "del" && args[3] == tapName
 }
 
-func deleteTapDeviceWithRetry(ctx context.Context, tapName string, retryInterval time.Duration, interfaceByName interfaceLookupFunc, runCommand rootCommandFunc) error {
+func deleteTapDeviceWithRetry(ctx context.Context, tapName string, retryInterval time.Duration, interfaceByName interfaceLookupFunc, runner privilegedCommandRunner) error {
 	if strings.TrimSpace(tapName) == "" {
 		return nil
 	}
@@ -2439,7 +2424,7 @@ func deleteTapDeviceWithRetry(ctx context.Context, tapName string, retryInterval
 	defer ticker.Stop()
 
 	for {
-		err := runCommand(ctx, "ip", "link", "del", tapName)
+		err := runner.Run(ctx, "ip", "link", "del", tapName)
 		if err == nil {
 			return nil
 		}
@@ -2565,7 +2550,7 @@ func helperMissingCapabilities(have, required []string) []string {
 }
 
 func helperCapabilities(ctx context.Context, cfg backend.FirecrackerConfig) ([]string, error) {
-	out, err := runHelperCommandOutput(ctx, cfg, "capabilities")
+	out, err := newHelperPrivilegedCommandRunner(cfg).Output(ctx, "capabilities")
 	if err != nil {
 		return nil, err
 	}
@@ -2588,7 +2573,7 @@ func helperCapabilities(ctx context.Context, cfg backend.FirecrackerConfig) ([]s
 }
 
 func helperVersion(ctx context.Context, cfg backend.FirecrackerConfig) (string, error) {
-	out, err := runHelperCommandOutput(ctx, cfg, "version")
+	out, err := newHelperPrivilegedCommandRunner(cfg).Output(ctx, "version")
 	if err != nil {
 		return "", err
 	}
@@ -2622,116 +2607,6 @@ func lookPathWithFallback(binary string, candidates ...string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("%q not found in PATH or fallback locations", binary)
-}
-
-func resolveTrustedCommandPath(command string, candidates ...string) (string, error) {
-	for _, candidate := range candidates {
-		candidate = strings.TrimSpace(candidate)
-		if candidate == "" {
-			continue
-		}
-		if _, err := os.Stat(candidate); err == nil {
-			return candidate, nil
-		}
-	}
-	return "", fmt.Errorf("%q not found in trusted locations", command)
-}
-
-func resolveDirectPrivilegedCommandPath(command string) (string, error) {
-	switch strings.TrimSpace(command) {
-	case "true":
-		return resolveTrustedCommandPath(command, "/usr/bin/true", "/bin/true")
-	case "dd":
-		return resolveTrustedCommandPath(command, "/usr/bin/dd", "/bin/dd")
-	case "ip":
-		return resolveTrustedCommandPath(command, "/usr/sbin/ip", "/sbin/ip")
-	case "iptables":
-		return resolveTrustedCommandPath(command, "/usr/sbin/iptables", "/sbin/iptables")
-	case "sysctl":
-		return resolveTrustedCommandPath(command, "/usr/sbin/sysctl", "/sbin/sysctl")
-	case "zfs":
-		return resolveTrustedCommandPath(command, "/usr/sbin/zfs", "/sbin/zfs")
-	default:
-		return "", fmt.Errorf("unsupported direct privileged command %q", command)
-	}
-}
-
-func runDirectPrivilegedCommand(ctx context.Context, args ...string) error {
-	if len(args) == 0 {
-		return errors.New("missing privileged command")
-	}
-	binary, err := directPrivilegedCommandPathResolver(args[0])
-	if err != nil {
-		return err
-	}
-	return runCombinedCommand(ctx, append([]string{binary}, args[1:]...), args)
-}
-
-func runDirectPrivilegedCommandOutput(ctx context.Context, args ...string) ([]byte, error) {
-	if len(args) == 0 {
-		return nil, errors.New("missing privileged command")
-	}
-	binary, err := directPrivilegedCommandPathResolver(args[0])
-	if err != nil {
-		return nil, err
-	}
-	return runCombinedCommandOutput(ctx, append([]string{binary}, args[1:]...), args)
-}
-
-func runRootCommand(ctx context.Context, cfg backend.FirecrackerConfig, args ...string) error {
-	if len(args) == 0 {
-		return errors.New("missing privileged command")
-	}
-	if privilegedCommandEUID() == 0 {
-		return runDirectPrivilegedCommand(ctx, args...)
-	}
-	return runHelperCommand(ctx, cfg, args...)
-}
-
-func runHelperCommand(ctx context.Context, cfg backend.FirecrackerConfig, args ...string) error {
-	if len(args) == 0 {
-		return errors.New("missing privileged command")
-	}
-
-	helperPath := resolvePrivilegedHelperPath(cfg)
-	if strings.TrimSpace(helperPath) == "" {
-		return errors.New("missing privileged helper path")
-	}
-	return runCombinedCommand(ctx, append([]string{"sudo", "-n", helperPath}, args...), append([]string{"helper"}, args...))
-}
-
-func runRootCommandOutput(ctx context.Context, cfg backend.FirecrackerConfig, args ...string) ([]byte, error) {
-	if len(args) == 0 {
-		return nil, errors.New("missing privileged command")
-	}
-	if privilegedCommandEUID() == 0 {
-		return runDirectPrivilegedCommandOutput(ctx, args...)
-	}
-	return runHelperCommandOutput(ctx, cfg, args...)
-}
-
-func runHelperCommandOutput(ctx context.Context, cfg backend.FirecrackerConfig, args ...string) ([]byte, error) {
-	if len(args) == 0 {
-		return nil, errors.New("missing privileged command")
-	}
-
-	helperPath := resolvePrivilegedHelperPath(cfg)
-	if strings.TrimSpace(helperPath) == "" {
-		return nil, errors.New("missing privileged helper path")
-	}
-	return runCombinedCommandOutput(ctx, append([]string{"sudo", "-n", helperPath}, args...), append([]string{"helper"}, args...))
-}
-
-func runRootCommandBatch(ctx context.Context, cfg backend.FirecrackerConfig, commands [][]string) error {
-	for _, args := range commands {
-		if len(args) == 0 {
-			continue
-		}
-		if err := runRootCommand(ctx, cfg, args...); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func runCombinedCommand(ctx context.Context, command []string, errorContext []string) error {
