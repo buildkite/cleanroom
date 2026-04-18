@@ -34,6 +34,7 @@ type rawPolicy struct {
 			Ref string `yaml:"ref"`
 		} `yaml:"image"`
 		Dependencies rawDependenciesConfig `yaml:"dependencies"`
+		Run          rawRunConfig          `yaml:"run"`
 		Services     rawServices           `yaml:"services"`
 		Network      struct {
 			Default string         `yaml:"default"`
@@ -59,6 +60,12 @@ type rawDependenciesConfig struct {
 	Key     rawDependencyKey `yaml:"key"`
 }
 
+type rawRunConfig struct {
+	Before rawShellCommandSpec `yaml:"before"`
+}
+
+type rawShellCommandSpec []string
+
 type rawServices struct {
 	Docker rawDockerService `yaml:"docker"`
 }
@@ -80,6 +87,7 @@ type CompiledPolicy struct {
 	NetworkDefault string       `json:"network_default"`
 	Allow          []AllowRule  `json:"allow"`
 	Dependencies   Dependencies `json:"dependencies"`
+	Run            Run          `json:"run"`
 	Hash           string       `json:"hash"`
 }
 
@@ -98,6 +106,10 @@ type Services struct {
 type Dependencies struct {
 	Command  []string `json:"command,omitempty"`
 	KeyFiles []string `json:"key_files,omitempty"`
+}
+
+type Run struct {
+	Before []string `json:"before,omitempty"`
 }
 
 type DockerService struct {
@@ -220,6 +232,10 @@ func Compile(raw rawPolicy) (*CompiledPolicy, error) {
 	if err != nil {
 		return nil, err
 	}
+	run, err := normalizeRun(raw.Sandbox.Run)
+	if err != nil {
+		return nil, err
+	}
 
 	compiled := &CompiledPolicy{
 		Version:     raw.Version,
@@ -233,6 +249,7 @@ func Compile(raw rawPolicy) (*CompiledPolicy, error) {
 		NetworkDefault: networkDefault,
 		Allow:          allow,
 		Dependencies:   dependencies,
+		Run:            run,
 	}
 
 	hash, err := hashPolicy(compiled)
@@ -293,8 +310,25 @@ func (d Dependencies) Enabled() bool {
 	return len(d.Command) > 0
 }
 
+func (r Run) HasBefore() bool {
+	return len(r.Before) > 0
+}
+
 func (c RepositoryConfig) Enabled() bool {
 	return strings.TrimSpace(strings.ToLower(c.Mode)) != "" && strings.TrimSpace(strings.ToLower(c.Mode)) != "none"
+}
+
+func (c *rawShellCommandSpec) UnmarshalYAML(node *yaml.Node) error {
+	if node == nil {
+		*c = nil
+		return nil
+	}
+	if node.Kind != yaml.ScalarNode || node.ShortTag() != "!!str" {
+		return fmt.Errorf("command must be a string")
+	}
+	script := strings.TrimSpace(node.Value)
+	*c = rawShellCommandSpec{"sh", "-lc", script}
+	return nil
 }
 
 func normalizeRepositoryConfig(raw *rawRepository) (RepositoryConfig, error) {
@@ -400,6 +434,9 @@ func (p *CompiledPolicy) ToProto() *cleanroomv1.Policy {
 				Files: append([]string(nil), p.Dependencies.KeyFiles...),
 			},
 		},
+		Run: &cleanroomv1.PolicyRun{
+			Before: append([]string(nil), p.Run.Before...),
+		},
 		Hash: p.Hash,
 	}
 }
@@ -470,6 +507,10 @@ func FromProto(pb *cleanroomv1.Policy) (*CompiledPolicy, error) {
 	if err != nil {
 		return nil, err
 	}
+	run, err := runFromProto(pb.GetRun())
+	if err != nil {
+		return nil, err
+	}
 
 	compiled := &CompiledPolicy{
 		Version:     int(pb.GetVersion()),
@@ -483,6 +524,7 @@ func FromProto(pb *cleanroomv1.Policy) (*CompiledPolicy, error) {
 		NetworkDefault: networkDefault,
 		Allow:          allow,
 		Dependencies:   dependencies,
+		Run:            run,
 	}
 
 	hash, err := hashPolicy(compiled)
@@ -540,6 +582,40 @@ func dependenciesFromProto(pb *cleanroomv1.PolicyDependencies) (Dependencies, er
 		Command:  command,
 		KeyFiles: keyFiles,
 	}, nil
+}
+
+func normalizeRun(raw rawRunConfig) (Run, error) {
+	before, err := normalizeShellCommand(raw.Before, "sandbox.run.before")
+	if err != nil {
+		return Run{}, err
+	}
+	return Run{Before: before}, nil
+}
+
+func runFromProto(pb *cleanroomv1.PolicyRun) (Run, error) {
+	if pb == nil {
+		return Run{}, nil
+	}
+	before, err := normalizeShellCommand(pb.GetBefore(), "policy run.before")
+	if err != nil {
+		return Run{}, err
+	}
+	return Run{Before: before}, nil
+}
+
+func normalizeShellCommand(raw []string, field string) ([]string, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	command := make([]string, 0, len(raw))
+	for i, arg := range raw {
+		trimmed := strings.TrimSpace(arg)
+		if trimmed == "" {
+			return nil, fmt.Errorf("%s[%d] cannot be empty", field, i)
+		}
+		command = append(command, trimmed)
+	}
+	return command, nil
 }
 
 func normalizeDependencyCommand(raw []string) ([]string, error) {

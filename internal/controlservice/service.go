@@ -82,6 +82,7 @@ type executionState struct {
 	ImageRef          string
 	ImageDigest       string
 	Command           []string
+	PreRunBefore      []string
 	Env               []string
 	Options           executionOptions
 	TTY               bool
@@ -1022,6 +1023,17 @@ func (s *Service) CreateExecution(ctx context.Context, req *cleanroomv1.CreateEx
 	} else if sandboxRepository != nil {
 		command = repositorycheckout.WrapCommandInWorkdir(command, sandboxRepository)
 	}
+	runRepository := repository
+	if runRepository == nil {
+		runRepository = sandboxRepository
+	}
+	var preRunBefore []string
+	if sandboxPolicy != nil && sandboxPolicy.Run.HasBefore() {
+		preRunBefore = append([]string(nil), sandboxPolicy.Run.Before...)
+		if runRepository != nil {
+			preRunBefore = repositorycheckout.WrapCommandInWorkdir(preRunBefore, runRepository)
+		}
+	}
 
 	s.mu.Lock()
 	s.ensureMapsLocked()
@@ -1062,6 +1074,7 @@ func (s *Service) CreateExecution(ctx context.Context, req *cleanroomv1.CreateEx
 		ImageRef:          imageRef,
 		ImageDigest:       imageDigest,
 		Command:           append([]string(nil), command...),
+		PreRunBefore:      preRunBefore,
 		Env:               executionEnv,
 		Options:           execOpts,
 		TTY:               tty,
@@ -1770,6 +1783,16 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 	if ex.Options.LaunchSeconds != 0 {
 		firecrackerCfg.LaunchSeconds = ex.Options.LaunchSeconds
 	}
+	preRunBefore := append([]string(nil), ex.PreRunBefore...)
+	if len(preRunBefore) > 0 {
+		s.recordExecutionEventLocked(ex, &cleanroomv1.ExecutionStreamEvent{
+			SandboxId:   sandboxID,
+			ExecutionId: executionID,
+			Status:      ex.Status,
+			Payload:     &cleanroomv1.ExecutionStreamEvent_Message{Message: "running sandbox.run.before"},
+			OccurredAt:  timestamppb.New(s.clock().Now()),
+		})
+	}
 
 	executionReq := backend.ExecutionRequest{
 		SandboxID:         sandboxID,
@@ -1793,6 +1816,83 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 	)
 	s.mu.Unlock()
 	defer span.End()
+
+	if len(preRunBefore) > 0 {
+		preRunExecutionID := s.ids().NewExecutionID()
+		preRunResult, preRunErr := s.runPersistentSandboxCommand(runCtx, adapter, sandboxID, sb.Policy, firecrackerCfg, preRunExecutionID, preRunBefore, s.executionAuxOutputStream(key))
+
+		s.mu.Lock()
+		ex, ok = s.executions[key]
+		if !ok {
+			s.mu.Unlock()
+			return
+		}
+		if preRunErr != nil {
+			span.RecordError(preRunErr)
+			span.SetStatus(codes.Error, preRunErr.Error())
+			finalStatus, exitCode := executionRunErrorStatus(ex, runCtx)
+			if strings.TrimSpace(preRunErr.Error()) != "" {
+				s.appendExecutionStderrLocked(ex, finalStatus, []byte(preRunErr.Error()+"\n"))
+			}
+			finished := s.clock().Now()
+			s.finalizeExecutionLocked(ex, finalStatus, exitCode, preRunErr.Error(), "", finished)
+			if sb, ok := s.sandboxes[sandboxID]; ok && sb.ActiveExecutionID == executionID {
+				sb.ActiveExecutionID = ""
+				sb.UpdatedAt = s.clock().Now()
+			}
+			s.mu.Unlock()
+			return
+		}
+		if preRunResult == nil {
+			finished := s.clock().Now()
+			s.finalizeExecutionLocked(ex, cleanroomv1.ExecutionStatus_EXECUTION_STATUS_FAILED, 1, "sandbox.run.before returned no result", "", finished)
+			if sb, ok := s.sandboxes[sandboxID]; ok && sb.ActiveExecutionID == executionID {
+				sb.ActiveExecutionID = ""
+				sb.UpdatedAt = s.clock().Now()
+			}
+			s.mu.Unlock()
+			return
+		}
+		s.mergeBufferedResultOutputLocked(ex, preRunResult, true)
+		if preRunResult.ExitCode != 0 {
+			msg := strings.TrimSpace(preRunResult.Message)
+			if msg == "" {
+				if ex.CancelRequested {
+					msg = "execution canceled before command start"
+				} else {
+					msg = fmt.Sprintf("sandbox.run.before failed with exit code %d", preRunResult.ExitCode)
+				}
+			}
+			if msg != "" && !strings.Contains(ex.Stderr, msg) {
+				s.appendExecutionStderrLocked(ex, cleanroomv1.ExecutionStatus_EXECUTION_STATUS_RUNNING, []byte(msg+"\n"))
+			}
+			finished := s.clock().Now()
+			finalStatus := cleanroomv1.ExecutionStatus_EXECUTION_STATUS_FAILED
+			finalExitCode := int32(preRunResult.ExitCode)
+			if ex.CancelRequested {
+				finalStatus = cleanroomv1.ExecutionStatus_EXECUTION_STATUS_CANCELED
+				finalExitCode = cancelExitCode(ex.CancelSignal)
+			}
+			s.finalizeExecutionLocked(ex, finalStatus, finalExitCode, msg, "", finished)
+			if sb, ok := s.sandboxes[sandboxID]; ok && sb.ActiveExecutionID == executionID {
+				sb.ActiveExecutionID = ""
+				sb.UpdatedAt = s.clock().Now()
+			}
+			s.mu.Unlock()
+			return
+		}
+		if ex.CancelRequested {
+			finished := s.clock().Now()
+			s.finalizeExecutionLocked(ex, cleanroomv1.ExecutionStatus_EXECUTION_STATUS_CANCELED, cancelExitCode(ex.CancelSignal), ex.Message, "execution canceled before command start", finished)
+			if sb, ok := s.sandboxes[sandboxID]; ok && sb.ActiveExecutionID == executionID {
+				sb.ActiveExecutionID = ""
+				sb.UpdatedAt = s.clock().Now()
+			}
+			s.mu.Unlock()
+			return
+		}
+		s.mu.Unlock()
+	}
 
 	result, err := s.runAdapterExecution(runCtx, adapter, executionReq, key)
 
@@ -1901,6 +2001,20 @@ func (s *Service) executionOutputStream(key string) backend.OutputStream {
 		},
 		OnAttach: func(io backend.AttachIO) {
 			s.setExecutionAttachIO(key, io)
+		},
+	}
+}
+
+func (s *Service) executionAuxOutputStream(key string) backend.OutputStream {
+	return backend.OutputStream{
+		OnStdout: func(chunk []byte) {
+			s.recordExecutionOutputChunk(key, true, chunk)
+		},
+		OnStderr: func(chunk []byte) {
+			s.recordExecutionOutputChunk(key, false, chunk)
+		},
+		OnWarning: func(message string) {
+			s.recordExecutionWarning(key, message)
 		},
 	}
 }

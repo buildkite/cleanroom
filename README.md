@@ -107,6 +107,22 @@ for `mise`; if you want `mise`, run it explicitly in the command you execute or
 in `sandbox.dependencies.command` so it can participate in dependency-stage
 caching.
 
+You can also define per-execution setup that runs before each top-level command:
+
+```yaml
+sandbox:
+  dependencies:
+    command: [bundle, install]
+    key:
+      files: [Gemfile.lock]
+  run:
+    before: |
+      docker compose up -d postgres valkey
+      bin/rails db:prepare
+```
+
+`sandbox.run.before` always runs through `sh -lc`.
+
 Pre-create a long-running sandbox without running a command:
 
 ```bash
