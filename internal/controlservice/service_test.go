@@ -2851,6 +2851,62 @@ func TestCreateExecutionPassesEnvToRunBefore(t *testing.T) {
 	}
 }
 
+func TestCreateExecutionPreservesRunBeforeOutputInFinalSnapshot(t *testing.T) {
+	adapter := &stubAdapter{
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+			switch strings.Join(req.Command, " ") {
+			case "sh -lc echo pre-run":
+				return &backend.ExecutionResult{
+					ExecutionID: req.ExecutionID,
+					ExitCode:    0,
+					Message:     "ok",
+					Stdout:      "pre-run output\n",
+				}, nil
+			case "sh -lc pwd":
+				return &backend.ExecutionResult{
+					ExecutionID: req.ExecutionID,
+					ExitCode:    0,
+					Message:     "ok",
+					Stdout:      "user output\n",
+				}, nil
+			default:
+				t.Fatalf("unexpected command: %v", req.Command)
+				return nil, nil
+			}
+		},
+	}
+	svc := newTestService(adapter)
+
+	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy: testRepositoryRunBeforePolicy(),
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createSandboxResp.GetSandbox().GetSandboxId()
+
+	createExecutionResp, err := svc.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+		SandboxId: sandboxID,
+		Command:   []string{"sh", "-lc", "pwd"},
+	})
+	if err != nil {
+		t.Fatalf("CreateExecution returned error: %v", err)
+	}
+	executionID := createExecutionResp.GetExecution().GetExecutionId()
+
+	if _, err := svc.WaitExecution(context.Background(), sandboxID, executionID); err != nil {
+		t.Fatalf("WaitExecution returned error: %v", err)
+	}
+
+	snapshot, err := svc.ExecutionSnapshot(sandboxID, executionID)
+	if err != nil {
+		t.Fatalf("ExecutionSnapshot returned error: %v", err)
+	}
+	if got, want := snapshot.Stdout, "pre-run output\nuser output\n"; got != want {
+		t.Fatalf("unexpected retained stdout: got %q want %q", got, want)
+	}
+}
+
 func TestCancelExecutionDuringRunBeforeTransitionsToCanceled(t *testing.T) {
 	started := make(chan struct{}, 1)
 	adapter := &stubAdapter{
