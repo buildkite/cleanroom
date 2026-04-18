@@ -274,6 +274,109 @@ backends:
 	}
 }
 
+func TestLoadTrimsObservabilityConfig(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	configPath := filepath.Join(tmp, "cleanroom", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	content := `observability:
+  enabled: true
+  deployment_environment: " ci "
+  otlp:
+    endpoint: " localhost:4317 "
+    protocol: " grpc "
+    headers:
+      " authorization ": " Bearer token "
+      "": ignored
+  traces:
+    exporter: " zipkin "
+    sampling:
+      mode: " parentbased_traceidratio "
+      ratio: 0.5
+    zipkin:
+      endpoint: " http://localhost:9411/api/v2/spans "
+      headers:
+        " x-dev-mode ": " true "
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, _, err := Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if !cfg.Observability.Enabled {
+		t.Fatal("expected observability to be enabled")
+	}
+	if got, want := cfg.Observability.DeploymentEnvironment, "ci"; got != want {
+		t.Fatalf("unexpected deployment environment: got %q want %q", got, want)
+	}
+	if got, want := cfg.Observability.OTLP.Endpoint, "localhost:4317"; got != want {
+		t.Fatalf("unexpected OTLP endpoint: got %q want %q", got, want)
+	}
+	if got, want := cfg.Observability.OTLP.Protocol, "grpc"; got != want {
+		t.Fatalf("unexpected OTLP protocol: got %q want %q", got, want)
+	}
+	if got, want := cfg.Observability.Traces.Exporter, "zipkin"; got != want {
+		t.Fatalf("unexpected trace exporter: got %q want %q", got, want)
+	}
+	if got, want := cfg.Observability.Traces.Sampling.Mode, "parentbased_traceidratio"; got != want {
+		t.Fatalf("unexpected sampling mode: got %q want %q", got, want)
+	}
+	if cfg.Observability.Traces.Sampling.Ratio == nil {
+		t.Fatal("expected sampling ratio to be set")
+	}
+	if got, want := *cfg.Observability.Traces.Sampling.Ratio, 0.5; got != want {
+		t.Fatalf("unexpected sampling ratio: got %v want %v", got, want)
+	}
+	headers := cfg.Observability.OTLP.Headers
+	if len(headers) != 1 {
+		t.Fatalf("unexpected header count: got %d want 1", len(headers))
+	}
+	if got, want := headers["authorization"], "Bearer token"; got != want {
+		t.Fatalf("unexpected authorization header: got %q want %q", got, want)
+	}
+	if got, want := cfg.Observability.Traces.Zipkin.Endpoint, "http://localhost:9411/api/v2/spans"; got != want {
+		t.Fatalf("unexpected zipkin endpoint: got %q want %q", got, want)
+	}
+	if got, want := cfg.Observability.Traces.Zipkin.Headers["x-dev-mode"], "true"; got != want {
+		t.Fatalf("unexpected zipkin header: got %q want %q", got, want)
+	}
+}
+
+func TestLoadObservabilitySupportsZeroSamplingRatio(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	configPath := filepath.Join(tmp, "cleanroom", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	content := `observability:
+  traces:
+    sampling:
+      ratio: 0
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, _, err := Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cfg.Observability.Traces.Sampling.Ratio == nil {
+		t.Fatal("expected zero sampling ratio to be preserved")
+	}
+	if got, want := *cfg.Observability.Traces.Sampling.Ratio, 0.0; got != want {
+		t.Fatalf("unexpected zero sampling ratio: got %v want %v", got, want)
+	}
+}
+
 func TestLoadSupportsLegacyDarwinVZMinimumRootFSBytesOnly(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", tmp)

@@ -16,9 +16,40 @@ import (
 )
 
 type Config struct {
-	DefaultBackend string   `yaml:"default_backend"`
-	ControlHost    string   `yaml:"control_host,omitempty"`
-	Backends       Backends `yaml:"backends"`
+	DefaultBackend string              `yaml:"default_backend"`
+	ControlHost    string              `yaml:"control_host,omitempty"`
+	Observability  ObservabilityConfig `yaml:"observability,omitempty"`
+	Backends       Backends            `yaml:"backends"`
+}
+
+type ObservabilityConfig struct {
+	Enabled               bool        `yaml:"enabled,omitempty"`
+	DeploymentEnvironment string      `yaml:"deployment_environment,omitempty"`
+	OTLP                  OTLPConfig  `yaml:"otlp,omitempty"`
+	Traces                TraceConfig `yaml:"traces,omitempty"`
+}
+
+type OTLPConfig struct {
+	Endpoint string            `yaml:"endpoint,omitempty"`
+	Protocol string            `yaml:"protocol,omitempty"`
+	Insecure bool              `yaml:"insecure,omitempty"`
+	Headers  map[string]string `yaml:"headers,omitempty"`
+}
+
+type TraceConfig struct {
+	Exporter string              `yaml:"exporter,omitempty"`
+	Sampling TraceSamplingConfig `yaml:"sampling,omitempty"`
+	Zipkin   ZipkinConfig        `yaml:"zipkin,omitempty"`
+}
+
+type TraceSamplingConfig struct {
+	Mode  string   `yaml:"mode,omitempty"`
+	Ratio *float64 `yaml:"ratio,omitempty"`
+}
+
+type ZipkinConfig struct {
+	Endpoint string            `yaml:"endpoint,omitempty"`
+	Headers  map[string]string `yaml:"headers,omitempty"`
 }
 
 type Backends struct {
@@ -366,6 +397,14 @@ func Load() (Config, string, error) {
 		cfg.DefaultBackend = DefaultBackendForHost()
 	}
 	cfg.ControlHost = strings.TrimSpace(cfg.ControlHost)
+	cfg.Observability.DeploymentEnvironment = strings.TrimSpace(cfg.Observability.DeploymentEnvironment)
+	cfg.Observability.OTLP.Endpoint = strings.TrimSpace(cfg.Observability.OTLP.Endpoint)
+	cfg.Observability.OTLP.Protocol = strings.TrimSpace(cfg.Observability.OTLP.Protocol)
+	cfg.Observability.OTLP.Headers = trimStringMap(cfg.Observability.OTLP.Headers)
+	cfg.Observability.Traces.Exporter = strings.TrimSpace(cfg.Observability.Traces.Exporter)
+	cfg.Observability.Traces.Sampling.Mode = strings.TrimSpace(cfg.Observability.Traces.Sampling.Mode)
+	cfg.Observability.Traces.Zipkin.Endpoint = strings.TrimSpace(cfg.Observability.Traces.Zipkin.Endpoint)
+	cfg.Observability.Traces.Zipkin.Headers = trimStringMap(cfg.Observability.Traces.Zipkin.Headers)
 	return cfg, path, nil
 }
 
@@ -398,4 +437,23 @@ func snapshotConfigIsZero(cfg SnapshotConfig) bool {
 		strings.TrimSpace(cfg.BaseDir) == "" &&
 		strings.TrimSpace(cfg.ZFSDataset) == "" &&
 		cfg.QuiesceTimeoutSeconds == 0
+}
+
+func trimStringMap(input map[string]string) map[string]string {
+	if len(input) == 0 {
+		return nil
+	}
+
+	out := make(map[string]string, len(input))
+	for key, value := range input {
+		trimmedKey := strings.TrimSpace(key)
+		if trimmedKey == "" {
+			continue
+		}
+		out[trimmedKey] = strings.TrimSpace(value)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }

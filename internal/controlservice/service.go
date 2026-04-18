@@ -15,12 +15,16 @@ import (
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/cachestore"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
+	"github.com/buildkite/cleanroom/internal/observability"
 	"github.com/buildkite/cleanroom/internal/paths"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/repositorycheckout"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 	"github.com/buildkite/cleanroom/internal/snapshotstore"
 	"github.com/charmbracelet/log"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -31,6 +35,7 @@ type Service struct {
 	Config            runtimeconfig.Config
 	Backends          map[string]backend.Adapter
 	Logger            *log.Logger
+	Observability     *observability.Runtime
 	RepositoryMirrors repositoryMirrorStore
 	runtime           serviceRuntime
 	interactive       interactiveSessionBroker
@@ -70,34 +75,35 @@ type sandboxState struct {
 }
 
 type executionState struct {
-	ID               string
-	SandboxID        string
-	ImageRef         string
-	ImageDigest      string
-	Command          []string
-	Env              []string
-	Options          executionOptions
-	TTY              bool
-	Kind             cleanroomv1.ExecutionKind
-	Status           cleanroomv1.ExecutionStatus
-	ExitCode         int32
-	StartedAt        *time.Time
-	FinishedAt       *time.Time
-	Message          string
-	Stdout           string
-	Stderr           string
-	LaunchedVM       bool
-	PlanPath         string
-	RunDir           string
-	CancelRequested  bool
-	CancelSignal     int32
-	Cancel           context.CancelFunc
-	AttachStdin      func([]byte) error
-	AttachCloseStdin func() error
-	AttachResize     func(cols, rows uint32) error
-	events           eventFeed[*cleanroomv1.ExecutionStreamEvent]
-	Done             chan struct{}
-	DoneClosed       bool
+	ID                string
+	SandboxID         string
+	ImageRef          string
+	ImageDigest       string
+	Command           []string
+	Env               []string
+	Options           executionOptions
+	TTY               bool
+	Kind              cleanroomv1.ExecutionKind
+	Status            cleanroomv1.ExecutionStatus
+	ExitCode          int32
+	StartedAt         *time.Time
+	FinishedAt        *time.Time
+	Message           string
+	Stdout            string
+	Stderr            string
+	LaunchedVM        bool
+	PlanPath          string
+	RunDir            string
+	CancelRequested   bool
+	CancelSignal      int32
+	Cancel            context.CancelFunc
+	AttachStdin       func([]byte) error
+	AttachCloseStdin  func() error
+	AttachResize      func(cols, rows uint32) error
+	ParentSpanContext trace.SpanContext
+	events            eventFeed[*cleanroomv1.ExecutionStreamEvent]
+	Done              chan struct{}
+	DoneClosed        bool
 }
 
 type interactiveSessionState struct {
@@ -1027,18 +1033,19 @@ func (s *Service) CreateExecution(ctx context.Context, req *cleanroomv1.CreateEx
 		return nil, fmt.Errorf("sandbox_busy: sandbox %q is preparing repository state", sandboxID)
 	}
 	ex := &executionState{
-		ID:          executionID,
-		SandboxID:   sandboxID,
-		ImageRef:    imageRef,
-		ImageDigest: imageDigest,
-		Command:     append([]string(nil), command...),
-		Env:         executionEnv,
-		Options:     execOpts,
-		TTY:         tty,
-		Kind:        kind,
-		Status:      cleanroomv1.ExecutionStatus_EXECUTION_STATUS_QUEUED,
-		events:      newEventFeed[*cleanroomv1.ExecutionStreamEvent](s.retention().maxRetainedExecutionEvents),
-		Done:        make(chan struct{}),
+		ID:                executionID,
+		SandboxID:         sandboxID,
+		ImageRef:          imageRef,
+		ImageDigest:       imageDigest,
+		Command:           append([]string(nil), command...),
+		Env:               executionEnv,
+		Options:           execOpts,
+		TTY:               tty,
+		Kind:              kind,
+		Status:            cleanroomv1.ExecutionStatus_EXECUTION_STATUS_QUEUED,
+		ParentSpanContext: trace.SpanContextFromContext(ctx),
+		events:            newEventFeed[*cleanroomv1.ExecutionStreamEvent](s.retention().maxRetainedExecutionEvents),
+		Done:              make(chan struct{}),
 	}
 	s.executions[executionKey(sandboxID, executionID)] = ex
 	sandbox.LastExecutionID = executionID
@@ -1708,7 +1715,11 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 		return
 	}
 
-	runCtx, cancel := context.WithCancel(context.Background())
+	runParentCtx := context.Background()
+	if ex.ParentSpanContext.IsValid() {
+		runParentCtx = trace.ContextWithSpanContext(runParentCtx, ex.ParentSpanContext)
+	}
+	runCtx, cancel := context.WithCancel(runParentCtx)
 	ex.Cancel = cancel
 
 	started := s.clock().Now()
@@ -1745,7 +1756,19 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 		Policy:            sb.Policy,
 		FirecrackerConfig: firecrackerCfg,
 	}
+	runCtx, span := s.Observability.Tracer("github.com/buildkite/cleanroom/internal/controlservice").Start(
+		runCtx,
+		"cleanroom.execution.run",
+		trace.WithAttributes(
+			attribute.String("cleanroom.backend", sb.Backend),
+			attribute.String("cleanroom.execution.id", ex.ID),
+			attribute.String("cleanroom.execution.kind", ex.Kind.String()),
+			attribute.String("cleanroom.sandbox.id", sandboxID),
+			attribute.Int("cleanroom.command.argc", len(ex.Command)),
+		),
+	)
 	s.mu.Unlock()
+	defer span.End()
 
 	result, err := s.runAdapterExecution(runCtx, adapter, executionReq, key)
 
@@ -1766,6 +1789,8 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 	clearExecutionAttachIOLocked(ex)
 
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		finalStatus, exitCode := executionRunErrorStatus(ex, runCtx)
 		if strings.TrimSpace(err.Error()) != "" {
 			s.appendExecutionStderrLocked(ex, finalStatus, []byte(err.Error()+"\n"))
@@ -1809,6 +1834,16 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 		finalExitCode = cancelExitCode(ex.CancelSignal)
 	} else if result.ExitCode == 0 {
 		finalStatus = cleanroomv1.ExecutionStatus_EXECUTION_STATUS_SUCCEEDED
+	}
+	span.SetAttributes(
+		attribute.Bool("cleanroom.vm.launched", result.LaunchedVM),
+		attribute.Int("cleanroom.exit_code", result.ExitCode),
+		attribute.String("cleanroom.execution.status", finalStatus.String()),
+	)
+	if finalStatus == cleanroomv1.ExecutionStatus_EXECUTION_STATUS_SUCCEEDED {
+		span.SetStatus(codes.Ok, "")
+	} else {
+		span.SetStatus(codes.Error, finalStatus.String())
 	}
 	finished := s.clock().Now()
 	s.finalizeExecutionLocked(ex, finalStatus, finalExitCode, ex.Message, "", finished)

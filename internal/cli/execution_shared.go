@@ -41,6 +41,7 @@ type executionSandbox struct {
 // lifecycle shape: resolve repository context, then either reuse the requested
 // sandbox or create one up front with repository bootstrap attached.
 func resolveExecutionSandbox(
+	callCtx context.Context,
 	logger *log.Logger,
 	client *controlclient.Client,
 	ctx *runtimeContext,
@@ -62,6 +63,7 @@ func resolveExecutionSandbox(
 	warnDirtyRepositoryCheckout(repository)
 
 	sandboxID, createdSandbox, err := ensureSandboxID(
+		callCtx,
 		logger,
 		client,
 		ctx.Loader,
@@ -85,7 +87,7 @@ func resolveExecutionSandbox(
 	}, nil
 }
 
-func ensureSandboxID(logger *log.Logger, client *controlclient.Client, loader policyLoader, cwd, host, backendName, existingSandboxID, fromSnapshot, imageRefOverride string, launchSeconds int64, repository *resolvedRepositoryCheckout) (string, bool, error) {
+func ensureSandboxID(callCtx context.Context, logger *log.Logger, client *controlclient.Client, loader policyLoader, cwd, host, backendName, existingSandboxID, fromSnapshot, imageRefOverride string, launchSeconds int64, repository *resolvedRepositoryCheckout) (string, bool, error) {
 	sandboxID := strings.TrimSpace(existingSandboxID)
 	fromSnapshot = strings.TrimSpace(fromSnapshot)
 	if sandboxID != "" {
@@ -107,7 +109,7 @@ func ensureSandboxID(logger *log.Logger, client *controlclient.Client, loader po
 		if strings.TrimSpace(backendName) != "" {
 			return "", false, errors.New("--backend cannot be used with --from")
 		}
-		_, sandboxID, err := createSandboxWithProgress(logger, os.Stderr, client, &cleanroomv1.CreateSandboxRequest{
+		_, sandboxID, err := createSandboxWithProgress(callCtx, logger, os.Stderr, client, &cleanroomv1.CreateSandboxRequest{
 			Options: &cleanroomv1.SandboxOptions{
 				LaunchSeconds: launchSeconds,
 			},
@@ -119,11 +121,18 @@ func ensureSandboxID(logger *log.Logger, client *controlclient.Client, loader po
 		return sandboxID, true, nil
 	}
 
-	sandboxID, _, err := createTopLevelSandbox(logger, client, loader, cwd, host, backendName, imageRefOverride, launchSeconds, repository)
+	sandboxID, _, err := createTopLevelSandbox(callCtx, logger, client, loader, cwd, host, backendName, imageRefOverride, launchSeconds, repository)
 	if err != nil {
 		return "", false, err
 	}
 	return sandboxID, true, nil
+}
+
+func tracePreservingContext(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+	return context.WithoutCancel(ctx)
 }
 
 func validateExecutionSandboxArgs(chdir, existingSandboxID, fromSnapshot string, keep bool, repositoryOverride repositoryOverrideFlags) error {
@@ -157,8 +166,8 @@ func validateExecutionSandboxArgs(chdir, existingSandboxID, fromSnapshot string,
 	return nil
 }
 
-func getFinalExecutionExitCode(client *controlclient.Client, sandboxID, executionID string) (int, bool) {
-	getResp, err := client.GetExecution(context.Background(), &cleanroomv1.GetExecutionRequest{
+func getFinalExecutionExitCode(callCtx context.Context, client *controlclient.Client, sandboxID, executionID string) (int, bool) {
+	getResp, err := client.GetExecution(tracePreservingContext(callCtx), &cleanroomv1.GetExecutionRequest{
 		SandboxId:   sandboxID,
 		ExecutionId: executionID,
 	})
@@ -173,6 +182,7 @@ func getFinalExecutionExitCode(client *controlclient.Client, sandboxID, executio
 }
 
 func startExecutionStdinForwarder(
+	callCtx context.Context,
 	client *controlclient.Client,
 	sandboxID, executionID string,
 	closeImmediately bool,
@@ -184,6 +194,7 @@ func startExecutionStdinForwarder(
 		if client == nil || strings.TrimSpace(sandboxID) == "" || strings.TrimSpace(executionID) == "" {
 			return
 		}
+		rpcCtx := tracePreservingContext(callCtx)
 
 		reportErr := func(err error) {
 			if err == nil {
@@ -196,7 +207,7 @@ func startExecutionStdinForwarder(
 		}
 
 		if closeImmediately {
-			if err := closeExecutionStdin(client, sandboxID, executionID); err != nil {
+			if err := closeExecutionStdin(rpcCtx, client, sandboxID, executionID); err != nil {
 				reportErr(err)
 			}
 			return
@@ -208,7 +219,7 @@ func startExecutionStdinForwarder(
 			n, readErr := os.Stdin.Read(buf)
 			if n > 0 {
 				sentInput = true
-				if _, err := client.WriteExecutionStdin(context.Background(), &cleanroomv1.WriteExecutionStdinRequest{
+				if _, err := client.WriteExecutionStdin(rpcCtx, &cleanroomv1.WriteExecutionStdinRequest{
 					SandboxId:   sandboxID,
 					ExecutionId: executionID,
 					Data:        append([]byte(nil), buf[:n]...),
@@ -224,7 +235,7 @@ func startExecutionStdinForwarder(
 				}
 			}
 			if readErr != nil {
-				if err := closeExecutionStdin(client, sandboxID, executionID); err != nil &&
+				if err := closeExecutionStdin(rpcCtx, client, sandboxID, executionID); err != nil &&
 					!(isExecutionStdinUnsupportedErr(err) && !sentInput) {
 					reportErr(err)
 				}
@@ -265,8 +276,8 @@ func resolveExecutionEnv(specs []string) ([]string, error) {
 	return out, nil
 }
 
-func closeExecutionStdin(client *controlclient.Client, sandboxID, executionID string) error {
-	_, err := client.CloseExecutionStdin(context.Background(), &cleanroomv1.CloseExecutionStdinRequest{
+func closeExecutionStdin(callCtx context.Context, client *controlclient.Client, sandboxID, executionID string) error {
+	_, err := client.CloseExecutionStdin(tracePreservingContext(callCtx), &cleanroomv1.CloseExecutionStdinRequest{
 		SandboxId:   sandboxID,
 		ExecutionId: executionID,
 	})
@@ -359,8 +370,8 @@ func writeExecutionInspectCommand(stderr io.Writer, sandboxID, executionID strin
 	return err
 }
 
-func replayExecutionHistory(client *controlclient.Client, sandboxID, executionID string, stdout, stderr io.Writer) (int, bool, error) {
-	stream, err := client.StreamExecution(context.Background(), &cleanroomv1.StreamExecutionRequest{
+func replayExecutionHistory(callCtx context.Context, client *controlclient.Client, sandboxID, executionID string, stdout, stderr io.Writer) (int, bool, error) {
+	stream, err := client.StreamExecution(tracePreservingContext(callCtx), &cleanroomv1.StreamExecutionRequest{
 		SandboxId:   sandboxID,
 		ExecutionId: executionID,
 		Follow:      false,
@@ -397,15 +408,15 @@ func replayExecutionHistory(client *controlclient.Client, sandboxID, executionID
 	return exitCode, haveExitCode, nil
 }
 
-func terminateSandboxBestEffort(client *controlclient.Client, sandboxID string, timeout time.Duration, logger *log.Logger, warnMessage string) {
+func terminateSandboxBestEffort(callCtx context.Context, client *controlclient.Client, sandboxID string, timeout time.Duration, logger *log.Logger, warnMessage string) {
 	if client == nil || strings.TrimSpace(sandboxID) == "" {
 		return
 	}
 
-	terminateCtx := context.Background()
+	terminateCtx := tracePreservingContext(callCtx)
 	var terminateCancel context.CancelFunc
 	if timeout > 0 {
-		terminateCtx, terminateCancel = context.WithTimeout(context.Background(), timeout)
+		terminateCtx, terminateCancel = context.WithTimeout(terminateCtx, timeout)
 		defer terminateCancel()
 	}
 

@@ -124,3 +124,34 @@ func TestCiCleanroomE2EIsolatesCacheInTempDir(t *testing.T) {
 		}
 	}
 }
+
+func TestCiCleanroomE2EPublishesLaunchObservabilityBundle(t *testing.T) {
+	t.Helper()
+
+	content, err := os.ReadFile("ci-cleanroom-e2e.sh")
+	if err != nil {
+		t.Fatalf("read ci-cleanroom-e2e.sh: %v", err)
+	}
+
+	script := string(content)
+	for _, needle := range []string{
+		`source "$SCRIPT_DIR/e2e-observability.sh"`,
+		`OBSERVABILITY_ARCHIVE_NAME="firecracker-e2e-observability.tgz"`,
+		`capture_latest_execution_observability "./dist/cleanroom"`,
+		`require_launch_observability "$OBSERVABILITY_SUITE_LABEL"`,
+		`publish_buildkite_observability \`,
+	} {
+		if !strings.Contains(script, needle) {
+			t.Fatalf("expected ci-cleanroom-e2e.sh to contain %q", needle)
+		}
+	}
+
+	for _, needle := range []string{
+		`./dist/cleanroom status --last | tee "$tmpdir/status.out"`,
+		`buildkite-agent annotate --context cleanroom-e2e-observability --style info < "$annotation_file"`,
+	} {
+		if strings.Contains(script, needle) {
+			t.Fatalf("expected ci-cleanroom-e2e.sh not to contain %q", needle)
+		}
+	}
+}

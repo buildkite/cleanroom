@@ -247,7 +247,7 @@ func runSandboxCreate(ctx *runtimeContext, connectFlags clientFlags, backend, fr
 			return errors.New("--dangerously-allow-all cannot be used with --from")
 		}
 
-		resp, _, err := createSandboxWithProgress(logger, os.Stderr, client, &cleanroomv1.CreateSandboxRequest{
+		resp, _, err := createSandboxWithProgress(context.Background(), logger, os.Stderr, client, &cleanroomv1.CreateSandboxRequest{
 			Options: &cleanroomv1.SandboxOptions{
 				LaunchSeconds: launchSeconds,
 			},
@@ -263,7 +263,7 @@ func runSandboxCreate(ctx *runtimeContext, connectFlags clientFlags, backend, fr
 		if err != nil {
 			return err
 		}
-		_, sandbox, err = createSandboxWithPolicy(logger, client, compiled, backend, launchSeconds, nil)
+		_, sandbox, err = createSandboxWithPolicy(context.Background(), logger, client, compiled, backend, launchSeconds, nil)
 		if err != nil {
 			return err
 		}
@@ -315,7 +315,7 @@ func (c *CreateCommand) Run(ctx *runtimeContext) error {
 		return err
 	}
 
-	sandboxID, sandbox, err := createTopLevelSandbox(logger, client, ctx.Loader, cwd, host, c.Backend, c.Image, c.LaunchSeconds, repository)
+	sandboxID, sandbox, err := createTopLevelSandbox(context.Background(), logger, client, ctx.Loader, cwd, host, c.Backend, c.Image, c.LaunchSeconds, repository)
 	if err != nil {
 		return err
 	}
@@ -339,6 +339,7 @@ func (c *CreateCommand) validate() error {
 }
 
 func createTopLevelSandbox(
+	callCtx context.Context,
 	logger *log.Logger,
 	client *controlclient.Client,
 	loader policyLoader,
@@ -359,17 +360,21 @@ func createTopLevelSandbox(
 		return "", nil, err
 	}
 
-	return createSandboxWithPolicy(logger, client, compiled, backendName, launchSeconds, repository)
+	return createSandboxWithPolicy(callCtx, logger, client, compiled, backendName, launchSeconds, repository)
 }
 
 func createSandboxWithProgress(
+	callCtx context.Context,
 	logger *log.Logger,
 	stderr *os.File,
 	client *controlclient.Client,
 	req *cleanroomv1.CreateSandboxRequest,
 ) (*cleanroomv1.CreateSandboxResponse, string, error) {
 	startedAt := time.Now()
-	stream, err := client.CreateSandboxStream(context.Background(), req)
+	if callCtx == nil {
+		callCtx = context.Background()
+	}
+	stream, err := client.CreateSandboxStream(callCtx, req)
 	if err != nil {
 		return nil, "", err
 	}
@@ -421,6 +426,7 @@ func createSandboxWithProgress(
 }
 
 func createSandboxWithPolicy(
+	callCtx context.Context,
 	logger *log.Logger,
 	client *controlclient.Client,
 	compiled *policy.CompiledPolicy,
@@ -432,7 +438,7 @@ func createSandboxWithPolicy(
 		return "", nil, errors.New("create sandbox: missing compiled policy")
 	}
 
-	createSandboxResp, sandboxID, err := createSandboxWithProgress(logger, os.Stderr, client, &cleanroomv1.CreateSandboxRequest{
+	createSandboxResp, sandboxID, err := createSandboxWithProgress(callCtx, logger, os.Stderr, client, &cleanroomv1.CreateSandboxRequest{
 		Backend: backendName,
 		Options: &cleanroomv1.SandboxOptions{
 			LaunchSeconds: launchSeconds,

@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"bytes"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -451,6 +453,66 @@ func TestServeCommandParses(t *testing.T) {
 
 	if _, err := parser.Parse([]string{"serve"}); err != nil {
 		t.Fatalf("parse serve returned error: %v", err)
+	}
+}
+
+func TestRuntimeServiceNameUsesDescriptiveNames(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if got, want := runtimeServiceName(nil), "cleanroom-cli"; got != want {
+		t.Fatalf("unexpected nil-context service name: got %q want %q", got, want)
+	}
+
+	execCtx, err := parser.Parse([]string{"exec", "--", "echo", "ok"})
+	if err != nil {
+		t.Fatalf("parse exec returned error: %v", err)
+	}
+	if got, want := runtimeServiceName(execCtx), "cleanroom-cli"; got != want {
+		t.Fatalf("unexpected exec service name: got %q want %q", got, want)
+	}
+
+	serveCtx, err := parser.Parse([]string{"serve"})
+	if err != nil {
+		t.Fatalf("parse serve returned error: %v", err)
+	}
+	if got, want := runtimeServiceName(serveCtx), "cleanroom-server"; got != want {
+		t.Fatalf("unexpected serve service name: got %q want %q", got, want)
+	}
+}
+
+func TestReportObservabilityShutdownWarnsWithoutFailingSuccessfulRun(t *testing.T) {
+	t.Parallel()
+
+	var runErr error
+	var stderr bytes.Buffer
+
+	reportObservabilityShutdown(&runErr, &stderr, errors.New("collector unavailable"))
+
+	if runErr != nil {
+		t.Fatalf("expected successful run to stay successful, got %v", runErr)
+	}
+	if got := stderr.String(); !strings.Contains(got, "shutdown observability: collector unavailable") {
+		t.Fatalf("expected shutdown warning in stderr, got %q", got)
+	}
+}
+
+func TestReportObservabilityShutdownAppendsToExistingRunError(t *testing.T) {
+	t.Parallel()
+
+	runErr := errors.New("command failed")
+	var stderr bytes.Buffer
+
+	reportObservabilityShutdown(&runErr, &stderr, errors.New("collector unavailable"))
+
+	if runErr == nil {
+		t.Fatal("expected run error to be preserved")
+	}
+	if got := runErr.Error(); !strings.Contains(got, "command failed") || !strings.Contains(got, "shutdown observability: collector unavailable") {
+		t.Fatalf("expected combined error, got %q", got)
+	}
+	if got := stderr.String(); got != "" {
+		t.Fatalf("expected no standalone warning for already failing run, got %q", got)
 	}
 }
 

@@ -34,20 +34,26 @@ type TLSOptions struct {
 }
 
 type Server struct {
-	service *controlservice.Service
-	logger  *log.Logger
+	service      *controlservice.Service
+	logger       *log.Logger
+	interceptors []connect.Interceptor
 }
 
-func New(service *controlservice.Service, logger *log.Logger) *Server {
-	return &Server{service: service, logger: logger}
+func New(service *controlservice.Service, logger *log.Logger, interceptors ...connect.Interceptor) *Server {
+	return &Server{service: service, logger: logger, interceptors: interceptors}
 }
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
-	sandboxPath, sandboxHandler := cleanroomv1connect.NewSandboxServiceHandler(s)
-	snapshotPath, snapshotHandler := cleanroomv1connect.NewSnapshotServiceHandler(s)
-	executionPath, executionHandler := cleanroomv1connect.NewExecutionServiceHandler(s)
+	handlerOptions := make([]connect.HandlerOption, 0, 1)
+	if len(s.interceptors) > 0 {
+		handlerOptions = append(handlerOptions, connect.WithInterceptors(s.interceptors...))
+	}
+
+	sandboxPath, sandboxHandler := cleanroomv1connect.NewSandboxServiceHandler(s, handlerOptions...)
+	snapshotPath, snapshotHandler := cleanroomv1connect.NewSnapshotServiceHandler(s, handlerOptions...)
+	executionPath, executionHandler := cleanroomv1connect.NewExecutionServiceHandler(s, handlerOptions...)
 	mux.Handle(sandboxPath, sandboxHandler)
 	mux.Handle(snapshotPath, snapshotHandler)
 	mux.Handle(executionPath, executionHandler)

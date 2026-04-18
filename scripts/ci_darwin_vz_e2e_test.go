@@ -46,6 +46,17 @@ func TestCiDarwinVZE2EUsesFileHandleNetworkMode(t *testing.T) {
 	if strings.Contains(string(content), `./dist/cleanroom exec --host "$listen_endpoint" --backend darwin-vz -c "$PWD" -- sh -lc 'echo darwin-vz-e2e'`) {
 		t.Fatalf("expected ci-darwin-vz-e2e.sh not to reuse the repository policy for the smoke test")
 	}
+	for _, needle := range []string{
+		`source "$SCRIPT_DIR/e2e-observability.sh"`,
+		`OBSERVABILITY_ARCHIVE_NAME="darwin-vz-e2e-observability.tgz"`,
+		`capture_latest_execution_observability "./dist/cleanroom"`,
+		`require_launch_observability "$OBSERVABILITY_SUITE_LABEL"`,
+		`publish_buildkite_observability \`,
+	} {
+		if !strings.Contains(string(content), needle) {
+			t.Fatalf("expected ci-darwin-vz-e2e.sh to contain %q", needle)
+		}
+	}
 }
 
 func TestCiDarwinVZFileHandleE2EUsesAllowlistPolicy(t *testing.T) {
@@ -72,6 +83,11 @@ func TestCiDarwinVZFileHandleE2EUsesAllowlistPolicy(t *testing.T) {
 		`./dist/cleanroom exec --host "$listen_endpoint" --backend darwin-vz -c "$allowlist_policy_dir" -- sh -lc 'http_proxy= https_proxy= HTTP_PROXY= HTTPS_PROXY= ALL_PROXY= all_proxy= NO_PROXY= no_proxy= wget -T 20 -q -O /dev/null https://github.com'`,
 		`./dist/cleanroom exec --host "$listen_endpoint" --backend darwin-vz -c "$allowlist_policy_dir" -- sh -lc 'http_proxy= https_proxy= HTTP_PROXY= HTTPS_PROXY= ALL_PROXY= all_proxy= NO_PROXY= no_proxy= wget -T 20 -q -O /dev/null https://buildkite.com'`,
 		`expected non-allowlisted egress to fail in filehandle mode`,
+		`source "$SCRIPT_DIR/e2e-observability.sh"`,
+		`OBSERVABILITY_ARCHIVE_NAME="darwin-vz-filehandle-e2e-observability.tgz"`,
+		`capture_latest_execution_observability "./dist/cleanroom"`,
+		`require_launch_observability "$OBSERVABILITY_SUITE_LABEL"`,
+		`publish_buildkite_observability \`,
 	} {
 		if !strings.Contains(script, needle) {
 			t.Fatalf("expected ci-darwin-vz-filehandle-e2e.sh to contain %q", needle)

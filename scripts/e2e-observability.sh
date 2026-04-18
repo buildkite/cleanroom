@@ -43,6 +43,11 @@ json_bool_field() {
   sed -nE "s/.*\"${key}\"[[:space:]]*:[[:space:]]*(true|false).*/\1/p" "$file" | head -n 1
 }
 
+mktemp_file() {
+  local parent_dir="${TMPDIR:-/tmp}"
+  mktemp "${parent_dir%/}/cleanroom-e2e-observability.XXXXXX"
+}
+
 append_metric_row() {
   local rows_file="$1"
   local key="$2"
@@ -93,8 +98,8 @@ write_observability_annotation() {
 
   local metric_rows
   local detail_rows
-  metric_rows="$(mktemp)"
-  detail_rows="$(mktemp)"
+  metric_rows="$(mktemp_file)"
+  detail_rows="$(mktemp_file)"
 
   append_metric_row "$metric_rows" "total_ms" "total" "$obs_file"
   append_metric_row "$metric_rows" "policy_resolve_ms" "policy resolve" "$obs_file"
