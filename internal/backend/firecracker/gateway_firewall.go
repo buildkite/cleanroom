@@ -20,10 +20,14 @@ import (
 // Returns a cleanup function that removes the rules. The caller must invoke
 // cleanup on shutdown.
 func SetupGatewayFirewall(ctx context.Context, port int, cfg backend.FirecrackerConfig) (cleanup func(), err error) {
-	return setupGatewayFirewall(ctx, port, newPrivilegedCommandRunner(cfg))
+	return setupGatewayFirewall(ctx, port, hostRuntimeForConfig(cfg))
 }
 
-func setupGatewayFirewall(ctx context.Context, port int, runner privilegedCommandRunner) (cleanup func(), err error) {
+func setupGatewayFirewall(ctx context.Context, port int, runtime hostRuntime) (cleanup func(), err error) {
+	return runtime.SetupGatewayFirewall(ctx, gatewayFirewallRequest{Port: port})
+}
+
+func setupGatewayFirewallWithRunner(ctx context.Context, port int, runner privilegedCommandRunner) (cleanup func(), err error) {
 	portStr := strconv.Itoa(port)
 
 	// Allow loopback access to gateway port.

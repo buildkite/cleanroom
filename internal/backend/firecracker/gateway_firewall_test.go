@@ -15,7 +15,7 @@ func TestSetupGatewayFirewall(t *testing.T) {
 		return nil
 	}
 
-	cleanup, err := setupGatewayFirewall(context.Background(), 8170, testPrivilegedCommandRunner{run: run})
+	cleanup, err := setupGatewayFirewallWithRunner(context.Background(), 8170, testPrivilegedCommandRunner{run: run})
 	if err != nil {
 		t.Fatalf("setupGatewayFirewall: %v", err)
 	}
