@@ -509,6 +509,9 @@ func (a *Adapter) CreateSnapshot(ctx context.Context, req backend.SnapshotReques
 	if err != nil {
 		return nil, err
 	}
+	if err := validateSnapshotStorageConfig(driverCfg); err != nil {
+		return nil, err
+	}
 	driverName := strings.ToLower(strings.TrimSpace(driverCfg.Snapshots.Driver))
 	if err := pauseSandboxProcess(instance); err != nil {
 		return nil, err
@@ -1981,6 +1984,20 @@ func validateSnapshotsEnabled(cfg backend.FirecrackerConfig) error {
 		return errors.New("firecracker snapshots are not enabled")
 	}
 	return nil
+}
+
+func validateSnapshotStorageConfig(cfg backend.FirecrackerConfig) error {
+	if err := validateSnapshotsEnabled(cfg); err != nil {
+		return err
+	}
+	if strings.EqualFold(strings.TrimSpace(cfg.Snapshots.Driver), "zfs") {
+		if strings.TrimSpace(cfg.Snapshots.ZFSDataset) == "" {
+			return errors.New("zfs volume driver requires dataset root")
+		}
+		return nil
+	}
+	_, err := snapshotVolumeStoreDriverFn(cfg)
+	return err
 }
 
 func pauseSandboxProcess(instance *sandboxInstance) error {

@@ -477,7 +477,11 @@ func TestCreateSnapshotUsesManagedVolumeRef(t *testing.T) {
 func TestCreateSnapshotRejectsDisabledZFSSnapshots(t *testing.T) {
 	prevSignal := sendProcessSignal
 	prevHostRuntimeFn := newHostRuntimeFn
-	sendProcessSignal = func(_ *os.Process, _ syscall.Signal) error { return nil }
+	var signals []syscall.Signal
+	sendProcessSignal = func(_ *os.Process, sig syscall.Signal) error {
+		signals = append(signals, sig)
+		return nil
+	}
 	t.Cleanup(func() {
 		sendProcessSignal = prevSignal
 		newHostRuntimeFn = prevHostRuntimeFn
@@ -533,6 +537,9 @@ func TestCreateSnapshotRejectsDisabledZFSSnapshots(t *testing.T) {
 	}
 	if got := err.Error(); !strings.Contains(got, "not enabled") {
 		t.Fatalf("expected snapshots disabled error, got %v", err)
+	}
+	if len(signals) != 0 {
+		t.Fatalf("expected snapshots-disabled validation to fail before pausing sandbox, got signals %v", signals)
 	}
 }
 
