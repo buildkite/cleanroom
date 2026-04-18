@@ -118,7 +118,7 @@ func TestSetupHostNetworkWithTrustedDNSFactoryConfiguresDynamicRulesWithoutStati
 	}
 
 	reqCtx, cancel := context.WithCancel(context.Background())
-	cfg, cleanup, err := setupHostNetworkWithTrustedDNSFactory(reqCtx, "run-12345", false, []policy.AllowRule{{Host: "proxy.golang.org", Ports: []int{443}}}, 8170, lookup, net.InterfaceByName, run, runBatch, factory, nil, nil)
+	cfg, cleanup, err := setupHostNetworkWithTrustedDNSFactory(reqCtx, "run-12345", false, []policy.AllowRule{{Host: "proxy.golang.org", Ports: []int{443}}}, 8170, lookup, net.InterfaceByName, testPrivilegedCommandRunner{run: run, runBatch: runBatch}, factory, nil, nil)
 	if err != nil {
 		t.Fatalf("setupHostNetworkWithTrustedDNSFactory: %v", err)
 	}
@@ -192,7 +192,7 @@ func TestSetupHostNetworkWithDepsAddsDenyDefaultAndCleanupIndependentContext(t *
 	}
 
 	reqCtx, cancel := context.WithCancel(context.Background())
-	cfg, cleanup, err := setupHostNetworkWithTrustedDNSFactory(reqCtx, "run-12345", false, []policy.AllowRule{{Host: "proxy.golang.org", Ports: []int{443}}}, 8170, lookup, net.InterfaceByName, run, runBatch, factory, nil, nil)
+	cfg, cleanup, err := setupHostNetworkWithTrustedDNSFactory(reqCtx, "run-12345", false, []policy.AllowRule{{Host: "proxy.golang.org", Ports: []int{443}}}, 8170, lookup, net.InterfaceByName, testPrivilegedCommandRunner{run: run, runBatch: runBatch}, factory, nil, nil)
 	if err != nil {
 		t.Fatalf("setupHostNetworkWithTrustedDNSFactory: %v", err)
 	}
@@ -292,7 +292,7 @@ func TestSetupHostNetworkWithTapLookupDeletesStaleTapBeforeCreate(t *testing.T) 
 	factory := func(_ context.Context, _ trustedDNSConfig) (func(), *dnsproxy.Runtime, error) {
 		return func() {}, nil, nil
 	}
-	_, cleanup, err := setupHostNetworkWithTrustedDNSFactory(context.Background(), runID, false, []policy.AllowRule{{Host: "proxy.golang.org", Ports: []int{443}}}, 0, lookup, interfaceByName, run, nil, factory, nil, nil)
+	_, cleanup, err := setupHostNetworkWithTrustedDNSFactory(context.Background(), runID, false, []policy.AllowRule{{Host: "proxy.golang.org", Ports: []int{443}}}, 0, lookup, interfaceByName, testPrivilegedCommandRunner{run: run}, factory, nil, nil)
 	if err != nil {
 		t.Fatalf("setupHostNetworkWithTrustedDNSFactory: %v", err)
 	}
@@ -331,7 +331,7 @@ func TestSetupHostNetworkWithDepsAddsAllowAllForwardRule(t *testing.T) {
 	factory := func(_ context.Context, _ trustedDNSConfig) (func(), *dnsproxy.Runtime, error) {
 		return func() {}, nil, nil
 	}
-	cfg, cleanup, err := setupHostNetworkWithTrustedDNSFactory(context.Background(), "run-allow-all", true, []policy.AllowRule{{Host: "stale.example.invalid", Ports: []int{443}}}, 0, lookup, net.InterfaceByName, run, runBatch, factory, nil, nil)
+	cfg, cleanup, err := setupHostNetworkWithTrustedDNSFactory(context.Background(), "run-allow-all", true, []policy.AllowRule{{Host: "stale.example.invalid", Ports: []int{443}}}, 0, lookup, net.InterfaceByName, testPrivilegedCommandRunner{run: run, runBatch: runBatch}, factory, nil, nil)
 	if err != nil {
 		t.Fatalf("setupHostNetworkWithTrustedDNSFactory: %v", err)
 	}
@@ -372,7 +372,7 @@ func TestSetupHostNetworkWithTrustedDNSFactoryPreservesDirectIPAllowRules(t *tes
 		return func() {}, nil, nil
 	}
 
-	cfg, cleanup, err := setupHostNetworkWithTrustedDNSFactory(context.Background(), "run-direct-ip", false, []policy.AllowRule{{Host: "203.0.113.10", Ports: []int{443}}}, 0, lookup, net.InterfaceByName, run, runBatch, factory, nil, nil)
+	cfg, cleanup, err := setupHostNetworkWithTrustedDNSFactory(context.Background(), "run-direct-ip", false, []policy.AllowRule{{Host: "203.0.113.10", Ports: []int{443}}}, 0, lookup, net.InterfaceByName, testPrivilegedCommandRunner{run: run, runBatch: runBatch}, factory, nil, nil)
 	if err != nil {
 		t.Fatalf("setupHostNetworkWithTrustedDNSFactory: %v", err)
 	}
@@ -413,7 +413,7 @@ func TestSetupHostNetworkWithTrustedDNSFactoryInsertsNFLogBeforeDrop(t *testing.
 		return func() {}, nil, nil
 	}
 
-	cfg, cleanup, err := setupHostNetworkWithTrustedDNSFactory(context.Background(), "run-nflog", false, []policy.AllowRule{{Host: "example.com", Ports: []int{443}}}, 0, lookup, net.InterfaceByName, run, runBatch, factory, nil, nil)
+	cfg, cleanup, err := setupHostNetworkWithTrustedDNSFactory(context.Background(), "run-nflog", false, []policy.AllowRule{{Host: "example.com", Ports: []int{443}}}, 0, lookup, net.InterfaceByName, testPrivilegedCommandRunner{run: run, runBatch: runBatch}, factory, nil, nil)
 	if err != nil {
 		t.Fatalf("setupHostNetworkWithTrustedDNSFactory: %v", err)
 	}
@@ -475,7 +475,7 @@ func TestSetupHostNetworkWithTrustedDNSFactoryRemovesNFLogRuleWhenListenerStartu
 		return func() {}, dnsproxy.NewRuntime(dnsproxy.RuntimeConfig{}), nil
 	}
 
-	cfg, cleanup, err := setupHostNetworkWithTrustedDNSFactory(context.Background(), "run-nflog-fail", false, []policy.AllowRule{{Host: "example.com", Ports: []int{443}}}, 0, lookup, net.InterfaceByName, run, runBatch, factory, nil, func(string) {})
+	cfg, cleanup, err := setupHostNetworkWithTrustedDNSFactory(context.Background(), "run-nflog-fail", false, []policy.AllowRule{{Host: "example.com", Ports: []int{443}}}, 0, lookup, net.InterfaceByName, testPrivilegedCommandRunner{run: run, runBatch: runBatch}, factory, nil, func(string) {})
 	if err != nil {
 		t.Fatalf("setupHostNetworkWithTrustedDNSFactory: %v", err)
 	}
@@ -544,7 +544,7 @@ func TestSetupHostNetworkWithTrustedDNSFactoryRetriesNFLogRuleCleanupAfterListen
 		return func() {}, dnsproxy.NewRuntime(dnsproxy.RuntimeConfig{}), nil
 	}
 
-	cfg, cleanup, err := setupHostNetworkWithTrustedDNSFactory(context.Background(), "run-nflog-retry-cleanup", false, []policy.AllowRule{{Host: "example.com", Ports: []int{443}}}, 0, lookup, net.InterfaceByName, run, runBatch, factory, nil, func(string) {})
+	cfg, cleanup, err := setupHostNetworkWithTrustedDNSFactory(context.Background(), "run-nflog-retry-cleanup", false, []policy.AllowRule{{Host: "example.com", Ports: []int{443}}}, 0, lookup, net.InterfaceByName, testPrivilegedCommandRunner{run: run, runBatch: runBatch}, factory, nil, func(string) {})
 	if err != nil {
 		t.Fatalf("setupHostNetworkWithTrustedDNSFactory: %v", err)
 	}
@@ -602,7 +602,7 @@ func TestDeleteTapDeviceWithRetryRetriesBusyTapDeletion(t *testing.T) {
 		return nil, errors.New("no such network interface")
 	}
 
-	if err := deleteTapDeviceWithRetry(context.Background(), tapName, time.Millisecond, interfaceByName, run); err != nil {
+	if err := deleteTapDeviceWithRetry(context.Background(), tapName, time.Millisecond, interfaceByName, testPrivilegedCommandRunner{run: run}); err != nil {
 		t.Fatalf("deleteTapDeviceWithRetry: %v", err)
 	}
 	if got, want := attempts, 2; got != want {
@@ -629,7 +629,7 @@ func TestDeleteTapDeviceWithRetryReturnsLookupError(t *testing.T) {
 		return nil, errors.New("permission denied")
 	}
 
-	err := deleteTapDeviceWithRetry(context.Background(), tapName, time.Millisecond, interfaceByName, run)
+	err := deleteTapDeviceWithRetry(context.Background(), tapName, time.Millisecond, interfaceByName, testPrivilegedCommandRunner{run: run})
 	if err == nil {
 		t.Fatal("expected lookup error")
 	}
