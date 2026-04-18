@@ -509,10 +509,10 @@ func (a *Adapter) CreateSnapshot(ctx context.Context, req backend.SnapshotReques
 	if err != nil {
 		return nil, err
 	}
-	driver, err := snapshotVolumeStoreDriverFn(driverCfg)
-	if err != nil {
+	if err := validateSnapshotStorageConfig(driverCfg); err != nil {
 		return nil, err
 	}
+	driverName := strings.ToLower(strings.TrimSpace(driverCfg.Snapshots.Driver))
 	if err := pauseSandboxProcess(instance); err != nil {
 		return nil, err
 	}
@@ -525,7 +525,7 @@ func (a *Adapter) CreateSnapshot(ctx context.Context, req backend.SnapshotReques
 		if err := resumeSandboxProcess(instance); err != nil && retErr == nil {
 			if strings.TrimSpace(snapshotStorageRef) != "" {
 				cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				cleanupErr := driver.DestroySnapshot(cleanupCtx, volumestore.DestroySnapshotRequest{SnapshotRef: snapshotStorageRef})
+				cleanupErr := destroySnapshotStorage(cleanupCtx, driverCfg, snapshotStorageRef)
 				cancel()
 				if cleanupErr != nil {
 					result = nil
@@ -537,20 +537,15 @@ func (a *Adapter) CreateSnapshot(ctx context.Context, req backend.SnapshotReques
 			retErr = fmt.Errorf("resume firecracker sandbox after snapshot: %w", err)
 		}
 	}()
-	if err := flushSnapshotHostFilesystem(ctx, driverCfg.Snapshots.Driver); err != nil {
+	if err := flushSnapshotHostFilesystem(ctx, driverName); err != nil {
 		return nil, err
 	}
-
-	snapshot, err := driver.SnapshotVolume(ctx, volumestore.SnapshotVolumeRequest{
-		SnapshotID: snapshotID,
-		VolumeRef:  volumeRef,
-	})
+	snapshotStorageRef, err = createSnapshotStorage(ctx, driverCfg, snapshotID, volumeRef)
 	if err != nil {
 		return nil, fmt.Errorf("persist snapshot rootfs: %w", err)
 	}
-	snapshotStorageRef = snapshot.StorageRef
 
-	return &backend.SnapshotResult{StorageRef: snapshot.StorageRef}, nil
+	return &backend.SnapshotResult{StorageRef: snapshotStorageRef}, nil
 }
 
 func (a *Adapter) ProvisionSandboxFromSnapshot(ctx context.Context, req backend.ProvisionFromSnapshotRequest) error {
@@ -616,13 +611,7 @@ func (a *Adapter) DeleteSnapshot(ctx context.Context, req backend.DeleteSnapshot
 	if err != nil {
 		return err
 	}
-	driver, err := snapshotVolumeStoreDriver(driverCfg)
-	if err != nil {
-		return err
-	}
-	if err := driver.DestroySnapshot(ctx, volumestore.DestroySnapshotRequest{
-		SnapshotRef: storageRef,
-	}); err != nil {
+	if err := destroySnapshotStorage(ctx, driverCfg, storageRef); err != nil {
 		return fmt.Errorf("remove snapshot rootfs %q: %w", storageRef, err)
 	}
 	return nil
@@ -1837,6 +1826,31 @@ func prepareWritableRootVolume(ctx context.Context, cfg backend.FirecrackerConfi
 	if err != nil {
 		return volumestore.WritableVolume{}, nil, err
 	}
+	if strings.EqualFold(strings.TrimSpace(driverCfg.Snapshots.Driver), "zfs") {
+		hostRuntime := hostRuntimeForConfig(driverCfg)
+		zfsReq := zfsWritableVolumeRequest{
+			VolumeID:     volumeID,
+			MinimumBytes: cfg.MinimumRootFSBytes,
+		}
+		if filepath.IsAbs(strings.TrimSpace(sourceRef)) {
+			zfsReq.SourcePath = sourceRef
+		} else {
+			zfsReq.SnapshotRef = sourceRef
+		}
+		volume, err := hostRuntime.PrepareZFSWritableVolume(ctx, zfsReq)
+		if err != nil {
+			return volumestore.WritableVolume{}, nil, err
+		}
+		cleanupVolume := func() {
+			if err := hostRuntime.DestroyZFSVolume(context.Background(), volume.Ref); err != nil {
+				log.Printf("firecracker: cleanup persistent volume %q: %v", volume.Ref, err)
+			}
+		}
+		return volumestore.WritableVolume{
+			Ref:            volume.Ref,
+			AttachmentPath: volume.AttachmentPath,
+		}, cleanupVolume, nil
+	}
 	driver, err := rootFSVolumeStoreDriverFn(driverCfg)
 	if err != nil {
 		return volumestore.WritableVolume{}, nil, err
@@ -1889,20 +1903,14 @@ func rootFSVolumeStoreDriver(cfg backend.FirecrackerConfig) (volumestore.Driver,
 			return nil, err
 		}
 		return driver, nil
-	case "zfs":
-		driver, err := hostRuntimeForConfig(cfg).OpenZFSVolumeStore(cfg.Snapshots.ZFSDataset)
-		if err != nil {
-			return nil, err
-		}
-		return driver, nil
 	default:
 		return nil, fmt.Errorf("unsupported firecracker snapshot driver %q", cfg.Snapshots.Driver)
 	}
 }
 
 func snapshotVolumeStoreDriver(cfg backend.FirecrackerConfig) (volumestore.Driver, error) {
-	if !cfg.Snapshots.Enabled {
-		return nil, errors.New("firecracker snapshots are not enabled")
+	if err := validateSnapshotsEnabled(cfg); err != nil {
+		return nil, err
 	}
 	return rootFSVolumeStoreDriver(cfg)
 }
@@ -1925,6 +1933,71 @@ func flushSnapshotHostFilesystem(ctx context.Context, driverName string) error {
 
 func snapshotDriverNeedsHostSync(driverName string) bool {
 	return strings.EqualFold(strings.TrimSpace(driverName), "zfs")
+}
+
+func createSnapshotStorage(ctx context.Context, cfg backend.FirecrackerConfig, snapshotID, volumeRef string) (string, error) {
+	if err := validateSnapshotsEnabled(cfg); err != nil {
+		return "", err
+	}
+	if strings.EqualFold(strings.TrimSpace(cfg.Snapshots.Driver), "zfs") {
+		snapshot, err := hostRuntimeForConfig(cfg).CreateZFSSnapshot(ctx, zfsSnapshotRequest{
+			SnapshotID: snapshotID,
+			VolumeRef:  volumeRef,
+		})
+		if err != nil {
+			return "", err
+		}
+		return snapshot.StorageRef, nil
+	}
+
+	driver, err := snapshotVolumeStoreDriverFn(cfg)
+	if err != nil {
+		return "", err
+	}
+	snapshot, err := driver.SnapshotVolume(ctx, volumestore.SnapshotVolumeRequest{
+		SnapshotID: snapshotID,
+		VolumeRef:  volumeRef,
+	})
+	if err != nil {
+		return "", err
+	}
+	return snapshot.StorageRef, nil
+}
+
+func destroySnapshotStorage(ctx context.Context, cfg backend.FirecrackerConfig, storageRef string) error {
+	if err := validateSnapshotsEnabled(cfg); err != nil {
+		return err
+	}
+	if strings.EqualFold(strings.TrimSpace(cfg.Snapshots.Driver), "zfs") {
+		return hostRuntimeForConfig(cfg).DestroyZFSSnapshot(ctx, storageRef)
+	}
+
+	driver, err := snapshotVolumeStoreDriverFn(cfg)
+	if err != nil {
+		return err
+	}
+	return driver.DestroySnapshot(ctx, volumestore.DestroySnapshotRequest{SnapshotRef: storageRef})
+}
+
+func validateSnapshotsEnabled(cfg backend.FirecrackerConfig) error {
+	if !cfg.Snapshots.Enabled {
+		return errors.New("firecracker snapshots are not enabled")
+	}
+	return nil
+}
+
+func validateSnapshotStorageConfig(cfg backend.FirecrackerConfig) error {
+	if err := validateSnapshotsEnabled(cfg); err != nil {
+		return err
+	}
+	if strings.EqualFold(strings.TrimSpace(cfg.Snapshots.Driver), "zfs") {
+		if strings.TrimSpace(cfg.Snapshots.ZFSDataset) == "" {
+			return errors.New("zfs volume driver requires dataset root")
+		}
+		return nil
+	}
+	_, err := snapshotVolumeStoreDriverFn(cfg)
+	return err
 }
 
 func pauseSandboxProcess(instance *sandboxInstance) error {

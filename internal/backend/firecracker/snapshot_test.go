@@ -157,10 +157,10 @@ func TestCreateSnapshotFlushesHostFilesystemForZFSSnapshots(t *testing.T) {
 	t.Cleanup(func() { sendProcessSignal = prevSignal })
 
 	prevSync := syncHostFilesystem
-	prevSnapshotDriver := snapshotVolumeStoreDriverFn
+	prevHostRuntimeFn := newHostRuntimeFn
 	t.Cleanup(func() {
 		syncHostFilesystem = prevSync
-		snapshotVolumeStoreDriverFn = prevSnapshotDriver
+		newHostRuntimeFn = prevHostRuntimeFn
 	})
 
 	var calls []string
@@ -168,22 +168,25 @@ func TestCreateSnapshotFlushesHostFilesystemForZFSSnapshots(t *testing.T) {
 		calls = append(calls, "host-sync")
 		return nil
 	}
-	snapshotVolumeStoreDriverFn = func(cfg backend.FirecrackerConfig) (volumestore.Driver, error) {
+	newHostRuntimeFn = func(cfg backend.FirecrackerConfig) hostRuntime {
 		if got, want := cfg.Snapshots.Driver, "zfs"; got != want {
 			t.Fatalf("unexpected snapshot driver: got %q want %q", got, want)
 		}
-		return testVolumeDriver{
-			snapshotVolumeFn: func(_ context.Context, req volumestore.SnapshotVolumeRequest) (volumestore.Snapshot, error) {
+		return testHostRuntime{
+			createZFSSnapshotFn: func(_ context.Context, req zfsSnapshotRequest) (zfsSnapshot, error) {
 				if got, want := calls, []string{"host-sync"}; strings.Join(got, ",") != strings.Join(want, ",") {
 					t.Fatalf("expected host sync before snapshot, got %v", got)
 				}
 				if got, want := req.VolumeRef, "tank/cleanroom/sandboxes/cr-test"; got != want {
 					t.Fatalf("unexpected volume ref: got %q want %q", got, want)
 				}
+				if got, want := req.SnapshotID, "snap-test"; got != want {
+					t.Fatalf("unexpected snapshot id: got %q want %q", got, want)
+				}
 				calls = append(calls, "snapshot")
-				return volumestore.Snapshot{StorageRef: "tank/cleanroom/snapshots/snap-test@seed"}, nil
+				return zfsSnapshot{StorageRef: "tank/cleanroom/snapshots/snap-test@seed"}, nil
 			},
-		}, nil
+		}
 	}
 
 	adapter := &Adapter{
@@ -230,11 +233,11 @@ func TestCreateSnapshotFlushesHostFilesystemForZFSSnapshots(t *testing.T) {
 
 func TestCreateSnapshotResumesSandboxWhenHostSyncFails(t *testing.T) {
 	prevSync := syncHostFilesystem
-	prevSnapshotDriver := snapshotVolumeStoreDriverFn
+	prevHostRuntimeFn := newHostRuntimeFn
 	prevSignal := sendProcessSignal
 	t.Cleanup(func() {
 		syncHostFilesystem = prevSync
-		snapshotVolumeStoreDriverFn = prevSnapshotDriver
+		newHostRuntimeFn = prevHostRuntimeFn
 		sendProcessSignal = prevSignal
 	})
 
@@ -247,16 +250,16 @@ func TestCreateSnapshotResumesSandboxWhenHostSyncFails(t *testing.T) {
 	syncHostFilesystem = func(context.Context) error {
 		return errors.New("host sync failed")
 	}
-	snapshotVolumeStoreDriverFn = func(cfg backend.FirecrackerConfig) (volumestore.Driver, error) {
+	newHostRuntimeFn = func(cfg backend.FirecrackerConfig) hostRuntime {
 		if got, want := cfg.Snapshots.Driver, "zfs"; got != want {
 			t.Fatalf("unexpected snapshot driver: got %q want %q", got, want)
 		}
-		return testVolumeDriver{
-			snapshotVolumeFn: func(context.Context, volumestore.SnapshotVolumeRequest) (volumestore.Snapshot, error) {
+		return testHostRuntime{
+			createZFSSnapshotFn: func(context.Context, zfsSnapshotRequest) (zfsSnapshot, error) {
 				t.Fatal("snapshot should not run after host sync failure")
-				return volumestore.Snapshot{}, nil
+				return zfsSnapshot{}, nil
 			},
-		}, nil
+		}
 	}
 
 	adapter := &Adapter{
@@ -468,6 +471,75 @@ func TestCreateSnapshotUsesManagedVolumeRef(t *testing.T) {
 	}
 	if got, want := string(data), "snapshot-bytes"; got != want {
 		t.Fatalf("unexpected snapshot contents: got %q want %q", got, want)
+	}
+}
+
+func TestCreateSnapshotRejectsDisabledZFSSnapshots(t *testing.T) {
+	prevSignal := sendProcessSignal
+	prevHostRuntimeFn := newHostRuntimeFn
+	var signals []syscall.Signal
+	sendProcessSignal = func(_ *os.Process, sig syscall.Signal) error {
+		signals = append(signals, sig)
+		return nil
+	}
+	t.Cleanup(func() {
+		sendProcessSignal = prevSignal
+		newHostRuntimeFn = prevHostRuntimeFn
+	})
+
+	newHostRuntimeFn = func(cfg backend.FirecrackerConfig) hostRuntime {
+		if got, want := cfg.Snapshots.Driver, "zfs"; got != want {
+			t.Fatalf("unexpected snapshot driver: got %q want %q", got, want)
+		}
+		return testHostRuntime{
+			createZFSSnapshotFn: func(context.Context, zfsSnapshotRequest) (zfsSnapshot, error) {
+				t.Fatal("zfs snapshot creation should not run when snapshots are disabled")
+				return zfsSnapshot{}, nil
+			},
+		}
+	}
+
+	adapter := &Adapter{
+		runGuestCommandFn: func(_ context.Context, _ context.Context, _ <-chan struct{}, _ func() error, _ string, _ uint32, req vsockexec.ExecRequest, _ backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error) {
+			if len(req.Command) != 1 || req.Command[0] != "sync" {
+				t.Fatalf("unexpected command: %v", req.Command)
+			}
+			return vsockexec.ExecResponse{ExitCode: 0}, guestExecTiming{}, nil
+		},
+		sandboxes: map[string]*sandboxInstance{
+			"cr-test": {
+				SandboxID:    "cr-test",
+				VsockPath:    "/tmp/fake.sock",
+				GuestPort:    10700,
+				fcCmd:        &exec.Cmd{Process: &os.Process{Pid: 42}},
+				exitedCh:     make(chan struct{}),
+				vmRootFSPath: "/dev/zvol/tank/cleanroom/sandboxes/cr-test",
+				volumeRef:    "tank/cleanroom/sandboxes/cr-test",
+			},
+		},
+	}
+
+	result, err := adapter.CreateSnapshot(context.Background(), backend.SnapshotRequest{
+		SandboxID:  "cr-test",
+		SnapshotID: "snap-test",
+		FirecrackerConfig: backend.FirecrackerConfig{
+			Snapshots: backend.SnapshotConfig{
+				Driver:     "zfs",
+				ZFSDataset: "tank/cleanroom",
+			},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected CreateSnapshot to reject disabled zfs snapshots")
+	}
+	if result != nil {
+		t.Fatalf("expected nil snapshot result, got %#v", result)
+	}
+	if got := err.Error(); !strings.Contains(got, "not enabled") {
+		t.Fatalf("expected snapshots disabled error, got %v", err)
+	}
+	if len(signals) != 0 {
+		t.Fatalf("expected snapshots-disabled validation to fail before pausing sandbox, got signals %v", signals)
 	}
 }
 
@@ -938,20 +1010,22 @@ func TestPrepareWritableRootVolumeUsesRootFSVolumeStoreDriver(t *testing.T) {
 }
 
 func TestPrepareWritableRootVolumeNormalizesManagedZFSStorageRefs(t *testing.T) {
-	prevDriverFn := rootFSVolumeStoreDriverFn
-	t.Cleanup(func() { rootFSVolumeStoreDriverFn = prevDriverFn })
+	prevHostRuntimeFn := newHostRuntimeFn
+	t.Cleanup(func() { newHostRuntimeFn = prevHostRuntimeFn })
 
 	var gotDriverCfg backend.FirecrackerConfig
-	rootFSVolumeStoreDriverFn = func(cfg backend.FirecrackerConfig) (volumestore.Driver, error) {
+	var gotReq zfsWritableVolumeRequest
+	newHostRuntimeFn = func(cfg backend.FirecrackerConfig) hostRuntime {
 		gotDriverCfg = cfg
-		return testVolumeDriver{
-			cloneSnapshotToVolumeFn: func(_ context.Context, req volumestore.CloneSnapshotToVolumeRequest) (volumestore.WritableVolume, error) {
-				return volumestore.WritableVolume{Ref: "tank/cleanroom/sandboxes/exec-1", AttachmentPath: req.AttachmentPath}, nil
+		return testHostRuntime{
+			prepareZFSWritableVolumeFn: func(_ context.Context, req zfsWritableVolumeRequest) (zfsWritableVolume, error) {
+				gotReq = req
+				return zfsWritableVolume{Ref: "tank/cleanroom/sandboxes/exec-1", AttachmentPath: "/dev/zvol/tank/cleanroom/sandboxes/exec-1"}, nil
 			},
-		}, nil
+		}
 	}
 
-	_, cleanupVolume, err := prepareWritableRootVolume(
+	volume, cleanupVolume, err := prepareWritableRootVolume(
 		context.Background(),
 		backend.FirecrackerConfig{},
 		"exec-1",
@@ -969,5 +1043,11 @@ func TestPrepareWritableRootVolumeNormalizesManagedZFSStorageRefs(t *testing.T) 
 	}
 	if got, want := gotDriverCfg.Snapshots.ZFSDataset, "tank/cleanroom"; got != want {
 		t.Fatalf("unexpected zfs dataset: got %q want %q", got, want)
+	}
+	if got, want := gotReq, (zfsWritableVolumeRequest{VolumeID: "exec-1", SnapshotRef: "tank/cleanroom/sandboxes/source@snap-golden"}); got != want {
+		t.Fatalf("unexpected zfs writable volume request: got %+v want %+v", got, want)
+	}
+	if got, want := volume.AttachmentPath, "/dev/zvol/tank/cleanroom/sandboxes/exec-1"; got != want {
+		t.Fatalf("unexpected attachment path: got %q want %q", got, want)
 	}
 }
