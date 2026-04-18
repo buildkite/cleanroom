@@ -26,8 +26,12 @@ var privilegedCommandEUID = os.Geteuid
 
 var directPrivilegedCommandPathResolver = resolveDirectPrivilegedCommandPath
 
+func privilegedCommandsRunDirectly() bool {
+	return privilegedCommandEUID() == 0
+}
+
 func newPrivilegedCommandRunner(cfg backend.FirecrackerConfig) privilegedCommandRunner {
-	if privilegedCommandEUID() == 0 {
+	if privilegedCommandsRunDirectly() {
 		return directPrivilegedCommandRunner{}
 	}
 	return helperPrivilegedCommandRunner{cfg: cfg}
