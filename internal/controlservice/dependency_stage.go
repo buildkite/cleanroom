@@ -224,6 +224,7 @@ func (s *Service) maybePublishDependencyStageCache(
 	compiled *policy.CompiledPolicy,
 	firecrackerCfg backend.FirecrackerConfig,
 	repository *repositorycheckout.Checkout,
+	changeset *repositorychangeset.Changeset,
 	plan dependencyStagePlan,
 	replacedRecord *cachestore.Record,
 ) {
@@ -262,20 +263,21 @@ func (s *Service) maybePublishDependencyStageCache(
 	}
 
 	record := cachestore.Record{
-		CacheKey:          plan.CacheKey,
-		Stage:             dependencyStageName,
-		State:             cacheStateReady,
-		BackingSnapshotID: strings.TrimSpace(snapshotID),
-		Backend:           backendName,
-		PolicyHash:        compiled.Hash,
-		Policy:            compiled.ToProto(),
-		Repository:        cloneRepositoryCheckout(normalizeRepositoryCheckoutForComparison(repository)).ToProto(),
-		ParentCacheKey:    plan.ParentWorkspaceCacheKey,
-		StorageDriver:     snapshotCfg.Snapshots.Driver,
-		StorageRef:        strings.TrimSpace(result.StorageRef),
-		CreatedAt:         s.clock().Now(),
-		LastUsedAt:        s.clock().Now(),
-		ProducerVersion:   dependencyStageProducerVersion,
+		CacheKey:               plan.CacheKey,
+		Stage:                  dependencyStageName,
+		State:                  cacheStateReady,
+		BackingSnapshotID:      strings.TrimSpace(snapshotID),
+		Backend:                backendName,
+		PolicyHash:             compiled.Hash,
+		Policy:                 compiled.ToProto(),
+		Repository:             cloneRepositoryCheckout(normalizeRepositoryCheckoutForComparison(repository)).ToProto(),
+		RepositoryHasChangeset: changeset != nil,
+		ParentCacheKey:         plan.ParentWorkspaceCacheKey,
+		StorageDriver:          snapshotCfg.Snapshots.Driver,
+		StorageRef:             strings.TrimSpace(result.StorageRef),
+		CreatedAt:              s.clock().Now(),
+		LastUsedAt:             s.clock().Now(),
+		ProducerVersion:        dependencyStageProducerVersion,
 	}
 
 	persist := store.Create

@@ -118,6 +118,68 @@ func TestBuildFromWorkingTreeRejectsDirtySubmoduleWorktree(t *testing.T) {
 	}
 }
 
+func TestBuildFromWorkingTreeRejectsSubmoduleGitlinkChange(t *testing.T) {
+	submoduleDir := initGitRepository(t)
+	superDir := t.TempDir()
+	runGit(t, superDir, "init")
+	runGit(t, superDir, "config", "user.name", "Cleanroom Test")
+	runGit(t, superDir, "config", "user.email", "cleanroom-test@example.com")
+	runGitWithEnv(t, superDir, []string{"GIT_ALLOW_PROTOCOL=file"}, "-c", "protocol.file.allow=always", "submodule", "add", submoduleDir, "deps/sub")
+	runGit(t, superDir, "commit", "-m", "add submodule")
+
+	if err := os.WriteFile(filepath.Join(superDir, "deps/sub/README.md"), []byte("advanced submodule\n"), 0o644); err != nil {
+		t.Fatalf("rewrite submodule readme: %v", err)
+	}
+	runGit(t, filepath.Join(superDir, "deps/sub"), "add", "README.md")
+	runGit(t, filepath.Join(superDir, "deps/sub"), "commit", "-m", "advance submodule")
+	runGit(t, superDir, "add", "deps/sub")
+
+	checkout := &repositorycheckout.Checkout{
+		RemoteURL:      "https://github.com/buildkite/cleanroom.git",
+		CommitSHA:      headCommit(t, superDir),
+		DestinationDir: "/workspace",
+		Submodules:     true,
+	}
+
+	changeset, err := BuildFromWorkingTree(superDir, checkout)
+	if err == nil {
+		t.Fatalf("expected submodule gitlink error, got changeset %+v", changeset)
+	}
+	if !strings.Contains(err.Error(), "submodule gitlink change") {
+		t.Fatalf("expected submodule gitlink error, got %v", err)
+	}
+}
+
+func TestValidateContentRejectsSubmoduleGitlinkPatch(t *testing.T) {
+	patch := []byte(strings.Join([]string{
+		"diff --git a/deps/sub b/deps/sub",
+		"index 1111111111111111111111111111111111111111..2222222222222222222222222222222222222222 160000",
+		"--- a/deps/sub",
+		"+++ b/deps/sub",
+		"@@ -1 +1 @@",
+		"-Subproject commit 1111111111111111111111111111111111111111",
+		"+Subproject commit 2222222222222222222222222222222222222222",
+		"",
+	}, "\n"))
+	changeset := &Changeset{
+		Format:        FormatGitDiffV1,
+		BaseCommitSHA: "0123456789abcdef0123456789abcdef01234567",
+		TreeDigest:    "89abcdef0123456789abcdef0123456789abcdef",
+		Patch:         patch,
+		Files: []File{{
+			Path:   "deps/sub",
+			SHA256: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		}},
+	}
+	changeset.Digest = buildDigest(changeset.BaseCommitSHA, changeset.TreeDigest, changeset.Patch, changeset.Files)
+
+	if err := changeset.ValidateContent(); err == nil {
+		t.Fatal("expected ValidateContent to reject submodule gitlink patch")
+	} else if !strings.Contains(err.Error(), "submodule gitlink") {
+		t.Fatalf("expected submodule gitlink error, got %v", err)
+	}
+}
+
 func TestDigestPathsFromBaseUsesPatchedContents(t *testing.T) {
 	repoDir := initGitRepository(t)
 	if err := os.WriteFile(filepath.Join(repoDir, "README.md"), []byte("patched\n"), 0o644); err != nil {

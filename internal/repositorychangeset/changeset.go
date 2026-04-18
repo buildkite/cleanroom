@@ -75,6 +75,11 @@ func BuildFromWorkingTree(repoRoot string, checkout *repositorycheckout.Checkout
 	if len(bytes.TrimSpace(patch)) == 0 {
 		return nil, nil
 	}
+	if gitlinkPaths, err := changedGitlinkPaths(repoRoot, env, baseCommitSHA); err != nil {
+		return nil, err
+	} else if len(gitlinkPaths) > 0 {
+		return nil, fmt.Errorf("repository changeset cannot represent submodule gitlink change(s): %s; commit and push the submodule update, or apply it manually inside the sandbox", strings.Join(gitlinkPaths, ", "))
+	}
 
 	treeDigestBytes, err := gitOutput(repoRoot, env, "write-tree")
 	if err != nil {
@@ -280,6 +285,9 @@ func (c *Changeset) ValidateContent() error {
 	if c == nil {
 		return nil
 	}
+	if patchHasGitlinkChanges(c.Patch) {
+		return errors.New("repository changeset cannot represent submodule gitlink changes")
+	}
 	files := make([]File, 0, len(c.Files))
 	seen := make(map[string]struct{}, len(c.Files))
 	for _, file := range c.Files {
@@ -388,6 +396,36 @@ func changedFiles(repoRoot string, env []string, baseCommitSHA string) ([]File, 
 	return files, nil
 }
 
+func changedGitlinkPaths(repoRoot string, env []string, baseCommitSHA string) ([]string, error) {
+	output, err := gitOutput(repoRoot, env, "diff", "--cached", "--raw", "--no-renames", "-z", baseCommitSHA)
+	if err != nil {
+		return nil, fmt.Errorf("list repository changeset gitlinks: %w", err)
+	}
+	tokens := splitNullTerminated(output)
+	paths := make([]string, 0)
+	for i := 0; i < len(tokens); i += 2 {
+		if i+1 >= len(tokens) {
+			return nil, fmt.Errorf("parse repository changeset raw diff entry %q", tokens[i])
+		}
+		fields := strings.Fields(tokens[i])
+		if len(fields) < 5 {
+			return nil, fmt.Errorf("parse repository changeset raw diff metadata %q", tokens[i])
+		}
+		oldMode := strings.TrimPrefix(fields[0], ":")
+		newMode := fields[1]
+		if oldMode != "160000" && newMode != "160000" {
+			continue
+		}
+		normalizedPath := normalizePath(tokens[i+1])
+		if normalizedPath == "" {
+			return nil, fmt.Errorf("parse repository changeset gitlink path from %q", tokens[i+1])
+		}
+		paths = append(paths, normalizedPath)
+	}
+	sort.Strings(paths)
+	return paths, nil
+}
+
 func ensureNoDirtySubmoduleWorktrees(repoRoot string) error {
 	output, err := gitOutput(repoRoot, os.Environ(), "status", "--porcelain=v2", "--ignore-submodules=none")
 	if err != nil {
@@ -413,6 +451,21 @@ func ensureNoDirtySubmoduleWorktrees(repoRoot string) error {
 		return fmt.Errorf("repository changeset cannot represent dirty submodule worktree %q; commit the submodule change or clean it first", path)
 	}
 	return nil
+}
+
+func patchHasGitlinkChanges(patch []byte) bool {
+	for _, line := range strings.Split(string(patch), "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(line, "index ") && strings.HasSuffix(line, " 160000"):
+			return true
+		case strings.HasPrefix(line, "-Subproject commit "):
+			return true
+		case strings.HasPrefix(line, "+Subproject commit "):
+			return true
+		}
+	}
+	return false
 }
 
 func pathExistsInIndex(repoRoot string, env []string, normalizedPath string) (bool, error) {

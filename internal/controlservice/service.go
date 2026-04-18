@@ -54,24 +54,25 @@ type Service struct {
 }
 
 type sandboxState struct {
-	ID                 string
-	Backend            string
-	Policy             *policy.CompiledPolicy
-	Firecracker        backend.FirecrackerConfig
-	Repository         *repositorycheckout.Checkout
-	SourceKind         string
-	SourceID           string
-	BackingSnapshotID  string
-	RepositoryBusy     bool
-	ActiveExecutionID  string
-	DownloadInProgress bool
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
-	LastExecutionID    string
-	Status             cleanroomv1.SandboxStatus
-	events             eventFeed[*cleanroomv1.SandboxEvent]
-	Done               chan struct{}
-	DoneClosed         bool
+	ID                     string
+	Backend                string
+	Policy                 *policy.CompiledPolicy
+	Firecracker            backend.FirecrackerConfig
+	Repository             *repositorycheckout.Checkout
+	RepositoryHasChangeset bool
+	SourceKind             string
+	SourceID               string
+	BackingSnapshotID      string
+	RepositoryBusy         bool
+	ActiveExecutionID      string
+	DownloadInProgress     bool
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
+	LastExecutionID        string
+	Status                 cleanroomv1.SandboxStatus
+	events                 eventFeed[*cleanroomv1.SandboxEvent]
+	Done                   chan struct{}
+	DoneClosed             bool
 }
 
 type executionState struct {
@@ -340,7 +341,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 			}
 			if dependencyStageCachingEnabled {
 				emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_PUBLISH_DEPENDENCY_STAGE_CACHE, "publishing dependency stage cache")
-				s.maybePublishDependencyStageCache(ctx, snapshotAdapter, sandboxID, backendName, compiled, firecrackerCfg, repository, dependencyStagePlan, replacedDependencyStageRecord)
+				s.maybePublishDependencyStageCache(ctx, snapshotAdapter, sandboxID, backendName, compiled, firecrackerCfg, repository, changeset, dependencyStagePlan, replacedDependencyStageRecord)
 			}
 		}
 		return restoredWorkspaceResp, nil
@@ -409,21 +410,22 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 		}
 		if dependencyStageCachingEnabled && snapshotCapable {
 			emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_PUBLISH_DEPENDENCY_STAGE_CACHE, "publishing dependency stage cache")
-			s.maybePublishDependencyStageCache(ctx, snapshotAdapter, sandboxID, backendName, compiled, firecrackerCfg, repository, dependencyStagePlan, replacedDependencyStageRecord)
+			s.maybePublishDependencyStageCache(ctx, snapshotAdapter, sandboxID, backendName, compiled, firecrackerCfg, repository, changeset, dependencyStagePlan, replacedDependencyStageRecord)
 		}
 	}
 
 	state := &sandboxState{
-		ID:          sandboxID,
-		Backend:     backendName,
-		Policy:      compiled,
-		Firecracker: firecrackerCfg,
-		Repository:  cloneRepositoryCheckout(repository),
-		CreatedAt:   now,
-		UpdatedAt:   now,
-		Status:      cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY,
-		events:      newEventFeed[*cleanroomv1.SandboxEvent](s.retention().maxRetainedSandboxEvents),
-		Done:        make(chan struct{}),
+		ID:                     sandboxID,
+		Backend:                backendName,
+		Policy:                 compiled,
+		Firecracker:            firecrackerCfg,
+		Repository:             cloneRepositoryCheckout(repository),
+		RepositoryHasChangeset: changeset != nil,
+		CreatedAt:              now,
+		UpdatedAt:              now,
+		Status:                 cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY,
+		events:                 newEventFeed[*cleanroomv1.SandboxEvent](s.retention().maxRetainedSandboxEvents),
+		Done:                   make(chan struct{}),
 	}
 
 	s.mu.Lock()
@@ -578,15 +580,16 @@ func (s *Service) CreateSnapshot(ctx context.Context, req *cleanroomv1.CreateSna
 	}
 	snapshotCfg := withSnapshotDriver(state.Backend, state.Firecracker, state.Firecracker.Snapshots.Driver)
 	record = snapshotstore.Record{
-		SnapshotID:      snapshotID,
-		SourceSandboxID: sandboxID,
-		Backend:         state.Backend,
-		Name:            name,
-		PolicyHash:      state.Policy.Hash,
-		Policy:          state.Policy.ToProto(),
-		Repository:      cloneRepositoryCheckout(state.Repository).ToProto(),
-		StorageDriver:   snapshotCfg.Snapshots.Driver,
-		CreatedAt:       now,
+		SnapshotID:             snapshotID,
+		SourceSandboxID:        sandboxID,
+		Backend:                state.Backend,
+		Name:                   name,
+		PolicyHash:             state.Policy.Hash,
+		Policy:                 state.Policy.ToProto(),
+		Repository:             cloneRepositoryCheckout(state.Repository).ToProto(),
+		RepositoryHasChangeset: state.RepositoryHasChangeset,
+		StorageDriver:          snapshotCfg.Snapshots.Driver,
+		CreatedAt:              now,
 	}
 	s.recordSandboxEventLocked(state, cleanroomv1.SandboxStatus_SANDBOX_STATUS_PROVISIONING, fmt.Sprintf("snapshot %s in progress", snapshotID))
 	s.mu.Unlock()
@@ -1943,9 +1946,11 @@ func (s *Service) preparePersistentSandboxRepository(
 	switch {
 	case sandbox.Repository == nil:
 		sandbox.RepositoryBusy = true
-	case repositoryCheckoutsEqual(sandbox.Repository, repository):
+	case repositoryCheckoutsEqual(sandbox.Repository, repository) && !sandbox.RepositoryHasChangeset:
 		s.mu.Unlock()
 		return nil
+	case repositoryCheckoutsEqual(sandbox.Repository, repository):
+		sandbox.RepositoryBusy = true
 	default:
 		s.mu.Unlock()
 		return fmt.Errorf("sandbox %q already has a different repository checkout", sandboxID)
@@ -1959,6 +1964,7 @@ func (s *Service) preparePersistentSandboxRepository(
 		sandbox.RepositoryBusy = false
 		if err == nil {
 			sandbox.Repository = cloneRepositoryCheckout(repository)
+			sandbox.RepositoryHasChangeset = false
 		}
 	}
 	s.mu.Unlock()

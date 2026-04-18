@@ -153,20 +153,21 @@ func (s *Service) maybePublishWorkspaceStageCache(
 	}
 
 	record := cachestore.Record{
-		CacheKey:          cacheKey,
-		Stage:             workspaceStageName,
-		State:             cacheStateReady,
-		BackingSnapshotID: strings.TrimSpace(snapshotID),
-		Backend:           backendName,
-		PolicyHash:        compiled.Hash,
-		Policy:            compiled.ToProto(),
-		Repository:        cloneRepositoryCheckout(normalizeRepositoryCheckoutForComparison(repository)).ToProto(),
-		ParentCacheKey:    strings.TrimSpace(runtimeBaseKey),
-		StorageDriver:     snapshotCfg.Snapshots.Driver,
-		StorageRef:        strings.TrimSpace(result.StorageRef),
-		CreatedAt:         s.clock().Now(),
-		LastUsedAt:        s.clock().Now(),
-		ProducerVersion:   workspaceStageProducerVersion,
+		CacheKey:               cacheKey,
+		Stage:                  workspaceStageName,
+		State:                  cacheStateReady,
+		BackingSnapshotID:      strings.TrimSpace(snapshotID),
+		Backend:                backendName,
+		PolicyHash:             compiled.Hash,
+		Policy:                 compiled.ToProto(),
+		Repository:             cloneRepositoryCheckout(normalizeRepositoryCheckoutForComparison(repository)).ToProto(),
+		RepositoryHasChangeset: changeset != nil,
+		ParentCacheKey:         strings.TrimSpace(runtimeBaseKey),
+		StorageDriver:          snapshotCfg.Snapshots.Driver,
+		StorageRef:             strings.TrimSpace(result.StorageRef),
+		CreatedAt:              s.clock().Now(),
+		LastUsedAt:             s.clock().Now(),
+		ProducerVersion:        workspaceStageProducerVersion,
 	}
 
 	persist := store.Create

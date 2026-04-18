@@ -16,21 +16,22 @@ import (
 )
 
 type Record struct {
-	CacheKey            string
-	Stage               string
-	State               string
-	BackingSnapshotID   string
-	Backend             string
-	PolicyHash          string
-	Policy              *cleanroomv1.Policy
-	Repository          *cleanroomv1.RepositoryCheckout
-	ParentCacheKey      string
-	StorageDriver       string
-	StorageRef          string
-	InputManifestDigest string
-	CreatedAt           time.Time
-	LastUsedAt          time.Time
-	ProducerVersion     string
+	CacheKey               string
+	Stage                  string
+	State                  string
+	BackingSnapshotID      string
+	Backend                string
+	PolicyHash             string
+	Policy                 *cleanroomv1.Policy
+	Repository             *cleanroomv1.RepositoryCheckout
+	RepositoryHasChangeset bool
+	ParentCacheKey         string
+	StorageDriver          string
+	StorageRef             string
+	InputManifestDigest    string
+	CreatedAt              time.Time
+	LastUsedAt             time.Time
+	ProducerVersion        string
 }
 
 type Options struct {
@@ -136,6 +137,7 @@ func (s *Store) persist(ctx context.Context, record Record, replace bool) error 
 			policy_hash,
 			policy_proto,
 			repository_proto,
+			repository_has_changeset,
 			parent_cache_key,
 			storage_driver,
 			storage_ref,
@@ -143,7 +145,7 @@ func (s *Store) persist(ctx context.Context, record Record, replace bool) error 
 			created_at_unix_nano,
 			last_used_at_unix_nano,
 			producer_version
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 	if replace {
 		verb = "upsert"
@@ -157,6 +159,7 @@ func (s *Store) persist(ctx context.Context, record Record, replace bool) error 
 				policy_hash,
 				policy_proto,
 				repository_proto,
+				repository_has_changeset,
 				parent_cache_key,
 				storage_driver,
 				storage_ref,
@@ -164,7 +167,7 @@ func (s *Store) persist(ctx context.Context, record Record, replace bool) error 
 				created_at_unix_nano,
 				last_used_at_unix_nano,
 				producer_version
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(stage, cache_key) DO UPDATE SET
 				state = excluded.state,
 				backing_snapshot_id = excluded.backing_snapshot_id,
@@ -172,6 +175,7 @@ func (s *Store) persist(ctx context.Context, record Record, replace bool) error 
 				policy_hash = excluded.policy_hash,
 				policy_proto = excluded.policy_proto,
 				repository_proto = excluded.repository_proto,
+				repository_has_changeset = excluded.repository_has_changeset,
 				parent_cache_key = excluded.parent_cache_key,
 				storage_driver = excluded.storage_driver,
 				storage_ref = excluded.storage_ref,
@@ -191,6 +195,7 @@ func (s *Store) persist(ctx context.Context, record Record, replace bool) error 
 		record.PolicyHash,
 		policyBytes,
 		repositoryBytes,
+		boolToInt(record.RepositoryHasChangeset),
 		nullableString(record.ParentCacheKey),
 		record.StorageDriver,
 		record.StorageRef,
@@ -221,6 +226,7 @@ func (s *Store) GetReady(ctx context.Context, stage, cacheKey string) (Record, b
 			policy_hash,
 			policy_proto,
 			repository_proto,
+			repository_has_changeset,
 			parent_cache_key,
 			storage_driver,
 			storage_ref,
@@ -288,6 +294,7 @@ func (s *Store) List(ctx context.Context) ([]Record, error) {
 			policy_hash,
 			policy_proto,
 			repository_proto,
+			repository_has_changeset,
 			parent_cache_key,
 			storage_driver,
 			storage_ref,
@@ -360,6 +367,7 @@ func (s *Store) initDB(ctx context.Context) error {
 			policy_hash TEXT NOT NULL,
 			policy_proto BLOB NOT NULL,
 			repository_proto BLOB,
+			repository_has_changeset INTEGER NOT NULL DEFAULT 0,
 			parent_cache_key TEXT,
 			storage_driver TEXT NOT NULL DEFAULT 'file',
 			storage_ref TEXT NOT NULL,
@@ -378,6 +386,9 @@ func (s *Store) initDB(ctx context.Context) error {
 	if _, err := db.ExecContext(ctx, `ALTER TABLE cache_entries ADD COLUMN backing_snapshot_id TEXT NOT NULL DEFAULT ''`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
 		return fmt.Errorf("ensure cache metadata backing_snapshot_id column: %w", err)
 	}
+	if _, err := db.ExecContext(ctx, `ALTER TABLE cache_entries ADD COLUMN repository_has_changeset INTEGER NOT NULL DEFAULT 0`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		return fmt.Errorf("ensure cache metadata repository_has_changeset column: %w", err)
+	}
 	return nil
 }
 
@@ -387,13 +398,14 @@ type recordScanner interface {
 
 func scanRecord(row recordScanner) (Record, error) {
 	var (
-		record          Record
-		policyBytes     []byte
-		repositoryBytes []byte
-		parentCacheKey  sql.NullString
-		inputDigest     sql.NullString
-		createdAtNano   int64
-		lastUsedAtNano  int64
+		record                 Record
+		policyBytes            []byte
+		repositoryBytes        []byte
+		repositoryHasChangeset int
+		parentCacheKey         sql.NullString
+		inputDigest            sql.NullString
+		createdAtNano          int64
+		lastUsedAtNano         int64
 	)
 	if err := row.Scan(
 		&record.CacheKey,
@@ -404,6 +416,7 @@ func scanRecord(row recordScanner) (Record, error) {
 		&record.PolicyHash,
 		&policyBytes,
 		&repositoryBytes,
+		&repositoryHasChangeset,
 		&parentCacheKey,
 		&record.StorageDriver,
 		&record.StorageRef,
@@ -425,6 +438,7 @@ func scanRecord(row recordScanner) (Record, error) {
 			return Record{}, fmt.Errorf("decode cache repository %q/%q: %w", record.Stage, record.CacheKey, err)
 		}
 	}
+	record.RepositoryHasChangeset = repositoryHasChangeset != 0
 	if parentCacheKey.Valid {
 		record.ParentCacheKey = parentCacheKey.String
 	}
@@ -441,6 +455,13 @@ func nullableString(value string) any {
 		return nil
 	}
 	return value
+}
+
+func boolToInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func defaultMetadataDBPath() (string, error) {

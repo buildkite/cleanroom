@@ -16,16 +16,17 @@ import (
 )
 
 type Record struct {
-	SnapshotID      string
-	SourceSandboxID string
-	Backend         string
-	Name            string
-	PolicyHash      string
-	Policy          *cleanroomv1.Policy
-	Repository      *cleanroomv1.RepositoryCheckout
-	StorageDriver   string
-	StorageRef      string
-	CreatedAt       time.Time
+	SnapshotID             string
+	SourceSandboxID        string
+	Backend                string
+	Name                   string
+	PolicyHash             string
+	Policy                 *cleanroomv1.Policy
+	Repository             *cleanroomv1.RepositoryCheckout
+	RepositoryHasChangeset bool
+	StorageDriver          string
+	StorageRef             string
+	CreatedAt              time.Time
 }
 
 type Options struct {
@@ -109,11 +110,12 @@ func (s *Store) Create(ctx context.Context, record Record) error {
 			policy_hash,
 			policy_proto,
 			repository_proto,
+			repository_has_changeset,
 			storage_driver,
 			storage_ref,
 			created_at_unix,
 			created_at_unix_nano
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		record.SnapshotID,
 		record.SourceSandboxID,
@@ -122,6 +124,7 @@ func (s *Store) Create(ctx context.Context, record Record) error {
 		record.PolicyHash,
 		policyBytes,
 		repositoryBytes,
+		boolToInt(record.RepositoryHasChangeset),
 		record.StorageDriver,
 		record.StorageRef,
 		record.CreatedAt.UTC().Unix(),
@@ -148,6 +151,7 @@ func (s *Store) Get(ctx context.Context, snapshotID string) (Record, bool, error
 			policy_hash,
 			policy_proto,
 			repository_proto,
+			repository_has_changeset,
 			storage_driver,
 			storage_ref,
 			created_at_unix_nano
@@ -181,6 +185,7 @@ func (s *Store) List(ctx context.Context) ([]Record, error) {
 			policy_hash,
 			policy_proto,
 			repository_proto,
+			repository_has_changeset,
 			storage_driver,
 			storage_ref,
 			created_at_unix_nano
@@ -246,6 +251,7 @@ func (s *Store) initDB(ctx context.Context) error {
 			policy_hash TEXT NOT NULL,
 			policy_proto BLOB NOT NULL,
 			repository_proto BLOB,
+			repository_has_changeset INTEGER NOT NULL DEFAULT 0,
 			storage_driver TEXT NOT NULL DEFAULT 'file',
 			storage_ref TEXT NOT NULL,
 			created_at_unix INTEGER NOT NULL,
@@ -261,6 +267,9 @@ func (s *Store) initDB(ctx context.Context) error {
 	}
 	if _, err := db.ExecContext(ctx, `ALTER TABLE snapshots ADD COLUMN repository_proto BLOB`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
 		return fmt.Errorf("ensure snapshot metadata repository_proto column: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `ALTER TABLE snapshots ADD COLUMN repository_has_changeset INTEGER NOT NULL DEFAULT 0`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		return fmt.Errorf("ensure snapshot metadata repository_has_changeset column: %w", err)
 	}
 	if _, err := db.ExecContext(ctx, `ALTER TABLE snapshots ADD COLUMN created_at_unix_nano INTEGER NOT NULL DEFAULT 0`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
 		return fmt.Errorf("ensure snapshot metadata created_at_unix_nano column: %w", err)
@@ -280,10 +289,11 @@ type recordScanner interface {
 
 func scanRecord(row recordScanner) (Record, error) {
 	var (
-		record          Record
-		policyBytes     []byte
-		repositoryBytes []byte
-		createdAtNano   int64
+		record                 Record
+		policyBytes            []byte
+		repositoryBytes        []byte
+		repositoryHasChangeset int
+		createdAtNano          int64
 	)
 	if err := row.Scan(
 		&record.SnapshotID,
@@ -293,6 +303,7 @@ func scanRecord(row recordScanner) (Record, error) {
 		&record.PolicyHash,
 		&policyBytes,
 		&repositoryBytes,
+		&repositoryHasChangeset,
 		&record.StorageDriver,
 		&record.StorageRef,
 		&createdAtNano,
@@ -310,6 +321,14 @@ func scanRecord(row recordScanner) (Record, error) {
 			return Record{}, fmt.Errorf("decode snapshot repository %q: %w", record.SnapshotID, err)
 		}
 	}
+	record.RepositoryHasChangeset = repositoryHasChangeset != 0
 	record.CreatedAt = time.Unix(0, createdAtNano).UTC()
 	return record, nil
+}
+
+func boolToInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }

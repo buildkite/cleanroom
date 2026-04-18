@@ -15,14 +15,15 @@ import (
 )
 
 type storedRootFSRecord struct {
-	ID            string
-	Kind          string
-	SnapshotID    string
-	Backend       string
-	Policy        *policy.CompiledPolicy
-	Repository    *repositorycheckout.Checkout
-	StorageDriver string
-	StorageRef    string
+	ID                     string
+	Kind                   string
+	SnapshotID             string
+	Backend                string
+	Policy                 *policy.CompiledPolicy
+	Repository             *repositorycheckout.Checkout
+	RepositoryHasChangeset bool
+	StorageDriver          string
+	StorageRef             string
 }
 
 func storedRootFSRecordFromSnapshot(record snapshotstore.Record) (storedRootFSRecord, error) {
@@ -31,14 +32,15 @@ func storedRootFSRecordFromSnapshot(record snapshotstore.Record) (storedRootFSRe
 		return storedRootFSRecord{}, fmt.Errorf("invalid snapshot policy %q: %w", record.SnapshotID, err)
 	}
 	return storedRootFSRecord{
-		ID:            strings.TrimSpace(record.SnapshotID),
-		Kind:          "snapshot",
-		SnapshotID:    strings.TrimSpace(record.SnapshotID),
-		Backend:       strings.TrimSpace(record.Backend),
-		Policy:        compiled,
-		Repository:    repositorycheckout.FromProto(record.Repository),
-		StorageDriver: strings.TrimSpace(record.StorageDriver),
-		StorageRef:    strings.TrimSpace(record.StorageRef),
+		ID:                     strings.TrimSpace(record.SnapshotID),
+		Kind:                   "snapshot",
+		SnapshotID:             strings.TrimSpace(record.SnapshotID),
+		Backend:                strings.TrimSpace(record.Backend),
+		Policy:                 compiled,
+		Repository:             repositorycheckout.FromProto(record.Repository),
+		RepositoryHasChangeset: record.RepositoryHasChangeset,
+		StorageDriver:          strings.TrimSpace(record.StorageDriver),
+		StorageRef:             strings.TrimSpace(record.StorageRef),
 	}, nil
 }
 
@@ -54,14 +56,15 @@ func storedRootFSRecordFromCacheEntry(record cachestore.Record) (storedRootFSRec
 		sourceKind += " stage cache"
 	}
 	return storedRootFSRecord{
-		ID:            strings.TrimSpace(record.CacheKey),
-		Kind:          sourceKind,
-		SnapshotID:    strings.TrimSpace(record.BackingSnapshotID),
-		Backend:       strings.TrimSpace(record.Backend),
-		Policy:        compiled,
-		Repository:    repositorycheckout.FromProto(record.Repository),
-		StorageDriver: strings.TrimSpace(record.StorageDriver),
-		StorageRef:    strings.TrimSpace(record.StorageRef),
+		ID:                     strings.TrimSpace(record.CacheKey),
+		Kind:                   sourceKind,
+		SnapshotID:             strings.TrimSpace(record.BackingSnapshotID),
+		Backend:                strings.TrimSpace(record.Backend),
+		Policy:                 compiled,
+		Repository:             repositorycheckout.FromProto(record.Repository),
+		RepositoryHasChangeset: record.RepositoryHasChangeset,
+		StorageDriver:          strings.TrimSpace(record.StorageDriver),
+		StorageRef:             strings.TrimSpace(record.StorageRef),
 	}, nil
 }
 
@@ -136,19 +139,20 @@ func (s *Service) createSandboxFromStoredRootFS(ctx context.Context, req *cleanr
 	}
 
 	state := &sandboxState{
-		ID:                sandboxID,
-		Backend:           backendName,
-		Policy:            effectivePolicy,
-		Firecracker:       firecrackerCfg,
-		Repository:        cloneRepositoryCheckout(record.Repository),
-		SourceKind:        sourceKind,
-		SourceID:          sourceID,
-		BackingSnapshotID: backingSnapshotID,
-		CreatedAt:         now,
-		UpdatedAt:         now,
-		Status:            cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY,
-		events:            newEventFeed[*cleanroomv1.SandboxEvent](s.retention().maxRetainedSandboxEvents),
-		Done:              make(chan struct{}),
+		ID:                     sandboxID,
+		Backend:                backendName,
+		Policy:                 effectivePolicy,
+		Firecracker:            firecrackerCfg,
+		Repository:             cloneRepositoryCheckout(record.Repository),
+		RepositoryHasChangeset: record.RepositoryHasChangeset,
+		SourceKind:             sourceKind,
+		SourceID:               sourceID,
+		BackingSnapshotID:      backingSnapshotID,
+		CreatedAt:              now,
+		UpdatedAt:              now,
+		Status:                 cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY,
+		events:                 newEventFeed[*cleanroomv1.SandboxEvent](s.retention().maxRetainedSandboxEvents),
+		Done:                   make(chan struct{}),
 	}
 
 	if sourceKind == "" {

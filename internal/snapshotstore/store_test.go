@@ -38,9 +38,10 @@ func TestStoreCreateGetListDelete(t *testing.T) {
 			Submodules:     true,
 			Branch:         "main",
 		},
-		StorageRef:    "/tmp/snap-test.ext4",
-		StorageDriver: "file",
-		CreatedAt:     time.Unix(1700000000, 0).UTC(),
+		RepositoryHasChangeset: true,
+		StorageRef:             "/tmp/snap-test.ext4",
+		StorageDriver:          "file",
+		CreatedAt:              time.Unix(1700000000, 0).UTC(),
 	}
 	if err := store.Create(context.Background(), record); err != nil {
 		t.Fatalf("Create returned error: %v", err)
@@ -64,6 +65,9 @@ func TestStoreCreateGetListDelete(t *testing.T) {
 	}
 	if got.Repository == nil || got.Repository.GetDestinationDir() != record.Repository.GetDestinationDir() || got.Repository.GetCommitSha() != record.Repository.GetCommitSha() {
 		t.Fatalf("unexpected stored repository: %#v", got.Repository)
+	}
+	if got.RepositoryHasChangeset != record.RepositoryHasChangeset {
+		t.Fatalf("unexpected repository_has_changeset: got %v want %v", got.RepositoryHasChangeset, record.RepositoryHasChangeset)
 	}
 
 	items, err := store.List(context.Background())
