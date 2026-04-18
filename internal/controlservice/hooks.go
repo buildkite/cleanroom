@@ -58,7 +58,7 @@ func shouldRunPostDependenciesHookOnStoredRootFS(record storedRootFSRecord, comp
 		return false
 	}
 	switch strings.TrimSpace(record.Kind) {
-	case "snapshot", "dependency stage cache":
+	case "dependency stage cache":
 		return true
 	default:
 		return false

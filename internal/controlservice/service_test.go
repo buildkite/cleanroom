@@ -2276,6 +2276,71 @@ func TestCreateSandboxRunsPostDependenciesHookAfterDependencyStageCacheRestore(t
 	}
 }
 
+func TestCreateSandboxFromSnapshotDoesNotRunPostDependenciesHook(t *testing.T) {
+	adapter := &stubAdapter{
+		createSnapshotFn: func(_ context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
+			return &backend.SnapshotResult{StorageRef: "/snapshots/" + req.SnapshotID + ".ext4"}, nil
+		},
+	}
+	svc := newTestService(adapter)
+
+	var (
+		mu       sync.Mutex
+		commands [][]string
+	)
+	runCalled := make(chan struct{}, 4)
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+		mu.Lock()
+		commands = append(commands, append([]string(nil), req.Command...))
+		mu.Unlock()
+		select {
+		case runCalled <- struct{}{}:
+		default:
+		}
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+	}
+
+	sourceResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy:             testRepositoryDependencyHookPolicy(),
+		RepositoryCheckout: testRepositoryCheckoutProto(),
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		select {
+		case <-runCalled:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for source sandbox bootstrap")
+		}
+	}
+
+	snapshotResp, err := svc.CreateSnapshot(context.Background(), &cleanroomv1.CreateSnapshotRequest{
+		SandboxId: sourceResp.GetSandbox().GetSandboxId(),
+	})
+	if err != nil {
+		t.Fatalf("CreateSnapshot returned error: %v", err)
+	}
+
+	forkResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Source: &cleanroomv1.CreateSandboxRequest_SnapshotId{
+			SnapshotId: snapshotResp.GetSnapshot().GetSnapshotId(),
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox from snapshot returned error: %v", err)
+	}
+	if forkResp.GetSandbox().GetSandboxId() == "" {
+		t.Fatal("expected sandbox id")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if got, want := len(commands), 3; got != want {
+		t.Fatalf("expected only source sandbox repository, dependency, and hook commands, got %d want %d", got, want)
+	}
+}
+
 func TestCreateSandboxBootstrapsDependenciesAfterWorkspaceStageRestoreWithoutDependencyStageCache(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	store := newMemorySnapshotStore()
