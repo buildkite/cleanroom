@@ -58,6 +58,7 @@ Deferred past MVP:
 - As a security reviewer, I can see exactly which hosts and registries were allowed for each sandbox execution.
 - As an SRE, I can configure backend selection and runtime options independently of repository policy.
 - As a developer, I can preinstall repository-defined toolchains (for example via `mise`) with an explicit dependency bootstrap command inside the sandbox.
+- As a developer, I can explicitly package local uncommitted repository changes into a reproducible changeset and run that inside a sandbox without mounting my host workspace.
 
 ## 5) Policy model
 ### 5.1 Repository config
@@ -150,6 +151,11 @@ Meaning:
 - `path` is the absolute guest destination, default `/workspace`
 - `submodules` controls whether submodules are initialized after checkout
 
+Repository policy controls only the exact committed checkout behavior. It does
+not include a field that implicitly copies or mounts local dirty-worktree
+content into the sandbox. Any inclusion of local modifications must use an
+explicit request-time changeset input.
+
 ### 5.2 Schema rules
 - Required: `version`, `sandbox.network.default`.
 - `sandbox.network.default` must be either `deny` or `allow`; v1 default must be `deny`.
@@ -161,6 +167,7 @@ Meaning:
 - `repository.submodules` defaults to `false`.
 - `sandbox.dependencies.command` defaults to unset; when present, Cleanroom runs that command in the repository workdir during sandbox creation and makes the result eligible for dependency-stage caching.
 - `sandbox.dependencies.key.files` defaults to empty; when present, Cleanroom hashes those repository-relative files from the exact committed checkout and includes them in the dependency-stage cache key.
+- Policy schema intentionally has no field for implicit dirty-worktree inclusion; explicit local modifications are a separate request-time changeset input.
 - Host matching supports:
   - exact host (`registry.npmjs.org`)
   - wildcard subdomains (`*.example.com`)
@@ -214,6 +221,7 @@ Meaning:
   - "local execution" means local backend selected by the server, not a direct non-API code path.
 - Filesystem writes persist across executions within a sandbox and are discarded on sandbox termination.
 - Current API/runtime intent: no host workspace mount input is accepted by `CreateSandbox` or `CreateExecution`.
+- Explicit local modifications, when requested, are packaged as a changeset input and applied after exact repository checkout rather than mounted from the host.
 - Workloads run against the backend-provided sandbox image filesystem.
 - By default, `cleanroom create`, `cleanroom exec`, and `cleanroom console` are repo-aware when run inside a git repository:
   - they resolve the local repository remote URL and committed `HEAD`
@@ -221,6 +229,7 @@ Meaning:
   - they start commands in `repository.path`
   - when `sandbox.dependencies.command` is set, sandbox creation runs that dependency bootstrap command after repository bootstrap and may publish a reusable dependency stage for later warm hits
   - Cleanroom does not auto-detect or auto-wrap `mise`; use explicit commands such as `mise exec -- ...` when needed
+- When explicitly requested, top-level commands may package local modifications against committed `HEAD` into a reproducible changeset, send that changeset as a separate sandbox-creation input, and apply it after repository bootstrap and before dependency bootstrap or workload execution.
 - `cleanroom sandbox create` remains the generic low-level surface and does not
   infer repository state from the current working tree or read `cleanroom.yaml`.
 - Without `--from`, `cleanroom sandbox create` synthesizes a repo-agnostic
@@ -237,10 +246,12 @@ Meaning:
   2. resolve and compile policy,
   3. when repo-aware bootstrap is enabled, resolve the current git repository
      root, remote URL, and committed `HEAD`,
-  4. create or select sandbox,
-  5. create execution,
-  6. stream output/events to caller,
-  7. return workload exit code.
+  4. when explicit local-changes mode is enabled, package a reproducible
+     changeset against that committed `HEAD`,
+  5. create or select sandbox,
+  6. create execution,
+  7. stream output/events to caller,
+  8. return workload exit code.
 - Default mode creates an ephemeral sandbox, runs the command, and terminates
   the sandbox afterward.
 - `--keep` preserves a newly created sandbox after execution completes.
@@ -249,8 +260,46 @@ Meaning:
 - Interactive executions must use `AttachExecution` bootstrap plus the dedicated QUIC interactive transport.
 - Non-interactive mode must use server-streaming semantics.
 - First interrupt signal should request execution cancel; second interrupt may detach client stream immediately.
-- If the local repository is dirty, Cleanroom should warn and continue using
-  committed `HEAD`; uncommitted changes must not be copied into the sandbox.
+- If the local repository is dirty and no explicit changeset mode is requested,
+  Cleanroom should warn and continue using committed `HEAD`; uncommitted changes
+  must not be copied into the sandbox.
+
+### 5.4.2 Explicit local changesets (normative)
+
+Local modifications must remain an explicit opt-in path rather than an implicit
+extension of `current-repo`.
+
+Requirements:
+
+- The exact committed checkout remains the default repository input.
+- Dirty-worktree inclusion must be triggered only by an explicit request-time
+  changeset mode.
+- A changeset must be bound to a concrete base checkout:
+  - canonical remote URL
+  - full base commit SHA
+  - submodule mode or equivalent repository materialization inputs
+- A changeset must carry deterministic identity metadata:
+  - a versioned transport format identifier
+  - a stable changeset digest
+  - the expected post-apply tree digest
+- The client may create the changeset from local repository state, but the
+  control plane must validate that the base checkout in the request matches the
+  changeset metadata before applying it.
+- The control plane must apply a changeset only after exact repository checkout
+  or workspace-stage restore and before dependency bootstrap or workload
+  execution.
+- If changeset application fails, or if the resulting repository tree digest
+  does not match the expected post-apply tree digest, sandbox creation must fail
+  closed.
+- Dependency bootstrap key resolution must use the post-apply repository tree
+  when a changeset is present.
+- Changesets are separate from both user snapshots and system-managed stage
+  caches. They are explicit request inputs, not snapshot restore targets.
+
+Transport format is intentionally implementation-defined in this spec, but it
+must be deterministic, versioned, and replayable without mounting the host
+workspace. A Git-native bundle or equivalent canonical archive is acceptable for
+the first implementation slice.
 
 ### 5.5 Compiled policy payload (normative)
 Cleanroom compiles repository policy into an immutable `CompiledPolicy` payload for sandbox creation. That payload is then reused for every execution in the sandbox. It is the only policy input to backend adapters.
@@ -279,6 +328,8 @@ Minimum required fields:
 Requirements:
 - Backend adapters must not re-resolve policy from repository files.
 - Runtime behavior is derived only from `CompiledPolicy`.
+- Explicit local changesets are separate request inputs and must not be folded
+  into `CompiledPolicy` or its hash.
 
 ## 6) Runtime behavior
 ### 6.1 Launch flow

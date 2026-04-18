@@ -42,6 +42,7 @@ func TestWorkspaceStageKey(t *testing.T) {
 		CommitSHA:                   "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 		SubmoduleMode:               "recursive",
 		SubmoduleResolutionDigest:   "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+		ChangesetDigest:             "sha256:6666666666666666666666666666666666666666666666666666666666666666",
 		CheckoutMode:                "detached",
 		DestinationDir:              "/workspace",
 		MaterializationRecipeDigest: "sha256:5555555555555555555555555555555555555555555555555555555555555555",
@@ -59,7 +60,7 @@ func TestWorkspaceStageKey(t *testing.T) {
 	}
 
 	mutated := inputs
-	mutated.Backend = "darwin-vz"
+	mutated.ChangesetDigest = "sha256:7777777777777777777777777777777777777777777777777777777777777777"
 	if gotMutated := WorkspaceStageKey(mutated); got == gotMutated {
 		t.Fatalf("workspace stage key did not change after input mutation: %q", got)
 	}

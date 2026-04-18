@@ -9,6 +9,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/cachekey"
 	"github.com/buildkite/cleanroom/internal/cachestore"
 	"github.com/buildkite/cleanroom/internal/policy"
+	"github.com/buildkite/cleanroom/internal/repositorychangeset"
 	"github.com/buildkite/cleanroom/internal/repositorycheckout"
 )
 
@@ -18,7 +19,7 @@ const (
 	workspaceStageProducerVersion = "cleanroom/workspace-stage-v1"
 )
 
-func workspaceStageCacheKey(backendName, runtimeBaseKey, compiledPolicyHash string, repository *repositorycheckout.Checkout) string {
+func workspaceStageCacheKey(backendName, runtimeBaseKey, compiledPolicyHash string, repository *repositorycheckout.Checkout, changeset *repositorychangeset.Changeset) string {
 	normalizedRepository := normalizeRepositoryCheckoutForComparison(repository)
 	if normalizedRepository == nil || strings.TrimSpace(backendName) == "" || strings.TrimSpace(runtimeBaseKey) == "" || strings.TrimSpace(compiledPolicyHash) == "" {
 		return ""
@@ -31,10 +32,18 @@ func workspaceStageCacheKey(backendName, runtimeBaseKey, compiledPolicyHash stri
 		CommitSHA:                   strings.TrimSpace(normalizedRepository.CommitSHA),
 		SubmoduleMode:               workspaceStageSubmoduleMode(normalizedRepository),
 		SubmoduleResolutionDigest:   "",
+		ChangesetDigest:             strings.TrimSpace(changesetDigest(changeset)),
 		CheckoutMode:                workspaceStageCheckoutMode(normalizedRepository),
 		DestinationDir:              strings.TrimSpace(normalizedRepository.DestinationDir),
 		MaterializationRecipeDigest: workspaceStageMaterializationRecipeDigest(normalizedRepository),
 	})
+}
+
+func changesetDigest(changeset *repositorychangeset.Changeset) string {
+	if changeset == nil {
+		return ""
+	}
+	return strings.TrimSpace(changeset.Digest)
 }
 
 func workspaceStageCheckoutMode(repository *repositorycheckout.Checkout) string {
@@ -61,7 +70,7 @@ func workspaceStageMaterializationRecipeDigest(repository *repositorycheckout.Ch
 	return repositorycheckout.BootstrapRecipeDigest(repository)
 }
 
-func (s *Service) lookupWorkspaceStageCache(ctx context.Context, backendName string, compiled *policy.CompiledPolicy, runtimeBaseKey string, repository *repositorycheckout.Checkout) (cachestore.Record, bool, error) {
+func (s *Service) lookupWorkspaceStageCache(ctx context.Context, backendName string, compiled *policy.CompiledPolicy, runtimeBaseKey string, repository *repositorycheckout.Checkout, changeset *repositorychangeset.Changeset) (cachestore.Record, bool, error) {
 	if compiled == nil || repository == nil || strings.TrimSpace(runtimeBaseKey) == "" {
 		return cachestore.Record{}, false, nil
 	}
@@ -69,7 +78,7 @@ func (s *Service) lookupWorkspaceStageCache(ctx context.Context, backendName str
 	if err != nil {
 		return cachestore.Record{}, false, nil
 	}
-	cacheKey := workspaceStageCacheKey(backendName, runtimeBaseKey, compiled.Hash, repository)
+	cacheKey := workspaceStageCacheKey(backendName, runtimeBaseKey, compiled.Hash, repository, changeset)
 	if cacheKey == "" {
 		return cachestore.Record{}, false, nil
 	}
@@ -101,6 +110,7 @@ func (s *Service) maybePublishWorkspaceStageCache(
 	firecrackerCfg backend.FirecrackerConfig,
 	runtimeBaseKey string,
 	repository *repositorycheckout.Checkout,
+	changeset *repositorychangeset.Changeset,
 	replacedRecord *cachestore.Record,
 ) {
 	if adapter == nil || compiled == nil || repository == nil || strings.TrimSpace(runtimeBaseKey) == "" {
@@ -115,12 +125,12 @@ func (s *Service) maybePublishWorkspaceStageCache(
 		return
 	}
 
-	cacheKey := workspaceStageCacheKey(backendName, runtimeBaseKey, compiled.Hash, repository)
+	cacheKey := workspaceStageCacheKey(backendName, runtimeBaseKey, compiled.Hash, repository, changeset)
 	if cacheKey == "" {
 		return
 	}
 
-	if record, ok, err := s.lookupWorkspaceStageCache(ctx, backendName, compiled, runtimeBaseKey, repository); err == nil && ok {
+	if record, ok, err := s.lookupWorkspaceStageCache(ctx, backendName, compiled, runtimeBaseKey, repository, changeset); err == nil && ok {
 		if replacedRecord == nil || strings.TrimSpace(record.CacheKey) != strings.TrimSpace(replacedRecord.CacheKey) {
 			s.logWorkspaceStageAlreadyPublished(record)
 			return
@@ -143,20 +153,21 @@ func (s *Service) maybePublishWorkspaceStageCache(
 	}
 
 	record := cachestore.Record{
-		CacheKey:          cacheKey,
-		Stage:             workspaceStageName,
-		State:             cacheStateReady,
-		BackingSnapshotID: strings.TrimSpace(snapshotID),
-		Backend:           backendName,
-		PolicyHash:        compiled.Hash,
-		Policy:            compiled.ToProto(),
-		Repository:        cloneRepositoryCheckout(normalizeRepositoryCheckoutForComparison(repository)).ToProto(),
-		ParentCacheKey:    strings.TrimSpace(runtimeBaseKey),
-		StorageDriver:     snapshotCfg.Snapshots.Driver,
-		StorageRef:        strings.TrimSpace(result.StorageRef),
-		CreatedAt:         s.clock().Now(),
-		LastUsedAt:        s.clock().Now(),
-		ProducerVersion:   workspaceStageProducerVersion,
+		CacheKey:               cacheKey,
+		Stage:                  workspaceStageName,
+		State:                  cacheStateReady,
+		BackingSnapshotID:      strings.TrimSpace(snapshotID),
+		Backend:                backendName,
+		PolicyHash:             compiled.Hash,
+		Policy:                 compiled.ToProto(),
+		Repository:             cloneRepositoryCheckout(normalizeRepositoryCheckoutForComparison(repository)).ToProto(),
+		RepositoryHasChangeset: changeset != nil,
+		ParentCacheKey:         strings.TrimSpace(runtimeBaseKey),
+		StorageDriver:          snapshotCfg.Snapshots.Driver,
+		StorageRef:             strings.TrimSpace(result.StorageRef),
+		CreatedAt:              s.clock().Now(),
+		LastUsedAt:             s.clock().Now(),
+		ProducerVersion:        workspaceStageProducerVersion,
 	}
 
 	persist := store.Create

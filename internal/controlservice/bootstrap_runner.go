@@ -3,6 +3,7 @@ package controlservice
 import (
 	"bytes"
 	"context"
+	"fmt"
 
 	"github.com/buildkite/cleanroom/internal/backend"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
@@ -17,10 +18,12 @@ func (s *Service) runPersistentBootstrapCommand(
 	firecrackerCfg backend.FirecrackerConfig,
 	phase cleanroomv1.CreateSandboxPhase,
 	command []string,
+	stdin []byte,
 	reporter CreateSandboxReporter,
 ) (string, *backend.ExecutionResult, string, string, error) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
+	var attachErr error
 	bootstrapExecutionID := s.ids().NewExecutionID()
 	result, err := adapter.RunInSandbox(ctx, backend.ExecutionRequest{
 		SandboxID:         sandboxID,
@@ -40,6 +43,27 @@ func (s *Service) runPersistentBootstrapCommand(
 		OnWarning: func(warning string) {
 			emitCreateSandboxWarning(reporter, phase, warning)
 		},
+		OnAttach: func(io backend.AttachIO) {
+			if len(stdin) == 0 {
+				return
+			}
+			if io.WriteStdin == nil {
+				attachErr = fmt.Errorf("bootstrap phase %q does not support stdin attach", phase.String())
+				return
+			}
+			if err := io.WriteStdin(append([]byte(nil), stdin...)); err != nil {
+				attachErr = fmt.Errorf("write bootstrap stdin: %w", err)
+				return
+			}
+			if io.CloseStdin != nil {
+				if err := io.CloseStdin(); err != nil {
+					attachErr = fmt.Errorf("close bootstrap stdin: %w", err)
+				}
+			}
+		},
 	})
+	if err == nil && attachErr != nil {
+		err = attachErr
+	}
 	return bootstrapExecutionID, result, stdout.String(), stderr.String(), err
 }

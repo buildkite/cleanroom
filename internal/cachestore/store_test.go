@@ -39,13 +39,14 @@ func TestStoreCreateGetReadyListDelete(t *testing.T) {
 			Submodules:     true,
 			Branch:         "main",
 		},
-		ParentCacheKey:      "runtime:test",
-		StorageRef:          "/tmp/workspace-test.ext4",
-		StorageDriver:       "file",
-		InputManifestDigest: "sha256:manifest",
-		CreatedAt:           time.Unix(1700000000, 123).UTC(),
-		LastUsedAt:          time.Unix(1700000001, 456).UTC(),
-		ProducerVersion:     "cleanroom-test/1",
+		RepositoryHasChangeset: true,
+		ParentCacheKey:         "runtime:test",
+		StorageRef:             "/tmp/workspace-test.ext4",
+		StorageDriver:          "file",
+		InputManifestDigest:    "sha256:manifest",
+		CreatedAt:              time.Unix(1700000000, 123).UTC(),
+		LastUsedAt:             time.Unix(1700000001, 456).UTC(),
+		ProducerVersion:        "cleanroom-test/1",
 	}
 	if err := store.Create(context.Background(), record); err != nil {
 		t.Fatalf("Create returned error: %v", err)
@@ -72,6 +73,9 @@ func TestStoreCreateGetReadyListDelete(t *testing.T) {
 	}
 	if got.Repository == nil || got.Repository.GetDestinationDir() != record.Repository.GetDestinationDir() || got.Repository.GetCommitSha() != record.Repository.GetCommitSha() {
 		t.Fatalf("unexpected stored repository: %#v", got.Repository)
+	}
+	if got.RepositoryHasChangeset != record.RepositoryHasChangeset {
+		t.Fatalf("unexpected repository_has_changeset: got %v want %v", got.RepositoryHasChangeset, record.RepositoryHasChangeset)
 	}
 
 	items, err := store.List(context.Background())
