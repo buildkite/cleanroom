@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -173,14 +174,7 @@ func Run(args []string, version string) (runErr error) {
 	}
 	runtimeCtx.Observability = obsRuntime
 	defer func() {
-		if err := obsRuntime.Shutdown(context.Background()); err != nil {
-			shutdownErr := fmt.Errorf("shutdown observability: %w", err)
-			if runErr == nil {
-				runErr = shutdownErr
-				return
-			}
-			runErr = errors.Join(runErr, shutdownErr)
-		}
+		reportObservabilityShutdown(&runErr, runtimeCtx.stderr(), obsRuntime.Shutdown(context.Background()))
 	}()
 
 	runErr = ctx.Run(runtimeCtx)
@@ -216,6 +210,22 @@ func (ctx *runtimeContext) stderr() *os.File {
 		return ctx.Stderr
 	}
 	return os.Stderr
+}
+
+func reportObservabilityShutdown(runErr *error, stderr io.Writer, shutdownErr error) {
+	if shutdownErr == nil {
+		return
+	}
+
+	wrapped := fmt.Errorf("shutdown observability: %w", shutdownErr)
+	if runErr != nil && *runErr != nil {
+		*runErr = errors.Join(*runErr, wrapped)
+		return
+	}
+
+	if stderr != nil {
+		_, _ = fmt.Fprintf(stderr, "warning: %v\n", wrapped)
+	}
 }
 
 func runtimeServiceName(ctx *kong.Context) string {
