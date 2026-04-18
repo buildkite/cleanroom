@@ -38,9 +38,14 @@ var hostSupportCommandOutput = func(ctx context.Context, binary string, args ...
 }
 
 func DetectHostSupport(ctx context.Context, cfg backend.FirecrackerConfig) HostSupport {
+	directRuntime := privilegedCommandsRunDirectly()
+	requiredCommands := []string{"ip", "iptables", "sysctl"}
+	if !directRuntime {
+		requiredCommands = append(requiredCommands, "sudo")
+	}
 	result := HostSupport{
 		HelperPath:       resolvePrivilegedHelperPath(cfg),
-		RequiredCommands: []string{"sudo", "ip", "iptables", "sysctl"},
+		RequiredCommands: requiredCommands,
 	}
 
 	if hostSupportGOOS != "linux" {
@@ -63,40 +68,43 @@ func DetectHostSupport(ctx context.Context, cfg backend.FirecrackerConfig) HostS
 		return result
 	}
 
-	if _, err := os.Stat(result.HelperPath); err != nil {
-		result.RuntimeMessage = fmt.Sprintf("privileged helper %q is not accessible: %v", result.HelperPath, err)
-		result.SnapshotMessage = result.RuntimeMessage
-		result.ZFSMessage = result.RuntimeMessage
-		return result
-	}
+	var caps []string
+	if !directRuntime {
+		if _, err := os.Stat(result.HelperPath); err != nil {
+			result.RuntimeMessage = fmt.Sprintf("privileged helper %q is not accessible: %v", result.HelperPath, err)
+			result.SnapshotMessage = result.RuntimeMessage
+			result.ZFSMessage = result.RuntimeMessage
+			return result
+		}
 
-	version, err := helperVersion(ctx, cfg)
-	if err != nil {
-		result.RuntimeMessage = fmt.Sprintf("privileged helper version probe failed: %v", err)
-		result.SnapshotMessage = result.RuntimeMessage
-		result.ZFSMessage = result.RuntimeMessage
-		return result
-	}
-	result.HelperVersion = version
+		version, err := helperVersion(ctx, cfg)
+		if err != nil {
+			result.RuntimeMessage = fmt.Sprintf("privileged helper version probe failed: %v", err)
+			result.SnapshotMessage = result.RuntimeMessage
+			result.ZFSMessage = result.RuntimeMessage
+			return result
+		}
+		result.HelperVersion = version
 
-	caps, err := helperCapabilities(ctx, cfg)
-	if err != nil {
-		result.RuntimeMessage = fmt.Sprintf("privileged helper capability probe failed: %v", err)
-		result.SnapshotMessage = result.RuntimeMessage
-		result.ZFSMessage = result.RuntimeMessage
-		return result
-	}
-	result.HelperCaps = append(result.HelperCaps, caps...)
+		caps, err = helperCapabilities(ctx, cfg)
+		if err != nil {
+			result.RuntimeMessage = fmt.Sprintf("privileged helper capability probe failed: %v", err)
+			result.SnapshotMessage = result.RuntimeMessage
+			result.ZFSMessage = result.RuntimeMessage
+			return result
+		}
+		result.HelperCaps = append(result.HelperCaps, caps...)
 
-	runtimeMissingCaps := helperMissingCapabilities(caps, []string{
-		helperCapabilityFirecrackerNetwork,
-		helperCapabilityFirecrackerTrustedDNS,
-	})
-	if len(runtimeMissingCaps) > 0 {
-		result.RuntimeMessage = fmt.Sprintf("privileged helper is missing required capabilities: %s", strings.Join(runtimeMissingCaps, ", "))
-		result.SnapshotMessage = result.RuntimeMessage
-		result.ZFSMessage = result.RuntimeMessage
-		return result
+		runtimeMissingCaps := helperMissingCapabilities(caps, []string{
+			helperCapabilityFirecrackerNetwork,
+			helperCapabilityFirecrackerTrustedDNS,
+		})
+		if len(runtimeMissingCaps) > 0 {
+			result.RuntimeMessage = fmt.Sprintf("privileged helper is missing required capabilities: %s", strings.Join(runtimeMissingCaps, ", "))
+			result.SnapshotMessage = result.RuntimeMessage
+			result.ZFSMessage = result.RuntimeMessage
+			return result
+		}
 	}
 
 	if err := runRootCommand(ctx, cfg, "true"); err != nil {
@@ -114,12 +122,18 @@ func DetectHostSupport(ctx context.Context, cfg backend.FirecrackerConfig) HostS
 
 	result.RuntimeUsable = true
 	result.SnapshotsUsable = true
-	result.RuntimeMessage = fmt.Sprintf("helper-based firecracker host runtime is usable via %s (helper contract version %s)", result.HelperPath, result.HelperVersion)
+	if directRuntime {
+		result.RuntimeMessage = "direct firecracker host runtime is usable as root"
+	} else {
+		result.RuntimeMessage = fmt.Sprintf("helper-based firecracker host runtime is usable via %s (helper contract version %s)", result.HelperPath, result.HelperVersion)
+	}
 	result.SnapshotMessage = "firecracker snapshot runtime is usable"
 
-	if missingCaps := helperMissingCapabilities(caps, []string{helperCapabilityFirecrackerZFS}); len(missingCaps) > 0 {
-		result.ZFSMessage = fmt.Sprintf("privileged helper is missing required capabilities: %s", strings.Join(missingCaps, ", "))
-		return result
+	if !directRuntime {
+		if missingCaps := helperMissingCapabilities(caps, []string{helperCapabilityFirecrackerZFS}); len(missingCaps) > 0 {
+			result.ZFSMessage = fmt.Sprintf("privileged helper is missing required capabilities: %s", strings.Join(missingCaps, ", "))
+			return result
+		}
 	}
 
 	zfsPath, err := lookPathWithFallback("zfs", "/usr/sbin/zfs", "/sbin/zfs")

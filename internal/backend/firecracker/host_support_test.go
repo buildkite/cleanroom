@@ -2,9 +2,11 @@ package firecracker
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/buildkite/cleanroom/internal/backend"
@@ -157,5 +159,59 @@ esac
 	}
 	if got, want := support.ZFSDatasetRoot, "cleanroom"; got != want {
 		t.Fatalf("unexpected zfs dataset root: got %q want %q", got, want)
+	}
+}
+
+func TestDetectHostSupportWhenRootDoesNotRequireSudoOrHelper(t *testing.T) {
+	prevResolveCommand := hostSupportResolveCommand
+	prevGOOS := hostSupportGOOS
+	t.Cleanup(func() {
+		hostSupportResolveCommand = prevResolveCommand
+		hostSupportGOOS = prevGOOS
+	})
+
+	hostSupportGOOS = "linux"
+	stubPrivilegedCommandEUID(t, 0)
+
+	tmpDir := t.TempDir()
+	truePath := writeExecutable(t, tmpDir, "true-root", "#!/bin/sh\nset -eu\nexit 0\n")
+	ipPath := writeExecutable(t, tmpDir, "ip-root", "#!/bin/sh\nset -eu\nif [ \"$1\" = \"link\" ] && [ \"$2\" = \"show\" ]; then exit 0; fi\nexit 0\n")
+	stubDirectPrivilegedCommandPathResolver(t, func(command string) (string, error) {
+		switch command {
+		case "true":
+			return truePath, nil
+		case "ip":
+			return ipPath, nil
+		default:
+			return resolveDirectPrivilegedCommandPath(command)
+		}
+	})
+	hostSupportResolveCommand = func(command string) (string, error) {
+		switch command {
+		case "ip", "iptables", "sysctl":
+			return "/fallback/" + command, nil
+		case "sudo":
+			return "", errors.New("sudo not installed")
+		default:
+			return "", errors.New("unexpected command")
+		}
+	}
+
+	support := DetectHostSupport(context.Background(), backend.FirecrackerConfig{
+		PrivilegedHelperPath: filepath.Join(tmpDir, "missing-helper"),
+	})
+	if !support.RuntimeUsable {
+		t.Fatalf("expected runtime usable when running as root, got %+v", support)
+	}
+	if !support.SnapshotsUsable {
+		t.Fatalf("expected snapshots usable when running as root, got %+v", support)
+	}
+	if strings.Contains(strings.ToLower(support.RuntimeMessage), "helper") {
+		t.Fatalf("expected root runtime message without helper dependency, got %q", support.RuntimeMessage)
+	}
+	for _, command := range support.RequiredCommands {
+		if command == "sudo" {
+			t.Fatalf("did not expect sudo in required commands when running as root: %v", support.RequiredCommands)
+		}
 	}
 }

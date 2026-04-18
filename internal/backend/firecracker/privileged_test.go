@@ -535,6 +535,71 @@ func TestDeleteSnapshotInfersZFSDriverFromStorageRef(t *testing.T) {
 	}
 }
 
+func TestDoctorWhenRootDoesNotRequireSudoOrHelper(t *testing.T) {
+	stubPrivilegedCommandEUID(t, 0)
+
+	tmpDir := t.TempDir()
+	binDir := filepath.Join(tmpDir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir bin dir: %v", err)
+	}
+	writeExecutable(t, binDir, "firecracker", "#!/bin/sh\nexit 0\n")
+	writeExecutable(t, binDir, "cleanroom-guest-agent", "#!/bin/sh\nexit 0\n")
+	writeExecutable(t, binDir, "mkfs.ext4", "#!/bin/sh\nexit 0\n")
+	writeExecutable(t, binDir, "debugfs", "#!/bin/sh\nexit 0\n")
+	writeExecutable(t, binDir, "iptables", "#!/bin/sh\nexit 0\n")
+	writeExecutable(t, binDir, "sysctl", "#!/bin/sh\nexit 0\n")
+	writeExecutable(t, binDir, "ip", "#!/bin/sh\nif [ \"$1\" = \"link\" ] && [ \"$2\" = \"show\" ]; then exit 0; fi\nexit 0\n")
+	t.Setenv("PATH", binDir)
+
+	truePath := writeExecutable(t, tmpDir, "true-root", "#!/bin/sh\nset -eu\nexit 0\n")
+	ipPath := writeExecutable(t, tmpDir, "ip-root", "#!/bin/sh\nset -eu\nif [ \"$1\" = \"link\" ] && [ \"$2\" = \"show\" ]; then exit 0; fi\nexit 0\n")
+	stubDirectPrivilegedCommandPathResolver(t, func(command string) (string, error) {
+		switch command {
+		case "true":
+			return truePath, nil
+		case "ip":
+			return ipPath, nil
+		default:
+			return resolveDirectPrivilegedCommandPath(command)
+		}
+	})
+
+	kernelPath := filepath.Join(tmpDir, "vmlinux")
+	if err := os.WriteFile(kernelPath, []byte("kernel"), 0o644); err != nil {
+		t.Fatalf("write kernel image: %v", err)
+	}
+
+	report, err := (&Adapter{}).Doctor(context.Background(), backend.DoctorRequest{
+		FirecrackerConfig: backend.FirecrackerConfig{
+			BinaryPath:           "firecracker",
+			KernelImagePath:      kernelPath,
+			PrivilegedHelperPath: filepath.Join(tmpDir, "missing-helper"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("Doctor returned error: %v", err)
+	}
+	if doctorHasCheck(report, "network_cmd_sudo") {
+		t.Fatalf("doctor unexpectedly requires sudo when running as root: %+v", doctorCheck(report, "network_cmd_sudo"))
+	}
+	if doctorHasCheck(report, "network_helper") {
+		t.Fatalf("doctor unexpectedly requires helper when running as root: %+v", doctorCheck(report, "network_helper"))
+	}
+	if doctorHasCheck(report, "network_helper_version") {
+		t.Fatalf("doctor unexpectedly probes helper version when running as root: %+v", doctorCheck(report, "network_helper_version"))
+	}
+	if doctorHasCheck(report, "network_helper_capabilities") {
+		t.Fatalf("doctor unexpectedly probes helper capabilities when running as root: %+v", doctorCheck(report, "network_helper_capabilities"))
+	}
+	if got := doctorCheck(report, "network_privileged_probe"); got.Status != "pass" {
+		t.Fatalf("unexpected network_privileged_probe check: %+v", got)
+	}
+	if got := doctorCheck(report, "network_privileged_ip"); got.Status != "pass" {
+		t.Fatalf("unexpected network_privileged_ip check: %+v", got)
+	}
+}
+
 func TestHelperCapabilitiesReturnsProbeError(t *testing.T) {
 	tmpDir := t.TempDir()
 	sudoLogPath := filepath.Join(tmpDir, "sudo.log")

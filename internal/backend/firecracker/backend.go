@@ -765,8 +765,12 @@ func (a *Adapter) Doctor(_ context.Context, req backend.DoctorRequest) (*backend
 
 	privilegedHelperPath := resolvePrivilegedHelperPath(req.FirecrackerConfig)
 	hostRuntime := hostRuntimeForConfig(req.FirecrackerConfig)
+	directRuntime := privilegedCommandsRunDirectly()
 
-	requiredCommands := []string{"ip", "iptables", "sysctl", "sudo"}
+	requiredCommands := []string{"ip", "iptables", "sysctl"}
+	if !directRuntime {
+		requiredCommands = append(requiredCommands, "sudo")
+	}
 	for _, cmd := range requiredCommands {
 		if _, err := exec.LookPath(cmd); err != nil {
 			appendCheck("network_cmd_"+cmd, "fail", fmt.Sprintf("missing required host command %q", cmd))
@@ -775,28 +779,32 @@ func (a *Adapter) Doctor(_ context.Context, req backend.DoctorRequest) (*backend
 		}
 	}
 
-	if _, err := os.Stat(privilegedHelperPath); err != nil {
-		appendCheck("network_helper", "fail", fmt.Sprintf("privileged helper %q is not accessible: %v", privilegedHelperPath, err))
+	if directRuntime {
+		appendCheck("network_runtime", "pass", "running as root; using direct privileged commands")
 	} else {
-		appendCheck("network_helper", "pass", fmt.Sprintf("using privileged helper %q", privilegedHelperPath))
-
-		version, err := helperVersion(context.Background(), req.FirecrackerConfig)
-		if err != nil {
-			appendCheck("network_helper_version", "warn", fmt.Sprintf("privileged helper version probe failed: %v", err))
+		if _, err := os.Stat(privilegedHelperPath); err != nil {
+			appendCheck("network_helper", "fail", fmt.Sprintf("privileged helper %q is not accessible: %v", privilegedHelperPath, err))
 		} else {
-			appendCheck("network_helper_version", "pass", fmt.Sprintf("helper contract version %s", version))
-		}
+			appendCheck("network_helper", "pass", fmt.Sprintf("using privileged helper %q", privilegedHelperPath))
 
-		caps, err := helperCapabilities(context.Background(), req.FirecrackerConfig)
-		if err != nil {
-			appendCheck("network_helper_capabilities", "fail", fmt.Sprintf("privileged helper capability probe failed: %v", err))
-		} else {
-			requiredCaps := helperRequiredCapabilities(req.FirecrackerConfig)
-			missingCaps := helperMissingCapabilities(caps, requiredCaps)
-			if len(missingCaps) > 0 {
-				appendCheck("network_helper_capabilities", "fail", fmt.Sprintf("helper is missing required capabilities: %s (have: %s)", strings.Join(missingCaps, ", "), strings.Join(caps, ", ")))
+			version, err := helperVersion(context.Background(), req.FirecrackerConfig)
+			if err != nil {
+				appendCheck("network_helper_version", "warn", fmt.Sprintf("privileged helper version probe failed: %v", err))
 			} else {
-				appendCheck("network_helper_capabilities", "pass", fmt.Sprintf("helper capabilities: %s", strings.Join(caps, ", ")))
+				appendCheck("network_helper_version", "pass", fmt.Sprintf("helper contract version %s", version))
+			}
+
+			caps, err := helperCapabilities(context.Background(), req.FirecrackerConfig)
+			if err != nil {
+				appendCheck("network_helper_capabilities", "fail", fmt.Sprintf("privileged helper capability probe failed: %v", err))
+			} else {
+				requiredCaps := helperRequiredCapabilities(req.FirecrackerConfig)
+				missingCaps := helperMissingCapabilities(caps, requiredCaps)
+				if len(missingCaps) > 0 {
+					appendCheck("network_helper_capabilities", "fail", fmt.Sprintf("helper is missing required capabilities: %s (have: %s)", strings.Join(missingCaps, ", "), strings.Join(caps, ", ")))
+				} else {
+					appendCheck("network_helper_capabilities", "pass", fmt.Sprintf("helper capabilities: %s", strings.Join(caps, ", ")))
+				}
 			}
 		}
 	}
