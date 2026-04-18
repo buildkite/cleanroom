@@ -130,7 +130,7 @@ func DetectHostSupport(ctx context.Context, cfg backend.FirecrackerConfig) HostS
 
 	requestedDataset := strings.TrimSpace(cfg.Snapshots.ZFSDataset)
 	if requestedDataset != "" {
-		if err := validateZFSDatasetRoot(ctx, zfsPath, requestedDataset); err != nil {
+		if err := validateZFSDatasetRoot(ctx, cfg, requestedDataset); err != nil {
 			result.ZFSMessage = err.Error()
 			return result
 		}
@@ -152,7 +152,7 @@ func DetectHostSupport(ctx context.Context, cfg backend.FirecrackerConfig) HostS
 		result.ZFSMessage = "no existing Cleanroom ZFS dataset root matched cleanroom or */cleanroom"
 		return result
 	case 1:
-		if err := validateZFSDatasetRoot(ctx, zfsPath, candidates[0]); err != nil {
+		if err := validateZFSDatasetRoot(ctx, cfg, candidates[0]); err != nil {
 			result.ZFSMessage = err.Error()
 			return result
 		}
@@ -189,7 +189,7 @@ func discoverCleanroomZFSDatasetRoots(ctx context.Context, zfsPath string) ([]st
 	return candidates, nil
 }
 
-func validateZFSDatasetRoot(ctx context.Context, zfsPath, dataset string) error {
+func validateZFSDatasetRoot(ctx context.Context, cfg backend.FirecrackerConfig, dataset string) error {
 	dataset = strings.TrimSpace(dataset)
 	if dataset == "" {
 		return fmt.Errorf("zfs dataset root is empty")
@@ -197,7 +197,7 @@ func validateZFSDatasetRoot(ctx context.Context, zfsPath, dataset string) error 
 	if !isCleanroomZFSDatasetRoot(dataset) {
 		return fmt.Errorf("zfs dataset root %q must be cleanroom or */cleanroom", dataset)
 	}
-	out, err := hostSupportCommandOutput(ctx, zfsPath, "list", "-H", "-d", "0", "-o", "name", dataset)
+	out, err := runRootCommandOutput(ctx, cfg, "zfs", "list", "-H", "-d", "0", "-o", "name", dataset)
 	if err != nil {
 		return fmt.Errorf("unable to access zfs dataset root %q: %v", dataset, err)
 	}

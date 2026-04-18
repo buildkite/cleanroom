@@ -311,8 +311,8 @@ func TestDoctorReportsZFSChecks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read helper log: %v", err)
 	}
-	if strings.Contains(string(logBytes), "zfs list -H -d 0 -o name tank/cleanroom") {
-		t.Fatalf("expected zfs dataset root probe to avoid the privileged helper, got log %q", string(logBytes))
+	if !strings.Contains(string(logBytes), "zfs list -H -d 0 -o name tank/cleanroom") {
+		t.Fatalf("expected zfs dataset root probe to use the privileged helper, got log %q", string(logBytes))
 	}
 }
 

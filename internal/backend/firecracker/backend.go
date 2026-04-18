@@ -839,7 +839,7 @@ func (a *Adapter) Doctor(_ context.Context, req backend.DoctorRequest) (*backend
 			if zfsBinary == "" {
 				appendCheck("snapshot_zfs_dataset_access", "fail", fmt.Sprintf("unable to access zfs dataset %q: zfs command not available", dataset))
 			} else {
-				if err := validateZFSDatasetRoot(context.Background(), zfsBinary, dataset); err != nil {
+				if err := validateZFSDatasetRoot(context.Background(), req.FirecrackerConfig, dataset); err != nil {
 					appendCheck("snapshot_zfs_dataset_access", "fail", err.Error())
 				} else {
 					appendCheck("snapshot_zfs_dataset_access", "pass", fmt.Sprintf("zfs dataset root %q is accessible", dataset))
