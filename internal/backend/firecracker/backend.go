@@ -130,6 +130,8 @@ var rootFSVolumeStoreDriverFn = rootFSVolumeStoreDriver
 
 var snapshotVolumeStoreDriverFn = snapshotVolumeStoreDriver
 
+var privilegedCommandEUID = os.Geteuid
+
 var nflogGroupFromTapNameFn = nflogGroupFromTapName
 
 var newNFLogListenerFn = newNFLogListener
@@ -2561,7 +2563,7 @@ func helperMissingCapabilities(have, required []string) []string {
 }
 
 func helperCapabilities(ctx context.Context, cfg backend.FirecrackerConfig) ([]string, error) {
-	out, err := runRootCommandOutput(ctx, cfg, "capabilities")
+	out, err := runHelperCommandOutput(ctx, cfg, "capabilities")
 	if err != nil {
 		return nil, err
 	}
@@ -2584,7 +2586,7 @@ func helperCapabilities(ctx context.Context, cfg backend.FirecrackerConfig) ([]s
 }
 
 func helperVersion(ctx context.Context, cfg backend.FirecrackerConfig) (string, error) {
-	out, err := runRootCommandOutput(ctx, cfg, "version")
+	out, err := runHelperCommandOutput(ctx, cfg, "version")
 	if err != nil {
 		return "", err
 	}
@@ -2620,7 +2622,48 @@ func lookPathWithFallback(binary string, candidates ...string) (string, error) {
 	return "", fmt.Errorf("%q not found in PATH or fallback locations", binary)
 }
 
+func resolveDirectPrivilegedCommandPath(command string) (string, error) {
+	switch strings.TrimSpace(command) {
+	case "zfs":
+		return lookPathWithFallback(command, "/usr/sbin/zfs", "/sbin/zfs")
+	default:
+		return hostSupportResolveCommand(command)
+	}
+}
+
+func runDirectPrivilegedCommand(ctx context.Context, args ...string) error {
+	if len(args) == 0 {
+		return errors.New("missing privileged command")
+	}
+	binary, err := resolveDirectPrivilegedCommandPath(args[0])
+	if err != nil {
+		return err
+	}
+	return runCombinedCommand(ctx, append([]string{binary}, args[1:]...), args)
+}
+
+func runDirectPrivilegedCommandOutput(ctx context.Context, args ...string) ([]byte, error) {
+	if len(args) == 0 {
+		return nil, errors.New("missing privileged command")
+	}
+	binary, err := resolveDirectPrivilegedCommandPath(args[0])
+	if err != nil {
+		return nil, err
+	}
+	return runCombinedCommandOutput(ctx, append([]string{binary}, args[1:]...), args)
+}
+
 func runRootCommand(ctx context.Context, cfg backend.FirecrackerConfig, args ...string) error {
+	if len(args) == 0 {
+		return errors.New("missing privileged command")
+	}
+	if privilegedCommandEUID() == 0 {
+		return runDirectPrivilegedCommand(ctx, args...)
+	}
+	return runHelperCommand(ctx, cfg, args...)
+}
+
+func runHelperCommand(ctx context.Context, cfg backend.FirecrackerConfig, args ...string) error {
 	if len(args) == 0 {
 		return errors.New("missing privileged command")
 	}
@@ -2633,6 +2676,16 @@ func runRootCommand(ctx context.Context, cfg backend.FirecrackerConfig, args ...
 }
 
 func runRootCommandOutput(ctx context.Context, cfg backend.FirecrackerConfig, args ...string) ([]byte, error) {
+	if len(args) == 0 {
+		return nil, errors.New("missing privileged command")
+	}
+	if privilegedCommandEUID() == 0 {
+		return runDirectPrivilegedCommandOutput(ctx, args...)
+	}
+	return runHelperCommandOutput(ctx, cfg, args...)
+}
+
+func runHelperCommandOutput(ctx context.Context, cfg backend.FirecrackerConfig, args ...string) ([]byte, error) {
 	if len(args) == 0 {
 		return nil, errors.New("missing privileged command")
 	}
