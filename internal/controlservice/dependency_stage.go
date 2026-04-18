@@ -98,7 +98,10 @@ func (s *Service) dependencyStageKeyFilesDigest(ctx context.Context, repository 
 	}
 	mirrorPath, err := s.RepositoryMirrors.MirrorPath(repository.RemoteURL)
 	if err != nil {
-		return "", err
+		mirrorPath, err = s.RepositoryMirrors.EnsureMirror(ctx, repository.RemoteURL)
+		if err != nil {
+			return "", err
+		}
 	}
 	digest, err := dependencyStageKeyFilesDigestFromMirror(ctx, mirrorPath, repository.CommitSHA, files)
 	if err == nil {
