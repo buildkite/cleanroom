@@ -191,6 +191,13 @@ func BuildBootstrapCommand(checkout *Checkout) []string {
 	return []string{"sh", "-lc", strings.Join(bootstrapScript(checkout), "\n")}
 }
 
+func BuildRefreshCommand(checkout *Checkout) []string {
+	if checkout == nil {
+		return nil
+	}
+	return []string{"sh", "-lc", strings.Join(refreshScript(checkout), "\n")}
+}
+
 func BootstrapRecipeDigest(checkout *Checkout) string {
 	if checkout == nil {
 		return ""
@@ -232,11 +239,6 @@ func NormalizeCommand(command []string) []string {
 
 func bootstrapScript(checkout *Checkout) []string {
 	cloneCommand := `git clone --filter=blob:none --no-checkout --progress "$remote" "$dest"`
-	checkoutCommand := `git -C "$dest" checkout --detach "$commit"`
-	if strings.TrimSpace(checkout.Branch) != "" {
-		checkoutCommand = `git -C "$dest" checkout -B "$branch" "$commit"`
-	}
-	submoduleCommand := `git -C "$dest" submodule update --init --recursive`
 
 	script := []string{
 		"set -eu",
@@ -248,12 +250,46 @@ func bootstrapScript(checkout *Checkout) []string {
 		`if [ -d "$dest" ] && [ -n "$(ls -A "$dest")" ]; then echo "repository destination already exists and is not empty: $dest" >&2; exit 1; fi`,
 		`mkdir -p "$dest"`,
 		cloneCommand,
+	}
+	return append(script, checkoutVerificationScript(checkout)...)
+}
+
+func refreshScript(checkout *Checkout) []string {
+	script := []string{
+		"set -eu",
+		"dest=" + shellQuote(checkout.DestinationDir),
+		"remote=" + shellQuote(checkout.RemoteURL),
+		"commit=" + shellQuote(checkout.CommitSHA),
+		"branch=" + shellQuote(checkout.Branch),
+		`if [ ! -d "$dest" ]; then echo "repository destination does not exist: $dest" >&2; exit 1; fi`,
+		`if ! git -C "$dest" rev-parse --is-inside-work-tree >/dev/null 2>&1; then echo "repository destination is not a git checkout: $dest" >&2; exit 1; fi`,
+		`if git -C "$dest" remote get-url origin >/dev/null 2>&1; then git -C "$dest" remote set-url origin "$remote"; else git -C "$dest" remote add origin "$remote"; fi`,
+		`git -C "$dest" submodule deinit -f --all >/dev/null 2>&1 || true`,
+		`git -C "$dest" reset --hard`,
+		`git -C "$dest" clean -ffdx`,
+		`git -C "$dest" fetch --filter=blob:none --progress origin "$commit"`,
+	}
+	return append(script, checkoutVerificationScript(checkout)...)
+}
+
+func checkoutVerificationScript(checkout *Checkout) []string {
+	checkoutCommand := `git -C "$dest" checkout --detach "$commit"`
+	if strings.TrimSpace(checkout.Branch) != "" {
+		checkoutCommand = `git -C "$dest" checkout -B "$branch" "$commit"`
+	}
+
+	script := []string{
 		checkoutCommand,
+		`git -C "$dest" reset --hard "$commit"`,
+		`git -C "$dest" clean -ffdx`,
 		`got="$(git -C "$dest" rev-parse HEAD)"`,
 		`if [ "$got" != "$commit" ]; then echo "repository checkout mismatch: expected $commit got $got" >&2; exit 1; fi`,
 	}
 	if checkout.Submodules {
-		script = append(script, submoduleCommand)
+		script = append(script,
+			`git -C "$dest" submodule sync --recursive`,
+			`git -C "$dest" submodule update --init --recursive --force`,
+		)
 	}
 	return script
 }

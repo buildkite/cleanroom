@@ -382,7 +382,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	if repository != nil {
 		emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_BOOTSTRAP_REPOSITORY, "bootstrapping repository checkout")
 	}
-	if err := s.bootstrapRepositoryInPersistentSandbox(ctx, adapter, sandboxID, compiled, firecrackerCfg, repository, reporter); err != nil {
+	if err := s.bootstrapRepositoryInPersistentSandbox(ctx, adapter, sandboxID, compiled, firecrackerCfg, repository, false, reporter); err != nil {
 		if terminateErr := s.terminateCreatedSandbox(context.Background(), adapter, sandboxID); terminateErr != nil {
 			return nil, fmt.Errorf("bootstrap repository checkout: %w; cleanup failed: %v", err, terminateErr)
 		}
@@ -1924,6 +1924,8 @@ func (s *Service) preparePersistentSandboxRepository(
 		return nil
 	}
 
+	refreshExisting := false
+
 	s.mu.Lock()
 	sandbox, ok := s.sandboxes[sandboxID]
 	if !ok {
@@ -1956,13 +1958,14 @@ func (s *Service) preparePersistentSandboxRepository(
 		return nil
 	case repositoryCheckoutsEqual(sandbox.Repository, repository):
 		sandbox.RepositoryBusy = true
+		refreshExisting = true
 	default:
 		s.mu.Unlock()
 		return fmt.Errorf("sandbox %q already has a different repository checkout", sandboxID)
 	}
 	s.mu.Unlock()
 
-	err := s.bootstrapRepositoryInPersistentSandbox(ctx, adapter, sandboxID, compiled, firecrackerCfg, repository, nil)
+	err := s.bootstrapRepositoryInPersistentSandbox(ctx, adapter, sandboxID, compiled, firecrackerCfg, repository, refreshExisting, nil)
 
 	s.mu.Lock()
 	if sandbox, ok := s.sandboxes[sandboxID]; ok {
@@ -1988,6 +1991,7 @@ func (s *Service) bootstrapRepositoryInPersistentSandbox(
 	compiled *policy.CompiledPolicy,
 	firecrackerCfg backend.FirecrackerConfig,
 	repository *repositorycheckout.Checkout,
+	refreshExisting bool,
 	reporter CreateSandboxReporter,
 ) error {
 	if repository == nil {
@@ -2012,6 +2016,11 @@ func (s *Service) bootstrapRepositoryInPersistentSandbox(
 		)
 	}
 
+	command := repositorycheckout.BuildBootstrapCommand(repository)
+	if refreshExisting {
+		command = repositorycheckout.BuildRefreshCommand(repository)
+	}
+
 	bootstrapExecutionID, result, stdout, stderr, err := s.runPersistentBootstrapCommand(
 		ctx,
 		adapter,
@@ -2019,7 +2028,7 @@ func (s *Service) bootstrapRepositoryInPersistentSandbox(
 		compiled,
 		firecrackerCfg,
 		cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_BOOTSTRAP_REPOSITORY,
-		repositorycheckout.BuildBootstrapCommand(repository),
+		command,
 		nil,
 		reporter,
 	)

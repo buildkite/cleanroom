@@ -73,6 +73,99 @@ func TestBuildBootstrapCommandAllowsExistingEmptyDestination(t *testing.T) {
 	}
 }
 
+func TestBuildRefreshCommandResetsExistingCheckoutInPlace(t *testing.T) {
+	command := BuildRefreshCommand(&Checkout{
+		RemoteURL:      "https://github.com/buildkite/cleanroom.git",
+		CommitSHA:      "0123456789abcdef0123456789abcdef01234567",
+		DestinationDir: "/workspace",
+		Branch:         "feature/console-branch",
+		Submodules:     true,
+	})
+
+	joined := strings.Join(command, " ")
+	if strings.Contains(joined, `git clone --filter=blob:none --no-checkout --progress "$remote" "$dest"`) {
+		t.Fatalf("expected refresh command to reuse existing checkout instead of cloning, got %q", joined)
+	}
+	if !strings.Contains(joined, `if ! git -C "$dest" rev-parse --is-inside-work-tree >/dev/null 2>&1; then`) {
+		t.Fatalf("expected refresh command to require an existing git checkout, got %q", joined)
+	}
+	if !strings.Contains(joined, `git -C "$dest" fetch --filter=blob:none --progress origin "$commit"`) {
+		t.Fatalf("expected refresh command to fetch the target commit, got %q", joined)
+	}
+	if !strings.Contains(joined, `git -C "$dest" clean -ffdx`) {
+		t.Fatalf("expected refresh command to discard untracked repository state, got %q", joined)
+	}
+	if !strings.Contains(joined, `git -C "$dest" checkout -B "$branch" "$commit"`) {
+		t.Fatalf("expected refresh command to preserve requested branch mode, got %q", joined)
+	}
+	if !strings.Contains(joined, `git -C "$dest" submodule update --init --recursive --force`) {
+		t.Fatalf("expected refresh command to restore submodules when requested, got %q", joined)
+	}
+}
+
+func TestBuildRefreshCommandResetsWorkingTreeToExactCommit(t *testing.T) {
+	remoteDir := filepath.Join(t.TempDir(), "remote.git")
+	runGit(t, "", "init", "--bare", remoteDir)
+
+	seedDir := filepath.Join(t.TempDir(), "seed")
+	runGit(t, "", "clone", remoteDir, seedDir)
+	runGit(t, seedDir, "config", "user.name", "Test User")
+	runGit(t, seedDir, "config", "user.email", "test@example.com")
+
+	readmePath := filepath.Join(seedDir, "README.md")
+	if err := os.WriteFile(readmePath, []byte("first\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(README.md) returned error: %v", err)
+	}
+	runGit(t, seedDir, "add", "README.md")
+	runGit(t, seedDir, "commit", "-m", "first")
+	runGit(t, seedDir, "push", "origin", "HEAD")
+	firstCommit := strings.TrimSpace(runGit(t, seedDir, "rev-parse", "HEAD"))
+
+	if err := os.WriteFile(readmePath, []byte("second\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(README.md) returned error: %v", err)
+	}
+	runGit(t, seedDir, "commit", "-am", "second")
+	runGit(t, seedDir, "push", "origin", "HEAD")
+	secondCommit := strings.TrimSpace(runGit(t, seedDir, "rev-parse", "HEAD"))
+
+	checkoutDir := filepath.Join(t.TempDir(), "checkout")
+	runGit(t, "", "clone", remoteDir, checkoutDir)
+	runGit(t, checkoutDir, "checkout", "--detach", secondCommit)
+
+	if err := os.WriteFile(filepath.Join(checkoutDir, "README.md"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(README.md) returned error: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(checkoutDir, "local.txt"), []byte("untracked\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(local.txt) returned error: %v", err)
+	}
+
+	command := BuildRefreshCommand(&Checkout{
+		RemoteURL:      remoteDir,
+		CommitSHA:      firstCommit,
+		DestinationDir: checkoutDir,
+	})
+	cmd := exec.Command(command[0], command[1:]...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("refresh command failed: %v\n%s", err, string(out))
+	}
+
+	gotCommit := strings.TrimSpace(runGit(t, checkoutDir, "rev-parse", "HEAD"))
+	if gotCommit != firstCommit {
+		t.Fatalf("unexpected checkout commit: got %q want %q", gotCommit, firstCommit)
+	}
+	readmeBytes, err := os.ReadFile(filepath.Join(checkoutDir, "README.md"))
+	if err != nil {
+		t.Fatalf("ReadFile(README.md) returned error: %v", err)
+	}
+	if got, want := string(readmeBytes), "first\n"; got != want {
+		t.Fatalf("unexpected README contents after refresh: got %q want %q", got, want)
+	}
+	if _, err := os.Stat(filepath.Join(checkoutDir, "local.txt")); !os.IsNotExist(err) {
+		t.Fatalf("expected untracked file cleanup after refresh, stat error=%v", err)
+	}
+}
+
 func TestNormalizeRemoteURLPreservesIPv6Brackets(t *testing.T) {
 	checkout := &Checkout{
 		RemoteURL:      "https://[2001:db8::1]/buildkite/cleanroom.git",
@@ -292,4 +385,17 @@ func TestWrapCommandInWorkdirFailsFastWhenWorkdirSetupFails(t *testing.T) {
 	if _, statErr := os.Stat(outputPath); !os.IsNotExist(statErr) {
 		t.Fatalf("expected payload not to run when workdir setup fails, stat error=%v", statErr)
 	}
+}
+
+func runGit(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, string(out))
+	}
+	return string(out)
 }

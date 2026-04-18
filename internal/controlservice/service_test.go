@@ -2883,8 +2883,11 @@ func TestCreateExecutionRebootstrapsSecondMatchingRepositoryAfterChangesetSandbo
 		t.Fatalf("expected first matching repository execution to preserve created changeset state, got %q", firstExecution)
 	}
 	rebootstrap := strings.Join(commands[3], " ")
-	if !strings.Contains(rebootstrap, "git clone --filter=blob:none --no-checkout") {
-		t.Fatalf("expected second matching repository execution to re-bootstrap exact checkout after changeset, got %q", rebootstrap)
+	if strings.Contains(rebootstrap, "git clone --filter=blob:none --no-checkout") {
+		t.Fatalf("expected second matching repository execution to refresh the existing checkout in place, got %q", rebootstrap)
+	}
+	if !strings.Contains(rebootstrap, `git -C "$dest" fetch --filter=blob:none --progress origin "$commit"`) {
+		t.Fatalf("expected second matching repository execution to fetch the exact checkout commit, got %q", rebootstrap)
 	}
 	secondExecution := strings.Join(commands[4], " ")
 	if strings.Contains(secondExecution, "git clone --filter=blob:none --no-checkout") {
@@ -3081,8 +3084,11 @@ func TestCreateExecutionRebootstrapsMatchingRepositoryAfterChangesetSnapshotRest
 		t.Fatalf("expected restore execution to run rebootstrap + user command, got %d command(s)", got)
 	}
 	rebootstrap := strings.Join(commands[0], " ")
-	if !strings.Contains(rebootstrap, "git clone --filter=blob:none --no-checkout") {
-		t.Fatalf("expected snapshot-backed execution to re-bootstrap exact checkout after changeset restore, got %q", rebootstrap)
+	if strings.Contains(rebootstrap, "git clone --filter=blob:none --no-checkout") {
+		t.Fatalf("expected snapshot-backed execution to refresh the existing checkout in place after changeset restore, got %q", rebootstrap)
+	}
+	if !strings.Contains(rebootstrap, `git -C "$dest" fetch --filter=blob:none --progress origin "$commit"`) {
+		t.Fatalf("expected snapshot-backed execution to fetch the exact checkout commit after changeset restore, got %q", rebootstrap)
 	}
 	joined := strings.Join(commands[1], " ")
 	if strings.Contains(joined, "git clone --filter=blob:none --no-checkout") {
