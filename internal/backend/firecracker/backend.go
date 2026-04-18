@@ -839,13 +839,10 @@ func (a *Adapter) Doctor(_ context.Context, req backend.DoctorRequest) (*backend
 			if zfsBinary == "" {
 				appendCheck("snapshot_zfs_dataset_access", "fail", fmt.Sprintf("unable to access zfs dataset %q: zfs command not available", dataset))
 			} else {
-				out, err := runRootCommandOutput(context.Background(), req.FirecrackerConfig, "zfs", "list", "-H", "-d", "0", "-o", "name", dataset)
-				if err != nil {
-					appendCheck("snapshot_zfs_dataset_access", "fail", fmt.Sprintf("unable to access zfs dataset %q: %v", dataset, err))
-				} else if strings.TrimSpace(string(out)) != dataset {
-					appendCheck("snapshot_zfs_dataset_access", "fail", fmt.Sprintf("zfs dataset probe for %q returned %q", dataset, strings.TrimSpace(string(out))))
+				if err := validateZFSDatasetRoot(context.Background(), req.FirecrackerConfig, dataset); err != nil {
+					appendCheck("snapshot_zfs_dataset_access", "fail", err.Error())
 				} else {
-					appendCheck("snapshot_zfs_dataset_access", "pass", fmt.Sprintf("zfs dataset %q is accessible", dataset))
+					appendCheck("snapshot_zfs_dataset_access", "pass", fmt.Sprintf("zfs dataset root %q is accessible", dataset))
 				}
 			}
 		}

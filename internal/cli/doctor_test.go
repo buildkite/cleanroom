@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/buildkite/cleanroom/internal/backend"
+	backendfirecracker "github.com/buildkite/cleanroom/internal/backend/firecracker"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 )
@@ -397,5 +398,156 @@ func TestDoctorCommandTextIncludesEffectiveSnapshotConfig(t *testing.T) {
 	}
 	if !strings.Contains(out, filepath.Join(tmpDir, "state", "cleanroom", "snapshots")) {
 		t.Fatalf("expected snapshot base dir in doctor output, got: %q", out)
+	}
+}
+
+func TestDoctorCommandReportsSupportedFirecrackerTierInJSON(t *testing.T) {
+	stubFirecrackerHostSupport(t, func(context.Context, backend.FirecrackerConfig) backendfirecracker.HostSupport {
+		return backendfirecracker.HostSupport{
+			RuntimeUsable:   true,
+			SnapshotsUsable: true,
+			ZFSUsable:       true,
+			ZFSDatasetRoot:  "tank/cleanroom",
+		}
+	})
+
+	tmpDir := t.TempDir()
+	stdoutPath := filepath.Join(tmpDir, "doctor.json")
+	stdout, err := os.Create(stdoutPath)
+	if err != nil {
+		t.Fatalf("create stdout file: %v", err)
+	}
+
+	cmd := DoctorCommand{Backend: "firecracker", JSON: true}
+	err = cmd.Run(&runtimeContext{
+		CWD:    tmpDir,
+		Stdout: stdout,
+		Loader: doctorFailingLoader{},
+		Config: runtimeconfig.Config{
+			Backends: runtimeconfig.Backends{
+				Firecracker: runtimeconfig.FirecrackerConfig{
+					Snapshots: runtimeconfig.SnapshotConfig{Enabled: true, Driver: "zfs", ZFSDataset: "tank/cleanroom"},
+				},
+			},
+		},
+		ConfigPath: filepath.Join(tmpDir, "config.yaml"),
+		Backends: map[string]backend.Adapter{
+			"firecracker": doctorSnapshotAdapter{},
+		},
+	})
+	if closeErr := stdout.Close(); closeErr != nil {
+		t.Fatalf("close stdout file: %v", closeErr)
+	}
+	if err != nil {
+		t.Fatalf("DoctorCommand.Run returned error: %v", err)
+	}
+
+	raw, err := os.ReadFile(stdoutPath)
+	if err != nil {
+		t.Fatalf("read doctor output: %v", err)
+	}
+
+	var payload struct {
+		Support struct {
+			Tier              string `json:"tier"`
+			Message           string `json:"message"`
+			HostRuntimeUsable bool   `json:"host_runtime_usable"`
+			SnapshotsUsable   bool   `json:"snapshots_usable"`
+			ZFSUsable         bool   `json:"zfs_usable"`
+			ZFSDatasetRoot    string `json:"zfs_dataset_root"`
+		} `json:"support"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("unmarshal doctor JSON: %v", err)
+	}
+	if got, want := payload.Support.Tier, "supported"; got != want {
+		t.Fatalf("unexpected support tier: got %q want %q", got, want)
+	}
+	if !payload.Support.HostRuntimeUsable || !payload.Support.SnapshotsUsable || !payload.Support.ZFSUsable {
+		t.Fatalf("expected support booleans to be true, got %+v", payload.Support)
+	}
+	if got, want := payload.Support.ZFSDatasetRoot, "tank/cleanroom"; got != want {
+		t.Fatalf("unexpected support dataset root: got %q want %q", got, want)
+	}
+	if !strings.Contains(payload.Support.Message, "supported: zfs-backed firecracker layered caching") {
+		t.Fatalf("unexpected support summary message: %q", payload.Support.Message)
+	}
+}
+
+func TestDoctorCommandReportsDegradedFirecrackerTierInText(t *testing.T) {
+	stubFirecrackerHostSupport(t, func(context.Context, backend.FirecrackerConfig) backendfirecracker.HostSupport {
+		return backendfirecracker.HostSupport{
+			RuntimeUsable:   true,
+			SnapshotsUsable: true,
+			ZFSUsable:       true,
+			ZFSDatasetRoot:  "tank/cleanroom",
+		}
+	})
+
+	tmpDir := t.TempDir()
+	stdout, readStdout := makeStdoutCapture(t)
+
+	cmd := DoctorCommand{Backend: "firecracker"}
+	err := cmd.Run(&runtimeContext{
+		CWD:    tmpDir,
+		Stdout: stdout,
+		Loader: doctorFailingLoader{},
+		Config: runtimeconfig.Config{
+			Backends: runtimeconfig.Backends{
+				Firecracker: runtimeconfig.FirecrackerConfig{
+					Snapshots: runtimeconfig.SnapshotConfig{Enabled: true, Driver: "file"},
+				},
+			},
+		},
+		ConfigPath: filepath.Join(tmpDir, "config.yaml"),
+		Backends: map[string]backend.Adapter{
+			"firecracker": doctorSnapshotAdapter{},
+		},
+	})
+	if err != nil {
+		t.Fatalf("DoctorCommand.Run returned error: %v", err)
+	}
+
+	out := readStdout()
+	if !strings.Contains(out, "support_tier: degraded: firecracker layered caching is file-backed; warm restores still copy bytes") {
+		t.Fatalf("expected degraded support tier line, got %q", out)
+	}
+	if !strings.Contains(out, "machine bootstrap can support zfs via tank/cleanroom") {
+		t.Fatalf("expected degraded support tier hint, got %q", out)
+	}
+}
+
+func TestDoctorCommandReportsUnsupportedFirecrackerTierWhenRuntimeMissing(t *testing.T) {
+	stubFirecrackerHostSupport(t, func(context.Context, backend.FirecrackerConfig) backendfirecracker.HostSupport {
+		return backendfirecracker.HostSupport{
+			RuntimeUsable:   false,
+			SnapshotsUsable: false,
+			RuntimeMessage:  "missing required host commands: sudo",
+			SnapshotMessage: "missing required host commands: sudo",
+			ZFSMessage:      "missing required host commands: sudo",
+		}
+	})
+
+	tmpDir := t.TempDir()
+	stdout, readStdout := makeStdoutCapture(t)
+
+	cmd := DoctorCommand{Backend: "firecracker"}
+	err := cmd.Run(&runtimeContext{
+		CWD:        tmpDir,
+		Stdout:     stdout,
+		Loader:     doctorFailingLoader{},
+		Config:     runtimeconfig.Config{},
+		ConfigPath: filepath.Join(tmpDir, "config.yaml"),
+		Backends: map[string]backend.Adapter{
+			"firecracker": doctorSnapshotAdapter{},
+		},
+	})
+	if err != nil {
+		t.Fatalf("DoctorCommand.Run returned error: %v", err)
+	}
+
+	out := readStdout()
+	if !strings.Contains(out, "✗ [fail] support_tier: unsupported: machine bootstrap incomplete for firecracker host runtime: missing required host commands: sudo") {
+		t.Fatalf("expected unsupported support tier line, got %q", out)
 	}
 }

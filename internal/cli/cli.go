@@ -37,6 +37,7 @@ type policyLoader interface {
 type runtimeContext struct {
 	CWD        string
 	Stdout     *os.File
+	Stderr     *os.File
 	Loader     policyLoader
 	Config     runtimeconfig.Config
 	ConfigPath string
@@ -118,6 +119,7 @@ func Run(args []string, version string) error {
 
 	runtimeCtx := &runtimeContext{
 		Stdout:     os.Stdout,
+		Stderr:     os.Stderr,
 		Loader:     policy.Loader{},
 		Config:     cfg,
 		ConfigPath: cfgPath,
@@ -175,4 +177,11 @@ func resolveCWD(base, chdir string) (string, error) {
 		return filepath.Clean(chdir), nil
 	}
 	return filepath.Join(base, chdir), nil
+}
+
+func (ctx *runtimeContext) stderr() *os.File {
+	if ctx != nil && ctx.Stderr != nil {
+		return ctx.Stderr
+	}
+	return os.Stderr
 }

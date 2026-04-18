@@ -97,6 +97,12 @@ The remaining gap is deployment/runtime-dependent rather than architectural:
 the default Firecracker `file` driver still copies ext4 bytes, so the "nearly
 plain sandbox boot time" win only happens on clone-capable storage such as ZFS.
 
+For release framing, Linux CI and local Linux should be described with the same
+model: machine bootstrap plus unprivileged user workflow. The difference is not
+"CI mode" versus "local mode". The difference is whether the host has already
+been prepared with the Firecracker helper, sudoers access, KVM access, and an
+optional Cleanroom ZFS dataset root.
+
 ### Phase 3: Dedicated cache store and dependency stage
 
 Status: started.
@@ -140,6 +146,15 @@ This phase now means:
 - dependency-stage caching is starting with a single configured dependency
   bootstrap slice for exact-commit workspaces; toolchain-derived key inputs are
   still pending
+
+Today that means:
+
+- ZFS-backed Firecracker is the supported Linux layered-cache path
+- file-backed Firecracker remains functional, but warm restores are degraded
+  because they still materialise writable root volumes by copying bytes
+- `cleanroom doctor` should be treated as the source of truth for whether a
+  given Linux host is in the supported, degraded, or unavailable Firecracker
+  state
 
 ### Not started
 

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/buildkite/cleanroom/internal/backend"
+	backendfirecracker "github.com/buildkite/cleanroom/internal/backend/firecracker"
 	"github.com/buildkite/cleanroom/internal/gateway"
 	"github.com/buildkite/cleanroom/internal/paths"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
@@ -24,6 +25,15 @@ type snapshotDoctorConfig struct {
 	Driver    string `json:"driver"`
 	BaseDir   string `json:"base_dir"`
 	Defaulted bool   `json:"defaulted"`
+}
+
+type doctorSupportSummary struct {
+	Tier              string `json:"tier"`
+	Message           string `json:"message"`
+	HostRuntimeUsable bool   `json:"host_runtime_usable"`
+	SnapshotsUsable   bool   `json:"snapshots_usable"`
+	ZFSUsable         bool   `json:"zfs_usable"`
+	ZFSDatasetRoot    string `json:"zfs_dataset_root,omitempty"`
 }
 
 func (d *DoctorCommand) Run(ctx *runtimeContext) error {
@@ -47,10 +57,16 @@ func (d *DoctorCommand) Run(ctx *runtimeContext) error {
 	}
 	routeSummary := strings.Join(gwRoutes, ", ")
 	snapshotCfg, snapshotCheck, hasSnapshotCfg := snapshotDoctorConfigForBackend(backendName, ctx.Config)
+	var supportSummary *doctorSupportSummary
 
 	checks := []backend.DoctorCheck{
 		{Name: "runtime_config", Status: "pass", Message: fmt.Sprintf("using runtime config path %s", ctx.ConfigPath)},
 		{Name: "backend", Status: "pass", Message: fmt.Sprintf("selected backend %s", backendName)},
+	}
+	if backendName == "firecracker" {
+		summary, check := firecrackerDoctorSupportSummary(detectFirecrackerHostSupport(context.Background(), runtimeconfig.MergeBackendConfig(ctx.Config, backendName, 0)), ctx.Config.Backends.Firecracker.Snapshots)
+		supportSummary = &summary
+		checks = append(checks, check)
 	}
 	if hasSnapshotCfg {
 		checks = append(checks, snapshotCheck)
@@ -137,6 +153,9 @@ func (d *DoctorCommand) Run(ctx *runtimeContext) error {
 		}
 		if hasSnapshotCfg {
 			payload["snapshot"] = snapshotCfg
+		}
+		if supportSummary != nil {
+			payload["support"] = supportSummary
 		}
 		enc := json.NewEncoder(ctx.Stdout)
 		enc.SetIndent("", "  ")
@@ -246,5 +265,73 @@ func snapshotConfigEnableHint(backendName string) string {
 		return "backends.firecracker.snapshots.enabled: true"
 	default:
 		return "backends.<backend>.snapshots.enabled: true"
+	}
+}
+
+func firecrackerDoctorSupportSummary(support backendfirecracker.HostSupport, snapshotCfg runtimeconfig.SnapshotConfig) (doctorSupportSummary, backend.DoctorCheck) {
+	summary := doctorSupportSummary{
+		HostRuntimeUsable: support.RuntimeUsable,
+		SnapshotsUsable:   support.SnapshotsUsable,
+		ZFSUsable:         support.ZFSUsable,
+		ZFSDatasetRoot:    support.ZFSDatasetRoot,
+	}
+
+	check := backend.DoctorCheck{Name: "support_tier"}
+	driver := runtimeconfig.SnapshotDriverOrDefault("firecracker", snapshotCfg.Driver)
+
+	if !support.RuntimeUsable {
+		summary.Tier = "unsupported"
+		summary.Message = "unsupported: machine bootstrap incomplete for firecracker host runtime: " + support.RuntimeMessage
+		check.Status = "fail"
+		check.Message = summary.Message
+		return summary, check
+	}
+
+	if !snapshotCfg.Enabled {
+		summary.Tier = "disabled"
+		summary.Message = "disabled: firecracker snapshot runtime is available, but snapshots are disabled in runtime config"
+		check.Status = "warn"
+		check.Message = summary.Message
+		return summary, check
+	}
+
+	switch driver {
+	case "zfs":
+		dataset := strings.TrimSpace(snapshotCfg.ZFSDataset)
+		if !support.ZFSUsable {
+			summary.Tier = "unsupported"
+			summary.Message = "unsupported: firecracker zfs-backed snapshots are configured, but host support is not usable: " + support.ZFSMessage
+			check.Status = "fail"
+			check.Message = summary.Message
+			return summary, check
+		}
+		if dataset == "" {
+			summary.Tier = "unsupported"
+			summary.Message = "unsupported: firecracker zfs-backed snapshots require backends.firecracker.snapshots.zfs_dataset"
+			check.Status = "fail"
+			check.Message = summary.Message
+			return summary, check
+		}
+		summary.Tier = "supported"
+		summary.ZFSDatasetRoot = dataset
+		summary.Message = fmt.Sprintf("supported: zfs-backed firecracker layered caching is available via dataset root %s", dataset)
+		check.Status = "pass"
+		check.Message = summary.Message
+		return summary, check
+	case "file":
+		summary.Tier = "degraded"
+		summary.Message = "degraded: firecracker layered caching is file-backed; warm restores still copy bytes"
+		if support.ZFSUsable && support.ZFSDatasetRoot != "" {
+			summary.Message += fmt.Sprintf(" (machine bootstrap can support zfs via %s)", support.ZFSDatasetRoot)
+		}
+		check.Status = "warn"
+		check.Message = summary.Message
+		return summary, check
+	default:
+		summary.Tier = "unsupported"
+		summary.Message = fmt.Sprintf("unsupported: firecracker snapshot driver %q is not recognised", snapshotCfg.Driver)
+		check.Status = "fail"
+		check.Message = summary.Message
+		return summary, check
 	}
 }
