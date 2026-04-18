@@ -2174,10 +2174,15 @@ func TestCreateSandboxReusesDependencyStageCacheForConfiguredDependencies(t *tes
 	}
 }
 
-func TestCreateSandboxBootstrapsDependenciesAfterWorkspaceStageRestoreWithoutDependencyStageCache(t *testing.T) {
+func TestCreateSandboxPublishesDependencyStageCacheAfterWorkspaceStageRestoreWhenMirrorPathIsMissing(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	store := newMemorySnapshotStore()
 	adapter := &stubAdapter{}
+	var snapshotReqs []backend.SnapshotRequest
+	adapter.createSnapshotFn = func(_ context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
+		snapshotReqs = append(snapshotReqs, req)
+		return &backend.SnapshotResult{StorageRef: "/snapshots/" + req.SnapshotID + ".ext4"}, nil
+	}
 	var runCommands [][]string
 	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 		runCommands = append(runCommands, append([]string(nil), req.Command...))
@@ -2237,17 +2242,33 @@ func TestCreateSandboxBootstrapsDependenciesAfterWorkspaceStageRestoreWithoutDep
 	if got, want := adapter.runCalls, 1; got != want {
 		t.Fatalf("expected dependency bootstrap to run once after workspace restore, got %d want %d", got, want)
 	}
-	if got, want := adapter.createSnapshotCalls, 0; got != want {
-		t.Fatalf("expected dependency cache publish to stay disabled after key resolution failure, got %d want %d", got, want)
+	if got, want := adapter.createSnapshotCalls, 1; got != want {
+		t.Fatalf("expected dependency cache publish after mirror creation, got %d want %d", got, want)
 	}
 	if got, want := mirrors.calls, 0; got != want {
-		t.Fatalf("expected dependency-stage key resolution to avoid remote mirror refresh, got %d want %d", got, want)
+		t.Fatalf("expected dependency-stage key resolution to avoid an extra ensure-contains refresh after creating the mirror, got %d want %d", got, want)
 	}
 	if got, want := mirrors.mirrorPathCalls, 1; got != want {
 		t.Fatalf("expected one local mirror path lookup while resolving dependency cache key, got %d want %d", got, want)
 	}
-	if got, want := mirrors.ensureMirrorCalls, 0; got != want {
-		t.Fatalf("expected dependency-stage key resolution to avoid EnsureMirror, got %d want %d", got, want)
+	if got, want := mirrors.ensureMirrorCalls, 1; got != want {
+		t.Fatalf("expected dependency-stage key resolution to create a local mirror, got %d want %d", got, want)
+	}
+	if got, want := len(snapshotReqs), 1; got != want {
+		t.Fatalf("expected one dependency-stage snapshot publish, got %d want %d", got, want)
+	}
+	records, err := cacheStore.List(context.Background())
+	if err != nil {
+		t.Fatalf("List returned error: %v", err)
+	}
+	dependencyRecords := 0
+	for _, record := range records {
+		if record.Stage == dependencyStageName {
+			dependencyRecords++
+		}
+	}
+	if got, want := dependencyRecords, 1; got != want {
+		t.Fatalf("expected one published dependency-stage cache record, got %d want %d", got, want)
 	}
 	if got, want := len(runCommands), 1; got != want {
 		t.Fatalf("expected one dependency bootstrap command, got %d want %d", got, want)
