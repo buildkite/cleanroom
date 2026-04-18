@@ -422,6 +422,10 @@ func Load() (Config, string, error) {
 }
 
 func validateObservabilityConfig(cfg ObservabilityConfig) error {
+	if !cfg.Enabled {
+		return nil
+	}
+
 	exporter := strings.ToLower(strings.TrimSpace(cfg.Traces.Exporter))
 	if hasUnsupportedOTLPConfig(cfg.OTLP) {
 		return errors.New("observability.otlp is not supported in this build; use observability.traces.exporter=zipkin and observability.traces.zipkin")

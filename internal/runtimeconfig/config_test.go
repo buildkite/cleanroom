@@ -381,6 +381,40 @@ func TestLoadRejectsUnsupportedObservabilityTraceExporter(t *testing.T) {
 	}
 }
 
+func TestLoadAllowsUnsupportedObservabilityConfigWhenDisabled(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	configPath := filepath.Join(tmp, "cleanroom", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	content := `observability:
+  enabled: false
+  otlp:
+    endpoint: " localhost:4317 "
+  traces:
+    exporter: " otlp "
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, _, err := Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cfg.Observability.Enabled {
+		t.Fatal("expected observability to remain disabled")
+	}
+	if got, want := cfg.Observability.OTLP.Endpoint, "localhost:4317"; got != want {
+		t.Fatalf("unexpected trimmed otlp endpoint: got %q want %q", got, want)
+	}
+	if got, want := cfg.Observability.Traces.Exporter, "otlp"; got != want {
+		t.Fatalf("unexpected trimmed trace exporter: got %q want %q", got, want)
+	}
+}
+
 func TestLoadTrimsGatewayGitCacheHosts(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", tmp)
