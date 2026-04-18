@@ -38,8 +38,19 @@ func doctorHasCheck(report *backend.DoctorReport, name string) bool {
 	return false
 }
 
+func stubPrivilegedCommandEUID(t *testing.T, uid int) {
+	t.Helper()
+
+	prev := privilegedCommandEUID
+	privilegedCommandEUID = func() int { return uid }
+	t.Cleanup(func() {
+		privilegedCommandEUID = prev
+	})
+}
+
 func setupFakeSudo(t *testing.T, logPath string) {
 	t.Helper()
+	stubPrivilegedCommandEUID(t, 1000)
 
 	tmpDir := t.TempDir()
 	fakeSudoPath := filepath.Join(tmpDir, "sudo")
@@ -87,6 +98,88 @@ func TestRunRootCommandInvokesHelper(t *testing.T) {
 	}
 	if got := strings.TrimSpace(string(sudoLogBytes)); !strings.HasPrefix(got, "-n "+helperPath+" ") {
 		t.Fatalf("expected helper invocation via sudo, got %q", got)
+	}
+}
+
+func TestRunRootCommandExecutesDirectlyWhenRoot(t *testing.T) {
+	stubPrivilegedCommandEUID(t, 0)
+
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "ip.log")
+	writeExecutable(t, tmpDir, "ip", "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$*\" >> \"$IP_LOG_PATH\"\n")
+	t.Setenv("IP_LOG_PATH", logPath)
+	t.Setenv("PATH", tmpDir+":"+os.Getenv("PATH"))
+
+	cfg := backend.FirecrackerConfig{
+		PrivilegedHelperPath: filepath.Join(tmpDir, "missing-helper"),
+	}
+
+	if err := runRootCommand(context.Background(), cfg, "ip", "link", "show"); err != nil {
+		t.Fatalf("runRootCommand: %v", err)
+	}
+
+	logBytes, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read direct command log: %v", err)
+	}
+	if got, want := strings.TrimSpace(string(logBytes)), "link show"; got != want {
+		t.Fatalf("unexpected direct command invocation: got %q want %q", got, want)
+	}
+}
+
+func TestRunRootCommandUsesResolvedCommandPathWhenRoot(t *testing.T) {
+	stubPrivilegedCommandEUID(t, 0)
+
+	prevResolveCommand := hostSupportResolveCommand
+	t.Cleanup(func() {
+		hostSupportResolveCommand = prevResolveCommand
+	})
+
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "ip.log")
+	ipPath := writeExecutable(t, tmpDir, "ip-root", "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$*\" >> \"$IP_LOG_PATH\"\n")
+	t.Setenv("IP_LOG_PATH", logPath)
+	hostSupportResolveCommand = func(command string) (string, error) {
+		if command == "ip" {
+			return ipPath, nil
+		}
+		return prevResolveCommand(command)
+	}
+
+	cfg := backend.FirecrackerConfig{
+		PrivilegedHelperPath: filepath.Join(tmpDir, "missing-helper"),
+	}
+
+	if err := runRootCommand(context.Background(), cfg, "ip", "link", "show"); err != nil {
+		t.Fatalf("runRootCommand: %v", err)
+	}
+
+	logBytes, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read resolved command log: %v", err)
+	}
+	if got, want := strings.TrimSpace(string(logBytes)), "link show"; got != want {
+		t.Fatalf("unexpected resolved command invocation: got %q want %q", got, want)
+	}
+}
+
+func TestRunRootCommandOutputExecutesDirectlyWhenRoot(t *testing.T) {
+	stubPrivilegedCommandEUID(t, 0)
+
+	tmpDir := t.TempDir()
+	writeExecutable(t, tmpDir, "zfs", "#!/bin/sh\nset -eu\nprintf 'tank/cleanroom\\n'\n")
+	t.Setenv("PATH", tmpDir+":"+os.Getenv("PATH"))
+
+	cfg := backend.FirecrackerConfig{
+		PrivilegedHelperPath: filepath.Join(tmpDir, "missing-helper"),
+	}
+
+	out, err := runRootCommandOutput(context.Background(), cfg, "zfs", "list", "-H", "-d", "0", "-o", "name", "tank/cleanroom")
+	if err != nil {
+		t.Fatalf("runRootCommandOutput: %v", err)
+	}
+	if got, want := strings.TrimSpace(string(out)), "tank/cleanroom"; got != want {
+		t.Fatalf("unexpected direct command output: got %q want %q", got, want)
 	}
 }
 
