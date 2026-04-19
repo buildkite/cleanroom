@@ -17,14 +17,11 @@ standard telemetry stack built around:
 
 Current implementation note:
 
-- the first shipped tracing slice started with OpenTelemetry spans plus a
-  Zipkin exporter into local Jaeger for developer workflows
-- the near-term direction is now to make OTLP trace export the primary
-  supported path so the same Cleanroom trace configuration works with local
-  Jaeger, an OpenTelemetry Collector or Grafana Alloy, and production
-  observability backends
-- Zipkin can remain as a compatibility bridge while OTLP lands cleanly, but it
-  should not remain the long-term primary operator path
+- the first shipped tracing slice added OpenTelemetry spans, trace IDs, direct
+  trace links, and serve startup/status output
+- OTLP trace export is now the only supported transport so the same Cleanroom
+  trace configuration works with local Jaeger, an OpenTelemetry Collector or
+  Grafana Alloy, and production observability backends
 
 ## Immediate delivery priorities
 
@@ -403,8 +400,7 @@ Notes:
 - config keys should remain backend-neutral
 - exporter auth and endpoint details belong here, not in backend adapters
 - CI hosts can still layer environment-variable overrides on top when needed
-- OTLP is the primary path to optimise for; Zipkin support is transitional
-  compatibility rather than the long-term default
+- OTLP is the only supported transport
 - `traces.url_template` is optional and gives the CLI a backend-neutral way to
   print direct trace links in failure footers and `cleanroom execution inspect`
 
@@ -419,7 +415,7 @@ Before broad metrics/logging work, make tracing easy to adopt and easy to use.
 Add:
 
 - OTLP trace export support in the runtime and config layer
-- clear config validation for supported trace exporter settings
+- clear config validation for OTLP trace settings
 - CLI output of `trace_id` and optional `trace_url` on failures and other
   trace jump-off points
 - gateway and backend spans needed for a useful single-execution trace

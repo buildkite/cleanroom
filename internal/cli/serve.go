@@ -204,17 +204,12 @@ func observabilityStartupFields(cfg runtimeconfig.ObservabilityConfig) []startup
 		return []startupField{{Key: "observability", Value: "disabled"}}
 	}
 
-	exporter, protocol, err := runtimeconfig.ResolveTraceExporter(cfg)
+	protocol, err := runtimeconfig.ResolveOTLPTraceProtocol(cfg)
 	if err != nil {
 		return []startupField{{Key: "observability", Value: "invalid"}}
 	}
 	fields := []startupField{{Key: "observability", Value: "enabled"}}
-	switch exporter {
-	case "otlp":
-		fields = append(fields, startupField{Key: "trace_export", Value: fmt.Sprintf("otlp/%s -> %s", protocol, strings.TrimSpace(cfg.OTLP.Endpoint))})
-	case "zipkin":
-		fields = append(fields, startupField{Key: "trace_export", Value: fmt.Sprintf("zipkin -> %s", strings.TrimSpace(cfg.Traces.Zipkin.Endpoint))})
-	}
+	fields = append(fields, startupField{Key: "trace_export", Value: fmt.Sprintf("otlp/%s -> %s", protocol, strings.TrimSpace(cfg.OTLP.Endpoint))})
 	fields = append(fields, startupField{Key: "trace_sampling", Value: formatTraceSampling(cfg.Traces.Sampling)})
 	if strings.TrimSpace(cfg.Traces.URLTemplate) != "" {
 		fields = append(fields, startupField{Key: "trace_links", Value: "enabled"})

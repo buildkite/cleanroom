@@ -13,7 +13,6 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
-	"go.opentelemetry.io/otel/exporters/zipkin"
 	"go.opentelemetry.io/otel/propagation"
 	sdkresource "go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -124,42 +123,14 @@ func newTracerProvider(ctx context.Context, opts Options) (*sdktrace.TracerProvi
 }
 
 func newTraceExporter(ctx context.Context, cfg runtimeconfig.ObservabilityConfig) (sdktrace.SpanExporter, error) {
-	exporter, otlpProtocol, err := runtimeconfig.ResolveTraceExporter(cfg)
+	otlpProtocol, err := runtimeconfig.ResolveOTLPTraceProtocol(cfg)
 	if err != nil {
 		return nil, err
 	}
-
-	switch exporter {
-	case "zipkin":
-		return newZipkinExporter(cfg.Traces.Zipkin)
-	case "otlp":
-		if strings.TrimSpace(cfg.OTLP.Endpoint) == "" {
-			return nil, errors.New("missing observability.otlp.endpoint")
-		}
-		return newOTLPExporter(ctx, cfg.OTLP, otlpProtocol)
-	case "":
-		return nil, errors.New("missing observability trace exporter configuration")
-	default:
-		return nil, fmt.Errorf("unsupported observability.traces.exporter %q", cfg.Traces.Exporter)
+	if strings.TrimSpace(cfg.OTLP.Endpoint) == "" {
+		return nil, errors.New("missing observability.otlp.endpoint")
 	}
-}
-
-func newZipkinExporter(cfg runtimeconfig.ZipkinConfig) (*zipkin.Exporter, error) {
-	endpoint := strings.TrimSpace(cfg.Endpoint)
-	if endpoint == "" {
-		return nil, errors.New("missing observability.traces.zipkin.endpoint")
-	}
-
-	options := make([]zipkin.Option, 0, 1)
-	if headers := runtimeconfigHeaders(cfg.Headers); len(headers) > 0 {
-		options = append(options, zipkin.WithHeaders(headers))
-	}
-
-	exporter, err := zipkin.New(endpoint, options...)
-	if err != nil {
-		return nil, fmt.Errorf("configure zipkin trace exporter: %w", err)
-	}
-	return exporter, nil
+	return newOTLPExporter(ctx, cfg.OTLP, otlpProtocol)
 }
 
 func newOTLPExporter(ctx context.Context, cfg runtimeconfig.OTLPConfig, protocol string) (sdktrace.SpanExporter, error) {

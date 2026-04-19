@@ -83,6 +83,8 @@ observability:
 `url_template` is optional. When set, Cleanroom prints `trace_url=...` in
 failure footers and exposes the same URL from `cleanroom execution inspect`.
 
+Cleanroom observability is OTLP-only.
+
 Install as a daemon:
 
 ```bash

@@ -285,15 +285,16 @@ func TestLoadTrimsObservabilityConfig(t *testing.T) {
 	content := `observability:
   enabled: true
   deployment_environment: " ci "
+  otlp:
+    endpoint: " https://otel.example.test:4318 "
+    protocol: " http/protobuf "
+    headers:
+      " x-otlp-token ": " secret "
   traces:
-    exporter: " zipkin "
     sampling:
       mode: " parentbased_traceidratio "
       ratio: 0.5
-    zipkin:
-      endpoint: " http://localhost:9411/api/v2/spans "
-      headers:
-        " x-dev-mode ": " true "
+    url_template: " https://jaeger.example.test/trace/{{.TraceID}} "
 `
 	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -309,8 +310,14 @@ func TestLoadTrimsObservabilityConfig(t *testing.T) {
 	if got, want := cfg.Observability.DeploymentEnvironment, "ci"; got != want {
 		t.Fatalf("unexpected deployment environment: got %q want %q", got, want)
 	}
-	if got, want := cfg.Observability.Traces.Exporter, "zipkin"; got != want {
-		t.Fatalf("unexpected trace exporter: got %q want %q", got, want)
+	if got, want := cfg.Observability.OTLP.Endpoint, "https://otel.example.test:4318"; got != want {
+		t.Fatalf("unexpected otlp endpoint: got %q want %q", got, want)
+	}
+	if got, want := cfg.Observability.OTLP.Protocol, "http/protobuf"; got != want {
+		t.Fatalf("unexpected otlp protocol: got %q want %q", got, want)
+	}
+	if got, want := cfg.Observability.OTLP.Headers["x-otlp-token"], "secret"; got != want {
+		t.Fatalf("unexpected otlp header: got %q want %q", got, want)
 	}
 	if got, want := cfg.Observability.Traces.Sampling.Mode, "parentbased_traceidratio"; got != want {
 		t.Fatalf("unexpected sampling mode: got %q want %q", got, want)
@@ -321,11 +328,8 @@ func TestLoadTrimsObservabilityConfig(t *testing.T) {
 	if got, want := *cfg.Observability.Traces.Sampling.Ratio, 0.5; got != want {
 		t.Fatalf("unexpected sampling ratio: got %v want %v", got, want)
 	}
-	if got, want := cfg.Observability.Traces.Zipkin.Endpoint, "http://localhost:9411/api/v2/spans"; got != want {
-		t.Fatalf("unexpected zipkin endpoint: got %q want %q", got, want)
-	}
-	if got, want := cfg.Observability.Traces.Zipkin.Headers["x-dev-mode"], "true"; got != want {
-		t.Fatalf("unexpected zipkin header: got %q want %q", got, want)
+	if got, want := cfg.Observability.Traces.URLTemplate, "https://jaeger.example.test/trace/{{.TraceID}}"; got != want {
+		t.Fatalf("unexpected trace url template: got %q want %q", got, want)
 	}
 }
 
@@ -501,8 +505,6 @@ func TestLoadRejectsMissingOTLPEndpointWhenEnabled(t *testing.T) {
 
 	content := `observability:
   enabled: true
-  traces:
-    exporter: otlp
 `
 	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -517,7 +519,7 @@ func TestLoadRejectsMissingOTLPEndpointWhenEnabled(t *testing.T) {
 	}
 }
 
-func TestLoadRejectsMissingZipkinEndpointWhenEnabled(t *testing.T) {
+func TestLoadRejectsUnsupportedObservabilityTraceExporter(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", tmp)
 	configPath := filepath.Join(tmp, "cleanroom", "config.yaml")
@@ -527,6 +529,8 @@ func TestLoadRejectsMissingZipkinEndpointWhenEnabled(t *testing.T) {
 
 	content := `observability:
   enabled: true
+  otlp:
+    endpoint: http://localhost:4318
   traces:
     exporter: zipkin
 `
@@ -536,9 +540,9 @@ func TestLoadRejectsMissingZipkinEndpointWhenEnabled(t *testing.T) {
 
 	_, _, err := Load()
 	if err == nil {
-		t.Fatal("expected Load to reject missing observability.traces.zipkin.endpoint")
+		t.Fatal("expected Load to reject unsupported observability.traces.exporter")
 	}
-	if !strings.Contains(err.Error(), "missing observability.traces.zipkin.endpoint") {
+	if !strings.Contains(err.Error(), "unsupported observability.traces.exporter") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

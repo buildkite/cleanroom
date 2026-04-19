@@ -1,7 +1,6 @@
 package observability
 
 import (
-	"bytes"
 	"context"
 	"io"
 	"net"
@@ -35,19 +34,22 @@ func TestStartDisabledReturnsRuntime(t *testing.T) {
 	}
 }
 
-func TestStartRejectsMissingZipkinEndpointWhenEnabled(t *testing.T) {
+func TestStartRejectsUnsupportedTraceExporterWhenEnabled(t *testing.T) {
 	_, err := Start(context.Background(), Options{
 		Config: runtimeconfig.ObservabilityConfig{
 			Enabled: true,
+			OTLP: runtimeconfig.OTLPConfig{
+				Endpoint: "http://localhost:4318",
+			},
 			Traces: runtimeconfig.TraceConfig{
 				Exporter: "zipkin",
 			},
 		},
 	})
 	if err == nil {
-		t.Fatal("expected Start to reject missing observability.traces.zipkin.endpoint")
+		t.Fatal("expected Start to reject unsupported observability.traces.exporter")
 	}
-	if !strings.Contains(err.Error(), "missing observability.traces.zipkin.endpoint") {
+	if !strings.Contains(err.Error(), "unsupported observability.traces.exporter") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -56,9 +58,6 @@ func TestStartRejectsMissingOTLPEndpointWhenEnabled(t *testing.T) {
 	_, err := Start(context.Background(), Options{
 		Config: runtimeconfig.ObservabilityConfig{
 			Enabled: true,
-			Traces: runtimeconfig.TraceConfig{
-				Exporter: "otlp",
-			},
 		},
 	})
 	if err == nil {
@@ -137,58 +136,6 @@ func TestNewSamplerPreservesExplicitZeroRatio(t *testing.T) {
 	}
 }
 
-func TestStartExportsZipkinSpanOnShutdown(t *testing.T) {
-	bodyCh := make(chan []byte, 1)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got, want := r.URL.Path, "/api/v2/spans"; got != want {
-			t.Errorf("unexpected request path: got %q want %q", got, want)
-		}
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Errorf("read request body: %v", err)
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		bodyCh <- body
-		w.WriteHeader(http.StatusAccepted)
-	}))
-	defer server.Close()
-
-	runtime, err := Start(context.Background(), Options{
-		Config: runtimeconfig.ObservabilityConfig{
-			Enabled: true,
-			Traces: runtimeconfig.TraceConfig{
-				Exporter: "zipkin",
-				Zipkin: runtimeconfig.ZipkinConfig{
-					Endpoint: server.URL + "/api/v2/spans",
-				},
-			},
-		},
-		ServiceName: "cleanroom-cli",
-	})
-	if err != nil {
-		t.Fatalf("Start returned error: %v", err)
-	}
-
-	_, span := runtime.Tracer("github.com/buildkite/cleanroom/internal/observability_test").Start(context.Background(), "cleanroom.test")
-	span.End()
-
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := runtime.Shutdown(shutdownCtx); err != nil {
-		t.Fatalf("Shutdown returned error: %v", err)
-	}
-
-	select {
-	case body := <-bodyCh:
-		if !bytes.Contains(body, []byte(`"name":"cleanroom.test"`)) {
-			t.Fatalf("expected exported span payload to contain span name, got %s", body)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for zipkin span export")
-	}
-}
-
 func TestStartExportsOTLPHTTPSpanOnShutdown(t *testing.T) {
 	bodyCh := make(chan []byte, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -251,7 +198,7 @@ func TestStartExportsOTLPHTTPSpanOnShutdown(t *testing.T) {
 	}
 }
 
-func TestStartExportsOTLPGRPCSpanOnShutdown(t *testing.T) {
+func TestStartExportsOTLPGRPCSpanOnShutdownWithDefaultProtocol(t *testing.T) {
 	requestCh := make(chan *coltracepb.ExportTraceServiceRequest, 1)
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -271,7 +218,6 @@ func TestStartExportsOTLPGRPCSpanOnShutdown(t *testing.T) {
 			Enabled: true,
 			OTLP: runtimeconfig.OTLPConfig{
 				Endpoint: listener.Addr().String(),
-				Protocol: "grpc",
 				Insecure: true,
 				Headers: map[string]string{
 					"x-trace-token": "secret",

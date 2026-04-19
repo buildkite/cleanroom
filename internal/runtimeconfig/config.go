@@ -53,17 +53,11 @@ type TraceConfig struct {
 	Exporter    string              `yaml:"exporter,omitempty"`
 	Sampling    TraceSamplingConfig `yaml:"sampling,omitempty"`
 	URLTemplate string              `yaml:"url_template,omitempty"`
-	Zipkin      ZipkinConfig        `yaml:"zipkin,omitempty"`
 }
 
 type TraceSamplingConfig struct {
 	Mode  string   `yaml:"mode,omitempty"`
 	Ratio *float64 `yaml:"ratio,omitempty"`
-}
-
-type ZipkinConfig struct {
-	Endpoint string            `yaml:"endpoint,omitempty"`
-	Headers  map[string]string `yaml:"headers,omitempty"`
 }
 
 type Backends struct {
@@ -453,10 +447,8 @@ func normalizeConfig(cfg Config, inferredDefaultBackend string) Config {
 	cfg.Observability.Traces.Exporter = strings.TrimSpace(cfg.Observability.Traces.Exporter)
 	cfg.Observability.Traces.Sampling.Mode = strings.TrimSpace(cfg.Observability.Traces.Sampling.Mode)
 	cfg.Observability.Traces.URLTemplate = strings.TrimSpace(cfg.Observability.Traces.URLTemplate)
-	cfg.Observability.Traces.Zipkin.Endpoint = strings.TrimSpace(cfg.Observability.Traces.Zipkin.Endpoint)
-	cfg.Observability.Traces.Zipkin.Headers = trimStringMap(cfg.Observability.Traces.Zipkin.Headers)
 	return cfg
-}
+	}
 
 func inferredDefaultBackend(hasFirecracker, hasDarwinVZ bool) string {
 	if hasFirecracker == hasDarwinVZ {
@@ -493,24 +485,14 @@ func validateObservabilityConfig(cfg ObservabilityConfig) error {
 		return nil
 	}
 
-	exporter, _, err := ResolveTraceExporter(cfg)
-	if err != nil {
+	if err := validateTraceExporter(cfg.Traces.Exporter); err != nil {
 		return err
 	}
-
-	switch exporter {
-	case "":
-		return errors.New("missing observability trace exporter configuration; set observability.traces.exporter, observability.otlp.endpoint, or observability.traces.zipkin.endpoint")
-	case "zipkin":
-		if strings.TrimSpace(cfg.Traces.Zipkin.Endpoint) == "" {
-			return errors.New("missing observability.traces.zipkin.endpoint")
-		}
-	case "otlp":
-		if err := validateOTLPEndpoint(cfg.OTLP.Endpoint); err != nil {
-			return err
-		}
-	default:
-		return fmt.Errorf("unsupported observability.traces.exporter %q", cfg.Traces.Exporter)
+	if err := validateOTLPEndpoint(cfg.OTLP.Endpoint); err != nil {
+		return err
+	}
+	if _, err := ResolveOTLPTraceProtocol(cfg); err != nil {
+		return err
 	}
 
 	if err := ValidateTraceSamplingConfig(cfg.Traces.Sampling); err != nil {
@@ -522,44 +504,22 @@ func validateObservabilityConfig(cfg ObservabilityConfig) error {
 	return nil
 }
 
-// ResolveTraceExporter resolves the configured trace exporter and OTLP
-// transport protocol, inferring the exporter from configured sections when the
-// exporter field is omitted.
-func ResolveTraceExporter(cfg ObservabilityConfig) (string, string, error) {
-	exporter := strings.ToLower(strings.TrimSpace(cfg.Traces.Exporter))
-	switch exporter {
-	case "":
-		hasOTLP := hasOTLPConfig(cfg.OTLP)
-		hasZipkin := hasZipkinConfig(cfg.Traces.Zipkin)
-		if hasOTLP && hasZipkin {
-			return "", "", errors.New("observability config is ambiguous; set observability.traces.exporter to choose otlp or zipkin")
-		}
-		if hasOTLP {
-			protocol, err := normalizeOTLPProtocol(cfg.OTLP.Protocol)
-			if err != nil {
-				return "", "", err
-			}
-			return "otlp", protocol, nil
-		}
-		if hasZipkin {
-			return "zipkin", "", nil
-		}
-		return "", "", nil
-	case "zipkin":
-		return "zipkin", "", nil
-	case "otlp":
-		protocol, err := normalizeOTLPProtocol(cfg.OTLP.Protocol)
-		if err != nil {
-			return "", "", err
-		}
-		return "otlp", protocol, nil
-	case "grpc":
-		return "otlp", "grpc", nil
-	case "otlp_http", "otlp/http", "http", "http/protobuf":
-		return "otlp", "http/protobuf", nil
+func validateTraceExporter(exporter string) error {
+	switch strings.ToLower(strings.TrimSpace(exporter)) {
+	case "", "otlp":
+		return nil
 	default:
-		return "", "", fmt.Errorf("unsupported observability.traces.exporter %q", cfg.Traces.Exporter)
+		return fmt.Errorf("unsupported observability.traces.exporter %q", exporter)
 	}
+}
+
+// ResolveOTLPTraceProtocol resolves the configured OTLP trace transport
+// protocol.
+func ResolveOTLPTraceProtocol(cfg ObservabilityConfig) (string, error) {
+	if err := validateTraceExporter(cfg.Traces.Exporter); err != nil {
+		return "", err
+	}
+	return normalizeOTLPProtocol(cfg.OTLP.Protocol)
 }
 
 // ValidateTraceSamplingConfig validates supported trace sampling modes and
@@ -614,13 +574,6 @@ func RenderTraceURL(cfg ObservabilityConfig, traceID, executionID, sandboxID str
 	})
 }
 
-func hasOTLPConfig(cfg OTLPConfig) bool {
-	return strings.TrimSpace(cfg.Endpoint) != "" ||
-		strings.TrimSpace(cfg.Protocol) != "" ||
-		cfg.Insecure ||
-		len(cfg.Headers) > 0
-}
-
 func executeTraceURLTemplate(templateText string, data TraceURLTemplateData) (string, error) {
 	trimmed := strings.TrimSpace(templateText)
 	if trimmed == "" {
@@ -639,10 +592,6 @@ func executeTraceURLTemplate(templateText string, data TraceURLTemplateData) (st
 		return "", err
 	}
 	return strings.TrimSpace(rendered.String()), nil
-}
-
-func hasZipkinConfig(cfg ZipkinConfig) bool {
-	return strings.TrimSpace(cfg.Endpoint) != "" || len(cfg.Headers) > 0
 }
 
 func normalizeOTLPProtocol(protocol string) (string, error) {

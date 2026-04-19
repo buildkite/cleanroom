@@ -558,9 +558,8 @@ API:
   - backend, command, user/actor
   - blocked connection attempts (host, reason, timestamp)
 - Deny events must use stable reason codes (for example `host_not_allowed`, `registry_not_allowed`, `lockfile_violation`, `backend_capability_mismatch`).
-- Trace export configuration stays in runtime config and supports OTLP as the
-  primary path, with optional direct trace URL rendering from a configured
-  template.
+- Trace export configuration stays in runtime config and uses OTLP, with
+  optional direct trace URL rendering from a configured template.
 - lockfile violations (registry, package, version, requested_path, action)
 - Metrics:
   - launch success/fail by backend
