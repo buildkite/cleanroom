@@ -210,12 +210,16 @@ func TestCreateCommandShowsDependencyBootstrapOutputDuringSandboxCreate(t *testi
 		t.Fatalf("CreateCommand.Run returned error: %v", outcome.err)
 	}
 	assertContainsAll(t, outcome.stderr,
-		"bootstrapping repository checkout",
 		"repo bootstrap output",
-		"running dependency bootstrap",
 		"dependency bootstrap output",
 		"Sandbox ready in",
 	)
+	if strings.Contains(outcome.stderr, "bootstrapping repository checkout") {
+		t.Fatalf("expected repository bootstrap phase chatter to be hidden, got %q", outcome.stderr)
+	}
+	if strings.Contains(outcome.stderr, "running dependency bootstrap") {
+		t.Fatalf("expected dependency bootstrap phase chatter to be hidden, got %q", outcome.stderr)
+	}
 	if got, want := callCount, 2; got != want {
 		t.Fatalf("expected repository and dependency bootstrap executions, got %d want %d", got, want)
 	}
@@ -842,8 +846,8 @@ func TestCreateCommandIncludesLocalChangesWithoutDirtyWarning(t *testing.T) {
 	}
 
 	outcome := runCreateAliasWithCapture(CreateCommand{
-		clientFlags:         clientFlags{Host: host},
-		Chdir:               repoDir,
+		clientFlags:              clientFlags{Host: host},
+		Chdir:                    repoDir,
 		repositoryChangesetFlags: repositoryChangesetFlags{IncludeLocalChanges: true},
 	}, runtimeContext{
 		CWD: repoDir,

@@ -78,10 +78,7 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 		rootSpan.End()
 	}()
 
-	logger, err := newLogger(e.LogLevel, "client")
-	if err != nil {
-		return err
-	}
+	logger := newClientLogger()
 
 	host := e.resolvedHost(ctx.Config)
 	client, err := e.connect(ctx)
@@ -97,14 +94,7 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 		return err
 	}
 
-	logger.Debug("sending execution request",
-		"host", host,
-		"backend", e.Backend,
-		"sandbox_id", strings.TrimSpace(e.In),
-		"command_argc", len(e.Command),
-		"env_count", len(executionEnv),
-	)
-	target, err := resolveExecutionSandbox(rootCtx, logger, client, ctx, cwd, host, e.Backend, e.In, e.From, e.Image, e.LaunchSeconds, e.repositoryOverrideFlags, e.repositoryChangesetFlags)
+	target, err := resolveExecutionSandbox(rootCtx, client, ctx, cwd, host, e.Backend, e.In, e.From, e.Image, e.LaunchSeconds, e.repositoryOverrideFlags, e.repositoryChangesetFlags)
 	if err != nil {
 		if strings.TrimSpace(e.From) != "" {
 			err = explainSnapshotRuntimeDisabledError(err, ctx)
@@ -252,8 +242,6 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 	}
 	executionID = createExecutionResp.GetExecution().GetExecutionId()
 
-	logger.Debug("execution started", "sandbox_id", sandboxID, "execution_id", executionID)
-
 	streamCtx, streamCancel := context.WithCancel(rootCtx)
 	defer streamCancel()
 	stream, err := client.StreamExecution(streamCtx, &cleanroomv1.StreamExecutionRequest{
@@ -284,13 +272,8 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 				})
 				if cancelErr != nil && logger != nil {
 					logger.Warn("cancel execution request failed", "sandbox_id", sandboxID, "execution_id", executionID, "error", cancelErr)
-				} else if logger != nil && cancelResp != nil {
-					logger.Debug("cancel execution requested",
-						"sandbox_id", sandboxID,
-						"execution_id", executionID,
-						"accepted", cancelResp.GetAccepted(),
-						"status", cancelResp.GetStatus().String(),
-					)
+				} else if cancelResp != nil && !cancelResp.GetAccepted() && logger != nil {
+					logger.Warn("cancel execution request was not accepted", "sandbox_id", sandboxID, "execution_id", executionID, "status", cancelResp.GetStatus().String())
 				}
 				continue
 			}
@@ -355,13 +338,6 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 			haveExitCode = true
 		}
 	}
-
-	logger.Debug("execution complete",
-		"sandbox_id", sandboxID,
-		"execution_id", executionID,
-		"have_exit_code", haveExitCode,
-		"exit_code", exitCode,
-	)
 
 	if !haveExitCode {
 		return errors.New("execution stream ended without exit status")

@@ -86,10 +86,7 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) (runErr error) {
 		rootSpan.End()
 	}()
 
-	logger, err := newLogger(c.LogLevel, "client")
-	if err != nil {
-		return err
-	}
+	logger := newClientLogger()
 
 	host := c.resolvedHost(ctx.Config)
 	client, err := c.connect(ctx)
@@ -105,14 +102,7 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) (runErr error) {
 		return err
 	}
 
-	logger.Debug("starting interactive console",
-		"host", host,
-		"backend", c.Backend,
-		"sandbox_id", strings.TrimSpace(c.In),
-		"command_argc", len(command),
-		"env_count", len(executionEnv),
-	)
-	target, err := resolveExecutionSandbox(rootCtx, logger, client, ctx, cwd, host, c.Backend, c.In, c.From, c.Image, c.LaunchSeconds, c.repositoryOverrideFlags, c.repositoryChangesetFlags)
+	target, err := resolveExecutionSandbox(rootCtx, client, ctx, cwd, host, c.Backend, c.In, c.From, c.Image, c.LaunchSeconds, c.repositoryOverrideFlags, c.repositoryChangesetFlags)
 	if err != nil {
 		if strings.TrimSpace(c.From) != "" {
 			err = explainSnapshotRuntimeDisabledError(err, ctx)
@@ -247,7 +237,6 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) (runErr error) {
 		return fmt.Errorf("create execution: %w", err)
 	}
 	executionID = createExecutionResp.GetExecution().GetExecutionId()
-	logger.Debug("console execution started", "sandbox_id", sandboxID, "execution_id", executionID)
 
 	stdinFD := int(os.Stdin.Fd())
 	initialCols, initialRows := attachTTYSize(stdinFD)

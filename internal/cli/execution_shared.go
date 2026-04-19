@@ -43,7 +43,6 @@ type executionSandbox struct {
 // sandbox or create one up front with repository bootstrap attached.
 func resolveExecutionSandbox(
 	callCtx context.Context,
-	logger *log.Logger,
 	client *controlclient.Client,
 	ctx *runtimeContext,
 	cwd, host, backendName, existingSandboxID, fromSnapshot, imageRefOverride string,
@@ -71,7 +70,6 @@ func resolveExecutionSandbox(
 
 	sandboxID, createdSandbox, err := ensureSandboxID(
 		callCtx,
-		logger,
 		client,
 		ctx.Loader,
 		cwd,
@@ -95,7 +93,7 @@ func resolveExecutionSandbox(
 	}, nil
 }
 
-func ensureSandboxID(callCtx context.Context, logger *log.Logger, client *controlclient.Client, loader policyLoader, cwd, host, backendName, existingSandboxID, fromSnapshot, imageRefOverride string, launchSeconds int64, repository *resolvedRepositoryCheckout, changeset *cleanroomv1.RepositoryChangeset) (string, bool, error) {
+func ensureSandboxID(callCtx context.Context, client *controlclient.Client, loader policyLoader, cwd, host, backendName, existingSandboxID, fromSnapshot, imageRefOverride string, launchSeconds int64, repository *resolvedRepositoryCheckout, changeset *cleanroomv1.RepositoryChangeset) (string, bool, error) {
 	sandboxID := strings.TrimSpace(existingSandboxID)
 	fromSnapshot = strings.TrimSpace(fromSnapshot)
 	if sandboxID != "" {
@@ -117,7 +115,7 @@ func ensureSandboxID(callCtx context.Context, logger *log.Logger, client *contro
 		if strings.TrimSpace(backendName) != "" {
 			return "", false, errors.New("--backend cannot be used with --from")
 		}
-		_, sandboxID, err := createSandboxWithProgress(callCtx, logger, os.Stderr, client, &cleanroomv1.CreateSandboxRequest{
+		_, sandboxID, err := createSandboxWithProgress(callCtx, os.Stderr, client, &cleanroomv1.CreateSandboxRequest{
 			Options: &cleanroomv1.SandboxOptions{
 				LaunchSeconds: launchSeconds,
 			},
@@ -129,7 +127,7 @@ func ensureSandboxID(callCtx context.Context, logger *log.Logger, client *contro
 		return sandboxID, true, nil
 	}
 
-	sandboxID, _, err := createTopLevelSandbox(callCtx, logger, client, loader, cwd, host, backendName, imageRefOverride, launchSeconds, repository, changeset)
+	sandboxID, _, err := createTopLevelSandbox(callCtx, client, loader, cwd, host, backendName, imageRefOverride, launchSeconds, repository, changeset)
 	if err != nil {
 		return "", false, err
 	}

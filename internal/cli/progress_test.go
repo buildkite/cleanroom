@@ -56,7 +56,7 @@ func TestWithSandboxProgressFailurePrintsFailure(t *testing.T) {
 
 	wantErr := errors.New("response missing sandbox id")
 	output, err := captureSandboxProgressOutput(t, func(stderr *os.File) error {
-		return withSandboxProgress(stderr, func() error {
+		return withSandboxProgress(stderr, func(_ *sandboxProgress) error {
 			time.Sleep(25 * time.Millisecond)
 			return wantErr
 		})
@@ -77,7 +77,7 @@ func TestWithSandboxProgressNoColorAvoidsANSIControlSequences(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
 
 	output, err := captureSandboxProgressOutput(t, func(stderr *os.File) error {
-		return withSandboxProgress(stderr, func() error {
+		return withSandboxProgress(stderr, func(_ *sandboxProgress) error {
 			time.Sleep(25 * time.Millisecond)
 			return nil
 		})
@@ -96,6 +96,35 @@ func TestWithSandboxProgressNoColorAvoidsANSIControlSequences(t *testing.T) {
 	}
 	if strings.Contains(output, "\r") {
 		t.Fatalf("did not expect carriage-return rewriting in no-color mode, got %q", output)
+	}
+}
+
+func TestWithSandboxProgressSuppressStopsFramesBeforeStreamingOutput(t *testing.T) {
+	forceSandboxProgressTTY(t)
+
+	output, err := captureSandboxProgressOutput(t, func(stderr *os.File) error {
+		return withSandboxProgress(stderr, func(progress *sandboxProgress) error {
+			time.Sleep(25 * time.Millisecond)
+			progress.suppress()
+			if _, err := stderr.WriteString("Cloning into '/workspace'...\n"); err != nil {
+				return err
+			}
+			time.Sleep(25 * time.Millisecond)
+			return nil
+		})
+	})
+	if err != nil {
+		t.Fatalf("withSandboxProgress returned error: %v", err)
+	}
+	idx := strings.Index(output, "Cloning into '/workspace'...")
+	if idx == -1 {
+		t.Fatalf("expected streamed output, got %q", output)
+	}
+	if strings.Contains(output[idx:], "Preparing sandbox") {
+		t.Fatalf("did not expect spinner frames after streamed output starts, got %q", output)
+	}
+	if !strings.Contains(output, "Sandbox ready in") {
+		t.Fatalf("expected completion message, got %q", output)
 	}
 }
 

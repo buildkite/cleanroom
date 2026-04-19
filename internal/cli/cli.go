@@ -77,9 +77,8 @@ func (c *VersionCommand) Run() error {
 }
 
 type clientFlags struct {
-	Host     string `help:"Control-plane endpoint (unix://path, http://host:port, or https://host:port)" env:"CLEANROOM_HOST"`
-	LogLevel string `help:"Client log level (debug|info|warn|error)"`
-	TLSCA    string `name:"tls-ca" aliases:"tlsca" help:"Path to CA certificate for server verification (auto-discovered from XDG config for https)" env:"CLEANROOM_TLS_CA"`
+	Host  string `help:"Control-plane endpoint (unix://path, http://host:port, or https://host:port)" env:"CLEANROOM_HOST"`
+	TLSCA string `name:"tls-ca" aliases:"tlsca" help:"Path to CA certificate for server verification (auto-discovered from XDG config for https)" env:"CLEANROOM_TLS_CA"`
 }
 
 func (f *clientFlags) resolvedHost(cfg runtimeconfig.Config) string {

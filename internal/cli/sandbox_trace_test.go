@@ -55,7 +55,7 @@ func TestCreateSandboxWithProgressClosesClientStreamForTracing(t *testing.T) {
 	}
 
 	rootCtx, rootSpan := clientObs.Tracer("github.com/buildkite/cleanroom/internal/cli_test").Start(context.Background(), "cleanroom.exec")
-	_, sandboxID, err := createSandboxWithProgress(rootCtx, nil, nil, client, &cleanroomv1.CreateSandboxRequest{
+	_, sandboxID, err := createSandboxWithProgress(rootCtx, nil, client, &cleanroomv1.CreateSandboxRequest{
 		Backend: "firecracker",
 		Policy:  sandboxTraceTestPolicy(),
 	})

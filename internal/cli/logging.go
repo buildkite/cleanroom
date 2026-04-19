@@ -19,3 +19,8 @@ func newLogger(rawLevel, component string) (*log.Logger, error) {
 	})
 	return logger.With("component", component), nil
 }
+
+func newClientLogger() *log.Logger {
+	logger, _ := newLogger("warn", "client")
+	return logger
+}

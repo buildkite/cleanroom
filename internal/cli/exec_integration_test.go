@@ -1225,7 +1225,7 @@ func TestExecIntegrationSecondInterruptKeepsSuppliedSandboxWithoutRemove(t *test
 	done := make(chan execOutcome, 1)
 	go func() {
 		done <- runExecWithCapture(ExecCommand{
-			clientFlags: clientFlags{Host: host, LogLevel: "debug"},
+			clientFlags: clientFlags{Host: host},
 			In:          sandboxID,
 			Command:     []string{"sleep", "300"},
 		}, runtimeContext{
@@ -1292,11 +1292,7 @@ func TestExecIntegrationVmPathUsesShForGuestCompatibility(t *testing.T) {
 }
 
 func TestParseSandboxID(t *testing.T) {
-	in := "DEBU execution started component=client sandbox_id=cr-123 execution_id=exec-456\n"
-	if got, want := parseSandboxID(in), "cr-123"; got != want {
-		t.Fatalf("unexpected sandbox id: got %q want %q", got, want)
-	}
-	in = "sandbox_id=cr_123\n"
+	in := "sandbox_id=cr_123\n"
 	if got, want := parseSandboxID(in), "cr_123"; got != want {
 		t.Fatalf("unexpected sandbox id from print output: got %q want %q", got, want)
 	}
@@ -1306,11 +1302,7 @@ func TestParseSandboxID(t *testing.T) {
 }
 
 func TestParseExecutionID(t *testing.T) {
-	in := "DEBU execution started component=client sandbox_id=cr-123 execution_id=exec-456\n"
-	if got, want := parseExecutionID(in), "exec-456"; got != want {
-		t.Fatalf("unexpected execution id: got %q want %q", got, want)
-	}
-	in = "execution_id=exec_456\n"
+	in := "execution_id=exec_456\n"
 	if got, want := parseExecutionID(in), "exec_456"; got != want {
 		t.Fatalf("unexpected execution id from print output: got %q want %q", got, want)
 	}

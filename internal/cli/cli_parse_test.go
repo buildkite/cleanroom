@@ -49,6 +49,19 @@ func TestExecCommandStillRequiresArgs(t *testing.T) {
 	}
 }
 
+func TestExecCommandRejectsRemovedClientLogLevelFlag(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	_, err := parser.Parse([]string{"exec", "--log-level", "debug", "--", "echo", "hello"})
+	if err == nil {
+		t.Fatal("expected parse error for removed client --log-level flag")
+	}
+	if !strings.Contains(err.Error(), "unknown flag") || !strings.Contains(err.Error(), "--log-level") {
+		t.Fatalf("expected unknown flag parse error, got %v", err)
+	}
+}
+
 func TestImagePullRequiresRef(t *testing.T) {
 	c := &CLI{}
 	parser := newParserForTest(t, c)
