@@ -129,8 +129,8 @@ func TestConfigInitWritesRuntimeConfig(t *testing.T) {
 	if !strings.Contains(string(raw), "snapshots:") {
 		t.Fatalf("expected generated config to include snapshot defaults, got:\n%s", raw)
 	}
-	if runtime.GOOS != "darwin" && !strings.Contains(string(raw), "enabled: false") {
-		t.Fatalf("expected generated config to include disabled snapshot default, got:\n%s", raw)
+	if strings.Contains(string(raw), "enabled: false") {
+		t.Fatalf("expected generated config to omit zero-value snapshot enabled field, got:\n%s", raw)
 	}
 	if runtime.GOOS != "darwin" && !strings.Contains(string(raw), "driver: file") {
 		t.Fatalf("expected generated config to include firecracker snapshot driver default, got:\n%s", raw)
