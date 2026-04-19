@@ -1,7 +1,6 @@
 package controlservice
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -98,6 +97,7 @@ type executionState struct {
 	LaunchedVM        bool
 	PlanPath          string
 	RunDir            string
+	PreRunActive      bool
 	CancelRequested   bool
 	CancelSignal      int32
 	Cancel            context.CancelFunc
@@ -1081,6 +1081,7 @@ func (s *Service) CreateExecution(ctx context.Context, req *cleanroomv1.CreateEx
 		TTY:               tty,
 		Kind:              kind,
 		Status:            cleanroomv1.ExecutionStatus_EXECUTION_STATUS_QUEUED,
+		PreRunActive:      len(preRunBefore) > 0,
 		ParentSpanContext: trace.SpanContextFromContext(ctx),
 		events:            newEventFeed[*cleanroomv1.ExecutionStreamEvent](s.retention().maxRetainedExecutionEvents),
 		Done:              make(chan struct{}),
@@ -1432,7 +1433,7 @@ func (s *Service) WriteExecutionStdin(sandboxID, executionID string, data []byte
 			s.mu.RUnlock()
 			return errors.New("execution is not running")
 		}
-		if deadline.IsZero() {
+		if !ex.PreRunActive && deadline.IsZero() {
 			deadline = clock.Now().Add(s.executionAttachStdinWaitLocked(sandboxID, ex))
 		}
 		writeFn = ex.AttachStdin
@@ -1442,7 +1443,7 @@ func (s *Service) WriteExecutionStdin(sandboxID, executionID string, data []byte
 		if writeFn != nil {
 			return writeFn(payload)
 		}
-		if clock.Now().After(deadline) {
+		if !deadline.IsZero() && clock.Now().After(deadline) {
 			return ErrExecutionStdinUnsupported
 		}
 		select {
@@ -1479,7 +1480,7 @@ func (s *Service) CloseExecutionStdin(sandboxID, executionID string) error {
 			s.mu.RUnlock()
 			return errors.New("execution is not running")
 		}
-		if deadline.IsZero() {
+		if !ex.PreRunActive && deadline.IsZero() {
 			deadline = clock.Now().Add(s.executionAttachStdinWaitLocked(sandboxID, ex))
 		}
 		closeFn = ex.AttachCloseStdin
@@ -1489,7 +1490,7 @@ func (s *Service) CloseExecutionStdin(sandboxID, executionID string) error {
 		if closeFn != nil {
 			return closeFn()
 		}
-		if clock.Now().After(deadline) {
+		if !deadline.IsZero() && clock.Now().After(deadline) {
 			return ErrExecutionStdinUnsupported
 		}
 		select {
@@ -1528,7 +1529,7 @@ func (s *Service) ResizeExecutionTTY(sandboxID, executionID string, cols, rows u
 	}
 
 	clock := s.clock()
-	deadline := clock.Now().Add(s.timeouts().attachResizeRegistrationWait)
+	var deadline time.Time
 	for {
 		var (
 			resizeFn func(cols, rows uint32) error
@@ -1544,6 +1545,9 @@ func (s *Service) ResizeExecutionTTY(sandboxID, executionID string, cols, rows u
 			s.mu.RUnlock()
 			return errors.New("execution is not running")
 		}
+		if !ex.PreRunActive && deadline.IsZero() {
+			deadline = clock.Now().Add(s.timeouts().attachResizeRegistrationWait)
+		}
 		resizeFn = ex.AttachResize
 		done = ex.Done
 		s.mu.RUnlock()
@@ -1551,7 +1555,7 @@ func (s *Service) ResizeExecutionTTY(sandboxID, executionID string, cols, rows u
 		if resizeFn != nil {
 			return resizeFn(cols, rows)
 		}
-		if clock.Now().After(deadline) {
+		if !deadline.IsZero() && clock.Now().After(deadline) {
 			return ErrExecutionResizeUnsupported
 		}
 		select {
@@ -1786,6 +1790,7 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 	}
 	preRunBefore := append([]string(nil), ex.PreRunBefore...)
 	if len(preRunBefore) > 0 {
+		ex.PreRunActive = true
 		s.recordExecutionEventLocked(ex, &cleanroomv1.ExecutionStreamEvent{
 			SandboxId:   sandboxID,
 			ExecutionId: executionID,
@@ -1828,6 +1833,7 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 			s.mu.Unlock()
 			return
 		}
+		ex.PreRunActive = false
 		if preRunErr != nil {
 			span.RecordError(preRunErr)
 			span.SetStatus(codes.Error, preRunErr.Error())
@@ -1897,8 +1903,8 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 
 	commandOutputPrefixStdout := ""
 	commandOutputPrefixStderr := ""
-	commandStreamStdout := &bytes.Buffer{}
-	commandStreamStderr := &bytes.Buffer{}
+	commandStreamStdout := newRetainedOutputCapture(s.retention().maxRetainedExecutionOutputBytes)
+	commandStreamStderr := newRetainedOutputCapture(s.retention().maxRetainedExecutionOutputBytes)
 
 	s.mu.Lock()
 	if ex, ok := s.executions[key]; ok {
@@ -1997,11 +2003,11 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 	}
 }
 
-func (s *Service) runAdapterExecution(runCtx context.Context, adapter backend.Adapter, executionReq backend.ExecutionRequest, key string, stdoutCapture, stderrCapture *bytes.Buffer) (*backend.ExecutionResult, error) {
+func (s *Service) runAdapterExecution(runCtx context.Context, adapter backend.Adapter, executionReq backend.ExecutionRequest, key string, stdoutCapture, stderrCapture *retainedOutputCapture) (*backend.ExecutionResult, error) {
 	return adapter.RunInSandbox(runCtx, executionReq, s.executionOutputStream(key, stdoutCapture, stderrCapture))
 }
 
-func (s *Service) executionOutputStream(key string, stdoutCapture, stderrCapture *bytes.Buffer) backend.OutputStream {
+func (s *Service) executionOutputStream(key string, stdoutCapture, stderrCapture *retainedOutputCapture) backend.OutputStream {
 	return backend.OutputStream{
 		OnStdout: func(chunk []byte) {
 			if stdoutCapture != nil {
