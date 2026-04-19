@@ -69,10 +69,9 @@ func (c *ExecutionInspectCommand) Run(ctx *runtimeContext) error {
 	}
 	if strings.TrimSpace(resp.GetTraceUrl()) == "" {
 		traceURL, err := runtimeconfig.RenderTraceURL(ctx.Config.Observability, resp.GetTraceId(), executionID, resolvedSandboxID)
-		if err != nil {
-			return err
+		if err == nil {
+			resp.TraceUrl = traceURL
 		}
-		resp.TraceUrl = traceURL
 	}
 
 	if c.JSON {
