@@ -26,6 +26,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 	"github.com/buildkite/cleanroom/internal/snapshotstore"
 	"github.com/charmbracelet/log"
+	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -109,6 +110,7 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 		gwMirrors,
 		contentCache,
 		ctx.Observability.TracerProvider(),
+		ctx.Observability.MeterProvider(),
 		logger.With("subsystem", "gateway"),
 		darwinGatewayHost,
 	))
@@ -184,7 +186,7 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 	return runErr
 }
 
-func gatewayServerConfig(listen string, registry *gateway.Registry, credentials gateway.CredentialProvider, mirrors gateway.GitMirrorStore, contentCache *gateway.ContentCache, tracerProvider trace.TracerProvider, logger *log.Logger, darwinGatewayHost string) gateway.ServerConfig {
+func gatewayServerConfig(listen string, registry *gateway.Registry, credentials gateway.CredentialProvider, mirrors gateway.GitMirrorStore, contentCache *gateway.ContentCache, tracerProvider trace.TracerProvider, meterProvider metric.MeterProvider, logger *log.Logger, darwinGatewayHost string) gateway.ServerConfig {
 	sourcePolicy := gatewayScopeTokenSourcePolicyForGatewayHost(strings.TrimSpace(darwinGatewayHost))
 	return gateway.ServerConfig{
 		ListenAddr:                      listen,
@@ -194,6 +196,7 @@ func gatewayServerConfig(listen string, registry *gateway.Registry, credentials 
 		ContentCache:                    contentCache,
 		Logger:                          logger,
 		TracerProvider:                  tracerProvider,
+		MeterProvider:                   meterProvider,
 		ScopeTokenTrustedSourcePrefixes: sourcePolicy.TrustedSourcePrefixes,
 		AllowScopeTokenFromAnySource:    sourcePolicy.AllowScopeTokenFromAnySource,
 	}

@@ -30,6 +30,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/gateway"
 	"github.com/buildkite/cleanroom/internal/hosttools"
 	"github.com/buildkite/cleanroom/internal/imagemgr"
+	"github.com/buildkite/cleanroom/internal/observability"
 	"github.com/buildkite/cleanroom/internal/paths"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/volumestore"
@@ -37,6 +38,7 @@ import (
 	"github.com/charmbracelet/log"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/sys/unix"
 )
@@ -71,6 +73,10 @@ type Adapter struct {
 	GatewayPort      int
 	GatewayBridgeURL string
 	GatewayRoutes    gateway.ProxyRoutes
+	MeterProvider    metric.MeterProvider
+	metricsOnce      sync.Once
+	metrics          *observability.BackendMetrics
+	metricsErr       error
 
 	ConfiguredNetworkMode string
 }
@@ -157,6 +163,38 @@ var (
 func New() *Adapter {
 	return &Adapter{
 		newImageManager: defaultImageManagerFactory,
+	}
+}
+
+func (a *Adapter) backendMetrics() *observability.BackendMetrics {
+	if a == nil {
+		return nil
+	}
+	a.metricsOnce.Do(func() {
+		a.metrics, a.metricsErr = observability.NewBackendMetrics(a.MeterProvider, "github.com/buildkite/cleanroom/internal/backend/darwinvz")
+		if a.metricsErr != nil {
+			log.Warn("darwin-vz backend metrics unavailable", "error", a.metricsErr)
+		}
+	})
+	return a.metrics
+}
+
+func (a *Adapter) recordLaunchPhaseMetrics(ctx context.Context, observation darwinVZRunObservation) {
+	metrics := a.backendMetrics()
+	if metrics == nil {
+		return
+	}
+	if observation.RootFSCopyMS > 0 {
+		metrics.RecordLaunchPhase(ctx, a.Name(), "rootfs_prepare", time.Duration(observation.RootFSCopyMS)*time.Millisecond)
+	}
+	if observation.VMReadyMS > 0 {
+		metrics.RecordLaunchPhase(ctx, a.Name(), "guest_wait_ready", time.Duration(observation.VMReadyMS)*time.Millisecond)
+	}
+	for phase, durationMS := range observation.HelperTimingMS {
+		if durationMS <= 0 {
+			continue
+		}
+		metrics.RecordLaunchPhase(ctx, a.Name(), "helper_"+strings.TrimSpace(phase), time.Duration(durationMS)*time.Millisecond)
 	}
 }
 
@@ -388,6 +426,7 @@ func (a *Adapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest
 		if err := writeDarwinVZRunObservation(runDir, &observation, time.Since(runStart).Milliseconds()); err != nil {
 			log.Warn("write darwin-vz run observability failed", "execution_id", req.ExecutionID, "error", err)
 		}
+		a.recordLaunchPhaseMetrics(ctx, observation)
 	}()
 
 	connectSeconds := req.LaunchSeconds

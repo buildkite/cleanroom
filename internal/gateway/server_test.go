@@ -11,6 +11,9 @@ import (
 	"testing"
 
 	"github.com/buildkite/cleanroom/internal/policy"
+	"go.opentelemetry.io/otel/attribute"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	tracetest "go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
@@ -137,6 +140,122 @@ func TestTracingMiddlewareUsesActiveExecutionTrace(t *testing.T) {
 	if got, want := gatewaySpan.Parent().SpanID(), parentSpan.SpanContext().SpanID(); got != want {
 		t.Fatalf("unexpected gateway parent span id: got %s want %s", got, want)
 	}
+}
+
+func TestTracingMiddlewareEmitsGatewayMetrics(t *testing.T) {
+	t.Parallel()
+
+	reg := NewRegistry()
+	p := &policy.CompiledPolicy{Version: 1, NetworkDefault: "deny", Allow: []policy.AllowRule{{Host: "github.com"}}}
+	if err := reg.Register("10.1.1.2", "sandbox-1", p); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	reader := sdkmetric.NewManualReader()
+	meterProvider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	defer func() {
+		_ = meterProvider.Shutdown(context.Background())
+	}()
+
+	srv := NewServer(ServerConfig{Registry: reg, MeterProvider: meterProvider})
+	handler := srv.identityMiddleware(srv.pathMiddleware(srv.tracingMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		setGatewayRequestDecision(r.Context(), "allow", "proxied")
+		w.WriteHeader(http.StatusNoContent)
+	}))))
+
+	req := httptest.NewRequest(http.MethodGet, "/git/github.com/org/repo.git/info/refs?service=git-upload-pack", nil)
+	req.RemoteAddr = "10.1.1.2:12345"
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", w.Code)
+	}
+
+	metrics := collectGatewayResourceMetrics(t, reader)
+	requireGatewayMetricSum(t, metrics, "cleanroom_gateway_requests_total", map[string]string{
+		"service":      "git",
+		"action":       "allow",
+		"reason_code":  "proxied",
+		"status_class": "2xx",
+	}, 1)
+	requireGatewayHistogramCount(t, metrics, "cleanroom_gateway_request_duration_seconds", map[string]string{
+		"service": "git",
+		"action":  "allow",
+	}, 1)
+}
+
+func collectGatewayResourceMetrics(t *testing.T, reader *sdkmetric.ManualReader) metricdata.ResourceMetrics {
+	t.Helper()
+	var metrics metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &metrics); err != nil {
+		t.Fatalf("Collect returned error: %v", err)
+	}
+	return metrics
+}
+
+func requireGatewayMetricSum(t *testing.T, metrics metricdata.ResourceMetrics, name string, attrs map[string]string, want int64) {
+	t.Helper()
+	for _, scopeMetrics := range metrics.ScopeMetrics {
+		for _, metric := range scopeMetrics.Metrics {
+			if metric.Name != name {
+				continue
+			}
+			sum, ok := metric.Data.(metricdata.Sum[int64])
+			if !ok {
+				t.Fatalf("metric %q had unexpected data type %T", name, metric.Data)
+			}
+			for _, point := range sum.DataPoints {
+				if gatewayMetricAttributesMatch(point.Attributes, attrs) {
+					if point.Value != want {
+						t.Fatalf("metric %q had value %d, want %d", name, point.Value, want)
+					}
+					return
+				}
+			}
+		}
+	}
+	t.Fatalf("metric %q with attrs %#v not found", name, attrs)
+}
+
+func requireGatewayHistogramCount(t *testing.T, metrics metricdata.ResourceMetrics, name string, attrs map[string]string, want uint64) {
+	t.Helper()
+	for _, scopeMetrics := range metrics.ScopeMetrics {
+		for _, metric := range scopeMetrics.Metrics {
+			if metric.Name != name {
+				continue
+			}
+			histogram, ok := metric.Data.(metricdata.Histogram[float64])
+			if !ok {
+				t.Fatalf("metric %q had unexpected data type %T", name, metric.Data)
+			}
+			for _, point := range histogram.DataPoints {
+				if gatewayMetricAttributesMatch(point.Attributes, attrs) {
+					if point.Count != want {
+						t.Fatalf("metric %q had count %d, want %d", name, point.Count, want)
+					}
+					return
+				}
+			}
+		}
+	}
+	t.Fatalf("metric %q with attrs %#v not found", name, attrs)
+}
+
+func gatewayMetricAttributesMatch(set attribute.Set, want map[string]string) bool {
+	if len(want) == 0 {
+		return true
+	}
+	got := map[string]string{}
+	for _, kv := range set.ToSlice() {
+		got[string(kv.Key)] = kv.Value.AsString()
+	}
+	for key, wantValue := range want {
+		if got[key] != wantValue {
+			return false
+		}
+	}
+	return true
 }
 
 func TestIdentityMiddlewareFallsBackToScopeToken(t *testing.T) {

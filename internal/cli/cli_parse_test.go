@@ -496,6 +496,39 @@ func TestRuntimeServiceNameUsesDescriptiveNames(t *testing.T) {
 	}
 }
 
+func TestCommandUsesStartupObservabilitySkipsDaemonLifecycleCommands(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		args    []string
+		wantUse bool
+	}{
+		{name: "serve", args: []string{"serve"}, wantUse: true},
+		{name: "exec", args: []string{"exec", "--", "echo", "ok"}, wantUse: true},
+		{name: "daemon install", args: []string{"daemon", "install"}, wantUse: false},
+		{name: "daemon install restart", args: []string{"daemon", "install", "--restart"}, wantUse: false},
+		{name: "daemon status", args: []string{"daemon", "status"}, wantUse: false},
+		{name: "daemon restart", args: []string{"daemon", "restart"}, wantUse: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := &CLI{}
+			parser := newParserForTest(t, c)
+
+			ctx, err := parser.Parse(tt.args)
+			if err != nil {
+				t.Fatalf("parse %q returned error: %v", strings.Join(tt.args, " "), err)
+			}
+
+			if got := commandUsesStartupObservability(ctx); got != tt.wantUse {
+				t.Fatalf("unexpected observability startup decision for %q: got %t want %t", ctx.Command(), got, tt.wantUse)
+			}
+		})
+	}
+}
+
 func TestReportObservabilityShutdownWarnsWithoutFailingSuccessfulRun(t *testing.T) {
 	t.Parallel()
 

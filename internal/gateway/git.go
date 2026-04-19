@@ -84,6 +84,7 @@ func (h *gitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	)
 
 	if !scope.Policy.Allows(upstreamHost, 443) {
+		setGatewayRequestDecision(r.Context(), "deny", reasonHostNotAllowed)
 		span.SetAttributes(
 			attribute.String("cleanroom.gateway.action", "deny"),
 			attribute.String("cleanroom.reason_code", reasonHostNotAllowed),
@@ -96,6 +97,7 @@ func (h *gitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	requestType, err := h.classifyRequest(r.Method, repoPath, r.URL.RawQuery)
 	if err != nil {
+		setGatewayRequestDecision(r.Context(), "deny", reasonMethodNotAllowed)
 		span.RecordError(err)
 		span.SetAttributes(
 			attribute.String("cleanroom.gateway.action", "deny"),
@@ -118,6 +120,7 @@ func (h *gitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if h.mirrors != nil {
 		if err := h.serveFromMirror(w, r, remoteURL, upstreamHost, repoPath, requestType); err != nil {
+			setGatewayRequestDecision(r.Context(), "deny", reasonUpstreamError)
 			span.RecordError(err)
 			span.SetAttributes(
 				attribute.String("cleanroom.gateway.action", "deny"),
@@ -128,6 +131,7 @@ func (h *gitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeReasonError(w, http.StatusBadGateway, reasonUpstreamError, err.Error())
 			return
 		}
+		setGatewayRequestDecision(r.Context(), "allow", "mirrored")
 		span.SetAttributes(
 			attribute.String("cleanroom.gateway.action", "allow"),
 			attribute.String("cleanroom.reason_code", "mirrored"),
@@ -167,10 +171,12 @@ func (h *gitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		attribute.String("cleanroom.gateway.action", "allow"),
 		attribute.String("cleanroom.reason_code", "proxied"),
 	)
+	setGatewayRequestDecision(r.Context(), "allow", "proxied")
 	h.auditLog(scope.SandboxID, upstreamHost, repoPath, "allow", "proxied")
 
 	resp, err := h.client.Do(upstreamReq)
 	if err != nil {
+		setGatewayRequestDecision(r.Context(), "deny", reasonUpstreamError)
 		span.RecordError(err)
 		span.SetAttributes(attribute.String("cleanroom.reason_code", reasonUpstreamError))
 		span.SetStatus(codes.Error, err.Error())

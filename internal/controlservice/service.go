@@ -37,6 +37,9 @@ type Service struct {
 	Backends        map[string]backend.Adapter
 	Logger          *log.Logger
 	Observability   *observability.Runtime
+	metricsOnce     sync.Once
+	metrics         *observability.ServiceMetrics
+	metricsErr      error
 	RepositoryStore repositorystore.RepositoryStore
 	runtime         serviceRuntime
 	interactive     interactiveSessionBroker
@@ -166,6 +169,63 @@ type executionSnapshot struct {
 	TraceID     string
 }
 
+func (s *Service) serviceMetrics() *observability.ServiceMetrics {
+	if s == nil {
+		return nil
+	}
+	s.metricsOnce.Do(func() {
+		if s.Observability == nil {
+			return
+		}
+		s.metrics, s.metricsErr = observability.NewServiceMetrics(s.Observability.MeterProvider())
+		if s.metricsErr != nil && s.Logger != nil {
+			s.Logger.Warn("service metrics unavailable", "error", s.metricsErr)
+		}
+	})
+	return s.metrics
+}
+
+func sandboxCreateSourceMetricValue(snapshotID string, resp *cleanroomv1.CreateSandboxResponse) string {
+	if resp != nil {
+		switch strings.TrimSpace(resp.GetSourceKind()) {
+		case "snapshot":
+			return "snapshot"
+		case "workspace stage cache":
+			return "workspace_cache"
+		case "dependency stage cache":
+			return "dependency_cache"
+		}
+	}
+	if strings.TrimSpace(snapshotID) != "" {
+		return "snapshot"
+	}
+	return "fresh"
+}
+
+func executionKindMetricValue(kind cleanroomv1.ExecutionKind) string {
+	switch kind {
+	case cleanroomv1.ExecutionKind_EXECUTION_KIND_INTERACTIVE:
+		return "interactive"
+	case cleanroomv1.ExecutionKind_EXECUTION_KIND_BATCH:
+		return "batch"
+	default:
+		return strings.ToLower(strings.TrimPrefix(kind.String(), "EXECUTION_KIND_"))
+	}
+}
+
+func executionOutcomeMetricValue(status cleanroomv1.ExecutionStatus) string {
+	switch status {
+	case cleanroomv1.ExecutionStatus_EXECUTION_STATUS_SUCCEEDED:
+		return "succeeded"
+	case cleanroomv1.ExecutionStatus_EXECUTION_STATUS_FAILED:
+		return "failed"
+	case cleanroomv1.ExecutionStatus_EXECUTION_STATUS_CANCELED:
+		return "canceled"
+	default:
+		return strings.ToLower(strings.TrimPrefix(status.String(), "EXECUTION_STATUS_"))
+	}
+}
+
 var (
 	ErrExecutionStdinUnsupported  = errors.New("execution stdin attach is not supported by the current backend")
 	ErrExecutionResizeUnsupported = errors.New("execution resize is not supported by the current backend")
@@ -183,8 +243,10 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	if req == nil {
 		return nil, errors.New("missing request")
 	}
+	createStarted := s.clock().Now()
 	snapshotID := strings.TrimSpace(req.GetSnapshotId())
 	changeset := repositoryChangesetFromProto(req.GetRepositoryChangeset())
+	backendName := resolveBackendName(strings.TrimSpace(req.GetBackend()), s.Config.DefaultBackend)
 	ctx, span := s.Observability.Tracer("github.com/buildkite/cleanroom/internal/controlservice").Start(
 		ctx,
 		"cleanroom.sandbox.create",
@@ -206,6 +268,15 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 			span.SetStatus(codes.Error, err.Error())
 		} else {
 			span.SetStatus(codes.Ok, "")
+		}
+		if metrics := s.serviceMetrics(); metrics != nil {
+			metrics.RecordSandboxCreate(
+				ctx,
+				backendName,
+				sandboxCreateSourceMetricValue(snapshotID, resp),
+				map[bool]string{true: "failed", false: "succeeded"}[err != nil],
+				s.clock().Now().Sub(createStarted),
+			)
 		}
 		span.End()
 	}()
@@ -231,7 +302,6 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 		return nil, fmt.Errorf("invalid policy: %w", err)
 	}
 
-	backendName := resolveBackendName(strings.TrimSpace(req.GetBackend()), s.Config.DefaultBackend)
 	span.SetAttributes(attribute.String("cleanroom.backend", backendName))
 	adapter, ok := s.Backends[backendName]
 	if !ok {
@@ -287,7 +357,15 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 
 			if dependencyStageCachingEnabled {
 				emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_LOOKUP_DEPENDENCY_STAGE_CACHE, "checking dependency stage cache")
-				record, found, err := s.lookupDependencyStageCache(ctx, backendName, compiled, repository, dependencyStagePlan)
+				var record cachestore.Record
+				var found bool
+				err := s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.lookup_dependency_stage_cache", []attribute.KeyValue{
+					attribute.String("cleanroom.backend", backendName),
+				}, func(ctx context.Context) error {
+					var lookupErr error
+					record, found, lookupErr = s.lookupDependencyStageCache(ctx, backendName, compiled, repository, dependencyStagePlan)
+					return lookupErr
+				})
 				if err != nil {
 					s.logDependencyStageWarning("lookup dependency stage cache", "", err)
 				} else if found {
@@ -298,15 +376,22 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 						Backend: backendName,
 						Options: req.GetOptions(),
 					}
-					resp, restoreErr := s.createSandboxFromCacheRecord(ctx, restoreReq, compiled, record, reporter)
+					var restoreResp *cleanroomv1.CreateSandboxResponse
+					restoreErr := s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.restore_dependency_stage_cache", []attribute.KeyValue{
+						attribute.String("cleanroom.backend", backendName),
+					}, func(ctx context.Context) error {
+						var err error
+						restoreResp, err = s.createSandboxFromCacheRecord(ctx, restoreReq, compiled, record, reporter)
+						return err
+					})
 					if restoreErr == nil {
 						if cacheStore, err := s.cacheStoreOrErr(); err == nil {
 							if err := cacheStore.Touch(ctx, record.Stage, record.CacheKey); err != nil {
 								s.logDependencyStageWarning("touch dependency stage cache", "", err)
 							}
 						}
-						s.logDependencyStageRestore(record, resp.GetSandbox().GetSandboxId())
-						return resp, nil
+						s.logDependencyStageRestore(record, restoreResp.GetSandbox().GetSandboxId())
+						return restoreResp, nil
 					}
 					recordCopy := record
 					replacedDependencyStageRecord = &recordCopy
@@ -318,7 +403,15 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 			}
 
 			emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_LOOKUP_WORKSPACE_STAGE_CACHE, "checking workspace stage cache")
-			record, found, err := s.lookupWorkspaceStageCache(ctx, backendName, compiled, workspaceStageRuntimeBaseKey, repository, changeset)
+			var record cachestore.Record
+			var found bool
+			err := s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.lookup_workspace_stage_cache", []attribute.KeyValue{
+				attribute.String("cleanroom.backend", backendName),
+			}, func(ctx context.Context) error {
+				var lookupErr error
+				record, found, lookupErr = s.lookupWorkspaceStageCache(ctx, backendName, compiled, workspaceStageRuntimeBaseKey, repository, changeset)
+				return lookupErr
+			})
 			if err != nil {
 				s.logWorkspaceStageWarning("lookup workspace stage cache", "", err)
 			} else if found {
@@ -329,18 +422,25 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 					Backend: backendName,
 					Options: req.GetOptions(),
 				}
-				resp, restoreErr := s.createSandboxFromCacheRecord(ctx, restoreReq, compiled, record, reporter)
+				var restoreResp *cleanroomv1.CreateSandboxResponse
+				restoreErr := s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.restore_workspace_stage_cache", []attribute.KeyValue{
+					attribute.String("cleanroom.backend", backendName),
+				}, func(ctx context.Context) error {
+					var err error
+					restoreResp, err = s.createSandboxFromCacheRecord(ctx, restoreReq, compiled, record, reporter)
+					return err
+				})
 				if restoreErr == nil {
 					if cacheStore, err := s.cacheStoreOrErr(); err == nil {
 						if err := cacheStore.Touch(ctx, record.Stage, record.CacheKey); err != nil {
 							s.logWorkspaceStageWarning("touch workspace stage cache", "", err)
 						}
 					}
-					s.logWorkspaceStageRestore(record, resp.GetSandbox().GetSandboxId())
+					s.logWorkspaceStageRestore(record, restoreResp.GetSandbox().GetSandboxId())
 					if !dependencyStageBootstrapEnabled {
-						return resp, nil
+						return restoreResp, nil
 					}
-					restoredWorkspaceResp = resp
+					restoredWorkspaceResp = restoreResp
 				} else {
 					recordCopy := record
 					replacedWorkspaceStageRecord = &recordCopy
@@ -428,7 +528,12 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	}
 	if changeset != nil {
 		emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_APPLY_REPOSITORY_CHANGESET, "applying repository changeset")
-		if err := s.bootstrapRepositoryChangesetInPersistentSandbox(ctx, adapter, sandboxID, compiled, firecrackerCfg, repository, changeset, reporter); err != nil {
+		if err := s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.apply_repository_changeset", []attribute.KeyValue{
+			attribute.String("cleanroom.backend", backendName),
+			attribute.String("cleanroom.sandbox.id", sandboxID),
+		}, func(ctx context.Context) error {
+			return s.bootstrapRepositoryChangesetInPersistentSandbox(ctx, adapter, sandboxID, compiled, firecrackerCfg, repository, changeset, reporter)
+		}); err != nil {
 			if terminateErr := s.terminateCreatedSandbox(context.Background(), adapter, sandboxID); terminateErr != nil {
 				return nil, fmt.Errorf("apply repository changeset: %w; cleanup failed: %v", err, terminateErr)
 			}
@@ -437,7 +542,13 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	}
 	if snapshotCapable && workspaceStageCachingEnabled {
 		emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_PUBLISH_WORKSPACE_STAGE_CACHE, "publishing workspace stage cache")
-		s.maybePublishWorkspaceStageCache(ctx, snapshotAdapter, sandboxID, backendName, compiled, firecrackerCfg, workspaceStageRuntimeBaseKey, repository, changeset, replacedWorkspaceStageRecord)
+		_ = s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.publish_workspace_stage_cache", []attribute.KeyValue{
+			attribute.String("cleanroom.backend", backendName),
+			attribute.String("cleanroom.sandbox.id", sandboxID),
+		}, func(ctx context.Context) error {
+			s.maybePublishWorkspaceStageCache(ctx, snapshotAdapter, sandboxID, backendName, compiled, firecrackerCfg, workspaceStageRuntimeBaseKey, repository, changeset, replacedWorkspaceStageRecord)
+			return nil
+		})
 	}
 	if dependencyStageBootstrapEnabled {
 		emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_BOOTSTRAP_DEPENDENCIES, "running dependency bootstrap")
@@ -455,7 +566,13 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 		}
 		if dependencyStageCachingEnabled && snapshotCapable {
 			emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_PUBLISH_DEPENDENCY_STAGE_CACHE, "publishing dependency stage cache")
-			s.maybePublishDependencyStageCache(ctx, snapshotAdapter, sandboxID, backendName, compiled, firecrackerCfg, repository, changeset, dependencyStagePlan, replacedDependencyStageRecord)
+			_ = s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.publish_dependency_stage_cache", []attribute.KeyValue{
+				attribute.String("cleanroom.backend", backendName),
+				attribute.String("cleanroom.sandbox.id", sandboxID),
+			}, func(ctx context.Context) error {
+				s.maybePublishDependencyStageCache(ctx, snapshotAdapter, sandboxID, backendName, compiled, firecrackerCfg, repository, changeset, dependencyStagePlan, replacedDependencyStageRecord)
+				return nil
+			})
 		}
 	}
 
@@ -989,7 +1106,7 @@ func (s *Service) TerminateSandbox(ctx context.Context, req *cleanroomv1.Termina
 	return resp, nil
 }
 
-func (s *Service) CreateExecution(ctx context.Context, req *cleanroomv1.CreateExecutionRequest) (*cleanroomv1.CreateExecutionResponse, error) {
+func (s *Service) CreateExecution(ctx context.Context, req *cleanroomv1.CreateExecutionRequest) (resp *cleanroomv1.CreateExecutionResponse, err error) {
 	if req == nil {
 		return nil, errors.New("missing request")
 	}
@@ -1001,6 +1118,29 @@ func (s *Service) CreateExecution(ctx context.Context, req *cleanroomv1.CreateEx
 	if len(command) == 0 {
 		return nil, errors.New("missing command")
 	}
+	ctx, span := s.Observability.Tracer("github.com/buildkite/cleanroom/internal/controlservice").Start(
+		ctx,
+		"cleanroom.execution.create",
+		trace.WithAttributes(
+			attribute.String("cleanroom.sandbox.id", sandboxID),
+			attribute.Int("cleanroom.command.argc", len(command)),
+		),
+	)
+	defer func() {
+		if resp != nil && resp.GetExecution() != nil {
+			span.SetAttributes(
+				attribute.String("cleanroom.execution.id", resp.GetExecution().GetExecutionId()),
+				attribute.String("cleanroom.execution.kind", resp.GetExecution().GetKind().String()),
+			)
+		}
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		} else {
+			span.SetStatus(codes.Ok, "")
+		}
+		span.End()
+	}()
 	executionEnv, err := normalizeExecutionEnv(req.GetEnv())
 	if err != nil {
 		return nil, err
@@ -1039,6 +1179,7 @@ func (s *Service) CreateExecution(ctx context.Context, req *cleanroomv1.CreateEx
 		s.mu.Unlock()
 		return nil, fmt.Errorf("unknown sandbox %q", sandboxID)
 	}
+	span.SetAttributes(attribute.String("cleanroom.backend", sandbox.Backend))
 	if sandbox.Status != cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY {
 		s.mu.Unlock()
 		return nil, fmt.Errorf("sandbox %q is not ready", sandboxID)
@@ -1159,7 +1300,7 @@ func (s *Service) CreateExecution(ctx context.Context, req *cleanroomv1.CreateEx
 	})
 	s.pruneStateLocked(now)
 
-	resp := &cleanroomv1.CreateExecutionResponse{Execution: cloneExecutionLocked(ex)}
+	resp = &cleanroomv1.CreateExecutionResponse{Execution: cloneExecutionLocked(ex)}
 	s.mu.Unlock()
 
 	go s.runExecution(sandboxID, executionID)
@@ -1918,6 +2059,11 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 	)
 	s.mu.Unlock()
 	defer span.End()
+	recordExecutionMetrics := func(status cleanroomv1.ExecutionStatus, finished time.Time) {
+		if metrics := s.serviceMetrics(); metrics != nil {
+			metrics.RecordExecution(runCtx, sb.Backend, executionKindMetricValue(ex.Kind), executionOutcomeMetricValue(status), finished.Sub(started))
+		}
+	}
 
 	if len(preRunBefore) > 0 {
 		preRunExecutionID := s.ids().NewExecutionID()
@@ -1941,6 +2087,7 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 			clearExecutionRuntimeHandlesLocked(ex)
 			finished := s.clock().Now()
 			s.finalizeExecutionLocked(ex, finalStatus, exitCode, preRunErr.Error(), "", finished)
+			recordExecutionMetrics(finalStatus, finished)
 			if sb, ok := s.sandboxes[sandboxID]; ok && sb.ActiveExecutionID == executionID {
 				sb.ActiveExecutionID = ""
 				sb.UpdatedAt = s.clock().Now()
@@ -1952,6 +2099,7 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 			clearExecutionRuntimeHandlesLocked(ex)
 			finished := s.clock().Now()
 			s.finalizeExecutionLocked(ex, cleanroomv1.ExecutionStatus_EXECUTION_STATUS_FAILED, 1, "sandbox.run.before returned no result", "", finished)
+			recordExecutionMetrics(cleanroomv1.ExecutionStatus_EXECUTION_STATUS_FAILED, finished)
 			if sb, ok := s.sandboxes[sandboxID]; ok && sb.ActiveExecutionID == executionID {
 				sb.ActiveExecutionID = ""
 				sb.UpdatedAt = s.clock().Now()
@@ -1981,6 +2129,7 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 			}
 			clearExecutionRuntimeHandlesLocked(ex)
 			s.finalizeExecutionLocked(ex, finalStatus, finalExitCode, msg, "", finished)
+			recordExecutionMetrics(finalStatus, finished)
 			if sb, ok := s.sandboxes[sandboxID]; ok && sb.ActiveExecutionID == executionID {
 				sb.ActiveExecutionID = ""
 				sb.UpdatedAt = s.clock().Now()
@@ -1992,6 +2141,7 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 			clearExecutionRuntimeHandlesLocked(ex)
 			finished := s.clock().Now()
 			s.finalizeExecutionLocked(ex, cleanroomv1.ExecutionStatus_EXECUTION_STATUS_CANCELED, cancelExitCode(ex.CancelSignal), ex.Message, "execution canceled before command start", finished)
+			recordExecutionMetrics(cleanroomv1.ExecutionStatus_EXECUTION_STATUS_CANCELED, finished)
 			if sb, ok := s.sandboxes[sandboxID]; ok && sb.ActiveExecutionID == executionID {
 				sb.ActiveExecutionID = ""
 				sb.UpdatedAt = s.clock().Now()
@@ -2038,6 +2188,7 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 		}
 		finished := s.clock().Now()
 		s.finalizeExecutionLocked(ex, finalStatus, exitCode, err.Error(), "", finished)
+		recordExecutionMetrics(finalStatus, finished)
 		if s.Logger != nil {
 			s.Logger.Warn("execution failed",
 				"sandbox_id", ex.SandboxID,
@@ -2080,6 +2231,7 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 	}
 	finished := s.clock().Now()
 	s.finalizeExecutionLocked(ex, finalStatus, finalExitCode, ex.Message, "", finished)
+	recordExecutionMetrics(finalStatus, finished)
 
 	if s.Logger != nil {
 		s.Logger.Info("execution completed",

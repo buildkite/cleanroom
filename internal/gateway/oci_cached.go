@@ -43,6 +43,7 @@ func (h *cachedRegistryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 
 	// Only GET and HEAD are valid OCI Distribution operations for pulls.
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		setGatewayRequestDecision(r.Context(), "deny", reasonMethodNotAllowed)
 		span.SetAttributes(
 			attribute.String("cleanroom.gateway.action", "deny"),
 			attribute.String("cleanroom.reason_code", reasonMethodNotAllowed),
@@ -71,6 +72,7 @@ func (h *cachedRegistryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 	normalizedPrefix := strings.ToLower(strings.TrimSpace(prefix))
 	policyHost, policyPort, upstreamHost, upstreamPort, err := h.cache.OCIUpstreamForPrefix(normalizedPrefix)
 	if err != nil {
+		setGatewayRequestDecision(r.Context(), "deny", "unknown_registry_prefix")
 		span.RecordError(err)
 		span.SetAttributes(
 			attribute.String("cleanroom.gateway.action", "deny"),
@@ -86,6 +88,7 @@ func (h *cachedRegistryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 		attribute.String("cleanroom.gateway.registry_prefix", normalizedPrefix),
 	)
 	if !scope.Policy.Allows(policyHost, policyPort) {
+		setGatewayRequestDecision(r.Context(), "deny", reasonHostNotAllowed)
 		span.SetAttributes(
 			attribute.String("cleanroom.gateway.action", "deny"),
 			attribute.String("cleanroom.reason_code", reasonHostNotAllowed),
@@ -101,10 +104,12 @@ func (h *cachedRegistryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 		attribute.Int("cleanroom.gateway.upstream_port", upstreamPort),
 		attribute.String("cleanroom.gateway.upstream_host", upstreamHost),
 	)
+	setGatewayRequestDecision(r.Context(), "allow", "cached")
 	h.auditLog(scope.SandboxID, upstreamHost, "allow", "cached")
 
 	cacheHandler, err := h.cache.OCIHandlerForPrefix(normalizedPrefix)
 	if err != nil {
+		setGatewayRequestDecision(r.Context(), "deny", "unknown_registry_prefix")
 		span.RecordError(err)
 		span.SetAttributes(
 			attribute.String("cleanroom.gateway.action", "deny"),

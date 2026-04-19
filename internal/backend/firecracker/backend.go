@@ -30,6 +30,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/gateway"
 	"github.com/buildkite/cleanroom/internal/hosttools"
 	"github.com/buildkite/cleanroom/internal/imagemgr"
+	"github.com/buildkite/cleanroom/internal/observability"
 	"github.com/buildkite/cleanroom/internal/paths"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/volumestore"
@@ -37,6 +38,7 @@ import (
 	fcvsock "github.com/firecracker-microvm/firecracker-go-sdk/vsock"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -69,6 +71,10 @@ type Adapter struct {
 	GatewayRegistry gatewayRegistry
 	GatewayPort     int
 	GatewayRoutes   gateway.ProxyRoutes
+	MeterProvider   metric.MeterProvider
+	metricsOnce     sync.Once
+	metrics         *observability.BackendMetrics
+	metricsErr      error
 }
 
 // gatewayRegistry is the subset of gateway.Registry used by the adapter.
@@ -242,6 +248,50 @@ func defaultImageManagerFactory() (imageEnsurer, error) {
 	return imagemgr.New(imagemgr.Options{})
 }
 
+func (a *Adapter) backendMetrics() *observability.BackendMetrics {
+	if a == nil {
+		return nil
+	}
+	a.metricsOnce.Do(func() {
+		a.metrics, a.metricsErr = observability.NewBackendMetrics(a.MeterProvider, "github.com/buildkite/cleanroom/internal/backend/firecracker")
+		if a.metricsErr != nil {
+			log.Printf("firecracker backend metrics unavailable: %v", a.metricsErr)
+		}
+	})
+	return a.metrics
+}
+
+func (a *Adapter) recordLaunchPhaseMetrics(ctx context.Context, observation firecrackerRunObservation) {
+	metrics := a.backendMetrics()
+	if metrics == nil {
+		return
+	}
+	if observation.RootFSCopyMS > 0 {
+		metrics.RecordLaunchPhase(ctx, a.Name(), "rootfs_prepare", time.Duration(observation.RootFSCopyMS)*time.Millisecond)
+	}
+	if observation.PolicyResolveMS > 0 {
+		metrics.RecordLaunchPhase(ctx, a.Name(), "policy_resolve", time.Duration(observation.PolicyResolveMS)*time.Millisecond)
+	}
+	if observation.NetworkSetupMS > 0 {
+		metrics.RecordLaunchPhase(ctx, a.Name(), "network_setup", time.Duration(observation.NetworkSetupMS)*time.Millisecond)
+	}
+	if observation.FirecrackerStartMS > 0 {
+		metrics.RecordLaunchPhase(ctx, a.Name(), "vm_launch", time.Duration(observation.FirecrackerStartMS)*time.Millisecond)
+	}
+	if observation.VMReadyMS > 0 {
+		metrics.RecordLaunchPhase(ctx, a.Name(), "guest_wait_ready", time.Duration(observation.VMReadyMS)*time.Millisecond)
+	}
+	if observation.VsockWaitMS > 0 {
+		metrics.RecordLaunchPhase(ctx, a.Name(), "vsock_wait", time.Duration(observation.VsockWaitMS)*time.Millisecond)
+	}
+	if observation.GuestExecMS > 0 {
+		metrics.RecordLaunchPhase(ctx, a.Name(), "guest_exec", time.Duration(observation.GuestExecMS)*time.Millisecond)
+	}
+	if observation.CleanupMS > 0 {
+		metrics.RecordLaunchPhase(ctx, a.Name(), "cleanup", time.Duration(observation.CleanupMS)*time.Millisecond)
+	}
+}
+
 func (a *Adapter) Name() string {
 	return "firecracker"
 }
@@ -386,6 +436,7 @@ func (a *Adapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest
 		observation.TotalMS = time.Since(runStart).Milliseconds()
 		obsPath := filepath.Join(runDir, runObservabilityFile)
 		_ = writeJSON(obsPath, observation)
+		a.recordLaunchPhaseMetrics(ctx, observation)
 	}
 	defer writeObservation()
 	if runDir != "" {

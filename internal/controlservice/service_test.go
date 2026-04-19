@@ -25,7 +25,10 @@ import (
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 	"github.com/buildkite/cleanroom/internal/snapshotstore"
 	"go.jetify.com/typeid"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
@@ -359,6 +362,79 @@ func findEndedSpanByName(spans []trace.ReadOnlySpan, name string) trace.ReadOnly
 	return nil
 }
 
+func collectResourceMetrics(t *testing.T, reader *sdkmetric.ManualReader) metricdata.ResourceMetrics {
+	t.Helper()
+	var metrics metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &metrics); err != nil {
+		t.Fatalf("Collect returned error: %v", err)
+	}
+	return metrics
+}
+
+func requireInt64SumMetricValue(t *testing.T, metrics metricdata.ResourceMetrics, name string, attrs map[string]string, want int64) {
+	t.Helper()
+	for _, scopeMetrics := range metrics.ScopeMetrics {
+		for _, metric := range scopeMetrics.Metrics {
+			if metric.Name != name {
+				continue
+			}
+			sum, ok := metric.Data.(metricdata.Sum[int64])
+			if !ok {
+				t.Fatalf("metric %q had unexpected data type %T", name, metric.Data)
+			}
+			for _, point := range sum.DataPoints {
+				if metricAttributesMatch(point.Attributes, attrs) {
+					if point.Value != want {
+						t.Fatalf("metric %q had value %d, want %d", name, point.Value, want)
+					}
+					return
+				}
+			}
+		}
+	}
+	t.Fatalf("metric %q with attrs %#v not found", name, attrs)
+}
+
+func requireHistogramMetricCount(t *testing.T, metrics metricdata.ResourceMetrics, name string, attrs map[string]string, want uint64) {
+	t.Helper()
+	for _, scopeMetrics := range metrics.ScopeMetrics {
+		for _, metric := range scopeMetrics.Metrics {
+			if metric.Name != name {
+				continue
+			}
+			histogram, ok := metric.Data.(metricdata.Histogram[float64])
+			if !ok {
+				t.Fatalf("metric %q had unexpected data type %T", name, metric.Data)
+			}
+			for _, point := range histogram.DataPoints {
+				if metricAttributesMatch(point.Attributes, attrs) {
+					if point.Count != want {
+						t.Fatalf("metric %q had count %d, want %d", name, point.Count, want)
+					}
+					return
+				}
+			}
+		}
+	}
+	t.Fatalf("metric %q with attrs %#v not found", name, attrs)
+}
+
+func metricAttributesMatch(set attribute.Set, want map[string]string) bool {
+	if len(want) == 0 {
+		return true
+	}
+	got := map[string]string{}
+	for _, kv := range set.ToSlice() {
+		got[string(kv.Key)] = kv.Value.AsString()
+	}
+	for key, wantValue := range want {
+		if got[key] != wantValue {
+			return false
+		}
+	}
+	return true
+}
+
 func testRetentionPolicy() *retentionPolicy {
 	retention := defaultRetentionPolicy
 	return &retention
@@ -471,6 +547,79 @@ func TestCreateSandboxTracesBootstrapFailure(t *testing.T) {
 	if got, want := createSpan.Status().Code, codes.Error; got != want {
 		t.Fatalf("unexpected create sandbox span status: got %v want %v", got, want)
 	}
+}
+
+func TestServiceEmitsSandboxAndExecutionMetrics(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	meterProvider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	tracerProvider := trace.NewTracerProvider()
+	defer func() {
+		_ = meterProvider.Shutdown(context.Background())
+		_ = tracerProvider.Shutdown(context.Background())
+	}()
+
+	obs, err := observability.NewWithProviders(tracerProvider, meterProvider)
+	if err != nil {
+		t.Fatalf("NewWithProviders returned error: %v", err)
+	}
+
+	adapter := &stubAdapter{
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
+			return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, LaunchedVM: true, Message: "ok"}, nil
+		},
+	}
+	svc := newTestService(adapter)
+	svc.Observability = obs
+
+	compiled := &policy.CompiledPolicy{
+		Version:        1,
+		NetworkDefault: "deny",
+		ImageRef:       "ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		ImageDigest:    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+	}
+	sandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Backend: "firecracker",
+		Policy:  compiled.ToProto(),
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+
+	executionResp, err := svc.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+		SandboxId: sandboxResp.GetSandbox().GetSandboxId(),
+		Command:   []string{"echo", "hello"},
+		Kind:      cleanroomv1.ExecutionKind_EXECUTION_KIND_BATCH,
+	})
+	if err != nil {
+		t.Fatalf("CreateExecution returned error: %v", err)
+	}
+
+	key := executionKey(sandboxResp.GetSandbox().GetSandboxId(), executionResp.GetExecution().GetExecutionId())
+	svc.mu.RLock()
+	done := svc.executions[key].Done
+	svc.mu.RUnlock()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for execution to finish")
+	}
+
+	metrics := collectResourceMetrics(t, reader)
+	requireHistogramMetricCount(t, metrics, "cleanroom_sandbox_create_duration_seconds", map[string]string{
+		"backend": "firecracker",
+		"source":  "fresh",
+		"outcome": "succeeded",
+	}, 1)
+	requireInt64SumMetricValue(t, metrics, "cleanroom_execution_total", map[string]string{
+		"backend": "firecracker",
+		"kind":    "batch",
+		"outcome": "succeeded",
+	}, 1)
+	requireHistogramMetricCount(t, metrics, "cleanroom_execution_duration_seconds", map[string]string{
+		"backend": "firecracker",
+		"kind":    "batch",
+		"outcome": "succeeded",
+	}, 1)
 }
 
 func testRepositoryMirror(t *testing.T, files map[string]string) (*stubRepositoryMirrorStore, *cleanroomv1.RepositoryCheckout) {

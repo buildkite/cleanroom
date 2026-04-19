@@ -65,20 +65,35 @@ The server listens on `unix://$XDG_RUNTIME_DIR/cleanroom/cleanroom.sock` by defa
 When observability is enabled, `cleanroom serve` also prints startup status for
 trace export, sampling, and whether direct trace links are configured.
 
-Enable OTLP tracing in runtime config:
+For local development, start the collector-based observability stack in
+[`examples/observability`](examples/observability/README.md):
+
+```bash
+docker compose -f examples/observability/docker-compose.yaml up -d
+```
+
+Point Cleanroom at the collector:
 
 ```yaml
 observability:
   enabled: true
   otlp:
-    endpoint: http://localhost:4318
+    endpoint: http://localhost:14318
     protocol: http/protobuf
   traces:
     sampling:
       mode: parentbased_traceidratio
       ratio: 1.0
-    url_template: https://jaeger.example.test/trace/{{.TraceID}}?execution={{.ExecutionID}}
 ```
+
+This local stack gives you:
+
+- Grafana at `http://localhost:3000`
+- Prometheus at `http://localhost:9090`
+- Tempo as the trace backend
+- an OpenTelemetry Collector listening on `localhost:14317` and `http://localhost:14318`
+
+If you prefer OTLP gRPC, set `endpoint: localhost:14317` and `protocol: grpc` instead.
 
 `url_template` is optional. When set, Cleanroom prints `trace_url=...` in
 failure footers and exposes the same URL from `cleanroom execution inspect`.
