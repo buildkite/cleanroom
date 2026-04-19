@@ -574,8 +574,11 @@ func TestDaemonInstallDarwinUpdatesRunningUserServiceWithoutRestart(t *testing.T
 		t.Fatalf("DaemonCommand.Run returned error: %v", err)
 	}
 
-	if len(calls) != 0 {
-		t.Fatalf("did not expect launchctl calls without --restart for running service, got: %v", calls)
+	wantCalls := [][]string{
+		{"launchctl", "enable", "gui/501/" + launchdServiceName},
+	}
+	if !reflect.DeepEqual(calls, wantCalls) {
+		t.Fatalf("unexpected launchctl commands without --restart: got %v want %v", calls, wantCalls)
 	}
 
 	raw, err := os.ReadFile(plistPath)

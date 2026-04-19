@@ -478,6 +478,9 @@ func installLaunchdDaemonInDomain(stdout io.Writer, executablePath string, args 
 	}
 
 	if loaded && active && !options.Restart {
+		if err := serveInstallRunCommand("launchctl", "enable", target); err != nil {
+			return fmt.Errorf("enable launchd service %s: %w", launchdServiceName, err)
+		}
 		_, err := fmt.Fprint(stdout, renderSummaryBlock(summaryBlock{
 			Title:      "daemon installed",
 			TitleStyle: defaultTerminalPalette().info,
