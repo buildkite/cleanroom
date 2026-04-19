@@ -18,7 +18,7 @@ func TestGatewayEnvVarsEmptyWhenNoPolicyHosts(t *testing.T) {
 			Allow:          []policy.AllowRule{{Host: "example.com", Ports: []int{80}}},
 		},
 	}
-	env := gatewayEnvVars(instance, 8170)
+	env := gatewayEnvVars(instance, 8170, gateway.ProxyRoutes{RubyGems: true})
 	if len(env) != 0 {
 		t.Fatalf("expected no env vars for host without port 443, got %v", env)
 	}
@@ -38,7 +38,7 @@ func TestGatewayEnvVarsGeneratesGitConfig(t *testing.T) {
 		},
 	}
 
-	env := gatewayEnvVars(instance, 8170)
+	env := gatewayEnvVars(instance, 8170, gateway.ProxyRoutes{})
 	if len(env) != 5 {
 		t.Fatalf("expected 5 env vars (1 count + 2*2 key/value), got %d: %v", len(env), env)
 	}
@@ -62,8 +62,33 @@ func TestGatewayEnvVarsNilPolicy(t *testing.T) {
 	t.Parallel()
 
 	instance := &sandboxInstance{}
-	env := gatewayEnvVars(instance, 8170)
+	env := gatewayEnvVars(instance, 8170, gateway.ProxyRoutes{RubyGems: true})
 	if env != nil {
 		t.Fatalf("expected nil for nil policy, got %v", env)
+	}
+}
+
+func TestGatewayEnvVarsSkipsRubyGemsMirrorWithoutLiveRoute(t *testing.T) {
+	t.Parallel()
+
+	instance := &sandboxInstance{
+		Policy: &policy.CompiledPolicy{
+			Version:        1,
+			NetworkDefault: "deny",
+			Allow:          []policy.AllowRule{{Host: "rubygems.org", Ports: []int{443}}},
+		},
+	}
+
+	env := gatewayEnvVars(instance, 8170, gateway.ProxyRoutes{})
+	for _, entry := range env {
+		if entry == gateway.BundlerAppConfigEnvKey+"="+gateway.BundlerAppConfigPath {
+			t.Fatalf("did not expect bundler app config env without a live rubygems route, got %v", env)
+		}
+		if entry == gateway.BundlerRubyGemsFallbackTimeoutEnvKey+"=0" {
+			t.Fatalf("did not expect bundler fallback timeout env without a live rubygems route, got %v", env)
+		}
+		if entry == gateway.BundlerRubyGemsMirrorEnvKey+"=http://"+gateway.GuestGatewayHostname+":8170/rubygems/" {
+			t.Fatalf("did not expect rubygems mirror env without a live rubygems route, got %v", env)
+		}
 	}
 }

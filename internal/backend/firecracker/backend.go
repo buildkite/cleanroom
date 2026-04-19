@@ -65,6 +65,7 @@ type Adapter struct {
 
 	GatewayRegistry gatewayRegistry
 	GatewayPort     int
+	GatewayRoutes   gateway.ProxyRoutes
 }
 
 // gatewayRegistry is the subset of gateway.Registry used by the adapter.
@@ -632,7 +633,7 @@ func (a *Adapter) executeInSandbox(ctx context.Context, instance *sandboxInstanc
 		if gwPort == 0 {
 			gwPort = gateway.DefaultPort
 		}
-		guestReq.Env = append(guestReq.Env, gatewayEnvVars(instance, gwPort)...)
+		guestReq.Env = append(guestReq.Env, gatewayEnvVars(instance, gwPort, a.GatewayRoutes)...)
 	}
 
 	connectSeconds := launchSeconds
@@ -2348,11 +2349,11 @@ func randomGuestCID() uint32 {
 	return cid%(0xFFFFFFFE-3) + 3
 }
 
-func gatewayEnvVars(instance *sandboxInstance, gwPort int) []string {
+func gatewayEnvVars(instance *sandboxInstance, gwPort int, routes gateway.ProxyRoutes) []string {
 	if instance == nil {
 		return nil
 	}
-	return gateway.ProxyEnvVars(instance.Policy, gwPort, "")
+	return gateway.ProxyEnvVars(instance.Policy, gwPort, "", routes)
 }
 
 func dockerServiceBootArgs(compiled *policy.CompiledPolicy, cfg backend.FirecrackerConfig) string {

@@ -26,6 +26,11 @@ const (
 	BundlerAppConfigPath = "/tmp/cleanroom-bundle-config"
 )
 
+// ProxyRoutes describes which gateway-backed guest proxy routes are live.
+type ProxyRoutes struct {
+	RubyGems bool
+}
+
 // GitProxyEnvVars returns git config environment variables that rewrite allowed
 // HTTPS remotes through the shared host gateway.
 func GitProxyEnvVars(compiled *policy.CompiledPolicy, gatewayPort int, scopeToken string) []string {
@@ -85,8 +90,8 @@ func GitProxyEnvVars(compiled *policy.CompiledPolicy, gatewayPort int, scopeToke
 // RubyGemsProxyEnvVars returns Bundler config environment variables that mirror
 // RubyGems traffic through the shared host gateway when rubygems.org is
 // policy-allowed.
-func RubyGemsProxyEnvVars(compiled *policy.CompiledPolicy, gatewayPort int) []string {
-	if !allowsHTTPSHost(compiled, "rubygems.org") || gatewayPort <= 0 {
+func RubyGemsProxyEnvVars(compiled *policy.CompiledPolicy, gatewayPort int, routes ProxyRoutes) []string {
+	if !routes.RubyGems || !allowsHTTPSHost(compiled, "rubygems.org") || gatewayPort <= 0 {
 		return nil
 	}
 
@@ -100,9 +105,9 @@ func RubyGemsProxyEnvVars(compiled *policy.CompiledPolicy, gatewayPort int) []st
 
 // ProxyEnvVars returns gateway-specific environment variables for guest
 // processes, including Git rewrite config and Bundler RubyGems mirroring.
-func ProxyEnvVars(compiled *policy.CompiledPolicy, gatewayPort int, scopeToken string) []string {
+func ProxyEnvVars(compiled *policy.CompiledPolicy, gatewayPort int, scopeToken string, routes ProxyRoutes) []string {
 	env := GitProxyEnvVars(compiled, gatewayPort, scopeToken)
-	env = append(env, RubyGemsProxyEnvVars(compiled, gatewayPort)...)
+	env = append(env, RubyGemsProxyEnvVars(compiled, gatewayPort, routes)...)
 	if len(env) == 0 {
 		return nil
 	}
