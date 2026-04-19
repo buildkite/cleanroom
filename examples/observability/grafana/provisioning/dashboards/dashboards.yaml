@@ -1,0 +1,11 @@
+apiVersion: 1
+
+providers:
+  - name: cleanroom-observability
+    orgId: 1
+    folder: Cleanroom
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /etc/grafana/provisioning/dashboards/cleanroom

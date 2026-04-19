@@ -55,6 +55,7 @@ If you prefer gRPC, set `endpoint: localhost:14317` and `protocol: grpc` instead
 - In Grafana Explore, use the `Tempo` datasource for traces.
 - Use the `Prometheus` datasource for `cleanroom_*` metrics exported from the collector.
 - Tempo service graph and span metrics also land in Prometheus.
+- Grafana also provisions a `Cleanroom Observability` dashboard automatically under the `Cleanroom` folder.
 
 ## Stop the stack
 
