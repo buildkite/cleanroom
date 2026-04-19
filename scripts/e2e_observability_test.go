@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestE2EObservabilityHelperPublishesAnnotationsAndArtifacts(t *testing.T) {
+func TestE2EObservabilityHelperPublishesArtifactsWithoutAnnotations(t *testing.T) {
 	t.Helper()
 
 	content, err := os.ReadFile("e2e-observability.sh")
@@ -25,7 +25,6 @@ func TestE2EObservabilityHelperPublishesAnnotationsAndArtifacts(t *testing.T) {
 		`metric_rows="$(mktemp_file)"`,
 		`detail_rows="$(mktemp_file)"`,
 		`execution inspect --host "$listen_endpoint" --json`,
-		`buildkite-agent annotate --context "$annotation_context" --style info <"$annotation_path"`,
 		`buildkite-agent artifact upload "$archive_name"`,
 		`launch-execution-observability.json`,
 	} {
@@ -35,6 +34,8 @@ func TestE2EObservabilityHelperPublishesAnnotationsAndArtifacts(t *testing.T) {
 	}
 
 	for _, needle := range []string{
+		`annotation_context="$2"`,
+		`buildkite-agent annotate --context "$annotation_context" --style info <"$annotation_path"`,
 		`metric_rows="$(mktemp)"`,
 		`detail_rows="$(mktemp)"`,
 	} {

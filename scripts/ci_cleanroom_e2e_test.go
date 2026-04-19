@@ -147,6 +147,7 @@ func TestCiCleanroomE2EPublishesLaunchObservabilityBundle(t *testing.T) {
 	}
 
 	for _, needle := range []string{
+		`OBSERVABILITY_CONTEXT="cleanroom-e2e-observability"`,
 		`./dist/cleanroom status --last | tee "$tmpdir/status.out"`,
 		`buildkite-agent annotate --context cleanroom-e2e-observability --style info < "$annotation_file"`,
 	} {

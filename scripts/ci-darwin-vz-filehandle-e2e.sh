@@ -7,7 +7,6 @@ source "$SCRIPT_DIR/e2e-observability.sh"
 
 DARWIN_VZ_KERNEL_IMAGE="${CLEANROOM_DARWIN_VZ_KERNEL_IMAGE:-}"
 OBSERVABILITY_SUITE_LABEL="darwin-vz Filehandle E2E"
-OBSERVABILITY_CONTEXT="darwin-vz-filehandle-e2e-observability"
 OBSERVABILITY_ARCHIVE_NAME="darwin-vz-filehandle-e2e-observability.tgz"
 
 echo "--- :hammer: Building binaries"
@@ -36,7 +35,6 @@ tmpdir="$(mktemp -d /tmp/cleanroom-dvz-fh-e2e.XXXXXX)"
 cleanup() {
   publish_buildkite_observability \
     "$OBSERVABILITY_SUITE_LABEL" \
-    "$OBSERVABILITY_CONTEXT" \
     "$OBSERVABILITY_ARCHIVE_NAME" \
     "./dist/cleanroom" \
     "${listen_endpoint:-}" \

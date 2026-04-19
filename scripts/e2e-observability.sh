@@ -182,11 +182,10 @@ copy_execution_observability_payloads() {
 
 publish_buildkite_observability() {
   local suite_label="$1"
-  local annotation_context="$2"
-  local archive_name="$3"
-  local cleanroom_bin="${4:-./dist/cleanroom}"
-  local listen_endpoint="${5:-}"
-  local tmpdir="${6:-}"
+  local archive_name="$2"
+  local cleanroom_bin="${3:-./dist/cleanroom}"
+  local listen_endpoint="${4:-}"
+  local tmpdir="${5:-}"
 
   if [[ "${CLEANROOM_E2E_OBSERVABILITY_PUBLISHED:-0}" == "1" ]]; then
     return 0
@@ -230,7 +229,6 @@ publish_buildkite_observability() {
   copy_execution_observability_payloads "$bundle_dir"
 
   tar -czf "$archive_path" -C "$bundle_dir" .
-  buildkite-agent annotate --context "$annotation_context" --style info <"$annotation_path" || true
   (
     cd "$tmpdir"
     buildkite-agent artifact upload "$archive_name"
