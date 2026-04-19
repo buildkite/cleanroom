@@ -367,10 +367,11 @@ func TestDaemonInstallRestartRestartsRunningSystemdService(t *testing.T) {
 	})
 
 	stdout, _ := makeStdoutCapture(t)
+	listen := "unix://" + filepath.Join(tmpDir, "cleanroom.sock")
 	cmd := &DaemonCommand{
 		Action:  "install",
 		Restart: true,
-		Listen:  "unix://" + filepath.Join(tmpDir, "cleanroom.sock"),
+		Listen:  listen,
 	}
 	if err := cmd.Run(daemonInstallContext(tmpDir, stdout)); err != nil {
 		t.Fatalf("DaemonCommand.Run returned error: %v", err)
@@ -390,8 +391,8 @@ func TestDaemonInstallRestartRestartsRunningSystemdService(t *testing.T) {
 	if !strings.Contains(content, "Environment=XDG_CONFIG_HOME=/root/.config") {
 		t.Fatalf("expected XDG_CONFIG_HOME environment in systemd unit, got:\n%s", content)
 	}
-	if !strings.Contains(content, "--listen unix:///var/run/cleanroom/cleanroom.sock") {
-		t.Fatalf("expected explicit default --listen in unit, got:\n%s", content)
+	if !strings.Contains(content, "--listen "+listen) {
+		t.Fatalf("expected configured --listen in unit, got:\n%s", content)
 	}
 	if strings.Contains(content, "serve install") {
 		t.Fatalf("unit should run server mode, not install mode:\n%s", content)
