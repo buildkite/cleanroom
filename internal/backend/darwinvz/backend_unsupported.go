@@ -8,6 +8,7 @@ import (
 	"runtime"
 
 	"github.com/buildkite/cleanroom/internal/backend"
+	"github.com/buildkite/cleanroom/internal/gateway"
 	"github.com/buildkite/cleanroom/internal/policy"
 )
 
@@ -15,6 +16,7 @@ type Adapter struct {
 	GatewayRegistry  gatewayRegistry
 	GatewayPort      int
 	GatewayBridgeURL string
+	GatewayRoutes    gateway.ProxyRoutes
 
 	ConfiguredNetworkMode string
 }

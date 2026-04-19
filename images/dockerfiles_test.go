@@ -116,6 +116,30 @@ func TestDebianPublishedBaseImagesInstallIPRoute2(t *testing.T) {
 	}
 }
 
+func TestDebianRubyBaseImageInstallsLibXML2Dev(t *testing.T) {
+	t.Parallel()
+
+	raw, err := os.ReadFile(filepath.Join(".", "Dockerfile.base-image-debian-ruby"))
+	if err != nil {
+		t.Fatalf("read Dockerfile.base-image-debian-ruby: %v", err)
+	}
+	if !dockerfileHasTrimmedLine(string(raw), "libxml2-dev \\") {
+		t.Fatal("Dockerfile.base-image-debian-ruby does not install libxml2-dev for native Ruby gem builds")
+	}
+}
+
+func TestDebianRubyBaseImageInstallsDefaultLibMySQLClientDev(t *testing.T) {
+	t.Parallel()
+
+	raw, err := os.ReadFile(filepath.Join(".", "Dockerfile.base-image-debian-ruby"))
+	if err != nil {
+		t.Fatalf("read Dockerfile.base-image-debian-ruby: %v", err)
+	}
+	if !dockerfileHasTrimmedLine(string(raw), "default-libmysqlclient-dev \\") {
+		t.Fatal("Dockerfile.base-image-debian-ruby does not install default-libmysqlclient-dev for mysql2 native gem builds")
+	}
+}
+
 func TestPublishedBaseImagesInstallPinnedMiseRelease(t *testing.T) {
 	t.Parallel()
 

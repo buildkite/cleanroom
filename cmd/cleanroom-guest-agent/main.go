@@ -12,10 +12,12 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"unsafe"
 
+	"github.com/buildkite/cleanroom/internal/gateway"
 	"github.com/buildkite/cleanroom/internal/vsockexec"
 	"github.com/creack/pty"
 	"github.com/mdlayher/vsock"
@@ -90,7 +92,11 @@ func handleConnTTY(conn io.ReadWriteCloser, dec *json.Decoder, req vsockexec.Exe
 	if req.Dir != "" {
 		cmd.Dir = req.Dir
 	}
-	env := buildCommandEnv(req.Env)
+	env, err := buildCommandEnv(req.Env)
+	if err != nil {
+		sendErrorResponse(conn, err)
+		return
+	}
 	if !envHasKey(env, "TERM") {
 		env = append(env, "TERM=xterm-256color")
 	}
@@ -120,7 +126,12 @@ func handleConnPipes(conn io.ReadWriteCloser, dec *json.Decoder, req vsockexec.E
 	if req.Dir != "" {
 		cmd.Dir = req.Dir
 	}
-	cmd.Env = buildCommandEnv(req.Env)
+	env, err := buildCommandEnv(req.Env)
+	if err != nil {
+		sendErrorResponse(conn, err)
+		return
+	}
+	cmd.Env = env
 
 	stdinPipe, err := cmd.StdinPipe()
 	if err != nil {
@@ -285,7 +296,7 @@ func (w streamFrameWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func buildCommandEnv(requestEnv []string) []string {
+func buildCommandEnv(requestEnv []string) ([]string, error) {
 	// Start from the current process environment so caller-provided values can
 	// override, while ensuring we have baseline HOME/PATH defaults for lookups.
 	base := map[string]string{}
@@ -309,6 +320,10 @@ func buildCommandEnv(requestEnv []string) []string {
 		base[key] = value
 	}
 
+	if err := configureBundlerMirror(base); err != nil {
+		return nil, err
+	}
+
 	if strings.TrimSpace(base["HOME"]) == "" {
 		base["HOME"] = "/root"
 	}
@@ -320,7 +335,41 @@ func buildCommandEnv(requestEnv []string) []string {
 	for key, value := range base {
 		out = append(out, key+"="+value)
 	}
-	return out
+	return out, nil
+}
+
+func configureBundlerMirror(base map[string]string) error {
+	if base == nil {
+		return nil
+	}
+
+	mirror := strings.TrimSpace(base[gateway.BundlerRubyGemsMirrorEnvKey])
+	if mirror == "" {
+		delete(base, gateway.BundlerRubyGemsMirrorEnvKey)
+		delete(base, gateway.BundlerRubyGemsFallbackTimeoutEnvKey)
+		return nil
+	}
+
+	timeout := strings.TrimSpace(base[gateway.BundlerRubyGemsFallbackTimeoutEnvKey])
+	configDir := strings.TrimSpace(base[gateway.BundlerAppConfigEnvKey])
+	if configDir == "" {
+		configDir = gateway.BundlerAppConfigPath
+		base[gateway.BundlerAppConfigEnvKey] = configDir
+	}
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		return fmt.Errorf("create Bundler config dir: %w", err)
+	}
+	configContent := fmt.Sprintf(
+		"---\nBUNDLE_MIRROR__HTTPS://RUBYGEMS__ORG/: %q\nBUNDLE_MIRROR__HTTPS://RUBYGEMS__ORG/__FALLBACK_TIMEOUT: %q\n",
+		mirror,
+		timeout,
+	)
+	if err := os.WriteFile(filepath.Join(configDir, "config"), []byte(configContent), 0o644); err != nil {
+		return fmt.Errorf("write Bundler config: %w", err)
+	}
+	delete(base, gateway.BundlerRubyGemsMirrorEnvKey)
+	delete(base, gateway.BundlerRubyGemsFallbackTimeoutEnvKey)
+	return nil
 }
 
 func errorsIsClosed(err error) bool {

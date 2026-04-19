@@ -14,6 +14,7 @@ import (
 	"github.com/buildkite/content-cache/download"
 	ccgit "github.com/buildkite/content-cache/protocol/git"
 	ccoci "github.com/buildkite/content-cache/protocol/oci"
+	ccrubygems "github.com/buildkite/content-cache/protocol/rubygems"
 	"github.com/buildkite/content-cache/store"
 	"github.com/buildkite/content-cache/store/metadb"
 	"github.com/charmbracelet/log"
@@ -44,6 +45,13 @@ type ContentCacheConfig struct {
 
 	// TagTTL controls how long OCI tag→digest mappings are cached.
 	TagTTL time.Duration
+
+	// RubyGemsUpstreamURL overrides the upstream RubyGems registry URL.
+	// Defaults to https://rubygems.org.
+	RubyGemsUpstreamURL string
+
+	// RubyGemsMetadataTTL controls how long RubyGems metadata is cached.
+	RubyGemsMetadataTTL time.Duration
 
 	Logger *log.Logger
 }
@@ -86,6 +94,7 @@ func NewContentCache(cfg ContentCacheConfig) (*ContentCache, error) {
 	// registry/CDN redirects for blob downloads.
 	gitHTTPClient := newGitContentCacheHTTPClient(cfg.Credentials)
 	ociHTTPClient := newOCIContentCacheHTTPClient(cfg.Credentials)
+	rubyGemsHTTPClient := newRubyGemsContentCacheHTTPClient(cfg.Credentials)
 
 	packIdx, err := metadb.NewEnvelopeIndex(db, "git", "pack", 24*time.Hour)
 	if err != nil {
@@ -107,9 +116,46 @@ func NewContentCache(cfg ContentCacheConfig) (*ContentCache, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("create oci image index: %w", err)
 	}
+	rubyGemsMetadataTTL := cfg.RubyGemsMetadataTTL
+	if rubyGemsMetadataTTL == 0 {
+		rubyGemsMetadataTTL = 5 * time.Minute
+	}
+	rubyGemsVersionsIdx, err := metadb.NewEnvelopeIndex(db, "rubygems", "versions", rubyGemsMetadataTTL)
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("create rubygems versions index: %w", err)
+	}
+	rubyGemsInfoIdx, err := metadb.NewEnvelopeIndex(db, "rubygems", "info", rubyGemsMetadataTTL)
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("create rubygems info index: %w", err)
+	}
+	rubyGemsSpecsIdx, err := metadb.NewEnvelopeIndex(db, "rubygems", "specs", rubyGemsMetadataTTL)
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("create rubygems specs index: %w", err)
+	}
+	rubyGemsGemIdx, err := metadb.NewEnvelopeIndex(db, "rubygems", "gem", 24*time.Hour)
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("create rubygems gem index: %w", err)
+	}
+	rubyGemsGemspecIdx, err := metadb.NewEnvelopeIndex(db, "rubygems", "gemspec", 24*time.Hour)
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("create rubygems gemspec index: %w", err)
+	}
 
 	gitIndex := ccgit.NewIndex(packIdx)
 	ociIndex := ccoci.NewIndex(imageIdx, manifestIdx, blobIdx)
+	rubyGemsIndex := ccrubygems.NewIndex(
+		rubyGemsVersionsIdx,
+		rubyGemsInfoIdx,
+		rubyGemsSpecsIdx,
+		rubyGemsGemIdx,
+		rubyGemsGemspecIdx,
+		cafs,
+	)
 	allowedGitHosts := normalizeAllowedGitHosts(cfg.GitAllowedHosts)
 	registryMappings, err := normalizeOCIRegistryMappings(cfg.OCIRegistries)
 	if err != nil {
@@ -189,6 +235,38 @@ func NewContentCache(cfg ContentCacheConfig) (*ContentCache, error) {
 			entry.closer = closeFunc(closer.Close)
 		}
 		return entry, nil
+	}
+
+	rubyGemsUpstreamURL := strings.TrimSpace(cfg.RubyGemsUpstreamURL)
+	if rubyGemsUpstreamURL == "" {
+		rubyGemsUpstreamURL = ccrubygems.DefaultUpstreamURL
+	}
+	rubyGemsPolicyHost, rubyGemsPolicyPort, err := registryHostPort(rubyGemsUpstreamURL)
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("resolve rubygems upstream: %w", err)
+	}
+	rubyGemsUpstream := ccrubygems.NewUpstream(
+		ccrubygems.WithRegistryURL(rubyGemsUpstreamURL),
+		ccrubygems.WithHTTPClient(rubyGemsHTTPClient),
+	)
+	rubyGemsHandler := ccrubygems.NewHandler(
+		rubyGemsIndex,
+		cafs,
+		ccrubygems.WithUpstream(rubyGemsUpstream),
+		ccrubygems.WithLogger(logger),
+		ccrubygems.WithDownloader(dl),
+		ccrubygems.WithMetadataTTL(rubyGemsMetadataTTL),
+	)
+	cache.rubyGems = rubyGemsHandlerEntry{
+		handler:      rubyGemsHandler,
+		policyHost:   rubyGemsPolicyHost,
+		policyPort:   rubyGemsPolicyPort,
+		upstreamHost: rubyGemsPolicyHost,
+		upstreamPort: rubyGemsPolicyPort,
+	}
+	if closer, ok := any(rubyGemsHandler).(interface{ Close() }); ok {
+		cache.rubyGems.closer = closeFunc(closer.Close)
 	}
 	return cache, nil
 }

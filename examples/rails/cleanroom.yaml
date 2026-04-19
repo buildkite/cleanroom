@@ -1,0 +1,43 @@
+version: 1
+repository:
+  enabled: false
+sandbox:
+  image:
+    ref: ghcr.io/buildkite/cleanroom-base/debian-ruby@sha256:cba9876d67beb8971e791f1bc6af175f0bff47e938f955059813c4dd6914eb53
+  dependencies:
+    command:
+      - sh
+      - -lc
+      - >-
+        apt-get update &&
+        apt-get install --yes --no-install-recommends
+        default-libmysqlclient-dev
+        libxml2-dev
+        &&
+        bundle install --jobs 4 --retry 1
+    key:
+      files:
+        - Gemfile
+        - Gemfile.lock
+        - rails.gemspec
+        - actioncable/actioncable.gemspec
+        - actionmailbox/actionmailbox.gemspec
+        - actionmailer/actionmailer.gemspec
+        - actionpack/actionpack.gemspec
+        - actiontext/actiontext.gemspec
+        - actionview/actionview.gemspec
+        - activejob/activejob.gemspec
+        - activemodel/activemodel.gemspec
+        - activerecord/activerecord.gemspec
+        - activestorage/activestorage.gemspec
+        - activesupport/activesupport.gemspec
+        - railties/railties.gemspec
+  network:
+    default: deny
+    allow:
+      - host: github.com
+        ports: [443]
+      - host: rubygems.org
+        ports: [443]
+      - host: deb.debian.org
+        ports: [80]

@@ -140,8 +140,8 @@ func TestDoctorCommandJSONIncludesCapabilities(t *testing.T) {
 	if payload.Gateway.DefaultPort != 8170 {
 		t.Fatalf("unexpected gateway default port: %d", payload.Gateway.DefaultPort)
 	}
-	if len(payload.Gateway.Routes) != 4 {
-		t.Fatalf("expected 4 gateway routes, got %d (%v)", len(payload.Gateway.Routes), payload.Gateway.Routes)
+	if len(payload.Gateway.Routes) != 5 {
+		t.Fatalf("expected 5 gateway routes, got %d (%v)", len(payload.Gateway.Routes), payload.Gateway.Routes)
 	}
 	foundGitHub := false
 	for _, h := range payload.Gateway.CredentialHosts {

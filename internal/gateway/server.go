@@ -19,6 +19,7 @@ const (
 
 	RouteGit      = "/git/"
 	RouteRegistry = "/registry/"
+	RouteRubyGems = "/rubygems/"
 	RouteSecrets  = "/secrets/"
 	RouteMeta     = "/meta/"
 )
@@ -26,6 +27,7 @@ const (
 var serviceRoutes = []string{
 	RouteGit,
 	RouteRegistry,
+	RouteRubyGems,
 	RouteSecrets,
 	RouteMeta,
 }
@@ -190,6 +192,12 @@ func NewServer(cfg ServerConfig) *Server {
 		mux.Handle(RouteRegistry, newCachedRegistryHandler(cfg.ContentCache, cfg.Logger))
 	} else {
 		mux.HandleFunc(RouteRegistry, stubHandler("registry"))
+	}
+
+	if cfg.ContentCache != nil && cfg.ContentCache.HasRubyGemsHandler() {
+		mux.Handle(RouteRubyGems, newCachedRubyGemsHandler(cfg.ContentCache, cfg.Logger))
+	} else {
+		mux.HandleFunc(RouteRubyGems, stubHandler("rubygems"))
 	}
 
 	mux.HandleFunc(RouteSecrets, stubHandler("secrets"))

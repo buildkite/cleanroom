@@ -13,6 +13,7 @@ func TestCanonicalisePathValid(t *testing.T) {
 		{"/git/github.com/org/repo.git/info/refs", "/git/github.com/org/repo.git/info/refs"},
 		{"/git/github.com/org/repo", "/git/github.com/org/repo"},
 		{"/registry/npmjs.org/pkg", "/registry/npmjs.org/pkg"},
+		{"/rubygems/versions", "/rubygems/versions"},
 		{"/meta/health", "/meta/health"},
 	}
 	for _, tt := range tests {

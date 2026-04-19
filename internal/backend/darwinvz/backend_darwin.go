@@ -67,6 +67,7 @@ type Adapter struct {
 	GatewayRegistry  gatewayRegistry
 	GatewayPort      int
 	GatewayBridgeURL string
+	GatewayRoutes    gateway.ProxyRoutes
 
 	ConfiguredNetworkMode string
 }
@@ -982,7 +983,7 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 		if startedVM.NetworkMetadata != nil {
 			networkMode = startedVM.NetworkMetadata.Mode
 		}
-		guestReq.Env = append(guestReq.Env, gatewayGitProxyEnvVars(req.Policy, networkMode, gwPort)...)
+		guestReq.Env = append(guestReq.Env, gatewayGitProxyEnvVars(req.Policy, networkMode, gwPort, a.GatewayRoutes)...)
 	}
 	seed := make([]byte, 64)
 	if _, err := cryptorand.Read(seed); err == nil {
@@ -1445,7 +1446,7 @@ func (a *Adapter) executeInSandbox(bootCtx context.Context, runCtx context.Conte
 		if instance.NetworkMetadata != nil {
 			networkMode = instance.NetworkMetadata.Mode
 		}
-		guestReq.Env = append(guestReq.Env, gatewayGitProxyEnvVars(policy, networkMode, gwPort)...)
+		guestReq.Env = append(guestReq.Env, gatewayGitProxyEnvVars(policy, networkMode, gwPort, a.GatewayRoutes)...)
 	}
 	seed := make([]byte, 64)
 	if _, err := cryptorand.Read(seed); err == nil {

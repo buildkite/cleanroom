@@ -10,7 +10,7 @@ import (
 
 func TestGatewayEnvVarsNilPolicy(t *testing.T) {
 	t.Parallel()
-	env := gatewayEnvVars(nil, 8170, "token")
+	env := gatewayEnvVars(nil, 8170, "token", gateway.ProxyRoutes{RubyGems: true})
 	if env != nil {
 		t.Fatalf("expected nil env for nil policy, got %v", env)
 	}
@@ -23,9 +23,68 @@ func TestGatewayEnvVarsNoHTTPSHosts(t *testing.T) {
 		NetworkDefault: "deny",
 		Allow:          []policy.AllowRule{{Host: "example.com", Ports: []int{80}}},
 	}
-	env := gatewayEnvVars(p, 8170, "token")
+	env := gatewayEnvVars(p, 8170, "token", gateway.ProxyRoutes{RubyGems: true})
 	if env != nil {
 		t.Fatalf("expected nil env without port 443 hosts, got %v", env)
+	}
+}
+
+func TestGatewayEnvVarsAddsRubyGemsMirror(t *testing.T) {
+	t.Parallel()
+
+	p := &policy.CompiledPolicy{
+		Version:        1,
+		NetworkDefault: "deny",
+		Allow:          []policy.AllowRule{{Host: "rubygems.org", Ports: []int{443}}},
+	}
+	env := gatewayEnvVars(p, 8170, "token", gateway.ProxyRoutes{RubyGems: true})
+	wantAppConfig := gateway.BundlerAppConfigEnvKey + "=" + gateway.BundlerAppConfigPath
+	wantMirror := gateway.BundlerRubyGemsMirrorEnvKey + "=http://" + gateway.GuestGatewayHostname + ":8170/rubygems/"
+	foundAppConfig := false
+	foundMirror := false
+	foundFallback := false
+	for _, entry := range env {
+		if entry == wantAppConfig {
+			foundAppConfig = true
+		}
+		if entry == wantMirror {
+			foundMirror = true
+		}
+		if entry == gateway.BundlerRubyGemsFallbackTimeoutEnvKey+"=0" {
+			foundFallback = true
+		}
+	}
+	if !foundAppConfig {
+		t.Fatalf("expected Bundler app config env %q in %v", wantAppConfig, env)
+	}
+	if !foundMirror {
+		t.Fatalf("expected rubyGems mirror env %q in %v", wantMirror, env)
+	}
+	if !foundFallback {
+		t.Fatalf("expected RubyGems fallback timeout env in %v", env)
+	}
+}
+
+func TestGatewayEnvVarsSkipsRubyGemsMirrorWithoutLiveRoute(t *testing.T) {
+	t.Parallel()
+
+	p := &policy.CompiledPolicy{
+		Version:        1,
+		NetworkDefault: "deny",
+		Allow:          []policy.AllowRule{{Host: "rubygems.org", Ports: []int{443}}},
+	}
+
+	env := gatewayEnvVars(p, 8170, "token", gateway.ProxyRoutes{})
+	for _, entry := range env {
+		if entry == gateway.BundlerAppConfigEnvKey+"="+gateway.BundlerAppConfigPath {
+			t.Fatalf("did not expect bundler app config env without live rubygems route, got %v", env)
+		}
+		if entry == gateway.BundlerRubyGemsFallbackTimeoutEnvKey+"=0" {
+			t.Fatalf("did not expect bundler fallback timeout env without live rubygems route, got %v", env)
+		}
+		if entry == gateway.BundlerRubyGemsMirrorEnvKey+"=http://"+gateway.GuestGatewayHostname+":8170/rubygems/" {
+			t.Fatalf("did not expect rubygems mirror env without live rubygems route, got %v", env)
+		}
 	}
 }
 
@@ -39,7 +98,7 @@ func TestGatewayEnvVarsGeneratesGitRewriteAndHeader(t *testing.T) {
 			{Host: "gitlab.com", Ports: []int{443}},
 		},
 	}
-	env := gatewayEnvVars(p, 8170, "scope-token")
+	env := gatewayEnvVars(p, 8170, "scope-token", gateway.ProxyRoutes{})
 	if len(env) != 7 {
 		t.Fatalf("expected 7 env vars (count + 3 key/value entries), got %d: %v", len(env), env)
 	}
@@ -75,7 +134,7 @@ func TestGatewayGitProxyEnvVarsUsesFileHandleGatewayWithoutHeader(t *testing.T) 
 		NetworkDefault: "deny",
 		Allow:          []policy.AllowRule{{Host: "github.com", Ports: []int{443}}},
 	}
-	env := gatewayGitProxyEnvVars(p, darwinVZNetworkModeFileHandle, 8170)
+	env := gatewayGitProxyEnvVars(p, darwinVZNetworkModeFileHandle, 8170, gateway.ProxyRoutes{})
 	if len(env) != 3 {
 		t.Fatalf("expected 3 env vars (count + 1 key/value entry), got %d: %v", len(env), env)
 	}
@@ -87,6 +146,36 @@ func TestGatewayGitProxyEnvVarsUsesFileHandleGatewayWithoutHeader(t *testing.T) 
 	}
 	if env[2] != "GIT_CONFIG_VALUE_0=https://github.com/" {
 		t.Fatalf("expected github rewrite value, got %s", env[2])
+	}
+}
+
+func TestGatewayGitProxyEnvVarsDefaultsEmptyModeToFileHandle(t *testing.T) {
+	t.Parallel()
+
+	p := &policy.CompiledPolicy{
+		Version:        1,
+		NetworkDefault: "deny",
+		Allow:          []policy.AllowRule{{Host: "rubygems.org", Ports: []int{443}}},
+	}
+	env := gatewayGitProxyEnvVars(p, "", 8170, gateway.ProxyRoutes{RubyGems: true})
+	wantAppConfig := gateway.BundlerAppConfigEnvKey + "=" + gateway.BundlerAppConfigPath
+	wantMirror := gateway.BundlerRubyGemsMirrorEnvKey + "=http://" + gateway.GuestGatewayHostname + ":8170/rubygems/"
+	foundAppConfig := false
+	foundMirror := false
+	for _, entry := range env {
+		if entry == wantAppConfig {
+			foundAppConfig = true
+		}
+		if entry == wantMirror {
+			foundMirror = true
+			break
+		}
+	}
+	if !foundAppConfig {
+		t.Fatalf("expected Bundler app config env %q in %v", wantAppConfig, env)
+	}
+	if !foundMirror {
+		t.Fatalf("expected rubyGems mirror env %q in %v", wantMirror, env)
 	}
 }
 
@@ -103,7 +192,7 @@ func TestGatewayGitProxyEnvVarsSkipsNonFileHandleModes(t *testing.T) {
 		networkMode := networkMode
 		t.Run(networkMode, func(t *testing.T) {
 			t.Parallel()
-			if env := gatewayGitProxyEnvVars(p, networkMode, 8170); env != nil {
+			if env := gatewayGitProxyEnvVars(p, networkMode, 8170, gateway.ProxyRoutes{RubyGems: true}); env != nil {
 				t.Fatalf("expected no git proxy env for non-filehandle mode %q, got %v", networkMode, env)
 			}
 		})
