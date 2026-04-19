@@ -1834,6 +1834,7 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 			return
 		}
 		ex.PreRunActive = false
+		s.applyExecutionResultMetadataLocked(ex, preRunResult)
 		if preRunErr != nil {
 			span.RecordError(preRunErr)
 			span.SetStatus(codes.Error, preRunErr.Error())
@@ -1953,15 +1954,7 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 		return
 	}
 
-	ex.LaunchedVM = result.LaunchedVM
-	ex.PlanPath = result.PlanPath
-	ex.RunDir = result.RunDir
-	if strings.TrimSpace(result.ImageRef) != "" {
-		ex.ImageRef = result.ImageRef
-	}
-	if strings.TrimSpace(result.ImageDigest) != "" {
-		ex.ImageDigest = result.ImageDigest
-	}
+	s.applyExecutionResultMetadataLocked(ex, result)
 	ex.Message = result.Message
 	s.mergeBufferedResultOutputFromStreamLocked(ex, result, commandOutputPrefixStdout, commandOutputPrefixStderr, commandStreamStdout.String(), commandStreamStderr.String())
 
@@ -2005,6 +1998,21 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 
 func (s *Service) runAdapterExecution(runCtx context.Context, adapter backend.Adapter, executionReq backend.ExecutionRequest, key string, stdoutCapture, stderrCapture *retainedOutputCapture) (*backend.ExecutionResult, error) {
 	return adapter.RunInSandbox(runCtx, executionReq, s.executionOutputStream(key, stdoutCapture, stderrCapture))
+}
+
+func (s *Service) applyExecutionResultMetadataLocked(ex *executionState, result *backend.ExecutionResult) {
+	if ex == nil || result == nil {
+		return
+	}
+	ex.LaunchedVM = result.LaunchedVM
+	ex.PlanPath = result.PlanPath
+	ex.RunDir = result.RunDir
+	if strings.TrimSpace(result.ImageRef) != "" {
+		ex.ImageRef = result.ImageRef
+	}
+	if strings.TrimSpace(result.ImageDigest) != "" {
+		ex.ImageDigest = result.ImageDigest
+	}
 }
 
 func (s *Service) executionOutputStream(key string, stdoutCapture, stderrCapture *retainedOutputCapture) backend.OutputStream {

@@ -2997,6 +2997,70 @@ func TestCreateExecutionPreservesRunBeforeOutputInFinalSnapshot(t *testing.T) {
 	}
 }
 
+func TestCreateExecutionRetainsRunBeforeFailureArtifacts(t *testing.T) {
+	adapter := &stubAdapter{
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+			switch strings.Join(req.Command, " ") {
+			case "sh -lc echo pre-run":
+				return &backend.ExecutionResult{
+					ExecutionID: req.ExecutionID,
+					ExitCode:    23,
+					LaunchedVM:  true,
+					PlanPath:    "/tmp/pre-run-plan",
+					RunDir:      "/tmp/pre-run-run",
+					Message:     "pre-run failed",
+					Stdout:      "pre-run output\n",
+				}, nil
+			default:
+				t.Fatalf("unexpected command: %v", req.Command)
+				return nil, nil
+			}
+		},
+	}
+	svc := newTestService(adapter)
+
+	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy: testRepositoryRunBeforePolicy(),
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createSandboxResp.GetSandbox().GetSandboxId()
+
+	createExecutionResp, err := svc.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+		SandboxId: sandboxID,
+		Command:   []string{"sh", "-lc", "pwd"},
+	})
+	if err != nil {
+		t.Fatalf("CreateExecution returned error: %v", err)
+	}
+	executionID := createExecutionResp.GetExecution().GetExecutionId()
+
+	if _, err := svc.WaitExecution(context.Background(), sandboxID, executionID); err != nil {
+		t.Fatalf("WaitExecution returned error: %v", err)
+	}
+
+	snapshot, err := svc.ExecutionSnapshot(sandboxID, executionID)
+	if err != nil {
+		t.Fatalf("ExecutionSnapshot returned error: %v", err)
+	}
+	if got, want := snapshot.RunDir, "/tmp/pre-run-run"; got != want {
+		t.Fatalf("unexpected run dir: got %q want %q", got, want)
+	}
+	if got, want := snapshot.PlanPath, "/tmp/pre-run-plan"; got != want {
+		t.Fatalf("unexpected plan path: got %q want %q", got, want)
+	}
+	if got, want := snapshot.Launched, true; got != want {
+		t.Fatalf("unexpected launched flag: got %t want %t", got, want)
+	}
+	if got, want := snapshot.Stdout, "pre-run output\n"; got != want {
+		t.Fatalf("unexpected retained stdout: got %q want %q", got, want)
+	}
+	if got, want := snapshot.Execution.GetExitCode(), int32(23); got != want {
+		t.Fatalf("unexpected exit code: got %d want %d", got, want)
+	}
+}
+
 func TestCancelExecutionDuringRunBeforeTransitionsToCanceled(t *testing.T) {
 	started := make(chan struct{}, 1)
 	adapter := &stubAdapter{
