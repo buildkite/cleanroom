@@ -212,16 +212,7 @@ func executionKindMetricValue(kind cleanroomv1.ExecutionKind) string {
 }
 
 func executionOutcomeMetricValue(status cleanroomv1.ExecutionStatus) string {
-	switch status {
-	case cleanroomv1.ExecutionStatus_EXECUTION_STATUS_SUCCEEDED:
-		return "succeeded"
-	case cleanroomv1.ExecutionStatus_EXECUTION_STATUS_FAILED:
-		return "failed"
-	case cleanroomv1.ExecutionStatus_EXECUTION_STATUS_CANCELED:
-		return "canceled"
-	default:
-		return strings.ToLower(strings.TrimPrefix(status.String(), "EXECUTION_STATUS_"))
-	}
+	return observability.ExecutionOutcome(status)
 }
 
 var (
@@ -248,19 +239,19 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	backendName := resolveBackendName(strings.TrimSpace(req.GetBackend()), s.Config.DefaultBackend)
 	ctx, span := s.Observability.Tracer("github.com/buildkite/cleanroom/internal/controlservice").Start(
 		ctx,
-		"cleanroom.sandbox.create",
+		observability.SpanSandboxCreate,
 		trace.WithAttributes(
-			attribute.Bool("cleanroom.sandbox.from_snapshot", snapshotID != ""),
-			attribute.Bool("cleanroom.repository.checkout", req.GetRepositoryCheckout() != nil),
-			attribute.Bool("cleanroom.repository.changeset", changeset != nil),
+			attribute.Bool(observability.AttrSandboxFromSnapshot, snapshotID != ""),
+			attribute.Bool(observability.AttrRepositoryCheckout, req.GetRepositoryCheckout() != nil),
+			attribute.Bool(observability.AttrRepositoryChangeset, changeset != nil),
 		),
 	)
 	defer func() {
 		metricBackendName := backendName
 		if resp != nil && resp.GetSandbox() != nil {
 			span.SetAttributes(
-				attribute.String("cleanroom.backend", resp.GetSandbox().GetBackend()),
-				attribute.String("cleanroom.sandbox.id", resp.GetSandbox().GetSandboxId()),
+				attribute.String(observability.AttrBackend, resp.GetSandbox().GetBackend()),
+				attribute.String(observability.AttrSandboxID, resp.GetSandbox().GetSandboxId()),
 			)
 			if resolvedBackend := strings.TrimSpace(resp.GetSandbox().GetBackend()); resolvedBackend != "" {
 				metricBackendName = resolvedBackend
@@ -277,7 +268,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 				ctx,
 				metricBackendName,
 				sandboxCreateSourceMetricValue(snapshotID, metricSourceKind),
-				map[bool]string{true: "failed", false: "succeeded"}[err != nil],
+				map[bool]string{true: observability.OutcomeFailed, false: observability.OutcomeSucceeded}[err != nil],
 				s.clock().Now().Sub(createStarted),
 			)
 		}
@@ -305,7 +296,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 		return nil, fmt.Errorf("invalid policy: %w", err)
 	}
 
-	span.SetAttributes(attribute.String("cleanroom.backend", backendName))
+	span.SetAttributes(attribute.String(observability.AttrBackend, backendName))
 	adapter, ok := s.Backends[backendName]
 	if !ok {
 		return nil, fmt.Errorf("unknown backend %q", backendName)
@@ -1125,17 +1116,17 @@ func (s *Service) CreateExecution(ctx context.Context, req *cleanroomv1.CreateEx
 	}
 	ctx, span := s.Observability.Tracer("github.com/buildkite/cleanroom/internal/controlservice").Start(
 		ctx,
-		"cleanroom.execution.create",
+		observability.SpanExecutionCreate,
 		trace.WithAttributes(
-			attribute.String("cleanroom.sandbox.id", sandboxID),
-			attribute.Int("cleanroom.command.argc", len(command)),
+			attribute.String(observability.AttrSandboxID, sandboxID),
+			attribute.Int(observability.AttrCommandArgc, len(command)),
 		),
 	)
 	defer func() {
 		if resp != nil && resp.GetExecution() != nil {
 			span.SetAttributes(
-				attribute.String("cleanroom.execution.id", resp.GetExecution().GetExecutionId()),
-				attribute.String("cleanroom.execution.kind", resp.GetExecution().GetKind().String()),
+				attribute.String(observability.AttrExecutionID, resp.GetExecution().GetExecutionId()),
+				attribute.String(observability.AttrExecutionKind, resp.GetExecution().GetKind().String()),
 			)
 		}
 		if err != nil {
@@ -1184,7 +1175,7 @@ func (s *Service) CreateExecution(ctx context.Context, req *cleanroomv1.CreateEx
 		s.mu.Unlock()
 		return nil, fmt.Errorf("unknown sandbox %q", sandboxID)
 	}
-	span.SetAttributes(attribute.String("cleanroom.backend", sandbox.Backend))
+	span.SetAttributes(attribute.String(observability.AttrBackend, sandbox.Backend))
 	if sandbox.Status != cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY {
 		s.mu.Unlock()
 		return nil, fmt.Errorf("sandbox %q is not ready", sandboxID)
@@ -2053,13 +2044,13 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 	}
 	runCtx, span := s.Observability.Tracer("github.com/buildkite/cleanroom/internal/controlservice").Start(
 		runCtx,
-		"cleanroom.execution.run",
+		observability.SpanExecutionRun,
 		trace.WithAttributes(
-			attribute.String("cleanroom.backend", sb.Backend),
-			attribute.String("cleanroom.execution.id", ex.ID),
-			attribute.String("cleanroom.execution.kind", ex.Kind.String()),
-			attribute.String("cleanroom.sandbox.id", sandboxID),
-			attribute.Int("cleanroom.command.argc", len(ex.Command)),
+			attribute.String(observability.AttrBackend, sb.Backend),
+			attribute.String(observability.AttrExecutionID, ex.ID),
+			attribute.String(observability.AttrExecutionKind, ex.Kind.String()),
+			attribute.String(observability.AttrSandboxID, sandboxID),
+			attribute.Int(observability.AttrCommandArgc, len(ex.Command)),
 		),
 	)
 	s.mu.Unlock()
@@ -2225,9 +2216,9 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 		finalStatus = cleanroomv1.ExecutionStatus_EXECUTION_STATUS_SUCCEEDED
 	}
 	span.SetAttributes(
-		attribute.Bool("cleanroom.vm.launched", result.LaunchedVM),
-		attribute.Int("cleanroom.exit_code", result.ExitCode),
-		attribute.String("cleanroom.execution.status", finalStatus.String()),
+		attribute.Bool(observability.AttrVMLaunched, result.LaunchedVM),
+		attribute.Int(observability.AttrExitCode, result.ExitCode),
+		attribute.String(observability.AttrExecutionStatus, finalStatus.String()),
 	)
 	if finalStatus == cleanroomv1.ExecutionStatus_EXECUTION_STATUS_SUCCEEDED {
 		span.SetStatus(codes.Ok, "")

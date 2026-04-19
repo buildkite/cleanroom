@@ -366,20 +366,20 @@ func (s *Server) tracingMiddleware(next http.Handler) http.Handler {
 
 		service := gatewayServiceForPath(r.URL.Path)
 		attributes := []attribute.KeyValue{
-			attribute.String("cleanroom.gateway.service", service),
+			attribute.String(observability.AttrGatewayService, service),
 			attribute.String("http.request.method", r.Method),
 			attribute.String("url.path", r.URL.Path),
 		}
 		if scope != nil {
 			if scope.SandboxID != "" {
-				attributes = append(attributes, attribute.String("cleanroom.sandbox.id", scope.SandboxID))
+				attributes = append(attributes, attribute.String(observability.AttrSandboxID, scope.SandboxID))
 			}
 			if scope.ExecutionID != "" {
-				attributes = append(attributes, attribute.String("cleanroom.execution.id", scope.ExecutionID))
+				attributes = append(attributes, attribute.String(observability.AttrExecutionID, scope.ExecutionID))
 			}
 		}
 
-		ctx, span := tracer.Start(ctx, "cleanroom.gateway."+service+".request", trace.WithAttributes(attributes...))
+		ctx, span := tracer.Start(ctx, observability.GatewayRequestSpanName(service), trace.WithAttributes(attributes...))
 		defer span.End()
 
 		status := &gatewayStatusRecorder{ResponseWriter: w, statusCode: http.StatusOK}
@@ -390,7 +390,7 @@ func (s *Server) tracingMiddleware(next http.Handler) http.Handler {
 			reasonCode = strings.TrimSpace(status.Header().Get(reasonCodeHeader))
 		}
 		if reasonCode != "" {
-			span.SetAttributes(attribute.String("cleanroom.reason_code", reasonCode))
+			span.SetAttributes(attribute.String(observability.AttrReasonCode, reasonCode))
 		}
 		if metrics := s.gatewayMetrics(); metrics != nil {
 			metrics.RecordRequest(ctx, service, requestObs.action, reasonCode, status.statusCode, time.Since(startedAt))

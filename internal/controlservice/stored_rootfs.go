@@ -8,6 +8,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/cachestore"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
+	"github.com/buildkite/cleanroom/internal/observability"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/repositorycheckout"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
@@ -132,8 +133,8 @@ func (s *Service) createSandboxFromStoredRootFS(ctx context.Context, req *cleanr
 		emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_RESTORE_WORKSPACE_STAGE_CACHE, "restoring workspace stage cache")
 	}
 	if err := s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.restore_snapshot", []attribute.KeyValue{
-		attribute.String("cleanroom.backend", backendName),
-		attribute.String("cleanroom.sandbox.id", sandboxID),
+		attribute.String(observability.AttrBackend, backendName),
+		attribute.String(observability.AttrSandboxID, sandboxID),
 		attribute.String("cleanroom.source_kind", sourceKind),
 	}, func(ctx context.Context) error {
 		return snapshotAdapter.ProvisionSandboxFromSnapshot(ctx, backend.ProvisionFromSnapshotRequest{
