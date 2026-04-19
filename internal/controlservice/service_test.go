@@ -2862,7 +2862,7 @@ func TestWriteExecutionStdinWaitsForRunBeforeToComplete(t *testing.T) {
 				case preRunStarted <- struct{}{}:
 				default:
 				}
-				time.Sleep(250 * time.Millisecond)
+				time.Sleep(150 * time.Millisecond)
 				return &backend.ExecutionResult{
 					ExecutionID: req.ExecutionID,
 					ExitCode:    0,
@@ -3111,6 +3111,71 @@ func TestCreateExecutionRunBeforeFailureClearsRuntimeHandles(t *testing.T) {
 	}
 	if ex.AttachStdin != nil || ex.AttachCloseStdin != nil || ex.AttachResize != nil {
 		t.Fatal("expected run.before failure to clear retained attach handlers")
+	}
+}
+
+func TestWriteExecutionStdinTimesOutWhenRunBeforeNeverCompletes(t *testing.T) {
+	preRunStarted := make(chan struct{}, 1)
+	adapter := &stubAdapter{
+		runStreamFn: func(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+			switch strings.Join(req.Command, " ") {
+			case "sh -lc echo pre-run":
+				select {
+				case preRunStarted <- struct{}{}:
+				default:
+				}
+				<-ctx.Done()
+				return nil, ctx.Err()
+			default:
+				t.Fatalf("unexpected command: %v", req.Command)
+				return nil, nil
+			}
+		},
+	}
+	svc := newTestService(adapter)
+	timeouts := defaultServiceTimeouts
+	timeouts.attachStdinRegistrationWait = 100 * time.Millisecond
+	svc.runtime.timeouts = &timeouts
+
+	policyProto := testPolicy()
+	policyProto.Run = &cleanroomv1.PolicyRun{
+		Before: []string{"sh", "-lc", "echo pre-run"},
+	}
+
+	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: policyProto})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createSandboxResp.GetSandbox().GetSandboxId()
+
+	createExecutionResp, err := svc.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+		SandboxId: sandboxID,
+		Command:   []string{"sh"},
+	})
+	if err != nil {
+		t.Fatalf("CreateExecution returned error: %v", err)
+	}
+	executionID := createExecutionResp.GetExecution().GetExecutionId()
+
+	select {
+	case <-preRunStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for run.before to start")
+	}
+
+	if err := svc.WriteExecutionStdin(sandboxID, executionID, []byte("hello\n")); !errors.Is(err, ErrExecutionStdinUnsupported) {
+		t.Fatalf("expected ErrExecutionStdinUnsupported, got %v", err)
+	}
+
+	if _, err := svc.CancelExecution(context.Background(), &cleanroomv1.CancelExecutionRequest{
+		SandboxId:   sandboxID,
+		ExecutionId: executionID,
+		Signal:      2,
+	}); err != nil {
+		t.Fatalf("CancelExecution returned error: %v", err)
+	}
+	if _, err := svc.WaitExecution(context.Background(), sandboxID, executionID); err != nil {
+		t.Fatalf("WaitExecution returned error: %v", err)
 	}
 }
 

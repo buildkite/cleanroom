@@ -1433,8 +1433,8 @@ func (s *Service) WriteExecutionStdin(sandboxID, executionID string, data []byte
 			s.mu.RUnlock()
 			return errors.New("execution is not running")
 		}
-		if !ex.PreRunActive && deadline.IsZero() {
-			deadline = clock.Now().Add(s.executionAttachStdinWaitLocked(sandboxID, ex))
+		if deadline.IsZero() {
+			deadline = clock.Now().Add(s.executionAttachStdinTotalWaitLocked(sandboxID, ex))
 		}
 		writeFn = ex.AttachStdin
 		done = ex.Done
@@ -1480,8 +1480,8 @@ func (s *Service) CloseExecutionStdin(sandboxID, executionID string) error {
 			s.mu.RUnlock()
 			return errors.New("execution is not running")
 		}
-		if !ex.PreRunActive && deadline.IsZero() {
-			deadline = clock.Now().Add(s.executionAttachStdinWaitLocked(sandboxID, ex))
+		if deadline.IsZero() {
+			deadline = clock.Now().Add(s.executionAttachStdinTotalWaitLocked(sandboxID, ex))
 		}
 		closeFn = ex.AttachCloseStdin
 		done = ex.Done
@@ -1518,6 +1518,22 @@ func (s *Service) executionAttachStdinWaitLocked(sandboxID string, ex *execution
 	return wait
 }
 
+func (s *Service) executionAttachStdinTotalWaitLocked(sandboxID string, ex *executionState) time.Duration {
+	wait := s.executionAttachStdinWaitLocked(sandboxID, ex)
+	if ex != nil && ex.PreRunActive {
+		return wait + s.executionAttachStdinWaitLocked(sandboxID, ex)
+	}
+	return wait
+}
+
+func (s *Service) executionAttachResizeTotalWaitLocked(sandboxID string, ex *executionState) time.Duration {
+	wait := s.timeouts().attachResizeRegistrationWait
+	if ex != nil && ex.PreRunActive {
+		return wait + s.executionAttachStdinWaitLocked(sandboxID, ex)
+	}
+	return wait
+}
+
 func (s *Service) ResizeExecutionTTY(sandboxID, executionID string, cols, rows uint32) error {
 	sandboxID = strings.TrimSpace(sandboxID)
 	executionID = strings.TrimSpace(executionID)
@@ -1545,8 +1561,8 @@ func (s *Service) ResizeExecutionTTY(sandboxID, executionID string, cols, rows u
 			s.mu.RUnlock()
 			return errors.New("execution is not running")
 		}
-		if !ex.PreRunActive && deadline.IsZero() {
-			deadline = clock.Now().Add(s.timeouts().attachResizeRegistrationWait)
+		if deadline.IsZero() {
+			deadline = clock.Now().Add(s.executionAttachResizeTotalWaitLocked(sandboxID, ex))
 		}
 		resizeFn = ex.AttachResize
 		done = ex.Done
