@@ -179,12 +179,37 @@ func (s *Service) CreateSandboxWithReporter(ctx context.Context, req *cleanroomv
 	return s.createSandbox(ctx, req, reporter)
 }
 
-func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSandboxRequest, reporter CreateSandboxReporter) (*cleanroomv1.CreateSandboxResponse, error) {
+func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSandboxRequest, reporter CreateSandboxReporter) (resp *cleanroomv1.CreateSandboxResponse, err error) {
 	if req == nil {
 		return nil, errors.New("missing request")
 	}
 	snapshotID := strings.TrimSpace(req.GetSnapshotId())
 	changeset := repositoryChangesetFromProto(req.GetRepositoryChangeset())
+	ctx, span := s.Observability.Tracer("github.com/buildkite/cleanroom/internal/controlservice").Start(
+		ctx,
+		"cleanroom.sandbox.create",
+		trace.WithAttributes(
+			attribute.Bool("cleanroom.sandbox.from_snapshot", snapshotID != ""),
+			attribute.Bool("cleanroom.repository.checkout", req.GetRepositoryCheckout() != nil),
+			attribute.Bool("cleanroom.repository.changeset", changeset != nil),
+		),
+	)
+	defer func() {
+		if resp != nil && resp.GetSandbox() != nil {
+			span.SetAttributes(
+				attribute.String("cleanroom.backend", resp.GetSandbox().GetBackend()),
+				attribute.String("cleanroom.sandbox.id", resp.GetSandbox().GetSandboxId()),
+			)
+		}
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		} else {
+			span.SetStatus(codes.Ok, "")
+		}
+		span.End()
+	}()
+
 	if snapshotID != "" {
 		if req.GetPolicy() != nil {
 			return nil, errors.New("snapshot-backed sandbox creation cannot include policy")
@@ -207,6 +232,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	}
 
 	backendName := resolveBackendName(strings.TrimSpace(req.GetBackend()), s.Config.DefaultBackend)
+	span.SetAttributes(attribute.String("cleanroom.backend", backendName))
 	adapter, ok := s.Backends[backendName]
 	if !ok {
 		return nil, fmt.Errorf("unknown backend %q", backendName)
@@ -329,9 +355,16 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 
 	if restoredWorkspaceResp != nil {
 		sandboxID := restoredWorkspaceResp.GetSandbox().GetSandboxId()
+		span.SetAttributes(attribute.String("cleanroom.sandbox.id", sandboxID))
 		if dependencyStageBootstrapEnabled {
 			emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_BOOTSTRAP_DEPENDENCIES, "running dependency bootstrap")
-			if err := s.bootstrapDependencyStageInPersistentSandbox(ctx, adapter, sandboxID, compiled, firecrackerCfg, dependencyStagePlan, reporter); err != nil {
+			if err := s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.bootstrap_dependencies", []attribute.KeyValue{
+				attribute.String("cleanroom.backend", backendName),
+				attribute.String("cleanroom.sandbox.id", sandboxID),
+				attribute.Int("cleanroom.command.argc", len(dependencyStagePlan.BootstrapCommand)),
+			}, func(ctx context.Context) error {
+				return s.bootstrapDependencyStageInPersistentSandbox(ctx, adapter, sandboxID, compiled, firecrackerCfg, dependencyStagePlan, reporter)
+			}); err != nil {
 				cleanupErr := s.terminateCreatedSandbox(context.Background(), adapter, sandboxID)
 				if cleanupErr != nil {
 					return nil, fmt.Errorf("bootstrap dependency stage: %w; cleanup failed: %v", err, cleanupErr)
@@ -348,6 +381,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 
 	now := s.clock().Now()
 	sandboxID := s.ids().NewSandboxID()
+	span.SetAttributes(attribute.String("cleanroom.sandbox.id", sandboxID))
 	if s.Logger != nil {
 		s.Logger.Debug("create sandbox requested",
 			"sandbox_id", sandboxID,
@@ -380,7 +414,13 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	if repository != nil {
 		emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_BOOTSTRAP_REPOSITORY, "bootstrapping repository checkout")
 	}
-	if err := s.bootstrapRepositoryInPersistentSandbox(ctx, adapter, sandboxID, compiled, firecrackerCfg, repository, false, reporter); err != nil {
+	if err := s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.bootstrap_repository", []attribute.KeyValue{
+		attribute.String("cleanroom.backend", backendName),
+		attribute.String("cleanroom.sandbox.id", sandboxID),
+		attribute.Bool("cleanroom.repository.refresh_existing", false),
+	}, func(ctx context.Context) error {
+		return s.bootstrapRepositoryInPersistentSandbox(ctx, adapter, sandboxID, compiled, firecrackerCfg, repository, false, reporter)
+	}); err != nil {
 		if terminateErr := s.terminateCreatedSandbox(context.Background(), adapter, sandboxID); terminateErr != nil {
 			return nil, fmt.Errorf("bootstrap repository checkout: %w; cleanup failed: %v", err, terminateErr)
 		}
@@ -401,7 +441,13 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	}
 	if dependencyStageBootstrapEnabled {
 		emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_BOOTSTRAP_DEPENDENCIES, "running dependency bootstrap")
-		if err := s.bootstrapDependencyStageInPersistentSandbox(ctx, adapter, sandboxID, compiled, firecrackerCfg, dependencyStagePlan, reporter); err != nil {
+		if err := s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.bootstrap_dependencies", []attribute.KeyValue{
+			attribute.String("cleanroom.backend", backendName),
+			attribute.String("cleanroom.sandbox.id", sandboxID),
+			attribute.Int("cleanroom.command.argc", len(dependencyStagePlan.BootstrapCommand)),
+		}, func(ctx context.Context) error {
+			return s.bootstrapDependencyStageInPersistentSandbox(ctx, adapter, sandboxID, compiled, firecrackerCfg, dependencyStagePlan, reporter)
+		}); err != nil {
 			if terminateErr := s.terminateCreatedSandbox(context.Background(), adapter, sandboxID); terminateErr != nil {
 				return nil, fmt.Errorf("bootstrap dependency stage: %w; cleanup failed: %v", err, terminateErr)
 			}
@@ -433,7 +479,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	s.sandboxes[sandboxID] = state
 	s.recordSandboxEventLocked(state, cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY, "sandbox created and ready")
 	s.pruneStateLocked(now)
-	resp := &cleanroomv1.CreateSandboxResponse{
+	resp = &cleanroomv1.CreateSandboxResponse{
 		Sandbox:           cloneSandboxLocked(state),
 		Message:           "sandbox created and ready",
 		SourceKind:        state.SourceKind,
@@ -451,6 +497,24 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	}
 
 	return resp, nil
+}
+
+func (s *Service) traceCreateSandboxPhase(ctx context.Context, name string, attrs []attribute.KeyValue, fn func(context.Context) error) error {
+	ctx, span := s.Observability.Tracer("github.com/buildkite/cleanroom/internal/controlservice").Start(
+		ctx,
+		name,
+		trace.WithAttributes(attrs...),
+	)
+	defer span.End()
+
+	err := fn(ctx)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return err
+	}
+	span.SetStatus(codes.Ok, "")
+	return nil
 }
 
 func (s *Service) createSandboxFromSnapshot(ctx context.Context, req *cleanroomv1.CreateSandboxRequest, snapshotID string, reporter CreateSandboxReporter) (*cleanroomv1.CreateSandboxResponse, error) {

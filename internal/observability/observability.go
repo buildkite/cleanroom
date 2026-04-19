@@ -37,38 +37,28 @@ type Runtime struct {
 	shutdown       func(context.Context) error
 }
 
-func Start(ctx context.Context, opts Options) (*Runtime, error) {
-	propagator := propagation.NewCompositeTextMapPropagator(
-		propagation.TraceContext{},
-		propagation.Baggage{},
-	)
-	runtime := &Runtime{
-		tracerProvider: tracenoop.NewTracerProvider(),
-		shutdown:       func(context.Context) error { return nil },
+// NewWithTracerProvider builds an observability runtime around an existing tracer provider.
+func NewWithTracerProvider(provider trace.TracerProvider) (*Runtime, error) {
+	if provider == nil {
+		provider = tracenoop.NewTracerProvider()
 	}
+	return newRuntime(provider, func(context.Context) error { return nil })
+}
+
+func Start(ctx context.Context, opts Options) (*Runtime, error) {
+	tracerProvider := trace.TracerProvider(tracenoop.NewTracerProvider())
+	shutdown := func(context.Context) error { return nil }
 
 	if opts.Config.Enabled {
 		provider, err := newTracerProvider(ctx, opts)
 		if err != nil {
 			return nil, err
 		}
-		runtime.tracerProvider = provider
-		runtime.shutdown = provider.Shutdown
+		tracerProvider = provider
+		shutdown = provider.Shutdown
 	}
 
-	interceptor, err := otelconnect.NewInterceptor(
-		otelconnect.WithPropagator(propagator),
-		otelconnect.WithTracerProvider(runtime.tracerProvider),
-		otelconnect.WithTrustRemote(),
-		otelconnect.WithoutMetrics(),
-		otelconnect.WithoutServerPeerAttributes(),
-		otelconnect.WithoutTraceEvents(),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("create connect interceptor: %w", err)
-	}
-	runtime.interceptor = interceptor
-	return runtime, nil
+	return newRuntime(tracerProvider, shutdown)
 }
 
 func (r *Runtime) Tracer(name string, options ...trace.TracerOption) trace.Tracer {
@@ -97,6 +87,31 @@ func (r *Runtime) Shutdown(ctx context.Context) error {
 		return nil
 	}
 	return r.shutdown(ctx)
+}
+
+func newRuntime(tracerProvider trace.TracerProvider, shutdown func(context.Context) error) (*Runtime, error) {
+	propagator := propagation.NewCompositeTextMapPropagator(
+		propagation.TraceContext{},
+		propagation.Baggage{},
+	)
+	runtime := &Runtime{
+		tracerProvider: tracerProvider,
+		shutdown:       shutdown,
+	}
+
+	interceptor, err := otelconnect.NewInterceptor(
+		otelconnect.WithPropagator(propagator),
+		otelconnect.WithTracerProvider(runtime.tracerProvider),
+		otelconnect.WithTrustRemote(),
+		otelconnect.WithoutMetrics(),
+		otelconnect.WithoutServerPeerAttributes(),
+		otelconnect.WithoutTraceEvents(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("create connect interceptor: %w", err)
+	}
+	runtime.interceptor = interceptor
+	return runtime, nil
 }
 
 func newTracerProvider(ctx context.Context, opts Options) (*sdktrace.TracerProvider, error) {

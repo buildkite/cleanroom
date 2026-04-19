@@ -16,6 +16,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/cachestore"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
+	"github.com/buildkite/cleanroom/internal/observability"
 	"github.com/buildkite/cleanroom/internal/paths"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/repositorychangeset"
@@ -24,6 +25,9 @@ import (
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 	"github.com/buildkite/cleanroom/internal/snapshotstore"
 	"go.jetify.com/typeid"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 type stubAdapter struct {
@@ -346,6 +350,15 @@ func newTestServiceWithSnapshotStore(adapter backend.Adapter, store snapshotMeta
 	}
 }
 
+func findEndedSpanByName(spans []trace.ReadOnlySpan, name string) trace.ReadOnlySpan {
+	for _, span := range spans {
+		if span.Name() == name {
+			return span
+		}
+	}
+	return nil
+}
+
 func testRetentionPolicy() *retentionPolicy {
 	retention := defaultRetentionPolicy
 	return &retention
@@ -357,6 +370,106 @@ func testRepositoryCheckoutProto() *cleanroomv1.RepositoryCheckout {
 		CommitSha:      "0123456789abcdef0123456789abcdef01234567",
 		DestinationDir: "/workspace",
 		Submodules:     true,
+	}
+}
+
+func TestCreateSandboxTracesBootstrapFailure(t *testing.T) {
+	t.Parallel()
+
+	recorder := tracetest.NewSpanRecorder()
+	tracerProvider := trace.NewTracerProvider()
+	tracerProvider.RegisterSpanProcessor(recorder)
+	defer func() {
+		_ = tracerProvider.Shutdown(context.Background())
+	}()
+
+	parentCtx, parentSpan := tracerProvider.Tracer("test").Start(context.Background(), "cleanroom.parent")
+	parentSpanContext := parentSpan.SpanContext()
+
+	runCount := 0
+	adapter := &stubAdapter{
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+			runCount++
+			switch runCount {
+			case 1:
+				if stream.OnStdout != nil {
+					stream.OnStdout([]byte("repository bootstrap ok\n"))
+				}
+				return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, LaunchedVM: true, Message: "ok"}, nil
+			case 2:
+				message := "dns error: failed to lookup address information: Try again\n"
+				if stream.OnStderr != nil {
+					stream.OnStderr([]byte(message))
+				}
+				return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 1, LaunchedVM: true, Stderr: message, Message: strings.TrimSpace(message)}, nil
+			default:
+				t.Fatalf("unexpected bootstrap run %d for command %q", runCount, req.Command)
+				return nil, nil
+			}
+		},
+	}
+	svc := newTestService(adapter)
+	obs, err := observability.NewWithTracerProvider(tracerProvider)
+	if err != nil {
+		t.Fatalf("NewWithTracerProvider returned error: %v", err)
+	}
+	svc.Observability = obs
+	svc.Config.Backends.Firecracker.Snapshots = runtimeconfig.SnapshotConfig{}
+
+	mirrors, repository := testRepositoryMirror(t, map[string]string{
+		".mise.toml": "[tools]\ngo = '1.25.9'\n",
+		"go.mod":     "module example.com/test\n",
+		"go.sum":     "",
+	})
+	svc.RepositoryMirrors = mirrors
+
+	_, err = svc.CreateSandbox(parentCtx, &cleanroomv1.CreateSandboxRequest{
+		Backend:            "firecracker",
+		Policy:             testRepositoryDependencyPolicy(),
+		RepositoryCheckout: repository,
+	})
+	parentSpan.End()
+	if err == nil {
+		t.Fatal("expected dependency bootstrap failure")
+	}
+	if !strings.Contains(err.Error(), "dns error") {
+		t.Fatalf("unexpected create sandbox error: %v", err)
+	}
+
+	spans := recorder.Ended()
+	createSpan := findEndedSpanByName(spans, "cleanroom.sandbox.create")
+	if createSpan == nil {
+		t.Fatalf("expected cleanroom.sandbox.create span, got spans %#v", spans)
+	}
+	repositorySpan := findEndedSpanByName(spans, "cleanroom.sandbox.bootstrap_repository")
+	if repositorySpan == nil {
+		t.Fatalf("expected cleanroom.sandbox.bootstrap_repository span, got spans %#v", spans)
+	}
+	dependencySpan := findEndedSpanByName(spans, "cleanroom.sandbox.bootstrap_dependencies")
+	if dependencySpan == nil {
+		t.Fatalf("expected cleanroom.sandbox.bootstrap_dependencies span, got spans %#v", spans)
+	}
+
+	if got, want := createSpan.SpanContext().TraceID(), parentSpanContext.TraceID(); got != want {
+		t.Fatalf("unexpected create sandbox trace id: got %s want %s", got, want)
+	}
+	if got, want := createSpan.Parent().SpanID(), parentSpanContext.SpanID(); got != want {
+		t.Fatalf("unexpected create sandbox parent span id: got %s want %s", got, want)
+	}
+	if got, want := repositorySpan.Parent().SpanID(), createSpan.SpanContext().SpanID(); got != want {
+		t.Fatalf("unexpected repository bootstrap parent span id: got %s want %s", got, want)
+	}
+	if got, want := dependencySpan.Parent().SpanID(), createSpan.SpanContext().SpanID(); got != want {
+		t.Fatalf("unexpected dependency bootstrap parent span id: got %s want %s", got, want)
+	}
+	if got, want := repositorySpan.Status().Code, codes.Ok; got != want {
+		t.Fatalf("unexpected repository bootstrap span status: got %v want %v", got, want)
+	}
+	if got, want := dependencySpan.Status().Code, codes.Error; got != want {
+		t.Fatalf("unexpected dependency bootstrap span status: got %v want %v", got, want)
+	}
+	if got, want := createSpan.Status().Code, codes.Error; got != want {
+		t.Fatalf("unexpected create sandbox span status: got %v want %v", got, want)
 	}
 }
 
