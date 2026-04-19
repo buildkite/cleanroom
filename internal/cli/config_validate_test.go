@@ -10,6 +10,7 @@ import (
 
 	"github.com/buildkite/cleanroom/internal/backend"
 	backendfirecracker "github.com/buildkite/cleanroom/internal/backend/firecracker"
+	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 )
 
 func TestConfigValidateReportsResolvedPathAndBackend(t *testing.T) {
@@ -123,5 +124,37 @@ func TestRunConfigInitBypassesBrokenDefaultRuntimeConfig(t *testing.T) {
 
 	if _, err := os.Stat(outputPath); err != nil {
 		t.Fatalf("expected config init output at %s: %v", outputPath, err)
+	}
+}
+
+func TestRunConfigInitForceOverwritesMalformedDefaultRuntimeConfig(t *testing.T) {
+	stubFirecrackerHostSupport(t, func(context.Context, backend.FirecrackerConfig) backendfirecracker.HostSupport {
+		return backendfirecracker.HostSupport{}
+	})
+
+	tmpDir := t.TempDir()
+	xdgConfigHome := filepath.Join(tmpDir, "xdg")
+	defaultConfigPath := filepath.Join(xdgConfigHome, "cleanroom", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(defaultConfigPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	if err := os.WriteFile(defaultConfigPath, []byte("default_backend: [\n"), 0o644); err != nil {
+		t.Fatalf("write malformed default config: %v", err)
+	}
+
+	t.Setenv("XDG_CONFIG_HOME", xdgConfigHome)
+	if err := Run([]string{"config", "init", "--force"}, "dev"); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	cfg, resolvedPath, err := runtimeconfig.LoadPath(defaultConfigPath)
+	if err != nil {
+		t.Fatalf("expected overwritten config at %s to be valid: %v", defaultConfigPath, err)
+	}
+	if got, want := resolvedPath, defaultConfigPath; got != want {
+		t.Fatalf("unexpected resolved path: got %q want %q", got, want)
+	}
+	if strings.TrimSpace(cfg.DefaultBackend) == "" {
+		t.Fatal("expected overwritten config to set default backend")
 	}
 }
