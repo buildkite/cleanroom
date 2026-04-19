@@ -178,7 +178,10 @@ func (h *gitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		setGatewayRequestDecision(r.Context(), "deny", reasonUpstreamError)
 		span.RecordError(err)
-		span.SetAttributes(attribute.String("cleanroom.reason_code", reasonUpstreamError))
+		span.SetAttributes(
+			attribute.String("cleanroom.gateway.action", "deny"),
+			attribute.String("cleanroom.reason_code", reasonUpstreamError),
+		)
 		span.SetStatus(codes.Error, err.Error())
 		writeReasonError(w, http.StatusBadGateway, reasonUpstreamError, "upstream error")
 		return

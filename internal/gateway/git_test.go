@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,9 @@ import (
 	"testing"
 
 	"github.com/buildkite/cleanroom/internal/policy"
+	"go.opentelemetry.io/otel/attribute"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	tracetest "go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 type staticCredentialProvider struct {
@@ -259,6 +263,55 @@ func TestGitHandlerNoScope(t *testing.T) {
 	}
 }
 
+func TestGitHandlerUpstreamTransportFailureMarksSpanDenied(t *testing.T) {
+	t.Parallel()
+
+	recorder := tracetest.NewSpanRecorder()
+	tracerProvider := sdktrace.NewTracerProvider()
+	tracerProvider.RegisterSpanProcessor(recorder)
+	defer func() {
+		_ = tracerProvider.Shutdown(context.Background())
+	}()
+
+	h := newGitHandler(nil, nil)
+	h.client = &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("dial tcp: i/o timeout")
+	})}
+
+	srv := &Server{tracerProvider: tracerProvider}
+	handler := srv.tracingMiddleware(h)
+
+	req := httptest.NewRequest("GET", "/git/github.com/org/repo.git/info/refs?service=git-upload-pack", nil)
+	req = withScope(req, gitTestScope())
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %d", w.Code)
+	}
+	if got := w.Header().Get(reasonCodeHeader); got != reasonUpstreamError {
+		t.Fatalf("expected %s=%s, got %q", reasonCodeHeader, reasonUpstreamError, got)
+	}
+
+	spans := recorder.Ended()
+	var gatewaySpan sdktrace.ReadOnlySpan
+	for _, span := range spans {
+		if span.Name() == "cleanroom.gateway.git.request" {
+			gatewaySpan = span
+			break
+		}
+	}
+	if gatewaySpan == nil {
+		t.Fatalf("expected gateway span, got spans %#v", spans)
+	}
+	if got := spanAttributeValue(gatewaySpan, "cleanroom.gateway.action"); got != "deny" {
+		t.Fatalf("expected cleanroom.gateway.action=deny, got %q", got)
+	}
+	if got := spanAttributeValue(gatewaySpan, "cleanroom.reason_code"); got != reasonUpstreamError {
+		t.Fatalf("expected cleanroom.reason_code=%s, got %q", reasonUpstreamError, got)
+	}
+}
+
 func TestGitHandlerServesMirrorToRealGitClient(t *testing.T) {
 	t.Parallel()
 
@@ -360,4 +413,23 @@ func TestUploadPackConfigArgsEnablePartialCloneFilter(t *testing.T) {
 	if !strings.Contains(joined, "uploadpack.allowFilter=true") {
 		t.Fatalf("expected upload-pack config args to enable filter support, got %q", joined)
 	}
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return fn(req)
+}
+
+func spanAttributeValue(span sdktrace.ReadOnlySpan, key string) string {
+	for _, attr := range span.Attributes() {
+		if string(attr.Key) != key {
+			continue
+		}
+		if attr.Value.Type() == attribute.STRING {
+			return attr.Value.AsString()
+		}
+		return attr.Value.Emit()
+	}
+	return ""
 }
