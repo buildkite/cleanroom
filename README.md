@@ -65,40 +65,8 @@ The server listens on `unix://$XDG_RUNTIME_DIR/cleanroom/cleanroom.sock` by defa
 When observability is enabled, `cleanroom serve` also prints startup status for
 trace export, sampling, and whether direct trace links are configured.
 
-For local development, start the collector-based observability stack in
-[`examples/observability`](examples/observability/README.md):
-
-```bash
-docker compose -f examples/observability/docker-compose.yaml up -d
-```
-
-Point Cleanroom at the collector:
-
-```yaml
-observability:
-  enabled: true
-  otlp:
-    endpoint: http://localhost:14318
-    protocol: http/protobuf
-  traces:
-    sampling:
-      mode: parentbased_traceidratio
-      ratio: 1.0
-```
-
-This local stack gives you:
-
-- Grafana at `http://localhost:3000`
-- Prometheus at `http://localhost:9090`
-- Tempo as the trace backend
-- an OpenTelemetry Collector listening on `localhost:14317` and `http://localhost:14318`
-
-If you prefer OTLP gRPC, set `endpoint: localhost:14317` and `protocol: grpc` instead.
-
-`url_template` is optional. When set, Cleanroom prints `trace_url=...` in
-failure footers and exposes the same URL from `cleanroom execution inspect`.
-
-Cleanroom observability is OTLP-only.
+For observability setup, local Grafana/Tempo/Prometheus development, runtime
+config examples, and trace diagnostics, see [docs/observability.md](docs/observability.md).
 
 Install as a daemon:
 
@@ -489,6 +457,7 @@ private sibling repo `../cleanroom-ops`.
 - [remote-access.md](docs/remote-access.md) -- Tailscale and HTTP listeners
 - [isolation.md](docs/isolation.md) -- enforcement details and persistence behavior
 - [api.md](docs/api.md) -- ConnectRPC surface and proto sketch
+- [observability.md](docs/observability.md) -- OTLP config, local stack, and trace diagnostics
 - [vsock.md](docs/vsock.md) -- guest execution protocol
 - [backend/firecracker.md](docs/backend/firecracker.md) -- Firecracker backend design
 - [backend/darwin-vz.md](docs/backend/darwin-vz.md) -- macOS backend and helper design
