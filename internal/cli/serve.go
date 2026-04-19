@@ -22,6 +22,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/endpoint"
 	"github.com/buildkite/cleanroom/internal/gateway"
 	"github.com/buildkite/cleanroom/internal/interactivequic"
+	"github.com/buildkite/cleanroom/internal/repositorystore"
 	"github.com/buildkite/cleanroom/internal/snapshotstore"
 	"github.com/charmbracelet/log"
 )
@@ -235,9 +236,9 @@ func newControlService(ctx *runtimeContext, logger *log.Logger, mirrors gateway.
 
 	if ctx == nil {
 		service := &controlservice.Service{
-			Logger:            logger,
-			RepositoryMirrors: mirrors,
-			SnapshotStore:     snapshotMetadataStore,
+			Logger:          logger,
+			RepositoryStore: repositorystore.NewMirrorBacked(mirrors),
+			SnapshotStore:   snapshotMetadataStore,
 		}
 		if cacheMetadataStore != nil {
 			service.CacheStore = cacheMetadataStore
@@ -245,13 +246,13 @@ func newControlService(ctx *runtimeContext, logger *log.Logger, mirrors gateway.
 		return service, nil
 	}
 	service := &controlservice.Service{
-		Loader:            ctx.Loader,
-		Config:            ctx.Config,
-		Backends:          ctx.Backends,
-		Logger:            logger,
-		Observability:     ctx.Observability,
-		RepositoryMirrors: mirrors,
-		SnapshotStore:     snapshotMetadataStore,
+		Loader:          ctx.Loader,
+		Config:          ctx.Config,
+		Backends:        ctx.Backends,
+		Logger:          logger,
+		Observability:   ctx.Observability,
+		RepositoryStore: repositorystore.NewMirrorBacked(mirrors),
+		SnapshotStore:   snapshotMetadataStore,
 	}
 	if cacheMetadataStore != nil {
 		service.CacheStore = cacheMetadataStore

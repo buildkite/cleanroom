@@ -16,6 +16,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/repositorychangeset"
 	"github.com/buildkite/cleanroom/internal/repositorycheckout"
+	"github.com/buildkite/cleanroom/internal/repositorystore"
 )
 
 const (
@@ -96,63 +97,65 @@ func (s *Service) dependencyStageKeyFilesDigest(ctx context.Context, repository 
 	if repository == nil {
 		return "", fmt.Errorf("dependency key files require a repository checkout")
 	}
-	if s.RepositoryMirrors == nil {
-		return "", fmt.Errorf("dependency key files require repository mirrors")
+	if s.RepositoryStore == nil {
+		return "", fmt.Errorf("dependency key files require repository store")
 	}
-	mirrorPath, err := s.RepositoryMirrors.MirrorPath(repository.RemoteURL)
-	if err != nil {
-		mirrorPath, err = s.RepositoryMirrors.EnsureMirror(ctx, repository.RemoteURL)
+	if changeset != nil {
+		var digest string
+		err := s.RepositoryStore.WithRepository(ctx, repository.RemoteURL, repository.CommitSHA, repositorystore.FetchHints{}, func(repoDir string) error {
+			var err error
+			digest, err = dependencyStageKeyFilesDigestWithChangeset(repoDir, changeset, files)
+			return err
+		})
 		if err != nil {
 			return "", err
 		}
-	}
-	digest, err := dependencyStageKeyFilesDigestFromMirror(ctx, mirrorPath, repository.CommitSHA, changeset, files)
-	if err == nil {
 		return digest, nil
 	}
-	if ensureErr := s.RepositoryMirrors.EnsureMirrorContains(ctx, repository.RemoteURL, repository.CommitSHA); ensureErr != nil {
-		return "", ensureErr
-	}
-	mirrorPath, err = s.RepositoryMirrors.MirrorPath(repository.RemoteURL)
+	var digest string
+	err := s.RepositoryStore.WithRepository(ctx, repository.RemoteURL, repository.CommitSHA, repositorystore.FetchHints{}, func(repoDir string) error {
+		var err error
+		digest, err = dependencyStageKeyFilesDigestAtCommit(ctx, repoDir, repository.CommitSHA, files)
+		return err
+	})
 	if err != nil {
 		return "", err
 	}
-	return dependencyStageKeyFilesDigestFromMirror(ctx, mirrorPath, repository.CommitSHA, changeset, files)
+	return digest, nil
 }
 
-func dependencyStageKeyFilesDigestFromMirror(ctx context.Context, mirrorPath, commitSHA string, changeset *repositorychangeset.Changeset, files []string) (string, error) {
-	trimmedMirrorPath := strings.TrimSpace(mirrorPath)
+func dependencyStageKeyFilesDigestWithChangeset(repoDir string, changeset *repositorychangeset.Changeset, files []string) (string, error) {
+	manifest := make([]dependencyKeyFileDigest, 0, len(files))
+	digests, err := changeset.DigestPathsFromBase(strings.TrimSpace(repoDir), files)
+	if err != nil {
+		return "", fmt.Errorf("read dependency key files from repository changeset: %w", err)
+	}
+	for _, file := range digests {
+		manifest = append(manifest, dependencyKeyFileDigest{
+			Path:    file.Path,
+			SHA256:  file.SHA256,
+			Deleted: file.Deleted,
+		})
+	}
+
+	payload, err := json.Marshal(manifest)
+	if err != nil {
+		return "", fmt.Errorf("marshal dependency key file manifest: %w", err)
+	}
+
+	sum := sha256.Sum256(payload)
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
+}
+
+func dependencyStageKeyFilesDigestAtCommit(ctx context.Context, repoDir, commitSHA string, files []string) (string, error) {
 	trimmedCommitSHA := strings.TrimSpace(commitSHA)
 	if trimmedCommitSHA == "" {
 		return "", fmt.Errorf("dependency key file commit SHA is empty")
 	}
 
 	manifest := make([]dependencyKeyFileDigest, 0, len(files))
-	if changeset != nil {
-		digests, err := changeset.DigestPathsFromBase(trimmedMirrorPath, files)
-		if err != nil {
-			return "", fmt.Errorf("read dependency key files from repository changeset: %w", err)
-		}
-		for _, file := range digests {
-			manifest = append(manifest, dependencyKeyFileDigest{
-				Path:    file.Path,
-				SHA256:  file.SHA256,
-				Deleted: file.Deleted,
-			})
-		}
-		payload, err := json.Marshal(manifest)
-		if err != nil {
-			return "", fmt.Errorf("marshal dependency key file manifest: %w", err)
-		}
-
-		sum := sha256.Sum256(payload)
-		return "sha256:" + hex.EncodeToString(sum[:]), nil
-	}
 	for _, file := range files {
-		if trimmedMirrorPath == "" {
-			return "", fmt.Errorf("dependency key file mirror path is empty")
-		}
-		digest, err := gitFileDigestAtCommit(ctx, trimmedMirrorPath, trimmedCommitSHA, file)
+		digest, err := gitFileDigestAtCommit(ctx, strings.TrimSpace(repoDir), trimmedCommitSHA, file)
 		if err != nil {
 			return "", fmt.Errorf("read dependency key file %q: %w", file, err)
 		}
@@ -171,8 +174,8 @@ func dependencyStageKeyFilesDigestFromMirror(ctx context.Context, mirrorPath, co
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
-func gitFileDigestAtCommit(ctx context.Context, repoPath, commitSHA, file string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", "-C", repoPath, "show", commitSHA+":"+file)
+func gitFileDigestAtCommit(ctx context.Context, repoDir, commitSHA, file string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "-C", repoDir, "show", commitSHA+":"+file)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		message := strings.TrimSpace(string(output))

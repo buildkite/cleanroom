@@ -19,6 +19,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/paths"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/repositorycheckout"
+	"github.com/buildkite/cleanroom/internal/repositorystore"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 	"github.com/buildkite/cleanroom/internal/snapshotstore"
 	"github.com/charmbracelet/log"
@@ -31,14 +32,14 @@ import (
 )
 
 type Service struct {
-	Loader            loader
-	Config            runtimeconfig.Config
-	Backends          map[string]backend.Adapter
-	Logger            *log.Logger
-	Observability     *observability.Runtime
-	RepositoryMirrors repositoryMirrorStore
-	runtime           serviceRuntime
-	interactive       interactiveSessionBroker
+	Loader          loader
+	Config          runtimeconfig.Config
+	Backends        map[string]backend.Adapter
+	Logger          *log.Logger
+	Observability   *observability.Runtime
+	RepositoryStore repositorystore.RepositoryStore
+	runtime         serviceRuntime
+	interactive     interactiveSessionBroker
 	// Snapshot lifecycle still lives on Service because it coordinates backend
 	// adapters, sandbox state, and metadata persistence in one operation chain.
 	// If this grows again, extract a dedicated snapshot manager rather than
@@ -128,12 +129,6 @@ type InteractiveSession struct {
 
 type loader interface {
 	LoadAndCompile(cwd string) (*policy.CompiledPolicy, string, error)
-}
-
-type repositoryMirrorStore interface {
-	MirrorPath(remoteURL string) (string, error)
-	EnsureMirror(ctx context.Context, remoteURL string) (string, error)
-	EnsureMirrorContains(ctx context.Context, remoteURL, commitSHA string) error
 }
 
 type snapshotMetadataStore interface {
@@ -1905,11 +1900,11 @@ func (s *Service) executionOutputStream(key string) backend.OutputStream {
 	}
 }
 
-func (s *Service) ensureRepositoryMirrorContains(ctx context.Context, repository *repositorycheckout.Checkout) error {
-	if repository == nil || s.RepositoryMirrors == nil {
+func (s *Service) ensureRepositoryCommitAvailable(ctx context.Context, repository *repositorycheckout.Checkout) error {
+	if repository == nil || s.RepositoryStore == nil {
 		return nil
 	}
-	return s.RepositoryMirrors.EnsureMirrorContains(ctx, repository.RemoteURL, repository.CommitSHA)
+	return s.RepositoryStore.EnsureCommit(ctx, repository.RemoteURL, repository.CommitSHA, repositorystore.FetchHints{})
 }
 
 func (s *Service) preparePersistentSandboxRepository(
@@ -2005,7 +2000,7 @@ func (s *Service) bootstrapRepositoryInPersistentSandbox(
 			"destination_dir", repository.DestinationDir,
 		)
 	}
-	if err := s.ensureRepositoryMirrorContains(ctx, repository); err != nil {
+	if err := s.ensureRepositoryCommitAvailable(ctx, repository); err != nil {
 		return err
 	}
 	if s.Logger != nil {

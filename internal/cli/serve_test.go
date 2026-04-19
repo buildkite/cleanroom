@@ -140,7 +140,7 @@ func TestGatewayServerConfigUsesDarwinGatewayHostForTrustedPrefixes(t *testing.T
 		t.Fatal("expected allow-any-source fallback to be preserved in server config")
 	}
 }
-func TestNewControlServiceWiresRepositoryMirrors(t *testing.T) {
+func TestNewControlServiceWiresRepositoryStore(t *testing.T) {
 	prevSnapshotStoreFactory := newSnapshotMetadataStore
 	t.Cleanup(func() { newSnapshotMetadataStore = prevSnapshotStoreFactory })
 	newSnapshotMetadataStore = func(snapshotstore.Options) (*snapshotstore.Store, error) {
@@ -161,8 +161,8 @@ func TestNewControlServiceWiresRepositoryMirrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newControlService returned error: %v", err)
 	}
-	if service.RepositoryMirrors != mirrors {
-		t.Fatal("expected control service to use the gateway mirror store")
+	if service.RepositoryStore == nil {
+		t.Fatal("expected control service to configure a repository store")
 	}
 }
 
