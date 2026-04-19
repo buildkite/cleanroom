@@ -92,6 +92,10 @@ message PolicyDependencies {
   PolicyDependencyKey key = 2;
 }
 
+message PolicyRun {
+  repeated string before = 1;
+}
+
 message Policy {
   int32 version = 1;
   string image_ref = 2;
@@ -101,6 +105,7 @@ message Policy {
   string hash = 6;
   PolicyServices services = 7;
   PolicyDependencies dependencies = 9;
+  PolicyRun run = 10;
 }
 
 message SandboxOptions {

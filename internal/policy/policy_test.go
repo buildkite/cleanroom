@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
+	"gopkg.in/yaml.v3"
 )
 
 const validImageRef = "ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -206,6 +207,95 @@ func TestCompileNormalizesDependencyBootstrapConfig(t *testing.T) {
 	}
 }
 
+func TestCompileNormalizesDependencyCommandString(t *testing.T) {
+	t.Parallel()
+
+	var raw rawPolicy
+	if err := yaml.Unmarshal([]byte(`
+version: 1
+sandbox:
+  image:
+    ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  dependencies:
+    command: bundle install
+    key:
+      files: [Gemfile.lock]
+  network:
+    default: deny
+`), &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	compiled, err := Compile(raw)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if got, want := compiled.Dependencies.Command, []string{"sh", "-lc", "bundle install"}; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("unexpected dependency command: got %v want %v", got, want)
+	}
+	if got, want := compiled.Dependencies.KeyFiles, []string{"Gemfile.lock"}; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("unexpected dependency key files: got %v want %v", got, want)
+	}
+}
+
+func TestCompileTreatsNullDependencyCommandAsUnset(t *testing.T) {
+	t.Parallel()
+
+	var raw rawPolicy
+	if err := yaml.Unmarshal([]byte(`
+version: 1
+sandbox:
+  image:
+    ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  dependencies:
+    command: null
+  network:
+    default: deny
+`), &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	compiled, err := Compile(raw)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if compiled.Dependencies.Enabled() {
+		t.Fatal("expected null dependency command to disable dependency bootstrap")
+	}
+	if len(compiled.Dependencies.Command) != 0 {
+		t.Fatalf("expected null dependency command to normalize to empty, got %v", compiled.Dependencies.Command)
+	}
+}
+
+func TestCompileAcceptsAliasedDependencyCommandSequence(t *testing.T) {
+	t.Parallel()
+
+	var raw rawPolicy
+	if err := yaml.Unmarshal([]byte(`
+version: 1
+common_cmd: &deps [mise, exec, --, go, mod, download]
+sandbox:
+  image:
+    ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  dependencies:
+    command: *deps
+    key:
+      files: [go.mod, go.sum]
+  network:
+    default: deny
+`), &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	compiled, err := Compile(raw)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if got, want := compiled.Dependencies.Command, []string{"mise", "exec", "--", "go", "mod", "download"}; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("unexpected dependency command: got %v want %v", got, want)
+	}
+}
+
 func TestCompileRejectsDependencyKeyFilesWithoutCommand(t *testing.T) {
 	t.Parallel()
 
@@ -217,6 +307,100 @@ func TestCompileRejectsDependencyKeyFilesWithoutCommand(t *testing.T) {
 		t.Fatal("expected compile to reject dependency key files without a command")
 	}
 	if !strings.Contains(err.Error(), "sandbox.dependencies.key.files") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestUnmarshalRejectsNonStringOrSequenceDependencyCommand(t *testing.T) {
+	t.Parallel()
+
+	var raw rawPolicy
+	err := yaml.Unmarshal([]byte(`
+version: 1
+sandbox:
+  image:
+    ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  dependencies:
+    command: false
+  network:
+    default: deny
+`), &raw)
+	if err == nil {
+		t.Fatal("expected unmarshal to reject non-string dependency command")
+	}
+	if !strings.Contains(err.Error(), "command must be a string or sequence") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestCompileNormalizesRunBeforeCommand(t *testing.T) {
+	t.Parallel()
+
+	var raw rawPolicy
+	if err := yaml.Unmarshal([]byte(`
+version: 1
+sandbox:
+  image:
+    ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  run:
+    before: |
+      docker compose up -d postgres valkey
+      bin/rails db:prepare
+  network:
+    default: deny
+`), &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	compiled, err := Compile(raw)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if got, want := compiled.Run.Before, []string{"sh", "-lc", "docker compose up -d postgres valkey\nbin/rails db:prepare"}; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("unexpected run.before command: got %v want %v", got, want)
+	}
+}
+
+func TestUnmarshalRejectsNonStringRunBefore(t *testing.T) {
+	t.Parallel()
+
+	var raw rawPolicy
+	err := yaml.Unmarshal([]byte(`
+version: 1
+sandbox:
+  image:
+    ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  run:
+    before: false
+  network:
+    default: deny
+`), &raw)
+	if err == nil {
+		t.Fatal("expected unmarshal to reject non-string run.before")
+	}
+	if !strings.Contains(err.Error(), "command must be a string") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestUnmarshalRejectsSequenceRunBefore(t *testing.T) {
+	t.Parallel()
+
+	var raw rawPolicy
+	err := yaml.Unmarshal([]byte(`
+version: 1
+sandbox:
+  image:
+    ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  run:
+    before: [bin/rails, db:prepare]
+  network:
+    default: deny
+`), &raw)
+	if err == nil {
+		t.Fatal("expected unmarshal to reject sequence run.before")
+	}
+	if !strings.Contains(err.Error(), "command must be a string") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -451,6 +635,7 @@ func TestCompiledPolicyProtoRoundTripPreservesDependencies(t *testing.T) {
 	raw := baseRawPolicy()
 	raw.Sandbox.Dependencies.Command = []string{"go", "mod", "download"}
 	raw.Sandbox.Dependencies.Key.Files = []string{"go.mod", "go.sum"}
+	raw.Sandbox.Run.Before = rawShellCommandSpec{"sh", "-lc", "bin/rails db:prepare"}
 	compiled, err := Compile(raw)
 	if err != nil {
 		t.Fatalf("compile: %v", err)
@@ -465,5 +650,8 @@ func TestCompiledPolicyProtoRoundTripPreservesDependencies(t *testing.T) {
 	}
 	if got, want := strings.Join(roundTripped.Dependencies.KeyFiles, "\x00"), strings.Join(compiled.Dependencies.KeyFiles, "\x00"); got != want {
 		t.Fatalf("unexpected dependency key files after round trip: got %q want %q", got, want)
+	}
+	if got, want := strings.Join(roundTripped.Run.Before, "\x00"), strings.Join(compiled.Run.Before, "\x00"); got != want {
+		t.Fatalf("unexpected run.before after round trip: got %q want %q", got, want)
 	}
 }

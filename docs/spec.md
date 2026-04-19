@@ -76,7 +76,7 @@ project:
 sandbox:
   ttl_minutes: 60
   dependencies:
-    command: [mise, exec, --, go, mod, download]
+    command: mise exec -- go mod download
     key:
       files:
         - .mise.toml
@@ -166,7 +166,10 @@ explicit request-time changeset input.
 - `repository.path` defaults to `/workspace` and must be an absolute guest path.
 - `repository.submodules` defaults to `false`.
 - `sandbox.dependencies.command` defaults to unset; when present, Cleanroom runs that command in the repository workdir during sandbox creation and makes the result eligible for dependency-stage caching.
+- `sandbox.dependencies.command` accepts either a YAML string or a YAML sequence; strings execute as `sh -lc <value>`, and strings are the preferred form.
 - `sandbox.dependencies.key.files` defaults to empty; when present, Cleanroom hashes those repository-relative files from the exact committed checkout and includes them in the dependency-stage cache key.
+- `sandbox.run.before` defaults to unset; when present, each execution runs that shell command in the repository workdir immediately before the requested command.
+- `sandbox.run.before` must be a YAML string or block string and executes as `sh -lc <value>`.
 - Policy schema intentionally has no field for implicit dirty-worktree inclusion; explicit local modifications are a separate request-time changeset input.
 - Host matching supports:
   - exact host (`registry.npmjs.org`)
@@ -228,6 +231,7 @@ explicit request-time changeset input.
   - they materialize that checkout inside the sandbox before the command runs
   - they start commands in `repository.path`
   - when `sandbox.dependencies.command` is set, sandbox creation runs that dependency bootstrap command after repository bootstrap and may publish a reusable dependency stage for later warm hits
+  - when `sandbox.run.before` is set, each execution runs that shell command immediately before the requested command
   - Cleanroom does not auto-detect or auto-wrap `mise`; use explicit commands such as `mise exec -- ...` when needed
 - When explicitly requested, top-level commands may package local modifications against committed `HEAD` into a reproducible changeset, send that changeset as a separate sandbox-creation input, and apply it after repository bootstrap and before dependency bootstrap or workload execution.
 - `cleanroom sandbox create` remains the generic low-level surface and does not

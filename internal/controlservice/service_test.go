@@ -303,6 +303,14 @@ func testRepositoryDependencyPolicy() *cleanroomv1.Policy {
 	return policyProto
 }
 
+func testRepositoryRunBeforePolicy() *cleanroomv1.Policy {
+	policyProto := testRepositoryPolicy()
+	policyProto.Run = &cleanroomv1.PolicyRun{
+		Before: []string{"sh", "-lc", "echo pre-run"},
+	}
+	return policyProto
+}
+
 func newTestService(adapter backend.Adapter) *Service {
 	return newTestServiceWithSnapshotStore(adapter, nil)
 }
@@ -2773,6 +2781,562 @@ func TestCreateExecutionSkipsBootstrapForMatchingPersistentRepository(t *testing
 	}
 }
 
+func TestCreateExecutionRunsRunBeforeBeforeUserCommand(t *testing.T) {
+	adapter := &stubAdapter{}
+	svc := newTestService(adapter)
+
+	var (
+		mu       sync.Mutex
+		commands [][]string
+	)
+	runCalled := make(chan struct{}, 4)
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+		mu.Lock()
+		commands = append(commands, append([]string(nil), req.Command...))
+		mu.Unlock()
+		select {
+		case runCalled <- struct{}{}:
+		default:
+		}
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+	}
+
+	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy:             testRepositoryRunBeforePolicy(),
+		RepositoryCheckout: testRepositoryCheckoutProto(),
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createSandboxResp.GetSandbox().GetSandboxId()
+	select {
+	case <-runCalled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for sandbox bootstrap")
+	}
+
+	createExecutionResp, err := svc.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+		SandboxId: sandboxID,
+		Command:   []string{"sh", "-lc", "pwd"},
+	})
+	if err != nil {
+		t.Fatalf("CreateExecution returned error: %v", err)
+	}
+	if createExecutionResp.GetExecution().GetExecutionId() == "" {
+		t.Fatal("expected execution id")
+	}
+	for i := 0; i < 2; i++ {
+		select {
+		case <-runCalled:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for run.before + user execution")
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if got, want := len(commands), 3; got != want {
+		t.Fatalf("expected create bootstrap, run.before, and user execution, got %d command(s)", got)
+	}
+	if runBefore := strings.Join(commands[1], " "); !repositoryWrappedCommandContains(runBefore, `exec 'sh' '-lc' 'echo pre-run'`) {
+		t.Fatalf("expected wrapped run.before command, got %q", runBefore)
+	}
+	if joined := strings.Join(commands[2], " "); !repositoryWrappedCommandContains(joined, `exec 'sh' '-lc' 'pwd'`) {
+		t.Fatalf("expected wrapped user command, got %q", joined)
+	}
+}
+
+func TestCreateExecutionPassesEnvToRunBefore(t *testing.T) {
+	adapter := &stubAdapter{}
+	svc := newTestService(adapter)
+
+	var (
+		mu   sync.Mutex
+		envs [][]string
+	)
+	runCalled := make(chan struct{}, 4)
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+		mu.Lock()
+		envs = append(envs, append([]string(nil), req.Env...))
+		mu.Unlock()
+		select {
+		case runCalled <- struct{}{}:
+		default:
+		}
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+	}
+
+	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy:             testRepositoryRunBeforePolicy(),
+		RepositoryCheckout: testRepositoryCheckoutProto(),
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createSandboxResp.GetSandbox().GetSandboxId()
+	select {
+	case <-runCalled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for sandbox bootstrap")
+	}
+
+	_, err = svc.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+		SandboxId: sandboxID,
+		Command:   []string{"sh", "-lc", "pwd"},
+		Env:       []string{"DATABASE_URL=postgres://example", "REDIS_URL=redis://example"},
+	})
+	if err != nil {
+		t.Fatalf("CreateExecution returned error: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		select {
+		case <-runCalled:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for run.before + user execution")
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if got, want := len(envs), 3; got != want {
+		t.Fatalf("expected create bootstrap, run.before, and user execution env captures, got %d", got)
+	}
+	for i, got := range envs[1:] {
+		if want := []string{"DATABASE_URL=postgres://example", "REDIS_URL=redis://example"}; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+			t.Fatalf("unexpected env on command #%d: got %v want %v", i+2, got, want)
+		}
+	}
+}
+
+func TestWriteExecutionStdinWaitsForRunBeforeToComplete(t *testing.T) {
+	preRunStarted := make(chan struct{}, 1)
+	stdinChunks := make(chan string, 1)
+	adapter := &stubAdapter{
+		runStreamFn: func(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+			switch strings.Join(req.Command, " ") {
+			case "sh -lc echo pre-run":
+				select {
+				case preRunStarted <- struct{}{}:
+				default:
+				}
+				time.Sleep(150 * time.Millisecond)
+				return &backend.ExecutionResult{
+					ExecutionID: req.ExecutionID,
+					ExitCode:    0,
+					Message:     "ok",
+				}, nil
+			case "sh":
+				if stream.OnAttach != nil {
+					stream.OnAttach(backend.AttachIO{
+						WriteStdin: func(data []byte) error {
+							stdinChunks <- string(data)
+							return nil
+						},
+					})
+				}
+				<-ctx.Done()
+				return nil, ctx.Err()
+			default:
+				t.Fatalf("unexpected command: %v", req.Command)
+				return nil, nil
+			}
+		},
+	}
+	svc := newTestService(adapter)
+	timeouts := defaultServiceTimeouts
+	timeouts.attachStdinRegistrationWait = 100 * time.Millisecond
+	svc.runtime.timeouts = &timeouts
+
+	policyProto := testPolicy()
+	policyProto.Run = &cleanroomv1.PolicyRun{
+		Before: []string{"sh", "-lc", "echo pre-run"},
+	}
+
+	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: policyProto})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createSandboxResp.GetSandbox().GetSandboxId()
+
+	createExecutionResp, err := svc.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+		SandboxId: sandboxID,
+		Command:   []string{"sh"},
+	})
+	if err != nil {
+		t.Fatalf("CreateExecution returned error: %v", err)
+	}
+	executionID := createExecutionResp.GetExecution().GetExecutionId()
+
+	select {
+	case <-preRunStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for run.before to start")
+	}
+
+	if err := svc.WriteExecutionStdin(sandboxID, executionID, []byte("hello\n")); err != nil {
+		t.Fatalf("WriteExecutionStdin returned error: %v", err)
+	}
+
+	select {
+	case got := <-stdinChunks:
+		if got != "hello\n" {
+			t.Fatalf("unexpected stdin payload: got %q want %q", got, "hello\n")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for stdin after run.before")
+	}
+
+	if _, err := svc.CancelExecution(context.Background(), &cleanroomv1.CancelExecutionRequest{
+		SandboxId:   sandboxID,
+		ExecutionId: executionID,
+		Signal:      2,
+	}); err != nil {
+		t.Fatalf("CancelExecution returned error: %v", err)
+	}
+	if _, err := svc.WaitExecution(context.Background(), sandboxID, executionID); err != nil {
+		t.Fatalf("WaitExecution returned error: %v", err)
+	}
+}
+
+func TestCreateExecutionPreservesRunBeforeOutputInFinalSnapshot(t *testing.T) {
+	adapter := &stubAdapter{
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+			switch strings.Join(req.Command, " ") {
+			case "sh -lc echo pre-run":
+				return &backend.ExecutionResult{
+					ExecutionID: req.ExecutionID,
+					ExitCode:    0,
+					Message:     "ok",
+					Stdout:      "pre-run output\n",
+				}, nil
+			case "sh -lc pwd":
+				return &backend.ExecutionResult{
+					ExecutionID: req.ExecutionID,
+					ExitCode:    0,
+					Message:     "ok",
+					Stdout:      "user output\n",
+				}, nil
+			default:
+				t.Fatalf("unexpected command: %v", req.Command)
+				return nil, nil
+			}
+		},
+	}
+	svc := newTestService(adapter)
+
+	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy: testRepositoryRunBeforePolicy(),
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createSandboxResp.GetSandbox().GetSandboxId()
+
+	createExecutionResp, err := svc.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+		SandboxId: sandboxID,
+		Command:   []string{"sh", "-lc", "pwd"},
+	})
+	if err != nil {
+		t.Fatalf("CreateExecution returned error: %v", err)
+	}
+	executionID := createExecutionResp.GetExecution().GetExecutionId()
+
+	if _, err := svc.WaitExecution(context.Background(), sandboxID, executionID); err != nil {
+		t.Fatalf("WaitExecution returned error: %v", err)
+	}
+
+	snapshot, err := svc.ExecutionSnapshot(sandboxID, executionID)
+	if err != nil {
+		t.Fatalf("ExecutionSnapshot returned error: %v", err)
+	}
+	if got, want := snapshot.Stdout, "pre-run output\nuser output\n"; got != want {
+		t.Fatalf("unexpected retained stdout: got %q want %q", got, want)
+	}
+}
+
+func TestCreateExecutionRetainsRunBeforeFailureArtifacts(t *testing.T) {
+	adapter := &stubAdapter{
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+			switch strings.Join(req.Command, " ") {
+			case "sh -lc echo pre-run":
+				return &backend.ExecutionResult{
+					ExecutionID: req.ExecutionID,
+					ExitCode:    23,
+					LaunchedVM:  true,
+					PlanPath:    "/tmp/pre-run-plan",
+					RunDir:      "/tmp/pre-run-run",
+					Message:     "pre-run failed",
+					Stdout:      "pre-run output\n",
+				}, nil
+			default:
+				t.Fatalf("unexpected command: %v", req.Command)
+				return nil, nil
+			}
+		},
+	}
+	svc := newTestService(adapter)
+
+	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy: testRepositoryRunBeforePolicy(),
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createSandboxResp.GetSandbox().GetSandboxId()
+
+	createExecutionResp, err := svc.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+		SandboxId: sandboxID,
+		Command:   []string{"sh", "-lc", "pwd"},
+	})
+	if err != nil {
+		t.Fatalf("CreateExecution returned error: %v", err)
+	}
+	executionID := createExecutionResp.GetExecution().GetExecutionId()
+
+	if _, err := svc.WaitExecution(context.Background(), sandboxID, executionID); err != nil {
+		t.Fatalf("WaitExecution returned error: %v", err)
+	}
+
+	snapshot, err := svc.ExecutionSnapshot(sandboxID, executionID)
+	if err != nil {
+		t.Fatalf("ExecutionSnapshot returned error: %v", err)
+	}
+	if got, want := snapshot.RunDir, "/tmp/pre-run-run"; got != want {
+		t.Fatalf("unexpected run dir: got %q want %q", got, want)
+	}
+	if got, want := snapshot.PlanPath, "/tmp/pre-run-plan"; got != want {
+		t.Fatalf("unexpected plan path: got %q want %q", got, want)
+	}
+	if got, want := snapshot.Launched, true; got != want {
+		t.Fatalf("unexpected launched flag: got %t want %t", got, want)
+	}
+	if got, want := snapshot.Stdout, "pre-run output\n"; got != want {
+		t.Fatalf("unexpected retained stdout: got %q want %q", got, want)
+	}
+	if got, want := snapshot.Execution.GetExitCode(), int32(23); got != want {
+		t.Fatalf("unexpected exit code: got %d want %d", got, want)
+	}
+}
+
+func TestCreateExecutionRunBeforeFailureClearsRuntimeHandles(t *testing.T) {
+	adapter := &stubAdapter{
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+			switch strings.Join(req.Command, " ") {
+			case "sh -lc echo pre-run":
+				return &backend.ExecutionResult{
+					ExecutionID: req.ExecutionID,
+					ExitCode:    23,
+					Message:     "pre-run failed",
+				}, nil
+			default:
+				t.Fatalf("unexpected command: %v", req.Command)
+				return nil, nil
+			}
+		},
+	}
+	svc := newTestService(adapter)
+
+	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy: testRepositoryRunBeforePolicy(),
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createSandboxResp.GetSandbox().GetSandboxId()
+
+	createExecutionResp, err := svc.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+		SandboxId: sandboxID,
+		Command:   []string{"sh", "-lc", "pwd"},
+	})
+	if err != nil {
+		t.Fatalf("CreateExecution returned error: %v", err)
+	}
+	executionID := createExecutionResp.GetExecution().GetExecutionId()
+
+	if _, err := svc.WaitExecution(context.Background(), sandboxID, executionID); err != nil {
+		t.Fatalf("WaitExecution returned error: %v", err)
+	}
+
+	svc.mu.RLock()
+	defer svc.mu.RUnlock()
+	ex, ok := svc.executions[executionKey(sandboxID, executionID)]
+	if !ok {
+		t.Fatalf("expected execution %q to remain available", executionID)
+	}
+	if ex.Cancel != nil {
+		t.Fatal("expected run.before failure to clear retained cancel handler")
+	}
+	if ex.AttachStdin != nil || ex.AttachCloseStdin != nil || ex.AttachResize != nil {
+		t.Fatal("expected run.before failure to clear retained attach handlers")
+	}
+}
+
+func TestWriteExecutionStdinTimesOutWhenRunBeforeNeverCompletes(t *testing.T) {
+	preRunStarted := make(chan struct{}, 1)
+	adapter := &stubAdapter{
+		runStreamFn: func(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+			switch strings.Join(req.Command, " ") {
+			case "sh -lc echo pre-run":
+				select {
+				case preRunStarted <- struct{}{}:
+				default:
+				}
+				<-ctx.Done()
+				return nil, ctx.Err()
+			default:
+				t.Fatalf("unexpected command: %v", req.Command)
+				return nil, nil
+			}
+		},
+	}
+	svc := newTestService(adapter)
+	timeouts := defaultServiceTimeouts
+	timeouts.attachStdinRegistrationWait = 100 * time.Millisecond
+	svc.runtime.timeouts = &timeouts
+
+	policyProto := testPolicy()
+	policyProto.Run = &cleanroomv1.PolicyRun{
+		Before: []string{"sh", "-lc", "echo pre-run"},
+	}
+
+	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: policyProto})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createSandboxResp.GetSandbox().GetSandboxId()
+
+	createExecutionResp, err := svc.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+		SandboxId: sandboxID,
+		Command:   []string{"sh"},
+	})
+	if err != nil {
+		t.Fatalf("CreateExecution returned error: %v", err)
+	}
+	executionID := createExecutionResp.GetExecution().GetExecutionId()
+
+	select {
+	case <-preRunStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for run.before to start")
+	}
+
+	if err := svc.WriteExecutionStdin(sandboxID, executionID, []byte("hello\n")); !errors.Is(err, ErrExecutionStdinUnsupported) {
+		t.Fatalf("expected ErrExecutionStdinUnsupported, got %v", err)
+	}
+
+	if _, err := svc.CancelExecution(context.Background(), &cleanroomv1.CancelExecutionRequest{
+		SandboxId:   sandboxID,
+		ExecutionId: executionID,
+		Signal:      2,
+	}); err != nil {
+		t.Fatalf("CancelExecution returned error: %v", err)
+	}
+	if _, err := svc.WaitExecution(context.Background(), sandboxID, executionID); err != nil {
+		t.Fatalf("WaitExecution returned error: %v", err)
+	}
+}
+
+func TestCancelExecutionDuringRunBeforeTransitionsToCanceled(t *testing.T) {
+	started := make(chan struct{}, 1)
+	adapter := &stubAdapter{
+		runStreamFn: func(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+			if strings.Join(req.Command, " ") == "sh -lc echo pre-run" {
+				select {
+				case started <- struct{}{}:
+				default:
+				}
+				<-ctx.Done()
+				return &backend.ExecutionResult{
+					ExecutionID: req.ExecutionID,
+					ExitCode:    1,
+					Message:     "terminated",
+				}, nil
+			}
+			t.Fatalf("expected user command not to run after run.before cancel, got %v", req.Command)
+			return nil, nil
+		},
+	}
+	svc := newTestService(adapter)
+
+	policyProto := testPolicy()
+	policyProto.Run = &cleanroomv1.PolicyRun{
+		Before: []string{"sh", "-lc", "echo pre-run"},
+	}
+
+	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: policyProto})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createSandboxResp.GetSandbox().GetSandboxId()
+
+	createExecutionResp, err := svc.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+		SandboxId: sandboxID,
+		Command:   []string{"sleep", "10"},
+	})
+	if err != nil {
+		t.Fatalf("CreateExecution returned error: %v", err)
+	}
+	executionID := createExecutionResp.GetExecution().GetExecutionId()
+
+	history, updates, done, unsubscribe, err := svc.SubscribeExecutionEvents(sandboxID, executionID)
+	if err != nil {
+		t.Fatalf("SubscribeExecutionEvents returned error: %v", err)
+	}
+	defer unsubscribe()
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for run.before to start")
+	}
+
+	cancelResp, err := svc.CancelExecution(context.Background(), &cleanroomv1.CancelExecutionRequest{
+		SandboxId:   sandboxID,
+		ExecutionId: executionID,
+		Signal:      15,
+	})
+	if err != nil {
+		t.Fatalf("CancelExecution returned error: %v", err)
+	}
+	if !cancelResp.GetAccepted() {
+		t.Fatal("expected cancel request to be accepted")
+	}
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for canceled execution to finish")
+	}
+
+	getResp, err := svc.GetExecution(context.Background(), &cleanroomv1.GetExecutionRequest{
+		SandboxId:   sandboxID,
+		ExecutionId: executionID,
+	})
+	if err != nil {
+		t.Fatalf("GetExecution returned error: %v", err)
+	}
+	if got, want := getResp.GetExecution().GetStatus(), cleanroomv1.ExecutionStatus_EXECUTION_STATUS_CANCELED; got != want {
+		t.Fatalf("unexpected execution status: got %v want %v", got, want)
+	}
+
+	events := collectExecutionEvents(t, history, updates, done)
+	var exit *cleanroomv1.ExecutionExit
+	for _, event := range events {
+		if payload, ok := event.Payload.(*cleanroomv1.ExecutionStreamEvent_Exit); ok {
+			exit = payload.Exit
+		}
+	}
+	if exit == nil {
+		t.Fatalf("expected exit event after cancel, events=%d", len(events))
+	}
+	if got, want := exit.GetStatus(), cleanroomv1.ExecutionStatus_EXECUTION_STATUS_CANCELED; got != want {
+		t.Fatalf("unexpected exit status: got %v want %v", got, want)
+	}
+	if got, want := exit.GetExitCode(), int32(143); got != want {
+		t.Fatalf("unexpected exit code: got %d want %d", got, want)
+	}
+}
+
 func TestCreateExecutionPreservesFirstMatchingRepositoryAfterChangesetSandboxCreate(t *testing.T) {
 	adapter := &stubAdapter{}
 	svc := newTestService(adapter)
@@ -4359,6 +4923,19 @@ func TestAppendRetainedOutputClonesTailSlice(t *testing.T) {
 	}
 	if unsafe.StringData(got) == unsafe.StringData(tail) {
 		t.Fatal("expected retained tail to be copied, but it reuses source backing storage")
+	}
+}
+
+func TestRetainedOutputCaptureBoundsStoredSuffix(t *testing.T) {
+	capture := newRetainedOutputCapture(8)
+	if _, err := capture.Write([]byte("hello")); err != nil {
+		t.Fatalf("Write returned error: %v", err)
+	}
+	if _, err := capture.Write([]byte("-world")); err != nil {
+		t.Fatalf("Write returned error: %v", err)
+	}
+	if got, want := capture.String(), "lo-world"; got != want {
+		t.Fatalf("unexpected retained capture suffix: got %q want %q", got, want)
 	}
 }
 

@@ -51,6 +51,14 @@ func clearExecutionAttachIOLocked(ex *executionState) {
 	ex.AttachResize = nil
 }
 
+func clearExecutionRuntimeHandlesLocked(ex *executionState) {
+	if ex == nil {
+		return
+	}
+	ex.Cancel = nil
+	clearExecutionAttachIOLocked(ex)
+}
+
 func closeSandboxSubscribersLocked(sb *sandboxState) {
 	sb.events.closeSubscribers()
 }
@@ -248,6 +256,30 @@ func appendRetainedOutput(existing, chunk string, limit int) string {
 		existing = strings.Clone(existing[len(existing)-keepExisting:])
 	}
 	return existing + chunk
+}
+
+type retainedOutputCapture struct {
+	limit int
+	value string
+}
+
+func newRetainedOutputCapture(limit int) *retainedOutputCapture {
+	return &retainedOutputCapture{limit: limit}
+}
+
+func (c *retainedOutputCapture) Write(p []byte) (int, error) {
+	if c == nil {
+		return len(p), nil
+	}
+	c.value = appendRetainedOutput(c.value, string(p), c.limit)
+	return len(p), nil
+}
+
+func (c *retainedOutputCapture) String() string {
+	if c == nil {
+		return ""
+	}
+	return c.value
 }
 
 func appendBounded[T any](history []T, item T, limit int) []T {
