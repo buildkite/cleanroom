@@ -26,13 +26,19 @@ type PolicyValidateCommand struct {
 }
 
 type ConfigCommand struct {
-	Init ConfigInitCommand `cmd:"" help:"Create a runtime config file with defaults"`
+	Init     ConfigInitCommand     `cmd:"" help:"Create a runtime config file with defaults"`
+	Validate ConfigValidateCommand `cmd:"" help:"Validate runtime config"`
 }
 
 type ConfigInitCommand struct {
 	Path           string `help:"Output path (default: $XDG_CONFIG_HOME/cleanroom/config.yaml)"`
 	Force          bool   `help:"Overwrite existing config file"`
 	DefaultBackend string `help:"Default backend value for config (firecracker|darwin-vz)"`
+}
+
+type ConfigValidateCommand struct {
+	Path string `help:"Runtime config path (default: $XDG_CONFIG_HOME/cleanroom/config.yaml)"`
+	JSON bool   `help:"Print validated runtime config as JSON"`
 }
 
 func (c *PolicyValidateCommand) Run(ctx *runtimeContext) error {
@@ -66,15 +72,9 @@ func (c *PolicyValidateCommand) Run(ctx *runtimeContext) error {
 }
 
 func (c *ConfigInitCommand) Run(ctx *runtimeContext) error {
-	path := strings.TrimSpace(c.Path)
-	if path == "" {
-		resolved, err := runtimeconfig.Path()
-		if err != nil {
-			return err
-		}
-		path = resolved
-	} else if !filepath.IsAbs(path) {
-		path = filepath.Join(ctx.CWD, path)
+	path, err := resolveRuntimeConfigPath(ctx.CWD, c.Path)
+	if err != nil {
+		return err
 	}
 
 	defaultBackend := strings.TrimSpace(c.DefaultBackend)
@@ -116,6 +116,57 @@ func (c *ConfigInitCommand) Run(ctx *runtimeContext) error {
 
 	_, err = fmt.Fprintln(ctx.Stdout, renderStatusValueLine("runtime config written", path, defaultTerminalPalette().info, shouldUseANSI(ctx.Stdout)))
 	return err
+}
+
+func (c *ConfigValidateCommand) Run(ctx *runtimeContext) error {
+	path, err := resolveRuntimeConfigPath(ctx.CWD, c.Path)
+	if err != nil {
+		return err
+	}
+	if st, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("runtime config does not exist at %s", path)
+		}
+		return fmt.Errorf("stat %s: %w", path, err)
+	} else if st.IsDir() {
+		return fmt.Errorf("runtime config path %s is a directory", path)
+	}
+
+	cfg, resolvedPath, err := runtimeconfig.LoadPath(path)
+	if err != nil {
+		return err
+	}
+
+	if c.JSON {
+		payload := map[string]any{
+			"path":            resolvedPath,
+			"default_backend": cfg.DefaultBackend,
+			"config":          cfg,
+		}
+		enc := json.NewEncoder(ctx.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(payload)
+	}
+
+	color := shouldUseANSI(ctx.Stdout)
+	var out strings.Builder
+	out.WriteString(renderStatusValueLine("runtime config valid", resolvedPath, defaultTerminalPalette().info, color))
+	out.WriteByte('\n')
+	out.WriteString(renderKeyValueLine("", "default backend", cfg.DefaultBackend, color, defaultTerminalPalette()))
+	out.WriteByte('\n')
+	_, err = fmt.Fprint(ctx.Stdout, out.String())
+	return err
+}
+
+func resolveRuntimeConfigPath(cwd, value string) (string, error) {
+	path := strings.TrimSpace(value)
+	if path == "" {
+		return runtimeconfig.Path()
+	}
+	if filepath.IsAbs(path) {
+		return filepath.Clean(path), nil
+	}
+	return filepath.Join(cwd, path), nil
 }
 
 func hostDefaultBackend() string {

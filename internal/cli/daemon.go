@@ -11,12 +11,19 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/buildkite/cleanroom/internal/backend"
+	"github.com/buildkite/cleanroom/internal/backend/darwinvz"
+	"github.com/buildkite/cleanroom/internal/backend/firecracker"
 	"github.com/buildkite/cleanroom/internal/endpoint"
+	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 )
 
 type DaemonCommand struct {
 	Action        string `arg:"" required:"" help:"Daemon action (install, uninstall, status, start, stop, restart)"`
-	Force         bool   `help:"Overwrite an existing daemon service file (daemon install) or start a stopped daemon during restart (daemon restart)"`
+	Force         bool   `help:"Start a stopped daemon during restart"`
+	Restart       bool   `help:"Restart or start the daemon after install so the current definition is live"`
+	InitConfig    bool   `help:"Create a default runtime config before install if the config file is missing"`
+	DryRun        bool   `help:"Preview daemon install changes without mutating the service manager"`
 	User          bool   `help:"Use user daemon scope (launchd only; install/uninstall/status/start/stop/restart actions)"`
 	System        bool   `help:"Use system daemon scope (linux only; install/uninstall/status/start/stop/restart actions)"`
 	JSON          bool   `help:"Print daemon status as JSON (status action only)"`
@@ -42,6 +49,11 @@ type daemonStatusPayload struct {
 type daemonStatusResult struct {
 	Report  daemonStatusReport
 	Payload daemonStatusPayload
+}
+
+type daemonInstallOptions struct {
+	Restart bool
+	DryRun  bool
 }
 
 type daemonScope string
@@ -72,6 +84,18 @@ func (s *DaemonCommand) Run(ctx *runtimeContext) error {
 	action := strings.TrimSpace(strings.ToLower(s.Action))
 	if s.JSON && action != "status" {
 		return errors.New("--json is only supported with daemon status")
+	}
+	if s.Restart && action != "install" {
+		return errors.New("--restart is only supported with daemon install")
+	}
+	if s.InitConfig && action != "install" {
+		return errors.New("--init-config is only supported with daemon install")
+	}
+	if s.DryRun && action != "install" {
+		return errors.New("--dry-run is only supported with daemon install")
+	}
+	if s.Force && action == "install" {
+		return errors.New("--force is no longer supported with daemon install")
 	}
 
 	switch action {
@@ -192,7 +216,7 @@ func (s *DaemonCommand) installDaemon(ctx *runtimeContext) error {
 		return err
 	}
 
-	var installFn func(io.Writer, string, []string, bool) error
+	var installFn func(io.Writer, string, []string, daemonInstallOptions) error
 	switch serveInstallGOOS {
 	case "linux":
 		installFn = installSystemdDaemon
@@ -210,6 +234,15 @@ func (s *DaemonCommand) installDaemon(ctx *runtimeContext) error {
 		return errors.New("daemon install requires root privileges (use sudo cleanroom daemon install)")
 	}
 
+	if s.InitConfig {
+		if err := s.ensureRuntimeConfig(ctx); err != nil {
+			return err
+		}
+	}
+	if err := s.reloadRuntimeConfig(ctx); err != nil {
+		return err
+	}
+
 	executablePath, err := serveInstallExecutablePath()
 	if err != nil {
 		return fmt.Errorf("resolve cleanroom executable path: %w", err)
@@ -225,7 +258,10 @@ func (s *DaemonCommand) installDaemon(ctx *runtimeContext) error {
 	if err != nil {
 		return err
 	}
-	return installFn(ctx.Stdout, executablePath, args, s.Force)
+	return installFn(ctx.Stdout, executablePath, args, daemonInstallOptions{
+		Restart: s.Restart,
+		DryRun:  s.DryRun,
+	})
 }
 
 func (s *DaemonCommand) uninstallDaemon(ctx *runtimeContext) error {
@@ -391,4 +427,56 @@ func runServeInstallCommandOutput(name string, args ...string) (string, error) {
 		return "", fmt.Errorf("%s: %w (%s)", strings.Join(parts, " "), err, msg)
 	}
 	return string(out), nil
+}
+
+func (s *DaemonCommand) ensureRuntimeConfig(ctx *runtimeContext) error {
+	path := strings.TrimSpace(ctx.ConfigPath)
+	if path == "" {
+		resolved, err := runtimeconfig.Path()
+		if err != nil {
+			return err
+		}
+		path = resolved
+	}
+
+	if _, err := os.Stat(path); err == nil {
+		ctx.ConfigPath = path
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("stat %s: %w", path, err)
+	}
+
+	initCmd := &ConfigInitCommand{Path: path}
+	if err := initCmd.Run(ctx); err != nil {
+		return err
+	}
+	ctx.ConfigPath = path
+	return nil
+}
+
+func (s *DaemonCommand) reloadRuntimeConfig(ctx *runtimeContext) error {
+	path := strings.TrimSpace(ctx.ConfigPath)
+	var (
+		cfg runtimeconfig.Config
+		err error
+	)
+	if path == "" {
+		cfg, path, err = runtimeconfig.Load()
+	} else {
+		cfg, path, err = runtimeconfig.LoadPath(path)
+	}
+	if err != nil {
+		return err
+	}
+
+	ctx.Config = cfg
+	ctx.ConfigPath = path
+	if ctx.Backends == nil {
+		ctx.Backends = map[string]backend.Adapter{
+			"firecracker": firecracker.New(),
+			"darwin-vz":   darwinvz.New(),
+		}
+	}
+	configureBackendRuntimeConfig(ctx.Backends, cfg)
+	return nil
 }

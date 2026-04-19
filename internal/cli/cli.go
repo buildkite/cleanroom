@@ -123,24 +123,12 @@ type hasExitCode interface {
 }
 
 func Run(args []string, version string) (runErr error) {
-	cfg, cfgPath, err := runtimeconfig.Load()
-	if err != nil {
-		return err
-	}
-
 	runtimeCtx := &runtimeContext{
-		Stdout:     os.Stdout,
-		Stderr:     os.Stderr,
-		Loader:     policy.Loader{},
-		Config:     cfg,
-		ConfigPath: cfgPath,
-		Version:    version,
-		Backends: map[string]backend.Adapter{
-			"firecracker": firecracker.New(),
-			"darwin-vz":   darwinvz.New(),
-		},
+		Stdout:  os.Stdout,
+		Stderr:  os.Stderr,
+		Loader:  policy.Loader{},
+		Version: version,
 	}
-	configureBackendRuntimeConfig(runtimeCtx.Backends, cfg)
 
 	cli := CLI{}
 	cli.Version.version = version
@@ -164,21 +152,48 @@ func Run(args []string, version string) (runErr error) {
 	}
 	runtimeCtx.CWD = cwd
 
-	obsRuntime, err := observability.Start(context.Background(), observability.Options{
-		Config:         cfg.Observability,
-		ServiceName:    runtimeServiceName(ctx),
-		ServiceVersion: version,
-	})
-	if err != nil {
-		return fmt.Errorf("configure observability: %w", err)
+	if !commandBypassesStartupRuntimeConfig(ctx) {
+		cfg, cfgPath, err := runtimeconfig.Load()
+		if err != nil {
+			return err
+		}
+		runtimeCtx.Config = cfg
+		runtimeCtx.ConfigPath = cfgPath
+		runtimeCtx.Backends = map[string]backend.Adapter{
+			"firecracker": firecracker.New(),
+			"darwin-vz":   darwinvz.New(),
+		}
+		configureBackendRuntimeConfig(runtimeCtx.Backends, cfg)
+
+		obsRuntime, err := observability.Start(context.Background(), observability.Options{
+			Config:         cfg.Observability,
+			ServiceName:    runtimeServiceName(ctx),
+			ServiceVersion: version,
+		})
+		if err != nil {
+			return fmt.Errorf("configure observability: %w", err)
+		}
+		runtimeCtx.Observability = obsRuntime
+		defer func() {
+			reportObservabilityShutdown(&runErr, runtimeCtx.stderr(), obsRuntime.Shutdown(context.Background()))
+		}()
 	}
-	runtimeCtx.Observability = obsRuntime
-	defer func() {
-		reportObservabilityShutdown(&runErr, runtimeCtx.stderr(), obsRuntime.Shutdown(context.Background()))
-	}()
 
 	runErr = ctx.Run(runtimeCtx)
 	return runErr
+}
+
+func commandBypassesStartupRuntimeConfig(ctx *kong.Context) bool {
+	if ctx == nil {
+		return false
+	}
+
+	switch ctx.Command() {
+	case "config init", "config validate", "version":
+		return true
+	default:
+		return false
+	}
 }
 
 func configureBackendRuntimeConfig(backends map[string]backend.Adapter, cfg runtimeconfig.Config) {

@@ -641,6 +641,32 @@ func TestLoadDefaultsBackendWhenMissing(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsUnsupportedDefaultBackend(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	configPath := filepath.Join(tmp, "cleanroom", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	content := `default_backend: podman
+backends:
+  firecracker:
+    binary_path: firecracker
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, _, err := Load()
+	if err == nil {
+		t.Fatal("expected Load to reject unsupported default backend")
+	}
+	if !strings.Contains(err.Error(), "unsupported default_backend") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestLoadTrimsControlHost(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", tmp)
@@ -665,6 +691,83 @@ backends:
 	}
 	if got, want := cfg.ControlHost, "unix:///tmp/cleanroom.sock"; got != want {
 		t.Fatalf("unexpected control host: got %q want %q", got, want)
+	}
+}
+
+func TestLoadRejectsInvalidControlHost(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	configPath := filepath.Join(tmp, "cleanroom", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	content := `control_host: not-an-endpoint
+backends:
+  firecracker:
+    binary_path: firecracker
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, _, err := Load()
+	if err == nil {
+		t.Fatal("expected Load to reject invalid control_host")
+	}
+	if !strings.Contains(err.Error(), "invalid control_host") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestLoadRejectsUnsupportedDarwinVZNetworkMode(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	configPath := filepath.Join(tmp, "cleanroom", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	content := `default_backend: darwin-vz
+backends:
+  darwin-vz:
+    network:
+      mode: vmnet
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, _, err := Load()
+	if err == nil {
+		t.Fatal("expected Load to reject unsupported darwin-vz network mode")
+	}
+	if !strings.Contains(err.Error(), "unsupported darwin-vz network mode") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestLoadPathLoadsExplicitPath(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "runtime.yaml")
+	content := `default_backend: firecracker
+backends:
+  firecracker:
+    binary_path: firecracker
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, resolvedPath, err := LoadPath(configPath)
+	if err != nil {
+		t.Fatalf("LoadPath returned error: %v", err)
+	}
+	if got, want := resolvedPath, configPath; got != want {
+		t.Fatalf("unexpected resolved path: got %q want %q", got, want)
+	}
+	if got, want := cfg.DefaultBackend, "firecracker"; got != want {
+		t.Fatalf("unexpected default backend: got %q want %q", got, want)
 	}
 }
 
