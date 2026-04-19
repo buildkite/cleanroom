@@ -20,6 +20,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/repositorychangeset"
 	"github.com/buildkite/cleanroom/internal/repositorycheckout"
+	"github.com/buildkite/cleanroom/internal/repositorystore"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 	"github.com/buildkite/cleanroom/internal/snapshotstore"
 	"go.jetify.com/typeid"
@@ -172,7 +173,7 @@ type stubClock struct {
 	now time.Time
 }
 
-func (s *stubRepositoryMirrorStore) EnsureMirrorContains(_ context.Context, remoteURL, commitSHA string) error {
+func (s *stubRepositoryMirrorStore) EnsureCommit(_ context.Context, remoteURL, commitSHA string, _ repositorystore.FetchHints) error {
 	s.remoteURL = remoteURL
 	s.commitSHA = commitSHA
 	s.calls++
@@ -180,6 +181,10 @@ func (s *stubRepositoryMirrorStore) EnsureMirrorContains(_ context.Context, remo
 		return s.ensureContainsFn(remoteURL, commitSHA)
 	}
 	return s.err
+}
+
+func (s *stubRepositoryMirrorStore) EnsureMirrorContains(ctx context.Context, remoteURL, commitSHA string) error {
+	return s.EnsureCommit(ctx, remoteURL, commitSHA, repositorystore.FetchHints{})
 }
 
 func (s *stubRepositoryMirrorStore) MirrorPath(remoteURL string) (string, error) {
@@ -198,6 +203,58 @@ func (s *stubRepositoryMirrorStore) EnsureMirror(_ context.Context, remoteURL st
 		return "", s.ensureMirrorErr
 	}
 	return s.mirrorPath, nil
+}
+
+func (s *stubRepositoryMirrorStore) ReadFileAtCommit(ctx context.Context, remoteURL, commitSHA, path string) ([]byte, error) {
+	var content []byte
+	err := s.WithRepository(ctx, remoteURL, commitSHA, repositorystore.FetchHints{}, func(repoDir string) error {
+		cmd := exec.CommandContext(ctx, "git", "-C", repoDir, "show", commitSHA+":"+path)
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			message := strings.TrimSpace(string(output))
+			if message == "" {
+				message = err.Error()
+			}
+			return errors.New(message)
+		}
+		content = output
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return content, nil
+}
+
+func (s *stubRepositoryMirrorStore) WithRepository(ctx context.Context, remoteURL, commitSHA string, _ repositorystore.FetchHints, fn func(repoDir string) error) error {
+	if fn == nil {
+		return errors.New("repository callback is nil")
+	}
+	repoDir, err := s.MirrorPath(remoteURL)
+	if err != nil {
+		repoDir, err = s.EnsureMirror(ctx, remoteURL)
+		if err != nil {
+			return err
+		}
+	}
+	if err := fn(repoDir); err == nil || strings.TrimSpace(commitSHA) == "" {
+		return err
+	}
+	if err := s.EnsureCommit(ctx, remoteURL, commitSHA, repositorystore.FetchHints{}); err != nil {
+		return err
+	}
+	repoDir, err = s.MirrorPath(remoteURL)
+	if err != nil {
+		repoDir, err = s.EnsureMirror(ctx, remoteURL)
+		if err != nil {
+			return err
+		}
+	}
+	return fn(repoDir)
+}
+
+func (s *stubRepositoryMirrorStore) TransportHints(context.Context, string, string, repositorystore.FetchHints) (repositorystore.TransportHints, error) {
+	return repositorystore.TransportHints{}, nil
 }
 
 func (c stubClock) Now() time.Time {
@@ -1385,7 +1442,7 @@ func TestCreateSandboxBootstrapsRepositoryInService(t *testing.T) {
 	adapter := &stubAdapter{}
 	mirrors := &stubRepositoryMirrorStore{}
 	svc := newTestService(adapter)
-	svc.RepositoryMirrors = mirrors
+	svc.RepositoryStore = mirrors
 
 	createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
 		Policy:             testRepositoryPolicy(),
@@ -1439,7 +1496,7 @@ func TestCreateSandboxPublishesWorkspaceStageCache(t *testing.T) {
 	}
 	mirrors := &stubRepositoryMirrorStore{}
 	svc := newTestServiceWithSnapshotStore(adapter, store)
-	svc.RepositoryMirrors = mirrors
+	svc.RepositoryStore = mirrors
 	publishedAt := time.Unix(1_700_000_123, 0).UTC()
 	svc.runtime.clock = stubClock{now: publishedAt}
 
@@ -1520,7 +1577,7 @@ func TestCreateSandboxReusesWorkspaceStageCache(t *testing.T) {
 	}
 	mirrors := &stubRepositoryMirrorStore{}
 	svc := newTestServiceWithSnapshotStore(adapter, store)
-	svc.RepositoryMirrors = mirrors
+	svc.RepositoryStore = mirrors
 
 	req := &cleanroomv1.CreateSandboxRequest{
 		Policy:             testRepositoryPolicy(),
@@ -1582,7 +1639,7 @@ func TestCreateExecutionPreservesFirstMatchingRepositoryAfterChangesetWorkspaceS
 		"README.md": "hello\n",
 	})
 	svc := newTestServiceWithSnapshotStore(adapter, store)
-	svc.RepositoryMirrors = mirrors
+	svc.RepositoryStore = mirrors
 
 	repository := repositorycheckout.FromProto(repositoryCheckout)
 	if err := os.WriteFile(filepath.Join(mirrors.mirrorPath, "README.md"), []byte("hello from changeset\n"), 0o644); err != nil {
@@ -1680,7 +1737,7 @@ func TestCreateSandboxReusesWorkspaceStageCacheForNormalizedDestinationDir(t *te
 	}
 	mirrors := &stubRepositoryMirrorStore{}
 	svc := newTestServiceWithSnapshotStore(adapter, store)
-	svc.RepositoryMirrors = mirrors
+	svc.RepositoryStore = mirrors
 
 	firstRepo := testRepositoryCheckoutProto()
 	firstRepo.DestinationDir = "/workspace/"
@@ -1718,7 +1775,7 @@ func TestCreateSandboxDoesNotReuseWorkspaceStageCacheAcrossPolicies(t *testing.T
 	}
 	mirrors := &stubRepositoryMirrorStore{}
 	svc := newTestServiceWithSnapshotStore(adapter, store)
-	svc.RepositoryMirrors = mirrors
+	svc.RepositoryStore = mirrors
 
 	firstPolicy := testRepositoryPolicy()
 	if _, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
@@ -1795,7 +1852,7 @@ func TestCreateSandboxPublishesWorkspaceStageCachePerBackend(t *testing.T) {
 	}
 	mirrors := &stubRepositoryMirrorStore{}
 	svc := newTestServiceWithSnapshotStore(firecrackerAdapter, store)
-	svc.RepositoryMirrors = mirrors
+	svc.RepositoryStore = mirrors
 	svc.Backends["darwin-vz"] = darwinAdapter
 	svc.Config.Backends.DarwinVZ.Snapshots.Enabled = true
 	svc.Config.Backends.DarwinVZ.Snapshots.Driver = "apfs"
@@ -1859,7 +1916,7 @@ func TestCreateSandboxDoesNotReuseWorkspaceStageWhenRuntimeBaseKeyChanges(t *tes
 	}
 	mirrors := &stubRepositoryMirrorStore{}
 	svc := newTestServiceWithSnapshotStore(adapter, store)
-	svc.RepositoryMirrors = mirrors
+	svc.RepositoryStore = mirrors
 
 	req := &cleanroomv1.CreateSandboxRequest{
 		Policy:             testRepositoryPolicy(),
@@ -1918,7 +1975,7 @@ func TestCreateSandboxFallsBackWhenWorkspaceStageRestoreFails(t *testing.T) {
 	}
 	mirrors := &stubRepositoryMirrorStore{}
 	svc := newTestServiceWithSnapshotStore(adapter, store)
-	svc.RepositoryMirrors = mirrors
+	svc.RepositoryStore = mirrors
 
 	req := &cleanroomv1.CreateSandboxRequest{
 		Policy:             testRepositoryPolicy(),
@@ -2093,7 +2150,7 @@ func TestCreateSandboxPublishesDependencyStageCacheForConfiguredDependencies(t *
 		"README": "ignored\n",
 	})
 	svc := newTestServiceWithSnapshotStore(adapter, store)
-	svc.RepositoryMirrors = mirrors
+	svc.RepositoryStore = mirrors
 
 	if _, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
 		Policy:             testRepositoryDependencyPolicy(),
@@ -2198,7 +2255,7 @@ func TestCreateSandboxReusesDependencyStageCacheForConfiguredDependencies(t *tes
 		"go.sum": "example.com/test v0.0.0 h1:abc123\n",
 	})
 	svc := newTestServiceWithSnapshotStore(adapter, store)
-	svc.RepositoryMirrors = mirrors
+	svc.RepositoryStore = mirrors
 
 	req := &cleanroomv1.CreateSandboxRequest{
 		Policy:             testRepositoryDependencyPolicy(),
@@ -2298,7 +2355,7 @@ func TestDependencyStageKeyFilesDigestDerivesHashesFromRepositoryChangesetPatch(
 	}
 
 	svc := newTestService(&stubAdapter{})
-	svc.RepositoryMirrors = mirrors
+	svc.RepositoryStore = mirrors
 
 	baseDigest, err := svc.dependencyStageKeyFilesDigest(context.Background(), repository, nil, []string{"go.mod", "go.sum"})
 	if err != nil {
@@ -2353,7 +2410,7 @@ func TestCreateSandboxBootstrapsDependenciesAfterWorkspaceStageRestoreWithoutDep
 	})
 	mirrors.mirrorPathErr = errors.New("mirror path unavailable")
 	svc := newTestServiceWithSnapshotStore(adapter, store)
-	svc.RepositoryMirrors = mirrors
+	svc.RepositoryStore = mirrors
 
 	compiled, err := policy.FromProto(testRepositoryDependencyPolicy())
 	if err != nil {
@@ -2460,7 +2517,7 @@ func TestCreateSandboxPublishesDependencyStageCacheWhenLocalMirrorStartsEmpty(t 
 	}
 
 	svc := newTestServiceWithSnapshotStore(adapter, store)
-	svc.RepositoryMirrors = mirrors
+	svc.RepositoryStore = mirrors
 
 	if _, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
 		Policy:             testRepositoryDependencyPolicy(),
@@ -2579,7 +2636,7 @@ func TestCreateExecutionWrapsRepositoryBootstrapInService(t *testing.T) {
 	adapter := &stubAdapter{}
 	mirrors := &stubRepositoryMirrorStore{}
 	svc := newTestService(adapter)
-	svc.RepositoryMirrors = mirrors
+	svc.RepositoryStore = mirrors
 	runCalled := make(chan struct{}, 4)
 	var (
 		mu       sync.Mutex
@@ -2654,7 +2711,7 @@ func TestCreateExecutionSkipsBootstrapForMatchingPersistentRepository(t *testing
 	adapter := &stubAdapter{}
 	mirrors := &stubRepositoryMirrorStore{}
 	svc := newTestService(adapter)
-	svc.RepositoryMirrors = mirrors
+	svc.RepositoryStore = mirrors
 
 	var (
 		mu       sync.Mutex
@@ -2723,7 +2780,7 @@ func TestCreateExecutionPreservesFirstMatchingRepositoryAfterChangesetSandboxCre
 	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
 		"README.md": "hello\n",
 	})
-	svc.RepositoryMirrors = mirrors
+	svc.RepositoryStore = mirrors
 	repository := repositorycheckout.FromProto(repositoryCheckout)
 	if err := os.WriteFile(filepath.Join(mirrors.mirrorPath, "README.md"), []byte("hello from changeset\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile(README.md) returned error: %v", err)
@@ -2804,7 +2861,7 @@ func TestCreateExecutionRebootstrapsSecondMatchingRepositoryAfterChangesetSandbo
 	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
 		"README.md": "hello\n",
 	})
-	svc.RepositoryMirrors = mirrors
+	svc.RepositoryStore = mirrors
 	repository := repositorycheckout.FromProto(repositoryCheckout)
 	if err := os.WriteFile(filepath.Join(mirrors.mirrorPath, "README.md"), []byte("hello from changeset\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile(README.md) returned error: %v", err)
@@ -2907,7 +2964,7 @@ func TestCreateExecutionSkipsBootstrapForSnapshotBackedSandboxWithMatchingReposi
 	mirrors := &stubRepositoryMirrorStore{}
 	store := newMemorySnapshotStore()
 	svc := newTestServiceWithSnapshotStore(adapter, store)
-	svc.RepositoryMirrors = mirrors
+	svc.RepositoryStore = mirrors
 
 	var (
 		mu       sync.Mutex
@@ -2996,7 +3053,7 @@ func TestCreateExecutionRebootstrapsMatchingRepositoryAfterChangesetSnapshotRest
 	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
 		"README.md": "hello\n",
 	})
-	svc.RepositoryMirrors = mirrors
+	svc.RepositoryStore = mirrors
 	repository := repositorycheckout.FromProto(repositoryCheckout)
 	if err := os.WriteFile(filepath.Join(mirrors.mirrorPath, "README.md"), []byte("hello from changeset\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile(README.md) returned error: %v", err)
@@ -3172,7 +3229,7 @@ func TestCreateExecutionRejectsRepositoryRemoteOutsidePolicy(t *testing.T) {
 	adapter := &stubAdapter{}
 	mirrors := &stubRepositoryMirrorStore{}
 	svc := newTestService(adapter)
-	svc.RepositoryMirrors = mirrors
+	svc.RepositoryStore = mirrors
 
 	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testRepositoryPolicy()})
 	if err != nil {
