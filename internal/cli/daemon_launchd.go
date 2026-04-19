@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/buildkite/cleanroom/internal/endpoint"
 )
@@ -350,16 +352,7 @@ func waitForLaunchdBootout(target, servicePath string) error {
 			return err
 		}
 
-		socketPresent := false
-		if socketPath != "" {
-			if _, err := serveInstallStat(socketPath); err == nil {
-				socketPresent = true
-			} else if !errors.Is(err, os.ErrNotExist) {
-				return fmt.Errorf("stat launchd listen socket %s: %w", socketPath, err)
-			}
-		}
-
-		if !loaded && !socketPresent {
+		if !loaded && !launchdSocketAcceptsConnections(socketPath) {
 			return nil
 		}
 		if attempt+1 < serveInstallWaitAttempts {
@@ -371,6 +364,19 @@ func waitForLaunchdBootout(target, servicePath string) error {
 		return fmt.Errorf("timed out waiting for launchd service %s to stop and release %s", launchdServiceName, socketPath)
 	}
 	return fmt.Errorf("timed out waiting for launchd service %s to stop", launchdServiceName)
+}
+
+func launchdSocketAcceptsConnections(socketPath string) bool {
+	if strings.TrimSpace(socketPath) == "" {
+		return false
+	}
+
+	conn, err := net.DialTimeout("unix", socketPath, 25*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
 }
 
 func launchdConfiguredUnixSocketPath(servicePath string) string {

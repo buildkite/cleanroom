@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -1604,16 +1605,26 @@ func TestDaemonRestartLaunchdForceBootstrapsStoppedUserService(t *testing.T) {
 	}
 }
 
-func TestWaitForLaunchdBootoutWaitsForSocketRemoval(t *testing.T) {
-	tmpDir := t.TempDir()
+func TestWaitForLaunchdBootoutWaitsForActiveSocketToClose(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("/tmp", "cleanroom-launchd-*")
+	if err != nil {
+		t.Fatalf("mktemp short dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tmpDir) })
 	plistPath := filepath.Join(tmpDir, "cleanroom.plist")
 	socketPath := filepath.Join(tmpDir, "cleanroom.sock")
 	if err := os.WriteFile(plistPath, []byte(renderLaunchdService("/usr/local/bin/cleanroom", []string{"serve", "--listen", "unix://" + socketPath})), 0o644); err != nil {
 		t.Fatalf("write plist: %v", err)
 	}
-	if err := os.WriteFile(socketPath, []byte(""), 0o644); err != nil {
-		t.Fatalf("write socket placeholder: %v", err)
+
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen on socket: %v", err)
 	}
+	t.Cleanup(func() {
+		_ = listener.Close()
+		_ = os.Remove(socketPath)
+	})
 
 	prevRunCommandOutput := serveInstallRunCommandOutput
 	prevSleep := serveInstallSleep
@@ -1625,8 +1636,8 @@ func TestWaitForLaunchdBootoutWaitsForSocketRemoval(t *testing.T) {
 	sleepCalls := 0
 	serveInstallSleep = func(time.Duration) {
 		sleepCalls++
-		if err := os.Remove(socketPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("remove socket placeholder: %v", err)
+		if err := listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			t.Fatalf("close socket listener: %v", err)
 		}
 	}
 	serveInstallWaitAttempts = 3
@@ -1642,7 +1653,54 @@ func TestWaitForLaunchdBootoutWaitsForSocketRemoval(t *testing.T) {
 		t.Fatalf("waitForLaunchdBootout returned error: %v", err)
 	}
 	if sleepCalls == 0 {
-		t.Fatal("expected waitForLaunchdBootout to wait for socket removal")
+		t.Fatal("expected waitForLaunchdBootout to wait for active socket shutdown")
+	}
+}
+
+func TestWaitForLaunchdBootoutIgnoresStaleSocketFile(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("/tmp", "cleanroom-launchd-*")
+	if err != nil {
+		t.Fatalf("mktemp short dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tmpDir) })
+	plistPath := filepath.Join(tmpDir, "cleanroom.plist")
+	socketPath := filepath.Join(tmpDir, "cleanroom.sock")
+	if err := os.WriteFile(plistPath, []byte(renderLaunchdService("/usr/local/bin/cleanroom", []string{"serve", "--listen", "unix://" + socketPath})), 0o644); err != nil {
+		t.Fatalf("write plist: %v", err)
+	}
+
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen on socket: %v", err)
+	}
+	if err := listener.Close(); err != nil {
+		t.Fatalf("close socket listener: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(socketPath) })
+
+	prevRunCommandOutput := serveInstallRunCommandOutput
+	prevSleep := serveInstallSleep
+	prevAttempts := serveInstallWaitAttempts
+	prevPollInterval := serveInstallWaitPollInterval
+	serveInstallRunCommandOutput = func(name string, args ...string) (string, error) {
+		return "", &exec.ExitError{ProcessState: &os.ProcessState{}}
+	}
+	sleepCalls := 0
+	serveInstallSleep = func(time.Duration) { sleepCalls++ }
+	serveInstallWaitAttempts = 2
+	serveInstallWaitPollInterval = 0
+	t.Cleanup(func() {
+		serveInstallRunCommandOutput = prevRunCommandOutput
+		serveInstallSleep = prevSleep
+		serveInstallWaitAttempts = prevAttempts
+		serveInstallWaitPollInterval = prevPollInterval
+	})
+
+	if err := waitForLaunchdBootout("gui/501/"+launchdServiceName, plistPath); err != nil {
+		t.Fatalf("waitForLaunchdBootout returned error: %v", err)
+	}
+	if sleepCalls != 0 {
+		t.Fatal("expected stale socket file not to block launchd bootout wait")
 	}
 }
 
