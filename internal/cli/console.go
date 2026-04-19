@@ -15,6 +15,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/endpoint"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/interactivequic"
+	"github.com/buildkite/cleanroom/internal/observability"
 	"github.com/buildkite/cleanroom/internal/repositorycheckout"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 	"go.opentelemetry.io/otel/attribute"
@@ -54,28 +55,28 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) (runErr error) {
 	}
 	commandArgs := executionCommandArgs(command)
 	rootAttrs := []attribute.KeyValue{
-		attribute.String("cleanroom.backend.requested", strings.TrimSpace(c.Backend)),
-		attribute.Bool("cleanroom.keep_sandbox", c.Keep),
-		attribute.Int("cleanroom.command.argc", len(commandArgs)),
+		attribute.String(observability.AttrBackendRequested, strings.TrimSpace(c.Backend)),
+		attribute.Bool(observability.AttrKeepSandbox, c.Keep),
+		attribute.Int(observability.AttrCommandArgc, len(commandArgs)),
 	}
 	if commandName := executionCommandName(commandArgs); commandName != "" {
 		rootAttrs = append(rootAttrs,
-			attribute.String("cleanroom.command.name", commandName),
-			attribute.String("cleanroom.command.summary", executionCommandSummary(commandArgs)),
+			attribute.String(observability.AttrCommandName, commandName),
+			attribute.String(observability.AttrCommandSummary, executionCommandSummary(commandArgs)),
 		)
 	}
 	rootCtx, rootSpan := ctx.Observability.Tracer("github.com/buildkite/cleanroom/internal/cli").Start(
 		context.Background(),
-		"cleanroom.console",
+		observability.SpanConsole,
 		trace.WithAttributes(rootAttrs...),
 	)
 	traceID := traceIDFromContext(rootCtx)
 	defer func() {
 		if sandboxID != "" {
-			rootSpan.SetAttributes(attribute.String("cleanroom.sandbox.id", sandboxID))
+			rootSpan.SetAttributes(attribute.String(observability.AttrSandboxID, sandboxID))
 		}
 		if executionID != "" {
-			rootSpan.SetAttributes(attribute.String("cleanroom.execution.id", executionID))
+			rootSpan.SetAttributes(attribute.String(observability.AttrExecutionID, executionID))
 		}
 		if runErr != nil {
 			rootSpan.RecordError(runErr)

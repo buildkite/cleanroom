@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/buildkite/cleanroom/internal/observability"
 	"github.com/charmbracelet/log"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -43,10 +44,10 @@ func (h *cachedRegistryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 
 	// Only GET and HEAD are valid OCI Distribution operations for pulls.
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		setGatewayRequestDecision(r.Context(), "deny", reasonMethodNotAllowed)
+		setGatewayRequestDecision(r.Context(), gatewayActionDeny, reasonMethodNotAllowed)
 		span.SetAttributes(
-			attribute.String("cleanroom.gateway.action", "deny"),
-			attribute.String("cleanroom.reason_code", reasonMethodNotAllowed),
+			attribute.String(observability.AttrGatewayAction, gatewayActionDeny),
+			attribute.String(observability.AttrReasonCode, reasonMethodNotAllowed),
 		)
 		span.SetStatus(codes.Error, "only GET and HEAD are permitted for registry")
 		writeReasonError(w, http.StatusMethodNotAllowed, reasonMethodNotAllowed, "only GET and HEAD are permitted for registry")
@@ -72,52 +73,52 @@ func (h *cachedRegistryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 	normalizedPrefix := strings.ToLower(strings.TrimSpace(prefix))
 	policyHost, policyPort, upstreamHost, upstreamPort, err := h.cache.OCIUpstreamForPrefix(normalizedPrefix)
 	if err != nil {
-		setGatewayRequestDecision(r.Context(), "deny", "unknown_registry_prefix")
+		setGatewayRequestDecision(r.Context(), gatewayActionDeny, reasonUnknownRegistryPrefix)
 		span.RecordError(err)
 		span.SetAttributes(
-			attribute.String("cleanroom.gateway.action", "deny"),
-			attribute.String("cleanroom.reason_code", "unknown_registry_prefix"),
+			attribute.String(observability.AttrGatewayAction, gatewayActionDeny),
+			attribute.String(observability.AttrReasonCode, reasonUnknownRegistryPrefix),
 		)
 		span.SetStatus(codes.Error, err.Error())
-		h.auditLog(scope.SandboxID, normalizedPrefix, "deny", "unknown_registry_prefix")
-		writeReasonError(w, http.StatusNotFound, "unknown_registry_prefix", fmt.Sprintf("unknown registry prefix %q", prefix))
+		h.auditLog(scope.SandboxID, normalizedPrefix, gatewayActionDeny, reasonUnknownRegistryPrefix)
+		writeReasonError(w, http.StatusNotFound, reasonUnknownRegistryPrefix, fmt.Sprintf("unknown registry prefix %q", prefix))
 		return
 	}
 	span.SetAttributes(
-		attribute.String("cleanroom.gateway.target_host", policyHost),
-		attribute.String("cleanroom.gateway.registry_prefix", normalizedPrefix),
+		attribute.String(observability.AttrGatewayTargetHost, policyHost),
+		attribute.String(observability.AttrGatewayRegistryPrefix, normalizedPrefix),
 	)
 	if !scope.Policy.Allows(policyHost, policyPort) {
-		setGatewayRequestDecision(r.Context(), "deny", reasonHostNotAllowed)
+		setGatewayRequestDecision(r.Context(), gatewayActionDeny, reasonHostNotAllowed)
 		span.SetAttributes(
-			attribute.String("cleanroom.gateway.action", "deny"),
-			attribute.String("cleanroom.reason_code", reasonHostNotAllowed),
+			attribute.String(observability.AttrGatewayAction, gatewayActionDeny),
+			attribute.String(observability.AttrReasonCode, reasonHostNotAllowed),
 		)
 		span.SetStatus(codes.Error, "upstream registry host is not allowed by sandbox policy")
-		h.auditLog(scope.SandboxID, policyHost, "deny", reasonHostNotAllowed)
+		h.auditLog(scope.SandboxID, policyHost, gatewayActionDeny, reasonHostNotAllowed)
 		writeReasonError(w, http.StatusForbidden, reasonHostNotAllowed, "upstream registry host is not allowed by sandbox policy")
 		return
 	}
 	span.SetAttributes(
-		attribute.String("cleanroom.gateway.action", "allow"),
-		attribute.String("cleanroom.reason_code", "cached"),
-		attribute.Int("cleanroom.gateway.upstream_port", upstreamPort),
-		attribute.String("cleanroom.gateway.upstream_host", upstreamHost),
+		attribute.String(observability.AttrGatewayAction, gatewayActionAllow),
+		attribute.String(observability.AttrReasonCode, reasonCached),
+		attribute.Int(observability.AttrGatewayUpstreamPort, upstreamPort),
+		attribute.String(observability.AttrGatewayUpstreamHost, upstreamHost),
 	)
-	setGatewayRequestDecision(r.Context(), "allow", "cached")
-	h.auditLog(scope.SandboxID, upstreamHost, "allow", "cached")
+	setGatewayRequestDecision(r.Context(), gatewayActionAllow, reasonCached)
+	h.auditLog(scope.SandboxID, upstreamHost, gatewayActionAllow, reasonCached)
 
 	cacheHandler, err := h.cache.OCIHandlerForPrefix(normalizedPrefix)
 	if err != nil {
-		setGatewayRequestDecision(r.Context(), "deny", "unknown_registry_prefix")
+		setGatewayRequestDecision(r.Context(), gatewayActionDeny, reasonUnknownRegistryPrefix)
 		span.RecordError(err)
 		span.SetAttributes(
-			attribute.String("cleanroom.gateway.action", "deny"),
-			attribute.String("cleanroom.reason_code", "unknown_registry_prefix"),
+			attribute.String(observability.AttrGatewayAction, gatewayActionDeny),
+			attribute.String(observability.AttrReasonCode, reasonUnknownRegistryPrefix),
 		)
 		span.SetStatus(codes.Error, err.Error())
-		h.auditLog(scope.SandboxID, normalizedPrefix, "deny", "unknown_registry_prefix")
-		writeReasonError(w, http.StatusNotFound, "unknown_registry_prefix", fmt.Sprintf("unknown registry prefix %q", prefix))
+		h.auditLog(scope.SandboxID, normalizedPrefix, gatewayActionDeny, reasonUnknownRegistryPrefix)
+		writeReasonError(w, http.StatusNotFound, reasonUnknownRegistryPrefix, fmt.Sprintf("unknown registry prefix %q", prefix))
 		return
 	}
 

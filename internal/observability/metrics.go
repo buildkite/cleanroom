@@ -20,7 +20,7 @@ type ServiceMetrics struct {
 func NewServiceMetrics(provider metric.MeterProvider) (*ServiceMetrics, error) {
 	meter := meterProviderOrNoop(provider).Meter("github.com/buildkite/cleanroom/internal/controlservice")
 	sandboxCreateDuration, err := meter.Float64Histogram(
-		"cleanroom_sandbox_create_duration_seconds",
+		MetricSandboxCreateDurationSeconds,
 		metric.WithDescription("Time spent creating a sandbox"),
 		metric.WithUnit("s"),
 	)
@@ -28,14 +28,14 @@ func NewServiceMetrics(provider metric.MeterProvider) (*ServiceMetrics, error) {
 		return nil, err
 	}
 	executionTotal, err := meter.Int64Counter(
-		"cleanroom_execution_total",
+		MetricExecutionTotal,
 		metric.WithDescription("Completed executions by backend, kind, and outcome"),
 	)
 	if err != nil {
 		return nil, err
 	}
 	executionDuration, err := meter.Float64Histogram(
-		"cleanroom_execution_duration_seconds",
+		MetricExecutionDurationSeconds,
 		metric.WithDescription("Execution duration by backend, kind, and outcome"),
 		metric.WithUnit("s"),
 	)
@@ -54,9 +54,9 @@ func (m *ServiceMetrics) RecordSandboxCreate(ctx context.Context, backendName, s
 		return
 	}
 	m.sandboxCreateDuration.Record(ctx, duration.Seconds(), metric.WithAttributes(
-		attribute.String("backend", normalizeMetricValue(backendName, "unknown")),
-		attribute.String("source", normalizeMetricValue(source, "unknown")),
-		attribute.String("outcome", normalizeMetricValue(outcome, "unknown")),
+		attribute.String(MetricLabelBackend, normalizeMetricValue(backendName, "unknown")),
+		attribute.String(MetricLabelSource, normalizeMetricValue(source, "unknown")),
+		attribute.String(MetricLabelOutcome, normalizeMetricValue(outcome, "unknown")),
 	))
 }
 
@@ -65,9 +65,9 @@ func (m *ServiceMetrics) RecordExecution(ctx context.Context, backendName, kind,
 		return
 	}
 	attrs := metric.WithAttributes(
-		attribute.String("backend", normalizeMetricValue(backendName, "unknown")),
-		attribute.String("kind", normalizeMetricValue(kind, "unknown")),
-		attribute.String("outcome", normalizeMetricValue(outcome, "unknown")),
+		attribute.String(MetricLabelBackend, normalizeMetricValue(backendName, "unknown")),
+		attribute.String(MetricLabelKind, normalizeMetricValue(kind, "unknown")),
+		attribute.String(MetricLabelOutcome, normalizeMetricValue(outcome, "unknown")),
 	)
 	m.executionTotal.Add(ctx, 1, attrs)
 	m.executionDuration.Record(ctx, duration.Seconds(), attrs)
@@ -81,14 +81,14 @@ type GatewayMetrics struct {
 func NewGatewayMetrics(provider metric.MeterProvider) (*GatewayMetrics, error) {
 	meter := meterProviderOrNoop(provider).Meter("github.com/buildkite/cleanroom/internal/gateway")
 	requestTotal, err := meter.Int64Counter(
-		"cleanroom_gateway_requests_total",
+		MetricGatewayRequestsTotal,
 		metric.WithDescription("Gateway requests by service, action, reason code, and status class"),
 	)
 	if err != nil {
 		return nil, err
 	}
 	requestDuration, err := meter.Float64Histogram(
-		"cleanroom_gateway_request_duration_seconds",
+		MetricGatewayRequestDuration,
 		metric.WithDescription("Gateway request duration by service and action"),
 		metric.WithUnit("s"),
 	)
@@ -106,14 +106,14 @@ func (m *GatewayMetrics) RecordRequest(ctx context.Context, service, action, rea
 	action = normalizeMetricValue(action, "unknown")
 	reasonCode = normalizeMetricValue(reasonCode, "none")
 	m.requestTotal.Add(ctx, 1, metric.WithAttributes(
-		attribute.String("service", service),
-		attribute.String("action", action),
-		attribute.String("reason_code", reasonCode),
-		attribute.String("status_class", statusCodeClass(statusCode)),
+		attribute.String(MetricLabelService, service),
+		attribute.String(MetricLabelAction, action),
+		attribute.String(MetricLabelReasonCode, reasonCode),
+		attribute.String(MetricLabelStatusClass, statusCodeClass(statusCode)),
 	))
 	m.requestDuration.Record(ctx, duration.Seconds(), metric.WithAttributes(
-		attribute.String("service", service),
-		attribute.String("action", action),
+		attribute.String(MetricLabelService, service),
+		attribute.String(MetricLabelAction, action),
 	))
 }
 
@@ -124,7 +124,7 @@ type BackendMetrics struct {
 func NewBackendMetrics(provider metric.MeterProvider, meterName string) (*BackendMetrics, error) {
 	meter := meterProviderOrNoop(provider).Meter(defaultTracerName(meterName))
 	launchPhaseDuration, err := meter.Float64Histogram(
-		"cleanroom_launch_phase_duration_seconds",
+		MetricLaunchPhaseDurationSeconds,
 		metric.WithDescription("Backend launch and guest execution phase duration"),
 		metric.WithUnit("s"),
 	)
@@ -139,8 +139,8 @@ func (m *BackendMetrics) RecordLaunchPhase(ctx context.Context, backendName, pha
 		return
 	}
 	m.launchPhaseDuration.Record(ctx, duration.Seconds(), metric.WithAttributes(
-		attribute.String("backend", normalizeMetricValue(backendName, "unknown")),
-		attribute.String("phase", normalizeMetricValue(phase, "unknown")),
+		attribute.String(MetricLabelBackend, normalizeMetricValue(backendName, "unknown")),
+		attribute.String(MetricLabelPhase, normalizeMetricValue(phase, "unknown")),
 	))
 }
 

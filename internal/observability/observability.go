@@ -26,7 +26,6 @@ import (
 )
 
 const (
-	serviceNamespace = "cleanroom"
 	defaultTraceName = "github.com/buildkite/cleanroom"
 )
 
@@ -380,7 +379,7 @@ func newSampler(cfg runtimeconfig.TraceSamplingConfig) (sdktrace.Sampler, error)
 
 func newResource(opts Options) (*sdkresource.Resource, error) {
 	attributes := []attribute.KeyValue{
-		attribute.String("service.namespace", serviceNamespace),
+		attribute.String("service.namespace", ServiceNamespace),
 		attribute.String("service.name", strings.TrimSpace(opts.ServiceName)),
 	}
 	if version := strings.TrimSpace(opts.ServiceVersion); version != "" {

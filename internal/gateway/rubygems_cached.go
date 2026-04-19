@@ -38,24 +38,24 @@ func (h *cachedRubyGemsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 
 	policyHost, policyPort, upstreamHost, _, err := h.cache.RubyGemsUpstream()
 	if err != nil {
-		h.auditLog(scope.SandboxID, "rubygems", "deny", "rubygems_unavailable")
+		h.auditLog(scope.SandboxID, "rubygems", gatewayActionDeny, reasonRubyGemsUnavailable)
 		writeReasonError(w, http.StatusBadGateway, reasonUpstreamError, "rubygems cache is not configured")
 		return
 	}
 	if !scope.Policy.Allows(policyHost, policyPort) {
-		h.auditLog(scope.SandboxID, policyHost, "deny", reasonHostNotAllowed)
+		h.auditLog(scope.SandboxID, policyHost, gatewayActionDeny, reasonHostNotAllowed)
 		writeReasonError(w, http.StatusForbidden, reasonHostNotAllowed, "upstream rubygems host is not allowed by sandbox policy")
 		return
 	}
 
 	handler, err := h.cache.RubyGemsHandler()
 	if err != nil {
-		h.auditLog(scope.SandboxID, "rubygems", "deny", "rubygems_unavailable")
+		h.auditLog(scope.SandboxID, "rubygems", gatewayActionDeny, reasonRubyGemsUnavailable)
 		writeReasonError(w, http.StatusBadGateway, reasonUpstreamError, "rubygems cache is not configured")
 		return
 	}
 
-	h.auditLog(scope.SandboxID, upstreamHost, "allow", "cached")
+	h.auditLog(scope.SandboxID, upstreamHost, gatewayActionAllow, reasonCached)
 
 	r = r.Clone(r.Context())
 	r.URL.Path = strings.TrimPrefix(r.URL.Path, "/rubygems")

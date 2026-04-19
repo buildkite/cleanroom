@@ -1,0 +1,98 @@
+package observability
+
+import (
+	"strings"
+
+	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
+)
+
+const (
+	ServiceNamespace = "cleanroom"
+
+	SpanExec            = "cleanroom.exec"
+	SpanConsole         = "cleanroom.console"
+	SpanSandboxCreate   = "cleanroom.sandbox.create"
+	SpanExecutionCreate = "cleanroom.execution.create"
+	SpanExecutionRun    = "cleanroom.execution.run"
+
+	MetricSandboxCreateDurationSeconds = "cleanroom_sandbox_create_duration_seconds"
+	MetricExecutionTotal               = "cleanroom_execution_total"
+	MetricExecutionDurationSeconds     = "cleanroom_execution_duration_seconds"
+	MetricGatewayRequestsTotal         = "cleanroom_gateway_requests_total"
+	MetricGatewayRequestDuration       = "cleanroom_gateway_request_duration_seconds"
+	MetricLaunchPhaseDurationSeconds   = "cleanroom_launch_phase_duration_seconds"
+
+	MetricLabelBackend     = "backend"
+	MetricLabelSource      = "source"
+	MetricLabelOutcome     = "outcome"
+	MetricLabelKind        = "kind"
+	MetricLabelService     = "service"
+	MetricLabelAction      = "action"
+	MetricLabelReasonCode  = "reason_code"
+	MetricLabelStatusClass = "status_class"
+	MetricLabelPhase       = "phase"
+
+	AttrBackend               = "cleanroom.backend"
+	AttrBackendRequested      = "cleanroom.backend.requested"
+	AttrSandboxID             = "cleanroom.sandbox.id"
+	AttrSandboxFromSnapshot   = "cleanroom.sandbox.from_snapshot"
+	AttrExecutionID           = "cleanroom.execution.id"
+	AttrExecutionKind         = "cleanroom.execution.kind"
+	AttrExecutionStatus       = "cleanroom.execution.status"
+	AttrReasonCode            = "cleanroom.reason_code"
+	AttrGatewayService        = "cleanroom.gateway.service"
+	AttrGatewayAction         = "cleanroom.gateway.action"
+	AttrGatewayTargetHost     = "cleanroom.gateway.target_host"
+	AttrGatewayRepoPath       = "cleanroom.gateway.repo_path"
+	AttrGatewayRequestType    = "cleanroom.gateway.request_type"
+	AttrGatewayRegistryPrefix = "cleanroom.gateway.registry_prefix"
+	AttrGatewayUpstreamHost   = "cleanroom.gateway.upstream_host"
+	AttrGatewayUpstreamPort   = "cleanroom.gateway.upstream_port"
+	AttrGatewayUpstreamStatus = "cleanroom.gateway.upstream_status_code"
+	AttrCommandArgc           = "cleanroom.command.argc"
+	AttrCommandName           = "cleanroom.command.name"
+	AttrCommandSummary        = "cleanroom.command.summary"
+	AttrKeepSandbox           = "cleanroom.keep_sandbox"
+	AttrStdinDisabled         = "cleanroom.stdin.disabled"
+	AttrRepositoryCheckout    = "cleanroom.repository.checkout"
+	AttrRepositoryChangeset   = "cleanroom.repository.changeset"
+	AttrVMLaunched            = "cleanroom.vm.launched"
+	AttrExitCode              = "cleanroom.exit_code"
+
+	OutcomeSucceeded = "succeeded"
+	OutcomeFailed    = "failed"
+	OutcomeCanceled  = "canceled"
+	OutcomeTimedOut  = "timed_out"
+
+	GatewayActionAllow = "allow"
+	GatewayActionDeny  = "deny"
+
+	ReasonHostNotAllowed        = "host_not_allowed"
+	ReasonMethodNotAllowed      = "method_not_allowed"
+	ReasonUpstreamError         = "upstream_error"
+	ReasonUnknownRegistryPrefix = "unknown_registry_prefix"
+	ReasonProxied               = "proxied"
+	ReasonMirrored              = "mirrored"
+	ReasonCached                = "cached"
+	ReasonFallback              = "fallback"
+	ReasonRubyGemsUnavailable   = "rubygems_unavailable"
+)
+
+func GatewayRequestSpanName(service string) string {
+	return "cleanroom.gateway." + service + ".request"
+}
+
+func ExecutionOutcome(status cleanroomv1.ExecutionStatus) string {
+	switch status {
+	case cleanroomv1.ExecutionStatus_EXECUTION_STATUS_SUCCEEDED:
+		return OutcomeSucceeded
+	case cleanroomv1.ExecutionStatus_EXECUTION_STATUS_FAILED:
+		return OutcomeFailed
+	case cleanroomv1.ExecutionStatus_EXECUTION_STATUS_CANCELED:
+		return OutcomeCanceled
+	case cleanroomv1.ExecutionStatus_EXECUTION_STATUS_TIMED_OUT:
+		return OutcomeTimedOut
+	default:
+		return strings.ToLower(strings.TrimPrefix(status.String(), "EXECUTION_STATUS_"))
+	}
+}
