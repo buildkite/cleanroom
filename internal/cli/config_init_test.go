@@ -43,9 +43,9 @@ func TestConfigInitWritesRuntimeConfig(t *testing.T) {
 		t.Fatalf("read generated config: %v", err)
 	}
 
-	var cfg runtimeconfig.Config
-	if err := yaml.Unmarshal(raw, &cfg); err != nil {
-		t.Fatalf("parse generated yaml: %v", err)
+	cfg, _, err := runtimeconfig.LoadPath(configPath)
+	if err != nil {
+		t.Fatalf("load generated config: %v", err)
 	}
 	if runtime.GOOS == "darwin" {
 		if !strings.Contains(string(raw), "darwin-vz:") {
@@ -64,6 +64,9 @@ func TestConfigInitWritesRuntimeConfig(t *testing.T) {
 	}
 	if got := strings.TrimSpace(cfg.DefaultBackend); got == "" {
 		t.Fatal("expected default_backend to be populated")
+	}
+	if strings.Contains(string(raw), "default_backend:") {
+		t.Fatalf("expected generated config to omit default_backend when only one backend is defined, got:\n%s", raw)
 	}
 	if runtime.GOOS == "darwin" {
 		if strings.Contains(string(raw), "firecracker:") {
@@ -170,14 +173,15 @@ func TestConfigInitDisablesDarwinVZSnapshotsWhenSupportUnavailable(t *testing.T)
 		t.Fatalf("ConfigInitCommand.Run returned error: %v", err)
 	}
 
-	raw, err := os.ReadFile(filepath.Join(tmpDir, "cleanroom", "config.yaml"))
+	configPath := filepath.Join(tmpDir, "cleanroom", "config.yaml")
+	raw, err := os.ReadFile(configPath)
 	if err != nil {
 		t.Fatalf("read generated config: %v", err)
 	}
 
-	var cfg runtimeconfig.Config
-	if err := yaml.Unmarshal(raw, &cfg); err != nil {
-		t.Fatalf("parse generated yaml: %v", err)
+	cfg, _, err := runtimeconfig.LoadPath(configPath)
+	if err != nil {
+		t.Fatalf("load generated config: %v", err)
 	}
 	if !strings.Contains(string(raw), "darwin-vz:") {
 		t.Fatalf("expected generated config to include darwin-vz backend, got:\n%s", raw)

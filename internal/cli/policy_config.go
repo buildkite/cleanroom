@@ -224,7 +224,7 @@ func defaultDarwinVZSnapshotConfig(emitRuntimeWarnings bool) (runtimeconfig.Snap
 }
 
 type runtimeConfigTemplate struct {
-	DefaultBackend string                     `yaml:"default_backend"`
+	DefaultBackend string                     `yaml:"default_backend,omitempty"`
 	Backends       runtimeConfigTemplateNodes `yaml:"backends"`
 }
 
@@ -279,8 +279,7 @@ type runtimeConfigSnapshot struct {
 
 func defaultRuntimeConfig(defaultBackend string, firecrackerSnapshots, darwinVZSnapshots runtimeconfig.SnapshotConfig) runtimeConfigTemplate {
 	tpl := runtimeConfigTemplate{
-		DefaultBackend: defaultBackend,
-		Backends:       runtimeConfigTemplateNodes{},
+		Backends: runtimeConfigTemplateNodes{},
 	}
 
 	switch defaultBackend {
