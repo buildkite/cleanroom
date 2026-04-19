@@ -98,6 +98,21 @@ func TestConfigInitParses(t *testing.T) {
 	}
 }
 
+func TestConfigValidateParses(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"config", "validate", "--path", "./config.yaml", "--json"}); err != nil {
+		t.Fatalf("parse config validate returned error: %v", err)
+	}
+	if got, want := c.Config.Validate.Path, "./config.yaml"; got != want {
+		t.Fatalf("unexpected config validate path: got %q want %q", got, want)
+	}
+	if !c.Config.Validate.JSON {
+		t.Fatal("expected config validate --json flag to be set")
+	}
+}
+
 func TestSnapshotInspectParses(t *testing.T) {
 	c := &CLI{}
 	parser := newParserForTest(t, c)
@@ -538,18 +553,24 @@ func TestDaemonInstallParses(t *testing.T) {
 	}
 }
 
-func TestDaemonInstallForceParses(t *testing.T) {
+func TestDaemonInstallRestartFlagsParse(t *testing.T) {
 	c := &CLI{}
 	parser := newParserForTest(t, c)
 
-	if _, err := parser.Parse([]string{"daemon", "install", "--force"}); err != nil {
-		t.Fatalf("parse daemon install --force returned error: %v", err)
+	if _, err := parser.Parse([]string{"daemon", "install", "--restart", "--init-config", "--dry-run"}); err != nil {
+		t.Fatalf("parse daemon install flags returned error: %v", err)
 	}
 	if got := c.Daemon.Action; got != "install" {
 		t.Fatalf("expected daemon action install, got %q", got)
 	}
-	if !c.Daemon.Force {
-		t.Fatal("expected --force to set Daemon.Force")
+	if !c.Daemon.Restart {
+		t.Fatal("expected --restart to set Daemon.Restart")
+	}
+	if !c.Daemon.InitConfig {
+		t.Fatal("expected --init-config to set Daemon.InitConfig")
+	}
+	if !c.Daemon.DryRun {
+		t.Fatal("expected --dry-run to set Daemon.DryRun")
 	}
 }
 

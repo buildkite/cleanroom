@@ -22,6 +22,14 @@ import (
 	"github.com/charmbracelet/log"
 )
 
+func daemonInstallContext(tmpDir string, stdout *os.File) *runtimeContext {
+	return &runtimeContext{
+		CWD:        tmpDir,
+		Stdout:     stdout,
+		ConfigPath: filepath.Join(tmpDir, "runtime-config.yaml"),
+	}
+}
+
 func TestShouldInstallGatewayFirewall(t *testing.T) {
 	t.Parallel()
 
@@ -270,11 +278,10 @@ func TestDaemonInstallRequiresRoot(t *testing.T) {
 	}
 }
 
-func TestDaemonInstallRefusesOverwriteWithoutForce(t *testing.T) {
+func TestDaemonInstallOverwritesExistingUnitByDefault(t *testing.T) {
 	tmpDir := t.TempDir()
 	unitPath := filepath.Join(tmpDir, "cleanroom.service")
-	original := []byte("existing-unit")
-	if err := os.WriteFile(unitPath, original, 0o644); err != nil {
+	if err := os.WriteFile(unitPath, []byte("existing-unit"), 0o644); err != nil {
 		t.Fatalf("write existing unit: %v", err)
 	}
 
@@ -287,9 +294,13 @@ func TestDaemonInstallRefusesOverwriteWithoutForce(t *testing.T) {
 	serveInstallGOOS = "linux"
 	serveInstallSystemdUnitPath = unitPath
 	serveInstallExecutablePath = func() (string, error) { return "/usr/local/bin/cleanroom", nil }
-	runCalls := 0
+	var calls [][]string
 	serveInstallRunCommand = func(name string, args ...string) error {
-		runCalls++
+		call := append([]string{name}, args...)
+		calls = append(calls, call)
+		if len(args) > 0 && args[0] == "is-active" {
+			return &exec.ExitError{ProcessState: &os.ProcessState{}}
+		}
 		return nil
 	}
 	t.Cleanup(func() {
@@ -302,30 +313,29 @@ func TestDaemonInstallRefusesOverwriteWithoutForce(t *testing.T) {
 
 	stdout, _ := makeStdoutCapture(t)
 	cmd := &DaemonCommand{Action: "install"}
-	err := cmd.Run(&runtimeContext{CWD: tmpDir, Stdout: stdout})
-	if err == nil {
-		t.Fatal("expected overwrite refusal")
-	}
-	if !strings.Contains(err.Error(), "already exists") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !strings.Contains(err.Error(), "--force") {
-		t.Fatalf("expected force guidance, got: %v", err)
-	}
-	if runCalls != 0 {
-		t.Fatalf("expected no service manager commands, got %d", runCalls)
+	if err := cmd.Run(daemonInstallContext(tmpDir, stdout)); err != nil {
+		t.Fatalf("DaemonCommand.Run returned error: %v", err)
 	}
 
 	raw, err := os.ReadFile(unitPath)
 	if err != nil {
 		t.Fatalf("read unit file: %v", err)
 	}
-	if got, want := string(raw), string(original); got != want {
-		t.Fatalf("unit content changed unexpectedly: got %q want %q", got, want)
+	if !strings.Contains(string(raw), "ExecStart=/usr/local/bin/cleanroom serve") {
+		t.Fatalf("expected unit content to be updated, got:\n%s", raw)
+	}
+
+	wantCalls := [][]string{
+		{"systemctl", "is-active", "--quiet", "cleanroom.service"},
+		{"systemctl", "daemon-reload"},
+		{"systemctl", "enable", "--now", "cleanroom.service"},
+	}
+	if !reflect.DeepEqual(calls, wantCalls) {
+		t.Fatalf("unexpected systemctl commands: got %v want %v", calls, wantCalls)
 	}
 }
 
-func TestDaemonInstallForceOverwritesAndEnablesService(t *testing.T) {
+func TestDaemonInstallRestartRestartsRunningSystemdService(t *testing.T) {
 	tmpDir := t.TempDir()
 	unitPath := filepath.Join(tmpDir, "cleanroom.service")
 	if err := os.WriteFile(unitPath, []byte("existing-unit"), 0o644); err != nil {
@@ -356,8 +366,8 @@ func TestDaemonInstallForceOverwritesAndEnablesService(t *testing.T) {
 	})
 
 	stdout, _ := makeStdoutCapture(t)
-	cmd := &DaemonCommand{Action: "install", Force: true}
-	if err := cmd.Run(&runtimeContext{CWD: tmpDir, Stdout: stdout}); err != nil {
+	cmd := &DaemonCommand{Action: "install", Restart: true}
+	if err := cmd.Run(daemonInstallContext(tmpDir, stdout)); err != nil {
 		t.Fatalf("DaemonCommand.Run returned error: %v", err)
 	}
 
@@ -383,8 +393,9 @@ func TestDaemonInstallForceOverwritesAndEnablesService(t *testing.T) {
 	}
 
 	wantCalls := [][]string{
+		{"systemctl", "is-active", "--quiet", "cleanroom.service"},
 		{"systemctl", "daemon-reload"},
-		{"systemctl", "enable", "--now", "cleanroom.service"},
+		{"systemctl", "enable", "cleanroom.service"},
 		{"systemctl", "restart", "cleanroom.service"},
 	}
 	if !reflect.DeepEqual(calls, wantCalls) {
@@ -440,7 +451,7 @@ func TestDaemonInstallUsesProvidedListenInUnit(t *testing.T) {
 
 	stdout, _ := makeStdoutCapture(t)
 	cmd := &DaemonCommand{Action: "install", Listen: "unix:///tmp/custom-cleanroom.sock"}
-	if err := cmd.Run(&runtimeContext{CWD: tmpDir, Stdout: stdout}); err != nil {
+	if err := cmd.Run(daemonInstallContext(tmpDir, stdout)); err != nil {
 		t.Fatalf("DaemonCommand.Run returned error: %v", err)
 	}
 
@@ -467,11 +478,15 @@ func TestDaemonInstallDarwinEnablesBootstrapsAndKickstartsUserService(t *testing
 	prevUserHomeDir := serveInstallUserHomeDir
 	prevExecutable := serveInstallExecutablePath
 	prevRunCommand := serveInstallRunCommand
+	prevRunCommandOutput := serveInstallRunCommandOutput
 	serveInstallEUID = func() int { return 501 }
 	serveInstallUID = func() int { return 501 }
 	serveInstallGOOS = "darwin"
 	serveInstallUserHomeDir = func() (string, error) { return tmpDir, nil }
 	serveInstallExecutablePath = func() (string, error) { return "/usr/local/bin/cleanroom", nil }
+	serveInstallRunCommandOutput = func(name string, args ...string) (string, error) {
+		return "", &exec.ExitError{ProcessState: &os.ProcessState{}}
+	}
 	var calls [][]string
 	serveInstallRunCommand = func(name string, args ...string) error {
 		calls = append(calls, append([]string{name}, args...))
@@ -484,11 +499,12 @@ func TestDaemonInstallDarwinEnablesBootstrapsAndKickstartsUserService(t *testing
 		serveInstallUserHomeDir = prevUserHomeDir
 		serveInstallExecutablePath = prevExecutable
 		serveInstallRunCommand = prevRunCommand
+		serveInstallRunCommandOutput = prevRunCommandOutput
 	})
 
 	stdout, _ := makeStdoutCapture(t)
 	cmd := &DaemonCommand{Action: "install"}
-	if err := cmd.Run(&runtimeContext{CWD: tmpDir, Stdout: stdout}); err != nil {
+	if err := cmd.Run(daemonInstallContext(tmpDir, stdout)); err != nil {
 		t.Fatalf("DaemonCommand.Run returned error: %v", err)
 	}
 
@@ -512,7 +528,7 @@ func TestDaemonInstallDarwinEnablesBootstrapsAndKickstartsUserService(t *testing
 	}
 }
 
-func TestDaemonInstallDarwinForceBootsOutBeforeRewritingAndKickstartsUserService(t *testing.T) {
+func TestDaemonInstallDarwinUpdatesRunningUserServiceWithoutRestart(t *testing.T) {
 	tmpDir := t.TempDir()
 	plistPath := filepath.Join(tmpDir, "Library", "LaunchAgents", launchdServiceName+".plist")
 	if err := os.MkdirAll(filepath.Dir(plistPath), 0o755); err != nil {
@@ -528,24 +544,18 @@ func TestDaemonInstallDarwinForceBootsOutBeforeRewritingAndKickstartsUserService
 	prevUserHomeDir := serveInstallUserHomeDir
 	prevExecutable := serveInstallExecutablePath
 	prevRunCommand := serveInstallRunCommand
+	prevRunCommandOutput := serveInstallRunCommandOutput
 	serveInstallEUID = func() int { return 501 }
 	serveInstallUID = func() int { return 501 }
 	serveInstallGOOS = "darwin"
 	serveInstallUserHomeDir = func() (string, error) { return tmpDir, nil }
 	serveInstallExecutablePath = func() (string, error) { return "/Users/lachlan/bin/cleanroom", nil }
+	serveInstallRunCommandOutput = func(name string, args ...string) (string, error) {
+		return "state = running\n", nil
+	}
 	var calls [][]string
 	serveInstallRunCommand = func(name string, args ...string) error {
-		call := append([]string{name}, args...)
-		calls = append(calls, call)
-		if len(args) > 0 && args[0] == "bootout" {
-			raw, err := os.ReadFile(plistPath)
-			if err != nil {
-				t.Fatalf("read existing plist during bootout: %v", err)
-			}
-			if got := string(raw); got != "old-plist" {
-				t.Fatalf("expected force install to boot out before rewriting plist, got %q", got)
-			}
-		}
+		calls = append(calls, append([]string{name}, args...))
 		return nil
 	}
 	t.Cleanup(func() {
@@ -555,11 +565,74 @@ func TestDaemonInstallDarwinForceBootsOutBeforeRewritingAndKickstartsUserService
 		serveInstallUserHomeDir = prevUserHomeDir
 		serveInstallExecutablePath = prevExecutable
 		serveInstallRunCommand = prevRunCommand
+		serveInstallRunCommandOutput = prevRunCommandOutput
 	})
 
 	stdout, _ := makeStdoutCapture(t)
-	cmd := &DaemonCommand{Action: "install", Force: true}
-	if err := cmd.Run(&runtimeContext{CWD: tmpDir, Stdout: stdout}); err != nil {
+	cmd := &DaemonCommand{Action: "install"}
+	if err := cmd.Run(daemonInstallContext(tmpDir, stdout)); err != nil {
+		t.Fatalf("DaemonCommand.Run returned error: %v", err)
+	}
+
+	wantCalls := [][]string{
+		{"launchctl", "enable", "gui/501/" + launchdServiceName},
+	}
+	if !reflect.DeepEqual(calls, wantCalls) {
+		t.Fatalf("unexpected launchctl commands without --restart: got %v want %v", calls, wantCalls)
+	}
+
+	raw, err := os.ReadFile(plistPath)
+	if err != nil {
+		t.Fatalf("read rewritten user launchd plist: %v", err)
+	}
+	if !strings.Contains(string(raw), "/Users/lachlan/bin/cleanroom") {
+		t.Fatalf("expected install to rewrite plist with new executable, got:\n%s", raw)
+	}
+}
+
+func TestDaemonInstallDarwinRestartBootsOutAndKickstartsRunningUserService(t *testing.T) {
+	tmpDir := t.TempDir()
+	plistPath := filepath.Join(tmpDir, "Library", "LaunchAgents", launchdServiceName+".plist")
+	if err := os.MkdirAll(filepath.Dir(plistPath), 0o755); err != nil {
+		t.Fatalf("mkdir launch agents dir: %v", err)
+	}
+	if err := os.WriteFile(plistPath, []byte("old-plist"), 0o644); err != nil {
+		t.Fatalf("write existing plist: %v", err)
+	}
+
+	prevEUID := serveInstallEUID
+	prevUID := serveInstallUID
+	prevGOOS := serveInstallGOOS
+	prevUserHomeDir := serveInstallUserHomeDir
+	prevExecutable := serveInstallExecutablePath
+	prevRunCommand := serveInstallRunCommand
+	prevRunCommandOutput := serveInstallRunCommandOutput
+	serveInstallEUID = func() int { return 501 }
+	serveInstallUID = func() int { return 501 }
+	serveInstallGOOS = "darwin"
+	serveInstallUserHomeDir = func() (string, error) { return tmpDir, nil }
+	serveInstallExecutablePath = func() (string, error) { return "/Users/lachlan/bin/cleanroom", nil }
+	serveInstallRunCommandOutput = func(name string, args ...string) (string, error) {
+		return "state = running\n", nil
+	}
+	var calls [][]string
+	serveInstallRunCommand = func(name string, args ...string) error {
+		calls = append(calls, append([]string{name}, args...))
+		return nil
+	}
+	t.Cleanup(func() {
+		serveInstallEUID = prevEUID
+		serveInstallUID = prevUID
+		serveInstallGOOS = prevGOOS
+		serveInstallUserHomeDir = prevUserHomeDir
+		serveInstallExecutablePath = prevExecutable
+		serveInstallRunCommand = prevRunCommand
+		serveInstallRunCommandOutput = prevRunCommandOutput
+	})
+
+	stdout, _ := makeStdoutCapture(t)
+	cmd := &DaemonCommand{Action: "install", Restart: true}
+	if err := cmd.Run(daemonInstallContext(tmpDir, stdout)); err != nil {
 		t.Fatalf("DaemonCommand.Run returned error: %v", err)
 	}
 
@@ -572,17 +645,9 @@ func TestDaemonInstallDarwinForceBootsOutBeforeRewritingAndKickstartsUserService
 	if !reflect.DeepEqual(calls, wantCalls) {
 		t.Fatalf("unexpected launchctl commands: got %v want %v", calls, wantCalls)
 	}
-
-	raw, err := os.ReadFile(plistPath)
-	if err != nil {
-		t.Fatalf("read rewritten user launchd plist: %v", err)
-	}
-	if !strings.Contains(string(raw), "/Users/lachlan/bin/cleanroom") {
-		t.Fatalf("expected force install to rewrite plist with new executable, got:\n%s", raw)
-	}
 }
 
-func TestDaemonInstallDarwinForceDoesNotBootoutWhenStagingPlistFails(t *testing.T) {
+func TestDaemonInstallDarwinDoesNotCallLaunchctlWhenStagingPlistFails(t *testing.T) {
 	tmpDir := t.TempDir()
 	plistPath := filepath.Join(tmpDir, "Library", "LaunchAgents", launchdServiceName+".plist")
 	if err := os.MkdirAll(filepath.Dir(plistPath), 0o755); err != nil {
@@ -598,12 +663,16 @@ func TestDaemonInstallDarwinForceDoesNotBootoutWhenStagingPlistFails(t *testing.
 	prevUserHomeDir := serveInstallUserHomeDir
 	prevExecutable := serveInstallExecutablePath
 	prevRunCommand := serveInstallRunCommand
+	prevRunCommandOutput := serveInstallRunCommandOutput
 	prevWriteFile := serveInstallWriteFile
 	serveInstallEUID = func() int { return 501 }
 	serveInstallUID = func() int { return 501 }
 	serveInstallGOOS = "darwin"
 	serveInstallUserHomeDir = func() (string, error) { return tmpDir, nil }
 	serveInstallExecutablePath = func() (string, error) { return "/Users/lachlan/bin/cleanroom", nil }
+	serveInstallRunCommandOutput = func(name string, args ...string) (string, error) {
+		return "state = running\n", nil
+	}
 	var calls [][]string
 	serveInstallRunCommand = func(name string, args ...string) error {
 		calls = append(calls, append([]string{name}, args...))
@@ -622,12 +691,13 @@ func TestDaemonInstallDarwinForceDoesNotBootoutWhenStagingPlistFails(t *testing.
 		serveInstallUserHomeDir = prevUserHomeDir
 		serveInstallExecutablePath = prevExecutable
 		serveInstallRunCommand = prevRunCommand
+		serveInstallRunCommandOutput = prevRunCommandOutput
 		serveInstallWriteFile = prevWriteFile
 	})
 
 	stdout, _ := makeStdoutCapture(t)
-	cmd := &DaemonCommand{Action: "install", Force: true}
-	err := cmd.Run(&runtimeContext{CWD: tmpDir, Stdout: stdout})
+	cmd := &DaemonCommand{Action: "install", Restart: true}
+	err := cmd.Run(daemonInstallContext(tmpDir, stdout))
 	if err == nil {
 		t.Fatal("expected staged plist write failure")
 	}
@@ -640,14 +710,14 @@ func TestDaemonInstallDarwinForceDoesNotBootoutWhenStagingPlistFails(t *testing.
 
 	raw, readErr := os.ReadFile(plistPath)
 	if readErr != nil {
-		t.Fatalf("read existing plist after failed force install: %v", readErr)
+		t.Fatalf("read existing plist after failed install: %v", readErr)
 	}
 	if got := string(raw); got != "old-plist" {
-		t.Fatalf("expected existing plist to remain unchanged after failed force install, got %q", got)
+		t.Fatalf("expected existing plist to remain unchanged after failed install, got %q", got)
 	}
 }
 
-func TestDaemonInstallDarwinForceRejectsDirectoryTargetBeforeBootout(t *testing.T) {
+func TestDaemonInstallDarwinRejectsDirectoryTargetBeforeLaunchctl(t *testing.T) {
 	tmpDir := t.TempDir()
 	plistPath := filepath.Join(tmpDir, "Library", "LaunchAgents", launchdServiceName+".plist")
 	if err := os.MkdirAll(plistPath, 0o755); err != nil {
@@ -660,11 +730,15 @@ func TestDaemonInstallDarwinForceRejectsDirectoryTargetBeforeBootout(t *testing.
 	prevUserHomeDir := serveInstallUserHomeDir
 	prevExecutable := serveInstallExecutablePath
 	prevRunCommand := serveInstallRunCommand
+	prevRunCommandOutput := serveInstallRunCommandOutput
 	serveInstallEUID = func() int { return 501 }
 	serveInstallUID = func() int { return 501 }
 	serveInstallGOOS = "darwin"
 	serveInstallUserHomeDir = func() (string, error) { return tmpDir, nil }
 	serveInstallExecutablePath = func() (string, error) { return "/Users/lachlan/bin/cleanroom", nil }
+	serveInstallRunCommandOutput = func(name string, args ...string) (string, error) {
+		return "", &exec.ExitError{ProcessState: &os.ProcessState{}}
+	}
 	var calls [][]string
 	serveInstallRunCommand = func(name string, args ...string) error {
 		calls = append(calls, append([]string{name}, args...))
@@ -677,11 +751,12 @@ func TestDaemonInstallDarwinForceRejectsDirectoryTargetBeforeBootout(t *testing.
 		serveInstallUserHomeDir = prevUserHomeDir
 		serveInstallExecutablePath = prevExecutable
 		serveInstallRunCommand = prevRunCommand
+		serveInstallRunCommandOutput = prevRunCommandOutput
 	})
 
 	stdout, _ := makeStdoutCapture(t)
-	cmd := &DaemonCommand{Action: "install", Force: true}
-	err := cmd.Run(&runtimeContext{CWD: tmpDir, Stdout: stdout})
+	cmd := &DaemonCommand{Action: "install", Restart: true}
+	err := cmd.Run(daemonInstallContext(tmpDir, stdout))
 	if err == nil {
 		t.Fatal("expected directory target failure")
 	}
@@ -817,7 +892,7 @@ func TestDaemonInstallCanonicalizesRelativeTLSPaths(t *testing.T) {
 		TLSCert: "certs/server.pem",
 		TLSKey:  "certs/server.key",
 	}
-	if err := cmd.Run(&runtimeContext{CWD: tmpDir, Stdout: stdout}); err != nil {
+	if err := cmd.Run(daemonInstallContext(tmpDir, stdout)); err != nil {
 		t.Fatalf("DaemonCommand.Run returned error: %v", err)
 	}
 
@@ -848,6 +923,9 @@ func TestServeInstallReturnsCommandErrors(t *testing.T) {
 	serveInstallSystemdUnitPath = unitPath
 	serveInstallExecutablePath = func() (string, error) { return "/usr/local/bin/cleanroom", nil }
 	serveInstallRunCommand = func(name string, args ...string) error {
+		if len(args) > 0 && args[0] == "is-active" {
+			return &exec.ExitError{ProcessState: &os.ProcessState{}}
+		}
 		return errors.New("command failed")
 	}
 	t.Cleanup(func() {
@@ -860,7 +938,7 @@ func TestServeInstallReturnsCommandErrors(t *testing.T) {
 
 	stdout, _ := makeStdoutCapture(t)
 	cmd := &DaemonCommand{Action: "install"}
-	err := cmd.Run(&runtimeContext{CWD: tmpDir, Stdout: stdout})
+	err := cmd.Run(daemonInstallContext(tmpDir, stdout))
 	if err == nil {
 		t.Fatal("expected install command failure")
 	}
@@ -1363,7 +1441,7 @@ func TestDaemonStartLaunchdEnablesBootstrapsAndKickstartsUserService(t *testing.
 	}
 }
 
-func TestDaemonRestartLaunchdKickstartsRunningUserService(t *testing.T) {
+func TestDaemonRestartLaunchdRebootstrapsRunningUserService(t *testing.T) {
 	tmpDir := t.TempDir()
 	plistPath := filepath.Join(tmpDir, "Library", "LaunchAgents", launchdServiceName+".plist")
 	if err := os.MkdirAll(filepath.Dir(plistPath), 0o755); err != nil {
@@ -1407,7 +1485,9 @@ func TestDaemonRestartLaunchdKickstartsRunningUserService(t *testing.T) {
 	}
 
 	wantCalls := [][]string{
+		{"launchctl", "bootout", "gui/501/" + launchdServiceName},
 		{"launchctl", "enable", "gui/501/" + launchdServiceName},
+		{"launchctl", "bootstrap", "gui/501", plistPath},
 		{"launchctl", "kickstart", "-k", "gui/501/" + launchdServiceName},
 	}
 	if !reflect.DeepEqual(calls, wantCalls) {

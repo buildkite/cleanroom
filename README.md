@@ -51,6 +51,7 @@ Initialize runtime config and check host prerequisites:
 
 ```bash
 cleanroom config init
+cleanroom config validate
 cleanroom doctor
 ```
 
@@ -66,13 +67,14 @@ Install as a daemon:
 
 ```bash
 # macOS: installs a user LaunchAgent (user-scope only)
-cleanroom daemon install
+cleanroom daemon install --restart
 
 # Linux (systemd)
-sudo cleanroom daemon install
+sudo cleanroom daemon install --restart
 ```
 
-Use `cleanroom daemon install --force` to overwrite an existing service file.
+Use `cleanroom daemon install --init-config --restart` for first-run bootstrap
+when the runtime config file does not exist yet.
 Use `cleanroom daemon restart --force` to start the daemon again if it is
 currently stopped. On macOS, `--system` is unsupported; `--user` is accepted
 for explicitness.
@@ -369,6 +371,7 @@ Config path: `$XDG_CONFIG_HOME/cleanroom/config.yaml` (typically `~/.config/clea
 
 ```bash
 cleanroom config init
+cleanroom config validate
 ```
 
 On macOS this defaults `default_backend` to `darwin-vz`. On Linux it defaults to `firecracker`.

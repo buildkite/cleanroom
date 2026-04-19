@@ -12,6 +12,7 @@ import (
 	"unicode"
 
 	"github.com/buildkite/cleanroom/internal/backend"
+	"github.com/buildkite/cleanroom/internal/endpoint"
 	"gopkg.in/yaml.v3"
 )
 
@@ -357,6 +358,15 @@ func Load() (Config, string, error) {
 		return Config{}, "", err
 	}
 
+	return LoadPath(path)
+}
+
+func LoadPath(path string) (Config, string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return Config{}, "", errors.New("runtime config path is empty")
+	}
+
 	b, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -365,9 +375,17 @@ func Load() (Config, string, error) {
 		return Config{}, path, fmt.Errorf("read %s: %w", path, err)
 	}
 
+	cfg, err := parseConfig(path, b)
+	if err != nil {
+		return Config{}, path, err
+	}
+	return cfg, path, nil
+}
+
+func parseConfig(path string, raw []byte) (Config, error) {
 	cfg := Config{}
-	if err := yaml.Unmarshal(b, &cfg); err != nil {
-		return Config{}, path, fmt.Errorf("parse %s: %w", path, err)
+	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+		return Config{}, fmt.Errorf("parse %s: %w", path, err)
 	}
 	presenceCfg := struct {
 		Backends struct {
@@ -377,8 +395,8 @@ func Load() (Config, string, error) {
 			LegacyDarwinVZ *yaml.Node `yaml:"darwin_vz"`
 		} `yaml:"backends"`
 	}{}
-	if err := yaml.Unmarshal(b, &presenceCfg); err != nil {
-		return Config{}, path, fmt.Errorf("parse %s: %w", path, err)
+	if err := yaml.Unmarshal(raw, &presenceCfg); err != nil {
+		return Config{}, fmt.Errorf("parse %s: %w", path, err)
 	}
 
 	darwinVZMinRootFSBytes := cfg.Backends.DarwinVZ.MinimumRootFSBytes
@@ -389,9 +407,9 @@ func Load() (Config, string, error) {
 				DarwinVZ DarwinVZConfig `yaml:"darwin_vz"`
 			} `yaml:"backends"`
 		}{}
-		if err := yaml.Unmarshal(b, &legacyCfg); err != nil {
+		if err := yaml.Unmarshal(raw, &legacyCfg); err != nil {
 			if presenceCfg.Backends.LegacyDarwinVZ != nil {
-				return Config{}, path, fmt.Errorf("parse %s: %w", path, err)
+				return Config{}, fmt.Errorf("parse %s: %w", path, err)
 			}
 		} else if darwinVZConfigHasValues(legacyCfg.Backends.DarwinVZ) {
 			cfg.Backends.DarwinVZ = legacyCfg.Backends.DarwinVZ
@@ -401,6 +419,14 @@ func Load() (Config, string, error) {
 		cfg.Backends.DarwinVZ.MinimumRootFSBytes = darwinVZMinRootFSBytes
 	}
 
+	cfg = normalizeConfig(cfg)
+	if err := validateConfig(cfg); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
+}
+
+func normalizeConfig(cfg Config) Config {
 	cfg.DefaultBackend = strings.TrimSpace(cfg.DefaultBackend)
 	if cfg.DefaultBackend == "" {
 		cfg.DefaultBackend = DefaultBackendForHost()
@@ -415,10 +441,27 @@ func Load() (Config, string, error) {
 	cfg.Observability.Traces.Sampling.Mode = strings.TrimSpace(cfg.Observability.Traces.Sampling.Mode)
 	cfg.Observability.Traces.Zipkin.Endpoint = strings.TrimSpace(cfg.Observability.Traces.Zipkin.Endpoint)
 	cfg.Observability.Traces.Zipkin.Headers = trimStringMap(cfg.Observability.Traces.Zipkin.Headers)
-	if err := validateObservabilityConfig(cfg.Observability); err != nil {
-		return Config{}, path, err
+	return cfg
+}
+
+func validateConfig(cfg Config) error {
+	switch cfg.DefaultBackend {
+	case "firecracker", "darwin-vz":
+	default:
+		return fmt.Errorf("unsupported default_backend %q (expected firecracker or darwin-vz)", cfg.DefaultBackend)
 	}
-	return cfg, path, nil
+	if cfg.ControlHost != "" {
+		if _, err := endpoint.Resolve(cfg.ControlHost); err != nil {
+			return fmt.Errorf("invalid control_host: %w", err)
+		}
+	}
+	if err := validateDarwinVZRuntimeConfig(cfg.Backends.DarwinVZ); err != nil {
+		return err
+	}
+	if err := validateObservabilityConfig(cfg.Observability); err != nil {
+		return err
+	}
+	return nil
 }
 
 func validateObservabilityConfig(cfg ObservabilityConfig) error {
@@ -446,6 +489,37 @@ func hasUnsupportedOTLPConfig(cfg OTLPConfig) bool {
 		strings.TrimSpace(cfg.Protocol) != "" ||
 		cfg.Insecure ||
 		len(cfg.Headers) > 0
+}
+
+func validateDarwinVZRuntimeConfig(cfg DarwinVZConfig) error {
+	mode := strings.ToLower(strings.TrimSpace(cfg.Network.Mode))
+	if mode == "" {
+		mode = "filehandle"
+	}
+	if mode != "filehandle" {
+		return fmt.Errorf("unsupported darwin-vz network mode %q: only %q is supported", cfg.Network.Mode, "filehandle")
+	}
+
+	removedSettings := make([]string, 0, 5)
+	if strings.TrimSpace(cfg.Network.ExternalInterface) != "" {
+		removedSettings = append(removedSettings, "external_interface")
+	}
+	if cfg.Network.DisableNAT44 {
+		removedSettings = append(removedSettings, "disable_nat44")
+	}
+	if cfg.Network.DisableNAT66 {
+		removedSettings = append(removedSettings, "disable_nat66")
+	}
+	if cfg.Network.DisableDNSProxy {
+		removedSettings = append(removedSettings, "disable_dns_proxy")
+	}
+	if cfg.Network.DisableRouterAdvertisement {
+		removedSettings = append(removedSettings, "disable_router_advertisement")
+	}
+	if len(removedSettings) == 0 {
+		return nil
+	}
+	return fmt.Errorf("darwin-vz no longer supports legacy vmnet settings: %s", strings.Join(removedSettings, ", "))
 }
 
 func darwinVZConfigIsZero(cfg DarwinVZConfig) bool {

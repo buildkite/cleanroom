@@ -167,25 +167,57 @@ func systemdServiceEnabled() (bool, error) {
 	}
 }
 
-func installSystemdDaemon(stdout io.Writer, executablePath string, args []string, force bool) error {
+func installSystemdDaemon(stdout io.Writer, executablePath string, args []string, options daemonInstallOptions) error {
 	content := renderSystemdService(executablePath, args)
-	if err := writeDaemonFile(serveInstallSystemdUnitPath, content, force, 0o644); err != nil {
+	active, err := systemdServiceActive()
+	if err != nil {
+		return err
+	}
+
+	if options.DryRun {
+		runtimeAction := "unchanged"
+		if !active {
+			runtimeAction = "started"
+		} else if options.Restart {
+			runtimeAction = "restarted"
+		}
+		_, err := fmt.Fprint(stdout, renderSummaryBlock(summaryBlock{
+			Title:      "daemon install dry-run",
+			TitleStyle: defaultTerminalPalette().warn,
+			Fields: []startupField{
+				{Key: "manager", Value: "systemd"},
+				{Key: "service", Value: systemdServiceName},
+				{Key: "path", Value: serveInstallSystemdUnitPath},
+				{Key: "runtime", Value: runtimeAction},
+			},
+		}, shouldUseANSI(stdout)))
+		return err
+	}
+
+	if err := writeDaemonFile(serveInstallSystemdUnitPath, content, 0o644); err != nil {
 		return err
 	}
 
 	if err := serveInstallRunCommand("systemctl", "daemon-reload"); err != nil {
 		return fmt.Errorf("reload systemd: %w", err)
 	}
-	if err := serveInstallRunCommand("systemctl", "enable", "--now", systemdServiceName); err != nil {
-		return fmt.Errorf("enable systemd service %s: %w", systemdServiceName, err)
-	}
-	if force {
-		if err := serveInstallRunCommand("systemctl", "restart", systemdServiceName); err != nil {
-			return fmt.Errorf("restart systemd service %s: %w", systemdServiceName, err)
+
+	if active {
+		if err := serveInstallRunCommand("systemctl", "enable", systemdServiceName); err != nil {
+			return fmt.Errorf("enable systemd service %s: %w", systemdServiceName, err)
+		}
+		if options.Restart {
+			if err := serveInstallRunCommand("systemctl", "restart", systemdServiceName); err != nil {
+				return fmt.Errorf("restart systemd service %s: %w", systemdServiceName, err)
+			}
+		}
+	} else {
+		if err := serveInstallRunCommand("systemctl", "enable", "--now", systemdServiceName); err != nil {
+			return fmt.Errorf("enable systemd service %s: %w", systemdServiceName, err)
 		}
 	}
 
-	_, err := fmt.Fprint(stdout, renderSummaryBlock(summaryBlock{
+	_, err = fmt.Fprint(stdout, renderSummaryBlock(summaryBlock{
 		Title:      "daemon installed",
 		TitleStyle: defaultTerminalPalette().info,
 		Fields: []startupField{
