@@ -416,6 +416,9 @@ func replayExecutionHistory(callCtx context.Context, client *controlclient.Clien
 	if err != nil {
 		return 0, false, err
 	}
+	defer func() {
+		_ = stream.Close()
+	}()
 
 	exitCode := 0
 	haveExitCode := false

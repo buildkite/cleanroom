@@ -387,6 +387,9 @@ func createSandboxWithProgress(
 	if err != nil {
 		return nil, "", err
 	}
+	defer func() {
+		_ = stream.Close()
+	}()
 
 	var resp *cleanroomv1.CreateSandboxResponse
 	for stream.Receive() {
