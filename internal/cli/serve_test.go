@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -11,6 +12,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/backend/darwinvz"
@@ -366,7 +368,12 @@ func TestDaemonInstallRestartRestartsRunningSystemdService(t *testing.T) {
 	})
 
 	stdout, _ := makeStdoutCapture(t)
-	cmd := &DaemonCommand{Action: "install", Restart: true}
+	listen := "unix://" + filepath.Join(tmpDir, "cleanroom.sock")
+	cmd := &DaemonCommand{
+		Action:  "install",
+		Restart: true,
+		Listen:  listen,
+	}
 	if err := cmd.Run(daemonInstallContext(tmpDir, stdout)); err != nil {
 		t.Fatalf("DaemonCommand.Run returned error: %v", err)
 	}
@@ -385,8 +392,8 @@ func TestDaemonInstallRestartRestartsRunningSystemdService(t *testing.T) {
 	if !strings.Contains(content, "Environment=XDG_CONFIG_HOME=/root/.config") {
 		t.Fatalf("expected XDG_CONFIG_HOME environment in systemd unit, got:\n%s", content)
 	}
-	if !strings.Contains(content, "--listen unix:///var/run/cleanroom/cleanroom.sock") {
-		t.Fatalf("expected explicit default --listen in unit, got:\n%s", content)
+	if !strings.Contains(content, "--listen "+listen) {
+		t.Fatalf("expected configured --listen in unit, got:\n%s", content)
 	}
 	if strings.Contains(content, "serve install") {
 		t.Fatalf("unit should run server mode, not install mode:\n%s", content)
@@ -550,11 +557,21 @@ func TestDaemonInstallDarwinUpdatesRunningUserServiceWithoutRestart(t *testing.T
 	serveInstallGOOS = "darwin"
 	serveInstallUserHomeDir = func() (string, error) { return tmpDir, nil }
 	serveInstallExecutablePath = func() (string, error) { return "/Users/lachlan/bin/cleanroom", nil }
+	loaded := true
 	serveInstallRunCommandOutput = func(name string, args ...string) (string, error) {
+		if !loaded {
+			return "", &exec.ExitError{ProcessState: &os.ProcessState{}}
+		}
 		return "state = running\n", nil
 	}
 	var calls [][]string
 	serveInstallRunCommand = func(name string, args ...string) error {
+		if len(args) > 0 && args[0] == "bootout" {
+			loaded = false
+		}
+		if len(args) > 0 && args[0] == "bootstrap" {
+			loaded = true
+		}
 		calls = append(calls, append([]string{name}, args...))
 		return nil
 	}
@@ -612,11 +629,21 @@ func TestDaemonInstallDarwinRestartBootsOutAndKickstartsRunningUserService(t *te
 	serveInstallGOOS = "darwin"
 	serveInstallUserHomeDir = func() (string, error) { return tmpDir, nil }
 	serveInstallExecutablePath = func() (string, error) { return "/Users/lachlan/bin/cleanroom", nil }
+	loaded := true
 	serveInstallRunCommandOutput = func(name string, args ...string) (string, error) {
+		if !loaded {
+			return "", &exec.ExitError{ProcessState: &os.ProcessState{}}
+		}
 		return "state = running\n", nil
 	}
 	var calls [][]string
 	serveInstallRunCommand = func(name string, args ...string) error {
+		if len(args) > 0 && args[0] == "bootout" {
+			loaded = false
+		}
+		if len(args) > 0 && args[0] == "bootstrap" {
+			loaded = true
+		}
 		calls = append(calls, append([]string{name}, args...))
 		return nil
 	}
@@ -631,7 +658,11 @@ func TestDaemonInstallDarwinRestartBootsOutAndKickstartsRunningUserService(t *te
 	})
 
 	stdout, _ := makeStdoutCapture(t)
-	cmd := &DaemonCommand{Action: "install", Restart: true}
+	cmd := &DaemonCommand{
+		Action:  "install",
+		Restart: true,
+		Listen:  "unix://" + filepath.Join(tmpDir, "cleanroom.sock"),
+	}
 	if err := cmd.Run(daemonInstallContext(tmpDir, stdout)); err != nil {
 		t.Fatalf("DaemonCommand.Run returned error: %v", err)
 	}
@@ -1461,11 +1492,21 @@ func TestDaemonRestartLaunchdRebootstrapsRunningUserService(t *testing.T) {
 	serveInstallEUID = func() int { return 501 }
 	serveInstallUID = func() int { return 501 }
 	serveInstallUserHomeDir = func() (string, error) { return tmpDir, nil }
+	loaded := true
 	serveInstallRunCommandOutput = func(name string, args ...string) (string, error) {
+		if !loaded {
+			return "", &exec.ExitError{ProcessState: &os.ProcessState{}}
+		}
 		return "state = running\n", nil
 	}
 	var calls [][]string
 	serveInstallRunCommand = func(name string, args ...string) error {
+		if len(args) > 0 && args[0] == "bootout" {
+			loaded = false
+		}
+		if len(args) > 0 && args[0] == "bootstrap" {
+			loaded = true
+		}
 		calls = append(calls, append([]string{name}, args...))
 		return nil
 	}
@@ -1561,6 +1602,105 @@ func TestDaemonRestartLaunchdForceBootstrapsStoppedUserService(t *testing.T) {
 	}
 	if !strings.Contains(out, "manager=launchd") {
 		t.Fatalf("expected manager=launchd, got: %s", out)
+	}
+}
+
+func TestWaitForLaunchdBootoutWaitsForActiveSocketToClose(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("/tmp", "cleanroom-launchd-*")
+	if err != nil {
+		t.Fatalf("mktemp short dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tmpDir) })
+	plistPath := filepath.Join(tmpDir, "cleanroom.plist")
+	socketPath := filepath.Join(tmpDir, "cleanroom.sock")
+	if err := os.WriteFile(plistPath, []byte(renderLaunchdService("/usr/local/bin/cleanroom", []string{"serve", "--listen", "unix://" + socketPath})), 0o644); err != nil {
+		t.Fatalf("write plist: %v", err)
+	}
+
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen on socket: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = listener.Close()
+		_ = os.Remove(socketPath)
+	})
+
+	prevRunCommandOutput := serveInstallRunCommandOutput
+	prevSleep := serveInstallSleep
+	prevAttempts := serveInstallWaitAttempts
+	prevPollInterval := serveInstallWaitPollInterval
+	serveInstallRunCommandOutput = func(name string, args ...string) (string, error) {
+		return "", &exec.ExitError{ProcessState: &os.ProcessState{}}
+	}
+	sleepCalls := 0
+	serveInstallSleep = func(time.Duration) {
+		sleepCalls++
+		if err := listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			t.Fatalf("close socket listener: %v", err)
+		}
+	}
+	serveInstallWaitAttempts = 3
+	serveInstallWaitPollInterval = 0
+	t.Cleanup(func() {
+		serveInstallRunCommandOutput = prevRunCommandOutput
+		serveInstallSleep = prevSleep
+		serveInstallWaitAttempts = prevAttempts
+		serveInstallWaitPollInterval = prevPollInterval
+	})
+
+	if err := waitForLaunchdBootout("gui/501/"+launchdServiceName, plistPath); err != nil {
+		t.Fatalf("waitForLaunchdBootout returned error: %v", err)
+	}
+	if sleepCalls == 0 {
+		t.Fatal("expected waitForLaunchdBootout to wait for active socket shutdown")
+	}
+}
+
+func TestWaitForLaunchdBootoutIgnoresStaleSocketFile(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("/tmp", "cleanroom-launchd-*")
+	if err != nil {
+		t.Fatalf("mktemp short dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tmpDir) })
+	plistPath := filepath.Join(tmpDir, "cleanroom.plist")
+	socketPath := filepath.Join(tmpDir, "cleanroom.sock")
+	if err := os.WriteFile(plistPath, []byte(renderLaunchdService("/usr/local/bin/cleanroom", []string{"serve", "--listen", "unix://" + socketPath})), 0o644); err != nil {
+		t.Fatalf("write plist: %v", err)
+	}
+
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen on socket: %v", err)
+	}
+	if err := listener.Close(); err != nil {
+		t.Fatalf("close socket listener: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(socketPath) })
+
+	prevRunCommandOutput := serveInstallRunCommandOutput
+	prevSleep := serveInstallSleep
+	prevAttempts := serveInstallWaitAttempts
+	prevPollInterval := serveInstallWaitPollInterval
+	serveInstallRunCommandOutput = func(name string, args ...string) (string, error) {
+		return "", &exec.ExitError{ProcessState: &os.ProcessState{}}
+	}
+	sleepCalls := 0
+	serveInstallSleep = func(time.Duration) { sleepCalls++ }
+	serveInstallWaitAttempts = 2
+	serveInstallWaitPollInterval = 0
+	t.Cleanup(func() {
+		serveInstallRunCommandOutput = prevRunCommandOutput
+		serveInstallSleep = prevSleep
+		serveInstallWaitAttempts = prevAttempts
+		serveInstallWaitPollInterval = prevPollInterval
+	})
+
+	if err := waitForLaunchdBootout("gui/501/"+launchdServiceName, plistPath); err != nil {
+		t.Fatalf("waitForLaunchdBootout returned error: %v", err)
+	}
+	if sleepCalls != 0 {
+		t.Fatal("expected stale socket file not to block launchd bootout wait")
 	}
 }
 

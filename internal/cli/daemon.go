@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/backend/darwinvz"
@@ -78,6 +79,9 @@ var (
 	serveInstallRunCommandOutput = runServeInstallCommandOutput
 	serveInstallSystemdUnitPath  = "/etc/systemd/system/" + systemdServiceName
 	serveInstallLaunchdPath      = "/Library/LaunchDaemons/" + launchdServiceName + ".plist"
+	serveInstallSleep            = time.Sleep
+	serveInstallWaitAttempts     = 50
+	serveInstallWaitPollInterval = 100 * time.Millisecond
 )
 
 func (s *DaemonCommand) Run(ctx *runtimeContext) error {

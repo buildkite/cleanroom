@@ -6,9 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
+
+	"github.com/buildkite/cleanroom/internal/endpoint"
 )
 
 func uninstallLaunchdDaemon(stdout io.Writer) error {
@@ -204,6 +208,9 @@ func restartLaunchdDaemonInDomain(stdout io.Writer, servicePath, domain string, 
 		if err := serveInstallRunCommand("launchctl", "bootout", target); err != nil && !isExitError(err) {
 			return fmt.Errorf("bootout launchd service %s: %w", launchdServiceName, err)
 		}
+		if err := waitForLaunchdBootout(target, servicePath); err != nil {
+			return err
+		}
 	}
 	if err := serveInstallRunCommand("launchctl", "enable", target); err != nil {
 		return fmt.Errorf("enable launchd service %s: %w", launchdServiceName, err)
@@ -335,6 +342,53 @@ func launchdConfiguredListenEndpoint(plistPath string) (string, error) {
 		}
 	}
 	return "", nil
+}
+
+func waitForLaunchdBootout(target, servicePath string) error {
+	socketPath := launchdConfiguredUnixSocketPath(servicePath)
+	for attempt := 0; attempt < serveInstallWaitAttempts; attempt++ {
+		loaded, _, err := launchdServiceStatus(target)
+		if err != nil {
+			return err
+		}
+
+		if !loaded && !launchdSocketAcceptsConnections(socketPath) {
+			return nil
+		}
+		if attempt+1 < serveInstallWaitAttempts {
+			serveInstallSleep(serveInstallWaitPollInterval)
+		}
+	}
+
+	if socketPath != "" {
+		return fmt.Errorf("timed out waiting for launchd service %s to stop and release %s", launchdServiceName, socketPath)
+	}
+	return fmt.Errorf("timed out waiting for launchd service %s to stop", launchdServiceName)
+}
+
+func launchdSocketAcceptsConnections(socketPath string) bool {
+	if strings.TrimSpace(socketPath) == "" {
+		return false
+	}
+
+	conn, err := net.DialTimeout("unix", socketPath, 25*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
+}
+
+func launchdConfiguredUnixSocketPath(servicePath string) string {
+	value, err := launchdConfiguredListenEndpoint(servicePath)
+	if err != nil {
+		return ""
+	}
+	ep, err := endpoint.ResolveListen(value)
+	if err != nil || ep.Scheme != "unix" {
+		return ""
+	}
+	return ep.Address
 }
 
 func launchdProgramArguments(plistContent []byte) ([]string, error) {
@@ -496,6 +550,9 @@ func installLaunchdDaemonInDomain(stdout io.Writer, executablePath string, args 
 	if loaded {
 		if err := serveInstallRunCommand("launchctl", "bootout", target); err != nil && !isExitError(err) {
 			return fmt.Errorf("bootout launchd service %s: %w", launchdServiceName, err)
+		}
+		if err := waitForLaunchdBootout(target, servicePath); err != nil {
+			return err
 		}
 	}
 	if err := serveInstallRunCommand("launchctl", "enable", target); err != nil {
