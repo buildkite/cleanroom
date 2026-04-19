@@ -622,6 +622,89 @@ func TestServiceEmitsSandboxAndExecutionMetrics(t *testing.T) {
 	}, 1)
 }
 
+func TestServiceSandboxCreateMetricsTrackWorkspaceCacheFailureSource(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	reader := sdkmetric.NewManualReader()
+	meterProvider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	tracerProvider := trace.NewTracerProvider()
+	defer func() {
+		_ = meterProvider.Shutdown(context.Background())
+		_ = tracerProvider.Shutdown(context.Background())
+	}()
+
+	obs, err := observability.NewWithProviders(tracerProvider, meterProvider)
+	if err != nil {
+		t.Fatalf("NewWithProviders returned error: %v", err)
+	}
+
+	store := newMemorySnapshotStore()
+	runCalls := 0
+	adapter := &stubAdapter{
+		createSnapshotFn: func(_ context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
+			return &backend.SnapshotResult{StorageRef: "/snapshots/" + req.SnapshotID + ".ext4"}, nil
+		},
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
+			runCalls++
+			result := &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, LaunchedVM: true, Message: "ok"}
+			if runCalls == 3 {
+				result.ExitCode = 1
+				result.Message = "dependency bootstrap failed"
+				result.Stderr = "dependency bootstrap failed\n"
+			}
+			return result, nil
+		},
+	}
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"go.mod": "module example.com/test\n\ngo 1.26.2\n",
+		"go.sum": "example.com/test v0.0.0 h1:abc123\n",
+	})
+	svc := newTestServiceWithSnapshotStore(adapter, store)
+	svc.Observability = obs
+	svc.RepositoryStore = mirrors
+
+	req := &cleanroomv1.CreateSandboxRequest{
+		Policy:             testRepositoryDependencyPolicy(),
+		RepositoryCheckout: repositoryCheckout,
+	}
+	if _, err := svc.CreateSandbox(context.Background(), req); err != nil {
+		t.Fatalf("first CreateSandbox returned error: %v", err)
+	}
+
+	records, err := svc.CacheStore.List(context.Background())
+	if err != nil {
+		t.Fatalf("List cache records returned error: %v", err)
+	}
+	for _, record := range records {
+		if record.Stage != "dependency" {
+			continue
+		}
+		if err := svc.CacheStore.Delete(context.Background(), record.Stage, record.CacheKey); err != nil {
+			t.Fatalf("Delete dependency cache record returned error: %v", err)
+		}
+	}
+
+	_, err = svc.CreateSandbox(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected second CreateSandbox to fail during dependency bootstrap")
+	}
+	if !strings.Contains(err.Error(), "bootstrap dependency stage") {
+		t.Fatalf("unexpected CreateSandbox error: %v", err)
+	}
+
+	metrics := collectResourceMetrics(t, reader)
+	requireHistogramMetricCount(t, metrics, "cleanroom_sandbox_create_duration_seconds", map[string]string{
+		"backend": "firecracker",
+		"source":  "fresh",
+		"outcome": "succeeded",
+	}, 1)
+	requireHistogramMetricCount(t, metrics, "cleanroom_sandbox_create_duration_seconds", map[string]string{
+		"backend": "firecracker",
+		"source":  "workspace_cache",
+		"outcome": "failed",
+	}, 1)
+}
+
 func testRepositoryMirror(t *testing.T, files map[string]string) (*stubRepositoryMirrorStore, *cleanroomv1.RepositoryCheckout) {
 	t.Helper()
 

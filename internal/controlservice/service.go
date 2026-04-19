@@ -185,16 +185,14 @@ func (s *Service) serviceMetrics() *observability.ServiceMetrics {
 	return s.metrics
 }
 
-func sandboxCreateSourceMetricValue(snapshotID string, resp *cleanroomv1.CreateSandboxResponse) string {
-	if resp != nil {
-		switch strings.TrimSpace(resp.GetSourceKind()) {
-		case "snapshot":
-			return "snapshot"
-		case "workspace stage cache":
-			return "workspace_cache"
-		case "dependency stage cache":
-			return "dependency_cache"
-		}
+func sandboxCreateSourceMetricValue(snapshotID, sourceKind string) string {
+	switch strings.TrimSpace(sourceKind) {
+	case "snapshot":
+		return "snapshot"
+	case "workspace stage cache":
+		return "workspace_cache"
+	case "dependency stage cache":
+		return "dependency_cache"
 	}
 	if strings.TrimSpace(snapshotID) != "" {
 		return "snapshot"
@@ -245,6 +243,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	}
 	createStarted := s.clock().Now()
 	snapshotID := strings.TrimSpace(req.GetSnapshotId())
+	metricSourceKind := ""
 	changeset := repositoryChangesetFromProto(req.GetRepositoryChangeset())
 	backendName := resolveBackendName(strings.TrimSpace(req.GetBackend()), s.Config.DefaultBackend)
 	ctx, span := s.Observability.Tracer("github.com/buildkite/cleanroom/internal/controlservice").Start(
@@ -273,7 +272,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 			metrics.RecordSandboxCreate(
 				ctx,
 				backendName,
-				sandboxCreateSourceMetricValue(snapshotID, resp),
+				sandboxCreateSourceMetricValue(snapshotID, metricSourceKind),
 				map[bool]string{true: "failed", false: "succeeded"}[err != nil],
 				s.clock().Now().Sub(createStarted),
 			)
@@ -385,6 +384,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 						return err
 					})
 					if restoreErr == nil {
+						metricSourceKind = "dependency stage cache"
 						if cacheStore, err := s.cacheStoreOrErr(); err == nil {
 							if err := cacheStore.Touch(ctx, record.Stage, record.CacheKey); err != nil {
 								s.logDependencyStageWarning("touch dependency stage cache", "", err)
@@ -431,6 +431,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 					return err
 				})
 				if restoreErr == nil {
+					metricSourceKind = "workspace stage cache"
 					if cacheStore, err := s.cacheStoreOrErr(); err == nil {
 						if err := cacheStore.Touch(ctx, record.Stage, record.CacheKey); err != nil {
 							s.logWorkspaceStageWarning("touch workspace stage cache", "", err)
