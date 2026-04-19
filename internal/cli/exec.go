@@ -29,6 +29,7 @@ type ExecCommand struct {
 	Env            []string `short:"e" name:"env" help:"Set guest environment variables; use KEY to inherit from the local environment or KEY=VALUE to set an explicit value"`
 	NoStdin        bool     `short:"n" name:"no-stdin" aliases:"stdin-eof" help:"Close stdin immediately instead of attaching it"`
 	PrintSandboxID bool     `name:"print-sandbox-id" help:"Print resolved sandbox_id=<id> to stderr before streaming output"`
+	PrintTraceID   bool     `name:"print-trace-id" help:"Print trace_id=<id> to stderr after a successful execution when available"`
 
 	LaunchSeconds int64 `help:"VM boot/guest-agent readiness timeout in seconds"`
 
@@ -42,15 +43,23 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 
 	sandboxID := ""
 	executionID := ""
+	commandArgs := executionCommandArgs(e.Command)
+	rootAttrs := []attribute.KeyValue{
+		attribute.String("cleanroom.backend.requested", strings.TrimSpace(e.Backend)),
+		attribute.Bool("cleanroom.keep_sandbox", e.Keep),
+		attribute.Bool("cleanroom.stdin.disabled", e.NoStdin),
+		attribute.Int("cleanroom.command.argc", len(commandArgs)),
+	}
+	if commandName := executionCommandName(commandArgs); commandName != "" {
+		rootAttrs = append(rootAttrs,
+			attribute.String("cleanroom.command.name", commandName),
+			attribute.String("cleanroom.command.summary", executionCommandSummary(commandArgs)),
+		)
+	}
 	rootCtx, rootSpan := ctx.Observability.Tracer("github.com/buildkite/cleanroom/internal/cli").Start(
 		context.Background(),
 		"cleanroom.exec",
-		trace.WithAttributes(
-			attribute.String("cleanroom.backend.requested", strings.TrimSpace(e.Backend)),
-			attribute.Bool("cleanroom.keep_sandbox", e.Keep),
-			attribute.Bool("cleanroom.stdin.disabled", e.NoStdin),
-			attribute.Int("cleanroom.command.argc", len(e.Command)),
-		),
+		trace.WithAttributes(rootAttrs...),
 	)
 	traceID := traceIDFromContext(rootCtx)
 	defer func() {
@@ -155,6 +164,18 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 		}
 		return nil
 	}
+	defer func() {
+		if runErr != nil || !e.PrintTraceID {
+			return
+		}
+		if err := printTraceID(); err != nil {
+			if runErr == nil {
+				runErr = err
+				return
+			}
+			runErr = errors.Join(runErr, err)
+		}
+	}()
 	defer func() {
 		if !createdSandbox || !e.Keep {
 			return

@@ -151,6 +151,51 @@ func traceIDFromContext(ctx context.Context) string {
 	return spanContext.TraceID().String()
 }
 
+func executionCommandArgs(command []string) []string {
+	args := make([]string, 0, len(command))
+	for _, arg := range command {
+		trimmed := strings.TrimSpace(arg)
+		if trimmed == "" {
+			continue
+		}
+		if len(args) == 0 && trimmed == "--" {
+			continue
+		}
+		args = append(args, trimmed)
+	}
+	return args
+}
+
+func executionCommandName(command []string) string {
+	for _, arg := range executionCommandArgs(command) {
+		if arg != "" {
+			return arg
+		}
+	}
+	return ""
+}
+
+func executionCommandSummary(command []string) string {
+	args := executionCommandArgs(command)
+	parts := make([]string, 0, min(3, len(args)))
+	truncated := false
+	for _, arg := range args {
+		if len(parts) == 3 {
+			truncated = true
+			break
+		}
+		parts = append(parts, arg)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	summary := strings.Join(parts, " ")
+	if truncated {
+		summary += " ..."
+	}
+	return summary
+}
+
 func validateExecutionSandboxArgs(chdir, existingSandboxID, fromSnapshot string, keep bool, repositoryOverride repositoryOverrideFlags, changesetFlags repositoryChangesetFlags) error {
 	sandboxID := strings.TrimSpace(existingSandboxID)
 	snapshotID := strings.TrimSpace(fromSnapshot)

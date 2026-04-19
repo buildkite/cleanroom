@@ -48,14 +48,26 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) (runErr error) {
 
 	sandboxID := ""
 	executionID := ""
+	command := append([]string(nil), c.Command...)
+	if len(command) == 0 {
+		command = []string{"sh"}
+	}
+	commandArgs := executionCommandArgs(command)
+	rootAttrs := []attribute.KeyValue{
+		attribute.String("cleanroom.backend.requested", strings.TrimSpace(c.Backend)),
+		attribute.Bool("cleanroom.keep_sandbox", c.Keep),
+		attribute.Int("cleanroom.command.argc", len(commandArgs)),
+	}
+	if commandName := executionCommandName(commandArgs); commandName != "" {
+		rootAttrs = append(rootAttrs,
+			attribute.String("cleanroom.command.name", commandName),
+			attribute.String("cleanroom.command.summary", executionCommandSummary(commandArgs)),
+		)
+	}
 	rootCtx, rootSpan := ctx.Observability.Tracer("github.com/buildkite/cleanroom/internal/cli").Start(
 		context.Background(),
 		"cleanroom.console",
-		trace.WithAttributes(
-			attribute.String("cleanroom.backend.requested", strings.TrimSpace(c.Backend)),
-			attribute.Bool("cleanroom.keep_sandbox", c.Keep),
-			attribute.Int("cleanroom.command.argc", len(c.Command)),
-		),
+		trace.WithAttributes(rootAttrs...),
 	)
 	traceID := traceIDFromContext(rootCtx)
 	defer func() {
@@ -93,10 +105,6 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) (runErr error) {
 		return err
 	}
 
-	command := append([]string(nil), c.Command...)
-	if len(command) == 0 {
-		command = []string{"sh"}
-	}
 	logger.Debug("starting interactive console",
 		"host", host,
 		"backend", c.Backend,

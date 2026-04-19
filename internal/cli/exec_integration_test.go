@@ -24,9 +24,11 @@ import (
 	"github.com/buildkite/cleanroom/internal/endpoint"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/interactivequic"
+	"github.com/buildkite/cleanroom/internal/observability"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 	"github.com/buildkite/cleanroom/internal/snapshotstore"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
 type integrationAdapter struct {
@@ -368,6 +370,21 @@ func runExecWithCapture(cmd ExecCommand, ctx runtimeContext) execOutcome {
 	}, &emptyStdin, ctx)
 }
 
+func newTestObservability(t *testing.T) *observability.Runtime {
+	t.Helper()
+
+	tracerProvider := sdktrace.NewTracerProvider()
+	t.Cleanup(func() {
+		_ = tracerProvider.Shutdown(context.Background())
+	})
+
+	obs, err := observability.NewWithTracerProvider(tracerProvider)
+	if err != nil {
+		t.Fatalf("NewWithTracerProvider returned error: %v", err)
+	}
+	return obs
+}
+
 func withTestSignalChannel(t *testing.T) chan os.Signal {
 	t.Helper()
 
@@ -411,6 +428,14 @@ func parseSandboxID(stderr string) string {
 
 func parseExecutionID(stderr string) string {
 	match := regexp.MustCompile(`execution_id="?([^"\s]+)"?`).FindStringSubmatch(stderr)
+	if len(match) < 2 {
+		return ""
+	}
+	return strings.TrimSpace(match[1])
+}
+
+func parseTraceID(stderr string) string {
+	match := regexp.MustCompile(`trace_id="?([^"\s]+)"?`).FindStringSubmatch(stderr)
 	if len(match) < 2 {
 		return ""
 	}
@@ -1318,6 +1343,63 @@ func TestExecIntegrationPrintSandboxIDFlag(t *testing.T) {
 	}
 	if strings.Contains(outcome.stdout, "sandbox_id=") {
 		t.Fatalf("sandbox_id marker must not be written to stdout: %q", outcome.stdout)
+	}
+}
+
+func TestExecIntegrationPrintTraceIDFlag(t *testing.T) {
+	host, _ := startIntegrationServer(t, &integrationAdapter{})
+	cwd := t.TempDir()
+	outcome := runExecWithCapture(ExecCommand{
+		clientFlags:  clientFlags{Host: host},
+		Chdir:        cwd,
+		PrintTraceID: true,
+		Command:      []string{"echo", "ok"},
+	}, runtimeContext{
+		CWD:           cwd,
+		Loader:        integrationLoader{},
+		Observability: newTestObservability(t),
+	})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err != nil {
+		t.Fatalf("ExecCommand.Run returned error: %v", outcome.err)
+	}
+	traceID := parseTraceID(outcome.stderr)
+	if traceID == "" {
+		t.Fatalf("missing trace_id in stderr output: %q", outcome.stderr)
+	}
+	if got, want := strings.Count(outcome.stderr, "trace_id="), 1; got != want {
+		t.Fatalf("expected one trace_id marker in stderr, got %d: %q", got, outcome.stderr)
+	}
+	if strings.Contains(outcome.stdout, "trace_id=") {
+		t.Fatalf("trace_id marker must not be written to stdout: %q", outcome.stdout)
+	}
+	if !strings.HasSuffix(outcome.stderr, "trace_id="+traceID+"\n") {
+		t.Fatalf("expected trace_id to be the final stderr line, got %q", outcome.stderr)
+	}
+}
+
+func TestExecIntegrationOmitsTraceIDWithoutFlag(t *testing.T) {
+	host, _ := startIntegrationServer(t, &integrationAdapter{})
+	cwd := t.TempDir()
+	outcome := runExecWithCapture(ExecCommand{
+		clientFlags: clientFlags{Host: host},
+		Chdir:       cwd,
+		Command:     []string{"echo", "ok"},
+	}, runtimeContext{
+		CWD:           cwd,
+		Loader:        integrationLoader{},
+		Observability: newTestObservability(t),
+	})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err != nil {
+		t.Fatalf("ExecCommand.Run returned error: %v", outcome.err)
+	}
+	if strings.Contains(outcome.stderr, "trace_id=") {
+		t.Fatalf("trace_id marker must not be printed without --print-trace-id: %q", outcome.stderr)
 	}
 }
 

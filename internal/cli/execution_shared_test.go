@@ -84,6 +84,107 @@ func TestTraceIDFromContextReturnsTraceID(t *testing.T) {
 	}
 }
 
+func TestExecutionCommandName(t *testing.T) {
+	tests := []struct {
+		name    string
+		command []string
+		want    string
+	}{
+		{
+			name:    "empty command",
+			command: nil,
+			want:    "",
+		},
+		{
+			name:    "first non-empty arg",
+			command: []string{" ", "npm", "test"},
+			want:    "npm",
+		},
+		{
+			name:    "skips leading passthrough separator",
+			command: []string{"--", "echo", "hello world"},
+			want:    "echo",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := executionCommandName(tt.command); got != tt.want {
+				t.Fatalf("unexpected command name: got %q want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExecutionCommandSummary(t *testing.T) {
+	tests := []struct {
+		name    string
+		command []string
+		want    string
+	}{
+		{
+			name:    "empty command",
+			command: nil,
+			want:    "",
+		},
+		{
+			name:    "includes short command",
+			command: []string{"npm", "test"},
+			want:    "npm test",
+		},
+		{
+			name:    "trims blank args and truncates long command",
+			command: []string{" ", "bash", "-lc", "bundle exec rspec", "extra"},
+			want:    "bash -lc bundle exec rspec ...",
+		},
+		{
+			name:    "skips leading passthrough separator",
+			command: []string{"--", "echo", "hello world"},
+			want:    "echo hello world",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := executionCommandSummary(tt.command); got != tt.want {
+				t.Fatalf("unexpected command summary: got %q want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExecutionCommandArgs(t *testing.T) {
+	tests := []struct {
+		name    string
+		command []string
+		want    []string
+	}{
+		{
+			name:    "empty command",
+			command: nil,
+			want:    []string{},
+		},
+		{
+			name:    "drops leading passthrough separator",
+			command: []string{"--", "echo", "hello world"},
+			want:    []string{"echo", "hello world"},
+		},
+		{
+			name:    "preserves guest separator after command",
+			command: []string{"--", "grep", "--", "needle", "file.txt"},
+			want:    []string{"grep", "--", "needle", "file.txt"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := executionCommandArgs(tt.command); !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("unexpected command args: got %v want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestWriteTraceID(t *testing.T) {
 	var stderr bytes.Buffer
 

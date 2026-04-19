@@ -54,6 +54,8 @@ execution diagnostics.
 
 - `cleanroom exec` and `cleanroom console` print `sandbox_id`, `execution_id`,
   and `trace_id` on failure when available.
+- `cleanroom exec --print-trace-id` also prints `trace_id` after a successful
+  execution when available.
 - When `url_template` is configured, failure footers also print `trace_url`.
 - `cleanroom execution inspect <execution-id>` shows execution status,
   retained stdout and stderr, `trace_id`, optional `trace_url`, and retained
