@@ -10,6 +10,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/gateway"
 	"github.com/buildkite/cleanroom/internal/policy"
+	"go.opentelemetry.io/otel/metric"
 )
 
 type Adapter struct {
@@ -17,6 +18,7 @@ type Adapter struct {
 	GatewayPort      int
 	GatewayBridgeURL string
 	GatewayRoutes    gateway.ProxyRoutes
+	MeterProvider    metric.MeterProvider
 
 	ConfiguredNetworkMode string
 }
