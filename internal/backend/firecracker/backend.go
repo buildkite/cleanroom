@@ -2352,7 +2352,7 @@ func gatewayEnvVars(instance *sandboxInstance, gwPort int) []string {
 	if instance == nil {
 		return nil
 	}
-	return gateway.GitProxyEnvVars(instance.Policy, gwPort, "")
+	return gateway.ProxyEnvVars(instance.Policy, gwPort, "")
 }
 
 func dockerServiceBootArgs(compiled *policy.CompiledPolicy, cfg backend.FirecrackerConfig) string {

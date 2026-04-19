@@ -29,6 +29,42 @@ func TestGatewayEnvVarsNoHTTPSHosts(t *testing.T) {
 	}
 }
 
+func TestGatewayEnvVarsAddsRubyGemsMirror(t *testing.T) {
+	t.Parallel()
+
+	p := &policy.CompiledPolicy{
+		Version:        1,
+		NetworkDefault: "deny",
+		Allow:          []policy.AllowRule{{Host: "rubygems.org", Ports: []int{443}}},
+	}
+	env := gatewayEnvVars(p, 8170, "token")
+	wantAppConfig := gateway.BundlerAppConfigEnvKey + "=" + gateway.BundlerAppConfigPath
+	wantMirror := gateway.BundlerRubyGemsMirrorEnvKey + "=http://" + gateway.GuestGatewayHostname + ":8170/rubygems/"
+	foundAppConfig := false
+	foundMirror := false
+	foundFallback := false
+	for _, entry := range env {
+		if entry == wantAppConfig {
+			foundAppConfig = true
+		}
+		if entry == wantMirror {
+			foundMirror = true
+		}
+		if entry == gateway.BundlerRubyGemsFallbackTimeoutEnvKey+"=0" {
+			foundFallback = true
+		}
+	}
+	if !foundAppConfig {
+		t.Fatalf("expected Bundler app config env %q in %v", wantAppConfig, env)
+	}
+	if !foundMirror {
+		t.Fatalf("expected rubyGems mirror env %q in %v", wantMirror, env)
+	}
+	if !foundFallback {
+		t.Fatalf("expected RubyGems fallback timeout env in %v", env)
+	}
+}
+
 func TestGatewayEnvVarsGeneratesGitRewriteAndHeader(t *testing.T) {
 	t.Parallel()
 	p := &policy.CompiledPolicy{
@@ -87,6 +123,36 @@ func TestGatewayGitProxyEnvVarsUsesFileHandleGatewayWithoutHeader(t *testing.T) 
 	}
 	if env[2] != "GIT_CONFIG_VALUE_0=https://github.com/" {
 		t.Fatalf("expected github rewrite value, got %s", env[2])
+	}
+}
+
+func TestGatewayGitProxyEnvVarsDefaultsEmptyModeToFileHandle(t *testing.T) {
+	t.Parallel()
+
+	p := &policy.CompiledPolicy{
+		Version:        1,
+		NetworkDefault: "deny",
+		Allow:          []policy.AllowRule{{Host: "rubygems.org", Ports: []int{443}}},
+	}
+	env := gatewayGitProxyEnvVars(p, "", 8170)
+	wantAppConfig := gateway.BundlerAppConfigEnvKey + "=" + gateway.BundlerAppConfigPath
+	wantMirror := gateway.BundlerRubyGemsMirrorEnvKey + "=http://" + gateway.GuestGatewayHostname + ":8170/rubygems/"
+	foundAppConfig := false
+	foundMirror := false
+	for _, entry := range env {
+		if entry == wantAppConfig {
+			foundAppConfig = true
+		}
+		if entry == wantMirror {
+			foundMirror = true
+			break
+		}
+	}
+	if !foundAppConfig {
+		t.Fatalf("expected Bundler app config env %q in %v", wantAppConfig, env)
+	}
+	if !foundMirror {
+		t.Fatalf("expected rubyGems mirror env %q in %v", wantMirror, env)
 	}
 }
 

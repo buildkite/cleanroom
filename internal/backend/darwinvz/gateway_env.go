@@ -1,8 +1,6 @@
 package darwinvz
 
 import (
-	"strings"
-
 	"github.com/buildkite/cleanroom/internal/gateway"
 	"github.com/buildkite/cleanroom/internal/policy"
 )
@@ -15,7 +13,7 @@ type gatewayRegistry interface {
 }
 
 func gatewayGitProxyEnvVars(compiled *policy.CompiledPolicy, networkMode string, gatewayPort int) []string {
-	if !strings.EqualFold(strings.TrimSpace(networkMode), darwinVZNetworkModeFileHandle) {
+	if darwinVZConfiguredOrDefaultNetworkMode(networkMode) != darwinVZNetworkModeFileHandle {
 		// darwin-vz only supports the file-handle guest gateway path.
 		return nil
 	}
@@ -23,5 +21,5 @@ func gatewayGitProxyEnvVars(compiled *policy.CompiledPolicy, networkMode string,
 }
 
 func gatewayEnvVars(compiled *policy.CompiledPolicy, gatewayPort int, scopeToken string) []string {
-	return gateway.GitProxyEnvVars(compiled, gatewayPort, scopeToken)
+	return gateway.ProxyEnvVars(compiled, gatewayPort, scopeToken)
 }

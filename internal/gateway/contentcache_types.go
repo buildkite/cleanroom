@@ -29,6 +29,15 @@ type ociHandlerEntry struct {
 	closer       io.Closer
 }
 
+type rubyGemsHandlerEntry struct {
+	handler      http.Handler
+	policyHost   string
+	policyPort   int
+	upstreamHost string
+	upstreamPort int
+	closer       io.Closer
+}
+
 // ContentCache holds the shared storage and protocol handlers.
 type ContentCache struct {
 	closer io.Closer
@@ -41,6 +50,8 @@ type ContentCache struct {
 	ociHandlers     map[string]ociHandlerEntry
 	buildOCIHandler ociHandlerFactory
 	resolveOCIRoute ociRouteResolver
+
+	rubyGems rubyGemsHandlerEntry
 }
 
 // Close releases resources held by the content cache.
@@ -57,6 +68,9 @@ func (c *ContentCache) Close() error {
 		}
 	}
 	c.ociMu.Unlock()
+	if c.rubyGems.closer != nil {
+		closers = append(closers, c.rubyGems.closer)
+	}
 
 	if c.closer != nil {
 		closers = append(closers, c.closer)
@@ -105,6 +119,28 @@ func (c *ContentCache) GitHandlerForHost(host string) (http.Handler, error) {
 // HasOCIHandler reports whether OCI caching is configured.
 func (c *ContentCache) HasOCIHandler() bool {
 	return c != nil && c.buildOCIHandler != nil
+}
+
+// HasRubyGemsHandler reports whether RubyGems caching is configured.
+func (c *ContentCache) HasRubyGemsHandler() bool {
+	return c != nil && c.rubyGems.handler != nil
+}
+
+// RubyGemsUpstream returns policy/upstream metadata for the configured
+// RubyGems upstream.
+func (c *ContentCache) RubyGemsUpstream() (string, int, string, int, error) {
+	if c == nil || c.rubyGems.handler == nil {
+		return "", 0, "", 0, errors.New("rubygems cache not configured")
+	}
+	return c.rubyGems.policyHost, c.rubyGems.policyPort, c.rubyGems.upstreamHost, c.rubyGems.upstreamPort, nil
+}
+
+// RubyGemsHandler returns the configured RubyGems cache handler.
+func (c *ContentCache) RubyGemsHandler() (http.Handler, error) {
+	if c == nil || c.rubyGems.handler == nil {
+		return nil, errors.New("rubygems cache not configured")
+	}
+	return c.rubyGems.handler, nil
 }
 
 // OCIUpstreamForPrefix returns policy/upstream metadata for the requested
@@ -272,6 +308,18 @@ func newGitContentCacheHTTPClient(credentials CredentialProvider) *http.Client {
 
 func newOCIContentCacheHTTPClient(credentials CredentialProvider) *http.Client {
 	client := newUpstreamContentCacheHTTPClient(credentials)
+	client.Transport = &policyValidatingRoundTripper{base: client.Transport}
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) == 0 {
+			return nil
+		}
+		return validateUpstreamTargetPolicy(req)
+	}
+	return client
+}
+
+func newRubyGemsContentCacheHTTPClient(_ CredentialProvider) *http.Client {
+	client := newUpstreamContentCacheHTTPClient(nil)
 	client.Transport = &policyValidatingRoundTripper{base: client.Transport}
 	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		if len(via) == 0 {

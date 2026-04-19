@@ -8,6 +8,7 @@ RUN apt-get update \
       build-essential \
       ca-certificates \
       curl \
+      default-libmysqlclient-dev \
       git \
       iproute2 \
       libffi-dev \
@@ -15,6 +16,7 @@ RUN apt-get update \
       libncurses-dev \
       libpq-dev \
       libreadline-dev \
+      libxml2-dev \
       libsqlite3-dev \
       libssl-dev \
       libyaml-dev \

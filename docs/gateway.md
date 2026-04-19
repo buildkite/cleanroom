@@ -18,6 +18,7 @@ Inside sandboxes, the shared gateway is exposed at
 |------|--------|---------|
 | `/git/` | Implemented | Cache-backed Git smart-HTTP route. `.git` remotes use embedded `content-cache`; non-cacheable paths fall back to Cleanroom's mirror-backed proxy. |
 | `/registry/` | Implemented | Cache-backed OCI Distribution route for allowlisted registries. |
+| `/rubygems/` | Implemented | Cache-backed RubyGems route for Bundler mirror traffic to `rubygems.org`. |
 | `/secrets/` | Reserved | Not implemented yet. |
 | `/meta/` | Reserved | Not implemented yet. |
 
@@ -84,6 +85,26 @@ Not wired yet:
 - guest-wide package-manager rewrites to `/registry/`
 - lockfile enforcement
 - non-OCI package-manager protocol handling
+
+## RubyGems route
+
+`/rubygems/` is backed by `content-cache`'s RubyGems handler. It serves the
+RubyGems Compact Index (`/versions`, `/info/<gem>`, `/names`), legacy specs
+metadata, and gem downloads while applying the sandbox allowlist to the
+upstream `rubygems.org` host before any upstream request is made.
+
+Current scope:
+
+- Bundler mirror traffic for the default `https://rubygems.org` source
+- Compact Index, legacy specs, and gem download requests
+- guest-side Bundler mirror environment injection when `rubygems.org` is
+  allowlisted
+
+Not wired yet:
+
+- generic `gem sources` rewrites for arbitrary RubyGems registries
+- lockfile enforcement
+- private RubyGems registry authentication flows
 
 ## Credentials
 
