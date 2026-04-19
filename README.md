@@ -112,7 +112,7 @@ You can also define per-execution setup that runs before each top-level command:
 ```yaml
 sandbox:
   dependencies:
-    command: [bundle, install]
+    command: bundle install
     key:
       files: [Gemfile.lock]
   run:
@@ -121,6 +121,8 @@ sandbox:
       bin/rails db:prepare
 ```
 
+`sandbox.dependencies.command` supports either a shell string or an argv sequence.
+Prefer the string form unless you specifically need exact argv semantics.
 `sandbox.run.before` always runs through `sh -lc`.
 
 Pre-create a long-running sandbox without running a command:
