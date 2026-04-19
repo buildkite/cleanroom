@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/backend/darwinvz"
@@ -366,7 +367,11 @@ func TestDaemonInstallRestartRestartsRunningSystemdService(t *testing.T) {
 	})
 
 	stdout, _ := makeStdoutCapture(t)
-	cmd := &DaemonCommand{Action: "install", Restart: true}
+	cmd := &DaemonCommand{
+		Action:  "install",
+		Restart: true,
+		Listen:  "unix://" + filepath.Join(tmpDir, "cleanroom.sock"),
+	}
 	if err := cmd.Run(daemonInstallContext(tmpDir, stdout)); err != nil {
 		t.Fatalf("DaemonCommand.Run returned error: %v", err)
 	}
@@ -550,11 +555,21 @@ func TestDaemonInstallDarwinUpdatesRunningUserServiceWithoutRestart(t *testing.T
 	serveInstallGOOS = "darwin"
 	serveInstallUserHomeDir = func() (string, error) { return tmpDir, nil }
 	serveInstallExecutablePath = func() (string, error) { return "/Users/lachlan/bin/cleanroom", nil }
+	loaded := true
 	serveInstallRunCommandOutput = func(name string, args ...string) (string, error) {
+		if !loaded {
+			return "", &exec.ExitError{ProcessState: &os.ProcessState{}}
+		}
 		return "state = running\n", nil
 	}
 	var calls [][]string
 	serveInstallRunCommand = func(name string, args ...string) error {
+		if len(args) > 0 && args[0] == "bootout" {
+			loaded = false
+		}
+		if len(args) > 0 && args[0] == "bootstrap" {
+			loaded = true
+		}
 		calls = append(calls, append([]string{name}, args...))
 		return nil
 	}
@@ -612,11 +627,21 @@ func TestDaemonInstallDarwinRestartBootsOutAndKickstartsRunningUserService(t *te
 	serveInstallGOOS = "darwin"
 	serveInstallUserHomeDir = func() (string, error) { return tmpDir, nil }
 	serveInstallExecutablePath = func() (string, error) { return "/Users/lachlan/bin/cleanroom", nil }
+	loaded := true
 	serveInstallRunCommandOutput = func(name string, args ...string) (string, error) {
+		if !loaded {
+			return "", &exec.ExitError{ProcessState: &os.ProcessState{}}
+		}
 		return "state = running\n", nil
 	}
 	var calls [][]string
 	serveInstallRunCommand = func(name string, args ...string) error {
+		if len(args) > 0 && args[0] == "bootout" {
+			loaded = false
+		}
+		if len(args) > 0 && args[0] == "bootstrap" {
+			loaded = true
+		}
 		calls = append(calls, append([]string{name}, args...))
 		return nil
 	}
@@ -631,7 +656,11 @@ func TestDaemonInstallDarwinRestartBootsOutAndKickstartsRunningUserService(t *te
 	})
 
 	stdout, _ := makeStdoutCapture(t)
-	cmd := &DaemonCommand{Action: "install", Restart: true}
+	cmd := &DaemonCommand{
+		Action:  "install",
+		Restart: true,
+		Listen:  "unix://" + filepath.Join(tmpDir, "cleanroom.sock"),
+	}
 	if err := cmd.Run(daemonInstallContext(tmpDir, stdout)); err != nil {
 		t.Fatalf("DaemonCommand.Run returned error: %v", err)
 	}
@@ -1461,11 +1490,21 @@ func TestDaemonRestartLaunchdRebootstrapsRunningUserService(t *testing.T) {
 	serveInstallEUID = func() int { return 501 }
 	serveInstallUID = func() int { return 501 }
 	serveInstallUserHomeDir = func() (string, error) { return tmpDir, nil }
+	loaded := true
 	serveInstallRunCommandOutput = func(name string, args ...string) (string, error) {
+		if !loaded {
+			return "", &exec.ExitError{ProcessState: &os.ProcessState{}}
+		}
 		return "state = running\n", nil
 	}
 	var calls [][]string
 	serveInstallRunCommand = func(name string, args ...string) error {
+		if len(args) > 0 && args[0] == "bootout" {
+			loaded = false
+		}
+		if len(args) > 0 && args[0] == "bootstrap" {
+			loaded = true
+		}
 		calls = append(calls, append([]string{name}, args...))
 		return nil
 	}
@@ -1561,6 +1600,48 @@ func TestDaemonRestartLaunchdForceBootstrapsStoppedUserService(t *testing.T) {
 	}
 	if !strings.Contains(out, "manager=launchd") {
 		t.Fatalf("expected manager=launchd, got: %s", out)
+	}
+}
+
+func TestWaitForLaunchdBootoutWaitsForSocketRemoval(t *testing.T) {
+	tmpDir := t.TempDir()
+	plistPath := filepath.Join(tmpDir, "cleanroom.plist")
+	socketPath := filepath.Join(tmpDir, "cleanroom.sock")
+	if err := os.WriteFile(plistPath, []byte(renderLaunchdService("/usr/local/bin/cleanroom", []string{"serve", "--listen", "unix://" + socketPath})), 0o644); err != nil {
+		t.Fatalf("write plist: %v", err)
+	}
+	if err := os.WriteFile(socketPath, []byte(""), 0o644); err != nil {
+		t.Fatalf("write socket placeholder: %v", err)
+	}
+
+	prevRunCommandOutput := serveInstallRunCommandOutput
+	prevSleep := serveInstallSleep
+	prevAttempts := serveInstallWaitAttempts
+	prevPollInterval := serveInstallWaitPollInterval
+	serveInstallRunCommandOutput = func(name string, args ...string) (string, error) {
+		return "", &exec.ExitError{ProcessState: &os.ProcessState{}}
+	}
+	sleepCalls := 0
+	serveInstallSleep = func(time.Duration) {
+		sleepCalls++
+		if err := os.Remove(socketPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("remove socket placeholder: %v", err)
+		}
+	}
+	serveInstallWaitAttempts = 3
+	serveInstallWaitPollInterval = 0
+	t.Cleanup(func() {
+		serveInstallRunCommandOutput = prevRunCommandOutput
+		serveInstallSleep = prevSleep
+		serveInstallWaitAttempts = prevAttempts
+		serveInstallWaitPollInterval = prevPollInterval
+	})
+
+	if err := waitForLaunchdBootout("gui/501/"+launchdServiceName, plistPath); err != nil {
+		t.Fatalf("waitForLaunchdBootout returned error: %v", err)
+	}
+	if sleepCalls == 0 {
+		t.Fatal("expected waitForLaunchdBootout to wait for socket removal")
 	}
 }
 
