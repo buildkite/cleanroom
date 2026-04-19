@@ -176,3 +176,33 @@ correlation fields used elsewhere:
 - `reason_code`
 - `component`
 - `subsystem`
+
+### Cache observability
+
+Layered-cache stage names are appropriate in observability because they help
+operators understand cache lookup, restore, publish, and fallback behaviour.
+They should remain telemetry vocabulary, not primary user-facing product nouns.
+
+The cache-stage values are:
+
+- `runtime`
+- `workspace`
+- `dependency`
+
+Recommended cache telemetry attributes are:
+
+- `cleanroom.cache.stage=runtime|workspace|dependency`
+- `cleanroom.cache.operation=lookup|restore|publish|invalidate`
+- `cleanroom.cache.result=hit|miss|restored|published|fallback|failed`
+
+Use these fields in traces and structured logs for cache-specific work. Use
+them in metrics only for cache-specific series, not for generic execution
+metrics.
+
+Recommended cache-specific metric naming is:
+
+- `cleanroom_cache_operation_total{stage,operation,result}`
+- `cleanroom_cache_operation_duration_seconds{stage,operation}`
+
+Do not put cache keys, storage refs, snapshot IDs, execution IDs, sandbox IDs,
+or image digests into metric labels.
