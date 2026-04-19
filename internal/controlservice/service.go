@@ -2091,8 +2091,8 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 			}
 			clearExecutionRuntimeHandlesLocked(ex)
 			finished := s.clock().Now()
-			s.finalizeExecutionLocked(ex, finalStatus, exitCode, preRunErr.Error(), "", finished)
 			recordExecutionMetrics(finalStatus, finished)
+			s.finalizeExecutionLocked(ex, finalStatus, exitCode, preRunErr.Error(), "", finished)
 			if sb, ok := s.sandboxes[sandboxID]; ok && sb.ActiveExecutionID == executionID {
 				sb.ActiveExecutionID = ""
 				sb.UpdatedAt = s.clock().Now()
@@ -2103,8 +2103,8 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 		if preRunResult == nil {
 			clearExecutionRuntimeHandlesLocked(ex)
 			finished := s.clock().Now()
-			s.finalizeExecutionLocked(ex, cleanroomv1.ExecutionStatus_EXECUTION_STATUS_FAILED, 1, "sandbox.run.before returned no result", "", finished)
 			recordExecutionMetrics(cleanroomv1.ExecutionStatus_EXECUTION_STATUS_FAILED, finished)
+			s.finalizeExecutionLocked(ex, cleanroomv1.ExecutionStatus_EXECUTION_STATUS_FAILED, 1, "sandbox.run.before returned no result", "", finished)
 			if sb, ok := s.sandboxes[sandboxID]; ok && sb.ActiveExecutionID == executionID {
 				sb.ActiveExecutionID = ""
 				sb.UpdatedAt = s.clock().Now()
@@ -2133,8 +2133,8 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 				finalExitCode = cancelExitCode(ex.CancelSignal)
 			}
 			clearExecutionRuntimeHandlesLocked(ex)
-			s.finalizeExecutionLocked(ex, finalStatus, finalExitCode, msg, "", finished)
 			recordExecutionMetrics(finalStatus, finished)
+			s.finalizeExecutionLocked(ex, finalStatus, finalExitCode, msg, "", finished)
 			if sb, ok := s.sandboxes[sandboxID]; ok && sb.ActiveExecutionID == executionID {
 				sb.ActiveExecutionID = ""
 				sb.UpdatedAt = s.clock().Now()
@@ -2145,8 +2145,8 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 		if ex.CancelRequested {
 			clearExecutionRuntimeHandlesLocked(ex)
 			finished := s.clock().Now()
-			s.finalizeExecutionLocked(ex, cleanroomv1.ExecutionStatus_EXECUTION_STATUS_CANCELED, cancelExitCode(ex.CancelSignal), ex.Message, "execution canceled before command start", finished)
 			recordExecutionMetrics(cleanroomv1.ExecutionStatus_EXECUTION_STATUS_CANCELED, finished)
+			s.finalizeExecutionLocked(ex, cleanroomv1.ExecutionStatus_EXECUTION_STATUS_CANCELED, cancelExitCode(ex.CancelSignal), ex.Message, "execution canceled before command start", finished)
 			if sb, ok := s.sandboxes[sandboxID]; ok && sb.ActiveExecutionID == executionID {
 				sb.ActiveExecutionID = ""
 				sb.UpdatedAt = s.clock().Now()
@@ -2192,8 +2192,8 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 			s.appendExecutionStderrLocked(ex, finalStatus, []byte(err.Error()+"\n"))
 		}
 		finished := s.clock().Now()
-		s.finalizeExecutionLocked(ex, finalStatus, exitCode, err.Error(), "", finished)
 		recordExecutionMetrics(finalStatus, finished)
+		s.finalizeExecutionLocked(ex, finalStatus, exitCode, err.Error(), "", finished)
 		if s.Logger != nil {
 			s.Logger.Warn("execution failed",
 				"sandbox_id", ex.SandboxID,
@@ -2235,8 +2235,8 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 		span.SetStatus(codes.Error, finalStatus.String())
 	}
 	finished := s.clock().Now()
-	s.finalizeExecutionLocked(ex, finalStatus, finalExitCode, ex.Message, "", finished)
 	recordExecutionMetrics(finalStatus, finished)
+	s.finalizeExecutionLocked(ex, finalStatus, finalExitCode, ex.Message, "", finished)
 
 	if s.Logger != nil {
 		s.Logger.Info("execution completed",
