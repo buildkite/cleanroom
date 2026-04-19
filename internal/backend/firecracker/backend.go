@@ -30,11 +30,16 @@ import (
 	"github.com/buildkite/cleanroom/internal/gateway"
 	"github.com/buildkite/cleanroom/internal/hosttools"
 	"github.com/buildkite/cleanroom/internal/imagemgr"
+	"github.com/buildkite/cleanroom/internal/observability"
 	"github.com/buildkite/cleanroom/internal/paths"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/volumestore"
 	"github.com/buildkite/cleanroom/internal/vsockexec"
 	fcvsock "github.com/firecracker-microvm/firecracker-go-sdk/vsock"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type imageEnsurer interface {
@@ -66,12 +71,18 @@ type Adapter struct {
 	GatewayRegistry gatewayRegistry
 	GatewayPort     int
 	GatewayRoutes   gateway.ProxyRoutes
+	MeterProvider   metric.MeterProvider
+	metricsOnce     sync.Once
+	metrics         *observability.BackendMetrics
+	metricsErr      error
 }
 
 // gatewayRegistry is the subset of gateway.Registry used by the adapter.
 type gatewayRegistry interface {
 	Register(guestIP, sandboxID string, p *policy.CompiledPolicy) error
 	Release(guestIP string)
+	SetActiveExecutionTrace(sandboxID, executionID string, spanContext trace.SpanContext)
+	ClearActiveExecutionTrace(sandboxID, executionID string)
 }
 
 type sandboxInstance struct {
@@ -237,6 +248,50 @@ func defaultImageManagerFactory() (imageEnsurer, error) {
 	return imagemgr.New(imagemgr.Options{})
 }
 
+func (a *Adapter) backendMetrics() *observability.BackendMetrics {
+	if a == nil {
+		return nil
+	}
+	a.metricsOnce.Do(func() {
+		a.metrics, a.metricsErr = observability.NewBackendMetrics(a.MeterProvider, "github.com/buildkite/cleanroom/internal/backend/firecracker")
+		if a.metricsErr != nil {
+			log.Printf("firecracker backend metrics unavailable: %v", a.metricsErr)
+		}
+	})
+	return a.metrics
+}
+
+func (a *Adapter) recordLaunchPhaseMetrics(ctx context.Context, observation firecrackerRunObservation) {
+	metrics := a.backendMetrics()
+	if metrics == nil {
+		return
+	}
+	if observation.RootFSCopyMS > 0 {
+		metrics.RecordLaunchPhase(ctx, a.Name(), "rootfs_prepare", time.Duration(observation.RootFSCopyMS)*time.Millisecond)
+	}
+	if observation.PolicyResolveMS > 0 {
+		metrics.RecordLaunchPhase(ctx, a.Name(), "policy_resolve", time.Duration(observation.PolicyResolveMS)*time.Millisecond)
+	}
+	if observation.NetworkSetupMS > 0 {
+		metrics.RecordLaunchPhase(ctx, a.Name(), "network_setup", time.Duration(observation.NetworkSetupMS)*time.Millisecond)
+	}
+	if observation.FirecrackerStartMS > 0 {
+		metrics.RecordLaunchPhase(ctx, a.Name(), "vm_launch", time.Duration(observation.FirecrackerStartMS)*time.Millisecond)
+	}
+	if observation.VMReadyMS > 0 {
+		metrics.RecordLaunchPhase(ctx, a.Name(), "guest_wait_ready", time.Duration(observation.VMReadyMS)*time.Millisecond)
+	}
+	if observation.VsockWaitMS > 0 {
+		metrics.RecordLaunchPhase(ctx, a.Name(), "vsock_wait", time.Duration(observation.VsockWaitMS)*time.Millisecond)
+	}
+	if observation.GuestExecMS > 0 {
+		metrics.RecordLaunchPhase(ctx, a.Name(), "guest_exec", time.Duration(observation.GuestExecMS)*time.Millisecond)
+	}
+	if observation.CleanupMS > 0 {
+		metrics.RecordLaunchPhase(ctx, a.Name(), "cleanup", time.Duration(observation.CleanupMS)*time.Millisecond)
+	}
+}
+
 func (a *Adapter) Name() string {
 	return "firecracker"
 }
@@ -250,7 +305,22 @@ func (a *Adapter) Capabilities() map[string]bool {
 	}
 }
 
-func (a *Adapter) ProvisionSandbox(ctx context.Context, req backend.ProvisionRequest) error {
+func (a *Adapter) ProvisionSandbox(ctx context.Context, req backend.ProvisionRequest) (retErr error) {
+	ctx, span := trace.SpanFromContext(ctx).TracerProvider().Tracer("github.com/buildkite/cleanroom/internal/backend/firecracker").Start(
+		ctx,
+		"cleanroom.backend.firecracker.provision",
+		trace.WithAttributes(attribute.String("cleanroom.sandbox.id", strings.TrimSpace(req.SandboxID))),
+	)
+	defer func() {
+		if retErr != nil {
+			span.RecordError(retErr)
+			span.SetStatus(codes.Error, retErr.Error())
+		} else {
+			span.SetStatus(codes.Ok, "")
+		}
+		span.End()
+	}()
+
 	sandboxID := strings.TrimSpace(req.SandboxID)
 	if sandboxID == "" {
 		return errors.New("missing sandbox_id")
@@ -301,7 +371,26 @@ func (a *Adapter) ProvisionSandbox(ctx context.Context, req backend.ProvisionReq
 	return nil
 }
 
-func (a *Adapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+func (a *Adapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (result *backend.ExecutionResult, retErr error) {
+	ctx, span := trace.SpanFromContext(ctx).TracerProvider().Tracer("github.com/buildkite/cleanroom/internal/backend/firecracker").Start(
+		ctx,
+		"cleanroom.backend.firecracker.run",
+		trace.WithAttributes(
+			attribute.String("cleanroom.sandbox.id", strings.TrimSpace(req.SandboxID)),
+			attribute.String("cleanroom.execution.id", strings.TrimSpace(req.ExecutionID)),
+			attribute.Int("cleanroom.command.argc", len(req.Command)),
+		),
+	)
+	defer func() {
+		if retErr != nil {
+			span.RecordError(retErr)
+			span.SetStatus(codes.Error, retErr.Error())
+		} else {
+			span.SetStatus(codes.Ok, "")
+		}
+		span.End()
+	}()
+
 	sandboxID := strings.TrimSpace(req.SandboxID)
 	if sandboxID == "" {
 		return nil, errors.New("missing sandbox_id")
@@ -332,6 +421,7 @@ func (a *Adapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest
 	}
 	observation := firecrackerRunObservation{
 		ExecutionID: req.ExecutionID,
+		TraceID:     traceIDFromSpanContext(trace.SpanContextFromContext(ctx)),
 		Backend:     a.Name(),
 		LaunchedVM:  false,
 		ImageRef:    instance.ImageRef,
@@ -346,6 +436,7 @@ func (a *Adapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest
 		observation.TotalMS = time.Since(runStart).Milliseconds()
 		obsPath := filepath.Join(runDir, runObservabilityFile)
 		_ = writeJSON(obsPath, observation)
+		a.recordLaunchPhaseMetrics(ctx, observation)
 	}
 	defer writeObservation()
 	if runDir != "" {
@@ -357,6 +448,10 @@ func (a *Adapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest
 	if stream.OnWarning != nil {
 		instance.warnings.SetHandler(stream.OnWarning)
 		defer instance.warnings.SetHandler(nil)
+	}
+	if a.GatewayRegistry != nil {
+		a.GatewayRegistry.SetActiveExecutionTrace(sandboxID, req.ExecutionID, trace.SpanContextFromContext(ctx))
+		defer a.GatewayRegistry.ClearActiveExecutionTrace(sandboxID, req.ExecutionID)
 	}
 
 	guestResult, timing, err := a.executeInSandbox(ctx, instance, req.LaunchSeconds, req.Command, req.Env, req.TTY, stream)
@@ -375,7 +470,7 @@ func (a *Adapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest
 		message = runResultMessage("guest command execution completed with guest-side error detail: " + guestResult.Error)
 	}
 
-	return &backend.ExecutionResult{
+	result = &backend.ExecutionResult{
 		ExecutionID: req.ExecutionID,
 		ExitCode:    guestResult.ExitCode,
 		LaunchedVM:  false,
@@ -386,7 +481,8 @@ func (a *Adapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest
 		Message:     message,
 		Stdout:      guestResult.Stdout,
 		Stderr:      guestResult.Stderr,
-	}, nil
+	}
+	return result, nil
 }
 
 func (a *Adapter) DownloadSandboxFile(ctx context.Context, sandboxID, path string, maxBytes int64) ([]byte, error) {
@@ -1166,6 +1262,7 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 
 type firecrackerRunObservation struct {
 	ExecutionID        string `json:"execution_id"`
+	TraceID            string `json:"trace_id,omitempty"`
 	Backend            string `json:"backend"`
 	LaunchedVM         bool   `json:"launched_vm"`
 	ImageRef           string `json:"image_ref,omitempty"`
@@ -1188,6 +1285,13 @@ type firecrackerRunObservation struct {
 	GuestExecMS        int64  `json:"guest_exec_ms,omitempty"`
 	CleanupMS          int64  `json:"cleanup_ms,omitempty"`
 	TotalMS            int64  `json:"total_ms,omitempty"`
+}
+
+func traceIDFromSpanContext(spanContext trace.SpanContext) string {
+	if !spanContext.IsValid() {
+		return ""
+	}
+	return spanContext.TraceID().String()
 }
 
 type firecrackerConfig struct {

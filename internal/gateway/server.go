@@ -8,8 +8,16 @@ import (
 	"net/netip"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/buildkite/cleanroom/internal/observability"
 	"github.com/charmbracelet/log"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/metric"
+	metricnoop "go.opentelemetry.io/otel/metric/noop"
+	"go.opentelemetry.io/otel/trace"
+	tracenoop "go.opentelemetry.io/otel/trace/noop"
 )
 
 // DefaultPort is the default gateway listen port.
@@ -48,6 +56,12 @@ func Routes() []string {
 type contextKey int
 
 const scopeContextKey contextKey = iota
+const gatewayRequestContextKey contextKey = 1
+
+type gatewayRequestObservability struct {
+	action     string
+	reasonCode string
+}
 
 // ScopeTokenHeader is the request header used for capability-token fallback
 // identity when source-IP identity is unavailable (for example darwin NAT).
@@ -141,6 +155,8 @@ type ServerConfig struct {
 	GitMirrors                      GitMirrorStore
 	ContentCache                    *ContentCache
 	Logger                          *log.Logger
+	TracerProvider                  trace.TracerProvider
+	MeterProvider                   metric.MeterProvider
 	ScopeTokenTrustedSourcePrefixes []netip.Prefix
 	AllowScopeTokenFromAnySource    bool
 }
@@ -149,6 +165,11 @@ type ServerConfig struct {
 type Server struct {
 	registry                        *Registry
 	logger                          *log.Logger
+	tracerProvider                  trace.TracerProvider
+	meterProvider                   metric.MeterProvider
+	metricsOnce                     sync.Once
+	metrics                         *observability.GatewayMetrics
+	metricsErr                      error
 	httpServer                      *http.Server
 	scopeTokenTrustedSourcePrefixes []netip.Prefix
 	allowScopeTokenFromAnySource    bool
@@ -173,9 +194,17 @@ func NewServer(cfg ServerConfig) *Server {
 	s := &Server{
 		registry:                        cfg.Registry,
 		logger:                          cfg.Logger,
+		tracerProvider:                  cfg.TracerProvider,
+		meterProvider:                   cfg.MeterProvider,
 		addr:                            addr,
 		scopeTokenTrustedSourcePrefixes: trustedSourcePrefixes,
 		allowScopeTokenFromAnySource:    cfg.AllowScopeTokenFromAnySource,
+	}
+	if s.tracerProvider == nil {
+		s.tracerProvider = tracenoop.NewTracerProvider()
+	}
+	if s.meterProvider == nil {
+		s.meterProvider = metricnoop.NewMeterProvider()
 	}
 
 	mux := http.NewServeMux()
@@ -204,10 +233,23 @@ func NewServer(cfg ServerConfig) *Server {
 	mux.HandleFunc(RouteMeta, stubHandler("meta"))
 
 	s.httpServer = &http.Server{
-		Handler: s.identityMiddleware(s.pathMiddleware(mux)),
+		Handler: s.identityMiddleware(s.pathMiddleware(s.tracingMiddleware(mux))),
 	}
 
 	return s
+}
+
+func (s *Server) gatewayMetrics() *observability.GatewayMetrics {
+	if s == nil {
+		return nil
+	}
+	s.metricsOnce.Do(func() {
+		s.metrics, s.metricsErr = observability.NewGatewayMetrics(s.meterProvider)
+		if s.metricsErr != nil && s.logger != nil {
+			s.logger.Warn("gateway metrics unavailable", "error", s.metricsErr)
+		}
+	})
+	return s.metrics
 }
 
 // Start begins listening for connections in the background.
@@ -310,6 +352,70 @@ func (s *Server) pathMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+func (s *Server) tracingMiddleware(next http.Handler) http.Handler {
+	tracer := s.tracerProvider.Tracer("github.com/buildkite/cleanroom/internal/gateway")
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		startedAt := time.Now()
+		ctx := r.Context()
+		scope, _ := ScopeFromContext(ctx)
+		if scope != nil && scope.TraceContext.IsValid() {
+			ctx = trace.ContextWithRemoteSpanContext(ctx, scope.TraceContext)
+		}
+		requestObs := &gatewayRequestObservability{}
+		ctx = context.WithValue(ctx, gatewayRequestContextKey, requestObs)
+
+		service := gatewayServiceForPath(r.URL.Path)
+		attributes := []attribute.KeyValue{
+			attribute.String("cleanroom.gateway.service", service),
+			attribute.String("http.request.method", r.Method),
+			attribute.String("url.path", r.URL.Path),
+		}
+		if scope != nil {
+			if scope.SandboxID != "" {
+				attributes = append(attributes, attribute.String("cleanroom.sandbox.id", scope.SandboxID))
+			}
+			if scope.ExecutionID != "" {
+				attributes = append(attributes, attribute.String("cleanroom.execution.id", scope.ExecutionID))
+			}
+		}
+
+		ctx, span := tracer.Start(ctx, "cleanroom.gateway."+service+".request", trace.WithAttributes(attributes...))
+		defer span.End()
+
+		status := &gatewayStatusRecorder{ResponseWriter: w, statusCode: http.StatusOK}
+		next.ServeHTTP(status, r.WithContext(ctx))
+		span.SetAttributes(attribute.Int("http.response.status_code", status.statusCode))
+		reasonCode := strings.TrimSpace(requestObs.reasonCode)
+		if reasonCode == "" {
+			reasonCode = strings.TrimSpace(status.Header().Get(reasonCodeHeader))
+		}
+		if reasonCode != "" {
+			span.SetAttributes(attribute.String("cleanroom.reason_code", reasonCode))
+		}
+		if metrics := s.gatewayMetrics(); metrics != nil {
+			metrics.RecordRequest(ctx, service, requestObs.action, reasonCode, status.statusCode, time.Since(startedAt))
+		}
+		if status.statusCode >= http.StatusBadRequest {
+			span.SetStatus(codes.Error, http.StatusText(status.statusCode))
+			return
+		}
+		span.SetStatus(codes.Ok, "")
+	})
+}
+
+func setGatewayRequestDecision(ctx context.Context, action, reasonCode string) {
+	obs, ok := ctx.Value(gatewayRequestContextKey).(*gatewayRequestObservability)
+	if !ok || obs == nil {
+		return
+	}
+	if strings.TrimSpace(action) != "" {
+		obs.action = strings.TrimSpace(action)
+	}
+	if strings.TrimSpace(reasonCode) != "" {
+		obs.reasonCode = strings.TrimSpace(reasonCode)
+	}
+}
+
 // extractSourceIP returns the IP portion of a RemoteAddr, handling both
 // IPv4 ("10.1.1.2:43210") and IPv6-mapped IPv4 ("[::ffff:10.1.1.2]:43210").
 func extractSourceIP(remoteAddr string) string {
@@ -334,6 +440,47 @@ func cloneScopeTokenTrustedSourcePrefixes(prefixes []netip.Prefix) []netip.Prefi
 	out := make([]netip.Prefix, len(prefixes))
 	copy(out, prefixes)
 	return out
+}
+
+type gatewayStatusRecorder struct {
+	http.ResponseWriter
+	statusCode int
+}
+
+func (r *gatewayStatusRecorder) Unwrap() http.ResponseWriter {
+	if r == nil {
+		return nil
+	}
+	return r.ResponseWriter
+}
+
+func (r *gatewayStatusRecorder) WriteHeader(statusCode int) {
+	r.statusCode = statusCode
+	r.ResponseWriter.WriteHeader(statusCode)
+}
+
+func (r *gatewayStatusRecorder) Write(p []byte) (int, error) {
+	if r.statusCode == 0 {
+		r.statusCode = http.StatusOK
+	}
+	return r.ResponseWriter.Write(p)
+}
+
+func gatewayServiceForPath(path string) string {
+	switch {
+	case strings.HasPrefix(path, RouteGit):
+		return "git"
+	case strings.HasPrefix(path, RouteRegistry):
+		return "registry"
+	case strings.HasPrefix(path, RouteRubyGems):
+		return "rubygems"
+	case strings.HasPrefix(path, RouteSecrets):
+		return "secrets"
+	case strings.HasPrefix(path, RouteMeta):
+		return "meta"
+	default:
+		return "request"
+	}
 }
 
 func stubHandler(service string) http.HandlerFunc {

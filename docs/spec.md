@@ -534,13 +534,14 @@ CLI:
 - Validation failures (`cleanroom policy validate`, pre-launch compile errors) return non-zero and print structured error details.
 - Launch failures (including `backend_capability_mismatch`) return non-zero before workload execution starts.
 - Runtime policy denies do not change process semantics unless deny prevents command completion; deny events must still be emitted.
-- Non-zero `cleanroom exec` and `cleanroom console` exits print `sandbox_id`, `execution_id`, and a follow-up `cleanroom execution inspect` command when available.
+- Non-zero `cleanroom exec` and `cleanroom console` exits print `sandbox_id`, `execution_id`, `trace_id`, and a follow-up `cleanroom execution inspect` command when available.
+- When a trace URL template is configured, those failure footers also print `trace_url`.
 
 API:
 - `SandboxService.CreateSandbox` returns client error for invalid policy input and conflict/error response for unsatisfied backend requirements.
 - `SandboxService.GetSandbox` must expose terminal sandbox status plus `last_execution_id` and `active_execution_id`.
 - `ExecutionService.GetExecution` must expose execution status and exit code.
-- `ExecutionService.InspectExecution` must expose richer diagnostics including message, retained stdout/stderr, artifacts location, and observability payload when available.
+- `ExecutionService.InspectExecution` must expose richer diagnostics including message, retained stdout/stderr, artifacts location, `trace_id`, optional `trace_url`, and observability payload when available.
 - ConnectRPC errors must include stable application `code` and human-readable `message`.
 - `ExecutionService.StreamExecution` and interactive sessions bootstrapped by `ExecutionService.AttachExecution` must terminate cleanly with final exit status signaling.
 - If an HTTP/JSON gateway is exposed, it must preserve the same stable error codes and reason semantics.
@@ -557,6 +558,8 @@ API:
   - backend, command, user/actor
   - blocked connection attempts (host, reason, timestamp)
 - Deny events must use stable reason codes (for example `host_not_allowed`, `registry_not_allowed`, `lockfile_violation`, `backend_capability_mismatch`).
+- Trace export configuration stays in runtime config and uses OTLP, with
+  optional direct trace URL rendering from a configured template.
 - lockfile violations (registry, package, version, requested_path, action)
 - Metrics:
   - launch success/fail by backend

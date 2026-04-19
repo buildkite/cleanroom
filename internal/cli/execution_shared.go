@@ -16,6 +16,7 @@ import (
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/charmbracelet/log"
 	"github.com/quic-go/quic-go"
+	"go.opentelemetry.io/otel/trace"
 )
 
 var (
@@ -42,7 +43,6 @@ type executionSandbox struct {
 // sandbox or create one up front with repository bootstrap attached.
 func resolveExecutionSandbox(
 	callCtx context.Context,
-	logger *log.Logger,
 	client *controlclient.Client,
 	ctx *runtimeContext,
 	cwd, host, backendName, existingSandboxID, fromSnapshot, imageRefOverride string,
@@ -70,7 +70,6 @@ func resolveExecutionSandbox(
 
 	sandboxID, createdSandbox, err := ensureSandboxID(
 		callCtx,
-		logger,
 		client,
 		ctx.Loader,
 		cwd,
@@ -94,7 +93,7 @@ func resolveExecutionSandbox(
 	}, nil
 }
 
-func ensureSandboxID(callCtx context.Context, logger *log.Logger, client *controlclient.Client, loader policyLoader, cwd, host, backendName, existingSandboxID, fromSnapshot, imageRefOverride string, launchSeconds int64, repository *resolvedRepositoryCheckout, changeset *cleanroomv1.RepositoryChangeset) (string, bool, error) {
+func ensureSandboxID(callCtx context.Context, client *controlclient.Client, loader policyLoader, cwd, host, backendName, existingSandboxID, fromSnapshot, imageRefOverride string, launchSeconds int64, repository *resolvedRepositoryCheckout, changeset *cleanroomv1.RepositoryChangeset) (string, bool, error) {
 	sandboxID := strings.TrimSpace(existingSandboxID)
 	fromSnapshot = strings.TrimSpace(fromSnapshot)
 	if sandboxID != "" {
@@ -116,7 +115,7 @@ func ensureSandboxID(callCtx context.Context, logger *log.Logger, client *contro
 		if strings.TrimSpace(backendName) != "" {
 			return "", false, errors.New("--backend cannot be used with --from")
 		}
-		_, sandboxID, err := createSandboxWithProgress(callCtx, logger, os.Stderr, client, &cleanroomv1.CreateSandboxRequest{
+		_, sandboxID, err := createSandboxWithProgress(callCtx, os.Stderr, client, &cleanroomv1.CreateSandboxRequest{
 			Options: &cleanroomv1.SandboxOptions{
 				LaunchSeconds: launchSeconds,
 			},
@@ -128,7 +127,7 @@ func ensureSandboxID(callCtx context.Context, logger *log.Logger, client *contro
 		return sandboxID, true, nil
 	}
 
-	sandboxID, _, err := createTopLevelSandbox(callCtx, logger, client, loader, cwd, host, backendName, imageRefOverride, launchSeconds, repository, changeset)
+	sandboxID, _, err := createTopLevelSandbox(callCtx, client, loader, cwd, host, backendName, imageRefOverride, launchSeconds, repository, changeset)
 	if err != nil {
 		return "", false, err
 	}
@@ -140,6 +139,59 @@ func tracePreservingContext(ctx context.Context) context.Context {
 		return context.Background()
 	}
 	return context.WithoutCancel(ctx)
+}
+
+func traceIDFromContext(ctx context.Context) string {
+	spanContext := trace.SpanContextFromContext(ctx)
+	if !spanContext.IsValid() {
+		return ""
+	}
+	return spanContext.TraceID().String()
+}
+
+func executionCommandArgs(command []string) []string {
+	args := make([]string, 0, len(command))
+	for _, arg := range command {
+		trimmed := strings.TrimSpace(arg)
+		if trimmed == "" {
+			continue
+		}
+		if len(args) == 0 && trimmed == "--" {
+			continue
+		}
+		args = append(args, trimmed)
+	}
+	return args
+}
+
+func executionCommandName(command []string) string {
+	for _, arg := range executionCommandArgs(command) {
+		if arg != "" {
+			return arg
+		}
+	}
+	return ""
+}
+
+func executionCommandSummary(command []string) string {
+	args := executionCommandArgs(command)
+	parts := make([]string, 0, min(3, len(args)))
+	truncated := false
+	for _, arg := range args {
+		if len(parts) == 3 {
+			truncated = true
+			break
+		}
+		parts = append(parts, arg)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	summary := strings.Join(parts, " ")
+	if truncated {
+		summary += " ..."
+	}
+	return summary
 }
 
 func validateExecutionSandboxArgs(chdir, existingSandboxID, fromSnapshot string, keep bool, repositoryOverride repositoryOverrideFlags, changesetFlags repositoryChangesetFlags) error {
@@ -362,6 +414,24 @@ func writeExecutionID(stderr io.Writer, executionID string) error {
 	return err
 }
 
+func writeTraceID(stderr io.Writer, traceID string) error {
+	traceID = strings.TrimSpace(traceID)
+	if stderr == nil || traceID == "" {
+		return nil
+	}
+	_, err := fmt.Fprintf(stderr, "trace_id=%s\n", traceID)
+	return err
+}
+
+func writeTraceURL(stderr io.Writer, traceURL string) error {
+	traceURL = strings.TrimSpace(traceURL)
+	if stderr == nil || traceURL == "" {
+		return nil
+	}
+	_, err := fmt.Fprintf(stderr, "trace_url=%s\n", traceURL)
+	return err
+}
+
 func writeArtifactsDir(stderr io.Writer, artifactsDir string) error {
 	artifactsDir = strings.TrimSpace(artifactsDir)
 	if stderr == nil || artifactsDir == "" {
@@ -389,6 +459,9 @@ func replayExecutionHistory(callCtx context.Context, client *controlclient.Clien
 	if err != nil {
 		return 0, false, err
 	}
+	defer func() {
+		_ = stream.Close()
+	}()
 
 	exitCode := 0
 	haveExitCode := false

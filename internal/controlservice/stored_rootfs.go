@@ -12,6 +12,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/repositorycheckout"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 	"github.com/buildkite/cleanroom/internal/snapshotstore"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 type storedRootFSRecord struct {
@@ -130,12 +131,18 @@ func (s *Service) createSandboxFromStoredRootFS(ctx context.Context, req *cleanr
 	case "workspace stage cache":
 		emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_RESTORE_WORKSPACE_STAGE_CACHE, "restoring workspace stage cache")
 	}
-	if err := snapshotAdapter.ProvisionSandboxFromSnapshot(ctx, backend.ProvisionFromSnapshotRequest{
-		SandboxID:         sandboxID,
-		SnapshotID:        provisionSnapshotID,
-		StorageRef:        record.StorageRef,
-		Policy:            effectivePolicy,
-		FirecrackerConfig: firecrackerCfg,
+	if err := s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.restore_snapshot", []attribute.KeyValue{
+		attribute.String("cleanroom.backend", backendName),
+		attribute.String("cleanroom.sandbox.id", sandboxID),
+		attribute.String("cleanroom.source_kind", sourceKind),
+	}, func(ctx context.Context) error {
+		return snapshotAdapter.ProvisionSandboxFromSnapshot(ctx, backend.ProvisionFromSnapshotRequest{
+			SandboxID:         sandboxID,
+			SnapshotID:        provisionSnapshotID,
+			StorageRef:        record.StorageRef,
+			Policy:            effectivePolicy,
+			FirecrackerConfig: firecrackerCfg,
+		})
 	}); err != nil {
 		return nil, fmt.Errorf("provision sandbox from snapshot: %w", err)
 	}

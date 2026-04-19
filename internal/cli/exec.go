@@ -10,6 +10,7 @@ import (
 
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/repositorycheckout"
+	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
@@ -28,6 +29,7 @@ type ExecCommand struct {
 	Env            []string `short:"e" name:"env" help:"Set guest environment variables; use KEY to inherit from the local environment or KEY=VALUE to set an explicit value"`
 	NoStdin        bool     `short:"n" name:"no-stdin" aliases:"stdin-eof" help:"Close stdin immediately instead of attaching it"`
 	PrintSandboxID bool     `name:"print-sandbox-id" help:"Print resolved sandbox_id=<id> to stderr before streaming output"`
+	PrintTraceID   bool     `name:"print-trace-id" help:"Print trace_id=<id> to stderr after a successful execution when available"`
 
 	LaunchSeconds int64 `help:"VM boot/guest-agent readiness timeout in seconds"`
 
@@ -41,16 +43,25 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 
 	sandboxID := ""
 	executionID := ""
+	commandArgs := executionCommandArgs(e.Command)
+	rootAttrs := []attribute.KeyValue{
+		attribute.String("cleanroom.backend.requested", strings.TrimSpace(e.Backend)),
+		attribute.Bool("cleanroom.keep_sandbox", e.Keep),
+		attribute.Bool("cleanroom.stdin.disabled", e.NoStdin),
+		attribute.Int("cleanroom.command.argc", len(commandArgs)),
+	}
+	if commandName := executionCommandName(commandArgs); commandName != "" {
+		rootAttrs = append(rootAttrs,
+			attribute.String("cleanroom.command.name", commandName),
+			attribute.String("cleanroom.command.summary", executionCommandSummary(commandArgs)),
+		)
+	}
 	rootCtx, rootSpan := ctx.Observability.Tracer("github.com/buildkite/cleanroom/internal/cli").Start(
 		context.Background(),
 		"cleanroom.exec",
-		trace.WithAttributes(
-			attribute.String("cleanroom.backend.requested", strings.TrimSpace(e.Backend)),
-			attribute.Bool("cleanroom.keep_sandbox", e.Keep),
-			attribute.Bool("cleanroom.stdin.disabled", e.NoStdin),
-			attribute.Int("cleanroom.command.argc", len(e.Command)),
-		),
+		trace.WithAttributes(rootAttrs...),
 	)
+	traceID := traceIDFromContext(rootCtx)
 	defer func() {
 		if sandboxID != "" {
 			rootSpan.SetAttributes(attribute.String("cleanroom.sandbox.id", sandboxID))
@@ -67,10 +78,7 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 		rootSpan.End()
 	}()
 
-	logger, err := newLogger(e.LogLevel, "client")
-	if err != nil {
-		return err
-	}
+	logger := newClientLogger()
 
 	host := e.resolvedHost(ctx.Config)
 	client, err := e.connect(ctx)
@@ -86,14 +94,7 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 		return err
 	}
 
-	logger.Debug("sending execution request",
-		"host", host,
-		"backend", e.Backend,
-		"sandbox_id", strings.TrimSpace(e.In),
-		"command_argc", len(e.Command),
-		"env_count", len(executionEnv),
-	)
-	target, err := resolveExecutionSandbox(rootCtx, logger, client, ctx, cwd, host, e.Backend, e.In, e.From, e.Image, e.LaunchSeconds, e.repositoryOverrideFlags, e.repositoryChangesetFlags)
+	target, err := resolveExecutionSandbox(rootCtx, client, ctx, cwd, host, e.Backend, e.In, e.From, e.Image, e.LaunchSeconds, e.repositoryOverrideFlags, e.repositoryChangesetFlags)
 	if err != nil {
 		if strings.TrimSpace(e.From) != "" {
 			err = explainSnapshotRuntimeDisabledError(err, ctx)
@@ -125,6 +126,46 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 		printedExecutionID = true
 		return nil
 	}
+	printedTraceID := false
+	printTraceID := func() error {
+		if printedTraceID {
+			return nil
+		}
+		if err := writeTraceID(os.Stderr, traceID); err != nil {
+			return err
+		}
+		printedTraceID = true
+		return nil
+	}
+	printedTraceURL := false
+	printTraceURL := func() error {
+		if printedTraceURL {
+			return nil
+		}
+		traceURL, err := runtimeconfig.RenderTraceURL(ctx.Config.Observability, traceID, executionID, sandboxID)
+		if err != nil {
+			return err
+		}
+		if err := writeTraceURL(os.Stderr, traceURL); err != nil {
+			return err
+		}
+		if strings.TrimSpace(traceURL) != "" {
+			printedTraceURL = true
+		}
+		return nil
+	}
+	defer func() {
+		if runErr != nil || !e.PrintTraceID {
+			return
+		}
+		if err := printTraceID(); err != nil {
+			if runErr == nil {
+				runErr = err
+				return
+			}
+			runErr = errors.Join(runErr, err)
+		}
+	}()
 	defer func() {
 		if !createdSandbox || !e.Keep {
 			return
@@ -146,6 +187,12 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 			extraErr = errors.Join(extraErr, err)
 		}
 		if err := printExecutionID(); err != nil {
+			extraErr = errors.Join(extraErr, err)
+		}
+		if err := printTraceID(); err != nil {
+			extraErr = errors.Join(extraErr, err)
+		}
+		if err := printTraceURL(); err != nil {
 			extraErr = errors.Join(extraErr, err)
 		}
 		if sandboxID != "" && executionID != "" {
@@ -195,8 +242,6 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 	}
 	executionID = createExecutionResp.GetExecution().GetExecutionId()
 
-	logger.Debug("execution started", "sandbox_id", sandboxID, "execution_id", executionID)
-
 	streamCtx, streamCancel := context.WithCancel(rootCtx)
 	defer streamCancel()
 	stream, err := client.StreamExecution(streamCtx, &cleanroomv1.StreamExecutionRequest{
@@ -227,13 +272,8 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 				})
 				if cancelErr != nil && logger != nil {
 					logger.Warn("cancel execution request failed", "sandbox_id", sandboxID, "execution_id", executionID, "error", cancelErr)
-				} else if logger != nil && cancelResp != nil {
-					logger.Debug("cancel execution requested",
-						"sandbox_id", sandboxID,
-						"execution_id", executionID,
-						"accepted", cancelResp.GetAccepted(),
-						"status", cancelResp.GetStatus().String(),
-					)
+				} else if cancelResp != nil && !cancelResp.GetAccepted() && logger != nil {
+					logger.Warn("cancel execution request was not accepted", "sandbox_id", sandboxID, "execution_id", executionID, "status", cancelResp.GetStatus().String())
 				}
 				continue
 			}
@@ -298,13 +338,6 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 			haveExitCode = true
 		}
 	}
-
-	logger.Debug("execution complete",
-		"sandbox_id", sandboxID,
-		"execution_id", executionID,
-		"have_exit_code", haveExitCode,
-		"exit_code", exitCode,
-	)
 
 	if !haveExitCode {
 		return errors.New("execution stream ended without exit status")

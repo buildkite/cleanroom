@@ -23,8 +23,11 @@ import (
 	"github.com/buildkite/cleanroom/internal/gateway"
 	"github.com/buildkite/cleanroom/internal/interactivequic"
 	"github.com/buildkite/cleanroom/internal/repositorystore"
+	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 	"github.com/buildkite/cleanroom/internal/snapshotstore"
 	"github.com/charmbracelet/log"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type ServeCommand struct {
@@ -55,15 +58,17 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 		if gatewayListen == "" {
 			gatewayListen = fmt.Sprintf(":%d", gateway.DefaultPort)
 		}
+		fields := []startupField{
+			{Key: "workspace", Value: ctx.CWD},
+			{Key: "listen", Value: endpointDisplay(ep)},
+			{Key: "gateway_listen", Value: gatewayListen},
+			{Key: "runtime_config", Value: ctx.ConfigPath},
+			{Key: "log_level", Value: effectiveLogLevel(s.LogLevel)},
+		}
+		fields = append(fields, observabilityStartupFields(ctx.Config.Observability)...)
 		if err := writeStartupHeader(os.Stderr, startupHeader{
-			Title: "cleanroom serve",
-			Fields: []startupField{
-				{Key: "workspace", Value: ctx.CWD},
-				{Key: "listen", Value: endpointDisplay(ep)},
-				{Key: "gateway_listen", Value: gatewayListen},
-				{Key: "runtime_config", Value: ctx.ConfigPath},
-				{Key: "log_level", Value: effectiveLogLevel(s.LogLevel)},
-			},
+			Title:  "cleanroom serve",
+			Fields: fields,
 		}, shouldUseANSI(os.Stderr)); err != nil {
 			return err
 		}
@@ -104,6 +109,8 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 		gwCredentials,
 		gwMirrors,
 		contentCache,
+		ctx.Observability.TracerProvider(),
+		ctx.Observability.MeterProvider(),
 		logger.With("subsystem", "gateway"),
 		darwinGatewayHost,
 	))
@@ -179,7 +186,7 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 	return runErr
 }
 
-func gatewayServerConfig(listen string, registry *gateway.Registry, credentials gateway.CredentialProvider, mirrors gateway.GitMirrorStore, contentCache *gateway.ContentCache, logger *log.Logger, darwinGatewayHost string) gateway.ServerConfig {
+func gatewayServerConfig(listen string, registry *gateway.Registry, credentials gateway.CredentialProvider, mirrors gateway.GitMirrorStore, contentCache *gateway.ContentCache, tracerProvider trace.TracerProvider, meterProvider metric.MeterProvider, logger *log.Logger, darwinGatewayHost string) gateway.ServerConfig {
 	sourcePolicy := gatewayScopeTokenSourcePolicyForGatewayHost(strings.TrimSpace(darwinGatewayHost))
 	return gateway.ServerConfig{
 		ListenAddr:                      listen,
@@ -188,9 +195,40 @@ func gatewayServerConfig(listen string, registry *gateway.Registry, credentials 
 		GitMirrors:                      mirrors,
 		ContentCache:                    contentCache,
 		Logger:                          logger,
+		TracerProvider:                  tracerProvider,
+		MeterProvider:                   meterProvider,
 		ScopeTokenTrustedSourcePrefixes: sourcePolicy.TrustedSourcePrefixes,
 		AllowScopeTokenFromAnySource:    sourcePolicy.AllowScopeTokenFromAnySource,
 	}
+}
+
+func observabilityStartupFields(cfg runtimeconfig.ObservabilityConfig) []startupField {
+	if !cfg.Enabled {
+		return []startupField{{Key: "observability", Value: "disabled"}}
+	}
+
+	protocol, err := runtimeconfig.ResolveOTLPTraceProtocol(cfg)
+	if err != nil {
+		return []startupField{{Key: "observability", Value: "invalid"}}
+	}
+	fields := []startupField{{Key: "observability", Value: "enabled"}}
+	fields = append(fields, startupField{Key: "trace_export", Value: fmt.Sprintf("otlp/%s -> %s", protocol, strings.TrimSpace(cfg.OTLP.Endpoint))})
+	fields = append(fields, startupField{Key: "trace_sampling", Value: formatTraceSampling(cfg.Traces.Sampling)})
+	if strings.TrimSpace(cfg.Traces.URLTemplate) != "" {
+		fields = append(fields, startupField{Key: "trace_links", Value: "enabled"})
+	}
+	return fields
+}
+
+func formatTraceSampling(cfg runtimeconfig.TraceSamplingConfig) string {
+	mode := strings.TrimSpace(cfg.Mode)
+	if mode == "" {
+		mode = "parentbased_traceidratio"
+	}
+	if cfg.Ratio == nil {
+		return mode
+	}
+	return fmt.Sprintf("%s ratio=%g", mode, *cfg.Ratio)
 }
 
 func configureGatewayBackends(backends map[string]backend.Adapter, gwRegistry *gateway.Registry, gwPort int, gwListenAddr, darwinGatewayHost string, routes gateway.ProxyRoutes) {

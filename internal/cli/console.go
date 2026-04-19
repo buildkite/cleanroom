@@ -16,6 +16,7 @@ import (
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/interactivequic"
 	"github.com/buildkite/cleanroom/internal/repositorycheckout"
+	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
@@ -47,15 +48,28 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) (runErr error) {
 
 	sandboxID := ""
 	executionID := ""
+	command := append([]string(nil), c.Command...)
+	if len(command) == 0 {
+		command = []string{"sh"}
+	}
+	commandArgs := executionCommandArgs(command)
+	rootAttrs := []attribute.KeyValue{
+		attribute.String("cleanroom.backend.requested", strings.TrimSpace(c.Backend)),
+		attribute.Bool("cleanroom.keep_sandbox", c.Keep),
+		attribute.Int("cleanroom.command.argc", len(commandArgs)),
+	}
+	if commandName := executionCommandName(commandArgs); commandName != "" {
+		rootAttrs = append(rootAttrs,
+			attribute.String("cleanroom.command.name", commandName),
+			attribute.String("cleanroom.command.summary", executionCommandSummary(commandArgs)),
+		)
+	}
 	rootCtx, rootSpan := ctx.Observability.Tracer("github.com/buildkite/cleanroom/internal/cli").Start(
 		context.Background(),
 		"cleanroom.console",
-		trace.WithAttributes(
-			attribute.String("cleanroom.backend.requested", strings.TrimSpace(c.Backend)),
-			attribute.Bool("cleanroom.keep_sandbox", c.Keep),
-			attribute.Int("cleanroom.command.argc", len(c.Command)),
-		),
+		trace.WithAttributes(rootAttrs...),
 	)
+	traceID := traceIDFromContext(rootCtx)
 	defer func() {
 		if sandboxID != "" {
 			rootSpan.SetAttributes(attribute.String("cleanroom.sandbox.id", sandboxID))
@@ -72,10 +86,7 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) (runErr error) {
 		rootSpan.End()
 	}()
 
-	logger, err := newLogger(c.LogLevel, "client")
-	if err != nil {
-		return err
-	}
+	logger := newClientLogger()
 
 	host := c.resolvedHost(ctx.Config)
 	client, err := c.connect(ctx)
@@ -91,18 +102,7 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) (runErr error) {
 		return err
 	}
 
-	command := append([]string(nil), c.Command...)
-	if len(command) == 0 {
-		command = []string{"sh"}
-	}
-	logger.Debug("starting interactive console",
-		"host", host,
-		"backend", c.Backend,
-		"sandbox_id", strings.TrimSpace(c.In),
-		"command_argc", len(command),
-		"env_count", len(executionEnv),
-	)
-	target, err := resolveExecutionSandbox(rootCtx, logger, client, ctx, cwd, host, c.Backend, c.In, c.From, c.Image, c.LaunchSeconds, c.repositoryOverrideFlags, c.repositoryChangesetFlags)
+	target, err := resolveExecutionSandbox(rootCtx, client, ctx, cwd, host, c.Backend, c.In, c.From, c.Image, c.LaunchSeconds, c.repositoryOverrideFlags, c.repositoryChangesetFlags)
 	if err != nil {
 		if strings.TrimSpace(c.From) != "" {
 			err = explainSnapshotRuntimeDisabledError(err, ctx)
@@ -134,6 +134,34 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) (runErr error) {
 		printedExecutionID = true
 		return nil
 	}
+	printedTraceID := false
+	printTraceID := func() error {
+		if printedTraceID {
+			return nil
+		}
+		if err := writeTraceID(os.Stderr, traceID); err != nil {
+			return err
+		}
+		printedTraceID = true
+		return nil
+	}
+	printedTraceURL := false
+	printTraceURL := func() error {
+		if printedTraceURL {
+			return nil
+		}
+		traceURL, err := runtimeconfig.RenderTraceURL(ctx.Config.Observability, traceID, executionID, sandboxID)
+		if err != nil {
+			return err
+		}
+		if err := writeTraceURL(os.Stderr, traceURL); err != nil {
+			return err
+		}
+		if strings.TrimSpace(traceURL) != "" {
+			printedTraceURL = true
+		}
+		return nil
+	}
 	defer func() {
 		if !createdSandbox || !c.Keep {
 			return
@@ -155,6 +183,12 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) (runErr error) {
 			extraErr = errors.Join(extraErr, err)
 		}
 		if err := printExecutionID(); err != nil {
+			extraErr = errors.Join(extraErr, err)
+		}
+		if err := printTraceID(); err != nil {
+			extraErr = errors.Join(extraErr, err)
+		}
+		if err := printTraceURL(); err != nil {
 			extraErr = errors.Join(extraErr, err)
 		}
 		if sandboxID != "" && executionID != "" {
@@ -203,7 +237,6 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) (runErr error) {
 		return fmt.Errorf("create execution: %w", err)
 	}
 	executionID = createExecutionResp.GetExecution().GetExecutionId()
-	logger.Debug("console execution started", "sandbox_id", sandboxID, "execution_id", executionID)
 
 	stdinFD := int(os.Stdin.Fd())
 	initialCols, initialRows := attachTTYSize(stdinFD)

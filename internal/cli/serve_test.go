@@ -19,6 +19,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/backend/firecracker"
 	"github.com/buildkite/cleanroom/internal/cachestore"
 	"github.com/buildkite/cleanroom/internal/gateway"
+	"github.com/buildkite/cleanroom/internal/observability"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 	"github.com/buildkite/cleanroom/internal/snapshotstore"
 	"github.com/charmbracelet/log"
@@ -119,6 +120,31 @@ func TestConfigureBackendRuntimeConfigConfiguresDarwinVZCapabilities(t *testing.
 	}
 }
 
+func TestConfigureBackendObservabilityConfiguresSupportedBackends(t *testing.T) {
+	t.Parallel()
+
+	obsRuntime, err := observability.NewWithProviders(nil, nil)
+	if err != nil {
+		t.Fatalf("NewWithProviders returned error: %v", err)
+	}
+
+	fcAdapter := &firecracker.Adapter{}
+	darwinAdapter := &darwinvz.Adapter{}
+	backends := map[string]backend.Adapter{
+		"firecracker": fcAdapter,
+		"darwin-vz":   darwinAdapter,
+	}
+
+	configureBackendObservability(backends, obsRuntime)
+
+	if fcAdapter.MeterProvider == nil {
+		t.Fatal("expected firecracker adapter meter provider to be configured")
+	}
+	if darwinAdapter.MeterProvider == nil {
+		t.Fatal("expected darwin-vz adapter meter provider to be configured")
+	}
+}
+
 func TestGatewayServerConfigUsesDarwinGatewayHostForTrustedPrefixes(t *testing.T) {
 	t.Parallel()
 
@@ -142,6 +168,8 @@ func TestGatewayServerConfigUsesDarwinGatewayHostForTrustedPrefixes(t *testing.T
 	cfg := gatewayServerConfig(
 		":8170",
 		gateway.NewRegistry(),
+		nil,
+		nil,
 		nil,
 		nil,
 		nil,

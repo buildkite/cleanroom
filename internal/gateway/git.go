@@ -14,6 +14,9 @@ import (
 	"time"
 
 	"github.com/charmbracelet/log"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -66,14 +69,27 @@ func (h *gitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
+	span := trace.SpanFromContext(r.Context())
 
 	upstreamHost, repoPath, err := splitGitRequestPath(r.URL.Path)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		http.Error(w, "bad request: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	span.SetAttributes(
+		attribute.String("cleanroom.gateway.target_host", upstreamHost),
+		attribute.String("cleanroom.gateway.repo_path", repoPath),
+	)
 
 	if !scope.Policy.Allows(upstreamHost, 443) {
+		setGatewayRequestDecision(r.Context(), "deny", reasonHostNotAllowed)
+		span.SetAttributes(
+			attribute.String("cleanroom.gateway.action", "deny"),
+			attribute.String("cleanroom.reason_code", reasonHostNotAllowed),
+		)
+		span.SetStatus(codes.Error, "upstream host is not allowed by sandbox policy")
 		h.auditLog(scope.SandboxID, upstreamHost, repoPath, "deny", reasonHostNotAllowed)
 		writeReasonError(w, http.StatusForbidden, reasonHostNotAllowed, "upstream host is not allowed by sandbox policy")
 		return
@@ -81,29 +97,53 @@ func (h *gitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	requestType, err := h.classifyRequest(r.Method, repoPath, r.URL.RawQuery)
 	if err != nil {
+		setGatewayRequestDecision(r.Context(), "deny", reasonMethodNotAllowed)
+		span.RecordError(err)
+		span.SetAttributes(
+			attribute.String("cleanroom.gateway.action", "deny"),
+			attribute.String("cleanroom.reason_code", reasonMethodNotAllowed),
+		)
+		span.SetStatus(codes.Error, err.Error())
 		h.auditLog(scope.SandboxID, upstreamHost, repoPath, "deny", reasonMethodNotAllowed)
 		writeReasonError(w, http.StatusForbidden, reasonMethodNotAllowed, err.Error())
 		return
 	}
+	span.SetAttributes(attribute.String("cleanroom.gateway.request_type", requestType))
 
 	remoteURL, err := canonicalUpstreamRemoteURL(upstreamHost, repoPath)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		writeReasonError(w, http.StatusBadRequest, reasonMethodNotAllowed, err.Error())
 		return
 	}
 
 	if h.mirrors != nil {
 		if err := h.serveFromMirror(w, r, remoteURL, upstreamHost, repoPath, requestType); err != nil {
+			setGatewayRequestDecision(r.Context(), "deny", reasonUpstreamError)
+			span.RecordError(err)
+			span.SetAttributes(
+				attribute.String("cleanroom.gateway.action", "deny"),
+				attribute.String("cleanroom.reason_code", reasonUpstreamError),
+			)
+			span.SetStatus(codes.Error, err.Error())
 			h.auditLog(scope.SandboxID, upstreamHost, repoPath, "deny", reasonUpstreamError)
 			writeReasonError(w, http.StatusBadGateway, reasonUpstreamError, err.Error())
 			return
 		}
+		setGatewayRequestDecision(r.Context(), "allow", "mirrored")
+		span.SetAttributes(
+			attribute.String("cleanroom.gateway.action", "allow"),
+			attribute.String("cleanroom.reason_code", "mirrored"),
+		)
 		h.auditLog(scope.SandboxID, upstreamHost, repoPath, "allow", "mirrored")
 		return
 	}
 
 	upstreamURL, err := upstreamRequestURL(upstreamHost, repoPath, r.URL.RawQuery)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		http.Error(w, "bad request: "+err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -117,6 +157,8 @@ func (h *gitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if h.credentials != nil {
 		header, err := h.credentials.Resolve(r.Context(), remoteURL)
 		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
@@ -125,14 +167,27 @@ func (h *gitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	span.SetAttributes(
+		attribute.String("cleanroom.gateway.action", "allow"),
+		attribute.String("cleanroom.reason_code", "proxied"),
+	)
+	setGatewayRequestDecision(r.Context(), "allow", "proxied")
 	h.auditLog(scope.SandboxID, upstreamHost, repoPath, "allow", "proxied")
 
 	resp, err := h.client.Do(upstreamReq)
 	if err != nil {
+		setGatewayRequestDecision(r.Context(), "deny", reasonUpstreamError)
+		span.RecordError(err)
+		span.SetAttributes(
+			attribute.String("cleanroom.gateway.action", "deny"),
+			attribute.String("cleanroom.reason_code", reasonUpstreamError),
+		)
+		span.SetStatus(codes.Error, err.Error())
 		writeReasonError(w, http.StatusBadGateway, reasonUpstreamError, "upstream error")
 		return
 	}
 	defer resp.Body.Close()
+	span.SetAttributes(attribute.Int("cleanroom.gateway.upstream_status_code", resp.StatusCode))
 
 	for key, vals := range resp.Header {
 		for _, v := range vals {

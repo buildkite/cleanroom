@@ -77,9 +77,8 @@ func (c *VersionCommand) Run() error {
 }
 
 type clientFlags struct {
-	Host     string `help:"Control-plane endpoint (unix://path, http://host:port, or https://host:port)" env:"CLEANROOM_HOST"`
-	LogLevel string `help:"Client log level (debug|info|warn|error)"`
-	TLSCA    string `name:"tls-ca" aliases:"tlsca" help:"Path to CA certificate for server verification (auto-discovered from XDG config for https)" env:"CLEANROOM_TLS_CA"`
+	Host  string `help:"Control-plane endpoint (unix://path, http://host:port, or https://host:port)" env:"CLEANROOM_HOST"`
+	TLSCA string `name:"tls-ca" aliases:"tlsca" help:"Path to CA certificate for server verification (auto-discovered from XDG config for https)" env:"CLEANROOM_TLS_CA"`
 }
 
 func (f *clientFlags) resolvedHost(cfg runtimeconfig.Config) string {
@@ -165,18 +164,21 @@ func Run(args []string, version string) (runErr error) {
 		}
 		configureBackendRuntimeConfig(runtimeCtx.Backends, cfg)
 
-		obsRuntime, err := observability.Start(context.Background(), observability.Options{
-			Config:         cfg.Observability,
-			ServiceName:    runtimeServiceName(ctx),
-			ServiceVersion: version,
-		})
-		if err != nil {
-			return fmt.Errorf("configure observability: %w", err)
+		if commandUsesStartupObservability(ctx) {
+			obsRuntime, err := observability.Start(context.Background(), observability.Options{
+				Config:         cfg.Observability,
+				ServiceName:    runtimeServiceName(ctx),
+				ServiceVersion: version,
+			})
+			if err != nil {
+				return fmt.Errorf("configure observability: %w", err)
+			}
+			runtimeCtx.Observability = obsRuntime
+			configureBackendObservability(runtimeCtx.Backends, obsRuntime)
+			defer func() {
+				reportObservabilityShutdown(&runErr, runtimeCtx.stderr(), obsRuntime.Shutdown(context.Background()))
+			}()
 		}
-		runtimeCtx.Observability = obsRuntime
-		defer func() {
-			reportObservabilityShutdown(&runErr, runtimeCtx.stderr(), obsRuntime.Shutdown(context.Background()))
-		}()
 	}
 
 	runErr = ctx.Run(runtimeCtx)
@@ -196,9 +198,28 @@ func commandBypassesStartupRuntimeConfig(ctx *kong.Context) bool {
 	}
 }
 
+func commandUsesStartupObservability(ctx *kong.Context) bool {
+	if ctx == nil {
+		return true
+	}
+	return !strings.HasPrefix(strings.TrimSpace(ctx.Command()), "daemon ")
+}
+
 func configureBackendRuntimeConfig(backends map[string]backend.Adapter, cfg runtimeconfig.Config) {
 	if darwinAdapter, ok := backends["darwin-vz"].(*darwinvz.Adapter); ok {
 		darwinAdapter.ConfiguredNetworkMode = strings.TrimSpace(cfg.Backends.DarwinVZ.Network.Mode)
+	}
+}
+
+func configureBackendObservability(backends map[string]backend.Adapter, obsRuntime *observability.Runtime) {
+	if obsRuntime == nil {
+		return
+	}
+	if firecrackerAdapter, ok := backends["firecracker"].(*firecracker.Adapter); ok {
+		firecrackerAdapter.MeterProvider = obsRuntime.MeterProvider()
+	}
+	if darwinAdapter, ok := backends["darwin-vz"].(*darwinvz.Adapter); ok {
+		darwinAdapter.MeterProvider = obsRuntime.MeterProvider()
 	}
 }
 

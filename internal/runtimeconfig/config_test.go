@@ -285,15 +285,16 @@ func TestLoadTrimsObservabilityConfig(t *testing.T) {
 	content := `observability:
   enabled: true
   deployment_environment: " ci "
+  otlp:
+    endpoint: " https://otel.example.test:4318 "
+    protocol: " http/protobuf "
+    headers:
+      " x-otlp-token ": " secret "
   traces:
-    exporter: " zipkin "
     sampling:
       mode: " parentbased_traceidratio "
       ratio: 0.5
-    zipkin:
-      endpoint: " http://localhost:9411/api/v2/spans "
-      headers:
-        " x-dev-mode ": " true "
+    url_template: " https://jaeger.example.test/trace/{{.TraceID}} "
 `
 	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -309,8 +310,14 @@ func TestLoadTrimsObservabilityConfig(t *testing.T) {
 	if got, want := cfg.Observability.DeploymentEnvironment, "ci"; got != want {
 		t.Fatalf("unexpected deployment environment: got %q want %q", got, want)
 	}
-	if got, want := cfg.Observability.Traces.Exporter, "zipkin"; got != want {
-		t.Fatalf("unexpected trace exporter: got %q want %q", got, want)
+	if got, want := cfg.Observability.OTLP.Endpoint, "https://otel.example.test:4318"; got != want {
+		t.Fatalf("unexpected otlp endpoint: got %q want %q", got, want)
+	}
+	if got, want := cfg.Observability.OTLP.Protocol, "http/protobuf"; got != want {
+		t.Fatalf("unexpected otlp protocol: got %q want %q", got, want)
+	}
+	if got, want := cfg.Observability.OTLP.Headers["x-otlp-token"], "secret"; got != want {
+		t.Fatalf("unexpected otlp header: got %q want %q", got, want)
 	}
 	if got, want := cfg.Observability.Traces.Sampling.Mode, "parentbased_traceidratio"; got != want {
 		t.Fatalf("unexpected sampling mode: got %q want %q", got, want)
@@ -321,15 +328,12 @@ func TestLoadTrimsObservabilityConfig(t *testing.T) {
 	if got, want := *cfg.Observability.Traces.Sampling.Ratio, 0.5; got != want {
 		t.Fatalf("unexpected sampling ratio: got %v want %v", got, want)
 	}
-	if got, want := cfg.Observability.Traces.Zipkin.Endpoint, "http://localhost:9411/api/v2/spans"; got != want {
-		t.Fatalf("unexpected zipkin endpoint: got %q want %q", got, want)
-	}
-	if got, want := cfg.Observability.Traces.Zipkin.Headers["x-dev-mode"], "true"; got != want {
-		t.Fatalf("unexpected zipkin header: got %q want %q", got, want)
+	if got, want := cfg.Observability.Traces.URLTemplate, "https://jaeger.example.test/trace/{{.TraceID}}"; got != want {
+		t.Fatalf("unexpected trace url template: got %q want %q", got, want)
 	}
 }
 
-func TestLoadRejectsUnsupportedObservabilityOTLPConfig(t *testing.T) {
+func TestLoadSupportsOTLPObservabilityConfig(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", tmp)
 	configPath := filepath.Join(tmp, "cleanroom", "config.yaml")
@@ -340,22 +344,34 @@ func TestLoadRejectsUnsupportedObservabilityOTLPConfig(t *testing.T) {
 	content := `observability:
   enabled: true
   otlp:
-    endpoint: "localhost:4317"
+    endpoint: " http://localhost:4318 "
+    protocol: " http/protobuf "
+    headers:
+      " x-otlp-token ": " secret "
 `
 	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
-	_, _, err := Load()
-	if err == nil {
-		t.Fatal("expected Load to reject unsupported observability.otlp config")
+	cfg, _, err := Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "observability.otlp") {
-		t.Fatalf("expected error to mention observability.otlp, got %v", err)
+	if !cfg.Observability.Enabled {
+		t.Fatal("expected observability to be enabled")
+	}
+	if got, want := cfg.Observability.OTLP.Endpoint, "http://localhost:4318"; got != want {
+		t.Fatalf("unexpected otlp endpoint: got %q want %q", got, want)
+	}
+	if got, want := cfg.Observability.OTLP.Protocol, "http/protobuf"; got != want {
+		t.Fatalf("unexpected otlp protocol: got %q want %q", got, want)
+	}
+	if got, want := cfg.Observability.OTLP.Headers["x-otlp-token"], "secret"; got != want {
+		t.Fatalf("unexpected otlp header: got %q want %q", got, want)
 	}
 }
 
-func TestLoadRejectsUnsupportedObservabilityTraceExporter(t *testing.T) {
+func TestLoadSupportsObservabilityTraceURLTemplate(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", tmp)
 	configPath := filepath.Join(tmp, "cleanroom", "config.yaml")
@@ -365,8 +381,45 @@ func TestLoadRejectsUnsupportedObservabilityTraceExporter(t *testing.T) {
 
 	content := `observability:
   enabled: true
+  otlp:
+    endpoint: http://localhost:4318
   traces:
-    exporter: otlp
+    url_template: " https://jaeger.example.test/trace/{{.TraceID}}?execution={{.ExecutionID}} "
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, _, err := Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if got, want := cfg.Observability.Traces.URLTemplate, "https://jaeger.example.test/trace/{{.TraceID}}?execution={{.ExecutionID}}"; got != want {
+		t.Fatalf("unexpected trace url template: got %q want %q", got, want)
+	}
+	traceURL, err := RenderTraceURL(cfg.Observability, "0123456789abcdef0123456789abcdef", "exec-123", "sandbox-123")
+	if err != nil {
+		t.Fatalf("RenderTraceURL returned error: %v", err)
+	}
+	if got, want := traceURL, "https://jaeger.example.test/trace/0123456789abcdef0123456789abcdef?execution=exec-123"; got != want {
+		t.Fatalf("unexpected rendered trace url: got %q want %q", got, want)
+	}
+}
+
+func TestLoadRejectsInvalidObservabilityTraceURLTemplateWhenEnabled(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	configPath := filepath.Join(tmp, "cleanroom", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	content := `observability:
+  enabled: true
+  otlp:
+    endpoint: http://localhost:4318
+  traces:
+    url_template: "https://jaeger.example.test/trace/{{.UnknownField}}"
 `
 	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -374,10 +427,64 @@ func TestLoadRejectsUnsupportedObservabilityTraceExporter(t *testing.T) {
 
 	_, _, err := Load()
 	if err == nil {
-		t.Fatal("expected Load to reject unsupported observability trace exporter")
+		t.Fatal("expected Load to reject invalid observability trace url template")
 	}
-	if !strings.Contains(err.Error(), "not supported in this build") {
-		t.Fatalf("expected error to mention unsupported build-time exporter, got %v", err)
+	if !strings.Contains(err.Error(), "observability.traces.url_template") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestLoadRejectsUnsupportedObservabilityOTLPProtocol(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	configPath := filepath.Join(tmp, "cleanroom", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	content := `observability:
+  enabled: true
+  otlp:
+    endpoint: http://localhost:4318
+    protocol: banana
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, _, err := Load()
+	if err == nil {
+		t.Fatal("expected Load to reject unsupported observability OTLP protocol")
+	}
+	if !strings.Contains(err.Error(), "observability.otlp.protocol") {
+		t.Fatalf("expected error to mention observability.otlp.protocol, got %v", err)
+	}
+}
+
+func TestLoadRejectsObservabilityOTLPHTTPPathWhenEnabled(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	configPath := filepath.Join(tmp, "cleanroom", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	content := `observability:
+  enabled: true
+  otlp:
+    endpoint: https://collector.example.test/v1/traces
+    protocol: http/protobuf
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, _, err := Load()
+	if err == nil {
+		t.Fatal("expected Load to reject observability.otlp.endpoint with a path for OTLP HTTP")
+	}
+	if !strings.Contains(err.Error(), "must not include a path") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -392,9 +499,9 @@ func TestLoadAllowsUnsupportedObservabilityConfigWhenDisabled(t *testing.T) {
 	content := `observability:
   enabled: false
   otlp:
-    endpoint: " localhost:4317 "
+    protocol: " banana "
   traces:
-    exporter: " otlp "
+    exporter: " honeycomb "
 `
 	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -407,11 +514,121 @@ func TestLoadAllowsUnsupportedObservabilityConfigWhenDisabled(t *testing.T) {
 	if cfg.Observability.Enabled {
 		t.Fatal("expected observability to remain disabled")
 	}
-	if got, want := cfg.Observability.OTLP.Endpoint, "localhost:4317"; got != want {
-		t.Fatalf("unexpected trimmed otlp endpoint: got %q want %q", got, want)
+	if got, want := cfg.Observability.OTLP.Protocol, "banana"; got != want {
+		t.Fatalf("unexpected trimmed otlp protocol: got %q want %q", got, want)
 	}
-	if got, want := cfg.Observability.Traces.Exporter, "otlp"; got != want {
+	if got, want := cfg.Observability.Traces.Exporter, "honeycomb"; got != want {
 		t.Fatalf("unexpected trimmed trace exporter: got %q want %q", got, want)
+	}
+}
+
+func TestLoadRejectsMissingOTLPEndpointWhenEnabled(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	configPath := filepath.Join(tmp, "cleanroom", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	content := `observability:
+  enabled: true
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, _, err := Load()
+	if err == nil {
+		t.Fatal("expected Load to reject missing observability.otlp.endpoint")
+	}
+	if !strings.Contains(err.Error(), "missing observability.otlp.endpoint") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestLoadRejectsUnsupportedObservabilityTraceExporter(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	configPath := filepath.Join(tmp, "cleanroom", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	content := `observability:
+  enabled: true
+  otlp:
+    endpoint: http://localhost:4318
+  traces:
+    exporter: zipkin
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, _, err := Load()
+	if err == nil {
+		t.Fatal("expected Load to reject unsupported observability.traces.exporter")
+	}
+	if !strings.Contains(err.Error(), "unsupported observability.traces.exporter") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestLoadRejectsUnsupportedObservabilitySamplingMode(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	configPath := filepath.Join(tmp, "cleanroom", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	content := `observability:
+  enabled: true
+  otlp:
+    endpoint: http://localhost:4318
+  traces:
+    sampling:
+      mode: banana
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, _, err := Load()
+	if err == nil {
+		t.Fatal("expected Load to reject unsupported observability sampling mode")
+	}
+	if !strings.Contains(err.Error(), "observability.traces.sampling.mode") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestLoadRejectsOutOfRangeObservabilitySamplingRatio(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	configPath := filepath.Join(tmp, "cleanroom", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	content := `observability:
+  enabled: true
+  otlp:
+    endpoint: http://localhost:4318
+  traces:
+    sampling:
+      ratio: 2
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, _, err := Load()
+	if err == nil {
+		t.Fatal("expected Load to reject out-of-range observability sampling ratio")
+	}
+	if !strings.Contains(err.Error(), "observability.traces.sampling.ratio") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

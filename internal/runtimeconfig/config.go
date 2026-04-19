@@ -1,14 +1,17 @@
 package runtimeconfig
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"math"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+	"text/template"
 	"unicode"
 
 	"github.com/buildkite/cleanroom/internal/backend"
@@ -47,19 +50,14 @@ type OTLPConfig struct {
 }
 
 type TraceConfig struct {
-	Exporter string              `yaml:"exporter,omitempty"`
-	Sampling TraceSamplingConfig `yaml:"sampling,omitempty"`
-	Zipkin   ZipkinConfig        `yaml:"zipkin,omitempty"`
+	Exporter    string              `yaml:"exporter,omitempty"`
+	Sampling    TraceSamplingConfig `yaml:"sampling,omitempty"`
+	URLTemplate string              `yaml:"url_template,omitempty"`
 }
 
 type TraceSamplingConfig struct {
 	Mode  string   `yaml:"mode,omitempty"`
 	Ratio *float64 `yaml:"ratio,omitempty"`
-}
-
-type ZipkinConfig struct {
-	Endpoint string            `yaml:"endpoint,omitempty"`
-	Headers  map[string]string `yaml:"headers,omitempty"`
 }
 
 type Backends struct {
@@ -448,8 +446,7 @@ func normalizeConfig(cfg Config, inferredDefaultBackend string) Config {
 	cfg.Observability.OTLP.Headers = trimStringMap(cfg.Observability.OTLP.Headers)
 	cfg.Observability.Traces.Exporter = strings.TrimSpace(cfg.Observability.Traces.Exporter)
 	cfg.Observability.Traces.Sampling.Mode = strings.TrimSpace(cfg.Observability.Traces.Sampling.Mode)
-	cfg.Observability.Traces.Zipkin.Endpoint = strings.TrimSpace(cfg.Observability.Traces.Zipkin.Endpoint)
-	cfg.Observability.Traces.Zipkin.Headers = trimStringMap(cfg.Observability.Traces.Zipkin.Headers)
+	cfg.Observability.Traces.URLTemplate = strings.TrimSpace(cfg.Observability.Traces.URLTemplate)
 	return cfg
 }
 
@@ -488,26 +485,149 @@ func validateObservabilityConfig(cfg ObservabilityConfig) error {
 		return nil
 	}
 
-	exporter := strings.ToLower(strings.TrimSpace(cfg.Traces.Exporter))
-	if hasUnsupportedOTLPConfig(cfg.OTLP) {
-		return errors.New("observability.otlp is not supported in this build; use observability.traces.exporter=zipkin and observability.traces.zipkin")
+	if err := validateTraceExporter(cfg.Traces.Exporter); err != nil {
+		return err
+	}
+	protocol, err := ResolveOTLPTraceProtocol(cfg)
+	if err != nil {
+		return err
+	}
+	if err := validateOTLPEndpoint(cfg.OTLP.Endpoint, protocol); err != nil {
+		return err
 	}
 
-	switch exporter {
-	case "", "zipkin":
+	if err := ValidateTraceSamplingConfig(cfg.Traces.Sampling); err != nil {
+		return err
+	}
+	if err := ValidateTraceURLTemplate(cfg.Traces.URLTemplate); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateTraceExporter(exporter string) error {
+	switch strings.ToLower(strings.TrimSpace(exporter)) {
+	case "", "otlp":
 		return nil
-	case "otlp", "otlp_http", "otlp/http", "http", "http/protobuf", "grpc":
-		return fmt.Errorf("trace exporter %q is not supported in this build; use observability.traces.exporter=zipkin", exporter)
 	default:
-		return fmt.Errorf("unsupported observability.traces.exporter %q", cfg.Traces.Exporter)
+		return fmt.Errorf("unsupported observability.traces.exporter %q", exporter)
 	}
 }
 
-func hasUnsupportedOTLPConfig(cfg OTLPConfig) bool {
-	return strings.TrimSpace(cfg.Endpoint) != "" ||
-		strings.TrimSpace(cfg.Protocol) != "" ||
-		cfg.Insecure ||
-		len(cfg.Headers) > 0
+// ResolveOTLPTraceProtocol resolves the configured OTLP trace transport
+// protocol.
+func ResolveOTLPTraceProtocol(cfg ObservabilityConfig) (string, error) {
+	if err := validateTraceExporter(cfg.Traces.Exporter); err != nil {
+		return "", err
+	}
+	return normalizeOTLPProtocol(cfg.OTLP.Protocol)
+}
+
+// ValidateTraceSamplingConfig validates supported trace sampling modes and
+// ratio values.
+func ValidateTraceSamplingConfig(cfg TraceSamplingConfig) error {
+	mode := strings.ToLower(strings.TrimSpace(cfg.Mode))
+	ratio := 1.0
+	if cfg.Ratio != nil {
+		ratio = *cfg.Ratio
+	}
+	if ratio < 0 || ratio > 1 {
+		return fmt.Errorf("observability.traces.sampling.ratio must be between 0 and 1, got %v", ratio)
+	}
+
+	switch mode {
+	case "", "parentbased_traceidratio", "traceidratio", "always_on", "always_off", "parentbased_always_on", "parentbased_always_off":
+		return nil
+	default:
+		return fmt.Errorf("unsupported observability.traces.sampling.mode %q", cfg.Mode)
+	}
+}
+
+type TraceURLTemplateData struct {
+	TraceID     string
+	ExecutionID string
+	SandboxID   string
+}
+
+func ValidateTraceURLTemplate(templateText string) error {
+	if strings.TrimSpace(templateText) == "" {
+		return nil
+	}
+	_, err := executeTraceURLTemplate(templateText, TraceURLTemplateData{
+		TraceID:     "0123456789abcdef0123456789abcdef",
+		ExecutionID: "execution_example",
+		SandboxID:   "sandbox_example",
+	})
+	if err != nil {
+		return fmt.Errorf("invalid observability.traces.url_template: %w", err)
+	}
+	return nil
+}
+
+func RenderTraceURL(cfg ObservabilityConfig, traceID, executionID, sandboxID string) (string, error) {
+	if strings.TrimSpace(traceID) == "" {
+		return "", nil
+	}
+	return executeTraceURLTemplate(cfg.Traces.URLTemplate, TraceURLTemplateData{
+		TraceID:     strings.TrimSpace(traceID),
+		ExecutionID: strings.TrimSpace(executionID),
+		SandboxID:   strings.TrimSpace(sandboxID),
+	})
+}
+
+func executeTraceURLTemplate(templateText string, data TraceURLTemplateData) (string, error) {
+	trimmed := strings.TrimSpace(templateText)
+	if trimmed == "" {
+		return "", nil
+	}
+	tpl, err := template.New("trace-url").Option("missingkey=error").Parse(trimmed)
+	if err != nil {
+		return "", err
+	}
+	var rendered bytes.Buffer
+	if err := tpl.Execute(&rendered, map[string]string{
+		"TraceID":     data.TraceID,
+		"ExecutionID": data.ExecutionID,
+		"SandboxID":   data.SandboxID,
+	}); err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(rendered.String()), nil
+}
+
+func normalizeOTLPProtocol(protocol string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(protocol)) {
+	case "", "grpc":
+		return "grpc", nil
+	case "otlp_http", "otlp/http", "http", "http/protobuf":
+		return "http/protobuf", nil
+	default:
+		return "", fmt.Errorf("unsupported observability.otlp.protocol %q", protocol)
+	}
+}
+
+func validateOTLPEndpoint(endpoint, protocol string) error {
+	trimmed := strings.TrimSpace(endpoint)
+	if trimmed == "" {
+		return errors.New("missing observability.otlp.endpoint")
+	}
+	if !strings.Contains(trimmed, "://") {
+		if strings.Contains(trimmed, "/") {
+			return fmt.Errorf("invalid observability.otlp.endpoint %q", endpoint)
+		}
+		return nil
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return fmt.Errorf("invalid observability.otlp.endpoint %q: %w", endpoint, err)
+	}
+	if parsed.Scheme == "" || parsed.Host == "" {
+		return fmt.Errorf("invalid observability.otlp.endpoint %q", endpoint)
+	}
+	if protocol == "http/protobuf" && parsed.Path != "" && parsed.Path != "/" {
+		return fmt.Errorf("observability.otlp.endpoint %q must not include a path when observability.otlp.protocol is http/protobuf", endpoint)
+	}
+	return nil
 }
 
 func validateDarwinVZRuntimeConfig(cfg DarwinVZConfig) error {

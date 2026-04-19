@@ -57,6 +57,14 @@ func TestCiDarwinVZE2EUsesFileHandleNetworkMode(t *testing.T) {
 			t.Fatalf("expected ci-darwin-vz-e2e.sh to contain %q", needle)
 		}
 	}
+	for _, needle := range []string{
+		`OBSERVABILITY_CONTEXT="darwin-vz-e2e-observability"`,
+		`buildkite-agent annotate --context darwin-vz-e2e-observability --style info`,
+	} {
+		if strings.Contains(string(content), needle) {
+			t.Fatalf("expected ci-darwin-vz-e2e.sh not to contain %q", needle)
+		}
+	}
 }
 
 func TestCiDarwinVZFileHandleE2EUsesAllowlistPolicy(t *testing.T) {
@@ -91,6 +99,14 @@ func TestCiDarwinVZFileHandleE2EUsesAllowlistPolicy(t *testing.T) {
 	} {
 		if !strings.Contains(script, needle) {
 			t.Fatalf("expected ci-darwin-vz-filehandle-e2e.sh to contain %q", needle)
+		}
+	}
+	for _, needle := range []string{
+		`OBSERVABILITY_CONTEXT="darwin-vz-filehandle-e2e-observability"`,
+		`buildkite-agent annotate --context darwin-vz-filehandle-e2e-observability --style info`,
+	} {
+		if strings.Contains(script, needle) {
+			t.Fatalf("expected ci-darwin-vz-filehandle-e2e.sh not to contain %q", needle)
 		}
 	}
 }

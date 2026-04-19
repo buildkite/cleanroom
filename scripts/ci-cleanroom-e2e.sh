@@ -11,7 +11,6 @@ ROOT_HELPER_REQUIRED_CAPABILITIES=(
 )
 
 OBSERVABILITY_SUITE_LABEL="Firecracker E2E"
-OBSERVABILITY_CONTEXT="cleanroom-e2e-observability"
 OBSERVABILITY_ARCHIVE_NAME="firecracker-e2e-observability.tgz"
 
 # run_privileged executes a privileged command via the installed root helper.
@@ -123,7 +122,6 @@ purge_stale_cleanroom_resources() {
 cleanup() {
   publish_buildkite_observability \
     "$OBSERVABILITY_SUITE_LABEL" \
-    "$OBSERVABILITY_CONTEXT" \
     "$OBSERVABILITY_ARCHIVE_NAME" \
     "./dist/cleanroom" \
     "${listen_endpoint:-}" \

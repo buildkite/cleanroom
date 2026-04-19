@@ -10,6 +10,7 @@ import (
 
 	"github.com/buildkite/cleanroom/internal/backend"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
+	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 )
 
 func runExecutionInspectWithCapture(cmd ExecutionInspectCommand, ctx runtimeContext) execOutcome {
@@ -209,6 +210,153 @@ func TestExecutionInspectIntegrationSupportsGlobalExecutionID(t *testing.T) {
 		"sandbox: "+sandboxID,
 		"status: succeeded",
 	)
+}
+
+func TestExecutionInspectIntegrationShowsTraceMetadata(t *testing.T) {
+	t.Helper()
+
+	runDir := filepath.Join(t.TempDir(), "artifacts")
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll returned error: %v", err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(runDir, "execution-observability.json"),
+		[]byte(`{"trace_id":"0123456789abcdef0123456789abcdef","total_ms":12}`),
+		0o644,
+	); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	adapter := &integrationAdapter{
+		runFn: func(_ context.Context, req backend.ExecutionRequest) (*backend.ExecutionResult, error) {
+			return &backend.ExecutionResult{
+				ExecutionID: req.ExecutionID,
+				ExitCode:    0,
+				RunDir:      runDir,
+			}, nil
+		},
+	}
+
+	host, svc := startIntegrationServerWithConfig(t, adapter, runtimeconfig.Config{
+		DefaultBackend: "firecracker",
+		Observability: runtimeconfig.ObservabilityConfig{
+			Enabled: true,
+			OTLP:    runtimeconfig.OTLPConfig{Endpoint: "http://localhost:4318"},
+			Traces: runtimeconfig.TraceConfig{
+				URLTemplate: "https://jaeger.example.test/trace/{{.TraceID}}?sandbox={{.SandboxID}}",
+			},
+		},
+	})
+	client := mustNewControlClient(t, host)
+	sandboxID := mustCreateSandbox(t, client)
+
+	createResp, err := client.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+		SandboxId: sandboxID,
+		Command:   []string{"echo", "ok"},
+		Kind:      cleanroomv1.ExecutionKind_EXECUTION_KIND_BATCH,
+	})
+	if err != nil {
+		t.Fatalf("CreateExecution returned error: %v", err)
+	}
+	executionID := createResp.GetExecution().GetExecutionId()
+	if _, err := svc.WaitExecution(context.Background(), sandboxID, executionID); err != nil {
+		t.Fatalf("WaitExecution returned error: %v", err)
+	}
+
+	outcome := runExecutionInspectWithCapture(ExecutionInspectCommand{
+		clientFlags: clientFlags{Host: host},
+		ExecutionID: executionID,
+	}, runtimeContext{CWD: t.TempDir()})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err != nil {
+		t.Fatalf("ExecutionInspectCommand.Run returned error: %v", outcome.err)
+	}
+
+	assertContainsAll(
+		t,
+		outcome.stdout,
+		"trace_id: 0123456789abcdef0123456789abcdef",
+		"trace_url: https://jaeger.example.test/trace/0123456789abcdef0123456789abcdef?sandbox="+sandboxID,
+	)
+}
+
+func TestExecutionInspectIntegrationIgnoresInvalidLocalTraceURLTemplate(t *testing.T) {
+	t.Helper()
+
+	runDir := filepath.Join(t.TempDir(), "artifacts")
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll returned error: %v", err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(runDir, "execution-observability.json"),
+		[]byte(`{"trace_id":"0123456789abcdef0123456789abcdef","total_ms":12}`),
+		0o644,
+	); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	adapter := &integrationAdapter{
+		runFn: func(_ context.Context, req backend.ExecutionRequest) (*backend.ExecutionResult, error) {
+			return &backend.ExecutionResult{
+				ExecutionID: req.ExecutionID,
+				ExitCode:    0,
+				RunDir:      runDir,
+			}, nil
+		},
+	}
+
+	host, svc := startIntegrationServerWithConfig(t, adapter, runtimeconfig.Config{
+		DefaultBackend: "firecracker",
+		Observability: runtimeconfig.ObservabilityConfig{
+			Enabled: true,
+			OTLP:    runtimeconfig.OTLPConfig{Endpoint: "http://localhost:4318"},
+		},
+	})
+	client := mustNewControlClient(t, host)
+	sandboxID := mustCreateSandbox(t, client)
+
+	createResp, err := client.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+		SandboxId: sandboxID,
+		Command:   []string{"echo", "ok"},
+		Kind:      cleanroomv1.ExecutionKind_EXECUTION_KIND_BATCH,
+	})
+	if err != nil {
+		t.Fatalf("CreateExecution returned error: %v", err)
+	}
+	executionID := createResp.GetExecution().GetExecutionId()
+	if _, err := svc.WaitExecution(context.Background(), sandboxID, executionID); err != nil {
+		t.Fatalf("WaitExecution returned error: %v", err)
+	}
+
+	outcome := runExecutionInspectWithCapture(ExecutionInspectCommand{
+		clientFlags: clientFlags{Host: host},
+		ExecutionID: executionID,
+	}, runtimeContext{
+		CWD: t.TempDir(),
+		Config: runtimeconfig.Config{
+			Observability: runtimeconfig.ObservabilityConfig{
+				Traces: runtimeconfig.TraceConfig{URLTemplate: "{{"},
+			},
+		},
+	})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err != nil {
+		t.Fatalf("ExecutionInspectCommand.Run returned error: %v", outcome.err)
+	}
+
+	assertContainsAll(
+		t,
+		outcome.stdout,
+		"execution: "+executionID,
+		"trace_id: 0123456789abcdef0123456789abcdef",
+	)
+	if strings.Contains(outcome.stdout, "trace_url:") {
+		t.Fatalf("did not expect trace_url output for invalid local template: %q", outcome.stdout)
+	}
 }
 
 func TestExecutionInspectCommandRejectsMutuallyExclusiveFlags(t *testing.T) {

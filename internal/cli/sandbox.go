@@ -13,7 +13,6 @@ import (
 	"github.com/buildkite/cleanroom/internal/controlclient"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/policy"
-	"github.com/charmbracelet/log"
 )
 
 type SandboxCommand struct {
@@ -227,10 +226,6 @@ func runSandboxCreate(ctx *runtimeContext, connectFlags clientFlags, backend, fr
 	if err != nil {
 		return err
 	}
-	logger, err := newLogger(connectFlags.LogLevel, "client")
-	if err != nil {
-		return err
-	}
 
 	from = strings.TrimSpace(from)
 	var sandbox *cleanroomv1.Sandbox
@@ -248,7 +243,7 @@ func runSandboxCreate(ctx *runtimeContext, connectFlags clientFlags, backend, fr
 			return errors.New("--dangerously-allow-all cannot be used with --from")
 		}
 
-		resp, _, err := createSandboxWithProgress(context.Background(), logger, os.Stderr, client, &cleanroomv1.CreateSandboxRequest{
+		resp, _, err := createSandboxWithProgress(context.Background(), os.Stderr, client, &cleanroomv1.CreateSandboxRequest{
 			Options: &cleanroomv1.SandboxOptions{
 				LaunchSeconds: launchSeconds,
 			},
@@ -264,7 +259,7 @@ func runSandboxCreate(ctx *runtimeContext, connectFlags clientFlags, backend, fr
 		if err != nil {
 			return err
 		}
-		_, sandbox, err = createSandboxWithPolicy(context.Background(), logger, client, compiled, backend, launchSeconds, nil, nil)
+		_, sandbox, err = createSandboxWithPolicy(context.Background(), client, compiled, backend, launchSeconds, nil, nil)
 		if err != nil {
 			return err
 		}
@@ -315,12 +310,8 @@ func (c *CreateCommand) Run(ctx *runtimeContext) error {
 		return err
 	}
 	warnDirtyRepositoryCheckout(repository, changeset != nil)
-	logger, err := newLogger(c.LogLevel, "client")
-	if err != nil {
-		return err
-	}
 
-	sandboxID, sandbox, err := createTopLevelSandbox(context.Background(), logger, client, ctx.Loader, cwd, host, c.Backend, c.Image, c.LaunchSeconds, repository, changeset)
+	sandboxID, sandbox, err := createTopLevelSandbox(context.Background(), client, ctx.Loader, cwd, host, c.Backend, c.Image, c.LaunchSeconds, repository, changeset)
 	if err != nil {
 		return err
 	}
@@ -348,7 +339,6 @@ func (c *CreateCommand) validate() error {
 
 func createTopLevelSandbox(
 	callCtx context.Context,
-	logger *log.Logger,
 	client *controlclient.Client,
 	loader policyLoader,
 	cwd, host, backendName, imageRefOverride string,
@@ -369,12 +359,11 @@ func createTopLevelSandbox(
 		return "", nil, err
 	}
 
-	return createSandboxWithPolicy(callCtx, logger, client, compiled, backendName, launchSeconds, repository, changeset)
+	return createSandboxWithPolicy(callCtx, client, compiled, backendName, launchSeconds, repository, changeset)
 }
 
 func createSandboxWithProgress(
 	callCtx context.Context,
-	logger *log.Logger,
 	stderr *os.File,
 	client *controlclient.Client,
 	req *cleanroomv1.CreateSandboxRequest,
@@ -383,60 +372,73 @@ func createSandboxWithProgress(
 	if callCtx == nil {
 		callCtx = context.Background()
 	}
-	stream, err := client.CreateSandboxStream(callCtx, req)
-	if err != nil {
-		return nil, "", err
-	}
 
 	var resp *cleanroomv1.CreateSandboxResponse
-	for stream.Receive() {
-		event := stream.Msg()
-		switch payload := event.Payload.(type) {
-		case *cleanroomv1.CreateSandboxEvent_Message:
-			if logger != nil && strings.TrimSpace(payload.Message) != "" {
-				logger.Info(strings.TrimSpace(payload.Message))
-			} else if stderr != nil && strings.TrimSpace(payload.Message) != "" {
-				_, _ = fmt.Fprintln(stderr, payload.Message)
+	sandboxID := ""
+	run := func(progress *sandboxProgress) error {
+		stream, err := client.CreateSandboxStream(callCtx, req)
+		if err != nil {
+			return err
+		}
+		defer func() {
+			_ = stream.Close()
+		}()
+
+		for stream.Receive() {
+			event := stream.Msg()
+			switch payload := event.Payload.(type) {
+			case *cleanroomv1.CreateSandboxEvent_Message:
+				continue
+			case *cleanroomv1.CreateSandboxEvent_Stdout:
+				if stderr != nil && len(payload.Stdout) > 0 {
+					progress.suppress()
+					_, _ = stderr.Write(payload.Stdout)
+				}
+			case *cleanroomv1.CreateSandboxEvent_Stderr:
+				if stderr != nil && len(payload.Stderr) > 0 {
+					progress.suppress()
+					_, _ = stderr.Write(payload.Stderr)
+				}
+			case *cleanroomv1.CreateSandboxEvent_Warning:
+				progress.suppress()
+				if err := writeExecutionWarning(stderr, payload.Warning); err != nil {
+					return err
+				}
+			case *cleanroomv1.CreateSandboxEvent_Response:
+				resp = payload.Response
 			}
-		case *cleanroomv1.CreateSandboxEvent_Stdout:
-			if stderr != nil && len(payload.Stdout) > 0 {
-				_, _ = stderr.Write(payload.Stdout)
-			}
-		case *cleanroomv1.CreateSandboxEvent_Stderr:
-			if stderr != nil && len(payload.Stderr) > 0 {
-				_, _ = stderr.Write(payload.Stderr)
-			}
-		case *cleanroomv1.CreateSandboxEvent_Warning:
-			if logger != nil && strings.TrimSpace(payload.Warning) != "" {
-				logger.Warn(strings.TrimSpace(payload.Warning))
-			} else if stderr != nil && strings.TrimSpace(payload.Warning) != "" {
-				_, _ = fmt.Fprintf(stderr, "warning: %s\n", payload.Warning)
-			}
-		case *cleanroomv1.CreateSandboxEvent_Response:
-			resp = payload.Response
+		}
+		if err := stream.Err(); err != nil {
+			return err
+		}
+		if resp == nil {
+			return errors.New("create sandbox stream returned no response")
+		}
+		sandboxID = strings.TrimSpace(resp.GetSandbox().GetSandboxId())
+		if sandboxID == "" {
+			return errors.New("response missing sandbox id")
+		}
+		return nil
+	}
+
+	showProgress := stderr != nil && isTerminalFunc(int(stderr.Fd()))
+	var err error
+	if showProgress {
+		err = withSandboxProgress(stderr, run)
+	} else {
+		err = run(nil)
+		if stderr != nil {
+			writeSandboxProgressCompletePlain(stderr, err == nil, time.Since(startedAt))
 		}
 	}
-	if err := stream.Err(); err != nil {
+	if err != nil {
 		return nil, "", err
-	}
-	if resp == nil {
-		return nil, "", errors.New("create sandbox stream returned no response")
-	}
-	sandboxID := strings.TrimSpace(resp.GetSandbox().GetSandboxId())
-	if sandboxID == "" {
-		return nil, "", errors.New("response missing sandbox id")
-	}
-	if logger != nil {
-		logger.Info("Sandbox ready in " + formatSandboxProgressDuration(time.Since(startedAt)))
-	} else if stderr != nil {
-		_, _ = fmt.Fprintf(stderr, "Sandbox ready in %s\n", formatSandboxProgressDuration(time.Since(startedAt)))
 	}
 	return resp, sandboxID, nil
 }
 
 func createSandboxWithPolicy(
 	callCtx context.Context,
-	logger *log.Logger,
 	client *controlclient.Client,
 	compiled *policy.CompiledPolicy,
 	backendName string,
@@ -448,7 +450,7 @@ func createSandboxWithPolicy(
 		return "", nil, errors.New("create sandbox: missing compiled policy")
 	}
 
-	createSandboxResp, sandboxID, err := createSandboxWithProgress(callCtx, logger, os.Stderr, client, &cleanroomv1.CreateSandboxRequest{
+	createSandboxResp, sandboxID, err := createSandboxWithProgress(callCtx, os.Stderr, client, &cleanroomv1.CreateSandboxRequest{
 		Backend: backendName,
 		Options: &cleanroomv1.SandboxOptions{
 			LaunchSeconds: launchSeconds,

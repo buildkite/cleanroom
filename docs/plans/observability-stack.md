@@ -2,7 +2,7 @@
 
 **Spec reference:** `spec.md` sections 8.1, 9; `api.md` section 9.3
 **Status:** in progress
-**Last reviewed:** 2026-04-12
+**Last reviewed:** 2026-04-19
 
 ## Summary
 
@@ -17,11 +17,39 @@ standard telemetry stack built around:
 
 Current implementation note:
 
-- the first shipped tracing slice uses OpenTelemetry spans plus a Zipkin
-  exporter into local Jaeger for developer workflows
-- OTLP collector export remains the target architecture and should replace this
-  bootstrap path in a later phase once the dependency/runtime constraints are
-  resolved cleanly in this repo
+- the first shipped tracing slice added OpenTelemetry spans, trace IDs, direct
+  trace links, and serve startup/status output
+- OTLP trace export is now the only supported transport so the same Cleanroom
+  trace configuration works with local Jaeger, an OpenTelemetry Collector or
+  Grafana Alloy, and production observability backends
+
+## Immediate delivery priorities
+
+The first operator-focused observability slice should optimise for ease of use,
+not breadth.
+
+We want a user to be able to:
+
+1. point Cleanroom at Jaeger, a local Collector, Grafana Alloy, or a production
+   OTLP ingress and immediately get useful traces
+2. follow one execution from CLI to control service to gateway to backend work
+3. use the CLI as the jump-off point into the trace UI rather than manually
+   reconstructing trace identifiers
+
+That means the immediate priorities are:
+
+- OTLP trace export support in runtime config and the observability runtime,
+  with gRPC and HTTP/protobuf transport support
+- backend-neutral trace coverage across CLI, control plane, gateway, and
+  backend adapters
+- CLI integration that surfaces `trace_id` and, when configured, direct trace
+  links from failure output and `cleanroom execution inspect`
+- explicit startup/status output so operators can see where traces are being
+  exported
+
+Metrics, structured log correlation, dashboards, and collector-side enrichment
+remain important, but they should follow the initial tracing UX rather than
+block it.
 
 The implementation should stay backend-agnostic at the product boundary:
 
@@ -198,6 +226,14 @@ Preferred data path:
    to Loki.
 5. Grafana becomes the main operator UI.
 
+For the first usable slice, the trace-only subset of this path is enough:
+
+1. Cleanroom emits OTLP traces.
+2. Those traces can be sent directly to a local Jaeger OTLP ingress or to a
+   local/remote Collector.
+3. The CLI exposes the trace identifier so the operator can pivot into the
+   trace UI quickly.
+
 ### 3. Buildkite role
 
 Buildkite should become the summary layer:
@@ -352,6 +388,7 @@ observability:
     sampling:
       mode: parentbased_traceidratio
       ratio: 1.0
+    url_template: https://jaeger.example.com/trace/{{.TraceID}}?execution={{.ExecutionID}}
   metrics:
     export_interval_seconds: 30
   logs:
@@ -363,10 +400,35 @@ Notes:
 - config keys should remain backend-neutral
 - exporter auth and endpoint details belong here, not in backend adapters
 - CI hosts can still layer environment-variable overrides on top when needed
+- OTLP is the only supported transport
+- `traces.url_template` is optional and gives the CLI a backend-neutral way to
+  print direct trace links in failure footers and `cleanroom execution inspect`
 
 ## Delivery strategy
 
 This should land in phases, with useful operator value after each slice.
+
+### Phase 0.5: Usable traces first
+
+Before broad metrics/logging work, make tracing easy to adopt and easy to use.
+
+Add:
+
+- OTLP trace export support in the runtime and config layer
+- clear config validation for OTLP trace settings
+- CLI output of `trace_id` and optional `trace_url` on failures and other
+  trace jump-off points
+- gateway and backend spans needed for a useful single-execution trace
+- `cleanroom serve` startup/status output that shows where traces are being
+  exported
+
+Definition of done:
+
+- one execution can be exported to Jaeger or an OTLP-compatible production
+  stack without transport-specific product quirks
+- the CLI gives the operator enough information to find the trace quickly
+- tracing support feels like a coherent product feature rather than raw SDK
+  plumbing
 
 ### Phase 0: Taxonomy and contracts
 
@@ -533,8 +595,6 @@ Mitigation:
 
 - Should managed Grafana Cloud be the default for the first slice, or do we
   want self-hosted Tempo/Loki/Mimir from the start?
-- Do we want to expose trace URLs directly from `cleanroom execution inspect`
-  when an execution carries exported trace metadata?
 - How much CI/build metadata should become resource attributes versus
   query-time enrichment in the collector?
 - Should we emit a first-class audit event stream in addition to logs, or is

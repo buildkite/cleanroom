@@ -30,11 +30,16 @@ import (
 	"github.com/buildkite/cleanroom/internal/gateway"
 	"github.com/buildkite/cleanroom/internal/hosttools"
 	"github.com/buildkite/cleanroom/internal/imagemgr"
+	"github.com/buildkite/cleanroom/internal/observability"
 	"github.com/buildkite/cleanroom/internal/paths"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/volumestore"
 	"github.com/buildkite/cleanroom/internal/vsockexec"
 	"github.com/charmbracelet/log"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/sys/unix"
 )
 
@@ -68,6 +73,10 @@ type Adapter struct {
 	GatewayPort      int
 	GatewayBridgeURL string
 	GatewayRoutes    gateway.ProxyRoutes
+	MeterProvider    metric.MeterProvider
+	metricsOnce      sync.Once
+	metrics          *observability.BackendMetrics
+	metricsErr       error
 
 	ConfiguredNetworkMode string
 }
@@ -114,6 +123,7 @@ const runObservabilityFile = "execution-observability.json"
 
 type darwinVZRunObservation struct {
 	ExecutionID       string           `json:"execution_id"`
+	TraceID           string           `json:"trace_id,omitempty"`
 	Backend           string           `json:"backend"`
 	LaunchedVM        bool             `json:"launched_vm"`
 	ImageRef          string           `json:"image_ref,omitempty"`
@@ -134,6 +144,13 @@ type darwinVZRunObservation struct {
 	TotalMS           int64            `json:"total_ms,omitempty"`
 }
 
+func traceIDFromSpanContext(spanContext trace.SpanContext) string {
+	if !spanContext.IsValid() {
+		return ""
+	}
+	return spanContext.TraceID().String()
+}
+
 const virtualizationNetworkProcessPath = "/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine"
 
 var (
@@ -146,6 +163,38 @@ var (
 func New() *Adapter {
 	return &Adapter{
 		newImageManager: defaultImageManagerFactory,
+	}
+}
+
+func (a *Adapter) backendMetrics() *observability.BackendMetrics {
+	if a == nil {
+		return nil
+	}
+	a.metricsOnce.Do(func() {
+		a.metrics, a.metricsErr = observability.NewBackendMetrics(a.MeterProvider, "github.com/buildkite/cleanroom/internal/backend/darwinvz")
+		if a.metricsErr != nil {
+			log.Warn("darwin-vz backend metrics unavailable", "error", a.metricsErr)
+		}
+	})
+	return a.metrics
+}
+
+func (a *Adapter) recordLaunchPhaseMetrics(ctx context.Context, observation darwinVZRunObservation) {
+	metrics := a.backendMetrics()
+	if metrics == nil {
+		return
+	}
+	if observation.RootFSCopyMS > 0 {
+		metrics.RecordLaunchPhase(ctx, a.Name(), "rootfs_prepare", time.Duration(observation.RootFSCopyMS)*time.Millisecond)
+	}
+	if observation.VMReadyMS > 0 {
+		metrics.RecordLaunchPhase(ctx, a.Name(), "guest_wait_ready", time.Duration(observation.VMReadyMS)*time.Millisecond)
+	}
+	for phase, durationMS := range observation.HelperTimingMS {
+		if durationMS <= 0 {
+			continue
+		}
+		metrics.RecordLaunchPhase(ctx, a.Name(), "helper_"+strings.TrimSpace(phase), time.Duration(durationMS)*time.Millisecond)
 	}
 }
 
@@ -260,7 +309,22 @@ func (a *Adapter) Capabilities() map[string]bool {
 	}
 }
 
-func (a *Adapter) ProvisionSandbox(ctx context.Context, req backend.ProvisionRequest) error {
+func (a *Adapter) ProvisionSandbox(ctx context.Context, req backend.ProvisionRequest) (retErr error) {
+	ctx, span := trace.SpanFromContext(ctx).TracerProvider().Tracer("github.com/buildkite/cleanroom/internal/backend/darwinvz").Start(
+		ctx,
+		"cleanroom.backend.darwin-vz.provision",
+		trace.WithAttributes(attribute.String("cleanroom.sandbox.id", strings.TrimSpace(req.SandboxID))),
+	)
+	defer func() {
+		if retErr != nil {
+			span.RecordError(retErr)
+			span.SetStatus(codes.Error, retErr.Error())
+		} else {
+			span.SetStatus(codes.Ok, "")
+		}
+		span.End()
+	}()
+
 	sandboxID := strings.TrimSpace(req.SandboxID)
 	if sandboxID == "" {
 		return errors.New("missing sandbox_id")
@@ -271,7 +335,26 @@ func (a *Adapter) ProvisionSandbox(ctx context.Context, req backend.ProvisionReq
 	return a.provisionSandbox(ctx, sandboxID, req.Policy, req.FirecrackerConfig)
 }
 
-func (a *Adapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+func (a *Adapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (result *backend.ExecutionResult, retErr error) {
+	ctx, span := trace.SpanFromContext(ctx).TracerProvider().Tracer("github.com/buildkite/cleanroom/internal/backend/darwinvz").Start(
+		ctx,
+		"cleanroom.backend.darwin-vz.run",
+		trace.WithAttributes(
+			attribute.String("cleanroom.sandbox.id", strings.TrimSpace(req.SandboxID)),
+			attribute.String("cleanroom.execution.id", strings.TrimSpace(req.ExecutionID)),
+			attribute.Int("cleanroom.command.argc", len(req.Command)),
+		),
+	)
+	defer func() {
+		if retErr != nil {
+			span.RecordError(retErr)
+			span.SetStatus(codes.Error, retErr.Error())
+		} else {
+			span.SetStatus(codes.Ok, "")
+		}
+		span.End()
+	}()
+
 	sandboxID := strings.TrimSpace(req.SandboxID)
 	if sandboxID == "" {
 		return nil, errors.New("missing sandbox_id")
@@ -324,6 +407,7 @@ func (a *Adapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest
 	req.RunDir = runDir
 	observation := darwinVZRunObservation{
 		ExecutionID: req.ExecutionID,
+		TraceID:     traceIDFromSpanContext(trace.SpanContextFromContext(ctx)),
 		Backend:     a.Name(),
 		RunDir:      runDir,
 		ImageRef:    instance.ImageRef,
@@ -342,6 +426,7 @@ func (a *Adapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest
 		if err := writeDarwinVZRunObservation(runDir, &observation, time.Since(runStart).Milliseconds()); err != nil {
 			log.Warn("write darwin-vz run observability failed", "execution_id", req.ExecutionID, "error", err)
 		}
+		a.recordLaunchPhaseMetrics(ctx, observation)
 	}()
 
 	connectSeconds := req.LaunchSeconds
@@ -961,8 +1046,12 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 		if err := a.GatewayRegistry.RegisterScopeToken(token, scopeSandboxID, req.Policy); err != nil {
 			return nil, fmt.Errorf("register sandbox in gateway: %w", err)
 		}
+		a.GatewayRegistry.SetActiveExecutionTrace(scopeSandboxID, req.ExecutionID, trace.SpanContextFromContext(ctx))
 		gatewayScopeToken = token
-		defer a.GatewayRegistry.ReleaseScopeToken(gatewayScopeToken)
+		defer func() {
+			a.GatewayRegistry.ClearActiveExecutionTrace(scopeSandboxID, req.ExecutionID)
+			a.GatewayRegistry.ReleaseScopeToken(gatewayScopeToken)
+		}()
 	}
 	if startedVM.FileHandleGW != nil {
 		startedVM.FileHandleGW.SetScopeToken(gatewayScopeToken)
@@ -1420,8 +1509,12 @@ func (a *Adapter) executeInSandbox(bootCtx context.Context, runCtx context.Conte
 		if err := a.GatewayRegistry.RegisterScopeToken(token, scopeSandboxID, policy); err != nil {
 			return nil, fmt.Errorf("register sandbox in gateway: %w", err)
 		}
+		a.GatewayRegistry.SetActiveExecutionTrace(scopeSandboxID, req.ExecutionID, trace.SpanContextFromContext(runCtx))
 		gatewayScopeToken = token
-		defer a.GatewayRegistry.ReleaseScopeToken(gatewayScopeToken)
+		defer func() {
+			a.GatewayRegistry.ClearActiveExecutionTrace(scopeSandboxID, req.ExecutionID)
+			a.GatewayRegistry.ReleaseScopeToken(gatewayScopeToken)
+		}()
 	}
 	if instance.FileHandleGateway != nil {
 		instance.FileHandleGateway.SetScopeToken(gatewayScopeToken)

@@ -4,14 +4,21 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"connectrpc.com/connect"
 	"connectrpc.com/otelconnect"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/exporters/zipkin"
+	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
+	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	"go.opentelemetry.io/otel/metric"
+	metricnoop "go.opentelemetry.io/otel/metric/noop"
 	"go.opentelemetry.io/otel/propagation"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	sdkresource "go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
@@ -31,27 +38,107 @@ type Options struct {
 
 type Runtime struct {
 	tracerProvider trace.TracerProvider
+	meterProvider  metric.MeterProvider
 	interceptor    connect.Interceptor
 	shutdown       func(context.Context) error
 }
 
-func Start(ctx context.Context, opts Options) (*Runtime, error) {
-	propagator := propagation.NewCompositeTextMapPropagator(
-		propagation.TraceContext{},
-		propagation.Baggage{},
-	)
-	runtime := &Runtime{
-		tracerProvider: tracenoop.NewTracerProvider(),
-		shutdown:       func(context.Context) error { return nil },
+// NewWithTracerProvider builds an observability runtime around an existing tracer provider.
+func NewWithTracerProvider(provider trace.TracerProvider) (*Runtime, error) {
+	return NewWithProviders(provider, nil)
+}
+
+// NewWithProviders builds an observability runtime around existing tracer and meter providers.
+func NewWithProviders(tracerProvider trace.TracerProvider, meterProvider metric.MeterProvider) (*Runtime, error) {
+	if tracerProvider == nil {
+		tracerProvider = tracenoop.NewTracerProvider()
 	}
+	if meterProvider == nil {
+		meterProvider = metricnoop.NewMeterProvider()
+	}
+	return newRuntime(tracerProvider, meterProvider, func(context.Context) error { return nil })
+}
+
+func Start(ctx context.Context, opts Options) (*Runtime, error) {
+	tracerProvider := trace.TracerProvider(tracenoop.NewTracerProvider())
+	meterProvider := metric.MeterProvider(metricnoop.NewMeterProvider())
+	shutdown := func(context.Context) error { return nil }
 
 	if opts.Config.Enabled {
 		provider, err := newTracerProvider(ctx, opts)
 		if err != nil {
 			return nil, err
 		}
-		runtime.tracerProvider = provider
-		runtime.shutdown = provider.Shutdown
+		metricsProvider, err := newMeterProvider(ctx, opts)
+		if err != nil {
+			shutdownCtx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			_ = provider.Shutdown(shutdownCtx)
+			return nil, err
+		}
+		tracerProvider = provider
+		meterProvider = metricsProvider
+		shutdown = func(shutdownCtx context.Context) error {
+			metricErr := metricsProvider.Shutdown(shutdownCtx)
+			traceErr := provider.Shutdown(shutdownCtx)
+			return errors.Join(traceErr, metricErr)
+		}
+	}
+
+	return newRuntime(tracerProvider, meterProvider, shutdown)
+}
+
+func (r *Runtime) Tracer(name string, options ...trace.TracerOption) trace.Tracer {
+	if r == nil {
+		return tracenoop.NewTracerProvider().Tracer(defaultTracerName(name), options...)
+	}
+	return r.tracerProvider.Tracer(defaultTracerName(name), options...)
+}
+
+func (r *Runtime) TracerProvider() trace.TracerProvider {
+	if r == nil {
+		return tracenoop.NewTracerProvider()
+	}
+	return r.tracerProvider
+}
+
+func (r *Runtime) Meter(name string, options ...metric.MeterOption) metric.Meter {
+	if r == nil {
+		return metricnoop.NewMeterProvider().Meter(defaultTracerName(name), options...)
+	}
+	return r.meterProvider.Meter(defaultTracerName(name), options...)
+}
+
+func (r *Runtime) MeterProvider() metric.MeterProvider {
+	if r == nil {
+		return metricnoop.NewMeterProvider()
+	}
+	return r.meterProvider
+}
+
+func (r *Runtime) ConnectInterceptor() connect.Interceptor {
+	if r == nil {
+		return nil
+	}
+	return r.interceptor
+}
+
+func (r *Runtime) Shutdown(ctx context.Context) error {
+	if r == nil || r.shutdown == nil {
+		return nil
+	}
+	return r.shutdown(ctx)
+}
+
+func newRuntime(tracerProvider trace.TracerProvider, meterProvider metric.MeterProvider, shutdown func(context.Context) error) (*Runtime, error) {
+	propagator := propagation.NewCompositeTextMapPropagator(
+		propagation.TraceContext{},
+		propagation.Baggage{},
+	)
+	runtime := &Runtime{
+		tracerProvider: tracerProvider,
+		meterProvider:  meterProvider,
+		shutdown:       shutdown,
 	}
 
 	interceptor, err := otelconnect.NewInterceptor(
@@ -67,27 +154,6 @@ func Start(ctx context.Context, opts Options) (*Runtime, error) {
 	}
 	runtime.interceptor = interceptor
 	return runtime, nil
-}
-
-func (r *Runtime) Tracer(name string, options ...trace.TracerOption) trace.Tracer {
-	if r == nil {
-		return tracenoop.NewTracerProvider().Tracer(defaultTracerName(name), options...)
-	}
-	return r.tracerProvider.Tracer(defaultTracerName(name), options...)
-}
-
-func (r *Runtime) ConnectInterceptor() connect.Interceptor {
-	if r == nil {
-		return nil
-	}
-	return r.interceptor
-}
-
-func (r *Runtime) Shutdown(ctx context.Context) error {
-	if r == nil || r.shutdown == nil {
-		return nil
-	}
-	return r.shutdown(ctx)
 }
 
 func newTracerProvider(ctx context.Context, opts Options) (*sdktrace.TracerProvider, error) {
@@ -113,54 +179,185 @@ func newTracerProvider(ctx context.Context, opts Options) (*sdktrace.TracerProvi
 	), nil
 }
 
-func newTraceExporter(_ context.Context, cfg runtimeconfig.ObservabilityConfig) (sdktrace.SpanExporter, error) {
-	exporter := strings.ToLower(strings.TrimSpace(cfg.Traces.Exporter))
-	if exporter == "" {
-		if strings.TrimSpace(cfg.OTLP.Endpoint) != "" {
-			return nil, errors.New("observability.otlp is configured but this build only supports observability.traces.exporter=zipkin")
-		}
-		exporter = "zipkin"
+func newMeterProvider(ctx context.Context, opts Options) (*sdkmetric.MeterProvider, error) {
+	exporter, err := newMetricExporter(ctx, opts.Config)
+	if err != nil {
+		return nil, err
 	}
 
-	switch exporter {
-	case "zipkin":
-		return newZipkinExporter(cfg.Traces.Zipkin)
-	case "otlp", "otlp_http", "otlp/http", "http", "http/protobuf", "grpc":
-		return nil, fmt.Errorf("trace exporter %q is not supported in this build; use observability.traces.exporter=zipkin", exporter)
+	resource, err := newResource(opts)
+	if err != nil {
+		return nil, err
+	}
+
+	reader := sdkmetric.NewPeriodicReader(exporter)
+	return sdkmetric.NewMeterProvider(
+		sdkmetric.WithResource(resource),
+		sdkmetric.WithReader(reader),
+	), nil
+}
+
+func newTraceExporter(ctx context.Context, cfg runtimeconfig.ObservabilityConfig) (sdktrace.SpanExporter, error) {
+	otlpProtocol, err := runtimeconfig.ResolveOTLPTraceProtocol(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(cfg.OTLP.Endpoint) == "" {
+		return nil, errors.New("missing observability.otlp.endpoint")
+	}
+	return newOTLPExporter(ctx, cfg.OTLP, otlpProtocol)
+}
+
+func newOTLPExporter(ctx context.Context, cfg runtimeconfig.OTLPConfig, protocol string) (sdktrace.SpanExporter, error) {
+	switch protocol {
+	case "grpc":
+		return newOTLPGRPCExporter(ctx, cfg)
+	case "http/protobuf":
+		return newOTLPHTTPExporter(ctx, cfg)
 	default:
-		return nil, fmt.Errorf("unsupported observability.traces.exporter %q", cfg.Traces.Exporter)
+		return nil, fmt.Errorf("unsupported observability.otlp.protocol %q", cfg.Protocol)
 	}
 }
 
-func newZipkinExporter(cfg runtimeconfig.ZipkinConfig) (*zipkin.Exporter, error) {
-	endpoint := strings.TrimSpace(cfg.Endpoint)
-	if endpoint == "" {
-		return nil, errors.New("missing observability.traces.zipkin.endpoint")
-	}
-
-	options := make([]zipkin.Option, 0, 1)
-	if headers := runtimeconfigHeaders(cfg.Headers); len(headers) > 0 {
-		options = append(options, zipkin.WithHeaders(headers))
-	}
-
-	exporter, err := zipkin.New(endpoint, options...)
+func newMetricExporter(ctx context.Context, cfg runtimeconfig.ObservabilityConfig) (sdkmetric.Exporter, error) {
+	otlpProtocol, err := runtimeconfig.ResolveOTLPTraceProtocol(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("configure zipkin trace exporter: %w", err)
+		return nil, err
+	}
+	if strings.TrimSpace(cfg.OTLP.Endpoint) == "" {
+		return nil, errors.New("missing observability.otlp.endpoint")
+	}
+	return newOTLPMetricExporter(ctx, cfg.OTLP, otlpProtocol)
+}
+
+func newOTLPMetricExporter(ctx context.Context, cfg runtimeconfig.OTLPConfig, protocol string) (sdkmetric.Exporter, error) {
+	switch protocol {
+	case "grpc":
+		return newOTLPGRPCMetricExporter(ctx, cfg)
+	case "http/protobuf":
+		return newOTLPHTTPMetricExporter(ctx, cfg)
+	default:
+		return nil, fmt.Errorf("unsupported observability.otlp.protocol %q", cfg.Protocol)
+	}
+}
+
+func newOTLPGRPCExporter(ctx context.Context, cfg runtimeconfig.OTLPConfig) (sdktrace.SpanExporter, error) {
+	options := make([]otlptracegrpc.Option, 0, 3)
+	if endpoint := strings.TrimSpace(cfg.Endpoint); endpoint != "" {
+		if hasURLScheme(endpoint) {
+			endpointURL, err := normalizeEndpointURL(endpoint)
+			if err != nil {
+				return nil, err
+			}
+			options = append(options, otlptracegrpc.WithEndpointURL(endpointURL))
+		} else {
+			options = append(options, otlptracegrpc.WithEndpoint(endpoint))
+		}
+	}
+	if cfg.Insecure {
+		options = append(options, otlptracegrpc.WithInsecure())
+	}
+	if headers := runtimeconfigHeaders(cfg.Headers); len(headers) > 0 {
+		options = append(options, otlptracegrpc.WithHeaders(headers))
+	}
+
+	exporter, err := otlptracegrpc.New(ctx, options...)
+	if err != nil {
+		return nil, fmt.Errorf("configure otlp grpc trace exporter: %w", err)
+	}
+	return exporter, nil
+}
+
+func newOTLPHTTPExporter(ctx context.Context, cfg runtimeconfig.OTLPConfig) (sdktrace.SpanExporter, error) {
+	options := make([]otlptracehttp.Option, 0, 3)
+	if endpoint := strings.TrimSpace(cfg.Endpoint); endpoint != "" {
+		if hasURLScheme(endpoint) {
+			endpointURL, err := normalizeOTLPHTTPTraceEndpointURL(endpoint)
+			if err != nil {
+				return nil, err
+			}
+			options = append(options, otlptracehttp.WithEndpointURL(endpointURL))
+		} else {
+			options = append(options, otlptracehttp.WithEndpoint(endpoint))
+		}
+	}
+	if cfg.Insecure {
+		options = append(options, otlptracehttp.WithInsecure())
+	}
+	if headers := runtimeconfigHeaders(cfg.Headers); len(headers) > 0 {
+		options = append(options, otlptracehttp.WithHeaders(headers))
+	}
+
+	exporter, err := otlptracehttp.New(ctx, options...)
+	if err != nil {
+		return nil, fmt.Errorf("configure otlp http trace exporter: %w", err)
+	}
+	return exporter, nil
+}
+
+func newOTLPGRPCMetricExporter(ctx context.Context, cfg runtimeconfig.OTLPConfig) (sdkmetric.Exporter, error) {
+	options := make([]otlpmetricgrpc.Option, 0, 3)
+	if endpoint := strings.TrimSpace(cfg.Endpoint); endpoint != "" {
+		if hasURLScheme(endpoint) {
+			endpointURL, err := normalizeEndpointURL(endpoint)
+			if err != nil {
+				return nil, err
+			}
+			options = append(options, otlpmetricgrpc.WithEndpointURL(endpointURL))
+		} else {
+			options = append(options, otlpmetricgrpc.WithEndpoint(endpoint))
+		}
+	}
+	if cfg.Insecure {
+		options = append(options, otlpmetricgrpc.WithInsecure())
+	}
+	if headers := runtimeconfigHeaders(cfg.Headers); len(headers) > 0 {
+		options = append(options, otlpmetricgrpc.WithHeaders(headers))
+	}
+
+	exporter, err := otlpmetricgrpc.New(ctx, options...)
+	if err != nil {
+		return nil, fmt.Errorf("configure otlp grpc metric exporter: %w", err)
+	}
+	return exporter, nil
+}
+
+func newOTLPHTTPMetricExporter(ctx context.Context, cfg runtimeconfig.OTLPConfig) (sdkmetric.Exporter, error) {
+	options := make([]otlpmetrichttp.Option, 0, 3)
+	if endpoint := strings.TrimSpace(cfg.Endpoint); endpoint != "" {
+		if hasURLScheme(endpoint) {
+			endpointURL, err := normalizeOTLPHTTPMetricEndpointURL(endpoint)
+			if err != nil {
+				return nil, err
+			}
+			options = append(options, otlpmetrichttp.WithEndpointURL(endpointURL))
+		} else {
+			options = append(options, otlpmetrichttp.WithEndpoint(endpoint))
+		}
+	}
+	if cfg.Insecure {
+		options = append(options, otlpmetrichttp.WithInsecure())
+	}
+	if headers := runtimeconfigHeaders(cfg.Headers); len(headers) > 0 {
+		options = append(options, otlpmetrichttp.WithHeaders(headers))
+	}
+
+	exporter, err := otlpmetrichttp.New(ctx, options...)
+	if err != nil {
+		return nil, fmt.Errorf("configure otlp http metric exporter: %w", err)
 	}
 	return exporter, nil
 }
 
 func newSampler(cfg runtimeconfig.TraceSamplingConfig) (sdktrace.Sampler, error) {
+	if err := runtimeconfig.ValidateTraceSamplingConfig(cfg); err != nil {
+		return nil, err
+	}
+
 	mode := strings.ToLower(strings.TrimSpace(cfg.Mode))
 	ratio := 1.0
 	if cfg.Ratio != nil {
 		ratio = *cfg.Ratio
-	}
-	if cfg.Ratio == nil {
-		ratio = 1
-	}
-	if ratio < 0 || ratio > 1 {
-		return nil, fmt.Errorf("observability.traces.sampling.ratio must be between 0 and 1, got %v", ratio)
 	}
 
 	switch mode {
@@ -222,10 +419,66 @@ func runtimeconfigHeaders(headers map[string]string) map[string]string {
 	return out
 }
 
+func hasURLScheme(endpoint string) bool {
+	return strings.Contains(strings.TrimSpace(endpoint), "://")
+}
+
+func normalizeEndpointURL(endpoint string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(endpoint))
+	if err != nil {
+		return "", fmt.Errorf("invalid observability.otlp.endpoint %q: %w", endpoint, err)
+	}
+	if parsed.Scheme == "" || parsed.Host == "" {
+		return "", fmt.Errorf("invalid observability.otlp.endpoint %q", endpoint)
+	}
+	return parsed.String(), nil
+}
+
+func normalizeOTLPHTTPTraceEndpointURL(endpoint string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(endpoint))
+	if err != nil {
+		return "", fmt.Errorf("invalid observability.otlp.endpoint %q: %w", endpoint, err)
+	}
+	if parsed.Scheme == "" || parsed.Host == "" {
+		return "", fmt.Errorf("invalid observability.otlp.endpoint %q", endpoint)
+	}
+	if parsed.Path != "" && parsed.Path != "/" {
+		return "", fmt.Errorf("observability.otlp.endpoint %q must not include a path when observability.otlp.protocol is http/protobuf", endpoint)
+	}
+	parsed.Path = "/v1/traces"
+	return parsed.String(), nil
+}
+
+func normalizeOTLPHTTPMetricEndpointURL(endpoint string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(endpoint))
+	if err != nil {
+		return "", fmt.Errorf("invalid observability.otlp.endpoint %q: %w", endpoint, err)
+	}
+	if parsed.Scheme == "" || parsed.Host == "" {
+		return "", fmt.Errorf("invalid observability.otlp.endpoint %q", endpoint)
+	}
+	if parsed.Path != "" && parsed.Path != "/" {
+		return "", fmt.Errorf("observability.otlp.endpoint %q must not include a path when observability.otlp.protocol is http/protobuf", endpoint)
+	}
+	parsed.Path = "/v1/metrics"
+	return parsed.String(), nil
+}
+
 func defaultTracerName(name string) string {
 	trimmed := strings.TrimSpace(name)
 	if trimmed == "" {
 		return defaultTraceName
 	}
 	return trimmed
+}
+
+func TraceIDFromContext(ctx context.Context) string {
+	return TraceIDFromSpanContext(trace.SpanContextFromContext(ctx))
+}
+
+func TraceIDFromSpanContext(spanContext trace.SpanContext) string {
+	if !spanContext.IsValid() {
+		return ""
+	}
+	return spanContext.TraceID().String()
 }

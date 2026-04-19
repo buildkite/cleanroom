@@ -16,6 +16,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/cachestore"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
+	"github.com/buildkite/cleanroom/internal/observability"
 	"github.com/buildkite/cleanroom/internal/paths"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/repositorychangeset"
@@ -24,6 +25,12 @@ import (
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 	"github.com/buildkite/cleanroom/internal/snapshotstore"
 	"go.jetify.com/typeid"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+	"go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 type stubAdapter struct {
@@ -346,6 +353,88 @@ func newTestServiceWithSnapshotStore(adapter backend.Adapter, store snapshotMeta
 	}
 }
 
+func findEndedSpanByName(spans []trace.ReadOnlySpan, name string) trace.ReadOnlySpan {
+	for _, span := range spans {
+		if span.Name() == name {
+			return span
+		}
+	}
+	return nil
+}
+
+func collectResourceMetrics(t *testing.T, reader *sdkmetric.ManualReader) metricdata.ResourceMetrics {
+	t.Helper()
+	var metrics metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &metrics); err != nil {
+		t.Fatalf("Collect returned error: %v", err)
+	}
+	return metrics
+}
+
+func requireInt64SumMetricValue(t *testing.T, metrics metricdata.ResourceMetrics, name string, attrs map[string]string, want int64) {
+	t.Helper()
+	for _, scopeMetrics := range metrics.ScopeMetrics {
+		for _, metric := range scopeMetrics.Metrics {
+			if metric.Name != name {
+				continue
+			}
+			sum, ok := metric.Data.(metricdata.Sum[int64])
+			if !ok {
+				t.Fatalf("metric %q had unexpected data type %T", name, metric.Data)
+			}
+			for _, point := range sum.DataPoints {
+				if metricAttributesMatch(point.Attributes, attrs) {
+					if point.Value != want {
+						t.Fatalf("metric %q had value %d, want %d", name, point.Value, want)
+					}
+					return
+				}
+			}
+		}
+	}
+	t.Fatalf("metric %q with attrs %#v not found", name, attrs)
+}
+
+func requireHistogramMetricCount(t *testing.T, metrics metricdata.ResourceMetrics, name string, attrs map[string]string, want uint64) {
+	t.Helper()
+	for _, scopeMetrics := range metrics.ScopeMetrics {
+		for _, metric := range scopeMetrics.Metrics {
+			if metric.Name != name {
+				continue
+			}
+			histogram, ok := metric.Data.(metricdata.Histogram[float64])
+			if !ok {
+				t.Fatalf("metric %q had unexpected data type %T", name, metric.Data)
+			}
+			for _, point := range histogram.DataPoints {
+				if metricAttributesMatch(point.Attributes, attrs) {
+					if point.Count != want {
+						t.Fatalf("metric %q had count %d, want %d", name, point.Count, want)
+					}
+					return
+				}
+			}
+		}
+	}
+	t.Fatalf("metric %q with attrs %#v not found", name, attrs)
+}
+
+func metricAttributesMatch(set attribute.Set, want map[string]string) bool {
+	if len(want) == 0 {
+		return true
+	}
+	got := map[string]string{}
+	for _, kv := range set.ToSlice() {
+		got[string(kv.Key)] = kv.Value.AsString()
+	}
+	for key, wantValue := range want {
+		if got[key] != wantValue {
+			return false
+		}
+	}
+	return true
+}
+
 func testRetentionPolicy() *retentionPolicy {
 	retention := defaultRetentionPolicy
 	return &retention
@@ -358,6 +447,322 @@ func testRepositoryCheckoutProto() *cleanroomv1.RepositoryCheckout {
 		DestinationDir: "/workspace",
 		Submodules:     true,
 	}
+}
+
+func TestCreateSandboxTracesBootstrapFailure(t *testing.T) {
+	t.Parallel()
+
+	recorder := tracetest.NewSpanRecorder()
+	tracerProvider := trace.NewTracerProvider()
+	tracerProvider.RegisterSpanProcessor(recorder)
+	defer func() {
+		_ = tracerProvider.Shutdown(context.Background())
+	}()
+
+	parentCtx, parentSpan := tracerProvider.Tracer("test").Start(context.Background(), "cleanroom.parent")
+	parentSpanContext := parentSpan.SpanContext()
+
+	runCount := 0
+	adapter := &stubAdapter{
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+			runCount++
+			switch runCount {
+			case 1:
+				if stream.OnStdout != nil {
+					stream.OnStdout([]byte("repository bootstrap ok\n"))
+				}
+				return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, LaunchedVM: true, Message: "ok"}, nil
+			case 2:
+				message := "dns error: failed to lookup address information: Try again\n"
+				if stream.OnStderr != nil {
+					stream.OnStderr([]byte(message))
+				}
+				return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 1, LaunchedVM: true, Stderr: message, Message: strings.TrimSpace(message)}, nil
+			default:
+				t.Fatalf("unexpected bootstrap run %d for command %q", runCount, req.Command)
+				return nil, nil
+			}
+		},
+	}
+	svc := newTestService(adapter)
+	obs, err := observability.NewWithTracerProvider(tracerProvider)
+	if err != nil {
+		t.Fatalf("NewWithTracerProvider returned error: %v", err)
+	}
+	svc.Observability = obs
+	svc.Config.Backends.Firecracker.Snapshots = runtimeconfig.SnapshotConfig{}
+
+	mirrors, repository := testRepositoryMirror(t, map[string]string{
+		".mise.toml": "[tools]\ngo = '1.25.9'\n",
+		"go.mod":     "module example.com/test\n",
+		"go.sum":     "",
+	})
+	svc.RepositoryStore = mirrors
+
+	_, err = svc.CreateSandbox(parentCtx, &cleanroomv1.CreateSandboxRequest{
+		Backend:            "firecracker",
+		Policy:             testRepositoryDependencyPolicy(),
+		RepositoryCheckout: repository,
+	})
+	parentSpan.End()
+	if err == nil {
+		t.Fatal("expected dependency bootstrap failure")
+	}
+	if !strings.Contains(err.Error(), "dns error") {
+		t.Fatalf("unexpected create sandbox error: %v", err)
+	}
+
+	spans := recorder.Ended()
+	createSpan := findEndedSpanByName(spans, "cleanroom.sandbox.create")
+	if createSpan == nil {
+		t.Fatalf("expected cleanroom.sandbox.create span, got spans %#v", spans)
+	}
+	repositorySpan := findEndedSpanByName(spans, "cleanroom.sandbox.bootstrap_repository")
+	if repositorySpan == nil {
+		t.Fatalf("expected cleanroom.sandbox.bootstrap_repository span, got spans %#v", spans)
+	}
+	dependencySpan := findEndedSpanByName(spans, "cleanroom.sandbox.bootstrap_dependencies")
+	if dependencySpan == nil {
+		t.Fatalf("expected cleanroom.sandbox.bootstrap_dependencies span, got spans %#v", spans)
+	}
+
+	if got, want := createSpan.SpanContext().TraceID(), parentSpanContext.TraceID(); got != want {
+		t.Fatalf("unexpected create sandbox trace id: got %s want %s", got, want)
+	}
+	if got, want := createSpan.Parent().SpanID(), parentSpanContext.SpanID(); got != want {
+		t.Fatalf("unexpected create sandbox parent span id: got %s want %s", got, want)
+	}
+	if got, want := repositorySpan.Parent().SpanID(), createSpan.SpanContext().SpanID(); got != want {
+		t.Fatalf("unexpected repository bootstrap parent span id: got %s want %s", got, want)
+	}
+	if got, want := dependencySpan.Parent().SpanID(), createSpan.SpanContext().SpanID(); got != want {
+		t.Fatalf("unexpected dependency bootstrap parent span id: got %s want %s", got, want)
+	}
+	if got, want := repositorySpan.Status().Code, codes.Ok; got != want {
+		t.Fatalf("unexpected repository bootstrap span status: got %v want %v", got, want)
+	}
+	if got, want := dependencySpan.Status().Code, codes.Error; got != want {
+		t.Fatalf("unexpected dependency bootstrap span status: got %v want %v", got, want)
+	}
+	if got, want := createSpan.Status().Code, codes.Error; got != want {
+		t.Fatalf("unexpected create sandbox span status: got %v want %v", got, want)
+	}
+}
+
+func TestServiceEmitsSandboxAndExecutionMetrics(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	meterProvider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	tracerProvider := trace.NewTracerProvider()
+	defer func() {
+		_ = meterProvider.Shutdown(context.Background())
+		_ = tracerProvider.Shutdown(context.Background())
+	}()
+
+	obs, err := observability.NewWithProviders(tracerProvider, meterProvider)
+	if err != nil {
+		t.Fatalf("NewWithProviders returned error: %v", err)
+	}
+
+	adapter := &stubAdapter{
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
+			return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, LaunchedVM: true, Message: "ok"}, nil
+		},
+	}
+	svc := newTestService(adapter)
+	svc.Observability = obs
+
+	compiled := &policy.CompiledPolicy{
+		Version:        1,
+		NetworkDefault: "deny",
+		ImageRef:       "ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		ImageDigest:    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+	}
+	sandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Backend: "firecracker",
+		Policy:  compiled.ToProto(),
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+
+	executionResp, err := svc.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+		SandboxId: sandboxResp.GetSandbox().GetSandboxId(),
+		Command:   []string{"echo", "hello"},
+		Kind:      cleanroomv1.ExecutionKind_EXECUTION_KIND_BATCH,
+	})
+	if err != nil {
+		t.Fatalf("CreateExecution returned error: %v", err)
+	}
+
+	key := executionKey(sandboxResp.GetSandbox().GetSandboxId(), executionResp.GetExecution().GetExecutionId())
+	svc.mu.RLock()
+	done := svc.executions[key].Done
+	svc.mu.RUnlock()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for execution to finish")
+	}
+
+	metrics := collectResourceMetrics(t, reader)
+	requireHistogramMetricCount(t, metrics, "cleanroom_sandbox_create_duration_seconds", map[string]string{
+		"backend": "firecracker",
+		"source":  "fresh",
+		"outcome": "succeeded",
+	}, 1)
+	requireInt64SumMetricValue(t, metrics, "cleanroom_execution_total", map[string]string{
+		"backend": "firecracker",
+		"kind":    "batch",
+		"outcome": "succeeded",
+	}, 1)
+	requireHistogramMetricCount(t, metrics, "cleanroom_execution_duration_seconds", map[string]string{
+		"backend": "firecracker",
+		"kind":    "batch",
+		"outcome": "succeeded",
+	}, 1)
+}
+
+func TestServiceSandboxCreateMetricsTrackWorkspaceCacheFailureSource(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	reader := sdkmetric.NewManualReader()
+	meterProvider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	tracerProvider := trace.NewTracerProvider()
+	defer func() {
+		_ = meterProvider.Shutdown(context.Background())
+		_ = tracerProvider.Shutdown(context.Background())
+	}()
+
+	obs, err := observability.NewWithProviders(tracerProvider, meterProvider)
+	if err != nil {
+		t.Fatalf("NewWithProviders returned error: %v", err)
+	}
+
+	store := newMemorySnapshotStore()
+	runCalls := 0
+	adapter := &stubAdapter{
+		createSnapshotFn: func(_ context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
+			return &backend.SnapshotResult{StorageRef: "/snapshots/" + req.SnapshotID + ".ext4"}, nil
+		},
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
+			runCalls++
+			result := &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, LaunchedVM: true, Message: "ok"}
+			if runCalls == 3 {
+				result.ExitCode = 1
+				result.Message = "dependency bootstrap failed"
+				result.Stderr = "dependency bootstrap failed\n"
+			}
+			return result, nil
+		},
+	}
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"go.mod": "module example.com/test\n\ngo 1.26.2\n",
+		"go.sum": "example.com/test v0.0.0 h1:abc123\n",
+	})
+	svc := newTestServiceWithSnapshotStore(adapter, store)
+	svc.Observability = obs
+	svc.RepositoryStore = mirrors
+
+	req := &cleanroomv1.CreateSandboxRequest{
+		Policy:             testRepositoryDependencyPolicy(),
+		RepositoryCheckout: repositoryCheckout,
+	}
+	if _, err := svc.CreateSandbox(context.Background(), req); err != nil {
+		t.Fatalf("first CreateSandbox returned error: %v", err)
+	}
+
+	records, err := svc.CacheStore.List(context.Background())
+	if err != nil {
+		t.Fatalf("List cache records returned error: %v", err)
+	}
+	for _, record := range records {
+		if record.Stage != "dependency" {
+			continue
+		}
+		if err := svc.CacheStore.Delete(context.Background(), record.Stage, record.CacheKey); err != nil {
+			t.Fatalf("Delete dependency cache record returned error: %v", err)
+		}
+	}
+
+	_, err = svc.CreateSandbox(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected second CreateSandbox to fail during dependency bootstrap")
+	}
+	if !strings.Contains(err.Error(), "bootstrap dependency stage") {
+		t.Fatalf("unexpected CreateSandbox error: %v", err)
+	}
+
+	metrics := collectResourceMetrics(t, reader)
+	requireHistogramMetricCount(t, metrics, "cleanroom_sandbox_create_duration_seconds", map[string]string{
+		"backend": "firecracker",
+		"source":  "fresh",
+		"outcome": "succeeded",
+	}, 1)
+	requireHistogramMetricCount(t, metrics, "cleanroom_sandbox_create_duration_seconds", map[string]string{
+		"backend": "firecracker",
+		"source":  "workspace_cache",
+		"outcome": "failed",
+	}, 1)
+}
+
+func TestServiceSandboxCreateMetricsUseSnapshotBackend(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	meterProvider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	tracerProvider := trace.NewTracerProvider()
+	defer func() {
+		_ = meterProvider.Shutdown(context.Background())
+		_ = tracerProvider.Shutdown(context.Background())
+	}()
+
+	obs, err := observability.NewWithProviders(tracerProvider, meterProvider)
+	if err != nil {
+		t.Fatalf("NewWithProviders returned error: %v", err)
+	}
+
+	store := newMemorySnapshotStore()
+	if err := store.Create(context.Background(), snapshotstore.Record{
+		SnapshotID:      "snap-1",
+		SourceSandboxID: "sandbox-source",
+		Backend:         "darwin-vz",
+		PolicyHash:      "policy-hash",
+		Policy:          testPolicy(),
+		StorageDriver:   "apfs",
+		StorageRef:      "/snapshots/snap-1.apfs",
+		CreatedAt:       time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("Create snapshot record returned error: %v", err)
+	}
+
+	adapter := &stubAdapter{}
+	svc := &Service{
+		Config: runtimeconfig.Config{
+			DefaultBackend: "firecracker",
+			Backends: runtimeconfig.Backends{
+				DarwinVZ: runtimeconfig.DarwinVZConfig{
+					Snapshots: runtimeconfig.SnapshotConfig{
+						Enabled: true,
+						Driver:  "apfs",
+					},
+				},
+			},
+		},
+		Backends:      map[string]backend.Adapter{"darwin-vz": adapter},
+		Observability: obs,
+		SnapshotStore: store,
+	}
+
+	if _, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Source: &cleanroomv1.CreateSandboxRequest_SnapshotId{SnapshotId: "snap-1"},
+	}); err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+
+	metrics := collectResourceMetrics(t, reader)
+	requireHistogramMetricCount(t, metrics, "cleanroom_sandbox_create_duration_seconds", map[string]string{
+		"backend": "darwin-vz",
+		"source":  "snapshot",
+		"outcome": "succeeded",
+	}, 1)
 }
 
 func testRepositoryMirror(t *testing.T, files map[string]string) (*stubRepositoryMirrorStore, *cleanroomv1.RepositoryCheckout) {

@@ -1,9 +1,9 @@
 package observability
 
 import (
-	"bytes"
 	"context"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,7 +11,12 @@ import (
 	"time"
 
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
+	"go.opentelemetry.io/otel/metric"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	colmetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
+	coltracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
+	"google.golang.org/grpc"
+	"google.golang.org/protobuf/proto"
 )
 
 func float64Ptr(v float64) *float64 {
@@ -31,36 +36,72 @@ func TestStartDisabledReturnsRuntime(t *testing.T) {
 	}
 }
 
-func TestStartRejectsMissingEndpointWhenEnabled(t *testing.T) {
+func TestStartRejectsUnsupportedTraceExporterWhenEnabled(t *testing.T) {
 	_, err := Start(context.Background(), Options{
 		Config: runtimeconfig.ObservabilityConfig{
 			Enabled: true,
+			OTLP: runtimeconfig.OTLPConfig{
+				Endpoint: "http://localhost:4318",
+			},
 			Traces: runtimeconfig.TraceConfig{
 				Exporter: "zipkin",
 			},
 		},
 	})
 	if err == nil {
-		t.Fatal("expected Start to reject missing observability.traces.zipkin.endpoint")
+		t.Fatal("expected Start to reject unsupported observability.traces.exporter")
 	}
-	if !strings.Contains(err.Error(), "missing observability.traces.zipkin.endpoint") {
+	if !strings.Contains(err.Error(), "unsupported observability.traces.exporter") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
-func TestStartRejectsUnsupportedProtocol(t *testing.T) {
+func TestStartRejectsMissingOTLPEndpointWhenEnabled(t *testing.T) {
 	_, err := Start(context.Background(), Options{
 		Config: runtimeconfig.ObservabilityConfig{
 			Enabled: true,
-			Traces: runtimeconfig.TraceConfig{
-				Exporter: "grpc",
+		},
+	})
+	if err == nil {
+		t.Fatal("expected Start to reject missing observability.otlp.endpoint")
+	}
+	if !strings.Contains(err.Error(), "missing observability.otlp.endpoint") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestStartRejectsUnsupportedOTLPProtocol(t *testing.T) {
+	_, err := Start(context.Background(), Options{
+		Config: runtimeconfig.ObservabilityConfig{
+			Enabled: true,
+			OTLP: runtimeconfig.OTLPConfig{
+				Endpoint: "http://localhost:4318",
+				Protocol: "banana",
 			},
 		},
 	})
 	if err == nil {
-		t.Fatal("expected Start to reject unsupported protocol")
+		t.Fatal("expected Start to reject unsupported OTLP protocol")
 	}
-	if !strings.Contains(err.Error(), "not supported in this build") {
+	if !strings.Contains(err.Error(), "observability.otlp.protocol") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestStartRejectsOTLPHTTPPath(t *testing.T) {
+	_, err := Start(context.Background(), Options{
+		Config: runtimeconfig.ObservabilityConfig{
+			Enabled: true,
+			OTLP: runtimeconfig.OTLPConfig{
+				Endpoint: "https://collector.example.test/v1/traces",
+				Protocol: "http/protobuf",
+			},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected Start to reject OTLP HTTP endpoints with a path")
+	}
+	if !strings.Contains(err.Error(), "must not include a path") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -115,11 +156,20 @@ func TestNewSamplerPreservesExplicitZeroRatio(t *testing.T) {
 	}
 }
 
-func TestStartExportsZipkinSpanOnShutdown(t *testing.T) {
-	bodyCh := make(chan []byte, 1)
+func TestStartExportsOTLPHTTPSpanOnShutdown(t *testing.T) {
+	bodyCh := make(chan []byte, 8)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got, want := r.URL.Path, "/api/v2/spans"; got != want {
+		if r.URL.Path == "/v1/metrics" {
+			w.Header().Set("Content-Type", "application/x-protobuf")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte{0x0a, 0x00})
+			return
+		}
+		if got, want := r.URL.Path, "/v1/traces"; got != want {
 			t.Errorf("unexpected request path: got %q want %q", got, want)
+		}
+		if got, want := r.Header.Get("X-Trace-Token"), "secret"; got != want {
+			t.Errorf("unexpected request header: got %q want %q", got, want)
 		}
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -127,18 +177,24 @@ func TestStartExportsZipkinSpanOnShutdown(t *testing.T) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		bodyCh <- body
-		w.WriteHeader(http.StatusAccepted)
+		select {
+		case bodyCh <- body:
+		default:
+		}
+		w.Header().Set("Content-Type", "application/x-protobuf")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte{0x0a, 0x00})
 	}))
 	defer server.Close()
 
 	runtime, err := Start(context.Background(), Options{
 		Config: runtimeconfig.ObservabilityConfig{
 			Enabled: true,
-			Traces: runtimeconfig.TraceConfig{
-				Exporter: "zipkin",
-				Zipkin: runtimeconfig.ZipkinConfig{
-					Endpoint: server.URL + "/api/v2/spans",
+			OTLP: runtimeconfig.OTLPConfig{
+				Endpoint: server.URL,
+				Protocol: "http/protobuf",
+				Headers: map[string]string{
+					"X-Trace-Token": "secret",
 				},
 			},
 		},
@@ -148,7 +204,7 @@ func TestStartExportsZipkinSpanOnShutdown(t *testing.T) {
 		t.Fatalf("Start returned error: %v", err)
 	}
 
-	_, span := runtime.Tracer("github.com/buildkite/cleanroom/internal/observability_test").Start(context.Background(), "cleanroom.test")
+	_, span := runtime.Tracer("github.com/buildkite/cleanroom/internal/observability_test").Start(context.Background(), "cleanroom.test.otlp.http")
 	span.End()
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -159,10 +215,212 @@ func TestStartExportsZipkinSpanOnShutdown(t *testing.T) {
 
 	select {
 	case body := <-bodyCh:
-		if !bytes.Contains(body, []byte(`"name":"cleanroom.test"`)) {
-			t.Fatalf("expected exported span payload to contain span name, got %s", body)
+		var req coltracepb.ExportTraceServiceRequest
+		if err := proto.Unmarshal(body, &req); err != nil {
+			t.Fatalf("unmarshal OTLP HTTP request: %v", err)
+		}
+		if len(req.ResourceSpans) == 0 {
+			t.Fatal("expected exported OTLP HTTP request to contain resource spans")
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for zipkin span export")
+		t.Fatal("timed out waiting for OTLP HTTP span export")
 	}
+}
+
+func TestStartExportsOTLPHTTPMetricsOnShutdown(t *testing.T) {
+	bodyCh := make(chan []byte, 8)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/metrics" {
+			w.Header().Set("Content-Type", "application/x-protobuf")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte{0x0a, 0x00})
+			return
+		}
+		if got, want := r.Header.Get("X-Metric-Token"), "secret"; got != want {
+			t.Errorf("unexpected request header: got %q want %q", got, want)
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read request body: %v", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		select {
+		case bodyCh <- body:
+		default:
+		}
+		w.Header().Set("Content-Type", "application/x-protobuf")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte{0x0a, 0x00})
+	}))
+	defer server.Close()
+
+	runtime, err := Start(context.Background(), Options{
+		Config: runtimeconfig.ObservabilityConfig{
+			Enabled: true,
+			OTLP: runtimeconfig.OTLPConfig{
+				Endpoint: server.URL,
+				Protocol: "http/protobuf",
+				Headers: map[string]string{
+					"X-Metric-Token": "secret",
+				},
+			},
+		},
+		ServiceName: "cleanroom-cli",
+	})
+	if err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+
+	counter, err := runtime.Meter("github.com/buildkite/cleanroom/internal/observability_test").Int64Counter("cleanroom.test.metric")
+	if err != nil {
+		t.Fatalf("Int64Counter returned error: %v", err)
+	}
+	counter.Add(context.Background(), 1, metric.WithAttributes())
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := runtime.Shutdown(shutdownCtx); err != nil {
+		t.Fatalf("Shutdown returned error: %v", err)
+	}
+
+	select {
+	case body := <-bodyCh:
+		var req colmetricspb.ExportMetricsServiceRequest
+		if err := proto.Unmarshal(body, &req); err != nil {
+			t.Fatalf("unmarshal OTLP HTTP metric request: %v", err)
+		}
+		if len(req.ResourceMetrics) == 0 {
+			t.Fatal("expected exported OTLP HTTP metric request to contain resource metrics")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for OTLP HTTP metric export")
+	}
+}
+
+func TestStartExportsOTLPGRPCSpanOnShutdownWithDefaultProtocol(t *testing.T) {
+	requestCh := make(chan *coltracepb.ExportTraceServiceRequest, 1)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer listener.Close()
+
+	grpcServer := grpc.NewServer()
+	coltracepb.RegisterTraceServiceServer(grpcServer, &captureTraceService{requests: requestCh})
+	colmetricspb.RegisterMetricsServiceServer(grpcServer, &captureMetricService{})
+	defer grpcServer.Stop()
+	go func() {
+		_ = grpcServer.Serve(listener)
+	}()
+
+	runtime, err := Start(context.Background(), Options{
+		Config: runtimeconfig.ObservabilityConfig{
+			Enabled: true,
+			OTLP: runtimeconfig.OTLPConfig{
+				Endpoint: listener.Addr().String(),
+				Insecure: true,
+				Headers: map[string]string{
+					"x-trace-token": "secret",
+				},
+			},
+		},
+		ServiceName: "cleanroom-cli",
+	})
+	if err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+
+	_, span := runtime.Tracer("github.com/buildkite/cleanroom/internal/observability_test").Start(context.Background(), "cleanroom.test.otlp.grpc")
+	span.End()
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := runtime.Shutdown(shutdownCtx); err != nil {
+		t.Fatalf("Shutdown returned error: %v", err)
+	}
+
+	select {
+	case req := <-requestCh:
+		if len(req.ResourceSpans) == 0 {
+			t.Fatal("expected exported OTLP gRPC request to contain resource spans")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for OTLP gRPC span export")
+	}
+}
+
+func TestStartExportsOTLPGRPCMetricsOnShutdown(t *testing.T) {
+	requestCh := make(chan *colmetricspb.ExportMetricsServiceRequest, 1)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer listener.Close()
+
+	grpcServer := grpc.NewServer()
+	colmetricspb.RegisterMetricsServiceServer(grpcServer, &captureMetricService{requests: requestCh})
+	defer grpcServer.Stop()
+	go func() {
+		_ = grpcServer.Serve(listener)
+	}()
+
+	runtime, err := Start(context.Background(), Options{
+		Config: runtimeconfig.ObservabilityConfig{
+			Enabled: true,
+			OTLP: runtimeconfig.OTLPConfig{
+				Endpoint: listener.Addr().String(),
+				Insecure: true,
+			},
+		},
+		ServiceName: "cleanroom-cli",
+	})
+	if err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+
+	counter, err := runtime.Meter("github.com/buildkite/cleanroom/internal/observability_test").Int64Counter("cleanroom.test.grpc.metric")
+	if err != nil {
+		t.Fatalf("Int64Counter returned error: %v", err)
+	}
+	counter.Add(context.Background(), 1)
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := runtime.Shutdown(shutdownCtx); err != nil {
+		t.Fatalf("Shutdown returned error: %v", err)
+	}
+
+	select {
+	case req := <-requestCh:
+		if len(req.ResourceMetrics) == 0 {
+			t.Fatal("expected exported OTLP gRPC request to contain resource metrics")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for OTLP gRPC metric export")
+	}
+}
+
+type captureTraceService struct {
+	coltracepb.UnimplementedTraceServiceServer
+	requests chan *coltracepb.ExportTraceServiceRequest
+}
+
+func (s *captureTraceService) Export(_ context.Context, req *coltracepb.ExportTraceServiceRequest) (*coltracepb.ExportTraceServiceResponse, error) {
+	if s != nil && s.requests != nil {
+		s.requests <- req
+	}
+	return &coltracepb.ExportTraceServiceResponse{}, nil
+}
+
+type captureMetricService struct {
+	colmetricspb.UnimplementedMetricsServiceServer
+	requests chan *colmetricspb.ExportMetricsServiceRequest
+}
+
+func (s *captureMetricService) Export(_ context.Context, req *colmetricspb.ExportMetricsServiceRequest) (*colmetricspb.ExportMetricsServiceResponse, error) {
+	if s != nil && s.requests != nil {
+		s.requests <- req
+	}
+	return &colmetricspb.ExportMetricsServiceResponse{}, nil
 }

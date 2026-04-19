@@ -82,11 +82,14 @@ func TestSandboxCreateIntegrationShowsProgressWhileProvisioning(t *testing.T) {
 	if strings.TrimSpace(outcome.stdout) == "" {
 		t.Fatalf("expected sandbox id output, got %q", outcome.stdout)
 	}
-	if !strings.Contains(outcome.stderr, "provisioning sandbox") {
-		t.Fatalf("expected provisioning message in stderr, got %q", outcome.stderr)
+	if !strings.Contains(outcome.stderr, "Preparing sandbox") {
+		t.Fatalf("expected sandbox progress output in stderr, got %q", outcome.stderr)
 	}
-	if !strings.Contains(outcome.stderr, "component=client") {
-		t.Fatalf("expected structured logger output in stderr, got %q", outcome.stderr)
+	if strings.Contains(outcome.stderr, "provisioning sandbox") {
+		t.Fatalf("expected sandbox phase chatter to be hidden, got %q", outcome.stderr)
+	}
+	if strings.Contains(outcome.stderr, "component=client") {
+		t.Fatalf("expected structured client logs to be hidden, got %q", outcome.stderr)
 	}
 	if !strings.Contains(outcome.stderr, "Sandbox ready in") {
 		t.Fatalf("expected completion message in stderr, got %q", outcome.stderr)
@@ -123,11 +126,14 @@ func TestExecIntegrationShowsProgressWhenCreatingSandbox(t *testing.T) {
 	if !strings.Contains(outcome.stdout, "ok\n") {
 		t.Fatalf("expected command output, got %q", outcome.stdout)
 	}
-	if !strings.Contains(outcome.stderr, "provisioning sandbox") {
-		t.Fatalf("expected provisioning message in stderr, got %q", outcome.stderr)
+	if !strings.Contains(outcome.stderr, "Preparing sandbox") {
+		t.Fatalf("expected sandbox progress output in stderr, got %q", outcome.stderr)
 	}
-	if !strings.Contains(outcome.stderr, "component=client") {
-		t.Fatalf("expected structured logger output in stderr, got %q", outcome.stderr)
+	if strings.Contains(outcome.stderr, "provisioning sandbox") {
+		t.Fatalf("expected sandbox phase chatter to be hidden, got %q", outcome.stderr)
+	}
+	if strings.Contains(outcome.stderr, "component=client") {
+		t.Fatalf("expected structured client logs to be hidden, got %q", outcome.stderr)
 	}
 	if !strings.Contains(outcome.stderr, "Sandbox ready in") {
 		t.Fatalf("expected completion message in stderr, got %q", outcome.stderr)
