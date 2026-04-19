@@ -705,6 +705,66 @@ func TestServiceSandboxCreateMetricsTrackWorkspaceCacheFailureSource(t *testing.
 	}, 1)
 }
 
+func TestServiceSandboxCreateMetricsUseSnapshotBackend(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	meterProvider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	tracerProvider := trace.NewTracerProvider()
+	defer func() {
+		_ = meterProvider.Shutdown(context.Background())
+		_ = tracerProvider.Shutdown(context.Background())
+	}()
+
+	obs, err := observability.NewWithProviders(tracerProvider, meterProvider)
+	if err != nil {
+		t.Fatalf("NewWithProviders returned error: %v", err)
+	}
+
+	store := newMemorySnapshotStore()
+	if err := store.Create(context.Background(), snapshotstore.Record{
+		SnapshotID:      "snap-1",
+		SourceSandboxID: "sandbox-source",
+		Backend:         "darwin-vz",
+		PolicyHash:      "policy-hash",
+		Policy:          testPolicy(),
+		StorageDriver:   "apfs",
+		StorageRef:      "/snapshots/snap-1.apfs",
+		CreatedAt:       time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("Create snapshot record returned error: %v", err)
+	}
+
+	adapter := &stubAdapter{}
+	svc := &Service{
+		Config: runtimeconfig.Config{
+			DefaultBackend: "firecracker",
+			Backends: runtimeconfig.Backends{
+				DarwinVZ: runtimeconfig.DarwinVZConfig{
+					Snapshots: runtimeconfig.SnapshotConfig{
+						Enabled: true,
+						Driver:  "apfs",
+					},
+				},
+			},
+		},
+		Backends:      map[string]backend.Adapter{"darwin-vz": adapter},
+		Observability: obs,
+		SnapshotStore: store,
+	}
+
+	if _, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Source: &cleanroomv1.CreateSandboxRequest_SnapshotId{SnapshotId: "snap-1"},
+	}); err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+
+	metrics := collectResourceMetrics(t, reader)
+	requireHistogramMetricCount(t, metrics, "cleanroom_sandbox_create_duration_seconds", map[string]string{
+		"backend": "darwin-vz",
+		"source":  "snapshot",
+		"outcome": "succeeded",
+	}, 1)
+}
+
 func testRepositoryMirror(t *testing.T, files map[string]string) (*stubRepositoryMirrorStore, *cleanroomv1.RepositoryCheckout) {
 	t.Helper()
 

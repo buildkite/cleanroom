@@ -461,6 +461,33 @@ func TestLoadRejectsUnsupportedObservabilityOTLPProtocol(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsObservabilityOTLPHTTPPathWhenEnabled(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	configPath := filepath.Join(tmp, "cleanroom", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	content := `observability:
+  enabled: true
+  otlp:
+    endpoint: https://collector.example.test/v1/traces
+    protocol: http/protobuf
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, _, err := Load()
+	if err == nil {
+		t.Fatal("expected Load to reject observability.otlp.endpoint with a path for OTLP HTTP")
+	}
+	if !strings.Contains(err.Error(), "must not include a path") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestLoadAllowsUnsupportedObservabilityConfigWhenDisabled(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", tmp)

@@ -88,6 +88,24 @@ func TestStartRejectsUnsupportedOTLPProtocol(t *testing.T) {
 	}
 }
 
+func TestStartRejectsOTLPHTTPPath(t *testing.T) {
+	_, err := Start(context.Background(), Options{
+		Config: runtimeconfig.ObservabilityConfig{
+			Enabled: true,
+			OTLP: runtimeconfig.OTLPConfig{
+				Endpoint: "https://collector.example.test/v1/traces",
+				Protocol: "http/protobuf",
+			},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected Start to reject OTLP HTTP endpoints with a path")
+	}
+	if !strings.Contains(err.Error(), "must not include a path") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestNewSamplerRejectsOutOfRangeRatio(t *testing.T) {
 	_, err := newSampler(runtimeconfig.TraceSamplingConfig{
 		Mode:  "parentbased_traceidratio",

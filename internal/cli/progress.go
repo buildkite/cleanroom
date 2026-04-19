@@ -84,7 +84,7 @@ func (p *sandboxProgress) complete(success bool, elapsed time.Duration) {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if !p.shown || p.stderr == nil {
+	if (!p.shown && !p.suppressed) || p.stderr == nil {
 		return
 	}
 	if p.useANSI {
@@ -143,9 +143,7 @@ func withSandboxProgress(stderr *os.File, fn func(progress *sandboxProgress) err
 	close(done)
 	<-stopped
 
-	if progress.wasShown() {
-		progress.complete(err == nil, time.Since(startedAt))
-	}
+	progress.complete(err == nil, time.Since(startedAt))
 	return err
 }
 

@@ -256,11 +256,15 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 		),
 	)
 	defer func() {
+		metricBackendName := backendName
 		if resp != nil && resp.GetSandbox() != nil {
 			span.SetAttributes(
 				attribute.String("cleanroom.backend", resp.GetSandbox().GetBackend()),
 				attribute.String("cleanroom.sandbox.id", resp.GetSandbox().GetSandboxId()),
 			)
+			if resolvedBackend := strings.TrimSpace(resp.GetSandbox().GetBackend()); resolvedBackend != "" {
+				metricBackendName = resolvedBackend
+			}
 		}
 		if err != nil {
 			span.RecordError(err)
@@ -271,7 +275,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 		if metrics := s.serviceMetrics(); metrics != nil {
 			metrics.RecordSandboxCreate(
 				ctx,
-				backendName,
+				metricBackendName,
 				sandboxCreateSourceMetricValue(snapshotID, metricSourceKind),
 				map[bool]string{true: "failed", false: "succeeded"}[err != nil],
 				s.clock().Now().Sub(createStarted),

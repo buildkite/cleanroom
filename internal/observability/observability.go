@@ -442,9 +442,10 @@ func normalizeOTLPHTTPTraceEndpointURL(endpoint string) (string, error) {
 	if parsed.Scheme == "" || parsed.Host == "" {
 		return "", fmt.Errorf("invalid observability.otlp.endpoint %q", endpoint)
 	}
-	if parsed.Path == "" || parsed.Path == "/" {
-		parsed.Path = "/v1/traces"
+	if parsed.Path != "" && parsed.Path != "/" {
+		return "", fmt.Errorf("observability.otlp.endpoint %q must not include a path when observability.otlp.protocol is http/protobuf", endpoint)
 	}
+	parsed.Path = "/v1/traces"
 	return parsed.String(), nil
 }
 
@@ -456,9 +457,10 @@ func normalizeOTLPHTTPMetricEndpointURL(endpoint string) (string, error) {
 	if parsed.Scheme == "" || parsed.Host == "" {
 		return "", fmt.Errorf("invalid observability.otlp.endpoint %q", endpoint)
 	}
-	if parsed.Path == "" || parsed.Path == "/" {
-		parsed.Path = "/v1/metrics"
+	if parsed.Path != "" && parsed.Path != "/" {
+		return "", fmt.Errorf("observability.otlp.endpoint %q must not include a path when observability.otlp.protocol is http/protobuf", endpoint)
 	}
+	parsed.Path = "/v1/metrics"
 	return parsed.String(), nil
 }
 

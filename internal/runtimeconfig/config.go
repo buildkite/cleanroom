@@ -448,7 +448,7 @@ func normalizeConfig(cfg Config, inferredDefaultBackend string) Config {
 	cfg.Observability.Traces.Sampling.Mode = strings.TrimSpace(cfg.Observability.Traces.Sampling.Mode)
 	cfg.Observability.Traces.URLTemplate = strings.TrimSpace(cfg.Observability.Traces.URLTemplate)
 	return cfg
-	}
+}
 
 func inferredDefaultBackend(hasFirecracker, hasDarwinVZ bool) string {
 	if hasFirecracker == hasDarwinVZ {
@@ -488,10 +488,11 @@ func validateObservabilityConfig(cfg ObservabilityConfig) error {
 	if err := validateTraceExporter(cfg.Traces.Exporter); err != nil {
 		return err
 	}
-	if err := validateOTLPEndpoint(cfg.OTLP.Endpoint); err != nil {
+	protocol, err := ResolveOTLPTraceProtocol(cfg)
+	if err != nil {
 		return err
 	}
-	if _, err := ResolveOTLPTraceProtocol(cfg); err != nil {
+	if err := validateOTLPEndpoint(cfg.OTLP.Endpoint, protocol); err != nil {
 		return err
 	}
 
@@ -605,7 +606,7 @@ func normalizeOTLPProtocol(protocol string) (string, error) {
 	}
 }
 
-func validateOTLPEndpoint(endpoint string) error {
+func validateOTLPEndpoint(endpoint, protocol string) error {
 	trimmed := strings.TrimSpace(endpoint)
 	if trimmed == "" {
 		return errors.New("missing observability.otlp.endpoint")
@@ -622,6 +623,9 @@ func validateOTLPEndpoint(endpoint string) error {
 	}
 	if parsed.Scheme == "" || parsed.Host == "" {
 		return fmt.Errorf("invalid observability.otlp.endpoint %q", endpoint)
+	}
+	if protocol == "http/protobuf" && parsed.Path != "" && parsed.Path != "/" {
+		return fmt.Errorf("observability.otlp.endpoint %q must not include a path when observability.otlp.protocol is http/protobuf", endpoint)
 	}
 	return nil
 }

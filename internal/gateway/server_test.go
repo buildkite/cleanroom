@@ -89,6 +89,14 @@ func TestIdentityMiddlewareInjectsScope(t *testing.T) {
 	}
 }
 
+func TestGatewayServiceForPathClassifiesRubyGems(t *testing.T) {
+	t.Parallel()
+
+	if got, want := gatewayServiceForPath("/rubygems/versions"), "rubygems"; got != want {
+		t.Fatalf("unexpected service classification: got %q want %q", got, want)
+	}
+}
+
 func TestTracingMiddlewareUsesActiveExecutionTrace(t *testing.T) {
 	t.Parallel()
 
@@ -183,6 +191,20 @@ func TestTracingMiddlewareEmitsGatewayMetrics(t *testing.T) {
 		"service": "git",
 		"action":  "allow",
 	}, 1)
+}
+
+func TestGatewayStatusRecorderUnwrapsResponseWriterForResponseController(t *testing.T) {
+	t.Parallel()
+
+	underlying := httptest.NewRecorder()
+	wrapped := &gatewayStatusRecorder{ResponseWriter: underlying}
+
+	if err := http.NewResponseController(wrapped).Flush(); err != nil {
+		t.Fatalf("Flush returned error: %v", err)
+	}
+	if !underlying.Flushed {
+		t.Fatal("expected flush to reach underlying response writer")
+	}
 }
 
 func collectGatewayResourceMetrics(t *testing.T, reader *sdkmetric.ManualReader) metricdata.ResourceMetrics {

@@ -101,15 +101,19 @@ func TestWithSandboxProgressNoColorAvoidsANSIControlSequences(t *testing.T) {
 
 func TestWithSandboxProgressSuppressStopsFramesBeforeStreamingOutput(t *testing.T) {
 	forceSandboxProgressTTY(t)
+	oldDelay := sandboxProgressStartDelay
+	sandboxProgressStartDelay = 50 * time.Millisecond
+	t.Cleanup(func() {
+		sandboxProgressStartDelay = oldDelay
+	})
 
 	output, err := captureSandboxProgressOutput(t, func(stderr *os.File) error {
 		return withSandboxProgress(stderr, func(progress *sandboxProgress) error {
-			time.Sleep(25 * time.Millisecond)
 			progress.suppress()
 			if _, err := stderr.WriteString("Cloning into '/workspace'...\n"); err != nil {
 				return err
 			}
-			time.Sleep(25 * time.Millisecond)
+			time.Sleep(10 * time.Millisecond)
 			return nil
 		})
 	})

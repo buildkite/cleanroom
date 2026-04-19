@@ -447,6 +447,13 @@ type gatewayStatusRecorder struct {
 	statusCode int
 }
 
+func (r *gatewayStatusRecorder) Unwrap() http.ResponseWriter {
+	if r == nil {
+		return nil
+	}
+	return r.ResponseWriter
+}
+
 func (r *gatewayStatusRecorder) WriteHeader(statusCode int) {
 	r.statusCode = statusCode
 	r.ResponseWriter.WriteHeader(statusCode)
@@ -465,6 +472,8 @@ func gatewayServiceForPath(path string) string {
 		return "git"
 	case strings.HasPrefix(path, RouteRegistry):
 		return "registry"
+	case strings.HasPrefix(path, RouteRubyGems):
+		return "rubygems"
 	case strings.HasPrefix(path, RouteSecrets):
 		return "secrets"
 	case strings.HasPrefix(path, RouteMeta):
