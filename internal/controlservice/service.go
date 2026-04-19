@@ -1842,6 +1842,7 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 			if strings.TrimSpace(preRunErr.Error()) != "" {
 				s.appendExecutionStderrLocked(ex, finalStatus, []byte(preRunErr.Error()+"\n"))
 			}
+			clearExecutionRuntimeHandlesLocked(ex)
 			finished := s.clock().Now()
 			s.finalizeExecutionLocked(ex, finalStatus, exitCode, preRunErr.Error(), "", finished)
 			if sb, ok := s.sandboxes[sandboxID]; ok && sb.ActiveExecutionID == executionID {
@@ -1852,6 +1853,7 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 			return
 		}
 		if preRunResult == nil {
+			clearExecutionRuntimeHandlesLocked(ex)
 			finished := s.clock().Now()
 			s.finalizeExecutionLocked(ex, cleanroomv1.ExecutionStatus_EXECUTION_STATUS_FAILED, 1, "sandbox.run.before returned no result", "", finished)
 			if sb, ok := s.sandboxes[sandboxID]; ok && sb.ActiveExecutionID == executionID {
@@ -1881,6 +1883,7 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 				finalStatus = cleanroomv1.ExecutionStatus_EXECUTION_STATUS_CANCELED
 				finalExitCode = cancelExitCode(ex.CancelSignal)
 			}
+			clearExecutionRuntimeHandlesLocked(ex)
 			s.finalizeExecutionLocked(ex, finalStatus, finalExitCode, msg, "", finished)
 			if sb, ok := s.sandboxes[sandboxID]; ok && sb.ActiveExecutionID == executionID {
 				sb.ActiveExecutionID = ""
@@ -1890,6 +1893,7 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 			return
 		}
 		if ex.CancelRequested {
+			clearExecutionRuntimeHandlesLocked(ex)
 			finished := s.clock().Now()
 			s.finalizeExecutionLocked(ex, cleanroomv1.ExecutionStatus_EXECUTION_STATUS_CANCELED, cancelExitCode(ex.CancelSignal), ex.Message, "execution canceled before command start", finished)
 			if sb, ok := s.sandboxes[sandboxID]; ok && sb.ActiveExecutionID == executionID {
@@ -1927,10 +1931,7 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 		sb.UpdatedAt = s.clock().Now()
 	}
 
-	if ex.Cancel != nil {
-		ex.Cancel = nil
-	}
-	clearExecutionAttachIOLocked(ex)
+	clearExecutionRuntimeHandlesLocked(ex)
 
 	if err != nil {
 		span.RecordError(err)

@@ -3061,6 +3061,59 @@ func TestCreateExecutionRetainsRunBeforeFailureArtifacts(t *testing.T) {
 	}
 }
 
+func TestCreateExecutionRunBeforeFailureClearsRuntimeHandles(t *testing.T) {
+	adapter := &stubAdapter{
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+			switch strings.Join(req.Command, " ") {
+			case "sh -lc echo pre-run":
+				return &backend.ExecutionResult{
+					ExecutionID: req.ExecutionID,
+					ExitCode:    23,
+					Message:     "pre-run failed",
+				}, nil
+			default:
+				t.Fatalf("unexpected command: %v", req.Command)
+				return nil, nil
+			}
+		},
+	}
+	svc := newTestService(adapter)
+
+	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy: testRepositoryRunBeforePolicy(),
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createSandboxResp.GetSandbox().GetSandboxId()
+
+	createExecutionResp, err := svc.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+		SandboxId: sandboxID,
+		Command:   []string{"sh", "-lc", "pwd"},
+	})
+	if err != nil {
+		t.Fatalf("CreateExecution returned error: %v", err)
+	}
+	executionID := createExecutionResp.GetExecution().GetExecutionId()
+
+	if _, err := svc.WaitExecution(context.Background(), sandboxID, executionID); err != nil {
+		t.Fatalf("WaitExecution returned error: %v", err)
+	}
+
+	svc.mu.RLock()
+	defer svc.mu.RUnlock()
+	ex, ok := svc.executions[executionKey(sandboxID, executionID)]
+	if !ok {
+		t.Fatalf("expected execution %q to remain available", executionID)
+	}
+	if ex.Cancel != nil {
+		t.Fatal("expected run.before failure to clear retained cancel handler")
+	}
+	if ex.AttachStdin != nil || ex.AttachCloseStdin != nil || ex.AttachResize != nil {
+		t.Fatal("expected run.before failure to clear retained attach handlers")
+	}
+}
+
 func TestCancelExecutionDuringRunBeforeTransitionsToCanceled(t *testing.T) {
 	started := make(chan struct{}, 1)
 	adapter := &stubAdapter{

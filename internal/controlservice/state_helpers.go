@@ -51,6 +51,14 @@ func clearExecutionAttachIOLocked(ex *executionState) {
 	ex.AttachResize = nil
 }
 
+func clearExecutionRuntimeHandlesLocked(ex *executionState) {
+	if ex == nil {
+		return
+	}
+	ex.Cancel = nil
+	clearExecutionAttachIOLocked(ex)
+}
+
 func closeSandboxSubscribersLocked(sb *sandboxState) {
 	sb.events.closeSubscribers()
 }
