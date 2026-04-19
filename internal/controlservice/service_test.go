@@ -421,7 +421,7 @@ func TestCreateSandboxTracesBootstrapFailure(t *testing.T) {
 		"go.mod":     "module example.com/test\n",
 		"go.sum":     "",
 	})
-	svc.RepositoryMirrors = mirrors
+	svc.RepositoryStore = mirrors
 
 	_, err = svc.CreateSandbox(parentCtx, &cleanroomv1.CreateSandboxRequest{
 		Backend:            "firecracker",
