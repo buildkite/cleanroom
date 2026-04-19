@@ -387,12 +387,21 @@ func parseConfig(path string, raw []byte) (Config, error) {
 	if err := yaml.Unmarshal(raw, &cfg); err != nil {
 		return Config{}, fmt.Errorf("parse %s: %w", path, err)
 	}
+	backendPresence := struct {
+		Backends struct {
+			Firecracker    *yaml.Node `yaml:"firecracker"`
+			DarwinVZ       *yaml.Node `yaml:"darwin-vz"`
+			LegacyDarwinVZ *yaml.Node `yaml:"darwin_vz"`
+		} `yaml:"backends"`
+	}{}
+	if err := yaml.Unmarshal(raw, &backendPresence); err != nil {
+		return Config{}, fmt.Errorf("parse %s: %w", path, err)
+	}
 	presenceCfg := struct {
 		Backends struct {
 			DarwinVZ struct {
 				MinimumRootFSBytes *ByteSize `yaml:"minimum_rootfs_bytes"`
 			} `yaml:"darwin-vz"`
-			LegacyDarwinVZ *yaml.Node `yaml:"darwin_vz"`
 		} `yaml:"backends"`
 	}{}
 	if err := yaml.Unmarshal(raw, &presenceCfg); err != nil {
@@ -408,7 +417,7 @@ func parseConfig(path string, raw []byte) (Config, error) {
 			} `yaml:"backends"`
 		}{}
 		if err := yaml.Unmarshal(raw, &legacyCfg); err != nil {
-			if presenceCfg.Backends.LegacyDarwinVZ != nil {
+			if backendPresence.Backends.LegacyDarwinVZ != nil {
 				return Config{}, fmt.Errorf("parse %s: %w", path, err)
 			}
 		} else if darwinVZConfigHasValues(legacyCfg.Backends.DarwinVZ) {
@@ -419,17 +428,17 @@ func parseConfig(path string, raw []byte) (Config, error) {
 		cfg.Backends.DarwinVZ.MinimumRootFSBytes = darwinVZMinRootFSBytes
 	}
 
-	cfg = normalizeConfig(cfg)
+	cfg = normalizeConfig(cfg, inferredDefaultBackend(backendPresence.Backends.Firecracker != nil, backendPresence.Backends.DarwinVZ != nil || backendPresence.Backends.LegacyDarwinVZ != nil))
 	if err := validateConfig(cfg); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil
 }
 
-func normalizeConfig(cfg Config) Config {
+func normalizeConfig(cfg Config, inferredDefaultBackend string) Config {
 	cfg.DefaultBackend = strings.TrimSpace(cfg.DefaultBackend)
 	if cfg.DefaultBackend == "" {
-		cfg.DefaultBackend = DefaultBackendForHost()
+		cfg.DefaultBackend = inferredDefaultBackend
 	}
 	cfg.ControlHost = strings.TrimSpace(cfg.ControlHost)
 	cfg.Gateway.Git.CacheHosts = trimStringSlice(cfg.Gateway.Git.CacheHosts)
@@ -442,6 +451,16 @@ func normalizeConfig(cfg Config) Config {
 	cfg.Observability.Traces.Zipkin.Endpoint = strings.TrimSpace(cfg.Observability.Traces.Zipkin.Endpoint)
 	cfg.Observability.Traces.Zipkin.Headers = trimStringMap(cfg.Observability.Traces.Zipkin.Headers)
 	return cfg
+}
+
+func inferredDefaultBackend(hasFirecracker, hasDarwinVZ bool) string {
+	if hasFirecracker == hasDarwinVZ {
+		return DefaultBackendForHost()
+	}
+	if hasFirecracker {
+		return "firecracker"
+	}
+	return "darwin-vz"
 }
 
 func validateConfig(cfg Config) error {

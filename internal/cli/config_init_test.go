@@ -4,10 +4,12 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/buildkite/cleanroom/internal/backend"
+	backenddarwinvz "github.com/buildkite/cleanroom/internal/backend/darwinvz"
 	backendfirecracker "github.com/buildkite/cleanroom/internal/backend/firecracker"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 	"gopkg.in/yaml.v3"
@@ -20,6 +22,9 @@ func TestConfigInitWritesRuntimeConfig(t *testing.T) {
 			SnapshotsUsable: false,
 			SnapshotMessage: "machine bootstrap incomplete",
 		}
+	})
+	stubDarwinVZSnapshotSupport(t, func() backenddarwinvz.SnapshotSupport {
+		return backenddarwinvz.SnapshotSupport{Usable: true, Message: "darwin-vz snapshot runtime is usable"}
 	})
 
 	tmpDir := t.TempDir()
@@ -38,56 +43,105 @@ func TestConfigInitWritesRuntimeConfig(t *testing.T) {
 		t.Fatalf("read generated config: %v", err)
 	}
 
-	var cfg runtimeconfig.Config
-	if err := yaml.Unmarshal(raw, &cfg); err != nil {
-		t.Fatalf("parse generated yaml: %v", err)
+	cfg, _, err := runtimeconfig.LoadPath(configPath)
+	if err != nil {
+		t.Fatalf("load generated config: %v", err)
 	}
-	if !strings.Contains(string(raw), "darwin-vz:") {
-		t.Fatalf("expected generated config to use backends.darwin-vz key, got:\n%s", raw)
+	if runtime.GOOS == "darwin" {
+		if !strings.Contains(string(raw), "darwin-vz:") {
+			t.Fatalf("expected generated config to use backends.darwin-vz key, got:\n%s", raw)
+		}
+		if !strings.Contains(string(raw), "backends:\n  darwin-vz:") {
+			t.Fatalf("expected generated config to use 2-space indentation, got:\n%s", raw)
+		}
+	} else {
+		if !strings.Contains(string(raw), "firecracker:") {
+			t.Fatalf("expected generated config to use backends.firecracker key, got:\n%s", raw)
+		}
+		if !strings.Contains(string(raw), "backends:\n  firecracker:") {
+			t.Fatalf("expected generated config to use 2-space indentation, got:\n%s", raw)
+		}
 	}
 	if got := strings.TrimSpace(cfg.DefaultBackend); got == "" {
 		t.Fatal("expected default_backend to be populated")
 	}
-	if got := strings.TrimSpace(cfg.Backends.Firecracker.BinaryPath); got == "" {
-		t.Fatal("expected backends.firecracker.binary_path to be populated")
+	if strings.Contains(string(raw), "default_backend:") {
+		t.Fatalf("expected generated config to omit default_backend when only one backend is defined, got:\n%s", raw)
 	}
-	if got := strings.TrimSpace(cfg.Backends.Firecracker.KernelImage); got != "" {
-		t.Fatalf("expected backends.firecracker.kernel_image to default empty, got %q", got)
-	}
-	if got := strings.TrimSpace(cfg.Backends.DarwinVZ.KernelImage); got != "" {
-		t.Fatalf("expected backends.darwin-vz.kernel_image to default empty, got %q", got)
-	}
-	if got, want := cfg.Backends.Firecracker.Snapshots.Driver, "file"; got != want {
-		t.Fatalf("expected backends.firecracker.snapshots.driver=%q, got %q", want, got)
-	}
-	if cfg.Backends.Firecracker.Snapshots.Enabled {
-		t.Fatal("expected backends.firecracker.snapshots.enabled to default false")
-	}
-	if got, want := cfg.Backends.DarwinVZ.Snapshots.Driver, "apfs"; got != want {
-		t.Fatalf("expected backends.darwin-vz.snapshots.driver=%q, got %q", want, got)
-	}
-	if cfg.Backends.DarwinVZ.Snapshots.Enabled {
-		t.Fatal("expected backends.darwin-vz.snapshots.enabled to default false")
-	}
-	if got, want := cfg.Backends.Firecracker.Services.Docker.StartupTimeoutSeconds, int64(20); got != want {
-		t.Fatalf("expected backends.firecracker.services.docker.startup_timeout_seconds=%d, got %d", want, got)
-	}
-	if got, want := cfg.Backends.Firecracker.Services.Docker.StorageDriver, "vfs"; got != want {
-		t.Fatalf("expected backends.firecracker.services.docker.storage_driver=%q, got %q", want, got)
-	}
-	if cfg.Backends.Firecracker.Services.Docker.IPTables {
-		t.Fatal("expected backends.firecracker.services.docker.iptables to default false")
+	if runtime.GOOS == "darwin" {
+		if strings.Contains(string(raw), "firecracker:") {
+			t.Fatalf("expected generated config to omit firecracker backend on darwin hosts, got:\n%s", raw)
+		}
+		if got := strings.TrimSpace(cfg.Backends.DarwinVZ.KernelImage); got != "" {
+			t.Fatalf("expected backends.darwin-vz.kernel_image to default empty, got %q", got)
+		}
+		if got, want := cfg.Backends.DarwinVZ.Snapshots.Driver, "apfs"; got != want {
+			t.Fatalf("expected backends.darwin-vz.snapshots.driver=%q, got %q", want, got)
+		}
+		if !cfg.Backends.DarwinVZ.Snapshots.Enabled {
+			t.Fatal("expected backends.darwin-vz.snapshots.enabled to default true on darwin")
+		}
+		if got, want := cfg.Backends.DarwinVZ.MemoryMiB, int64(4096); got != want {
+			t.Fatalf("expected backends.darwin-vz.memory_mib=%d, got %d", want, got)
+		}
+		if got, want := int64(cfg.Backends.DarwinVZ.MinimumRootFSBytes), int64(4<<30); got != want {
+			t.Fatalf("expected backends.darwin-vz.minimum_rootfs_bytes=%d, got %d", want, got)
+		}
+		if !strings.Contains(string(raw), "memory_mib: 4096") {
+			t.Fatalf("expected generated config to include memory_mib: 4096, got:\n%s", raw)
+		}
+		if !strings.Contains(string(raw), "minimum_rootfs_bytes: 4GiB") {
+			t.Fatalf("expected generated config to include minimum_rootfs_bytes: 4GiB, got:\n%s", raw)
+		}
+		for _, forbidden := range []string{"kernel_image:", "rootfs:", "iptables:"} {
+			if strings.Contains(string(raw), forbidden) {
+				t.Fatalf("expected generated config to omit zero-value field %q, got:\n%s", forbidden, raw)
+			}
+		}
+	} else {
+		if strings.Contains(string(raw), "darwin-vz:") {
+			t.Fatalf("expected generated config to omit darwin-vz backend on non-darwin hosts, got:\n%s", raw)
+		}
+		if got := strings.TrimSpace(cfg.Backends.Firecracker.BinaryPath); got == "" {
+			t.Fatal("expected backends.firecracker.binary_path to be populated")
+		}
+		if got := strings.TrimSpace(cfg.Backends.Firecracker.KernelImage); got != "" {
+			t.Fatalf("expected backends.firecracker.kernel_image to default empty, got %q", got)
+		}
+		if got, want := cfg.Backends.Firecracker.Snapshots.Driver, "file"; got != want {
+			t.Fatalf("expected backends.firecracker.snapshots.driver=%q, got %q", want, got)
+		}
+		if cfg.Backends.Firecracker.Snapshots.Enabled {
+			t.Fatal("expected backends.firecracker.snapshots.enabled to default false")
+		}
+		if got, want := cfg.Backends.Firecracker.Services.Docker.StartupTimeoutSeconds, int64(20); got != want {
+			t.Fatalf("expected backends.firecracker.services.docker.startup_timeout_seconds=%d, got %d", want, got)
+		}
+		if got, want := cfg.Backends.Firecracker.Services.Docker.StorageDriver, "vfs"; got != want {
+			t.Fatalf("expected backends.firecracker.services.docker.storage_driver=%q, got %q", want, got)
+		}
+		if cfg.Backends.Firecracker.Services.Docker.IPTables {
+			t.Fatal("expected backends.firecracker.services.docker.iptables to default false")
+		}
+		for _, forbidden := range []string{"kernel_image:", "rootfs:", "iptables:"} {
+			if strings.Contains(string(raw), forbidden) {
+				t.Fatalf("expected generated config to omit zero-value field %q, got:\n%s", forbidden, raw)
+			}
+		}
 	}
 	if !strings.Contains(string(raw), "snapshots:") {
 		t.Fatalf("expected generated config to include snapshot defaults, got:\n%s", raw)
 	}
-	if !strings.Contains(string(raw), "enabled: false") {
-		t.Fatalf("expected generated config to include disabled snapshot default, got:\n%s", raw)
+	if strings.Contains(string(raw), "enabled: false") {
+		t.Fatalf("expected generated config to omit zero-value snapshot enabled field, got:\n%s", raw)
 	}
-	if !strings.Contains(string(raw), "driver: file") {
+	if runtime.GOOS != "darwin" && !strings.Contains(string(raw), "driver: file") {
 		t.Fatalf("expected generated config to include firecracker snapshot driver default, got:\n%s", raw)
 	}
-	if !strings.Contains(string(raw), "driver: apfs") {
+	if runtime.GOOS == "darwin" && (!strings.Contains(string(raw), "enabled: true") || !strings.Contains(string(raw), "driver: apfs")) {
+		t.Fatalf("expected generated config to enable darwin-vz snapshots on darwin hosts, got:\n%s", raw)
+	}
+	if runtime.GOOS == "darwin" && !strings.Contains(string(raw), "driver: apfs") {
 		t.Fatalf("expected generated config to include darwin-vz snapshot driver default, got:\n%s", raw)
 	}
 	if strings.Contains(string(raw), "base_dir:") {
@@ -98,6 +152,71 @@ func TestConfigInitWritesRuntimeConfig(t *testing.T) {
 	}
 	if strings.Contains(string(raw), "quiesce_timeout_seconds:") {
 		t.Fatalf("expected generated config to omit empty snapshot quiesce timeout, got:\n%s", raw)
+	}
+}
+
+func TestConfigInitDisablesDarwinVZSnapshotsWhenSupportUnavailable(t *testing.T) {
+	stubFirecrackerHostSupport(t, func(context.Context, backend.FirecrackerConfig) backendfirecracker.HostSupport {
+		return backendfirecracker.HostSupport{}
+	})
+	stubDarwinVZSnapshotSupport(t, func() backenddarwinvz.SnapshotSupport {
+		return backenddarwinvz.SnapshotSupport{Usable: false, Message: "darwin-vz snapshots remain disabled: helper unavailable"}
+	})
+
+	tmpDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmpDir)
+
+	stdout, _ := makeStdoutCapture(t)
+	stderr, readStderr := makeStdoutCapture(t)
+	cmd := &ConfigInitCommand{DefaultBackend: "darwin-vz"}
+	if err := cmd.Run(&runtimeContext{CWD: tmpDir, Stdout: stdout, Stderr: stderr}); err != nil {
+		t.Fatalf("ConfigInitCommand.Run returned error: %v", err)
+	}
+
+	configPath := filepath.Join(tmpDir, "cleanroom", "config.yaml")
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read generated config: %v", err)
+	}
+
+	cfg, _, err := runtimeconfig.LoadPath(configPath)
+	if err != nil {
+		t.Fatalf("load generated config: %v", err)
+	}
+	if !strings.Contains(string(raw), "darwin-vz:") {
+		t.Fatalf("expected generated config to include darwin-vz backend, got:\n%s", raw)
+	}
+	if !strings.Contains(string(raw), "backends:\n  darwin-vz:") {
+		t.Fatalf("expected generated config to use 2-space indentation, got:\n%s", raw)
+	}
+	if strings.Contains(string(raw), "firecracker:") {
+		t.Fatalf("expected generated config to omit firecracker backend when default backend is darwin-vz, got:\n%s", raw)
+	}
+	if cfg.Backends.DarwinVZ.Snapshots.Enabled {
+		t.Fatal("expected backends.darwin-vz.snapshots.enabled to default false when support is unavailable")
+	}
+	if got, want := cfg.Backends.DarwinVZ.Snapshots.Driver, "apfs"; got != want {
+		t.Fatalf("unexpected darwin-vz snapshot driver: got %q want %q", got, want)
+	}
+	if got, want := cfg.Backends.DarwinVZ.MemoryMiB, int64(4096); got != want {
+		t.Fatalf("expected backends.darwin-vz.memory_mib=%d, got %d", want, got)
+	}
+	if got, want := int64(cfg.Backends.DarwinVZ.MinimumRootFSBytes), int64(4<<30); got != want {
+		t.Fatalf("expected backends.darwin-vz.minimum_rootfs_bytes=%d, got %d", want, got)
+	}
+	if out := readStderr(); !strings.Contains(out, "darwin-vz snapshots remain disabled: helper unavailable") {
+		t.Fatalf("expected darwin-vz snapshot warning, got %q", out)
+	}
+	if !strings.Contains(string(raw), "memory_mib: 4096") {
+		t.Fatalf("expected generated config to include memory_mib: 4096, got:\n%s", raw)
+	}
+	if !strings.Contains(string(raw), "minimum_rootfs_bytes: 4GiB") {
+		t.Fatalf("expected generated config to include minimum_rootfs_bytes: 4GiB, got:\n%s", raw)
+	}
+	for _, forbidden := range []string{"enabled: false", "kernel_image:", "rootfs:", "iptables:"} {
+		if strings.Contains(string(raw), forbidden) {
+			t.Fatalf("expected generated config to omit zero-value field %q, got:\n%s", forbidden, raw)
+		}
 	}
 }
 

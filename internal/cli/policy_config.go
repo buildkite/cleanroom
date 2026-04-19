@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -9,12 +10,14 @@ import (
 	"strings"
 
 	"github.com/buildkite/cleanroom/internal/backend"
+	backenddarwinvz "github.com/buildkite/cleanroom/internal/backend/darwinvz"
 	backendfirecracker "github.com/buildkite/cleanroom/internal/backend/firecracker"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 	"gopkg.in/yaml.v3"
 )
 
 var detectFirecrackerHostSupport = backendfirecracker.DetectHostSupport
+var detectDarwinVZSnapshotSupport = backenddarwinvz.DetectSnapshotSupport
 
 type PolicyCommand struct {
 	Validate PolicyValidateCommand `cmd:"" help:"Validate policy configuration"`
@@ -100,8 +103,14 @@ func (c *ConfigInitCommand) Run(ctx *runtimeContext) error {
 	}
 
 	firecrackerSnapshots, warnings := defaultFirecrackerSnapshotConfig(context.Background(), defaultBackend == "firecracker" || hostDefaultBackend() == "firecracker")
+	darwinVZSnapshots := runtimeconfig.SnapshotConfig{Enabled: false, Driver: "apfs"}
+	if defaultBackend == "darwin-vz" {
+		var darwinVZWarnings []string
+		darwinVZSnapshots, darwinVZWarnings = defaultDarwinVZSnapshotConfig(true)
+		warnings = append(warnings, darwinVZWarnings...)
+	}
 
-	payload, err := yaml.Marshal(defaultRuntimeConfig(defaultBackend, firecrackerSnapshots))
+	payload, err := marshalRuntimeConfigTemplate(defaultRuntimeConfig(defaultBackend, firecrackerSnapshots, darwinVZSnapshots))
 	if err != nil {
 		return fmt.Errorf("marshal runtime config template: %w", err)
 	}
@@ -195,48 +204,137 @@ func defaultFirecrackerSnapshotConfig(ctx context.Context, emitRuntimeWarnings b
 	return snapshot, []string{"firecracker snapshots default to driver=file: " + support.ZFSMessage}
 }
 
-func defaultRuntimeConfig(defaultBackend string, firecrackerSnapshots runtimeconfig.SnapshotConfig) runtimeconfig.Config {
-	return runtimeconfig.Config{
-		DefaultBackend: defaultBackend,
-		Backends: runtimeconfig.Backends{
-			Firecracker: runtimeconfig.FirecrackerConfig{
-				BinaryPath:  "firecracker",
-				KernelImage: "",
-				RootFS:      "",
-				Services: runtimeconfig.ServicesConfig{
-					Docker: runtimeconfig.DockerServiceConfig{
-						StartupTimeoutSeconds: 20,
-						StorageDriver:         "vfs",
-						IPTables:              false,
-					},
-				},
-				Snapshots:            firecrackerSnapshots,
-				PrivilegedHelperPath: "/usr/local/sbin/cleanroom-root-helper",
-				VCPUs:                2,
-				MemoryMiB:            1024,
-				GuestCID:             3,
-				GuestPort:            10700,
-				LaunchSeconds:        30,
-			},
-			DarwinVZ: runtimeconfig.DarwinVZConfig{
-				KernelImage: "",
-				RootFS:      "",
-				Services: runtimeconfig.ServicesConfig{
-					Docker: runtimeconfig.DockerServiceConfig{
-						StartupTimeoutSeconds: 20,
-						StorageDriver:         "vfs",
-						IPTables:              false,
-					},
-				},
-				Snapshots: runtimeconfig.SnapshotConfig{
-					Enabled: false,
-					Driver:  "apfs",
-				},
-				VCPUs:         2,
-				MemoryMiB:     1024,
-				GuestPort:     10700,
-				LaunchSeconds: 30,
-			},
-		},
+func defaultDarwinVZSnapshotConfig(emitRuntimeWarnings bool) (runtimeconfig.SnapshotConfig, []string) {
+	snapshot := runtimeconfig.SnapshotConfig{Enabled: false, Driver: "apfs"}
+	support := detectDarwinVZSnapshotSupport()
+	if !support.Usable {
+		warnings := []string{}
+		if emitRuntimeWarnings {
+			message := strings.TrimSpace(support.Message)
+			if message == "" {
+				message = "darwin-vz snapshots remain disabled: snapshot runtime is not usable"
+			}
+			warnings = append(warnings, message)
+		}
+		return snapshot, warnings
 	}
+
+	snapshot.Enabled = true
+	return snapshot, nil
+}
+
+type runtimeConfigTemplate struct {
+	DefaultBackend string                     `yaml:"default_backend,omitempty"`
+	Backends       runtimeConfigTemplateNodes `yaml:"backends"`
+}
+
+type runtimeConfigTemplateNodes struct {
+	Firecracker *runtimeConfigFirecracker `yaml:"firecracker,omitempty"`
+	DarwinVZ    *runtimeConfigDarwinVZ    `yaml:"darwin-vz,omitempty"`
+}
+
+type runtimeConfigFirecracker struct {
+	BinaryPath           string                `yaml:"binary_path,omitempty"`
+	KernelImage          string                `yaml:"kernel_image,omitempty"`
+	RootFS               string                `yaml:"rootfs,omitempty"`
+	Services             runtimeConfigServices `yaml:"services,omitempty"`
+	Snapshots            runtimeConfigSnapshot `yaml:"snapshots,omitempty"`
+	PrivilegedHelperPath string                `yaml:"privileged_helper_path,omitempty"`
+	VCPUs                int64                 `yaml:"vcpus,omitempty"`
+	MemoryMiB            int64                 `yaml:"memory_mib,omitempty"`
+	GuestCID             uint32                `yaml:"guest_cid,omitempty"`
+	GuestPort            uint32                `yaml:"guest_port,omitempty"`
+	LaunchSeconds        int64                 `yaml:"launch_seconds,omitempty"`
+}
+
+type runtimeConfigDarwinVZ struct {
+	KernelImage        string                `yaml:"kernel_image,omitempty"`
+	RootFS             string                `yaml:"rootfs,omitempty"`
+	MinimumRootFSBytes string                `yaml:"minimum_rootfs_bytes,omitempty"`
+	Services           runtimeConfigServices `yaml:"services,omitempty"`
+	Snapshots          runtimeConfigSnapshot `yaml:"snapshots,omitempty"`
+	VCPUs              int64                 `yaml:"vcpus,omitempty"`
+	MemoryMiB          int64                 `yaml:"memory_mib,omitempty"`
+	GuestPort          uint32                `yaml:"guest_port,omitempty"`
+	LaunchSeconds      int64                 `yaml:"launch_seconds,omitempty"`
+}
+
+type runtimeConfigServices struct {
+	Docker runtimeConfigDockerService `yaml:"docker,omitempty"`
+}
+
+type runtimeConfigDockerService struct {
+	StartupTimeoutSeconds int64  `yaml:"startup_timeout_seconds,omitempty"`
+	StorageDriver         string `yaml:"storage_driver,omitempty"`
+	IPTables              bool   `yaml:"iptables,omitempty"`
+}
+
+type runtimeConfigSnapshot struct {
+	Enabled               bool   `yaml:"enabled,omitempty"`
+	Driver                string `yaml:"driver,omitempty"`
+	BaseDir               string `yaml:"base_dir,omitempty"`
+	ZFSDataset            string `yaml:"zfs_dataset,omitempty"`
+	QuiesceTimeoutSeconds int64  `yaml:"quiesce_timeout_seconds,omitempty"`
+}
+
+func defaultRuntimeConfig(defaultBackend string, firecrackerSnapshots, darwinVZSnapshots runtimeconfig.SnapshotConfig) runtimeConfigTemplate {
+	tpl := runtimeConfigTemplate{
+		Backends: runtimeConfigTemplateNodes{},
+	}
+
+	switch defaultBackend {
+	case "darwin-vz":
+		tpl.Backends.DarwinVZ = &runtimeConfigDarwinVZ{
+			KernelImage:        "",
+			RootFS:             "",
+			MinimumRootFSBytes: "4GiB",
+			Services: runtimeConfigServices{
+				Docker: runtimeConfigDockerService{
+					StartupTimeoutSeconds: 20,
+					StorageDriver:         "vfs",
+					IPTables:              false,
+				},
+			},
+			Snapshots:     runtimeConfigSnapshot(darwinVZSnapshots),
+			VCPUs:         2,
+			MemoryMiB:     4096,
+			GuestPort:     10700,
+			LaunchSeconds: 30,
+		}
+	default:
+		tpl.Backends.Firecracker = &runtimeConfigFirecracker{
+			BinaryPath:  "firecracker",
+			KernelImage: "",
+			RootFS:      "",
+			Services: runtimeConfigServices{
+				Docker: runtimeConfigDockerService{
+					StartupTimeoutSeconds: 20,
+					StorageDriver:         "vfs",
+					IPTables:              false,
+				},
+			},
+			Snapshots:            runtimeConfigSnapshot(firecrackerSnapshots),
+			PrivilegedHelperPath: "/usr/local/sbin/cleanroom-root-helper",
+			VCPUs:                2,
+			MemoryMiB:            1024,
+			GuestCID:             3,
+			GuestPort:            10700,
+			LaunchSeconds:        30,
+		}
+	}
+
+	return tpl
+}
+
+func marshalRuntimeConfigTemplate(cfg runtimeConfigTemplate) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(2)
+	if err := enc.Encode(cfg); err != nil {
+		return nil, err
+	}
+	if err := enc.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }

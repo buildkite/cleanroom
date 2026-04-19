@@ -616,7 +616,29 @@ backends:
 	}
 }
 
-func TestLoadDefaultsBackendWhenMissing(t *testing.T) {
+func TestLoadDefaultsBackendWhenMissingAndCannotBeInferred(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	configPath := filepath.Join(tmp, "cleanroom", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	content := "backends: {}\n"
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, _, err := Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if got, want := cfg.DefaultBackend, DefaultBackendForHost(); got != want {
+		t.Fatalf("unexpected default backend: got %q want %q", got, want)
+	}
+}
+
+func TestLoadUsesOnlyDefinedBackendWhenDefaultBackendMissing(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", tmp)
 	configPath := filepath.Join(tmp, "cleanroom", "config.yaml")
@@ -636,7 +658,7 @@ func TestLoadDefaultsBackendWhenMissing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
-	if got, want := cfg.DefaultBackend, DefaultBackendForHost(); got != want {
+	if got, want := cfg.DefaultBackend, "firecracker"; got != want {
 		t.Fatalf("unexpected default backend: got %q want %q", got, want)
 	}
 }
