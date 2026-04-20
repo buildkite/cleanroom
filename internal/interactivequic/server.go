@@ -8,6 +8,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/buildkite/cleanroom/internal/controlservice"
@@ -18,6 +19,7 @@ import (
 
 const DefaultALPN = "cleanroom-interactive-v1"
 const interactiveStdinRetryInterval = 10 * time.Millisecond
+const interactiveStdinExitDrainTimeout = 100 * time.Millisecond
 
 type Service interface {
 	ConsumeInteractiveSession(sessionID, token string) (*controlservice.InteractiveSession, error)
@@ -175,18 +177,21 @@ func (s *Server) handleConnection(ctx context.Context, conn *quic.Conn) {
 	go s.readControlLoop(ctx, decoder, session, controlErrCh)
 
 	stdinErrCh := make(chan error, 1)
+	var stdinSawInput atomic.Bool
 	go func() {
 		stdinStream, acceptErr := conn.AcceptUniStream(ctx)
 		if acceptErr != nil {
 			stdinErrCh <- acceptErr
 			return
 		}
-		s.readStdinLoop(ctx, session, stdinStream, stdinErrCh)
+		s.readStdinLoop(ctx, session, stdinStream, stdinErrCh, &stdinSawInput)
 	}()
 
 	for _, event := range history {
 		if s.forwardEventToPTY(event, ptyStream) {
-			if s.forwardInteractiveStdinErr(session, sendControl, pollInteractiveStdinErr(stdinErrCh)) {
+			if s.forwardInteractiveStdinErr(session, sendControl, pendingInteractiveStdinErr(stdinErrCh, stdinSawInput.Load())) {
+				_ = ptyStream.Close()
+				gracefulClose = true
 				return
 			}
 			_ = ptyStream.Close()
@@ -207,6 +212,8 @@ func (s *Server) handleConnection(ctx context.Context, conn *quic.Conn) {
 				return
 			}
 			_ = sendControl(controlMessage{Type: controlTypeError, Error: err.Error()})
+			_ = ptyStream.Close()
+			gracefulClose = true
 			return
 		case err := <-stdinErrCh:
 			if shouldFailInteractiveOnStdinErr(err) {
@@ -214,6 +221,8 @@ func (s *Server) handleConnection(ctx context.Context, conn *quic.Conn) {
 					s.logger.Warn("interactive stdin stream failed", "session_id", session.SessionID, "error", err)
 				}
 				_ = sendControl(controlMessage{Type: controlTypeError, Error: err.Error()})
+				_ = ptyStream.Close()
+				gracefulClose = true
 				return
 			}
 		case event, ok := <-updates:
@@ -221,7 +230,9 @@ func (s *Server) handleConnection(ctx context.Context, conn *quic.Conn) {
 				return
 			}
 			if s.forwardEventToPTY(event, ptyStream) {
-				if s.forwardInteractiveStdinErr(session, sendControl, pollInteractiveStdinErr(stdinErrCh)) {
+				if s.forwardInteractiveStdinErr(session, sendControl, pendingInteractiveStdinErr(stdinErrCh, stdinSawInput.Load())) {
+					_ = ptyStream.Close()
+					gracefulClose = true
 					return
 				}
 				_ = ptyStream.Close()
@@ -241,7 +252,9 @@ func (s *Server) handleConnection(ctx context.Context, conn *quic.Conn) {
 						return
 					}
 					if s.forwardEventToPTY(event, ptyStream) {
-						if s.forwardInteractiveStdinErr(session, sendControl, pollInteractiveStdinErr(stdinErrCh)) {
+						if s.forwardInteractiveStdinErr(session, sendControl, pendingInteractiveStdinErr(stdinErrCh, stdinSawInput.Load())) {
+							_ = ptyStream.Close()
+							gracefulClose = true
 							return
 						}
 						_ = ptyStream.Close()
@@ -370,11 +383,14 @@ func isInteractiveAcceptClosedErr(err error) bool {
 		errors.Is(err, net.ErrClosed)
 }
 
-func (s *Server) readStdinLoop(ctx context.Context, session *controlservice.InteractiveSession, stream *quic.ReceiveStream, errCh chan<- error) {
+func (s *Server) readStdinLoop(ctx context.Context, session *controlservice.InteractiveSession, stream *quic.ReceiveStream, errCh chan<- error, sawInput *atomic.Bool) {
 	buf := make([]byte, 4096)
 	for {
 		n, err := stream.Read(buf)
 		if n > 0 {
+			if sawInput != nil {
+				sawInput.Store(true)
+			}
 			payload := append([]byte(nil), buf[:n]...)
 			if writeErr := s.writeInteractiveStdinWithRetry(ctx, session, payload); writeErr != nil {
 				errCh <- writeErr
@@ -444,16 +460,49 @@ func (s *Server) forwardEventToPTY(event *cleanroomv1.ExecutionStreamEvent, stre
 	return false
 }
 
-func pollInteractiveStdinErr(errCh <-chan error) error {
+func receiveInteractiveStdinErr(errCh <-chan error, wait time.Duration) error {
 	if errCh == nil {
 		return nil
 	}
+	if wait <= 0 {
+		select {
+		case err, ok := <-errCh:
+			if !ok {
+				return nil
+			}
+			return err
+		default:
+			return nil
+		}
+	}
+
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
 	select {
-	case err := <-errCh:
+	case err, ok := <-errCh:
+		if !ok {
+			return nil
+		}
 		return err
-	default:
+	case <-timer.C:
 		return nil
 	}
+}
+
+func pollInteractiveStdinErr(errCh <-chan error) error {
+	return receiveInteractiveStdinErr(errCh, 0)
+}
+
+func waitInteractiveStdinErr(errCh <-chan error, wait time.Duration) error {
+	return receiveInteractiveStdinErr(errCh, wait)
+}
+
+func pendingInteractiveStdinErr(errCh <-chan error, sawInput bool) error {
+	err := pollInteractiveStdinErr(errCh)
+	if err != nil || !sawInput {
+		return err
+	}
+	return waitInteractiveStdinErr(errCh, interactiveStdinExitDrainTimeout)
 }
 
 func (s *Server) forwardInteractiveStdinErr(session *controlservice.InteractiveSession, sendControl func(controlMessage) error, err error) bool {
