@@ -3,9 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
-	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/observability"
-	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
@@ -59,7 +57,6 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) (runErr error) {
 		observability.SpanConsole,
 		trace.WithAttributes(rootAttrs...),
 	)
-	traceID := traceIDFromContext(rootCtx)
 	defer func() {
 		if sandboxID != "" {
 			rootSpan.SetAttributes(attribute.String(observability.AttrSandboxID, sandboxID))
@@ -113,45 +110,6 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) (runErr error) {
 		printedSandboxID = true
 		return nil
 	}
-	printedExecutionID := false
-	printExecutionID := func() error {
-		if printedExecutionID {
-			return nil
-		}
-		if err := writeExecutionID(os.Stderr, executionID); err != nil {
-			return err
-		}
-		printedExecutionID = true
-		return nil
-	}
-	printedTraceID := false
-	printTraceID := func() error {
-		if printedTraceID {
-			return nil
-		}
-		if err := writeTraceID(os.Stderr, traceID); err != nil {
-			return err
-		}
-		printedTraceID = true
-		return nil
-	}
-	printedTraceURL := false
-	printTraceURL := func() error {
-		if printedTraceURL {
-			return nil
-		}
-		traceURL, err := runtimeconfig.RenderTraceURL(ctx.Config.Observability, traceID, executionID, sandboxID)
-		if err != nil {
-			return err
-		}
-		if err := writeTraceURL(os.Stderr, traceURL); err != nil {
-			return err
-		}
-		if strings.TrimSpace(traceURL) != "" {
-			printedTraceURL = true
-		}
-		return nil
-	}
 	defer func() {
 		if !createdSandbox || !c.Keep {
 			return
@@ -168,36 +126,7 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) (runErr error) {
 		if runErr == nil {
 			return
 		}
-		var extraErr error
-		if err := printSandboxID(); err != nil {
-			extraErr = errors.Join(extraErr, err)
-		}
-		if err := printExecutionID(); err != nil {
-			extraErr = errors.Join(extraErr, err)
-		}
-		if err := printTraceID(); err != nil {
-			extraErr = errors.Join(extraErr, err)
-		}
-		if err := printTraceURL(); err != nil {
-			extraErr = errors.Join(extraErr, err)
-		}
-		if sandboxID != "" && executionID != "" {
-			if err := writeExecutionInspectCommand(os.Stderr, sandboxID, executionID); err != nil {
-				extraErr = errors.Join(extraErr, err)
-			}
-			resp, err := client.InspectExecution(rootCtx, &cleanroomv1.InspectExecutionRequest{
-				SandboxId:   sandboxID,
-				ExecutionId: executionID,
-			})
-			if err == nil {
-				if err := writeArtifactsDir(os.Stderr, resp.GetArtifactsDir()); err != nil {
-					extraErr = errors.Join(extraErr, err)
-				}
-			}
-		}
-		if extraErr != nil {
-			runErr = errors.Join(runErr, extraErr)
-		}
+		// Non-zero exits should leave stderr focused on the streamed command output.
 	}()
 	if c.PrintSandboxID {
 		if err := printSandboxID(); err != nil {

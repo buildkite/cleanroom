@@ -535,8 +535,8 @@ CLI:
 - Validation failures (`cleanroom policy validate`, pre-launch compile errors) return non-zero and print structured error details.
 - Launch failures (including `backend_capability_mismatch`) return non-zero before workload execution starts.
 - Runtime policy denies do not change process semantics unless deny prevents command completion; deny events must still be emitted.
-- Non-zero `cleanroom exec` and `cleanroom console` exits print `sandbox_id`, `execution_id`, `trace_id`, and a follow-up `cleanroom execution inspect` command when available.
-- When a trace URL template is configured, those failure footers also print `trace_url`.
+- Non-zero `cleanroom exec` and `cleanroom console` exits preserve streamed stdout/stderr and do not append automatic diagnostic footers.
+- `cleanroom exec --print-sandbox-id` and `cleanroom exec --print-trace-id` remain the explicit opt-in surfaces for correlation identifiers.
 
 API:
 - `SandboxService.CreateSandbox` returns client error for invalid policy input and conflict/error response for unsatisfied backend requirements.

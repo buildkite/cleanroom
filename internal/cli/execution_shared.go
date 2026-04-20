@@ -405,48 +405,12 @@ func writeSandboxID(stderr io.Writer, sandboxID string) error {
 	return err
 }
 
-func writeExecutionID(stderr io.Writer, executionID string) error {
-	executionID = strings.TrimSpace(executionID)
-	if stderr == nil || executionID == "" {
-		return nil
-	}
-	_, err := fmt.Fprintf(stderr, "execution_id=%s\n", executionID)
-	return err
-}
-
 func writeTraceID(stderr io.Writer, traceID string) error {
 	traceID = strings.TrimSpace(traceID)
 	if stderr == nil || traceID == "" {
 		return nil
 	}
 	_, err := fmt.Fprintf(stderr, "trace_id=%s\n", traceID)
-	return err
-}
-
-func writeTraceURL(stderr io.Writer, traceURL string) error {
-	traceURL = strings.TrimSpace(traceURL)
-	if stderr == nil || traceURL == "" {
-		return nil
-	}
-	_, err := fmt.Fprintf(stderr, "trace_url=%s\n", traceURL)
-	return err
-}
-
-func writeArtifactsDir(stderr io.Writer, artifactsDir string) error {
-	artifactsDir = strings.TrimSpace(artifactsDir)
-	if stderr == nil || artifactsDir == "" {
-		return nil
-	}
-	_, err := fmt.Fprintf(stderr, "artifacts_dir=%s\n", artifactsDir)
-	return err
-}
-
-func writeExecutionInspectCommand(stderr io.Writer, sandboxID, executionID string) error {
-	executionID = strings.TrimSpace(executionID)
-	if stderr == nil || executionID == "" {
-		return nil
-	}
-	_, err := fmt.Fprintf(stderr, "inspect_command=cleanroom execution inspect %s\n", executionID)
 	return err
 }
 

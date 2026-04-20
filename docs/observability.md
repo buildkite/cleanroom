@@ -31,9 +31,8 @@ instead.
 structured logs with stable correlation fields such as `trace_id`, `span_id`,
 `execution_id`, `sandbox_id`, `backend`, and `reason_code`.
 
-`observability.traces.url_template` is optional. When set, Cleanroom prints
-`trace_url=...` in failure footers and exposes the same URL from
-`cleanroom execution inspect`.
+`observability.traces.url_template` is optional. When set, Cleanroom exposes
+`trace_url` from `cleanroom execution inspect`.
 
 ## Local stack
 
@@ -59,11 +58,11 @@ under the `Cleanroom` folder.
 Use the local stack or your configured OTLP backend to inspect traces and
 execution diagnostics.
 
-- `cleanroom exec`, `cleanroom exec --tty`, and `cleanroom console` print
-  `sandbox_id`, `execution_id`, and `trace_id` on failure when available.
+- `cleanroom exec`, `cleanroom exec --tty`, and `cleanroom console` leave
+  failure stderr focused on streamed guest output instead of appending
+  diagnostic footers.
 - `cleanroom exec --print-trace-id` also prints `trace_id` after a successful
   execution when available.
-- When `url_template` is configured, failure footers also print `trace_url`.
 - `cleanroom execution inspect <execution-id>` shows execution status,
   retained stdout and stderr, `trace_id`, optional `trace_url`, and retained
   observability payload.

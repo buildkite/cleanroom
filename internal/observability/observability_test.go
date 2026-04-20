@@ -38,6 +38,49 @@ func TestStartDisabledReturnsRuntime(t *testing.T) {
 	}
 }
 
+func TestStartDisabledLeavesExistingOTelErrorHandlerUntouched(t *testing.T) {
+	original := otel.GetErrorHandler()
+	t.Cleanup(func() { otel.SetErrorHandler(original) })
+
+	previousErrCh := make(chan error, 1)
+	otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) {
+		previousErrCh <- err
+	}))
+
+	reportedErrCh := make(chan error, 1)
+	runtime, err := Start(context.Background(), Options{
+		ReportError: func(err error) {
+			reportedErrCh <- err
+		},
+	})
+	if err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+
+	otel.Handle(errors.New("disabled observability"))
+
+	select {
+	case err := <-previousErrCh:
+		if got, want := err.Error(), "disabled observability"; got != want {
+			t.Fatalf("unexpected restored handler error: got %q want %q", got, want)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for existing error handler")
+	}
+
+	select {
+	case err := <-reportedErrCh:
+		t.Fatalf("expected disabled observability not to install report handler, got %v", err)
+	default:
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := runtime.Shutdown(shutdownCtx); err != nil {
+		t.Fatalf("Shutdown returned error: %v", err)
+	}
+}
+
 func TestStartRejectsUnsupportedTraceExporterWhenEnabled(t *testing.T) {
 	_, err := Start(context.Background(), Options{
 		Config: runtimeconfig.ObservabilityConfig{
@@ -281,6 +324,52 @@ func TestStartSuppressesConfiguredReporterDuringShutdown(t *testing.T) {
 	}
 }
 
+func TestRuntimeErrorReporterSuppressWaitsForInFlightHandle(t *testing.T) {
+	enteredReport := make(chan struct{})
+	releaseReport := make(chan struct{})
+	reporter := &runtimeErrorReporter{report: func(error) {
+		close(enteredReport)
+		<-releaseReport
+	}}
+
+	handleDone := make(chan struct{})
+	go func() {
+		defer close(handleDone)
+		reporter.Handle(errors.New("collector unavailable"))
+	}()
+
+	select {
+	case <-enteredReport:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for in-flight report")
+	}
+
+	suppressDone := make(chan struct{})
+	go func() {
+		reporter.suppress()
+		close(suppressDone)
+	}()
+
+	select {
+	case <-suppressDone:
+		t.Fatal("expected suppress to wait for in-flight report")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(releaseReport)
+
+	select {
+	case <-suppressDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for suppress to finish")
+	}
+
+	select {
+	case <-handleDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for handle to finish")
+	}
+}
 func TestStartExportsOTLPHTTPSpanOnShutdown(t *testing.T) {
 	bodyCh := make(chan []byte, 8)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
