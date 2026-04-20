@@ -22,3 +22,12 @@ func TestGuestInitScriptAutostartsDockerWhenAvailable(t *testing.T) {
 		t.Fatal("expected init script to wait for dockerd API readiness")
 	}
 }
+
+func TestGuestInitScriptSeedsLocalhostHostsEntries(t *testing.T) {
+	if !strings.Contains(guestInitScriptTemplate, "127.0.0.1 localhost") {
+		t.Fatal("expected localhost IPv4 hosts entry in init script")
+	}
+	if !strings.Contains(guestInitScriptTemplate, "::1 localhost ip6-localhost ip6-loopback") {
+		t.Fatal("expected localhost IPv6 hosts entry in init script")
+	}
+}

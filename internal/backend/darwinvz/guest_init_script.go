@@ -30,6 +30,12 @@ mount -t tmpfs tmpfs /tmp 2>/dev/null || true
 export HOME=/root
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/root/.local/bin
 
+mkdir -p /etc 2>/dev/null || true
+cat >/etc/hosts <<'EOF'
+127.0.0.1 localhost
+::1 localhost ip6-localhost ip6-loopback
+EOF
+
 cmdline="$(cat /proc/cmdline 2>/dev/null || true)"
 arg_value() {
   key="$1"
