@@ -324,6 +324,126 @@ func TestStartSuppressesConfiguredReporterDuringShutdown(t *testing.T) {
 	}
 }
 
+func TestStartPreservesNestedOTelErrorHandlersAcrossRuntimeShutdown(t *testing.T) {
+	original := otel.GetErrorHandler()
+	t.Cleanup(func() { otel.SetErrorHandler(original) })
+
+	previousErrCh := make(chan error, 1)
+	otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) {
+		previousErrCh <- err
+	}))
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-protobuf")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte{0x0a, 0x00})
+	}))
+	defer server.Close()
+
+	reportedErrCh1 := make(chan error, 1)
+	runtime1, err := Start(context.Background(), Options{
+		Config: runtimeconfig.ObservabilityConfig{
+			Enabled: true,
+			OTLP: runtimeconfig.OTLPConfig{
+				Endpoint: server.URL,
+				Protocol: "http/protobuf",
+			},
+		},
+		ServiceName: "cleanroom-cli-1",
+		ReportError: func(err error) {
+			reportedErrCh1 <- err
+		},
+	})
+	if err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+
+	reportedErrCh2 := make(chan error, 2)
+	runtime2, err := Start(context.Background(), Options{
+		Config: runtimeconfig.ObservabilityConfig{
+			Enabled: true,
+			OTLP: runtimeconfig.OTLPConfig{
+				Endpoint: server.URL,
+				Protocol: "http/protobuf",
+			},
+		},
+		ServiceName: "cleanroom-cli-2",
+		ReportError: func(err error) {
+			reportedErrCh2 <- err
+		},
+	})
+	if err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+
+	otel.Handle(errors.New("before shutdown"))
+
+	select {
+	case err := <-reportedErrCh2:
+		if got, want := err.Error(), "before shutdown"; got != want {
+			t.Fatalf("unexpected nested reporter error: got %q want %q", got, want)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for nested reporter")
+	}
+
+	select {
+	case err := <-reportedErrCh1:
+		t.Fatalf("expected newer runtime to own otel errors, got %v", err)
+	default:
+	}
+	select {
+	case err := <-previousErrCh:
+		t.Fatalf("expected previous handler to be shadowed, got %v", err)
+	default:
+	}
+
+	shutdownCtx1, cancel1 := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel1()
+	if err := runtime1.Shutdown(shutdownCtx1); err != nil {
+		t.Fatalf("Shutdown returned error: %v", err)
+	}
+
+	otel.Handle(errors.New("after first shutdown"))
+
+	select {
+	case err := <-reportedErrCh2:
+		if got, want := err.Error(), "after first shutdown"; got != want {
+			t.Fatalf("unexpected error after first shutdown: got %q want %q", got, want)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for remaining runtime reporter")
+	}
+
+	select {
+	case err := <-reportedErrCh1:
+		t.Fatalf("expected shutdown runtime not to resume ownership, got %v", err)
+	default:
+	}
+	select {
+	case err := <-previousErrCh:
+		t.Fatalf("expected previous handler to remain shadowed, got %v", err)
+	default:
+	}
+
+	shutdownCtx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel2()
+	if err := runtime2.Shutdown(shutdownCtx2); err != nil {
+		t.Fatalf("Shutdown returned error: %v", err)
+	}
+
+	otel.Handle(errors.New("after second shutdown"))
+
+	select {
+	case err := <-previousErrCh:
+		if got, want := err.Error(), "after second shutdown"; got != want {
+			t.Fatalf("unexpected restored handler error: got %q want %q", got, want)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for previous handler restoration")
+	}
+}
+
 func TestRuntimeErrorReporterSuppressWaitsForInFlightHandle(t *testing.T) {
 	enteredReport := make(chan struct{})
 	releaseReport := make(chan struct{})
