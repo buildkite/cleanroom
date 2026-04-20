@@ -65,13 +65,12 @@ func NewWithProviders(tracerProvider trace.TracerProvider, meterProvider metric.
 func Start(ctx context.Context, opts Options) (*Runtime, error) {
 	tracerProvider := trace.TracerProvider(tracenoop.NewTracerProvider())
 	meterProvider := metric.MeterProvider(metricnoop.NewMeterProvider())
-	errorReporter, restoreErrorHandler := installErrorHandler(opts.ReportError)
-	shutdown := func(context.Context) error {
-		restoreErrorHandler()
-		return nil
-	}
+	var errorReporter *runtimeErrorReporter
+	restoreErrorHandler := func() {}
+	shutdown := func(context.Context) error { return nil }
 
 	if opts.Config.Enabled {
+		errorReporter, restoreErrorHandler = installErrorHandler(opts.ReportError)
 		provider, err := newTracerProvider(ctx, opts)
 		if err != nil {
 			restoreErrorHandler()
