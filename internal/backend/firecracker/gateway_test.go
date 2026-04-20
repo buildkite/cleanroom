@@ -102,6 +102,7 @@ func TestGatewayEnvVarsAddsGoProxyAndMiseMirror(t *testing.T) {
 			NetworkDefault: "deny",
 			Allow: []policy.AllowRule{
 				{Host: "proxy.golang.org", Ports: []int{443}},
+				{Host: "sum.golang.org", Ports: []int{443}},
 				{Host: "dl.google.com", Ports: []int{443}},
 			},
 		},

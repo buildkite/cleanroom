@@ -115,7 +115,7 @@ func RubyGemsProxyEnvVars(compiled *policy.CompiledPolicy, gatewayPort int, rout
 // GoProxyEnvVars returns environment variables that route Go module downloads
 // through the shared host gateway when proxy.golang.org is policy-allowed.
 func GoProxyEnvVars(compiled *policy.CompiledPolicy, gatewayPort int, routes ProxyRoutes) []string {
-	if !routes.GoProxy || !allowsHTTPSHost(compiled, "proxy.golang.org") || gatewayPort <= 0 {
+	if !routes.GoProxy || !allowsHTTPSHost(compiled, "proxy.golang.org") || !allowsHTTPSHost(compiled, "sum.golang.org") || gatewayPort <= 0 {
 		return nil
 	}
 

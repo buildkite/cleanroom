@@ -63,7 +63,10 @@ func TestGoProxyEnvVarsRequiresLiveRoute(t *testing.T) {
 	compiled := &policy.CompiledPolicy{
 		Version:        1,
 		NetworkDefault: "deny",
-		Allow:          []policy.AllowRule{{Host: "proxy.golang.org", Ports: []int{443}}},
+		Allow: []policy.AllowRule{
+			{Host: "proxy.golang.org", Ports: []int{443}},
+			{Host: "sum.golang.org", Ports: []int{443}},
+		},
 	}
 
 	if env := GoProxyEnvVars(compiled, 8170, ProxyRoutes{}); env != nil {
@@ -76,6 +79,20 @@ func TestGoProxyEnvVarsRequiresLiveRoute(t *testing.T) {
 	}
 	if want := GoProxyDefaultEnvKey + "=http://" + GuestGatewayHostname + ":8170/goproxy,direct"; env[0] != want {
 		t.Fatalf("expected %q, got %q", want, env[0])
+	}
+}
+
+func TestGoProxyEnvVarsRequiresSumDBAllowlist(t *testing.T) {
+	t.Parallel()
+
+	compiled := &policy.CompiledPolicy{
+		Version:        1,
+		NetworkDefault: "deny",
+		Allow:          []policy.AllowRule{{Host: "proxy.golang.org", Ports: []int{443}}},
+	}
+
+	if env := GoProxyEnvVars(compiled, 8170, ProxyRoutes{GoProxy: true}); env != nil {
+		t.Fatalf("expected no goproxy env without sumdb allowlist, got %v", env)
 	}
 }
 
