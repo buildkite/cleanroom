@@ -11,9 +11,12 @@ import (
 
 func newLogger(rawLevel string, cfg runtimeconfig.ObservabilityConfig, component string) (*log.Logger, error) {
 	levelName := effectiveLogLevel(rawLevel)
+	if _, err := log.ParseLevel(levelName); err != nil {
+		return nil, fmt.Errorf("invalid --log-level %q: %w", rawLevel, err)
+	}
 	logger, err := observability.NewLogger(os.Stderr, levelName, cfg, observability.LogFieldComponent, component)
 	if err != nil {
-		return nil, fmt.Errorf("invalid --log-level %q: %w", rawLevel, err)
+		return nil, err
 	}
 	return logger, nil
 }
