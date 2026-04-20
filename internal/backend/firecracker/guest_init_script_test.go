@@ -33,10 +33,16 @@ func TestGuestInitScriptSeedsLocalhostHostsEntries(t *testing.T) {
 	if strings.Contains(guestInitScriptTemplate, "cat >/etc/hosts") {
 		t.Fatal("expected init script to preserve existing hosts entries")
 	}
-	if !strings.Contains(guestInitScriptTemplate, ">>/etc/hosts") {
-		t.Fatal("expected init script to append missing localhost hosts entries")
+	if !strings.Contains(guestInitScriptTemplate, "append_hosts_line_if_missing()") {
+		t.Fatal("expected init script to use helper for missing localhost hosts entries")
 	}
-	if !strings.Contains(guestInitScriptTemplate, ">>/etc/hosts 2>/dev/null || true") {
-		t.Fatal("expected localhost hosts entry append to be best-effort")
+	if !strings.Contains(guestInitScriptTemplate, "tail -c 1 /etc/hosts") {
+		t.Fatal("expected localhost hosts entry helper to detect missing trailing newline")
+	}
+	if !strings.Contains(guestInitScriptTemplate, "printf '\\n' >>/etc/hosts 2>/dev/null || true") {
+		t.Fatal("expected localhost hosts entry helper to insert a separator newline when needed")
+	}
+	if !strings.Contains(guestInitScriptTemplate, "printf '%s\\n' \"$line\" >>/etc/hosts 2>/dev/null || true") {
+		t.Fatal("expected localhost hosts entry helper to append lines best-effort")
 	}
 }

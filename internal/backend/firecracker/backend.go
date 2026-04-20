@@ -160,12 +160,19 @@ export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/root/.
 
 mkdir -p /etc 2>/dev/null || true
 touch /etc/hosts 2>/dev/null || true
-if ! grep -Eq '^[[:space:]]*127\.0\.0\.1([[:space:]]|$).*localhost([[:space:]]|$)' /etc/hosts 2>/dev/null; then
-  printf '127.0.0.1 localhost\n' >>/etc/hosts 2>/dev/null || true
-fi
-if ! grep -Eq '^[[:space:]]*::1([[:space:]]|$).*localhost([[:space:]]|$)' /etc/hosts 2>/dev/null; then
-  printf '::1 localhost ip6-localhost ip6-loopback\n' >>/etc/hosts 2>/dev/null || true
-fi
+append_hosts_line_if_missing() {
+  pattern="$1"
+  line="$2"
+  if grep -Eq "$pattern" /etc/hosts 2>/dev/null; then
+    return 0
+  fi
+  if [ -s /etc/hosts ] && [ -n "$(tail -c 1 /etc/hosts 2>/dev/null || true)" ]; then
+    printf '\n' >>/etc/hosts 2>/dev/null || true
+  fi
+  printf '%s\n' "$line" >>/etc/hosts 2>/dev/null || true
+}
+append_hosts_line_if_missing '^[[:space:]]*127\.0\.0\.1([[:space:]]|$).*localhost([[:space:]]|$)' '127.0.0.1 localhost'
+append_hosts_line_if_missing '^[[:space:]]*::1([[:space:]]|$).*localhost([[:space:]]|$)' '::1 localhost ip6-localhost ip6-loopback'
 
 cmdline="$(cat /proc/cmdline 2>/dev/null || true)"
 arg_value() {
