@@ -2,6 +2,7 @@ package observability
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	colmetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
@@ -33,6 +35,49 @@ func TestStartDisabledReturnsRuntime(t *testing.T) {
 	}
 	if runtime.ConnectInterceptor() == nil {
 		t.Fatal("expected connect interceptor")
+	}
+}
+
+func TestStartDisabledLeavesExistingOTelErrorHandlerUntouched(t *testing.T) {
+	original := otel.GetErrorHandler()
+	t.Cleanup(func() { otel.SetErrorHandler(original) })
+
+	previousErrCh := make(chan error, 1)
+	otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) {
+		previousErrCh <- err
+	}))
+
+	reportedErrCh := make(chan error, 1)
+	runtime, err := Start(context.Background(), Options{
+		ReportError: func(err error) {
+			reportedErrCh <- err
+		},
+	})
+	if err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+
+	otel.Handle(errors.New("disabled observability"))
+
+	select {
+	case err := <-previousErrCh:
+		if got, want := err.Error(), "disabled observability"; got != want {
+			t.Fatalf("unexpected restored handler error: got %q want %q", got, want)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for existing error handler")
+	}
+
+	select {
+	case err := <-reportedErrCh:
+		t.Fatalf("expected disabled observability not to install report handler, got %v", err)
+	default:
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := runtime.Shutdown(shutdownCtx); err != nil {
+		t.Fatalf("Shutdown returned error: %v", err)
 	}
 }
 
@@ -153,6 +198,176 @@ func TestNewSamplerPreservesExplicitZeroRatio(t *testing.T) {
 	)
 	if result.Decision != sdktrace.Drop {
 		t.Fatalf("expected explicit zero ratio to drop, got %v", result.Decision)
+	}
+}
+
+func TestStartRoutesOTelErrorsToConfiguredReporter(t *testing.T) {
+	original := otel.GetErrorHandler()
+	t.Cleanup(func() { otel.SetErrorHandler(original) })
+
+	previousErrCh := make(chan error, 1)
+	otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) {
+		previousErrCh <- err
+	}))
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-protobuf")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte{0x0a, 0x00})
+	}))
+	defer server.Close()
+
+	reportedErrCh := make(chan error, 1)
+	runtime, err := Start(context.Background(), Options{
+		Config: runtimeconfig.ObservabilityConfig{
+			Enabled: true,
+			OTLP: runtimeconfig.OTLPConfig{
+				Endpoint: server.URL,
+				Protocol: "http/protobuf",
+			},
+		},
+		ServiceName: "cleanroom-cli",
+		ReportError: func(err error) {
+			reportedErrCh <- err
+		},
+	})
+	if err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+
+	otel.Handle(errors.New("collector unavailable"))
+
+	select {
+	case err := <-reportedErrCh:
+		if got, want := err.Error(), "collector unavailable"; got != want {
+			t.Fatalf("unexpected reported error: got %q want %q", got, want)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for configured error reporter")
+	}
+
+	select {
+	case err := <-previousErrCh:
+		t.Fatalf("expected configured error reporter to replace previous handler, got %v", err)
+	default:
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := runtime.Shutdown(shutdownCtx); err != nil {
+		t.Fatalf("Shutdown returned error: %v", err)
+	}
+
+	otel.Handle(errors.New("after shutdown"))
+
+	select {
+	case err := <-previousErrCh:
+		if got, want := err.Error(), "after shutdown"; got != want {
+			t.Fatalf("unexpected restored handler error: got %q want %q", got, want)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for restored error handler")
+	}
+}
+
+func TestStartSuppressesConfiguredReporterDuringShutdown(t *testing.T) {
+	original := otel.GetErrorHandler()
+	t.Cleanup(func() { otel.SetErrorHandler(original) })
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	endpoint := listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatalf("close listener: %v", err)
+	}
+
+	reportedErrCh := make(chan error, 2)
+	runtime, err := Start(context.Background(), Options{
+		Config: runtimeconfig.ObservabilityConfig{
+			Enabled: true,
+			OTLP: runtimeconfig.OTLPConfig{
+				Endpoint: "http://" + endpoint,
+				Protocol: "http/protobuf",
+			},
+		},
+		ServiceName: "cleanroom-cli",
+		ReportError: func(err error) {
+			reportedErrCh <- err
+		},
+	})
+	if err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+
+	counter, err := runtime.Meter("github.com/buildkite/cleanroom/internal/observability_test").Int64Counter("cleanroom.test.shutdown.metric")
+	if err != nil {
+		t.Fatalf("Int64Counter returned error: %v", err)
+	}
+	counter.Add(context.Background(), 1)
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err = runtime.Shutdown(shutdownCtx)
+	if err == nil {
+		t.Fatal("expected Shutdown to return an export error")
+	}
+	if !strings.Contains(err.Error(), "failed to upload metrics") {
+		t.Fatalf("expected shutdown error to mention metric upload failure, got %v", err)
+	}
+
+	select {
+	case err := <-reportedErrCh:
+		t.Fatalf("expected shutdown errors to be returned, not reported asynchronously, got %v", err)
+	default:
+	}
+}
+
+func TestRuntimeErrorReporterSuppressWaitsForInFlightHandle(t *testing.T) {
+	enteredReport := make(chan struct{})
+	releaseReport := make(chan struct{})
+	reporter := &runtimeErrorReporter{report: func(error) {
+		close(enteredReport)
+		<-releaseReport
+	}}
+
+	handleDone := make(chan struct{})
+	go func() {
+		defer close(handleDone)
+		reporter.Handle(errors.New("collector unavailable"))
+	}()
+
+	select {
+	case <-enteredReport:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for in-flight report")
+	}
+
+	suppressDone := make(chan struct{})
+	go func() {
+		reporter.suppress()
+		close(suppressDone)
+	}()
+
+	select {
+	case <-suppressDone:
+		t.Fatal("expected suppress to wait for in-flight report")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(releaseReport)
+
+	select {
+	case <-suppressDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for suppress to finish")
+	}
+
+	select {
+	case <-handleDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for handle to finish")
 	}
 }
 

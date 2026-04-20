@@ -101,6 +101,14 @@ run = "go run ./cmd/cleanroom doctor"
 description = "Run cleanroom diagnostics as JSON"
 run = "go run ./cmd/cleanroom doctor --json"
 
+[tasks."observability:up"]
+description = "Start the local observability stack"
+run = "docker compose -f examples/observability/docker-compose.yaml up -d"
+
+[tasks."observability:down"]
+description = "Stop the local observability stack"
+run = "docker compose -f examples/observability/docker-compose.yaml down -v"
+
 [tasks.check]
 description = "Run build, test, and lint"
 depends = ["build", "test", "lint-shell"]
