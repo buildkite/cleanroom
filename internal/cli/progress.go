@@ -165,22 +165,21 @@ func writeSandboxProgressComplete(stderr *os.File, success bool, elapsed time.Du
 	if stderr == nil {
 		return
 	}
-	message := "Sandbox ready"
-	if !success {
-		message = "Sandbox creation failed"
+	if success {
+		_, _ = fmt.Fprint(stderr, "\r\033[2K")
+		return
 	}
-	_, _ = fmt.Fprintf(stderr, "\r\033[2K%s in %s\n", message, formatSandboxProgressDuration(elapsed))
+	_, _ = fmt.Fprintf(stderr, "\r\033[2KSandbox creation failed in %s\n", formatSandboxProgressDuration(elapsed))
 }
 
 func writeSandboxProgressCompletePlain(stderr *os.File, success bool, elapsed time.Duration) {
 	if stderr == nil {
 		return
 	}
-	message := "Sandbox ready"
-	if !success {
-		message = "Sandbox creation failed"
+	if success {
+		return
 	}
-	_, _ = fmt.Fprintf(stderr, "%s in %s\n", message, formatSandboxProgressDuration(elapsed))
+	_, _ = fmt.Fprintf(stderr, "Sandbox creation failed in %s\n", formatSandboxProgressDuration(elapsed))
 }
 
 func formatSandboxProgressDuration(elapsed time.Duration) string {
