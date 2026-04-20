@@ -12,7 +12,7 @@ var (
 	sandboxProgressTickInterval = 100 * time.Millisecond
 )
 
-var sandboxProgressFrames = []string{"-", "\\", "|", "/"}
+var sandboxProgressFrames = []string{"⣾ ", "⣽ ", "⣻ ", "⢿ ", "⡿ ", "⣟ ", "⣯ ", "⣷ "}
 
 type sandboxProgress struct {
 	mu         sync.Mutex
@@ -158,7 +158,7 @@ func writeSandboxProgressFrame(stderr *os.File, frame string, elapsed time.Durat
 	if stderr == nil {
 		return
 	}
-	_, _ = fmt.Fprintf(stderr, "\r\033[2K[%s] Preparing sandbox (first use may take a bit)... %s", frame, formatSandboxProgressDuration(elapsed))
+	_, _ = fmt.Fprintf(stderr, "\r\033[2K%s Preparing sandbox (first use may take a bit)... %s", frame, formatSandboxProgressDuration(elapsed))
 }
 
 func writeSandboxProgressComplete(stderr *os.File, success bool, elapsed time.Duration) {
