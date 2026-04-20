@@ -29,12 +29,37 @@ type ociHandlerEntry struct {
 	closer       io.Closer
 }
 
+type goProxyHandlerEntry struct {
+	handler      http.Handler
+	policyHost   string
+	policyPort   int
+	upstreamHost string
+	upstreamPort int
+	closer       io.Closer
+}
+
+type sumDBHandlerEntry struct {
+	handler      http.Handler
+	policyHost   string
+	policyPort   int
+	upstreamHost string
+	upstreamPort int
+	name         string
+	closer       io.Closer
+}
+
 type rubyGemsHandlerEntry struct {
 	handler      http.Handler
 	policyHost   string
 	policyPort   int
 	upstreamHost string
 	upstreamPort int
+	closer       io.Closer
+}
+
+type fetchHandlerEntry struct {
+	handler      http.Handler
+	allowedHosts map[string]struct{}
 	closer       io.Closer
 }
 
@@ -51,7 +76,10 @@ type ContentCache struct {
 	buildOCIHandler ociHandlerFactory
 	resolveOCIRoute ociRouteResolver
 
+	goProxy  goProxyHandlerEntry
+	sumdb    sumDBHandlerEntry
 	rubyGems rubyGemsHandlerEntry
+	fetch    fetchHandlerEntry
 }
 
 // Close releases resources held by the content cache.
@@ -61,15 +89,24 @@ func (c *ContentCache) Close() error {
 	}
 
 	c.ociMu.Lock()
-	closers := make([]io.Closer, 0, len(c.ociHandlers)+1)
+	closers := make([]io.Closer, 0, len(c.ociHandlers)+4)
 	for _, entry := range c.ociHandlers {
 		if entry.closer != nil {
 			closers = append(closers, entry.closer)
 		}
 	}
 	c.ociMu.Unlock()
+	if c.goProxy.closer != nil {
+		closers = append(closers, c.goProxy.closer)
+	}
+	if c.sumdb.closer != nil {
+		closers = append(closers, c.sumdb.closer)
+	}
 	if c.rubyGems.closer != nil {
 		closers = append(closers, c.rubyGems.closer)
+	}
+	if c.fetch.closer != nil {
+		closers = append(closers, c.fetch.closer)
 	}
 
 	if c.closer != nil {
@@ -121,6 +158,48 @@ func (c *ContentCache) HasOCIHandler() bool {
 	return c != nil && c.buildOCIHandler != nil
 }
 
+// HasGoProxyHandler reports whether Go module proxy caching is configured.
+func (c *ContentCache) HasGoProxyHandler() bool {
+	return c != nil && c.goProxy.handler != nil
+}
+
+// GoProxyUpstream returns policy/upstream metadata for the configured Go module proxy.
+func (c *ContentCache) GoProxyUpstream() (string, int, string, int, error) {
+	if c == nil || c.goProxy.handler == nil {
+		return "", 0, "", 0, errors.New("goproxy cache not configured")
+	}
+	return c.goProxy.policyHost, c.goProxy.policyPort, c.goProxy.upstreamHost, c.goProxy.upstreamPort, nil
+}
+
+// GoProxyHandler returns the configured Go module proxy cache handler.
+func (c *ContentCache) GoProxyHandler() (http.Handler, error) {
+	if c == nil || c.goProxy.handler == nil {
+		return nil, errors.New("goproxy cache not configured")
+	}
+	return c.goProxy.handler, nil
+}
+
+// HasSumDBHandler reports whether sumdb caching is configured.
+func (c *ContentCache) HasSumDBHandler() bool {
+	return c != nil && c.sumdb.handler != nil
+}
+
+// SumDBUpstream returns policy/upstream metadata for the configured checksum database proxy.
+func (c *ContentCache) SumDBUpstream() (string, int, string, int, error) {
+	if c == nil || c.sumdb.handler == nil {
+		return "", 0, "", 0, errors.New("sumdb cache not configured")
+	}
+	return c.sumdb.policyHost, c.sumdb.policyPort, c.sumdb.upstreamHost, c.sumdb.upstreamPort, nil
+}
+
+// SumDBHandler returns the configured checksum database proxy handler.
+func (c *ContentCache) SumDBHandler() (http.Handler, error) {
+	if c == nil || c.sumdb.handler == nil {
+		return nil, errors.New("sumdb cache not configured")
+	}
+	return c.sumdb.handler, nil
+}
+
 // HasRubyGemsHandler reports whether RubyGems caching is configured.
 func (c *ContentCache) HasRubyGemsHandler() bool {
 	return c != nil && c.rubyGems.handler != nil
@@ -141,6 +220,32 @@ func (c *ContentCache) RubyGemsHandler() (http.Handler, error) {
 		return nil, errors.New("rubygems cache not configured")
 	}
 	return c.rubyGems.handler, nil
+}
+
+// HasFetchHandler reports whether immutable artifact fetch caching is configured.
+func (c *ContentCache) HasFetchHandler() bool {
+	return c != nil && c.fetch.handler != nil
+}
+
+// FetchAllowsHost reports whether the immutable artifact fetch route is configured for host.
+func (c *ContentCache) FetchAllowsHost(host string) bool {
+	if c == nil || c.fetch.handler == nil {
+		return false
+	}
+	host = strings.ToLower(strings.TrimSpace(host))
+	if host == "" {
+		return false
+	}
+	_, ok := c.fetch.allowedHosts[host]
+	return ok
+}
+
+// FetchHandler returns the configured immutable artifact fetch cache handler.
+func (c *ContentCache) FetchHandler() (http.Handler, error) {
+	if c == nil || c.fetch.handler == nil {
+		return nil, errors.New("fetch cache not configured")
+	}
+	return c.fetch.handler, nil
 }
 
 // OCIUpstreamForPrefix returns policy/upstream metadata for the requested
@@ -307,19 +412,27 @@ func newGitContentCacheHTTPClient(credentials CredentialProvider) *http.Client {
 }
 
 func newOCIContentCacheHTTPClient(credentials CredentialProvider) *http.Client {
-	client := newUpstreamContentCacheHTTPClient(credentials)
-	client.Transport = &policyValidatingRoundTripper{base: client.Transport}
-	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		if len(via) == 0 {
-			return nil
-		}
-		return validateUpstreamTargetPolicy(req)
-	}
-	return client
+	return newPolicyValidatingContentCacheHTTPClient(credentials)
+}
+
+func newGoProxyContentCacheHTTPClient() *http.Client {
+	return newPolicyValidatingContentCacheHTTPClient(nil)
+}
+
+func newSumDBContentCacheHTTPClient() *http.Client {
+	return newPolicyValidatingContentCacheHTTPClient(nil)
 }
 
 func newRubyGemsContentCacheHTTPClient(_ CredentialProvider) *http.Client {
-	client := newUpstreamContentCacheHTTPClient(nil)
+	return newPolicyValidatingContentCacheHTTPClient(nil)
+}
+
+func newFetchContentCacheHTTPClient() *http.Client {
+	return newPolicyValidatingContentCacheHTTPClient(nil)
+}
+
+func newPolicyValidatingContentCacheHTTPClient(credentials CredentialProvider) *http.Client {
+	client := newUpstreamContentCacheHTTPClient(credentials)
 	client.Transport = &policyValidatingRoundTripper{base: client.Transport}
 	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		if len(via) == 0 {

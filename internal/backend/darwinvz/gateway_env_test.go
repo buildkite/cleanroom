@@ -198,3 +198,33 @@ func TestGatewayGitProxyEnvVarsSkipsNonFileHandleModes(t *testing.T) {
 		})
 	}
 }
+
+func TestGatewayEnvVarsAddsGoProxyAndMiseMirror(t *testing.T) {
+	t.Parallel()
+
+	p := &policy.CompiledPolicy{
+		Version:        1,
+		NetworkDefault: "deny",
+		Allow: []policy.AllowRule{
+			{Host: "proxy.golang.org", Ports: []int{443}},
+			{Host: "dl.google.com", Ports: []int{443}},
+		},
+	}
+	env := gatewayEnvVars(p, 8170, "token", gateway.ProxyRoutes{GoProxy: true, Fetch: true})
+	foundGoProxy := false
+	foundMiseMirror := false
+	for _, entry := range env {
+		if entry == "GOPROXY=http://"+gateway.GuestGatewayHostname+":8170/goproxy,direct" {
+			foundGoProxy = true
+		}
+		if entry == "MISE_GO_DOWNLOAD_MIRROR=http://"+gateway.GuestGatewayHostname+":8170/fetch/dl.google.com/go" {
+			foundMiseMirror = true
+		}
+	}
+	if !foundGoProxy {
+		t.Fatalf("expected GOPROXY env in %v", env)
+	}
+	if !foundMiseMirror {
+		t.Fatalf("expected MISE_GO_DOWNLOAD_MIRROR env in %v", env)
+	}
+}

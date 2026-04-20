@@ -29,6 +29,7 @@ const (
 	reasonCodeHeader            = "X-Cleanroom-Reason-Code"
 	reasonHostNotAllowed        = observability.ReasonHostNotAllowed
 	reasonMethodNotAllowed      = observability.ReasonMethodNotAllowed
+	reasonInvalidRequest        = observability.ReasonInvalidRequest
 	reasonUpstreamError         = observability.ReasonUpstreamError
 	reasonUnknownRegistryPrefix = observability.ReasonUnknownRegistryPrefix
 	reasonProxied               = observability.ReasonProxied
@@ -122,9 +123,15 @@ func (h *gitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	remoteURL, err := canonicalUpstreamRemoteURL(upstreamHost, repoPath)
 	if err != nil {
+		setGatewayRequestDecision(r.Context(), gatewayActionDeny, reasonInvalidRequest)
 		span.RecordError(err)
+		span.SetAttributes(
+			attribute.String(observability.AttrGatewayAction, gatewayActionDeny),
+			attribute.String(observability.AttrReasonCode, reasonInvalidRequest),
+		)
 		span.SetStatus(codes.Error, err.Error())
-		writeReasonError(w, http.StatusBadRequest, reasonMethodNotAllowed, err.Error())
+		h.auditLog(r.Context(), scope.SandboxID, upstreamHost, repoPath, gatewayActionDeny, reasonInvalidRequest)
+		writeReasonError(w, http.StatusBadRequest, reasonInvalidRequest, err.Error())
 		return
 	}
 

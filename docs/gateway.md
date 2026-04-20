@@ -3,9 +3,9 @@
 The Cleanroom server runs a shared host gateway that mediates sandbox access to
 selected external services. The current implementation embeds
 `github.com/buildkite/content-cache` behind the gateway for cache-backed Git
-smart-HTTP and OCI registry routes, while keeping sandbox identity, policy
-enforcement, and credential resolution in Cleanroom's own `internal/gateway`
-layer.
+smart-HTTP, OCI registry, Go module proxy, RubyGems, and immutable download
+routes, while keeping sandbox identity, policy enforcement, and credential
+resolution in Cleanroom's own `internal/gateway` layer.
 
 Currently supported on the `firecracker` and `darwin-vz` backends.
 
@@ -18,7 +18,9 @@ Inside sandboxes, the shared gateway is exposed at
 |------|--------|---------|
 | `/git/` | Implemented | Cache-backed Git smart-HTTP route. `.git` remotes use embedded `content-cache`; non-cacheable paths fall back to Cleanroom's mirror-backed proxy. |
 | `/registry/` | Implemented | Cache-backed OCI Distribution route for allowlisted registries. |
+| `/goproxy/` | Implemented | Cache-backed Go module proxy route. Also serves mirrored checksum database requests under `/goproxy/sumdb/`. |
 | `/rubygems/` | Implemented | Cache-backed RubyGems route for Bundler mirror traffic to `rubygems.org`. |
+| `/fetch/` | Implemented | Cache-backed immutable download route for configured upstream hosts such as `dl.google.com`. |
 | `/secrets/` | Reserved | Not implemented yet. |
 | `/meta/` | Reserved | Not implemented yet. |
 
@@ -86,6 +88,28 @@ Not wired yet:
 - lockfile enforcement
 - non-OCI package-manager protocol handling
 
+## Go module proxy route
+
+`/goproxy/` is backed by `content-cache`'s Go module proxy and mirrored checksum
+database handlers. It serves `GOPROXY` requests for `@v/list`, `.info`, `.mod`,
+and `.zip`, while also answering mirrored checksum-database requests under
+`/goproxy/sumdb/`.
+
+Current scope:
+
+- guest-side `GOPROXY` environment injection when `proxy.golang.org` is
+  allowlisted
+- Go module metadata and zip fetches through the shared host gateway
+- mirrored checksum-database requests when `sum.golang.org` is allowlisted
+- host-side redirect validation for proxy redirects such as
+  `storage.googleapis.com`
+
+Not wired yet:
+
+- lockfile-derived Go module allowlists
+- private module or private checksum-database authentication flows
+- non-default upstream Go proxy or sumdb configuration
+
 ## RubyGems route
 
 `/rubygems/` is backed by `content-cache`'s RubyGems handler. It serves the
@@ -105,6 +129,26 @@ Not wired yet:
 - generic `gem sources` rewrites for arbitrary RubyGems registries
 - lockfile enforcement
 - private RubyGems registry authentication flows
+
+## Immutable fetch route
+
+`/fetch/` is backed by `content-cache`'s immutable download handler. Cleanroom
+uses it for guest-side tool downloads that are expressed as direct HTTPS
+artifacts rather than registry APIs.
+
+Current scope:
+
+- guest-side `MISE_GO_DOWNLOAD_MIRROR` injection when `dl.google.com` is
+  allowlisted
+- cache-backed Go SDK downloads from `dl.google.com/go/...`
+- host-side redirect validation and sandbox allowlist enforcement for configured
+  fetch hosts
+
+Not wired yet:
+
+- broader guest-side tool download rewrites beyond the configured fetch hosts
+- lockfile-aware artifact allowlists
+- authenticated private artifact downloads
 
 ## Credentials
 

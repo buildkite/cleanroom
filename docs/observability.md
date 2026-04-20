@@ -109,7 +109,8 @@ The current top-level product spans are:
 - `cleanroom.execution.run`
 - `cleanroom.gateway.<service>.request`
 
-`<service>` is one of `git`, `registry`, `rubygems`, `secrets`, or `meta`.
+`<service>` is one of `git`, `registry`, `goproxy`, `sumdb`, `rubygems`,
+`fetch`, `secrets`, or `meta`.
 
 Sandbox creation may emit additional child spans under the
 `cleanroom.sandbox.*` prefix for cache lookup, restore, bootstrap, and publish

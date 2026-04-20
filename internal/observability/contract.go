@@ -78,6 +78,7 @@ const (
 
 	ReasonHostNotAllowed        = "host_not_allowed"
 	ReasonMethodNotAllowed      = "method_not_allowed"
+	ReasonInvalidRequest        = "invalid_request"
 	ReasonUpstreamError         = "upstream_error"
 	ReasonUnknownRegistryPrefix = "unknown_registry_prefix"
 	ReasonProxied               = "proxied"

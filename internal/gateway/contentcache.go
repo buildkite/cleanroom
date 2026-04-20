@@ -12,7 +12,9 @@ import (
 
 	"github.com/buildkite/content-cache/backend"
 	"github.com/buildkite/content-cache/download"
+	ccfetch "github.com/buildkite/content-cache/protocol/fetch"
 	ccgit "github.com/buildkite/content-cache/protocol/git"
+	ccgoproxy "github.com/buildkite/content-cache/protocol/goproxy"
 	ccoci "github.com/buildkite/content-cache/protocol/oci"
 	ccrubygems "github.com/buildkite/content-cache/protocol/rubygems"
 	"github.com/buildkite/content-cache/store"
@@ -52,6 +54,10 @@ type ContentCacheConfig struct {
 
 	// RubyGemsMetadataTTL controls how long RubyGems metadata is cached.
 	RubyGemsMetadataTTL time.Duration
+
+	// FetchAllowedHosts restricts which upstream hosts may be served by the
+	// immutable artifact fetch route.
+	FetchAllowedHosts []string
 
 	Logger *log.Logger
 }
@@ -93,8 +99,11 @@ func NewContentCache(cfg ContentCacheConfig) (*ContentCache, error) {
 	// redirects across policy boundaries, while OCI pulls commonly rely on
 	// registry/CDN redirects for blob downloads.
 	gitHTTPClient := newGitContentCacheHTTPClient(cfg.Credentials)
+	goProxyHTTPClient := newGoProxyContentCacheHTTPClient()
+	sumDBHTTPClient := newSumDBContentCacheHTTPClient()
 	ociHTTPClient := newOCIContentCacheHTTPClient(cfg.Credentials)
 	rubyGemsHTTPClient := newRubyGemsContentCacheHTTPClient(cfg.Credentials)
+	fetchHTTPClient := newFetchContentCacheHTTPClient()
 
 	packIdx, err := metadb.NewEnvelopeIndex(db, "git", "pack", 24*time.Hour)
 	if err != nil {
@@ -115,6 +124,26 @@ func NewContentCache(cfg ContentCacheConfig) (*ContentCache, error) {
 	if err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("create oci image index: %w", err)
+	}
+	goProxyModIdx, err := metadb.NewEnvelopeIndex(db, "goproxy", "mod", 24*time.Hour)
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("create goproxy mod index: %w", err)
+	}
+	goProxyInfoIdx, err := metadb.NewEnvelopeIndex(db, "goproxy", "info", 24*time.Hour)
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("create goproxy info index: %w", err)
+	}
+	goProxyListIdx, err := metadb.NewEnvelopeIndex(db, "goproxy", "list", 24*time.Hour)
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("create goproxy list index: %w", err)
+	}
+	sumDBIdx, err := metadb.NewEnvelopeIndex(db, "sumdb", "cache", 0)
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("create sumdb cache index: %w", err)
 	}
 	rubyGemsMetadataTTL := cfg.RubyGemsMetadataTTL
 	if rubyGemsMetadataTTL == 0 {
@@ -145,8 +174,15 @@ func NewContentCache(cfg ContentCacheConfig) (*ContentCache, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("create rubygems gemspec index: %w", err)
 	}
+	fetchResourceIdx, err := metadb.NewEnvelopeIndex(db, "fetch", "resource", 24*time.Hour)
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("create fetch resource index: %w", err)
+	}
 
 	gitIndex := ccgit.NewIndex(packIdx)
+	goProxyIndex := ccgoproxy.NewIndex(goProxyModIdx, goProxyInfoIdx, goProxyListIdx)
+	sumDBIndex := ccgoproxy.NewSumdbIndex(sumDBIdx)
 	ociIndex := ccoci.NewIndex(imageIdx, manifestIdx, blobIdx)
 	rubyGemsIndex := ccrubygems.NewIndex(
 		rubyGemsVersionsIdx,
@@ -156,7 +192,10 @@ func NewContentCache(cfg ContentCacheConfig) (*ContentCache, error) {
 		rubyGemsGemspecIdx,
 		cafs,
 	)
+	fetchIndex := ccfetch.NewIndex(fetchResourceIdx)
 	allowedGitHosts := normalizeAllowedGitHosts(cfg.GitAllowedHosts)
+	allowedFetchHosts := normalizeAllowedHostList(cfg.FetchAllowedHosts)
+	allowedFetchHostSet := normalizeAllowedGitHosts(allowedFetchHosts)
 	registryMappings, err := normalizeOCIRegistryMappings(cfg.OCIRegistries)
 	if err != nil {
 		_ = db.Close()
@@ -173,6 +212,62 @@ func NewContentCache(cfg ContentCacheConfig) (*ContentCache, error) {
 		gitHandlers: make(map[string]http.Handler),
 		ociHandlers: make(map[string]ociHandlerEntry),
 	}
+	goProxyUpstreamURL := strings.TrimSpace(ccgoproxy.DefaultUpstreamURL)
+	goProxyPolicyHost, goProxyPolicyPort, err := registryHostPort(goProxyUpstreamURL)
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("resolve goproxy upstream: %w", err)
+	}
+	goProxyUpstream := ccgoproxy.NewUpstream(
+		ccgoproxy.WithUpstreamURL(goProxyUpstreamURL),
+		ccgoproxy.WithHTTPClient(goProxyHTTPClient),
+	)
+	goProxyHandler := ccgoproxy.NewHandler(
+		goProxyIndex,
+		cafs,
+		ccgoproxy.WithUpstream(goProxyUpstream),
+		ccgoproxy.WithLogger(logger),
+		ccgoproxy.WithDownloader(dl),
+	)
+	cache.goProxy = goProxyHandlerEntry{
+		handler:      goProxyHandler,
+		policyHost:   goProxyPolicyHost,
+		policyPort:   goProxyPolicyPort,
+		upstreamHost: goProxyPolicyHost,
+		upstreamPort: goProxyPolicyPort,
+	}
+	if closer, ok := any(goProxyHandler).(interface{ Close() }); ok {
+		cache.goProxy.closer = closeFunc(closer.Close)
+	}
+
+	sumDBUpstreamURL := strings.TrimSpace(ccgoproxy.DefaultSumDBURL)
+	sumDBPolicyHost, sumDBPolicyPort, err := registryHostPort(sumDBUpstreamURL)
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("resolve sumdb upstream: %w", err)
+	}
+	sumDBUpstream := ccgoproxy.NewSumdbUpstream(
+		ccgoproxy.WithSumdbHTTPClient(sumDBHTTPClient),
+	)
+	sumDBHandler := ccgoproxy.NewSumdbHandler(
+		sumDBIndex,
+		cafs,
+		ccgoproxy.WithSumdbUpstream(sumDBUpstream),
+		ccgoproxy.WithSumdbLogger(logger),
+		ccgoproxy.WithSumdbName(ccgoproxy.DefaultSumDBName),
+	)
+	cache.sumdb = sumDBHandlerEntry{
+		handler:      sumDBHandler,
+		name:         ccgoproxy.DefaultSumDBName,
+		policyHost:   sumDBPolicyHost,
+		policyPort:   sumDBPolicyPort,
+		upstreamHost: sumDBPolicyHost,
+		upstreamPort: sumDBPolicyPort,
+	}
+	if closer, ok := any(sumDBHandler).(interface{ Close() }); ok {
+		cache.sumdb.closer = closeFunc(closer.Close)
+	}
+
 	cache.resolveOCIRoute = func(prefix string) (ociRoute, error) {
 		return resolveOCIRegistryRoute(prefix, registryMappings)
 	}
@@ -268,6 +363,23 @@ func NewContentCache(cfg ContentCacheConfig) (*ContentCache, error) {
 	if closer, ok := any(rubyGemsHandler).(interface{ Close() }); ok {
 		cache.rubyGems.closer = closeFunc(closer.Close)
 	}
+	if len(allowedFetchHosts) > 0 {
+		fetchHandler := ccfetch.NewHandler(
+			fetchIndex,
+			cafs,
+			ccfetch.WithHTTPClient(fetchHTTPClient),
+			ccfetch.WithLogger(logger),
+			ccfetch.WithDownloader(dl),
+			ccfetch.WithAllowedHosts(allowedFetchHosts),
+		)
+		cache.fetch = fetchHandlerEntry{
+			handler:      fetchHandler,
+			allowedHosts: allowedFetchHostSet,
+		}
+		if closer, ok := any(fetchHandler).(interface{ Close() }); ok {
+			cache.fetch.closer = closeFunc(closer.Close)
+		}
+	}
 	return cache, nil
 }
 
@@ -285,12 +397,31 @@ func normalizeAllowedGitHosts(hosts []string) map[string]struct{} {
 		return nil
 	}
 	out := make(map[string]struct{}, len(hosts))
+	for _, host := range normalizeAllowedHostList(hosts) {
+		out[host] = struct{}{}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func normalizeAllowedHostList(hosts []string) []string {
+	if len(hosts) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(hosts))
+	seen := make(map[string]struct{}, len(hosts))
 	for _, host := range hosts {
 		host = strings.ToLower(strings.TrimSpace(host))
 		if host == "" {
 			continue
 		}
-		out[host] = struct{}{}
+		if _, ok := seen[host]; ok {
+			continue
+		}
+		seen[host] = struct{}{}
+		out = append(out, host)
 	}
 	if len(out) == 0 {
 		return nil

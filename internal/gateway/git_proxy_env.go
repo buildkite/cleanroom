@@ -29,6 +29,8 @@ const (
 // ProxyRoutes describes which gateway-backed guest proxy routes are live.
 type ProxyRoutes struct {
 	RubyGems bool
+	GoProxy  bool
+	Fetch    bool
 }
 
 // GitProxyEnvVars returns git config environment variables that rewrite allowed
@@ -103,11 +105,39 @@ func RubyGemsProxyEnvVars(compiled *policy.CompiledPolicy, gatewayPort int, rout
 	}
 }
 
+// GoProxyEnvVars returns environment variables that route Go module downloads
+// through the shared host gateway when proxy.golang.org is policy-allowed.
+func GoProxyEnvVars(compiled *policy.CompiledPolicy, gatewayPort int, routes ProxyRoutes) []string {
+	if !routes.GoProxy || !allowsHTTPSHost(compiled, "proxy.golang.org") || gatewayPort <= 0 {
+		return nil
+	}
+
+	return []string{
+		fmt.Sprintf("GOPROXY=http://%s:%d/goproxy,direct", GuestGatewayHostname, gatewayPort),
+	}
+}
+
+// MiseProxyEnvVars returns environment variables that route immutable mise Go
+// SDK downloads through the shared host gateway when dl.google.com is
+// policy-allowed.
+func MiseProxyEnvVars(compiled *policy.CompiledPolicy, gatewayPort int, routes ProxyRoutes) []string {
+	if !routes.Fetch || !allowsHTTPSHost(compiled, "dl.google.com") || gatewayPort <= 0 {
+		return nil
+	}
+
+	return []string{
+		fmt.Sprintf("MISE_GO_DOWNLOAD_MIRROR=http://%s:%d/fetch/dl.google.com/go", GuestGatewayHostname, gatewayPort),
+	}
+}
+
 // ProxyEnvVars returns gateway-specific environment variables for guest
-// processes, including Git rewrite config and Bundler RubyGems mirroring.
+// processes, including Git rewrite config, Bundler RubyGems mirroring, Go
+// module proxying, and immutable tool download mirroring.
 func ProxyEnvVars(compiled *policy.CompiledPolicy, gatewayPort int, scopeToken string, routes ProxyRoutes) []string {
 	env := GitProxyEnvVars(compiled, gatewayPort, scopeToken)
 	env = append(env, RubyGemsProxyEnvVars(compiled, gatewayPort, routes)...)
+	env = append(env, GoProxyEnvVars(compiled, gatewayPort, routes)...)
+	env = append(env, MiseProxyEnvVars(compiled, gatewayPort, routes)...)
 	if len(env) == 0 {
 		return nil
 	}

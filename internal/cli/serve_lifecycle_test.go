@@ -201,6 +201,9 @@ func TestServeCommandRunServerPassesGatewayGitCacheHostsToContentCache(t *testin
 	if got, want := captured.GitAllowedHosts, []string{"github.com", "gitlab.com"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
 		t.Fatalf("unexpected git cache hosts: got %v want %v", got, want)
 	}
+	if got, want := captured.FetchAllowedHosts, []string{"dl.google.com"}; len(got) != len(want) || got[0] != want[0] {
+		t.Fatalf("unexpected fetch cache hosts: got %v want %v", got, want)
+	}
 	if cancelRun == nil {
 		t.Fatal("expected serveSignalNotifyContext replacement to capture a cancel func")
 	}
