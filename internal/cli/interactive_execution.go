@@ -31,6 +31,30 @@ type interactiveExecutionResult struct {
 	ForcedLocalExit bool
 }
 
+func requestInteractiveExecutionCancelAsync(
+	rootCtx context.Context,
+	logger *log.Logger,
+	sandboxID, executionID string,
+	signal int32,
+	cancelExecution func(context.Context, *cleanroomv1.CancelExecutionRequest) (*cleanroomv1.CancelExecutionResponse, error),
+) {
+	if cancelExecution == nil {
+		return
+	}
+	go func() {
+		cancelResp, cancelErr := cancelExecution(tracePreservingContext(rootCtx), &cleanroomv1.CancelExecutionRequest{
+			SandboxId:   sandboxID,
+			ExecutionId: executionID,
+			Signal:      signal,
+		})
+		if cancelErr != nil && logger != nil {
+			logger.Warn("cancel interactive execution request failed", "sandbox_id", sandboxID, "execution_id", executionID, "error", cancelErr)
+		} else if cancelResp != nil && !cancelResp.GetAccepted() && logger != nil {
+			logger.Warn("cancel interactive execution request was not accepted", "sandbox_id", sandboxID, "execution_id", executionID, "status", cancelResp.GetStatus().String())
+		}
+	}()
+}
+
 func runInteractiveExecution(
 	rootCtx context.Context,
 	ctx *runtimeContext,
@@ -99,16 +123,7 @@ func runInteractiveExecution(
 				_ = session.SendSignal(signal)
 				return
 			}
-			cancelResp, cancelErr := client.CancelExecution(rootCtx, &cleanroomv1.CancelExecutionRequest{
-				SandboxId:   sandboxID,
-				ExecutionId: executionID,
-				Signal:      signal,
-			})
-			if cancelErr != nil && logger != nil {
-				logger.Warn("cancel interactive execution request failed", "sandbox_id", sandboxID, "execution_id", executionID, "error", cancelErr)
-			} else if cancelResp != nil && !cancelResp.GetAccepted() && logger != nil {
-				logger.Warn("cancel interactive execution request was not accepted", "sandbox_id", sandboxID, "execution_id", executionID, "status", cancelResp.GetStatus().String())
-			}
+			requestInteractiveExecutionCancelAsync(rootCtx, logger, sandboxID, executionID, signal, client.CancelExecution)
 			return
 		}
 		forceLocalExitOnce.Do(func() {

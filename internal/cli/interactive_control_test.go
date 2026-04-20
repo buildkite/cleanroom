@@ -5,6 +5,10 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"context"
+
+	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 )
 
 func TestPollInteractiveExitOrControlErrPrefersExitCode(t *testing.T) {
@@ -126,5 +130,40 @@ func TestWaitForInteractiveExitOrControlErrIgnoresBenignControlErrorUntilExit(t 
 	}
 	if got, want := gotExitCode, 3; got != want {
 		t.Fatalf("unexpected exit code: got %d want %d", got, want)
+	}
+}
+
+func TestRequestInteractiveExecutionCancelAsyncReturnsImmediately(t *testing.T) {
+	t.Parallel()
+
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	returned := make(chan struct{}, 1)
+	t.Cleanup(func() {
+		close(release)
+	})
+
+	go func() {
+		requestInteractiveExecutionCancelAsync(context.Background(), nil, "sandbox-123", "exec-123", 2, func(context.Context, *cleanroomv1.CancelExecutionRequest) (*cleanroomv1.CancelExecutionResponse, error) {
+			select {
+			case started <- struct{}{}:
+			default:
+			}
+			<-release
+			return &cleanroomv1.CancelExecutionResponse{Accepted: true}, nil
+		})
+		returned <- struct{}{}
+	}()
+
+	select {
+	case <-returned:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("timed out waiting for async cancel request dispatch")
+	}
+
+	select {
+	case <-started:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("timed out waiting for async cancel request to start")
 	}
 }
