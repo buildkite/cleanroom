@@ -734,24 +734,31 @@ func (s *Service) GetSandbox(_ context.Context, req *cleanroomv1.GetSandboxReque
 
 func (s *Service) ListSandboxes(_ context.Context, _ *cleanroomv1.ListSandboxesRequest) (*cleanroomv1.ListSandboxesResponse, error) {
 	s.mu.RLock()
-	items := make([]*sandboxState, 0, len(s.sandboxes))
+	type sandboxListItem struct {
+		sandbox  *cleanroomv1.Sandbox
+		sortTime time.Time
+	}
+	items := make([]sandboxListItem, 0, len(s.sandboxes))
 	for _, sb := range s.sandboxes {
-		items = append(items, sb)
+		items = append(items, sandboxListItem{
+			sandbox:  cloneSandboxLocked(sb),
+			sortTime: sandboxTerminalTime(sb),
+		})
 	}
 	s.mu.RUnlock()
 
 	sort.Slice(items, func(i, j int) bool {
-		left := sandboxTerminalTime(items[i])
-		right := sandboxTerminalTime(items[j])
+		left := items[i].sortTime
+		right := items[j].sortTime
 		if left.Equal(right) {
-			return items[i].ID < items[j].ID
+			return items[i].sandbox.GetSandboxId() < items[j].sandbox.GetSandboxId()
 		}
 		return left.After(right)
 	})
 
 	resp := &cleanroomv1.ListSandboxesResponse{Sandboxes: make([]*cleanroomv1.Sandbox, 0, len(items))}
-	for _, sb := range items {
-		resp.Sandboxes = append(resp.Sandboxes, cloneSandboxLocked(sb))
+	for _, item := range items {
+		resp.Sandboxes = append(resp.Sandboxes, item.sandbox)
 	}
 	return resp, nil
 }

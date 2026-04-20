@@ -5592,6 +5592,51 @@ func TestListExecutionsSupportsRetainedExecutionFromPrunedSandbox(t *testing.T) 
 	}
 }
 
+func TestListSandboxesReturnsNewestSnapshotFirst(t *testing.T) {
+	svc := newTestService(&stubAdapter{})
+	first := &sandboxState{
+		ID:        "sandbox_first",
+		Status:    cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY,
+		CreatedAt: time.Unix(1_700_000_000, 0).UTC(),
+		UpdatedAt: time.Unix(1_700_000_010, 0).UTC(),
+		events:    newEventFeed[*cleanroomv1.SandboxEvent](0),
+		Done:      make(chan struct{}),
+	}
+	second := &sandboxState{
+		ID:        "sandbox_second",
+		Status:    cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPED,
+		CreatedAt: time.Unix(1_700_000_100, 0).UTC(),
+		UpdatedAt: time.Unix(1_700_000_200, 0).UTC(),
+		events:    newEventFeed[*cleanroomv1.SandboxEvent](0),
+		Done:      make(chan struct{}),
+	}
+
+	svc.mu.Lock()
+	svc.ensureMapsLocked()
+	svc.sandboxes[first.ID] = first
+	svc.sandboxes[second.ID] = second
+	svc.mu.Unlock()
+
+	resp, err := svc.ListSandboxes(context.Background(), &cleanroomv1.ListSandboxesRequest{})
+	if err != nil {
+		t.Fatalf("ListSandboxes returned error: %v", err)
+	}
+
+	sandboxes := resp.GetSandboxes()
+	if got, want := len(sandboxes), 2; got != want {
+		t.Fatalf("unexpected sandbox count: got %d want %d", got, want)
+	}
+	if got, want := sandboxes[0].GetSandboxId(), second.ID; got != want {
+		t.Fatalf("unexpected first sandbox id: got %q want %q", got, want)
+	}
+	if got, want := sandboxes[0].GetUpdatedAt().AsTime(), second.UpdatedAt; !got.Equal(want) {
+		t.Fatalf("unexpected first sandbox updated_at: got %v want %v", got, want)
+	}
+	if got, want := sandboxes[1].GetSandboxId(), first.ID; got != want {
+		t.Fatalf("unexpected second sandbox id: got %q want %q", got, want)
+	}
+}
+
 func TestExecutionRetentionBoundsOutput(t *testing.T) {
 	adapter := &stubAdapter{
 		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
