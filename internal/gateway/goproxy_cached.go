@@ -6,12 +6,13 @@ import (
 	"strings"
 
 	"github.com/buildkite/cleanroom/internal/observability"
+	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/charmbracelet/log"
 )
 
 type goProxyHandlerProvider interface {
 	GoProxyUpstream() (string, int, string, int, error)
-	GoProxyHandler() (http.Handler, error)
+	GoProxyHandlerForPolicy(compiled *policy.CompiledPolicy) (http.Handler, error)
 	SumDBUpstream() (string, int, string, int, error)
 	SumDBHandler() (http.Handler, error)
 }
@@ -34,9 +35,9 @@ func (h *cachedGoProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+	if r.Method != http.MethodGet {
 		setGatewayRequestDecision(r.Context(), gatewayActionDeny, reasonMethodNotAllowed)
-		writeReasonError(w, http.StatusMethodNotAllowed, reasonMethodNotAllowed, "only GET and HEAD are permitted for goproxy")
+		writeReasonError(w, http.StatusMethodNotAllowed, reasonMethodNotAllowed, "only GET is permitted for goproxy")
 		return
 	}
 
@@ -65,7 +66,7 @@ func (h *cachedGoProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	if service == "sumdb" {
 		handler, err = h.cache.SumDBHandler()
 	} else {
-		handler, err = h.cache.GoProxyHandler()
+		handler, err = h.cache.GoProxyHandlerForPolicy(scope.Policy)
 	}
 	if err != nil {
 		setGatewayRequestDecision(r.Context(), gatewayActionDeny, reasonUpstreamError)

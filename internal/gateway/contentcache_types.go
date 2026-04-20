@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/buildkite/cleanroom/internal/policy"
 )
 
 type gitHandlerFactory func(host string) (http.Handler, error)
@@ -29,13 +31,19 @@ type ociHandlerEntry struct {
 	closer       io.Closer
 }
 
+type goProxyScopedHandler struct {
+	handler http.Handler
+	closer  io.Closer
+}
+
 type goProxyHandlerEntry struct {
-	handler      http.Handler
 	policyHost   string
 	policyPort   int
 	upstreamHost string
 	upstreamPort int
-	closer       io.Closer
+	mu           sync.Mutex
+	handlers     map[string]goProxyScopedHandler
+	buildHandler func(*policy.CompiledPolicy) (goProxyScopedHandler, error)
 }
 
 type sumDBHandlerEntry struct {
@@ -96,9 +104,13 @@ func (c *ContentCache) Close() error {
 		}
 	}
 	c.ociMu.Unlock()
-	if c.goProxy.closer != nil {
-		closers = append(closers, c.goProxy.closer)
+	c.goProxy.mu.Lock()
+	for _, entry := range c.goProxy.handlers {
+		if entry.closer != nil {
+			closers = append(closers, entry.closer)
+		}
 	}
+	c.goProxy.mu.Unlock()
 	if c.sumdb.closer != nil {
 		closers = append(closers, c.sumdb.closer)
 	}
@@ -160,23 +172,49 @@ func (c *ContentCache) HasOCIHandler() bool {
 
 // HasGoProxyHandler reports whether Go module proxy caching is configured.
 func (c *ContentCache) HasGoProxyHandler() bool {
-	return c != nil && c.goProxy.handler != nil
+	return c != nil && c.goProxy.buildHandler != nil
 }
 
 // GoProxyUpstream returns policy/upstream metadata for the configured Go module proxy.
 func (c *ContentCache) GoProxyUpstream() (string, int, string, int, error) {
-	if c == nil || c.goProxy.handler == nil {
+	if c == nil || c.goProxy.buildHandler == nil {
 		return "", 0, "", 0, errors.New("goproxy cache not configured")
 	}
 	return c.goProxy.policyHost, c.goProxy.policyPort, c.goProxy.upstreamHost, c.goProxy.upstreamPort, nil
 }
 
-// GoProxyHandler returns the configured Go module proxy cache handler.
-func (c *ContentCache) GoProxyHandler() (http.Handler, error) {
-	if c == nil || c.goProxy.handler == nil {
+// GoProxyHandlerForPolicy returns a Go module proxy cache handler scoped to
+// the provided compiled policy. The handler caches background fills against the
+// same allowlist that authorized the originating sandbox request.
+func (c *ContentCache) GoProxyHandlerForPolicy(compiled *policy.CompiledPolicy) (http.Handler, error) {
+	if c == nil || c.goProxy.buildHandler == nil {
 		return nil, errors.New("goproxy cache not configured")
 	}
-	return c.goProxy.handler, nil
+	if compiled == nil {
+		return nil, errors.New("goproxy policy is required")
+	}
+
+	key := strings.TrimSpace(compiled.Hash)
+	if key == "" {
+		key = fmt.Sprintf("%p", compiled)
+	}
+
+	c.goProxy.mu.Lock()
+	defer c.goProxy.mu.Unlock()
+
+	if entry, ok := c.goProxy.handlers[key]; ok {
+		return entry.handler, nil
+	}
+
+	entry, err := c.goProxy.buildHandler(compiled)
+	if err != nil {
+		return nil, err
+	}
+	if c.goProxy.handlers == nil {
+		c.goProxy.handlers = make(map[string]goProxyScopedHandler)
+	}
+	c.goProxy.handlers[key] = entry
+	return entry.handler, nil
 }
 
 // HasSumDBHandler reports whether sumdb caching is configured.
@@ -369,9 +407,11 @@ func ociUpstreamPolicyFromContext(ctx context.Context) (ociUpstreamPolicyContext
 	return policy, ok
 }
 
-func validateUpstreamTargetPolicy(req *http.Request) error {
-	scope, ok := ScopeFromContext(req.Context())
-	if !ok || scope == nil || scope.Policy == nil {
+func validateUpstreamTargetPolicy(req *http.Request, compiled *policy.CompiledPolicy) error {
+	if scope, ok := ScopeFromContext(req.Context()); ok && scope != nil && scope.Policy != nil {
+		compiled = scope.Policy
+	}
+	if compiled == nil {
 		return errors.New("sandbox scope is required for upstream policy validation")
 	}
 
@@ -385,7 +425,7 @@ func validateUpstreamTargetPolicy(req *http.Request) error {
 		policyHost = mapped.policyHost
 		policyPort = mapped.policyPort
 	}
-	if !scope.Policy.Allows(policyHost, policyPort) {
+	if !compiled.Allows(policyHost, policyPort) {
 		return fmt.Errorf("upstream target %s:%d is not allowed by sandbox policy", policyHost, policyPort)
 	}
 	return nil
@@ -400,7 +440,8 @@ type credentialInjector struct {
 }
 
 type policyValidatingRoundTripper struct {
-	base http.RoundTripper
+	base   http.RoundTripper
+	policy *policy.CompiledPolicy
 }
 
 func newGitContentCacheHTTPClient(credentials CredentialProvider) *http.Client {
@@ -412,33 +453,33 @@ func newGitContentCacheHTTPClient(credentials CredentialProvider) *http.Client {
 }
 
 func newOCIContentCacheHTTPClient(credentials CredentialProvider) *http.Client {
-	return newPolicyValidatingContentCacheHTTPClient(credentials)
+	return newPolicyValidatingContentCacheHTTPClient(credentials, nil)
 }
 
-func newGoProxyContentCacheHTTPClient() *http.Client {
-	return newPolicyValidatingContentCacheHTTPClient(nil)
+func newGoProxyContentCacheHTTPClient(compiled *policy.CompiledPolicy) *http.Client {
+	return newPolicyValidatingContentCacheHTTPClient(nil, compiled)
 }
 
 func newSumDBContentCacheHTTPClient() *http.Client {
-	return newPolicyValidatingContentCacheHTTPClient(nil)
+	return newPolicyValidatingContentCacheHTTPClient(nil, nil)
 }
 
 func newRubyGemsContentCacheHTTPClient(_ CredentialProvider) *http.Client {
-	return newPolicyValidatingContentCacheHTTPClient(nil)
+	return newPolicyValidatingContentCacheHTTPClient(nil, nil)
 }
 
 func newFetchContentCacheHTTPClient() *http.Client {
-	return newPolicyValidatingContentCacheHTTPClient(nil)
+	return newPolicyValidatingContentCacheHTTPClient(nil, nil)
 }
 
-func newPolicyValidatingContentCacheHTTPClient(credentials CredentialProvider) *http.Client {
+func newPolicyValidatingContentCacheHTTPClient(credentials CredentialProvider, compiled *policy.CompiledPolicy) *http.Client {
 	client := newUpstreamContentCacheHTTPClient(credentials)
-	client.Transport = &policyValidatingRoundTripper{base: client.Transport}
+	client.Transport = &policyValidatingRoundTripper{base: client.Transport, policy: compiled}
 	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		if len(via) == 0 {
 			return nil
 		}
-		return validateUpstreamTargetPolicy(req)
+		return validateUpstreamTargetPolicy(req, compiled)
 	}
 	return client
 }
@@ -472,7 +513,7 @@ func (c *credentialInjector) RoundTrip(r *http.Request) (*http.Response, error) 
 }
 
 func (p *policyValidatingRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
-	if err := validateUpstreamTargetPolicy(r); err != nil {
+	if err := validateUpstreamTargetPolicy(r, p.policy); err != nil {
 		return nil, err
 	}
 	return p.base.RoundTrip(r)

@@ -22,6 +22,7 @@ import (
 	"github.com/charmbracelet/log"
 
 	"github.com/buildkite/cleanroom/internal/paths"
+	"github.com/buildkite/cleanroom/internal/policy"
 )
 
 var errGitHostNotConfiguredForCaching = errors.New("git host not configured for caching")
@@ -99,7 +100,6 @@ func NewContentCache(cfg ContentCacheConfig) (*ContentCache, error) {
 	// redirects across policy boundaries, while OCI pulls commonly rely on
 	// registry/CDN redirects for blob downloads.
 	gitHTTPClient := newGitContentCacheHTTPClient(cfg.Credentials)
-	goProxyHTTPClient := newGoProxyContentCacheHTTPClient()
 	sumDBHTTPClient := newSumDBContentCacheHTTPClient()
 	ociHTTPClient := newOCIContentCacheHTTPClient(cfg.Credentials)
 	rubyGemsHTTPClient := newRubyGemsContentCacheHTTPClient(cfg.Credentials)
@@ -218,26 +218,30 @@ func NewContentCache(cfg ContentCacheConfig) (*ContentCache, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("resolve goproxy upstream: %w", err)
 	}
-	goProxyUpstream := ccgoproxy.NewUpstream(
-		ccgoproxy.WithUpstreamURL(goProxyUpstreamURL),
-		ccgoproxy.WithHTTPClient(goProxyHTTPClient),
-	)
-	goProxyHandler := ccgoproxy.NewHandler(
-		goProxyIndex,
-		cafs,
-		ccgoproxy.WithUpstream(goProxyUpstream),
-		ccgoproxy.WithLogger(logger),
-		ccgoproxy.WithDownloader(dl),
-	)
 	cache.goProxy = goProxyHandlerEntry{
-		handler:      goProxyHandler,
 		policyHost:   goProxyPolicyHost,
 		policyPort:   goProxyPolicyPort,
 		upstreamHost: goProxyPolicyHost,
 		upstreamPort: goProxyPolicyPort,
-	}
-	if closer, ok := any(goProxyHandler).(interface{ Close() }); ok {
-		cache.goProxy.closer = closeFunc(closer.Close)
+		handlers:     make(map[string]goProxyScopedHandler),
+		buildHandler: func(compiled *policy.CompiledPolicy) (goProxyScopedHandler, error) {
+			goProxyUpstream := ccgoproxy.NewUpstream(
+				ccgoproxy.WithUpstreamURL(goProxyUpstreamURL),
+				ccgoproxy.WithHTTPClient(newGoProxyContentCacheHTTPClient(compiled)),
+			)
+			handler := ccgoproxy.NewHandler(
+				goProxyIndex,
+				cafs,
+				ccgoproxy.WithUpstream(goProxyUpstream),
+				ccgoproxy.WithLogger(logger),
+				ccgoproxy.WithDownloader(dl),
+			)
+			entry := goProxyScopedHandler{handler: handler}
+			if closer, ok := any(handler).(interface{ Close() }); ok {
+				entry.closer = closeFunc(closer.Close)
+			}
+			return entry, nil
+		},
 	}
 
 	sumDBUpstreamURL := strings.TrimSpace(ccgoproxy.DefaultSumDBURL)

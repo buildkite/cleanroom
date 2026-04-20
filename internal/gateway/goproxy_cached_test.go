@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/buildkite/cleanroom/internal/policy"
 )
 
 type stubGoProxyHandlerProvider struct {
@@ -28,7 +30,7 @@ func (s *stubGoProxyHandlerProvider) GoProxyUpstream() (string, int, string, int
 	return s.goPolicyHost, s.goPolicyPort, s.goUpstreamHost, s.goUpstreamPort, nil
 }
 
-func (s *stubGoProxyHandlerProvider) GoProxyHandler() (http.Handler, error) {
+func (s *stubGoProxyHandlerProvider) GoProxyHandlerForPolicy(*policy.CompiledPolicy) (http.Handler, error) {
 	if s.err != nil {
 		return nil, s.err
 	}
@@ -157,5 +159,34 @@ func TestCachedGoProxyHandlerUnavailable(t *testing.T) {
 
 	if w.Code != http.StatusBadGateway {
 		t.Fatalf("expected 502, got %d", w.Code)
+	}
+}
+
+func TestCachedGoProxyHandlerRejectsHead(t *testing.T) {
+	t.Parallel()
+
+	h := newCachedGoProxyHandler(&stubGoProxyHandlerProvider{
+		goHandler:       http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatal("handler should not run") }),
+		sumdbHandler:    http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatal("handler should not run") }),
+		goPolicyHost:    "proxy.golang.org",
+		goPolicyPort:    443,
+		goUpstreamHost:  "proxy.golang.org",
+		goUpstreamPort:  443,
+		sumPolicyHost:   "sum.golang.org",
+		sumPolicyPort:   443,
+		sumUpstreamHost: "sum.golang.org",
+		sumUpstreamPort: 443,
+	}, nil)
+
+	req := httptest.NewRequest(http.MethodHead, "/goproxy/github.com/pkg/errors/@v/list", nil)
+	req = withScope(req, registryTestScope("proxy.golang.org"))
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405, got %d", w.Code)
+	}
+	if got := w.Header().Get(reasonCodeHeader); got != reasonMethodNotAllowed {
+		t.Fatalf("expected reason %s, got %q", reasonMethodNotAllowed, got)
 	}
 }
