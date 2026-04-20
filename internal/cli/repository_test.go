@@ -212,7 +212,6 @@ func TestCreateCommandShowsDependencyBootstrapOutputDuringSandboxCreate(t *testi
 	assertContainsAll(t, outcome.stderr,
 		"repo bootstrap output",
 		"dependency bootstrap output",
-		"Sandbox ready in",
 	)
 	if strings.Contains(outcome.stderr, "bootstrapping repository checkout") {
 		t.Fatalf("expected repository bootstrap phase chatter to be hidden, got %q", outcome.stderr)

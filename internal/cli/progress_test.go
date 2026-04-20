@@ -88,8 +88,8 @@ func TestWithSandboxProgressNoColorAvoidsANSIControlSequences(t *testing.T) {
 	if !strings.Contains(output, "Preparing sandbox (first use may take a bit)...") {
 		t.Fatalf("expected plain progress start output, got %q", output)
 	}
-	if !strings.Contains(output, "Sandbox ready in") {
-		t.Fatalf("expected plain progress completion output, got %q", output)
+	if strings.Contains(output, "Sandbox ready in") {
+		t.Fatalf("did not expect success progress completion output, got %q", output)
 	}
 	if strings.Contains(output, "\x1b[") {
 		t.Fatalf("did not expect ANSI escapes in no-color mode, got %q", output)
@@ -127,8 +127,56 @@ func TestWithSandboxProgressSuppressStopsFramesBeforeStreamingOutput(t *testing.
 	if strings.Contains(output[idx:], "Preparing sandbox") {
 		t.Fatalf("did not expect spinner frames after streamed output starts, got %q", output)
 	}
-	if !strings.Contains(output, "Sandbox ready in") {
-		t.Fatalf("expected completion message, got %q", output)
+	if strings.Contains(output, "Sandbox ready in") {
+		t.Fatalf("did not expect success completion message, got %q", output)
+	}
+}
+
+func TestWithSandboxProgressSuccessClearsSpinnerWithoutCompletionMessage(t *testing.T) {
+	forceSandboxProgressTTY(t)
+	t.Setenv("CLICOLOR_FORCE", "1")
+
+	output, err := captureSandboxProgressOutput(t, func(stderr *os.File) error {
+		return withSandboxProgress(stderr, func(_ *sandboxProgress) error {
+			time.Sleep(25 * time.Millisecond)
+			return nil
+		})
+	})
+	if err != nil {
+		t.Fatalf("withSandboxProgress returned error: %v", err)
+	}
+	if strings.Contains(output, "Sandbox ready in") {
+		t.Fatalf("did not expect success completion output, got %q", output)
+	}
+	if !strings.Contains(output, "\r\x1b[2K") {
+		t.Fatalf("expected spinner line clearing output, got %q", output)
+	}
+}
+
+func TestWithSandboxProgressSuppressAfterSpinnerKeepsStreamedOutput(t *testing.T) {
+	forceSandboxProgressTTY(t)
+	t.Setenv("CLICOLOR_FORCE", "1")
+
+	output, err := captureSandboxProgressOutput(t, func(stderr *os.File) error {
+		return withSandboxProgress(stderr, func(progress *sandboxProgress) error {
+			time.Sleep(20 * time.Millisecond)
+			progress.suppress()
+			if _, err := stderr.WriteString("stream fragment"); err != nil {
+				return err
+			}
+			time.Sleep(10 * time.Millisecond)
+			return nil
+		})
+	})
+	if err != nil {
+		t.Fatalf("withSandboxProgress returned error: %v", err)
+	}
+	idx := strings.Index(output, "stream fragment")
+	if idx == -1 {
+		t.Fatalf("expected streamed output, got %q", output)
+	}
+	if strings.Contains(output[idx:], "\r\x1b[2K") {
+		t.Fatalf("did not expect line clearing after streamed output, got %q", output)
 	}
 }
 
