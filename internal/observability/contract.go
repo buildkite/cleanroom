@@ -59,6 +59,15 @@ const (
 	AttrVMLaunched            = "cleanroom.vm.launched"
 	AttrExitCode              = "cleanroom.exit_code"
 
+	LogFieldTraceID     = "trace_id"
+	LogFieldSpanID      = "span_id"
+	LogFieldExecutionID = "execution_id"
+	LogFieldSandboxID   = "sandbox_id"
+	LogFieldBackend     = "backend"
+	LogFieldReasonCode  = "reason_code"
+	LogFieldComponent   = "component"
+	LogFieldSubsystem   = "subsystem"
+
 	OutcomeSucceeded = "succeeded"
 	OutcomeFailed    = "failed"
 	OutcomeCanceled  = "canceled"

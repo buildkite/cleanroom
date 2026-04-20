@@ -1,7 +1,9 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -12,7 +14,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/buildkite/cleanroom/internal/observability"
 	"github.com/buildkite/cleanroom/internal/policy"
+	"github.com/charmbracelet/log"
 	"go.opentelemetry.io/otel/attribute"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	tracetest "go.opentelemetry.io/otel/sdk/trace/tracetest"
@@ -168,6 +172,54 @@ func TestGitHandlerProxiesUpstream(t *testing.T) {
 	body, _ := io.ReadAll(w.Body)
 	if string(body) != "git-refs-data" {
 		t.Fatalf("unexpected body: %q", string(body))
+	}
+}
+
+func TestGitHandlerAuditLogIncludesTraceCorrelation(t *testing.T) {
+	t.Parallel()
+
+	var logBuf bytes.Buffer
+	logger := log.NewWithOptions(&logBuf, log.Options{Formatter: log.JSONFormatter})
+	recorder := tracetest.NewSpanRecorder()
+	tracerProvider := sdktrace.NewTracerProvider()
+	tracerProvider.RegisterSpanProcessor(recorder)
+	defer func() {
+		_ = tracerProvider.Shutdown(context.Background())
+	}()
+
+	srv := &Server{tracerProvider: tracerProvider}
+	h := newGitHandler(nil, logger)
+	handler := srv.tracingMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h.ServeHTTP(w, r)
+	}))
+
+	req := httptest.NewRequest("GET", "/git/evil.com/org/repo.git/info/refs?service=git-upload-pack", nil)
+	req = withScope(req, gitTestScope())
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", w.Code)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(logBuf.Bytes()), &payload); err != nil {
+		t.Fatalf("expected json gateway log, got error: %v\noutput=%s", err, logBuf.String())
+	}
+	if got, want := payload["action"], gatewayActionDeny; got != want {
+		t.Fatalf("unexpected action: got %#v want %#v", got, want)
+	}
+	if got, want := payload["reason_code"], reasonHostNotAllowed; got != want {
+		t.Fatalf("unexpected reason_code: got %#v want %#v", got, want)
+	}
+	if got, want := payload[observability.LogFieldSandboxID], "sandbox-test"; got != want {
+		t.Fatalf("unexpected sandbox_id: got %#v want %#v", got, want)
+	}
+	if _, ok := payload[observability.LogFieldTraceID]; !ok {
+		t.Fatalf("expected trace_id in log payload: %#v", payload)
+	}
+	if _, ok := payload[observability.LogFieldSpanID]; !ok {
+		t.Fatalf("expected span_id in log payload: %#v", payload)
 	}
 }
 

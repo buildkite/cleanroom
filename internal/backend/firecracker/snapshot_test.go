@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,6 +15,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/volumestore"
 	"github.com/buildkite/cleanroom/internal/vsockexec"
+	"github.com/charmbracelet/log"
 )
 
 type testVolumeDriver struct {
@@ -75,16 +75,10 @@ func captureFirecrackerLogOutput(t *testing.T) *bytes.Buffer {
 	t.Helper()
 
 	var buf bytes.Buffer
-	prevWriter := log.Writer()
-	prevFlags := log.Flags()
-	prevPrefix := log.Prefix()
-	log.SetOutput(&buf)
-	log.SetFlags(0)
-	log.SetPrefix("")
+	prevLogger := log.Default()
+	log.SetDefault(log.NewWithOptions(&buf, log.Options{Formatter: log.TextFormatter}))
 	t.Cleanup(func() {
-		log.SetOutput(prevWriter)
-		log.SetFlags(prevFlags)
-		log.SetPrefix(prevPrefix)
+		log.SetDefault(prevLogger)
 	})
 	return &buf
 }
@@ -950,7 +944,7 @@ func TestPreparePersistentWritableVolumeLogsDestroyFailure(t *testing.T) {
 
 	cleanupVolume()
 
-	if got := logOutput.String(); !strings.Contains(got, "firecracker: cleanup persistent volume \"tank/cleanroom/sandboxes/sandbox-1\": destroy failed") {
+	if got := logOutput.String(); !strings.Contains(got, "cleanup persistent volume") || !strings.Contains(got, "volume_ref=tank/cleanroom/sandboxes/sandbox-1") || !strings.Contains(got, "destroy failed") {
 		t.Fatalf("expected destroy error to be logged, got %q", got)
 	}
 }

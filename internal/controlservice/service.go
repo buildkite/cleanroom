@@ -246,6 +246,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 			attribute.Bool(observability.AttrRepositoryChangeset, changeset != nil),
 		),
 	)
+	logger := observability.WithTraceContext(s.Logger, ctx)
 	defer func() {
 		metricBackendName := backendName
 		if resp != nil && resp.GetSandbox() != nil {
@@ -478,19 +479,19 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	now := s.clock().Now()
 	sandboxID := s.ids().NewSandboxID()
 	span.SetAttributes(attribute.String("cleanroom.sandbox.id", sandboxID))
-	if s.Logger != nil {
-		s.Logger.Debug("create sandbox requested",
-			"sandbox_id", sandboxID,
-			"backend", backendName,
+	if logger != nil {
+		logger.Debug("create sandbox requested",
+			observability.LogFieldSandboxID, sandboxID,
+			observability.LogFieldBackend, backendName,
 			"policy_hash", compiled.Hash,
 			"repository_checkout", repository != nil,
 		)
 	}
 
-	if s.Logger != nil {
-		s.Logger.Debug("provisioning sandbox",
-			"sandbox_id", sandboxID,
-			"backend", backendName,
+	if logger != nil {
+		logger.Debug("provisioning sandbox",
+			observability.LogFieldSandboxID, sandboxID,
+			observability.LogFieldBackend, backendName,
 		)
 	}
 	emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_PROVISION_SANDBOX, "provisioning sandbox")
@@ -501,10 +502,10 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	}); err != nil {
 		return nil, fmt.Errorf("provision sandbox: %w", err)
 	}
-	if s.Logger != nil {
-		s.Logger.Debug("sandbox provisioned",
-			"sandbox_id", sandboxID,
-			"backend", backendName,
+	if logger != nil {
+		logger.Debug("sandbox provisioned",
+			observability.LogFieldSandboxID, sandboxID,
+			observability.LogFieldBackend, backendName,
 		)
 	}
 	if repository != nil {
@@ -601,10 +602,10 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	}
 	s.mu.Unlock()
 
-	if s.Logger != nil {
-		s.Logger.Info("sandbox created",
-			"sandbox_id", sandboxID,
-			"backend", backendName,
+	if logger != nil {
+		logger.Info("sandbox created",
+			observability.LogFieldSandboxID, sandboxID,
+			observability.LogFieldBackend, backendName,
 			"policy_hash", compiled.Hash,
 		)
 	}
@@ -1122,6 +1123,7 @@ func (s *Service) CreateExecution(ctx context.Context, req *cleanroomv1.CreateEx
 			attribute.Int(observability.AttrCommandArgc, len(command)),
 		),
 	)
+	logger := observability.WithTraceContext(s.Logger, ctx)
 	defer func() {
 		if resp != nil && resp.GetExecution() != nil {
 			span.SetAttributes(
@@ -1185,6 +1187,7 @@ func (s *Service) CreateExecution(ctx context.Context, req *cleanroomv1.CreateEx
 		s.mu.Unlock()
 		return nil, fmt.Errorf("unknown backend %q", sandbox.Backend)
 	}
+	sandboxBackend := sandbox.Backend
 	if strings.TrimSpace(sandbox.ActiveExecutionID) != "" {
 		if activeExecution, ok := s.executions[executionKey(sandboxID, sandbox.ActiveExecutionID)]; ok && !isFinalExecutionStatus(activeExecution.Status) {
 			s.mu.Unlock()
@@ -1301,10 +1304,11 @@ func (s *Service) CreateExecution(ctx context.Context, req *cleanroomv1.CreateEx
 
 	go s.runExecution(sandboxID, executionID)
 
-	if s.Logger != nil {
-		s.Logger.Info("execution created",
-			"sandbox_id", sandboxID,
-			"execution_id", executionID,
+	if logger != nil {
+		logger.Info("execution created",
+			observability.LogFieldSandboxID, sandboxID,
+			observability.LogFieldExecutionID, executionID,
+			observability.LogFieldBackend, sandboxBackend,
 			"command_argc", len(command),
 			"tty", tty,
 			"kind", kind.String(),
@@ -2053,6 +2057,7 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 			attribute.Int(observability.AttrCommandArgc, len(ex.Command)),
 		),
 	)
+	runLogger := observability.WithTraceContext(s.Logger, runCtx)
 	s.mu.Unlock()
 	defer span.End()
 	recordExecutionMetrics := func(status cleanroomv1.ExecutionStatus, finished time.Time) {
@@ -2185,10 +2190,11 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 		finished := s.clock().Now()
 		recordExecutionMetrics(finalStatus, finished)
 		s.finalizeExecutionLocked(ex, finalStatus, exitCode, err.Error(), "", finished)
-		if s.Logger != nil {
-			s.Logger.Warn("execution failed",
-				"sandbox_id", ex.SandboxID,
-				"execution_id", ex.ID,
+		if runLogger != nil {
+			runLogger.Warn("execution failed",
+				observability.LogFieldSandboxID, ex.SandboxID,
+				observability.LogFieldExecutionID, ex.ID,
+				observability.LogFieldBackend, sb.Backend,
 				"image_ref", ex.ImageRef,
 				"image_digest", ex.ImageDigest,
 				"status", ex.Status.String(),
@@ -2229,10 +2235,11 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 	recordExecutionMetrics(finalStatus, finished)
 	s.finalizeExecutionLocked(ex, finalStatus, finalExitCode, ex.Message, "", finished)
 
-	if s.Logger != nil {
-		s.Logger.Info("execution completed",
-			"sandbox_id", ex.SandboxID,
-			"execution_id", ex.ID,
+	if runLogger != nil {
+		runLogger.Info("execution completed",
+			observability.LogFieldSandboxID, ex.SandboxID,
+			observability.LogFieldExecutionID, ex.ID,
+			observability.LogFieldBackend, sb.Backend,
 			"image_ref", ex.ImageRef,
 			"image_digest", ex.ImageDigest,
 			"exit_code", ex.ExitCode,

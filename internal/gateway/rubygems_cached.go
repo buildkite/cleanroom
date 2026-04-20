@@ -1,9 +1,11 @@
 package gateway
 
 import (
+	"context"
 	"net/http"
 	"strings"
 
+	"github.com/buildkite/cleanroom/internal/observability"
 	"github.com/charmbracelet/log"
 )
 
@@ -38,24 +40,24 @@ func (h *cachedRubyGemsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 
 	policyHost, policyPort, upstreamHost, _, err := h.cache.RubyGemsUpstream()
 	if err != nil {
-		h.auditLog(scope.SandboxID, "rubygems", gatewayActionDeny, reasonRubyGemsUnavailable)
+		h.auditLog(r.Context(), scope.SandboxID, "rubygems", gatewayActionDeny, reasonRubyGemsUnavailable)
 		writeReasonError(w, http.StatusBadGateway, reasonUpstreamError, "rubygems cache is not configured")
 		return
 	}
 	if !scope.Policy.Allows(policyHost, policyPort) {
-		h.auditLog(scope.SandboxID, policyHost, gatewayActionDeny, reasonHostNotAllowed)
+		h.auditLog(r.Context(), scope.SandboxID, policyHost, gatewayActionDeny, reasonHostNotAllowed)
 		writeReasonError(w, http.StatusForbidden, reasonHostNotAllowed, "upstream rubygems host is not allowed by sandbox policy")
 		return
 	}
 
 	handler, err := h.cache.RubyGemsHandler()
 	if err != nil {
-		h.auditLog(scope.SandboxID, "rubygems", gatewayActionDeny, reasonRubyGemsUnavailable)
+		h.auditLog(r.Context(), scope.SandboxID, "rubygems", gatewayActionDeny, reasonRubyGemsUnavailable)
 		writeReasonError(w, http.StatusBadGateway, reasonUpstreamError, "rubygems cache is not configured")
 		return
 	}
 
-	h.auditLog(scope.SandboxID, upstreamHost, gatewayActionAllow, reasonCached)
+	h.auditLog(r.Context(), scope.SandboxID, upstreamHost, gatewayActionAllow, reasonCached)
 
 	r = r.Clone(r.Context())
 	r.URL.Path = strings.TrimPrefix(r.URL.Path, "/rubygems")
@@ -66,15 +68,16 @@ func (h *cachedRubyGemsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 	handler.ServeHTTP(w, r)
 }
 
-func (h *cachedRubyGemsHandler) auditLog(sandboxID, target, action, reason string) {
-	if h.logger == nil {
+func (h *cachedRubyGemsHandler) auditLog(ctx context.Context, sandboxID, target, action, reason string) {
+	logger := observability.WithTraceContext(h.logger, ctx)
+	if logger == nil {
 		return
 	}
-	h.logger.Info("gateway rubygems request",
-		"sandbox_id", sandboxID,
+	logger.Info("gateway rubygems request",
+		observability.LogFieldSandboxID, sandboxID,
 		"service", "rubygems",
 		"target", target,
 		"action", action,
-		"reason_code", reason,
+		observability.LogFieldReasonCode, reason,
 	)
 }

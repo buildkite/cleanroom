@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"net/netip"
 	"os"
@@ -13,7 +12,9 @@ import (
 	"time"
 
 	"github.com/buildkite/cleanroom/internal/dnsproxy"
+	"github.com/buildkite/cleanroom/internal/observability"
 	"github.com/buildkite/cleanroom/internal/policy"
+	charmlog "github.com/charmbracelet/log"
 )
 
 type hostNetworkConfig struct {
@@ -29,25 +30,39 @@ type interfaceLookupFunc func(name string) (*net.Interface, error)
 type rootCommandBatchFunc func(ctx context.Context, commands [][]string) error
 
 func setupHostNetwork(ctx context.Context, runID string, allowAll bool, allow []policy.AllowRule, gatewayPort int, runner privilegedCommandRunner, onDeny func(sandboxID, queryName string), onBlocked func(string)) (hostNetworkConfig, func(), error) {
+	return setupHostNetworkWithLogger(ctx, runID, allowAll, allow, gatewayPort, nil, runner, onDeny, onBlocked)
+}
+
+func setupHostNetworkWithLogger(ctx context.Context, runID string, allowAll bool, allow []policy.AllowRule, gatewayPort int, logger *charmlog.Logger, runner privilegedCommandRunner, onDeny func(sandboxID, queryName string), onBlocked func(string)) (hostNetworkConfig, func(), error) {
 	lookup := func(ctx context.Context, host string) ([]net.IP, error) {
 		return net.DefaultResolver.LookupIP(ctx, "ip4", host)
 	}
-	return setupHostNetworkWithDeps(ctx, runID, allowAll, allow, gatewayPort, lookup, runner, onDeny, onBlocked)
+	return setupHostNetworkWithDepsAndLogger(ctx, runID, allowAll, allow, gatewayPort, lookup, logger, runner, onDeny, onBlocked)
 }
 
 func setupHostNetworkWithDeps(ctx context.Context, runID string, allowAll bool, allow []policy.AllowRule, gatewayPort int, lookup ipLookupFunc, runner privilegedCommandRunner, onDeny func(sandboxID, queryName string), onBlocked func(string)) (hostNetworkConfig, func(), error) {
-	return setupHostNetworkWithTrustedDNSFactory(ctx, runID, allowAll, allow, gatewayPort, lookup, net.InterfaceByName, runner, newTrustedDNSService, onDeny, onBlocked)
+	return setupHostNetworkWithDepsAndLogger(ctx, runID, allowAll, allow, gatewayPort, lookup, nil, runner, onDeny, onBlocked)
+}
+
+func setupHostNetworkWithDepsAndLogger(ctx context.Context, runID string, allowAll bool, allow []policy.AllowRule, gatewayPort int, lookup ipLookupFunc, logger *charmlog.Logger, runner privilegedCommandRunner, onDeny func(sandboxID, queryName string), onBlocked func(string)) (hostNetworkConfig, func(), error) {
+	return setupHostNetworkWithTrustedDNSFactoryAndLogger(ctx, runID, allowAll, allow, gatewayPort, lookup, net.InterfaceByName, logger, runner, newTrustedDNSService, onDeny, onBlocked)
 }
 
 func setupHostNetworkWithTapLookup(ctx context.Context, runID string, allowAll bool, allow []policy.AllowRule, gatewayPort int, lookup ipLookupFunc, interfaceByName interfaceLookupFunc, runner privilegedCommandRunner, onDeny func(sandboxID, queryName string), onBlocked func(string)) (hostNetworkConfig, func(), error) {
-	return setupHostNetworkWithTrustedDNSFactory(ctx, runID, allowAll, allow, gatewayPort, lookup, interfaceByName, runner, newTrustedDNSService, onDeny, onBlocked)
+	return setupHostNetworkWithTrustedDNSFactoryAndLogger(ctx, runID, allowAll, allow, gatewayPort, lookup, interfaceByName, nil, runner, newTrustedDNSService, onDeny, onBlocked)
 }
 
 func setupHostNetworkWithTrustedDNSFactory(ctx context.Context, runID string, allowAll bool, allow []policy.AllowRule, gatewayPort int, lookup ipLookupFunc, interfaceByName interfaceLookupFunc, runner privilegedCommandRunner, factory trustedDNSFactory, onDeny func(sandboxID, queryName string), onBlocked func(string)) (hostNetworkConfig, func(), error) {
+	return setupHostNetworkWithTrustedDNSFactoryAndLogger(ctx, runID, allowAll, allow, gatewayPort, lookup, interfaceByName, nil, runner, factory, onDeny, onBlocked)
+}
+
+func setupHostNetworkWithTrustedDNSFactoryAndLogger(ctx context.Context, runID string, allowAll bool, allow []policy.AllowRule, gatewayPort int, lookup ipLookupFunc, interfaceByName interfaceLookupFunc, logger *charmlog.Logger, runner privilegedCommandRunner, factory trustedDNSFactory, onDeny func(sandboxID, queryName string), onBlocked func(string)) (hostNetworkConfig, func(), error) {
 	_ = lookup
 	if factory == nil {
 		factory = newTrustedDNSService
 	}
+
+	networkLogger := observability.WithLoggerFields(baseFirecrackerLogger(logger), observability.LogFieldSandboxID, runID)
 
 	tapName := tapNameFromExecutionID(runID)
 	hostIP, guestIP := hostGuestIPs(runID)
@@ -91,7 +106,7 @@ func setupHostNetworkWithTrustedDNSFactory(ctx context.Context, runID string, al
 	removeNFLogRule := func(tapName, groupStr string) {
 		args := []string{"iptables", "-D", "FORWARD", "-i", tapName, "-j", "NFLOG", "--nflog-group", groupStr}
 		if err := runner.Run(cleanupCtx, args...); err != nil {
-			log.Printf("nflog iptables cleanup failed for %s: %v", tapName, err)
+			networkLogger.Warn("nflog iptables cleanup failed", "tap_name", tapName, "error", err)
 			addCleanup(args...)
 		}
 	}
@@ -239,6 +254,7 @@ func setupHostNetworkWithTrustedDNSFactory(ctx context.Context, runID string, al
 		runBatch:     runner.RunBatch,
 		tcpChainName: tcpChainName,
 		udpChainName: udpChainName,
+		logger:       networkLogger,
 		onDeny:       onDeny,
 	})
 	if err != nil {
@@ -257,17 +273,18 @@ func setupHostNetworkWithTrustedDNSFactory(ctx context.Context, runID string, al
 		if nflogGroup > 0 && onBlocked != nil && dnsRuntime != nil {
 			groupStr := strconv.Itoa(int(nflogGroup))
 			if err := setupRun("iptables", "-A", "FORWARD", "-i", tapName, "-j", "NFLOG", "--nflog-group", groupStr); err != nil {
-				log.Printf("nflog iptables rule unavailable for %s: %v", tapName, err)
+				networkLogger.Warn("nflog iptables rule unavailable", "tap_name", tapName, "error", err)
 			} else {
 				listener, nflogErr := newNFLogListenerFn(nflogListenerConfig{
 					group:     nflogGroup,
 					sandboxID: runID,
 					guestIP:   guestAddr,
 					runtime:   dnsRuntime,
+					logger:    networkLogger,
 					onBlocked: onBlocked,
 				})
 				if nflogErr != nil {
-					log.Printf("nflog listener unavailable for %s: %v", runID, nflogErr)
+					networkLogger.Warn("nflog listener unavailable", "error", nflogErr)
 					removeNFLogRule(tapName, groupStr)
 				} else if listener == nil {
 					removeNFLogRule(tapName, groupStr)

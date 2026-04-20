@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"net/netip"
 	"strconv"
@@ -15,6 +14,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/dnsproxy"
 	"github.com/buildkite/cleanroom/internal/gateway"
 	"github.com/buildkite/cleanroom/internal/policy"
+	charmlog "github.com/charmbracelet/log"
 	"github.com/miekg/dns"
 )
 
@@ -32,6 +32,7 @@ type trustedDNSConfig struct {
 	tcpChainName string
 	udpChainName string
 	now          func() time.Time
+	logger       *charmlog.Logger
 	onDeny       func(sandboxID, queryName string)
 }
 
@@ -43,6 +44,7 @@ type trustedDNSChainSyncer struct {
 	udpChainName string
 	runBatch     rootCommandBatchFunc
 	now          func() time.Time
+	logger       *charmlog.Logger
 }
 
 type trustedDNSChainManager struct {
@@ -99,6 +101,7 @@ func newTrustedDNSService(_ context.Context, cfg trustedDNSConfig) (func(), *dns
 			udpChainName: cfg.udpChainName,
 			runBatch:     cfg.runBatch,
 			now:          cfg.now,
+			logger:       cfg.logger,
 		})
 	}
 
@@ -151,12 +154,12 @@ func newTrustedDNSService(_ context.Context, cfg trustedDNSConfig) (func(), *dns
 
 	go func() {
 		if err := udpServer.ActivateAndServe(); err != nil && !isTrustedDNSServerClosedError(err) {
-			log.Printf("trusted dns udp server failed for %s: %v", cfg.sandboxID, err)
+			baseFirecrackerLogger(cfg.logger).Error("trusted dns udp server failed", "error", err)
 		}
 	}()
 	go func() {
 		if err := tcpServer.ActivateAndServe(); err != nil && !isTrustedDNSServerClosedError(err) {
-			log.Printf("trusted dns tcp server failed for %s: %v", cfg.sandboxID, err)
+			baseFirecrackerLogger(cfg.logger).Error("trusted dns tcp server failed", "error", err)
 		}
 	}()
 
@@ -247,7 +250,7 @@ func (m *trustedDNSChainManager) run(ctx context.Context) {
 
 		nextSync, hasNextSync, err := m.syncOnce()
 		if err != nil {
-			log.Printf("trusted dns sync failed for %s: %v", m.sandboxID, err)
+			baseFirecrackerLogger(m.syncer.logger).Warn("trusted dns sync failed", "error", err)
 			nextSync = time.Now().Add(trustedDNSSyncRetryDelay)
 			hasNextSync = true
 		}

@@ -22,6 +22,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/endpoint"
 	"github.com/buildkite/cleanroom/internal/gateway"
 	"github.com/buildkite/cleanroom/internal/interactivequic"
+	"github.com/buildkite/cleanroom/internal/observability"
 	"github.com/buildkite/cleanroom/internal/repositorystore"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 	"github.com/buildkite/cleanroom/internal/snapshotstore"
@@ -74,11 +75,15 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 		}
 	}
 
-	logger, err := newLogger(s.LogLevel, "server")
+	logger, err := newLogger(s.LogLevel, ctx.Config.Observability, "server")
 	if err != nil {
 		return err
 	}
 	log.SetDefault(logger)
+	configureBackendLogging(ctx.Backends, logger)
+	serviceLogger := logger.With("subsystem", "service")
+	httpLogger := logger.With("subsystem", "http")
+	interactiveLogger := logger.With("subsystem", "interactive-quic")
 
 	gwRegistry := gateway.NewRegistry()
 	gwCredentials := gateway.NewChainCredentialProvider(
@@ -151,7 +156,7 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 		}
 	}
 
-	service, err := newControlService(ctx, logger.With("subsystem", "service"), gwMirrors)
+	service, err := newControlService(ctx, serviceLogger, gwMirrors)
 	if err != nil {
 		return err
 	}
@@ -159,12 +164,12 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 	if interceptor := ctx.Observability.ConnectInterceptor(); interceptor != nil {
 		serverInterceptors = append(serverInterceptors, interceptor)
 	}
-	server := controlserver.New(service, logger.With("subsystem", "http"), serverInterceptors...)
+	server := controlserver.New(service, httpLogger, serverInterceptors...)
 
 	runCtx, cancel := serveSignalNotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	interactiveListen, interactiveHost := resolveInteractiveQUICEndpoint(ep)
-	interactiveServer, err := interactivequic.Start(runCtx, interactiveListen, service, logger.With("subsystem", "interactive-quic"))
+	interactiveServer, err := interactivequic.Start(runCtx, interactiveListen, service, interactiveLogger)
 	if err != nil {
 		return fmt.Errorf("start interactive quic server: %w", err)
 	}
@@ -172,14 +177,14 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 
 	interactiveEndpoint := interactiveAdvertiseEndpoint(interactiveServer.Addr(), interactiveHost)
 	service.ConfigureInteractiveTransport(interactiveEndpoint, interactiveServer.ALPN(), interactiveServer.CertPinSHA256())
-	logger.Info(
+	interactiveLogger.Info(
 		"interactive QUIC server ready",
 		"listen", interactiveServer.Addr().String(),
 		"endpoint", interactiveEndpoint,
 		"alpn", interactiveServer.ALPN(),
 	)
 
-	runErr := controlserver.Serve(runCtx, ep, server.Handler(), logger, serverTLS)
+	runErr := controlserver.Serve(runCtx, ep, server.Handler(), httpLogger, serverTLS)
 	gwStopCtx, gwStopCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer gwStopCancel()
 	_ = gwServer.Stop(gwStopCtx)
@@ -203,8 +208,15 @@ func gatewayServerConfig(listen string, registry *gateway.Registry, credentials 
 }
 
 func observabilityStartupFields(cfg runtimeconfig.ObservabilityConfig) []startupField {
+	format, err := runtimeconfig.ResolveObservabilityLogFormat(cfg)
+	if err != nil {
+		return []startupField{{Key: "observability", Value: "invalid"}}
+	}
 	if !cfg.Enabled {
-		return []startupField{{Key: "observability", Value: "disabled"}}
+		return []startupField{
+			{Key: "observability", Value: "disabled"},
+			{Key: "log_format", Value: format},
+		}
 	}
 
 	protocol, err := runtimeconfig.ResolveOTLPTraceProtocol(cfg)
@@ -212,6 +224,7 @@ func observabilityStartupFields(cfg runtimeconfig.ObservabilityConfig) []startup
 		return []startupField{{Key: "observability", Value: "invalid"}}
 	}
 	fields := []startupField{{Key: "observability", Value: "enabled"}}
+	fields = append(fields, startupField{Key: "log_format", Value: format})
 	fields = append(fields, startupField{Key: "trace_export", Value: fmt.Sprintf("otlp/%s -> %s", protocol, strings.TrimSpace(cfg.OTLP.Endpoint))})
 	fields = append(fields, startupField{Key: "trace_sampling", Value: formatTraceSampling(cfg.Traces.Sampling)})
 	if strings.TrimSpace(cfg.Traces.URLTemplate) != "" {
@@ -229,6 +242,19 @@ func formatTraceSampling(cfg runtimeconfig.TraceSamplingConfig) string {
 		return mode
 	}
 	return fmt.Sprintf("%s ratio=%g", mode, *cfg.Ratio)
+}
+
+func configureBackendLogging(backends map[string]backend.Adapter, logger *log.Logger) {
+	if logger == nil {
+		return
+	}
+	if fcAdapter, ok := backends["firecracker"].(*firecracker.Adapter); ok {
+		fcAdapter.Logger = observability.WithLoggerFields(
+			logger,
+			observability.LogFieldSubsystem, "firecracker",
+			observability.LogFieldBackend, "firecracker",
+		)
+	}
 }
 
 func configureGatewayBackends(backends map[string]backend.Adapter, gwRegistry *gateway.Registry, gwPort int, gwListenAddr, darwinGatewayHost string, routes gateway.ProxyRoutes) {

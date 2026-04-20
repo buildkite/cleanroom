@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
@@ -80,7 +81,7 @@ func (h *cachedRegistryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 			attribute.String(observability.AttrReasonCode, reasonUnknownRegistryPrefix),
 		)
 		span.SetStatus(codes.Error, err.Error())
-		h.auditLog(scope.SandboxID, normalizedPrefix, gatewayActionDeny, reasonUnknownRegistryPrefix)
+		h.auditLog(r.Context(), scope.SandboxID, normalizedPrefix, gatewayActionDeny, reasonUnknownRegistryPrefix)
 		writeReasonError(w, http.StatusNotFound, reasonUnknownRegistryPrefix, fmt.Sprintf("unknown registry prefix %q", prefix))
 		return
 	}
@@ -95,7 +96,7 @@ func (h *cachedRegistryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 			attribute.String(observability.AttrReasonCode, reasonHostNotAllowed),
 		)
 		span.SetStatus(codes.Error, "upstream registry host is not allowed by sandbox policy")
-		h.auditLog(scope.SandboxID, policyHost, gatewayActionDeny, reasonHostNotAllowed)
+		h.auditLog(r.Context(), scope.SandboxID, policyHost, gatewayActionDeny, reasonHostNotAllowed)
 		writeReasonError(w, http.StatusForbidden, reasonHostNotAllowed, "upstream registry host is not allowed by sandbox policy")
 		return
 	}
@@ -106,7 +107,7 @@ func (h *cachedRegistryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 		attribute.String(observability.AttrGatewayUpstreamHost, upstreamHost),
 	)
 	setGatewayRequestDecision(r.Context(), gatewayActionAllow, reasonCached)
-	h.auditLog(scope.SandboxID, upstreamHost, gatewayActionAllow, reasonCached)
+	h.auditLog(r.Context(), scope.SandboxID, upstreamHost, gatewayActionAllow, reasonCached)
 
 	cacheHandler, err := h.cache.OCIHandlerForPrefix(normalizedPrefix)
 	if err != nil {
@@ -117,7 +118,7 @@ func (h *cachedRegistryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 			attribute.String(observability.AttrReasonCode, reasonUnknownRegistryPrefix),
 		)
 		span.SetStatus(codes.Error, err.Error())
-		h.auditLog(scope.SandboxID, normalizedPrefix, gatewayActionDeny, reasonUnknownRegistryPrefix)
+		h.auditLog(r.Context(), scope.SandboxID, normalizedPrefix, gatewayActionDeny, reasonUnknownRegistryPrefix)
 		writeReasonError(w, http.StatusNotFound, reasonUnknownRegistryPrefix, fmt.Sprintf("unknown registry prefix %q", prefix))
 		return
 	}
@@ -137,15 +138,16 @@ func rewriteOCICachePath(prefix, rest string) string {
 	return "/v2/" + prefix + "/" + rest
 }
 
-func (h *cachedRegistryHandler) auditLog(sandboxID, target, action, reason string) {
-	if h.logger == nil {
+func (h *cachedRegistryHandler) auditLog(ctx context.Context, sandboxID, target, action, reason string) {
+	logger := observability.WithTraceContext(h.logger, ctx)
+	if logger == nil {
 		return
 	}
-	h.logger.Info("gateway registry request",
-		"sandbox_id", sandboxID,
+	logger.Info("gateway registry request",
+		observability.LogFieldSandboxID, sandboxID,
 		"service", "registry",
 		"target", target,
 		"action", action,
-		"reason_code", reason,
+		observability.LogFieldReasonCode, reason,
 	)
 }

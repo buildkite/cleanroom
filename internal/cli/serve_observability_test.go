@@ -11,7 +11,10 @@ func TestObservabilityStartupFieldsDisabled(t *testing.T) {
 	t.Parallel()
 
 	got := observabilityStartupFields(runtimeconfig.ObservabilityConfig{})
-	want := []startupField{{Key: "observability", Value: "disabled"}}
+	want := []startupField{
+		{Key: "observability", Value: "disabled"},
+		{Key: "log_format", Value: "text"},
+	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("unexpected observability startup fields: got %#v want %#v", got, want)
 	}
@@ -23,6 +26,9 @@ func TestObservabilityStartupFieldsOTLP(t *testing.T) {
 	ratio := 0.5
 	got := observabilityStartupFields(runtimeconfig.ObservabilityConfig{
 		Enabled: true,
+		Logs: runtimeconfig.LogConfig{
+			Format: "json",
+		},
 		OTLP: runtimeconfig.OTLPConfig{
 			Endpoint: "https://otel.example.test:4317",
 			Protocol: "grpc",
@@ -37,6 +43,7 @@ func TestObservabilityStartupFieldsOTLP(t *testing.T) {
 	})
 	want := []startupField{
 		{Key: "observability", Value: "enabled"},
+		{Key: "log_format", Value: "json"},
 		{Key: "trace_export", Value: "otlp/grpc -> https://otel.example.test:4317"},
 		{Key: "trace_sampling", Value: "parentbased_traceidratio ratio=0.5"},
 		{Key: "trace_links", Value: "enabled"},
