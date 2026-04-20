@@ -153,6 +153,33 @@ func TestWithSandboxProgressSuccessClearsSpinnerWithoutCompletionMessage(t *test
 	}
 }
 
+func TestWithSandboxProgressSuppressAfterSpinnerKeepsStreamedOutput(t *testing.T) {
+	forceSandboxProgressTTY(t)
+	t.Setenv("CLICOLOR_FORCE", "1")
+
+	output, err := captureSandboxProgressOutput(t, func(stderr *os.File) error {
+		return withSandboxProgress(stderr, func(progress *sandboxProgress) error {
+			time.Sleep(20 * time.Millisecond)
+			progress.suppress()
+			if _, err := stderr.WriteString("stream fragment"); err != nil {
+				return err
+			}
+			time.Sleep(10 * time.Millisecond)
+			return nil
+		})
+	})
+	if err != nil {
+		t.Fatalf("withSandboxProgress returned error: %v", err)
+	}
+	idx := strings.Index(output, "stream fragment")
+	if idx == -1 {
+		t.Fatalf("expected streamed output, got %q", output)
+	}
+	if strings.Contains(output[idx:], "\r\x1b[2K") {
+		t.Fatalf("did not expect line clearing after streamed output, got %q", output)
+	}
+}
+
 func TestWriteSandboxProgressFrameClearsTheLine(t *testing.T) {
 	tmpDir := t.TempDir()
 	stderrPath := filepath.Join(tmpDir, "stderr.log")

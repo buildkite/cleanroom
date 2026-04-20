@@ -87,6 +87,9 @@ func (p *sandboxProgress) complete(success bool, elapsed time.Duration) {
 	if (!p.shown && !p.suppressed) || p.stderr == nil {
 		return
 	}
+	if success && p.suppressed {
+		return
+	}
 	if p.useANSI {
 		writeSandboxProgressComplete(p.stderr, success, elapsed)
 		return
