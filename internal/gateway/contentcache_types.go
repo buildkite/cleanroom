@@ -16,6 +16,8 @@ import (
 	"github.com/buildkite/cleanroom/internal/policy"
 )
 
+const defaultMaxGoProxyScopedHandlers = 32
+
 type gitHandlerFactory func(host string) (http.Handler, error)
 
 type ociHandlerFactory func(prefix string) (ociHandlerEntry, error)
@@ -43,6 +45,8 @@ type goProxyHandlerEntry struct {
 	upstreamPort int
 	mu           sync.Mutex
 	handlers     map[string]goProxyScopedHandler
+	order        []string
+	maxHandlers  int
 	buildHandler func(*policy.CompiledPolicy) (goProxyScopedHandler, error)
 }
 
@@ -200,21 +204,60 @@ func (c *ContentCache) GoProxyHandlerForPolicy(compiled *policy.CompiledPolicy) 
 	}
 
 	c.goProxy.mu.Lock()
-	defer c.goProxy.mu.Unlock()
 
 	if entry, ok := c.goProxy.handlers[key]; ok {
+		c.goProxy.touchLocked(key)
+		c.goProxy.mu.Unlock()
 		return entry.handler, nil
 	}
 
 	entry, err := c.goProxy.buildHandler(compiled)
 	if err != nil {
+		c.goProxy.mu.Unlock()
 		return nil, err
 	}
 	if c.goProxy.handlers == nil {
 		c.goProxy.handlers = make(map[string]goProxyScopedHandler)
 	}
 	c.goProxy.handlers[key] = entry
+	c.goProxy.touchLocked(key)
+	evicted := c.goProxy.evictLocked()
+	c.goProxy.mu.Unlock()
+	if evicted != nil {
+		_ = evicted.Close()
+	}
 	return entry.handler, nil
+}
+
+func (e *goProxyHandlerEntry) touchLocked(key string) {
+	for i, existing := range e.order {
+		if existing != key {
+			continue
+		}
+		copy(e.order[i:], e.order[i+1:])
+		e.order = e.order[:len(e.order)-1]
+		break
+	}
+	e.order = append(e.order, key)
+}
+
+func (e *goProxyHandlerEntry) evictLocked() io.Closer {
+	maxHandlers := e.maxHandlers
+	if maxHandlers <= 0 {
+		maxHandlers = defaultMaxGoProxyScopedHandlers
+	}
+	if len(e.order) <= maxHandlers {
+		return nil
+	}
+
+	evictedKey := e.order[0]
+	e.order = e.order[1:]
+	entry, ok := e.handlers[evictedKey]
+	if !ok {
+		return nil
+	}
+	delete(e.handlers, evictedKey)
+	return entry.closer
 }
 
 // HasSumDBHandler reports whether sumdb caching is configured.

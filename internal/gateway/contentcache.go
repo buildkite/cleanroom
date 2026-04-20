@@ -224,6 +224,7 @@ func NewContentCache(cfg ContentCacheConfig) (*ContentCache, error) {
 		upstreamHost: goProxyPolicyHost,
 		upstreamPort: goProxyPolicyPort,
 		handlers:     make(map[string]goProxyScopedHandler),
+		maxHandlers:  defaultMaxGoProxyScopedHandlers,
 		buildHandler: func(compiled *policy.CompiledPolicy) (goProxyScopedHandler, error) {
 			goProxyUpstream := ccgoproxy.NewUpstream(
 				ccgoproxy.WithUpstreamURL(goProxyUpstreamURL),
