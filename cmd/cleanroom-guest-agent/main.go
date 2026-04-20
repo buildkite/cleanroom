@@ -300,6 +300,7 @@ func buildCommandEnv(requestEnv []string) ([]string, error) {
 	// Start from the current process environment so caller-provided values can
 	// override, while ensuring we have baseline HOME/PATH defaults for lookups.
 	base := map[string]string{}
+	requestKeys := make(map[string]struct{}, len(requestEnv))
 	for _, entry := range os.Environ() {
 		parts := strings.SplitN(entry, "=", 2)
 		key := parts[0]
@@ -317,13 +318,14 @@ func buildCommandEnv(requestEnv []string) ([]string, error) {
 		if len(parts) == 2 {
 			value = parts[1]
 		}
+		requestKeys[key] = struct{}{}
 		base[key] = value
 	}
 
 	if err := configureBundlerMirror(base); err != nil {
 		return nil, err
 	}
-	configureGatewayGoEnv(base)
+	configureGatewayGoEnv(base, requestKeys)
 
 	if strings.TrimSpace(base["HOME"]) == "" {
 		base["HOME"] = "/root"
@@ -339,20 +341,20 @@ func buildCommandEnv(requestEnv []string) ([]string, error) {
 	return out, nil
 }
 
-func configureGatewayGoEnv(base map[string]string) {
+func configureGatewayGoEnv(base map[string]string, requestKeys map[string]struct{}) {
 	if base == nil {
 		return
 	}
 
 	if defaultProxy, ok := base[gateway.GoProxyDefaultEnvKey]; ok {
-		if _, exists := base["GOPROXY"]; !exists {
+		if _, explicit := requestKeys["GOPROXY"]; !explicit && strings.TrimSpace(base["GOPROXY"]) == "" {
 			base["GOPROXY"] = defaultProxy
 		}
 		delete(base, gateway.GoProxyDefaultEnvKey)
 	}
 
 	if defaultMirror, ok := base[gateway.MiseGoDownloadMirrorDefaultEnvKey]; ok {
-		if _, exists := base["MISE_GO_DOWNLOAD_MIRROR"]; !exists {
+		if _, explicit := requestKeys["MISE_GO_DOWNLOAD_MIRROR"]; !explicit && strings.TrimSpace(base["MISE_GO_DOWNLOAD_MIRROR"]) == "" {
 			base["MISE_GO_DOWNLOAD_MIRROR"] = defaultMirror
 		}
 		delete(base, gateway.MiseGoDownloadMirrorDefaultEnvKey)
