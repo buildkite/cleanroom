@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/alecthomas/kong"
@@ -169,6 +170,7 @@ func Run(args []string, version string) (runErr error) {
 				Config:         cfg.Observability,
 				ServiceName:    runtimeServiceName(ctx),
 				ServiceVersion: version,
+				ReportError:    newObservabilityErrorReporter(runtimeCtx.stderr()),
 			})
 			if err != nil {
 				return fmt.Errorf("configure observability: %w", err)
@@ -260,7 +262,19 @@ func reportObservabilityShutdown(runErr *error, stderr io.Writer, shutdownErr er
 	}
 
 	if stderr != nil {
-		_, _ = fmt.Fprintf(stderr, "warning: %v\n", wrapped)
+		_ = writeExecutionWarning(stderr, wrapped.Error())
+	}
+}
+
+func newObservabilityErrorReporter(stderr io.Writer) func(error) {
+	var mu sync.Mutex
+	return func(err error) {
+		if err == nil || stderr == nil {
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		_ = writeExecutionWarning(stderr, err.Error())
 	}
 }
 

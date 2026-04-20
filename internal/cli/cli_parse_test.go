@@ -558,6 +558,19 @@ func TestReportObservabilityShutdownWarnsWithoutFailingSuccessfulRun(t *testing.
 	}
 }
 
+func TestNewObservabilityErrorReporterWarnsToStderr(t *testing.T) {
+	t.Parallel()
+
+	var stderr bytes.Buffer
+	report := newObservabilityErrorReporter(&stderr)
+
+	report(errors.New("collector unavailable"))
+
+	if got := stderr.String(); !strings.Contains(got, "warning: collector unavailable") {
+		t.Fatalf("expected observability warning in stderr, got %q", got)
+	}
+}
+
 func TestReportObservabilityShutdownAppendsToExistingRunError(t *testing.T) {
 	t.Parallel()
 

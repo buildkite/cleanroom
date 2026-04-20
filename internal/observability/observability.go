@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"connectrpc.com/connect"
 	"connectrpc.com/otelconnect"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
@@ -33,6 +36,7 @@ type Options struct {
 	Config         runtimeconfig.ObservabilityConfig
 	ServiceName    string
 	ServiceVersion string
+	ReportError    func(error)
 }
 
 type Runtime struct {
@@ -61,11 +65,16 @@ func NewWithProviders(tracerProvider trace.TracerProvider, meterProvider metric.
 func Start(ctx context.Context, opts Options) (*Runtime, error) {
 	tracerProvider := trace.TracerProvider(tracenoop.NewTracerProvider())
 	meterProvider := metric.MeterProvider(metricnoop.NewMeterProvider())
-	shutdown := func(context.Context) error { return nil }
+	errorReporter, restoreErrorHandler := installErrorHandler(opts.ReportError)
+	shutdown := func(context.Context) error {
+		restoreErrorHandler()
+		return nil
+	}
 
 	if opts.Config.Enabled {
 		provider, err := newTracerProvider(ctx, opts)
 		if err != nil {
+			restoreErrorHandler()
 			return nil, err
 		}
 		metricsProvider, err := newMeterProvider(ctx, opts)
@@ -73,18 +82,63 @@ func Start(ctx context.Context, opts Options) (*Runtime, error) {
 			shutdownCtx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			_ = provider.Shutdown(shutdownCtx)
+			restoreErrorHandler()
 			return nil, err
 		}
 		tracerProvider = provider
 		meterProvider = metricsProvider
 		shutdown = func(shutdownCtx context.Context) error {
+			if errorReporter != nil {
+				errorReporter.suppress()
+			}
+			defer restoreErrorHandler()
 			metricErr := metricsProvider.Shutdown(shutdownCtx)
 			traceErr := provider.Shutdown(shutdownCtx)
 			return errors.Join(traceErr, metricErr)
 		}
 	}
 
-	return newRuntime(tracerProvider, meterProvider, shutdown)
+	runtime, err := newRuntime(tracerProvider, meterProvider, shutdown)
+	if err != nil {
+		restoreErrorHandler()
+		return nil, err
+	}
+	return runtime, nil
+}
+
+type runtimeErrorReporter struct {
+	mu      sync.Mutex
+	report  func(error)
+	ignored atomic.Bool
+}
+
+func (r *runtimeErrorReporter) Handle(err error) {
+	if r == nil || err == nil || r.ignored.Load() {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.ignored.Load() {
+		return
+	}
+	r.report(err)
+}
+
+func (r *runtimeErrorReporter) suppress() {
+	if r == nil {
+		return
+	}
+	r.ignored.Store(true)
+}
+
+func installErrorHandler(report func(error)) (*runtimeErrorReporter, func()) {
+	if report == nil {
+		return nil, func() {}
+	}
+	previous := otel.GetErrorHandler()
+	reporter := &runtimeErrorReporter{report: report}
+	otel.SetErrorHandler(reporter)
+	return reporter, func() { otel.SetErrorHandler(previous) }
 }
 
 func (r *Runtime) Tracer(name string, options ...trace.TracerOption) trace.Tracer {
