@@ -137,6 +137,7 @@ structured logs where applicable:
 - `cleanroom.sandbox.id`
 - `cleanroom.execution.id`
 - `cleanroom.execution.kind`
+- `cleanroom.repository.commit_sha`
 - `cleanroom.reason_code`
 - `cleanroom.gateway.service`
 - `cleanroom.gateway.action`
@@ -199,6 +200,8 @@ Recommended cache telemetry attributes are:
 - `cleanroom.cache.stage=runtime|workspace|dependency`
 - `cleanroom.cache.operation=lookup|restore|publish|invalidate`
 - `cleanroom.cache.result=hit|miss|restored|published|fallback|failed`
+- `cleanroom.cache.lookup_reason=cache_record_not_found|backend_mismatch|policy_hash_mismatch|repository_changed|workspace_parent_changed`
+- `cleanroom.repository.commit_sha=<git commit sha>`
 
 Use these fields in traces and structured logs for cache-specific work. Use
 them in metrics only for cache-specific series, not for generic execution

@@ -3,6 +3,7 @@ package controlservice
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -362,6 +363,37 @@ func findEndedSpanByName(spans []trace.ReadOnlySpan, name string) trace.ReadOnly
 	return nil
 }
 
+func spanAttributeValue(span trace.ReadOnlySpan, key string) (string, bool) {
+	if span == nil {
+		return "", false
+	}
+	for _, kv := range span.Attributes() {
+		if string(kv.Key) != key {
+			continue
+		}
+		return fmt.Sprint(kv.Value.AsInterface()), true
+	}
+	return "", false
+}
+
+func requireSpanAttributeValue(t *testing.T, span trace.ReadOnlySpan, key, want string) {
+	t.Helper()
+	got, ok := spanAttributeValue(span, key)
+	if !ok {
+		t.Fatalf("expected span %q to include attribute %q", span.Name(), key)
+	}
+	if got != want {
+		t.Fatalf("unexpected span %q attribute %q: got %q want %q", span.Name(), key, got, want)
+	}
+}
+
+func requireSpanMissingAttribute(t *testing.T, span trace.ReadOnlySpan, key string) {
+	t.Helper()
+	if got, ok := spanAttributeValue(span, key); ok {
+		t.Fatalf("expected span %q to omit attribute %q, got %q", span.Name(), key, got)
+	}
+}
+
 func collectResourceMetrics(t *testing.T, reader *sdkmetric.ManualReader) metricdata.ResourceMetrics {
 	t.Helper()
 	var metrics metricdata.ResourceMetrics
@@ -490,7 +522,6 @@ func TestCreateSandboxTracesBootstrapFailure(t *testing.T) {
 		t.Fatalf("NewWithTracerProvider returned error: %v", err)
 	}
 	svc.Observability = obs
-	svc.Config.Backends.Firecracker.Snapshots = runtimeconfig.SnapshotConfig{}
 
 	mirrors, repository := testRepositoryMirror(t, map[string]string{
 		".mise.toml": "[tools]\ngo = '1.25.9'\n",
@@ -521,6 +552,14 @@ func TestCreateSandboxTracesBootstrapFailure(t *testing.T) {
 	if repositorySpan == nil {
 		t.Fatalf("expected cleanroom.sandbox.bootstrap_repository span, got spans %#v", spans)
 	}
+	workspaceLookupSpan := findEndedSpanByName(spans, "cleanroom.sandbox.lookup_workspace_stage_cache")
+	if workspaceLookupSpan == nil {
+		t.Fatalf("expected cleanroom.sandbox.lookup_workspace_stage_cache span, got spans %#v", spans)
+	}
+	dependencyLookupSpan := findEndedSpanByName(spans, "cleanroom.sandbox.lookup_dependency_stage_cache")
+	if dependencyLookupSpan == nil {
+		t.Fatalf("expected cleanroom.sandbox.lookup_dependency_stage_cache span, got spans %#v", spans)
+	}
 	dependencySpan := findEndedSpanByName(spans, "cleanroom.sandbox.bootstrap_dependencies")
 	if dependencySpan == nil {
 		t.Fatalf("expected cleanroom.sandbox.bootstrap_dependencies span, got spans %#v", spans)
@@ -535,6 +574,12 @@ func TestCreateSandboxTracesBootstrapFailure(t *testing.T) {
 	if got, want := repositorySpan.Parent().SpanID(), createSpan.SpanContext().SpanID(); got != want {
 		t.Fatalf("unexpected repository bootstrap parent span id: got %s want %s", got, want)
 	}
+	if got, want := workspaceLookupSpan.Parent().SpanID(), createSpan.SpanContext().SpanID(); got != want {
+		t.Fatalf("unexpected workspace lookup parent span id: got %s want %s", got, want)
+	}
+	if got, want := dependencyLookupSpan.Parent().SpanID(), createSpan.SpanContext().SpanID(); got != want {
+		t.Fatalf("unexpected dependency lookup parent span id: got %s want %s", got, want)
+	}
 	if got, want := dependencySpan.Parent().SpanID(), createSpan.SpanContext().SpanID(); got != want {
 		t.Fatalf("unexpected dependency bootstrap parent span id: got %s want %s", got, want)
 	}
@@ -547,6 +592,85 @@ func TestCreateSandboxTracesBootstrapFailure(t *testing.T) {
 	if got, want := createSpan.Status().Code, codes.Error; got != want {
 		t.Fatalf("unexpected create sandbox span status: got %v want %v", got, want)
 	}
+	repositoryCommitSHA := repository.GetCommitSha()
+	requireSpanAttributeValue(t, createSpan, observability.AttrRepositoryCommitSHA, repositoryCommitSHA)
+	requireSpanAttributeValue(t, repositorySpan, observability.AttrRepositoryCommitSHA, repositoryCommitSHA)
+	requireSpanAttributeValue(t, dependencySpan, observability.AttrRepositoryCommitSHA, repositoryCommitSHA)
+	requireSpanAttributeValue(t, workspaceLookupSpan, observability.AttrRepositoryCommitSHA, repositoryCommitSHA)
+	requireSpanAttributeValue(t, dependencyLookupSpan, observability.AttrRepositoryCommitSHA, repositoryCommitSHA)
+	requireSpanAttributeValue(t, workspaceLookupSpan, observability.AttrCacheStage, observability.CacheStageWorkspace)
+	requireSpanAttributeValue(t, workspaceLookupSpan, observability.AttrCacheOperation, observability.CacheOperationLookup)
+	requireSpanAttributeValue(t, workspaceLookupSpan, observability.AttrCacheResult, observability.CacheResultMiss)
+	requireSpanAttributeValue(t, workspaceLookupSpan, observability.AttrCacheLookupReason, observability.CacheLookupReasonRecordNotFound)
+	requireSpanAttributeValue(t, dependencyLookupSpan, observability.AttrCacheStage, observability.CacheStageDependency)
+	requireSpanAttributeValue(t, dependencyLookupSpan, observability.AttrCacheOperation, observability.CacheOperationLookup)
+	requireSpanAttributeValue(t, dependencyLookupSpan, observability.AttrCacheResult, observability.CacheResultMiss)
+	requireSpanAttributeValue(t, dependencyLookupSpan, observability.AttrCacheLookupReason, observability.CacheLookupReasonRecordNotFound)
+}
+
+func TestCreateSandboxTracesDependencyCacheHitAttributes(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	store := newMemorySnapshotStore()
+	adapter := &stubAdapter{}
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"go.mod": "module example.com/test\n\ngo 1.26.2\n",
+		"go.sum": "example.com/test v0.0.0 h1:abc123\n",
+	})
+	svc := newTestServiceWithSnapshotStore(adapter, store)
+	svc.RepositoryStore = mirrors
+
+	req := &cleanroomv1.CreateSandboxRequest{
+		Policy:             testRepositoryDependencyPolicy(),
+		RepositoryCheckout: repositoryCheckout,
+	}
+	if _, err := svc.CreateSandbox(context.Background(), req); err != nil {
+		t.Fatalf("first CreateSandbox returned error: %v", err)
+	}
+	mirrors.err = errors.New("offline")
+
+	recorder := tracetest.NewSpanRecorder()
+	tracerProvider := trace.NewTracerProvider()
+	tracerProvider.RegisterSpanProcessor(recorder)
+	defer func() {
+		_ = tracerProvider.Shutdown(context.Background())
+	}()
+	obs, err := observability.NewWithTracerProvider(tracerProvider)
+	if err != nil {
+		t.Fatalf("NewWithTracerProvider returned error: %v", err)
+	}
+	svc.Observability = obs
+
+	resp, err := svc.CreateSandbox(context.Background(), req)
+	if err != nil {
+		t.Fatalf("second CreateSandbox returned error: %v", err)
+	}
+	if got, want := resp.GetSourceKind(), "dependency stage cache"; got != want {
+		t.Fatalf("unexpected response source kind: got %q want %q", got, want)
+	}
+
+	spans := recorder.Ended()
+	lookupSpan := findEndedSpanByName(spans, "cleanroom.sandbox.lookup_dependency_stage_cache")
+	if lookupSpan == nil {
+		t.Fatalf("expected cleanroom.sandbox.lookup_dependency_stage_cache span, got spans %#v", spans)
+	}
+	restoreSpan := findEndedSpanByName(spans, "cleanroom.sandbox.restore_dependency_stage_cache")
+	if restoreSpan == nil {
+		t.Fatalf("expected cleanroom.sandbox.restore_dependency_stage_cache span, got spans %#v", spans)
+	}
+	if workspaceLookupSpan := findEndedSpanByName(spans, "cleanroom.sandbox.lookup_workspace_stage_cache"); workspaceLookupSpan != nil {
+		t.Fatalf("expected dependency cache hit to skip workspace lookup span, got spans %#v", spans)
+	}
+
+	repositoryCommitSHA := repositoryCheckout.GetCommitSha()
+	requireSpanAttributeValue(t, lookupSpan, observability.AttrRepositoryCommitSHA, repositoryCommitSHA)
+	requireSpanAttributeValue(t, lookupSpan, observability.AttrCacheStage, observability.CacheStageDependency)
+	requireSpanAttributeValue(t, lookupSpan, observability.AttrCacheOperation, observability.CacheOperationLookup)
+	requireSpanAttributeValue(t, lookupSpan, observability.AttrCacheResult, observability.CacheResultHit)
+	requireSpanMissingAttribute(t, lookupSpan, observability.AttrCacheLookupReason)
+	requireSpanAttributeValue(t, restoreSpan, observability.AttrRepositoryCommitSHA, repositoryCommitSHA)
+	requireSpanAttributeValue(t, restoreSpan, observability.AttrCacheStage, observability.CacheStageDependency)
+	requireSpanAttributeValue(t, restoreSpan, observability.AttrCacheOperation, observability.CacheOperationRestore)
+	requireSpanAttributeValue(t, restoreSpan, observability.AttrCacheResult, observability.CacheResultRestored)
 }
 
 func TestServiceEmitsSandboxAndExecutionMetrics(t *testing.T) {

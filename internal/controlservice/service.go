@@ -304,6 +304,11 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	}
 	repository := repositorycheckout.FromProto(req.GetRepositoryCheckout())
 	if repository != nil {
+		if commitSHA := strings.TrimSpace(repository.CommitSHA); commitSHA != "" {
+			span.SetAttributes(attribute.String(observability.AttrRepositoryCommitSHA, commitSHA))
+		}
+	}
+	if repository != nil {
 		if err := validateRepositoryCheckoutForPolicy(compiled, repository); err != nil {
 			return nil, err
 		}
@@ -354,11 +359,16 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 				emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_LOOKUP_DEPENDENCY_STAGE_CACHE, "checking dependency stage cache")
 				var record cachestore.Record
 				var found bool
-				err := s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.lookup_dependency_stage_cache", []attribute.KeyValue{
-					attribute.String("cleanroom.backend", backendName),
-				}, func(ctx context.Context) error {
+				var lookupReason string
+				err := s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.lookup_dependency_stage_cache", cachePhaseAttributes(
+					observability.CacheStageDependency,
+					observability.CacheOperationLookup,
+					repository,
+					attribute.String(observability.AttrBackend, backendName),
+				), func(ctx context.Context) error {
 					var lookupErr error
-					record, found, lookupErr = s.lookupDependencyStageCache(ctx, backendName, compiled, repository, dependencyStagePlan)
+					record, found, lookupReason, lookupErr = s.lookupDependencyStageCache(ctx, backendName, compiled, repository, dependencyStagePlan)
+					setCacheLookupSpanAttributes(ctx, found, lookupReason, lookupErr)
 					return lookupErr
 				})
 				if err != nil {
@@ -372,11 +382,15 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 						Options: req.GetOptions(),
 					}
 					var restoreResp *cleanroomv1.CreateSandboxResponse
-					restoreErr := s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.restore_dependency_stage_cache", []attribute.KeyValue{
-						attribute.String("cleanroom.backend", backendName),
-					}, func(ctx context.Context) error {
+					restoreErr := s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.restore_dependency_stage_cache", cachePhaseAttributes(
+						observability.CacheStageDependency,
+						observability.CacheOperationRestore,
+						repository,
+						attribute.String(observability.AttrBackend, backendName),
+					), func(ctx context.Context) error {
 						var err error
 						restoreResp, err = s.createSandboxFromCacheRecord(ctx, restoreReq, compiled, record, reporter)
+						setCacheResultSpanAttribute(ctx, map[bool]string{true: observability.CacheResultFailed, false: observability.CacheResultRestored}[err != nil])
 						return err
 					})
 					if restoreErr == nil {
@@ -401,11 +415,16 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 			emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_LOOKUP_WORKSPACE_STAGE_CACHE, "checking workspace stage cache")
 			var record cachestore.Record
 			var found bool
-			err := s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.lookup_workspace_stage_cache", []attribute.KeyValue{
-				attribute.String("cleanroom.backend", backendName),
-			}, func(ctx context.Context) error {
+			var lookupReason string
+			err := s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.lookup_workspace_stage_cache", cachePhaseAttributes(
+				observability.CacheStageWorkspace,
+				observability.CacheOperationLookup,
+				repository,
+				attribute.String(observability.AttrBackend, backendName),
+			), func(ctx context.Context) error {
 				var lookupErr error
-				record, found, lookupErr = s.lookupWorkspaceStageCache(ctx, backendName, compiled, workspaceStageRuntimeBaseKey, repository, changeset)
+				record, found, lookupReason, lookupErr = s.lookupWorkspaceStageCache(ctx, backendName, compiled, workspaceStageRuntimeBaseKey, repository, changeset)
+				setCacheLookupSpanAttributes(ctx, found, lookupReason, lookupErr)
 				return lookupErr
 			})
 			if err != nil {
@@ -419,11 +438,15 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 					Options: req.GetOptions(),
 				}
 				var restoreResp *cleanroomv1.CreateSandboxResponse
-				restoreErr := s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.restore_workspace_stage_cache", []attribute.KeyValue{
-					attribute.String("cleanroom.backend", backendName),
-				}, func(ctx context.Context) error {
+				restoreErr := s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.restore_workspace_stage_cache", cachePhaseAttributes(
+					observability.CacheStageWorkspace,
+					observability.CacheOperationRestore,
+					repository,
+					attribute.String(observability.AttrBackend, backendName),
+				), func(ctx context.Context) error {
 					var err error
 					restoreResp, err = s.createSandboxFromCacheRecord(ctx, restoreReq, compiled, record, reporter)
+					setCacheResultSpanAttribute(ctx, map[bool]string{true: observability.CacheResultFailed, false: observability.CacheResultRestored}[err != nil])
 					return err
 				})
 				if restoreErr == nil {
@@ -454,12 +477,18 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 		sandboxID := restoredWorkspaceResp.GetSandbox().GetSandboxId()
 		span.SetAttributes(attribute.String("cleanroom.sandbox.id", sandboxID))
 		if dependencyStageBootstrapEnabled {
+			bootstrapAttrs := []attribute.KeyValue{
+				attribute.String(observability.AttrBackend, backendName),
+				attribute.String(observability.AttrSandboxID, sandboxID),
+				attribute.Int(observability.AttrCommandArgc, len(dependencyStagePlan.BootstrapCommand)),
+			}
+			if repository != nil {
+				if commitSHA := strings.TrimSpace(repository.CommitSHA); commitSHA != "" {
+					bootstrapAttrs = append(bootstrapAttrs, attribute.String(observability.AttrRepositoryCommitSHA, commitSHA))
+				}
+			}
 			emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_BOOTSTRAP_DEPENDENCIES, "running dependency bootstrap")
-			if err := s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.bootstrap_dependencies", []attribute.KeyValue{
-				attribute.String("cleanroom.backend", backendName),
-				attribute.String("cleanroom.sandbox.id", sandboxID),
-				attribute.Int("cleanroom.command.argc", len(dependencyStagePlan.BootstrapCommand)),
-			}, func(ctx context.Context) error {
+			if err := s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.bootstrap_dependencies", bootstrapAttrs, func(ctx context.Context) error {
 				return s.bootstrapDependencyStageInPersistentSandbox(ctx, adapter, sandboxID, compiled, firecrackerCfg, dependencyStagePlan, reporter)
 			}); err != nil {
 				cleanupErr := s.terminateCreatedSandbox(context.Background(), adapter, sandboxID)
@@ -511,11 +540,17 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	if repository != nil {
 		emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_BOOTSTRAP_REPOSITORY, "bootstrapping repository checkout")
 	}
-	if err := s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.bootstrap_repository", []attribute.KeyValue{
-		attribute.String("cleanroom.backend", backendName),
-		attribute.String("cleanroom.sandbox.id", sandboxID),
+	repositoryBootstrapAttrs := []attribute.KeyValue{
+		attribute.String(observability.AttrBackend, backendName),
+		attribute.String(observability.AttrSandboxID, sandboxID),
 		attribute.Bool("cleanroom.repository.refresh_existing", false),
-	}, func(ctx context.Context) error {
+	}
+	if repository != nil {
+		if commitSHA := strings.TrimSpace(repository.CommitSHA); commitSHA != "" {
+			repositoryBootstrapAttrs = append(repositoryBootstrapAttrs, attribute.String(observability.AttrRepositoryCommitSHA, commitSHA))
+		}
+	}
+	if err := s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.bootstrap_repository", repositoryBootstrapAttrs, func(ctx context.Context) error {
 		return s.bootstrapRepositoryInPersistentSandbox(ctx, adapter, sandboxID, compiled, firecrackerCfg, repository, false, reporter)
 	}); err != nil {
 		if terminateErr := s.terminateCreatedSandbox(context.Background(), adapter, sandboxID); terminateErr != nil {
@@ -524,11 +559,17 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 		return nil, fmt.Errorf("bootstrap repository checkout: %w", err)
 	}
 	if changeset != nil {
+		changesetAttrs := []attribute.KeyValue{
+			attribute.String(observability.AttrBackend, backendName),
+			attribute.String(observability.AttrSandboxID, sandboxID),
+		}
+		if repository != nil {
+			if commitSHA := strings.TrimSpace(repository.CommitSHA); commitSHA != "" {
+				changesetAttrs = append(changesetAttrs, attribute.String(observability.AttrRepositoryCommitSHA, commitSHA))
+			}
+		}
 		emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_APPLY_REPOSITORY_CHANGESET, "applying repository changeset")
-		if err := s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.apply_repository_changeset", []attribute.KeyValue{
-			attribute.String("cleanroom.backend", backendName),
-			attribute.String("cleanroom.sandbox.id", sandboxID),
-		}, func(ctx context.Context) error {
+		if err := s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.apply_repository_changeset", changesetAttrs, func(ctx context.Context) error {
 			return s.bootstrapRepositoryChangesetInPersistentSandbox(ctx, adapter, sandboxID, compiled, firecrackerCfg, repository, changeset, reporter)
 		}); err != nil {
 			if terminateErr := s.terminateCreatedSandbox(context.Background(), adapter, sandboxID); terminateErr != nil {
@@ -548,12 +589,18 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 		})
 	}
 	if dependencyStageBootstrapEnabled {
+		bootstrapAttrs := []attribute.KeyValue{
+			attribute.String(observability.AttrBackend, backendName),
+			attribute.String(observability.AttrSandboxID, sandboxID),
+			attribute.Int(observability.AttrCommandArgc, len(dependencyStagePlan.BootstrapCommand)),
+		}
+		if repository != nil {
+			if commitSHA := strings.TrimSpace(repository.CommitSHA); commitSHA != "" {
+				bootstrapAttrs = append(bootstrapAttrs, attribute.String(observability.AttrRepositoryCommitSHA, commitSHA))
+			}
+		}
 		emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_BOOTSTRAP_DEPENDENCIES, "running dependency bootstrap")
-		if err := s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.bootstrap_dependencies", []attribute.KeyValue{
-			attribute.String("cleanroom.backend", backendName),
-			attribute.String("cleanroom.sandbox.id", sandboxID),
-			attribute.Int("cleanroom.command.argc", len(dependencyStagePlan.BootstrapCommand)),
-		}, func(ctx context.Context) error {
+		if err := s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.bootstrap_dependencies", bootstrapAttrs, func(ctx context.Context) error {
 			return s.bootstrapDependencyStageInPersistentSandbox(ctx, adapter, sandboxID, compiled, firecrackerCfg, dependencyStagePlan, reporter)
 		}); err != nil {
 			if terminateErr := s.terminateCreatedSandbox(context.Background(), adapter, sandboxID); terminateErr != nil {

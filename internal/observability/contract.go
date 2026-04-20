@@ -56,6 +56,11 @@ const (
 	AttrStdinDisabled         = "cleanroom.stdin.disabled"
 	AttrRepositoryCheckout    = "cleanroom.repository.checkout"
 	AttrRepositoryChangeset   = "cleanroom.repository.changeset"
+	AttrRepositoryCommitSHA   = "cleanroom.repository.commit_sha"
+	AttrCacheStage            = "cleanroom.cache.stage"
+	AttrCacheOperation        = "cleanroom.cache.operation"
+	AttrCacheResult           = "cleanroom.cache.result"
+	AttrCacheLookupReason     = "cleanroom.cache.lookup_reason"
 	AttrVMLaunched            = "cleanroom.vm.launched"
 	AttrExitCode              = "cleanroom.exit_code"
 
@@ -85,6 +90,28 @@ const (
 	ReasonCached                = "cached"
 	ReasonFallback              = "fallback"
 	ReasonRubyGemsUnavailable   = "rubygems_unavailable"
+
+	CacheStageRuntime    = "runtime"
+	CacheStageWorkspace  = "workspace"
+	CacheStageDependency = "dependency"
+
+	CacheOperationLookup     = "lookup"
+	CacheOperationRestore    = "restore"
+	CacheOperationPublish    = "publish"
+	CacheOperationInvalidate = "invalidate"
+
+	CacheResultHit       = "hit"
+	CacheResultMiss      = "miss"
+	CacheResultRestored  = "restored"
+	CacheResultPublished = "published"
+	CacheResultFallback  = "fallback"
+	CacheResultFailed    = "failed"
+
+	CacheLookupReasonRecordNotFound         = "cache_record_not_found"
+	CacheLookupReasonBackendMismatch        = "backend_mismatch"
+	CacheLookupReasonPolicyHashMismatch     = "policy_hash_mismatch"
+	CacheLookupReasonRepositoryChanged      = "repository_changed"
+	CacheLookupReasonWorkspaceParentChanged = "workspace_parent_changed"
 )
 
 func GatewayRequestSpanName(service string) string {
