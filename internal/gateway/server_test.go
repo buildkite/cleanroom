@@ -97,6 +97,30 @@ func TestGatewayServiceForPathClassifiesRubyGems(t *testing.T) {
 	}
 }
 
+func TestGatewayServiceForPathClassifiesGoProxy(t *testing.T) {
+	t.Parallel()
+
+	if got, want := gatewayServiceForPath("/goproxy/github.com/pkg/errors/@v/list"), "goproxy"; got != want {
+		t.Fatalf("unexpected service classification: got %q want %q", got, want)
+	}
+}
+
+func TestGatewayServiceForPathClassifiesSumDB(t *testing.T) {
+	t.Parallel()
+
+	if got, want := gatewayServiceForPath("/goproxy/sumdb/sum.golang.org/supported"), "sumdb"; got != want {
+		t.Fatalf("unexpected service classification: got %q want %q", got, want)
+	}
+}
+
+func TestGatewayServiceForPathClassifiesFetch(t *testing.T) {
+	t.Parallel()
+
+	if got, want := gatewayServiceForPath("/fetch/dl.google.com/go/go1.26.2.linux-amd64.tar.gz"), "fetch"; got != want {
+		t.Fatalf("unexpected service classification: got %q want %q", got, want)
+	}
+}
+
 func TestTracingMiddlewareUsesActiveExecutionTrace(t *testing.T) {
 	t.Parallel()
 

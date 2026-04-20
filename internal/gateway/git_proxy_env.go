@@ -24,11 +24,20 @@ const (
 	BundlerAppConfigEnvKey = "BUNDLE_APP_CONFIG"
 	// BundlerAppConfigPath is the guest path used for generated Bundler config.
 	BundlerAppConfigPath = "/tmp/cleanroom-bundle-config"
+	// GoProxyDefaultEnvKey is a shell-safe hint consumed by the guest agent to
+	// set GOPROXY only when the caller has not already defined it.
+	GoProxyDefaultEnvKey = "CLEANROOM_GOPROXY_DEFAULT"
+	// MiseGoDownloadMirrorDefaultEnvKey is a shell-safe hint consumed by the
+	// guest agent to set MISE_GO_DOWNLOAD_MIRROR only when the caller has not
+	// already defined it.
+	MiseGoDownloadMirrorDefaultEnvKey = "CLEANROOM_MISE_GO_DOWNLOAD_MIRROR_DEFAULT"
 )
 
 // ProxyRoutes describes which gateway-backed guest proxy routes are live.
 type ProxyRoutes struct {
 	RubyGems bool
+	GoProxy  bool
+	Fetch    bool
 }
 
 // GitProxyEnvVars returns git config environment variables that rewrite allowed
@@ -103,11 +112,39 @@ func RubyGemsProxyEnvVars(compiled *policy.CompiledPolicy, gatewayPort int, rout
 	}
 }
 
+// GoProxyEnvVars returns environment variables that route Go module downloads
+// through the shared host gateway when proxy.golang.org is policy-allowed.
+func GoProxyEnvVars(compiled *policy.CompiledPolicy, gatewayPort int, routes ProxyRoutes) []string {
+	if !routes.GoProxy || !allowsHTTPSHost(compiled, "proxy.golang.org") || !allowsHTTPSHost(compiled, "sum.golang.org") || gatewayPort <= 0 {
+		return nil
+	}
+
+	return []string{
+		fmt.Sprintf("%s=http://%s:%d/goproxy,direct", GoProxyDefaultEnvKey, GuestGatewayHostname, gatewayPort),
+	}
+}
+
+// MiseProxyEnvVars returns environment variables that route immutable mise Go
+// SDK downloads through the shared host gateway when dl.google.com is
+// policy-allowed.
+func MiseProxyEnvVars(compiled *policy.CompiledPolicy, gatewayPort int, routes ProxyRoutes) []string {
+	if !routes.Fetch || !allowsHTTPSHost(compiled, "dl.google.com") || gatewayPort <= 0 {
+		return nil
+	}
+
+	return []string{
+		fmt.Sprintf("%s=http://%s:%d/fetch/dl.google.com/go", MiseGoDownloadMirrorDefaultEnvKey, GuestGatewayHostname, gatewayPort),
+	}
+}
+
 // ProxyEnvVars returns gateway-specific environment variables for guest
-// processes, including Git rewrite config and Bundler RubyGems mirroring.
+// processes, including Git rewrite config, Bundler RubyGems mirroring, Go
+// module proxying, and immutable tool download mirroring.
 func ProxyEnvVars(compiled *policy.CompiledPolicy, gatewayPort int, scopeToken string, routes ProxyRoutes) []string {
 	env := GitProxyEnvVars(compiled, gatewayPort, scopeToken)
 	env = append(env, RubyGemsProxyEnvVars(compiled, gatewayPort, routes)...)
+	env = append(env, GoProxyEnvVars(compiled, gatewayPort, routes)...)
+	env = append(env, MiseProxyEnvVars(compiled, gatewayPort, routes)...)
 	if len(env) == 0 {
 		return nil
 	}

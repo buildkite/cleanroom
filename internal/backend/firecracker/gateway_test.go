@@ -92,3 +92,37 @@ func TestGatewayEnvVarsSkipsRubyGemsMirrorWithoutLiveRoute(t *testing.T) {
 		}
 	}
 }
+
+func TestGatewayEnvVarsAddsGoProxyAndMiseMirror(t *testing.T) {
+	t.Parallel()
+
+	instance := &sandboxInstance{
+		Policy: &policy.CompiledPolicy{
+			Version:        1,
+			NetworkDefault: "deny",
+			Allow: []policy.AllowRule{
+				{Host: "proxy.golang.org", Ports: []int{443}},
+				{Host: "sum.golang.org", Ports: []int{443}},
+				{Host: "dl.google.com", Ports: []int{443}},
+			},
+		},
+	}
+
+	env := gatewayEnvVars(instance, 8170, gateway.ProxyRoutes{GoProxy: true, Fetch: true})
+	foundGoProxy := false
+	foundMiseMirror := false
+	for _, entry := range env {
+		if entry == gateway.GoProxyDefaultEnvKey+"=http://"+gateway.GuestGatewayHostname+":8170/goproxy,direct" {
+			foundGoProxy = true
+		}
+		if entry == gateway.MiseGoDownloadMirrorDefaultEnvKey+"=http://"+gateway.GuestGatewayHostname+":8170/fetch/dl.google.com/go" {
+			foundMiseMirror = true
+		}
+	}
+	if !foundGoProxy {
+		t.Fatalf("expected %s env in %v", gateway.GoProxyDefaultEnvKey, env)
+	}
+	if !foundMiseMirror {
+		t.Fatalf("expected %s env in %v", gateway.MiseGoDownloadMirrorDefaultEnvKey, env)
+	}
+}

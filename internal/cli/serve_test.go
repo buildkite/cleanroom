@@ -72,7 +72,7 @@ func TestConfigureGatewayBackendsConfiguresDarwinVZGateway(t *testing.T) {
 		"darwin-vz":   darwinAdapter,
 	}
 
-	configureGatewayBackends(backends, gwRegistry, 8170, "0.0.0.0:8170", "192.168.64.1", gateway.ProxyRoutes{RubyGems: true})
+	configureGatewayBackends(backends, gwRegistry, 8170, "0.0.0.0:8170", "192.168.64.1", gateway.ProxyRoutes{RubyGems: true, GoProxy: true, Fetch: true})
 
 	if fcAdapter.GatewayRegistry == nil {
 		t.Fatal("expected firecracker adapter to use the host gateway registry")
@@ -82,6 +82,12 @@ func TestConfigureGatewayBackendsConfiguresDarwinVZGateway(t *testing.T) {
 	}
 	if !fcAdapter.GatewayRoutes.RubyGems {
 		t.Fatal("expected firecracker adapter to receive live rubygems route state")
+	}
+	if !fcAdapter.GatewayRoutes.GoProxy {
+		t.Fatal("expected firecracker adapter to receive live goproxy route state")
+	}
+	if !fcAdapter.GatewayRoutes.Fetch {
+		t.Fatal("expected firecracker adapter to receive live fetch route state")
 	}
 	if darwinAdapter.GatewayRegistry == nil {
 		t.Fatal("expected darwin-vz adapter to use the host gateway registry")
@@ -94,6 +100,12 @@ func TestConfigureGatewayBackendsConfiguresDarwinVZGateway(t *testing.T) {
 	}
 	if !darwinAdapter.GatewayRoutes.RubyGems {
 		t.Fatal("expected darwin-vz adapter to receive live rubygems route state")
+	}
+	if !darwinAdapter.GatewayRoutes.GoProxy {
+		t.Fatal("expected darwin-vz adapter to receive live goproxy route state")
+	}
+	if !darwinAdapter.GatewayRoutes.Fetch {
+		t.Fatal("expected darwin-vz adapter to receive live fetch route state")
 	}
 }
 

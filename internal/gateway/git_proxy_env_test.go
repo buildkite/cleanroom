@@ -56,3 +56,64 @@ func TestProxyEnvVarsStillIncludesGitWhenRubyGemsRouteIsUnavailable(t *testing.T
 		}
 	}
 }
+
+func TestGoProxyEnvVarsRequiresLiveRoute(t *testing.T) {
+	t.Parallel()
+
+	compiled := &policy.CompiledPolicy{
+		Version:        1,
+		NetworkDefault: "deny",
+		Allow: []policy.AllowRule{
+			{Host: "proxy.golang.org", Ports: []int{443}},
+			{Host: "sum.golang.org", Ports: []int{443}},
+		},
+	}
+
+	if env := GoProxyEnvVars(compiled, 8170, ProxyRoutes{}); env != nil {
+		t.Fatalf("expected no goproxy env without live route, got %v", env)
+	}
+
+	env := GoProxyEnvVars(compiled, 8170, ProxyRoutes{GoProxy: true})
+	if len(env) != 1 {
+		t.Fatalf("expected 1 goproxy env var with live route, got %d: %v", len(env), env)
+	}
+	if want := GoProxyDefaultEnvKey + "=http://" + GuestGatewayHostname + ":8170/goproxy,direct"; env[0] != want {
+		t.Fatalf("expected %q, got %q", want, env[0])
+	}
+}
+
+func TestGoProxyEnvVarsRequiresSumDBAllowlist(t *testing.T) {
+	t.Parallel()
+
+	compiled := &policy.CompiledPolicy{
+		Version:        1,
+		NetworkDefault: "deny",
+		Allow:          []policy.AllowRule{{Host: "proxy.golang.org", Ports: []int{443}}},
+	}
+
+	if env := GoProxyEnvVars(compiled, 8170, ProxyRoutes{GoProxy: true}); env != nil {
+		t.Fatalf("expected no goproxy env without sumdb allowlist, got %v", env)
+	}
+}
+
+func TestMiseProxyEnvVarsRequiresLiveRoute(t *testing.T) {
+	t.Parallel()
+
+	compiled := &policy.CompiledPolicy{
+		Version:        1,
+		NetworkDefault: "deny",
+		Allow:          []policy.AllowRule{{Host: "dl.google.com", Ports: []int{443}}},
+	}
+
+	if env := MiseProxyEnvVars(compiled, 8170, ProxyRoutes{}); env != nil {
+		t.Fatalf("expected no mise fetch env without live route, got %v", env)
+	}
+
+	env := MiseProxyEnvVars(compiled, 8170, ProxyRoutes{Fetch: true})
+	if len(env) != 1 {
+		t.Fatalf("expected 1 mise fetch env var with live route, got %d: %v", len(env), env)
+	}
+	if want := MiseGoDownloadMirrorDefaultEnvKey + "=http://" + GuestGatewayHostname + ":8170/fetch/dl.google.com/go"; env[0] != want {
+		t.Fatalf("expected %q, got %q", want, env[0])
+	}
+}

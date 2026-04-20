@@ -45,6 +45,8 @@ var newCacheMetadataStore = cachestore.New
 var gatewayScopeTokenSourcePolicyForGatewayHost = gateway.ScopeTokenSourcePolicyForGatewayHost
 var newGatewayContentCache = gateway.NewContentCache
 
+var defaultGatewayFetchHosts = []string{"dl.google.com"}
+
 func (s *ServeCommand) Run(ctx *runtimeContext) error {
 	return s.runServer(ctx)
 }
@@ -97,9 +99,10 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 
 	var contentCache *gateway.ContentCache
 	contentCache, err = newGatewayContentCache(gateway.ContentCacheConfig{
-		GitAllowedHosts: ctx.Config.Gateway.Git.CacheHosts,
-		Credentials:     gwCredentials,
-		Logger:          logger.With("subsystem", "content-cache"),
+		GitAllowedHosts:   ctx.Config.Gateway.Git.CacheHosts,
+		FetchAllowedHosts: append([]string(nil), defaultGatewayFetchHosts...),
+		Credentials:       gwCredentials,
+		Logger:            logger.With("subsystem", "content-cache"),
 	})
 	if err != nil {
 		logger.Warn("content cache unavailable; continuing without cache-backed gateway routes", "error", err)
@@ -132,6 +135,8 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 
 	configureGatewayBackends(ctx.Backends, gwRegistry, gwPort, gwServer.Addr(), darwinGatewayHost, gateway.ProxyRoutes{
 		RubyGems: contentCache != nil && contentCache.HasRubyGemsHandler(),
+		GoProxy:  contentCache != nil && contentCache.HasGoProxyHandler() && contentCache.HasSumDBHandler(),
+		Fetch:    contentCache != nil && contentCache.FetchAllowsHost("dl.google.com"),
 	})
 
 	if fcAdapter, ok := ctx.Backends["firecracker"].(*firecracker.Adapter); ok && fcAdapter.GatewayRegistry != nil {

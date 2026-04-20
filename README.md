@@ -12,7 +12,7 @@ Agent sandboxing tools are [proliferating fast](docs/research.md). Most focus on
 
 **Self-hosted.** Runs on your infrastructure. Your code and data never leave your machines.
 
-**Credentials stay on the host.** A [host-side gateway](docs/gateway.md) rewrites git traffic through Cleanroom-owned routes and keeps upstream credentials on the host side of the boundary. The same gateway now embeds `content-cache` for cache-backed git, OCI, and RubyGems handling.
+**Credentials stay on the host.** A [host-side gateway](docs/gateway.md) rewrites git traffic through Cleanroom-owned routes and keeps upstream credentials on the host side of the boundary. The same gateway now embeds `content-cache` for cache-backed git, OCI, Go module, RubyGems, and immutable download handling.
 
 **Standard OCI images.** Use any OCI image from any registry as your sandbox base. Digest-pinned in policy for reproducibility. No custom VM image format or vendor-specific base images. Same image works across backends.
 

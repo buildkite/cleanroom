@@ -32,6 +32,8 @@ const (
 	defaultTraceName = "github.com/buildkite/cleanroom"
 )
 
+var otelErrorHandlerMu sync.Mutex
+
 type Options struct {
 	Config         runtimeconfig.ObservabilityConfig
 	ServiceName    string
@@ -106,9 +108,10 @@ func Start(ctx context.Context, opts Options) (*Runtime, error) {
 }
 
 type runtimeErrorReporter struct {
-	mu      sync.Mutex
-	report  func(error)
-	ignored atomic.Bool
+	mu       sync.Mutex
+	report   func(error)
+	previous otel.ErrorHandler
+	ignored  atomic.Bool
 }
 
 func (r *runtimeErrorReporter) Handle(err error) {
@@ -136,10 +139,53 @@ func installErrorHandler(report func(error)) (*runtimeErrorReporter, func()) {
 	if report == nil {
 		return nil, func() {}
 	}
+
+	otelErrorHandlerMu.Lock()
 	previous := otel.GetErrorHandler()
-	reporter := &runtimeErrorReporter{report: report}
+	reporter := &runtimeErrorReporter{
+		report:   report,
+		previous: previous,
+	}
 	otel.SetErrorHandler(reporter)
-	return reporter, func() { otel.SetErrorHandler(previous) }
+	otelErrorHandlerMu.Unlock()
+
+	return reporter, func() { restoreErrorHandler(reporter) }
+}
+
+func restoreErrorHandler(reporter *runtimeErrorReporter) {
+	if reporter == nil {
+		return
+	}
+
+	otelErrorHandlerMu.Lock()
+	defer otelErrorHandlerMu.Unlock()
+
+	current := otel.GetErrorHandler()
+	if current == reporter {
+		otel.SetErrorHandler(reporter.previous)
+		return
+	}
+
+	currentReporter, ok := current.(*runtimeErrorReporter)
+	if !ok {
+		return
+	}
+	currentReporter.removeNested(reporter, reporter.previous)
+}
+
+func (r *runtimeErrorReporter) removeNested(target *runtimeErrorReporter, replacement otel.ErrorHandler) bool {
+	if r == nil || target == nil {
+		return false
+	}
+	if r.previous == target {
+		r.previous = replacement
+		return true
+	}
+	next, ok := r.previous.(*runtimeErrorReporter)
+	if !ok {
+		return false
+	}
+	return next.removeNested(target, replacement)
 }
 
 func (r *Runtime) Tracer(name string, options ...trace.TracerOption) trace.Tracer {

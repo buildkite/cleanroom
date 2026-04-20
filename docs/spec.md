@@ -359,7 +359,7 @@ All runtime launch behavior is initiated by control-plane API calls (for example
 
 ### 6.2 Host gateway
 
-Cleanroom runs a single shared host gateway process that provides mediated access to external services for sandboxes on the host. The current implementation serves Git, OCI registry, and RubyGems routes today, while keeping secret and metadata routes reserved for follow-up work. Sandbox identity is derived from the network transport layer, not bearer tokens.
+Cleanroom runs a single shared host gateway process that provides mediated access to external services for sandboxes on the host. The current implementation serves Git, OCI registry, Go module proxy, RubyGems, and immutable fetch routes today, while keeping secret and metadata routes reserved for follow-up work. Sandbox identity is derived from the network transport layer, not bearer tokens.
 
 #### 6.2.1 Transport and sandbox identity
 
@@ -367,7 +367,7 @@ The gateway uses TAP-network TCP rather than `AF_VSOCK` for guest-to-host servic
 
 Each sandbox is provisioned with a unique TAP device and a unique guest IP. The host gateway identifies the calling sandbox by mapping the source IP of incoming connections to the registered sandbox and its `CompiledPolicy`.
 
-- The gateway listens on a small fixed set of host ports (or a single port with path-prefix routing for `/git/`, `/registry/`, `/rubygems/`, `/secrets/`, `/meta/`).
+- The gateway listens on a small fixed set of host ports (or a single port with path-prefix routing for `/git/`, `/registry/`, `/goproxy/`, `/rubygems/`, `/fetch/`, `/secrets/`, `/meta/`).
 - Sandbox identity is resolved from the connection source IP. No tokens, API keys, or path-embedded credentials are used for sandbox identification.
 - The gateway maintains a registry of `(guestIP → sandboxID → CompiledPolicy)` populated at sandbox creation and removed at teardown.
 - The guest discovers the gateway via its host-side TAP IP on well-known ports, injected into the command environment (for example `GIT_CONFIG_GLOBAL`, `HTTP_PROXY`, or equivalent per-service environment variables).
@@ -403,11 +403,15 @@ These rules are installed during sandbox network setup and torn down during clea
 - The gateway exposes a `/registry/` route backed by embedded `content-cache` OCI handlers.
 - The gateway resolves a registry prefix from the request path, maps it to an upstream registry URL, and applies the sandbox allowlist against the mapped policy host and port before forwarding upstream.
 - Current route scope is OCI pull-style `GET` and `HEAD` traffic.
+- The gateway exposes a `/goproxy/` route backed by embedded `content-cache` Go module proxy handlers, including mirrored sumdb traffic under `/goproxy/sumdb/`.
+- Current Go module scope includes `GOPROXY` metadata requests, module zip downloads, and mirrored checksum-database requests.
 - The gateway also exposes a `/rubygems/` route backed by embedded `content-cache` RubyGems handlers for Bundler mirror traffic to `rubygems.org`.
 - Current RubyGems scope includes Compact Index metadata, legacy specs metadata, and gem downloads.
+- The gateway exposes a `/fetch/` route backed by embedded `content-cache` immutable artifact handlers for configured hosts such as `dl.google.com`.
 - Unsupported registry requests are denied with explicit audit reason (`registry_not_allowed`) or route-specific validation errors.
 - Future work:
   - guest-side package-manager rewrites through `/registry/`
+  - broader guest-side tool download rewrites beyond the current `/fetch/` slice
   - broader guest-side RubyGems source rewrites beyond the default Bundler mirror path
   - lockfile enforcement
   - broader non-OCI package-manager protocol support

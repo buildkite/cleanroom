@@ -49,9 +49,9 @@ Go module resolution:
 |---|---|
 | `github.com`, `api.github.com` | Git clone and GitHub API |
 | `release-assets.githubusercontent.com` | mise downloads golangci-lint from GitHub releases |
-| `dl.google.com` | mise downloads the Go SDK |
-| `proxy.golang.org`, `sum.golang.org` | Go module proxy and checksum database |
-| `storage.googleapis.com` | Go proxy redirects module payloads here |
+| `dl.google.com` | upstream host validated by the gateway `/fetch/` route for Go SDK downloads |
+| `proxy.golang.org`, `sum.golang.org` | upstream hosts validated by the gateway `/goproxy/` route and mirrored checksum database |
+| `storage.googleapis.com` | Go proxy redirect target validated by the host-side goproxy client |
 | `mise-versions.jdx.dev`, `mise.jdx.dev` | mise tool metadata resolution |
 
 ## Notes
@@ -61,4 +61,7 @@ Go module resolution:
   and keys that stage on `.mise.toml`, `go.mod`, and `go.sum`, so a successful
   first run can publish a reusable dependency stage for later warm hits on the
   same exact commit and policy
+- Cleanroom now injects `GOPROXY` and `MISE_GO_DOWNLOAD_MIRROR` automatically
+  when the relevant upstream hosts are allowlisted, so `go mod download` and
+  `mise use go@...` warm the shared gateway cache instead of fetching directly
 - `go test -p 1` avoids OOM kills on constrained guest memory

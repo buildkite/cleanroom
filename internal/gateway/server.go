@@ -27,7 +27,9 @@ const (
 
 	RouteGit      = "/git/"
 	RouteRegistry = "/registry/"
+	RouteGoProxy  = "/goproxy/"
 	RouteRubyGems = "/rubygems/"
+	RouteFetch    = "/fetch/"
 	RouteSecrets  = "/secrets/"
 	RouteMeta     = "/meta/"
 )
@@ -35,7 +37,9 @@ const (
 var serviceRoutes = []string{
 	RouteGit,
 	RouteRegistry,
+	RouteGoProxy,
 	RouteRubyGems,
+	RouteFetch,
 	RouteSecrets,
 	RouteMeta,
 }
@@ -223,10 +227,22 @@ func NewServer(cfg ServerConfig) *Server {
 		mux.HandleFunc(RouteRegistry, stubHandler("registry"))
 	}
 
+	if cfg.ContentCache != nil && cfg.ContentCache.HasGoProxyHandler() && cfg.ContentCache.HasSumDBHandler() {
+		mux.Handle(RouteGoProxy, newCachedGoProxyHandler(cfg.ContentCache, cfg.Logger))
+	} else {
+		mux.HandleFunc(RouteGoProxy, stubHandler("goproxy"))
+	}
+
 	if cfg.ContentCache != nil && cfg.ContentCache.HasRubyGemsHandler() {
 		mux.Handle(RouteRubyGems, newCachedRubyGemsHandler(cfg.ContentCache, cfg.Logger))
 	} else {
 		mux.HandleFunc(RouteRubyGems, stubHandler("rubygems"))
+	}
+
+	if cfg.ContentCache != nil && cfg.ContentCache.HasFetchHandler() {
+		mux.Handle(RouteFetch, newCachedFetchHandler(cfg.ContentCache, cfg.Logger))
+	} else {
+		mux.HandleFunc(RouteFetch, stubHandler("fetch"))
 	}
 
 	mux.HandleFunc(RouteSecrets, stubHandler("secrets"))
@@ -472,8 +488,14 @@ func gatewayServiceForPath(path string) string {
 		return "git"
 	case strings.HasPrefix(path, RouteRegistry):
 		return "registry"
+	case strings.HasPrefix(path, "/goproxy/sumdb/"):
+		return "sumdb"
+	case strings.HasPrefix(path, RouteGoProxy):
+		return "goproxy"
 	case strings.HasPrefix(path, RouteRubyGems):
 		return "rubygems"
+	case strings.HasPrefix(path, RouteFetch):
+		return "fetch"
 	case strings.HasPrefix(path, RouteSecrets):
 		return "secrets"
 	case strings.HasPrefix(path, RouteMeta):

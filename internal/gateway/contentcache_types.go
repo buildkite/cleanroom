@@ -12,7 +12,11 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/buildkite/cleanroom/internal/policy"
 )
+
+const defaultMaxGoProxyScopedHandlers = 32
 
 type gitHandlerFactory func(host string) (http.Handler, error)
 
@@ -29,12 +33,45 @@ type ociHandlerEntry struct {
 	closer       io.Closer
 }
 
+type goProxyScopedHandler struct {
+	handler http.Handler
+	closer  io.Closer
+}
+
+type goProxyHandlerEntry struct {
+	policyHost   string
+	policyPort   int
+	upstreamHost string
+	upstreamPort int
+	mu           sync.Mutex
+	handlers     map[string]goProxyScopedHandler
+	order        []string
+	maxHandlers  int
+	buildHandler func(*policy.CompiledPolicy) (goProxyScopedHandler, error)
+}
+
+type sumDBHandlerEntry struct {
+	handler      http.Handler
+	policyHost   string
+	policyPort   int
+	upstreamHost string
+	upstreamPort int
+	name         string
+	closer       io.Closer
+}
+
 type rubyGemsHandlerEntry struct {
 	handler      http.Handler
 	policyHost   string
 	policyPort   int
 	upstreamHost string
 	upstreamPort int
+	closer       io.Closer
+}
+
+type fetchHandlerEntry struct {
+	handler      http.Handler
+	allowedHosts map[string]struct{}
 	closer       io.Closer
 }
 
@@ -51,7 +88,10 @@ type ContentCache struct {
 	buildOCIHandler ociHandlerFactory
 	resolveOCIRoute ociRouteResolver
 
+	goProxy  goProxyHandlerEntry
+	sumdb    sumDBHandlerEntry
 	rubyGems rubyGemsHandlerEntry
+	fetch    fetchHandlerEntry
 }
 
 // Close releases resources held by the content cache.
@@ -61,15 +101,28 @@ func (c *ContentCache) Close() error {
 	}
 
 	c.ociMu.Lock()
-	closers := make([]io.Closer, 0, len(c.ociHandlers)+1)
+	closers := make([]io.Closer, 0, len(c.ociHandlers)+4)
 	for _, entry := range c.ociHandlers {
 		if entry.closer != nil {
 			closers = append(closers, entry.closer)
 		}
 	}
 	c.ociMu.Unlock()
+	c.goProxy.mu.Lock()
+	for _, entry := range c.goProxy.handlers {
+		if entry.closer != nil {
+			closers = append(closers, entry.closer)
+		}
+	}
+	c.goProxy.mu.Unlock()
+	if c.sumdb.closer != nil {
+		closers = append(closers, c.sumdb.closer)
+	}
 	if c.rubyGems.closer != nil {
 		closers = append(closers, c.rubyGems.closer)
+	}
+	if c.fetch.closer != nil {
+		closers = append(closers, c.fetch.closer)
 	}
 
 	if c.closer != nil {
@@ -121,6 +174,113 @@ func (c *ContentCache) HasOCIHandler() bool {
 	return c != nil && c.buildOCIHandler != nil
 }
 
+// HasGoProxyHandler reports whether Go module proxy caching is configured.
+func (c *ContentCache) HasGoProxyHandler() bool {
+	return c != nil && c.goProxy.buildHandler != nil
+}
+
+// GoProxyUpstream returns policy/upstream metadata for the configured Go module proxy.
+func (c *ContentCache) GoProxyUpstream() (string, int, string, int, error) {
+	if c == nil || c.goProxy.buildHandler == nil {
+		return "", 0, "", 0, errors.New("goproxy cache not configured")
+	}
+	return c.goProxy.policyHost, c.goProxy.policyPort, c.goProxy.upstreamHost, c.goProxy.upstreamPort, nil
+}
+
+// GoProxyHandlerForPolicy returns a Go module proxy cache handler scoped to
+// the provided compiled policy. The handler caches background fills against the
+// same allowlist that authorized the originating sandbox request.
+func (c *ContentCache) GoProxyHandlerForPolicy(compiled *policy.CompiledPolicy) (http.Handler, error) {
+	if c == nil || c.goProxy.buildHandler == nil {
+		return nil, errors.New("goproxy cache not configured")
+	}
+	if compiled == nil {
+		return nil, errors.New("goproxy policy is required")
+	}
+
+	key := strings.TrimSpace(compiled.Hash)
+	if key == "" {
+		key = fmt.Sprintf("%p", compiled)
+	}
+
+	c.goProxy.mu.Lock()
+
+	if entry, ok := c.goProxy.handlers[key]; ok {
+		c.goProxy.touchLocked(key)
+		c.goProxy.mu.Unlock()
+		return entry.handler, nil
+	}
+
+	entry, err := c.goProxy.buildHandler(compiled)
+	if err != nil {
+		c.goProxy.mu.Unlock()
+		return nil, err
+	}
+	if c.goProxy.handlers == nil {
+		c.goProxy.handlers = make(map[string]goProxyScopedHandler)
+	}
+	c.goProxy.handlers[key] = entry
+	c.goProxy.touchLocked(key)
+	evicted := c.goProxy.evictLocked()
+	c.goProxy.mu.Unlock()
+	if evicted != nil {
+		_ = evicted.Close()
+	}
+	return entry.handler, nil
+}
+
+func (e *goProxyHandlerEntry) touchLocked(key string) {
+	for i, existing := range e.order {
+		if existing != key {
+			continue
+		}
+		copy(e.order[i:], e.order[i+1:])
+		e.order = e.order[:len(e.order)-1]
+		break
+	}
+	e.order = append(e.order, key)
+}
+
+func (e *goProxyHandlerEntry) evictLocked() io.Closer {
+	maxHandlers := e.maxHandlers
+	if maxHandlers <= 0 {
+		maxHandlers = defaultMaxGoProxyScopedHandlers
+	}
+	if len(e.order) <= maxHandlers {
+		return nil
+	}
+
+	evictedKey := e.order[0]
+	e.order = e.order[1:]
+	entry, ok := e.handlers[evictedKey]
+	if !ok {
+		return nil
+	}
+	delete(e.handlers, evictedKey)
+	return entry.closer
+}
+
+// HasSumDBHandler reports whether sumdb caching is configured.
+func (c *ContentCache) HasSumDBHandler() bool {
+	return c != nil && c.sumdb.handler != nil
+}
+
+// SumDBUpstream returns policy/upstream metadata for the configured checksum database proxy.
+func (c *ContentCache) SumDBUpstream() (string, int, string, int, error) {
+	if c == nil || c.sumdb.handler == nil {
+		return "", 0, "", 0, errors.New("sumdb cache not configured")
+	}
+	return c.sumdb.policyHost, c.sumdb.policyPort, c.sumdb.upstreamHost, c.sumdb.upstreamPort, nil
+}
+
+// SumDBHandler returns the configured checksum database proxy handler.
+func (c *ContentCache) SumDBHandler() (http.Handler, error) {
+	if c == nil || c.sumdb.handler == nil {
+		return nil, errors.New("sumdb cache not configured")
+	}
+	return c.sumdb.handler, nil
+}
+
 // HasRubyGemsHandler reports whether RubyGems caching is configured.
 func (c *ContentCache) HasRubyGemsHandler() bool {
 	return c != nil && c.rubyGems.handler != nil
@@ -141,6 +301,32 @@ func (c *ContentCache) RubyGemsHandler() (http.Handler, error) {
 		return nil, errors.New("rubygems cache not configured")
 	}
 	return c.rubyGems.handler, nil
+}
+
+// HasFetchHandler reports whether immutable artifact fetch caching is configured.
+func (c *ContentCache) HasFetchHandler() bool {
+	return c != nil && c.fetch.handler != nil
+}
+
+// FetchAllowsHost reports whether the immutable artifact fetch route is configured for host.
+func (c *ContentCache) FetchAllowsHost(host string) bool {
+	if c == nil || c.fetch.handler == nil {
+		return false
+	}
+	host = strings.ToLower(strings.TrimSpace(host))
+	if host == "" {
+		return false
+	}
+	_, ok := c.fetch.allowedHosts[host]
+	return ok
+}
+
+// FetchHandler returns the configured immutable artifact fetch cache handler.
+func (c *ContentCache) FetchHandler() (http.Handler, error) {
+	if c == nil || c.fetch.handler == nil {
+		return nil, errors.New("fetch cache not configured")
+	}
+	return c.fetch.handler, nil
 }
 
 // OCIUpstreamForPrefix returns policy/upstream metadata for the requested
@@ -264,9 +450,11 @@ func ociUpstreamPolicyFromContext(ctx context.Context) (ociUpstreamPolicyContext
 	return policy, ok
 }
 
-func validateUpstreamTargetPolicy(req *http.Request) error {
-	scope, ok := ScopeFromContext(req.Context())
-	if !ok || scope == nil || scope.Policy == nil {
+func validateUpstreamTargetPolicy(req *http.Request, compiled *policy.CompiledPolicy) error {
+	if scope, ok := ScopeFromContext(req.Context()); ok && scope != nil && scope.Policy != nil {
+		compiled = scope.Policy
+	}
+	if compiled == nil {
 		return errors.New("sandbox scope is required for upstream policy validation")
 	}
 
@@ -280,7 +468,7 @@ func validateUpstreamTargetPolicy(req *http.Request) error {
 		policyHost = mapped.policyHost
 		policyPort = mapped.policyPort
 	}
-	if !scope.Policy.Allows(policyHost, policyPort) {
+	if !compiled.Allows(policyHost, policyPort) {
 		return fmt.Errorf("upstream target %s:%d is not allowed by sandbox policy", policyHost, policyPort)
 	}
 	return nil
@@ -295,7 +483,8 @@ type credentialInjector struct {
 }
 
 type policyValidatingRoundTripper struct {
-	base http.RoundTripper
+	base   http.RoundTripper
+	policy *policy.CompiledPolicy
 }
 
 func newGitContentCacheHTTPClient(credentials CredentialProvider) *http.Client {
@@ -307,25 +496,33 @@ func newGitContentCacheHTTPClient(credentials CredentialProvider) *http.Client {
 }
 
 func newOCIContentCacheHTTPClient(credentials CredentialProvider) *http.Client {
-	client := newUpstreamContentCacheHTTPClient(credentials)
-	client.Transport = &policyValidatingRoundTripper{base: client.Transport}
-	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		if len(via) == 0 {
-			return nil
-		}
-		return validateUpstreamTargetPolicy(req)
-	}
-	return client
+	return newPolicyValidatingContentCacheHTTPClient(credentials, nil)
+}
+
+func newGoProxyContentCacheHTTPClient(compiled *policy.CompiledPolicy) *http.Client {
+	return newPolicyValidatingContentCacheHTTPClient(nil, compiled)
+}
+
+func newSumDBContentCacheHTTPClient() *http.Client {
+	return newPolicyValidatingContentCacheHTTPClient(nil, nil)
 }
 
 func newRubyGemsContentCacheHTTPClient(_ CredentialProvider) *http.Client {
-	client := newUpstreamContentCacheHTTPClient(nil)
-	client.Transport = &policyValidatingRoundTripper{base: client.Transport}
+	return newPolicyValidatingContentCacheHTTPClient(nil, nil)
+}
+
+func newFetchContentCacheHTTPClient() *http.Client {
+	return newPolicyValidatingContentCacheHTTPClient(nil, nil)
+}
+
+func newPolicyValidatingContentCacheHTTPClient(credentials CredentialProvider, compiled *policy.CompiledPolicy) *http.Client {
+	client := newUpstreamContentCacheHTTPClient(credentials)
+	client.Transport = &policyValidatingRoundTripper{base: client.Transport, policy: compiled}
 	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		if len(via) == 0 {
 			return nil
 		}
-		return validateUpstreamTargetPolicy(req)
+		return validateUpstreamTargetPolicy(req, compiled)
 	}
 	return client
 }
@@ -359,7 +556,7 @@ func (c *credentialInjector) RoundTrip(r *http.Request) (*http.Response, error) 
 }
 
 func (p *policyValidatingRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
-	if err := validateUpstreamTargetPolicy(r); err != nil {
+	if err := validateUpstreamTargetPolicy(r, p.policy); err != nil {
 		return nil, err
 	}
 	return p.base.RoundTrip(r)
