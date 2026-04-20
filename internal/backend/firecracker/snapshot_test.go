@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"log"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,6 +16,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/volumestore"
 	"github.com/buildkite/cleanroom/internal/vsockexec"
+	"github.com/charmbracelet/log"
 )
 
 type testVolumeDriver struct {
@@ -75,16 +76,10 @@ func captureFirecrackerLogOutput(t *testing.T) *bytes.Buffer {
 	t.Helper()
 
 	var buf bytes.Buffer
-	prevWriter := log.Writer()
-	prevFlags := log.Flags()
-	prevPrefix := log.Prefix()
-	log.SetOutput(&buf)
-	log.SetFlags(0)
-	log.SetPrefix("")
+	prevLogger := log.Default()
+	log.SetDefault(log.NewWithOptions(&buf, log.Options{Formatter: log.TextFormatter}))
 	t.Cleanup(func() {
-		log.SetOutput(prevWriter)
-		log.SetFlags(prevFlags)
-		log.SetPrefix(prevPrefix)
+		log.SetDefault(prevLogger)
 	})
 	return &buf
 }
@@ -543,6 +538,60 @@ func TestCreateSnapshotRejectsDisabledZFSSnapshots(t *testing.T) {
 	}
 }
 
+func TestSnapshotStorageHelpersPassLoggerToHostRuntime(t *testing.T) {
+	prevHostRuntimeFn := newHostRuntimeFn
+	t.Cleanup(func() { newHostRuntimeFn = prevHostRuntimeFn })
+
+	logger := log.New(io.Discard)
+	runtime := &testLoggerAwareHostRuntime{}
+	runtime.testHostRuntime.createZFSSnapshotFn = func(_ context.Context, req zfsSnapshotRequest) (zfsSnapshot, error) {
+		if runtime.logger != logger {
+			t.Fatal("expected createSnapshotStorage to pass the logger into the host runtime")
+		}
+		if got, want := req.SnapshotID, "snap-test"; got != want {
+			t.Fatalf("unexpected snapshot id: got %q want %q", got, want)
+		}
+		if got, want := req.VolumeRef, "tank/cleanroom/sandboxes/cr-test"; got != want {
+			t.Fatalf("unexpected volume ref: got %q want %q", got, want)
+		}
+		return zfsSnapshot{StorageRef: "tank/cleanroom/snapshots/snap-test@seed"}, nil
+	}
+	runtime.testHostRuntime.destroyZFSSnapshotFn = func(_ context.Context, snapshotRef string) error {
+		if runtime.logger != logger {
+			t.Fatal("expected destroySnapshotStorage to pass the logger into the host runtime")
+		}
+		if got, want := snapshotRef, "tank/cleanroom/snapshots/snap-test@seed"; got != want {
+			t.Fatalf("unexpected snapshot ref: got %q want %q", got, want)
+		}
+		return nil
+	}
+	newHostRuntimeFn = func(cfg backend.FirecrackerConfig) hostRuntime {
+		if got, want := cfg.Snapshots.Driver, "zfs"; got != want {
+			t.Fatalf("unexpected snapshot driver: got %q want %q", got, want)
+		}
+		return runtime
+	}
+
+	cfg := backend.FirecrackerConfig{
+		Snapshots: backend.SnapshotConfig{
+			Enabled:    true,
+			Driver:     "zfs",
+			ZFSDataset: "tank/cleanroom",
+		},
+	}
+
+	storageRef, err := createSnapshotStorage(context.Background(), logger, cfg, "snap-test", "tank/cleanroom/sandboxes/cr-test")
+	if err != nil {
+		t.Fatalf("createSnapshotStorage returned error: %v", err)
+	}
+	if got, want := storageRef, "tank/cleanroom/snapshots/snap-test@seed"; got != want {
+		t.Fatalf("unexpected storage ref: got %q want %q", got, want)
+	}
+	if err := destroySnapshotStorage(context.Background(), logger, cfg, storageRef); err != nil {
+		t.Fatalf("destroySnapshotStorage returned error: %v", err)
+	}
+}
+
 func TestCreateSnapshotReturnsErrorWhenSandboxResumeFails(t *testing.T) {
 	stateHome := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", stateHome)
@@ -950,7 +999,7 @@ func TestPreparePersistentWritableVolumeLogsDestroyFailure(t *testing.T) {
 
 	cleanupVolume()
 
-	if got := logOutput.String(); !strings.Contains(got, "firecracker: cleanup persistent volume \"tank/cleanroom/sandboxes/sandbox-1\": destroy failed") {
+	if got := logOutput.String(); !strings.Contains(got, "cleanup persistent volume") || !strings.Contains(got, "volume_ref=tank/cleanroom/sandboxes/sandbox-1") || !strings.Contains(got, "destroy failed") {
 		t.Fatalf("expected destroy error to be logged, got %q", got)
 	}
 }

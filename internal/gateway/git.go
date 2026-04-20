@@ -3,6 +3,7 @@ package gateway
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -99,7 +100,7 @@ func (h *gitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			attribute.String(observability.AttrReasonCode, reasonHostNotAllowed),
 		)
 		span.SetStatus(codes.Error, "upstream host is not allowed by sandbox policy")
-		h.auditLog(scope.SandboxID, upstreamHost, repoPath, gatewayActionDeny, reasonHostNotAllowed)
+		h.auditLog(r.Context(), scope.SandboxID, upstreamHost, repoPath, gatewayActionDeny, reasonHostNotAllowed)
 		writeReasonError(w, http.StatusForbidden, reasonHostNotAllowed, "upstream host is not allowed by sandbox policy")
 		return
 	}
@@ -113,7 +114,7 @@ func (h *gitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			attribute.String(observability.AttrReasonCode, reasonMethodNotAllowed),
 		)
 		span.SetStatus(codes.Error, err.Error())
-		h.auditLog(scope.SandboxID, upstreamHost, repoPath, gatewayActionDeny, reasonMethodNotAllowed)
+		h.auditLog(r.Context(), scope.SandboxID, upstreamHost, repoPath, gatewayActionDeny, reasonMethodNotAllowed)
 		writeReasonError(w, http.StatusForbidden, reasonMethodNotAllowed, err.Error())
 		return
 	}
@@ -136,7 +137,7 @@ func (h *gitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				attribute.String(observability.AttrReasonCode, reasonUpstreamError),
 			)
 			span.SetStatus(codes.Error, err.Error())
-			h.auditLog(scope.SandboxID, upstreamHost, repoPath, gatewayActionDeny, reasonUpstreamError)
+			h.auditLog(r.Context(), scope.SandboxID, upstreamHost, repoPath, gatewayActionDeny, reasonUpstreamError)
 			writeReasonError(w, http.StatusBadGateway, reasonUpstreamError, err.Error())
 			return
 		}
@@ -145,7 +146,7 @@ func (h *gitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			attribute.String(observability.AttrGatewayAction, gatewayActionAllow),
 			attribute.String(observability.AttrReasonCode, reasonMirrored),
 		)
-		h.auditLog(scope.SandboxID, upstreamHost, repoPath, gatewayActionAllow, reasonMirrored)
+		h.auditLog(r.Context(), scope.SandboxID, upstreamHost, repoPath, gatewayActionAllow, reasonMirrored)
 		return
 	}
 
@@ -181,7 +182,7 @@ func (h *gitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		attribute.String(observability.AttrReasonCode, reasonProxied),
 	)
 	setGatewayRequestDecision(r.Context(), gatewayActionAllow, reasonProxied)
-	h.auditLog(scope.SandboxID, upstreamHost, repoPath, gatewayActionAllow, reasonProxied)
+	h.auditLog(r.Context(), scope.SandboxID, upstreamHost, repoPath, gatewayActionAllow, reasonProxied)
 
 	resp, err := h.client.Do(upstreamReq)
 	if err != nil {
@@ -423,17 +424,18 @@ func (h *gitHandler) classifyRequest(method, repoPath, query string) (string, er
 	}
 }
 
-func (h *gitHandler) auditLog(sandboxID, upstreamHost, repoPath, action, reason string) {
-	if h.logger == nil {
+func (h *gitHandler) auditLog(ctx context.Context, sandboxID, upstreamHost, repoPath, action, reason string) {
+	logger := observability.WithTraceContext(h.logger, ctx)
+	if logger == nil {
 		return
 	}
-	h.logger.Info("gateway git request",
-		"sandbox_id", sandboxID,
+	logger.Info("gateway git request",
+		observability.LogFieldSandboxID, sandboxID,
 		"service", "git",
 		"upstream_host", upstreamHost,
 		"repo_path", repoPath,
 		"action", action,
-		"reason_code", reason,
+		observability.LogFieldReasonCode, reason,
 	)
 }
 

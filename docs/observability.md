@@ -1,8 +1,9 @@
 # Observability
 
-Cleanroom observability is OTLP-only. When enabled, `cleanroom serve` prints
-startup status for trace export, sampling, and whether direct trace links are
-configured.
+Cleanroom observability is OTLP-only for traces and metrics. Server-side
+operational logs stay local to the process and can be emitted as text or JSON.
+When enabled, `cleanroom serve` prints startup status for log format, trace
+export, sampling, and whether direct trace links are configured.
 
 ## Runtime config
 
@@ -12,6 +13,8 @@ Configure observability in `~/.config/cleanroom/config.yaml`:
 observability:
   enabled: true
   deployment_environment: local
+  logs:
+    format: json
   otlp:
     endpoint: http://localhost:14318
     protocol: http/protobuf
@@ -23,6 +26,10 @@ observability:
 
 If you prefer OTLP gRPC, set `endpoint: localhost:14317` and `protocol: grpc`
 instead.
+
+`observability.logs.format` defaults to `text`. Set it to `json` when you want
+structured logs with stable correlation fields such as `trace_id`, `span_id`,
+`execution_id`, `sandbox_id`, `backend`, and `reason_code`.
 
 `observability.traces.url_template` is optional. When set, Cleanroom prints
 `trace_url=...` in failure footers and exposes the same URL from

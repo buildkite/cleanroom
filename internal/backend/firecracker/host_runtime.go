@@ -3,14 +3,15 @@ package firecracker
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/buildkite/cleanroom/internal/backend"
+	"github.com/buildkite/cleanroom/internal/observability"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/volumestore"
+	charmlog "github.com/charmbracelet/log"
 )
 
 type hostRuntime interface {
@@ -73,6 +74,7 @@ type zfsSnapshot struct {
 type runnerBackedHostRuntime struct {
 	cfg    backend.FirecrackerConfig
 	runner privilegedCommandRunner
+	logger *charmlog.Logger
 }
 
 type hostRuntimeVolumeCommandRunner struct {
@@ -88,18 +90,30 @@ func hostRuntimeForConfig(cfg backend.FirecrackerConfig) hostRuntime {
 	return newHostRuntimeFn(cfg)
 }
 
+func hostRuntimeForConfigWithLogger(cfg backend.FirecrackerConfig, logger *charmlog.Logger) hostRuntime {
+	runtime := hostRuntimeForConfig(cfg)
+	if setter, ok := runtime.(interface{ setLogger(*charmlog.Logger) }); ok {
+		setter.setLogger(logger)
+	}
+	return runtime
+}
+
 func newRunnerBackedHostRuntime(cfg backend.FirecrackerConfig) hostRuntime {
-	return runnerBackedHostRuntime{
+	return &runnerBackedHostRuntime{
 		cfg:    cfg,
 		runner: newPrivilegedCommandRunner(cfg),
 	}
 }
 
-func (r runnerBackedHostRuntime) CheckAccess(ctx context.Context) error {
+func (r *runnerBackedHostRuntime) setLogger(logger *charmlog.Logger) {
+	r.logger = logger
+}
+
+func (r *runnerBackedHostRuntime) CheckAccess(ctx context.Context) error {
 	return r.runner.Run(ctx, "true")
 }
 
-func (r runnerBackedHostRuntime) CheckNetworking(ctx context.Context) error {
+func (r *runnerBackedHostRuntime) CheckNetworking(ctx context.Context) error {
 	return r.runner.Run(ctx, "ip", "link", "show")
 }
 
@@ -117,8 +131,8 @@ func (l gatewayFirewallLease) Release(ctx context.Context) error {
 	return l.release(ctx)
 }
 
-func (r runnerBackedHostRuntime) SetupSandboxNetwork(ctx context.Context, req sandboxNetworkRequest) (sandboxNetworkLease, error) {
-	config, cleanup, err := setupHostNetwork(ctx, req.SandboxID, req.AllowAll, req.Allow, req.GatewayPort, r.runner, req.OnDeny, req.OnBlocked)
+func (r *runnerBackedHostRuntime) SetupSandboxNetwork(ctx context.Context, req sandboxNetworkRequest) (sandboxNetworkLease, error) {
+	config, cleanup, err := setupHostNetworkWithLogger(ctx, req.SandboxID, req.AllowAll, req.Allow, req.GatewayPort, observability.WithTraceContext(r.logger, ctx), r.runner, req.OnDeny, req.OnBlocked)
 	if err != nil {
 		return sandboxNetworkLease{}, err
 	}
@@ -131,7 +145,7 @@ func (r runnerBackedHostRuntime) SetupSandboxNetwork(ctx context.Context, req sa
 	}, nil
 }
 
-func (r runnerBackedHostRuntime) SetupGatewayFirewall(ctx context.Context, req gatewayFirewallRequest) (gatewayFirewallLease, error) {
+func (r *runnerBackedHostRuntime) SetupGatewayFirewall(ctx context.Context, req gatewayFirewallRequest) (gatewayFirewallLease, error) {
 	cleanup, err := setupGatewayFirewallWithRunner(ctx, req.Port, r.runner)
 	if err != nil {
 		return gatewayFirewallLease{}, err
@@ -144,11 +158,11 @@ func (r runnerBackedHostRuntime) SetupGatewayFirewall(ctx context.Context, req g
 	}, nil
 }
 
-func (r runnerBackedHostRuntime) ValidateZFSDatasetRoot(ctx context.Context, dataset string) error {
+func (r *runnerBackedHostRuntime) ValidateZFSDatasetRoot(ctx context.Context, dataset string) error {
 	return validateZFSDatasetRootWithRunner(ctx, r.runner, dataset)
 }
 
-func (r runnerBackedHostRuntime) PrepareZFSWritableVolume(ctx context.Context, req zfsWritableVolumeRequest) (zfsWritableVolume, error) {
+func (r *runnerBackedHostRuntime) PrepareZFSWritableVolume(ctx context.Context, req zfsWritableVolumeRequest) (zfsWritableVolume, error) {
 	driver, err := r.openZFSVolumeStore(r.cfg.Snapshots.ZFSDataset)
 	if err != nil {
 		return zfsWritableVolume{}, err
@@ -162,7 +176,7 @@ func (r runnerBackedHostRuntime) PrepareZFSWritableVolume(ctx context.Context, r
 
 	cleanupVolume := func(ref string) {
 		if err := driver.DestroyVolume(context.Background(), volumestore.DestroyVolumeRequest{VolumeRef: ref}); err != nil {
-			log.Printf("firecracker: cleanup persistent volume %q: %v", ref, err)
+			logPersistentVolumeCleanup(r.logger, ref, err)
 		}
 	}
 	resizeVolume := func(volume volumestore.WritableVolume) (zfsWritableVolume, error) {
@@ -210,7 +224,7 @@ func (r runnerBackedHostRuntime) PrepareZFSWritableVolume(ctx context.Context, r
 	return resizeVolume(volume)
 }
 
-func (r runnerBackedHostRuntime) CreateZFSSnapshot(ctx context.Context, req zfsSnapshotRequest) (zfsSnapshot, error) {
+func (r *runnerBackedHostRuntime) CreateZFSSnapshot(ctx context.Context, req zfsSnapshotRequest) (zfsSnapshot, error) {
 	driver, err := r.openZFSVolumeStore(r.cfg.Snapshots.ZFSDataset)
 	if err != nil {
 		return zfsSnapshot{}, err
@@ -225,7 +239,7 @@ func (r runnerBackedHostRuntime) CreateZFSSnapshot(ctx context.Context, req zfsS
 	return zfsSnapshot{StorageRef: snapshot.StorageRef}, nil
 }
 
-func (r runnerBackedHostRuntime) DestroyZFSVolume(ctx context.Context, volumeRef string) error {
+func (r *runnerBackedHostRuntime) DestroyZFSVolume(ctx context.Context, volumeRef string) error {
 	driver, err := r.openZFSVolumeStore(r.cfg.Snapshots.ZFSDataset)
 	if err != nil {
 		return err
@@ -233,7 +247,7 @@ func (r runnerBackedHostRuntime) DestroyZFSVolume(ctx context.Context, volumeRef
 	return driver.DestroyVolume(ctx, volumestore.DestroyVolumeRequest{VolumeRef: volumeRef})
 }
 
-func (r runnerBackedHostRuntime) DestroyZFSSnapshot(ctx context.Context, snapshotRef string) error {
+func (r *runnerBackedHostRuntime) DestroyZFSSnapshot(ctx context.Context, snapshotRef string) error {
 	driver, err := r.openZFSVolumeStore(r.cfg.Snapshots.ZFSDataset)
 	if err != nil {
 		return err
@@ -241,7 +255,7 @@ func (r runnerBackedHostRuntime) DestroyZFSSnapshot(ctx context.Context, snapsho
 	return driver.DestroySnapshot(ctx, volumestore.DestroySnapshotRequest{SnapshotRef: snapshotRef})
 }
 
-func (r runnerBackedHostRuntime) openZFSVolumeStore(datasetRoot string) (*volumestore.ZFSDriver, error) {
+func (r *runnerBackedHostRuntime) openZFSVolumeStore(datasetRoot string) (*volumestore.ZFSDriver, error) {
 	return volumestore.NewZFSDriver(volumestore.ZFSDriverOptions{
 		DatasetRoot: datasetRoot,
 		Runner:      hostRuntimeVolumeCommandRunner{runner: r.runner},

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/buildkite/cleanroom/internal/backend"
+	charmlog "github.com/charmbracelet/log"
 )
 
 // SetupGatewayFirewall installs global iptables rules that restrict access to
@@ -19,8 +20,8 @@ import (
 //
 // Returns a cleanup function that removes the rules. The caller must invoke
 // cleanup on shutdown.
-func SetupGatewayFirewall(ctx context.Context, port int, cfg backend.FirecrackerConfig) (cleanup func(), err error) {
-	return setupGatewayFirewall(ctx, port, hostRuntimeForConfig(cfg))
+func SetupGatewayFirewall(ctx context.Context, port int, cfg backend.FirecrackerConfig, logger *charmlog.Logger) (cleanup func(), err error) {
+	return setupGatewayFirewall(ctx, port, hostRuntimeForConfigWithLogger(cfg, logger))
 }
 
 func setupGatewayFirewall(ctx context.Context, port int, runtime hostRuntime) (cleanup func(), err error) {

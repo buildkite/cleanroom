@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -142,6 +143,61 @@ func TestConfigureBackendObservabilityConfiguresSupportedBackends(t *testing.T) 
 	}
 	if darwinAdapter.MeterProvider == nil {
 		t.Fatal("expected darwin-vz adapter meter provider to be configured")
+	}
+}
+
+func TestConfigureBackendLoggingConfiguresFirecrackerLogger(t *testing.T) {
+	t.Parallel()
+
+	fcAdapter := &firecracker.Adapter{}
+	backends := map[string]backend.Adapter{"firecracker": fcAdapter}
+
+	configureBackendLogging(backends, log.New(io.Discard))
+
+	if fcAdapter.Logger == nil {
+		t.Fatal("expected firecracker adapter logger to be configured")
+	}
+}
+
+func TestServeSubsystemLoggersIncludeSubsystem(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	logger, err := observability.NewLogger(&buf, "info", runtimeconfig.ObservabilityConfig{
+		Logs: runtimeconfig.LogConfig{Format: "json"},
+	}, observability.LogFieldComponent, "server")
+	if err != nil {
+		t.Fatalf("NewLogger returned error: %v", err)
+	}
+
+	logger.With(observability.LogFieldSubsystem, "interactive-quic").Info("interactive QUIC server ready")
+	logger.With(observability.LogFieldSubsystem, "http").Info("serving cleanroom control API")
+
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if got, want := len(lines), 2; got != want {
+		t.Fatalf("unexpected log line count: got %d want %d\noutput=%s", got, want, buf.String())
+	}
+
+	var first map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &first); err != nil {
+		t.Fatalf("unmarshal first log line: %v", err)
+	}
+	if got, want := first[observability.LogFieldComponent], "server"; got != want {
+		t.Fatalf("unexpected component: got %#v want %#v", got, want)
+	}
+	if got, want := first[observability.LogFieldSubsystem], "interactive-quic"; got != want {
+		t.Fatalf("unexpected first subsystem: got %#v want %#v", got, want)
+	}
+
+	var second map[string]any
+	if err := json.Unmarshal([]byte(lines[1]), &second); err != nil {
+		t.Fatalf("unmarshal second log line: %v", err)
+	}
+	if got, want := second[observability.LogFieldComponent], "server"; got != want {
+		t.Fatalf("unexpected component: got %#v want %#v", got, want)
+	}
+	if got, want := second[observability.LogFieldSubsystem], "http"; got != want {
+		t.Fatalf("unexpected second subsystem: got %#v want %#v", got, want)
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"net/netip"
 
 	"github.com/buildkite/cleanroom/internal/dnsproxy"
+	charmlog "github.com/charmbracelet/log"
 )
 
 type nflogListenerConfig struct {
@@ -13,6 +14,7 @@ type nflogListenerConfig struct {
 	sandboxID string
 	guestIP   netip.Addr
 	runtime   *dnsproxy.Runtime
+	logger    *charmlog.Logger
 	onBlocked func(string)
 }
 

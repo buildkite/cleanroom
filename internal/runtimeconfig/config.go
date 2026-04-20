@@ -38,8 +38,13 @@ type GatewayGitConfig struct {
 type ObservabilityConfig struct {
 	Enabled               bool        `yaml:"enabled,omitempty"`
 	DeploymentEnvironment string      `yaml:"deployment_environment,omitempty"`
+	Logs                  LogConfig   `yaml:"logs,omitempty"`
 	OTLP                  OTLPConfig  `yaml:"otlp,omitempty"`
 	Traces                TraceConfig `yaml:"traces,omitempty"`
+}
+
+type LogConfig struct {
+	Format string `yaml:"format,omitempty"`
 }
 
 type OTLPConfig struct {
@@ -441,6 +446,10 @@ func normalizeConfig(cfg Config, inferredDefaultBackend string) Config {
 	cfg.ControlHost = strings.TrimSpace(cfg.ControlHost)
 	cfg.Gateway.Git.CacheHosts = trimStringSlice(cfg.Gateway.Git.CacheHosts)
 	cfg.Observability.DeploymentEnvironment = strings.TrimSpace(cfg.Observability.DeploymentEnvironment)
+	cfg.Observability.Logs.Format = strings.ToLower(strings.TrimSpace(cfg.Observability.Logs.Format))
+	if cfg.Observability.Logs.Format == "" {
+		cfg.Observability.Logs.Format = "text"
+	}
 	cfg.Observability.OTLP.Endpoint = strings.TrimSpace(cfg.Observability.OTLP.Endpoint)
 	cfg.Observability.OTLP.Protocol = strings.TrimSpace(cfg.Observability.OTLP.Protocol)
 	cfg.Observability.OTLP.Headers = trimStringMap(cfg.Observability.OTLP.Headers)
@@ -481,6 +490,9 @@ func validateConfig(cfg Config) error {
 }
 
 func validateObservabilityConfig(cfg ObservabilityConfig) error {
+	if _, err := ResolveObservabilityLogFormat(cfg); err != nil {
+		return err
+	}
 	if !cfg.Enabled {
 		return nil
 	}
@@ -503,6 +515,17 @@ func validateObservabilityConfig(cfg ObservabilityConfig) error {
 		return err
 	}
 	return nil
+}
+
+func ResolveObservabilityLogFormat(cfg ObservabilityConfig) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(cfg.Logs.Format)) {
+	case "", "text":
+		return "text", nil
+	case "json":
+		return "json", nil
+	default:
+		return "", fmt.Errorf("unsupported observability.logs.format %q", cfg.Logs.Format)
+	}
 }
 
 func validateTraceExporter(exporter string) error {

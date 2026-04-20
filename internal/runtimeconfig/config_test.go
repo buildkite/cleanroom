@@ -285,6 +285,8 @@ func TestLoadTrimsObservabilityConfig(t *testing.T) {
 	content := `observability:
   enabled: true
   deployment_environment: " ci "
+  logs:
+    format: " JSON "
   otlp:
     endpoint: " https://otel.example.test:4318 "
     protocol: " http/protobuf "
@@ -309,6 +311,9 @@ func TestLoadTrimsObservabilityConfig(t *testing.T) {
 	}
 	if got, want := cfg.Observability.DeploymentEnvironment, "ci"; got != want {
 		t.Fatalf("unexpected deployment environment: got %q want %q", got, want)
+	}
+	if got, want := cfg.Observability.Logs.Format, "json"; got != want {
+		t.Fatalf("unexpected log format: got %q want %q", got, want)
 	}
 	if got, want := cfg.Observability.OTLP.Endpoint, "https://otel.example.test:4318"; got != want {
 		t.Fatalf("unexpected otlp endpoint: got %q want %q", got, want)
@@ -368,6 +373,55 @@ func TestLoadSupportsOTLPObservabilityConfig(t *testing.T) {
 	}
 	if got, want := cfg.Observability.OTLP.Headers["x-otlp-token"], "secret"; got != want {
 		t.Fatalf("unexpected otlp header: got %q want %q", got, want)
+	}
+}
+
+func TestLoadDefaultsObservabilityLogFormatToText(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	configPath := filepath.Join(tmp, "cleanroom", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	content := `observability:
+  logs: {}
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, _, err := Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if got, want := cfg.Observability.Logs.Format, "text"; got != want {
+		t.Fatalf("unexpected log format: got %q want %q", got, want)
+	}
+}
+
+func TestLoadRejectsUnsupportedObservabilityLogFormat(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	configPath := filepath.Join(tmp, "cleanroom", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	content := `observability:
+  logs:
+    format: logfmt
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, _, err := Load()
+	if err == nil {
+		t.Fatal("expected Load to reject unsupported log format")
+	}
+	if !strings.Contains(err.Error(), "observability.logs.format") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

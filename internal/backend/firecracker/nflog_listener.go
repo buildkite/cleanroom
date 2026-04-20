@@ -6,12 +6,12 @@ import (
 	"context"
 	"fmt"
 	"hash/fnv"
-	"log"
 	"net/netip"
 	"strings"
 	"time"
 
 	"github.com/buildkite/cleanroom/internal/dnsproxy"
+	charmlog "github.com/charmbracelet/log"
 	nflog "github.com/florianl/go-nflog/v2"
 	"github.com/mdlayher/netlink"
 )
@@ -29,6 +29,7 @@ type nflogListenerConfig struct {
 	sandboxID string
 	guestIP   netip.Addr
 	runtime   *dnsproxy.Runtime
+	logger    *charmlog.Logger
 	onBlocked func(string)
 }
 
@@ -87,7 +88,7 @@ func newNFLogListener(cfg nflogListenerConfig) (*nflogListener, error) {
 		if ctx.Err() != nil {
 			return 1
 		}
-		log.Printf("[ERROR] nflog group %d: %v", cfg.group, e)
+		baseFirecrackerLogger(cfg.logger).Warn("nflog listener error", "nflog_group", cfg.group, "error", e)
 		return 0
 	}
 

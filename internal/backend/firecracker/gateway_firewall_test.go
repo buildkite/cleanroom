@@ -2,8 +2,12 @@ package firecracker
 
 import (
 	"context"
+	"io"
 	"strings"
 	"testing"
+
+	"github.com/buildkite/cleanroom/internal/backend"
+	charmlog "github.com/charmbracelet/log"
 )
 
 func TestSetupGatewayFirewall(t *testing.T) {
@@ -47,4 +51,30 @@ func TestSetupGatewayFirewall(t *testing.T) {
 			t.Errorf("cleanup call %d:\n  got:  %s\n  want: %s", i, calls[i], w)
 		}
 	}
+}
+
+func TestSetupGatewayFirewallPassesLoggerToHostRuntime(t *testing.T) {
+	prevHostRuntimeFn := newHostRuntimeFn
+	t.Cleanup(func() { newHostRuntimeFn = prevHostRuntimeFn })
+
+	logger := charmlog.New(io.Discard)
+	runtime := &testLoggerAwareHostRuntime{}
+	runtime.testHostRuntime.setupGatewayFirewallFn = func(_ context.Context, req gatewayFirewallRequest) (gatewayFirewallLease, error) {
+		if got, want := req.Port, 8170; got != want {
+			t.Fatalf("unexpected gateway firewall port: got %d want %d", got, want)
+		}
+		if runtime.logger != logger {
+			t.Fatal("expected SetupGatewayFirewall to pass the logger into the host runtime")
+		}
+		return gatewayFirewallLease{}, nil
+	}
+	newHostRuntimeFn = func(backend.FirecrackerConfig) hostRuntime {
+		return runtime
+	}
+
+	cleanup, err := SetupGatewayFirewall(context.Background(), 8170, backend.FirecrackerConfig{}, logger)
+	if err != nil {
+		t.Fatalf("SetupGatewayFirewall returned error: %v", err)
+	}
+	cleanup()
 }
