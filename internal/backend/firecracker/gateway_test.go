@@ -111,17 +111,17 @@ func TestGatewayEnvVarsAddsGoProxyAndMiseMirror(t *testing.T) {
 	foundGoProxy := false
 	foundMiseMirror := false
 	for _, entry := range env {
-		if entry == "GOPROXY=http://"+gateway.GuestGatewayHostname+":8170/goproxy,direct" {
+		if entry == gateway.GoProxyDefaultEnvKey+"=http://"+gateway.GuestGatewayHostname+":8170/goproxy,direct" {
 			foundGoProxy = true
 		}
-		if entry == "MISE_GO_DOWNLOAD_MIRROR=http://"+gateway.GuestGatewayHostname+":8170/fetch/dl.google.com/go" {
+		if entry == gateway.MiseGoDownloadMirrorDefaultEnvKey+"=http://"+gateway.GuestGatewayHostname+":8170/fetch/dl.google.com/go" {
 			foundMiseMirror = true
 		}
 	}
 	if !foundGoProxy {
-		t.Fatalf("expected GOPROXY env in %v", env)
+		t.Fatalf("expected %s env in %v", gateway.GoProxyDefaultEnvKey, env)
 	}
 	if !foundMiseMirror {
-		t.Fatalf("expected MISE_GO_DOWNLOAD_MIRROR env in %v", env)
+		t.Fatalf("expected %s env in %v", gateway.MiseGoDownloadMirrorDefaultEnvKey, env)
 	}
 }

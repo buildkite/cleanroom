@@ -74,7 +74,7 @@ func TestGoProxyEnvVarsRequiresLiveRoute(t *testing.T) {
 	if len(env) != 1 {
 		t.Fatalf("expected 1 goproxy env var with live route, got %d: %v", len(env), env)
 	}
-	if want := "GOPROXY=http://" + GuestGatewayHostname + ":8170/goproxy,direct"; env[0] != want {
+	if want := GoProxyDefaultEnvKey + "=http://" + GuestGatewayHostname + ":8170/goproxy,direct"; env[0] != want {
 		t.Fatalf("expected %q, got %q", want, env[0])
 	}
 }
@@ -96,7 +96,7 @@ func TestMiseProxyEnvVarsRequiresLiveRoute(t *testing.T) {
 	if len(env) != 1 {
 		t.Fatalf("expected 1 mise fetch env var with live route, got %d: %v", len(env), env)
 	}
-	if want := "MISE_GO_DOWNLOAD_MIRROR=http://" + GuestGatewayHostname + ":8170/fetch/dl.google.com/go"; env[0] != want {
+	if want := MiseGoDownloadMirrorDefaultEnvKey + "=http://" + GuestGatewayHostname + ":8170/fetch/dl.google.com/go"; env[0] != want {
 		t.Fatalf("expected %q, got %q", want, env[0])
 	}
 }

@@ -24,6 +24,13 @@ const (
 	BundlerAppConfigEnvKey = "BUNDLE_APP_CONFIG"
 	// BundlerAppConfigPath is the guest path used for generated Bundler config.
 	BundlerAppConfigPath = "/tmp/cleanroom-bundle-config"
+	// GoProxyDefaultEnvKey is a shell-safe hint consumed by the guest agent to
+	// set GOPROXY only when the caller has not already defined it.
+	GoProxyDefaultEnvKey = "CLEANROOM_GOPROXY_DEFAULT"
+	// MiseGoDownloadMirrorDefaultEnvKey is a shell-safe hint consumed by the
+	// guest agent to set MISE_GO_DOWNLOAD_MIRROR only when the caller has not
+	// already defined it.
+	MiseGoDownloadMirrorDefaultEnvKey = "CLEANROOM_MISE_GO_DOWNLOAD_MIRROR_DEFAULT"
 )
 
 // ProxyRoutes describes which gateway-backed guest proxy routes are live.
@@ -113,7 +120,7 @@ func GoProxyEnvVars(compiled *policy.CompiledPolicy, gatewayPort int, routes Pro
 	}
 
 	return []string{
-		fmt.Sprintf("GOPROXY=http://%s:%d/goproxy,direct", GuestGatewayHostname, gatewayPort),
+		fmt.Sprintf("%s=http://%s:%d/goproxy,direct", GoProxyDefaultEnvKey, GuestGatewayHostname, gatewayPort),
 	}
 }
 
@@ -126,7 +133,7 @@ func MiseProxyEnvVars(compiled *policy.CompiledPolicy, gatewayPort int, routes P
 	}
 
 	return []string{
-		fmt.Sprintf("MISE_GO_DOWNLOAD_MIRROR=http://%s:%d/fetch/dl.google.com/go", GuestGatewayHostname, gatewayPort),
+		fmt.Sprintf("%s=http://%s:%d/fetch/dl.google.com/go", MiseGoDownloadMirrorDefaultEnvKey, GuestGatewayHostname, gatewayPort),
 	}
 }
 

@@ -323,6 +323,7 @@ func buildCommandEnv(requestEnv []string) ([]string, error) {
 	if err := configureBundlerMirror(base); err != nil {
 		return nil, err
 	}
+	configureGatewayGoEnv(base)
 
 	if strings.TrimSpace(base["HOME"]) == "" {
 		base["HOME"] = "/root"
@@ -336,6 +337,26 @@ func buildCommandEnv(requestEnv []string) ([]string, error) {
 		out = append(out, key+"="+value)
 	}
 	return out, nil
+}
+
+func configureGatewayGoEnv(base map[string]string) {
+	if base == nil {
+		return
+	}
+
+	if defaultProxy, ok := base[gateway.GoProxyDefaultEnvKey]; ok {
+		if _, exists := base["GOPROXY"]; !exists {
+			base["GOPROXY"] = defaultProxy
+		}
+		delete(base, gateway.GoProxyDefaultEnvKey)
+	}
+
+	if defaultMirror, ok := base[gateway.MiseGoDownloadMirrorDefaultEnvKey]; ok {
+		if _, exists := base["MISE_GO_DOWNLOAD_MIRROR"]; !exists {
+			base["MISE_GO_DOWNLOAD_MIRROR"] = defaultMirror
+		}
+		delete(base, gateway.MiseGoDownloadMirrorDefaultEnvKey)
+	}
 }
 
 func configureBundlerMirror(base map[string]string) error {
