@@ -37,6 +37,9 @@ func TestGuestInitScriptBootstrapsNetwork(t *testing.T) {
 	if !strings.Contains(guestInitScriptTemplate, ">>/etc/hosts") {
 		t.Fatal("expected init script to append missing localhost hosts entries")
 	}
+	if !strings.Contains(guestInitScriptTemplate, ">>/etc/hosts 2>/dev/null || true") {
+		t.Fatal("expected localhost hosts entry append to be best-effort")
+	}
 	if !strings.Contains(guestInitScriptTemplate, "ip link set lo up") {
 		t.Fatal("expected loopback interface setup in init script")
 	}
