@@ -13,6 +13,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/cachekey"
 	"github.com/buildkite/cleanroom/internal/cachestore"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
+	"github.com/buildkite/cleanroom/internal/observability"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/repositorychangeset"
 	"github.com/buildkite/cleanroom/internal/repositorycheckout"
@@ -189,35 +190,35 @@ func gitFileDigestAtCommit(ctx context.Context, repoDir, commitSHA, file string)
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
-func (s *Service) lookupDependencyStageCache(ctx context.Context, backendName string, compiled *policy.CompiledPolicy, repository *repositorycheckout.Checkout, plan dependencyStagePlan) (cachestore.Record, bool, error) {
+func (s *Service) lookupDependencyStageCache(ctx context.Context, backendName string, compiled *policy.CompiledPolicy, repository *repositorycheckout.Checkout, plan dependencyStagePlan) (cachestore.Record, bool, string, error) {
 	if compiled == nil || repository == nil || strings.TrimSpace(plan.CacheKey) == "" {
-		return cachestore.Record{}, false, nil
+		return cachestore.Record{}, false, "", nil
 	}
 	store, err := s.cacheStoreOrErr()
 	if err != nil {
-		return cachestore.Record{}, false, nil
+		return cachestore.Record{}, false, "", nil
 	}
 
 	record, ok, err := store.GetReady(ctx, dependencyStageName, plan.CacheKey)
 	if err != nil {
-		return cachestore.Record{}, false, err
+		return cachestore.Record{}, false, "", err
 	}
 	if !ok {
-		return cachestore.Record{}, false, nil
+		return cachestore.Record{}, false, observability.CacheLookupReasonRecordNotFound, nil
 	}
 	if strings.TrimSpace(record.Backend) != strings.TrimSpace(backendName) {
-		return cachestore.Record{}, false, nil
+		return cachestore.Record{}, false, observability.CacheLookupReasonBackendMismatch, nil
 	}
 	if strings.TrimSpace(record.PolicyHash) != strings.TrimSpace(compiled.Hash) {
-		return cachestore.Record{}, false, nil
+		return cachestore.Record{}, false, observability.CacheLookupReasonPolicyHashMismatch, nil
 	}
 	if strings.TrimSpace(record.ParentCacheKey) != strings.TrimSpace(plan.ParentWorkspaceCacheKey) {
-		return cachestore.Record{}, false, nil
+		return cachestore.Record{}, false, observability.CacheLookupReasonWorkspaceParentChanged, nil
 	}
 	if !repositoryCheckoutsEqual(repositorycheckout.FromProto(record.Repository), repository) {
-		return cachestore.Record{}, false, nil
+		return cachestore.Record{}, false, observability.CacheLookupReasonRepositoryChanged, nil
 	}
-	return record, true, nil
+	return record, true, "", nil
 }
 
 func (s *Service) maybePublishDependencyStageCache(
@@ -243,7 +244,7 @@ func (s *Service) maybePublishDependencyStageCache(
 		return
 	}
 
-	if record, ok, err := s.lookupDependencyStageCache(ctx, backendName, compiled, repository, plan); err == nil && ok {
+	if record, ok, _, err := s.lookupDependencyStageCache(ctx, backendName, compiled, repository, plan); err == nil && ok {
 		if replacedRecord == nil || strings.TrimSpace(record.CacheKey) != strings.TrimSpace(replacedRecord.CacheKey) {
 			s.logDependencyStageAlreadyPublished(record)
 			return
