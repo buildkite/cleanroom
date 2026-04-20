@@ -436,8 +436,8 @@ cleanroom version
 
 Failure flow:
 
-- `cleanroom exec` and `cleanroom console` print `sandbox_id`, `execution_id`, and `trace_id` on failure when available.
-- When `observability.traces.url_template` is configured, failure footers also print `trace_url`.
+- `cleanroom exec` and `cleanroom console` keep failure stderr focused on streamed guest output; they do not append `sandbox_id`, `execution_id`, `trace_id`, or `trace_url` footers automatically.
+- Use `--print-sandbox-id` when you need to correlate a kept or reused sandbox, and use `cleanroom status --last` or `cleanroom execution inspect ...` for retained diagnostics.
 - Attached `cleanroom exec` and `cleanroom console` streams may print warning notices on stderr for policy observations such as blocked connections or disallowed DNS lookups.
 - `cleanroom sandbox inspect <sandbox-id>` shows sandbox state plus `last_execution_id` and `active_execution_id`.
 - `cleanroom execution inspect ...` is the control-plane view for execution status, retained stdout/stderr, image metadata, `trace_id`, optional `trace_url`, and observability.
