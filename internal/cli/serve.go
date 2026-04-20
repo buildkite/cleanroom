@@ -139,7 +139,7 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 			fwCfg := backend.FirecrackerConfig{
 				PrivilegedHelperPath: ctx.Config.Backends.Firecracker.PrivilegedHelperPath,
 			}
-			fwCleanup, err := firecracker.SetupGatewayFirewall(context.Background(), gwPort, fwCfg)
+			fwCleanup, err := firecracker.SetupGatewayFirewall(context.Background(), gwPort, fwCfg, logger.With("subsystem", "gateway"))
 			if err != nil {
 				logger.Warn("failed to install gateway firewall rules", "error", err)
 			} else {

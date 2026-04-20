@@ -614,6 +614,7 @@ func (a *Adapter) CreateSnapshot(ctx context.Context, req backend.SnapshotReques
 	if err := pauseSandboxProcess(instance); err != nil {
 		return nil, err
 	}
+	snapshotLogger := observability.WithLoggerFields(observability.WithTraceContext(baseFirecrackerLogger(a.Logger), ctx), observability.LogFieldSandboxID, sandboxID)
 	snapshotStorageRef := ""
 	paused := true
 	defer func() {
@@ -623,7 +624,7 @@ func (a *Adapter) CreateSnapshot(ctx context.Context, req backend.SnapshotReques
 		if err := resumeSandboxProcess(instance); err != nil && retErr == nil {
 			if strings.TrimSpace(snapshotStorageRef) != "" {
 				cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				cleanupErr := destroySnapshotStorage(cleanupCtx, driverCfg, snapshotStorageRef)
+				cleanupErr := destroySnapshotStorage(cleanupCtx, snapshotLogger, driverCfg, snapshotStorageRef)
 				cancel()
 				if cleanupErr != nil {
 					result = nil
@@ -638,7 +639,7 @@ func (a *Adapter) CreateSnapshot(ctx context.Context, req backend.SnapshotReques
 	if err := flushSnapshotHostFilesystem(ctx, driverName); err != nil {
 		return nil, err
 	}
-	snapshotStorageRef, err = createSnapshotStorage(ctx, driverCfg, snapshotID, volumeRef)
+	snapshotStorageRef, err = createSnapshotStorage(ctx, snapshotLogger, driverCfg, snapshotID, volumeRef)
 	if err != nil {
 		return nil, fmt.Errorf("persist snapshot rootfs: %w", err)
 	}
@@ -709,7 +710,7 @@ func (a *Adapter) DeleteSnapshot(ctx context.Context, req backend.DeleteSnapshot
 	if err != nil {
 		return err
 	}
-	if err := destroySnapshotStorage(ctx, driverCfg, storageRef); err != nil {
+	if err := destroySnapshotStorage(ctx, observability.WithTraceContext(baseFirecrackerLogger(a.Logger), ctx), driverCfg, storageRef); err != nil {
 		return fmt.Errorf("remove snapshot rootfs %q: %w", storageRef, err)
 	}
 	return nil
@@ -751,7 +752,7 @@ func (a *Adapter) executeInSandbox(ctx context.Context, instance *sandboxInstanc
 	return runGuestCommandFn(bootCtx, ctx, instance.exitedCh, instance.exitedErrOrNil, instance.VsockPath, instance.GuestPort, guestReq, stream)
 }
 
-func (a *Adapter) Doctor(_ context.Context, req backend.DoctorRequest) (*backend.DoctorReport, error) {
+func (a *Adapter) Doctor(ctx context.Context, req backend.DoctorRequest) (*backend.DoctorReport, error) {
 	report := &backend.DoctorReport{
 		Backend: a.Name(),
 	}
@@ -862,7 +863,7 @@ func (a *Adapter) Doctor(_ context.Context, req backend.DoctorRequest) (*backend
 	appendCheck("network_policy_rules", policyRulesStatus, policyRulesMessage)
 
 	privilegedHelperPath := resolvePrivilegedHelperPath(req.FirecrackerConfig)
-	hostRuntime := hostRuntimeForConfig(req.FirecrackerConfig)
+	hostRuntime := hostRuntimeForConfigWithLogger(req.FirecrackerConfig, observability.WithTraceContext(baseFirecrackerLogger(a.Logger), ctx))
 	directRuntime := privilegedCommandsRunDirectly()
 
 	requiredCommands := []string{"ip", "iptables", "sysctl"}
@@ -1094,7 +1095,8 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 	vmRootFSPath := writableVolume.AttachmentPath
 
 	networkSetupStart := time.Now()
-	hostRuntime := hostRuntimeForConfig(req.FirecrackerConfig)
+	executionLogger := observability.WithLoggerFields(observability.WithTraceContext(baseFirecrackerLogger(a.Logger), ctx), observability.LogFieldExecutionID, req.ExecutionID)
+	hostRuntime := hostRuntimeForConfigWithLogger(req.FirecrackerConfig, executionLogger)
 	networkLease, err := hostRuntime.SetupSandboxNetwork(ctx, sandboxNetworkRequest{
 		SandboxID: req.ExecutionID,
 		AllowAll:  req.Policy.NetworkDefault == "allow",
@@ -1709,7 +1711,8 @@ func (a *Adapter) launchSandboxVMFromRootFS(ctx context.Context, sandboxID strin
 	}
 	vmRootFSPath := writableVolume.AttachmentPath
 
-	hostRuntime := hostRuntimeForConfig(cfg)
+	sandboxLogger := observability.WithLoggerFields(observability.WithTraceContext(baseFirecrackerLogger(a.Logger), ctx), observability.LogFieldSandboxID, sandboxID)
+	hostRuntime := hostRuntimeForConfigWithLogger(cfg, sandboxLogger)
 	gwPort := 0
 	if a.GatewayRegistry != nil {
 		gwPort = a.GatewayPort
@@ -2071,12 +2074,12 @@ func snapshotDriverNeedsHostSync(driverName string) bool {
 	return strings.EqualFold(strings.TrimSpace(driverName), "zfs")
 }
 
-func createSnapshotStorage(ctx context.Context, cfg backend.FirecrackerConfig, snapshotID, volumeRef string) (string, error) {
+func createSnapshotStorage(ctx context.Context, logger *charmlog.Logger, cfg backend.FirecrackerConfig, snapshotID, volumeRef string) (string, error) {
 	if err := validateSnapshotsEnabled(cfg); err != nil {
 		return "", err
 	}
 	if strings.EqualFold(strings.TrimSpace(cfg.Snapshots.Driver), "zfs") {
-		snapshot, err := hostRuntimeForConfig(cfg).CreateZFSSnapshot(ctx, zfsSnapshotRequest{
+		snapshot, err := hostRuntimeForConfigWithLogger(cfg, logger).CreateZFSSnapshot(ctx, zfsSnapshotRequest{
 			SnapshotID: snapshotID,
 			VolumeRef:  volumeRef,
 		})
@@ -2100,12 +2103,12 @@ func createSnapshotStorage(ctx context.Context, cfg backend.FirecrackerConfig, s
 	return snapshot.StorageRef, nil
 }
 
-func destroySnapshotStorage(ctx context.Context, cfg backend.FirecrackerConfig, storageRef string) error {
+func destroySnapshotStorage(ctx context.Context, logger *charmlog.Logger, cfg backend.FirecrackerConfig, storageRef string) error {
 	if err := validateSnapshotsEnabled(cfg); err != nil {
 		return err
 	}
 	if strings.EqualFold(strings.TrimSpace(cfg.Snapshots.Driver), "zfs") {
-		return hostRuntimeForConfig(cfg).DestroyZFSSnapshot(ctx, storageRef)
+		return hostRuntimeForConfigWithLogger(cfg, logger).DestroyZFSSnapshot(ctx, storageRef)
 	}
 
 	driver, err := snapshotVolumeStoreDriverFn(cfg)

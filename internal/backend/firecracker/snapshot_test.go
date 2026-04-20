@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -534,6 +535,60 @@ func TestCreateSnapshotRejectsDisabledZFSSnapshots(t *testing.T) {
 	}
 	if len(signals) != 0 {
 		t.Fatalf("expected snapshots-disabled validation to fail before pausing sandbox, got signals %v", signals)
+	}
+}
+
+func TestSnapshotStorageHelpersPassLoggerToHostRuntime(t *testing.T) {
+	prevHostRuntimeFn := newHostRuntimeFn
+	t.Cleanup(func() { newHostRuntimeFn = prevHostRuntimeFn })
+
+	logger := log.New(io.Discard)
+	runtime := &testLoggerAwareHostRuntime{}
+	runtime.testHostRuntime.createZFSSnapshotFn = func(_ context.Context, req zfsSnapshotRequest) (zfsSnapshot, error) {
+		if runtime.logger != logger {
+			t.Fatal("expected createSnapshotStorage to pass the logger into the host runtime")
+		}
+		if got, want := req.SnapshotID, "snap-test"; got != want {
+			t.Fatalf("unexpected snapshot id: got %q want %q", got, want)
+		}
+		if got, want := req.VolumeRef, "tank/cleanroom/sandboxes/cr-test"; got != want {
+			t.Fatalf("unexpected volume ref: got %q want %q", got, want)
+		}
+		return zfsSnapshot{StorageRef: "tank/cleanroom/snapshots/snap-test@seed"}, nil
+	}
+	runtime.testHostRuntime.destroyZFSSnapshotFn = func(_ context.Context, snapshotRef string) error {
+		if runtime.logger != logger {
+			t.Fatal("expected destroySnapshotStorage to pass the logger into the host runtime")
+		}
+		if got, want := snapshotRef, "tank/cleanroom/snapshots/snap-test@seed"; got != want {
+			t.Fatalf("unexpected snapshot ref: got %q want %q", got, want)
+		}
+		return nil
+	}
+	newHostRuntimeFn = func(cfg backend.FirecrackerConfig) hostRuntime {
+		if got, want := cfg.Snapshots.Driver, "zfs"; got != want {
+			t.Fatalf("unexpected snapshot driver: got %q want %q", got, want)
+		}
+		return runtime
+	}
+
+	cfg := backend.FirecrackerConfig{
+		Snapshots: backend.SnapshotConfig{
+			Enabled:    true,
+			Driver:     "zfs",
+			ZFSDataset: "tank/cleanroom",
+		},
+	}
+
+	storageRef, err := createSnapshotStorage(context.Background(), logger, cfg, "snap-test", "tank/cleanroom/sandboxes/cr-test")
+	if err != nil {
+		t.Fatalf("createSnapshotStorage returned error: %v", err)
+	}
+	if got, want := storageRef, "tank/cleanroom/snapshots/snap-test@seed"; got != want {
+		t.Fatalf("unexpected storage ref: got %q want %q", got, want)
+	}
+	if err := destroySnapshotStorage(context.Background(), logger, cfg, storageRef); err != nil {
+		t.Fatalf("destroySnapshotStorage returned error: %v", err)
 	}
 }
 

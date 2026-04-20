@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/buildkite/cleanroom/internal/backend"
+	charmlog "github.com/charmbracelet/log"
 )
 
 type testHostRuntime struct {
@@ -17,6 +18,15 @@ type testHostRuntime struct {
 	createZFSSnapshotFn        func(context.Context, zfsSnapshotRequest) (zfsSnapshot, error)
 	destroyZFSVolumeFn         func(context.Context, string) error
 	destroyZFSSnapshotFn       func(context.Context, string) error
+}
+
+type testLoggerAwareHostRuntime struct {
+	testHostRuntime
+	logger *charmlog.Logger
+}
+
+func (r *testLoggerAwareHostRuntime) setLogger(logger *charmlog.Logger) {
+	r.logger = logger
 }
 
 func (r testHostRuntime) CheckAccess(ctx context.Context) error {
