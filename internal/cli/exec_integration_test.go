@@ -609,6 +609,145 @@ func TestExecIntegrationForwardsStdinByDefault(t *testing.T) {
 	}
 }
 
+func TestExecIntegrationTTYForwardsStdinAndStreamsOutput(t *testing.T) {
+	started := make(chan struct{}, 1)
+	var captured strings.Builder
+	adapter := &integrationAdapter{
+		runStreamFn: func(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+			if !req.TTY {
+				return nil, errors.New("expected tty execution")
+			}
+
+			done := make(chan struct{})
+			if stream.OnAttach != nil {
+				stream.OnAttach(backend.AttachIO{
+					WriteStdin: func(data []byte) error {
+						_, _ = captured.Write(data)
+						if stream.OnStdout != nil {
+							stream.OnStdout(data)
+						}
+						if strings.Contains(captured.String(), "exit\n") {
+							select {
+							case <-done:
+							default:
+								close(done)
+							}
+						}
+						return nil
+					},
+				})
+			}
+			select {
+			case started <- struct{}{}:
+			default:
+			}
+
+			select {
+			case <-done:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+			return &backend.ExecutionResult{
+				ExecutionID: req.ExecutionID,
+				ExitCode:    0,
+				Stdout:      captured.String(),
+				Message:     "ok",
+			}, nil
+		},
+	}
+
+	host, _ := startIntegrationServer(t, adapter)
+	cwd := t.TempDir()
+	cmd := ExecCommand{
+		clientFlags: clientFlags{Host: host},
+		Chdir:       cwd,
+		TTY:         true,
+		Command:     []string{"sh"},
+	}
+	stdinData := "hello\nexit\n"
+	outcome := runWithCapture(func(runCtx *runtimeContext) error {
+		return cmd.Run(runCtx)
+	}, &stdinData, runtimeContext{
+		CWD:    cwd,
+		Loader: integrationLoader{},
+	})
+
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err != nil {
+		t.Fatalf("ExecCommand.Run returned error: %v", outcome.err)
+	}
+	if got, want := captured.String(), stdinData; got != want {
+		t.Fatalf("unexpected stdin forwarded to tty exec: got %q want %q", got, want)
+	}
+	if got, want := outcome.stdout, stdinData; got != want {
+		t.Fatalf("unexpected tty exec stdout: got %q want %q", got, want)
+	}
+	_ = mustReceiveWithin(t, started, 2*time.Second, "timed out waiting for tty exec to start")
+}
+
+func TestExecIntegrationTTYSurfacesStdinAttachFailures(t *testing.T) {
+	firstWrite := make(chan struct{}, 1)
+	adapter := &integrationAdapter{
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+			if !req.TTY {
+				return nil, errors.New("expected tty execution")
+			}
+			if stream.OnAttach != nil {
+				stream.OnAttach(backend.AttachIO{
+					WriteStdin: func(data []byte) error {
+						select {
+						case firstWrite <- struct{}{}:
+						default:
+						}
+						return errors.New("use of closed network connection")
+					},
+					CloseStdin: func() error {
+						return nil
+					},
+				})
+			}
+			select {
+			case <-firstWrite:
+			case <-time.After(2 * time.Second):
+				return nil, errors.New("timed out waiting for stdin write")
+			}
+			return &backend.ExecutionResult{
+				ExecutionID: req.ExecutionID,
+				ExitCode:    0,
+				Message:     "ok",
+			}, nil
+		},
+	}
+
+	host, _ := startIntegrationServer(t, adapter)
+	cwd := t.TempDir()
+	stdinData := "input\n"
+	cmd := ExecCommand{
+		clientFlags: clientFlags{Host: host},
+		Chdir:       cwd,
+		TTY:         true,
+		Command:     []string{"cat"},
+	}
+	outcome := runWithCapture(func(runCtx *runtimeContext) error {
+		return cmd.Run(runCtx)
+	}, &stdinData, runtimeContext{
+		CWD:    cwd,
+		Loader: integrationLoader{},
+	})
+
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err == nil {
+		t.Fatal("expected stdin attach error")
+	}
+	if !strings.Contains(outcome.err.Error(), "closed network connection") {
+		t.Fatalf("expected surfaced interactive stdin failure, got %v", outcome.err)
+	}
+}
+
 func TestExecIntegrationPassesResolvedEnv(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "host-secret")
 
@@ -800,6 +939,29 @@ func TestExecIntegrationNoStdinClosesImmediately(t *testing.T) {
 	case got := <-stdinWrites:
 		t.Fatalf("expected no stdin writes, got %q", got)
 	default:
+	}
+}
+
+func TestExecIntegrationRejectsNoStdinWithTTY(t *testing.T) {
+	cwd := t.TempDir()
+	outcome := runExecWithCapture(ExecCommand{
+		Chdir:   cwd,
+		TTY:     true,
+		NoStdin: true,
+		Command: []string{"cat"},
+	}, runtimeContext{
+		CWD:    cwd,
+		Loader: integrationLoader{},
+	})
+
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err == nil {
+		t.Fatal("expected exec --tty -n to fail")
+	}
+	if !strings.Contains(outcome.err.Error(), "--no-stdin cannot be used with --tty") {
+		t.Fatalf("unexpected error: %v", outcome.err)
 	}
 }
 
@@ -1250,6 +1412,83 @@ func TestExecIntegrationSecondInterruptKeepsSuppliedSandboxWithoutRemove(t *test
 	}
 
 	requireSandboxStatus(t, client, sandboxID, cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY)
+
+	release()
+	_ = mustReceiveWithin(t, runReturned, 2*time.Second, "timed out waiting for adapter run to return after release")
+}
+
+func TestExecIntegrationTTYSecondInterruptTerminatesSandboxWithRemove(t *testing.T) {
+	started := make(chan struct{}, 1)
+	releaseRun := make(chan struct{})
+	runReturned := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() {
+		releaseOnce.Do(func() {
+			close(releaseRun)
+		})
+	}
+	t.Cleanup(release)
+	adapter := &integrationAdapter{
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+			if !req.TTY {
+				return nil, errors.New("expected tty execution")
+			}
+			if stream.OnAttach != nil {
+				stream.OnAttach(backend.AttachIO{
+					WriteStdin: func([]byte) error { return nil },
+					CloseStdin: func() error { return nil },
+				})
+			}
+			defer close(runReturned)
+			select {
+			case started <- struct{}{}:
+			default:
+			}
+			<-releaseRun
+			return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "released"}, nil
+		},
+	}
+
+	host, _ := startIntegrationServer(t, adapter)
+	signalCh := withTestSignalChannel(t)
+	cwd := t.TempDir()
+
+	done := make(chan execOutcome, 1)
+	go func() {
+		done <- runExecWithCapture(ExecCommand{
+			clientFlags:    clientFlags{Host: host},
+			Chdir:          cwd,
+			TTY:            true,
+			PrintSandboxID: true,
+			Command:        []string{"sleep", "300"},
+		}, runtimeContext{
+			CWD:    cwd,
+			Loader: integrationLoader{},
+		})
+	}()
+
+	_ = mustReceiveWithin(t, started, 2*time.Second, "timed out waiting for tty execution to start")
+	signalCh <- os.Interrupt
+	signalCh <- os.Interrupt
+
+	outcome := mustReceiveWithin(t, done, 2*time.Second, "timed out waiting for second-interrupt tty exec exit")
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err == nil {
+		t.Fatal("expected cancellation error")
+	}
+	if got, want := ExitCode(outcome.err), 130; got != want {
+		t.Fatalf("unexpected cli exit code: got %d want %d (err=%v)", got, want, outcome.err)
+	}
+
+	sandboxID := parseSandboxID(outcome.stderr)
+	if sandboxID == "" {
+		t.Fatalf("missing sandbox_id in stderr output: %q", outcome.stderr)
+	}
+
+	client := mustNewControlClient(t, host)
+	requireSandboxStatus(t, client, sandboxID, cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPED)
 
 	release()
 	_ = mustReceiveWithin(t, runReturned, 2*time.Second, "timed out waiting for adapter run to return after release")

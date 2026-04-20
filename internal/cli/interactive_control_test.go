@@ -7,23 +7,23 @@ import (
 	"time"
 )
 
-func TestPollInteractiveExitOrControlErrPrefersExitCode(t *testing.T) {
+func TestPollInteractiveExitOrControlErrPrefersControlError(t *testing.T) {
 	t.Parallel()
 
 	exitCodeCh := make(chan int, 1)
 	exitCodeCh <- 17
-	controlErrCh := make(chan error)
-	close(controlErrCh)
+	controlErrCh := make(chan error, 1)
+	controlErrCh <- errors.New("control failed")
 
 	gotExitCode, haveExitCode, err := pollInteractiveExitOrControlErr(exitCodeCh, &controlErrCh)
-	if err != nil {
-		t.Fatalf("expected no poll error, got %v", err)
+	if haveExitCode {
+		t.Fatalf("unexpected exit code from poll: %d", gotExitCode)
 	}
-	if !haveExitCode {
-		t.Fatal("expected poll to consume exit code")
+	if err == nil {
+		t.Fatal("expected control error, got nil")
 	}
-	if gotExitCode != 17 {
-		t.Fatalf("unexpected exit code: got %d want 17", gotExitCode)
+	if got, want := err.Error(), "interactive control stream: control failed"; !strings.Contains(got, want) {
+		t.Fatalf("unexpected control error message: got %q want substring %q", got, want)
 	}
 }
 

@@ -155,27 +155,43 @@ func isLoopbackHost(host string) bool {
 }
 
 func pollInteractiveExitOrControlErr(exitCodeCh <-chan int, controlErrCh *chan error) (int, bool, error) {
-	if exitCodeCh != nil {
+	if controlErrCh == nil || *controlErrCh == nil {
+		if exitCodeCh == nil {
+			return 0, false, nil
+		}
 		select {
 		case code := <-exitCodeCh:
 			return code, true, nil
 		default:
+			return 0, false, nil
 		}
-	}
-
-	if controlErrCh == nil || *controlErrCh == nil {
-		return 0, false, nil
 	}
 
 	select {
 	case controlErr, ok := <-*controlErrCh:
 		if !ok {
 			*controlErrCh = nil
-			return 0, false, nil
+			if exitCodeCh == nil {
+				return 0, false, nil
+			}
+			select {
+			case code := <-exitCodeCh:
+				return code, true, nil
+			default:
+				return 0, false, nil
+			}
 		}
 		if controlErr != nil && !isInteractiveStreamClosedErr(controlErr) {
 			return 0, false, fmt.Errorf("interactive control stream: %w", controlErr)
 		}
+	default:
+	}
+	if exitCodeCh == nil {
+		return 0, false, nil
+	}
+	select {
+	case code := <-exitCodeCh:
+		return code, true, nil
 	default:
 	}
 	return 0, false, nil

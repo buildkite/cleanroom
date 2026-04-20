@@ -28,6 +28,7 @@ type ExecCommand struct {
 	repositoryChangesetFlags
 	Keep           bool     `help:"Keep a newly created sandbox after the command completes"`
 	Env            []string `short:"e" name:"env" help:"Set guest environment variables; use KEY to inherit from the local environment or KEY=VALUE to set an explicit value"`
+	TTY            bool     `name:"tty" help:"Allocate a tty and attach through the interactive transport; stdout and stderr merge into a single stream"`
 	NoStdin        bool     `short:"n" name:"no-stdin" aliases:"stdin-eof" help:"Close stdin immediately instead of attaching it"`
 	PrintSandboxID bool     `name:"print-sandbox-id" help:"Print resolved sandbox_id=<id> to stderr before streaming output"`
 	PrintTraceID   bool     `name:"print-trace-id" help:"Print trace_id=<id> to stderr after a successful execution when available"`
@@ -40,6 +41,9 @@ type ExecCommand struct {
 func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 	if err := validateExecutionSandboxArgs(e.Chdir, e.In, e.From, e.Keep, e.repositoryOverrideFlags, e.repositoryChangesetFlags); err != nil {
 		return err
+	}
+	if e.TTY && e.NoStdin {
+		return errors.New("--no-stdin cannot be used with --tty")
 	}
 
 	sandboxID := ""
@@ -227,6 +231,34 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 		}
 		terminateSandboxBestEffort(rootCtx, client, sandboxID, 0, logger, "terminate sandbox after exec failed")
 	}()
+	if e.TTY {
+		interactiveResult, err := runInteractiveExecution(
+			rootCtx,
+			ctx,
+			client,
+			logger,
+			host,
+			sandboxID,
+			repository,
+			e.Command,
+			executionEnv,
+			e.LaunchSeconds,
+			interactiveExecutionOptions{
+				Label:   "exec",
+				NoStdin: e.NoStdin,
+			},
+		)
+		if interactiveResult.ExecutionID != "" {
+			executionID = interactiveResult.ExecutionID
+		}
+		if interactiveResult.ForcedLocalExit {
+			detached = true
+			if autoTerminateSandbox {
+				terminateSandboxBestEffort(rootCtx, client, sandboxID, sandboxTerminateTimeout, logger, "terminate sandbox after detach failed")
+			}
+		}
+		return err
+	}
 
 	createExecutionResp, err := client.CreateExecution(rootCtx, &cleanroomv1.CreateExecutionRequest{
 		SandboxId:          sandboxID,

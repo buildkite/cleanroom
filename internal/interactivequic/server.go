@@ -186,6 +186,9 @@ func (s *Server) handleConnection(ctx context.Context, conn *quic.Conn) {
 
 	for _, event := range history {
 		if s.forwardEventToPTY(event, ptyStream) {
+			if s.forwardInteractiveStdinErr(session, sendControl, pollInteractiveStdinErr(stdinErrCh)) {
+				return
+			}
 			_ = ptyStream.Close()
 			_ = sendControl(controlMessage{
 				Type:     controlTypeExit,
@@ -218,6 +221,9 @@ func (s *Server) handleConnection(ctx context.Context, conn *quic.Conn) {
 				return
 			}
 			if s.forwardEventToPTY(event, ptyStream) {
+				if s.forwardInteractiveStdinErr(session, sendControl, pollInteractiveStdinErr(stdinErrCh)) {
+					return
+				}
 				_ = ptyStream.Close()
 				_ = sendControl(controlMessage{
 					Type:     controlTypeExit,
@@ -235,6 +241,9 @@ func (s *Server) handleConnection(ctx context.Context, conn *quic.Conn) {
 						return
 					}
 					if s.forwardEventToPTY(event, ptyStream) {
+						if s.forwardInteractiveStdinErr(session, sendControl, pollInteractiveStdinErr(stdinErrCh)) {
+							return
+						}
 						_ = ptyStream.Close()
 						_ = sendControl(controlMessage{
 							Type:     controlTypeExit,
@@ -433,6 +442,29 @@ func (s *Server) forwardEventToPTY(event *cleanroomv1.ExecutionStreamEvent, stre
 		return true
 	}
 	return false
+}
+
+func pollInteractiveStdinErr(errCh <-chan error) error {
+	if errCh == nil {
+		return nil
+	}
+	select {
+	case err := <-errCh:
+		return err
+	default:
+		return nil
+	}
+}
+
+func (s *Server) forwardInteractiveStdinErr(session *controlservice.InteractiveSession, sendControl func(controlMessage) error, err error) bool {
+	if !shouldFailInteractiveOnStdinErr(err) {
+		return false
+	}
+	if s.logger != nil {
+		s.logger.Warn("interactive stdin stream failed", "session_id", session.SessionID, "error", err)
+	}
+	_ = sendControl(controlMessage{Type: controlTypeError, Error: err.Error()})
+	return true
 }
 
 func newControlSender(enc *json.Encoder) func(controlMessage) error {

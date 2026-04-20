@@ -331,11 +331,13 @@ Behavior contract:
 7. Attach stdio according to command mode:
    - `cleanroom exec` defaults to attached stdin plus separate stdout/stderr
      using `StreamExecution`, `WriteExecutionStdin`, and `CloseExecutionStdin`
+   - `cleanroom exec --tty` uses `AttachExecution` plus the QUIC interactive
+     transport for PTY-oriented command sessions
    - `cleanroom exec --env KEY` inherits `KEY` from the local client
    - `cleanroom exec --env KEY=VALUE` sends an explicit guest env assignment
    - `cleanroom exec -n` closes stdin immediately so the command observes EOF
-   - `cleanroom console` uses `AttachExecution` for PTY-oriented
-     interactive sessions
+   - `cleanroom console` is the shell-oriented entrypoint for the same
+     PTY-oriented interactive transport
    - attached execution streams may emit warning events; the CLI renders them
      as warning notices on stderr
 8. Return the command exit code.
