@@ -65,6 +65,8 @@ const (
 )
 
 type ExecutionOptions = cleanroomv1.ExecutionOptions
+type ListExecutionsRequest = cleanroomv1.ListExecutionsRequest
+type ListExecutionsResponse = cleanroomv1.ListExecutionsResponse
 type CreateExecutionRequest = cleanroomv1.CreateExecutionRequest
 type CreateExecutionResponse = cleanroomv1.CreateExecutionResponse
 type AttachExecutionRequest = cleanroomv1.AttachExecutionRequest

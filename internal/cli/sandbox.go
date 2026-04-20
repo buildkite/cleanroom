@@ -41,7 +41,8 @@ type SandboxListCommand struct {
 
 type SandboxInspectCommand struct {
 	clientFlags
-	SandboxID string `arg:"" required:"" help:"Sandbox ID to inspect"`
+	SandboxID string `arg:"" optional:"" help:"Sandbox ID to inspect"`
+	Last      bool   `help:"Inspect the most recent sandbox"`
 	JSON      bool   `help:"Print sandbox as JSON"`
 }
 
@@ -112,15 +113,40 @@ func (c *SandboxInspectCommand) Run(ctx *runtimeContext) error {
 		return err
 	}
 
+	sandboxID := strings.TrimSpace(c.SandboxID)
+	if c.Last {
+		if sandboxID != "" {
+			return errors.New("choose either <sandbox-id> or --last")
+		}
+		listResp, err := client.ListSandboxes(context.Background(), &cleanroomv1.ListSandboxesRequest{})
+		if err != nil {
+			return fmt.Errorf("list sandboxes: %w", err)
+		}
+		for _, sandbox := range listResp.GetSandboxes() {
+			if sandbox == nil {
+				continue
+			}
+			sandboxID = strings.TrimSpace(sandbox.GetSandboxId())
+			if sandboxID != "" {
+				break
+			}
+		}
+		if sandboxID == "" {
+			return errors.New("no sandboxes available")
+		}
+	} else if sandboxID == "" {
+		return errors.New("missing <sandbox-id> or use --last")
+	}
+
 	resp, err := client.GetSandbox(context.Background(), &cleanroomv1.GetSandboxRequest{
-		SandboxId: c.SandboxID,
+		SandboxId: sandboxID,
 	})
 	if err != nil {
 		return err
 	}
 	sandbox := resp.GetSandbox()
 	if sandbox == nil {
-		return fmt.Errorf("sandbox %q not found", c.SandboxID)
+		return fmt.Errorf("sandbox %q not found", sandboxID)
 	}
 
 	if c.JSON {

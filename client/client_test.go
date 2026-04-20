@@ -201,6 +201,24 @@ func TestClientLifecycle(t *testing.T) {
 		t.Fatalf("unexpected execution status: %v", got)
 	}
 
+	listExecutionsResp, err := client.ListExecutions(ctx, &ListExecutionsRequest{All: true})
+	if err != nil {
+		t.Fatalf("ListExecutions returned error: %v", err)
+	}
+	foundExecution := false
+	for _, execution := range listExecutionsResp.GetExecutions() {
+		if execution.GetExecutionId() != executionID {
+			continue
+		}
+		foundExecution = true
+		if got := execution.GetSandboxId(); got != sandboxID {
+			t.Fatalf("ListExecutions sandbox id mismatch: got %q want %q", got, sandboxID)
+		}
+	}
+	if !foundExecution {
+		t.Fatalf("expected ListExecutions to include %q", executionID)
+	}
+
 	terminateResp, err := client.TerminateSandbox(ctx, &TerminateSandboxRequest{SandboxId: sandboxID})
 	if err != nil {
 		t.Fatalf("TerminateSandbox returned error: %v", err)

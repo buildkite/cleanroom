@@ -171,6 +171,42 @@ func TestSandboxListParsesAllFlag(t *testing.T) {
 	}
 }
 
+func TestSandboxInspectParsesLastFlag(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"sandbox", "inspect", "--last"}); err != nil {
+		t.Fatalf("parse sandbox inspect --last returned error: %v", err)
+	}
+	if !c.Sandbox.Inspect.Last {
+		t.Fatal("expected sandbox inspect last flag to be set")
+	}
+}
+
+func TestExecutionListParsesAllFlag(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"execution", "ls", "--all"}); err != nil {
+		t.Fatalf("parse execution ls --all returned error: %v", err)
+	}
+	if !c.Execution.List.All {
+		t.Fatal("expected execution list all flag to be set")
+	}
+}
+
+func TestExecutionInspectParsesLastWithoutSandboxID(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"execution", "inspect", "--last"}); err != nil {
+		t.Fatalf("parse execution inspect --last returned error: %v", err)
+	}
+	if !c.Execution.Inspect.Last {
+		t.Fatal("expected execution inspect last flag to be set")
+	}
+}
+
 func TestSandboxCreateParsesImageOverride(t *testing.T) {
 	c := &CLI{}
 	parser := newParserForTest(t, c)

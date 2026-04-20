@@ -195,6 +195,14 @@ func (c *Client) DeleteSnapshot(ctx context.Context, req *cleanroomv1.DeleteSnap
 	return resp.Msg, nil
 }
 
+func (c *Client) ListExecutions(ctx context.Context, req *cleanroomv1.ListExecutionsRequest) (*cleanroomv1.ListExecutionsResponse, error) {
+	resp, err := c.executionClient.ListExecutions(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
 func (c *Client) CreateExecution(ctx context.Context, req *cleanroomv1.CreateExecutionRequest) (*cleanroomv1.CreateExecutionResponse, error) {
 	resp, err := c.executionClient.CreateExecution(ctx, connect.NewRequest(req))
 	if err != nil {

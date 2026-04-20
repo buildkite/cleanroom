@@ -70,6 +70,9 @@ const (
 	// SnapshotServiceDeleteSnapshotProcedure is the fully-qualified name of the SnapshotService's
 	// DeleteSnapshot RPC.
 	SnapshotServiceDeleteSnapshotProcedure = "/cleanroom.v1.SnapshotService/DeleteSnapshot"
+	// ExecutionServiceListExecutionsProcedure is the fully-qualified name of the ExecutionService's
+	// ListExecutions RPC.
+	ExecutionServiceListExecutionsProcedure = "/cleanroom.v1.ExecutionService/ListExecutions"
 	// ExecutionServiceCreateExecutionProcedure is the fully-qualified name of the ExecutionService's
 	// CreateExecution RPC.
 	ExecutionServiceCreateExecutionProcedure = "/cleanroom.v1.ExecutionService/CreateExecution"
@@ -472,6 +475,7 @@ func (UnimplementedSnapshotServiceHandler) DeleteSnapshot(context.Context, *conn
 
 // ExecutionServiceClient is a client for the cleanroom.v1.ExecutionService service.
 type ExecutionServiceClient interface {
+	ListExecutions(context.Context, *connect.Request[v1.ListExecutionsRequest]) (*connect.Response[v1.ListExecutionsResponse], error)
 	CreateExecution(context.Context, *connect.Request[v1.CreateExecutionRequest]) (*connect.Response[v1.CreateExecutionResponse], error)
 	AttachExecution(context.Context, *connect.Request[v1.AttachExecutionRequest]) (*connect.Response[v1.AttachExecutionResponse], error)
 	GetExecution(context.Context, *connect.Request[v1.GetExecutionRequest]) (*connect.Response[v1.GetExecutionResponse], error)
@@ -493,6 +497,12 @@ func NewExecutionServiceClient(httpClient connect.HTTPClient, baseURL string, op
 	baseURL = strings.TrimRight(baseURL, "/")
 	executionServiceMethods := v1.File_proto_cleanroom_v1_control_proto.Services().ByName("ExecutionService").Methods()
 	return &executionServiceClient{
+		listExecutions: connect.NewClient[v1.ListExecutionsRequest, v1.ListExecutionsResponse](
+			httpClient,
+			baseURL+ExecutionServiceListExecutionsProcedure,
+			connect.WithSchema(executionServiceMethods.ByName("ListExecutions")),
+			connect.WithClientOptions(opts...),
+		),
 		createExecution: connect.NewClient[v1.CreateExecutionRequest, v1.CreateExecutionResponse](
 			httpClient,
 			baseURL+ExecutionServiceCreateExecutionProcedure,
@@ -546,6 +556,7 @@ func NewExecutionServiceClient(httpClient connect.HTTPClient, baseURL string, op
 
 // executionServiceClient implements ExecutionServiceClient.
 type executionServiceClient struct {
+	listExecutions      *connect.Client[v1.ListExecutionsRequest, v1.ListExecutionsResponse]
 	createExecution     *connect.Client[v1.CreateExecutionRequest, v1.CreateExecutionResponse]
 	attachExecution     *connect.Client[v1.AttachExecutionRequest, v1.AttachExecutionResponse]
 	getExecution        *connect.Client[v1.GetExecutionRequest, v1.GetExecutionResponse]
@@ -554,6 +565,11 @@ type executionServiceClient struct {
 	writeExecutionStdin *connect.Client[v1.WriteExecutionStdinRequest, v1.WriteExecutionStdinResponse]
 	closeExecutionStdin *connect.Client[v1.CloseExecutionStdinRequest, v1.CloseExecutionStdinResponse]
 	streamExecution     *connect.Client[v1.StreamExecutionRequest, v1.ExecutionStreamEvent]
+}
+
+// ListExecutions calls cleanroom.v1.ExecutionService.ListExecutions.
+func (c *executionServiceClient) ListExecutions(ctx context.Context, req *connect.Request[v1.ListExecutionsRequest]) (*connect.Response[v1.ListExecutionsResponse], error) {
+	return c.listExecutions.CallUnary(ctx, req)
 }
 
 // CreateExecution calls cleanroom.v1.ExecutionService.CreateExecution.
@@ -598,6 +614,7 @@ func (c *executionServiceClient) StreamExecution(ctx context.Context, req *conne
 
 // ExecutionServiceHandler is an implementation of the cleanroom.v1.ExecutionService service.
 type ExecutionServiceHandler interface {
+	ListExecutions(context.Context, *connect.Request[v1.ListExecutionsRequest]) (*connect.Response[v1.ListExecutionsResponse], error)
 	CreateExecution(context.Context, *connect.Request[v1.CreateExecutionRequest]) (*connect.Response[v1.CreateExecutionResponse], error)
 	AttachExecution(context.Context, *connect.Request[v1.AttachExecutionRequest]) (*connect.Response[v1.AttachExecutionResponse], error)
 	GetExecution(context.Context, *connect.Request[v1.GetExecutionRequest]) (*connect.Response[v1.GetExecutionResponse], error)
@@ -615,6 +632,12 @@ type ExecutionServiceHandler interface {
 // and JSON codecs. They also support gzip compression.
 func NewExecutionServiceHandler(svc ExecutionServiceHandler, opts ...connect.HandlerOption) (string, http.Handler) {
 	executionServiceMethods := v1.File_proto_cleanroom_v1_control_proto.Services().ByName("ExecutionService").Methods()
+	executionServiceListExecutionsHandler := connect.NewUnaryHandler(
+		ExecutionServiceListExecutionsProcedure,
+		svc.ListExecutions,
+		connect.WithSchema(executionServiceMethods.ByName("ListExecutions")),
+		connect.WithHandlerOptions(opts...),
+	)
 	executionServiceCreateExecutionHandler := connect.NewUnaryHandler(
 		ExecutionServiceCreateExecutionProcedure,
 		svc.CreateExecution,
@@ -665,6 +688,8 @@ func NewExecutionServiceHandler(svc ExecutionServiceHandler, opts ...connect.Han
 	)
 	return "/cleanroom.v1.ExecutionService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case ExecutionServiceListExecutionsProcedure:
+			executionServiceListExecutionsHandler.ServeHTTP(w, r)
 		case ExecutionServiceCreateExecutionProcedure:
 			executionServiceCreateExecutionHandler.ServeHTTP(w, r)
 		case ExecutionServiceAttachExecutionProcedure:
@@ -689,6 +714,10 @@ func NewExecutionServiceHandler(svc ExecutionServiceHandler, opts ...connect.Han
 
 // UnimplementedExecutionServiceHandler returns CodeUnimplemented from all methods.
 type UnimplementedExecutionServiceHandler struct{}
+
+func (UnimplementedExecutionServiceHandler) ListExecutions(context.Context, *connect.Request[v1.ListExecutionsRequest]) (*connect.Response[v1.ListExecutionsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cleanroom.v1.ExecutionService.ListExecutions is not implemented"))
+}
 
 func (UnimplementedExecutionServiceHandler) CreateExecution(context.Context, *connect.Request[v1.CreateExecutionRequest]) (*connect.Response[v1.CreateExecutionResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cleanroom.v1.ExecutionService.CreateExecution is not implemented"))

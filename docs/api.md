@@ -79,14 +79,15 @@ Two services are sufficient.
 
 ### 4.2 ExecutionService
 
-1. `CreateExecution(CreateExecutionRequest) returns (CreateExecutionResponse)` (unary)
-2. `AttachExecution(AttachExecutionRequest) returns (AttachExecutionResponse)` (unary)
-3. `GetExecution(GetExecutionRequest) returns (GetExecutionResponse)` (unary)
-4. `InspectExecution(InspectExecutionRequest) returns (InspectExecutionResponse)` (unary)
-5. `CancelExecution(CancelExecutionRequest) returns (CancelExecutionResponse)` (unary)
-6. `WriteExecutionStdin(WriteExecutionStdinRequest) returns (WriteExecutionStdinResponse)` (unary)
-7. `CloseExecutionStdin(CloseExecutionStdinRequest) returns (CloseExecutionStdinResponse)` (unary)
-8. `StreamExecution(StreamExecutionRequest) returns (stream ExecutionStreamEvent)` (server-streaming)
+1. `ListExecutions(ListExecutionsRequest) returns (ListExecutionsResponse)` (unary)
+2. `CreateExecution(CreateExecutionRequest) returns (CreateExecutionResponse)` (unary)
+3. `AttachExecution(AttachExecutionRequest) returns (AttachExecutionResponse)` (unary)
+4. `GetExecution(GetExecutionRequest) returns (GetExecutionResponse)` (unary)
+5. `InspectExecution(InspectExecutionRequest) returns (InspectExecutionResponse)` (unary)
+6. `CancelExecution(CancelExecutionRequest) returns (CancelExecutionResponse)` (unary)
+7. `WriteExecutionStdin(WriteExecutionStdinRequest) returns (WriteExecutionStdinResponse)` (unary)
+8. `CloseExecutionStdin(CloseExecutionStdinRequest) returns (CloseExecutionStdinResponse)` (unary)
+9. `StreamExecution(StreamExecutionRequest) returns (stream ExecutionStreamEvent)` (server-streaming)
 
 `AttachExecution` is a bootstrap RPC for interactive executions. It returns a session token plus QUIC connection parameters. Interactive PTY bytes and control frames do not flow through ConnectRPC after bootstrap.
 
@@ -164,6 +165,7 @@ service SandboxService {
 }
 
 service ExecutionService {
+  rpc ListExecutions(ListExecutionsRequest) returns (ListExecutionsResponse);
   rpc CreateExecution(CreateExecutionRequest) returns (CreateExecutionResponse);
   rpc AttachExecution(AttachExecutionRequest) returns (AttachExecutionResponse);
   rpc GetExecution(GetExecutionRequest) returns (GetExecutionResponse);
@@ -204,6 +206,15 @@ message Execution {
   google.protobuf.Timestamp finished_at = 7;
   bool tty = 8;
   ExecutionKind kind = 10;
+}
+
+message ListExecutionsRequest {
+  string sandbox_id = 1;
+  bool all = 2;
+}
+
+message ListExecutionsResponse {
+  repeated Execution executions = 1;
 }
 
 message AttachExecutionRequest {
@@ -274,6 +285,7 @@ Expose a server mode and API-driven commands in the same binary.
 - `cleanroom sandbox create`
 - `cleanroom sandbox create --from <snapshot-id>`
 - `cleanroom sandbox inspect <sandbox-id>`
+- `cleanroom sandbox inspect --last`
 - `cleanroom sandbox ls`
 - `cleanroom sandbox rm <sandbox-id>`
 
@@ -289,13 +301,17 @@ and `--dangerously-allow-all` cannot be combined with `--from`.
 ### 9.3 Execution commands
 
 - `cleanroom inspect <typeid>`
+- `cleanroom execution ls`
+- `cleanroom execution ls --all`
 - `cleanroom execution inspect <execution-id>`
+- `cleanroom execution inspect --last`
 - `cleanroom execution inspect --sandbox-id <sandbox-id> --last`
 - `cleanroom status --execution-id <execution-id>`
 - `cleanroom status --last`
 
 Notes:
-- `sandbox inspect` is the lookup surface when you only know a sandbox ID.
+- `sandbox inspect` is the lookup surface when you only know a sandbox ID, and `--last` resolves the most recently updated sandbox.
+- `execution ls` is the discovery surface for active executions; add `--all` to include finished executions still retained in control-plane memory.
 - `execution inspect` is the live control-plane inspection surface and includes
   trace metadata when available.
 - `status` is the local retained-artifacts browser under `$XDG_STATE_HOME/cleanroom/executions`.
@@ -363,7 +379,7 @@ Failure UX:
 - On policy/runtime deny, print stable reason code and a follow-up command to inspect sandbox or execution state.
 
 Debugging flow:
-1. Start with `cleanroom status --last` when you only need the newest retained execution, or `cleanroom sandbox inspect <sandbox-id>` when you already know the sandbox ID.
+1. Start with `cleanroom execution ls` when you need to find an active run, `cleanroom execution inspect --last` when you want the newest known execution, or `cleanroom sandbox inspect <sandbox-id>` when you already know the sandbox ID.
 2. Use `cleanroom execution inspect <execution-id>` for the canonical execution view, including `trace_id`, optional `trace_url`, and retained observability payload.
 3. Use `cleanroom status --execution-id <execution-id>` for retained local artifacts and raw observability files.
 

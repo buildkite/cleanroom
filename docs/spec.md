@@ -519,9 +519,12 @@ Policy feature mapping:
   - `cleanroom console [--] <command>`
   - `cleanroom inspect <typeid>`
   - `cleanroom sandbox inspect <sandbox-id>`
+  - `cleanroom sandbox inspect --last`
   - `cleanroom sandbox ls`
   - `cleanroom sandbox rm <sandbox-id>`
+  - `cleanroom execution ls`
   - `cleanroom execution inspect <execution-id>`
+  - `cleanroom execution inspect --last`
   - `cleanroom execution inspect --sandbox-id <sandbox-id> --last`
   - `cleanroom doctor`
   - `cleanroom status [--execution-id <execution-id>|--last]`
@@ -531,7 +534,7 @@ Policy feature mapping:
   - machine-readable output (`--json`) for pipeline tooling
 - API/SDK (v1):
   - ConnectRPC `SandboxService` (`CreateSandbox`, `GetSandbox`, `ListSandboxes`, `DownloadSandboxFile`, `TerminateSandbox`, `StreamSandboxEvents`)
-  - ConnectRPC `ExecutionService` (`CreateExecution`, `AttachExecution`, `GetExecution`, `InspectExecution`, `CancelExecution`, `WriteExecutionStdin`, `CloseExecutionStdin`, `StreamExecution`)
+  - ConnectRPC `ExecutionService` (`ListExecutions`, `CreateExecution`, `AttachExecution`, `GetExecution`, `InspectExecution`, `CancelExecution`, `WriteExecutionStdin`, `CloseExecutionStdin`, `StreamExecution`)
 
 ### 8.1 CLI and API failure contract (normative)
 CLI:
@@ -544,6 +547,7 @@ CLI:
 API:
 - `SandboxService.CreateSandbox` returns client error for invalid policy input and conflict/error response for unsatisfied backend requirements.
 - `SandboxService.GetSandbox` must expose terminal sandbox status plus `last_execution_id` and `active_execution_id`.
+- `ExecutionService.ListExecutions` must list active executions by default, include finished executions when explicitly requested, and return newest executions first.
 - `ExecutionService.GetExecution` must expose execution status and exit code.
 - `ExecutionService.InspectExecution` must expose richer diagnostics including message, retained stdout/stderr, artifacts location, `trace_id`, optional `trace_url`, and observability payload when available.
 - ConnectRPC errors must include stable application `code` and human-readable `message`.

@@ -5537,6 +5537,61 @@ func TestStatePruningBoundsRetainedTerminalState(t *testing.T) {
 	}
 }
 
+func TestListExecutionsSupportsRetainedExecutionFromPrunedSandbox(t *testing.T) {
+	svc := newTestService(&stubAdapter{})
+	retention := testRetentionPolicy()
+	retention.maxRetainedStoppedSandboxes = 1
+	retention.maxRetainedFinishedExecutions = 2
+	retention.retainedStateMaxAge = 24 * time.Hour
+	svc.runtime.retention = retention
+
+	runOnce := func() (string, string) {
+		createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+		if err != nil {
+			t.Fatalf("CreateSandbox returned error: %v", err)
+		}
+		sandboxID := createSandboxResp.GetSandbox().GetSandboxId()
+
+		createExecutionResp, err := svc.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+			SandboxId: sandboxID,
+			Command:   []string{"echo", "ok"},
+		})
+		if err != nil {
+			t.Fatalf("CreateExecution returned error: %v", err)
+		}
+		executionID := createExecutionResp.GetExecution().GetExecutionId()
+
+		if _, err := svc.WaitExecution(context.Background(), sandboxID, executionID); err != nil {
+			t.Fatalf("WaitExecution returned error: %v", err)
+		}
+		if _, err := svc.TerminateSandbox(context.Background(), &cleanroomv1.TerminateSandboxRequest{SandboxId: sandboxID}); err != nil {
+			t.Fatalf("TerminateSandbox returned error: %v", err)
+		}
+		return sandboxID, executionID
+	}
+
+	_, _ = runOnce()
+	prunedSandboxID, retainedExecutionID := runOnce()
+	_, _ = runOnce()
+
+	resp, err := svc.ListExecutions(context.Background(), &cleanroomv1.ListExecutionsRequest{
+		SandboxId: prunedSandboxID,
+		All:       true,
+	})
+	if err != nil {
+		t.Fatalf("ListExecutions returned error: %v", err)
+	}
+	if got, want := len(resp.GetExecutions()), 1; got != want {
+		t.Fatalf("unexpected execution count: got %d want %d", got, want)
+	}
+	if got, want := resp.GetExecutions()[0].GetExecutionId(), retainedExecutionID; got != want {
+		t.Fatalf("unexpected execution id: got %q want %q", got, want)
+	}
+	if got, want := resp.GetExecutions()[0].GetSandboxId(), prunedSandboxID; got != want {
+		t.Fatalf("unexpected sandbox id: got %q want %q", got, want)
+	}
+}
+
 func TestExecutionRetentionBoundsOutput(t *testing.T) {
 	adapter := &stubAdapter{
 		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {

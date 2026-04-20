@@ -22,9 +22,9 @@ import (
 	"github.com/buildkite/cleanroom/internal/gen/cleanroom/v1/cleanroomv1connect"
 	"github.com/buildkite/cleanroom/internal/tlsconfig"
 	"github.com/charmbracelet/log"
-	"google.golang.org/protobuf/types/known/timestamppb"
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // TLSOptions holds explicit TLS paths for the server.
@@ -192,6 +192,14 @@ func (s *Server) ListSnapshots(ctx context.Context, req *connect.Request[cleanro
 
 func (s *Server) DeleteSnapshot(ctx context.Context, req *connect.Request[cleanroomv1.DeleteSnapshotRequest]) (*connect.Response[cleanroomv1.DeleteSnapshotResponse], error) {
 	resp, err := s.service.DeleteSnapshot(ctx, req.Msg)
+	if err != nil {
+		return nil, toConnectError(err)
+	}
+	return connect.NewResponse(resp), nil
+}
+
+func (s *Server) ListExecutions(ctx context.Context, req *connect.Request[cleanroomv1.ListExecutionsRequest]) (*connect.Response[cleanroomv1.ListExecutionsResponse], error) {
+	resp, err := s.service.ListExecutions(ctx, req.Msg)
 	if err != nil {
 		return nil, toConnectError(err)
 	}

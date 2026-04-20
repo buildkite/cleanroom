@@ -6,21 +6,88 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"text/tabwriter"
 
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 )
 
 type ExecutionCommand struct {
+	List    ExecutionListCommand    `name:"ls" aliases:"list" cmd:"" help:"List known executions"`
 	Inspect ExecutionInspectCommand `name:"inspect" aliases:"show" cmd:"" help:"Inspect an execution and its diagnostics"`
+}
+
+type ExecutionListCommand struct {
+	clientFlags
+	SandboxID string `name:"sandbox-id" help:"Only list executions for this sandbox"`
+	All       bool   `help:"Include finished executions"`
+	JSON      bool   `help:"Print executions as JSON"`
 }
 
 type ExecutionInspectCommand struct {
 	clientFlags
-	SandboxID   string `name:"sandbox-id" help:"Sandbox ID that owns the execution (required with --last)"`
+	SandboxID   string `name:"sandbox-id" help:"Sandbox ID that owns or scopes the execution"`
 	ExecutionID string `arg:"" optional:"" help:"Execution ID to inspect"`
-	Last        bool   `help:"Inspect the sandbox's last execution (requires --sandbox-id)"`
+	Last        bool   `help:"Inspect the most recent execution globally or within --sandbox-id"`
 	JSON        bool   `help:"Print execution inspection as JSON"`
+}
+
+func (c *ExecutionListCommand) Run(ctx *runtimeContext) error {
+	client, err := c.connect(ctx)
+	if err != nil {
+		return err
+	}
+
+	resp, err := client.ListExecutions(context.Background(), &cleanroomv1.ListExecutionsRequest{
+		SandboxId: strings.TrimSpace(c.SandboxID),
+		All:       c.All,
+	})
+	if err != nil {
+		return fmt.Errorf("list executions: %w", err)
+	}
+
+	if c.JSON {
+		enc := json.NewEncoder(ctx.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(resp.GetExecutions())
+	}
+
+	executions := resp.GetExecutions()
+	if len(executions) == 0 {
+		_, err := fmt.Fprintln(ctx.Stdout, executionListEmptyMessage(c.All, strings.TrimSpace(c.SandboxID)))
+		return err
+	}
+
+	tw := tabwriter.NewWriter(ctx.Stdout, 0, 2, 2, ' ', 0)
+	if _, err := fmt.Fprintln(tw, "ID\tSTATUS\tKIND\tSANDBOX\tSTARTED\tFINISHED"); err != nil {
+		return err
+	}
+	for _, execution := range executions {
+		if execution == nil {
+			continue
+		}
+		started := ""
+		if startedAt := execution.GetStartedAt(); startedAt != nil {
+			started = startedAt.AsTime().Format(timeFormat)
+		}
+		finished := ""
+		if finishedAt := execution.GetFinishedAt(); finishedAt != nil {
+			finished = finishedAt.AsTime().Format(timeFormat)
+		}
+		if _, err := fmt.Fprintf(
+			tw,
+			"%s\t%s\t%s\t%s\t%s\t%s\n",
+			execution.GetExecutionId(),
+			executionStatusString(execution.GetStatus()),
+			executionKindString(execution.GetKind()),
+			execution.GetSandboxId(),
+			started,
+			finished,
+		); err != nil {
+			return err
+		}
+	}
+	return tw.Flush()
 }
 
 func (c *ExecutionInspectCommand) Run(ctx *runtimeContext) error {
@@ -35,20 +102,27 @@ func (c *ExecutionInspectCommand) Run(ctx *runtimeContext) error {
 		if executionID != "" {
 			return errors.New("choose either <execution-id> or --last")
 		}
-		if sandboxID == "" {
-			return errors.New("--sandbox-id is required with --last")
-		}
-		sbResp, err := client.GetSandbox(context.Background(), &cleanroomv1.GetSandboxRequest{SandboxId: sandboxID})
+		listResp, err := client.ListExecutions(context.Background(), &cleanroomv1.ListExecutionsRequest{
+			SandboxId: sandboxID,
+			All:       true,
+		})
 		if err != nil {
-			return fmt.Errorf("get sandbox: %w", err)
+			return fmt.Errorf("list executions: %w", err)
 		}
-		sandbox := sbResp.GetSandbox()
-		if sandbox == nil {
-			return fmt.Errorf("sandbox %q not found", sandboxID)
+		for _, execution := range listResp.GetExecutions() {
+			if execution == nil {
+				continue
+			}
+			executionID = strings.TrimSpace(execution.GetExecutionId())
+			if executionID != "" {
+				break
+			}
 		}
-		executionID = strings.TrimSpace(sandbox.GetLastExecutionId())
 		if executionID == "" {
-			return fmt.Errorf("sandbox %q has no recorded executions", sandboxID)
+			if sandboxID != "" {
+				return fmt.Errorf("sandbox %q has no recorded executions", sandboxID)
+			}
+			return errors.New("no recorded executions")
 		}
 	} else {
 		if executionID == "" {
@@ -169,6 +243,17 @@ func (c *ExecutionInspectCommand) Run(ctx *runtimeContext) error {
 }
 
 const timeFormat = "2006-01-02T15:04:05Z07:00"
+
+func executionListEmptyMessage(includeFinished bool, sandboxID string) string {
+	scope := ""
+	if strings.TrimSpace(sandboxID) != "" {
+		scope = " for sandbox " + strings.TrimSpace(sandboxID)
+	}
+	if includeFinished {
+		return "no recorded executions" + scope
+	}
+	return "no active executions" + scope
+}
 
 func executionStatusString(status cleanroomv1.ExecutionStatus) string {
 	switch status {
