@@ -127,6 +127,8 @@ func (r *runtimeErrorReporter) suppress() {
 	if r == nil {
 		return
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.ignored.Store(true)
 }
 

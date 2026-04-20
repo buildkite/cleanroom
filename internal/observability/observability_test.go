@@ -324,6 +324,53 @@ func TestStartSuppressesConfiguredReporterDuringShutdown(t *testing.T) {
 	}
 }
 
+func TestRuntimeErrorReporterSuppressWaitsForInFlightHandle(t *testing.T) {
+	enteredReport := make(chan struct{})
+	releaseReport := make(chan struct{})
+	reporter := &runtimeErrorReporter{report: func(error) {
+		close(enteredReport)
+		<-releaseReport
+	}}
+
+	handleDone := make(chan struct{})
+	go func() {
+		defer close(handleDone)
+		reporter.Handle(errors.New("collector unavailable"))
+	}()
+
+	select {
+	case <-enteredReport:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for in-flight report")
+	}
+
+	suppressDone := make(chan struct{})
+	go func() {
+		reporter.suppress()
+		close(suppressDone)
+	}()
+
+	select {
+	case <-suppressDone:
+		t.Fatal("expected suppress to wait for in-flight report")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(releaseReport)
+
+	select {
+	case <-suppressDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for suppress to finish")
+	}
+
+	select {
+	case <-handleDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for handle to finish")
+	}
+}
+
 func TestStartExportsOTLPHTTPSpanOnShutdown(t *testing.T) {
 	bodyCh := make(chan []byte, 8)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
