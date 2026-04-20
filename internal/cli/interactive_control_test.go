@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-func TestPollInteractiveExitOrControlErrPrefersControlError(t *testing.T) {
+func TestPollInteractiveExitOrControlErrPrefersExitCode(t *testing.T) {
 	t.Parallel()
 
 	exitCodeCh := make(chan int, 1)
@@ -16,14 +16,14 @@ func TestPollInteractiveExitOrControlErrPrefersControlError(t *testing.T) {
 	controlErrCh <- errors.New("control failed")
 
 	gotExitCode, haveExitCode, err := pollInteractiveExitOrControlErr(exitCodeCh, &controlErrCh)
-	if haveExitCode {
-		t.Fatalf("unexpected exit code from poll: %d", gotExitCode)
+	if err != nil {
+		t.Fatalf("expected no poll error, got %v", err)
 	}
-	if err == nil {
-		t.Fatal("expected control error, got nil")
+	if !haveExitCode {
+		t.Fatal("expected exit code from poll")
 	}
-	if got, want := err.Error(), "interactive control stream: control failed"; !strings.Contains(got, want) {
-		t.Fatalf("unexpected control error message: got %q want substring %q", got, want)
+	if got, want := gotExitCode, 17; got != want {
+		t.Fatalf("unexpected exit code from poll: got %d want %d", got, want)
 	}
 }
 
@@ -82,5 +82,49 @@ func TestWaitForInteractiveExitOrControlErrReturnsControlError(t *testing.T) {
 	}
 	if got, want := err.Error(), "interactive control stream: control failed"; !strings.Contains(got, want) {
 		t.Fatalf("unexpected control error message: got %q want substring %q", got, want)
+	}
+}
+
+func TestWaitForInteractiveExitOrControlErrPrefersExitCodeWhenBothReady(t *testing.T) {
+	t.Parallel()
+
+	exitCodeCh := make(chan int, 1)
+	exitCodeCh <- 9
+	controlErrCh := make(chan error, 1)
+	controlErrCh <- errors.New("control failed")
+
+	gotExitCode, haveExitCode, err := waitForInteractiveExitOrControlErr(exitCodeCh, &controlErrCh, 10*time.Millisecond)
+	if err != nil {
+		t.Fatalf("expected no wait error, got %v", err)
+	}
+	if !haveExitCode {
+		t.Fatal("expected wait to return exit code")
+	}
+	if got, want := gotExitCode, 9; got != want {
+		t.Fatalf("unexpected exit code: got %d want %d", got, want)
+	}
+}
+
+func TestWaitForInteractiveExitOrControlErrIgnoresBenignControlErrorUntilExit(t *testing.T) {
+	t.Parallel()
+
+	exitCodeCh := make(chan int, 1)
+	controlErrCh := make(chan error, 1)
+	controlErrCh <- errors.New("execution is not running")
+
+	go func() {
+		time.Sleep(5 * time.Millisecond)
+		exitCodeCh <- 3
+	}()
+
+	gotExitCode, haveExitCode, err := waitForInteractiveExitOrControlErr(exitCodeCh, &controlErrCh, 20*time.Millisecond)
+	if err != nil {
+		t.Fatalf("expected no wait error, got %v", err)
+	}
+	if !haveExitCode {
+		t.Fatal("expected wait to return exit code")
+	}
+	if got, want := gotExitCode, 3; got != want {
+		t.Fatalf("unexpected exit code: got %d want %d", got, want)
 	}
 }
