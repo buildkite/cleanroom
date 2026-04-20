@@ -196,15 +196,3 @@ func TestWriteTraceID(t *testing.T) {
 		t.Fatalf("unexpected trace id output: got %q want %q", got, want)
 	}
 }
-
-func TestWriteTraceURL(t *testing.T) {
-	var stderr bytes.Buffer
-
-	if err := writeTraceURL(&stderr, " https://jaeger.example.test/trace/0123456789abcdef0123456789abcdef "); err != nil {
-		t.Fatalf("writeTraceURL returned error: %v", err)
-	}
-
-	if got, want := stderr.String(), "trace_url=https://jaeger.example.test/trace/0123456789abcdef0123456789abcdef\n"; got != want {
-		t.Fatalf("unexpected trace url output: got %q want %q", got, want)
-	}
-}

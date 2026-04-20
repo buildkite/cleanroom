@@ -357,13 +357,13 @@ Signal behavior:
 2. Second `Ctrl-C`: force detach client stream and return immediately.
 
 Failure UX:
-- Always print `sandbox_id`, `execution_id`, and `trace_id` when available.
-- When `observability.traces.url_template` is configured, also print `trace_url`.
-- On `exec` or `console` failure, also print a ready-to-run `cleanroom execution inspect ...` follow-up command and `artifacts_dir` when available.
+- `exec` and `console` failures preserve streamed guest stdout/stderr and return the guest exit code without appending a diagnostic footer.
+- `cleanroom exec --print-sandbox-id` remains the explicit opt-in for printing the resolved sandbox ID before streaming begins.
+- `cleanroom exec --print-trace-id` remains the explicit opt-in for printing `trace_id` after a successful execution.
 - On policy/runtime deny, print stable reason code and a follow-up command to inspect sandbox or execution state.
 
 Debugging flow:
-1. Start with `cleanroom sandbox inspect <sandbox-id>` when you need the sandbox state or do not yet know the execution ID.
+1. Start with `cleanroom status --last` when you only need the newest retained execution, or `cleanroom sandbox inspect <sandbox-id>` when you already know the sandbox ID.
 2. Use `cleanroom execution inspect <execution-id>` for the canonical execution view, including `trace_id`, optional `trace_url`, and retained observability payload.
 3. Use `cleanroom status --execution-id <execution-id>` for retained local artifacts and raw observability files.
 

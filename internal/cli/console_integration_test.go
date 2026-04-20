@@ -562,7 +562,7 @@ func TestConsoleIntegrationRoutesBackendWarningsToStderr(t *testing.T) {
 	}
 }
 
-func TestConsoleIntegrationPrintsExecutionHintsOnFailure(t *testing.T) {
+func TestConsoleIntegrationOmitsFailureFooter(t *testing.T) {
 	host, _ := startIntegrationServer(t, &integrationAdapter{
 		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
 			return &backend.ExecutionResult{
@@ -590,16 +590,16 @@ func TestConsoleIntegrationPrintsExecutionHintsOnFailure(t *testing.T) {
 	if got, want := ExitCode(outcome.err), 7; got != want {
 		t.Fatalf("unexpected console exit code: got %d want %d (err=%v)", got, want, outcome.err)
 	}
-	if got := parseSandboxID(outcome.stderr); got == "" {
-		t.Fatalf("expected sandbox_id in failure output, got %q", outcome.stderr)
+	if strings.Contains(outcome.stderr, "sandbox_id=") {
+		t.Fatalf("did not expect sandbox_id footer in failure output, got %q", outcome.stderr)
 	}
-	if got := parseExecutionID(outcome.stderr); got == "" {
-		t.Fatalf("expected execution_id in failure output, got %q", outcome.stderr)
+	if strings.Contains(outcome.stderr, "execution_id=") {
+		t.Fatalf("did not expect execution_id footer in failure output, got %q", outcome.stderr)
 	}
-	if !strings.Contains(outcome.stderr, "inspect_command=cleanroom execution inspect ") {
-		t.Fatalf("expected inspect_command in failure output, got %q", outcome.stderr)
+	if strings.Contains(outcome.stderr, "inspect_command=cleanroom execution inspect ") {
+		t.Fatalf("did not expect inspect_command footer in failure output, got %q", outcome.stderr)
 	}
-	if !strings.Contains(outcome.stderr, "artifacts_dir=/tmp/console-failed") {
-		t.Fatalf("expected artifacts_dir in failure output, got %q", outcome.stderr)
+	if strings.Contains(outcome.stderr, "artifacts_dir=/tmp/console-failed") {
+		t.Fatalf("did not expect artifacts_dir footer in failure output, got %q", outcome.stderr)
 	}
 }

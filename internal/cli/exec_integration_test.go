@@ -968,7 +968,7 @@ func TestExecIntegrationNoStdinFailureDoesNotHangWhileStreamBlocked(t *testing.T
 	}
 }
 
-func TestExecIntegrationPropagatesExitAndStderr(t *testing.T) {
+func TestExecIntegrationPropagatesExitWithoutFailureFooter(t *testing.T) {
 	adapter := &integrationAdapter{
 		runFn: func(_ context.Context, req backend.ExecutionRequest) (*backend.ExecutionResult, error) {
 			return &backend.ExecutionResult{
@@ -1008,17 +1008,17 @@ func TestExecIntegrationPropagatesExitAndStderr(t *testing.T) {
 	if !strings.Contains(outcome.stderr, "err\n") {
 		t.Fatalf("expected stderr in stream output, got %q", outcome.stderr)
 	}
-	if got := parseSandboxID(outcome.stderr); got == "" {
-		t.Fatalf("expected sandbox_id in failure output, got %q", outcome.stderr)
+	if strings.Contains(outcome.stderr, "sandbox_id=") {
+		t.Fatalf("did not expect sandbox_id footer in failure output, got %q", outcome.stderr)
 	}
-	if got := parseExecutionID(outcome.stderr); got == "" {
-		t.Fatalf("expected execution_id in failure output, got %q", outcome.stderr)
+	if strings.Contains(outcome.stderr, "execution_id=") {
+		t.Fatalf("did not expect execution_id footer in failure output, got %q", outcome.stderr)
 	}
-	if !strings.Contains(outcome.stderr, "inspect_command=cleanroom execution inspect ") {
-		t.Fatalf("expected inspect_command in failure output, got %q", outcome.stderr)
+	if strings.Contains(outcome.stderr, "inspect_command=cleanroom execution inspect ") {
+		t.Fatalf("did not expect inspect_command footer in failure output, got %q", outcome.stderr)
 	}
-	if !strings.Contains(outcome.stderr, "artifacts_dir=/tmp/exec-failed") {
-		t.Fatalf("expected artifacts_dir in failure output, got %q", outcome.stderr)
+	if strings.Contains(outcome.stderr, "artifacts_dir=/tmp/exec-failed") {
+		t.Fatalf("did not expect artifacts_dir footer in failure output, got %q", outcome.stderr)
 	}
 }
 
