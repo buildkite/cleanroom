@@ -114,7 +114,11 @@ func (c *ExecutionInspectCommand) Run(ctx *runtimeContext) error {
 				continue
 			}
 			executionID = strings.TrimSpace(execution.GetExecutionId())
+			selectedSandboxID := strings.TrimSpace(execution.GetSandboxId())
 			if executionID != "" {
+				if sandboxID == "" && selectedSandboxID != "" {
+					sandboxID = selectedSandboxID
+				}
 				break
 			}
 		}
