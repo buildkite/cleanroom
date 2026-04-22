@@ -734,19 +734,81 @@ func (s *Service) GetSandbox(_ context.Context, req *cleanroomv1.GetSandboxReque
 
 func (s *Service) ListSandboxes(_ context.Context, _ *cleanroomv1.ListSandboxesRequest) (*cleanroomv1.ListSandboxesResponse, error) {
 	s.mu.RLock()
-	items := make([]*sandboxState, 0, len(s.sandboxes))
+	type sandboxListItem struct {
+		sandbox  *cleanroomv1.Sandbox
+		sortTime time.Time
+	}
+	items := make([]sandboxListItem, 0, len(s.sandboxes))
 	for _, sb := range s.sandboxes {
-		items = append(items, sb)
+		items = append(items, sandboxListItem{
+			sandbox:  cloneSandboxLocked(sb),
+			sortTime: sandboxTerminalTime(sb),
+		})
 	}
 	s.mu.RUnlock()
 
 	sort.Slice(items, func(i, j int) bool {
-		return items[i].CreatedAt.Before(items[j].CreatedAt)
+		left := items[i].sortTime
+		right := items[j].sortTime
+		if left.Equal(right) {
+			return items[i].sandbox.GetSandboxId() < items[j].sandbox.GetSandboxId()
+		}
+		return left.After(right)
 	})
 
 	resp := &cleanroomv1.ListSandboxesResponse{Sandboxes: make([]*cleanroomv1.Sandbox, 0, len(items))}
-	for _, sb := range items {
-		resp.Sandboxes = append(resp.Sandboxes, cloneSandboxLocked(sb))
+	for _, item := range items {
+		resp.Sandboxes = append(resp.Sandboxes, item.sandbox)
+	}
+	return resp, nil
+}
+
+func (s *Service) ListExecutions(_ context.Context, req *cleanroomv1.ListExecutionsRequest) (*cleanroomv1.ListExecutionsResponse, error) {
+	if req == nil {
+		req = &cleanroomv1.ListExecutionsRequest{}
+	}
+	sandboxID := strings.TrimSpace(req.GetSandboxId())
+	includeFinal := req.GetAll()
+
+	type executionListItem struct {
+		execution *cleanroomv1.Execution
+		sortTime  time.Time
+	}
+
+	s.mu.RLock()
+	items := make([]executionListItem, 0, len(s.executions))
+	for _, ex := range s.executions {
+		if ex == nil {
+			continue
+		}
+		if sandboxID != "" && ex.SandboxID != sandboxID {
+			continue
+		}
+		if !includeFinal && isFinalExecutionStatus(ex.Status) {
+			continue
+		}
+		items = append(items, executionListItem{
+			execution: cloneExecutionLocked(ex),
+			sortTime:  executionSortTime(ex, s.sandboxes[ex.SandboxID]),
+		})
+	}
+	s.mu.RUnlock()
+
+	sort.Slice(items, func(i, j int) bool {
+		left := items[i].sortTime
+		right := items[j].sortTime
+		if left.Equal(right) {
+			if items[i].execution.GetSandboxId() == items[j].execution.GetSandboxId() {
+				return items[i].execution.GetExecutionId() < items[j].execution.GetExecutionId()
+			}
+			return items[i].execution.GetSandboxId() < items[j].execution.GetSandboxId()
+		}
+		return left.After(right)
+	})
+
+	resp := &cleanroomv1.ListExecutionsResponse{Executions: make([]*cleanroomv1.Execution, 0, len(items))}
+	for _, item := range items {
+		resp.Executions = append(resp.Executions, item.execution)
 	}
 	return resp, nil
 }

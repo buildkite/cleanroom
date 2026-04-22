@@ -162,6 +162,13 @@ func (c *Client) DeleteSnapshot(ctx context.Context, req *DeleteSnapshotRequest)
 	return c.inner.DeleteSnapshot(ctx, req)
 }
 
+func (c *Client) ListExecutions(ctx context.Context, req *ListExecutionsRequest) (*ListExecutionsResponse, error) {
+	if c == nil || c.inner == nil {
+		return nil, errors.New("nil client")
+	}
+	return c.inner.ListExecutions(ctx, req)
+}
+
 func (c *Client) CreateExecution(ctx context.Context, req *CreateExecutionRequest) (*CreateExecutionResponse, error) {
 	if c == nil || c.inner == nil {
 		return nil, errors.New("nil client")

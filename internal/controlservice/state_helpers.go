@@ -80,6 +80,13 @@ func executionTerminalTime(ex *executionState) time.Time {
 	return time.Time{}
 }
 
+func executionSortTime(ex *executionState, sb *sandboxState) time.Time {
+	if when := executionTerminalTime(ex); !when.IsZero() {
+		return when
+	}
+	return sandboxTerminalTime(sb)
+}
+
 func sandboxTerminalTime(sb *sandboxState) time.Time {
 	if sb == nil {
 		return time.Time{}

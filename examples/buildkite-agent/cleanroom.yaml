@@ -1,11 +1,12 @@
 version: 1
-repository:
-  enabled: false
 sandbox:
   image:
-    ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:8eb2c1bc27af65d828ab6d93738a1adb1b62ef5b74417a273cedf3e7cec5f18b
+    ref: ghcr.io/buildkite/cleanroom-base/debian@sha256:28c3f638fabe1ed780f87b82cfb0c6dda2549c86b9e4edbe519e8250243411c5
   dependencies:
-    command: [mise, exec, --, go, mod, download]
+    command: |
+      mise settings ruby.compile=false
+      mise install
+      mise exec -- go mod download
     key:
       files:
         - .mise.toml
@@ -18,8 +19,6 @@ sandbox:
         ports: [443]
       - host: api.github.com
         ports: [443]
-      - host: release-assets.githubusercontent.com
-        ports: [443]
       - host: dl.google.com
         ports: [443]
       - host: proxy.golang.org
@@ -31,6 +30,8 @@ sandbox:
       - host: mise-versions.jdx.dev
         ports: [443]
       - host: mise.jdx.dev
+        ports: [443]
+      - host: release-assets.githubusercontent.com
         ports: [443]
       - host: tuf-repo-cdn.sigstore.dev
         ports: [443]

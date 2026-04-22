@@ -25,6 +25,7 @@ service SnapshotService {
 }
 
 service ExecutionService {
+  rpc ListExecutions(ListExecutionsRequest) returns (ListExecutionsResponse);
   rpc CreateExecution(CreateExecutionRequest) returns (CreateExecutionResponse);
   rpc AttachExecution(AttachExecutionRequest) returns (AttachExecutionResponse);
   rpc GetExecution(GetExecutionRequest) returns (GetExecutionResponse);
@@ -203,6 +204,15 @@ message ListSandboxesRequest {}
 
 message ListSandboxesResponse {
   repeated Sandbox sandboxes = 1;
+}
+
+message ListExecutionsRequest {
+  string sandbox_id = 1;
+  bool all = 2;
+}
+
+message ListExecutionsResponse {
+  repeated Execution executions = 1;
 }
 
 message DownloadSandboxFileRequest {

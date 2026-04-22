@@ -87,6 +87,29 @@ func TestSandboxInspectIntegrationJSON(t *testing.T) {
 	}
 }
 
+func TestSandboxInspectIntegrationSupportsLast(t *testing.T) {
+	host, _ := startIntegrationServer(t, &integrationAdapter{})
+	cwd := t.TempDir()
+
+	client := mustNewControlClient(t, host)
+	_ = mustCreateSandbox(t, client)
+	latestSandboxID := mustCreateSandbox(t, client)
+
+	outcome := runSandboxInspectWithCapture(SandboxInspectCommand{
+		clientFlags: clientFlags{Host: host},
+		Last:        true,
+	}, runtimeContext{CWD: cwd})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err != nil {
+		t.Fatalf("SandboxInspectCommand.Run returned error: %v", outcome.err)
+	}
+	if !strings.Contains(outcome.stdout, "sandbox: "+latestSandboxID) {
+		t.Fatalf("expected latest sandbox id in output, got %q", outcome.stdout)
+	}
+}
+
 func TestSandboxInspectIntegrationShowsProvenance(t *testing.T) {
 	host, _ := startIntegrationServer(t, &snapshotIntegrationAdapter{})
 	cwd := t.TempDir()

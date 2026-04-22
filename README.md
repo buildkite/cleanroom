@@ -427,8 +427,11 @@ When `rootfs` is unset, Cleanroom derives one from `sandbox.image.ref` and injec
 cleanroom doctor              # check host prerequisites
 cleanroom doctor --json       # machine-readable with capabilities map
 cleanroom sandbox inspect <sandbox-id>
+cleanroom sandbox inspect --last
+cleanroom execution ls        # list active executions
+cleanroom execution inspect --last
 cleanroom execution inspect --sandbox-id <sandbox-id> --last
-cleanroom execution inspect --sandbox-id <sandbox-id> <execution-id>
+cleanroom execution inspect <execution-id>
 cleanroom status --last       # browse the newest retained execution artifacts
 cleanroom status --execution-id <execution-id>
 cleanroom version
@@ -439,7 +442,8 @@ Failure flow:
 - `cleanroom exec` and `cleanroom console` keep failure stderr focused on streamed guest output; they do not append `sandbox_id`, `execution_id`, `trace_id`, or `trace_url` footers automatically.
 - Use `--print-sandbox-id` when you need to correlate a kept or reused sandbox, and use `cleanroom status --last` or `cleanroom execution inspect ...` for retained diagnostics.
 - Attached `cleanroom exec` and `cleanroom console` streams may print warning notices on stderr for policy observations such as blocked connections or disallowed DNS lookups.
-- `cleanroom sandbox inspect <sandbox-id>` shows sandbox state plus `last_execution_id` and `active_execution_id`.
+- `cleanroom sandbox inspect <sandbox-id>` and `cleanroom sandbox inspect --last` show sandbox state plus `last_execution_id` and `active_execution_id`.
+- `cleanroom execution ls` lists active executions by default; add `--all` to include finished executions that are still known to the control plane.
 - `cleanroom execution inspect ...` is the control-plane view for execution status, retained stdout/stderr, image metadata, `trace_id`, optional `trace_url`, and observability.
 - `cleanroom status ...` is the local artifact view under `$XDG_STATE_HOME/cleanroom/executions`.
 
