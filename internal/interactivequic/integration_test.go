@@ -2,6 +2,7 @@ package interactivequic
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -20,6 +21,7 @@ type integrationInteractiveService struct {
 	history           []*cleanroomv1.ExecutionStreamEvent
 	updates           chan *cleanroomv1.ExecutionStreamEvent
 	done              chan struct{}
+	writeStdinFn      func(sandboxID, executionID string, data []byte) error
 
 	mu       sync.Mutex
 	released []string
@@ -84,6 +86,9 @@ func (s *integrationInteractiveService) ReleaseInteractiveExecution(sandboxID, e
 func (s *integrationInteractiveService) WriteExecutionStdin(sandboxID, executionID string, data []byte) error {
 	if sandboxID != s.session.SandboxID || executionID != s.session.ExecutionID {
 		return fmt.Errorf("unexpected stdin target %q/%q", sandboxID, executionID)
+	}
+	if s.writeStdinFn != nil {
+		return s.writeStdinFn(sandboxID, executionID, data)
 	}
 	select {
 	case s.stdinCh <- string(data):
@@ -271,6 +276,73 @@ func TestDialRejectsWrongCertPin(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "interactive cert pin mismatch") {
 		t.Fatalf("unexpected cert pin error: %v", err)
+	}
+}
+
+func TestDialReportsPendingStdinErrorBeforeExit(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	service := newIntegrationInteractiveService()
+	service.writeStdinFn = func(sandboxID, executionID string, data []byte) error {
+		select {
+		case service.stdinCh <- string(data):
+		default:
+		}
+		service.updates <- &cleanroomv1.ExecutionStreamEvent{
+			SandboxId:   sandboxID,
+			ExecutionId: executionID,
+			Status:      cleanroomv1.ExecutionStatus_EXECUTION_STATUS_SUCCEEDED,
+			Payload: &cleanroomv1.ExecutionStreamEvent_Exit{
+				Exit: &cleanroomv1.ExecutionExit{
+					ExitCode: 0,
+					Status:   cleanroomv1.ExecutionStatus_EXECUTION_STATUS_SUCCEEDED,
+					Message:  "ok",
+				},
+			},
+		}
+		close(service.done)
+		close(service.updates)
+		return errors.New("use of closed network connection")
+	}
+
+	server, err := Start(ctx, "127.0.0.1:0", service, nil)
+	if err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+	defer func() {
+		_ = server.Close()
+	}()
+
+	session, err := Dial(
+		context.Background(),
+		server.Addr().String(),
+		server.ALPN(),
+		"SHA256:"+strings.ToUpper(server.CertPinSHA256()),
+		service.expectedSessionID,
+		service.expectedToken,
+	)
+	if err != nil {
+		t.Fatalf("Dial returned error: %v", err)
+	}
+	defer session.Close()
+
+	_ = waitForResizeCall(t, service.resizeCh)
+	_ = readPTYChunk(t, session)
+
+	if err := session.WriteStdin([]byte("stdin-data")); err != nil {
+		t.Fatalf("WriteStdin returned error: %v", err)
+	}
+	if got, want := waitForString(t, service.stdinCh), "stdin-data"; got != want {
+		t.Fatalf("unexpected stdin payload: got %q want %q", got, want)
+	}
+
+	msg := waitForControlMessage(t, session.Events())
+	if got, want := msg.Type, controlTypeError; got != want {
+		t.Fatalf("unexpected control message type: got %q want %q", got, want)
+	}
+	if !strings.Contains(msg.Error, "closed network connection") {
+		t.Fatalf("unexpected control message error: %q", msg.Error)
 	}
 }
 

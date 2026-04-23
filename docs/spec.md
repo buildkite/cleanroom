@@ -261,8 +261,9 @@ explicit request-time changeset input.
 - `--keep` preserves a newly created sandbox after execution completes.
 - Reuse an existing sandbox with `--in <id>`.
 - Create a new sandbox from a snapshot with `--from <snapshot-id>`.
-- Interactive executions must use `AttachExecution` bootstrap plus the dedicated QUIC interactive transport.
-- Non-interactive mode must use server-streaming semantics.
+- `cleanroom exec` defaults to non-interactive server-streaming semantics.
+- `cleanroom exec --tty` and `cleanroom console` must use `AttachExecution`
+  bootstrap plus the dedicated QUIC interactive transport.
 - First interrupt signal should request execution cancel; second interrupt may detach client stream immediately.
 - If the local repository is dirty and no explicit changeset mode is requested,
   Cleanroom should warn and continue using committed `HEAD`; uncommitted changes

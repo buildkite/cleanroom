@@ -103,7 +103,7 @@ Run a command in a sandbox:
 
 ```bash
 cleanroom exec -- npm test
-cleanroom exec -e OPENAI_API_KEY -- codex app-server
+cleanroom exec --tty -e OPENAI_API_KEY -- codex app-server
 ```
 
 When `cleanroom.yaml` includes a repository bootstrap block, the top-level
@@ -186,6 +186,7 @@ Interactive console:
 
 ```bash
 cleanroom console -- bash
+cleanroom exec --tty -- bash
 ```
 
 ## Policy file
@@ -253,7 +254,8 @@ With the default behavior:
 
 - `cleanroom create` creates a sandbox with the current repo checked out at local `HEAD`
 - `cleanroom exec -- <cmd>` checks out the repo, runs `<cmd>` from `/workspace`, and tears the sandbox down unless `--keep` is set
-- `cleanroom console -- bash` opens a shell in `/workspace` and tears the sandbox down unless `--keep` is set
+- `cleanroom exec --tty -- <cmd>` runs `<cmd>` from `/workspace` with a real tty and tears the sandbox down unless `--keep` is set
+- `cleanroom console -- bash` opens a shell in `/workspace` using the same interactive tty transport and tears the sandbox down unless `--keep` is set
 - dirty working trees print a warning and use committed `HEAD`; uncommitted changes are not copied in
 - `cleanroom sandbox create` remains explicit and repo-agnostic
 
@@ -339,6 +341,10 @@ func example() error {
 - protobuf request/response/event types (for example `client.CreateExecutionRequest`)
 - status enums (`client.SandboxStatus_*`, `client.ExecutionStatus_*`)
 - ergonomic wrappers (`client.NewFromEnv`, `client.EnsureSandbox`, `client.ExecAndWait`)
+
+`client.ExecAndWait` is the batch-oriented helper. Interactive attach flows use
+the lower-level execution RPCs (`CreateExecution`, `AttachExecution`, and
+related methods).
 
 ## Images
 

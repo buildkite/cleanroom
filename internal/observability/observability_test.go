@@ -490,7 +490,6 @@ func TestRuntimeErrorReporterSuppressWaitsForInFlightHandle(t *testing.T) {
 		t.Fatal("timed out waiting for handle to finish")
 	}
 }
-
 func TestStartExportsOTLPHTTPSpanOnShutdown(t *testing.T) {
 	bodyCh := make(chan []byte, 8)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

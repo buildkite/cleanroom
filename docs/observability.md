@@ -58,8 +58,9 @@ under the `Cleanroom` folder.
 Use the local stack or your configured OTLP backend to inspect traces and
 execution diagnostics.
 
-- `cleanroom exec` and `cleanroom console` leave failure stderr focused on
-  streamed guest output instead of appending diagnostic footers.
+- `cleanroom exec`, `cleanroom exec --tty`, and `cleanroom console` leave
+  failure stderr focused on streamed guest output instead of appending
+  diagnostic footers.
 - `cleanroom exec --print-trace-id` also prints `trace_id` after a successful
   execution when available.
 - `cleanroom execution inspect <execution-id>` shows execution status,

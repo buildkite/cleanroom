@@ -154,15 +154,22 @@ func isLoopbackHost(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-func pollInteractiveExitOrControlErr(exitCodeCh <-chan int, controlErrCh *chan error) (int, bool, error) {
-	if exitCodeCh != nil {
-		select {
-		case code := <-exitCodeCh:
-			return code, true, nil
-		default:
-		}
+func pollInteractiveExitCode(exitCodeCh <-chan int) (int, bool) {
+	if exitCodeCh == nil {
+		return 0, false
 	}
+	select {
+	case code := <-exitCodeCh:
+		return code, true
+	default:
+		return 0, false
+	}
+}
 
+func pollInteractiveExitOrControlErr(exitCodeCh <-chan int, controlErrCh *chan error) (int, bool, error) {
+	if code, haveExitCode := pollInteractiveExitCode(exitCodeCh); haveExitCode {
+		return code, true, nil
+	}
 	if controlErrCh == nil || *controlErrCh == nil {
 		return 0, false, nil
 	}
@@ -171,12 +178,24 @@ func pollInteractiveExitOrControlErr(exitCodeCh <-chan int, controlErrCh *chan e
 	case controlErr, ok := <-*controlErrCh:
 		if !ok {
 			*controlErrCh = nil
+			if code, haveExitCode := pollInteractiveExitCode(exitCodeCh); haveExitCode {
+				return code, true, nil
+			}
 			return 0, false, nil
 		}
 		if controlErr != nil && !isInteractiveStreamClosedErr(controlErr) {
+			if code, haveExitCode := pollInteractiveExitCode(exitCodeCh); haveExitCode {
+				return code, true, nil
+			}
+			if isBenignExecutionStdinErr(controlErr) {
+				return 0, false, nil
+			}
 			return 0, false, fmt.Errorf("interactive control stream: %w", controlErr)
 		}
 	default:
+	}
+	if code, haveExitCode := pollInteractiveExitCode(exitCodeCh); haveExitCode {
+		return code, true, nil
 	}
 	return 0, false, nil
 }
@@ -208,6 +227,12 @@ func waitForInteractiveExitOrControlErr(exitCodeCh <-chan int, controlErrCh *cha
 				continue
 			}
 			if controlErr != nil && !isInteractiveStreamClosedErr(controlErr) {
+				if code, haveExitCode := pollInteractiveExitCode(exitCodeCh); haveExitCode {
+					return code, true, nil
+				}
+				if isBenignExecutionStdinErr(controlErr) {
+					continue
+				}
 				return 0, false, fmt.Errorf("interactive control stream: %w", controlErr)
 			}
 		case <-deadline.C:

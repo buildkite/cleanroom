@@ -58,7 +58,7 @@ type CLI struct {
 	Snapshot  SnapshotCommand  `cmd:"" help:"Manage snapshots"`
 	Create    CreateCommand    `cmd:"" help:"Create a sandbox using repo policy"`
 	Exec      ExecCommand      `cmd:"" help:"Execute a command in a sandbox"`
-	Console   ConsoleCommand   `cmd:"" help:"Open an interactive console in a sandbox"`
+	Console   ConsoleCommand   `cmd:"" help:"Run a command with an interactive tty in a sandbox"`
 	Serve     ServeCommand     `cmd:"" help:"Run the cleanroom control-plane server in the foreground"`
 	Daemon    DaemonCommand    `cmd:"" help:"Manage daemon/service lifecycle"`
 	Doctor    DoctorCommand    `cmd:"" help:"Run environment and backend diagnostics"`

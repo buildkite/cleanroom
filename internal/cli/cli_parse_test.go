@@ -49,6 +49,21 @@ func TestExecCommandStillRequiresArgs(t *testing.T) {
 	}
 }
 
+func TestExecCommandParsesTTYFlag(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"exec", "--tty", "--", "bash"}); err != nil {
+		t.Fatalf("parse exec --tty returned error: %v", err)
+	}
+	if !c.Exec.TTY {
+		t.Fatal("expected exec --tty flag to be set")
+	}
+	if got, want := trimPassthroughSeparator(c.Exec.Command), []string{"bash"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected exec command: got %v want %v", got, want)
+	}
+}
+
 func TestExecCommandRejectsRemovedClientLogLevelFlag(t *testing.T) {
 	c := &CLI{}
 	parser := newParserForTest(t, c)

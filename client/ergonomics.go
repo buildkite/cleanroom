@@ -321,11 +321,10 @@ func (c *Client) lockEnsureKey(ctx context.Context, key string) (func(), error) 
 	}, nil
 }
 
-// ExecOptions controls how ExecAndWait streams command output.
+// ExecOptions controls how batch ExecAndWait streams command output.
 type ExecOptions struct {
 	Stdout io.Writer
 	Stderr io.Writer
-	TTY    bool
 	// Timeout bounds the stream/wait phase after execution creation.
 	Timeout time.Duration
 }
@@ -341,7 +340,7 @@ type ExecResult struct {
 	Stderr      string
 }
 
-// ExecAndWait creates an execution, streams output, and waits for completion.
+// ExecAndWait creates a batch execution, streams output, and waits for completion.
 func (c *Client) ExecAndWait(ctx context.Context, sandboxID string, command []string, opts ExecOptions) (*ExecResult, error) {
 	if c == nil || c.inner == nil {
 		return nil, errors.New("nil client")
@@ -357,9 +356,6 @@ func (c *Client) ExecAndWait(ctx context.Context, sandboxID string, command []st
 	createReq := &CreateExecutionRequest{
 		SandboxId: sandboxID,
 		Command:   append([]string(nil), command...),
-	}
-	if opts.TTY {
-		createReq.Options = &ExecutionOptions{Tty: true}
 	}
 
 	created, err := c.CreateExecution(ctx, createReq)
