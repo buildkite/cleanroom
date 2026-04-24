@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net/url"
 	"os"
@@ -63,6 +64,34 @@ type TraceConfig struct {
 type TraceSamplingConfig struct {
 	Mode  string   `yaml:"mode,omitempty"`
 	Ratio *float64 `yaml:"ratio,omitempty"`
+}
+
+type configFile struct {
+	DefaultBackend string              `yaml:"default_backend"`
+	ControlHost    string              `yaml:"control_host,omitempty"`
+	Gateway        GatewayConfig       `yaml:"gateway,omitempty"`
+	Observability  ObservabilityConfig `yaml:"observability,omitempty"`
+	Backends       backendsFile        `yaml:"backends"`
+}
+
+type backendsFile struct {
+	Firecracker    FirecrackerConfig `yaml:"firecracker"`
+	DarwinVZ       DarwinVZConfig    `yaml:"darwin-vz"`
+	DarwinVZLegacy DarwinVZConfig    `yaml:"darwin_vz"`
+}
+
+func (f configFile) config() Config {
+	cfg := Config{
+		DefaultBackend: f.DefaultBackend,
+		ControlHost:    f.ControlHost,
+		Gateway:        f.Gateway,
+		Observability:  f.Observability,
+		Backends: Backends{
+			Firecracker: f.Backends.Firecracker,
+			DarwinVZ:    f.Backends.DarwinVZ,
+		},
+	}
+	return cfg
 }
 
 type Backends struct {
@@ -386,10 +415,16 @@ func LoadPath(path string) (Config, string, error) {
 }
 
 func parseConfig(path string, raw []byte) (Config, error) {
-	cfg := Config{}
-	if err := yaml.Unmarshal(raw, &cfg); err != nil {
-		return Config{}, fmt.Errorf("parse %s: %w", path, err)
+	rawCfg := configFile{}
+	dec := yaml.NewDecoder(bytes.NewReader(raw))
+	dec.KnownFields(true)
+	if err := dec.Decode(&rawCfg); err != nil {
+		if !errors.Is(err, io.EOF) {
+			return Config{}, fmt.Errorf("parse %s: %w", path, err)
+		}
 	}
+	cfg := rawCfg.config()
+
 	backendPresence := struct {
 		Backends struct {
 			Firecracker    *yaml.Node `yaml:"firecracker"`
@@ -414,17 +449,8 @@ func parseConfig(path string, raw []byte) (Config, error) {
 	darwinVZMinRootFSBytes := cfg.Backends.DarwinVZ.MinimumRootFSBytes
 	darwinVZMinRootFSBytesSet := presenceCfg.Backends.DarwinVZ.MinimumRootFSBytes != nil
 	if darwinVZConfigIsZero(cfg.Backends.DarwinVZ) {
-		legacyCfg := struct {
-			Backends struct {
-				DarwinVZ DarwinVZConfig `yaml:"darwin_vz"`
-			} `yaml:"backends"`
-		}{}
-		if err := yaml.Unmarshal(raw, &legacyCfg); err != nil {
-			if backendPresence.Backends.LegacyDarwinVZ != nil {
-				return Config{}, fmt.Errorf("parse %s: %w", path, err)
-			}
-		} else if darwinVZConfigHasValues(legacyCfg.Backends.DarwinVZ) {
-			cfg.Backends.DarwinVZ = legacyCfg.Backends.DarwinVZ
+		if darwinVZConfigHasValues(rawCfg.Backends.DarwinVZLegacy) {
+			cfg.Backends.DarwinVZ = rawCfg.Backends.DarwinVZLegacy
 		}
 	}
 	if darwinVZMinRootFSBytesSet {

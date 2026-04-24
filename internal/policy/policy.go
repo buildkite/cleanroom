@@ -1,11 +1,13 @@
 package policy
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path"
 	"path/filepath"
@@ -423,8 +425,12 @@ func readPolicy(path string) (rawPolicy, error) {
 	}
 
 	var raw rawPolicy
-	if err := yaml.Unmarshal(b, &raw); err != nil {
-		return rawPolicy{}, fmt.Errorf("parse %s: %w", path, err)
+	dec := yaml.NewDecoder(bytes.NewReader(b))
+	dec.KnownFields(true)
+	if err := dec.Decode(&raw); err != nil {
+		if !errors.Is(err, io.EOF) {
+			return rawPolicy{}, fmt.Errorf("parse %s: %w", path, err)
+		}
 	}
 
 	return raw, nil
