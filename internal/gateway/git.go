@@ -42,9 +42,10 @@ const (
 	gatewayActionDeny           = observability.GatewayActionDeny
 )
 
-const maxUploadPackRequestBytes int64 = 32 << 20
-
-var errUploadPackRequestTooLarge = errors.New("git-upload-pack request body too large")
+var (
+	maxUploadPackRequestBytes    int64 = 32 << 20
+	errUploadPackRequestTooLarge       = errors.New("git-upload-pack request body too large")
+)
 
 type gitHandler struct {
 	credentials CredentialProvider
@@ -142,6 +143,18 @@ func (h *gitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if h.mirrors != nil {
 		if err := h.serveFromMirror(w, r, remoteURL, upstreamHost, repoPath, requestType); err != nil {
+			if errors.Is(err, errUploadPackRequestTooLarge) {
+				setGatewayRequestDecision(r.Context(), gatewayActionDeny, reasonInvalidRequest)
+				span.RecordError(err)
+				span.SetAttributes(
+					attribute.String(observability.AttrGatewayAction, gatewayActionDeny),
+					attribute.String(observability.AttrReasonCode, reasonInvalidRequest),
+				)
+				span.SetStatus(codes.Error, err.Error())
+				h.auditLog(r.Context(), scope.SandboxID, upstreamHost, repoPath, gatewayActionDeny, reasonInvalidRequest)
+				writeReasonError(w, http.StatusRequestEntityTooLarge, reasonInvalidRequest, err.Error())
+				return
+			}
 			setGatewayRequestDecision(r.Context(), gatewayActionDeny, reasonUpstreamError)
 			span.RecordError(err)
 			span.SetAttributes(

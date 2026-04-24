@@ -365,6 +365,32 @@ func TestGitHandlerUpstreamTransportFailureMarksSpanDenied(t *testing.T) {
 	}
 }
 
+func TestGitHandlerMirrorOversizedUploadPackReturnsRequestTooLarge(t *testing.T) {
+	oldLimit := maxUploadPackRequestBytes
+	maxUploadPackRequestBytes = 8
+	t.Cleanup(func() {
+		maxUploadPackRequestBytes = oldLimit
+	})
+
+	h := newGitHandler(nil, nil)
+	h.mirrors = &staticMirrorStore{mirrorDir: t.TempDir()}
+
+	req := httptest.NewRequest("POST", "/git/github.com/org/repo.git/git-upload-pack", strings.NewReader("012345678"))
+	req = withScope(req, gitTestScope())
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413, got %d (body: %s)", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get(reasonCodeHeader); got != reasonInvalidRequest {
+		t.Fatalf("expected %s=%s, got %q", reasonCodeHeader, reasonInvalidRequest, got)
+	}
+	if body := w.Body.String(); !strings.Contains(body, errUploadPackRequestTooLarge.Error()) {
+		t.Fatalf("expected body to include oversize error, got %q", body)
+	}
+}
+
 func TestGitHandlerServesMirrorToRealGitClient(t *testing.T) {
 	t.Parallel()
 
