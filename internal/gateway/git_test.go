@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -464,6 +465,33 @@ func TestUploadPackConfigArgsEnablePartialCloneFilter(t *testing.T) {
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "uploadpack.allowFilter=true") {
 		t.Fatalf("expected upload-pack config args to enable filter support, got %q", joined)
+	}
+}
+
+func TestReadUploadPackBodyRejectsOversizedPlainBody(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/git/github.com/org/repo.git/git-upload-pack", strings.NewReader("012345678"))
+
+	_, err := readUploadPackBodyWithLimit(req, 8)
+	if !errors.Is(err, errUploadPackRequestTooLarge) {
+		t.Fatalf("readUploadPackBody error = %v, want %v", err, errUploadPackRequestTooLarge)
+	}
+}
+
+func TestReadUploadPackBodyRejectsOversizedGzipExpansion(t *testing.T) {
+	var compressed bytes.Buffer
+	gz := gzip.NewWriter(&compressed)
+	if _, err := gz.Write([]byte("012345678")); err != nil {
+		t.Fatalf("write gzip body: %v", err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatalf("close gzip body: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/git/github.com/org/repo.git/git-upload-pack", &compressed)
+	req.Header.Set("Content-Encoding", "gzip")
+
+	_, err := readUploadPackBodyWithLimit(req, 8)
+	if !errors.Is(err, errUploadPackRequestTooLarge) {
+		t.Fatalf("readUploadPackBody error = %v, want %v", err, errUploadPackRequestTooLarge)
 	}
 }
 

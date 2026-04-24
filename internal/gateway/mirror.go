@@ -198,9 +198,8 @@ func (s *gitMirrorStore) cloneMirror(ctx context.Context, remoteURL, mirrorDir s
 	if err := os.MkdirAll(filepath.Dir(mirrorDir), 0o755); err != nil {
 		return fmt.Errorf("create mirror directory: %w", err)
 	}
-	args := s.gitArgsWithAuth(ctx, remoteURL, "clone", "--mirror", remoteURL, mirrorDir)
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmd := exec.CommandContext(ctx, "git", "clone", "--mirror", remoteURL, mirrorDir)
+	cmd.Env = s.gitEnvWithAuth(ctx, remoteURL, append(os.Environ(), "GIT_TERMINAL_PROMPT=0"))
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		_ = os.RemoveAll(mirrorDir)
@@ -217,9 +216,8 @@ func (s *gitMirrorStore) fetchMirror(ctx context.Context, remoteURL, mirrorDir s
 		return fmt.Errorf("git remote set-url origin %s: %s: %w", remoteURL, strings.TrimSpace(string(output)), err)
 	}
 
-	args := s.gitArgsWithAuth(ctx, remoteURL, "-C", mirrorDir, "fetch", "--prune", "origin")
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmd := exec.CommandContext(ctx, "git", "-C", mirrorDir, "fetch", "--prune", "origin")
+	cmd.Env = s.gitEnvWithAuth(ctx, remoteURL, append(os.Environ(), "GIT_TERMINAL_PROMPT=0"))
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("git fetch --prune origin: %s: %w", strings.TrimSpace(string(output)), err)
@@ -228,7 +226,8 @@ func (s *gitMirrorStore) fetchMirror(ctx context.Context, remoteURL, mirrorDir s
 	return nil
 }
 
-func (s *gitMirrorStore) gitArgsWithAuth(ctx context.Context, remoteURL string, args ...string) []string {
+func (s *gitMirrorStore) gitEnvWithAuth(ctx context.Context, remoteURL string, baseEnv []string) []string {
+	env := append([]string(nil), baseEnv...)
 	key := ""
 	value := ""
 	if s != nil && s.credentials != nil {
@@ -240,12 +239,30 @@ func (s *gitMirrorStore) gitArgsWithAuth(ctx context.Context, remoteURL string, 
 	}
 
 	if key == "" || value == "" {
-		return append([]string(nil), args...)
+		return env
 	}
 
-	out := make([]string, 0, len(args)+2)
-	out = append(out, "-c", key+"="+value)
-	out = append(out, args...)
+	env = pruneGitConfigEnv(env)
+	return append(env,
+		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0="+key,
+		"GIT_CONFIG_VALUE_0="+value,
+	)
+}
+
+func pruneGitConfigEnv(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, entry := range env {
+		name, _, ok := strings.Cut(entry, "=")
+		if !ok {
+			out = append(out, entry)
+			continue
+		}
+		if name == "GIT_CONFIG_COUNT" || strings.HasPrefix(name, "GIT_CONFIG_KEY_") || strings.HasPrefix(name, "GIT_CONFIG_VALUE_") {
+			continue
+		}
+		out = append(out, entry)
+	}
 	return out
 }
 

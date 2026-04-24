@@ -73,6 +73,12 @@ const ScopeTokenHeader = "X-Cleanroom-Scope-Token"
 
 var defaultDarwinVZScopeTokenSourcePrefix = netip.MustParsePrefix("192.168.64.0/24")
 
+func defaultScopeTokenSourcePolicy() ScopeTokenSourcePolicy {
+	return ScopeTokenSourcePolicy{
+		TrustedSourcePrefixes: []netip.Prefix{defaultDarwinVZScopeTokenSourcePrefix},
+	}
+}
+
 // ScopeFromContext retrieves the SandboxScope injected by identity middleware.
 func ScopeFromContext(ctx context.Context) (*SandboxScope, bool) {
 	scope, ok := ctx.Value(scopeContextKey).(*SandboxScope)
@@ -101,10 +107,9 @@ func ScopeTokenSourcePolicyForGatewayHost(gatewayHost string) ScopeTokenSourcePo
 }
 
 func scopeTokenSourcePolicyForGatewayHost(ctx context.Context, gatewayHost string, lookup gatewayHostLookupFunc) ScopeTokenSourcePolicy {
-	defaultPrefixes := []netip.Prefix{defaultDarwinVZScopeTokenSourcePrefix}
 	gatewayHost = strings.TrimSpace(gatewayHost)
 	if gatewayHost == "" {
-		return ScopeTokenSourcePolicy{TrustedSourcePrefixes: defaultPrefixes}
+		return defaultScopeTokenSourcePolicy()
 	}
 
 	if addr, err := netip.ParseAddr(gatewayHost); err == nil {
@@ -113,12 +118,12 @@ func scopeTokenSourcePolicyForGatewayHost(ctx context.Context, gatewayHost strin
 		}
 	}
 	if lookup == nil {
-		return ScopeTokenSourcePolicy{AllowScopeTokenFromAnySource: true}
+		return defaultScopeTokenSourcePolicy()
 	}
 
 	resolved, err := lookup(ctx, gatewayHost)
 	if err != nil {
-		return ScopeTokenSourcePolicy{AllowScopeTokenFromAnySource: true}
+		return defaultScopeTokenSourcePolicy()
 	}
 
 	prefixes := make([]netip.Prefix, 0, len(resolved))
@@ -139,7 +144,7 @@ func scopeTokenSourcePolicyForGatewayHost(ctx context.Context, gatewayHost strin
 		prefixes = append(prefixes, prefix)
 	}
 	if len(prefixes) == 0 {
-		return ScopeTokenSourcePolicy{AllowScopeTokenFromAnySource: true}
+		return defaultScopeTokenSourcePolicy()
 	}
 	return ScopeTokenSourcePolicy{TrustedSourcePrefixes: prefixes}
 }
@@ -249,7 +254,10 @@ func NewServer(cfg ServerConfig) *Server {
 	mux.HandleFunc(RouteMeta, stubHandler("meta"))
 
 	s.httpServer = &http.Server{
-		Handler: s.identityMiddleware(s.pathMiddleware(s.tracingMiddleware(mux))),
+		Handler:           s.identityMiddleware(s.pathMiddleware(s.tracingMiddleware(mux))),
+		ReadHeaderTimeout: 5 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
 	}
 
 	return s

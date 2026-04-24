@@ -520,18 +520,45 @@ func TestScopeTokenTrustedSourcePrefixesForGatewayHostResolvesHostnames(t *testi
 	}
 }
 
-func TestScopeTokenSourcePolicyForGatewayHostAllowsAnySourceOnLookupFailure(t *testing.T) {
+func TestScopeTokenSourcePolicyForGatewayHostFallsBackToDefaultPrefixesOnLookupFailure(t *testing.T) {
 	t.Parallel()
 
 	got := scopeTokenSourcePolicyForGatewayHost(context.Background(), "gateway.local", func(context.Context, string) ([]net.IP, error) {
 		return nil, errors.New("lookup failed")
 	})
 
-	if !got.AllowScopeTokenFromAnySource {
-		t.Fatal("expected source trust to be disabled on lookup failure")
+	if got.AllowScopeTokenFromAnySource {
+		t.Fatal("did not expect source trust to be disabled on lookup failure")
 	}
-	if len(got.TrustedSourcePrefixes) != 0 {
-		t.Fatalf("expected no trusted source prefixes when trust is disabled, got %v", got.TrustedSourcePrefixes)
+	want := []netip.Prefix{netip.MustParsePrefix("192.168.64.0/24")}
+	if len(got.TrustedSourcePrefixes) != len(want) {
+		t.Fatalf("len(prefixes) = %d, want %d", len(got.TrustedSourcePrefixes), len(want))
+	}
+	for i := range got.TrustedSourcePrefixes {
+		if got.TrustedSourcePrefixes[i] != want[i] {
+			t.Fatalf("prefix[%d] = %s, want %s", i, got.TrustedSourcePrefixes[i], want[i])
+		}
+	}
+}
+
+func TestScopeTokenSourcePolicyForGatewayHostFallsBackToDefaultPrefixesOnEmptyLookup(t *testing.T) {
+	t.Parallel()
+
+	got := scopeTokenSourcePolicyForGatewayHost(context.Background(), "gateway.local", func(context.Context, string) ([]net.IP, error) {
+		return nil, nil
+	})
+
+	if got.AllowScopeTokenFromAnySource {
+		t.Fatal("did not expect source trust to be disabled on empty lookup")
+	}
+	want := []netip.Prefix{netip.MustParsePrefix("192.168.64.0/24")}
+	if len(got.TrustedSourcePrefixes) != len(want) {
+		t.Fatalf("len(prefixes) = %d, want %d", len(got.TrustedSourcePrefixes), len(want))
+	}
+	for i := range got.TrustedSourcePrefixes {
+		if got.TrustedSourcePrefixes[i] != want[i] {
+			t.Fatalf("prefix[%d] = %s, want %s", i, got.TrustedSourcePrefixes[i], want[i])
+		}
 	}
 }
 
