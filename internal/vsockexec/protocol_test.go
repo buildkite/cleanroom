@@ -177,6 +177,34 @@ func TestProtocolRoundTripStdinEcho(t *testing.T) {
 	}
 }
 
+func TestDecodeStreamResponseRetainsBoundedOutputTail(t *testing.T) {
+	var buf bytes.Buffer
+	fullStdout := strings.Repeat("a", defaultStreamResponseOutputLimit) + "bc"
+	if err := EncodeStreamFrame(&buf, ExecStreamFrame{Type: "stdout", Data: []byte(fullStdout)}); err != nil {
+		t.Fatalf("EncodeStreamFrame stdout: %v", err)
+	}
+	if err := EncodeStreamFrame(&buf, ExecStreamFrame{Type: "exit", ExitCode: 0}); err != nil {
+		t.Fatalf("EncodeStreamFrame exit: %v", err)
+	}
+
+	var streamed bytes.Buffer
+	res, err := DecodeStreamResponse(&buf, StreamCallbacks{
+		OnStdout: func(data []byte) { streamed.Write(data) },
+	})
+	if err != nil {
+		t.Fatalf("DecodeStreamResponse: %v", err)
+	}
+	if got, want := streamed.String(), fullStdout; got != want {
+		t.Fatalf("streamed stdout length = %d, want %d", len(got), len(want))
+	}
+	if got, want := len(res.Stdout), defaultStreamResponseOutputLimit; got != want {
+		t.Fatalf("retained stdout length = %d, want %d", got, want)
+	}
+	if !strings.HasSuffix(fullStdout, res.Stdout) {
+		t.Fatalf("retained stdout does not match tail of streamed output")
+	}
+}
+
 // TestProtocolRoundTripResizeFrame verifies that resize frames are correctly
 // transmitted alongside stdin data.
 func TestProtocolRoundTripResizeFrame(t *testing.T) {

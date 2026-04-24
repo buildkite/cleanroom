@@ -9,7 +9,11 @@ import (
 	"strings"
 )
 
-const DefaultPort uint32 = 10700
+const (
+	DefaultPort uint32 = 10700
+
+	defaultStreamResponseOutputLimit = 1 << 20
+)
 
 type ExecRequest struct {
 	Command     []string `json:"command"`
@@ -134,12 +138,12 @@ func DecodeStreamResponse(r io.Reader, callbacks StreamCallbacks) (ExecResponse,
 				continue
 			}
 			if kind == "stdout" {
-				out.Stdout += string(chunk)
+				out.Stdout = appendBoundedString(out.Stdout, chunk, defaultStreamResponseOutputLimit)
 				if callbacks.OnStdout != nil {
 					callbacks.OnStdout(append([]byte(nil), chunk...))
 				}
 			} else {
-				out.Stderr += string(chunk)
+				out.Stderr = appendBoundedString(out.Stderr, chunk, defaultStreamResponseOutputLimit)
 				if callbacks.OnStderr != nil {
 					callbacks.OnStderr(append([]byte(nil), chunk...))
 				}
@@ -160,6 +164,23 @@ func DecodeStreamResponse(r io.Reader, callbacks StreamCallbacks) (ExecResponse,
 			return ExecResponse{}, fmt.Errorf("unknown stream frame type %q", kind)
 		}
 	}
+}
+
+func appendBoundedString(current string, chunk []byte, limit int) string {
+	if len(chunk) == 0 || limit <= 0 {
+		return current
+	}
+	if len(chunk) >= limit {
+		return string(chunk[len(chunk)-limit:])
+	}
+	if len(current)+len(chunk) <= limit {
+		return current + string(chunk)
+	}
+	keep := limit - len(chunk)
+	if keep < 0 {
+		keep = 0
+	}
+	return current[len(current)-keep:] + string(chunk)
 }
 
 func decodeFrameData(raw json.RawMessage) ([]byte, error) {
