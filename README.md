@@ -111,10 +111,10 @@ commands become repo-aware: Cleanroom resolves the current git remote and local
 `HEAD`, materializes that checkout in the sandbox, and starts commands in the
 configured guest path. Cleanroom no longer auto-detects or auto-wraps commands
 for `mise`; if you want `mise`, run it explicitly in the command you execute or
-in `sandbox.dependencies.command` so it can participate in dependency-stage
-caching.
+in `sandbox.dependencies.command` or `sandbox.services.command` so it can
+participate in create-time stage caching.
 
-You can also define per-execution setup that runs before each top-level command:
+You can also define create-time and per-execution setup:
 
 ```yaml
 sandbox:
@@ -122,14 +122,28 @@ sandbox:
     command: bundle install
     key:
       files: [Gemfile.lock]
-  run:
-    before: |
+  services:
+    docker:
+      required: true
+    command: |
       docker compose up -d postgres valkey
       bin/rails db:prepare
+      docker compose stop postgres valkey
+    key:
+      files: [docker-compose.yml, db/schema.rb]
+  run:
+    before: docker compose up -d postgres valkey
 ```
 
-`sandbox.dependencies.command` supports either a shell string or an argv sequence.
-Prefer the string form unless you specifically need exact argv semantics.
+Use `sandbox.dependencies.command` for deterministic repo-local bootstrap,
+`sandbox.services.command` for snapshotable on-disk service preparation, and
+`sandbox.run.before` for live startup that must happen before each execution.
+Set `sandbox.services.docker.required: true` when the services bootstrap needs
+the guest Docker daemon.
+
+`sandbox.dependencies.command` and `sandbox.services.command` support either a
+shell string or an argv sequence. Prefer the string form unless you specifically
+need exact argv semantics.
 `sandbox.run.before` always runs through `sh -lc`.
 
 Pre-create a long-running sandbox without running a command:

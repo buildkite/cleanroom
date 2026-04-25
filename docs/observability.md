@@ -196,13 +196,14 @@ The cache-stage values are:
 - `runtime`
 - `workspace`
 - `dependency`
+- `services`
 
 Recommended cache telemetry attributes are:
 
-- `cleanroom.cache.stage=runtime|workspace|dependency`
+- `cleanroom.cache.stage=runtime|workspace|dependency|services`
 - `cleanroom.cache.operation=lookup|restore|publish|invalidate`
 - `cleanroom.cache.result=hit|miss|restored|published|fallback|failed`
-- `cleanroom.cache.lookup_reason=cache_record_not_found|backend_mismatch|policy_hash_mismatch|repository_changed|workspace_parent_changed`
+- `cleanroom.cache.lookup_reason=cache_record_not_found|backend_mismatch|policy_hash_mismatch|repository_changed|parent_stage_changed`
 - `cleanroom.repository.commit_sha=<git commit sha>`
 
 Use these fields in traces and structured logs for cache-specific work. Use
