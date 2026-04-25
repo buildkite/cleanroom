@@ -254,3 +254,66 @@ exit 2
 		t.Fatalf("exec should not run after sandbox create fails, got:\n%s", rawLog)
 	}
 }
+
+func TestBenchmarkTTIStartServerRefusesExistingUnixSocket(t *testing.T) {
+	tmpDir := t.TempDir()
+	binDir := filepath.Join(tmpDir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir bin: %v", err)
+	}
+
+	writeLocalExecutable(t, binDir, "hyperfine", "#!/usr/bin/env bash\nexit 0\n")
+
+	callLog := filepath.Join(tmpDir, "cleanroom-calls.log")
+	fakeCleanroom := `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "$FAKE_CLEANROOM_LOG"
+if [[ "${1:-}" == serve ]]; then
+  echo "serve should not start with an existing socket" >&2
+  exit 2
+fi
+exit 0
+`
+	fakeCleanroomPath := writeLocalExecutable(t, binDir, "cleanroom", fakeCleanroom)
+
+	socketPath := filepath.Join(tmpDir, "cleanroom.sock")
+	if err := os.WriteFile(socketPath, []byte("existing socket sentinel"), 0o600); err != nil {
+		t.Fatalf("write existing socket sentinel: %v", err)
+	}
+
+	cmd := exec.Command(
+		"bash",
+		"benchmark-tti.sh",
+		"--cleanroom-bin", fakeCleanroomPath,
+		"--host", "unix://"+socketPath,
+		"--start-server",
+		"--iterations", "1",
+		"--warmup", "0",
+		"--output-dir", filepath.Join(tmpDir, "out"),
+	)
+	cmd.Env = append(os.Environ(),
+		"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"FAKE_CLEANROOM_LOG="+callLog,
+	)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected benchmark-tti.sh to fail when start-server socket exists\n%s", out)
+	}
+	if !strings.Contains(string(out), "already exists") {
+		t.Fatalf("expected existing socket error, got:\n%s", out)
+	}
+	contents, err := os.ReadFile(socketPath)
+	if err != nil {
+		t.Fatalf("existing socket path should not be removed: %v", err)
+	}
+	if got, want := string(contents), "existing socket sentinel"; got != want {
+		t.Fatalf("existing socket path was modified: got %q want %q", got, want)
+	}
+	rawLog, err := os.ReadFile(callLog)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("read call log: %v", err)
+	}
+	if strings.Contains(string(rawLog), "serve") {
+		t.Fatalf("serve should not start with an existing socket, got:\n%s", rawLog)
+	}
+}

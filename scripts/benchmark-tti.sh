@@ -48,6 +48,7 @@ else
   cleanroom_bin="cleanroom"
 fi
 cleanroom_bin_explicit=0
+host_explicit=0
 
 host="$default_host"
 iterations=10
@@ -60,6 +61,7 @@ start_server=0
 build_before=0
 gateway_listen=":0"
 server_pid=""
+server_socket_dir=""
 server_socket_path=""
 sandbox_id_path=""
 
@@ -67,6 +69,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --host)
       host="$2"
+      host_explicit=1
       shift 2
       ;;
     -n|--iterations)
@@ -139,6 +142,9 @@ cleanup() {
   if [[ -n "$server_socket_path" ]]; then
     rm -f "$server_socket_path"
   fi
+  if [[ -n "$server_socket_dir" ]]; then
+    rmdir "$server_socket_dir" >/dev/null 2>&1 || true
+  fi
 
   if [[ -n "$sandbox_id_path" ]]; then
     rm -f "$sandbox_id_path"
@@ -188,6 +194,12 @@ output_path="${output_dir}/${timestamp}.json"
 sandbox_id_path="$(mktemp "${output_dir}/.tti-sandbox-id.XXXXXX")"
 server_log_path="${output_dir}/${timestamp}-server.log"
 
+if [[ "$start_server" -eq 1 && "$host_explicit" -eq 0 ]]; then
+  server_socket_dir="$(mktemp -d "${output_dir}/.cleanroom-server.XXXXXX")"
+  server_socket_path="${server_socket_dir}/cleanroom.sock"
+  host="unix://${server_socket_path}"
+fi
+
 if [[ -z "${CLEANROOM_DARWIN_VZ_HELPER:-}" ]]; then
   if [[ -d "${PWD}/dist/cleanroom-darwin-vz.app" ]]; then
     export CLEANROOM_DARWIN_VZ_HELPER="${PWD}/dist/cleanroom-darwin-vz.app"
@@ -198,9 +210,16 @@ fi
 
 if [[ "$start_server" -eq 1 ]]; then
   if [[ "$host" == unix://* ]]; then
-    server_socket_path="${host#unix://}"
+    if [[ -z "$server_socket_path" ]]; then
+      requested_socket_path="${host#unix://}"
+      if [[ -e "$requested_socket_path" ]]; then
+        echo "refusing to start cleanroom server because unix socket path already exists: $requested_socket_path" >&2
+        echo "choose a different --host or omit --host to use an isolated benchmark socket" >&2
+        exit 1
+      fi
+      server_socket_path="$requested_socket_path"
+    fi
     mkdir -p "$(dirname "$server_socket_path")"
-    rm -f "$server_socket_path"
   fi
 
   "$cleanroom_bin" serve --listen "$host" --gateway-listen "$gateway_listen" >"$server_log_path" 2>&1 &
