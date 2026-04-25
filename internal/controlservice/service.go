@@ -193,6 +193,8 @@ func sandboxCreateSourceMetricValue(snapshotID, sourceKind string) string {
 		return "workspace_cache"
 	case "dependency stage cache":
 		return "dependency_cache"
+	case "portable dependency stage cache":
+		return "dependency_cache"
 	case "services stage cache":
 		return "services_cache"
 	}
