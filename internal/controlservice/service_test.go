@@ -978,6 +978,33 @@ func TestServiceSandboxCreateMetricsUseSnapshotBackend(t *testing.T) {
 	}, 1)
 }
 
+func TestSandboxCreateSourceMetricValue(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		snapshotID string
+		sourceKind string
+		want       string
+	}{
+		{name: "fresh", want: "fresh"},
+		{name: "snapshot source kind", sourceKind: "snapshot", want: "snapshot"},
+		{name: "snapshot id fallback", snapshotID: "snap-1", want: "snapshot"},
+		{name: "workspace cache", sourceKind: "workspace stage cache", want: "workspace_cache"},
+		{name: "dependency cache", sourceKind: "dependency stage cache", want: "dependency_cache"},
+		{name: "portable dependency cache", sourceKind: "portable dependency stage cache", want: "dependency_cache"},
+		{name: "services cache", sourceKind: "services stage cache", want: "services_cache"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := sandboxCreateSourceMetricValue(tt.snapshotID, tt.sourceKind); got != tt.want {
+				t.Fatalf("sandboxCreateSourceMetricValue(%q, %q) = %q, want %q", tt.snapshotID, tt.sourceKind, got, tt.want)
+			}
+		})
+	}
+}
+
 func testRepositoryMirror(t *testing.T, files map[string]string) (*stubRepositoryMirrorStore, *cleanroomv1.RepositoryCheckout) {
 	t.Helper()
 
