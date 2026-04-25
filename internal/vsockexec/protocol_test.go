@@ -179,7 +179,8 @@ func TestProtocolRoundTripStdinEcho(t *testing.T) {
 
 func TestDecodeStreamResponseRetainsBoundedOutputTail(t *testing.T) {
 	var buf bytes.Buffer
-	fullStdout := strings.Repeat("a", defaultStreamResponseOutputLimit) + "bc"
+	const limit = 8
+	fullStdout := "0123456789"
 	if err := EncodeStreamFrame(&buf, ExecStreamFrame{Type: "stdout", Data: []byte(fullStdout)}); err != nil {
 		t.Fatalf("EncodeStreamFrame stdout: %v", err)
 	}
@@ -189,7 +190,8 @@ func TestDecodeStreamResponseRetainsBoundedOutputTail(t *testing.T) {
 
 	var streamed bytes.Buffer
 	res, err := DecodeStreamResponse(&buf, StreamCallbacks{
-		OnStdout: func(data []byte) { streamed.Write(data) },
+		OnStdout:                 func(data []byte) { streamed.Write(data) },
+		BufferedOutputLimitBytes: limit,
 	})
 	if err != nil {
 		t.Fatalf("DecodeStreamResponse: %v", err)
@@ -197,7 +199,7 @@ func TestDecodeStreamResponseRetainsBoundedOutputTail(t *testing.T) {
 	if got, want := streamed.String(), fullStdout; got != want {
 		t.Fatalf("streamed stdout length = %d, want %d", len(got), len(want))
 	}
-	if got, want := len(res.Stdout), defaultStreamResponseOutputLimit; got != want {
+	if got, want := len(res.Stdout), limit; got != want {
 		t.Fatalf("retained stdout length = %d, want %d", got, want)
 	}
 	if !strings.HasSuffix(fullStdout, res.Stdout) {

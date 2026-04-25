@@ -2282,8 +2282,9 @@ func runGuestCommand(bootCtx context.Context, execCtx context.Context, processEx
 
 	commandStart := time.Now()
 	res, err := vsockexec.DecodeStreamResponse(conn, vsockexec.StreamCallbacks{
-		OnStdout: stream.OnStdout,
-		OnStderr: stream.OnStderr,
+		OnStdout:                 stream.OnStdout,
+		OnStderr:                 stream.OnStderr,
+		BufferedOutputLimitBytes: stream.BufferedOutputLimitBytes,
 	})
 	if err != nil {
 		if ctxErr := execCtx.Err(); ctxErr != nil {

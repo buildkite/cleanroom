@@ -1112,8 +1112,9 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 	}
 
 	guestRes, err := vsockexec.DecodeStreamResponse(conn, vsockexec.StreamCallbacks{
-		OnStdout: stream.OnStdout,
-		OnStderr: stream.OnStderr,
+		OnStdout:                 stream.OnStdout,
+		OnStderr:                 stream.OnStderr,
+		BufferedOutputLimitBytes: stream.BufferedOutputLimitBytes,
 	})
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
@@ -1578,8 +1579,9 @@ func (a *Adapter) executeInSandbox(bootCtx context.Context, runCtx context.Conte
 	}
 
 	guestRes, err := vsockexec.DecodeStreamResponse(conn, vsockexec.StreamCallbacks{
-		OnStdout: stream.OnStdout,
-		OnStderr: stream.OnStderr,
+		OnStdout:                 stream.OnStdout,
+		OnStderr:                 stream.OnStderr,
+		BufferedOutputLimitBytes: stream.BufferedOutputLimitBytes,
 	})
 	if err != nil {
 		if ctxErr := runCtx.Err(); ctxErr != nil {

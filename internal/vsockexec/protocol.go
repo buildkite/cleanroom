@@ -95,12 +95,14 @@ func DecodeInputFrame(r io.Reader) (ExecInputFrame, error) {
 }
 
 type StreamCallbacks struct {
-	OnStdout func([]byte)
-	OnStderr func([]byte)
+	OnStdout                 func([]byte)
+	OnStderr                 func([]byte)
+	BufferedOutputLimitBytes int
 }
 
 func DecodeStreamResponse(r io.Reader, callbacks StreamCallbacks) (ExecResponse, error) {
 	dec := json.NewDecoder(r)
+	bufferedOutputLimit := callbacks.bufferedOutputLimitBytes()
 	out := ExecResponse{}
 	for {
 		raw := map[string]json.RawMessage{}
@@ -138,12 +140,12 @@ func DecodeStreamResponse(r io.Reader, callbacks StreamCallbacks) (ExecResponse,
 				continue
 			}
 			if kind == "stdout" {
-				out.Stdout = appendBoundedString(out.Stdout, chunk, defaultStreamResponseOutputLimit)
+				out.Stdout = appendBoundedString(out.Stdout, chunk, bufferedOutputLimit)
 				if callbacks.OnStdout != nil {
 					callbacks.OnStdout(append([]byte(nil), chunk...))
 				}
 			} else {
-				out.Stderr = appendBoundedString(out.Stderr, chunk, defaultStreamResponseOutputLimit)
+				out.Stderr = appendBoundedString(out.Stderr, chunk, bufferedOutputLimit)
 				if callbacks.OnStderr != nil {
 					callbacks.OnStderr(append([]byte(nil), chunk...))
 				}
@@ -164,6 +166,13 @@ func DecodeStreamResponse(r io.Reader, callbacks StreamCallbacks) (ExecResponse,
 			return ExecResponse{}, fmt.Errorf("unknown stream frame type %q", kind)
 		}
 	}
+}
+
+func (callbacks StreamCallbacks) bufferedOutputLimitBytes() int {
+	if callbacks.BufferedOutputLimitBytes > 0 {
+		return callbacks.BufferedOutputLimitBytes
+	}
+	return defaultStreamResponseOutputLimit
 }
 
 func appendBoundedString(current string, chunk []byte, limit int) string {

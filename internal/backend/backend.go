@@ -154,10 +154,11 @@ type AttachIO struct {
 }
 
 type OutputStream struct {
-	OnStdout  func([]byte)
-	OnStderr  func([]byte)
-	OnWarning func(string)
-	OnAttach  func(AttachIO)
+	OnStdout                 func([]byte)
+	OnStderr                 func([]byte)
+	OnWarning                func(string)
+	OnAttach                 func(AttachIO)
+	BufferedOutputLimitBytes int
 }
 
 type ExecutionRequest struct {

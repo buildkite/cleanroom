@@ -5638,8 +5638,10 @@ func TestListSandboxesReturnsNewestSnapshotFirst(t *testing.T) {
 }
 
 func TestExecutionRetentionBoundsOutput(t *testing.T) {
+	gotStreamLimit := 0
 	adapter := &stubAdapter{
 		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+			gotStreamLimit = stream.BufferedOutputLimitBytes
 			for _, chunk := range []string{"1234", "5678", "90"} {
 				if stream.OnStdout != nil {
 					stream.OnStdout([]byte(chunk))
@@ -5695,6 +5697,9 @@ func TestExecutionRetentionBoundsOutput(t *testing.T) {
 	}
 	if got, want := snapshot.Stderr, "cdefghij"; got != want {
 		t.Fatalf("unexpected retained stderr: got %q want %q", got, want)
+	}
+	if got, want := gotStreamLimit, 8; got != want {
+		t.Fatalf("unexpected stream buffered output limit: got %d want %d", got, want)
 	}
 }
 
