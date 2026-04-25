@@ -116,7 +116,7 @@ var (
 		return exec.Command("docker", "rm", "-f", containerID).Run()
 	}
 	resolveReferenceForImageOverride = func(ctx context.Context, source string, allowLocal bool) (string, error) {
-		if digestRef, err := ociref.ParseDigestReference(source); err == nil && isRegistryHostPrefix(digestRef.Repository) {
+		if digestRef, err := ociref.ParseDigestReference(source); err == nil && digestReferenceHasExplicitRegistryHost(digestRef) {
 			return digestRef.Original, nil
 		}
 
@@ -160,7 +160,7 @@ func isExplicitRegistryReference(raw string) bool {
 		return false
 	}
 	if parsed, err := ociref.ParseDigestReference(trimmed); err == nil {
-		return isRegistryHostPrefix(parsed.Repository)
+		return digestReferenceHasExplicitRegistryHost(parsed)
 	}
 	namePart := trimmed
 	if at := strings.Index(namePart, "@"); at >= 0 {
@@ -170,6 +170,11 @@ func isExplicitRegistryReference(raw string) bool {
 		namePart = namePart[:colon]
 	}
 	first := strings.TrimSpace(strings.SplitN(namePart, "/", 2)[0])
+	return isRegistryHostPrefix(first)
+}
+
+func digestReferenceHasExplicitRegistryHost(ref ociref.DigestReference) bool {
+	first, _, _ := strings.Cut(ref.Repository, "/")
 	return isRegistryHostPrefix(first)
 }
 

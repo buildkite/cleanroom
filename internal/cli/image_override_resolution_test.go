@@ -168,6 +168,41 @@ func TestResolveReferenceForImageOverrideReturnsExplicitRegistryDigestWithoutRes
 	}
 }
 
+func TestResolveReferenceForImageOverrideDoesNotTreatDottedImageNameAsRegistryHost(t *testing.T) {
+	localCalls := 0
+	remoteCalls := 0
+	const sourceRef = "myteam/app.v2@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	const localRef = "local/docker-image@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+	withImageOverrideResolversForTest(
+		t,
+		func(_ context.Context, source string) (string, error) {
+			localCalls++
+			if got, want := source, sourceRef; got != want {
+				t.Fatalf("unexpected local resolver source: got %q want %q", got, want)
+			}
+			return localRef, nil
+		},
+		func(_ context.Context, _ string) (string, error) {
+			remoteCalls++
+			return "", errors.New("remote resolver should not be called")
+		},
+	)
+
+	got, err := resolveReferenceForImageOverride(context.Background(), sourceRef, true)
+	if err != nil {
+		t.Fatalf("resolveReferenceForImageOverride returned error: %v", err)
+	}
+	if got != localRef {
+		t.Fatalf("unexpected resolved ref: got %q want %q", got, localRef)
+	}
+	if localCalls != 1 {
+		t.Fatalf("expected local resolver call count 1, got %d", localCalls)
+	}
+	if remoteCalls != 0 {
+		t.Fatalf("expected remote resolver call count 0, got %d", remoteCalls)
+	}
+}
+
 func TestResolveReferenceForImageOverrideSkipsLocalForRemoteEndpoint(t *testing.T) {
 	localCalls := 0
 	remoteCalls := 0
