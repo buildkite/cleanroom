@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -198,9 +199,8 @@ func (s *gitMirrorStore) cloneMirror(ctx context.Context, remoteURL, mirrorDir s
 	if err := os.MkdirAll(filepath.Dir(mirrorDir), 0o755); err != nil {
 		return fmt.Errorf("create mirror directory: %w", err)
 	}
-	args := s.gitArgsWithAuth(ctx, remoteURL, "clone", "--mirror", remoteURL, mirrorDir)
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmd := exec.CommandContext(ctx, "git", "clone", "--mirror", remoteURL, mirrorDir)
+	cmd.Env = s.gitEnvWithAuth(ctx, remoteURL, append(os.Environ(), "GIT_TERMINAL_PROMPT=0"))
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		_ = os.RemoveAll(mirrorDir)
@@ -217,9 +217,8 @@ func (s *gitMirrorStore) fetchMirror(ctx context.Context, remoteURL, mirrorDir s
 		return fmt.Errorf("git remote set-url origin %s: %s: %w", remoteURL, strings.TrimSpace(string(output)), err)
 	}
 
-	args := s.gitArgsWithAuth(ctx, remoteURL, "-C", mirrorDir, "fetch", "--prune", "origin")
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmd := exec.CommandContext(ctx, "git", "-C", mirrorDir, "fetch", "--prune", "origin")
+	cmd.Env = s.gitEnvWithAuth(ctx, remoteURL, append(os.Environ(), "GIT_TERMINAL_PROMPT=0"))
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("git fetch --prune origin: %s: %w", strings.TrimSpace(string(output)), err)
@@ -228,7 +227,8 @@ func (s *gitMirrorStore) fetchMirror(ctx context.Context, remoteURL, mirrorDir s
 	return nil
 }
 
-func (s *gitMirrorStore) gitArgsWithAuth(ctx context.Context, remoteURL string, args ...string) []string {
+func (s *gitMirrorStore) gitEnvWithAuth(ctx context.Context, remoteURL string, baseEnv []string) []string {
+	env := append([]string(nil), baseEnv...)
 	key := ""
 	value := ""
 	if s != nil && s.credentials != nil {
@@ -240,13 +240,65 @@ func (s *gitMirrorStore) gitArgsWithAuth(ctx context.Context, remoteURL string, 
 	}
 
 	if key == "" || value == "" {
-		return append([]string(nil), args...)
+		return env
 	}
 
-	out := make([]string, 0, len(args)+2)
-	out = append(out, "-c", key+"="+value)
-	out = append(out, args...)
+	return appendGitConfigEnv(env, key, value)
+}
+
+func appendGitConfigEnv(env []string, key, value string) []string {
+	count, hasCount := gitConfigCount(env)
+	authIndex := 0
+	if hasCount {
+		authIndex = count
+	}
+	out := make([]string, 0, len(env)+3)
+	countWritten := false
+	for _, entry := range env {
+		name, _, ok := strings.Cut(entry, "=")
+		if !ok {
+			out = append(out, entry)
+			continue
+		}
+		if name == "GIT_CONFIG_COUNT" {
+			if !hasCount || countWritten {
+				continue
+			}
+			out = append(out, "GIT_CONFIG_COUNT="+strconv.Itoa(authIndex+1))
+			countWritten = true
+			continue
+		}
+		if !hasCount && (strings.HasPrefix(name, "GIT_CONFIG_KEY_") || strings.HasPrefix(name, "GIT_CONFIG_VALUE_")) {
+			continue
+		}
+		out = append(out, entry)
+	}
+	if !countWritten {
+		out = append(out, "GIT_CONFIG_COUNT="+strconv.Itoa(authIndex+1))
+	}
+	out = append(out,
+		fmt.Sprintf("GIT_CONFIG_KEY_%d=%s", authIndex, key),
+		fmt.Sprintf("GIT_CONFIG_VALUE_%d=%s", authIndex, value),
+	)
 	return out
+}
+
+func gitConfigCount(env []string) (int, bool) {
+	count := 0
+	found := false
+	for _, entry := range env {
+		name, value, ok := strings.Cut(entry, "=")
+		if !ok || name != "GIT_CONFIG_COUNT" {
+			continue
+		}
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed < 0 {
+			return 0, false
+		}
+		count = parsed
+		found = true
+	}
+	return count, found
 }
 
 func gitCommitExists(ctx context.Context, repoDir, commitSHA string) (bool, error) {
