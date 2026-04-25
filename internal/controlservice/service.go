@@ -2377,8 +2377,9 @@ func (s *Service) applyExecutionResultMetadataLocked(ex *executionState, result 
 }
 
 func (s *Service) executionOutputStream(key string, stdoutCapture, stderrCapture *retainedOutputCapture) backend.OutputStream {
+	bufferedOutputLimit := s.retention().maxRetainedExecutionOutputBytes
 	return backend.OutputStream{
-		BufferedOutputLimitBytes: s.retention().maxRetainedExecutionOutputBytes,
+		BufferedOutputLimitBytes: &bufferedOutputLimit,
 		OnStdout: func(chunk []byte) {
 			if stdoutCapture != nil {
 				_, _ = stdoutCapture.Write(chunk)
@@ -2401,8 +2402,9 @@ func (s *Service) executionOutputStream(key string, stdoutCapture, stderrCapture
 }
 
 func (s *Service) executionAuxOutputStream(key string) backend.OutputStream {
+	bufferedOutputLimit := s.retention().maxRetainedExecutionOutputBytes
 	return backend.OutputStream{
-		BufferedOutputLimitBytes: s.retention().maxRetainedExecutionOutputBytes,
+		BufferedOutputLimitBytes: &bufferedOutputLimit,
 		OnStdout: func(chunk []byte) {
 			s.recordExecutionOutputChunk(key, true, chunk)
 		},

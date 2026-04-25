@@ -95,9 +95,11 @@ func DecodeInputFrame(r io.Reader) (ExecInputFrame, error) {
 }
 
 type StreamCallbacks struct {
-	OnStdout                 func([]byte)
-	OnStderr                 func([]byte)
-	BufferedOutputLimitBytes int
+	OnStdout func([]byte)
+	OnStderr func([]byte)
+	// BufferedOutputLimitBytes caps stdout/stderr accumulated in the final
+	// response. Nil uses the default limit; zero disables accumulation.
+	BufferedOutputLimitBytes *int
 }
 
 func DecodeStreamResponse(r io.Reader, callbacks StreamCallbacks) (ExecResponse, error) {
@@ -169,8 +171,8 @@ func DecodeStreamResponse(r io.Reader, callbacks StreamCallbacks) (ExecResponse,
 }
 
 func (callbacks StreamCallbacks) bufferedOutputLimitBytes() int {
-	if callbacks.BufferedOutputLimitBytes > 0 {
-		return callbacks.BufferedOutputLimitBytes
+	if callbacks.BufferedOutputLimitBytes != nil {
+		return *callbacks.BufferedOutputLimitBytes
 	}
 	return defaultStreamResponseOutputLimit
 }

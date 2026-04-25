@@ -154,11 +154,13 @@ type AttachIO struct {
 }
 
 type OutputStream struct {
-	OnStdout                 func([]byte)
-	OnStderr                 func([]byte)
-	OnWarning                func(string)
-	OnAttach                 func(AttachIO)
-	BufferedOutputLimitBytes int
+	OnStdout  func([]byte)
+	OnStderr  func([]byte)
+	OnWarning func(string)
+	OnAttach  func(AttachIO)
+	// BufferedOutputLimitBytes caps stdout/stderr accumulated in the backend
+	// result. Nil keeps the backend default; zero disables accumulation.
+	BufferedOutputLimitBytes *int
 }
 
 type ExecutionRequest struct {

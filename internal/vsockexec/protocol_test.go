@@ -179,7 +179,7 @@ func TestProtocolRoundTripStdinEcho(t *testing.T) {
 
 func TestDecodeStreamResponseRetainsBoundedOutputTail(t *testing.T) {
 	var buf bytes.Buffer
-	const limit = 8
+	limit := 8
 	fullStdout := "0123456789"
 	if err := EncodeStreamFrame(&buf, ExecStreamFrame{Type: "stdout", Data: []byte(fullStdout)}); err != nil {
 		t.Fatalf("EncodeStreamFrame stdout: %v", err)
@@ -191,7 +191,7 @@ func TestDecodeStreamResponseRetainsBoundedOutputTail(t *testing.T) {
 	var streamed bytes.Buffer
 	res, err := DecodeStreamResponse(&buf, StreamCallbacks{
 		OnStdout:                 func(data []byte) { streamed.Write(data) },
-		BufferedOutputLimitBytes: limit,
+		BufferedOutputLimitBytes: &limit,
 	})
 	if err != nil {
 		t.Fatalf("DecodeStreamResponse: %v", err)
@@ -204,6 +204,39 @@ func TestDecodeStreamResponseRetainsBoundedOutputTail(t *testing.T) {
 	}
 	if !strings.HasSuffix(fullStdout, res.Stdout) {
 		t.Fatalf("retained stdout does not match tail of streamed output")
+	}
+}
+
+func TestDecodeStreamResponseHonorsZeroBufferedOutputLimit(t *testing.T) {
+	var buf bytes.Buffer
+	if err := EncodeStreamFrame(&buf, ExecStreamFrame{Type: "stdout", Data: []byte("stdout")}); err != nil {
+		t.Fatalf("EncodeStreamFrame stdout: %v", err)
+	}
+	if err := EncodeStreamFrame(&buf, ExecStreamFrame{Type: "stderr", Data: []byte("stderr")}); err != nil {
+		t.Fatalf("EncodeStreamFrame stderr: %v", err)
+	}
+	if err := EncodeStreamFrame(&buf, ExecStreamFrame{Type: "exit", ExitCode: 0}); err != nil {
+		t.Fatalf("EncodeStreamFrame exit: %v", err)
+	}
+
+	limit := 0
+	var streamedStdout, streamedStderr bytes.Buffer
+	res, err := DecodeStreamResponse(&buf, StreamCallbacks{
+		OnStdout:                 func(data []byte) { streamedStdout.Write(data) },
+		OnStderr:                 func(data []byte) { streamedStderr.Write(data) },
+		BufferedOutputLimitBytes: &limit,
+	})
+	if err != nil {
+		t.Fatalf("DecodeStreamResponse: %v", err)
+	}
+	if got, want := streamedStdout.String(), "stdout"; got != want {
+		t.Fatalf("streamed stdout: got %q want %q", got, want)
+	}
+	if got, want := streamedStderr.String(), "stderr"; got != want {
+		t.Fatalf("streamed stderr: got %q want %q", got, want)
+	}
+	if res.Stdout != "" || res.Stderr != "" {
+		t.Fatalf("retained output with zero limit: stdout %q stderr %q", res.Stdout, res.Stderr)
 	}
 }
 
