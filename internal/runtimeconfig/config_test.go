@@ -960,6 +960,32 @@ backends:
 	}
 }
 
+func TestLoadRejectsUnknownConfigFields(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	configPath := filepath.Join(tmp, "cleanroom", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	content := `default_backend: firecracker
+backends:
+  firecracker:
+    memory_mb: 1024
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, _, err := Load()
+	if err == nil {
+		t.Fatal("expected unknown config field to be rejected")
+	}
+	if !strings.Contains(err.Error(), "memory_mb") {
+		t.Fatalf("expected error to name unknown field, got %v", err)
+	}
+}
+
 func TestLoadTrimsControlHost(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", tmp)

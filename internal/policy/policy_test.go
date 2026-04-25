@@ -418,6 +418,31 @@ func TestLoadPropagatesPrimaryStatError(t *testing.T) {
 	}
 }
 
+func TestReadPolicyRejectsUnknownFields(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), PrimaryPolicyPath)
+	if err := os.WriteFile(path, []byte(`
+version: 1
+unknown_top_level: true
+sandbox:
+  image:
+    ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  network:
+    default: deny
+`), 0o644); err != nil {
+		t.Fatalf("write policy: %v", err)
+	}
+
+	_, err := readPolicy(path)
+	if err == nil {
+		t.Fatal("expected unknown policy field to be rejected")
+	}
+	if !strings.Contains(err.Error(), "unknown_top_level") {
+		t.Fatalf("expected error to name unknown field, got %v", err)
+	}
+}
+
 func TestLoadRepositoryDefaultsCurrentRepoSettings(t *testing.T) {
 	t.Parallel()
 
