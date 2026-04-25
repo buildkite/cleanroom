@@ -161,3 +161,96 @@ sys.exit(2)
 		t.Fatalf("expected exec --in call, got:\n%s", rawLog)
 	}
 }
+
+func TestBenchmarkTTIStopsWhenSandboxCreateFails(t *testing.T) {
+	tmpDir := t.TempDir()
+	binDir := filepath.Join(tmpDir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir bin: %v", err)
+	}
+
+	fakeHyperfine := `#!/usr/bin/env bash
+set -euo pipefail
+prepare=
+cleanup=
+command=
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --runs|--warmup|--export-json)
+      shift 2
+      ;;
+    --prepare)
+      prepare=$2
+      shift 2
+      ;;
+    --cleanup)
+      cleanup=$2
+      shift 2
+      ;;
+    *)
+      command=$1
+      shift
+      ;;
+  esac
+done
+if [[ -n "$prepare" ]]; then
+  bash -lc "$prepare"
+fi
+set +e
+bash -lc "$command"
+status=$?
+set -e
+if [[ -n "$cleanup" ]]; then
+  bash -lc "$cleanup"
+fi
+exit "$status"
+`
+	writeLocalExecutable(t, binDir, "hyperfine", fakeHyperfine)
+
+	callLog := filepath.Join(tmpDir, "cleanroom-calls.log")
+	fakeCleanroom := `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "$FAKE_CLEANROOM_LOG"
+if [[ "${1:-}" == sandbox && "${2:-}" == create ]]; then
+  echo "create failed" >&2
+  exit 42
+fi
+if [[ "${1:-}" == exec ]]; then
+  echo "exec should not run after create failure" >&2
+  exit 0
+fi
+if [[ "${1:-}" == sandbox && "${2:-}" == rm ]]; then
+  exit 0
+fi
+echo "unexpected args: $*" >&2
+exit 2
+`
+	fakeCleanroomPath := writeLocalExecutable(t, binDir, "cleanroom", fakeCleanroom)
+
+	cmd := exec.Command(
+		"bash",
+		"benchmark-tti.sh",
+		"--cleanroom-bin", fakeCleanroomPath,
+		"--host", "unix://"+filepath.Join(tmpDir, "cleanroom.sock"),
+		"--backend", "darwin-vz",
+		"--iterations", "1",
+		"--warmup", "0",
+		"--output-dir", filepath.Join(tmpDir, "out"),
+	)
+	cmd.Env = append(os.Environ(),
+		"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"FAKE_CLEANROOM_LOG="+callLog,
+	)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected benchmark-tti.sh to fail when sandbox create fails\n%s", out)
+	}
+
+	rawLog, err := os.ReadFile(callLog)
+	if err != nil {
+		t.Fatalf("read call log: %v", err)
+	}
+	if strings.Contains(string(rawLog), "exec ") {
+		t.Fatalf("exec should not run after sandbox create fails, got:\n%s", rawLog)
+	}
+}

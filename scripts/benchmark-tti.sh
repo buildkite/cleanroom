@@ -250,7 +250,7 @@ for token in "${exec_cmd_prefix[@]}"; do
   quoted_exec_cmd_prefix+="${escaped} "
 done
 printf -v sandbox_id_escaped '%q' "$sandbox_id_path"
-quoted_benchmark_cmd="sid=\$(${quoted_sandbox_create_cmd}2>/dev/null); printf 'sandbox_id=%s\n' \"\${sid}\" > ${sandbox_id_escaped}; ${quoted_exec_cmd_prefix}\"\${sid}\" -- echo benchmark >/dev/null"
+quoted_benchmark_cmd="sid=\$(${quoted_sandbox_create_cmd}2>/dev/null) && [ -n \"\${sid}\" ] && printf 'sandbox_id=%s\n' \"\${sid}\" > ${sandbox_id_escaped} && ${quoted_exec_cmd_prefix}\"\${sid}\" -- echo benchmark >/dev/null"
 
 printf -v cleanroom_bin_escaped '%q' "$cleanroom_bin"
 printf -v host_escaped '%q' "$host"
