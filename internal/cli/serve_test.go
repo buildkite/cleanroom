@@ -72,13 +72,16 @@ func TestConfigureGatewayBackendsConfiguresDarwinVZGateway(t *testing.T) {
 		"darwin-vz":   darwinAdapter,
 	}
 
-	configureGatewayBackends(backends, gwRegistry, 8170, "0.0.0.0:8170", "192.168.64.1", gateway.ProxyRoutes{RubyGems: true, GoProxy: true, Fetch: true})
+	configureGatewayBackends(backends, gwRegistry, 8170, "0.0.0.0:8170", "192.168.64.1", gateway.ProxyRoutes{DockerHubMirror: true, RubyGems: true, GoProxy: true, Fetch: true})
 
 	if fcAdapter.GatewayRegistry == nil {
 		t.Fatal("expected firecracker adapter to use the host gateway registry")
 	}
 	if got, want := fcAdapter.GatewayPort, 8170; got != want {
 		t.Fatalf("unexpected firecracker gateway port: got %d want %d", got, want)
+	}
+	if !fcAdapter.GatewayRoutes.DockerHubMirror {
+		t.Fatal("expected firecracker adapter to receive live docker hub mirror state")
 	}
 	if !fcAdapter.GatewayRoutes.RubyGems {
 		t.Fatal("expected firecracker adapter to receive live rubygems route state")
@@ -97,6 +100,9 @@ func TestConfigureGatewayBackendsConfiguresDarwinVZGateway(t *testing.T) {
 	}
 	if got, want := darwinAdapter.GatewayBridgeURL, "http://127.0.0.1:8170"; got != want {
 		t.Fatalf("unexpected darwin-vz gateway bridge url: got %q want %q", got, want)
+	}
+	if !darwinAdapter.GatewayRoutes.DockerHubMirror {
+		t.Fatal("expected darwin-vz adapter to receive live docker hub mirror state")
 	}
 	if !darwinAdapter.GatewayRoutes.RubyGems {
 		t.Fatal("expected darwin-vz adapter to receive live rubygems route state")

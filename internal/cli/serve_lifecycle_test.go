@@ -159,7 +159,7 @@ func TestServeCommandRunServerStartsWithoutContentCache(t *testing.T) {
 	}
 }
 
-func TestServeCommandRunServerPassesGatewayGitCacheHostsToContentCache(t *testing.T) {
+func TestServeCommandRunServerPassesGatewayCacheConfigToContentCache(t *testing.T) {
 	listenAddr := reserveLocalTCPAddr(t)
 	var cancelRun context.CancelFunc
 	stubServeNotifyContext(t, func(parent context.Context, _ ...os.Signal) (context.Context, context.CancelFunc) {
@@ -191,6 +191,11 @@ func TestServeCommandRunServerPassesGatewayGitCacheHostsToContentCache(t *testin
 					Git: runtimeconfig.GatewayGitConfig{
 						CacheHosts: []string{"github.com", "gitlab.com"},
 					},
+					OCI: runtimeconfig.GatewayOCIConfig{
+						Registries: map[string]string{
+							"ghcr.io": "https://ghcr.io",
+						},
+					},
 				},
 			},
 			Backends: map[string]backend.Adapter{},
@@ -200,6 +205,9 @@ func TestServeCommandRunServerPassesGatewayGitCacheHostsToContentCache(t *testin
 	waitForHTTPHealthz(t, fmt.Sprintf("http://%s/healthz", listenAddr), 5*time.Second)
 	if got, want := captured.GitAllowedHosts, []string{"github.com", "gitlab.com"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
 		t.Fatalf("unexpected git cache hosts: got %v want %v", got, want)
+	}
+	if got, want := captured.OCIRegistries["ghcr.io"], "https://ghcr.io"; got != want {
+		t.Fatalf("unexpected OCI registry mapping: got %q want %q", got, want)
 	}
 	if got, want := captured.FetchAllowedHosts, []string{"dl.google.com"}; len(got) != len(want) || got[0] != want[0] {
 		t.Fatalf("unexpected fetch cache hosts: got %v want %v", got, want)

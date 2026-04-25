@@ -16,9 +16,9 @@ Agent sandboxing tools are [proliferating fast](docs/research.md). Most focus on
 
 **Standard OCI images.** Use any OCI image from any registry as your sandbox base. Digest-pinned in policy for reproducibility. No custom VM image format or vendor-specific base images. Same image works across backends.
 
-**Docker inside the sandbox.** Enable a guest Docker daemon with a single policy flag (`services.docker.required: true`). Build and run containers inside the microVM.
+**Docker inside the sandbox.** Enable a guest Docker daemon with a single policy flag (`services.docker.required: true`). Docker Hub pulls are mirrored through the host gateway cache, and you can build and run containers inside the microVM.
 
-**Coming soon:** broader guest-side package-manager rewrites with lockfile enforcement, broader Docker pull caching, hermetic offline build flows, and richer audit surfaces. See the [spec](docs/spec.md) for the full roadmap.
+**Coming soon:** broader guest-side package-manager rewrites with lockfile enforcement, broader non-Docker-Hub registry caching, hermetic offline build flows, and richer audit surfaces. See the [spec](docs/spec.md) for the full roadmap.
 
 ## Install
 

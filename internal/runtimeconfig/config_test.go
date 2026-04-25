@@ -720,6 +720,40 @@ func TestLoadTrimsGatewayGitCacheHosts(t *testing.T) {
 	}
 }
 
+func TestLoadTrimsGatewayOCIRegistries(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	configPath := filepath.Join(tmp, "cleanroom", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	content := `gateway:
+  oci:
+    registries:
+      " ghcr.io ": " https://ghcr.io/ "
+      "": "https://example.invalid"
+      " registry.internal:5000 ": " registry.internal:5000 "
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, _, err := Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if got, want := len(cfg.Gateway.OCI.Registries), 2; got != want {
+		t.Fatalf("unexpected registry mapping count: got %d want %d", got, want)
+	}
+	if got, want := cfg.Gateway.OCI.Registries["ghcr.io"], "https://ghcr.io/"; got != want {
+		t.Fatalf("unexpected ghcr registry mapping: got %q want %q", got, want)
+	}
+	if got, want := cfg.Gateway.OCI.Registries["registry.internal:5000"], "registry.internal:5000"; got != want {
+		t.Fatalf("unexpected internal registry mapping: got %q want %q", got, want)
+	}
+}
+
 func TestLoadObservabilitySupportsZeroSamplingRatio(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", tmp)

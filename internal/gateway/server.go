@@ -22,8 +22,9 @@ import (
 
 // DefaultPort is the default gateway listen port.
 const (
-	DefaultPort       = 8170
-	DefaultListenAddr = ":8170"
+	DefaultPort          = 8170
+	DefaultListenAddr    = ":8170"
+	RouteDockerHubMirror = "/v2/"
 
 	RouteGit      = "/git/"
 	RouteRegistry = "/registry/"
@@ -35,6 +36,7 @@ const (
 )
 
 var serviceRoutes = []string{
+	RouteDockerHubMirror,
 	RouteGit,
 	RouteRegistry,
 	RouteGoProxy,
@@ -222,8 +224,13 @@ func NewServer(cfg ServerConfig) *Server {
 
 	// Registry: prefer content-cache OCI handler, fall back to stub.
 	if cfg.ContentCache != nil && cfg.ContentCache.HasOCIHandler() {
+		dockerHubMirror := newDockerHubMirrorHandler(cfg.ContentCache, cfg.Logger)
+		mux.Handle("/v2", dockerHubMirror)
+		mux.Handle(RouteDockerHubMirror, dockerHubMirror)
 		mux.Handle(RouteRegistry, newCachedRegistryHandler(cfg.ContentCache, cfg.Logger))
 	} else {
+		mux.HandleFunc("/v2", stubHandler("dockerhub mirror"))
+		mux.HandleFunc(RouteDockerHubMirror, stubHandler("dockerhub mirror"))
 		mux.HandleFunc(RouteRegistry, stubHandler("registry"))
 	}
 
@@ -484,6 +491,8 @@ func (r *gatewayStatusRecorder) Write(p []byte) (int, error) {
 
 func gatewayServiceForPath(path string) string {
 	switch {
+	case path == "/v2" || strings.HasPrefix(path, RouteDockerHubMirror):
+		return "registry"
 	case strings.HasPrefix(path, RouteGit):
 		return "git"
 	case strings.HasPrefix(path, RouteRegistry):

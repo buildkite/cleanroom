@@ -223,10 +223,19 @@ if [ "$DOCKER_REQUIRED" = "1" ] && command -v dockerd >/dev/null 2>&1; then
     DOCKER_STORAGE_DRIVER="vfs"
   fi
   DOCKER_IPTABLES="$(arg_value cleanroom_service_docker_iptables || true)"
+  DOCKER_MIRROR_HOST="$(arg_value cleanroom_service_docker_registry_mirror_host || true)"
+  DOCKER_MIRROR_PORT="$(arg_value cleanroom_service_docker_registry_mirror_port || true)"
+  case "$DOCKER_MIRROR_PORT" in
+    ''|*[!0-9]*) DOCKER_MIRROR_PORT="" ;;
+  esac
 
   DOCKER_ARGS="--host=unix:///var/run/docker.sock --storage-driver=$DOCKER_STORAGE_DRIVER"
   if [ "$DOCKER_IPTABLES" = "0" ] || [ "$DOCKER_IPTABLES" = "false" ]; then
     DOCKER_ARGS="$DOCKER_ARGS --iptables=false"
+  fi
+  if [ -n "$DOCKER_MIRROR_HOST" ] && [ -n "$DOCKER_MIRROR_PORT" ]; then
+    DOCKER_ARGS="$DOCKER_ARGS --registry-mirror=http://$DOCKER_MIRROR_HOST:$DOCKER_MIRROR_PORT"
+    DOCKER_ARGS="$DOCKER_ARGS --insecure-registry=$DOCKER_MIRROR_HOST:$DOCKER_MIRROR_PORT"
   fi
 
   mkdir -p /var/log /var/lib/docker /etc/docker /var/run /sys/fs/cgroup
@@ -1135,7 +1144,7 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 	defer cleanupMeasured()
 
 	vsockPath := filepath.Join(runDir, "vsock.sock")
-	dockerBootArgs := dockerServiceBootArgs(req.Policy, req.FirecrackerConfig)
+	dockerBootArgs := dockerServiceBootArgs(req.Policy, req.FirecrackerConfig, a.GatewayPort, a.GatewayRoutes)
 	fcCfg := firecrackerConfig{
 		BootSource: bootSource{
 			KernelImagePath: kernelPath,
@@ -1787,7 +1796,7 @@ func (a *Adapter) launchSandboxVMFromRootFS(ctx context.Context, sandboxID strin
 	}
 
 	vsockPath := filepath.Join(runDir, "vsock.sock")
-	dockerBootArgs := dockerServiceBootArgs(compiled, cfg)
+	dockerBootArgs := dockerServiceBootArgs(compiled, cfg, a.GatewayPort, a.GatewayRoutes)
 	fcCfg := firecrackerConfig{
 		BootSource: bootSource{
 			KernelImagePath: kernelPath,
@@ -2489,7 +2498,7 @@ func gatewayEnvVars(instance *sandboxInstance, gwPort int, routes gateway.ProxyR
 	return gateway.ProxyEnvVars(instance.Policy, gwPort, "", routes)
 }
 
-func dockerServiceBootArgs(compiled *policy.CompiledPolicy, cfg backend.FirecrackerConfig) string {
+func dockerServiceBootArgs(compiled *policy.CompiledPolicy, cfg backend.FirecrackerConfig, gatewayPort int, routes gateway.ProxyRoutes) string {
 	if compiled == nil || !compiled.RequiresDockerService() {
 		return "cleanroom_service_docker_required=0"
 	}
@@ -2509,12 +2518,23 @@ func dockerServiceBootArgs(compiled *policy.CompiledPolicy, cfg backend.Firecrac
 		iptables = 1
 	}
 
-	return fmt.Sprintf(
+	args := fmt.Sprintf(
 		"cleanroom_service_docker_required=1 cleanroom_service_docker_startup_timeout=%d cleanroom_service_docker_storage_driver=%s cleanroom_service_docker_iptables=%d",
 		startupSeconds,
 		storageDriver,
 		iptables,
 	)
+	if routes.DockerHubMirror && gatewayPort > 0 {
+		host := sanitizeKernelArgValue(gateway.GuestGatewayHostname)
+		if host != "" {
+			args += fmt.Sprintf(
+				" cleanroom_service_docker_registry_mirror_host=%s cleanroom_service_docker_registry_mirror_port=%d",
+				host,
+				gatewayPort,
+			)
+		}
+	}
+	return args
 }
 
 func sanitizeKernelArgValue(value string) string {

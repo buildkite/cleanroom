@@ -178,10 +178,19 @@ if [ "$DOCKER_REQUIRED" = "1" ] && command -v dockerd >/dev/null 2>&1; then
     DOCKER_STORAGE_DRIVER="vfs"
   fi
   DOCKER_IPTABLES="$(arg_value cleanroom_service_docker_iptables || true)"
+  DOCKER_MIRROR_HOST="$(arg_value cleanroom_service_docker_registry_mirror_host || true)"
+  DOCKER_MIRROR_PORT="$(arg_value cleanroom_service_docker_registry_mirror_port || true)"
+  case "$DOCKER_MIRROR_PORT" in
+    ''|*[!0-9]*) DOCKER_MIRROR_PORT="" ;;
+  esac
 
   DOCKER_ARGS="--host=unix:///var/run/docker.sock --storage-driver=$DOCKER_STORAGE_DRIVER"
   if [ "$DOCKER_IPTABLES" = "0" ] || [ "$DOCKER_IPTABLES" = "false" ]; then
     DOCKER_ARGS="$DOCKER_ARGS --iptables=false"
+  fi
+  if [ -n "$DOCKER_MIRROR_HOST" ] && [ -n "$DOCKER_MIRROR_PORT" ]; then
+    DOCKER_ARGS="$DOCKER_ARGS --registry-mirror=http://$DOCKER_MIRROR_HOST:$DOCKER_MIRROR_PORT"
+    DOCKER_ARGS="$DOCKER_ARGS --insecure-registry=$DOCKER_MIRROR_HOST:$DOCKER_MIRROR_PORT"
   fi
 
   mkdir -p /var/log /var/lib/docker /etc/docker /var/run /sys/fs/cgroup

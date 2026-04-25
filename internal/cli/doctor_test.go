@@ -11,6 +11,7 @@ import (
 
 	"github.com/buildkite/cleanroom/internal/backend"
 	backendfirecracker "github.com/buildkite/cleanroom/internal/backend/firecracker"
+	"github.com/buildkite/cleanroom/internal/gateway"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 )
@@ -140,8 +141,8 @@ func TestDoctorCommandJSONIncludesCapabilities(t *testing.T) {
 	if payload.Gateway.DefaultPort != 8170 {
 		t.Fatalf("unexpected gateway default port: %d", payload.Gateway.DefaultPort)
 	}
-	if len(payload.Gateway.Routes) != 7 {
-		t.Fatalf("expected 7 gateway routes, got %d (%v)", len(payload.Gateway.Routes), payload.Gateway.Routes)
+	if len(payload.Gateway.Routes) != len(gateway.Routes()) {
+		t.Fatalf("expected %d gateway routes, got %d (%v)", len(gateway.Routes()), len(payload.Gateway.Routes), payload.Gateway.Routes)
 	}
 	foundGitHub := false
 	for _, h := range payload.Gateway.CredentialHosts {

@@ -41,9 +41,10 @@ type ContentCacheConfig struct {
 	// policy-allowed host.
 	GitAllowedHosts []string
 
-	// OCIRegistries maps a request prefix to an upstream registry URL. Entries
-	// augment the built-in defaults and are useful for aliases such as
-	// {"docker.io": "https://registry-1.docker.io"} or custom symbolic prefixes.
+	// OCIRegistries maps a registry host-style prefix to an upstream registry
+	// URL. Entries augment the built-in defaults and are useful for host-based
+	// remaps such as {"docker.io": "https://registry-1.docker.io"} or
+	// {"registry.internal:5000": "https://registry.internal"}.
 	OCIRegistries map[string]string
 
 	// TagTTL controls how long OCI tag→digest mappings are cached.
@@ -446,6 +447,9 @@ func normalizeOCIRegistryMappings(registries map[string]string) (map[string]stri
 		normalizedURL := strings.TrimRight(strings.TrimSpace(registryURL), "/")
 		if normalizedPrefix == "" || normalizedURL == "" {
 			continue
+		}
+		if !isRegistryHostPrefix(normalizedPrefix) {
+			return nil, fmt.Errorf("registry mapping key %q must be a registry host", prefix)
 		}
 		if !strings.Contains(normalizedURL, "://") {
 			normalizedURL = "https://" + normalizedURL
