@@ -24,13 +24,18 @@ The system-cache pipeline uses stage terminology:
 - workspace stage: runtime rootfs plus exact repository checkout
 - dependency stage: workspace stage plus policy-constrained bootstrap and
   dependencies
+- portable dependency seed: dependency-prepared rootfs that can be restored
+  first and then have the repository checkout refreshed to a different commit
+  when declared dependency inputs still match
 - services stage: dependency stage or workspace stage plus policy-constrained
   service preparation state on disk
 
 Each stage output is a full sealed rootfs snapshot. Higher stages subsume lower
 stages. At runtime we do not mount `runtime + workspace + dependency` as a live
 stack. We clone the best ready stage into one writable child and boot that as
-the only guest root disk.
+the only guest root disk. When a portable dependency seed is used, it is still a
+full rootfs snapshot. Cleanroom restores it into a writable child, refreshes the
+repository checkout inside that child, and only then treats the sandbox as ready.
 
 The core system-cache model is:
 
@@ -58,6 +63,9 @@ This document uses:
 
 - **stage** for the transformation step in the cache pipeline
 - **cache entry** for the immutable stored output of a stage
+- **portable dependency seed** for a dependency-prepared full-rootfs cache entry
+  whose useful dependency state is expected to survive a later repository
+  checkout refresh
 
 Current implementation still uses some "seed" naming for stage outputs,
 especially workspace-stage snapshots. This document uses stage terminology
@@ -124,6 +132,9 @@ This phase now means:
   `sandbox.dependencies.key.files`, which bootstraps a single dependency
   command inside the restored workspace stage and publishes the resulting
   dependency stage
+- add a portable dependency-seed path for dependency state that survives an
+  in-place checkout refresh, so unchanged lockfiles can reuse a dependency
+  snapshot across source-only commits
 - keep distribution/export out of scope until the host-local model is proven
 
 ## Current Progress Snapshot
@@ -149,6 +160,8 @@ This phase now means:
 - dependency-stage caching is starting with a single configured dependency
   bootstrap slice for exact-commit workspaces; toolchain-derived key inputs are
   still pending
+- portable dependency-seed reuse is implemented as an explicit
+  `sandbox.dependencies.reuse: portable` mode for declared key-file inputs
 
 Today that means:
 
@@ -173,6 +186,9 @@ Today that means:
 - the initial dependency-stage key intentionally starts from the workspace-stage
   key plus policy hash, dependency bootstrap recipe digest, and declared key
   file digests; richer toolchain inputs are still to come
+- because dependency-stage snapshots are full rootfs snapshots, decoupling them
+  from exact workspace identity requires a checkout refresh and validation step
+  after restore; it is not live layer composition
 
 ## Background
 
@@ -276,6 +292,11 @@ They must instead be keyed by exact inputs such as:
 - compiled policy hash
 - bootstrap recipe digest
 
+Portable dependency seeds are the one deliberate exception to "commit SHA is
+part of every repository cache key": they may omit the exact source commit only
+because they include declared dependency key-file bytes and must refresh and
+verify the checkout before execution.
+
 ### 3. System caches are stage outputs
 
 The cache pipeline should be described as ordered stages:
@@ -287,6 +308,10 @@ The cache pipeline should be described as ordered stages:
 Each stage produces one immutable cached output. Higher stages subsume the
 lower stages logically, even if the runtime only boots from one concrete rootfs
 snapshot.
+
+Portable dependency seeds are dependency-stage entries with different reuse
+semantics. They do not mean Cleanroom can compose independent dependency and
+workspace snapshots at runtime.
 
 ### 4. Each system cache entry is a full rootfs snapshot
 
@@ -342,8 +367,11 @@ This is the host-managed environment cache pipeline:
 - runtime stage cache
 - workspace stage cache
 - dependency stage cache
+- portable dependency seed cache
 
 These are reusable rootfs states that can be cloned into disposable sandboxes.
+Portable dependency seeds are still full rootfs states; their portability comes
+from checkout refresh and validation, not from filesystem layering.
 
 ### B. Transport caches
 
@@ -470,7 +498,9 @@ Purpose:
 - capture the environment after policy-constrained bootstrap such as
   dependency install, generated fixtures, and language-specific setup
 
-Suggested key:
+There are two dependency-cache modes.
+
+The conservative exact dependency stage remains tied to a specific workspace:
 
 ```text
 dependency_stage_key = H(
@@ -484,9 +514,32 @@ dependency_stage_key = H(
 )
 ```
 
+The portable dependency seed is keyed by dependency-relevant inputs rather than
+by the exact workspace snapshot:
+
+```text
+portable_dependency_seed_key = H(
+  runtime_base_key,
+  backend_family,
+  canonical_remote_url,
+  repository_destination_dir,
+  repository_submodule_mode,
+  checkout_refresh_recipe_digest,
+  dependency_policy_hash,
+  dependency_key_files_digest,
+  bootstrap_recipe_digest,
+  dependency_output_mode,
+  producer_version
+)
+```
+
 Output:
 
-- sealed rootfs snapshot ready for common build or test commands
+- exact dependency stage: sealed rootfs snapshot ready for common build or test
+  commands against one exact checkout
+- portable dependency seed: sealed rootfs snapshot that may contain an older
+  checkout, but can be restored first and then refreshed to the requested
+  checkout before execution
 
 Notes:
 
@@ -504,6 +557,22 @@ Notes:
   with the workspace-stage key plus policy hash, the concrete bootstrap recipe
   digest, and declared key-file digests, then grow richer toolchain inputs
   later
+- portable dependency seeds are a separate reuse mode, not a replacement for
+  exact dependency stages
+- a portable seed hit must refresh the repository checkout inside the writable
+  child before user code runs; the restored snapshot's old checkout is never
+  treated as current
+- after checkout refresh and changeset apply, Cleanroom must recompute the
+  declared dependency key-file digest and only skip dependency bootstrap if it
+  still matches the seed's recorded digest
+- if the digest does not match, Cleanroom must discard the restored child and
+  fall back to the normal workspace-stage path before running fresh dependencies
+- the portable mode is suitable for dependency outputs that survive
+  `git reset --hard` and `git clean -ffdx`, such as Go module caches,
+  `mise` installs, system packages, and global package-manager caches
+- repo-local outputs such as `node_modules`, `vendor/bundle`, or generated files
+  under the checkout should stay on the exact dependency-stage path unless
+  explicit preserve/output semantics are added later
 
 ### Stage 3: Writable execution child
 
@@ -593,10 +662,18 @@ The control plane can then resolve the highest reusable stage cache it trusts:
 
 1. services stage hit for the exact checkout plus optional changeset
 2. dependency stage hit for the exact checkout plus optional changeset
-3. workspace stage hit for the exact checkout plus optional changeset
-4. exact-checkout workspace stage hit, followed by verified changeset apply
-5. runtime stage hit
-6. cold path
+3. portable dependency-seed hit for matching dependency inputs, followed by
+   checkout refresh, optional changeset apply, and post-refresh key-file
+   validation
+4. workspace stage hit for the exact checkout plus optional changeset
+5. exact-checkout workspace stage hit, followed by verified changeset apply
+6. runtime stage hit
+7. cold path
+
+Portable dependency-seed lookup should use host-side key-file digest resolution
+when possible so Cleanroom does not restore a candidate that is already known to
+be stale. The post-refresh digest check is still required as defense in depth
+before skipping dependency bootstrap.
 
 ## Production Flow
 
@@ -645,6 +722,24 @@ Shared stage-cache publication should be a host-controlled promotion pipeline.
 5. Snapshot the resulting root volume.
 6. Publish the dependency-stage metadata and storage reference atomically.
 
+### Publish portable dependency seed
+
+1. Start from the same host-controlled dependency bootstrap flow as an exact
+   dependency stage.
+2. Compute the portable dependency seed key from the runtime base, repository
+   identity, checkout-refresh recipe, dependency policy hash, bootstrap recipe
+   digest, and declared dependency key-file digest.
+3. Verify the bootstrap completed successfully and record the key-file digest
+   that made the seed reusable.
+4. Verify that the dependency output mode is portable. The first portable slice
+   should only promote seeds whose useful dependency state lives outside the
+   repository checkout, or whose output paths are explicitly declared by a later
+   policy surface.
+5. Snapshot the resulting root volume.
+6. Publish the portable seed metadata and storage reference atomically. The
+   stored repository checkout is provenance only; later reuse must not treat it
+   as the requested checkout.
+
 ### Publish services stage
 
 1. Start from a published dependency stage when one exists, otherwise from a
@@ -666,6 +761,8 @@ Warm-hit resolution should be simple.
 3. Clone its rootfs snapshot into a fresh writable child volume.
 4. Attach that single writable child as the VM root disk.
 5. Boot a fresh sandbox.
+6. Perform any required trusted post-restore work, such as checkout refresh for
+   portable dependency seeds, before reporting the sandbox as ready.
 
 If no services stage exists but a dependency stage does:
 
@@ -673,7 +770,22 @@ If no services stage exists but a dependency stage does:
 2. run the constrained services-preparation recipe
 3. optionally publish a services stage if the policy allows promotion
 
-If no dependency stage exists but a workspace stage does:
+If no exact dependency stage exists but a portable dependency seed does:
+
+1. clone the portable dependency seed into a writable child
+2. refresh the repository checkout in that child to the requested commit
+3. if a changeset was requested, apply it and verify the resulting tree digest
+4. recompute the declared dependency key-file digest from the refreshed tree
+5. if the digest still matches the seed metadata, skip dependency bootstrap and
+   run from the refreshed child
+6. if the digest differs, discard the child and continue with the normal
+   workspace-stage or cold path
+
+This flow does not compose immutable snapshots. It restores one full snapshot
+and mutates only the disposable writable child.
+
+If no dependency stage or portable dependency seed exists but a workspace stage
+does:
 
 1. clone the workspace stage
 2. if needed, apply and verify the requested changeset
@@ -742,6 +854,10 @@ The design should eliminate these weaker trust paths:
 - use `write temp -> fsync -> atomic rename` for new artifact blobs and metadata
 - never serve partially written artifacts
 - never accept a guest-provided "cache hit" claim as authoritative
+- never treat a portable dependency seed's stored checkout as current; checkout
+  refresh and verification are part of every portable-seed hit
+- if post-refresh dependency key-file validation fails, discard the restored
+  child instead of trying to repair it in place
 
 ### Offline warm mode
 
@@ -750,6 +866,30 @@ When a policy requires strict offline warm-cache execution:
 - the control plane must refuse upstream git or registry access
 - only published `ready` stage caches may be used
 - missing artifacts fail closed
+
+### Portable dependency-seed safety
+
+Portable dependency seeds trade exact checkout identity for faster
+source-iteration when declared dependency inputs are unchanged. The safety rules
+are stricter than a normal exact dependency-stage hit:
+
+- require declared dependency key files; an empty key-file set should remain on
+  the exact workspace-bound path unless a stronger input model exists
+- compute key-file digests from the requested checkout, including post-apply
+  changesets
+- restore the seed only into a fresh writable child
+- refresh the checkout before user code runs
+- verify `HEAD`, submodule behavior, and changeset tree digest after refresh
+- recompute the key-file digest after refresh and compare it with the seed
+  metadata
+- do not promote or reuse portable seeds for dependency outputs under the
+  checkout unless explicit output-preservation semantics define how those paths
+  survive `git clean`
+
+The main correctness risk is under-declared dependency inputs. If the bootstrap
+command reads source files, scripts, generated config, or environment inputs
+that are not represented in the dependency key, cross-commit reuse can be stale.
+The conservative exact dependency stage should remain available for those cases.
 
 ## Runtime Filesystem Model
 
@@ -761,9 +901,15 @@ That means:
 - no default "base volume plus repo volume plus deps volume" mount assembly
 - no separate default `/workspace` guest-visible volume
 - one attached writable root volume per sandbox
+- no live composition of independent workspace and dependency snapshots
 
 Logical cache layering still exists, but it is represented in metadata and
 lineage rather than in a live guest mount stack.
+
+Portable dependency seeds keep the same filesystem model. A seed hit clones one
+full rootfs snapshot into a writable child, then refreshes the checkout inside
+that child. The old checkout inside the sealed seed is an implementation detail,
+not part of the requested sandbox state.
 
 This matches the current backend shape better:
 
@@ -831,9 +977,9 @@ This plan composes with the existing documents rather than replacing them.
 | File | Change |
 |---|---|
 | `internal/gateway/mirror.go` | Already acts as the host-side git transport cache keyed by canonical remote URL. |
-| `internal/repositorycheckout/checkout.go` | Already uses exact remote URL and full commit SHA as the checkout source of truth; `branch` currently affects local checkout mode only. |
+| `internal/repositorycheckout/checkout.go` | Already uses exact remote URL and full commit SHA as the checkout source of truth; `branch` currently affects local checkout mode only. `BuildRefreshCommand` is also the checkout-refresh primitive needed after restoring a portable dependency seed. |
 | `internal/controlservice/workspace_stage.go` | Current workspace-stage orchestration already lives here using dedicated stage-cache metadata. |
-| `internal/controlservice/dependency_stage.go` | Dependency-stage orchestration entry point for policy-controlled bootstrap, declared key-file hashing, post-apply tree keying, and publication. |
+| `internal/controlservice/dependency_stage.go` | Dependency-stage orchestration entry point for policy-controlled bootstrap, declared key-file hashing, post-apply tree keying, exact dependency-stage publication, and the planned portable dependency-seed lookup/validation path. |
 | `internal/snapshotstore/store.go` | Should remain the user snapshot store rather than being expanded into the system-cache store. |
 | `internal/changesetstore/*` | Planned store for explicit local changeset metadata and replay payloads, separate from both snapshots and stage caches. |
 | `internal/volumestore/store.go` | Already provides the backend-neutral clone/snapshot contract shared by both backends. |
@@ -849,6 +995,7 @@ Suggested stage-cache record shape:
 ```text
 cache_key
 stage                    // runtime | workspace | dependency
+reuse_mode               // exact | portable_seed, when stage = dependency
 state                    // ready | failed | garbage
 parent_cache_key
 changeset_digest         // optional, when a workspace/dependency stage includes explicit local changes
@@ -857,6 +1004,8 @@ storage_ref
 policy_hash
 repository
 input_manifest_digest
+dependency_key_files_digest
+checkout_refresh_required
 created_at
 last_used_at
 producer_version
@@ -904,6 +1053,11 @@ This metadata should live in a dedicated `changesetstore`, not in
    `sandbox.dependencies.key.files`, with `go mod download` as the first
    example recipe keyed by workspace stage plus policy, command recipe, and
    declared key-file digests.
+4. Add portable dependency-seed reuse for cross-commit iteration when declared
+   dependency key files are unchanged. The current slice is opt-in through
+   `sandbox.dependencies.reuse: portable`, restores the dependency-prepared
+   rootfs into a writable child, refreshes the checkout to the requested commit,
+   and falls back to normal dependency bootstrap if restore or refresh fails.
 
 These are architecturally landed, but the full performance win still depends on
 clone-capable storage instead of the default `file` driver, and the dependency
@@ -917,12 +1071,14 @@ stage still needs richer lockfile/toolchain inputs.
    dependency-stage reuse correctly.
 3. Add richer toolchain input digests for dependency-stage keys beyond the
    current workspace-plus-command-plus-key-files slice.
-4. Add additional ecosystems only after the first explicit dependency-stage
+4. Add explicit dependency output/preserve semantics if we want portable reuse
+   for repo-local outputs such as `node_modules` or `vendor/bundle`.
+5. Add additional ecosystems only after the first explicit dependency-stage
    flow is solid.
-5. Add strict offline warm-cache mode and fail-closed launch checks.
-6. Add garbage collection and retention policies after the key model and
+6. Add strict offline warm-cache mode and fail-closed launch checks.
+7. Add garbage collection and retention policies after the key model and
    publication flow are stable.
-7. Revisit cross-host distribution/export only after the local host model is
+8. Revisit cross-host distribution/export only after the local host model is
    proven worthwhile.
 
 ## Testing Plan
@@ -958,10 +1114,17 @@ implemented today as the workspace-seed flow:
   mirror
 - dependency-stage key files resolve from the post-apply tree when a changeset
   is present
+- portable dependency-seed hits refresh the checkout before execution
+- portable dependency-seed hits recompute dependency key-file digests after
+  refresh and skip dependency bootstrap only when they match
+- portable dependency-seed mismatches discard the restored child and fall back
+  to the normal workspace-stage path
 
 ### Runtime performance
 
 - warm dependency-stage hit skips repository clone and dependency install
+- warm portable dependency-seed hit skips dependency install while still doing
+  an incremental checkout refresh through the gateway cache
 - Firecracker warm hits avoid full rootfs file copies
 - snapshot clone latency and VM boot latency are measured separately
 
@@ -971,8 +1134,12 @@ implemented today as the workspace-seed flow:
   npm, pip, or another?
 - Should dependency-stage caches be published automatically on successful
   bootstrap, or only when explicitly requested?
+- Should portable dependency-seed reuse be opt-in, or should it be the default
+  whenever non-empty dependency key files are declared and outputs are portable?
 - What retention policy should apply to large dependency-stage caches relative
   to smaller workspace-stage caches?
+- How should Cleanroom detect or declare whether dependency outputs are
+  portable across `git clean`?
 - Should workspace-stage identity continue to include the local checkout branch,
   or should branch stay outside reusable cache keys once checkout mode is
   modeled separately?

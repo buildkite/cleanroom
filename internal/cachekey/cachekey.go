@@ -54,6 +54,22 @@ type ServicesStageInputs struct {
 	BootstrapRecipeDigest string
 }
 
+// PortableDependencyStageInputs are the inputs that define a dependency stage
+// that can be restored before refreshing the checkout to a different commit.
+type PortableDependencyStageInputs struct {
+	Backend                     string
+	RuntimeKey                  string
+	CompiledPolicyHash          string
+	CanonicalRemoteURL          string
+	SubmoduleMode               string
+	DestinationDir              string
+	CheckoutRefreshRecipeDigest string
+	KeyFilesDigest              string
+	BootstrapRecipeDigest       string
+	OutputMode                  string
+	ProducerVersion             string
+}
+
 // RuntimeStageKey returns the canonical cache key for a runtime stage output.
 func RuntimeStageKey(in RuntimeStageInputs) string {
 	return buildStageKey("runtime", []component{
@@ -100,6 +116,25 @@ func ServicesStageKey(in ServicesStageInputs) string {
 		{name: "compiled_policy_hash", value: canonicalDigest(in.CompiledPolicyHash)},
 		{name: "key_files_digest", value: canonicalDigest(in.KeyFilesDigest)},
 		{name: "bootstrap_recipe_digest", value: canonicalDigest(in.BootstrapRecipeDigest)},
+	})
+}
+
+// PortableDependencyStageKey returns the canonical cache key for a portable
+// dependency stage output.
+func PortableDependencyStageKey(in PortableDependencyStageInputs) string {
+	return buildStageKey("dependency", []component{
+		{name: "reuse_mode", value: canonicalIdentifier("portable_seed")},
+		{name: "backend", value: canonicalIdentifier(in.Backend)},
+		{name: "runtime_key", value: canonicalReference(in.RuntimeKey)},
+		{name: "compiled_policy_hash", value: canonicalDigest(in.CompiledPolicyHash)},
+		{name: "canonical_remote_url", value: canonicalRemoteURL(in.CanonicalRemoteURL)},
+		{name: "submodule_mode", value: canonicalIdentifier(in.SubmoduleMode)},
+		{name: "destination_dir", value: canonicalAbsolutePath(in.DestinationDir)},
+		{name: "checkout_refresh_recipe_digest", value: canonicalDigest(in.CheckoutRefreshRecipeDigest)},
+		{name: "key_files_digest", value: canonicalDigest(in.KeyFilesDigest)},
+		{name: "bootstrap_recipe_digest", value: canonicalDigest(in.BootstrapRecipeDigest)},
+		{name: "output_mode", value: canonicalIdentifier(in.OutputMode)},
+		{name: "producer_version", value: canonicalIdentifier(in.ProducerVersion)},
 	})
 }
 

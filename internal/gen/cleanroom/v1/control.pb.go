@@ -718,6 +718,7 @@ type PolicyDependencies struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Command       []string               `protobuf:"bytes,1,rep,name=command,proto3" json:"command,omitempty"`
 	Key           *PolicyDependencyKey   `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`
+	Reuse         string                 `protobuf:"bytes,3,opt,name=reuse,proto3" json:"reuse,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -764,6 +765,13 @@ func (x *PolicyDependencies) GetKey() *PolicyDependencyKey {
 		return x.Key
 	}
 	return nil
+}
+
+func (x *PolicyDependencies) GetReuse() string {
+	if x != nil {
+		return x.Reuse
+	}
+	return ""
 }
 
 type PolicyRun struct {
@@ -3887,10 +3895,11 @@ const file_proto_cleanroom_v1_control_proto_rawDesc = "" +
 	"\acommand\x18\x02 \x03(\tR\acommand\x123\n" +
 	"\x03key\x18\x03 \x01(\v2!.cleanroom.v1.PolicyDependencyKeyR\x03key\"+\n" +
 	"\x13PolicyDependencyKey\x12\x14\n" +
-	"\x05files\x18\x01 \x03(\tR\x05files\"c\n" +
+	"\x05files\x18\x01 \x03(\tR\x05files\"y\n" +
 	"\x12PolicyDependencies\x12\x18\n" +
 	"\acommand\x18\x01 \x03(\tR\acommand\x123\n" +
-	"\x03key\x18\x02 \x01(\v2!.cleanroom.v1.PolicyDependencyKeyR\x03key\"#\n" +
+	"\x03key\x18\x02 \x01(\v2!.cleanroom.v1.PolicyDependencyKeyR\x03key\x12\x14\n" +
+	"\x05reuse\x18\x03 \x01(\tR\x05reuse\"#\n" +
 	"\tPolicyRun\x12\x16\n" +
 	"\x06before\x18\x01 \x03(\tR\x06before\"\xff\x02\n" +
 	"\x06Policy\x12\x18\n" +

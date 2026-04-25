@@ -60,6 +60,7 @@ type rawDependencyKey struct {
 type rawDependenciesConfig struct {
 	Command rawDependencyCommandSpec `yaml:"command"`
 	Key     rawDependencyKey         `yaml:"key"`
+	Reuse   string                   `yaml:"reuse"`
 }
 
 type rawDependencyCommandSpec []string
@@ -114,6 +115,7 @@ type Services struct {
 type Dependencies struct {
 	Command  []string `json:"command,omitempty"`
 	KeyFiles []string `json:"key_files,omitempty"`
+	Reuse    string   `json:"reuse,omitempty"`
 }
 
 type Run struct {
@@ -322,6 +324,11 @@ func (d Dependencies) Enabled() bool {
 	return len(d.Command) > 0
 }
 
+const (
+	DependencyReuseExact    = "exact"
+	DependencyReusePortable = "portable"
+)
+
 func (r Run) HasBefore() bool {
 	return len(r.Before) > 0
 }
@@ -491,6 +498,7 @@ func (p *CompiledPolicy) ToProto() *cleanroomv1.Policy {
 			Key: &cleanroomv1.PolicyDependencyKey{
 				Files: append([]string(nil), p.Dependencies.KeyFiles...),
 			},
+			Reuse: p.Dependencies.Reuse,
 		},
 		Run: &cleanroomv1.PolicyRun{
 			Before: append([]string(nil), p.Run.Before...),
@@ -606,15 +614,26 @@ func normalizeDependencies(raw rawDependenciesConfig) (Dependencies, error) {
 	if err != nil {
 		return Dependencies{}, err
 	}
+	reuse, err := normalizeDependencyReuse(raw.Reuse, "sandbox.dependencies.reuse")
+	if err != nil {
+		return Dependencies{}, err
+	}
 	if len(command) == 0 {
 		if len(keyFiles) > 0 {
 			return Dependencies{}, errors.New("sandbox.dependencies.key.files requires sandbox.dependencies.command")
 		}
+		if reuse != "" {
+			return Dependencies{}, errors.New("sandbox.dependencies.reuse requires sandbox.dependencies.command")
+		}
 		return Dependencies{}, nil
+	}
+	if reuse == DependencyReusePortable && len(keyFiles) == 0 {
+		return Dependencies{}, errors.New("sandbox.dependencies.reuse=portable requires sandbox.dependencies.key.files")
 	}
 	return Dependencies{
 		Command:  command,
 		KeyFiles: keyFiles,
+		Reuse:    reuse,
 	}, nil
 }
 
@@ -630,15 +649,26 @@ func dependenciesFromProto(pb *cleanroomv1.PolicyDependencies) (Dependencies, er
 	if err != nil {
 		return Dependencies{}, err
 	}
+	reuse, err := normalizeDependencyReuse(pb.GetReuse(), "policy dependencies.reuse")
+	if err != nil {
+		return Dependencies{}, err
+	}
 	if len(command) == 0 {
 		if len(keyFiles) > 0 {
 			return Dependencies{}, errors.New("policy dependencies.key.files requires dependencies.command")
 		}
+		if reuse != "" {
+			return Dependencies{}, errors.New("policy dependencies.reuse requires dependencies.command")
+		}
 		return Dependencies{}, nil
+	}
+	if reuse == DependencyReusePortable && len(keyFiles) == 0 {
+		return Dependencies{}, errors.New("policy dependencies.reuse=portable requires dependencies.key.files")
 	}
 	return Dependencies{
 		Command:  command,
 		KeyFiles: keyFiles,
+		Reuse:    reuse,
 	}, nil
 }
 
@@ -762,6 +792,18 @@ func normalizeBootstrapKeyFiles(raw []string, field string) ([]string, error) {
 	}
 	sort.Strings(files)
 	return files, nil
+}
+
+func normalizeDependencyReuse(raw, field string) (string, error) {
+	trimmed := strings.TrimSpace(strings.ToLower(raw))
+	switch trimmed {
+	case "", DependencyReuseExact:
+		return "", nil
+	case DependencyReusePortable:
+		return DependencyReusePortable, nil
+	default:
+		return "", fmt.Errorf("%s must be %q or %q", field, DependencyReuseExact, DependencyReusePortable)
+	}
 }
 
 func hashPolicy(p *CompiledPolicy) (string, error) {

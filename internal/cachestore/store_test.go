@@ -39,14 +39,17 @@ func TestStoreCreateGetReadyListDelete(t *testing.T) {
 			Submodules:     true,
 			Branch:         "main",
 		},
-		RepositoryHasChangeset: true,
-		ParentCacheKey:         "runtime:test",
-		StorageRef:             "/tmp/workspace-test.ext4",
-		StorageDriver:          "file",
-		InputManifestDigest:    "sha256:manifest",
-		CreatedAt:              time.Unix(1700000000, 123).UTC(),
-		LastUsedAt:             time.Unix(1700000001, 456).UTC(),
-		ProducerVersion:        "cleanroom-test/1",
+		RepositoryHasChangeset:   true,
+		ParentCacheKey:           "runtime:test",
+		ReuseMode:                "portable_seed",
+		StorageRef:               "/tmp/workspace-test.ext4",
+		StorageDriver:            "file",
+		InputManifestDigest:      "sha256:manifest",
+		DependencyKeyFilesDigest: "sha256:dependency-key-files",
+		CheckoutRefreshRequired:  true,
+		CreatedAt:                time.Unix(1700000000, 123).UTC(),
+		LastUsedAt:               time.Unix(1700000001, 456).UTC(),
+		ProducerVersion:          "cleanroom-test/1",
 	}
 	if err := store.Create(context.Background(), record); err != nil {
 		t.Fatalf("Create returned error: %v", err)
@@ -59,7 +62,7 @@ func TestStoreCreateGetReadyListDelete(t *testing.T) {
 	if !ok {
 		t.Fatal("expected stored ready cache")
 	}
-	if got.CacheKey != record.CacheKey || got.Stage != record.Stage || got.State != record.State || got.PolicyHash != record.PolicyHash || got.StorageRef != record.StorageRef || got.StorageDriver != record.StorageDriver || got.ParentCacheKey != record.ParentCacheKey || got.InputManifestDigest != record.InputManifestDigest || got.ProducerVersion != record.ProducerVersion {
+	if got.CacheKey != record.CacheKey || got.Stage != record.Stage || got.State != record.State || got.PolicyHash != record.PolicyHash || got.StorageRef != record.StorageRef || got.StorageDriver != record.StorageDriver || got.ParentCacheKey != record.ParentCacheKey || got.ReuseMode != record.ReuseMode || got.InputManifestDigest != record.InputManifestDigest || got.DependencyKeyFilesDigest != record.DependencyKeyFilesDigest || got.CheckoutRefreshRequired != record.CheckoutRefreshRequired || got.ProducerVersion != record.ProducerVersion {
 		t.Fatalf("unexpected cache record: %#v", got)
 	}
 	if !got.CreatedAt.Equal(record.CreatedAt) {

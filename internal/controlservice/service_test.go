@@ -320,6 +320,14 @@ func testRepositoryDependencyAndServicesPolicy() *cleanroomv1.Policy {
 			Files: []string{"docker-compose.yml"},
 		},
 	}
+
+	return policyProto
+}
+
+func testRepositoryPortableDependencyPolicy() *cleanroomv1.Policy {
+	policyProto := testRepositoryDependencyPolicy()
+	policyProto.Dependencies.Reuse = policy.DependencyReusePortable
+
 	return policyProto
 }
 
@@ -2834,7 +2842,7 @@ func TestCreateSandboxPublishesDependencyStageCacheForConfiguredDependencies(t *
 	if !ok {
 		t.Fatal("expected configured dependency stage plan to be enabled")
 	}
-	plan, ok, err = svc.finalizeDependencyStagePlan(context.Background(), compiled, repository, nil, workspaceKey, plan)
+	plan, ok, err = svc.finalizeDependencyStagePlan(context.Background(), compiled, repository, nil, "firecracker", workspaceKey, "runtime-base:test", plan)
 	if err != nil {
 		t.Fatalf("finalizeDependencyStagePlan returned error: %v", err)
 	}
@@ -3048,7 +3056,7 @@ func TestCreateSandboxPublishesServicesStageCacheForConfiguredServices(t *testin
 	if !ok {
 		t.Fatal("expected configured dependency stage plan to be enabled")
 	}
-	dependencyPlan, ok, err = svc.finalizeDependencyStagePlan(context.Background(), compiled, repository, nil, workspaceKey, dependencyPlan)
+	dependencyPlan, ok, err = svc.finalizeDependencyStagePlan(context.Background(), compiled, repository, nil, "firecracker", workspaceKey, "runtime-base:test", dependencyPlan)
 	if err != nil {
 		t.Fatalf("finalizeDependencyStagePlan returned error: %v", err)
 	}
@@ -3249,6 +3257,220 @@ func TestCreateSandboxBootstrapsServicesAfterDependencyStageRestoreWithoutServic
 	}
 }
 
+func TestCreateSandboxReusesPortableDependencyStageAfterCheckoutRefresh(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	store := newMemorySnapshotStore()
+	adapter := &stubAdapter{}
+	var snapshotReqs []backend.SnapshotRequest
+	var runCommands [][]string
+	validationDigest := ""
+	adapter.createSnapshotFn = func(_ context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
+		snapshotReqs = append(snapshotReqs, req)
+		return &backend.SnapshotResult{StorageRef: "/snapshots/" + req.SnapshotID + ".ext4"}, nil
+	}
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+		runCommands = append(runCommands, append([]string(nil), req.Command...))
+		if strings.Contains(strings.Join(req.Command, "\n"), "sha256sum") && stream.OnStdout != nil {
+			stream.OnStdout([]byte(validationDigest + "\n"))
+		}
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+	}
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"go.mod": "module example.com/test\n\ngo 1.26.2\n",
+		"go.sum": "example.com/test v0.0.0 h1:abc123\n",
+		"app.go": "package main\n\nfunc main() {}\n",
+	})
+	if err := os.WriteFile(filepath.Join(mirrors.mirrorPath, "app.go"), []byte("package main\n\nfunc main() { println(\"changed\") }\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(app.go) returned error: %v", err)
+	}
+	runTestGit(t, mirrors.mirrorPath, "add", ".")
+	runTestGit(t, mirrors.mirrorPath, "commit", "-m", "source-only change")
+	updatedCommit := strings.TrimSpace(runTestGit(t, mirrors.mirrorPath, "rev-parse", "HEAD"))
+	updatedCheckout := *repositoryCheckout
+	updatedCheckout.CommitSha = updatedCommit
+
+	svc := newTestServiceWithSnapshotStore(adapter, store)
+	svc.RepositoryStore = mirrors
+	var err error
+	validationDigest, err = svc.dependencyStageKeyFilesDigest(context.Background(), repositorycheckout.FromProto(&updatedCheckout), nil, []string{"go.mod", "go.sum"})
+	if err != nil {
+		t.Fatalf("dependencyStageKeyFilesDigest returned error: %v", err)
+	}
+
+	if _, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy:             testRepositoryPortableDependencyPolicy(),
+		RepositoryCheckout: repositoryCheckout,
+	}); err != nil {
+		t.Fatalf("first CreateSandbox returned error: %v", err)
+	}
+	secondResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy:             testRepositoryPortableDependencyPolicy(),
+		RepositoryCheckout: &updatedCheckout,
+	})
+	if err != nil {
+		t.Fatalf("second CreateSandbox returned error: %v", err)
+	}
+	if got, want := secondResp.GetSourceKind(), "portable dependency stage cache"; got != want {
+		t.Fatalf("unexpected response source kind: got %q want %q", got, want)
+	}
+	if got, want := secondResp.GetSandbox().GetSourceKind(), "portable dependency stage cache"; got != want {
+		t.Fatalf("unexpected sandbox source kind: got %q want %q", got, want)
+	}
+	if got, want := adapter.provisionCalls, 1; got != want {
+		t.Fatalf("expected portable dependency-stage hit to avoid second cold provision, got %d want %d", got, want)
+	}
+	if got, want := adapter.provisionFromSnapshotCalls, 1; got != want {
+		t.Fatalf("expected portable dependency-stage hit to restore once, got %d want %d", got, want)
+	}
+	if got, want := adapter.createSnapshotCalls, 2; got != want {
+		t.Fatalf("expected portable metadata to share the dependency snapshot, got %d snapshot creates", got)
+	}
+	if got, want := len(snapshotReqs), 2; got != want {
+		t.Fatalf("expected workspace and dependency snapshot publishes only, got %d want %d", got, want)
+	}
+	if got, want := len(runCommands), 4; got != want {
+		t.Fatalf("expected repository bootstrap, dependency bootstrap, and checkout refresh, got %d commands", got)
+	}
+	refreshCommand := strings.Join(runCommands[2], "\n")
+	if !strings.Contains(refreshCommand, updatedCommit) || !strings.Contains(refreshCommand, `git -C "$dest" fetch --filter=blob:none --progress origin "$commit"`) {
+		t.Fatalf("expected portable hit to refresh checkout to %s, got %q", updatedCommit, refreshCommand)
+	}
+	if dependencyBootstrap := strings.Join(runCommands[1], " "); !repositoryWrappedCommandContains(dependencyBootstrap, `exec 'mise' 'exec' '--' 'go' 'mod' 'download'`) {
+		t.Fatalf("expected first run to bootstrap dependencies, got %q", dependencyBootstrap)
+	}
+	if validationCommand := strings.Join(runCommands[3], "\n"); !strings.Contains(validationCommand, "sha256sum") {
+		t.Fatalf("expected portable hit to validate dependency key files, got %q", validationCommand)
+	}
+
+	cacheStore, ok := svc.CacheStore.(*memoryCacheStore)
+	if !ok {
+		t.Fatalf("expected memory cache store, got %T", svc.CacheStore)
+	}
+	records, err := cacheStore.List(context.Background())
+	if err != nil {
+		t.Fatalf("List returned error: %v", err)
+	}
+	var exactRecord, portableRecord *cachestore.Record
+	for i := range records {
+		switch records[i].ReuseMode {
+		case dependencyStageReuseExact:
+			record := records[i]
+			exactRecord = &record
+		case dependencyStageReusePortableSeed:
+			record := records[i]
+			portableRecord = &record
+		}
+	}
+	if exactRecord == nil {
+		t.Fatal("expected exact dependency stage metadata")
+	}
+	if portableRecord == nil {
+		t.Fatal("expected portable dependency stage metadata")
+	}
+	if got, want := portableRecord.BackingSnapshotID, exactRecord.BackingSnapshotID; got != want {
+		t.Fatalf("expected portable record to share exact dependency snapshot: got %q want %q", got, want)
+	}
+	if got, want := portableRecord.ParentCacheKey, "runtime-base:test"; got != want {
+		t.Fatalf("unexpected portable parent cache key: got %q want %q", got, want)
+	}
+	if portableRecord.DependencyKeyFilesDigest == "" {
+		t.Fatal("expected portable dependency key-file digest metadata")
+	}
+
+	svc.mu.Lock()
+	restoredState := svc.sandboxes[secondResp.GetSandbox().GetSandboxId()]
+	svc.mu.Unlock()
+	if restoredState == nil || restoredState.Repository == nil {
+		t.Fatal("expected restored sandbox repository state")
+	}
+	if got, want := restoredState.Repository.CommitSHA, updatedCommit; got != want {
+		t.Fatalf("expected restored sandbox repository to be refreshed: got %q want %q", got, want)
+	}
+}
+
+func TestCreateSandboxBootstrapsServicesAfterPortableDependencyStageRestore(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	store := newMemorySnapshotStore()
+	adapter := &stubAdapter{}
+	var snapshotReqs []backend.SnapshotRequest
+	var runCommands [][]string
+	validationDigest := ""
+	adapter.createSnapshotFn = func(_ context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
+		snapshotReqs = append(snapshotReqs, req)
+		return &backend.SnapshotResult{StorageRef: "/snapshots/" + req.SnapshotID + ".ext4"}, nil
+	}
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+		runCommands = append(runCommands, append([]string(nil), req.Command...))
+		if strings.Contains(strings.Join(req.Command, "\n"), "sha256sum") && stream.OnStdout != nil {
+			stream.OnStdout([]byte(validationDigest + "\n"))
+		}
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+	}
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"go.mod":             "module example.com/test\n\ngo 1.26.2\n",
+		"go.sum":             "example.com/test v0.0.0 h1:abc123\n",
+		"docker-compose.yml": "services:\n  postgres:\n    image: postgres:17\n",
+		"app.go":             "package main\n\nfunc main() {}\n",
+	})
+	if err := os.WriteFile(filepath.Join(mirrors.mirrorPath, "app.go"), []byte("package main\n\nfunc main() { println(\"changed\") }\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(app.go) returned error: %v", err)
+	}
+	runTestGit(t, mirrors.mirrorPath, "add", ".")
+	runTestGit(t, mirrors.mirrorPath, "commit", "-m", "source-only change")
+	updatedCommit := strings.TrimSpace(runTestGit(t, mirrors.mirrorPath, "rev-parse", "HEAD"))
+	updatedCheckout := *repositoryCheckout
+	updatedCheckout.CommitSha = updatedCommit
+
+	svc := newTestServiceWithSnapshotStore(adapter, store)
+	svc.RepositoryStore = mirrors
+	var err error
+	validationDigest, err = svc.dependencyStageKeyFilesDigest(context.Background(), repositorycheckout.FromProto(&updatedCheckout), nil, []string{"go.mod", "go.sum"})
+	if err != nil {
+		t.Fatalf("dependencyStageKeyFilesDigest returned error: %v", err)
+	}
+
+	portableServicesPolicy := testRepositoryDependencyAndServicesPolicy()
+	portableServicesPolicy.Dependencies.Reuse = policy.DependencyReusePortable
+	if _, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy:             portableServicesPolicy,
+		RepositoryCheckout: repositoryCheckout,
+	}); err != nil {
+		t.Fatalf("first CreateSandbox returned error: %v", err)
+	}
+	secondResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy:             portableServicesPolicy,
+		RepositoryCheckout: &updatedCheckout,
+	})
+	if err != nil {
+		t.Fatalf("second CreateSandbox returned error: %v", err)
+	}
+	if got, want := secondResp.GetSourceKind(), "portable dependency stage cache"; got != want {
+		t.Fatalf("unexpected response source kind: got %q want %q", got, want)
+	}
+	if got, want := adapter.provisionCalls, 1; got != want {
+		t.Fatalf("expected portable dependency-stage hit to avoid second cold provision, got %d want %d", got, want)
+	}
+	if got, want := adapter.provisionFromSnapshotCalls, 1; got != want {
+		t.Fatalf("expected portable dependency-stage hit to restore once, got %d want %d", got, want)
+	}
+	if got, want := adapter.createSnapshotCalls, 4; got != want {
+		t.Fatalf("expected first workspace/dependency/services snapshots plus refreshed services snapshot, got %d want %d", got, want)
+	}
+	if got, want := len(snapshotReqs), 4; got != want {
+		t.Fatalf("expected four snapshot publish requests, got %d want %d", got, want)
+	}
+	if got, want := len(runCommands), 6; got != want {
+		t.Fatalf("expected cold bootstraps plus portable refresh, validation, and services bootstrap, got %d want %d", got, want)
+	}
+	if refreshCommand := strings.Join(runCommands[3], "\n"); !strings.Contains(refreshCommand, updatedCommit) {
+		t.Fatalf("expected portable hit to refresh checkout to %s, got %q", updatedCommit, refreshCommand)
+	}
+	servicesBootstrap := strings.Join(runCommands[5], " ")
+	if !repositoryWrappedCommandContains(servicesBootstrap, `exec 'docker' 'compose' 'up' '-d' 'postgres'`) {
+		t.Fatalf("expected services bootstrap after portable restore, got %q", servicesBootstrap)
+	}
+}
+
 func TestDependencyStageKeyFilesDigestDerivesHashesFromRepositoryChangesetPatch(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
@@ -3304,6 +3526,27 @@ func TestDependencyStageKeyFilesDigestDerivesHashesFromRepositoryChangesetPatch(
 	}
 	if got, want := tamperedDigest, changesetDigest; got != want {
 		t.Fatalf("expected dependency key file digest to ignore tampered file hashes: got %q want %q", got, want)
+	}
+}
+
+func TestDependencyStageKeyFilesDigestCommandHashesSymlinkTargets(t *testing.T) {
+	t.Parallel()
+
+	command, err := dependencyStageKeyFilesDigestCommand(&repositorycheckout.Checkout{DestinationDir: "/workspace"}, []string{"Gemfile.lock"})
+	if err != nil {
+		t.Fatalf("dependencyStageKeyFilesDigestCommand returned error: %v", err)
+	}
+	script := strings.Join(command, "\n")
+	for _, want := range []string{
+		`if [ -L "$path" ]; then`,
+		`target="$(readlink "$path")"`,
+		`printf '%s' "$target" | sha256sum`,
+		`elif [ -e "$path" ]; then`,
+		`sha256sum "$path"`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("expected validation script to contain %q, got %q", want, script)
+		}
 	}
 }
 
