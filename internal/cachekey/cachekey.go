@@ -123,7 +123,7 @@ func ServicesStageKey(in ServicesStageInputs) string {
 // dependency stage output.
 func PortableDependencyStageKey(in PortableDependencyStageInputs) string {
 	return buildStageKey("dependency", []component{
-		{name: "reuse_mode", value: canonicalIdentifier("portable_seed")},
+		{name: "reuse_mode", value: canonicalIdentifier("portable")},
 		{name: "backend", value: canonicalIdentifier(in.Backend)},
 		{name: "runtime_key", value: canonicalReference(in.RuntimeKey)},
 		{name: "compiled_policy_hash", value: canonicalDigest(in.CompiledPolicyHash)},

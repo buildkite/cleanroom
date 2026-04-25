@@ -18,12 +18,12 @@ func TestBenchmarkRepositoryBootstrapTool(t *testing.T) {
 	}
 
 	scenarios := []struct {
-		name       string
-		hasSeedRun bool
+		name           string
+		hasCacheWarmup bool
 	}{
-		{name: "cold-host", hasSeedRun: false},
-		{name: "warm-repository-store", hasSeedRun: true},
-		{name: "warm-workspace-stage", hasSeedRun: true},
+		{name: "cold-host", hasCacheWarmup: false},
+		{name: "warm-repository-store", hasCacheWarmup: true},
+		{name: "warm-workspace-stage", hasCacheWarmup: true},
 	}
 
 	for _, scenario := range scenarios {
@@ -132,9 +132,9 @@ raise SystemExit(2)
 					Warmup     int    `json:"warmup"`
 					Backend    string `json:"backend"`
 				} `json:"config"`
-				Seed       *map[string]any  `json:"seed"`
-				WarmupRuns []map[string]any `json:"warmup_runs"`
-				Runs       []struct {
+				CacheWarmup *map[string]any  `json:"cache_warmup"`
+				WarmupRuns  []map[string]any `json:"warmup_runs"`
+				Runs        []struct {
 					Label   string  `json:"label"`
 					Backend string  `json:"backend"`
 					Elapsed float64 `json:"elapsed_seconds"`
@@ -168,11 +168,11 @@ raise SystemExit(2)
 			if got, want := len(payload.Runs), 2; got != want {
 				t.Fatalf("unexpected measured run count: got %d want %d", got, want)
 			}
-			if scenario.hasSeedRun && payload.Seed == nil {
-				t.Fatal("expected seed run metadata")
+			if scenario.hasCacheWarmup && payload.CacheWarmup == nil {
+				t.Fatal("expected cache warmup run metadata")
 			}
-			if !scenario.hasSeedRun && payload.Seed != nil {
-				t.Fatalf("expected no seed metadata, got %+v", payload.Seed)
+			if !scenario.hasCacheWarmup && payload.CacheWarmup != nil {
+				t.Fatalf("expected no cache warmup metadata, got %+v", payload.CacheWarmup)
 			}
 			for _, run := range payload.Runs {
 				if run.Label == "" {

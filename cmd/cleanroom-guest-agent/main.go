@@ -405,13 +405,13 @@ func listenVsock(port uint32) (net.Listener, error) {
 	return vsock.Listen(port, nil)
 }
 
-func injectEntropy(seed []byte) error {
-	if len(seed) == 0 {
+func injectEntropy(entropy []byte) error {
+	if len(entropy) == 0 {
 		return nil
 	}
 
-	// Best effort fallback: mix seed into urandom even if entropy credit ioctl is unavailable.
-	if err := os.WriteFile("/dev/urandom", seed, 0o000); err != nil {
+	// Best effort fallback: mix caller-provided entropy into urandom even if entropy credit ioctl is unavailable.
+	if err := os.WriteFile("/dev/urandom", entropy, 0o000); err != nil {
 		_ = err
 	}
 
@@ -423,10 +423,10 @@ func injectEntropy(seed []byte) error {
 
 	// Linux rand_pool_info:
 	// struct rand_pool_info { int entropy_count; int buf_size; __u32 buf[0]; };
-	payload := make([]byte, 8+len(seed))
-	binary.LittleEndian.PutUint32(payload[0:4], uint32(len(seed)*8))
-	binary.LittleEndian.PutUint32(payload[4:8], uint32(len(seed)))
-	copy(payload[8:], seed)
+	payload := make([]byte, 8+len(entropy))
+	binary.LittleEndian.PutUint32(payload[0:4], uint32(len(entropy)*8))
+	binary.LittleEndian.PutUint32(payload[4:8], uint32(len(entropy)))
+	copy(payload[8:], entropy)
 
 	_, _, errno := unix.Syscall(unix.SYS_IOCTL, f.Fd(), uintptr(unix.RNDADDENTROPY), uintptr(unsafe.Pointer(&payload[0])))
 	if errno != 0 {

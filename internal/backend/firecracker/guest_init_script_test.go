@@ -35,7 +35,7 @@ func TestGuestInitScriptAutostartsDockerWhenAvailable(t *testing.T) {
 	}
 }
 
-func TestGuestInitScriptSeedsLocalhostHostsEntries(t *testing.T) {
+func TestGuestInitScriptAddsLocalhostHostsEntries(t *testing.T) {
 	if !strings.Contains(guestInitScriptTemplate, "127.0.0.1 localhost") {
 		t.Fatal("expected localhost IPv4 hosts entry in init script")
 	}

@@ -11,7 +11,7 @@ import (
 	"unicode"
 )
 
-const zfsBaseSnapshotName = "seed"
+const zfsManagedSnapshotName = "base"
 const zfsBaseNamespace = "base"
 const zfsSandboxNamespace = "sandboxes"
 const zfsSnapshotNamespace = "snapshots"
@@ -70,7 +70,7 @@ func (d *ZFSDriver) EnsureBaseVolume(ctx context.Context, req EnsureBaseVolumeRe
 	}
 
 	baseDataset := d.baseDataset(req.BaseID, req.MinimumBytes)
-	baseSnapshot := d.snapshotRef(baseDataset, zfsBaseSnapshotName)
+	baseSnapshot := d.snapshotRef(baseDataset, zfsManagedSnapshotName)
 	volumeSize := info.Size()
 	if req.MinimumBytes > volumeSize {
 		volumeSize = req.MinimumBytes
@@ -86,7 +86,7 @@ func (d *ZFSDriver) EnsureBaseVolume(ctx context.Context, req EnsureBaseVolumeRe
 		}
 		if err := d.runner.Run(ctx, "dd", "if="+sourcePath, "of="+zvolDevicePath(baseDataset), "bs=4M", "conv=fsync", "status=none"); err != nil {
 			_ = d.runner.Run(context.Background(), "zfs", "destroy", "-r", baseDataset)
-			return BaseVolume{}, fmt.Errorf("seed zfs base volume %q: %w", baseDataset, err)
+			return BaseVolume{}, fmt.Errorf("initialize zfs base volume %q: %w", baseDataset, err)
 		}
 	}
 
@@ -129,7 +129,7 @@ func (d *ZFSDriver) SnapshotVolume(ctx context.Context, req SnapshotVolumeReques
 
 	sourceSnapshotRef := d.snapshotRef(volumeRef, "snap-"+snapshotID)
 	storedDataset := d.datasetPath(zfsSnapshotNamespace, snapshotID)
-	storedSnapshotRef := d.snapshotRef(storedDataset, zfsBaseSnapshotName)
+	storedSnapshotRef := d.snapshotRef(storedDataset, zfsManagedSnapshotName)
 
 	exists, err := d.refExists(ctx, storedDataset)
 	if err != nil {

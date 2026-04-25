@@ -315,7 +315,7 @@ Start with a simple correctness-first flow:
 5. optionally materialize submodules
 
 This keeps the semantics obvious, prefers blobless transfer over sparse
-checkout, and avoids backend-specific file seeding.
+checkout, and avoids backend-specific file injection.
 
 ## Efficient upstream strategy
 
@@ -473,12 +473,12 @@ Useful future optimizations:
 ## Next speed stage
 
 If the mirror-backed gateway is still not fast enough, the next stage should be
-commit-addressed workspace seeds.
+commit-addressed workspace-stage snapshots.
 
 That means:
 
-- prepare a host-side checkout seed for `(remote, commit, submodules, mode)`
-- clone or copy that seed into new sandboxes
+- prepare a host-side workspace stage for `(remote, commit, submodules, mode)`
+- clone or copy that stage output into new sandboxes
 - keep `origin` pointed at the gateway
 
 That is the step that turns "avoid hammering GitHub" into "new sandboxes start
@@ -566,8 +566,8 @@ This is clearer than pretending the checkout is a normal user execution.
 9. Move checkout orchestration into the control service for persistent
    sandboxes.
 10. Add generic explicit `sandbox create` git flags.
-11. If needed, add commit-addressed workspace seeds as a second-stage startup
-    optimization.
+11. If needed, add commit-addressed workspace-stage snapshots as a second-stage
+    startup optimization.
 
 ## Bottom line
 
@@ -580,5 +580,5 @@ The most useful model is:
 - the control plane owns checkout orchestration
 - the guest still clones through the gateway
 - the gateway owns auth and is backed by a host mirror cache
-- later, if needed, workspace seeds can make repeated sandbox creation much
-  cheaper than recloning every time
+- later, if needed, workspace-stage snapshots can make repeated sandbox
+  creation much cheaper than recloning every time

@@ -62,7 +62,7 @@ func BuildFromWorkingTree(repoRoot string, checkout *repositorycheckout.Checkout
 
 	env := append(os.Environ(), "GIT_INDEX_FILE="+indexPath)
 	if _, err := gitOutput(repoRoot, env, "read-tree", baseCommitSHA); err != nil {
-		return nil, fmt.Errorf("seed temporary git index: %w", err)
+		return nil, fmt.Errorf("initialize temporary git index: %w", err)
 	}
 	if _, err := gitOutput(repoRoot, env, "add", "-A", "--all", "."); err != nil {
 		return nil, fmt.Errorf("stage working tree into temporary git index: %w", err)
@@ -152,7 +152,7 @@ func (c *Changeset) DigestPathsFromBase(repoRoot string, paths []string) ([]File
 
 	env := append(os.Environ(), "GIT_INDEX_FILE="+indexPath)
 	if _, err := gitOutput(repoRoot, env, "read-tree", baseCommitSHA); err != nil {
-		return nil, fmt.Errorf("seed temporary git index: %w", err)
+		return nil, fmt.Errorf("initialize temporary git index: %w", err)
 	}
 	if _, err := gitOutput(repoRoot, env, "apply", "--cached", "--binary", "--whitespace=nowarn", patchPath); err != nil {
 		return nil, fmt.Errorf("apply repository changeset patch to temporary git index: %w", err)

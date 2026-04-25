@@ -58,7 +58,7 @@ func storedRootFSRecordFromCacheEntry(record cachestore.Record) (storedRootFSRec
 	} else {
 		sourceKind += " stage cache"
 	}
-	if strings.TrimSpace(record.ReuseMode) == dependencyStageReusePortableSeed {
+	if strings.TrimSpace(record.ReuseMode) == dependencyStageReusePortable {
 		sourceKind = "portable dependency stage cache"
 	}
 	return storedRootFSRecord{

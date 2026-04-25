@@ -107,26 +107,26 @@ func TestBuildRefreshCommandResetsWorkingTreeToExactCommit(t *testing.T) {
 	remoteDir := filepath.Join(t.TempDir(), "remote.git")
 	runGit(t, "", "init", "--bare", remoteDir)
 
-	seedDir := filepath.Join(t.TempDir(), "seed")
-	runGit(t, "", "clone", remoteDir, seedDir)
-	runGit(t, seedDir, "config", "user.name", "Test User")
-	runGit(t, seedDir, "config", "user.email", "test@example.com")
+	sourceDir := filepath.Join(t.TempDir(), "source")
+	runGit(t, "", "clone", remoteDir, sourceDir)
+	runGit(t, sourceDir, "config", "user.name", "Test User")
+	runGit(t, sourceDir, "config", "user.email", "test@example.com")
 
-	readmePath := filepath.Join(seedDir, "README.md")
+	readmePath := filepath.Join(sourceDir, "README.md")
 	if err := os.WriteFile(readmePath, []byte("first\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile(README.md) returned error: %v", err)
 	}
-	runGit(t, seedDir, "add", "README.md")
-	runGit(t, seedDir, "commit", "-m", "first")
-	runGit(t, seedDir, "push", "origin", "HEAD")
-	firstCommit := strings.TrimSpace(runGit(t, seedDir, "rev-parse", "HEAD"))
+	runGit(t, sourceDir, "add", "README.md")
+	runGit(t, sourceDir, "commit", "-m", "first")
+	runGit(t, sourceDir, "push", "origin", "HEAD")
+	firstCommit := strings.TrimSpace(runGit(t, sourceDir, "rev-parse", "HEAD"))
 
 	if err := os.WriteFile(readmePath, []byte("second\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile(README.md) returned error: %v", err)
 	}
-	runGit(t, seedDir, "commit", "-am", "second")
-	runGit(t, seedDir, "push", "origin", "HEAD")
-	secondCommit := strings.TrimSpace(runGit(t, seedDir, "rev-parse", "HEAD"))
+	runGit(t, sourceDir, "commit", "-am", "second")
+	runGit(t, sourceDir, "push", "origin", "HEAD")
+	secondCommit := strings.TrimSpace(runGit(t, sourceDir, "rev-parse", "HEAD"))
 
 	checkoutDir := filepath.Join(t.TempDir(), "checkout")
 	runGit(t, "", "clone", remoteDir, checkoutDir)

@@ -747,9 +747,9 @@ func (a *Adapter) executeInSandbox(ctx context.Context, instance *sandboxInstanc
 		Env:     append([]string(nil), env...),
 		TTY:     tty,
 	}
-	seed := make([]byte, 64)
-	if _, err := cryptorand.Read(seed); err == nil {
-		guestReq.EntropySeed = seed
+	entropy := make([]byte, 64)
+	if _, err := cryptorand.Read(entropy); err == nil {
+		guestReq.EntropySeed = entropy
 	}
 	if a.GatewayRegistry != nil && instance.HostIP != "" {
 		gwPort := a.GatewayPort
@@ -1250,9 +1250,9 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 		Command: req.Command,
 		TTY:     req.TTY,
 	}
-	seed := make([]byte, 64)
-	if _, err := cryptorand.Read(seed); err == nil {
-		guestReq.EntropySeed = seed
+	entropy := make([]byte, 64)
+	if _, err := cryptorand.Read(entropy); err == nil {
+		guestReq.EntropySeed = entropy
 	}
 	guestResult, guestTiming, err := runGuestCommand(bootCtx, ctx, processExited, processExitErrFn, vsockPath, req.GuestPort, guestReq, stream)
 	if err != nil {
