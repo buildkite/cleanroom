@@ -46,6 +46,14 @@ type DependencyStageInputs struct {
 	BootstrapRecipeDigest string
 }
 
+// ServicesStageInputs are the inputs that define the reusable services stage.
+type ServicesStageInputs struct {
+	ParentStageKey        string
+	CompiledPolicyHash    string
+	KeyFilesDigest        string
+	BootstrapRecipeDigest string
+}
+
 // RuntimeStageKey returns the canonical cache key for a runtime stage output.
 func RuntimeStageKey(in RuntimeStageInputs) string {
 	return buildStageKey("runtime", []component{
@@ -79,6 +87,16 @@ func WorkspaceStageKey(in WorkspaceStageInputs) string {
 func DependencyStageKey(in DependencyStageInputs) string {
 	return buildStageKey("dependency", []component{
 		{name: "workspace_key", value: canonicalReference(in.WorkspaceKey)},
+		{name: "compiled_policy_hash", value: canonicalDigest(in.CompiledPolicyHash)},
+		{name: "key_files_digest", value: canonicalDigest(in.KeyFilesDigest)},
+		{name: "bootstrap_recipe_digest", value: canonicalDigest(in.BootstrapRecipeDigest)},
+	})
+}
+
+// ServicesStageKey returns the canonical cache key for a services stage output.
+func ServicesStageKey(in ServicesStageInputs) string {
+	return buildStageKey("services", []component{
+		{name: "parent_stage_key", value: canonicalReference(in.ParentStageKey)},
 		{name: "compiled_policy_hash", value: canonicalDigest(in.CompiledPolicyHash)},
 		{name: "key_files_digest", value: canonicalDigest(in.KeyFilesDigest)},
 		{name: "bootstrap_recipe_digest", value: canonicalDigest(in.BootstrapRecipeDigest)},

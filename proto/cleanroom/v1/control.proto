@@ -82,6 +82,8 @@ message PolicyDockerService {
 
 message PolicyServices {
   PolicyDockerService docker = 1;
+  repeated string command = 2;
+  PolicyDependencyKey key = 3;
 }
 
 message PolicyDependencyKey {
@@ -176,6 +178,10 @@ enum CreateSandboxPhase {
   CREATE_SANDBOX_PHASE_PUBLISH_DEPENDENCY_STAGE_CACHE = 10;
   CREATE_SANDBOX_PHASE_READY = 11;
   CREATE_SANDBOX_PHASE_APPLY_REPOSITORY_CHANGESET = 12;
+  CREATE_SANDBOX_PHASE_LOOKUP_SERVICES_STAGE_CACHE = 13;
+  CREATE_SANDBOX_PHASE_RESTORE_SERVICES_STAGE_CACHE = 14;
+  CREATE_SANDBOX_PHASE_BOOTSTRAP_SERVICES = 15;
+  CREATE_SANDBOX_PHASE_PUBLISH_SERVICES_STAGE_CACHE = 16;
 }
 
 message CreateSandboxEvent {

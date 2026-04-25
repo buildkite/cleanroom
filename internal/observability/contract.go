@@ -95,6 +95,7 @@ const (
 	CacheStageRuntime    = "runtime"
 	CacheStageWorkspace  = "workspace"
 	CacheStageDependency = "dependency"
+	CacheStageServices   = "services"
 
 	CacheOperationLookup     = "lookup"
 	CacheOperationRestore    = "restore"
@@ -112,6 +113,7 @@ const (
 	CacheLookupReasonBackendMismatch        = "backend_mismatch"
 	CacheLookupReasonPolicyHashMismatch     = "policy_hash_mismatch"
 	CacheLookupReasonRepositoryChanged      = "repository_changed"
+	CacheLookupReasonParentStageChanged     = "parent_stage_changed"
 	CacheLookupReasonWorkspaceParentChanged = "workspace_parent_changed"
 )
 

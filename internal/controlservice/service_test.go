@@ -311,6 +311,18 @@ func testRepositoryDependencyPolicy() *cleanroomv1.Policy {
 	return policyProto
 }
 
+func testRepositoryDependencyAndServicesPolicy() *cleanroomv1.Policy {
+	policyProto := testRepositoryDependencyPolicy()
+	policyProto.Services = &cleanroomv1.PolicyServices{
+		Docker:  &cleanroomv1.PolicyDockerService{Required: true},
+		Command: []string{"docker", "compose", "up", "-d", "postgres"},
+		Key: &cleanroomv1.PolicyDependencyKey{
+			Files: []string{"docker-compose.yml"},
+		},
+	}
+	return policyProto
+}
+
 func testRepositoryRunBeforePolicy() *cleanroomv1.Policy {
 	policyProto := testRepositoryPolicy()
 	policyProto.Run = &cleanroomv1.PolicyRun{
@@ -669,6 +681,75 @@ func TestCreateSandboxTracesDependencyCacheHitAttributes(t *testing.T) {
 	requireSpanMissingAttribute(t, lookupSpan, observability.AttrCacheLookupReason)
 	requireSpanAttributeValue(t, restoreSpan, observability.AttrRepositoryCommitSHA, repositoryCommitSHA)
 	requireSpanAttributeValue(t, restoreSpan, observability.AttrCacheStage, observability.CacheStageDependency)
+	requireSpanAttributeValue(t, restoreSpan, observability.AttrCacheOperation, observability.CacheOperationRestore)
+	requireSpanAttributeValue(t, restoreSpan, observability.AttrCacheResult, observability.CacheResultRestored)
+}
+
+func TestCreateSandboxTracesServicesCacheHitAttributes(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	store := newMemorySnapshotStore()
+	adapter := &stubAdapter{}
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"go.mod":             "module example.com/test\n\ngo 1.26.2\n",
+		"go.sum":             "example.com/test v0.0.0 h1:abc123\n",
+		"docker-compose.yml": "services:\n  postgres:\n    image: postgres:17\n",
+	})
+	svc := newTestServiceWithSnapshotStore(adapter, store)
+	svc.RepositoryStore = mirrors
+
+	req := &cleanroomv1.CreateSandboxRequest{
+		Policy:             testRepositoryDependencyAndServicesPolicy(),
+		RepositoryCheckout: repositoryCheckout,
+	}
+	if _, err := svc.CreateSandbox(context.Background(), req); err != nil {
+		t.Fatalf("first CreateSandbox returned error: %v", err)
+	}
+	mirrors.err = errors.New("offline")
+
+	recorder := tracetest.NewSpanRecorder()
+	tracerProvider := trace.NewTracerProvider()
+	tracerProvider.RegisterSpanProcessor(recorder)
+	defer func() {
+		_ = tracerProvider.Shutdown(context.Background())
+	}()
+	obs, err := observability.NewWithTracerProvider(tracerProvider)
+	if err != nil {
+		t.Fatalf("NewWithTracerProvider returned error: %v", err)
+	}
+	svc.Observability = obs
+
+	resp, err := svc.CreateSandbox(context.Background(), req)
+	if err != nil {
+		t.Fatalf("second CreateSandbox returned error: %v", err)
+	}
+	if got, want := resp.GetSourceKind(), "services stage cache"; got != want {
+		t.Fatalf("unexpected response source kind: got %q want %q", got, want)
+	}
+
+	spans := recorder.Ended()
+	lookupSpan := findEndedSpanByName(spans, "cleanroom.sandbox.lookup_services_stage_cache")
+	if lookupSpan == nil {
+		t.Fatalf("expected cleanroom.sandbox.lookup_services_stage_cache span, got spans %#v", spans)
+	}
+	restoreSpan := findEndedSpanByName(spans, "cleanroom.sandbox.restore_services_stage_cache")
+	if restoreSpan == nil {
+		t.Fatalf("expected cleanroom.sandbox.restore_services_stage_cache span, got spans %#v", spans)
+	}
+	if dependencyLookupSpan := findEndedSpanByName(spans, "cleanroom.sandbox.lookup_dependency_stage_cache"); dependencyLookupSpan != nil {
+		t.Fatalf("expected services cache hit to skip dependency lookup span, got spans %#v", spans)
+	}
+	if workspaceLookupSpan := findEndedSpanByName(spans, "cleanroom.sandbox.lookup_workspace_stage_cache"); workspaceLookupSpan != nil {
+		t.Fatalf("expected services cache hit to skip workspace lookup span, got spans %#v", spans)
+	}
+
+	repositoryCommitSHA := repositoryCheckout.GetCommitSha()
+	requireSpanAttributeValue(t, lookupSpan, observability.AttrRepositoryCommitSHA, repositoryCommitSHA)
+	requireSpanAttributeValue(t, lookupSpan, observability.AttrCacheStage, observability.CacheStageServices)
+	requireSpanAttributeValue(t, lookupSpan, observability.AttrCacheOperation, observability.CacheOperationLookup)
+	requireSpanAttributeValue(t, lookupSpan, observability.AttrCacheResult, observability.CacheResultHit)
+	requireSpanMissingAttribute(t, lookupSpan, observability.AttrCacheLookupReason)
+	requireSpanAttributeValue(t, restoreSpan, observability.AttrRepositoryCommitSHA, repositoryCommitSHA)
+	requireSpanAttributeValue(t, restoreSpan, observability.AttrCacheStage, observability.CacheStageServices)
 	requireSpanAttributeValue(t, restoreSpan, observability.AttrCacheOperation, observability.CacheOperationRestore)
 	requireSpanAttributeValue(t, restoreSpan, observability.AttrCacheResult, observability.CacheResultRestored)
 }
@@ -2866,6 +2947,305 @@ func TestCreateSandboxReusesDependencyStageCacheForConfiguredDependencies(t *tes
 	}
 	if got, want := adapter.provisionFromSnapshotReq.SnapshotID, snapshotReqs[1].SnapshotID; got != want {
 		t.Fatalf("unexpected dependency stage snapshot id on warm hit: got %q want %q", got, want)
+	}
+}
+
+func TestCreateSandboxPublishesServicesStageCacheForConfiguredServices(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	store := newMemorySnapshotStore()
+	adapter := &stubAdapter{}
+	var (
+		runMu        sync.Mutex
+		runCommands  [][]string
+		snapshotReqs []backend.SnapshotRequest
+	)
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+		runMu.Lock()
+		runCommands = append(runCommands, append([]string(nil), req.Command...))
+		runMu.Unlock()
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+	}
+	adapter.createSnapshotFn = func(_ context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
+		snapshotReqs = append(snapshotReqs, req)
+		return &backend.SnapshotResult{StorageRef: "/snapshots/" + req.SnapshotID + ".ext4"}, nil
+	}
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"go.mod":             "module example.com/test\n\ngo 1.26.2\n",
+		"go.sum":             "example.com/test v0.0.0 h1:abc123\n",
+		"docker-compose.yml": "services:\n  postgres:\n    image: postgres:17\n",
+	})
+	svc := newTestServiceWithSnapshotStore(adapter, store)
+	svc.RepositoryStore = mirrors
+
+	if _, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy:             testRepositoryDependencyAndServicesPolicy(),
+		RepositoryCheckout: repositoryCheckout,
+	}); err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+
+	if got, want := adapter.provisionCalls, 1; got != want {
+		t.Fatalf("unexpected provision call count: got %d want %d", got, want)
+	}
+	if got, want := adapter.runCalls, 3; got != want {
+		t.Fatalf("expected repository + dependency + services bootstrap executions, got %d want %d", got, want)
+	}
+	if got, want := adapter.createSnapshotCalls, 3; got != want {
+		t.Fatalf("expected workspace + dependency + services stage snapshots, got %d want %d", got, want)
+	}
+	if got, want := len(snapshotReqs), 3; got != want {
+		t.Fatalf("expected three snapshot publish requests, got %d want %d", got, want)
+	}
+
+	cacheStore, ok := svc.CacheStore.(*memoryCacheStore)
+	if !ok {
+		t.Fatalf("expected memory cache store, got %T", svc.CacheStore)
+	}
+	records, err := cacheStore.List(context.Background())
+	if err != nil {
+		t.Fatalf("List returned error: %v", err)
+	}
+	if got, want := len(records), 3; got != want {
+		t.Fatalf("expected workspace + dependency + services cache records, got %d want %d", got, want)
+	}
+
+	var (
+		workspaceRecord  *cachestore.Record
+		dependencyRecord *cachestore.Record
+		servicesRecord   *cachestore.Record
+	)
+	for i := range records {
+		record := records[i]
+		switch record.Stage {
+		case workspaceStageName:
+			recordCopy := record
+			workspaceRecord = &recordCopy
+		case dependencyStageName:
+			recordCopy := record
+			dependencyRecord = &recordCopy
+		case servicesStageName:
+			recordCopy := record
+			servicesRecord = &recordCopy
+		}
+	}
+	if workspaceRecord == nil {
+		t.Fatal("expected published workspace stage cache record")
+	}
+	if dependencyRecord == nil {
+		t.Fatal("expected published dependency stage cache record")
+	}
+	if servicesRecord == nil {
+		t.Fatal("expected published services stage cache record")
+	}
+
+	compiled, err := policy.FromProto(testRepositoryDependencyAndServicesPolicy())
+	if err != nil {
+		t.Fatalf("FromProto returned error: %v", err)
+	}
+	repository := repositorycheckout.FromProto(repositoryCheckout)
+	workspaceKey := workspaceStageCacheKey("firecracker", "runtime-base:test", compiled.Hash, repository, nil)
+	dependencyPlan, ok := dependencyStagePlanForRepository(compiled, repository)
+	if !ok {
+		t.Fatal("expected configured dependency stage plan to be enabled")
+	}
+	dependencyPlan, ok, err = svc.finalizeDependencyStagePlan(context.Background(), compiled, repository, nil, workspaceKey, dependencyPlan)
+	if err != nil {
+		t.Fatalf("finalizeDependencyStagePlan returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected configured dependency stage cache plan to be enabled")
+	}
+	servicesPlan, ok := servicesStagePlanForRepository(compiled, repository)
+	if !ok {
+		t.Fatal("expected configured services stage plan to be enabled")
+	}
+	servicesPlan, ok, err = svc.finalizeServicesStagePlan(context.Background(), compiled, repository, nil, dependencyPlan.CacheKey, servicesPlan)
+	if err != nil {
+		t.Fatalf("finalizeServicesStagePlan returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected configured services stage cache plan to be enabled")
+	}
+	if got, want := servicesRecord.CacheKey, servicesPlan.CacheKey; got != want {
+		t.Fatalf("unexpected services stage cache key: got %q want %q", got, want)
+	}
+	if got, want := servicesRecord.ParentCacheKey, dependencyPlan.CacheKey; got != want {
+		t.Fatalf("unexpected services stage parent cache key: got %q want %q", got, want)
+	}
+
+	runMu.Lock()
+	defer runMu.Unlock()
+	if got, want := len(runCommands), 3; got != want {
+		t.Fatalf("expected three bootstrap commands, got %d want %d", got, want)
+	}
+	servicesBootstrap := strings.Join(runCommands[2], " ")
+	if !repositoryWrappedCommandContains(servicesBootstrap, `exec 'docker' 'compose' 'up' '-d' 'postgres'`) {
+		t.Fatalf("expected services bootstrap to preserve explicit docker compose command, got %q", servicesBootstrap)
+	}
+}
+
+func TestCreateSandboxReusesServicesStageCacheForConfiguredServices(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	store := newMemorySnapshotStore()
+	adapter := &stubAdapter{}
+	var snapshotReqs []backend.SnapshotRequest
+	adapter.createSnapshotFn = func(_ context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
+		snapshotReqs = append(snapshotReqs, req)
+		return &backend.SnapshotResult{StorageRef: "/snapshots/" + req.SnapshotID + ".ext4"}, nil
+	}
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"go.mod":             "module example.com/test\n\ngo 1.26.2\n",
+		"go.sum":             "example.com/test v0.0.0 h1:abc123\n",
+		"docker-compose.yml": "services:\n  postgres:\n    image: postgres:17\n",
+	})
+	svc := newTestServiceWithSnapshotStore(adapter, store)
+	svc.RepositoryStore = mirrors
+
+	req := &cleanroomv1.CreateSandboxRequest{
+		Policy:             testRepositoryDependencyAndServicesPolicy(),
+		RepositoryCheckout: repositoryCheckout,
+	}
+
+	if _, err := svc.CreateSandbox(context.Background(), req); err != nil {
+		t.Fatalf("first CreateSandbox returned error: %v", err)
+	}
+	mirrors.err = errors.New("offline")
+	secondResp, err := svc.CreateSandbox(context.Background(), req)
+	if err != nil {
+		t.Fatalf("second CreateSandbox returned error: %v", err)
+	}
+	if got, want := secondResp.GetSourceKind(), "services stage cache"; got != want {
+		t.Fatalf("unexpected response source kind: got %q want %q", got, want)
+	}
+	if got, want := secondResp.GetSandbox().GetSourceKind(), "services stage cache"; got != want {
+		t.Fatalf("unexpected sandbox source kind: got %q want %q", got, want)
+	}
+	records, err := svc.CacheStore.List(context.Background())
+	if err != nil {
+		t.Fatalf("List cache records returned error: %v", err)
+	}
+	var servicesRecord *cachestore.Record
+	for i := range records {
+		if records[i].Stage == servicesStageName {
+			servicesRecord = &records[i]
+			break
+		}
+	}
+	if servicesRecord == nil {
+		t.Fatal("expected published services stage cache record")
+	}
+	if got, want := secondResp.GetSourceId(), servicesRecord.CacheKey; got != want {
+		t.Fatalf("unexpected response source id: got %q want %q", got, want)
+	}
+	if got, want := secondResp.GetBackingSnapshotId(), servicesRecord.BackingSnapshotID; got != want {
+		t.Fatalf("unexpected response backing snapshot id: got %q want %q", got, want)
+	}
+	if got, want := secondResp.GetSandbox().GetSourceId(), servicesRecord.CacheKey; got != want {
+		t.Fatalf("unexpected sandbox source id: got %q want %q", got, want)
+	}
+	if got, want := secondResp.GetSandbox().GetBackingSnapshotId(), servicesRecord.BackingSnapshotID; got != want {
+		t.Fatalf("unexpected sandbox backing snapshot id: got %q want %q", got, want)
+	}
+
+	if got, want := adapter.provisionCalls, 1; got != want {
+		t.Fatalf("expected warm services-stage hit to avoid reprovision bootstrap path, got %d want %d", got, want)
+	}
+	if got, want := adapter.provisionFromSnapshotCalls, 1; got != want {
+		t.Fatalf("expected warm services-stage hit to restore once, got %d want %d", got, want)
+	}
+	if got, want := adapter.runCalls, 3; got != want {
+		t.Fatalf("expected warm services-stage hit to skip bootstrap executions, got %d want %d", got, want)
+	}
+	if got, want := adapter.createSnapshotCalls, 3; got != want {
+		t.Fatalf("expected warm services-stage hit to avoid republishing stage caches, got %d want %d", got, want)
+	}
+	if got, want := len(snapshotReqs), 3; got != want {
+		t.Fatalf("expected one workspace, one dependency, and one services snapshot publish, got %d want %d", got, want)
+	}
+	if got, want := mirrors.calls, 1; got != want {
+		t.Fatalf("expected only the first repository bootstrap to ensure the exact commit, got %d want %d", got, want)
+	}
+	if got, want := mirrors.mirrorPathCalls, 4; got != want {
+		t.Fatalf("expected dependency and services stage keying to use local mirror paths on both attempts, got %d want %d", got, want)
+	}
+	if got, want := adapter.provisionFromSnapshotReq.StorageRef, "/snapshots/"+snapshotReqs[2].SnapshotID+".ext4"; got != want {
+		t.Fatalf("unexpected services stage storage ref on warm hit: got %q want %q", got, want)
+	}
+	if got, want := adapter.provisionFromSnapshotReq.SnapshotID, snapshotReqs[2].SnapshotID; got != want {
+		t.Fatalf("unexpected services stage snapshot id on warm hit: got %q want %q", got, want)
+	}
+}
+
+func TestCreateSandboxBootstrapsServicesAfterDependencyStageRestoreWithoutServicesStageCache(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	store := newMemorySnapshotStore()
+	adapter := &stubAdapter{}
+	var snapshotReqs []backend.SnapshotRequest
+	adapter.createSnapshotFn = func(_ context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
+		snapshotReqs = append(snapshotReqs, req)
+		return &backend.SnapshotResult{StorageRef: "/snapshots/" + req.SnapshotID + ".ext4"}, nil
+	}
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"go.mod":             "module example.com/test\n\ngo 1.26.2\n",
+		"go.sum":             "example.com/test v0.0.0 h1:abc123\n",
+		"docker-compose.yml": "services:\n  postgres:\n    image: postgres:17\n",
+	})
+	svc := newTestServiceWithSnapshotStore(adapter, store)
+	svc.RepositoryStore = mirrors
+
+	req := &cleanroomv1.CreateSandboxRequest{
+		Policy:             testRepositoryDependencyAndServicesPolicy(),
+		RepositoryCheckout: repositoryCheckout,
+	}
+
+	if _, err := svc.CreateSandbox(context.Background(), req); err != nil {
+		t.Fatalf("first CreateSandbox returned error: %v", err)
+	}
+
+	records, err := svc.CacheStore.List(context.Background())
+	if err != nil {
+		t.Fatalf("List cache records returned error: %v", err)
+	}
+	var dependencyRecord *cachestore.Record
+	for _, record := range records {
+		switch record.Stage {
+		case dependencyStageName:
+			recordCopy := record
+			dependencyRecord = &recordCopy
+		case servicesStageName:
+			if err := svc.CacheStore.Delete(context.Background(), record.Stage, record.CacheKey); err != nil {
+				t.Fatalf("Delete services cache record returned error: %v", err)
+			}
+		}
+	}
+	if dependencyRecord == nil {
+		t.Fatal("expected published dependency stage cache record")
+	}
+
+	secondResp, err := svc.CreateSandbox(context.Background(), req)
+	if err != nil {
+		t.Fatalf("second CreateSandbox returned error: %v", err)
+	}
+	if got, want := secondResp.GetSourceKind(), "dependency stage cache"; got != want {
+		t.Fatalf("unexpected response source kind: got %q want %q", got, want)
+	}
+	if got, want := adapter.provisionCalls, 1; got != want {
+		t.Fatalf("expected dependency-stage restore path to avoid cold provision, got %d want %d", got, want)
+	}
+	if got, want := adapter.provisionFromSnapshotCalls, 1; got != want {
+		t.Fatalf("expected exactly one dependency-stage restore, got %d want %d", got, want)
+	}
+	if got, want := adapter.runCalls, 4; got != want {
+		t.Fatalf("expected only one extra services bootstrap after dependency restore, got %d want %d", got, want)
+	}
+	if got, want := adapter.createSnapshotCalls, 4; got != want {
+		t.Fatalf("expected only one extra services-stage snapshot publish, got %d want %d", got, want)
+	}
+	if got, want := adapter.provisionFromSnapshotReq.SnapshotID, dependencyRecord.BackingSnapshotID; got != want {
+		t.Fatalf("unexpected restore snapshot id: got %q want %q", got, want)
+	}
+	if got, want := len(snapshotReqs), 4; got != want {
+		t.Fatalf("expected one replacement services-stage snapshot publish, got %d want %d", got, want)
 	}
 }
 
