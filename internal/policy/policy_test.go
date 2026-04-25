@@ -218,6 +218,26 @@ func TestCompileNormalizesDependencyBootstrapConfig(t *testing.T) {
 	if got, want := compiled.Dependencies.KeyFiles, []string{"go.mod", "go.sum"}; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("unexpected dependency key files: got %v want %v", got, want)
 	}
+	if got := compiled.Dependencies.Reuse; got != "" {
+		t.Fatalf("expected default dependency reuse mode to be empty/exact, got %q", got)
+	}
+}
+
+func TestCompileNormalizesPortableDependencyReuse(t *testing.T) {
+	t.Parallel()
+
+	raw := baseRawPolicy()
+	raw.Sandbox.Dependencies.Command = []string{"go", "mod", "download"}
+	raw.Sandbox.Dependencies.Key.Files = []string{"go.mod", "go.sum"}
+	raw.Sandbox.Dependencies.Reuse = "portable"
+
+	compiled, err := Compile(raw)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if got, want := compiled.Dependencies.Reuse, DependencyReusePortable; got != want {
+		t.Fatalf("unexpected dependency reuse mode: got %q want %q", got, want)
+	}
 }
 
 func TestCompileNormalizesServicesBootstrapConfig(t *testing.T) {
@@ -343,6 +363,22 @@ func TestCompileRejectsDependencyKeyFilesWithoutCommand(t *testing.T) {
 		t.Fatal("expected compile to reject dependency key files without a command")
 	}
 	if !strings.Contains(err.Error(), "sandbox.dependencies.key.files") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestCompileRejectsPortableDependencyReuseWithoutKeyFiles(t *testing.T) {
+	t.Parallel()
+
+	raw := baseRawPolicy()
+	raw.Sandbox.Dependencies.Command = []string{"go", "mod", "download"}
+	raw.Sandbox.Dependencies.Reuse = "portable"
+
+	_, err := Compile(raw)
+	if err == nil {
+		t.Fatal("expected compile to reject portable dependency reuse without key files")
+	}
+	if !strings.Contains(err.Error(), "sandbox.dependencies.reuse=portable") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -696,6 +732,7 @@ func TestCompiledPolicyProtoRoundTripPreservesDependenciesAndServices(t *testing
 	raw := baseRawPolicy()
 	raw.Sandbox.Dependencies.Command = []string{"go", "mod", "download"}
 	raw.Sandbox.Dependencies.Key.Files = []string{"go.mod", "go.sum"}
+	raw.Sandbox.Dependencies.Reuse = "portable"
 	raw.Sandbox.Services.Docker.Required = true
 	raw.Sandbox.Services.Command = []string{"docker", "compose", "up", "-d", "postgres"}
 	raw.Sandbox.Services.Key.Files = []string{"docker-compose.yml"}
@@ -714,6 +751,9 @@ func TestCompiledPolicyProtoRoundTripPreservesDependenciesAndServices(t *testing
 	}
 	if got, want := strings.Join(roundTripped.Dependencies.KeyFiles, "\x00"), strings.Join(compiled.Dependencies.KeyFiles, "\x00"); got != want {
 		t.Fatalf("unexpected dependency key files after round trip: got %q want %q", got, want)
+	}
+	if got, want := roundTripped.Dependencies.Reuse, compiled.Dependencies.Reuse; got != want {
+		t.Fatalf("unexpected dependency reuse after round trip: got %q want %q", got, want)
 	}
 	if got, want := roundTripped.Services.Docker.Required, compiled.Services.Docker.Required; got != want {
 		t.Fatalf("unexpected docker requirement after round trip: got %t want %t", got, want)

@@ -93,6 +93,7 @@ message PolicyDependencyKey {
 message PolicyDependencies {
   repeated string command = 1;
   PolicyDependencyKey key = 2;
+  string reuse = 3;
 }
 
 message PolicyRun {

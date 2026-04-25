@@ -1,6 +1,7 @@
 package controlservice
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -21,17 +22,24 @@ import (
 )
 
 const (
-	dependencyStageName            = "dependency"
-	dependencyStageProducerVersion = "cleanroom/dependency-stage-v1"
+	dependencyStageName                    = "dependency"
+	dependencyStageProducerVersion         = "cleanroom/dependency-stage-v1"
+	portableDependencyStageProducerVersion = "cleanroom/portable-dependency-stage-v1"
+	dependencyStageReuseExact              = "exact"
+	dependencyStageReusePortableSeed       = "portable_seed"
+	portableDependencyOutputMode           = "outside-workspace"
 )
 
 type dependencyStagePlan struct {
 	CacheKey                string
+	PortableCacheKey        string
 	ParentWorkspaceCacheKey string
+	ParentRuntimeCacheKey   string
 	BootstrapCommand        []string
 	BootstrapRecipeDigest   string
 	KeyFiles                []string
 	KeyFilesDigest          string
+	Portable                bool
 }
 
 type stageKeyFileDigest struct {
@@ -55,6 +63,7 @@ func dependencyStagePlanForRepository(compiled *policy.CompiledPolicy, repositor
 		BootstrapCommand:      bootstrapCommand,
 		BootstrapRecipeDigest: bootstrapRecipeDigest,
 		KeyFiles:              append([]string(nil), compiled.Dependencies.KeyFiles...),
+		Portable:              compiled.Dependencies.Reuse == policy.DependencyReusePortable,
 	}, true
 }
 
@@ -63,7 +72,9 @@ func (s *Service) finalizeDependencyStagePlan(
 	compiled *policy.CompiledPolicy,
 	repository *repositorycheckout.Checkout,
 	changeset *repositorychangeset.Changeset,
+	backendName string,
 	workspaceStageKey string,
+	runtimeBaseKey string,
 	plan dependencyStagePlan,
 ) (dependencyStagePlan, bool, error) {
 	if compiled == nil || repository == nil || strings.TrimSpace(workspaceStageKey) == "" {
@@ -87,7 +98,24 @@ func (s *Service) finalizeDependencyStagePlan(
 
 	plan.CacheKey = cacheKey
 	plan.ParentWorkspaceCacheKey = strings.TrimSpace(workspaceStageKey)
+	plan.ParentRuntimeCacheKey = strings.TrimSpace(runtimeBaseKey)
 	plan.KeyFilesDigest = strings.TrimSpace(keyFilesDigest)
+	if plan.Portable && strings.TrimSpace(runtimeBaseKey) != "" && strings.TrimSpace(keyFilesDigest) != "" {
+		normalizedRepository := normalizeRepositoryCheckoutForComparison(repository)
+		plan.PortableCacheKey = cachekey.PortableDependencyStageKey(cachekey.PortableDependencyStageInputs{
+			Backend:                     strings.TrimSpace(backendName),
+			RuntimeKey:                  strings.TrimSpace(runtimeBaseKey),
+			CompiledPolicyHash:          strings.TrimSpace(compiled.Hash),
+			CanonicalRemoteURL:          strings.TrimSpace(normalizedRepository.RemoteURL),
+			SubmoduleMode:               workspaceStageSubmoduleMode(normalizedRepository),
+			DestinationDir:              strings.TrimSpace(normalizedRepository.DestinationDir),
+			CheckoutRefreshRecipeDigest: repositorycheckout.RefreshRecipeDigest(normalizedRepository),
+			KeyFilesDigest:              strings.TrimSpace(keyFilesDigest),
+			BootstrapRecipeDigest:       strings.TrimSpace(plan.BootstrapRecipeDigest),
+			OutputMode:                  portableDependencyOutputMode,
+			ProducerVersion:             portableDependencyStageProducerVersion,
+		})
+	}
 	return plan, true, nil
 }
 
@@ -213,6 +241,9 @@ func (s *Service) lookupDependencyStageCache(ctx context.Context, backendName st
 	if strings.TrimSpace(record.Backend) != strings.TrimSpace(backendName) {
 		return cachestore.Record{}, false, observability.CacheLookupReasonBackendMismatch, nil
 	}
+	if reuseMode := strings.TrimSpace(record.ReuseMode); reuseMode != "" && reuseMode != dependencyStageReuseExact {
+		return cachestore.Record{}, false, observability.CacheLookupReasonRecordNotFound, nil
+	}
 	if strings.TrimSpace(record.PolicyHash) != strings.TrimSpace(compiled.Hash) {
 		return cachestore.Record{}, false, observability.CacheLookupReasonPolicyHashMismatch, nil
 	}
@@ -223,6 +254,215 @@ func (s *Service) lookupDependencyStageCache(ctx context.Context, backendName st
 		return cachestore.Record{}, false, observability.CacheLookupReasonRepositoryChanged, nil
 	}
 	return record, true, "", nil
+}
+
+func (s *Service) lookupPortableDependencyStageCache(ctx context.Context, backendName string, compiled *policy.CompiledPolicy, repository *repositorycheckout.Checkout, plan dependencyStagePlan) (cachestore.Record, bool, string, error) {
+	if compiled == nil || repository == nil || strings.TrimSpace(plan.PortableCacheKey) == "" {
+		return cachestore.Record{}, false, "", nil
+	}
+	store, err := s.cacheStoreOrErr()
+	if err != nil {
+		return cachestore.Record{}, false, "", nil
+	}
+
+	record, ok, err := store.GetReady(ctx, dependencyStageName, plan.PortableCacheKey)
+	if err != nil {
+		return cachestore.Record{}, false, "", err
+	}
+	if !ok {
+		return cachestore.Record{}, false, observability.CacheLookupReasonRecordNotFound, nil
+	}
+	if strings.TrimSpace(record.Backend) != strings.TrimSpace(backendName) {
+		return cachestore.Record{}, false, observability.CacheLookupReasonBackendMismatch, nil
+	}
+	if strings.TrimSpace(record.ReuseMode) != dependencyStageReusePortableSeed {
+		return cachestore.Record{}, false, observability.CacheLookupReasonRecordNotFound, nil
+	}
+	if strings.TrimSpace(record.PolicyHash) != strings.TrimSpace(compiled.Hash) {
+		return cachestore.Record{}, false, observability.CacheLookupReasonPolicyHashMismatch, nil
+	}
+	if strings.TrimSpace(record.ParentCacheKey) != strings.TrimSpace(plan.ParentRuntimeCacheKey) {
+		return cachestore.Record{}, false, observability.CacheLookupReasonWorkspaceParentChanged, nil
+	}
+	if strings.TrimSpace(record.DependencyKeyFilesDigest) != strings.TrimSpace(plan.KeyFilesDigest) {
+		return cachestore.Record{}, false, observability.CacheLookupReasonRecordNotFound, nil
+	}
+	if !portableDependencyRepositoriesCompatible(repositorycheckout.FromProto(record.Repository), repository) {
+		return cachestore.Record{}, false, observability.CacheLookupReasonRepositoryChanged, nil
+	}
+	return record, true, "", nil
+}
+
+func portableDependencyRepositoriesCompatible(left, right *repositorycheckout.Checkout) bool {
+	left = normalizeRepositoryCheckoutForComparison(left)
+	right = normalizeRepositoryCheckoutForComparison(right)
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return strings.TrimSpace(left.RemoteURL) == strings.TrimSpace(right.RemoteURL) &&
+		strings.TrimSpace(left.DestinationDir) == strings.TrimSpace(right.DestinationDir) &&
+		left.Submodules == right.Submodules &&
+		strings.TrimSpace(left.Branch) == strings.TrimSpace(right.Branch)
+}
+
+func (s *Service) restorePortableDependencyStageCache(
+	ctx context.Context,
+	adapter backend.Adapter,
+	backendName string,
+	compiled *policy.CompiledPolicy,
+	firecrackerCfg backend.FirecrackerConfig,
+	repository *repositorycheckout.Checkout,
+	changeset *repositorychangeset.Changeset,
+	options *cleanroomv1.SandboxOptions,
+	record cachestore.Record,
+	reporter CreateSandboxReporter,
+) (*cleanroomv1.CreateSandboxResponse, error) {
+	restoreReq := &cleanroomv1.CreateSandboxRequest{
+		Backend: backendName,
+		Options: options,
+	}
+	restoreResp, err := s.createSandboxFromCacheRecord(ctx, restoreReq, compiled, record, reporter)
+	if err != nil {
+		return nil, err
+	}
+
+	sandboxID := restoreResp.GetSandbox().GetSandboxId()
+	if err := s.bootstrapRepositoryInPersistentSandbox(ctx, adapter, sandboxID, compiled, firecrackerCfg, repository, true, reporter); err != nil {
+		if cleanupErr := s.terminateCreatedSandbox(context.Background(), adapter, sandboxID); cleanupErr != nil {
+			return nil, fmt.Errorf("refresh repository checkout after portable dependency stage restore: %w; cleanup failed: %v", err, cleanupErr)
+		}
+		return nil, fmt.Errorf("refresh repository checkout after portable dependency stage restore: %w", err)
+	}
+	if changeset != nil {
+		if err := s.bootstrapRepositoryChangesetInPersistentSandbox(ctx, adapter, sandboxID, compiled, firecrackerCfg, repository, changeset, reporter); err != nil {
+			if cleanupErr := s.terminateCreatedSandbox(context.Background(), adapter, sandboxID); cleanupErr != nil {
+				return nil, fmt.Errorf("apply repository changeset after portable dependency stage restore: %w; cleanup failed: %v", err, cleanupErr)
+			}
+			return nil, fmt.Errorf("apply repository changeset after portable dependency stage restore: %w", err)
+		}
+	}
+	if err := s.validatePortableDependencyStageKeyFiles(ctx, adapter, sandboxID, compiled, firecrackerCfg, repository, record.DependencyKeyFilesDigest); err != nil {
+		if cleanupErr := s.terminateCreatedSandbox(context.Background(), adapter, sandboxID); cleanupErr != nil {
+			return nil, fmt.Errorf("validate portable dependency stage key files: %w; cleanup failed: %v", err, cleanupErr)
+		}
+		return nil, fmt.Errorf("validate portable dependency stage key files: %w", err)
+	}
+
+	if sandbox := s.markRestoredSandboxRepositoryReady(sandboxID, repository, changeset != nil); sandbox != nil {
+		restoreResp.Sandbox = sandbox
+	}
+	return restoreResp, nil
+}
+
+func (s *Service) markRestoredSandboxRepositoryReady(sandboxID string, repository *repositorycheckout.Checkout, hasChangeset bool) *cleanroomv1.Sandbox {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sandbox, ok := s.sandboxes[sandboxID]
+	if !ok {
+		return nil
+	}
+	sandbox.Repository = cloneRepositoryCheckout(repository)
+	sandbox.RepositoryHasChangeset = hasChangeset
+	sandbox.RepositoryChangesetPendingExecution = hasChangeset
+	sandbox.UpdatedAt = s.clock().Now()
+	return cloneSandboxLocked(sandbox)
+}
+
+func (s *Service) validatePortableDependencyStageKeyFiles(
+	ctx context.Context,
+	adapter backend.Adapter,
+	sandboxID string,
+	compiled *policy.CompiledPolicy,
+	firecrackerCfg backend.FirecrackerConfig,
+	repository *repositorycheckout.Checkout,
+	expectedDigest string,
+) error {
+	expectedDigest = strings.TrimSpace(expectedDigest)
+	if expectedDigest == "" {
+		return fmt.Errorf("portable dependency stage is missing dependency key-file digest")
+	}
+	command, err := dependencyStageKeyFilesDigestCommand(repository, compiled.Dependencies.KeyFiles)
+	if err != nil {
+		return err
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	result, err := s.runPersistentSandboxCommand(ctx, adapter, sandboxID, compiled, firecrackerCfg, s.ids().NewExecutionID(), command, nil, backend.OutputStream{
+		OnStdout: func(chunk []byte) {
+			_, _ = stdout.Write(chunk)
+		},
+		OnStderr: func(chunk []byte) {
+			_, _ = stderr.Write(chunk)
+		},
+	})
+	if err != nil {
+		message := strings.TrimSpace(stderr.String())
+		if message == "" {
+			message = err.Error()
+		}
+		return fmt.Errorf("%s", message)
+	}
+	if result == nil {
+		return fmt.Errorf("portable dependency key-file validation returned no result")
+	}
+	if result.ExitCode != 0 {
+		message := strings.TrimSpace(stderr.String())
+		if message == "" {
+			message = strings.TrimSpace(stdout.String())
+		}
+		if message == "" {
+			message = fmt.Sprintf("portable dependency key-file validation failed with exit code %d", result.ExitCode)
+		}
+		return fmt.Errorf("%s", message)
+	}
+	actualDigest := strings.TrimSpace(stdout.String())
+	if actualDigest != expectedDigest {
+		return fmt.Errorf("portable dependency key-file digest mismatch: expected %s got %s", expectedDigest, actualDigest)
+	}
+	return nil
+}
+
+func dependencyStageKeyFilesDigestCommand(repository *repositorycheckout.Checkout, files []string) ([]string, error) {
+	if repository == nil {
+		return nil, fmt.Errorf("portable dependency key-file validation requires a repository checkout")
+	}
+	if len(files) == 0 {
+		return nil, fmt.Errorf("portable dependency key-file validation requires dependency key files")
+	}
+	var script strings.Builder
+	script.WriteString("set -eu\n")
+	script.WriteString("dest=" + dependencyStageShellQuote(repository.DestinationDir) + "\n")
+	script.WriteString(`manifest='['` + "\n")
+	script.WriteString(`sep=''` + "\n")
+	for _, file := range files {
+		pathJSON, err := json.Marshal(file)
+		if err != nil {
+			return nil, fmt.Errorf("marshal dependency key-file path: %w", err)
+		}
+		script.WriteString("file=" + dependencyStageShellQuote(file) + "\n")
+		script.WriteString("path_json=" + dependencyStageShellQuote(string(pathJSON)) + "\n")
+		script.WriteString(`path="$dest/$file"` + "\n")
+		script.WriteString(`if [ -L "$path" ]; then` + "\n")
+		script.WriteString(`  target="$(readlink "$path")"` + "\n")
+		script.WriteString(`  hex="$(printf '%s' "$target" | sha256sum | awk '{print $1}')"` + "\n")
+		script.WriteString(`  entry="{\"path\":${path_json},\"sha256\":\"sha256:${hex}\"}"` + "\n")
+		script.WriteString(`elif [ -e "$path" ]; then` + "\n")
+		script.WriteString(`  hex="$(sha256sum "$path" | awk '{print $1}')"` + "\n")
+		script.WriteString(`  entry="{\"path\":${path_json},\"sha256\":\"sha256:${hex}\"}"` + "\n")
+		script.WriteString("else\n")
+		script.WriteString(`  entry="{\"path\":${path_json},\"deleted\":true}"` + "\n")
+		script.WriteString("fi\n")
+		script.WriteString(`manifest="${manifest}${sep}${entry}"` + "\n")
+		script.WriteString(`sep=','` + "\n")
+	}
+	script.WriteString(`manifest="${manifest}]"` + "\n")
+	script.WriteString(`digest="$(printf '%s' "$manifest" | sha256sum | awk '{print $1}')"` + "\n")
+	script.WriteString(`printf 'sha256:%s\n' "$digest"` + "\n")
+	return []string{"sh", "-lc", script.String()}, nil
+}
+
+func dependencyStageShellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
 }
 
 func (s *Service) maybePublishDependencyStageCache(
@@ -248,13 +488,38 @@ func (s *Service) maybePublishDependencyStageCache(
 		return
 	}
 
+	var exactRecord cachestore.Record
+	exactPublished := false
+	exactReusable := false
 	if record, ok, _, err := s.lookupDependencyStageCache(ctx, backendName, compiled, repository, plan); err == nil && ok {
+		exactRecord = record
+		exactPublished = true
 		if replacedRecord == nil || strings.TrimSpace(record.CacheKey) != strings.TrimSpace(replacedRecord.CacheKey) {
+			exactReusable = true
 			s.logDependencyStageAlreadyPublished(record)
-			return
+			if !plan.Portable || strings.TrimSpace(plan.PortableCacheKey) == "" {
+				return
+			}
+			if portableRecord, ok, _, portableErr := s.lookupPortableDependencyStageCache(ctx, backendName, compiled, repository, plan); portableErr == nil && ok {
+				s.logDependencyStageAlreadyPublished(portableRecord)
+				return
+			} else if portableErr != nil {
+				s.logDependencyStageWarning("lookup portable dependency stage cache", sandboxID, portableErr)
+				return
+			}
 		}
 	} else if err != nil {
 		s.logDependencyStageWarning("lookup dependency stage cache", sandboxID, err)
+		return
+	}
+
+	if exactPublished && exactReusable && strings.TrimSpace(plan.PortableCacheKey) != "" {
+		portableRecord := portableDependencyStageRecordFromExactRecord(exactRecord, compiled, repository, changeset, plan)
+		if err := store.Upsert(ctx, portableRecord); err != nil {
+			s.logDependencyStageWarning("persist portable dependency stage cache metadata", sandboxID, err)
+			return
+		}
+		s.logDependencyStagePublished(portableRecord, sandboxID, false)
 		return
 	}
 
@@ -271,21 +536,23 @@ func (s *Service) maybePublishDependencyStageCache(
 	}
 
 	record := cachestore.Record{
-		CacheKey:               plan.CacheKey,
-		Stage:                  dependencyStageName,
-		State:                  cacheStateReady,
-		BackingSnapshotID:      strings.TrimSpace(snapshotID),
-		Backend:                backendName,
-		PolicyHash:             compiled.Hash,
-		Policy:                 compiled.ToProto(),
-		Repository:             cloneRepositoryCheckout(normalizeRepositoryCheckoutForComparison(repository)).ToProto(),
-		RepositoryHasChangeset: changeset != nil,
-		ParentCacheKey:         plan.ParentWorkspaceCacheKey,
-		StorageDriver:          snapshotCfg.Snapshots.Driver,
-		StorageRef:             strings.TrimSpace(result.StorageRef),
-		CreatedAt:              s.clock().Now(),
-		LastUsedAt:             s.clock().Now(),
-		ProducerVersion:        dependencyStageProducerVersion,
+		CacheKey:                 plan.CacheKey,
+		Stage:                    dependencyStageName,
+		ReuseMode:                dependencyStageReuseExact,
+		State:                    cacheStateReady,
+		BackingSnapshotID:        strings.TrimSpace(snapshotID),
+		Backend:                  backendName,
+		PolicyHash:               compiled.Hash,
+		Policy:                   compiled.ToProto(),
+		Repository:               cloneRepositoryCheckout(normalizeRepositoryCheckoutForComparison(repository)).ToProto(),
+		RepositoryHasChangeset:   changeset != nil,
+		ParentCacheKey:           plan.ParentWorkspaceCacheKey,
+		StorageDriver:            snapshotCfg.Snapshots.Driver,
+		StorageRef:               strings.TrimSpace(result.StorageRef),
+		DependencyKeyFilesDigest: plan.KeyFilesDigest,
+		CreatedAt:                s.clock().Now(),
+		LastUsedAt:               s.clock().Now(),
+		ProducerVersion:          dependencyStageProducerVersion,
 	}
 
 	persist := store.Create
@@ -309,11 +576,42 @@ func (s *Service) maybePublishDependencyStageCache(
 
 	s.logDependencyStagePublished(record, sandboxID, replacedRecord != nil && strings.TrimSpace(replacedRecord.CacheKey) == plan.CacheKey)
 
+	if strings.TrimSpace(plan.PortableCacheKey) != "" {
+		portableRecord := portableDependencyStageRecordFromExactRecord(record, compiled, repository, changeset, plan)
+		if err := store.Upsert(ctx, portableRecord); err != nil {
+			s.logDependencyStageWarning("persist portable dependency stage cache metadata", sandboxID, err)
+		} else {
+			s.logDependencyStagePublished(portableRecord, sandboxID, false)
+		}
+	}
+
 	if replacedRecord != nil && strings.TrimSpace(replacedRecord.CacheKey) == plan.CacheKey {
 		if err := s.deleteWorkspaceStageCacheSnapshot(ctx, adapter, backendName, firecrackerCfg, *replacedRecord); err != nil {
 			s.logDependencyStageWarning("delete replaced dependency stage cache snapshot", sandboxID, err)
 		}
 	}
+}
+
+func portableDependencyStageRecordFromExactRecord(
+	exactRecord cachestore.Record,
+	compiled *policy.CompiledPolicy,
+	repository *repositorycheckout.Checkout,
+	changeset *repositorychangeset.Changeset,
+	plan dependencyStagePlan,
+) cachestore.Record {
+	record := exactRecord
+	record.CacheKey = strings.TrimSpace(plan.PortableCacheKey)
+	record.ReuseMode = dependencyStageReusePortableSeed
+	record.PolicyHash = compiled.Hash
+	record.Policy = compiled.ToProto()
+	record.Repository = cloneRepositoryCheckout(normalizeRepositoryCheckoutForComparison(repository)).ToProto()
+	record.RepositoryHasChangeset = changeset != nil
+	record.ParentCacheKey = strings.TrimSpace(plan.ParentRuntimeCacheKey)
+	record.InputManifestDigest = strings.TrimSpace(plan.KeyFilesDigest)
+	record.DependencyKeyFilesDigest = strings.TrimSpace(plan.KeyFilesDigest)
+	record.CheckoutRefreshRequired = true
+	record.ProducerVersion = portableDependencyStageProducerVersion
+	return record
 }
 
 func (s *Service) bootstrapDependencyStageInPersistentSandbox(

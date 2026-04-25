@@ -122,6 +122,9 @@ sandbox:
     command: bundle install
     key:
       files: [Gemfile.lock]
+    # Optional: reuse dependency state across source-only commits when the
+    # dependency outputs survive a checkout refresh.
+    # reuse: portable
   services:
     docker:
       required: true

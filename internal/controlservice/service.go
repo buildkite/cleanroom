@@ -356,7 +356,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 			workspaceStageCachingEnabled = true
 			workspaceStageKey = workspaceStageCacheKey(backendName, workspaceStageRuntimeBaseKey, compiled.Hash, repository, changeset)
 			if dependencyStageBootstrapEnabled {
-				dependencyStagePlan, dependencyStageCachingEnabled, err = s.finalizeDependencyStagePlan(ctx, compiled, repository, changeset, workspaceStageKey, dependencyStagePlan)
+				dependencyStagePlan, dependencyStageCachingEnabled, err = s.finalizeDependencyStagePlan(ctx, compiled, repository, changeset, backendName, workspaceStageKey, workspaceStageRuntimeBaseKey, dependencyStagePlan)
 				if err != nil {
 					dependencyStageCachingEnabled = false
 					s.logDependencyStageWarning("resolve dependency stage cache key", "", err)
@@ -495,6 +495,60 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 				} else {
 					s.logDependencyStageCacheMiss(backendName, dependencyStagePlan.CacheKey)
 					emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_LOOKUP_DEPENDENCY_STAGE_CACHE, "dependency stage cache miss")
+				}
+
+				if strings.TrimSpace(dependencyStagePlan.PortableCacheKey) != "" {
+					emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_LOOKUP_DEPENDENCY_STAGE_CACHE, "checking portable dependency stage cache")
+					var portableRecord cachestore.Record
+					var portableFound bool
+					var portableLookupReason string
+					portableLookupErr := s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.lookup_portable_dependency_stage_cache", cachePhaseAttributes(
+						observability.CacheStageDependency,
+						observability.CacheOperationLookup,
+						repository,
+						attribute.String(observability.AttrBackend, backendName),
+					), func(ctx context.Context) error {
+						var lookupErr error
+						portableRecord, portableFound, portableLookupReason, lookupErr = s.lookupPortableDependencyStageCache(ctx, backendName, compiled, repository, dependencyStagePlan)
+						setCacheLookupSpanAttributes(ctx, portableFound, portableLookupReason, lookupErr)
+						return lookupErr
+					})
+					if portableLookupErr != nil {
+						s.logDependencyStageWarning("lookup portable dependency stage cache", "", portableLookupErr)
+					} else if portableFound {
+						s.logDependencyStageCacheHit(portableRecord)
+						emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_LOOKUP_DEPENDENCY_STAGE_CACHE, "portable dependency stage cache hit")
+						var restoreResp *cleanroomv1.CreateSandboxResponse
+						restoreErr := s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.restore_portable_dependency_stage_cache", cachePhaseAttributes(
+							observability.CacheStageDependency,
+							observability.CacheOperationRestore,
+							repository,
+							attribute.String(observability.AttrBackend, backendName),
+						), func(ctx context.Context) error {
+							var err error
+							restoreResp, err = s.restorePortableDependencyStageCache(ctx, adapter, backendName, compiled, firecrackerCfg, repository, changeset, req.GetOptions(), portableRecord, reporter)
+							setCacheResultSpanAttribute(ctx, map[bool]string{true: observability.CacheResultFailed, false: observability.CacheResultRestored}[err != nil])
+							return err
+						})
+						if restoreErr == nil {
+							metricSourceKind = "portable dependency stage cache"
+							if cacheStore, err := s.cacheStoreOrErr(); err == nil {
+								if err := cacheStore.Touch(ctx, portableRecord.Stage, portableRecord.CacheKey); err != nil {
+									s.logDependencyStageWarning("touch portable dependency stage cache", "", err)
+								}
+							}
+							s.logDependencyStageRestore(portableRecord, restoreResp.GetSandbox().GetSandboxId())
+							if !servicesStageBootstrapEnabled {
+								return restoreResp, nil
+							}
+							restoredDependencyResp = restoreResp
+						} else {
+							s.logDependencyStageRestoreWarning(portableRecord, restoreErr)
+						}
+					} else {
+						s.logDependencyStageCacheMiss(backendName, dependencyStagePlan.PortableCacheKey)
+						emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_LOOKUP_DEPENDENCY_STAGE_CACHE, "portable dependency stage cache miss")
+					}
 				}
 			}
 

@@ -91,3 +91,42 @@ func TestDependencyStageKey(t *testing.T) {
 		t.Fatalf("dependency stage key did not change after input mutation: %q", got)
 	}
 }
+
+func TestPortableDependencyStageKey(t *testing.T) {
+	inputs := PortableDependencyStageInputs{
+		Backend:                     "firecracker",
+		RuntimeKey:                  "runtime:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		CompiledPolicyHash:          "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+		CanonicalRemoteURL:          "https://github.com/buildkite/cleanroom.git",
+		SubmoduleMode:               "disabled",
+		DestinationDir:              "/workspace",
+		CheckoutRefreshRecipeDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		KeyFilesDigest:              "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		BootstrapRecipeDigest:       "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+		OutputMode:                  "outside-workspace",
+		ProducerVersion:             "cleanroom/portable-dependency-stage-v1",
+	}
+
+	got := PortableDependencyStageKey(inputs)
+	if got == "" {
+		t.Fatal("portable dependency stage key is empty")
+	}
+	if !strings.HasPrefix(got, "dependency:v1:") {
+		t.Fatalf("portable dependency stage key prefix = %q, want %q", got, "dependency:v1:")
+	}
+	if gotAgain := PortableDependencyStageKey(inputs); got != gotAgain {
+		t.Fatalf("portable dependency stage key changed for identical inputs: first %q second %q", got, gotAgain)
+	}
+
+	mutated := inputs
+	mutated.KeyFilesDigest = "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+	if gotMutated := PortableDependencyStageKey(mutated); got == gotMutated {
+		t.Fatalf("portable dependency stage key did not change after key-file mutation: %q", got)
+	}
+
+	mutated = inputs
+	mutated.CanonicalRemoteURL = "https://github.com/buildkite/other.git"
+	if gotMutated := PortableDependencyStageKey(mutated); got == gotMutated {
+		t.Fatalf("portable dependency stage key did not change after repository mutation: %q", got)
+	}
+}

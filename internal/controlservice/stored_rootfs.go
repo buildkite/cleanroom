@@ -58,6 +58,9 @@ func storedRootFSRecordFromCacheEntry(record cachestore.Record) (storedRootFSRec
 	} else {
 		sourceKind += " stage cache"
 	}
+	if strings.TrimSpace(record.ReuseMode) == dependencyStageReusePortableSeed {
+		sourceKind = "portable dependency stage cache"
+	}
 	return storedRootFSRecord{
 		ID:                                  strings.TrimSpace(record.CacheKey),
 		Kind:                                sourceKind,
@@ -131,6 +134,8 @@ func (s *Service) createSandboxFromStoredRootFS(ctx context.Context, req *cleanr
 		emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_RESTORE_DEPENDENCY_STAGE_CACHE, "restoring dependency stage cache")
 	case "services stage cache":
 		emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_RESTORE_SERVICES_STAGE_CACHE, "restoring services stage cache")
+	case "portable dependency stage cache":
+		emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_RESTORE_DEPENDENCY_STAGE_CACHE, "restoring portable dependency stage cache")
 	case "workspace stage cache":
 		emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_RESTORE_WORKSPACE_STAGE_CACHE, "restoring workspace stage cache")
 	}

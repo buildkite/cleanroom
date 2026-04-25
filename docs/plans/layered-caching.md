@@ -160,8 +160,8 @@ This phase now means:
 - dependency-stage caching is starting with a single configured dependency
   bootstrap slice for exact-commit workspaces; toolchain-derived key inputs are
   still pending
-- portable dependency-seed reuse across source-only commits is not implemented
-  yet
+- portable dependency-seed reuse is implemented as an explicit
+  `sandbox.dependencies.reuse: portable` mode for declared key-file inputs
 
 Today that means:
 
@@ -1053,6 +1053,11 @@ This metadata should live in a dedicated `changesetstore`, not in
    `sandbox.dependencies.key.files`, with `go mod download` as the first
    example recipe keyed by workspace stage plus policy, command recipe, and
    declared key-file digests.
+4. Add portable dependency-seed reuse for cross-commit iteration when declared
+   dependency key files are unchanged. The current slice is opt-in through
+   `sandbox.dependencies.reuse: portable`, restores the dependency-prepared
+   rootfs into a writable child, refreshes the checkout to the requested commit,
+   and falls back to normal dependency bootstrap if restore or refresh fails.
 
 These are architecturally landed, but the full performance win still depends on
 clone-capable storage instead of the default `file` driver, and the dependency
@@ -1064,24 +1069,16 @@ stage still needs richer lockfile/toolchain inputs.
    workspaces.
 2. Add post-apply dependency key-file hashing so local lockfile changes affect
    dependency-stage reuse correctly.
-3. Add portable dependency-seed reuse for cross-commit iteration when declared
-   dependency key files are unchanged:
-   - compute dependency key-file digests for the requested checkout before
-     restore when possible
-   - restore the seed into a writable child
-   - refresh the checkout to the requested commit
-   - validate key files again after refresh
-   - discard the child and fall back if validation fails
-4. Add richer toolchain input digests for dependency-stage keys beyond the
+3. Add richer toolchain input digests for dependency-stage keys beyond the
    current workspace-plus-command-plus-key-files slice.
-5. Add explicit dependency output/preserve semantics if we want portable reuse
+4. Add explicit dependency output/preserve semantics if we want portable reuse
    for repo-local outputs such as `node_modules` or `vendor/bundle`.
-6. Add additional ecosystems only after the first explicit dependency-stage
+5. Add additional ecosystems only after the first explicit dependency-stage
    flow is solid.
-7. Add strict offline warm-cache mode and fail-closed launch checks.
-8. Add garbage collection and retention policies after the key model and
+6. Add strict offline warm-cache mode and fail-closed launch checks.
+7. Add garbage collection and retention policies after the key model and
    publication flow are stable.
-9. Revisit cross-host distribution/export only after the local host model is
+8. Revisit cross-host distribution/export only after the local host model is
    proven worthwhile.
 
 ## Testing Plan

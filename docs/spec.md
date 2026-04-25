@@ -168,6 +168,7 @@ explicit request-time changeset input.
 - `sandbox.dependencies.command` defaults to unset; when present, Cleanroom runs that command in the repository workdir during sandbox creation and makes the result eligible for dependency-stage caching.
 - `sandbox.dependencies.command` accepts either a YAML string or a YAML sequence; strings execute as `sh -lc <value>`, and strings are the preferred form.
 - `sandbox.dependencies.key.files` defaults to empty; when present, Cleanroom hashes those repository-relative files from the exact committed checkout and includes them in the dependency-stage cache key.
+- `sandbox.dependencies.reuse` defaults to `exact`; `portable` opts into dependency-stage reuse across source-only commits by restoring the dependency snapshot, refreshing the checkout, and reusing it only when declared key files still match.
 - `sandbox.services.command` defaults to unset; when present, Cleanroom runs that command in the repository workdir after dependency bootstrap during sandbox creation and makes the result eligible for services-stage caching.
 - `sandbox.services.command` accepts either a YAML string or a YAML sequence; strings execute as `sh -lc <value>`, and strings are the preferred form.
 - `sandbox.services.key.files` defaults to empty; when present, Cleanroom hashes those repository-relative files from the exact committed checkout and includes them in the services-stage cache key.
@@ -302,6 +303,9 @@ Requirements:
   closed.
 - Dependency bootstrap key resolution must use the post-apply repository tree
   when a changeset is present.
+- Portable dependency reuse requires declared dependency key files and must
+  refresh the checkout before running user code; if key-file validation fails,
+  the restored child is discarded and normal dependency bootstrap is used.
 - Changesets are separate from both user snapshots and system-managed stage
   caches. They are explicit request inputs, not snapshot restore targets.
 

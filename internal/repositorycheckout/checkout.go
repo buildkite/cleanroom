@@ -205,6 +205,15 @@ func BootstrapRecipeDigest(checkout *Checkout) string {
 	return commandRecipeDigest(BuildBootstrapCommand(checkout))
 }
 
+func RefreshRecipeDigest(checkout *Checkout) string {
+	if checkout == nil {
+		return ""
+	}
+	normalized := *checkout
+	normalized.CommitSHA = ""
+	return commandRecipeDigest(BuildRefreshCommand(&normalized))
+}
+
 func WorkdirRecipeDigest(command []string, checkout *Checkout) string {
 	if checkout == nil {
 		return ""
