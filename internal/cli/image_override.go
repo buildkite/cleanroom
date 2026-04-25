@@ -117,6 +117,11 @@ var (
 	}
 	resolveReferenceForImageOverride = func(ctx context.Context, source string, allowLocal bool) (string, error) {
 		if digestRef, err := ociref.ParseDigestReference(source); err == nil && digestReferenceHasExplicitRegistryHost(digestRef) {
+			if allowLocal {
+				if err := validateImageOverridePlatform(ctx, source, digestRef.Original); err != nil {
+					return "", err
+				}
+			}
 			return digestRef.Original, nil
 		}
 
@@ -132,16 +137,8 @@ var (
 		resolved, err := resolveReferenceForPolicyUpdate(ctx, source)
 		if err == nil {
 			if allowLocal {
-				resolvedRef, parseErr := name.ParseReference(resolved, name.WeakValidation)
-				if parseErr != nil {
-					return "", fmt.Errorf("resolve image digest for %q: %w", source, parseErr)
-				}
-				imageOS, imageArch, platformErr := resolveReferencePlatformConfig(ctx, resolvedRef)
-				if platformErr != nil {
-					return "", fmt.Errorf("resolve image digest for %q: %w", source, platformErr)
-				}
-				if err := imagemgr.ValidateImagePlatformForHost(imageOS, imageArch, runtime.GOARCH); err != nil {
-					return "", fmt.Errorf("resolve image digest for %q: %w", source, err)
+				if err := validateImageOverridePlatform(ctx, source, resolved); err != nil {
+					return "", err
 				}
 			}
 			return resolved, nil
@@ -153,6 +150,21 @@ var (
 		return "", fmt.Errorf("%w; local docker resolution failed: %v", err, localErr)
 	}
 )
+
+func validateImageOverridePlatform(ctx context.Context, source, resolved string) error {
+	resolvedRef, parseErr := name.ParseReference(resolved, name.WeakValidation)
+	if parseErr != nil {
+		return fmt.Errorf("resolve image digest for %q: %w", source, parseErr)
+	}
+	imageOS, imageArch, platformErr := resolveReferencePlatformConfig(ctx, resolvedRef)
+	if platformErr != nil {
+		return fmt.Errorf("resolve image digest for %q: %w", source, platformErr)
+	}
+	if err := imagemgr.ValidateImagePlatformForHost(imageOS, imageArch, runtime.GOARCH); err != nil {
+		return fmt.Errorf("resolve image digest for %q: %w", source, err)
+	}
+	return nil
+}
 
 func isExplicitRegistryReference(raw string) bool {
 	trimmed := strings.TrimSpace(raw)
