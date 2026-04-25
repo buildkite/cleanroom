@@ -1074,9 +1074,9 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 		}
 		guestReq.Env = append(guestReq.Env, gatewayGitProxyEnvVars(req.Policy, networkMode, gwPort, a.GatewayRoutes)...)
 	}
-	seed := make([]byte, 64)
-	if _, err := cryptorand.Read(seed); err == nil {
-		guestReq.EntropySeed = seed
+	entropy := make([]byte, 64)
+	if _, err := cryptorand.Read(entropy); err == nil {
+		guestReq.EntropySeed = entropy
 	}
 	if err := vsockexec.EncodeRequest(conn, guestReq); err != nil {
 		observation.Error = err.Error()
@@ -1542,9 +1542,9 @@ func (a *Adapter) executeInSandbox(bootCtx context.Context, runCtx context.Conte
 		}
 		guestReq.Env = append(guestReq.Env, gatewayGitProxyEnvVars(policy, networkMode, gwPort, a.GatewayRoutes)...)
 	}
-	seed := make([]byte, 64)
-	if _, err := cryptorand.Read(seed); err == nil {
-		guestReq.EntropySeed = seed
+	entropy := make([]byte, 64)
+	if _, err := cryptorand.Read(entropy); err == nil {
+		guestReq.EntropySeed = entropy
 	}
 	if err := vsockexec.EncodeRequest(conn, guestReq); err != nil {
 		return nil, fmt.Errorf("send guest exec request: %w", err)

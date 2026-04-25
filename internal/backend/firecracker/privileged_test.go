@@ -482,7 +482,7 @@ func TestDeleteSnapshotDerivesZFSDatasetFromStorageRef(t *testing.T) {
 	t.Setenv("HELPER_LOG_PATH", logPath)
 
 	err := (&Adapter{}).DeleteSnapshot(context.Background(), backend.DeleteSnapshotRequest{
-		StorageRef: "tank/cleanroom/snapshots/snap-test@seed",
+		StorageRef: "tank/cleanroom/snapshots/snap-test@base",
 		FirecrackerConfig: backend.FirecrackerConfig{
 			PrivilegedHelperPath: helperPath,
 			Snapshots: backend.SnapshotConfig{
@@ -514,7 +514,7 @@ func TestDeleteSnapshotInfersZFSDriverFromStorageRef(t *testing.T) {
 	t.Setenv("HELPER_LOG_PATH", logPath)
 
 	err := (&Adapter{}).DeleteSnapshot(context.Background(), backend.DeleteSnapshotRequest{
-		StorageRef: "tank/cleanroom/snapshots/snap-test@seed",
+		StorageRef: "tank/cleanroom/snapshots/snap-test@base",
 		FirecrackerConfig: backend.FirecrackerConfig{
 			PrivilegedHelperPath: helperPath,
 			Snapshots: backend.SnapshotConfig{

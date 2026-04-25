@@ -86,7 +86,7 @@ type payload struct {
 	Platform     any         `json:"platform"`
 	TempRoot     string      `json:"temp_root"`
 	TempRootKept bool        `json:"temp_root_kept"`
-	Seed         *runResult  `json:"seed"`
+	CacheWarmup  *runResult  `json:"cache_warmup"`
 	WarmupRuns   []runResult `json:"warmup_runs"`
 	Runs         []runResult `json:"runs"`
 	Summary      summary     `json:"summary"`
@@ -150,13 +150,13 @@ func run(args []string, stdout, stderr io.Writer) (runErr error) {
 	fmt.Fprintf(stdout, "- output: %s\n", runner.outputPath)
 	fmt.Fprintf(stdout, "- temp root: %s\n", runner.tmpRoot)
 
-	seed, err := runner.seedRun()
+	cacheWarmup, err := runner.cacheWarmupRun()
 	if err != nil {
 		runner.keepTempDir = true
 		return err
 	}
-	if seed != nil {
-		fmt.Fprintln(stdout, "- seed: performed")
+	if cacheWarmup != nil {
+		fmt.Fprintln(stdout, "- cache warmup: performed")
 	}
 
 	if runner.cfg.Warmup > 0 {
@@ -205,7 +205,7 @@ func run(args []string, stdout, stderr io.Writer) (runErr error) {
 		},
 		TempRoot:     runner.tmpRoot,
 		TempRootKept: runner.keepTempDir,
-		Seed:         seed,
+		CacheWarmup:  cacheWarmup,
 		WarmupRuns:   warmupRuns,
 		Runs:         runs,
 		Summary:      computeSummary(elapsed),
@@ -253,7 +253,7 @@ Options:
   -h, --help                Show this help
 
 Notes:
-  - This tool starts its own cleanroom server for each seed/run sequence.
+  - This tool starts its own cleanroom server for each cache-warmup/run sequence.
   - It isolates XDG cache/state/data/runtime directories per scenario while
     preserving the caller's runtime config discovery.
   - The measured command is: cleanroom create --json
@@ -376,13 +376,13 @@ func (r *benchmarkRunner) cleanup() error {
 	return nil
 }
 
-func (r *benchmarkRunner) seedRun() (*runResult, error) {
+func (r *benchmarkRunner) cacheWarmupRun() (*runResult, error) {
 	sharedEnvRoot := filepath.Join(r.tmpRoot, "shared")
 	switch r.cfg.Scenario {
 	case scenarioWarmRepositoryStore:
 		r.resetStageState(sharedEnvRoot)
 		r.resetTransportState(sharedEnvRoot)
-		result, err := r.runCreateIteration(sharedEnvRoot, "seed", 0)
+		result, err := r.runCreateIteration(sharedEnvRoot, "cache-warmup", 0)
 		if err != nil {
 			return nil, err
 		}
@@ -391,7 +391,7 @@ func (r *benchmarkRunner) seedRun() (*runResult, error) {
 	case scenarioWarmWorkspaceStage:
 		r.resetStageState(sharedEnvRoot)
 		r.resetTransportState(sharedEnvRoot)
-		result, err := r.runCreateIteration(sharedEnvRoot, "seed", 0)
+		result, err := r.runCreateIteration(sharedEnvRoot, "cache-warmup", 0)
 		if err != nil {
 			return nil, err
 		}

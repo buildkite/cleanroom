@@ -3383,7 +3383,7 @@ func TestCreateSandboxReusesPortableDependencyStageAfterCheckoutRefresh(t *testi
 		case dependencyStageReuseExact:
 			record := records[i]
 			exactRecord = &record
-		case dependencyStageReusePortableSeed:
+		case dependencyStageReusePortable:
 			record := records[i]
 			portableRecord = &record
 		}

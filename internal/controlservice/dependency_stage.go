@@ -26,7 +26,7 @@ const (
 	dependencyStageProducerVersion         = "cleanroom/dependency-stage-v1"
 	portableDependencyStageProducerVersion = "cleanroom/portable-dependency-stage-v1"
 	dependencyStageReuseExact              = "exact"
-	dependencyStageReusePortableSeed       = "portable_seed"
+	dependencyStageReusePortable           = "portable"
 	portableDependencyOutputMode           = "outside-workspace"
 )
 
@@ -275,7 +275,7 @@ func (s *Service) lookupPortableDependencyStageCache(ctx context.Context, backen
 	if strings.TrimSpace(record.Backend) != strings.TrimSpace(backendName) {
 		return cachestore.Record{}, false, observability.CacheLookupReasonBackendMismatch, nil
 	}
-	if strings.TrimSpace(record.ReuseMode) != dependencyStageReusePortableSeed {
+	if strings.TrimSpace(record.ReuseMode) != dependencyStageReusePortable {
 		return cachestore.Record{}, false, observability.CacheLookupReasonRecordNotFound, nil
 	}
 	if strings.TrimSpace(record.PolicyHash) != strings.TrimSpace(compiled.Hash) {
@@ -601,7 +601,7 @@ func portableDependencyStageRecordFromExactRecord(
 ) cachestore.Record {
 	record := exactRecord
 	record.CacheKey = strings.TrimSpace(plan.PortableCacheKey)
-	record.ReuseMode = dependencyStageReusePortableSeed
+	record.ReuseMode = dependencyStageReusePortable
 	record.PolicyHash = compiled.Hash
 	record.Policy = compiled.ToProto()
 	record.Repository = cloneRepositoryCheckout(normalizeRepositoryCheckoutForComparison(repository)).ToProto()

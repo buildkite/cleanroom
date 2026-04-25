@@ -110,7 +110,7 @@ func TestZFSDriverEnsureBaseVolumeAndCloneLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnsureBaseVolume returned error: %v", err)
 	}
-	if got, want := base.Ref, "tank/cleanroom/base/runtime-key@seed"; got != want {
+	if got, want := base.Ref, "tank/cleanroom/base/runtime-key@base"; got != want {
 		t.Fatalf("unexpected base ref: got %q want %q", got, want)
 	}
 
@@ -132,10 +132,10 @@ func TestZFSDriverEnsureBaseVolumeAndCloneLifecycle(t *testing.T) {
 		"zfs list -H -o name tank/cleanroom/base/runtime-key",
 		"zfs create -p -V 10 tank/cleanroom/base/runtime-key",
 		"dd if=" + sourcePath + " of=/dev/zvol/tank/cleanroom/base/runtime-key bs=4M conv=fsync status=none",
-		"zfs list -H -o name tank/cleanroom/base/runtime-key@seed",
-		"zfs snapshot tank/cleanroom/base/runtime-key@seed",
+		"zfs list -H -o name tank/cleanroom/base/runtime-key@base",
+		"zfs snapshot tank/cleanroom/base/runtime-key@base",
 		"zfs list -H -o name tank/cleanroom/sandboxes/sandbox-1",
-		"zfs clone -p tank/cleanroom/base/runtime-key@seed tank/cleanroom/sandboxes/sandbox-1",
+		"zfs clone -p tank/cleanroom/base/runtime-key@base tank/cleanroom/sandboxes/sandbox-1",
 	}
 	if got, want := runner.commands, wantCommands; strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("unexpected zfs commands:\n got: %v\nwant: %v", got, want)
@@ -163,7 +163,7 @@ func TestZFSDriverSnapshotSurvivesSourceVolumeDestroy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SnapshotVolume returned error: %v", err)
 	}
-	if got, want := snapshot.Ref, "tank/cleanroom/snapshots/golden@seed"; got != want {
+	if got, want := snapshot.Ref, "tank/cleanroom/snapshots/golden@base"; got != want {
 		t.Fatalf("unexpected snapshot ref: got %q want %q", got, want)
 	}
 
@@ -195,11 +195,11 @@ func TestZFSDriverSnapshotSurvivesSourceVolumeDestroy(t *testing.T) {
 		"zfs list -H -o name tank/cleanroom/snapshots/golden",
 		"zfs clone -p tank/cleanroom/sandboxes/sandbox-1@snap-golden tank/cleanroom/snapshots/golden",
 		"zfs promote tank/cleanroom/snapshots/golden",
-		"zfs snapshot tank/cleanroom/snapshots/golden@seed",
+		"zfs snapshot tank/cleanroom/snapshots/golden@base",
 		"zfs destroy tank/cleanroom/sandboxes/sandbox-1@snap-golden",
 		"zfs destroy -r tank/cleanroom/sandboxes/sandbox-1",
 		"zfs list -H -o name tank/cleanroom/sandboxes/sandbox-2",
-		"zfs clone -p tank/cleanroom/snapshots/golden@seed tank/cleanroom/sandboxes/sandbox-2",
+		"zfs clone -p tank/cleanroom/snapshots/golden@base tank/cleanroom/sandboxes/sandbox-2",
 		"zfs destroy -r tank/cleanroom/sandboxes/sandbox-2",
 		"zfs destroy -r tank/cleanroom/snapshots/golden",
 	}
@@ -231,7 +231,7 @@ func TestZFSDriverEnsureBaseVolumeUsesMinimumBytesNamespace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnsureBaseVolume returned error: %v", err)
 	}
-	if got, want := base.Ref, "tank/cleanroom/base/runtime-key-min-8388608@seed"; got != want {
+	if got, want := base.Ref, "tank/cleanroom/base/runtime-key-min-8388608@base"; got != want {
 		t.Fatalf("unexpected base ref: got %q want %q", got, want)
 	}
 
@@ -239,8 +239,8 @@ func TestZFSDriverEnsureBaseVolumeUsesMinimumBytesNamespace(t *testing.T) {
 		"zfs list -H -o name tank/cleanroom/base/runtime-key-min-8388608",
 		"zfs create -p -V 8388608 tank/cleanroom/base/runtime-key-min-8388608",
 		"dd if=" + sourcePath + " of=/dev/zvol/tank/cleanroom/base/runtime-key-min-8388608 bs=4M conv=fsync status=none",
-		"zfs list -H -o name tank/cleanroom/base/runtime-key-min-8388608@seed",
-		"zfs snapshot tank/cleanroom/base/runtime-key-min-8388608@seed",
+		"zfs list -H -o name tank/cleanroom/base/runtime-key-min-8388608@base",
+		"zfs snapshot tank/cleanroom/base/runtime-key-min-8388608@base",
 	}
 	if got, want := runner.commands, wantCommands; strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("unexpected zfs commands:\n got: %v\nwant: %v", got, want)
@@ -257,7 +257,7 @@ func TestZFSDriverRequiresDatasetRoot(t *testing.T) {
 func TestZFSDatasetRootFromStoredSnapshotRef(t *testing.T) {
 	t.Parallel()
 
-	if got, ok := ZFSDatasetRootFromStoredSnapshotRef("tank/cleanroom/snapshots/golden@seed"); !ok || got != "tank/cleanroom" {
+	if got, ok := ZFSDatasetRootFromStoredSnapshotRef("tank/cleanroom/snapshots/golden@base"); !ok || got != "tank/cleanroom" {
 		t.Fatalf("unexpected dataset root: got %q ok=%t", got, ok)
 	}
 	if _, ok := ZFSDatasetRootFromStoredSnapshotRef("tank/cleanroom/sandboxes/sandbox-1@snap-golden"); ok {
@@ -269,12 +269,12 @@ func TestZFSDatasetRootFromManagedRef(t *testing.T) {
 	t.Parallel()
 
 	cases := map[string]string{
-		"tank/cleanroom/base/runtime-key@seed":                  "tank/cleanroom",
+		"tank/cleanroom/base/runtime-key@base":                  "tank/cleanroom",
 		"tank/cleanroom/sandboxes/sandbox-1":                    "tank/cleanroom",
-		"tank/cleanroom/snapshots/golden@seed":                  "tank/cleanroom",
+		"tank/cleanroom/snapshots/golden@base":                  "tank/cleanroom",
 		"tank/cleanroom/sandboxes/source@snap-golden":           "tank/cleanroom",
 		"tank/snapshots/cleanroom/sandboxes/sandbox-1":          "tank/snapshots/cleanroom",
-		"tank/base/cleanroom/snapshots/golden@seed":             "tank/base/cleanroom",
+		"tank/base/cleanroom/snapshots/golden@base":             "tank/base/cleanroom",
 		"tank/sandboxes/cleanroom/base/runtime-key-min-8388608": "tank/sandboxes/cleanroom",
 	}
 	for ref, want := range cases {

@@ -29,7 +29,7 @@ The target model is:
   repository-store abstraction
 - first back that abstraction with today’s mirror behavior
 - then add a Git-native partial/promisor backend
-- optionally seed cold hosts with bundle artifacts before talking to origin
+- optionally hydrate cold hosts from bundle artifacts before talking to origin
 - later distribute services/dependency/workspace-stage caches across hosts to
   skip Git entirely on a hit
 
@@ -190,7 +190,7 @@ That means:
 This keeps correctness and cache identity stable while the host-side transport
 layer evolves.
 
-### 4. Add bundle seeding through `content-cache`
+### 4. Add bundle hydration through `content-cache`
 
 Once Cleanroom can consume repository transport hints, add generic Git bundle
 support to `content-cache`.
@@ -205,7 +205,7 @@ This should cover:
 
 Cleanroom can then use those artifacts opportunistically:
 
-- if a bundle seed is available, hydrate the repository store from it first
+- if a bundle artifact is available, hydrate the repository store from it first
 - then fetch only the delta needed to reach the exact target commit
 - if no bundle is available, continue with direct origin access
 
@@ -319,7 +319,7 @@ Success criteria:
 - no user-visible behavior regression
 - warm services/dependency/workspace-stage hits remain unchanged
 
-### Phase 4: Bundle seeding via `content-cache`
+### Phase 4: Bundle hydration via `content-cache`
 
 Status: not started.
 
@@ -355,7 +355,7 @@ Success criteria:
   optimization.
 - Partial/promisor mode should be gated behind explicit runtime configuration
   until proven on supported hosts and remotes.
-- Bundle seeding should be opportunistic rather than mandatory.
+- Bundle hydration should be opportunistic rather than mandatory.
 
 ## Verification
 
@@ -448,7 +448,7 @@ Add metrics and debug logs for:
 - repo-aware bootstrap duration by phase
 
 These measurements are necessary to decide whether later slices, especially
-bundle seeding and cross-host stage distribution, are worth their complexity.
+bundle hydration and cross-host stage distribution, are worth their complexity.
 
 ## Open Questions
 

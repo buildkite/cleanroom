@@ -234,7 +234,7 @@ func TestRemoveKeepsMetadataWhenRootFSDeleteFails(t *testing.T) {
 		t.Fatalf("create rootfs directory: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(rootfsDir, "keep"), []byte("x"), 0o644); err != nil {
-		t.Fatalf("seed rootfs directory: %v", err)
+		t.Fatalf("populate rootfs directory: %v", err)
 	}
 
 	record := Record{

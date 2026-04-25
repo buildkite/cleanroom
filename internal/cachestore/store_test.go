@@ -41,7 +41,7 @@ func TestStoreCreateGetReadyListDelete(t *testing.T) {
 		},
 		RepositoryHasChangeset:   true,
 		ParentCacheKey:           "runtime:test",
-		ReuseMode:                "portable_seed",
+		ReuseMode:                "portable",
 		StorageRef:               "/tmp/workspace-test.ext4",
 		StorageDriver:            "file",
 		InputManifestDigest:      "sha256:manifest",
@@ -108,7 +108,7 @@ func TestStoreGetReadyFiltersNonReadyStates(t *testing.T) {
 	}
 
 	record := Record{
-		CacheKey:          "dependency-seed:test",
+		CacheKey:          "dependency-stage:test",
 		Stage:             "dependency",
 		State:             "failed",
 		BackingSnapshotID: "snapshot-dependency-test",

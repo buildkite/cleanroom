@@ -179,7 +179,7 @@ func TestCreateSnapshotFlushesHostFilesystemForZFSSnapshots(t *testing.T) {
 					t.Fatalf("unexpected snapshot id: got %q want %q", got, want)
 				}
 				calls = append(calls, "snapshot")
-				return zfsSnapshot{StorageRef: "tank/cleanroom/snapshots/snap-test@seed"}, nil
+				return zfsSnapshot{StorageRef: "tank/cleanroom/snapshots/snap-test@base"}, nil
 			},
 		}
 	}
@@ -218,7 +218,7 @@ func TestCreateSnapshotFlushesHostFilesystemForZFSSnapshots(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateSnapshot returned error: %v", err)
 	}
-	if got, want := result.StorageRef, "tank/cleanroom/snapshots/snap-test@seed"; got != want {
+	if got, want := result.StorageRef, "tank/cleanroom/snapshots/snap-test@base"; got != want {
 		t.Fatalf("unexpected snapshot storage ref: got %q want %q", got, want)
 	}
 	if got, want := calls, []string{"host-sync", "snapshot"}; strings.Join(got, ",") != strings.Join(want, ",") {
@@ -554,13 +554,13 @@ func TestSnapshotStorageHelpersPassLoggerToHostRuntime(t *testing.T) {
 		if got, want := req.VolumeRef, "tank/cleanroom/sandboxes/cr-test"; got != want {
 			t.Fatalf("unexpected volume ref: got %q want %q", got, want)
 		}
-		return zfsSnapshot{StorageRef: "tank/cleanroom/snapshots/snap-test@seed"}, nil
+		return zfsSnapshot{StorageRef: "tank/cleanroom/snapshots/snap-test@base"}, nil
 	}
 	runtime.testHostRuntime.destroyZFSSnapshotFn = func(_ context.Context, snapshotRef string) error {
 		if runtime.logger != logger {
 			t.Fatal("expected destroySnapshotStorage to pass the logger into the host runtime")
 		}
-		if got, want := snapshotRef, "tank/cleanroom/snapshots/snap-test@seed"; got != want {
+		if got, want := snapshotRef, "tank/cleanroom/snapshots/snap-test@base"; got != want {
 			t.Fatalf("unexpected snapshot ref: got %q want %q", got, want)
 		}
 		return nil
@@ -584,7 +584,7 @@ func TestSnapshotStorageHelpersPassLoggerToHostRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatalf("createSnapshotStorage returned error: %v", err)
 	}
-	if got, want := storageRef, "tank/cleanroom/snapshots/snap-test@seed"; got != want {
+	if got, want := storageRef, "tank/cleanroom/snapshots/snap-test@base"; got != want {
 		t.Fatalf("unexpected storage ref: got %q want %q", got, want)
 	}
 	if err := destroySnapshotStorage(context.Background(), logger, cfg, storageRef); err != nil {
@@ -712,7 +712,7 @@ func TestSnapshotConfigForStorageRefUsesStoredZFSDataset(t *testing.T) {
 			Driver:     "zfs",
 			ZFSDataset: "tank/other",
 		},
-	}, "tank/cleanroom/snapshots/snap-test@seed")
+	}, "tank/cleanroom/snapshots/snap-test@base")
 	if err != nil {
 		t.Fatalf("snapshotConfigForStorageRef returned error: %v", err)
 	}
@@ -741,7 +741,7 @@ func TestSnapshotConfigForStorageRefLeavesConfiguredDatasetForNonStoredRef(t *te
 func TestSnapshotConfigForStorageRefInfersZFSDriverFromStoredRef(t *testing.T) {
 	t.Parallel()
 
-	cfg, err := snapshotConfigForStorageRef(backend.FirecrackerConfig{}, "tank/cleanroom/snapshots/snap-test@seed")
+	cfg, err := snapshotConfigForStorageRef(backend.FirecrackerConfig{}, "tank/cleanroom/snapshots/snap-test@base")
 	if err != nil {
 		t.Fatalf("snapshotConfigForStorageRef returned error: %v", err)
 	}
@@ -773,7 +773,7 @@ func TestSnapshotConfigForStorageRefRejectsDriverMismatch(t *testing.T) {
 
 	_, err := snapshotConfigForStorageRef(backend.FirecrackerConfig{
 		Snapshots: backend.SnapshotConfig{Driver: "file"},
-	}, "tank/cleanroom/snapshots/snap-test@seed")
+	}, "tank/cleanroom/snapshots/snap-test@base")
 	if err == nil {
 		t.Fatal("expected snapshotConfigForStorageRef to reject driver mismatch")
 	}
