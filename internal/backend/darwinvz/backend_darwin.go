@@ -1980,7 +1980,7 @@ func (a *Adapter) ensurePreparedRuntimeRootFSFromImage(ctx context.Context, imag
 		return preparedRootFS{}, err
 	}
 	if _, err := os.Stat(preparedPath); err == nil {
-		if validateErr := validatePreparedRuntimeRootFS(preparedPath); validateErr == nil {
+		if preparedRuntimeRootFSCacheHitIsValid(preparedPath) {
 			return preparedRootFS{
 				Ref:    artifact.Ref,
 				Digest: artifact.Digest,
@@ -1989,6 +1989,7 @@ func (a *Adapter) ensurePreparedRuntimeRootFSFromImage(ctx context.Context, imag
 			}, nil
 		}
 		// Stale/incomplete cache entries should be rebuilt instead of reused.
+		_ = os.Remove(preparedRuntimeRootFSMarkerPath(preparedPath))
 		_ = os.Remove(preparedPath)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return preparedRootFS{}, fmt.Errorf("inspect prepared runtime rootfs %q: %w", preparedPath, err)
@@ -1998,7 +1999,7 @@ func (a *Adapter) ensurePreparedRuntimeRootFSFromImage(ctx context.Context, imag
 	defer a.runtimeImageMu.Unlock()
 
 	if _, err := os.Stat(preparedPath); err == nil {
-		if validateErr := validatePreparedRuntimeRootFS(preparedPath); validateErr == nil {
+		if preparedRuntimeRootFSCacheHitIsValid(preparedPath) {
 			return preparedRootFS{
 				Ref:    artifact.Ref,
 				Digest: artifact.Digest,
@@ -2006,6 +2007,7 @@ func (a *Adapter) ensurePreparedRuntimeRootFSFromImage(ctx context.Context, imag
 				Hit:    true,
 			}, nil
 		}
+		_ = os.Remove(preparedRuntimeRootFSMarkerPath(preparedPath))
 		if removeErr := os.Remove(preparedPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
 			return preparedRootFS{}, fmt.Errorf("remove invalid prepared runtime rootfs %q: %w", preparedPath, removeErr)
 		}
@@ -2034,6 +2036,7 @@ func (a *Adapter) ensurePreparedRuntimeRootFSFromImage(ctx context.Context, imag
 		_ = os.Remove(tmpPath)
 		if _, statErr := os.Stat(preparedPath); statErr == nil {
 			if validateErr := validatePreparedRuntimeRootFS(preparedPath); validateErr == nil {
+				_ = writePreparedRuntimeRootFSMarker(preparedPath)
 				return preparedRootFS{
 					Ref:    artifact.Ref,
 					Digest: artifact.Digest,
@@ -2045,6 +2048,7 @@ func (a *Adapter) ensurePreparedRuntimeRootFSFromImage(ctx context.Context, imag
 		}
 		return preparedRootFS{}, fmt.Errorf("store prepared runtime rootfs %q: %w", preparedPath, err)
 	}
+	_ = writePreparedRuntimeRootFSMarker(preparedPath)
 
 	return preparedRootFS{
 		Ref:    artifact.Ref,
@@ -2057,6 +2061,8 @@ func (a *Adapter) ensurePreparedRuntimeRootFSFromImage(ctx context.Context, imag
 var preparedRuntimeRootFSRequiredPaths = []string{
 	guestAgentPath,
 }
+
+var validatePreparedRuntimeRootFSFn = validatePreparedRuntimeRootFS
 
 func validatePreparedRuntimeRootFS(path string) error {
 	for _, requiredPath := range preparedRuntimeRootFSRequiredPaths {
@@ -2072,6 +2078,67 @@ func validatePreparedRuntimeRootFS(path string) error {
 		},
 	)
 }
+
+const preparedRuntimeRootFSMarkerVersion = "v1"
+
+func preparedRuntimeRootFSCacheHitIsValid(path string) bool {
+	if preparedRuntimeRootFSMarkerMatches(path) {
+		return true
+	}
+	if err := validatePreparedRuntimeRootFSFn(path); err != nil {
+		return false
+	}
+	_ = writePreparedRuntimeRootFSMarker(path)
+	return true
+}
+
+func preparedRuntimeRootFSMarkerPath(path string) string {
+	return path + ".validated"
+}
+
+func preparedRuntimeRootFSMarkerMatches(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	raw, err := os.ReadFile(preparedRuntimeRootFSMarkerPath(path))
+	if err != nil {
+		return false
+	}
+	fields := strings.Fields(string(raw))
+	if len(fields) != 3 || fields[0] != preparedRuntimeRootFSMarkerVersion {
+		return false
+	}
+	size, err := strconv.ParseInt(fields[1], 10, 64)
+	if err != nil || size != info.Size() {
+		return false
+	}
+	modTimeNanos, err := strconv.ParseInt(fields[2], 10, 64)
+	if err != nil || modTimeNanos != info.ModTime().UTC().UnixNano() {
+		return false
+	}
+	return true
+}
+
+func writePreparedRuntimeRootFSMarker(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	markerPath := preparedRuntimeRootFSMarkerPath(path)
+	tmpPath := markerPath + fmt.Sprintf(".tmp-%d", time.Now().UnixNano())
+	content := fmt.Sprintf("%s\n%d\n%d\n", preparedRuntimeRootFSMarkerVersion, info.Size(), info.ModTime().UTC().UnixNano())
+	if err := os.WriteFile(tmpPath, []byte(content), 0o644); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Rename(tmpPath, markerPath); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	return nil
+}
+
 func preparedRuntimeRootFSPath(imageDigest, guestAgentHash string) (string, error) {
 	cacheBase, err := paths.CacheBaseDir()
 	if err != nil {
