@@ -87,6 +87,9 @@ func TestConfigInitWritesRuntimeConfig(t *testing.T) {
 		if got, want := int64(cfg.Backends.DarwinVZ.MinimumRootFSBytes), int64(4<<30); got != want {
 			t.Fatalf("expected backends.darwin-vz.minimum_rootfs_bytes=%d, got %d", want, got)
 		}
+		if got, want := cfg.Backends.DarwinVZ.Services.Docker.StorageDriver, "overlay2"; got != want {
+			t.Fatalf("expected backends.darwin-vz.services.docker.storage_driver=%q, got %q", want, got)
+		}
 		if !strings.Contains(string(raw), "memory_mib: 4096") {
 			t.Fatalf("expected generated config to include memory_mib: 4096, got:\n%s", raw)
 		}
@@ -117,7 +120,7 @@ func TestConfigInitWritesRuntimeConfig(t *testing.T) {
 		if got, want := cfg.Backends.Firecracker.Services.Docker.StartupTimeoutSeconds, int64(20); got != want {
 			t.Fatalf("expected backends.firecracker.services.docker.startup_timeout_seconds=%d, got %d", want, got)
 		}
-		if got, want := cfg.Backends.Firecracker.Services.Docker.StorageDriver, "vfs"; got != want {
+		if got, want := cfg.Backends.Firecracker.Services.Docker.StorageDriver, "overlay2"; got != want {
 			t.Fatalf("expected backends.firecracker.services.docker.storage_driver=%q, got %q", want, got)
 		}
 		if cfg.Backends.Firecracker.Services.Docker.IPTables {

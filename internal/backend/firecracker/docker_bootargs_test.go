@@ -52,7 +52,7 @@ func TestDockerServiceBootArgsUsesSafeDefaults(t *testing.T) {
 	got := dockerServiceBootArgs(compiled, backend.FirecrackerConfig{}, 0, gateway.ProxyRoutes{})
 	for _, want := range []string{
 		"cleanroom_service_docker_startup_timeout=20",
-		"cleanroom_service_docker_storage_driver=vfs",
+		"cleanroom_service_docker_storage_driver=overlay2",
 		"cleanroom_service_docker_iptables=0",
 	} {
 		if !strings.Contains(got, want) {
