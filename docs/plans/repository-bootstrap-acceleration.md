@@ -13,7 +13,7 @@ This plan keeps the existing repository-bootstrap contract:
 
 - Cleanroom resolves an exact remote URL and full commit SHA
 - the sandbox receives an exact committed checkout
-- warm hits continue to come from workspace/dependency stage caches
+- warm hits continue to come from services/dependency/workspace stage caches
 
 The change is in how Cleanroom prepares host-side git state for that exact
 checkout. Today the cold path eagerly creates and refreshes a full bare mirror
@@ -30,8 +30,8 @@ The target model is:
 - first back that abstraction with today’s mirror behavior
 - then add a Git-native partial/promisor backend
 - optionally seed cold hosts with bundle artifacts before talking to origin
-- later distribute workspace-stage caches across hosts to skip Git entirely on
-  a hit
+- later distribute services/dependency/workspace-stage caches across hosts to
+  skip Git entirely on a hit
 
 This plan intentionally leaves any git-aware VFS or lazy worktree mount out of
 scope.
@@ -61,7 +61,7 @@ makes it harder to evolve the transport layer independently.
 - Preserve exact-commit checkout semantics.
 - Keep the implementation backend-agnostic.
 - Keep host-side credentials and origin auth under Cleanroom control.
-- Preserve the current warm path through workspace/dependency stage caches.
+- Preserve the current warm path through services/dependency/workspace stage caches.
 - Create a clean boundary between Cleanroom repository semantics and
   `content-cache` transport artifacts.
 
@@ -82,7 +82,7 @@ Cleanroom owns:
 - canonical remote identity
 - exact commit resolution and verification
 - repository bootstrap policy checks
-- workspace/dependency-stage identity
+- services/dependency/workspace-stage identity
 - sandbox-visible checkout behavior
 
 `content-cache` should not become a Git worktree engine or a repository
@@ -117,9 +117,9 @@ interface should not require a full mirror forever.
 ### 4. Warm speed should still come from stage caches
 
 This plan accelerates the cold path, but it does not replace the layered cache
-model. The largest end-to-end wins still come from reusing workspace and
-dependency stages. Git acceleration reduces the cost of producing those stages
-on cold hosts.
+model. The largest end-to-end wins still come from reusing services,
+dependency, and workspace stages. Git acceleration reduces the cost of
+producing those stages on cold hosts.
 
 ## Proposed Architecture
 
@@ -212,9 +212,10 @@ Cleanroom can then use those artifacts opportunistically:
 This is the most promising Git-native accelerator for brand-new hosts in a
 fleet because it removes repeated full-history bootstrap from origin.
 
-### 5. Later distribute workspace-stage caches in Cleanroom
+### 5. Later distribute stage caches in Cleanroom
 
-Distributed workspace/dependency stages are a separate, higher-level feature.
+Distributed services/workspace/dependency stages are a separate, higher-level
+feature.
 
 They belong in Cleanroom because they are defined by:
 
@@ -240,8 +241,8 @@ Belongs in this repository:
 - dependency-stage key-file reads at exact commits
 - repository bootstrap orchestration
 - checkout-mode decisions such as sparse checkout, if introduced later
-- workspace/dependency-stage identity and cache publication
-- distributed workspace/dependency-stage caches
+- services/dependency/workspace-stage identity and cache publication
+- distributed services/dependency/workspace-stage caches
 
 ### `content-cache`
 
@@ -281,8 +282,9 @@ Work:
 Success criteria:
 
 - no change in bootstrap semantics
-- no change in workspace/dependency-stage cache keys
-- existing repository-bootstrap and dependency-stage tests still pass
+- no change in services/dependency/workspace-stage cache keys
+- existing repository-bootstrap, dependency-stage, and services-stage tests
+  still pass
 
 ### Phase 2: Partial/promisor repository store
 
@@ -315,7 +317,7 @@ Success criteria:
 
 - repo-aware `create`, `exec`, and `console` get faster on cold hosts
 - no user-visible behavior regression
-- warm workspace/dependency-stage hits remain unchanged
+- warm services/dependency/workspace-stage hits remain unchanged
 
 ### Phase 4: Bundle seeding via `content-cache`
 
@@ -339,8 +341,7 @@ Status: not started.
 
 Work:
 
-- export/import workspace-stage caches across hosts
-- later extend the same model to dependency stages
+- export/import services/dependency/workspace-stage caches across hosts
 
 Success criteria:
 
@@ -392,8 +393,10 @@ dependency-stage tests with fixture repositories that assert:
 - warm workspace-stage hits still skip repository bootstrap when expected
 - warm dependency-stage hits still skip both repository bootstrap and
   dependency bootstrap when expected
-- workspace/dependency-stage keys stay stable unless checkout semantics
-  intentionally change
+- warm services-stage hits still skip repository bootstrap plus dependency and
+  services bootstrap when expected
+- services/dependency/workspace-stage keys stay stable unless checkout
+  semantics intentionally change
 
 The same scenarios should be exercised against both repository-store backends
 where practical.
@@ -429,7 +432,7 @@ under a live daemon. That avoids false results from open metadata databases.
 Do not advance a phase unless it shows:
 
 - no correctness regressions in the contract and end-to-end suites
-- no unexpected workspace/dependency-stage cache-key churn
+- no unexpected services/dependency/workspace-stage cache-key churn
 - a measurable cold-host improvement on at least one representative large repo
 - no material warm-path regression relative to the current baseline
 

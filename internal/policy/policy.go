@@ -71,7 +71,9 @@ type rawRunConfig struct {
 type rawShellCommandSpec []string
 
 type rawServices struct {
-	Docker rawDockerService `yaml:"docker"`
+	Docker  rawDockerService         `yaml:"docker"`
+	Command rawDependencyCommandSpec `yaml:"command"`
+	Key     rawDependencyKey         `yaml:"key"`
 }
 
 type rawDockerService struct {
@@ -104,7 +106,9 @@ type RepositoryConfig struct {
 }
 
 type Services struct {
-	Docker DockerService `json:"docker"`
+	Docker   DockerService `json:"docker"`
+	Command  []string      `json:"command,omitempty"`
+	KeyFiles []string      `json:"key_files,omitempty"`
 }
 
 type Dependencies struct {
@@ -236,20 +240,20 @@ func Compile(raw rawPolicy) (*CompiledPolicy, error) {
 	if err != nil {
 		return nil, err
 	}
+	services, err := normalizeServices(raw.Sandbox.Services)
+	if err != nil {
+		return nil, err
+	}
 	run, err := normalizeRun(raw.Sandbox.Run)
 	if err != nil {
 		return nil, err
 	}
 
 	compiled := &CompiledPolicy{
-		Version:     raw.Version,
-		ImageRef:    parsedRef.Original,
-		ImageDigest: parsedRef.Digest(),
-		Services: Services{
-			Docker: DockerService{
-				Required: raw.Sandbox.Services.Docker.Required,
-			},
-		},
+		Version:        raw.Version,
+		ImageRef:       parsedRef.Original,
+		ImageDigest:    parsedRef.Digest(),
+		Services:       services,
 		NetworkDefault: networkDefault,
 		Allow:          allow,
 		Dependencies:   dependencies,
@@ -308,6 +312,10 @@ func (p *CompiledPolicy) RequiresDockerService() bool {
 		return false
 	}
 	return p.Services.Docker.Required
+}
+
+func (s Services) BootstrapEnabled() bool {
+	return len(s.Command) > 0
 }
 
 func (d Dependencies) Enabled() bool {
@@ -471,6 +479,10 @@ func (p *CompiledPolicy) ToProto() *cleanroomv1.Policy {
 			Docker: &cleanroomv1.PolicyDockerService{
 				Required: p.Services.Docker.Required,
 			},
+			Command: append([]string(nil), p.Services.Command...),
+			Key: &cleanroomv1.PolicyDependencyKey{
+				Files: append([]string(nil), p.Services.KeyFiles...),
+			},
 		},
 		NetworkDefault: p.NetworkDefault,
 		Allow:          allow,
@@ -553,20 +565,20 @@ func FromProto(pb *cleanroomv1.Policy) (*CompiledPolicy, error) {
 	if err != nil {
 		return nil, err
 	}
+	services, err := servicesFromProto(pb.GetServices())
+	if err != nil {
+		return nil, err
+	}
 	run, err := runFromProto(pb.GetRun())
 	if err != nil {
 		return nil, err
 	}
 
 	compiled := &CompiledPolicy{
-		Version:     int(pb.GetVersion()),
-		ImageRef:    parsedRef.Original,
-		ImageDigest: parsedRef.Digest(),
-		Services: Services{
-			Docker: DockerService{
-				Required: pb.GetServices().GetDocker().GetRequired(),
-			},
-		},
+		Version:        int(pb.GetVersion()),
+		ImageRef:       parsedRef.Original,
+		ImageDigest:    parsedRef.Digest(),
+		Services:       services,
 		NetworkDefault: networkDefault,
 		Allow:          allow,
 		Dependencies:   dependencies,
@@ -586,11 +598,11 @@ func FromProto(pb *cleanroomv1.Policy) (*CompiledPolicy, error) {
 }
 
 func normalizeDependencies(raw rawDependenciesConfig) (Dependencies, error) {
-	command, err := normalizeDependencyCommand(raw.Command)
+	command, err := normalizeBootstrapCommand(raw.Command, "sandbox.dependencies.command")
 	if err != nil {
 		return Dependencies{}, err
 	}
-	keyFiles, err := normalizeDependencyKeyFiles(raw.Key.Files)
+	keyFiles, err := normalizeBootstrapKeyFiles(raw.Key.Files, "sandbox.dependencies.key.files")
 	if err != nil {
 		return Dependencies{}, err
 	}
@@ -610,11 +622,11 @@ func dependenciesFromProto(pb *cleanroomv1.PolicyDependencies) (Dependencies, er
 	if pb == nil {
 		return Dependencies{}, nil
 	}
-	command, err := normalizeDependencyCommand(pb.GetCommand())
+	command, err := normalizeBootstrapCommand(pb.GetCommand(), "policy dependencies.command")
 	if err != nil {
 		return Dependencies{}, err
 	}
-	keyFiles, err := normalizeDependencyKeyFiles(pb.GetKey().GetFiles())
+	keyFiles, err := normalizeBootstrapKeyFiles(pb.GetKey().GetFiles(), "policy dependencies.key.files")
 	if err != nil {
 		return Dependencies{}, err
 	}
@@ -625,6 +637,51 @@ func dependenciesFromProto(pb *cleanroomv1.PolicyDependencies) (Dependencies, er
 		return Dependencies{}, nil
 	}
 	return Dependencies{
+		Command:  command,
+		KeyFiles: keyFiles,
+	}, nil
+}
+
+func normalizeServices(raw rawServices) (Services, error) {
+	command, err := normalizeBootstrapCommand(raw.Command, "sandbox.services.command")
+	if err != nil {
+		return Services{}, err
+	}
+	keyFiles, err := normalizeBootstrapKeyFiles(raw.Key.Files, "sandbox.services.key.files")
+	if err != nil {
+		return Services{}, err
+	}
+	if len(command) == 0 && len(keyFiles) > 0 {
+		return Services{}, errors.New("sandbox.services.key.files requires sandbox.services.command")
+	}
+	return Services{
+		Docker: DockerService{
+			Required: raw.Docker.Required,
+		},
+		Command:  command,
+		KeyFiles: keyFiles,
+	}, nil
+}
+
+func servicesFromProto(pb *cleanroomv1.PolicyServices) (Services, error) {
+	if pb == nil {
+		return Services{}, nil
+	}
+	command, err := normalizeBootstrapCommand(pb.GetCommand(), "policy services.command")
+	if err != nil {
+		return Services{}, err
+	}
+	keyFiles, err := normalizeBootstrapKeyFiles(pb.GetKey().GetFiles(), "policy services.key.files")
+	if err != nil {
+		return Services{}, err
+	}
+	if len(command) == 0 && len(keyFiles) > 0 {
+		return Services{}, errors.New("policy services.key.files requires services.command")
+	}
+	return Services{
+		Docker: DockerService{
+			Required: pb.GetDocker().GetRequired(),
+		},
 		Command:  command,
 		KeyFiles: keyFiles,
 	}, nil
@@ -664,7 +721,7 @@ func normalizeShellCommand(raw []string, field string) ([]string, error) {
 	return command, nil
 }
 
-func normalizeDependencyCommand(raw []string) ([]string, error) {
+func normalizeBootstrapCommand(raw []string, field string) ([]string, error) {
 	if len(raw) == 0 {
 		return nil, nil
 	}
@@ -672,14 +729,14 @@ func normalizeDependencyCommand(raw []string) ([]string, error) {
 	for i, arg := range raw {
 		trimmed := strings.TrimSpace(arg)
 		if trimmed == "" {
-			return nil, fmt.Errorf("sandbox.dependencies.command[%d] cannot be empty", i)
+			return nil, fmt.Errorf("%s[%d] cannot be empty", field, i)
 		}
 		command = append(command, trimmed)
 	}
 	return command, nil
 }
 
-func normalizeDependencyKeyFiles(raw []string) ([]string, error) {
+func normalizeBootstrapKeyFiles(raw []string, field string) ([]string, error) {
 	if len(raw) == 0 {
 		return nil, nil
 	}
@@ -688,14 +745,14 @@ func normalizeDependencyKeyFiles(raw []string) ([]string, error) {
 	for i, candidate := range raw {
 		trimmed := strings.TrimSpace(candidate)
 		if trimmed == "" {
-			return nil, fmt.Errorf("sandbox.dependencies.key.files[%d] cannot be empty", i)
+			return nil, fmt.Errorf("%s[%d] cannot be empty", field, i)
 		}
 		if strings.HasPrefix(trimmed, "/") {
-			return nil, fmt.Errorf("sandbox.dependencies.key.files[%d] must be relative", i)
+			return nil, fmt.Errorf("%s[%d] must be relative", field, i)
 		}
 		cleaned := path.Clean(strings.ReplaceAll(trimmed, "\\", "/"))
 		if cleaned == "." || cleaned == ".." || strings.HasPrefix(cleaned, "../") {
-			return nil, fmt.Errorf("sandbox.dependencies.key.files[%d] must stay within the repository root", i)
+			return nil, fmt.Errorf("%s[%d] must stay within the repository root", field, i)
 		}
 		if _, ok := seen[cleaned]; ok {
 			continue

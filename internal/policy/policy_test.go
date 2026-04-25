@@ -175,6 +175,19 @@ func TestCompileCapturesDockerServiceRequirement(t *testing.T) {
 	}
 }
 
+func TestCompileDefaultsServicesBootstrapDisabled(t *testing.T) {
+	t.Parallel()
+
+	raw := baseRawPolicy()
+	compiled, err := Compile(raw)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if compiled.Services.BootstrapEnabled() {
+		t.Fatal("expected compiled policy to disable services bootstrap by default")
+	}
+}
+
 func TestCompileDefaultsDependenciesDisabled(t *testing.T) {
 	t.Parallel()
 
@@ -204,6 +217,29 @@ func TestCompileNormalizesDependencyBootstrapConfig(t *testing.T) {
 	}
 	if got, want := compiled.Dependencies.KeyFiles, []string{"go.mod", "go.sum"}; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("unexpected dependency key files: got %v want %v", got, want)
+	}
+}
+
+func TestCompileNormalizesServicesBootstrapConfig(t *testing.T) {
+	t.Parallel()
+
+	raw := baseRawPolicy()
+	raw.Sandbox.Services.Docker.Required = true
+	raw.Sandbox.Services.Command = []string{"docker", "compose", "up", "-d", "postgres"}
+	raw.Sandbox.Services.Key.Files = []string{"./docker-compose.yml", "docker-compose.yml"}
+
+	compiled, err := Compile(raw)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if !compiled.Services.Docker.Required {
+		t.Fatal("expected compiled policy to preserve docker service requirement")
+	}
+	if got, want := compiled.Services.Command, []string{"docker", "compose", "up", "-d", "postgres"}; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("unexpected services command: got %v want %v", got, want)
+	}
+	if got, want := compiled.Services.KeyFiles, []string{"docker-compose.yml"}; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("unexpected services key files: got %v want %v", got, want)
 	}
 }
 
@@ -654,12 +690,15 @@ func TestFromProtoAcceptsAllowDefault(t *testing.T) {
 	}
 }
 
-func TestCompiledPolicyProtoRoundTripPreservesDependencies(t *testing.T) {
+func TestCompiledPolicyProtoRoundTripPreservesDependenciesAndServices(t *testing.T) {
 	t.Parallel()
 
 	raw := baseRawPolicy()
 	raw.Sandbox.Dependencies.Command = []string{"go", "mod", "download"}
 	raw.Sandbox.Dependencies.Key.Files = []string{"go.mod", "go.sum"}
+	raw.Sandbox.Services.Docker.Required = true
+	raw.Sandbox.Services.Command = []string{"docker", "compose", "up", "-d", "postgres"}
+	raw.Sandbox.Services.Key.Files = []string{"docker-compose.yml"}
 	raw.Sandbox.Run.Before = rawShellCommandSpec{"sh", "-lc", "bin/rails db:prepare"}
 	compiled, err := Compile(raw)
 	if err != nil {
@@ -675,6 +714,15 @@ func TestCompiledPolicyProtoRoundTripPreservesDependencies(t *testing.T) {
 	}
 	if got, want := strings.Join(roundTripped.Dependencies.KeyFiles, "\x00"), strings.Join(compiled.Dependencies.KeyFiles, "\x00"); got != want {
 		t.Fatalf("unexpected dependency key files after round trip: got %q want %q", got, want)
+	}
+	if got, want := roundTripped.Services.Docker.Required, compiled.Services.Docker.Required; got != want {
+		t.Fatalf("unexpected docker requirement after round trip: got %t want %t", got, want)
+	}
+	if got, want := strings.Join(roundTripped.Services.Command, "\x00"), strings.Join(compiled.Services.Command, "\x00"); got != want {
+		t.Fatalf("unexpected services command after round trip: got %q want %q", got, want)
+	}
+	if got, want := strings.Join(roundTripped.Services.KeyFiles, "\x00"), strings.Join(compiled.Services.KeyFiles, "\x00"); got != want {
+		t.Fatalf("unexpected services key files after round trip: got %q want %q", got, want)
 	}
 	if got, want := strings.Join(roundTripped.Run.Before, "\x00"), strings.Join(compiled.Run.Before, "\x00"); got != want {
 		t.Fatalf("unexpected run.before after round trip: got %q want %q", got, want)

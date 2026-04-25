@@ -34,7 +34,7 @@ type dependencyStagePlan struct {
 	KeyFilesDigest          string
 }
 
-type dependencyKeyFileDigest struct {
+type stageKeyFileDigest struct {
 	Path    string `json:"path"`
 	SHA256  string `json:"sha256,omitempty"`
 	Deleted bool   `json:"deleted,omitempty"`
@@ -92,20 +92,24 @@ func (s *Service) finalizeDependencyStagePlan(
 }
 
 func (s *Service) dependencyStageKeyFilesDigest(ctx context.Context, repository *repositorycheckout.Checkout, changeset *repositorychangeset.Changeset, files []string) (string, error) {
+	return s.stageKeyFilesDigest(ctx, repository, changeset, files, dependencyStageName)
+}
+
+func (s *Service) stageKeyFilesDigest(ctx context.Context, repository *repositorycheckout.Checkout, changeset *repositorychangeset.Changeset, files []string, stageName string) (string, error) {
 	if len(files) == 0 {
 		return "", nil
 	}
 	if repository == nil {
-		return "", fmt.Errorf("dependency key files require a repository checkout")
+		return "", fmt.Errorf("%s key files require a repository checkout", stageName)
 	}
 	if s.RepositoryStore == nil {
-		return "", fmt.Errorf("dependency key files require repository store")
+		return "", fmt.Errorf("%s key files require repository store", stageName)
 	}
 	if changeset != nil {
 		var digest string
 		err := s.RepositoryStore.WithRepository(ctx, repository.RemoteURL, repository.CommitSHA, repositorystore.FetchHints{}, func(repoDir string) error {
 			var err error
-			digest, err = dependencyStageKeyFilesDigestWithChangeset(repoDir, changeset, files)
+			digest, err = stageKeyFilesDigestWithChangeset(repoDir, changeset, files, stageName)
 			return err
 		})
 		if err != nil {
@@ -116,7 +120,7 @@ func (s *Service) dependencyStageKeyFilesDigest(ctx context.Context, repository 
 	var digest string
 	err := s.RepositoryStore.WithRepository(ctx, repository.RemoteURL, repository.CommitSHA, repositorystore.FetchHints{}, func(repoDir string) error {
 		var err error
-		digest, err = dependencyStageKeyFilesDigestAtCommit(ctx, repoDir, repository.CommitSHA, files)
+		digest, err = stageKeyFilesDigestAtCommit(ctx, repoDir, repository.CommitSHA, files, stageName)
 		return err
 	})
 	if err != nil {
@@ -125,14 +129,14 @@ func (s *Service) dependencyStageKeyFilesDigest(ctx context.Context, repository 
 	return digest, nil
 }
 
-func dependencyStageKeyFilesDigestWithChangeset(repoDir string, changeset *repositorychangeset.Changeset, files []string) (string, error) {
-	manifest := make([]dependencyKeyFileDigest, 0, len(files))
+func stageKeyFilesDigestWithChangeset(repoDir string, changeset *repositorychangeset.Changeset, files []string, stageName string) (string, error) {
+	manifest := make([]stageKeyFileDigest, 0, len(files))
 	digests, err := changeset.DigestPathsFromBase(strings.TrimSpace(repoDir), files)
 	if err != nil {
-		return "", fmt.Errorf("read dependency key files from repository changeset: %w", err)
+		return "", fmt.Errorf("read %s key files from repository changeset: %w", stageName, err)
 	}
 	for _, file := range digests {
-		manifest = append(manifest, dependencyKeyFileDigest{
+		manifest = append(manifest, stageKeyFileDigest{
 			Path:    file.Path,
 			SHA256:  file.SHA256,
 			Deleted: file.Deleted,
@@ -141,26 +145,26 @@ func dependencyStageKeyFilesDigestWithChangeset(repoDir string, changeset *repos
 
 	payload, err := json.Marshal(manifest)
 	if err != nil {
-		return "", fmt.Errorf("marshal dependency key file manifest: %w", err)
+		return "", fmt.Errorf("marshal %s key file manifest: %w", stageName, err)
 	}
 
 	sum := sha256.Sum256(payload)
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
-func dependencyStageKeyFilesDigestAtCommit(ctx context.Context, repoDir, commitSHA string, files []string) (string, error) {
+func stageKeyFilesDigestAtCommit(ctx context.Context, repoDir, commitSHA string, files []string, stageName string) (string, error) {
 	trimmedCommitSHA := strings.TrimSpace(commitSHA)
 	if trimmedCommitSHA == "" {
-		return "", fmt.Errorf("dependency key file commit SHA is empty")
+		return "", fmt.Errorf("%s key file commit SHA is empty", stageName)
 	}
 
-	manifest := make([]dependencyKeyFileDigest, 0, len(files))
+	manifest := make([]stageKeyFileDigest, 0, len(files))
 	for _, file := range files {
 		digest, err := gitFileDigestAtCommit(ctx, strings.TrimSpace(repoDir), trimmedCommitSHA, file)
 		if err != nil {
-			return "", fmt.Errorf("read dependency key file %q: %w", file, err)
+			return "", fmt.Errorf("read %s key file %q: %w", stageName, file, err)
 		}
-		manifest = append(manifest, dependencyKeyFileDigest{
+		manifest = append(manifest, stageKeyFileDigest{
 			Path:   file,
 			SHA256: digest,
 		})
@@ -168,7 +172,7 @@ func dependencyStageKeyFilesDigestAtCommit(ctx context.Context, repoDir, commitS
 
 	payload, err := json.Marshal(manifest)
 	if err != nil {
-		return "", fmt.Errorf("marshal dependency key file manifest: %w", err)
+		return "", fmt.Errorf("marshal %s key file manifest: %w", stageName, err)
 	}
 
 	sum := sha256.Sum256(payload)
@@ -213,7 +217,7 @@ func (s *Service) lookupDependencyStageCache(ctx context.Context, backendName st
 		return cachestore.Record{}, false, observability.CacheLookupReasonPolicyHashMismatch, nil
 	}
 	if strings.TrimSpace(record.ParentCacheKey) != strings.TrimSpace(plan.ParentWorkspaceCacheKey) {
-		return cachestore.Record{}, false, observability.CacheLookupReasonWorkspaceParentChanged, nil
+		return cachestore.Record{}, false, observability.CacheLookupReasonParentStageChanged, nil
 	}
 	if !repositoryCheckoutsEqual(repositorycheckout.FromProto(record.Repository), repository) {
 		return cachestore.Record{}, false, observability.CacheLookupReasonRepositoryChanged, nil

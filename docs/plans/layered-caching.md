@@ -24,6 +24,8 @@ The system-cache pipeline uses stage terminology:
 - workspace stage: runtime rootfs plus exact repository checkout
 - dependency stage: workspace stage plus policy-constrained bootstrap and
   dependencies
+- services stage: dependency stage or workspace stage plus policy-constrained
+  service preparation state on disk
 
 Each stage output is a full sealed rootfs snapshot. Higher stages subsume lower
 stages. At runtime we do not mount `runtime + workspace + dependency` as a live
@@ -589,11 +591,12 @@ the resolved request inputs.
 
 The control plane can then resolve the highest reusable stage cache it trusts:
 
-1. dependency stage hit for the exact checkout plus optional changeset
-2. workspace stage hit for the exact checkout plus optional changeset
-3. exact-checkout workspace stage hit, followed by verified changeset apply
-4. runtime stage hit
-5. cold path
+1. services stage hit for the exact checkout plus optional changeset
+2. dependency stage hit for the exact checkout plus optional changeset
+3. workspace stage hit for the exact checkout plus optional changeset
+4. exact-checkout workspace stage hit, followed by verified changeset apply
+5. runtime stage hit
+6. cold path
 
 ## Production Flow
 
@@ -642,6 +645,18 @@ Shared stage-cache publication should be a host-controlled promotion pipeline.
 5. Snapshot the resulting root volume.
 6. Publish the dependency-stage metadata and storage reference atomically.
 
+### Publish services stage
+
+1. Start from a published dependency stage when one exists, otherwise from a
+   published workspace stage.
+2. Run the constrained services-preparation recipe in a temporary builder
+   sandbox.
+3. Stop any long-lived processes before snapshot publication; the cached value
+   is on-disk state, not live process memory.
+4. Verify the services-preparation recipe completed successfully.
+5. Snapshot the resulting root volume.
+6. Publish the services-stage metadata and storage reference atomically.
+
 ## Consumption Flow
 
 Warm-hit resolution should be simple.
@@ -652,12 +667,20 @@ Warm-hit resolution should be simple.
 4. Attach that single writable child as the VM root disk.
 5. Boot a fresh sandbox.
 
+If no services stage exists but a dependency stage does:
+
+1. clone the dependency stage
+2. run the constrained services-preparation recipe
+3. optionally publish a services stage if the policy allows promotion
+
 If no dependency stage exists but a workspace stage does:
 
 1. clone the workspace stage
 2. if needed, apply and verify the requested changeset
 3. run the constrained bootstrap recipe
 4. optionally publish a dependency stage if the policy allows promotion
+5. if needed, run the constrained services-preparation recipe
+6. optionally publish a services stage if the policy allows promotion
 
 If only the runtime stage exists:
 
