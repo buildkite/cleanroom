@@ -136,24 +136,25 @@ func TestGitMirrorStoreUsesRemoteURLScopedAuthHeader(t *testing.T) {
 	})
 	env := store.gitEnvWithAuth(context.Background(), "https://github.com/buildkite/cleanroom.git", []string{
 		"PATH=/bin",
-		"GIT_CONFIG_COUNT=99",
-		"GIT_CONFIG_KEY_0=http.old/.extraHeader",
-		"GIT_CONFIG_VALUE_0=Authorization: stale",
+		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=url.https://github.com/.insteadOf",
+		"GIT_CONFIG_VALUE_0=gh:",
 	})
 
-	if got, want := findEnvValue(env, "GIT_CONFIG_COUNT"), "1"; got != want {
+	if got, want := findEnvValue(env, "GIT_CONFIG_COUNT"), "2"; got != want {
 		t.Fatalf("GIT_CONFIG_COUNT = %q, want %q", got, want)
 	}
-	if got, want := findEnvValue(env, "GIT_CONFIG_KEY_0"), "http.https://github.com/buildkite/cleanroom.git/.extraHeader"; got != want {
+	if got, want := findEnvValue(env, "GIT_CONFIG_KEY_0"), "url.https://github.com/.insteadOf"; got != want {
 		t.Fatalf("GIT_CONFIG_KEY_0 = %q, want %q", got, want)
 	}
-	if got, want := findEnvValue(env, "GIT_CONFIG_VALUE_0"), "Authorization: Basic test"; got != want {
+	if got, want := findEnvValue(env, "GIT_CONFIG_VALUE_0"), "gh:"; got != want {
 		t.Fatalf("GIT_CONFIG_VALUE_0 = %q, want %q", got, want)
 	}
-	for _, entry := range env {
-		if strings.Contains(entry, "stale") {
-			t.Fatalf("stale git config env leaked through: %v", env)
-		}
+	if got, want := findEnvValue(env, "GIT_CONFIG_KEY_1"), "http.https://github.com/buildkite/cleanroom.git/.extraHeader"; got != want {
+		t.Fatalf("GIT_CONFIG_KEY_1 = %q, want %q", got, want)
+	}
+	if got, want := findEnvValue(env, "GIT_CONFIG_VALUE_1"), "Authorization: Basic test"; got != want {
+		t.Fatalf("GIT_CONFIG_VALUE_1 = %q, want %q", got, want)
 	}
 }
 

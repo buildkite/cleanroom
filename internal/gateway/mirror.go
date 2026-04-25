@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -242,28 +243,62 @@ func (s *gitMirrorStore) gitEnvWithAuth(ctx context.Context, remoteURL string, b
 		return env
 	}
 
-	env = pruneGitConfigEnv(env)
-	return append(env,
-		"GIT_CONFIG_COUNT=1",
-		"GIT_CONFIG_KEY_0="+key,
-		"GIT_CONFIG_VALUE_0="+value,
-	)
+	return appendGitConfigEnv(env, key, value)
 }
 
-func pruneGitConfigEnv(env []string) []string {
-	out := make([]string, 0, len(env))
+func appendGitConfigEnv(env []string, key, value string) []string {
+	count, hasCount := gitConfigCount(env)
+	authIndex := 0
+	if hasCount {
+		authIndex = count
+	}
+	out := make([]string, 0, len(env)+3)
+	countWritten := false
 	for _, entry := range env {
 		name, _, ok := strings.Cut(entry, "=")
 		if !ok {
 			out = append(out, entry)
 			continue
 		}
-		if name == "GIT_CONFIG_COUNT" || strings.HasPrefix(name, "GIT_CONFIG_KEY_") || strings.HasPrefix(name, "GIT_CONFIG_VALUE_") {
+		if name == "GIT_CONFIG_COUNT" {
+			if !hasCount || countWritten {
+				continue
+			}
+			out = append(out, "GIT_CONFIG_COUNT="+strconv.Itoa(authIndex+1))
+			countWritten = true
+			continue
+		}
+		if !hasCount && (strings.HasPrefix(name, "GIT_CONFIG_KEY_") || strings.HasPrefix(name, "GIT_CONFIG_VALUE_")) {
 			continue
 		}
 		out = append(out, entry)
 	}
+	if !countWritten {
+		out = append(out, "GIT_CONFIG_COUNT="+strconv.Itoa(authIndex+1))
+	}
+	out = append(out,
+		fmt.Sprintf("GIT_CONFIG_KEY_%d=%s", authIndex, key),
+		fmt.Sprintf("GIT_CONFIG_VALUE_%d=%s", authIndex, value),
+	)
 	return out
+}
+
+func gitConfigCount(env []string) (int, bool) {
+	count := 0
+	found := false
+	for _, entry := range env {
+		name, value, ok := strings.Cut(entry, "=")
+		if !ok || name != "GIT_CONFIG_COUNT" {
+			continue
+		}
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed < 0 {
+			return 0, false
+		}
+		count = parsed
+		found = true
+	}
+	return count, found
 }
 
 func gitCommitExists(ctx context.Context, repoDir, commitSHA string) (bool, error) {
