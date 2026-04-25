@@ -12,8 +12,9 @@ Options:
   --host <endpoint>         Control-plane endpoint (default: unix://$XDG_RUNTIME_DIR/cleanroom/cleanroom.sock, or unix:///tmp/cleanroom/cleanroom.sock)
   -n, --iterations <count>  Number of benchmark runs (default: 10)
   --warmup <count>          Warmup runs before measuring (default: 1)
-  --backend <name>          Optional backend override for cleanroom exec
-  -c, --chdir <path>        Repository/policy directory (default: current directory)
+  --backend <name>          Optional backend override for sandbox create
+  --image <ref>             Image ref for sandbox create (default: pinned cleanroom-base alpine digest)
+  -c, --chdir <path>        Accepted for compatibility; raw sandbox benchmark ignores local policy
   --output-dir <path>       JSON output directory (default: benchmarks/results)
   --cleanroom-bin <path>    cleanroom binary path (default: cleanroom from PATH, then ./dist/cleanroom)
   --start-server            Start cleanroom serve in the background before benchmarking
@@ -27,7 +28,7 @@ Environment:
 Notes:
   - By default this script expects the cleanroom server to already be running.
   - Use --start-server to self-host cleanroom serve outside the timed section.
-  - The measured command is: cleanroom exec ... -- echo benchmark
+  - The measured command is: cleanroom sandbox create ... && cleanroom exec --in ... -- echo benchmark
   - Sandbox termination runs in hyperfine cleanup and is excluded from timing.
 EOF
 }
@@ -37,6 +38,7 @@ if [[ -n "${XDG_RUNTIME_DIR:-}" ]]; then
 else
   default_host="unix:///tmp/cleanroom/cleanroom.sock"
 fi
+default_image="ghcr.io/buildkite/cleanroom-base/alpine@sha256:fe2fbe4950546c0983247d71d5ff5795b064d7e603596efc57e2ea88aaaf3cb1"
 
 if command -v cleanroom >/dev/null 2>&1; then
   cleanroom_bin="$(command -v cleanroom)"
@@ -51,6 +53,7 @@ host="$default_host"
 iterations=10
 warmup=1
 backend=""
+image="$default_image"
 chdir="$PWD"
 output_dir="benchmarks/results"
 start_server=0
@@ -76,6 +79,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --backend)
       backend="$2"
+      shift 2
+      ;;
+    --image)
+      image="$2"
       shift 2
       ;;
     -c|--chdir)
@@ -218,19 +225,32 @@ if [[ "$start_server" -eq 1 ]]; then
   fi
 fi
 
-benchmark_cmd=("$cleanroom_bin" exec --host "$host" -c "$chdir")
-if [[ -n "$backend" ]]; then
-  benchmark_cmd+=(--backend "$backend")
-fi
-benchmark_cmd+=(--keep --print-sandbox-id -- echo benchmark)
+# Keep accepting --chdir for older callers while ensuring this benchmark stays
+# repo-agnostic and never reads local cleanroom.yaml or git state.
+: "$chdir"
 
-quoted_benchmark_cmd=""
-for token in "${benchmark_cmd[@]}"; do
+sandbox_create_cmd=("$cleanroom_bin" sandbox create --host "$host")
+if [[ -n "$backend" ]]; then
+  sandbox_create_cmd+=(--backend "$backend")
+fi
+if [[ -n "$image" ]]; then
+  sandbox_create_cmd+=(--image "$image")
+fi
+
+quoted_sandbox_create_cmd=""
+for token in "${sandbox_create_cmd[@]}"; do
   printf -v escaped '%q' "$token"
-  quoted_benchmark_cmd+="${escaped} "
+  quoted_sandbox_create_cmd+="${escaped} "
+done
+
+exec_cmd_prefix=("$cleanroom_bin" exec --host "$host" --in)
+quoted_exec_cmd_prefix=""
+for token in "${exec_cmd_prefix[@]}"; do
+  printf -v escaped '%q' "$token"
+  quoted_exec_cmd_prefix+="${escaped} "
 done
 printf -v sandbox_id_escaped '%q' "$sandbox_id_path"
-quoted_benchmark_cmd+=" >/dev/null 2>${sandbox_id_escaped}"
+quoted_benchmark_cmd="sid=\$(${quoted_sandbox_create_cmd}2>/dev/null); printf 'sandbox_id=%s\n' \"\${sid}\" > ${sandbox_id_escaped}; ${quoted_exec_cmd_prefix}\"\${sid}\" -- echo benchmark >/dev/null"
 
 printf -v cleanroom_bin_escaped '%q' "$cleanroom_bin"
 printf -v host_escaped '%q' "$host"
@@ -238,6 +258,7 @@ cleanup_cmd="sid=\$(grep -m1 '^sandbox_id=' ${sandbox_id_escaped} | cut -d= -f2 
 
 echo "Benchmarking TTI with hyperfine"
 echo "- endpoint: ${host}"
+echo "- image: ${image}"
 echo "- iterations: ${iterations}"
 echo "- warmup: ${warmup}"
 echo "- output: ${output_path}"

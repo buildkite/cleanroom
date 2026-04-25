@@ -137,6 +137,37 @@ func TestResolveReferenceForImageOverrideReturnsRemoteErrorOnlyForExplicitRegist
 	}
 }
 
+func TestResolveReferenceForImageOverrideReturnsExplicitRegistryDigestWithoutResolution(t *testing.T) {
+	localCalls := 0
+	remoteCalls := 0
+	const pinnedRef = "ghcr.io/buildkite/cleanroom-base/alpine@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	withImageOverrideResolversForTest(
+		t,
+		func(_ context.Context, _ string) (string, error) {
+			localCalls++
+			return "", errors.New("local resolver should not be called")
+		},
+		func(_ context.Context, _ string) (string, error) {
+			remoteCalls++
+			return "", errors.New("remote resolver should not be called")
+		},
+	)
+
+	got, err := resolveReferenceForImageOverride(context.Background(), pinnedRef, true)
+	if err != nil {
+		t.Fatalf("resolveReferenceForImageOverride returned error: %v", err)
+	}
+	if got != pinnedRef {
+		t.Fatalf("unexpected resolved ref: got %q want %q", got, pinnedRef)
+	}
+	if localCalls != 0 {
+		t.Fatalf("expected local resolver call count 0, got %d", localCalls)
+	}
+	if remoteCalls != 0 {
+		t.Fatalf("expected remote resolver call count 0, got %d", remoteCalls)
+	}
+}
+
 func TestResolveReferenceForImageOverrideSkipsLocalForRemoteEndpoint(t *testing.T) {
 	localCalls := 0
 	remoteCalls := 0

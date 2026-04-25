@@ -116,6 +116,10 @@ var (
 		return exec.Command("docker", "rm", "-f", containerID).Run()
 	}
 	resolveReferenceForImageOverride = func(ctx context.Context, source string, allowLocal bool) (string, error) {
+		if digestRef, err := ociref.ParseDigestReference(source); err == nil && isRegistryHostPrefix(digestRef.Repository) {
+			return digestRef.Original, nil
+		}
+
 		if !allowLocal {
 			return resolveReferenceForPolicyUpdate(ctx, source)
 		}
