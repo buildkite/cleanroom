@@ -100,6 +100,7 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 	var contentCache *gateway.ContentCache
 	contentCache, err = newGatewayContentCache(gateway.ContentCacheConfig{
 		GitAllowedHosts:   ctx.Config.Gateway.Git.CacheHosts,
+		OCIRegistries:     ctx.Config.Gateway.OCI.Registries,
 		FetchAllowedHosts: append([]string(nil), defaultGatewayFetchHosts...),
 		Credentials:       gwCredentials,
 		Logger:            logger.With("subsystem", "content-cache"),
@@ -134,9 +135,10 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 	}
 
 	configureGatewayBackends(ctx.Backends, gwRegistry, gwPort, gwServer.Addr(), darwinGatewayHost, gateway.ProxyRoutes{
-		RubyGems: contentCache != nil && contentCache.HasRubyGemsHandler(),
-		GoProxy:  contentCache != nil && contentCache.HasGoProxyHandler() && contentCache.HasSumDBHandler(),
-		Fetch:    contentCache != nil && contentCache.FetchAllowsHost("dl.google.com"),
+		DockerHubMirror: contentCache != nil && contentCache.HasOCIHandler(),
+		RubyGems:        contentCache != nil && contentCache.HasRubyGemsHandler(),
+		GoProxy:         contentCache != nil && contentCache.HasGoProxyHandler() && contentCache.HasSumDBHandler(),
+		Fetch:           contentCache != nil && contentCache.FetchAllowsHost("dl.google.com"),
 	})
 
 	if fcAdapter, ok := ctx.Backends["firecracker"].(*firecracker.Adapter); ok && fcAdapter.GatewayRegistry != nil {

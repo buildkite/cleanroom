@@ -950,7 +950,7 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 		"console=hvc0 root=/dev/vda rw init=%s cleanroom_guest_port=%d %s",
 		guestInitPath,
 		req.GuestPort,
-		dockerServiceBootArgs(req.Policy, req.FirecrackerConfig),
+		dockerServiceBootArgs(req.Policy, req.FirecrackerConfig, a.GatewayPort, a.GatewayRoutes),
 	)
 	consolePath := filepath.Join(runDir, "vm.console.log")
 
@@ -1265,7 +1265,7 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 		"console=hvc0 root=/dev/vda rw init=%s cleanroom_guest_port=%d %s",
 		guestInitPath,
 		cfg.GuestPort,
-		dockerServiceBootArgs(compiled, cfg),
+		dockerServiceBootArgs(compiled, cfg, a.GatewayPort, a.GatewayRoutes),
 	)
 	consolePath := filepath.Join(runDir, "vm.console.log")
 

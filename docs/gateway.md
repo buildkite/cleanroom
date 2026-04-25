@@ -16,6 +16,7 @@ Inside sandboxes, the shared gateway is exposed at
 
 | Path | Status | Purpose |
 |------|--------|---------|
+| `/v2/` | Implemented | Docker Hub-compatible pull-through mirror endpoint for guest `dockerd`. |
 | `/git/` | Implemented | Cache-backed Git smart-HTTP route. `.git` remotes use embedded `content-cache`; non-cacheable paths fall back to Cleanroom's mirror-backed proxy. |
 | `/registry/` | Implemented | Cache-backed OCI Distribution route for allowlisted registries. |
 | `/goproxy/` | Implemented | Cache-backed Go module proxy route. Also serves mirrored checksum database requests under `/goproxy/sumdb/`. |
@@ -80,13 +81,44 @@ Current scope:
 - OCI pull-style `GET` and `HEAD` requests
 - built-in prefix mapping for Docker Hub (`docker.io` ->
   `https://registry-1.docker.io`)
-- additional registry-prefix mappings configured inside the gateway
+- additional registry-prefix mappings configured via
+  `gateway.oci.registries` in runtime config
+- custom registry keys must be real registry hosts, not arbitrary aliases
+
+Example runtime config:
+
+```yaml
+gateway:
+  oci:
+    registries:
+      ghcr.io: https://ghcr.io
+      registry.internal:5000: https://registry.internal:5000
+```
 
 Not wired yet:
 
 - guest-wide package-manager rewrites to `/registry/`
 - lockfile enforcement
 - non-OCI package-manager protocol handling
+
+## Docker Hub mirror
+
+`/v2/` exposes a Docker Hub-compatible mirror endpoint backed by the same
+embedded OCI cache. When guest Docker service support is enabled and the OCI
+cache route is live, Cleanroom starts `dockerd` with this gateway endpoint as a
+Docker Hub registry mirror.
+
+Current scope:
+
+- guest `dockerd` pull-through caching for Docker Hub images
+- pull-style `GET` and `HEAD` requests only
+- mirror traffic routed to the same `docker.io` -> `registry-1.docker.io`
+  upstream mapping used by `/registry/`
+
+Not wired yet:
+
+- guest daemon rewrites for non-Docker-Hub registries
+- Docker push or other write operations through the mirror
 
 ## Go module proxy route
 

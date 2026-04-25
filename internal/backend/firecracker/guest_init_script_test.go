@@ -18,6 +18,18 @@ func TestGuestInitScriptAutostartsDockerWhenAvailable(t *testing.T) {
 	if !strings.Contains(guestInitScriptTemplate, "DOCKER_IPTABLES=\"$(arg_value cleanroom_service_docker_iptables || true)\"") {
 		t.Fatal("expected docker iptables boot arg lookup in init script")
 	}
+	if !strings.Contains(guestInitScriptTemplate, "DOCKER_MIRROR_HOST=\"$(arg_value cleanroom_service_docker_registry_mirror_host || true)\"") {
+		t.Fatal("expected docker registry mirror host boot arg lookup in init script")
+	}
+	if !strings.Contains(guestInitScriptTemplate, "DOCKER_MIRROR_PORT=\"$(arg_value cleanroom_service_docker_registry_mirror_port || true)\"") {
+		t.Fatal("expected docker registry mirror port boot arg lookup in init script")
+	}
+	if !strings.Contains(guestInitScriptTemplate, "--registry-mirror=http://$DOCKER_MIRROR_HOST:$DOCKER_MIRROR_PORT") {
+		t.Fatal("expected init script to configure dockerd registry mirror when provided")
+	}
+	if !strings.Contains(guestInitScriptTemplate, "--insecure-registry=$DOCKER_MIRROR_HOST:$DOCKER_MIRROR_PORT") {
+		t.Fatal("expected init script to mark the dockerd mirror as insecure for guest HTTP access")
+	}
 	if !strings.Contains(guestInitScriptTemplate, "docker version >/dev/null 2>&1") {
 		t.Fatal("expected init script to wait for dockerd API readiness")
 	}

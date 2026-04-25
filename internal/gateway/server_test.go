@@ -105,6 +105,16 @@ func TestGatewayServiceForPathClassifiesGoProxy(t *testing.T) {
 	}
 }
 
+func TestGatewayServiceForPathClassifiesDockerHubMirror(t *testing.T) {
+	t.Parallel()
+
+	for _, path := range []string{"/v2", "/v2/library/alpine/manifests/latest"} {
+		if got, want := gatewayServiceForPath(path), "registry"; got != want {
+			t.Fatalf("unexpected service classification for %q: got %q want %q", path, got, want)
+		}
+	}
+}
+
 func TestGatewayServiceForPathClassifiesSumDB(t *testing.T) {
 	t.Parallel()
 

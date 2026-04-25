@@ -5,10 +5,11 @@ import (
 	"strings"
 
 	"github.com/buildkite/cleanroom/internal/backend"
+	"github.com/buildkite/cleanroom/internal/gateway"
 	"github.com/buildkite/cleanroom/internal/policy"
 )
 
-func dockerServiceBootArgs(compiled *policy.CompiledPolicy, cfg backend.FirecrackerConfig) string {
+func dockerServiceBootArgs(compiled *policy.CompiledPolicy, cfg backend.FirecrackerConfig, gatewayPort int, routes gateway.ProxyRoutes) string {
 	if compiled == nil || !compiled.RequiresDockerService() {
 		return "cleanroom_service_docker_required=0"
 	}
@@ -28,12 +29,23 @@ func dockerServiceBootArgs(compiled *policy.CompiledPolicy, cfg backend.Firecrac
 		iptables = 1
 	}
 
-	return fmt.Sprintf(
+	args := fmt.Sprintf(
 		"cleanroom_service_docker_required=1 cleanroom_service_docker_startup_timeout=%d cleanroom_service_docker_storage_driver=%s cleanroom_service_docker_iptables=%d",
 		startupSeconds,
 		storageDriver,
 		iptables,
 	)
+	if routes.DockerHubMirror && gatewayPort > 0 {
+		host := sanitizeKernelArgValue(gateway.GuestGatewayHostname)
+		if host != "" {
+			args += fmt.Sprintf(
+				" cleanroom_service_docker_registry_mirror_host=%s cleanroom_service_docker_registry_mirror_port=%d",
+				host,
+				gatewayPort,
+			)
+		}
+	}
+	return args
 }
 
 func sanitizeKernelArgValue(value string) string {

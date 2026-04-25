@@ -412,6 +412,8 @@ These rules are installed during sandbox network setup and torn down during clea
 - The gateway exposes a `/registry/` route backed by embedded `content-cache` OCI handlers.
 - The gateway resolves a registry prefix from the request path, maps it to an upstream registry URL, and applies the sandbox allowlist against the mapped policy host and port before forwarding upstream.
 - Current route scope is OCI pull-style `GET` and `HEAD` traffic.
+- The gateway also exposes a Docker Hub-compatible `/v2/` mirror endpoint backed by the same OCI cache so guest `dockerd` can use the shared gateway as a Docker Hub registry mirror.
+- Current Docker mirror scope is Docker Hub pull-style `GET` and `HEAD` traffic.
 - The gateway exposes a `/goproxy/` route backed by embedded `content-cache` Go module proxy handlers, including mirrored sumdb traffic under `/goproxy/sumdb/`.
 - Current Go module scope includes `GOPROXY` metadata requests, module zip downloads, and mirrored checksum-database requests.
 - The gateway also exposes a `/rubygems/` route backed by embedded `content-cache` RubyGems handlers for Bundler mirror traffic to `rubygems.org`.

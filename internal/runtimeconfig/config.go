@@ -30,10 +30,15 @@ type Config struct {
 
 type GatewayConfig struct {
 	Git GatewayGitConfig `yaml:"git,omitempty"`
+	OCI GatewayOCIConfig `yaml:"oci,omitempty"`
 }
 
 type GatewayGitConfig struct {
 	CacheHosts []string `yaml:"cache_hosts,omitempty"`
+}
+
+type GatewayOCIConfig struct {
+	Registries map[string]string `yaml:"registries,omitempty"`
 }
 
 type ObservabilityConfig struct {
@@ -471,6 +476,7 @@ func normalizeConfig(cfg Config, inferredDefaultBackend string) Config {
 	}
 	cfg.ControlHost = strings.TrimSpace(cfg.ControlHost)
 	cfg.Gateway.Git.CacheHosts = trimStringSlice(cfg.Gateway.Git.CacheHosts)
+	cfg.Gateway.OCI.Registries = trimStringMap(cfg.Gateway.OCI.Registries)
 	cfg.Observability.DeploymentEnvironment = strings.TrimSpace(cfg.Observability.DeploymentEnvironment)
 	cfg.Observability.Logs.Format = strings.ToLower(strings.TrimSpace(cfg.Observability.Logs.Format))
 	if cfg.Observability.Logs.Format == "" {

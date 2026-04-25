@@ -7,11 +7,12 @@ import (
 	"testing"
 
 	"github.com/buildkite/cleanroom/internal/backend"
+	"github.com/buildkite/cleanroom/internal/gateway"
 	"github.com/buildkite/cleanroom/internal/policy"
 )
 
 func TestDockerServiceBootArgsDisabledByDefault(t *testing.T) {
-	got := dockerServiceBootArgs(nil, backend.FirecrackerConfig{})
+	got := dockerServiceBootArgs(nil, backend.FirecrackerConfig{}, 0, gateway.ProxyRoutes{})
 	if got != "cleanroom_service_docker_required=0" {
 		t.Fatalf("unexpected docker boot args: %q", got)
 	}
@@ -29,15 +30,33 @@ func TestDockerServiceBootArgsUsesPolicyAndRuntimeSettings(t *testing.T) {
 		DockerIPTables:       true,
 	}
 
-	got := dockerServiceBootArgs(compiled, cfg)
+	got := dockerServiceBootArgs(compiled, cfg, 8170, gateway.ProxyRoutes{DockerHubMirror: true})
 	for _, want := range []string{
 		"cleanroom_service_docker_required=1",
 		"cleanroom_service_docker_startup_timeout=45",
 		"cleanroom_service_docker_storage_driver=overlay2",
 		"cleanroom_service_docker_iptables=1",
+		"cleanroom_service_docker_registry_mirror_host=gateway.cleanroom.internal",
+		"cleanroom_service_docker_registry_mirror_port=8170",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected %q in docker boot args %q", want, got)
 		}
+	}
+}
+
+func TestDockerServiceBootArgsSkipsMirrorWithoutLiveRoute(t *testing.T) {
+	compiled := &policy.CompiledPolicy{
+		Services: policy.Services{
+			Docker: policy.DockerService{Required: true},
+		},
+	}
+
+	got := dockerServiceBootArgs(compiled, backend.FirecrackerConfig{}, 8170, gateway.ProxyRoutes{})
+	if strings.Contains(got, "cleanroom_service_docker_registry_mirror_host") {
+		t.Fatalf("did not expect docker mirror host in boot args %q", got)
+	}
+	if strings.Contains(got, "cleanroom_service_docker_registry_mirror_port") {
+		t.Fatalf("did not expect docker mirror port in boot args %q", got)
 	}
 }

@@ -12,7 +12,7 @@ mise run install
 
 ## Files
 
-- `cleanroom.yaml`: digest-pinned Docker image ref, `sandbox.services.docker.required: true`, and a deny-by-default network allowlist for Docker Hub pull endpoints.
+- `cleanroom.yaml`: digest-pinned Docker image ref, `sandbox.services.docker.required: true`, and a deny-by-default network allowlist for the upstream Docker Hub endpoints that the host gateway validates and fetches against.
 
 ## Quick test flow
 
@@ -33,6 +33,10 @@ Confirm daemon + client are wired:
 ```bash
 mise exec -- cleanroom exec --backend darwin-vz -- docker version
 ```
+
+With the gateway server running, guest `dockerd` automatically uses
+`gateway.cleanroom.internal` as its Docker Hub mirror, backed by the embedded
+OCI cache.
 
 Run a container pull + execution smoke test:
 

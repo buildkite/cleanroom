@@ -435,28 +435,17 @@ func TestResolveOCIRegistryRouteUsesDockerHubAlias(t *testing.T) {
 	}
 }
 
-func TestResolveOCIRegistryRoutePreservesConfiguredPortForSymbolicPrefix(t *testing.T) {
+func TestNormalizeOCIRegistryMappingsRejectsSymbolicPrefix(t *testing.T) {
 	t.Parallel()
 
-	routes, err := normalizeOCIRegistryMappings(map[string]string{
+	_, err := normalizeOCIRegistryMappings(map[string]string{
 		"registry-cache": "https://registry.internal:5000",
 	})
-	if err != nil {
-		t.Fatalf("normalizeOCIRegistryMappings returned error: %v", err)
+	if err == nil {
+		t.Fatal("expected symbolic registry prefix to be rejected")
 	}
-
-	route, err := resolveOCIRegistryRoute("registry-cache", routes)
-	if err != nil {
-		t.Fatalf("resolveOCIRegistryRoute returned error: %v", err)
-	}
-	if route.policyHost != "registry.internal" {
-		t.Fatalf("expected registry.internal policy host, got %q", route.policyHost)
-	}
-	if route.policyPort != 5000 {
-		t.Fatalf("expected registry.internal policy port 5000, got %d", route.policyPort)
-	}
-	if route.upstreamHost != "registry.internal" {
-		t.Fatalf("expected registry.internal upstream host, got %q", route.upstreamHost)
+	if got, want := err.Error(), `registry mapping key "registry-cache" must be a registry host`; got != want {
+		t.Fatalf("unexpected error: got %q want %q", got, want)
 	}
 }
 
