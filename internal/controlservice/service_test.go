@@ -5638,8 +5638,13 @@ func TestListSandboxesReturnsNewestSnapshotFirst(t *testing.T) {
 }
 
 func TestExecutionRetentionBoundsOutput(t *testing.T) {
+	var gotStreamLimit *int
 	adapter := &stubAdapter{
 		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+			if stream.BufferedOutputLimitBytes != nil {
+				limit := *stream.BufferedOutputLimitBytes
+				gotStreamLimit = &limit
+			}
 			for _, chunk := range []string{"1234", "5678", "90"} {
 				if stream.OnStdout != nil {
 					stream.OnStdout([]byte(chunk))
@@ -5695,6 +5700,57 @@ func TestExecutionRetentionBoundsOutput(t *testing.T) {
 	}
 	if got, want := snapshot.Stderr, "cdefghij"; got != want {
 		t.Fatalf("unexpected retained stderr: got %q want %q", got, want)
+	}
+	if gotStreamLimit == nil {
+		t.Fatalf("expected stream buffered output limit to be set")
+	}
+	if got, want := *gotStreamLimit, 8; got != want {
+		t.Fatalf("unexpected stream buffered output limit: got %d want %d", got, want)
+	}
+}
+
+func TestExecutionRetentionSetsZeroStreamOutputLimit(t *testing.T) {
+	var gotStreamLimit *int
+	adapter := &stubAdapter{
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+			if stream.BufferedOutputLimitBytes != nil {
+				limit := *stream.BufferedOutputLimitBytes
+				gotStreamLimit = &limit
+			}
+			return &backend.ExecutionResult{
+				ExecutionID: req.ExecutionID,
+				ExitCode:    0,
+			}, nil
+		},
+	}
+	svc := newTestService(adapter)
+	retention := testRetentionPolicy()
+	retention.maxRetainedExecutionOutputBytes = 0
+	svc.runtime.retention = retention
+
+	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createSandboxResp.GetSandbox().GetSandboxId()
+
+	createExecutionResp, err := svc.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+		SandboxId: sandboxID,
+		Command:   []string{"echo", "disabled"},
+	})
+	if err != nil {
+		t.Fatalf("CreateExecution returned error: %v", err)
+	}
+	executionID := createExecutionResp.GetExecution().GetExecutionId()
+
+	if _, err := svc.WaitExecution(context.Background(), sandboxID, executionID); err != nil {
+		t.Fatalf("WaitExecution returned error: %v", err)
+	}
+	if gotStreamLimit == nil {
+		t.Fatalf("expected stream buffered output limit to be set")
+	}
+	if got := *gotStreamLimit; got != 0 {
+		t.Fatalf("unexpected stream buffered output limit: got %d want 0", got)
 	}
 }
 

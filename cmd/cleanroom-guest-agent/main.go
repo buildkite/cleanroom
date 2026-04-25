@@ -3,7 +3,6 @@
 package main
 
 import (
-	"bytes"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -158,17 +157,17 @@ func handleConnPipes(conn io.ReadWriteCloser, dec *json.Decoder, req vsockexec.E
 
 	go readInputFrames(dec, stdinPipe, func() { _ = stdinPipe.Close() }, nil)
 
-	var stdoutBuf bytes.Buffer
-	var stderrBuf bytes.Buffer
+	stdoutBuf := newBoundedOutputBuffer(maxExecResponseOutputBytes)
+	stderrBuf := newBoundedOutputBuffer(maxExecResponseOutputBytes)
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		_, _ = io.Copy(io.MultiWriter(&stdoutBuf, streamFrameWriter{send: sender.Send, kind: "stdout"}), stdout)
+		_, _ = io.Copy(io.MultiWriter(stdoutBuf, streamFrameWriter{send: sender.Send, kind: "stdout"}), stdout)
 	}()
 	go func() {
 		defer wg.Done()
-		_, _ = io.Copy(io.MultiWriter(&stderrBuf, streamFrameWriter{send: sender.Send, kind: "stderr"}), stderr)
+		_, _ = io.Copy(io.MultiWriter(stderrBuf, streamFrameWriter{send: sender.Send, kind: "stderr"}), stderr)
 	}()
 
 	wg.Wait()

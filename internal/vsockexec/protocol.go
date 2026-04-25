@@ -9,7 +9,11 @@ import (
 	"strings"
 )
 
-const DefaultPort uint32 = 10700
+const (
+	DefaultPort uint32 = 10700
+
+	defaultStreamResponseOutputLimit = 1 << 20
+)
 
 type ExecRequest struct {
 	Command     []string `json:"command"`
@@ -93,10 +97,14 @@ func DecodeInputFrame(r io.Reader) (ExecInputFrame, error) {
 type StreamCallbacks struct {
 	OnStdout func([]byte)
 	OnStderr func([]byte)
+	// BufferedOutputLimitBytes caps stdout/stderr accumulated in the final
+	// response. Nil uses the default limit; zero disables accumulation.
+	BufferedOutputLimitBytes *int
 }
 
 func DecodeStreamResponse(r io.Reader, callbacks StreamCallbacks) (ExecResponse, error) {
 	dec := json.NewDecoder(r)
+	bufferedOutputLimit := callbacks.bufferedOutputLimitBytes()
 	out := ExecResponse{}
 	for {
 		raw := map[string]json.RawMessage{}
@@ -134,12 +142,12 @@ func DecodeStreamResponse(r io.Reader, callbacks StreamCallbacks) (ExecResponse,
 				continue
 			}
 			if kind == "stdout" {
-				out.Stdout += string(chunk)
+				out.Stdout = appendBoundedString(out.Stdout, chunk, bufferedOutputLimit)
 				if callbacks.OnStdout != nil {
 					callbacks.OnStdout(append([]byte(nil), chunk...))
 				}
 			} else {
-				out.Stderr += string(chunk)
+				out.Stderr = appendBoundedString(out.Stderr, chunk, bufferedOutputLimit)
 				if callbacks.OnStderr != nil {
 					callbacks.OnStderr(append([]byte(nil), chunk...))
 				}
@@ -160,6 +168,30 @@ func DecodeStreamResponse(r io.Reader, callbacks StreamCallbacks) (ExecResponse,
 			return ExecResponse{}, fmt.Errorf("unknown stream frame type %q", kind)
 		}
 	}
+}
+
+func (callbacks StreamCallbacks) bufferedOutputLimitBytes() int {
+	if callbacks.BufferedOutputLimitBytes != nil {
+		return *callbacks.BufferedOutputLimitBytes
+	}
+	return defaultStreamResponseOutputLimit
+}
+
+func appendBoundedString(current string, chunk []byte, limit int) string {
+	if len(chunk) == 0 || limit <= 0 {
+		return current
+	}
+	if len(chunk) >= limit {
+		return string(chunk[len(chunk)-limit:])
+	}
+	if len(current)+len(chunk) <= limit {
+		return current + string(chunk)
+	}
+	keep := limit - len(chunk)
+	if keep < 0 {
+		keep = 0
+	}
+	return current[len(current)-keep:] + string(chunk)
 }
 
 func decodeFrameData(raw json.RawMessage) ([]byte, error) {
