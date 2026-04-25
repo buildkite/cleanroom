@@ -137,6 +137,117 @@ func TestResolveReferenceForImageOverrideReturnsRemoteErrorOnlyForExplicitRegist
 	}
 }
 
+func TestResolveReferenceForImageOverrideReturnsExplicitRegistryDigestWithoutResolution(t *testing.T) {
+	localCalls := 0
+	remoteCalls := 0
+	const pinnedRef = "ghcr.io/buildkite/cleanroom-base/alpine@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	withImageOverrideResolversForTest(
+		t,
+		func(_ context.Context, _ string) (string, error) {
+			localCalls++
+			return "", errors.New("local resolver should not be called")
+		},
+		func(_ context.Context, _ string) (string, error) {
+			remoteCalls++
+			return "", errors.New("remote resolver should not be called")
+		},
+	)
+
+	got, err := resolveReferenceForImageOverride(context.Background(), pinnedRef, true)
+	if err != nil {
+		t.Fatalf("resolveReferenceForImageOverride returned error: %v", err)
+	}
+	if got != pinnedRef {
+		t.Fatalf("unexpected resolved ref: got %q want %q", got, pinnedRef)
+	}
+	if localCalls != 0 {
+		t.Fatalf("expected local resolver call count 0, got %d", localCalls)
+	}
+	if remoteCalls != 0 {
+		t.Fatalf("expected remote resolver call count 0, got %d", remoteCalls)
+	}
+}
+
+func TestResolveReferenceForImageOverrideValidatesExplicitRegistryDigestPlatform(t *testing.T) {
+	localCalls := 0
+	remoteCalls := 0
+	platformCalls := 0
+	const pinnedRef = "ghcr.io/buildkite/cleanroom-base/alpine@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	withImageOverrideResolversForTest(
+		t,
+		func(_ context.Context, _ string) (string, error) {
+			localCalls++
+			return "", errors.New("local resolver should not be called")
+		},
+		func(_ context.Context, _ string) (string, error) {
+			remoteCalls++
+			return "", errors.New("remote resolver should not be called")
+		},
+	)
+	resolveReferencePlatformConfig = func(_ context.Context, ref name.Reference) (string, string, error) {
+		platformCalls++
+		if got, want := ref.Name(), pinnedRef; got != want {
+			t.Fatalf("unexpected platform resolver ref: got %q want %q", got, want)
+		}
+		if runtime.GOARCH == "arm64" {
+			return "linux", "amd64", nil
+		}
+		return "linux", "arm64", nil
+	}
+
+	_, err := resolveReferenceForImageOverride(context.Background(), pinnedRef, true)
+	if err == nil {
+		t.Fatal("expected resolveReferenceForImageOverride to reject mismatched platform")
+	}
+	if !strings.Contains(err.Error(), "incompatible") {
+		t.Fatalf("expected platform mismatch error, got %v", err)
+	}
+	if localCalls != 0 {
+		t.Fatalf("expected local resolver call count 0, got %d", localCalls)
+	}
+	if remoteCalls != 0 {
+		t.Fatalf("expected remote resolver call count 0, got %d", remoteCalls)
+	}
+	if platformCalls != 1 {
+		t.Fatalf("expected platform resolver call count 1, got %d", platformCalls)
+	}
+}
+
+func TestResolveReferenceForImageOverrideDoesNotTreatDottedImageNameAsRegistryHost(t *testing.T) {
+	localCalls := 0
+	remoteCalls := 0
+	const sourceRef = "myteam/app.v2@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	const localRef = "local/docker-image@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+	withImageOverrideResolversForTest(
+		t,
+		func(_ context.Context, source string) (string, error) {
+			localCalls++
+			if got, want := source, sourceRef; got != want {
+				t.Fatalf("unexpected local resolver source: got %q want %q", got, want)
+			}
+			return localRef, nil
+		},
+		func(_ context.Context, _ string) (string, error) {
+			remoteCalls++
+			return "", errors.New("remote resolver should not be called")
+		},
+	)
+
+	got, err := resolveReferenceForImageOverride(context.Background(), sourceRef, true)
+	if err != nil {
+		t.Fatalf("resolveReferenceForImageOverride returned error: %v", err)
+	}
+	if got != localRef {
+		t.Fatalf("unexpected resolved ref: got %q want %q", got, localRef)
+	}
+	if localCalls != 1 {
+		t.Fatalf("expected local resolver call count 1, got %d", localCalls)
+	}
+	if remoteCalls != 0 {
+		t.Fatalf("expected remote resolver call count 0, got %d", remoteCalls)
+	}
+}
+
 func TestResolveReferenceForImageOverrideSkipsLocalForRemoteEndpoint(t *testing.T) {
 	localCalls := 0
 	remoteCalls := 0

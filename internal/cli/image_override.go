@@ -116,6 +116,15 @@ var (
 		return exec.Command("docker", "rm", "-f", containerID).Run()
 	}
 	resolveReferenceForImageOverride = func(ctx context.Context, source string, allowLocal bool) (string, error) {
+		if digestRef, err := ociref.ParseDigestReference(source); err == nil && digestReferenceHasExplicitRegistryHost(digestRef) {
+			if allowLocal {
+				if err := validateImageOverridePlatform(ctx, source, digestRef.Original); err != nil {
+					return "", err
+				}
+			}
+			return digestRef.Original, nil
+		}
+
 		if !allowLocal {
 			return resolveReferenceForPolicyUpdate(ctx, source)
 		}
@@ -128,16 +137,8 @@ var (
 		resolved, err := resolveReferenceForPolicyUpdate(ctx, source)
 		if err == nil {
 			if allowLocal {
-				resolvedRef, parseErr := name.ParseReference(resolved, name.WeakValidation)
-				if parseErr != nil {
-					return "", fmt.Errorf("resolve image digest for %q: %w", source, parseErr)
-				}
-				imageOS, imageArch, platformErr := resolveReferencePlatformConfig(ctx, resolvedRef)
-				if platformErr != nil {
-					return "", fmt.Errorf("resolve image digest for %q: %w", source, platformErr)
-				}
-				if err := imagemgr.ValidateImagePlatformForHost(imageOS, imageArch, runtime.GOARCH); err != nil {
-					return "", fmt.Errorf("resolve image digest for %q: %w", source, err)
+				if err := validateImageOverridePlatform(ctx, source, resolved); err != nil {
+					return "", err
 				}
 			}
 			return resolved, nil
@@ -150,13 +151,28 @@ var (
 	}
 )
 
+func validateImageOverridePlatform(ctx context.Context, source, resolved string) error {
+	resolvedRef, parseErr := name.ParseReference(resolved, name.WeakValidation)
+	if parseErr != nil {
+		return fmt.Errorf("resolve image digest for %q: %w", source, parseErr)
+	}
+	imageOS, imageArch, platformErr := resolveReferencePlatformConfig(ctx, resolvedRef)
+	if platformErr != nil {
+		return fmt.Errorf("resolve image digest for %q: %w", source, platformErr)
+	}
+	if err := imagemgr.ValidateImagePlatformForHost(imageOS, imageArch, runtime.GOARCH); err != nil {
+		return fmt.Errorf("resolve image digest for %q: %w", source, err)
+	}
+	return nil
+}
+
 func isExplicitRegistryReference(raw string) bool {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
 		return false
 	}
 	if parsed, err := ociref.ParseDigestReference(trimmed); err == nil {
-		return isRegistryHostPrefix(parsed.Repository)
+		return digestReferenceHasExplicitRegistryHost(parsed)
 	}
 	namePart := trimmed
 	if at := strings.Index(namePart, "@"); at >= 0 {
@@ -166,6 +182,11 @@ func isExplicitRegistryReference(raw string) bool {
 		namePart = namePart[:colon]
 	}
 	first := strings.TrimSpace(strings.SplitN(namePart, "/", 2)[0])
+	return isRegistryHostPrefix(first)
+}
+
+func digestReferenceHasExplicitRegistryHost(ref ociref.DigestReference) bool {
+	first, _, _ := strings.Cut(ref.Repository, "/")
 	return isRegistryHostPrefix(first)
 }
 
