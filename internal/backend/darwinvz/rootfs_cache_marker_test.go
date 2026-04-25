@@ -85,6 +85,40 @@ func TestPreparedRuntimeRootFSCacheHitRevalidatesStaleMarker(t *testing.T) {
 	}
 }
 
+func TestPreparedRuntimeRootFSCacheHitRevalidatesWhenContentsChangeWithPreservedSizeAndModTime(t *testing.T) {
+	rootFSPath := writeTestPreparedRootFS(t, "prepared-rootfs")
+	info, err := os.Stat(rootFSPath)
+	if err != nil {
+		t.Fatalf("stat prepared rootfs: %v", err)
+	}
+	if err := writePreparedRuntimeRootFSMarker(rootFSPath); err != nil {
+		t.Fatalf("write prepared rootfs marker: %v", err)
+	}
+	if err := os.WriteFile(rootFSPath, []byte("corrupted-rootf"), 0o644); err != nil {
+		t.Fatalf("mutate prepared rootfs: %v", err)
+	}
+	if err := os.Chtimes(rootFSPath, info.ModTime(), info.ModTime()); err != nil {
+		t.Fatalf("restore prepared rootfs mtime: %v", err)
+	}
+
+	validateCalls := 0
+	restore := stubPreparedRuntimeRootFSValidator(t, func(string) error {
+		validateCalls++
+		return nil
+	})
+	defer restore()
+
+	if !preparedRuntimeRootFSCacheHitIsValid(rootFSPath) {
+		t.Fatal("expected marker with changed contents to be refreshed after validation")
+	}
+	if validateCalls != 1 {
+		t.Fatalf("expected content change with preserved size and mtime to force validation once, got %d calls", validateCalls)
+	}
+	if !preparedRuntimeRootFSMarkerMatches(rootFSPath) {
+		t.Fatal("expected refreshed marker to match mutated rootfs")
+	}
+}
+
 func TestPreparedRuntimeRootFSCacheHitRejectsInvalidPreparedRootFS(t *testing.T) {
 	rootFSPath := writeTestPreparedRootFS(t, "prepared-rootfs")
 

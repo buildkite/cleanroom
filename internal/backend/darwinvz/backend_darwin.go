@@ -2079,7 +2079,13 @@ func validatePreparedRuntimeRootFS(path string) error {
 	)
 }
 
-const preparedRuntimeRootFSMarkerVersion = "v1"
+const preparedRuntimeRootFSMarkerVersion = "v2"
+
+type preparedRuntimeRootFSMarkerState struct {
+	size            int64
+	modTimeNanos    int64
+	changeTimeNanos int64
+}
 
 func preparedRuntimeRootFSCacheHitIsValid(path string) bool {
 	if preparedRuntimeRootFSMarkerMatches(path) {
@@ -2096,8 +2102,20 @@ func preparedRuntimeRootFSMarkerPath(path string) string {
 	return path + ".validated"
 }
 
+func preparedRuntimeRootFSMarkerStateForPath(path string) (preparedRuntimeRootFSMarkerState, error) {
+	var stat unix.Stat_t
+	if err := unix.Stat(path, &stat); err != nil {
+		return preparedRuntimeRootFSMarkerState{}, err
+	}
+	return preparedRuntimeRootFSMarkerState{
+		size:            stat.Size,
+		modTimeNanos:    stat.Mtim.Nano(),
+		changeTimeNanos: stat.Ctim.Nano(),
+	}, nil
+}
+
 func preparedRuntimeRootFSMarkerMatches(path string) bool {
-	info, err := os.Stat(path)
+	state, err := preparedRuntimeRootFSMarkerStateForPath(path)
 	if err != nil {
 		return false
 	}
@@ -2106,28 +2124,32 @@ func preparedRuntimeRootFSMarkerMatches(path string) bool {
 		return false
 	}
 	fields := strings.Fields(string(raw))
-	if len(fields) != 3 || fields[0] != preparedRuntimeRootFSMarkerVersion {
+	if len(fields) != 4 || fields[0] != preparedRuntimeRootFSMarkerVersion {
 		return false
 	}
 	size, err := strconv.ParseInt(fields[1], 10, 64)
-	if err != nil || size != info.Size() {
+	if err != nil || size != state.size {
 		return false
 	}
 	modTimeNanos, err := strconv.ParseInt(fields[2], 10, 64)
-	if err != nil || modTimeNanos != info.ModTime().UTC().UnixNano() {
+	if err != nil || modTimeNanos != state.modTimeNanos {
+		return false
+	}
+	changeTimeNanos, err := strconv.ParseInt(fields[3], 10, 64)
+	if err != nil || changeTimeNanos != state.changeTimeNanos {
 		return false
 	}
 	return true
 }
 
 func writePreparedRuntimeRootFSMarker(path string) error {
-	info, err := os.Stat(path)
+	state, err := preparedRuntimeRootFSMarkerStateForPath(path)
 	if err != nil {
 		return err
 	}
 	markerPath := preparedRuntimeRootFSMarkerPath(path)
 	tmpPath := markerPath + fmt.Sprintf(".tmp-%d", time.Now().UnixNano())
-	content := fmt.Sprintf("%s\n%d\n%d\n", preparedRuntimeRootFSMarkerVersion, info.Size(), info.ModTime().UTC().UnixNano())
+	content := fmt.Sprintf("%s\n%d\n%d\n%d\n", preparedRuntimeRootFSMarkerVersion, state.size, state.modTimeNanos, state.changeTimeNanos)
 	if err := os.WriteFile(tmpPath, []byte(content), 0o644); err != nil {
 		_ = os.Remove(tmpPath)
 		return err
