@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/controlclient"
 	"github.com/buildkite/cleanroom/internal/endpoint"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
@@ -240,6 +242,49 @@ func TestCopyToSandboxAppendsLocalBasenameForRemoteDirectory(t *testing.T) {
 	}
 }
 
+func TestCopyToSandboxAppendsLocalBasenameForExistingRemoteDirectory(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "fixture.txt")
+	if err := os.WriteFile(src, []byte("payload"), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+
+	var gotRemotePath string
+	adapter := &copyIntegrationAdapter{
+		statFn: func(_ context.Context, _ string, path string) (*backend.SandboxPathInfo, error) {
+			if got, want := path, "/tmp"; got != want {
+				t.Fatalf("unexpected stat path: got %q want %q", got, want)
+			}
+			return &backend.SandboxPathInfo{Path: path, Type: backend.SandboxPathTypeDirectory}, nil
+		},
+		writeFn: func(_ context.Context, _ string, path string, r io.Reader, _ fs.FileMode, _ time.Time) (int64, error) {
+			gotRemotePath = path
+			data, err := io.ReadAll(r)
+			return int64(len(data)), err
+		},
+	}
+	host, _ := startIntegrationServer(t, adapter)
+	sandboxID := createCopyTestSandbox(t, host)
+	stdout, _ := makeStdoutCapture(t)
+	stderr, _ := makeStdoutCapture(t)
+
+	cmd := CopyCommand{
+		clientFlags: clientFlags{Host: host},
+		Source:      src,
+		Destination: sandboxID + ":/tmp",
+	}
+	if err := cmd.Run(&runtimeContext{
+		Config:        runtimeconfig.Config{},
+		Observability: newTestObservability(t),
+		Stdout:        stdout,
+		Stderr:        stderr,
+	}); err != nil {
+		t.Fatalf("CopyCommand.Run returned error: %v", err)
+	}
+	if got, want := gotRemotePath, "/tmp/fixture.txt"; got != want {
+		t.Fatalf("unexpected remote path: got %q want %q", got, want)
+	}
+}
+
 func TestCopyFromSandboxReturnsDownloadError(t *testing.T) {
 	adapter := &copyIntegrationAdapter{
 		readFn: func(context.Context, string, string, int64, func([]byte) error) error {
@@ -274,6 +319,7 @@ type copyIntegrationAdapter struct {
 	integrationAdapter
 	downloadFn func(context.Context, string, string, int64) ([]byte, error)
 	uploadFn   func(context.Context, string, string, []byte, fs.FileMode) error
+	statFn     func(context.Context, string, string) (*backend.SandboxPathInfo, error)
 	readFn     func(context.Context, string, string, int64, func([]byte) error) error
 	writeFn    func(context.Context, string, string, io.Reader, fs.FileMode, time.Time) (int64, error)
 }
@@ -290,6 +336,13 @@ func (a *copyIntegrationAdapter) UploadSandboxFile(ctx context.Context, sandboxI
 		return a.uploadFn(ctx, sandboxID, path, data, mode)
 	}
 	return errors.New("upload not configured")
+}
+
+func (a *copyIntegrationAdapter) StatSandboxPath(ctx context.Context, sandboxID, path string) (*backend.SandboxPathInfo, error) {
+	if a.statFn != nil {
+		return a.statFn(ctx, sandboxID, path)
+	}
+	return nil, fmt.Errorf("path not found: %s", path)
 }
 
 func (a *copyIntegrationAdapter) ReadSandboxFile(ctx context.Context, sandboxID, path string, maxBytes int64, emit func([]byte) error) error {

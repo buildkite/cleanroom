@@ -125,6 +125,22 @@ func (c *CopyCommand) copyToSandbox(ctx *runtimeContext, localPath string, remot
 	if err != nil {
 		return err
 	}
+	if remotePath == remote.path && !strings.HasSuffix(remote.path, "/") {
+		statResp, err := client.StatSandboxPath(context.Background(), &cleanroomv1.StatSandboxPathRequest{
+			SandboxId: remote.sandboxID,
+			Path:      remote.path,
+		})
+		if err != nil {
+			if !isSandboxPathNotFoundError(err) {
+				return fmt.Errorf("stat sandbox destination: %w", err)
+			}
+		} else if statResp.GetInfo().GetType() == cleanroomv1.SandboxPathType_SANDBOX_PATH_TYPE_DIRECTORY {
+			remotePath, err = remoteCopyDestinationWithLocalBasename(remote.path, localPath)
+			if err != nil {
+				return err
+			}
+		}
+	}
 	file, err := os.Open(localPath)
 	if err != nil {
 		return fmt.Errorf("open local source: %w", err)
@@ -218,9 +234,17 @@ func resolveRemoteCopyDestination(remotePath, localPath string) (string, error) 
 	if !strings.HasSuffix(remotePath, "/") {
 		return remotePath, nil
 	}
+	return remoteCopyDestinationWithLocalBasename(remotePath, localPath)
+}
+
+func remoteCopyDestinationWithLocalBasename(remotePath, localPath string) (string, error) {
 	base := filepath.Base(localPath)
 	if base == "." || base == string(filepath.Separator) || base == "" {
 		return "", fmt.Errorf("cannot infer remote filename from local path %q", localPath)
 	}
 	return posixpath.Join(remotePath, base), nil
+}
+
+func isSandboxPathNotFoundError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "path not found:")
 }
