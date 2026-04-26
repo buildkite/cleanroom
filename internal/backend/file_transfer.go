@@ -111,20 +111,27 @@ if [ -d "$path" ]; then
 	exit 1
 fi
 write_path=$path
-if [ -L "$path" ]; then
-	link_target=$(readlink "$path" || true)
+symlink_hops=0
+while [ -L "$write_path" ]; do
+	symlink_hops=$((symlink_hops + 1))
+	if [ "$symlink_hops" -gt 40 ]; then
+		echo "too many symlinks resolving destination: $path" >&2
+		exit 1
+	fi
+	link_dir=$(dirname "$write_path")
+	link_target=$(readlink "$write_path" || true)
 	if [ -z "$link_target" ]; then
 		echo "failed to resolve symlink destination: $path" >&2
 		exit 1
 	fi
 	case "$link_target" in
 		/*) write_path=$link_target ;;
-		*) write_path=$dir/$link_target ;;
+		*) write_path=$link_dir/$link_target ;;
 	esac
-	if [ -d "$write_path" ]; then
-		echo "destination is a directory: $path" >&2
-		exit 1
-	fi
+done
+if [ -d "$write_path" ]; then
+	echo "destination is a directory: $path" >&2
+	exit 1
 fi
 write_dir=$(dirname "$write_path")
 mkdir -p "$write_dir"

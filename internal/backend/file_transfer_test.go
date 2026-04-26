@@ -114,6 +114,51 @@ func TestSandboxFileUploadCommandPreservesSymlinkTarget(t *testing.T) {
 	}
 }
 
+func TestSandboxFileUploadCommandPreservesSymlinkChainTarget(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.txt")
+	if err := os.WriteFile(target, []byte("old"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	link2 := filepath.Join(dir, "link2.txt")
+	if err := os.Symlink("target.txt", link2); err != nil {
+		t.Fatalf("create second symlink: %v", err)
+	}
+	link1 := filepath.Join(dir, "link1.txt")
+	if err := os.Symlink("link2.txt", link1); err != nil {
+		t.Fatalf("create first symlink: %v", err)
+	}
+	cmdArgs, err := SandboxFileUploadCommand(link1, 0o640, time.Time{})
+	if err != nil {
+		t.Fatalf("SandboxFileUploadCommand returned error: %v", err)
+	}
+
+	cmd := exec.Command(cmdArgs[0], cmdArgs[1:]...)
+	cmd.Stdin = strings.NewReader("payload")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("upload command failed: %v\n%s", err, string(output))
+	}
+
+	for _, link := range []string{link1, link2} {
+		linkInfo, err := os.Lstat(link)
+		if err != nil {
+			t.Fatalf("lstat %s: %v", filepath.Base(link), err)
+		}
+		if linkInfo.Mode()&os.ModeSymlink == 0 {
+			t.Fatalf("expected %s to remain a symlink, got mode %s", filepath.Base(link), linkInfo.Mode())
+		}
+	}
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read target: %v", err)
+	}
+	if got, want := string(data), "payload"; got != want {
+		t.Fatalf("unexpected target payload: got %q want %q", got, want)
+	}
+}
+
 func TestCopyReaderToAttachStdinClosesOnReadError(t *testing.T) {
 	t.Parallel()
 
