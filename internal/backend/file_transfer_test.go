@@ -46,6 +46,17 @@ func TestSandboxFileUploadCommandAppliesMtime(t *testing.T) {
 	}
 }
 
+func TestSandboxTreeWalkScriptUsesBusyBoxCompatibleFindTerminator(t *testing.T) {
+	t.Parallel()
+
+	if !strings.Contains(SandboxTreeWalkScript, "cleanroom-walk {} \\;") {
+		t.Fatalf("expected tree walk script to use BusyBox-compatible find terminator")
+	}
+	if strings.Contains(SandboxTreeWalkScript, "cleanroom-walk {} +") {
+		t.Fatalf("expected tree walk script not to use GNU find batched -exec terminator")
+	}
+}
+
 func TestSandboxFileReadCommandReportsMissingPathWithSentinel(t *testing.T) {
 	t.Parallel()
 

@@ -107,7 +107,7 @@ for p do
 	mtime=$(stat -c "%Y" -- "$p")
 	printf "%s\000%s\000%s\000%s\000%s\000%s\000" "$p" "$kind" "$size" "$mode" "$mtime" "$target"
 done
-' cleanroom-walk {} +
+' cleanroom-walk {} \;
 `
 
 const SandboxFileReadScript = `set -eu
