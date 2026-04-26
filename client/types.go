@@ -33,6 +33,15 @@ type DownloadSandboxFileResponse = cleanroomv1.DownloadSandboxFileResponse
 type UploadSandboxFileRequest = cleanroomv1.UploadSandboxFileRequest
 type UploadSandboxFileResponse = cleanroomv1.UploadSandboxFileResponse
 type SandboxPathType = cleanroomv1.SandboxPathType
+
+const (
+	SandboxPathType_SANDBOX_PATH_TYPE_UNSPECIFIED = cleanroomv1.SandboxPathType_SANDBOX_PATH_TYPE_UNSPECIFIED
+	SandboxPathType_SANDBOX_PATH_TYPE_FILE        = cleanroomv1.SandboxPathType_SANDBOX_PATH_TYPE_FILE
+	SandboxPathType_SANDBOX_PATH_TYPE_DIRECTORY   = cleanroomv1.SandboxPathType_SANDBOX_PATH_TYPE_DIRECTORY
+	SandboxPathType_SANDBOX_PATH_TYPE_SYMLINK     = cleanroomv1.SandboxPathType_SANDBOX_PATH_TYPE_SYMLINK
+	SandboxPathType_SANDBOX_PATH_TYPE_OTHER       = cleanroomv1.SandboxPathType_SANDBOX_PATH_TYPE_OTHER
+)
+
 type SandboxPathInfo = cleanroomv1.SandboxPathInfo
 type StatSandboxPathRequest = cleanroomv1.StatSandboxPathRequest
 type StatSandboxPathResponse = cleanroomv1.StatSandboxPathResponse

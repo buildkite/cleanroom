@@ -9,6 +9,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -182,6 +183,55 @@ func SandboxFileUploadCommand(path string, mode fs.FileMode, mtime time.Time) ([
 // CopyReaderToAttachStdin streams r to the attached guest stdin and always
 // sends EOF after the attach succeeds, including when r returns an error.
 func CopyReaderToAttachStdin(r io.Reader, attach AttachIO, payloadName string) (written int64, err error) {
+	return copyReaderToAttachStdin(r, attach, payloadName, nil)
+}
+
+// AttachStdinCopy tracks a background copy into attached guest stdin.
+type AttachStdinCopy struct {
+	done    chan struct{}
+	result  AttachStdinCopyResult
+	written atomic.Int64
+}
+
+// AttachStdinCopyResult is the terminal result of an attached stdin copy.
+type AttachStdinCopyResult struct {
+	Written int64
+	Err     error
+}
+
+// StartCopyReaderToAttachStdin streams r to guest stdin in the background.
+func StartCopyReaderToAttachStdin(r io.Reader, attach AttachIO, payloadName string) *AttachStdinCopy {
+	copy := &AttachStdinCopy{done: make(chan struct{})}
+	go func() {
+		copy.result.Written, copy.result.Err = copyReaderToAttachStdin(r, attach, payloadName, copy.written.Store)
+		close(copy.done)
+	}()
+	return copy
+}
+
+// Wait waits for the stdin copy to finish and returns its final result.
+func (c *AttachStdinCopy) Wait() AttachStdinCopyResult {
+	if c == nil {
+		return AttachStdinCopyResult{}
+	}
+	<-c.done
+	return c.result
+}
+
+// Written returns the latest byte count observed for the stdin copy.
+func (c *AttachStdinCopy) Written() int64 {
+	if c == nil {
+		return 0
+	}
+	select {
+	case <-c.done:
+		return c.result.Written
+	default:
+		return c.written.Load()
+	}
+}
+
+func copyReaderToAttachStdin(r io.Reader, attach AttachIO, payloadName string, onWritten func(int64)) (written int64, err error) {
 	if attach.WriteStdin == nil || attach.CloseStdin == nil {
 		return 0, errors.New("stdin attach unavailable")
 	}
@@ -196,6 +246,9 @@ func CopyReaderToAttachStdin(r io.Reader, attach AttachIO, payloadName string) (
 		n, readErr := r.Read(buf)
 		if n > 0 {
 			written += int64(n)
+			if onWritten != nil {
+				onWritten(written)
+			}
 			if err := attach.WriteStdin(buf[:n]); err != nil {
 				return written, fmt.Errorf("write %s payload: %w", payloadName, err)
 			}

@@ -347,6 +347,62 @@ func TestWriteSandboxFileWritesPayloadModeAndMtime(t *testing.T) {
 	}
 }
 
+func TestWriteSandboxFileReturnsGuestErrorWhenUploadFailsBeforeReadingPayload(t *testing.T) {
+	t.Parallel()
+
+	writeStarted := make(chan struct{}, 1)
+	unblockWrite := make(chan struct{})
+	defer close(unblockWrite)
+	adapter := &Adapter{}
+	adapter.executeInSandboxFn = func(_ context.Context, _ context.Context, _ *sandboxInstance, _ backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+		if stream.OnAttach != nil {
+			stream.OnAttach(backend.AttachIO{
+				WriteStdin: func([]byte) error {
+					select {
+					case writeStarted <- struct{}{}:
+					default:
+					}
+					<-unblockWrite
+					return errors.New("stdin closed")
+				},
+				CloseStdin: func() error {
+					return nil
+				},
+			})
+		}
+		select {
+		case <-writeStarted:
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for upload copy to start")
+		}
+		return &backend.ExecutionResult{ExitCode: 1, Stderr: "destination is a directory: /tmp/upload\n"}, nil
+	}
+	adapter.sandboxes = map[string]*sandboxInstance{
+		"cr-test": {
+			SandboxID: "cr-test",
+			exitedCh:  make(chan struct{}),
+		},
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := adapter.WriteSandboxFile(context.Background(), "cr-test", "/tmp/upload", bytes.NewReader([]byte("payload")), 0o644, time.Time{})
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected upload error")
+		}
+		if !strings.Contains(err.Error(), "destination is a directory") {
+			t.Fatalf("unexpected upload error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("WriteSandboxFile blocked behind upload stdin copy")
+	}
+}
+
 func TestTerminateSandboxRemovesRunDir(t *testing.T) {
 	t.Parallel()
 

@@ -679,7 +679,7 @@ func (a *Adapter) WriteSandboxFile(ctx context.Context, sandboxID, path string, 
 
 	attached := false
 	var attachErr error
-	var written int64
+	var copy *backend.AttachStdinCopy
 	result, err := a.runFileTransferCommand(ctx, sandboxID, cmd, backend.OutputStream{
 		OnAttach: func(attach backend.AttachIO) {
 			attached = true
@@ -687,21 +687,27 @@ func (a *Adapter) WriteSandboxFile(ctx context.Context, sandboxID, path string, 
 				attachErr = errors.New("sandbox file upload requires stdin attach")
 				return
 			}
-			written, attachErr = backend.CopyReaderToAttachStdin(r, attach, "file")
+			copy = backend.StartCopyReaderToAttachStdin(r, attach, "file")
 		},
 	})
+	written := copy.Written()
 	if err != nil {
 		return written, err
 	}
 	if !attached {
 		return written, errors.New("sandbox file write requires stdin attach")
 	}
-	if attachErr != nil {
-		return written, attachErr
-	}
 	if result.ExitCode != 0 {
 		return written, fileTransferExitError(result, "write file command failed")
 	}
+	if attachErr != nil {
+		return written, attachErr
+	}
+	copyResult := copy.Wait()
+	if copyResult.Err != nil {
+		return copyResult.Written, copyResult.Err
+	}
+	written = copyResult.Written
 	return written, nil
 }
 
@@ -790,7 +796,7 @@ func (a *Adapter) ExtractSandboxArchive(ctx context.Context, sandboxID, destinat
 
 	attached := false
 	var attachErr error
-	var written int64
+	var copy *backend.AttachStdinCopy
 	result, err := a.runFileTransferCommand(ctx, sandboxID, cmd, backend.OutputStream{
 		OnAttach: func(attach backend.AttachIO) {
 			attached = true
@@ -798,21 +804,27 @@ func (a *Adapter) ExtractSandboxArchive(ctx context.Context, sandboxID, destinat
 				attachErr = errors.New("sandbox archive extract requires stdin attach")
 				return
 			}
-			written, attachErr = backend.CopyReaderToAttachStdin(r, attach, "archive")
+			copy = backend.StartCopyReaderToAttachStdin(r, attach, "archive")
 		},
 	})
+	written := copy.Written()
 	if err != nil {
 		return written, err
 	}
 	if !attached {
 		return written, errors.New("sandbox archive extract requires stdin attach")
 	}
-	if attachErr != nil {
-		return written, attachErr
-	}
 	if result.ExitCode != 0 {
 		return written, fileTransferExitError(result, "extract archive command failed")
 	}
+	if attachErr != nil {
+		return written, attachErr
+	}
+	copyResult := copy.Wait()
+	if copyResult.Err != nil {
+		return copyResult.Written, copyResult.Err
+	}
+	written = copyResult.Written
 	return written, nil
 }
 
