@@ -70,11 +70,16 @@ If both exist, root `cleanroom.yaml` is authoritative and `.buildkite/cleanroom.
 
 ```yaml
 version: 1
-project:
-  name: my-repo
+
+repository:
+  enabled: true
+  remote: origin
+  path: /workspace
+  submodules: false
 
 sandbox:
-  ttl_minutes: 60
+  image:
+    ref: ghcr.io/buildkite/cleanroom-base/debian@sha256:28c3f638fabe1ed780f87b82cfb0c6dda2549c86b9e4edbe519e8250243411c5
   resources:
     vcpus: 4
     memory: 8GiB
@@ -86,45 +91,21 @@ sandbox:
         - .mise.toml
         - go.mod
         - go.sum
+    reuse: portable
+  services:
+    docker:
+      required: true
+  run:
+    before: mise exec -- go test ./...
   network:
     default: deny
     allow:
       - host: api.github.com
-        reason: source-control and release checks
-        ports:
-          - 443
-      - host: *.npmjs.org
-        reason: npm metadata + tgz
         ports: [443]
-      - host: registry.npmjs.org
-        reason: npm package tarballs
+      - host: proxy.golang.org
         ports: [443]
-    deny:
-      - host: 169.254.169.254
-      - host: metadata.google.internal
-
-registries:
-  npm:
-    enable: true
-    allowed_hosts:
-      - registry.npmjs.org
-      - registry.yarnpkg.com
-    cache_ref: content-cache
-    fallback: deny
-    lockfile_enforcement:
-      enabled: true
-      mode: deny_unknown
-      lockfiles:
-        - package-lock.json
-        - yarn.lock
-  pip:
-    enable: false
-    lockfile_enforcement:
-      enabled: false
-
-metadata:
-  owner: team-security
-  risk_class: low
+      - host: sum.golang.org
+        ports: [443]
 ```
 
 ### 5.1.1 Repository bootstrap config
@@ -161,8 +142,14 @@ content into the sandbox. Any inclusion of local modifications must use an
 explicit request-time changeset input.
 
 ### 5.2 Schema rules
-- Required: `version`, `sandbox.network.default`.
-- `sandbox.network.default` must be either `deny` or `allow`; v1 default must be `deny`.
+- Required: `version`, `sandbox.image.ref`.
+- `sandbox.image.ref` must be a digest-pinned OCI image reference. CLI image
+  override paths may resolve tags or local images before building the compiled
+  policy, but repository policy files should be pinned.
+- `sandbox.network.default` defaults to `deny` when omitted. Repository policy
+  files currently accept only `deny`; `allow` is reserved for the internal
+  repo-agnostic `cleanroom sandbox create --dangerously-allow-all` path and is
+  not valid in `cleanroom.yaml`.
 - If `repository` is omitted, top-level commands default to the current repo with `remote: origin`, `path: /workspace`, and `submodules: false`.
 - `repository.enabled` defaults to `true`; `false` disables repo-aware bootstrap for top-level commands.
 - `repository.mode` is optional and, when set, may be `none` or `current-repo`.
@@ -183,41 +170,50 @@ explicit request-time changeset input.
 - `sandbox.run.before` defaults to unset; when present, each execution runs that shell command in the repository workdir immediately before the requested command.
 - `sandbox.run.before` must be a YAML string or block string and executes as `sh -lc <value>`.
 - Policy schema intentionally has no field for implicit dirty-worktree inclusion; explicit local modifications are a separate request-time changeset input.
-- Host matching supports:
-  - exact host (`registry.npmjs.org`)
-  - wildcard subdomains (`*.example.com`)
-  - optional CIDR if we need API/IP exceptions later.
-- All hostnames are normalized to lowercase punycode when applicable.
-- Ports are optional; if omitted, default allow for `{80,443}` only.
-- `registries.*.fallback = deny|allow` defines handling for a supported package manager request not explicitly in allowlist.
-- `registries.*.lockfile_enforcement` controls whether package fetches are constrained by lockfile-derived coordinates:
-  - `enabled: true|false`
-  - `mode`:
-    - `deny_unknown` (default): deny any artifact not declared in resolved lockfiles.
-    - `warn`: emit violation events but allow in migration mode.
-    - `off`: no lockfile restrictions.
-  - `lockfiles[]`: repository-relative lockfile paths.
-- When lockfile enforcement is enabled, the policy compiler records exact package artifact allow entries with integrity metadata where available.
+- `sandbox.network.allow` defaults to empty. Each entry must include an exact
+  `host` value and at least one explicit port in `ports`.
+- Host matching is exact after trimming whitespace and lowercasing the policy
+  and requested host values. Wildcards and CIDR ranges are not part of the
+  current policy-file schema.
+- Ports are required and must be integers from 1 to 65535.
+- The current policy-file schema has no `sandbox.network.deny`, `registries`,
+  `metadata`, `secrets`, or lockfile-enforcement fields. Those concepts may be
+  added later, but unknown fields intentionally fail validation today.
 
 ### 5.2.1 Deterministic network match semantics (normative)
-- Cleanroom must normalize policy hosts and requested destination hosts before matching:
-  - lowercase
-  - IDN to punycode where applicable
-  - trailing dot removed
-- Rule precedence for destination evaluation must be deterministic:
-  1. explicit `deny` exact host/IP match
-  2. explicit `allow` exact host/IP match
-  3. explicit `allow` wildcard host match
-  4. fallback to `sandbox.network.default`
-- Wildcard host matching supports only left-most label form (for example `*.example.com`).
-- Wildcard host entries do not match the apex domain (`example.com`) unless explicitly listed.
-- If a destination is expressed as an IP literal, it is evaluated against explicit IP/CIDR rules only.
-- If no explicit IP/CIDR rule matches an IP-literal destination, default behavior is deny.
+- Cleanroom trims whitespace and lowercases policy hosts and requested
+  destination hosts before matching.
+- A destination is allowed only when an exact `sandbox.network.allow` host and
+  port entry matches the destination selected by the relevant backend or gateway
+  route.
+- Any destination not matched by an exact allow entry is denied.
+- IP literals are treated as exact host values. CIDR matching is not currently
+  implemented.
+- Repository policy files cannot request allow-by-default behavior. The only
+  allow-by-default mode is the internal compiled policy produced by
+  `cleanroom sandbox create --dangerously-allow-all` for repo-agnostic sandboxes.
 
-### 5.3 Secret references
-- Policy contains only secret identifiers, never plaintext token values.
-- Secret IDs are resolved at run-time from the CI environment or external secret provider.
-- Runtime policy object contains:
+### 5.2.2 Future schema ideas (non-normative)
+
+The following ideas are intentionally not accepted in `cleanroom.yaml` today:
+
+- wildcard host rules, with explicit single-label versus multi-label matching
+  semantics
+- CIDR rules for IP-literal destinations
+- optional port defaults such as `{80,443}`
+- explicit deny rules, if Cleanroom later supports allow-by-default policy files
+- first-class registry or package-manager policy blocks
+- lockfile-derived artifact allowlists
+- opaque policy metadata annotations
+
+### 5.3 Future: secret references (non-normative)
+
+Secret binding policy is not part of the current repository policy schema. A
+future implementation may allow policy files to reference secret identifiers,
+but not plaintext token values. Secret IDs would be resolved at run time from
+the CI environment or an external secret provider.
+
+A future runtime policy object may contain:
   - `secret_id` (e.g. `npm_readonly`, `github_pat_ci`)
   - `target` (which backend uses it: content-cache, secret-proxy, or direct env-injected)
   - `allowed_hosts` (host restrictions for each secret binding)
@@ -329,29 +325,23 @@ the first implementation slice.
 Cleanroom compiles repository policy into an immutable `CompiledPolicy` payload for sandbox creation. That payload is then reused for every execution in the sandbox. It is the only policy input to backend adapters.
 
 Minimum required fields:
-- `policy_hash` (digest of full compiled payload)
-- `source`
-  - `repository`
-  - `commit_sha`
-  - `policy_path`
-- `network`
-  - `default_action`
-  - `allow_rules[]` (normalized host/IP, ports, protocol defaults)
-  - `deny_rules[]` (normalized host/IP, ports optional)
+- `version`
+- `image_ref`
+- `image_digest`
+- `network_default`
+- `allow[]`
+  - `host`
+  - `ports[]`
+- `services`
+  - Docker service requirement
+  - optional services bootstrap command and key files
+- `dependencies`
+  - optional dependency bootstrap command, key files, and reuse mode
+- `run`
+  - optional pre-run command
 - `resources`
-  - `vcpus`
-  - `memory_bytes`
-  - `disk_bytes`
-- `registries`
-  - manager key (`npm`, `pip`, and so on)
-  - `enabled`
-  - `allowed_hosts[]`
-  - `cache_ref`
-  - `fallback`
-  - `lockfile_policy` (enabled/mode/inputs)
-  - `artifact_allowlist[]` (when lockfile enforcement is enabled)
-- `secrets`
-  - secret binding metadata only (ID, target component, host scope, TTL hints)
+  - optional `vcpus`, `memory_bytes`, and `disk_bytes`
+- `hash` (digest of the compiled policy payload)
 
 Requirements:
 - Backend adapters must not re-resolve policy from repository files.
@@ -443,15 +433,12 @@ These rules are installed during sandbox network setup and torn down during clea
   - broader non-OCI package-manager protocol support
   - optional metadata signing/validation hooks
 
-#### 6.2.5 Secret injection
+#### 6.2.5 Future: secret injection
 
-- For outbound calls that require per-service credentials, the gateway injects credentials on the upstream leg without exposing them to the sandbox.
-- The gateway resolves secret bindings from the sandbox's compiled policy (`secrets[]` entries with `secret_id`, `allowed_hosts`, and `ttl_seconds`).
-- For each proxied request, the gateway validates the destination host against the secret binding's `allowed_hosts` scope, then injects the credential into the upstream request header (default `Authorization: Bearer` pattern).
-- Requirements:
-  - no plaintext secrets in repository policy, command arguments, or guest environment.
-  - blocked with `secret_scope_violation` if destination host does not match the secret binding's allowed hosts.
-  - all injection events are logged with secret ID, destination host, and sandbox ID; never with secret values.
+The `/secrets/` gateway route and policy-level secret bindings are reserved for
+future work. A future implementation may inject credentials on the upstream leg
+without exposing them to the sandbox, validate each credential against
+host-scoped bindings, and log secret IDs without logging secret values.
 
 #### 6.2.6 Audit attribution
 
@@ -468,21 +455,28 @@ These rules are installed during sandbox network setup and torn down during clea
 
 ### 6.3 Default-fail semantics
 - Any destination not matched by explicit allowlist is denied.
-- Any registry not listed in an enabled `registries.*` block is denied.
-- Failed policy validation blocks launch unless explicitly bypassed by an explicit admin flag.
+- Gateway-backed registry, package, and fetch routes must still pass the
+  sandbox policy allow check for their upstream host and port before forwarding.
+- Failed policy validation blocks launch.
 
-### 6.4 Lockfile-restricted package fetches
-- During policy compilation, cleanroom parses lockfiles from `registries.*.lockfile_enforcement.lockfiles`.
-- For each allowed package manager, cleanroom builds an explicit artifact allowlist:
+### 6.4 Future: lockfile-restricted package fetches
+
+Lockfile-derived artifact policy is not part of the current repository policy
+schema. A future implementation may add package-manager-specific policy that:
+
+- parses lockfiles during policy compilation
+- builds an explicit artifact allowlist for each supported package manager:
   - package identity + version
   - registry endpoint
   - optional integrity/hash requirement
-- The host gateway receives these allow rules and can only forward requests that match them.
-- If a request misses lockfile constraints:
+- passes those allow rules to the host gateway so it can only forward matching
+  requests
+- handles requests that miss lockfile constraints using an explicit mode:
   - `mode=deny_unknown`: block and emit `lockfile_violation` event.
   - `mode=warn`: allow but emit warning/metric.
-- Unsupported or missing lockfile + enabled enforcement blocks launch by default.
-- Lockfile-derived restrictions are an additional layer on top of network/host allowlists, never a replacement.
+
+Lockfile-derived restrictions would be an additional layer on top of
+network/host allowlists, never a replacement.
 
 ## 7) Backend abstraction
 Cleanroom provides a Go adapter interface for backend implementations:
@@ -500,18 +494,17 @@ Cleanroom provides a Go adapter interface for backend implementations:
 ### 7.1 Backend capability contract (required for launch)
 Each backend must publish a capability map consumed by launch-time validation. Capabilities describe enforcement outcomes, not implementation details.
 
-Required capabilities:
-- `network_default_deny`: backend can enforce deny-by-default outbound network behavior.
-- `network_host_port_filtering`: backend can enforce host/port allow/deny outcomes from compiled policy.
+Current capability keys:
+- `network.default_deny`: backend can enforce deny-by-default outbound network behavior.
+- `network.allowlist_egress`: backend can enforce allowlist egress outcomes from compiled policy.
 - `dns_control_or_equivalent`: backend can prevent bypass of policy via unmanaged resolver paths.
-- `policy_immutability`: backend executes against immutable compiled policy payload for the sandbox lifetime.
-- `audit_event_emission`: backend can emit required allow/deny and violation events with execution identifiers.
-- `secret_isolation`: backend can satisfy secret exposure constraints defined in this spec.
+- `network.guest_interface`: backend provides a managed guest network interface.
 
 Optional capabilities (may be added by policy requirements later):
 - `protocol_granularity`: protocol-specific network controls beyond baseline host/port behavior.
 - `advanced_destination_identity`: stronger destination identity checks beyond hostname matching.
 - `offline_cache_mode`: enforce no-upstream behavior when only warm cache artifacts are allowed.
+- `secret_isolation`: backend can satisfy future secret exposure constraints.
 
 Fail-closed rule:
 - Launch must fail with `backend_capability_mismatch` when effective policy requirements exceed backend-declared capabilities.
@@ -591,10 +584,11 @@ API:
   - effective allowlist summary
   - backend, command, user/actor
   - blocked connection attempts (host, reason, timestamp)
-- Deny events must use stable reason codes (for example `host_not_allowed`, `registry_not_allowed`, `lockfile_violation`, `backend_capability_mismatch`).
+- Deny events must use stable reason codes (for example `host_not_allowed`,
+  `method_not_allowed`, `invalid_request`, `upstream_error`, or
+  `unknown_registry_prefix`).
 - Trace export configuration stays in runtime config and uses OTLP, with
   optional direct trace URL rendering from a configured template.
-- lockfile violations (registry, package, version, requested_path, action)
 - Metrics:
   - launch success/fail by backend
   - rule violation counts
@@ -604,32 +598,33 @@ API:
 ### 9.1 Stable reason/error code set (v1 baseline)
 Cleanroom must standardize and document a canonical code enum used consistently across CLI output, API responses, and audit events.
 
-Minimum v1 codes:
-- `policy_invalid`
-- `policy_conflict`
-- `backend_unavailable`
-- `backend_capability_mismatch`
+Current gateway reason codes:
 - `host_not_allowed`
-- `registry_not_allowed`
-- `lockfile_violation`
-- `secret_scope_violation`
-- `runtime_launch_failed`
+- `method_not_allowed`
+- `invalid_request`
+- `upstream_error`
+- `unknown_registry_prefix`
+- `rubygems_unavailable`
+- `proxied`
+- `mirrored`
+- `cached`
+- `fallback`
+
+Future policy features may add `lockfile_violation` and
+`secret_scope_violation` reason codes when those enforcement paths exist.
 
 ## 10) Security considerations
 - Principle of least privilege:
   - deny-by-default network, explicit allow rules only.
 - Tamper-evident policy changes:
   - policy file changes require review before merge.
-- Secret safety:
-  - no embedding secrets in policy file.
-  - secrets injected at runtime by CI secret store.
 - Supply chain safety:
   - content-cache as first stop for registry access.
   - support offline modes where only pre-warmed cached artifacts are permitted.
-- Secret safety:
+- Future secret safety:
   - no plaintext secrets in policy, command args, or guest env.
-  - secret IDs are validated against policy and projected as short-lived bindings only.
-  - all injection events are logged with secret ID, destination, and reason, never with secret values.
+  - secret IDs should be validated against policy and projected as short-lived bindings only.
+  - all injection events should be logged with secret ID, destination, and reason, never with secret values.
 
 ## 11) Risks and open decisions
 - Whether tokenizer-style injection runs as embedded process in cleanroom binary or as isolated helper.
@@ -641,7 +636,7 @@ Minimum v1 codes:
 ## 12) Build plan
 ### Phase 1 (MVP)
 - Spec schema + validator (`cleanroom.yaml` parser with `.buildkite/cleanroom.yaml` fallback)
-- Core policy compiler to normalized allowlist + registry map
+- Core policy compiler to normalized exact-host allowlist
 - Local backend (Firecracker) implementation
 - embed `content-cache` behind gateway Git and OCI routes
 - `cleanroom serve` foreground server plus `cleanroom daemon` lifecycle management and CLI client command set (`exec`, `console`, `sandbox inspect`, `execution inspect`)
@@ -663,13 +658,15 @@ Minimum v1 codes:
 2. Running `cleanroom exec [--] <command>` creates a sandbox where unlisted hosts are unreachable.
 3. Gateway-mediated Git, OCI registry, and RubyGems fetches work only through cache-backed routes and allowed destinations.
 4. Unsupported destination attempts are denied and logged.
-5. Lockfile-enabled registries block undeclared package artifacts by default.
-6. Git clones are rewritten to cached smart-HTTP endpoints and private clone auth is provided without plaintext exposure.
-7. Secrets can be used via tokenizer-style proxy flow with host-scoped allowlist and no plaintext secrets in guest/runtime-visible config.
-8. Launch fails when selected backend cannot satisfy required policy capabilities.
-9. Audit logs include `execution_id`, `actor`, `backend`, and `policy_hash` for every execution.
-10. Backend adapters must pass the Cleanroom conformance suite for required capabilities before being considered supported.
-11. All CLI execution paths (`exec`, `console`, `sandbox inspect`, `execution inspect`) are routed through the control-plane API; no direct non-API execution path is supported.
+5. Git clones are rewritten to cached smart-HTTP endpoints when the target host is allowed.
+6. Launch fails when selected backend cannot satisfy required policy capabilities.
+7. Audit logs include execution, backend, policy, gateway action, and reason-code context where available.
+8. Backend adapters must pass the Cleanroom conformance suite for required capabilities before being considered supported.
+9. All CLI execution paths (`exec`, `console`, `sandbox inspect`, `execution inspect`) are routed through the control-plane API; no direct non-API execution path is supported.
+
+Future acceptance criteria may add lockfile-derived artifact enforcement,
+policy-level secret bindings, explicit deny rules, wildcard host rules, and
+registry-specific fallback policy.
 
 ## 14) Conformance test matrix (required for supported backends)
 Cleanroom must provide a backend-agnostic conformance suite that validates equivalent enforcement outcomes for the same `CompiledPolicy`.
@@ -677,12 +674,11 @@ Cleanroom must provide a backend-agnostic conformance suite that validates equiv
 Minimum matrix coverage:
 - Default deny blocks unlisted destinations.
 - Explicit allow host/port permits expected outbound traffic.
-- Explicit deny overrides matching allow.
-- Wildcard host semantics match spec normalization/precedence.
-- Registry fallback and allowlist behavior matches policy.
-- Lockfile enforcement blocks undeclared artifacts in `deny_unknown` mode.
-- Secret scope violations emit `secret_scope_violation`.
 - Missing required capability fails launch with `backend_capability_mismatch`.
+
+Future matrix coverage may add explicit-deny precedence, wildcard host
+semantics, registry fallback behavior, lockfile enforcement, and secret scope
+violations once those policy features are implemented.
 
 Support gate:
 - A backend is not marked supported in v1 until conformance tests pass on its target platform(s).
