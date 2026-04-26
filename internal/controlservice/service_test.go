@@ -5559,6 +5559,34 @@ func TestUploadSandboxFileDefaultsMode(t *testing.T) {
 	}
 }
 
+func TestUploadSandboxFileRejectsOversizedData(t *testing.T) {
+	adapter := &stubAdapter{
+		uploadFn: func(context.Context, string, string, []byte, fs.FileMode) error {
+			t.Fatal("backend upload should not be called")
+			return nil
+		},
+	}
+	svc := newTestService(adapter)
+	svc.runtime.defaultDownloadMaxBytes = 4
+
+	createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+
+	_, err = svc.UploadSandboxFile(context.Background(), &cleanroomv1.UploadSandboxFileRequest{
+		SandboxId: createResp.GetSandbox().GetSandboxId(),
+		Path:      "/tmp/upload.txt",
+		Data:      []byte("12345"),
+	})
+	if err == nil {
+		t.Fatal("expected oversized upload error")
+	}
+	if !strings.Contains(err.Error(), "exceeds max_bytes=4") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestReadSandboxFileStreamsChunks(t *testing.T) {
 	adapter := &stubAdapter{
 		readFn: func(_ context.Context, _, path string, maxBytes int64, emit func([]byte) error) error {
@@ -5638,13 +5666,13 @@ func TestWriteSandboxFileStreamsReader(t *testing.T) {
 func TestSandboxPathPrimitiveDispatch(t *testing.T) {
 	adapter := &stubAdapter{
 		statFn: func(_ context.Context, _, path string) (*backend.SandboxPathInfo, error) {
-			return &backend.SandboxPathInfo{Path: path, Type: backend.SandboxPathTypeFile, SizeBytes: 7, Mode: 0o644}, nil
+			return &backend.SandboxPathInfo{Path: path, Type: backend.SandboxPathTypeFile, SizeBytes: 7, Mode: 0o4644}, nil
 		},
 		walkFn: func(_ context.Context, _, path string, emit func(backend.SandboxPathInfo) error) error {
-			if err := emit(backend.SandboxPathInfo{Path: path, Type: backend.SandboxPathTypeDirectory, Mode: 0o755}); err != nil {
+			if err := emit(backend.SandboxPathInfo{Path: path, Type: backend.SandboxPathTypeDirectory, Mode: 0o1755}); err != nil {
 				return err
 			}
-			return emit(backend.SandboxPathInfo{Path: path + "/file.txt", Type: backend.SandboxPathTypeFile, SizeBytes: 4, Mode: 0o644})
+			return emit(backend.SandboxPathInfo{Path: path + "/file.txt", Type: backend.SandboxPathTypeFile, SizeBytes: 4, Mode: 0o2644})
 		},
 		removeFn: func(_ context.Context, _, path string, recursive bool) error {
 			if got, want := path, "/tmp/remove"; got != want {
@@ -5670,10 +5698,15 @@ func TestSandboxPathPrimitiveDispatch(t *testing.T) {
 	if got, want := statResp.GetInfo().GetType(), cleanroomv1.SandboxPathType_SANDBOX_PATH_TYPE_FILE; got != want {
 		t.Fatalf("unexpected stat type: got %v want %v", got, want)
 	}
+	if got, want := statResp.GetInfo().GetMode(), uint32(0o4644); got != want {
+		t.Fatalf("unexpected stat mode: got %04o want %04o", got, want)
+	}
 
 	var walked []string
+	var walkedModes []string
 	err = svc.WalkSandboxTree(context.Background(), &cleanroomv1.WalkSandboxTreeRequest{SandboxId: sandboxID, Path: "/tmp/tree"}, func(resp *cleanroomv1.WalkSandboxTreeResponse) error {
 		walked = append(walked, resp.GetInfo().GetPath())
+		walkedModes = append(walkedModes, fmt.Sprintf("%04o", resp.GetInfo().GetMode()))
 		return nil
 	})
 	if err != nil {
@@ -5681,6 +5714,9 @@ func TestSandboxPathPrimitiveDispatch(t *testing.T) {
 	}
 	if got, want := strings.Join(walked, ","), "/tmp/tree,/tmp/tree/file.txt"; got != want {
 		t.Fatalf("unexpected walk paths: got %q want %q", got, want)
+	}
+	if got, want := strings.Join(walkedModes, ","), "1755,2644"; got != want {
+		t.Fatalf("unexpected walk modes: got %q want %q", got, want)
 	}
 
 	if _, err := svc.RemoveSandboxPath(context.Background(), &cleanroomv1.RemoveSandboxPathRequest{SandboxId: sandboxID, Path: "/tmp/remove", Recursive: true}); err != nil {

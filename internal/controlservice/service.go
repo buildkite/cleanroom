@@ -1366,6 +1366,11 @@ func (s *Service) UploadSandboxFile(ctx context.Context, req *cleanroomv1.Upload
 		return nil, errors.New("invalid path: must be absolute")
 	}
 	mode := backend.NormalizeSandboxFileMode(fs.FileMode(req.GetMode()))
+	data := req.GetData()
+	maxBytes := s.downloadMaxBytesDefault()
+	if int64(len(data)) > maxBytes {
+		return nil, fmt.Errorf("upload data exceeds max_bytes=%d", maxBytes)
+	}
 
 	s.mu.Lock()
 	state, ok := s.sandboxes[sandboxID]
@@ -1411,7 +1416,6 @@ func (s *Service) UploadSandboxFile(ctx context.Context, req *cleanroomv1.Upload
 		s.mu.Unlock()
 	}()
 
-	data := req.GetData()
 	if err := uploader.UploadSandboxFile(ctx, sandboxID, path, data, mode); err != nil {
 		return nil, fmt.Errorf("upload sandbox file: %w", err)
 	}
@@ -3555,7 +3559,7 @@ func sandboxPathInfoToProto(info *backend.SandboxPathInfo) *cleanroomv1.SandboxP
 		Path:          info.Path,
 		Type:          pathType,
 		SizeBytes:     info.SizeBytes,
-		Mode:          uint32(info.Mode.Perm()),
+		Mode:          uint32(info.Mode),
 		SymlinkTarget: info.SymlinkTarget,
 	}
 	if !info.MTime.IsZero() {
