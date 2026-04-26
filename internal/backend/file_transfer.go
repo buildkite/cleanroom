@@ -74,6 +74,10 @@ mode=$2
 mtime=${3:-}
 dir=$(dirname "$path")
 mkdir -p "$dir"
+if [ -d "$path" ]; then
+	echo "destination is a directory: $path" >&2
+	exit 1
+fi
 tmp="${path}.cleanroom-copy.$$"
 cleanup() {
 	rm -f "$tmp"
