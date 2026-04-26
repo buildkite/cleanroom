@@ -606,6 +606,7 @@ Current API/client error classifiers:
 - `invalid_argument`
 - `not_found`
 - `unavailable`
+- `failed_precondition`
 - `internal`
 - `policy_invalid`
 - `policy_conflict`

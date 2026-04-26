@@ -815,6 +815,10 @@ func TestErrCode(t *testing.T) {
 		t.Fatalf("unexpected code for not found: %q", got)
 	}
 
+	if got := ErrCode(connect.NewError(connect.CodeFailedPrecondition, errors.New("sandbox \"x\" is not ready"))); got != ErrorCodeFailedPrecondition {
+		t.Fatalf("unexpected code for failed precondition: %q", got)
+	}
+
 	if got := ErrCode(connect.NewError(connect.CodeInternal, errors.New("backend_capability_mismatch: denied"))); got != ErrorCodeBackendCapabilityMismatch {
 		t.Fatalf("unexpected code for backend mismatch: %q", got)
 	}

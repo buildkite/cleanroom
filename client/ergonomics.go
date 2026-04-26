@@ -22,6 +22,7 @@ const (
 	ErrorCodeInvalidArgument           ErrorCode = "invalid_argument"
 	ErrorCodeNotFound                  ErrorCode = "not_found"
 	ErrorCodeUnavailable               ErrorCode = "unavailable"
+	ErrorCodeFailedPrecondition        ErrorCode = "failed_precondition"
 	ErrorCodeInternal                  ErrorCode = "internal"
 	ErrorCodePolicyInvalid             ErrorCode = "policy_invalid"
 	ErrorCodePolicyConflict            ErrorCode = "policy_conflict"
@@ -62,6 +63,8 @@ func ErrCode(err error) ErrorCode {
 			return ErrorCodeNotFound
 		case connect.CodeUnavailable:
 			return ErrorCodeUnavailable
+		case connect.CodeFailedPrecondition:
+			return ErrorCodeFailedPrecondition
 		default:
 			return ErrorCodeInternal
 		}
