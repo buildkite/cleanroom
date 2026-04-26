@@ -1,6 +1,7 @@
 package backend
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -72,4 +73,54 @@ func TestSandboxFileUploadCommandRejectsDirectoryTarget(t *testing.T) {
 	if len(entries) != 0 {
 		t.Fatalf("expected target directory to stay empty, found %d entries", len(entries))
 	}
+}
+
+func TestCopyReaderToAttachStdinClosesOnReadError(t *testing.T) {
+	t.Parallel()
+
+	readErr := errors.New("source failed")
+	reader := &errorAfterDataReader{
+		data: []byte("payload"),
+		err:  readErr,
+	}
+	var got strings.Builder
+	closed := false
+
+	written, err := CopyReaderToAttachStdin(reader, AttachIO{
+		WriteStdin: func(data []byte) error {
+			_, err := got.Write(data)
+			return err
+		},
+		CloseStdin: func() error {
+			closed = true
+			return nil
+		},
+	}, "file")
+
+	if !errors.Is(err, readErr) {
+		t.Fatalf("expected read error, got %v", err)
+	}
+	if got.String() != "payload" {
+		t.Fatalf("unexpected stdin payload: got %q", got.String())
+	}
+	if written != int64(len("payload")) {
+		t.Fatalf("unexpected written byte count: got %d want %d", written, len("payload"))
+	}
+	if !closed {
+		t.Fatal("expected stdin to be closed after read error")
+	}
+}
+
+type errorAfterDataReader struct {
+	data []byte
+	err  error
+	done bool
+}
+
+func (r *errorAfterDataReader) Read(p []byte) (int, error) {
+	if r.done {
+		return 0, r.err
+	}
+	r.done = true
+	return copy(p, r.data), r.err
 }

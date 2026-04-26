@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"math"
 	"strconv"
@@ -176,6 +177,36 @@ func SandboxFileUploadCommand(path string, mode fs.FileMode, mtime time.Time) ([
 		fmt.Sprintf("%04o", NormalizeSandboxFileMode(mode).Perm()),
 		mtimeArg,
 	}, nil
+}
+
+// CopyReaderToAttachStdin streams r to the attached guest stdin and always
+// sends EOF after the attach succeeds, including when r returns an error.
+func CopyReaderToAttachStdin(r io.Reader, attach AttachIO, payloadName string) (written int64, err error) {
+	if attach.WriteStdin == nil || attach.CloseStdin == nil {
+		return 0, errors.New("stdin attach unavailable")
+	}
+	defer func() {
+		if closeErr := attach.CloseStdin(); closeErr != nil && err == nil {
+			err = fmt.Errorf("close %s stdin: %w", payloadName, closeErr)
+		}
+	}()
+
+	buf := make([]byte, 32*1024)
+	for {
+		n, readErr := r.Read(buf)
+		if n > 0 {
+			written += int64(n)
+			if err := attach.WriteStdin(buf[:n]); err != nil {
+				return written, fmt.Errorf("write %s payload: %w", payloadName, err)
+			}
+		}
+		if readErr != nil {
+			if !errors.Is(readErr, io.EOF) {
+				return written, fmt.Errorf("read %s payload: %w", payloadName, readErr)
+			}
+			return written, nil
+		}
+	}
 }
 
 func SandboxPathRemoveCommand(path string, recursive bool) ([]string, error) {

@@ -638,27 +638,7 @@ func (a *Adapter) WriteSandboxFile(ctx context.Context, sandboxID, path string, 
 				attachErr = errors.New("sandbox file upload requires stdin attach")
 				return
 			}
-			buf := make([]byte, 32*1024)
-			for {
-				n, readErr := r.Read(buf)
-				if n > 0 {
-					written += int64(n)
-					if err := attach.WriteStdin(buf[:n]); err != nil {
-						attachErr = fmt.Errorf("write file payload: %w", err)
-						return
-					}
-				}
-				if readErr != nil {
-					if !errors.Is(readErr, io.EOF) {
-						attachErr = fmt.Errorf("read file payload: %w", readErr)
-						return
-					}
-					break
-				}
-			}
-			if err := attach.CloseStdin(); err != nil {
-				attachErr = fmt.Errorf("close file stdin: %w", err)
-			}
+			written, attachErr = backend.CopyReaderToAttachStdin(r, attach, "file")
 		},
 	})
 	if err != nil {
@@ -762,27 +742,7 @@ func (a *Adapter) ExtractSandboxArchive(ctx context.Context, sandboxID, destinat
 				attachErr = errors.New("sandbox archive extract requires stdin attach")
 				return
 			}
-			buf := make([]byte, 32*1024)
-			for {
-				n, readErr := r.Read(buf)
-				if n > 0 {
-					written += int64(n)
-					if err := attach.WriteStdin(buf[:n]); err != nil {
-						attachErr = fmt.Errorf("write archive payload: %w", err)
-						return
-					}
-				}
-				if readErr != nil {
-					if !errors.Is(readErr, io.EOF) {
-						attachErr = fmt.Errorf("read archive payload: %w", readErr)
-						return
-					}
-					break
-				}
-			}
-			if err := attach.CloseStdin(); err != nil {
-				attachErr = fmt.Errorf("close archive stdin: %w", err)
-			}
+			written, attachErr = backend.CopyReaderToAttachStdin(r, attach, "archive")
 		},
 	})
 	if err != nil {
