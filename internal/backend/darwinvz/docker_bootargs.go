@@ -21,7 +21,7 @@ func dockerServiceBootArgs(compiled *policy.CompiledPolicy, cfg backend.Firecrac
 
 	storageDriver := sanitizeKernelArgValue(strings.TrimSpace(cfg.DockerStorageDriver))
 	if storageDriver == "" {
-		storageDriver = "vfs"
+		storageDriver = "overlay2"
 	}
 
 	iptables := 0

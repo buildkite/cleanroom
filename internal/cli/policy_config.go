@@ -291,7 +291,7 @@ func defaultRuntimeConfig(defaultBackend string, firecrackerSnapshots, darwinVZS
 			Services: runtimeConfigServices{
 				Docker: runtimeConfigDockerService{
 					StartupTimeoutSeconds: 20,
-					StorageDriver:         "vfs",
+					StorageDriver:         "overlay2",
 					IPTables:              false,
 				},
 			},
@@ -309,7 +309,7 @@ func defaultRuntimeConfig(defaultBackend string, firecrackerSnapshots, darwinVZS
 			Services: runtimeConfigServices{
 				Docker: runtimeConfigDockerService{
 					StartupTimeoutSeconds: 20,
-					StorageDriver:         "vfs",
+					StorageDriver:         "overlay2",
 					IPTables:              false,
 				},
 			},

@@ -175,7 +175,7 @@ if [ "$DOCKER_REQUIRED" = "1" ] && command -v dockerd >/dev/null 2>&1; then
   fi
   DOCKER_STORAGE_DRIVER="$(arg_value cleanroom_service_docker_storage_driver || true)"
   if [ -z "$DOCKER_STORAGE_DRIVER" ]; then
-    DOCKER_STORAGE_DRIVER="vfs"
+    DOCKER_STORAGE_DRIVER="overlay2"
   fi
   DOCKER_IPTABLES="$(arg_value cleanroom_service_docker_iptables || true)"
   DOCKER_MIRROR_HOST="$(arg_value cleanroom_service_docker_registry_mirror_host || true)"
