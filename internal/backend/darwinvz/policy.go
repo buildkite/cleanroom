@@ -21,10 +21,14 @@ func evaluateNetworkPolicyForRun(networkDefault string, allowCount int, allowlis
 
 func evaluateNetworkPolicy(networkDefault string, allowCount int, allowlistSupported, requireAllowlistEnforcement bool) (string, error) {
 	_, _ = allowCount, requireAllowlistEnforcement
-	if strings.TrimSpace(networkDefault) != "deny" {
-		return "", fmt.Errorf("darwin-vz backend requires deny-by-default policy, got %q", networkDefault)
+	switch strings.TrimSpace(strings.ToLower(networkDefault)) {
+	case "deny":
+		return "", nil
+	case "allow":
+		return guestNetworkUnavailableWarning, nil
+	default:
+		return "", fmt.Errorf("darwin-vz backend requires network.default=deny or allow, got %q", networkDefault)
 	}
-	return "", nil
 }
 
 func allowlistSupportForConfig(cfg backend.FirecrackerConfig) (supported bool, detail, protectionMessage string, err error) {

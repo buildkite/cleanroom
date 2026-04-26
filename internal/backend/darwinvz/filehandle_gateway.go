@@ -246,8 +246,8 @@ func newFileHandleDNSRuntime(sandboxID string, compiled *policy.CompiledPolicy) 
 	if compiled == nil {
 		return nil, nil
 	}
-	if strings.TrimSpace(compiled.NetworkDefault) != "deny" {
-		return nil, fmt.Errorf("darwin-vz backend requires deny-by-default policy, got %q", compiled.NetworkDefault)
+	if _, err := evaluateNetworkPolicyForRun(compiled.NetworkDefault, len(compiled.Allow), true); err != nil {
+		return nil, err
 	}
 	sandboxID = strings.TrimSpace(sandboxID)
 	if sandboxID == "" {

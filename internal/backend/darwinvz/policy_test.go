@@ -7,16 +7,13 @@ import (
 	"github.com/buildkite/cleanroom/internal/backend"
 )
 
-func TestEvaluateNetworkPolicyRequiresDenyDefault(t *testing.T) {
+func TestEvaluateNetworkPolicyAllowsAllowDefaultWithWarning(t *testing.T) {
 	warn, err := evaluateNetworkPolicyForRun("allow", 0, false)
-	if err == nil {
-		t.Fatal("expected error for non-deny network default")
+	if err != nil {
+		t.Fatalf("unexpected error for allow network default: %v", err)
 	}
-	if !strings.Contains(err.Error(), "deny-by-default") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if warn != "" {
-		t.Fatalf("expected empty warning, got %q", warn)
+	if !strings.Contains(warn, "without host-side egress filtering") {
+		t.Fatalf("expected allow-default warning, got %q", warn)
 	}
 }
 
