@@ -289,16 +289,16 @@ func (d *SandboxPathInfoDecoder) Write(data []byte) ([]SandboxPathInfo, error) {
 	if len(data) == 0 {
 		return nil, nil
 	}
-	combined := append(d.partial, data...)
+	combined := append(append([]byte(nil), d.partial...), data...)
 	parts := bytes.Split(combined, []byte{0})
 	if len(parts) == 0 {
 		return nil, nil
 	}
-	d.partial = append(d.partial[:0], parts[len(parts)-1]...)
 	for _, part := range parts[:len(parts)-1] {
 		field := append([]byte(nil), part...)
 		d.fields = append(d.fields, field)
 	}
+	d.partial = append([]byte(nil), parts[len(parts)-1]...)
 	return d.emitComplete()
 }
 

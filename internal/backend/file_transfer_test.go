@@ -111,6 +111,27 @@ func TestCopyReaderToAttachStdinClosesOnReadError(t *testing.T) {
 	}
 }
 
+func TestSandboxPathInfoDecoderDoesNotCorruptCompleteFieldsWithTrailingPartial(t *testing.T) {
+	t.Parallel()
+
+	var decoder SandboxPathInfoDecoder
+	decoder.partial = append(make([]byte, 0, 128), []byte("/tmp/original")...)
+
+	records, err := decoder.Write([]byte("\000file\00012\0000644\0001700000123\000\000/next-partial"))
+	if err != nil {
+		t.Fatalf("Write returned error: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("expected one complete record, got %d", len(records))
+	}
+	if got, want := records[0].Path, "/tmp/original"; got != want {
+		t.Fatalf("unexpected decoded path: got %q want %q", got, want)
+	}
+	if got, want := decoder.partial, []byte("/next-partial"); string(got) != string(want) {
+		t.Fatalf("unexpected trailing partial: got %q want %q", string(got), string(want))
+	}
+}
+
 type errorAfterDataReader struct {
 	data []byte
 	err  error

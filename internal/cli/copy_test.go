@@ -154,6 +154,21 @@ func TestCopyFromSandboxUsesRemoteBasenameForLocalDirectory(t *testing.T) {
 	}
 }
 
+func TestResolveLocalCopyDestinationRejectsMissingSlashSuffixedPath(t *testing.T) {
+	missingDir := filepath.Join(t.TempDir(), "missing") + string(filepath.Separator)
+
+	_, err := resolveLocalCopyDestination(missingDir, "/var/log/result.txt")
+	if err == nil {
+		t.Fatal("expected missing slash-suffixed destination error")
+	}
+	if !strings.Contains(err.Error(), "ends with a path separator") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Clean(missingDir)); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("expected destination directory not to be created, got stat err %v", statErr)
+	}
+}
+
 func TestCopyToSandboxStreamsLocalFileToExecutionStdin(t *testing.T) {
 	src := filepath.Join(t.TempDir(), "fixture.txt")
 	if err := os.WriteFile(src, []byte("hello from host\n"), 0o640); err != nil {

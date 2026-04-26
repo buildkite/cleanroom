@@ -213,6 +213,9 @@ func resolveLocalCopyDestination(localPath, remotePath string) (string, error) {
 	info, err := os.Stat(localPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
+			if strings.HasSuffix(localPath, string(filepath.Separator)) {
+				return "", fmt.Errorf("local destination %q ends with a path separator but does not exist", localPath)
+			}
 			return localPath, nil
 		}
 		return "", fmt.Errorf("stat local destination: %w", err)
