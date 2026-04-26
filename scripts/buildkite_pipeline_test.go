@@ -117,6 +117,16 @@ func TestBuildkitePipelineUsesSetupGoForGoSteps(t *testing.T) {
 	if !strings.Contains(pipeline, "CLEANROOM_DARWIN_VZ_HELPER_SIGN_IDENTIFIER: com.buildkite.cleanroom.darwin-vz") {
 		t.Fatalf("expected .buildkite/pipeline.yml to set the darwin-vz vmnet helper bundle identifier")
 	}
+	for _, needle := range []string{
+		"CLEANROOM_KERNEL_IMAGE",
+		"CLEANROOM_FIRECRACKER_BINARY",
+		"CLEANROOM_PRIVILEGED_MODE",
+		"CLEANROOM_PRIVILEGED_HELPER_PATH",
+	} {
+		if strings.Contains(pipeline, needle) {
+			t.Fatalf("expected .buildkite/pipeline.yml not to hardcode Firecracker CI env %q", needle)
+		}
+	}
 }
 
 func TestBuildkiteCommandHookIsRemoved(t *testing.T) {

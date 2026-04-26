@@ -99,11 +99,6 @@ main() {
   FIRECRACKER_BINARY="${CLEANROOM_FIRECRACKER_BINARY:-firecracker}"
   PRIVILEGED_HELPER_PATH="${CLEANROOM_PRIVILEGED_HELPER_PATH:-/usr/local/sbin/cleanroom-root-helper}"
 
-  if [[ -z "$KERNEL_IMAGE" ]]; then
-    echo "CLEANROOM_KERNEL_IMAGE is required for Firecracker example CI" >&2
-    exit 1
-  fi
-
   verify_helper_capabilities
 
   echo "--- :broom: Pre-build cleanup"
@@ -128,11 +123,13 @@ default_backend: firecracker
 backends:
   firecracker:
     binary_path: $FIRECRACKER_BINARY
-    kernel_image: $KERNEL_IMAGE
     vcpus: 2
     memory_mib: 1024
     launch_seconds: 90
 EOF
+  if [[ -n "$KERNEL_IMAGE" ]]; then
+    echo "    kernel_image: $KERNEL_IMAGE" >> "$XDG_CONFIG_HOME/cleanroom/config.yaml"
+  fi
   echo "    privileged_helper_path: $PRIVILEGED_HELPER_PATH" >> "$XDG_CONFIG_HOME/cleanroom/config.yaml"
 
   echo "--- :stethoscope: Doctor"
