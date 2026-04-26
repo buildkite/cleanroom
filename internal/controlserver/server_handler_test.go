@@ -351,6 +351,11 @@ func TestToConnectErrorMapsExpectedCodes(t *testing.T) {
 			want: connect.CodeNotFound,
 		},
 		{
+			name: "sandbox path not found maps to not found",
+			err:  backend.NewSandboxPathNotFoundError("/tmp/missing"),
+			want: connect.CodeNotFound,
+		},
+		{
 			name: "not ready maps to failed precondition",
 			err:  errors.New("sandbox \"sbx-123\" is not ready"),
 			want: connect.CodeFailedPrecondition,

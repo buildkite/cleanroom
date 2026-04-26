@@ -16,6 +16,7 @@ import (
 	"crypto/tls"
 
 	"connectrpc.com/connect"
+	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/controlservice"
 	"github.com/buildkite/cleanroom/internal/endpoint"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
@@ -576,6 +577,8 @@ func toConnectError(err error) error {
 		code = connect.CodeCanceled
 	case errors.Is(err, context.DeadlineExceeded):
 		code = connect.CodeDeadlineExceeded
+	case errors.Is(err, backend.ErrSandboxPathNotFound):
+		code = connect.CodeNotFound
 	case strings.Contains(message, "missing "), strings.Contains(message, "invalid"):
 		code = connect.CodeInvalidArgument
 	case strings.Contains(message, "unknown sandbox"), strings.Contains(message, "unknown cleanroom"), strings.Contains(message, "unknown execution"):

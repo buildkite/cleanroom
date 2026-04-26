@@ -839,6 +839,9 @@ func fileTransferExitError(result *backend.ExecutionResult, stderr, fallback str
 		return errors.New(fallback)
 	}
 	msg := strings.TrimSpace(stderr)
+	if pathErr := backend.SandboxPathNotFoundErrorFromStderr(msg); pathErr != nil {
+		return pathErr
+	}
 	if msg == "" {
 		msg = strings.TrimSpace(result.Message)
 	}

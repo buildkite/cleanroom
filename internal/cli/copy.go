@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"connectrpc.com/connect"
+	"github.com/buildkite/cleanroom/internal/controlclient"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -126,15 +128,11 @@ func (c *CopyCommand) copyToSandbox(ctx *runtimeContext, localPath string, remot
 		return err
 	}
 	if remotePath == remote.path && !strings.HasSuffix(remote.path, "/") {
-		statResp, err := client.StatSandboxPath(context.Background(), &cleanroomv1.StatSandboxPathRequest{
-			SandboxId: remote.sandboxID,
-			Path:      remote.path,
-		})
+		isDir, err := sandboxDestinationIsDirectory(context.Background(), client, remote.sandboxID, remote.path)
 		if err != nil {
-			if !isSandboxPathNotFoundError(err) {
-				return fmt.Errorf("stat sandbox destination: %w", err)
-			}
-		} else if statResp.GetInfo().GetType() == cleanroomv1.SandboxPathType_SANDBOX_PATH_TYPE_DIRECTORY {
+			return fmt.Errorf("stat sandbox destination: %w", err)
+		}
+		if isDir {
 			remotePath, err = remoteCopyDestinationWithLocalBasename(remote.path, localPath)
 			if err != nil {
 				return err
@@ -248,6 +246,52 @@ func remoteCopyDestinationWithLocalBasename(remotePath, localPath string) (strin
 	return posixpath.Join(remotePath, base), nil
 }
 
+func sandboxDestinationIsDirectory(ctx context.Context, client *controlclient.Client, sandboxID, remotePath string) (bool, error) {
+	statResp, err := client.StatSandboxPath(ctx, &cleanroomv1.StatSandboxPathRequest{
+		SandboxId: sandboxID,
+		Path:      remotePath,
+	})
+	if err != nil {
+		if isSandboxPathNotFoundError(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	info := statResp.GetInfo()
+	switch info.GetType() {
+	case cleanroomv1.SandboxPathType_SANDBOX_PATH_TYPE_DIRECTORY:
+		return true, nil
+	case cleanroomv1.SandboxPathType_SANDBOX_PATH_TYPE_SYMLINK:
+		target := resolveRemoteSymlinkTarget(remotePath, info.GetSymlinkTarget())
+		if target == "" {
+			return false, nil
+		}
+		targetResp, err := client.StatSandboxPath(ctx, &cleanroomv1.StatSandboxPathRequest{
+			SandboxId: sandboxID,
+			Path:      target,
+		})
+		if err != nil {
+			if isSandboxPathNotFoundError(err) {
+				return false, nil
+			}
+			return false, err
+		}
+		return targetResp.GetInfo().GetType() == cleanroomv1.SandboxPathType_SANDBOX_PATH_TYPE_DIRECTORY, nil
+	default:
+		return false, nil
+	}
+}
+
+func resolveRemoteSymlinkTarget(linkPath, target string) string {
+	if target == "" {
+		return ""
+	}
+	if strings.HasPrefix(target, "/") {
+		return posixpath.Clean(target)
+	}
+	return posixpath.Clean(posixpath.Join(posixpath.Dir(linkPath), target))
+}
+
 func isSandboxPathNotFoundError(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "path not found:")
+	return connect.CodeOf(err) == connect.CodeNotFound
 }

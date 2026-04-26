@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -300,6 +299,58 @@ func TestCopyToSandboxAppendsLocalBasenameForExistingRemoteDirectory(t *testing.
 	}
 }
 
+func TestCopyToSandboxAppendsLocalBasenameForRemoteSymlinkDirectory(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "fixture.txt")
+	if err := os.WriteFile(src, []byte("payload"), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+
+	var gotRemotePath string
+	var statPaths []string
+	adapter := &copyIntegrationAdapter{
+		statFn: func(_ context.Context, _ string, path string) (*backend.SandboxPathInfo, error) {
+			statPaths = append(statPaths, path)
+			switch path {
+			case "/tmp/link":
+				return &backend.SandboxPathInfo{Path: path, Type: backend.SandboxPathTypeSymlink, SymlinkTarget: "artifacts"}, nil
+			case "/tmp/artifacts":
+				return &backend.SandboxPathInfo{Path: path, Type: backend.SandboxPathTypeDirectory}, nil
+			default:
+				return nil, backend.NewSandboxPathNotFoundError(path)
+			}
+		},
+		writeFn: func(_ context.Context, _ string, path string, r io.Reader, _ fs.FileMode, _ time.Time) (int64, error) {
+			gotRemotePath = path
+			data, err := io.ReadAll(r)
+			return int64(len(data)), err
+		},
+	}
+	host, _ := startIntegrationServer(t, adapter)
+	sandboxID := createCopyTestSandbox(t, host)
+	stdout, _ := makeStdoutCapture(t)
+	stderr, _ := makeStdoutCapture(t)
+
+	cmd := CopyCommand{
+		clientFlags: clientFlags{Host: host},
+		Source:      src,
+		Destination: sandboxID + ":/tmp/link",
+	}
+	if err := cmd.Run(&runtimeContext{
+		Config:        runtimeconfig.Config{},
+		Observability: newTestObservability(t),
+		Stdout:        stdout,
+		Stderr:        stderr,
+	}); err != nil {
+		t.Fatalf("CopyCommand.Run returned error: %v", err)
+	}
+	if got, want := strings.Join(statPaths, ","), "/tmp/link,/tmp/artifacts"; got != want {
+		t.Fatalf("unexpected stat paths: got %q want %q", got, want)
+	}
+	if got, want := gotRemotePath, "/tmp/link/fixture.txt"; got != want {
+		t.Fatalf("unexpected remote path: got %q want %q", got, want)
+	}
+}
+
 func TestCopyFromSandboxReturnsDownloadError(t *testing.T) {
 	adapter := &copyIntegrationAdapter{
 		readFn: func(context.Context, string, string, int64, func([]byte) error) error {
@@ -357,7 +408,7 @@ func (a *copyIntegrationAdapter) StatSandboxPath(ctx context.Context, sandboxID,
 	if a.statFn != nil {
 		return a.statFn(ctx, sandboxID, path)
 	}
-	return nil, fmt.Errorf("path not found: %s", path)
+	return nil, backend.NewSandboxPathNotFoundError(path)
 }
 
 func (a *copyIntegrationAdapter) ReadSandboxFile(ctx context.Context, sandboxID, path string, maxBytes int64, emit func([]byte) error) error {

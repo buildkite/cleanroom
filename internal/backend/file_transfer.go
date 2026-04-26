@@ -15,6 +15,36 @@ import (
 
 const DefaultSandboxFileTransferMaxBytes int64 = 10 * 1024 * 1024
 
+var ErrSandboxPathNotFound = errors.New("sandbox path not found")
+
+type SandboxPathNotFoundError struct {
+	Path string
+}
+
+func (e SandboxPathNotFoundError) Error() string {
+	if e.Path == "" {
+		return ErrSandboxPathNotFound.Error()
+	}
+	return ErrSandboxPathNotFound.Error() + ": " + e.Path
+}
+
+func (e SandboxPathNotFoundError) Is(target error) bool {
+	return target == ErrSandboxPathNotFound
+}
+
+func NewSandboxPathNotFoundError(path string) error {
+	return SandboxPathNotFoundError{Path: path}
+}
+
+func SandboxPathNotFoundErrorFromStderr(stderr string) error {
+	msg := strings.TrimSpace(stderr)
+	const prefix = "path not found:"
+	if !strings.HasPrefix(msg, prefix) {
+		return nil
+	}
+	return NewSandboxPathNotFoundError(strings.TrimSpace(strings.TrimPrefix(msg, prefix)))
+}
+
 const SandboxPathInfoScript = `set -eu
 p=$1
 if [ ! -e "$p" ] && [ ! -L "$p" ]; then
