@@ -2,6 +2,7 @@ package backend
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -16,6 +17,15 @@ import (
 const DefaultSandboxFileTransferMaxBytes int64 = 10 * 1024 * 1024
 
 var ErrSandboxPathNotFound = errors.New("sandbox path not found")
+
+// SandboxCommandRunner runs a transfer command inside a persistent sandbox.
+type SandboxCommandRunner func(ctx context.Context, sandboxID string, cmd []string, stream OutputStream) (*ExecutionResult, error)
+
+// SandboxFileTransfer implements backend-neutral sandbox file transfer
+// semantics over a backend-specific command runner.
+type SandboxFileTransfer struct {
+	Run SandboxCommandRunner
+}
 
 type SandboxPathNotFoundError struct {
 	Path string
@@ -349,6 +359,355 @@ func NormalizeSandboxFileMode(mode fs.FileMode) fs.FileMode {
 		return 0o644
 	}
 	return mode
+}
+
+func (t SandboxFileTransfer) DownloadSandboxFile(ctx context.Context, sandboxID, path string, maxBytes int64) ([]byte, error) {
+	var stdout bytes.Buffer
+	if err := t.ReadSandboxFile(ctx, sandboxID, path, maxBytes, func(chunk []byte) error {
+		_, _ = stdout.Write(chunk)
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return stdout.Bytes(), nil
+}
+
+func (t SandboxFileTransfer) UploadSandboxFile(ctx context.Context, sandboxID, path string, data []byte, mode fs.FileMode) error {
+	_, err := t.WriteSandboxFile(ctx, sandboxID, path, bytes.NewReader(data), mode, time.Time{})
+	return err
+}
+
+func (t SandboxFileTransfer) StatSandboxPath(ctx context.Context, sandboxID, path string) (*SandboxPathInfo, error) {
+	cmd, err := SandboxPathStatCommand(path)
+	if err != nil {
+		return nil, err
+	}
+
+	var stdout, stderr bytes.Buffer
+	result, err := t.run(ctx, sandboxID, cmd, OutputStream{
+		OnStdout: func(chunk []byte) {
+			_, _ = stdout.Write(chunk)
+		},
+		OnStderr: func(chunk []byte) {
+			_, _ = stderr.Write(chunk)
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	if result.ExitCode != 0 {
+		return nil, sandboxFileTransferExitError(result, stderr.String(), "stat path command failed")
+	}
+	records, err := ParseSandboxPathInfoRecords(stdout.Bytes())
+	if err != nil {
+		return nil, err
+	}
+	if len(records) != 1 {
+		return nil, fmt.Errorf("stat path returned %d records", len(records))
+	}
+	return &records[0], nil
+}
+
+func (t SandboxFileTransfer) WalkSandboxTree(ctx context.Context, sandboxID, path string, emit func(SandboxPathInfo) error) error {
+	cmd, err := SandboxTreeWalkCommand(path)
+	if err != nil {
+		return err
+	}
+
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var decoder SandboxPathInfoDecoder
+	var emitErr error
+	var stderr bytes.Buffer
+	result, err := t.run(runCtx, sandboxID, cmd, OutputStream{
+		OnStderr: func(chunk []byte) {
+			_, _ = stderr.Write(chunk)
+		},
+		OnStdout: func(chunk []byte) {
+			if emitErr != nil {
+				return
+			}
+			records, err := decoder.Write(chunk)
+			if err != nil {
+				emitErr = err
+				cancel()
+				return
+			}
+			for _, record := range records {
+				if err := emit(record); err != nil {
+					emitErr = err
+					cancel()
+					return
+				}
+			}
+		},
+	})
+	if emitErr != nil {
+		return emitErr
+	}
+	if err != nil {
+		return err
+	}
+	if result.ExitCode != 0 {
+		return sandboxFileTransferExitError(result, stderr.String(), "walk tree command failed")
+	}
+	records, err := decoder.Flush()
+	if err != nil {
+		return err
+	}
+	for _, record := range records {
+		if err := emit(record); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (t SandboxFileTransfer) ReadSandboxFile(ctx context.Context, sandboxID, path string, maxBytes int64, emit func([]byte) error) error {
+	if maxBytes <= 0 {
+		maxBytes = DefaultSandboxFileTransferMaxBytes
+	}
+	cmd, err := SandboxFileReadCommand(path, maxBytes)
+	if err != nil {
+		return err
+	}
+
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var total int64
+	var emitErr error
+	var stderr bytes.Buffer
+	result, err := t.run(runCtx, sandboxID, cmd, OutputStream{
+		OnStderr: func(chunk []byte) {
+			_, _ = stderr.Write(chunk)
+		},
+		OnStdout: func(chunk []byte) {
+			if emitErr != nil {
+				return
+			}
+			if total+int64(len(chunk)) > maxBytes {
+				allowed := maxBytes - total
+				if allowed > 0 && emit != nil {
+					if err := emit(chunk[:allowed]); err != nil {
+						emitErr = err
+					}
+				}
+				if emitErr == nil {
+					emitErr = fmt.Errorf("file %q exceeds max_bytes=%d", path, maxBytes)
+				}
+				cancel()
+				return
+			}
+			total += int64(len(chunk))
+			if emit != nil {
+				if err := emit(chunk); err != nil {
+					emitErr = err
+					cancel()
+				}
+			}
+		},
+	})
+	if emitErr != nil {
+		return emitErr
+	}
+	if err != nil {
+		return err
+	}
+	if result.ExitCode != 0 {
+		return sandboxFileTransferExitError(result, stderr.String(), "read file command failed")
+	}
+	return nil
+}
+
+func (t SandboxFileTransfer) WriteSandboxFile(ctx context.Context, sandboxID, path string, r io.Reader, mode fs.FileMode, mtime time.Time) (int64, error) {
+	sandboxID = strings.TrimSpace(sandboxID)
+	if sandboxID == "" {
+		return 0, errors.New("missing sandbox_id")
+	}
+	cmd, err := SandboxFileUploadCommand(path, mode, mtime)
+	if err != nil {
+		return 0, err
+	}
+
+	attached := false
+	var attachErr error
+	var copy *AttachStdinCopy
+	var stderr bytes.Buffer
+	result, err := t.run(ctx, sandboxID, cmd, OutputStream{
+		OnStderr: func(chunk []byte) {
+			_, _ = stderr.Write(chunk)
+		},
+		OnAttach: func(attach AttachIO) {
+			attached = true
+			if attach.WriteStdin == nil || attach.CloseStdin == nil {
+				attachErr = errors.New("sandbox file upload requires stdin attach")
+				return
+			}
+			copy = StartCopyReaderToAttachStdin(r, attach, "file")
+		},
+	})
+	written := copy.Written()
+	if err != nil {
+		return written, err
+	}
+	if !attached {
+		return written, errors.New("sandbox file write requires stdin attach")
+	}
+	if result.ExitCode != 0 {
+		return written, sandboxFileTransferExitError(result, stderr.String(), "write file command failed")
+	}
+	if attachErr != nil {
+		return written, attachErr
+	}
+	copyResult := copy.Wait()
+	if copyResult.Err != nil {
+		return copyResult.Written, copyResult.Err
+	}
+	written = copyResult.Written
+	return written, nil
+}
+
+func (t SandboxFileTransfer) RemoveSandboxPath(ctx context.Context, sandboxID, path string, recursive bool) error {
+	cmd, err := SandboxPathRemoveCommand(path, recursive)
+	if err != nil {
+		return err
+	}
+	var stderr bytes.Buffer
+	result, err := t.run(ctx, sandboxID, cmd, OutputStream{OnStderr: func(chunk []byte) {
+		_, _ = stderr.Write(chunk)
+	}})
+	if err != nil {
+		return err
+	}
+	if result.ExitCode != 0 {
+		return sandboxFileTransferExitError(result, stderr.String(), "remove path command failed")
+	}
+	return nil
+}
+
+func (t SandboxFileTransfer) ArchiveSandboxPaths(ctx context.Context, sandboxID string, paths []string, maxBytes int64, emit func([]byte) error) error {
+	if maxBytes <= 0 {
+		maxBytes = DefaultSandboxFileTransferMaxBytes
+	}
+	cmd, err := SandboxArchivePathsCommand(paths, maxBytes)
+	if err != nil {
+		return err
+	}
+
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var total int64
+	var emitErr error
+	var stderr bytes.Buffer
+	result, err := t.run(runCtx, sandboxID, cmd, OutputStream{
+		OnStderr: func(chunk []byte) {
+			_, _ = stderr.Write(chunk)
+		},
+		OnStdout: func(chunk []byte) {
+			if emitErr != nil {
+				return
+			}
+			if total+int64(len(chunk)) > maxBytes {
+				allowed := maxBytes - total
+				if allowed > 0 && emit != nil {
+					if err := emit(chunk[:allowed]); err != nil {
+						emitErr = err
+					}
+				}
+				if emitErr == nil {
+					emitErr = fmt.Errorf("archive exceeds max_bytes=%d", maxBytes)
+				}
+				cancel()
+				return
+			}
+			total += int64(len(chunk))
+			if emit != nil {
+				if err := emit(chunk); err != nil {
+					emitErr = err
+					cancel()
+					return
+				}
+			}
+		},
+	})
+	if emitErr != nil {
+		return emitErr
+	}
+	if err != nil {
+		return err
+	}
+	if result.ExitCode != 0 {
+		return sandboxFileTransferExitError(result, stderr.String(), "archive paths command failed")
+	}
+	return nil
+}
+
+func (t SandboxFileTransfer) ExtractSandboxArchive(ctx context.Context, sandboxID, destination string, r io.Reader) (int64, error) {
+	cmd, err := SandboxExtractArchiveCommand(destination)
+	if err != nil {
+		return 0, err
+	}
+
+	attached := false
+	var attachErr error
+	var copy *AttachStdinCopy
+	var stderr bytes.Buffer
+	result, err := t.run(ctx, sandboxID, cmd, OutputStream{
+		OnStderr: func(chunk []byte) {
+			_, _ = stderr.Write(chunk)
+		},
+		OnAttach: func(attach AttachIO) {
+			attached = true
+			if attach.WriteStdin == nil || attach.CloseStdin == nil {
+				attachErr = errors.New("sandbox archive extract requires stdin attach")
+				return
+			}
+			copy = StartCopyReaderToAttachStdin(r, attach, "archive")
+		},
+	})
+	written := copy.Written()
+	if err != nil {
+		return written, err
+	}
+	if !attached {
+		return written, errors.New("sandbox archive extract requires stdin attach")
+	}
+	if result.ExitCode != 0 {
+		return written, sandboxFileTransferExitError(result, stderr.String(), "extract archive command failed")
+	}
+	if attachErr != nil {
+		return written, attachErr
+	}
+	copyResult := copy.Wait()
+	if copyResult.Err != nil {
+		return copyResult.Written, copyResult.Err
+	}
+	written = copyResult.Written
+	return written, nil
+}
+
+func (t SandboxFileTransfer) run(ctx context.Context, sandboxID string, cmd []string, stream OutputStream) (*ExecutionResult, error) {
+	if t.Run == nil {
+		return nil, errors.New("sandbox file transfer runner is nil")
+	}
+	return t.Run(ctx, sandboxID, cmd, stream)
+}
+
+func sandboxFileTransferExitError(result *ExecutionResult, stderr, fallback string) error {
+	if result == nil {
+		return errors.New(fallback)
+	}
+	msg := strings.TrimSpace(stderr)
+	if pathErr := SandboxPathNotFoundErrorFromStderr(msg); pathErr != nil {
+		return pathErr
+	}
+	if msg == "" {
+		msg = strings.TrimSpace(result.Message)
+	}
+	if msg == "" {
+		msg = fallback
+	}
+	return errors.New(msg)
 }
 
 func ParseSandboxPathInfoRecords(data []byte) ([]SandboxPathInfo, error) {

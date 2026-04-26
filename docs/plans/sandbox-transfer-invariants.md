@@ -106,8 +106,8 @@ type SandboxCommandRunner func(
 ) (*backend.ExecutionResult, error)
 ```
 
-A shared transfer helper can own the invariant-heavy methods above and call a
-backend-specific command runner. Firecracker and Darwin-VZ should keep sandbox
+`backend.SandboxFileTransfer` owns the invariant-heavy methods above and calls
+a backend-specific command runner. Firecracker and Darwin-VZ keep sandbox
 lookup, boot timeout, VM lifecycle, vsock or guest-agent execution, and test
 hooks inside their adapters.
 
