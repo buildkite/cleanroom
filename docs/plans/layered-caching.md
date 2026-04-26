@@ -152,16 +152,27 @@ This phase now means:
   `cachestore`
 - one writable-root-volume preparation path for Firecracker normal execution
   and snapshot restore
+- request-scoped `--include-local-changes` packaging and replay after exact
+  repository checkout
+- dependency-stage and services-stage key-file digest resolution from the
+  post-apply tree when an explicit changeset is present
+- exact dependency-stage publish, lookup, restore, and republish for one
+  configured dependency bootstrap command
+- portable dependency-stage reuse as an explicit
+  `sandbox.dependencies.reuse: portable` mode for declared key-file inputs
+- services-stage publish, lookup, restore, and republish on top of the selected
+  workspace or dependency stage
 
 ### Partial
 
 - Firecracker hot-path materialization is wired through the volume-store path,
   but clone-based behavior still depends on the configured storage driver
-- dependency-stage caching is starting with a single configured dependency
-  bootstrap slice for exact-commit workspaces; toolchain-derived key inputs are
+- dependency-stage keying has the first explicit input model, but richer
+  toolchain-derived inputs, lockfile parser inputs, and artifact allowlists are
   still pending
-- portable dependency-stage reuse is implemented as an explicit
-  `sandbox.dependencies.reuse: portable` mode for declared key-file inputs
+- explicit local changes are packaged into each create request today, but there
+  is not yet a dedicated `changesetstore` for durable host-local changeset
+  metadata and replay payloads
 
 Today that means:
 
@@ -174,6 +185,7 @@ Today that means:
 
 ### Not started
 
+- dedicated `changesetstore` storage and lifecycle
 - strict offline warm-cache mode
 - garbage collection and retention policy
 - cross-host distribution/export for stage caches
@@ -183,9 +195,9 @@ Today that means:
 - workspace-stage keying currently includes the local checkout branch because
   repository bootstrap can create either a detached checkout or a named local
   branch
-- the initial dependency-stage key intentionally starts from the workspace-stage
-  key plus policy hash, dependency bootstrap recipe digest, and declared key
-  file digests; richer toolchain inputs are still to come
+- the dependency-stage key intentionally starts from the workspace-stage key
+  plus policy hash, dependency bootstrap recipe digest, and declared key-file
+  digests; richer toolchain and lockfile-parser inputs are still to come
 - because dependency-stage snapshots are full rootfs snapshots, decoupling them
   from exact workspace identity requires a checkout refresh and validation step
   after restore; it is not live layer composition
@@ -1078,6 +1090,21 @@ This metadata should live in a dedicated `changesetstore`, not in
    inputs.
 3. Add a dedicated `cachestore` for system-managed stage caches and move
    workspace-stage metadata off reserved snapshot names.
+4. Add request-scoped local changeset packaging and replay on top of
+   exact-commit workspaces.
+5. Resolve dependency and services key-file digests from the post-apply tree
+   when a changeset is present.
+6. Add the first explicit dependency stage using one configured bootstrap
+   command. The current slice is `sandbox.dependencies.command` plus
+   `sandbox.dependencies.key.files`, keyed by workspace stage plus policy,
+   command recipe, and declared key-file digests.
+7. Add portable dependency-stage reuse for cross-commit iteration when declared
+   dependency key files are unchanged. The current slice is opt-in through
+   `sandbox.dependencies.reuse: portable`, restores the dependency-prepared
+   rootfs into a writable child, refreshes the checkout to the requested commit,
+   and falls back to normal dependency bootstrap if restore or refresh fails.
+8. Add services-stage caching on top of the selected workspace or dependency
+   stage.
 
 ### Partial
 
@@ -1085,29 +1112,25 @@ This metadata should live in a dedicated `changesetstore`, not in
    volume path.
 2. Use published snapshot `storage_ref` values as the source for writable child
    preparation.
-3. Add the first explicit dependency stage using one configured bootstrap
-   command. The current slice is `sandbox.dependencies.command` plus
-   `sandbox.dependencies.key.files`, with `go mod download` as the first
-   example recipe keyed by workspace stage plus policy, command recipe, and
-   declared key-file digests.
-4. Add portable dependency-stage reuse for cross-commit iteration when declared
-   dependency key files are unchanged. The current slice is opt-in through
-   `sandbox.dependencies.reuse: portable`, restores the dependency-prepared
-   rootfs into a writable child, refreshes the checkout to the requested commit,
-   and falls back to normal dependency bootstrap if restore or refresh fails.
+3. Add richer dependency input modeling beyond the current
+   workspace-plus-command-plus-key-files slice.
+4. Turn request-scoped changeset payloads into a durable host-local
+   `changesetstore` if changesets need reuse, retention, or operator
+   introspection outside one sandbox create request.
 
-These are architecturally landed, but the full performance win still depends on
-clone-capable storage instead of the default `file` driver, and the dependency
-stage still needs richer lockfile/toolchain inputs.
+The stage-cache flow is architecturally landed, but the full performance win
+still depends on clone-capable storage instead of the default `file` driver,
+and the dependency stage still needs richer lockfile/toolchain inputs.
 
 ### Remaining
 
-1. Add explicit host-local changeset packaging and replay on top of exact-commit
-   workspaces.
-2. Add post-apply dependency key-file hashing so local lockfile changes affect
-   dependency-stage reuse correctly.
-3. Add richer toolchain input digests for dependency-stage keys beyond the
+1. Add a dedicated `changesetstore` for durable host-local changeset metadata,
+   replay payload lifecycle, and any future changeset reuse outside a single
+   create request.
+2. Add richer toolchain input digests for dependency-stage keys beyond the
    current workspace-plus-command-plus-key-files slice.
+3. Add lockfile parser inputs and artifact allowlists so dependency-stage keys
+   can move beyond manually declared key files.
 4. Add explicit dependency output/preserve semantics if we want portable reuse
    for repo-local outputs such as `node_modules` or `vendor/bundle`.
 5. Add additional ecosystems only after the first explicit dependency-stage
@@ -1134,20 +1157,16 @@ stage still needs richer lockfile/toolchain inputs.
 - failed publishes do not corrupt existing entries
 - concurrent publishes of the same key coalesce correctly
 
-Current coverage already exists for the narrower workspace-stage flow:
+Current coverage exists for the implemented host-local stage-cache flow:
 
 - warm workspace-stage hits reuse snapshot-backed sandbox creation
 - runtime-base changes invalidate workspace-stage reuse
 - restore failures fall back to cold bootstrap and republish
 - writable-volume preparation cleans up failed clones and uses the configured
   volume-store driver
-
-### Policy enforcement
-
-- lockfile-derived artifact allowlists block undeclared package requests
-- offline warm mode fails closed when a required artifact is missing
-- git repository materialization blocks until the requested commit exists in the
-  mirror
+- exact dependency-stage hits skip dependency bootstrap
+- services-stage hits skip dependency and services bootstrap
+- local changeset payloads are replayed after exact repository checkout
 - dependency-stage key files resolve from the post-apply tree when a changeset
   is present
 - portable dependency-stage hits refresh the checkout before execution
@@ -1155,6 +1174,13 @@ Current coverage already exists for the narrower workspace-stage flow:
   refresh and skip dependency bootstrap only when they match
 - portable dependency-stage mismatches discard the restored child and fall back
   to the normal workspace-stage path
+
+### Policy enforcement
+
+- lockfile-derived artifact allowlists block undeclared package requests
+- offline warm mode fails closed when a required artifact is missing
+- git repository materialization blocks until the requested commit exists in the
+  mirror
 
 ### Runtime performance
 
@@ -1168,8 +1194,9 @@ Current coverage already exists for the narrower workspace-stage flow:
 
 - Which ecosystem should be the first strict lockfile-enforced package cache:
   npm, pip, or another?
-- Should dependency-stage caches be published automatically on successful
-  bootstrap, or only when explicitly requested?
+- Should automatic dependency-stage publication remain the default once
+  retention and strict offline modes exist, or should policy be able to require
+  explicit promotion?
 - Should portable dependency-stage reuse be opt-in, or should it be the default
   whenever non-empty dependency key files are declared and outputs are portable?
 - What retention policy should apply to large dependency-stage caches relative
