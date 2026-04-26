@@ -75,6 +75,48 @@ func TestSandboxFileUploadCommandRejectsDirectoryTarget(t *testing.T) {
 	}
 }
 
+func TestSandboxFileUploadCommandRejectsSymlinkToDirectoryTarget(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	targetDir := filepath.Join(dir, "target-dir")
+	if err := os.Mkdir(targetDir, 0o755); err != nil {
+		t.Fatalf("create target directory: %v", err)
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink("target-dir", link); err != nil {
+		t.Fatalf("create symlink: %v", err)
+	}
+	cmdArgs, err := SandboxFileUploadCommand(link, 0o640, time.Time{})
+	if err != nil {
+		t.Fatalf("SandboxFileUploadCommand returned error: %v", err)
+	}
+
+	cmd := exec.Command(cmdArgs[0], cmdArgs[1:]...)
+	cmd.Stdin = strings.NewReader("payload")
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatal("expected upload command to reject symlink-to-directory target")
+	}
+	if !strings.Contains(string(output), "destination is a directory") {
+		t.Fatalf("unexpected command output: %s", string(output))
+	}
+	linkInfo, err := os.Lstat(link)
+	if err != nil {
+		t.Fatalf("lstat link: %v", err)
+	}
+	if linkInfo.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("expected destination to remain a symlink, got mode %s", linkInfo.Mode())
+	}
+	entries, err := os.ReadDir(targetDir)
+	if err != nil {
+		t.Fatalf("read target directory: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("expected target directory to stay empty, found %d entries", len(entries))
+	}
+}
+
 func TestSandboxFileUploadCommandPreservesSymlinkTarget(t *testing.T) {
 	t.Parallel()
 
@@ -156,6 +198,43 @@ func TestSandboxFileUploadCommandPreservesSymlinkChainTarget(t *testing.T) {
 	}
 	if got, want := string(data), "payload"; got != want {
 		t.Fatalf("unexpected target payload: got %q want %q", got, want)
+	}
+}
+
+func TestSandboxFileUploadCommandRejectsSymlinkLoop(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	link1 := filepath.Join(dir, "link1.txt")
+	link2 := filepath.Join(dir, "link2.txt")
+	if err := os.Symlink("link2.txt", link1); err != nil {
+		t.Fatalf("create first symlink: %v", err)
+	}
+	if err := os.Symlink("link1.txt", link2); err != nil {
+		t.Fatalf("create second symlink: %v", err)
+	}
+	cmdArgs, err := SandboxFileUploadCommand(link1, 0o640, time.Time{})
+	if err != nil {
+		t.Fatalf("SandboxFileUploadCommand returned error: %v", err)
+	}
+
+	cmd := exec.Command(cmdArgs[0], cmdArgs[1:]...)
+	cmd.Stdin = strings.NewReader("payload")
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatal("expected upload command to reject symlink loop")
+	}
+	if !strings.Contains(string(output), "too many symlinks resolving destination") {
+		t.Fatalf("unexpected command output: %s", string(output))
+	}
+	for _, link := range []string{link1, link2} {
+		linkInfo, err := os.Lstat(link)
+		if err != nil {
+			t.Fatalf("lstat %s: %v", filepath.Base(link), err)
+		}
+		if linkInfo.Mode()&os.ModeSymlink == 0 {
+			t.Fatalf("expected %s to remain a symlink, got mode %s", filepath.Base(link), linkInfo.Mode())
+		}
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	posixpath "path"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"connectrpc.com/connect"
 	"github.com/buildkite/cleanroom/internal/controlclient"
@@ -219,6 +220,11 @@ func resolveLocalCopyDestination(localPath, remotePath string) (string, error) {
 				return "", fmt.Errorf("local destination %q ends with a path separator but does not exist", localPath)
 			}
 			return localPath, nil
+		}
+		if errors.Is(err, syscall.ELOOP) {
+			if _, resolveErr := resolveLocalInstallDestination(localPath); resolveErr != nil {
+				return "", resolveErr
+			}
 		}
 		return "", fmt.Errorf("stat local destination: %w", err)
 	}

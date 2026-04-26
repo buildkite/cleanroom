@@ -204,6 +204,63 @@ func TestCopyFromSandboxPreservesLocalDestinationSymlink(t *testing.T) {
 	}
 }
 
+func TestCopyFromSandboxPreservesLocalDestinationSymlinkChain(t *testing.T) {
+	payload := []byte("payload")
+	adapter := &copyIntegrationAdapter{
+		readFn: func(_ context.Context, _ string, _ string, _ int64, emit func([]byte) error) error {
+			return emit(payload)
+		},
+	}
+	host, _ := startIntegrationServer(t, adapter)
+	sandboxID := createCopyTestSandbox(t, host)
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.txt")
+	if err := os.WriteFile(target, []byte("old"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	link2 := filepath.Join(dir, "link2.txt")
+	if err := os.Symlink("target.txt", link2); err != nil {
+		t.Fatalf("create second symlink: %v", err)
+	}
+	link1 := filepath.Join(dir, "link1.txt")
+	if err := os.Symlink("link2.txt", link1); err != nil {
+		t.Fatalf("create first symlink: %v", err)
+	}
+	stdout, _ := makeStdoutCapture(t)
+	stderr, _ := makeStdoutCapture(t)
+
+	cmd := CopyCommand{
+		clientFlags: clientFlags{Host: host},
+		Source:      sandboxID + ":/var/log/result.txt",
+		Destination: link1,
+	}
+	if err := cmd.Run(&runtimeContext{
+		Config:        runtimeconfig.Config{},
+		Observability: newTestObservability(t),
+		Stdout:        stdout,
+		Stderr:        stderr,
+	}); err != nil {
+		t.Fatalf("CopyCommand.Run returned error: %v", err)
+	}
+
+	for _, link := range []string{link1, link2} {
+		linkInfo, err := os.Lstat(link)
+		if err != nil {
+			t.Fatalf("lstat %s: %v", filepath.Base(link), err)
+		}
+		if linkInfo.Mode()&os.ModeSymlink == 0 {
+			t.Fatalf("expected %s to remain a symlink, got mode %s", filepath.Base(link), linkInfo.Mode())
+		}
+	}
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read target: %v", err)
+	}
+	if !bytes.Equal(data, payload) {
+		t.Fatalf("unexpected target data: got %q want %q", data, payload)
+	}
+}
+
 func TestCopyFromSandboxWritesThroughDanglingLocalDestinationSymlink(t *testing.T) {
 	payload := []byte("payload")
 	adapter := &copyIntegrationAdapter{
@@ -252,6 +309,50 @@ func TestCopyFromSandboxWritesThroughDanglingLocalDestinationSymlink(t *testing.
 	}
 }
 
+func TestCopyFromSandboxRejectsLocalDestinationSymlinkCycle(t *testing.T) {
+	readCalled := false
+	adapter := &copyIntegrationAdapter{
+		readFn: func(_ context.Context, _ string, _ string, _ int64, _ func([]byte) error) error {
+			readCalled = true
+			return nil
+		},
+	}
+	host, _ := startIntegrationServer(t, adapter)
+	sandboxID := createCopyTestSandbox(t, host)
+	dir := t.TempDir()
+	link1 := filepath.Join(dir, "link1.txt")
+	link2 := filepath.Join(dir, "link2.txt")
+	if err := os.Symlink("link2.txt", link1); err != nil {
+		t.Fatalf("create first symlink: %v", err)
+	}
+	if err := os.Symlink("link1.txt", link2); err != nil {
+		t.Fatalf("create second symlink: %v", err)
+	}
+	stdout, _ := makeStdoutCapture(t)
+	stderr, _ := makeStdoutCapture(t)
+
+	cmd := CopyCommand{
+		clientFlags: clientFlags{Host: host},
+		Source:      sandboxID + ":/var/log/result.txt",
+		Destination: link1,
+	}
+	err := cmd.Run(&runtimeContext{
+		Config:        runtimeconfig.Config{},
+		Observability: newTestObservability(t),
+		Stdout:        stdout,
+		Stderr:        stderr,
+	})
+	if err == nil {
+		t.Fatal("expected symlink cycle error")
+	}
+	if !strings.Contains(err.Error(), "local destination symlink cycle") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if readCalled {
+		t.Fatal("expected copy to fail before reading sandbox file")
+	}
+}
+
 func TestResolveLocalCopyDestinationRejectsMissingSlashSuffixedPath(t *testing.T) {
 	missingDir := filepath.Join(t.TempDir(), "missing") + string(filepath.Separator)
 
@@ -272,12 +373,17 @@ func TestCopyToSandboxStreamsLocalFileToExecutionStdin(t *testing.T) {
 	if err := os.WriteFile(src, []byte("hello from host\n"), 0o640); err != nil {
 		t.Fatalf("write source: %v", err)
 	}
+	mtime := time.Unix(1700000456, 0)
+	if err := os.Chtimes(src, mtime, mtime); err != nil {
+		t.Fatalf("set source mtime: %v", err)
+	}
 
 	var gotData []byte
 	var gotPath string
 	var gotMode fs.FileMode
+	var gotMTime time.Time
 	adapter := &copyIntegrationAdapter{
-		writeFn: func(_ context.Context, _ string, path string, r io.Reader, mode fs.FileMode, _ time.Time) (int64, error) {
+		writeFn: func(_ context.Context, _ string, path string, r io.Reader, mode fs.FileMode, mtime time.Time) (int64, error) {
 			gotPath = path
 			data, err := io.ReadAll(r)
 			if err != nil {
@@ -285,6 +391,7 @@ func TestCopyToSandboxStreamsLocalFileToExecutionStdin(t *testing.T) {
 			}
 			gotData = append([]byte(nil), data...)
 			gotMode = mode
+			gotMTime = mtime
 			return int64(len(data)), nil
 		},
 	}
@@ -315,6 +422,9 @@ func TestCopyToSandboxStreamsLocalFileToExecutionStdin(t *testing.T) {
 	}
 	if got, want := gotMode, fs.FileMode(0o640); got != want {
 		t.Fatalf("unexpected remote mode: got %04o want %04o", got, want)
+	}
+	if got, want := gotMTime.Unix(), mtime.Unix(); got != want {
+		t.Fatalf("unexpected remote mtime: got %d want %d", got, want)
 	}
 }
 
@@ -501,6 +611,61 @@ func TestCopyToSandboxAppendsLocalBasenameForRemoteSymlinkDirectoryChain(t *test
 	}
 	if got, want := gotRemotePath, "/tmp/link1/fixture.txt"; got != want {
 		t.Fatalf("unexpected remote path: got %q want %q", got, want)
+	}
+}
+
+func TestCopyToSandboxRejectsRemoteSymlinkDirectoryCycle(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "fixture.txt")
+	if err := os.WriteFile(src, []byte("payload"), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+
+	writeCalled := false
+	var statPaths []string
+	adapter := &copyIntegrationAdapter{
+		statFn: func(_ context.Context, _ string, path string) (*backend.SandboxPathInfo, error) {
+			statPaths = append(statPaths, path)
+			switch path {
+			case "/tmp/link1":
+				return &backend.SandboxPathInfo{Path: path, Type: backend.SandboxPathTypeSymlink, SymlinkTarget: "link2"}, nil
+			case "/tmp/link2":
+				return &backend.SandboxPathInfo{Path: path, Type: backend.SandboxPathTypeSymlink, SymlinkTarget: "link1"}, nil
+			default:
+				return nil, backend.NewSandboxPathNotFoundError(path)
+			}
+		},
+		writeFn: func(_ context.Context, _ string, _ string, _ io.Reader, _ fs.FileMode, _ time.Time) (int64, error) {
+			writeCalled = true
+			return 0, nil
+		},
+	}
+	host, _ := startIntegrationServer(t, adapter)
+	sandboxID := createCopyTestSandbox(t, host)
+	stdout, _ := makeStdoutCapture(t)
+	stderr, _ := makeStdoutCapture(t)
+
+	cmd := CopyCommand{
+		clientFlags: clientFlags{Host: host},
+		Source:      src,
+		Destination: sandboxID + ":/tmp/link1",
+	}
+	err := cmd.Run(&runtimeContext{
+		Config:        runtimeconfig.Config{},
+		Observability: newTestObservability(t),
+		Stdout:        stdout,
+		Stderr:        stderr,
+	})
+	if err == nil {
+		t.Fatal("expected remote symlink cycle error")
+	}
+	if !strings.Contains(err.Error(), "remote destination symlink cycle") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got, want := strings.Join(statPaths, ","), "/tmp/link1,/tmp/link2"; got != want {
+		t.Fatalf("unexpected stat paths: got %q want %q", got, want)
+	}
+	if writeCalled {
+		t.Fatal("expected copy to fail before writing sandbox file")
 	}
 }
 
