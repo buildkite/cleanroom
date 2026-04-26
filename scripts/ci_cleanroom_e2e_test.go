@@ -34,6 +34,28 @@ func TestCiCleanroomE2EUsesHelperViaNonInteractiveSudo(t *testing.T) {
 	}
 }
 
+func TestFirecrackerCIScriptsDoNotRequireKernelEnv(t *testing.T) {
+	t.Helper()
+
+	for _, path := range []string{
+		"ci-cleanroom-e2e.sh",
+		"ci-examples-firecracker.sh",
+	} {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+
+		script := string(content)
+		if strings.Contains(script, "CLEANROOM_KERNEL_IMAGE is required") {
+			t.Fatalf("expected %s not to require CLEANROOM_KERNEL_IMAGE", path)
+		}
+		if !strings.Contains(script, "if [[ -n \"$KERNEL_IMAGE\" ]]; then") {
+			t.Fatalf("expected %s to append kernel_image only when explicitly configured", path)
+		}
+	}
+}
+
 func TestCiCleanroomE2EDownloadSandboxFileProbeUsesTimeout(t *testing.T) {
 	t.Helper()
 
