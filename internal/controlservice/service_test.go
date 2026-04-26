@@ -5205,6 +5205,48 @@ func TestCreateSandboxMergesDarwinVZConfig(t *testing.T) {
 	}
 }
 
+func TestCreateSandboxAppliesPolicyResourceMinimums(t *testing.T) {
+	adapter := &stubAdapter{}
+	svc := &Service{
+		Config: runtimeconfig.Config{
+			DefaultBackend: "darwin-vz",
+			Backends: runtimeconfig.Backends{
+				DarwinVZ: runtimeconfig.DarwinVZConfig{
+					VCPUs:              2,
+					MemoryMiB:          1024,
+					MinimumRootFSBytes: runtimeconfig.ByteSize(8 << 30),
+				},
+			},
+		},
+		Backends: map[string]backend.Adapter{"darwin-vz": adapter},
+	}
+
+	policyProto := testPolicy()
+	policyProto.Resources = &cleanroomv1.PolicyResources{
+		Vcpus:       4,
+		MemoryBytes: (3 << 30) + 1,
+		DiskBytes:   16 << 30,
+	}
+
+	_, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy: policyProto,
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+
+	gotCfg := adapter.provisionReq.FirecrackerConfig
+	if got, want := gotCfg.VCPUs, int64(4); got != want {
+		t.Fatalf("unexpected vcpus: got %d want %d", got, want)
+	}
+	if got, want := gotCfg.MemoryMiB, int64(3073); got != want {
+		t.Fatalf("unexpected memory_mib: got %d want %d", got, want)
+	}
+	if got, want := gotCfg.MinimumRootFSBytes, int64(16<<30); got != want {
+		t.Fatalf("unexpected minimum_rootfs_bytes: got %d want %d", got, want)
+	}
+}
+
 func TestCreateSandboxMergesFirecrackerSnapshotConfig(t *testing.T) {
 	adapter := &stubAdapter{}
 	svc := &Service{

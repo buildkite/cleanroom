@@ -340,6 +340,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	}
 	firecrackerCfg := runtimeconfig.MergeBackendConfig(s.Config, backendName, execOpts.LaunchSeconds)
 	firecrackerCfg.RunDir = ""
+	firecrackerCfg = withPolicyResourceRequirements(firecrackerCfg, compiled.Resources)
 	firecrackerCfg = withRepositoryBootstrapRootFSMinimum(firecrackerCfg, compiled, repository)
 
 	var replacedWorkspaceStageRecord *cachestore.Record

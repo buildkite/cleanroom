@@ -215,6 +215,10 @@ version: 1
 sandbox:
   image:
     ref: ghcr.io/buildkite/cleanroom-base/debian@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  resources:
+    vcpus: 4
+    memory: 8GiB
+    disk: 16GiB
   network:
     default: deny
     allow:
@@ -223,6 +227,12 @@ sandbox:
       - host: registry.npmjs.org
         ports: [443]
 ```
+
+`sandbox.resources` is optional and declares backend-neutral minimum workload
+requirements. `vcpus` is a positive integer, while `memory` and `disk` accept
+raw bytes or human-friendly sizes such as `4096MiB`, `8GiB`, or `16GiB`.
+Cleanroom raises the selected backend runtime config to meet these minimums,
+but does not lower larger host defaults.
 
 Enable Docker as a guest service:
 

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/buildkite/cleanroom/internal/bytesize"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"gopkg.in/yaml.v3"
 )
@@ -172,6 +173,59 @@ func TestCompileCapturesDockerServiceRequirement(t *testing.T) {
 	}
 	if !compiled.Services.Docker.Required {
 		t.Fatal("expected compiled policy to require docker service")
+	}
+}
+
+func TestCompileNormalizesResourceRequirements(t *testing.T) {
+	t.Parallel()
+
+	var raw rawPolicy
+	if err := yaml.Unmarshal([]byte(`
+version: 1
+sandbox:
+  image:
+    ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  resources:
+    vcpus: 4
+    memory: 12GiB
+    disk: 16GiB
+  network:
+    default: deny
+`), &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	compiled, err := Compile(raw)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if compiled.Resources == nil {
+		t.Fatal("expected resource requirements")
+	}
+	if got, want := compiled.Resources.VCPUs, int64(4); got != want {
+		t.Fatalf("unexpected vcpus: got %d want %d", got, want)
+	}
+	if got, want := compiled.Resources.MemoryBytes, int64(12<<30); got != want {
+		t.Fatalf("unexpected memory bytes: got %d want %d", got, want)
+	}
+	if got, want := compiled.Resources.DiskBytes, int64(16<<30); got != want {
+		t.Fatalf("unexpected disk bytes: got %d want %d", got, want)
+	}
+}
+
+func TestCompileRejectsNonPositiveResourceRequirements(t *testing.T) {
+	t.Parallel()
+
+	raw := baseRawPolicy()
+	vcpus := int64(0)
+	raw.Sandbox.Resources.VCPUs = &vcpus
+
+	_, err := Compile(raw)
+	if err == nil {
+		t.Fatal("expected compile to reject zero vcpus")
+	}
+	if !strings.Contains(err.Error(), "sandbox.resources.vcpus") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -737,6 +791,12 @@ func TestCompiledPolicyProtoRoundTripPreservesDependenciesAndServices(t *testing
 	raw.Sandbox.Services.Command = []string{"docker", "compose", "up", "-d", "postgres"}
 	raw.Sandbox.Services.Key.Files = []string{"docker-compose.yml"}
 	raw.Sandbox.Run.Before = rawShellCommandSpec{"sh", "-lc", "bin/rails db:prepare"}
+	vcpus := int64(6)
+	memory := bytesize.Size(12 << 30)
+	disk := bytesize.Size(18 << 30)
+	raw.Sandbox.Resources.VCPUs = &vcpus
+	raw.Sandbox.Resources.Memory = &memory
+	raw.Sandbox.Resources.Disk = &disk
 	compiled, err := Compile(raw)
 	if err != nil {
 		t.Fatalf("compile: %v", err)
@@ -766,5 +826,30 @@ func TestCompiledPolicyProtoRoundTripPreservesDependenciesAndServices(t *testing
 	}
 	if got, want := strings.Join(roundTripped.Run.Before, "\x00"), strings.Join(compiled.Run.Before, "\x00"); got != want {
 		t.Fatalf("unexpected run.before after round trip: got %q want %q", got, want)
+	}
+	if roundTripped.Resources == nil {
+		t.Fatal("expected resources after round trip")
+	}
+	if got, want := *roundTripped.Resources, *compiled.Resources; got != want {
+		t.Fatalf("unexpected resources after round trip: got %#v want %#v", got, want)
+	}
+}
+
+func TestFromProtoRejectsNegativeResourceRequirements(t *testing.T) {
+	t.Parallel()
+
+	_, err := FromProto(&cleanroomv1.Policy{
+		Version:        1,
+		ImageRef:       validImageRef,
+		NetworkDefault: "deny",
+		Resources: &cleanroomv1.PolicyResources{
+			MemoryBytes: -1,
+		},
+	})
+	if err == nil {
+		t.Fatal("expected FromProto to reject negative resource requirement")
+	}
+	if !strings.Contains(err.Error(), "resources.memory_bytes") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }

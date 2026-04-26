@@ -110,6 +110,7 @@ func (s *Service) createSandboxFromStoredRootFS(ctx context.Context, req *cleanr
 	}
 	firecrackerCfg := runtimeconfig.MergeBackendConfig(s.Config, backendName, execOpts.LaunchSeconds)
 	firecrackerCfg.RunDir = ""
+	firecrackerCfg = withPolicyResourceRequirements(firecrackerCfg, effectivePolicy.Resources)
 	firecrackerCfg = withSnapshotDriver(backendName, firecrackerCfg, record.StorageDriver)
 
 	now := s.clock().Now()

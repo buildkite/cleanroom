@@ -6,15 +6,14 @@ dependency bootstrap, Go module resolution, and dependency-stage warmup.
 
 ## Prerequisites
 
-Install cleanroom (`mise run install` from repository root) and ensure
-your runtime config has enough resources for a large Go build:
+Install cleanroom (`mise run install` from repository root). The example policy
+declares enough guest resources for a large Go build:
 
 ```yaml
-# ~/.config/cleanroom/config.yaml
-backends:
-  darwin-vz:
-    memory_mib: 12288
-    minimum_rootfs_bytes: 12GiB
+sandbox:
+  resources:
+    memory: 12GiB
+    disk: 12GiB
 ```
 
 ## Usage
@@ -67,7 +66,7 @@ Go module resolution:
 - First run is slow: git clone, mise tool install, and Go module download
 - The example now targets the current `buildkite/agent` `HEAD` commit at the time of this update: `9eba5c5b83807b9aaaaffef6225be1f62c8d7d6c`
 - The example policy uses the current multi-arch Debian base image digest `ghcr.io/buildkite/cleanroom-base/debian@sha256:28c3f638fabe1ed780f87b82cfb0c6dda2549c86b9e4edbe519e8250243411c5`
-- Guest memory still comes from `~/.config/cleanroom/config.yaml`; `cleanroom.yaml` does not carry backend runtime sizing
+- Guest resource minimums are declared in `cleanroom.yaml`; larger host runtime defaults still win
 - The policy sets:
 
   ```sh

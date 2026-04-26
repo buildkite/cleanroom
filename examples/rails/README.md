@@ -18,14 +18,13 @@ Pull the Debian Ruby base image used by the example:
 cleanroom image pull ghcr.io/buildkite/cleanroom-base/debian-ruby@sha256:cba9876d67beb8971e791f1bc6af175f0bff47e938f955059813c4dd6914eb53
 ```
 
-Give the guest enough memory and disk for the first Rails bundle:
+The example policy declares enough guest memory and disk for the first Rails bundle:
 
 ```yaml
-# ~/.config/cleanroom/config.yaml
-backends:
-  darwin-vz:
-    memory_mib: 4096
-    minimum_rootfs_bytes: 14GiB
+sandbox:
+  resources:
+    memory: 4GiB
+    disk: 14GiB
 ```
 
 ## Usage
