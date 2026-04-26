@@ -2114,9 +2114,13 @@ func preparedRuntimeRootFSMarkerStateForPath(path string) (preparedRuntimeRootFS
 	}
 	return preparedRuntimeRootFSMarkerState{
 		size:            stat.Size,
-		modTimeNanos:    stat.Mtim.Nano(),
-		changeTimeNanos: stat.Ctim.Nano(),
+		modTimeNanos:    timespecUnixNano(stat.Mtim),
+		changeTimeNanos: timespecUnixNano(stat.Ctim),
 	}, nil
+}
+
+func timespecUnixNano(ts unix.Timespec) int64 {
+	return time.Unix(ts.Sec, ts.Nsec).UnixNano()
 }
 
 func preparedRuntimeRootFSMarkerMatches(path string) bool {
