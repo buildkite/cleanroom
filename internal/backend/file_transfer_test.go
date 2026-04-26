@@ -1,6 +1,7 @@
 package backend
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"os/exec"
@@ -42,6 +43,31 @@ func TestSandboxFileUploadCommandAppliesMtime(t *testing.T) {
 	}
 	if got, want := info.ModTime().Unix(), mtime.Unix(); got != want {
 		t.Fatalf("unexpected uploaded mtime: got %d want %d", got, want)
+	}
+}
+
+func TestSandboxFileReadCommandReportsMissingPathWithSentinel(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "missing.txt")
+	cmdArgs, err := SandboxFileReadCommand(path, 32)
+	if err != nil {
+		t.Fatalf("SandboxFileReadCommand returned error: %v", err)
+	}
+
+	cmd := exec.Command(cmdArgs[0], cmdArgs[1:]...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err = cmd.Run()
+	if err == nil {
+		t.Fatal("expected read command to reject missing path")
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("expected no stdout, got %q", stdout.String())
+	}
+	if got, want := strings.TrimSpace(stderr.String()), "path not found: "+path; got != want {
+		t.Fatalf("unexpected stderr: got %q want %q", got, want)
 	}
 }
 

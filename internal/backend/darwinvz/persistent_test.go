@@ -238,8 +238,20 @@ func TestDownloadSandboxFileReturnsBytes(t *testing.T) {
 		if instance == nil || instance.SandboxID != "cr-test" {
 			t.Fatalf("unexpected sandbox instance: %#v", instance)
 		}
-		if got, want := req.Command, []string{"head", "-c", "33", "--", "/home/sprite/artifacts/haiku.txt"}; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
-			t.Fatalf("unexpected command: got %v want %v", got, want)
+		if len(req.Command) != 6 {
+			t.Fatalf("unexpected command: got %v", req.Command)
+		}
+		if got, want := req.Command[0], "sh"; got != want {
+			t.Fatalf("unexpected command[0]: got %q want %q", got, want)
+		}
+		if got, want := req.Command[3], "cleanroom-read"; got != want {
+			t.Fatalf("unexpected command[3]: got %q want %q", got, want)
+		}
+		if got, want := req.Command[4], "/home/sprite/artifacts/haiku.txt"; got != want {
+			t.Fatalf("unexpected read path: got %q want %q", got, want)
+		}
+		if got, want := req.Command[5], "33"; got != want {
+			t.Fatalf("unexpected read limit: got %q want %q", got, want)
 		}
 		if stream.OnStdout != nil {
 			stream.OnStdout([]byte("hello"))
@@ -268,7 +280,7 @@ func TestDownloadSandboxFileReturnsStreamedStderrOnFailure(t *testing.T) {
 	adapter := &Adapter{}
 	adapter.executeInSandboxFn = func(_ context.Context, _ context.Context, _ *sandboxInstance, _ backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 		if stream.OnStderr != nil {
-			stream.OnStderr([]byte("head: cannot open '/missing': No such file or directory\n"))
+			stream.OnStderr([]byte("path not found: /missing\n"))
 		}
 		return &backend.ExecutionResult{ExitCode: 1}, nil
 	}
@@ -283,7 +295,7 @@ func TestDownloadSandboxFileReturnsStreamedStderrOnFailure(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected download error")
 	}
-	if !strings.Contains(err.Error(), "cannot open '/missing'") {
+	if !errors.Is(err, backend.ErrSandboxPathNotFound) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

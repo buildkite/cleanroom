@@ -249,8 +249,20 @@ func TestDownloadSandboxFileReturnsBytes(t *testing.T) {
 
 	adapter := &Adapter{}
 	adapter.runGuestCommandFn = func(_ context.Context, _ context.Context, _ <-chan struct{}, _ func() error, _ string, _ uint32, req vsockexec.ExecRequest, stream backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error) {
-		if got, want := req.Command, []string{"head", "-c", "33", "--", "/home/sprite/artifacts/haiku.txt"}; len(got) != len(want) || strings.Join(got, "\x00") != strings.Join(want, "\x00") {
-			t.Fatalf("unexpected command: got %v want %v", got, want)
+		if len(req.Command) != 6 {
+			t.Fatalf("unexpected command: got %v", req.Command)
+		}
+		if got, want := req.Command[0], "sh"; got != want {
+			t.Fatalf("unexpected command[0]: got %q want %q", got, want)
+		}
+		if got, want := req.Command[3], "cleanroom-read"; got != want {
+			t.Fatalf("unexpected command[3]: got %q want %q", got, want)
+		}
+		if got, want := req.Command[4], "/home/sprite/artifacts/haiku.txt"; got != want {
+			t.Fatalf("unexpected read path: got %q want %q", got, want)
+		}
+		if got, want := req.Command[5], "33"; got != want {
+			t.Fatalf("unexpected read limit: got %q want %q", got, want)
 		}
 		if stream.OnStdout != nil {
 			stream.OnStdout([]byte("hello"))
@@ -280,8 +292,20 @@ func TestDownloadSandboxFileHandlesMaxInt64MaxBytes(t *testing.T) {
 
 	adapter := &Adapter{}
 	adapter.runGuestCommandFn = func(_ context.Context, _ context.Context, _ <-chan struct{}, _ func() error, _ string, _ uint32, req vsockexec.ExecRequest, stream backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error) {
-		if got, want := req.Command, []string{"head", "-c", "9223372036854775807", "--", "/home/sprite/artifacts/haiku.txt"}; len(got) != len(want) || strings.Join(got, "\x00") != strings.Join(want, "\x00") {
-			t.Fatalf("unexpected command: got %v want %v", got, want)
+		if len(req.Command) != 6 {
+			t.Fatalf("unexpected command: got %v", req.Command)
+		}
+		if got, want := req.Command[0], "sh"; got != want {
+			t.Fatalf("unexpected command[0]: got %q want %q", got, want)
+		}
+		if got, want := req.Command[3], "cleanroom-read"; got != want {
+			t.Fatalf("unexpected command[3]: got %q want %q", got, want)
+		}
+		if got, want := req.Command[4], "/home/sprite/artifacts/haiku.txt"; got != want {
+			t.Fatalf("unexpected read path: got %q want %q", got, want)
+		}
+		if got, want := req.Command[5], "9223372036854775807"; got != want {
+			t.Fatalf("unexpected read limit: got %q want %q", got, want)
 		}
 		if stream.OnStdout != nil {
 			stream.OnStdout([]byte("hello"))
@@ -340,7 +364,7 @@ func TestDownloadSandboxFileReturnsStreamedStderrOnFailure(t *testing.T) {
 	adapter := &Adapter{}
 	adapter.runGuestCommandFn = func(_ context.Context, _ context.Context, _ <-chan struct{}, _ func() error, _ string, _ uint32, _ vsockexec.ExecRequest, stream backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error) {
 		if stream.OnStderr != nil {
-			stream.OnStderr([]byte("head: cannot open '/missing': No such file or directory\n"))
+			stream.OnStderr([]byte("path not found: /missing\n"))
 		}
 		return vsockexec.ExecResponse{ExitCode: 1}, guestExecTiming{}, nil
 	}
@@ -357,7 +381,7 @@ func TestDownloadSandboxFileReturnsStreamedStderrOnFailure(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected download error")
 	}
-	if !strings.Contains(err.Error(), "cannot open '/missing'") {
+	if !errors.Is(err, backend.ErrSandboxPathNotFound) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

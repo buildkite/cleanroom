@@ -110,6 +110,16 @@ done
 ' cleanroom-walk {} +
 `
 
+const SandboxFileReadScript = `set -eu
+path=$1
+limit=$2
+if [ ! -e "$path" ] && [ ! -L "$path" ]; then
+	echo "path not found: $path" >&2
+	exit 1
+fi
+exec head -c "$limit" -- "$path"
+`
+
 const SandboxFileUploadScript = `set -eu
 path=$1
 mode=$2
@@ -223,7 +233,7 @@ func SandboxFileReadCommand(path string, maxBytes int64) ([]string, error) {
 	if maxBytes == math.MaxInt64 {
 		limit = maxBytes
 	}
-	return []string{"head", "-c", strconv.FormatInt(limit, 10), "--", path}, nil
+	return []string{"sh", "-c", SandboxFileReadScript, "cleanroom-read", path, strconv.FormatInt(limit, 10)}, nil
 }
 
 func SandboxFileUploadCommand(path string, mode fs.FileMode, mtime time.Time) ([]string, error) {
