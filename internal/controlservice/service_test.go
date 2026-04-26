@@ -16,6 +16,7 @@ import (
 
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/cachestore"
+	"github.com/buildkite/cleanroom/internal/changesetstore"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/observability"
 	"github.com/buildkite/cleanroom/internal/paths"
@@ -368,9 +369,10 @@ func newTestServiceWithSnapshotStore(adapter backend.Adapter, store snapshotMeta
 				},
 			},
 		},
-		Backends:      map[string]backend.Adapter{"firecracker": adapter},
-		SnapshotStore: store,
-		CacheStore:    newMemoryCacheStore(),
+		Backends:       map[string]backend.Adapter{"firecracker": adapter},
+		SnapshotStore:  store,
+		CacheStore:     newMemoryCacheStore(),
+		ChangesetStore: newMemoryChangesetStore(),
 	}
 }
 
@@ -1170,6 +1172,44 @@ func (s *memoryCacheStore) Delete(_ context.Context, stage, cacheKey string) err
 	defer s.mu.Unlock()
 	delete(s.records, cacheStoreKey(stage, cacheKey))
 	return nil
+}
+
+type memoryChangesetStore struct {
+	mu      sync.Mutex
+	records map[string]changesetstore.Record
+}
+
+func newMemoryChangesetStore() *memoryChangesetStore {
+	return &memoryChangesetStore{records: map[string]changesetstore.Record{}}
+}
+
+func (s *memoryChangesetStore) Put(_ context.Context, repository *repositorycheckout.Checkout, changeset *repositorychangeset.Changeset) (changesetstore.Record, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now().UTC()
+	record := changesetstore.Record{
+		ChangesetID:        changesetstore.RecordID(repository, changeset),
+		CanonicalRemoteURL: strings.TrimSpace(repository.RemoteURL),
+		BaseCommitSHA:      strings.TrimSpace(changeset.BaseCommitSHA),
+		SubmoduleMode: func() string {
+			if repository.Submodules {
+				return "enabled"
+			}
+			return "disabled"
+		}(),
+		ChangesetDigest: strings.TrimSpace(changeset.Digest),
+		FinalTreeDigest: strings.TrimSpace(changeset.TreeDigest),
+		TransportFormat: changesetstore.TransportFormatProtoV1,
+		TransportRef:    "memory",
+		PayloadDigest:   "memory",
+		CreatedAt:       now,
+		LastUsedAt:      now,
+	}
+	if record.ChangesetID == "" {
+		return changesetstore.Record{}, errors.New("missing changeset id")
+	}
+	s.records[record.ChangesetID] = record
+	return record, nil
 }
 
 func cacheStoreKey(stage, cacheKey string) string {
@@ -4896,6 +4936,54 @@ func TestCreateExecutionRebootstrapsMatchingRepositoryAfterChangesetSnapshotRest
 	}
 	if !repositoryWrappedCommandContains(joined, `exec 'sh' '-lc' 'pwd'`) {
 		t.Fatalf("expected wrapped user command in repository workdir, got %q", joined)
+	}
+}
+
+func TestCreateSandboxPersistsRepositoryChangeset(t *testing.T) {
+	adapter := &stubAdapter{}
+	svc := newTestService(adapter)
+
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"README.md": "hello\n",
+	})
+	svc.RepositoryStore = mirrors
+	repository := repositorycheckout.FromProto(repositoryCheckout)
+	if err := os.WriteFile(filepath.Join(mirrors.mirrorPath, "README.md"), []byte("hello from changeset\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(README.md) returned error: %v", err)
+	}
+	changeset, err := repositorychangeset.BuildFromWorkingTree(mirrors.mirrorPath, repository)
+	if err != nil {
+		t.Fatalf("BuildFromWorkingTree returned error: %v", err)
+	}
+	if changeset == nil {
+		t.Fatal("expected repository changeset")
+	}
+
+	store := newMemoryChangesetStore()
+	svc.ChangesetStore = store
+	_, err = svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy:              testRepositoryPolicy(),
+		RepositoryCheckout:  repositoryCheckout,
+		RepositoryChangeset: changeset.ToProto(),
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if got, want := len(store.records), 1; got != want {
+		t.Fatalf("expected one persisted changeset, got %d", got)
+	}
+	record := store.records[changesetstore.RecordID(repository, changeset)]
+	if record.ChangesetID == "" {
+		t.Fatalf("expected persisted changeset id in records: %#v", store.records)
+	}
+	if record.ChangesetDigest != changeset.Digest {
+		t.Fatalf("unexpected persisted changeset digest: got %q want %q", record.ChangesetDigest, changeset.Digest)
+	}
+	if record.FinalTreeDigest != changeset.TreeDigest {
+		t.Fatalf("unexpected persisted tree digest: got %q want %q", record.FinalTreeDigest, changeset.TreeDigest)
 	}
 }
 

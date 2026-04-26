@@ -26,6 +26,7 @@ type Record struct {
 	Policy                   *cleanroomv1.Policy
 	Repository               *cleanroomv1.RepositoryCheckout
 	RepositoryHasChangeset   bool
+	RepositoryChangesetID    string
 	ParentCacheKey           string
 	StorageDriver            string
 	StorageRef               string
@@ -142,6 +143,7 @@ func (s *Store) persist(ctx context.Context, record Record, replace bool) error 
 			policy_proto,
 			repository_proto,
 			repository_has_changeset,
+			repository_changeset_id,
 			parent_cache_key,
 			storage_driver,
 			storage_ref,
@@ -151,7 +153,7 @@ func (s *Store) persist(ctx context.Context, record Record, replace bool) error 
 			created_at_unix_nano,
 			last_used_at_unix_nano,
 			producer_version
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 	if replace {
 		verb = "upsert"
@@ -167,6 +169,7 @@ func (s *Store) persist(ctx context.Context, record Record, replace bool) error 
 				policy_proto,
 				repository_proto,
 				repository_has_changeset,
+				repository_changeset_id,
 				parent_cache_key,
 				storage_driver,
 				storage_ref,
@@ -176,7 +179,7 @@ func (s *Store) persist(ctx context.Context, record Record, replace bool) error 
 				created_at_unix_nano,
 				last_used_at_unix_nano,
 				producer_version
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(stage, cache_key) DO UPDATE SET
 				reuse_mode = excluded.reuse_mode,
 				state = excluded.state,
@@ -186,6 +189,7 @@ func (s *Store) persist(ctx context.Context, record Record, replace bool) error 
 				policy_proto = excluded.policy_proto,
 				repository_proto = excluded.repository_proto,
 				repository_has_changeset = excluded.repository_has_changeset,
+				repository_changeset_id = excluded.repository_changeset_id,
 				parent_cache_key = excluded.parent_cache_key,
 				storage_driver = excluded.storage_driver,
 				storage_ref = excluded.storage_ref,
@@ -209,6 +213,7 @@ func (s *Store) persist(ctx context.Context, record Record, replace bool) error 
 		policyBytes,
 		repositoryBytes,
 		boolToInt(record.RepositoryHasChangeset),
+		nullableString(record.RepositoryChangesetID),
 		nullableString(record.ParentCacheKey),
 		record.StorageDriver,
 		record.StorageRef,
@@ -243,6 +248,7 @@ func (s *Store) GetReady(ctx context.Context, stage, cacheKey string) (Record, b
 			policy_proto,
 			repository_proto,
 			repository_has_changeset,
+			repository_changeset_id,
 			parent_cache_key,
 			storage_driver,
 			storage_ref,
@@ -314,6 +320,7 @@ func (s *Store) List(ctx context.Context) ([]Record, error) {
 			policy_proto,
 			repository_proto,
 			repository_has_changeset,
+			repository_changeset_id,
 			parent_cache_key,
 			storage_driver,
 			storage_ref,
@@ -390,6 +397,7 @@ func (s *Store) initDB(ctx context.Context) error {
 			policy_proto BLOB NOT NULL,
 			repository_proto BLOB,
 			repository_has_changeset INTEGER NOT NULL DEFAULT 0,
+			repository_changeset_id TEXT,
 			parent_cache_key TEXT,
 			storage_driver TEXT NOT NULL DEFAULT 'file',
 			storage_ref TEXT NOT NULL,
@@ -412,6 +420,9 @@ func (s *Store) initDB(ctx context.Context) error {
 	}
 	if _, err := db.ExecContext(ctx, `ALTER TABLE cache_entries ADD COLUMN repository_has_changeset INTEGER NOT NULL DEFAULT 0`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
 		return fmt.Errorf("ensure cache metadata repository_has_changeset column: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `ALTER TABLE cache_entries ADD COLUMN repository_changeset_id TEXT`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		return fmt.Errorf("ensure cache metadata repository_changeset_id column: %w", err)
 	}
 	if _, err := db.ExecContext(ctx, `ALTER TABLE cache_entries ADD COLUMN reuse_mode TEXT`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
 		return fmt.Errorf("ensure cache metadata reuse_mode column: %w", err)
@@ -437,6 +448,7 @@ func scanRecord(row recordScanner) (Record, error) {
 		repositoryHasChangeset   int
 		checkoutRefreshRequired  int
 		reuseMode                sql.NullString
+		repositoryChangesetID    sql.NullString
 		parentCacheKey           sql.NullString
 		inputDigest              sql.NullString
 		dependencyKeyFilesDigest sql.NullString
@@ -454,6 +466,7 @@ func scanRecord(row recordScanner) (Record, error) {
 		&policyBytes,
 		&repositoryBytes,
 		&repositoryHasChangeset,
+		&repositoryChangesetID,
 		&parentCacheKey,
 		&record.StorageDriver,
 		&record.StorageRef,
@@ -478,6 +491,9 @@ func scanRecord(row recordScanner) (Record, error) {
 		}
 	}
 	record.RepositoryHasChangeset = repositoryHasChangeset != 0
+	if repositoryChangesetID.Valid {
+		record.RepositoryChangesetID = repositoryChangesetID.String
+	}
 	if parentCacheKey.Valid {
 		record.ParentCacheKey = parentCacheKey.String
 	}

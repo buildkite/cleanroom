@@ -17,6 +17,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/backend/darwinvz"
 	"github.com/buildkite/cleanroom/internal/backend/firecracker"
 	"github.com/buildkite/cleanroom/internal/cachestore"
+	"github.com/buildkite/cleanroom/internal/changesetstore"
 	"github.com/buildkite/cleanroom/internal/controlserver"
 	"github.com/buildkite/cleanroom/internal/controlservice"
 	"github.com/buildkite/cleanroom/internal/endpoint"
@@ -42,6 +43,7 @@ type ServeCommand struct {
 var serveSignalNotifyContext = signal.NotifyContext
 var newSnapshotMetadataStore = snapshotstore.New
 var newCacheMetadataStore = cachestore.New
+var newChangesetMetadataStore = changesetstore.New
 var gatewayScopeTokenSourcePolicyForGatewayHost = gateway.ScopeTokenSourcePolicyForGatewayHost
 var newGatewayContentCache = gateway.NewContentCache
 
@@ -308,6 +310,14 @@ func newControlService(ctx *runtimeContext, logger *log.Logger, mirrors gateway.
 		}
 		cacheMetadataStore = nil
 	}
+	var changesetMetadataStore *changesetstore.Store
+	changesetMetadataStore, err = newChangesetMetadataStore(changesetstore.Options{})
+	if err != nil {
+		if logger != nil {
+			logger.Warn("changeset metadata store unavailable; repository changeset persistence disabled", "error", err)
+		}
+		changesetMetadataStore = nil
+	}
 
 	if ctx == nil {
 		service := &controlservice.Service{
@@ -317,6 +327,9 @@ func newControlService(ctx *runtimeContext, logger *log.Logger, mirrors gateway.
 		}
 		if cacheMetadataStore != nil {
 			service.CacheStore = cacheMetadataStore
+		}
+		if changesetMetadataStore != nil {
+			service.ChangesetStore = changesetMetadataStore
 		}
 		return service, nil
 	}
@@ -331,6 +344,9 @@ func newControlService(ctx *runtimeContext, logger *log.Logger, mirrors gateway.
 	}
 	if cacheMetadataStore != nil {
 		service.CacheStore = cacheMetadataStore
+	}
+	if changesetMetadataStore != nil {
+		service.ChangesetStore = changesetMetadataStore
 	}
 	return service, nil
 }

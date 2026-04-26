@@ -295,6 +295,9 @@ Requirements:
 - The client may create the changeset from local repository state, but the
   control plane must validate that the base checkout in the request matches the
   changeset metadata before applying it.
+- When a host-local changeset store is available, the control plane should
+  persist the validated changeset identity and replay payload before applying
+  it so cache lineage can refer to a stable changeset ID.
 - The control plane must apply a changeset only after exact repository checkout
   or workspace-stage restore and before dependency bootstrap or workload
   execution.

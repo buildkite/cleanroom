@@ -80,7 +80,7 @@ func (s *Service) finalizeServicesStagePlan(
 	return plan, true, nil
 }
 
-func (s *Service) lookupServicesStageCache(ctx context.Context, backendName string, compiled *policy.CompiledPolicy, repository *repositorycheckout.Checkout, plan servicesStagePlan) (cachestore.Record, bool, string, error) {
+func (s *Service) lookupServicesStageCache(ctx context.Context, backendName string, compiled *policy.CompiledPolicy, repository *repositorycheckout.Checkout, changeset *repositorychangeset.Changeset, plan servicesStagePlan) (cachestore.Record, bool, string, error) {
 	if compiled == nil || repository == nil || strings.TrimSpace(plan.CacheKey) == "" {
 		return cachestore.Record{}, false, "", nil
 	}
@@ -106,6 +106,9 @@ func (s *Service) lookupServicesStageCache(ctx context.Context, backendName stri
 		return cachestore.Record{}, false, observability.CacheLookupReasonParentStageChanged, nil
 	}
 	if !repositoryCheckoutsEqual(repositorycheckout.FromProto(record.Repository), repository) {
+		return cachestore.Record{}, false, observability.CacheLookupReasonRepositoryChanged, nil
+	}
+	if !cacheRecordChangesetIDMatches(record.RepositoryChangesetID, repository, changeset) {
 		return cachestore.Record{}, false, observability.CacheLookupReasonRepositoryChanged, nil
 	}
 	return record, true, "", nil
@@ -134,7 +137,7 @@ func (s *Service) maybePublishServicesStageCache(
 		return
 	}
 
-	if record, ok, _, err := s.lookupServicesStageCache(ctx, backendName, compiled, repository, plan); err == nil && ok {
+	if record, ok, _, err := s.lookupServicesStageCache(ctx, backendName, compiled, repository, changeset, plan); err == nil && ok {
 		if replacedRecord == nil || strings.TrimSpace(record.CacheKey) != strings.TrimSpace(replacedRecord.CacheKey) {
 			s.logServicesStageAlreadyPublished(record)
 			return
@@ -166,6 +169,7 @@ func (s *Service) maybePublishServicesStageCache(
 		Policy:                 compiled.ToProto(),
 		Repository:             cloneRepositoryCheckout(normalizeRepositoryCheckoutForComparison(repository)).ToProto(),
 		RepositoryHasChangeset: changeset != nil,
+		RepositoryChangesetID:  repositoryChangesetID(repository, changeset),
 		ParentCacheKey:         plan.ParentStageCacheKey,
 		StorageDriver:          snapshotCfg.Snapshots.Driver,
 		StorageRef:             strings.TrimSpace(result.StorageRef),

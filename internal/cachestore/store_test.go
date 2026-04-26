@@ -40,6 +40,7 @@ func TestStoreCreateGetReadyListDelete(t *testing.T) {
 			Branch:         "main",
 		},
 		RepositoryHasChangeset:   true,
+		RepositoryChangesetID:    "changeset:v1:test",
 		ParentCacheKey:           "runtime:test",
 		ReuseMode:                "portable",
 		StorageRef:               "/tmp/workspace-test.ext4",
@@ -62,7 +63,7 @@ func TestStoreCreateGetReadyListDelete(t *testing.T) {
 	if !ok {
 		t.Fatal("expected stored ready cache")
 	}
-	if got.CacheKey != record.CacheKey || got.Stage != record.Stage || got.State != record.State || got.PolicyHash != record.PolicyHash || got.StorageRef != record.StorageRef || got.StorageDriver != record.StorageDriver || got.ParentCacheKey != record.ParentCacheKey || got.ReuseMode != record.ReuseMode || got.InputManifestDigest != record.InputManifestDigest || got.DependencyKeyFilesDigest != record.DependencyKeyFilesDigest || got.CheckoutRefreshRequired != record.CheckoutRefreshRequired || got.ProducerVersion != record.ProducerVersion {
+	if got.CacheKey != record.CacheKey || got.Stage != record.Stage || got.State != record.State || got.PolicyHash != record.PolicyHash || got.StorageRef != record.StorageRef || got.StorageDriver != record.StorageDriver || got.ParentCacheKey != record.ParentCacheKey || got.ReuseMode != record.ReuseMode || got.RepositoryChangesetID != record.RepositoryChangesetID || got.InputManifestDigest != record.InputManifestDigest || got.DependencyKeyFilesDigest != record.DependencyKeyFilesDigest || got.CheckoutRefreshRequired != record.CheckoutRefreshRequired || got.ProducerVersion != record.ProducerVersion {
 		t.Fatalf("unexpected cache record: %#v", got)
 	}
 	if !got.CreatedAt.Equal(record.CreatedAt) {

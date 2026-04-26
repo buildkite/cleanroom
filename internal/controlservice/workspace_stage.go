@@ -97,6 +97,9 @@ func (s *Service) lookupWorkspaceStageCache(ctx context.Context, backendName str
 	if !repositoryCheckoutsEqual(repositorycheckout.FromProto(record.Repository), repository) {
 		return cachestore.Record{}, false, observability.CacheLookupReasonRepositoryChanged, nil
 	}
+	if !cacheRecordChangesetIDMatches(record.RepositoryChangesetID, repository, changeset) {
+		return cachestore.Record{}, false, observability.CacheLookupReasonRepositoryChanged, nil
+	}
 	if strings.TrimSpace(record.PolicyHash) != strings.TrimSpace(compiled.Hash) {
 		return cachestore.Record{}, false, observability.CacheLookupReasonPolicyHashMismatch, nil
 	}
@@ -163,6 +166,7 @@ func (s *Service) maybePublishWorkspaceStageCache(
 		Policy:                 compiled.ToProto(),
 		Repository:             cloneRepositoryCheckout(normalizeRepositoryCheckoutForComparison(repository)).ToProto(),
 		RepositoryHasChangeset: changeset != nil,
+		RepositoryChangesetID:  repositoryChangesetID(repository, changeset),
 		ParentCacheKey:         strings.TrimSpace(runtimeBaseKey),
 		StorageDriver:          snapshotCfg.Snapshots.Driver,
 		StorageRef:             strings.TrimSpace(result.StorageRef),

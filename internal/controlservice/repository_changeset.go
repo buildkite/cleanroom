@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/buildkite/cleanroom/internal/backend"
+	"github.com/buildkite/cleanroom/internal/changesetstore"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/repositorychangeset"
@@ -31,6 +32,37 @@ func validateRepositoryChangesetForCheckout(repository *repositorycheckout.Check
 		return err
 	}
 	return nil
+}
+
+func repositoryChangesetID(repository *repositorycheckout.Checkout, changeset *repositorychangeset.Changeset) string {
+	return changesetstore.RecordID(repository, changeset)
+}
+
+func cacheRecordChangesetIDMatches(recordChangesetID string, repository *repositorycheckout.Checkout, changeset *repositorychangeset.Changeset) bool {
+	recordChangesetID = strings.TrimSpace(recordChangesetID)
+	expectedChangesetID := repositoryChangesetID(repository, changeset)
+	return recordChangesetID == expectedChangesetID
+}
+
+func (s *Service) persistRepositoryChangeset(ctx context.Context, repository *repositorycheckout.Checkout, changeset *repositorychangeset.Changeset) (changesetstore.Record, error) {
+	if changeset == nil {
+		return changesetstore.Record{}, nil
+	}
+	if s.ChangesetStore == nil {
+		return changesetstore.Record{}, nil
+	}
+	record, err := s.ChangesetStore.Put(ctx, repository, changeset)
+	if err != nil {
+		return changesetstore.Record{}, fmt.Errorf("persist repository changeset: %w", err)
+	}
+	if s.Logger != nil {
+		s.Logger.Debug("repository changeset persisted",
+			"changeset_id", record.ChangesetID,
+			"changeset_digest", record.ChangesetDigest,
+			"tree_digest", record.FinalTreeDigest,
+		)
+	}
+	return record, nil
 }
 
 func persistentBootstrapCommandError(result *backend.ExecutionResult, stdout, stderr string, err error, missingResultMessage, exitCodeMessage string) error {

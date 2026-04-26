@@ -154,6 +154,9 @@ This phase now means:
   and snapshot restore
 - request-scoped `--include-local-changes` packaging and replay after exact
   repository checkout
+- durable host-local `changesetstore` metadata and payload storage for
+  explicit repository changesets, with stage-cache metadata recording the
+  stable changeset ID
 - dependency-stage and services-stage key-file digest resolution from the
   post-apply tree when an explicit changeset is present
 - exact dependency-stage publish, lookup, restore, and republish for one
@@ -170,9 +173,9 @@ This phase now means:
 - dependency-stage keying has the first explicit input model, but richer
   toolchain-derived inputs, lockfile parser inputs, and artifact allowlists are
   still pending
-- explicit local changes are packaged into each create request today, but there
-  is not yet a dedicated `changesetstore` for durable host-local changeset
-  metadata and replay payloads
+- explicit local changes are still supplied through each create request today;
+  the durable `changesetstore` records the replay payload and identity, but a
+  user-facing `--changeset <id>` reuse surface has not been added yet
 
 Today that means:
 
@@ -185,7 +188,6 @@ Today that means:
 
 ### Not started
 
-- dedicated `changesetstore` storage and lifecycle
 - strict offline warm-cache mode
 - garbage collection and retention policy
 - cross-host distribution/export for stage caches
@@ -1030,7 +1032,7 @@ This plan composes with the existing documents rather than replacing them.
 | `internal/controlservice/workspace_stage.go` | Current workspace-stage orchestration already lives here using dedicated stage-cache metadata. |
 | `internal/controlservice/dependency_stage.go` | Dependency-stage orchestration entry point for policy-controlled bootstrap, declared key-file hashing, post-apply tree keying, exact dependency-stage publication, and the portable dependency-stage lookup/validation path. |
 | `internal/snapshotstore/store.go` | Should remain the user snapshot store rather than being expanded into the system-cache store. |
-| `internal/changesetstore/*` | Planned store for explicit local changeset metadata and replay payloads, separate from both snapshots and stage caches. |
+| `internal/changesetstore/*` | Landed store for explicit local changeset metadata and replay payloads, separate from both snapshots and stage caches. |
 | `internal/volumestore/store.go` | Already provides the backend-neutral clone/snapshot contract shared by both backends. |
 | `internal/backend/firecracker/backend.go` | Already routes normal execution and snapshot restore through writable root volume preparation; actual clone behavior depends on the configured driver. |
 | `internal/backend/darwinvz/backend_darwin.go` | Already fits the same one-rootfs model and can use APFS clone materialization. |
@@ -1047,7 +1049,7 @@ stage                    // runtime | workspace | dependency | services
 reuse_mode               // exact | portable, when stage = dependency
 state                    // ready | failed | garbage
 parent_cache_key
-changeset_digest         // optional, when a workspace/dependency stage includes explicit local changes
+changeset_id             // optional, when a workspace/dependency stage includes explicit local changes
 storage_driver
 storage_ref
 policy_hash
@@ -1075,6 +1077,7 @@ changeset_digest
 final_tree_digest
 transport_format
 transport_ref
+payload_digest
 created_at
 ```
 
@@ -1105,6 +1108,9 @@ This metadata should live in a dedicated `changesetstore`, not in
    and falls back to normal dependency bootstrap if restore or refresh fails.
 8. Add services-stage caching on top of the selected workspace or dependency
    stage.
+9. Add a dedicated `changesetstore` for durable host-local changeset metadata
+   and replay payloads, and record the stable changeset ID in system stage-cache
+   metadata when a stage includes explicit local changes.
 
 ### Partial
 
@@ -1114,9 +1120,8 @@ This metadata should live in a dedicated `changesetstore`, not in
    preparation.
 3. Add richer dependency input modeling beyond the current
    workspace-plus-command-plus-key-files slice.
-4. Turn request-scoped changeset payloads into a durable host-local
-   `changesetstore` if changesets need reuse, retention, or operator
-   introspection outside one sandbox create request.
+4. Add a user-facing changeset reuse surface if durable changesets need to be
+   replayed outside the original sandbox create request.
 
 The stage-cache flow is architecturally landed, but the full performance win
 still depends on clone-capable storage instead of the default `file` driver,
@@ -1124,17 +1129,16 @@ and the dependency stage still needs richer lockfile/toolchain inputs.
 
 ### Remaining
 
-1. Add a dedicated `changesetstore` for durable host-local changeset metadata,
-   replay payload lifecycle, and any future changeset reuse outside a single
-   create request.
-2. Add richer toolchain input digests for dependency-stage keys beyond the
+1. Add richer toolchain input digests for dependency-stage keys beyond the
    current workspace-plus-command-plus-key-files slice.
-3. Add lockfile parser inputs and artifact allowlists so dependency-stage keys
+2. Add lockfile parser inputs and artifact allowlists so dependency-stage keys
    can move beyond manually declared key files.
-4. Add explicit dependency output/preserve semantics if we want portable reuse
+3. Add explicit dependency output/preserve semantics if we want portable reuse
    for repo-local outputs such as `node_modules` or `vendor/bundle`.
-5. Add additional ecosystems only after the first explicit dependency-stage
+4. Add additional ecosystems only after the first explicit dependency-stage
    flow is solid.
+5. Add a user-facing `--changeset <id>` or equivalent reuse surface if durable
+   changesets need explicit replay outside the original create request.
 6. Add strict offline warm-cache mode and fail-closed launch checks.
 7. Add garbage collection and retention policies after the key model and
    publication flow are stable.
@@ -1164,6 +1168,9 @@ Current coverage exists for the implemented host-local stage-cache flow:
 - restore failures fall back to cold bootstrap and republish
 - writable-volume preparation cleans up failed clones and uses the configured
   volume-store driver
+- changesetstore round-trips explicit changeset metadata and payloads, dedupes
+  by stable identity, and detects payload corruption
+- sandbox creation persists explicit repository changesets before applying them
 - exact dependency-stage hits skip dependency bootstrap
 - services-stage hits skip dependency and services bootstrap
 - local changeset payloads are replayed after exact repository checkout

@@ -222,7 +222,7 @@ func gitFileDigestAtCommit(ctx context.Context, repoDir, commitSHA, file string)
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
-func (s *Service) lookupDependencyStageCache(ctx context.Context, backendName string, compiled *policy.CompiledPolicy, repository *repositorycheckout.Checkout, plan dependencyStagePlan) (cachestore.Record, bool, string, error) {
+func (s *Service) lookupDependencyStageCache(ctx context.Context, backendName string, compiled *policy.CompiledPolicy, repository *repositorycheckout.Checkout, changeset *repositorychangeset.Changeset, plan dependencyStagePlan) (cachestore.Record, bool, string, error) {
 	if compiled == nil || repository == nil || strings.TrimSpace(plan.CacheKey) == "" {
 		return cachestore.Record{}, false, "", nil
 	}
@@ -251,6 +251,9 @@ func (s *Service) lookupDependencyStageCache(ctx context.Context, backendName st
 		return cachestore.Record{}, false, observability.CacheLookupReasonParentStageChanged, nil
 	}
 	if !repositoryCheckoutsEqual(repositorycheckout.FromProto(record.Repository), repository) {
+		return cachestore.Record{}, false, observability.CacheLookupReasonRepositoryChanged, nil
+	}
+	if !cacheRecordChangesetIDMatches(record.RepositoryChangesetID, repository, changeset) {
 		return cachestore.Record{}, false, observability.CacheLookupReasonRepositoryChanged, nil
 	}
 	return record, true, "", nil
@@ -491,7 +494,7 @@ func (s *Service) maybePublishDependencyStageCache(
 	var exactRecord cachestore.Record
 	exactPublished := false
 	exactReusable := false
-	if record, ok, _, err := s.lookupDependencyStageCache(ctx, backendName, compiled, repository, plan); err == nil && ok {
+	if record, ok, _, err := s.lookupDependencyStageCache(ctx, backendName, compiled, repository, changeset, plan); err == nil && ok {
 		exactRecord = record
 		exactPublished = true
 		if replacedRecord == nil || strings.TrimSpace(record.CacheKey) != strings.TrimSpace(replacedRecord.CacheKey) {
@@ -546,6 +549,7 @@ func (s *Service) maybePublishDependencyStageCache(
 		Policy:                   compiled.ToProto(),
 		Repository:               cloneRepositoryCheckout(normalizeRepositoryCheckoutForComparison(repository)).ToProto(),
 		RepositoryHasChangeset:   changeset != nil,
+		RepositoryChangesetID:    repositoryChangesetID(repository, changeset),
 		ParentCacheKey:           plan.ParentWorkspaceCacheKey,
 		StorageDriver:            snapshotCfg.Snapshots.Driver,
 		StorageRef:               strings.TrimSpace(result.StorageRef),
@@ -606,6 +610,7 @@ func portableDependencyStageRecordFromExactRecord(
 	record.Policy = compiled.ToProto()
 	record.Repository = cloneRepositoryCheckout(normalizeRepositoryCheckoutForComparison(repository)).ToProto()
 	record.RepositoryHasChangeset = changeset != nil
+	record.RepositoryChangesetID = repositoryChangesetID(repository, changeset)
 	record.ParentCacheKey = strings.TrimSpace(plan.ParentRuntimeCacheKey)
 	record.InputManifestDigest = strings.TrimSpace(plan.KeyFilesDigest)
 	record.DependencyKeyFilesDigest = strings.TrimSpace(plan.KeyFilesDigest)
