@@ -75,6 +75,10 @@ project:
 
 sandbox:
   ttl_minutes: 60
+  resources:
+    vcpus: 4
+    memory: 8GiB
+    disk: 16GiB
   dependencies:
     command: mise exec -- go mod download
     key:
@@ -165,6 +169,10 @@ explicit request-time changeset input.
 - `repository.remote` defaults to `origin`.
 - `repository.path` defaults to `/workspace` and must be an absolute guest path.
 - `repository.submodules` defaults to `false`.
+- `sandbox.resources` defaults to unset. When present, it declares backend-neutral minimum workload requirements.
+- `sandbox.resources.vcpus` must be a positive integer.
+- `sandbox.resources.memory` and `sandbox.resources.disk` must be positive byte sizes. They accept raw bytes or size strings such as `4096MiB`, `8GiB`, or `16GiB`.
+- Resource requirements raise the effective backend runtime settings when the host runtime config is lower; they do not lower larger host defaults.
 - `sandbox.dependencies.command` defaults to unset; when present, Cleanroom runs that command in the repository workdir during sandbox creation and makes the result eligible for dependency-stage caching.
 - `sandbox.dependencies.command` accepts either a YAML string or a YAML sequence; strings execute as `sh -lc <value>`, and strings are the preferred form.
 - `sandbox.dependencies.key.files` defaults to empty; when present, Cleanroom hashes those repository-relative files from the exact committed checkout and includes them in the dependency-stage cache key.
@@ -330,6 +338,10 @@ Minimum required fields:
   - `default_action`
   - `allow_rules[]` (normalized host/IP, ports, protocol defaults)
   - `deny_rules[]` (normalized host/IP, ports optional)
+- `resources`
+  - `vcpus`
+  - `memory_bytes`
+  - `disk_bytes`
 - `registries`
   - manager key (`npm`, `pip`, and so on)
   - `enabled`

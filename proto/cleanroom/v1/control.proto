@@ -100,6 +100,12 @@ message PolicyRun {
   repeated string before = 1;
 }
 
+message PolicyResources {
+  int64 vcpus = 1;
+  int64 memory_bytes = 2;
+  int64 disk_bytes = 3;
+}
+
 message Policy {
   int32 version = 1;
   string image_ref = 2;
@@ -110,6 +116,7 @@ message Policy {
   PolicyServices services = 7;
   PolicyDependencies dependencies = 9;
   PolicyRun run = 10;
+  PolicyResources resources = 11;
 }
 
 message SandboxOptions {

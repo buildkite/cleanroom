@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/buildkite/cleanroom/internal/bytesize"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/ociref"
 	"gopkg.in/yaml.v3"
@@ -38,6 +39,7 @@ type rawPolicy struct {
 		Dependencies rawDependenciesConfig `yaml:"dependencies"`
 		Run          rawRunConfig          `yaml:"run"`
 		Services     rawServices           `yaml:"services"`
+		Resources    rawResources          `yaml:"resources"`
 		Network      struct {
 			Default string         `yaml:"default"`
 			Allow   []rawAllowRule `yaml:"allow"`
@@ -81,6 +83,12 @@ type rawDockerService struct {
 	Required bool `yaml:"required"`
 }
 
+type rawResources struct {
+	VCPUs  *int64         `yaml:"vcpus"`
+	Memory *bytesize.Size `yaml:"memory"`
+	Disk   *bytesize.Size `yaml:"disk"`
+}
+
 type rawAllowRule struct {
 	Host  string `yaml:"host"`
 	Ports []int  `yaml:"ports"`
@@ -95,6 +103,7 @@ type CompiledPolicy struct {
 	Allow          []AllowRule  `json:"allow"`
 	Dependencies   Dependencies `json:"dependencies"`
 	Run            Run          `json:"run"`
+	Resources      *Resources   `json:"resources,omitempty"`
 	Hash           string       `json:"hash"`
 }
 
@@ -124,6 +133,16 @@ type Run struct {
 
 type DockerService struct {
 	Required bool `json:"required"`
+}
+
+type Resources struct {
+	VCPUs       int64 `json:"vcpus,omitempty"`
+	MemoryBytes int64 `json:"memory_bytes,omitempty"`
+	DiskBytes   int64 `json:"disk_bytes,omitempty"`
+}
+
+func (r Resources) IsZero() bool {
+	return r.VCPUs == 0 && r.MemoryBytes == 0 && r.DiskBytes == 0
 }
 
 type AllowRule struct {
@@ -250,6 +269,10 @@ func Compile(raw rawPolicy) (*CompiledPolicy, error) {
 	if err != nil {
 		return nil, err
 	}
+	resources, err := normalizeResources(raw.Sandbox.Resources, "sandbox.resources")
+	if err != nil {
+		return nil, err
+	}
 
 	compiled := &CompiledPolicy{
 		Version:        raw.Version,
@@ -260,6 +283,7 @@ func Compile(raw rawPolicy) (*CompiledPolicy, error) {
 		Allow:          allow,
 		Dependencies:   dependencies,
 		Run:            run,
+		Resources:      resources,
 	}
 
 	hash, err := hashPolicy(compiled)
@@ -478,6 +502,14 @@ func (p *CompiledPolicy) ToProto() *cleanroomv1.Policy {
 			Ports: ports,
 		})
 	}
+	var resources *cleanroomv1.PolicyResources
+	if p.Resources != nil && !p.Resources.IsZero() {
+		resources = &cleanroomv1.PolicyResources{
+			Vcpus:       p.Resources.VCPUs,
+			MemoryBytes: p.Resources.MemoryBytes,
+			DiskBytes:   p.Resources.DiskBytes,
+		}
+	}
 	return &cleanroomv1.Policy{
 		Version:     int32(p.Version),
 		ImageRef:    p.ImageRef,
@@ -503,7 +535,8 @@ func (p *CompiledPolicy) ToProto() *cleanroomv1.Policy {
 		Run: &cleanroomv1.PolicyRun{
 			Before: append([]string(nil), p.Run.Before...),
 		},
-		Hash: p.Hash,
+		Resources: resources,
+		Hash:      p.Hash,
 	}
 }
 
@@ -581,6 +614,10 @@ func FromProto(pb *cleanroomv1.Policy) (*CompiledPolicy, error) {
 	if err != nil {
 		return nil, err
 	}
+	resources, err := resourcesFromProto(pb.GetResources())
+	if err != nil {
+		return nil, err
+	}
 
 	compiled := &CompiledPolicy{
 		Version:        int(pb.GetVersion()),
@@ -591,6 +628,7 @@ func FromProto(pb *cleanroomv1.Policy) (*CompiledPolicy, error) {
 		Allow:          allow,
 		Dependencies:   dependencies,
 		Run:            run,
+		Resources:      resources,
 	}
 
 	hash, err := hashPolicy(compiled)
@@ -734,6 +772,56 @@ func runFromProto(pb *cleanroomv1.PolicyRun) (Run, error) {
 		return Run{}, err
 	}
 	return Run{Before: before}, nil
+}
+
+func normalizeResources(raw rawResources, field string) (*Resources, error) {
+	var resources Resources
+	if raw.VCPUs != nil {
+		if *raw.VCPUs <= 0 {
+			return nil, fmt.Errorf("%s.vcpus must be positive", field)
+		}
+		resources.VCPUs = *raw.VCPUs
+	}
+	if raw.Memory != nil {
+		if *raw.Memory <= 0 {
+			return nil, fmt.Errorf("%s.memory must be positive", field)
+		}
+		resources.MemoryBytes = int64(*raw.Memory)
+	}
+	if raw.Disk != nil {
+		if *raw.Disk <= 0 {
+			return nil, fmt.Errorf("%s.disk must be positive", field)
+		}
+		resources.DiskBytes = int64(*raw.Disk)
+	}
+	if resources.IsZero() {
+		return nil, nil
+	}
+	return &resources, nil
+}
+
+func resourcesFromProto(pb *cleanroomv1.PolicyResources) (*Resources, error) {
+	if pb == nil {
+		return nil, nil
+	}
+	resources := Resources{
+		VCPUs:       pb.GetVcpus(),
+		MemoryBytes: pb.GetMemoryBytes(),
+		DiskBytes:   pb.GetDiskBytes(),
+	}
+	if resources.VCPUs < 0 {
+		return nil, errors.New("policy resources.vcpus must be non-negative")
+	}
+	if resources.MemoryBytes < 0 {
+		return nil, errors.New("policy resources.memory_bytes must be non-negative")
+	}
+	if resources.DiskBytes < 0 {
+		return nil, errors.New("policy resources.disk_bytes must be non-negative")
+	}
+	if resources.IsZero() {
+		return nil, nil
+	}
+	return &resources, nil
 }
 
 func normalizeShellCommand(raw []string, field string) ([]string, error) {
