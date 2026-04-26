@@ -61,7 +61,6 @@ func TestConsoleIntegrationForwardsStdinAndStreamsOutput(t *testing.T) {
 			return &backend.ExecutionResult{
 				ExecutionID: req.ExecutionID,
 				ExitCode:    0,
-				Stdout:      captured.String(),
 				Message:     "ok",
 			}, nil
 		},
@@ -305,8 +304,11 @@ func TestConsoleRejectsUnsupportedHostScheme(t *testing.T) {
 
 func TestConsoleIntegrationDefaultTerminatesCreatedSandbox(t *testing.T) {
 	host, _ := startIntegrationServer(t, &integrationAdapter{
-		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
-			return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Stdout: "ok\n", Message: "ok"}, nil
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+			if stream.OnStdout != nil {
+				stream.OnStdout([]byte("ok\n"))
+			}
+			return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
 		},
 	})
 
@@ -336,8 +338,11 @@ func TestConsoleIntegrationDefaultTerminatesCreatedSandbox(t *testing.T) {
 
 func TestConsoleIntegrationKeepPreservesCreatedSandbox(t *testing.T) {
 	host, _ := startIntegrationServer(t, &integrationAdapter{
-		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
-			return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Stdout: "ok\n", Message: "ok"}, nil
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+			if stream.OnStdout != nil {
+				stream.OnStdout([]byte("ok\n"))
+			}
+			return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
 		},
 	})
 
@@ -367,8 +372,11 @@ func TestConsoleIntegrationKeepPreservesCreatedSandbox(t *testing.T) {
 
 func TestConsoleIntegrationKeepWithPrintSandboxIDPrintsOnce(t *testing.T) {
 	host, _ := startIntegrationServer(t, &integrationAdapter{
-		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
-			return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Stdout: "ok\n", Message: "ok"}, nil
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+			if stream.OnStdout != nil {
+				stream.OnStdout([]byte("ok\n"))
+			}
+			return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
 		},
 	})
 
@@ -419,7 +427,10 @@ func TestConsoleIntegrationReuseSandboxSkipsPolicyCompile(t *testing.T) {
 			default:
 			}
 			<-done
-			return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Stdout: "ok\n", Message: "ok"}, nil
+			if stream.OnStdout != nil {
+				stream.OnStdout([]byte("ok\n"))
+			}
+			return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
 		},
 	})
 	client := mustNewControlClient(t, host)
@@ -447,8 +458,11 @@ func TestConsoleIntegrationReuseSandboxSkipsPolicyCompile(t *testing.T) {
 
 func TestConsoleIntegrationRejectsKeepWhenReusingSandbox(t *testing.T) {
 	host, _ := startIntegrationServer(t, &integrationAdapter{
-		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
-			return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Stdout: "ok\n", Message: "ok"}, nil
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+			if stream.OnStdout != nil {
+				stream.OnStdout([]byte("ok\n"))
+			}
+			return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
 		},
 	})
 	client := mustNewControlClient(t, host)
@@ -535,8 +549,6 @@ func TestConsoleIntegrationRoutesBackendWarningsToStderr(t *testing.T) {
 			return &backend.ExecutionResult{
 				ExecutionID: req.ExecutionID,
 				ExitCode:    0,
-				Stdout:      "/ # ",
-				Stderr:      "warning: backend warning\n",
 			}, nil
 		},
 	})

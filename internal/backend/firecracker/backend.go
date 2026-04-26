@@ -506,8 +506,6 @@ func (a *Adapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest
 		ImageRef:    instance.ImageRef,
 		ImageDigest: instance.ImageDigest,
 		Message:     message,
-		Stdout:      guestResult.Stdout,
-		Stderr:      guestResult.Stderr,
 	}
 	return result, nil
 }
@@ -537,7 +535,7 @@ func (a *Adapter) DownloadSandboxFile(ctx context.Context, sandboxID, path strin
 		return nil, fmt.Errorf("sandbox %q is not running: %w", sandboxID, err)
 	}
 
-	var stdout bytes.Buffer
+	var stdout, stderr bytes.Buffer
 	limit := maxBytes + 1
 	if maxBytes == math.MaxInt64 {
 		limit = maxBytes
@@ -545,12 +543,14 @@ func (a *Adapter) DownloadSandboxFile(ctx context.Context, sandboxID, path strin
 	cmd := []string{"head", "-c", strconv.FormatInt(limit, 10), "--", path}
 	result, _, err := a.executeInSandbox(ctx, instance, 0, cmd, nil, false, backend.OutputStream{OnStdout: func(chunk []byte) {
 		_, _ = stdout.Write(chunk)
+	}, OnStderr: func(chunk []byte) {
+		_, _ = stderr.Write(chunk)
 	}})
 	if err != nil {
 		return nil, err
 	}
 	if result.ExitCode != 0 {
-		msg := strings.TrimSpace(result.Stderr)
+		msg := strings.TrimSpace(stderr.String())
 		if msg == "" {
 			msg = strings.TrimSpace(result.Error)
 		}
@@ -561,9 +561,6 @@ func (a *Adapter) DownloadSandboxFile(ctx context.Context, sandboxID, path strin
 	}
 
 	data := stdout.Bytes()
-	if len(data) == 0 && result.Stdout != "" {
-		data = []byte(result.Stdout)
-	}
 	if int64(len(data)) > maxBytes {
 		return nil, fmt.Errorf("file %q exceeds max_bytes=%d", path, maxBytes)
 	}
@@ -1266,10 +1263,6 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 	observation.VMReadyMS = vmReady.Milliseconds()
 	observation.VsockWaitMS = guestTiming.WaitForAgent.Milliseconds()
 	observation.GuestExecMS = guestTiming.CommandRun.Milliseconds()
-	if guestResult.Error != "" && strings.TrimSpace(guestResult.Stderr) == "" {
-		guestResult.Stderr = guestResult.Error + "\n"
-	}
-
 	message := runResultMessage("firecracker launch and guest command execution complete")
 	if guestResult.Error != "" {
 		message = runResultMessage("firecracker launch and guest command execution completed with guest-side error detail: " + guestResult.Error)
@@ -1291,8 +1284,6 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 		ImageRef:    imageArtifact.Ref,
 		ImageDigest: imageArtifact.Digest,
 		Message:     message + "; " + timingSummary,
-		Stdout:      guestResult.Stdout,
-		Stderr:      guestResult.Stderr,
 	}, nil
 }
 

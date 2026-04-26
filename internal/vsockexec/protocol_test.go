@@ -167,9 +167,6 @@ func TestProtocolRoundTripStdinEcho(t *testing.T) {
 	if got, want := stdout.String(), "hello world"; got != want {
 		t.Fatalf("streamed stdout: got %q want %q", got, want)
 	}
-	if got, want := res.Stdout, "hello world"; got != want {
-		t.Fatalf("accumulated stdout: got %q want %q", got, want)
-	}
 
 	guestWg.Wait()
 	if guestErr != nil {
@@ -177,9 +174,8 @@ func TestProtocolRoundTripStdinEcho(t *testing.T) {
 	}
 }
 
-func TestDecodeStreamResponseRetainsBoundedOutputTail(t *testing.T) {
+func TestDecodeStreamResponseForwardsOutputOnlyThroughCallbacks(t *testing.T) {
 	var buf bytes.Buffer
-	limit := 8
 	fullStdout := "0123456789"
 	if err := EncodeStreamFrame(&buf, ExecStreamFrame{Type: "stdout", Data: []byte(fullStdout)}); err != nil {
 		t.Fatalf("EncodeStreamFrame stdout: %v", err)
@@ -190,8 +186,7 @@ func TestDecodeStreamResponseRetainsBoundedOutputTail(t *testing.T) {
 
 	var streamed bytes.Buffer
 	res, err := DecodeStreamResponse(&buf, StreamCallbacks{
-		OnStdout:                 func(data []byte) { streamed.Write(data) },
-		BufferedOutputLimitBytes: &limit,
+		OnStdout: func(data []byte) { streamed.Write(data) },
 	})
 	if err != nil {
 		t.Fatalf("DecodeStreamResponse: %v", err)
@@ -199,15 +194,12 @@ func TestDecodeStreamResponseRetainsBoundedOutputTail(t *testing.T) {
 	if got, want := streamed.String(), fullStdout; got != want {
 		t.Fatalf("streamed stdout length = %d, want %d", len(got), len(want))
 	}
-	if got, want := len(res.Stdout), limit; got != want {
-		t.Fatalf("retained stdout length = %d, want %d", got, want)
-	}
-	if !strings.HasSuffix(fullStdout, res.Stdout) {
-		t.Fatalf("retained stdout does not match tail of streamed output")
+	if got, want := res.ExitCode, 0; got != want {
+		t.Fatalf("unexpected exit code: got %d want %d", got, want)
 	}
 }
 
-func TestDecodeStreamResponseHonorsZeroBufferedOutputLimit(t *testing.T) {
+func TestDecodeStreamResponseReturnsOnlyExitMetadata(t *testing.T) {
 	var buf bytes.Buffer
 	if err := EncodeStreamFrame(&buf, ExecStreamFrame{Type: "stdout", Data: []byte("stdout")}); err != nil {
 		t.Fatalf("EncodeStreamFrame stdout: %v", err)
@@ -219,12 +211,10 @@ func TestDecodeStreamResponseHonorsZeroBufferedOutputLimit(t *testing.T) {
 		t.Fatalf("EncodeStreamFrame exit: %v", err)
 	}
 
-	limit := 0
 	var streamedStdout, streamedStderr bytes.Buffer
 	res, err := DecodeStreamResponse(&buf, StreamCallbacks{
-		OnStdout:                 func(data []byte) { streamedStdout.Write(data) },
-		OnStderr:                 func(data []byte) { streamedStderr.Write(data) },
-		BufferedOutputLimitBytes: &limit,
+		OnStdout: func(data []byte) { streamedStdout.Write(data) },
+		OnStderr: func(data []byte) { streamedStderr.Write(data) },
 	})
 	if err != nil {
 		t.Fatalf("DecodeStreamResponse: %v", err)
@@ -235,8 +225,20 @@ func TestDecodeStreamResponseHonorsZeroBufferedOutputLimit(t *testing.T) {
 	if got, want := streamedStderr.String(), "stderr"; got != want {
 		t.Fatalf("streamed stderr: got %q want %q", got, want)
 	}
-	if res.Stdout != "" || res.Stderr != "" {
-		t.Fatalf("retained output with zero limit: stdout %q stderr %q", res.Stdout, res.Stderr)
+	if got, want := res.ExitCode, 0; got != want {
+		t.Fatalf("unexpected exit code: got %d want %d", got, want)
+	}
+}
+
+func TestDecodeStreamResponseRejectsUntypedPayload(t *testing.T) {
+	t.Parallel()
+
+	_, err := DecodeStreamResponse(strings.NewReader(`{"exit_code":0,"stdout":"legacy"}`), StreamCallbacks{})
+	if err == nil {
+		t.Fatal("expected missing type error")
+	}
+	if !strings.Contains(err.Error(), "missing stream frame type") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

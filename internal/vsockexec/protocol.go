@@ -11,8 +11,6 @@ import (
 
 const (
 	DefaultPort uint32 = 10700
-
-	defaultStreamResponseOutputLimit = 1 << 20
 )
 
 type ExecRequest struct {
@@ -25,8 +23,6 @@ type ExecRequest struct {
 
 type ExecResponse struct {
 	ExitCode int    `json:"exit_code"`
-	Stdout   string `json:"stdout,omitempty"`
-	Stderr   string `json:"stderr,omitempty"`
 	Error    string `json:"error,omitempty"`
 }
 
@@ -54,18 +50,6 @@ func DecodeRequest(r io.Reader) (ExecRequest, error) {
 
 func EncodeRequest(w io.Writer, req ExecRequest) error {
 	return json.NewEncoder(w).Encode(req)
-}
-
-func DecodeResponse(r io.Reader) (ExecResponse, error) {
-	var res ExecResponse
-	if err := json.NewDecoder(r).Decode(&res); err != nil {
-		return ExecResponse{}, err
-	}
-	return res, nil
-}
-
-func EncodeResponse(w io.Writer, res ExecResponse) error {
-	return json.NewEncoder(w).Encode(res)
 }
 
 func EncodeStreamFrame(w io.Writer, frame ExecStreamFrame) error {
@@ -97,14 +81,10 @@ func DecodeInputFrame(r io.Reader) (ExecInputFrame, error) {
 type StreamCallbacks struct {
 	OnStdout func([]byte)
 	OnStderr func([]byte)
-	// BufferedOutputLimitBytes caps stdout/stderr accumulated in the final
-	// response. Nil uses the default limit; zero disables accumulation.
-	BufferedOutputLimitBytes *int
 }
 
 func DecodeStreamResponse(r io.Reader, callbacks StreamCallbacks) (ExecResponse, error) {
 	dec := json.NewDecoder(r)
-	bufferedOutputLimit := callbacks.bufferedOutputLimitBytes()
 	out := ExecResponse{}
 	for {
 		raw := map[string]json.RawMessage{}
@@ -114,16 +94,7 @@ func DecodeStreamResponse(r io.Reader, callbacks StreamCallbacks) (ExecResponse,
 
 		typeRaw, hasType := raw["type"]
 		if !hasType {
-			// Backward compatibility with single ExecResponse payload.
-			payload, err := json.Marshal(raw)
-			if err != nil {
-				return ExecResponse{}, err
-			}
-			res := ExecResponse{}
-			if err := json.Unmarshal(payload, &res); err != nil {
-				return ExecResponse{}, err
-			}
-			return res, nil
+			return ExecResponse{}, errors.New("missing stream frame type")
 		}
 
 		kind := ""
@@ -142,12 +113,10 @@ func DecodeStreamResponse(r io.Reader, callbacks StreamCallbacks) (ExecResponse,
 				continue
 			}
 			if kind == "stdout" {
-				out.Stdout = appendBoundedString(out.Stdout, chunk, bufferedOutputLimit)
 				if callbacks.OnStdout != nil {
 					callbacks.OnStdout(append([]byte(nil), chunk...))
 				}
 			} else {
-				out.Stderr = appendBoundedString(out.Stderr, chunk, bufferedOutputLimit)
 				if callbacks.OnStderr != nil {
 					callbacks.OnStderr(append([]byte(nil), chunk...))
 				}
@@ -168,30 +137,6 @@ func DecodeStreamResponse(r io.Reader, callbacks StreamCallbacks) (ExecResponse,
 			return ExecResponse{}, fmt.Errorf("unknown stream frame type %q", kind)
 		}
 	}
-}
-
-func (callbacks StreamCallbacks) bufferedOutputLimitBytes() int {
-	if callbacks.BufferedOutputLimitBytes != nil {
-		return *callbacks.BufferedOutputLimitBytes
-	}
-	return defaultStreamResponseOutputLimit
-}
-
-func appendBoundedString(current string, chunk []byte, limit int) string {
-	if len(chunk) == 0 || limit <= 0 {
-		return current
-	}
-	if len(chunk) >= limit {
-		return string(chunk[len(chunk)-limit:])
-	}
-	if len(current)+len(chunk) <= limit {
-		return current + string(chunk)
-	}
-	keep := limit - len(chunk)
-	if keep < 0 {
-		keep = 0
-	}
-	return current[len(current)-keep:] + string(chunk)
 }
 
 func decodeFrameData(raw json.RawMessage) ([]byte, error) {

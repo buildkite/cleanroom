@@ -12,6 +12,8 @@ import (
 type delayedPersistentAdapter struct {
 	provisionDelay time.Duration
 	runResult      backend.ExecutionResult
+	runStdout      string
+	runStderr      string
 }
 
 func (a *delayedPersistentAdapter) Name() string { return "firecracker" }
@@ -28,11 +30,11 @@ func (a *delayedPersistentAdapter) ProvisionSandbox(ctx context.Context, _ backe
 func (a *delayedPersistentAdapter) RunInSandbox(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 	result := a.runResult
 	result.ExecutionID = req.ExecutionID
-	if stream.OnStdout != nil && result.Stdout != "" {
-		stream.OnStdout([]byte(result.Stdout))
+	if stream.OnStdout != nil && a.runStdout != "" {
+		stream.OnStdout([]byte(a.runStdout))
 	}
-	if stream.OnStderr != nil && result.Stderr != "" {
-		stream.OnStderr([]byte(result.Stderr))
+	if stream.OnStderr != nil && a.runStderr != "" {
+		stream.OnStderr([]byte(a.runStderr))
 	}
 	return &result, nil
 }
@@ -103,9 +105,9 @@ func TestExecIntegrationShowsProgressWhenCreatingSandbox(t *testing.T) {
 		provisionDelay: 25 * time.Millisecond,
 		runResult: backend.ExecutionResult{
 			ExitCode: 0,
-			Stdout:   "ok\n",
 			Message:  "ok",
 		},
+		runStdout: "ok\n",
 	})
 	cwd := t.TempDir()
 

@@ -64,15 +64,15 @@ func handleConn(conn io.ReadWriteCloser) {
 
 	var req vsockexec.ExecRequest
 	if err := dec.Decode(&req); err != nil {
-		_ = vsockexec.EncodeResponse(conn, vsockexec.ExecResponse{ExitCode: 1, Error: err.Error()})
+		sendErrorResponse(conn, err)
 		return
 	}
 	if len(req.Command) == 0 {
-		_ = vsockexec.EncodeResponse(conn, vsockexec.ExecResponse{ExitCode: 1, Error: "missing command"})
+		sendErrorResponse(conn, errors.New("missing command"))
 		return
 	}
 	if strings.TrimSpace(req.Command[0]) == "" {
-		_ = vsockexec.EncodeResponse(conn, vsockexec.ExecResponse{ExitCode: 1, Error: "missing command executable"})
+		sendErrorResponse(conn, errors.New("missing command executable"))
 		return
 	}
 	if len(req.EntropySeed) > 0 {
@@ -117,7 +117,7 @@ func handleConnTTY(conn io.ReadWriteCloser, dec *json.Decoder, req vsockexec.Exe
 	// PTY read returns EIO when the slave side closes; ignore the error.
 	_, _ = io.Copy(streamFrameWriter{send: sender.Send, kind: "stdout"}, ptmx)
 
-	sendExitResult(sender, conn, cmd.Wait())
+	sendExitResult(sender, cmd.Wait())
 }
 
 func handleConnPipes(conn io.ReadWriteCloser, dec *json.Decoder, req vsockexec.ExecRequest) {
@@ -157,17 +157,15 @@ func handleConnPipes(conn io.ReadWriteCloser, dec *json.Decoder, req vsockexec.E
 
 	go readInputFrames(dec, stdinPipe, func() { _ = stdinPipe.Close() }, nil)
 
-	stdoutBuf := newBoundedOutputBuffer(maxExecResponseOutputBytes)
-	stderrBuf := newBoundedOutputBuffer(maxExecResponseOutputBytes)
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		_, _ = io.Copy(io.MultiWriter(stdoutBuf, streamFrameWriter{send: sender.Send, kind: "stdout"}), stdout)
+		_, _ = io.Copy(streamFrameWriter{send: sender.Send, kind: "stdout"}, stdout)
 	}()
 	go func() {
 		defer wg.Done()
-		_, _ = io.Copy(io.MultiWriter(stderrBuf, streamFrameWriter{send: sender.Send, kind: "stderr"}), stderr)
+		_, _ = io.Copy(streamFrameWriter{send: sender.Send, kind: "stderr"}, stderr)
 	}()
 
 	wg.Wait()
@@ -179,12 +177,7 @@ func handleConnPipes(conn io.ReadWriteCloser, dec *json.Decoder, req vsockexec.E
 		ExitCode: exitCode,
 		Error:    errMsg,
 	}); err != nil {
-		_ = vsockexec.EncodeResponse(conn, vsockexec.ExecResponse{
-			ExitCode: exitCode,
-			Error:    errMsg,
-			Stdout:   stdoutBuf.String(),
-			Stderr:   stderrBuf.String(),
-		})
+		return
 	}
 }
 
@@ -215,20 +208,31 @@ func readInputFrames(dec *json.Decoder, w io.Writer, closeStdin func(), resizeFn
 }
 
 func sendErrorResponse(w io.Writer, err error) {
-	_ = vsockexec.EncodeResponse(w, vsockexec.ExecResponse{ExitCode: 1, Error: err.Error()})
+	msg := err.Error()
+	sender := newFrameSender(w)
+	if sendErr := sender.Send(vsockexec.ExecStreamFrame{
+		Type: "stderr",
+		Data: []byte(msg + "\n"),
+	}); sendErr != nil {
+		return
+	}
+	if sendErr := sender.Send(vsockexec.ExecStreamFrame{
+		Type:     "exit",
+		ExitCode: 1,
+		Error:    msg,
+	}); sendErr != nil {
+		return
+	}
 }
 
-func sendExitResult(sender *frameSender, w io.Writer, waitErr error) {
+func sendExitResult(sender *frameSender, waitErr error) {
 	exitCode, errMsg := exitResult(waitErr)
 	if err := sender.Send(vsockexec.ExecStreamFrame{
 		Type:     "exit",
 		ExitCode: exitCode,
 		Error:    errMsg,
 	}); err != nil {
-		_ = vsockexec.EncodeResponse(w, vsockexec.ExecResponse{
-			ExitCode: exitCode,
-			Error:    errMsg,
-		})
+		return
 	}
 }
 

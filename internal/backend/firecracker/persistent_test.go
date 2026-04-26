@@ -140,7 +140,7 @@ func TestRunInSandboxWritesRunObservabilityForStatusCommand(t *testing.T) {
 		if stream.OnStdout != nil {
 			stream.OnStdout([]byte("hello\n"))
 		}
-		return vsockexec.ExecResponse{ExitCode: 0, Stdout: "hello\n"}, guestExecTiming{WaitForAgent: 5 * time.Millisecond, CommandRun: 8 * time.Millisecond}, nil
+		return vsockexec.ExecResponse{ExitCode: 0}, guestExecTiming{WaitForAgent: 5 * time.Millisecond, CommandRun: 8 * time.Millisecond}, nil
 	}
 	adapter.sandboxes = map[string]*sandboxInstance{
 		"cr-test": {
@@ -255,7 +255,7 @@ func TestDownloadSandboxFileReturnsBytes(t *testing.T) {
 		if stream.OnStdout != nil {
 			stream.OnStdout([]byte("hello"))
 		}
-		return vsockexec.ExecResponse{ExitCode: 0, Stdout: "hello"}, guestExecTiming{}, nil
+		return vsockexec.ExecResponse{ExitCode: 0}, guestExecTiming{}, nil
 	}
 	adapter.sandboxes = map[string]*sandboxInstance{
 		"cr-test": {
@@ -275,31 +275,6 @@ func TestDownloadSandboxFileReturnsBytes(t *testing.T) {
 	}
 }
 
-func TestDownloadSandboxFileFallsBackToExecResponseStdout(t *testing.T) {
-	t.Parallel()
-
-	adapter := &Adapter{}
-	adapter.runGuestCommandFn = func(_ context.Context, _ context.Context, _ <-chan struct{}, _ func() error, _ string, _ uint32, _ vsockexec.ExecRequest, _ backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error) {
-		return vsockexec.ExecResponse{ExitCode: 0, Stdout: "legacy-output"}, guestExecTiming{}, nil
-	}
-	adapter.sandboxes = map[string]*sandboxInstance{
-		"cr-test": {
-			SandboxID: "cr-test",
-			VsockPath: "/tmp/fake.sock",
-			GuestPort: 10700,
-			exitedCh:  make(chan struct{}),
-		},
-	}
-
-	data, err := adapter.DownloadSandboxFile(context.Background(), "cr-test", "/home/sprite/artifacts/haiku.txt", 32)
-	if err != nil {
-		t.Fatalf("DownloadSandboxFile returned error: %v", err)
-	}
-	if got, want := string(data), "legacy-output"; got != want {
-		t.Fatalf("unexpected data: got %q want %q", got, want)
-	}
-}
-
 func TestDownloadSandboxFileHandlesMaxInt64MaxBytes(t *testing.T) {
 	t.Parallel()
 
@@ -311,7 +286,7 @@ func TestDownloadSandboxFileHandlesMaxInt64MaxBytes(t *testing.T) {
 		if stream.OnStdout != nil {
 			stream.OnStdout([]byte("hello"))
 		}
-		return vsockexec.ExecResponse{ExitCode: 0, Stdout: "hello"}, guestExecTiming{}, nil
+		return vsockexec.ExecResponse{ExitCode: 0}, guestExecTiming{}, nil
 	}
 	adapter.sandboxes = map[string]*sandboxInstance{
 		"cr-test": {
@@ -339,7 +314,7 @@ func TestDownloadSandboxFileEnforcesMaxBytes(t *testing.T) {
 		if stream.OnStdout != nil {
 			stream.OnStdout([]byte("0123456789"))
 		}
-		return vsockexec.ExecResponse{ExitCode: 0, Stdout: "0123456789"}, guestExecTiming{}, nil
+		return vsockexec.ExecResponse{ExitCode: 0}, guestExecTiming{}, nil
 	}
 	adapter.sandboxes = map[string]*sandboxInstance{
 		"cr-test": {

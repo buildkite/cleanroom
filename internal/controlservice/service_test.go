@@ -98,12 +98,6 @@ func (s *stubAdapter) RunInSandbox(ctx context.Context, req backend.ExecutionReq
 			Message:     "ok",
 		}
 	}
-	if stream.OnStdout != nil && result.Stdout != "" {
-		stream.OnStdout([]byte(result.Stdout))
-	}
-	if stream.OnStderr != nil && result.Stderr != "" {
-		stream.OnStderr([]byte(result.Stderr))
-	}
 	return result, nil
 }
 
@@ -529,7 +523,7 @@ func TestCreateSandboxTracesBootstrapFailure(t *testing.T) {
 				if stream.OnStderr != nil {
 					stream.OnStderr([]byte(message))
 				}
-				return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 1, LaunchedVM: true, Stderr: message, Message: strings.TrimSpace(message)}, nil
+				return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 1, LaunchedVM: true, Message: strings.TrimSpace(message)}, nil
 			default:
 				t.Fatalf("unexpected bootstrap run %d for command %q", runCount, req.Command)
 				return nil, nil
@@ -857,13 +851,15 @@ func TestServiceSandboxCreateMetricsTrackWorkspaceCacheFailureSource(t *testing.
 		createSnapshotFn: func(_ context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
 			return &backend.SnapshotResult{StorageRef: "/snapshots/" + req.SnapshotID + ".ext4"}, nil
 		},
-		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 			runCalls++
 			result := &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, LaunchedVM: true, Message: "ok"}
 			if runCalls == 3 {
 				result.ExitCode = 1
 				result.Message = "dependency bootstrap failed"
-				result.Stderr = "dependency bootstrap failed\n"
+				if stream.OnStderr != nil {
+					stream.OnStderr([]byte("dependency bootstrap failed\n"))
+				}
 			}
 			return result, nil
 		},
@@ -1189,7 +1185,13 @@ func cacheRecordBackingSnapshotID(record cachestore.Record) (string, bool) {
 
 func TestExecutionStreamIncludesExitEvent(t *testing.T) {
 	adapter := &stubAdapter{
-		runFn: func(_ context.Context, req backend.ExecutionRequest) (*backend.ExecutionResult, error) {
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+			if stream.OnStdout != nil {
+				stream.OnStdout([]byte("hello stdout\n"))
+			}
+			if stream.OnStderr != nil {
+				stream.OnStderr([]byte("hello stderr\n"))
+			}
 			return &backend.ExecutionResult{
 				ExecutionID: req.ExecutionID,
 				ExitCode:    7,
@@ -1199,8 +1201,6 @@ func TestExecutionStreamIncludesExitEvent(t *testing.T) {
 				ImageRef:    "ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 				ImageDigest: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 				Message:     "done",
-				Stdout:      "hello stdout\n",
-				Stderr:      "hello stderr\n",
 			}, nil
 		},
 	}
@@ -1921,7 +1921,6 @@ func TestExecutionStreamIncludesStructuredWarnings(t *testing.T) {
 			return &backend.ExecutionResult{
 				ExecutionID: req.ExecutionID,
 				ExitCode:    0,
-				Stdout:      "hello stdout\n",
 				Message:     "done",
 			}, nil
 		},
@@ -4182,18 +4181,22 @@ func TestCreateExecutionPreservesRunBeforeOutputInFinalSnapshot(t *testing.T) {
 		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 			switch strings.Join(req.Command, " ") {
 			case "sh -lc echo pre-run":
+				if stream.OnStdout != nil {
+					stream.OnStdout([]byte("pre-run output\n"))
+				}
 				return &backend.ExecutionResult{
 					ExecutionID: req.ExecutionID,
 					ExitCode:    0,
 					Message:     "ok",
-					Stdout:      "pre-run output\n",
 				}, nil
 			case "sh -lc pwd":
+				if stream.OnStdout != nil {
+					stream.OnStdout([]byte("user output\n"))
+				}
 				return &backend.ExecutionResult{
 					ExecutionID: req.ExecutionID,
 					ExitCode:    0,
 					Message:     "ok",
-					Stdout:      "user output\n",
 				}, nil
 			default:
 				t.Fatalf("unexpected command: %v", req.Command)
@@ -4238,6 +4241,9 @@ func TestCreateExecutionRetainsRunBeforeFailureArtifacts(t *testing.T) {
 		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 			switch strings.Join(req.Command, " ") {
 			case "sh -lc echo pre-run":
+				if stream.OnStdout != nil {
+					stream.OnStdout([]byte("pre-run output\n"))
+				}
 				return &backend.ExecutionResult{
 					ExecutionID: req.ExecutionID,
 					ExitCode:    23,
@@ -4245,7 +4251,6 @@ func TestCreateExecutionRetainsRunBeforeFailureArtifacts(t *testing.T) {
 					PlanPath:    "/tmp/pre-run-plan",
 					RunDir:      "/tmp/pre-run-run",
 					Message:     "pre-run failed",
-					Stdout:      "pre-run output\n",
 				}, nil
 			default:
 				t.Fatalf("unexpected command: %v", req.Command)
@@ -6055,44 +6060,6 @@ func TestPruneFinishedExecutionClearsSandboxExecutionPointers(t *testing.T) {
 	}
 }
 
-func TestBufferedResultDeltaModes(t *testing.T) {
-	if got, replace := bufferedResultDelta("abc", "abcabc", 3); got != "" || replace {
-		t.Fatalf("expected saturated suffix overlap to suppress duplicate delta, got delta=%q replace=%t", got, replace)
-	}
-	if got, replace := bufferedResultDelta("prefix-", "prefix-tail", 1024); got != "tail" || replace {
-		t.Fatalf("expected prefix-only append delta, got delta=%q replace=%t", got, replace)
-	}
-	if got, replace := bufferedResultDelta("tail", "head-tail", 1024); got != "head-tail" || !replace {
-		t.Fatalf("expected suffix-only backfill replacement, got delta=%q replace=%t", got, replace)
-	}
-}
-
-func TestMergeBufferedResultOutputReplacesMissingStreamPrefix(t *testing.T) {
-	svc := newTestService(&stubAdapter{})
-	ex := &executionState{
-		ID:        "exec-1",
-		SandboxID: "sb-1",
-		Stdout:    "tail",
-		Status:    cleanroomv1.ExecutionStatus_EXECUTION_STATUS_RUNNING,
-		events:    newEventFeed[*cleanroomv1.ExecutionStreamEvent](defaultRetentionPolicy.maxRetainedExecutionEvents),
-	}
-
-	svc.mergeBufferedResultOutputLocked(ex, &backend.ExecutionResult{
-		Stdout: "head-tail",
-	}, true)
-
-	if got, want := ex.Stdout, "head-tail"; got != want {
-		t.Fatalf("expected buffered replacement to preserve missing prefix: got %q want %q", got, want)
-	}
-	history := ex.events.snapshot()
-	if got, want := len(history), 1; got != want {
-		t.Fatalf("expected single buffered stdout event, got %d want %d", got, want)
-	}
-	if got, want := string(history[0].GetStdout()), "head-tail"; got != want {
-		t.Fatalf("unexpected buffered stdout event payload: got %q want %q", got, want)
-	}
-}
-
 func TestAppendRetainedOutputClonesTailSlice(t *testing.T) {
 	source := strings.Repeat("x", 1024) + "tail"
 	tail := source[len(source)-4:]
@@ -6102,19 +6069,6 @@ func TestAppendRetainedOutputClonesTailSlice(t *testing.T) {
 	}
 	if unsafe.StringData(got) == unsafe.StringData(tail) {
 		t.Fatal("expected retained tail to be copied, but it reuses source backing storage")
-	}
-}
-
-func TestRetainedOutputCaptureBoundsStoredSuffix(t *testing.T) {
-	capture := newRetainedOutputCapture(8)
-	if _, err := capture.Write([]byte("hello")); err != nil {
-		t.Fatalf("Write returned error: %v", err)
-	}
-	if _, err := capture.Write([]byte("-world")); err != nil {
-		t.Fatalf("Write returned error: %v", err)
-	}
-	if got, want := capture.String(), "lo-world"; got != want {
-		t.Fatalf("unexpected retained capture suffix: got %q want %q", got, want)
 	}
 }
 
@@ -6288,13 +6242,8 @@ func TestListSandboxesReturnsNewestSnapshotFirst(t *testing.T) {
 }
 
 func TestExecutionRetentionBoundsOutput(t *testing.T) {
-	var gotStreamLimit *int
 	adapter := &stubAdapter{
 		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
-			if stream.BufferedOutputLimitBytes != nil {
-				limit := *stream.BufferedOutputLimitBytes
-				gotStreamLimit = &limit
-			}
 			for _, chunk := range []string{"1234", "5678", "90"} {
 				if stream.OnStdout != nil {
 					stream.OnStdout([]byte(chunk))
@@ -6312,8 +6261,6 @@ func TestExecutionRetentionBoundsOutput(t *testing.T) {
 				PlanPath:    "/tmp/plan",
 				RunDir:      "/tmp/run",
 				Message:     "ok",
-				Stdout:      "1234567890",
-				Stderr:      "abcdefghij",
 			}, nil
 		},
 	}
@@ -6351,21 +6298,16 @@ func TestExecutionRetentionBoundsOutput(t *testing.T) {
 	if got, want := snapshot.Stderr, "cdefghij"; got != want {
 		t.Fatalf("unexpected retained stderr: got %q want %q", got, want)
 	}
-	if gotStreamLimit == nil {
-		t.Fatalf("expected stream buffered output limit to be set")
-	}
-	if got, want := *gotStreamLimit, 8; got != want {
-		t.Fatalf("unexpected stream buffered output limit: got %d want %d", got, want)
-	}
 }
 
-func TestExecutionRetentionSetsZeroStreamOutputLimit(t *testing.T) {
-	var gotStreamLimit *int
+func TestExecutionRetentionZeroesSnapshotOutputButKeepsEvents(t *testing.T) {
 	adapter := &stubAdapter{
 		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
-			if stream.BufferedOutputLimitBytes != nil {
-				limit := *stream.BufferedOutputLimitBytes
-				gotStreamLimit = &limit
+			if stream.OnStdout != nil {
+				stream.OnStdout([]byte("stdout"))
+			}
+			if stream.OnStderr != nil {
+				stream.OnStderr([]byte("stderr"))
 			}
 			return &backend.ExecutionResult{
 				ExecutionID: req.ExecutionID,
@@ -6396,11 +6338,34 @@ func TestExecutionRetentionSetsZeroStreamOutputLimit(t *testing.T) {
 	if _, err := svc.WaitExecution(context.Background(), sandboxID, executionID); err != nil {
 		t.Fatalf("WaitExecution returned error: %v", err)
 	}
-	if gotStreamLimit == nil {
-		t.Fatalf("expected stream buffered output limit to be set")
+
+	snapshot, err := svc.ExecutionSnapshot(sandboxID, executionID)
+	if err != nil {
+		t.Fatalf("ExecutionSnapshot returned error: %v", err)
 	}
-	if got := *gotStreamLimit; got != 0 {
-		t.Fatalf("unexpected stream buffered output limit: got %d want 0", got)
+	if got := snapshot.Stdout; got != "" {
+		t.Fatalf("expected retained stdout to be empty, got %q", got)
+	}
+	if got := snapshot.Stderr; got != "" {
+		t.Fatalf("expected retained stderr to be empty, got %q", got)
+	}
+
+	history, _, _, unsubscribe, err := svc.SubscribeExecutionEvents(sandboxID, executionID)
+	if err != nil {
+		t.Fatalf("SubscribeExecutionEvents returned error: %v", err)
+	}
+	defer unsubscribe()
+	var sawStdout, sawStderr bool
+	for _, event := range history {
+		if string(event.GetStdout()) == "stdout" {
+			sawStdout = true
+		}
+		if string(event.GetStderr()) == "stderr" {
+			sawStderr = true
+		}
+	}
+	if !sawStdout || !sawStderr {
+		t.Fatalf("expected stream events to be retained, saw stdout=%t stderr=%t", sawStdout, sawStderr)
 	}
 }
 
@@ -6419,7 +6384,6 @@ func TestExecutionRetentionBoundsEventHistory(t *testing.T) {
 				PlanPath:    "/tmp/plan",
 				RunDir:      "/tmp/run",
 				Message:     "ok",
-				Stdout:      "1234",
 			}, nil
 		},
 	}
@@ -6527,7 +6491,6 @@ func TestStreamedOutputArrivesBeforeExecutionExit(t *testing.T) {
 				PlanPath:    "/tmp/plan",
 				RunDir:      "/tmp/run",
 				Message:     "ok",
-				Stdout:      "chunk-1\nchunk-2\n",
 			}, nil
 		},
 	}

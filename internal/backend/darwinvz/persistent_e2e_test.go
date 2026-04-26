@@ -3,6 +3,7 @@
 package darwinvz
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -128,13 +129,14 @@ func TestPersistentSandboxE2E(t *testing.T) {
 		t.Fatalf("first RunInSandbox returned error: %v", err)
 	}
 	if first.ExitCode != 0 {
-		t.Fatalf("expected first exit code 0, got %d (stderr=%q)", first.ExitCode, first.Stderr)
+		t.Fatalf("expected first exit code 0, got %d", first.ExitCode)
 	}
 	if first.LaunchedVM {
 		t.Fatalf("expected persistent execution to report LaunchedVM=false, got %#v", first)
 	}
 
 	run2Dir := filepath.Join(t.TempDir(), "run-2")
+	var secondStdout bytes.Buffer
 	second, err := adapter.RunInSandbox(ctx, backend.ExecutionRequest{
 		SandboxID:   sandboxID,
 		ExecutionID: "run-2",
@@ -144,17 +146,19 @@ func TestPersistentSandboxE2E(t *testing.T) {
 			RunDir:        run2Dir,
 			LaunchSeconds: cfg.LaunchSeconds,
 		},
-	}, backend.OutputStream{})
+	}, backend.OutputStream{OnStdout: func(chunk []byte) {
+		_, _ = secondStdout.Write(chunk)
+	}})
 	if err != nil {
 		t.Fatalf("second RunInSandbox returned error: %v", err)
 	}
 	if second.ExitCode != 0 {
-		t.Fatalf("expected second exit code 0, got %d (stderr=%q)", second.ExitCode, second.Stderr)
+		t.Fatalf("expected second exit code 0, got %d", second.ExitCode)
 	}
 	if second.LaunchedVM {
 		t.Fatalf("expected persistent execution to report LaunchedVM=false, got %#v", second)
 	}
-	if got, want := strings.TrimSpace(second.Stdout), markerValue; got != want {
+	if got, want := strings.TrimSpace(secondStdout.String()), markerValue; got != want {
 		t.Fatalf("unexpected persisted file contents: got %q want %q", got, want)
 	}
 	if got, want := second.PlanPath, first.PlanPath; got != want {
@@ -265,13 +269,14 @@ func TestPersistentSandboxE2EExecStreamingDoesNotHang(t *testing.T) {
 		t.Fatalf("warm-up RunInSandbox returned error: %v", err)
 	}
 	if warmup.ExitCode != 0 {
-		t.Fatalf("expected warm-up exit code 0, got %d (stderr=%q)", warmup.ExitCode, warmup.Stderr)
+		t.Fatalf("expected warm-up exit code 0, got %d", warmup.ExitCode)
 	}
 
 	for i := 0; i < 8; i++ {
 		runID := fmt.Sprintf("run-stream-%d", i)
 		want := fmt.Sprintf("stream-%d", i)
 		runCtx, runCancel := context.WithTimeout(ctx, 30*time.Second)
+		var stdout bytes.Buffer
 		res, err := adapter.RunInSandbox(runCtx, backend.ExecutionRequest{
 			SandboxID:   sandboxID,
 			ExecutionID: runID,
@@ -280,15 +285,17 @@ func TestPersistentSandboxE2EExecStreamingDoesNotHang(t *testing.T) {
 			FirecrackerConfig: backend.FirecrackerConfig{
 				LaunchSeconds: cfg.LaunchSeconds,
 			},
-		}, backend.OutputStream{})
+		}, backend.OutputStream{OnStdout: func(chunk []byte) {
+			_, _ = stdout.Write(chunk)
+		}})
 		runCancel()
 		if err != nil {
 			t.Fatalf("RunInSandbox %q returned error: %v", runID, err)
 		}
 		if res.ExitCode != 0 {
-			t.Fatalf("expected %q exit code 0, got %d (stderr=%q)", runID, res.ExitCode, res.Stderr)
+			t.Fatalf("expected %q exit code 0, got %d", runID, res.ExitCode)
 		}
-		if got := strings.TrimSpace(res.Stdout); got != want {
+		if got := strings.TrimSpace(stdout.String()); got != want {
 			t.Fatalf("unexpected stdout for %q: got %q want %q", runID, got, want)
 		}
 	}
