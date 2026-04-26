@@ -204,6 +204,54 @@ func TestCopyFromSandboxPreservesLocalDestinationSymlink(t *testing.T) {
 	}
 }
 
+func TestCopyFromSandboxWritesThroughDanglingLocalDestinationSymlink(t *testing.T) {
+	payload := []byte("payload")
+	adapter := &copyIntegrationAdapter{
+		readFn: func(_ context.Context, _ string, _ string, _ int64, emit func([]byte) error) error {
+			return emit(payload)
+		},
+	}
+	host, _ := startIntegrationServer(t, adapter)
+	sandboxID := createCopyTestSandbox(t, host)
+	dir := t.TempDir()
+	target := filepath.Join(dir, "missing-target.txt")
+	link := filepath.Join(dir, "link.txt")
+	if err := os.Symlink("missing-target.txt", link); err != nil {
+		t.Fatalf("create symlink: %v", err)
+	}
+	stdout, _ := makeStdoutCapture(t)
+	stderr, _ := makeStdoutCapture(t)
+
+	cmd := CopyCommand{
+		clientFlags: clientFlags{Host: host},
+		Source:      sandboxID + ":/var/log/result.txt",
+		Destination: link,
+	}
+	if err := cmd.Run(&runtimeContext{
+		Config:        runtimeconfig.Config{},
+		Observability: newTestObservability(t),
+		Stdout:        stdout,
+		Stderr:        stderr,
+	}); err != nil {
+		t.Fatalf("CopyCommand.Run returned error: %v", err)
+	}
+
+	linkInfo, err := os.Lstat(link)
+	if err != nil {
+		t.Fatalf("lstat link: %v", err)
+	}
+	if linkInfo.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("expected destination to remain a symlink, got mode %s", linkInfo.Mode())
+	}
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read target: %v", err)
+	}
+	if !bytes.Equal(data, payload) {
+		t.Fatalf("unexpected target data: got %q want %q", data, payload)
+	}
+}
+
 func TestResolveLocalCopyDestinationRejectsMissingSlashSuffixedPath(t *testing.T) {
 	missingDir := filepath.Join(t.TempDir(), "missing") + string(filepath.Separator)
 
@@ -398,6 +446,60 @@ func TestCopyToSandboxAppendsLocalBasenameForRemoteSymlinkDirectory(t *testing.T
 		t.Fatalf("unexpected stat paths: got %q want %q", got, want)
 	}
 	if got, want := gotRemotePath, "/tmp/link/fixture.txt"; got != want {
+		t.Fatalf("unexpected remote path: got %q want %q", got, want)
+	}
+}
+
+func TestCopyToSandboxAppendsLocalBasenameForRemoteSymlinkDirectoryChain(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "fixture.txt")
+	if err := os.WriteFile(src, []byte("payload"), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+
+	var gotRemotePath string
+	var statPaths []string
+	adapter := &copyIntegrationAdapter{
+		statFn: func(_ context.Context, _ string, path string) (*backend.SandboxPathInfo, error) {
+			statPaths = append(statPaths, path)
+			switch path {
+			case "/tmp/link1":
+				return &backend.SandboxPathInfo{Path: path, Type: backend.SandboxPathTypeSymlink, SymlinkTarget: "link2"}, nil
+			case "/tmp/link2":
+				return &backend.SandboxPathInfo{Path: path, Type: backend.SandboxPathTypeSymlink, SymlinkTarget: "/tmp/artifacts"}, nil
+			case "/tmp/artifacts":
+				return &backend.SandboxPathInfo{Path: path, Type: backend.SandboxPathTypeDirectory}, nil
+			default:
+				return nil, backend.NewSandboxPathNotFoundError(path)
+			}
+		},
+		writeFn: func(_ context.Context, _ string, path string, r io.Reader, _ fs.FileMode, _ time.Time) (int64, error) {
+			gotRemotePath = path
+			data, err := io.ReadAll(r)
+			return int64(len(data)), err
+		},
+	}
+	host, _ := startIntegrationServer(t, adapter)
+	sandboxID := createCopyTestSandbox(t, host)
+	stdout, _ := makeStdoutCapture(t)
+	stderr, _ := makeStdoutCapture(t)
+
+	cmd := CopyCommand{
+		clientFlags: clientFlags{Host: host},
+		Source:      src,
+		Destination: sandboxID + ":/tmp/link1",
+	}
+	if err := cmd.Run(&runtimeContext{
+		Config:        runtimeconfig.Config{},
+		Observability: newTestObservability(t),
+		Stdout:        stdout,
+		Stderr:        stderr,
+	}); err != nil {
+		t.Fatalf("CopyCommand.Run returned error: %v", err)
+	}
+	if got, want := strings.Join(statPaths, ","), "/tmp/link1,/tmp/link2,/tmp/artifacts"; got != want {
+		t.Fatalf("unexpected stat paths: got %q want %q", got, want)
+	}
+	if got, want := gotRemotePath, "/tmp/link1/fixture.txt"; got != want {
 		t.Fatalf("unexpected remote path: got %q want %q", got, want)
 	}
 }

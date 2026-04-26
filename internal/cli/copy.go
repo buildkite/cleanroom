@@ -233,28 +233,33 @@ func resolveLocalCopyDestination(localPath, remotePath string) (string, error) {
 }
 
 func resolveLocalInstallDestination(destination string) (string, error) {
-	info, err := os.Lstat(destination)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return destination, nil
+	current := destination
+	seen := map[string]struct{}{}
+	for range 40 {
+		info, err := os.Lstat(current)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return current, nil
+			}
+			return "", fmt.Errorf("lstat local destination: %w", err)
 		}
-		return "", fmt.Errorf("lstat local destination: %w", err)
+		if info.Mode()&os.ModeSymlink == 0 {
+			return current, nil
+		}
+		if _, ok := seen[current]; ok {
+			return "", fmt.Errorf("local destination symlink cycle at %q", destination)
+		}
+		seen[current] = struct{}{}
+		target, err := os.Readlink(current)
+		if err != nil {
+			return "", fmt.Errorf("read local destination symlink: %w", err)
+		}
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(filepath.Dir(current), target)
+		}
+		current = filepath.Clean(target)
 	}
-	if info.Mode()&os.ModeSymlink == 0 {
-		return destination, nil
-	}
-	target, err := filepath.EvalSymlinks(destination)
-	if err != nil {
-		return "", fmt.Errorf("resolve local destination symlink: %w", err)
-	}
-	targetInfo, err := os.Stat(target)
-	if err != nil {
-		return "", fmt.Errorf("stat local destination symlink target: %w", err)
-	}
-	if targetInfo.IsDir() {
-		return destination, nil
-	}
-	return target, nil
+	return "", fmt.Errorf("local destination symlink chain too deep at %q", destination)
 }
 
 func resolveRemoteCopyDestination(remotePath, localPath string) (string, error) {
@@ -276,28 +281,16 @@ func remoteCopyDestinationWithLocalBasename(remotePath, localPath string) (strin
 }
 
 func sandboxDestinationIsDirectory(ctx context.Context, client *controlclient.Client, sandboxID, remotePath string) (bool, error) {
-	statResp, err := client.StatSandboxPath(ctx, &cleanroomv1.StatSandboxPathRequest{
-		SandboxId: sandboxID,
-		Path:      remotePath,
-	})
-	if err != nil {
-		if isSandboxPathNotFoundError(err) {
-			return false, nil
+	current := remotePath
+	seen := map[string]struct{}{}
+	for range 40 {
+		if _, ok := seen[current]; ok {
+			return false, fmt.Errorf("remote destination symlink cycle at %q", remotePath)
 		}
-		return false, err
-	}
-	info := statResp.GetInfo()
-	switch info.GetType() {
-	case cleanroomv1.SandboxPathType_SANDBOX_PATH_TYPE_DIRECTORY:
-		return true, nil
-	case cleanroomv1.SandboxPathType_SANDBOX_PATH_TYPE_SYMLINK:
-		target := resolveRemoteSymlinkTarget(remotePath, info.GetSymlinkTarget())
-		if target == "" {
-			return false, nil
-		}
-		targetResp, err := client.StatSandboxPath(ctx, &cleanroomv1.StatSandboxPathRequest{
+		seen[current] = struct{}{}
+		statResp, err := client.StatSandboxPath(ctx, &cleanroomv1.StatSandboxPathRequest{
 			SandboxId: sandboxID,
-			Path:      target,
+			Path:      current,
 		})
 		if err != nil {
 			if isSandboxPathNotFoundError(err) {
@@ -305,10 +298,21 @@ func sandboxDestinationIsDirectory(ctx context.Context, client *controlclient.Cl
 			}
 			return false, err
 		}
-		return targetResp.GetInfo().GetType() == cleanroomv1.SandboxPathType_SANDBOX_PATH_TYPE_DIRECTORY, nil
-	default:
-		return false, nil
+		info := statResp.GetInfo()
+		switch info.GetType() {
+		case cleanroomv1.SandboxPathType_SANDBOX_PATH_TYPE_DIRECTORY:
+			return true, nil
+		case cleanroomv1.SandboxPathType_SANDBOX_PATH_TYPE_SYMLINK:
+			target := resolveRemoteSymlinkTarget(current, info.GetSymlinkTarget())
+			if target == "" {
+				return false, nil
+			}
+			current = target
+		default:
+			return false, nil
+		}
 	}
+	return false, fmt.Errorf("remote destination symlink chain too deep at %q", remotePath)
 }
 
 func resolveRemoteSymlinkTarget(linkPath, target string) string {
