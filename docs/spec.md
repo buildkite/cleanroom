@@ -595,10 +595,29 @@ API:
   - cache hit/miss latency and error rates
 - Longitudinal audit retention: at least 90 days minimum.
 
-### 9.1 Stable reason/error code set (v1 baseline)
-Cleanroom must standardize and document a canonical code enum used consistently across CLI output, API responses, and audit events.
+### 9.1 Stable API error and gateway reason codes
+Cleanroom uses stable API error codes for CLI and SDK error handling, and stable
+gateway reason codes for gateway request audit, trace, and metrics labels.
 
-Current gateway reason codes:
+Current API/client error classifiers:
+- `unknown`
+- `canceled`
+- `deadline_exceeded`
+- `invalid_argument`
+- `not_found`
+- `unavailable`
+- `internal`
+- `policy_invalid`
+- `policy_conflict`
+- `backend_unavailable`
+- `backend_capability_mismatch`
+- `host_not_allowed`
+- `registry_not_allowed`
+- `lockfile_violation`
+- `secret_scope_violation`
+- `runtime_launch_failed`
+
+Current gateway request reason codes:
 - `host_not_allowed`
 - `method_not_allowed`
 - `invalid_request`
@@ -610,8 +629,9 @@ Current gateway reason codes:
 - `cached`
 - `fallback`
 
-Future policy features may add `lockfile_violation` and
-`secret_scope_violation` reason codes when those enforcement paths exist.
+Some API/client classifiers, such as `lockfile_violation` and
+`secret_scope_violation`, are reserved for planned policy features but remain
+stable client-facing codes.
 
 ## 10) Security considerations
 - Principle of least privilege:
