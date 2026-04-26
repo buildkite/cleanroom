@@ -145,6 +145,7 @@ Minimum v1 codes:
 - `policy_conflict`
 - `backend_unavailable`
 - `backend_capability_mismatch`
+- `failed_precondition`
 - `host_not_allowed`
 - `registry_not_allowed`
 - `lockfile_violation`
