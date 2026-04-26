@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/buildkite/cleanroom/internal/backend"
+	"github.com/buildkite/cleanroom/internal/backend/guestexec"
 	"github.com/buildkite/cleanroom/internal/bootassets"
 	"github.com/buildkite/cleanroom/internal/ext4edit"
 	"github.com/buildkite/cleanroom/internal/ext4image"
@@ -1020,15 +1021,9 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 	}
 	defer conn.Close()
 
-	if dl, ok := ctx.Deadline(); ok {
-		if err := conn.SetDeadline(dl); err != nil {
-			return nil, fmt.Errorf("set proxy socket deadline: %w", err)
-		}
+	if err := guestexec.PrepareConn(ctx, conn, "set proxy socket deadline"); err != nil {
+		return nil, err
 	}
-	go func() {
-		<-ctx.Done()
-		_ = conn.Close()
-	}()
 
 	gatewayScopeToken := ""
 	if a.GatewayRegistry != nil {
@@ -1078,44 +1073,13 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 	if _, err := cryptorand.Read(entropy); err == nil {
 		guestReq.EntropySeed = entropy
 	}
-	if err := vsockexec.EncodeRequest(conn, guestReq); err != nil {
+	if err := guestexec.SendRequest(conn, guestReq); err != nil {
 		observation.Error = err.Error()
-		return nil, fmt.Errorf("send guest exec request: %w", err)
+		return nil, err
 	}
+	guestexec.AttachStream(conn, stream, darwinVZAttachMetadata(networkProcessPID, startedVM.NetworkMetadata))
 
-	inputSender := &inputFrameSender{w: conn}
-	if stream.OnAttach != nil {
-		var metadata map[string]string
-		if networkProcessPID > 0 || (startedVM.NetworkMetadata != nil && strings.TrimSpace(startedVM.NetworkMetadata.GuestIP) != "") {
-			metadata = map[string]string{}
-			if networkProcessPID > 0 {
-				metadata["network_process_pid"] = strconv.Itoa(networkProcessPID)
-			}
-			if startedVM.NetworkMetadata != nil {
-				if guestIP := strings.TrimSpace(startedVM.NetworkMetadata.GuestIP); guestIP != "" {
-					metadata["network_guest_ip"] = guestIP
-				}
-			}
-		}
-		stream.OnAttach(backend.AttachIO{
-			WriteStdin: func(data []byte) error {
-				return inputSender.Send(vsockexec.ExecInputFrame{Type: "stdin", Data: data})
-			},
-			CloseStdin: func() error {
-				return inputSender.Send(vsockexec.ExecInputFrame{Type: "eof"})
-			},
-			ResizeTTY: func(cols, rows uint32) error {
-				return inputSender.Send(vsockexec.ExecInputFrame{Type: "resize", Cols: cols, Rows: rows})
-			},
-			Metadata: metadata,
-		})
-	}
-
-	guestRes, err := vsockexec.DecodeStreamResponse(conn, vsockexec.StreamCallbacks{
-		OnStdout:                 stream.OnStdout,
-		OnStderr:                 stream.OnStderr,
-		BufferedOutputLimitBytes: stream.BufferedOutputLimitBytes,
-	})
+	guestRes, err := guestexec.DecodeResponse(conn, stream)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			observation.Error = ctxErr.Error()
@@ -1484,15 +1448,9 @@ func (a *Adapter) executeInSandbox(bootCtx context.Context, runCtx context.Conte
 	}
 	defer conn.Close()
 
-	if dl, ok := runCtx.Deadline(); ok {
-		if err := conn.SetDeadline(dl); err != nil {
-			return nil, fmt.Errorf("set proxy socket deadline: %w", err)
-		}
+	if err := guestexec.PrepareConn(runCtx, conn, "set proxy socket deadline"); err != nil {
+		return nil, err
 	}
-	go func() {
-		<-runCtx.Done()
-		_ = conn.Close()
-	}()
 
 	gatewayScopeToken := ""
 	if a.GatewayRegistry != nil {
@@ -1546,43 +1504,12 @@ func (a *Adapter) executeInSandbox(bootCtx context.Context, runCtx context.Conte
 	if _, err := cryptorand.Read(entropy); err == nil {
 		guestReq.EntropySeed = entropy
 	}
-	if err := vsockexec.EncodeRequest(conn, guestReq); err != nil {
-		return nil, fmt.Errorf("send guest exec request: %w", err)
+	if err := guestexec.SendRequest(conn, guestReq); err != nil {
+		return nil, err
 	}
+	guestexec.AttachStream(conn, stream, darwinVZAttachMetadata(instance.NetworkProcessPID, instance.NetworkMetadata))
 
-	inputSender := &inputFrameSender{w: conn}
-	if stream.OnAttach != nil {
-		var metadata map[string]string
-		if instance.NetworkProcessPID > 0 || (instance.NetworkMetadata != nil && strings.TrimSpace(instance.NetworkMetadata.GuestIP) != "") {
-			metadata = map[string]string{}
-			if instance.NetworkProcessPID > 0 {
-				metadata["network_process_pid"] = strconv.Itoa(instance.NetworkProcessPID)
-			}
-			if instance.NetworkMetadata != nil {
-				if guestIP := strings.TrimSpace(instance.NetworkMetadata.GuestIP); guestIP != "" {
-					metadata["network_guest_ip"] = guestIP
-				}
-			}
-		}
-		stream.OnAttach(backend.AttachIO{
-			WriteStdin: func(data []byte) error {
-				return inputSender.Send(vsockexec.ExecInputFrame{Type: "stdin", Data: data})
-			},
-			CloseStdin: func() error {
-				return inputSender.Send(vsockexec.ExecInputFrame{Type: "eof"})
-			},
-			ResizeTTY: func(cols, rows uint32) error {
-				return inputSender.Send(vsockexec.ExecInputFrame{Type: "resize", Cols: cols, Rows: rows})
-			},
-			Metadata: metadata,
-		})
-	}
-
-	guestRes, err := vsockexec.DecodeStreamResponse(conn, vsockexec.StreamCallbacks{
-		OnStdout:                 stream.OnStdout,
-		OnStderr:                 stream.OnStderr,
-		BufferedOutputLimitBytes: stream.BufferedOutputLimitBytes,
-	})
+	guestRes, err := guestexec.DecodeResponse(conn, stream)
 	if err != nil {
 		if ctxErr := runCtx.Err(); ctxErr != nil {
 			return nil, fmt.Errorf("guest exec canceled while waiting for response: %w", ctxErr)
@@ -2403,15 +2330,20 @@ func (a *Adapter) resolveKernelPath(ctx context.Context, configuredPath string) 
 	return resolved.Path, resolved.Notice, nil
 }
 
-type inputFrameSender struct {
-	w  io.Writer
-	mu sync.Mutex
-}
-
-func (s *inputFrameSender) Send(frame vsockexec.ExecInputFrame) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return vsockexec.EncodeInputFrame(s.w, frame)
+func darwinVZAttachMetadata(networkProcessPID int, networkMetadata *darwinVZNetworkMetadata) map[string]string {
+	if networkProcessPID <= 0 && (networkMetadata == nil || strings.TrimSpace(networkMetadata.GuestIP) == "") {
+		return nil
+	}
+	metadata := map[string]string{}
+	if networkProcessPID > 0 {
+		metadata["network_process_pid"] = strconv.Itoa(networkProcessPID)
+	}
+	if networkMetadata != nil {
+		if guestIP := strings.TrimSpace(networkMetadata.GuestIP); guestIP != "" {
+			metadata["network_guest_ip"] = guestIP
+		}
+	}
+	return metadata
 }
 
 func darwinVZTimingSummary(timingMS map[string]int64) string {

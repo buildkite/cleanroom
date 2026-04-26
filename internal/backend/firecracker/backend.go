@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/buildkite/cleanroom/internal/backend"
+	"github.com/buildkite/cleanroom/internal/backend/guestexec"
 	"github.com/buildkite/cleanroom/internal/bootassets"
 	"github.com/buildkite/cleanroom/internal/ext4edit"
 	"github.com/buildkite/cleanroom/internal/gateway"
@@ -2248,53 +2249,16 @@ func runGuestCommand(bootCtx context.Context, execCtx context.Context, processEx
 		AgentReadyAt: readyAt,
 	}
 	defer conn.Close()
-	if dl, ok := execCtx.Deadline(); ok {
-		if deadlineConn, ok := conn.(interface{ SetDeadline(time.Time) error }); ok {
-			if err := deadlineConn.SetDeadline(dl); err != nil {
-				return vsockexec.ExecResponse{}, guestExecTiming{}, fmt.Errorf("set vsock deadline: %w", err)
-			}
-		}
+	if err := guestexec.PrepareConn(execCtx, conn, "set vsock deadline"); err != nil {
+		return vsockexec.ExecResponse{}, guestExecTiming{}, err
 	}
-	// Ensure blocked reads/writes are interrupted when context is canceled.
-	go func() {
-		<-execCtx.Done()
-		_ = conn.Close()
-	}()
-
-	if err := vsockexec.EncodeRequest(conn, req); err != nil {
-		return vsockexec.ExecResponse{}, guestExecTiming{}, fmt.Errorf("send guest exec request: %w", err)
+	if err := guestexec.SendRequest(conn, req); err != nil {
+		return vsockexec.ExecResponse{}, guestExecTiming{}, err
 	}
-
-	// Provide stdin/resize handlers so the caller can forward interactive
-	// input to the guest process via the same vsock connection.
-	inputSender := &inputFrameSender{w: conn}
-	if stream.OnAttach != nil {
-		stream.OnAttach(backend.AttachIO{
-			WriteStdin: func(data []byte) error {
-				return inputSender.Send(vsockexec.ExecInputFrame{
-					Type: "stdin",
-					Data: data,
-				})
-			},
-			CloseStdin: func() error {
-				return inputSender.Send(vsockexec.ExecInputFrame{Type: "eof"})
-			},
-			ResizeTTY: func(cols, rows uint32) error {
-				return inputSender.Send(vsockexec.ExecInputFrame{
-					Type: "resize",
-					Cols: cols,
-					Rows: rows,
-				})
-			},
-		})
-	}
+	guestexec.AttachStream(conn, stream, nil)
 
 	commandStart := time.Now()
-	res, err := vsockexec.DecodeStreamResponse(conn, vsockexec.StreamCallbacks{
-		OnStdout:                 stream.OnStdout,
-		OnStderr:                 stream.OnStderr,
-		BufferedOutputLimitBytes: stream.BufferedOutputLimitBytes,
-	})
+	res, err := guestexec.DecodeResponse(conn, stream)
 	if err != nil {
 		if ctxErr := execCtx.Err(); ctxErr != nil {
 			return vsockexec.ExecResponse{}, guestExecTiming{}, fmt.Errorf("guest exec canceled while waiting for response: %w", ctxErr)
@@ -2303,17 +2267,6 @@ func runGuestCommand(bootCtx context.Context, execCtx context.Context, processEx
 	}
 	timing.CommandRun = time.Since(commandStart)
 	return res, timing, nil
-}
-
-type inputFrameSender struct {
-	w  io.Writer
-	mu sync.Mutex
-}
-
-func (s *inputFrameSender) Send(frame vsockexec.ExecInputFrame) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return vsockexec.EncodeInputFrame(s.w, frame)
 }
 
 type callbackWriter struct {
