@@ -71,6 +71,7 @@ done
 const SandboxFileUploadScript = `set -eu
 path=$1
 mode=$2
+mtime=${3:-}
 dir=$(dirname "$path")
 mkdir -p "$dir"
 tmp="${path}.cleanroom-copy.$$"
@@ -80,6 +81,15 @@ cleanup() {
 trap cleanup EXIT HUP INT TERM
 cat > "$tmp"
 chmod "$mode" "$tmp"
+if [ -n "$mtime" ]; then
+	if ! touch -m -d "@$mtime" "$tmp" 2>/dev/null; then
+		timestamp=$(date -d "@$mtime" +%Y%m%d%H%M.%S 2>/dev/null || date -r "$mtime" +%Y%m%d%H%M.%S 2>/dev/null || true)
+		if [ -z "$timestamp" ] || ! touch -m -t "$timestamp" "$tmp" 2>/dev/null; then
+			echo "failed to apply mtime $mtime to $path" >&2
+			exit 1
+		fi
+	fi
+fi
 mv -f "$tmp" "$path"
 trap - EXIT HUP INT TERM
 `
@@ -145,9 +155,13 @@ func SandboxFileReadCommand(path string, maxBytes int64) ([]string, error) {
 	return []string{"head", "-c", strconv.FormatInt(limit, 10), "--", path}, nil
 }
 
-func SandboxFileUploadCommand(path string, mode fs.FileMode) ([]string, error) {
+func SandboxFileUploadCommand(path string, mode fs.FileMode, mtime time.Time) ([]string, error) {
 	if err := ValidateSandboxFilePath(path); err != nil {
 		return nil, err
+	}
+	mtimeArg := ""
+	if !mtime.IsZero() {
+		mtimeArg = strconv.FormatInt(mtime.Unix(), 10)
 	}
 	return []string{
 		"sh",
@@ -156,6 +170,7 @@ func SandboxFileUploadCommand(path string, mode fs.FileMode) ([]string, error) {
 		"cleanroom-copy",
 		path,
 		fmt.Sprintf("%04o", NormalizeSandboxFileMode(mode).Perm()),
+		mtimeArg,
 	}, nil
 }
 

@@ -334,11 +334,12 @@ func TestDownloadSandboxFileEnforcesMaxBytes(t *testing.T) {
 	}
 }
 
-func TestUploadSandboxFileWritesPayloadAndMode(t *testing.T) {
+func TestWriteSandboxFileWritesPayloadModeAndMtime(t *testing.T) {
 	t.Parallel()
 
 	var got bytes.Buffer
 	closed := false
+	mtime := time.Unix(1700000123, 987654321)
 	adapter := &Adapter{}
 	adapter.runGuestCommandFn = func(_ context.Context, _ context.Context, _ <-chan struct{}, _ func() error, _ string, _ uint32, req vsockexec.ExecRequest, stream backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error) {
 		if got, want := req.Command[0], "sh"; got != want {
@@ -352,6 +353,9 @@ func TestUploadSandboxFileWritesPayloadAndMode(t *testing.T) {
 		}
 		if got, want := req.Command[5], "0600"; got != want {
 			t.Fatalf("unexpected upload mode: got %q want %q", got, want)
+		}
+		if got, want := req.Command[6], "1700000123"; got != want {
+			t.Fatalf("unexpected upload mtime: got %q want %q", got, want)
 		}
 		if stream.OnAttach != nil {
 			stream.OnAttach(backend.AttachIO{
@@ -376,8 +380,12 @@ func TestUploadSandboxFileWritesPayloadAndMode(t *testing.T) {
 		},
 	}
 
-	if err := adapter.UploadSandboxFile(context.Background(), "cr-test", "/home/sprite/artifacts/upload.txt", []byte("payload"), 0o600); err != nil {
-		t.Fatalf("UploadSandboxFile returned error: %v", err)
+	written, err := adapter.WriteSandboxFile(context.Background(), "cr-test", "/home/sprite/artifacts/upload.txt", bytes.NewReader([]byte("payload")), 0o600, mtime)
+	if err != nil {
+		t.Fatalf("WriteSandboxFile returned error: %v", err)
+	}
+	if written != int64(len("payload")) {
+		t.Fatalf("unexpected written byte count: got %d want %d", written, len("payload"))
 	}
 	if got.String() != "payload" {
 		t.Fatalf("unexpected uploaded payload: got %q", got.String())

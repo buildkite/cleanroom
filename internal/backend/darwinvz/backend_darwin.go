@@ -618,12 +618,12 @@ func (a *Adapter) ReadSandboxFile(ctx context.Context, sandboxID, path string, m
 	return nil
 }
 
-func (a *Adapter) WriteSandboxFile(ctx context.Context, sandboxID, path string, r io.Reader, mode fs.FileMode, _ time.Time) (int64, error) {
+func (a *Adapter) WriteSandboxFile(ctx context.Context, sandboxID, path string, r io.Reader, mode fs.FileMode, mtime time.Time) (int64, error) {
 	sandboxID = strings.TrimSpace(sandboxID)
 	if sandboxID == "" {
 		return 0, errors.New("missing sandbox_id")
 	}
-	cmd, err := backend.SandboxFileUploadCommand(path, mode)
+	cmd, err := backend.SandboxFileUploadCommand(path, mode, mtime)
 	if err != nil {
 		return 0, err
 	}
