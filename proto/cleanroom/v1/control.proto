@@ -13,6 +13,14 @@ service SandboxService {
   rpc GetSandbox(GetSandboxRequest) returns (GetSandboxResponse);
   rpc ListSandboxes(ListSandboxesRequest) returns (ListSandboxesResponse);
   rpc DownloadSandboxFile(DownloadSandboxFileRequest) returns (DownloadSandboxFileResponse);
+  rpc UploadSandboxFile(UploadSandboxFileRequest) returns (UploadSandboxFileResponse);
+  rpc StatSandboxPath(StatSandboxPathRequest) returns (StatSandboxPathResponse);
+  rpc WalkSandboxTree(WalkSandboxTreeRequest) returns (stream WalkSandboxTreeResponse);
+  rpc ReadSandboxFile(ReadSandboxFileRequest) returns (stream ReadSandboxFileResponse);
+  rpc WriteSandboxFile(stream WriteSandboxFileRequest) returns (WriteSandboxFileResponse);
+  rpc RemoveSandboxPath(RemoveSandboxPathRequest) returns (RemoveSandboxPathResponse);
+  rpc ArchiveSandboxPaths(ArchiveSandboxPathsRequest) returns (stream ArchiveSandboxPathsResponse);
+  rpc ExtractSandboxArchive(stream ExtractSandboxArchiveRequest) returns (ExtractSandboxArchiveResponse);
   rpc TerminateSandbox(TerminateSandboxRequest) returns (TerminateSandboxResponse);
   rpc StreamSandboxEvents(StreamSandboxEventsRequest) returns (stream SandboxEvent);
 }
@@ -240,6 +248,124 @@ message DownloadSandboxFileResponse {
   string path = 2;
   bytes data = 3;
   int64 size_bytes = 4;
+}
+
+message UploadSandboxFileRequest {
+  string sandbox_id = 1;
+  string path = 2;
+  bytes data = 3;
+  uint32 mode = 4;
+}
+
+message UploadSandboxFileResponse {
+  string sandbox_id = 1;
+  string path = 2;
+  int64 size_bytes = 3;
+}
+
+enum SandboxPathType {
+  SANDBOX_PATH_TYPE_UNSPECIFIED = 0;
+  SANDBOX_PATH_TYPE_FILE = 1;
+  SANDBOX_PATH_TYPE_DIRECTORY = 2;
+  SANDBOX_PATH_TYPE_SYMLINK = 3;
+  SANDBOX_PATH_TYPE_OTHER = 4;
+}
+
+message SandboxPathInfo {
+  string path = 1;
+  SandboxPathType type = 2;
+  int64 size_bytes = 3;
+  uint32 mode = 4;
+  google.protobuf.Timestamp mtime = 5;
+  string symlink_target = 6;
+}
+
+message StatSandboxPathRequest {
+  string sandbox_id = 1;
+  string path = 2;
+}
+
+message StatSandboxPathResponse {
+  SandboxPathInfo info = 1;
+}
+
+message WalkSandboxTreeRequest {
+  string sandbox_id = 1;
+  string path = 2;
+}
+
+message WalkSandboxTreeResponse {
+  SandboxPathInfo info = 1;
+}
+
+message ReadSandboxFileRequest {
+  string sandbox_id = 1;
+  string path = 2;
+  int64 max_bytes = 3;
+}
+
+message ReadSandboxFileResponse {
+  bytes data = 1;
+}
+
+message WriteSandboxFileInit {
+  string sandbox_id = 1;
+  string path = 2;
+  uint32 mode = 3;
+  google.protobuf.Timestamp mtime = 4;
+}
+
+message WriteSandboxFileRequest {
+  oneof payload {
+    WriteSandboxFileInit init = 1;
+    bytes data = 2;
+  }
+}
+
+message WriteSandboxFileResponse {
+  string sandbox_id = 1;
+  string path = 2;
+  int64 size_bytes = 3;
+}
+
+message RemoveSandboxPathRequest {
+  string sandbox_id = 1;
+  string path = 2;
+  bool recursive = 3;
+}
+
+message RemoveSandboxPathResponse {
+  string sandbox_id = 1;
+  string path = 2;
+  bool removed = 3;
+}
+
+message ArchiveSandboxPathsRequest {
+  string sandbox_id = 1;
+  repeated string paths = 2;
+  int64 max_bytes = 3;
+}
+
+message ArchiveSandboxPathsResponse {
+  bytes data = 1;
+}
+
+message ExtractSandboxArchiveInit {
+  string sandbox_id = 1;
+  string destination = 2;
+}
+
+message ExtractSandboxArchiveRequest {
+  oneof payload {
+    ExtractSandboxArchiveInit init = 1;
+    bytes data = 2;
+  }
+}
+
+message ExtractSandboxArchiveResponse {
+  string sandbox_id = 1;
+  string destination = 2;
+  int64 size_bytes = 3;
 }
 
 message TerminateSandboxRequest {

@@ -30,6 +30,35 @@ type ListSandboxesRequest = cleanroomv1.ListSandboxesRequest
 type ListSandboxesResponse = cleanroomv1.ListSandboxesResponse
 type DownloadSandboxFileRequest = cleanroomv1.DownloadSandboxFileRequest
 type DownloadSandboxFileResponse = cleanroomv1.DownloadSandboxFileResponse
+type UploadSandboxFileRequest = cleanroomv1.UploadSandboxFileRequest
+type UploadSandboxFileResponse = cleanroomv1.UploadSandboxFileResponse
+type SandboxPathType = cleanroomv1.SandboxPathType
+
+const (
+	SandboxPathType_SANDBOX_PATH_TYPE_UNSPECIFIED = cleanroomv1.SandboxPathType_SANDBOX_PATH_TYPE_UNSPECIFIED
+	SandboxPathType_SANDBOX_PATH_TYPE_FILE        = cleanroomv1.SandboxPathType_SANDBOX_PATH_TYPE_FILE
+	SandboxPathType_SANDBOX_PATH_TYPE_DIRECTORY   = cleanroomv1.SandboxPathType_SANDBOX_PATH_TYPE_DIRECTORY
+	SandboxPathType_SANDBOX_PATH_TYPE_SYMLINK     = cleanroomv1.SandboxPathType_SANDBOX_PATH_TYPE_SYMLINK
+	SandboxPathType_SANDBOX_PATH_TYPE_OTHER       = cleanroomv1.SandboxPathType_SANDBOX_PATH_TYPE_OTHER
+)
+
+type SandboxPathInfo = cleanroomv1.SandboxPathInfo
+type StatSandboxPathRequest = cleanroomv1.StatSandboxPathRequest
+type StatSandboxPathResponse = cleanroomv1.StatSandboxPathResponse
+type WalkSandboxTreeRequest = cleanroomv1.WalkSandboxTreeRequest
+type WalkSandboxTreeResponse = cleanroomv1.WalkSandboxTreeResponse
+type ReadSandboxFileRequest = cleanroomv1.ReadSandboxFileRequest
+type ReadSandboxFileResponse = cleanroomv1.ReadSandboxFileResponse
+type WriteSandboxFileInit = cleanroomv1.WriteSandboxFileInit
+type WriteSandboxFileRequest = cleanroomv1.WriteSandboxFileRequest
+type WriteSandboxFileResponse = cleanroomv1.WriteSandboxFileResponse
+type RemoveSandboxPathRequest = cleanroomv1.RemoveSandboxPathRequest
+type RemoveSandboxPathResponse = cleanroomv1.RemoveSandboxPathResponse
+type ArchiveSandboxPathsRequest = cleanroomv1.ArchiveSandboxPathsRequest
+type ArchiveSandboxPathsResponse = cleanroomv1.ArchiveSandboxPathsResponse
+type ExtractSandboxArchiveInit = cleanroomv1.ExtractSandboxArchiveInit
+type ExtractSandboxArchiveRequest = cleanroomv1.ExtractSandboxArchiveRequest
+type ExtractSandboxArchiveResponse = cleanroomv1.ExtractSandboxArchiveResponse
 type TerminateSandboxRequest = cleanroomv1.TerminateSandboxRequest
 type TerminateSandboxResponse = cleanroomv1.TerminateSandboxResponse
 type StreamSandboxEventsRequest = cleanroomv1.StreamSandboxEventsRequest

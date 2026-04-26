@@ -58,6 +58,14 @@ Current capability values (visible in `cleanroom doctor --json`):
 
 - `exec.streaming=true`
 - `sandbox.file_download=true`
+- `sandbox.file_upload=true`
+- `sandbox.path_stat=true`
+- `sandbox.tree_walk=true`
+- `sandbox.file_read=true`
+- `sandbox.file_write=true`
+- `sandbox.path_remove=true`
+- `sandbox.archive_read=true`
+- `sandbox.archive_write=true`
 - `network.default_deny=true`
 - `network.allowlist_egress=true`
 - `dns_control_or_equivalent=true`

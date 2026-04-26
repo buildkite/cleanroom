@@ -186,6 +186,13 @@ cleanroom exec --in <id> -- npm run lint
 cleanroom exec --in <id> -- npm run build
 ```
 
+Copy a one-off file into or out of a kept sandbox:
+
+```bash
+cleanroom cp ./fixture.json <id>:/tmp/fixture.json
+cleanroom cp <id>:/tmp/result.json ./result.json
+```
+
 Keep a sandbox created by `exec`:
 
 ```bash
@@ -302,10 +309,11 @@ sandbox:
 
 | Host OS | Backend | Status | Notes |
 |---------|---------|--------|-------|
-| Linux | `firecracker` | Full support | Persistent sandboxes, per-sandbox TAP + guest IP identity, file download, egress allowlist enforcement |
-| macOS | `darwin-vz` | Supported with gaps | Persistent sandboxes, `filehandle` networking with allowlist egress filtering, no file download, no TAP parity |
+| Linux | `firecracker` | Full support | Persistent sandboxes, per-sandbox TAP + guest IP identity, file copy, egress allowlist enforcement |
+| macOS | `darwin-vz` | Supported with gaps | Persistent sandboxes, file copy, `filehandle` networking with allowlist egress filtering, no TAP parity |
 
 Backend capabilities are exposed in `cleanroom doctor --json` under `capabilities`. See [isolation model](docs/isolation.md) for enforcement and persistence details.
+File copy uses streaming file primitives, and the API also exposes path and archive primitives for larger sync and diff workflows.
 
 Network model differs significantly by backend:
 

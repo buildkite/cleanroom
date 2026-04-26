@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,7 +19,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/vsockexec"
 )
 
-func TestCapabilitiesExposeSnapshotWithoutFileDownload(t *testing.T) {
+func TestCapabilitiesExposeSnapshotAndFileTransfer(t *testing.T) {
 	t.Parallel()
 
 	caps := backend.CapabilitiesForAdapter(New())
@@ -26,8 +27,24 @@ func TestCapabilitiesExposeSnapshotWithoutFileDownload(t *testing.T) {
 	if !caps[backend.CapabilitySandboxSnapshot] {
 		t.Fatalf("expected %s=true", backend.CapabilitySandboxSnapshot)
 	}
-	if caps[backend.CapabilitySandboxFileDownload] {
-		t.Fatalf("expected %s=false", backend.CapabilitySandboxFileDownload)
+	if !caps[backend.CapabilitySandboxFileDownload] {
+		t.Fatalf("expected %s=true", backend.CapabilitySandboxFileDownload)
+	}
+	if !caps[backend.CapabilitySandboxFileUpload] {
+		t.Fatalf("expected %s=true", backend.CapabilitySandboxFileUpload)
+	}
+	for _, key := range []string{
+		backend.CapabilitySandboxPathStat,
+		backend.CapabilitySandboxTreeWalk,
+		backend.CapabilitySandboxFileRead,
+		backend.CapabilitySandboxFileWrite,
+		backend.CapabilitySandboxPathRemove,
+		backend.CapabilitySandboxArchiveRead,
+		backend.CapabilitySandboxArchiveWrite,
+	} {
+		if !caps[key] {
+			t.Fatalf("expected %s=true", key)
+		}
 	}
 }
 
@@ -210,6 +227,194 @@ func TestDefaultDarwinVZE2EImageRefUsesPublishedDigest(t *testing.T) {
 	const want = "docker.io/library/alpine@sha256:a4f4213abb84c497377b8544c81b3564f313746700372ec4fe84653e4fb03805"
 	if got := defaultDarwinVZE2EImageRef(); got != want {
 		t.Fatalf("unexpected default e2e image ref: got %q want %q", got, want)
+	}
+}
+
+func TestDownloadSandboxFileReturnsBytes(t *testing.T) {
+	t.Parallel()
+
+	adapter := &Adapter{}
+	adapter.executeInSandboxFn = func(_ context.Context, _ context.Context, instance *sandboxInstance, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+		if instance == nil || instance.SandboxID != "cr-test" {
+			t.Fatalf("unexpected sandbox instance: %#v", instance)
+		}
+		if len(req.Command) != 6 {
+			t.Fatalf("unexpected command: got %v", req.Command)
+		}
+		if got, want := req.Command[0], "sh"; got != want {
+			t.Fatalf("unexpected command[0]: got %q want %q", got, want)
+		}
+		if got, want := req.Command[3], "cleanroom-read"; got != want {
+			t.Fatalf("unexpected command[3]: got %q want %q", got, want)
+		}
+		if got, want := req.Command[4], "/home/sprite/artifacts/haiku.txt"; got != want {
+			t.Fatalf("unexpected read path: got %q want %q", got, want)
+		}
+		if got, want := req.Command[5], "33"; got != want {
+			t.Fatalf("unexpected read limit: got %q want %q", got, want)
+		}
+		if stream.OnStdout != nil {
+			stream.OnStdout([]byte("hello"))
+		}
+		return &backend.ExecutionResult{ExitCode: 0}, nil
+	}
+	adapter.sandboxes = map[string]*sandboxInstance{
+		"cr-test": {
+			SandboxID: "cr-test",
+			exitedCh:  make(chan struct{}),
+		},
+	}
+
+	data, err := adapter.DownloadSandboxFile(context.Background(), "cr-test", "/home/sprite/artifacts/haiku.txt", 32)
+	if err != nil {
+		t.Fatalf("DownloadSandboxFile returned error: %v", err)
+	}
+	if got, want := string(data), "hello"; got != want {
+		t.Fatalf("unexpected data: got %q want %q", got, want)
+	}
+}
+
+func TestDownloadSandboxFileReturnsStreamedStderrOnFailure(t *testing.T) {
+	t.Parallel()
+
+	adapter := &Adapter{}
+	adapter.executeInSandboxFn = func(_ context.Context, _ context.Context, _ *sandboxInstance, _ backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+		if stream.OnStderr != nil {
+			stream.OnStderr([]byte("path not found: /missing\n"))
+		}
+		return &backend.ExecutionResult{ExitCode: 1}, nil
+	}
+	adapter.sandboxes = map[string]*sandboxInstance{
+		"cr-test": {
+			SandboxID: "cr-test",
+			exitedCh:  make(chan struct{}),
+		},
+	}
+
+	_, err := adapter.DownloadSandboxFile(context.Background(), "cr-test", "/missing", 32)
+	if err == nil {
+		t.Fatal("expected download error")
+	}
+	if !errors.Is(err, backend.ErrSandboxPathNotFound) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestWriteSandboxFileWritesPayloadModeAndMtime(t *testing.T) {
+	t.Parallel()
+
+	var got bytes.Buffer
+	closed := false
+	mtime := time.Unix(1700000123, 987654321)
+	adapter := &Adapter{}
+	adapter.executeInSandboxFn = func(_ context.Context, _ context.Context, _ *sandboxInstance, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+		if got, want := req.Command[0], "sh"; got != want {
+			t.Fatalf("unexpected command[0]: got %q want %q", got, want)
+		}
+		if got, want := req.Command[3], "cleanroom-copy"; got != want {
+			t.Fatalf("unexpected command[3]: got %q want %q", got, want)
+		}
+		if got, want := req.Command[4], "/home/sprite/artifacts/upload.txt"; got != want {
+			t.Fatalf("unexpected upload path: got %q want %q", got, want)
+		}
+		if got, want := req.Command[5], "0600"; got != want {
+			t.Fatalf("unexpected upload mode: got %q want %q", got, want)
+		}
+		if got, want := req.Command[6], "1700000123"; got != want {
+			t.Fatalf("unexpected upload mtime: got %q want %q", got, want)
+		}
+		if stream.OnAttach != nil {
+			stream.OnAttach(backend.AttachIO{
+				WriteStdin: func(data []byte) error {
+					_, err := got.Write(data)
+					return err
+				},
+				CloseStdin: func() error {
+					closed = true
+					return nil
+				},
+			})
+		}
+		return &backend.ExecutionResult{ExitCode: 0}, nil
+	}
+	adapter.sandboxes = map[string]*sandboxInstance{
+		"cr-test": {
+			SandboxID: "cr-test",
+			exitedCh:  make(chan struct{}),
+		},
+	}
+
+	written, err := adapter.WriteSandboxFile(context.Background(), "cr-test", "/home/sprite/artifacts/upload.txt", bytes.NewReader([]byte("payload")), 0o600, mtime)
+	if err != nil {
+		t.Fatalf("WriteSandboxFile returned error: %v", err)
+	}
+	if written != int64(len("payload")) {
+		t.Fatalf("unexpected written byte count: got %d want %d", written, len("payload"))
+	}
+	if got.String() != "payload" {
+		t.Fatalf("unexpected uploaded payload: got %q", got.String())
+	}
+	if !closed {
+		t.Fatal("expected upload stdin to be closed")
+	}
+}
+
+func TestWriteSandboxFileReturnsGuestErrorWhenUploadFailsBeforeReadingPayload(t *testing.T) {
+	t.Parallel()
+
+	writeStarted := make(chan struct{}, 1)
+	unblockWrite := make(chan struct{})
+	defer close(unblockWrite)
+	adapter := &Adapter{}
+	adapter.executeInSandboxFn = func(_ context.Context, _ context.Context, _ *sandboxInstance, _ backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+		if stream.OnAttach != nil {
+			stream.OnAttach(backend.AttachIO{
+				WriteStdin: func([]byte) error {
+					select {
+					case writeStarted <- struct{}{}:
+					default:
+					}
+					<-unblockWrite
+					return errors.New("stdin closed")
+				},
+				CloseStdin: func() error {
+					return nil
+				},
+			})
+		}
+		select {
+		case <-writeStarted:
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for upload copy to start")
+		}
+		if stream.OnStderr != nil {
+			stream.OnStderr([]byte("destination is a directory: /tmp/upload\n"))
+		}
+		return &backend.ExecutionResult{ExitCode: 1}, nil
+	}
+	adapter.sandboxes = map[string]*sandboxInstance{
+		"cr-test": {
+			SandboxID: "cr-test",
+			exitedCh:  make(chan struct{}),
+		},
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := adapter.WriteSandboxFile(context.Background(), "cr-test", "/tmp/upload", bytes.NewReader([]byte("payload")), 0o644, time.Time{})
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected upload error")
+		}
+		if !strings.Contains(err.Error(), "destination is a directory") {
+			t.Fatalf("unexpected upload error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("WriteSandboxFile blocked behind upload stdin copy")
 	}
 }
 

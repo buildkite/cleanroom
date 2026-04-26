@@ -74,8 +74,16 @@ Two services are sufficient.
 2. `GetSandbox(GetSandboxRequest) returns (GetSandboxResponse)` (unary)
 3. `ListSandboxes(ListSandboxesRequest) returns (ListSandboxesResponse)` (unary)
 4. `DownloadSandboxFile(DownloadSandboxFileRequest) returns (DownloadSandboxFileResponse)` (unary)
-5. `TerminateSandbox(TerminateSandboxRequest) returns (TerminateSandboxResponse)` (unary)
-6. `StreamSandboxEvents(StreamSandboxEventsRequest) returns (stream SandboxEvent)` (server-streaming)
+5. `UploadSandboxFile(UploadSandboxFileRequest) returns (UploadSandboxFileResponse)` (unary)
+6. `StatSandboxPath(StatSandboxPathRequest) returns (StatSandboxPathResponse)` (unary)
+7. `WalkSandboxTree(WalkSandboxTreeRequest) returns (stream WalkSandboxTreeResponse)` (server-streaming)
+8. `ReadSandboxFile(ReadSandboxFileRequest) returns (stream ReadSandboxFileResponse)` (server-streaming)
+9. `WriteSandboxFile(stream WriteSandboxFileRequest) returns (WriteSandboxFileResponse)` (client-streaming)
+10. `RemoveSandboxPath(RemoveSandboxPathRequest) returns (RemoveSandboxPathResponse)` (unary)
+11. `ArchiveSandboxPaths(ArchiveSandboxPathsRequest) returns (stream ArchiveSandboxPathsResponse)` (server-streaming)
+12. `ExtractSandboxArchive(stream ExtractSandboxArchiveRequest) returns (ExtractSandboxArchiveResponse)` (client-streaming)
+13. `TerminateSandbox(TerminateSandboxRequest) returns (TerminateSandboxResponse)` (unary)
+14. `StreamSandboxEvents(StreamSandboxEventsRequest) returns (stream SandboxEvent)` (server-streaming)
 
 ### 4.2 ExecutionService
 
@@ -160,6 +168,14 @@ service SandboxService {
   rpc GetSandbox(GetSandboxRequest) returns (GetSandboxResponse);
   rpc ListSandboxes(ListSandboxesRequest) returns (ListSandboxesResponse);
   rpc DownloadSandboxFile(DownloadSandboxFileRequest) returns (DownloadSandboxFileResponse);
+  rpc UploadSandboxFile(UploadSandboxFileRequest) returns (UploadSandboxFileResponse);
+  rpc StatSandboxPath(StatSandboxPathRequest) returns (StatSandboxPathResponse);
+  rpc WalkSandboxTree(WalkSandboxTreeRequest) returns (stream WalkSandboxTreeResponse);
+  rpc ReadSandboxFile(ReadSandboxFileRequest) returns (stream ReadSandboxFileResponse);
+  rpc WriteSandboxFile(stream WriteSandboxFileRequest) returns (WriteSandboxFileResponse);
+  rpc RemoveSandboxPath(RemoveSandboxPathRequest) returns (RemoveSandboxPathResponse);
+  rpc ArchiveSandboxPaths(ArchiveSandboxPathsRequest) returns (stream ArchiveSandboxPathsResponse);
+  rpc ExtractSandboxArchive(stream ExtractSandboxArchiveRequest) returns (ExtractSandboxArchiveResponse);
   rpc TerminateSandbox(TerminateSandboxRequest) returns (TerminateSandboxResponse);
   rpc StreamSandboxEvents(StreamSandboxEventsRequest) returns (stream SandboxEvent);
 }

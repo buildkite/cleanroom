@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"os"
 	"os/exec"
@@ -463,6 +464,89 @@ func (a *Adapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest
 		}
 	}
 	return result, nil
+}
+
+func (a *Adapter) DownloadSandboxFile(ctx context.Context, sandboxID, path string, maxBytes int64) ([]byte, error) {
+	return a.sandboxFileTransfer().DownloadSandboxFile(ctx, sandboxID, path, maxBytes)
+}
+
+func (a *Adapter) UploadSandboxFile(ctx context.Context, sandboxID, path string, data []byte, mode fs.FileMode) error {
+	return a.sandboxFileTransfer().UploadSandboxFile(ctx, sandboxID, path, data, mode)
+}
+
+func (a *Adapter) StatSandboxPath(ctx context.Context, sandboxID, path string) (*backend.SandboxPathInfo, error) {
+	return a.sandboxFileTransfer().StatSandboxPath(ctx, sandboxID, path)
+}
+
+func (a *Adapter) WalkSandboxTree(ctx context.Context, sandboxID, path string, emit func(backend.SandboxPathInfo) error) error {
+	return a.sandboxFileTransfer().WalkSandboxTree(ctx, sandboxID, path, emit)
+}
+
+func (a *Adapter) ReadSandboxFile(ctx context.Context, sandboxID, path string, maxBytes int64, emit func([]byte) error) error {
+	return a.sandboxFileTransfer().ReadSandboxFile(ctx, sandboxID, path, maxBytes, emit)
+}
+
+func (a *Adapter) WriteSandboxFile(ctx context.Context, sandboxID, path string, r io.Reader, mode fs.FileMode, mtime time.Time) (int64, error) {
+	return a.sandboxFileTransfer().WriteSandboxFile(ctx, sandboxID, path, r, mode, mtime)
+}
+
+func (a *Adapter) RemoveSandboxPath(ctx context.Context, sandboxID, path string, recursive bool) error {
+	return a.sandboxFileTransfer().RemoveSandboxPath(ctx, sandboxID, path, recursive)
+}
+
+func (a *Adapter) ArchiveSandboxPaths(ctx context.Context, sandboxID string, paths []string, maxBytes int64, emit func([]byte) error) error {
+	return a.sandboxFileTransfer().ArchiveSandboxPaths(ctx, sandboxID, paths, maxBytes, emit)
+}
+
+func (a *Adapter) ExtractSandboxArchive(ctx context.Context, sandboxID, destination string, r io.Reader) (int64, error) {
+	return a.sandboxFileTransfer().ExtractSandboxArchive(ctx, sandboxID, destination, r)
+}
+
+func (a *Adapter) sandboxFileTransfer() backend.SandboxFileTransfer {
+	return backend.SandboxFileTransfer{Run: a.runSandboxFileTransferCommand}
+}
+
+func (a *Adapter) lookupRunningSandbox(sandboxID string) (*sandboxInstance, error) {
+	a.sandboxMu.Lock()
+	instance, ok := a.sandboxes[sandboxID]
+	a.sandboxMu.Unlock()
+	if !ok {
+		return nil, fmt.Errorf("unknown sandbox %q", sandboxID)
+	}
+	if err := instance.exitedErrOrNil(); err != nil {
+		return nil, fmt.Errorf("sandbox %q is not running: %w", sandboxID, err)
+	}
+	return instance, nil
+}
+
+func (a *Adapter) runSandboxFileTransferCommand(ctx context.Context, sandboxID string, cmd []string, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+	instance, err := a.lookupRunningSandbox(sandboxID)
+	if err != nil {
+		return nil, err
+	}
+	return a.runFileTransferCommand(ctx, instance, backend.ExecutionRequest{
+		SandboxID: sandboxID,
+		Command:   cmd,
+		Policy:    instance.Policy,
+	}, stream)
+}
+
+func (a *Adapter) runFileTransferCommand(ctx context.Context, instance *sandboxInstance, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+	connectSeconds := req.LaunchSeconds
+	if connectSeconds <= 0 {
+		connectSeconds = instance.CommandTimeout
+	}
+	if connectSeconds <= 0 {
+		connectSeconds = 30
+	}
+	bootCtx, cancel := context.WithTimeout(ctx, time.Duration(connectSeconds)*time.Second)
+	defer cancel()
+
+	executeInSandbox := a.executeInSandboxFn
+	if executeInSandbox == nil {
+		executeInSandbox = a.executeInSandbox
+	}
+	return executeInSandbox(bootCtx, ctx, instance, req, stream)
 }
 
 func (a *Adapter) TerminateSandbox(_ context.Context, sandboxID string) error {

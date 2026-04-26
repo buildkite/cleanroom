@@ -1,7 +1,6 @@
 package firecracker
 
 import (
-	"bytes"
 	"context"
 	cryptorand "crypto/rand"
 	"crypto/sha1"
@@ -11,12 +10,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -120,7 +118,6 @@ const helperCapabilityFirecrackerNetwork = "firecracker-network"
 const helperCapabilityFirecrackerTrustedDNS = "firecracker-trusted-dns"
 const helperCapabilityFirecrackerZFS = "firecracker-zfs"
 const helperCapabilityFirecrackerNFLog = "firecracker-nflog"
-const defaultDownloadMaxBytes int64 = 10 * 1024 * 1024
 const snapshotSyncTimeoutSeconds = 10
 const networkCleanupTimeout = 5 * time.Second
 const guestInitScriptPathSbin = "/sbin/cleanroom-init"
@@ -511,20 +508,50 @@ func (a *Adapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest
 }
 
 func (a *Adapter) DownloadSandboxFile(ctx context.Context, sandboxID, path string, maxBytes int64) ([]byte, error) {
+	return a.sandboxFileTransfer().DownloadSandboxFile(ctx, sandboxID, path, maxBytes)
+}
+
+func (a *Adapter) UploadSandboxFile(ctx context.Context, sandboxID, path string, data []byte, mode fs.FileMode) error {
+	return a.sandboxFileTransfer().UploadSandboxFile(ctx, sandboxID, path, data, mode)
+}
+
+func (a *Adapter) StatSandboxPath(ctx context.Context, sandboxID, path string) (*backend.SandboxPathInfo, error) {
+	return a.sandboxFileTransfer().StatSandboxPath(ctx, sandboxID, path)
+}
+
+func (a *Adapter) WalkSandboxTree(ctx context.Context, sandboxID, path string, emit func(backend.SandboxPathInfo) error) error {
+	return a.sandboxFileTransfer().WalkSandboxTree(ctx, sandboxID, path, emit)
+}
+
+func (a *Adapter) ReadSandboxFile(ctx context.Context, sandboxID, path string, maxBytes int64, emit func([]byte) error) error {
+	return a.sandboxFileTransfer().ReadSandboxFile(ctx, sandboxID, path, maxBytes, emit)
+}
+
+func (a *Adapter) WriteSandboxFile(ctx context.Context, sandboxID, path string, r io.Reader, mode fs.FileMode, mtime time.Time) (int64, error) {
+	return a.sandboxFileTransfer().WriteSandboxFile(ctx, sandboxID, path, r, mode, mtime)
+}
+
+func (a *Adapter) RemoveSandboxPath(ctx context.Context, sandboxID, path string, recursive bool) error {
+	return a.sandboxFileTransfer().RemoveSandboxPath(ctx, sandboxID, path, recursive)
+}
+
+func (a *Adapter) ArchiveSandboxPaths(ctx context.Context, sandboxID string, paths []string, maxBytes int64, emit func([]byte) error) error {
+	return a.sandboxFileTransfer().ArchiveSandboxPaths(ctx, sandboxID, paths, maxBytes, emit)
+}
+
+func (a *Adapter) ExtractSandboxArchive(ctx context.Context, sandboxID, destination string, r io.Reader) (int64, error) {
+	return a.sandboxFileTransfer().ExtractSandboxArchive(ctx, sandboxID, destination, r)
+}
+
+func (a *Adapter) sandboxFileTransfer() backend.SandboxFileTransfer {
+	return backend.SandboxFileTransfer{Run: a.runFileTransferCommand}
+}
+
+func (a *Adapter) lookupRunningSandbox(sandboxID string) (*sandboxInstance, error) {
 	sandboxID = strings.TrimSpace(sandboxID)
 	if sandboxID == "" {
 		return nil, errors.New("missing sandbox_id")
 	}
-	if path == "" {
-		return nil, errors.New("missing path")
-	}
-	if !strings.HasPrefix(path, "/") {
-		return nil, errors.New("invalid path: must be absolute")
-	}
-	if maxBytes <= 0 {
-		maxBytes = defaultDownloadMaxBytes
-	}
-
 	a.sandboxMu.Lock()
 	instance, ok := a.sandboxes[sandboxID]
 	a.sandboxMu.Unlock()
@@ -534,37 +561,22 @@ func (a *Adapter) DownloadSandboxFile(ctx context.Context, sandboxID, path strin
 	if err := instance.exitedErrOrNil(); err != nil {
 		return nil, fmt.Errorf("sandbox %q is not running: %w", sandboxID, err)
 	}
+	return instance, nil
+}
 
-	var stdout, stderr bytes.Buffer
-	limit := maxBytes + 1
-	if maxBytes == math.MaxInt64 {
-		limit = maxBytes
-	}
-	cmd := []string{"head", "-c", strconv.FormatInt(limit, 10), "--", path}
-	result, _, err := a.executeInSandbox(ctx, instance, 0, cmd, nil, false, backend.OutputStream{OnStdout: func(chunk []byte) {
-		_, _ = stdout.Write(chunk)
-	}, OnStderr: func(chunk []byte) {
-		_, _ = stderr.Write(chunk)
-	}})
+func (a *Adapter) runFileTransferCommand(ctx context.Context, sandboxID string, cmd []string, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+	instance, err := a.lookupRunningSandbox(sandboxID)
 	if err != nil {
 		return nil, err
 	}
-	if result.ExitCode != 0 {
-		msg := strings.TrimSpace(stderr.String())
-		if msg == "" {
-			msg = strings.TrimSpace(result.Error)
-		}
-		if msg == "" {
-			msg = "read file command failed"
-		}
-		return nil, errors.New(msg)
+	result, _, err := a.executeInSandbox(ctx, instance, 0, cmd, nil, false, stream)
+	if err != nil {
+		return nil, err
 	}
-
-	data := stdout.Bytes()
-	if int64(len(data)) > maxBytes {
-		return nil, fmt.Errorf("file %q exceeds max_bytes=%d", path, maxBytes)
-	}
-	return append([]byte(nil), data...), nil
+	return &backend.ExecutionResult{
+		ExitCode: result.ExitCode,
+		Message:  result.Error,
+	}, nil
 }
 
 func (a *Adapter) TerminateSandbox(_ context.Context, sandboxID string) error {

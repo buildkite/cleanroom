@@ -151,6 +151,50 @@ func (c *Client) DownloadSandboxFile(ctx context.Context, req *cleanroomv1.Downl
 	return resp.Msg, nil
 }
 
+func (c *Client) UploadSandboxFile(ctx context.Context, req *cleanroomv1.UploadSandboxFileRequest) (*cleanroomv1.UploadSandboxFileResponse, error) {
+	resp, err := c.sandboxClient.UploadSandboxFile(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
+func (c *Client) StatSandboxPath(ctx context.Context, req *cleanroomv1.StatSandboxPathRequest) (*cleanroomv1.StatSandboxPathResponse, error) {
+	resp, err := c.sandboxClient.StatSandboxPath(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
+func (c *Client) WalkSandboxTree(ctx context.Context, req *cleanroomv1.WalkSandboxTreeRequest) (*connect.ServerStreamForClient[cleanroomv1.WalkSandboxTreeResponse], error) {
+	return c.sandboxClient.WalkSandboxTree(ctx, connect.NewRequest(req))
+}
+
+func (c *Client) ReadSandboxFile(ctx context.Context, req *cleanroomv1.ReadSandboxFileRequest) (*connect.ServerStreamForClient[cleanroomv1.ReadSandboxFileResponse], error) {
+	return c.sandboxClient.ReadSandboxFile(ctx, connect.NewRequest(req))
+}
+
+func (c *Client) WriteSandboxFile(ctx context.Context) *connect.ClientStreamForClient[cleanroomv1.WriteSandboxFileRequest, cleanroomv1.WriteSandboxFileResponse] {
+	return c.sandboxClient.WriteSandboxFile(ctx)
+}
+
+func (c *Client) RemoveSandboxPath(ctx context.Context, req *cleanroomv1.RemoveSandboxPathRequest) (*cleanroomv1.RemoveSandboxPathResponse, error) {
+	resp, err := c.sandboxClient.RemoveSandboxPath(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
+func (c *Client) ArchiveSandboxPaths(ctx context.Context, req *cleanroomv1.ArchiveSandboxPathsRequest) (*connect.ServerStreamForClient[cleanroomv1.ArchiveSandboxPathsResponse], error) {
+	return c.sandboxClient.ArchiveSandboxPaths(ctx, connect.NewRequest(req))
+}
+
+func (c *Client) ExtractSandboxArchive(ctx context.Context) *connect.ClientStreamForClient[cleanroomv1.ExtractSandboxArchiveRequest, cleanroomv1.ExtractSandboxArchiveResponse] {
+	return c.sandboxClient.ExtractSandboxArchive(ctx)
+}
+
 func (c *Client) TerminateSandbox(ctx context.Context, req *cleanroomv1.TerminateSandboxRequest) (*cleanroomv1.TerminateSandboxResponse, error) {
 	resp, err := c.sandboxClient.TerminateSandbox(ctx, connect.NewRequest(req))
 	if err != nil {

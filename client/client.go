@@ -120,6 +120,62 @@ func (c *Client) DownloadSandboxFile(ctx context.Context, req *DownloadSandboxFi
 	return c.inner.DownloadSandboxFile(ctx, req)
 }
 
+func (c *Client) UploadSandboxFile(ctx context.Context, req *UploadSandboxFileRequest) (*UploadSandboxFileResponse, error) {
+	if c == nil || c.inner == nil {
+		return nil, errors.New("nil client")
+	}
+	return c.inner.UploadSandboxFile(ctx, req)
+}
+
+func (c *Client) StatSandboxPath(ctx context.Context, req *StatSandboxPathRequest) (*StatSandboxPathResponse, error) {
+	if c == nil || c.inner == nil {
+		return nil, errors.New("nil client")
+	}
+	return c.inner.StatSandboxPath(ctx, req)
+}
+
+func (c *Client) WalkSandboxTree(ctx context.Context, req *WalkSandboxTreeRequest) (*connect.ServerStreamForClient[WalkSandboxTreeResponse], error) {
+	if c == nil || c.inner == nil {
+		return nil, errors.New("nil client")
+	}
+	return c.inner.WalkSandboxTree(ctx, req)
+}
+
+func (c *Client) ReadSandboxFile(ctx context.Context, req *ReadSandboxFileRequest) (*connect.ServerStreamForClient[ReadSandboxFileResponse], error) {
+	if c == nil || c.inner == nil {
+		return nil, errors.New("nil client")
+	}
+	return c.inner.ReadSandboxFile(ctx, req)
+}
+
+func (c *Client) WriteSandboxFile(ctx context.Context) (*connect.ClientStreamForClient[WriteSandboxFileRequest, WriteSandboxFileResponse], error) {
+	if c == nil || c.inner == nil {
+		return nil, errors.New("nil client")
+	}
+	return c.inner.WriteSandboxFile(ctx), nil
+}
+
+func (c *Client) RemoveSandboxPath(ctx context.Context, req *RemoveSandboxPathRequest) (*RemoveSandboxPathResponse, error) {
+	if c == nil || c.inner == nil {
+		return nil, errors.New("nil client")
+	}
+	return c.inner.RemoveSandboxPath(ctx, req)
+}
+
+func (c *Client) ArchiveSandboxPaths(ctx context.Context, req *ArchiveSandboxPathsRequest) (*connect.ServerStreamForClient[ArchiveSandboxPathsResponse], error) {
+	if c == nil || c.inner == nil {
+		return nil, errors.New("nil client")
+	}
+	return c.inner.ArchiveSandboxPaths(ctx, req)
+}
+
+func (c *Client) ExtractSandboxArchive(ctx context.Context) (*connect.ClientStreamForClient[ExtractSandboxArchiveRequest, ExtractSandboxArchiveResponse], error) {
+	if c == nil || c.inner == nil {
+		return nil, errors.New("nil client")
+	}
+	return c.inner.ExtractSandboxArchive(ctx), nil
+}
+
 func (c *Client) TerminateSandbox(ctx context.Context, req *TerminateSandboxRequest) (*TerminateSandboxResponse, error) {
 	if c == nil || c.inner == nil {
 		return nil, errors.New("nil client")

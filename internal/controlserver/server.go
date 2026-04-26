@@ -16,6 +16,7 @@ import (
 	"crypto/tls"
 
 	"connectrpc.com/connect"
+	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/controlservice"
 	"github.com/buildkite/cleanroom/internal/endpoint"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
@@ -120,6 +121,150 @@ func (s *Server) ListSandboxes(ctx context.Context, req *connect.Request[cleanro
 func (s *Server) DownloadSandboxFile(ctx context.Context, req *connect.Request[cleanroomv1.DownloadSandboxFileRequest]) (*connect.Response[cleanroomv1.DownloadSandboxFileResponse], error) {
 	resp, err := s.service.DownloadSandboxFile(ctx, req.Msg)
 	if err != nil {
+		return nil, toConnectError(err)
+	}
+	return connect.NewResponse(resp), nil
+}
+
+func (s *Server) UploadSandboxFile(ctx context.Context, req *connect.Request[cleanroomv1.UploadSandboxFileRequest]) (*connect.Response[cleanroomv1.UploadSandboxFileResponse], error) {
+	resp, err := s.service.UploadSandboxFile(ctx, req.Msg)
+	if err != nil {
+		return nil, toConnectError(err)
+	}
+	return connect.NewResponse(resp), nil
+}
+
+func (s *Server) StatSandboxPath(ctx context.Context, req *connect.Request[cleanroomv1.StatSandboxPathRequest]) (*connect.Response[cleanroomv1.StatSandboxPathResponse], error) {
+	resp, err := s.service.StatSandboxPath(ctx, req.Msg)
+	if err != nil {
+		return nil, toConnectError(err)
+	}
+	return connect.NewResponse(resp), nil
+}
+
+func (s *Server) WalkSandboxTree(ctx context.Context, req *connect.Request[cleanroomv1.WalkSandboxTreeRequest], stream *connect.ServerStream[cleanroomv1.WalkSandboxTreeResponse]) error {
+	return toConnectError(s.service.WalkSandboxTree(ctx, req.Msg, stream.Send))
+}
+
+func (s *Server) ReadSandboxFile(ctx context.Context, req *connect.Request[cleanroomv1.ReadSandboxFileRequest], stream *connect.ServerStream[cleanroomv1.ReadSandboxFileResponse]) error {
+	return toConnectError(s.service.ReadSandboxFile(ctx, req.Msg, stream.Send))
+}
+
+func (s *Server) WriteSandboxFile(ctx context.Context, stream *connect.ClientStream[cleanroomv1.WriteSandboxFileRequest]) (*connect.Response[cleanroomv1.WriteSandboxFileResponse], error) {
+	if !stream.Receive() {
+		if err := stream.Err(); err != nil {
+			return nil, toConnectError(err)
+		}
+		return nil, toConnectError(errors.New("missing write init"))
+	}
+	init := stream.Msg().GetInit()
+	if init == nil {
+		return nil, toConnectError(errors.New("first write message must contain init"))
+	}
+
+	reader, writer := io.Pipe()
+	receiveDone := make(chan error, 1)
+	go func() {
+		for stream.Receive() {
+			msg := stream.Msg()
+			if msg.GetInit() != nil {
+				err := errors.New("write init must only be sent once")
+				_ = writer.CloseWithError(err)
+				receiveDone <- err
+				return
+			}
+			dataPayload, ok := msg.GetPayload().(*cleanroomv1.WriteSandboxFileRequest_Data)
+			if !ok {
+				continue
+			}
+			if len(dataPayload.Data) == 0 {
+				continue
+			}
+			if _, err := writer.Write(dataPayload.Data); err != nil {
+				receiveDone <- err
+				return
+			}
+		}
+		if err := stream.Err(); err != nil {
+			_ = writer.CloseWithError(err)
+			receiveDone <- err
+			return
+		}
+		receiveDone <- writer.Close()
+	}()
+
+	resp, err := s.service.WriteSandboxFile(ctx, init, reader)
+	if err != nil {
+		_ = reader.CloseWithError(err)
+		return nil, toConnectError(err)
+	}
+	if err := <-receiveDone; err != nil {
+		return nil, toConnectError(err)
+	}
+	return connect.NewResponse(resp), nil
+}
+
+func (s *Server) RemoveSandboxPath(ctx context.Context, req *connect.Request[cleanroomv1.RemoveSandboxPathRequest]) (*connect.Response[cleanroomv1.RemoveSandboxPathResponse], error) {
+	resp, err := s.service.RemoveSandboxPath(ctx, req.Msg)
+	if err != nil {
+		return nil, toConnectError(err)
+	}
+	return connect.NewResponse(resp), nil
+}
+
+func (s *Server) ArchiveSandboxPaths(ctx context.Context, req *connect.Request[cleanroomv1.ArchiveSandboxPathsRequest], stream *connect.ServerStream[cleanroomv1.ArchiveSandboxPathsResponse]) error {
+	return toConnectError(s.service.ArchiveSandboxPaths(ctx, req.Msg, stream.Send))
+}
+
+func (s *Server) ExtractSandboxArchive(ctx context.Context, stream *connect.ClientStream[cleanroomv1.ExtractSandboxArchiveRequest]) (*connect.Response[cleanroomv1.ExtractSandboxArchiveResponse], error) {
+	if !stream.Receive() {
+		if err := stream.Err(); err != nil {
+			return nil, toConnectError(err)
+		}
+		return nil, toConnectError(errors.New("missing extract init"))
+	}
+	init := stream.Msg().GetInit()
+	if init == nil {
+		return nil, toConnectError(errors.New("first extract message must contain init"))
+	}
+
+	reader, writer := io.Pipe()
+	receiveDone := make(chan error, 1)
+	go func() {
+		for stream.Receive() {
+			msg := stream.Msg()
+			if msg.GetInit() != nil {
+				err := errors.New("extract init must only be sent once")
+				_ = writer.CloseWithError(err)
+				receiveDone <- err
+				return
+			}
+			dataPayload, ok := msg.GetPayload().(*cleanroomv1.ExtractSandboxArchiveRequest_Data)
+			if !ok {
+				continue
+			}
+			if len(dataPayload.Data) == 0 {
+				continue
+			}
+			if _, err := writer.Write(dataPayload.Data); err != nil {
+				receiveDone <- err
+				return
+			}
+		}
+		if err := stream.Err(); err != nil {
+			_ = writer.CloseWithError(err)
+			receiveDone <- err
+			return
+		}
+		receiveDone <- writer.Close()
+	}()
+
+	resp, err := s.service.ExtractSandboxArchive(ctx, init, reader)
+	if err != nil {
+		_ = reader.CloseWithError(err)
+		return nil, toConnectError(err)
+	}
+	if err := <-receiveDone; err != nil {
 		return nil, toConnectError(err)
 	}
 	return connect.NewResponse(resp), nil
@@ -432,6 +577,8 @@ func toConnectError(err error) error {
 		code = connect.CodeCanceled
 	case errors.Is(err, context.DeadlineExceeded):
 		code = connect.CodeDeadlineExceeded
+	case errors.Is(err, backend.ErrSandboxPathNotFound):
+		code = connect.CodeNotFound
 	case strings.Contains(message, "missing "), strings.Contains(message, "invalid"):
 		code = connect.CodeInvalidArgument
 	case strings.Contains(message, "unknown sandbox"), strings.Contains(message, "unknown cleanroom"), strings.Contains(message, "unknown execution"):
