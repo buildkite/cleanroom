@@ -78,6 +78,9 @@ agents:
     command: mise exec -- codex
     test: mise exec -- codex --version >/dev/null 2>&1
     install: mise use -g npm:@openai/codex
+    credentials:
+      - source: ~/.codex/auth.json
+        target: ~/.codex/auth.json
 backends:
   darwin-vz:
     rootfs: /tmp/rootfs
@@ -99,6 +102,15 @@ backends:
 	}
 	if got, want := agent.Install, "mise use -g npm:@openai/codex"; got != want {
 		t.Fatalf("unexpected agent install: got %q want %q", got, want)
+	}
+	if got, want := len(agent.Credentials), 1; got != want {
+		t.Fatalf("unexpected credential count: got %d want %d", got, want)
+	}
+	if got, want := agent.Credentials[0].Source, "~/.codex/auth.json"; got != want {
+		t.Fatalf("unexpected credential source: got %q want %q", got, want)
+	}
+	if got, want := agent.Credentials[0].Target, "~/.codex/auth.json"; got != want {
+		t.Fatalf("unexpected credential target: got %q want %q", got, want)
 	}
 }
 

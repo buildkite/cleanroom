@@ -331,21 +331,43 @@ func defaultRuntimeConfig(defaultBackend string, firecrackerSnapshots, darwinVZS
 func defaultRuntimeAgentConfig() map[string]runtimeconfig.Agent {
 	return map[string]runtimeconfig.Agent{
 		"codex": {
-			Command: "mise exec -- codex",
-			Test:    "mise exec -- codex --version >/dev/null 2>&1",
-			Install: "mise use -g npm:@openai/codex",
+			Command: defaultAgentCommand("codex", "@openai/codex"),
+			Test:    defaultAgentTest("codex"),
+			Credentials: []runtimeconfig.AgentCredential{
+				{Source: "~/.codex/auth.json", Target: "~/.codex/auth.json"},
+				{Source: "~/.codex/config.toml", Target: "~/.codex/config.toml"},
+			},
 		},
 		"claude": {
-			Command: "mise exec -- claude",
-			Test:    "mise exec -- claude --version >/dev/null 2>&1",
-			Install: "mise use -g npm:@anthropic-ai/claude-code",
+			Command: defaultAgentCommand("claude", "@anthropic-ai/claude-code"),
+			Test:    defaultAgentTest("claude"),
+			Credentials: []runtimeconfig.AgentCredential{
+				{Source: "~/.claude", Target: "~/.claude"},
+			},
 		},
 		"gemini": {
-			Command: "mise exec -- gemini",
-			Test:    "mise exec -- gemini --version >/dev/null 2>&1",
-			Install: "mise use -g npm:@google/gemini-cli",
+			Command: defaultAgentCommand("gemini", "@google/gemini-cli"),
+			Test:    defaultAgentTest("gemini"),
+			Credentials: []runtimeconfig.AgentCredential{
+				{Source: "~/.gemini", Target: "~/.gemini"},
+			},
+		},
+		"opencode": {
+			Command: defaultAgentCommand("opencode", "opencode-ai"),
+			Test:    defaultAgentTest("opencode"),
+			Credentials: []runtimeconfig.AgentCredential{
+				{Source: "~/.config/opencode", Target: "~/.config/opencode"},
+			},
 		},
 	}
+}
+
+func defaultAgentCommand(binary, npmPackage string) string {
+	return fmt.Sprintf(`sh -lc 'if command -v %[1]s >/dev/null 2>&1; then exec %[1]s "$@"; fi; exec env MISE_YES=1 MISE_TRUSTED_CONFIG_PATHS=/workspace mise --no-config exec -y nodejs@lts -- npm exec --yes --package %[2]s@latest -- %[1]s "$@"' sh`, binary, npmPackage)
+}
+
+func defaultAgentTest(binary string) string {
+	return fmt.Sprintf("command -v %s >/dev/null 2>&1 || command -v mise >/dev/null 2>&1", binary)
 }
 
 func marshalRuntimeConfigTemplate(cfg runtimeConfigTemplate) ([]byte, error) {

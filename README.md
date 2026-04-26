@@ -218,6 +218,7 @@ Temporarily disable egress filtering for a newly created repository sandbox:
 ```bash
 cleanroom console --dangerously-allow-all -- bash
 cleanroom exec --dangerously-allow-all -- npm test
+cleanroom agent --dangerously-allow-all codex -- exec "summarize the repo"
 ```
 
 Agent command:
@@ -234,7 +235,7 @@ By default Cleanroom checks that the requested command exists in the sandbox bef
 ```yaml
 agents:
   codex:
-    command: sh -lc 'if command -v codex >/dev/null 2>&1; then exec codex "$@"; fi; exec env MISE_YES=1 MISE_TRUSTED_CONFIG_PATHS=/workspace mise --no-config exec -y nodejs@latest npm:@openai/codex@latest -- codex "$@"' sh
+    command: sh -lc 'if command -v codex >/dev/null 2>&1; then exec codex "$@"; fi; exec env MISE_YES=1 MISE_TRUSTED_CONFIG_PATHS=/workspace mise --no-config exec -y nodejs@lts -- npm exec --yes --package @openai/codex@latest -- codex "$@"' sh
     test: command -v codex >/dev/null 2>&1 || command -v mise >/dev/null 2>&1
     credentials:
       - source: ~/.codex/auth.json
@@ -242,19 +243,19 @@ agents:
       - source: ~/.codex/config.toml
         target: ~/.codex/config.toml
   claude:
-    command: sh -lc 'if command -v claude >/dev/null 2>&1; then exec claude "$@"; fi; exec env MISE_YES=1 MISE_TRUSTED_CONFIG_PATHS=/workspace mise --no-config exec -y nodejs@latest npm:@anthropic-ai/claude-code@latest -- claude "$@"' sh
+    command: sh -lc 'if command -v claude >/dev/null 2>&1; then exec claude "$@"; fi; exec env MISE_YES=1 MISE_TRUSTED_CONFIG_PATHS=/workspace mise --no-config exec -y nodejs@lts -- npm exec --yes --package @anthropic-ai/claude-code@latest -- claude "$@"' sh
     test: command -v claude >/dev/null 2>&1 || command -v mise >/dev/null 2>&1
     credentials:
       - source: ~/.claude
         target: ~/.claude
   gemini:
-    command: sh -lc 'if command -v gemini >/dev/null 2>&1; then exec gemini "$@"; fi; exec env MISE_YES=1 MISE_TRUSTED_CONFIG_PATHS=/workspace mise --no-config exec -y nodejs@latest npm:@google/gemini-cli@latest -- gemini "$@"' sh
+    command: sh -lc 'if command -v gemini >/dev/null 2>&1; then exec gemini "$@"; fi; exec env MISE_YES=1 MISE_TRUSTED_CONFIG_PATHS=/workspace mise --no-config exec -y nodejs@lts -- npm exec --yes --package @google/gemini-cli@latest -- gemini "$@"' sh
     test: command -v gemini >/dev/null 2>&1 || command -v mise >/dev/null 2>&1
     credentials:
       - source: ~/.gemini
         target: ~/.gemini
   opencode:
-    command: sh -lc 'if command -v opencode >/dev/null 2>&1; then exec opencode "$@"; fi; exec env MISE_YES=1 MISE_TRUSTED_CONFIG_PATHS=/workspace mise --no-config exec -y nodejs@latest npm:opencode-ai@latest -- opencode "$@"' sh
+    command: sh -lc 'if command -v opencode >/dev/null 2>&1; then exec opencode "$@"; fi; exec env MISE_YES=1 MISE_TRUSTED_CONFIG_PATHS=/workspace mise --no-config exec -y nodejs@lts -- npm exec --yes --package opencode-ai@latest -- opencode "$@"' sh
     test: command -v opencode >/dev/null 2>&1 || command -v mise >/dev/null 2>&1
     credentials:
       - source: ~/.config/opencode
@@ -266,7 +267,6 @@ Credential paths are copied into the sandbox before the agent starts. Missing cr
 The default fallback uses mise-managed Node.js plus the agent npm package so plain Debian images with the required runtime libraries can start agents without preinstalled agent binaries.
 
 For Codex inside cleanroom, prefer device-code auth or API-key auth. Browser/ChatGPT sign-in is not supported in the sandbox yet because it expects a localhost OAuth callback.
-
 
 ## Policy file
 
@@ -485,17 +485,31 @@ default_backend: firecracker
 control_host: ""             # optional override for client endpoint resolution
 agents:
   codex:
-    command: mise exec -- codex
-    test: mise exec -- codex --version >/dev/null 2>&1
-    install: mise use -g npm:@openai/codex
+    command: sh -lc 'if command -v codex >/dev/null 2>&1; then exec codex "$@"; fi; exec env MISE_YES=1 MISE_TRUSTED_CONFIG_PATHS=/workspace mise --no-config exec -y nodejs@lts -- npm exec --yes --package @openai/codex@latest -- codex "$@"' sh
+    test: command -v codex >/dev/null 2>&1 || command -v mise >/dev/null 2>&1
+    credentials:
+      - source: ~/.codex/auth.json
+        target: ~/.codex/auth.json
+      - source: ~/.codex/config.toml
+        target: ~/.codex/config.toml
   claude:
-    command: mise exec -- claude
-    test: mise exec -- claude --version >/dev/null 2>&1
-    install: mise use -g npm:@anthropic-ai/claude-code
+    command: sh -lc 'if command -v claude >/dev/null 2>&1; then exec claude "$@"; fi; exec env MISE_YES=1 MISE_TRUSTED_CONFIG_PATHS=/workspace mise --no-config exec -y nodejs@lts -- npm exec --yes --package @anthropic-ai/claude-code@latest -- claude "$@"' sh
+    test: command -v claude >/dev/null 2>&1 || command -v mise >/dev/null 2>&1
+    credentials:
+      - source: ~/.claude
+        target: ~/.claude
   gemini:
-    command: mise exec -- gemini
-    test: mise exec -- gemini --version >/dev/null 2>&1
-    install: mise use -g npm:@google/gemini-cli
+    command: sh -lc 'if command -v gemini >/dev/null 2>&1; then exec gemini "$@"; fi; exec env MISE_YES=1 MISE_TRUSTED_CONFIG_PATHS=/workspace mise --no-config exec -y nodejs@lts -- npm exec --yes --package @google/gemini-cli@latest -- gemini "$@"' sh
+    test: command -v gemini >/dev/null 2>&1 || command -v mise >/dev/null 2>&1
+    credentials:
+      - source: ~/.gemini
+        target: ~/.gemini
+  opencode:
+    command: sh -lc 'if command -v opencode >/dev/null 2>&1; then exec opencode "$@"; fi; exec env MISE_YES=1 MISE_TRUSTED_CONFIG_PATHS=/workspace mise --no-config exec -y nodejs@lts -- npm exec --yes --package opencode-ai@latest -- opencode "$@"' sh
+    test: command -v opencode >/dev/null 2>&1 || command -v mise >/dev/null 2>&1
+    credentials:
+      - source: ~/.config/opencode
+        target: ~/.config/opencode
 backends:
   firecracker:
     binary_path: firecracker

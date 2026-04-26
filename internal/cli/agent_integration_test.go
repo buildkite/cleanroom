@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -15,6 +17,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/controlclient"
 	"github.com/buildkite/cleanroom/internal/endpoint"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
+	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 )
 
 func runAgentWithCapture(cmd AgentCommand, stdinData string, ctx runtimeContext) execOutcome {
@@ -100,7 +103,6 @@ func TestAgentIntegrationStartsPersistentSandbox(t *testing.T) {
 			return &backend.ExecutionResult{
 				ExecutionID: req.ExecutionID,
 				ExitCode:    0,
-				Stdout:      "codex-ready\n",
 				Message:     "ok",
 			}, nil
 		},
@@ -111,7 +113,7 @@ func TestAgentIntegrationStartsPersistentSandbox(t *testing.T) {
 	outcome := runAgentWithCapture(AgentCommand{
 		clientFlags: clientFlags{Host: host},
 		Chdir:       cwd,
-		Command:     "amp",
+		Agent:       "amp",
 	}, "", runtimeContext{
 		CWD:    cwd,
 		Loader: integrationLoader{},
@@ -146,6 +148,8 @@ func TestAgentIntegrationStartsPersistentSandbox(t *testing.T) {
 }
 
 func TestAgentIntegrationUsesPolicyImageForCreatedSandbox(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
 	imageRefCh := make(chan string, 1)
 	var gotCommand []string
 	adapter := &integrationAdapter{
@@ -168,7 +172,7 @@ func TestAgentIntegrationUsesPolicyImageForCreatedSandbox(t *testing.T) {
 	outcome := runAgentWithCapture(AgentCommand{
 		clientFlags: clientFlags{Host: host},
 		Chdir:       cwd,
-		Command:     "codex",
+		Agent:       "codex",
 	}, "", runtimeContext{
 		CWD:    cwd,
 		Loader: integrationLoader{},
@@ -180,7 +184,7 @@ func TestAgentIntegrationUsesPolicyImageForCreatedSandbox(t *testing.T) {
 	if outcome.err != nil {
 		t.Fatalf("AgentCommand.Run returned error: %v", outcome.err)
 	}
-	assertAgentShellCommand(t, gotCommand, "codex", "exec codex")
+	assertAgentShellCommand(t, gotCommand, "codex", "exec sh -lc 'if command -v codex >/dev/null 2>&1; then exec codex \"$@\"; fi; exec env MISE_YES=1 MISE_TRUSTED_CONFIG_PATHS=/workspace mise --no-config exec -y nodejs@lts -- npm exec --yes --package @openai/codex@latest -- codex \"$@\"' sh")
 
 	gotImageRef := mustReceiveWithin(t, imageRefCh, 2*time.Second, "timed out waiting for run request policy")
 	if got, want := gotImageRef, integrationPolicyImageRef; got != want {
@@ -188,7 +192,40 @@ func TestAgentIntegrationUsesPolicyImageForCreatedSandbox(t *testing.T) {
 	}
 }
 
+func TestAgentIntegrationDangerouslyAllowAllSetsAllowNetworkDefault(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	adapter := &snapshotIntegrationAdapter{}
+	host, _ := startIntegrationServer(t, adapter)
+	cwd := t.TempDir()
+
+	outcome := runAgentWithCapture(AgentCommand{
+		clientFlags:         clientFlags{Host: host},
+		Chdir:               cwd,
+		DangerouslyAllowAll: true,
+		Agent:               "codex",
+	}, "", runtimeContext{
+		CWD:    cwd,
+		Loader: integrationLoader{},
+	})
+
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err != nil {
+		t.Fatalf("AgentCommand.Run returned error: %v", outcome.err)
+	}
+	if adapter.provisionReq.Policy == nil {
+		t.Fatal("expected provisioned policy")
+	}
+	if got, want := adapter.provisionReq.Policy.NetworkDefault, "allow"; got != want {
+		t.Fatalf("unexpected provisioned network default: got %q want %q", got, want)
+	}
+}
+
 func TestAgentIntegrationPassesArgsToCommand(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
 	var gotCommand []string
 	adapter := &integrationAdapter{
 		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
@@ -206,7 +243,7 @@ func TestAgentIntegrationPassesArgsToCommand(t *testing.T) {
 	outcome := runAgentWithCapture(AgentCommand{
 		clientFlags: clientFlags{Host: host},
 		Chdir:       cwd,
-		Command:     "codex",
+		Agent:       "codex",
 		Args:        []string{"--", "exec", "--yolo", "fix lint failures"},
 	}, "", runtimeContext{
 		CWD:    cwd,
@@ -219,7 +256,94 @@ func TestAgentIntegrationPassesArgsToCommand(t *testing.T) {
 	if outcome.err != nil {
 		t.Fatalf("AgentCommand.Run returned error: %v", outcome.err)
 	}
-	assertAgentShellCommand(t, gotCommand, "codex", "exec codex 'exec' '--yolo' 'fix lint failures'")
+	assertAgentShellCommand(t, gotCommand, "codex", "exec sh -lc 'if command -v codex >/dev/null 2>&1; then exec codex \"$@\"; fi; exec env MISE_YES=1 MISE_TRUSTED_CONFIG_PATHS=/workspace mise --no-config exec -y nodejs@lts -- npm exec --yes --package @openai/codex@latest -- codex \"$@\"' sh 'exec' '--yolo' 'fix lint failures'")
+}
+
+func TestAgentIntegrationCopiesConfiguredCredentialsBeforeAttach(t *testing.T) {
+	hostHome := t.TempDir()
+	sourcePath := filepath.Join(hostHome, ".codex", "auth.json")
+	if err := os.MkdirAll(filepath.Dir(sourcePath), 0o700); err != nil {
+		t.Fatalf("mkdir credentials: %v", err)
+	}
+	if err := os.WriteFile(sourcePath, []byte(`{"token":"redacted"}`), 0o600); err != nil {
+		t.Fatalf("write credential: %v", err)
+	}
+
+	adapter := &agentCredentialCopyAdapter{
+		integrationAdapter: &integrationAdapter{
+			runStreamFn: func(_ context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
+				if !req.TTY {
+					return nil, errors.New("expected agent execution to use tty")
+				}
+				return &backend.ExecutionResult{
+					ExecutionID: req.ExecutionID,
+					ExitCode:    0,
+					Message:     "ok",
+				}, nil
+			},
+		},
+	}
+
+	host, _ := startIntegrationServer(t, adapter)
+	cwd := t.TempDir()
+	outcome := runAgentWithCapture(AgentCommand{
+		clientFlags: clientFlags{Host: host},
+		Chdir:       cwd,
+		Agent:       "codex",
+	}, "", runtimeContext{
+		CWD:    cwd,
+		Loader: integrationLoader{},
+		Config: runtimeconfig.Config{
+			Agents: map[string]runtimeconfig.Agent{
+				"codex": {
+					Command: "codex",
+					Test:    "command -v codex >/dev/null 2>&1",
+					Credentials: []runtimeconfig.AgentCredential{
+						{Source: sourcePath, Target: "~/.codex/auth.json"},
+					},
+				},
+			},
+		},
+	})
+
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err != nil {
+		t.Fatalf("AgentCommand.Run returned error: %v", outcome.err)
+	}
+	if got, want := adapter.archiveDestination, "/"; got != want {
+		t.Fatalf("unexpected credential archive destination: got %q want %q", got, want)
+	}
+	assertAgentShellCommand(t, adapter.runReq.Command, "codex", "exec codex")
+
+	tr := tar.NewReader(bytes.NewReader(adapter.archive.Bytes()))
+	header, err := tr.Next()
+	if err != nil {
+		t.Fatalf("read credential archive header: %v", err)
+	}
+	if got, want := header.Name, "root/.codex/auth.json"; got != want {
+		t.Fatalf("unexpected credential archive path: got %q want %q", got, want)
+	}
+	body, err := io.ReadAll(tr)
+	if err != nil {
+		t.Fatalf("read credential archive body: %v", err)
+	}
+	if got, want := string(body), `{"token":"redacted"}`; got != want {
+		t.Fatalf("unexpected credential archive body: got %q want %q", got, want)
+	}
+}
+
+type agentCredentialCopyAdapter struct {
+	*integrationAdapter
+
+	archiveDestination string
+	archive            bytes.Buffer
+}
+
+func (a *agentCredentialCopyAdapter) ExtractSandboxArchive(_ context.Context, _ string, destination string, r io.Reader) (int64, error) {
+	a.archiveDestination = destination
+	return io.Copy(&a.archive, r)
 }
 
 func TestAgentIntegrationReusesProvidedSandboxWithoutLoadingPolicy(t *testing.T) {
@@ -240,7 +364,7 @@ func TestAgentIntegrationReusesProvidedSandboxWithoutLoadingPolicy(t *testing.T)
 	outcome := runAgentWithCapture(AgentCommand{
 		clientFlags: clientFlags{Host: host},
 		SandboxID:   sandboxID,
-		Command:     "amp",
+		Agent:       "amp",
 	}, "", runtimeContext{
 		CWD:    t.TempDir(),
 		Loader: failingLoader{},
@@ -261,7 +385,10 @@ func assertAgentShellCommand(t *testing.T, got []string, testName, execLine stri
 		t.Fatalf("unexpected command wrapper: got %v", got)
 	}
 	script := got[2]
-	if !strings.Contains(script, "command -v '"+testName+"' >/dev/null 2>&1") {
+	if !strings.Contains(script, "command -v '"+testName+"' >/dev/null 2>&1") &&
+		!strings.Contains(script, "command -v "+testName+" >/dev/null 2>&1") &&
+		!strings.Contains(script, "mise exec -- "+testName+" --version >/dev/null 2>&1") &&
+		!strings.Contains(script, "mise --no-config exec -y nodejs@lts -- npm exec --yes --package ") {
 		t.Fatalf("expected agent test for %q in script:\n%s", testName, script)
 	}
 	if !strings.Contains(script, execLine) {

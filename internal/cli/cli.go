@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -138,6 +139,9 @@ func Run(args []string, version string) (runErr error) {
 		&cli,
 		kong.Name("cleanroom"),
 		kong.Description("Cleanroom CLI"),
+		kong.Vars{
+			"agent_names": agentNamesForParser(),
+		},
 	)
 	if err != nil {
 		return err
@@ -187,6 +191,32 @@ func Run(args []string, version string) (runErr error) {
 
 	runErr = ctx.Run(runtimeCtx)
 	return runErr
+}
+
+func agentNamesForParser() string {
+	cfg, _, err := runtimeconfig.Load()
+	if err != nil {
+		cfg = runtimeconfig.Config{}
+	}
+	names := map[string]struct{}{}
+	for name := range defaultRuntimeAgentConfig() {
+		name = strings.TrimSpace(name)
+		if name != "" {
+			names[name] = struct{}{}
+		}
+	}
+	for name := range cfg.Agents {
+		name = strings.TrimSpace(name)
+		if name != "" {
+			names[name] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(names))
+	for name := range names {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return strings.Join(out, ",")
 }
 
 func commandBypassesStartupRuntimeConfig(ctx *kong.Context) bool {

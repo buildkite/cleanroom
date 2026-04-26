@@ -65,14 +65,20 @@ func TestConfigInitWritesRuntimeConfig(t *testing.T) {
 	if got := strings.TrimSpace(cfg.DefaultBackend); got == "" {
 		t.Fatal("expected default_backend to be populated")
 	}
-	if got, want := cfg.Agents["codex"].Install, "mise use -g npm:@openai/codex"; got != want {
-		t.Fatalf("expected generated config to include codex install command %q, got %q", want, got)
+	if got, want := cfg.Agents["codex"].Command, defaultAgentCommand("codex", "@openai/codex"); got != want {
+		t.Fatalf("expected generated config to include codex command %q, got %q", want, got)
 	}
-	if got, want := cfg.Agents["claude"].Install, "mise use -g npm:@anthropic-ai/claude-code"; got != want {
-		t.Fatalf("expected generated config to include claude install command %q, got %q", want, got)
+	if got, want := cfg.Agents["claude"].Command, defaultAgentCommand("claude", "@anthropic-ai/claude-code"); got != want {
+		t.Fatalf("expected generated config to include claude command %q, got %q", want, got)
 	}
-	if got, want := cfg.Agents["gemini"].Install, "mise use -g npm:@google/gemini-cli"; got != want {
-		t.Fatalf("expected generated config to include gemini install command %q, got %q", want, got)
+	if got, want := cfg.Agents["gemini"].Command, defaultAgentCommand("gemini", "@google/gemini-cli"); got != want {
+		t.Fatalf("expected generated config to include gemini command %q, got %q", want, got)
+	}
+	if got, want := cfg.Agents["opencode"].Command, defaultAgentCommand("opencode", "opencode-ai"); got != want {
+		t.Fatalf("expected generated config to include opencode command %q, got %q", want, got)
+	}
+	if got := cfg.Agents["codex"].Credentials; len(got) == 0 {
+		t.Fatal("expected generated config to include codex credential paths")
 	}
 	if strings.Contains(string(raw), "default_backend:") {
 		t.Fatalf("expected generated config to omit default_backend when only one backend is defined, got:\n%s", raw)

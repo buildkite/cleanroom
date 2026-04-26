@@ -1,7 +1,7 @@
 version: 1
 sandbox:
   image:
-    ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:91a63856cdf97b2e5659660b41d1a131d3b57bfa4cad254018e391ffef6fa4b9
+    ref: ghcr.io/buildkite/cleanroom-base/debian@sha256:66d2bafc1cd64e594b32d9c091f1bc79bc1fb3811686ea920c58f6e4275f6663
   network:
     default: deny
     allow:

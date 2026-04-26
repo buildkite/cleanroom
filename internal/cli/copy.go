@@ -253,6 +253,40 @@ func applyLocalCopyMetadata(path string, info *cleanroomv1.SandboxPathInfo) erro
 	return nil
 }
 
+func extractSandboxArchive(ctx context.Context, client *controlclient.Client, sandboxID, destination string, r io.Reader) error {
+	stream := client.ExtractSandboxArchive(ctx)
+	if err := stream.Send(&cleanroomv1.ExtractSandboxArchiveRequest{
+		Payload: &cleanroomv1.ExtractSandboxArchiveRequest_Init{Init: &cleanroomv1.ExtractSandboxArchiveInit{
+			SandboxId:   sandboxID,
+			Destination: destination,
+		}},
+	}); err != nil {
+		return fmt.Errorf("start sandbox archive extract: %w", err)
+	}
+
+	buf := make([]byte, 32*1024)
+	for {
+		n, readErr := r.Read(buf)
+		if n > 0 {
+			if err := stream.Send(&cleanroomv1.ExtractSandboxArchiveRequest{
+				Payload: &cleanroomv1.ExtractSandboxArchiveRequest_Data{Data: append([]byte(nil), buf[:n]...)},
+			}); err != nil {
+				return fmt.Errorf("extract sandbox archive: %w", err)
+			}
+		}
+		if readErr != nil {
+			if !errors.Is(readErr, io.EOF) {
+				return fmt.Errorf("read sandbox archive payload: %w", readErr)
+			}
+			break
+		}
+	}
+	if _, err := stream.CloseAndReceive(); err != nil {
+		return fmt.Errorf("extract sandbox archive: %w", err)
+	}
+	return nil
+}
+
 func parseCopyOperand(spec string) (copyOperand, error) {
 	if strings.Contains(spec, "\x00") {
 		return copyOperand{}, errors.New("path contains NUL")

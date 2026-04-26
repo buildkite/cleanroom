@@ -28,9 +28,15 @@ type Config struct {
 }
 
 type Agent struct {
-	Command string `yaml:"command,omitempty"`
-	Test    string `yaml:"test,omitempty"`
-	Install string `yaml:"install,omitempty"`
+	Command     string            `yaml:"command,omitempty"`
+	Test        string            `yaml:"test,omitempty"`
+	Install     string            `yaml:"install,omitempty"`
+	Credentials []AgentCredential `yaml:"credentials,omitempty"`
+}
+
+type AgentCredential struct {
+	Source string `yaml:"source,omitempty"`
+	Target string `yaml:"target,omitempty"`
 }
 
 type GatewayConfig struct {
@@ -416,7 +422,30 @@ func normalizeAgents(in map[string]Agent) map[string]Agent {
 		agent.Command = strings.TrimSpace(agent.Command)
 		agent.Test = strings.TrimSpace(agent.Test)
 		agent.Install = strings.TrimSpace(agent.Install)
+		agent.Credentials = normalizeAgentCredentials(agent.Credentials)
 		out[trimmedName] = agent
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func normalizeAgentCredentials(in []AgentCredential) []AgentCredential {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]AgentCredential, 0, len(in))
+	for _, credential := range in {
+		credential.Source = strings.TrimSpace(credential.Source)
+		credential.Target = strings.TrimSpace(credential.Target)
+		if credential.Source == "" {
+			continue
+		}
+		if credential.Target == "" {
+			credential.Target = credential.Source
+		}
+		out = append(out, credential)
 	}
 	if len(out) == 0 {
 		return nil

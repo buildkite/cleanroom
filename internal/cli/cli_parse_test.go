@@ -3,7 +3,10 @@ package cli
 import (
 	"bytes"
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -17,6 +20,9 @@ func newParserForTest(t *testing.T, c *CLI) *kong.Kong {
 		c,
 		kong.Name("cleanroom"),
 		kong.Description("Cleanroom CLI (MVP)"),
+		kong.Vars{
+			"agent_names": "amp,claude,codex,gemini,opencode",
+		},
 	)
 	if err != nil {
 		t.Fatalf("create parser: %v", err)
@@ -148,8 +154,8 @@ func TestAgentParsesCommandWithoutArgs(t *testing.T) {
 	if _, err := parser.Parse([]string{"agent", "amp"}); err != nil {
 		t.Fatalf("parse agent returned error: %v", err)
 	}
-	if got, want := c.Agent.Command, "amp"; got != want {
-		t.Fatalf("unexpected agent command: got %q want %q", got, want)
+	if got, want := c.Agent.Agent, "amp"; got != want {
+		t.Fatalf("unexpected agent name: got %q want %q", got, want)
 	}
 	if got := len(c.Agent.Args); got != 0 {
 		t.Fatalf("expected no agent args, got %v", c.Agent.Args)
@@ -163,8 +169,8 @@ func TestAgentParsesCommandAfterSeparator(t *testing.T) {
 	if _, err := parser.Parse([]string{"agent", "--", "amp"}); err != nil {
 		t.Fatalf("parse agent command after separator returned error: %v", err)
 	}
-	if got, want := c.Agent.Command, "amp"; got != want {
-		t.Fatalf("unexpected agent command: got %q want %q", got, want)
+	if got, want := c.Agent.Agent, "amp"; got != want {
+		t.Fatalf("unexpected agent name: got %q want %q", got, want)
 	}
 }
 
@@ -175,11 +181,60 @@ func TestAgentPassesThroughArgs(t *testing.T) {
 	if _, err := parser.Parse([]string{"agent", "codex", "--yolo", "--model", "gpt-5.3-codex"}); err != nil {
 		t.Fatalf("parse agent args returned error: %v", err)
 	}
-	if got, want := c.Agent.Command, "codex"; got != want {
-		t.Fatalf("unexpected agent command: got %q want %q", got, want)
+	if got, want := c.Agent.Agent, "codex"; got != want {
+		t.Fatalf("unexpected agent name: got %q want %q", got, want)
 	}
 	if got, want := strings.Join(c.Agent.Args, " "), "--yolo --model gpt-5.3-codex"; got != want {
 		t.Fatalf("unexpected agent args: got %q want %q", got, want)
+	}
+}
+
+func TestAgentParsesDangerouslyAllowAll(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"agent", "--dangerously-allow-all", "codex"}); err != nil {
+		t.Fatalf("parse agent --dangerously-allow-all returned error: %v", err)
+	}
+	if !c.Agent.DangerouslyAllowAll {
+		t.Fatal("expected agent dangerously-allow-all flag to be set")
+	}
+}
+
+func TestAgentRejectsUnknownAgentName(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	_, err := parser.Parse([]string{"agent", "unknown"})
+	if err == nil {
+		t.Fatal("expected parse error for unknown agent")
+	}
+	if !strings.Contains(err.Error(), "must be one of") || !strings.Contains(err.Error(), "unknown") {
+		t.Fatalf("expected enum parse error, got %v", err)
+	}
+}
+
+func TestAgentNamesForParserIncludesConfiguredAgents(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	configPath := filepath.Join(tmp, "cleanroom", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	if err := os.WriteFile(configPath, []byte(`default_backend: darwin-vz
+agents:
+  amp:
+    command: amp
+backends:
+  darwin-vz:
+    rootfs: /tmp/rootfs
+`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	names := strings.Split(agentNamesForParser(), ",")
+	if !slices.Contains(names, "amp") || !slices.Contains(names, "codex") {
+		t.Fatalf("expected configured and default agent names, got %v", names)
 	}
 }
 
