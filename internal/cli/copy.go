@@ -66,11 +66,15 @@ func (c *CopyCommand) copyFromSandbox(ctx *runtimeContext, remote *copyRemotePat
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+	installDestination, err := resolveLocalInstallDestination(destination)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(installDestination), 0o755); err != nil {
 		return fmt.Errorf("create local destination parent: %w", err)
 	}
 
-	tmp, err := os.CreateTemp(filepath.Dir(destination), "."+filepath.Base(destination)+".tmp-*")
+	tmp, err := os.CreateTemp(filepath.Dir(installDestination), "."+filepath.Base(installDestination)+".tmp-*")
 	if err != nil {
 		return fmt.Errorf("create local temporary file: %w", err)
 	}
@@ -102,7 +106,7 @@ func (c *CopyCommand) copyFromSandbox(ctx *runtimeContext, remote *copyRemotePat
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close local temporary file: %w", err)
 	}
-	if err := os.Rename(tmpPath, destination); err != nil {
+	if err := os.Rename(tmpPath, installDestination); err != nil {
 		return fmt.Errorf("install local file: %w", err)
 	}
 	committed = true
@@ -226,6 +230,31 @@ func resolveLocalCopyDestination(localPath, remotePath string) (string, error) {
 		return "", fmt.Errorf("cannot infer local filename from remote path %q", remotePath)
 	}
 	return filepath.Join(localPath, base), nil
+}
+
+func resolveLocalInstallDestination(destination string) (string, error) {
+	info, err := os.Lstat(destination)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return destination, nil
+		}
+		return "", fmt.Errorf("lstat local destination: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		return destination, nil
+	}
+	target, err := filepath.EvalSymlinks(destination)
+	if err != nil {
+		return "", fmt.Errorf("resolve local destination symlink: %w", err)
+	}
+	targetInfo, err := os.Stat(target)
+	if err != nil {
+		return "", fmt.Errorf("stat local destination symlink target: %w", err)
+	}
+	if targetInfo.IsDir() {
+		return destination, nil
+	}
+	return target, nil
 }
 
 func resolveRemoteCopyDestination(remotePath, localPath string) (string, error) {

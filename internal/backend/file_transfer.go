@@ -110,7 +110,25 @@ if [ -d "$path" ]; then
 	echo "destination is a directory: $path" >&2
 	exit 1
 fi
-tmp="${path}.cleanroom-copy.$$"
+write_path=$path
+if [ -L "$path" ]; then
+	link_target=$(readlink "$path" || true)
+	if [ -z "$link_target" ]; then
+		echo "failed to resolve symlink destination: $path" >&2
+		exit 1
+	fi
+	case "$link_target" in
+		/*) write_path=$link_target ;;
+		*) write_path=$dir/$link_target ;;
+	esac
+	if [ -d "$write_path" ]; then
+		echo "destination is a directory: $path" >&2
+		exit 1
+	fi
+fi
+write_dir=$(dirname "$write_path")
+mkdir -p "$write_dir"
+tmp="${write_path}.cleanroom-copy.$$"
 cleanup() {
 	rm -f "$tmp"
 }
@@ -126,7 +144,7 @@ if [ -n "$mtime" ]; then
 		fi
 	fi
 fi
-mv -f "$tmp" "$path"
+mv -f "$tmp" "$write_path"
 trap - EXIT HUP INT TERM
 `
 
