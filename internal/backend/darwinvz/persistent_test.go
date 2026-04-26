@@ -262,6 +262,32 @@ func TestDownloadSandboxFileReturnsBytes(t *testing.T) {
 	}
 }
 
+func TestDownloadSandboxFileReturnsStreamedStderrOnFailure(t *testing.T) {
+	t.Parallel()
+
+	adapter := &Adapter{}
+	adapter.executeInSandboxFn = func(_ context.Context, _ context.Context, _ *sandboxInstance, _ backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+		if stream.OnStderr != nil {
+			stream.OnStderr([]byte("head: cannot open '/missing': No such file or directory\n"))
+		}
+		return &backend.ExecutionResult{ExitCode: 1}, nil
+	}
+	adapter.sandboxes = map[string]*sandboxInstance{
+		"cr-test": {
+			SandboxID: "cr-test",
+			exitedCh:  make(chan struct{}),
+		},
+	}
+
+	_, err := adapter.DownloadSandboxFile(context.Background(), "cr-test", "/missing", 32)
+	if err == nil {
+		t.Fatal("expected download error")
+	}
+	if !strings.Contains(err.Error(), "cannot open '/missing'") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestWriteSandboxFileWritesPayloadModeAndMtime(t *testing.T) {
 	t.Parallel()
 

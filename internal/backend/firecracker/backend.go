@@ -613,8 +613,12 @@ func (a *Adapter) ReadSandboxFile(ctx context.Context, sandboxID, path string, m
 	bufferLimit := 0
 	var total int64
 	var emitErr error
+	var stderr bytes.Buffer
 	result, err := a.runFileTransferCommand(runCtx, sandboxID, cmd, backend.OutputStream{
 		BufferedOutputLimitBytes: &bufferLimit,
+		OnStderr: func(chunk []byte) {
+			_, _ = stderr.Write(chunk)
+		},
 		OnStdout: func(chunk []byte) {
 			if emitErr != nil {
 				return
@@ -648,6 +652,9 @@ func (a *Adapter) ReadSandboxFile(ctx context.Context, sandboxID, path string, m
 		return err
 	}
 	if result.ExitCode != 0 {
+		if result.Stderr == "" && stderr.Len() > 0 {
+			result.Stderr = stderr.String()
+		}
 		return fileTransferExitError(result, "read file command failed")
 	}
 	if total == 0 && result.Stdout != "" && emit != nil {
@@ -727,8 +734,12 @@ func (a *Adapter) ArchiveSandboxPaths(ctx context.Context, sandboxID string, pat
 	bufferLimit := 0
 	var total int64
 	var emitErr error
+	var stderr bytes.Buffer
 	result, err := a.runFileTransferCommand(runCtx, sandboxID, cmd, backend.OutputStream{
 		BufferedOutputLimitBytes: &bufferLimit,
+		OnStderr: func(chunk []byte) {
+			_, _ = stderr.Write(chunk)
+		},
 		OnStdout: func(chunk []byte) {
 			if emitErr != nil {
 				return
@@ -763,6 +774,9 @@ func (a *Adapter) ArchiveSandboxPaths(ctx context.Context, sandboxID string, pat
 		return err
 	}
 	if result.ExitCode != 0 {
+		if result.Stderr == "" && stderr.Len() > 0 {
+			result.Stderr = stderr.String()
+		}
 		return fileTransferExitError(result, "archive paths command failed")
 	}
 	return nil
