@@ -77,6 +77,8 @@ after these invariants are stable.
 - Local destination symlink chains are followed with a bounded hop count.
 - Dangling local destination symlinks materialize their target path.
 - Local destination symlink loops fail cleanly.
+- Copying a sandbox file to a local file preserves the sandbox file mode and
+  mtime.
 
 ### CLI copy behavior
 
