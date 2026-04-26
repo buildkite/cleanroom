@@ -244,7 +244,7 @@ func TestDownloadSandboxFileReturnsBytes(t *testing.T) {
 		if stream.OnStdout != nil {
 			stream.OnStdout([]byte("hello"))
 		}
-		return &backend.ExecutionResult{ExitCode: 0, Stdout: "hello"}, nil
+		return &backend.ExecutionResult{ExitCode: 0}, nil
 	}
 	adapter.sandboxes = map[string]*sandboxInstance{
 		"cr-test": {
@@ -375,7 +375,10 @@ func TestWriteSandboxFileReturnsGuestErrorWhenUploadFailsBeforeReadingPayload(t 
 		case <-time.After(time.Second):
 			t.Fatal("timed out waiting for upload copy to start")
 		}
-		return &backend.ExecutionResult{ExitCode: 1, Stderr: "destination is a directory: /tmp/upload\n"}, nil
+		if stream.OnStderr != nil {
+			stream.OnStderr([]byte("destination is a directory: /tmp/upload\n"))
+		}
+		return &backend.ExecutionResult{ExitCode: 1}, nil
 	}
 	adapter.sandboxes = map[string]*sandboxInstance{
 		"cr-test": {

@@ -451,7 +451,10 @@ func TestWriteSandboxFileReturnsGuestErrorWhenUploadFailsBeforeReadingPayload(t 
 		case <-time.After(time.Second):
 			t.Fatal("timed out waiting for upload copy to start")
 		}
-		return vsockexec.ExecResponse{ExitCode: 1, Stderr: "destination is a directory: /tmp/upload\n"}, guestExecTiming{}, nil
+		if stream.OnStderr != nil {
+			stream.OnStderr([]byte("destination is a directory: /tmp/upload\n"))
+		}
+		return vsockexec.ExecResponse{ExitCode: 1}, guestExecTiming{}, nil
 	}
 	adapter.sandboxes = map[string]*sandboxInstance{
 		"cr-test": {
