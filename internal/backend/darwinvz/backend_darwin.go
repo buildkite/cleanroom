@@ -843,9 +843,8 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 
 	warnings := buildRuntimeWarnings(policyWarn, guestNetworkingWarning)
 
-	stderrPrefix := ""
 	for _, warningText := range warnings {
-		stderrPrefix += emitExecutionWarning(stream, warningText)
+		emitExecutionWarning(stream, warningText)
 	}
 
 	resolvedImageRef := req.Policy.ImageRef
@@ -872,7 +871,6 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 			ImageRef:    resolvedImageRef,
 			ImageDigest: resolvedImageDigest,
 			Message:     "darwin-vz execution plan generated; command not executed",
-			Stderr:      stderrPrefix,
 		}, nil
 	}
 
@@ -1108,8 +1106,6 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 		ImageRef:    resolvedImageRef,
 		ImageDigest: resolvedImageDigest,
 		Message:     message,
-		Stdout:      guestRes.Stdout,
-		Stderr:      stderrPrefix + guestRes.Stderr,
 	}, nil
 }
 
@@ -1425,9 +1421,8 @@ func (a *Adapter) executeInSandbox(bootCtx context.Context, runCtx context.Conte
 	}
 
 	warnings := buildRuntimeWarnings(policyWarn, guestNetworkingWarning)
-	stderrPrefix := ""
 	for _, warningText := range warnings {
-		stderrPrefix += emitExecutionWarning(stream, warningText)
+		emitExecutionWarning(stream, warningText)
 	}
 
 	helper := instance.Helper
@@ -1526,8 +1521,6 @@ func (a *Adapter) executeInSandbox(bootCtx context.Context, runCtx context.Conte
 		ImageRef:    instance.ImageRef,
 		ImageDigest: instance.ImageDigest,
 		Message:     darwinVZResultMessage(guestRes.Error),
-		Stdout:      guestRes.Stdout,
-		Stderr:      stderrPrefix + guestRes.Stderr,
 	}, nil
 }
 
@@ -1684,7 +1677,7 @@ func probeGuestExecReadyWithExit(ctx context.Context, helper *helperSession, soc
 		}
 		return fmt.Errorf("send guest readiness probe over darwin-vz proxy: %w", err)
 	}
-	if _, err := vsockexec.DecodeResponse(conn); err != nil {
+	if _, err := guestexec.DecodeResponse(conn, backend.OutputStream{}); err != nil {
 		if helper != nil {
 			return helper.decorateError(fmt.Errorf("decode guest readiness probe over darwin-vz proxy: %w", err))
 		}
@@ -1795,20 +1788,19 @@ func buildRuntimeWarnings(policyWarning, guestNetworkingWarning string) []string
 	return warnings
 }
 
-func emitExecutionWarning(stream backend.OutputStream, warningText string) string {
+func emitExecutionWarning(stream backend.OutputStream, warningText string) {
 	warningText = strings.TrimSpace(warningText)
 	if warningText == "" {
-		return ""
+		return
 	}
 	if stream.OnWarning != nil {
 		stream.OnWarning(warningText)
-		return ""
+		return
 	}
 	warningLine := "warning: " + warningText + "\n"
 	if stream.OnStderr != nil {
 		stream.OnStderr([]byte(warningLine))
 	}
-	return warningLine
 }
 
 type imageArtifact struct {

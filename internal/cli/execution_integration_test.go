@@ -35,12 +35,16 @@ func TestExecutionInspectIntegrationShowsExecutionDetails(t *testing.T) {
 	}
 
 	adapter := &integrationAdapter{
-		runFn: func(_ context.Context, req backend.ExecutionRequest) (*backend.ExecutionResult, error) {
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+			if stream.OnStdout != nil {
+				stream.OnStdout([]byte("hello\n"))
+			}
+			if stream.OnStderr != nil {
+				stream.OnStderr([]byte("warn\n"))
+			}
 			return &backend.ExecutionResult{
 				ExecutionID: req.ExecutionID,
 				ExitCode:    0,
-				Stdout:      "hello\n",
-				Stderr:      "warn\n",
 				RunDir:      runDir,
 				PlanPath:    "/tmp/plan.json",
 				ImageRef:    "ghcr.io/buildkite/cleanroom-base/alpine@sha256:abc",
@@ -104,11 +108,13 @@ func TestExecutionInspectIntegrationSupportsLastAndJSON(t *testing.T) {
 	t.Helper()
 
 	adapter := &integrationAdapter{
-		runFn: func(_ context.Context, req backend.ExecutionRequest) (*backend.ExecutionResult, error) {
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+			if stream.OnStdout != nil {
+				stream.OnStdout([]byte("hello\n"))
+			}
 			return &backend.ExecutionResult{
 				ExecutionID: req.ExecutionID,
 				ExitCode:    0,
-				Stdout:      "hello\n",
 				Message:     "done",
 			}, nil
 		},
@@ -165,11 +171,13 @@ func TestExecutionInspectIntegrationSupportsGlobalLast(t *testing.T) {
 	t.Helper()
 
 	adapter := &integrationAdapter{
-		runFn: func(_ context.Context, req backend.ExecutionRequest) (*backend.ExecutionResult, error) {
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+			if stream.OnStdout != nil {
+				stream.OnStdout([]byte("hello\n"))
+			}
 			return &backend.ExecutionResult{
 				ExecutionID: req.ExecutionID,
 				ExitCode:    0,
-				Stdout:      "hello\n",
 				Message:     "done",
 			}, nil
 		},
@@ -229,11 +237,13 @@ func TestExecutionInspectIntegrationSupportsGlobalExecutionID(t *testing.T) {
 	t.Helper()
 
 	adapter := &integrationAdapter{
-		runFn: func(_ context.Context, req backend.ExecutionRequest) (*backend.ExecutionResult, error) {
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+			if stream.OnStdout != nil {
+				stream.OnStdout([]byte("hello\n"))
+			}
 			return &backend.ExecutionResult{
 				ExecutionID: req.ExecutionID,
 				ExitCode:    0,
-				Stdout:      "hello\n",
 				Message:     "done",
 			}, nil
 		},

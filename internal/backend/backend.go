@@ -158,9 +158,6 @@ type OutputStream struct {
 	OnStderr  func([]byte)
 	OnWarning func(string)
 	OnAttach  func(AttachIO)
-	// BufferedOutputLimitBytes caps stdout/stderr accumulated in the backend
-	// result. Nil keeps the backend default; zero disables accumulation.
-	BufferedOutputLimitBytes *int
 }
 
 type ExecutionRequest struct {
@@ -217,8 +214,6 @@ type ExecutionResult struct {
 	ImageRef    string
 	ImageDigest string
 	Message     string
-	Stdout      string
-	Stderr      string
 }
 
 type DoctorRequest struct {

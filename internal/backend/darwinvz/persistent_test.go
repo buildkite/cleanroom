@@ -189,8 +189,12 @@ func TestProbeGuestExecReadyWaitsForGuestResponse(t *testing.T) {
 			t.Errorf("expected empty probe command, got %v", req.Command)
 			return
 		}
-		if encodeErr := vsockexec.EncodeResponse(conn, vsockexec.ExecResponse{ExitCode: 1, Error: "missing command"}); encodeErr != nil {
-			t.Errorf("encode probe response: %v", encodeErr)
+		if encodeErr := vsockexec.EncodeStreamFrame(conn, vsockexec.ExecStreamFrame{
+			Type:     "exit",
+			ExitCode: 1,
+			Error:    "missing command",
+		}); encodeErr != nil {
+			t.Errorf("encode probe exit frame: %v", encodeErr)
 		}
 	}()
 

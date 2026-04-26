@@ -97,7 +97,7 @@ func TestAttachStreamWritesInputFramesAndMetadata(t *testing.T) {
 	}
 }
 
-func TestDecodeResponseForwardsStreamCallbacksAndLimit(t *testing.T) {
+func TestDecodeResponseForwardsStreamCallbacks(t *testing.T) {
 	var frames bytes.Buffer
 	if err := vsockexec.EncodeStreamFrame(&frames, vsockexec.ExecStreamFrame{Type: "stdout", Data: []byte("abcdef")}); err != nil {
 		t.Fatalf("EncodeStreamFrame stdout: %v", err)
@@ -106,20 +106,15 @@ func TestDecodeResponseForwardsStreamCallbacksAndLimit(t *testing.T) {
 		t.Fatalf("EncodeStreamFrame exit: %v", err)
 	}
 
-	limit := 3
 	var streamed bytes.Buffer
 	res, err := DecodeResponse(&frames, backend.OutputStream{
-		OnStdout:                 func(chunk []byte) { streamed.Write(chunk) },
-		BufferedOutputLimitBytes: &limit,
+		OnStdout: func(chunk []byte) { streamed.Write(chunk) },
 	})
 	if err != nil {
 		t.Fatalf("DecodeResponse returned error: %v", err)
 	}
 	if got, want := streamed.String(), "abcdef"; got != want {
 		t.Fatalf("unexpected streamed stdout: got %q want %q", got, want)
-	}
-	if got, want := res.Stdout, "def"; got != want {
-		t.Fatalf("unexpected retained stdout: got %q want %q", got, want)
 	}
 	if got, want := res.ExitCode, 7; got != want {
 		t.Fatalf("unexpected exit code: got %d want %d", got, want)

@@ -2462,7 +2462,6 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 			s.mu.Unlock()
 			return
 		}
-		s.mergeBufferedResultOutputLocked(ex, preRunResult, true)
 		if preRunResult.ExitCode != 0 {
 			msg := strings.TrimSpace(preRunResult.Message)
 			if msg == "" {
@@ -2471,9 +2470,6 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 				} else {
 					msg = fmt.Sprintf("sandbox.run.before failed with exit code %d", preRunResult.ExitCode)
 				}
-			}
-			if msg != "" && !strings.Contains(ex.Stderr, msg) {
-				s.appendExecutionStderrLocked(ex, cleanroomv1.ExecutionStatus_EXECUTION_STATUS_RUNNING, []byte(msg+"\n"))
 			}
 			finished := s.clock().Now()
 			finalStatus := cleanroomv1.ExecutionStatus_EXECUTION_STATUS_FAILED
@@ -2507,19 +2503,7 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 		s.mu.Unlock()
 	}
 
-	commandOutputPrefixStdout := ""
-	commandOutputPrefixStderr := ""
-	commandStreamStdout := newRetainedOutputCapture(s.retention().maxRetainedExecutionOutputBytes)
-	commandStreamStderr := newRetainedOutputCapture(s.retention().maxRetainedExecutionOutputBytes)
-
-	s.mu.Lock()
-	if ex, ok := s.executions[key]; ok {
-		commandOutputPrefixStdout = ex.Stdout
-		commandOutputPrefixStderr = ex.Stderr
-	}
-	s.mu.Unlock()
-
-	result, err := s.runAdapterExecution(runCtx, adapter, executionReq, key, commandStreamStdout, commandStreamStderr)
+	result, err := s.runAdapterExecution(runCtx, adapter, executionReq, key)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -2560,12 +2544,6 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 
 	s.applyExecutionResultMetadataLocked(ex, result)
 	ex.Message = result.Message
-	s.mergeBufferedResultOutputFromStreamLocked(ex, result, commandOutputPrefixStdout, commandOutputPrefixStderr, commandStreamStdout.String(), commandStreamStderr.String())
-
-	if result.ExitCode != 0 && strings.TrimSpace(result.Message) != "" && !strings.Contains(ex.Stderr, result.Message) {
-		msg := result.Message + "\n"
-		s.appendExecutionStderrLocked(ex, cleanroomv1.ExecutionStatus_EXECUTION_STATUS_RUNNING, []byte(msg))
-	}
 
 	finalStatus := cleanroomv1.ExecutionStatus_EXECUTION_STATUS_FAILED
 	finalExitCode := int32(result.ExitCode)
@@ -2602,8 +2580,8 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 	}
 }
 
-func (s *Service) runAdapterExecution(runCtx context.Context, adapter backend.Adapter, executionReq backend.ExecutionRequest, key string, stdoutCapture, stderrCapture *retainedOutputCapture) (*backend.ExecutionResult, error) {
-	return adapter.RunInSandbox(runCtx, executionReq, s.executionOutputStream(key, stdoutCapture, stderrCapture))
+func (s *Service) runAdapterExecution(runCtx context.Context, adapter backend.Adapter, executionReq backend.ExecutionRequest, key string) (*backend.ExecutionResult, error) {
+	return adapter.RunInSandbox(runCtx, executionReq, s.executionOutputStream(key))
 }
 
 func (s *Service) applyExecutionResultMetadataLocked(ex *executionState, result *backend.ExecutionResult) {
@@ -2621,20 +2599,12 @@ func (s *Service) applyExecutionResultMetadataLocked(ex *executionState, result 
 	}
 }
 
-func (s *Service) executionOutputStream(key string, stdoutCapture, stderrCapture *retainedOutputCapture) backend.OutputStream {
-	bufferedOutputLimit := s.retention().maxRetainedExecutionOutputBytes
+func (s *Service) executionOutputStream(key string) backend.OutputStream {
 	return backend.OutputStream{
-		BufferedOutputLimitBytes: &bufferedOutputLimit,
 		OnStdout: func(chunk []byte) {
-			if stdoutCapture != nil {
-				_, _ = stdoutCapture.Write(chunk)
-			}
 			s.recordExecutionOutputChunk(key, true, chunk)
 		},
 		OnStderr: func(chunk []byte) {
-			if stderrCapture != nil {
-				_, _ = stderrCapture.Write(chunk)
-			}
 			s.recordExecutionOutputChunk(key, false, chunk)
 		},
 		OnWarning: func(message string) {
@@ -2647,9 +2617,7 @@ func (s *Service) executionOutputStream(key string, stdoutCapture, stderrCapture
 }
 
 func (s *Service) executionAuxOutputStream(key string) backend.OutputStream {
-	bufferedOutputLimit := s.retention().maxRetainedExecutionOutputBytes
 	return backend.OutputStream{
-		BufferedOutputLimitBytes: &bufferedOutputLimit,
 		OnStdout: func(chunk []byte) {
 			s.recordExecutionOutputChunk(key, true, chunk)
 		},
@@ -2872,53 +2840,6 @@ func (s *Service) finishSnapshotDelete(snapshotID string) {
 	delete(s.snapshotDeletions, snapshotID)
 }
 
-func (s *Service) mergeBufferedResultOutputLocked(ex *executionState, result *backend.ExecutionResult, usedStreaming bool) {
-	if ex == nil || result == nil {
-		return
-	}
-
-	appendStdout := result.Stdout
-	appendStderr := result.Stderr
-	replaceStdout := false
-	replaceStderr := false
-	retention := s.retention()
-	if usedStreaming {
-		appendStdout, replaceStdout = bufferedResultDelta(ex.Stdout, result.Stdout, retention.maxRetainedExecutionOutputBytes)
-		appendStderr, replaceStderr = bufferedResultDelta(ex.Stderr, result.Stderr, retention.maxRetainedExecutionOutputBytes)
-	}
-
-	if replaceStdout {
-		s.replaceExecutionStdoutFromBufferedLocked(ex, cleanroomv1.ExecutionStatus_EXECUTION_STATUS_RUNNING, appendStdout)
-	} else {
-		s.appendExecutionStdoutLocked(ex, cleanroomv1.ExecutionStatus_EXECUTION_STATUS_RUNNING, []byte(appendStdout))
-	}
-	if replaceStderr {
-		s.replaceExecutionStderrFromBufferedLocked(ex, cleanroomv1.ExecutionStatus_EXECUTION_STATUS_RUNNING, appendStderr)
-	} else {
-		s.appendExecutionStderrLocked(ex, cleanroomv1.ExecutionStatus_EXECUTION_STATUS_RUNNING, []byte(appendStderr))
-	}
-}
-
-func (s *Service) mergeBufferedResultOutputFromStreamLocked(ex *executionState, result *backend.ExecutionResult, prefixStdout, prefixStderr, streamedStdout, streamedStderr string) {
-	if ex == nil || result == nil {
-		return
-	}
-
-	appendStdout, replaceStdout := bufferedResultDelta(streamedStdout, result.Stdout, s.retention().maxRetainedExecutionOutputBytes)
-	appendStderr, replaceStderr := bufferedResultDelta(streamedStderr, result.Stderr, s.retention().maxRetainedExecutionOutputBytes)
-
-	if replaceStdout {
-		s.replaceExecutionStdoutFromBufferedWithPrefixLocked(ex, cleanroomv1.ExecutionStatus_EXECUTION_STATUS_RUNNING, prefixStdout, appendStdout)
-	} else {
-		s.appendExecutionStdoutLocked(ex, cleanroomv1.ExecutionStatus_EXECUTION_STATUS_RUNNING, []byte(appendStdout))
-	}
-	if replaceStderr {
-		s.replaceExecutionStderrFromBufferedWithPrefixLocked(ex, cleanroomv1.ExecutionStatus_EXECUTION_STATUS_RUNNING, prefixStderr, appendStderr)
-	} else {
-		s.appendExecutionStderrLocked(ex, cleanroomv1.ExecutionStatus_EXECUTION_STATUS_RUNNING, []byte(appendStderr))
-	}
-}
-
 func (s *Service) recordExecutionOutputChunk(key string, isStdout bool, chunk []byte) {
 	if len(chunk) == 0 {
 		return
@@ -2996,62 +2917,6 @@ func (s *Service) appendExecutionStderrLocked(ex *executionState, status cleanro
 		ExecutionId: ex.ID,
 		Status:      status,
 		Payload:     &cleanroomv1.ExecutionStreamEvent_Stderr{Stderr: append([]byte(nil), chunk...)},
-		OccurredAt:  timestamppb.New(s.clock().Now()),
-	})
-}
-
-func (s *Service) replaceExecutionStdoutFromBufferedLocked(ex *executionState, status cleanroomv1.ExecutionStatus, output string) {
-	if ex == nil || output == "" {
-		return
-	}
-	ex.Stdout = appendRetainedOutput("", output, s.retention().maxRetainedExecutionOutputBytes)
-	s.recordExecutionEventLocked(ex, &cleanroomv1.ExecutionStreamEvent{
-		SandboxId:   ex.SandboxID,
-		ExecutionId: ex.ID,
-		Status:      status,
-		Payload:     &cleanroomv1.ExecutionStreamEvent_Stdout{Stdout: []byte(output)},
-		OccurredAt:  timestamppb.New(s.clock().Now()),
-	})
-}
-
-func (s *Service) replaceExecutionStdoutFromBufferedWithPrefixLocked(ex *executionState, status cleanroomv1.ExecutionStatus, prefix, output string) {
-	if ex == nil || output == "" {
-		return
-	}
-	ex.Stdout = appendRetainedOutput(prefix, output, s.retention().maxRetainedExecutionOutputBytes)
-	s.recordExecutionEventLocked(ex, &cleanroomv1.ExecutionStreamEvent{
-		SandboxId:   ex.SandboxID,
-		ExecutionId: ex.ID,
-		Status:      status,
-		Payload:     &cleanroomv1.ExecutionStreamEvent_Stdout{Stdout: []byte(output)},
-		OccurredAt:  timestamppb.New(s.clock().Now()),
-	})
-}
-
-func (s *Service) replaceExecutionStderrFromBufferedLocked(ex *executionState, status cleanroomv1.ExecutionStatus, output string) {
-	if ex == nil || output == "" {
-		return
-	}
-	ex.Stderr = appendRetainedOutput("", output, s.retention().maxRetainedExecutionOutputBytes)
-	s.recordExecutionEventLocked(ex, &cleanroomv1.ExecutionStreamEvent{
-		SandboxId:   ex.SandboxID,
-		ExecutionId: ex.ID,
-		Status:      status,
-		Payload:     &cleanroomv1.ExecutionStreamEvent_Stderr{Stderr: []byte(output)},
-		OccurredAt:  timestamppb.New(s.clock().Now()),
-	})
-}
-
-func (s *Service) replaceExecutionStderrFromBufferedWithPrefixLocked(ex *executionState, status cleanroomv1.ExecutionStatus, prefix, output string) {
-	if ex == nil || output == "" {
-		return
-	}
-	ex.Stderr = appendRetainedOutput(prefix, output, s.retention().maxRetainedExecutionOutputBytes)
-	s.recordExecutionEventLocked(ex, &cleanroomv1.ExecutionStreamEvent{
-		SandboxId:   ex.SandboxID,
-		ExecutionId: ex.ID,
-		Status:      status,
-		Payload:     &cleanroomv1.ExecutionStreamEvent_Stderr{Stderr: []byte(output)},
 		OccurredAt:  timestamppb.New(s.clock().Now()),
 	})
 }

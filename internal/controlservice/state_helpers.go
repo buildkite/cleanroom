@@ -219,32 +219,6 @@ func normalizeExecutionEnv(env []string) ([]string, error) {
 	return out, nil
 }
 
-func bufferedResultDelta(retained, buffered string, retentionLimit int) (string, bool) {
-	if buffered == "" {
-		return "", false
-	}
-	if retained == "" {
-		return buffered, false
-	}
-	if strings.HasSuffix(buffered, retained) {
-		// If retention is saturated, treat suffix-only overlap as a truncation artifact
-		// and avoid replaying duplicate tail bytes from the buffered result.
-		if retentionLimit > 0 && len(retained) >= retentionLimit {
-			return "", false
-		}
-		if strings.HasPrefix(buffered, retained) {
-			return buffered[len(retained):], false
-		}
-		// Stream callbacks likely missed earlier bytes; replace retained output with
-		// the complete buffered output so snapshots/history stay correct.
-		return buffered, true
-	}
-	if strings.HasPrefix(buffered, retained) {
-		return buffered[len(retained):], false
-	}
-	return buffered, true
-}
-
 func appendRetainedOutput(existing, chunk string, limit int) string {
 	if limit <= 0 {
 		return ""
@@ -263,30 +237,6 @@ func appendRetainedOutput(existing, chunk string, limit int) string {
 		existing = strings.Clone(existing[len(existing)-keepExisting:])
 	}
 	return existing + chunk
-}
-
-type retainedOutputCapture struct {
-	limit int
-	value string
-}
-
-func newRetainedOutputCapture(limit int) *retainedOutputCapture {
-	return &retainedOutputCapture{limit: limit}
-}
-
-func (c *retainedOutputCapture) Write(p []byte) (int, error) {
-	if c == nil {
-		return len(p), nil
-	}
-	c.value = appendRetainedOutput(c.value, string(p), c.limit)
-	return len(p), nil
-}
-
-func (c *retainedOutputCapture) String() string {
-	if c == nil {
-		return ""
-	}
-	return c.value
 }
 
 func appendBounded[T any](history []T, item T, limit int) []T {

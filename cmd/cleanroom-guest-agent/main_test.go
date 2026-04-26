@@ -3,10 +3,13 @@
 package main
 
 import (
+	"bytes"
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/buildkite/cleanroom/internal/gateway"
+	"github.com/buildkite/cleanroom/internal/vsockexec"
 )
 
 func TestBuildCommandEnvAppliesGatewayDefaultsWhenUnset(t *testing.T) {
@@ -62,6 +65,29 @@ func TestBuildCommandEnvPreservesExplicitUserGoEnv(t *testing.T) {
 	}
 	if _, ok := got[gateway.MiseGoDownloadMirrorDefaultEnvKey]; ok {
 		t.Fatalf("did not expect %s to remain in child env", gateway.MiseGoDownloadMirrorDefaultEnvKey)
+	}
+}
+
+func TestSendErrorResponseStreamsStderrAndExit(t *testing.T) {
+	var buf bytes.Buffer
+
+	sendErrorResponse(&buf, errors.New("exec: missing binary"))
+
+	var stderr bytes.Buffer
+	res, err := vsockexec.DecodeStreamResponse(&buf, vsockexec.StreamCallbacks{
+		OnStderr: func(chunk []byte) { stderr.Write(chunk) },
+	})
+	if err != nil {
+		t.Fatalf("DecodeStreamResponse returned error: %v", err)
+	}
+	if got, want := stderr.String(), "exec: missing binary\n"; got != want {
+		t.Fatalf("unexpected streamed stderr: got %q want %q", got, want)
+	}
+	if got, want := res.ExitCode, 1; got != want {
+		t.Fatalf("unexpected exit code: got %d want %d", got, want)
+	}
+	if got, want := res.Error, "exec: missing binary"; got != want {
+		t.Fatalf("unexpected error: got %q want %q", got, want)
 	}
 }
 

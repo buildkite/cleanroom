@@ -77,9 +77,8 @@ func AttachStream(w io.Writer, stream backend.OutputStream, metadata map[string]
 // forwarding stdout and stderr callbacks.
 func DecodeResponse(r io.Reader, stream backend.OutputStream) (vsockexec.ExecResponse, error) {
 	return vsockexec.DecodeStreamResponse(r, vsockexec.StreamCallbacks{
-		OnStdout:                 stream.OnStdout,
-		OnStderr:                 stream.OnStderr,
-		BufferedOutputLimitBytes: stream.BufferedOutputLimitBytes,
+		OnStdout: stream.OnStdout,
+		OnStderr: stream.OnStderr,
 	})
 }
 

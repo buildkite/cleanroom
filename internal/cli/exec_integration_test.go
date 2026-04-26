@@ -499,7 +499,6 @@ func TestExecIntegrationStreamsOutput(t *testing.T) {
 			return &backend.ExecutionResult{
 				ExecutionID: req.ExecutionID,
 				ExitCode:    0,
-				Stdout:      "one\ntwo\n",
 				Message:     "ok",
 			}, nil
 		},
@@ -571,7 +570,6 @@ func TestExecIntegrationForwardsStdinByDefault(t *testing.T) {
 			return &backend.ExecutionResult{
 				ExecutionID: req.ExecutionID,
 				ExitCode:    0,
-				Stdout:      output,
 				Message:     "ok",
 			}, nil
 		},
@@ -650,7 +648,6 @@ func TestExecIntegrationTTYForwardsStdinAndStreamsOutput(t *testing.T) {
 			return &backend.ExecutionResult{
 				ExecutionID: req.ExecutionID,
 				ExitCode:    0,
-				Stdout:      captured.String(),
 				Message:     "ok",
 			}, nil
 		},
@@ -836,7 +833,6 @@ func TestExecIntegrationIgnoresLateBenignStdinWriteFailures(t *testing.T) {
 			return &backend.ExecutionResult{
 				ExecutionID: req.ExecutionID,
 				ExitCode:    0,
-				Stdout:      "done\n",
 				Message:     "ok",
 			}, nil
 		},
@@ -927,7 +923,6 @@ func TestExecIntegrationTTYIgnoresLateBenignStdinWriteFailures(t *testing.T) {
 			return &backend.ExecutionResult{
 				ExecutionID: req.ExecutionID,
 				ExitCode:    0,
-				Stdout:      "done\n",
 				Message:     "ok",
 			}, nil
 		},
@@ -991,7 +986,6 @@ func TestExecIntegrationNoStdinClosesImmediately(t *testing.T) {
 			return &backend.ExecutionResult{
 				ExecutionID: req.ExecutionID,
 				ExitCode:    0,
-				Stdout:      "closed\n",
 				Message:     "ok",
 			}, nil
 		},
@@ -1077,7 +1071,6 @@ func TestExecIntegrationIgnoresBenignStdinCloseFailures(t *testing.T) {
 			return &backend.ExecutionResult{
 				ExecutionID: req.ExecutionID,
 				ExitCode:    0,
-				Stdout:      "done\n",
 				Message:     "ok",
 			}, nil
 		},
@@ -1138,7 +1131,6 @@ func TestExecIntegrationPropagatesStdinWriteClosedConnectionFailures(t *testing.
 			return &backend.ExecutionResult{
 				ExecutionID: req.ExecutionID,
 				ExitCode:    0,
-				Stdout:      "done\n",
 				Message:     "ok",
 			}, nil
 		},
@@ -1215,12 +1207,16 @@ func TestExecIntegrationNoStdinFailureDoesNotHangWhileStreamBlocked(t *testing.T
 
 func TestExecIntegrationPropagatesExitWithoutFailureFooter(t *testing.T) {
 	adapter := &integrationAdapter{
-		runFn: func(_ context.Context, req backend.ExecutionRequest) (*backend.ExecutionResult, error) {
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+			if stream.OnStdout != nil {
+				stream.OnStdout([]byte("out\n"))
+			}
+			if stream.OnStderr != nil {
+				stream.OnStderr([]byte("err\n"))
+			}
 			return &backend.ExecutionResult{
 				ExecutionID: req.ExecutionID,
 				ExitCode:    7,
-				Stdout:      "out\n",
-				Stderr:      "err\n",
 				RunDir:      "/tmp/exec-failed",
 				Message:     "failed",
 			}, nil
@@ -1283,7 +1279,6 @@ func TestExecIntegrationRendersStructuredWarnings(t *testing.T) {
 			return &backend.ExecutionResult{
 				ExecutionID: req.ExecutionID,
 				ExitCode:    0,
-				Stdout:      "hello world\n",
 				Message:     "ok",
 			}, nil
 		},
@@ -1579,14 +1574,16 @@ func TestExecIntegrationTTYSecondInterruptTerminatesSandboxWithRemove(t *testing
 
 func TestExecIntegrationVmPathUsesShForGuestCompatibility(t *testing.T) {
 	adapter := &integrationAdapter{
-		runFn: func(_ context.Context, req backend.ExecutionRequest) (*backend.ExecutionResult, error) {
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
 			if len(req.Command) >= 1 && req.Command[0] == "bash" {
 				return nil, errors.New(`exec: "bash": executable file not found in $PATH`)
+			}
+			if stream.OnStdout != nil {
+				stream.OnStdout([]byte("guest-ok\n"))
 			}
 			return &backend.ExecutionResult{
 				ExecutionID: req.ExecutionID,
 				ExitCode:    0,
-				Stdout:      "guest-ok\n",
 				Message:     "ok",
 			}, nil
 		},

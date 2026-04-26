@@ -24,14 +24,13 @@ func (integrationAdapter) ProvisionSandbox(context.Context, backend.ProvisionReq
 }
 
 func (integrationAdapter) RunInSandbox(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+	if stream.OnStdout != nil {
+		stream.OnStdout([]byte("hello from cleanroom\n"))
+	}
 	result := &backend.ExecutionResult{
 		ExecutionID: req.ExecutionID,
 		ExitCode:    0,
-		Stdout:      "hello from cleanroom\n",
 		Message:     "ok",
-	}
-	if stream.OnStdout != nil {
-		stream.OnStdout([]byte(result.Stdout))
 	}
 	return result, nil
 }

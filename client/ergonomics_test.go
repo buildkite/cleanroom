@@ -94,7 +94,6 @@ func (a *warningStreamingAdapter) RunInSandbox(_ context.Context, req backend.Ex
 	return &backend.ExecutionResult{
 		ExecutionID: req.ExecutionID,
 		ExitCode:    0,
-		Stdout:      "hello from cleanroom\n",
 		Message:     "done",
 	}, nil
 }

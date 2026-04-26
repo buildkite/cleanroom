@@ -3,6 +3,7 @@
 package firecracker
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -136,6 +137,7 @@ func TestSnapshotLifecycleZFSE2E(t *testing.T) {
 	runCommand := func(ctx context.Context, sandboxID, runID string, command ...string) string {
 		t.Helper()
 
+		var stdout bytes.Buffer
 		result, err := adapter.RunInSandbox(ctx, backend.ExecutionRequest{
 			SandboxID:   sandboxID,
 			ExecutionID: runID,
@@ -144,14 +146,16 @@ func TestSnapshotLifecycleZFSE2E(t *testing.T) {
 			FirecrackerConfig: backend.FirecrackerConfig{
 				LaunchSeconds: cfg.LaunchSeconds,
 			},
-		}, backend.OutputStream{})
+		}, backend.OutputStream{OnStdout: func(chunk []byte) {
+			_, _ = stdout.Write(chunk)
+		}})
 		if err != nil {
 			t.Fatalf("%s returned error: %v", runID, err)
 		}
 		if result.ExitCode != 0 {
-			t.Fatalf("%s exit code=%d stdout=%q stderr=%q", runID, result.ExitCode, result.Stdout, result.Stderr)
+			t.Fatalf("%s exit code=%d stdout=%q", runID, result.ExitCode, stdout.String())
 		}
-		return strings.TrimSpace(result.Stdout)
+		return strings.TrimSpace(stdout.String())
 	}
 
 	beforeValue := "snapshot-before"

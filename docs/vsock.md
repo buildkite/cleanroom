@@ -92,16 +92,6 @@ The `data` field is base64-encoded bytes. The decoder also tolerates plain strin
 | `exit_code` | `int`    | Process exit code (0 = success)              |
 | `error`     | `string` | Guest-side error message, if any             |
 
-### ExecResponse (legacy fallback)
-
-If the guest agent fails to send stream frames (protocol mismatch), it falls back to a single JSON response:
-
-```json
-{"exit_code": 0, "stdout": "hello\n", "stderr": "", "error": ""}
-```
-
-The host decoder detects this by checking for the absence of a `type` field.
-
 ## Transport
 
 - **Port:** Configurable via `CLEANROOM_VSOCK_PORT` env var in the guest, default `10700`
