@@ -132,12 +132,20 @@ func (c *CopyCommand) copyToSandbox(ctx *runtimeContext, localPath string, remot
 	if err != nil {
 		return err
 	}
-	if remotePath == remote.path && !strings.HasSuffix(remote.path, "/") {
-		isDir, err := sandboxDestinationIsDirectory(context.Background(), client, remote.sandboxID, remote.path)
+	if strings.HasSuffix(remote.path, "/") {
+		state, err := sandboxDestinationDirectoryState(context.Background(), client, remote.sandboxID, remoteDirectoryProbePath(remote.path))
 		if err != nil {
 			return fmt.Errorf("stat sandbox destination: %w", err)
 		}
-		if isDir {
+		if state == sandboxDestinationOther {
+			return fmt.Errorf("remote destination %q ends with / but is not a directory", remote.path)
+		}
+	} else if remotePath == remote.path {
+		state, err := sandboxDestinationDirectoryState(context.Background(), client, remote.sandboxID, remote.path)
+		if err != nil {
+			return fmt.Errorf("stat sandbox destination: %w", err)
+		}
+		if state == sandboxDestinationDirectory {
 			remotePath, err = remoteCopyDestinationWithLocalBasename(remote.path, localPath)
 			if err != nil {
 				return err
@@ -286,12 +294,21 @@ func remoteCopyDestinationWithLocalBasename(remotePath, localPath string) (strin
 	return posixpath.Join(remotePath, base), nil
 }
 
-func sandboxDestinationIsDirectory(ctx context.Context, client *controlclient.Client, sandboxID, remotePath string) (bool, error) {
+type sandboxDestinationDirectoryStatus int
+
+const (
+	sandboxDestinationMissing sandboxDestinationDirectoryStatus = iota
+	sandboxDestinationDirectory
+	sandboxDestinationOther
+)
+
+func sandboxDestinationDirectoryState(ctx context.Context, client *controlclient.Client, sandboxID, remotePath string) (sandboxDestinationDirectoryStatus, error) {
 	current := remotePath
 	seen := map[string]struct{}{}
+	followedSymlink := false
 	for range 40 {
 		if _, ok := seen[current]; ok {
-			return false, fmt.Errorf("remote destination symlink cycle at %q", remotePath)
+			return sandboxDestinationOther, fmt.Errorf("remote destination symlink cycle at %q", remotePath)
 		}
 		seen[current] = struct{}{}
 		statResp, err := client.StatSandboxPath(ctx, &cleanroomv1.StatSandboxPathRequest{
@@ -300,25 +317,37 @@ func sandboxDestinationIsDirectory(ctx context.Context, client *controlclient.Cl
 		})
 		if err != nil {
 			if isSandboxPathNotFoundError(err) {
-				return false, nil
+				if followedSymlink {
+					return sandboxDestinationOther, nil
+				}
+				return sandboxDestinationMissing, nil
 			}
-			return false, err
+			return sandboxDestinationOther, err
 		}
 		info := statResp.GetInfo()
 		switch info.GetType() {
 		case cleanroomv1.SandboxPathType_SANDBOX_PATH_TYPE_DIRECTORY:
-			return true, nil
+			return sandboxDestinationDirectory, nil
 		case cleanroomv1.SandboxPathType_SANDBOX_PATH_TYPE_SYMLINK:
 			target := resolveRemoteSymlinkTarget(current, info.GetSymlinkTarget())
 			if target == "" {
-				return false, nil
+				return sandboxDestinationOther, nil
 			}
 			current = target
+			followedSymlink = true
 		default:
-			return false, nil
+			return sandboxDestinationOther, nil
 		}
 	}
-	return false, fmt.Errorf("remote destination symlink chain too deep at %q", remotePath)
+	return sandboxDestinationOther, fmt.Errorf("remote destination symlink chain too deep at %q", remotePath)
+}
+
+func remoteDirectoryProbePath(remotePath string) string {
+	trimmed := strings.TrimRight(remotePath, "/")
+	if trimmed == "" {
+		return "/"
+	}
+	return trimmed
 }
 
 func resolveRemoteSymlinkTarget(linkPath, target string) string {

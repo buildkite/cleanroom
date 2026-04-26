@@ -465,6 +465,57 @@ func TestCopyToSandboxAppendsLocalBasenameForRemoteDirectory(t *testing.T) {
 	}
 }
 
+func TestCopyToSandboxRejectsSlashSuffixedRemoteFileBeforeUpload(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "fixture.txt")
+	if err := os.WriteFile(src, []byte("payload"), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+
+	writeCalled := false
+	var statPaths []string
+	adapter := &copyIntegrationAdapter{
+		statFn: func(_ context.Context, _ string, path string) (*backend.SandboxPathInfo, error) {
+			statPaths = append(statPaths, path)
+			if path == "/tmp/file" {
+				return &backend.SandboxPathInfo{Path: path, Type: backend.SandboxPathTypeFile}, nil
+			}
+			return nil, backend.NewSandboxPathNotFoundError(path)
+		},
+		writeFn: func(_ context.Context, _ string, _ string, _ io.Reader, _ fs.FileMode, _ time.Time) (int64, error) {
+			writeCalled = true
+			return 0, nil
+		},
+	}
+	host, _ := startIntegrationServer(t, adapter)
+	sandboxID := createCopyTestSandbox(t, host)
+	stdout, _ := makeStdoutCapture(t)
+	stderr, _ := makeStdoutCapture(t)
+
+	cmd := CopyCommand{
+		clientFlags: clientFlags{Host: host},
+		Source:      src,
+		Destination: sandboxID + ":/tmp/file/",
+	}
+	err := cmd.Run(&runtimeContext{
+		Config:        runtimeconfig.Config{},
+		Observability: newTestObservability(t),
+		Stdout:        stdout,
+		Stderr:        stderr,
+	})
+	if err == nil {
+		t.Fatal("expected slash-suffixed remote file error")
+	}
+	if !strings.Contains(err.Error(), "ends with / but is not a directory") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got, want := strings.Join(statPaths, ","), "/tmp/file"; got != want {
+		t.Fatalf("unexpected stat paths: got %q want %q", got, want)
+	}
+	if writeCalled {
+		t.Fatal("expected copy to fail before writing sandbox file")
+	}
+}
+
 func TestCopyToSandboxAppendsLocalBasenameForExistingRemoteDirectory(t *testing.T) {
 	src := filepath.Join(t.TempDir(), "fixture.txt")
 	if err := os.WriteFile(src, []byte("payload"), 0o644); err != nil {
@@ -648,6 +699,61 @@ func TestCopyToSandboxRejectsRemoteSymlinkDirectoryCycle(t *testing.T) {
 		clientFlags: clientFlags{Host: host},
 		Source:      src,
 		Destination: sandboxID + ":/tmp/link1",
+	}
+	err := cmd.Run(&runtimeContext{
+		Config:        runtimeconfig.Config{},
+		Observability: newTestObservability(t),
+		Stdout:        stdout,
+		Stderr:        stderr,
+	})
+	if err == nil {
+		t.Fatal("expected remote symlink cycle error")
+	}
+	if !strings.Contains(err.Error(), "remote destination symlink cycle") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got, want := strings.Join(statPaths, ","), "/tmp/link1,/tmp/link2"; got != want {
+		t.Fatalf("unexpected stat paths: got %q want %q", got, want)
+	}
+	if writeCalled {
+		t.Fatal("expected copy to fail before writing sandbox file")
+	}
+}
+
+func TestCopyToSandboxRejectsSlashSuffixedRemoteSymlinkCycle(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "fixture.txt")
+	if err := os.WriteFile(src, []byte("payload"), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+
+	writeCalled := false
+	var statPaths []string
+	adapter := &copyIntegrationAdapter{
+		statFn: func(_ context.Context, _ string, path string) (*backend.SandboxPathInfo, error) {
+			statPaths = append(statPaths, path)
+			switch path {
+			case "/tmp/link1":
+				return &backend.SandboxPathInfo{Path: path, Type: backend.SandboxPathTypeSymlink, SymlinkTarget: "link2"}, nil
+			case "/tmp/link2":
+				return &backend.SandboxPathInfo{Path: path, Type: backend.SandboxPathTypeSymlink, SymlinkTarget: "link1"}, nil
+			default:
+				return nil, backend.NewSandboxPathNotFoundError(path)
+			}
+		},
+		writeFn: func(_ context.Context, _ string, _ string, _ io.Reader, _ fs.FileMode, _ time.Time) (int64, error) {
+			writeCalled = true
+			return 0, nil
+		},
+	}
+	host, _ := startIntegrationServer(t, adapter)
+	sandboxID := createCopyTestSandbox(t, host)
+	stdout, _ := makeStdoutCapture(t)
+	stderr, _ := makeStdoutCapture(t)
+
+	cmd := CopyCommand{
+		clientFlags: clientFlags{Host: host},
+		Source:      src,
+		Destination: sandboxID + ":/tmp/link1/",
 	}
 	err := cmd.Run(&runtimeContext{
 		Config:        runtimeconfig.Config{},
