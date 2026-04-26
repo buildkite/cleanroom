@@ -56,6 +56,7 @@ const (
 	AttrStdinDisabled         = "cleanroom.stdin.disabled"
 	AttrRepositoryCheckout    = "cleanroom.repository.checkout"
 	AttrRepositoryChangeset   = "cleanroom.repository.changeset"
+	AttrRepositoryChangesetID = "cleanroom.repository.changeset_id"
 	AttrRepositoryCommitSHA   = "cleanroom.repository.commit_sha"
 	AttrCacheStage            = "cleanroom.cache.stage"
 	AttrCacheOperation        = "cleanroom.cache.operation"

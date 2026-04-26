@@ -19,6 +19,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/backend/darwinvz"
 	"github.com/buildkite/cleanroom/internal/backend/firecracker"
 	"github.com/buildkite/cleanroom/internal/cachestore"
+	"github.com/buildkite/cleanroom/internal/changesetstore"
 	"github.com/buildkite/cleanroom/internal/gateway"
 	"github.com/buildkite/cleanroom/internal/observability"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
@@ -260,9 +261,16 @@ func TestGatewayServerConfigUsesDarwinGatewayHostForTrustedPrefixes(t *testing.T
 }
 func TestNewControlServiceWiresRepositoryStore(t *testing.T) {
 	prevSnapshotStoreFactory := newSnapshotMetadataStore
-	t.Cleanup(func() { newSnapshotMetadataStore = prevSnapshotStoreFactory })
+	prevChangesetStoreFactory := newChangesetMetadataStore
+	t.Cleanup(func() {
+		newSnapshotMetadataStore = prevSnapshotStoreFactory
+		newChangesetMetadataStore = prevChangesetStoreFactory
+	})
 	newSnapshotMetadataStore = func(snapshotstore.Options) (*snapshotstore.Store, error) {
 		return &snapshotstore.Store{}, nil
+	}
+	newChangesetMetadataStore = func(changesetstore.Options) (*changesetstore.Store, error) {
+		return &changesetstore.Store{}, nil
 	}
 
 	mirrors := gateway.NewGitMirrorStore(t.TempDir(), 0, nil)
@@ -282,13 +290,23 @@ func TestNewControlServiceWiresRepositoryStore(t *testing.T) {
 	if service.RepositoryStore == nil {
 		t.Fatal("expected control service to configure a repository store")
 	}
+	if service.ChangesetStore == nil {
+		t.Fatal("expected control service to configure a changeset store")
+	}
 }
 
 func TestNewControlServiceWiresSnapshotStore(t *testing.T) {
 	prevSnapshotStoreFactory := newSnapshotMetadataStore
-	t.Cleanup(func() { newSnapshotMetadataStore = prevSnapshotStoreFactory })
+	prevChangesetStoreFactory := newChangesetMetadataStore
+	t.Cleanup(func() {
+		newSnapshotMetadataStore = prevSnapshotStoreFactory
+		newChangesetMetadataStore = prevChangesetStoreFactory
+	})
 	newSnapshotMetadataStore = func(snapshotstore.Options) (*snapshotstore.Store, error) {
 		return &snapshotstore.Store{}, nil
+	}
+	newChangesetMetadataStore = func(changesetstore.Options) (*changesetstore.Store, error) {
+		return &changesetstore.Store{}, nil
 	}
 
 	mirrors := gateway.NewGitMirrorStore(t.TempDir(), 0, nil)
@@ -332,15 +350,20 @@ func TestNewControlServiceReturnsSnapshotStoreError(t *testing.T) {
 func TestNewControlServiceIgnoresCacheStoreError(t *testing.T) {
 	prevSnapshotStoreFactory := newSnapshotMetadataStore
 	prevCacheStoreFactory := newCacheMetadataStore
+	prevChangesetStoreFactory := newChangesetMetadataStore
 	t.Cleanup(func() {
 		newSnapshotMetadataStore = prevSnapshotStoreFactory
 		newCacheMetadataStore = prevCacheStoreFactory
+		newChangesetMetadataStore = prevChangesetStoreFactory
 	})
 	newSnapshotMetadataStore = func(snapshotstore.Options) (*snapshotstore.Store, error) {
 		return &snapshotstore.Store{}, nil
 	}
 	newCacheMetadataStore = func(cachestore.Options) (*cachestore.Store, error) {
 		return nil, errors.New("cache metadata unavailable")
+	}
+	newChangesetMetadataStore = func(changesetstore.Options) (*changesetstore.Store, error) {
+		return &changesetstore.Store{}, nil
 	}
 
 	service, err := newControlService(&runtimeContext{}, log.New(io.Discard), nil)
@@ -355,6 +378,35 @@ func TestNewControlServiceIgnoresCacheStoreError(t *testing.T) {
 	}
 	if service.SnapshotStore == nil {
 		t.Fatal("expected snapshot store to remain configured when cache metadata setup fails")
+	}
+}
+
+func TestNewControlServiceIgnoresChangesetStoreError(t *testing.T) {
+	prevSnapshotStoreFactory := newSnapshotMetadataStore
+	prevChangesetStoreFactory := newChangesetMetadataStore
+	t.Cleanup(func() {
+		newSnapshotMetadataStore = prevSnapshotStoreFactory
+		newChangesetMetadataStore = prevChangesetStoreFactory
+	})
+	newSnapshotMetadataStore = func(snapshotstore.Options) (*snapshotstore.Store, error) {
+		return &snapshotstore.Store{}, nil
+	}
+	newChangesetMetadataStore = func(changesetstore.Options) (*changesetstore.Store, error) {
+		return nil, errors.New("changeset metadata unavailable")
+	}
+
+	service, err := newControlService(&runtimeContext{}, log.New(io.Discard), nil)
+	if err != nil {
+		t.Fatalf("newControlService returned error: %v", err)
+	}
+	if service == nil {
+		t.Fatal("expected non-nil service when changeset metadata store setup fails")
+	}
+	if service.ChangesetStore != nil {
+		t.Fatal("expected changeset store to remain nil when changeset metadata setup fails")
+	}
+	if service.SnapshotStore == nil {
+		t.Fatal("expected snapshot store to remain configured when changeset metadata setup fails")
 	}
 }
 

@@ -14,10 +14,12 @@ import (
 
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/cachestore"
+	"github.com/buildkite/cleanroom/internal/changesetstore"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/observability"
 	"github.com/buildkite/cleanroom/internal/paths"
 	"github.com/buildkite/cleanroom/internal/policy"
+	"github.com/buildkite/cleanroom/internal/repositorychangeset"
 	"github.com/buildkite/cleanroom/internal/repositorycheckout"
 	"github.com/buildkite/cleanroom/internal/repositorystore"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
@@ -47,8 +49,9 @@ type Service struct {
 	// adapters, sandbox state, and metadata persistence in one operation chain.
 	// If this grows again, extract a dedicated snapshot manager rather than
 	// adding more snapshot-specific branching here.
-	SnapshotStore snapshotMetadataStore
-	CacheStore    cacheMetadataStore
+	SnapshotStore  snapshotMetadataStore
+	CacheStore     cacheMetadataStore
+	ChangesetStore changesetMetadataStore
 
 	mu                sync.RWMutex
 	sandboxes         map[string]*sandboxState
@@ -150,6 +153,10 @@ type cacheMetadataStore interface {
 	Touch(context.Context, string, string) error
 	List(context.Context) ([]cachestore.Record, error)
 	Delete(context.Context, string, string) error
+}
+
+type changesetMetadataStore interface {
+	Put(context.Context, *repositorycheckout.Checkout, *repositorychangeset.Changeset) (changesetstore.Record, error)
 }
 
 type executionOptions struct {
@@ -320,6 +327,11 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	if err := validateRepositoryChangesetForCheckout(repository, changeset); err != nil {
 		return nil, err
 	}
+	if changesetRecord, err := s.persistRepositoryChangeset(ctx, repository, changeset); err != nil {
+		return nil, err
+	} else if strings.TrimSpace(changesetRecord.ChangesetID) != "" {
+		span.SetAttributes(attribute.String(observability.AttrRepositoryChangesetID, changesetRecord.ChangesetID))
+	}
 
 	opts := req.GetOptions()
 	execOpts := executionOptions{}
@@ -394,7 +406,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 					attribute.String(observability.AttrBackend, backendName),
 				), func(ctx context.Context) error {
 					var lookupErr error
-					record, found, lookupReason, lookupErr = s.lookupServicesStageCache(ctx, backendName, compiled, repository, servicesStagePlan)
+					record, found, lookupReason, lookupErr = s.lookupServicesStageCache(ctx, backendName, compiled, repository, changeset, servicesStagePlan)
 					setCacheLookupSpanAttributes(ctx, found, lookupReason, lookupErr)
 					return lookupErr
 				})
@@ -451,7 +463,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 					attribute.String(observability.AttrBackend, backendName),
 				), func(ctx context.Context) error {
 					var lookupErr error
-					record, found, lookupReason, lookupErr = s.lookupDependencyStageCache(ctx, backendName, compiled, repository, dependencyStagePlan)
+					record, found, lookupReason, lookupErr = s.lookupDependencyStageCache(ctx, backendName, compiled, repository, changeset, dependencyStagePlan)
 					setCacheLookupSpanAttributes(ctx, found, lookupReason, lookupErr)
 					return lookupErr
 				})
