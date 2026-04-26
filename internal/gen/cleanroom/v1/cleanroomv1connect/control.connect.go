@@ -52,6 +52,30 @@ const (
 	// SandboxServiceDownloadSandboxFileProcedure is the fully-qualified name of the SandboxService's
 	// DownloadSandboxFile RPC.
 	SandboxServiceDownloadSandboxFileProcedure = "/cleanroom.v1.SandboxService/DownloadSandboxFile"
+	// SandboxServiceUploadSandboxFileProcedure is the fully-qualified name of the SandboxService's
+	// UploadSandboxFile RPC.
+	SandboxServiceUploadSandboxFileProcedure = "/cleanroom.v1.SandboxService/UploadSandboxFile"
+	// SandboxServiceStatSandboxPathProcedure is the fully-qualified name of the SandboxService's
+	// StatSandboxPath RPC.
+	SandboxServiceStatSandboxPathProcedure = "/cleanroom.v1.SandboxService/StatSandboxPath"
+	// SandboxServiceWalkSandboxTreeProcedure is the fully-qualified name of the SandboxService's
+	// WalkSandboxTree RPC.
+	SandboxServiceWalkSandboxTreeProcedure = "/cleanroom.v1.SandboxService/WalkSandboxTree"
+	// SandboxServiceReadSandboxFileProcedure is the fully-qualified name of the SandboxService's
+	// ReadSandboxFile RPC.
+	SandboxServiceReadSandboxFileProcedure = "/cleanroom.v1.SandboxService/ReadSandboxFile"
+	// SandboxServiceWriteSandboxFileProcedure is the fully-qualified name of the SandboxService's
+	// WriteSandboxFile RPC.
+	SandboxServiceWriteSandboxFileProcedure = "/cleanroom.v1.SandboxService/WriteSandboxFile"
+	// SandboxServiceRemoveSandboxPathProcedure is the fully-qualified name of the SandboxService's
+	// RemoveSandboxPath RPC.
+	SandboxServiceRemoveSandboxPathProcedure = "/cleanroom.v1.SandboxService/RemoveSandboxPath"
+	// SandboxServiceArchiveSandboxPathsProcedure is the fully-qualified name of the SandboxService's
+	// ArchiveSandboxPaths RPC.
+	SandboxServiceArchiveSandboxPathsProcedure = "/cleanroom.v1.SandboxService/ArchiveSandboxPaths"
+	// SandboxServiceExtractSandboxArchiveProcedure is the fully-qualified name of the SandboxService's
+	// ExtractSandboxArchive RPC.
+	SandboxServiceExtractSandboxArchiveProcedure = "/cleanroom.v1.SandboxService/ExtractSandboxArchive"
 	// SandboxServiceTerminateSandboxProcedure is the fully-qualified name of the SandboxService's
 	// TerminateSandbox RPC.
 	SandboxServiceTerminateSandboxProcedure = "/cleanroom.v1.SandboxService/TerminateSandbox"
@@ -106,6 +130,14 @@ type SandboxServiceClient interface {
 	GetSandbox(context.Context, *connect.Request[v1.GetSandboxRequest]) (*connect.Response[v1.GetSandboxResponse], error)
 	ListSandboxes(context.Context, *connect.Request[v1.ListSandboxesRequest]) (*connect.Response[v1.ListSandboxesResponse], error)
 	DownloadSandboxFile(context.Context, *connect.Request[v1.DownloadSandboxFileRequest]) (*connect.Response[v1.DownloadSandboxFileResponse], error)
+	UploadSandboxFile(context.Context, *connect.Request[v1.UploadSandboxFileRequest]) (*connect.Response[v1.UploadSandboxFileResponse], error)
+	StatSandboxPath(context.Context, *connect.Request[v1.StatSandboxPathRequest]) (*connect.Response[v1.StatSandboxPathResponse], error)
+	WalkSandboxTree(context.Context, *connect.Request[v1.WalkSandboxTreeRequest]) (*connect.ServerStreamForClient[v1.WalkSandboxTreeResponse], error)
+	ReadSandboxFile(context.Context, *connect.Request[v1.ReadSandboxFileRequest]) (*connect.ServerStreamForClient[v1.ReadSandboxFileResponse], error)
+	WriteSandboxFile(context.Context) *connect.ClientStreamForClient[v1.WriteSandboxFileRequest, v1.WriteSandboxFileResponse]
+	RemoveSandboxPath(context.Context, *connect.Request[v1.RemoveSandboxPathRequest]) (*connect.Response[v1.RemoveSandboxPathResponse], error)
+	ArchiveSandboxPaths(context.Context, *connect.Request[v1.ArchiveSandboxPathsRequest]) (*connect.ServerStreamForClient[v1.ArchiveSandboxPathsResponse], error)
+	ExtractSandboxArchive(context.Context) *connect.ClientStreamForClient[v1.ExtractSandboxArchiveRequest, v1.ExtractSandboxArchiveResponse]
 	TerminateSandbox(context.Context, *connect.Request[v1.TerminateSandboxRequest]) (*connect.Response[v1.TerminateSandboxResponse], error)
 	StreamSandboxEvents(context.Context, *connect.Request[v1.StreamSandboxEventsRequest]) (*connect.ServerStreamForClient[v1.SandboxEvent], error)
 }
@@ -151,6 +183,54 @@ func NewSandboxServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(sandboxServiceMethods.ByName("DownloadSandboxFile")),
 			connect.WithClientOptions(opts...),
 		),
+		uploadSandboxFile: connect.NewClient[v1.UploadSandboxFileRequest, v1.UploadSandboxFileResponse](
+			httpClient,
+			baseURL+SandboxServiceUploadSandboxFileProcedure,
+			connect.WithSchema(sandboxServiceMethods.ByName("UploadSandboxFile")),
+			connect.WithClientOptions(opts...),
+		),
+		statSandboxPath: connect.NewClient[v1.StatSandboxPathRequest, v1.StatSandboxPathResponse](
+			httpClient,
+			baseURL+SandboxServiceStatSandboxPathProcedure,
+			connect.WithSchema(sandboxServiceMethods.ByName("StatSandboxPath")),
+			connect.WithClientOptions(opts...),
+		),
+		walkSandboxTree: connect.NewClient[v1.WalkSandboxTreeRequest, v1.WalkSandboxTreeResponse](
+			httpClient,
+			baseURL+SandboxServiceWalkSandboxTreeProcedure,
+			connect.WithSchema(sandboxServiceMethods.ByName("WalkSandboxTree")),
+			connect.WithClientOptions(opts...),
+		),
+		readSandboxFile: connect.NewClient[v1.ReadSandboxFileRequest, v1.ReadSandboxFileResponse](
+			httpClient,
+			baseURL+SandboxServiceReadSandboxFileProcedure,
+			connect.WithSchema(sandboxServiceMethods.ByName("ReadSandboxFile")),
+			connect.WithClientOptions(opts...),
+		),
+		writeSandboxFile: connect.NewClient[v1.WriteSandboxFileRequest, v1.WriteSandboxFileResponse](
+			httpClient,
+			baseURL+SandboxServiceWriteSandboxFileProcedure,
+			connect.WithSchema(sandboxServiceMethods.ByName("WriteSandboxFile")),
+			connect.WithClientOptions(opts...),
+		),
+		removeSandboxPath: connect.NewClient[v1.RemoveSandboxPathRequest, v1.RemoveSandboxPathResponse](
+			httpClient,
+			baseURL+SandboxServiceRemoveSandboxPathProcedure,
+			connect.WithSchema(sandboxServiceMethods.ByName("RemoveSandboxPath")),
+			connect.WithClientOptions(opts...),
+		),
+		archiveSandboxPaths: connect.NewClient[v1.ArchiveSandboxPathsRequest, v1.ArchiveSandboxPathsResponse](
+			httpClient,
+			baseURL+SandboxServiceArchiveSandboxPathsProcedure,
+			connect.WithSchema(sandboxServiceMethods.ByName("ArchiveSandboxPaths")),
+			connect.WithClientOptions(opts...),
+		),
+		extractSandboxArchive: connect.NewClient[v1.ExtractSandboxArchiveRequest, v1.ExtractSandboxArchiveResponse](
+			httpClient,
+			baseURL+SandboxServiceExtractSandboxArchiveProcedure,
+			connect.WithSchema(sandboxServiceMethods.ByName("ExtractSandboxArchive")),
+			connect.WithClientOptions(opts...),
+		),
 		terminateSandbox: connect.NewClient[v1.TerminateSandboxRequest, v1.TerminateSandboxResponse](
 			httpClient,
 			baseURL+SandboxServiceTerminateSandboxProcedure,
@@ -168,13 +248,21 @@ func NewSandboxServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 
 // sandboxServiceClient implements SandboxServiceClient.
 type sandboxServiceClient struct {
-	createSandbox       *connect.Client[v1.CreateSandboxRequest, v1.CreateSandboxResponse]
-	createSandboxStream *connect.Client[v1.CreateSandboxRequest, v1.CreateSandboxEvent]
-	getSandbox          *connect.Client[v1.GetSandboxRequest, v1.GetSandboxResponse]
-	listSandboxes       *connect.Client[v1.ListSandboxesRequest, v1.ListSandboxesResponse]
-	downloadSandboxFile *connect.Client[v1.DownloadSandboxFileRequest, v1.DownloadSandboxFileResponse]
-	terminateSandbox    *connect.Client[v1.TerminateSandboxRequest, v1.TerminateSandboxResponse]
-	streamSandboxEvents *connect.Client[v1.StreamSandboxEventsRequest, v1.SandboxEvent]
+	createSandbox         *connect.Client[v1.CreateSandboxRequest, v1.CreateSandboxResponse]
+	createSandboxStream   *connect.Client[v1.CreateSandboxRequest, v1.CreateSandboxEvent]
+	getSandbox            *connect.Client[v1.GetSandboxRequest, v1.GetSandboxResponse]
+	listSandboxes         *connect.Client[v1.ListSandboxesRequest, v1.ListSandboxesResponse]
+	downloadSandboxFile   *connect.Client[v1.DownloadSandboxFileRequest, v1.DownloadSandboxFileResponse]
+	uploadSandboxFile     *connect.Client[v1.UploadSandboxFileRequest, v1.UploadSandboxFileResponse]
+	statSandboxPath       *connect.Client[v1.StatSandboxPathRequest, v1.StatSandboxPathResponse]
+	walkSandboxTree       *connect.Client[v1.WalkSandboxTreeRequest, v1.WalkSandboxTreeResponse]
+	readSandboxFile       *connect.Client[v1.ReadSandboxFileRequest, v1.ReadSandboxFileResponse]
+	writeSandboxFile      *connect.Client[v1.WriteSandboxFileRequest, v1.WriteSandboxFileResponse]
+	removeSandboxPath     *connect.Client[v1.RemoveSandboxPathRequest, v1.RemoveSandboxPathResponse]
+	archiveSandboxPaths   *connect.Client[v1.ArchiveSandboxPathsRequest, v1.ArchiveSandboxPathsResponse]
+	extractSandboxArchive *connect.Client[v1.ExtractSandboxArchiveRequest, v1.ExtractSandboxArchiveResponse]
+	terminateSandbox      *connect.Client[v1.TerminateSandboxRequest, v1.TerminateSandboxResponse]
+	streamSandboxEvents   *connect.Client[v1.StreamSandboxEventsRequest, v1.SandboxEvent]
 }
 
 // CreateSandbox calls cleanroom.v1.SandboxService.CreateSandbox.
@@ -202,6 +290,46 @@ func (c *sandboxServiceClient) DownloadSandboxFile(ctx context.Context, req *con
 	return c.downloadSandboxFile.CallUnary(ctx, req)
 }
 
+// UploadSandboxFile calls cleanroom.v1.SandboxService.UploadSandboxFile.
+func (c *sandboxServiceClient) UploadSandboxFile(ctx context.Context, req *connect.Request[v1.UploadSandboxFileRequest]) (*connect.Response[v1.UploadSandboxFileResponse], error) {
+	return c.uploadSandboxFile.CallUnary(ctx, req)
+}
+
+// StatSandboxPath calls cleanroom.v1.SandboxService.StatSandboxPath.
+func (c *sandboxServiceClient) StatSandboxPath(ctx context.Context, req *connect.Request[v1.StatSandboxPathRequest]) (*connect.Response[v1.StatSandboxPathResponse], error) {
+	return c.statSandboxPath.CallUnary(ctx, req)
+}
+
+// WalkSandboxTree calls cleanroom.v1.SandboxService.WalkSandboxTree.
+func (c *sandboxServiceClient) WalkSandboxTree(ctx context.Context, req *connect.Request[v1.WalkSandboxTreeRequest]) (*connect.ServerStreamForClient[v1.WalkSandboxTreeResponse], error) {
+	return c.walkSandboxTree.CallServerStream(ctx, req)
+}
+
+// ReadSandboxFile calls cleanroom.v1.SandboxService.ReadSandboxFile.
+func (c *sandboxServiceClient) ReadSandboxFile(ctx context.Context, req *connect.Request[v1.ReadSandboxFileRequest]) (*connect.ServerStreamForClient[v1.ReadSandboxFileResponse], error) {
+	return c.readSandboxFile.CallServerStream(ctx, req)
+}
+
+// WriteSandboxFile calls cleanroom.v1.SandboxService.WriteSandboxFile.
+func (c *sandboxServiceClient) WriteSandboxFile(ctx context.Context) *connect.ClientStreamForClient[v1.WriteSandboxFileRequest, v1.WriteSandboxFileResponse] {
+	return c.writeSandboxFile.CallClientStream(ctx)
+}
+
+// RemoveSandboxPath calls cleanroom.v1.SandboxService.RemoveSandboxPath.
+func (c *sandboxServiceClient) RemoveSandboxPath(ctx context.Context, req *connect.Request[v1.RemoveSandboxPathRequest]) (*connect.Response[v1.RemoveSandboxPathResponse], error) {
+	return c.removeSandboxPath.CallUnary(ctx, req)
+}
+
+// ArchiveSandboxPaths calls cleanroom.v1.SandboxService.ArchiveSandboxPaths.
+func (c *sandboxServiceClient) ArchiveSandboxPaths(ctx context.Context, req *connect.Request[v1.ArchiveSandboxPathsRequest]) (*connect.ServerStreamForClient[v1.ArchiveSandboxPathsResponse], error) {
+	return c.archiveSandboxPaths.CallServerStream(ctx, req)
+}
+
+// ExtractSandboxArchive calls cleanroom.v1.SandboxService.ExtractSandboxArchive.
+func (c *sandboxServiceClient) ExtractSandboxArchive(ctx context.Context) *connect.ClientStreamForClient[v1.ExtractSandboxArchiveRequest, v1.ExtractSandboxArchiveResponse] {
+	return c.extractSandboxArchive.CallClientStream(ctx)
+}
+
 // TerminateSandbox calls cleanroom.v1.SandboxService.TerminateSandbox.
 func (c *sandboxServiceClient) TerminateSandbox(ctx context.Context, req *connect.Request[v1.TerminateSandboxRequest]) (*connect.Response[v1.TerminateSandboxResponse], error) {
 	return c.terminateSandbox.CallUnary(ctx, req)
@@ -219,6 +347,14 @@ type SandboxServiceHandler interface {
 	GetSandbox(context.Context, *connect.Request[v1.GetSandboxRequest]) (*connect.Response[v1.GetSandboxResponse], error)
 	ListSandboxes(context.Context, *connect.Request[v1.ListSandboxesRequest]) (*connect.Response[v1.ListSandboxesResponse], error)
 	DownloadSandboxFile(context.Context, *connect.Request[v1.DownloadSandboxFileRequest]) (*connect.Response[v1.DownloadSandboxFileResponse], error)
+	UploadSandboxFile(context.Context, *connect.Request[v1.UploadSandboxFileRequest]) (*connect.Response[v1.UploadSandboxFileResponse], error)
+	StatSandboxPath(context.Context, *connect.Request[v1.StatSandboxPathRequest]) (*connect.Response[v1.StatSandboxPathResponse], error)
+	WalkSandboxTree(context.Context, *connect.Request[v1.WalkSandboxTreeRequest], *connect.ServerStream[v1.WalkSandboxTreeResponse]) error
+	ReadSandboxFile(context.Context, *connect.Request[v1.ReadSandboxFileRequest], *connect.ServerStream[v1.ReadSandboxFileResponse]) error
+	WriteSandboxFile(context.Context, *connect.ClientStream[v1.WriteSandboxFileRequest]) (*connect.Response[v1.WriteSandboxFileResponse], error)
+	RemoveSandboxPath(context.Context, *connect.Request[v1.RemoveSandboxPathRequest]) (*connect.Response[v1.RemoveSandboxPathResponse], error)
+	ArchiveSandboxPaths(context.Context, *connect.Request[v1.ArchiveSandboxPathsRequest], *connect.ServerStream[v1.ArchiveSandboxPathsResponse]) error
+	ExtractSandboxArchive(context.Context, *connect.ClientStream[v1.ExtractSandboxArchiveRequest]) (*connect.Response[v1.ExtractSandboxArchiveResponse], error)
 	TerminateSandbox(context.Context, *connect.Request[v1.TerminateSandboxRequest]) (*connect.Response[v1.TerminateSandboxResponse], error)
 	StreamSandboxEvents(context.Context, *connect.Request[v1.StreamSandboxEventsRequest], *connect.ServerStream[v1.SandboxEvent]) error
 }
@@ -260,6 +396,54 @@ func NewSandboxServiceHandler(svc SandboxServiceHandler, opts ...connect.Handler
 		connect.WithSchema(sandboxServiceMethods.ByName("DownloadSandboxFile")),
 		connect.WithHandlerOptions(opts...),
 	)
+	sandboxServiceUploadSandboxFileHandler := connect.NewUnaryHandler(
+		SandboxServiceUploadSandboxFileProcedure,
+		svc.UploadSandboxFile,
+		connect.WithSchema(sandboxServiceMethods.ByName("UploadSandboxFile")),
+		connect.WithHandlerOptions(opts...),
+	)
+	sandboxServiceStatSandboxPathHandler := connect.NewUnaryHandler(
+		SandboxServiceStatSandboxPathProcedure,
+		svc.StatSandboxPath,
+		connect.WithSchema(sandboxServiceMethods.ByName("StatSandboxPath")),
+		connect.WithHandlerOptions(opts...),
+	)
+	sandboxServiceWalkSandboxTreeHandler := connect.NewServerStreamHandler(
+		SandboxServiceWalkSandboxTreeProcedure,
+		svc.WalkSandboxTree,
+		connect.WithSchema(sandboxServiceMethods.ByName("WalkSandboxTree")),
+		connect.WithHandlerOptions(opts...),
+	)
+	sandboxServiceReadSandboxFileHandler := connect.NewServerStreamHandler(
+		SandboxServiceReadSandboxFileProcedure,
+		svc.ReadSandboxFile,
+		connect.WithSchema(sandboxServiceMethods.ByName("ReadSandboxFile")),
+		connect.WithHandlerOptions(opts...),
+	)
+	sandboxServiceWriteSandboxFileHandler := connect.NewClientStreamHandler(
+		SandboxServiceWriteSandboxFileProcedure,
+		svc.WriteSandboxFile,
+		connect.WithSchema(sandboxServiceMethods.ByName("WriteSandboxFile")),
+		connect.WithHandlerOptions(opts...),
+	)
+	sandboxServiceRemoveSandboxPathHandler := connect.NewUnaryHandler(
+		SandboxServiceRemoveSandboxPathProcedure,
+		svc.RemoveSandboxPath,
+		connect.WithSchema(sandboxServiceMethods.ByName("RemoveSandboxPath")),
+		connect.WithHandlerOptions(opts...),
+	)
+	sandboxServiceArchiveSandboxPathsHandler := connect.NewServerStreamHandler(
+		SandboxServiceArchiveSandboxPathsProcedure,
+		svc.ArchiveSandboxPaths,
+		connect.WithSchema(sandboxServiceMethods.ByName("ArchiveSandboxPaths")),
+		connect.WithHandlerOptions(opts...),
+	)
+	sandboxServiceExtractSandboxArchiveHandler := connect.NewClientStreamHandler(
+		SandboxServiceExtractSandboxArchiveProcedure,
+		svc.ExtractSandboxArchive,
+		connect.WithSchema(sandboxServiceMethods.ByName("ExtractSandboxArchive")),
+		connect.WithHandlerOptions(opts...),
+	)
 	sandboxServiceTerminateSandboxHandler := connect.NewUnaryHandler(
 		SandboxServiceTerminateSandboxProcedure,
 		svc.TerminateSandbox,
@@ -284,6 +468,22 @@ func NewSandboxServiceHandler(svc SandboxServiceHandler, opts ...connect.Handler
 			sandboxServiceListSandboxesHandler.ServeHTTP(w, r)
 		case SandboxServiceDownloadSandboxFileProcedure:
 			sandboxServiceDownloadSandboxFileHandler.ServeHTTP(w, r)
+		case SandboxServiceUploadSandboxFileProcedure:
+			sandboxServiceUploadSandboxFileHandler.ServeHTTP(w, r)
+		case SandboxServiceStatSandboxPathProcedure:
+			sandboxServiceStatSandboxPathHandler.ServeHTTP(w, r)
+		case SandboxServiceWalkSandboxTreeProcedure:
+			sandboxServiceWalkSandboxTreeHandler.ServeHTTP(w, r)
+		case SandboxServiceReadSandboxFileProcedure:
+			sandboxServiceReadSandboxFileHandler.ServeHTTP(w, r)
+		case SandboxServiceWriteSandboxFileProcedure:
+			sandboxServiceWriteSandboxFileHandler.ServeHTTP(w, r)
+		case SandboxServiceRemoveSandboxPathProcedure:
+			sandboxServiceRemoveSandboxPathHandler.ServeHTTP(w, r)
+		case SandboxServiceArchiveSandboxPathsProcedure:
+			sandboxServiceArchiveSandboxPathsHandler.ServeHTTP(w, r)
+		case SandboxServiceExtractSandboxArchiveProcedure:
+			sandboxServiceExtractSandboxArchiveHandler.ServeHTTP(w, r)
 		case SandboxServiceTerminateSandboxProcedure:
 			sandboxServiceTerminateSandboxHandler.ServeHTTP(w, r)
 		case SandboxServiceStreamSandboxEventsProcedure:
@@ -315,6 +515,38 @@ func (UnimplementedSandboxServiceHandler) ListSandboxes(context.Context, *connec
 
 func (UnimplementedSandboxServiceHandler) DownloadSandboxFile(context.Context, *connect.Request[v1.DownloadSandboxFileRequest]) (*connect.Response[v1.DownloadSandboxFileResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cleanroom.v1.SandboxService.DownloadSandboxFile is not implemented"))
+}
+
+func (UnimplementedSandboxServiceHandler) UploadSandboxFile(context.Context, *connect.Request[v1.UploadSandboxFileRequest]) (*connect.Response[v1.UploadSandboxFileResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cleanroom.v1.SandboxService.UploadSandboxFile is not implemented"))
+}
+
+func (UnimplementedSandboxServiceHandler) StatSandboxPath(context.Context, *connect.Request[v1.StatSandboxPathRequest]) (*connect.Response[v1.StatSandboxPathResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cleanroom.v1.SandboxService.StatSandboxPath is not implemented"))
+}
+
+func (UnimplementedSandboxServiceHandler) WalkSandboxTree(context.Context, *connect.Request[v1.WalkSandboxTreeRequest], *connect.ServerStream[v1.WalkSandboxTreeResponse]) error {
+	return connect.NewError(connect.CodeUnimplemented, errors.New("cleanroom.v1.SandboxService.WalkSandboxTree is not implemented"))
+}
+
+func (UnimplementedSandboxServiceHandler) ReadSandboxFile(context.Context, *connect.Request[v1.ReadSandboxFileRequest], *connect.ServerStream[v1.ReadSandboxFileResponse]) error {
+	return connect.NewError(connect.CodeUnimplemented, errors.New("cleanroom.v1.SandboxService.ReadSandboxFile is not implemented"))
+}
+
+func (UnimplementedSandboxServiceHandler) WriteSandboxFile(context.Context, *connect.ClientStream[v1.WriteSandboxFileRequest]) (*connect.Response[v1.WriteSandboxFileResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cleanroom.v1.SandboxService.WriteSandboxFile is not implemented"))
+}
+
+func (UnimplementedSandboxServiceHandler) RemoveSandboxPath(context.Context, *connect.Request[v1.RemoveSandboxPathRequest]) (*connect.Response[v1.RemoveSandboxPathResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cleanroom.v1.SandboxService.RemoveSandboxPath is not implemented"))
+}
+
+func (UnimplementedSandboxServiceHandler) ArchiveSandboxPaths(context.Context, *connect.Request[v1.ArchiveSandboxPathsRequest], *connect.ServerStream[v1.ArchiveSandboxPathsResponse]) error {
+	return connect.NewError(connect.CodeUnimplemented, errors.New("cleanroom.v1.SandboxService.ArchiveSandboxPaths is not implemented"))
+}
+
+func (UnimplementedSandboxServiceHandler) ExtractSandboxArchive(context.Context, *connect.ClientStream[v1.ExtractSandboxArchiveRequest]) (*connect.Response[v1.ExtractSandboxArchiveResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cleanroom.v1.SandboxService.ExtractSandboxArchive is not implemented"))
 }
 
 func (UnimplementedSandboxServiceHandler) TerminateSandbox(context.Context, *connect.Request[v1.TerminateSandboxRequest]) (*connect.Response[v1.TerminateSandboxResponse], error) {

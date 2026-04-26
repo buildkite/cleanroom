@@ -2,7 +2,10 @@ package backend
 
 import (
 	"context"
+	"io"
+	"io/fs"
 	"testing"
+	"time"
 )
 
 type testAdapter struct{}
@@ -23,6 +26,38 @@ func (testPersistentAdapter) DownloadSandboxFile(context.Context, string, string
 	return []byte("ok"), nil
 }
 
+func (testPersistentAdapter) UploadSandboxFile(context.Context, string, string, []byte, fs.FileMode) error {
+	return nil
+}
+
+func (testPersistentAdapter) StatSandboxPath(context.Context, string, string) (*SandboxPathInfo, error) {
+	return &SandboxPathInfo{}, nil
+}
+
+func (testPersistentAdapter) WalkSandboxTree(context.Context, string, string, func(SandboxPathInfo) error) error {
+	return nil
+}
+
+func (testPersistentAdapter) ReadSandboxFile(context.Context, string, string, int64, func([]byte) error) error {
+	return nil
+}
+
+func (testPersistentAdapter) WriteSandboxFile(context.Context, string, string, io.Reader, fs.FileMode, time.Time) (int64, error) {
+	return 0, nil
+}
+
+func (testPersistentAdapter) RemoveSandboxPath(context.Context, string, string, bool) error {
+	return nil
+}
+
+func (testPersistentAdapter) ArchiveSandboxPaths(context.Context, string, []string, int64, func([]byte) error) error {
+	return nil
+}
+
+func (testPersistentAdapter) ExtractSandboxArchive(context.Context, string, string, io.Reader) (int64, error) {
+	return 0, nil
+}
+
 type testReporterAdapter struct{ testAdapter }
 
 func (testReporterAdapter) Capabilities() map[string]bool {
@@ -41,6 +76,22 @@ func TestCapabilitiesForAdapterInfersInterfaceCapabilities(t *testing.T) {
 	}
 	if !caps[CapabilitySandboxFileDownload] {
 		t.Fatalf("expected %s=true", CapabilitySandboxFileDownload)
+	}
+	if !caps[CapabilitySandboxFileUpload] {
+		t.Fatalf("expected %s=true", CapabilitySandboxFileUpload)
+	}
+	for _, key := range []string{
+		CapabilitySandboxPathStat,
+		CapabilitySandboxTreeWalk,
+		CapabilitySandboxFileRead,
+		CapabilitySandboxFileWrite,
+		CapabilitySandboxPathRemove,
+		CapabilitySandboxArchiveRead,
+		CapabilitySandboxArchiveWrite,
+	} {
+		if !caps[key] {
+			t.Fatalf("expected %s=true", key)
+		}
 	}
 }
 

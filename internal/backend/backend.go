@@ -2,8 +2,11 @@ package backend
 
 import (
 	"context"
+	"io"
+	"io/fs"
 	"maps"
 	"sort"
+	"time"
 
 	"github.com/buildkite/cleanroom/internal/policy"
 )
@@ -12,6 +15,14 @@ const (
 	CapabilityExecStreaming          = "exec.streaming"
 	CapabilitySandboxSnapshot        = "sandbox.snapshot"
 	CapabilitySandboxFileDownload    = "sandbox.file_download"
+	CapabilitySandboxFileUpload      = "sandbox.file_upload"
+	CapabilitySandboxPathStat        = "sandbox.path_stat"
+	CapabilitySandboxTreeWalk        = "sandbox.tree_walk"
+	CapabilitySandboxFileRead        = "sandbox.file_read"
+	CapabilitySandboxFileWrite       = "sandbox.file_write"
+	CapabilitySandboxPathRemove      = "sandbox.path_remove"
+	CapabilitySandboxArchiveRead     = "sandbox.archive_read"
+	CapabilitySandboxArchiveWrite    = "sandbox.archive_write"
 	CapabilityNetworkDefaultDeny     = "network.default_deny"
 	CapabilityNetworkAllowlistEgress = "network.allowlist_egress"
 	CapabilityDNSControlOrEquivalent = "dns_control_or_equivalent"
@@ -22,6 +33,14 @@ var knownCapabilityKeys = []string{
 	CapabilityExecStreaming,
 	CapabilitySandboxSnapshot,
 	CapabilitySandboxFileDownload,
+	CapabilitySandboxFileUpload,
+	CapabilitySandboxPathStat,
+	CapabilitySandboxTreeWalk,
+	CapabilitySandboxFileRead,
+	CapabilitySandboxFileWrite,
+	CapabilitySandboxPathRemove,
+	CapabilitySandboxArchiveRead,
+	CapabilitySandboxArchiveWrite,
 	CapabilityNetworkDefaultDeny,
 	CapabilityNetworkAllowlistEgress,
 	CapabilityDNSControlOrEquivalent,
@@ -47,6 +66,14 @@ type CapabilityReporter interface {
 // - Adapter => exec.streaming
 // - SnapshottingAdapter => sandbox.snapshot
 // - SandboxFileDownloadAdapter => sandbox.file_download
+// - SandboxFileUploadAdapter => sandbox.file_upload
+// - SandboxPathStatAdapter => sandbox.path_stat
+// - SandboxTreeWalkAdapter => sandbox.tree_walk
+// - SandboxFileReadAdapter => sandbox.file_read
+// - SandboxFileWriteAdapter => sandbox.file_write
+// - SandboxPathRemoveAdapter => sandbox.path_remove
+// - SandboxArchiveReadAdapter => sandbox.archive_read
+// - SandboxArchiveWriteAdapter => sandbox.archive_write
 //
 // Additional backend-specific capabilities can be provided by implementing
 // CapabilityReporter.
@@ -65,6 +92,30 @@ func CapabilitiesForAdapter(adapter Adapter) map[string]bool {
 	}
 	if _, ok := adapter.(SandboxFileDownloadAdapter); ok {
 		caps[CapabilitySandboxFileDownload] = true
+	}
+	if _, ok := adapter.(SandboxFileUploadAdapter); ok {
+		caps[CapabilitySandboxFileUpload] = true
+	}
+	if _, ok := adapter.(SandboxPathStatAdapter); ok {
+		caps[CapabilitySandboxPathStat] = true
+	}
+	if _, ok := adapter.(SandboxTreeWalkAdapter); ok {
+		caps[CapabilitySandboxTreeWalk] = true
+	}
+	if _, ok := adapter.(SandboxFileReadAdapter); ok {
+		caps[CapabilitySandboxFileRead] = true
+	}
+	if _, ok := adapter.(SandboxFileWriteAdapter); ok {
+		caps[CapabilitySandboxFileWrite] = true
+	}
+	if _, ok := adapter.(SandboxPathRemoveAdapter); ok {
+		caps[CapabilitySandboxPathRemove] = true
+	}
+	if _, ok := adapter.(SandboxArchiveReadAdapter); ok {
+		caps[CapabilitySandboxArchiveRead] = true
+	}
+	if _, ok := adapter.(SandboxArchiveWriteAdapter); ok {
+		caps[CapabilitySandboxArchiveWrite] = true
 	}
 
 	if reporter, ok := adapter.(CapabilityReporter); ok {
@@ -111,9 +162,60 @@ type RuntimeBaseKeyProvider interface {
 	RuntimeBaseKey(ctx context.Context, compiled *policy.CompiledPolicy, cfg FirecrackerConfig) (string, error)
 }
 
+type SandboxPathType string
+
+const (
+	SandboxPathTypeFile      SandboxPathType = "file"
+	SandboxPathTypeDirectory SandboxPathType = "directory"
+	SandboxPathTypeSymlink   SandboxPathType = "symlink"
+	SandboxPathTypeOther     SandboxPathType = "other"
+)
+
+type SandboxPathInfo struct {
+	Path          string
+	Type          SandboxPathType
+	SizeBytes     int64
+	Mode          fs.FileMode
+	MTime         time.Time
+	SymlinkTarget string
+}
+
 // SandboxFileDownloadAdapter can copy files out of a persistent sandbox.
 type SandboxFileDownloadAdapter interface {
 	DownloadSandboxFile(ctx context.Context, sandboxID, path string, maxBytes int64) ([]byte, error)
+}
+
+// SandboxFileUploadAdapter can copy files into a persistent sandbox.
+type SandboxFileUploadAdapter interface {
+	UploadSandboxFile(ctx context.Context, sandboxID, path string, data []byte, mode fs.FileMode) error
+}
+
+type SandboxPathStatAdapter interface {
+	StatSandboxPath(ctx context.Context, sandboxID, path string) (*SandboxPathInfo, error)
+}
+
+type SandboxTreeWalkAdapter interface {
+	WalkSandboxTree(ctx context.Context, sandboxID, path string, emit func(SandboxPathInfo) error) error
+}
+
+type SandboxFileReadAdapter interface {
+	ReadSandboxFile(ctx context.Context, sandboxID, path string, maxBytes int64, emit func([]byte) error) error
+}
+
+type SandboxFileWriteAdapter interface {
+	WriteSandboxFile(ctx context.Context, sandboxID, path string, r io.Reader, mode fs.FileMode, mtime time.Time) (int64, error)
+}
+
+type SandboxPathRemoveAdapter interface {
+	RemoveSandboxPath(ctx context.Context, sandboxID, path string, recursive bool) error
+}
+
+type SandboxArchiveReadAdapter interface {
+	ArchiveSandboxPaths(ctx context.Context, sandboxID string, paths []string, maxBytes int64, emit func([]byte) error) error
+}
+
+type SandboxArchiveWriteAdapter interface {
+	ExtractSandboxArchive(ctx context.Context, sandboxID, destination string, r io.Reader) (int64, error)
 }
 
 type ProvisionRequest struct {

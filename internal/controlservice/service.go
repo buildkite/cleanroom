@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -73,7 +75,7 @@ type sandboxState struct {
 	BackingSnapshotID                   string
 	RepositoryBusy                      bool
 	ActiveExecutionID                   string
-	DownloadInProgress                  bool
+	FileTransferInProgress              bool
 	CreatedAt                           time.Time
 	UpdatedAt                           time.Time
 	LastExecutionID                     string
@@ -1312,9 +1314,9 @@ func (s *Service) DownloadSandboxFile(ctx context.Context, req *cleanroomv1.Down
 		s.mu.Unlock()
 		return nil, fmt.Errorf("backend %q does not support sandbox file downloads", state.Backend)
 	}
-	if state.DownloadInProgress {
+	if state.FileTransferInProgress {
 		s.mu.Unlock()
-		return nil, fmt.Errorf("sandbox_busy: sandbox %q already has an active file download", sandboxID)
+		return nil, fmt.Errorf("sandbox_busy: sandbox %q already has an active file transfer", sandboxID)
 	}
 	if state.RepositoryBusy {
 		s.mu.Unlock()
@@ -1326,12 +1328,12 @@ func (s *Service) DownloadSandboxFile(ctx context.Context, req *cleanroomv1.Down
 			return nil, fmt.Errorf("sandbox_busy: sandbox %q already has active execution %q", sandboxID, activeID)
 		}
 	}
-	state.DownloadInProgress = true
+	state.FileTransferInProgress = true
 	s.mu.Unlock()
 	defer func() {
 		s.mu.Lock()
 		if current, ok := s.sandboxes[sandboxID]; ok {
-			current.DownloadInProgress = false
+			current.FileTransferInProgress = false
 		}
 		s.mu.Unlock()
 	}()
@@ -1345,6 +1347,305 @@ func (s *Service) DownloadSandboxFile(ctx context.Context, req *cleanroomv1.Down
 		Path:      path,
 		Data:      data,
 		SizeBytes: int64(len(data)),
+	}, nil
+}
+
+func (s *Service) UploadSandboxFile(ctx context.Context, req *cleanroomv1.UploadSandboxFileRequest) (*cleanroomv1.UploadSandboxFileResponse, error) {
+	if req == nil {
+		return nil, errors.New("missing request")
+	}
+	sandboxID := strings.TrimSpace(req.GetSandboxId())
+	if sandboxID == "" {
+		return nil, errors.New("missing sandbox_id")
+	}
+	path := req.GetPath()
+	if path == "" {
+		return nil, errors.New("missing path")
+	}
+	if !strings.HasPrefix(path, "/") {
+		return nil, errors.New("invalid path: must be absolute")
+	}
+	mode := backend.NormalizeSandboxFileMode(fs.FileMode(req.GetMode()))
+
+	s.mu.Lock()
+	state, ok := s.sandboxes[sandboxID]
+	if !ok {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("unknown sandbox %q", sandboxID)
+	}
+	if state.Status != cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("sandbox %q is not ready", sandboxID)
+	}
+	adapter, ok := s.Backends[state.Backend]
+	if !ok {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("unknown backend %q", state.Backend)
+	}
+	uploader, ok := adapter.(backend.SandboxFileUploadAdapter)
+	if !ok {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("backend %q does not support sandbox file uploads", state.Backend)
+	}
+	if state.FileTransferInProgress {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("sandbox_busy: sandbox %q already has an active file transfer", sandboxID)
+	}
+	if state.RepositoryBusy {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("sandbox_busy: sandbox %q is preparing repository state", sandboxID)
+	}
+	if activeID := strings.TrimSpace(state.ActiveExecutionID); activeID != "" {
+		if activeExecution, ok := s.executions[executionKey(sandboxID, activeID)]; ok && !isFinalExecutionStatus(activeExecution.Status) {
+			s.mu.Unlock()
+			return nil, fmt.Errorf("sandbox_busy: sandbox %q already has active execution %q", sandboxID, activeID)
+		}
+	}
+	state.FileTransferInProgress = true
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		if current, ok := s.sandboxes[sandboxID]; ok {
+			current.FileTransferInProgress = false
+		}
+		s.mu.Unlock()
+	}()
+
+	data := req.GetData()
+	if err := uploader.UploadSandboxFile(ctx, sandboxID, path, data, mode); err != nil {
+		return nil, fmt.Errorf("upload sandbox file: %w", err)
+	}
+	return &cleanroomv1.UploadSandboxFileResponse{
+		SandboxId: sandboxID,
+		Path:      path,
+		SizeBytes: int64(len(data)),
+	}, nil
+}
+
+func (s *Service) StatSandboxPath(ctx context.Context, req *cleanroomv1.StatSandboxPathRequest) (*cleanroomv1.StatSandboxPathResponse, error) {
+	if req == nil {
+		return nil, errors.New("missing request")
+	}
+	sandboxID, path, err := validateSandboxPathRequest(req.GetSandboxId(), req.GetPath())
+	if err != nil {
+		return nil, err
+	}
+	adapter, backendName, finish, err := s.beginSandboxFileTransfer(sandboxID)
+	if err != nil {
+		return nil, err
+	}
+	defer finish()
+
+	stat, ok := adapter.(backend.SandboxPathStatAdapter)
+	if !ok {
+		return nil, fmt.Errorf("backend %q does not support sandbox path stat", backendName)
+	}
+	info, err := stat.StatSandboxPath(ctx, sandboxID, path)
+	if err != nil {
+		return nil, fmt.Errorf("stat sandbox path: %w", err)
+	}
+	return &cleanroomv1.StatSandboxPathResponse{Info: sandboxPathInfoToProto(info)}, nil
+}
+
+func (s *Service) WalkSandboxTree(ctx context.Context, req *cleanroomv1.WalkSandboxTreeRequest, emit func(*cleanroomv1.WalkSandboxTreeResponse) error) error {
+	if req == nil {
+		return errors.New("missing request")
+	}
+	sandboxID, path, err := validateSandboxPathRequest(req.GetSandboxId(), req.GetPath())
+	if err != nil {
+		return err
+	}
+	adapter, backendName, finish, err := s.beginSandboxFileTransfer(sandboxID)
+	if err != nil {
+		return err
+	}
+	defer finish()
+
+	walker, ok := adapter.(backend.SandboxTreeWalkAdapter)
+	if !ok {
+		return fmt.Errorf("backend %q does not support sandbox tree walks", backendName)
+	}
+	if emit == nil {
+		emit = func(*cleanroomv1.WalkSandboxTreeResponse) error { return nil }
+	}
+	if err := walker.WalkSandboxTree(ctx, sandboxID, path, func(info backend.SandboxPathInfo) error {
+		return emit(&cleanroomv1.WalkSandboxTreeResponse{Info: sandboxPathInfoToProto(&info)})
+	}); err != nil {
+		return fmt.Errorf("walk sandbox tree: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) ReadSandboxFile(ctx context.Context, req *cleanroomv1.ReadSandboxFileRequest, emit func(*cleanroomv1.ReadSandboxFileResponse) error) error {
+	if req == nil {
+		return errors.New("missing request")
+	}
+	sandboxID, path, err := validateSandboxPathRequest(req.GetSandboxId(), req.GetPath())
+	if err != nil {
+		return err
+	}
+	maxBytes := req.GetMaxBytes()
+	if maxBytes <= 0 {
+		maxBytes = s.downloadMaxBytesDefault()
+	}
+	adapter, backendName, finish, err := s.beginSandboxFileTransfer(sandboxID)
+	if err != nil {
+		return err
+	}
+	defer finish()
+
+	reader, ok := adapter.(backend.SandboxFileReadAdapter)
+	if !ok {
+		return fmt.Errorf("backend %q does not support sandbox file reads", backendName)
+	}
+	if emit == nil {
+		emit = func(*cleanroomv1.ReadSandboxFileResponse) error { return nil }
+	}
+	if err := reader.ReadSandboxFile(ctx, sandboxID, path, maxBytes, func(chunk []byte) error {
+		if len(chunk) == 0 {
+			return nil
+		}
+		return emit(&cleanroomv1.ReadSandboxFileResponse{Data: append([]byte(nil), chunk...)})
+	}); err != nil {
+		return fmt.Errorf("read sandbox file: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) WriteSandboxFile(ctx context.Context, init *cleanroomv1.WriteSandboxFileInit, r io.Reader) (*cleanroomv1.WriteSandboxFileResponse, error) {
+	if init == nil {
+		return nil, errors.New("missing write init")
+	}
+	if r == nil {
+		return nil, errors.New("missing file payload")
+	}
+	sandboxID, path, err := validateSandboxPathRequest(init.GetSandboxId(), init.GetPath())
+	if err != nil {
+		return nil, err
+	}
+	mode := backend.NormalizeSandboxFileMode(fs.FileMode(init.GetMode()))
+	mtime := time.Time{}
+	if init.GetMtime() != nil {
+		mtime = init.GetMtime().AsTime()
+	}
+	adapter, backendName, finish, err := s.beginSandboxFileTransfer(sandboxID)
+	if err != nil {
+		return nil, err
+	}
+	defer finish()
+
+	writer, ok := adapter.(backend.SandboxFileWriteAdapter)
+	if !ok {
+		return nil, fmt.Errorf("backend %q does not support sandbox file writes", backendName)
+	}
+	size, err := writer.WriteSandboxFile(ctx, sandboxID, path, r, mode, mtime)
+	if err != nil {
+		return nil, fmt.Errorf("write sandbox file: %w", err)
+	}
+	return &cleanroomv1.WriteSandboxFileResponse{
+		SandboxId: sandboxID,
+		Path:      path,
+		SizeBytes: size,
+	}, nil
+}
+
+func (s *Service) RemoveSandboxPath(ctx context.Context, req *cleanroomv1.RemoveSandboxPathRequest) (*cleanroomv1.RemoveSandboxPathResponse, error) {
+	if req == nil {
+		return nil, errors.New("missing request")
+	}
+	sandboxID, path, err := validateSandboxPathRequest(req.GetSandboxId(), req.GetPath())
+	if err != nil {
+		return nil, err
+	}
+	adapter, backendName, finish, err := s.beginSandboxFileTransfer(sandboxID)
+	if err != nil {
+		return nil, err
+	}
+	defer finish()
+
+	remover, ok := adapter.(backend.SandboxPathRemoveAdapter)
+	if !ok {
+		return nil, fmt.Errorf("backend %q does not support sandbox path removal", backendName)
+	}
+	if err := remover.RemoveSandboxPath(ctx, sandboxID, path, req.GetRecursive()); err != nil {
+		return nil, fmt.Errorf("remove sandbox path: %w", err)
+	}
+	return &cleanroomv1.RemoveSandboxPathResponse{
+		SandboxId: sandboxID,
+		Path:      path,
+		Removed:   true,
+	}, nil
+}
+
+func (s *Service) ArchiveSandboxPaths(ctx context.Context, req *cleanroomv1.ArchiveSandboxPathsRequest, emit func(*cleanroomv1.ArchiveSandboxPathsResponse) error) error {
+	if req == nil {
+		return errors.New("missing request")
+	}
+	sandboxID := strings.TrimSpace(req.GetSandboxId())
+	if sandboxID == "" {
+		return errors.New("missing sandbox_id")
+	}
+	paths := req.GetPaths()
+	if err := backend.ValidateSandboxFilePaths(paths); err != nil {
+		return err
+	}
+	maxBytes := req.GetMaxBytes()
+	if maxBytes <= 0 {
+		maxBytes = s.downloadMaxBytesDefault()
+	}
+	adapter, backendName, finish, err := s.beginSandboxFileTransfer(sandboxID)
+	if err != nil {
+		return err
+	}
+	defer finish()
+
+	archiver, ok := adapter.(backend.SandboxArchiveReadAdapter)
+	if !ok {
+		return fmt.Errorf("backend %q does not support sandbox archive reads", backendName)
+	}
+	if emit == nil {
+		emit = func(*cleanroomv1.ArchiveSandboxPathsResponse) error { return nil }
+	}
+	if err := archiver.ArchiveSandboxPaths(ctx, sandboxID, paths, maxBytes, func(chunk []byte) error {
+		if len(chunk) == 0 {
+			return nil
+		}
+		return emit(&cleanroomv1.ArchiveSandboxPathsResponse{Data: append([]byte(nil), chunk...)})
+	}); err != nil {
+		return fmt.Errorf("archive sandbox paths: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) ExtractSandboxArchive(ctx context.Context, init *cleanroomv1.ExtractSandboxArchiveInit, r io.Reader) (*cleanroomv1.ExtractSandboxArchiveResponse, error) {
+	if init == nil {
+		return nil, errors.New("missing extract init")
+	}
+	if r == nil {
+		return nil, errors.New("missing archive payload")
+	}
+	sandboxID, destination, err := validateSandboxPathRequest(init.GetSandboxId(), init.GetDestination())
+	if err != nil {
+		return nil, err
+	}
+	adapter, backendName, finish, err := s.beginSandboxFileTransfer(sandboxID)
+	if err != nil {
+		return nil, err
+	}
+	defer finish()
+
+	extractor, ok := adapter.(backend.SandboxArchiveWriteAdapter)
+	if !ok {
+		return nil, fmt.Errorf("backend %q does not support sandbox archive writes", backendName)
+	}
+	size, err := extractor.ExtractSandboxArchive(ctx, sandboxID, destination, r)
+	if err != nil {
+		return nil, fmt.Errorf("extract sandbox archive: %w", err)
+	}
+	return &cleanroomv1.ExtractSandboxArchiveResponse{
+		SandboxId:   sandboxID,
+		Destination: destination,
+		SizeBytes:   size,
 	}, nil
 }
 
@@ -1549,9 +1850,9 @@ func (s *Service) CreateExecution(ctx context.Context, req *cleanroomv1.CreateEx
 			return nil, fmt.Errorf("sandbox_busy: sandbox %q already has active execution %q", sandboxID, sandbox.ActiveExecutionID)
 		}
 	}
-	if sandbox.DownloadInProgress {
+	if sandbox.FileTransferInProgress {
 		s.mu.Unlock()
-		return nil, fmt.Errorf("sandbox_busy: sandbox %q currently has an active file download", sandboxID)
+		return nil, fmt.Errorf("sandbox_busy: sandbox %q currently has an active file transfer", sandboxID)
 	}
 	if sandbox.RepositoryBusy {
 		s.mu.Unlock()
@@ -1613,9 +1914,9 @@ func (s *Service) CreateExecution(ctx context.Context, req *cleanroomv1.CreateEx
 		}
 		sandbox.ActiveExecutionID = ""
 	}
-	if sandbox.DownloadInProgress {
+	if sandbox.FileTransferInProgress {
 		s.mu.Unlock()
-		return nil, fmt.Errorf("sandbox_busy: sandbox %q currently has an active file download", sandboxID)
+		return nil, fmt.Errorf("sandbox_busy: sandbox %q currently has an active file transfer", sandboxID)
 	}
 	if sandbox.RepositoryBusy {
 		s.mu.Unlock()
@@ -2662,9 +2963,9 @@ func (s *Service) preparePersistentSandboxRepository(
 		s.mu.Unlock()
 		return fmt.Errorf("sandbox %q is not ready", sandboxID)
 	}
-	if sandbox.DownloadInProgress {
+	if sandbox.FileTransferInProgress {
 		s.mu.Unlock()
-		return fmt.Errorf("sandbox_busy: sandbox %q currently has an active file download", sandboxID)
+		return fmt.Errorf("sandbox_busy: sandbox %q currently has an active file transfer", sandboxID)
 	}
 	if sandbox.RepositoryBusy {
 		s.mu.Unlock()
@@ -3163,8 +3464,8 @@ func ensureSandboxIdleLocked(sandboxID string, sb *sandboxState, executions map[
 	if sb.Status != cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY {
 		return fmt.Errorf("sandbox %q is not ready", sandboxID)
 	}
-	if sb.DownloadInProgress {
-		return fmt.Errorf("sandbox_busy: sandbox %q currently has an active file download", sandboxID)
+	if sb.FileTransferInProgress {
+		return fmt.Errorf("sandbox_busy: sandbox %q currently has an active file transfer", sandboxID)
 	}
 	if sb.RepositoryBusy {
 		return fmt.Errorf("sandbox_busy: sandbox %q is preparing repository state", sandboxID)
@@ -3175,6 +3476,92 @@ func ensureSandboxIdleLocked(sandboxID string, sb *sandboxState, executions map[
 		}
 	}
 	return nil
+}
+
+func validateSandboxPathRequest(sandboxID, path string) (string, string, error) {
+	sandboxID = strings.TrimSpace(sandboxID)
+	if sandboxID == "" {
+		return "", "", errors.New("missing sandbox_id")
+	}
+	if path == "" {
+		return "", "", errors.New("missing path")
+	}
+	if !strings.HasPrefix(path, "/") {
+		return "", "", errors.New("invalid path: must be absolute")
+	}
+	return sandboxID, path, nil
+}
+
+func (s *Service) beginSandboxFileTransfer(sandboxID string) (backend.Adapter, string, func(), error) {
+	s.mu.Lock()
+	state, ok := s.sandboxes[sandboxID]
+	if !ok {
+		s.mu.Unlock()
+		return nil, "", nil, fmt.Errorf("unknown sandbox %q", sandboxID)
+	}
+	if state.Status != cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY {
+		s.mu.Unlock()
+		return nil, "", nil, fmt.Errorf("sandbox %q is not ready", sandboxID)
+	}
+	adapter, ok := s.Backends[state.Backend]
+	if !ok {
+		s.mu.Unlock()
+		return nil, "", nil, fmt.Errorf("unknown backend %q", state.Backend)
+	}
+	if state.FileTransferInProgress {
+		s.mu.Unlock()
+		return nil, "", nil, fmt.Errorf("sandbox_busy: sandbox %q already has an active file transfer", sandboxID)
+	}
+	if state.RepositoryBusy {
+		s.mu.Unlock()
+		return nil, "", nil, fmt.Errorf("sandbox_busy: sandbox %q is preparing repository state", sandboxID)
+	}
+	if activeID := strings.TrimSpace(state.ActiveExecutionID); activeID != "" {
+		if activeExecution, ok := s.executions[executionKey(sandboxID, activeID)]; ok && !isFinalExecutionStatus(activeExecution.Status) {
+			s.mu.Unlock()
+			return nil, "", nil, fmt.Errorf("sandbox_busy: sandbox %q already has active execution %q", sandboxID, activeID)
+		}
+	}
+	state.FileTransferInProgress = true
+	backendName := state.Backend
+	s.mu.Unlock()
+
+	finish := func() {
+		s.mu.Lock()
+		if current, ok := s.sandboxes[sandboxID]; ok {
+			current.FileTransferInProgress = false
+		}
+		s.mu.Unlock()
+	}
+	return adapter, backendName, finish, nil
+}
+
+func sandboxPathInfoToProto(info *backend.SandboxPathInfo) *cleanroomv1.SandboxPathInfo {
+	if info == nil {
+		return nil
+	}
+	pathType := cleanroomv1.SandboxPathType_SANDBOX_PATH_TYPE_OTHER
+	switch info.Type {
+	case backend.SandboxPathTypeFile:
+		pathType = cleanroomv1.SandboxPathType_SANDBOX_PATH_TYPE_FILE
+	case backend.SandboxPathTypeDirectory:
+		pathType = cleanroomv1.SandboxPathType_SANDBOX_PATH_TYPE_DIRECTORY
+	case backend.SandboxPathTypeSymlink:
+		pathType = cleanroomv1.SandboxPathType_SANDBOX_PATH_TYPE_SYMLINK
+	case backend.SandboxPathTypeOther:
+		pathType = cleanroomv1.SandboxPathType_SANDBOX_PATH_TYPE_OTHER
+	}
+	out := &cleanroomv1.SandboxPathInfo{
+		Path:          info.Path,
+		Type:          pathType,
+		SizeBytes:     info.SizeBytes,
+		Mode:          uint32(info.Mode.Perm()),
+		SymlinkTarget: info.SymlinkTarget,
+	}
+	if !info.MTime.IsZero() {
+		out.Mtime = timestamppb.New(info.MTime)
+	}
+	return out
 }
 
 func (s *Service) snapshotStoreOrErr() (snapshotMetadataStore, error) {

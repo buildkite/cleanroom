@@ -559,7 +559,7 @@ Policy feature mapping:
   - `cleanroom exec --` wrapper for existing and local automation
   - machine-readable output (`--json`) for pipeline tooling
 - API/SDK (v1):
-  - ConnectRPC `SandboxService` (`CreateSandbox`, `GetSandbox`, `ListSandboxes`, `DownloadSandboxFile`, `TerminateSandbox`, `StreamSandboxEvents`)
+  - ConnectRPC `SandboxService` (`CreateSandbox`, `GetSandbox`, `ListSandboxes`, `StatSandboxPath`, `WalkSandboxTree`, `ReadSandboxFile`, `WriteSandboxFile`, `RemoveSandboxPath`, `ArchiveSandboxPaths`, `ExtractSandboxArchive`, `TerminateSandbox`, `StreamSandboxEvents`)
   - ConnectRPC `ExecutionService` (`ListExecutions`, `CreateExecution`, `AttachExecution`, `GetExecution`, `InspectExecution`, `CancelExecution`, `WriteExecutionStdin`, `CloseExecutionStdin`, `StreamExecution`)
 
 ### 8.1 CLI and API failure contract (normative)

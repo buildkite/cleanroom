@@ -333,3 +333,81 @@ func TestDownloadSandboxFileEnforcesMaxBytes(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestUploadSandboxFileWritesPayloadAndMode(t *testing.T) {
+	t.Parallel()
+
+	var got bytes.Buffer
+	closed := false
+	adapter := &Adapter{}
+	adapter.runGuestCommandFn = func(_ context.Context, _ context.Context, _ <-chan struct{}, _ func() error, _ string, _ uint32, req vsockexec.ExecRequest, stream backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error) {
+		if got, want := req.Command[0], "sh"; got != want {
+			t.Fatalf("unexpected command[0]: got %q want %q", got, want)
+		}
+		if got, want := req.Command[3], "cleanroom-copy"; got != want {
+			t.Fatalf("unexpected command[3]: got %q want %q", got, want)
+		}
+		if got, want := req.Command[4], "/home/sprite/artifacts/upload.txt"; got != want {
+			t.Fatalf("unexpected upload path: got %q want %q", got, want)
+		}
+		if got, want := req.Command[5], "0600"; got != want {
+			t.Fatalf("unexpected upload mode: got %q want %q", got, want)
+		}
+		if stream.OnAttach != nil {
+			stream.OnAttach(backend.AttachIO{
+				WriteStdin: func(data []byte) error {
+					_, err := got.Write(data)
+					return err
+				},
+				CloseStdin: func() error {
+					closed = true
+					return nil
+				},
+			})
+		}
+		return vsockexec.ExecResponse{ExitCode: 0}, guestExecTiming{}, nil
+	}
+	adapter.sandboxes = map[string]*sandboxInstance{
+		"cr-test": {
+			SandboxID: "cr-test",
+			VsockPath: "/tmp/fake.sock",
+			GuestPort: 10700,
+			exitedCh:  make(chan struct{}),
+		},
+	}
+
+	if err := adapter.UploadSandboxFile(context.Background(), "cr-test", "/home/sprite/artifacts/upload.txt", []byte("payload"), 0o600); err != nil {
+		t.Fatalf("UploadSandboxFile returned error: %v", err)
+	}
+	if got.String() != "payload" {
+		t.Fatalf("unexpected uploaded payload: got %q", got.String())
+	}
+	if !closed {
+		t.Fatal("expected upload stdin to be closed")
+	}
+}
+
+func TestUploadSandboxFileRequiresStdinAttach(t *testing.T) {
+	t.Parallel()
+
+	adapter := &Adapter{}
+	adapter.runGuestCommandFn = func(_ context.Context, _ context.Context, _ <-chan struct{}, _ func() error, _ string, _ uint32, _ vsockexec.ExecRequest, _ backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error) {
+		return vsockexec.ExecResponse{ExitCode: 0}, guestExecTiming{}, nil
+	}
+	adapter.sandboxes = map[string]*sandboxInstance{
+		"cr-test": {
+			SandboxID: "cr-test",
+			VsockPath: "/tmp/fake.sock",
+			GuestPort: 10700,
+			exitedCh:  make(chan struct{}),
+		},
+	}
+
+	err := adapter.UploadSandboxFile(context.Background(), "cr-test", "/tmp/upload.txt", []byte("payload"), 0o644)
+	if err == nil {
+		t.Fatal("expected stdin attach error")
+	}
+	if !strings.Contains(err.Error(), "stdin attach") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
