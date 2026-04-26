@@ -43,7 +43,26 @@ if ! grep -q '^docker-version-ok$' "$tmpdir/docker-version.out"; then
 fi
 
 echo "--- :whale: Docker example pull smoke test ($BACKEND)"
-"$REPO_ROOT/dist/cleanroom" exec --host "$LISTEN_ENDPOINT" --backend "$BACKEND" -c "$REPO_ROOT/examples/docker" -- sh -lc 'docker pull alpine:3.22 >/dev/null && echo docker-pull-ok' | tee "$tmpdir/docker-pull.out"
+pull_attempt=1
+pull_max_attempts=3
+while true; do
+  set +e
+  "$REPO_ROOT/dist/cleanroom" exec --host "$LISTEN_ENDPOINT" --backend "$BACKEND" -c "$REPO_ROOT/examples/docker" -- sh -lc 'docker pull alpine:3.22 >/dev/null && echo docker-pull-ok' | tee "$tmpdir/docker-pull.out"
+  pull_status=${PIPESTATUS[0]}
+  set -e
+
+  if [[ "$pull_status" -eq 0 ]]; then
+    break
+  fi
+  if [[ "$pull_attempt" -lt "$pull_max_attempts" ]]; then
+    echo "docker pull smoke failed on attempt $pull_attempt/$pull_max_attempts; retrying"
+    sleep "$pull_attempt"
+    pull_attempt=$((pull_attempt + 1))
+    continue
+  fi
+  echo "docker pull smoke failed after $pull_max_attempts attempts" >&2
+  exit "$pull_status"
+done
 if ! grep -q '^docker-pull-ok$' "$tmpdir/docker-pull.out"; then
   echo "expected docker pull smoke output missing" >&2
   exit 1
