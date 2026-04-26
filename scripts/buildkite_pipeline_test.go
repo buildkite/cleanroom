@@ -54,6 +54,14 @@ func TestBuildkitePipelineUsesSetupGoForGoSteps(t *testing.T) {
     plugins:
       - ` + setupGoBuildkitePluginRef + `:
     command: scripts/ci-cleanroom-e2e.sh`,
+		`- label: ":book: Examples (macOS)"
+    plugins:
+      - ` + setupGoBuildkitePluginRef + `:
+    command: scripts/ci-examples-darwin-vz.sh`,
+		`- label: ":book: Examples (Linux)"
+    plugins:
+      - ` + setupGoBuildkitePluginRef + `:
+    command: scripts/ci-examples-firecracker.sh`,
 		`- label: ":rocket: Publish release"
     if: build.tag != null
     plugins:
@@ -78,6 +86,9 @@ func TestBuildkitePipelineUsesSetupGoForGoSteps(t *testing.T) {
 		"scripts/base-image-tag.sh",
 		"scripts/install-global.sh",
 		"scripts/e2e-observability.sh",
+		"scripts/ci-example-smoke.sh",
+		"scripts/ci-examples-firecracker.sh",
+		"scripts/ci-examples-darwin-vz.sh",
 		"scripts/build-macos-release-pkg.sh",
 		"scripts/notarize-macos-package.sh",
 	} {
@@ -160,6 +171,9 @@ func TestBuildkiteCIScriptsDoNotInvokeMiseDirectly(t *testing.T) {
 
 	for _, path := range []string{
 		"ci-cleanroom-e2e.sh",
+		"ci-example-smoke.sh",
+		"ci-examples-firecracker.sh",
+		"ci-examples-darwin-vz.sh",
 		"ci-darwin-vz-e2e.sh",
 		"ci-darwin-vz-filehandle-e2e.sh",
 		"ci-macos-release-pkg.sh",
@@ -214,6 +228,9 @@ func TestMiseLintShellCoversSharedE2EObservabilityHelper(t *testing.T) {
 		`[tasks.lint-shell]`,
 		`scripts/base-image-tag.sh`,
 		`scripts/e2e-observability.sh`,
+		`scripts/ci-example-smoke.sh`,
+		`scripts/ci-examples-firecracker.sh`,
+		`scripts/ci-examples-darwin-vz.sh`,
 		`scripts/ci-darwin-vz-filehandle-e2e.sh`,
 		`scripts/build-macos-release-pkg.sh`,
 		`scripts/notarize-macos-package.sh`,
