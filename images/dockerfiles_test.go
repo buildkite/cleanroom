@@ -140,6 +140,25 @@ func TestDebianRubyBaseImageInstallsDefaultLibMySQLClientDev(t *testing.T) {
 	}
 }
 
+func TestDebianBaseImagesInstallLibatomicForMiseManagedNode(t *testing.T) {
+	t.Parallel()
+
+	for _, relPath := range debianPublishedBaseDockerfiles() {
+		relPath := relPath
+		t.Run(relPath, func(t *testing.T) {
+			t.Parallel()
+
+			raw, err := os.ReadFile(filepath.Join(".", relPath))
+			if err != nil {
+				t.Fatalf("read %s: %v", relPath, err)
+			}
+			if !dockerfileHasTrimmedLine(string(raw), "libatomic1 \\") {
+				t.Fatalf("%s does not install libatomic1 for mise-managed Node.js on arm64", relPath)
+			}
+		})
+	}
+}
+
 func TestPublishedBaseImagesInstallPinnedMiseRelease(t *testing.T) {
 	t.Parallel()
 

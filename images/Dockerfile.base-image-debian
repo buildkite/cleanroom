@@ -9,6 +9,7 @@ RUN apt-get update \
       curl \
       git \
       iproute2 \
+      libatomic1 \
       openssh-client \
       strace \
     && rm -rf /var/lib/apt/lists/*
