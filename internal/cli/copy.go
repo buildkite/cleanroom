@@ -71,6 +71,10 @@ func (c *CopyCommand) copyFromSandbox(ctx *runtimeContext, remote *copyRemotePat
 	if err != nil {
 		return err
 	}
+	sourceInfo, err := sandboxSourceFileInfo(context.Background(), client, remote.sandboxID, remote.path)
+	if err != nil {
+		return fmt.Errorf("stat sandbox source: %w", err)
+	}
 	if err := os.MkdirAll(filepath.Dir(installDestination), 0o755); err != nil {
 		return fmt.Errorf("create local destination parent: %w", err)
 	}
@@ -106,6 +110,9 @@ func (c *CopyCommand) copyFromSandbox(ctx *runtimeContext, remote *copyRemotePat
 	}
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close local temporary file: %w", err)
+	}
+	if err := applyLocalCopyMetadata(tmpPath, sourceInfo); err != nil {
+		return err
 	}
 	if err := os.Rename(tmpPath, installDestination); err != nil {
 		return fmt.Errorf("install local file: %w", err)
@@ -189,6 +196,59 @@ func (c *CopyCommand) copyToSandbox(ctx *runtimeContext, localPath string, remot
 	_, err = stream.CloseAndReceive()
 	if err != nil {
 		return fmt.Errorf("write sandbox file: %w", err)
+	}
+	return nil
+}
+
+func sandboxSourceFileInfo(ctx context.Context, client *controlclient.Client, sandboxID, remotePath string) (*cleanroomv1.SandboxPathInfo, error) {
+	current := remotePath
+	seen := map[string]struct{}{}
+	for range 40 {
+		if _, ok := seen[current]; ok {
+			return nil, fmt.Errorf("remote source symlink cycle at %q", remotePath)
+		}
+		seen[current] = struct{}{}
+		statResp, err := client.StatSandboxPath(ctx, &cleanroomv1.StatSandboxPathRequest{
+			SandboxId: sandboxID,
+			Path:      current,
+		})
+		if err != nil {
+			return nil, err
+		}
+		info := statResp.GetInfo()
+		switch info.GetType() {
+		case cleanroomv1.SandboxPathType_SANDBOX_PATH_TYPE_FILE:
+			return info, nil
+		case cleanroomv1.SandboxPathType_SANDBOX_PATH_TYPE_SYMLINK:
+			target := resolveRemoteSymlinkTarget(current, info.GetSymlinkTarget())
+			if target == "" {
+				return nil, fmt.Errorf("remote source symlink at %q has empty target", current)
+			}
+			current = target
+		case cleanroomv1.SandboxPathType_SANDBOX_PATH_TYPE_DIRECTORY:
+			return nil, fmt.Errorf("remote source %q is a directory; copy supports files", remotePath)
+		default:
+			return nil, fmt.Errorf("remote source %q is not a file", remotePath)
+		}
+	}
+	return nil, fmt.Errorf("remote source symlink chain too deep at %q", remotePath)
+}
+
+func applyLocalCopyMetadata(path string, info *cleanroomv1.SandboxPathInfo) error {
+	if info == nil {
+		return errors.New("missing sandbox source metadata")
+	}
+	if mtime := info.GetMtime(); mtime != nil {
+		if err := mtime.CheckValid(); err != nil {
+			return fmt.Errorf("invalid sandbox source mtime: %w", err)
+		}
+		t := mtime.AsTime()
+		if err := os.Chtimes(path, t, t); err != nil {
+			return fmt.Errorf("apply local file mtime: %w", err)
+		}
+	}
+	if err := os.Chmod(path, os.FileMode(info.GetMode()).Perm()); err != nil {
+		return fmt.Errorf("apply local file mode: %w", err)
 	}
 	return nil
 }

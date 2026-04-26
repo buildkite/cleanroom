@@ -75,6 +75,7 @@ func TestCopyCommandRejectsRemoteToRemote(t *testing.T) {
 func TestCopyFromSandboxWritesLocalFile(t *testing.T) {
 	payload := []byte{0, 1, 'h', 'i', '\n'}
 	adapter := &copyIntegrationAdapter{
+		statFn: copyTestSandboxFileStat(0o644, time.Time{}),
 		readFn: func(_ context.Context, sandboxID, path string, maxBytes int64, emit func([]byte) error) error {
 			if strings.TrimSpace(sandboxID) == "" {
 				t.Fatal("expected sandbox id")
@@ -118,8 +119,117 @@ func TestCopyFromSandboxWritesLocalFile(t *testing.T) {
 	}
 }
 
+func TestCopyFromSandboxPreservesRemoteModeAndMtime(t *testing.T) {
+	payload := []byte("payload")
+	mtime := time.Unix(1700000123, 0)
+	adapter := &copyIntegrationAdapter{
+		statFn: copyTestSandboxFileStat(0o640, mtime),
+		readFn: func(_ context.Context, _ string, _ string, _ int64, emit func([]byte) error) error {
+			return emit(payload)
+		},
+	}
+	host, _ := startIntegrationServer(t, adapter)
+	sandboxID := createCopyTestSandbox(t, host)
+	dest := filepath.Join(t.TempDir(), "artifact.txt")
+	stdout, _ := makeStdoutCapture(t)
+	stderr, _ := makeStdoutCapture(t)
+
+	cmd := CopyCommand{
+		clientFlags: clientFlags{Host: host},
+		Source:      sandboxID + ":/tmp/artifact.txt",
+		Destination: dest,
+	}
+	if err := cmd.Run(&runtimeContext{
+		Config:        runtimeconfig.Config{},
+		Observability: newTestObservability(t),
+		Stdout:        stdout,
+		Stderr:        stderr,
+	}); err != nil {
+		t.Fatalf("CopyCommand.Run returned error: %v", err)
+	}
+
+	data, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatalf("read copied file: %v", err)
+	}
+	if !bytes.Equal(data, payload) {
+		t.Fatalf("unexpected copied data: got %q want %q", data, payload)
+	}
+	info, err := os.Stat(dest)
+	if err != nil {
+		t.Fatalf("stat copied file: %v", err)
+	}
+	if got, want := info.Mode().Perm(), fs.FileMode(0o640); got != want {
+		t.Fatalf("unexpected copied mode: got %04o want %04o", got, want)
+	}
+	if got, want := info.ModTime().Unix(), mtime.Unix(); got != want {
+		t.Fatalf("unexpected copied mtime: got %d want %d", got, want)
+	}
+}
+
+func TestCopyFromSandboxUsesRemoteSymlinkTargetMetadata(t *testing.T) {
+	payload := []byte("payload")
+	mtime := time.Unix(1700000456, 0)
+	var statPaths []string
+	var readPath string
+	adapter := &copyIntegrationAdapter{
+		statFn: func(_ context.Context, _ string, path string) (*backend.SandboxPathInfo, error) {
+			statPaths = append(statPaths, path)
+			switch path {
+			case "/tmp/link.txt":
+				return &backend.SandboxPathInfo{Path: path, Type: backend.SandboxPathTypeSymlink, SymlinkTarget: "target.txt"}, nil
+			case "/tmp/target.txt":
+				return &backend.SandboxPathInfo{Path: path, Type: backend.SandboxPathTypeFile, Mode: 0o600, MTime: mtime}, nil
+			default:
+				return nil, backend.NewSandboxPathNotFoundError(path)
+			}
+		},
+		readFn: func(_ context.Context, _ string, path string, _ int64, emit func([]byte) error) error {
+			readPath = path
+			return emit(payload)
+		},
+	}
+	host, _ := startIntegrationServer(t, adapter)
+	sandboxID := createCopyTestSandbox(t, host)
+	dest := filepath.Join(t.TempDir(), "artifact.txt")
+	stdout, _ := makeStdoutCapture(t)
+	stderr, _ := makeStdoutCapture(t)
+
+	cmd := CopyCommand{
+		clientFlags: clientFlags{Host: host},
+		Source:      sandboxID + ":/tmp/link.txt",
+		Destination: dest,
+	}
+	if err := cmd.Run(&runtimeContext{
+		Config:        runtimeconfig.Config{},
+		Observability: newTestObservability(t),
+		Stdout:        stdout,
+		Stderr:        stderr,
+	}); err != nil {
+		t.Fatalf("CopyCommand.Run returned error: %v", err)
+	}
+
+	if got, want := strings.Join(statPaths, ","), "/tmp/link.txt,/tmp/target.txt"; got != want {
+		t.Fatalf("unexpected stat paths: got %q want %q", got, want)
+	}
+	if got, want := readPath, "/tmp/link.txt"; got != want {
+		t.Fatalf("unexpected read path: got %q want %q", got, want)
+	}
+	info, err := os.Stat(dest)
+	if err != nil {
+		t.Fatalf("stat copied file: %v", err)
+	}
+	if got, want := info.Mode().Perm(), fs.FileMode(0o600); got != want {
+		t.Fatalf("unexpected copied mode: got %04o want %04o", got, want)
+	}
+	if got, want := info.ModTime().Unix(), mtime.Unix(); got != want {
+		t.Fatalf("unexpected copied mtime: got %d want %d", got, want)
+	}
+}
+
 func TestCopyFromSandboxUsesRemoteBasenameForLocalDirectory(t *testing.T) {
 	adapter := &copyIntegrationAdapter{
+		statFn: copyTestSandboxFileStat(0o644, time.Time{}),
 		readFn: func(_ context.Context, _ string, _ string, _ int64, emit func([]byte) error) error {
 			return emit([]byte("payload"))
 		},
@@ -156,6 +266,7 @@ func TestCopyFromSandboxUsesRemoteBasenameForLocalDirectory(t *testing.T) {
 func TestCopyFromSandboxPreservesLocalDestinationSymlink(t *testing.T) {
 	payload := []byte("payload")
 	adapter := &copyIntegrationAdapter{
+		statFn: copyTestSandboxFileStat(0o644, time.Time{}),
 		readFn: func(_ context.Context, _ string, _ string, _ int64, emit func([]byte) error) error {
 			return emit(payload)
 		},
@@ -207,6 +318,7 @@ func TestCopyFromSandboxPreservesLocalDestinationSymlink(t *testing.T) {
 func TestCopyFromSandboxPreservesLocalDestinationSymlinkChain(t *testing.T) {
 	payload := []byte("payload")
 	adapter := &copyIntegrationAdapter{
+		statFn: copyTestSandboxFileStat(0o644, time.Time{}),
 		readFn: func(_ context.Context, _ string, _ string, _ int64, emit func([]byte) error) error {
 			return emit(payload)
 		},
@@ -264,6 +376,7 @@ func TestCopyFromSandboxPreservesLocalDestinationSymlinkChain(t *testing.T) {
 func TestCopyFromSandboxWritesThroughDanglingLocalDestinationSymlink(t *testing.T) {
 	payload := []byte("payload")
 	adapter := &copyIntegrationAdapter{
+		statFn: copyTestSandboxFileStat(0o644, time.Time{}),
 		readFn: func(_ context.Context, _ string, _ string, _ int64, emit func([]byte) error) error {
 			return emit(payload)
 		},
@@ -777,6 +890,7 @@ func TestCopyToSandboxRejectsSlashSuffixedRemoteSymlinkCycle(t *testing.T) {
 
 func TestCopyFromSandboxReturnsDownloadError(t *testing.T) {
 	adapter := &copyIntegrationAdapter{
+		statFn: copyTestSandboxFileStat(0o644, time.Time{}),
 		readFn: func(context.Context, string, string, int64, func([]byte) error) error {
 			return errors.New("cat: missing")
 		},
@@ -847,6 +961,18 @@ func (a *copyIntegrationAdapter) WriteSandboxFile(ctx context.Context, sandboxID
 		return a.writeFn(ctx, sandboxID, path, r, mode, mtime)
 	}
 	return 0, errors.New("write not configured")
+}
+
+func copyTestSandboxFileStat(mode fs.FileMode, mtime time.Time) func(context.Context, string, string) (*backend.SandboxPathInfo, error) {
+	return func(_ context.Context, _ string, path string) (*backend.SandboxPathInfo, error) {
+		return &backend.SandboxPathInfo{
+			Path:      path,
+			Type:      backend.SandboxPathTypeFile,
+			Mode:      mode,
+			MTime:     mtime,
+			SizeBytes: 7,
+		}, nil
+	}
 }
 
 func createCopyTestSandbox(t *testing.T, host string) string {
