@@ -247,19 +247,20 @@ func TestWorkspaceCopyUsesRawArchiveForNonGitWorkspace(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(sourceRoot, ".git/config"), []byte("skip\n"), 0o644); err != nil {
 		t.Fatalf("write skipped git config: %v", err)
 	}
+	if err := os.MkdirAll(filepath.Join(sourceRoot, "app/submodule"), 0o755); err != nil {
+		t.Fatalf("create submodule dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceRoot, "app/submodule/.git"), []byte("gitdir: ../../.git/modules/submodule\n"), 0o644); err != nil {
+		t.Fatalf("write skipped git file: %v", err)
+	}
 
 	var (
-		removedPath string
-		recursive   bool
+		mu          sync.Mutex
+		commands    [][]string
 		destination string
 		files       = map[string]string{}
 	)
 	adapter := &copyIntegrationAdapter{
-		removeFn: func(_ context.Context, _ string, path string, rec bool) error {
-			removedPath = path
-			recursive = rec
-			return nil
-		},
 		extractFn: func(_ context.Context, _ string, dest string, r io.Reader) (int64, error) {
 			destination = dest
 			tr := tar.NewReader(r)
@@ -285,6 +286,12 @@ func TestWorkspaceCopyUsesRawArchiveForNonGitWorkspace(t *testing.T) {
 	}
 	host, _ := startIntegrationServer(t, adapter)
 	sandboxID := createWorkspaceCopyTestSandboxWithRepository(t, host, "/workspace-app")
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
+		mu.Lock()
+		commands = append(commands, append([]string(nil), req.Command...))
+		mu.Unlock()
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+	}
 	stdout, _ := makeStdoutCapture(t)
 	stderr, _ := makeStdoutCapture(t)
 
@@ -304,11 +311,14 @@ func TestWorkspaceCopyUsesRawArchiveForNonGitWorkspace(t *testing.T) {
 		t.Fatalf("WorkspaceCopyCommand.Run returned error: %v", err)
 	}
 
-	if got, want := removedPath, "/workspace-app"; got != want {
-		t.Fatalf("unexpected removed workspace root: got %q want %q", got, want)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(commands) != 1 {
+		t.Fatalf("expected one raw workspace clean command, got %d", len(commands))
 	}
-	if !recursive {
-		t.Fatal("expected workspace root removal to be recursive")
+	cleanCommand := strings.Join(commands[0], " ")
+	if !strings.Contains(cleanCommand, `basename "$entry"`) || !strings.Contains(cleanCommand, `= ".git"`) {
+		t.Fatalf("expected raw workspace clean command to preserve .git, got %q", cleanCommand)
 	}
 	if got, want := destination, "/workspace-app"; got != want {
 		t.Fatalf("unexpected extract destination: got %q want %q", got, want)
@@ -318,6 +328,9 @@ func TestWorkspaceCopyUsesRawArchiveForNonGitWorkspace(t *testing.T) {
 	}
 	if _, ok := files[".git/config"]; ok {
 		t.Fatalf("expected .git directory to be skipped, got files %#v", files)
+	}
+	if _, ok := files["app/submodule/.git"]; ok {
+		t.Fatalf("expected .git file to be skipped, got files %#v", files)
 	}
 }
 

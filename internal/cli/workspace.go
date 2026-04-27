@@ -168,17 +168,36 @@ func copyRawWorkspaceToSandbox(callCtx context.Context, ctx *runtimeContext, cli
 	if _, err := rawWorkspacePlan(opts.CWD, destination); err != nil {
 		return err
 	}
-	if _, err := client.RemoveSandboxPath(tracePreservingContext(callCtx), &cleanroomv1.RemoveSandboxPathRequest{
-		SandboxId: opts.SandboxID,
-		Path:      destination,
-		Recursive: true,
-	}); err != nil && !isSandboxPathNotFoundError(err) {
-		return fmt.Errorf("remove sandbox workspace root: %w", err)
+	if err := cleanRawWorkspaceDestination(callCtx, ctx, client, opts.SandboxID, destination); err != nil {
+		return err
 	}
 	if err := extractRawWorkspaceArchive(callCtx, client, opts.SandboxID, destination, opts.CWD); err != nil {
 		return err
 	}
 	return nil
+}
+
+func cleanRawWorkspaceDestination(callCtx context.Context, ctx *runtimeContext, client *controlclient.Client, sandboxID, destination string) error {
+	return runWorkspaceExecution(callCtx, ctx, client, sandboxID, nil, rawWorkspaceCleanCommand(destination), nil)
+}
+
+func rawWorkspaceCleanCommand(destination string) []string {
+	script := []string{
+		"set -eu",
+		"dest=" + workspaceShellQuote(destination),
+		`if [ -e "$dest" ] && [ ! -d "$dest" ]; then echo "workspace destination is not a directory: $dest" >&2; exit 1; fi`,
+		`mkdir -p "$dest"`,
+		`for entry in "$dest"/* "$dest"/.[!.]* "$dest"/..?*; do`,
+		`  [ -e "$entry" ] || [ -L "$entry" ] || continue`,
+		`  [ "$(basename "$entry")" = ".git" ] && continue`,
+		`  rm -rf -- "$entry"`,
+		`done`,
+	}
+	return []string{"sh", "-lc", strings.Join(script, "\n")}
+}
+
+func workspaceShellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
 }
 
 func resolveSandboxWorkspaceDestination(callCtx context.Context, client *controlclient.Client, sandboxID string) (string, error) {
@@ -400,7 +419,10 @@ func shouldSkipRawWorkspacePath(rel string, d fs.DirEntry) bool {
 		return false
 	}
 	name := filepath.Base(rel)
-	return d.IsDir() && (name == ".git" || name == ".cleanroom")
+	if name == ".git" {
+		return true
+	}
+	return d.IsDir() && name == ".cleanroom"
 }
 
 func workspaceRemotePath(root, rel string) string {
