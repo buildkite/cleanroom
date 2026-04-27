@@ -28,10 +28,13 @@ Inside sandboxes, the shared gateway is exposed at
 ## Sandbox identity
 
 On `firecracker`, the gateway identifies the sandbox from the guest source IP.
-On `darwin-vz`, guests share NAT, so requests use the
-`X-Cleanroom-Scope-Token` header. The gateway normally restricts that header to
-configured gateway-source prefixes, but falls back to allowing it from any
-source if gateway-host resolution is unavailable.
+On `darwin-vz`, the file-handle gateway bridge forwards requests with the
+`X-Cleanroom-Scope-Token` header. The gateway accepts scope-token requests from
+loopback by default, which covers the host-local file-handle bridge. When a
+gateway host is configured, Cleanroom derives additional trusted IPv4 `/24` or
+IPv6 `/64` prefixes from that host or its resolved addresses. If gateway-host
+resolution fails or returns no addresses, Cleanroom falls back to loopback-only
+scope-token trust rather than accepting scope tokens from arbitrary sources.
 
 ## Git proxy
 
