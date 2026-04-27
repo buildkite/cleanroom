@@ -223,24 +223,37 @@ func copyRawWorkspaceToSandbox(callCtx context.Context, ctx *runtimeContext, cli
 }
 
 func cleanRawWorkspaceDestination(callCtx context.Context, ctx *runtimeContext, client *controlclient.Client, sandboxID, destination string) error {
-	state, err := sandboxDestinationDirectoryState(tracePreservingContext(callCtx), client, sandboxID, destination)
+	statResp, err := client.StatSandboxPath(tracePreservingContext(callCtx), &cleanroomv1.StatSandboxPathRequest{
+		SandboxId: sandboxID,
+		Path:      destination,
+	})
 	if err != nil {
+		if isSandboxPathNotFoundError(err) {
+			return nil
+		}
 		return fmt.Errorf("inspect sandbox workspace destination: %w", err)
 	}
-	switch state {
-	case sandboxDestinationMissing:
-		return nil
-	case sandboxDestinationOther:
-		if _, err := client.RemoveSandboxPath(tracePreservingContext(callCtx), &cleanroomv1.RemoveSandboxPathRequest{
-			SandboxId: sandboxID,
-			Path:      destination,
-		}); err != nil && !isSandboxPathNotFoundError(err) {
-			return fmt.Errorf("remove non-directory workspace destination: %w", err)
-		}
-		return nil
-	default:
-		return runWorkspaceExecution(callCtx, ctx, client, sandboxID, nil, rawWorkspaceCleanCommand(destination), nil)
+	info := statResp.GetInfo()
+	if info == nil {
+		return errors.New("inspect sandbox workspace destination: missing path info")
 	}
+	if info.GetType() != cleanroomv1.SandboxPathType_SANDBOX_PATH_TYPE_DIRECTORY {
+		return removeRawWorkspaceDestinationRoot(callCtx, client, sandboxID, destination)
+	}
+	return runWorkspaceExecution(callCtx, ctx, client, sandboxID, nil, rawWorkspaceCleanCommand(destination), nil)
+}
+
+func removeRawWorkspaceDestinationRoot(callCtx context.Context, client *controlclient.Client, sandboxID, destination string) error {
+	if _, err := client.RemoveSandboxPath(tracePreservingContext(callCtx), &cleanroomv1.RemoveSandboxPathRequest{
+		SandboxId: sandboxID,
+		Path:      destination,
+	}); err != nil {
+		if isSandboxPathNotFoundError(err) {
+			return nil
+		}
+		return fmt.Errorf("remove non-directory workspace destination: %w", err)
+	}
+	return nil
 }
 
 func rawWorkspaceCleanCommand(destination string) []string {

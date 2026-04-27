@@ -509,6 +509,80 @@ func TestWorkspaceCopySkipsRawCleanWhenDestinationMissing(t *testing.T) {
 	}
 }
 
+func TestWorkspaceCopyRemovesSymlinkedRawDestinationRoot(t *testing.T) {
+	sourceRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(sourceRoot, "main.txt"), []byte("payload\n"), 0o644); err != nil {
+		t.Fatalf("write workspace file: %v", err)
+	}
+
+	var (
+		mu               sync.Mutex
+		commands         [][]string
+		removedPath      string
+		removedRecursive bool
+		destination      string
+	)
+	adapter := &copyIntegrationAdapter{
+		statFn: func(_ context.Context, _ string, path string) (*backend.SandboxPathInfo, error) {
+			return &backend.SandboxPathInfo{
+				Path:          path,
+				Type:          backend.SandboxPathTypeSymlink,
+				SymlinkTarget: "/",
+			}, nil
+		},
+		removeFn: func(_ context.Context, _ string, path string, recursive bool) error {
+			removedPath = path
+			removedRecursive = recursive
+			return nil
+		},
+		extractFn: func(_ context.Context, _ string, dest string, r io.Reader) (int64, error) {
+			destination = dest
+			return io.Copy(io.Discard, r)
+		},
+	}
+	host, _ := startIntegrationServer(t, adapter)
+	sandboxID := createWorkspaceCopyTestSandboxWithRepository(t, host, "/workspace-app")
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
+		mu.Lock()
+		commands = append(commands, append([]string(nil), req.Command...))
+		mu.Unlock()
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+	}
+	stdout, _ := makeStdoutCapture(t)
+	stderr, _ := makeStdoutCapture(t)
+
+	cmd := WorkspaceCopyCommand{
+		clientFlags: clientFlags{Host: host},
+		Chdir:       sourceRoot,
+		SandboxID:   sandboxID,
+	}
+	if err := cmd.Run(&runtimeContext{
+		CWD:           sourceRoot,
+		Loader:        repositoryNotFoundLoader{},
+		Config:        runtimeconfig.Config{},
+		Observability: newTestObservability(t),
+		Stdout:        stdout,
+		Stderr:        stderr,
+	}); err != nil {
+		t.Fatalf("WorkspaceCopyCommand.Run returned error: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(commands) != 0 {
+		t.Fatalf("expected symlinked raw workspace destination to skip clean execution, got %d command(s)", len(commands))
+	}
+	if got, want := removedPath, "/workspace-app"; got != want {
+		t.Fatalf("unexpected removed path: got %q want %q", got, want)
+	}
+	if removedRecursive {
+		t.Fatal("expected symlinked raw workspace destination to be removed non-recursively")
+	}
+	if got, want := destination, "/workspace-app"; got != want {
+		t.Fatalf("unexpected extract destination: got %q want %q", got, want)
+	}
+}
+
 func TestRawWorkspaceCopyFollowsSymlinkedSourceRoot(t *testing.T) {
 	realRoot := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(realRoot, "app"), 0o755); err != nil {
