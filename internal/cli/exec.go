@@ -109,6 +109,10 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 	sandboxID = target.SandboxID
 	createdSandbox := target.CreatedSandbox
 	repository := target.Repository
+	command := append([]string(nil), e.Command...)
+	if repository == nil && strings.TrimSpace(target.WorkspaceRoot) != "" {
+		command = repositorycheckout.WrapCommandInWorkdir(command, workspaceWorkdirCheckout(target.WorkspaceRoot))
+	}
 	printedSandboxID := false
 	printSandboxID := func() error {
 		if printedSandboxID {
@@ -183,7 +187,7 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 			host,
 			sandboxID,
 			repository,
-			e.Command,
+			command,
 			executionEnv,
 			e.LaunchSeconds,
 			interactiveExecutionOptions{
@@ -205,7 +209,7 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 
 	createExecutionResp, err := client.CreateExecution(rootCtx, &cleanroomv1.CreateExecutionRequest{
 		SandboxId:          sandboxID,
-		Command:            repositorycheckout.NormalizeCommand(e.Command),
+		Command:            repositorycheckout.NormalizeCommand(command),
 		Env:                executionEnv,
 		Kind:               cleanroomv1.ExecutionKind_EXECUTION_KIND_BATCH,
 		RepositoryCheckout: repositoryCheckoutProto(repository),

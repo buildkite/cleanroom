@@ -13,13 +13,11 @@ type workspaceCopyFlags struct {
 	Copy bool `name:"copy" help:"Copy local workspace changes into the sandbox workspace before running"`
 }
 
-func (f workspaceCopyFlags) validate(existingSandboxID, fromSnapshot string, repositoryOverride repositoryOverrideFlags) error {
+func (f workspaceCopyFlags) validate(_ string, fromSnapshot string, repositoryOverride repositoryOverrideFlags) error {
 	if !f.Copy {
 		return nil
 	}
 	switch {
-	case strings.TrimSpace(existingSandboxID) != "":
-		return errors.New("--copy cannot be used with --in")
 	case strings.TrimSpace(fromSnapshot) != "":
 		return errors.New("--copy cannot be used with --from")
 	case repositoryOverride.hasRepositoryOverride():
@@ -34,7 +32,7 @@ func resolveRepositoryChangeset(repository *resolvedRepositoryCheckout, copyWork
 		return nil, nil
 	}
 	if repository == nil {
-		return nil, errors.New("--copy requires a repository-aware top-level command")
+		return nil, nil
 	}
 	if strings.TrimSpace(repository.RootDir) == "" {
 		return nil, errors.New("--copy requires a local repository checkout")

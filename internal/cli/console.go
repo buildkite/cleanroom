@@ -8,6 +8,7 @@ import (
 
 	"github.com/buildkite/cleanroom/internal/controlclient"
 	"github.com/buildkite/cleanroom/internal/observability"
+	"github.com/buildkite/cleanroom/internal/repositorycheckout"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
@@ -103,6 +104,9 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) (runErr error) {
 	sandboxID = target.SandboxID
 	createdSandbox := target.CreatedSandbox
 	repository := target.Repository
+	if repository == nil && strings.TrimSpace(target.WorkspaceRoot) != "" {
+		command = repositorycheckout.WrapCommandInWorkdir(command, workspaceWorkdirCheckout(target.WorkspaceRoot))
+	}
 	printedSandboxID := false
 	printSandboxID := func() error {
 		if printedSandboxID {

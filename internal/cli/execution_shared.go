@@ -36,6 +36,7 @@ type executionSandbox struct {
 	SandboxID      string
 	CreatedSandbox bool
 	Repository     *resolvedRepositoryCheckout
+	WorkspaceRoot  string
 }
 
 // resolveExecutionSandbox keeps `exec` and `console` on the same sandbox
@@ -56,18 +57,20 @@ func resolveExecutionSandbox(
 
 	var repository *resolvedRepositoryCheckout
 	var changeset *cleanroomv1.RepositoryChangeset
-	if existingSandboxID == "" && fromSnapshot == "" {
+	if fromSnapshot == "" && (existingSandboxID == "" || copyFlags.Copy) {
 		var err error
 		repository, err = resolveRepositoryCheckoutWithOverride(cwd, ctx.Loader, repositoryOverride)
 		if err != nil {
 			return nil, err
 		}
-		changeset, err = resolveRepositoryChangeset(repository, copyFlags.Copy)
-		if err != nil {
-			return nil, err
+		if existingSandboxID == "" {
+			changeset, err = resolveRepositoryChangeset(repository, copyFlags.Copy)
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
-	warnDirtyRepositoryCheckout(repository, changeset != nil)
+	warnDirtyRepositoryCheckout(repository, copyFlags.Copy && repository != nil && fromSnapshot == "")
 
 	sandboxID, createdSandbox, err := ensureSandboxID(
 		callCtx,
@@ -88,10 +91,35 @@ func resolveExecutionSandbox(
 		return nil, err
 	}
 
+	workspaceRoot := ""
+	if copyFlags.Copy && fromSnapshot == "" {
+		changesetAppliedDuringCreate := existingSandboxID == "" && repository != nil && changeset != nil
+		if repository == nil {
+			workspaceRoot, err = resolveWorkspaceDestinationRoot(cwd, ctx.Loader)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if !changesetAppliedDuringCreate {
+			if err := copyWorkspaceToSandbox(callCtx, ctx, client, workspaceCopyOptions{
+				CWD:           cwd,
+				SandboxID:     sandboxID,
+				Repository:    repository,
+				ForceGitReset: existingSandboxID != "",
+			}); err != nil {
+				if createdSandbox {
+					terminateSandboxBestEffort(callCtx, client, sandboxID, 0, nil, "")
+				}
+				return nil, err
+			}
+		}
+	}
+
 	return &executionSandbox{
 		SandboxID:      sandboxID,
 		CreatedSandbox: createdSandbox,
 		Repository:     repository,
+		WorkspaceRoot:  workspaceRoot,
 	}, nil
 }
 
@@ -226,7 +254,7 @@ func validateExecutionSandboxArgs(chdir, existingSandboxID, fromSnapshot string,
 	if snapshotID != "" && dangerouslyAllowAll {
 		return errors.New("--dangerously-allow-all cannot be used with --from")
 	}
-	if sandboxID != "" && hasChdir {
+	if sandboxID != "" && hasChdir && !copyFlags.Copy {
 		return errors.New("--chdir cannot be used with --in")
 	}
 	if snapshotID != "" && hasChdir {

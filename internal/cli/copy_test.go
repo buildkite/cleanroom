@@ -926,6 +926,8 @@ type copyIntegrationAdapter struct {
 	statFn     func(context.Context, string, string) (*backend.SandboxPathInfo, error)
 	readFn     func(context.Context, string, string, int64, func([]byte) error) error
 	writeFn    func(context.Context, string, string, io.Reader, fs.FileMode, time.Time) (int64, error)
+	removeFn   func(context.Context, string, string, bool) error
+	extractFn  func(context.Context, string, string, io.Reader) (int64, error)
 }
 
 func (a *copyIntegrationAdapter) DownloadSandboxFile(ctx context.Context, sandboxID, path string, maxBytes int64) ([]byte, error) {
@@ -961,6 +963,20 @@ func (a *copyIntegrationAdapter) WriteSandboxFile(ctx context.Context, sandboxID
 		return a.writeFn(ctx, sandboxID, path, r, mode, mtime)
 	}
 	return 0, errors.New("write not configured")
+}
+
+func (a *copyIntegrationAdapter) RemoveSandboxPath(ctx context.Context, sandboxID, path string, recursive bool) error {
+	if a.removeFn != nil {
+		return a.removeFn(ctx, sandboxID, path, recursive)
+	}
+	return errors.New("remove not configured")
+}
+
+func (a *copyIntegrationAdapter) ExtractSandboxArchive(ctx context.Context, sandboxID, destination string, r io.Reader) (int64, error) {
+	if a.extractFn != nil {
+		return a.extractFn(ctx, sandboxID, destination, r)
+	}
+	return 0, errors.New("extract not configured")
 }
 
 func copyTestSandboxFileStat(mode fs.FileMode, mtime time.Time) func(context.Context, string, string) (*backend.SandboxPathInfo, error) {

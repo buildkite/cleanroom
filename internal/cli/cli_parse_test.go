@@ -365,6 +365,21 @@ func TestTopLevelCommandsParseCopyFlag(t *testing.T) {
 	})
 }
 
+func TestWorkspaceCopyParses(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"workspace", "copy", "--dry-run", "cr_123"}); err != nil {
+		t.Fatalf("parse workspace copy returned error: %v", err)
+	}
+	if got, want := c.Workspace.Copy.SandboxID, "cr_123"; got != want {
+		t.Fatalf("unexpected workspace copy sandbox id: got %q want %q", got, want)
+	}
+	if !c.Workspace.Copy.DryRun {
+		t.Fatal("expected workspace copy dry-run flag to be set")
+	}
+}
+
 func TestIncludeLocalChangesFlagRejected(t *testing.T) {
 	c := &CLI{}
 	parser := newParserForTest(t, c)

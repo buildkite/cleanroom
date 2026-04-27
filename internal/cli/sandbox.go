@@ -342,6 +342,14 @@ func (c *CreateCommand) Run(ctx *runtimeContext) error {
 	if err != nil {
 		return err
 	}
+	if c.Copy && repository == nil {
+		if err := copyWorkspaceToSandbox(context.Background(), ctx, client, workspaceCopyOptions{
+			CWD:       cwd,
+			SandboxID: sandboxID,
+		}); err != nil {
+			return fmt.Errorf("copy workspace into sandbox %s: %w", sandboxID, err)
+		}
+	}
 	if c.JSON {
 		enc := json.NewEncoder(ctx.Stdout)
 		enc.SetIndent("", "  ")
