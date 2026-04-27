@@ -59,8 +59,9 @@ type CreateCommand struct {
 	Image   string `help:"Override sandbox image ref (tag, digest, or local Docker image)"`
 	repositoryOverrideFlags
 	repositoryChangesetFlags
-	LaunchSeconds int64 `help:"VM boot/guest-agent readiness timeout in seconds"`
-	JSON          bool  `help:"Print sandbox as JSON"`
+	DangerouslyAllowAll bool  `name:"dangerously-allow-all" help:"Disable network egress filtering for a newly created sandbox"`
+	LaunchSeconds       int64 `help:"VM boot/guest-agent readiness timeout in seconds"`
+	JSON                bool  `help:"Print sandbox as JSON"`
 }
 
 func (c *SandboxListCommand) Run(ctx *runtimeContext) error {
@@ -315,7 +316,7 @@ func (c *CreateCommand) Run(ctx *runtimeContext) error {
 		return err
 	}
 	if strings.TrimSpace(c.From) != "" {
-		return runSandboxCreate(ctx, c.clientFlags, c.Backend, c.From, c.Image, false, false, c.LaunchSeconds, c.JSON)
+		return runSandboxCreate(ctx, c.clientFlags, c.Backend, c.From, c.Image, false, c.DangerouslyAllowAll, c.LaunchSeconds, c.JSON)
 	}
 	host := c.resolvedHost(ctx.Config)
 	client, err := c.connect(ctx)
@@ -337,7 +338,7 @@ func (c *CreateCommand) Run(ctx *runtimeContext) error {
 	}
 	warnDirtyRepositoryCheckout(repository, changeset != nil)
 
-	sandboxID, sandbox, err := createTopLevelSandbox(context.Background(), client, ctx.Loader, cwd, host, c.Backend, c.Image, c.LaunchSeconds, repository, changeset)
+	sandboxID, sandbox, err := createTopLevelSandbox(context.Background(), client, ctx.Loader, cwd, host, c.Backend, c.Image, c.LaunchSeconds, c.DangerouslyAllowAll, repository, changeset)
 	if err != nil {
 		return err
 	}
@@ -360,6 +361,9 @@ func (c *CreateCommand) validate() error {
 	if c.repositoryOverrideFlags.hasRepositoryOverride() && strings.TrimSpace(c.From) != "" {
 		return errors.New("--repo-url cannot be used with --from")
 	}
+	if c.DangerouslyAllowAll && strings.TrimSpace(c.From) != "" {
+		return errors.New("--dangerously-allow-all cannot be used with --from")
+	}
 	return nil
 }
 
@@ -369,6 +373,7 @@ func createTopLevelSandbox(
 	loader policyLoader,
 	cwd, host, backendName, imageRefOverride string,
 	launchSeconds int64,
+	dangerouslyAllowAll bool,
 	repository *resolvedRepositoryCheckout,
 	changeset *cleanroomv1.RepositoryChangeset,
 ) (string, *cleanroomv1.Sandbox, error) {
@@ -384,8 +389,25 @@ func createTopLevelSandbox(
 	if err != nil {
 		return "", nil, err
 	}
+	compiled, err = overrideCompiledPolicyNetworkDefault(compiled, dangerouslyAllowAll)
+	if err != nil {
+		return "", nil, err
+	}
 
 	return createSandboxWithPolicy(callCtx, client, compiled, backendName, launchSeconds, repository, changeset)
+}
+
+func overrideCompiledPolicyNetworkDefault(compiled *policy.CompiledPolicy, dangerouslyAllowAll bool) (*policy.CompiledPolicy, error) {
+	if !dangerouslyAllowAll {
+		return compiled, nil
+	}
+	if compiled == nil {
+		return nil, errors.New("create sandbox: missing compiled policy")
+	}
+	pb := compiled.ToProto()
+	pb.NetworkDefault = "allow"
+	pb.Hash = ""
+	return policy.FromProto(pb)
 }
 
 func createSandboxWithProgress(

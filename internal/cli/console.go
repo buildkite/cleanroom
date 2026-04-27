@@ -3,12 +3,14 @@ package cli
 import (
 	"context"
 	"errors"
+	"os"
+	"strings"
+
+	"github.com/buildkite/cleanroom/internal/controlclient"
 	"github.com/buildkite/cleanroom/internal/observability"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
-	"os"
-	"strings"
 )
 
 type ConsoleCommand struct {
@@ -20,17 +22,19 @@ type ConsoleCommand struct {
 	Image   string `help:"Override sandbox image ref for newly created sandboxes (tag, digest, or local Docker image)"`
 	repositoryOverrideFlags
 	repositoryChangesetFlags
-	Keep           bool     `help:"Keep a newly created sandbox after the console exits"`
-	Env            []string `short:"e" name:"env" help:"Set guest environment variables; use KEY to inherit from the local environment or KEY=VALUE to set an explicit value"`
-	PrintSandboxID bool     `name:"print-sandbox-id" help:"Print resolved sandbox_id=<id> to stderr before attaching"`
+	Keep                bool     `help:"Keep a newly created sandbox after the console exits"`
+	DangerouslyAllowAll bool     `name:"dangerously-allow-all" help:"Disable network egress filtering for a newly created sandbox"`
+	Env                 []string `short:"e" name:"env" help:"Set guest environment variables; use KEY to inherit from the local environment or KEY=VALUE to set an explicit value"`
+	PrintSandboxID      bool     `name:"print-sandbox-id" help:"Print resolved sandbox_id=<id> to stderr before attaching"`
 
 	LaunchSeconds int64 `help:"VM boot/guest-agent readiness timeout in seconds"`
 
-	Command []string `arg:"" passthrough:"partial" optional:"" help:"Command to run with an interactive tty (default: sh)"`
+	Command   []string `arg:"" passthrough:"partial" optional:"" help:"Command to run with an interactive tty (default: sh)"`
+	preAttach func(context.Context, *controlclient.Client, string) error
 }
 
 func (c *ConsoleCommand) Run(ctx *runtimeContext) (runErr error) {
-	if err := validateExecutionSandboxArgs(c.Chdir, c.In, c.From, c.Keep, c.repositoryOverrideFlags, c.repositoryChangesetFlags); err != nil {
+	if err := validateExecutionSandboxArgs(c.Chdir, c.In, c.From, c.Keep, c.DangerouslyAllowAll, c.repositoryOverrideFlags, c.repositoryChangesetFlags); err != nil {
 		return err
 	}
 
@@ -89,7 +93,7 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) (runErr error) {
 		return err
 	}
 
-	target, err := resolveExecutionSandbox(rootCtx, client, ctx, cwd, host, c.Backend, c.In, c.From, c.Image, c.LaunchSeconds, c.repositoryOverrideFlags, c.repositoryChangesetFlags)
+	target, err := resolveExecutionSandbox(rootCtx, client, ctx, cwd, host, c.Backend, c.In, c.From, c.Image, c.LaunchSeconds, c.DangerouslyAllowAll, c.repositoryOverrideFlags, c.repositoryChangesetFlags)
 	if err != nil {
 		if strings.TrimSpace(c.From) != "" {
 			err = explainSnapshotRuntimeDisabledError(err, ctx)
@@ -141,6 +145,11 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) (runErr error) {
 		}
 		terminateSandboxBestEffort(rootCtx, client, sandboxID, 0, logger, "terminate sandbox after console failed")
 	}()
+	if c.preAttach != nil {
+		if err := c.preAttach(rootCtx, client, sandboxID); err != nil {
+			return err
+		}
+	}
 
 	interactiveResult, err := runInteractiveExecution(
 		rootCtx,
