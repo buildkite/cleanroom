@@ -4708,6 +4708,133 @@ func TestCreateExecutionPreservesFirstMatchingRepositoryAfterChangesetSandboxCre
 	}
 }
 
+func TestCreateExecutionKeepsPendingChangesetAfterRunBeforeFailure(t *testing.T) {
+	adapter := &stubAdapter{}
+	svc := newTestService(adapter)
+
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"README.md": "hello\n",
+	})
+	svc.RepositoryStore = mirrors
+	repository := repositorycheckout.FromProto(repositoryCheckout)
+	if err := os.WriteFile(filepath.Join(mirrors.mirrorPath, "README.md"), []byte("hello from changeset\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(README.md) returned error: %v", err)
+	}
+	changeset, err := repositorychangeset.BuildFromWorkingTree(mirrors.mirrorPath, repository)
+	if err != nil {
+		t.Fatalf("BuildFromWorkingTree returned error: %v", err)
+	}
+	if changeset == nil {
+		t.Fatal("expected repository changeset")
+	}
+
+	var (
+		mu             sync.Mutex
+		commands       [][]string
+		preRunAttempts int
+	)
+	runCalled := make(chan struct{}, 8)
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
+		joined := strings.Join(req.Command, " ")
+		isPreRun := repositoryWrappedCommandContains(joined, `exec 'sh' '-lc' 'echo pre-run'`)
+
+		mu.Lock()
+		commands = append(commands, append([]string(nil), req.Command...))
+		attempt := 0
+		if isPreRun {
+			preRunAttempts++
+			attempt = preRunAttempts
+		}
+		mu.Unlock()
+
+		select {
+		case runCalled <- struct{}{}:
+		default:
+		}
+
+		if isPreRun && attempt == 1 {
+			return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 23, Message: "pre-run failed"}, nil
+		}
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+	}
+
+	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy:              testRepositoryRunBeforePolicy(),
+		RepositoryCheckout:  repositoryCheckout,
+		RepositoryChangeset: changeset.ToProto(),
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createSandboxResp.GetSandbox().GetSandboxId()
+	for i := 0; i < 2; i++ {
+		select {
+		case <-runCalled:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for changeset sandbox bootstrap")
+		}
+	}
+
+	firstResp, err := svc.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+		SandboxId:          sandboxID,
+		Command:            []string{"sh", "-lc", "pwd"},
+		RepositoryCheckout: repositoryCheckout,
+	})
+	if err != nil {
+		t.Fatalf("CreateExecution first attempt returned error: %v", err)
+	}
+	firstExecution, err := svc.WaitExecution(context.Background(), sandboxID, firstResp.GetExecution().GetExecutionId())
+	if err != nil {
+		t.Fatalf("WaitExecution first attempt returned error: %v", err)
+	}
+	if got, want := firstExecution.GetStatus(), cleanroomv1.ExecutionStatus_EXECUTION_STATUS_FAILED; got != want {
+		t.Fatalf("unexpected first execution status: got %v want %v", got, want)
+	}
+
+	secondResp, err := svc.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+		SandboxId:          sandboxID,
+		Command:            []string{"sh", "-lc", "pwd"},
+		RepositoryCheckout: repositoryCheckout,
+	})
+	if err != nil {
+		t.Fatalf("CreateExecution retry returned error: %v", err)
+	}
+	secondExecution, err := svc.WaitExecution(context.Background(), sandboxID, secondResp.GetExecution().GetExecutionId())
+	if err != nil {
+		t.Fatalf("WaitExecution retry returned error: %v", err)
+	}
+	if got, want := secondExecution.GetStatus(), cleanroomv1.ExecutionStatus_EXECUTION_STATUS_SUCCEEDED; got != want {
+		t.Fatalf("unexpected retry execution status: got %v want %v", got, want)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if got, want := preRunAttempts, 2; got != want {
+		t.Fatalf("expected two run.before attempts, got %d", got)
+	}
+	if got, want := len(commands), 5; got != want {
+		t.Fatalf("expected create bootstrap + changeset apply + failed run.before + retry run.before + retry execution, got %d command(s)", got)
+	}
+	failedPreRun := strings.Join(commands[2], " ")
+	if strings.Contains(failedPreRun, "git clone --filter=blob:none --no-checkout") {
+		t.Fatalf("expected failed run.before to use created changeset state, got %q", failedPreRun)
+	}
+	if !repositoryWrappedCommandContains(failedPreRun, `exec 'sh' '-lc' 'echo pre-run'`) {
+		t.Fatalf("expected wrapped run.before command on first attempt, got %q", failedPreRun)
+	}
+	retryPreRun := strings.Join(commands[3], " ")
+	if strings.Contains(retryPreRun, `git -C "$dest" fetch --filter=blob:none --progress origin "$commit"`) {
+		t.Fatalf("expected retry to preserve pending changeset state instead of refreshing checkout, got %q", retryPreRun)
+	}
+	if !repositoryWrappedCommandContains(retryPreRun, `exec 'sh' '-lc' 'echo pre-run'`) {
+		t.Fatalf("expected wrapped run.before command on retry, got %q", retryPreRun)
+	}
+	retryExecution := strings.Join(commands[4], " ")
+	if !repositoryWrappedCommandContains(retryExecution, `exec 'sh' '-lc' 'pwd'`) {
+		t.Fatalf("expected wrapped user command on retry, got %q", retryExecution)
+	}
+}
+
 func TestCreateExecutionRebootstrapsSecondMatchingRepositoryAfterChangesetSandboxCreate(t *testing.T) {
 	adapter := &stubAdapter{}
 	svc := newTestService(adapter)
