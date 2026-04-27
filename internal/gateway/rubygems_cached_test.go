@@ -48,6 +48,7 @@ func TestCachedRubyGemsHandlerStripsPrefixAndDelegates(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/rubygems/versions", nil)
 	req = withScope(req, registryTestScope("rubygems.org"))
+	req, obs := withGatewayRequestObservability(req)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 
@@ -57,6 +58,7 @@ func TestCachedRubyGemsHandlerStripsPrefixAndDelegates(t *testing.T) {
 	if want := "/versions"; capturedPath != want {
 		t.Fatalf("expected backend path %q, got %q", want, capturedPath)
 	}
+	requireGatewayRequestDecision(t, obs, gatewayActionAllow, reasonCached)
 }
 
 func TestCachedRubyGemsHandlerDeniesUnallowedHost(t *testing.T) {
@@ -75,6 +77,7 @@ func TestCachedRubyGemsHandlerDeniesUnallowedHost(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/rubygems/versions", nil)
 	req = withScope(req, registryTestScope("github.com"))
+	req, obs := withGatewayRequestObservability(req)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 
@@ -84,6 +87,7 @@ func TestCachedRubyGemsHandlerDeniesUnallowedHost(t *testing.T) {
 	if got := w.Header().Get(reasonCodeHeader); got != reasonHostNotAllowed {
 		t.Fatalf("expected reason %s, got %q", reasonHostNotAllowed, got)
 	}
+	requireGatewayRequestDecision(t, obs, gatewayActionDeny, reasonHostNotAllowed)
 }
 
 func TestCachedRubyGemsHandlerRejectsPost(t *testing.T) {
@@ -101,12 +105,14 @@ func TestCachedRubyGemsHandlerRejectsPost(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/rubygems/versions", nil)
 	req = withScope(req, registryTestScope("rubygems.org"))
+	req, obs := withGatewayRequestObservability(req)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 
 	if w.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("expected 405, got %d", w.Code)
 	}
+	requireGatewayRequestDecision(t, obs, gatewayActionDeny, reasonMethodNotAllowed)
 }
 
 func TestCachedRubyGemsHandlerNoScope(t *testing.T) {
@@ -138,10 +144,12 @@ func TestCachedRubyGemsHandlerUnavailable(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/rubygems/versions", nil)
 	req = withScope(req, registryTestScope("rubygems.org"))
+	req, obs := withGatewayRequestObservability(req)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 
 	if w.Code != http.StatusBadGateway {
 		t.Fatalf("expected 502, got %d", w.Code)
 	}
+	requireGatewayRequestDecision(t, obs, gatewayActionDeny, reasonUpstreamError)
 }

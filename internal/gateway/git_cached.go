@@ -44,14 +44,17 @@ func (h *cachedGitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if !gitRequestUsesDotGit(repoPath) {
 		if h.fallback == nil {
+			setGatewayRequestDecision(r.Context(), gatewayActionDeny, reasonUpstreamError)
 			writeReasonError(w, http.StatusBadGateway, reasonUpstreamError, "git cache fallback is not configured for non-.git remotes")
 			return
 		}
+		setGatewayRequestDecision(r.Context(), gatewayActionAllow, reasonFallback)
 		h.fallback.ServeHTTP(w, r)
 		return
 	}
 
 	if !scope.Policy.Allows(upstreamHost, 443) {
+		setGatewayRequestDecision(r.Context(), gatewayActionDeny, reasonHostNotAllowed)
 		h.auditLog(r.Context(), scope.SandboxID, upstreamHost, repoPath, gatewayActionDeny, reasonHostNotAllowed)
 		writeReasonError(w, http.StatusForbidden, reasonHostNotAllowed, "upstream host is not allowed by sandbox policy")
 		return
@@ -59,6 +62,7 @@ func (h *cachedGitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Classify the request to reject pushes before hitting the cache layer.
 	if _, err := classifyGitRequest(r.Method, repoPath, r.URL.RawQuery); err != nil {
+		setGatewayRequestDecision(r.Context(), gatewayActionDeny, reasonMethodNotAllowed)
 		h.auditLog(r.Context(), scope.SandboxID, upstreamHost, repoPath, gatewayActionDeny, reasonMethodNotAllowed)
 		writeReasonError(w, http.StatusForbidden, reasonMethodNotAllowed, err.Error())
 		return
@@ -68,18 +72,22 @@ func (h *cachedGitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if errors.Is(err, errGitHostNotConfiguredForCaching) {
 			if h.fallback == nil {
+				setGatewayRequestDecision(r.Context(), gatewayActionDeny, reasonUpstreamError)
 				h.auditLog(r.Context(), scope.SandboxID, upstreamHost, repoPath, gatewayActionDeny, reasonUpstreamError)
 				writeReasonError(w, http.StatusBadGateway, reasonUpstreamError, fmt.Sprintf("git cache fallback is not configured for %s", upstreamHost))
 				return
 			}
+			setGatewayRequestDecision(r.Context(), gatewayActionAllow, reasonFallback)
 			h.auditLog(r.Context(), scope.SandboxID, upstreamHost, repoPath, gatewayActionAllow, reasonFallback)
 			h.fallback.ServeHTTP(w, r)
 			return
 		}
+		setGatewayRequestDecision(r.Context(), gatewayActionDeny, reasonUpstreamError)
 		h.auditLog(r.Context(), scope.SandboxID, upstreamHost, repoPath, gatewayActionDeny, reasonUpstreamError)
 		writeReasonError(w, http.StatusBadGateway, reasonUpstreamError, fmt.Sprintf("git cache handler unavailable for %s: %v", upstreamHost, err))
 		return
 	}
+	setGatewayRequestDecision(r.Context(), gatewayActionAllow, reasonCached)
 	h.auditLog(r.Context(), scope.SandboxID, upstreamHost, repoPath, gatewayActionAllow, reasonCached)
 
 	// content-cache's git handler expects paths like /{host}/{repo}.git/...

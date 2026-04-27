@@ -423,8 +423,12 @@ func (s *Server) tracingMiddleware(next http.Handler) http.Handler {
 		if reasonCode != "" {
 			span.SetAttributes(attribute.String(observability.AttrReasonCode, reasonCode))
 		}
+		action := strings.TrimSpace(requestObs.action)
+		if action != "" {
+			span.SetAttributes(attribute.String(observability.AttrGatewayAction, action))
+		}
 		if metrics := s.gatewayMetrics(); metrics != nil {
-			metrics.RecordRequest(ctx, service, requestObs.action, reasonCode, status.statusCode, time.Since(startedAt))
+			metrics.RecordRequest(ctx, service, action, reasonCode, status.statusCode, time.Since(startedAt))
 		}
 		if status.statusCode >= http.StatusBadRequest {
 			span.SetStatus(codes.Error, http.StatusText(status.statusCode))

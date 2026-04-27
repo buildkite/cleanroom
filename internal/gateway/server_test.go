@@ -199,7 +199,14 @@ func TestTracingMiddlewareEmitsGatewayMetrics(t *testing.T) {
 		_ = meterProvider.Shutdown(context.Background())
 	}()
 
-	srv := NewServer(ServerConfig{Registry: reg, MeterProvider: meterProvider})
+	recorder := tracetest.NewSpanRecorder()
+	tracerProvider := sdktrace.NewTracerProvider()
+	tracerProvider.RegisterSpanProcessor(recorder)
+	defer func() {
+		_ = tracerProvider.Shutdown(context.Background())
+	}()
+
+	srv := NewServer(ServerConfig{Registry: reg, TracerProvider: tracerProvider, MeterProvider: meterProvider})
 	handler := srv.identityMiddleware(srv.pathMiddleware(srv.tracingMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		setGatewayRequestDecision(r.Context(), "allow", "proxied")
 		w.WriteHeader(http.StatusNoContent)
@@ -225,6 +232,21 @@ func TestTracingMiddlewareEmitsGatewayMetrics(t *testing.T) {
 		"service": "git",
 		"action":  "allow",
 	}, 1)
+
+	spans := recorder.Ended()
+	var gatewaySpan sdktrace.ReadOnlySpan
+	for _, span := range spans {
+		if span.Name() == "cleanroom.gateway.git.request" {
+			gatewaySpan = span
+			break
+		}
+	}
+	if gatewaySpan == nil {
+		t.Fatalf("expected gateway span, got spans %#v", spans)
+	}
+	if got := spanAttributeValue(gatewaySpan, "cleanroom.gateway.action"); got != "allow" {
+		t.Fatalf("expected cleanroom.gateway.action=allow, got %q", got)
+	}
 }
 
 func TestGatewayStatusRecorderUnwrapsResponseWriterForResponseController(t *testing.T) {
