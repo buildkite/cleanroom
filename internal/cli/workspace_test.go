@@ -217,11 +217,70 @@ func TestWorkspaceCopyResetsGitCheckoutWhenLocalRepoClean(t *testing.T) {
 	}
 }
 
-func TestWorkspaceCopyDryRunDoesNotResetCleanGitCheckout(t *testing.T) {
+func TestResolveExecutionSandboxReturnsSandboxWorkspaceRootAfterGitCopyInExistingSandbox(t *testing.T) {
 	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
 
 	adapter := &integrationAdapter{}
 	host, _ := startIntegrationServer(t, adapter)
+	head, err := gitOutput(repoDir, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatalf("resolve repository HEAD: %v", err)
+	}
+	branch, err := gitOutput(repoDir, "branch", "--show-current")
+	if err != nil {
+		t.Fatalf("resolve repository branch: %v", err)
+	}
+	sandboxID := createWorkspaceCopyTestSandboxWithRepositoryCommitBranch(t, host, "/sandbox-workspace", head, branch)
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+	}
+
+	client := mustNewControlClient(t, host)
+	target, err := resolveExecutionSandbox(
+		context.Background(),
+		client,
+		&runtimeContext{
+			CWD:           repoDir,
+			Loader:        workspaceCopyRepositoryLoader(),
+			Config:        runtimeconfig.Config{},
+			Observability: newTestObservability(t),
+		},
+		repoDir,
+		host,
+		"",
+		sandboxID,
+		"",
+		"",
+		0,
+		false,
+		repositoryOverrideFlags{},
+		workspaceCopyFlags{Copy: true},
+	)
+	if err != nil {
+		t.Fatalf("resolveExecutionSandbox returned error: %v", err)
+	}
+	if target.Repository == nil {
+		t.Fatal("expected returned execution sandbox to include repository checkout")
+	}
+	if got, want := target.Repository.DestinationDir, "/sandbox-workspace"; got != want {
+		t.Fatalf("unexpected returned repository destination: got %q want %q", got, want)
+	}
+}
+
+func TestWorkspaceCopyDryRunReportsCleanGitResetWithoutExecuting(t *testing.T) {
+	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
+
+	adapter := &integrationAdapter{}
+	host, _ := startIntegrationServer(t, adapter)
+	head, err := gitOutput(repoDir, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatalf("resolve repository HEAD: %v", err)
+	}
+	branch, err := gitOutput(repoDir, "branch", "--show-current")
+	if err != nil {
+		t.Fatalf("resolve repository branch: %v", err)
+	}
+	sandboxID := createWorkspaceCopyTestSandboxWithRepositoryCommitBranch(t, host, "/sandbox-workspace", head, branch)
 	var (
 		mu       sync.Mutex
 		commands [][]string
@@ -239,7 +298,7 @@ func TestWorkspaceCopyDryRunDoesNotResetCleanGitCheckout(t *testing.T) {
 		clientFlags: clientFlags{Host: host},
 		Chdir:       repoDir,
 		DryRun:      true,
-		SandboxID:   "cr_dryrun",
+		SandboxID:   sandboxID,
 	}
 	if err := cmd.Run(&runtimeContext{
 		CWD:           repoDir,
@@ -251,8 +310,8 @@ func TestWorkspaceCopyDryRunDoesNotResetCleanGitCheckout(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("WorkspaceCopyCommand.Run returned error: %v", err)
 	}
-	if got := stdoutText(); got != "" {
-		t.Fatalf("expected clean dry-run to print no planned changes, got %q", got)
+	if got, want := stdoutText(), "reset\t/sandbox-workspace\n"; got != want {
+		t.Fatalf("unexpected clean dry-run plan: got %q want %q", got, want)
 	}
 	mu.Lock()
 	defer mu.Unlock()

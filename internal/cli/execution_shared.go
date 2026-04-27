@@ -102,6 +102,16 @@ func resolveExecutionSandbox(
 			if err != nil {
 				return nil, err
 			}
+		} else if existingSandboxID != "" {
+			effectiveRepository, _, err := resolveGitWorkspaceCheckout(callCtx, client, workspaceCopyOptions{
+				SandboxID:  sandboxID,
+				Repository: repository,
+			})
+			if err != nil {
+				return nil, err
+			}
+			repository = effectiveRepository
+			workspaceRoot = repository.DestinationDir
 		}
 		if !changesetAppliedDuringCreate {
 			if err := copyWorkspaceToSandbox(callCtx, ctx, client, workspaceCopyOptions{

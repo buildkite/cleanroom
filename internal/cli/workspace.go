@@ -91,7 +91,14 @@ func copyGitWorkspaceToSandbox(callCtx context.Context, ctx *runtimeContext, cli
 	}
 	if changeset == nil {
 		if opts.DryRun {
-			return nil
+			if !opts.ForceGitReset {
+				return nil
+			}
+			_, checkout, err := resolveGitWorkspaceCheckout(callCtx, client, opts)
+			if err != nil {
+				return err
+			}
+			return printWorkspacePlan(runtimeStdout(ctx), gitWorkspacePlan(checkout.DestinationDir, nil, true))
 		}
 		if opts.ForceGitReset {
 			effectiveRepository, checkout, err := resolveGitWorkspaceCheckout(callCtx, client, opts)
@@ -107,7 +114,7 @@ func copyGitWorkspaceToSandbox(callCtx context.Context, ctx *runtimeContext, cli
 		return err
 	}
 	if opts.DryRun {
-		return printWorkspacePlan(runtimeStdout(ctx), gitWorkspacePlan(checkout.DestinationDir, changeset.Files))
+		return printWorkspacePlan(runtimeStdout(ctx), gitWorkspacePlan(checkout.DestinationDir, changeset.Files, opts.ForceGitReset))
 	}
 
 	command := repositorychangeset.ApplyCommand(checkout, changeset)
@@ -162,8 +169,14 @@ func runWorkspaceExecution(callCtx context.Context, ctx *runtimeContext, client 
 	return streamWorkspaceExecutionWithInput(callCtx, ctx, client, sandboxID, executionID, input)
 }
 
-func gitWorkspacePlan(destination string, files []repositorychangeset.File) []workspacePlanEntry {
-	entries := make([]workspacePlanEntry, 0, len(files))
+func gitWorkspacePlan(destination string, files []repositorychangeset.File, reset bool) []workspacePlanEntry {
+	entries := make([]workspacePlanEntry, 0, len(files)+1)
+	if reset {
+		entries = append(entries, workspacePlanEntry{
+			Action: "reset",
+			Path:   workspaceRemotePath(destination, ""),
+		})
+	}
 	for _, file := range files {
 		action := "write"
 		if file.Deleted {
