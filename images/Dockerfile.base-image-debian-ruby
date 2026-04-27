@@ -11,6 +11,7 @@ RUN apt-get update \
       default-libmysqlclient-dev \
       git \
       iproute2 \
+      libatomic1 \
       libffi-dev \
       libgdbm-dev \
       libncurses-dev \

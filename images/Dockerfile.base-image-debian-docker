@@ -10,6 +10,7 @@ RUN apt-get update \
       docker.io \
       git \
       iproute2 \
+      libatomic1 \
       openssh-client \
       strace \
     && rm -rf /var/lib/apt/lists/*
