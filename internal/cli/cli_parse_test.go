@@ -330,6 +330,54 @@ func TestTopLevelCreateParsesDangerouslyAllowAll(t *testing.T) {
 	}
 }
 
+func TestTopLevelCommandsParseCopyFlag(t *testing.T) {
+	t.Run("create", func(t *testing.T) {
+		c := &CLI{}
+		parser := newParserForTest(t, c)
+		if _, err := parser.Parse([]string{"create", "--copy"}); err != nil {
+			t.Fatalf("parse create --copy returned error: %v", err)
+		}
+		if !c.Create.Copy {
+			t.Fatal("expected create copy flag to be set")
+		}
+	})
+
+	t.Run("exec", func(t *testing.T) {
+		c := &CLI{}
+		parser := newParserForTest(t, c)
+		if _, err := parser.Parse([]string{"exec", "--copy", "--", "echo", "ok"}); err != nil {
+			t.Fatalf("parse exec --copy returned error: %v", err)
+		}
+		if !c.Exec.Copy {
+			t.Fatal("expected exec copy flag to be set")
+		}
+	})
+
+	t.Run("console", func(t *testing.T) {
+		c := &CLI{}
+		parser := newParserForTest(t, c)
+		if _, err := parser.Parse([]string{"console", "--copy"}); err != nil {
+			t.Fatalf("parse console --copy returned error: %v", err)
+		}
+		if !c.Console.Copy {
+			t.Fatal("expected console copy flag to be set")
+		}
+	})
+}
+
+func TestIncludeLocalChangesFlagRejected(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	_, err := parser.Parse([]string{"create", "--include-local-changes"})
+	if err == nil {
+		t.Fatal("expected removed --include-local-changes flag to be rejected")
+	}
+	if !strings.Contains(err.Error(), "unknown flag") || !strings.Contains(err.Error(), "--include-local-changes") {
+		t.Fatalf("expected unknown flag parse error, got %v", err)
+	}
+}
+
 func TestExecParsesImageOverride(t *testing.T) {
 	c := &CLI{}
 	parser := newParserForTest(t, c)

@@ -24,7 +24,7 @@ type ExecCommand struct {
 	From    string `name:"from" help:"Create the sandbox from an existing snapshot ID"`
 	Image   string `help:"Override sandbox image ref for newly created sandboxes (tag, digest, or local Docker image)"`
 	repositoryOverrideFlags
-	repositoryChangesetFlags
+	workspaceCopyFlags
 	Keep                bool     `help:"Keep a newly created sandbox after the command completes"`
 	DangerouslyAllowAll bool     `name:"dangerously-allow-all" help:"Disable network egress filtering for a newly created sandbox"`
 	Env                 []string `short:"e" name:"env" help:"Set guest environment variables; use KEY to inherit from the local environment or KEY=VALUE to set an explicit value"`
@@ -39,7 +39,7 @@ type ExecCommand struct {
 }
 
 func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
-	if err := validateExecutionSandboxArgs(e.Chdir, e.In, e.From, e.Keep, e.DangerouslyAllowAll, e.repositoryOverrideFlags, e.repositoryChangesetFlags); err != nil {
+	if err := validateExecutionSandboxArgs(e.Chdir, e.In, e.From, e.Keep, e.DangerouslyAllowAll, e.repositoryOverrideFlags, e.workspaceCopyFlags); err != nil {
 		return err
 	}
 	if e.TTY && e.NoStdin {
@@ -99,7 +99,7 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 		return err
 	}
 
-	target, err := resolveExecutionSandbox(rootCtx, client, ctx, cwd, host, e.Backend, e.In, e.From, e.Image, e.LaunchSeconds, e.DangerouslyAllowAll, e.repositoryOverrideFlags, e.repositoryChangesetFlags)
+	target, err := resolveExecutionSandbox(rootCtx, client, ctx, cwd, host, e.Backend, e.In, e.From, e.Image, e.LaunchSeconds, e.DangerouslyAllowAll, e.repositoryOverrideFlags, e.workspaceCopyFlags)
 	if err != nil {
 		if strings.TrimSpace(e.From) != "" {
 			err = explainSnapshotRuntimeDisabledError(err, ctx)

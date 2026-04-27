@@ -49,25 +49,25 @@ func resolveExecutionSandbox(
 	launchSeconds int64,
 	dangerouslyAllowAll bool,
 	repositoryOverride repositoryOverrideFlags,
-	changesetFlags repositoryChangesetFlags,
+	copyFlags workspaceCopyFlags,
 ) (*executionSandbox, error) {
 	existingSandboxID = strings.TrimSpace(existingSandboxID)
 	fromSnapshot = strings.TrimSpace(fromSnapshot)
 
 	var repository *resolvedRepositoryCheckout
-	localChanges := repositoryLocalChanges{}
+	var changeset *cleanroomv1.RepositoryChangeset
 	if existingSandboxID == "" && fromSnapshot == "" {
 		var err error
 		repository, err = resolveRepositoryCheckoutWithOverride(cwd, ctx.Loader, repositoryOverride)
 		if err != nil {
 			return nil, err
 		}
-		localChanges, err = resolveRepositoryLocalChanges(repository, changesetFlags.IncludeLocalChanges)
+		changeset, err = resolveRepositoryChangeset(repository, copyFlags.Copy)
 		if err != nil {
 			return nil, err
 		}
 	}
-	warnDirtyRepositoryCheckout(repository, localChanges.Changeset != nil || localChanges.CommitBundle != nil)
+	warnDirtyRepositoryCheckout(repository, changeset != nil)
 
 	sandboxID, createdSandbox, err := ensureSandboxID(
 		callCtx,
@@ -82,7 +82,7 @@ func resolveExecutionSandbox(
 		launchSeconds,
 		dangerouslyAllowAll,
 		repository,
-		localChanges,
+		changeset,
 	)
 	if err != nil {
 		return nil, err
@@ -95,7 +95,7 @@ func resolveExecutionSandbox(
 	}, nil
 }
 
-func ensureSandboxID(callCtx context.Context, client *controlclient.Client, loader policyLoader, cwd, host, backendName, existingSandboxID, fromSnapshot, imageRefOverride string, launchSeconds int64, dangerouslyAllowAll bool, repository *resolvedRepositoryCheckout, localChanges repositoryLocalChanges) (string, bool, error) {
+func ensureSandboxID(callCtx context.Context, client *controlclient.Client, loader policyLoader, cwd, host, backendName, existingSandboxID, fromSnapshot, imageRefOverride string, launchSeconds int64, dangerouslyAllowAll bool, repository *resolvedRepositoryCheckout, changeset *cleanroomv1.RepositoryChangeset) (string, bool, error) {
 	sandboxID := strings.TrimSpace(existingSandboxID)
 	fromSnapshot = strings.TrimSpace(fromSnapshot)
 	if sandboxID != "" {
@@ -135,7 +135,7 @@ func ensureSandboxID(callCtx context.Context, client *controlclient.Client, load
 		return sandboxID, true, nil
 	}
 
-	sandboxID, _, err := createTopLevelSandbox(callCtx, client, loader, cwd, host, backendName, imageRefOverride, launchSeconds, dangerouslyAllowAll, repository, localChanges)
+	sandboxID, _, err := createTopLevelSandbox(callCtx, client, loader, cwd, host, backendName, imageRefOverride, launchSeconds, dangerouslyAllowAll, repository, changeset)
 	if err != nil {
 		return "", false, err
 	}
@@ -202,7 +202,7 @@ func executionCommandSummary(command []string) string {
 	return summary
 }
 
-func validateExecutionSandboxArgs(chdir, existingSandboxID, fromSnapshot string, keep, dangerouslyAllowAll bool, repositoryOverride repositoryOverrideFlags, changesetFlags repositoryChangesetFlags) error {
+func validateExecutionSandboxArgs(chdir, existingSandboxID, fromSnapshot string, keep, dangerouslyAllowAll bool, repositoryOverride repositoryOverrideFlags, copyFlags workspaceCopyFlags) error {
 	sandboxID := strings.TrimSpace(existingSandboxID)
 	snapshotID := strings.TrimSpace(fromSnapshot)
 	hasChdir := strings.TrimSpace(chdir) != ""
@@ -210,7 +210,7 @@ func validateExecutionSandboxArgs(chdir, existingSandboxID, fromSnapshot string,
 	if _, err := repositoryOverride.resolve(".", nil); err != nil {
 		return err
 	}
-	if err := changesetFlags.validate(existingSandboxID, fromSnapshot, repositoryOverride); err != nil {
+	if err := copyFlags.validate(existingSandboxID, fromSnapshot, repositoryOverride); err != nil {
 		return err
 	}
 
