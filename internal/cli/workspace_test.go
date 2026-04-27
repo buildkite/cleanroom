@@ -38,7 +38,15 @@ func TestWorkspaceCopyAppliesGitChangeset(t *testing.T) {
 
 	adapter := &integrationAdapter{}
 	host, _ := startIntegrationServer(t, adapter)
-	sandboxID := createWorkspaceCopyTestSandbox(t, host, workspaceCopyTestPolicy())
+	head, err := gitOutput(repoDir, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatalf("resolve repository HEAD: %v", err)
+	}
+	branch, err := gitOutput(repoDir, "branch", "--show-current")
+	if err != nil {
+		t.Fatalf("resolve repository branch: %v", err)
+	}
+	sandboxID := createWorkspaceCopyTestSandboxWithRepositoryCommitBranch(t, host, "/sandbox-workspace", head, branch)
 
 	var (
 		mu       sync.Mutex
@@ -100,12 +108,18 @@ func TestWorkspaceCopyAppliesGitChangeset(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(commands) < 2 {
-		t.Fatalf("expected repository bootstrap and changeset apply commands, got %d", len(commands))
+	if len(commands) < 1 {
+		t.Fatalf("expected changeset apply command, got %d", len(commands))
 	}
 	applyCommand := strings.Join(commands[len(commands)-1], " ")
 	if !strings.Contains(applyCommand, `git -C "$dest" reset --hard "$base_commit"`) {
 		t.Fatalf("expected workspace copy to reset the checkout before applying, got %q", applyCommand)
+	}
+	if !strings.Contains(applyCommand, "dest='/sandbox-workspace'") {
+		t.Fatalf("expected workspace copy to target sandbox-recorded checkout root, got %q", applyCommand)
+	}
+	if strings.Contains(applyCommand, "dest='/workspace'") {
+		t.Fatalf("expected workspace copy not to use stale local policy checkout root, got %q", applyCommand)
 	}
 	if got, want := len(patches), 1; got != want {
 		t.Fatalf("expected one attached changeset patch, got %d", got)
@@ -123,7 +137,15 @@ func TestWorkspaceCopyResetsGitCheckoutWhenLocalRepoClean(t *testing.T) {
 
 	adapter := &integrationAdapter{}
 	host, _ := startIntegrationServer(t, adapter)
-	sandboxID := createWorkspaceCopyTestSandbox(t, host, workspaceCopyTestPolicy())
+	head, err := gitOutput(repoDir, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatalf("resolve repository HEAD: %v", err)
+	}
+	branch, err := gitOutput(repoDir, "branch", "--show-current")
+	if err != nil {
+		t.Fatalf("resolve repository branch: %v", err)
+	}
+	sandboxID := createWorkspaceCopyTestSandboxWithRepositoryCommitBranch(t, host, "/sandbox-workspace", head, branch)
 
 	var (
 		mu          sync.Mutex
@@ -174,12 +196,18 @@ func TestWorkspaceCopyResetsGitCheckoutWhenLocalRepoClean(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(commands) < 2 {
-		t.Fatalf("expected repository bootstrap and checkout reset commands, got %d", len(commands))
+	if len(commands) < 1 {
+		t.Fatalf("expected checkout reset command, got %d", len(commands))
 	}
 	resetCommand := strings.Join(commands[len(commands)-1], " ")
 	if !strings.Contains(resetCommand, `git -C "$dest" reset --hard "$base_commit"`) {
 		t.Fatalf("expected clean workspace copy to reset the checkout, got %q", resetCommand)
+	}
+	if !strings.Contains(resetCommand, "dest='/sandbox-workspace'") {
+		t.Fatalf("expected clean workspace copy to target sandbox-recorded checkout root, got %q", resetCommand)
+	}
+	if strings.Contains(resetCommand, "dest='/workspace'") {
+		t.Fatalf("expected clean workspace copy not to use stale local policy checkout root, got %q", resetCommand)
 	}
 	if strings.Contains(resetCommand, `git -C "$dest" apply --binary`) {
 		t.Fatalf("expected clean workspace copy to avoid applying an empty patch, got %q", resetCommand)
@@ -334,6 +362,63 @@ func TestWorkspaceCopyUsesRawArchiveForNonGitWorkspace(t *testing.T) {
 	}
 }
 
+func TestRawWorkspaceCopyFollowsSymlinkedSourceRoot(t *testing.T) {
+	realRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(realRoot, "app"), 0o755); err != nil {
+		t.Fatalf("create app dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(realRoot, "app/main.txt"), []byte("payload\n"), 0o644); err != nil {
+		t.Fatalf("write workspace file: %v", err)
+	}
+
+	linkRoot := filepath.Join(t.TempDir(), "workspace-link")
+	if err := os.Symlink(realRoot, linkRoot); err != nil {
+		t.Fatalf("create workspace symlink: %v", err)
+	}
+
+	entries, err := rawWorkspacePlan(linkRoot, "/workspace")
+	if err != nil {
+		t.Fatalf("rawWorkspacePlan returned error: %v", err)
+	}
+	foundPlanEntry := false
+	for _, entry := range entries {
+		if entry.Action == "write" && entry.Path == "/workspace/app/main.txt" {
+			foundPlanEntry = true
+			break
+		}
+	}
+	if !foundPlanEntry {
+		t.Fatalf("expected symlinked workspace root plan to include app/main.txt, got %#v", entries)
+	}
+
+	var archive bytes.Buffer
+	if err := writeRawWorkspaceTar(&archive, linkRoot); err != nil {
+		t.Fatalf("writeRawWorkspaceTar returned error: %v", err)
+	}
+	tr := tar.NewReader(&archive)
+	files := map[string]string{}
+	for {
+		header, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("read archive: %v", err)
+		}
+		if header.Typeflag != tar.TypeReg {
+			continue
+		}
+		data, err := io.ReadAll(tr)
+		if err != nil {
+			t.Fatalf("read archived file: %v", err)
+		}
+		files[header.Name] = string(data)
+	}
+	if got, want := files["app/main.txt"], "payload\n"; got != want {
+		t.Fatalf("unexpected archived file content: got %q want %q; files=%#v", got, want, files)
+	}
+}
+
 func TestWorkspaceCopyRejectsUnsafeRawDestinationRoot(t *testing.T) {
 	sourceRoot := t.TempDir()
 	err := copyRawWorkspaceToSandbox(context.Background(), &runtimeContext{}, nil, workspaceCopyOptions{
@@ -425,6 +510,10 @@ func createWorkspaceCopyTestSandbox(t *testing.T, host string, compiled *cleanro
 }
 
 func createWorkspaceCopyTestSandboxWithRepository(t *testing.T, host, destination string) string {
+	return createWorkspaceCopyTestSandboxWithRepositoryCommitBranch(t, host, destination, "0123456789abcdef0123456789abcdef01234567", "")
+}
+
+func createWorkspaceCopyTestSandboxWithRepositoryCommitBranch(t *testing.T, host, destination, commit, branch string) string {
 	t.Helper()
 
 	client := mustNewControlClient(t, host)
@@ -433,8 +522,9 @@ func createWorkspaceCopyTestSandboxWithRepository(t *testing.T, host, destinatio
 		Policy:  workspaceCopyTestPolicy(),
 		RepositoryCheckout: &cleanroomv1.RepositoryCheckout{
 			RemoteUrl:      "https://github.com/buildkite/cleanroom.git",
-			CommitSha:      "0123456789abcdef0123456789abcdef01234567",
+			CommitSha:      strings.TrimSpace(commit),
 			DestinationDir: destination,
+			Branch:         strings.TrimSpace(branch),
 		},
 	})
 	if err != nil {
