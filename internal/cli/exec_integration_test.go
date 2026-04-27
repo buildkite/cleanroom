@@ -145,10 +145,12 @@ func (a *snapshotIntegrationAdapter) TerminateSandbox(ctx context.Context, sandb
 
 type integrationLoader struct{}
 
+const integrationPolicyImageRef = "ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
 func (integrationLoader) LoadAndCompile(_ string) (*policy.CompiledPolicy, string, error) {
 	return &policy.CompiledPolicy{
 		Version:        1,
-		ImageRef:       "ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		ImageRef:       integrationPolicyImageRef,
 		ImageDigest:    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 		NetworkDefault: "deny",
 	}, "/repo/cleanroom.yaml", nil
@@ -526,6 +528,34 @@ func TestExecIntegrationStreamsOutput(t *testing.T) {
 	}
 	if strings.Index(outcome.stdout, "one\n") > strings.Index(outcome.stdout, "two\n") {
 		t.Fatalf("expected ordered stdout chunks, got %q", outcome.stdout)
+	}
+}
+
+func TestExecIntegrationDangerouslyAllowAllSetsAllowNetworkDefault(t *testing.T) {
+	adapter := &snapshotIntegrationAdapter{}
+	host, _ := startIntegrationServer(t, adapter)
+	cwd := t.TempDir()
+
+	outcome := runExecWithCapture(ExecCommand{
+		clientFlags:         clientFlags{Host: host},
+		Chdir:               cwd,
+		DangerouslyAllowAll: true,
+		Command:             []string{"echo", "ok"},
+	}, runtimeContext{
+		CWD:    cwd,
+		Loader: integrationLoader{},
+	})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err != nil {
+		t.Fatalf("ExecCommand.Run returned error: %v", outcome.err)
+	}
+	if adapter.provisionReq.Policy == nil {
+		t.Fatal("expected provisioned policy")
+	}
+	if got, want := adapter.provisionReq.Policy.NetworkDefault, "allow"; got != want {
+		t.Fatalf("unexpected provisioned network default: got %q want %q", got, want)
 	}
 }
 

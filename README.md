@@ -213,6 +213,13 @@ cleanroom console -- bash
 cleanroom exec --tty -- bash
 ```
 
+Temporarily disable egress filtering for a newly created repository sandbox:
+
+```bash
+cleanroom console --dangerously-allow-all -- bash
+cleanroom exec --dangerously-allow-all -- npm test
+```
+
 ## Policy file
 
 A `cleanroom.yaml` in your repo defines the sandbox policy. Cleanroom also checks `.buildkite/cleanroom.yaml` as a fallback.

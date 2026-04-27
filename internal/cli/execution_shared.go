@@ -47,6 +47,7 @@ func resolveExecutionSandbox(
 	ctx *runtimeContext,
 	cwd, host, backendName, existingSandboxID, fromSnapshot, imageRefOverride string,
 	launchSeconds int64,
+	dangerouslyAllowAll bool,
 	repositoryOverride repositoryOverrideFlags,
 	changesetFlags repositoryChangesetFlags,
 ) (*executionSandbox, error) {
@@ -79,6 +80,7 @@ func resolveExecutionSandbox(
 		fromSnapshot,
 		imageRefOverride,
 		launchSeconds,
+		dangerouslyAllowAll,
 		repository,
 		changeset,
 	)
@@ -93,7 +95,7 @@ func resolveExecutionSandbox(
 	}, nil
 }
 
-func ensureSandboxID(callCtx context.Context, client *controlclient.Client, loader policyLoader, cwd, host, backendName, existingSandboxID, fromSnapshot, imageRefOverride string, launchSeconds int64, repository *resolvedRepositoryCheckout, changeset *cleanroomv1.RepositoryChangeset) (string, bool, error) {
+func ensureSandboxID(callCtx context.Context, client *controlclient.Client, loader policyLoader, cwd, host, backendName, existingSandboxID, fromSnapshot, imageRefOverride string, launchSeconds int64, dangerouslyAllowAll bool, repository *resolvedRepositoryCheckout, changeset *cleanroomv1.RepositoryChangeset) (string, bool, error) {
 	sandboxID := strings.TrimSpace(existingSandboxID)
 	fromSnapshot = strings.TrimSpace(fromSnapshot)
 	if sandboxID != "" {
@@ -102,6 +104,9 @@ func ensureSandboxID(callCtx context.Context, client *controlclient.Client, load
 		}
 		if strings.TrimSpace(imageRefOverride) != "" {
 			return "", false, errors.New("--image cannot be used with --in")
+		}
+		if dangerouslyAllowAll {
+			return "", false, errors.New("--dangerously-allow-all cannot be used with --in")
 		}
 		return sandboxID, false, nil
 	}
@@ -115,6 +120,9 @@ func ensureSandboxID(callCtx context.Context, client *controlclient.Client, load
 		if strings.TrimSpace(backendName) != "" {
 			return "", false, errors.New("--backend cannot be used with --from")
 		}
+		if dangerouslyAllowAll {
+			return "", false, errors.New("--dangerously-allow-all cannot be used with --from")
+		}
 		_, sandboxID, err := createSandboxWithProgress(callCtx, os.Stderr, client, &cleanroomv1.CreateSandboxRequest{
 			Options: &cleanroomv1.SandboxOptions{
 				LaunchSeconds: launchSeconds,
@@ -127,7 +135,7 @@ func ensureSandboxID(callCtx context.Context, client *controlclient.Client, load
 		return sandboxID, true, nil
 	}
 
-	sandboxID, _, err := createTopLevelSandbox(callCtx, client, loader, cwd, host, backendName, imageRefOverride, launchSeconds, repository, changeset)
+	sandboxID, _, err := createTopLevelSandbox(callCtx, client, loader, cwd, host, backendName, imageRefOverride, launchSeconds, dangerouslyAllowAll, repository, changeset)
 	if err != nil {
 		return "", false, err
 	}
@@ -194,7 +202,7 @@ func executionCommandSummary(command []string) string {
 	return summary
 }
 
-func validateExecutionSandboxArgs(chdir, existingSandboxID, fromSnapshot string, keep bool, repositoryOverride repositoryOverrideFlags, changesetFlags repositoryChangesetFlags) error {
+func validateExecutionSandboxArgs(chdir, existingSandboxID, fromSnapshot string, keep, dangerouslyAllowAll bool, repositoryOverride repositoryOverrideFlags, changesetFlags repositoryChangesetFlags) error {
 	sandboxID := strings.TrimSpace(existingSandboxID)
 	snapshotID := strings.TrimSpace(fromSnapshot)
 	hasChdir := strings.TrimSpace(chdir) != ""
@@ -211,6 +219,12 @@ func validateExecutionSandboxArgs(chdir, existingSandboxID, fromSnapshot string,
 	}
 	if sandboxID != "" && keep {
 		return errors.New("--keep cannot be used with --in")
+	}
+	if sandboxID != "" && dangerouslyAllowAll {
+		return errors.New("--dangerously-allow-all cannot be used with --in")
+	}
+	if snapshotID != "" && dangerouslyAllowAll {
+		return errors.New("--dangerously-allow-all cannot be used with --from")
 	}
 	if sandboxID != "" && hasChdir {
 		return errors.New("--chdir cannot be used with --in")

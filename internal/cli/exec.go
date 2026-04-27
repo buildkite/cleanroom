@@ -25,12 +25,13 @@ type ExecCommand struct {
 	Image   string `help:"Override sandbox image ref for newly created sandboxes (tag, digest, or local Docker image)"`
 	repositoryOverrideFlags
 	repositoryChangesetFlags
-	Keep           bool     `help:"Keep a newly created sandbox after the command completes"`
-	Env            []string `short:"e" name:"env" help:"Set guest environment variables; use KEY to inherit from the local environment or KEY=VALUE to set an explicit value"`
-	TTY            bool     `name:"tty" help:"Allocate a tty and attach through the interactive transport; stdout and stderr merge into a single stream"`
-	NoStdin        bool     `short:"n" name:"no-stdin" aliases:"stdin-eof" help:"Close stdin immediately instead of attaching it"`
-	PrintSandboxID bool     `name:"print-sandbox-id" help:"Print resolved sandbox_id=<id> to stderr before streaming output"`
-	PrintTraceID   bool     `name:"print-trace-id" help:"Print trace_id=<id> to stderr after a successful execution when available"`
+	Keep                bool     `help:"Keep a newly created sandbox after the command completes"`
+	DangerouslyAllowAll bool     `name:"dangerously-allow-all" help:"Disable network egress filtering for a newly created sandbox"`
+	Env                 []string `short:"e" name:"env" help:"Set guest environment variables; use KEY to inherit from the local environment or KEY=VALUE to set an explicit value"`
+	TTY                 bool     `name:"tty" help:"Allocate a tty and attach through the interactive transport; stdout and stderr merge into a single stream"`
+	NoStdin             bool     `short:"n" name:"no-stdin" aliases:"stdin-eof" help:"Close stdin immediately instead of attaching it"`
+	PrintSandboxID      bool     `name:"print-sandbox-id" help:"Print resolved sandbox_id=<id> to stderr before streaming output"`
+	PrintTraceID        bool     `name:"print-trace-id" help:"Print trace_id=<id> to stderr after a successful execution when available"`
 
 	LaunchSeconds int64 `help:"VM boot/guest-agent readiness timeout in seconds"`
 
@@ -38,7 +39,7 @@ type ExecCommand struct {
 }
 
 func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
-	if err := validateExecutionSandboxArgs(e.Chdir, e.In, e.From, e.Keep, e.repositoryOverrideFlags, e.repositoryChangesetFlags); err != nil {
+	if err := validateExecutionSandboxArgs(e.Chdir, e.In, e.From, e.Keep, e.DangerouslyAllowAll, e.repositoryOverrideFlags, e.repositoryChangesetFlags); err != nil {
 		return err
 	}
 	if e.TTY && e.NoStdin {
@@ -98,7 +99,7 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 		return err
 	}
 
-	target, err := resolveExecutionSandbox(rootCtx, client, ctx, cwd, host, e.Backend, e.In, e.From, e.Image, e.LaunchSeconds, e.repositoryOverrideFlags, e.repositoryChangesetFlags)
+	target, err := resolveExecutionSandbox(rootCtx, client, ctx, cwd, host, e.Backend, e.In, e.From, e.Image, e.LaunchSeconds, e.DangerouslyAllowAll, e.repositoryOverrideFlags, e.repositoryChangesetFlags)
 	if err != nil {
 		if strings.TrimSpace(e.From) != "" {
 			err = explainSnapshotRuntimeDisabledError(err, ctx)

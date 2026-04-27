@@ -318,6 +318,18 @@ func TestTopLevelCreateParsesFromSnapshot(t *testing.T) {
 	}
 }
 
+func TestTopLevelCreateParsesDangerouslyAllowAll(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"create", "--dangerously-allow-all"}); err != nil {
+		t.Fatalf("parse create --dangerously-allow-all returned error: %v", err)
+	}
+	if !c.Create.DangerouslyAllowAll {
+		t.Fatal("expected create dangerously-allow-all flag to be set")
+	}
+}
+
 func TestExecParsesImageOverride(t *testing.T) {
 	c := &CLI{}
 	parser := newParserForTest(t, c)
@@ -328,6 +340,18 @@ func TestExecParsesImageOverride(t *testing.T) {
 	}
 	if got, want := c.Exec.Image, imageRef; got != want {
 		t.Fatalf("unexpected exec image override: got %q want %q", got, want)
+	}
+}
+
+func TestExecParsesDangerouslyAllowAll(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"exec", "--dangerously-allow-all", "--", "echo", "ok"}); err != nil {
+		t.Fatalf("parse exec --dangerously-allow-all returned error: %v", err)
+	}
+	if !c.Exec.DangerouslyAllowAll {
+		t.Fatal("expected exec dangerously-allow-all flag to be set")
 	}
 }
 
@@ -389,6 +413,18 @@ func TestConsoleParsesImageOverride(t *testing.T) {
 	}
 	if got, want := c.Console.Image, imageRef; got != want {
 		t.Fatalf("unexpected console image override: got %q want %q", got, want)
+	}
+}
+
+func TestConsoleParsesDangerouslyAllowAll(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"console", "--dangerously-allow-all"}); err != nil {
+		t.Fatalf("parse console --dangerously-allow-all returned error: %v", err)
+	}
+	if !c.Console.DangerouslyAllowAll {
+		t.Fatal("expected console dangerously-allow-all flag to be set")
 	}
 }
 
