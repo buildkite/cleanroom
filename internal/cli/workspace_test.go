@@ -231,7 +231,14 @@ func TestResolveExecutionSandboxClearsRepositoryAfterGitCopyInExistingSandbox(t 
 		t.Fatalf("resolve repository branch: %v", err)
 	}
 	sandboxID := createWorkspaceCopyTestSandboxWithRepositoryCommitBranch(t, host, "/sandbox-workspace", head, branch)
+	var (
+		mu            sync.Mutex
+		launchSeconds []int64
+	)
 	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
+		mu.Lock()
+		launchSeconds = append(launchSeconds, req.LaunchSeconds)
+		mu.Unlock()
 		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
 	}
 
@@ -251,7 +258,7 @@ func TestResolveExecutionSandboxClearsRepositoryAfterGitCopyInExistingSandbox(t 
 		sandboxID,
 		"",
 		"",
-		0,
+		37,
 		false,
 		repositoryOverrideFlags{},
 		workspaceCopyFlags{Copy: true},
@@ -264,6 +271,14 @@ func TestResolveExecutionSandboxClearsRepositoryAfterGitCopyInExistingSandbox(t 
 	}
 	if got, want := target.WorkspaceRoot, "/sandbox-workspace"; got != want {
 		t.Fatalf("unexpected returned workspace root: got %q want %q", got, want)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(launchSeconds) == 0 {
+		t.Fatal("expected workspace copy execution to run")
+	}
+	if got, want := launchSeconds[0], int64(37); got != want {
+		t.Fatalf("unexpected workspace copy launch seconds: got %d want %d", got, want)
 	}
 }
 

@@ -121,6 +121,7 @@ func resolveExecutionSandbox(
 				Repository:    copyRepository,
 				Destination:   workspaceRoot,
 				ForceGitReset: existingSandboxID != "",
+				LaunchSeconds: launchSeconds,
 			}); err != nil {
 				if createdSandbox {
 					terminateSandboxBestEffort(callCtx, client, sandboxID, 0, nil, "")

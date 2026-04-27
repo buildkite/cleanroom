@@ -469,6 +469,7 @@ message ExecutionOptions {
   int64 launch_seconds = 5;
   bool tty = 6;
   bool preserve_repository_changeset_pending_execution = 8;
+  bool skip_run_before = 9;
 }
 
 message CreateExecutionRequest {

@@ -38,6 +38,7 @@ type workspaceCopyOptions struct {
 	Repository    *resolvedRepositoryCheckout
 	Destination   string
 	ForceGitReset bool
+	LaunchSeconds int64
 }
 
 type workspacePlanEntry struct {
@@ -105,7 +106,7 @@ func copyGitWorkspaceToSandbox(callCtx context.Context, ctx *runtimeContext, cli
 			if err != nil {
 				return err
 			}
-			return runWorkspaceExecution(callCtx, ctx, client, opts.SandboxID, effectiveRepository, repositorychangeset.ResetCommand(checkout), nil)
+			return runWorkspaceExecution(callCtx, ctx, client, opts.SandboxID, effectiveRepository, repositorychangeset.ResetCommand(checkout), nil, opts.LaunchSeconds)
 		}
 		return nil
 	}
@@ -121,7 +122,7 @@ func copyGitWorkspaceToSandbox(callCtx context.Context, ctx *runtimeContext, cli
 	if opts.ForceGitReset {
 		command = repositorychangeset.ApplyCommandResettingCheckout(checkout, changeset)
 	}
-	return runWorkspaceExecution(callCtx, ctx, client, opts.SandboxID, effectiveRepository, command, bytes.NewReader(changeset.Patch))
+	return runWorkspaceExecution(callCtx, ctx, client, opts.SandboxID, effectiveRepository, command, bytes.NewReader(changeset.Patch), opts.LaunchSeconds)
 }
 
 func resolveGitWorkspaceCheckout(callCtx context.Context, client *controlclient.Client, opts workspaceCopyOptions) (*resolvedRepositoryCheckout, *repositorycheckout.Checkout, error) {
@@ -143,7 +144,7 @@ func resolveGitWorkspaceCheckout(callCtx context.Context, client *controlclient.
 	return &effectiveRepository, checkout, nil
 }
 
-func runWorkspaceExecution(callCtx context.Context, ctx *runtimeContext, client *controlclient.Client, sandboxID string, repository *resolvedRepositoryCheckout, command []string, input io.Reader) error {
+func runWorkspaceExecution(callCtx context.Context, ctx *runtimeContext, client *controlclient.Client, sandboxID string, repository *resolvedRepositoryCheckout, command []string, input io.Reader, launchSeconds int64) error {
 	if len(command) == 0 {
 		return errors.New("workspace copy execution command is empty")
 	}
@@ -154,6 +155,8 @@ func runWorkspaceExecution(callCtx context.Context, ctx *runtimeContext, client 
 		RepositoryCheckout: repositoryCheckoutProto(repository),
 		Options: &cleanroomv1.ExecutionOptions{
 			PreserveRepositoryChangesetPendingExecution: true,
+			SkipRunBefore: true,
+			LaunchSeconds: launchSeconds,
 		},
 	})
 	if err != nil {
@@ -210,7 +213,7 @@ func copyRawWorkspaceToSandbox(callCtx context.Context, ctx *runtimeContext, cli
 	if _, err := rawWorkspacePlan(opts.CWD, destination); err != nil {
 		return err
 	}
-	if err := cleanRawWorkspaceDestination(callCtx, ctx, client, opts.SandboxID, destination); err != nil {
+	if err := cleanRawWorkspaceDestination(callCtx, ctx, client, opts.SandboxID, destination, opts.LaunchSeconds); err != nil {
 		return err
 	}
 	if err := extractRawWorkspaceArchive(callCtx, client, opts.SandboxID, destination, opts.CWD); err != nil {
@@ -219,7 +222,7 @@ func copyRawWorkspaceToSandbox(callCtx context.Context, ctx *runtimeContext, cli
 	return nil
 }
 
-func cleanRawWorkspaceDestination(callCtx context.Context, ctx *runtimeContext, client *controlclient.Client, sandboxID, destination string) error {
+func cleanRawWorkspaceDestination(callCtx context.Context, ctx *runtimeContext, client *controlclient.Client, sandboxID, destination string, launchSeconds int64) error {
 	statResp, err := client.StatSandboxPath(tracePreservingContext(callCtx), &cleanroomv1.StatSandboxPathRequest{
 		SandboxId: sandboxID,
 		Path:      destination,
@@ -237,7 +240,7 @@ func cleanRawWorkspaceDestination(callCtx context.Context, ctx *runtimeContext, 
 	if info.GetType() != cleanroomv1.SandboxPathType_SANDBOX_PATH_TYPE_DIRECTORY {
 		return removeRawWorkspaceDestinationRoot(callCtx, client, sandboxID, destination)
 	}
-	return runWorkspaceExecution(callCtx, ctx, client, sandboxID, nil, rawWorkspaceCleanCommand(destination), nil)
+	return runWorkspaceExecution(callCtx, ctx, client, sandboxID, nil, rawWorkspaceCleanCommand(destination), nil, launchSeconds)
 }
 
 func removeRawWorkspaceDestinationRoot(callCtx context.Context, client *controlclient.Client, sandboxID, destination string) error {

@@ -166,6 +166,7 @@ type changesetMetadataStore interface {
 type executionOptions struct {
 	LaunchSeconds                               int64
 	PreserveRepositoryChangesetPendingExecution bool
+	SkipRunBefore                               bool
 }
 
 type executionSnapshot struct {
@@ -1831,6 +1832,7 @@ func (s *Service) CreateExecution(ctx context.Context, req *cleanroomv1.CreateEx
 		execOpts = executionOptions{
 			LaunchSeconds: opts.GetLaunchSeconds(),
 			PreserveRepositoryChangesetPendingExecution: opts.GetPreserveRepositoryChangesetPendingExecution(),
+			SkipRunBefore: opts.GetSkipRunBefore(),
 		}
 		tty = opts.GetTty()
 	}
@@ -1905,7 +1907,7 @@ func (s *Service) CreateExecution(ctx context.Context, req *cleanroomv1.CreateEx
 		runRepository = sandboxRepository
 	}
 	var preRunBefore []string
-	if sandboxPolicy != nil && sandboxPolicy.Run.HasBefore() {
+	if !execOpts.SkipRunBefore && sandboxPolicy != nil && sandboxPolicy.Run.HasBefore() {
 		preRunBefore = append([]string(nil), sandboxPolicy.Run.Before...)
 		if runRepository != nil {
 			preRunBefore = repositorycheckout.WrapCommandInWorkdir(preRunBefore, runRepository)

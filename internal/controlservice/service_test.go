@@ -4980,6 +4980,54 @@ func TestCreateExecutionCanPreservePendingChangesetForInternalWorkspaceCopy(t *t
 	}
 }
 
+func TestCreateExecutionCanSkipRunBefore(t *testing.T) {
+	adapter := &stubAdapter{}
+	svc := newTestService(adapter)
+
+	var (
+		mu       sync.Mutex
+		commands [][]string
+	)
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
+		mu.Lock()
+		commands = append(commands, append([]string(nil), req.Command...))
+		mu.Unlock()
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+	}
+
+	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy: testRepositoryRunBeforePolicy(),
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createSandboxResp.GetSandbox().GetSandboxId()
+
+	resp, err := svc.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+		SandboxId: sandboxID,
+		Command:   []string{"sh", "-lc", "pwd"},
+		Options: &cleanroomv1.ExecutionOptions{
+			SkipRunBefore: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateExecution returned error: %v", err)
+	}
+	if _, err := svc.WaitExecution(context.Background(), sandboxID, resp.GetExecution().GetExecutionId()); err != nil {
+		t.Fatalf("WaitExecution returned error: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if got, want := len(commands), 1; got != want {
+		t.Fatalf("expected only user command when run.before is skipped, got %d command(s)", got)
+	}
+	joined := strings.Join(commands[0], " ")
+	if strings.Contains(joined, "echo pre-run") {
+		t.Fatalf("expected run.before to be skipped, got %q", joined)
+	}
+}
+
 func TestCreateExecutionKeepsPendingChangesetAfterRunBeforeFailure(t *testing.T) {
 	adapter := &stubAdapter{}
 	svc := newTestService(adapter)
