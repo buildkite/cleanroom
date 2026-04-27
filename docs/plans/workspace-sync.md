@@ -11,9 +11,9 @@ Replace the current `--include-local-changes` UX with a clearer `--copy` flag
 and add explicit workspace copy/export primitives for the common "edit
 locally, run in Cleanroom, bring changes back" workflow.
 
-In this plan, "workspace" means the project tree inside the cleanroom,
-normally `/workspace`. It does not mean the full sandbox filesystem, and it
-does not create a host mount.
+In this plan, "workspace" means the project tree inside the cleanroom at the
+resolved repository path, normally `/workspace`. It does not mean the full
+sandbox filesystem, and it does not create a host mount.
 
 The user-facing workspace vocabulary is:
 
@@ -60,19 +60,22 @@ cleanroom exec --sync -- npm run generate
 
 Top-level flags:
 
-- `--copy` copies local workspace changes into `/workspace` before running.
-  It is automation over the same operation as `cleanroom workspace copy`.
-- `--export-on-exit` exports the included `/workspace` file set back into the
-  local workspace after the command or console session exits.
+- `--copy` copies local workspace changes into the sandbox workspace before
+  running. It is automation over the same operation as
+  `cleanroom workspace copy`.
+- `--export-on-exit` exports the included sandbox workspace file set back into
+  the local workspace after the command or console session exits.
 - `--sync` is equivalent to `--copy --export-on-exit`.
 
 ## Goals
 
 - Make local development workflows feel direct: edits made locally appear in
-  `/workspace`, and useful changes made in `/workspace` can come back.
+  the sandbox workspace, and useful changes made there can come back.
 - Keep CI and hermetic workflows explicit and available.
-- Keep `/workspace` copy/export behavior as command primitives that can be
-  used manually and by top-level automation.
+- Keep workspace copy/export behavior as command primitives that can be used
+  manually and by top-level automation.
+- Support custom `repository.path` values rather than hardcoding workspace
+  operations to `/workspace`.
 - Keep ordinary `exec`, `console`, and `create` startup fast by avoiding
   implicit whole-tree copy operations.
 - Replace `--include-local-changes` with `--copy` instead of carrying both
@@ -97,6 +100,10 @@ Top-level flags:
 - Making `cleanroom sandbox create` infer repository policy or local workspace
   state.
 - Exporting ignored workspace artifacts by default.
+- Adding an export conflict override such as `--force` or `--overwrite` in the
+  MVP.
+- Supporting arbitrary local export roots in the MVP.
+- Running export automatically from `cleanroom sandbox rm`.
 - Replacing artifact upload/download APIs for non-workspace build outputs.
 - Requiring the guest image to provide the `rsync` binary.
 
@@ -114,8 +121,8 @@ cleanroom cp <sandbox-id>:/absolute/path <local-file-or-directory>
 It is intentionally not a workspace lifecycle command. Current behavior is
 scoped to one local file to one sandbox path, or one sandbox file to one local
 path. Recursive local directory upload, workspace baselines, conflict
-detection, dry-run export planning, and `/workspace` mirror semantics are out
-of scope for `cp`.
+detection, dry-run export planning, and workspace mirror semantics are out of
+scope for `cp`.
 
 Workspace commands should use a shared workspace planner with
 workspace-specific safety semantics. The planner selects the transport from
@@ -127,6 +134,11 @@ the source workspace:
 
 Top-level `--copy` must call the same copy operation as
 `cleanroom workspace copy`; it is not a separate changeset-only mode.
+
+Workspace commands must operate on the sandbox's recorded workspace root. For
+repository-backed sandboxes, that root is the resolved `repository.path`,
+defaulting to `/workspace`. Commands should not silently assume `/workspace`
+when the policy or request used a different repository path.
 
 ### `cleanroom workspace copy`
 
@@ -140,7 +152,8 @@ cleanroom workspace copy --dry-run <sandbox-id>
 Default behavior:
 
 - source: the caller's local repository/workspace root
-- destination: the sandbox workspace root, normally `/workspace`
+- destination: the sandbox workspace root, resolved from `repository.path` and
+  normally `/workspace`
 - mirror local additions, modifications, and deletes from the included
   workspace file set into the cleanroom workspace
 - skip `.git/`
@@ -169,13 +182,14 @@ cleanroom workspace export --dry-run <sandbox-id>
 
 Default behavior:
 
-- source: the sandbox workspace root, normally `/workspace`
+- source: the sandbox workspace root, resolved from `repository.path` and
+  normally `/workspace`
 - destination: the caller's local repository/workspace root
 - mirror cleanroom additions, modifications, and deletes from the included
   workspace file set into the local workspace
-- if the source `/workspace` is a Git worktree, produce an export changeset
+- if the source workspace is a Git worktree, produce an export changeset
   against the recorded cleanroom baseline
-- if the source `/workspace` is not a Git worktree, use raw workspace transfer
+- if the source workspace is not a Git worktree, use raw workspace transfer
 - honor Git ignore rules by default for Git-backed source workspaces; ignored
   paths such as `node_modules/`, `.venv/`, and cache directories are not
   export candidates
@@ -188,13 +202,12 @@ Default behavior:
 checkout?" This is intentionally different from `workspace diff`.
 
 If local files diverged while the cleanroom was running, export should fail
-closed and name the conflicting paths. A later force or overwrite mode can be
-added if we have a concrete need, but the initial export path should be
-conflict-safe.
+closed and name the conflicting paths. A later conflict override can be added
+from concrete usage, but the initial export path should be conflict-safe.
 
 ### `cleanroom workspace diff`
 
-Show how `/workspace` differs from the cleanroom's recorded workspace
+Show how the sandbox workspace differs from the cleanroom's recorded workspace
 baseline.
 
 ```sh
@@ -238,7 +251,8 @@ repository changeset path:
 1. create or select the sandbox,
 2. create a repository changeset from local additions, modifications, and
    deletes,
-3. apply that changeset after the exact checkout is prepared in `/workspace`,
+3. apply that changeset after the exact checkout is prepared in the resolved
+   sandbox workspace root,
 4. record local binding metadata so later `workspace copy`,
    `workspace export`, and automated exports know the local root.
 
@@ -264,9 +278,9 @@ For `--keep`, export should still run after the execution/session exits, but
 the sandbox should remain available. The user can run more explicit
 `workspace copy`, `workspace diff`, or `workspace export` commands later.
 
-For `cleanroom create`, export-on-termination needs extra local binding
-semantics. That should be a later phase. The first version should support
-manual `workspace export <sandbox-id>` for sandboxes created with `create`.
+For `cleanroom create`, the first version should support manual
+`workspace export <sandbox-id>` for sandboxes created with `create`.
+`cleanroom sandbox rm` should not write back into the caller's checkout.
 
 ### `--sync`
 
@@ -320,6 +334,16 @@ There is no bidirectional merge command in v1.
 - `diff` means cleanroom workspace against cleanroom baseline
 - `sync` is a documented alias for copy plus export-on-exit
 
+### Workspace root follows repository.path
+
+Workspace operations use the sandbox's recorded workspace root. For
+repository-backed sandboxes, that is the resolved `repository.path`, defaulting
+to `/workspace`.
+
+This keeps workspace copy/export aligned with existing command execution: if a
+policy checks the repository out somewhere other than `/workspace`, copy,
+export, diff, and top-level automation operate on that same path.
+
 ### Mirror semantics are scoped by the workspace file set
 
 Workspace copy/export should mirror additions, modifications, and deletes in
@@ -327,10 +351,10 @@ the named direction, but only inside the included workspace file set. This
 keeps the mental model simple without copying platform-specific dependency
 trees:
 
-- copy makes the included `/workspace` source set match the included local
-  source set
-- export makes the included local source set match the included `/workspace`
-  source set
+- copy makes the included sandbox workspace source set match the included
+  local source set
+- export makes the included local source set match the included sandbox
+  workspace source set
 
 For Git-backed source workspaces, the default included file set is:
 
@@ -382,6 +406,22 @@ cleanroom workspace export --dry-run <sandbox-id>
 The exported payload should remain available under Cleanroom state so users can
 recover it manually if needed.
 
+The MVP should not provide a conflict override such as `--force` or
+`--overwrite`. A later override can be added from concrete usage.
+
+### Local root binding is explicit
+
+Workspace export should write only to a trusted local root:
+
+- Prefer the local root bound by the last `workspace copy` or top-level
+  `--copy`.
+- If there is no binding, allow export from the current working tree only when
+  its repository identity matches the sandbox repository identity.
+- Refuse export when the local root is ambiguous.
+
+The MVP should not add an arbitrary `--local-root` override. That avoids
+writing a cleanroom export into the wrong checkout.
+
 ### No hidden mounts
 
 Workspace copy/export should be implemented as explicit file transfer events,
@@ -427,9 +467,9 @@ silently fall back to raw copy, because that changes ignore/delete semantics.
 
 For efficient raw-transfer implementation, the CLI can batch file changes into
 the existing archive-write path plus a workspace manifest. Export can use the
-inverse shape: build a manifest and payload from `/workspace`, stream it to the
-CLI through archive/read primitives, and let the CLI apply it to the local
-workspace after local conflict checks pass.
+inverse shape: build a manifest and payload from the sandbox workspace root,
+stream it to the CLI through archive/read primitives, and let the CLI apply it
+to the local workspace after local conflict checks pass.
 
 `cleanroom cp` remains the one-file convenience layer over the same substrate.
 It should not grow workspace baselines or mirror behavior.
@@ -443,7 +483,8 @@ supporting non-Git workspaces through raw transfer.
 Cleanroom should record workspace metadata per sandbox:
 
 - sandbox ID
-- workspace root inside the sandbox, normally `/workspace`
+- workspace root inside the sandbox, resolved from `repository.path` and
+  normally `/workspace`
 - local root path used for the last copy, stored client-side only
 - cleanroom workspace baseline manifest or tree digest
 - last copy manifest used for export conflict detection
@@ -542,6 +583,8 @@ Status: landed.
 - Add `cleanroom workspace copy`.
 - Add `cleanroom workspace copy --dry-run`.
 - Add `--copy` to `exec`, `console`, and `create`.
+- Resolve the destination workspace root from `repository.path`, defaulting to
+  `/workspace`.
 - Use repository changesets when the source workspace is a Git worktree.
 - Use raw workspace transfer when the source workspace is not a Git worktree.
 - Add tests that ignored files and directories, including a representative
@@ -560,8 +603,14 @@ Status: landed.
 - Add `cleanroom workspace export --dry-run`.
 - Add `cleanroom workspace export`.
 - Add `cleanroom workspace diff`.
+- Resolve the sandbox workspace root from `repository.path`, defaulting to
+  `/workspace`.
 - Add export tests proving ignored cleanroom outputs are not written back to
   the local checkout by default.
+- Add export tests proving local divergence fails closed with no force or
+  overwrite mode.
+- Add export tests proving an unbound export refuses to write unless the
+  current working tree matches the sandbox repository identity.
 - Require explicit sandbox IDs or support `--last` consistently with existing
   inspect commands.
 - Store local binding metadata in client-side Cleanroom state.
@@ -575,8 +624,7 @@ Status: landed.
 
 ### Phase 4: Optional live local-to-cleanroom copy
 
-- Decide whether `--copy-live` is still needed after one-shot copy/export has
-  been exercised.
+- Defer `--copy-live` until one-shot copy/export has been exercised.
 - If implemented, add `--copy-live` to `exec` and `console`.
 - Keep `--sync` as `--copy --export-on-exit` unless we explicitly choose a
   breaking semantic change.
@@ -587,23 +635,25 @@ Status: landed.
 - Surface live copy failures without hiding workload output.
 - Ensure live copy cannot race with an export operation.
 
-### Phase 5: Export-on-terminate for kept sandboxes
+### Phase 5: Optional export-on-terminate for kept sandboxes
 
-- Decide whether `create` should record an export-on-termination binding.
-- If implemented, make `cleanroom sandbox rm` run export before termination
-  when a local binding exists.
-- If export fails, refuse termination by default and provide an explicit
-  discard flag.
+- Do not make `cleanroom sandbox rm` write to the caller's checkout in the MVP.
+- If export-on-terminate is added later, require an explicit create-time opt-in
+  such as `cleanroom create --export-on-terminate`.
+- If an explicit export-on-terminate fails, refuse termination by default and
+  provide an explicit discard flag.
 
-## Open Decisions
+## Resolved Decisions
 
-- Whether custom `repository.path` values should be supported by workspace
-  commands or whether workspace copy should standardize on `/workspace`.
-- Whether export conflict override should be named `--force`, `--overwrite`,
-  or left out until there is a concrete need.
-- Whether workspace commands should support an explicit local root override, or
-  only use the bound/calling repository root.
-- What explicit-path UX should exist later for exporting ignored generated
-  artifacts when `cleanroom cp` is too low-level.
-- Whether live copy deserves a separate `--copy-live` flag after the one-shot
-  workflow lands.
+- Workspace commands support custom `repository.path` values and default to
+  `/workspace`.
+- Export has no conflict override in the MVP.
+- Export uses the bound local root or a matching current working tree; there is
+  no arbitrary local-root override in the MVP.
+- Ignored generated artifacts remain excluded by default. Future support should
+  use explicit relative includes, for example
+  `cleanroom workspace export <sandbox-id> --include path/to/generated-file`.
+- Live copy is deferred. `--sync` remains one-shot
+  `--copy --export-on-exit`.
+- `cleanroom sandbox rm` does not export automatically. Export-on-terminate is
+  future work and must require explicit opt-in.
