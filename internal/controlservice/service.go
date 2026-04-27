@@ -164,7 +164,8 @@ type changesetMetadataStore interface {
 }
 
 type executionOptions struct {
-	LaunchSeconds int64
+	LaunchSeconds                               int64
+	PreserveRepositoryChangesetPendingExecution bool
 }
 
 type executionSnapshot struct {
@@ -1829,6 +1830,7 @@ func (s *Service) CreateExecution(ctx context.Context, req *cleanroomv1.CreateEx
 	if opts := req.GetOptions(); opts != nil {
 		execOpts = executionOptions{
 			LaunchSeconds: opts.GetLaunchSeconds(),
+			PreserveRepositoryChangesetPendingExecution: opts.GetPreserveRepositoryChangesetPendingExecution(),
 		}
 		tty = opts.GetTty()
 	}
@@ -2883,7 +2885,7 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 	finished := s.clock().Now()
 	recordExecutionMetrics(finalStatus, finished)
 	s.finalizeExecutionLocked(ex, finalStatus, finalExitCode, ex.Message, "", finished)
-	if finalStatus == cleanroomv1.ExecutionStatus_EXECUTION_STATUS_SUCCEEDED {
+	if finalStatus == cleanroomv1.ExecutionStatus_EXECUTION_STATUS_SUCCEEDED && !ex.Options.PreserveRepositoryChangesetPendingExecution {
 		s.markRepositoryChangesetExecutionConsumedLocked(sandboxID)
 	}
 

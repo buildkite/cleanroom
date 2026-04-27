@@ -4886,6 +4886,100 @@ func TestCreateExecutionPreservesFirstMatchingRepositoryAfterChangesetSandboxCre
 	}
 }
 
+func TestCreateExecutionCanPreservePendingChangesetForInternalWorkspaceCopy(t *testing.T) {
+	adapter := &stubAdapter{}
+	svc := newTestService(adapter)
+
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"README.md": "hello\n",
+	})
+	svc.RepositoryStore = mirrors
+	repository := repositorycheckout.FromProto(repositoryCheckout)
+	if err := os.WriteFile(filepath.Join(mirrors.mirrorPath, "README.md"), []byte("hello from changeset\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(README.md) returned error: %v", err)
+	}
+	changeset, err := repositorychangeset.BuildFromWorkingTree(mirrors.mirrorPath, repository)
+	if err != nil {
+		t.Fatalf("BuildFromWorkingTree returned error: %v", err)
+	}
+	if changeset == nil {
+		t.Fatal("expected repository changeset")
+	}
+
+	var (
+		mu       sync.Mutex
+		commands [][]string
+	)
+	runCalled := make(chan struct{}, 8)
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
+		mu.Lock()
+		commands = append(commands, append([]string(nil), req.Command...))
+		mu.Unlock()
+		select {
+		case runCalled <- struct{}{}:
+		default:
+		}
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+	}
+
+	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy:              testRepositoryPolicy(),
+		RepositoryCheckout:  repositoryCheckout,
+		RepositoryChangeset: changeset.ToProto(),
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createSandboxResp.GetSandbox().GetSandboxId()
+	for i := 0; i < 2; i++ {
+		select {
+		case <-runCalled:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for changeset sandbox bootstrap")
+		}
+	}
+
+	copyResp, err := svc.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+		SandboxId:          sandboxID,
+		Command:            []string{"sh", "-lc", "true"},
+		RepositoryCheckout: repositoryCheckout,
+		Options: &cleanroomv1.ExecutionOptions{
+			PreserveRepositoryChangesetPendingExecution: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateExecution internal copy returned error: %v", err)
+	}
+	if _, err := svc.WaitExecution(context.Background(), sandboxID, copyResp.GetExecution().GetExecutionId()); err != nil {
+		t.Fatalf("WaitExecution internal copy returned error: %v", err)
+	}
+
+	userResp, err := svc.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+		SandboxId:          sandboxID,
+		Command:            []string{"sh", "-lc", "pwd"},
+		RepositoryCheckout: repositoryCheckout,
+	})
+	if err != nil {
+		t.Fatalf("CreateExecution user command returned error: %v", err)
+	}
+	if _, err := svc.WaitExecution(context.Background(), sandboxID, userResp.GetExecution().GetExecutionId()); err != nil {
+		t.Fatalf("WaitExecution user command returned error: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if got, want := len(commands), 4; got != want {
+		t.Fatalf("expected create bootstrap + changeset apply + internal copy + user execution, got %d command(s)", got)
+	}
+	userCommand := strings.Join(commands[3], " ")
+	if strings.Contains(userCommand, `git -C "$dest" fetch --filter=blob:none --progress origin "$commit"`) {
+		t.Fatalf("expected user execution to preserve pending changeset state instead of refreshing checkout, got %q", userCommand)
+	}
+	if !repositoryWrappedCommandContains(userCommand, `exec 'sh' '-lc' 'pwd'`) {
+		t.Fatalf("expected wrapped user command, got %q", userCommand)
+	}
+}
+
 func TestCreateExecutionKeepsPendingChangesetAfterRunBeforeFailure(t *testing.T) {
 	adapter := &stubAdapter{}
 	svc := newTestService(adapter)

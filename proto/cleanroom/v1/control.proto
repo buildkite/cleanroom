@@ -468,6 +468,7 @@ message ExecutionOptions {
   reserved "read_only_workspace", "cwd";
   int64 launch_seconds = 5;
   bool tty = 6;
+  bool preserve_repository_changeset_pending_execution = 8;
 }
 
 message CreateExecutionRequest {

@@ -158,6 +158,9 @@ func runWorkspaceExecution(callCtx context.Context, ctx *runtimeContext, client 
 		Command:            command,
 		Kind:               cleanroomv1.ExecutionKind_EXECUTION_KIND_BATCH,
 		RepositoryCheckout: repositoryCheckoutProto(repository),
+		Options: &cleanroomv1.ExecutionOptions{
+			PreserveRepositoryChangesetPendingExecution: true,
+		},
 	})
 	if err != nil {
 		return fmt.Errorf("create workspace copy execution: %w", err)
