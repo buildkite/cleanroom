@@ -1,7 +1,7 @@
 version: 1
 sandbox:
   image:
-    ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:91a63856cdf97b2e5659660b41d1a131d3b57bfa4cad254018e391ffef6fa4b9
+    ref: ghcr.io/buildkite/cleanroom-base/debian-agents@sha256:0a213da7f86739f2841fbec41122b2b0fc766ea0a5a6204d3cd71642206e3669
   network:
     default: deny
     allow:
@@ -9,9 +9,17 @@ sandbox:
         ports: [443]
       - host: github.com
         ports: [443]
+      - host: mise-versions.jdx.dev
+        ports: [443]
+      - host: mise.jdx.dev
+        ports: [443]
+      - host: nodejs.org
+        ports: [443]
       - host: objects.githubusercontent.com
         ports: [443]
       - host: proxy.golang.org
+        ports: [443]
+      - host: registry.npmjs.org
         ports: [443]
       - host: sum.golang.org
         ports: [443]
