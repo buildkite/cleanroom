@@ -89,6 +89,23 @@ func resolveRepositoryCheckoutWithOverride(cwd string, loader policyLoader, over
 		}
 		return nil, err
 	}
+	return resolveRepositoryCheckoutFromConfig(cwd, loader, repository, true)
+}
+
+func resolveWorkspaceCopyRepositoryCheckout(cwd string, loader policyLoader) (*resolvedRepositoryCheckout, error) {
+	repository, err := resolveRepositoryCheckout(cwd, loader)
+	if err != nil || repository != nil {
+		return repository, err
+	}
+	return resolveRepositoryCheckoutFromConfig(cwd, loader, policy.RepositoryConfig{
+		Implicit: true,
+		Mode:     "current-repo",
+		Remote:   "origin",
+		Path:     defaultRepositoryOverridePath,
+	}, false)
+}
+
+func resolveRepositoryCheckoutFromConfig(cwd string, loader policyLoader, repository policy.RepositoryConfig, validatePolicy bool) (*resolvedRepositoryCheckout, error) {
 	repoRoot, err := resolveRepositoryRoot(cwd, repository)
 	if err != nil {
 		if errors.Is(err, errSkipRepositoryCheckout) {
@@ -118,12 +135,14 @@ func resolveRepositoryCheckoutWithOverride(cwd string, loader policyLoader, over
 		return nil, err
 	}
 
-	compiled, _, err := loader.LoadAndCompile(cwd)
-	if err != nil {
-		return nil, err
-	}
-	if compiled != nil && !compiled.Allows(remoteHost, 443) {
-		return nil, fmt.Errorf("repository remote host %q is not allowed by sandbox policy", remoteHost)
+	if validatePolicy && loader != nil {
+		compiled, _, err := loader.LoadAndCompile(cwd)
+		if err != nil {
+			return nil, err
+		}
+		if compiled != nil && !compiled.Allows(remoteHost, 443) {
+			return nil, fmt.Errorf("repository remote host %q is not allowed by sandbox policy", remoteHost)
+		}
 	}
 
 	return &resolvedRepositoryCheckout{

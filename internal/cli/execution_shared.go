@@ -59,7 +59,11 @@ func resolveExecutionSandbox(
 	var changeset *cleanroomv1.RepositoryChangeset
 	if fromSnapshot == "" && (existingSandboxID == "" || copyFlags.Copy) {
 		var err error
-		repository, err = resolveRepositoryCheckoutWithOverride(cwd, ctx.Loader, repositoryOverride)
+		if copyFlags.Copy && existingSandboxID != "" && !repositoryOverride.hasRepositoryOverride() {
+			repository, err = resolveWorkspaceCopyRepositoryCheckout(cwd, ctx.Loader)
+		} else {
+			repository, err = resolveRepositoryCheckoutWithOverride(cwd, ctx.Loader, repositoryOverride)
+		}
 		if err != nil {
 			return nil, err
 		}

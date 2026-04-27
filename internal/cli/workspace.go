@@ -55,7 +55,7 @@ func (c *WorkspaceCopyCommand) Run(ctx *runtimeContext) error {
 	if err != nil {
 		return err
 	}
-	repository, err := resolveRepositoryCheckout(cwd, ctx.Loader)
+	repository, err := resolveWorkspaceCopyRepositoryCheckout(cwd, ctx.Loader)
 	if err != nil {
 		return err
 	}

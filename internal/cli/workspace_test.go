@@ -132,6 +132,122 @@ func TestWorkspaceCopyAppliesGitChangeset(t *testing.T) {
 	}
 }
 
+func TestWorkspaceCopyUsesGitChangesetForGitWorktreeWithoutRepositoryPolicy(t *testing.T) {
+	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
+	if err := os.WriteFile(filepath.Join(repoDir, ".gitignore"), []byte("node_modules/\n"), 0o644); err != nil {
+		t.Fatalf("write gitignore: %v", err)
+	}
+	runGitInDir(t, repoDir, "add", ".gitignore")
+	runGitInDir(t, repoDir, "commit", "-m", "ignore dependencies")
+	if err := os.WriteFile(filepath.Join(repoDir, "dirty.txt"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatalf("write dirty file: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(repoDir, "node_modules/pkg"), 0o755); err != nil {
+		t.Fatalf("create ignored dependency dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "node_modules/pkg/index.js"), []byte("ignored\n"), 0o644); err != nil {
+		t.Fatalf("write ignored dependency file: %v", err)
+	}
+
+	var rawArchiveCalled bool
+	adapter := &copyIntegrationAdapter{
+		extractFn: func(context.Context, string, string, io.Reader) (int64, error) {
+			rawArchiveCalled = true
+			return 0, errors.New("raw archive should not run")
+		},
+	}
+	host, _ := startIntegrationServer(t, adapter)
+	head, err := gitOutput(repoDir, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatalf("resolve repository HEAD: %v", err)
+	}
+	branch, err := gitOutput(repoDir, "branch", "--show-current")
+	if err != nil {
+		t.Fatalf("resolve repository branch: %v", err)
+	}
+	sandboxID := createWorkspaceCopyTestSandboxWithRepositoryCommitBranch(t, host, "/sandbox-workspace", head, branch)
+
+	var (
+		mu       sync.Mutex
+		commands [][]string
+		patches  []string
+	)
+	adapter.runStreamFn = func(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+		mu.Lock()
+		commands = append(commands, append([]string(nil), req.Command...))
+		mu.Unlock()
+
+		if !strings.Contains(strings.Join(req.Command, " "), `git -C "$dest" apply --binary --whitespace=nowarn "$patch_file"`) {
+			return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+		}
+
+		closed := make(chan struct{})
+		var closeOnce sync.Once
+		var stdin bytes.Buffer
+		if stream.OnAttach != nil {
+			stream.OnAttach(backend.AttachIO{
+				WriteStdin: func(data []byte) error {
+					_, err := stdin.Write(data)
+					return err
+				},
+				CloseStdin: func() error {
+					mu.Lock()
+					patches = append(patches, stdin.String())
+					mu.Unlock()
+					closeOnce.Do(func() { close(closed) })
+					return nil
+				},
+			})
+		}
+		select {
+		case <-closed:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+	}
+
+	stdout, _ := makeStdoutCapture(t)
+	stderr, _ := makeStdoutCapture(t)
+	cmd := WorkspaceCopyCommand{
+		clientFlags: clientFlags{Host: host},
+		Chdir:       repoDir,
+		SandboxID:   sandboxID,
+	}
+	if err := cmd.Run(&runtimeContext{
+		CWD:           repoDir,
+		Loader:        repositoryNotFoundLoader{},
+		Config:        runtimeconfig.Config{},
+		Observability: newTestObservability(t),
+		Stdout:        stdout,
+		Stderr:        stderr,
+	}); err != nil {
+		t.Fatalf("WorkspaceCopyCommand.Run returned error: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if rawArchiveCalled {
+		t.Fatal("expected Git worktree workspace copy to avoid raw archive transport")
+	}
+	if len(commands) < 1 {
+		t.Fatalf("expected changeset apply command, got %d", len(commands))
+	}
+	applyCommand := strings.Join(commands[len(commands)-1], " ")
+	if !strings.Contains(applyCommand, `git -C "$dest" apply --binary --whitespace=nowarn "$patch_file"`) {
+		t.Fatalf("expected workspace copy to use Git changeset apply, got %q", applyCommand)
+	}
+	if got, want := len(patches), 1; got != want {
+		t.Fatalf("expected one attached changeset patch, got %d", got)
+	}
+	if !strings.Contains(patches[0], "dirty.txt") {
+		t.Fatalf("expected changeset patch to reference dirty.txt, got %q", patches[0])
+	}
+	if strings.Contains(patches[0], "node_modules") {
+		t.Fatalf("expected ignored dependency tree to be excluded, got %q", patches[0])
+	}
+}
+
 func TestWorkspaceCopyResetsGitCheckoutWhenLocalRepoClean(t *testing.T) {
 	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
 
@@ -279,6 +395,132 @@ func TestResolveExecutionSandboxClearsRepositoryAfterGitCopyInExistingSandbox(t 
 	}
 	if got, want := launchSeconds[0], int64(37); got != want {
 		t.Fatalf("unexpected workspace copy launch seconds: got %d want %d", got, want)
+	}
+}
+
+func TestResolveExecutionSandboxCopyUsesGitWorktreeWithoutRepositoryPolicy(t *testing.T) {
+	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
+	if err := os.WriteFile(filepath.Join(repoDir, ".gitignore"), []byte("node_modules/\n"), 0o644); err != nil {
+		t.Fatalf("write gitignore: %v", err)
+	}
+	runGitInDir(t, repoDir, "add", ".gitignore")
+	runGitInDir(t, repoDir, "commit", "-m", "ignore dependencies")
+	if err := os.WriteFile(filepath.Join(repoDir, "dirty.txt"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatalf("write dirty file: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(repoDir, "node_modules/pkg"), 0o755); err != nil {
+		t.Fatalf("create ignored dependency dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "node_modules/pkg/index.js"), []byte("ignored\n"), 0o644); err != nil {
+		t.Fatalf("write ignored dependency file: %v", err)
+	}
+
+	var rawArchiveCalled bool
+	adapter := &copyIntegrationAdapter{
+		extractFn: func(context.Context, string, string, io.Reader) (int64, error) {
+			rawArchiveCalled = true
+			return 0, errors.New("raw archive should not run")
+		},
+	}
+	host, _ := startIntegrationServer(t, adapter)
+	head, err := gitOutput(repoDir, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatalf("resolve repository HEAD: %v", err)
+	}
+	branch, err := gitOutput(repoDir, "branch", "--show-current")
+	if err != nil {
+		t.Fatalf("resolve repository branch: %v", err)
+	}
+	sandboxID := createWorkspaceCopyTestSandboxWithRepositoryCommitBranch(t, host, "/sandbox-workspace", head, branch)
+
+	var (
+		mu       sync.Mutex
+		commands [][]string
+		patches  []string
+	)
+	adapter.runStreamFn = func(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+		mu.Lock()
+		commands = append(commands, append([]string(nil), req.Command...))
+		mu.Unlock()
+
+		if !strings.Contains(strings.Join(req.Command, " "), `git -C "$dest" apply --binary --whitespace=nowarn "$patch_file"`) {
+			return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+		}
+
+		closed := make(chan struct{})
+		var closeOnce sync.Once
+		var stdin bytes.Buffer
+		if stream.OnAttach != nil {
+			stream.OnAttach(backend.AttachIO{
+				WriteStdin: func(data []byte) error {
+					_, err := stdin.Write(data)
+					return err
+				},
+				CloseStdin: func() error {
+					mu.Lock()
+					patches = append(patches, stdin.String())
+					mu.Unlock()
+					closeOnce.Do(func() { close(closed) })
+					return nil
+				},
+			})
+		}
+		select {
+		case <-closed:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+	}
+
+	client := mustNewControlClient(t, host)
+	target, err := resolveExecutionSandbox(
+		context.Background(),
+		client,
+		&runtimeContext{
+			CWD:           repoDir,
+			Loader:        repositoryNotFoundLoader{},
+			Config:        runtimeconfig.Config{},
+			Observability: newTestObservability(t),
+		},
+		repoDir,
+		host,
+		"",
+		sandboxID,
+		"",
+		"",
+		0,
+		false,
+		repositoryOverrideFlags{},
+		workspaceCopyFlags{Copy: true},
+	)
+	if err != nil {
+		t.Fatalf("resolveExecutionSandbox returned error: %v", err)
+	}
+	if target.Repository != nil {
+		t.Fatalf("expected returned execution sandbox to avoid repository checkout after copy, got %#v", target.Repository)
+	}
+	if got, want := target.WorkspaceRoot, "/sandbox-workspace"; got != want {
+		t.Fatalf("unexpected returned workspace root: got %q want %q", got, want)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if rawArchiveCalled {
+		t.Fatal("expected Git worktree --copy to avoid raw archive transport")
+	}
+	if len(commands) < 1 {
+		t.Fatalf("expected changeset apply command, got %d", len(commands))
+	}
+	applyCommand := strings.Join(commands[len(commands)-1], " ")
+	if !strings.Contains(applyCommand, `git -C "$dest" apply --binary --whitespace=nowarn "$patch_file"`) {
+		t.Fatalf("expected --copy to use Git changeset apply, got %q", applyCommand)
+	}
+	if got, want := len(patches), 1; got != want {
+		t.Fatalf("expected one attached changeset patch, got %d", got)
+	}
+	if strings.Contains(patches[0], "node_modules") {
+		t.Fatalf("expected ignored dependency tree to be excluded, got %q", patches[0])
 	}
 }
 
