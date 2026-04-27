@@ -197,6 +197,7 @@ func TestSetupHostNetworkWithDepsAddsDenyDefaultAndCleanupIndependentContext(t *
 		t.Fatalf("setupHostNetworkWithTrustedDNSFactory: %v", err)
 	}
 	cancel()
+	time.Sleep(networkCleanupTimeout + 50*time.Millisecond)
 	cleanup()
 
 	tap := cfg.TapName

@@ -80,11 +80,11 @@ func setupHostNetworkWithTrustedDNSFactoryAndLogger(ctx context.Context, runID s
 	setupRun := func(args ...string) error {
 		return runner.Run(ctx, args...)
 	}
-	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), networkCleanupTimeout)
 	cleanupCmds := make([][]string, 0, 16)
 	trustedDNSCleanup := func() {}
 	nflogCleanupFn := func() {}
 	cleanup := func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), networkCleanupTimeout)
 		defer cleanupCancel()
 		nflogCleanupFn()
 		trustedDNSCleanup()
@@ -104,6 +104,9 @@ func setupHostNetworkWithTrustedDNSFactoryAndLogger(ctx context.Context, runID s
 		cleanupCmds = append(cleanupCmds, append([]string(nil), args...))
 	}
 	removeNFLogRule := func(tapName, groupStr string) {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), networkCleanupTimeout)
+		defer cleanupCancel()
+
 		args := []string{"iptables", "-D", "FORWARD", "-i", tapName, "-j", "NFLOG", "--nflog-group", groupStr}
 		if err := runner.Run(cleanupCtx, args...); err != nil {
 			networkLogger.Warn("nflog iptables cleanup failed", "tap_name", tapName, "error", err)

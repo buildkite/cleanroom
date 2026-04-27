@@ -4,9 +4,11 @@ package darwinvz
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestPreparedRuntimeRootFSCacheHitUsesValidMarkerWithoutExt4Validation(t *testing.T) {
@@ -116,6 +118,37 @@ func TestPreparedRuntimeRootFSCacheHitRevalidatesWhenContentsChangeWithPreserved
 	}
 	if !preparedRuntimeRootFSMarkerMatches(rootFSPath) {
 		t.Fatal("expected refreshed marker to match mutated rootfs")
+	}
+}
+
+func TestPreparedRuntimeRootFSMarkerRejectsSubsecondOnlyTimestampMatch(t *testing.T) {
+	rootFSPath := writeTestPreparedRootFS(t, "prepared-rootfs")
+	const nsec = int64(123456789)
+	oldModTime := time.Unix(1_700_000_000, nsec)
+	newModTime := time.Unix(1_700_000_001, nsec)
+	if err := os.Chtimes(rootFSPath, oldModTime, oldModTime); err != nil {
+		t.Fatalf("set initial prepared rootfs timestamps: %v", err)
+	}
+	if err := os.Chtimes(rootFSPath, newModTime, newModTime); err != nil {
+		t.Fatalf("preserve prepared rootfs nsec while changing seconds: %v", err)
+	}
+
+	state, err := preparedRuntimeRootFSMarkerStateForPath(rootFSPath)
+	if err != nil {
+		t.Fatalf("stat prepared rootfs marker state: %v", err)
+	}
+	oldStyleContent := fmt.Sprintf("%s\n%d\n%d\n%d\n",
+		preparedRuntimeRootFSMarkerVersion,
+		state.size,
+		nsec,
+		state.changeTimeNanos%int64(time.Second),
+	)
+	if err := os.WriteFile(preparedRuntimeRootFSMarkerPath(rootFSPath), []byte(oldStyleContent), 0o644); err != nil {
+		t.Fatalf("write old-style prepared rootfs marker: %v", err)
+	}
+
+	if preparedRuntimeRootFSMarkerMatches(rootFSPath) {
+		t.Fatal("expected subsecond-only marker to be stale after timestamp seconds changed")
 	}
 }
 
