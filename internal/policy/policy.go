@@ -8,10 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/buildkite/cleanroom/internal/bytesize"
@@ -41,8 +43,8 @@ type rawPolicy struct {
 		Services     rawServices           `yaml:"services"`
 		Resources    rawResources          `yaml:"resources"`
 		Network      struct {
-			Default string         `yaml:"default"`
-			Allow   []rawAllowRule `yaml:"allow"`
+			Default string        `yaml:"default"`
+			Allow   rawAllowRules `yaml:"allow"`
 		} `yaml:"network"`
 	} `yaml:"sandbox"`
 }
@@ -93,6 +95,8 @@ type rawAllowRule struct {
 	Host  string `yaml:"host"`
 	Ports []int  `yaml:"ports"`
 }
+
+type rawAllowRules []rawAllowRule
 
 type CompiledPolicy struct {
 	Version        int          `json:"version"`
@@ -403,6 +407,126 @@ func (c *rawDependencyCommandSpec) UnmarshalYAML(node *yaml.Node) error {
 	default:
 		return fmt.Errorf("command must be a string or sequence")
 	}
+}
+
+func (rules *rawAllowRules) UnmarshalYAML(node *yaml.Node) error {
+	if node == nil {
+		*rules = nil
+		return nil
+	}
+	node = dereferenceYAMLAlias(node)
+	if node.Kind == yaml.ScalarNode && node.ShortTag() == "!!null" {
+		*rules = nil
+		return nil
+	}
+
+	switch node.Kind {
+	case yaml.ScalarNode:
+		var rule rawAllowRule
+		if err := rule.UnmarshalYAML(node); err != nil {
+			return err
+		}
+		*rules = rawAllowRules{rule}
+		return nil
+	case yaml.SequenceNode:
+		out := make(rawAllowRules, 0, len(node.Content))
+		for _, item := range node.Content {
+			var rule rawAllowRule
+			if err := rule.UnmarshalYAML(item); err != nil {
+				return err
+			}
+			out = append(out, rule)
+		}
+		*rules = out
+		return nil
+	default:
+		return fmt.Errorf("sandbox.network.allow must be a string or sequence")
+	}
+}
+
+func (rule *rawAllowRule) UnmarshalYAML(node *yaml.Node) error {
+	if node == nil {
+		*rule = rawAllowRule{}
+		return nil
+	}
+	node = dereferenceYAMLAlias(node)
+
+	switch node.Kind {
+	case yaml.ScalarNode:
+		if node.ShortTag() != "!!str" {
+			return fmt.Errorf("network allow entry must be a host:port string or mapping")
+		}
+		parsed, err := parseAllowRuleShorthand(node.Value)
+		if err != nil {
+			return err
+		}
+		*rule = parsed
+		return nil
+	case yaml.MappingNode:
+		var out rawAllowRule
+		for i := 0; i < len(node.Content); i += 2 {
+			keyNode := dereferenceYAMLAlias(node.Content[i])
+			valueNode := dereferenceYAMLAlias(node.Content[i+1])
+			if keyNode == nil || keyNode.Kind != yaml.ScalarNode || keyNode.ShortTag() != "!!str" {
+				return fmt.Errorf("network allow mapping keys must be strings")
+			}
+			switch keyNode.Value {
+			case "host":
+				if err := valueNode.Decode(&out.Host); err != nil {
+					return err
+				}
+			case "ports":
+				if err := valueNode.Decode(&out.Ports); err != nil {
+					return err
+				}
+			default:
+				return fmt.Errorf("unknown network allow field %q", keyNode.Value)
+			}
+		}
+		*rule = out
+		return nil
+	default:
+		return fmt.Errorf("network allow entry must be a host:port string or mapping")
+	}
+}
+
+func parseAllowRuleShorthand(value string) (rawAllowRule, error) {
+	entry := strings.TrimSpace(value)
+	if entry == "" {
+		return rawAllowRule{}, errors.New("network allow shorthand cannot be empty")
+	}
+	if strings.Contains(entry, "://") {
+		return rawAllowRule{}, fmt.Errorf("network allow shorthand %q must be host:port, not a URL", entry)
+	}
+
+	host, portText, err := net.SplitHostPort(entry)
+	if err != nil {
+		return rawAllowRule{}, fmt.Errorf("network allow shorthand %q must be host:port", entry)
+	}
+	host = strings.TrimSpace(host)
+	portText = strings.TrimSpace(portText)
+	if host == "" {
+		return rawAllowRule{}, fmt.Errorf("network allow shorthand %q must include a host", entry)
+	}
+	if strings.Contains(host, "/") {
+		return rawAllowRule{}, fmt.Errorf("network allow shorthand %q must be host:port, not a URL or path", entry)
+	}
+	if strings.Contains(host, ":") {
+		return rawAllowRule{}, errors.New("network allow shorthand does not support IPv6 literals; use host and ports")
+	}
+
+	port, err := strconv.Atoi(portText)
+	if err != nil {
+		return rawAllowRule{}, fmt.Errorf("network allow shorthand %q contains invalid port %q", entry, portText)
+	}
+	if port < 1 || port > 65535 {
+		return rawAllowRule{}, fmt.Errorf("network allow shorthand %q contains invalid port %d", entry, port)
+	}
+
+	return rawAllowRule{
+		Host:  host,
+		Ports: []int{port},
+	}, nil
 }
 
 func dereferenceYAMLAlias(node *yaml.Node) *yaml.Node {

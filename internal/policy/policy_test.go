@@ -125,7 +125,7 @@ func TestCompileHashStable(t *testing.T) {
 	t.Parallel()
 
 	raw := baseRawPolicy()
-	raw.Sandbox.Network.Allow = []rawAllowRule{
+	raw.Sandbox.Network.Allow = rawAllowRules{
 		{Host: "api.github.com", Ports: []int{443, 443, 80}},
 		{Host: "registry.npmjs.org", Ports: []int{443}},
 	}
@@ -141,6 +141,141 @@ func TestCompileHashStable(t *testing.T) {
 
 	if compiledA.Hash != compiledB.Hash {
 		t.Fatalf("hash mismatch: %s != %s", compiledA.Hash, compiledB.Hash)
+	}
+}
+
+func TestCompileNormalizesNetworkAllowShorthand(t *testing.T) {
+	t.Parallel()
+
+	var raw rawPolicy
+	if err := yaml.Unmarshal([]byte(`
+version: 1
+sandbox:
+  image:
+    ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  network:
+    default: deny
+    allow:
+      - GitHub.com:443
+      - host: registry.npmjs.org
+        ports: [443, 80, 443]
+`), &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	compiled, err := Compile(raw)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	if len(compiled.Allow) != 2 {
+		t.Fatalf("unexpected allow rule count: got %d want 2", len(compiled.Allow))
+	}
+	if got, want := compiled.Allow[0].Host, "github.com"; got != want {
+		t.Fatalf("unexpected first allow host: got %q want %q", got, want)
+	}
+	if got, want := compiled.Allow[0].Ports, []int{443}; len(got) != len(want) || got[0] != want[0] {
+		t.Fatalf("unexpected first allow ports: got %v want %v", got, want)
+	}
+	if got, want := compiled.Allow[1].Host, "registry.npmjs.org"; got != want {
+		t.Fatalf("unexpected second allow host: got %q want %q", got, want)
+	}
+	if got, want := compiled.Allow[1].Ports, []int{80, 443}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("unexpected second allow ports: got %v want %v", got, want)
+	}
+}
+
+func TestCompileNormalizesNetworkAllowScalar(t *testing.T) {
+	t.Parallel()
+
+	var raw rawPolicy
+	if err := yaml.Unmarshal([]byte(`
+version: 1
+sandbox:
+  image:
+    ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  network:
+    default: deny
+    allow: proxy.golang.org:443
+`), &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	compiled, err := Compile(raw)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if len(compiled.Allow) != 1 {
+		t.Fatalf("unexpected allow rule count: got %d want 1", len(compiled.Allow))
+	}
+	if !compiled.Allows("proxy.golang.org", 443) {
+		t.Fatal("expected proxy.golang.org:443 to be allowed")
+	}
+	if compiled.Allows("proxy.golang.org", 80) {
+		t.Fatal("did not expect proxy.golang.org:80 to be allowed")
+	}
+}
+
+func TestUnmarshalRejectsInvalidNetworkAllowShorthand(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name     string
+		allow    string
+		contains string
+	}{
+		{name: "bare host", allow: "github.com", contains: "host:port"},
+		{name: "url", allow: "https://github.com:443", contains: "not a URL"},
+		{name: "invalid port", allow: "github.com:notaport", contains: "invalid port"},
+		{name: "zero port", allow: "github.com:0", contains: "invalid port 0"},
+		{name: "ipv6", allow: `"[2001:db8::1]:443"`, contains: "does not support IPv6"},
+		{name: "non string", allow: "[443]", contains: "host:port string or mapping"},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var raw rawPolicy
+			err := yaml.Unmarshal([]byte(`
+version: 1
+sandbox:
+  image:
+    ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  network:
+    default: deny
+    allow: `+tc.allow+`
+`), &raw)
+			if err == nil {
+				t.Fatal("expected unmarshal to reject invalid network allow shorthand")
+			}
+			if !strings.Contains(err.Error(), tc.contains) {
+				t.Fatalf("unexpected error: got %v want substring %q", err, tc.contains)
+			}
+		})
+	}
+}
+
+func TestUnmarshalRejectsUnknownNetworkAllowField(t *testing.T) {
+	t.Parallel()
+
+	var raw rawPolicy
+	err := yaml.Unmarshal([]byte(`
+version: 1
+sandbox:
+  image:
+    ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  network:
+    default: deny
+    allow:
+      - host: github.com
+        ports: [443]
+        protocol: tcp
+`), &raw)
+	if err == nil {
+		t.Fatal("expected unmarshal to reject unknown network allow field")
+	}
+	if !strings.Contains(err.Error(), "protocol") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
