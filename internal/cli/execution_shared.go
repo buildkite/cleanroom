@@ -97,6 +97,7 @@ func resolveExecutionSandbox(
 	workspaceRoot := ""
 	if copyFlags.Copy && fromSnapshot == "" {
 		changesetAppliedDuringCreate := existingSandboxID == "" && repository != nil && changeset != nil
+		copyRepository := repository
 		if repository == nil {
 			workspaceRoot, err = resolveSandboxWorkspaceDestination(callCtx, client, sandboxID)
 			if err != nil {
@@ -110,14 +111,14 @@ func resolveExecutionSandbox(
 			if err != nil {
 				return nil, err
 			}
-			repository = effectiveRepository
-			workspaceRoot = repository.DestinationDir
+			copyRepository = effectiveRepository
+			workspaceRoot = effectiveRepository.DestinationDir
 		}
 		if !changesetAppliedDuringCreate {
 			if err := copyWorkspaceToSandbox(callCtx, ctx, client, workspaceCopyOptions{
 				CWD:           cwd,
 				SandboxID:     sandboxID,
-				Repository:    repository,
+				Repository:    copyRepository,
 				Destination:   workspaceRoot,
 				ForceGitReset: existingSandboxID != "",
 			}); err != nil {
@@ -125,6 +126,9 @@ func resolveExecutionSandbox(
 					terminateSandboxBestEffort(callCtx, client, sandboxID, 0, nil, "")
 				}
 				return nil, err
+			}
+			if existingSandboxID != "" && copyRepository != nil {
+				repository = nil
 			}
 		}
 	}

@@ -217,7 +217,7 @@ func TestWorkspaceCopyResetsGitCheckoutWhenLocalRepoClean(t *testing.T) {
 	}
 }
 
-func TestResolveExecutionSandboxReturnsSandboxWorkspaceRootAfterGitCopyInExistingSandbox(t *testing.T) {
+func TestResolveExecutionSandboxClearsRepositoryAfterGitCopyInExistingSandbox(t *testing.T) {
 	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
 
 	adapter := &integrationAdapter{}
@@ -259,11 +259,11 @@ func TestResolveExecutionSandboxReturnsSandboxWorkspaceRootAfterGitCopyInExistin
 	if err != nil {
 		t.Fatalf("resolveExecutionSandbox returned error: %v", err)
 	}
-	if target.Repository == nil {
-		t.Fatal("expected returned execution sandbox to include repository checkout")
+	if target.Repository != nil {
+		t.Fatalf("expected returned execution sandbox to avoid repository checkout after copy, got %#v", target.Repository)
 	}
-	if got, want := target.Repository.DestinationDir, "/sandbox-workspace"; got != want {
-		t.Fatalf("unexpected returned repository destination: got %q want %q", got, want)
+	if got, want := target.WorkspaceRoot, "/sandbox-workspace"; got != want {
+		t.Fatalf("unexpected returned workspace root: got %q want %q", got, want)
 	}
 }
 
@@ -678,6 +678,38 @@ func TestWorkspaceCopyRejectsRawCopyWhenSandboxWorkspaceRootUnknown(t *testing.T
 	})
 	if err == nil {
 		t.Fatal("expected raw workspace copy to reject sandbox without recorded workspace root")
+	}
+	if !strings.Contains(err.Error(), "does not have a recorded workspace root") {
+		t.Fatalf("expected recorded workspace root error, got %v", err)
+	}
+}
+
+func TestWorkspaceCopyRejectsGitCopyWhenSandboxWorkspaceRootUnknown(t *testing.T) {
+	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
+	if err := os.WriteFile(filepath.Join(repoDir, "dirty.txt"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatalf("write dirty file: %v", err)
+	}
+	adapter := &integrationAdapter{}
+	host, _ := startIntegrationServer(t, adapter)
+	sandboxID := createWorkspaceCopyTestSandbox(t, host, workspaceCopyTestPolicy())
+
+	stdout, _ := makeStdoutCapture(t)
+	stderr, _ := makeStdoutCapture(t)
+	cmd := WorkspaceCopyCommand{
+		clientFlags: clientFlags{Host: host},
+		Chdir:       repoDir,
+		SandboxID:   sandboxID,
+	}
+	err := cmd.Run(&runtimeContext{
+		CWD:           repoDir,
+		Loader:        workspaceCopyRepositoryLoader(),
+		Config:        runtimeconfig.Config{},
+		Observability: newTestObservability(t),
+		Stdout:        stdout,
+		Stderr:        stderr,
+	})
+	if err == nil {
+		t.Fatal("expected git workspace copy to reject sandbox without recorded workspace root")
 	}
 	if !strings.Contains(err.Error(), "does not have a recorded workspace root") {
 		t.Fatalf("expected recorded workspace root error, got %v", err)

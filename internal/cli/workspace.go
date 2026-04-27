@@ -132,16 +132,10 @@ func resolveGitWorkspaceCheckout(callCtx context.Context, client *controlclient.
 	destination := strings.TrimSpace(opts.Destination)
 	if destination == "" {
 		var err error
-		destination, err = resolveSandboxWorkspaceDestinationIfRecorded(callCtx, client, opts.SandboxID)
+		destination, err = resolveSandboxWorkspaceDestination(callCtx, client, opts.SandboxID)
 		if err != nil {
 			return nil, nil, err
 		}
-	}
-	if destination == "" {
-		destination = strings.TrimSpace(repository.DestinationDir)
-	}
-	if destination == "" {
-		return nil, nil, errors.New("workspace copy requires a repository destination")
 	}
 	effectiveRepository := *repository
 	effectiveRepository.DestinationDir = destination
