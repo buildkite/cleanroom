@@ -70,15 +70,11 @@ type gatewayRequestObservability struct {
 }
 
 // ScopeTokenHeader is the request header used for capability-token fallback
-// identity when source-IP identity is unavailable (for example darwin NAT).
+// identity when source-IP identity is unavailable.
 const ScopeTokenHeader = "X-Cleanroom-Scope-Token"
 
-var defaultDarwinVZScopeTokenSourcePrefix = netip.MustParsePrefix("192.168.64.0/24")
-
 func defaultScopeTokenSourcePolicy() ScopeTokenSourcePolicy {
-	return ScopeTokenSourcePolicy{
-		TrustedSourcePrefixes: []netip.Prefix{defaultDarwinVZScopeTokenSourcePrefix},
-	}
+	return ScopeTokenSourcePolicy{}
 }
 
 // ScopeFromContext retrieves the SandboxScope injected by identity middleware.
