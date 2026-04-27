@@ -236,10 +236,8 @@ sandbox:
   network:
     default: deny
     allow:
-      - host: api.github.com
-        ports: [443]
-      - host: registry.npmjs.org
-        ports: [443]
+      - api.github.com:443
+      - registry.npmjs.org:443
 ```
 
 `sandbox.resources` is optional and declares backend-neutral minimum workload
@@ -307,9 +305,7 @@ example:
 sandbox:
   network:
     default: deny
-    allow:
-      - host: github.com
-        ports: [443]
+    allow: github.com:443
 ```
 
 ## Backend support

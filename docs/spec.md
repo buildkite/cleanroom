@@ -100,12 +100,9 @@ sandbox:
   network:
     default: deny
     allow:
-      - host: api.github.com
-        ports: [443]
-      - host: proxy.golang.org
-        ports: [443]
-      - host: sum.golang.org
-        ports: [443]
+      - api.github.com:443
+      - proxy.golang.org:443
+      - sum.golang.org:443
 ```
 
 ### 5.1.1 Repository bootstrap config
@@ -170,8 +167,14 @@ explicit request-time changeset input.
 - `sandbox.run.before` defaults to unset; when present, each execution runs that shell command in the repository workdir immediately before the requested command.
 - `sandbox.run.before` must be a YAML string or block string and executes as `sh -lc <value>`.
 - Policy schema intentionally has no field for implicit dirty-worktree inclusion; explicit local modifications are a separate request-time changeset input.
-- `sandbox.network.allow` defaults to empty. Each entry must include an exact
-  `host` value and at least one explicit port in `ports`.
+- `sandbox.network.allow` defaults to empty. It accepts either a sequence of
+  entries or a single scalar entry.
+- An allow entry may be a mapping with an exact `host` value and at least one
+  explicit port in `ports`, or the scalar shorthand `host:port`.
+- The `host:port` shorthand must include one explicit port from 1 to 65535.
+  Bare hosts, URLs, paths, port ranges, and IPv6 literals are not accepted in
+  shorthand form. Use the mapping form for hosts that cannot be represented
+  unambiguously as `host:port`.
 - Host matching is exact after trimming whitespace and lowercasing the policy
   and requested host values. Wildcards and CIDR ranges are not part of the
   current policy-file schema.
