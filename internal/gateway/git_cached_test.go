@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -37,6 +38,26 @@ func cachedGitTestScope() *SandboxScope {
 	}
 }
 
+func withGatewayRequestObservability(r *http.Request) (*http.Request, *gatewayRequestObservability) {
+	obs := &gatewayRequestObservability{}
+	ctx := context.WithValue(r.Context(), gatewayRequestContextKey, obs)
+	return r.WithContext(ctx), obs
+}
+
+func requireGatewayRequestDecision(t *testing.T, obs *gatewayRequestObservability, action, reason string) {
+	t.Helper()
+
+	if obs == nil {
+		t.Fatal("missing gateway request observability")
+	}
+	if obs.action != action {
+		t.Fatalf("expected gateway action %q, got %q", action, obs.action)
+	}
+	if obs.reasonCode != reason {
+		t.Fatalf("expected gateway reason %q, got %q", reason, obs.reasonCode)
+	}
+}
+
 func TestCachedGitHandlerPolicyDeniesUnallowedHost(t *testing.T) {
 	t.Parallel()
 
@@ -47,6 +68,7 @@ func TestCachedGitHandlerPolicyDeniesUnallowedHost(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "/git/evil.com/org/repo.git/info/refs?service=git-upload-pack", nil)
 	req = withScope(req, cachedGitTestScope())
+	req, obs := withGatewayRequestObservability(req)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 
@@ -56,6 +78,7 @@ func TestCachedGitHandlerPolicyDeniesUnallowedHost(t *testing.T) {
 	if got := w.Header().Get(reasonCodeHeader); got != reasonHostNotAllowed {
 		t.Fatalf("expected reason %s, got %q", reasonHostNotAllowed, got)
 	}
+	requireGatewayRequestDecision(t, obs, gatewayActionDeny, reasonHostNotAllowed)
 }
 
 func TestCachedGitHandlerRejectsReceivePack(t *testing.T) {
@@ -68,12 +91,14 @@ func TestCachedGitHandlerRejectsReceivePack(t *testing.T) {
 
 	req := httptest.NewRequest("POST", "/git/github.com/org/repo.git/git-receive-pack", nil)
 	req = withScope(req, cachedGitTestScope())
+	req, obs := withGatewayRequestObservability(req)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("expected 403, got %d", w.Code)
 	}
+	requireGatewayRequestDecision(t, obs, gatewayActionDeny, reasonMethodNotAllowed)
 }
 
 func TestCachedGitHandlerNoScope(t *testing.T) {
@@ -106,6 +131,7 @@ func TestCachedGitHandlerStripsGitPrefixAndDelegates(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "/git/github.com/org/repo.git/info/refs?service=git-upload-pack", nil)
 	req = withScope(req, cachedGitTestScope())
+	req, obs := withGatewayRequestObservability(req)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 
@@ -118,6 +144,7 @@ func TestCachedGitHandlerStripsGitPrefixAndDelegates(t *testing.T) {
 	if provider.host != "github.com" {
 		t.Fatalf("expected git cache host github.com, got %q", provider.host)
 	}
+	requireGatewayRequestDecision(t, obs, gatewayActionAllow, reasonCached)
 }
 
 func TestCachedGitHandlerUploadPackDelegates(t *testing.T) {
@@ -134,6 +161,7 @@ func TestCachedGitHandlerUploadPackDelegates(t *testing.T) {
 
 	req := httptest.NewRequest("POST", "/git/github.com/org/repo.git/git-upload-pack", nil)
 	req = withScope(req, cachedGitTestScope())
+	req, obs := withGatewayRequestObservability(req)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 
@@ -149,6 +177,7 @@ func TestCachedGitHandlerUploadPackDelegates(t *testing.T) {
 	if provider.host != "github.com" {
 		t.Fatalf("expected git cache host github.com, got %q", provider.host)
 	}
+	requireGatewayRequestDecision(t, obs, gatewayActionAllow, reasonCached)
 }
 
 func TestCachedGitHandlerFallsBackForUnconfiguredCacheHost(t *testing.T) {
@@ -177,6 +206,7 @@ func TestCachedGitHandlerFallsBackForUnconfiguredCacheHost(t *testing.T) {
 			},
 		},
 	})
+	req, obs := withGatewayRequestObservability(req)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 
@@ -192,6 +222,7 @@ func TestCachedGitHandlerFallsBackForUnconfiguredCacheHost(t *testing.T) {
 	if provider.host != "github.enterprise.test" {
 		t.Fatalf("expected cache host lookup for github.enterprise.test, got %q", provider.host)
 	}
+	requireGatewayRequestDecision(t, obs, gatewayActionAllow, reasonFallback)
 }
 
 func TestCachedGitHandlerFallsBackForNonDotGitRemotes(t *testing.T) {
@@ -212,6 +243,7 @@ func TestCachedGitHandlerFallsBackForNonDotGitRemotes(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "/git/github.com/org/repo/info/refs?service=git-upload-pack", nil)
 	req = withScope(req, cachedGitTestScope())
+	req, obs := withGatewayRequestObservability(req)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 
@@ -227,4 +259,5 @@ func TestCachedGitHandlerFallsBackForNonDotGitRemotes(t *testing.T) {
 	if provider.host != "" {
 		t.Fatalf("expected cache host lookup to be skipped, got %q", provider.host)
 	}
+	requireGatewayRequestDecision(t, obs, gatewayActionAllow, reasonFallback)
 }

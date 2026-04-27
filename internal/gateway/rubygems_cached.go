@@ -34,17 +34,20 @@ func (h *cachedRubyGemsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 	}
 
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		setGatewayRequestDecision(r.Context(), gatewayActionDeny, reasonMethodNotAllowed)
 		writeReasonError(w, http.StatusMethodNotAllowed, reasonMethodNotAllowed, "only GET and HEAD are permitted for rubygems")
 		return
 	}
 
 	policyHost, policyPort, upstreamHost, _, err := h.cache.RubyGemsUpstream()
 	if err != nil {
+		setGatewayRequestDecision(r.Context(), gatewayActionDeny, reasonUpstreamError)
 		h.auditLog(r.Context(), scope.SandboxID, "rubygems", gatewayActionDeny, reasonRubyGemsUnavailable)
 		writeReasonError(w, http.StatusBadGateway, reasonUpstreamError, "rubygems cache is not configured")
 		return
 	}
 	if !scope.Policy.Allows(policyHost, policyPort) {
+		setGatewayRequestDecision(r.Context(), gatewayActionDeny, reasonHostNotAllowed)
 		h.auditLog(r.Context(), scope.SandboxID, policyHost, gatewayActionDeny, reasonHostNotAllowed)
 		writeReasonError(w, http.StatusForbidden, reasonHostNotAllowed, "upstream rubygems host is not allowed by sandbox policy")
 		return
@@ -52,11 +55,13 @@ func (h *cachedRubyGemsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 
 	handler, err := h.cache.RubyGemsHandler()
 	if err != nil {
+		setGatewayRequestDecision(r.Context(), gatewayActionDeny, reasonUpstreamError)
 		h.auditLog(r.Context(), scope.SandboxID, "rubygems", gatewayActionDeny, reasonRubyGemsUnavailable)
 		writeReasonError(w, http.StatusBadGateway, reasonUpstreamError, "rubygems cache is not configured")
 		return
 	}
 
+	setGatewayRequestDecision(r.Context(), gatewayActionAllow, reasonCached)
 	h.auditLog(r.Context(), scope.SandboxID, upstreamHost, gatewayActionAllow, reasonCached)
 
 	r = r.Clone(r.Context())
