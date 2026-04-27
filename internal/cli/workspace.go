@@ -210,7 +210,24 @@ func copyRawWorkspaceToSandbox(callCtx context.Context, ctx *runtimeContext, cli
 }
 
 func cleanRawWorkspaceDestination(callCtx context.Context, ctx *runtimeContext, client *controlclient.Client, sandboxID, destination string) error {
-	return runWorkspaceExecution(callCtx, ctx, client, sandboxID, nil, rawWorkspaceCleanCommand(destination), nil)
+	state, err := sandboxDestinationDirectoryState(tracePreservingContext(callCtx), client, sandboxID, destination)
+	if err != nil {
+		return fmt.Errorf("inspect sandbox workspace destination: %w", err)
+	}
+	switch state {
+	case sandboxDestinationMissing:
+		return nil
+	case sandboxDestinationOther:
+		if _, err := client.RemoveSandboxPath(tracePreservingContext(callCtx), &cleanroomv1.RemoveSandboxPathRequest{
+			SandboxId: sandboxID,
+			Path:      destination,
+		}); err != nil && !isSandboxPathNotFoundError(err) {
+			return fmt.Errorf("remove non-directory workspace destination: %w", err)
+		}
+		return nil
+	default:
+		return runWorkspaceExecution(callCtx, ctx, client, sandboxID, nil, rawWorkspaceCleanCommand(destination), nil)
+	}
 }
 
 func rawWorkspaceCleanCommand(destination string) []string {

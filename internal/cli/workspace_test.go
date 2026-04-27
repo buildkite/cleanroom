@@ -289,6 +289,12 @@ func TestWorkspaceCopyUsesRawArchiveForNonGitWorkspace(t *testing.T) {
 		files       = map[string]string{}
 	)
 	adapter := &copyIntegrationAdapter{
+		statFn: func(_ context.Context, _ string, path string) (*backend.SandboxPathInfo, error) {
+			return &backend.SandboxPathInfo{
+				Path: path,
+				Type: backend.SandboxPathTypeDirectory,
+			}, nil
+		},
 		extractFn: func(_ context.Context, _ string, dest string, r io.Reader) (int64, error) {
 			destination = dest
 			tr := tar.NewReader(r)
@@ -359,6 +365,88 @@ func TestWorkspaceCopyUsesRawArchiveForNonGitWorkspace(t *testing.T) {
 	}
 	if _, ok := files["app/submodule/.git"]; ok {
 		t.Fatalf("expected .git file to be skipped, got files %#v", files)
+	}
+}
+
+func TestWorkspaceCopySkipsRawCleanWhenDestinationMissing(t *testing.T) {
+	sourceRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(sourceRoot, "app"), 0o755); err != nil {
+		t.Fatalf("create app dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceRoot, "app/main.txt"), []byte("payload\n"), 0o644); err != nil {
+		t.Fatalf("write workspace file: %v", err)
+	}
+
+	var (
+		mu          sync.Mutex
+		commands    [][]string
+		destination string
+		files       = map[string]string{}
+	)
+	adapter := &copyIntegrationAdapter{
+		statFn: func(_ context.Context, _ string, path string) (*backend.SandboxPathInfo, error) {
+			return nil, backend.NewSandboxPathNotFoundError(path)
+		},
+		extractFn: func(_ context.Context, _ string, dest string, r io.Reader) (int64, error) {
+			destination = dest
+			tr := tar.NewReader(r)
+			for {
+				header, err := tr.Next()
+				if errors.Is(err, io.EOF) {
+					break
+				}
+				if err != nil {
+					return 0, err
+				}
+				if header.Typeflag != tar.TypeReg {
+					continue
+				}
+				data, err := io.ReadAll(tr)
+				if err != nil {
+					return 0, err
+				}
+				files[header.Name] = string(data)
+			}
+			return 0, nil
+		},
+	}
+	host, _ := startIntegrationServer(t, adapter)
+	sandboxID := createWorkspaceCopyTestSandboxWithRepository(t, host, "/workspace-app")
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
+		mu.Lock()
+		commands = append(commands, append([]string(nil), req.Command...))
+		mu.Unlock()
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+	}
+	stdout, _ := makeStdoutCapture(t)
+	stderr, _ := makeStdoutCapture(t)
+
+	cmd := WorkspaceCopyCommand{
+		clientFlags: clientFlags{Host: host},
+		Chdir:       sourceRoot,
+		SandboxID:   sandboxID,
+	}
+	if err := cmd.Run(&runtimeContext{
+		CWD:           sourceRoot,
+		Loader:        repositoryNotFoundLoader{},
+		Config:        runtimeconfig.Config{},
+		Observability: newTestObservability(t),
+		Stdout:        stdout,
+		Stderr:        stderr,
+	}); err != nil {
+		t.Fatalf("WorkspaceCopyCommand.Run returned error: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(commands) != 0 {
+		t.Fatalf("expected missing raw workspace destination to skip clean execution, got %d command(s)", len(commands))
+	}
+	if got, want := destination, "/workspace-app"; got != want {
+		t.Fatalf("unexpected extract destination: got %q want %q", got, want)
+	}
+	if got, want := files["app/main.txt"], "payload\n"; got != want {
+		t.Fatalf("unexpected archived file content: got %q want %q", got, want)
 	}
 }
 
