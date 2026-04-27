@@ -103,6 +103,29 @@ func TestRuntimeAllowsConnectionFromObservedAllowedAddress(t *testing.T) {
 	}
 }
 
+func TestRuntimeAllowDefaultPermitsConnectionWithoutDNSObservation(t *testing.T) {
+	t.Parallel()
+
+	runtime := NewRuntime(RuntimeConfig{})
+	if err := runtime.RegisterSandbox("sandbox-1", &policy.CompiledPolicy{
+		Version:        1,
+		NetworkDefault: "allow",
+	}); err != nil {
+		t.Fatalf("register sandbox: %v", err)
+	}
+
+	if !runtime.AllowConnection(Connection{
+		SandboxID:  "sandbox-1",
+		SourceIP:   netip.MustParseAddr("10.0.0.2"),
+		SourcePort: 40000,
+		DestIP:     netip.MustParseAddr("93.184.216.34"),
+		DestPort:   443,
+		Protocol:   ProtocolTCP,
+	}, time.Date(2026, time.April, 27, 10, 0, 0, 0, time.UTC)) {
+		t.Fatal("expected allow-default policy to permit arbitrary connection")
+	}
+}
+
 func TestRuntimeHonoursMinimumTTLAcrossCNAMEChainAndKeepsEstablishedConnections(t *testing.T) {
 	t.Parallel()
 

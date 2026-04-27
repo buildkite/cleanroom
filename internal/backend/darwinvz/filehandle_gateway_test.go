@@ -137,6 +137,20 @@ func TestNewFileHandleDNSRuntimeRequiresSandboxIDWhenPolicyPresent(t *testing.T)
 	}
 }
 
+func TestNewFileHandleDNSRuntimeAcceptsAllowDefaultPolicy(t *testing.T) {
+	t.Parallel()
+
+	runtime, err := newFileHandleDNSRuntime("sandbox-1", &policy.CompiledPolicy{
+		NetworkDefault: "allow",
+	})
+	if err != nil {
+		t.Fatalf("newFileHandleDNSRuntime returned error: %v", err)
+	}
+	if !runtime.HostAllowedByPolicy("sandbox-1", "example.com") {
+		t.Fatal("expected allow-default policy to allow arbitrary hosts")
+	}
+}
+
 func TestResolveFileHandleDNSUpstreamAddrUsesConfiguredValue(t *testing.T) {
 	t.Parallel()
 

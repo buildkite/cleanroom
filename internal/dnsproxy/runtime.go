@@ -330,6 +330,9 @@ func (r *Runtime) AllowConnection(conn Connection, now time.Time) bool {
 	if !ok {
 		return false
 	}
+	if state.allowsAllConnections() {
+		return true
+	}
 
 	key := connectionKey{
 		sourceIP:   conn.SourceIP,
@@ -516,6 +519,10 @@ func (s *sandboxState) observationAllowsPort(observation Observation, port int) 
 		return true
 	}
 	return false
+}
+
+func (s *sandboxState) allowsAllConnections() bool {
+	return s != nil && s.policy != nil && strings.TrimSpace(strings.ToLower(s.policy.NetworkDefault)) == "allow"
 }
 
 func (s *sandboxState) observationAllowedPorts(observation Observation) []int {
