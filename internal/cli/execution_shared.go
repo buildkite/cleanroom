@@ -98,7 +98,7 @@ func resolveExecutionSandbox(
 	if copyFlags.Copy && fromSnapshot == "" {
 		changesetAppliedDuringCreate := existingSandboxID == "" && repository != nil && changeset != nil
 		if repository == nil {
-			workspaceRoot, err = resolveWorkspaceDestinationRoot(cwd, ctx.Loader)
+			workspaceRoot, err = resolveSandboxWorkspaceDestination(callCtx, client, sandboxID)
 			if err != nil {
 				return nil, err
 			}
@@ -108,6 +108,7 @@ func resolveExecutionSandbox(
 				CWD:           cwd,
 				SandboxID:     sandboxID,
 				Repository:    repository,
+				Destination:   workspaceRoot,
 				ForceGitReset: existingSandboxID != "",
 			}); err != nil {
 				if createdSandbox {

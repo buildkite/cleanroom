@@ -36,6 +36,7 @@ type workspaceCopyOptions struct {
 	SandboxID     string
 	DryRun        bool
 	Repository    *resolvedRepositoryCheckout
+	Destination   string
 	ForceGitReset bool
 }
 
@@ -146,9 +147,13 @@ func gitWorkspacePlan(destination string, files []repositorychangeset.File) []wo
 }
 
 func copyRawWorkspaceToSandbox(callCtx context.Context, ctx *runtimeContext, client *controlclient.Client, opts workspaceCopyOptions) error {
-	destination, err := resolveWorkspaceDestinationRoot(opts.CWD, ctx.Loader)
-	if err != nil {
-		return err
+	destination := strings.TrimSpace(opts.Destination)
+	if destination == "" {
+		var err error
+		destination, err = resolveSandboxWorkspaceDestination(callCtx, client, opts.SandboxID)
+		if err != nil {
+			return err
+		}
 	}
 	if err := validateRawWorkspaceDestinationRoot(destination); err != nil {
 		return err
@@ -176,18 +181,25 @@ func copyRawWorkspaceToSandbox(callCtx context.Context, ctx *runtimeContext, cli
 	return nil
 }
 
-func resolveWorkspaceDestinationRoot(cwd string, loader policyLoader) (string, error) {
-	repository, err := loadRepositoryConfig(cwd, loader)
+func resolveSandboxWorkspaceDestination(callCtx context.Context, client *controlclient.Client, sandboxID string) (string, error) {
+	if client == nil {
+		return "", errors.New("workspace copy requires a control client")
+	}
+	resp, err := client.GetSandbox(tracePreservingContext(callCtx), &cleanroomv1.GetSandboxRequest{
+		SandboxId: sandboxID,
+	})
 	if err != nil {
-		if errors.Is(err, errSkipRepositoryCheckout) {
-			return defaultRepositoryOverridePath, nil
-		}
-		return "", err
+		return "", fmt.Errorf("inspect sandbox workspace: %w", err)
 	}
-	if strings.TrimSpace(repository.Path) == "" {
-		return defaultRepositoryOverridePath, nil
+	sandbox := resp.GetSandbox()
+	if sandbox == nil {
+		return "", fmt.Errorf("sandbox %q not found", sandboxID)
 	}
-	return repository.Path, nil
+	destination := strings.TrimSpace(sandbox.GetRepositoryCheckout().GetDestinationDir())
+	if destination == "" {
+		return "", fmt.Errorf("sandbox %q does not have a recorded workspace root; create it from a repository checkout or use cleanroom copy for explicit paths", sandboxID)
+	}
+	return destination, nil
 }
 
 func validateRawWorkspaceDestinationRoot(destination string) error {

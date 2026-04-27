@@ -157,13 +157,14 @@ cleanroom workspace copy --dry-run <sandbox-id>
 Default behavior:
 
 - source: the caller's local repository/workspace root
-- destination: the sandbox workspace root, resolved from `repository.path` and
-  normally `/workspace`
+- destination: the sandbox's recorded workspace root, resolved from
+  `repository.path` at sandbox creation and normally `/workspace`
 - mirror local additions, modifications, and deletes from the included
   workspace file set into the cleanroom workspace
 - skip `.git/`
 - if the source is a Git worktree, package and apply a repository changeset
-- if the source is not a Git worktree, use raw workspace transfer
+- if the source is not a Git worktree, use raw workspace transfer, but refuse
+  when the sandbox does not expose a recorded workspace root
 - honor Git ignore rules by default for Git-backed source workspaces
 - record the local binding and manifest needed for later export conflict
   checks

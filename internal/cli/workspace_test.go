@@ -284,7 +284,7 @@ func TestWorkspaceCopyUsesRawArchiveForNonGitWorkspace(t *testing.T) {
 		},
 	}
 	host, _ := startIntegrationServer(t, adapter)
-	sandboxID := createWorkspaceCopyTestSandbox(t, host, copyTestPolicy())
+	sandboxID := createWorkspaceCopyTestSandboxWithRepository(t, host, "/workspace-app")
 	stdout, _ := makeStdoutCapture(t)
 	stderr, _ := makeStdoutCapture(t)
 
@@ -304,13 +304,13 @@ func TestWorkspaceCopyUsesRawArchiveForNonGitWorkspace(t *testing.T) {
 		t.Fatalf("WorkspaceCopyCommand.Run returned error: %v", err)
 	}
 
-	if got, want := removedPath, "/workspace"; got != want {
+	if got, want := removedPath, "/workspace-app"; got != want {
 		t.Fatalf("unexpected removed workspace root: got %q want %q", got, want)
 	}
 	if !recursive {
 		t.Fatal("expected workspace root removal to be recursive")
 	}
-	if got, want := destination, "/workspace"; got != want {
+	if got, want := destination, "/workspace-app"; got != want {
 		t.Fatalf("unexpected extract destination: got %q want %q", got, want)
 	}
 	if got, want := files["app/main.txt"], "payload\n"; got != want {
@@ -323,22 +323,45 @@ func TestWorkspaceCopyUsesRawArchiveForNonGitWorkspace(t *testing.T) {
 
 func TestWorkspaceCopyRejectsUnsafeRawDestinationRoot(t *testing.T) {
 	sourceRoot := t.TempDir()
-	err := copyRawWorkspaceToSandbox(context.Background(), &runtimeContext{
-		Loader: repositoryIntegrationLoader{
-			repository: policy.RepositoryConfig{
-				Mode: "current-repo",
-				Path: "/",
-			},
-		},
-	}, nil, workspaceCopyOptions{
-		CWD:       sourceRoot,
-		SandboxID: "cr_123",
+	err := copyRawWorkspaceToSandbox(context.Background(), &runtimeContext{}, nil, workspaceCopyOptions{
+		CWD:         sourceRoot,
+		SandboxID:   "cr_123",
+		Destination: "/",
 	})
 	if err == nil {
 		t.Fatal("expected unsafe raw workspace destination to be rejected")
 	}
 	if !strings.Contains(err.Error(), "unsafe for raw workspace copy") {
 		t.Fatalf("expected unsafe destination error, got %v", err)
+	}
+}
+
+func TestWorkspaceCopyRejectsRawCopyWhenSandboxWorkspaceRootUnknown(t *testing.T) {
+	sourceRoot := t.TempDir()
+	adapter := &copyIntegrationAdapter{}
+	host, _ := startIntegrationServer(t, adapter)
+	sandboxID := createWorkspaceCopyTestSandbox(t, host, copyTestPolicy())
+
+	stdout, _ := makeStdoutCapture(t)
+	stderr, _ := makeStdoutCapture(t)
+	cmd := WorkspaceCopyCommand{
+		clientFlags: clientFlags{Host: host},
+		Chdir:       sourceRoot,
+		SandboxID:   sandboxID,
+	}
+	err := cmd.Run(&runtimeContext{
+		CWD:           sourceRoot,
+		Loader:        repositoryNotFoundLoader{},
+		Config:        runtimeconfig.Config{},
+		Observability: newTestObservability(t),
+		Stdout:        stdout,
+		Stderr:        stderr,
+	})
+	if err == nil {
+		t.Fatal("expected raw workspace copy to reject sandbox without recorded workspace root")
+	}
+	if !strings.Contains(err.Error(), "does not have a recorded workspace root") {
+		t.Fatalf("expected recorded workspace root error, got %v", err)
 	}
 }
 
@@ -358,6 +381,7 @@ func TestTopLevelCopyRejectsNonGitWorkspaceWhenCreatingSandbox(t *testing.T) {
 		"",
 		"",
 		0,
+		false,
 		repositoryOverrideFlags{},
 		workspaceCopyFlags{Copy: true},
 	)
@@ -376,6 +400,29 @@ func createWorkspaceCopyTestSandbox(t *testing.T, host string, compiled *cleanro
 	resp, err := client.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
 		Backend: "firecracker",
 		Policy:  compiled,
+	})
+	if err != nil {
+		t.Fatalf("create sandbox: %v", err)
+	}
+	sandboxID := strings.TrimSpace(resp.GetSandbox().GetSandboxId())
+	if sandboxID == "" {
+		t.Fatal("create sandbox response missing sandbox id")
+	}
+	return sandboxID
+}
+
+func createWorkspaceCopyTestSandboxWithRepository(t *testing.T, host, destination string) string {
+	t.Helper()
+
+	client := mustNewControlClient(t, host)
+	resp, err := client.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Backend: "firecracker",
+		Policy:  workspaceCopyTestPolicy(),
+		RepositoryCheckout: &cleanroomv1.RepositoryCheckout{
+			RemoteUrl:      "https://github.com/buildkite/cleanroom.git",
+			CommitSha:      "0123456789abcdef0123456789abcdef01234567",
+			DestinationDir: destination,
+		},
 	})
 	if err != nil {
 		t.Fatalf("create sandbox: %v", err)
