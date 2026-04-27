@@ -58,3 +58,12 @@ func TestGuestInitScriptAddsLocalhostHostsEntries(t *testing.T) {
 		t.Fatal("expected localhost hosts entry helper to append lines best-effort")
 	}
 }
+
+func TestGuestInitScriptConfiguresLoopback(t *testing.T) {
+	if !strings.Contains(guestInitScriptTemplate, "ip link set dev lo up") {
+		t.Fatal("expected init script to bring up loopback")
+	}
+	if !strings.Contains(guestInitScriptTemplate, "ip addr add 127.0.0.1/8 dev lo") {
+		t.Fatal("expected init script to configure IPv4 loopback")
+	}
+}

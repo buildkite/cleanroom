@@ -78,6 +78,15 @@ func TestGuestInitScriptBootstrapsNetwork(t *testing.T) {
 	}
 }
 
+func TestGuestInitScriptConfiguresLoopback(t *testing.T) {
+	if !strings.Contains(guestInitScriptTemplate, "ip link set lo up") {
+		t.Fatal("expected init script to bring up loopback")
+	}
+	if !strings.Contains(guestInitScriptTemplate, "ip addr add 127.0.0.1/8 dev lo") {
+		t.Fatal("expected init script to configure IPv4 loopback")
+	}
+}
+
 func TestGuestInitScriptAutostartsDockerWhenAvailable(t *testing.T) {
 	if !strings.Contains(guestInitScriptTemplate, "DOCKER_REQUIRED=\"$(arg_value cleanroom_service_docker_required || true)\"") {
 		t.Fatal("expected docker service required flag lookup in init script")

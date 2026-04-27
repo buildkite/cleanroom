@@ -172,6 +172,15 @@ append_hosts_line_if_missing() {
 append_hosts_line_if_missing '^[[:space:]]*127\.0\.0\.1([[:space:]]|$).*localhost([[:space:]]|$)' '127.0.0.1 localhost'
 append_hosts_line_if_missing '^[[:space:]]*::1([[:space:]]|$).*localhost([[:space:]]|$)' '::1 localhost ip6-localhost ip6-loopback'
 
+if command -v ip >/dev/null 2>&1; then
+  ip link set dev lo up 2>/dev/null || true
+  ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
+  ip -6 addr add ::1/128 dev lo 2>/dev/null || true
+elif command -v ifconfig >/dev/null 2>&1; then
+  ifconfig lo 127.0.0.1 netmask 255.0.0.0 up 2>/dev/null || true
+  ifconfig lo inet6 ::1/128 up 2>/dev/null || true
+fi
+
 cmdline="$(cat /proc/cmdline 2>/dev/null || true)"
 arg_value() {
   key="$1"
