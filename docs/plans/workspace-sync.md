@@ -132,8 +132,13 @@ the source workspace:
 - Non-Git source: raw workspace transfer using the backend-neutral
   file/path/archive layer.
 
-Top-level `--copy` must call the same copy operation as
-`cleanroom workspace copy`; it is not a separate changeset-only mode.
+Top-level `--copy` should call the same copy operation as
+`cleanroom workspace copy`; it is not a separate changeset-only mode. The
+first implementation keeps that guarantee for Git-backed workspaces. For
+non-Git workspaces, `cleanroom workspace copy` can use raw transfer against an
+existing sandbox, but top-level `--copy` must stay disabled until there is a
+create-time raw workspace primitive that runs before dependency and service
+bootstrap.
 
 Workspace commands must operate on the sandbox's recorded workspace root. For
 repository-backed sandboxes, that root is the resolved `repository.path`,
@@ -256,8 +261,9 @@ repository changeset path:
 4. record local binding metadata so later `workspace copy`,
    `workspace export`, and automated exports know the local root.
 
-For non-Git source workspaces, the same `--copy` flag should use raw workspace
-transfer instead of a changeset.
+For non-Git source workspaces, the same `--copy` flag should eventually use raw
+workspace transfer instead of a changeset, but only once raw transfer can run as
+part of sandbox creation before bootstrap.
 
 The existing changeset path already has the right ignore shape: it stages the
 working tree through Git, so ignored files are not part of the copied payload
@@ -586,11 +592,14 @@ Status: landed.
 - Resolve the destination workspace root from `repository.path`, defaulting to
   `/workspace`.
 - Use repository changesets when the source workspace is a Git worktree.
-- Use raw workspace transfer when the source workspace is not a Git worktree.
+- Use raw workspace transfer for manual `workspace copy` when the source
+  workspace is not a Git worktree.
+- Reject top-level `--copy` for non-Git workspaces until raw transfer can be
+  attached to sandbox creation before bootstrap.
 - Add tests that ignored files and directories, including a representative
   `node_modules/`, are not included in Git-backed copy unless tracked.
 - Add tests that `workspace copy` and top-level `--copy` produce the same
-  destination contents for Git and non-Git sources.
+  destination contents for Git sources.
 - Remove or immediately deprecate `--include-local-changes` as the old spelling
   of the same behavior.
 - Apply copied changes after exact checkout setup and before command execution

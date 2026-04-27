@@ -27,6 +27,13 @@ func (f workspaceCopyFlags) validate(_ string, fromSnapshot string, repositoryOv
 	}
 }
 
+func validateTopLevelWorkspaceCopyTransport(repository *resolvedRepositoryCheckout, copyWorkspace bool) error {
+	if !copyWorkspace || repository != nil {
+		return nil
+	}
+	return errors.New("--copy for non-Git workspaces cannot be used while creating a sandbox yet; create the sandbox first, then run cleanroom workspace copy <sandbox-id>")
+}
+
 func resolveRepositoryChangeset(repository *resolvedRepositoryCheckout, copyWorkspace bool) (*cleanroomv1.RepositoryChangeset, error) {
 	if !copyWorkspace {
 		return nil, nil

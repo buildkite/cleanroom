@@ -84,24 +84,37 @@ func copyGitWorkspaceToSandbox(callCtx context.Context, ctx *runtimeContext, cli
 	if strings.TrimSpace(repository.RootDir) == "" {
 		return errors.New("workspace copy requires a local repository checkout")
 	}
-	changeset, err := repositorychangeset.BuildFromWorkingTree(repository.RootDir, toRepositoryCheckout(repository))
+	checkout := toRepositoryCheckout(repository)
+	changeset, err := repositorychangeset.BuildFromWorkingTree(repository.RootDir, checkout)
 	if err != nil {
 		return fmt.Errorf("package local workspace changes: %w", err)
 	}
 	if changeset == nil {
+		if opts.DryRun {
+			return nil
+		}
+		if opts.ForceGitReset {
+			return runWorkspaceExecution(callCtx, ctx, client, opts.SandboxID, repository, repositorychangeset.ResetCommand(checkout), nil)
+		}
 		return nil
 	}
 	if opts.DryRun {
 		return printWorkspacePlan(runtimeStdout(ctx), gitWorkspacePlan(repository.DestinationDir, changeset.Files))
 	}
 
-	checkout := toRepositoryCheckout(repository)
 	command := repositorychangeset.ApplyCommand(checkout, changeset)
 	if opts.ForceGitReset {
 		command = repositorychangeset.ApplyCommandResettingCheckout(checkout, changeset)
 	}
+	return runWorkspaceExecution(callCtx, ctx, client, opts.SandboxID, repository, command, bytes.NewReader(changeset.Patch))
+}
+
+func runWorkspaceExecution(callCtx context.Context, ctx *runtimeContext, client *controlclient.Client, sandboxID string, repository *resolvedRepositoryCheckout, command []string, input io.Reader) error {
+	if len(command) == 0 {
+		return errors.New("workspace copy execution command is empty")
+	}
 	createResp, err := client.CreateExecution(tracePreservingContext(callCtx), &cleanroomv1.CreateExecutionRequest{
-		SandboxId:          opts.SandboxID,
+		SandboxId:          sandboxID,
 		Command:            command,
 		Kind:               cleanroomv1.ExecutionKind_EXECUTION_KIND_BATCH,
 		RepositoryCheckout: repositoryCheckoutProto(repository),
@@ -113,7 +126,7 @@ func copyGitWorkspaceToSandbox(callCtx context.Context, ctx *runtimeContext, cli
 	if executionID == "" {
 		return errors.New("workspace copy execution response missing execution id")
 	}
-	return streamWorkspaceExecutionWithInput(callCtx, ctx, client, opts.SandboxID, executionID, bytes.NewReader(changeset.Patch))
+	return streamWorkspaceExecutionWithInput(callCtx, ctx, client, sandboxID, executionID, input)
 }
 
 func gitWorkspacePlan(destination string, files []repositorychangeset.File) []workspacePlanEntry {
@@ -135,6 +148,9 @@ func gitWorkspacePlan(destination string, files []repositorychangeset.File) []wo
 func copyRawWorkspaceToSandbox(callCtx context.Context, ctx *runtimeContext, client *controlclient.Client, opts workspaceCopyOptions) error {
 	destination, err := resolveWorkspaceDestinationRoot(opts.CWD, ctx.Loader)
 	if err != nil {
+		return err
+	}
+	if err := validateRawWorkspaceDestinationRoot(destination); err != nil {
 		return err
 	}
 	if opts.DryRun {
@@ -172,6 +188,37 @@ func resolveWorkspaceDestinationRoot(cwd string, loader policyLoader) (string, e
 		return defaultRepositoryOverridePath, nil
 	}
 	return repository.Path, nil
+}
+
+func validateRawWorkspaceDestinationRoot(destination string) error {
+	cleaned := posixpath.Clean(strings.TrimSpace(destination))
+	if cleaned == "." || cleaned == "" {
+		return errors.New("workspace destination root is required")
+	}
+	if !strings.HasPrefix(cleaned, "/") {
+		return fmt.Errorf("workspace destination root %q must be absolute", destination)
+	}
+	switch cleaned {
+	case "/",
+		"/bin",
+		"/boot",
+		"/dev",
+		"/etc",
+		"/home",
+		"/lib",
+		"/lib64",
+		"/proc",
+		"/root",
+		"/run",
+		"/sbin",
+		"/sys",
+		"/tmp",
+		"/usr",
+		"/var":
+		return fmt.Errorf("workspace destination root %q is unsafe for raw workspace copy", destination)
+	default:
+		return nil
+	}
 }
 
 func rawWorkspacePlan(sourceRoot, destination string) ([]workspacePlanEntry, error) {
@@ -386,11 +433,15 @@ func streamWorkspaceExecutionWithInput(callCtx context.Context, ctx *runtimeCont
 		return fmt.Errorf("stream workspace copy execution: %w", err)
 	}
 
-	stdinErrCh := make(chan error, 1)
-	go func() {
-		stdinErrCh <- writeExecutionInput(tracePreservingContext(callCtx), client, sandboxID, executionID, input)
-		close(stdinErrCh)
-	}()
+	var stdinErrCh <-chan error
+	if input != nil {
+		ch := make(chan error, 1)
+		stdinErrCh = ch
+		go func() {
+			ch <- writeExecutionInput(tracePreservingContext(callCtx), client, sandboxID, executionID, input)
+			close(ch)
+		}()
+	}
 
 	exitCode := 0
 	haveExitCode := false

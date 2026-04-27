@@ -63,6 +63,9 @@ func resolveExecutionSandbox(
 		if err != nil {
 			return nil, err
 		}
+		if err := validateTopLevelWorkspaceCopyTransport(repository, copyFlags.Copy && existingSandboxID == ""); err != nil {
+			return nil, err
+		}
 		if existingSandboxID == "" {
 			changeset, err = resolveRepositoryChangeset(repository, copyFlags.Copy)
 			if err != nil {

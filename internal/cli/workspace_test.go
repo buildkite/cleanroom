@@ -118,6 +118,121 @@ func TestWorkspaceCopyAppliesGitChangeset(t *testing.T) {
 	}
 }
 
+func TestWorkspaceCopyResetsGitCheckoutWhenLocalRepoClean(t *testing.T) {
+	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
+
+	adapter := &integrationAdapter{}
+	host, _ := startIntegrationServer(t, adapter)
+	sandboxID := createWorkspaceCopyTestSandbox(t, host, workspaceCopyTestPolicy())
+
+	var (
+		mu          sync.Mutex
+		commands    [][]string
+		stdinWrites int
+		stdinCloses int
+	)
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+		mu.Lock()
+		commands = append(commands, append([]string(nil), req.Command...))
+		mu.Unlock()
+		if stream.OnAttach != nil {
+			stream.OnAttach(backend.AttachIO{
+				WriteStdin: func(_ []byte) error {
+					mu.Lock()
+					stdinWrites++
+					mu.Unlock()
+					return nil
+				},
+				CloseStdin: func() error {
+					mu.Lock()
+					stdinCloses++
+					mu.Unlock()
+					return nil
+				},
+			})
+		}
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+	}
+
+	stdout, _ := makeStdoutCapture(t)
+	stderr, _ := makeStdoutCapture(t)
+	cmd := WorkspaceCopyCommand{
+		clientFlags: clientFlags{Host: host},
+		Chdir:       repoDir,
+		SandboxID:   sandboxID,
+	}
+	if err := cmd.Run(&runtimeContext{
+		CWD:           repoDir,
+		Loader:        workspaceCopyRepositoryLoader(),
+		Config:        runtimeconfig.Config{},
+		Observability: newTestObservability(t),
+		Stdout:        stdout,
+		Stderr:        stderr,
+	}); err != nil {
+		t.Fatalf("WorkspaceCopyCommand.Run returned error: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(commands) < 2 {
+		t.Fatalf("expected repository bootstrap and checkout reset commands, got %d", len(commands))
+	}
+	resetCommand := strings.Join(commands[len(commands)-1], " ")
+	if !strings.Contains(resetCommand, `git -C "$dest" reset --hard "$base_commit"`) {
+		t.Fatalf("expected clean workspace copy to reset the checkout, got %q", resetCommand)
+	}
+	if strings.Contains(resetCommand, `git -C "$dest" apply --binary`) {
+		t.Fatalf("expected clean workspace copy to avoid applying an empty patch, got %q", resetCommand)
+	}
+	if stdinWrites != 0 || stdinCloses != 0 {
+		t.Fatalf("expected reset-only copy to avoid stdin attachment, got writes=%d closes=%d", stdinWrites, stdinCloses)
+	}
+}
+
+func TestWorkspaceCopyDryRunDoesNotResetCleanGitCheckout(t *testing.T) {
+	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
+
+	adapter := &integrationAdapter{}
+	host, _ := startIntegrationServer(t, adapter)
+	var (
+		mu       sync.Mutex
+		commands [][]string
+	)
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
+		mu.Lock()
+		commands = append(commands, append([]string(nil), req.Command...))
+		mu.Unlock()
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+	}
+
+	stdout, stdoutText := makeStdoutCapture(t)
+	stderr, _ := makeStdoutCapture(t)
+	cmd := WorkspaceCopyCommand{
+		clientFlags: clientFlags{Host: host},
+		Chdir:       repoDir,
+		DryRun:      true,
+		SandboxID:   "cr_dryrun",
+	}
+	if err := cmd.Run(&runtimeContext{
+		CWD:           repoDir,
+		Loader:        workspaceCopyRepositoryLoader(),
+		Config:        runtimeconfig.Config{},
+		Observability: newTestObservability(t),
+		Stdout:        stdout,
+		Stderr:        stderr,
+	}); err != nil {
+		t.Fatalf("WorkspaceCopyCommand.Run returned error: %v", err)
+	}
+	if got := stdoutText(); got != "" {
+		t.Fatalf("expected clean dry-run to print no planned changes, got %q", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(commands) != 0 {
+		t.Fatalf("dry-run should not run workspace copy execution, got %q", strings.Join(commands[0], " "))
+	}
+}
+
 func TestWorkspaceCopyUsesRawArchiveForNonGitWorkspace(t *testing.T) {
 	sourceRoot := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(sourceRoot, "app"), 0o755); err != nil {
@@ -203,6 +318,54 @@ func TestWorkspaceCopyUsesRawArchiveForNonGitWorkspace(t *testing.T) {
 	}
 	if _, ok := files[".git/config"]; ok {
 		t.Fatalf("expected .git directory to be skipped, got files %#v", files)
+	}
+}
+
+func TestWorkspaceCopyRejectsUnsafeRawDestinationRoot(t *testing.T) {
+	sourceRoot := t.TempDir()
+	err := copyRawWorkspaceToSandbox(context.Background(), &runtimeContext{
+		Loader: repositoryIntegrationLoader{
+			repository: policy.RepositoryConfig{
+				Mode: "current-repo",
+				Path: "/",
+			},
+		},
+	}, nil, workspaceCopyOptions{
+		CWD:       sourceRoot,
+		SandboxID: "cr_123",
+	})
+	if err == nil {
+		t.Fatal("expected unsafe raw workspace destination to be rejected")
+	}
+	if !strings.Contains(err.Error(), "unsafe for raw workspace copy") {
+		t.Fatalf("expected unsafe destination error, got %v", err)
+	}
+}
+
+func TestTopLevelCopyRejectsNonGitWorkspaceWhenCreatingSandbox(t *testing.T) {
+	cwd := t.TempDir()
+	_, err := resolveExecutionSandbox(
+		context.Background(),
+		nil,
+		&runtimeContext{
+			CWD:    cwd,
+			Loader: repositoryNotFoundLoader{},
+		},
+		cwd,
+		"",
+		"",
+		"",
+		"",
+		"",
+		0,
+		repositoryOverrideFlags{},
+		workspaceCopyFlags{Copy: true},
+	)
+	if err == nil {
+		t.Fatal("expected non-Git top-level --copy to be rejected before sandbox creation")
+	}
+	if !strings.Contains(err.Error(), "non-Git workspaces") {
+		t.Fatalf("expected non-Git copy error, got %v", err)
 	}
 }
 
