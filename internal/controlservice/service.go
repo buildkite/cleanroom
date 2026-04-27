@@ -1926,9 +1926,6 @@ func (s *Service) CreateExecution(ctx context.Context, req *cleanroomv1.CreateEx
 		s.mu.Unlock()
 		return nil, fmt.Errorf("sandbox_busy: sandbox %q is preparing repository state", sandboxID)
 	}
-	if sandbox.RepositoryHasChangeset && sandbox.RepositoryChangesetPendingExecution {
-		sandbox.RepositoryChangesetPendingExecution = false
-	}
 	ex := &executionState{
 		ID:                executionID,
 		SandboxID:         sandboxID,
@@ -2872,6 +2869,9 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 	finished := s.clock().Now()
 	recordExecutionMetrics(finalStatus, finished)
 	s.finalizeExecutionLocked(ex, finalStatus, finalExitCode, ex.Message, "", finished)
+	if finalStatus == cleanroomv1.ExecutionStatus_EXECUTION_STATUS_SUCCEEDED {
+		s.markRepositoryChangesetExecutionConsumedLocked(sandboxID)
+	}
 
 	if runLogger != nil {
 		runLogger.Info("execution completed",
@@ -2903,6 +2903,18 @@ func (s *Service) applyExecutionResultMetadataLocked(ex *executionState, result 
 	if strings.TrimSpace(result.ImageDigest) != "" {
 		ex.ImageDigest = result.ImageDigest
 	}
+}
+
+func (s *Service) markRepositoryChangesetExecutionConsumedLocked(sandboxID string) {
+	sandbox, ok := s.sandboxes[sandboxID]
+	if !ok {
+		return
+	}
+	if !sandbox.RepositoryHasChangeset || !sandbox.RepositoryChangesetPendingExecution {
+		return
+	}
+	sandbox.RepositoryChangesetPendingExecution = false
+	sandbox.UpdatedAt = s.clock().Now()
 }
 
 func (s *Service) executionOutputStream(key string) backend.OutputStream {
