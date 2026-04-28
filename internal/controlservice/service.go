@@ -2964,20 +2964,30 @@ func (s *Service) ensureRepositoryCommitAvailable(ctx context.Context, repositor
 		return nil
 	}
 	if commitBundle != nil {
-		prerequisites, err := commitBundle.PrerequisiteCommits()
-		if err != nil {
+		if err := s.ensureRepositoryCommitBundlePrerequisites(ctx, repository, commitBundle); err != nil {
 			return err
-		}
-		for _, prerequisite := range prerequisites {
-			if err := s.RepositoryStore.EnsureCommit(ctx, repository.RemoteURL, prerequisite, repositorystore.FetchHints{}); err != nil {
-				return fmt.Errorf("ensure repository commit bundle prerequisite %s: %w", prerequisite, err)
-			}
 		}
 		return s.RepositoryStore.WithRepository(ctx, repository.RemoteURL, "", repositorystore.FetchHints{}, func(repoDir string) error {
 			return commitBundle.VerifyAgainstRepository(ctx, repoDir)
 		})
 	}
 	return s.RepositoryStore.EnsureCommit(ctx, repository.RemoteURL, repository.CommitSHA, repositorystore.FetchHints{})
+}
+
+func (s *Service) ensureRepositoryCommitBundlePrerequisites(ctx context.Context, repository *repositorycheckout.Checkout, commitBundle *repositorybundle.Bundle) error {
+	if repository == nil || commitBundle == nil || s.RepositoryStore == nil {
+		return nil
+	}
+	prerequisites, err := commitBundle.PrerequisiteCommits()
+	if err != nil {
+		return err
+	}
+	for _, prerequisite := range prerequisites {
+		if err := s.RepositoryStore.EnsureCommit(ctx, repository.RemoteURL, prerequisite, repositorystore.FetchHints{}); err != nil {
+			return fmt.Errorf("ensure repository commit bundle prerequisite %s: %w", prerequisite, err)
+		}
+	}
+	return nil
 }
 
 func (s *Service) preparePersistentSandboxRepository(

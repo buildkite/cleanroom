@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -230,6 +231,7 @@ type stubLoader struct {
 type stubRepositoryMirrorStore struct {
 	remoteURL         string
 	commitSHA         string
+	commitSHAs        []string
 	calls             int
 	err               error
 	ensureContainsFn  func(remoteURL, commitSHA string) error
@@ -247,6 +249,7 @@ type stubClock struct {
 func (s *stubRepositoryMirrorStore) EnsureCommit(_ context.Context, remoteURL, commitSHA string, _ repositorystore.FetchHints) error {
 	s.remoteURL = remoteURL
 	s.commitSHA = commitSHA
+	s.commitSHAs = append(s.commitSHAs, commitSHA)
 	s.calls++
 	if s.ensureContainsFn != nil {
 		return s.ensureContainsFn(remoteURL, commitSHA)
@@ -5577,6 +5580,7 @@ func TestCreateSandboxCachesStagesForLocalOnlyCommitBundle(t *testing.T) {
 		"go.sum":             "example.com/test v0.0.0 h1:abc123\n",
 		"docker-compose.yml": "services:\n  postgres:\n    image: postgres:17\n",
 	})
+	baseCommit := repositoryCheckout.GetCommitSha()
 
 	localRepo := filepath.Join(t.TempDir(), "local")
 	runTestGit(t, t.TempDir(), "clone", mirrors.mirrorPath, localRepo)
@@ -5624,6 +5628,12 @@ func TestCreateSandboxCachesStagesForLocalOnlyCommitBundle(t *testing.T) {
 		if !stages[stage] {
 			t.Fatalf("expected %s stage cache record, got stages %v", stage, stages)
 		}
+	}
+	if !slices.Contains(mirrors.commitSHAs, baseCommit) {
+		t.Fatalf("expected bundle prerequisite %q to be ensured before cache planning/bootstrap, got %v", baseCommit, mirrors.commitSHAs)
+	}
+	if slices.Contains(mirrors.commitSHAs, localCommit) {
+		t.Fatalf("expected local-only commit %q to come from bundle, got direct ensure calls %v", localCommit, mirrors.commitSHAs)
 	}
 }
 
