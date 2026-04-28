@@ -372,13 +372,13 @@ func (s *Service) restorePortableDependencyStageCache(
 		return nil, fmt.Errorf("validate portable dependency stage key files: %w", err)
 	}
 
-	if sandbox := s.markRestoredSandboxRepositoryReady(sandboxID, repository, changeset != nil); sandbox != nil {
+	if sandbox := s.markRestoredSandboxRepositoryReady(sandboxID, repository, commitBundle, changeset != nil); sandbox != nil {
 		restoreResp.Sandbox = sandbox
 	}
 	return restoreResp, nil
 }
 
-func (s *Service) markRestoredSandboxRepositoryReady(sandboxID string, repository *repositorycheckout.Checkout, hasChangeset bool) *cleanroomv1.Sandbox {
+func (s *Service) markRestoredSandboxRepositoryReady(sandboxID string, repository *repositorycheckout.Checkout, commitBundle *repositorybundle.Bundle, hasChangeset bool) *cleanroomv1.Sandbox {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	sandbox, ok := s.sandboxes[sandboxID]
@@ -386,6 +386,7 @@ func (s *Service) markRestoredSandboxRepositoryReady(sandboxID string, repositor
 		return nil
 	}
 	sandbox.Repository = cloneRepositoryCheckout(repository)
+	sandbox.RepositoryCommitBundle = cloneRepositoryCommitBundle(commitBundle)
 	sandbox.RepositoryHasChangeset = hasChangeset
 	sandbox.RepositoryChangesetPendingExecution = hasChangeset
 	sandbox.UpdatedAt = s.clock().Now()
