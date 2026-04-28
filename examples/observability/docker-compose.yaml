@@ -47,7 +47,7 @@ services:
       - ./grafana/dashboards:/etc/grafana/provisioning/dashboards/cleanroom:ro
       - grafana-data:/var/lib/grafana
     ports:
-      - "3300:3000"
+      - "3330:3000"
     depends_on:
       - prometheus
       - tempo
