@@ -1780,6 +1780,14 @@ func (s *Service) TerminateSandbox(ctx context.Context, req *cleanroomv1.Termina
 }
 
 func (s *Service) CreateExecution(ctx context.Context, req *cleanroomv1.CreateExecutionRequest) (resp *cleanroomv1.CreateExecutionResponse, err error) {
+	return s.createExecution(ctx, req, false)
+}
+
+func (s *Service) CreateInternalWorkspaceCopyInExecution(ctx context.Context, req *cleanroomv1.CreateExecutionRequest) (resp *cleanroomv1.CreateExecutionResponse, err error) {
+	return s.createExecution(ctx, req, true)
+}
+
+func (s *Service) createExecution(ctx context.Context, req *cleanroomv1.CreateExecutionRequest, internalWorkspaceCopyIn bool) (resp *cleanroomv1.CreateExecutionResponse, err error) {
 	if req == nil {
 		return nil, errors.New("missing request")
 	}
@@ -1835,6 +1843,9 @@ func (s *Service) CreateExecution(ctx context.Context, req *cleanroomv1.CreateEx
 			SkipRunBefore: opts.GetSkipRunBefore(),
 		}
 		tty = opts.GetTty()
+	}
+	if err := validateInternalExecutionOptions(execOpts, internalWorkspaceCopyIn); err != nil {
+		return nil, err
 	}
 	kind, err := resolveExecutionKind(req.GetKind(), tty)
 	if err != nil {
@@ -1990,6 +2001,19 @@ func (s *Service) CreateExecution(ctx context.Context, req *cleanroomv1.CreateEx
 		)
 	}
 	return resp, nil
+}
+
+func validateInternalExecutionOptions(opts executionOptions, internalWorkspaceCopyIn bool) error {
+	if internalWorkspaceCopyIn {
+		return nil
+	}
+	if opts.PreserveRepositoryChangesetPendingExecution {
+		return errors.New("preserve repository changeset pending execution is only available for internal workspace copy-in executions")
+	}
+	if opts.SkipRunBefore {
+		return errors.New("skip run before is only available for internal workspace copy-in executions")
+	}
+	return nil
 }
 
 func (s *Service) AttachExecution(_ context.Context, req *cleanroomv1.AttachExecutionRequest) (*cleanroomv1.AttachExecutionResponse, error) {

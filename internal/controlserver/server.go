@@ -40,6 +40,8 @@ type Server struct {
 	interceptors []connect.Interceptor
 }
 
+const internalWorkspaceCopyInHeader = "Cleanroom-Internal-Workspace-Copy-In"
+
 func New(service *controlservice.Service, logger *log.Logger, interceptors ...connect.Interceptor) *Server {
 	return &Server{service: service, logger: logger, interceptors: interceptors}
 }
@@ -352,7 +354,11 @@ func (s *Server) ListExecutions(ctx context.Context, req *connect.Request[cleanr
 }
 
 func (s *Server) CreateExecution(ctx context.Context, req *connect.Request[cleanroomv1.CreateExecutionRequest]) (*connect.Response[cleanroomv1.CreateExecutionResponse], error) {
-	resp, err := s.service.CreateExecution(ctx, req.Msg)
+	createExecution := s.service.CreateExecution
+	if req.Header().Get(internalWorkspaceCopyInHeader) == "1" {
+		createExecution = s.service.CreateInternalWorkspaceCopyInExecution
+	}
+	resp, err := createExecution(ctx, req.Msg)
 	if err != nil {
 		return nil, toConnectError(err)
 	}

@@ -148,7 +148,7 @@ func runWorkspaceExecution(callCtx context.Context, ctx *runtimeContext, client 
 	if len(command) == 0 {
 		return errors.New("workspace copy-in execution command is empty")
 	}
-	createResp, err := client.CreateExecution(tracePreservingContext(callCtx), &cleanroomv1.CreateExecutionRequest{
+	createResp, err := client.CreateWorkspaceCopyInExecution(tracePreservingContext(callCtx), &cleanroomv1.CreateExecutionRequest{
 		SandboxId:          sandboxID,
 		Command:            command,
 		Kind:               cleanroomv1.ExecutionKind_EXECUTION_KIND_BATCH,
@@ -577,7 +577,11 @@ func streamWorkspaceExecutionWithInput(callCtx context.Context, ctx *runtimeCont
 		ch := make(chan error, 1)
 		stdinErrCh = ch
 		go func() {
-			ch <- writeExecutionInput(tracePreservingContext(callCtx), client, sandboxID, executionID, input)
+			err := writeExecutionInput(tracePreservingContext(callCtx), client, sandboxID, executionID, input)
+			if err != nil {
+				streamCancel()
+			}
+			ch <- err
 			close(ch)
 		}()
 	}

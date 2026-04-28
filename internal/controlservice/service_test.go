@@ -4939,7 +4939,7 @@ func TestCreateExecutionCanPreservePendingChangesetForInternalWorkspaceCopy(t *t
 		}
 	}
 
-	copyResp, err := svc.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+	copyResp, err := svc.CreateInternalWorkspaceCopyInExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
 		SandboxId:          sandboxID,
 		Command:            []string{"sh", "-lc", "true"},
 		RepositoryCheckout: repositoryCheckout,
@@ -4980,7 +4980,42 @@ func TestCreateExecutionCanPreservePendingChangesetForInternalWorkspaceCopy(t *t
 	}
 }
 
-func TestCreateExecutionCanSkipRunBefore(t *testing.T) {
+func TestCreateExecutionRejectsInternalWorkspaceCopyInOptions(t *testing.T) {
+	svc := newTestService(&stubAdapter{})
+
+	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy: testRepositoryRunBeforePolicy(),
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createSandboxResp.GetSandbox().GetSandboxId()
+
+	for name, opts := range map[string]*cleanroomv1.ExecutionOptions{
+		"preserve pending changeset": {
+			PreserveRepositoryChangesetPendingExecution: true,
+		},
+		"skip run before": {
+			SkipRunBefore: true,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := svc.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+				SandboxId: sandboxID,
+				Command:   []string{"sh", "-lc", "pwd"},
+				Options:   opts,
+			})
+			if err == nil {
+				t.Fatal("expected CreateExecution to reject internal workspace copy-in option")
+			}
+			if !strings.Contains(err.Error(), "internal workspace copy-in executions") {
+				t.Fatalf("expected internal workspace copy-in error, got %v", err)
+			}
+		})
+	}
+}
+
+func TestCreateInternalWorkspaceCopyInExecutionCanSkipRunBefore(t *testing.T) {
 	adapter := &stubAdapter{}
 	svc := newTestService(adapter)
 
@@ -5003,7 +5038,7 @@ func TestCreateExecutionCanSkipRunBefore(t *testing.T) {
 	}
 	sandboxID := createSandboxResp.GetSandbox().GetSandboxId()
 
-	resp, err := svc.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+	resp, err := svc.CreateInternalWorkspaceCopyInExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
 		SandboxId: sandboxID,
 		Command:   []string{"sh", "-lc", "pwd"},
 		Options: &cleanroomv1.ExecutionOptions{

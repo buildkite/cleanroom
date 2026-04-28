@@ -255,6 +255,18 @@ func (c *Client) CreateExecution(ctx context.Context, req *cleanroomv1.CreateExe
 	return resp.Msg, nil
 }
 
+const internalWorkspaceCopyInHeader = "Cleanroom-Internal-Workspace-Copy-In"
+
+func (c *Client) CreateWorkspaceCopyInExecution(ctx context.Context, req *cleanroomv1.CreateExecutionRequest) (*cleanroomv1.CreateExecutionResponse, error) {
+	connectReq := connect.NewRequest(req)
+	connectReq.Header().Set(internalWorkspaceCopyInHeader, "1")
+	resp, err := c.executionClient.CreateExecution(ctx, connectReq)
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
 func (c *Client) AttachExecution(ctx context.Context, req *cleanroomv1.AttachExecutionRequest) (*cleanroomv1.AttachExecutionResponse, error) {
 	resp, err := c.executionClient.AttachExecution(ctx, connect.NewRequest(req))
 	if err != nil {

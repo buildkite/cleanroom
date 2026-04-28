@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/buildkite/cleanroom/internal/backend"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
@@ -129,6 +130,90 @@ func TestWorkspaceCopyInAppliesGitChangeset(t *testing.T) {
 	}
 	if strings.Contains(patches[0], "node_modules") {
 		t.Fatalf("expected ignored dependency tree to be excluded, got %q", patches[0])
+	}
+}
+
+func TestWorkspaceCopyInReturnsWhenPatchStdinWriteFails(t *testing.T) {
+	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
+	if err := os.WriteFile(filepath.Join(repoDir, "dirty.txt"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatalf("write dirty file: %v", err)
+	}
+
+	adapter := &integrationAdapter{}
+	host, _ := startIntegrationServer(t, adapter)
+	head, err := gitOutput(repoDir, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatalf("resolve repository HEAD: %v", err)
+	}
+	branch, err := gitOutput(repoDir, "branch", "--show-current")
+	if err != nil {
+		t.Fatalf("resolve repository branch: %v", err)
+	}
+	sandboxID := createWorkspaceCopyTestSandboxWithRepositoryCommitBranch(t, host, "/sandbox-workspace", head, branch)
+
+	applyExecutionIDCh := make(chan string, 1)
+	adapter.runStreamFn = func(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+		if !strings.Contains(strings.Join(req.Command, " "), `git -C "$dest" apply --binary --whitespace=nowarn "$patch_file"`) {
+			return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+		}
+		select {
+		case applyExecutionIDCh <- req.ExecutionID:
+		default:
+		}
+		if stream.OnAttach != nil {
+			stream.OnAttach(backend.AttachIO{
+				WriteStdin: func([]byte) error {
+					return errors.New("broken stdin")
+				},
+				CloseStdin: func() error {
+					return nil
+				},
+			})
+		}
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+
+	stdout, _ := makeStdoutCapture(t)
+	stderr, _ := makeStdoutCapture(t)
+	cmd := WorkspaceCopyInCommand{
+		clientFlags: clientFlags{Host: host},
+		Chdir:       repoDir,
+		SandboxID:   sandboxID,
+	}
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- cmd.Run(&runtimeContext{
+			CWD:           repoDir,
+			Loader:        workspaceCopyRepositoryLoader(),
+			Config:        runtimeconfig.Config{},
+			Observability: newTestObservability(t),
+			Stdout:        stdout,
+			Stderr:        stderr,
+		})
+	}()
+
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("expected WorkspaceCopyInCommand.Run to return stdin write error")
+		}
+		if !strings.Contains(err.Error(), "write workspace copy-in payload") || !strings.Contains(err.Error(), "broken stdin") {
+			t.Fatalf("expected stdin write error, got %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for workspace copy-in to return stdin write error")
+	}
+
+	client := mustNewControlClient(t, host)
+	select {
+	case executionID := <-applyExecutionIDCh:
+		_, _ = client.CancelExecution(context.Background(), &cleanroomv1.CancelExecutionRequest{
+			SandboxId:   sandboxID,
+			ExecutionId: executionID,
+			Signal:      2,
+		})
+	default:
 	}
 }
 
