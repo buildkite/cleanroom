@@ -382,7 +382,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 			workspaceStageCachingEnabled = true
 			workspaceStageKey = workspaceStageCacheKey(backendName, workspaceStageRuntimeBaseKey, compiled.Hash, repository, changeset)
 			if dependencyStageBootstrapEnabled {
-				dependencyStagePlan, dependencyStageCachingEnabled, err = s.finalizeDependencyStagePlan(ctx, compiled, repository, changeset, backendName, workspaceStageKey, workspaceStageRuntimeBaseKey, dependencyStagePlan)
+				dependencyStagePlan, dependencyStageCachingEnabled, err = s.finalizeDependencyStagePlan(ctx, compiled, repository, changeset, commitBundle, backendName, workspaceStageKey, workspaceStageRuntimeBaseKey, dependencyStagePlan)
 				if err != nil {
 					dependencyStageCachingEnabled = false
 					s.logDependencyStageWarning("resolve dependency stage cache key", "", err)
@@ -398,7 +398,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 					}
 				}
 				if parentStageKey != "" {
-					servicesStagePlan, servicesStageCachingEnabled, err = s.finalizeServicesStagePlan(ctx, compiled, repository, changeset, parentStageKey, servicesStagePlan)
+					servicesStagePlan, servicesStageCachingEnabled, err = s.finalizeServicesStagePlan(ctx, compiled, repository, changeset, commitBundle, parentStageKey, servicesStagePlan)
 					if err != nil {
 						servicesStageCachingEnabled = false
 						s.logServicesStageWarning("resolve services stage cache key", "", err)

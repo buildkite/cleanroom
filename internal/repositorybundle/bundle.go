@@ -95,12 +95,16 @@ func BuildFromRepository(repoRoot, remoteName string, checkout *repositorychecko
 		return nil, fmt.Errorf("read repository commit bundle: %w", err)
 	}
 
-	return &Bundle{
+	bundle := &Bundle{
 		Format:          FormatGitBundleV1,
 		TargetCommitSHA: targetCommitSHA,
 		Digest:          sha256Digest(payload),
 		Payload:         payload,
-	}, nil
+	}
+	if err := bundle.ValidateContent(); err != nil {
+		return nil, err
+	}
+	return bundle, nil
 }
 
 func FromProto(proto *cleanroomv1.RepositoryCommitBundle) *Bundle {
@@ -164,6 +168,13 @@ func (b *Bundle) ValidateContent() error {
 	if strings.TrimSpace(b.Digest) != expectedDigest {
 		return fmt.Errorf("repository commit bundle digest %q does not match content %q", b.Digest, expectedDigest)
 	}
+	prerequisites, err := b.PrerequisiteCommits()
+	if err != nil {
+		return err
+	}
+	if len(prerequisites) == 0 {
+		return errors.New("repository commit bundle has no remote prerequisites; full-history bundles are not supported yet")
+	}
 	return nil
 }
 
@@ -202,6 +213,65 @@ func (b *Bundle) VerifyAgainstRepository(ctx context.Context, repoDir string) er
 		return fmt.Errorf("repository commit bundle does not advertise target commit %q as HEAD", b.TargetCommitSHA)
 	}
 	return nil
+}
+
+func (b *Bundle) WithRepository(ctx context.Context, repoDir string, fn func(repoDir string) error) error {
+	if b == nil {
+		return nil
+	}
+	if fn == nil {
+		return errors.New("repository commit bundle callback is nil")
+	}
+	if err := b.ValidateContent(); err != nil {
+		return err
+	}
+	repoDir = strings.TrimSpace(repoDir)
+	if repoDir == "" {
+		return errors.New("repository path is required to read commit bundle")
+	}
+
+	objectDir, err := gitOutputContext(ctx, repoDir, "rev-parse", "--git-path", "objects")
+	if err != nil {
+		return fmt.Errorf("resolve repository object directory: %w", err)
+	}
+	objectDirPath := strings.TrimSpace(string(objectDir))
+	if objectDirPath == "" {
+		return errors.New("repository object directory is empty")
+	}
+	if !filepath.IsAbs(objectDirPath) {
+		objectDirPath = filepath.Join(repoDir, objectDirPath)
+	}
+
+	tmpDir, err := os.MkdirTemp("", "cleanroom-repository-bundle-view-*")
+	if err != nil {
+		return fmt.Errorf("create temporary repository commit bundle view: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	viewDir := filepath.Join(tmpDir, "repo.git")
+	if _, err := gitOutputContext(ctx, tmpDir, "init", "--bare", viewDir); err != nil {
+		return fmt.Errorf("initialize temporary repository commit bundle view: %w", err)
+	}
+	alternatesPath := filepath.Join(viewDir, "objects", "info", "alternates")
+	if err := os.MkdirAll(filepath.Dir(alternatesPath), 0o755); err != nil {
+		return fmt.Errorf("prepare temporary repository alternates: %w", err)
+	}
+	if err := os.WriteFile(alternatesPath, []byte(objectDirPath+"\n"), 0o644); err != nil {
+		return fmt.Errorf("write temporary repository alternates: %w", err)
+	}
+
+	bundlePath, cleanup, err := writeTempBundle(b.Payload)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	if _, err := gitOutputContext(ctx, viewDir, "fetch", bundlePath, "+HEAD:refs/cleanroom/target"); err != nil {
+		return fmt.Errorf("fetch repository commit bundle into temporary view: %w", err)
+	}
+	if _, err := gitOutputContext(ctx, viewDir, "cat-file", "-e", strings.TrimSpace(b.TargetCommitSHA)+"^{commit}"); err != nil {
+		return fmt.Errorf("verify repository commit bundle target in temporary view: %w", err)
+	}
+	return fn(viewDir)
 }
 
 func parseBundlePrerequisites(payload []byte) ([]string, error) {

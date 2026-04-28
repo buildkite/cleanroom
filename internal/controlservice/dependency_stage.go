@@ -73,6 +73,7 @@ func (s *Service) finalizeDependencyStagePlan(
 	compiled *policy.CompiledPolicy,
 	repository *repositorycheckout.Checkout,
 	changeset *repositorychangeset.Changeset,
+	commitBundle *repositorybundle.Bundle,
 	backendName string,
 	workspaceStageKey string,
 	runtimeBaseKey string,
@@ -82,7 +83,7 @@ func (s *Service) finalizeDependencyStagePlan(
 		return plan, false, nil
 	}
 
-	keyFilesDigest, err := s.dependencyStageKeyFilesDigest(ctx, repository, changeset, plan.KeyFiles)
+	keyFilesDigest, err := s.dependencyStageKeyFilesDigest(ctx, repository, changeset, commitBundle, plan.KeyFiles)
 	if err != nil {
 		return plan, false, err
 	}
@@ -120,11 +121,11 @@ func (s *Service) finalizeDependencyStagePlan(
 	return plan, true, nil
 }
 
-func (s *Service) dependencyStageKeyFilesDigest(ctx context.Context, repository *repositorycheckout.Checkout, changeset *repositorychangeset.Changeset, files []string) (string, error) {
-	return s.stageKeyFilesDigest(ctx, repository, changeset, files, dependencyStageName)
+func (s *Service) dependencyStageKeyFilesDigest(ctx context.Context, repository *repositorycheckout.Checkout, changeset *repositorychangeset.Changeset, commitBundle *repositorybundle.Bundle, files []string) (string, error) {
+	return s.stageKeyFilesDigest(ctx, repository, changeset, commitBundle, files, dependencyStageName)
 }
 
-func (s *Service) stageKeyFilesDigest(ctx context.Context, repository *repositorycheckout.Checkout, changeset *repositorychangeset.Changeset, files []string, stageName string) (string, error) {
+func (s *Service) stageKeyFilesDigest(ctx context.Context, repository *repositorycheckout.Checkout, changeset *repositorychangeset.Changeset, commitBundle *repositorybundle.Bundle, files []string, stageName string) (string, error) {
 	if len(files) == 0 {
 		return "", nil
 	}
@@ -133,6 +134,24 @@ func (s *Service) stageKeyFilesDigest(ctx context.Context, repository *repositor
 	}
 	if s.RepositoryStore == nil {
 		return "", fmt.Errorf("%s key files require repository store", stageName)
+	}
+	if commitBundle != nil {
+		var digest string
+		err := s.RepositoryStore.WithRepository(ctx, repository.RemoteURL, "", repositorystore.FetchHints{}, func(repoDir string) error {
+			return commitBundle.WithRepository(ctx, repoDir, func(bundleRepoDir string) error {
+				var err error
+				if changeset != nil {
+					digest, err = stageKeyFilesDigestWithChangeset(bundleRepoDir, changeset, files, stageName)
+				} else {
+					digest, err = stageKeyFilesDigestAtCommit(ctx, bundleRepoDir, repository.CommitSHA, files, stageName)
+				}
+				return err
+			})
+		})
+		if err != nil {
+			return "", err
+		}
+		return digest, nil
 	}
 	if changeset != nil {
 		var digest string

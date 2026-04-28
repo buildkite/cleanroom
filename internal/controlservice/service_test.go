@@ -2976,7 +2976,7 @@ func TestCreateSandboxPublishesDependencyStageCacheForConfiguredDependencies(t *
 	if !ok {
 		t.Fatal("expected configured dependency stage plan to be enabled")
 	}
-	plan, ok, err = svc.finalizeDependencyStagePlan(context.Background(), compiled, repository, nil, "firecracker", workspaceKey, "runtime-base:test", plan)
+	plan, ok, err = svc.finalizeDependencyStagePlan(context.Background(), compiled, repository, nil, nil, "firecracker", workspaceKey, "runtime-base:test", plan)
 	if err != nil {
 		t.Fatalf("finalizeDependencyStagePlan returned error: %v", err)
 	}
@@ -3190,7 +3190,7 @@ func TestCreateSandboxPublishesServicesStageCacheForConfiguredServices(t *testin
 	if !ok {
 		t.Fatal("expected configured dependency stage plan to be enabled")
 	}
-	dependencyPlan, ok, err = svc.finalizeDependencyStagePlan(context.Background(), compiled, repository, nil, "firecracker", workspaceKey, "runtime-base:test", dependencyPlan)
+	dependencyPlan, ok, err = svc.finalizeDependencyStagePlan(context.Background(), compiled, repository, nil, nil, "firecracker", workspaceKey, "runtime-base:test", dependencyPlan)
 	if err != nil {
 		t.Fatalf("finalizeDependencyStagePlan returned error: %v", err)
 	}
@@ -3201,7 +3201,7 @@ func TestCreateSandboxPublishesServicesStageCacheForConfiguredServices(t *testin
 	if !ok {
 		t.Fatal("expected configured services stage plan to be enabled")
 	}
-	servicesPlan, ok, err = svc.finalizeServicesStagePlan(context.Background(), compiled, repository, nil, dependencyPlan.CacheKey, servicesPlan)
+	servicesPlan, ok, err = svc.finalizeServicesStagePlan(context.Background(), compiled, repository, nil, nil, dependencyPlan.CacheKey, servicesPlan)
 	if err != nil {
 		t.Fatalf("finalizeServicesStagePlan returned error: %v", err)
 	}
@@ -3426,7 +3426,7 @@ func TestCreateSandboxReusesPortableDependencyStageAfterCheckoutRefresh(t *testi
 	svc := newTestServiceWithSnapshotStore(adapter, store)
 	svc.RepositoryStore = mirrors
 	var err error
-	validationDigest, err = svc.dependencyStageKeyFilesDigest(context.Background(), repositorycheckout.FromProto(&updatedCheckout), nil, []string{"go.mod", "go.sum"})
+	validationDigest, err = svc.dependencyStageKeyFilesDigest(context.Background(), repositorycheckout.FromProto(&updatedCheckout), nil, nil, []string{"go.mod", "go.sum"})
 	if err != nil {
 		t.Fatalf("dependencyStageKeyFilesDigest returned error: %v", err)
 	}
@@ -3558,7 +3558,7 @@ func TestCreateSandboxBootstrapsServicesAfterPortableDependencyStageRestore(t *t
 	svc := newTestServiceWithSnapshotStore(adapter, store)
 	svc.RepositoryStore = mirrors
 	var err error
-	validationDigest, err = svc.dependencyStageKeyFilesDigest(context.Background(), repositorycheckout.FromProto(&updatedCheckout), nil, []string{"go.mod", "go.sum"})
+	validationDigest, err = svc.dependencyStageKeyFilesDigest(context.Background(), repositorycheckout.FromProto(&updatedCheckout), nil, nil, []string{"go.mod", "go.sum"})
 	if err != nil {
 		t.Fatalf("dependencyStageKeyFilesDigest returned error: %v", err)
 	}
@@ -3630,11 +3630,11 @@ func TestDependencyStageKeyFilesDigestDerivesHashesFromRepositoryChangesetPatch(
 	svc := newTestService(&stubAdapter{})
 	svc.RepositoryStore = mirrors
 
-	baseDigest, err := svc.dependencyStageKeyFilesDigest(context.Background(), repository, nil, []string{"go.mod", "go.sum"})
+	baseDigest, err := svc.dependencyStageKeyFilesDigest(context.Background(), repository, nil, nil, []string{"go.mod", "go.sum"})
 	if err != nil {
 		t.Fatalf("dependencyStageKeyFilesDigest without changeset returned error: %v", err)
 	}
-	changesetDigest, err := svc.dependencyStageKeyFilesDigest(context.Background(), repository, changeset, []string{"go.mod", "go.sum"})
+	changesetDigest, err := svc.dependencyStageKeyFilesDigest(context.Background(), repository, changeset, nil, []string{"go.mod", "go.sum"})
 	if err != nil {
 		t.Fatalf("dependencyStageKeyFilesDigest with changeset returned error: %v", err)
 	}
@@ -3654,7 +3654,7 @@ func TestDependencyStageKeyFilesDigestDerivesHashesFromRepositoryChangesetPatch(
 		tampered.Files[i].SHA256 = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
 	}
 
-	tamperedDigest, err := svc.dependencyStageKeyFilesDigest(context.Background(), repository, &tampered, []string{"go.mod", "go.sum"})
+	tamperedDigest, err := svc.dependencyStageKeyFilesDigest(context.Background(), repository, &tampered, nil, []string{"go.mod", "go.sum"})
 	if err != nil {
 		t.Fatalf("dependencyStageKeyFilesDigest with tampered changeset metadata returned error: %v", err)
 	}
@@ -5251,6 +5251,65 @@ func TestCreateSandboxBootstrapsLocalOnlyCommitBundle(t *testing.T) {
 	joined := strings.Join(adapter.req.Command, " ")
 	if !strings.Contains(joined, `git -C "$dest" fetch --progress "$bundle_file" "+HEAD:$bundle_ref"`) {
 		t.Fatalf("expected bootstrap command to fetch attached bundle, got %q", joined)
+	}
+}
+
+func TestCreateSandboxCachesStagesForLocalOnlyCommitBundle(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	store := newMemorySnapshotStore()
+	adapter := &stubAdapter{}
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"go.mod":             "module example.com/test\n\ngo 1.26.2\n",
+		"go.sum":             "example.com/test v0.0.0 h1:abc123\n",
+		"docker-compose.yml": "services:\n  postgres:\n    image: postgres:17\n",
+	})
+
+	localRepo := filepath.Join(t.TempDir(), "local")
+	runTestGit(t, t.TempDir(), "clone", mirrors.mirrorPath, localRepo)
+	runTestGit(t, localRepo, "config", "user.email", "test@example.com")
+	runTestGit(t, localRepo, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(localRepo, "go.sum"), []byte("example.com/test v0.0.0 h1:abc123\nexample.com/lib v1.0.0 h1:def456\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(go.sum) returned error: %v", err)
+	}
+	runTestGit(t, localRepo, "add", "go.sum")
+	runTestGit(t, localRepo, "commit", "-m", "local dependency update")
+	localCommit := strings.TrimSpace(runTestGit(t, localRepo, "rev-parse", "HEAD"))
+
+	commitBundle, err := repositorybundle.BuildFromRepository(localRepo, "origin", &repositorycheckout.Checkout{CommitSHA: localCommit})
+	if err != nil {
+		t.Fatalf("BuildFromRepository returned error: %v", err)
+	}
+	if commitBundle == nil {
+		t.Fatal("expected repository commit bundle")
+	}
+	repositoryCheckout.CommitSha = localCommit
+
+	svc := newTestServiceWithSnapshotStore(adapter, store)
+	svc.RepositoryStore = mirrors
+	if _, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy:                 testRepositoryDependencyAndServicesPolicy(),
+		RepositoryCheckout:     repositoryCheckout,
+		RepositoryCommitBundle: commitBundle.ToProto(),
+	}); err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+
+	cacheStore, ok := svc.CacheStore.(*memoryCacheStore)
+	if !ok {
+		t.Fatalf("expected memory cache store, got %T", svc.CacheStore)
+	}
+	records, err := cacheStore.List(context.Background())
+	if err != nil {
+		t.Fatalf("List returned error: %v", err)
+	}
+	stages := map[string]bool{}
+	for _, record := range records {
+		stages[record.Stage] = true
+	}
+	for _, stage := range []string{workspaceStageName, dependencyStageName, servicesStageName} {
+		if !stages[stage] {
+			t.Fatalf("expected %s stage cache record, got stages %v", stage, stages)
+		}
 	}
 }
 
