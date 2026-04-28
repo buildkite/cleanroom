@@ -21,6 +21,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/observability"
 	"github.com/buildkite/cleanroom/internal/paths"
 	"github.com/buildkite/cleanroom/internal/policy"
+	"github.com/buildkite/cleanroom/internal/repositorybundle"
 	"github.com/buildkite/cleanroom/internal/repositorychangeset"
 	"github.com/buildkite/cleanroom/internal/repositorycheckout"
 	"github.com/buildkite/cleanroom/internal/repositorystore"
@@ -249,6 +250,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	snapshotID := strings.TrimSpace(req.GetSnapshotId())
 	metricSourceKind := ""
 	changeset := repositoryChangesetFromProto(req.GetRepositoryChangeset())
+	commitBundle := repositoryCommitBundleFromProto(req.GetRepositoryCommitBundle())
 	backendName := resolveBackendName(strings.TrimSpace(req.GetBackend()), s.Config.DefaultBackend)
 	ctx, span := s.Observability.Tracer("github.com/buildkite/cleanroom/internal/controlservice").Start(
 		ctx,
@@ -257,6 +259,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 			attribute.Bool(observability.AttrSandboxFromSnapshot, snapshotID != ""),
 			attribute.Bool(observability.AttrRepositoryCheckout, req.GetRepositoryCheckout() != nil),
 			attribute.Bool(observability.AttrRepositoryChangeset, changeset != nil),
+			attribute.Bool(observability.AttrRepositoryCommitBundle, commitBundle != nil),
 		),
 	)
 	logger := observability.WithTraceContext(s.Logger, ctx)
@@ -299,6 +302,9 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 		if changeset != nil {
 			return nil, errors.New("snapshot-backed sandbox creation cannot include repository changeset")
 		}
+		if commitBundle != nil {
+			return nil, errors.New("snapshot-backed sandbox creation cannot include repository commit bundle")
+		}
 		return s.createSandboxFromSnapshot(ctx, req, snapshotID, reporter)
 	}
 	if req.GetPolicy() == nil {
@@ -327,6 +333,9 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 		}
 	}
 	if err := validateRepositoryChangesetForCheckout(repository, changeset); err != nil {
+		return nil, err
+	}
+	if err := validateRepositoryCommitBundleForCheckout(repository, commitBundle); err != nil {
 		return nil, err
 	}
 	if changesetRecord, err := s.persistRepositoryChangeset(ctx, repository, changeset); err != nil {
@@ -543,7 +552,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 							attribute.String(observability.AttrBackend, backendName),
 						), func(ctx context.Context) error {
 							var err error
-							restoreResp, err = s.restorePortableDependencyStageCache(ctx, adapter, backendName, compiled, firecrackerCfg, repository, changeset, req.GetOptions(), portableRecord, reporter)
+							restoreResp, err = s.restorePortableDependencyStageCache(ctx, adapter, backendName, compiled, firecrackerCfg, repository, changeset, commitBundle, req.GetOptions(), portableRecord, reporter)
 							setCacheResultSpanAttribute(ctx, map[bool]string{true: observability.CacheResultFailed, false: observability.CacheResultRestored}[err != nil])
 							return err
 						})
@@ -768,7 +777,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 		}
 	}
 	if err := s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.bootstrap_repository", repositoryBootstrapAttrs, func(ctx context.Context) error {
-		return s.bootstrapRepositoryInPersistentSandbox(ctx, adapter, sandboxID, compiled, firecrackerCfg, repository, false, reporter)
+		return s.bootstrapRepositoryInPersistentSandbox(ctx, adapter, sandboxID, compiled, firecrackerCfg, repository, commitBundle, false, reporter)
 	}); err != nil {
 		if terminateErr := s.terminateCreatedSandbox(context.Background(), adapter, sandboxID); terminateErr != nil {
 			return nil, fmt.Errorf("bootstrap repository checkout: %w; cleanup failed: %v", err, terminateErr)
@@ -2948,9 +2957,23 @@ func (s *Service) executionAuxOutputStream(key string) backend.OutputStream {
 	}
 }
 
-func (s *Service) ensureRepositoryCommitAvailable(ctx context.Context, repository *repositorycheckout.Checkout) error {
+func (s *Service) ensureRepositoryCommitAvailable(ctx context.Context, repository *repositorycheckout.Checkout, commitBundle *repositorybundle.Bundle) error {
 	if repository == nil || s.RepositoryStore == nil {
 		return nil
+	}
+	if commitBundle != nil {
+		prerequisites, err := commitBundle.PrerequisiteCommits()
+		if err != nil {
+			return err
+		}
+		for _, prerequisite := range prerequisites {
+			if err := s.RepositoryStore.EnsureCommit(ctx, repository.RemoteURL, prerequisite, repositorystore.FetchHints{}); err != nil {
+				return fmt.Errorf("ensure repository commit bundle prerequisite %s: %w", prerequisite, err)
+			}
+		}
+		return s.RepositoryStore.WithRepository(ctx, repository.RemoteURL, "", repositorystore.FetchHints{}, func(repoDir string) error {
+			return commitBundle.VerifyAgainstRepository(ctx, repoDir)
+		})
 	}
 	return s.RepositoryStore.EnsureCommit(ctx, repository.RemoteURL, repository.CommitSHA, repositorystore.FetchHints{})
 }
@@ -3008,7 +3031,7 @@ func (s *Service) preparePersistentSandboxRepository(
 	}
 	s.mu.Unlock()
 
-	err := s.bootstrapRepositoryInPersistentSandbox(ctx, adapter, sandboxID, compiled, firecrackerCfg, repository, refreshExisting, nil)
+	err := s.bootstrapRepositoryInPersistentSandbox(ctx, adapter, sandboxID, compiled, firecrackerCfg, repository, nil, refreshExisting, nil)
 
 	s.mu.Lock()
 	if sandbox, ok := s.sandboxes[sandboxID]; ok {
@@ -3034,6 +3057,7 @@ func (s *Service) bootstrapRepositoryInPersistentSandbox(
 	compiled *policy.CompiledPolicy,
 	firecrackerCfg backend.FirecrackerConfig,
 	repository *repositorycheckout.Checkout,
+	commitBundle *repositorybundle.Bundle,
 	refreshExisting bool,
 	reporter CreateSandboxReporter,
 ) error {
@@ -3048,7 +3072,7 @@ func (s *Service) bootstrapRepositoryInPersistentSandbox(
 			"destination_dir", repository.DestinationDir,
 		)
 	}
-	if err := s.ensureRepositoryCommitAvailable(ctx, repository); err != nil {
+	if err := s.ensureRepositoryCommitAvailable(ctx, repository, commitBundle); err != nil {
 		return err
 	}
 	if s.Logger != nil {
@@ -3060,8 +3084,16 @@ func (s *Service) bootstrapRepositoryInPersistentSandbox(
 	}
 
 	command := repositorycheckout.BuildBootstrapCommand(repository)
+	stdin := []byte(nil)
+	if commitBundle != nil {
+		command = repositorycheckout.BuildBootstrapCommandWithBundle(repository, repositorycheckout.BundleRefName(commitBundle.TargetCommitSHA))
+		stdin = commitBundle.Payload
+	}
 	if refreshExisting {
 		command = repositorycheckout.BuildRefreshCommand(repository)
+		if commitBundle != nil {
+			command = repositorycheckout.BuildRefreshCommandWithBundle(repository, repositorycheckout.BundleRefName(commitBundle.TargetCommitSHA))
+		}
 	}
 
 	bootstrapExecutionID, result, stdout, stderr, err := s.runPersistentBootstrapCommand(
@@ -3072,7 +3104,7 @@ func (s *Service) bootstrapRepositoryInPersistentSandbox(
 		firecrackerCfg,
 		cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_BOOTSTRAP_REPOSITORY,
 		command,
-		nil,
+		stdin,
 		reporter,
 	)
 	if s.Logger != nil {

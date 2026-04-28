@@ -14,6 +14,7 @@ import (
 
 type resolvedRepositoryCheckout struct {
 	RootDir        string
+	RemoteName     string
 	RemoteURL      string
 	CommitSHA      string
 	DestinationDir string
@@ -127,6 +128,7 @@ func resolveRepositoryCheckoutWithOverride(cwd string, loader policyLoader, over
 
 	return &resolvedRepositoryCheckout{
 		RootDir:        repoRoot,
+		RemoteName:     repository.Remote,
 		RemoteURL:      canonicalURL,
 		CommitSHA:      strings.TrimSpace(commitSHA),
 		DestinationDir: repository.Path,

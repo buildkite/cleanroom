@@ -1,6 +1,7 @@
 package controlservice
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -23,6 +24,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/observability"
 	"github.com/buildkite/cleanroom/internal/paths"
 	"github.com/buildkite/cleanroom/internal/policy"
+	"github.com/buildkite/cleanroom/internal/repositorybundle"
 	"github.com/buildkite/cleanroom/internal/repositorychangeset"
 	"github.com/buildkite/cleanroom/internal/repositorycheckout"
 	"github.com/buildkite/cleanroom/internal/repositorystore"
@@ -5182,6 +5184,73 @@ func TestCreateSandboxPersistsRepositoryChangeset(t *testing.T) {
 	}
 	if record.FinalTreeDigest != changeset.TreeDigest {
 		t.Fatalf("unexpected persisted tree digest: got %q want %q", record.FinalTreeDigest, changeset.TreeDigest)
+	}
+}
+
+func TestCreateSandboxBootstrapsLocalOnlyCommitBundle(t *testing.T) {
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"README.md": "hello\n",
+	})
+	baseCommit := repositoryCheckout.GetCommitSha()
+
+	localRepo := filepath.Join(t.TempDir(), "local")
+	runTestGit(t, t.TempDir(), "clone", mirrors.mirrorPath, localRepo)
+	runTestGit(t, localRepo, "config", "user.email", "test@example.com")
+	runTestGit(t, localRepo, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(localRepo, "local.txt"), []byte("local\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(local.txt) returned error: %v", err)
+	}
+	runTestGit(t, localRepo, "add", "local.txt")
+	runTestGit(t, localRepo, "commit", "-m", "local commit")
+	localCommit := strings.TrimSpace(runTestGit(t, localRepo, "rev-parse", "HEAD"))
+
+	commitBundle, err := repositorybundle.BuildFromRepository(localRepo, "origin", &repositorycheckout.Checkout{CommitSHA: localCommit})
+	if err != nil {
+		t.Fatalf("BuildFromRepository returned error: %v", err)
+	}
+	if commitBundle == nil {
+		t.Fatal("expected repository commit bundle")
+	}
+	repositoryCheckout.CommitSha = localCommit
+
+	var capturedBundle []byte
+	adapter := &stubAdapter{}
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+		if stream.OnAttach != nil {
+			var stdin bytes.Buffer
+			stream.OnAttach(backend.AttachIO{
+				WriteStdin: func(data []byte) error {
+					_, err := stdin.Write(data)
+					return err
+				},
+				CloseStdin: func() error {
+					capturedBundle = append([]byte(nil), stdin.Bytes()...)
+					return nil
+				},
+			})
+		}
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+	}
+	svc := newTestService(adapter)
+	svc.RepositoryStore = mirrors
+
+	_, err = svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy:                 testRepositoryPolicy(),
+		RepositoryCheckout:     repositoryCheckout,
+		RepositoryCommitBundle: commitBundle.ToProto(),
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	if got, want := mirrors.commitSHA, baseCommit; got != want {
+		t.Fatalf("expected mirror to ensure bundle prerequisite %q, got %q", want, got)
+	}
+	if !bytes.Equal(capturedBundle, commitBundle.Payload) {
+		t.Fatalf("bootstrap stdin did not receive repository commit bundle")
+	}
+	joined := strings.Join(adapter.req.Command, " ")
+	if !strings.Contains(joined, `git -C "$dest" fetch --progress "$bundle_file" "+HEAD:$bundle_ref"`) {
+		t.Fatalf("expected bootstrap command to fetch attached bundle, got %q", joined)
 	}
 }
 

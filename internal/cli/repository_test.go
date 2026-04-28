@@ -69,6 +69,7 @@ func initGitRepository(t *testing.T, remoteURL string) string {
 	runGit("add", "README.md")
 	runGit("commit", "-m", "initial")
 	runGit("remote", "add", "origin", remoteURL)
+	runGit("update-ref", "refs/remotes/origin/main", "HEAD")
 	return dir
 }
 
@@ -81,6 +82,23 @@ func headCommit(t *testing.T, dir string) string {
 		t.Fatalf("git rev-parse HEAD failed: %v\n%s", err, string(out))
 	}
 	return strings.TrimSpace(string(out))
+}
+
+func commitFile(t *testing.T, dir, name, content, message string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s: %v", name, err)
+	}
+	cmd := exec.Command("git", "add", name)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git add %s failed: %v\n%s", name, err, string(out))
+	}
+	cmd = exec.Command("git", "commit", "-m", message)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git commit %s failed: %v\n%s", message, err, string(out))
+	}
 }
 
 func checkoutGitBranch(t *testing.T, dir, branch string) {
@@ -888,6 +906,102 @@ func TestCreateCommandIncludesLocalChangesWithoutDirtyWarning(t *testing.T) {
 	}
 	if !strings.Contains(patches[0], "dirty.txt") {
 		t.Fatalf("expected changeset patch to reference dirty.txt, got %q", patches[0])
+	}
+}
+
+func TestCreateCommandIncludesLocalOnlyCommitsWithLocalChangesFlag(t *testing.T) {
+	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
+	commitFile(t, repoDir, "local.txt", "local\n", "local commit")
+	wantCommit := headCommit(t, repoDir)
+
+	adapter := &integrationAdapter{}
+	host, _ := startIntegrationServer(t, adapter)
+
+	var (
+		mu       sync.Mutex
+		commands [][]string
+		bundles  [][]byte
+	)
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+		mu.Lock()
+		commands = append(commands, append([]string(nil), req.Command...))
+		mu.Unlock()
+		if stream.OnAttach != nil {
+			var stdin bytes.Buffer
+			stream.OnAttach(backend.AttachIO{
+				WriteStdin: func(data []byte) error {
+					_, err := stdin.Write(data)
+					return err
+				},
+				CloseStdin: func() error {
+					mu.Lock()
+					bundles = append(bundles, append([]byte(nil), stdin.Bytes()...))
+					mu.Unlock()
+					return nil
+				},
+			})
+		}
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+	}
+
+	outcome := runCreateAliasWithCapture(CreateCommand{
+		clientFlags:              clientFlags{Host: host},
+		Chdir:                    repoDir,
+		repositoryChangesetFlags: repositoryChangesetFlags{IncludeLocalChanges: true},
+	}, runtimeContext{
+		CWD: repoDir,
+		Loader: repositoryIntegrationLoader{
+			compiled: &policy.CompiledPolicy{
+				Version:        1,
+				ImageRef:       "ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+				ImageDigest:    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+				NetworkDefault: "deny",
+				Allow:          []policy.AllowRule{{Host: "github.com", Ports: []int{443}}},
+			},
+			repository: policy.RepositoryConfig{
+				Mode:   "current-repo",
+				Remote: "origin",
+				Path:   "/workspace",
+			},
+		},
+	})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err != nil {
+		t.Fatalf("CreateCommand.Run returned error: %v", outcome.err)
+	}
+	if strings.Contains(outcome.stderr, "repository has local modifications") {
+		t.Fatalf("expected dirty repository warning to be suppressed, got %q", outcome.stderr)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if got, want := len(commands), 1; got != want {
+		t.Fatalf("expected repository bootstrap only, got %d want %d", got, want)
+	}
+	joined := strings.Join(commands[0], " ")
+	if !strings.Contains(joined, `git -C "$dest" fetch --progress "$bundle_file" "+HEAD:$bundle_ref"`) {
+		t.Fatalf("expected bootstrap command to fetch attached bundle, got %q", joined)
+	}
+	if !strings.Contains(joined, wantCommit) {
+		t.Fatalf("expected bootstrap command to checkout local commit %q, got %q", wantCommit, joined)
+	}
+	if got, want := len(bundles), 1; got != want {
+		t.Fatalf("expected one attached commit bundle, got %d want %d", got, want)
+	}
+
+	bundlePath := filepath.Join(t.TempDir(), "commits.bundle")
+	if err := os.WriteFile(bundlePath, bundles[0], 0o600); err != nil {
+		t.Fatalf("write captured bundle: %v", err)
+	}
+	cmd := exec.Command("git", "-C", repoDir, "bundle", "list-heads", bundlePath, "HEAD")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git bundle list-heads failed: %v\n%s", err, string(out))
+	}
+	if !strings.Contains(string(out), wantCommit+" HEAD") {
+		t.Fatalf("expected bundle HEAD %q, got %q", wantCommit, string(out))
 	}
 }
 

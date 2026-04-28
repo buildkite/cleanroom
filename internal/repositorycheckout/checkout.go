@@ -191,11 +191,33 @@ func BuildBootstrapCommand(checkout *Checkout) []string {
 	return []string{"sh", "-lc", strings.Join(bootstrapScript(checkout), "\n")}
 }
 
+func BuildBootstrapCommandWithBundle(checkout *Checkout, bundleRef string) []string {
+	if checkout == nil {
+		return nil
+	}
+	return []string{"sh", "-lc", strings.Join(bootstrapScriptWithBundle(checkout, bundleRef), "\n")}
+}
+
 func BuildRefreshCommand(checkout *Checkout) []string {
 	if checkout == nil {
 		return nil
 	}
 	return []string{"sh", "-lc", strings.Join(refreshScript(checkout), "\n")}
+}
+
+func BuildRefreshCommandWithBundle(checkout *Checkout, bundleRef string) []string {
+	if checkout == nil {
+		return nil
+	}
+	return []string{"sh", "-lc", strings.Join(refreshScriptWithBundle(checkout, bundleRef), "\n")}
+}
+
+func BundleRefName(commitSHA string) string {
+	commitSHA = strings.ToLower(strings.TrimSpace(commitSHA))
+	if commitSHA == "" {
+		return "refs/remotes/cleanroom/local"
+	}
+	return "refs/remotes/cleanroom/" + commitSHA
 }
 
 func BootstrapRecipeDigest(checkout *Checkout) string {
@@ -247,6 +269,10 @@ func NormalizeCommand(command []string) []string {
 }
 
 func bootstrapScript(checkout *Checkout) []string {
+	return bootstrapScriptWithBundle(checkout, "")
+}
+
+func bootstrapScriptWithBundle(checkout *Checkout, bundleRef string) []string {
 	cloneCommand := `git clone --filter=blob:none --no-checkout --progress "$remote" "$dest"`
 
 	script := []string{
@@ -260,10 +286,17 @@ func bootstrapScript(checkout *Checkout) []string {
 		`mkdir -p "$dest"`,
 		cloneCommand,
 	}
+	if strings.TrimSpace(bundleRef) != "" {
+		script = append(script, bundleFetchScript(bundleRef)...)
+	}
 	return append(script, checkoutVerificationScript(checkout)...)
 }
 
 func refreshScript(checkout *Checkout) []string {
+	return refreshScriptWithBundle(checkout, "")
+}
+
+func refreshScriptWithBundle(checkout *Checkout, bundleRef string) []string {
 	script := []string{
 		"set -eu",
 		"dest=" + shellQuote(checkout.DestinationDir),
@@ -276,9 +309,27 @@ func refreshScript(checkout *Checkout) []string {
 		`git -C "$dest" submodule deinit -f --all >/dev/null 2>&1 || true`,
 		`git -C "$dest" reset --hard`,
 		`git -C "$dest" clean -ffdx`,
-		`git -C "$dest" fetch --filter=blob:none --progress origin "$commit"`,
+	}
+	if strings.TrimSpace(bundleRef) != "" {
+		script = append(script,
+			`git -C "$dest" fetch --filter=blob:none --progress origin`,
+		)
+		script = append(script, bundleFetchScript(bundleRef)...)
+	} else {
+		script = append(script, `git -C "$dest" fetch --filter=blob:none --progress origin "$commit"`)
 	}
 	return append(script, checkoutVerificationScript(checkout)...)
+}
+
+func bundleFetchScript(bundleRef string) []string {
+	return []string{
+		"bundle_ref=" + shellQuote(bundleRef),
+		`bundle_file="$(mktemp)"`,
+		`cleanup_bundle() { rm -f "$bundle_file"; }`,
+		`trap cleanup_bundle EXIT INT TERM`,
+		`cat >"$bundle_file"`,
+		`git -C "$dest" fetch --progress "$bundle_file" "+HEAD:$bundle_ref"`,
+	}
 }
 
 func checkoutVerificationScript(checkout *Checkout) []string {

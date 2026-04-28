@@ -16,6 +16,7 @@ import (
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/observability"
 	"github.com/buildkite/cleanroom/internal/policy"
+	"github.com/buildkite/cleanroom/internal/repositorybundle"
 	"github.com/buildkite/cleanroom/internal/repositorychangeset"
 	"github.com/buildkite/cleanroom/internal/repositorycheckout"
 	"github.com/buildkite/cleanroom/internal/repositorystore"
@@ -316,6 +317,7 @@ func (s *Service) restorePortableDependencyStageCache(
 	firecrackerCfg backend.FirecrackerConfig,
 	repository *repositorycheckout.Checkout,
 	changeset *repositorychangeset.Changeset,
+	commitBundle *repositorybundle.Bundle,
 	options *cleanroomv1.SandboxOptions,
 	record cachestore.Record,
 	reporter CreateSandboxReporter,
@@ -330,7 +332,7 @@ func (s *Service) restorePortableDependencyStageCache(
 	}
 
 	sandboxID := restoreResp.GetSandbox().GetSandboxId()
-	if err := s.bootstrapRepositoryInPersistentSandbox(ctx, adapter, sandboxID, compiled, firecrackerCfg, repository, true, reporter); err != nil {
+	if err := s.bootstrapRepositoryInPersistentSandbox(ctx, adapter, sandboxID, compiled, firecrackerCfg, repository, commitBundle, true, reporter); err != nil {
 		if cleanupErr := s.terminateCreatedSandbox(context.Background(), adapter, sandboxID); cleanupErr != nil {
 			return nil, fmt.Errorf("refresh repository checkout after portable dependency stage restore: %w; cleanup failed: %v", err, cleanupErr)
 		}

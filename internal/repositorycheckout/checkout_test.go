@@ -54,6 +54,25 @@ func TestBuildBootstrapCommandForcesCloneProgressWithoutTTY(t *testing.T) {
 	}
 }
 
+func TestBuildBootstrapCommandWithBundleFetchesAttachedBundle(t *testing.T) {
+	command := BuildBootstrapCommandWithBundle(&Checkout{
+		RemoteURL:      "https://github.com/buildkite/cleanroom.git",
+		CommitSHA:      "0123456789abcdef0123456789abcdef01234567",
+		DestinationDir: "/workspace",
+	}, BundleRefName("0123456789abcdef0123456789abcdef01234567"))
+
+	joined := strings.Join(command, " ")
+	if !strings.Contains(joined, `cat >"$bundle_file"`) {
+		t.Fatalf("expected bootstrap command to read an attached bundle, got %q", joined)
+	}
+	if !strings.Contains(joined, `git -C "$dest" fetch --progress "$bundle_file" "+HEAD:$bundle_ref"`) {
+		t.Fatalf("expected bootstrap command to fetch the attached bundle, got %q", joined)
+	}
+	if !strings.Contains(joined, `bundle_ref='refs/remotes/cleanroom/0123456789abcdef0123456789abcdef01234567'`) {
+		t.Fatalf("expected bootstrap command to isolate bundle ref, got %q", joined)
+	}
+}
+
 func TestBuildBootstrapCommandAllowsExistingEmptyDestination(t *testing.T) {
 	command := BuildBootstrapCommand(&Checkout{
 		RemoteURL:      "https://github.com/buildkite/cleanroom.git",
