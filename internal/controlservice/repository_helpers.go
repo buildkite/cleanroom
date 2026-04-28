@@ -78,8 +78,8 @@ func validateRepositoryCheckoutForPolicy(compiled *policy.CompiledPolicy, reposi
 	if compiled == nil {
 		return errors.New("repository checkout requires a compiled policy")
 	}
-	if !compiled.Allows(host, 443) {
-		return fmt.Errorf("repository remote host %q is not allowed by sandbox policy", host)
+	if !compiled.AllowsForStage(policy.NetworkStageWorkspace, host, 443) {
+		return fmt.Errorf("repository remote host %q is not allowed by workspace network policy", host)
 	}
 	return nil
 }

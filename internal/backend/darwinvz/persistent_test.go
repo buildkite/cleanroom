@@ -33,6 +33,9 @@ func TestCapabilitiesExposeSnapshotAndFileTransfer(t *testing.T) {
 	if !caps[backend.CapabilitySandboxFileUpload] {
 		t.Fatalf("expected %s=true", backend.CapabilitySandboxFileUpload)
 	}
+	if !caps[backend.CapabilityNetworkStageScopedEgress] {
+		t.Fatalf("expected %s=true", backend.CapabilityNetworkStageScopedEgress)
+	}
 	for _, key := range []string{
 		backend.CapabilitySandboxPathStat,
 		backend.CapabilitySandboxTreeWalk,

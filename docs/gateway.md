@@ -38,15 +38,19 @@ scope-token trust rather than accepting scope tokens from arbitrary sources.
 
 ## Git proxy
 
-Cleanroom rewrites clone URLs to the host gateway when the target host is in
-`sandbox.network.allow`. Clone commands run unchanged inside the sandbox:
+Cleanroom rewrites clone URLs to the host gateway when the target host is in the
+active effective network policy. With legacy policies that means
+`sandbox.network.allow`; with stage-local policies it means the current
+workspace, dependencies, services, or execution allowlist. Clone commands run
+unchanged inside the sandbox:
 
 ```bash
 cleanroom exec -- git clone https://github.com/org/repo.git
 ```
 
 The gateway resolves the target host from the request path, validates it against
-the sandbox's compiled policy, and proxies the git smart-HTTP protocol upstream.
+the sandbox's active effective policy, and proxies the git smart-HTTP protocol
+upstream.
 For `.git` smart-HTTP routes, the request is handed to embedded
 `content-cache`; for non-`.git` paths, the gateway falls back to Cleanroom's
 mirror-backed proxy. Guest-side git rewrites target
@@ -66,7 +70,7 @@ Allowed host example (from this repo's policy):
 cleanroom exec -- git ls-remote https://github.com/buildkite/cleanroom.git HEAD
 ```
 
-Denied host example (not in `sandbox.network.allow`):
+Denied host example (not in the active effective policy):
 
 ```bash
 cleanroom exec -- git ls-remote https://gitlab.com/gitlab-org/gitlab.git HEAD

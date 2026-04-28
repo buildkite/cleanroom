@@ -76,6 +76,8 @@ repository:
   remote: origin
   path: /workspace
   submodules: false
+  network:
+    allow: github.com:443
 
 sandbox:
   image:
@@ -85,6 +87,10 @@ sandbox:
     memory: 8GiB
     disk: 16GiB
   dependencies:
+    network:
+      allow:
+        - proxy.golang.org:443
+        - sum.golang.org:443
     command: mise exec -- go mod download
     key:
       files:
@@ -93,16 +99,15 @@ sandbox:
         - go.sum
     reuse: portable
   services:
+    network:
+      allow: ghcr.io:443
     docker:
       required: true
   run:
+    network: {}
     before: mise exec -- go test ./...
   network:
     default: deny
-    allow:
-      - api.github.com:443
-      - proxy.golang.org:443
-      - sum.golang.org:443
 ```
 
 ### 5.1.1 Repository bootstrap config
@@ -169,6 +174,20 @@ explicit request-time changeset input.
 - Policy schema intentionally has no field for implicit dirty-worktree inclusion; explicit local modifications are a separate request-time changeset input.
 - `sandbox.network.allow` defaults to empty. It accepts either a sequence of
   entries or a single scalar entry.
+- `repository.network.allow` is the workspace-stage allowlist for repository
+  checkout and explicit repository changeset application.
+- `sandbox.dependencies.network.allow` applies only while
+  `sandbox.dependencies.command` runs.
+- `sandbox.services.network.allow` applies only while
+  `sandbox.services.command` runs.
+- `sandbox.run.network.allow` applies to `sandbox.run.before` and the requested
+  execution command.
+- Stage-local network blocks do not inherit from one another. An omitted
+  stage-local block means no external egress for that stage when any stage-local
+  network block is configured.
+- `sandbox.network.allow` cannot be combined with stage-local network blocks. It
+  remains the legacy all-stage allowlist when no stage-local network block is
+  configured.
 - An allow entry may be a mapping with an exact `host` value and at least one
   explicit port in `ports`, or the scalar shorthand `host:port`.
 - The `host:port` shorthand must include one explicit port from 1 to 65535.
@@ -186,9 +205,14 @@ explicit request-time changeset input.
 ### 5.2.1 Deterministic network match semantics (normative)
 - Cleanroom trims whitespace and lowercases policy hosts and requested
   destination hosts before matching.
-- A destination is allowed only when an exact `sandbox.network.allow` host and
-  port entry matches the destination selected by the relevant backend or gateway
-  route.
+- A destination is allowed only when an exact host and port entry matches the
+  effective policy for the active stage.
+- The active stages are `workspace` for repository checkout and changeset
+  application, `dependencies` for dependency bootstrap, `services` for services
+  bootstrap, and `execution` for `sandbox.run.before` plus the requested
+  command.
+- If no stage-local network block is configured, the legacy
+  `sandbox.network.allow` list is the effective policy for every stage.
 - Any destination not matched by an exact allow entry is denied.
 - IP literals are treated as exact host values. CIDR matching is not currently
   implemented.
@@ -335,6 +359,9 @@ Minimum required fields:
 - `allow[]`
   - `host`
   - `ports[]`
+- `network_stages`
+  - optional `workspace`, `dependencies`, `services`, and `execution`
+    allowlists
 - `services`
   - Docker service requirement
   - optional services bootstrap command and key files
@@ -404,10 +431,10 @@ These rules are installed during sandbox network setup and torn down during clea
 
 #### 6.2.3 Git proxy
 
-- Cleanroom rewrites clone URLs to the host gateway's git endpoint when a repo host is in `sandbox.network.allow`.
+- Cleanroom rewrites clone URLs to the host gateway's git endpoint when a repo host is in the effective policy for the active stage.
 - Runtime injects scoped Git URL rewrite config inside the sandbox command environment (for example `url.<gateway>/git/<host>/.insteadOf=https://<host>/`).
 - Clone commands run unchanged inside the sandbox (`git clone https://github.com/org/repo.git`), with transport rewritten to the gateway endpoint.
-- The gateway resolves the target host from the request path, validates it against the sandbox's compiled policy, and proxies the git smart-HTTP protocol (`info/refs?service=git-upload-pack` and `git-upload-pack`) upstream.
+- The gateway resolves the target host from the request path, validates it against the sandbox's active effective policy, and proxies the git smart-HTTP protocol (`info/refs?service=git-upload-pack` and `git-upload-pack`) upstream.
 - Upstream authentication is held host-side by the gateway process (for example GitHub App installation tokens or PATs resolved from the CI secret store). Credentials are never exposed to the guest.
 - Enforcement:
   - deny by default except policy-allowed git hosts.
@@ -500,6 +527,8 @@ Each backend must publish a capability map consumed by launch-time validation. C
 Current capability keys:
 - `network.default_deny`: backend can enforce deny-by-default outbound network behavior.
 - `network.allowlist_egress`: backend can enforce allowlist egress outcomes from compiled policy.
+- `network.stage_scoped_egress`: backend can swap to the active stage allowlist
+  before each sandbox command and revoke broader-stage connections.
 - `dns_control_or_equivalent`: backend can prevent bypass of policy via unmanaged resolver paths.
 - `network.guest_interface`: backend provides a managed guest network interface.
 

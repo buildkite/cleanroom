@@ -16,6 +16,7 @@ func (s *Service) runPersistentSandboxCommand(
 	sandboxID string,
 	compiled *policy.CompiledPolicy,
 	firecrackerCfg backend.FirecrackerConfig,
+	networkStage policy.NetworkStage,
 	executionID string,
 	command []string,
 	env []string,
@@ -27,6 +28,7 @@ func (s *Service) runPersistentSandboxCommand(
 		Command:           append([]string(nil), command...),
 		Env:               append([]string(nil), env...),
 		Policy:            compiled,
+		NetworkStage:      networkStage,
 		FirecrackerConfig: withRunDir(firecrackerCfg, internalBootstrapArtifactsDir(sandboxID, executionID)),
 	}, stream)
 }
@@ -38,6 +40,7 @@ func (s *Service) runPersistentBootstrapCommand(
 	compiled *policy.CompiledPolicy,
 	firecrackerCfg backend.FirecrackerConfig,
 	phase cleanroomv1.CreateSandboxPhase,
+	networkStage policy.NetworkStage,
 	command []string,
 	stdin []byte,
 	reporter CreateSandboxReporter,
@@ -46,7 +49,7 @@ func (s *Service) runPersistentBootstrapCommand(
 	var stderr bytes.Buffer
 	var attachErr error
 	bootstrapExecutionID := s.ids().NewExecutionID()
-	result, err := s.runPersistentSandboxCommand(ctx, adapter, sandboxID, compiled, firecrackerCfg, bootstrapExecutionID, command, nil, backend.OutputStream{
+	result, err := s.runPersistentSandboxCommand(ctx, adapter, sandboxID, compiled, firecrackerCfg, networkStage, bootstrapExecutionID, command, nil, backend.OutputStream{
 		OnStdout: func(chunk []byte) {
 			_, _ = stdout.Write(chunk)
 			emitCreateSandboxStdout(reporter, phase, chunk)

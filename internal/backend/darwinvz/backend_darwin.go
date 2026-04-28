@@ -304,10 +304,11 @@ func (a *Adapter) Capabilities() map[string]bool {
 	}
 	dnsControlSupported := configuredMode == darwinVZNetworkModeFileHandle
 	return map[string]bool{
-		backend.CapabilityNetworkDefaultDeny:     true,
-		backend.CapabilityNetworkAllowlistEgress: allowlistSupported,
-		backend.CapabilityDNSControlOrEquivalent: dnsControlSupported,
-		backend.CapabilityNetworkGuestInterface:  true,
+		backend.CapabilityNetworkDefaultDeny:       true,
+		backend.CapabilityNetworkAllowlistEgress:   allowlistSupported,
+		backend.CapabilityNetworkStageScopedEgress: allowlistSupported && dnsControlSupported,
+		backend.CapabilityDNSControlOrEquivalent:   dnsControlSupported,
+		backend.CapabilityNetworkGuestInterface:    true,
 	}
 }
 
@@ -344,6 +345,7 @@ func (a *Adapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest
 		trace.WithAttributes(
 			attribute.String("cleanroom.sandbox.id", strings.TrimSpace(req.SandboxID)),
 			attribute.String("cleanroom.execution.id", strings.TrimSpace(req.ExecutionID)),
+			attribute.String("cleanroom.network.stage", string(req.NetworkStage)),
 			attribute.Int("cleanroom.command.argc", len(req.Command)),
 		),
 	)
@@ -384,12 +386,13 @@ func (a *Adapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest
 	if req.Policy == nil {
 		return nil, errors.New("missing compiled policy")
 	}
+	networkPolicy := req.Policy.NetworkPolicyForStage(req.NetworkStage)
 	allowlistSupported, allowlistStatusDetail, _, supportErr := allowlistSupportForConfig(instance.FirecrackerConfig)
 	if supportErr != nil {
 		return nil, supportErr
 	}
-	if _, policyErr := evaluateNetworkPolicyForRun(req.Policy.NetworkDefault, len(req.Policy.Allow), allowlistSupported); policyErr != nil {
-		if len(req.Policy.Allow) > 0 && !allowlistSupported && allowlistStatusDetail != "" {
+	if _, policyErr := evaluateNetworkPolicyForRun(networkPolicy.NetworkDefault, len(networkPolicy.Allow), allowlistSupported); policyErr != nil {
+		if len(networkPolicy.Allow) > 0 && !allowlistSupported && allowlistStatusDetail != "" {
 			return nil, fmt.Errorf("%w (%s)", policyErr, allowlistStatusDetail)
 		}
 		return nil, policyErr
@@ -854,13 +857,14 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 	if req.Policy == nil {
 		return nil, errors.New("missing compiled policy")
 	}
+	networkPolicy := req.Policy.NetworkPolicyForStage(req.NetworkStage)
 	allowlistSupported, allowlistStatusDetail, _, supportErr := allowlistSupportForConfig(req.FirecrackerConfig)
 	if supportErr != nil {
 		return nil, supportErr
 	}
-	policyWarn, policyErr := evaluateNetworkPolicyForRun(req.Policy.NetworkDefault, len(req.Policy.Allow), allowlistSupported)
+	policyWarn, policyErr := evaluateNetworkPolicyForRun(networkPolicy.NetworkDefault, len(networkPolicy.Allow), allowlistSupported)
 	if policyErr != nil {
-		if len(req.Policy.Allow) > 0 && !allowlistSupported && allowlistStatusDetail != "" {
+		if len(networkPolicy.Allow) > 0 && !allowlistSupported && allowlistStatusDetail != "" {
 			return nil, fmt.Errorf("%w (%s)", policyErr, allowlistStatusDetail)
 		}
 		return nil, policyErr
@@ -1033,7 +1037,7 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 		"console=hvc0 root=/dev/vda rw init=%s cleanroom_guest_port=%d %s",
 		guestInitPath,
 		req.GuestPort,
-		dockerServiceBootArgs(req.Policy, req.FirecrackerConfig, a.GatewayPort, a.GatewayRoutes),
+		dockerServiceBootArgs(networkPolicy, req.FirecrackerConfig, a.GatewayPort, a.GatewayRoutes),
 	)
 	consolePath := filepath.Join(runDir, "vm.console.log")
 
@@ -1063,7 +1067,7 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 		NetworkCfg:     networkCfg,
 		HostGatewayURL: a.GatewayBridgeURL,
 		GatewayPort:    a.GatewayPort,
-		Policy:         req.Policy,
+		Policy:         networkPolicy,
 		VCPUs:          req.VCPUs,
 		MemoryMiB:      req.MemoryMiB,
 		GuestPort:      req.GuestPort,
@@ -1120,7 +1124,7 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 		if scopeSandboxID == "" {
 			scopeSandboxID = vmID
 		}
-		if err := a.GatewayRegistry.RegisterScopeToken(token, scopeSandboxID, req.Policy); err != nil {
+		if err := a.GatewayRegistry.RegisterScopeToken(token, scopeSandboxID, networkPolicy); err != nil {
 			return nil, fmt.Errorf("register sandbox in gateway: %w", err)
 		}
 		a.GatewayRegistry.SetActiveExecutionTrace(scopeSandboxID, req.ExecutionID, trace.SpanContextFromContext(ctx))
@@ -1149,7 +1153,7 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 		if startedVM.NetworkMetadata != nil {
 			networkMode = startedVM.NetworkMetadata.Mode
 		}
-		guestReq.Env = append(guestReq.Env, gatewayGitProxyEnvVars(req.Policy, networkMode, gwPort, a.GatewayRoutes)...)
+		guestReq.Env = append(guestReq.Env, gatewayGitProxyEnvVars(networkPolicy, networkMode, gwPort, a.GatewayRoutes)...)
 	}
 	entropy := make([]byte, 64)
 	if _, err := cryptorand.Read(entropy); err == nil {
@@ -1484,13 +1488,14 @@ func (a *Adapter) executeInSandbox(bootCtx context.Context, runCtx context.Conte
 	if policy == nil {
 		return nil, errors.New("missing compiled policy")
 	}
+	networkPolicy := policy.NetworkPolicyForStage(req.NetworkStage)
 	allowlistSupported, allowlistStatusDetail, _, supportErr := allowlistSupportForConfig(instance.FirecrackerConfig)
 	if supportErr != nil {
 		return nil, supportErr
 	}
-	policyWarn, policyErr := evaluateNetworkPolicyForRun(policy.NetworkDefault, len(policy.Allow), allowlistSupported)
+	policyWarn, policyErr := evaluateNetworkPolicyForRun(networkPolicy.NetworkDefault, len(networkPolicy.Allow), allowlistSupported)
 	if policyErr != nil {
-		if len(policy.Allow) > 0 && !allowlistSupported && allowlistStatusDetail != "" {
+		if len(networkPolicy.Allow) > 0 && !allowlistSupported && allowlistStatusDetail != "" {
 			return nil, fmt.Errorf("%w (%s)", policyErr, allowlistStatusDetail)
 		}
 		return nil, policyErr
@@ -1531,20 +1536,26 @@ func (a *Adapter) executeInSandbox(bootCtx context.Context, runCtx context.Conte
 		return nil, err
 	}
 
+	scopeSandboxID := strings.TrimSpace(req.SandboxID)
+	if scopeSandboxID == "" {
+		scopeSandboxID = strings.TrimSpace(instance.SandboxID)
+	}
+	if scopeSandboxID == "" {
+		scopeSandboxID = strings.TrimSpace(req.ExecutionID)
+	}
+	if instance.FileHandleGateway != nil {
+		if err := instance.FileHandleGateway.SetPolicy(scopeSandboxID, networkPolicy); err != nil {
+			return nil, fmt.Errorf("update file-handle network policy: %w", err)
+		}
+	}
+
 	gatewayScopeToken := ""
 	if a.GatewayRegistry != nil {
 		token, tokenErr := randomScopeToken()
 		if tokenErr != nil {
 			return nil, fmt.Errorf("generate gateway scope token: %w", tokenErr)
 		}
-		scopeSandboxID := strings.TrimSpace(req.SandboxID)
-		if scopeSandboxID == "" {
-			scopeSandboxID = strings.TrimSpace(instance.SandboxID)
-		}
-		if scopeSandboxID == "" {
-			scopeSandboxID = strings.TrimSpace(req.ExecutionID)
-		}
-		if err := a.GatewayRegistry.RegisterScopeToken(token, scopeSandboxID, policy); err != nil {
+		if err := a.GatewayRegistry.RegisterScopeToken(token, scopeSandboxID, networkPolicy); err != nil {
 			return nil, fmt.Errorf("register sandbox in gateway: %w", err)
 		}
 		a.GatewayRegistry.SetActiveExecutionTrace(scopeSandboxID, req.ExecutionID, trace.SpanContextFromContext(runCtx))
@@ -1577,7 +1588,7 @@ func (a *Adapter) executeInSandbox(bootCtx context.Context, runCtx context.Conte
 		if instance.NetworkMetadata != nil {
 			networkMode = instance.NetworkMetadata.Mode
 		}
-		guestReq.Env = append(guestReq.Env, gatewayGitProxyEnvVars(policy, networkMode, gwPort, a.GatewayRoutes)...)
+		guestReq.Env = append(guestReq.Env, gatewayGitProxyEnvVars(networkPolicy, networkMode, gwPort, a.GatewayRoutes)...)
 	}
 	entropy := make([]byte, 64)
 	if _, err := cryptorand.Read(entropy); err == nil {

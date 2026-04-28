@@ -151,6 +151,81 @@ func TestNewFileHandleDNSRuntimeAcceptsAllowDefaultPolicy(t *testing.T) {
 	}
 }
 
+func TestFileHandleGatewaySetPolicyUpdatesDNSRuntime(t *testing.T) {
+	t.Parallel()
+
+	runtime, err := newFileHandleDNSRuntime("sandbox-1", &policy.CompiledPolicy{
+		NetworkDefault: "deny",
+		Allow: []policy.AllowRule{
+			{Host: "old.example", Ports: []int{443}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("newFileHandleDNSRuntime returned error: %v", err)
+	}
+	gateway := &fileHandleGateway{
+		network: &fileHandleVirtualNetwork{dnsRuntime: runtime},
+	}
+
+	if err := gateway.SetPolicy("sandbox-1", &policy.CompiledPolicy{
+		NetworkDefault: "deny",
+		Allow: []policy.AllowRule{
+			{Host: "new.example", Ports: []int{443}},
+		},
+	}); err != nil {
+		t.Fatalf("SetPolicy returned error: %v", err)
+	}
+	if runtime.HostAllowedByPolicy("sandbox-1", "old.example") {
+		t.Fatal("did not expect old policy host to remain allowed")
+	}
+	if !runtime.HostAllowedByPolicy("sandbox-1", "new.example") {
+		t.Fatal("expected new policy host to be allowed")
+	}
+}
+
+func TestFileHandleVirtualNetworkSetPolicyClosesActiveTCPProxyConnections(t *testing.T) {
+	t.Parallel()
+
+	runtime, err := newFileHandleDNSRuntime("sandbox-1", &policy.CompiledPolicy{
+		NetworkDefault: "deny",
+		Allow: []policy.AllowRule{
+			{Host: "old.example", Ports: []int{443}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("newFileHandleDNSRuntime returned error: %v", err)
+	}
+	network := &fileHandleVirtualNetwork{dnsRuntime: runtime}
+	guest, guestPeer := net.Pipe()
+	defer guestPeer.Close()
+	outbound, outboundPeer := net.Pipe()
+	defer outboundPeer.Close()
+
+	untrack := network.trackTCPProxyConn(guest, outbound)
+	if err := network.SetPolicy("sandbox-1", &policy.CompiledPolicy{
+		NetworkDefault: "deny",
+		Allow: []policy.AllowRule{
+			{Host: "new.example", Ports: []int{443}},
+		},
+	}); err != nil {
+		t.Fatalf("SetPolicy returned error: %v", err)
+	}
+	untrack()
+
+	if _, err := guest.Write([]byte("x")); err == nil {
+		t.Fatal("expected tracked guest connection to be closed")
+	}
+	if _, err := outbound.Write([]byte("x")); err == nil {
+		t.Fatal("expected tracked outbound connection to be closed")
+	}
+	if runtime.HostAllowedByPolicy("sandbox-1", "old.example") {
+		t.Fatal("did not expect old policy host to remain allowed")
+	}
+	if !runtime.HostAllowedByPolicy("sandbox-1", "new.example") {
+		t.Fatal("expected new policy host to be allowed")
+	}
+}
+
 func TestResolveFileHandleDNSUpstreamAddrUsesConfiguredValue(t *testing.T) {
 	t.Parallel()
 

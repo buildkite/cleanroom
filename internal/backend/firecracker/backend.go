@@ -361,6 +361,9 @@ func (a *Adapter) ProvisionSandbox(ctx context.Context, req backend.ProvisionReq
 	if req.Policy == nil {
 		return errors.New("missing compiled policy")
 	}
+	if req.Policy.HasStageScopedNetwork() {
+		return errors.New("firecracker backend does not support stage-scoped network policies yet")
+	}
 
 	a.sandboxMu.Lock()
 	if a.sandboxes == nil {
@@ -443,6 +446,13 @@ func (a *Adapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest
 	}
 	if err := instance.exitedErrOrNil(); err != nil {
 		return nil, fmt.Errorf("sandbox %q is not running: %w", sandboxID, err)
+	}
+	activePolicy := instance.Policy
+	if req.Policy != nil {
+		activePolicy = req.Policy
+	}
+	if activePolicy != nil && activePolicy.HasStageScopedNetwork() {
+		return nil, errors.New("firecracker backend does not support stage-scoped network policies yet")
 	}
 
 	runStart := time.Now()
@@ -698,6 +708,9 @@ func (a *Adapter) ProvisionSandboxFromSnapshot(ctx context.Context, req backend.
 	}
 	if req.Policy == nil {
 		return errors.New("missing compiled policy")
+	}
+	if req.Policy.HasStageScopedNetwork() {
+		return errors.New("firecracker backend does not support stage-scoped network policies yet")
 	}
 	storageRef := strings.TrimSpace(req.StorageRef)
 	if storageRef == "" {

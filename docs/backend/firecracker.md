@@ -19,6 +19,8 @@ supported layered-cache path.
 - Linux-only local backend using Firecracker + KVM.
 - Enforce `CompiledPolicy` only (no runtime repo policy reload).
 - Deny-by-default egress with explicit allow rules.
+- Stage-local network policies currently fail closed until Firecracker has
+  active per-command egress rule updates.
 - Route git egress through the shared host gateway, with embedded
   `content-cache` for Git and OCI transport caching.
 - Keep secret values out of guest env and policy files.
@@ -68,6 +70,7 @@ Current capability values (visible in `cleanroom doctor --json`):
 - `sandbox.archive_write=true`
 - `network.default_deny=true`
 - `network.allowlist_egress=true`
+- `network.stage_scoped_egress=false`
 - `dns_control_or_equivalent=true`
 - `network.guest_interface=true`
 

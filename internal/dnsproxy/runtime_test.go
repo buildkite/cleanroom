@@ -126,6 +126,76 @@ func TestRuntimeAllowDefaultPermitsConnectionWithoutDNSObservation(t *testing.T)
 	}
 }
 
+func TestRuntimeUpdateSandboxPolicyClearsObservationsAndConnections(t *testing.T) {
+	t.Parallel()
+
+	runtime := NewRuntime(RuntimeConfig{
+		MaxObservationsPerScope:  8,
+		MaxConnectionsPerSandbox: 8,
+	})
+	if err := runtime.RegisterSandbox("sandbox-1", testCompiledPolicy(
+		policy.AllowRule{Host: "old.example", Ports: []int{443}},
+	)); err != nil {
+		t.Fatalf("register sandbox: %v", err)
+	}
+
+	now := time.Date(2026, time.April, 6, 10, 0, 0, 0, time.UTC)
+	sourceIP := netip.MustParseAddr("10.0.0.2")
+	oldDestIP := netip.MustParseAddr("203.0.113.10")
+	newDestIP := netip.MustParseAddr("203.0.113.11")
+
+	if err := runtime.ObserveResponse("sandbox-1", sourceIP, testResponse("old.example.",
+		&dns.A{
+			Hdr: dns.RR_Header{Name: "old.example.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 30},
+			A:   net.ParseIP("203.0.113.10"),
+		},
+	), now); err != nil {
+		t.Fatalf("observe old response: %v", err)
+	}
+	oldFlow := Connection{
+		SandboxID:  "sandbox-1",
+		SourceIP:   sourceIP,
+		SourcePort: 41000,
+		DestIP:     oldDestIP,
+		DestPort:   443,
+		Protocol:   ProtocolTCP,
+	}
+	if !runtime.AllowConnection(oldFlow, now) {
+		t.Fatal("expected old observed destination to be permitted before policy update")
+	}
+
+	if err := runtime.UpdateSandboxPolicy("sandbox-1", testCompiledPolicy(
+		policy.AllowRule{Host: "new.example", Ports: []int{443}},
+	)); err != nil {
+		t.Fatalf("update sandbox policy: %v", err)
+	}
+	if got := runtime.Observations("sandbox-1", now); len(got) != 0 {
+		t.Fatalf("expected observations to be cleared after policy update, got %v", got)
+	}
+	if runtime.AllowConnection(oldFlow, now) {
+		t.Fatal("did not expect old established connection to survive policy update")
+	}
+
+	if err := runtime.ObserveResponse("sandbox-1", sourceIP, testResponse("new.example.",
+		&dns.A{
+			Hdr: dns.RR_Header{Name: "new.example.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 30},
+			A:   net.ParseIP("203.0.113.11"),
+		},
+	), now); err != nil {
+		t.Fatalf("observe new response: %v", err)
+	}
+	if !runtime.AllowConnection(Connection{
+		SandboxID:  "sandbox-1",
+		SourceIP:   sourceIP,
+		SourcePort: 41001,
+		DestIP:     newDestIP,
+		DestPort:   443,
+		Protocol:   ProtocolTCP,
+	}, now) {
+		t.Fatal("expected new observed destination to be permitted after policy update")
+	}
+}
+
 func TestRuntimeHonoursMinimumTTLAcrossCNAMEChainAndKeepsEstablishedConnections(t *testing.T) {
 	t.Parallel()
 
