@@ -69,6 +69,7 @@ type sandboxState struct {
 	Policy                              *policy.CompiledPolicy
 	Firecracker                         backend.FirecrackerConfig
 	Repository                          *repositorycheckout.Checkout
+	RepositoryCommitBundle              *repositorybundle.Bundle
 	RepositoryHasChangeset              bool
 	RepositoryChangesetPendingExecution bool
 	SourceKind                          string
@@ -883,6 +884,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 		Policy:                              compiled,
 		Firecracker:                         firecrackerCfg,
 		Repository:                          cloneRepositoryCheckout(repository),
+		RepositoryCommitBundle:              cloneRepositoryCommitBundle(commitBundle),
 		RepositoryHasChangeset:              changeset != nil,
 		RepositoryChangesetPendingExecution: changeset != nil,
 		CreatedAt:                           now,
@@ -2991,6 +2993,7 @@ func (s *Service) preparePersistentSandboxRepository(
 	}
 
 	refreshExisting := false
+	commitBundle := (*repositorybundle.Bundle)(nil)
 
 	s.mu.Lock()
 	sandbox, ok := s.sandboxes[sandboxID]
@@ -3025,19 +3028,21 @@ func (s *Service) preparePersistentSandboxRepository(
 	case repositoryCheckoutsEqual(sandbox.Repository, repository):
 		sandbox.RepositoryBusy = true
 		refreshExisting = true
+		commitBundle = cloneRepositoryCommitBundle(sandbox.RepositoryCommitBundle)
 	default:
 		s.mu.Unlock()
 		return fmt.Errorf("sandbox %q already has a different repository checkout", sandboxID)
 	}
 	s.mu.Unlock()
 
-	err := s.bootstrapRepositoryInPersistentSandbox(ctx, adapter, sandboxID, compiled, firecrackerCfg, repository, nil, refreshExisting, nil)
+	err := s.bootstrapRepositoryInPersistentSandbox(ctx, adapter, sandboxID, compiled, firecrackerCfg, repository, commitBundle, refreshExisting, nil)
 
 	s.mu.Lock()
 	if sandbox, ok := s.sandboxes[sandboxID]; ok {
 		sandbox.RepositoryBusy = false
 		if err == nil {
 			sandbox.Repository = cloneRepositoryCheckout(repository)
+			sandbox.RepositoryCommitBundle = cloneRepositoryCommitBundle(commitBundle)
 			sandbox.RepositoryHasChangeset = false
 			sandbox.RepositoryChangesetPendingExecution = false
 		}

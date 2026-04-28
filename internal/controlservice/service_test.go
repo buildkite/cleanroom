@@ -4938,6 +4938,149 @@ func TestCreateExecutionRebootstrapsSecondMatchingRepositoryAfterChangesetSandbo
 	}
 }
 
+func TestCreateExecutionRebootstrapsConsumedChangesetWithStoredCommitBundle(t *testing.T) {
+	adapter := &stubAdapter{}
+	svc := newTestService(adapter)
+
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"README.md": "hello\n",
+	})
+	baseCommit := repositoryCheckout.GetCommitSha()
+
+	localRepo := filepath.Join(t.TempDir(), "local")
+	runTestGit(t, t.TempDir(), "clone", mirrors.mirrorPath, localRepo)
+	runTestGit(t, localRepo, "config", "user.email", "test@example.com")
+	runTestGit(t, localRepo, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(localRepo, "local.txt"), []byte("local\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(local.txt) returned error: %v", err)
+	}
+	runTestGit(t, localRepo, "add", "local.txt")
+	runTestGit(t, localRepo, "commit", "-m", "local commit")
+	localCommit := strings.TrimSpace(runTestGit(t, localRepo, "rev-parse", "HEAD"))
+	repositoryCheckout.CommitSha = localCommit
+	repository := repositorycheckout.FromProto(repositoryCheckout)
+
+	commitBundle, err := repositorybundle.BuildFromRepository(localRepo, "origin", repository)
+	if err != nil {
+		t.Fatalf("BuildFromRepository returned error: %v", err)
+	}
+	if commitBundle == nil {
+		t.Fatal("expected repository commit bundle")
+	}
+	if err := os.WriteFile(filepath.Join(localRepo, "README.md"), []byte("hello from changeset\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(README.md) returned error: %v", err)
+	}
+	changeset, err := repositorychangeset.BuildFromWorkingTree(localRepo, repository)
+	if err != nil {
+		t.Fatalf("BuildFromWorkingTree returned error: %v", err)
+	}
+	if changeset == nil {
+		t.Fatal("expected repository changeset")
+	}
+
+	mirrors.ensureContainsFn = func(_ string, commitSHA string) error {
+		if strings.TrimSpace(commitSHA) == localCommit {
+			return errors.New("local-only commit should be provided by stored bundle")
+		}
+		if strings.TrimSpace(commitSHA) != baseCommit {
+			return fmt.Errorf("unexpected mirror commit %q", commitSHA)
+		}
+		return nil
+	}
+	svc.RepositoryStore = mirrors
+
+	var (
+		mu              sync.Mutex
+		commands        [][]string
+		bundleStdinUses int
+	)
+	runCalled := make(chan struct{}, 8)
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+		if stream.OnAttach != nil {
+			var stdin bytes.Buffer
+			stream.OnAttach(backend.AttachIO{
+				WriteStdin: func(data []byte) error {
+					_, err := stdin.Write(data)
+					return err
+				},
+				CloseStdin: func() error {
+					if bytes.Equal(stdin.Bytes(), commitBundle.Payload) {
+						mu.Lock()
+						bundleStdinUses++
+						mu.Unlock()
+					}
+					return nil
+				},
+			})
+		}
+		mu.Lock()
+		commands = append(commands, append([]string(nil), req.Command...))
+		mu.Unlock()
+		select {
+		case runCalled <- struct{}{}:
+		default:
+		}
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+	}
+
+	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy:                 testRepositoryPolicy(),
+		RepositoryCheckout:     repositoryCheckout,
+		RepositoryChangeset:    changeset.ToProto(),
+		RepositoryCommitBundle: commitBundle.ToProto(),
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createSandboxResp.GetSandbox().GetSandboxId()
+	for i := 0; i < 2; i++ {
+		select {
+		case <-runCalled:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for changeset sandbox bootstrap")
+		}
+	}
+
+	for i := 0; i < 2; i++ {
+		_, err = svc.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+			SandboxId:          sandboxID,
+			Command:            []string{"sh", "-lc", "pwd"},
+			RepositoryCheckout: repositoryCheckout,
+		})
+		if err != nil {
+			t.Fatalf("CreateExecution #%d returned error: %v", i+1, err)
+		}
+		select {
+		case <-runCalled:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for execution #%d", i+1)
+		}
+		if i == 1 {
+			select {
+			case <-runCalled:
+			case <-time.After(2 * time.Second):
+				t.Fatal("timed out waiting for second execution rebootstrap")
+			}
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if got, want := bundleStdinUses, 2; got != want {
+		t.Fatalf("expected initial bootstrap and refresh to receive commit bundle stdin, got %d", got)
+	}
+	if got, want := len(commands), 5; got != want {
+		t.Fatalf("expected create bootstrap + changeset apply + first execution + bundled refresh + second execution, got %d command(s)", got)
+	}
+	rebootstrap := strings.Join(commands[3], " ")
+	if !strings.Contains(rebootstrap, `git -C "$dest" fetch --progress "$bundle_file" "+HEAD:$bundle_ref"`) {
+		t.Fatalf("expected second matching repository execution to fetch stored bundle, got %q", rebootstrap)
+	}
+	if strings.Contains(rebootstrap, `git -C "$dest" fetch --filter=blob:none --progress origin "$commit"`) {
+		t.Fatalf("expected stored bundle refresh to avoid fetching the local-only commit directly, got %q", rebootstrap)
+	}
+}
+
 func TestCreateExecutionSkipsBootstrapForSnapshotBackedSandboxWithMatchingRepository(t *testing.T) {
 	adapter := &stubAdapter{
 		createSnapshotFn: func(_ context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {

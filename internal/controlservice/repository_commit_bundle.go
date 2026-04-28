@@ -12,6 +12,13 @@ func repositoryCommitBundleFromProto(proto *cleanroomv1.RepositoryCommitBundle) 
 	return repositorybundle.FromProto(proto)
 }
 
+func cloneRepositoryCommitBundle(bundle *repositorybundle.Bundle) *repositorybundle.Bundle {
+	if bundle == nil {
+		return nil
+	}
+	return repositorybundle.FromProto(bundle.ToProto())
+}
+
 func validateRepositoryCommitBundleForCheckout(repository *repositorycheckout.Checkout, bundle *repositorybundle.Bundle) error {
 	if bundle == nil {
 		return nil

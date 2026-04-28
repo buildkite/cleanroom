@@ -284,8 +284,11 @@ func bootstrapScriptWithBundle(checkout *Checkout, bundleRef string) []string {
 		`if [ -e "$dest" ] && [ ! -d "$dest" ]; then echo "repository destination is not a directory: $dest" >&2; exit 1; fi`,
 		`if [ -d "$dest" ] && [ -n "$(ls -A "$dest")" ]; then echo "repository destination already exists and is not empty: $dest" >&2; exit 1; fi`,
 		`mkdir -p "$dest"`,
-		cloneCommand,
 	}
+	if strings.TrimSpace(bundleRef) != "" {
+		script = append(script, bundleInputScript()...)
+	}
+	script = append(script, cloneCommand)
 	if strings.TrimSpace(bundleRef) != "" {
 		script = append(script, bundleFetchScript(bundleRef)...)
 	}
@@ -311,6 +314,7 @@ func refreshScriptWithBundle(checkout *Checkout, bundleRef string) []string {
 		`git -C "$dest" clean -ffdx`,
 	}
 	if strings.TrimSpace(bundleRef) != "" {
+		script = append(script, bundleInputScript()...)
 		script = append(script,
 			`git -C "$dest" fetch --filter=blob:none --progress origin`,
 		)
@@ -321,13 +325,18 @@ func refreshScriptWithBundle(checkout *Checkout, bundleRef string) []string {
 	return append(script, checkoutVerificationScript(checkout)...)
 }
 
-func bundleFetchScript(bundleRef string) []string {
+func bundleInputScript() []string {
 	return []string{
-		"bundle_ref=" + shellQuote(bundleRef),
 		`bundle_file="$(mktemp)"`,
 		`cleanup_bundle() { rm -f "$bundle_file"; }`,
 		`trap cleanup_bundle EXIT INT TERM`,
 		`cat >"$bundle_file"`,
+	}
+}
+
+func bundleFetchScript(bundleRef string) []string {
+	return []string{
+		"bundle_ref=" + shellQuote(bundleRef),
 		`git -C "$dest" fetch --progress "$bundle_file" "+HEAD:$bundle_ref"`,
 	}
 }
