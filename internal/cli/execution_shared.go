@@ -57,9 +57,9 @@ func resolveExecutionSandbox(
 
 	var repository *resolvedRepositoryCheckout
 	var changeset *cleanroomv1.RepositoryChangeset
-	if fromSnapshot == "" && (existingSandboxID == "" || copyFlags.Copy) {
+	if fromSnapshot == "" && (existingSandboxID == "" || copyFlags.CopyIn) {
 		var err error
-		if copyFlags.Copy && existingSandboxID != "" && !repositoryOverride.hasRepositoryOverride() {
+		if copyFlags.CopyIn && existingSandboxID != "" && !repositoryOverride.hasRepositoryOverride() {
 			repository, err = resolveWorkspaceCopyRepositoryCheckout(cwd, ctx.Loader)
 		} else {
 			repository, err = resolveRepositoryCheckoutWithOverride(cwd, ctx.Loader, repositoryOverride)
@@ -67,17 +67,17 @@ func resolveExecutionSandbox(
 		if err != nil {
 			return nil, err
 		}
-		if err := validateTopLevelWorkspaceCopyTransport(repository, copyFlags.Copy && existingSandboxID == ""); err != nil {
+		if err := validateTopLevelWorkspaceCopyTransport(repository, copyFlags.CopyIn && existingSandboxID == ""); err != nil {
 			return nil, err
 		}
 		if existingSandboxID == "" {
-			changeset, err = resolveRepositoryChangeset(repository, copyFlags.Copy)
+			changeset, err = resolveRepositoryChangeset(repository, copyFlags.CopyIn)
 			if err != nil {
 				return nil, err
 			}
 		}
 	}
-	warnDirtyRepositoryCheckout(repository, copyFlags.Copy && repository != nil && fromSnapshot == "")
+	warnDirtyRepositoryCheckout(repository, copyFlags.CopyIn && repository != nil && fromSnapshot == "")
 
 	sandboxID, createdSandbox, err := ensureSandboxID(
 		callCtx,
@@ -99,7 +99,7 @@ func resolveExecutionSandbox(
 	}
 
 	workspaceRoot := ""
-	if copyFlags.Copy && fromSnapshot == "" {
+	if copyFlags.CopyIn && fromSnapshot == "" {
 		changesetAppliedDuringCreate := existingSandboxID == "" && repository != nil && changeset != nil
 		copyRepository := repository
 		if repository == nil {
@@ -277,7 +277,7 @@ func validateExecutionSandboxArgs(chdir, existingSandboxID, fromSnapshot string,
 	if snapshotID != "" && dangerouslyAllowAll {
 		return errors.New("--dangerously-allow-all cannot be used with --from")
 	}
-	if sandboxID != "" && hasChdir && !copyFlags.Copy {
+	if sandboxID != "" && hasChdir && !copyFlags.CopyIn {
 		return errors.New("--chdir cannot be used with --in")
 	}
 	if snapshotID != "" && hasChdir {

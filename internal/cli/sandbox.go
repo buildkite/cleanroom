@@ -332,10 +332,10 @@ func (c *CreateCommand) Run(ctx *runtimeContext) error {
 	if err != nil {
 		return err
 	}
-	if err := validateTopLevelWorkspaceCopyTransport(repository, c.Copy); err != nil {
+	if err := validateTopLevelWorkspaceCopyTransport(repository, c.CopyIn); err != nil {
 		return err
 	}
-	changeset, err := resolveRepositoryChangeset(repository, c.Copy)
+	changeset, err := resolveRepositoryChangeset(repository, c.CopyIn)
 	if err != nil {
 		return err
 	}

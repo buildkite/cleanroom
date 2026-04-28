@@ -10,18 +10,18 @@ import (
 )
 
 type workspaceCopyFlags struct {
-	Copy bool `name:"copy" help:"Copy local workspace changes into the sandbox workspace before running"`
+	CopyIn bool `name:"copy-in" help:"Copy local workspace changes into the sandbox workspace before running"`
 }
 
 func (f workspaceCopyFlags) validate(_ string, fromSnapshot string, repositoryOverride repositoryOverrideFlags) error {
-	if !f.Copy {
+	if !f.CopyIn {
 		return nil
 	}
 	switch {
 	case strings.TrimSpace(fromSnapshot) != "":
-		return errors.New("--copy cannot be used with --from")
+		return errors.New("--copy-in cannot be used with --from")
 	case repositoryOverride.hasRepositoryOverride():
-		return errors.New("--copy cannot be used with --repo-url or --repo-commit")
+		return errors.New("--copy-in cannot be used with --repo-url or --repo-commit")
 	default:
 		return nil
 	}
@@ -31,7 +31,7 @@ func validateTopLevelWorkspaceCopyTransport(repository *resolvedRepositoryChecko
 	if !copyWorkspace || repository != nil {
 		return nil
 	}
-	return errors.New("--copy for non-Git workspaces cannot be used while creating a sandbox yet; create the sandbox first, then run cleanroom workspace copy <sandbox-id>")
+	return errors.New("--copy-in for non-Git workspaces cannot be used while creating a sandbox yet; create the sandbox first, then run cleanroom workspace copy-in <sandbox-id>")
 }
 
 func resolveRepositoryChangeset(repository *resolvedRepositoryCheckout, copyWorkspace bool) (*cleanroomv1.RepositoryChangeset, error) {
@@ -42,7 +42,7 @@ func resolveRepositoryChangeset(repository *resolvedRepositoryCheckout, copyWork
 		return nil, nil
 	}
 	if strings.TrimSpace(repository.RootDir) == "" {
-		return nil, errors.New("--copy requires a local repository checkout")
+		return nil, errors.New("--copy-in requires a local repository checkout")
 	}
 
 	changeset, err := repositorychangeset.BuildFromWorkingTree(repository.RootDir, toRepositoryCheckout(repository))

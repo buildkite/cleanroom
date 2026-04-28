@@ -330,53 +330,53 @@ func TestTopLevelCreateParsesDangerouslyAllowAll(t *testing.T) {
 	}
 }
 
-func TestTopLevelCommandsParseCopyFlag(t *testing.T) {
+func TestTopLevelCommandsParseCopyInFlag(t *testing.T) {
 	t.Run("create", func(t *testing.T) {
 		c := &CLI{}
 		parser := newParserForTest(t, c)
-		if _, err := parser.Parse([]string{"create", "--copy"}); err != nil {
-			t.Fatalf("parse create --copy returned error: %v", err)
+		if _, err := parser.Parse([]string{"create", "--copy-in"}); err != nil {
+			t.Fatalf("parse create --copy-in returned error: %v", err)
 		}
-		if !c.Create.Copy {
-			t.Fatal("expected create copy flag to be set")
+		if !c.Create.CopyIn {
+			t.Fatal("expected create copy-in flag to be set")
 		}
 	})
 
 	t.Run("exec", func(t *testing.T) {
 		c := &CLI{}
 		parser := newParserForTest(t, c)
-		if _, err := parser.Parse([]string{"exec", "--copy", "--", "echo", "ok"}); err != nil {
-			t.Fatalf("parse exec --copy returned error: %v", err)
+		if _, err := parser.Parse([]string{"exec", "--copy-in", "--", "echo", "ok"}); err != nil {
+			t.Fatalf("parse exec --copy-in returned error: %v", err)
 		}
-		if !c.Exec.Copy {
-			t.Fatal("expected exec copy flag to be set")
+		if !c.Exec.CopyIn {
+			t.Fatal("expected exec copy-in flag to be set")
 		}
 	})
 
 	t.Run("console", func(t *testing.T) {
 		c := &CLI{}
 		parser := newParserForTest(t, c)
-		if _, err := parser.Parse([]string{"console", "--copy"}); err != nil {
-			t.Fatalf("parse console --copy returned error: %v", err)
+		if _, err := parser.Parse([]string{"console", "--copy-in"}); err != nil {
+			t.Fatalf("parse console --copy-in returned error: %v", err)
 		}
-		if !c.Console.Copy {
-			t.Fatal("expected console copy flag to be set")
+		if !c.Console.CopyIn {
+			t.Fatal("expected console copy-in flag to be set")
 		}
 	})
 }
 
-func TestWorkspaceCopyParses(t *testing.T) {
+func TestWorkspaceCopyInParses(t *testing.T) {
 	c := &CLI{}
 	parser := newParserForTest(t, c)
 
-	if _, err := parser.Parse([]string{"workspace", "copy", "--dry-run", "cr_123"}); err != nil {
-		t.Fatalf("parse workspace copy returned error: %v", err)
+	if _, err := parser.Parse([]string{"workspace", "copy-in", "--dry-run", "cr_123"}); err != nil {
+		t.Fatalf("parse workspace copy-in returned error: %v", err)
 	}
-	if got, want := c.Workspace.Copy.SandboxID, "cr_123"; got != want {
-		t.Fatalf("unexpected workspace copy sandbox id: got %q want %q", got, want)
+	if got, want := c.Workspace.CopyIn.SandboxID, "cr_123"; got != want {
+		t.Fatalf("unexpected workspace copy-in sandbox id: got %q want %q", got, want)
 	}
-	if !c.Workspace.Copy.DryRun {
-		t.Fatal("expected workspace copy dry-run flag to be set")
+	if !c.Workspace.CopyIn.DryRun {
+		t.Fatal("expected workspace copy-in dry-run flag to be set")
 	}
 }
 

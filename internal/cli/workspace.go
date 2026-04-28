@@ -21,13 +21,13 @@ import (
 )
 
 type WorkspaceCommand struct {
-	Copy WorkspaceCopyCommand `cmd:"" help:"Copy local workspace changes into a sandbox"`
+	CopyIn WorkspaceCopyInCommand `name:"copy-in" cmd:"" help:"Copy local workspace changes into a sandbox"`
 }
 
-type WorkspaceCopyCommand struct {
+type WorkspaceCopyInCommand struct {
 	clientFlags
-	Chdir     string `short:"c" help:"Change to this local directory before planning the workspace copy"`
-	DryRun    bool   `name:"dry-run" help:"Show the workspace paths that would be copied without modifying the sandbox"`
+	Chdir     string `short:"c" help:"Change to this local directory before planning the workspace copy-in"`
+	DryRun    bool   `name:"dry-run" help:"Show the workspace paths that would be copied in without modifying the sandbox"`
 	SandboxID string `arg:"" required:"" help:"Sandbox ID to copy into"`
 }
 
@@ -46,7 +46,7 @@ type workspacePlanEntry struct {
 	Path   string
 }
 
-func (c *WorkspaceCopyCommand) Run(ctx *runtimeContext) error {
+func (c *WorkspaceCopyInCommand) Run(ctx *runtimeContext) error {
 	cwd, err := resolveCWD(ctx.CWD, c.Chdir)
 	if err != nil {
 		return err
@@ -84,7 +84,7 @@ func copyWorkspaceToSandbox(callCtx context.Context, ctx *runtimeContext, client
 func copyGitWorkspaceToSandbox(callCtx context.Context, ctx *runtimeContext, client *controlclient.Client, opts workspaceCopyOptions) error {
 	repository := opts.Repository
 	if strings.TrimSpace(repository.RootDir) == "" {
-		return errors.New("workspace copy requires a local repository checkout")
+		return errors.New("workspace copy-in requires a local repository checkout")
 	}
 	changeset, err := repositorychangeset.BuildFromWorkingTree(repository.RootDir, toRepositoryCheckout(repository))
 	if err != nil {
@@ -128,7 +128,7 @@ func copyGitWorkspaceToSandbox(callCtx context.Context, ctx *runtimeContext, cli
 func resolveGitWorkspaceCheckout(callCtx context.Context, client *controlclient.Client, opts workspaceCopyOptions) (*resolvedRepositoryCheckout, *repositorycheckout.Checkout, error) {
 	repository := opts.Repository
 	if repository == nil {
-		return nil, nil, errors.New("workspace copy requires a local repository checkout")
+		return nil, nil, errors.New("workspace copy-in requires a local repository checkout")
 	}
 	destination := strings.TrimSpace(opts.Destination)
 	if destination == "" {
@@ -146,7 +146,7 @@ func resolveGitWorkspaceCheckout(callCtx context.Context, client *controlclient.
 
 func runWorkspaceExecution(callCtx context.Context, ctx *runtimeContext, client *controlclient.Client, sandboxID string, repository *resolvedRepositoryCheckout, command []string, input io.Reader, launchSeconds int64) error {
 	if len(command) == 0 {
-		return errors.New("workspace copy execution command is empty")
+		return errors.New("workspace copy-in execution command is empty")
 	}
 	createResp, err := client.CreateExecution(tracePreservingContext(callCtx), &cleanroomv1.CreateExecutionRequest{
 		SandboxId:          sandboxID,
@@ -160,11 +160,11 @@ func runWorkspaceExecution(callCtx context.Context, ctx *runtimeContext, client 
 		},
 	})
 	if err != nil {
-		return fmt.Errorf("create workspace copy execution: %w", err)
+		return fmt.Errorf("create workspace copy-in execution: %w", err)
 	}
 	executionID := strings.TrimSpace(createResp.GetExecution().GetExecutionId())
 	if executionID == "" {
-		return errors.New("workspace copy execution response missing execution id")
+		return errors.New("workspace copy-in execution response missing execution id")
 	}
 	return streamWorkspaceExecutionWithInput(callCtx, ctx, client, sandboxID, executionID, input)
 }
@@ -288,7 +288,7 @@ func resolveSandboxWorkspaceDestination(callCtx context.Context, client *control
 
 func resolveSandboxWorkspaceDestinationIfRecorded(callCtx context.Context, client *controlclient.Client, sandboxID string) (string, error) {
 	if client == nil {
-		return "", errors.New("workspace copy requires a control client")
+		return "", errors.New("workspace copy-in requires a control client")
 	}
 	resp, err := client.GetSandbox(tracePreservingContext(callCtx), &cleanroomv1.GetSandboxRequest{
 		SandboxId: sandboxID,
@@ -328,7 +328,7 @@ func validateRawWorkspaceDestinationRoot(destination string) error {
 		"/tmp",
 		"/usr",
 		"/var":
-		return fmt.Errorf("workspace destination root %q is unsafe for raw workspace copy", destination)
+		return fmt.Errorf("workspace destination root %q is unsafe for raw workspace copy-in", destination)
 	default:
 		return nil
 	}
@@ -494,7 +494,7 @@ func walkRawWorkspace(sourceRoot string, visit func(path string, d fs.DirEntry, 
 		case info.IsDir(), info.Mode().IsRegular(), info.Mode()&os.ModeSymlink != 0:
 			return visit(path, d, info, filepath.ToSlash(rel))
 		default:
-			return fmt.Errorf("workspace copy cannot archive unsupported file %s", path)
+			return fmt.Errorf("workspace copy-in cannot archive unsupported file %s", path)
 		}
 	})
 }
@@ -569,7 +569,7 @@ func streamWorkspaceExecutionWithInput(callCtx context.Context, ctx *runtimeCont
 		Follow:      true,
 	})
 	if err != nil {
-		return fmt.Errorf("stream workspace copy execution: %w", err)
+		return fmt.Errorf("stream workspace copy-in execution: %w", err)
 	}
 
 	var stdinErrCh <-chan error
@@ -609,7 +609,7 @@ func streamWorkspaceExecutionWithInput(callCtx context.Context, ctx *runtimeCont
 		}
 	}
 	if err := stream.Err(); err != nil && !isCanceledStreamErr(err) {
-		return fmt.Errorf("stream workspace copy execution: %w", err)
+		return fmt.Errorf("stream workspace copy-in execution: %w", err)
 	}
 	if err := waitExecutionStdinErr(stdinErrCh, executionStdinErrDrainTimeout); err != nil {
 		return err
@@ -621,7 +621,7 @@ func streamWorkspaceExecutionWithInput(callCtx context.Context, ctx *runtimeCont
 		}
 	}
 	if !haveExitCode {
-		return errors.New("workspace copy execution ended without exit status")
+		return errors.New("workspace copy-in execution ended without exit status")
 	}
 	if exitCode != 0 {
 		return exitCodeError{code: exitCode}
@@ -639,12 +639,12 @@ func writeExecutionInput(callCtx context.Context, client *controlclient.Client, 
 				ExecutionId: executionID,
 				Data:        append([]byte(nil), buf[:n]...),
 			}); err != nil {
-				return fmt.Errorf("write workspace copy payload: %w", err)
+				return fmt.Errorf("write workspace copy-in payload: %w", err)
 			}
 		}
 		if readErr != nil {
 			if !errors.Is(readErr, io.EOF) {
-				return fmt.Errorf("read workspace copy payload: %w", readErr)
+				return fmt.Errorf("read workspace copy-in payload: %w", readErr)
 			}
 			break
 		}

@@ -826,7 +826,7 @@ func TestCreateCommandWarnsWhenRepositoryIsDirtyUsesANSIWhenForced(t *testing.T)
 	}
 }
 
-func TestCreateCommandCopySuppressesDirtyWarning(t *testing.T) {
+func TestCreateCommandCopyInSuppressesDirtyWarning(t *testing.T) {
 	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
 	if err := os.WriteFile(filepath.Join(repoDir, "dirty.txt"), []byte("dirty\n"), 0o644); err != nil {
 		t.Fatalf("write dirty file: %v", err)
@@ -865,7 +865,7 @@ func TestCreateCommandCopySuppressesDirtyWarning(t *testing.T) {
 	outcome := runCreateAliasWithCapture(CreateCommand{
 		clientFlags:        clientFlags{Host: host},
 		Chdir:              repoDir,
-		workspaceCopyFlags: workspaceCopyFlags{Copy: true},
+		workspaceCopyFlags: workspaceCopyFlags{CopyIn: true},
 	}, runtimeContext{
 		CWD: repoDir,
 		Loader: repositoryIntegrationLoader{

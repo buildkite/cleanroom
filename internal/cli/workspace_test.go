@@ -19,7 +19,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 )
 
-func TestWorkspaceCopyAppliesGitChangeset(t *testing.T) {
+func TestWorkspaceCopyInAppliesGitChangeset(t *testing.T) {
 	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
 	if err := os.WriteFile(filepath.Join(repoDir, ".gitignore"), []byte("node_modules/\n"), 0o644); err != nil {
 		t.Fatalf("write gitignore: %v", err)
@@ -90,7 +90,7 @@ func TestWorkspaceCopyAppliesGitChangeset(t *testing.T) {
 
 	stdout, _ := makeStdoutCapture(t)
 	stderr, _ := makeStdoutCapture(t)
-	cmd := WorkspaceCopyCommand{
+	cmd := WorkspaceCopyInCommand{
 		clientFlags: clientFlags{Host: host},
 		Chdir:       repoDir,
 		SandboxID:   sandboxID,
@@ -103,7 +103,7 @@ func TestWorkspaceCopyAppliesGitChangeset(t *testing.T) {
 		Stdout:        stdout,
 		Stderr:        stderr,
 	}); err != nil {
-		t.Fatalf("WorkspaceCopyCommand.Run returned error: %v", err)
+		t.Fatalf("WorkspaceCopyInCommand.Run returned error: %v", err)
 	}
 
 	mu.Lock()
@@ -113,13 +113,13 @@ func TestWorkspaceCopyAppliesGitChangeset(t *testing.T) {
 	}
 	applyCommand := strings.Join(commands[len(commands)-1], " ")
 	if !strings.Contains(applyCommand, `git -C "$dest" reset --hard "$base_commit"`) {
-		t.Fatalf("expected workspace copy to reset the checkout before applying, got %q", applyCommand)
+		t.Fatalf("expected workspace copy-in to reset the checkout before applying, got %q", applyCommand)
 	}
 	if !strings.Contains(applyCommand, "dest='/sandbox-workspace'") {
-		t.Fatalf("expected workspace copy to target sandbox-recorded checkout root, got %q", applyCommand)
+		t.Fatalf("expected workspace copy-in to target sandbox-recorded checkout root, got %q", applyCommand)
 	}
 	if strings.Contains(applyCommand, "dest='/workspace'") {
-		t.Fatalf("expected workspace copy not to use stale local policy checkout root, got %q", applyCommand)
+		t.Fatalf("expected workspace copy-in not to use stale local policy checkout root, got %q", applyCommand)
 	}
 	if got, want := len(patches), 1; got != want {
 		t.Fatalf("expected one attached changeset patch, got %d", got)
@@ -132,7 +132,7 @@ func TestWorkspaceCopyAppliesGitChangeset(t *testing.T) {
 	}
 }
 
-func TestWorkspaceCopyUsesGitChangesetForGitWorktreeWithoutRepositoryPolicy(t *testing.T) {
+func TestWorkspaceCopyInUsesGitChangesetForGitWorktreeWithoutRepositoryPolicy(t *testing.T) {
 	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
 	if err := os.WriteFile(filepath.Join(repoDir, ".gitignore"), []byte("node_modules/\n"), 0o644); err != nil {
 		t.Fatalf("write gitignore: %v", err)
@@ -209,7 +209,7 @@ func TestWorkspaceCopyUsesGitChangesetForGitWorktreeWithoutRepositoryPolicy(t *t
 
 	stdout, _ := makeStdoutCapture(t)
 	stderr, _ := makeStdoutCapture(t)
-	cmd := WorkspaceCopyCommand{
+	cmd := WorkspaceCopyInCommand{
 		clientFlags: clientFlags{Host: host},
 		Chdir:       repoDir,
 		SandboxID:   sandboxID,
@@ -222,20 +222,20 @@ func TestWorkspaceCopyUsesGitChangesetForGitWorktreeWithoutRepositoryPolicy(t *t
 		Stdout:        stdout,
 		Stderr:        stderr,
 	}); err != nil {
-		t.Fatalf("WorkspaceCopyCommand.Run returned error: %v", err)
+		t.Fatalf("WorkspaceCopyInCommand.Run returned error: %v", err)
 	}
 
 	mu.Lock()
 	defer mu.Unlock()
 	if rawArchiveCalled {
-		t.Fatal("expected Git worktree workspace copy to avoid raw archive transport")
+		t.Fatal("expected Git worktree workspace copy-in to avoid raw archive transport")
 	}
 	if len(commands) < 1 {
 		t.Fatalf("expected changeset apply command, got %d", len(commands))
 	}
 	applyCommand := strings.Join(commands[len(commands)-1], " ")
 	if !strings.Contains(applyCommand, `git -C "$dest" apply --binary --whitespace=nowarn "$patch_file"`) {
-		t.Fatalf("expected workspace copy to use Git changeset apply, got %q", applyCommand)
+		t.Fatalf("expected workspace copy-in to use Git changeset apply, got %q", applyCommand)
 	}
 	if got, want := len(patches), 1; got != want {
 		t.Fatalf("expected one attached changeset patch, got %d", got)
@@ -248,7 +248,7 @@ func TestWorkspaceCopyUsesGitChangesetForGitWorktreeWithoutRepositoryPolicy(t *t
 	}
 }
 
-func TestWorkspaceCopyResetsGitCheckoutWhenLocalRepoClean(t *testing.T) {
+func TestWorkspaceCopyInResetsGitCheckoutWhenLocalRepoClean(t *testing.T) {
 	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
 
 	adapter := &integrationAdapter{}
@@ -294,7 +294,7 @@ func TestWorkspaceCopyResetsGitCheckoutWhenLocalRepoClean(t *testing.T) {
 
 	stdout, _ := makeStdoutCapture(t)
 	stderr, _ := makeStdoutCapture(t)
-	cmd := WorkspaceCopyCommand{
+	cmd := WorkspaceCopyInCommand{
 		clientFlags: clientFlags{Host: host},
 		Chdir:       repoDir,
 		SandboxID:   sandboxID,
@@ -307,7 +307,7 @@ func TestWorkspaceCopyResetsGitCheckoutWhenLocalRepoClean(t *testing.T) {
 		Stdout:        stdout,
 		Stderr:        stderr,
 	}); err != nil {
-		t.Fatalf("WorkspaceCopyCommand.Run returned error: %v", err)
+		t.Fatalf("WorkspaceCopyInCommand.Run returned error: %v", err)
 	}
 
 	mu.Lock()
@@ -317,16 +317,16 @@ func TestWorkspaceCopyResetsGitCheckoutWhenLocalRepoClean(t *testing.T) {
 	}
 	resetCommand := strings.Join(commands[len(commands)-1], " ")
 	if !strings.Contains(resetCommand, `git -C "$dest" reset --hard "$base_commit"`) {
-		t.Fatalf("expected clean workspace copy to reset the checkout, got %q", resetCommand)
+		t.Fatalf("expected clean workspace copy-in to reset the checkout, got %q", resetCommand)
 	}
 	if !strings.Contains(resetCommand, "dest='/sandbox-workspace'") {
-		t.Fatalf("expected clean workspace copy to target sandbox-recorded checkout root, got %q", resetCommand)
+		t.Fatalf("expected clean workspace copy-in to target sandbox-recorded checkout root, got %q", resetCommand)
 	}
 	if strings.Contains(resetCommand, "dest='/workspace'") {
-		t.Fatalf("expected clean workspace copy not to use stale local policy checkout root, got %q", resetCommand)
+		t.Fatalf("expected clean workspace copy-in not to use stale local policy checkout root, got %q", resetCommand)
 	}
 	if strings.Contains(resetCommand, `git -C "$dest" apply --binary`) {
-		t.Fatalf("expected clean workspace copy to avoid applying an empty patch, got %q", resetCommand)
+		t.Fatalf("expected clean workspace copy-in to avoid applying an empty patch, got %q", resetCommand)
 	}
 	if stdinWrites != 0 || stdinCloses != 0 {
 		t.Fatalf("expected reset-only copy to avoid stdin attachment, got writes=%d closes=%d", stdinWrites, stdinCloses)
@@ -377,7 +377,7 @@ func TestResolveExecutionSandboxClearsRepositoryAfterGitCopyInExistingSandbox(t 
 		37,
 		false,
 		repositoryOverrideFlags{},
-		workspaceCopyFlags{Copy: true},
+		workspaceCopyFlags{CopyIn: true},
 	)
 	if err != nil {
 		t.Fatalf("resolveExecutionSandbox returned error: %v", err)
@@ -391,14 +391,14 @@ func TestResolveExecutionSandboxClearsRepositoryAfterGitCopyInExistingSandbox(t 
 	mu.Lock()
 	defer mu.Unlock()
 	if len(launchSeconds) == 0 {
-		t.Fatal("expected workspace copy execution to run")
+		t.Fatal("expected workspace copy-in execution to run")
 	}
 	if got, want := launchSeconds[0], int64(37); got != want {
-		t.Fatalf("unexpected workspace copy launch seconds: got %d want %d", got, want)
+		t.Fatalf("unexpected workspace copy-in launch seconds: got %d want %d", got, want)
 	}
 }
 
-func TestResolveExecutionSandboxCopyUsesGitWorktreeWithoutRepositoryPolicy(t *testing.T) {
+func TestResolveExecutionSandboxCopyInUsesGitWorktreeWithoutRepositoryPolicy(t *testing.T) {
 	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
 	if err := os.WriteFile(filepath.Join(repoDir, ".gitignore"), []byte("node_modules/\n"), 0o644); err != nil {
 		t.Fatalf("write gitignore: %v", err)
@@ -492,7 +492,7 @@ func TestResolveExecutionSandboxCopyUsesGitWorktreeWithoutRepositoryPolicy(t *te
 		0,
 		false,
 		repositoryOverrideFlags{},
-		workspaceCopyFlags{Copy: true},
+		workspaceCopyFlags{CopyIn: true},
 	)
 	if err != nil {
 		t.Fatalf("resolveExecutionSandbox returned error: %v", err)
@@ -507,14 +507,14 @@ func TestResolveExecutionSandboxCopyUsesGitWorktreeWithoutRepositoryPolicy(t *te
 	mu.Lock()
 	defer mu.Unlock()
 	if rawArchiveCalled {
-		t.Fatal("expected Git worktree --copy to avoid raw archive transport")
+		t.Fatal("expected Git worktree --copy-in to avoid raw archive transport")
 	}
 	if len(commands) < 1 {
 		t.Fatalf("expected changeset apply command, got %d", len(commands))
 	}
 	applyCommand := strings.Join(commands[len(commands)-1], " ")
 	if !strings.Contains(applyCommand, `git -C "$dest" apply --binary --whitespace=nowarn "$patch_file"`) {
-		t.Fatalf("expected --copy to use Git changeset apply, got %q", applyCommand)
+		t.Fatalf("expected --copy-in to use Git changeset apply, got %q", applyCommand)
 	}
 	if got, want := len(patches), 1; got != want {
 		t.Fatalf("expected one attached changeset patch, got %d", got)
@@ -524,7 +524,7 @@ func TestResolveExecutionSandboxCopyUsesGitWorktreeWithoutRepositoryPolicy(t *te
 	}
 }
 
-func TestWorkspaceCopyDryRunReportsCleanGitResetWithoutExecuting(t *testing.T) {
+func TestWorkspaceCopyInDryRunReportsCleanGitResetWithoutExecuting(t *testing.T) {
 	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
 
 	adapter := &integrationAdapter{}
@@ -551,7 +551,7 @@ func TestWorkspaceCopyDryRunReportsCleanGitResetWithoutExecuting(t *testing.T) {
 
 	stdout, stdoutText := makeStdoutCapture(t)
 	stderr, _ := makeStdoutCapture(t)
-	cmd := WorkspaceCopyCommand{
+	cmd := WorkspaceCopyInCommand{
 		clientFlags: clientFlags{Host: host},
 		Chdir:       repoDir,
 		DryRun:      true,
@@ -565,7 +565,7 @@ func TestWorkspaceCopyDryRunReportsCleanGitResetWithoutExecuting(t *testing.T) {
 		Stdout:        stdout,
 		Stderr:        stderr,
 	}); err != nil {
-		t.Fatalf("WorkspaceCopyCommand.Run returned error: %v", err)
+		t.Fatalf("WorkspaceCopyInCommand.Run returned error: %v", err)
 	}
 	if got, want := stdoutText(), "reset\t/sandbox-workspace\n"; got != want {
 		t.Fatalf("unexpected clean dry-run plan: got %q want %q", got, want)
@@ -573,11 +573,11 @@ func TestWorkspaceCopyDryRunReportsCleanGitResetWithoutExecuting(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	if len(commands) != 0 {
-		t.Fatalf("dry-run should not run workspace copy execution, got %q", strings.Join(commands[0], " "))
+		t.Fatalf("dry-run should not run workspace copy-in execution, got %q", strings.Join(commands[0], " "))
 	}
 }
 
-func TestWorkspaceCopyUsesRawArchiveForNonGitWorkspace(t *testing.T) {
+func TestWorkspaceCopyInUsesRawArchiveForNonGitWorkspace(t *testing.T) {
 	sourceRoot := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(sourceRoot, "app"), 0o755); err != nil {
 		t.Fatalf("create app dir: %v", err)
@@ -645,7 +645,7 @@ func TestWorkspaceCopyUsesRawArchiveForNonGitWorkspace(t *testing.T) {
 	stdout, _ := makeStdoutCapture(t)
 	stderr, _ := makeStdoutCapture(t)
 
-	cmd := WorkspaceCopyCommand{
+	cmd := WorkspaceCopyInCommand{
 		clientFlags: clientFlags{Host: host},
 		Chdir:       sourceRoot,
 		SandboxID:   sandboxID,
@@ -658,7 +658,7 @@ func TestWorkspaceCopyUsesRawArchiveForNonGitWorkspace(t *testing.T) {
 		Stdout:        stdout,
 		Stderr:        stderr,
 	}); err != nil {
-		t.Fatalf("WorkspaceCopyCommand.Run returned error: %v", err)
+		t.Fatalf("WorkspaceCopyInCommand.Run returned error: %v", err)
 	}
 
 	mu.Lock()
@@ -684,7 +684,7 @@ func TestWorkspaceCopyUsesRawArchiveForNonGitWorkspace(t *testing.T) {
 	}
 }
 
-func TestWorkspaceCopySkipsRawCleanWhenDestinationMissing(t *testing.T) {
+func TestWorkspaceCopyInSkipsRawCleanWhenDestinationMissing(t *testing.T) {
 	sourceRoot := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(sourceRoot, "app"), 0o755); err != nil {
 		t.Fatalf("create app dir: %v", err)
@@ -737,7 +737,7 @@ func TestWorkspaceCopySkipsRawCleanWhenDestinationMissing(t *testing.T) {
 	stdout, _ := makeStdoutCapture(t)
 	stderr, _ := makeStdoutCapture(t)
 
-	cmd := WorkspaceCopyCommand{
+	cmd := WorkspaceCopyInCommand{
 		clientFlags: clientFlags{Host: host},
 		Chdir:       sourceRoot,
 		SandboxID:   sandboxID,
@@ -750,7 +750,7 @@ func TestWorkspaceCopySkipsRawCleanWhenDestinationMissing(t *testing.T) {
 		Stdout:        stdout,
 		Stderr:        stderr,
 	}); err != nil {
-		t.Fatalf("WorkspaceCopyCommand.Run returned error: %v", err)
+		t.Fatalf("WorkspaceCopyInCommand.Run returned error: %v", err)
 	}
 
 	mu.Lock()
@@ -766,7 +766,7 @@ func TestWorkspaceCopySkipsRawCleanWhenDestinationMissing(t *testing.T) {
 	}
 }
 
-func TestWorkspaceCopyRemovesSymlinkedRawDestinationRoot(t *testing.T) {
+func TestWorkspaceCopyInRemovesSymlinkedRawDestinationRoot(t *testing.T) {
 	sourceRoot := t.TempDir()
 	if err := os.WriteFile(filepath.Join(sourceRoot, "main.txt"), []byte("payload\n"), 0o644); err != nil {
 		t.Fatalf("write workspace file: %v", err)
@@ -808,7 +808,7 @@ func TestWorkspaceCopyRemovesSymlinkedRawDestinationRoot(t *testing.T) {
 	stdout, _ := makeStdoutCapture(t)
 	stderr, _ := makeStdoutCapture(t)
 
-	cmd := WorkspaceCopyCommand{
+	cmd := WorkspaceCopyInCommand{
 		clientFlags: clientFlags{Host: host},
 		Chdir:       sourceRoot,
 		SandboxID:   sandboxID,
@@ -821,7 +821,7 @@ func TestWorkspaceCopyRemovesSymlinkedRawDestinationRoot(t *testing.T) {
 		Stdout:        stdout,
 		Stderr:        stderr,
 	}); err != nil {
-		t.Fatalf("WorkspaceCopyCommand.Run returned error: %v", err)
+		t.Fatalf("WorkspaceCopyInCommand.Run returned error: %v", err)
 	}
 
 	mu.Lock()
@@ -897,7 +897,7 @@ func TestRawWorkspaceCopyFollowsSymlinkedSourceRoot(t *testing.T) {
 	}
 }
 
-func TestWorkspaceCopyRejectsUnsafeRawDestinationRoot(t *testing.T) {
+func TestWorkspaceCopyInRejectsUnsafeRawDestinationRoot(t *testing.T) {
 	sourceRoot := t.TempDir()
 	err := copyRawWorkspaceToSandbox(context.Background(), &runtimeContext{}, nil, workspaceCopyOptions{
 		CWD:         sourceRoot,
@@ -907,12 +907,12 @@ func TestWorkspaceCopyRejectsUnsafeRawDestinationRoot(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected unsafe raw workspace destination to be rejected")
 	}
-	if !strings.Contains(err.Error(), "unsafe for raw workspace copy") {
+	if !strings.Contains(err.Error(), "unsafe for raw workspace copy-in") {
 		t.Fatalf("expected unsafe destination error, got %v", err)
 	}
 }
 
-func TestWorkspaceCopyRejectsRawCopyWhenSandboxWorkspaceRootUnknown(t *testing.T) {
+func TestWorkspaceCopyInRejectsRawCopyWhenSandboxWorkspaceRootUnknown(t *testing.T) {
 	sourceRoot := t.TempDir()
 	adapter := &copyIntegrationAdapter{}
 	host, _ := startIntegrationServer(t, adapter)
@@ -920,7 +920,7 @@ func TestWorkspaceCopyRejectsRawCopyWhenSandboxWorkspaceRootUnknown(t *testing.T
 
 	stdout, _ := makeStdoutCapture(t)
 	stderr, _ := makeStdoutCapture(t)
-	cmd := WorkspaceCopyCommand{
+	cmd := WorkspaceCopyInCommand{
 		clientFlags: clientFlags{Host: host},
 		Chdir:       sourceRoot,
 		SandboxID:   sandboxID,
@@ -934,14 +934,14 @@ func TestWorkspaceCopyRejectsRawCopyWhenSandboxWorkspaceRootUnknown(t *testing.T
 		Stderr:        stderr,
 	})
 	if err == nil {
-		t.Fatal("expected raw workspace copy to reject sandbox without recorded workspace root")
+		t.Fatal("expected raw workspace copy-in to reject sandbox without recorded workspace root")
 	}
 	if !strings.Contains(err.Error(), "does not have a recorded workspace root") {
 		t.Fatalf("expected recorded workspace root error, got %v", err)
 	}
 }
 
-func TestWorkspaceCopyRejectsGitCopyWhenSandboxWorkspaceRootUnknown(t *testing.T) {
+func TestWorkspaceCopyInRejectsGitCopyWhenSandboxWorkspaceRootUnknown(t *testing.T) {
 	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
 	if err := os.WriteFile(filepath.Join(repoDir, "dirty.txt"), []byte("dirty\n"), 0o644); err != nil {
 		t.Fatalf("write dirty file: %v", err)
@@ -952,7 +952,7 @@ func TestWorkspaceCopyRejectsGitCopyWhenSandboxWorkspaceRootUnknown(t *testing.T
 
 	stdout, _ := makeStdoutCapture(t)
 	stderr, _ := makeStdoutCapture(t)
-	cmd := WorkspaceCopyCommand{
+	cmd := WorkspaceCopyInCommand{
 		clientFlags: clientFlags{Host: host},
 		Chdir:       repoDir,
 		SandboxID:   sandboxID,
@@ -966,14 +966,14 @@ func TestWorkspaceCopyRejectsGitCopyWhenSandboxWorkspaceRootUnknown(t *testing.T
 		Stderr:        stderr,
 	})
 	if err == nil {
-		t.Fatal("expected git workspace copy to reject sandbox without recorded workspace root")
+		t.Fatal("expected git workspace copy-in to reject sandbox without recorded workspace root")
 	}
 	if !strings.Contains(err.Error(), "does not have a recorded workspace root") {
 		t.Fatalf("expected recorded workspace root error, got %v", err)
 	}
 }
 
-func TestTopLevelCopyRejectsNonGitWorkspaceWhenCreatingSandbox(t *testing.T) {
+func TestTopLevelCopyInRejectsNonGitWorkspaceWhenCreatingSandbox(t *testing.T) {
 	cwd := t.TempDir()
 	_, err := resolveExecutionSandbox(
 		context.Background(),
@@ -991,10 +991,10 @@ func TestTopLevelCopyRejectsNonGitWorkspaceWhenCreatingSandbox(t *testing.T) {
 		0,
 		false,
 		repositoryOverrideFlags{},
-		workspaceCopyFlags{Copy: true},
+		workspaceCopyFlags{CopyIn: true},
 	)
 	if err == nil {
-		t.Fatal("expected non-Git top-level --copy to be rejected before sandbox creation")
+		t.Fatal("expected non-Git top-level --copy-in to be rejected before sandbox creation")
 	}
 	if !strings.Contains(err.Error(), "non-Git workspaces") {
 		t.Fatalf("expected non-Git copy error, got %v", err)
