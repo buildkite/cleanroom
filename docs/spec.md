@@ -144,9 +144,9 @@ explicit request-time changeset input.
   override paths may resolve tags or local images before building the compiled
   policy, but repository policy files should be pinned.
 - `sandbox.network.default` defaults to `deny` when omitted. Repository policy
-  files currently accept only `deny`; `allow` is reserved for the internal
-  repo-agnostic `cleanroom sandbox create --dangerously-allow-all` path and is
-  not valid in `cleanroom.yaml`.
+  files currently accept only `deny`; `allow` is reserved for compiled policies
+  produced by CLI `--dangerously-allow-all` paths when creating a new sandbox
+  and is not valid in `cleanroom.yaml`.
 - If `repository` is omitted, top-level commands default to the current repo with `remote: origin`, `path: /workspace`, and `submodules: false`.
 - `repository.enabled` defaults to `true`; `false` disables repo-aware bootstrap for top-level commands.
 - `repository.mode` is optional and, when set, may be `none` or `current-repo`.
@@ -194,7 +194,8 @@ explicit request-time changeset input.
   implemented.
 - Repository policy files cannot request allow-by-default behavior. The only
   allow-by-default mode is the internal compiled policy produced by
-  `cleanroom sandbox create --dangerously-allow-all` for repo-agnostic sandboxes.
+  `--dangerously-allow-all` on new-sandbox CLI paths, including repo-aware
+  top-level commands and repo-agnostic `cleanroom sandbox create`.
 
 ### 5.2.2 Future schema ideas (non-normative)
 
