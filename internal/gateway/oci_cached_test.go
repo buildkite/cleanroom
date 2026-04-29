@@ -326,15 +326,51 @@ func TestCachedRegistryHandlerEmptyPrefix(t *testing.T) {
 	backend := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		t.Fatal("backend should not be called for empty prefix")
 	})
-	h := newCachedRegistryHandler(&stubRegistryPrefixHandlerProvider{handler: backend}, nil)
+	provider := &stubRegistryPrefixHandlerProvider{handler: backend}
+	h := newCachedRegistryHandler(provider, nil)
 
 	req := httptest.NewRequest("GET", "/registry/", nil)
 	req = withScope(req, registryTestScope("registry-1.docker.io"))
+	req, obs := withGatewayRequestObservability(req)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", w.Code)
+	}
+	if got := w.Header().Get(reasonCodeHeader); got != reasonInvalidRequest {
+		t.Fatalf("expected reason %s, got %q", reasonInvalidRequest, got)
+	}
+	requireGatewayRequestDecision(t, obs, gatewayActionDeny, reasonInvalidRequest)
+	if provider.lookupCalls != 0 {
+		t.Fatalf("expected invalid request to avoid metadata lookup, got %d lookups", provider.lookupCalls)
+	}
+}
+
+func TestCachedRegistryHandlerBarePrefixSetsGatewayDecision(t *testing.T) {
+	t.Parallel()
+
+	backend := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Fatal("backend should not be called for bare prefix")
+	})
+	provider := &stubRegistryPrefixHandlerProvider{handler: backend}
+	h := newCachedRegistryHandler(provider, nil)
+
+	req := httptest.NewRequest("GET", "/registry/docker.io", nil)
+	req = withScope(req, registryTestScope("docker.io"))
+	req, obs := withGatewayRequestObservability(req)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+	if got := w.Header().Get(reasonCodeHeader); got != reasonInvalidRequest {
+		t.Fatalf("expected reason %s, got %q", reasonInvalidRequest, got)
+	}
+	requireGatewayRequestDecision(t, obs, gatewayActionDeny, reasonInvalidRequest)
+	if provider.lookupCalls != 0 {
+		t.Fatalf("expected invalid request to avoid metadata lookup, got %d lookups", provider.lookupCalls)
 	}
 }
 
