@@ -345,6 +345,30 @@ func TestCreateExecutionRejectsSpoofedInternalWorkspaceCopyInHeader(t *testing.T
 	}
 }
 
+func TestCreateExecutionAllowsInternalWorkspaceCopyInHeaderWhenTrusted(t *testing.T) {
+	service := newHandlerTestService(newHandlerTestAdapter())
+	httpServer := httptest.NewServer(New(service, nil).TrustInternalWorkspaceCopyInRequests().Handler())
+	defer httpServer.Close()
+
+	executionClient := cleanroomv1connect.NewExecutionServiceClient(http.DefaultClient, httpServer.URL)
+	req := connect.NewRequest(&cleanroomv1.CreateExecutionRequest{
+		SandboxId: "sbx_trusted",
+		Command:   []string{"sh", "-lc", "true"},
+		Options: &cleanroomv1.ExecutionOptions{
+			SkipRunBefore: true,
+		},
+	})
+	req.Header().Set(internalWorkspaceCopyInHeader, "1")
+
+	_, err := executionClient.CreateExecution(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected CreateExecution to return unknown sandbox")
+	}
+	if code := connect.CodeOf(err); code != connect.CodeNotFound {
+		t.Fatalf("unexpected error code: got %v want %v (err=%v)", code, connect.CodeNotFound, err)
+	}
+}
+
 func TestToConnectErrorMapsExpectedCodes(t *testing.T) {
 	t.Parallel()
 
