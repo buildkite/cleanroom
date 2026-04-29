@@ -35,15 +35,23 @@ type TLSOptions struct {
 }
 
 type Server struct {
-	service      *controlservice.Service
-	logger       *log.Logger
-	interceptors []connect.Interceptor
+	service                              *controlservice.Service
+	logger                               *log.Logger
+	interceptors                         []connect.Interceptor
+	trustedInternalWorkspaceCopyInHeader bool
 }
 
 const internalWorkspaceCopyInHeader = "Cleanroom-Internal-Workspace-Copy-In"
 
 func New(service *controlservice.Service, logger *log.Logger, interceptors ...connect.Interceptor) *Server {
 	return &Server{service: service, logger: logger, interceptors: interceptors}
+}
+
+func (s *Server) TrustInternalWorkspaceCopyInRequests() *Server {
+	if s != nil {
+		s.trustedInternalWorkspaceCopyInHeader = true
+	}
+	return s
 }
 
 func (s *Server) Handler() http.Handler {
@@ -356,6 +364,9 @@ func (s *Server) ListExecutions(ctx context.Context, req *connect.Request[cleanr
 func (s *Server) CreateExecution(ctx context.Context, req *connect.Request[cleanroomv1.CreateExecutionRequest]) (*connect.Response[cleanroomv1.CreateExecutionResponse], error) {
 	createExecution := s.service.CreateExecution
 	if req.Header().Get(internalWorkspaceCopyInHeader) == "1" {
+		if !s.trustedInternalWorkspaceCopyInHeader {
+			return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("internal workspace copy-in requests require a trusted control endpoint"))
+		}
 		createExecution = s.service.CreateInternalWorkspaceCopyInExecution
 	}
 	resp, err := createExecution(ctx, req.Msg)
