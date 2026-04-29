@@ -55,19 +55,19 @@ func resolveExecutionSandbox(
 	fromSnapshot = strings.TrimSpace(fromSnapshot)
 
 	var repository *resolvedRepositoryCheckout
-	var changeset *cleanroomv1.RepositoryChangeset
+	localChanges := repositoryLocalChanges{}
 	if existingSandboxID == "" && fromSnapshot == "" {
 		var err error
 		repository, err = resolveRepositoryCheckoutWithOverride(cwd, ctx.Loader, repositoryOverride)
 		if err != nil {
 			return nil, err
 		}
-		changeset, err = resolveRepositoryChangeset(repository, changesetFlags.IncludeLocalChanges)
+		localChanges, err = resolveRepositoryLocalChanges(repository, changesetFlags.IncludeLocalChanges)
 		if err != nil {
 			return nil, err
 		}
 	}
-	warnDirtyRepositoryCheckout(repository, changeset != nil)
+	warnDirtyRepositoryCheckout(repository, localChanges.Changeset != nil || localChanges.CommitBundle != nil)
 
 	sandboxID, createdSandbox, err := ensureSandboxID(
 		callCtx,
@@ -82,7 +82,7 @@ func resolveExecutionSandbox(
 		launchSeconds,
 		dangerouslyAllowAll,
 		repository,
-		changeset,
+		localChanges,
 	)
 	if err != nil {
 		return nil, err
@@ -95,7 +95,7 @@ func resolveExecutionSandbox(
 	}, nil
 }
 
-func ensureSandboxID(callCtx context.Context, client *controlclient.Client, loader policyLoader, cwd, host, backendName, existingSandboxID, fromSnapshot, imageRefOverride string, launchSeconds int64, dangerouslyAllowAll bool, repository *resolvedRepositoryCheckout, changeset *cleanroomv1.RepositoryChangeset) (string, bool, error) {
+func ensureSandboxID(callCtx context.Context, client *controlclient.Client, loader policyLoader, cwd, host, backendName, existingSandboxID, fromSnapshot, imageRefOverride string, launchSeconds int64, dangerouslyAllowAll bool, repository *resolvedRepositoryCheckout, localChanges repositoryLocalChanges) (string, bool, error) {
 	sandboxID := strings.TrimSpace(existingSandboxID)
 	fromSnapshot = strings.TrimSpace(fromSnapshot)
 	if sandboxID != "" {
@@ -135,7 +135,7 @@ func ensureSandboxID(callCtx context.Context, client *controlclient.Client, load
 		return sandboxID, true, nil
 	}
 
-	sandboxID, _, err := createTopLevelSandbox(callCtx, client, loader, cwd, host, backendName, imageRefOverride, launchSeconds, dangerouslyAllowAll, repository, changeset)
+	sandboxID, _, err := createTopLevelSandbox(callCtx, client, loader, cwd, host, backendName, imageRefOverride, launchSeconds, dangerouslyAllowAll, repository, localChanges)
 	if err != nil {
 		return "", false, err
 	}

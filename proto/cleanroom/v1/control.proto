@@ -158,6 +158,13 @@ message RepositoryChangeset {
   repeated RepositoryChangesetFile files = 6;
 }
 
+message RepositoryCommitBundle {
+  string format = 1;
+  string target_commit_sha = 2;
+  string digest = 3;
+  bytes bundle = 4;
+}
+
 message CreateSandboxRequest {
   reserved 1;
   reserved "cwd";
@@ -166,6 +173,7 @@ message CreateSandboxRequest {
   Policy policy = 4;
   RepositoryCheckout repository_checkout = 5;
   RepositoryChangeset repository_changeset = 7;
+  RepositoryCommitBundle repository_commit_bundle = 8;
   oneof source {
     string snapshot_id = 6;
   }

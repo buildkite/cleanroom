@@ -21,6 +21,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/observability"
 	"github.com/buildkite/cleanroom/internal/paths"
 	"github.com/buildkite/cleanroom/internal/policy"
+	"github.com/buildkite/cleanroom/internal/repositorybundle"
 	"github.com/buildkite/cleanroom/internal/repositorychangeset"
 	"github.com/buildkite/cleanroom/internal/repositorycheckout"
 	"github.com/buildkite/cleanroom/internal/repositorystore"
@@ -68,6 +69,7 @@ type sandboxState struct {
 	Policy                              *policy.CompiledPolicy
 	Firecracker                         backend.FirecrackerConfig
 	Repository                          *repositorycheckout.Checkout
+	RepositoryCommitBundle              *repositorybundle.Bundle
 	RepositoryHasChangeset              bool
 	RepositoryChangesetPendingExecution bool
 	SourceKind                          string
@@ -249,6 +251,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	snapshotID := strings.TrimSpace(req.GetSnapshotId())
 	metricSourceKind := ""
 	changeset := repositoryChangesetFromProto(req.GetRepositoryChangeset())
+	commitBundle := repositoryCommitBundleFromProto(req.GetRepositoryCommitBundle())
 	backendName := resolveBackendName(strings.TrimSpace(req.GetBackend()), s.Config.DefaultBackend)
 	ctx, span := s.Observability.Tracer("github.com/buildkite/cleanroom/internal/controlservice").Start(
 		ctx,
@@ -257,6 +260,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 			attribute.Bool(observability.AttrSandboxFromSnapshot, snapshotID != ""),
 			attribute.Bool(observability.AttrRepositoryCheckout, req.GetRepositoryCheckout() != nil),
 			attribute.Bool(observability.AttrRepositoryChangeset, changeset != nil),
+			attribute.Bool(observability.AttrRepositoryCommitBundle, commitBundle != nil),
 		),
 	)
 	logger := observability.WithTraceContext(s.Logger, ctx)
@@ -299,6 +303,9 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 		if changeset != nil {
 			return nil, errors.New("snapshot-backed sandbox creation cannot include repository changeset")
 		}
+		if commitBundle != nil {
+			return nil, errors.New("snapshot-backed sandbox creation cannot include repository commit bundle")
+		}
 		return s.createSandboxFromSnapshot(ctx, req, snapshotID, reporter)
 	}
 	if req.GetPolicy() == nil {
@@ -327,6 +334,9 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 		}
 	}
 	if err := validateRepositoryChangesetForCheckout(repository, changeset); err != nil {
+		return nil, err
+	}
+	if err := validateRepositoryCommitBundleForCheckout(repository, commitBundle); err != nil {
 		return nil, err
 	}
 	if changesetRecord, err := s.persistRepositoryChangeset(ctx, repository, changeset); err != nil {
@@ -373,7 +383,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 			workspaceStageCachingEnabled = true
 			workspaceStageKey = workspaceStageCacheKey(backendName, workspaceStageRuntimeBaseKey, compiled.Hash, repository, changeset)
 			if dependencyStageBootstrapEnabled {
-				dependencyStagePlan, dependencyStageCachingEnabled, err = s.finalizeDependencyStagePlan(ctx, compiled, repository, changeset, backendName, workspaceStageKey, workspaceStageRuntimeBaseKey, dependencyStagePlan)
+				dependencyStagePlan, dependencyStageCachingEnabled, err = s.finalizeDependencyStagePlan(ctx, compiled, repository, changeset, commitBundle, backendName, workspaceStageKey, workspaceStageRuntimeBaseKey, dependencyStagePlan)
 				if err != nil {
 					dependencyStageCachingEnabled = false
 					s.logDependencyStageWarning("resolve dependency stage cache key", "", err)
@@ -389,7 +399,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 					}
 				}
 				if parentStageKey != "" {
-					servicesStagePlan, servicesStageCachingEnabled, err = s.finalizeServicesStagePlan(ctx, compiled, repository, changeset, parentStageKey, servicesStagePlan)
+					servicesStagePlan, servicesStageCachingEnabled, err = s.finalizeServicesStagePlan(ctx, compiled, repository, changeset, commitBundle, parentStageKey, servicesStagePlan)
 					if err != nil {
 						servicesStageCachingEnabled = false
 						s.logServicesStageWarning("resolve services stage cache key", "", err)
@@ -442,6 +452,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 								s.logServicesStageWarning("touch services stage cache", "", err)
 							}
 						}
+						s.retainRestoredSandboxRepositoryState(restoreResp, repository, commitBundle, changeset)
 						s.logServicesStageRestore(record, restoreResp.GetSandbox().GetSandboxId())
 						return restoreResp, nil
 					}
@@ -499,6 +510,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 								s.logDependencyStageWarning("touch dependency stage cache", "", err)
 							}
 						}
+						s.retainRestoredSandboxRepositoryState(restoreResp, repository, commitBundle, changeset)
 						s.logDependencyStageRestore(record, restoreResp.GetSandbox().GetSandboxId())
 						if !servicesStageBootstrapEnabled {
 							return restoreResp, nil
@@ -543,7 +555,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 							attribute.String(observability.AttrBackend, backendName),
 						), func(ctx context.Context) error {
 							var err error
-							restoreResp, err = s.restorePortableDependencyStageCache(ctx, adapter, backendName, compiled, firecrackerCfg, repository, changeset, req.GetOptions(), portableRecord, reporter)
+							restoreResp, err = s.restorePortableDependencyStageCache(ctx, adapter, backendName, compiled, firecrackerCfg, repository, changeset, commitBundle, req.GetOptions(), portableRecord, reporter)
 							setCacheResultSpanAttribute(ctx, map[bool]string{true: observability.CacheResultFailed, false: observability.CacheResultRestored}[err != nil])
 							return err
 						})
@@ -614,6 +626,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 								s.logWorkspaceStageWarning("touch workspace stage cache", "", err)
 							}
 						}
+						s.retainRestoredSandboxRepositoryState(restoreResp, repository, commitBundle, changeset)
 						s.logWorkspaceStageRestore(record, restoreResp.GetSandbox().GetSandboxId())
 						if !dependencyStageBootstrapEnabled && !servicesStageBootstrapEnabled {
 							return restoreResp, nil
@@ -768,7 +781,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 		}
 	}
 	if err := s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.bootstrap_repository", repositoryBootstrapAttrs, func(ctx context.Context) error {
-		return s.bootstrapRepositoryInPersistentSandbox(ctx, adapter, sandboxID, compiled, firecrackerCfg, repository, false, reporter)
+		return s.bootstrapRepositoryInPersistentSandbox(ctx, adapter, sandboxID, compiled, firecrackerCfg, repository, commitBundle, false, reporter)
 	}); err != nil {
 		if terminateErr := s.terminateCreatedSandbox(context.Background(), adapter, sandboxID); terminateErr != nil {
 			return nil, fmt.Errorf("bootstrap repository checkout: %w; cleanup failed: %v", err, terminateErr)
@@ -874,6 +887,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 		Policy:                              compiled,
 		Firecracker:                         firecrackerCfg,
 		Repository:                          cloneRepositoryCheckout(repository),
+		RepositoryCommitBundle:              cloneRepositoryCommitBundle(commitBundle),
 		RepositoryHasChangeset:              changeset != nil,
 		RepositoryChangesetPendingExecution: changeset != nil,
 		CreatedAt:                           now,
@@ -2948,11 +2962,39 @@ func (s *Service) executionAuxOutputStream(key string) backend.OutputStream {
 	}
 }
 
-func (s *Service) ensureRepositoryCommitAvailable(ctx context.Context, repository *repositorycheckout.Checkout) error {
+func (s *Service) ensureRepositoryCommitAvailable(ctx context.Context, repository *repositorycheckout.Checkout, commitBundle *repositorybundle.Bundle) error {
 	if repository == nil || s.RepositoryStore == nil {
 		return nil
 	}
+	if commitBundle != nil {
+		prerequisiteCommit, err := s.ensureRepositoryCommitBundlePrerequisites(ctx, repository, commitBundle)
+		if err != nil {
+			return err
+		}
+		return s.RepositoryStore.WithRepository(ctx, repository.RemoteURL, prerequisiteCommit, repositorystore.FetchHints{}, func(repoDir string) error {
+			return commitBundle.VerifyAgainstRepository(ctx, repoDir)
+		})
+	}
 	return s.RepositoryStore.EnsureCommit(ctx, repository.RemoteURL, repository.CommitSHA, repositorystore.FetchHints{})
+}
+
+func (s *Service) ensureRepositoryCommitBundlePrerequisites(ctx context.Context, repository *repositorycheckout.Checkout, commitBundle *repositorybundle.Bundle) (string, error) {
+	if repository == nil || commitBundle == nil || s.RepositoryStore == nil {
+		return "", nil
+	}
+	prerequisites, err := commitBundle.PrerequisiteCommits()
+	if err != nil {
+		return "", err
+	}
+	if len(prerequisites) == 0 {
+		return "", errors.New("repository commit bundle has no remote prerequisites; push the base commits to the remote before bundling; full-history bundles are not supported yet")
+	}
+	for _, prerequisite := range prerequisites {
+		if err := s.RepositoryStore.EnsureCommit(ctx, repository.RemoteURL, prerequisite, repositorystore.FetchHints{}); err != nil {
+			return "", fmt.Errorf("ensure repository commit bundle prerequisite %s: %w", prerequisite, err)
+		}
+	}
+	return prerequisites[0], nil
 }
 
 func (s *Service) preparePersistentSandboxRepository(
@@ -2968,6 +3010,7 @@ func (s *Service) preparePersistentSandboxRepository(
 	}
 
 	refreshExisting := false
+	commitBundle := (*repositorybundle.Bundle)(nil)
 
 	s.mu.Lock()
 	sandbox, ok := s.sandboxes[sandboxID]
@@ -3002,19 +3045,21 @@ func (s *Service) preparePersistentSandboxRepository(
 	case repositoryCheckoutsEqual(sandbox.Repository, repository):
 		sandbox.RepositoryBusy = true
 		refreshExisting = true
+		commitBundle = cloneRepositoryCommitBundle(sandbox.RepositoryCommitBundle)
 	default:
 		s.mu.Unlock()
 		return fmt.Errorf("sandbox %q already has a different repository checkout", sandboxID)
 	}
 	s.mu.Unlock()
 
-	err := s.bootstrapRepositoryInPersistentSandbox(ctx, adapter, sandboxID, compiled, firecrackerCfg, repository, refreshExisting, nil)
+	err := s.bootstrapRepositoryInPersistentSandbox(ctx, adapter, sandboxID, compiled, firecrackerCfg, repository, commitBundle, refreshExisting, nil)
 
 	s.mu.Lock()
 	if sandbox, ok := s.sandboxes[sandboxID]; ok {
 		sandbox.RepositoryBusy = false
 		if err == nil {
 			sandbox.Repository = cloneRepositoryCheckout(repository)
+			sandbox.RepositoryCommitBundle = cloneRepositoryCommitBundle(commitBundle)
 			sandbox.RepositoryHasChangeset = false
 			sandbox.RepositoryChangesetPendingExecution = false
 		}
@@ -3034,6 +3079,7 @@ func (s *Service) bootstrapRepositoryInPersistentSandbox(
 	compiled *policy.CompiledPolicy,
 	firecrackerCfg backend.FirecrackerConfig,
 	repository *repositorycheckout.Checkout,
+	commitBundle *repositorybundle.Bundle,
 	refreshExisting bool,
 	reporter CreateSandboxReporter,
 ) error {
@@ -3048,7 +3094,7 @@ func (s *Service) bootstrapRepositoryInPersistentSandbox(
 			"destination_dir", repository.DestinationDir,
 		)
 	}
-	if err := s.ensureRepositoryCommitAvailable(ctx, repository); err != nil {
+	if err := s.ensureRepositoryCommitAvailable(ctx, repository, commitBundle); err != nil {
 		return err
 	}
 	if s.Logger != nil {
@@ -3060,8 +3106,16 @@ func (s *Service) bootstrapRepositoryInPersistentSandbox(
 	}
 
 	command := repositorycheckout.BuildBootstrapCommand(repository)
+	stdin := []byte(nil)
+	if commitBundle != nil {
+		command = repositorycheckout.BuildBootstrapCommandWithBundle(repository, repositorycheckout.BundleRefName(commitBundle.TargetCommitSHA))
+		stdin = commitBundle.Payload
+	}
 	if refreshExisting {
 		command = repositorycheckout.BuildRefreshCommand(repository)
+		if commitBundle != nil {
+			command = repositorycheckout.BuildRefreshCommandWithBundle(repository, repositorycheckout.BundleRefName(commitBundle.TargetCommitSHA))
+		}
 	}
 
 	bootstrapExecutionID, result, stdout, stderr, err := s.runPersistentBootstrapCommand(
@@ -3072,7 +3126,7 @@ func (s *Service) bootstrapRepositoryInPersistentSandbox(
 		firecrackerCfg,
 		cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_BOOTSTRAP_REPOSITORY,
 		command,
-		nil,
+		stdin,
 		reporter,
 	)
 	if s.Logger != nil {

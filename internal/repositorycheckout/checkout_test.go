@@ -54,6 +54,45 @@ func TestBuildBootstrapCommandForcesCloneProgressWithoutTTY(t *testing.T) {
 	}
 }
 
+func TestBuildBootstrapCommandWithBundleFetchesAttachedBundle(t *testing.T) {
+	command := BuildBootstrapCommandWithBundle(&Checkout{
+		RemoteURL:      "https://github.com/buildkite/cleanroom.git",
+		CommitSHA:      "0123456789abcdef0123456789abcdef01234567",
+		DestinationDir: "/workspace",
+	}, BundleRefName("0123456789abcdef0123456789abcdef01234567"))
+
+	joined := strings.Join(command, " ")
+	if !strings.Contains(joined, `cat >"$bundle_file"`) {
+		t.Fatalf("expected bootstrap command to read an attached bundle, got %q", joined)
+	}
+	if !strings.Contains(joined, `git -C "$dest" fetch --progress "$bundle_file" "+HEAD:$bundle_ref"`) {
+		t.Fatalf("expected bootstrap command to fetch the attached bundle, got %q", joined)
+	}
+	if !strings.Contains(joined, `bundle_ref='refs/remotes/cleanroom/0123456789abcdef0123456789abcdef01234567'`) {
+		t.Fatalf("expected bootstrap command to isolate bundle ref, got %q", joined)
+	}
+	assertCommandOrder(t, joined,
+		`cat >"$bundle_file"`,
+		`git clone --filter=blob:none --no-checkout --progress "$remote" "$dest"`,
+		`git -C "$dest" fetch --progress "$bundle_file" "+HEAD:$bundle_ref"`,
+	)
+}
+
+func TestBuildRefreshCommandWithBundleReadsBundleBeforeNetworkFetch(t *testing.T) {
+	command := BuildRefreshCommandWithBundle(&Checkout{
+		RemoteURL:      "https://github.com/buildkite/cleanroom.git",
+		CommitSHA:      "0123456789abcdef0123456789abcdef01234567",
+		DestinationDir: "/workspace",
+	}, BundleRefName("0123456789abcdef0123456789abcdef01234567"))
+
+	joined := strings.Join(command, " ")
+	assertCommandOrder(t, joined,
+		`cat >"$bundle_file"`,
+		`git -C "$dest" fetch --filter=blob:none --progress origin`,
+		`git -C "$dest" fetch --progress "$bundle_file" "+HEAD:$bundle_ref"`,
+	)
+}
+
 func TestBuildBootstrapCommandAllowsExistingEmptyDestination(t *testing.T) {
 	command := BuildBootstrapCommand(&Checkout{
 		RemoteURL:      "https://github.com/buildkite/cleanroom.git",
@@ -182,6 +221,21 @@ func TestNormalizeRemoteURLPreservesIPv6Brackets(t *testing.T) {
 	}
 	if got, want := checkout.RemoteURL, "https://[2001:db8::1]/buildkite/cleanroom.git"; got != want {
 		t.Fatalf("unexpected normalized URL: got %q want %q", got, want)
+	}
+}
+
+func assertCommandOrder(t *testing.T, command string, fragments ...string) {
+	t.Helper()
+	previous := -1
+	for _, fragment := range fragments {
+		index := strings.Index(command, fragment)
+		if index < 0 {
+			t.Fatalf("expected command to contain %q, got %q", fragment, command)
+		}
+		if index <= previous {
+			t.Fatalf("expected %q to appear after previous fragment in command %q", fragment, command)
+		}
+		previous = index
 	}
 }
 
