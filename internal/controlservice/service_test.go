@@ -229,17 +229,18 @@ type stubLoader struct {
 }
 
 type stubRepositoryMirrorStore struct {
-	remoteURL         string
-	commitSHA         string
-	commitSHAs        []string
-	calls             int
-	err               error
-	ensureContainsFn  func(remoteURL, commitSHA string) error
-	mirrorPath        string
-	mirrorPathCalls   int
-	mirrorPathErr     error
-	ensureMirrorCalls int
-	ensureMirrorErr   error
+	remoteURL          string
+	commitSHA          string
+	commitSHAs         []string
+	withRepositorySHAs []string
+	calls              int
+	err                error
+	ensureContainsFn   func(remoteURL, commitSHA string) error
+	mirrorPath         string
+	mirrorPathCalls    int
+	mirrorPathErr      error
+	ensureMirrorCalls  int
+	ensureMirrorErr    error
 }
 
 type stubClock struct {
@@ -304,6 +305,7 @@ func (s *stubRepositoryMirrorStore) WithRepository(ctx context.Context, remoteUR
 	if fn == nil {
 		return errors.New("repository callback is nil")
 	}
+	s.withRepositorySHAs = append(s.withRepositorySHAs, commitSHA)
 	repoDir, err := s.MirrorPath(remoteURL)
 	if err != nil {
 		repoDir, err = s.EnsureMirror(ctx, remoteURL)
@@ -5634,6 +5636,12 @@ func TestCreateSandboxCachesStagesForLocalOnlyCommitBundle(t *testing.T) {
 	}
 	if slices.Contains(mirrors.commitSHAs, localCommit) {
 		t.Fatalf("expected local-only commit %q to come from bundle, got direct ensure calls %v", localCommit, mirrors.commitSHAs)
+	}
+	if !slices.Contains(mirrors.withRepositorySHAs, baseCommit) {
+		t.Fatalf("expected repository views to use bundle prerequisite %q, got %v", baseCommit, mirrors.withRepositorySHAs)
+	}
+	if slices.Contains(mirrors.withRepositorySHAs, "") {
+		t.Fatalf("expected bundle repository views to use a prerequisite commit, got %v", mirrors.withRepositorySHAs)
 	}
 }
 

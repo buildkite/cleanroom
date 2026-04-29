@@ -82,7 +82,7 @@ func TestBuildFromRepositoryRejectsFullHistoryBundleWithoutPrerequisites(t *test
 	if bundle != nil {
 		t.Fatalf("expected rejected bundle to be nil, got %#v", bundle)
 	}
-	if !strings.Contains(err.Error(), "full-history bundles are not supported yet") {
+	if !strings.Contains(err.Error(), "push the base commits to the remote before bundling") {
 		t.Fatalf("expected full-history rejection, got %v", err)
 	}
 }

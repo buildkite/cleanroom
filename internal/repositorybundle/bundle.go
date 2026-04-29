@@ -29,6 +29,8 @@ type Bundle struct {
 	Payload         []byte
 }
 
+// BuildFromRepository bundles local-only commits ending at HEAD.
+// The checkout commit must match HEAD because the bundle target is HEAD.
 func BuildFromRepository(repoRoot, remoteName string, checkout *repositorycheckout.Checkout) (*Bundle, error) {
 	if checkout == nil {
 		return nil, errors.New("repository commit bundle requires a repository checkout")
@@ -173,7 +175,7 @@ func (b *Bundle) ValidateContent() error {
 		return err
 	}
 	if len(prerequisites) == 0 {
-		return errors.New("repository commit bundle has no remote prerequisites; full-history bundles are not supported yet")
+		return errors.New("repository commit bundle has no remote prerequisites; push the base commits to the remote before bundling; full-history bundles are not supported yet")
 	}
 	return nil
 }

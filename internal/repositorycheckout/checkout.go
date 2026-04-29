@@ -316,6 +316,7 @@ func refreshScriptWithBundle(checkout *Checkout, bundleRef string) []string {
 	if strings.TrimSpace(bundleRef) != "" {
 		script = append(script, bundleInputScript()...)
 		script = append(script,
+			`# Fetch advertised remote refs before applying the bundle; raw SHA fetches are not portable across Git servers.`,
 			`git -C "$dest" fetch --filter=blob:none --progress origin`,
 		)
 		script = append(script, bundleFetchScript(bundleRef)...)

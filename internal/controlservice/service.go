@@ -2964,30 +2964,34 @@ func (s *Service) ensureRepositoryCommitAvailable(ctx context.Context, repositor
 		return nil
 	}
 	if commitBundle != nil {
-		if err := s.ensureRepositoryCommitBundlePrerequisites(ctx, repository, commitBundle); err != nil {
+		prerequisiteCommit, err := s.ensureRepositoryCommitBundlePrerequisites(ctx, repository, commitBundle)
+		if err != nil {
 			return err
 		}
-		return s.RepositoryStore.WithRepository(ctx, repository.RemoteURL, "", repositorystore.FetchHints{}, func(repoDir string) error {
+		return s.RepositoryStore.WithRepository(ctx, repository.RemoteURL, prerequisiteCommit, repositorystore.FetchHints{}, func(repoDir string) error {
 			return commitBundle.VerifyAgainstRepository(ctx, repoDir)
 		})
 	}
 	return s.RepositoryStore.EnsureCommit(ctx, repository.RemoteURL, repository.CommitSHA, repositorystore.FetchHints{})
 }
 
-func (s *Service) ensureRepositoryCommitBundlePrerequisites(ctx context.Context, repository *repositorycheckout.Checkout, commitBundle *repositorybundle.Bundle) error {
+func (s *Service) ensureRepositoryCommitBundlePrerequisites(ctx context.Context, repository *repositorycheckout.Checkout, commitBundle *repositorybundle.Bundle) (string, error) {
 	if repository == nil || commitBundle == nil || s.RepositoryStore == nil {
-		return nil
+		return "", nil
 	}
 	prerequisites, err := commitBundle.PrerequisiteCommits()
 	if err != nil {
-		return err
+		return "", err
+	}
+	if len(prerequisites) == 0 {
+		return "", errors.New("repository commit bundle has no remote prerequisites; push the base commits to the remote before bundling; full-history bundles are not supported yet")
 	}
 	for _, prerequisite := range prerequisites {
 		if err := s.RepositoryStore.EnsureCommit(ctx, repository.RemoteURL, prerequisite, repositorystore.FetchHints{}); err != nil {
-			return fmt.Errorf("ensure repository commit bundle prerequisite %s: %w", prerequisite, err)
+			return "", fmt.Errorf("ensure repository commit bundle prerequisite %s: %w", prerequisite, err)
 		}
 	}
-	return nil
+	return prerequisites[0], nil
 }
 
 func (s *Service) preparePersistentSandboxRepository(

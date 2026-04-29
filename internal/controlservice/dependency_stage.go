@@ -136,11 +136,12 @@ func (s *Service) stageKeyFilesDigest(ctx context.Context, repository *repositor
 		return "", fmt.Errorf("%s key files require repository store", stageName)
 	}
 	if commitBundle != nil {
-		if err := s.ensureRepositoryCommitBundlePrerequisites(ctx, repository, commitBundle); err != nil {
+		prerequisiteCommit, err := s.ensureRepositoryCommitBundlePrerequisites(ctx, repository, commitBundle)
+		if err != nil {
 			return "", err
 		}
 		var digest string
-		err := s.RepositoryStore.WithRepository(ctx, repository.RemoteURL, "", repositorystore.FetchHints{}, func(repoDir string) error {
+		err = s.RepositoryStore.WithRepository(ctx, repository.RemoteURL, prerequisiteCommit, repositorystore.FetchHints{}, func(repoDir string) error {
 			return commitBundle.WithRepository(ctx, repoDir, func(bundleRepoDir string) error {
 				var err error
 				if changeset != nil {
