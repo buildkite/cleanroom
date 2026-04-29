@@ -397,6 +397,15 @@ func (s *Service) markRestoredSandboxRepositoryReady(sandboxID string, repositor
 	return cloneSandboxLocked(sandbox)
 }
 
+func (s *Service) retainRestoredSandboxRepositoryState(resp *cleanroomv1.CreateSandboxResponse, repository *repositorycheckout.Checkout, commitBundle *repositorybundle.Bundle, changeset *repositorychangeset.Changeset) {
+	if resp == nil || resp.GetSandbox() == nil {
+		return
+	}
+	if sandbox := s.markRestoredSandboxRepositoryReady(resp.GetSandbox().GetSandboxId(), repository, commitBundle, changeset != nil); sandbox != nil {
+		resp.Sandbox = sandbox
+	}
+}
+
 func (s *Service) validatePortableDependencyStageKeyFiles(
 	ctx context.Context,
 	adapter backend.Adapter,

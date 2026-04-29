@@ -452,6 +452,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 								s.logServicesStageWarning("touch services stage cache", "", err)
 							}
 						}
+						s.retainRestoredSandboxRepositoryState(restoreResp, repository, commitBundle, changeset)
 						s.logServicesStageRestore(record, restoreResp.GetSandbox().GetSandboxId())
 						return restoreResp, nil
 					}
@@ -509,6 +510,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 								s.logDependencyStageWarning("touch dependency stage cache", "", err)
 							}
 						}
+						s.retainRestoredSandboxRepositoryState(restoreResp, repository, commitBundle, changeset)
 						s.logDependencyStageRestore(record, restoreResp.GetSandbox().GetSandboxId())
 						if !servicesStageBootstrapEnabled {
 							return restoreResp, nil
@@ -624,6 +626,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 								s.logWorkspaceStageWarning("touch workspace stage cache", "", err)
 							}
 						}
+						s.retainRestoredSandboxRepositoryState(restoreResp, repository, commitBundle, changeset)
 						s.logWorkspaceStageRestore(record, restoreResp.GetSandbox().GetSandboxId())
 						if !dependencyStageBootstrapEnabled && !servicesStageBootstrapEnabled {
 							return restoreResp, nil
