@@ -97,12 +97,54 @@ func resolveWorkspaceCopyRepositoryCheckout(cwd string, loader policyLoader) (*r
 	if err != nil || repository != nil {
 		return repository, err
 	}
+	remoteName, err := resolveImplicitRepositoryRemote(cwd)
+	if err != nil {
+		if errors.Is(err, errSkipRepositoryCheckout) {
+			return nil, nil
+		}
+		return nil, err
+	}
 	return resolveRepositoryCheckoutFromConfig(cwd, loader, policy.RepositoryConfig{
 		Implicit: true,
 		Mode:     "current-repo",
-		Remote:   "origin",
+		Remote:   remoteName,
 		Path:     defaultRepositoryOverridePath,
 	}, false)
+}
+
+func resolveImplicitRepositoryRemote(cwd string) (string, error) {
+	repoRoot, err := resolveRepositoryRoot(cwd, policy.RepositoryConfig{
+		Implicit: true,
+		Mode:     "current-repo",
+		Path:     defaultRepositoryOverridePath,
+	})
+	if err != nil {
+		return "", err
+	}
+
+	if upstream, err := gitOutput(repoRoot, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"); err == nil {
+		if remote, _, ok := strings.Cut(strings.TrimSpace(upstream), "/"); ok && strings.TrimSpace(remote) != "" {
+			return strings.TrimSpace(remote), nil
+		}
+	}
+
+	remoteOutput, err := gitOutput(repoRoot, "remote")
+	if err != nil {
+		return "", fmt.Errorf("list repository remotes: %w", err)
+	}
+	remotes := strings.Fields(remoteOutput)
+	switch len(remotes) {
+	case 0:
+		return "", errors.New("workspace copy-in requires a repository remote")
+	case 1:
+		return remotes[0], nil
+	}
+	for _, remote := range remotes {
+		if remote == "origin" {
+			return remote, nil
+		}
+	}
+	return "", fmt.Errorf("workspace copy-in found multiple repository remotes (%s); configure repository.remote in cleanroom.yaml", strings.Join(remotes, ", "))
 }
 
 func resolveRepositoryCheckoutFromConfig(cwd string, loader policyLoader, repository policy.RepositoryConfig, validatePolicy bool) (*resolvedRepositoryCheckout, error) {

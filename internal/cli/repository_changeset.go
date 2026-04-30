@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
+	"github.com/buildkite/cleanroom/internal/repositorybundle"
 	"github.com/buildkite/cleanroom/internal/repositorychangeset"
 )
 
@@ -34,23 +35,40 @@ func validateTopLevelWorkspaceCopyTransport(repository *resolvedRepositoryChecko
 	return errors.New("--copy-in for non-Git workspaces cannot be used while creating a sandbox yet; create the sandbox first, then run cleanroom workspace copy-in <sandbox-id>")
 }
 
-func resolveRepositoryChangeset(repository *resolvedRepositoryCheckout, copyWorkspace bool) (*cleanroomv1.RepositoryChangeset, error) {
+type repositoryLocalChanges struct {
+	Changeset    *cleanroomv1.RepositoryChangeset
+	CommitBundle *cleanroomv1.RepositoryCommitBundle
+}
+
+func resolveRepositoryLocalChanges(repository *resolvedRepositoryCheckout, copyWorkspace bool) (repositoryLocalChanges, error) {
 	if !copyWorkspace {
-		return nil, nil
+		return repositoryLocalChanges{}, nil
 	}
 	if repository == nil {
-		return nil, nil
+		return repositoryLocalChanges{}, nil
 	}
 	if strings.TrimSpace(repository.RootDir) == "" {
-		return nil, errors.New("--copy-in requires a local repository checkout")
+		return repositoryLocalChanges{}, errors.New("--copy-in requires a local repository checkout")
+	}
+	if strings.TrimSpace(repository.RemoteName) == "" {
+		return repositoryLocalChanges{}, errors.New("--copy-in requires a named repository remote")
+	}
+
+	commitBundle, err := repositorybundle.BuildFromRepository(repository.RootDir, repository.RemoteName, toRepositoryCheckout(repository))
+	if err != nil {
+		return repositoryLocalChanges{}, fmt.Errorf("package local repository commits: %w", err)
 	}
 
 	changeset, err := repositorychangeset.BuildFromWorkingTree(repository.RootDir, toRepositoryCheckout(repository))
 	if err != nil {
-		return nil, fmt.Errorf("package local repository changes: %w", err)
+		return repositoryLocalChanges{}, fmt.Errorf("package local repository changes: %w", err)
 	}
-	if changeset == nil {
-		return nil, nil
+	out := repositoryLocalChanges{}
+	if commitBundle != nil {
+		out.CommitBundle = commitBundle.ToProto()
 	}
-	return changeset.ToProto(), nil
+	if changeset != nil {
+		out.Changeset = changeset.ToProto()
+	}
+	return out, nil
 }
