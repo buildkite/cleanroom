@@ -86,7 +86,11 @@ func copyGitWorkspaceToSandbox(callCtx context.Context, ctx *runtimeContext, cli
 	if strings.TrimSpace(repository.RootDir) == "" {
 		return errors.New("workspace copy-in requires a local repository checkout")
 	}
-	changeset, err := repositorychangeset.BuildFromWorkingTree(repository.RootDir, toRepositoryCheckout(repository))
+	effectiveRepository, checkout, err := resolveGitWorkspaceCheckout(callCtx, client, opts)
+	if err != nil {
+		return err
+	}
+	changeset, err := repositorychangeset.BuildFromWorkingTree(repository.RootDir, checkout)
 	if err != nil {
 		return fmt.Errorf("package local workspace changes: %w", err)
 	}
@@ -95,24 +99,12 @@ func copyGitWorkspaceToSandbox(callCtx context.Context, ctx *runtimeContext, cli
 			if !opts.ForceGitReset {
 				return nil
 			}
-			_, checkout, err := resolveGitWorkspaceCheckout(callCtx, client, opts)
-			if err != nil {
-				return err
-			}
 			return printWorkspacePlan(runtimeStdout(ctx), gitWorkspacePlan(checkout.DestinationDir, nil, true))
 		}
 		if opts.ForceGitReset {
-			effectiveRepository, checkout, err := resolveGitWorkspaceCheckout(callCtx, client, opts)
-			if err != nil {
-				return err
-			}
 			return runWorkspaceExecution(callCtx, ctx, client, opts.SandboxID, effectiveRepository, repositorychangeset.ResetCommand(checkout), nil, opts.LaunchSeconds)
 		}
 		return nil
-	}
-	effectiveRepository, checkout, err := resolveGitWorkspaceCheckout(callCtx, client, opts)
-	if err != nil {
-		return err
 	}
 	if opts.DryRun {
 		return printWorkspacePlan(runtimeStdout(ctx), gitWorkspacePlan(checkout.DestinationDir, changeset.Files, opts.ForceGitReset))
@@ -130,15 +122,23 @@ func resolveGitWorkspaceCheckout(callCtx context.Context, client *controlclient.
 	if repository == nil {
 		return nil, nil, errors.New("workspace copy-in requires a local repository checkout")
 	}
+	effectiveRepository := *repository
 	destination := strings.TrimSpace(opts.Destination)
 	if destination == "" {
-		var err error
-		destination, err = resolveSandboxWorkspaceDestination(callCtx, client, opts.SandboxID)
+		sandboxRepository, err := resolveSandboxRepositoryCheckout(callCtx, client, opts.SandboxID)
 		if err != nil {
 			return nil, nil, err
 		}
+		destination = strings.TrimSpace(sandboxRepository.GetDestinationDir())
+		if remoteURL := strings.TrimSpace(sandboxRepository.GetRemoteUrl()); remoteURL != "" {
+			effectiveRepository.RemoteURL = remoteURL
+		}
+		if commitSHA := strings.TrimSpace(sandboxRepository.GetCommitSha()); commitSHA != "" {
+			effectiveRepository.CommitSHA = commitSHA
+		}
+		effectiveRepository.Submodules = sandboxRepository.GetSubmodules()
+		effectiveRepository.Branch = strings.TrimSpace(sandboxRepository.GetBranch())
 	}
-	effectiveRepository := *repository
 	effectiveRepository.DestinationDir = destination
 	checkout := toRepositoryCheckout(&effectiveRepository)
 	return &effectiveRepository, checkout, nil
@@ -276,10 +276,11 @@ func workspaceShellQuote(value string) string {
 }
 
 func resolveSandboxWorkspaceDestination(callCtx context.Context, client *controlclient.Client, sandboxID string) (string, error) {
-	destination, err := resolveSandboxWorkspaceDestinationIfRecorded(callCtx, client, sandboxID)
+	repository, err := resolveSandboxRepositoryCheckout(callCtx, client, sandboxID)
 	if err != nil {
 		return "", err
 	}
+	destination := strings.TrimSpace(repository.GetDestinationDir())
 	if destination == "" {
 		return "", fmt.Errorf("sandbox %q does not have a recorded workspace root; create it from a repository checkout or use cleanroom copy for explicit paths", sandboxID)
 	}
@@ -287,20 +288,42 @@ func resolveSandboxWorkspaceDestination(callCtx context.Context, client *control
 }
 
 func resolveSandboxWorkspaceDestinationIfRecorded(callCtx context.Context, client *controlclient.Client, sandboxID string) (string, error) {
+	repository, err := resolveSandboxRepositoryCheckoutIfRecorded(callCtx, client, sandboxID)
+	if err != nil || repository == nil {
+		return "", err
+	}
+	return strings.TrimSpace(repository.GetDestinationDir()), nil
+}
+
+func resolveSandboxRepositoryCheckout(callCtx context.Context, client *controlclient.Client, sandboxID string) (*cleanroomv1.RepositoryCheckout, error) {
+	repository, err := resolveSandboxRepositoryCheckoutIfRecorded(callCtx, client, sandboxID)
+	if err != nil {
+		return nil, err
+	}
+	if repository == nil || strings.TrimSpace(repository.GetDestinationDir()) == "" {
+		return nil, fmt.Errorf("sandbox %q does not have a recorded workspace root; create it from a repository checkout or use cleanroom copy for explicit paths", sandboxID)
+	}
+	return repository, nil
+}
+
+func resolveSandboxRepositoryCheckoutIfRecorded(callCtx context.Context, client *controlclient.Client, sandboxID string) (*cleanroomv1.RepositoryCheckout, error) {
 	if client == nil {
-		return "", errors.New("workspace copy-in requires a control client")
+		return nil, errors.New("workspace copy-in requires a control client")
 	}
 	resp, err := client.GetSandbox(tracePreservingContext(callCtx), &cleanroomv1.GetSandboxRequest{
 		SandboxId: sandboxID,
 	})
 	if err != nil {
-		return "", fmt.Errorf("inspect sandbox workspace: %w", err)
+		return nil, fmt.Errorf("inspect sandbox workspace: %w", err)
 	}
 	sandbox := resp.GetSandbox()
 	if sandbox == nil {
-		return "", fmt.Errorf("sandbox %q not found", sandboxID)
+		return nil, fmt.Errorf("sandbox %q not found", sandboxID)
 	}
-	return strings.TrimSpace(sandbox.GetRepositoryCheckout().GetDestinationDir()), nil
+	if sandbox.GetRepositoryCheckout() == nil {
+		return nil, nil
+	}
+	return sandbox.GetRepositoryCheckout(), nil
 }
 
 func validateRawWorkspaceDestinationRoot(destination string) error {

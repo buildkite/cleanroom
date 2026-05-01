@@ -133,6 +133,98 @@ func TestWorkspaceCopyInAppliesGitChangeset(t *testing.T) {
 	}
 }
 
+func TestWorkspaceCopyInAppliesLocalOnlyCommitsFromSandboxBase(t *testing.T) {
+	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
+	baseCommit := headCommit(t, repoDir)
+	branch, err := gitOutput(repoDir, "branch", "--show-current")
+	if err != nil {
+		t.Fatalf("resolve repository branch: %v", err)
+	}
+	commitFile(t, repoDir, "local.txt", "local\n", "local commit")
+	localCommit := headCommit(t, repoDir)
+
+	adapter := &integrationAdapter{}
+	host, _ := startIntegrationServer(t, adapter)
+	sandboxID := createWorkspaceCopyTestSandboxWithRepositoryCommitBranch(t, host, "/sandbox-workspace", baseCommit, strings.TrimSpace(branch))
+
+	var (
+		mu       sync.Mutex
+		commands [][]string
+		patches  []string
+	)
+	adapter.runStreamFn = func(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+		mu.Lock()
+		commands = append(commands, append([]string(nil), req.Command...))
+		mu.Unlock()
+
+		if !strings.Contains(strings.Join(req.Command, " "), `git -C "$dest" apply --binary --whitespace=nowarn "$patch_file"`) {
+			return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+		}
+
+		closed := make(chan struct{})
+		var closeOnce sync.Once
+		var stdin bytes.Buffer
+		if stream.OnAttach != nil {
+			stream.OnAttach(backend.AttachIO{
+				WriteStdin: func(data []byte) error {
+					_, err := stdin.Write(data)
+					return err
+				},
+				CloseStdin: func() error {
+					mu.Lock()
+					patches = append(patches, stdin.String())
+					mu.Unlock()
+					closeOnce.Do(func() { close(closed) })
+					return nil
+				},
+			})
+		}
+		select {
+		case <-closed:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+	}
+
+	stdout, _ := makeStdoutCapture(t)
+	stderr, _ := makeStdoutCapture(t)
+	cmd := WorkspaceCopyInCommand{
+		clientFlags: clientFlags{Host: host},
+		Chdir:       repoDir,
+		SandboxID:   sandboxID,
+	}
+	if err := cmd.Run(&runtimeContext{
+		CWD:           repoDir,
+		Loader:        workspaceCopyRepositoryLoader(),
+		Config:        runtimeconfig.Config{},
+		Observability: newTestObservability(t),
+		Stdout:        stdout,
+		Stderr:        stderr,
+	}); err != nil {
+		t.Fatalf("WorkspaceCopyInCommand.Run returned error: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(commands) < 1 {
+		t.Fatalf("expected changeset apply command, got %d", len(commands))
+	}
+	applyCommand := strings.Join(commands[len(commands)-1], " ")
+	if !strings.Contains(applyCommand, baseCommit) {
+		t.Fatalf("expected workspace copy-in to reset to sandbox base commit %q, got %q", baseCommit, applyCommand)
+	}
+	if strings.Contains(applyCommand, localCommit) {
+		t.Fatalf("expected workspace copy-in not to request local-only commit %q, got %q", localCommit, applyCommand)
+	}
+	if got, want := len(patches), 1; got != want {
+		t.Fatalf("expected one attached changeset patch, got %d", got)
+	}
+	if !strings.Contains(patches[0], "local.txt") {
+		t.Fatalf("expected changeset patch to include local-only commit file, got %q", patches[0])
+	}
+}
+
 func TestWorkspaceCopyInReturnsWhenPatchStdinWriteFails(t *testing.T) {
 	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
 	if err := os.WriteFile(filepath.Join(repoDir, "dirty.txt"), []byte("dirty\n"), 0o644); err != nil {
