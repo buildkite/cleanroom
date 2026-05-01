@@ -357,7 +357,7 @@ func ResetCommand(checkout *repositorycheckout.Checkout) []string {
 		"base_commit=" + shellQuote(baseCommitSHA),
 		`if [ ! -d "$dest/.git" ]; then echo "repository destination is not a git checkout: $dest" >&2; exit 1; fi`,
 		`git -C "$dest" reset --hard "$base_commit" >/dev/null`,
-		`git -C "$dest" clean -fd >/dev/null`,
+		`git -C "$dest" clean -ffd >/dev/null`,
 	}
 	return []string{"sh", "-lc", strings.Join(script, "\n")}
 }
@@ -376,7 +376,7 @@ func applyCommand(checkout *repositorycheckout.Checkout, changeset *Changeset, r
 	if resetCheckout {
 		script = append(script,
 			`git -C "$dest" reset --hard "$base_commit" >/dev/null`,
-			`git -C "$dest" clean -fd >/dev/null`,
+			`git -C "$dest" clean -ffd >/dev/null`,
 		)
 	}
 	script = append(script,
