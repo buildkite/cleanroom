@@ -164,7 +164,9 @@ type changesetMetadataStore interface {
 }
 
 type executionOptions struct {
-	LaunchSeconds int64
+	LaunchSeconds                               int64
+	PreserveRepositoryChangesetPendingExecution bool
+	SkipRunBefore                               bool
 }
 
 type executionSnapshot struct {
@@ -1778,6 +1780,14 @@ func (s *Service) TerminateSandbox(ctx context.Context, req *cleanroomv1.Termina
 }
 
 func (s *Service) CreateExecution(ctx context.Context, req *cleanroomv1.CreateExecutionRequest) (resp *cleanroomv1.CreateExecutionResponse, err error) {
+	return s.createExecution(ctx, req, false)
+}
+
+func (s *Service) CreateInternalWorkspaceCopyInExecution(ctx context.Context, req *cleanroomv1.CreateExecutionRequest) (resp *cleanroomv1.CreateExecutionResponse, err error) {
+	return s.createExecution(ctx, req, true)
+}
+
+func (s *Service) createExecution(ctx context.Context, req *cleanroomv1.CreateExecutionRequest, internalWorkspaceCopyIn bool) (resp *cleanroomv1.CreateExecutionResponse, err error) {
 	if req == nil {
 		return nil, errors.New("missing request")
 	}
@@ -1829,8 +1839,13 @@ func (s *Service) CreateExecution(ctx context.Context, req *cleanroomv1.CreateEx
 	if opts := req.GetOptions(); opts != nil {
 		execOpts = executionOptions{
 			LaunchSeconds: opts.GetLaunchSeconds(),
+			PreserveRepositoryChangesetPendingExecution: opts.GetPreserveRepositoryChangesetPendingExecution(),
+			SkipRunBefore: opts.GetSkipRunBefore(),
 		}
 		tty = opts.GetTty()
+	}
+	if err := validateInternalExecutionOptions(execOpts, internalWorkspaceCopyIn); err != nil {
+		return nil, err
 	}
 	kind, err := resolveExecutionKind(req.GetKind(), tty)
 	if err != nil {
@@ -1903,7 +1918,7 @@ func (s *Service) CreateExecution(ctx context.Context, req *cleanroomv1.CreateEx
 		runRepository = sandboxRepository
 	}
 	var preRunBefore []string
-	if sandboxPolicy != nil && sandboxPolicy.Run.HasBefore() {
+	if !execOpts.SkipRunBefore && sandboxPolicy != nil && sandboxPolicy.Run.HasBefore() {
 		preRunBefore = append([]string(nil), sandboxPolicy.Run.Before...)
 		if runRepository != nil {
 			preRunBefore = repositorycheckout.WrapCommandInWorkdir(preRunBefore, runRepository)
@@ -1986,6 +2001,19 @@ func (s *Service) CreateExecution(ctx context.Context, req *cleanroomv1.CreateEx
 		)
 	}
 	return resp, nil
+}
+
+func validateInternalExecutionOptions(opts executionOptions, internalWorkspaceCopyIn bool) error {
+	if internalWorkspaceCopyIn {
+		return nil
+	}
+	if opts.PreserveRepositoryChangesetPendingExecution {
+		return errors.New("preserve repository changeset pending execution is only available for internal workspace copy-in executions")
+	}
+	if opts.SkipRunBefore {
+		return errors.New("skip run before is only available for internal workspace copy-in executions")
+	}
+	return nil
 }
 
 func (s *Service) AttachExecution(_ context.Context, req *cleanroomv1.AttachExecutionRequest) (*cleanroomv1.AttachExecutionResponse, error) {
@@ -2883,7 +2911,7 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 	finished := s.clock().Now()
 	recordExecutionMetrics(finalStatus, finished)
 	s.finalizeExecutionLocked(ex, finalStatus, finalExitCode, ex.Message, "", finished)
-	if finalStatus == cleanroomv1.ExecutionStatus_EXECUTION_STATUS_SUCCEEDED {
+	if finalStatus == cleanroomv1.ExecutionStatus_EXECUTION_STATUS_SUCCEEDED && !ex.Options.PreserveRepositoryChangesetPendingExecution {
 		s.markRepositoryChangesetExecutionConsumedLocked(sandboxID)
 	}
 

@@ -36,6 +36,7 @@ type executionSandbox struct {
 	SandboxID      string
 	CreatedSandbox bool
 	Repository     *resolvedRepositoryCheckout
+	WorkspaceRoot  string
 }
 
 // resolveExecutionSandbox keeps `exec` and `console` on the same sandbox
@@ -49,25 +50,34 @@ func resolveExecutionSandbox(
 	launchSeconds int64,
 	dangerouslyAllowAll bool,
 	repositoryOverride repositoryOverrideFlags,
-	changesetFlags repositoryChangesetFlags,
+	copyFlags workspaceCopyFlags,
 ) (*executionSandbox, error) {
 	existingSandboxID = strings.TrimSpace(existingSandboxID)
 	fromSnapshot = strings.TrimSpace(fromSnapshot)
 
 	var repository *resolvedRepositoryCheckout
 	localChanges := repositoryLocalChanges{}
-	if existingSandboxID == "" && fromSnapshot == "" {
+	if fromSnapshot == "" && (existingSandboxID == "" || copyFlags.CopyIn) {
 		var err error
-		repository, err = resolveRepositoryCheckoutWithOverride(cwd, ctx.Loader, repositoryOverride)
+		if copyFlags.CopyIn && existingSandboxID != "" && !repositoryOverride.hasRepositoryOverride() {
+			repository, err = resolveWorkspaceCopyRepositoryCheckout(cwd, ctx.Loader)
+		} else {
+			repository, err = resolveRepositoryCheckoutWithOverride(cwd, ctx.Loader, repositoryOverride)
+		}
 		if err != nil {
 			return nil, err
 		}
-		localChanges, err = resolveRepositoryLocalChanges(repository, changesetFlags.IncludeLocalChanges)
-		if err != nil {
+		if err := validateTopLevelWorkspaceCopyTransport(repository, copyFlags.CopyIn && existingSandboxID == ""); err != nil {
 			return nil, err
+		}
+		if existingSandboxID == "" {
+			localChanges, err = resolveRepositoryLocalChanges(repository, copyFlags.CopyIn)
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
-	warnDirtyRepositoryCheckout(repository, localChanges.Changeset != nil || localChanges.CommitBundle != nil)
+	warnDirtyRepositoryCheckout(repository, copyFlags.CopyIn && repository != nil && fromSnapshot == "")
 
 	sandboxID, createdSandbox, err := ensureSandboxID(
 		callCtx,
@@ -88,10 +98,51 @@ func resolveExecutionSandbox(
 		return nil, err
 	}
 
+	workspaceRoot := ""
+	if copyFlags.CopyIn && fromSnapshot == "" {
+		localChangesAttachedDuringCreate := existingSandboxID == "" && repository != nil && (localChanges.Changeset != nil || localChanges.CommitBundle != nil)
+		copyRepository := repository
+		if repository == nil {
+			workspaceRoot, err = resolveSandboxWorkspaceDestination(callCtx, client, sandboxID)
+			if err != nil {
+				return nil, err
+			}
+		} else if existingSandboxID != "" {
+			effectiveRepository, _, err := resolveGitWorkspaceCheckout(callCtx, client, workspaceCopyOptions{
+				SandboxID:  sandboxID,
+				Repository: repository,
+			})
+			if err != nil {
+				return nil, err
+			}
+			copyRepository = effectiveRepository
+			workspaceRoot = effectiveRepository.DestinationDir
+		}
+		if !localChangesAttachedDuringCreate {
+			if err := copyWorkspaceToSandbox(callCtx, ctx, client, workspaceCopyOptions{
+				CWD:           cwd,
+				SandboxID:     sandboxID,
+				Repository:    copyRepository,
+				Destination:   workspaceRoot,
+				ForceGitReset: existingSandboxID != "",
+				LaunchSeconds: launchSeconds,
+			}); err != nil {
+				if createdSandbox {
+					terminateSandboxBestEffort(callCtx, client, sandboxID, 0, nil, "")
+				}
+				return nil, err
+			}
+			if existingSandboxID != "" && copyRepository != nil {
+				repository = nil
+			}
+		}
+	}
+
 	return &executionSandbox{
 		SandboxID:      sandboxID,
 		CreatedSandbox: createdSandbox,
 		Repository:     repository,
+		WorkspaceRoot:  workspaceRoot,
 	}, nil
 }
 
@@ -202,7 +253,7 @@ func executionCommandSummary(command []string) string {
 	return summary
 }
 
-func validateExecutionSandboxArgs(chdir, existingSandboxID, fromSnapshot string, keep, dangerouslyAllowAll bool, repositoryOverride repositoryOverrideFlags, changesetFlags repositoryChangesetFlags) error {
+func validateExecutionSandboxArgs(chdir, existingSandboxID, fromSnapshot string, keep, dangerouslyAllowAll bool, repositoryOverride repositoryOverrideFlags, copyFlags workspaceCopyFlags) error {
 	sandboxID := strings.TrimSpace(existingSandboxID)
 	snapshotID := strings.TrimSpace(fromSnapshot)
 	hasChdir := strings.TrimSpace(chdir) != ""
@@ -210,7 +261,7 @@ func validateExecutionSandboxArgs(chdir, existingSandboxID, fromSnapshot string,
 	if _, err := repositoryOverride.resolve(".", nil); err != nil {
 		return err
 	}
-	if err := changesetFlags.validate(existingSandboxID, fromSnapshot, repositoryOverride); err != nil {
+	if err := copyFlags.validate(existingSandboxID, fromSnapshot, repositoryOverride); err != nil {
 		return err
 	}
 
@@ -226,7 +277,7 @@ func validateExecutionSandboxArgs(chdir, existingSandboxID, fromSnapshot string,
 	if snapshotID != "" && dangerouslyAllowAll {
 		return errors.New("--dangerously-allow-all cannot be used with --from")
 	}
-	if sandboxID != "" && hasChdir {
+	if sandboxID != "" && hasChdir && !copyFlags.CopyIn {
 		return errors.New("--chdir cannot be used with --in")
 	}
 	if snapshotID != "" && hasChdir {

@@ -84,6 +84,17 @@ func headCommit(t *testing.T, dir string) string {
 	return strings.TrimSpace(string(out))
 }
 
+func runGitInRepository(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v failed: %v\n%s", args, err, string(out))
+	}
+	return strings.TrimSpace(string(out))
+}
+
 func commitFile(t *testing.T, dir, name, content, message string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
@@ -693,6 +704,25 @@ func TestResolveRepositoryCheckoutSkipsImplicitDefaultOutsideGitRepo(t *testing.
 	}
 }
 
+func TestResolveWorkspaceCopyRepositoryCheckoutUsesNonOriginRemoteWithoutPolicy(t *testing.T) {
+	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
+	runGitInRepository(t, repoDir, "remote", "rename", "origin", "upstream")
+
+	checkout, err := resolveWorkspaceCopyRepositoryCheckout(repoDir, repositoryNotFoundLoader{})
+	if err != nil {
+		t.Fatalf("resolveWorkspaceCopyRepositoryCheckout returned error: %v", err)
+	}
+	if checkout == nil {
+		t.Fatal("expected repository checkout result")
+	}
+	if got, want := checkout.RemoteName, "upstream"; got != want {
+		t.Fatalf("unexpected remote name: got %q want %q", got, want)
+	}
+	if got, want := checkout.RemoteURL, "https://github.com/buildkite/cleanroom.git"; got != want {
+		t.Fatalf("unexpected remote url: got %q want %q", got, want)
+	}
+}
+
 func TestExecCommandWithSandboxIDAllowsMissingPolicyInCurrentDirectory(t *testing.T) {
 	adapter := &integrationAdapter{}
 	host, _ := startIntegrationServer(t, adapter)
@@ -826,7 +856,7 @@ func TestCreateCommandWarnsWhenRepositoryIsDirtyUsesANSIWhenForced(t *testing.T)
 	}
 }
 
-func TestCreateCommandIncludesLocalChangesWithoutDirtyWarning(t *testing.T) {
+func TestCreateCommandCopyInSuppressesDirtyWarning(t *testing.T) {
 	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
 	if err := os.WriteFile(filepath.Join(repoDir, "dirty.txt"), []byte("dirty\n"), 0o644); err != nil {
 		t.Fatalf("write dirty file: %v", err)
@@ -863,9 +893,9 @@ func TestCreateCommandIncludesLocalChangesWithoutDirtyWarning(t *testing.T) {
 	}
 
 	outcome := runCreateAliasWithCapture(CreateCommand{
-		clientFlags:              clientFlags{Host: host},
-		Chdir:                    repoDir,
-		repositoryChangesetFlags: repositoryChangesetFlags{IncludeLocalChanges: true},
+		clientFlags:        clientFlags{Host: host},
+		Chdir:              repoDir,
+		workspaceCopyFlags: workspaceCopyFlags{CopyIn: true},
 	}, runtimeContext{
 		CWD: repoDir,
 		Loader: repositoryIntegrationLoader{
@@ -909,7 +939,7 @@ func TestCreateCommandIncludesLocalChangesWithoutDirtyWarning(t *testing.T) {
 	}
 }
 
-func TestCreateCommandIncludesLocalOnlyCommitsWithLocalChangesFlag(t *testing.T) {
+func TestCreateCommandCopyInIncludesLocalOnlyCommits(t *testing.T) {
 	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
 	commitFile(t, repoDir, "local.txt", "local\n", "local commit")
 	wantCommit := headCommit(t, repoDir)
@@ -945,9 +975,9 @@ func TestCreateCommandIncludesLocalOnlyCommitsWithLocalChangesFlag(t *testing.T)
 	}
 
 	outcome := runCreateAliasWithCapture(CreateCommand{
-		clientFlags:              clientFlags{Host: host},
-		Chdir:                    repoDir,
-		repositoryChangesetFlags: repositoryChangesetFlags{IncludeLocalChanges: true},
+		clientFlags:        clientFlags{Host: host},
+		Chdir:              repoDir,
+		workspaceCopyFlags: workspaceCopyFlags{CopyIn: true},
 	}, runtimeContext{
 		CWD: repoDir,
 		Loader: repositoryIntegrationLoader{
@@ -970,9 +1000,6 @@ func TestCreateCommandIncludesLocalOnlyCommitsWithLocalChangesFlag(t *testing.T)
 	}
 	if outcome.err != nil {
 		t.Fatalf("CreateCommand.Run returned error: %v", outcome.err)
-	}
-	if strings.Contains(outcome.stderr, "repository has local modifications") {
-		t.Fatalf("expected dirty repository warning to be suppressed, got %q", outcome.stderr)
 	}
 
 	mu.Lock()

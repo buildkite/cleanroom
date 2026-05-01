@@ -152,7 +152,7 @@ This phase now means:
   `cachestore`
 - one writable-root-volume preparation path for Firecracker normal execution
   and snapshot restore
-- request-scoped `--include-local-changes` packaging and replay after exact
+- request-scoped `--copy-in` packaging and replay after exact
   repository checkout
 - durable host-local `changesetstore` metadata and payload storage for
   explicit repository changesets, with stage-cache metadata recording the
@@ -279,7 +279,7 @@ The user-facing restore/fork surface should remain snapshot-oriented:
 - normal sandbox creation should resolve system stage caches automatically from
   request inputs
 - explicit local changes should use a separate changeset surface such as
-  `--changeset` or `--include-local-changes`, not snapshot restore semantics
+  `--changeset` or `--copy-in`, not snapshot restore semantics
 - if direct stage-cache selection is ever exposed, it should use a separate
   operator/debug surface rather than sharing snapshot semantics
 

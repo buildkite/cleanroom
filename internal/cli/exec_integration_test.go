@@ -212,7 +212,7 @@ func startIntegrationServerWithConfig(t *testing.T, adapter backend.Adapter, cfg
 		},
 	}
 
-	httpServer := httptest.NewServer(controlserver.New(svc, nil).Handler())
+	httpServer := httptest.NewServer(controlserver.New(svc, nil).TrustInternalWorkspaceCopyInRequests().Handler())
 	t.Cleanup(httpServer.Close)
 
 	quicCtx, quicCancel := context.WithCancel(context.Background())
@@ -261,7 +261,7 @@ func startUnixIntegrationServer(t *testing.T, adapter backend.Adapter) (string, 
 	if err != nil {
 		t.Fatalf("listen on unix socket: %v", err)
 	}
-	server := &http.Server{Handler: controlserver.New(svc, nil).Handler()}
+	server := &http.Server{Handler: controlserver.New(svc, nil).TrustInternalWorkspaceCopyInRequests().Handler()}
 	go func() {
 		_ = server.Serve(listener)
 	}()

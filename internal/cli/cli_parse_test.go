@@ -330,6 +330,69 @@ func TestTopLevelCreateParsesDangerouslyAllowAll(t *testing.T) {
 	}
 }
 
+func TestTopLevelCommandsParseCopyInFlag(t *testing.T) {
+	t.Run("create", func(t *testing.T) {
+		c := &CLI{}
+		parser := newParserForTest(t, c)
+		if _, err := parser.Parse([]string{"create", "--copy-in"}); err != nil {
+			t.Fatalf("parse create --copy-in returned error: %v", err)
+		}
+		if !c.Create.CopyIn {
+			t.Fatal("expected create copy-in flag to be set")
+		}
+	})
+
+	t.Run("exec", func(t *testing.T) {
+		c := &CLI{}
+		parser := newParserForTest(t, c)
+		if _, err := parser.Parse([]string{"exec", "--copy-in", "--", "echo", "ok"}); err != nil {
+			t.Fatalf("parse exec --copy-in returned error: %v", err)
+		}
+		if !c.Exec.CopyIn {
+			t.Fatal("expected exec copy-in flag to be set")
+		}
+	})
+
+	t.Run("console", func(t *testing.T) {
+		c := &CLI{}
+		parser := newParserForTest(t, c)
+		if _, err := parser.Parse([]string{"console", "--copy-in"}); err != nil {
+			t.Fatalf("parse console --copy-in returned error: %v", err)
+		}
+		if !c.Console.CopyIn {
+			t.Fatal("expected console copy-in flag to be set")
+		}
+	})
+}
+
+func TestWorkspaceCopyInParses(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"workspace", "copy-in", "--dry-run", "cr_123"}); err != nil {
+		t.Fatalf("parse workspace copy-in returned error: %v", err)
+	}
+	if got, want := c.Workspace.CopyIn.SandboxID, "cr_123"; got != want {
+		t.Fatalf("unexpected workspace copy-in sandbox id: got %q want %q", got, want)
+	}
+	if !c.Workspace.CopyIn.DryRun {
+		t.Fatal("expected workspace copy-in dry-run flag to be set")
+	}
+}
+
+func TestIncludeLocalChangesFlagRejected(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	_, err := parser.Parse([]string{"create", "--include-local-changes"})
+	if err == nil {
+		t.Fatal("expected removed --include-local-changes flag to be rejected")
+	}
+	if !strings.Contains(err.Error(), "unknown flag") || !strings.Contains(err.Error(), "--include-local-changes") {
+		t.Fatalf("expected unknown flag parse error, got %v", err)
+	}
+}
+
 func TestExecParsesImageOverride(t *testing.T) {
 	c := &CLI{}
 	parser := newParserForTest(t, c)

@@ -1,14 +1,14 @@
 # Sandbox Transfer Invariants
 
 **Status:** Stabilization plan
-**Last reviewed:** 2026-04-26
+**Last reviewed:** 2026-04-28
 
 ## Summary
 
 Cleanroom now has explicit primitives for moving files and archive payloads into
 and out of persistent sandboxes. These primitives are intended to be the
 substrate for one-off `cleanroom copy` usage first, and later for faster
-workspace sync, diff, and export workflows.
+workspace copy-in, copy-out, diff, and sync workflows.
 
 The transfer layer should stay backend-neutral above the final command-runner
 boundary. Firecracker and Darwin-VZ can differ in how they execute a guest
@@ -30,9 +30,9 @@ The current transfer surface covers:
   one sandbox file to local path
 
 The current surface does not cover recursive local directory upload,
-sandbox-to-sandbox copy, full workspace sync, conflict detection, rsync-style
-delete behavior, or patch/diff generation. Those should build on this layer
-after these invariants are stable.
+sandbox-to-sandbox copy, full workspace copy-in/copy-out automation, conflict
+detection, rsync-style delete behavior, or patch/diff generation. Those should
+build on this layer after these invariants are stable.
 
 ## Required Invariants
 
@@ -144,7 +144,8 @@ CLI tests should cover:
 
 ## Delivery Guidance
 
-Do not broaden this PR into workspace sync. The stabilization target is a small,
-well-defined transfer layer whose behavior is hard to regress. Once this matrix
-is covered, workspace sync can layer higher-level planning, change detection,
-and delete behavior on top without reopening backend copy semantics.
+Do not broaden this PR into workspace copy-in/copy-out automation. The
+stabilization target is a small, well-defined transfer layer whose behavior is
+hard to regress. Once this matrix is covered, workspace copy-in/copy-out can
+layer higher-level planning, change detection, and delete behavior on top
+without reopening backend copy semantics.
