@@ -226,6 +226,96 @@ install_macos_pkg() {
   run_with_optional_sudo installer -pkg "$pkg_path" -target /
 }
 
+homebrew_e2fsprogs_prefixes() {
+  local brew_path prefix
+
+  if brew_path="$(command -v brew 2>/dev/null)"; then
+    prefix="$("${brew_path}" --prefix e2fsprogs 2>/dev/null || true)"
+    if [ -n "${prefix}" ]; then
+      printf '%s\n' "${prefix}"
+    fi
+  fi
+
+  printf '%s\n' /opt/homebrew/opt/e2fsprogs /usr/local/opt/e2fsprogs
+}
+
+resolve_homebrew_e2fsprogs_binary() {
+  local binary="$1"
+  local path prefix subdir
+
+  if path="$(command -v "${binary}" 2>/dev/null)"; then
+    printf '%s\n' "${path}"
+    return 0
+  fi
+
+  while IFS= read -r prefix; do
+    [ -n "${prefix}" ] || continue
+    for subdir in sbin bin; do
+      path="${prefix}/${subdir}/${binary}"
+      if [ -x "${path}" ]; then
+        printf '%s\n' "${path}"
+        return 0
+      fi
+    done
+  done < <(homebrew_e2fsprogs_prefixes)
+
+  return 1
+}
+
+prompt_install_homebrew_package() {
+  local package="$1"
+  local answer
+
+  [ -r /dev/tty ] && [ -w /dev/tty ] || return 1
+  printf '[cleanroom-install] Install %s with Homebrew now? [y/N] ' "${package}" >/dev/tty
+  IFS= read -r answer </dev/tty || return 1
+
+  case "${answer}" in
+    y|Y|yes|YES|Yes) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+maybe_install_darwin_host_dependencies() {
+  local brew_path
+  local -a missing=()
+
+  [ "${HOST_OS}" = "Darwin" ] || return 0
+
+  if ! resolve_homebrew_e2fsprogs_binary mkfs.ext4 >/dev/null; then
+    missing+=(mkfs.ext4)
+  fi
+  if ! resolve_homebrew_e2fsprogs_binary debugfs >/dev/null; then
+    missing+=(debugfs)
+  fi
+  if [ "${#missing[@]}" -eq 0 ]; then
+    return 0
+  fi
+
+  warn "macOS host dependencies missing: ${missing[*]}; install them with \`brew install e2fsprogs\`"
+  if ! brew_path="$(command -v brew 2>/dev/null)"; then
+    warn "Homebrew was not found; install Homebrew or run \`brew install e2fsprogs\` after installing it"
+    return 0
+  fi
+
+  if ! prompt_install_homebrew_package e2fsprogs; then
+    warn "skipping e2fsprogs install; run \`brew install e2fsprogs\`, then \`cleanroom doctor\`"
+    return 0
+  fi
+
+  log "Installing e2fsprogs with Homebrew"
+  if ! "${brew_path}" install e2fsprogs; then
+    warn "failed to install e2fsprogs with Homebrew; run \`brew install e2fsprogs\`, then \`cleanroom doctor\`"
+    return 0
+  fi
+
+  if resolve_homebrew_e2fsprogs_binary mkfs.ext4 >/dev/null && resolve_homebrew_e2fsprogs_binary debugfs >/dev/null; then
+    log "Installed e2fsprogs host tools"
+  else
+    warn "e2fsprogs install finished, but mkfs.ext4/debugfs were not found; run \`cleanroom doctor\` for details"
+  fi
+}
+
 can_use_notarized_macos_pkg() {
   [ "$HOST_OS" = "Darwin" ] || return 1
   [ "$INSTALL_DIR" = "/usr/local/bin" ] || return 1
@@ -377,6 +467,7 @@ if can_use_notarized_macos_pkg && try_install_notarized_macos_pkg; then
     *":${INSTALL_DIR}:"*) ;;
     *) warn "${INSTALL_DIR} is not in PATH" ;;
   esac
+  maybe_install_darwin_host_dependencies
   exit 0
 fi
 
@@ -534,3 +625,5 @@ case ":${PATH}:" in
   *":${INSTALL_DIR}:"*) ;;
   *) warn "${INSTALL_DIR} is not in PATH" ;;
 esac
+
+maybe_install_darwin_host_dependencies
