@@ -394,13 +394,48 @@ func (m *Manager) registerHTTPS(ctx context.Context, ownerID, sandboxID string, 
 	m.mu.Unlock()
 
 	if err := m.startHTTPS(ctx); err != nil {
-		m.ReleaseOwner(ownerID)
+		m.releaseRoute(r)
 		return nil, err
 	}
 	m.mu.Lock()
 	r.url = m.httpsURL(host)
 	m.mu.Unlock()
 	return r.toProto(), nil
+}
+
+func (m *Manager) releaseRoute(target *route) {
+	if target == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	switch target.protocol {
+	case "tcp":
+		if m.tcpRoutes[target.hostPort] == target {
+			delete(m.tcpRoutes, target.hostPort)
+			if server := m.tcpServers[target.hostPort]; server != nil {
+				delete(m.tcpServers, target.hostPort)
+				_ = server.ln.Close()
+			}
+		}
+	case "https":
+		if m.httpsRoutes[target.hostname] == target {
+			delete(m.httpsRoutes, target.hostname)
+			closeHTTPSRouteIdleConnections(target)
+		}
+	}
+	routes := m.byOwner[target.ownerID]
+	for i, r := range routes {
+		if r == target {
+			routes = append(routes[:i], routes[i+1:]...)
+			break
+		}
+	}
+	if len(routes) == 0 {
+		delete(m.byOwner, target.ownerID)
+		return
+	}
+	m.byOwner[target.ownerID] = routes
 }
 
 func (m *Manager) serveTCP(server *tcpServer, hostPort int) {

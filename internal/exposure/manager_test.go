@@ -244,6 +244,74 @@ func TestRegisterHTTPSRetriesAfterListenFailure(t *testing.T) {
 	}
 }
 
+func TestRegisterHTTPSFailureKeepsExistingOwnerRoutes(t *testing.T) {
+	t.Parallel()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve https listen port: %v", err)
+	}
+	defer ln.Close()
+
+	hostPort := freeTCPPort(t)
+	manager := NewManager(Config{
+		TCPHost:     "127.0.0.1",
+		HTTPSListen: ln.Addr().String(),
+		TLSDir:      t.TempDir(),
+	})
+	t.Cleanup(func() {
+		if err := manager.Close(); err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	})
+
+	_, err = manager.Register(context.Background(), RegisterRequest{
+		OwnerID:   "owner-1",
+		SandboxID: "sandbox-1",
+		Exposure: &cleanroomv1.PortExposure{
+			Protocol:  "tcp",
+			HostPort:  int32(hostPort),
+			GuestPort: 3000,
+		},
+		Dialer: testDialer,
+	})
+	if err != nil {
+		t.Fatalf("Register tcp returned error: %v", err)
+	}
+
+	_, err = manager.Register(context.Background(), RegisterRequest{
+		OwnerID:   "owner-1",
+		SandboxID: "sandbox-1",
+		Exposure: &cleanroomv1.PortExposure{
+			Protocol:  "https",
+			Name:      "buildkite",
+			GuestPort: 3000,
+		},
+		Dialer: testDialer,
+	})
+	if err == nil {
+		t.Fatal("expected https listen conflict error")
+	}
+	if !strings.Contains(err.Error(), "listen https exposure") {
+		t.Fatalf("expected listen conflict error, got %v", err)
+	}
+
+	manager.mu.RLock()
+	tcpRoute := manager.tcpRoutes[hostPort]
+	httpsRoute := manager.httpsRoutes["buildkite.cleanroom.localhost"]
+	ownerRoutes := append([]*route(nil), manager.byOwner["owner-1"]...)
+	manager.mu.RUnlock()
+	if tcpRoute == nil {
+		t.Fatal("expected failed https registration to keep existing tcp route")
+	}
+	if httpsRoute != nil {
+		t.Fatal("expected failed https registration to roll back only the new https route")
+	}
+	if len(ownerRoutes) != 1 || ownerRoutes[0] != tcpRoute {
+		t.Fatalf("unexpected owner routes after rollback: got %d routes", len(ownerRoutes))
+	}
+}
+
 func TestRegisterHTTPSFallsBackToEphemeralPortWhenDefaultListenIsBusy(t *testing.T) {
 	t.Parallel()
 
