@@ -576,24 +576,37 @@ func patchHasGitlinkChanges(patch []byte) bool {
 }
 
 func pathModeInIndex(repoRoot string, env []string, normalizedPath string) (string, bool, error) {
-	output, err := gitOutput(repoRoot, env, "ls-files", "--stage", "-z", "--", normalizedPath)
+	output, err := gitOutput(repoRoot, env, "ls-files", "--stage", "-z", "--", literalGitPathspec(normalizedPath))
 	if err != nil {
 		return "", false, err
 	}
-	return gitIndexMode(output)
+	return gitIndexMode(output, normalizedPath)
 }
 
-func gitIndexMode(output []byte) (string, bool, error) {
+func gitIndexMode(output []byte, normalizedPath string) (string, bool, error) {
 	output = bytes.TrimRight(output, "\x00")
 	if len(bytes.TrimSpace(output)) == 0 {
 		return "", false, nil
 	}
-	entry, _, _ := bytes.Cut(output, []byte{0})
-	fields := strings.Fields(string(entry))
-	if len(fields) < 3 || strings.TrimSpace(fields[0]) == "" {
-		return "", false, fmt.Errorf("parse git index entry %q", string(entry))
+	for _, entry := range bytes.Split(output, []byte{0}) {
+		metadata, rawPath, ok := bytes.Cut(entry, []byte{'\t'})
+		if !ok {
+			return "", false, fmt.Errorf("parse git index entry %q", string(entry))
+		}
+		if normalizePath(string(rawPath)) != normalizedPath {
+			continue
+		}
+		fields := strings.Fields(string(metadata))
+		if len(fields) < 3 || strings.TrimSpace(fields[0]) == "" {
+			return "", false, fmt.Errorf("parse git index entry %q", string(entry))
+		}
+		return fields[0], true, nil
 	}
-	return fields[0], true, nil
+	return "", false, nil
+}
+
+func literalGitPathspec(normalizedPath string) string {
+	return ":(literal)" + normalizedPath
 }
 
 func buildDigest(baseCommitSHA, treeDigest string, patch []byte, files []File) string {

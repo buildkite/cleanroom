@@ -599,6 +599,7 @@ func buildGitWorkspaceCopyOutPatchFromLocalBase(localRoot, baseCommit, sandboxPa
 	if len(paths) == 0 {
 		return nil, nil, nil
 	}
+	pathspecs := gitWorkspacePathspecs(paths)
 	localTree, err := gitWorkspaceCurrentTree(localRoot)
 	if err != nil {
 		return nil, nil, err
@@ -607,12 +608,12 @@ func buildGitWorkspaceCopyOutPatchFromLocalBase(localRoot, baseCommit, sandboxPa
 	if err != nil {
 		return nil, nil, err
 	}
-	nameStatusArgs := append([]string{"diff", "--name-status", "--no-renames", "-z", localTree, sandboxTree, "--"}, paths...)
+	nameStatusArgs := append([]string{"diff", "--name-status", "--no-renames", "-z", localTree, sandboxTree, "--"}, pathspecs...)
 	nameStatus, err := gitOutputRaw(localRoot, nil, nameStatusArgs...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("build workspace copy-out local name-status: %w", err)
 	}
-	patchArgs := append([]string{"diff", "--binary", "--full-index", "--no-ext-diff", "--no-color", "--no-renames", localTree, sandboxTree, "--"}, paths...)
+	patchArgs := append([]string{"diff", "--binary", "--full-index", "--no-ext-diff", "--no-color", "--no-renames", localTree, sandboxTree, "--"}, pathspecs...)
 	patch, err := gitOutputRaw(localRoot, nil, patchArgs...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("build workspace copy-out local patch: %w", err)
@@ -689,7 +690,7 @@ func gitWorkspaceStagedPaths(localRoot string, paths []string) (map[string]bool,
 	if len(paths) == 0 {
 		return staged, nil
 	}
-	args := append([]string{"diff", "--cached", "--name-only", "--no-renames", "-z", "--"}, paths...)
+	args := append([]string{"diff", "--cached", "--name-only", "--no-renames", "-z", "--"}, gitWorkspacePathspecs(paths)...)
 	output, err := gitOutputRaw(localRoot, nil, args...)
 	if err != nil {
 		return nil, fmt.Errorf("inspect staged local workspace paths: %w", err)
@@ -743,11 +744,11 @@ func gitWorkspaceIndexFile(localRoot string, env []string, rel string) (workspac
 }
 
 func gitWorkspacePathModeInIndex(localRoot string, env []string, rel string) (string, bool, error) {
-	output, err := gitOutputRaw(localRoot, env, "ls-files", "--stage", "-z", "--", rel)
+	output, err := gitOutputRaw(localRoot, env, "ls-files", "--stage", "-z", "--", gitWorkspacePathspec(rel))
 	if err != nil {
 		return "", false, fmt.Errorf("inspect local workspace path %q in temporary index: %w", rel, err)
 	}
-	mode, exists, err := gitWorkspaceEntryMode(output)
+	mode, exists, err := gitWorkspaceEntryMode(output, rel)
 	if err != nil {
 		return "", false, fmt.Errorf("parse local workspace path %q in temporary index: %w", rel, err)
 	}
@@ -755,28 +756,45 @@ func gitWorkspacePathModeInIndex(localRoot string, env []string, rel string) (st
 }
 
 func gitWorkspacePathModeInCommit(localRoot, commit, rel string) (string, bool, error) {
-	output, err := gitOutputRaw(localRoot, nil, "ls-tree", "-z", strings.TrimSpace(commit), "--", rel)
+	output, err := gitOutputRaw(localRoot, nil, "ls-tree", "-z", strings.TrimSpace(commit), "--", gitWorkspacePathspec(rel))
 	if err != nil {
 		return "", false, fmt.Errorf("inspect sandbox baseline path %q: %w", rel, err)
 	}
-	mode, exists, err := gitWorkspaceEntryMode(output)
+	mode, exists, err := gitWorkspaceEntryMode(output, rel)
 	if err != nil {
 		return "", false, fmt.Errorf("parse sandbox baseline path %q: %w", rel, err)
 	}
 	return mode, exists, nil
 }
 
-func gitWorkspaceEntryMode(output []byte) (string, bool, error) {
+func gitWorkspaceEntryMode(output []byte, rel string) (string, bool, error) {
+	normalized, err := workspaceRelativePath(rel)
+	if err != nil {
+		return "", false, err
+	}
 	output = bytes.TrimRight(output, "\x00")
 	if len(bytes.TrimSpace(output)) == 0 {
 		return "", false, nil
 	}
-	entry, _, _ := bytes.Cut(output, []byte{0})
-	fields := strings.Fields(string(entry))
-	if len(fields) < 3 || strings.TrimSpace(fields[0]) == "" {
-		return "", false, fmt.Errorf("parse git entry %q", string(entry))
+	for _, entry := range bytes.Split(output, []byte{0}) {
+		metadata, rawPath, ok := bytes.Cut(entry, []byte{'\t'})
+		if !ok {
+			return "", false, fmt.Errorf("parse git entry %q", string(entry))
+		}
+		path, err := workspaceRelativePath(string(rawPath))
+		if err != nil {
+			return "", false, err
+		}
+		if path != normalized {
+			continue
+		}
+		fields := strings.Fields(string(metadata))
+		if len(fields) < 3 || strings.TrimSpace(fields[0]) == "" {
+			return "", false, fmt.Errorf("parse git entry %q", string(entry))
+		}
+		return fields[0], true, nil
 	}
-	return fields[0], true, nil
+	return "", false, nil
 }
 
 func workspaceCopyOutPaths(files []repositorychangeset.File) ([]string, error) {
@@ -795,6 +813,18 @@ func workspaceCopyOutPaths(files []repositorychangeset.File) ([]string, error) {
 	}
 	sort.Strings(paths)
 	return paths, nil
+}
+
+func gitWorkspacePathspecs(paths []string) []string {
+	pathspecs := make([]string, 0, len(paths))
+	for _, path := range paths {
+		pathspecs = append(pathspecs, gitWorkspacePathspec(path))
+	}
+	return pathspecs
+}
+
+func gitWorkspacePathspec(path string) string {
+	return ":(literal)" + path
 }
 
 func temporaryGitIndex() (string, func(), error) {

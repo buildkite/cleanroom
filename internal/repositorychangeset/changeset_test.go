@@ -21,6 +21,15 @@ func TestBuildFromWorkingTree(t *testing.T) {
 	if err := os.Chmod(filepath.Join(repoDir, "new.txt"), 0o755); err != nil {
 		t.Fatalf("chmod new file: %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(repoDir, "A.txt"), []byte("decoy\n"), 0o755); err != nil {
+		t.Fatalf("write decoy file: %v", err)
+	}
+	if err := os.Chmod(filepath.Join(repoDir, "A.txt"), 0o755); err != nil {
+		t.Fatalf("chmod decoy file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "[AB].txt"), []byte("literal brackets\n"), 0o644); err != nil {
+		t.Fatalf("write bracket file: %v", err)
+	}
 
 	checkout := &repositorycheckout.Checkout{
 		RemoteURL:      "https://github.com/buildkite/cleanroom.git",
@@ -68,6 +77,12 @@ func TestBuildFromWorkingTree(t *testing.T) {
 	}
 	if got, want := modes["new.txt"], "100755"; got != want {
 		t.Fatalf("unexpected new.txt mode: got %q want %q", got, want)
+	}
+	if got, want := modes["A.txt"], "100755"; got != want {
+		t.Fatalf("unexpected A.txt mode: got %q want %q", got, want)
+	}
+	if got, want := modes["[AB].txt"], "100644"; got != want {
+		t.Fatalf("unexpected [AB].txt mode: got %q want %q", got, want)
 	}
 
 	again, err := BuildFromWorkingTree(repoDir, checkout)

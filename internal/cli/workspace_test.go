@@ -1395,6 +1395,65 @@ func TestWorkspaceCopyOutRejectsLocalModeDivergenceFromCopyInManifestBase(t *tes
 	assertWorkspaceCopyOutRecoveryPayload(t, fixture.sandboxID)
 }
 
+func TestWorkspaceCopyOutAppliesLiteralPathspecFromCopyInManifestBase(t *testing.T) {
+	fixture := setupWorkspaceCopyOutManifestBaseWithLocalMutate(t, func(localRoot string) {
+		if err := os.WriteFile(filepath.Join(localRoot, "A.txt"), []byte("decoy\n"), 0o755); err != nil {
+			t.Fatalf("write decoy file: %v", err)
+		}
+		if err := os.Chmod(filepath.Join(localRoot, "A.txt"), 0o755); err != nil {
+			t.Fatalf("chmod decoy file: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(localRoot, "[AB].txt"), []byte("local brackets\n"), 0o644); err != nil {
+			t.Fatalf("write bracket file: %v", err)
+		}
+	}, func(localRoot string) {
+		if err := os.WriteFile(filepath.Join(localRoot, "[AB].txt"), []byte("local brackets\nsandbox\n"), 0o644); err != nil {
+			t.Fatalf("write sandbox bracket file: %v", err)
+		}
+	})
+
+	stdout, stdoutText := makeStdoutCapture(t)
+	stderr, _ := makeStdoutCapture(t)
+	cmd := WorkspaceCopyOutCommand{
+		clientFlags: clientFlags{Host: fixture.host},
+		SandboxID:   fixture.sandboxID,
+	}
+	if err := cmd.Run(&runtimeContext{
+		CWD:           t.TempDir(),
+		Loader:        repositoryNotFoundLoader{},
+		Config:        runtimeconfig.Config{},
+		Observability: newTestObservability(t),
+		Stdout:        stdout,
+		Stderr:        stderr,
+	}); err != nil {
+		t.Fatalf("WorkspaceCopyOutCommand.Run returned error: %v", err)
+	}
+
+	bracketPath := filepath.Join(fixture.localRoot, "[AB].txt")
+	bracket, err := os.ReadFile(bracketPath)
+	if err != nil {
+		t.Fatalf("read bracket file: %v", err)
+	}
+	if got, want := string(bracket), "local brackets\nsandbox\n"; got != want {
+		t.Fatalf("unexpected bracket file content: got %q want %q", got, want)
+	}
+	decoyInfo, err := os.Stat(filepath.Join(fixture.localRoot, "A.txt"))
+	if err != nil {
+		t.Fatalf("stat decoy file: %v", err)
+	}
+	if got, want := decoyInfo.Mode().Perm(), os.FileMode(0o755); got != want {
+		t.Fatalf("copy-out should leave decoy mode unchanged: got %o want %o", got, want)
+	}
+	expected := strings.Join([]string{
+		"write\t" + filepath.Join(fixture.resolvedLocalRoot, "[AB].txt"),
+		"",
+	}, "\n")
+	if got := stdoutText(); got != expected {
+		t.Fatalf("unexpected copy-out output: got %q want %q", got, expected)
+	}
+	assertWorkspaceCopyOutRecoveryPayload(t, fixture.sandboxID)
+}
+
 func TestWorkspaceCopyOutRejectsStagedDivergenceFromCopyInManifestBase(t *testing.T) {
 	fixture := setupWorkspaceCopyOutManifestBase(t, func(localRoot string) {
 		if err := os.WriteFile(filepath.Join(localRoot, "README.md"), []byte("local\nsandbox\n"), 0o644); err != nil {
@@ -2336,6 +2395,11 @@ type workspaceCopyOutManifestFixture struct {
 
 func setupWorkspaceCopyOutManifestBase(t *testing.T, sandboxMutate func(string)) workspaceCopyOutManifestFixture {
 	t.Helper()
+	return setupWorkspaceCopyOutManifestBaseWithLocalMutate(t, nil, sandboxMutate)
+}
+
+func setupWorkspaceCopyOutManifestBaseWithLocalMutate(t *testing.T, localMutate, sandboxMutate func(string)) workspaceCopyOutManifestFixture {
+	t.Helper()
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	localRoot := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
 	resolvedLocalRoot, err := gitOutput(localRoot, "rev-parse", "--show-toplevel")
@@ -2355,6 +2419,9 @@ func setupWorkspaceCopyOutManifestBase(t *testing.T, sandboxMutate func(string))
 	}
 	if err := os.WriteFile(filepath.Join(localRoot, "local.txt"), []byte("local only\n"), 0o644); err != nil {
 		t.Fatalf("write local-only file: %v", err)
+	}
+	if localMutate != nil {
+		localMutate(localRoot)
 	}
 	runGitInDir(t, localRoot, "add", "-A")
 	runGitInDir(t, localRoot, "commit", "-m", "local copy-in state")
