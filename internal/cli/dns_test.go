@@ -54,6 +54,11 @@ func TestDNSInstallTrustsLeafCertificateInInvokingUserKeychain(t *testing.T) {
 	resolverPath := filepath.Join(t.TempDir(), "resolver", exposure.Domain)
 	var calls [][]string
 	stubDNSInstallEnvironment(t, home, resolverPath, &calls)
+	var chownPaths []string
+	dnsInstallChown = func(path string, _, _ int) error {
+		chownPaths = append(chownPaths, path)
+		return nil
+	}
 
 	stdout, _ := makeStdoutCapture(t)
 	cmd := &DNSCommand{Action: "install"}
@@ -91,6 +96,17 @@ func TestDNSInstallTrustsLeafCertificateInInvokingUserKeychain(t *testing.T) {
 	}
 	if strings.Contains(strings.Join(calls[0], " "), "System.keychain") {
 		t.Fatalf("did not expect install to trust the system keychain: %v", calls[0])
+	}
+
+	wantChownPaths := []string{
+		filepath.Join(home, ".config"),
+		filepath.Join(home, ".config", "cleanroom"),
+		filepath.Join(home, ".config", "cleanroom", "tls"),
+		certPath,
+		filepath.Join(home, ".config", "cleanroom", "tls", exposure.LocalCertificateKeyFilename),
+	}
+	if !reflect.DeepEqual(chownPaths, wantChownPaths) {
+		t.Fatalf("unexpected chown paths: got %v want %v", chownPaths, wantChownPaths)
 	}
 }
 

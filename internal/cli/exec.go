@@ -176,6 +176,14 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 			return err
 		}
 	}
+	detached := false
+	autoTerminateSandbox := createdSandbox && !e.Keep
+	defer func() {
+		if detached || !autoTerminateSandbox || sandboxID == "" {
+			return
+		}
+		terminateSandboxBestEffort(rootCtx, client, sandboxID, 0, logger, "terminate sandbox after exec failed")
+	}()
 	exposureManager, exposed, err := startClientExposures(rootCtx, client, sandboxID, exposures)
 	if err != nil {
 		return err
@@ -186,14 +194,6 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 			return err
 		}
 	}
-	detached := false
-	autoTerminateSandbox := createdSandbox && !e.Keep
-	defer func() {
-		if detached || !autoTerminateSandbox || sandboxID == "" {
-			return
-		}
-		terminateSandboxBestEffort(rootCtx, client, sandboxID, 0, logger, "terminate sandbox after exec failed")
-	}()
 	if e.TTY {
 		interactiveResult, err := runInteractiveExecution(
 			rootCtx,

@@ -333,6 +333,8 @@ func chownExposureTLSMaterial(dir string) error {
 		return fmt.Errorf("parse SUDO_GID: %w", err)
 	}
 	for _, path := range []string{
+		filepath.Dir(filepath.Dir(dir)),
+		filepath.Dir(dir),
 		dir,
 		filepath.Join(dir, exposure.LocalCertificateFilename),
 		filepath.Join(dir, exposure.LocalCertificateKeyFilename),
