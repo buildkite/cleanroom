@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -826,6 +827,314 @@ func TestWorkspaceCopyOutDryRunReportsSandboxGitPlan(t *testing.T) {
 	}
 }
 
+func TestWorkspaceCopyOutAppliesSandboxGitPatch(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	localRoot := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
+	if err := os.WriteFile(filepath.Join(localRoot, "removed.txt"), []byte("remove me\n"), 0o644); err != nil {
+		t.Fatalf("write removed file: %v", err)
+	}
+	runGitInDir(t, localRoot, "add", "removed.txt")
+	runGitInDir(t, localRoot, "commit", "-m", "add removed file")
+	baseCommit := headCommit(t, localRoot)
+
+	if err := os.WriteFile(filepath.Join(localRoot, "README.md"), []byte("sandbox\n"), 0o644); err != nil {
+		t.Fatalf("write sandbox readme: %v", err)
+	}
+	if err := os.Remove(filepath.Join(localRoot, "removed.txt")); err != nil {
+		t.Fatalf("remove sandbox file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(localRoot, "new.txt"), []byte("new\n"), 0o644); err != nil {
+		t.Fatalf("write sandbox new file: %v", err)
+	}
+	runGitInDir(t, localRoot, "add", "-A")
+	nameStatus := gitOutputBytes(t, localRoot, "diff", "--cached", "--name-status", "--no-renames", "-z", baseCommit)
+	patch := gitOutputBytes(t, localRoot, "diff", "--cached", "--binary", "--full-index", "--no-ext-diff", "--no-color", "--no-renames", baseCommit)
+	runGitInDir(t, localRoot, "reset", "--hard", baseCommit)
+	runGitInDir(t, localRoot, "clean", "-fd")
+	resolvedLocalRoot, err := gitOutput(localRoot, "rev-parse", "--show-toplevel")
+	if err != nil {
+		t.Fatalf("resolve local repository root: %v", err)
+	}
+
+	adapter := &integrationAdapter{}
+	host, _ := startIntegrationServer(t, adapter)
+	sandboxID := createWorkspaceCopyTestSandboxWithRepositoryCommitBranch(t, host, "/sandbox-workspace", baseCommit, "main")
+
+	var (
+		mu       sync.Mutex
+		commands [][]string
+	)
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+		mu.Lock()
+		commands = append(commands, append([]string(nil), req.Command...))
+		mu.Unlock()
+		command := strings.Join(req.Command, " ")
+		switch {
+		case strings.Contains(command, "cleanroom-copy-out-v1"):
+			if stream.OnStdout != nil {
+				stream.OnStdout(workspaceCopyOutTestPayload(nameStatus, patch))
+			}
+		default:
+			t.Fatalf("unexpected workspace copy-out command: %q", command)
+		}
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+	}
+
+	stdout, stdoutText := makeStdoutCapture(t)
+	stderr, _ := makeStdoutCapture(t)
+	cmd := WorkspaceCopyOutCommand{
+		clientFlags: clientFlags{Host: host},
+		Chdir:       localRoot,
+		SandboxID:   sandboxID,
+	}
+	if err := cmd.Run(&runtimeContext{
+		CWD:           localRoot,
+		Loader:        repositoryNotFoundLoader{},
+		Config:        runtimeconfig.Config{},
+		Observability: newTestObservability(t),
+		Stdout:        stdout,
+		Stderr:        stderr,
+	}); err != nil {
+		t.Fatalf("WorkspaceCopyOutCommand.Run returned error: %v", err)
+	}
+
+	readme, err := os.ReadFile(filepath.Join(localRoot, "README.md"))
+	if err != nil {
+		t.Fatalf("read README: %v", err)
+	}
+	if got, want := string(readme), "sandbox\n"; got != want {
+		t.Fatalf("unexpected README content: got %q want %q", got, want)
+	}
+	newFile, err := os.ReadFile(filepath.Join(localRoot, "new.txt"))
+	if err != nil {
+		t.Fatalf("read new file: %v", err)
+	}
+	if got, want := string(newFile), "new\n"; got != want {
+		t.Fatalf("unexpected new file content: got %q want %q", got, want)
+	}
+	if _, err := os.Stat(filepath.Join(localRoot, "removed.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected removed file to be deleted, got err %v", err)
+	}
+
+	expected := strings.Join([]string{
+		"delete\t" + filepath.Join(resolvedLocalRoot, "removed.txt"),
+		"write\t" + filepath.Join(resolvedLocalRoot, "README.md"),
+		"write\t" + filepath.Join(resolvedLocalRoot, "new.txt"),
+		"",
+	}, "\n")
+	if got := stdoutText(); got != expected {
+		t.Fatalf("unexpected copy-out output: got %q want %q", got, expected)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(commands) != 1 {
+		t.Fatalf("expected one combined copy-out execution, got %d", len(commands))
+	}
+	assertWorkspaceCopyOutRecoveryPayload(t, sandboxID)
+}
+
+func TestWorkspaceCopyOutRejectsLocalDivergence(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	localRoot := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
+	baseCommit := headCommit(t, localRoot)
+
+	if err := os.WriteFile(filepath.Join(localRoot, "README.md"), []byte("sandbox\n"), 0o644); err != nil {
+		t.Fatalf("write sandbox readme: %v", err)
+	}
+	runGitInDir(t, localRoot, "add", "README.md")
+	nameStatus := gitOutputBytes(t, localRoot, "diff", "--cached", "--name-status", "--no-renames", "-z", baseCommit)
+	patch := gitOutputBytes(t, localRoot, "diff", "--cached", "--binary", "--full-index", "--no-ext-diff", "--no-color", "--no-renames", baseCommit)
+	runGitInDir(t, localRoot, "reset", "--hard", baseCommit)
+	if err := os.WriteFile(filepath.Join(localRoot, "README.md"), []byte("local\n"), 0o644); err != nil {
+		t.Fatalf("write local readme: %v", err)
+	}
+
+	adapter := &integrationAdapter{}
+	host, _ := startIntegrationServer(t, adapter)
+	sandboxID := createWorkspaceCopyTestSandboxWithRepositoryCommitBranch(t, host, "/sandbox-workspace", baseCommit, "main")
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+		command := strings.Join(req.Command, " ")
+		switch {
+		case strings.Contains(command, "cleanroom-copy-out-v1"):
+			if stream.OnStdout != nil {
+				stream.OnStdout(workspaceCopyOutTestPayload(nameStatus, patch))
+			}
+		default:
+			t.Fatalf("unexpected workspace copy-out command: %q", command)
+		}
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+	}
+
+	stdout, _ := makeStdoutCapture(t)
+	stderr, _ := makeStdoutCapture(t)
+	cmd := WorkspaceCopyOutCommand{
+		clientFlags: clientFlags{Host: host},
+		Chdir:       localRoot,
+		SandboxID:   sandboxID,
+	}
+	err := cmd.Run(&runtimeContext{
+		CWD:           localRoot,
+		Loader:        repositoryNotFoundLoader{},
+		Config:        runtimeconfig.Config{},
+		Observability: newTestObservability(t),
+		Stdout:        stdout,
+		Stderr:        stderr,
+	})
+	if err == nil {
+		t.Fatal("expected local divergence to be rejected")
+	}
+	if !strings.Contains(err.Error(), `local workspace path "README.md" changed independently`) {
+		t.Fatalf("expected local path divergence error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "sandbox changes saved to") {
+		t.Fatalf("expected recovery payload path in error, got %v", err)
+	}
+	readme, err := os.ReadFile(filepath.Join(localRoot, "README.md"))
+	if err != nil {
+		t.Fatalf("read README: %v", err)
+	}
+	if got, want := string(readme), "local\n"; got != want {
+		t.Fatalf("copy-out should not overwrite divergent local file: got %q want %q", got, want)
+	}
+	assertWorkspaceCopyOutRecoveryPayload(t, sandboxID)
+}
+
+func TestWorkspaceCopyOutRejectsIgnoredLocalTarget(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	localRoot := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
+	if err := os.WriteFile(filepath.Join(localRoot, ".gitignore"), []byte("ignored/\n"), 0o644); err != nil {
+		t.Fatalf("write gitignore: %v", err)
+	}
+	runGitInDir(t, localRoot, "add", ".gitignore")
+	runGitInDir(t, localRoot, "commit", "-m", "ignore output")
+	baseCommit := headCommit(t, localRoot)
+
+	if err := os.MkdirAll(filepath.Join(localRoot, "ignored"), 0o755); err != nil {
+		t.Fatalf("create ignored dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(localRoot, "ignored", "output.txt"), []byte("sandbox\n"), 0o644); err != nil {
+		t.Fatalf("write sandbox ignored output: %v", err)
+	}
+	runGitInDir(t, localRoot, "add", "-f", "ignored/output.txt")
+	nameStatus := gitOutputBytes(t, localRoot, "diff", "--cached", "--name-status", "--no-renames", "-z", baseCommit)
+	patch := gitOutputBytes(t, localRoot, "diff", "--cached", "--binary", "--full-index", "--no-ext-diff", "--no-color", "--no-renames", baseCommit)
+	runGitInDir(t, localRoot, "reset", "--hard", baseCommit)
+	if err := os.MkdirAll(filepath.Join(localRoot, "ignored"), 0o755); err != nil {
+		t.Fatalf("recreate ignored dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(localRoot, "ignored", "output.txt"), []byte("local ignored\n"), 0o644); err != nil {
+		t.Fatalf("write local ignored output: %v", err)
+	}
+
+	adapter := &integrationAdapter{}
+	host, _ := startIntegrationServer(t, adapter)
+	sandboxID := createWorkspaceCopyTestSandboxWithRepositoryCommitBranch(t, host, "/sandbox-workspace", baseCommit, "main")
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+		command := strings.Join(req.Command, " ")
+		switch {
+		case strings.Contains(command, "cleanroom-copy-out-v1"):
+			if stream.OnStdout != nil {
+				stream.OnStdout(workspaceCopyOutTestPayload(nameStatus, patch))
+			}
+		default:
+			t.Fatalf("unexpected workspace copy-out command: %q", command)
+		}
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+	}
+
+	stdout, _ := makeStdoutCapture(t)
+	stderr, _ := makeStdoutCapture(t)
+	cmd := WorkspaceCopyOutCommand{
+		clientFlags: clientFlags{Host: host},
+		Chdir:       localRoot,
+		SandboxID:   sandboxID,
+	}
+	err := cmd.Run(&runtimeContext{
+		CWD:           localRoot,
+		Loader:        repositoryNotFoundLoader{},
+		Config:        runtimeconfig.Config{},
+		Observability: newTestObservability(t),
+		Stdout:        stdout,
+		Stderr:        stderr,
+	})
+	if err == nil {
+		t.Fatal("expected ignored local target to be rejected")
+	}
+	if !strings.Contains(err.Error(), `local workspace path "ignored/output.txt" exists outside sandbox baseline`) {
+		t.Fatalf("expected ignored local path conflict, got %v", err)
+	}
+	output, err := os.ReadFile(filepath.Join(localRoot, "ignored", "output.txt"))
+	if err != nil {
+		t.Fatalf("read ignored output: %v", err)
+	}
+	if got, want := string(output), "local ignored\n"; got != want {
+		t.Fatalf("copy-out should not overwrite ignored local file: got %q want %q", got, want)
+	}
+	assertWorkspaceCopyOutRecoveryPayload(t, sandboxID)
+}
+
+func TestWorkspaceCopyOutRejectsBaselineMismatch(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	localRoot := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
+	baseCommit := headCommit(t, localRoot)
+
+	if err := os.WriteFile(filepath.Join(localRoot, "README.md"), []byte("sandbox\n"), 0o644); err != nil {
+		t.Fatalf("write sandbox readme: %v", err)
+	}
+	runGitInDir(t, localRoot, "add", "README.md")
+	nameStatus := gitOutputBytes(t, localRoot, "diff", "--cached", "--name-status", "--no-renames", "-z", baseCommit)
+	patch := gitOutputBytes(t, localRoot, "diff", "--cached", "--binary", "--full-index", "--no-ext-diff", "--no-color", "--no-renames", baseCommit)
+	runGitInDir(t, localRoot, "reset", "--hard", baseCommit)
+	if err := os.WriteFile(filepath.Join(localRoot, "local.txt"), []byte("local commit\n"), 0o644); err != nil {
+		t.Fatalf("write local commit file: %v", err)
+	}
+	runGitInDir(t, localRoot, "add", "local.txt")
+	runGitInDir(t, localRoot, "commit", "-m", "local commit")
+
+	adapter := &integrationAdapter{}
+	host, _ := startIntegrationServer(t, adapter)
+	sandboxID := createWorkspaceCopyTestSandboxWithRepositoryCommitBranch(t, host, "/sandbox-workspace", baseCommit, "main")
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+		command := strings.Join(req.Command, " ")
+		switch {
+		case strings.Contains(command, "cleanroom-copy-out-v1"):
+			if stream.OnStdout != nil {
+				stream.OnStdout(workspaceCopyOutTestPayload(nameStatus, patch))
+			}
+		default:
+			t.Fatalf("unexpected workspace copy-out command: %q", command)
+		}
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+	}
+
+	stdout, _ := makeStdoutCapture(t)
+	stderr, _ := makeStdoutCapture(t)
+	cmd := WorkspaceCopyOutCommand{
+		clientFlags: clientFlags{Host: host},
+		Chdir:       localRoot,
+		SandboxID:   sandboxID,
+	}
+	err := cmd.Run(&runtimeContext{
+		CWD:           localRoot,
+		Loader:        repositoryNotFoundLoader{},
+		Config:        runtimeconfig.Config{},
+		Observability: newTestObservability(t),
+		Stdout:        stdout,
+		Stderr:        stderr,
+	})
+	if err == nil {
+		t.Fatal("expected baseline mismatch to be rejected")
+	}
+	if !strings.Contains(err.Error(), "requires local checkout HEAD") {
+		t.Fatalf("expected baseline mismatch error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "sandbox changes saved to") {
+		t.Fatalf("expected recovery payload path in error, got %v", err)
+	}
+	assertWorkspaceCopyOutRecoveryPayload(t, sandboxID)
+}
+
 func TestWorkspaceCopyOutPlanRejectsWindowsDrivePaths(t *testing.T) {
 	for _, rel := range []string{
 		"C:/tmp.txt",
@@ -856,6 +1165,24 @@ func TestWorkspaceCopyOutPlanAllowsRelativeColonPaths(t *testing.T) {
 	}
 	if !reflect.DeepEqual(entries, expected) {
 		t.Fatalf("unexpected copy-out plan: got %+v want %+v", entries, expected)
+	}
+}
+
+func TestParseGitWorkspaceCopyOutPayload(t *testing.T) {
+	nameStatus := []byte("M\x00changed.txt\x00")
+	patch := []byte("diff --git a/changed.txt b/changed.txt\n")
+	gotNameStatus, gotPatch, err := parseGitWorkspaceCopyOutPayload(workspaceCopyOutTestPayload(nameStatus, patch))
+	if err != nil {
+		t.Fatalf("parseGitWorkspaceCopyOutPayload returned error: %v", err)
+	}
+	if !bytes.Equal(gotNameStatus, nameStatus) {
+		t.Fatalf("unexpected name-status payload: got %q want %q", gotNameStatus, nameStatus)
+	}
+	if !bytes.Equal(gotPatch, patch) {
+		t.Fatalf("unexpected patch payload: got %q want %q", gotPatch, patch)
+	}
+	if _, _, err := parseGitWorkspaceCopyOutPayload([]byte("cleanroom-copy-out-v1 1 1\nabc")); err == nil {
+		t.Fatal("expected trailing payload data to be rejected")
 	}
 }
 
@@ -1485,6 +1812,53 @@ func workspaceCopyRepositoryLoader() repositoryIntegrationLoader {
 			Path:   "/workspace",
 		},
 	}
+}
+
+func assertWorkspaceCopyOutRecoveryPayload(t *testing.T, sandboxID string) {
+	t.Helper()
+	recoveryRoot := filepath.Join(os.Getenv("XDG_STATE_HOME"), "cleanroom", "workspace-copy-out")
+	entries, err := os.ReadDir(recoveryRoot)
+	if err != nil {
+		t.Fatalf("read workspace copy-out recovery root: %v", err)
+	}
+	prefix := safeWorkspaceStateName(sandboxID) + "-"
+	var matches []os.DirEntry
+	for _, entry := range entries {
+		if entry.IsDir() && strings.HasPrefix(entry.Name(), prefix) {
+			matches = append(matches, entry)
+		}
+	}
+	if len(matches) != 1 {
+		t.Fatalf("expected one recovery payload for %q, got %d", sandboxID, len(matches))
+	}
+	payloadDir := filepath.Join(recoveryRoot, matches[0].Name())
+	for _, name := range []string{"changes.patch", "manifest.json"} {
+		info, err := os.Stat(filepath.Join(payloadDir, name))
+		if err != nil {
+			t.Fatalf("expected recovery payload %s: %v", name, err)
+		}
+		if info.Size() == 0 {
+			t.Fatalf("expected non-empty recovery payload %s", name)
+		}
+	}
+}
+
+func gitOutputBytes(t *testing.T, dir string, args ...string) []byte {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v failed: %v\n%s", args, err, string(out))
+	}
+	return out
+}
+
+func workspaceCopyOutTestPayload(nameStatus, patch []byte) []byte {
+	payload := []byte(fmt.Sprintf("cleanroom-copy-out-v1 %d %d\n", len(nameStatus), len(patch)))
+	payload = append(payload, nameStatus...)
+	payload = append(payload, patch...)
+	return payload
 }
 
 func runGitInDir(t *testing.T, dir string, args ...string) {

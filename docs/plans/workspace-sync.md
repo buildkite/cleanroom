@@ -3,17 +3,21 @@
 **Spec reference:** `spec.md` sections 5.1.1, 5.4, 5.4.2
 **Related plan:** `docs/plans/sandbox-transfer-invariants.md`
 **Status:** In progress
-**Last reviewed:** 2026-05-02
+**Last reviewed:** 2026-05-03
 
 ## Implementation Status
 
 - Phase 1 copy-in support landed in PR #251.
-- This changeset should land the read-only Phase 2 foundation:
+- PR #272 landed the read-only Phase 2 foundation:
   Git-backed `workspace diff`, Git-backed `workspace copy-out --dry-run`,
   sandbox-root resolution from the recorded repository checkout, and local-root
   safety that requires a matching local Git checkout before copy-out planning.
-- Local copy-out writes, local binding metadata, recoverable copy-out payloads,
-  top-level `--copy-out`, and `--sync` remain follow-up work.
+- This changeset should land the first write-capable Phase 2 slice: Git-backed
+  `workspace copy-out` applies sandbox changes to the matching local checkout,
+  saves a recoverable patch and manifest before applying, refuses local baseline
+  mismatches, and refuses target paths that changed independently.
+- Local binding metadata, non-Git/raw copy-out writes, top-level `--copy-out`,
+  and `--sync` remain follow-up work.
 
 ## Summary
 
@@ -220,6 +224,11 @@ checkout?" This is intentionally different from `workspace diff`.
 If local files diverged while the cleanroom was running, copy-out should fail
 closed and name the conflicting paths. A later conflict override can be added
 from concrete usage, but the initial copy-out path should be conflict-safe.
+
+The first write-capable implementation is Git-backed only. Until local binding
+metadata lands, unbound copy-out writes require the local checkout `HEAD` to
+match the sandbox's recorded repository baseline. If it does not match, the
+command saves the sandbox patch in Cleanroom state and refuses to write.
 
 ### `cleanroom workspace diff`
 
@@ -621,17 +630,17 @@ Status: landed.
 
 ### Phase 2: Workspace copy-out and diff
 
-- Add `cleanroom workspace copy-out --dry-run`.
-- Add `cleanroom workspace copy-out`.
-- Add `cleanroom workspace diff`.
-- Resolve the sandbox workspace root from `repository.path`, defaulting to
-  `/workspace`.
-- Add copy-out tests proving ignored cleanroom outputs are not written back to
-  the local checkout by default.
-- Add copy-out tests proving local divergence fails closed with no force or
-  overwrite mode.
-- Add copy-out tests proving an unbound copy-out refuses to write unless the
-  current working tree matches the sandbox repository identity.
+- PR #272: add `cleanroom workspace copy-out --dry-run`.
+- This changeset: add Git-backed `cleanroom workspace copy-out` writes.
+- PR #272: add `cleanroom workspace diff`.
+- PR #272: resolve the sandbox workspace root from `repository.path`, defaulting
+  to `/workspace`.
+- Covered by repository changeset tests: ignored cleanroom outputs are not
+  included in Git-backed copy-out candidates by default.
+- This changeset: add copy-out tests proving local divergence fails closed with
+  no force or overwrite mode.
+- This changeset: add copy-out tests proving an unbound copy-out refuses to
+  write unless the current working tree matches the sandbox repository baseline.
 - Require explicit sandbox IDs or support `--last` consistently with existing
   inspect commands.
 - Store local binding metadata in client-side Cleanroom state.

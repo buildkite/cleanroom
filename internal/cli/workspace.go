@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,10 +13,13 @@ import (
 	posixpath "path"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/buildkite/cleanroom/internal/controlclient"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
+	"github.com/buildkite/cleanroom/internal/paths"
 	"github.com/buildkite/cleanroom/internal/repositorychangeset"
 	"github.com/buildkite/cleanroom/internal/repositorycheckout"
 )
@@ -60,6 +64,27 @@ type workspacePlanEntry struct {
 	Path   string
 }
 
+type workspaceCopyOutRecoveryPayload struct {
+	Directory string
+	PatchPath string
+}
+
+type workspaceCopyOutRecoveryManifest struct {
+	CreatedAt         string                         `json:"created_at"`
+	SandboxID         string                         `json:"sandbox_id"`
+	LocalRoot         string                         `json:"local_root"`
+	SandboxRemoteURL  string                         `json:"sandbox_remote_url"`
+	SandboxCommitSHA  string                         `json:"sandbox_commit_sha"`
+	SandboxBranch     string                         `json:"sandbox_branch,omitempty"`
+	SandboxWorkspace  string                         `json:"sandbox_workspace"`
+	CandidateWorktree []workspaceCopyOutRecoveryFile `json:"candidate_worktree"`
+}
+
+type workspaceCopyOutRecoveryFile struct {
+	Action string `json:"action"`
+	Path   string `json:"path"`
+}
+
 func (c *WorkspaceCopyInCommand) Run(ctx *runtimeContext) error {
 	cwd, err := resolveCWD(ctx.CWD, c.Chdir)
 	if err != nil {
@@ -87,9 +112,6 @@ func (c *WorkspaceCopyOutCommand) Run(ctx *runtimeContext) error {
 	if err != nil {
 		return err
 	}
-	if !c.DryRun {
-		return errors.New("workspace copy-out writes are not implemented yet; use --dry-run to preview sandbox changes")
-	}
 	repository, err := resolveWorkspaceCopyRepositoryCheckout(cwd, ctx.Loader)
 	if err != nil {
 		return err
@@ -102,10 +124,10 @@ func (c *WorkspaceCopyOutCommand) Run(ctx *runtimeContext) error {
 	if err != nil {
 		return err
 	}
-	return previewWorkspaceCopyOut(context.Background(), ctx, client, workspaceCopyOptions{
+	return copyWorkspaceOut(context.Background(), ctx, client, workspaceCopyOptions{
 		CWD:        localRoot,
 		SandboxID:  c.SandboxID,
-		DryRun:     true,
+		DryRun:     c.DryRun,
 		Repository: repository,
 	})
 }
@@ -169,7 +191,7 @@ func copyGitWorkspaceToSandbox(callCtx context.Context, ctx *runtimeContext, cli
 	return runWorkspaceExecution(callCtx, ctx, client, opts.SandboxID, effectiveRepository, command, bytes.NewReader(changeset.Patch), opts.LaunchSeconds)
 }
 
-func previewWorkspaceCopyOut(callCtx context.Context, ctx *runtimeContext, client *controlclient.Client, opts workspaceCopyOptions) error {
+func copyWorkspaceOut(callCtx context.Context, ctx *runtimeContext, client *controlclient.Client, opts workspaceCopyOptions) error {
 	if strings.TrimSpace(opts.SandboxID) == "" {
 		return errors.New("missing sandbox id")
 	}
@@ -183,19 +205,65 @@ func previewWorkspaceCopyOut(callCtx context.Context, ctx *runtimeContext, clien
 	if err := validateWorkspaceCopyOutLocalRepository(opts.Repository, checkout); err != nil {
 		return err
 	}
-	command := repositorychangeset.WorktreeNameStatusCommand(checkout)
+	if opts.DryRun {
+		command := repositorychangeset.WorktreeNameStatusCommand(checkout)
+		if len(command) == 0 {
+			return errors.New("sandbox repository checkout is missing the information needed to plan workspace copy-out")
+		}
+		output, err := runWorkspaceExecutionCapture(callCtx, ctx, client, opts.SandboxID, command, opts.LaunchSeconds)
+		if err != nil {
+			return err
+		}
+		files, err := parseGitNameStatusWorkspaceFiles(output)
+		if err != nil {
+			return err
+		}
+		entries, err := gitWorkspaceCopyOutPlanFiles(opts.CWD, files)
+		if err != nil {
+			return err
+		}
+		return printWorkspacePlan(runtimeStdout(ctx), entries)
+	}
+
+	command := repositorychangeset.WorktreeCopyOutCommand(checkout)
 	if len(command) == 0 {
-		return errors.New("sandbox repository checkout is missing the information needed to plan workspace copy-out")
+		return errors.New("sandbox repository checkout is missing the information needed to copy workspace changes out")
 	}
 	output, err := runWorkspaceExecutionCapture(callCtx, ctx, client, opts.SandboxID, command, opts.LaunchSeconds)
 	if err != nil {
 		return err
 	}
-	entries, err := gitWorkspaceCopyOutPlan(opts.CWD, output)
+	nameStatus, patch, err := parseGitWorkspaceCopyOutPayload(output)
 	if err != nil {
 		return err
 	}
+	files, err := parseGitNameStatusWorkspaceFiles(nameStatus)
+	if err != nil {
+		return err
+	}
+	entries, err := gitWorkspaceCopyOutPlanFiles(opts.CWD, files)
+	if err != nil {
+		return err
+	}
+	if len(files) == 0 {
+		return nil
+	}
+	recovery, err := writeWorkspaceCopyOutRecoveryPayload(opts, checkout, files, patch)
+	if err != nil {
+		return err
+	}
+	if err := ensureGitWorkspaceCopyOutSafe(opts.Repository, checkout, files); err != nil {
+		return fmt.Errorf("%w; sandbox changes saved to %s", err, recovery.Directory)
+	}
+	if err := applyGitWorkspaceCopyOutPatch(opts.Repository.RootDir, recovery.PatchPath); err != nil {
+		return fmt.Errorf("%w; sandbox changes saved to %s", err, recovery.Directory)
+	}
 	return printWorkspacePlan(runtimeStdout(ctx), entries)
+}
+
+func previewWorkspaceCopyOut(callCtx context.Context, ctx *runtimeContext, client *controlclient.Client, opts workspaceCopyOptions) error {
+	opts.DryRun = true
+	return copyWorkspaceOut(callCtx, ctx, client, opts)
 }
 
 func diffWorkspaceInSandbox(callCtx context.Context, ctx *runtimeContext, client *controlclient.Client, opts workspaceCopyOptions) error {
@@ -244,6 +312,180 @@ func validateWorkspaceCopyOutLocalRepository(local *resolvedRepositoryCheckout, 
 		return fmt.Errorf("workspace copy-out local repository remote %q does not match sandbox repository remote %q", localRemote, sandboxRemote)
 	}
 	return nil
+}
+
+func ensureGitWorkspaceCopyOutSafe(local *resolvedRepositoryCheckout, checkout *repositorycheckout.Checkout, files []repositorychangeset.File) error {
+	if local == nil || strings.TrimSpace(local.RootDir) == "" {
+		return errors.New("workspace copy-out requires a local Git repository checkout matching the sandbox repository")
+	}
+	localCommit := strings.TrimSpace(local.CommitSHA)
+	sandboxCommit := ""
+	if checkout != nil {
+		sandboxCommit = strings.TrimSpace(checkout.CommitSHA)
+	}
+	if localCommit == "" || sandboxCommit == "" {
+		return errors.New("workspace copy-out requires local and sandbox repository commits")
+	}
+	if !strings.EqualFold(localCommit, sandboxCommit) {
+		return fmt.Errorf("workspace copy-out requires local checkout HEAD %s to match sandbox baseline %s", shortGitSHA(localCommit), shortGitSHA(sandboxCommit))
+	}
+	for _, file := range files {
+		if err := ensureGitWorkspaceCopyOutPathSafe(local.RootDir, sandboxCommit, file.Path); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func ensureGitWorkspaceCopyOutPathSafe(localRoot, baseCommit, rel string) error {
+	normalized, err := workspaceRelativePath(rel)
+	if err != nil {
+		return err
+	}
+	status, err := gitOutput(localRoot, "status", "--porcelain", "--", normalized)
+	if err != nil {
+		return fmt.Errorf("inspect local workspace path %q: %w", normalized, err)
+	}
+	if strings.TrimSpace(status) != "" {
+		return fmt.Errorf("local workspace path %q changed independently; refusing workspace copy-out", normalized)
+	}
+	existsInBaseline, err := gitPathExistsInCommit(localRoot, baseCommit, normalized)
+	if err != nil {
+		return err
+	}
+	if existsInBaseline {
+		return nil
+	}
+	localPath, err := workspaceLocalPath(localRoot, normalized)
+	if err != nil {
+		return err
+	}
+	if _, err := os.Lstat(localPath); err == nil {
+		return fmt.Errorf("local workspace path %q exists outside sandbox baseline; refusing workspace copy-out", normalized)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect local workspace path %q: %w", normalized, err)
+	}
+	return nil
+}
+
+func gitPathExistsInCommit(localRoot, commit, rel string) (bool, error) {
+	output, err := gitOutput(localRoot, "ls-tree", "--name-only", "-z", commit, "--", rel)
+	if err != nil {
+		return false, fmt.Errorf("inspect sandbox baseline path %q: %w", rel, err)
+	}
+	return strings.Trim(output, "\x00 \n\r\t") != "", nil
+}
+
+func applyGitWorkspaceCopyOutPatch(localRoot, patchPath string) error {
+	if strings.TrimSpace(localRoot) == "" {
+		return errors.New("missing local workspace root")
+	}
+	if strings.TrimSpace(patchPath) == "" {
+		return errors.New("missing workspace copy-out patch")
+	}
+	if _, err := gitOutput(localRoot, "apply", "--binary", "--whitespace=nowarn", patchPath); err != nil {
+		return fmt.Errorf("apply workspace copy-out patch: %w", err)
+	}
+	return nil
+}
+
+func writeWorkspaceCopyOutRecoveryPayload(opts workspaceCopyOptions, checkout *repositorycheckout.Checkout, files []repositorychangeset.File, patch []byte) (*workspaceCopyOutRecoveryPayload, error) {
+	base, err := paths.StateBaseDir()
+	if err != nil {
+		return nil, fmt.Errorf("resolve workspace copy-out state directory: %w", err)
+	}
+	recoveryRoot := filepath.Join(base, "workspace-copy-out")
+	if err := os.MkdirAll(recoveryRoot, 0o700); err != nil {
+		return nil, fmt.Errorf("create workspace copy-out state directory: %w", err)
+	}
+	payloadDir, err := os.MkdirTemp(recoveryRoot, safeWorkspaceStateName(opts.SandboxID)+"-")
+	if err != nil {
+		return nil, fmt.Errorf("create workspace copy-out recovery payload: %w", err)
+	}
+	patchPath := filepath.Join(payloadDir, "changes.patch")
+	if err := os.WriteFile(patchPath, patch, 0o600); err != nil {
+		return nil, fmt.Errorf("write workspace copy-out recovery patch: %w", err)
+	}
+	manifest := workspaceCopyOutRecoveryManifest{
+		CreatedAt:         time.Now().UTC().Format(time.RFC3339Nano),
+		SandboxID:         strings.TrimSpace(opts.SandboxID),
+		LocalRoot:         strings.TrimSpace(opts.CWD),
+		CandidateWorktree: workspaceCopyOutRecoveryFiles(files),
+	}
+	if checkout != nil {
+		manifest.SandboxRemoteURL = strings.TrimSpace(checkout.RemoteURL)
+		manifest.SandboxCommitSHA = strings.TrimSpace(checkout.CommitSHA)
+		manifest.SandboxBranch = strings.TrimSpace(checkout.Branch)
+		manifest.SandboxWorkspace = strings.TrimSpace(checkout.DestinationDir)
+	}
+	data, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("encode workspace copy-out recovery manifest: %w", err)
+	}
+	data = append(data, '\n')
+	if err := os.WriteFile(filepath.Join(payloadDir, "manifest.json"), data, 0o600); err != nil {
+		return nil, fmt.Errorf("write workspace copy-out recovery manifest: %w", err)
+	}
+	return &workspaceCopyOutRecoveryPayload{
+		Directory: payloadDir,
+		PatchPath: patchPath,
+	}, nil
+}
+
+func workspaceCopyOutRecoveryFiles(files []repositorychangeset.File) []workspaceCopyOutRecoveryFile {
+	recoveryFiles := make([]workspaceCopyOutRecoveryFile, 0, len(files))
+	for _, file := range files {
+		action := "write"
+		if file.Deleted {
+			action = "delete"
+		}
+		recoveryFiles = append(recoveryFiles, workspaceCopyOutRecoveryFile{
+			Action: action,
+			Path:   file.Path,
+		})
+	}
+	sort.Slice(recoveryFiles, func(i, j int) bool {
+		if recoveryFiles[i].Action != recoveryFiles[j].Action {
+			return recoveryFiles[i].Action < recoveryFiles[j].Action
+		}
+		return recoveryFiles[i].Path < recoveryFiles[j].Path
+	})
+	return recoveryFiles
+}
+
+func safeWorkspaceStateName(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "sandbox"
+	}
+	var b strings.Builder
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '-' || r == '_' || r == '.':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('-')
+		}
+	}
+	name := strings.Trim(b.String(), "-.")
+	if name == "" {
+		return "sandbox"
+	}
+	return name
+}
+
+func shortGitSHA(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) <= 12 {
+		return value
+	}
+	return value[:12]
 }
 
 func resolveGitWorkspaceCheckout(callCtx context.Context, client *controlclient.Client, opts workspaceCopyOptions) (*resolvedRepositoryCheckout, *repositorycheckout.Checkout, error) {
@@ -337,6 +579,10 @@ func gitWorkspaceCopyOutPlan(localRoot string, nameStatus []byte) ([]workspacePl
 	if err != nil {
 		return nil, err
 	}
+	return gitWorkspaceCopyOutPlanFiles(localRoot, files)
+}
+
+func gitWorkspaceCopyOutPlanFiles(localRoot string, files []repositorychangeset.File) ([]workspacePlanEntry, error) {
 	entries := make([]workspacePlanEntry, 0, len(files))
 	for _, file := range files {
 		localPath, err := workspaceLocalPath(localRoot, file.Path)
@@ -354,6 +600,35 @@ func gitWorkspaceCopyOutPlan(localRoot string, nameStatus []byte) ([]workspacePl
 	}
 	sortWorkspacePlan(entries)
 	return entries, nil
+}
+
+func parseGitWorkspaceCopyOutPayload(output []byte) ([]byte, []byte, error) {
+	header, payload, ok := bytes.Cut(output, []byte("\n"))
+	if !ok {
+		return nil, nil, errors.New("parse workspace copy-out payload: missing header")
+	}
+	fields := strings.Fields(string(header))
+	if len(fields) != 3 || fields[0] != "cleanroom-copy-out-v1" {
+		return nil, nil, fmt.Errorf("parse workspace copy-out payload header %q", string(header))
+	}
+	nameStatusSize, err := strconv.ParseInt(fields[1], 10, 64)
+	if err != nil || nameStatusSize < 0 {
+		return nil, nil, fmt.Errorf("parse workspace copy-out name-status size %q", fields[1])
+	}
+	patchSize, err := strconv.ParseInt(fields[2], 10, 64)
+	if err != nil || patchSize < 0 {
+		return nil, nil, fmt.Errorf("parse workspace copy-out patch size %q", fields[2])
+	}
+	totalSize := nameStatusSize + patchSize
+	if totalSize < nameStatusSize || totalSize > int64(len(payload)) {
+		return nil, nil, fmt.Errorf("parse workspace copy-out payload: expected %d bytes after header, got %d", totalSize, len(payload))
+	}
+	if totalSize != int64(len(payload)) {
+		return nil, nil, fmt.Errorf("parse workspace copy-out payload: unexpected trailing data after %d bytes", totalSize)
+	}
+	nameStatus := payload[:nameStatusSize]
+	patch := payload[nameStatusSize:totalSize]
+	return nameStatus, patch, nil
 }
 
 func parseGitNameStatusWorkspaceFiles(output []byte) ([]repositorychangeset.File, error) {
