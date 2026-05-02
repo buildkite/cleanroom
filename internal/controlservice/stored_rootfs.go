@@ -182,6 +182,9 @@ func (s *Service) createSandboxFromStoredRootFS(ctx context.Context, req *cleanr
 		s.mu.Unlock()
 		return nil, fmt.Errorf("provision sandbox from snapshot: %w", err)
 	}
+	if err := s.ensureSandboxCreateStillProvisioning(sandboxID); err != nil {
+		return nil, err
+	}
 
 	if sourceKind == "" {
 		sourceKind = "stored rootfs"
@@ -191,26 +194,11 @@ func (s *Service) createSandboxFromStoredRootFS(ctx context.Context, req *cleanr
 
 	s.mu.Lock()
 	s.ensureMapsLocked()
-	state, ok = s.sandboxes[sandboxID]
-	if !ok {
-		state = &sandboxState{
-			ID:                                  sandboxID,
-			Backend:                             backendName,
-			Capabilities:                        backend.CapabilitiesForAdapter(adapter),
-			Policy:                              effectivePolicy,
-			Firecracker:                         firecrackerCfg,
-			Repository:                          cloneRepositoryCheckout(record.Repository),
-			RepositoryHasChangeset:              record.RepositoryHasChangeset,
-			RepositoryChangesetPendingExecution: record.RepositoryChangesetPendingExecution,
-			SourceKind:                          sourceKind,
-			SourceID:                            sourceID,
-			BackingSnapshotID:                   backingSnapshotID,
-			CreatedAt:                           now,
-			UpdatedAt:                           now,
-			events:                              newEventFeed[*cleanroomv1.SandboxEvent](s.retention().maxRetainedSandboxEvents),
-			Done:                                make(chan struct{}),
-		}
-		s.sandboxes[sandboxID] = state
+	var stateErr error
+	state, stateErr = s.sandboxCreateProvisioningStateLocked(sandboxID)
+	if stateErr != nil {
+		s.mu.Unlock()
+		return nil, stateErr
 	}
 	s.recordSandboxEventLocked(state, cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY, eventMessage)
 	s.pruneStateLocked(now)

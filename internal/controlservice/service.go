@@ -89,6 +89,8 @@ type sandboxState struct {
 	DoneClosed                          bool
 }
 
+var errSandboxCreateAborted = errors.New("sandbox creation aborted")
+
 type executionState struct {
 	ID                string
 	SandboxID         string
@@ -460,6 +462,9 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 						s.logServicesStageRestore(record, restoreResp.GetSandbox().GetSandboxId())
 						return restoreResp, nil
 					}
+					if errors.Is(restoreErr, errSandboxCreateAborted) {
+						return nil, restoreErr
+					}
 					recordCopy := record
 					replacedServicesStageRecord = &recordCopy
 					s.logServicesStageRestoreWarning(record, restoreErr)
@@ -520,6 +525,8 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 							return restoreResp, nil
 						}
 						restoredDependencyResp = restoreResp
+					} else if errors.Is(restoreErr, errSandboxCreateAborted) {
+						return nil, restoreErr
 					} else {
 						recordCopy := record
 						replacedDependencyStageRecord = &recordCopy
@@ -575,6 +582,8 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 								return restoreResp, nil
 							}
 							restoredDependencyResp = restoreResp
+						} else if errors.Is(restoreErr, errSandboxCreateAborted) {
+							return nil, restoreErr
 						} else {
 							s.logDependencyStageRestoreWarning(portableRecord, restoreErr)
 						}
@@ -636,6 +645,8 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 							return restoreResp, nil
 						}
 						restoredWorkspaceResp = restoreResp
+					} else if errors.Is(restoreErr, errSandboxCreateAborted) {
+						return nil, restoreErr
 					} else {
 						recordCopy := record
 						replacedWorkspaceStageRecord = &recordCopy
@@ -790,6 +801,9 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 		s.mu.Unlock()
 		return nil, fmt.Errorf("provision sandbox: %w", err)
 	}
+	if err := s.ensureSandboxCreateStillProvisioning(sandboxID); err != nil {
+		return nil, err
+	}
 	if logger != nil {
 		logger.Debug("sandbox provisioned",
 			observability.LogFieldSandboxID, sandboxID,
@@ -817,6 +831,9 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 		}
 		return nil, fmt.Errorf("bootstrap repository checkout: %w", err)
 	}
+	if err := s.ensureSandboxCreateStillProvisioning(sandboxID); err != nil {
+		return nil, err
+	}
 	if changeset != nil {
 		changesetAttrs := []attribute.KeyValue{
 			attribute.String(observability.AttrBackend, backendName),
@@ -836,6 +853,9 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 			}
 			return nil, fmt.Errorf("apply repository changeset: %w", err)
 		}
+		if err := s.ensureSandboxCreateStillProvisioning(sandboxID); err != nil {
+			return nil, err
+		}
 	}
 	if snapshotCapable && workspaceStageCachingEnabled {
 		emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_PUBLISH_WORKSPACE_STAGE_CACHE, "publishing workspace stage cache")
@@ -846,6 +866,9 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 			s.maybePublishWorkspaceStageCache(ctx, snapshotAdapter, sandboxID, backendName, compiled, firecrackerCfg, workspaceStageRuntimeBaseKey, repository, changeset, replacedWorkspaceStageRecord)
 			return nil
 		})
+		if err := s.ensureSandboxCreateStillProvisioning(sandboxID); err != nil {
+			return nil, err
+		}
 	}
 	if dependencyStageBootstrapEnabled {
 		bootstrapAttrs := []attribute.KeyValue{
@@ -867,6 +890,9 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 			}
 			return nil, fmt.Errorf("bootstrap dependency stage: %w", err)
 		}
+		if err := s.ensureSandboxCreateStillProvisioning(sandboxID); err != nil {
+			return nil, err
+		}
 		if dependencyStageCachingEnabled && snapshotCapable {
 			emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_PUBLISH_DEPENDENCY_STAGE_CACHE, "publishing dependency stage cache")
 			_ = s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.publish_dependency_stage_cache", []attribute.KeyValue{
@@ -876,6 +902,9 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 				s.maybePublishDependencyStageCache(ctx, snapshotAdapter, sandboxID, backendName, compiled, firecrackerCfg, repository, changeset, dependencyStagePlan, replacedDependencyStageRecord)
 				return nil
 			})
+			if err := s.ensureSandboxCreateStillProvisioning(sandboxID); err != nil {
+				return nil, err
+			}
 		}
 	}
 	if servicesStageBootstrapEnabled {
@@ -898,6 +927,9 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 			}
 			return nil, fmt.Errorf("bootstrap services stage: %w", err)
 		}
+		if err := s.ensureSandboxCreateStillProvisioning(sandboxID); err != nil {
+			return nil, err
+		}
 		if servicesStageCachingEnabled && snapshotCapable {
 			emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_PUBLISH_SERVICES_STAGE_CACHE, "publishing services stage cache")
 			_ = s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.publish_services_stage_cache", []attribute.KeyValue{
@@ -907,29 +939,18 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 				s.maybePublishServicesStageCache(ctx, snapshotAdapter, sandboxID, backendName, compiled, firecrackerCfg, repository, changeset, servicesStagePlan, replacedServicesStageRecord)
 				return nil
 			})
+			if err := s.ensureSandboxCreateStillProvisioning(sandboxID); err != nil {
+				return nil, err
+			}
 		}
 	}
 
 	s.mu.Lock()
 	s.ensureMapsLocked()
-	state, ok = s.sandboxes[sandboxID]
-	if !ok {
-		state = &sandboxState{
-			ID:                                  sandboxID,
-			Backend:                             backendName,
-			Capabilities:                        backend.CapabilitiesForAdapter(adapter),
-			Policy:                              compiled,
-			Firecracker:                         firecrackerCfg,
-			Repository:                          cloneRepositoryCheckout(repository),
-			RepositoryCommitBundle:              cloneRepositoryCommitBundle(commitBundle),
-			RepositoryHasChangeset:              changeset != nil,
-			RepositoryChangesetPendingExecution: changeset != nil,
-			CreatedAt:                           now,
-			UpdatedAt:                           now,
-			events:                              newEventFeed[*cleanroomv1.SandboxEvent](s.retention().maxRetainedSandboxEvents),
-			Done:                                make(chan struct{}),
-		}
-		s.sandboxes[sandboxID] = state
+	state, err = s.sandboxCreateProvisioningStateLocked(sandboxID)
+	if err != nil {
+		s.mu.Unlock()
+		return nil, err
 	}
 	s.recordSandboxEventLocked(state, cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY, "sandbox created and ready")
 	s.pruneStateLocked(now)
@@ -2251,6 +2272,29 @@ func (s *Service) terminateCreatedSandbox(ctx context.Context, adapter backend.A
 	s.mu.Unlock()
 
 	return err
+}
+
+func (s *Service) ensureSandboxCreateStillProvisioning(sandboxID string) error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	_, err := s.sandboxCreateProvisioningStateLocked(sandboxID)
+	return err
+}
+
+func (s *Service) sandboxCreateProvisioningStateLocked(sandboxID string) (*sandboxState, error) {
+	state, ok := s.sandboxes[sandboxID]
+	if !ok {
+		return nil, fmt.Errorf("sandbox %q was removed during creation: %w", sandboxID, errSandboxCreateAborted)
+	}
+	if state.Status != cleanroomv1.SandboxStatus_SANDBOX_STATUS_PROVISIONING {
+		switch state.Status {
+		case cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPING, cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPED:
+			return nil, fmt.Errorf("sandbox %q was terminated during creation: %w", sandboxID, errSandboxCreateAborted)
+		default:
+			return nil, fmt.Errorf("sandbox %q left provisioning during creation with status %s: %w", sandboxID, state.Status, errSandboxCreateAborted)
+		}
+	}
+	return state, nil
 }
 
 func (s *Service) ConsumeInteractiveSession(sessionID, token string) (*InteractiveSession, error) {
