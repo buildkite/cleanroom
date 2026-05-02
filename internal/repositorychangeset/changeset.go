@@ -407,6 +407,14 @@ func ResetCommand(checkout *repositorycheckout.Checkout) []string {
 	return []string{"sh", "-lc", strings.Join(script, "\n")}
 }
 
+func WorktreeDiffCommand(checkout *repositorycheckout.Checkout) []string {
+	return worktreeChangesCommand(checkout, `GIT_INDEX_FILE="$index_file" git -C "$dest" diff --cached --binary --full-index --no-ext-diff --no-color --no-renames "$base_commit"`)
+}
+
+func WorktreeNameStatusCommand(checkout *repositorycheckout.Checkout) []string {
+	return worktreeChangesCommand(checkout, `GIT_INDEX_FILE="$index_file" git -C "$dest" diff --cached --name-status --no-renames -z "$base_commit"`)
+}
+
 func applyCommand(checkout *repositorycheckout.Checkout, changeset *Changeset, resetCheckout bool) []string {
 	if checkout == nil || changeset == nil {
 		return nil
@@ -436,6 +444,37 @@ func applyCommand(checkout *repositorycheckout.Checkout, changeset *Changeset, r
 		`got_tree="$(GIT_INDEX_FILE="$index_file" git -C "$dest" write-tree)"`,
 		`if [ "$got_tree" != "$expected_tree" ]; then echo "repository changeset tree mismatch: expected $expected_tree got $got_tree" >&2; exit 1; fi`,
 	)
+	return []string{"sh", "-lc", strings.Join(script, "\n")}
+}
+
+func worktreeChangesCommand(checkout *repositorycheckout.Checkout, emit string) []string {
+	if checkout == nil {
+		return nil
+	}
+	baseCommitSHA := strings.ToLower(strings.TrimSpace(checkout.CommitSHA))
+	if baseCommitSHA == "" || strings.TrimSpace(checkout.DestinationDir) == "" || strings.TrimSpace(emit) == "" {
+		return nil
+	}
+	script := []string{
+		"set -eu",
+		"dest=" + shellQuote(checkout.DestinationDir),
+		"base_commit=" + shellQuote(baseCommitSHA),
+		`if [ ! -d "$dest/.git" ]; then echo "repository destination is not a git checkout: $dest" >&2; exit 1; fi`,
+		`status_file="$(mktemp)"`,
+		`index_file="$(mktemp)"`,
+		`raw_file="$(mktemp)"`,
+		`cleanup() { rm -f "$status_file" "$index_file" "$raw_file"; }`,
+		`trap cleanup EXIT INT TERM`,
+		`git -C "$dest" status --porcelain=v2 --ignore-submodules=none >"$status_file"`,
+		`dirty_submodule="$(awk '($1 == "1" || $1 == "2") && length($3) == 4 && substr($3, 1, 1) == "S" && (substr($3, 3, 1) != "." || substr($3, 4, 1) != ".") { print $NF; exit }' "$status_file")"`,
+		`if [ -n "$dirty_submodule" ]; then echo "repository changeset cannot represent dirty submodule worktree $dirty_submodule; commit the submodule change or clean it first" >&2; exit 1; fi`,
+		`GIT_INDEX_FILE="$index_file" git -C "$dest" read-tree "$base_commit"`,
+		`GIT_INDEX_FILE="$index_file" git -C "$dest" add -A --all .`,
+		`GIT_INDEX_FILE="$index_file" git -C "$dest" diff --cached --raw --no-renames "$base_commit" >"$raw_file"`,
+		`gitlink_path="$(awk '($1 == ":160000" || $2 == "160000") { print $NF; exit }' "$raw_file")"`,
+		`if [ -n "$gitlink_path" ]; then echo "repository changeset cannot represent submodule gitlink change(s): $gitlink_path; commit and push the submodule update, or apply it manually inside the sandbox" >&2; exit 1; fi`,
+		emit,
+	}
 	return []string{"sh", "-lc", strings.Join(script, "\n")}
 }
 

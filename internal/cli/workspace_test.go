@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -290,7 +291,7 @@ func TestWorkspaceCopyInReturnsWhenPatchStdinWriteFails(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected WorkspaceCopyInCommand.Run to return stdin write error")
 		}
-		if !strings.Contains(err.Error(), "write workspace copy-in payload") || !strings.Contains(err.Error(), "broken stdin") {
+		if !strings.Contains(err.Error(), "write workspace operation payload") || !strings.Contains(err.Error(), "broken stdin") {
 			t.Fatalf("expected stdin write error, got %v", err)
 		}
 	case <-time.After(3 * time.Second):
@@ -751,6 +752,241 @@ func TestWorkspaceCopyInDryRunReportsCleanGitResetWithoutExecuting(t *testing.T)
 	defer mu.Unlock()
 	if len(commands) != 0 {
 		t.Fatalf("dry-run should not run workspace copy-in execution, got %q", strings.Join(commands[0], " "))
+	}
+}
+
+func TestWorkspaceCopyOutDryRunReportsSandboxGitPlan(t *testing.T) {
+	localRoot := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
+	resolvedLocalRoot, err := gitOutput(localRoot, "rev-parse", "--show-toplevel")
+	if err != nil {
+		t.Fatalf("resolve local repository root: %v", err)
+	}
+	subdir := filepath.Join(localRoot, "subdir")
+	if err := os.MkdirAll(subdir, 0o755); err != nil {
+		t.Fatalf("create subdir: %v", err)
+	}
+	adapter := &integrationAdapter{}
+	host, _ := startIntegrationServer(t, adapter)
+	sandboxID := createWorkspaceCopyTestSandboxWithRepository(t, host, "/sandbox-workspace")
+
+	var (
+		mu       sync.Mutex
+		commands [][]string
+	)
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+		mu.Lock()
+		commands = append(commands, append([]string(nil), req.Command...))
+		mu.Unlock()
+		if stream.OnStdout != nil {
+			stream.OnStdout([]byte("M\x00changed.txt\x00D\x00removed.txt\x00A\x00nested/new.txt\x00"))
+		}
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+	}
+
+	stdout, stdoutText := makeStdoutCapture(t)
+	stderr, _ := makeStdoutCapture(t)
+	cmd := WorkspaceCopyOutCommand{
+		clientFlags: clientFlags{Host: host},
+		Chdir:       subdir,
+		DryRun:      true,
+		SandboxID:   sandboxID,
+	}
+	if err := cmd.Run(&runtimeContext{
+		CWD:           localRoot,
+		Loader:        repositoryNotFoundLoader{},
+		Config:        runtimeconfig.Config{},
+		Observability: newTestObservability(t),
+		Stdout:        stdout,
+		Stderr:        stderr,
+	}); err != nil {
+		t.Fatalf("WorkspaceCopyOutCommand.Run returned error: %v", err)
+	}
+
+	expected := strings.Join([]string{
+		"delete\t" + filepath.Join(resolvedLocalRoot, "removed.txt"),
+		"write\t" + filepath.Join(resolvedLocalRoot, "changed.txt"),
+		"write\t" + filepath.Join(resolvedLocalRoot, "nested", "new.txt"),
+		"",
+	}, "\n")
+	if got := stdoutText(); got != expected {
+		t.Fatalf("unexpected copy-out dry-run plan: got %q want %q", got, expected)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(commands) != 1 {
+		t.Fatalf("expected one workspace copy-out planning execution, got %d", len(commands))
+	}
+	planCommand := strings.Join(commands[0], " ")
+	if !strings.Contains(planCommand, "dest='/sandbox-workspace'") {
+		t.Fatalf("expected copy-out planning to use sandbox workspace root, got %q", planCommand)
+	}
+	if !strings.Contains(planCommand, "diff --cached --name-status --no-renames -z") {
+		t.Fatalf("expected copy-out planning to use git name-status, got %q", planCommand)
+	}
+}
+
+func TestWorkspaceCopyOutPlanRejectsWindowsDrivePaths(t *testing.T) {
+	for _, rel := range []string{
+		"C:/tmp.txt",
+		"c:/tmp.txt",
+		"D:\\tmp.txt",
+	} {
+		t.Run(rel, func(t *testing.T) {
+			_, err := gitWorkspaceCopyOutPlan(t.TempDir(), []byte("M\x00"+rel+"\x00"))
+			if err == nil {
+				t.Fatal("expected Windows drive path to be rejected")
+			}
+			if !strings.Contains(err.Error(), "not a safe relative path") {
+				t.Fatalf("expected safe relative path error, got %v", err)
+			}
+		})
+	}
+}
+
+func TestWorkspaceCopyOutPlanAllowsRelativeColonPaths(t *testing.T) {
+	localRoot := t.TempDir()
+	entries, err := gitWorkspaceCopyOutPlan(localRoot, []byte("M\x00a:b.txt\x00A\x00dir/Z:tmp.txt\x00"))
+	if err != nil {
+		t.Fatalf("gitWorkspaceCopyOutPlan returned error: %v", err)
+	}
+	expected := []workspacePlanEntry{
+		{Action: "write", Path: filepath.Join(localRoot, "a:b.txt")},
+		{Action: "write", Path: filepath.Join(localRoot, "dir", "Z:tmp.txt")},
+	}
+	if !reflect.DeepEqual(entries, expected) {
+		t.Fatalf("unexpected copy-out plan: got %+v want %+v", entries, expected)
+	}
+}
+
+func TestWorkspaceCopyOutDryRunRejectsNonGitLocalRoot(t *testing.T) {
+	adapter := &integrationAdapter{}
+	host, _ := startIntegrationServer(t, adapter)
+	sandboxID := createWorkspaceCopyTestSandboxWithRepository(t, host, "/sandbox-workspace")
+
+	var executionCalled bool
+	adapter.runStreamFn = func(_ context.Context, _ backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
+		executionCalled = true
+		return &backend.ExecutionResult{ExitCode: 0, Message: "ok"}, nil
+	}
+
+	cwd := t.TempDir()
+	stdout, _ := makeStdoutCapture(t)
+	stderr, _ := makeStdoutCapture(t)
+	cmd := WorkspaceCopyOutCommand{
+		clientFlags: clientFlags{Host: host},
+		Chdir:       cwd,
+		DryRun:      true,
+		SandboxID:   sandboxID,
+	}
+	err := cmd.Run(&runtimeContext{
+		CWD:           cwd,
+		Loader:        repositoryNotFoundLoader{},
+		Config:        runtimeconfig.Config{},
+		Observability: newTestObservability(t),
+		Stdout:        stdout,
+		Stderr:        stderr,
+	})
+	if err == nil {
+		t.Fatal("expected non-Git copy-out root to be rejected")
+	}
+	if !strings.Contains(err.Error(), "requires a local Git repository checkout") {
+		t.Fatalf("expected local Git checkout error, got %v", err)
+	}
+	if executionCalled {
+		t.Fatal("expected copy-out to fail before sandbox planning execution")
+	}
+}
+
+func TestWorkspaceCopyOutDryRunRejectsMismatchedLocalRepository(t *testing.T) {
+	localRoot := initGitRepository(t, "https://github.com/buildkite/not-cleanroom.git")
+	adapter := &integrationAdapter{}
+	host, _ := startIntegrationServer(t, adapter)
+	sandboxID := createWorkspaceCopyTestSandboxWithRepository(t, host, "/sandbox-workspace")
+
+	var executionCalled bool
+	adapter.runStreamFn = func(_ context.Context, _ backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
+		executionCalled = true
+		return &backend.ExecutionResult{ExitCode: 0, Message: "ok"}, nil
+	}
+
+	stdout, _ := makeStdoutCapture(t)
+	stderr, _ := makeStdoutCapture(t)
+	cmd := WorkspaceCopyOutCommand{
+		clientFlags: clientFlags{Host: host},
+		Chdir:       localRoot,
+		DryRun:      true,
+		SandboxID:   sandboxID,
+	}
+	err := cmd.Run(&runtimeContext{
+		CWD:           localRoot,
+		Loader:        repositoryNotFoundLoader{},
+		Config:        runtimeconfig.Config{},
+		Observability: newTestObservability(t),
+		Stdout:        stdout,
+		Stderr:        stderr,
+	})
+	if err == nil {
+		t.Fatal("expected mismatched local repository to be rejected")
+	}
+	if !strings.Contains(err.Error(), "does not match sandbox repository remote") {
+		t.Fatalf("expected repository mismatch error, got %v", err)
+	}
+	if executionCalled {
+		t.Fatal("expected copy-out to fail before sandbox planning execution")
+	}
+}
+
+func TestWorkspaceDiffStreamsSandboxGitDiff(t *testing.T) {
+	diff := []byte("diff --git a/changed.txt b/changed.txt\n+changed\n")
+	adapter := &integrationAdapter{}
+	host, _ := startIntegrationServer(t, adapter)
+	sandboxID := createWorkspaceCopyTestSandboxWithRepository(t, host, "/sandbox-workspace")
+
+	var (
+		mu       sync.Mutex
+		commands [][]string
+	)
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+		mu.Lock()
+		commands = append(commands, append([]string(nil), req.Command...))
+		mu.Unlock()
+		if stream.OnStdout != nil {
+			stream.OnStdout(diff)
+		}
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+	}
+
+	stdout, stdoutText := makeStdoutCapture(t)
+	stderr, _ := makeStdoutCapture(t)
+	cmd := WorkspaceDiffCommand{
+		clientFlags: clientFlags{Host: host},
+		SandboxID:   sandboxID,
+	}
+	if err := cmd.Run(&runtimeContext{
+		CWD:           t.TempDir(),
+		Config:        runtimeconfig.Config{},
+		Observability: newTestObservability(t),
+		Stdout:        stdout,
+		Stderr:        stderr,
+	}); err != nil {
+		t.Fatalf("WorkspaceDiffCommand.Run returned error: %v", err)
+	}
+	if got := stdoutText(); got != string(diff) {
+		t.Fatalf("unexpected workspace diff output: got %q want %q", got, diff)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(commands) != 1 {
+		t.Fatalf("expected one workspace diff execution, got %d", len(commands))
+	}
+	diffCommand := strings.Join(commands[0], " ")
+	if !strings.Contains(diffCommand, "dest='/sandbox-workspace'") {
+		t.Fatalf("expected workspace diff to use sandbox workspace root, got %q", diffCommand)
+	}
+	if !strings.Contains(diffCommand, "diff --cached --binary --full-index") {
+		t.Fatalf("expected workspace diff to use git binary diff, got %q", diffCommand)
 	}
 }
 

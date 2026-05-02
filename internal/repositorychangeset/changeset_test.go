@@ -411,6 +411,133 @@ func TestDigestPathsFromBaseExpandsDeletedGlobMatches(t *testing.T) {
 	}
 }
 
+func TestWorktreeNameStatusCommandReportsWorkingTreeChanges(t *testing.T) {
+	repoDir := initGitRepository(t)
+	if err := os.WriteFile(filepath.Join(repoDir, ".gitignore"), []byte("ignored/\n"), 0o644); err != nil {
+		t.Fatalf("write gitignore: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "removed.txt"), []byte("remove me\n"), 0o644); err != nil {
+		t.Fatalf("write removed file: %v", err)
+	}
+	runGit(t, repoDir, "add", ".gitignore", "removed.txt")
+	runGit(t, repoDir, "commit", "-m", "add fixtures")
+	base := headCommit(t, repoDir)
+
+	if err := os.WriteFile(filepath.Join(repoDir, "README.md"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatalf("rewrite readme: %v", err)
+	}
+	if err := os.Remove(filepath.Join(repoDir, "removed.txt")); err != nil {
+		t.Fatalf("remove tracked file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "new.txt"), []byte("new\n"), 0o644); err != nil {
+		t.Fatalf("write new file: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(repoDir, "ignored"), 0o755); err != nil {
+		t.Fatalf("create ignored dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "ignored", "output.txt"), []byte("ignored\n"), 0o644); err != nil {
+		t.Fatalf("write ignored file: %v", err)
+	}
+
+	command := WorktreeNameStatusCommand(&repositorycheckout.Checkout{
+		CommitSHA:      base,
+		DestinationDir: repoDir,
+	})
+	out := runShellCommand(t, command)
+	for _, want := range []string{
+		"M\x00README.md\x00",
+		"D\x00removed.txt\x00",
+		"A\x00new.txt\x00",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected name-status output to contain %q, got %q", want, out)
+		}
+	}
+	if strings.Contains(out, "ignored") {
+		t.Fatalf("expected ignored files to stay out of name-status output, got %q", out)
+	}
+}
+
+func TestWorktreeChangesCommandsRejectDirtySubmoduleWorktree(t *testing.T) {
+	submoduleDir := initGitRepository(t)
+	superDir := t.TempDir()
+	runGit(t, superDir, "init")
+	runGit(t, superDir, "config", "user.name", "Cleanroom Test")
+	runGit(t, superDir, "config", "user.email", "cleanroom-test@example.com")
+	runGitWithEnv(t, superDir, []string{"GIT_ALLOW_PROTOCOL=file"}, "-c", "protocol.file.allow=always", "submodule", "add", submoduleDir, "deps/sub")
+	runGit(t, superDir, "commit", "-m", "add submodule")
+	base := headCommit(t, superDir)
+
+	if err := os.WriteFile(filepath.Join(superDir, "deps/sub/README.md"), []byte("dirty submodule\n"), 0o644); err != nil {
+		t.Fatalf("rewrite submodule readme: %v", err)
+	}
+
+	checkout := &repositorycheckout.Checkout{
+		CommitSHA:      base,
+		DestinationDir: superDir,
+		Submodules:     true,
+	}
+	for _, tc := range []struct {
+		name    string
+		command []string
+	}{
+		{name: "name-status", command: WorktreeNameStatusCommand(checkout)},
+		{name: "diff", command: WorktreeDiffCommand(checkout)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := runShellCommandResult(t, tc.command)
+			if err == nil {
+				t.Fatalf("expected dirty submodule worktree error, got output %q", out)
+			}
+			if !strings.Contains(out, "dirty submodule worktree") {
+				t.Fatalf("expected dirty submodule worktree error, got %v\n%s", err, out)
+			}
+		})
+	}
+}
+
+func TestWorktreeChangesCommandsRejectSubmoduleGitlinkChange(t *testing.T) {
+	submoduleDir := initGitRepository(t)
+	superDir := t.TempDir()
+	runGit(t, superDir, "init")
+	runGit(t, superDir, "config", "user.name", "Cleanroom Test")
+	runGit(t, superDir, "config", "user.email", "cleanroom-test@example.com")
+	runGitWithEnv(t, superDir, []string{"GIT_ALLOW_PROTOCOL=file"}, "-c", "protocol.file.allow=always", "submodule", "add", submoduleDir, "deps/sub")
+	runGit(t, superDir, "commit", "-m", "add submodule")
+	base := headCommit(t, superDir)
+
+	if err := os.WriteFile(filepath.Join(superDir, "deps/sub/README.md"), []byte("advanced submodule\n"), 0o644); err != nil {
+		t.Fatalf("rewrite submodule readme: %v", err)
+	}
+	runGit(t, filepath.Join(superDir, "deps/sub"), "add", "README.md")
+	runGit(t, filepath.Join(superDir, "deps/sub"), "config", "user.name", "Cleanroom Test")
+	runGit(t, filepath.Join(superDir, "deps/sub"), "config", "user.email", "cleanroom-test@example.com")
+	runGit(t, filepath.Join(superDir, "deps/sub"), "commit", "-m", "advance submodule")
+
+	checkout := &repositorycheckout.Checkout{
+		CommitSHA:      base,
+		DestinationDir: superDir,
+		Submodules:     true,
+	}
+	for _, tc := range []struct {
+		name    string
+		command []string
+	}{
+		{name: "name-status", command: WorktreeNameStatusCommand(checkout)},
+		{name: "diff", command: WorktreeDiffCommand(checkout)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := runShellCommandResult(t, tc.command)
+			if err == nil {
+				t.Fatalf("expected submodule gitlink error, got output %q", out)
+			}
+			if !strings.Contains(out, "submodule gitlink change") {
+				t.Fatalf("expected submodule gitlink error, got %v\n%s", err, out)
+			}
+		})
+	}
+}
+
 func initGitRepository(t *testing.T) string {
 	t.Helper()
 
@@ -450,6 +577,25 @@ func bytesContainAll(haystack []byte, needles ...[]byte) bool {
 func runGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	return runGitWithEnv(t, dir, nil, args...)
+}
+
+func runShellCommand(t *testing.T, command []string) string {
+	t.Helper()
+	out, err := runShellCommandResult(t, command)
+	if err != nil {
+		t.Fatalf("command %v failed: %v\n%s", command, err, out)
+	}
+	return out
+}
+
+func runShellCommandResult(t *testing.T, command []string) (string, error) {
+	t.Helper()
+	if len(command) == 0 {
+		t.Fatal("missing command")
+	}
+	cmd := exec.Command(command[0], command[1:]...)
+	out, err := cmd.CombinedOutput()
+	return string(out), err
 }
 
 func runGitWithEnv(t *testing.T, dir string, env []string, args ...string) string {

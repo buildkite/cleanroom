@@ -21,7 +21,9 @@ import (
 )
 
 type WorkspaceCommand struct {
-	CopyIn WorkspaceCopyInCommand `name:"copy-in" cmd:"" help:"Copy local workspace changes into a sandbox"`
+	CopyIn  WorkspaceCopyInCommand  `name:"copy-in" cmd:"" help:"Copy local workspace changes into a sandbox"`
+	CopyOut WorkspaceCopyOutCommand `name:"copy-out" cmd:"" help:"Preview or copy sandbox workspace changes back locally"`
+	Diff    WorkspaceDiffCommand    `cmd:"" help:"Show sandbox workspace changes"`
 }
 
 type WorkspaceCopyInCommand struct {
@@ -29,6 +31,18 @@ type WorkspaceCopyInCommand struct {
 	Chdir     string `short:"c" help:"Change to this local directory before planning the workspace copy-in"`
 	DryRun    bool   `name:"dry-run" help:"Show the workspace paths that would be copied in without modifying the sandbox"`
 	SandboxID string `arg:"" required:"" help:"Sandbox ID to copy into"`
+}
+
+type WorkspaceCopyOutCommand struct {
+	clientFlags
+	Chdir     string `short:"c" help:"Change to this local directory before planning the workspace copy-out"`
+	DryRun    bool   `name:"dry-run" help:"Show the local workspace paths that would be copied out without modifying local files"`
+	SandboxID string `arg:"" required:"" help:"Sandbox ID to copy out from"`
+}
+
+type WorkspaceDiffCommand struct {
+	clientFlags
+	SandboxID string `arg:"" required:"" help:"Sandbox ID to diff"`
 }
 
 type workspaceCopyOptions struct {
@@ -65,6 +79,44 @@ func (c *WorkspaceCopyInCommand) Run(ctx *runtimeContext) error {
 		DryRun:        c.DryRun,
 		Repository:    repository,
 		ForceGitReset: true,
+	})
+}
+
+func (c *WorkspaceCopyOutCommand) Run(ctx *runtimeContext) error {
+	cwd, err := resolveCWD(ctx.CWD, c.Chdir)
+	if err != nil {
+		return err
+	}
+	if !c.DryRun {
+		return errors.New("workspace copy-out writes are not implemented yet; use --dry-run to preview sandbox changes")
+	}
+	repository, err := resolveWorkspaceCopyRepositoryCheckout(cwd, ctx.Loader)
+	if err != nil {
+		return err
+	}
+	localRoot := cwd
+	if repository != nil && strings.TrimSpace(repository.RootDir) != "" {
+		localRoot = repository.RootDir
+	}
+	client, err := c.connect(ctx)
+	if err != nil {
+		return err
+	}
+	return previewWorkspaceCopyOut(context.Background(), ctx, client, workspaceCopyOptions{
+		CWD:        localRoot,
+		SandboxID:  c.SandboxID,
+		DryRun:     true,
+		Repository: repository,
+	})
+}
+
+func (c *WorkspaceDiffCommand) Run(ctx *runtimeContext) error {
+	client, err := c.connect(ctx)
+	if err != nil {
+		return err
+	}
+	return diffWorkspaceInSandbox(context.Background(), ctx, client, workspaceCopyOptions{
+		SandboxID: c.SandboxID,
 	})
 }
 
@@ -117,6 +169,83 @@ func copyGitWorkspaceToSandbox(callCtx context.Context, ctx *runtimeContext, cli
 	return runWorkspaceExecution(callCtx, ctx, client, opts.SandboxID, effectiveRepository, command, bytes.NewReader(changeset.Patch), opts.LaunchSeconds)
 }
 
+func previewWorkspaceCopyOut(callCtx context.Context, ctx *runtimeContext, client *controlclient.Client, opts workspaceCopyOptions) error {
+	if strings.TrimSpace(opts.SandboxID) == "" {
+		return errors.New("missing sandbox id")
+	}
+	if strings.TrimSpace(opts.CWD) == "" {
+		return errors.New("missing local workspace root")
+	}
+	checkout, err := sandboxRepositoryCheckout(callCtx, client, opts.SandboxID)
+	if err != nil {
+		return err
+	}
+	if err := validateWorkspaceCopyOutLocalRepository(opts.Repository, checkout); err != nil {
+		return err
+	}
+	command := repositorychangeset.WorktreeNameStatusCommand(checkout)
+	if len(command) == 0 {
+		return errors.New("sandbox repository checkout is missing the information needed to plan workspace copy-out")
+	}
+	output, err := runWorkspaceExecutionCapture(callCtx, ctx, client, opts.SandboxID, command, opts.LaunchSeconds)
+	if err != nil {
+		return err
+	}
+	entries, err := gitWorkspaceCopyOutPlan(opts.CWD, output)
+	if err != nil {
+		return err
+	}
+	return printWorkspacePlan(runtimeStdout(ctx), entries)
+}
+
+func diffWorkspaceInSandbox(callCtx context.Context, ctx *runtimeContext, client *controlclient.Client, opts workspaceCopyOptions) error {
+	if strings.TrimSpace(opts.SandboxID) == "" {
+		return errors.New("missing sandbox id")
+	}
+	checkout, err := sandboxRepositoryCheckout(callCtx, client, opts.SandboxID)
+	if err != nil {
+		return err
+	}
+	command := repositorychangeset.WorktreeDiffCommand(checkout)
+	if len(command) == 0 {
+		return errors.New("sandbox repository checkout is missing the information needed to diff workspace changes")
+	}
+	return runWorkspaceExecution(callCtx, ctx, client, opts.SandboxID, nil, command, nil, opts.LaunchSeconds)
+}
+
+func sandboxRepositoryCheckout(callCtx context.Context, client *controlclient.Client, sandboxID string) (*repositorycheckout.Checkout, error) {
+	repository, err := resolveSandboxRepositoryCheckout(callCtx, client, sandboxID)
+	if err != nil {
+		return nil, err
+	}
+	checkout := repositorycheckout.FromProto(repository)
+	if checkout == nil {
+		return nil, fmt.Errorf("sandbox %q does not have a recorded repository checkout", sandboxID)
+	}
+	return checkout, nil
+}
+
+func validateWorkspaceCopyOutLocalRepository(local *resolvedRepositoryCheckout, sandbox *repositorycheckout.Checkout) error {
+	if local == nil || strings.TrimSpace(local.RootDir) == "" {
+		return errors.New("workspace copy-out requires a local Git repository checkout matching the sandbox repository")
+	}
+	localRemote := strings.TrimSpace(local.RemoteURL)
+	if localRemote == "" {
+		return errors.New("workspace copy-out requires a local repository remote")
+	}
+	if sandbox == nil || strings.TrimSpace(sandbox.RemoteURL) == "" {
+		return errors.New("sandbox repository checkout is missing the remote needed to validate workspace copy-out")
+	}
+	sandboxRemote, _, err := repositorycheckout.CanonicalizeRemoteURL(sandbox.RemoteURL)
+	if err != nil {
+		return fmt.Errorf("validate sandbox repository remote for workspace copy-out: %w", err)
+	}
+	if localRemote != sandboxRemote {
+		return fmt.Errorf("workspace copy-out local repository remote %q does not match sandbox repository remote %q", localRemote, sandboxRemote)
+	}
+	return nil
+}
+
 func resolveGitWorkspaceCheckout(callCtx context.Context, client *controlclient.Client, opts workspaceCopyOptions) (*resolvedRepositoryCheckout, *repositorycheckout.Checkout, error) {
 	repository := opts.Repository
 	if repository == nil {
@@ -145,8 +274,20 @@ func resolveGitWorkspaceCheckout(callCtx context.Context, client *controlclient.
 }
 
 func runWorkspaceExecution(callCtx context.Context, ctx *runtimeContext, client *controlclient.Client, sandboxID string, repository *resolvedRepositoryCheckout, command []string, input io.Reader, launchSeconds int64) error {
+	return runWorkspaceExecutionWithStdout(callCtx, ctx, client, sandboxID, repository, command, input, launchSeconds, runtimeStdout(ctx))
+}
+
+func runWorkspaceExecutionCapture(callCtx context.Context, ctx *runtimeContext, client *controlclient.Client, sandboxID string, command []string, launchSeconds int64) ([]byte, error) {
+	var stdout bytes.Buffer
+	if err := runWorkspaceExecutionWithStdout(callCtx, ctx, client, sandboxID, nil, command, nil, launchSeconds, &stdout); err != nil {
+		return nil, err
+	}
+	return stdout.Bytes(), nil
+}
+
+func runWorkspaceExecutionWithStdout(callCtx context.Context, ctx *runtimeContext, client *controlclient.Client, sandboxID string, repository *resolvedRepositoryCheckout, command []string, input io.Reader, launchSeconds int64, stdout io.Writer) error {
 	if len(command) == 0 {
-		return errors.New("workspace copy-in execution command is empty")
+		return errors.New("workspace operation execution command is empty")
 	}
 	createResp, err := client.CreateWorkspaceCopyInExecution(tracePreservingContext(callCtx), &cleanroomv1.CreateExecutionRequest{
 		SandboxId:          sandboxID,
@@ -160,13 +301,13 @@ func runWorkspaceExecution(callCtx context.Context, ctx *runtimeContext, client 
 		},
 	})
 	if err != nil {
-		return fmt.Errorf("create workspace copy-in execution: %w", err)
+		return fmt.Errorf("create workspace operation execution: %w", err)
 	}
 	executionID := strings.TrimSpace(createResp.GetExecution().GetExecutionId())
 	if executionID == "" {
-		return errors.New("workspace copy-in execution response missing execution id")
+		return errors.New("workspace operation execution response missing execution id")
 	}
-	return streamWorkspaceExecutionWithInput(callCtx, ctx, client, sandboxID, executionID, input)
+	return streamWorkspaceExecutionWithInput(callCtx, ctx, client, sandboxID, executionID, input, stdout)
 }
 
 func gitWorkspacePlan(destination string, files []repositorychangeset.File, reset bool) []workspacePlanEntry {
@@ -189,6 +330,92 @@ func gitWorkspacePlan(destination string, files []repositorychangeset.File, rese
 	}
 	sortWorkspacePlan(entries)
 	return entries
+}
+
+func gitWorkspaceCopyOutPlan(localRoot string, nameStatus []byte) ([]workspacePlanEntry, error) {
+	files, err := parseGitNameStatusWorkspaceFiles(nameStatus)
+	if err != nil {
+		return nil, err
+	}
+	entries := make([]workspacePlanEntry, 0, len(files))
+	for _, file := range files {
+		localPath, err := workspaceLocalPath(localRoot, file.Path)
+		if err != nil {
+			return nil, err
+		}
+		action := "write"
+		if file.Deleted {
+			action = "delete"
+		}
+		entries = append(entries, workspacePlanEntry{
+			Action: action,
+			Path:   localPath,
+		})
+	}
+	sortWorkspacePlan(entries)
+	return entries, nil
+}
+
+func parseGitNameStatusWorkspaceFiles(output []byte) ([]repositorychangeset.File, error) {
+	tokens := splitNullTerminatedWorkspaceFields(output)
+	files := make([]repositorychangeset.File, 0, len(tokens)/2)
+	for i := 0; i < len(tokens); i += 2 {
+		if i+1 >= len(tokens) {
+			return nil, fmt.Errorf("parse workspace changes file status %q", tokens[i])
+		}
+		status := strings.TrimSpace(tokens[i])
+		if status == "" {
+			return nil, errors.New("parse workspace changes: empty file status")
+		}
+		rel, err := workspaceRelativePath(tokens[i+1])
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, repositorychangeset.File{
+			Path:    rel,
+			Deleted: strings.HasPrefix(status, "D"),
+		})
+	}
+	return files, nil
+}
+
+func splitNullTerminatedWorkspaceFields(output []byte) []string {
+	trimmed := bytes.TrimRight(output, "\x00")
+	if len(trimmed) == 0 {
+		return nil
+	}
+	parts := bytes.Split(trimmed, []byte{0})
+	fields := make([]string, 0, len(parts))
+	for _, part := range parts {
+		fields = append(fields, string(part))
+	}
+	return fields
+}
+
+func workspaceLocalPath(root, rel string) (string, error) {
+	normalized, err := workspaceRelativePath(rel)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, filepath.FromSlash(normalized)), nil
+}
+
+func workspaceRelativePath(rel string) (string, error) {
+	slashed := filepath.ToSlash(rel)
+	cleaned := posixpath.Clean(slashed)
+	windowsCleaned := posixpath.Clean(strings.ReplaceAll(slashed, "\\", "/"))
+	if cleaned == "." || cleaned == "" || strings.HasPrefix(cleaned, "/") || hasWindowsDriveAbsolutePathPrefix(windowsCleaned) || cleaned == ".." || strings.HasPrefix(cleaned, "../") {
+		return "", fmt.Errorf("workspace path %q is not a safe relative path", rel)
+	}
+	return cleaned, nil
+}
+
+func hasWindowsDriveAbsolutePathPrefix(path string) bool {
+	if len(path) < 3 || path[1] != ':' || path[2] != '/' {
+		return false
+	}
+	drive := path[0]
+	return (drive >= 'A' && drive <= 'Z') || (drive >= 'a' && drive <= 'z')
 }
 
 func copyRawWorkspaceToSandbox(callCtx context.Context, ctx *runtimeContext, client *controlclient.Client, opts workspaceCopyOptions) error {
@@ -583,7 +810,10 @@ func sortWorkspacePlan(entries []workspacePlanEntry) {
 	})
 }
 
-func streamWorkspaceExecutionWithInput(callCtx context.Context, ctx *runtimeContext, client *controlclient.Client, sandboxID, executionID string, input io.Reader) error {
+func streamWorkspaceExecutionWithInput(callCtx context.Context, ctx *runtimeContext, client *controlclient.Client, sandboxID, executionID string, input io.Reader, stdout io.Writer) error {
+	if stdout == nil {
+		stdout = runtimeStdout(ctx)
+	}
 	streamCtx, streamCancel := context.WithCancel(tracePreservingContext(callCtx))
 	defer streamCancel()
 	stream, err := client.StreamExecution(streamCtx, &cleanroomv1.StreamExecutionRequest{
@@ -592,7 +822,7 @@ func streamWorkspaceExecutionWithInput(callCtx context.Context, ctx *runtimeCont
 		Follow:      true,
 	})
 	if err != nil {
-		return fmt.Errorf("stream workspace copy-in execution: %w", err)
+		return fmt.Errorf("stream workspace operation execution: %w", err)
 	}
 
 	var stdinErrCh <-chan error
@@ -615,7 +845,7 @@ func streamWorkspaceExecutionWithInput(callCtx context.Context, ctx *runtimeCont
 		event := stream.Msg()
 		switch payload := event.Payload.(type) {
 		case *cleanroomv1.ExecutionStreamEvent_Stdout:
-			if _, err := runtimeStdout(ctx).Write(payload.Stdout); err != nil {
+			if _, err := stdout.Write(payload.Stdout); err != nil {
 				return err
 			}
 		case *cleanroomv1.ExecutionStreamEvent_Stderr:
@@ -636,7 +866,7 @@ func streamWorkspaceExecutionWithInput(callCtx context.Context, ctx *runtimeCont
 		}
 	}
 	if err := stream.Err(); err != nil && !isCanceledStreamErr(err) {
-		return fmt.Errorf("stream workspace copy-in execution: %w", err)
+		return fmt.Errorf("stream workspace operation execution: %w", err)
 	}
 	if err := waitExecutionStdinErr(stdinErrCh, executionStdinErrDrainTimeout); err != nil {
 		return err
@@ -648,7 +878,7 @@ func streamWorkspaceExecutionWithInput(callCtx context.Context, ctx *runtimeCont
 		}
 	}
 	if !haveExitCode {
-		return errors.New("workspace copy-in execution ended without exit status")
+		return errors.New("workspace operation execution ended without exit status")
 	}
 	if exitCode != 0 {
 		return exitCodeError{code: exitCode}
@@ -666,12 +896,12 @@ func writeExecutionInput(callCtx context.Context, client *controlclient.Client, 
 				ExecutionId: executionID,
 				Data:        append([]byte(nil), buf[:n]...),
 			}); err != nil {
-				return fmt.Errorf("write workspace copy-in payload: %w", err)
+				return fmt.Errorf("write workspace operation payload: %w", err)
 			}
 		}
 		if readErr != nil {
 			if !errors.Is(readErr, io.EOF) {
-				return fmt.Errorf("read workspace copy-in payload: %w", readErr)
+				return fmt.Errorf("read workspace operation payload: %w", readErr)
 			}
 			break
 		}
