@@ -1,0 +1,4 @@
+interface:
+  display_name: "Cleanroom"
+  short_description: "Run work in Cleanroom sandboxes"
+  default_prompt: "Use $cleanroom to run this task inside a Cleanroom sandbox."
