@@ -2,8 +2,18 @@
 
 **Spec reference:** `spec.md` sections 5.1.1, 5.4, 5.4.2
 **Related plan:** `docs/plans/sandbox-transfer-invariants.md`
-**Status:** Proposed
-**Last reviewed:** 2026-04-28
+**Status:** In progress
+**Last reviewed:** 2026-05-02
+
+## Implementation Status
+
+- Phase 1 copy-in support landed in PR #251.
+- This changeset should land the read-only Phase 2 foundation:
+  Git-backed `workspace diff`, Git-backed `workspace copy-out --dry-run`,
+  sandbox-root resolution from the recorded repository checkout, and local-root
+  safety that requires a matching local Git checkout before copy-out planning.
+- Local copy-out writes, local binding metadata, recoverable copy-out payloads,
+  top-level `--copy-out`, and `--sync` remain follow-up work.
 
 ## Summary
 
