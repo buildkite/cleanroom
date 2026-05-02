@@ -1446,9 +1446,15 @@ func expandGuestPathValue(value, field string, requireAbsolute bool) (string, er
 		value = defaultBlockHome + value[1:]
 	} else if strings.HasPrefix(value, "~") {
 		return "", fmt.Errorf("%s does not support ~user expansion", field)
+	} else if value == "$HOME" {
+		value = defaultBlockHome
+	} else if strings.HasPrefix(value, "$HOME/") {
+		value = defaultBlockHome + strings.TrimPrefix(value, "$HOME")
+	} else if value == "${HOME}" {
+		value = defaultBlockHome
+	} else if strings.HasPrefix(value, "${HOME}/") {
+		value = defaultBlockHome + strings.TrimPrefix(value, "${HOME}")
 	}
-	value = strings.ReplaceAll(value, "${HOME}", defaultBlockHome)
-	value = strings.ReplaceAll(value, "$HOME", defaultBlockHome)
 	if strings.Contains(value, "$") {
 		return "", fmt.Errorf("%s contains an unsupported variable expansion", field)
 	}

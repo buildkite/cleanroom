@@ -158,7 +158,7 @@ func (c *Changeset) DigestPathsFromBase(repoRoot string, paths []string) ([]File
 		return nil, fmt.Errorf("apply repository changeset patch to temporary git index: %w", err)
 	}
 
-	expandedPaths, err := expandDigestPathsInIndex(repoRoot, env, paths)
+	expandedPaths, err := expandDigestPathsInIndex(repoRoot, env, baseCommitSHA, paths)
 	if err != nil {
 		return nil, err
 	}
@@ -188,7 +188,7 @@ func (c *Changeset) DigestPathsFromBase(repoRoot string, paths []string) ([]File
 	return files, nil
 }
 
-func expandDigestPathsInIndex(repoRoot string, env []string, paths []string) ([]string, error) {
+func expandDigestPathsInIndex(repoRoot string, env []string, baseCommitSHA string, paths []string) ([]string, error) {
 	seen := make(map[string]struct{}, len(paths))
 	var expanded []string
 	var indexPaths []string
@@ -210,7 +210,7 @@ func expandDigestPathsInIndex(repoRoot string, env []string, paths []string) ([]
 		}
 		if indexPaths == nil {
 			var err error
-			indexPaths, err = listIndexPaths(repoRoot, env)
+			indexPaths, err = listIndexPathsIncludingDeleted(repoRoot, env, baseCommitSHA)
 			if err != nil {
 				return nil, err
 			}
@@ -572,6 +572,49 @@ func listIndexPaths(repoRoot string, env []string) ([]string, error) {
 		normalizedPath := normalizePath(token)
 		if normalizedPath == "" {
 			return nil, fmt.Errorf("parse repository changeset index path from %q", token)
+		}
+		paths = append(paths, normalizedPath)
+	}
+	sort.Strings(paths)
+	return paths, nil
+}
+
+func listIndexPathsIncludingDeleted(repoRoot string, env []string, baseCommitSHA string) ([]string, error) {
+	paths, err := listIndexPaths(repoRoot, env)
+	if err != nil {
+		return nil, err
+	}
+	deletedPaths, err := listDeletedIndexPaths(repoRoot, env, baseCommitSHA)
+	if err != nil {
+		return nil, err
+	}
+	if len(deletedPaths) == 0 {
+		return paths, nil
+	}
+	seen := make(map[string]struct{}, len(paths)+len(deletedPaths))
+	combined := make([]string, 0, len(paths)+len(deletedPaths))
+	for _, candidate := range append(paths, deletedPaths...) {
+		if _, exists := seen[candidate]; exists {
+			continue
+		}
+		seen[candidate] = struct{}{}
+		combined = append(combined, candidate)
+	}
+	sort.Strings(combined)
+	return combined, nil
+}
+
+func listDeletedIndexPaths(repoRoot string, env []string, baseCommitSHA string) ([]string, error) {
+	output, err := gitOutput(repoRoot, env, "diff", "--cached", "--name-only", "-z", "--diff-filter=D", strings.TrimSpace(baseCommitSHA), "--")
+	if err != nil {
+		return nil, fmt.Errorf("list deleted repository changeset index paths: %w", err)
+	}
+	tokens := splitNullTerminated(output)
+	paths := make([]string, 0, len(tokens))
+	for _, token := range tokens {
+		normalizedPath := normalizePath(token)
+		if normalizedPath == "" {
+			return nil, fmt.Errorf("parse deleted repository changeset index path from %q", token)
 		}
 		paths = append(paths, normalizedPath)
 	}

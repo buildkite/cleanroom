@@ -673,6 +673,8 @@ func TestCompileRejectsInvalidOutputPaths(t *testing.T) {
 		{name: "workspace dir", outputs: rawPolicyBlockOutputs{Dirs: []string{"/workspace/node_modules"}}, want: "must not be under /workspace"},
 		{name: "root dir", outputs: rawPolicyBlockOutputs{Dirs: []string{"/"}}, want: "must not be /"},
 		{name: "unknown variable", outputs: rawPolicyBlockOutputs{Dirs: []string{"${CACHE}/go"}}, want: "unsupported variable expansion"},
+		{name: "home variable typo", outputs: rawPolicyBlockOutputs{Dirs: []string{"$HOMECACHE/go"}}, want: "unsupported variable expansion"},
+		{name: "home braced variable typo", outputs: rawPolicyBlockOutputs{Dirs: []string{"${HOME}CACHE/go"}}, want: "unsupported variable expansion"},
 		{name: "other user home", outputs: rawPolicyBlockOutputs{Dirs: []string{"~builder/.cache"}}, want: "does not support ~user expansion"},
 		{name: "duplicate normalized dirs", outputs: rawPolicyBlockOutputs{Dirs: []string{"~/go/pkg/mod", "${HOME}/go/pkg/mod"}}, want: "duplicates output path"},
 		{name: "overlapping dirs", outputs: rawPolicyBlockOutputs{Dirs: []string{"${HOME}/go", "${HOME}/go/pkg/mod"}}, want: "overlapping paths"},

@@ -368,6 +368,49 @@ func TestDigestPathsFromBaseExpandsGlobs(t *testing.T) {
 	}
 }
 
+func TestDigestPathsFromBaseExpandsDeletedGlobMatches(t *testing.T) {
+	repoDir := initGitRepository(t)
+	if err := os.WriteFile(filepath.Join(repoDir, "go.sum"), []byte("example.com/test v0.0.0 h1:abc123\n"), 0o644); err != nil {
+		t.Fatalf("write go.sum: %v", err)
+	}
+	runGit(t, repoDir, "add", "go.sum")
+	runGit(t, repoDir, "commit", "-m", "add go sum")
+
+	checkout := &repositorycheckout.Checkout{
+		RemoteURL:      "https://github.com/buildkite/cleanroom.git",
+		CommitSHA:      headCommit(t, repoDir),
+		DestinationDir: "/workspace",
+	}
+
+	if err := os.Remove(filepath.Join(repoDir, "go.sum")); err != nil {
+		t.Fatalf("delete go.sum: %v", err)
+	}
+	changeset, err := BuildFromWorkingTree(repoDir, checkout)
+	if err != nil {
+		t.Fatalf("BuildFromWorkingTree returned error: %v", err)
+	}
+	if changeset == nil {
+		t.Fatal("expected changeset")
+	}
+
+	digests, err := changeset.DigestPathsFromBase(repoDir, []string{"*.sum"})
+	if err != nil {
+		t.Fatalf("DigestPathsFromBase returned error: %v", err)
+	}
+	if got, want := len(digests), 1; got != want {
+		t.Fatalf("unexpected digest count: got %d want %d", got, want)
+	}
+	if got, want := digests[0].Path, "go.sum"; got != want {
+		t.Fatalf("unexpected digest path: got %q want %q", got, want)
+	}
+	if !digests[0].Deleted {
+		t.Fatal("expected go.sum to be recorded as deleted")
+	}
+	if digests[0].SHA256 != "" {
+		t.Fatalf("expected deleted go.sum digest to be empty, got %q", digests[0].SHA256)
+	}
+}
+
 func initGitRepository(t *testing.T) string {
 	t.Helper()
 
