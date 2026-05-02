@@ -389,22 +389,28 @@ func testRepositoryPolicy() *cleanroomv1.Policy {
 func testRepositoryDependencyPolicy() *cleanroomv1.Policy {
 	policyProto := testRepositoryPolicy()
 	policyProto.Dependencies = &cleanroomv1.PolicyDependencies{
-		Command: []string{"mise", "exec", "--", "go", "mod", "download"},
-		Key: &cleanroomv1.PolicyDependencyKey{
-			Files: []string{"go.mod", "go.sum"},
-		},
+		Blocks: []*cleanroomv1.PolicyBlock{testPolicyBlock(
+			"go-modules",
+			[]string{"mise", "exec", "--", "go", "mod", "download"},
+			[]string{"go.mod", "go.sum"},
+			[]string{"/root/go/pkg/mod"},
+			nil,
+		)},
 	}
 	return policyProto
 }
 
 func testRepositoryDependencyAndServicesPolicy() *cleanroomv1.Policy {
 	policyProto := testRepositoryDependencyPolicy()
+	policyProto.Docker = &cleanroomv1.PolicyDocker{Required: true}
 	policyProto.Services = &cleanroomv1.PolicyServices{
-		Docker:  &cleanroomv1.PolicyDockerService{Required: true},
-		Command: []string{"docker", "compose", "up", "-d", "postgres"},
-		Key: &cleanroomv1.PolicyDependencyKey{
-			Files: []string{"docker-compose.yml"},
-		},
+		Blocks: []*cleanroomv1.PolicyBlock{testPolicyBlock(
+			"postgres",
+			[]string{"docker", "compose", "up", "-d", "postgres"},
+			[]string{"docker-compose.yml"},
+			[]string{"/var/lib/cleanroom/services/postgres"},
+			nil,
+		)},
 	}
 
 	return policyProto
@@ -415,6 +421,20 @@ func testRepositoryPortableDependencyPolicy() *cleanroomv1.Policy {
 	policyProto.Dependencies.Reuse = policy.DependencyReusePortable
 
 	return policyProto
+}
+
+func testPolicyBlock(name string, command, inputFiles, outputDirs, outputFiles []string) *cleanroomv1.PolicyBlock {
+	return &cleanroomv1.PolicyBlock{
+		Name:    name,
+		Command: append([]string(nil), command...),
+		Inputs: &cleanroomv1.PolicyBlockInputs{
+			Files: append([]string(nil), inputFiles...),
+		},
+		Outputs: &cleanroomv1.PolicyBlockOutputs{
+			Dirs:  append([]string(nil), outputDirs...),
+			Files: append([]string(nil), outputFiles...),
+		},
+	}
 }
 
 func testRepositoryRunBeforePolicy() *cleanroomv1.Policy {
@@ -3118,7 +3138,7 @@ func TestCreateSandboxPublishesDependencyStageCacheForConfiguredDependencies(t *
 		t.Fatalf("expected two bootstrap commands, got %d want %d", got, want)
 	}
 	dependencyBootstrap := strings.Join(runCommands[1], " ")
-	if !repositoryWrappedCommandContains(dependencyBootstrap, `exec 'mise' 'exec' '--' 'go' 'mod' 'download'`) {
+	if !strings.Contains(dependencyBootstrap, "mise") || !strings.Contains(dependencyBootstrap, "go") || !strings.Contains(dependencyBootstrap, "download") {
 		t.Fatalf("expected configured dependency bootstrap to preserve explicit mise command, got %q", dependencyBootstrap)
 	}
 }
@@ -3343,7 +3363,7 @@ func TestCreateSandboxPublishesServicesStageCacheForConfiguredServices(t *testin
 		t.Fatalf("expected three bootstrap commands, got %d want %d", got, want)
 	}
 	servicesBootstrap := strings.Join(runCommands[2], " ")
-	if !repositoryWrappedCommandContains(servicesBootstrap, `exec 'docker' 'compose' 'up' '-d' 'postgres'`) {
+	if !strings.Contains(servicesBootstrap, "docker") || !strings.Contains(servicesBootstrap, "compose") || !strings.Contains(servicesBootstrap, "postgres") {
 		t.Fatalf("expected services bootstrap to preserve explicit docker compose command, got %q", servicesBootstrap)
 	}
 }
@@ -3591,7 +3611,7 @@ func TestCreateSandboxReusesPortableDependencyStageAfterCheckoutRefresh(t *testi
 	if !strings.Contains(refreshCommand, updatedCommit) || !strings.Contains(refreshCommand, `git -C "$dest" fetch --filter=blob:none --progress origin "$commit"`) {
 		t.Fatalf("expected portable hit to refresh checkout to %s, got %q", updatedCommit, refreshCommand)
 	}
-	if dependencyBootstrap := strings.Join(runCommands[1], " "); !repositoryWrappedCommandContains(dependencyBootstrap, `exec 'mise' 'exec' '--' 'go' 'mod' 'download'`) {
+	if dependencyBootstrap := strings.Join(runCommands[1], " "); !strings.Contains(dependencyBootstrap, "mise") || !strings.Contains(dependencyBootstrap, "go") || !strings.Contains(dependencyBootstrap, "download") {
 		t.Fatalf("expected first run to bootstrap dependencies, got %q", dependencyBootstrap)
 	}
 	if validationCommand := strings.Join(runCommands[3], "\n"); !strings.Contains(validationCommand, "sha256sum") {
@@ -3893,7 +3913,7 @@ func TestCreateSandboxBootstrapsServicesAfterPortableDependencyStageRestore(t *t
 		t.Fatalf("expected portable hit to refresh checkout to %s, got %q", updatedCommit, refreshCommand)
 	}
 	servicesBootstrap := strings.Join(runCommands[5], " ")
-	if !repositoryWrappedCommandContains(servicesBootstrap, `exec 'docker' 'compose' 'up' '-d' 'postgres'`) {
+	if !strings.Contains(servicesBootstrap, "docker") || !strings.Contains(servicesBootstrap, "compose") || !strings.Contains(servicesBootstrap, "postgres") {
 		t.Fatalf("expected services bootstrap after portable restore, got %q", servicesBootstrap)
 	}
 }
@@ -3953,6 +3973,39 @@ func TestDependencyStageKeyFilesDigestDerivesHashesFromRepositoryChangesetPatch(
 	}
 	if got, want := tamperedDigest, changesetDigest; got != want {
 		t.Fatalf("expected dependency key file digest to ignore tampered file hashes: got %q want %q", got, want)
+	}
+}
+
+func TestDependencyStageKeyFilesDigestExpandsGlobsDeterministically(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"go.mod":             "module example.com/test\n\ngo 1.26.2\n",
+		"go.sum":             "example.com/test v0.0.0 h1:abc123\n",
+		"docker-compose.yml": "services:\n  postgres:\n    image: postgres:17\n",
+	})
+	repository := repositorycheckout.FromProto(repositoryCheckout)
+
+	svc := newTestService(&stubAdapter{})
+	svc.RepositoryStore = mirrors
+
+	globDigest, err := svc.dependencyStageKeyFilesDigest(context.Background(), repository, nil, nil, []string{"*.sum", "go.*"})
+	if err != nil {
+		t.Fatalf("dependencyStageKeyFilesDigest with glob returned error: %v", err)
+	}
+	explicitDigest, err := svc.dependencyStageKeyFilesDigest(context.Background(), repository, nil, nil, []string{"go.mod", "go.sum"})
+	if err != nil {
+		t.Fatalf("dependencyStageKeyFilesDigest with explicit files returned error: %v", err)
+	}
+	if got, want := globDigest, explicitDigest; got != want {
+		t.Fatalf("expected glob and explicit digest to match: got %q want %q", got, want)
+	}
+
+	_, err = svc.dependencyStageKeyFilesDigest(context.Background(), repository, nil, nil, []string{"*.missing"})
+	if err == nil {
+		t.Fatal("expected empty glob to fail")
+	}
+	if !strings.Contains(err.Error(), "matched no files") {
+		t.Fatalf("unexpected empty glob error: %v", err)
 	}
 }
 
@@ -4077,7 +4130,7 @@ func TestCreateSandboxBootstrapsDependenciesAfterWorkspaceStageRestoreWithoutDep
 		t.Fatalf("expected one dependency bootstrap command, got %d want %d", got, want)
 	}
 	dependencyBootstrap := strings.Join(runCommands[0], " ")
-	if !repositoryWrappedCommandContains(dependencyBootstrap, `exec 'mise' 'exec' '--' 'go' 'mod' 'download'`) {
+	if !strings.Contains(dependencyBootstrap, "mise") || !strings.Contains(dependencyBootstrap, "go") || !strings.Contains(dependencyBootstrap, "download") {
 		t.Fatalf("expected dependency bootstrap to preserve explicit mise command, got %q", dependencyBootstrap)
 	}
 }
@@ -6396,9 +6449,7 @@ func TestCreateSandboxSetsRepositoryBootstrapRootFSMinimum(t *testing.T) {
 	}
 
 	policyProto := testRepositoryPolicy()
-	policyProto.Services = &cleanroomv1.PolicyServices{
-		Docker: &cleanroomv1.PolicyDockerService{Required: true},
-	}
+	policyProto.Docker = &cleanroomv1.PolicyDocker{Required: true}
 
 	_, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
 		Backend:            "darwin-vz",

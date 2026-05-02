@@ -48,7 +48,7 @@ cleanroom exec \
 
 ## What this exercises
 
-- `sandbox.dependencies.command` fills the remaining guest package gap
+- the `bundle` dependency block fills the remaining guest package gap
   (`default-libmysqlclient-dev`, `libxml2-dev`) and runs a full `bundle install`
 - Bundler mirror env injection rewrites the default `https://rubygems.org`
   source through Cleanroom's `/rubygems/` gateway route

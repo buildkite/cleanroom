@@ -70,6 +70,41 @@ type PortableDependencyStageInputs struct {
 	ProducerVersion             string
 }
 
+// DependencyVolumeInputs are the inputs that define a cacheable dependency
+// block output volume.
+type DependencyVolumeInputs struct {
+	Backend                         string
+	RuntimeKey                      string
+	ReuseNamespace                  string
+	CompiledPolicyHash              string
+	BlockName                       string
+	CommandDigest                   string
+	EnvDigest                       string
+	InputManifestDigest             string
+	NormalizedOutputsDigest         string
+	PriorDependencyOutputKeysDigest string
+	OutputVolumeLayoutVersion       string
+	ProducerVersion                 string
+}
+
+// ServiceVolumeInputs are the inputs that define a cacheable service block
+// output volume.
+type ServiceVolumeInputs struct {
+	Backend                      string
+	RuntimeKey                   string
+	ReuseNamespace               string
+	CompiledPolicyHash           string
+	BlockName                    string
+	CommandDigest                string
+	EnvDigest                    string
+	InputManifestDigest          string
+	NormalizedOutputsDigest      string
+	DependencyOutputKeysDigest   string
+	PriorServiceOutputKeysDigest string
+	OutputVolumeLayoutVersion    string
+	ProducerVersion              string
+}
+
 // RuntimeStageKey returns the canonical cache key for a runtime stage output.
 func RuntimeStageKey(in RuntimeStageInputs) string {
 	return buildStageKey("runtime", []component{
@@ -138,6 +173,56 @@ func PortableDependencyStageKey(in PortableDependencyStageInputs) string {
 	})
 }
 
+// DependencyVolumeKey returns the canonical cache key for a dependency block
+// output volume.
+func DependencyVolumeKey(in DependencyVolumeInputs) string {
+	return buildStageKey("dependency-volume", []component{
+		{name: "backend", value: canonicalIdentifier(in.Backend)},
+		{name: "runtime_key", value: canonicalReference(in.RuntimeKey)},
+		{name: "reuse_namespace", value: canonicalReuseNamespace(in.ReuseNamespace)},
+		{name: "compiled_policy_hash", value: canonicalDigest(in.CompiledPolicyHash)},
+		{name: "block_name", value: canonicalIdentifier(in.BlockName)},
+		{name: "command_digest", value: canonicalDigest(in.CommandDigest)},
+		{name: "env_digest", value: canonicalDigest(in.EnvDigest)},
+		{name: "input_manifest_digest", value: canonicalDigest(in.InputManifestDigest)},
+		{name: "normalized_outputs_digest", value: canonicalDigest(in.NormalizedOutputsDigest)},
+		{name: "prior_dependency_output_keys_digest", value: canonicalDigest(in.PriorDependencyOutputKeysDigest)},
+		{name: "output_volume_layout_version", value: canonicalIdentifier(in.OutputVolumeLayoutVersion)},
+		{name: "producer_version", value: canonicalIdentifier(in.ProducerVersion)},
+	})
+}
+
+// ServiceVolumeKey returns the canonical cache key for a service block output
+// volume.
+func ServiceVolumeKey(in ServiceVolumeInputs) string {
+	return buildStageKey("service-volume", []component{
+		{name: "backend", value: canonicalIdentifier(in.Backend)},
+		{name: "runtime_key", value: canonicalReference(in.RuntimeKey)},
+		{name: "reuse_namespace", value: canonicalReuseNamespace(in.ReuseNamespace)},
+		{name: "compiled_policy_hash", value: canonicalDigest(in.CompiledPolicyHash)},
+		{name: "block_name", value: canonicalIdentifier(in.BlockName)},
+		{name: "command_digest", value: canonicalDigest(in.CommandDigest)},
+		{name: "env_digest", value: canonicalDigest(in.EnvDigest)},
+		{name: "input_manifest_digest", value: canonicalDigest(in.InputManifestDigest)},
+		{name: "normalized_outputs_digest", value: canonicalDigest(in.NormalizedOutputsDigest)},
+		{name: "dependency_output_keys_digest", value: canonicalDigest(in.DependencyOutputKeysDigest)},
+		{name: "prior_service_output_keys_digest", value: canonicalDigest(in.PriorServiceOutputKeysDigest)},
+		{name: "output_volume_layout_version", value: canonicalIdentifier(in.OutputVolumeLayoutVersion)},
+		{name: "producer_version", value: canonicalIdentifier(in.ProducerVersion)},
+	})
+}
+
+// ReuseNamespace returns the cache reuse boundary for file-keyed output volumes.
+// Explicit namespaces are trusted by policy; otherwise reuse is scoped to the
+// canonical repository remote.
+func ReuseNamespace(explicit, canonicalRemote string) string {
+	explicit = strings.TrimSpace(explicit)
+	if explicit != "" {
+		return explicit
+	}
+	return canonicalRemoteURL(canonicalRemote)
+}
+
 type component struct {
 	name  string
 	value string
@@ -176,6 +261,10 @@ func canonicalIdentifier(value string) string {
 }
 
 func canonicalReference(value string) string {
+	return strings.TrimSpace(value)
+}
+
+func canonicalReuseNamespace(value string) string {
 	return strings.TrimSpace(value)
 }
 

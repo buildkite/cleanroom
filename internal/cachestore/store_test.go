@@ -46,11 +46,26 @@ func TestStoreCreateGetReadyListDelete(t *testing.T) {
 		StorageRef:               "/tmp/workspace-test.ext4",
 		StorageDriver:            "file",
 		InputManifestDigest:      "sha256:manifest",
+		CommandDigest:            "sha256:command",
+		EnvDigest:                "sha256:env",
+		NormalizedOutputsDigest:  "sha256:outputs",
+		OutputManifestDigest:     "sha256:output-manifest",
 		DependencyKeyFilesDigest: "sha256:dependency-key-files",
-		CheckoutRefreshRequired:  true,
-		CreatedAt:                time.Unix(1700000000, 123).UTC(),
-		LastUsedAt:               time.Unix(1700000001, 456).UTC(),
-		ProducerVersion:          "cleanroom-test/1",
+		OutputRecords: []OutputRecord{
+			{
+				Kind:           "directory",
+				Path:           "/root/go/pkg/mod",
+				VolumeSubpath:  "dirs/root-go-pkg-mod",
+				StorageDriver:  "file",
+				StorageRef:     "/tmp/go-mod-output.ext4",
+				SnapshotRef:    "/tmp/go-mod-output-snapshot.ext4",
+				ManifestDigest: "sha256:go-mod-output",
+			},
+		},
+		CheckoutRefreshRequired: true,
+		CreatedAt:               time.Unix(1700000000, 123).UTC(),
+		LastUsedAt:              time.Unix(1700000001, 456).UTC(),
+		ProducerVersion:         "cleanroom-test/1",
 	}
 	if err := store.Create(context.Background(), record); err != nil {
 		t.Fatalf("Create returned error: %v", err)
@@ -63,8 +78,14 @@ func TestStoreCreateGetReadyListDelete(t *testing.T) {
 	if !ok {
 		t.Fatal("expected stored ready cache")
 	}
-	if got.CacheKey != record.CacheKey || got.Stage != record.Stage || got.State != record.State || got.PolicyHash != record.PolicyHash || got.StorageRef != record.StorageRef || got.StorageDriver != record.StorageDriver || got.ParentCacheKey != record.ParentCacheKey || got.ReuseMode != record.ReuseMode || got.RepositoryChangesetID != record.RepositoryChangesetID || got.InputManifestDigest != record.InputManifestDigest || got.DependencyKeyFilesDigest != record.DependencyKeyFilesDigest || got.CheckoutRefreshRequired != record.CheckoutRefreshRequired || got.ProducerVersion != record.ProducerVersion {
+	if got.CacheKey != record.CacheKey || got.Stage != record.Stage || got.State != record.State || got.PolicyHash != record.PolicyHash || got.StorageRef != record.StorageRef || got.StorageDriver != record.StorageDriver || got.ParentCacheKey != record.ParentCacheKey || got.ReuseMode != record.ReuseMode || got.RepositoryChangesetID != record.RepositoryChangesetID || got.InputManifestDigest != record.InputManifestDigest || got.CommandDigest != record.CommandDigest || got.EnvDigest != record.EnvDigest || got.NormalizedOutputsDigest != record.NormalizedOutputsDigest || got.OutputManifestDigest != record.OutputManifestDigest || got.DependencyKeyFilesDigest != record.DependencyKeyFilesDigest || got.CheckoutRefreshRequired != record.CheckoutRefreshRequired || got.ProducerVersion != record.ProducerVersion {
 		t.Fatalf("unexpected cache record: %#v", got)
+	}
+	if got, want := len(got.OutputRecords), len(record.OutputRecords); got != want {
+		t.Fatalf("unexpected output record count: got %d want %d", got, want)
+	}
+	if got, want := got.OutputRecords[0], record.OutputRecords[0]; got != want {
+		t.Fatalf("unexpected output record: %#v want %#v", got, want)
 	}
 	if !got.CreatedAt.Equal(record.CreatedAt) {
 		t.Fatalf("unexpected created_at: got %s want %s", got.CreatedAt.Format(time.RFC3339Nano), record.CreatedAt.Format(time.RFC3339Nano))

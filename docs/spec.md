@@ -86,28 +86,38 @@ sandbox:
     vcpus: 4
     memory: 8GiB
     disk: 16GiB
+  docker:
+    required: true
   dependencies:
-    network:
-      allow:
-        - proxy.golang.org:443
-        - sum.golang.org:443
-    command: mise exec -- go mod download
-    key:
-      files:
-        - .mise.toml
-        - go.mod
-        - go.sum
-    reuse: portable
-  services:
-    network:
-      allow: ghcr.io:443
-    docker:
-      required: true
+    - name: toolchains
+      command: mise install
+      inputs:
+        files:
+          - .mise.toml
+      outputs:
+        dirs:
+          - ${HOME}/.cache/mise
+          - ${HOME}/.local/share/mise
+    - name: go-modules
+      command: mise exec -- go mod download
+      inputs:
+        files:
+          - go.mod
+          - go.sum
+      outputs:
+        dirs:
+          - ${HOME}/go/pkg/mod
   run:
-    network: {}
     before: mise exec -- go test ./...
   network:
     default: deny
+    dependencies:
+      allow:
+        - proxy.golang.org:443
+        - sum.golang.org:443
+    services:
+      allow: ghcr.io:443
+    execution: {}
 ```
 
 ### 5.1.1 Repository bootstrap config
@@ -162,13 +172,23 @@ explicit request-time changeset input.
 - `sandbox.resources.vcpus` must be a positive integer.
 - `sandbox.resources.memory` and `sandbox.resources.disk` must be positive byte sizes. They accept raw bytes or size strings such as `4096MiB`, `8GiB`, or `16GiB`.
 - Resource requirements raise the effective backend runtime settings when the host runtime config is lower; they do not lower larger host defaults.
-- `sandbox.dependencies.command` defaults to unset; when present, Cleanroom runs that command in the repository workdir during sandbox creation and makes the result eligible for dependency-stage caching.
-- `sandbox.dependencies.command` accepts either a YAML string or a YAML sequence; strings execute as `sh -lc <value>`, and strings are the preferred form.
-- `sandbox.dependencies.key.files` defaults to empty; when present, Cleanroom hashes those repository-relative files from the exact committed checkout and includes them in the dependency-stage cache key.
-- `sandbox.dependencies.reuse` defaults to `exact`; `portable` opts into dependency-stage reuse across source-only commits by restoring the dependency snapshot, refreshing the checkout, and reusing it only when declared key files still match.
-- `sandbox.services.command` defaults to unset; when present, Cleanroom runs that command in the repository workdir after dependency bootstrap during sandbox creation and makes the result eligible for services-stage caching.
-- `sandbox.services.command` accepts either a YAML string or a YAML sequence; strings execute as `sh -lc <value>`, and strings are the preferred form.
-- `sandbox.services.key.files` defaults to empty; when present, Cleanroom hashes those repository-relative files from the exact committed checkout and includes them in the services-stage cache key.
+- `sandbox.docker.required` defaults to `false`; when true, Cleanroom starts the guest Docker daemon for the sandbox.
+- `sandbox.dependencies` defaults to an empty block list; each block has `name`, `command`, `inputs.files`, and `outputs.dirs` or `outputs.files`.
+- Dependency block commands run in the repository workdir during sandbox creation and make declared outputs eligible for dependency-stage caching.
+- Dependency block commands accept either a YAML string or a YAML sequence; strings execute as `sh -lc <value>`, and strings are the preferred form.
+- `sandbox.services` defaults to an empty block list; each block has `name`, `command`, `inputs.files`, and `outputs.dirs` or `outputs.files`.
+- Service block commands run in the repository workdir after dependency bootstrap during sandbox creation and make declared outputs eligible for services-stage caching.
+- Service block commands accept either a YAML string or a YAML sequence; strings execute as `sh -lc <value>`, and strings are the preferred form.
+- Block `inputs.files` are repository-relative regular files or globs matching
+  regular files. Literal paths must exist; globs must match at least one path.
+- Block `outputs.dirs` and `outputs.files` are absolute guest paths outside
+  `/workspace` and cannot be `/`; `${HOME}`, `$HOME`, and `~` expand to the
+  Cleanroom block execution home.
+- Block `env` values are literal strings, except leading home-directory
+  shorthand forms (`~`, `~/`, `$HOME`, `$HOME/`, `${HOME}`, `${HOME}/`) expand
+  to the Cleanroom block execution home.
+- Normalized outputs must be unique and non-overlapping across all dependency
+  and service blocks.
 - `sandbox.run.before` defaults to unset; when present, each execution runs that shell command in the repository workdir immediately before the requested command.
 - `sandbox.run.before` must be a YAML string or block string and executes as `sh -lc <value>`.
 - Policy schema intentionally has no field for implicit dirty-worktree inclusion; explicit local modifications are a separate request-time changeset input.
@@ -176,12 +196,10 @@ explicit request-time changeset input.
   entries or a single scalar entry.
 - `repository.network.allow` is the workspace-stage allowlist for repository
   checkout and explicit repository changeset application.
-- `sandbox.dependencies.network.allow` applies only while
-  `sandbox.dependencies.command` runs.
-- `sandbox.services.network.allow` applies only while
-  `sandbox.services.command` runs.
-- `sandbox.run.network.allow` applies to `sandbox.run.before` and the requested
-  execution command.
+- `sandbox.network.dependencies.allow` applies only while dependency blocks run.
+- `sandbox.network.services.allow` applies only while service blocks run.
+- `sandbox.network.execution.allow` applies to `sandbox.run.before` and the
+  requested execution command.
 - Stage-local network blocks do not inherit from one another. An omitted
   stage-local block means no external egress for that stage when any stage-local
   network block is configured.
@@ -266,8 +284,8 @@ A future runtime policy object may contain:
   - they resolve the local repository remote URL and committed `HEAD`
   - they materialize that checkout inside the sandbox before the command runs
   - they start commands in `repository.path`
-  - when `sandbox.dependencies.command` is set, sandbox creation runs that dependency bootstrap command after repository bootstrap and may publish a reusable dependency stage for later warm hits
-  - when `sandbox.services.command` is set, sandbox creation runs that services bootstrap command after dependency bootstrap and may publish a reusable services stage for later warm hits
+  - when `sandbox.dependencies` blocks are set, sandbox creation runs those dependency bootstrap blocks after repository bootstrap and may publish a reusable dependency stage for later warm hits
+  - when `sandbox.services` blocks are set, sandbox creation runs those services bootstrap blocks after dependency bootstrap and may publish a reusable services stage for later warm hits
   - when `sandbox.run.before` is set, each execution runs that shell command immediately before the requested command
   - Cleanroom does not auto-detect or auto-wrap `mise`; use explicit commands such as `mise exec -- ...` when needed
 - When explicitly requested, top-level commands may package local modifications against committed `HEAD` into a reproducible changeset, send that changeset as a separate sandbox-creation input, and apply it after repository bootstrap and before dependency bootstrap, services bootstrap, or workload execution.
@@ -336,11 +354,11 @@ Requirements:
 - If changeset application fails, or if the resulting repository tree digest
   does not match the expected post-apply tree digest, sandbox creation must fail
   closed.
-- Dependency bootstrap key resolution must use the post-apply repository tree
+- Dependency and service input resolution must use the post-apply repository tree
   when a changeset is present.
-- Portable dependency reuse requires declared dependency key files and must
-  refresh the checkout before running user code; if key-file validation fails,
-  the restored child is discarded and normal dependency bootstrap is used.
+- File-keyed dependency and service output reuse requires declared block inputs
+  and outputs and must validate declared inputs before publishing reusable
+  outputs.
 - Changesets are separate from both user snapshots and system-managed stage
   caches. They are explicit request inputs, not snapshot restore targets.
 
@@ -364,10 +382,11 @@ Minimum required fields:
   - optional `workspace`, `dependencies`, `services`, and `execution`
     allowlists
 - `services`
-  - Docker service requirement
-  - optional services bootstrap command and key files
+  - optional service blocks with command, inputs, and outputs
 - `dependencies`
-  - optional dependency bootstrap command, key files, and reuse mode
+  - optional dependency blocks with command, inputs, and outputs
+- `docker`
+  - Docker service requirement
 - `run`
   - optional pre-run command
 - `resources`

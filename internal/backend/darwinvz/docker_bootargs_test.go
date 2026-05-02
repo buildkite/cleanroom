@@ -20,9 +20,7 @@ func TestDockerServiceBootArgsDisabledByDefault(t *testing.T) {
 
 func TestDockerServiceBootArgsUsesPolicyAndRuntimeSettings(t *testing.T) {
 	compiled := &policy.CompiledPolicy{
-		Services: policy.Services{
-			Docker: policy.DockerService{Required: true},
-		},
+		Docker: policy.DockerService{Required: true},
 	}
 	cfg := backend.FirecrackerConfig{
 		DockerStartupSeconds: 45,
@@ -47,9 +45,7 @@ func TestDockerServiceBootArgsUsesPolicyAndRuntimeSettings(t *testing.T) {
 
 func TestDockerServiceBootArgsSkipsMirrorWithoutLiveRoute(t *testing.T) {
 	compiled := &policy.CompiledPolicy{
-		Services: policy.Services{
-			Docker: policy.DockerService{Required: true},
-		},
+		Docker: policy.DockerService{Required: true},
 	}
 
 	got := dockerServiceBootArgs(compiled, backend.FirecrackerConfig{}, 8170, gateway.ProxyRoutes{})

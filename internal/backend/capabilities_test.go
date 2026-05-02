@@ -93,6 +93,15 @@ func TestCapabilitiesForAdapterInfersInterfaceCapabilities(t *testing.T) {
 			t.Fatalf("expected %s=true", key)
 		}
 	}
+	for _, key := range []string{
+		CapabilitySandboxCacheOutputVolumes,
+		CapabilitySandboxCacheOutputFastClone,
+		CapabilitySandboxOverlayWriteCapture,
+	} {
+		if caps[key] {
+			t.Fatalf("expected %s=false without backend reporter", key)
+		}
+	}
 }
 
 func TestCapabilitiesForAdapterMergesReporterCapabilities(t *testing.T) {

@@ -322,6 +322,52 @@ func TestResetCommandsUseDoubleForceClean(t *testing.T) {
 	}
 }
 
+func TestDigestPathsFromBaseExpandsGlobs(t *testing.T) {
+	repoDir := initGitRepository(t)
+	if err := os.WriteFile(filepath.Join(repoDir, "go.mod"), []byte("module example.com/test\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "go.sum"), []byte("example.com/test v0.0.0 h1:abc123\n"), 0o644); err != nil {
+		t.Fatalf("write go.sum: %v", err)
+	}
+
+	checkout := &repositorycheckout.Checkout{
+		RemoteURL:      "https://github.com/buildkite/cleanroom.git",
+		CommitSHA:      headCommit(t, repoDir),
+		DestinationDir: "/workspace",
+	}
+
+	changeset, err := BuildFromWorkingTree(repoDir, checkout)
+	if err != nil {
+		t.Fatalf("BuildFromWorkingTree returned error: %v", err)
+	}
+	if changeset == nil {
+		t.Fatal("expected changeset")
+	}
+
+	digests, err := changeset.DigestPathsFromBase(repoDir, []string{"*.sum", "go.*"})
+	if err != nil {
+		t.Fatalf("DigestPathsFromBase returned error: %v", err)
+	}
+	if got, want := len(digests), 2; got != want {
+		t.Fatalf("unexpected digest count: got %d want %d", got, want)
+	}
+	if got, want := digests[0].Path, "go.mod"; got != want {
+		t.Fatalf("unexpected first digest path: got %q want %q", got, want)
+	}
+	if got, want := digests[1].Path, "go.sum"; got != want {
+		t.Fatalf("unexpected second digest path: got %q want %q", got, want)
+	}
+
+	_, err = changeset.DigestPathsFromBase(repoDir, []string{"*.missing"})
+	if err == nil {
+		t.Fatal("expected empty glob to fail")
+	}
+	if !strings.Contains(err.Error(), "matched no files") {
+		t.Fatalf("unexpected empty glob error: %v", err)
+	}
+}
+
 func initGitRepository(t *testing.T) string {
 	t.Helper()
 

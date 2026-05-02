@@ -21,6 +21,24 @@ func baseRawPolicy() rawPolicy {
 	return raw
 }
 
+func rawBlock(name string, command []string, inputs []string, outputs rawPolicyBlockOutputs) rawPolicyBlock {
+	return rawPolicyBlock{
+		Name:    name,
+		Command: rawDependencyCommandSpec(command),
+		Inputs:  rawPolicyBlockInputs{Files: inputs},
+		Outputs: outputs,
+	}
+}
+
+func protoBlock(name string, command []string, inputs []string, outputs *cleanroomv1.PolicyBlockOutputs) *cleanroomv1.PolicyBlock {
+	return &cleanroomv1.PolicyBlock{
+		Name:    name,
+		Command: command,
+		Inputs:  &cleanroomv1.PolicyBlockInputs{Files: inputs},
+		Outputs: outputs,
+	}
+}
+
 func TestLoaderPrefersRootPolicy(t *testing.T) {
 	t.Parallel()
 
@@ -228,19 +246,16 @@ repository:
 sandbox:
   image:
     ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
-  dependencies:
-    network:
+  network:
+    default: deny
+    dependencies:
       allow:
         - proxy.golang.org:443
         - host: storage.googleapis.com
           ports: [443, 443]
-  services:
-    network:
+    services:
       allow: registry-1.docker.io:443
-  run:
-    network: {}
-  network:
-    default: deny
+    execution: {}
 `), &raw); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
@@ -287,10 +302,10 @@ func TestNetworkPolicyForStageRehashesStageScopedPolicies(t *testing.T) {
 			Allow: rawAllowRules{{Host: "github.com", Ports: []int{443}}},
 		},
 	}
-	raw.Sandbox.Dependencies.Network = &rawStageNetworkConfig{
+	raw.Sandbox.Network.Dependencies = &rawStageNetworkConfig{
 		Allow: rawAllowRules{{Host: "proxy.golang.org", Ports: []int{443}}},
 	}
-	raw.Sandbox.Run.Network = &rawStageNetworkConfig{}
+	raw.Sandbox.Network.Execution = &rawStageNetworkConfig{}
 
 	compiled, err := Compile(raw)
 	if err != nil {
@@ -454,13 +469,13 @@ func TestCompileCapturesDockerServiceRequirement(t *testing.T) {
 	t.Parallel()
 
 	raw := baseRawPolicy()
-	raw.Sandbox.Services.Docker.Required = true
+	raw.Sandbox.Docker.Required = true
 
 	compiled, err := Compile(raw)
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	if !compiled.Services.Docker.Required {
+	if !compiled.Docker.Required {
 		t.Fatal("expected compiled policy to require docker service")
 	}
 }
@@ -548,38 +563,31 @@ func TestCompileNormalizesDependencyBootstrapConfig(t *testing.T) {
 	t.Parallel()
 
 	raw := baseRawPolicy()
-	raw.Sandbox.Dependencies.Command = []string{"go", "mod", "download"}
-	raw.Sandbox.Dependencies.Key.Files = []string{"./go.sum", "go.mod", "go.sum"}
+	raw.Sandbox.Dependencies = rawPolicyBlocks{
+		rawBlock("go-modules", []string{"go", "mod", "download"}, []string{"./go.sum", "go.mod", "go.sum"}, rawPolicyBlockOutputs{
+			Dirs: []string{"${HOME}/go/pkg/mod"},
+		}),
+	}
 
 	compiled, err := Compile(raw)
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	if got, want := compiled.Dependencies.Command, []string{"go", "mod", "download"}; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+	if len(compiled.Dependencies.Blocks) != 1 {
+		t.Fatalf("unexpected dependency block count: got %d want 1", len(compiled.Dependencies.Blocks))
+	}
+	block := compiled.Dependencies.Blocks[0]
+	if got, want := block.Name, "go-modules"; got != want {
+		t.Fatalf("unexpected dependency block name: got %q want %q", got, want)
+	}
+	if got, want := block.Command, []string{"go", "mod", "download"}; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("unexpected dependency command: got %v want %v", got, want)
 	}
 	if got, want := compiled.Dependencies.KeyFiles, []string{"go.mod", "go.sum"}; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("unexpected dependency key files: got %v want %v", got, want)
 	}
-	if got := compiled.Dependencies.Reuse; got != "" {
-		t.Fatalf("expected default dependency reuse mode to be empty/exact, got %q", got)
-	}
-}
-
-func TestCompileNormalizesPortableDependencyReuse(t *testing.T) {
-	t.Parallel()
-
-	raw := baseRawPolicy()
-	raw.Sandbox.Dependencies.Command = []string{"go", "mod", "download"}
-	raw.Sandbox.Dependencies.Key.Files = []string{"go.mod", "go.sum"}
-	raw.Sandbox.Dependencies.Reuse = "portable"
-
-	compiled, err := Compile(raw)
-	if err != nil {
-		t.Fatalf("compile: %v", err)
-	}
-	if got, want := compiled.Dependencies.Reuse, DependencyReusePortable; got != want {
-		t.Fatalf("unexpected dependency reuse mode: got %q want %q", got, want)
+	if got, want := block.Outputs.Dirs, []string{"/root/go/pkg/mod"}; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("unexpected dependency outputs: got %v want %v", got, want)
 	}
 }
 
@@ -587,22 +595,223 @@ func TestCompileNormalizesServicesBootstrapConfig(t *testing.T) {
 	t.Parallel()
 
 	raw := baseRawPolicy()
-	raw.Sandbox.Services.Docker.Required = true
-	raw.Sandbox.Services.Command = []string{"docker", "compose", "up", "-d", "postgres"}
-	raw.Sandbox.Services.Key.Files = []string{"./docker-compose.yml", "docker-compose.yml"}
+	raw.Sandbox.Docker.Required = true
+	raw.Sandbox.Services = rawPolicyBlocks{
+		rawBlock("postgres", []string{"docker", "compose", "up", "-d", "postgres"}, []string{"./docker-compose.yml", "docker-compose.yml"}, rawPolicyBlockOutputs{
+			Dirs: []string{"/var/lib/cleanroom/services/postgres"},
+		}),
+	}
 
 	compiled, err := Compile(raw)
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	if !compiled.Services.Docker.Required {
+	if !compiled.Docker.Required {
 		t.Fatal("expected compiled policy to preserve docker service requirement")
 	}
-	if got, want := compiled.Services.Command, []string{"docker", "compose", "up", "-d", "postgres"}; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+	if len(compiled.Services.Blocks) != 1 {
+		t.Fatalf("unexpected services block count: got %d want 1", len(compiled.Services.Blocks))
+	}
+	if got, want := compiled.Services.Blocks[0].Command, []string{"docker", "compose", "up", "-d", "postgres"}; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("unexpected services command: got %v want %v", got, want)
 	}
 	if got, want := compiled.Services.KeyFiles, []string{"docker-compose.yml"}; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("unexpected services key files: got %v want %v", got, want)
+	}
+}
+
+func TestUnmarshalRejectsOldServicesObjectShape(t *testing.T) {
+	t.Parallel()
+
+	var raw rawPolicy
+	err := yaml.Unmarshal([]byte(`
+version: 1
+sandbox:
+  image:
+    ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  services:
+    docker:
+      required: true
+    command: docker compose up -d postgres
+    key:
+      files: [docker-compose.yml]
+  network:
+    default: deny
+`), &raw)
+	if err == nil {
+		t.Fatal("expected unmarshal to reject old services object shape")
+	}
+}
+
+func TestCompileRejectsDuplicateDependencyBlockNames(t *testing.T) {
+	t.Parallel()
+
+	raw := baseRawPolicy()
+	raw.Sandbox.Dependencies = rawPolicyBlocks{
+		rawBlock("go-modules", []string{"go", "mod", "download"}, []string{"go.mod"}, rawPolicyBlockOutputs{Dirs: []string{"${HOME}/go/pkg/mod"}}),
+		rawBlock("go-modules", []string{"go", "env"}, []string{"go.sum"}, rawPolicyBlockOutputs{Dirs: []string{"${HOME}/.cache/go-build"}}),
+	}
+
+	_, err := Compile(raw)
+	if err == nil {
+		t.Fatal("expected compile to reject duplicate block names")
+	}
+	if !strings.Contains(err.Error(), "duplicated") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestCompileRejectsInvalidOutputPaths(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		outputs rawPolicyBlockOutputs
+		want    string
+	}{
+		{name: "relative dir", outputs: rawPolicyBlockOutputs{Dirs: []string{"var/cache"}}, want: "must be absolute"},
+		{name: "workspace dir", outputs: rawPolicyBlockOutputs{Dirs: []string{"/workspace/node_modules"}}, want: "must not be under /workspace"},
+		{name: "root dir", outputs: rawPolicyBlockOutputs{Dirs: []string{"/"}}, want: "must not be /"},
+		{name: "unknown variable", outputs: rawPolicyBlockOutputs{Dirs: []string{"${CACHE}/go"}}, want: "unsupported variable expansion"},
+		{name: "other user home", outputs: rawPolicyBlockOutputs{Dirs: []string{"~builder/.cache"}}, want: "does not support ~user expansion"},
+		{name: "duplicate normalized dirs", outputs: rawPolicyBlockOutputs{Dirs: []string{"~/go/pkg/mod", "${HOME}/go/pkg/mod"}}, want: "duplicates output path"},
+		{name: "overlapping dirs", outputs: rawPolicyBlockOutputs{Dirs: []string{"${HOME}/go", "${HOME}/go/pkg/mod"}}, want: "overlapping paths"},
+		{name: "file inside dir", outputs: rawPolicyBlockOutputs{Dirs: []string{"${HOME}/.cache/mise"}, Files: []string{"${HOME}/.cache/mise/index.json"}}, want: "inside output dir"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			raw := baseRawPolicy()
+			raw.Sandbox.Dependencies = rawPolicyBlocks{
+				rawBlock("deps", []string{"true"}, []string{"go.mod"}, tc.outputs),
+			}
+
+			_, err := Compile(raw)
+			if err == nil {
+				t.Fatal("expected compile to reject output path")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected error containing %q, got %v", tc.want, err)
+			}
+		})
+	}
+}
+
+func TestCompileRejectsOverlappingOutputsAcrossDependencyBlocks(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		first  rawPolicyBlockOutputs
+		second rawPolicyBlockOutputs
+		want   string
+	}{
+		{
+			name:   "duplicate dir",
+			first:  rawPolicyBlockOutputs{Dirs: []string{"${HOME}/go/pkg/mod"}},
+			second: rawPolicyBlockOutputs{Dirs: []string{"~/go/pkg/mod"}},
+			want:   "duplicates",
+		},
+		{
+			name:   "nested dir",
+			first:  rawPolicyBlockOutputs{Dirs: []string{"${HOME}/go"}},
+			second: rawPolicyBlockOutputs{Dirs: []string{"${HOME}/go/pkg/mod"}},
+			want:   "overlaps",
+		},
+		{
+			name:   "file inside dir",
+			first:  rawPolicyBlockOutputs{Dirs: []string{"${HOME}/.cache/mise"}},
+			second: rawPolicyBlockOutputs{Files: []string{"${HOME}/.cache/mise/state.json"}},
+			want:   "overlaps",
+		},
+		{
+			name:   "duplicate file",
+			first:  rawPolicyBlockOutputs{Files: []string{"${HOME}/.bundle/config"}},
+			second: rawPolicyBlockOutputs{Files: []string{"~/.bundle/config"}},
+			want:   "duplicates",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			raw := baseRawPolicy()
+			raw.Sandbox.Dependencies = rawPolicyBlocks{
+				rawBlock("first", []string{"true"}, []string{"go.mod"}, tc.first),
+				rawBlock("second", []string{"true"}, []string{"go.sum"}, tc.second),
+			}
+
+			_, err := Compile(raw)
+			if err == nil {
+				t.Fatal("expected compile to reject overlapping outputs")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected error containing %q, got %v", tc.want, err)
+			}
+		})
+	}
+}
+
+func TestCompileRejectsOverlappingOutputsAcrossDependencyAndServiceBlocks(t *testing.T) {
+	t.Parallel()
+
+	raw := baseRawPolicy()
+	raw.Sandbox.Dependencies = rawPolicyBlocks{
+		rawBlock("go", []string{"true"}, []string{"go.mod"}, rawPolicyBlockOutputs{Dirs: []string{"${HOME}/go"}}),
+	}
+	raw.Sandbox.Services = rawPolicyBlocks{
+		rawBlock("postgres", []string{"true"}, []string{"docker-compose.yml"}, rawPolicyBlockOutputs{Files: []string{"${HOME}/go/service.state"}}),
+	}
+
+	_, err := Compile(raw)
+	if err == nil {
+		t.Fatal("expected compile to reject overlapping dependency and service outputs")
+	}
+	if !strings.Contains(err.Error(), "overlaps") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestCompilePreservesLiteralBlockEnvValues(t *testing.T) {
+	t.Parallel()
+
+	raw := baseRawPolicy()
+	raw.Sandbox.Dependencies = rawPolicyBlocks{
+		{
+			Name:    "go",
+			Command: rawDependencyCommandSpec{"true"},
+			Inputs:  rawPolicyBlockInputs{Files: []string{"go.mod"}},
+			Env: map[string]string{
+				"EMPTY":      "",
+				"GOCACHE":    "${HOME}/.cache/go-build",
+				"GOPROXY":    "https://proxy.golang.org,direct",
+				"RAW_PATH":   "a/../b",
+				"TRAILING":   "value ",
+				"UNEXPANDED": "$CACHE/go",
+			},
+			Outputs: rawPolicyBlockOutputs{Dirs: []string{"${HOME}/go/pkg/mod"}},
+		},
+	}
+
+	compiled, err := Compile(raw)
+	if err != nil {
+		t.Fatalf("Compile returned error: %v", err)
+	}
+	env := compiled.Dependencies.Blocks[0].Env
+	for key, want := range map[string]string{
+		"EMPTY":      "",
+		"GOCACHE":    "/root/.cache/go-build",
+		"GOPROXY":    "https://proxy.golang.org,direct",
+		"RAW_PATH":   "a/../b",
+		"TRAILING":   "value ",
+		"UNEXPANDED": "$CACHE/go",
+	} {
+		if got := env[key]; got != want {
+			t.Fatalf("unexpected env %s: got %q want %q", key, got, want)
+		}
 	}
 }
 
@@ -616,9 +825,12 @@ sandbox:
   image:
     ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
   dependencies:
-    command: bundle install
-    key:
-      files: [Gemfile.lock]
+    - name: gems
+      command: bundle install
+      inputs:
+        files: [Gemfile.lock]
+      outputs:
+        dirs: ["${HOME}/.bundle"]
   network:
     default: deny
 `), &raw); err != nil {
@@ -629,7 +841,10 @@ sandbox:
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	if got, want := compiled.Dependencies.Command, []string{"sh", "-lc", "bundle install"}; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+	if len(compiled.Dependencies.Blocks) != 1 {
+		t.Fatalf("unexpected dependency block count: got %d want 1", len(compiled.Dependencies.Blocks))
+	}
+	if got, want := compiled.Dependencies.Blocks[0].Command, []string{"sh", "-lc", "bundle install"}; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("unexpected dependency command: got %v want %v", got, want)
 	}
 	if got, want := compiled.Dependencies.KeyFiles, []string{"Gemfile.lock"}; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
@@ -637,32 +852,24 @@ sandbox:
 	}
 }
 
-func TestCompileTreatsNullDependencyCommandAsUnset(t *testing.T) {
+func TestUnmarshalRejectsOldDependencyObjectShape(t *testing.T) {
 	t.Parallel()
 
 	var raw rawPolicy
-	if err := yaml.Unmarshal([]byte(`
+	err := yaml.Unmarshal([]byte(`
 version: 1
 sandbox:
   image:
     ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
   dependencies:
-    command: null
+    command: bundle install
+    key:
+      files: [Gemfile.lock]
   network:
     default: deny
-`), &raw); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-
-	compiled, err := Compile(raw)
-	if err != nil {
-		t.Fatalf("compile: %v", err)
-	}
-	if compiled.Dependencies.Enabled() {
-		t.Fatal("expected null dependency command to disable dependency bootstrap")
-	}
-	if len(compiled.Dependencies.Command) != 0 {
-		t.Fatalf("expected null dependency command to normalize to empty, got %v", compiled.Dependencies.Command)
+`), &raw)
+	if err == nil {
+		t.Fatal("expected unmarshal to reject old dependency object shape")
 	}
 }
 
@@ -677,9 +884,12 @@ sandbox:
   image:
     ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
   dependencies:
-    command: *deps
-    key:
-      files: [go.mod, go.sum]
+    - name: go-modules
+      command: *deps
+      inputs:
+        files: [go.mod, go.sum]
+      outputs:
+        dirs: [~/go/pkg/mod]
   network:
     default: deny
 `), &raw); err != nil {
@@ -690,38 +900,52 @@ sandbox:
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	if got, want := compiled.Dependencies.Command, []string{"mise", "exec", "--", "go", "mod", "download"}; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+	if len(compiled.Dependencies.Blocks) != 1 {
+		t.Fatalf("unexpected dependency block count: got %d want 1", len(compiled.Dependencies.Blocks))
+	}
+	if got, want := compiled.Dependencies.Blocks[0].Command, []string{"mise", "exec", "--", "go", "mod", "download"}; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("unexpected dependency command: got %v want %v", got, want)
 	}
 }
 
-func TestCompileRejectsDependencyKeyFilesWithoutCommand(t *testing.T) {
+func TestCompileRejectsDependencyInputsWithoutCommand(t *testing.T) {
 	t.Parallel()
 
 	raw := baseRawPolicy()
-	raw.Sandbox.Dependencies.Key.Files = []string{"go.sum"}
+	raw.Sandbox.Dependencies = rawPolicyBlocks{
+		{
+			Name: "go-modules",
+			Inputs: rawPolicyBlockInputs{
+				Files: []string{"go.sum"},
+			},
+			Outputs: rawPolicyBlockOutputs{
+				Dirs: []string{"${HOME}/go/pkg/mod"},
+			},
+		},
+	}
 
 	_, err := Compile(raw)
 	if err == nil {
-		t.Fatal("expected compile to reject dependency key files without a command")
+		t.Fatal("expected compile to reject dependency inputs without a command")
 	}
-	if !strings.Contains(err.Error(), "sandbox.dependencies.key.files") {
+	if !strings.Contains(err.Error(), "sandbox.dependencies[0].command") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
-func TestCompileRejectsPortableDependencyReuseWithoutKeyFiles(t *testing.T) {
+func TestCompileRejectsDependencyBlockWithoutOutputs(t *testing.T) {
 	t.Parallel()
 
 	raw := baseRawPolicy()
-	raw.Sandbox.Dependencies.Command = []string{"go", "mod", "download"}
-	raw.Sandbox.Dependencies.Reuse = "portable"
+	raw.Sandbox.Dependencies = rawPolicyBlocks{
+		rawBlock("go-modules", []string{"go", "mod", "download"}, []string{"go.sum"}, rawPolicyBlockOutputs{}),
+	}
 
 	_, err := Compile(raw)
 	if err == nil {
-		t.Fatal("expected compile to reject portable dependency reuse without key files")
+		t.Fatal("expected compile to reject dependency block without outputs")
 	}
-	if !strings.Contains(err.Error(), "sandbox.dependencies.reuse=portable") {
+	if !strings.Contains(err.Error(), "sandbox.dependencies[0].outputs") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -736,7 +960,12 @@ sandbox:
   image:
     ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
   dependencies:
-    command: false
+    - name: go-modules
+      command: false
+      inputs:
+        files: [go.mod]
+      outputs:
+        dirs: ["${HOME}/go/pkg/mod"]
   network:
     default: deny
 `), &raw)
@@ -1036,17 +1265,47 @@ func TestFromProtoPropagatesDockerServiceRequirement(t *testing.T) {
 		Version:        1,
 		ImageRef:       validImageRef,
 		NetworkDefault: "deny",
-		Services: &cleanroomv1.PolicyServices{
-			Docker: &cleanroomv1.PolicyDockerService{
-				Required: true,
-			},
+		Docker: &cleanroomv1.PolicyDocker{
+			Required: true,
 		},
 	})
 	if err != nil {
 		t.Fatalf("FromProto returned error: %v", err)
 	}
-	if !compiled.Services.Docker.Required {
+	if !compiled.Docker.Required {
 		t.Fatal("expected docker service requirement from proto policy")
+	}
+}
+
+func TestFromProtoRejectsOverlappingDependencyAndServiceOutputs(t *testing.T) {
+	t.Parallel()
+
+	_, err := FromProto(&cleanroomv1.Policy{
+		Version:        1,
+		ImageRef:       validImageRef,
+		NetworkDefault: "deny",
+		Dependencies: &cleanroomv1.PolicyDependencies{
+			Blocks: []*cleanroomv1.PolicyBlock{protoBlock(
+				"go",
+				[]string{"true"},
+				[]string{"go.mod"},
+				&cleanroomv1.PolicyBlockOutputs{Dirs: []string{"/root/go"}},
+			)},
+		},
+		Services: &cleanroomv1.PolicyServices{
+			Blocks: []*cleanroomv1.PolicyBlock{protoBlock(
+				"postgres",
+				[]string{"true"},
+				[]string{"docker-compose.yml"},
+				&cleanroomv1.PolicyBlockOutputs{Files: []string{"/root/go/service.state"}},
+			)},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected FromProto to reject overlapping dependency and service outputs")
+	}
+	if !strings.Contains(err.Error(), "overlaps") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -1123,10 +1382,10 @@ func TestCompiledPolicyProtoRoundTripPreservesStageScopedNetwork(t *testing.T) {
 			Allow: rawAllowRules{{Host: "github.com", Ports: []int{443}}},
 		},
 	}
-	raw.Sandbox.Dependencies.Network = &rawStageNetworkConfig{
+	raw.Sandbox.Network.Dependencies = &rawStageNetworkConfig{
 		Allow: rawAllowRules{{Host: "proxy.golang.org", Ports: []int{443}}},
 	}
-	raw.Sandbox.Run.Network = &rawStageNetworkConfig{}
+	raw.Sandbox.Network.Execution = &rawStageNetworkConfig{}
 
 	compiled, err := Compile(raw)
 	if err != nil {
@@ -1158,12 +1417,17 @@ func TestCompiledPolicyProtoRoundTripPreservesDependenciesAndServices(t *testing
 	t.Parallel()
 
 	raw := baseRawPolicy()
-	raw.Sandbox.Dependencies.Command = []string{"go", "mod", "download"}
-	raw.Sandbox.Dependencies.Key.Files = []string{"go.mod", "go.sum"}
-	raw.Sandbox.Dependencies.Reuse = "portable"
-	raw.Sandbox.Services.Docker.Required = true
-	raw.Sandbox.Services.Command = []string{"docker", "compose", "up", "-d", "postgres"}
-	raw.Sandbox.Services.Key.Files = []string{"docker-compose.yml"}
+	raw.Sandbox.Docker.Required = true
+	raw.Sandbox.Dependencies = rawPolicyBlocks{
+		rawBlock("go-modules", []string{"go", "mod", "download"}, []string{"go.mod", "go.sum"}, rawPolicyBlockOutputs{
+			Dirs: []string{"${HOME}/go/pkg/mod"},
+		}),
+	}
+	raw.Sandbox.Services = rawPolicyBlocks{
+		rawBlock("postgres", []string{"docker", "compose", "up", "-d", "postgres"}, []string{"docker-compose.yml"}, rawPolicyBlockOutputs{
+			Dirs: []string{"/var/lib/cleanroom/services/postgres"},
+		}),
+	}
 	raw.Sandbox.Run.Before = rawShellCommandSpec{"sh", "-lc", "bin/rails db:prepare"}
 	vcpus := int64(6)
 	memory := bytesize.Size(12 << 30)
@@ -1186,10 +1450,10 @@ func TestCompiledPolicyProtoRoundTripPreservesDependenciesAndServices(t *testing
 	if got, want := strings.Join(roundTripped.Dependencies.KeyFiles, "\x00"), strings.Join(compiled.Dependencies.KeyFiles, "\x00"); got != want {
 		t.Fatalf("unexpected dependency key files after round trip: got %q want %q", got, want)
 	}
-	if got, want := roundTripped.Dependencies.Reuse, compiled.Dependencies.Reuse; got != want {
-		t.Fatalf("unexpected dependency reuse after round trip: got %q want %q", got, want)
+	if got, want := len(roundTripped.Dependencies.Blocks), len(compiled.Dependencies.Blocks); got != want {
+		t.Fatalf("unexpected dependency block count after round trip: got %d want %d", got, want)
 	}
-	if got, want := roundTripped.Services.Docker.Required, compiled.Services.Docker.Required; got != want {
+	if got, want := roundTripped.Docker.Required, compiled.Docker.Required; got != want {
 		t.Fatalf("unexpected docker requirement after round trip: got %t want %t", got, want)
 	}
 	if got, want := strings.Join(roundTripped.Services.Command, "\x00"), strings.Join(compiled.Services.Command, "\x00"); got != want {

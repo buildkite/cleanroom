@@ -144,8 +144,7 @@ explain and test. Existing policies should be migrated to the new list shape and
 `inputs.files` are repository-relative paths or glob patterns. They are
 resolved from the post-changeset repository tree when a changeset is present.
 
-`outputs.dirs`, `outputs.files`, and block `env` values support limited
-guest-path expansion:
+`outputs.dirs` and `outputs.files` support limited guest-path expansion:
 
 - `~` and `~/...` expand to the sandbox user's home directory.
 - `${HOME}` and `$HOME` expand to the same canonical home directory.
@@ -159,8 +158,9 @@ guest-path expansion:
   capture and restored by Cleanroom before later blocks or user commands.
 - declared outputs are required in the first slice. Optional outputs can be added
   later as an explicit schema feature.
-- normalized output directories must be unique and non-overlapping. Parent/child
-  directory pairs are rejected in the first slice.
+- normalized output paths must be unique and non-overlapping across all
+  dependency and service blocks. Parent/child directory pairs are rejected in
+  the first slice.
 - a file output inside a declared output directory is rejected as redundant.
 - multiple file outputs may share a parent directory. Cleanroom should not use a
   single-file bind mount as the primary mechanism because atomic replacement
@@ -169,10 +169,13 @@ guest-path expansion:
 This must be string normalization, not shell expansion.
 
 The canonical home directory is the `HOME` value Cleanroom supplies in the
-closed block execution environment. Cleanroom must set that value before path
-normalization, include it in the block environment digest, and expand `~`,
-`$HOME`, and `${HOME}` to that exact value. The first implementation should not
-discover a different home directory from the image at runtime.
+closed block execution environment. Cleanroom must set that value before output
+path normalization. Block `env` values are literal strings, except leading `~`,
+`~/`, `$HOME`, `$HOME/`, `${HOME}`, and `${HOME}/` forms are expanded to the
+same canonical home directory. Other `$...` values, URLs, relative paths, empty
+strings, and trailing spaces are preserved and included in the block environment
+digest as provided. The first implementation should not discover a different
+home directory from the image at runtime.
 
 ## Semantics
 
@@ -363,14 +366,15 @@ service_volume_key = H(
 )
 ```
 
-Input manifests should record path, file type, mode, content digest, symlink
-target, and deleted state. They should be sorted before hashing. Missing
-required literal paths should fail. Glob matches should be sorted and should
-fail if the pattern is invalid or matches no files. Optional inputs can be added
-later as an explicit schema feature; the first implementation should not hash an
-empty glob as an empty input set because that is usually a typo and creates an
-overbroad cache key. Input projection validation must reject symlink escapes
-before running the block command.
+Input manifests should record regular-file path, mode, and content digest, and
+reject directories, symlinks, devices, and other non-regular inputs. They should
+be sorted before hashing. Missing required literal paths should fail. Glob
+matches should be sorted and should fail if the pattern is invalid, matches no
+files, or matches non-regular files. Optional inputs can be added later as an
+explicit schema feature; the first implementation should not hash an empty glob
+as an empty input set because that is usually a typo and creates an overbroad
+cache key. Input projection validation must reject symlink escapes before
+running the block command.
 
 The normalized output declaration is part of the key because changing directory
 mount destinations or file-output restore paths can change command behavior even
@@ -648,9 +652,66 @@ Create-sandbox stream messages should stay user-readable:
 14. Add end-to-end tests that prove a source-only commit reuses dependency and
     service output volumes without rerunning their commands.
 
-Steps 1 through 6 can be developed with unit tests before backend work. Steps 8
-and 9 are the main backend slices. Steps 10 and 11 depend on the backend request
-fields but can use a stub adapter in control-service tests.
+### Phase 1 PR Status
+
+The first implementation PR covers the contract and plumbing layer, not the
+runtime sidecar-volume execution path.
+
+Completed in phase 1:
+
+- policy schema and proto support for ordered dependency and service blocks
+- `sandbox.docker.required` as the Docker runtime requirement
+- validation for block names, commands, input files, `outputs.dirs`,
+  `outputs.files`, `${HOME}`, `$HOME`, `~`, duplicate paths, overlapping paths,
+  and `/workspace` output rejection
+- rejection of the old YAML object forms for `sandbox.dependencies`,
+  `sandbox.services.command`, `sandbox.services.key`, and
+  `sandbox.services.docker.required`
+- deterministic input-manifest helper package for literal regular files,
+  regular-file globs, file contents, and modes, rejecting non-regular inputs
+- glob-aware dependency key-file hashing for the existing stage-cache path,
+  including changeset-aware resolution
+- dependency and service output-volume cache-key helper APIs
+- reuse namespace helper, defaulting to canonical repository remote when no
+  explicit namespace is provided
+- cache metadata fields for command, env, normalized outputs, output manifests,
+  and output records
+- backend capability flags and provision request fields for cache output volumes
+  and overlay write capture
+- README, spec, API docs, and example policies updated to the new schema
+- tests for schema validation, cache keys, input manifests, cache metadata,
+  glob expansion, generated proto round trips, CLI Docker policy creation, and
+  existing dependency/services stage-cache behavior
+
+Current runtime behavior after phase 1:
+
+- dependency and service blocks are compiled into the existing aggregate
+  dependency/services stage bootstrap command
+- existing full-rootfs dependency and services stage caches continue to work
+- declared outputs are validated and represented in policy/proto/cache metadata,
+  but they are not yet restored or published as independent output volumes
+- overlayfs write capture is represented as a backend capability contract, but
+  no backend runner enforces escaped-write detection yet
+
+Remaining work:
+
+- build per-block dependency and service planning instead of only aggregate
+  bootstrap planning
+- materialize isolated declared-input projections before running cacheable
+  blocks
+- implement the guest overlay write-capture runner
+- prepare output volumes before VM launch, mount declared `outputs.dirs`, and
+  copy declared `outputs.files`
+- publish and restore output-volume snapshots and output manifests
+- implement escaped-write warning plus exact full-rootfs fallback
+- add observability events for per-block lookup, restore, execution, publish,
+  and fallback decisions
+- add end-to-end tests proving source-only commits reuse dependency and service
+  output volumes without rerunning block commands
+
+Steps 8 and 9 remain the main backend slices. Steps 10 and 11 should now build
+on the phase 1 request fields and metadata, with stub-adapter tests before the
+Firecracker implementation.
 
 ## Tests
 
@@ -671,6 +732,8 @@ Minimum coverage:
 - path normalization makes `~/go/pkg/mod` and `${HOME}/go/pkg/mod` equivalent
 - input manifests are deterministic across file order and glob order
 - input manifest validation rejects empty glob matches
+- input manifest validation rejects directories, symlinks, and other
+  non-regular files
 - input projection rejects symlinks that escape the declared input set
 - cache keys change when inputs, env, command, output declarations, runtime key, or
   prior block output keys change

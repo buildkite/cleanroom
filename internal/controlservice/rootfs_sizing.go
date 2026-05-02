@@ -21,7 +21,7 @@ func withRepositoryBootstrapRootFSMinimum(
 	}
 
 	minimumBytes := repositoryBootstrapMinimumRootFSBytes
-	if compiled != nil && compiled.Services.Docker.Required {
+	if compiled != nil && compiled.Docker.Required {
 		minimumBytes = repositoryBootstrapDockerMinimumRootFSBytes
 	}
 	if cfg.MinimumRootFSBytes < minimumBytes {

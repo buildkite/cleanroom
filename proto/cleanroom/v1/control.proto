@@ -112,24 +112,38 @@ message PolicyAllowRule {
   repeated int32 ports = 2;
 }
 
-message PolicyDockerService {
+message PolicyDocker {
   bool required = 1;
 }
 
-message PolicyServices {
-  PolicyDockerService docker = 1;
-  repeated string command = 2;
-  PolicyDependencyKey key = 3;
-}
-
-message PolicyDependencyKey {
+message PolicyBlockInputs {
   repeated string files = 1;
 }
 
+message PolicyBlockOutputs {
+  repeated string dirs = 1;
+  repeated string files = 2;
+}
+
+message PolicyBlock {
+  string name = 1;
+  repeated string command = 2;
+  PolicyBlockInputs inputs = 3;
+  map<string, string> env = 4;
+  PolicyBlockOutputs outputs = 5;
+}
+
+message PolicyServices {
+  reserved 1, 2, 3;
+  reserved "docker", "command", "key";
+  repeated PolicyBlock blocks = 4;
+}
+
 message PolicyDependencies {
-  repeated string command = 1;
-  PolicyDependencyKey key = 2;
+  reserved 1, 2;
+  reserved "command", "key";
   string reuse = 3;
+  repeated PolicyBlock blocks = 4;
 }
 
 message PolicyRun {
@@ -165,6 +179,7 @@ message Policy {
   PolicyRun run = 10;
   PolicyResources resources = 11;
   PolicyNetworkStages network_stages = 12;
+  PolicyDocker docker = 13;
 }
 
 message SandboxOptions {

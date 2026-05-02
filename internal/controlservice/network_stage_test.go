@@ -111,16 +111,22 @@ func testStageScopedNetworkPolicy() *cleanroomv1.Policy {
 			Execution: &cleanroomv1.PolicyNetwork{},
 		},
 		Dependencies: &cleanroomv1.PolicyDependencies{
-			Command: []string{"mise", "exec", "--", "go", "mod", "download"},
-			Key: &cleanroomv1.PolicyDependencyKey{
-				Files: []string{"go.mod", "go.sum"},
-			},
+			Blocks: []*cleanroomv1.PolicyBlock{testPolicyBlock(
+				"go-modules",
+				[]string{"mise", "exec", "--", "go", "mod", "download"},
+				[]string{"go.mod", "go.sum"},
+				[]string{"/root/go/pkg/mod"},
+				nil,
+			)},
 		},
 		Services: &cleanroomv1.PolicyServices{
-			Command: []string{"docker", "compose", "up", "-d", "postgres"},
-			Key: &cleanroomv1.PolicyDependencyKey{
-				Files: []string{"docker-compose.yml"},
-			},
+			Blocks: []*cleanroomv1.PolicyBlock{testPolicyBlock(
+				"postgres",
+				[]string{"docker", "compose", "up", "-d", "postgres"},
+				[]string{"docker-compose.yml"},
+				[]string{"/var/lib/cleanroom/services/postgres"},
+				nil,
+			)},
 		},
 		Run: &cleanroomv1.PolicyRun{
 			Before: []string{"sh", "-lc", "echo pre-run"},
