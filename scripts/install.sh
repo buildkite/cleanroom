@@ -267,8 +267,12 @@ prompt_install_homebrew_package() {
   local answer
 
   [ -r /dev/tty ] && [ -w /dev/tty ] || return 1
-  printf '[cleanroom-install] Install %s with Homebrew now? [y/N] ' "${package}" >/dev/tty
-  IFS= read -r answer </dev/tty || return 1
+  if ! { printf '[cleanroom-install] Install %s with Homebrew now? [y/N] ' "${package}" >/dev/tty; } 2>/dev/null; then
+    return 1
+  fi
+  if ! { IFS= read -r answer </dev/tty; } 2>/dev/null; then
+    return 1
+  fi
 
   case "${answer}" in
     y|Y|yes|YES|Yes) return 0 ;;
