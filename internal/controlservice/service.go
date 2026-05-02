@@ -28,6 +28,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/repositorystore"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 	"github.com/buildkite/cleanroom/internal/snapshotstore"
+	"github.com/buildkite/cleanroom/internal/storagegc"
 	"github.com/charmbracelet/log"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -49,6 +50,7 @@ type Service struct {
 	RepositoryStore repositorystore.RepositoryStore
 	runtime         serviceRuntime
 	interactive     interactiveSessionBroker
+	storageCleanup  terminatedSandboxStorageCleanupScheduler
 	// Snapshot lifecycle still lives on Service because it coordinates backend
 	// adapters, sandbox state, and metadata persistence in one operation chain.
 	// If this grows again, extract a dedicated snapshot manager rather than
@@ -62,6 +64,13 @@ type Service struct {
 	executions        map[string]*executionState
 	snapshotOps       map[string]int
 	snapshotDeletions map[string]struct{}
+}
+
+type terminatedSandboxStorageCleanupScheduler struct {
+	once   sync.Once
+	queue  chan string
+	mu     sync.Mutex
+	queued map[string]struct{}
 }
 
 type sandboxState struct {
@@ -1867,6 +1876,7 @@ func (s *Service) TerminateSandbox(ctx context.Context, req *cleanroomv1.Termina
 			"backend", backendName,
 		)
 	}
+	s.scheduleTerminatedSandboxStorageCleanup(sandboxID)
 	return resp, nil
 }
 
@@ -2269,7 +2279,122 @@ func (s *Service) terminateCreatedSandbox(ctx context.Context, adapter backend.A
 	}
 	s.mu.Unlock()
 
+	s.scheduleTerminatedSandboxStorageCleanup(sandboxID)
 	return err
+}
+
+func (s *Service) scheduleTerminatedSandboxStorageCleanup(sandboxID string) {
+	sandboxID = strings.TrimSpace(sandboxID)
+	if sandboxID == "" {
+		return
+	}
+	scheduler := s.startTerminatedSandboxStorageCleanupWorker()
+
+	scheduler.mu.Lock()
+	if _, ok := scheduler.queued[sandboxID]; ok {
+		scheduler.mu.Unlock()
+		return
+	}
+	scheduler.queued[sandboxID] = struct{}{}
+	queue := scheduler.queue
+	scheduler.mu.Unlock()
+
+	select {
+	case queue <- sandboxID:
+	default:
+		scheduler.mu.Lock()
+		delete(scheduler.queued, sandboxID)
+		scheduler.mu.Unlock()
+		if s.Logger != nil {
+			s.Logger.Warn("terminated sandbox storage cleanup queue full", "sandbox_id", sandboxID, "queue_size", cap(queue))
+		}
+	}
+}
+
+func (s *Service) startTerminatedSandboxStorageCleanupWorker() *terminatedSandboxStorageCleanupScheduler {
+	scheduler := &s.storageCleanup
+	scheduler.once.Do(func() {
+		scheduler.queue = make(chan string, s.terminatedSandboxStorageCleanupQueueSize())
+		scheduler.queued = make(map[string]struct{})
+		// The worker lives for the service lifetime; cleanup is best-effort and
+		// does not have a separate shutdown path.
+		go s.runTerminatedSandboxStorageCleanupWorker()
+	})
+	return scheduler
+}
+
+func (s *Service) runTerminatedSandboxStorageCleanupWorker() {
+	scheduler := &s.storageCleanup
+	for sandboxID := range scheduler.queue {
+		s.runTerminatedSandboxStorageCleanup(sandboxID)
+
+		scheduler.mu.Lock()
+		delete(scheduler.queued, sandboxID)
+		scheduler.mu.Unlock()
+	}
+}
+
+func (s *Service) runTerminatedSandboxStorageCleanup(sandboxID string) {
+	cleanup := s.runtime.terminatedSandboxStorageCleanup
+	if cleanup == nil {
+		cleanup = s.cleanupTerminatedSandboxStorage
+	}
+	cleanup(sandboxID)
+}
+
+func (s *Service) cleanupTerminatedSandboxStorage(sandboxID string) {
+	sandboxID = strings.TrimSpace(sandboxID)
+	if sandboxID == "" {
+		return
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), s.timeouts().storageCleanupTimeout)
+	defer cancel()
+
+	report, err := storagegc.Inventory(cleanupCtx, storagegc.InventoryOptions{
+		Config:            s.Config,
+		ActiveSandboxIDs:  s.currentSandboxIDs(),
+		SandboxRuntimeIDs: []string{sandboxID},
+		SandboxStateKnown: true,
+		Now:               s.clock().Now(),
+		Kinds:             []string{storagegc.KindSandboxRuntime},
+		SkipSize:          true,
+	})
+	if err != nil {
+		if s.Logger != nil {
+			s.Logger.Warn("inventory terminated sandbox storage for cleanup failed", "sandbox_id", sandboxID, "error", err)
+		}
+		return
+	}
+	plan := storagegc.PlanLifecyclePrune(report, storagegc.LifecycleOptions{TerminatedSandboxIDs: []string{sandboxID}})
+	if len(plan.Actions) == 0 {
+		return
+	}
+	result, err := storagegc.ExecutePrune(cleanupCtx, report, plan, storagegc.ExecuteOptions{})
+	if err != nil {
+		if s.Logger != nil {
+			s.Logger.Warn("cleanup terminated sandbox storage failed", "sandbox_id", sandboxID, "error", err)
+		}
+		return
+	}
+	if s.Logger != nil && result.DeletedEntries > 0 {
+		s.Logger.Info("cleaned up terminated sandbox storage",
+			"sandbox_id", sandboxID,
+			"deleted_entries", result.DeletedEntries,
+			"reclaimed_bytes", result.ReclaimedBytes,
+		)
+	}
+}
+
+func (s *Service) currentSandboxIDs() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	ids := make([]string, 0, len(s.sandboxes))
+	for sandboxID := range s.sandboxes {
+		if strings.TrimSpace(sandboxID) != "" {
+			ids = append(ids, sandboxID)
+		}
+	}
+	return ids
 }
 
 func (s *Service) ensureSandboxCreateStillProvisioning(sandboxID string) error {

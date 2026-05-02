@@ -47,14 +47,24 @@ type ImageManager interface {
 }
 
 type InventoryOptions struct {
-	Config            runtimeconfig.Config
-	ActiveSandboxIDs  []string
+	Config           runtimeconfig.Config
+	ActiveSandboxIDs []string
+	// SandboxRuntimeIDs limits sandbox-runtime scanning to specific sandbox ids.
+	// Empty means scan every sandbox runtime directory.
+	SandboxRuntimeIDs []string
 	SandboxStateKnown bool
 	SnapshotStore     SnapshotLister
 	CacheStore        CacheStore
 	ImageManager      ImageManager
 	Now               time.Time
 	ExecutionMaxAge   time.Duration
+	// SkipSize avoids recursive filesystem sizing. It is intended for
+	// lifecycle cleanup paths where deletion is targeted and byte accounting is
+	// not user-facing.
+	SkipSize bool
+	// Kinds limits emitted entries. Empty means all categories; selected kinds
+	// may still read adjacent metadata when needed for protection checks.
+	Kinds []string
 }
 
 type Entry struct {
@@ -94,6 +104,12 @@ type PruneOptions struct {
 	All       bool
 	OlderThan time.Duration
 	Now       time.Time
+}
+
+// LifecycleOptions selects cleanup actions that are safe because the service
+// just completed the owning lifecycle transition.
+type LifecycleOptions struct {
+	TerminatedSandboxIDs []string
 }
 
 type Action struct {
@@ -153,100 +169,118 @@ func Inventory(ctx context.Context, opts InventoryOptions) (Report, error) {
 		Totals:            map[string]CategoryTotal{},
 	}
 
-	snapshotStore := opts.SnapshotStore
-	if snapshotStore == nil {
-		store, err := snapshotstore.New(snapshotstore.Options{})
-		if err != nil {
-			return Report{}, err
-		}
-		snapshotStore = store
-	}
-	cacheStore := opts.CacheStore
-	if cacheStore == nil {
-		store, err := cachestore.New(cachestore.Options{})
-		if err != nil {
-			return Report{}, err
-		}
-		cacheStore = store
-	}
-	imageManager := opts.ImageManager
-	if imageManager == nil {
-		manager, err := imagemgr.New(imagemgr.Options{})
-		if err != nil {
-			return Report{}, err
-		}
-		imageManager = manager
-	}
-
+	includedKinds := stringSet(opts.Kinds)
 	referencedSnapshotPaths := map[string][]string{}
-	snapshotRecords, err := snapshotStore.List(ctx)
-	if err != nil {
-		return Report{}, fmt.Errorf("list snapshot metadata: %w", err)
-	}
-	for _, record := range snapshotRecords {
-		entry := entryFromSnapshotRecord(record)
-		if entry.Path != "" {
-			if size, err := pathSize(entry.Path); err == nil {
-				entry.SizeBytes = size
-			} else {
-				return Report{}, fmt.Errorf("size snapshot %q: %w", record.SnapshotID, err)
+	if inventoryIncludes(includedKinds, KindSnapshot) || inventoryIncludes(includedKinds, KindStageCache) || inventoryIncludes(includedKinds, KindOrphanSnapshot) {
+		snapshotStore := opts.SnapshotStore
+		if snapshotStore == nil {
+			store, err := snapshotstore.New(snapshotstore.Options{})
+			if err != nil {
+				return Report{}, err
 			}
-			addPathReference(referencedSnapshotPaths, entry.Path, "snapshot metadata "+record.SnapshotID)
+			snapshotStore = store
 		}
-		report.Entries = append(report.Entries, entry)
-	}
-
-	cacheRecords, err := cacheStore.List(ctx)
-	if err != nil {
-		return Report{}, fmt.Errorf("list cache metadata: %w", err)
-	}
-	for _, record := range cacheRecords {
-		entry := entryFromCacheRecord(record)
-		if entry.Path != "" {
-			if size, err := pathSize(entry.Path); err == nil {
-				entry.SizeBytes = size
-			} else {
-				return Report{}, fmt.Errorf("size cache %q/%q: %w", record.Stage, record.CacheKey, err)
-			}
-			if protections := referencedSnapshotPaths[cleanPath(entry.Path)]; len(protections) > 0 {
-				entry.ProtectedBy = append(entry.ProtectedBy, protections...)
-				entry.Reason = "stage-cache metadata; also referenced by explicit snapshot metadata"
-			}
-			addPathReference(referencedSnapshotPaths, entry.Path, "stage-cache metadata "+record.Stage+"/"+record.CacheKey)
+		snapshotRecords, err := snapshotStore.List(ctx)
+		if err != nil {
+			return Report{}, fmt.Errorf("list snapshot metadata: %w", err)
 		}
-		report.Entries = append(report.Entries, entry)
+		for _, record := range snapshotRecords {
+			entry := entryFromSnapshotRecord(record)
+			if entry.Path != "" {
+				if size, err := maybePathSize(ctx, entry.Path, opts.SkipSize); err == nil {
+					entry.SizeBytes = size
+				} else {
+					return Report{}, fmt.Errorf("size snapshot %q: %w", record.SnapshotID, err)
+				}
+				addPathReference(referencedSnapshotPaths, entry.Path, "snapshot metadata "+record.SnapshotID)
+			}
+			if inventoryIncludes(includedKinds, KindSnapshot) {
+				report.Entries = append(report.Entries, entry)
+			}
+		}
 	}
 
-	activeSandboxes := stringSet(opts.ActiveSandboxIDs)
-	sandboxEntries, err := scanSandboxRuntimeDirs(filepath.Join(stateBase, "sandboxes"), activeSandboxes, opts.SandboxStateKnown)
-	if err != nil {
-		return Report{}, err
+	if inventoryIncludes(includedKinds, KindStageCache) || inventoryIncludes(includedKinds, KindOrphanSnapshot) {
+		cacheStore := opts.CacheStore
+		if cacheStore == nil {
+			store, err := cachestore.New(cachestore.Options{})
+			if err != nil {
+				return Report{}, err
+			}
+			cacheStore = store
+		}
+		cacheRecords, err := cacheStore.List(ctx)
+		if err != nil {
+			return Report{}, fmt.Errorf("list cache metadata: %w", err)
+		}
+		for _, record := range cacheRecords {
+			entry := entryFromCacheRecord(record)
+			if entry.Path != "" {
+				if size, err := maybePathSize(ctx, entry.Path, opts.SkipSize); err == nil {
+					entry.SizeBytes = size
+				} else {
+					return Report{}, fmt.Errorf("size cache %q/%q: %w", record.Stage, record.CacheKey, err)
+				}
+				if protections := referencedSnapshotPaths[cleanPath(entry.Path)]; len(protections) > 0 {
+					entry.ProtectedBy = append(entry.ProtectedBy, protections...)
+					entry.Reason = "stage-cache metadata; also referenced by explicit snapshot metadata"
+				}
+				addPathReference(referencedSnapshotPaths, entry.Path, "stage-cache metadata "+record.Stage+"/"+record.CacheKey)
+			}
+			if inventoryIncludes(includedKinds, KindStageCache) {
+				report.Entries = append(report.Entries, entry)
+			}
+		}
 	}
-	report.Entries = append(report.Entries, sandboxEntries...)
 
-	orphanSnapshots, err := scanOrphanSnapshotDirs(snapshotRoots, referencedSnapshotPaths)
-	if err != nil {
-		return Report{}, err
+	if inventoryIncludes(includedKinds, KindSandboxRuntime) {
+		activeSandboxes := stringSet(opts.ActiveSandboxIDs)
+		sandboxEntries, err := scanSandboxRuntimeDirs(ctx, filepath.Join(stateBase, "sandboxes"), activeSandboxes, stringSet(opts.SandboxRuntimeIDs), opts.SandboxStateKnown, opts.SkipSize)
+		if err != nil {
+			return Report{}, err
+		}
+		report.Entries = append(report.Entries, sandboxEntries...)
 	}
-	report.Entries = append(report.Entries, orphanSnapshots...)
 
-	runtimeRootFS, err := scanRuntimeRootFS(cacheBase)
-	if err != nil {
-		return Report{}, err
+	if inventoryIncludes(includedKinds, KindOrphanSnapshot) {
+		orphanSnapshots, err := scanOrphanSnapshotDirs(ctx, snapshotRoots, referencedSnapshotPaths, opts.SkipSize)
+		if err != nil {
+			return Report{}, err
+		}
+		report.Entries = append(report.Entries, orphanSnapshots...)
 	}
-	report.Entries = append(report.Entries, runtimeRootFS...)
 
-	imageEntries, err := scanImageEntries(ctx, imageManager)
-	if err != nil {
-		return Report{}, err
+	if inventoryIncludes(includedKinds, KindRuntimeRootFS) {
+		runtimeRootFS, err := scanRuntimeRootFS(cacheBase, opts.SkipSize)
+		if err != nil {
+			return Report{}, err
+		}
+		report.Entries = append(report.Entries, runtimeRootFS...)
 	}
-	report.Entries = append(report.Entries, imageEntries...)
 
-	executionEntries, err := scanExecutionArtifacts(filepath.Join(stateBase, "executions"), now, executionMaxAge)
-	if err != nil {
-		return Report{}, err
+	if inventoryIncludes(includedKinds, KindImageCache) {
+		imageManager := opts.ImageManager
+		if imageManager == nil {
+			manager, err := imagemgr.New(imagemgr.Options{})
+			if err != nil {
+				return Report{}, err
+			}
+			imageManager = manager
+		}
+		imageEntries, err := scanImageEntries(ctx, imageManager, opts.SkipSize)
+		if err != nil {
+			return Report{}, err
+		}
+		report.Entries = append(report.Entries, imageEntries...)
 	}
-	report.Entries = append(report.Entries, executionEntries...)
+
+	if inventoryIncludes(includedKinds, KindExecutionArtifact) {
+		executionEntries, err := scanExecutionArtifacts(ctx, filepath.Join(stateBase, "executions"), now, executionMaxAge, opts.SkipSize)
+		if err != nil {
+			return Report{}, err
+		}
+		report.Entries = append(report.Entries, executionEntries...)
+	}
 
 	for _, root := range []struct {
 		kind string
@@ -256,7 +290,10 @@ func Inventory(ctx context.Context, opts InventoryOptions) (Report, error) {
 		{kind: KindContentCache, path: filepath.Join(cacheBase, "content-cache")},
 		{kind: KindChangesetStore, path: filepath.Join(stateBase, "changesets")},
 	} {
-		entry, ok, err := protectedRootEntry(root.kind, root.path)
+		if !inventoryIncludes(includedKinds, root.kind) {
+			continue
+		}
+		entry, ok, err := protectedRootEntry(ctx, root.kind, root.path, opts.SkipSize)
 		if err != nil {
 			return Report{}, err
 		}
@@ -334,6 +371,47 @@ func PlanPrune(report Report, opts PruneOptions) Plan {
 	return plan
 }
 
+// PlanLifecyclePrune plans targeted cleanup for resources whose owner just
+// completed a lifecycle transition. It is intentionally narrower than
+// PlanPrune and does not apply age or --all policy.
+func PlanLifecyclePrune(report Report, opts LifecycleOptions) Plan {
+	if !report.SandboxStateKnown {
+		return Plan{}
+	}
+	terminatedSandboxes := stringSet(opts.TerminatedSandboxIDs)
+	if len(terminatedSandboxes) == 0 {
+		return Plan{}
+	}
+
+	plan := Plan{}
+	for _, entry := range report.Entries {
+		if entry.Kind != KindSandboxRuntime {
+			continue
+		}
+		if _, ok := terminatedSandboxes[entry.ID]; !ok {
+			continue
+		}
+		actionPath, ok := deletionPathForReport(report, entry)
+		if !ok || actionPath == "" {
+			continue
+		}
+		action := Action{
+			Kind:      entry.Kind,
+			ID:        entry.ID,
+			Path:      actionPath,
+			SizeBytes: entry.SizeBytes,
+			Reason:    "terminated sandbox lifecycle cleanup",
+			Entry:     entry,
+		}
+		plan.Actions = append(plan.Actions, action)
+		plan.ReclaimableBytes += action.SizeBytes
+	}
+	sort.Slice(plan.Actions, func(i, j int) bool {
+		return plan.Actions[i].ID < plan.Actions[j].ID
+	})
+	return plan
+}
+
 func stageCacheStorageExclusive(entry Entry) bool {
 	for _, protection := range entry.ProtectedBy {
 		if strings.HasPrefix(protection, "snapshot metadata ") {
@@ -351,24 +429,33 @@ func ExecutePrune(ctx context.Context, report Report, plan Plan, opts ExecuteOpt
 	roots = uniqueCleanPaths(roots)
 
 	cacheStore := opts.CacheStore
-	if cacheStore == nil {
-		store, err := cachestore.New(cachestore.Options{})
-		if err != nil {
-			return Result{}, err
-		}
-		cacheStore = store
-	}
 	imageManager := opts.ImageManager
-	if imageManager == nil {
-		manager, err := imagemgr.New(imagemgr.Options{})
-		if err != nil {
-			return Result{}, err
+	for _, action := range plan.Actions {
+		switch action.Kind {
+		case KindStageCache:
+			if cacheStore == nil {
+				store, err := cachestore.New(cachestore.Options{})
+				if err != nil {
+					return Result{}, err
+				}
+				cacheStore = store
+			}
+		case KindImageCache:
+			if imageManager == nil {
+				manager, err := imagemgr.New(imagemgr.Options{})
+				if err != nil {
+					return Result{}, err
+				}
+				imageManager = manager
+			}
 		}
-		imageManager = manager
 	}
 
 	result := Result{}
 	for _, action := range plan.Actions {
+		if err := ctx.Err(); err != nil {
+			return result, err
+		}
 		if err := executeAction(ctx, report, action, roots, cacheStore, imageManager); err != nil {
 			return result, err
 		}
@@ -444,7 +531,7 @@ func entryFromCacheRecord(record cachestore.Record) Entry {
 	}
 }
 
-func scanSandboxRuntimeDirs(baseDir string, activeIDs map[string]struct{}, stateKnown bool) ([]Entry, error) {
+func scanSandboxRuntimeDirs(ctx context.Context, baseDir string, activeIDs, selectedIDs map[string]struct{}, stateKnown, skipSize bool) ([]Entry, error) {
 	dirEntries, err := os.ReadDir(baseDir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -457,8 +544,13 @@ func scanSandboxRuntimeDirs(baseDir string, activeIDs map[string]struct{}, state
 		if !dirEntry.IsDir() {
 			continue
 		}
+		if len(selectedIDs) > 0 {
+			if _, ok := selectedIDs[dirEntry.Name()]; !ok {
+				continue
+			}
+		}
 		path := filepath.Join(baseDir, dirEntry.Name())
-		size, err := pathSize(path)
+		size, err := maybePathSize(ctx, path, skipSize)
 		if err != nil {
 			return nil, fmt.Errorf("size sandbox runtime %q: %w", path, err)
 		}
@@ -489,7 +581,7 @@ func scanSandboxRuntimeDirs(baseDir string, activeIDs map[string]struct{}, state
 	return out, nil
 }
 
-func scanOrphanSnapshotDirs(snapshotRoots []string, refs map[string][]string) ([]Entry, error) {
+func scanOrphanSnapshotDirs(ctx context.Context, snapshotRoots []string, refs map[string][]string, skipSize bool) ([]Entry, error) {
 	var out []Entry
 	seen := map[string]struct{}{}
 	for _, root := range snapshotRoots {
@@ -518,7 +610,7 @@ func scanOrphanSnapshotDirs(snapshotRoots []string, refs map[string][]string) ([
 				if _, ok := refs[cleanPath(dirPath)]; ok {
 					continue
 				}
-				size, err := pathSize(dirPath)
+				size, err := maybePathSize(ctx, dirPath, skipSize)
 				if err != nil {
 					return nil, fmt.Errorf("size orphan snapshot %q: %w", dirPath, err)
 				}
@@ -544,7 +636,7 @@ func scanOrphanSnapshotDirs(snapshotRoots []string, refs map[string][]string) ([
 	return out, nil
 }
 
-func scanRuntimeRootFS(cacheBase string) ([]Entry, error) {
+func scanRuntimeRootFS(cacheBase string, skipSize bool) ([]Entry, error) {
 	var out []Entry
 	for _, backendName := range []string{"firecracker", "darwin-vz"} {
 		dir := filepath.Join(cacheBase, backendName, "runtime-rootfs")
@@ -564,12 +656,16 @@ func scanRuntimeRootFS(cacheBase string) ([]Entry, error) {
 			if err != nil {
 				return nil, fmt.Errorf("inspect runtime rootfs cache %q: %w", path, err)
 			}
+			size := int64(0)
+			if !skipSize {
+				size = allocatedFileSize(info)
+			}
 			out = append(out, Entry{
 				Kind:        KindRuntimeRootFS,
 				ID:          strings.TrimSuffix(dirEntry.Name(), filepath.Ext(dirEntry.Name())),
 				Backend:     backendName,
 				Path:        path,
-				SizeBytes:   allocatedFileSize(info),
+				SizeBytes:   size,
 				Reclaimable: false,
 				Reason:      "runtime rootfs cache preserved unless selected",
 				ProtectedBy: []string{"runtime rootfs cache"},
@@ -581,7 +677,7 @@ func scanRuntimeRootFS(cacheBase string) ([]Entry, error) {
 	return out, nil
 }
 
-func scanImageEntries(ctx context.Context, imageManager ImageManager) ([]Entry, error) {
+func scanImageEntries(ctx context.Context, imageManager ImageManager, skipSize bool) ([]Entry, error) {
 	records, err := imageManager.List(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list image cache metadata: %w", err)
@@ -589,8 +685,8 @@ func scanImageEntries(ctx context.Context, imageManager ImageManager) ([]Entry, 
 	out := make([]Entry, 0, len(records))
 	for _, record := range records {
 		var size int64
-		if path := strings.TrimSpace(record.RootFSPath); path != "" {
-			if actualSize, err := pathSize(path); err == nil && actualSize > 0 {
+		if path := strings.TrimSpace(record.RootFSPath); path != "" && !skipSize {
+			if actualSize, err := pathSize(ctx, path); err == nil && actualSize > 0 {
 				size = actualSize
 			} else if err == nil {
 				size = 0
@@ -613,7 +709,7 @@ func scanImageEntries(ctx context.Context, imageManager ImageManager) ([]Entry, 
 	return out, nil
 }
 
-func scanExecutionArtifacts(baseDir string, now time.Time, maxAge time.Duration) ([]Entry, error) {
+func scanExecutionArtifacts(ctx context.Context, baseDir string, now time.Time, maxAge time.Duration, skipSize bool) ([]Entry, error) {
 	dirEntries, err := os.ReadDir(baseDir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -627,7 +723,7 @@ func scanExecutionArtifacts(baseDir string, now time.Time, maxAge time.Duration)
 			continue
 		}
 		path := filepath.Join(baseDir, dirEntry.Name())
-		size, err := pathSize(path)
+		size, err := maybePathSize(ctx, path, skipSize)
 		if err != nil {
 			return nil, fmt.Errorf("size execution artifacts %q: %w", path, err)
 		}
@@ -656,8 +752,8 @@ func scanExecutionArtifacts(baseDir string, now time.Time, maxAge time.Duration)
 	return out, nil
 }
 
-func protectedRootEntry(kind, path string) (Entry, bool, error) {
-	size, err := pathSize(path)
+func protectedRootEntry(ctx context.Context, kind, path string, skipSize bool) (Entry, bool, error) {
+	size, err := maybePathSize(ctx, path, skipSize)
 	if err != nil {
 		return Entry{}, false, fmt.Errorf("size %s root %q: %w", kind, path, err)
 	}
@@ -773,6 +869,14 @@ func removeOwnedPath(path string, roots []string) error {
 	return nil
 }
 
+func inventoryIncludes(includedKinds map[string]struct{}, kind string) bool {
+	if len(includedKinds) == 0 {
+		return true
+	}
+	_, ok := includedKinds[kind]
+	return ok
+}
+
 func pathWithinAnyRoot(path string, roots []string) bool {
 	path = cleanPath(path)
 	for _, root := range roots {
@@ -791,7 +895,17 @@ func pathWithinAnyRoot(path string, roots []string) bool {
 	return false
 }
 
-func pathSize(path string) (int64, error) {
+func maybePathSize(ctx context.Context, path string, skip bool) (int64, error) {
+	if skip {
+		return 0, nil
+	}
+	return pathSize(ctx, path)
+}
+
+func pathSize(ctx context.Context, path string) (int64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return 0, nil
@@ -809,6 +923,9 @@ func pathSize(path string) (int64, error) {
 
 	var total int64
 	err = filepath.WalkDir(path, func(path string, entry os.DirEntry, err error) error {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		if err != nil {
 			return err
 		}
