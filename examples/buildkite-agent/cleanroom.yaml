@@ -6,15 +6,27 @@ sandbox:
     memory: 12GiB
     disk: 12GiB
   dependencies:
-    command: |
-      mise settings ruby.compile=false
-      mise install
-      mise exec -- go mod download
-    key:
-      files:
-        - .mise.toml
-        - go.mod
-        - go.sum
+    - name: toolchains
+      command: |
+        mise settings ruby.compile=false
+        mise install
+      inputs:
+        files:
+          - .mise.toml
+      outputs:
+        dirs:
+          - ${HOME}/.cache/mise
+          - ${HOME}/.local/share/mise
+          - ${HOME}/.local/state/mise
+    - name: go-modules
+      command: mise exec -- go mod download
+      inputs:
+        files:
+          - go.mod
+          - go.sum
+      outputs:
+        dirs:
+          - ${HOME}/go/pkg/mod
   network:
     default: deny
     allow:

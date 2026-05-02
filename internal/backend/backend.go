@@ -13,23 +13,26 @@ import (
 )
 
 const (
-	CapabilityExecStreaming            = "exec.streaming"
-	CapabilitySandboxSnapshot          = "sandbox.snapshot"
-	CapabilitySandboxFileDownload      = "sandbox.file_download"
-	CapabilitySandboxFileUpload        = "sandbox.file_upload"
-	CapabilitySandboxPathStat          = "sandbox.path_stat"
-	CapabilitySandboxTreeWalk          = "sandbox.tree_walk"
-	CapabilitySandboxFileRead          = "sandbox.file_read"
-	CapabilitySandboxFileWrite         = "sandbox.file_write"
-	CapabilitySandboxPathRemove        = "sandbox.path_remove"
-	CapabilitySandboxArchiveRead       = "sandbox.archive_read"
-	CapabilitySandboxArchiveWrite      = "sandbox.archive_write"
-	CapabilityNetworkDefaultDeny       = "network.default_deny"
-	CapabilityNetworkAllowlistEgress   = "network.allowlist_egress"
-	CapabilityNetworkStageScopedEgress = "network.stage_scoped_egress"
-	CapabilityDNSControlOrEquivalent   = "dns_control_or_equivalent"
-	CapabilityNetworkGuestInterface    = "network.guest_interface"
-	CapabilitySandboxPortDial          = "sandbox.port_dial"
+	CapabilityExecStreaming               = "exec.streaming"
+	CapabilitySandboxSnapshot             = "sandbox.snapshot"
+	CapabilitySandboxFileDownload         = "sandbox.file_download"
+	CapabilitySandboxFileUpload           = "sandbox.file_upload"
+	CapabilitySandboxPathStat             = "sandbox.path_stat"
+	CapabilitySandboxTreeWalk             = "sandbox.tree_walk"
+	CapabilitySandboxFileRead             = "sandbox.file_read"
+	CapabilitySandboxFileWrite            = "sandbox.file_write"
+	CapabilitySandboxPathRemove           = "sandbox.path_remove"
+	CapabilitySandboxArchiveRead          = "sandbox.archive_read"
+	CapabilitySandboxArchiveWrite         = "sandbox.archive_write"
+	CapabilityNetworkDefaultDeny          = "network.default_deny"
+	CapabilityNetworkAllowlistEgress      = "network.allowlist_egress"
+	CapabilityNetworkStageScopedEgress    = "network.stage_scoped_egress"
+	CapabilityDNSControlOrEquivalent      = "dns_control_or_equivalent"
+	CapabilityNetworkGuestInterface       = "network.guest_interface"
+	CapabilitySandboxPortDial             = "sandbox.port_dial"
+	CapabilitySandboxCacheOutputVolumes   = "sandbox.cache_output_volumes"
+	CapabilitySandboxCacheOutputFastClone = "sandbox.cache_output_fast_clone"
+	CapabilitySandboxOverlayWriteCapture  = "sandbox.overlay_write_capture"
 )
 
 var knownCapabilityKeys = []string{
@@ -50,6 +53,9 @@ var knownCapabilityKeys = []string{
 	CapabilityDNSControlOrEquivalent,
 	CapabilityNetworkGuestInterface,
 	CapabilitySandboxPortDial,
+	CapabilitySandboxCacheOutputVolumes,
+	CapabilitySandboxCacheOutputFastClone,
+	CapabilitySandboxOverlayWriteCapture,
 }
 
 type Adapter interface {
@@ -232,8 +238,9 @@ type SandboxPortDialer interface {
 }
 
 type ProvisionRequest struct {
-	SandboxID string
-	Policy    *policy.CompiledPolicy
+	SandboxID          string
+	Policy             *policy.CompiledPolicy
+	CacheOutputVolumes []CacheOutputVolumeSpec
 	FirecrackerConfig
 }
 
@@ -248,11 +255,35 @@ type SnapshotResult struct {
 }
 
 type ProvisionFromSnapshotRequest struct {
-	SandboxID  string
-	SnapshotID string
-	StorageRef string
-	Policy     *policy.CompiledPolicy
+	SandboxID          string
+	SnapshotID         string
+	StorageRef         string
+	Policy             *policy.CompiledPolicy
+	CacheOutputVolumes []CacheOutputVolumeSpec
 	FirecrackerConfig
+}
+
+type CacheOutputVolumeSpec struct {
+	Stage             string
+	BlockName         string
+	CacheKey          string
+	VolumeID          string
+	SourceSnapshotRef string
+	StorageDriver     string
+	StorageRef        string
+	DirMappings       []CacheOutputDirMapping
+	FileMappings      []CacheOutputFileMapping
+}
+
+type CacheOutputDirMapping struct {
+	GuestPath string
+	Subpath   string
+}
+
+type CacheOutputFileMapping struct {
+	GuestPath string
+	Subpath   string
+	Mode      fs.FileMode
 }
 
 type DeleteSnapshotRequest struct {

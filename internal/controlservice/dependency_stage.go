@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"path"
+	"sort"
 	"strings"
 
 	"github.com/buildkite/cleanroom/internal/backend"
@@ -209,9 +211,13 @@ func stageKeyFilesDigestAtCommit(ctx context.Context, repoDir, commitSHA string,
 	if trimmedCommitSHA == "" {
 		return "", fmt.Errorf("%s key file commit SHA is empty", stageName)
 	}
+	expandedFiles, err := expandStageKeyFilesAtCommit(ctx, repoDir, trimmedCommitSHA, files, stageName)
+	if err != nil {
+		return "", err
+	}
 
-	manifest := make([]stageKeyFileDigest, 0, len(files))
-	for _, file := range files {
+	manifest := make([]stageKeyFileDigest, 0, len(expandedFiles))
+	for _, file := range expandedFiles {
 		digest, err := gitFileDigestAtCommit(ctx, strings.TrimSpace(repoDir), trimmedCommitSHA, file)
 		if err != nil {
 			return "", fmt.Errorf("read %s key file %q: %w", stageName, file, err)
@@ -229,6 +235,76 @@ func stageKeyFilesDigestAtCommit(ctx context.Context, repoDir, commitSHA string,
 
 	sum := sha256.Sum256(payload)
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
+}
+
+func expandStageKeyFilesAtCommit(ctx context.Context, repoDir, commitSHA string, files []string, stageName string) ([]string, error) {
+	seen := make(map[string]struct{}, len(files))
+	var expanded []string
+	var treeFiles []string
+	for _, file := range files {
+		file = strings.TrimSpace(file)
+		if !strings.ContainsAny(file, "*?[") {
+			if _, ok := seen[file]; ok {
+				continue
+			}
+			seen[file] = struct{}{}
+			expanded = append(expanded, file)
+			continue
+		}
+		if _, err := path.Match(file, ""); err != nil {
+			return nil, fmt.Errorf("%s key file glob %q is invalid: %w", stageName, file, err)
+		}
+		if treeFiles == nil {
+			var err error
+			treeFiles, err = gitFilesAtCommit(ctx, repoDir, commitSHA)
+			if err != nil {
+				return nil, fmt.Errorf("list %s key files at commit: %w", stageName, err)
+			}
+		}
+		matches := 0
+		for _, candidate := range treeFiles {
+			matched, err := path.Match(file, candidate)
+			if err != nil {
+				return nil, fmt.Errorf("%s key file glob %q is invalid: %w", stageName, file, err)
+			}
+			if !matched {
+				continue
+			}
+			matches++
+			if _, ok := seen[candidate]; ok {
+				continue
+			}
+			seen[candidate] = struct{}{}
+			expanded = append(expanded, candidate)
+		}
+		if matches == 0 {
+			return nil, fmt.Errorf("%s key file glob %q matched no files", stageName, file)
+		}
+	}
+	sort.Strings(expanded)
+	return expanded, nil
+}
+
+func gitFilesAtCommit(ctx context.Context, repoDir, commitSHA string) ([]string, error) {
+	cmd := exec.CommandContext(ctx, "git", "-C", repoDir, "ls-tree", "-r", "--name-only", "-z", commitSHA)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		message := strings.TrimSpace(string(output))
+		if message == "" {
+			message = err.Error()
+		}
+		return nil, fmt.Errorf("%s", message)
+	}
+	parts := bytes.Split(output, []byte{0})
+	files := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if len(part) == 0 {
+			continue
+		}
+		files = append(files, string(part))
+	}
+	sort.Strings(files)
+	return files, nil
 }
 
 func gitFileDigestAtCommit(ctx context.Context, repoDir, commitSHA, file string) (string, error) {

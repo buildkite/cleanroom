@@ -38,11 +38,12 @@ type rawPolicy struct {
 		Image struct {
 			Ref string `yaml:"ref"`
 		} `yaml:"image"`
-		Dependencies rawDependenciesConfig `yaml:"dependencies"`
-		Run          rawRunConfig          `yaml:"run"`
-		Services     rawServices           `yaml:"services"`
-		Resources    rawResources          `yaml:"resources"`
-		Network      rawSandboxNetwork     `yaml:"network"`
+		Docker       rawDockerConfig    `yaml:"docker"`
+		Dependencies rawDependencyStage `yaml:"dependencies"`
+		Run          rawRunConfig       `yaml:"run"`
+		Services     rawPolicyBlocks    `yaml:"services"`
+		Resources    rawResources       `yaml:"resources"`
+		Network      rawSandboxNetwork  `yaml:"network"`
 	} `yaml:"sandbox"`
 }
 
@@ -55,35 +56,41 @@ type rawRepository struct {
 	Network    *rawStageNetworkConfig `yaml:"network"`
 }
 
-type rawDependencyKey struct {
-	Files []string `yaml:"files"`
-}
-
-type rawDependenciesConfig struct {
-	Command rawDependencyCommandSpec `yaml:"command"`
-	Key     rawDependencyKey         `yaml:"key"`
-	Reuse   string                   `yaml:"reuse"`
-	Network *rawStageNetworkConfig   `yaml:"network"`
-}
-
 type rawDependencyCommandSpec []string
 
 type rawRunConfig struct {
-	Before  rawShellCommandSpec    `yaml:"before"`
-	Network *rawStageNetworkConfig `yaml:"network"`
+	Before rawShellCommandSpec `yaml:"before"`
 }
 
 type rawShellCommandSpec []string
 
-type rawServices struct {
-	Docker  rawDockerService         `yaml:"docker"`
-	Command rawDependencyCommandSpec `yaml:"command"`
-	Key     rawDependencyKey         `yaml:"key"`
-	Network *rawStageNetworkConfig   `yaml:"network"`
+type rawDockerConfig struct {
+	Required bool `yaml:"required"`
 }
 
-type rawDockerService struct {
-	Required bool `yaml:"required"`
+type rawPolicyBlocks []rawPolicyBlock
+
+type rawDependencyStage struct {
+	Reuse       string
+	Blocks      rawPolicyBlocks
+	blocksField string
+}
+
+type rawPolicyBlock struct {
+	Name    string                   `yaml:"name"`
+	Command rawDependencyCommandSpec `yaml:"command"`
+	Inputs  rawPolicyBlockInputs     `yaml:"inputs"`
+	Env     map[string]string        `yaml:"env"`
+	Outputs rawPolicyBlockOutputs    `yaml:"outputs"`
+}
+
+type rawPolicyBlockInputs struct {
+	Files []string `yaml:"files"`
+}
+
+type rawPolicyBlockOutputs struct {
+	Dirs  []string `yaml:"dirs"`
+	Files []string `yaml:"files"`
 }
 
 type rawResources struct {
@@ -93,8 +100,11 @@ type rawResources struct {
 }
 
 type rawSandboxNetwork struct {
-	Default string        `yaml:"default"`
-	Allow   rawAllowRules `yaml:"allow"`
+	Default      string                 `yaml:"default"`
+	Allow        rawAllowRules          `yaml:"allow"`
+	Dependencies *rawStageNetworkConfig `yaml:"dependencies"`
+	Services     *rawStageNetworkConfig `yaml:"services"`
+	Execution    *rawStageNetworkConfig `yaml:"execution"`
 }
 
 type rawStageNetworkConfig struct {
@@ -112,6 +122,7 @@ type CompiledPolicy struct {
 	Version        int                   `json:"version"`
 	ImageRef       string                `json:"image_ref"`
 	ImageDigest    string                `json:"image_digest"`
+	Docker         DockerService         `json:"docker"`
 	Services       Services              `json:"services"`
 	NetworkDefault string                `json:"network_default"`
 	Allow          []AllowRule           `json:"allow"`
@@ -131,15 +142,16 @@ type RepositoryConfig struct {
 }
 
 type Services struct {
-	Docker   DockerService `json:"docker"`
-	Command  []string      `json:"command,omitempty"`
-	KeyFiles []string      `json:"key_files,omitempty"`
+	Blocks   []StageBlock `json:"blocks,omitempty"`
+	Command  []string     `json:"-"`
+	KeyFiles []string     `json:"-"`
 }
 
 type Dependencies struct {
-	Command  []string `json:"command,omitempty"`
-	KeyFiles []string `json:"key_files,omitempty"`
-	Reuse    string   `json:"reuse,omitempty"`
+	Blocks   []StageBlock `json:"blocks,omitempty"`
+	Command  []string     `json:"-"`
+	KeyFiles []string     `json:"-"`
+	Reuse    string       `json:"-"`
 }
 
 type Run struct {
@@ -172,6 +184,23 @@ type NetworkStagePolicies struct {
 
 type DockerService struct {
 	Required bool `json:"required"`
+}
+
+type StageBlock struct {
+	Name    string            `json:"name"`
+	Command []string          `json:"command"`
+	Inputs  StageBlockInputs  `json:"inputs"`
+	Env     map[string]string `json:"env,omitempty"`
+	Outputs StageBlockOutputs `json:"outputs"`
+}
+
+type StageBlockInputs struct {
+	Files []string `json:"files,omitempty"`
+}
+
+type StageBlockOutputs struct {
+	Dirs  []string `json:"dirs,omitempty"`
+	Files []string `json:"files,omitempty"`
 }
 
 type Resources struct {
@@ -242,15 +271,15 @@ func normalizeRawNetworkStages(raw rawPolicy) (*NetworkStagePolicies, error) {
 			return nil, err
 		}
 	}
-	out.Dependencies, err = normalizeRawStageNetwork(raw.Sandbox.Dependencies.Network)
+	out.Dependencies, err = normalizeRawStageNetwork(raw.Sandbox.Network.Dependencies)
 	if err != nil {
 		return nil, err
 	}
-	out.Services, err = normalizeRawStageNetwork(raw.Sandbox.Services.Network)
+	out.Services, err = normalizeRawStageNetwork(raw.Sandbox.Network.Services)
 	if err != nil {
 		return nil, err
 	}
-	out.Execution, err = normalizeRawStageNetwork(raw.Sandbox.Run.Network)
+	out.Execution, err = normalizeRawStageNetwork(raw.Sandbox.Network.Execution)
 	if err != nil {
 		return nil, err
 	}
@@ -349,12 +378,16 @@ func Compile(raw rawPolicy) (*CompiledPolicy, error) {
 		return nil, errors.New("sandbox.network.allow cannot be combined with stage-local network blocks")
 	}
 
+	docker := normalizeDocker(raw.Sandbox.Docker)
 	dependencies, err := normalizeDependencies(raw.Sandbox.Dependencies)
 	if err != nil {
 		return nil, err
 	}
 	services, err := normalizeServices(raw.Sandbox.Services)
 	if err != nil {
+		return nil, err
+	}
+	if err := validatePolicyOutputRelationships(dependencies.Blocks, services.Blocks); err != nil {
 		return nil, err
 	}
 	run, err := normalizeRun(raw.Sandbox.Run)
@@ -370,6 +403,7 @@ func Compile(raw rawPolicy) (*CompiledPolicy, error) {
 		Version:        raw.Version,
 		ImageRef:       parsedRef.Original,
 		ImageDigest:    parsedRef.Digest(),
+		Docker:         docker,
 		Services:       services,
 		NetworkDefault: networkDefault,
 		Allow:          allow,
@@ -512,15 +546,15 @@ func (p *CompiledPolicy) RequiresDockerService() bool {
 	if p == nil {
 		return false
 	}
-	return p.Services.Docker.Required
+	return p.Docker.Required
 }
 
 func (s Services) BootstrapEnabled() bool {
-	return len(s.Command) > 0
+	return len(s.Blocks) > 0 || len(s.Command) > 0
 }
 
 func (d Dependencies) Enabled() bool {
-	return len(d.Command) > 0
+	return len(d.Blocks) > 0 || len(d.Command) > 0
 }
 
 const (
@@ -577,6 +611,47 @@ func (c *rawDependencyCommandSpec) UnmarshalYAML(node *yaml.Node) error {
 		return nil
 	default:
 		return fmt.Errorf("command must be a string or sequence")
+	}
+}
+
+func (stage *rawDependencyStage) UnmarshalYAML(node *yaml.Node) error {
+	if node == nil {
+		return nil
+	}
+	node = dereferenceYAMLAlias(node)
+	if node.Kind == yaml.ScalarNode && node.ShortTag() == "!!null" {
+		return nil
+	}
+	switch node.Kind {
+	case yaml.SequenceNode:
+		var blocks rawPolicyBlocks
+		if err := node.Decode(&blocks); err != nil {
+			return err
+		}
+		stage.Blocks = blocks
+		stage.blocksField = "sandbox.dependencies"
+		return nil
+	case yaml.MappingNode:
+		stage.blocksField = "sandbox.dependencies.blocks"
+		for i := 0; i < len(node.Content); i += 2 {
+			key := node.Content[i]
+			value := node.Content[i+1]
+			switch key.Value {
+			case "reuse":
+				if err := value.Decode(&stage.Reuse); err != nil {
+					return err
+				}
+			case "blocks":
+				if err := value.Decode(&stage.Blocks); err != nil {
+					return err
+				}
+			default:
+				return fmt.Errorf("sandbox.dependencies.%s is not supported; use sandbox.dependencies.blocks", key.Value)
+			}
+		}
+		return nil
+	default:
+		return fmt.Errorf("sandbox.dependencies must be a list of blocks or an object with reuse and blocks")
 	}
 }
 
@@ -798,24 +873,16 @@ func (p *CompiledPolicy) ToProto() *cleanroomv1.Policy {
 		Version:     int32(p.Version),
 		ImageRef:    p.ImageRef,
 		ImageDigest: p.ImageDigest,
-		Services: &cleanroomv1.PolicyServices{
-			Docker: &cleanroomv1.PolicyDockerService{
-				Required: p.Services.Docker.Required,
-			},
-			Command: append([]string(nil), p.Services.Command...),
-			Key: &cleanroomv1.PolicyDependencyKey{
-				Files: append([]string(nil), p.Services.KeyFiles...),
-			},
+		Docker: &cleanroomv1.PolicyDocker{
+			Required: p.Docker.Required,
 		},
+		Services:       &cleanroomv1.PolicyServices{Blocks: stageBlocksToProto(p.Services.Blocks)},
 		NetworkDefault: p.NetworkDefault,
 		Allow:          allowRulesToProto(p.Allow),
 		NetworkStages:  networkStagesToProto(p.NetworkStages),
 		Dependencies: &cleanroomv1.PolicyDependencies{
-			Command: append([]string(nil), p.Dependencies.Command...),
-			Key: &cleanroomv1.PolicyDependencyKey{
-				Files: append([]string(nil), p.Dependencies.KeyFiles...),
-			},
-			Reuse: p.Dependencies.Reuse,
+			Reuse:  p.Dependencies.Reuse,
+			Blocks: stageBlocksToProto(p.Dependencies.Blocks),
 		},
 		Run: &cleanroomv1.PolicyRun{
 			Before: append([]string(nil), p.Run.Before...),
@@ -984,12 +1051,16 @@ func FromProto(pb *cleanroomv1.Policy) (*CompiledPolicy, error) {
 		return nil, errors.New("policy network_default must be deny when stage-local network blocks are configured")
 	}
 
+	docker := DockerService{Required: pb.GetDocker().GetRequired()}
 	dependencies, err := dependenciesFromProto(pb.GetDependencies())
 	if err != nil {
 		return nil, err
 	}
 	services, err := servicesFromProto(pb.GetServices())
 	if err != nil {
+		return nil, err
+	}
+	if err := validatePolicyOutputRelationships(dependencies.Blocks, services.Blocks); err != nil {
 		return nil, err
 	}
 	run, err := runFromProto(pb.GetRun())
@@ -1005,6 +1076,7 @@ func FromProto(pb *cleanroomv1.Policy) (*CompiledPolicy, error) {
 		Version:        int(pb.GetVersion()),
 		ImageRef:       parsedRef.Original,
 		ImageDigest:    parsedRef.Digest(),
+		Docker:         docker,
 		Services:       services,
 		NetworkDefault: networkDefault,
 		Allow:          allow,
@@ -1026,32 +1098,27 @@ func FromProto(pb *cleanroomv1.Policy) (*CompiledPolicy, error) {
 	return compiled, nil
 }
 
-func normalizeDependencies(raw rawDependenciesConfig) (Dependencies, error) {
-	command, err := normalizeBootstrapCommand(raw.Command, "sandbox.dependencies.command")
+func normalizeDocker(raw rawDockerConfig) DockerService {
+	return DockerService{Required: raw.Required}
+}
+
+func normalizeDependencies(raw rawDependencyStage) (Dependencies, error) {
+	blocksField := raw.blocksField
+	if blocksField == "" {
+		blocksField = "sandbox.dependencies"
+	}
+	blocks, err := normalizeStageBlocks(raw.Blocks, blocksField)
 	if err != nil {
 		return Dependencies{}, err
 	}
-	keyFiles, err := normalizeBootstrapKeyFiles(raw.Key.Files, "sandbox.dependencies.key.files")
+	command := combinedStageBlockCommand(blocks)
+	keyFiles := combinedStageBlockInputFiles(blocks)
+	reuse, err := normalizeDependencyReuse(raw.Reuse, keyFiles, "sandbox.dependencies.reuse")
 	if err != nil {
 		return Dependencies{}, err
-	}
-	reuse, err := normalizeDependencyReuse(raw.Reuse, "sandbox.dependencies.reuse")
-	if err != nil {
-		return Dependencies{}, err
-	}
-	if len(command) == 0 {
-		if len(keyFiles) > 0 {
-			return Dependencies{}, errors.New("sandbox.dependencies.key.files requires sandbox.dependencies.command")
-		}
-		if reuse != "" {
-			return Dependencies{}, errors.New("sandbox.dependencies.reuse requires sandbox.dependencies.command")
-		}
-		return Dependencies{}, nil
-	}
-	if reuse == DependencyReusePortable && len(keyFiles) == 0 {
-		return Dependencies{}, errors.New("sandbox.dependencies.reuse=portable requires sandbox.dependencies.key.files")
 	}
 	return Dependencies{
+		Blocks:   blocks,
 		Command:  command,
 		KeyFiles: keyFiles,
 		Reuse:    reuse,
@@ -1062,55 +1129,47 @@ func dependenciesFromProto(pb *cleanroomv1.PolicyDependencies) (Dependencies, er
 	if pb == nil {
 		return Dependencies{}, nil
 	}
-	command, err := normalizeBootstrapCommand(pb.GetCommand(), "policy dependencies.command")
+	blocks, err := stageBlocksFromProto(pb.GetBlocks(), "policy dependencies")
 	if err != nil {
 		return Dependencies{}, err
 	}
-	keyFiles, err := normalizeBootstrapKeyFiles(pb.GetKey().GetFiles(), "policy dependencies.key.files")
+	keyFiles := combinedStageBlockInputFiles(blocks)
+	reuse, err := normalizeDependencyReuse(pb.GetReuse(), keyFiles, "policy dependencies.reuse")
 	if err != nil {
 		return Dependencies{}, err
-	}
-	reuse, err := normalizeDependencyReuse(pb.GetReuse(), "policy dependencies.reuse")
-	if err != nil {
-		return Dependencies{}, err
-	}
-	if len(command) == 0 {
-		if len(keyFiles) > 0 {
-			return Dependencies{}, errors.New("policy dependencies.key.files requires dependencies.command")
-		}
-		if reuse != "" {
-			return Dependencies{}, errors.New("policy dependencies.reuse requires dependencies.command")
-		}
-		return Dependencies{}, nil
-	}
-	if reuse == DependencyReusePortable && len(keyFiles) == 0 {
-		return Dependencies{}, errors.New("policy dependencies.reuse=portable requires dependencies.key.files")
 	}
 	return Dependencies{
-		Command:  command,
+		Blocks:   blocks,
+		Command:  combinedStageBlockCommand(blocks),
 		KeyFiles: keyFiles,
 		Reuse:    reuse,
 	}, nil
 }
 
-func normalizeServices(raw rawServices) (Services, error) {
-	command, err := normalizeBootstrapCommand(raw.Command, "sandbox.services.command")
+func normalizeDependencyReuse(raw string, keyFiles []string, field string) (string, error) {
+	reuse := strings.TrimSpace(strings.ToLower(raw))
+	switch reuse {
+	case "", DependencyReuseExact:
+		return "", nil
+	case DependencyReusePortable:
+		if len(keyFiles) == 0 {
+			return "", fmt.Errorf("%s=portable requires key files", field)
+		}
+		return reuse, nil
+	default:
+		return "", fmt.Errorf("unsupported %s %q: expected %q", field, raw, DependencyReusePortable)
+	}
+}
+
+func normalizeServices(raw rawPolicyBlocks) (Services, error) {
+	blocks, err := normalizeStageBlocks(raw, "sandbox.services")
 	if err != nil {
 		return Services{}, err
-	}
-	keyFiles, err := normalizeBootstrapKeyFiles(raw.Key.Files, "sandbox.services.key.files")
-	if err != nil {
-		return Services{}, err
-	}
-	if len(command) == 0 && len(keyFiles) > 0 {
-		return Services{}, errors.New("sandbox.services.key.files requires sandbox.services.command")
 	}
 	return Services{
-		Docker: DockerService{
-			Required: raw.Docker.Required,
-		},
-		Command:  command,
-		KeyFiles: keyFiles,
+		Blocks:   blocks,
+		Command:  combinedStageBlockCommand(blocks),
+		KeyFiles: combinedStageBlockInputFiles(blocks),
 	}, nil
 }
 
@@ -1118,23 +1177,14 @@ func servicesFromProto(pb *cleanroomv1.PolicyServices) (Services, error) {
 	if pb == nil {
 		return Services{}, nil
 	}
-	command, err := normalizeBootstrapCommand(pb.GetCommand(), "policy services.command")
+	blocks, err := stageBlocksFromProto(pb.GetBlocks(), "policy services")
 	if err != nil {
 		return Services{}, err
-	}
-	keyFiles, err := normalizeBootstrapKeyFiles(pb.GetKey().GetFiles(), "policy services.key.files")
-	if err != nil {
-		return Services{}, err
-	}
-	if len(command) == 0 && len(keyFiles) > 0 {
-		return Services{}, errors.New("policy services.key.files requires services.command")
 	}
 	return Services{
-		Docker: DockerService{
-			Required: pb.GetDocker().GetRequired(),
-		},
-		Command:  command,
-		KeyFiles: keyFiles,
+		Blocks:   blocks,
+		Command:  combinedStageBlockCommand(blocks),
+		KeyFiles: combinedStageBlockInputFiles(blocks),
 	}, nil
 }
 
@@ -1265,16 +1315,438 @@ func normalizeBootstrapKeyFiles(raw []string, field string) ([]string, error) {
 	return files, nil
 }
 
-func normalizeDependencyReuse(raw, field string) (string, error) {
-	trimmed := strings.TrimSpace(strings.ToLower(raw))
-	switch trimmed {
-	case "", DependencyReuseExact:
-		return "", nil
-	case DependencyReusePortable:
-		return DependencyReusePortable, nil
-	default:
-		return "", fmt.Errorf("%s must be %q or %q", field, DependencyReuseExact, DependencyReusePortable)
+const (
+	defaultBlockHome      = "/root"
+	defaultBlockWorkspace = "/workspace"
+)
+
+func normalizeStageBlocks(raw []rawPolicyBlock, field string) ([]StageBlock, error) {
+	if len(raw) == 0 {
+		return nil, nil
 	}
+	seenNames := make(map[string]struct{}, len(raw))
+	blocks := make([]StageBlock, 0, len(raw))
+	for i, candidate := range raw {
+		block, err := normalizeStageBlock(candidate, fmt.Sprintf("%s[%d]", field, i))
+		if err != nil {
+			return nil, err
+		}
+		if _, ok := seenNames[block.Name]; ok {
+			return nil, fmt.Errorf("%s[%d].name %q is duplicated", field, i, block.Name)
+		}
+		seenNames[block.Name] = struct{}{}
+		blocks = append(blocks, block)
+	}
+	if err := validateStageBlockOutputRelationships(blocks, field); err != nil {
+		return nil, err
+	}
+	return blocks, nil
+}
+
+func normalizeStageBlock(raw rawPolicyBlock, field string) (StageBlock, error) {
+	name := strings.TrimSpace(raw.Name)
+	if name == "" {
+		return StageBlock{}, fmt.Errorf("%s.name is required", field)
+	}
+	if !validStageBlockName(name) {
+		return StageBlock{}, fmt.Errorf("%s.name %q must match [A-Za-z0-9][A-Za-z0-9_.-]*", field, name)
+	}
+	command, err := normalizeBootstrapCommand(raw.Command, field+".command")
+	if err != nil {
+		return StageBlock{}, err
+	}
+	if len(command) == 0 {
+		return StageBlock{}, fmt.Errorf("%s.command is required", field)
+	}
+	inputFiles, err := normalizeBootstrapKeyFiles(raw.Inputs.Files, field+".inputs.files")
+	if err != nil {
+		return StageBlock{}, err
+	}
+	if len(inputFiles) == 0 {
+		return StageBlock{}, fmt.Errorf("%s.inputs.files must include at least one file or glob", field)
+	}
+	env, err := normalizeBlockEnv(raw.Env, field+".env")
+	if err != nil {
+		return StageBlock{}, err
+	}
+	outputs, err := normalizeBlockOutputs(raw.Outputs, field+".outputs")
+	if err != nil {
+		return StageBlock{}, err
+	}
+	if len(outputs.Dirs) == 0 && len(outputs.Files) == 0 {
+		return StageBlock{}, fmt.Errorf("%s.outputs must include at least one dir or file", field)
+	}
+	return StageBlock{
+		Name:    name,
+		Command: command,
+		Inputs:  StageBlockInputs{Files: inputFiles},
+		Env:     env,
+		Outputs: outputs,
+	}, nil
+}
+
+func validStageBlockName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i, r := range name {
+		if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			continue
+		}
+		if i > 0 && (r == '_' || r == '.' || r == '-') {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func normalizeBlockEnv(raw map[string]string, field string) (map[string]string, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	env := make(map[string]string, len(raw))
+	for key, value := range raw {
+		name := strings.TrimSpace(key)
+		if name == "" {
+			return nil, fmt.Errorf("%s contains an empty key", field)
+		}
+		if !validEnvName(name) {
+			return nil, fmt.Errorf("%s.%s must be a valid environment variable name", field, name)
+		}
+		env[name] = expandGuestEnvValue(value)
+	}
+	return env, nil
+}
+
+func expandGuestEnvValue(value string) string {
+	switch {
+	case value == "~":
+		return defaultBlockHome
+	case strings.HasPrefix(value, "~/"):
+		return defaultBlockHome + value[1:]
+	case value == "$HOME":
+		return defaultBlockHome
+	case strings.HasPrefix(value, "$HOME/"):
+		return defaultBlockHome + strings.TrimPrefix(value, "$HOME")
+	case value == "${HOME}":
+		return defaultBlockHome
+	case strings.HasPrefix(value, "${HOME}/"):
+		return defaultBlockHome + strings.TrimPrefix(value, "${HOME}")
+	case value == "$WORKSPACE":
+		return defaultBlockWorkspace
+	case strings.HasPrefix(value, "$WORKSPACE/"):
+		return defaultBlockWorkspace + strings.TrimPrefix(value, "$WORKSPACE")
+	case value == "${WORKSPACE}":
+		return defaultBlockWorkspace
+	case strings.HasPrefix(value, "${WORKSPACE}/"):
+		return defaultBlockWorkspace + strings.TrimPrefix(value, "${WORKSPACE}")
+	default:
+		return value
+	}
+}
+
+func validEnvName(name string) bool {
+	for i, r := range name {
+		if i == 0 {
+			if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || r == '_' {
+				continue
+			}
+			return false
+		}
+		if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' {
+			continue
+		}
+		return false
+	}
+	return name != ""
+}
+
+func normalizeBlockOutputs(raw rawPolicyBlockOutputs, field string) (StageBlockOutputs, error) {
+	dirs, err := normalizeOutputPaths(raw.Dirs, field+".dirs")
+	if err != nil {
+		return StageBlockOutputs{}, err
+	}
+	files, err := normalizeOutputPaths(raw.Files, field+".files")
+	if err != nil {
+		return StageBlockOutputs{}, err
+	}
+	if err := validateOutputPathRelationships(dirs, files, field); err != nil {
+		return StageBlockOutputs{}, err
+	}
+	return StageBlockOutputs{Dirs: dirs, Files: files}, nil
+}
+
+func normalizeOutputPaths(raw []string, field string) ([]string, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	seen := make(map[string]struct{}, len(raw))
+	paths := make([]string, 0, len(raw))
+	for i, candidate := range raw {
+		normalized, err := expandGuestPathValue(strings.TrimSpace(candidate), fmt.Sprintf("%s[%d]", field, i), true)
+		if err != nil {
+			return nil, err
+		}
+		if strings.HasPrefix(normalized, "/workspace/") || normalized == "/workspace" {
+			return nil, fmt.Errorf("%s[%d] must not be under /workspace", field, i)
+		}
+		if normalized == "/" {
+			return nil, fmt.Errorf("%s[%d] must not be /", field, i)
+		}
+		if _, ok := seen[normalized]; ok {
+			return nil, fmt.Errorf("%s[%d] duplicates output path %q", field, i, normalized)
+		}
+		seen[normalized] = struct{}{}
+		paths = append(paths, normalized)
+	}
+	sort.Strings(paths)
+	return paths, nil
+}
+
+func expandGuestPathValue(value, field string, requireAbsolute bool) (string, error) {
+	if value == "" {
+		return "", fmt.Errorf("%s cannot be empty", field)
+	}
+	if value == "~" {
+		value = defaultBlockHome
+	} else if strings.HasPrefix(value, "~/") {
+		value = defaultBlockHome + value[1:]
+	} else if strings.HasPrefix(value, "~") {
+		return "", fmt.Errorf("%s does not support ~user expansion", field)
+	} else if value == "$HOME" {
+		value = defaultBlockHome
+	} else if strings.HasPrefix(value, "$HOME/") {
+		value = defaultBlockHome + strings.TrimPrefix(value, "$HOME")
+	} else if value == "${HOME}" {
+		value = defaultBlockHome
+	} else if strings.HasPrefix(value, "${HOME}/") {
+		value = defaultBlockHome + strings.TrimPrefix(value, "${HOME}")
+	} else if value == "$WORKSPACE" {
+		value = defaultBlockWorkspace
+	} else if strings.HasPrefix(value, "$WORKSPACE/") {
+		value = defaultBlockWorkspace + strings.TrimPrefix(value, "$WORKSPACE")
+	} else if value == "${WORKSPACE}" {
+		value = defaultBlockWorkspace
+	} else if strings.HasPrefix(value, "${WORKSPACE}/") {
+		value = defaultBlockWorkspace + strings.TrimPrefix(value, "${WORKSPACE}")
+	}
+	if strings.Contains(value, "$") {
+		return "", fmt.Errorf("%s contains an unsupported variable expansion", field)
+	}
+	value = path.Clean(strings.ReplaceAll(value, "\\", "/"))
+	if strings.ContainsAny(value, "*?[") {
+		return "", fmt.Errorf("%s must not contain glob characters", field)
+	}
+	if requireAbsolute && !strings.HasPrefix(value, "/") {
+		return "", fmt.Errorf("%s must be absolute", field)
+	}
+	return value, nil
+}
+
+func validateOutputPathRelationships(dirs, files []string, field string) error {
+	for i, dir := range dirs {
+		for j, other := range dirs {
+			if i == j {
+				continue
+			}
+			if pathContains(dir, other) {
+				return fmt.Errorf("%s.dirs contains overlapping paths %q and %q", field, dir, other)
+			}
+		}
+		for _, file := range files {
+			if file == dir || pathContains(dir, file) {
+				return fmt.Errorf("%s.files path %q is inside output dir %q", field, file, dir)
+			}
+		}
+	}
+	return nil
+}
+
+type stageBlockOutputPath struct {
+	Block string
+	Kind  string
+	Path  string
+}
+
+func validateStageBlockOutputRelationships(blocks []StageBlock, field string) error {
+	seen := make(map[string]stageBlockOutputPath)
+	var dirs []stageBlockOutputPath
+	var files []stageBlockOutputPath
+
+	for _, block := range blocks {
+		for _, dir := range block.Outputs.Dirs {
+			ref := stageBlockOutputPath{Block: block.Name, Kind: "dir", Path: dir}
+			if previous, ok := seen[dir]; ok {
+				return fmt.Errorf("%s block %q output %s %q duplicates block %q output %s", field, block.Name, ref.Kind, ref.Path, previous.Block, previous.Kind)
+			}
+			seen[dir] = ref
+			dirs = append(dirs, ref)
+		}
+		for _, file := range block.Outputs.Files {
+			ref := stageBlockOutputPath{Block: block.Name, Kind: "file", Path: file}
+			if previous, ok := seen[file]; ok {
+				return fmt.Errorf("%s block %q output %s %q duplicates block %q output %s", field, block.Name, ref.Kind, ref.Path, previous.Block, previous.Kind)
+			}
+			seen[file] = ref
+			files = append(files, ref)
+		}
+	}
+
+	for i, dir := range dirs {
+		for j, other := range dirs {
+			if i == j {
+				continue
+			}
+			if pathContains(dir.Path, other.Path) {
+				return fmt.Errorf("%s block %q output dir %q overlaps block %q output dir %q", field, dir.Block, dir.Path, other.Block, other.Path)
+			}
+		}
+		for _, file := range files {
+			if pathContains(dir.Path, file.Path) {
+				return fmt.Errorf("%s block %q output dir %q overlaps block %q output file %q", field, dir.Block, dir.Path, file.Block, file.Path)
+			}
+		}
+	}
+	return nil
+}
+
+func validatePolicyOutputRelationships(dependencyBlocks, serviceBlocks []StageBlock) error {
+	if len(dependencyBlocks) == 0 || len(serviceBlocks) == 0 {
+		return nil
+	}
+	blocks := make([]StageBlock, 0, len(dependencyBlocks)+len(serviceBlocks))
+	blocks = appendLabeledStageBlocks(blocks, "dependencies", dependencyBlocks)
+	blocks = appendLabeledStageBlocks(blocks, "services", serviceBlocks)
+	return validateStageBlockOutputRelationships(blocks, "sandbox")
+}
+
+func appendLabeledStageBlocks(dst []StageBlock, stage string, blocks []StageBlock) []StageBlock {
+	for _, block := range blocks {
+		candidate := block
+		candidate.Name = stage + "." + block.Name
+		dst = append(dst, candidate)
+	}
+	return dst
+}
+
+func pathContains(parent, child string) bool {
+	parent = path.Clean(parent)
+	child = path.Clean(child)
+	if parent == "/" {
+		return child != "/"
+	}
+	return strings.HasPrefix(child, parent+"/")
+}
+
+func stageBlocksToProto(blocks []StageBlock) []*cleanroomv1.PolicyBlock {
+	out := make([]*cleanroomv1.PolicyBlock, 0, len(blocks))
+	for _, block := range blocks {
+		out = append(out, &cleanroomv1.PolicyBlock{
+			Name:    block.Name,
+			Command: append([]string(nil), block.Command...),
+			Inputs: &cleanroomv1.PolicyBlockInputs{
+				Files: append([]string(nil), block.Inputs.Files...),
+			},
+			Env: cloneStringMap(block.Env),
+			Outputs: &cleanroomv1.PolicyBlockOutputs{
+				Dirs:  append([]string(nil), block.Outputs.Dirs...),
+				Files: append([]string(nil), block.Outputs.Files...),
+			},
+		})
+	}
+	return out
+}
+
+func stageBlocksFromProto(blocks []*cleanroomv1.PolicyBlock, field string) ([]StageBlock, error) {
+	raw := make([]rawPolicyBlock, 0, len(blocks))
+	for _, block := range blocks {
+		if block == nil {
+			raw = append(raw, rawPolicyBlock{})
+			continue
+		}
+		raw = append(raw, rawPolicyBlock{
+			Name:    block.GetName(),
+			Command: rawDependencyCommandSpec(append([]string(nil), block.GetCommand()...)),
+			Inputs: rawPolicyBlockInputs{
+				Files: append([]string(nil), block.GetInputs().GetFiles()...),
+			},
+			Env: cloneStringMap(block.GetEnv()),
+			Outputs: rawPolicyBlockOutputs{
+				Dirs:  append([]string(nil), block.GetOutputs().GetDirs()...),
+				Files: append([]string(nil), block.GetOutputs().GetFiles()...),
+			},
+		})
+	}
+	return normalizeStageBlocks(raw, field+".blocks")
+}
+
+func cloneStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
+}
+
+func combinedStageBlockInputFiles(blocks []StageBlock) []string {
+	seen := make(map[string]struct{})
+	var files []string
+	for _, block := range blocks {
+		for _, file := range block.Inputs.Files {
+			if _, ok := seen[file]; ok {
+				continue
+			}
+			seen[file] = struct{}{}
+			files = append(files, file)
+		}
+	}
+	sort.Strings(files)
+	return files
+}
+
+func combinedStageBlockCommand(blocks []StageBlock) []string {
+	if len(blocks) == 0 {
+		return nil
+	}
+	var script strings.Builder
+	script.WriteString("set -eu\n")
+	for _, block := range blocks {
+		script.WriteString("(\n")
+		if len(block.Env) > 0 {
+			keys := make([]string, 0, len(block.Env))
+			for key := range block.Env {
+				keys = append(keys, key)
+			}
+			sort.Strings(keys)
+			for _, key := range keys {
+				script.WriteString("export ")
+				script.WriteString(key)
+				script.WriteString("=")
+				script.WriteString(shellQuote(block.Env[key]))
+				script.WriteString("\n")
+			}
+		}
+		script.WriteString(commandShellLine(block.Command))
+		script.WriteString("\n")
+		script.WriteString(")\n")
+	}
+	return []string{"sh", "-lc", script.String()}
+}
+
+func commandShellLine(command []string) string {
+	parts := make([]string, 0, len(command))
+	for _, arg := range command {
+		parts = append(parts, shellQuote(arg))
+	}
+	return strings.Join(parts, " ")
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
 }
 
 func hashPolicy(p *CompiledPolicy) (string, error) {

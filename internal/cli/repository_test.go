@@ -268,7 +268,16 @@ func TestCreateCommandShowsDependencyBootstrapOutputDuringSandboxCreate(t *testi
 				NetworkDefault: "deny",
 				Allow:          []policy.AllowRule{{Host: "github.com", Ports: []int{443}}},
 				Dependencies: policy.Dependencies{
-					Command: []string{"go", "mod", "download"},
+					Blocks: []policy.StageBlock{
+						{
+							Name:    "go-modules",
+							Command: []string{"go", "mod", "download"},
+							Inputs:  policy.StageBlockInputs{Files: []string{"README.md"}},
+							Outputs: policy.StageBlockOutputs{Dirs: []string{"/root/go/pkg/mod"}},
+						},
+					},
+					Command:  []string{"go", "mod", "download"},
+					KeyFiles: []string{"README.md"},
 				},
 			},
 			repository: policy.RepositoryConfig{

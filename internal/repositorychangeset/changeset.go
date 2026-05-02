@@ -158,18 +158,12 @@ func (c *Changeset) DigestPathsFromBase(repoRoot string, paths []string) ([]File
 		return nil, fmt.Errorf("apply repository changeset patch to temporary git index: %w", err)
 	}
 
-	files := make([]File, 0, len(paths))
-	seen := make(map[string]struct{}, len(paths))
-	for _, rawPath := range paths {
-		normalizedPath := normalizePath(rawPath)
-		if normalizedPath == "" {
-			return nil, fmt.Errorf("repository changeset digest path %q is invalid", rawPath)
-		}
-		if _, exists := seen[normalizedPath]; exists {
-			return nil, fmt.Errorf("repository changeset digest path %q is duplicated", normalizedPath)
-		}
-		seen[normalizedPath] = struct{}{}
-
+	expandedPaths, err := expandDigestPathsInIndex(repoRoot, env, baseCommitSHA, paths)
+	if err != nil {
+		return nil, err
+	}
+	files := make([]File, 0, len(expandedPaths))
+	for _, normalizedPath := range expandedPaths {
 		file := File{Path: normalizedPath}
 		exists, err := pathExistsInIndex(repoRoot, env, normalizedPath)
 		if err != nil {
@@ -192,6 +186,57 @@ func (c *Changeset) DigestPathsFromBase(repoRoot string, paths []string) ([]File
 		return files[i].Path < files[j].Path
 	})
 	return files, nil
+}
+
+func expandDigestPathsInIndex(repoRoot string, env []string, baseCommitSHA string, paths []string) ([]string, error) {
+	seen := make(map[string]struct{}, len(paths))
+	var expanded []string
+	var indexPaths []string
+	for _, rawPath := range paths {
+		normalizedPath := normalizePath(rawPath)
+		if normalizedPath == "" {
+			return nil, fmt.Errorf("repository changeset digest path %q is invalid", rawPath)
+		}
+		if !strings.ContainsAny(normalizedPath, "*?[") {
+			if _, exists := seen[normalizedPath]; exists {
+				continue
+			}
+			seen[normalizedPath] = struct{}{}
+			expanded = append(expanded, normalizedPath)
+			continue
+		}
+		if _, err := path.Match(normalizedPath, ""); err != nil {
+			return nil, fmt.Errorf("repository changeset digest path glob %q is invalid: %w", normalizedPath, err)
+		}
+		if indexPaths == nil {
+			var err error
+			indexPaths, err = listIndexPathsIncludingDeleted(repoRoot, env, baseCommitSHA)
+			if err != nil {
+				return nil, err
+			}
+		}
+		matches := 0
+		for _, candidate := range indexPaths {
+			matched, err := path.Match(normalizedPath, candidate)
+			if err != nil {
+				return nil, fmt.Errorf("repository changeset digest path glob %q is invalid: %w", normalizedPath, err)
+			}
+			if !matched {
+				continue
+			}
+			matches++
+			if _, exists := seen[candidate]; exists {
+				continue
+			}
+			seen[candidate] = struct{}{}
+			expanded = append(expanded, candidate)
+		}
+		if matches == 0 {
+			return nil, fmt.Errorf("repository changeset digest path glob %q matched no files", normalizedPath)
+		}
+	}
+	sort.Strings(expanded)
+	return expanded, nil
 }
 
 func FromProto(proto *cleanroomv1.RepositoryChangeset) *Changeset {
@@ -570,6 +615,67 @@ func pathExistsInIndex(repoRoot string, env []string, normalizedPath string) (bo
 		return false, err
 	}
 	return strings.TrimSpace(string(output)) != "", nil
+}
+
+func listIndexPaths(repoRoot string, env []string) ([]string, error) {
+	output, err := gitOutput(repoRoot, env, "ls-files", "-z")
+	if err != nil {
+		return nil, fmt.Errorf("list repository changeset index paths: %w", err)
+	}
+	tokens := splitNullTerminated(output)
+	paths := make([]string, 0, len(tokens))
+	for _, token := range tokens {
+		normalizedPath := normalizePath(token)
+		if normalizedPath == "" {
+			return nil, fmt.Errorf("parse repository changeset index path from %q", token)
+		}
+		paths = append(paths, normalizedPath)
+	}
+	sort.Strings(paths)
+	return paths, nil
+}
+
+func listIndexPathsIncludingDeleted(repoRoot string, env []string, baseCommitSHA string) ([]string, error) {
+	paths, err := listIndexPaths(repoRoot, env)
+	if err != nil {
+		return nil, err
+	}
+	deletedPaths, err := listDeletedIndexPaths(repoRoot, env, baseCommitSHA)
+	if err != nil {
+		return nil, err
+	}
+	if len(deletedPaths) == 0 {
+		return paths, nil
+	}
+	seen := make(map[string]struct{}, len(paths)+len(deletedPaths))
+	combined := make([]string, 0, len(paths)+len(deletedPaths))
+	for _, candidate := range append(paths, deletedPaths...) {
+		if _, exists := seen[candidate]; exists {
+			continue
+		}
+		seen[candidate] = struct{}{}
+		combined = append(combined, candidate)
+	}
+	sort.Strings(combined)
+	return combined, nil
+}
+
+func listDeletedIndexPaths(repoRoot string, env []string, baseCommitSHA string) ([]string, error) {
+	output, err := gitOutput(repoRoot, env, "diff", "--cached", "--name-only", "-z", "--diff-filter=D", strings.TrimSpace(baseCommitSHA), "--")
+	if err != nil {
+		return nil, fmt.Errorf("list deleted repository changeset index paths: %w", err)
+	}
+	tokens := splitNullTerminated(output)
+	paths := make([]string, 0, len(tokens))
+	for _, token := range tokens {
+		normalizedPath := normalizePath(token)
+		if normalizedPath == "" {
+			return nil, fmt.Errorf("parse deleted repository changeset index path from %q", token)
+		}
+		paths = append(paths, normalizedPath)
+	}
+	sort.Strings(paths)
+	return paths, nil
 }
 
 func buildDigest(baseCommitSHA, treeDigest string, patch []byte, files []File) string {

@@ -359,8 +359,7 @@ Behavior contract:
 5. For repo-aware top-level commands, materialize that checkout in the sandbox
    and default the guest working directory to `repository.path`.
    - Cleanroom does not auto-detect or auto-wrap `mise`; call it explicitly in
-     `sandbox.dependencies.command`, `sandbox.services.command`, or the
-     workload command when needed
+     dependency blocks, service blocks, or the workload command when needed
 6. Create execution with explicit kind, env, and TTY options.
 7. Attach stdio according to command mode:
    - `cleanroom exec` defaults to attached stdin plus separate stdout/stderr

@@ -12,7 +12,7 @@ mise run install
 
 ## Files
 
-- `cleanroom.yaml`: digest-pinned Docker image ref, `sandbox.services.docker.required: true`, and a deny-by-default network allowlist for the upstream Docker Hub endpoints that the host gateway validates and fetches against.
+- `cleanroom.yaml`: digest-pinned Docker image ref, `sandbox.docker.required: true`, and a deny-by-default network allowlist for the upstream Docker Hub endpoints that the host gateway validates and fetches against.
 
 ## Quick test flow
 

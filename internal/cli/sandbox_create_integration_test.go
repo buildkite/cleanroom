@@ -164,7 +164,7 @@ func TestSandboxCreateIntegrationDockerRequiresGuestService(t *testing.T) {
 	if adapter.provisionReq.Policy == nil {
 		t.Fatal("expected provisioned policy")
 	}
-	if !adapter.provisionReq.Policy.Services.Docker.Required {
+	if !adapter.provisionReq.Policy.Docker.Required {
 		t.Fatal("expected provisioned docker service to be required")
 	}
 }

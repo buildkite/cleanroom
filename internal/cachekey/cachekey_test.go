@@ -130,3 +130,81 @@ func TestPortableDependencyStageKey(t *testing.T) {
 		t.Fatalf("portable dependency stage key did not change after repository mutation: %q", got)
 	}
 }
+
+func TestDependencyVolumeKey(t *testing.T) {
+	inputs := DependencyVolumeInputs{
+		Backend:                         "firecracker",
+		RuntimeKey:                      "runtime:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		ReuseNamespace:                  "https://github.com/buildkite/cleanroom.git",
+		CompiledPolicyHash:              "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+		BlockName:                       "go-modules",
+		CommandDigest:                   "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+		EnvDigest:                       "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+		InputManifestDigest:             "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+		NormalizedOutputsDigest:         "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+		PriorDependencyOutputKeysDigest: "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+		OutputVolumeLayoutVersion:       "aggregate-v1",
+		ProducerVersion:                 "cleanroom/dependency-volume-v1",
+	}
+
+	got := DependencyVolumeKey(inputs)
+	if !strings.HasPrefix(got, "dependency-volume:v1:") {
+		t.Fatalf("dependency volume key prefix = %q, want %q", got, "dependency-volume:v1:")
+	}
+	if gotAgain := DependencyVolumeKey(inputs); got != gotAgain {
+		t.Fatalf("dependency volume key changed for identical inputs: first %q second %q", got, gotAgain)
+	}
+
+	mutated := inputs
+	mutated.ReuseNamespace = "https://github.com/buildkite/other.git"
+	if gotMutated := DependencyVolumeKey(mutated); got == gotMutated {
+		t.Fatalf("dependency volume key did not change after reuse namespace mutation: %q", got)
+	}
+
+	mutated = inputs
+	mutated.NormalizedOutputsDigest = "sha256:7777777777777777777777777777777777777777777777777777777777777777"
+	if gotMutated := DependencyVolumeKey(mutated); got == gotMutated {
+		t.Fatalf("dependency volume key did not change after outputs mutation: %q", got)
+	}
+}
+
+func TestServiceVolumeKey(t *testing.T) {
+	inputs := ServiceVolumeInputs{
+		Backend:                      "firecracker",
+		RuntimeKey:                   "runtime:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		ReuseNamespace:               "https://github.com/buildkite/cleanroom.git",
+		CompiledPolicyHash:           "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+		BlockName:                    "postgres",
+		CommandDigest:                "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+		EnvDigest:                    "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+		InputManifestDigest:          "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+		NormalizedOutputsDigest:      "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+		DependencyOutputKeysDigest:   "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+		PriorServiceOutputKeysDigest: "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+		OutputVolumeLayoutVersion:    "aggregate-v1",
+		ProducerVersion:              "cleanroom/service-volume-v1",
+	}
+
+	got := ServiceVolumeKey(inputs)
+	if !strings.HasPrefix(got, "service-volume:v1:") {
+		t.Fatalf("service volume key prefix = %q, want %q", got, "service-volume:v1:")
+	}
+	if gotAgain := ServiceVolumeKey(inputs); got != gotAgain {
+		t.Fatalf("service volume key changed for identical inputs: first %q second %q", got, gotAgain)
+	}
+
+	mutated := inputs
+	mutated.DependencyOutputKeysDigest = "sha256:8888888888888888888888888888888888888888888888888888888888888888"
+	if gotMutated := ServiceVolumeKey(mutated); got == gotMutated {
+		t.Fatalf("service volume key did not change after dependency output keys mutation: %q", got)
+	}
+}
+
+func TestReuseNamespaceDefaultsToCanonicalRemote(t *testing.T) {
+	if got, want := ReuseNamespace("", " https://github.com/buildkite/cleanroom.git "), "https://github.com/buildkite/cleanroom.git"; got != want {
+		t.Fatalf("unexpected default reuse namespace: got %q want %q", got, want)
+	}
+	if got, want := ReuseNamespace("org/buildkite", "https://github.com/buildkite/cleanroom.git"), "org/buildkite"; got != want {
+		t.Fatalf("unexpected explicit reuse namespace: got %q want %q", got, want)
+	}
+}

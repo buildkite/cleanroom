@@ -16,7 +16,7 @@ Agent sandboxing tools are [proliferating fast](docs/research.md). Most focus on
 
 **Standard OCI images.** Use any OCI image from any registry as your sandbox base. Digest-pinned in policy for reproducibility. No custom VM image format or vendor-specific base images. Same image works across backends.
 
-**Docker inside the sandbox.** Enable a guest Docker daemon with a single policy flag (`services.docker.required: true`). Docker Hub pulls are mirrored through the host gateway cache, and you can build and run containers inside the microVM.
+**Docker inside the sandbox.** Enable a guest Docker daemon with a single policy flag (`docker.required: true`). Docker Hub pulls are mirrored through the host gateway cache, and you can build and run containers inside the microVM.
 
 **Coming soon:** broader guest-side package-manager rewrites with lockfile enforcement, broader non-Docker-Hub registry caching, hermetic offline build flows, and richer audit surfaces. See the [spec](docs/spec.md) for the full roadmap.
 
@@ -127,42 +127,45 @@ commands become repo-aware: Cleanroom resolves the current git remote and local
 `HEAD`, materializes that checkout in the sandbox, and starts commands in the
 configured guest path. Cleanroom no longer auto-detects or auto-wraps commands
 for `mise`; if you want `mise`, run it explicitly in the command you execute or
-in `sandbox.dependencies.command` or `sandbox.services.command` so it can
-participate in create-time stage caching.
+in a dependency or service block command so it can participate in create-time
+stage caching.
 
 You can also define create-time and per-execution setup:
 
 ```yaml
 sandbox:
+  docker:
+    required: true
   dependencies:
-    command: bundle install
-    key:
-      files: [Gemfile.lock]
-    # Optional: reuse dependency state across source-only commits when the
-    # dependency outputs survive a checkout refresh.
-    # reuse: portable
+    - name: gems
+      command: bundle install
+      inputs:
+        files: [Gemfile.lock]
+      outputs:
+        dirs: ["${HOME}/.bundle"]
   services:
-    docker:
-      required: true
-    command: |
-      docker compose up -d postgres valkey
-      bin/rails db:prepare
-      docker compose stop postgres valkey
-    key:
-      files: [docker-compose.yml, db/schema.rb]
+    - name: database
+      command: |
+        docker compose up -d postgres valkey
+        bin/rails db:prepare
+        docker compose stop postgres valkey
+      inputs:
+        files: [docker-compose.yml, db/schema.rb]
+      outputs:
+        dirs: [/var/lib/cleanroom/services/database]
   run:
     before: docker compose up -d postgres valkey
 ```
 
-Use `sandbox.dependencies.command` for deterministic repo-local bootstrap,
-`sandbox.services.command` for snapshotable on-disk service preparation, and
+Use `sandbox.dependencies` blocks for deterministic repo-local bootstrap,
+`sandbox.services` blocks for snapshotable on-disk service preparation, and
 `sandbox.run.before` for live startup that must happen before each execution.
-Set `sandbox.services.docker.required: true` when the services bootstrap needs
-the guest Docker daemon.
+Set `sandbox.docker.required: true` when the sandbox needs the guest Docker
+daemon.
 
-`sandbox.dependencies.command` and `sandbox.services.command` support either a
-shell string or an argv sequence. Prefer the string form unless you specifically
-need exact argv semantics.
+Dependency and service block commands support either a shell string or an argv
+sequence. Prefer the string form unless you specifically need exact argv
+semantics.
 `sandbox.run.before` always runs through `sh -lc`.
 
 Pre-create a long-running sandbox without running a command:
@@ -286,9 +289,8 @@ Enable Docker as a guest service:
 
 ```yaml
 sandbox:
-  services:
-    docker:
-      required: true
+  docker:
+    required: true
 ```
 
 Validate policy without running anything:

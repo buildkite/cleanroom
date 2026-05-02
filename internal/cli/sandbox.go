@@ -556,10 +556,8 @@ func defaultSandboxCreatePolicy(host, imageRefOverride string, requireDockerServ
 		Version:        1,
 		ImageRef:       resolvedRef,
 		NetworkDefault: networkDefault,
-		Services: &cleanroomv1.PolicyServices{
-			Docker: &cleanroomv1.PolicyDockerService{
-				Required: requireDockerService,
-			},
+		Docker: &cleanroomv1.PolicyDocker{
+			Required: requireDockerService,
 		},
 	})
 	if err != nil {

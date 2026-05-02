@@ -3,6 +3,7 @@ package cachestore
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -31,11 +32,26 @@ type Record struct {
 	StorageDriver            string
 	StorageRef               string
 	InputManifestDigest      string
+	CommandDigest            string
+	EnvDigest                string
+	NormalizedOutputsDigest  string
+	OutputManifestDigest     string
 	DependencyKeyFilesDigest string
+	OutputRecords            []OutputRecord
 	CheckoutRefreshRequired  bool
 	CreatedAt                time.Time
 	LastUsedAt               time.Time
 	ProducerVersion          string
+}
+
+type OutputRecord struct {
+	Kind           string `json:"kind"`
+	Path           string `json:"path"`
+	VolumeSubpath  string `json:"volume_subpath,omitempty"`
+	StorageDriver  string `json:"storage_driver"`
+	StorageRef     string `json:"storage_ref"`
+	SnapshotRef    string `json:"snapshot_ref,omitempty"`
+	ManifestDigest string `json:"manifest_digest,omitempty"`
 }
 
 type Options struct {
@@ -123,6 +139,13 @@ func (s *Store) persist(ctx context.Context, record Record, replace bool) error 
 			return fmt.Errorf("marshal cache repository %q: %w", record.CacheKey, err)
 		}
 	}
+	var outputRecordsBytes []byte
+	if len(record.OutputRecords) > 0 {
+		outputRecordsBytes, err = json.Marshal(record.OutputRecords)
+		if err != nil {
+			return fmt.Errorf("marshal cache output records %q: %w", record.CacheKey, err)
+		}
+	}
 
 	db, err := s.open(ctx)
 	if err != nil {
@@ -148,12 +171,17 @@ func (s *Store) persist(ctx context.Context, record Record, replace bool) error 
 			storage_driver,
 			storage_ref,
 			input_manifest_digest,
+			command_digest,
+			env_digest,
+			normalized_outputs_digest,
+			output_manifest_digest,
 			dependency_key_files_digest,
+			output_records_json,
 			checkout_refresh_required,
 			created_at_unix_nano,
 			last_used_at_unix_nano,
 			producer_version
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 	if replace {
 		verb = "upsert"
@@ -174,12 +202,17 @@ func (s *Store) persist(ctx context.Context, record Record, replace bool) error 
 				storage_driver,
 				storage_ref,
 				input_manifest_digest,
+				command_digest,
+				env_digest,
+				normalized_outputs_digest,
+				output_manifest_digest,
 				dependency_key_files_digest,
+				output_records_json,
 				checkout_refresh_required,
 				created_at_unix_nano,
 				last_used_at_unix_nano,
 				producer_version
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(stage, cache_key) DO UPDATE SET
 				reuse_mode = excluded.reuse_mode,
 				state = excluded.state,
@@ -194,7 +227,12 @@ func (s *Store) persist(ctx context.Context, record Record, replace bool) error 
 				storage_driver = excluded.storage_driver,
 				storage_ref = excluded.storage_ref,
 				input_manifest_digest = excluded.input_manifest_digest,
+				command_digest = excluded.command_digest,
+				env_digest = excluded.env_digest,
+				normalized_outputs_digest = excluded.normalized_outputs_digest,
+				output_manifest_digest = excluded.output_manifest_digest,
 				dependency_key_files_digest = excluded.dependency_key_files_digest,
+				output_records_json = excluded.output_records_json,
 				checkout_refresh_required = excluded.checkout_refresh_required,
 				created_at_unix_nano = excluded.created_at_unix_nano,
 				last_used_at_unix_nano = excluded.last_used_at_unix_nano,
@@ -218,7 +256,12 @@ func (s *Store) persist(ctx context.Context, record Record, replace bool) error 
 		record.StorageDriver,
 		record.StorageRef,
 		nullableString(record.InputManifestDigest),
+		nullableString(record.CommandDigest),
+		nullableString(record.EnvDigest),
+		nullableString(record.NormalizedOutputsDigest),
+		nullableString(record.OutputManifestDigest),
 		nullableString(record.DependencyKeyFilesDigest),
+		nullableBytes(outputRecordsBytes),
 		boolToInt(record.CheckoutRefreshRequired),
 		record.CreatedAt.UTC().UnixNano(),
 		record.LastUsedAt.UTC().UnixNano(),
@@ -253,7 +296,12 @@ func (s *Store) GetReady(ctx context.Context, stage, cacheKey string) (Record, b
 			storage_driver,
 			storage_ref,
 			input_manifest_digest,
+			command_digest,
+			env_digest,
+			normalized_outputs_digest,
+			output_manifest_digest,
 			dependency_key_files_digest,
+			output_records_json,
 			checkout_refresh_required,
 			created_at_unix_nano,
 			last_used_at_unix_nano,
@@ -325,7 +373,12 @@ func (s *Store) List(ctx context.Context) ([]Record, error) {
 			storage_driver,
 			storage_ref,
 			input_manifest_digest,
+			command_digest,
+			env_digest,
+			normalized_outputs_digest,
+			output_manifest_digest,
 			dependency_key_files_digest,
+			output_records_json,
 			checkout_refresh_required,
 			created_at_unix_nano,
 			last_used_at_unix_nano,
@@ -402,7 +455,12 @@ func (s *Store) initDB(ctx context.Context) error {
 			storage_driver TEXT NOT NULL DEFAULT 'file',
 			storage_ref TEXT NOT NULL,
 			input_manifest_digest TEXT,
+			command_digest TEXT,
+			env_digest TEXT,
+			normalized_outputs_digest TEXT,
+			output_manifest_digest TEXT,
 			dependency_key_files_digest TEXT,
+			output_records_json BLOB,
 			checkout_refresh_required INTEGER NOT NULL DEFAULT 0,
 			created_at_unix_nano INTEGER NOT NULL,
 			last_used_at_unix_nano INTEGER NOT NULL,
@@ -433,6 +491,21 @@ func (s *Store) initDB(ctx context.Context) error {
 	if _, err := db.ExecContext(ctx, `ALTER TABLE cache_entries ADD COLUMN checkout_refresh_required INTEGER NOT NULL DEFAULT 0`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
 		return fmt.Errorf("ensure cache metadata checkout_refresh_required column: %w", err)
 	}
+	if _, err := db.ExecContext(ctx, `ALTER TABLE cache_entries ADD COLUMN command_digest TEXT`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		return fmt.Errorf("ensure cache metadata command_digest column: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `ALTER TABLE cache_entries ADD COLUMN env_digest TEXT`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		return fmt.Errorf("ensure cache metadata env_digest column: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `ALTER TABLE cache_entries ADD COLUMN normalized_outputs_digest TEXT`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		return fmt.Errorf("ensure cache metadata normalized_outputs_digest column: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `ALTER TABLE cache_entries ADD COLUMN output_manifest_digest TEXT`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		return fmt.Errorf("ensure cache metadata output_manifest_digest column: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `ALTER TABLE cache_entries ADD COLUMN output_records_json BLOB`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		return fmt.Errorf("ensure cache metadata output_records_json column: %w", err)
+	}
 	return nil
 }
 
@@ -451,7 +524,12 @@ func scanRecord(row recordScanner) (Record, error) {
 		repositoryChangesetID    sql.NullString
 		parentCacheKey           sql.NullString
 		inputDigest              sql.NullString
+		commandDigest            sql.NullString
+		envDigest                sql.NullString
+		normalizedOutputsDigest  sql.NullString
+		outputManifestDigest     sql.NullString
 		dependencyKeyFilesDigest sql.NullString
+		outputRecordsBytes       []byte
 		createdAtNano            int64
 		lastUsedAtNano           int64
 	)
@@ -471,7 +549,12 @@ func scanRecord(row recordScanner) (Record, error) {
 		&record.StorageDriver,
 		&record.StorageRef,
 		&inputDigest,
+		&commandDigest,
+		&envDigest,
+		&normalizedOutputsDigest,
+		&outputManifestDigest,
 		&dependencyKeyFilesDigest,
+		&outputRecordsBytes,
 		&checkoutRefreshRequired,
 		&createdAtNano,
 		&lastUsedAtNano,
@@ -503,8 +586,25 @@ func scanRecord(row recordScanner) (Record, error) {
 	if inputDigest.Valid {
 		record.InputManifestDigest = inputDigest.String
 	}
+	if commandDigest.Valid {
+		record.CommandDigest = commandDigest.String
+	}
+	if envDigest.Valid {
+		record.EnvDigest = envDigest.String
+	}
+	if normalizedOutputsDigest.Valid {
+		record.NormalizedOutputsDigest = normalizedOutputsDigest.String
+	}
+	if outputManifestDigest.Valid {
+		record.OutputManifestDigest = outputManifestDigest.String
+	}
 	if dependencyKeyFilesDigest.Valid {
 		record.DependencyKeyFilesDigest = dependencyKeyFilesDigest.String
+	}
+	if len(outputRecordsBytes) > 0 {
+		if err := json.Unmarshal(outputRecordsBytes, &record.OutputRecords); err != nil {
+			return Record{}, fmt.Errorf("decode cache output records %q/%q: %w", record.Stage, record.CacheKey, err)
+		}
 	}
 	record.CheckoutRefreshRequired = checkoutRefreshRequired != 0
 	record.CreatedAt = time.Unix(0, createdAtNano).UTC()
@@ -514,6 +614,13 @@ func scanRecord(row recordScanner) (Record, error) {
 
 func nullableString(value string) any {
 	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	return value
+}
+
+func nullableBytes(value []byte) any {
+	if len(value) == 0 {
 		return nil
 	}
 	return value
