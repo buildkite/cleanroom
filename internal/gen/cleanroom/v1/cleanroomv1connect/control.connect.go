@@ -82,6 +82,9 @@ const (
 	// SandboxServiceStreamSandboxEventsProcedure is the fully-qualified name of the SandboxService's
 	// StreamSandboxEvents RPC.
 	SandboxServiceStreamSandboxEventsProcedure = "/cleanroom.v1.SandboxService/StreamSandboxEvents"
+	// SandboxServiceDialSandboxPortProcedure is the fully-qualified name of the SandboxService's
+	// DialSandboxPort RPC.
+	SandboxServiceDialSandboxPortProcedure = "/cleanroom.v1.SandboxService/DialSandboxPort"
 	// SnapshotServiceCreateSnapshotProcedure is the fully-qualified name of the SnapshotService's
 	// CreateSnapshot RPC.
 	SnapshotServiceCreateSnapshotProcedure = "/cleanroom.v1.SnapshotService/CreateSnapshot"
@@ -140,6 +143,7 @@ type SandboxServiceClient interface {
 	ExtractSandboxArchive(context.Context) *connect.ClientStreamForClient[v1.ExtractSandboxArchiveRequest, v1.ExtractSandboxArchiveResponse]
 	TerminateSandbox(context.Context, *connect.Request[v1.TerminateSandboxRequest]) (*connect.Response[v1.TerminateSandboxResponse], error)
 	StreamSandboxEvents(context.Context, *connect.Request[v1.StreamSandboxEventsRequest]) (*connect.ServerStreamForClient[v1.SandboxEvent], error)
+	DialSandboxPort(context.Context) *connect.BidiStreamForClient[v1.SandboxPortFrame, v1.SandboxPortFrame]
 }
 
 // NewSandboxServiceClient constructs a client for the cleanroom.v1.SandboxService service. By
@@ -243,6 +247,12 @@ func NewSandboxServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(sandboxServiceMethods.ByName("StreamSandboxEvents")),
 			connect.WithClientOptions(opts...),
 		),
+		dialSandboxPort: connect.NewClient[v1.SandboxPortFrame, v1.SandboxPortFrame](
+			httpClient,
+			baseURL+SandboxServiceDialSandboxPortProcedure,
+			connect.WithSchema(sandboxServiceMethods.ByName("DialSandboxPort")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -263,6 +273,7 @@ type sandboxServiceClient struct {
 	extractSandboxArchive *connect.Client[v1.ExtractSandboxArchiveRequest, v1.ExtractSandboxArchiveResponse]
 	terminateSandbox      *connect.Client[v1.TerminateSandboxRequest, v1.TerminateSandboxResponse]
 	streamSandboxEvents   *connect.Client[v1.StreamSandboxEventsRequest, v1.SandboxEvent]
+	dialSandboxPort       *connect.Client[v1.SandboxPortFrame, v1.SandboxPortFrame]
 }
 
 // CreateSandbox calls cleanroom.v1.SandboxService.CreateSandbox.
@@ -340,6 +351,11 @@ func (c *sandboxServiceClient) StreamSandboxEvents(ctx context.Context, req *con
 	return c.streamSandboxEvents.CallServerStream(ctx, req)
 }
 
+// DialSandboxPort calls cleanroom.v1.SandboxService.DialSandboxPort.
+func (c *sandboxServiceClient) DialSandboxPort(ctx context.Context) *connect.BidiStreamForClient[v1.SandboxPortFrame, v1.SandboxPortFrame] {
+	return c.dialSandboxPort.CallBidiStream(ctx)
+}
+
 // SandboxServiceHandler is an implementation of the cleanroom.v1.SandboxService service.
 type SandboxServiceHandler interface {
 	CreateSandbox(context.Context, *connect.Request[v1.CreateSandboxRequest]) (*connect.Response[v1.CreateSandboxResponse], error)
@@ -357,6 +373,7 @@ type SandboxServiceHandler interface {
 	ExtractSandboxArchive(context.Context, *connect.ClientStream[v1.ExtractSandboxArchiveRequest]) (*connect.Response[v1.ExtractSandboxArchiveResponse], error)
 	TerminateSandbox(context.Context, *connect.Request[v1.TerminateSandboxRequest]) (*connect.Response[v1.TerminateSandboxResponse], error)
 	StreamSandboxEvents(context.Context, *connect.Request[v1.StreamSandboxEventsRequest], *connect.ServerStream[v1.SandboxEvent]) error
+	DialSandboxPort(context.Context, *connect.BidiStream[v1.SandboxPortFrame, v1.SandboxPortFrame]) error
 }
 
 // NewSandboxServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -456,6 +473,12 @@ func NewSandboxServiceHandler(svc SandboxServiceHandler, opts ...connect.Handler
 		connect.WithSchema(sandboxServiceMethods.ByName("StreamSandboxEvents")),
 		connect.WithHandlerOptions(opts...),
 	)
+	sandboxServiceDialSandboxPortHandler := connect.NewBidiStreamHandler(
+		SandboxServiceDialSandboxPortProcedure,
+		svc.DialSandboxPort,
+		connect.WithSchema(sandboxServiceMethods.ByName("DialSandboxPort")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/cleanroom.v1.SandboxService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case SandboxServiceCreateSandboxProcedure:
@@ -488,6 +511,8 @@ func NewSandboxServiceHandler(svc SandboxServiceHandler, opts ...connect.Handler
 			sandboxServiceTerminateSandboxHandler.ServeHTTP(w, r)
 		case SandboxServiceStreamSandboxEventsProcedure:
 			sandboxServiceStreamSandboxEventsHandler.ServeHTTP(w, r)
+		case SandboxServiceDialSandboxPortProcedure:
+			sandboxServiceDialSandboxPortHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -555,6 +580,10 @@ func (UnimplementedSandboxServiceHandler) TerminateSandbox(context.Context, *con
 
 func (UnimplementedSandboxServiceHandler) StreamSandboxEvents(context.Context, *connect.Request[v1.StreamSandboxEventsRequest], *connect.ServerStream[v1.SandboxEvent]) error {
 	return connect.NewError(connect.CodeUnimplemented, errors.New("cleanroom.v1.SandboxService.StreamSandboxEvents is not implemented"))
+}
+
+func (UnimplementedSandboxServiceHandler) DialSandboxPort(context.Context, *connect.BidiStream[v1.SandboxPortFrame, v1.SandboxPortFrame]) error {
+	return connect.NewError(connect.CodeUnimplemented, errors.New("cleanroom.v1.SandboxService.DialSandboxPort is not implemented"))
 }
 
 // SnapshotServiceClient is a client for the cleanroom.v1.SnapshotService service.

@@ -124,3 +124,13 @@ func TestInspectCommandRejectsUnknownIDKind(t *testing.T) {
 		t.Fatalf("unexpected validation error: %v", outcome.err)
 	}
 }
+
+func TestInspectTargetKindRecognizesSandboxFallbackID(t *testing.T) {
+	kind, err := inspectTargetKind("cr-123")
+	if err != nil {
+		t.Fatalf("inspectTargetKind returned error: %v", err)
+	}
+	if got, want := kind, "sandbox"; got != want {
+		t.Fatalf("unexpected target kind: got %q want %q", got, want)
+	}
+}

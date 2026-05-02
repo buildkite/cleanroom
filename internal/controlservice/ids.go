@@ -17,7 +17,7 @@ var generateTypeID = func(prefix string) (string, error) {
 }
 
 func newSandboxID() string {
-	return newID("cr")
+	return newIDWithFallbackPrefix("", "cr")
 }
 
 func newExecutionID() string {
@@ -33,10 +33,20 @@ func newInteractiveSessionID() string {
 }
 
 func newID(prefix string) string {
+	return newIDWithFallbackPrefix(prefix, prefix)
+}
+
+func newIDWithFallbackPrefix(prefix, fallbackPrefix string) string {
+	prefix = strings.TrimSpace(prefix)
 	id, err := generateTypeID(prefix)
 	if err == nil && strings.TrimSpace(id) != "" {
 		return id
 	}
 
-	return fmt.Sprintf("%s-%d", prefix, time.Now().UTC().UnixNano())
+	fallbackPrefix = strings.TrimSpace(fallbackPrefix)
+	timestamp := time.Now().UTC().UnixNano()
+	if fallbackPrefix == "" {
+		return fmt.Sprintf("%d", timestamp)
+	}
+	return fmt.Sprintf("%s-%d", fallbackPrefix, timestamp)
 }

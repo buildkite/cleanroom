@@ -53,6 +53,8 @@ func inspectTargetKind(id string) (string, error) {
 	parsed, err := typeid.FromString(targetID)
 	if err == nil {
 		switch parsed.Prefix() {
+		case "":
+			return "sandbox", nil
 		case "cr":
 			return "sandbox", nil
 		case "exec":

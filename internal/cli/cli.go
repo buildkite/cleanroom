@@ -51,23 +51,26 @@ type runtimeContext struct {
 }
 
 type CLI struct {
-	Policy    PolicyCommand    `cmd:"" help:"Policy commands"`
-	Config    ConfigCommand    `cmd:"" help:"Runtime config commands"`
-	Image     ImageCommand     `cmd:"" help:"Manage OCI image cache artifacts"`
-	Inspect   InspectCommand   `cmd:"" help:"Inspect a sandbox, execution, or snapshot by ID"`
-	Snapshot  SnapshotCommand  `cmd:"" help:"Manage snapshots"`
-	Create    CreateCommand    `cmd:"" help:"Create a sandbox using repo policy"`
-	Exec      ExecCommand      `cmd:"" help:"Execute a command in a sandbox"`
-	Console   ConsoleCommand   `cmd:"" help:"Run a command with an interactive tty in a sandbox"`
-	Copy      CopyCommand      `name:"copy" aliases:"cp" cmd:"" help:"Copy one file into or out of a sandbox"`
-	Workspace WorkspaceCommand `cmd:"" help:"Manage sandbox workspace contents"`
-	Serve     ServeCommand     `cmd:"" help:"Run the cleanroom control-plane server in the foreground"`
-	Daemon    DaemonCommand    `cmd:"" help:"Manage daemon/service lifecycle"`
-	Doctor    DoctorCommand    `cmd:"" help:"Run environment and backend diagnostics"`
-	Execution ExecutionCommand `cmd:"" help:"Inspect command executions and diagnostics"`
-	Status    StatusCommand    `cmd:"" help:"Browse retained execution artifacts"`
-	Sandbox   SandboxCommand   `cmd:"" help:"Manage sandboxes"`
-	Version   VersionCommand   `cmd:"" help:"Print version information"`
+	Policy      PolicyCommand      `cmd:"" help:"Policy commands"`
+	Config      ConfigCommand      `cmd:"" help:"Runtime config commands"`
+	Image       ImageCommand       `cmd:"" help:"Manage OCI image cache artifacts"`
+	Inspect     InspectCommand     `cmd:"" help:"Inspect a sandbox, execution, or snapshot by ID"`
+	Snapshot    SnapshotCommand    `cmd:"" help:"Manage snapshots"`
+	Create      CreateCommand      `cmd:"" help:"Create a sandbox using repo policy"`
+	Exec        ExecCommand        `cmd:"" help:"Execute a command in a sandbox"`
+	Console     ConsoleCommand     `cmd:"" help:"Run a command with an interactive tty in a sandbox"`
+	Copy        CopyCommand        `name:"copy" aliases:"cp" cmd:"" help:"Copy one file into or out of a sandbox"`
+	Workspace   WorkspaceCommand   `cmd:"" help:"Manage sandbox workspace contents"`
+	Expose      ExposeCommand      `cmd:"" help:"Expose sandbox ports on this client"`
+	PortForward PortForwardCommand `name:"port-forward" cmd:"" help:"Forward local TCP ports to a sandbox"`
+	Serve       ServeCommand       `cmd:"" help:"Run the cleanroom control-plane server in the foreground"`
+	Daemon      DaemonCommand      `cmd:"" help:"Manage daemon/service lifecycle"`
+	DNS         DNSCommand         `name:"dns" cmd:"" help:"Manage host DNS for local exposures"`
+	Doctor      DoctorCommand      `cmd:"" help:"Run environment and backend diagnostics"`
+	Execution   ExecutionCommand   `cmd:"" help:"Inspect command executions and diagnostics"`
+	Status      StatusCommand      `cmd:"" help:"Browse retained execution artifacts"`
+	Sandbox     SandboxCommand     `cmd:"" help:"Manage sandboxes"`
+	Version     VersionCommand     `cmd:"" help:"Print version information"`
 }
 
 type VersionCommand struct {

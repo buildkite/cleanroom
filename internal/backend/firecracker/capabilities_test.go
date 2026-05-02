@@ -24,4 +24,7 @@ func TestCapabilitiesDeclareNetworkSupport(t *testing.T) {
 	if !caps[backend.CapabilityNetworkGuestInterface] {
 		t.Fatalf("expected %s=true", backend.CapabilityNetworkGuestInterface)
 	}
+	if !caps[backend.CapabilitySandboxPortDial] {
+		t.Fatalf("expected %s=true", backend.CapabilitySandboxPortDial)
+	}
 }

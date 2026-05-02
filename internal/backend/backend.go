@@ -5,6 +5,7 @@ import (
 	"io"
 	"io/fs"
 	"maps"
+	"net"
 	"sort"
 	"time"
 
@@ -28,6 +29,7 @@ const (
 	CapabilityNetworkStageScopedEgress = "network.stage_scoped_egress"
 	CapabilityDNSControlOrEquivalent   = "dns_control_or_equivalent"
 	CapabilityNetworkGuestInterface    = "network.guest_interface"
+	CapabilitySandboxPortDial          = "sandbox.port_dial"
 )
 
 var knownCapabilityKeys = []string{
@@ -47,6 +49,7 @@ var knownCapabilityKeys = []string{
 	CapabilityNetworkStageScopedEgress,
 	CapabilityDNSControlOrEquivalent,
 	CapabilityNetworkGuestInterface,
+	CapabilitySandboxPortDial,
 }
 
 type Adapter interface {
@@ -76,6 +79,7 @@ type CapabilityReporter interface {
 // - SandboxPathRemoveAdapter => sandbox.path_remove
 // - SandboxArchiveReadAdapter => sandbox.archive_read
 // - SandboxArchiveWriteAdapter => sandbox.archive_write
+// - SandboxPortDialer => sandbox.port_dial
 //
 // Additional backend-specific capabilities can be provided by implementing
 // CapabilityReporter.
@@ -118,6 +122,9 @@ func CapabilitiesForAdapter(adapter Adapter) map[string]bool {
 	}
 	if _, ok := adapter.(SandboxArchiveWriteAdapter); ok {
 		caps[CapabilitySandboxArchiveWrite] = true
+	}
+	if _, ok := adapter.(SandboxPortDialer); ok {
+		caps[CapabilitySandboxPortDial] = true
 	}
 
 	if reporter, ok := adapter.(CapabilityReporter); ok {
@@ -218,6 +225,10 @@ type SandboxArchiveReadAdapter interface {
 
 type SandboxArchiveWriteAdapter interface {
 	ExtractSandboxArchive(ctx context.Context, sandboxID, destination string, r io.Reader) (int64, error)
+}
+
+type SandboxPortDialer interface {
+	DialSandboxPort(ctx context.Context, sandboxID string, port int) (net.Conn, error)
 }
 
 type ProvisionRequest struct {

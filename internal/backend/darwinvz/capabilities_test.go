@@ -35,6 +35,13 @@ func TestCapabilitiesMatchImplicitDefaultNetworkMode(t *testing.T) {
 	} else if caps[backend.CapabilityDNSControlOrEquivalent] {
 		t.Fatalf("expected %s=false", backend.CapabilityDNSControlOrEquivalent)
 	}
+	if runtime.GOOS == "darwin" {
+		if !caps[backend.CapabilitySandboxPortDial] {
+			t.Fatalf("expected %s=true on darwin", backend.CapabilitySandboxPortDial)
+		}
+	} else if caps[backend.CapabilitySandboxPortDial] {
+		t.Fatalf("expected %s=false", backend.CapabilitySandboxPortDial)
+	}
 }
 
 func TestCapabilitiesDeclareAllowlistFilteringForFileHandleMode(t *testing.T) {
@@ -58,5 +65,8 @@ func TestCapabilitiesDeclareAllowlistFilteringForFileHandleMode(t *testing.T) {
 	}
 	if !caps[backend.CapabilityDNSControlOrEquivalent] {
 		t.Fatalf("expected %s=true", backend.CapabilityDNSControlOrEquivalent)
+	}
+	if !caps[backend.CapabilitySandboxPortDial] {
+		t.Fatalf("expected %s=true", backend.CapabilitySandboxPortDial)
 	}
 }

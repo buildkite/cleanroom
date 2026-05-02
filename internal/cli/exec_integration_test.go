@@ -1866,6 +1866,49 @@ func TestExecIntegrationUsesCreateExecDestroyLifecycle(t *testing.T) {
 	}
 }
 
+func TestExecIntegrationTerminatesCreatedSandboxWhenExposureSetupFails(t *testing.T) {
+	adapter := &snapshotIntegrationAdapter{}
+	host, _ := startIntegrationServer(t, adapter)
+	cwd := t.TempDir()
+
+	outcome := runExecWithCapture(ExecCommand{
+		clientFlags: clientFlags{Host: host},
+		Chdir:       cwd,
+		Expose:      []string{"3000"},
+		Command:     []string{"echo", "ok"},
+	}, runtimeContext{
+		CWD:    cwd,
+		Loader: integrationLoader{},
+	})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err == nil {
+		t.Fatal("expected ExecCommand.Run to fail during exposure setup")
+	}
+	if !strings.Contains(outcome.err.Error(), "does not support sandbox port dialing") {
+		t.Fatalf("unexpected ExecCommand.Run error: %v", outcome.err)
+	}
+
+	adapter.mu.Lock()
+	sandboxID := adapter.provisionReq.SandboxID
+	terminateCalls := adapter.terminateCalls
+	runInSandboxCalls := adapter.runInSandboxCalls
+	adapter.mu.Unlock()
+	if sandboxID == "" {
+		t.Fatal("expected sandbox to be provisioned before exposure setup")
+	}
+	if got, want := terminateCalls, 1; got != want {
+		t.Fatalf("expected created sandbox to be terminated after exposure setup failure: got %d want %d", got, want)
+	}
+	if got, want := runInSandboxCalls, 0; got != want {
+		t.Fatalf("expected command not to start after exposure setup failure: got %d want %d", got, want)
+	}
+
+	client := mustNewControlClient(t, host)
+	requireSandboxStatus(t, client, sandboxID, cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPED)
+}
+
 func TestExecIntegrationRejectsKeepWhenReusingSandbox(t *testing.T) {
 	host, _ := startIntegrationServer(t, &integrationAdapter{})
 	client := mustNewControlClient(t, host)
