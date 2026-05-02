@@ -19,10 +19,12 @@ import (
 	"github.com/buildkite/cleanroom/internal/backend"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/policy"
+	"github.com/buildkite/cleanroom/internal/repositorychangeset"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 )
 
 func TestWorkspaceCopyInAppliesGitChangeset(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
 	if err := os.WriteFile(filepath.Join(repoDir, ".gitignore"), []byte("node_modules/\n"), 0o644); err != nil {
 		t.Fatalf("write gitignore: %v", err)
@@ -136,6 +138,7 @@ func TestWorkspaceCopyInAppliesGitChangeset(t *testing.T) {
 }
 
 func TestWorkspaceCopyInAppliesLocalOnlyCommitsFromSandboxBase(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
 	baseCommit := headCommit(t, repoDir)
 	branch, err := gitOutput(repoDir, "branch", "--show-current")
@@ -228,6 +231,7 @@ func TestWorkspaceCopyInAppliesLocalOnlyCommitsFromSandboxBase(t *testing.T) {
 }
 
 func TestWorkspaceCopyInReturnsWhenPatchStdinWriteFails(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
 	if err := os.WriteFile(filepath.Join(repoDir, "dirty.txt"), []byte("dirty\n"), 0o644); err != nil {
 		t.Fatalf("write dirty file: %v", err)
@@ -312,6 +316,7 @@ func TestWorkspaceCopyInReturnsWhenPatchStdinWriteFails(t *testing.T) {
 }
 
 func TestWorkspaceCopyInUsesGitChangesetForGitWorktreeWithoutRepositoryPolicy(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
 	if err := os.WriteFile(filepath.Join(repoDir, ".gitignore"), []byte("node_modules/\n"), 0o644); err != nil {
 		t.Fatalf("write gitignore: %v", err)
@@ -428,6 +433,7 @@ func TestWorkspaceCopyInUsesGitChangesetForGitWorktreeWithoutRepositoryPolicy(t 
 }
 
 func TestWorkspaceCopyInResetsGitCheckoutWhenLocalRepoClean(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
 
 	adapter := &integrationAdapter{}
@@ -513,6 +519,7 @@ func TestWorkspaceCopyInResetsGitCheckoutWhenLocalRepoClean(t *testing.T) {
 }
 
 func TestResolveExecutionSandboxClearsRepositoryAfterGitCopyInExistingSandbox(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
 
 	adapter := &integrationAdapter{}
@@ -578,6 +585,7 @@ func TestResolveExecutionSandboxClearsRepositoryAfterGitCopyInExistingSandbox(t 
 }
 
 func TestResolveExecutionSandboxCopyInUsesGitWorktreeWithoutRepositoryPolicy(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
 	if err := os.WriteFile(filepath.Join(repoDir, ".gitignore"), []byte("node_modules/\n"), 0o644); err != nil {
 		t.Fatalf("write gitignore: %v", err)
@@ -756,6 +764,143 @@ func TestWorkspaceCopyInDryRunReportsCleanGitResetWithoutExecuting(t *testing.T)
 	}
 }
 
+func TestWorkspaceCopyInRecordsGitBinding(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
+	head, err := gitOutput(repoDir, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatalf("resolve repository HEAD: %v", err)
+	}
+	branch, err := gitOutput(repoDir, "branch", "--show-current")
+	if err != nil {
+		t.Fatalf("resolve repository branch: %v", err)
+	}
+
+	adapter := &integrationAdapter{}
+	host, _ := startIntegrationServer(t, adapter)
+	sandboxID := createWorkspaceCopyTestSandboxWithRepositoryCommitBranch(t, host, "/sandbox-workspace", head, branch)
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
+		command := strings.Join(req.Command, " ")
+		if !strings.Contains(command, "reset --hard") {
+			t.Fatalf("expected clean copy-in reset command, got %q", command)
+		}
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+	}
+
+	stdout, _ := makeStdoutCapture(t)
+	stderr, _ := makeStdoutCapture(t)
+	cmd := WorkspaceCopyInCommand{
+		clientFlags: clientFlags{Host: host},
+		Chdir:       repoDir,
+		SandboxID:   sandboxID,
+	}
+	if err := cmd.Run(&runtimeContext{
+		CWD:           repoDir,
+		Loader:        repositoryNotFoundLoader{},
+		Config:        runtimeconfig.Config{},
+		Observability: newTestObservability(t),
+		Stdout:        stdout,
+		Stderr:        stderr,
+	}); err != nil {
+		t.Fatalf("WorkspaceCopyInCommand.Run returned error: %v", err)
+	}
+
+	binding := mustReadWorkspaceBinding(t, sandboxID)
+	if got, want := binding.LocalRoot, mustNormalizeWorkspaceLocalRoot(t, repoDir); got != want {
+		t.Fatalf("unexpected binding local root: got %q want %q", got, want)
+	}
+	if got, want := binding.RepositoryRemoteURL, "https://github.com/buildkite/cleanroom.git"; got != want {
+		t.Fatalf("unexpected binding remote: got %q want %q", got, want)
+	}
+	if got, want := binding.RepositoryCommitSHA, head; got != want {
+		t.Fatalf("unexpected binding commit: got %q want %q", got, want)
+	}
+	if got, want := binding.SandboxWorkspace, "/sandbox-workspace"; got != want {
+		t.Fatalf("unexpected binding workspace: got %q want %q", got, want)
+	}
+	if got, want := binding.Transport, workspaceBindingTransportGit; got != want {
+		t.Fatalf("unexpected binding transport: got %q want %q", got, want)
+	}
+	if got, want := binding.LastOperation, "copy-in"; got != want {
+		t.Fatalf("unexpected binding operation: got %q want %q", got, want)
+	}
+}
+
+func TestWorkspaceCopyInWarnsWhenBindingCannotBeSaved(t *testing.T) {
+	setBrokenWorkspaceStateHome(t)
+	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
+	head, err := gitOutput(repoDir, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatalf("resolve repository HEAD: %v", err)
+	}
+	branch, err := gitOutput(repoDir, "branch", "--show-current")
+	if err != nil {
+		t.Fatalf("resolve repository branch: %v", err)
+	}
+
+	adapter := &integrationAdapter{}
+	host, _ := startIntegrationServer(t, adapter)
+	sandboxID := createWorkspaceCopyTestSandboxWithRepositoryCommitBranch(t, host, "/sandbox-workspace", head, branch)
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
+		command := strings.Join(req.Command, " ")
+		if !strings.Contains(command, "reset --hard") {
+			t.Fatalf("expected clean copy-in reset command, got %q", command)
+		}
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+	}
+
+	stdout, _ := makeStdoutCapture(t)
+	stderr, stderrText := makeStdoutCapture(t)
+	cmd := WorkspaceCopyInCommand{
+		clientFlags: clientFlags{Host: host},
+		Chdir:       repoDir,
+		SandboxID:   sandboxID,
+	}
+	if err := cmd.Run(&runtimeContext{
+		CWD:           repoDir,
+		Loader:        repositoryNotFoundLoader{},
+		Config:        runtimeconfig.Config{},
+		Observability: newTestObservability(t),
+		Stdout:        stdout,
+		Stderr:        stderr,
+	}); err != nil {
+		t.Fatalf("WorkspaceCopyInCommand.Run returned error: %v", err)
+	}
+	if got := stderrText(); !strings.Contains(got, "warning: workspace binding was not saved") {
+		t.Fatalf("expected binding warning on stderr, got %q", got)
+	}
+}
+
+func TestWorkspaceBindingRecordsCopyInManifest(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
+	repository, err := resolveWorkspaceCopyRepositoryCheckout(repoDir, repositoryNotFoundLoader{})
+	if err != nil {
+		t.Fatalf("resolve repository checkout: %v", err)
+	}
+	files := []repositorychangeset.File{{
+		Path:   "dirty.txt",
+		SHA256: "sha256:dirty",
+	}, {
+		Path:    "removed.txt",
+		Deleted: true,
+	}}
+	checkout := toRepositoryCheckout(repository)
+	checkout.DestinationDir = "/sandbox-workspace"
+
+	if err := recordGitWorkspaceBinding("cr_manifest", repository, checkout, files, "copy-in"); err != nil {
+		t.Fatalf("recordGitWorkspaceBinding returned error: %v", err)
+	}
+	binding := mustReadWorkspaceBinding(t, "cr_manifest")
+	expected := []workspaceBindingFile{
+		{Path: "dirty.txt", SHA256: "sha256:dirty"},
+		{Path: "removed.txt", Deleted: true},
+	}
+	if !reflect.DeepEqual(binding.CopyInManifest, expected) {
+		t.Fatalf("unexpected binding manifest: got %+v want %+v", binding.CopyInManifest, expected)
+	}
+}
+
 func TestWorkspaceCopyOutDryRunReportsSandboxGitPlan(t *testing.T) {
 	localRoot := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
 	resolvedLocalRoot, err := gitOutput(localRoot, "rev-parse", "--show-toplevel")
@@ -824,6 +969,121 @@ func TestWorkspaceCopyOutDryRunReportsSandboxGitPlan(t *testing.T) {
 	}
 	if !strings.Contains(planCommand, "diff --cached --name-status --no-renames -z") {
 		t.Fatalf("expected copy-out planning to use git name-status, got %q", planCommand)
+	}
+}
+
+func TestWorkspaceCopyOutDryRunUsesBoundLocalRoot(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	localRoot := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
+	resolvedLocalRoot, err := gitOutput(localRoot, "rev-parse", "--show-toplevel")
+	if err != nil {
+		t.Fatalf("resolve local repository root: %v", err)
+	}
+	head, err := gitOutput(localRoot, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatalf("resolve repository HEAD: %v", err)
+	}
+	repository, err := resolveWorkspaceCopyRepositoryCheckout(localRoot, repositoryNotFoundLoader{})
+	if err != nil {
+		t.Fatalf("resolve repository checkout: %v", err)
+	}
+
+	adapter := &integrationAdapter{}
+	host, _ := startIntegrationServer(t, adapter)
+	sandboxID := createWorkspaceCopyTestSandboxWithRepositoryCommitBranch(t, host, "/sandbox-workspace", head, "main")
+	checkout := toRepositoryCheckout(repository)
+	checkout.DestinationDir = "/sandbox-workspace"
+	if err := recordGitWorkspaceBinding(sandboxID, repository, checkout, nil, "copy-in"); err != nil {
+		t.Fatalf("record workspace binding: %v", err)
+	}
+
+	var executionCalled bool
+	adapter.runStreamFn = func(_ context.Context, _ backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+		executionCalled = true
+		if stream.OnStdout != nil {
+			stream.OnStdout([]byte("M\x00changed.txt\x00"))
+		}
+		return &backend.ExecutionResult{ExitCode: 0, Message: "ok"}, nil
+	}
+
+	stdout, stdoutText := makeStdoutCapture(t)
+	stderr, _ := makeStdoutCapture(t)
+	cmd := WorkspaceCopyOutCommand{
+		clientFlags: clientFlags{Host: host},
+		DryRun:      true,
+		SandboxID:   sandboxID,
+	}
+	if err := cmd.Run(&runtimeContext{
+		CWD:           t.TempDir(),
+		Loader:        repositoryNotFoundLoader{},
+		Config:        runtimeconfig.Config{},
+		Observability: newTestObservability(t),
+		Stdout:        stdout,
+		Stderr:        stderr,
+	}); err != nil {
+		t.Fatalf("WorkspaceCopyOutCommand.Run returned error: %v", err)
+	}
+	if !executionCalled {
+		t.Fatal("expected sandbox planning execution")
+	}
+	expected := "write\t" + filepath.Join(resolvedLocalRoot, "changed.txt") + "\n"
+	if got := stdoutText(); got != expected {
+		t.Fatalf("unexpected copy-out dry-run plan: got %q want %q", got, expected)
+	}
+}
+
+func TestWorkspaceCopyOutRejectsExplicitRootOutsideBinding(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	localRoot := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
+	otherRoot := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
+	head, err := gitOutput(localRoot, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatalf("resolve repository HEAD: %v", err)
+	}
+	repository, err := resolveWorkspaceCopyRepositoryCheckout(localRoot, repositoryNotFoundLoader{})
+	if err != nil {
+		t.Fatalf("resolve repository checkout: %v", err)
+	}
+
+	adapter := &integrationAdapter{}
+	host, _ := startIntegrationServer(t, adapter)
+	sandboxID := createWorkspaceCopyTestSandboxWithRepositoryCommitBranch(t, host, "/sandbox-workspace", head, "main")
+	checkout := toRepositoryCheckout(repository)
+	checkout.DestinationDir = "/sandbox-workspace"
+	if err := recordGitWorkspaceBinding(sandboxID, repository, checkout, nil, "copy-in"); err != nil {
+		t.Fatalf("record workspace binding: %v", err)
+	}
+
+	var executionCalled bool
+	adapter.runStreamFn = func(_ context.Context, _ backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
+		executionCalled = true
+		return &backend.ExecutionResult{ExitCode: 0, Message: "ok"}, nil
+	}
+
+	stdout, _ := makeStdoutCapture(t)
+	stderr, _ := makeStdoutCapture(t)
+	cmd := WorkspaceCopyOutCommand{
+		clientFlags: clientFlags{Host: host},
+		Chdir:       otherRoot,
+		DryRun:      true,
+		SandboxID:   sandboxID,
+	}
+	err = cmd.Run(&runtimeContext{
+		CWD:           localRoot,
+		Loader:        repositoryNotFoundLoader{},
+		Config:        runtimeconfig.Config{},
+		Observability: newTestObservability(t),
+		Stdout:        stdout,
+		Stderr:        stderr,
+	})
+	if err == nil {
+		t.Fatal("expected mismatched explicit root to be rejected")
+	}
+	if !strings.Contains(err.Error(), "is bound to local root") {
+		t.Fatalf("expected bound local root error, got %v", err)
+	}
+	if executionCalled {
+		t.Fatal("expected copy-out to fail before sandbox planning execution")
 	}
 }
 
@@ -1841,6 +2101,36 @@ func assertWorkspaceCopyOutRecoveryPayload(t *testing.T, sandboxID string) {
 			t.Fatalf("expected non-empty recovery payload %s", name)
 		}
 	}
+}
+
+func mustReadWorkspaceBinding(t *testing.T, sandboxID string) *workspaceBinding {
+	t.Helper()
+	binding, err := readWorkspaceBinding(sandboxID)
+	if err != nil {
+		t.Fatalf("readWorkspaceBinding returned error: %v", err)
+	}
+	if binding == nil {
+		t.Fatalf("expected workspace binding for %q", sandboxID)
+	}
+	return binding
+}
+
+func mustNormalizeWorkspaceLocalRoot(t *testing.T, root string) string {
+	t.Helper()
+	normalized, err := normalizeWorkspaceLocalRoot(root)
+	if err != nil {
+		t.Fatalf("normalizeWorkspaceLocalRoot returned error: %v", err)
+	}
+	return normalized
+}
+
+func setBrokenWorkspaceStateHome(t *testing.T) {
+	t.Helper()
+	stateHome := filepath.Join(t.TempDir(), "state-home-file")
+	if err := os.WriteFile(stateHome, []byte("not a directory\n"), 0o644); err != nil {
+		t.Fatalf("write broken XDG_STATE_HOME: %v", err)
+	}
+	t.Setenv("XDG_STATE_HOME", stateHome)
 }
 
 func gitOutputBytes(t *testing.T, dir string, args ...string) []byte {

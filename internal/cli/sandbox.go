@@ -347,6 +347,9 @@ func (c *CreateCommand) Run(ctx *runtimeContext) error {
 	if err != nil {
 		return err
 	}
+	if c.CopyIn && repository != nil {
+		warnWorkspaceBindingError(ctx, recordGitWorkspaceBinding(sandboxID, repository, toRepositoryCheckout(repository), repositoryLocalChangesFiles(localChanges), "copy-in"))
+	}
 	if c.JSON {
 		enc := json.NewEncoder(ctx.Stdout)
 		enc.SetIndent("", "  ")

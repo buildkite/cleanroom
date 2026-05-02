@@ -135,6 +135,8 @@ func resolveExecutionSandbox(
 			if existingSandboxID != "" && copyRepository != nil {
 				repository = nil
 			}
+		} else if repository != nil {
+			warnWorkspaceBindingError(ctx, recordGitWorkspaceBinding(sandboxID, repository, toRepositoryCheckout(repository), repositoryLocalChangesFiles(localChanges), "copy-in"))
 		}
 	}
 

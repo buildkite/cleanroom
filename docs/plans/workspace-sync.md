@@ -12,12 +12,16 @@
   Git-backed `workspace diff`, Git-backed `workspace copy-out --dry-run`,
   sandbox-root resolution from the recorded repository checkout, and local-root
   safety that requires a matching local Git checkout before copy-out planning.
-- This changeset should land the first write-capable Phase 2 slice: Git-backed
+- PR #274 landed the first write-capable Phase 2 slice: Git-backed
   `workspace copy-out` applies sandbox changes to the matching local checkout,
   saves a recoverable patch and manifest before applying, refuses local baseline
   mismatches, and refuses target paths that changed independently.
-- Local binding metadata, non-Git/raw copy-out writes, top-level `--copy-out`,
-  and `--sync` remain follow-up work.
+- This changeset should land client-side Git workspace binding metadata:
+  `workspace copy-in` and top-level `--copy-in` record the trusted local root,
+  canonical remote, baseline commit, sandbox workspace root, operation time, and
+  copy-in manifest; `workspace copy-out` prefers that bound root.
+- Non-Git/raw copy-out writes, copy-out application from a prior copy-in
+  manifest, top-level `--copy-out`, and `--sync` remain follow-up work.
 
 ## Summary
 
@@ -444,6 +448,9 @@ Workspace copy-out should write only to a trusted local root:
 - If there is no binding, allow copy-out from the current working tree only when
   its repository identity matches the sandbox repository identity.
 - Refuse copy-out when the local root is ambiguous.
+- Until copy-out can apply against a prior copy-in manifest, bound Git copy-out
+  should still fail closed for local target paths that do not match the sandbox
+  baseline.
 
 The MVP should not add an arbitrary `--local-root` override. That avoids
 writing cleanroom copy-out results into the wrong checkout.
@@ -511,7 +518,7 @@ Cleanroom should record workspace metadata per sandbox:
 - sandbox ID
 - workspace root inside the sandbox, resolved from `repository.path` and
   normally `/workspace`
-- local root path used for the last workspace copy-in or copy-out, stored
+- local root path used for the last Git-backed workspace copy-in, stored
   client-side only
 - cleanroom workspace baseline manifest or tree digest
 - last workspace copy-in manifest used for copy-out conflict detection
@@ -631,19 +638,22 @@ Status: landed.
 ### Phase 2: Workspace copy-out and diff
 
 - PR #272: add `cleanroom workspace copy-out --dry-run`.
-- This changeset: add Git-backed `cleanroom workspace copy-out` writes.
+- PR #274: add Git-backed `cleanroom workspace copy-out` writes.
 - PR #272: add `cleanroom workspace diff`.
 - PR #272: resolve the sandbox workspace root from `repository.path`, defaulting
   to `/workspace`.
 - Covered by repository changeset tests: ignored cleanroom outputs are not
   included in Git-backed copy-out candidates by default.
-- This changeset: add copy-out tests proving local divergence fails closed with
+- PR #274: add copy-out tests proving local divergence fails closed with
   no force or overwrite mode.
-- This changeset: add copy-out tests proving an unbound copy-out refuses to
+- PR #274: add copy-out tests proving an unbound copy-out refuses to
   write unless the current working tree matches the sandbox repository baseline.
 - Require explicit sandbox IDs or support `--last` consistently with existing
   inspect commands.
-- Store local binding metadata in client-side Cleanroom state.
+- This changeset: store Git local binding metadata in client-side Cleanroom
+  state and prefer the bound local root during `workspace copy-out`.
+- Follow-up: use the recorded copy-in manifest as the local conflict/apply base,
+  then add top-level `--copy-out` automation.
 
 ### Phase 3: Safe top-level copy-out automation
 

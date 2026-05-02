@@ -54,6 +54,7 @@ type workspaceCopyOptions struct {
 	SandboxID     string
 	DryRun        bool
 	Repository    *resolvedRepositoryCheckout
+	Binding       *workspaceBinding
 	Destination   string
 	ForceGitReset bool
 	LaunchSeconds int64
@@ -112,7 +113,24 @@ func (c *WorkspaceCopyOutCommand) Run(ctx *runtimeContext) error {
 	if err != nil {
 		return err
 	}
-	repository, err := resolveWorkspaceCopyRepositoryCheckout(cwd, ctx.Loader)
+	binding, err := readWorkspaceBinding(c.SandboxID)
+	if err != nil {
+		return err
+	}
+	repositoryRoot := cwd
+	if binding != nil && binding.Transport == workspaceBindingTransportGit && strings.TrimSpace(binding.LocalRoot) != "" {
+		if strings.TrimSpace(c.Chdir) != "" {
+			chdirRepository, err := resolveWorkspaceCopyRepositoryCheckout(cwd, ctx.Loader)
+			if err != nil {
+				return err
+			}
+			if chdirRepository == nil || !sameWorkspaceLocalRoot(chdirRepository.RootDir, binding.LocalRoot) {
+				return fmt.Errorf("workspace copy-out sandbox %q is bound to local root %q, but --chdir resolved to %q", c.SandboxID, binding.LocalRoot, cwd)
+			}
+		}
+		repositoryRoot = binding.LocalRoot
+	}
+	repository, err := resolveWorkspaceCopyRepositoryCheckout(repositoryRoot, ctx.Loader)
 	if err != nil {
 		return err
 	}
@@ -129,6 +147,7 @@ func (c *WorkspaceCopyOutCommand) Run(ctx *runtimeContext) error {
 		SandboxID:  c.SandboxID,
 		DryRun:     c.DryRun,
 		Repository: repository,
+		Binding:    binding,
 	})
 }
 
@@ -176,8 +195,11 @@ func copyGitWorkspaceToSandbox(callCtx context.Context, ctx *runtimeContext, cli
 			return printWorkspacePlan(runtimeStdout(ctx), gitWorkspacePlan(checkout.DestinationDir, nil, true))
 		}
 		if opts.ForceGitReset {
-			return runWorkspaceExecution(callCtx, ctx, client, opts.SandboxID, effectiveRepository, repositorychangeset.ResetCommand(checkout), nil, opts.LaunchSeconds)
+			if err := runWorkspaceExecution(callCtx, ctx, client, opts.SandboxID, effectiveRepository, repositorychangeset.ResetCommand(checkout), nil, opts.LaunchSeconds); err != nil {
+				return err
+			}
 		}
+		warnWorkspaceBindingError(ctx, recordGitWorkspaceBinding(opts.SandboxID, effectiveRepository, checkout, nil, "copy-in"))
 		return nil
 	}
 	if opts.DryRun {
@@ -188,7 +210,11 @@ func copyGitWorkspaceToSandbox(callCtx context.Context, ctx *runtimeContext, cli
 	if opts.ForceGitReset {
 		command = repositorychangeset.ApplyCommandResettingCheckout(checkout, changeset)
 	}
-	return runWorkspaceExecution(callCtx, ctx, client, opts.SandboxID, effectiveRepository, command, bytes.NewReader(changeset.Patch), opts.LaunchSeconds)
+	if err := runWorkspaceExecution(callCtx, ctx, client, opts.SandboxID, effectiveRepository, command, bytes.NewReader(changeset.Patch), opts.LaunchSeconds); err != nil {
+		return err
+	}
+	warnWorkspaceBindingError(ctx, recordGitWorkspaceBinding(opts.SandboxID, effectiveRepository, checkout, changeset.Files, "copy-in"))
+	return nil
 }
 
 func copyWorkspaceOut(callCtx context.Context, ctx *runtimeContext, client *controlclient.Client, opts workspaceCopyOptions) error {
@@ -200,6 +226,9 @@ func copyWorkspaceOut(callCtx context.Context, ctx *runtimeContext, client *cont
 	}
 	checkout, err := sandboxRepositoryCheckout(callCtx, client, opts.SandboxID)
 	if err != nil {
+		return err
+	}
+	if err := validateWorkspaceBinding(opts.Binding, opts.SandboxID, checkout); err != nil {
 		return err
 	}
 	if err := validateWorkspaceCopyOutLocalRepository(opts.Repository, checkout); err != nil {

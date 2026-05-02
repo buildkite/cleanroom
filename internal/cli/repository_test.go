@@ -918,6 +918,7 @@ func TestCreateCommandWarnsWhenRepositoryIsDirtyUsesANSIWhenForced(t *testing.T)
 }
 
 func TestCreateCommandCopyInSuppressesDirtyWarning(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
 	if err := os.WriteFile(filepath.Join(repoDir, "dirty.txt"), []byte("dirty\n"), 0o644); err != nil {
 		t.Fatalf("write dirty file: %v", err)
@@ -983,6 +984,20 @@ func TestCreateCommandCopyInSuppressesDirtyWarning(t *testing.T) {
 	if strings.Contains(outcome.stderr, "repository has local modifications") {
 		t.Fatalf("expected dirty repository warning to be suppressed, got %q", outcome.stderr)
 	}
+	sandboxID := strings.TrimSpace(outcome.stdout)
+	if sandboxID == "" {
+		t.Fatal("expected create command to print sandbox id")
+	}
+	binding := mustReadWorkspaceBinding(t, sandboxID)
+	if got, want := binding.LocalRoot, mustNormalizeWorkspaceLocalRoot(t, repoDir); got != want {
+		t.Fatalf("unexpected binding local root: got %q want %q", got, want)
+	}
+	if got, want := binding.SandboxWorkspace, "/workspace"; got != want {
+		t.Fatalf("unexpected binding workspace: got %q want %q", got, want)
+	}
+	if len(binding.CopyInManifest) != 1 || binding.CopyInManifest[0].Path != "dirty.txt" {
+		t.Fatalf("expected dirty.txt in binding manifest, got %+v", binding.CopyInManifest)
+	}
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -1000,7 +1015,53 @@ func TestCreateCommandCopyInSuppressesDirtyWarning(t *testing.T) {
 	}
 }
 
+func TestCreateCommandCopyInWarnsWhenBindingCannotBeSaved(t *testing.T) {
+	setBrokenWorkspaceStateHome(t)
+	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
+
+	adapter := &integrationAdapter{}
+	host, _ := startIntegrationServer(t, adapter)
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+	}
+
+	outcome := runCreateAliasWithCapture(CreateCommand{
+		clientFlags:        clientFlags{Host: host},
+		Chdir:              repoDir,
+		workspaceCopyFlags: workspaceCopyFlags{CopyIn: true},
+	}, runtimeContext{
+		CWD: repoDir,
+		Loader: repositoryIntegrationLoader{
+			compiled: &policy.CompiledPolicy{
+				Version:        1,
+				ImageRef:       "ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+				ImageDigest:    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+				NetworkDefault: "deny",
+				Allow:          []policy.AllowRule{{Host: "github.com", Ports: []int{443}}},
+			},
+			repository: policy.RepositoryConfig{
+				Mode:   "current-repo",
+				Remote: "origin",
+				Path:   "/workspace",
+			},
+		},
+	})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err != nil {
+		t.Fatalf("CreateCommand.Run returned error: %v", outcome.err)
+	}
+	if strings.TrimSpace(outcome.stdout) == "" {
+		t.Fatal("expected create command to print sandbox id")
+	}
+	if !strings.Contains(outcome.stderr, "warning: workspace binding was not saved") {
+		t.Fatalf("expected binding warning on stderr, got %q", outcome.stderr)
+	}
+}
+
 func TestCreateCommandCopyInIncludesLocalOnlyCommits(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	repoDir := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
 	commitFile(t, repoDir, "local.txt", "local\n", "local commit")
 	wantCommit := headCommit(t, repoDir)
