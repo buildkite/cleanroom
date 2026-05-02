@@ -825,6 +825,25 @@ func TestWorkspaceCopyOutDryRunReportsSandboxGitPlan(t *testing.T) {
 	}
 }
 
+func TestWorkspaceCopyOutPlanRejectsWindowsDrivePaths(t *testing.T) {
+	for _, rel := range []string{
+		"C:/tmp.txt",
+		"c:/tmp.txt",
+		"D:\\tmp.txt",
+		"Z:tmp.txt",
+	} {
+		t.Run(rel, func(t *testing.T) {
+			_, err := gitWorkspaceCopyOutPlan(t.TempDir(), []byte("M\x00"+rel+"\x00"))
+			if err == nil {
+				t.Fatal("expected Windows drive path to be rejected")
+			}
+			if !strings.Contains(err.Error(), "not a safe relative path") {
+				t.Fatalf("expected safe relative path error, got %v", err)
+			}
+		})
+	}
+}
+
 func TestWorkspaceCopyOutDryRunRejectsNonGitLocalRoot(t *testing.T) {
 	adapter := &integrationAdapter{}
 	host, _ := startIntegrationServer(t, adapter)

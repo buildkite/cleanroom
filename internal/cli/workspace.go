@@ -401,11 +401,21 @@ func workspaceLocalPath(root, rel string) (string, error) {
 }
 
 func workspaceRelativePath(rel string) (string, error) {
-	cleaned := posixpath.Clean(filepath.ToSlash(rel))
-	if cleaned == "." || cleaned == "" || strings.HasPrefix(cleaned, "/") || cleaned == ".." || strings.HasPrefix(cleaned, "../") {
+	slashed := filepath.ToSlash(rel)
+	cleaned := posixpath.Clean(slashed)
+	windowsCleaned := posixpath.Clean(strings.ReplaceAll(slashed, "\\", "/"))
+	if cleaned == "." || cleaned == "" || strings.HasPrefix(cleaned, "/") || hasWindowsDrivePathPrefix(windowsCleaned) || cleaned == ".." || strings.HasPrefix(cleaned, "../") {
 		return "", fmt.Errorf("workspace path %q is not a safe relative path", rel)
 	}
 	return cleaned, nil
+}
+
+func hasWindowsDrivePathPrefix(path string) bool {
+	if len(path) < 2 || path[1] != ':' {
+		return false
+	}
+	drive := path[0]
+	return (drive >= 'A' && drive <= 'Z') || (drive >= 'a' && drive <= 'z')
 }
 
 func copyRawWorkspaceToSandbox(callCtx context.Context, ctx *runtimeContext, client *controlclient.Client, opts workspaceCopyOptions) error {
