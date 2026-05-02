@@ -742,6 +742,9 @@ func TestCompileRejectsInvalidOutputPaths(t *testing.T) {
 		{name: "unknown variable", outputs: rawPolicyBlockOutputs{Dirs: []string{"${CACHE}/go"}}, want: "unsupported variable expansion"},
 		{name: "home variable typo", outputs: rawPolicyBlockOutputs{Dirs: []string{"$HOMECACHE/go"}}, want: "unsupported variable expansion"},
 		{name: "home braced variable typo", outputs: rawPolicyBlockOutputs{Dirs: []string{"${HOME}CACHE/go"}}, want: "unsupported variable expansion"},
+		{name: "workspace variable dir", outputs: rawPolicyBlockOutputs{Dirs: []string{"${WORKSPACE}/vendor/bundle"}}, want: "must not be under /workspace"},
+		{name: "workspace variable typo", outputs: rawPolicyBlockOutputs{Dirs: []string{"$WORKSPACECACHE/go"}}, want: "unsupported variable expansion"},
+		{name: "workspace braced variable typo", outputs: rawPolicyBlockOutputs{Dirs: []string{"${WORKSPACE}CACHE/go"}}, want: "unsupported variable expansion"},
 		{name: "other user home", outputs: rawPolicyBlockOutputs{Dirs: []string{"~builder/.cache"}}, want: "does not support ~user expansion"},
 		{name: "duplicate normalized dirs", outputs: rawPolicyBlockOutputs{Dirs: []string{"~/go/pkg/mod", "${HOME}/go/pkg/mod"}}, want: "duplicates output path"},
 		{name: "overlapping dirs", outputs: rawPolicyBlockOutputs{Dirs: []string{"${HOME}/go", "${HOME}/go/pkg/mod"}}, want: "overlapping paths"},
@@ -860,6 +863,8 @@ func TestCompilePreservesLiteralBlockEnvValues(t *testing.T) {
 				"RAW_PATH":   "a/../b",
 				"TRAILING":   "value ",
 				"UNEXPANDED": "$CACHE/go",
+				"WORKDIR":    "${WORKSPACE}",
+				"WORKCACHE":  "$WORKSPACE/.cache",
 			},
 			Outputs: rawPolicyBlockOutputs{Dirs: []string{"${HOME}/go/pkg/mod"}},
 		},
@@ -877,6 +882,8 @@ func TestCompilePreservesLiteralBlockEnvValues(t *testing.T) {
 		"RAW_PATH":   "a/../b",
 		"TRAILING":   "value ",
 		"UNEXPANDED": "$CACHE/go",
+		"WORKDIR":    "/workspace",
+		"WORKCACHE":  "/workspace/.cache",
 	} {
 		if got := env[key]; got != want {
 			t.Fatalf("unexpected env %s: got %q want %q", key, got, want)

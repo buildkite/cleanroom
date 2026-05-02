@@ -1315,7 +1315,10 @@ func normalizeBootstrapKeyFiles(raw []string, field string) ([]string, error) {
 	return files, nil
 }
 
-const defaultBlockHome = "/root"
+const (
+	defaultBlockHome      = "/root"
+	defaultBlockWorkspace = "/workspace"
+)
 
 func normalizeStageBlocks(raw []rawPolicyBlock, field string) ([]StageBlock, error) {
 	if len(raw) == 0 {
@@ -1430,6 +1433,14 @@ func expandGuestEnvValue(value string) string {
 		return defaultBlockHome
 	case strings.HasPrefix(value, "${HOME}/"):
 		return defaultBlockHome + strings.TrimPrefix(value, "${HOME}")
+	case value == "$WORKSPACE":
+		return defaultBlockWorkspace
+	case strings.HasPrefix(value, "$WORKSPACE/"):
+		return defaultBlockWorkspace + strings.TrimPrefix(value, "$WORKSPACE")
+	case value == "${WORKSPACE}":
+		return defaultBlockWorkspace
+	case strings.HasPrefix(value, "${WORKSPACE}/"):
+		return defaultBlockWorkspace + strings.TrimPrefix(value, "${WORKSPACE}")
 	default:
 		return value
 	}
@@ -1511,6 +1522,14 @@ func expandGuestPathValue(value, field string, requireAbsolute bool) (string, er
 		value = defaultBlockHome
 	} else if strings.HasPrefix(value, "${HOME}/") {
 		value = defaultBlockHome + strings.TrimPrefix(value, "${HOME}")
+	} else if value == "$WORKSPACE" {
+		value = defaultBlockWorkspace
+	} else if strings.HasPrefix(value, "$WORKSPACE/") {
+		value = defaultBlockWorkspace + strings.TrimPrefix(value, "$WORKSPACE")
+	} else if value == "${WORKSPACE}" {
+		value = defaultBlockWorkspace
+	} else if strings.HasPrefix(value, "${WORKSPACE}/") {
+		value = defaultBlockWorkspace + strings.TrimPrefix(value, "${WORKSPACE}")
 	}
 	if strings.Contains(value, "$") {
 		return "", fmt.Errorf("%s contains an unsupported variable expansion", field)

@@ -104,6 +104,8 @@ sandbox:
         files:
           - go.mod
           - go.sum
+      env:
+        GOMODCACHE: ${HOME}/go/pkg/mod
       outputs:
         dirs:
           - ${HOME}/go/pkg/mod
@@ -184,10 +186,12 @@ explicit request-time changeset input.
   regular files. Literal paths must exist; globs must match at least one path.
 - Block `outputs.dirs` and `outputs.files` are absolute guest paths outside
   `/workspace` and cannot be `/`; `${HOME}`, `$HOME`, and `~` expand to the
-  Cleanroom block execution home.
+  Cleanroom block execution home, while `${WORKSPACE}` and `$WORKSPACE` expand
+  to the Cleanroom workspace root before the workspace-output rejection runs.
 - Block `env` values are literal strings, except leading home-directory
-  shorthand forms (`~`, `~/`, `$HOME`, `$HOME/`, `${HOME}`, `${HOME}/`) expand
-  to the Cleanroom block execution home.
+  and workspace shorthand forms (`~`, `~/`, `$HOME`, `$HOME/`, `${HOME}`,
+  `${HOME}/`, `$WORKSPACE`, `$WORKSPACE/`, `${WORKSPACE}`, `${WORKSPACE}/`)
+  expand to the corresponding Cleanroom guest paths.
 - Normalized outputs must be unique and non-overlapping across all dependency
   and service blocks.
 - `sandbox.run.before` defaults to unset; when present, each execution runs that shell command in the repository workdir immediately before the requested command.

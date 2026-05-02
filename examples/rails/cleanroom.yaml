@@ -9,6 +9,10 @@ sandbox:
     disk: 14GiB
   dependencies:
     - name: bundle
+      env:
+        GEM_HOME: /usr/local/bundle
+        BUNDLE_PATH: /usr/local/bundle
+        BUNDLE_APP_CONFIG: /usr/local/bundle
       command:
         - sh
         - -lc

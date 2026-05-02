@@ -148,6 +148,8 @@ resolved from the post-changeset repository tree when a changeset is present.
 
 - `~` and `~/...` expand to the sandbox user's home directory.
 - `${HOME}` and `$HOME` expand to the same canonical home directory.
+- `${WORKSPACE}` and `$WORKSPACE` expand to the Cleanroom workspace root before
+  workspace-output validation runs.
 - unknown variables, `~otheruser`, relative paths, empty paths, globs in output
   paths, and paths that normalize outside their allowed root are rejected.
 - normalized absolute guest paths are used for cache keys and mount decisions.
@@ -172,10 +174,12 @@ The canonical home directory is the `HOME` value Cleanroom supplies in the
 closed block execution environment. Cleanroom must set that value before output
 path normalization. Block `env` values are literal strings, except leading `~`,
 `~/`, `$HOME`, `$HOME/`, `${HOME}`, and `${HOME}/` forms are expanded to the
-same canonical home directory. Other `$...` values, URLs, relative paths, empty
-strings, and trailing spaces are preserved and included in the block environment
-digest as provided. The first implementation should not discover a different
-home directory from the image at runtime.
+same canonical home directory, and leading `$WORKSPACE`, `$WORKSPACE/`,
+`${WORKSPACE}`, and `${WORKSPACE}/` forms are expanded to the canonical
+workspace root. Other `$...` values, URLs, relative paths, empty strings, and
+trailing spaces are preserved and included in the block environment digest as
+provided. The first implementation should not discover a different home
+directory from the image at runtime.
 
 ## Semantics
 
@@ -629,7 +633,8 @@ Create-sandbox stream messages should stay user-readable:
 1. Add schema types for `sandbox.docker.required`, dependency blocks, and service
    blocks, including `outputs.dirs` and `outputs.files`, in
    `internal/policy/policy.go` and `proto/cleanroom/v1/control.proto`.
-2. Add path expansion and validation helpers for `${HOME}`, `$HOME`, and `~`.
+2. Add path expansion and validation helpers for `${HOME}`, `$HOME`, `~`, and
+   `${WORKSPACE}`.
 3. Add deterministic input-manifest hashing for literal files and globs.
 4. Add dependency and service volume cache-key helpers in
    `internal/cachekey/cachekey.go`.
@@ -662,8 +667,8 @@ Completed in phase 1:
 - policy schema and proto support for ordered dependency and service blocks
 - `sandbox.docker.required` as the Docker runtime requirement
 - validation for block names, commands, input files, `outputs.dirs`,
-  `outputs.files`, `${HOME}`, `$HOME`, `~`, duplicate paths, overlapping paths,
-  and `/workspace` output rejection
+  `outputs.files`, `${HOME}`, `$HOME`, `~`, `${WORKSPACE}`, duplicate paths,
+  overlapping paths, and workspace output rejection
 - rejection of the old YAML object forms for `sandbox.dependencies`,
   `sandbox.services.command`, `sandbox.services.key`, and
   `sandbox.services.docker.required`
@@ -730,6 +735,7 @@ Minimum coverage:
 - policy validation rejects duplicate or overlapping normalized output directories
 - policy validation rejects file outputs inside directory outputs
 - path normalization makes `~/go/pkg/mod` and `${HOME}/go/pkg/mod` equivalent
+  and rejects `${WORKSPACE}` outputs after expansion
 - input manifests are deterministic across file order and glob order
 - input manifest validation rejects empty glob matches
 - input manifest validation rejects directories, symlinks, and other
