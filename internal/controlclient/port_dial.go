@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -211,15 +212,15 @@ func (c *streamPortConn) RemoteAddr() net.Addr {
 }
 
 func (c *streamPortConn) SetDeadline(time.Time) error {
-	return nil
+	return os.ErrNoDeadline
 }
 
 func (c *streamPortConn) SetReadDeadline(time.Time) error {
-	return nil
+	return os.ErrNoDeadline
 }
 
 func (c *streamPortConn) SetWriteDeadline(time.Time) error {
-	return nil
+	return os.ErrNoDeadline
 }
 
 type portAddr string

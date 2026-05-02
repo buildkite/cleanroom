@@ -96,11 +96,25 @@ func copySandboxPortStreamToConn(stream *connect.BidiStream[cleanroomv1.SandboxP
 		if len(data) == 0 {
 			continue
 		}
-		if _, err := conn.Write(data); err != nil {
+		if err := writeSandboxPortData(conn, data); err != nil {
 			_ = conn.Close()
 			return fmt.Errorf("write sandbox port: %w", err)
 		}
 	}
+}
+
+func writeSandboxPortData(conn net.Conn, data []byte) error {
+	for len(data) > 0 {
+		n, err := conn.Write(data)
+		if err != nil {
+			return err
+		}
+		if n <= 0 {
+			return io.ErrShortWrite
+		}
+		data = data[n:]
+	}
+	return nil
 }
 
 func copySandboxPortConnToStream(stream *connect.BidiStream[cleanroomv1.SandboxPortFrame, cleanroomv1.SandboxPortFrame], conn net.Conn) error {

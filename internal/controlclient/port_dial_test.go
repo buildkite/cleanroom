@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -190,5 +191,20 @@ func TestDialSandboxPortCloseDoesNotWaitForBackendEOF(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for Close")
+	}
+}
+
+func TestDialSandboxPortDeadlinesAreUnsupported(t *testing.T) {
+	conn := &streamPortConn{}
+	deadline := time.Now().Add(time.Second)
+
+	if err := conn.SetDeadline(deadline); !errors.Is(err, os.ErrNoDeadline) {
+		t.Fatalf("SetDeadline error: got %v want %v", err, os.ErrNoDeadline)
+	}
+	if err := conn.SetReadDeadline(deadline); !errors.Is(err, os.ErrNoDeadline) {
+		t.Fatalf("SetReadDeadline error: got %v want %v", err, os.ErrNoDeadline)
+	}
+	if err := conn.SetWriteDeadline(deadline); !errors.Is(err, os.ErrNoDeadline) {
+		t.Fatalf("SetWriteDeadline error: got %v want %v", err, os.ErrNoDeadline)
 	}
 }
