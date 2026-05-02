@@ -68,7 +68,10 @@ type zfsSnapshotRequest struct {
 }
 
 type zfsSnapshot struct {
-	StorageRef string
+	StorageRef         string
+	StorageSizeBytes   int64
+	ExclusiveSizeBytes int64
+	DriverMetadata     string
 }
 
 type runnerBackedHostRuntime struct {
@@ -236,7 +239,20 @@ func (r *runnerBackedHostRuntime) CreateZFSSnapshot(ctx context.Context, req zfs
 	if err != nil {
 		return zfsSnapshot{}, err
 	}
-	return zfsSnapshot{StorageRef: snapshot.StorageRef}, nil
+	desc, err := driver.DescribeSnapshot(ctx, volumestore.DescribeSnapshotRequest{StorageRef: snapshot.StorageRef})
+	if err != nil {
+		return zfsSnapshot{}, fmt.Errorf("describe zfs snapshot metadata: %w", err)
+	}
+	driverMetadata, err := volumestore.EncodeZFSDriverMetadata(volumestore.ZFSDriverMetadataFromDescription(desc))
+	if err != nil {
+		return zfsSnapshot{}, err
+	}
+	return zfsSnapshot{
+		StorageRef:         snapshot.StorageRef,
+		StorageSizeBytes:   snapshot.StorageSizeBytes,
+		ExclusiveSizeBytes: snapshot.ExclusiveSizeBytes,
+		DriverMetadata:     driverMetadata,
+	}, nil
 }
 
 func (r *runnerBackedHostRuntime) DestroyZFSVolume(ctx context.Context, volumeRef string) error {

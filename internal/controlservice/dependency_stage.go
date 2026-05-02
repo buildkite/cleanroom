@@ -649,6 +649,7 @@ func (s *Service) maybePublishDependencyStageCache(
 		return
 	}
 
+	now := s.clock().Now()
 	record := cachestore.Record{
 		CacheKey:                 plan.CacheKey,
 		Stage:                    dependencyStageName,
@@ -665,10 +666,11 @@ func (s *Service) maybePublishDependencyStageCache(
 		StorageDriver:            snapshotCfg.Snapshots.Driver,
 		StorageRef:               strings.TrimSpace(result.StorageRef),
 		DependencyKeyFilesDigest: plan.KeyFilesDigest,
-		CreatedAt:                s.clock().Now(),
-		LastUsedAt:               s.clock().Now(),
+		CreatedAt:                now,
+		LastUsedAt:               now,
 		ProducerVersion:          dependencyStageProducerVersion,
 	}
+	populateStageCacheRecordMetadata(&record, plan.ParentRuntimeCacheKey, result, now)
 
 	persist := store.Create
 	if replacedRecord != nil && strings.TrimSpace(replacedRecord.CacheKey) == plan.CacheKey {

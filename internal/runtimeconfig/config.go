@@ -21,9 +21,21 @@ import (
 type Config struct {
 	DefaultBackend string              `yaml:"default_backend"`
 	ControlHost    string              `yaml:"control_host,omitempty"`
+	Cache          CacheConfig         `yaml:"cache,omitempty"`
 	Gateway        GatewayConfig       `yaml:"gateway,omitempty"`
 	Observability  ObservabilityConfig `yaml:"observability,omitempty"`
 	Backends       Backends            `yaml:"backends"`
+}
+
+// CacheConfig configures host-to-host cache reuse.
+type CacheConfig struct {
+	Peers []CachePeerConfig `yaml:"peers,omitempty"`
+}
+
+// CachePeerConfig identifies a trusted Cleanroom cache peer.
+type CachePeerConfig struct {
+	URL      string `yaml:"url"`
+	TokenEnv string `yaml:"token_env,omitempty"`
 }
 
 type GatewayConfig struct {
@@ -72,6 +84,7 @@ type TraceSamplingConfig struct {
 type configFile struct {
 	DefaultBackend string              `yaml:"default_backend"`
 	ControlHost    string              `yaml:"control_host,omitempty"`
+	Cache          CacheConfig         `yaml:"cache,omitempty"`
 	Gateway        GatewayConfig       `yaml:"gateway,omitempty"`
 	Observability  ObservabilityConfig `yaml:"observability,omitempty"`
 	Backends       backendsFile        `yaml:"backends"`
@@ -87,6 +100,7 @@ func (f configFile) config() Config {
 	cfg := Config{
 		DefaultBackend: f.DefaultBackend,
 		ControlHost:    f.ControlHost,
+		Cache:          f.Cache,
 		Gateway:        f.Gateway,
 		Observability:  f.Observability,
 		Backends: Backends{
@@ -377,6 +391,7 @@ func normalizeConfig(cfg Config, inferredDefaultBackend string) Config {
 		cfg.DefaultBackend = inferredDefaultBackend
 	}
 	cfg.ControlHost = strings.TrimSpace(cfg.ControlHost)
+	cfg.Cache.Peers = normalizeCachePeers(cfg.Cache.Peers)
 	cfg.Gateway.Git.CacheHosts = trimStringSlice(cfg.Gateway.Git.CacheHosts)
 	cfg.Gateway.OCI.Registries = trimStringMap(cfg.Gateway.OCI.Registries)
 	cfg.Observability.DeploymentEnvironment = strings.TrimSpace(cfg.Observability.DeploymentEnvironment)
@@ -414,6 +429,9 @@ func validateConfig(cfg Config) error {
 			return fmt.Errorf("invalid control_host: %w", err)
 		}
 	}
+	if err := validateCacheConfig(cfg.Cache); err != nil {
+		return err
+	}
 	if err := validateDarwinVZRuntimeConfig(cfg.Backends.DarwinVZ); err != nil {
 		return err
 	}
@@ -447,6 +465,48 @@ func validateObservabilityConfig(cfg ObservabilityConfig) error {
 	}
 	if err := ValidateTraceURLTemplate(cfg.Traces.URLTemplate); err != nil {
 		return err
+	}
+	return nil
+}
+
+func normalizeCachePeers(peers []CachePeerConfig) []CachePeerConfig {
+	if len(peers) == 0 {
+		return nil
+	}
+	out := make([]CachePeerConfig, 0, len(peers))
+	for _, peer := range peers {
+		normalized := CachePeerConfig{
+			URL:      strings.TrimSpace(peer.URL),
+			TokenEnv: strings.TrimSpace(peer.TokenEnv),
+		}
+		if normalized.URL == "" && normalized.TokenEnv == "" {
+			continue
+		}
+		out = append(out, normalized)
+	}
+	return out
+}
+
+func validateCacheConfig(cfg CacheConfig) error {
+	for i, peer := range cfg.Peers {
+		if strings.TrimSpace(peer.URL) == "" {
+			return fmt.Errorf("cache.peers[%d].url is required", i)
+		}
+		parsed, err := url.Parse(peer.URL)
+		if err != nil {
+			return fmt.Errorf("invalid cache.peers[%d].url: %w", i, err)
+		}
+		switch parsed.Scheme {
+		case "http", "https":
+		default:
+			return fmt.Errorf("unsupported cache.peers[%d].url scheme %q (expected http or https)", i, parsed.Scheme)
+		}
+		if parsed.Host == "" {
+			return fmt.Errorf("cache.peers[%d].url must include a host", i)
+		}
+		if strings.TrimSpace(peer.TokenEnv) == "" {
+			return fmt.Errorf("cache.peers[%d].token_env is required", i)
+		}
 	}
 	return nil
 }

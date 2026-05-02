@@ -11,9 +11,11 @@ import (
 )
 
 type zfsTestRunner struct {
-	commands []string
-	exists   map[string]bool
-	origins  map[string]string
+	commands      []string
+	exists        map[string]bool
+	origins       map[string]string
+	guids         map[string]string
+	sendEstimates map[string]int64
 }
 
 func (r *zfsTestRunner) Run(_ context.Context, command string, args ...string) error {
@@ -84,6 +86,25 @@ func (r *zfsTestRunner) Output(_ context.Context, command string, args ...string
 			return []byte(ref + "\n"), nil
 		}
 		return nil, errors.New("cannot open dataset: dataset does not exist")
+	}
+	if command == "zfs" && len(args) == 6 && args[0] == "get" && args[1] == "-H" && args[2] == "-o" && args[3] == "value" && args[4] == "guid" {
+		ref := args[5]
+		if !r.exists[ref] {
+			return nil, errors.New("cannot open dataset: dataset does not exist")
+		}
+		if guid := strings.TrimSpace(r.guids[ref]); guid != "" {
+			return []byte(guid + "\n"), nil
+		}
+		return []byte("guid-" + strings.ReplaceAll(ref, "/", "-") + "\n"), nil
+	}
+	if command == "zfs" && len(args) == 5 && args[0] == "send" && args[1] == "-nP" && args[2] == "-i" {
+		fromRef := args[3]
+		toRef := args[4]
+		if !r.exists[fromRef] || !r.exists[toRef] {
+			return nil, errors.New("could not find any snapshots to send")
+		}
+		estimate := r.sendEstimates[fromRef+"\x00"+toRef]
+		return []byte(fmt.Sprintf("incremental\t%s\t%s\nsize\t%d\n", fromRef, toRef, estimate)), nil
 	}
 	return nil, fmt.Errorf("unsupported output command: %s %s", command, strings.Join(args, " "))
 }
@@ -241,6 +262,147 @@ func TestZFSDriverEnsureBaseVolumeUsesMinimumBytesNamespace(t *testing.T) {
 		"dd if=" + sourcePath + " of=/dev/zvol/tank/cleanroom/base/runtime-key-min-8388608 bs=4M conv=fsync status=none",
 		"zfs list -H -o name tank/cleanroom/base/runtime-key-min-8388608@base",
 		"zfs snapshot tank/cleanroom/base/runtime-key-min-8388608@base",
+	}
+	if got, want := runner.commands, wantCommands; strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("unexpected zfs commands:\n got: %v\nwant: %v", got, want)
+	}
+}
+
+func TestZFSDriverDescribeSnapshotReturnsGUIDMetadata(t *testing.T) {
+	runner := &zfsTestRunner{
+		exists: map[string]bool{
+			"tank/cleanroom/snapshots/golden@base": true,
+		},
+		guids: map[string]string{
+			"tank/cleanroom/snapshots/golden@base": "123456789",
+		},
+	}
+	driver, err := NewZFSDriver(ZFSDriverOptions{
+		DatasetRoot: "tank/cleanroom",
+		Runner:      runner,
+	})
+	if err != nil {
+		t.Fatalf("NewZFSDriver returned error: %v", err)
+	}
+
+	desc, err := driver.DescribeSnapshot(context.Background(), DescribeSnapshotRequest{
+		StorageRef: "tank/cleanroom/snapshots/golden@base",
+	})
+	if err != nil {
+		t.Fatalf("DescribeSnapshot returned error: %v", err)
+	}
+	if got, want := desc.SnapshotRef, "tank/cleanroom/snapshots/golden@base"; got != want {
+		t.Fatalf("unexpected snapshot ref: got %q want %q", got, want)
+	}
+	if got, want := desc.SnapshotGUID, "123456789"; got != want {
+		t.Fatalf("unexpected snapshot guid: got %q want %q", got, want)
+	}
+
+	metadata, err := EncodeZFSDriverMetadata(ZFSDriverMetadataFromDescription(desc))
+	if err != nil {
+		t.Fatalf("EncodeZFSDriverMetadata returned error: %v", err)
+	}
+	if !strings.Contains(metadata, `"zfs_snapshot_guid":"123456789"`) {
+		t.Fatalf("expected metadata to contain snapshot guid, got %s", metadata)
+	}
+
+	wantCommands := []string{
+		"zfs get -H -o value guid tank/cleanroom/snapshots/golden@base",
+	}
+	if got, want := runner.commands, wantCommands; strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("unexpected zfs commands:\n got: %v\nwant: %v", got, want)
+	}
+}
+
+func TestZFSDriverPlansIncrementalSnapshotExport(t *testing.T) {
+	fromRef := "tank/cleanroom/snapshots/parent@base"
+	toRef := "tank/cleanroom/snapshots/child@base"
+	runner := &zfsTestRunner{
+		exists: map[string]bool{
+			fromRef: true,
+			toRef:   true,
+		},
+		guids: map[string]string{
+			fromRef: "parent-guid",
+			toRef:   "child-guid",
+		},
+		sendEstimates: map[string]int64{
+			fromRef + "\x00" + toRef: 4096,
+		},
+	}
+	driver, err := NewZFSDriver(ZFSDriverOptions{
+		DatasetRoot: "tank/cleanroom",
+		Runner:      runner,
+	})
+	if err != nil {
+		t.Fatalf("NewZFSDriver returned error: %v", err)
+	}
+
+	plan, err := driver.PlanIncrementalSnapshotExport(context.Background(), IncrementalSnapshotExportRequest{
+		FromSnapshotRef:  fromRef,
+		FromSnapshotGUID: "parent-guid",
+		ToSnapshotRef:    toRef,
+		ToSnapshotGUID:   "child-guid",
+	})
+	if err != nil {
+		t.Fatalf("PlanIncrementalSnapshotExport returned error: %v", err)
+	}
+	if got, want := plan.FromSnapshotGUID, "parent-guid"; got != want {
+		t.Fatalf("unexpected parent guid: got %q want %q", got, want)
+	}
+	if got, want := plan.ToSnapshotGUID, "child-guid"; got != want {
+		t.Fatalf("unexpected child guid: got %q want %q", got, want)
+	}
+	if got, want := plan.EstimatedBytes, int64(4096); got != want {
+		t.Fatalf("unexpected estimate: got %d want %d", got, want)
+	}
+
+	wantCommands := []string{
+		"zfs get -H -o value guid " + fromRef,
+		"zfs get -H -o value guid " + toRef,
+		"zfs send -nP -i " + fromRef + " " + toRef,
+	}
+	if got, want := runner.commands, wantCommands; strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("unexpected zfs commands:\n got: %v\nwant: %v", got, want)
+	}
+}
+
+func TestZFSDriverRejectsIncrementalExportParentGUIDMismatch(t *testing.T) {
+	fromRef := "tank/cleanroom/snapshots/parent@base"
+	toRef := "tank/cleanroom/snapshots/child@base"
+	runner := &zfsTestRunner{
+		exists: map[string]bool{
+			fromRef: true,
+			toRef:   true,
+		},
+		guids: map[string]string{
+			fromRef: "actual-parent-guid",
+			toRef:   "child-guid",
+		},
+	}
+	driver, err := NewZFSDriver(ZFSDriverOptions{
+		DatasetRoot: "tank/cleanroom",
+		Runner:      runner,
+	})
+	if err != nil {
+		t.Fatalf("NewZFSDriver returned error: %v", err)
+	}
+
+	_, err = driver.PlanIncrementalSnapshotExport(context.Background(), IncrementalSnapshotExportRequest{
+		FromSnapshotRef:  fromRef,
+		FromSnapshotGUID: "expected-parent-guid",
+		ToSnapshotRef:    toRef,
+		ToSnapshotGUID:   "child-guid",
+	})
+	if err == nil {
+		t.Fatal("expected PlanIncrementalSnapshotExport to reject parent guid mismatch")
+	}
+	if !strings.Contains(err.Error(), "parent guid mismatch") {
+		t.Fatalf("expected parent guid mismatch error, got %v", err)
+	}
+
+	wantCommands := []string{
+		"zfs get -H -o value guid " + fromRef,
 	}
 	if got, want := runner.commands, wantCommands; strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("unexpected zfs commands:\n got: %v\nwant: %v", got, want)

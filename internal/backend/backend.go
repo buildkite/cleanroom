@@ -251,7 +251,10 @@ type SnapshotRequest struct {
 }
 
 type SnapshotResult struct {
-	StorageRef string
+	StorageRef         string
+	StorageSizeBytes   int64
+	ExclusiveSizeBytes int64
+	DriverMetadata     string
 }
 
 type ProvisionFromSnapshotRequest struct {

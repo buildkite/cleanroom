@@ -12,7 +12,7 @@ set -euo pipefail
 # - Helper updates must land on hosts before branches that depend on new capabilities can pass.
 
 helper_contract_version() {
-  echo "6"
+  echo "7"
 }
 
 helper_has_zfs() {
@@ -388,6 +388,17 @@ run_zfs() {
 
   if [[ "$#" -eq 7 && "$1" == "list" && "$2" == "-H" && "$3" == "-d" && "$4" == "0" && "$5" == "-o" && "$6" == "name" ]]; then
     is_cleanroom_zfs_dataset "$7" || die "zfs list -d 0: unsupported dataset '$7'"
+    exec "$bin" "$@"
+  fi
+
+  if [[ "$#" -eq 6 && "$1" == "get" && "$2" == "-H" && "$3" == "-o" && "$4" == "value" && "$5" == "guid" ]]; then
+    is_cleanroom_zfs_dataset "$6" || is_cleanroom_zfs_snapshot_ref "$6" || die "zfs get: unsupported ref '$6'"
+    exec "$bin" "$@"
+  fi
+
+  if [[ "$#" -eq 5 && "$1" == "send" && "$2" == "-nP" && "$3" == "-i" ]]; then
+    is_cleanroom_zfs_snapshot_ref "$4" || die "zfs send: unsupported parent snapshot '$4'"
+    is_cleanroom_zfs_snapshot_ref "$5" || die "zfs send: unsupported child snapshot '$5'"
     exec "$bin" "$@"
   fi
 

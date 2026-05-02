@@ -580,14 +580,14 @@ func TestSnapshotStorageHelpersPassLoggerToHostRuntime(t *testing.T) {
 		},
 	}
 
-	storageRef, err := createSnapshotStorage(context.Background(), logger, cfg, "snap-test", "tank/cleanroom/sandboxes/cr-test")
+	result, err := createSnapshotStorage(context.Background(), logger, cfg, "snap-test", "tank/cleanroom/sandboxes/cr-test")
 	if err != nil {
 		t.Fatalf("createSnapshotStorage returned error: %v", err)
 	}
-	if got, want := storageRef, "tank/cleanroom/snapshots/snap-test@base"; got != want {
+	if got, want := result.StorageRef, "tank/cleanroom/snapshots/snap-test@base"; got != want {
 		t.Fatalf("unexpected storage ref: got %q want %q", got, want)
 	}
-	if err := destroySnapshotStorage(context.Background(), logger, cfg, storageRef); err != nil {
+	if err := destroySnapshotStorage(context.Background(), logger, cfg, result.StorageRef); err != nil {
 		t.Fatalf("destroySnapshotStorage returned error: %v", err)
 	}
 }

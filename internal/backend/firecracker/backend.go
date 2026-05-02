@@ -698,6 +698,7 @@ func (a *Adapter) CreateSnapshot(ctx context.Context, req backend.SnapshotReques
 	}
 	snapshotLogger := observability.WithLoggerFields(observability.WithTraceContext(baseFirecrackerLogger(a.Logger), ctx), observability.LogFieldSandboxID, sandboxID)
 	snapshotStorageRef := ""
+	var snapshotResult *backend.SnapshotResult
 	paused := true
 	defer func() {
 		if !paused {
@@ -721,12 +722,16 @@ func (a *Adapter) CreateSnapshot(ctx context.Context, req backend.SnapshotReques
 	if err := flushSnapshotHostFilesystem(ctx, driverName); err != nil {
 		return nil, err
 	}
-	snapshotStorageRef, err = createSnapshotStorage(ctx, snapshotLogger, driverCfg, snapshotID, volumeRef)
+	snapshotResult, err = createSnapshotStorage(ctx, snapshotLogger, driverCfg, snapshotID, volumeRef)
 	if err != nil {
 		return nil, fmt.Errorf("persist snapshot rootfs: %w", err)
 	}
+	if snapshotResult == nil {
+		return nil, errors.New("snapshot storage returned no result")
+	}
+	snapshotStorageRef = strings.TrimSpace(snapshotResult.StorageRef)
 
-	return &backend.SnapshotResult{StorageRef: snapshotStorageRef}, nil
+	return snapshotResult, nil
 }
 
 func (a *Adapter) ProvisionSandboxFromSnapshot(ctx context.Context, req backend.ProvisionFromSnapshotRequest) error {
@@ -2153,9 +2158,9 @@ func snapshotDriverNeedsHostSync(driverName string) bool {
 	return strings.EqualFold(strings.TrimSpace(driverName), "zfs")
 }
 
-func createSnapshotStorage(ctx context.Context, logger *charmlog.Logger, cfg backend.FirecrackerConfig, snapshotID, volumeRef string) (string, error) {
+func createSnapshotStorage(ctx context.Context, logger *charmlog.Logger, cfg backend.FirecrackerConfig, snapshotID, volumeRef string) (*backend.SnapshotResult, error) {
 	if err := validateSnapshotsEnabled(cfg); err != nil {
-		return "", err
+		return nil, err
 	}
 	if strings.EqualFold(strings.TrimSpace(cfg.Snapshots.Driver), "zfs") {
 		snapshot, err := hostRuntimeForConfigWithLogger(cfg, logger).CreateZFSSnapshot(ctx, zfsSnapshotRequest{
@@ -2163,23 +2168,33 @@ func createSnapshotStorage(ctx context.Context, logger *charmlog.Logger, cfg bac
 			VolumeRef:  volumeRef,
 		})
 		if err != nil {
-			return "", err
+			return nil, err
 		}
-		return snapshot.StorageRef, nil
+		return &backend.SnapshotResult{
+			StorageRef:         snapshot.StorageRef,
+			StorageSizeBytes:   snapshot.StorageSizeBytes,
+			ExclusiveSizeBytes: snapshot.ExclusiveSizeBytes,
+			DriverMetadata:     snapshot.DriverMetadata,
+		}, nil
 	}
 
 	driver, err := snapshotVolumeStoreDriverFn(cfg)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	snapshot, err := driver.SnapshotVolume(ctx, volumestore.SnapshotVolumeRequest{
 		SnapshotID: snapshotID,
 		VolumeRef:  volumeRef,
 	})
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	return snapshot.StorageRef, nil
+	return &backend.SnapshotResult{
+		StorageRef:         snapshot.StorageRef,
+		StorageSizeBytes:   snapshot.StorageSizeBytes,
+		ExclusiveSizeBytes: snapshot.ExclusiveSizeBytes,
+		DriverMetadata:     snapshot.DriverMetadata,
+	}, nil
 }
 
 func destroySnapshotStorage(ctx context.Context, logger *charmlog.Logger, cfg backend.FirecrackerConfig, storageRef string) error {
