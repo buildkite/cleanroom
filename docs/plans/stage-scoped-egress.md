@@ -126,7 +126,8 @@ func (p *CompiledPolicy) AllowsForStage(stage NetworkStage, host string, port in
 
 The effective policy keeps `NetworkDefault` deny and uses the allow rules from
 the active stage. The original compiled policy hash continues to identify the
-complete repository policy.
+complete repository policy, while stage-specific effective-policy clones get
+their own hash for runtime cache keys that store policy-scoped handlers.
 
 ## Control-Service Changes
 

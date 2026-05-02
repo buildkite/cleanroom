@@ -278,6 +278,70 @@ sandbox:
 	}
 }
 
+func TestNetworkPolicyForStageRehashesStageScopedPolicies(t *testing.T) {
+	t.Parallel()
+
+	raw := baseRawPolicy()
+	raw.Repository = &rawRepository{
+		Network: &rawStageNetworkConfig{
+			Allow: rawAllowRules{{Host: "github.com", Ports: []int{443}}},
+		},
+	}
+	raw.Sandbox.Dependencies.Network = &rawStageNetworkConfig{
+		Allow: rawAllowRules{{Host: "proxy.golang.org", Ports: []int{443}}},
+	}
+	raw.Sandbox.Run.Network = &rawStageNetworkConfig{}
+
+	compiled, err := Compile(raw)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	workspace := compiled.NetworkPolicyForStage(NetworkStageWorkspace)
+	dependencies := compiled.NetworkPolicyForStage(NetworkStageDependencies)
+	execution := compiled.NetworkPolicyForStage(NetworkStageExecution)
+
+	for stage, effective := range map[NetworkStage]*CompiledPolicy{
+		NetworkStageWorkspace:    workspace,
+		NetworkStageDependencies: dependencies,
+		NetworkStageExecution:    execution,
+	} {
+		if effective.Hash == "" {
+			t.Fatalf("expected %s effective policy hash", stage)
+		}
+		if effective.Hash == compiled.Hash {
+			t.Fatalf("expected %s effective policy hash to differ from full policy hash", stage)
+		}
+		if effective.NetworkStages != nil {
+			t.Fatalf("expected %s effective policy to drop stage table", stage)
+		}
+	}
+	if workspace.Hash == dependencies.Hash {
+		t.Fatal("expected workspace and dependencies effective policies to have distinct hashes")
+	}
+	if dependencies.Hash == execution.Hash {
+		t.Fatal("expected dependencies and execution effective policies to have distinct hashes")
+	}
+	if got := compiled.NetworkPolicyForStage(NetworkStageDependencies).Hash; got != dependencies.Hash {
+		t.Fatalf("expected dependencies effective policy hash to be stable: got %q want %q", got, dependencies.Hash)
+	}
+}
+
+func TestNetworkPolicyForStageRetainsLegacyPolicyHash(t *testing.T) {
+	t.Parallel()
+
+	raw := baseRawPolicy()
+	raw.Sandbox.Network.Allow = rawAllowRules{{Host: "api.github.com", Ports: []int{443}}}
+
+	compiled, err := Compile(raw)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	effective := compiled.NetworkPolicyForStage(NetworkStageExecution)
+	if effective.Hash != compiled.Hash {
+		t.Fatalf("expected legacy effective policy hash to remain unchanged: got %q want %q", effective.Hash, compiled.Hash)
+	}
+}
+
 func TestCompileRejectsMixedGlobalAndStageNetwork(t *testing.T) {
 	t.Parallel()
 

@@ -433,6 +433,11 @@ func (p *CompiledPolicy) NetworkPolicyForStage(stage NetworkStage) *CompiledPoli
 	if stagePolicy := p.NetworkStages.ForStage(normalizeNetworkStage(stage)); stagePolicy != nil {
 		effective.Allow = cloneAllowRules(stagePolicy.Allow)
 	}
+	if hash, err := hashPolicy(&effective); err == nil {
+		effective.Hash = hash
+	} else {
+		effective.Hash = ""
+	}
 	return &effective
 }
 
