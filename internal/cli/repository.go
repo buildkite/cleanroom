@@ -58,8 +58,8 @@ func (f repositoryOverrideFlags) resolve(cwd string, loader policyLoader) (*reso
 		if err != nil {
 			return nil, err
 		}
-		if compiled != nil && !compiled.Allows(remoteHost, 443) {
-			return nil, fmt.Errorf("repository remote host %q is not allowed by sandbox policy", remoteHost)
+		if compiled != nil && !compiled.AllowsForStage(policy.NetworkStageWorkspace, remoteHost, 443) {
+			return nil, fmt.Errorf("repository remote host %q is not allowed by workspace network policy", remoteHost)
 		}
 	}
 
@@ -182,8 +182,8 @@ func resolveRepositoryCheckoutFromConfig(cwd string, loader policyLoader, reposi
 		if err != nil {
 			return nil, err
 		}
-		if compiled != nil && !compiled.Allows(remoteHost, 443) {
-			return nil, fmt.Errorf("repository remote host %q is not allowed by sandbox policy", remoteHost)
+		if compiled != nil && !compiled.AllowsForStage(policy.NetworkStageWorkspace, remoteHost, 443) {
+			return nil, fmt.Errorf("repository remote host %q is not allowed by workspace network policy", remoteHost)
 		}
 	}
 

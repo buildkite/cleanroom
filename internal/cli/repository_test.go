@@ -187,6 +187,52 @@ func TestCreateCommandBootstrapsRepositoryForCurrentRepo(t *testing.T) {
 	}
 }
 
+func TestCreateCommandAllowsRepositoryHostFromWorkspaceStageNetwork(t *testing.T) {
+	repoDir := initGitRepository(t, "git@github.com:buildkite/cleanroom.git")
+
+	adapter := &integrationAdapter{}
+	host, _ := startIntegrationServer(t, adapter)
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+	}
+
+	outcome := runCreateAliasWithCapture(CreateCommand{
+		clientFlags: clientFlags{Host: host},
+		Chdir:       repoDir,
+	}, runtimeContext{
+		CWD: repoDir,
+		Loader: repositoryIntegrationLoader{
+			compiled: stageScopedWorkspaceGitHubPolicy(),
+			repository: policy.RepositoryConfig{
+				Mode:   "current-repo",
+				Remote: "origin",
+				Path:   "/workspace",
+			},
+		},
+	})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err != nil {
+		t.Fatalf("CreateCommand.Run returned error: %v", outcome.err)
+	}
+}
+
+func TestRepositoryOverrideAllowsHostFromWorkspaceStageNetwork(t *testing.T) {
+	checkout, err := (repositoryOverrideFlags{
+		RepoURL:    "https://github.com/buildkite/cleanroom.git",
+		RepoCommit: "0123456789abcdef0123456789abcdef01234567",
+	}).resolve(t.TempDir(), repositoryIntegrationLoader{
+		compiled: stageScopedWorkspaceGitHubPolicy(),
+	})
+	if err != nil {
+		t.Fatalf("repository override resolve returned error: %v", err)
+	}
+	if checkout == nil {
+		t.Fatal("expected repository override checkout")
+	}
+}
+
 func TestCreateCommandShowsDependencyBootstrapOutputDuringSandboxCreate(t *testing.T) {
 	repoDir := initGitRepository(t, "git@github.com:buildkite/cleanroom.git")
 
@@ -250,6 +296,21 @@ func TestCreateCommandShowsDependencyBootstrapOutputDuringSandboxCreate(t *testi
 	}
 	if got, want := callCount, 2; got != want {
 		t.Fatalf("expected repository and dependency bootstrap executions, got %d want %d", got, want)
+	}
+}
+
+func stageScopedWorkspaceGitHubPolicy() *policy.CompiledPolicy {
+	return &policy.CompiledPolicy{
+		Version:        1,
+		ImageRef:       "ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		ImageDigest:    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		NetworkDefault: "deny",
+		NetworkStages: &policy.NetworkStagePolicies{
+			Workspace: &policy.NetworkPolicy{
+				Allow: []policy.AllowRule{{Host: "github.com", Ports: []int{443}}},
+			},
+			Execution: &policy.NetworkPolicy{},
+		},
 	}
 }
 
