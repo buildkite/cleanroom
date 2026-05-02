@@ -370,6 +370,23 @@ func WorktreeNameStatusCommand(checkout *repositorycheckout.Checkout) []string {
 	return worktreeChangesCommand(checkout, `GIT_INDEX_FILE="$index_file" git -C "$dest" diff --cached --name-status --no-renames -z "$base_commit"`)
 }
 
+func WorktreeCopyOutCommand(checkout *repositorycheckout.Checkout) []string {
+	emit := strings.Join([]string{
+		`name_status_file="$(mktemp)"`,
+		`patch_file="$(mktemp)"`,
+		`cleanup_copy_out() { rm -f "$name_status_file" "$patch_file"; }`,
+		`trap 'cleanup; cleanup_copy_out' EXIT INT TERM`,
+		`GIT_INDEX_FILE="$index_file" git -C "$dest" diff --cached --name-status --no-renames -z "$base_commit" >"$name_status_file"`,
+		`GIT_INDEX_FILE="$index_file" git -C "$dest" diff --cached --binary --full-index --no-ext-diff --no-color --no-renames "$base_commit" >"$patch_file"`,
+		`name_status_size="$(wc -c <"$name_status_file" | tr -d '[:space:]')"`,
+		`patch_size="$(wc -c <"$patch_file" | tr -d '[:space:]')"`,
+		`printf 'cleanroom-copy-out-v1 %s %s\n' "$name_status_size" "$patch_size"`,
+		`cat "$name_status_file"`,
+		`cat "$patch_file"`,
+	}, "\n")
+	return worktreeChangesCommand(checkout, emit)
+}
+
 func applyCommand(checkout *repositorycheckout.Checkout, changeset *Changeset, resetCheckout bool) []string {
 	if checkout == nil || changeset == nil {
 		return nil
