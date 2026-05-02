@@ -20,6 +20,7 @@ import (
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/repositorychangeset"
+	"github.com/buildkite/cleanroom/internal/repositorycheckout"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 )
 
@@ -881,6 +882,7 @@ func TestWorkspaceBindingRecordsCopyInManifest(t *testing.T) {
 	files := []repositorychangeset.File{{
 		Path:   "dirty.txt",
 		SHA256: "sha256:dirty",
+		Mode:   "100644",
 	}, {
 		Path:    "removed.txt",
 		Deleted: true,
@@ -893,7 +895,7 @@ func TestWorkspaceBindingRecordsCopyInManifest(t *testing.T) {
 	}
 	binding := mustReadWorkspaceBinding(t, "cr_manifest")
 	expected := []workspaceBindingFile{
-		{Path: "dirty.txt", SHA256: "sha256:dirty"},
+		{Path: "dirty.txt", SHA256: "sha256:dirty", Mode: "100644"},
 		{Path: "removed.txt", Deleted: true},
 	}
 	if !reflect.DeepEqual(binding.CopyInManifest, expected) {
@@ -1192,6 +1194,205 @@ func TestWorkspaceCopyOutAppliesSandboxGitPatch(t *testing.T) {
 		t.Fatalf("expected one combined copy-out execution, got %d", len(commands))
 	}
 	assertWorkspaceCopyOutRecoveryPayload(t, sandboxID)
+}
+
+func TestWorkspaceCopyOutAppliesFromCopyInManifestBase(t *testing.T) {
+	fixture := setupWorkspaceCopyOutManifestBase(t, func(localRoot string) {
+		if err := os.WriteFile(filepath.Join(localRoot, "README.md"), []byte("local\nsandbox\n"), 0o644); err != nil {
+			t.Fatalf("write sandbox README: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(localRoot, "local.txt"), []byte("local only\nsandbox\n"), 0o644); err != nil {
+			t.Fatalf("write sandbox local file: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(localRoot, "generated.txt"), []byte("generated\n"), 0o644); err != nil {
+			t.Fatalf("write sandbox generated file: %v", err)
+		}
+	})
+
+	stdout, stdoutText := makeStdoutCapture(t)
+	stderr, _ := makeStdoutCapture(t)
+	cmd := WorkspaceCopyOutCommand{
+		clientFlags: clientFlags{Host: fixture.host},
+		SandboxID:   fixture.sandboxID,
+	}
+	if err := cmd.Run(&runtimeContext{
+		CWD:           t.TempDir(),
+		Loader:        repositoryNotFoundLoader{},
+		Config:        runtimeconfig.Config{},
+		Observability: newTestObservability(t),
+		Stdout:        stdout,
+		Stderr:        stderr,
+	}); err != nil {
+		t.Fatalf("WorkspaceCopyOutCommand.Run returned error: %v", err)
+	}
+
+	for path, want := range map[string]string{
+		"README.md":     "local\nsandbox\n",
+		"local.txt":     "local only\nsandbox\n",
+		"generated.txt": "generated\n",
+	} {
+		got, err := os.ReadFile(filepath.Join(fixture.localRoot, path))
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		if string(got) != want {
+			t.Fatalf("unexpected %s content: got %q want %q", path, got, want)
+		}
+	}
+
+	expected := strings.Join([]string{
+		"write\t" + filepath.Join(fixture.resolvedLocalRoot, "README.md"),
+		"write\t" + filepath.Join(fixture.resolvedLocalRoot, "generated.txt"),
+		"write\t" + filepath.Join(fixture.resolvedLocalRoot, "local.txt"),
+		"",
+	}, "\n")
+	if got := stdoutText(); got != expected {
+		t.Fatalf("unexpected copy-out output: got %q want %q", got, expected)
+	}
+	assertWorkspaceCopyOutRecoveryPayload(t, fixture.sandboxID)
+}
+
+func TestWorkspaceCopyOutDryRunUsesCopyInManifestBase(t *testing.T) {
+	fixture := setupWorkspaceCopyOutManifestBase(t, func(localRoot string) {
+		if err := os.WriteFile(filepath.Join(localRoot, "README.md"), []byte("local\nsandbox\n"), 0o644); err != nil {
+			t.Fatalf("write sandbox README: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(localRoot, "generated.txt"), []byte("generated\n"), 0o644); err != nil {
+			t.Fatalf("write sandbox generated file: %v", err)
+		}
+	})
+
+	stdout, stdoutText := makeStdoutCapture(t)
+	stderr, _ := makeStdoutCapture(t)
+	cmd := WorkspaceCopyOutCommand{
+		clientFlags: clientFlags{Host: fixture.host},
+		DryRun:      true,
+		SandboxID:   fixture.sandboxID,
+	}
+	if err := cmd.Run(&runtimeContext{
+		CWD:           t.TempDir(),
+		Loader:        repositoryNotFoundLoader{},
+		Config:        runtimeconfig.Config{},
+		Observability: newTestObservability(t),
+		Stdout:        stdout,
+		Stderr:        stderr,
+	}); err != nil {
+		t.Fatalf("WorkspaceCopyOutCommand.Run returned error: %v", err)
+	}
+
+	readme, err := os.ReadFile(filepath.Join(fixture.localRoot, "README.md"))
+	if err != nil {
+		t.Fatalf("read README: %v", err)
+	}
+	if got, want := string(readme), "local\n"; got != want {
+		t.Fatalf("dry-run should not modify README: got %q want %q", got, want)
+	}
+	if _, err := os.Stat(filepath.Join(fixture.localRoot, "generated.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("dry-run should not write generated file, got err %v", err)
+	}
+
+	expected := strings.Join([]string{
+		"write\t" + filepath.Join(fixture.resolvedLocalRoot, "README.md"),
+		"write\t" + filepath.Join(fixture.resolvedLocalRoot, "generated.txt"),
+		"",
+	}, "\n")
+	if got := stdoutText(); got != expected {
+		t.Fatalf("unexpected copy-out dry-run output: got %q want %q", got, expected)
+	}
+}
+
+func TestWorkspaceCopyOutRejectsLocalDivergenceFromCopyInManifestBase(t *testing.T) {
+	fixture := setupWorkspaceCopyOutManifestBase(t, func(localRoot string) {
+		if err := os.WriteFile(filepath.Join(localRoot, "README.md"), []byte("local\nsandbox\n"), 0o644); err != nil {
+			t.Fatalf("write sandbox README: %v", err)
+		}
+	})
+	if err := os.WriteFile(filepath.Join(fixture.localRoot, "README.md"), []byte("local divergent\n"), 0o644); err != nil {
+		t.Fatalf("write divergent local README: %v", err)
+	}
+
+	stdout, _ := makeStdoutCapture(t)
+	stderr, _ := makeStdoutCapture(t)
+	cmd := WorkspaceCopyOutCommand{
+		clientFlags: clientFlags{Host: fixture.host},
+		SandboxID:   fixture.sandboxID,
+	}
+	err := cmd.Run(&runtimeContext{
+		CWD:           t.TempDir(),
+		Loader:        repositoryNotFoundLoader{},
+		Config:        runtimeconfig.Config{},
+		Observability: newTestObservability(t),
+		Stdout:        stdout,
+		Stderr:        stderr,
+	})
+	if err == nil {
+		t.Fatal("expected local divergence from copy-in manifest to be rejected")
+	}
+	if !strings.Contains(err.Error(), `local workspace path "README.md" changed independently`) {
+		t.Fatalf("expected manifest divergence error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "sandbox changes saved to") {
+		t.Fatalf("expected recovery payload path in error, got %v", err)
+	}
+	readme, err := os.ReadFile(filepath.Join(fixture.localRoot, "README.md"))
+	if err != nil {
+		t.Fatalf("read README: %v", err)
+	}
+	if got, want := string(readme), "local divergent\n"; got != want {
+		t.Fatalf("copy-out should not overwrite divergent local file: got %q want %q", got, want)
+	}
+	assertWorkspaceCopyOutRecoveryPayload(t, fixture.sandboxID)
+}
+
+func TestWorkspaceCopyOutRejectsLocalModeDivergenceFromCopyInManifestBase(t *testing.T) {
+	fixture := setupWorkspaceCopyOutManifestBase(t, func(localRoot string) {
+		if err := os.WriteFile(filepath.Join(localRoot, "README.md"), []byte("local\nsandbox\n"), 0o644); err != nil {
+			t.Fatalf("write sandbox README: %v", err)
+		}
+	})
+	readmePath := filepath.Join(fixture.localRoot, "README.md")
+	if err := os.Chmod(readmePath, 0o755); err != nil {
+		t.Fatalf("chmod local README: %v", err)
+	}
+
+	stdout, _ := makeStdoutCapture(t)
+	stderr, _ := makeStdoutCapture(t)
+	cmd := WorkspaceCopyOutCommand{
+		clientFlags: clientFlags{Host: fixture.host},
+		SandboxID:   fixture.sandboxID,
+	}
+	err := cmd.Run(&runtimeContext{
+		CWD:           t.TempDir(),
+		Loader:        repositoryNotFoundLoader{},
+		Config:        runtimeconfig.Config{},
+		Observability: newTestObservability(t),
+		Stdout:        stdout,
+		Stderr:        stderr,
+	})
+	if err == nil {
+		t.Fatal("expected local mode divergence from copy-in manifest to be rejected")
+	}
+	if !strings.Contains(err.Error(), `local workspace path "README.md" changed independently`) {
+		t.Fatalf("expected manifest divergence error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "sandbox changes saved to") {
+		t.Fatalf("expected recovery payload path in error, got %v", err)
+	}
+	info, err := os.Stat(readmePath)
+	if err != nil {
+		t.Fatalf("stat README: %v", err)
+	}
+	if got, want := info.Mode().Perm(), os.FileMode(0o755); got != want {
+		t.Fatalf("copy-out should leave local README mode unchanged: got %o want %o", got, want)
+	}
+	readme, err := os.ReadFile(readmePath)
+	if err != nil {
+		t.Fatalf("read README: %v", err)
+	}
+	if got, want := string(readme), "local\n"; got != want {
+		t.Fatalf("copy-out should leave local README content unchanged: got %q want %q", got, want)
+	}
+	assertWorkspaceCopyOutRecoveryPayload(t, fixture.sandboxID)
 }
 
 func TestWorkspaceCopyOutRejectsLocalDivergence(t *testing.T) {
@@ -2071,6 +2272,86 @@ func workspaceCopyRepositoryLoader() repositoryIntegrationLoader {
 			Remote: "origin",
 			Path:   "/workspace",
 		},
+	}
+}
+
+type workspaceCopyOutManifestFixture struct {
+	localRoot         string
+	resolvedLocalRoot string
+	host              string
+	sandboxID         string
+}
+
+func setupWorkspaceCopyOutManifestBase(t *testing.T, sandboxMutate func(string)) workspaceCopyOutManifestFixture {
+	t.Helper()
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	localRoot := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
+	resolvedLocalRoot, err := gitOutput(localRoot, "rev-parse", "--show-toplevel")
+	if err != nil {
+		t.Fatalf("resolve local repository root: %v", err)
+	}
+	baseCommit := headCommit(t, localRoot)
+	checkout := &repositorycheckout.Checkout{
+		RemoteURL:      "https://github.com/buildkite/cleanroom.git",
+		CommitSHA:      baseCommit,
+		DestinationDir: "/sandbox-workspace",
+		Branch:         "main",
+	}
+
+	if err := os.WriteFile(filepath.Join(localRoot, "README.md"), []byte("local\n"), 0o644); err != nil {
+		t.Fatalf("write local README: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(localRoot, "local.txt"), []byte("local only\n"), 0o644); err != nil {
+		t.Fatalf("write local-only file: %v", err)
+	}
+	runGitInDir(t, localRoot, "add", "-A")
+	runGitInDir(t, localRoot, "commit", "-m", "local copy-in state")
+	copyInCommit := headCommit(t, localRoot)
+
+	changeset, err := repositorychangeset.BuildFromWorkingTree(localRoot, checkout)
+	if err != nil {
+		t.Fatalf("build copy-in manifest changeset: %v", err)
+	}
+	if changeset == nil {
+		t.Fatal("expected copy-in manifest changeset")
+	}
+	repository, err := resolveWorkspaceCopyRepositoryCheckout(localRoot, repositoryNotFoundLoader{})
+	if err != nil {
+		t.Fatalf("resolve local repository checkout: %v", err)
+	}
+
+	adapter := &integrationAdapter{}
+	host, _ := startIntegrationServer(t, adapter)
+	sandboxID := createWorkspaceCopyTestSandboxWithRepositoryCommitBranch(t, host, "/sandbox-workspace", baseCommit, "main")
+	if err := recordGitWorkspaceBinding(sandboxID, repository, checkout, changeset.Files, "copy-in"); err != nil {
+		t.Fatalf("record workspace binding: %v", err)
+	}
+
+	sandboxMutate(localRoot)
+	runGitInDir(t, localRoot, "add", "-A")
+	nameStatus := gitOutputBytes(t, localRoot, "diff", "--cached", "--name-status", "--no-renames", "-z", baseCommit)
+	patch := gitOutputBytes(t, localRoot, "diff", "--cached", "--binary", "--full-index", "--no-ext-diff", "--no-color", "--no-renames", baseCommit)
+	runGitInDir(t, localRoot, "reset", "--hard", copyInCommit)
+	runGitInDir(t, localRoot, "clean", "-fd")
+
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+		command := strings.Join(req.Command, " ")
+		switch {
+		case strings.Contains(command, "cleanroom-copy-out-v1"):
+			if stream.OnStdout != nil {
+				stream.OnStdout(workspaceCopyOutTestPayload(nameStatus, patch))
+			}
+		default:
+			t.Fatalf("unexpected workspace copy-out command: %q", command)
+		}
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+	}
+
+	return workspaceCopyOutManifestFixture{
+		localRoot:         localRoot,
+		resolvedLocalRoot: resolvedLocalRoot,
+		host:              host,
+		sandboxID:         sandboxID,
 	}
 }
 

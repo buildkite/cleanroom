@@ -38,6 +38,7 @@ func validateTopLevelWorkspaceCopyTransport(repository *resolvedRepositoryChecko
 type repositoryLocalChanges struct {
 	Changeset    *cleanroomv1.RepositoryChangeset
 	CommitBundle *cleanroomv1.RepositoryCommitBundle
+	Files        []repositorychangeset.File
 }
 
 func resolveRepositoryLocalChanges(repository *resolvedRepositoryCheckout, copyWorkspace bool) (repositoryLocalChanges, error) {
@@ -68,6 +69,7 @@ func resolveRepositoryLocalChanges(repository *resolvedRepositoryCheckout, copyW
 		out.CommitBundle = commitBundle.ToProto()
 	}
 	if changeset != nil {
+		out.Files = append([]repositorychangeset.File(nil), changeset.Files...)
 		out.Changeset = changeset.ToProto()
 	}
 	return out, nil

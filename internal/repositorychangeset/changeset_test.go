@@ -18,6 +18,9 @@ func TestBuildFromWorkingTree(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repoDir, "new.txt"), []byte("new file\n"), 0o755); err != nil {
 		t.Fatalf("write new file: %v", err)
 	}
+	if err := os.Chmod(filepath.Join(repoDir, "new.txt"), 0o755); err != nil {
+		t.Fatalf("chmod new file: %v", err)
+	}
 
 	checkout := &repositorycheckout.Checkout{
 		RemoteURL:      "https://github.com/buildkite/cleanroom.git",
@@ -55,6 +58,16 @@ func TestBuildFromWorkingTree(t *testing.T) {
 	}
 	if digest, deleted, ok := changeset.ChangedFileDigest("new.txt"); !ok || deleted || digest == "" {
 		t.Fatalf("expected new.txt digest, got digest=%q deleted=%v ok=%v", digest, deleted, ok)
+	}
+	modes := make(map[string]string, len(changeset.Files))
+	for _, file := range changeset.Files {
+		modes[file.Path] = file.Mode
+	}
+	if got, want := modes["README.md"], "100644"; got != want {
+		t.Fatalf("unexpected README.md mode: got %q want %q", got, want)
+	}
+	if got, want := modes["new.txt"], "100755"; got != want {
+		t.Fatalf("unexpected new.txt mode: got %q want %q", got, want)
 	}
 
 	again, err := BuildFromWorkingTree(repoDir, checkout)
@@ -297,6 +310,9 @@ func TestDigestPathsFromBaseUsesPatchedContents(t *testing.T) {
 	}
 	if digests[0].Deleted {
 		t.Fatal("expected README.md to be present after applying changeset")
+	}
+	if got, want := digests[0].Mode, "100644"; got != want {
+		t.Fatalf("unexpected README.md mode: got %q want %q", got, want)
 	}
 }
 

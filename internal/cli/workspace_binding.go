@@ -36,6 +36,7 @@ type workspaceBinding struct {
 type workspaceBindingFile struct {
 	Path    string `json:"path"`
 	SHA256  string `json:"sha256,omitempty"`
+	Mode    string `json:"mode,omitempty"`
 	Deleted bool   `json:"deleted,omitempty"`
 }
 
@@ -102,6 +103,10 @@ func recordGitWorkspaceBinding(sandboxID string, repository *resolvedRepositoryC
 	if operation == "" {
 		operation = "copy-in"
 	}
+	manifest, err := workspaceBindingFiles(files)
+	if err != nil {
+		return err
+	}
 	return writeWorkspaceBinding(&workspaceBinding{
 		Version:             workspaceBindingVersion,
 		SandboxID:           sandboxID,
@@ -113,7 +118,7 @@ func recordGitWorkspaceBinding(sandboxID string, repository *resolvedRepositoryC
 		Transport:           workspaceBindingTransportGit,
 		LastOperation:       operation,
 		LastOperationAt:     time.Now().UTC().Format(time.RFC3339Nano),
-		CopyInManifest:      workspaceBindingFiles(files),
+		CopyInManifest:      manifest,
 	})
 }
 
@@ -204,22 +209,40 @@ func validateWorkspaceBinding(binding *workspaceBinding, sandboxID string, check
 	return nil
 }
 
-func workspaceBindingFiles(files []repositorychangeset.File) []workspaceBindingFile {
+func workspaceBindingFiles(files []repositorychangeset.File) ([]workspaceBindingFile, error) {
 	if len(files) == 0 {
-		return nil
+		return nil, nil
 	}
 	out := make([]workspaceBindingFile, 0, len(files))
 	for _, file := range files {
+		path, err := workspaceRelativePath(file.Path)
+		if err != nil {
+			return nil, err
+		}
+		mode := strings.TrimSpace(file.Mode)
+		sha256 := strings.TrimSpace(file.SHA256)
+		if file.Deleted {
+			mode = ""
+			sha256 = ""
+		} else if sha256 == "" {
+			return nil, fmt.Errorf("workspace binding copy-in manifest path %q is missing sha256", path)
+		} else if mode == "" {
+			return nil, fmt.Errorf("workspace binding copy-in manifest path %q is missing git mode", path)
+		}
 		out = append(out, workspaceBindingFile{
-			Path:    file.Path,
-			SHA256:  file.SHA256,
+			Path:    path,
+			SHA256:  sha256,
+			Mode:    mode,
 			Deleted: file.Deleted,
 		})
 	}
-	return out
+	return out, nil
 }
 
 func repositoryLocalChangesFiles(localChanges repositoryLocalChanges) []repositorychangeset.File {
+	if len(localChanges.Files) > 0 {
+		return append([]repositorychangeset.File(nil), localChanges.Files...)
+	}
 	changeset := localChanges.Changeset
 	if changeset == nil {
 		return nil

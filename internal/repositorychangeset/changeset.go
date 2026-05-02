@@ -21,6 +21,7 @@ const FormatGitDiffV1 = "git-diff-v1"
 type File struct {
 	Path    string
 	SHA256  string
+	Mode    string
 	Deleted bool
 }
 
@@ -171,7 +172,7 @@ func (c *Changeset) DigestPathsFromBase(repoRoot string, paths []string) ([]File
 		seen[normalizedPath] = struct{}{}
 
 		file := File{Path: normalizedPath}
-		exists, err := pathExistsInIndex(repoRoot, env, normalizedPath)
+		mode, exists, err := pathModeInIndex(repoRoot, env, normalizedPath)
 		if err != nil {
 			return nil, fmt.Errorf("check repository changeset path %q in temporary git index: %w", normalizedPath, err)
 		}
@@ -180,6 +181,7 @@ func (c *Changeset) DigestPathsFromBase(repoRoot string, paths []string) ([]File
 			files = append(files, file)
 			continue
 		}
+		file.Mode = mode
 
 		blob, err := gitOutput(repoRoot, env, "show", ":"+normalizedPath)
 		if err != nil {
@@ -475,6 +477,15 @@ func changedFiles(repoRoot string, env []string, baseCommitSHA string) ([]File, 
 			continue
 		}
 
+		mode, exists, err := pathModeInIndex(repoRoot, env, normalizedPath)
+		if err != nil {
+			return nil, fmt.Errorf("inspect repository changeset file %q in temporary git index: %w", normalizedPath, err)
+		}
+		if !exists {
+			return nil, fmt.Errorf("repository changeset file %q is missing from temporary git index", normalizedPath)
+		}
+		file.Mode = mode
+
 		blob, err := gitOutput(repoRoot, env, "show", ":"+normalizedPath)
 		if err != nil {
 			return nil, fmt.Errorf("read repository changeset file %q from temporary git index: %w", normalizedPath, err)
@@ -564,12 +575,25 @@ func patchHasGitlinkChanges(patch []byte) bool {
 	return false
 }
 
-func pathExistsInIndex(repoRoot string, env []string, normalizedPath string) (bool, error) {
-	output, err := gitOutput(repoRoot, env, "ls-files", "--stage", "--", normalizedPath)
+func pathModeInIndex(repoRoot string, env []string, normalizedPath string) (string, bool, error) {
+	output, err := gitOutput(repoRoot, env, "ls-files", "--stage", "-z", "--", normalizedPath)
 	if err != nil {
-		return false, err
+		return "", false, err
 	}
-	return strings.TrimSpace(string(output)) != "", nil
+	return gitIndexMode(output)
+}
+
+func gitIndexMode(output []byte) (string, bool, error) {
+	output = bytes.TrimRight(output, "\x00")
+	if len(bytes.TrimSpace(output)) == 0 {
+		return "", false, nil
+	}
+	entry, _, _ := bytes.Cut(output, []byte{0})
+	fields := strings.Fields(string(entry))
+	if len(fields) < 3 || strings.TrimSpace(fields[0]) == "" {
+		return "", false, fmt.Errorf("parse git index entry %q", string(entry))
+	}
+	return fields[0], true, nil
 }
 
 func buildDigest(baseCommitSHA, treeDigest string, patch []byte, files []File) string {
