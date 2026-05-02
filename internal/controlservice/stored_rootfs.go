@@ -175,11 +175,9 @@ func (s *Service) createSandboxFromStoredRootFS(ctx context.Context, req *cleanr
 			FirecrackerConfig: firecrackerCfg,
 		})
 	}); err != nil {
-		s.mu.Lock()
-		if current, ok := s.sandboxes[sandboxID]; ok {
-			s.dropSandboxLocked(sandboxID, current)
+		if stateErr := s.dropProvisioningSandboxAfterCreateError(sandboxID); stateErr != nil {
+			return nil, stateErr
 		}
-		s.mu.Unlock()
 		return nil, fmt.Errorf("provision sandbox from snapshot: %w", err)
 	}
 	if err := s.ensureSandboxCreateStillProvisioning(sandboxID); err != nil {

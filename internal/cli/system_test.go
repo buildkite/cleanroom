@@ -32,11 +32,11 @@ func TestParseSystemPruneDuration(t *testing.T) {
 }
 
 func TestParseSystemPruneDurationRejectsInvalidValue(t *testing.T) {
-	if _, err := parseSystemPruneDuration("soon"); err == nil {
-		t.Fatal("expected invalid duration to fail")
-	}
-	if _, err := parseSystemPruneDuration("-1h"); err == nil {
-		t.Fatal("expected negative duration to fail")
+	tests := []string{"soon", "-1h", "NaNd", "Infd", "1e100d"}
+	for _, input := range tests {
+		if _, err := parseSystemPruneDuration(input); err == nil {
+			t.Fatalf("expected %q to fail", input)
+		}
 	}
 }
 

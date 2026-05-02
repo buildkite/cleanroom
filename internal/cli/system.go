@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"sort"
 	"strconv"
@@ -342,7 +343,11 @@ func parseSystemPruneDuration(value string) (time.Duration, error) {
 		if days < 0 {
 			return 0, errors.New("--older-than must be non-negative")
 		}
-		return time.Duration(days * float64(24*time.Hour)), nil
+		duration := days * float64(24*time.Hour)
+		if math.IsNaN(duration) || math.IsInf(duration, 0) || duration > float64(1<<63-1) {
+			return 0, fmt.Errorf("parse --older-than %q: duration is too large", value)
+		}
+		return time.Duration(duration), nil
 	}
 	return 0, fmt.Errorf("parse --older-than %q: use Go duration syntax such as 24h or day syntax such as 7d", value)
 }

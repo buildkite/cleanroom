@@ -794,11 +794,9 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 		Policy:            compiled,
 		FirecrackerConfig: firecrackerCfg,
 	}); err != nil {
-		s.mu.Lock()
-		if current, ok := s.sandboxes[sandboxID]; ok {
-			s.dropSandboxLocked(sandboxID, current)
+		if stateErr := s.dropProvisioningSandboxAfterCreateError(sandboxID); stateErr != nil {
+			return nil, stateErr
 		}
-		s.mu.Unlock()
 		return nil, fmt.Errorf("provision sandbox: %w", err)
 	}
 	if err := s.ensureSandboxCreateStillProvisioning(sandboxID); err != nil {
@@ -2279,6 +2277,17 @@ func (s *Service) ensureSandboxCreateStillProvisioning(sandboxID string) error {
 	defer s.mu.RUnlock()
 	_, err := s.sandboxCreateProvisioningStateLocked(sandboxID)
 	return err
+}
+
+func (s *Service) dropProvisioningSandboxAfterCreateError(sandboxID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, err := s.sandboxCreateProvisioningStateLocked(sandboxID)
+	if err != nil {
+		return err
+	}
+	s.dropSandboxLocked(sandboxID, current)
+	return nil
 }
 
 func (s *Service) sandboxCreateProvisioningStateLocked(sandboxID string) (*sandboxState, error) {

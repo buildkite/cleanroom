@@ -2925,6 +2925,63 @@ func TestCreateSandboxFallsBackWhenWorkspaceStageRestoreFails(t *testing.T) {
 	}
 }
 
+func TestCreateSandboxDoesNotFallbackWhenWorkspaceStageRestoreIsTerminated(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	store := newMemorySnapshotStore()
+	restoreStarted := make(chan struct{})
+	releaseRestore := make(chan struct{})
+	adapter := &stubAdapter{
+		createSnapshotFn: func(_ context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
+			return &backend.SnapshotResult{StorageRef: "/snapshots/" + req.SnapshotID + ".ext4"}, nil
+		},
+	}
+	mirrors := &stubRepositoryMirrorStore{}
+	svc := newTestServiceWithSnapshotStore(adapter, store)
+	svc.RepositoryStore = mirrors
+
+	req := &cleanroomv1.CreateSandboxRequest{
+		Policy:             testRepositoryPolicy(),
+		RepositoryCheckout: testRepositoryCheckoutProto(),
+	}
+
+	if _, err := svc.CreateSandbox(context.Background(), req); err != nil {
+		t.Fatalf("first CreateSandbox returned error: %v", err)
+	}
+	adapter.provisionFromSnapshotFn = func(context.Context, backend.ProvisionFromSnapshotRequest) error {
+		close(restoreStarted)
+		<-releaseRestore
+		return errors.New("snapshot restore interrupted")
+	}
+
+	createDone := make(chan error, 1)
+	go func() {
+		_, err := svc.CreateSandbox(context.Background(), req)
+		createDone <- err
+	}()
+
+	<-restoreStarted
+	sandboxID := requireProvisioningSandboxID(t, svc)
+	if _, err := svc.TerminateSandbox(context.Background(), &cleanroomv1.TerminateSandboxRequest{SandboxId: sandboxID}); err != nil {
+		t.Fatalf("TerminateSandbox returned error: %v", err)
+	}
+	close(releaseRestore)
+	if err := <-createDone; !errors.Is(err, errSandboxCreateAborted) {
+		t.Fatalf("CreateSandbox error = %v, want %v", err, errSandboxCreateAborted)
+	}
+	if got, want := adapter.provisionFromSnapshotCalls, 1; got != want {
+		t.Fatalf("unexpected provision-from-snapshot calls: got %d want %d", got, want)
+	}
+	if got, want := adapter.provisionCalls, 1; got != want {
+		t.Fatalf("terminated restore should not fall back to cold provision: got %d want %d", got, want)
+	}
+	if got, want := adapter.createSnapshotCalls, 1; got != want {
+		t.Fatalf("terminated restore should not republish cache: got %d want %d", got, want)
+	}
+	if got, want := adapter.terminateCalls, 1; got != want {
+		t.Fatalf("unexpected terminate calls: got %d want %d", got, want)
+	}
+}
+
 func TestDeleteWorkspaceStageCacheSnapshotRejectsInFlightRestore(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	store := newMemorySnapshotStore()
