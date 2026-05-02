@@ -169,6 +169,46 @@ func TestDNSInstallRefreshesExistingCertificateTrust(t *testing.T) {
 	}
 }
 
+func TestDNSInstallUsesXDGConfigHomeForExposureCertificate(t *testing.T) {
+	home := t.TempDir()
+	xdgConfigHome := filepath.Join(home, "xdg-config")
+	resolverPath := filepath.Join(t.TempDir(), "resolver", exposure.Domain)
+	var calls [][]string
+	stubDNSInstallEnvironment(t, home, resolverPath, &calls)
+	baseGetenv := dnsInstallGetenv
+	dnsInstallGetenv = func(key string) string {
+		if key == "XDG_CONFIG_HOME" {
+			return xdgConfigHome
+		}
+		return baseGetenv(key)
+	}
+
+	stdout, _ := makeStdoutCapture(t)
+	cmd := &DNSCommand{Action: "install"}
+	if err := cmd.Run(&runtimeContext{Stdout: stdout}); err != nil {
+		t.Fatalf("DNSCommand.Run returned error: %v", err)
+	}
+
+	certPath := filepath.Join(xdgConfigHome, "cleanroom", "tls", exposure.LocalCertificateFilename)
+	keychain := filepath.Join(home, "Library", "Keychains", "login.keychain-db")
+	wantCalls := [][]string{{
+		"sudo", "-u", "lachlan", "security", "add-trusted-cert",
+		"-r", "trustRoot",
+		"-p", "ssl",
+		"-k", keychain,
+		certPath,
+	}}
+	if !reflect.DeepEqual(calls, wantCalls) {
+		t.Fatalf("unexpected trust commands: got %v want %v", calls, wantCalls)
+	}
+	if _, err := os.Stat(certPath); err != nil {
+		t.Fatalf("expected certificate under XDG_CONFIG_HOME: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".config", "cleanroom", "tls", exposure.LocalCertificateFilename)); !os.IsNotExist(err) {
+		t.Fatalf("expected default config certificate not to be created, got err=%v", err)
+	}
+}
+
 func TestDNSStatusReportsCertificateTrust(t *testing.T) {
 	home := t.TempDir()
 	resolverPath := filepath.Join(t.TempDir(), "resolver", exposure.Domain)

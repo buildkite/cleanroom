@@ -103,11 +103,12 @@ func (c *DNSCommand) installDNS(ctx *runtimeContext) error {
 	} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("read exposure certificate %s: %w", certPath, err)
 	}
+	parentDirs := exposureTLSParentDirsToChown(tlsDir)
 	cert, err := exposure.EnsureLocalCertificate(exposure.Domain, tlsDir)
 	if err != nil {
 		return fmt.Errorf("ensure exposure certificate: %w", err)
 	}
-	if err := chownExposureTLSMaterial(tlsDir); err != nil {
+	if err := chownExposureTLSMaterial(tlsDir, parentDirs); err != nil {
 		return err
 	}
 	if err := installExposureCertificateTrust(cert.CertPath); err != nil {
@@ -308,17 +309,70 @@ func resolverFileListen(data []byte, fallback string) string {
 }
 
 func dnsExposureTLSDir() (string, error) {
-	sudoUser := strings.TrimSpace(dnsInstallGetenv("SUDO_USER"))
-	if sudoUser != "" && sudoUser != "root" {
-		u, err := dnsInstallLookupUser(sudoUser)
-		if err == nil && strings.TrimSpace(u.HomeDir) != "" {
-			return filepath.Join(u.HomeDir, ".config", "cleanroom", "tls"), nil
-		}
+	if configHome := strings.TrimSpace(dnsInstallGetenv("XDG_CONFIG_HOME")); configHome != "" {
+		return filepath.Join(configHome, "cleanroom", "tls"), nil
+	}
+	if home := dnsExposureInvokingHomeDir(); home != "" {
+		return filepath.Join(home, ".config", "cleanroom", "tls"), nil
 	}
 	return exposure.DefaultTLSDir()
 }
 
-func chownExposureTLSMaterial(dir string) error {
+func dnsExposureInvokingHomeDir() string {
+	sudoUser := strings.TrimSpace(dnsInstallGetenv("SUDO_USER"))
+	if sudoUser == "" || sudoUser == "root" {
+		return ""
+	}
+	u, err := dnsInstallLookupUser(sudoUser)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(u.HomeDir)
+}
+
+func exposureTLSParentDirsToChown(dir string) []string {
+	dir = filepath.Clean(strings.TrimSpace(dir))
+	if dir == "" || dir == "." {
+		return nil
+	}
+	userHome := dnsExposureInvokingHomeDir()
+	parents := []string{filepath.Dir(filepath.Dir(dir)), filepath.Dir(dir)}
+	dirs := make([]string, 0, len(parents))
+	seen := make(map[string]struct{}, len(parents))
+	for _, path := range parents {
+		path = filepath.Clean(path)
+		if path == "" || path == "." || path == string(filepath.Separator) || path == dir {
+			continue
+		}
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		if pathWithinDir(userHome, path) {
+			dirs = append(dirs, path)
+			continue
+		}
+		if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
+			dirs = append(dirs, path)
+		}
+	}
+	return dirs
+}
+
+func pathWithinDir(base, path string) bool {
+	base = filepath.Clean(strings.TrimSpace(base))
+	path = filepath.Clean(strings.TrimSpace(path))
+	if base == "" || base == "." || base == string(filepath.Separator) || path == "" {
+		return false
+	}
+	rel, err := filepath.Rel(base, path)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
+}
+
+func chownExposureTLSMaterial(dir string, parentDirs []string) error {
 	uidRaw := strings.TrimSpace(dnsInstallGetenv("SUDO_UID"))
 	gidRaw := strings.TrimSpace(dnsInstallGetenv("SUDO_GID"))
 	if uidRaw == "" || gidRaw == "" {
@@ -332,13 +386,13 @@ func chownExposureTLSMaterial(dir string) error {
 	if err != nil {
 		return fmt.Errorf("parse SUDO_GID: %w", err)
 	}
-	for _, path := range []string{
-		filepath.Dir(filepath.Dir(dir)),
-		filepath.Dir(dir),
+	paths := append([]string(nil), parentDirs...)
+	paths = append(paths,
 		dir,
 		filepath.Join(dir, exposure.LocalCertificateFilename),
 		filepath.Join(dir, exposure.LocalCertificateKeyFilename),
-	} {
+	)
+	for _, path := range paths {
 		if err := dnsInstallChown(path, uid, gid); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("chown %s: %w", path, err)
 		}
