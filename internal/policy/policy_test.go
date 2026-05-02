@@ -30,6 +30,13 @@ func rawBlock(name string, command []string, inputs []string, outputs rawPolicyB
 	}
 }
 
+func rawDependencyBlocks(blocks ...rawPolicyBlock) rawDependencyStage {
+	return rawDependencyStage{
+		Blocks:      rawPolicyBlocks(blocks),
+		blocksField: "sandbox.dependencies",
+	}
+}
+
 func protoBlock(name string, command []string, inputs []string, outputs *cleanroomv1.PolicyBlockOutputs) *cleanroomv1.PolicyBlock {
 	return &cleanroomv1.PolicyBlock{
 		Name:    name,
@@ -563,11 +570,11 @@ func TestCompileNormalizesDependencyBootstrapConfig(t *testing.T) {
 	t.Parallel()
 
 	raw := baseRawPolicy()
-	raw.Sandbox.Dependencies = rawPolicyBlocks{
+	raw.Sandbox.Dependencies = rawDependencyBlocks(
 		rawBlock("go-modules", []string{"go", "mod", "download"}, []string{"./go.sum", "go.mod", "go.sum"}, rawPolicyBlockOutputs{
 			Dirs: []string{"${HOME}/go/pkg/mod"},
 		}),
-	}
+	)
 
 	compiled, err := Compile(raw)
 	if err != nil {
@@ -588,6 +595,66 @@ func TestCompileNormalizesDependencyBootstrapConfig(t *testing.T) {
 	}
 	if got, want := block.Outputs.Dirs, []string{"/root/go/pkg/mod"}; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("unexpected dependency outputs: got %v want %v", got, want)
+	}
+}
+
+func TestCompilePreservesDependencyReuseFromYAML(t *testing.T) {
+	t.Parallel()
+
+	var raw rawPolicy
+	if err := yaml.Unmarshal([]byte(`
+version: 1
+sandbox:
+  image:
+    ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  dependencies:
+    reuse: portable
+    blocks:
+      - name: go-modules
+        command: go mod download
+        inputs:
+          files:
+            - go.mod
+            - go.sum
+        outputs:
+          dirs:
+            - ${HOME}/go/pkg/mod
+  network:
+    default: deny
+`), &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	compiled, err := Compile(raw)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if got, want := compiled.Dependencies.Reuse, DependencyReusePortable; got != want {
+		t.Fatalf("unexpected dependency reuse mode: got %q want %q", got, want)
+	}
+	if got, want := compiled.Dependencies.KeyFiles, []string{"go.mod", "go.sum"}; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("unexpected dependency key files: got %v want %v", got, want)
+	}
+}
+
+func TestUnmarshalRejectsOldDependenciesObjectShape(t *testing.T) {
+	t.Parallel()
+
+	var raw rawPolicy
+	err := yaml.Unmarshal([]byte(`
+version: 1
+sandbox:
+  image:
+    ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  dependencies:
+    command: go mod download
+    key:
+      files: [go.mod, go.sum]
+  network:
+    default: deny
+`), &raw)
+	if err == nil {
+		t.Fatal("expected unmarshal to reject old dependencies object shape")
 	}
 }
 
@@ -647,10 +714,10 @@ func TestCompileRejectsDuplicateDependencyBlockNames(t *testing.T) {
 	t.Parallel()
 
 	raw := baseRawPolicy()
-	raw.Sandbox.Dependencies = rawPolicyBlocks{
+	raw.Sandbox.Dependencies = rawDependencyBlocks(
 		rawBlock("go-modules", []string{"go", "mod", "download"}, []string{"go.mod"}, rawPolicyBlockOutputs{Dirs: []string{"${HOME}/go/pkg/mod"}}),
 		rawBlock("go-modules", []string{"go", "env"}, []string{"go.sum"}, rawPolicyBlockOutputs{Dirs: []string{"${HOME}/.cache/go-build"}}),
-	}
+	)
 
 	_, err := Compile(raw)
 	if err == nil {
@@ -686,9 +753,9 @@ func TestCompileRejectsInvalidOutputPaths(t *testing.T) {
 			t.Parallel()
 
 			raw := baseRawPolicy()
-			raw.Sandbox.Dependencies = rawPolicyBlocks{
+			raw.Sandbox.Dependencies = rawDependencyBlocks(
 				rawBlock("deps", []string{"true"}, []string{"go.mod"}, tc.outputs),
-			}
+			)
 
 			_, err := Compile(raw)
 			if err == nil {
@@ -741,10 +808,10 @@ func TestCompileRejectsOverlappingOutputsAcrossDependencyBlocks(t *testing.T) {
 			t.Parallel()
 
 			raw := baseRawPolicy()
-			raw.Sandbox.Dependencies = rawPolicyBlocks{
+			raw.Sandbox.Dependencies = rawDependencyBlocks(
 				rawBlock("first", []string{"true"}, []string{"go.mod"}, tc.first),
 				rawBlock("second", []string{"true"}, []string{"go.sum"}, tc.second),
-			}
+			)
 
 			_, err := Compile(raw)
 			if err == nil {
@@ -761,9 +828,9 @@ func TestCompileRejectsOverlappingOutputsAcrossDependencyAndServiceBlocks(t *tes
 	t.Parallel()
 
 	raw := baseRawPolicy()
-	raw.Sandbox.Dependencies = rawPolicyBlocks{
+	raw.Sandbox.Dependencies = rawDependencyBlocks(
 		rawBlock("go", []string{"true"}, []string{"go.mod"}, rawPolicyBlockOutputs{Dirs: []string{"${HOME}/go"}}),
-	}
+	)
 	raw.Sandbox.Services = rawPolicyBlocks{
 		rawBlock("postgres", []string{"true"}, []string{"docker-compose.yml"}, rawPolicyBlockOutputs{Files: []string{"${HOME}/go/service.state"}}),
 	}
@@ -781,8 +848,8 @@ func TestCompilePreservesLiteralBlockEnvValues(t *testing.T) {
 	t.Parallel()
 
 	raw := baseRawPolicy()
-	raw.Sandbox.Dependencies = rawPolicyBlocks{
-		{
+	raw.Sandbox.Dependencies = rawDependencyBlocks(
+		rawPolicyBlock{
 			Name:    "go",
 			Command: rawDependencyCommandSpec{"true"},
 			Inputs:  rawPolicyBlockInputs{Files: []string{"go.mod"}},
@@ -796,7 +863,7 @@ func TestCompilePreservesLiteralBlockEnvValues(t *testing.T) {
 			},
 			Outputs: rawPolicyBlockOutputs{Dirs: []string{"${HOME}/go/pkg/mod"}},
 		},
-	}
+	)
 
 	compiled, err := Compile(raw)
 	if err != nil {
@@ -914,8 +981,8 @@ func TestCompileRejectsDependencyInputsWithoutCommand(t *testing.T) {
 	t.Parallel()
 
 	raw := baseRawPolicy()
-	raw.Sandbox.Dependencies = rawPolicyBlocks{
-		{
+	raw.Sandbox.Dependencies = rawDependencyBlocks(
+		rawPolicyBlock{
 			Name: "go-modules",
 			Inputs: rawPolicyBlockInputs{
 				Files: []string{"go.sum"},
@@ -924,7 +991,7 @@ func TestCompileRejectsDependencyInputsWithoutCommand(t *testing.T) {
 				Dirs: []string{"${HOME}/go/pkg/mod"},
 			},
 		},
-	}
+	)
 
 	_, err := Compile(raw)
 	if err == nil {
@@ -939,9 +1006,9 @@ func TestCompileRejectsDependencyBlockWithoutOutputs(t *testing.T) {
 	t.Parallel()
 
 	raw := baseRawPolicy()
-	raw.Sandbox.Dependencies = rawPolicyBlocks{
+	raw.Sandbox.Dependencies = rawDependencyBlocks(
 		rawBlock("go-modules", []string{"go", "mod", "download"}, []string{"go.sum"}, rawPolicyBlockOutputs{}),
-	}
+	)
 
 	_, err := Compile(raw)
 	if err == nil {
@@ -1420,11 +1487,11 @@ func TestCompiledPolicyProtoRoundTripPreservesDependenciesAndServices(t *testing
 
 	raw := baseRawPolicy()
 	raw.Sandbox.Docker.Required = true
-	raw.Sandbox.Dependencies = rawPolicyBlocks{
+	raw.Sandbox.Dependencies = rawDependencyBlocks(
 		rawBlock("go-modules", []string{"go", "mod", "download"}, []string{"go.mod", "go.sum"}, rawPolicyBlockOutputs{
 			Dirs: []string{"${HOME}/go/pkg/mod"},
 		}),
-	}
+	)
 	raw.Sandbox.Services = rawPolicyBlocks{
 		rawBlock("postgres", []string{"docker", "compose", "up", "-d", "postgres"}, []string{"docker-compose.yml"}, rawPolicyBlockOutputs{
 			Dirs: []string{"/var/lib/cleanroom/services/postgres"},

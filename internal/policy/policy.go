@@ -38,12 +38,12 @@ type rawPolicy struct {
 		Image struct {
 			Ref string `yaml:"ref"`
 		} `yaml:"image"`
-		Docker       rawDockerConfig   `yaml:"docker"`
-		Dependencies rawPolicyBlocks   `yaml:"dependencies"`
-		Run          rawRunConfig      `yaml:"run"`
-		Services     rawPolicyBlocks   `yaml:"services"`
-		Resources    rawResources      `yaml:"resources"`
-		Network      rawSandboxNetwork `yaml:"network"`
+		Docker       rawDockerConfig    `yaml:"docker"`
+		Dependencies rawDependencyStage `yaml:"dependencies"`
+		Run          rawRunConfig       `yaml:"run"`
+		Services     rawPolicyBlocks    `yaml:"services"`
+		Resources    rawResources       `yaml:"resources"`
+		Network      rawSandboxNetwork  `yaml:"network"`
 	} `yaml:"sandbox"`
 }
 
@@ -69,6 +69,12 @@ type rawDockerConfig struct {
 }
 
 type rawPolicyBlocks []rawPolicyBlock
+
+type rawDependencyStage struct {
+	Reuse       string
+	Blocks      rawPolicyBlocks
+	blocksField string
+}
 
 type rawPolicyBlock struct {
 	Name    string                   `yaml:"name"`
@@ -608,6 +614,47 @@ func (c *rawDependencyCommandSpec) UnmarshalYAML(node *yaml.Node) error {
 	}
 }
 
+func (stage *rawDependencyStage) UnmarshalYAML(node *yaml.Node) error {
+	if node == nil {
+		return nil
+	}
+	node = dereferenceYAMLAlias(node)
+	if node.Kind == yaml.ScalarNode && node.ShortTag() == "!!null" {
+		return nil
+	}
+	switch node.Kind {
+	case yaml.SequenceNode:
+		var blocks rawPolicyBlocks
+		if err := node.Decode(&blocks); err != nil {
+			return err
+		}
+		stage.Blocks = blocks
+		stage.blocksField = "sandbox.dependencies"
+		return nil
+	case yaml.MappingNode:
+		stage.blocksField = "sandbox.dependencies.blocks"
+		for i := 0; i < len(node.Content); i += 2 {
+			key := node.Content[i]
+			value := node.Content[i+1]
+			switch key.Value {
+			case "reuse":
+				if err := value.Decode(&stage.Reuse); err != nil {
+					return err
+				}
+			case "blocks":
+				if err := value.Decode(&stage.Blocks); err != nil {
+					return err
+				}
+			default:
+				return fmt.Errorf("sandbox.dependencies.%s is not supported; use sandbox.dependencies.blocks", key.Value)
+			}
+		}
+		return nil
+	default:
+		return fmt.Errorf("sandbox.dependencies must be a list of blocks or an object with reuse and blocks")
+	}
+}
+
 func (rules *rawAllowRules) UnmarshalYAML(node *yaml.Node) error {
 	if node == nil {
 		*rules = nil
@@ -1055,16 +1102,26 @@ func normalizeDocker(raw rawDockerConfig) DockerService {
 	return DockerService{Required: raw.Required}
 }
 
-func normalizeDependencies(raw rawPolicyBlocks) (Dependencies, error) {
-	blocks, err := normalizeStageBlocks(raw, "sandbox.dependencies")
+func normalizeDependencies(raw rawDependencyStage) (Dependencies, error) {
+	blocksField := raw.blocksField
+	if blocksField == "" {
+		blocksField = "sandbox.dependencies"
+	}
+	blocks, err := normalizeStageBlocks(raw.Blocks, blocksField)
 	if err != nil {
 		return Dependencies{}, err
 	}
 	command := combinedStageBlockCommand(blocks)
+	keyFiles := combinedStageBlockInputFiles(blocks)
+	reuse, err := normalizeDependencyReuse(raw.Reuse, keyFiles, "sandbox.dependencies.reuse")
+	if err != nil {
+		return Dependencies{}, err
+	}
 	return Dependencies{
 		Blocks:   blocks,
 		Command:  command,
-		KeyFiles: combinedStageBlockInputFiles(blocks),
+		KeyFiles: keyFiles,
+		Reuse:    reuse,
 	}, nil
 }
 

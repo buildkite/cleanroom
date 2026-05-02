@@ -173,7 +173,8 @@ explicit request-time changeset input.
 - `sandbox.resources.memory` and `sandbox.resources.disk` must be positive byte sizes. They accept raw bytes or size strings such as `4096MiB`, `8GiB`, or `16GiB`.
 - Resource requirements raise the effective backend runtime settings when the host runtime config is lower; they do not lower larger host defaults.
 - `sandbox.docker.required` defaults to `false`; when true, Cleanroom starts the guest Docker daemon for the sandbox.
-- `sandbox.dependencies` defaults to an empty block list; each block has `name`, `command`, `inputs.files`, and `outputs.dirs` or `outputs.files`.
+- `sandbox.dependencies` defaults to an empty block list; each block has `name`, `command`, `inputs.files`, and `outputs.dirs` or `outputs.files`. It may be a block list directly, or an object with `reuse` and `blocks` when dependency-stage options are needed.
+- `sandbox.dependencies.reuse` may be `portable` when `sandbox.dependencies.blocks` declares at least one input file; omitted or `exact` means exact checkout reuse only.
 - Dependency block commands run in the repository workdir during sandbox creation and make declared outputs eligible for dependency-stage caching.
 - Dependency block commands accept either a YAML string or a YAML sequence; strings execute as `sh -lc <value>`, and strings are the preferred form.
 - `sandbox.services` defaults to an empty block list; each block has `name`, `command`, `inputs.files`, and `outputs.dirs` or `outputs.files`.
