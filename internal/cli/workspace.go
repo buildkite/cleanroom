@@ -410,6 +410,10 @@ func ensureGitWorkspaceCopyOutSafeWithBinding(localRoot, baseCommit string, bind
 	if err != nil {
 		return err
 	}
+	staged, err := gitWorkspaceStagedPaths(localRoot, paths)
+	if err != nil {
+		return err
+	}
 	for _, path := range paths {
 		expected, ok := manifest[path]
 		if !ok {
@@ -420,6 +424,15 @@ func ensureGitWorkspaceCopyOutSafeWithBinding(localRoot, baseCommit string, bind
 		}
 		if err := ensureGitWorkspaceFileMatchesExpected(localRoot, path, current[path], expected); err != nil {
 			return err
+		}
+		if staged[path] {
+			index, err := gitWorkspaceIndexFile(localRoot, nil, path)
+			if err != nil {
+				return err
+			}
+			if err := ensureGitWorkspaceFileMatchesExpected(localRoot, path, index, expected); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -669,6 +682,26 @@ func gitWorkspaceCurrentFiles(localRoot string, paths []string) (map[string]work
 		files[path] = file
 	}
 	return files, nil
+}
+
+func gitWorkspaceStagedPaths(localRoot string, paths []string) (map[string]bool, error) {
+	staged := make(map[string]bool)
+	if len(paths) == 0 {
+		return staged, nil
+	}
+	args := append([]string{"diff", "--cached", "--name-only", "--no-renames", "-z", "--"}, paths...)
+	output, err := gitOutputRaw(localRoot, nil, args...)
+	if err != nil {
+		return nil, fmt.Errorf("inspect staged local workspace paths: %w", err)
+	}
+	for _, rawPath := range splitNullTerminatedWorkspaceFields(output) {
+		path, err := workspaceRelativePath(rawPath)
+		if err != nil {
+			return nil, err
+		}
+		staged[path] = true
+	}
+	return staged, nil
 }
 
 func gitWorkspaceCommitFile(localRoot, commit, rel string) (workspaceBindingFile, error) {

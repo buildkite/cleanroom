@@ -1395,6 +1395,58 @@ func TestWorkspaceCopyOutRejectsLocalModeDivergenceFromCopyInManifestBase(t *tes
 	assertWorkspaceCopyOutRecoveryPayload(t, fixture.sandboxID)
 }
 
+func TestWorkspaceCopyOutRejectsStagedDivergenceFromCopyInManifestBase(t *testing.T) {
+	fixture := setupWorkspaceCopyOutManifestBase(t, func(localRoot string) {
+		if err := os.WriteFile(filepath.Join(localRoot, "README.md"), []byte("local\nsandbox\n"), 0o644); err != nil {
+			t.Fatalf("write sandbox README: %v", err)
+		}
+	})
+	readmePath := filepath.Join(fixture.localRoot, "README.md")
+	if err := os.WriteFile(readmePath, []byte("staged divergent\n"), 0o644); err != nil {
+		t.Fatalf("write staged divergent README: %v", err)
+	}
+	runGitInDir(t, fixture.localRoot, "add", "README.md")
+	if err := os.WriteFile(readmePath, []byte("local\n"), 0o644); err != nil {
+		t.Fatalf("restore working tree README: %v", err)
+	}
+
+	stdout, _ := makeStdoutCapture(t)
+	stderr, _ := makeStdoutCapture(t)
+	cmd := WorkspaceCopyOutCommand{
+		clientFlags: clientFlags{Host: fixture.host},
+		SandboxID:   fixture.sandboxID,
+	}
+	err := cmd.Run(&runtimeContext{
+		CWD:           t.TempDir(),
+		Loader:        repositoryNotFoundLoader{},
+		Config:        runtimeconfig.Config{},
+		Observability: newTestObservability(t),
+		Stdout:        stdout,
+		Stderr:        stderr,
+	})
+	if err == nil {
+		t.Fatal("expected staged divergence from copy-in manifest to be rejected")
+	}
+	if !strings.Contains(err.Error(), `local workspace path "README.md" changed independently`) {
+		t.Fatalf("expected staged divergence error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "sandbox changes saved to") {
+		t.Fatalf("expected recovery payload path in error, got %v", err)
+	}
+	readme, err := os.ReadFile(readmePath)
+	if err != nil {
+		t.Fatalf("read README: %v", err)
+	}
+	if got, want := string(readme), "local\n"; got != want {
+		t.Fatalf("copy-out should leave local README content unchanged: got %q want %q", got, want)
+	}
+	staged := gitOutputBytes(t, fixture.localRoot, "show", ":README.md")
+	if got, want := string(staged), "staged divergent\n"; got != want {
+		t.Fatalf("copy-out should leave staged README content unchanged: got %q want %q", got, want)
+	}
+	assertWorkspaceCopyOutRecoveryPayload(t, fixture.sandboxID)
+}
+
 func TestWorkspaceCopyOutRejectsLocalDivergence(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	localRoot := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
