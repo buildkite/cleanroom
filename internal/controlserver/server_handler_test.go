@@ -321,6 +321,175 @@ func TestExecutionEventStreamReturnsHistoryThenFollowUpdates(t *testing.T) {
 	}
 }
 
+func TestCreateExecutionRejectsSpoofedInternalWorkspaceCopyInHeader(t *testing.T) {
+	service := newHandlerTestService(newHandlerTestAdapter())
+	httpServer := httptest.NewServer(New(service, nil).Handler())
+	defer httpServer.Close()
+
+	executionClient := cleanroomv1connect.NewExecutionServiceClient(http.DefaultClient, httpServer.URL)
+	req := connect.NewRequest(&cleanroomv1.CreateExecutionRequest{
+		SandboxId: "sbx_spoofed",
+		Command:   []string{"sh", "-lc", "true"},
+		Options: &cleanroomv1.ExecutionOptions{
+			SkipRunBefore: true,
+		},
+	})
+	req.Header().Set(internalWorkspaceCopyInHeader, "1")
+
+	_, err := executionClient.CreateExecution(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected CreateExecution to reject spoofed internal workspace copy-in header")
+	}
+	if code := connect.CodeOf(err); code != connect.CodeUnauthenticated {
+		t.Fatalf("unexpected error code: got %v want %v (err=%v)", code, connect.CodeUnauthenticated, err)
+	}
+}
+
+func TestCreateExecutionRejectsInternalWorkspaceCopyInHeaderWhenLoopbackTrustUnmarked(t *testing.T) {
+	service := newHandlerTestService(newHandlerTestAdapter())
+	server := New(service, nil).TrustInternalWorkspaceCopyInRequestsFromLoopback()
+
+	req := connect.NewRequest(&cleanroomv1.CreateExecutionRequest{
+		SandboxId: "sbx_unmarked",
+		Command:   []string{"sh", "-lc", "true"},
+		Options: &cleanroomv1.ExecutionOptions{
+			SkipRunBefore: true,
+		},
+	})
+	req.Header().Set(internalWorkspaceCopyInHeader, "1")
+
+	_, err := server.CreateExecution(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected CreateExecution to reject unmarked internal workspace copy-in request")
+	}
+	if code := connect.CodeOf(err); code != connect.CodeUnauthenticated {
+		t.Fatalf("unexpected error code: got %v want %v (err=%v)", code, connect.CodeUnauthenticated, err)
+	}
+}
+
+func TestCreateExecutionAllowsInternalWorkspaceCopyInHeaderFromLoopbackTrustedEndpoint(t *testing.T) {
+	service := newHandlerTestService(newHandlerTestAdapter())
+	httpServer := httptest.NewServer(New(service, nil).TrustInternalWorkspaceCopyInRequestsFromLoopback().Handler())
+	defer httpServer.Close()
+
+	executionClient := cleanroomv1connect.NewExecutionServiceClient(http.DefaultClient, httpServer.URL)
+	req := connect.NewRequest(&cleanroomv1.CreateExecutionRequest{
+		SandboxId: "sbx_loopback_trusted",
+		Command:   []string{"sh", "-lc", "true"},
+		Options: &cleanroomv1.ExecutionOptions{
+			SkipRunBefore: true,
+		},
+	})
+	req.Header().Set(internalWorkspaceCopyInHeader, "1")
+
+	_, err := executionClient.CreateExecution(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected CreateExecution to return unknown sandbox")
+	}
+	if code := connect.CodeOf(err); code != connect.CodeNotFound {
+		t.Fatalf("unexpected error code: got %v want %v (err=%v)", code, connect.CodeNotFound, err)
+	}
+}
+
+func TestCreateExecutionAllowsInternalWorkspaceCopyInHeaderWhenTrusted(t *testing.T) {
+	service := newHandlerTestService(newHandlerTestAdapter())
+	httpServer := httptest.NewServer(New(service, nil).TrustInternalWorkspaceCopyInRequests().Handler())
+	defer httpServer.Close()
+
+	executionClient := cleanroomv1connect.NewExecutionServiceClient(http.DefaultClient, httpServer.URL)
+	req := connect.NewRequest(&cleanroomv1.CreateExecutionRequest{
+		SandboxId: "sbx_trusted",
+		Command:   []string{"sh", "-lc", "true"},
+		Options: &cleanroomv1.ExecutionOptions{
+			SkipRunBefore: true,
+		},
+	})
+	req.Header().Set(internalWorkspaceCopyInHeader, "1")
+
+	_, err := executionClient.CreateExecution(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected CreateExecution to return unknown sandbox")
+	}
+	if code := connect.CodeOf(err); code != connect.CodeNotFound {
+		t.Fatalf("unexpected error code: got %v want %v (err=%v)", code, connect.CodeNotFound, err)
+	}
+}
+
+func TestMarkLoopbackInternalWorkspaceCopyInRequestsStripsSpoofedMarkerFromRemote(t *testing.T) {
+	var gotTrusted string
+	handler := markLoopbackInternalWorkspaceCopyInRequests(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		gotTrusted = r.Header.Get(internalWorkspaceCopyInTrustedHeader)
+	}))
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.RemoteAddr = "203.0.113.10:12345"
+	req.Header.Set(internalWorkspaceCopyInHeader, "1")
+	req.Header.Set(internalWorkspaceCopyInTrustedHeader, "1")
+
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	if gotTrusted != "" {
+		t.Fatalf("expected spoofed trust marker to be stripped for remote caller, got %q", gotTrusted)
+	}
+}
+
+func TestMarkLoopbackInternalWorkspaceCopyInRequestsMarksLoopback(t *testing.T) {
+	var gotTrusted string
+	handler := markLoopbackInternalWorkspaceCopyInRequests(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		gotTrusted = r.Header.Get(internalWorkspaceCopyInTrustedHeader)
+	}))
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.RemoteAddr = "127.0.0.1:12345"
+	req.Header.Set(internalWorkspaceCopyInHeader, "1")
+
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	if gotTrusted != "1" {
+		t.Fatalf("expected loopback copy-in request to be marked trusted, got %q", gotTrusted)
+	}
+}
+
+func TestIsLoopbackRemoteAddr(t *testing.T) {
+	tests := []struct {
+		name       string
+		remoteAddr string
+		want       bool
+	}{
+		{
+			name:       "ipv4 loopback",
+			remoteAddr: "127.0.0.1:12345",
+			want:       true,
+		},
+		{
+			name:       "ipv6 loopback",
+			remoteAddr: "[::1]:12345",
+			want:       true,
+		},
+		{
+			name:       "remote ipv4",
+			remoteAddr: "203.0.113.10:12345",
+			want:       false,
+		},
+		{
+			name:       "private network is still remote",
+			remoteAddr: "10.0.0.2:12345",
+			want:       false,
+		},
+		{
+			name:       "invalid",
+			remoteAddr: "not-an-address",
+			want:       false,
+		},
+	}
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isLoopbackRemoteAddr(tc.remoteAddr); got != tc.want {
+				t.Fatalf("isLoopbackRemoteAddr(%q) = %v, want %v", tc.remoteAddr, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestToConnectErrorMapsExpectedCodes(t *testing.T) {
 	t.Parallel()
 

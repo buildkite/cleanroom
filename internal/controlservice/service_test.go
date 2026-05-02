@@ -1,6 +1,7 @@
 package controlservice
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -23,6 +25,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/observability"
 	"github.com/buildkite/cleanroom/internal/paths"
 	"github.com/buildkite/cleanroom/internal/policy"
+	"github.com/buildkite/cleanroom/internal/repositorybundle"
 	"github.com/buildkite/cleanroom/internal/repositorychangeset"
 	"github.com/buildkite/cleanroom/internal/repositorycheckout"
 	"github.com/buildkite/cleanroom/internal/repositorystore"
@@ -226,16 +229,18 @@ type stubLoader struct {
 }
 
 type stubRepositoryMirrorStore struct {
-	remoteURL         string
-	commitSHA         string
-	calls             int
-	err               error
-	ensureContainsFn  func(remoteURL, commitSHA string) error
-	mirrorPath        string
-	mirrorPathCalls   int
-	mirrorPathErr     error
-	ensureMirrorCalls int
-	ensureMirrorErr   error
+	remoteURL          string
+	commitSHA          string
+	commitSHAs         []string
+	withRepositorySHAs []string
+	calls              int
+	err                error
+	ensureContainsFn   func(remoteURL, commitSHA string) error
+	mirrorPath         string
+	mirrorPathCalls    int
+	mirrorPathErr      error
+	ensureMirrorCalls  int
+	ensureMirrorErr    error
 }
 
 type stubClock struct {
@@ -245,6 +250,7 @@ type stubClock struct {
 func (s *stubRepositoryMirrorStore) EnsureCommit(_ context.Context, remoteURL, commitSHA string, _ repositorystore.FetchHints) error {
 	s.remoteURL = remoteURL
 	s.commitSHA = commitSHA
+	s.commitSHAs = append(s.commitSHAs, commitSHA)
 	s.calls++
 	if s.ensureContainsFn != nil {
 		return s.ensureContainsFn(remoteURL, commitSHA)
@@ -299,6 +305,7 @@ func (s *stubRepositoryMirrorStore) WithRepository(ctx context.Context, remoteUR
 	if fn == nil {
 		return errors.New("repository callback is nil")
 	}
+	s.withRepositorySHAs = append(s.withRepositorySHAs, commitSHA)
 	repoDir, err := s.MirrorPath(remoteURL)
 	if err != nil {
 		repoDir, err = s.EnsureMirror(ctx, remoteURL)
@@ -2974,7 +2981,7 @@ func TestCreateSandboxPublishesDependencyStageCacheForConfiguredDependencies(t *
 	if !ok {
 		t.Fatal("expected configured dependency stage plan to be enabled")
 	}
-	plan, ok, err = svc.finalizeDependencyStagePlan(context.Background(), compiled, repository, nil, "firecracker", workspaceKey, "runtime-base:test", plan)
+	plan, ok, err = svc.finalizeDependencyStagePlan(context.Background(), compiled, repository, nil, nil, "firecracker", workspaceKey, "runtime-base:test", plan)
 	if err != nil {
 		t.Fatalf("finalizeDependencyStagePlan returned error: %v", err)
 	}
@@ -3188,7 +3195,7 @@ func TestCreateSandboxPublishesServicesStageCacheForConfiguredServices(t *testin
 	if !ok {
 		t.Fatal("expected configured dependency stage plan to be enabled")
 	}
-	dependencyPlan, ok, err = svc.finalizeDependencyStagePlan(context.Background(), compiled, repository, nil, "firecracker", workspaceKey, "runtime-base:test", dependencyPlan)
+	dependencyPlan, ok, err = svc.finalizeDependencyStagePlan(context.Background(), compiled, repository, nil, nil, "firecracker", workspaceKey, "runtime-base:test", dependencyPlan)
 	if err != nil {
 		t.Fatalf("finalizeDependencyStagePlan returned error: %v", err)
 	}
@@ -3199,7 +3206,7 @@ func TestCreateSandboxPublishesServicesStageCacheForConfiguredServices(t *testin
 	if !ok {
 		t.Fatal("expected configured services stage plan to be enabled")
 	}
-	servicesPlan, ok, err = svc.finalizeServicesStagePlan(context.Background(), compiled, repository, nil, dependencyPlan.CacheKey, servicesPlan)
+	servicesPlan, ok, err = svc.finalizeServicesStagePlan(context.Background(), compiled, repository, nil, nil, dependencyPlan.CacheKey, servicesPlan)
 	if err != nil {
 		t.Fatalf("finalizeServicesStagePlan returned error: %v", err)
 	}
@@ -3424,7 +3431,7 @@ func TestCreateSandboxReusesPortableDependencyStageAfterCheckoutRefresh(t *testi
 	svc := newTestServiceWithSnapshotStore(adapter, store)
 	svc.RepositoryStore = mirrors
 	var err error
-	validationDigest, err = svc.dependencyStageKeyFilesDigest(context.Background(), repositorycheckout.FromProto(&updatedCheckout), nil, []string{"go.mod", "go.sum"})
+	validationDigest, err = svc.dependencyStageKeyFilesDigest(context.Background(), repositorycheckout.FromProto(&updatedCheckout), nil, nil, []string{"go.mod", "go.sum"})
 	if err != nil {
 		t.Fatalf("dependencyStageKeyFilesDigest returned error: %v", err)
 	}
@@ -3520,6 +3527,177 @@ func TestCreateSandboxReusesPortableDependencyStageAfterCheckoutRefresh(t *testi
 	}
 }
 
+func TestCreateSandboxStoresCommitBundleAfterPortableDependencyStageRestore(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	store := newMemorySnapshotStore()
+	adapter := &stubAdapter{}
+	var runCommands [][]string
+	validationDigest := ""
+	adapter.createSnapshotFn = func(_ context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
+		return &backend.SnapshotResult{StorageRef: "/snapshots/" + req.SnapshotID + ".ext4"}, nil
+	}
+
+	var (
+		mu              sync.Mutex
+		bundlePayload   []byte
+		bundleStdinUses int
+	)
+	runCalled := make(chan struct{}, 16)
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+		if stream.OnAttach != nil {
+			var stdin bytes.Buffer
+			stream.OnAttach(backend.AttachIO{
+				WriteStdin: func(data []byte) error {
+					_, err := stdin.Write(data)
+					return err
+				},
+				CloseStdin: func() error {
+					mu.Lock()
+					if bytes.Equal(stdin.Bytes(), bundlePayload) {
+						bundleStdinUses++
+					}
+					mu.Unlock()
+					return nil
+				},
+			})
+		}
+		mu.Lock()
+		runCommands = append(runCommands, append([]string(nil), req.Command...))
+		mu.Unlock()
+		if strings.Contains(strings.Join(req.Command, "\n"), "sha256sum") && stream.OnStdout != nil {
+			stream.OnStdout([]byte(validationDigest + "\n"))
+		}
+		select {
+		case runCalled <- struct{}{}:
+		default:
+		}
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+	}
+
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"go.mod": "module example.com/test\n\ngo 1.26.2\n",
+		"go.sum": "example.com/test v0.0.0 h1:abc123\n",
+		"app.go": "package main\n\nfunc main() {}\n",
+	})
+	baseCommit := repositoryCheckout.GetCommitSha()
+
+	localRepo := filepath.Join(t.TempDir(), "local")
+	runTestGit(t, t.TempDir(), "clone", mirrors.mirrorPath, localRepo)
+	runTestGit(t, localRepo, "config", "user.email", "test@example.com")
+	runTestGit(t, localRepo, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(localRepo, "app.go"), []byte("package main\n\nfunc main() { println(\"local\") }\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(app.go) returned error: %v", err)
+	}
+	runTestGit(t, localRepo, "add", ".")
+	runTestGit(t, localRepo, "commit", "-m", "local source-only change")
+	localCommit := strings.TrimSpace(runTestGit(t, localRepo, "rev-parse", "HEAD"))
+	updatedCheckout := *repositoryCheckout
+	updatedCheckout.CommitSha = localCommit
+	updatedRepository := repositorycheckout.FromProto(&updatedCheckout)
+
+	commitBundle, err := repositorybundle.BuildFromRepository(localRepo, "origin", updatedRepository)
+	if err != nil {
+		t.Fatalf("BuildFromRepository returned error: %v", err)
+	}
+	if commitBundle == nil {
+		t.Fatal("expected repository commit bundle")
+	}
+	bundlePayload = append([]byte(nil), commitBundle.Payload...)
+	if err := os.WriteFile(filepath.Join(localRepo, "app.go"), []byte("package main\n\nfunc main() { println(\"dirty\") }\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(app.go dirty) returned error: %v", err)
+	}
+	changeset, err := repositorychangeset.BuildFromWorkingTree(localRepo, updatedRepository)
+	if err != nil {
+		t.Fatalf("BuildFromWorkingTree returned error: %v", err)
+	}
+	if changeset == nil {
+		t.Fatal("expected repository changeset")
+	}
+
+	mirrors.ensureContainsFn = func(_ string, commitSHA string) error {
+		switch strings.TrimSpace(commitSHA) {
+		case baseCommit:
+			return nil
+		case localCommit:
+			return errors.New("local-only commit should be provided by stored bundle")
+		default:
+			return fmt.Errorf("unexpected mirror commit %q", commitSHA)
+		}
+	}
+
+	svc := newTestServiceWithSnapshotStore(adapter, store)
+	svc.RepositoryStore = mirrors
+	validationDigest, err = svc.dependencyStageKeyFilesDigest(context.Background(), updatedRepository, changeset, commitBundle, []string{"go.mod", "go.sum"})
+	if err != nil {
+		t.Fatalf("dependencyStageKeyFilesDigest returned error: %v", err)
+	}
+
+	if _, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy:             testRepositoryPortableDependencyPolicy(),
+		RepositoryCheckout: repositoryCheckout,
+	}); err != nil {
+		t.Fatalf("first CreateSandbox returned error: %v", err)
+	}
+	secondResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy:                 testRepositoryPortableDependencyPolicy(),
+		RepositoryCheckout:     &updatedCheckout,
+		RepositoryChangeset:    changeset.ToProto(),
+		RepositoryCommitBundle: commitBundle.ToProto(),
+	})
+	if err != nil {
+		t.Fatalf("second CreateSandbox returned error: %v", err)
+	}
+	if got, want := secondResp.GetSourceKind(), "portable dependency stage cache"; got != want {
+		t.Fatalf("unexpected response source kind: got %q want %q", got, want)
+	}
+
+	sandboxID := secondResp.GetSandbox().GetSandboxId()
+	svc.mu.Lock()
+	restoredState := svc.sandboxes[sandboxID]
+	hasBundle := restoredState != nil && restoredState.RepositoryCommitBundle != nil
+	svc.mu.Unlock()
+	if !hasBundle {
+		t.Fatal("expected portable-cache restored sandbox to retain repository commit bundle")
+	}
+
+	for i := 0; i < 2; i++ {
+		execResp, err := svc.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+			SandboxId:          sandboxID,
+			Command:            []string{"sh", "-lc", "pwd"},
+			RepositoryCheckout: &updatedCheckout,
+		})
+		if err != nil {
+			t.Fatalf("CreateExecution #%d returned error: %v", i+1, err)
+		}
+		execution, err := svc.WaitExecution(context.Background(), sandboxID, execResp.GetExecution().GetExecutionId())
+		if err != nil {
+			t.Fatalf("WaitExecution #%d returned error: %v", i+1, err)
+		}
+		if got, want := execution.GetStatus(), cleanroomv1.ExecutionStatus_EXECUTION_STATUS_SUCCEEDED; got != want {
+			t.Fatalf("unexpected execution #%d status: got %v want %v", i+1, got, want)
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if got, want := bundleStdinUses, 2; got != want {
+		t.Fatalf("expected portable restore refresh and consumed-changeset refresh to receive commit bundle stdin, got %d", got)
+	}
+	foundBundledRefresh := false
+	for _, command := range runCommands {
+		joined := strings.Join(command, "\n")
+		if strings.Contains(joined, `git -C "$dest" fetch --progress "$bundle_file" "+HEAD:$bundle_ref"`) {
+			foundBundledRefresh = true
+		}
+		if strings.Contains(joined, `git -C "$dest" fetch --filter=blob:none --progress origin "$commit"`) && strings.Contains(joined, localCommit) {
+			t.Fatalf("expected local-only commit refreshes to use bundle, got %q", joined)
+		}
+	}
+	if !foundBundledRefresh {
+		t.Fatalf("expected at least one bundled refresh command, got %#v", runCommands)
+	}
+}
+
 func TestCreateSandboxBootstrapsServicesAfterPortableDependencyStageRestore(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	store := newMemorySnapshotStore()
@@ -3556,7 +3734,7 @@ func TestCreateSandboxBootstrapsServicesAfterPortableDependencyStageRestore(t *t
 	svc := newTestServiceWithSnapshotStore(adapter, store)
 	svc.RepositoryStore = mirrors
 	var err error
-	validationDigest, err = svc.dependencyStageKeyFilesDigest(context.Background(), repositorycheckout.FromProto(&updatedCheckout), nil, []string{"go.mod", "go.sum"})
+	validationDigest, err = svc.dependencyStageKeyFilesDigest(context.Background(), repositorycheckout.FromProto(&updatedCheckout), nil, nil, []string{"go.mod", "go.sum"})
 	if err != nil {
 		t.Fatalf("dependencyStageKeyFilesDigest returned error: %v", err)
 	}
@@ -3628,11 +3806,11 @@ func TestDependencyStageKeyFilesDigestDerivesHashesFromRepositoryChangesetPatch(
 	svc := newTestService(&stubAdapter{})
 	svc.RepositoryStore = mirrors
 
-	baseDigest, err := svc.dependencyStageKeyFilesDigest(context.Background(), repository, nil, []string{"go.mod", "go.sum"})
+	baseDigest, err := svc.dependencyStageKeyFilesDigest(context.Background(), repository, nil, nil, []string{"go.mod", "go.sum"})
 	if err != nil {
 		t.Fatalf("dependencyStageKeyFilesDigest without changeset returned error: %v", err)
 	}
-	changesetDigest, err := svc.dependencyStageKeyFilesDigest(context.Background(), repository, changeset, []string{"go.mod", "go.sum"})
+	changesetDigest, err := svc.dependencyStageKeyFilesDigest(context.Background(), repository, changeset, nil, []string{"go.mod", "go.sum"})
 	if err != nil {
 		t.Fatalf("dependencyStageKeyFilesDigest with changeset returned error: %v", err)
 	}
@@ -3652,7 +3830,7 @@ func TestDependencyStageKeyFilesDigestDerivesHashesFromRepositoryChangesetPatch(
 		tampered.Files[i].SHA256 = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
 	}
 
-	tamperedDigest, err := svc.dependencyStageKeyFilesDigest(context.Background(), repository, &tampered, []string{"go.mod", "go.sum"})
+	tamperedDigest, err := svc.dependencyStageKeyFilesDigest(context.Background(), repository, &tampered, nil, []string{"go.mod", "go.sum"})
 	if err != nil {
 		t.Fatalf("dependencyStageKeyFilesDigest with tampered changeset metadata returned error: %v", err)
 	}
@@ -4708,6 +4886,183 @@ func TestCreateExecutionPreservesFirstMatchingRepositoryAfterChangesetSandboxCre
 	}
 }
 
+func TestCreateExecutionCanPreservePendingChangesetForInternalWorkspaceCopy(t *testing.T) {
+	adapter := &stubAdapter{}
+	svc := newTestService(adapter)
+
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"README.md": "hello\n",
+	})
+	svc.RepositoryStore = mirrors
+	repository := repositorycheckout.FromProto(repositoryCheckout)
+	if err := os.WriteFile(filepath.Join(mirrors.mirrorPath, "README.md"), []byte("hello from changeset\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(README.md) returned error: %v", err)
+	}
+	changeset, err := repositorychangeset.BuildFromWorkingTree(mirrors.mirrorPath, repository)
+	if err != nil {
+		t.Fatalf("BuildFromWorkingTree returned error: %v", err)
+	}
+	if changeset == nil {
+		t.Fatal("expected repository changeset")
+	}
+
+	var (
+		mu       sync.Mutex
+		commands [][]string
+	)
+	runCalled := make(chan struct{}, 8)
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
+		mu.Lock()
+		commands = append(commands, append([]string(nil), req.Command...))
+		mu.Unlock()
+		select {
+		case runCalled <- struct{}{}:
+		default:
+		}
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+	}
+
+	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy:              testRepositoryPolicy(),
+		RepositoryCheckout:  repositoryCheckout,
+		RepositoryChangeset: changeset.ToProto(),
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createSandboxResp.GetSandbox().GetSandboxId()
+	for i := 0; i < 2; i++ {
+		select {
+		case <-runCalled:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for changeset sandbox bootstrap")
+		}
+	}
+
+	copyResp, err := svc.CreateInternalWorkspaceCopyInExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+		SandboxId:          sandboxID,
+		Command:            []string{"sh", "-lc", "true"},
+		RepositoryCheckout: repositoryCheckout,
+		Options: &cleanroomv1.ExecutionOptions{
+			PreserveRepositoryChangesetPendingExecution: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateExecution internal copy returned error: %v", err)
+	}
+	if _, err := svc.WaitExecution(context.Background(), sandboxID, copyResp.GetExecution().GetExecutionId()); err != nil {
+		t.Fatalf("WaitExecution internal copy returned error: %v", err)
+	}
+
+	userResp, err := svc.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+		SandboxId:          sandboxID,
+		Command:            []string{"sh", "-lc", "pwd"},
+		RepositoryCheckout: repositoryCheckout,
+	})
+	if err != nil {
+		t.Fatalf("CreateExecution user command returned error: %v", err)
+	}
+	if _, err := svc.WaitExecution(context.Background(), sandboxID, userResp.GetExecution().GetExecutionId()); err != nil {
+		t.Fatalf("WaitExecution user command returned error: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if got, want := len(commands), 4; got != want {
+		t.Fatalf("expected create bootstrap + changeset apply + internal copy + user execution, got %d command(s)", got)
+	}
+	userCommand := strings.Join(commands[3], " ")
+	if strings.Contains(userCommand, `git -C "$dest" fetch --filter=blob:none --progress origin "$commit"`) {
+		t.Fatalf("expected user execution to preserve pending changeset state instead of refreshing checkout, got %q", userCommand)
+	}
+	if !repositoryWrappedCommandContains(userCommand, `exec 'sh' '-lc' 'pwd'`) {
+		t.Fatalf("expected wrapped user command, got %q", userCommand)
+	}
+}
+
+func TestCreateExecutionRejectsInternalWorkspaceCopyInOptions(t *testing.T) {
+	svc := newTestService(&stubAdapter{})
+
+	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy: testRepositoryRunBeforePolicy(),
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createSandboxResp.GetSandbox().GetSandboxId()
+
+	for name, opts := range map[string]*cleanroomv1.ExecutionOptions{
+		"preserve pending changeset": {
+			PreserveRepositoryChangesetPendingExecution: true,
+		},
+		"skip run before": {
+			SkipRunBefore: true,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := svc.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+				SandboxId: sandboxID,
+				Command:   []string{"sh", "-lc", "pwd"},
+				Options:   opts,
+			})
+			if err == nil {
+				t.Fatal("expected CreateExecution to reject internal workspace copy-in option")
+			}
+			if !strings.Contains(err.Error(), "internal workspace copy-in executions") {
+				t.Fatalf("expected internal workspace copy-in error, got %v", err)
+			}
+		})
+	}
+}
+
+func TestCreateInternalWorkspaceCopyInExecutionCanSkipRunBefore(t *testing.T) {
+	adapter := &stubAdapter{}
+	svc := newTestService(adapter)
+
+	var (
+		mu       sync.Mutex
+		commands [][]string
+	)
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
+		mu.Lock()
+		commands = append(commands, append([]string(nil), req.Command...))
+		mu.Unlock()
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+	}
+
+	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy: testRepositoryRunBeforePolicy(),
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createSandboxResp.GetSandbox().GetSandboxId()
+
+	resp, err := svc.CreateInternalWorkspaceCopyInExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+		SandboxId: sandboxID,
+		Command:   []string{"sh", "-lc", "pwd"},
+		Options: &cleanroomv1.ExecutionOptions{
+			SkipRunBefore: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateExecution returned error: %v", err)
+	}
+	if _, err := svc.WaitExecution(context.Background(), sandboxID, resp.GetExecution().GetExecutionId()); err != nil {
+		t.Fatalf("WaitExecution returned error: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if got, want := len(commands), 1; got != want {
+		t.Fatalf("expected only user command when run.before is skipped, got %d command(s)", got)
+	}
+	joined := strings.Join(commands[0], " ")
+	if strings.Contains(joined, "echo pre-run") {
+		t.Fatalf("expected run.before to be skipped, got %q", joined)
+	}
+}
+
 func TestCreateExecutionKeepsPendingChangesetAfterRunBeforeFailure(t *testing.T) {
 	adapter := &stubAdapter{}
 	svc := newTestService(adapter)
@@ -4933,6 +5288,149 @@ func TestCreateExecutionRebootstrapsSecondMatchingRepositoryAfterChangesetSandbo
 	}
 	if !repositoryWrappedCommandContains(secondExecution, `exec 'sh' '-lc' 'pwd'`) {
 		t.Fatalf("expected wrapped user command in repository workdir, got %q", secondExecution)
+	}
+}
+
+func TestCreateExecutionRebootstrapsConsumedChangesetWithStoredCommitBundle(t *testing.T) {
+	adapter := &stubAdapter{}
+	svc := newTestService(adapter)
+
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"README.md": "hello\n",
+	})
+	baseCommit := repositoryCheckout.GetCommitSha()
+
+	localRepo := filepath.Join(t.TempDir(), "local")
+	runTestGit(t, t.TempDir(), "clone", mirrors.mirrorPath, localRepo)
+	runTestGit(t, localRepo, "config", "user.email", "test@example.com")
+	runTestGit(t, localRepo, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(localRepo, "local.txt"), []byte("local\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(local.txt) returned error: %v", err)
+	}
+	runTestGit(t, localRepo, "add", "local.txt")
+	runTestGit(t, localRepo, "commit", "-m", "local commit")
+	localCommit := strings.TrimSpace(runTestGit(t, localRepo, "rev-parse", "HEAD"))
+	repositoryCheckout.CommitSha = localCommit
+	repository := repositorycheckout.FromProto(repositoryCheckout)
+
+	commitBundle, err := repositorybundle.BuildFromRepository(localRepo, "origin", repository)
+	if err != nil {
+		t.Fatalf("BuildFromRepository returned error: %v", err)
+	}
+	if commitBundle == nil {
+		t.Fatal("expected repository commit bundle")
+	}
+	if err := os.WriteFile(filepath.Join(localRepo, "README.md"), []byte("hello from changeset\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(README.md) returned error: %v", err)
+	}
+	changeset, err := repositorychangeset.BuildFromWorkingTree(localRepo, repository)
+	if err != nil {
+		t.Fatalf("BuildFromWorkingTree returned error: %v", err)
+	}
+	if changeset == nil {
+		t.Fatal("expected repository changeset")
+	}
+
+	mirrors.ensureContainsFn = func(_ string, commitSHA string) error {
+		if strings.TrimSpace(commitSHA) == localCommit {
+			return errors.New("local-only commit should be provided by stored bundle")
+		}
+		if strings.TrimSpace(commitSHA) != baseCommit {
+			return fmt.Errorf("unexpected mirror commit %q", commitSHA)
+		}
+		return nil
+	}
+	svc.RepositoryStore = mirrors
+
+	var (
+		mu              sync.Mutex
+		commands        [][]string
+		bundleStdinUses int
+	)
+	runCalled := make(chan struct{}, 8)
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+		if stream.OnAttach != nil {
+			var stdin bytes.Buffer
+			stream.OnAttach(backend.AttachIO{
+				WriteStdin: func(data []byte) error {
+					_, err := stdin.Write(data)
+					return err
+				},
+				CloseStdin: func() error {
+					if bytes.Equal(stdin.Bytes(), commitBundle.Payload) {
+						mu.Lock()
+						bundleStdinUses++
+						mu.Unlock()
+					}
+					return nil
+				},
+			})
+		}
+		mu.Lock()
+		commands = append(commands, append([]string(nil), req.Command...))
+		mu.Unlock()
+		select {
+		case runCalled <- struct{}{}:
+		default:
+		}
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+	}
+
+	createSandboxResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy:                 testRepositoryPolicy(),
+		RepositoryCheckout:     repositoryCheckout,
+		RepositoryChangeset:    changeset.ToProto(),
+		RepositoryCommitBundle: commitBundle.ToProto(),
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createSandboxResp.GetSandbox().GetSandboxId()
+	for i := 0; i < 2; i++ {
+		select {
+		case <-runCalled:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for changeset sandbox bootstrap")
+		}
+	}
+
+	for i := 0; i < 2; i++ {
+		_, err = svc.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+			SandboxId:          sandboxID,
+			Command:            []string{"sh", "-lc", "pwd"},
+			RepositoryCheckout: repositoryCheckout,
+		})
+		if err != nil {
+			t.Fatalf("CreateExecution #%d returned error: %v", i+1, err)
+		}
+		select {
+		case <-runCalled:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for execution #%d", i+1)
+		}
+		if i == 1 {
+			select {
+			case <-runCalled:
+			case <-time.After(2 * time.Second):
+				t.Fatal("timed out waiting for second execution rebootstrap")
+			}
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if got, want := bundleStdinUses, 2; got != want {
+		t.Fatalf("expected initial bootstrap and refresh to receive commit bundle stdin, got %d", got)
+	}
+	if got, want := len(commands), 5; got != want {
+		t.Fatalf("expected create bootstrap + changeset apply + first execution + bundled refresh + second execution, got %d command(s)", got)
+	}
+	rebootstrap := strings.Join(commands[3], " ")
+	if !strings.Contains(rebootstrap, `git -C "$dest" fetch --progress "$bundle_file" "+HEAD:$bundle_ref"`) {
+		t.Fatalf("expected second matching repository execution to fetch stored bundle, got %q", rebootstrap)
+	}
+	if strings.Contains(rebootstrap, `git -C "$dest" fetch --filter=blob:none --progress origin "$commit"`) {
+		t.Fatalf("expected stored bundle refresh to avoid fetching the local-only commit directly, got %q", rebootstrap)
 	}
 }
 
@@ -5182,6 +5680,284 @@ func TestCreateSandboxPersistsRepositoryChangeset(t *testing.T) {
 	}
 	if record.FinalTreeDigest != changeset.TreeDigest {
 		t.Fatalf("unexpected persisted tree digest: got %q want %q", record.FinalTreeDigest, changeset.TreeDigest)
+	}
+}
+
+func TestCreateSandboxBootstrapsLocalOnlyCommitBundle(t *testing.T) {
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"README.md": "hello\n",
+	})
+	baseCommit := repositoryCheckout.GetCommitSha()
+
+	localRepo := filepath.Join(t.TempDir(), "local")
+	runTestGit(t, t.TempDir(), "clone", mirrors.mirrorPath, localRepo)
+	runTestGit(t, localRepo, "config", "user.email", "test@example.com")
+	runTestGit(t, localRepo, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(localRepo, "local.txt"), []byte("local\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(local.txt) returned error: %v", err)
+	}
+	runTestGit(t, localRepo, "add", "local.txt")
+	runTestGit(t, localRepo, "commit", "-m", "local commit")
+	localCommit := strings.TrimSpace(runTestGit(t, localRepo, "rev-parse", "HEAD"))
+
+	commitBundle, err := repositorybundle.BuildFromRepository(localRepo, "origin", &repositorycheckout.Checkout{CommitSHA: localCommit})
+	if err != nil {
+		t.Fatalf("BuildFromRepository returned error: %v", err)
+	}
+	if commitBundle == nil {
+		t.Fatal("expected repository commit bundle")
+	}
+	repositoryCheckout.CommitSha = localCommit
+
+	var capturedBundle []byte
+	adapter := &stubAdapter{}
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+		if stream.OnAttach != nil {
+			var stdin bytes.Buffer
+			stream.OnAttach(backend.AttachIO{
+				WriteStdin: func(data []byte) error {
+					_, err := stdin.Write(data)
+					return err
+				},
+				CloseStdin: func() error {
+					capturedBundle = append([]byte(nil), stdin.Bytes()...)
+					return nil
+				},
+			})
+		}
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+	}
+	svc := newTestService(adapter)
+	svc.RepositoryStore = mirrors
+
+	_, err = svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy:                 testRepositoryPolicy(),
+		RepositoryCheckout:     repositoryCheckout,
+		RepositoryCommitBundle: commitBundle.ToProto(),
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	if got, want := mirrors.commitSHA, baseCommit; got != want {
+		t.Fatalf("expected mirror to ensure bundle prerequisite %q, got %q", want, got)
+	}
+	if !bytes.Equal(capturedBundle, commitBundle.Payload) {
+		t.Fatalf("bootstrap stdin did not receive repository commit bundle")
+	}
+	joined := strings.Join(adapter.req.Command, " ")
+	if !strings.Contains(joined, `git -C "$dest" fetch --progress "$bundle_file" "+HEAD:$bundle_ref"`) {
+		t.Fatalf("expected bootstrap command to fetch attached bundle, got %q", joined)
+	}
+}
+
+func TestCreateSandboxStoresCommitBundleAfterServicesStageRestore(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	store := newMemorySnapshotStore()
+	adapter := &stubAdapter{}
+	adapter.createSnapshotFn = func(_ context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
+		return &backend.SnapshotResult{StorageRef: "/snapshots/" + req.SnapshotID + ".ext4"}, nil
+	}
+
+	var (
+		mu              sync.Mutex
+		bundlePayload   []byte
+		bundleStdinUses int
+	)
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+		if stream.OnAttach != nil {
+			var stdin bytes.Buffer
+			stream.OnAttach(backend.AttachIO{
+				WriteStdin: func(data []byte) error {
+					_, err := stdin.Write(data)
+					return err
+				},
+				CloseStdin: func() error {
+					mu.Lock()
+					if bytes.Equal(stdin.Bytes(), bundlePayload) {
+						bundleStdinUses++
+					}
+					mu.Unlock()
+					return nil
+				},
+			})
+		}
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+	}
+
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"go.mod":             "module example.com/test\n\ngo 1.26.2\n",
+		"go.sum":             "example.com/test v0.0.0 h1:abc123\n",
+		"docker-compose.yml": "services:\n  postgres:\n    image: postgres:17\n",
+		"app.go":             "package main\n\nfunc main() {}\n",
+	})
+	baseCommit := repositoryCheckout.GetCommitSha()
+
+	localRepo := filepath.Join(t.TempDir(), "local")
+	runTestGit(t, t.TempDir(), "clone", mirrors.mirrorPath, localRepo)
+	runTestGit(t, localRepo, "config", "user.email", "test@example.com")
+	runTestGit(t, localRepo, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(localRepo, "app.go"), []byte("package main\n\nfunc main() { println(\"local\") }\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(app.go) returned error: %v", err)
+	}
+	runTestGit(t, localRepo, "add", ".")
+	runTestGit(t, localRepo, "commit", "-m", "local source-only change")
+	localCommit := strings.TrimSpace(runTestGit(t, localRepo, "rev-parse", "HEAD"))
+	updatedCheckout := *repositoryCheckout
+	updatedCheckout.CommitSha = localCommit
+	updatedRepository := repositorycheckout.FromProto(&updatedCheckout)
+
+	commitBundle, err := repositorybundle.BuildFromRepository(localRepo, "origin", updatedRepository)
+	if err != nil {
+		t.Fatalf("BuildFromRepository returned error: %v", err)
+	}
+	if commitBundle == nil {
+		t.Fatal("expected repository commit bundle")
+	}
+	bundlePayload = append([]byte(nil), commitBundle.Payload...)
+	if err := os.WriteFile(filepath.Join(localRepo, "app.go"), []byte("package main\n\nfunc main() { println(\"dirty\") }\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(app.go dirty) returned error: %v", err)
+	}
+	changeset, err := repositorychangeset.BuildFromWorkingTree(localRepo, updatedRepository)
+	if err != nil {
+		t.Fatalf("BuildFromWorkingTree returned error: %v", err)
+	}
+	if changeset == nil {
+		t.Fatal("expected repository changeset")
+	}
+
+	mirrors.ensureContainsFn = func(_ string, commitSHA string) error {
+		switch strings.TrimSpace(commitSHA) {
+		case baseCommit:
+			return nil
+		case localCommit:
+			return errors.New("local-only commit should be provided by stored bundle")
+		default:
+			return fmt.Errorf("unexpected mirror commit %q", commitSHA)
+		}
+	}
+
+	svc := newTestServiceWithSnapshotStore(adapter, store)
+	svc.RepositoryStore = mirrors
+	req := &cleanroomv1.CreateSandboxRequest{
+		Policy:                 testRepositoryDependencyAndServicesPolicy(),
+		RepositoryCheckout:     &updatedCheckout,
+		RepositoryChangeset:    changeset.ToProto(),
+		RepositoryCommitBundle: commitBundle.ToProto(),
+	}
+	if _, err := svc.CreateSandbox(context.Background(), req); err != nil {
+		t.Fatalf("first CreateSandbox returned error: %v", err)
+	}
+	secondResp, err := svc.CreateSandbox(context.Background(), req)
+	if err != nil {
+		t.Fatalf("second CreateSandbox returned error: %v", err)
+	}
+	if got, want := secondResp.GetSourceKind(), "services stage cache"; got != want {
+		t.Fatalf("unexpected response source kind: got %q want %q", got, want)
+	}
+
+	sandboxID := secondResp.GetSandbox().GetSandboxId()
+	svc.mu.Lock()
+	restoredState := svc.sandboxes[sandboxID]
+	hasBundle := restoredState != nil && restoredState.RepositoryCommitBundle != nil
+	svc.mu.Unlock()
+	if !hasBundle {
+		t.Fatal("expected services-cache restored sandbox to retain repository commit bundle")
+	}
+
+	for i := 0; i < 2; i++ {
+		execResp, err := svc.CreateExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+			SandboxId:          sandboxID,
+			Command:            []string{"sh", "-lc", "pwd"},
+			RepositoryCheckout: &updatedCheckout,
+		})
+		if err != nil {
+			t.Fatalf("CreateExecution #%d returned error: %v", i+1, err)
+		}
+		execution, err := svc.WaitExecution(context.Background(), sandboxID, execResp.GetExecution().GetExecutionId())
+		if err != nil {
+			t.Fatalf("WaitExecution #%d returned error: %v", i+1, err)
+		}
+		if got, want := execution.GetStatus(), cleanroomv1.ExecutionStatus_EXECUTION_STATUS_SUCCEEDED; got != want {
+			t.Fatalf("unexpected execution #%d status: got %v want %v", i+1, got, want)
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if got, want := bundleStdinUses, 2; got != want {
+		t.Fatalf("expected cold bootstrap and consumed-changeset refresh to receive commit bundle stdin, got %d", got)
+	}
+}
+
+func TestCreateSandboxCachesStagesForLocalOnlyCommitBundle(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	store := newMemorySnapshotStore()
+	adapter := &stubAdapter{}
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"go.mod":             "module example.com/test\n\ngo 1.26.2\n",
+		"go.sum":             "example.com/test v0.0.0 h1:abc123\n",
+		"docker-compose.yml": "services:\n  postgres:\n    image: postgres:17\n",
+	})
+	baseCommit := repositoryCheckout.GetCommitSha()
+
+	localRepo := filepath.Join(t.TempDir(), "local")
+	runTestGit(t, t.TempDir(), "clone", mirrors.mirrorPath, localRepo)
+	runTestGit(t, localRepo, "config", "user.email", "test@example.com")
+	runTestGit(t, localRepo, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(localRepo, "go.sum"), []byte("example.com/test v0.0.0 h1:abc123\nexample.com/lib v1.0.0 h1:def456\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(go.sum) returned error: %v", err)
+	}
+	runTestGit(t, localRepo, "add", "go.sum")
+	runTestGit(t, localRepo, "commit", "-m", "local dependency update")
+	localCommit := strings.TrimSpace(runTestGit(t, localRepo, "rev-parse", "HEAD"))
+
+	commitBundle, err := repositorybundle.BuildFromRepository(localRepo, "origin", &repositorycheckout.Checkout{CommitSHA: localCommit})
+	if err != nil {
+		t.Fatalf("BuildFromRepository returned error: %v", err)
+	}
+	if commitBundle == nil {
+		t.Fatal("expected repository commit bundle")
+	}
+	repositoryCheckout.CommitSha = localCommit
+
+	svc := newTestServiceWithSnapshotStore(adapter, store)
+	svc.RepositoryStore = mirrors
+	if _, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy:                 testRepositoryDependencyAndServicesPolicy(),
+		RepositoryCheckout:     repositoryCheckout,
+		RepositoryCommitBundle: commitBundle.ToProto(),
+	}); err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+
+	cacheStore, ok := svc.CacheStore.(*memoryCacheStore)
+	if !ok {
+		t.Fatalf("expected memory cache store, got %T", svc.CacheStore)
+	}
+	records, err := cacheStore.List(context.Background())
+	if err != nil {
+		t.Fatalf("List returned error: %v", err)
+	}
+	stages := map[string]bool{}
+	for _, record := range records {
+		stages[record.Stage] = true
+	}
+	for _, stage := range []string{workspaceStageName, dependencyStageName, servicesStageName} {
+		if !stages[stage] {
+			t.Fatalf("expected %s stage cache record, got stages %v", stage, stages)
+		}
+	}
+	if !slices.Contains(mirrors.commitSHAs, baseCommit) {
+		t.Fatalf("expected bundle prerequisite %q to be ensured before cache planning/bootstrap, got %v", baseCommit, mirrors.commitSHAs)
+	}
+	if slices.Contains(mirrors.commitSHAs, localCommit) {
+		t.Fatalf("expected local-only commit %q to come from bundle, got direct ensure calls %v", localCommit, mirrors.commitSHAs)
+	}
+	if !slices.Contains(mirrors.withRepositorySHAs, baseCommit) {
+		t.Fatalf("expected repository views to use bundle prerequisite %q, got %v", baseCommit, mirrors.withRepositorySHAs)
+	}
+	if slices.Contains(mirrors.withRepositorySHAs, "") {
+		t.Fatalf("expected bundle repository views to use a prerequisite commit, got %v", mirrors.withRepositorySHAs)
 	}
 }
 

@@ -35,13 +35,41 @@ type TLSOptions struct {
 }
 
 type Server struct {
-	service      *controlservice.Service
-	logger       *log.Logger
-	interceptors []connect.Interceptor
+	service                      *controlservice.Service
+	logger                       *log.Logger
+	interceptors                 []connect.Interceptor
+	internalWorkspaceCopyInTrust internalWorkspaceCopyInTrustMode
 }
+
+type internalWorkspaceCopyInTrustMode int
+
+const (
+	internalWorkspaceCopyInTrustNone internalWorkspaceCopyInTrustMode = iota
+	internalWorkspaceCopyInTrustAll
+	internalWorkspaceCopyInTrustLoopback
+)
+
+const (
+	internalWorkspaceCopyInHeader        = "Cleanroom-Internal-Workspace-Copy-In"
+	internalWorkspaceCopyInTrustedHeader = "Cleanroom-Internal-Workspace-Copy-In-Trusted"
+)
 
 func New(service *controlservice.Service, logger *log.Logger, interceptors ...connect.Interceptor) *Server {
 	return &Server{service: service, logger: logger, interceptors: interceptors}
+}
+
+func (s *Server) TrustInternalWorkspaceCopyInRequests() *Server {
+	if s != nil {
+		s.internalWorkspaceCopyInTrust = internalWorkspaceCopyInTrustAll
+	}
+	return s
+}
+
+func (s *Server) TrustInternalWorkspaceCopyInRequestsFromLoopback() *Server {
+	if s != nil {
+		s.internalWorkspaceCopyInTrust = internalWorkspaceCopyInTrustLoopback
+	}
+	return s
 }
 
 func (s *Server) Handler() http.Handler {
@@ -63,7 +91,11 @@ func (s *Server) Handler() http.Handler {
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.WriteString(w, "ok\n")
 	})
-	return h2c.NewHandler(mux, &http2.Server{})
+	handler := h2c.NewHandler(mux, &http2.Server{})
+	if s.internalWorkspaceCopyInTrust == internalWorkspaceCopyInTrustLoopback {
+		return markLoopbackInternalWorkspaceCopyInRequests(handler)
+	}
+	return handler
 }
 
 func (s *Server) CreateSandbox(ctx context.Context, req *connect.Request[cleanroomv1.CreateSandboxRequest]) (*connect.Response[cleanroomv1.CreateSandboxResponse], error) {
@@ -352,11 +384,43 @@ func (s *Server) ListExecutions(ctx context.Context, req *connect.Request[cleanr
 }
 
 func (s *Server) CreateExecution(ctx context.Context, req *connect.Request[cleanroomv1.CreateExecutionRequest]) (*connect.Response[cleanroomv1.CreateExecutionResponse], error) {
-	resp, err := s.service.CreateExecution(ctx, req.Msg)
+	createExecution := s.service.CreateExecution
+	if req.Header().Get(internalWorkspaceCopyInHeader) == "1" {
+		switch s.internalWorkspaceCopyInTrust {
+		case internalWorkspaceCopyInTrustAll:
+		case internalWorkspaceCopyInTrustLoopback:
+			if req.Header().Get(internalWorkspaceCopyInTrustedHeader) != "1" {
+				return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("internal workspace copy-in requests require a trusted control endpoint"))
+			}
+		default:
+			return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("internal workspace copy-in requests require a trusted control endpoint"))
+		}
+		createExecution = s.service.CreateInternalWorkspaceCopyInExecution
+	}
+	resp, err := createExecution(ctx, req.Msg)
 	if err != nil {
 		return nil, toConnectError(err)
 	}
 	return connect.NewResponse(resp), nil
+}
+
+func markLoopbackInternalWorkspaceCopyInRequests(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Header.Del(internalWorkspaceCopyInTrustedHeader)
+		if r.Header.Get(internalWorkspaceCopyInHeader) == "1" && isLoopbackRemoteAddr(r.RemoteAddr) {
+			r.Header.Set(internalWorkspaceCopyInTrustedHeader, "1")
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func isLoopbackRemoteAddr(remoteAddr string) bool {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		host = remoteAddr
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func (s *Server) AttachExecution(ctx context.Context, req *connect.Request[cleanroomv1.AttachExecutionRequest]) (*connect.Response[cleanroomv1.AttachExecutionResponse], error) {

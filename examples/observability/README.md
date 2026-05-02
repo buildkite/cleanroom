@@ -20,7 +20,7 @@ docker compose up -d
 
 The local endpoints are:
 
-- Grafana: `http://localhost:3300`
+- Grafana: `http://localhost:3330`
 - Prometheus: `http://localhost:9090`
 - Tempo HTTP API: `http://localhost:3200`
 - OTLP gRPC ingest: `localhost:14317`

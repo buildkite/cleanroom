@@ -56,6 +56,7 @@ message Sandbox {
   string source_kind = 9;
   string source_id = 10;
   string backing_snapshot_id = 11;
+  RepositoryCheckout repository_checkout = 12;
 }
 
 message Snapshot {
@@ -170,6 +171,13 @@ message RepositoryChangeset {
   repeated RepositoryChangesetFile files = 6;
 }
 
+message RepositoryCommitBundle {
+  string format = 1;
+  string target_commit_sha = 2;
+  string digest = 3;
+  bytes bundle = 4;
+}
+
 message CreateSandboxRequest {
   reserved 1;
   reserved "cwd";
@@ -178,6 +186,7 @@ message CreateSandboxRequest {
   Policy policy = 4;
   RepositoryCheckout repository_checkout = 5;
   RepositoryChangeset repository_changeset = 7;
+  RepositoryCommitBundle repository_commit_bundle = 8;
   oneof source {
     string snapshot_id = 6;
   }
@@ -471,6 +480,8 @@ message ExecutionOptions {
   reserved "read_only_workspace", "cwd";
   int64 launch_seconds = 5;
   bool tty = 6;
+  bool preserve_repository_changeset_pending_execution = 8;
+  bool skip_run_before = 9;
 }
 
 message CreateExecutionRequest {

@@ -300,6 +300,28 @@ func TestDigestPathsFromBaseUsesPatchedContents(t *testing.T) {
 	}
 }
 
+func TestResetCommandsUseDoubleForceClean(t *testing.T) {
+	checkout := &repositorycheckout.Checkout{
+		CommitSHA:      "0123456789abcdef0123456789abcdef01234567",
+		DestinationDir: "/workspace",
+	}
+	changeset := &Changeset{
+		BaseCommitSHA: checkout.CommitSHA,
+		TreeDigest:    "89abcdef0123456789abcdef0123456789abcdef",
+		Patch:         []byte("diff --git a/README.md b/README.md\n"),
+	}
+
+	resetCommand := strings.Join(ResetCommand(checkout), "\n")
+	if !strings.Contains(resetCommand, `git -C "$dest" clean -ffd >/dev/null`) {
+		t.Fatalf("expected reset command to double-force clean, got %q", resetCommand)
+	}
+
+	applyCommand := strings.Join(ApplyCommandResettingCheckout(checkout, changeset), "\n")
+	if !strings.Contains(applyCommand, `git -C "$dest" clean -ffd >/dev/null`) {
+		t.Fatalf("expected apply-reset command to double-force clean, got %q", applyCommand)
+	}
+}
+
 func initGitRepository(t *testing.T) string {
 	t.Helper()
 

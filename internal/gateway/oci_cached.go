@@ -61,12 +61,14 @@ func (h *cachedRegistryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 	// Extract the prefix (first path segment) to look up the upstream host.
 	prefix, _, hasSep := strings.Cut(remainder, "/")
 	if prefix == "" {
-		http.Error(w, "bad request: missing registry prefix", http.StatusBadRequest)
+		setGatewayRequestDecision(r.Context(), gatewayActionDeny, reasonInvalidRequest)
+		writeReasonError(w, http.StatusBadRequest, reasonInvalidRequest, "missing registry prefix")
 		return
 	}
 	if !hasSep {
 		// Bare prefix with no trailing path — not a valid OCI request.
-		http.Error(w, "bad request: missing image path", http.StatusBadRequest)
+		setGatewayRequestDecision(r.Context(), gatewayActionDeny, reasonInvalidRequest)
+		writeReasonError(w, http.StatusBadRequest, reasonInvalidRequest, "missing image path")
 		return
 	}
 	rest := strings.TrimPrefix(remainder, prefix+"/")

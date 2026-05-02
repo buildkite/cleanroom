@@ -336,14 +336,50 @@ func (c *Changeset) ChangedFileDigest(path string) (digest string, deleted, ok b
 }
 
 func ApplyCommand(checkout *repositorycheckout.Checkout, changeset *Changeset) []string {
+	return applyCommand(checkout, changeset, false)
+}
+
+func ApplyCommandResettingCheckout(checkout *repositorycheckout.Checkout, changeset *Changeset) []string {
+	return applyCommand(checkout, changeset, true)
+}
+
+func ResetCommand(checkout *repositorycheckout.Checkout) []string {
+	if checkout == nil {
+		return nil
+	}
+	baseCommitSHA := strings.ToLower(strings.TrimSpace(checkout.CommitSHA))
+	if baseCommitSHA == "" {
+		return nil
+	}
+	script := []string{
+		"set -eu",
+		"dest=" + shellQuote(checkout.DestinationDir),
+		"base_commit=" + shellQuote(baseCommitSHA),
+		`if [ ! -d "$dest/.git" ]; then echo "repository destination is not a git checkout: $dest" >&2; exit 1; fi`,
+		`git -C "$dest" reset --hard "$base_commit" >/dev/null`,
+		`git -C "$dest" clean -ffd >/dev/null`,
+	}
+	return []string{"sh", "-lc", strings.Join(script, "\n")}
+}
+
+func applyCommand(checkout *repositorycheckout.Checkout, changeset *Changeset, resetCheckout bool) []string {
 	if checkout == nil || changeset == nil {
 		return nil
 	}
 	script := []string{
 		"set -eu",
 		"dest=" + shellQuote(checkout.DestinationDir),
+		"base_commit=" + shellQuote(changeset.BaseCommitSHA),
 		"expected_tree=" + shellQuote(changeset.TreeDigest),
 		`if [ ! -d "$dest/.git" ]; then echo "repository destination is not a git checkout: $dest" >&2; exit 1; fi`,
+	}
+	if resetCheckout {
+		script = append(script,
+			`git -C "$dest" reset --hard "$base_commit" >/dev/null`,
+			`git -C "$dest" clean -ffd >/dev/null`,
+		)
+	}
+	script = append(script,
 		`patch_file="$(mktemp)"`,
 		`index_file="$(mktemp)"`,
 		`cleanup() { rm -f "$patch_file" "$index_file"; }`,
@@ -354,7 +390,7 @@ func ApplyCommand(checkout *repositorycheckout.Checkout, changeset *Changeset) [
 		`GIT_INDEX_FILE="$index_file" git -C "$dest" add -A --all .`,
 		`got_tree="$(GIT_INDEX_FILE="$index_file" git -C "$dest" write-tree)"`,
 		`if [ "$got_tree" != "$expected_tree" ]; then echo "repository changeset tree mismatch: expected $expected_tree got $got_tree" >&2; exit 1; fi`,
-	}
+	)
 	return []string{"sh", "-lc", strings.Join(script, "\n")}
 }
 

@@ -174,6 +174,11 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 		serverInterceptors = append(serverInterceptors, interceptor)
 	}
 	server := controlserver.New(service, httpLogger, serverInterceptors...)
+	if ep.Scheme == "unix" {
+		server.TrustInternalWorkspaceCopyInRequests()
+	} else {
+		server.TrustInternalWorkspaceCopyInRequestsFromLoopback()
+	}
 
 	runCtx, cancel := serveSignalNotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()

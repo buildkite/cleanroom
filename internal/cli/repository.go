@@ -14,6 +14,7 @@ import (
 
 type resolvedRepositoryCheckout struct {
 	RootDir        string
+	RemoteName     string
 	RemoteURL      string
 	CommitSHA      string
 	DestinationDir string
@@ -88,6 +89,65 @@ func resolveRepositoryCheckoutWithOverride(cwd string, loader policyLoader, over
 		}
 		return nil, err
 	}
+	return resolveRepositoryCheckoutFromConfig(cwd, loader, repository, true)
+}
+
+func resolveWorkspaceCopyRepositoryCheckout(cwd string, loader policyLoader) (*resolvedRepositoryCheckout, error) {
+	repository, err := resolveRepositoryCheckout(cwd, loader)
+	if err != nil || repository != nil {
+		return repository, err
+	}
+	remoteName, err := resolveImplicitRepositoryRemote(cwd)
+	if err != nil {
+		if errors.Is(err, errSkipRepositoryCheckout) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return resolveRepositoryCheckoutFromConfig(cwd, loader, policy.RepositoryConfig{
+		Implicit: true,
+		Mode:     "current-repo",
+		Remote:   remoteName,
+		Path:     defaultRepositoryOverridePath,
+	}, false)
+}
+
+func resolveImplicitRepositoryRemote(cwd string) (string, error) {
+	repoRoot, err := resolveRepositoryRoot(cwd, policy.RepositoryConfig{
+		Implicit: true,
+		Mode:     "current-repo",
+		Path:     defaultRepositoryOverridePath,
+	})
+	if err != nil {
+		return "", err
+	}
+
+	if upstream, err := gitOutput(repoRoot, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"); err == nil {
+		if remote, _, ok := strings.Cut(strings.TrimSpace(upstream), "/"); ok && strings.TrimSpace(remote) != "" {
+			return strings.TrimSpace(remote), nil
+		}
+	}
+
+	remoteOutput, err := gitOutput(repoRoot, "remote")
+	if err != nil {
+		return "", fmt.Errorf("list repository remotes: %w", err)
+	}
+	remotes := strings.Fields(remoteOutput)
+	switch len(remotes) {
+	case 0:
+		return "", errors.New("workspace copy-in requires a repository remote")
+	case 1:
+		return remotes[0], nil
+	}
+	for _, remote := range remotes {
+		if remote == "origin" {
+			return remote, nil
+		}
+	}
+	return "", fmt.Errorf("workspace copy-in found multiple repository remotes (%s); configure repository.remote in cleanroom.yaml", strings.Join(remotes, ", "))
+}
+
+func resolveRepositoryCheckoutFromConfig(cwd string, loader policyLoader, repository policy.RepositoryConfig, validatePolicy bool) (*resolvedRepositoryCheckout, error) {
 	repoRoot, err := resolveRepositoryRoot(cwd, repository)
 	if err != nil {
 		if errors.Is(err, errSkipRepositoryCheckout) {
@@ -117,16 +177,19 @@ func resolveRepositoryCheckoutWithOverride(cwd string, loader policyLoader, over
 		return nil, err
 	}
 
-	compiled, _, err := loader.LoadAndCompile(cwd)
-	if err != nil {
-		return nil, err
-	}
-	if compiled != nil && !compiled.Allows(remoteHost, 443) {
-		return nil, fmt.Errorf("repository remote host %q is not allowed by sandbox policy", remoteHost)
+	if validatePolicy && loader != nil {
+		compiled, _, err := loader.LoadAndCompile(cwd)
+		if err != nil {
+			return nil, err
+		}
+		if compiled != nil && !compiled.Allows(remoteHost, 443) {
+			return nil, fmt.Errorf("repository remote host %q is not allowed by sandbox policy", remoteHost)
+		}
 	}
 
 	return &resolvedRepositoryCheckout{
 		RootDir:        repoRoot,
+		RemoteName:     repository.Remote,
 		RemoteURL:      canonicalURL,
 		CommitSHA:      strings.TrimSpace(commitSHA),
 		DestinationDir: repository.Path,

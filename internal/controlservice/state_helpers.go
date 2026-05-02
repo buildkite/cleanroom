@@ -129,17 +129,18 @@ func cloneSandboxLocked(state *sandboxState) *cleanroomv1.Sandbox {
 		policyHash = state.Policy.Hash
 	}
 	return &cleanroomv1.Sandbox{
-		SandboxId:         state.ID,
-		Status:            state.Status,
-		Backend:           state.Backend,
-		PolicyHash:        policyHash,
-		CreatedAt:         timestamppb.New(state.CreatedAt),
-		UpdatedAt:         timestamppb.New(state.UpdatedAt),
-		LastExecutionId:   state.LastExecutionID,
-		ActiveExecutionId: state.ActiveExecutionID,
-		SourceKind:        state.SourceKind,
-		SourceId:          state.SourceID,
-		BackingSnapshotId: state.BackingSnapshotID,
+		SandboxId:          state.ID,
+		Status:             state.Status,
+		Backend:            state.Backend,
+		PolicyHash:         policyHash,
+		CreatedAt:          timestamppb.New(state.CreatedAt),
+		UpdatedAt:          timestamppb.New(state.UpdatedAt),
+		LastExecutionId:    state.LastExecutionID,
+		ActiveExecutionId:  state.ActiveExecutionID,
+		SourceKind:         state.SourceKind,
+		SourceId:           state.SourceID,
+		BackingSnapshotId:  state.BackingSnapshotID,
+		RepositoryCheckout: cloneRepositoryCheckout(state.Repository).ToProto(),
 	}
 }
 

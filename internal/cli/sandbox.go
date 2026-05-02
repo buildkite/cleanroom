@@ -58,7 +58,7 @@ type CreateCommand struct {
 	From    string `name:"from" help:"Create the sandbox from an existing snapshot ID"`
 	Image   string `help:"Override sandbox image ref (tag, digest, or local Docker image)"`
 	repositoryOverrideFlags
-	repositoryChangesetFlags
+	workspaceCopyFlags
 	DangerouslyAllowAll bool  `name:"dangerously-allow-all" help:"Disable network egress filtering for a newly created sandbox"`
 	LaunchSeconds       int64 `help:"VM boot/guest-agent readiness timeout in seconds"`
 	JSON                bool  `help:"Print sandbox as JSON"`
@@ -286,7 +286,7 @@ func runSandboxCreate(ctx *runtimeContext, connectFlags clientFlags, backend, fr
 		if err != nil {
 			return err
 		}
-		_, sandbox, err = createSandboxWithPolicy(context.Background(), client, compiled, backend, launchSeconds, nil, nil)
+		_, sandbox, err = createSandboxWithPolicy(context.Background(), client, compiled, backend, launchSeconds, nil, repositoryLocalChanges{})
 		if err != nil {
 			return err
 		}
@@ -332,13 +332,16 @@ func (c *CreateCommand) Run(ctx *runtimeContext) error {
 	if err != nil {
 		return err
 	}
-	changeset, err := resolveRepositoryChangeset(repository, c.IncludeLocalChanges)
+	if err := validateTopLevelWorkspaceCopyTransport(repository, c.CopyIn); err != nil {
+		return err
+	}
+	localChanges, err := resolveRepositoryLocalChanges(repository, c.CopyIn)
 	if err != nil {
 		return err
 	}
-	warnDirtyRepositoryCheckout(repository, changeset != nil)
+	warnDirtyRepositoryCheckout(repository, c.CopyIn && repository != nil)
 
-	sandboxID, sandbox, err := createTopLevelSandbox(context.Background(), client, ctx.Loader, cwd, host, c.Backend, c.Image, c.LaunchSeconds, c.DangerouslyAllowAll, repository, changeset)
+	sandboxID, sandbox, err := createTopLevelSandbox(context.Background(), client, ctx.Loader, cwd, host, c.Backend, c.Image, c.LaunchSeconds, c.DangerouslyAllowAll, repository, localChanges)
 	if err != nil {
 		return err
 	}
@@ -355,7 +358,7 @@ func (c *CreateCommand) validate() error {
 	if _, err := c.repositoryOverrideFlags.resolve(".", nil); err != nil {
 		return err
 	}
-	if err := c.repositoryChangesetFlags.validate("", c.From, c.repositoryOverrideFlags); err != nil {
+	if err := c.workspaceCopyFlags.validate("", c.From, c.repositoryOverrideFlags); err != nil {
 		return err
 	}
 	if c.repositoryOverrideFlags.hasRepositoryOverride() && strings.TrimSpace(c.From) != "" {
@@ -375,7 +378,7 @@ func createTopLevelSandbox(
 	launchSeconds int64,
 	dangerouslyAllowAll bool,
 	repository *resolvedRepositoryCheckout,
-	changeset *cleanroomv1.RepositoryChangeset,
+	localChanges repositoryLocalChanges,
 ) (string, *cleanroomv1.Sandbox, error) {
 	compiled, _, err := loader.LoadAndCompile(cwd)
 	if err != nil {
@@ -394,7 +397,7 @@ func createTopLevelSandbox(
 		return "", nil, err
 	}
 
-	return createSandboxWithPolicy(callCtx, client, compiled, backendName, launchSeconds, repository, changeset)
+	return createSandboxWithPolicy(callCtx, client, compiled, backendName, launchSeconds, repository, localChanges)
 }
 
 func overrideCompiledPolicyNetworkDefault(compiled *policy.CompiledPolicy, dangerouslyAllowAll bool) (*policy.CompiledPolicy, error) {
@@ -492,7 +495,7 @@ func createSandboxWithPolicy(
 	backendName string,
 	launchSeconds int64,
 	repository *resolvedRepositoryCheckout,
-	changeset *cleanroomv1.RepositoryChangeset,
+	localChanges repositoryLocalChanges,
 ) (string, *cleanroomv1.Sandbox, error) {
 	if compiled == nil {
 		return "", nil, errors.New("create sandbox: missing compiled policy")
@@ -503,9 +506,10 @@ func createSandboxWithPolicy(
 		Options: &cleanroomv1.SandboxOptions{
 			LaunchSeconds: launchSeconds,
 		},
-		Policy:              compiled.ToProto(),
-		RepositoryCheckout:  repositoryCheckoutProto(repository),
-		RepositoryChangeset: changeset,
+		Policy:                 compiled.ToProto(),
+		RepositoryCheckout:     repositoryCheckoutProto(repository),
+		RepositoryChangeset:    localChanges.Changeset,
+		RepositoryCommitBundle: localChanges.CommitBundle,
 	})
 	if err != nil {
 		return "", nil, fmt.Errorf("create sandbox: %w", err)

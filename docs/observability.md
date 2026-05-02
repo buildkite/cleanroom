@@ -45,7 +45,7 @@ docker compose -f examples/observability/docker-compose.yaml up -d
 
 That stack provides:
 
-- Grafana at `http://localhost:3300`
+- Grafana at `http://localhost:3330`
 - Prometheus at `http://localhost:9090`
 - Tempo at `http://localhost:3200`
 - an OpenTelemetry Collector listening on `localhost:14317` and `http://localhost:14318`

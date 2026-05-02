@@ -11,6 +11,7 @@ import (
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/observability"
 	"github.com/buildkite/cleanroom/internal/policy"
+	"github.com/buildkite/cleanroom/internal/repositorybundle"
 	"github.com/buildkite/cleanroom/internal/repositorychangeset"
 	"github.com/buildkite/cleanroom/internal/repositorycheckout"
 )
@@ -52,6 +53,7 @@ func (s *Service) finalizeServicesStagePlan(
 	compiled *policy.CompiledPolicy,
 	repository *repositorycheckout.Checkout,
 	changeset *repositorychangeset.Changeset,
+	commitBundle *repositorybundle.Bundle,
 	parentStageKey string,
 	plan servicesStagePlan,
 ) (servicesStagePlan, bool, error) {
@@ -59,7 +61,7 @@ func (s *Service) finalizeServicesStagePlan(
 		return plan, false, nil
 	}
 
-	keyFilesDigest, err := s.stageKeyFilesDigest(ctx, repository, changeset, plan.KeyFiles, servicesStageName)
+	keyFilesDigest, err := s.stageKeyFilesDigest(ctx, repository, changeset, commitBundle, plan.KeyFiles, servicesStageName)
 	if err != nil {
 		return plan, false, err
 	}

@@ -6,46 +6,69 @@ import (
 	"strings"
 
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
+	"github.com/buildkite/cleanroom/internal/repositorybundle"
 	"github.com/buildkite/cleanroom/internal/repositorychangeset"
 )
 
-type repositoryChangesetFlags struct {
-	IncludeLocalChanges bool `name:"include-local-changes" help:"Package local uncommitted changes into a reproducible changeset and apply them after exact repository checkout"`
+type workspaceCopyFlags struct {
+	CopyIn bool `name:"copy-in" help:"Copy local workspace changes into the sandbox workspace before running"`
 }
 
-func (f repositoryChangesetFlags) validate(existingSandboxID, fromSnapshot string, repositoryOverride repositoryOverrideFlags) error {
-	if !f.IncludeLocalChanges {
+func (f workspaceCopyFlags) validate(_ string, fromSnapshot string, repositoryOverride repositoryOverrideFlags) error {
+	if !f.CopyIn {
 		return nil
 	}
 	switch {
-	case strings.TrimSpace(existingSandboxID) != "":
-		return errors.New("--include-local-changes cannot be used with --in")
 	case strings.TrimSpace(fromSnapshot) != "":
-		return errors.New("--include-local-changes cannot be used with --from")
+		return errors.New("--copy-in cannot be used with --from")
 	case repositoryOverride.hasRepositoryOverride():
-		return errors.New("--include-local-changes cannot be used with --repo-url or --repo-commit")
+		return errors.New("--copy-in cannot be used with --repo-url or --repo-commit")
 	default:
 		return nil
 	}
 }
 
-func resolveRepositoryChangeset(repository *resolvedRepositoryCheckout, includeLocalChanges bool) (*cleanroomv1.RepositoryChangeset, error) {
-	if !includeLocalChanges {
-		return nil, nil
+func validateTopLevelWorkspaceCopyTransport(repository *resolvedRepositoryCheckout, copyWorkspace bool) error {
+	if !copyWorkspace || repository != nil {
+		return nil
+	}
+	return errors.New("--copy-in for non-Git workspaces cannot be used while creating a sandbox yet; create the sandbox first, then run cleanroom workspace copy-in <sandbox-id>")
+}
+
+type repositoryLocalChanges struct {
+	Changeset    *cleanroomv1.RepositoryChangeset
+	CommitBundle *cleanroomv1.RepositoryCommitBundle
+}
+
+func resolveRepositoryLocalChanges(repository *resolvedRepositoryCheckout, copyWorkspace bool) (repositoryLocalChanges, error) {
+	if !copyWorkspace {
+		return repositoryLocalChanges{}, nil
 	}
 	if repository == nil {
-		return nil, errors.New("--include-local-changes requires a repository-aware top-level command")
+		return repositoryLocalChanges{}, nil
 	}
 	if strings.TrimSpace(repository.RootDir) == "" {
-		return nil, errors.New("--include-local-changes requires a local repository checkout")
+		return repositoryLocalChanges{}, errors.New("--copy-in requires a local repository checkout")
+	}
+	if strings.TrimSpace(repository.RemoteName) == "" {
+		return repositoryLocalChanges{}, errors.New("--copy-in requires a named repository remote")
+	}
+
+	commitBundle, err := repositorybundle.BuildFromRepository(repository.RootDir, repository.RemoteName, toRepositoryCheckout(repository))
+	if err != nil {
+		return repositoryLocalChanges{}, fmt.Errorf("package local repository commits: %w", err)
 	}
 
 	changeset, err := repositorychangeset.BuildFromWorkingTree(repository.RootDir, toRepositoryCheckout(repository))
 	if err != nil {
-		return nil, fmt.Errorf("package local repository changes: %w", err)
+		return repositoryLocalChanges{}, fmt.Errorf("package local repository changes: %w", err)
 	}
-	if changeset == nil {
-		return nil, nil
+	out := repositoryLocalChanges{}
+	if commitBundle != nil {
+		out.CommitBundle = commitBundle.ToProto()
 	}
-	return changeset.ToProto(), nil
+	if changeset != nil {
+		out.Changeset = changeset.ToProto()
+	}
+	return out, nil
 }
