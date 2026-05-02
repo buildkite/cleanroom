@@ -40,9 +40,8 @@ repository:
 sandbox:
   image:
     ref: ghcr.io/buildkite/cleanroom-base/alpine-docker@sha256:19c696770ae8f3f36e786bf25a0e08e5a5c18b9a7fe52bde7d988c3da500bf08
-  services:
-    docker:
-      required: true
+  docker:
+    required: true
   network:
     default: deny
     allow:
