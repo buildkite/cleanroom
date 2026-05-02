@@ -70,6 +70,7 @@ type CLI struct {
 	Execution   ExecutionCommand   `cmd:"" help:"Inspect command executions and diagnostics"`
 	Status      StatusCommand      `cmd:"" help:"Browse retained execution artifacts"`
 	Sandbox     SandboxCommand     `cmd:"" help:"Manage sandboxes"`
+	System      SystemCommand      `cmd:"" help:"Inspect and prune host storage"`
 	Version     VersionCommand     `cmd:"" help:"Print version information"`
 }
 

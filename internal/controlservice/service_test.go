@@ -2925,6 +2925,63 @@ func TestCreateSandboxFallsBackWhenWorkspaceStageRestoreFails(t *testing.T) {
 	}
 }
 
+func TestCreateSandboxDoesNotFallbackWhenWorkspaceStageRestoreIsTerminated(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	store := newMemorySnapshotStore()
+	restoreStarted := make(chan struct{})
+	releaseRestore := make(chan struct{})
+	adapter := &stubAdapter{
+		createSnapshotFn: func(_ context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
+			return &backend.SnapshotResult{StorageRef: "/snapshots/" + req.SnapshotID + ".ext4"}, nil
+		},
+	}
+	mirrors := &stubRepositoryMirrorStore{}
+	svc := newTestServiceWithSnapshotStore(adapter, store)
+	svc.RepositoryStore = mirrors
+
+	req := &cleanroomv1.CreateSandboxRequest{
+		Policy:             testRepositoryPolicy(),
+		RepositoryCheckout: testRepositoryCheckoutProto(),
+	}
+
+	if _, err := svc.CreateSandbox(context.Background(), req); err != nil {
+		t.Fatalf("first CreateSandbox returned error: %v", err)
+	}
+	adapter.provisionFromSnapshotFn = func(context.Context, backend.ProvisionFromSnapshotRequest) error {
+		close(restoreStarted)
+		<-releaseRestore
+		return errors.New("snapshot restore interrupted")
+	}
+
+	createDone := make(chan error, 1)
+	go func() {
+		_, err := svc.CreateSandbox(context.Background(), req)
+		createDone <- err
+	}()
+
+	<-restoreStarted
+	sandboxID := requireProvisioningSandboxID(t, svc)
+	if _, err := svc.TerminateSandbox(context.Background(), &cleanroomv1.TerminateSandboxRequest{SandboxId: sandboxID}); err != nil {
+		t.Fatalf("TerminateSandbox returned error: %v", err)
+	}
+	close(releaseRestore)
+	if err := <-createDone; !errors.Is(err, errSandboxCreateAborted) {
+		t.Fatalf("CreateSandbox error = %v, want %v", err, errSandboxCreateAborted)
+	}
+	if got, want := adapter.provisionFromSnapshotCalls, 1; got != want {
+		t.Fatalf("unexpected provision-from-snapshot calls: got %d want %d", got, want)
+	}
+	if got, want := adapter.provisionCalls, 1; got != want {
+		t.Fatalf("terminated restore should not fall back to cold provision: got %d want %d", got, want)
+	}
+	if got, want := adapter.createSnapshotCalls, 1; got != want {
+		t.Fatalf("terminated restore should not republish cache: got %d want %d", got, want)
+	}
+	if got, want := adapter.terminateCalls, 1; got != want {
+		t.Fatalf("unexpected terminate calls: got %d want %d", got, want)
+	}
+}
+
 func TestDeleteWorkspaceStageCacheSnapshotRejectsInFlightRestore(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	store := newMemorySnapshotStore()
@@ -7747,6 +7804,159 @@ func TestListSandboxesReturnsNewestSnapshotFirst(t *testing.T) {
 	if got, want := sandboxes[1].GetSandboxId(), first.ID; got != want {
 		t.Fatalf("unexpected second sandbox id: got %q want %q", got, want)
 	}
+}
+
+func TestListSandboxesIncludesProvisioningSandbox(t *testing.T) {
+	provisionStarted := make(chan struct{})
+	releaseProvision := make(chan struct{})
+	adapter := &stubAdapter{
+		provisionFn: func(context.Context, backend.ProvisionRequest) error {
+			close(provisionStarted)
+			<-releaseProvision
+			return nil
+		},
+	}
+	svc := newTestService(adapter)
+
+	createDone := make(chan error, 1)
+	go func() {
+		_, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+		createDone <- err
+	}()
+
+	<-provisionStarted
+	resp, err := svc.ListSandboxes(context.Background(), &cleanroomv1.ListSandboxesRequest{})
+	if err != nil {
+		t.Fatalf("ListSandboxes returned error: %v", err)
+	}
+	sandboxes := resp.GetSandboxes()
+	if got, want := len(sandboxes), 1; got != want {
+		t.Fatalf("unexpected sandbox count: got %d want %d", got, want)
+	}
+	if got, want := sandboxes[0].GetStatus(), cleanroomv1.SandboxStatus_SANDBOX_STATUS_PROVISIONING; got != want {
+		t.Fatalf("unexpected sandbox status: got %v want %v", got, want)
+	}
+
+	close(releaseProvision)
+	if err := <-createDone; err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+}
+
+func TestCreateSandboxAbortsWhenTerminatedDuringProvision(t *testing.T) {
+	provisionStarted := make(chan struct{})
+	releaseProvision := make(chan struct{})
+	adapter := &stubAdapter{
+		provisionFn: func(context.Context, backend.ProvisionRequest) error {
+			close(provisionStarted)
+			<-releaseProvision
+			return nil
+		},
+	}
+	svc := newTestService(adapter)
+
+	createDone := make(chan error, 1)
+	go func() {
+		_, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+		createDone <- err
+	}()
+
+	<-provisionStarted
+	sandboxID := requireProvisioningSandboxID(t, svc)
+	if _, err := svc.TerminateSandbox(context.Background(), &cleanroomv1.TerminateSandboxRequest{SandboxId: sandboxID}); err != nil {
+		t.Fatalf("TerminateSandbox returned error: %v", err)
+	}
+	close(releaseProvision)
+	if err := <-createDone; !errors.Is(err, errSandboxCreateAborted) {
+		t.Fatalf("CreateSandbox error = %v, want %v", err, errSandboxCreateAborted)
+	}
+
+	resp, err := svc.GetSandbox(context.Background(), &cleanroomv1.GetSandboxRequest{SandboxId: sandboxID})
+	if err != nil {
+		t.Fatalf("GetSandbox returned error: %v", err)
+	}
+	if got, want := resp.GetSandbox().GetStatus(), cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPED; got != want {
+		t.Fatalf("unexpected sandbox status: got %v want %v", got, want)
+	}
+	if got, want := adapter.terminateCalls, 1; got != want {
+		t.Fatalf("unexpected terminate calls: got %d want %d", got, want)
+	}
+}
+
+func TestCreateSandboxFromSnapshotAbortsWhenTerminatedDuringRestore(t *testing.T) {
+	store := newMemorySnapshotStore()
+	restoreStarted := make(chan struct{})
+	releaseRestore := make(chan struct{})
+	adapter := &stubAdapter{
+		createSnapshotFn: func(_ context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
+			return &backend.SnapshotResult{StorageRef: "/snapshots/" + req.SnapshotID + ".ext4"}, nil
+		},
+		provisionFromSnapshotFn: func(context.Context, backend.ProvisionFromSnapshotRequest) error {
+			close(restoreStarted)
+			<-releaseRestore
+			return nil
+		},
+	}
+	svc := newTestServiceWithSnapshotStore(adapter, store)
+
+	sourceResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	snapshotResp, err := svc.CreateSnapshot(context.Background(), &cleanroomv1.CreateSnapshotRequest{
+		SandboxId: sourceResp.GetSandbox().GetSandboxId(),
+		Name:      "base",
+	})
+	if err != nil {
+		t.Fatalf("CreateSnapshot returned error: %v", err)
+	}
+
+	createDone := make(chan error, 1)
+	go func() {
+		_, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+			Source: &cleanroomv1.CreateSandboxRequest_SnapshotId{SnapshotId: snapshotResp.GetSnapshot().GetSnapshotId()},
+		})
+		createDone <- err
+	}()
+
+	<-restoreStarted
+	sandboxID := requireProvisioningSandboxID(t, svc)
+	if _, err := svc.TerminateSandbox(context.Background(), &cleanroomv1.TerminateSandboxRequest{SandboxId: sandboxID}); err != nil {
+		t.Fatalf("TerminateSandbox returned error: %v", err)
+	}
+	close(releaseRestore)
+	if err := <-createDone; !errors.Is(err, errSandboxCreateAborted) {
+		t.Fatalf("CreateSandbox from snapshot error = %v, want %v", err, errSandboxCreateAborted)
+	}
+
+	resp, err := svc.GetSandbox(context.Background(), &cleanroomv1.GetSandboxRequest{SandboxId: sandboxID})
+	if err != nil {
+		t.Fatalf("GetSandbox returned error: %v", err)
+	}
+	if got, want := resp.GetSandbox().GetStatus(), cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPED; got != want {
+		t.Fatalf("unexpected sandbox status: got %v want %v", got, want)
+	}
+	if got, want := adapter.provisionFromSnapshotCalls, 1; got != want {
+		t.Fatalf("unexpected provision-from-snapshot calls: got %d want %d", got, want)
+	}
+	if got, want := adapter.terminateCalls, 1; got != want {
+		t.Fatalf("unexpected terminate calls: got %d want %d", got, want)
+	}
+}
+
+func requireProvisioningSandboxID(t *testing.T, svc *Service) string {
+	t.Helper()
+	resp, err := svc.ListSandboxes(context.Background(), &cleanroomv1.ListSandboxesRequest{})
+	if err != nil {
+		t.Fatalf("ListSandboxes returned error: %v", err)
+	}
+	for _, sandbox := range resp.GetSandboxes() {
+		if sandbox.GetStatus() == cleanroomv1.SandboxStatus_SANDBOX_STATUS_PROVISIONING {
+			return sandbox.GetSandboxId()
+		}
+	}
+	t.Fatalf("no provisioning sandbox in %d sandboxes", len(resp.GetSandboxes()))
+	return ""
 }
 
 func TestExecutionRetentionBoundsOutput(t *testing.T) {
