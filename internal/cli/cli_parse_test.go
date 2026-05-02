@@ -426,6 +426,33 @@ func TestWorkspaceCopyInParses(t *testing.T) {
 	}
 }
 
+func TestWorkspaceCopyOutAndDiffParse(t *testing.T) {
+	t.Run("copy-out", func(t *testing.T) {
+		c := &CLI{}
+		parser := newParserForTest(t, c)
+		if _, err := parser.Parse([]string{"workspace", "copy-out", "--dry-run", "cr_123"}); err != nil {
+			t.Fatalf("parse workspace copy-out returned error: %v", err)
+		}
+		if got, want := c.Workspace.CopyOut.SandboxID, "cr_123"; got != want {
+			t.Fatalf("unexpected workspace copy-out sandbox id: got %q want %q", got, want)
+		}
+		if !c.Workspace.CopyOut.DryRun {
+			t.Fatal("expected workspace copy-out dry-run flag to be set")
+		}
+	})
+
+	t.Run("diff", func(t *testing.T) {
+		c := &CLI{}
+		parser := newParserForTest(t, c)
+		if _, err := parser.Parse([]string{"workspace", "diff", "cr_123"}); err != nil {
+			t.Fatalf("parse workspace diff returned error: %v", err)
+		}
+		if got, want := c.Workspace.Diff.SandboxID, "cr_123"; got != want {
+			t.Fatalf("unexpected workspace diff sandbox id: got %q want %q", got, want)
+		}
+	})
+}
+
 func TestIncludeLocalChangesFlagRejected(t *testing.T) {
 	c := &CLI{}
 	parser := newParserForTest(t, c)
