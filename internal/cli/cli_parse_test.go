@@ -174,6 +174,39 @@ func TestSandboxCreateParses(t *testing.T) {
 	}
 }
 
+func TestSystemCommandsParse(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"system", "df", "--json"}); err != nil {
+		t.Fatalf("parse system df returned error: %v", err)
+	}
+	if !c.System.DF.JSON {
+		t.Fatal("expected system df --json flag to be set")
+	}
+
+	c = &CLI{}
+	parser = newParserForTest(t, c)
+	if _, err := parser.Parse([]string{"system", "prune", "--dry-run", "--all", "--table", "--json", "--older-than", "7d"}); err != nil {
+		t.Fatalf("parse system prune returned error: %v", err)
+	}
+	if !c.System.Prune.DryRun {
+		t.Fatal("expected system prune --dry-run flag to be set")
+	}
+	if !c.System.Prune.All {
+		t.Fatal("expected system prune --all flag to be set")
+	}
+	if !c.System.Prune.Table {
+		t.Fatal("expected system prune --table flag to be set")
+	}
+	if !c.System.Prune.JSON {
+		t.Fatal("expected system prune --json flag to be set")
+	}
+	if got, want := c.System.Prune.OlderThan, "7d"; got != want {
+		t.Fatalf("unexpected older-than: got %q want %q", got, want)
+	}
+}
+
 func TestSandboxCreateRejectsExposureFlags(t *testing.T) {
 	c := &CLI{}
 	parser := newParserForTest(t, c)
