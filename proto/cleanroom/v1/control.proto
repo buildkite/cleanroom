@@ -23,6 +23,7 @@ service SandboxService {
   rpc ExtractSandboxArchive(stream ExtractSandboxArchiveRequest) returns (ExtractSandboxArchiveResponse);
   rpc TerminateSandbox(TerminateSandboxRequest) returns (TerminateSandboxResponse);
   rpc StreamSandboxEvents(StreamSandboxEventsRequest) returns (stream SandboxEvent);
+  rpc DialSandboxPort(stream SandboxPortFrame) returns (stream SandboxPortFrame);
 }
 
 service SnapshotService {
@@ -57,7 +58,33 @@ message Sandbox {
   string source_id = 10;
   string backing_snapshot_id = 11;
   RepositoryCheckout repository_checkout = 12;
+  map<string, bool> backend_capabilities = 13;
 }
+
+message PortExposure {
+  string protocol = 1;
+  int32 guest_port = 2;
+  int32 host_port = 3;
+  string name = 4;
+  string hostname = 5;
+  string url = 6;
+}
+
+message SandboxPortFrame {
+  oneof payload {
+    SandboxPortOpen open = 1;
+    bytes data = 2;
+    SandboxPortCloseWrite close_write = 3;
+    SandboxPortOpenResult open_result = 4;
+  }
+}
+
+message SandboxPortOpen {
+  string sandbox_id = 1;
+  int32 guest_port = 2;
+}
+
+message SandboxPortCloseWrite {}
 
 message Snapshot {
   string snapshot_id = 1;
@@ -598,4 +625,8 @@ message ExecutionStreamEvent {
   google.protobuf.Timestamp occurred_at = 8;
   string image_ref = 9;
   string image_digest = 10;
+}
+
+message SandboxPortOpenResult {
+  string error = 1;
 }

@@ -257,6 +257,13 @@ func (g *fileHandleGateway) SetPolicy(sandboxID string, compiled *policy.Compile
 	return g.network.SetPolicy(sandboxID, compiled)
 }
 
+func (g *fileHandleGateway) DialTCP(ctx context.Context, guestIP string, port int) (net.Conn, error) {
+	if g == nil || g.network == nil {
+		return nil, errors.New("file-handle gateway is not running")
+	}
+	return g.network.DialTCP(ctx, guestIP, port)
+}
+
 func newFileHandleDNSRuntime(sandboxID string, compiled *policy.CompiledPolicy) (*dnsproxy.Runtime, error) {
 	if compiled == nil {
 		return nil, nil
@@ -618,6 +625,24 @@ func closeTCPProxyConns(conns []*fileHandleTCPProxyConn) {
 			_ = conn.outbound.Close()
 		}
 	}
+}
+
+func (n *fileHandleVirtualNetwork) DialTCP(ctx context.Context, guestIP string, port int) (net.Conn, error) {
+	if n == nil || n.stack == nil {
+		return nil, errors.New("file-handle virtual network is not running")
+	}
+	if port < 1 || port > 65535 {
+		return nil, fmt.Errorf("port %d out of range 1-65535", port)
+	}
+	ip := net.ParseIP(strings.TrimSpace(guestIP)).To4()
+	if ip == nil {
+		return nil, fmt.Errorf("invalid guest ip %q", guestIP)
+	}
+	return gonet.DialContextTCP(ctx, n.stack, tcpip.FullAddress{
+		NIC:  1,
+		Addr: tcpip.AddrFrom4Slice(ip),
+		Port: uint16(port),
+	}, ipv4.ProtocolNumber)
 }
 
 func (n *fileHandleVirtualNetwork) Close() error {

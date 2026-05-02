@@ -303,8 +303,10 @@ func runSandboxCreate(ctx *runtimeContext, connectFlags clientFlags, backend, fr
 		return enc.Encode(sandbox)
 	}
 
-	_, err = fmt.Fprintln(ctx.Stdout, sandboxID)
-	return err
+	if _, err := fmt.Fprintln(ctx.Stdout, sandboxID); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (c *SandboxCreateCommand) Run(ctx *runtimeContext) error {
@@ -350,8 +352,10 @@ func (c *CreateCommand) Run(ctx *runtimeContext) error {
 		enc.SetIndent("", "  ")
 		return enc.Encode(sandbox)
 	}
-	_, err = fmt.Fprintln(ctx.Stdout, sandboxID)
-	return err
+	if _, err := fmt.Fprintln(ctx.Stdout, sandboxID); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (c *CreateCommand) validate() error {

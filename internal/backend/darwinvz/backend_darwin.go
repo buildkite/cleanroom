@@ -309,6 +309,7 @@ func (a *Adapter) Capabilities() map[string]bool {
 		backend.CapabilityNetworkStageScopedEgress: allowlistSupported && dnsControlSupported,
 		backend.CapabilityDNSControlOrEquivalent:   dnsControlSupported,
 		backend.CapabilityNetworkGuestInterface:    true,
+		backend.CapabilitySandboxPortDial:          configuredMode == darwinVZNetworkModeFileHandle,
 	}
 }
 
@@ -570,6 +571,37 @@ func (a *Adapter) TerminateSandbox(_ context.Context, sandboxID string) error {
 
 	instance.shutdown()
 	return nil
+}
+
+func (a *Adapter) DialSandboxPort(ctx context.Context, sandboxID string, port int) (net.Conn, error) {
+	sandboxID = strings.TrimSpace(sandboxID)
+	if sandboxID == "" {
+		return nil, errors.New("missing sandbox_id")
+	}
+	if port < 1 || port > 65535 {
+		return nil, fmt.Errorf("port %d out of range 1-65535", port)
+	}
+
+	a.sandboxMu.Lock()
+	instance, ok := a.sandboxes[sandboxID]
+	a.sandboxMu.Unlock()
+	if !ok {
+		return nil, fmt.Errorf("unknown sandbox %q", sandboxID)
+	}
+	if err := instance.exitedErrOrNil(); err != nil {
+		return nil, fmt.Errorf("sandbox %q is not running: %w", sandboxID, err)
+	}
+	if instance.FileHandleGateway == nil {
+		return nil, fmt.Errorf("sandbox %q does not have a filehandle network gateway", sandboxID)
+	}
+	guestIP := ""
+	if instance.NetworkMetadata != nil {
+		guestIP = strings.TrimSpace(instance.NetworkMetadata.GuestIP)
+	}
+	if guestIP == "" {
+		return nil, fmt.Errorf("sandbox %q has no guest ip", sandboxID)
+	}
+	return instance.FileHandleGateway.DialTCP(ctx, guestIP, port)
 }
 
 func (a *Adapter) CreateSnapshot(ctx context.Context, req backend.SnapshotRequest) (result *backend.SnapshotResult, retErr error) {

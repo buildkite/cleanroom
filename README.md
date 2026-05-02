@@ -71,7 +71,7 @@ config examples, and trace diagnostics, see [docs/observability.md](docs/observa
 Install as a daemon:
 
 ```bash
-# macOS: installs a user LaunchAgent (user-scope only)
+# macOS: installs a user LaunchAgent
 cleanroom daemon install --restart
 
 # Linux (systemd)
@@ -81,8 +81,8 @@ sudo cleanroom daemon install --restart
 Use `cleanroom daemon install --init-config --restart` for first-run bootstrap
 when the runtime config file does not exist yet.
 Use `cleanroom daemon restart --force` to start the daemon again if it is
-currently stopped. On macOS, `--system` is unsupported; `--user` is accepted
-for explicitness.
+currently stopped. `--system` is unsupported on macOS; `--user` is accepted for
+explicitness.
 
 Manage the daemon lifecycle:
 
@@ -98,6 +98,22 @@ The system daemon socket is root-owned (`unix:///var/run/cleanroom/cleanroom.soc
 so client commands against that daemon should be run with `sudo` unless you
 configure an alternate endpoint. User-scope daemons listen on the runtime socket
 (`unix://$XDG_RUNTIME_DIR/cleanroom/cleanroom.sock` when `XDG_RUNTIME_DIR` is set).
+
+Install host DNS and local HTTPS trust for named exposures on macOS:
+
+```bash
+sudo cleanroom dns install
+```
+
+This installs `/etc/resolver/cleanroom.localhost`, creates a managed local
+exposure certificate under the invoking user's Cleanroom TLS directory, and
+trusts that certificate for SSL in the invoking user's login keychain.
+`cleanroom dns status` reports both resolver and certificate trust state.
+`cleanroom dns uninstall` removes the managed resolver and certificate
+material. The foreground `exec`, `expose`, or `port-forward` process owns, or
+takes over, the local DNS server while exposures are live. HTTPS exposures use
+`127.0.0.1:8143` when available; parallel exposure processes fall back to another
+loopback port and print that port in their URLs.
 
 Run a command in a sandbox:
 
@@ -185,6 +201,26 @@ cleanroom sandbox ls
 cleanroom exec --in <id> -- npm run lint
 cleanroom exec --in <id> -- npm run build
 ```
+
+Expose sandbox ports for local development:
+
+```bash
+# Raw TCP: host 127.0.0.1:15432 -> sandbox port 5432
+cleanroom exec --expose 15432:5432 -- postgres
+
+# HTTPS route, usually https://buildkite.cleanroom.localhost:8143
+cleanroom exec --expose-https buildkite:3000 -- npm run dev
+
+# Keep forwarding from this client to an existing sandbox
+cleanroom expose --in <id> --expose-https buildkite:3000
+cleanroom port-forward --in <id> 15432:5432
+```
+
+`--expose <port>` maps the same host and guest port. `--expose-https <port>`
+uses the sandbox ID as the hostname label, and `--expose-https <name>:<port>`
+uses the provided DNS label under `cleanroom.localhost`. Exposure requests are
+owned by the client process that starts them; they are not stored in
+`cleanroom.yaml` or the sandbox record.
 
 Copy a one-off file into or out of a kept sandbox:
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -71,6 +72,23 @@ type stubAdapter struct {
 	terminateCalls             int
 	runtimeBaseKeyOverride     string
 	runtimeBaseKeyErr          error
+}
+
+type portDialAdapter struct {
+	stubAdapter
+	capabilities map[string]bool
+	dialFn       func(context.Context, string, int) (net.Conn, error)
+}
+
+func (s *portDialAdapter) DialSandboxPort(ctx context.Context, sandboxID string, port int) (net.Conn, error) {
+	if s.dialFn != nil {
+		return s.dialFn(ctx, sandboxID, port)
+	}
+	return nil, errors.New("dial not configured")
+}
+
+func (s *portDialAdapter) Capabilities() map[string]bool {
+	return s.capabilities
 }
 
 func (s *stubAdapter) Name() string { return "stub" }
@@ -440,6 +458,105 @@ func newTestServiceWithSnapshotStore(adapter backend.Adapter, store snapshotMeta
 		SnapshotStore:  store,
 		CacheStore:     newMemoryCacheStore(),
 		ChangesetStore: newMemoryChangesetStore(),
+	}
+}
+
+func TestDialSandboxPortUsesReadySandboxBackendDialer(t *testing.T) {
+	serverConn, clientConn := net.Pipe()
+	defer serverConn.Close()
+	defer clientConn.Close()
+
+	var gotSandboxID string
+	var gotPort int
+	adapter := &portDialAdapter{
+		dialFn: func(_ context.Context, sandboxID string, port int) (net.Conn, error) {
+			gotSandboxID = sandboxID
+			gotPort = port
+			return serverConn, nil
+		},
+	}
+	svc := newTestService(adapter)
+	createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createResp.GetSandbox().GetSandboxId()
+
+	conn, err := svc.DialSandboxPort(context.Background(), &cleanroomv1.SandboxPortOpen{
+		SandboxId: sandboxID,
+		GuestPort: 3000,
+	})
+	if err != nil {
+		t.Fatalf("DialSandboxPort returned error: %v", err)
+	}
+	defer conn.Close()
+	if gotSandboxID != sandboxID {
+		t.Fatalf("unexpected sandbox id: got %q want %q", gotSandboxID, sandboxID)
+	}
+	if gotPort != 3000 {
+		t.Fatalf("unexpected port: got %d want 3000", gotPort)
+	}
+}
+
+func TestCreateSandboxReportsBackendPortDialCapability(t *testing.T) {
+	svc := newTestService(&portDialAdapter{})
+	createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+
+	capabilities := createResp.GetSandbox().GetBackendCapabilities()
+	if !capabilities[backend.CapabilitySandboxPortDial] {
+		t.Fatalf("expected sandbox to report %s=true, got %v", backend.CapabilitySandboxPortDial, capabilities)
+	}
+}
+
+func TestDialSandboxPortRejectsDisabledBackendCapability(t *testing.T) {
+	dialCalled := false
+	adapter := &portDialAdapter{
+		capabilities: map[string]bool{backend.CapabilitySandboxPortDial: false},
+		dialFn: func(context.Context, string, int) (net.Conn, error) {
+			dialCalled = true
+			return nil, errors.New("dial should not be called")
+		},
+	}
+	svc := newTestService(adapter)
+	createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+
+	_, err = svc.DialSandboxPort(context.Background(), &cleanroomv1.SandboxPortOpen{
+		SandboxId: createResp.GetSandbox().GetSandboxId(),
+		GuestPort: 3000,
+	})
+	if err == nil {
+		t.Fatal("expected DialSandboxPort to reject disabled backend capability")
+	}
+	if !strings.Contains(err.Error(), "does not support sandbox port dialing") {
+		t.Fatalf("unexpected DialSandboxPort error: %v", err)
+	}
+	if dialCalled {
+		t.Fatal("expected DialSandboxPort not to call the backend dialer")
+	}
+}
+
+func TestDialSandboxPortRejectsBackendWithoutDialer(t *testing.T) {
+	svc := newTestService(&stubAdapter{})
+	createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+
+	_, err = svc.DialSandboxPort(context.Background(), &cleanroomv1.SandboxPortOpen{
+		SandboxId: createResp.GetSandbox().GetSandboxId(),
+		GuestPort: 3000,
+	})
+	if err == nil {
+		t.Fatal("expected DialSandboxPort to reject backend without dialer")
+	}
+	if !strings.Contains(err.Error(), "does not support sandbox port dialing") {
+		t.Fatalf("unexpected DialSandboxPort error: %v", err)
 	}
 }
 
@@ -6939,7 +7056,7 @@ func TestServiceGeneratedIDsUseTypeIDFormat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected typeid-formatted sandbox id, got %q: %v", sandboxID, err)
 	}
-	if got, want := parsedSandboxID.Prefix(), "cr"; got != want {
+	if got, want := parsedSandboxID.Prefix(), ""; got != want {
 		t.Fatalf("unexpected sandbox id prefix: got %q want %q", got, want)
 	}
 

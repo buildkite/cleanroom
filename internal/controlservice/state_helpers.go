@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/buildkite/cleanroom/internal/backend"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -129,18 +130,19 @@ func cloneSandboxLocked(state *sandboxState) *cleanroomv1.Sandbox {
 		policyHash = state.Policy.Hash
 	}
 	return &cleanroomv1.Sandbox{
-		SandboxId:          state.ID,
-		Status:             state.Status,
-		Backend:            state.Backend,
-		PolicyHash:         policyHash,
-		CreatedAt:          timestamppb.New(state.CreatedAt),
-		UpdatedAt:          timestamppb.New(state.UpdatedAt),
-		LastExecutionId:    state.LastExecutionID,
-		ActiveExecutionId:  state.ActiveExecutionID,
-		SourceKind:         state.SourceKind,
-		SourceId:           state.SourceID,
-		BackingSnapshotId:  state.BackingSnapshotID,
-		RepositoryCheckout: cloneRepositoryCheckout(state.Repository).ToProto(),
+		SandboxId:           state.ID,
+		Status:              state.Status,
+		Backend:             state.Backend,
+		PolicyHash:          policyHash,
+		CreatedAt:           timestamppb.New(state.CreatedAt),
+		UpdatedAt:           timestamppb.New(state.UpdatedAt),
+		LastExecutionId:     state.LastExecutionID,
+		ActiveExecutionId:   state.ActiveExecutionID,
+		SourceKind:          state.SourceKind,
+		SourceId:            state.SourceID,
+		BackingSnapshotId:   state.BackingSnapshotID,
+		RepositoryCheckout:  cloneRepositoryCheckout(state.Repository).ToProto(),
+		BackendCapabilities: backend.CloneCapabilities(state.Capabilities),
 	}
 }
 

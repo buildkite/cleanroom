@@ -174,6 +174,52 @@ func TestSandboxCreateParses(t *testing.T) {
 	}
 }
 
+func TestSandboxCreateRejectsExposureFlags(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	_, err := parser.Parse([]string{"sandbox", "create", "--expose", "15432:5432"})
+	if err == nil {
+		t.Fatal("expected sandbox create --expose to be rejected")
+	}
+	if !strings.Contains(err.Error(), "unknown flag") || !strings.Contains(err.Error(), "--expose") {
+		t.Fatalf("expected unknown flag parse error, got %v", err)
+	}
+}
+
+func TestExposeParsesExposureFlags(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"expose", "--in", "sandbox123", "--expose", "15432:5432", "--expose-https", "buildkite:3000"}); err != nil {
+		t.Fatalf("parse expose returned error: %v", err)
+	}
+	if got, want := c.Expose.SandboxID, "sandbox123"; got != want {
+		t.Fatalf("unexpected expose sandbox id: got %q want %q", got, want)
+	}
+	if got, want := c.Expose.Expose, []string{"15432:5432"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected expose --expose values: got %v want %v", got, want)
+	}
+	if got, want := c.Expose.ExposeHTTPS, []string{"buildkite:3000"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected expose --expose-https values: got %v want %v", got, want)
+	}
+}
+
+func TestPortForwardParsesSpecs(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"port-forward", "--in", "sandbox123", "3000", "15432:5432"}); err != nil {
+		t.Fatalf("parse port-forward returned error: %v", err)
+	}
+	if got, want := c.PortForward.SandboxID, "sandbox123"; got != want {
+		t.Fatalf("unexpected port-forward sandbox id: got %q want %q", got, want)
+	}
+	if got, want := c.PortForward.Specs, []string{"3000", "15432:5432"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected port-forward specs: got %v want %v", got, want)
+	}
+}
+
 func TestSandboxListParsesAllFlag(t *testing.T) {
 	c := &CLI{}
 	parser := newParserForTest(t, c)
@@ -406,6 +452,24 @@ func TestExecParsesImageOverride(t *testing.T) {
 	}
 }
 
+func TestExecParsesExposureFlags(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"exec", "--expose", "5432", "--expose-https", "buildkite:3000", "--", "npm", "run", "dev"}); err != nil {
+		t.Fatalf("parse exec exposure flags returned error: %v", err)
+	}
+	if got, want := c.Exec.Expose, []string{"5432"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected exec --expose values: got %v want %v", got, want)
+	}
+	if got, want := c.Exec.ExposeHTTPS, []string{"buildkite:3000"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected exec --expose-https values: got %v want %v", got, want)
+	}
+	if got, want := trimPassthroughSeparator(c.Exec.Command), []string{"npm", "run", "dev"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected exec command: got %v want %v", got, want)
+	}
+}
+
 func TestExecParsesDangerouslyAllowAll(t *testing.T) {
 	c := &CLI{}
 	parser := newParserForTest(t, c)
@@ -634,6 +698,15 @@ func TestServeCommandParses(t *testing.T) {
 	}
 }
 
+func TestServeCommandRejectsExposureListenFlags(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"serve", "--exposure-dns-listen", "127.0.0.1:1153"}); err == nil {
+		t.Fatal("expected parse error for removed serve exposure listen flag")
+	}
+}
+
 func TestRuntimeServiceNameUsesDescriptiveNames(t *testing.T) {
 	c := &CLI{}
 	parser := newParserForTest(t, c)
@@ -780,6 +853,27 @@ func TestDaemonInstallRestartFlagsParse(t *testing.T) {
 	}
 	if !c.Daemon.DryRun {
 		t.Fatal("expected --dry-run to set Daemon.DryRun")
+	}
+}
+
+func TestDNSInstallParses(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"dns", "install"}); err != nil {
+		t.Fatalf("parse dns install returned error: %v", err)
+	}
+	if got, want := c.DNS.Action, "install"; got != want {
+		t.Fatalf("expected dns action install, got %q", got)
+	}
+}
+
+func TestDNSInstallRejectsListenFlag(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"dns", "install", "--listen", "127.0.0.1:1153"}); err == nil {
+		t.Fatal("expected parse error for removed dns listen flag")
 	}
 }
 

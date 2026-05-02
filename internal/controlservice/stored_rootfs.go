@@ -159,6 +159,7 @@ func (s *Service) createSandboxFromStoredRootFS(ctx context.Context, req *cleanr
 	state := &sandboxState{
 		ID:                                  sandboxID,
 		Backend:                             backendName,
+		Capabilities:                        backend.CapabilitiesForAdapter(adapter),
 		Policy:                              effectivePolicy,
 		Firecracker:                         firecrackerCfg,
 		Repository:                          cloneRepositoryCheckout(record.Repository),

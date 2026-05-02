@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"os"
 	"path/filepath"
 	"sort"
@@ -66,6 +67,7 @@ type Service struct {
 type sandboxState struct {
 	ID                                  string
 	Backend                             string
+	Capabilities                        map[string]bool
 	Policy                              *policy.CompiledPolicy
 	Firecracker                         backend.FirecrackerConfig
 	Repository                          *repositorycheckout.Checkout
@@ -886,6 +888,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	state := &sandboxState{
 		ID:                                  sandboxID,
 		Backend:                             backendName,
+		Capabilities:                        backend.CapabilitiesForAdapter(adapter),
 		Policy:                              compiled,
 		Firecracker:                         firecrackerCfg,
 		Repository:                          cloneRepositoryCheckout(repository),
@@ -1530,6 +1533,49 @@ func (s *Service) ReadSandboxFile(ctx context.Context, req *cleanroomv1.ReadSand
 		return fmt.Errorf("read sandbox file: %w", err)
 	}
 	return nil
+}
+
+func (s *Service) DialSandboxPort(ctx context.Context, req *cleanroomv1.SandboxPortOpen) (net.Conn, error) {
+	if req == nil {
+		return nil, errors.New("missing sandbox port open request")
+	}
+	sandboxID := strings.TrimSpace(req.GetSandboxId())
+	if sandboxID == "" {
+		return nil, errors.New("missing sandbox_id")
+	}
+	port := int(req.GetGuestPort())
+	if port < 1 || port > 65535 {
+		return nil, fmt.Errorf("invalid guest port %d", port)
+	}
+
+	s.mu.RLock()
+	state, ok := s.sandboxes[sandboxID]
+	if !ok {
+		s.mu.RUnlock()
+		return nil, fmt.Errorf("unknown sandbox %q", sandboxID)
+	}
+	if state.Status != cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY {
+		s.mu.RUnlock()
+		return nil, fmt.Errorf("sandbox %q is not ready", sandboxID)
+	}
+	adapter, ok := s.Backends[state.Backend]
+	backendName := state.Backend
+	capabilities := state.Capabilities
+	s.mu.RUnlock()
+	if !ok {
+		return nil, fmt.Errorf("unknown backend %q", backendName)
+	}
+	if capabilities == nil {
+		capabilities = backend.CapabilitiesForAdapter(adapter)
+	}
+	if !capabilities[backend.CapabilitySandboxPortDial] {
+		return nil, fmt.Errorf("backend %q does not support sandbox port dialing", backendName)
+	}
+	dialer, ok := adapter.(backend.SandboxPortDialer)
+	if !ok {
+		return nil, fmt.Errorf("backend %q does not support sandbox port dialing", backendName)
+	}
+	return dialer.DialSandboxPort(ctx, sandboxID, port)
 }
 
 func (s *Service) WriteSandboxFile(ctx context.Context, init *cleanroomv1.WriteSandboxFileInit, r io.Reader) (*cleanroomv1.WriteSandboxFileResponse, error) {

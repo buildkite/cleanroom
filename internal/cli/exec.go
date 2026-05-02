@@ -28,6 +28,8 @@ type ExecCommand struct {
 	Keep                bool     `help:"Keep a newly created sandbox after the command completes"`
 	DangerouslyAllowAll bool     `name:"dangerously-allow-all" help:"Disable network egress filtering for a newly created sandbox"`
 	Env                 []string `short:"e" name:"env" help:"Set guest environment variables; use KEY to inherit from the local environment or KEY=VALUE to set an explicit value"`
+	Expose              []string `name:"expose" help:"Expose raw TCP as <guest-port> or <host-port>:<guest-port>"`
+	ExposeHTTPS         []string `name:"expose-https" help:"Expose HTTPS as [name:]<guest-port> under cleanroom.localhost"`
 	TTY                 bool     `name:"tty" help:"Allocate a tty and attach through the interactive transport; stdout and stderr merge into a single stream"`
 	NoStdin             bool     `short:"n" name:"no-stdin" aliases:"stdin-eof" help:"Close stdin immediately instead of attaching it"`
 	PrintSandboxID      bool     `name:"print-sandbox-id" help:"Print resolved sandbox_id=<id> to stderr before streaming output"`
@@ -95,6 +97,10 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 		return err
 	}
 	executionEnv, err := resolveExecutionEnv(e.Env)
+	if err != nil {
+		return err
+	}
+	exposures, err := parseExposureFlags(e.Expose, e.ExposeHTTPS)
 	if err != nil {
 		return err
 	}
@@ -167,6 +173,16 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 	}()
 	if e.PrintSandboxID {
 		if err := printSandboxID(); err != nil {
+			return err
+		}
+	}
+	exposureManager, exposed, err := startClientExposures(rootCtx, client, sandboxID, exposures)
+	if err != nil {
+		return err
+	}
+	if exposureManager != nil {
+		defer exposureManager.Close()
+		if err := writeExposureLines(os.Stderr, exposed); err != nil {
 			return err
 		}
 	}
