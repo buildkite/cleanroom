@@ -102,6 +102,7 @@ type fileHandleGatewayHTTPBridge struct {
 type fileHandleTCPProxyConn struct {
 	guest    net.Conn
 	outbound net.Conn
+	cancel   context.CancelFunc
 }
 
 var (
@@ -476,12 +477,15 @@ func newFileHandleVirtualNetwork(cfg fileHandleGatewayConfig, dnsUpstreamAddr st
 			return
 		}
 
-		outbound, err := net.Dial("tcp", fmt.Sprintf("%s:%d", destIP.String(), r.ID().LocalPort))
+		dialCtx, cancelDial := context.WithCancel(context.Background())
+		tracked, untrack := network.trackTCPProxyConnLocked(cancelDial)
+		network.activeMu.Unlock()
+		outbound, err := new(net.Dialer).DialContext(dialCtx, "tcp", fmt.Sprintf("%s:%d", destIP.String(), r.ID().LocalPort))
 		if err != nil {
+			untrack()
 			if dnsRuntime != nil {
 				dnsRuntime.ReleaseConnection(conn)
 			}
-			network.activeMu.Unlock()
 			r.Complete(true)
 			return
 		}
@@ -490,11 +494,11 @@ func newFileHandleVirtualNetwork(cfg fileHandleGatewayConfig, dnsUpstreamAddr st
 		ep, tcpErr := r.CreateEndpoint(&wq)
 		r.Complete(false)
 		if tcpErr != nil {
+			untrack()
 			_ = outbound.Close()
 			if dnsRuntime != nil {
 				dnsRuntime.ReleaseConnection(conn)
 			}
-			network.activeMu.Unlock()
 			return
 		}
 
@@ -504,8 +508,15 @@ func newFileHandleVirtualNetwork(cfg fileHandleGatewayConfig, dnsUpstreamAddr st
 			},
 		}
 		guestConn := gonet.NewTCPConn(&wq, ep)
-		untrack := network.trackTCPProxyConnLocked(guestConn, outbound)
-		network.activeMu.Unlock()
+		if !network.activateTCPProxyConn(tracked, guestConn, outbound) {
+			untrack()
+			_ = guestConn.Close()
+			_ = outbound.Close()
+			if dnsRuntime != nil {
+				dnsRuntime.ReleaseConnection(conn)
+			}
+			return
+		}
 		defer untrack()
 		remote.HandleConn(guestConn)
 		if dnsRuntime != nil {
@@ -538,22 +549,42 @@ func (n *fileHandleVirtualNetwork) trackTCPProxyConn(guest, outbound net.Conn) f
 		return func() {}
 	}
 	n.activeMu.Lock()
-	untrack := n.trackTCPProxyConnLocked(guest, outbound)
+	tracked, untrack := n.trackTCPProxyConnLocked(nil)
+	tracked.guest = guest
+	tracked.outbound = outbound
 	n.activeMu.Unlock()
 	return untrack
 }
 
-func (n *fileHandleVirtualNetwork) trackTCPProxyConnLocked(guest, outbound net.Conn) func() {
-	tracked := &fileHandleTCPProxyConn{guest: guest, outbound: outbound}
+func (n *fileHandleVirtualNetwork) trackTCPProxyConnLocked(cancel context.CancelFunc) (*fileHandleTCPProxyConn, func()) {
+	tracked := &fileHandleTCPProxyConn{cancel: cancel}
 	if n.activeTCP == nil {
 		n.activeTCP = make(map[*fileHandleTCPProxyConn]struct{})
 	}
 	n.activeTCP[tracked] = struct{}{}
-	return func() {
+	untrack := func() {
+		if cancel != nil {
+			cancel()
+		}
 		n.activeMu.Lock()
 		delete(n.activeTCP, tracked)
 		n.activeMu.Unlock()
 	}
+	return tracked, untrack
+}
+
+func (n *fileHandleVirtualNetwork) activateTCPProxyConn(tracked *fileHandleTCPProxyConn, guest, outbound net.Conn) bool {
+	if n == nil || tracked == nil {
+		return false
+	}
+	n.activeMu.Lock()
+	defer n.activeMu.Unlock()
+	if _, ok := n.activeTCP[tracked]; !ok {
+		return false
+	}
+	tracked.guest = guest
+	tracked.outbound = outbound
+	return true
 }
 
 func (n *fileHandleVirtualNetwork) closeActiveTCPProxyConns() {
@@ -577,6 +608,9 @@ func (n *fileHandleVirtualNetwork) drainActiveTCPProxyConnsLocked() []*fileHandl
 
 func closeTCPProxyConns(conns []*fileHandleTCPProxyConn) {
 	for _, conn := range conns {
+		if conn.cancel != nil {
+			conn.cancel()
+		}
 		if conn.guest != nil {
 			_ = conn.guest.Close()
 		}

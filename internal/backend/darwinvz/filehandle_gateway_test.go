@@ -226,6 +226,46 @@ func TestFileHandleVirtualNetworkSetPolicyClosesActiveTCPProxyConnections(t *tes
 	}
 }
 
+func TestFileHandleVirtualNetworkSetPolicyCancelsPendingTCPProxyDial(t *testing.T) {
+	t.Parallel()
+
+	runtime, err := newFileHandleDNSRuntime("sandbox-1", &policy.CompiledPolicy{
+		NetworkDefault: "deny",
+		Allow: []policy.AllowRule{
+			{Host: "old.example", Ports: []int{443}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("newFileHandleDNSRuntime returned error: %v", err)
+	}
+	network := &fileHandleVirtualNetwork{dnsRuntime: runtime}
+	dialCtx, cancelDial := context.WithCancel(context.Background())
+	network.activeMu.Lock()
+	_, untrack := network.trackTCPProxyConnLocked(cancelDial)
+	network.activeMu.Unlock()
+	defer untrack()
+
+	if err := network.SetPolicy("sandbox-1", &policy.CompiledPolicy{
+		NetworkDefault: "deny",
+		Allow: []policy.AllowRule{
+			{Host: "new.example", Ports: []int{443}},
+		},
+	}); err != nil {
+		t.Fatalf("SetPolicy returned error: %v", err)
+	}
+	select {
+	case <-dialCtx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for pending TCP proxy dial to be canceled")
+	}
+	if runtime.HostAllowedByPolicy("sandbox-1", "old.example") {
+		t.Fatal("did not expect old policy host to remain allowed")
+	}
+	if !runtime.HostAllowedByPolicy("sandbox-1", "new.example") {
+		t.Fatal("expected new policy host to be allowed")
+	}
+}
+
 func TestFileHandleVirtualNetworkSetPolicySerializesWithTCPAdmission(t *testing.T) {
 	t.Parallel()
 
