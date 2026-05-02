@@ -12,21 +12,22 @@ import (
 )
 
 const (
-	CapabilityExecStreaming          = "exec.streaming"
-	CapabilitySandboxSnapshot        = "sandbox.snapshot"
-	CapabilitySandboxFileDownload    = "sandbox.file_download"
-	CapabilitySandboxFileUpload      = "sandbox.file_upload"
-	CapabilitySandboxPathStat        = "sandbox.path_stat"
-	CapabilitySandboxTreeWalk        = "sandbox.tree_walk"
-	CapabilitySandboxFileRead        = "sandbox.file_read"
-	CapabilitySandboxFileWrite       = "sandbox.file_write"
-	CapabilitySandboxPathRemove      = "sandbox.path_remove"
-	CapabilitySandboxArchiveRead     = "sandbox.archive_read"
-	CapabilitySandboxArchiveWrite    = "sandbox.archive_write"
-	CapabilityNetworkDefaultDeny     = "network.default_deny"
-	CapabilityNetworkAllowlistEgress = "network.allowlist_egress"
-	CapabilityDNSControlOrEquivalent = "dns_control_or_equivalent"
-	CapabilityNetworkGuestInterface  = "network.guest_interface"
+	CapabilityExecStreaming            = "exec.streaming"
+	CapabilitySandboxSnapshot          = "sandbox.snapshot"
+	CapabilitySandboxFileDownload      = "sandbox.file_download"
+	CapabilitySandboxFileUpload        = "sandbox.file_upload"
+	CapabilitySandboxPathStat          = "sandbox.path_stat"
+	CapabilitySandboxTreeWalk          = "sandbox.tree_walk"
+	CapabilitySandboxFileRead          = "sandbox.file_read"
+	CapabilitySandboxFileWrite         = "sandbox.file_write"
+	CapabilitySandboxPathRemove        = "sandbox.path_remove"
+	CapabilitySandboxArchiveRead       = "sandbox.archive_read"
+	CapabilitySandboxArchiveWrite      = "sandbox.archive_write"
+	CapabilityNetworkDefaultDeny       = "network.default_deny"
+	CapabilityNetworkAllowlistEgress   = "network.allowlist_egress"
+	CapabilityNetworkStageScopedEgress = "network.stage_scoped_egress"
+	CapabilityDNSControlOrEquivalent   = "dns_control_or_equivalent"
+	CapabilityNetworkGuestInterface    = "network.guest_interface"
 )
 
 var knownCapabilityKeys = []string{
@@ -43,6 +44,7 @@ var knownCapabilityKeys = []string{
 	CapabilitySandboxArchiveWrite,
 	CapabilityNetworkDefaultDeny,
 	CapabilityNetworkAllowlistEgress,
+	CapabilityNetworkStageScopedEgress,
 	CapabilityDNSControlOrEquivalent,
 	CapabilityNetworkGuestInterface,
 }
@@ -263,12 +265,13 @@ type OutputStream struct {
 }
 
 type ExecutionRequest struct {
-	SandboxID   string
-	ExecutionID string
-	Command     []string
-	Env         []string
-	TTY         bool
-	Policy      *policy.CompiledPolicy
+	SandboxID    string
+	ExecutionID  string
+	Command      []string
+	Env          []string
+	TTY          bool
+	Policy       *policy.CompiledPolicy
+	NetworkStage policy.NetworkStage
 	FirecrackerConfig
 }
 

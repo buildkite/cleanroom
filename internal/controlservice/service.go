@@ -2743,6 +2743,7 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 		Env:               append([]string(nil), ex.Env...),
 		TTY:               ex.TTY,
 		Policy:            sb.Policy,
+		NetworkStage:      policy.NetworkStageExecution,
 		FirecrackerConfig: firecrackerCfg,
 	}
 	runCtx, span := s.Observability.Tracer("github.com/buildkite/cleanroom/internal/controlservice").Start(
@@ -2767,7 +2768,7 @@ func (s *Service) runExecution(sandboxID, executionID string) {
 
 	if len(preRunBefore) > 0 {
 		preRunExecutionID := s.ids().NewExecutionID()
-		preRunResult, preRunErr := s.runPersistentSandboxCommand(runCtx, adapter, sandboxID, sb.Policy, firecrackerCfg, preRunExecutionID, preRunBefore, ex.Env, s.executionAuxOutputStream(key))
+		preRunResult, preRunErr := s.runPersistentSandboxCommand(runCtx, adapter, sandboxID, sb.Policy, firecrackerCfg, policy.NetworkStageExecution, preRunExecutionID, preRunBefore, ex.Env, s.executionAuxOutputStream(key))
 
 		s.mu.Lock()
 		ex, ok = s.executions[key]
@@ -3153,6 +3154,7 @@ func (s *Service) bootstrapRepositoryInPersistentSandbox(
 		compiled,
 		firecrackerCfg,
 		cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_BOOTSTRAP_REPOSITORY,
+		policy.NetworkStageWorkspace,
 		command,
 		stdin,
 		reporter,

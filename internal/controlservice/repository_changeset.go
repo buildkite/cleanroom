@@ -124,6 +124,7 @@ func (s *Service) bootstrapRepositoryChangesetInPersistentSandbox(
 		compiled,
 		firecrackerCfg,
 		cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_APPLY_REPOSITORY_CHANGESET,
+		policy.NetworkStageWorkspace,
 		repositorychangeset.ApplyCommand(repository, changeset),
 		changeset.Patch,
 		reporter,

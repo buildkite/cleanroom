@@ -56,6 +56,74 @@ func TestProvisionSandboxRejectsConcurrentProvisionForSameID(t *testing.T) {
 	}
 }
 
+func TestProvisionSandboxRejectsStageScopedNetworkPolicy(t *testing.T) {
+	t.Parallel()
+
+	adapter := &Adapter{
+		launchSandboxVMFn: func(context.Context, string, *policy.CompiledPolicy, backend.FirecrackerConfig) (*sandboxInstance, error) {
+			t.Fatal("launchSandboxVMFn should not be called")
+			return nil, nil
+		},
+	}
+
+	err := adapter.ProvisionSandbox(context.Background(), backend.ProvisionRequest{
+		SandboxID: "cr-test",
+		Policy:    testStageScopedPolicy(),
+	})
+	if err == nil {
+		t.Fatal("expected ProvisionSandbox to reject stage-scoped network policy")
+	}
+	if !strings.Contains(err.Error(), "stage-scoped network") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunInSandboxRejectsStageScopedNetworkPolicy(t *testing.T) {
+	t.Parallel()
+
+	adapter := &Adapter{}
+	adapter.runGuestCommandFn = func(context.Context, context.Context, <-chan struct{}, func() error, string, uint32, vsockexec.ExecRequest, backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error) {
+		t.Fatal("runGuestCommandFn should not be called")
+		return vsockexec.ExecResponse{}, guestExecTiming{}, nil
+	}
+	adapter.sandboxes = map[string]*sandboxInstance{
+		"cr-test": {
+			SandboxID: "cr-test",
+			Policy:    testStageScopedPolicy(),
+		},
+	}
+
+	_, err := adapter.RunInSandbox(context.Background(), backend.ExecutionRequest{
+		SandboxID:   "cr-test",
+		ExecutionID: "run-1",
+		Command:     []string{"echo", "hello"},
+	}, backend.OutputStream{})
+	if err == nil {
+		t.Fatal("expected RunInSandbox to reject stage-scoped network policy")
+	}
+	if !strings.Contains(err.Error(), "stage-scoped network") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestProvisionSandboxFromSnapshotRejectsStageScopedNetworkPolicy(t *testing.T) {
+	t.Parallel()
+
+	adapter := &Adapter{}
+	err := adapter.ProvisionSandboxFromSnapshot(context.Background(), backend.ProvisionFromSnapshotRequest{
+		SandboxID:  "cr-test",
+		SnapshotID: "snap-1",
+		StorageRef: "/tmp/snapshot.ext4",
+		Policy:     testStageScopedPolicy(),
+	})
+	if err == nil {
+		t.Fatal("expected ProvisionSandboxFromSnapshot to reject stage-scoped network policy")
+	}
+	if !strings.Contains(err.Error(), "stage-scoped network") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestSandboxShutdownRemovesRunDir(t *testing.T) {
 	t.Parallel()
 
@@ -530,5 +598,17 @@ func TestUploadSandboxFileRequiresStdinAttach(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "stdin attach") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func testStageScopedPolicy() *policy.CompiledPolicy {
+	return &policy.CompiledPolicy{
+		Version:        1,
+		NetworkDefault: "deny",
+		NetworkStages: &policy.NetworkStagePolicies{
+			Execution: &policy.NetworkPolicy{
+				Allow: []policy.AllowRule{{Host: "example.com", Ports: []int{443}}},
+			},
+		},
 	}
 }

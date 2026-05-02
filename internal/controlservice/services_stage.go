@@ -234,6 +234,7 @@ func (s *Service) bootstrapServicesStageInPersistentSandbox(
 		compiled,
 		firecrackerCfg,
 		cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_BOOTSTRAP_SERVICES,
+		policy.NetworkStageServices,
 		plan.BootstrapCommand,
 		nil,
 		reporter,

@@ -109,6 +109,17 @@ message PolicyRun {
   repeated string before = 1;
 }
 
+message PolicyNetwork {
+  repeated PolicyAllowRule allow = 1;
+}
+
+message PolicyNetworkStages {
+  PolicyNetwork workspace = 1;
+  PolicyNetwork dependencies = 2;
+  PolicyNetwork services = 3;
+  PolicyNetwork execution = 4;
+}
+
 message PolicyResources {
   int64 vcpus = 1;
   int64 memory_bytes = 2;
@@ -126,6 +137,7 @@ message Policy {
   PolicyDependencies dependencies = 9;
   PolicyRun run = 10;
   PolicyResources resources = 11;
+  PolicyNetworkStages network_stages = 12;
 }
 
 message SandboxOptions {

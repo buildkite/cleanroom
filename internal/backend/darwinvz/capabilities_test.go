@@ -17,8 +17,13 @@ func TestCapabilitiesMatchImplicitDefaultNetworkMode(t *testing.T) {
 		if !caps[backend.CapabilityNetworkAllowlistEgress] {
 			t.Fatalf("expected %s=true on darwin", backend.CapabilityNetworkAllowlistEgress)
 		}
+		if !caps[backend.CapabilityNetworkStageScopedEgress] {
+			t.Fatalf("expected %s=true on darwin", backend.CapabilityNetworkStageScopedEgress)
+		}
 	} else if caps[backend.CapabilityNetworkAllowlistEgress] {
 		t.Fatalf("expected %s=false", backend.CapabilityNetworkAllowlistEgress)
+	} else if caps[backend.CapabilityNetworkStageScopedEgress] {
+		t.Fatalf("expected %s=false", backend.CapabilityNetworkStageScopedEgress)
 	}
 	if !caps[backend.CapabilityNetworkGuestInterface] {
 		t.Fatalf("expected %s=true", backend.CapabilityNetworkGuestInterface)
@@ -44,6 +49,9 @@ func TestCapabilitiesDeclareAllowlistFilteringForFileHandleMode(t *testing.T) {
 	}
 	if !caps[backend.CapabilityNetworkAllowlistEgress] {
 		t.Fatalf("expected %s=true", backend.CapabilityNetworkAllowlistEgress)
+	}
+	if !caps[backend.CapabilityNetworkStageScopedEgress] {
+		t.Fatalf("expected %s=true", backend.CapabilityNetworkStageScopedEgress)
 	}
 	if !caps[backend.CapabilityNetworkGuestInterface] {
 		t.Fatalf("expected %s=true", backend.CapabilityNetworkGuestInterface)

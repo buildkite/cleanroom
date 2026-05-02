@@ -159,6 +159,31 @@ func (r *Runtime) RegisterSandbox(sandboxID string, compiled *policy.CompiledPol
 	return nil
 }
 
+// UpdateSandboxPolicy replaces the active policy for a registered sandbox and
+// clears cached DNS observations and connection leases from the previous policy.
+func (r *Runtime) UpdateSandboxPolicy(sandboxID string, compiled *policy.CompiledPolicy) error {
+	sandboxID = strings.TrimSpace(sandboxID)
+	if sandboxID == "" {
+		return errors.New("sandbox id must not be empty")
+	}
+	if compiled == nil {
+		return errors.New("compiled policy is required")
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	state, ok := r.sandboxes[sandboxID]
+	if !ok {
+		return ErrSandboxNotRegistered
+	}
+	state.policy = compiled
+	state.scopes = make(map[netip.Addr]*scopeState)
+	state.connections = make(map[connectionKey]struct{})
+	state.connectionOrder = nil
+	return nil
+}
+
 // ClearSandbox removes a sandbox policy, observations, and active connections.
 func (r *Runtime) ClearSandbox(sandboxID string) {
 	r.mu.Lock()

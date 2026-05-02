@@ -425,7 +425,7 @@ func (s *Service) validatePortableDependencyStageKeyFiles(
 	}
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	result, err := s.runPersistentSandboxCommand(ctx, adapter, sandboxID, compiled, firecrackerCfg, s.ids().NewExecutionID(), command, nil, backend.OutputStream{
+	result, err := s.runPersistentSandboxCommand(ctx, adapter, sandboxID, compiled, firecrackerCfg, policy.NetworkStageExecution, s.ids().NewExecutionID(), command, nil, backend.OutputStream{
 		OnStdout: func(chunk []byte) {
 			_, _ = stdout.Write(chunk)
 		},
@@ -680,6 +680,7 @@ func (s *Service) bootstrapDependencyStageInPersistentSandbox(
 		compiled,
 		firecrackerCfg,
 		cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_BOOTSTRAP_DEPENDENCIES,
+		policy.NetworkStageDependencies,
 		plan.BootstrapCommand,
 		nil,
 		reporter,

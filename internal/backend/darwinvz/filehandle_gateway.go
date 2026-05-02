@@ -74,7 +74,9 @@ type fileHandleVirtualNetwork struct {
 	gatewayHTTPLn     net.Listener
 	gatewayHTTPServer *http.Server
 
-	warnings backend.WarningEmitter
+	warnings  backend.WarningEmitter
+	activeMu  sync.Mutex
+	activeTCP map[*fileHandleTCPProxyConn]struct{}
 }
 
 type fileHandleGateway struct {
@@ -95,6 +97,12 @@ type fileHandleGatewayHTTPBridge struct {
 
 	scopeMu    sync.RWMutex
 	scopeToken string
+}
+
+type fileHandleTCPProxyConn struct {
+	guest    net.Conn
+	outbound net.Conn
+	cancel   context.CancelFunc
 }
 
 var (
@@ -240,6 +248,13 @@ func (g *fileHandleGateway) SetWarningHandler(handler func(string)) {
 		return
 	}
 	g.network.warnings.SetHandler(handler)
+}
+
+func (g *fileHandleGateway) SetPolicy(sandboxID string, compiled *policy.CompiledPolicy) error {
+	if g == nil || g.network == nil {
+		return nil
+	}
+	return g.network.SetPolicy(sandboxID, compiled)
 }
 
 func newFileHandleDNSRuntime(sandboxID string, compiled *policy.CompiledPolicy) (*dnsproxy.Runtime, error) {
@@ -417,6 +432,7 @@ func newFileHandleVirtualNetwork(cfg fileHandleGatewayConfig, dnsUpstreamAddr st
 		dnsRuntime:        dnsRuntime,
 		gatewayHTTPLn:     gatewayHTTPLn,
 		gatewayHTTPServer: gatewayHTTPServer,
+		activeTCP:         make(map[*fileHandleTCPProxyConn]struct{}),
 	}
 
 	tcpForwarder := tcp.NewForwarder(s, 0, 10, func(r *tcp.ForwarderRequest) {
@@ -438,6 +454,7 @@ func newFileHandleVirtualNetwork(cfg fileHandleGatewayConfig, dnsUpstreamAddr st
 			DestPort:   r.ID().LocalPort,
 			Protocol:   dnsproxy.ProtocolTCP,
 		}
+		network.activeMu.Lock()
 		if dnsRuntime != nil && !dnsRuntime.AllowConnection(conn, time.Now()) {
 			dest := destIP.String()
 			if names := dnsRuntime.NamesForAddress(cfg.SandboxID, sourceIP, destIP, time.Now()); len(names) > 0 {
@@ -455,12 +472,17 @@ func newFileHandleVirtualNetwork(cfg fileHandleGatewayConfig, dnsUpstreamAddr st
 				"dest_port", r.ID().LocalPort,
 				"source_ip", sourceIP.String(),
 			)
+			network.activeMu.Unlock()
 			r.Complete(true)
 			return
 		}
 
-		outbound, err := net.Dial("tcp", fmt.Sprintf("%s:%d", destIP.String(), r.ID().LocalPort))
+		dialCtx, cancelDial := context.WithCancel(context.Background())
+		tracked, untrack := network.trackTCPProxyConnLocked(cancelDial)
+		network.activeMu.Unlock()
+		outbound, err := new(net.Dialer).DialContext(dialCtx, "tcp", fmt.Sprintf("%s:%d", destIP.String(), r.ID().LocalPort))
 		if err != nil {
+			untrack()
 			if dnsRuntime != nil {
 				dnsRuntime.ReleaseConnection(conn)
 			}
@@ -472,6 +494,7 @@ func newFileHandleVirtualNetwork(cfg fileHandleGatewayConfig, dnsUpstreamAddr st
 		ep, tcpErr := r.CreateEndpoint(&wq)
 		r.Complete(false)
 		if tcpErr != nil {
+			untrack()
 			_ = outbound.Close()
 			if dnsRuntime != nil {
 				dnsRuntime.ReleaseConnection(conn)
@@ -485,6 +508,16 @@ func newFileHandleVirtualNetwork(cfg fileHandleGatewayConfig, dnsUpstreamAddr st
 			},
 		}
 		guestConn := gonet.NewTCPConn(&wq, ep)
+		if !network.activateTCPProxyConn(tracked, guestConn, outbound) {
+			untrack()
+			_ = guestConn.Close()
+			_ = outbound.Close()
+			if dnsRuntime != nil {
+				dnsRuntime.ReleaseConnection(conn)
+			}
+			return
+		}
+		defer untrack()
 		remote.HandleConn(guestConn)
 		if dnsRuntime != nil {
 			dnsRuntime.ReleaseConnection(conn)
@@ -499,10 +532,99 @@ func (n *fileHandleVirtualNetwork) AcceptVfkit(ctx context.Context, conn net.Con
 	return n.networkSwitch.Accept(ctx, conn, gvtypes.VfkitProtocol)
 }
 
+func (n *fileHandleVirtualNetwork) SetPolicy(sandboxID string, compiled *policy.CompiledPolicy) error {
+	if n == nil || n.dnsRuntime == nil {
+		return nil
+	}
+	n.activeMu.Lock()
+	conns := n.drainActiveTCPProxyConnsLocked()
+	closeTCPProxyConns(conns)
+	err := n.dnsRuntime.UpdateSandboxPolicy(sandboxID, compiled)
+	n.activeMu.Unlock()
+	return err
+}
+
+func (n *fileHandleVirtualNetwork) trackTCPProxyConn(guest, outbound net.Conn) func() {
+	if n == nil {
+		return func() {}
+	}
+	n.activeMu.Lock()
+	tracked, untrack := n.trackTCPProxyConnLocked(nil)
+	tracked.guest = guest
+	tracked.outbound = outbound
+	n.activeMu.Unlock()
+	return untrack
+}
+
+func (n *fileHandleVirtualNetwork) trackTCPProxyConnLocked(cancel context.CancelFunc) (*fileHandleTCPProxyConn, func()) {
+	tracked := &fileHandleTCPProxyConn{cancel: cancel}
+	if n.activeTCP == nil {
+		n.activeTCP = make(map[*fileHandleTCPProxyConn]struct{})
+	}
+	n.activeTCP[tracked] = struct{}{}
+	untrack := func() {
+		if cancel != nil {
+			cancel()
+		}
+		n.activeMu.Lock()
+		delete(n.activeTCP, tracked)
+		n.activeMu.Unlock()
+	}
+	return tracked, untrack
+}
+
+func (n *fileHandleVirtualNetwork) activateTCPProxyConn(tracked *fileHandleTCPProxyConn, guest, outbound net.Conn) bool {
+	if n == nil || tracked == nil {
+		return false
+	}
+	n.activeMu.Lock()
+	defer n.activeMu.Unlock()
+	if _, ok := n.activeTCP[tracked]; !ok {
+		return false
+	}
+	tracked.guest = guest
+	tracked.outbound = outbound
+	return true
+}
+
+func (n *fileHandleVirtualNetwork) closeActiveTCPProxyConns() {
+	if n == nil {
+		return
+	}
+	n.activeMu.Lock()
+	conns := n.drainActiveTCPProxyConnsLocked()
+	n.activeMu.Unlock()
+	closeTCPProxyConns(conns)
+}
+
+func (n *fileHandleVirtualNetwork) drainActiveTCPProxyConnsLocked() []*fileHandleTCPProxyConn {
+	conns := make([]*fileHandleTCPProxyConn, 0, len(n.activeTCP))
+	for conn := range n.activeTCP {
+		conns = append(conns, conn)
+	}
+	n.activeTCP = make(map[*fileHandleTCPProxyConn]struct{})
+	return conns
+}
+
+func closeTCPProxyConns(conns []*fileHandleTCPProxyConn) {
+	for _, conn := range conns {
+		if conn.cancel != nil {
+			conn.cancel()
+		}
+		if conn.guest != nil {
+			_ = conn.guest.Close()
+		}
+		if conn.outbound != nil {
+			_ = conn.outbound.Close()
+		}
+	}
+}
+
 func (n *fileHandleVirtualNetwork) Close() error {
 	if n == nil {
 		return nil
 	}
+	n.closeActiveTCPProxyConns()
 
 	var closeErr error
 	if n.dnsUDPConn != nil {

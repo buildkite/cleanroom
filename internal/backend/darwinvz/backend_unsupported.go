@@ -33,9 +33,10 @@ func (a *Adapter) Name() string {
 
 func (a *Adapter) Capabilities() map[string]bool {
 	return map[string]bool{
-		backend.CapabilityNetworkDefaultDeny:     true,
-		backend.CapabilityNetworkAllowlistEgress: false,
-		backend.CapabilityNetworkGuestInterface:  true,
+		backend.CapabilityNetworkDefaultDeny:       true,
+		backend.CapabilityNetworkAllowlistEgress:   false,
+		backend.CapabilityNetworkStageScopedEgress: false,
+		backend.CapabilityNetworkGuestInterface:    true,
 	}
 }
 

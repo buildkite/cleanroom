@@ -216,6 +216,160 @@ sandbox:
 	}
 }
 
+func TestCompileNormalizesStageScopedNetwork(t *testing.T) {
+	t.Parallel()
+
+	var raw rawPolicy
+	if err := yaml.Unmarshal([]byte(`
+version: 1
+repository:
+  network:
+    allow: github.com:443
+sandbox:
+  image:
+    ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  dependencies:
+    network:
+      allow:
+        - proxy.golang.org:443
+        - host: storage.googleapis.com
+          ports: [443, 443]
+  services:
+    network:
+      allow: registry-1.docker.io:443
+  run:
+    network: {}
+  network:
+    default: deny
+`), &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	compiled, err := Compile(raw)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if !compiled.HasStageScopedNetwork() {
+		t.Fatal("expected stage-scoped network policy")
+	}
+	if len(compiled.Allow) != 0 {
+		t.Fatalf("expected global allowlist to be empty, got %v", compiled.Allow)
+	}
+	if !compiled.AllowsForStage(NetworkStageWorkspace, "github.com", 443) {
+		t.Fatal("expected workspace stage to allow github.com:443")
+	}
+	if compiled.AllowsForStage(NetworkStageExecution, "github.com", 443) {
+		t.Fatal("did not expect execution stage to inherit workspace allowlist")
+	}
+	if !compiled.AllowsForStage(NetworkStageDependencies, "proxy.golang.org", 443) {
+		t.Fatal("expected dependencies stage to allow proxy.golang.org:443")
+	}
+	if !compiled.AllowsForStage(NetworkStageDependencies, "storage.googleapis.com", 443) {
+		t.Fatal("expected dependencies stage to allow storage.googleapis.com:443")
+	}
+	if !compiled.AllowsForStage(NetworkStageServices, "registry-1.docker.io", 443) {
+		t.Fatal("expected services stage to allow registry-1.docker.io:443")
+	}
+	if compiled.NetworkStages.Execution == nil {
+		t.Fatal("expected explicit empty execution stage network block")
+	}
+	if compiled.AllowsForStage(NetworkStageExecution, "registry-1.docker.io", 443) {
+		t.Fatal("did not expect execution stage egress")
+	}
+}
+
+func TestNetworkPolicyForStageRehashesStageScopedPolicies(t *testing.T) {
+	t.Parallel()
+
+	raw := baseRawPolicy()
+	raw.Repository = &rawRepository{
+		Network: &rawStageNetworkConfig{
+			Allow: rawAllowRules{{Host: "github.com", Ports: []int{443}}},
+		},
+	}
+	raw.Sandbox.Dependencies.Network = &rawStageNetworkConfig{
+		Allow: rawAllowRules{{Host: "proxy.golang.org", Ports: []int{443}}},
+	}
+	raw.Sandbox.Run.Network = &rawStageNetworkConfig{}
+
+	compiled, err := Compile(raw)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	workspace := compiled.NetworkPolicyForStage(NetworkStageWorkspace)
+	dependencies := compiled.NetworkPolicyForStage(NetworkStageDependencies)
+	execution := compiled.NetworkPolicyForStage(NetworkStageExecution)
+
+	for stage, effective := range map[NetworkStage]*CompiledPolicy{
+		NetworkStageWorkspace:    workspace,
+		NetworkStageDependencies: dependencies,
+		NetworkStageExecution:    execution,
+	} {
+		if effective.Hash == "" {
+			t.Fatalf("expected %s effective policy hash", stage)
+		}
+		if effective.Hash == compiled.Hash {
+			t.Fatalf("expected %s effective policy hash to differ from full policy hash", stage)
+		}
+		if effective.NetworkStages != nil {
+			t.Fatalf("expected %s effective policy to drop stage table", stage)
+		}
+	}
+	if workspace.Hash == dependencies.Hash {
+		t.Fatal("expected workspace and dependencies effective policies to have distinct hashes")
+	}
+	if dependencies.Hash == execution.Hash {
+		t.Fatal("expected dependencies and execution effective policies to have distinct hashes")
+	}
+	if got := compiled.NetworkPolicyForStage(NetworkStageDependencies).Hash; got != dependencies.Hash {
+		t.Fatalf("expected dependencies effective policy hash to be stable: got %q want %q", got, dependencies.Hash)
+	}
+}
+
+func TestNetworkPolicyForStageRetainsLegacyPolicyHash(t *testing.T) {
+	t.Parallel()
+
+	raw := baseRawPolicy()
+	raw.Sandbox.Network.Allow = rawAllowRules{{Host: "api.github.com", Ports: []int{443}}}
+
+	compiled, err := Compile(raw)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	effective := compiled.NetworkPolicyForStage(NetworkStageExecution)
+	if effective.Hash != compiled.Hash {
+		t.Fatalf("expected legacy effective policy hash to remain unchanged: got %q want %q", effective.Hash, compiled.Hash)
+	}
+}
+
+func TestCompileRejectsMixedGlobalAndStageNetwork(t *testing.T) {
+	t.Parallel()
+
+	var raw rawPolicy
+	if err := yaml.Unmarshal([]byte(`
+version: 1
+repository:
+  network:
+    allow: github.com:443
+sandbox:
+  image:
+    ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  network:
+    default: deny
+    allow: proxy.golang.org:443
+`), &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	_, err := Compile(raw)
+	if err == nil {
+		t.Fatal("expected compile to reject mixed global and stage-local allowlists")
+	}
+	if !strings.Contains(err.Error(), "sandbox.network.allow") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestUnmarshalRejectsInvalidNetworkAllowShorthand(t *testing.T) {
 	t.Parallel()
 
@@ -912,6 +1066,91 @@ func TestFromProtoAcceptsAllowDefault(t *testing.T) {
 	}
 	if !compiled.Allows("example.com", 443) {
 		t.Fatal("expected allow-default policy to allow arbitrary host:port")
+	}
+}
+
+func TestFromProtoRejectsMixedAllowAndStageNetwork(t *testing.T) {
+	t.Parallel()
+
+	_, err := FromProto(&cleanroomv1.Policy{
+		Version:        1,
+		ImageRef:       validImageRef,
+		NetworkDefault: "deny",
+		Allow: []*cleanroomv1.PolicyAllowRule{
+			{Host: "proxy.golang.org", Ports: []int32{443}},
+		},
+		NetworkStages: &cleanroomv1.PolicyNetworkStages{
+			Workspace: &cleanroomv1.PolicyNetwork{
+				Allow: []*cleanroomv1.PolicyAllowRule{
+					{Host: "github.com", Ports: []int32{443}},
+				},
+			},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected FromProto to reject mixed global and stage-local allowlists")
+	}
+	if !strings.Contains(err.Error(), "policy allow") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestFromProtoRejectsAllowDefaultWithStageNetwork(t *testing.T) {
+	t.Parallel()
+
+	_, err := FromProto(&cleanroomv1.Policy{
+		Version:        1,
+		ImageRef:       validImageRef,
+		NetworkDefault: "allow",
+		NetworkStages: &cleanroomv1.PolicyNetworkStages{
+			Execution: &cleanroomv1.PolicyNetwork{},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected FromProto to reject allow default with stage-local network blocks")
+	}
+	if !strings.Contains(err.Error(), "network_default") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestCompiledPolicyProtoRoundTripPreservesStageScopedNetwork(t *testing.T) {
+	t.Parallel()
+
+	raw := baseRawPolicy()
+	raw.Repository = &rawRepository{
+		Network: &rawStageNetworkConfig{
+			Allow: rawAllowRules{{Host: "github.com", Ports: []int{443}}},
+		},
+	}
+	raw.Sandbox.Dependencies.Network = &rawStageNetworkConfig{
+		Allow: rawAllowRules{{Host: "proxy.golang.org", Ports: []int{443}}},
+	}
+	raw.Sandbox.Run.Network = &rawStageNetworkConfig{}
+
+	compiled, err := Compile(raw)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	roundTripped, err := FromProto(compiled.ToProto())
+	if err != nil {
+		t.Fatalf("FromProto returned error: %v", err)
+	}
+	if !roundTripped.HasStageScopedNetwork() {
+		t.Fatal("expected stage-scoped network after round trip")
+	}
+	if !roundTripped.AllowsForStage(NetworkStageWorkspace, "github.com", 443) {
+		t.Fatal("expected workspace allowlist after round trip")
+	}
+	if !roundTripped.AllowsForStage(NetworkStageDependencies, "proxy.golang.org", 443) {
+		t.Fatal("expected dependencies allowlist after round trip")
+	}
+	if roundTripped.NetworkStages.Execution == nil {
+		t.Fatal("expected explicit empty execution stage after round trip")
+	}
+	if roundTripped.AllowsForStage(NetworkStageExecution, "github.com", 443) {
+		t.Fatal("did not expect execution stage to inherit workspace allowlist after round trip")
 	}
 }
 

@@ -17,7 +17,7 @@ Implemented:
 - interactive and non-interactive command execution via existing `internal/vsockexec` protocol
 - helper-managed VM lifecycle (`StartVM` / `StopVM` / `PauseVM` / `ResumeVM`)
 - `filehandle` network mode with a Cleanroom-owned guest gateway and stable guest IP
-- TCP allowlist egress filtering for `sandbox.network.allow` in `filehandle` mode
+- TCP allowlist egress filtering for the active effective policy in `filehandle` mode
 - allow-all egress for repo-agnostic sandboxes created with `cleanroom sandbox create --dangerously-allow-all`
 - hostname-based allow rules currently use observed DNS answers plus destination IP:port, so co-hosted services on the same IP:port are not distinguished
 - guest access to the shared host gateway through the stable hostname `gateway.cleanroom.internal`
@@ -125,8 +125,11 @@ On macOS, cleanroom also probes common Homebrew `e2fsprogs` locations.
   - gives each sandbox a stable private guest IP
   - runs a Cleanroom-owned guest gateway on the gateway IP, typically `10.233.0.1`
   - serves guest DNS from that gateway IP
-  - enforces `sandbox.network.allow` for TCP egress in the gateway
+  - enforces the active effective policy for TCP egress in the gateway
+  - swaps the active policy before each sandbox command when stage-local network
+    blocks are configured
   - bypasses egress filtering when the compiled policy uses `network.default=allow`
+  - closes active TCP proxy connections when the active policy changes
   - authorizes hostname rules from observed DNS answers plus destination IP:port rather than HTTP `Host` or TLS SNI
   - exposes the shared host gateway service to the guest at `gateway.cleanroom.internal`
 
@@ -162,6 +165,7 @@ Current `darwin-vz` capability values:
 - `sandbox.archive_write=true`
 - `network.default_deny=true`
 - `network.allowlist_egress=true`
+- `network.stage_scoped_egress=true`
 - `network.guest_interface=true`
 
 Git traffic for allowed HTTPS hosts uses the filehandle gateway path:
