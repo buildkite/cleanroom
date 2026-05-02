@@ -742,6 +742,26 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	now := s.clock().Now()
 	sandboxID := s.ids().NewSandboxID()
 	span.SetAttributes(attribute.String("cleanroom.sandbox.id", sandboxID))
+	state := &sandboxState{
+		ID:                                  sandboxID,
+		Backend:                             backendName,
+		Capabilities:                        backend.CapabilitiesForAdapter(adapter),
+		Policy:                              compiled,
+		Firecracker:                         firecrackerCfg,
+		Repository:                          cloneRepositoryCheckout(repository),
+		RepositoryCommitBundle:              cloneRepositoryCommitBundle(commitBundle),
+		RepositoryHasChangeset:              changeset != nil,
+		RepositoryChangesetPendingExecution: changeset != nil,
+		CreatedAt:                           now,
+		UpdatedAt:                           now,
+		Status:                              cleanroomv1.SandboxStatus_SANDBOX_STATUS_PROVISIONING,
+		events:                              newEventFeed[*cleanroomv1.SandboxEvent](s.retention().maxRetainedSandboxEvents),
+		Done:                                make(chan struct{}),
+	}
+	s.mu.Lock()
+	s.ensureMapsLocked()
+	s.sandboxes[sandboxID] = state
+	s.mu.Unlock()
 	if logger != nil {
 		logger.Debug("create sandbox requested",
 			observability.LogFieldSandboxID, sandboxID,
@@ -763,6 +783,11 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 		Policy:            compiled,
 		FirecrackerConfig: firecrackerCfg,
 	}); err != nil {
+		s.mu.Lock()
+		if current, ok := s.sandboxes[sandboxID]; ok {
+			s.dropSandboxLocked(sandboxID, current)
+		}
+		s.mu.Unlock()
 		return nil, fmt.Errorf("provision sandbox: %w", err)
 	}
 	if logger != nil {
@@ -885,26 +910,27 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 		}
 	}
 
-	state := &sandboxState{
-		ID:                                  sandboxID,
-		Backend:                             backendName,
-		Capabilities:                        backend.CapabilitiesForAdapter(adapter),
-		Policy:                              compiled,
-		Firecracker:                         firecrackerCfg,
-		Repository:                          cloneRepositoryCheckout(repository),
-		RepositoryCommitBundle:              cloneRepositoryCommitBundle(commitBundle),
-		RepositoryHasChangeset:              changeset != nil,
-		RepositoryChangesetPendingExecution: changeset != nil,
-		CreatedAt:                           now,
-		UpdatedAt:                           now,
-		Status:                              cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY,
-		events:                              newEventFeed[*cleanroomv1.SandboxEvent](s.retention().maxRetainedSandboxEvents),
-		Done:                                make(chan struct{}),
-	}
-
 	s.mu.Lock()
 	s.ensureMapsLocked()
-	s.sandboxes[sandboxID] = state
+	state, ok = s.sandboxes[sandboxID]
+	if !ok {
+		state = &sandboxState{
+			ID:                                  sandboxID,
+			Backend:                             backendName,
+			Capabilities:                        backend.CapabilitiesForAdapter(adapter),
+			Policy:                              compiled,
+			Firecracker:                         firecrackerCfg,
+			Repository:                          cloneRepositoryCheckout(repository),
+			RepositoryCommitBundle:              cloneRepositoryCommitBundle(commitBundle),
+			RepositoryHasChangeset:              changeset != nil,
+			RepositoryChangesetPendingExecution: changeset != nil,
+			CreatedAt:                           now,
+			UpdatedAt:                           now,
+			events:                              newEventFeed[*cleanroomv1.SandboxEvent](s.retention().maxRetainedSandboxEvents),
+			Done:                                make(chan struct{}),
+		}
+		s.sandboxes[sandboxID] = state
+	}
 	s.recordSandboxEventLocked(state, cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY, "sandbox created and ready")
 	s.pruneStateLocked(now)
 	resp = &cleanroomv1.CreateSandboxResponse{

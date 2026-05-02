@@ -140,22 +140,6 @@ func (s *Service) createSandboxFromStoredRootFS(ctx context.Context, req *cleanr
 	case "workspace stage cache":
 		emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_RESTORE_WORKSPACE_STAGE_CACHE, "restoring workspace stage cache")
 	}
-	if err := s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.restore_snapshot", []attribute.KeyValue{
-		attribute.String(observability.AttrBackend, backendName),
-		attribute.String(observability.AttrSandboxID, sandboxID),
-		attribute.String("cleanroom.source_kind", sourceKind),
-	}, func(ctx context.Context) error {
-		return snapshotAdapter.ProvisionSandboxFromSnapshot(ctx, backend.ProvisionFromSnapshotRequest{
-			SandboxID:         sandboxID,
-			SnapshotID:        provisionSnapshotID,
-			StorageRef:        record.StorageRef,
-			Policy:            effectivePolicy,
-			FirecrackerConfig: firecrackerCfg,
-		})
-	}); err != nil {
-		return nil, fmt.Errorf("provision sandbox from snapshot: %w", err)
-	}
-
 	state := &sandboxState{
 		ID:                                  sandboxID,
 		Backend:                             backendName,
@@ -170,9 +154,33 @@ func (s *Service) createSandboxFromStoredRootFS(ctx context.Context, req *cleanr
 		BackingSnapshotID:                   backingSnapshotID,
 		CreatedAt:                           now,
 		UpdatedAt:                           now,
-		Status:                              cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY,
+		Status:                              cleanroomv1.SandboxStatus_SANDBOX_STATUS_PROVISIONING,
 		events:                              newEventFeed[*cleanroomv1.SandboxEvent](s.retention().maxRetainedSandboxEvents),
 		Done:                                make(chan struct{}),
+	}
+	s.mu.Lock()
+	s.ensureMapsLocked()
+	s.sandboxes[sandboxID] = state
+	s.mu.Unlock()
+	if err := s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.restore_snapshot", []attribute.KeyValue{
+		attribute.String(observability.AttrBackend, backendName),
+		attribute.String(observability.AttrSandboxID, sandboxID),
+		attribute.String("cleanroom.source_kind", sourceKind),
+	}, func(ctx context.Context) error {
+		return snapshotAdapter.ProvisionSandboxFromSnapshot(ctx, backend.ProvisionFromSnapshotRequest{
+			SandboxID:         sandboxID,
+			SnapshotID:        provisionSnapshotID,
+			StorageRef:        record.StorageRef,
+			Policy:            effectivePolicy,
+			FirecrackerConfig: firecrackerCfg,
+		})
+	}); err != nil {
+		s.mu.Lock()
+		if current, ok := s.sandboxes[sandboxID]; ok {
+			s.dropSandboxLocked(sandboxID, current)
+		}
+		s.mu.Unlock()
+		return nil, fmt.Errorf("provision sandbox from snapshot: %w", err)
 	}
 
 	if sourceKind == "" {
@@ -183,7 +191,27 @@ func (s *Service) createSandboxFromStoredRootFS(ctx context.Context, req *cleanr
 
 	s.mu.Lock()
 	s.ensureMapsLocked()
-	s.sandboxes[sandboxID] = state
+	state, ok = s.sandboxes[sandboxID]
+	if !ok {
+		state = &sandboxState{
+			ID:                                  sandboxID,
+			Backend:                             backendName,
+			Capabilities:                        backend.CapabilitiesForAdapter(adapter),
+			Policy:                              effectivePolicy,
+			Firecracker:                         firecrackerCfg,
+			Repository:                          cloneRepositoryCheckout(record.Repository),
+			RepositoryHasChangeset:              record.RepositoryHasChangeset,
+			RepositoryChangesetPendingExecution: record.RepositoryChangesetPendingExecution,
+			SourceKind:                          sourceKind,
+			SourceID:                            sourceID,
+			BackingSnapshotID:                   backingSnapshotID,
+			CreatedAt:                           now,
+			UpdatedAt:                           now,
+			events:                              newEventFeed[*cleanroomv1.SandboxEvent](s.retention().maxRetainedSandboxEvents),
+			Done:                                make(chan struct{}),
+		}
+		s.sandboxes[sandboxID] = state
+	}
 	s.recordSandboxEventLocked(state, cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY, eventMessage)
 	s.pruneStateLocked(now)
 	resp := &cleanroomv1.CreateSandboxResponse{

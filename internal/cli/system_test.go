@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -36,6 +37,45 @@ func TestParseSystemPruneDurationRejectsInvalidValue(t *testing.T) {
 	}
 	if _, err := parseSystemPruneDuration("-1h"); err == nil {
 		t.Fatal("expected negative duration to fail")
+	}
+}
+
+func TestSystemPruneOlderThanDoesNotOverrideExecutionRetention(t *testing.T) {
+	previousListSandboxIDs := systemListSandboxIDs
+	previousInventory := systemInventory
+	previousPlanPrune := systemPlanPrune
+	t.Cleanup(func() {
+		systemListSandboxIDs = previousListSandboxIDs
+		systemInventory = previousInventory
+		systemPlanPrune = previousPlanPrune
+	})
+
+	systemListSandboxIDs = func(context.Context, *runtimeContext, clientFlags) ([]string, bool, error) {
+		return nil, true, nil
+	}
+	var gotExecutionMaxAge time.Duration
+	systemInventory = func(_ context.Context, opts storagegc.InventoryOptions) (storagegc.Report, error) {
+		gotExecutionMaxAge = opts.ExecutionMaxAge
+		return storagegc.Report{GeneratedAt: time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC)}, nil
+	}
+	var gotOlderThan time.Duration
+	systemPlanPrune = func(_ storagegc.Report, opts storagegc.PruneOptions) storagegc.Plan {
+		gotOlderThan = opts.OlderThan
+		return storagegc.Plan{}
+	}
+
+	stdout, _ := makeStdoutCapture(t)
+	t.Cleanup(func() { _ = stdout.Close() })
+
+	err := (&SystemPruneCommand{DryRun: true, OlderThan: "7d"}).Run(&runtimeContext{Stdout: stdout})
+	if err != nil {
+		t.Fatalf("SystemPruneCommand.Run returned error: %v", err)
+	}
+	if got, want := gotExecutionMaxAge, storagegc.DefaultExecutionMaxAge; got != want {
+		t.Fatalf("unexpected execution retention: got %s want %s", got, want)
+	}
+	if got, want := gotOlderThan, 7*24*time.Hour; got != want {
+		t.Fatalf("unexpected prune older-than: got %s want %s", got, want)
 	}
 }
 

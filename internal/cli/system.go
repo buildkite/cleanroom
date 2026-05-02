@@ -42,6 +42,7 @@ type SystemPruneCommand struct {
 var systemInventory = storagegc.Inventory
 var systemPlanPrune = storagegc.PlanPrune
 var systemExecutePrune = storagegc.ExecutePrune
+var systemListSandboxIDs = listSystemSandboxIDs
 var systemIsTerminal = func(f *os.File) bool {
 	return f != nil && term.IsTerminal(int(f.Fd()))
 }
@@ -67,7 +68,7 @@ func (c *SystemPruneCommand) Run(ctx *runtimeContext) error {
 	if err != nil {
 		return err
 	}
-	report, _, err := loadSystemInventory(context.Background(), ctx, c.clientFlags, true, olderThan)
+	report, _, err := loadSystemInventory(context.Background(), ctx, c.clientFlags, true, 0)
 	if err != nil {
 		return err
 	}
@@ -114,7 +115,7 @@ func (c *SystemPruneCommand) Run(ctx *runtimeContext) error {
 }
 
 func loadSystemInventory(ctx context.Context, runtimeCtx *runtimeContext, flags clientFlags, requireSandboxState bool, executionMaxAge time.Duration) (storagegc.Report, error, error) {
-	sandboxIDs, stateKnown, listErr := listSystemSandboxIDs(ctx, runtimeCtx, flags)
+	sandboxIDs, stateKnown, listErr := systemListSandboxIDs(ctx, runtimeCtx, flags)
 	if listErr != nil && requireSandboxState {
 		return storagegc.Report{}, nil, fmt.Errorf("list sandboxes before prune: %w", listErr)
 	}

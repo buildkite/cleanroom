@@ -7749,6 +7749,43 @@ func TestListSandboxesReturnsNewestSnapshotFirst(t *testing.T) {
 	}
 }
 
+func TestListSandboxesIncludesProvisioningSandbox(t *testing.T) {
+	provisionStarted := make(chan struct{})
+	releaseProvision := make(chan struct{})
+	adapter := &stubAdapter{
+		provisionFn: func(context.Context, backend.ProvisionRequest) error {
+			close(provisionStarted)
+			<-releaseProvision
+			return nil
+		},
+	}
+	svc := newTestService(adapter)
+
+	createDone := make(chan error, 1)
+	go func() {
+		_, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+		createDone <- err
+	}()
+
+	<-provisionStarted
+	resp, err := svc.ListSandboxes(context.Background(), &cleanroomv1.ListSandboxesRequest{})
+	if err != nil {
+		t.Fatalf("ListSandboxes returned error: %v", err)
+	}
+	sandboxes := resp.GetSandboxes()
+	if got, want := len(sandboxes), 1; got != want {
+		t.Fatalf("unexpected sandbox count: got %d want %d", got, want)
+	}
+	if got, want := sandboxes[0].GetStatus(), cleanroomv1.SandboxStatus_SANDBOX_STATUS_PROVISIONING; got != want {
+		t.Fatalf("unexpected sandbox status: got %v want %v", got, want)
+	}
+
+	close(releaseProvision)
+	if err := <-createDone; err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+}
+
 func TestExecutionRetentionBoundsOutput(t *testing.T) {
 	adapter := &stubAdapter{
 		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {

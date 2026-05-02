@@ -24,9 +24,10 @@ func (s stubSnapshotStore) List(context.Context) ([]snapshotstore.Record, error)
 }
 
 type stubCacheStore struct {
-	records []cachestore.Record
-	err     error
-	deleted []string
+	records   []cachestore.Record
+	err       error
+	deleteErr error
+	deleted   []string
 }
 
 func (s *stubCacheStore) List(context.Context) ([]cachestore.Record, error) {
@@ -35,6 +36,9 @@ func (s *stubCacheStore) List(context.Context) ([]cachestore.Record, error) {
 
 func (s *stubCacheStore) Delete(_ context.Context, stage, cacheKey string) error {
 	s.deleted = append(s.deleted, stage+"/"+cacheKey)
+	if s.deleteErr != nil {
+		return s.deleteErr
+	}
 	return nil
 }
 
@@ -153,21 +157,14 @@ func TestInventoryCountsAllocatedBytesForSparseFiles(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(tmpDir, "cache-home"))
 
 	stateBase := filepath.Join(tmpDir, "state-home", "cleanroom")
+	cacheBase := filepath.Join(tmpDir, "cache-home", "cleanroom")
 	sparseRootFS := filepath.Join(stateBase, "snapshots", "darwin-vz", "snap-orphan", "rootfs.ext4")
 	if err := os.MkdirAll(filepath.Dir(sparseRootFS), 0o755); err != nil {
 		t.Fatalf("create sparse snapshot directory: %v", err)
 	}
-	f, err := os.Create(sparseRootFS)
-	if err != nil {
-		t.Fatalf("create sparse rootfs: %v", err)
-	}
-	if err := f.Truncate(8 << 30); err != nil {
-		_ = f.Close()
-		t.Fatalf("truncate sparse rootfs: %v", err)
-	}
-	if err := f.Close(); err != nil {
-		t.Fatalf("close sparse rootfs: %v", err)
-	}
+	writeSparseFile(t, sparseRootFS, 8<<30)
+	sparseRuntimeRootFS := filepath.Join(cacheBase, "darwin-vz", "runtime-rootfs", "runtime.ext4")
+	writeSparseFile(t, sparseRuntimeRootFS, 8<<30)
 
 	report, err := Inventory(context.Background(), InventoryOptions{
 		SandboxStateKnown: true,
@@ -181,6 +178,10 @@ func TestInventoryCountsAllocatedBytesForSparseFiles(t *testing.T) {
 	entry := findEntry(t, report, KindOrphanSnapshot, "snap-orphan")
 	if entry.SizeBytes >= 8<<30 {
 		t.Fatalf("expected sparse file to report allocated bytes below logical size, got %d", entry.SizeBytes)
+	}
+	runtimeEntry := findEntry(t, report, KindRuntimeRootFS, "runtime")
+	if runtimeEntry.SizeBytes >= 8<<30 {
+		t.Fatalf("expected sparse runtime rootfs to report allocated bytes below logical size, got %d", runtimeEntry.SizeBytes)
 	}
 }
 
@@ -206,47 +207,52 @@ func TestInventoryProtectsSandboxDirsWhenDaemonStateIsUnknown(t *testing.T) {
 
 func TestPlanPruneIncludesAllAndOlderThanCaches(t *testing.T) {
 	now := time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC)
-	report := Report{Entries: []Entry{
-		{
-			Kind:       KindRuntimeRootFS,
-			ID:         "old-runtime",
-			Path:       "/tmp/runtime.ext4",
-			SizeBytes:  10,
-			LastUsedAt: now.Add(-48 * time.Hour),
+	report := Report{
+		SnapshotRoots: []string{"/tmp/snapshots"},
+		Entries: []Entry{
+			{
+				Kind:       KindRuntimeRootFS,
+				ID:         "old-runtime",
+				Path:       "/tmp/runtime.ext4",
+				SizeBytes:  10,
+				LastUsedAt: now.Add(-48 * time.Hour),
+			},
+			{
+				Kind:       KindStageCache,
+				ID:         "dependencies/cache",
+				Stage:      "dependencies",
+				CacheKey:   "cache",
+				Backend:    "firecracker",
+				Path:       "/tmp/snapshots/firecracker/cache/rootfs.ext4",
+				SizeBytes:  20,
+				LastUsedAt: now.Add(-48 * time.Hour),
+			},
+			{
+				Kind:        KindStageCache,
+				ID:          "dependencies/shared",
+				Stage:       "dependencies",
+				CacheKey:    "shared",
+				Backend:     "firecracker",
+				Path:        "/tmp/snapshots/firecracker/shared/rootfs.ext4",
+				SizeBytes:   25,
+				ProtectedBy: []string{"stage-cache metadata", "snapshot metadata explicit"},
+				LastUsedAt:  now.Add(-48 * time.Hour),
+			},
+			{
+				Kind:       KindImageCache,
+				ID:         "sha256:image",
+				Path:       "/tmp/images/image.ext4",
+				SizeBytes:  30,
+				LastUsedAt: now.Add(-time.Hour),
+			},
+			{
+				Kind:      KindSnapshot,
+				ID:        "explicit",
+				Path:      "/tmp/snapshots/firecracker/explicit/rootfs.ext4",
+				SizeBytes: 40,
+			},
 		},
-		{
-			Kind:       KindStageCache,
-			ID:         "dependencies/cache",
-			Stage:      "dependencies",
-			CacheKey:   "cache",
-			Path:       "/tmp/snapshots/firecracker/cache/rootfs.ext4",
-			SizeBytes:  20,
-			LastUsedAt: now.Add(-48 * time.Hour),
-		},
-		{
-			Kind:        KindStageCache,
-			ID:          "dependencies/shared",
-			Stage:       "dependencies",
-			CacheKey:    "shared",
-			Path:        "/tmp/snapshots/firecracker/shared/rootfs.ext4",
-			SizeBytes:   25,
-			ProtectedBy: []string{"stage-cache metadata", "snapshot metadata explicit"},
-			LastUsedAt:  now.Add(-48 * time.Hour),
-		},
-		{
-			Kind:       KindImageCache,
-			ID:         "sha256:image",
-			Path:       "/tmp/images/image.ext4",
-			SizeBytes:  30,
-			LastUsedAt: now.Add(-time.Hour),
-		},
-		{
-			Kind:      KindSnapshot,
-			ID:        "explicit",
-			Path:      "/tmp/snapshots/firecracker/explicit/rootfs.ext4",
-			SizeBytes: 40,
-		},
-	}}
+	}
 
 	agedPlan := PlanPrune(report, PruneOptions{OlderThan: 24 * time.Hour, Now: now})
 	if got, want := len(agedPlan.Actions), 2; got != want {
@@ -264,6 +270,50 @@ func TestPlanPruneIncludesAllAndOlderThanCaches(t *testing.T) {
 	assertPlanAction(t, allPlan, KindImageCache, "sha256:image")
 }
 
+func TestPlanPruneSkipsStageCacheOutsideManagedSnapshotStorage(t *testing.T) {
+	now := time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC)
+	report := Report{
+		SnapshotRoots: []string{"/tmp/snapshots"},
+		Entries: []Entry{
+			{
+				Kind:       KindStageCache,
+				ID:         "dependencies/repo",
+				Stage:      "dependencies",
+				CacheKey:   "repo",
+				Backend:    "firecracker",
+				Path:       "/tmp/state/cleanroom/repos/rootfs.ext4",
+				SizeBytes:  20,
+				LastUsedAt: now.Add(-48 * time.Hour),
+			},
+			{
+				Kind:       KindStageCache,
+				ID:         "dependencies/nested",
+				Stage:      "dependencies",
+				CacheKey:   "nested",
+				Backend:    "firecracker",
+				Path:       "/tmp/snapshots/firecracker/cache/nested/rootfs.ext4",
+				SizeBytes:  20,
+				LastUsedAt: now.Add(-48 * time.Hour),
+			},
+			{
+				Kind:       KindStageCache,
+				ID:         "dependencies/wrong-backend",
+				Stage:      "dependencies",
+				CacheKey:   "wrong-backend",
+				Backend:    "darwin-vz",
+				Path:       "/tmp/snapshots/firecracker/cache/rootfs.ext4",
+				SizeBytes:  20,
+				LastUsedAt: now.Add(-48 * time.Hour),
+			},
+		},
+	}
+
+	allPlan := PlanPrune(report, PruneOptions{All: true, Now: now})
+	if got := len(allPlan.Actions); got != 0 {
+		t.Fatalf("expected no unmanaged stage-cache actions, got %#v", allPlan.Actions)
+	}
+}
+
 func TestExecutePruneDeletesOwnedPathsAndStageCacheMetadata(t *testing.T) {
 	tmpDir := t.TempDir()
 	stageRootFS := filepath.Join(tmpDir, "state", "cleanroom", "snapshots", "firecracker", "cache", "rootfs.ext4")
@@ -278,6 +328,7 @@ func TestExecutePruneDeletesOwnedPathsAndStageCacheMetadata(t *testing.T) {
 				ID:         "dependencies/cache",
 				Stage:      "dependencies",
 				CacheKey:   "cache",
+				Backend:    "firecracker",
 				Path:       stageRootFS,
 				SizeBytes:  5,
 				LastUsedAt: time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC),
@@ -298,6 +349,38 @@ func TestExecutePruneDeletesOwnedPathsAndStageCacheMetadata(t *testing.T) {
 	}
 	if got, want := cacheStore.deleted, []string{"dependencies/cache"}; len(got) != len(want) || got[0] != want[0] {
 		t.Fatalf("unexpected metadata deletes: got %v want %v", got, want)
+	}
+}
+
+func TestExecutePruneKeepsStageCacheStorageWhenMetadataDeleteFails(t *testing.T) {
+	tmpDir := t.TempDir()
+	stageRootFS := filepath.Join(tmpDir, "state", "cleanroom", "snapshots", "firecracker", "cache", "rootfs.ext4")
+	writeFile(t, stageRootFS, "cache")
+	report := Report{
+		StateBaseDir:  filepath.Join(tmpDir, "state", "cleanroom"),
+		CacheBaseDir:  filepath.Join(tmpDir, "cache", "cleanroom"),
+		SnapshotRoots: []string{filepath.Join(tmpDir, "state", "cleanroom", "snapshots")},
+		Entries: []Entry{
+			{
+				Kind:       KindStageCache,
+				ID:         "dependencies/cache",
+				Stage:      "dependencies",
+				CacheKey:   "cache",
+				Backend:    "firecracker",
+				Path:       stageRootFS,
+				StorageRef: stageRootFS,
+				SizeBytes:  5,
+				LastUsedAt: time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC),
+			},
+		},
+	}
+	plan := PlanPrune(report, PruneOptions{All: true, Now: time.Date(2026, 5, 3, 0, 0, 0, 0, time.UTC)})
+	cacheStore := &stubCacheStore{deleteErr: errors.New("metadata locked")}
+	if _, err := ExecutePrune(context.Background(), report, plan, ExecuteOptions{CacheStore: cacheStore, ImageManager: &stubImageManager{}}); err == nil {
+		t.Fatal("expected ExecutePrune to return metadata delete error")
+	}
+	if _, err := os.Stat(filepath.Dir(stageRootFS)); err != nil {
+		t.Fatalf("expected stage cache directory to remain, stat err=%v", err)
 	}
 }
 
@@ -359,5 +442,23 @@ func writeFile(t *testing.T, path, content string) {
 	}
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+func writeSparseFile(t *testing.T, path string, size int64) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("create parent for %s: %v", path, err)
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create sparse file %s: %v", path, err)
+	}
+	if err := f.Truncate(size); err != nil {
+		_ = f.Close()
+		t.Fatalf("truncate sparse file %s: %v", path, err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close sparse file %s: %v", path, err)
 	}
 }

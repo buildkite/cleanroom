@@ -286,7 +286,7 @@ func PlanPrune(report Report, opts PruneOptions) Plan {
 				reclaimable = true
 				reason = fmt.Sprintf("older than %s", opts.OlderThan)
 			case KindStageCache:
-				if entry.Path != "" && stageCacheStorageExclusive(entry) {
+				if entry.Path != "" && stageCacheStorageExclusive(entry) && stageCacheStorageManaged(entry, report.SnapshotRoots) {
 					reclaimable = true
 					reason = fmt.Sprintf("stage cache older than %s", opts.OlderThan)
 				}
@@ -298,7 +298,7 @@ func PlanPrune(report Report, opts PruneOptions) Plan {
 				reclaimable = true
 				reason = "system cache selected by --all"
 			case KindStageCache:
-				if entry.Path != "" && stageCacheStorageExclusive(entry) {
+				if entry.Path != "" && stageCacheStorageExclusive(entry) && stageCacheStorageManaged(entry, report.SnapshotRoots) {
 					reclaimable = true
 					reason = "stage cache selected by --all"
 				}
@@ -310,10 +310,14 @@ func PlanPrune(report Report, opts PruneOptions) Plan {
 		if !reclaimable {
 			continue
 		}
+		actionPath, ok := deletionPathForReport(report, entry)
+		if !ok {
+			continue
+		}
 		action := Action{
 			Kind:      entry.Kind,
 			ID:        entry.ID,
-			Path:      deletionPath(entry),
+			Path:      actionPath,
 			SizeBytes: entry.SizeBytes,
 			Reason:    reason,
 			Entry:     entry,
@@ -365,7 +369,7 @@ func ExecutePrune(ctx context.Context, report Report, plan Plan, opts ExecuteOpt
 
 	result := Result{}
 	for _, action := range plan.Actions {
-		if err := executeAction(ctx, action, roots, cacheStore, imageManager); err != nil {
+		if err := executeAction(ctx, report, action, roots, cacheStore, imageManager); err != nil {
 			return result, err
 		}
 		result.DeletedEntries++
@@ -374,7 +378,7 @@ func ExecutePrune(ctx context.Context, report Report, plan Plan, opts ExecuteOpt
 	return result, nil
 }
 
-func executeAction(ctx context.Context, action Action, roots []string, cacheStore CacheStore, imageManager ImageManager) error {
+func executeAction(ctx context.Context, report Report, action Action, roots []string, cacheStore CacheStore, imageManager ImageManager) error {
 	switch action.Kind {
 	case KindImageCache:
 		if imageManager == nil {
@@ -385,8 +389,9 @@ func executeAction(ctx context.Context, action Action, roots []string, cacheStor
 		}
 		return nil
 	case KindStageCache:
-		if err := removeOwnedPath(action.Path, roots); err != nil {
-			return err
+		stageCachePath, ok := managedSnapshotDirectory(action.Entry.Path, report.SnapshotRoots, action.Entry.Backend)
+		if !ok {
+			return fmt.Errorf("refusing to remove stage-cache storage_ref %q outside managed snapshot storage", action.Entry.StorageRef)
 		}
 		if cacheStore == nil {
 			return errors.New("cache metadata store is not configured")
@@ -394,7 +399,7 @@ func executeAction(ctx context.Context, action Action, roots []string, cacheStor
 		if err := cacheStore.Delete(ctx, action.Entry.Stage, action.Entry.CacheKey); err != nil {
 			return fmt.Errorf("delete stage-cache metadata %q/%q: %w", action.Entry.Stage, action.Entry.CacheKey, err)
 		}
-		return nil
+		return removeOwnedPath(stageCachePath, roots)
 	default:
 		return removeOwnedPath(action.Path, roots)
 	}
@@ -564,7 +569,7 @@ func scanRuntimeRootFS(cacheBase string) ([]Entry, error) {
 				ID:          strings.TrimSuffix(dirEntry.Name(), filepath.Ext(dirEntry.Name())),
 				Backend:     backendName,
 				Path:        path,
-				SizeBytes:   info.Size(),
+				SizeBytes:   allocatedFileSize(info),
 				Reclaimable: false,
 				Reason:      "runtime rootfs cache preserved unless selected",
 				ProtectedBy: []string{"runtime rootfs cache"},
@@ -696,6 +701,15 @@ func storageRefPath(storageRef string) string {
 	return cleanPath(ref)
 }
 
+func deletionPathForReport(report Report, entry Entry) (string, bool) {
+	switch entry.Kind {
+	case KindStageCache:
+		return managedSnapshotDirectory(entry.Path, report.SnapshotRoots, entry.Backend)
+	default:
+		return deletionPath(entry), true
+	}
+}
+
 func deletionPath(entry Entry) string {
 	switch entry.Kind {
 	case KindOrphanSnapshot:
@@ -708,6 +722,41 @@ func deletionPath(entry Entry) string {
 	default:
 		return entry.Path
 	}
+}
+
+func stageCacheStorageManaged(entry Entry, snapshotRoots []string) bool {
+	_, ok := managedSnapshotDirectory(entry.Path, snapshotRoots, entry.Backend)
+	return ok
+}
+
+func managedSnapshotDirectory(path string, snapshotRoots []string, backendName string) (string, bool) {
+	path = cleanPath(path)
+	if path == "" || filepath.Base(path) != "rootfs.ext4" {
+		return "", false
+	}
+	backendName = strings.TrimSpace(backendName)
+	if backendName != "firecracker" && backendName != "darwin-vz" {
+		return "", false
+	}
+	for _, root := range snapshotRoots {
+		root = cleanPath(root)
+		if root == "" {
+			continue
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil || rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." {
+			continue
+		}
+		parts := strings.Split(rel, string(filepath.Separator))
+		if len(parts) != 3 {
+			continue
+		}
+		if parts[0] != backendName || strings.TrimSpace(parts[1]) == "" || parts[2] != "rootfs.ext4" {
+			continue
+		}
+		return filepath.Dir(path), true
+	}
+	return "", false
 }
 
 func removeOwnedPath(path string, roots []string) error {
