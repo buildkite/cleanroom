@@ -226,6 +226,54 @@ func TestFileHandleVirtualNetworkSetPolicyClosesActiveTCPProxyConnections(t *tes
 	}
 }
 
+func TestFileHandleVirtualNetworkSetPolicySerializesWithTCPAdmission(t *testing.T) {
+	t.Parallel()
+
+	runtime, err := newFileHandleDNSRuntime("sandbox-1", &policy.CompiledPolicy{
+		NetworkDefault: "deny",
+		Allow: []policy.AllowRule{
+			{Host: "old.example", Ports: []int{443}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("newFileHandleDNSRuntime returned error: %v", err)
+	}
+	network := &fileHandleVirtualNetwork{dnsRuntime: runtime}
+	network.activeMu.Lock()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- network.SetPolicy("sandbox-1", &policy.CompiledPolicy{
+			NetworkDefault: "deny",
+			Allow: []policy.AllowRule{
+				{Host: "new.example", Ports: []int{443}},
+			},
+		})
+	}()
+
+	select {
+	case err := <-done:
+		t.Fatalf("SetPolicy completed while TCP admission lock was held: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	network.activeMu.Unlock()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("SetPolicy returned error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for SetPolicy after releasing TCP admission lock")
+	}
+	if runtime.HostAllowedByPolicy("sandbox-1", "old.example") {
+		t.Fatal("did not expect old policy host to remain allowed")
+	}
+	if !runtime.HostAllowedByPolicy("sandbox-1", "new.example") {
+		t.Fatal("expected new policy host to be allowed")
+	}
+}
+
 func TestResolveFileHandleDNSUpstreamAddrUsesConfiguredValue(t *testing.T) {
 	t.Parallel()
 

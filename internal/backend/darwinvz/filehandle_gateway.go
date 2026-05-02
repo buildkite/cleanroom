@@ -453,6 +453,7 @@ func newFileHandleVirtualNetwork(cfg fileHandleGatewayConfig, dnsUpstreamAddr st
 			DestPort:   r.ID().LocalPort,
 			Protocol:   dnsproxy.ProtocolTCP,
 		}
+		network.activeMu.Lock()
 		if dnsRuntime != nil && !dnsRuntime.AllowConnection(conn, time.Now()) {
 			dest := destIP.String()
 			if names := dnsRuntime.NamesForAddress(cfg.SandboxID, sourceIP, destIP, time.Now()); len(names) > 0 {
@@ -470,6 +471,7 @@ func newFileHandleVirtualNetwork(cfg fileHandleGatewayConfig, dnsUpstreamAddr st
 				"dest_port", r.ID().LocalPort,
 				"source_ip", sourceIP.String(),
 			)
+			network.activeMu.Unlock()
 			r.Complete(true)
 			return
 		}
@@ -479,6 +481,7 @@ func newFileHandleVirtualNetwork(cfg fileHandleGatewayConfig, dnsUpstreamAddr st
 			if dnsRuntime != nil {
 				dnsRuntime.ReleaseConnection(conn)
 			}
+			network.activeMu.Unlock()
 			r.Complete(true)
 			return
 		}
@@ -491,6 +494,7 @@ func newFileHandleVirtualNetwork(cfg fileHandleGatewayConfig, dnsUpstreamAddr st
 			if dnsRuntime != nil {
 				dnsRuntime.ReleaseConnection(conn)
 			}
+			network.activeMu.Unlock()
 			return
 		}
 
@@ -500,7 +504,8 @@ func newFileHandleVirtualNetwork(cfg fileHandleGatewayConfig, dnsUpstreamAddr st
 			},
 		}
 		guestConn := gonet.NewTCPConn(&wq, ep)
-		untrack := network.trackTCPProxyConn(guestConn, outbound)
+		untrack := network.trackTCPProxyConnLocked(guestConn, outbound)
+		network.activeMu.Unlock()
 		defer untrack()
 		remote.HandleConn(guestConn)
 		if dnsRuntime != nil {
@@ -520,21 +525,30 @@ func (n *fileHandleVirtualNetwork) SetPolicy(sandboxID string, compiled *policy.
 	if n == nil || n.dnsRuntime == nil {
 		return nil
 	}
-	n.closeActiveTCPProxyConns()
-	return n.dnsRuntime.UpdateSandboxPolicy(sandboxID, compiled)
+	n.activeMu.Lock()
+	conns := n.drainActiveTCPProxyConnsLocked()
+	closeTCPProxyConns(conns)
+	err := n.dnsRuntime.UpdateSandboxPolicy(sandboxID, compiled)
+	n.activeMu.Unlock()
+	return err
 }
 
 func (n *fileHandleVirtualNetwork) trackTCPProxyConn(guest, outbound net.Conn) func() {
 	if n == nil {
 		return func() {}
 	}
-	tracked := &fileHandleTCPProxyConn{guest: guest, outbound: outbound}
 	n.activeMu.Lock()
+	untrack := n.trackTCPProxyConnLocked(guest, outbound)
+	n.activeMu.Unlock()
+	return untrack
+}
+
+func (n *fileHandleVirtualNetwork) trackTCPProxyConnLocked(guest, outbound net.Conn) func() {
+	tracked := &fileHandleTCPProxyConn{guest: guest, outbound: outbound}
 	if n.activeTCP == nil {
 		n.activeTCP = make(map[*fileHandleTCPProxyConn]struct{})
 	}
 	n.activeTCP[tracked] = struct{}{}
-	n.activeMu.Unlock()
 	return func() {
 		n.activeMu.Lock()
 		delete(n.activeTCP, tracked)
@@ -547,12 +561,21 @@ func (n *fileHandleVirtualNetwork) closeActiveTCPProxyConns() {
 		return
 	}
 	n.activeMu.Lock()
+	conns := n.drainActiveTCPProxyConnsLocked()
+	n.activeMu.Unlock()
+	closeTCPProxyConns(conns)
+}
+
+func (n *fileHandleVirtualNetwork) drainActiveTCPProxyConnsLocked() []*fileHandleTCPProxyConn {
 	conns := make([]*fileHandleTCPProxyConn, 0, len(n.activeTCP))
 	for conn := range n.activeTCP {
 		conns = append(conns, conn)
 	}
 	n.activeTCP = make(map[*fileHandleTCPProxyConn]struct{})
-	n.activeMu.Unlock()
+	return conns
+}
+
+func closeTCPProxyConns(conns []*fileHandleTCPProxyConn) {
 	for _, conn := range conns {
 		if conn.guest != nil {
 			_ = conn.guest.Close()
