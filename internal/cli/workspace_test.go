@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -830,7 +831,6 @@ func TestWorkspaceCopyOutPlanRejectsWindowsDrivePaths(t *testing.T) {
 		"C:/tmp.txt",
 		"c:/tmp.txt",
 		"D:\\tmp.txt",
-		"Z:tmp.txt",
 	} {
 		t.Run(rel, func(t *testing.T) {
 			_, err := gitWorkspaceCopyOutPlan(t.TempDir(), []byte("M\x00"+rel+"\x00"))
@@ -841,6 +841,21 @@ func TestWorkspaceCopyOutPlanRejectsWindowsDrivePaths(t *testing.T) {
 				t.Fatalf("expected safe relative path error, got %v", err)
 			}
 		})
+	}
+}
+
+func TestWorkspaceCopyOutPlanAllowsRelativeColonPaths(t *testing.T) {
+	localRoot := t.TempDir()
+	entries, err := gitWorkspaceCopyOutPlan(localRoot, []byte("M\x00a:b.txt\x00A\x00dir/Z:tmp.txt\x00"))
+	if err != nil {
+		t.Fatalf("gitWorkspaceCopyOutPlan returned error: %v", err)
+	}
+	expected := []workspacePlanEntry{
+		{Action: "write", Path: filepath.Join(localRoot, "a:b.txt")},
+		{Action: "write", Path: filepath.Join(localRoot, "dir", "Z:tmp.txt")},
+	}
+	if !reflect.DeepEqual(entries, expected) {
+		t.Fatalf("unexpected copy-out plan: got %+v want %+v", entries, expected)
 	}
 }
 

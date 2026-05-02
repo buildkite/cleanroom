@@ -404,14 +404,14 @@ func workspaceRelativePath(rel string) (string, error) {
 	slashed := filepath.ToSlash(rel)
 	cleaned := posixpath.Clean(slashed)
 	windowsCleaned := posixpath.Clean(strings.ReplaceAll(slashed, "\\", "/"))
-	if cleaned == "." || cleaned == "" || strings.HasPrefix(cleaned, "/") || hasWindowsDrivePathPrefix(windowsCleaned) || cleaned == ".." || strings.HasPrefix(cleaned, "../") {
+	if cleaned == "." || cleaned == "" || strings.HasPrefix(cleaned, "/") || hasWindowsDriveAbsolutePathPrefix(windowsCleaned) || cleaned == ".." || strings.HasPrefix(cleaned, "../") {
 		return "", fmt.Errorf("workspace path %q is not a safe relative path", rel)
 	}
 	return cleaned, nil
 }
 
-func hasWindowsDrivePathPrefix(path string) bool {
-	if len(path) < 2 || path[1] != ':' {
+func hasWindowsDriveAbsolutePathPrefix(path string) bool {
+	if len(path) < 3 || path[1] != ':' || path[2] != '/' {
 		return false
 	}
 	drive := path[0]
