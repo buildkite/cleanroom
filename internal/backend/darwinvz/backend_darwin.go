@@ -1176,11 +1176,14 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 	}
 
 	guestReq := vsockexec.ExecRequest{
-		Command: append([]string(nil), req.Command...),
-		Env:     append([]string(nil), req.Env...),
-		TTY:     req.TTY,
+		Command:         append([]string(nil), req.Command...),
+		Dir:             strings.TrimSpace(req.Dir),
+		Env:             append([]string(nil), req.Env...),
+		ClosedEnv:       req.ClosedEnv,
+		TTY:             req.TTY,
+		InputProjection: darwinVZInputProjection(req.InputProjection),
 	}
-	if a.GatewayRegistry != nil && gatewayScopeToken != "" {
+	if !req.ClosedEnv && a.GatewayRegistry != nil && gatewayScopeToken != "" {
 		gwPort := a.GatewayPort
 		if gwPort <= 0 {
 			gwPort = gateway.DefaultPort
@@ -1614,11 +1617,14 @@ func (a *Adapter) executeInSandbox(bootCtx context.Context, runCtx context.Conte
 	}
 
 	guestReq := vsockexec.ExecRequest{
-		Command: append([]string(nil), req.Command...),
-		Env:     append([]string(nil), req.Env...),
-		TTY:     req.TTY,
+		Command:         append([]string(nil), req.Command...),
+		Dir:             strings.TrimSpace(req.Dir),
+		Env:             append([]string(nil), req.Env...),
+		ClosedEnv:       req.ClosedEnv,
+		TTY:             req.TTY,
+		InputProjection: darwinVZInputProjection(req.InputProjection),
 	}
-	if a.GatewayRegistry != nil && gatewayScopeToken != "" {
+	if !req.ClosedEnv && a.GatewayRegistry != nil && gatewayScopeToken != "" {
 		gwPort := a.GatewayPort
 		if gwPort <= 0 {
 			gwPort = gateway.DefaultPort
@@ -2539,6 +2545,18 @@ func logExecutionNotice(backendName, runID, notice string) {
 		fields = append(fields, "execution_id", id)
 	}
 	log.Info(msg, fields...)
+}
+
+func darwinVZInputProjection(projection *backend.InputProjection) *vsockexec.InputProjection {
+	if projection == nil {
+		return nil
+	}
+	return &vsockexec.InputProjection{
+		SourceRoot:          strings.TrimSpace(projection.SourceRoot),
+		TargetRoot:          strings.TrimSpace(projection.TargetRoot),
+		Files:               append([]string(nil), projection.Files...),
+		MountSourceReadOnly: projection.MountSourceReadOnly,
+	}
 }
 
 func randomScopeToken() (string, error) {

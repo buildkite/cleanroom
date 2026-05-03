@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/buildkite/cleanroom/internal/backend"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
@@ -22,11 +23,36 @@ func (s *Service) runPersistentSandboxCommand(
 	env []string,
 	stream backend.OutputStream,
 ) (*backend.ExecutionResult, error) {
+	return s.runPersistentSandboxCommandWithOptions(ctx, adapter, sandboxID, compiled, firecrackerCfg, networkStage, executionID, command, env, persistentSandboxCommandOptions{}, stream)
+}
+
+type persistentSandboxCommandOptions struct {
+	Dir             string
+	ClosedEnv       bool
+	InputProjection *backend.InputProjection
+}
+
+func (s *Service) runPersistentSandboxCommandWithOptions(
+	ctx context.Context,
+	adapter backend.Adapter,
+	sandboxID string,
+	compiled *policy.CompiledPolicy,
+	firecrackerCfg backend.FirecrackerConfig,
+	networkStage policy.NetworkStage,
+	executionID string,
+	command []string,
+	env []string,
+	opts persistentSandboxCommandOptions,
+	stream backend.OutputStream,
+) (*backend.ExecutionResult, error) {
 	return adapter.RunInSandbox(ctx, backend.ExecutionRequest{
 		SandboxID:         sandboxID,
 		ExecutionID:       executionID,
 		Command:           append([]string(nil), command...),
+		Dir:               strings.TrimSpace(opts.Dir),
 		Env:               append([]string(nil), env...),
+		ClosedEnv:         opts.ClosedEnv,
+		InputProjection:   cloneInputProjection(opts.InputProjection),
 		Policy:            compiled,
 		NetworkStage:      networkStage,
 		FirecrackerConfig: withRunDir(firecrackerCfg, internalBootstrapArtifactsDir(sandboxID, executionID)),
@@ -45,11 +71,28 @@ func (s *Service) runPersistentBootstrapCommand(
 	stdin []byte,
 	reporter CreateSandboxReporter,
 ) (string, *backend.ExecutionResult, string, string, error) {
+	return s.runPersistentBootstrapCommandWithOptions(ctx, adapter, sandboxID, compiled, firecrackerCfg, phase, networkStage, command, nil, stdin, persistentSandboxCommandOptions{}, reporter)
+}
+
+func (s *Service) runPersistentBootstrapCommandWithOptions(
+	ctx context.Context,
+	adapter backend.Adapter,
+	sandboxID string,
+	compiled *policy.CompiledPolicy,
+	firecrackerCfg backend.FirecrackerConfig,
+	phase cleanroomv1.CreateSandboxPhase,
+	networkStage policy.NetworkStage,
+	command []string,
+	env []string,
+	stdin []byte,
+	opts persistentSandboxCommandOptions,
+	reporter CreateSandboxReporter,
+) (string, *backend.ExecutionResult, string, string, error) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	var attachErr error
 	bootstrapExecutionID := s.ids().NewExecutionID()
-	result, err := s.runPersistentSandboxCommand(ctx, adapter, sandboxID, compiled, firecrackerCfg, networkStage, bootstrapExecutionID, command, nil, backend.OutputStream{
+	result, err := s.runPersistentSandboxCommandWithOptions(ctx, adapter, sandboxID, compiled, firecrackerCfg, networkStage, bootstrapExecutionID, command, env, opts, backend.OutputStream{
 		OnStdout: func(chunk []byte) {
 			_, _ = stdout.Write(chunk)
 			emitCreateSandboxStdout(reporter, phase, chunk)
@@ -84,4 +127,16 @@ func (s *Service) runPersistentBootstrapCommand(
 		err = attachErr
 	}
 	return bootstrapExecutionID, result, stdout.String(), stderr.String(), err
+}
+
+func cloneInputProjection(projection *backend.InputProjection) *backend.InputProjection {
+	if projection == nil {
+		return nil
+	}
+	return &backend.InputProjection{
+		SourceRoot:          strings.TrimSpace(projection.SourceRoot),
+		TargetRoot:          strings.TrimSpace(projection.TargetRoot),
+		Files:               append([]string(nil), projection.Files...),
+		MountSourceReadOnly: projection.MountSourceReadOnly,
+	}
 }

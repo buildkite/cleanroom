@@ -503,7 +503,7 @@ func (a *Adapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest
 		defer a.GatewayRegistry.ClearActiveExecutionTrace(sandboxID, req.ExecutionID)
 	}
 
-	guestResult, timing, err := a.executeInSandbox(ctx, instance, req.LaunchSeconds, req.Command, req.Env, req.TTY, stream)
+	guestResult, timing, err := a.executeInSandbox(ctx, instance, req.LaunchSeconds, req.Command, req.Dir, req.Env, req.ClosedEnv, req.InputProjection, req.TTY, stream)
 	if err != nil {
 		observation.ExitCode = 1
 		observation.GuestError = err.Error()
@@ -594,7 +594,7 @@ func (a *Adapter) runFileTransferCommand(ctx context.Context, sandboxID string, 
 	if err != nil {
 		return nil, err
 	}
-	result, _, err := a.executeInSandbox(ctx, instance, 0, cmd, nil, false, stream)
+	result, _, err := a.executeInSandbox(ctx, instance, 0, cmd, "", nil, false, nil, false, stream)
 	if err != nil {
 		return nil, err
 	}
@@ -672,7 +672,7 @@ func (a *Adapter) CreateSnapshot(ctx context.Context, req backend.SnapshotReques
 		return nil, fmt.Errorf("sandbox %q is not running: %w", sandboxID, err)
 	}
 
-	syncResp, _, err := a.executeInSandbox(ctx, instance, snapshotSyncTimeoutSeconds, []string{"sync"}, nil, false, backend.OutputStream{})
+	syncResp, _, err := a.executeInSandbox(ctx, instance, snapshotSyncTimeoutSeconds, []string{"sync"}, "", nil, false, nil, false, backend.OutputStream{})
 	if err != nil {
 		return nil, fmt.Errorf("sync sandbox filesystem before snapshot: %w", err)
 	}
@@ -809,18 +809,21 @@ func (a *Adapter) DeleteSnapshot(ctx context.Context, req backend.DeleteSnapshot
 	return nil
 }
 
-func (a *Adapter) executeInSandbox(ctx context.Context, instance *sandboxInstance, launchSeconds int64, command, env []string, tty bool, stream backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error) {
+func (a *Adapter) executeInSandbox(ctx context.Context, instance *sandboxInstance, launchSeconds int64, command []string, dir string, env []string, closedEnv bool, inputProjection *backend.InputProjection, tty bool, stream backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error) {
 	guestReq := vsockexec.ExecRequest{
 		Command:           append([]string(nil), command...),
+		Dir:               strings.TrimSpace(dir),
 		Env:               append([]string(nil), env...),
+		ClosedEnv:         closedEnv,
 		TTY:               tty,
 		CacheOutputMounts: cloneCacheOutputMounts(instance.cacheOutputMounts),
+		InputProjection:   vsockInputProjection(inputProjection),
 	}
 	entropy := make([]byte, 64)
 	if _, err := cryptorand.Read(entropy); err == nil {
 		guestReq.EntropySeed = entropy
 	}
-	if a.GatewayRegistry != nil && instance.HostIP != "" {
+	if !closedEnv && a.GatewayRegistry != nil && instance.HostIP != "" {
 		gwPort := a.GatewayPort
 		if gwPort == 0 {
 			gwPort = gateway.DefaultPort
@@ -1316,8 +1319,12 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 	defer bootCancel()
 
 	guestReq := vsockexec.ExecRequest{
-		Command: req.Command,
-		TTY:     req.TTY,
+		Command:         req.Command,
+		Dir:             strings.TrimSpace(req.Dir),
+		Env:             append([]string(nil), req.Env...),
+		ClosedEnv:       req.ClosedEnv,
+		TTY:             req.TTY,
+		InputProjection: vsockInputProjection(req.InputProjection),
 	}
 	entropy := make([]byte, 64)
 	if _, err := cryptorand.Read(entropy); err == nil {

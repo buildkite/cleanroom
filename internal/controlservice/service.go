@@ -747,7 +747,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 				}
 				return nil, fmt.Errorf("bootstrap services stage: %w", err)
 			}
-			if servicesStageCachingEnabled {
+			if servicesStageCachingEnabled && !serviceBlockVolumePlanAvailable {
 				emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_PUBLISH_SERVICES_STAGE_CACHE, "publishing services stage cache")
 				s.maybePublishServicesStageCache(ctx, snapshotAdapter, sandboxID, backendName, compiled, firecrackerCfg, repository, changeset, servicesStagePlan, replacedServicesStageRecord)
 			}
@@ -771,6 +771,9 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 			}
 			emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_BOOTSTRAP_DEPENDENCIES, "running dependency bootstrap")
 			if err := s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.bootstrap_dependencies", bootstrapAttrs, func(ctx context.Context) error {
+				if dependencyBlockVolumePlanAvailable {
+					return s.bootstrapDependencyBlockVolumePlanInPersistentSandbox(ctx, adapter, sandboxID, compiled, firecrackerCfg, repository, dependencyBlockVolumePlan, reporter)
+				}
 				return s.bootstrapDependencyStageInPersistentSandbox(ctx, adapter, sandboxID, compiled, firecrackerCfg, dependencyStagePlan, reporter)
 			}); err != nil {
 				cleanupErr := s.terminateCreatedSandbox(context.Background(), adapter, sandboxID)
@@ -779,7 +782,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 				}
 				return nil, fmt.Errorf("bootstrap dependency stage: %w", err)
 			}
-			if dependencyStageCachingEnabled {
+			if dependencyStageCachingEnabled && !dependencyBlockVolumePlanAvailable {
 				emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_PUBLISH_DEPENDENCY_STAGE_CACHE, "publishing dependency stage cache")
 				s.maybePublishDependencyStageCache(ctx, snapshotAdapter, sandboxID, backendName, compiled, firecrackerCfg, repository, changeset, dependencyStagePlan, replacedDependencyStageRecord)
 			}
@@ -805,7 +808,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 				}
 				return nil, fmt.Errorf("bootstrap services stage: %w", err)
 			}
-			if servicesStageCachingEnabled {
+			if servicesStageCachingEnabled && !serviceBlockVolumePlanAvailable {
 				emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_PUBLISH_SERVICES_STAGE_CACHE, "publishing services stage cache")
 				s.maybePublishServicesStageCache(ctx, snapshotAdapter, sandboxID, backendName, compiled, firecrackerCfg, repository, changeset, servicesStagePlan, replacedServicesStageRecord)
 			}
@@ -945,6 +948,9 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 		}
 		emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_BOOTSTRAP_DEPENDENCIES, "running dependency bootstrap")
 		if err := s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.bootstrap_dependencies", bootstrapAttrs, func(ctx context.Context) error {
+			if dependencyBlockVolumePlanAvailable {
+				return s.bootstrapDependencyBlockVolumePlanInPersistentSandbox(ctx, adapter, sandboxID, compiled, firecrackerCfg, repository, dependencyBlockVolumePlan, reporter)
+			}
 			return s.bootstrapDependencyStageInPersistentSandbox(ctx, adapter, sandboxID, compiled, firecrackerCfg, dependencyStagePlan, reporter)
 		}); err != nil {
 			if terminateErr := s.terminateCreatedSandbox(context.Background(), adapter, sandboxID); terminateErr != nil {
@@ -955,7 +961,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 		if err := s.ensureSandboxCreateStillProvisioning(sandboxID); err != nil {
 			return nil, err
 		}
-		if dependencyStageCachingEnabled && snapshotCapable {
+		if dependencyStageCachingEnabled && snapshotCapable && !dependencyBlockVolumePlanAvailable {
 			emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_PUBLISH_DEPENDENCY_STAGE_CACHE, "publishing dependency stage cache")
 			_ = s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.publish_dependency_stage_cache", []attribute.KeyValue{
 				attribute.String("cleanroom.backend", backendName),
@@ -992,7 +998,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 		if err := s.ensureSandboxCreateStillProvisioning(sandboxID); err != nil {
 			return nil, err
 		}
-		if servicesStageCachingEnabled && snapshotCapable {
+		if servicesStageCachingEnabled && snapshotCapable && !serviceBlockVolumePlanAvailable {
 			emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_PUBLISH_SERVICES_STAGE_CACHE, "publishing services stage cache")
 			_ = s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.publish_services_stage_cache", []attribute.KeyValue{
 				attribute.String("cleanroom.backend", backendName),

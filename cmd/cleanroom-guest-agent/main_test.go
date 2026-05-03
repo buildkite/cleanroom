@@ -19,7 +19,7 @@ func TestBuildCommandEnvAppliesGatewayDefaultsWhenUnset(t *testing.T) {
 	env, err := buildCommandEnv([]string{
 		gateway.GoProxyDefaultEnvKey + "=http://gateway.cleanroom.internal:8170/goproxy,direct",
 		gateway.MiseGoDownloadMirrorDefaultEnvKey + "=http://gateway.cleanroom.internal:8170/fetch/dl.google.com/go",
-	})
+	}, true)
 	if err != nil {
 		t.Fatalf("buildCommandEnv returned error: %v", err)
 	}
@@ -48,7 +48,7 @@ func TestBuildCommandEnvPreservesExplicitUserGoEnv(t *testing.T) {
 		"MISE_GO_DOWNLOAD_MIRROR=https://example.test/go",
 		gateway.GoProxyDefaultEnvKey + "=http://gateway.cleanroom.internal:8170/goproxy,direct",
 		gateway.MiseGoDownloadMirrorDefaultEnvKey + "=http://gateway.cleanroom.internal:8170/fetch/dl.google.com/go",
-	})
+	}, true)
 	if err != nil {
 		t.Fatalf("buildCommandEnv returned error: %v", err)
 	}
@@ -65,6 +65,29 @@ func TestBuildCommandEnvPreservesExplicitUserGoEnv(t *testing.T) {
 	}
 	if _, ok := got[gateway.MiseGoDownloadMirrorDefaultEnvKey]; ok {
 		t.Fatalf("did not expect %s to remain in child env", gateway.MiseGoDownloadMirrorDefaultEnvKey)
+	}
+}
+
+func TestBuildCommandEnvCanDisableAmbientInheritance(t *testing.T) {
+	t.Setenv("UNKEYED_AMBIENT", "leak")
+
+	env, err := buildCommandEnv([]string{"DECLARED=value"}, false)
+	if err != nil {
+		t.Fatalf("buildCommandEnv returned error: %v", err)
+	}
+
+	got := envMap(env)
+	if got["UNKEYED_AMBIENT"] != "" {
+		t.Fatalf("did not expect ambient env to be inherited, got %q", got["UNKEYED_AMBIENT"])
+	}
+	if got["DECLARED"] != "value" {
+		t.Fatalf("expected declared env to be present, got %q", got["DECLARED"])
+	}
+	if got["HOME"] != "/root" {
+		t.Fatalf("expected default HOME, got %q", got["HOME"])
+	}
+	if got["PATH"] == "" {
+		t.Fatal("expected default PATH")
 	}
 }
 
