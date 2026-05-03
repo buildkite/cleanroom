@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"archive/tar"
 	"bytes"
 	"context"
 	"errors"
@@ -1193,7 +1192,7 @@ func TestWorkspaceCopyOutAppliesSandboxGitPatch(t *testing.T) {
 	if len(commands) != 1 {
 		t.Fatalf("expected one combined copy-out execution, got %d", len(commands))
 	}
-	assertWorkspaceCopyOutRecoveryPayload(t, sandboxID)
+	assertNoWorkspaceCopyOutRecoveryPayload(t)
 }
 
 func TestWorkspaceCopyOutAppliesFromCopyInManifestBase(t *testing.T) {
@@ -1249,7 +1248,7 @@ func TestWorkspaceCopyOutAppliesFromCopyInManifestBase(t *testing.T) {
 	if got := stdoutText(); got != expected {
 		t.Fatalf("unexpected copy-out output: got %q want %q", got, expected)
 	}
-	assertWorkspaceCopyOutRecoveryPayload(t, fixture.sandboxID)
+	assertNoWorkspaceCopyOutRecoveryPayload(t)
 }
 
 func TestWorkspaceCopyOutDryRunUsesCopyInManifestBase(t *testing.T) {
@@ -1331,9 +1330,6 @@ func TestWorkspaceCopyOutRejectsLocalDivergenceFromCopyInManifestBase(t *testing
 	if !strings.Contains(err.Error(), `local workspace path "README.md" changed independently`) {
 		t.Fatalf("expected manifest divergence error, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "sandbox changes saved to") {
-		t.Fatalf("expected recovery payload path in error, got %v", err)
-	}
 	readme, err := os.ReadFile(filepath.Join(fixture.localRoot, "README.md"))
 	if err != nil {
 		t.Fatalf("read README: %v", err)
@@ -1341,7 +1337,149 @@ func TestWorkspaceCopyOutRejectsLocalDivergenceFromCopyInManifestBase(t *testing
 	if got, want := string(readme), "local divergent\n"; got != want {
 		t.Fatalf("copy-out should not overwrite divergent local file: got %q want %q", got, want)
 	}
-	assertWorkspaceCopyOutRecoveryPayload(t, fixture.sandboxID)
+	assertNoWorkspaceCopyOutRecoveryPayload(t)
+}
+
+func TestWorkspaceCopyOutReportsAllLocalDivergenceFromCopyInManifestBase(t *testing.T) {
+	fixture := setupWorkspaceCopyOutManifestBase(t, func(localRoot string) {
+		if err := os.WriteFile(filepath.Join(localRoot, "README.md"), []byte("local\nsandbox\n"), 0o644); err != nil {
+			t.Fatalf("write sandbox README: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(localRoot, "local.txt"), []byte("local only\nsandbox\n"), 0o644); err != nil {
+			t.Fatalf("write sandbox local file: %v", err)
+		}
+	})
+	if err := os.WriteFile(filepath.Join(fixture.localRoot, "README.md"), []byte("local divergent\n"), 0o644); err != nil {
+		t.Fatalf("write divergent local README: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(fixture.localRoot, "local.txt"), []byte("local divergent\n"), 0o644); err != nil {
+		t.Fatalf("write divergent local file: %v", err)
+	}
+
+	stdout, _ := makeStdoutCapture(t)
+	stderr, _ := makeStdoutCapture(t)
+	cmd := WorkspaceCopyOutCommand{
+		clientFlags: clientFlags{Host: fixture.host},
+		SandboxID:   fixture.sandboxID,
+	}
+	err := cmd.Run(&runtimeContext{
+		CWD:           t.TempDir(),
+		Loader:        repositoryNotFoundLoader{},
+		Config:        runtimeconfig.Config{},
+		Observability: newTestObservability(t),
+		Stdout:        stdout,
+		Stderr:        stderr,
+	})
+	if err == nil {
+		t.Fatal("expected local divergence from copy-in manifest to be rejected")
+	}
+	for _, want := range []string{
+		"workspace copy-out found 2 local conflicts",
+		"README.md: changed independently",
+		"local.txt: changed independently",
+		"--force",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("expected error to contain %q, got %v", want, err)
+		}
+	}
+	assertNoWorkspaceCopyOutRecoveryPayload(t)
+}
+
+func TestWorkspaceCopyOutForceOverwritesLocalDivergenceFromCopyInManifestBase(t *testing.T) {
+	fixture := setupWorkspaceCopyOutManifestBase(t, func(localRoot string) {
+		if err := os.WriteFile(filepath.Join(localRoot, "README.md"), []byte("local\nsandbox\n"), 0o644); err != nil {
+			t.Fatalf("write sandbox README: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(localRoot, "local.txt"), []byte("local only\nsandbox\n"), 0o644); err != nil {
+			t.Fatalf("write sandbox local file: %v", err)
+		}
+	})
+	if err := os.WriteFile(filepath.Join(fixture.localRoot, "README.md"), []byte("local divergent\n"), 0o644); err != nil {
+		t.Fatalf("write divergent local README: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(fixture.localRoot, "local.txt"), []byte("local divergent\n"), 0o644); err != nil {
+		t.Fatalf("write divergent local file: %v", err)
+	}
+
+	stdout, _ := makeStdoutCapture(t)
+	stderr, _ := makeStdoutCapture(t)
+	cmd := WorkspaceCopyOutCommand{
+		clientFlags: clientFlags{Host: fixture.host},
+		Force:       true,
+		SandboxID:   fixture.sandboxID,
+	}
+	if err := cmd.Run(&runtimeContext{
+		CWD:           t.TempDir(),
+		Loader:        repositoryNotFoundLoader{},
+		Config:        runtimeconfig.Config{},
+		Observability: newTestObservability(t),
+		Stdout:        stdout,
+		Stderr:        stderr,
+	}); err != nil {
+		t.Fatalf("WorkspaceCopyOutCommand.Run returned error: %v", err)
+	}
+	for path, want := range map[string]string{
+		"README.md": "local\nsandbox\n",
+		"local.txt": "local only\nsandbox\n",
+	} {
+		got, err := os.ReadFile(filepath.Join(fixture.localRoot, path))
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		if string(got) != want {
+			t.Fatalf("unexpected %s content: got %q want %q", path, got, want)
+		}
+	}
+	assertNoWorkspaceCopyOutRecoveryPayload(t)
+}
+
+func TestWorkspaceCopyOutForceClearsStagedDivergenceFromCopyInManifestBase(t *testing.T) {
+	fixture := setupWorkspaceCopyOutManifestBase(t, func(localRoot string) {
+		if err := os.WriteFile(filepath.Join(localRoot, "README.md"), []byte("local\nsandbox\n"), 0o644); err != nil {
+			t.Fatalf("write sandbox README: %v", err)
+		}
+	})
+	readmePath := filepath.Join(fixture.localRoot, "README.md")
+	if err := os.WriteFile(readmePath, []byte("staged divergent\n"), 0o644); err != nil {
+		t.Fatalf("write staged divergent README: %v", err)
+	}
+	runGitInDir(t, fixture.localRoot, "add", "README.md")
+	if err := os.WriteFile(readmePath, []byte("local\n"), 0o644); err != nil {
+		t.Fatalf("restore working tree README: %v", err)
+	}
+
+	stdout, _ := makeStdoutCapture(t)
+	stderr, _ := makeStdoutCapture(t)
+	cmd := WorkspaceCopyOutCommand{
+		clientFlags: clientFlags{Host: fixture.host},
+		Force:       true,
+		SandboxID:   fixture.sandboxID,
+	}
+	if err := cmd.Run(&runtimeContext{
+		CWD:           t.TempDir(),
+		Loader:        repositoryNotFoundLoader{},
+		Config:        runtimeconfig.Config{},
+		Observability: newTestObservability(t),
+		Stdout:        stdout,
+		Stderr:        stderr,
+	}); err != nil {
+		t.Fatalf("WorkspaceCopyOutCommand.Run returned error: %v", err)
+	}
+	readme, err := os.ReadFile(readmePath)
+	if err != nil {
+		t.Fatalf("read README: %v", err)
+	}
+	if got, want := string(readme), "local\nsandbox\n"; got != want {
+		t.Fatalf("unexpected README content: got %q want %q", got, want)
+	}
+	if staged := gitOutputBytes(t, fixture.localRoot, "diff", "--cached", "--name-only", "--", "README.md"); len(staged) != 0 {
+		t.Fatalf("force copy-out should clear stale staged target content, got cached diff %q", staged)
+	}
+	if status := gitOutputBytes(t, fixture.localRoot, "status", "--short", "--", "README.md"); string(status) != " M README.md\n" {
+		t.Fatalf("unexpected README status after force copy-out: got %q", status)
+	}
+	assertNoWorkspaceCopyOutRecoveryPayload(t)
 }
 
 func TestWorkspaceCopyOutRejectsLocalModeDivergenceFromCopyInManifestBase(t *testing.T) {
@@ -1375,9 +1513,6 @@ func TestWorkspaceCopyOutRejectsLocalModeDivergenceFromCopyInManifestBase(t *tes
 	if !strings.Contains(err.Error(), `local workspace path "README.md" changed independently`) {
 		t.Fatalf("expected manifest divergence error, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "sandbox changes saved to") {
-		t.Fatalf("expected recovery payload path in error, got %v", err)
-	}
 	info, err := os.Stat(readmePath)
 	if err != nil {
 		t.Fatalf("stat README: %v", err)
@@ -1392,7 +1527,7 @@ func TestWorkspaceCopyOutRejectsLocalModeDivergenceFromCopyInManifestBase(t *tes
 	if got, want := string(readme), "local\n"; got != want {
 		t.Fatalf("copy-out should leave local README content unchanged: got %q want %q", got, want)
 	}
-	assertWorkspaceCopyOutRecoveryPayload(t, fixture.sandboxID)
+	assertNoWorkspaceCopyOutRecoveryPayload(t)
 }
 
 func TestWorkspaceCopyOutAppliesLiteralPathspecFromCopyInManifestBase(t *testing.T) {
@@ -1451,7 +1586,7 @@ func TestWorkspaceCopyOutAppliesLiteralPathspecFromCopyInManifestBase(t *testing
 	if got := stdoutText(); got != expected {
 		t.Fatalf("unexpected copy-out output: got %q want %q", got, expected)
 	}
-	assertWorkspaceCopyOutRecoveryPayload(t, fixture.sandboxID)
+	assertNoWorkspaceCopyOutRecoveryPayload(t)
 }
 
 func TestWorkspaceCopyOutRejectsStagedDivergenceFromCopyInManifestBase(t *testing.T) {
@@ -1489,9 +1624,6 @@ func TestWorkspaceCopyOutRejectsStagedDivergenceFromCopyInManifestBase(t *testin
 	if !strings.Contains(err.Error(), `local workspace path "README.md" changed independently`) {
 		t.Fatalf("expected staged divergence error, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "sandbox changes saved to") {
-		t.Fatalf("expected recovery payload path in error, got %v", err)
-	}
 	readme, err := os.ReadFile(readmePath)
 	if err != nil {
 		t.Fatalf("read README: %v", err)
@@ -1503,7 +1635,7 @@ func TestWorkspaceCopyOutRejectsStagedDivergenceFromCopyInManifestBase(t *testin
 	if got, want := string(staged), "staged divergent\n"; got != want {
 		t.Fatalf("copy-out should leave staged README content unchanged: got %q want %q", got, want)
 	}
-	assertWorkspaceCopyOutRecoveryPayload(t, fixture.sandboxID)
+	assertNoWorkspaceCopyOutRecoveryPayload(t)
 }
 
 func TestWorkspaceCopyOutRejectsLocalDivergence(t *testing.T) {
@@ -1559,9 +1691,6 @@ func TestWorkspaceCopyOutRejectsLocalDivergence(t *testing.T) {
 	if !strings.Contains(err.Error(), `local workspace path "README.md" changed independently`) {
 		t.Fatalf("expected local path divergence error, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "sandbox changes saved to") {
-		t.Fatalf("expected recovery payload path in error, got %v", err)
-	}
 	readme, err := os.ReadFile(filepath.Join(localRoot, "README.md"))
 	if err != nil {
 		t.Fatalf("read README: %v", err)
@@ -1569,7 +1698,7 @@ func TestWorkspaceCopyOutRejectsLocalDivergence(t *testing.T) {
 	if got, want := string(readme), "local\n"; got != want {
 		t.Fatalf("copy-out should not overwrite divergent local file: got %q want %q", got, want)
 	}
-	assertWorkspaceCopyOutRecoveryPayload(t, sandboxID)
+	assertNoWorkspaceCopyOutRecoveryPayload(t)
 }
 
 func TestWorkspaceCopyOutRejectsIgnoredLocalTarget(t *testing.T) {
@@ -1643,7 +1772,7 @@ func TestWorkspaceCopyOutRejectsIgnoredLocalTarget(t *testing.T) {
 	if got, want := string(output), "local ignored\n"; got != want {
 		t.Fatalf("copy-out should not overwrite ignored local file: got %q want %q", got, want)
 	}
-	assertWorkspaceCopyOutRecoveryPayload(t, sandboxID)
+	assertNoWorkspaceCopyOutRecoveryPayload(t)
 }
 
 func TestWorkspaceCopyOutRejectsBaselineMismatch(t *testing.T) {
@@ -1701,10 +1830,130 @@ func TestWorkspaceCopyOutRejectsBaselineMismatch(t *testing.T) {
 	if !strings.Contains(err.Error(), "requires local checkout HEAD") {
 		t.Fatalf("expected baseline mismatch error, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "sandbox changes saved to") {
-		t.Fatalf("expected recovery payload path in error, got %v", err)
+	assertNoWorkspaceCopyOutRecoveryPayload(t)
+}
+
+func TestWorkspaceCopyOutForceAllowsBaselineMismatch(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	localRoot := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
+	baseCommit := headCommit(t, localRoot)
+
+	if err := os.WriteFile(filepath.Join(localRoot, "README.md"), []byte("sandbox\n"), 0o644); err != nil {
+		t.Fatalf("write sandbox readme: %v", err)
 	}
-	assertWorkspaceCopyOutRecoveryPayload(t, sandboxID)
+	runGitInDir(t, localRoot, "add", "README.md")
+	nameStatus := gitOutputBytes(t, localRoot, "diff", "--cached", "--name-status", "--no-renames", "-z", baseCommit)
+	patch := gitOutputBytes(t, localRoot, "diff", "--cached", "--binary", "--full-index", "--no-ext-diff", "--no-color", "--no-renames", baseCommit)
+	runGitInDir(t, localRoot, "reset", "--hard", baseCommit)
+	if err := os.WriteFile(filepath.Join(localRoot, "local.txt"), []byte("local commit\n"), 0o644); err != nil {
+		t.Fatalf("write local commit file: %v", err)
+	}
+	runGitInDir(t, localRoot, "add", "local.txt")
+	runGitInDir(t, localRoot, "commit", "-m", "local commit")
+
+	adapter := &integrationAdapter{}
+	host, _ := startIntegrationServer(t, adapter)
+	sandboxID := createWorkspaceCopyTestSandboxWithRepositoryCommitBranch(t, host, "/sandbox-workspace", baseCommit, "main")
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+		command := strings.Join(req.Command, " ")
+		switch {
+		case strings.Contains(command, "cleanroom-copy-out-v1"):
+			if stream.OnStdout != nil {
+				stream.OnStdout(workspaceCopyOutTestPayload(nameStatus, patch))
+			}
+		default:
+			t.Fatalf("unexpected workspace copy-out command: %q", command)
+		}
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+	}
+
+	stdout, _ := makeStdoutCapture(t)
+	stderr, _ := makeStdoutCapture(t)
+	cmd := WorkspaceCopyOutCommand{
+		clientFlags: clientFlags{Host: host},
+		Chdir:       localRoot,
+		Force:       true,
+		SandboxID:   sandboxID,
+	}
+	if err := cmd.Run(&runtimeContext{
+		CWD:           localRoot,
+		Loader:        repositoryNotFoundLoader{},
+		Config:        runtimeconfig.Config{},
+		Observability: newTestObservability(t),
+		Stdout:        stdout,
+		Stderr:        stderr,
+	}); err != nil {
+		t.Fatalf("WorkspaceCopyOutCommand.Run returned error: %v", err)
+	}
+	readme, err := os.ReadFile(filepath.Join(localRoot, "README.md"))
+	if err != nil {
+		t.Fatalf("read README: %v", err)
+	}
+	if got, want := string(readme), "sandbox\n"; got != want {
+		t.Fatalf("unexpected README content: got %q want %q", got, want)
+	}
+	local, err := os.ReadFile(filepath.Join(localRoot, "local.txt"))
+	if err != nil {
+		t.Fatalf("read local file: %v", err)
+	}
+	if got, want := string(local), "local commit\n"; got != want {
+		t.Fatalf("force copy-out should leave untargeted local file alone: got %q want %q", got, want)
+	}
+	assertNoWorkspaceCopyOutRecoveryPayload(t)
+}
+
+func TestWorkspaceCopyOutForceDryRunUsesLocalApplyBase(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	localRoot := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
+	baseCommit := headCommit(t, localRoot)
+
+	if err := os.WriteFile(filepath.Join(localRoot, "README.md"), []byte("sandbox\n"), 0o644); err != nil {
+		t.Fatalf("write sandbox readme: %v", err)
+	}
+	runGitInDir(t, localRoot, "add", "README.md")
+	nameStatus := gitOutputBytes(t, localRoot, "diff", "--cached", "--name-status", "--no-renames", "-z", baseCommit)
+	patch := gitOutputBytes(t, localRoot, "diff", "--cached", "--binary", "--full-index", "--no-ext-diff", "--no-color", "--no-renames", baseCommit)
+	runGitInDir(t, localRoot, "commit", "-m", "local already has sandbox readme")
+
+	adapter := &integrationAdapter{}
+	host, _ := startIntegrationServer(t, adapter)
+	sandboxID := createWorkspaceCopyTestSandboxWithRepositoryCommitBranch(t, host, "/sandbox-workspace", baseCommit, "main")
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+		command := strings.Join(req.Command, " ")
+		switch {
+		case strings.Contains(command, "cleanroom-copy-out-v1"):
+			if stream.OnStdout != nil {
+				stream.OnStdout(workspaceCopyOutTestPayload(nameStatus, patch))
+			}
+		default:
+			t.Fatalf("unexpected workspace copy-out command: %q", command)
+		}
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+	}
+
+	stdout, stdoutText := makeStdoutCapture(t)
+	stderr, _ := makeStdoutCapture(t)
+	cmd := WorkspaceCopyOutCommand{
+		clientFlags: clientFlags{Host: host},
+		Chdir:       localRoot,
+		DryRun:      true,
+		Force:       true,
+		SandboxID:   sandboxID,
+	}
+	if err := cmd.Run(&runtimeContext{
+		CWD:           localRoot,
+		Loader:        repositoryNotFoundLoader{},
+		Config:        runtimeconfig.Config{},
+		Observability: newTestObservability(t),
+		Stdout:        stdout,
+		Stderr:        stderr,
+	}); err != nil {
+		t.Fatalf("WorkspaceCopyOutCommand.Run returned error: %v", err)
+	}
+	if got := stdoutText(); got != "" {
+		t.Fatalf("force dry-run should plan from local apply base: got %q", got)
+	}
+	assertNoWorkspaceCopyOutRecoveryPayload(t)
 }
 
 func TestWorkspaceCopyOutPlanRejectsWindowsDrivePaths(t *testing.T) {
@@ -1889,349 +2138,14 @@ func TestWorkspaceDiffStreamsSandboxGitDiff(t *testing.T) {
 	}
 }
 
-func TestWorkspaceCopyInUsesRawArchiveForNonGitWorkspace(t *testing.T) {
-	sourceRoot := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(sourceRoot, "app"), 0o755); err != nil {
-		t.Fatalf("create app dir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(sourceRoot, "app/main.txt"), []byte("payload\n"), 0o644); err != nil {
-		t.Fatalf("write workspace file: %v", err)
-	}
-	if err := os.MkdirAll(filepath.Join(sourceRoot, ".git"), 0o755); err != nil {
-		t.Fatalf("create skipped git dir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(sourceRoot, ".git/config"), []byte("skip\n"), 0o644); err != nil {
-		t.Fatalf("write skipped git config: %v", err)
-	}
-	if err := os.MkdirAll(filepath.Join(sourceRoot, "app/submodule"), 0o755); err != nil {
-		t.Fatalf("create submodule dir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(sourceRoot, "app/submodule/.git"), []byte("gitdir: ../../.git/modules/submodule\n"), 0o644); err != nil {
-		t.Fatalf("write skipped git file: %v", err)
-	}
-
-	var (
-		mu          sync.Mutex
-		commands    [][]string
-		destination string
-		files       = map[string]string{}
-	)
-	adapter := &copyIntegrationAdapter{
-		statFn: func(_ context.Context, _ string, path string) (*backend.SandboxPathInfo, error) {
-			return &backend.SandboxPathInfo{
-				Path: path,
-				Type: backend.SandboxPathTypeDirectory,
-			}, nil
-		},
-		extractFn: func(_ context.Context, _ string, dest string, r io.Reader) (int64, error) {
-			destination = dest
-			tr := tar.NewReader(r)
-			for {
-				header, err := tr.Next()
-				if errors.Is(err, io.EOF) {
-					break
-				}
-				if err != nil {
-					return 0, err
-				}
-				if header.Typeflag != tar.TypeReg {
-					continue
-				}
-				data, err := io.ReadAll(tr)
-				if err != nil {
-					return 0, err
-				}
-				files[header.Name] = string(data)
-			}
-			return 0, nil
-		},
-	}
-	host, _ := startIntegrationServer(t, adapter)
-	sandboxID := createWorkspaceCopyTestSandboxWithRepository(t, host, "/workspace-app")
-	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
-		mu.Lock()
-		commands = append(commands, append([]string(nil), req.Command...))
-		mu.Unlock()
-		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
-	}
-	stdout, _ := makeStdoutCapture(t)
-	stderr, _ := makeStdoutCapture(t)
-
-	cmd := WorkspaceCopyInCommand{
-		clientFlags: clientFlags{Host: host},
-		Chdir:       sourceRoot,
-		SandboxID:   sandboxID,
-	}
-	if err := cmd.Run(&runtimeContext{
-		CWD:           sourceRoot,
-		Loader:        repositoryNotFoundLoader{},
-		Config:        runtimeconfig.Config{},
-		Observability: newTestObservability(t),
-		Stdout:        stdout,
-		Stderr:        stderr,
-	}); err != nil {
-		t.Fatalf("WorkspaceCopyInCommand.Run returned error: %v", err)
-	}
-
-	mu.Lock()
-	defer mu.Unlock()
-	if len(commands) != 1 {
-		t.Fatalf("expected one raw workspace clean command, got %d", len(commands))
-	}
-	cleanCommand := strings.Join(commands[0], " ")
-	if !strings.Contains(cleanCommand, `basename "$entry"`) || !strings.Contains(cleanCommand, `= ".git"`) {
-		t.Fatalf("expected raw workspace clean command to preserve .git, got %q", cleanCommand)
-	}
-	if got, want := destination, "/workspace-app"; got != want {
-		t.Fatalf("unexpected extract destination: got %q want %q", got, want)
-	}
-	if got, want := files["app/main.txt"], "payload\n"; got != want {
-		t.Fatalf("unexpected archived file content: got %q want %q", got, want)
-	}
-	if _, ok := files[".git/config"]; ok {
-		t.Fatalf("expected .git directory to be skipped, got files %#v", files)
-	}
-	if _, ok := files["app/submodule/.git"]; ok {
-		t.Fatalf("expected .git file to be skipped, got files %#v", files)
-	}
-}
-
-func TestWorkspaceCopyInSkipsRawCleanWhenDestinationMissing(t *testing.T) {
-	sourceRoot := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(sourceRoot, "app"), 0o755); err != nil {
-		t.Fatalf("create app dir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(sourceRoot, "app/main.txt"), []byte("payload\n"), 0o644); err != nil {
-		t.Fatalf("write workspace file: %v", err)
-	}
-
-	var (
-		mu          sync.Mutex
-		commands    [][]string
-		destination string
-		files       = map[string]string{}
-	)
-	adapter := &copyIntegrationAdapter{
-		statFn: func(_ context.Context, _ string, path string) (*backend.SandboxPathInfo, error) {
-			return nil, backend.NewSandboxPathNotFoundError(path)
-		},
-		extractFn: func(_ context.Context, _ string, dest string, r io.Reader) (int64, error) {
-			destination = dest
-			tr := tar.NewReader(r)
-			for {
-				header, err := tr.Next()
-				if errors.Is(err, io.EOF) {
-					break
-				}
-				if err != nil {
-					return 0, err
-				}
-				if header.Typeflag != tar.TypeReg {
-					continue
-				}
-				data, err := io.ReadAll(tr)
-				if err != nil {
-					return 0, err
-				}
-				files[header.Name] = string(data)
-			}
-			return 0, nil
-		},
-	}
-	host, _ := startIntegrationServer(t, adapter)
-	sandboxID := createWorkspaceCopyTestSandboxWithRepository(t, host, "/workspace-app")
-	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
-		mu.Lock()
-		commands = append(commands, append([]string(nil), req.Command...))
-		mu.Unlock()
-		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
-	}
-	stdout, _ := makeStdoutCapture(t)
-	stderr, _ := makeStdoutCapture(t)
-
-	cmd := WorkspaceCopyInCommand{
-		clientFlags: clientFlags{Host: host},
-		Chdir:       sourceRoot,
-		SandboxID:   sandboxID,
-	}
-	if err := cmd.Run(&runtimeContext{
-		CWD:           sourceRoot,
-		Loader:        repositoryNotFoundLoader{},
-		Config:        runtimeconfig.Config{},
-		Observability: newTestObservability(t),
-		Stdout:        stdout,
-		Stderr:        stderr,
-	}); err != nil {
-		t.Fatalf("WorkspaceCopyInCommand.Run returned error: %v", err)
-	}
-
-	mu.Lock()
-	defer mu.Unlock()
-	if len(commands) != 0 {
-		t.Fatalf("expected missing raw workspace destination to skip clean execution, got %d command(s)", len(commands))
-	}
-	if got, want := destination, "/workspace-app"; got != want {
-		t.Fatalf("unexpected extract destination: got %q want %q", got, want)
-	}
-	if got, want := files["app/main.txt"], "payload\n"; got != want {
-		t.Fatalf("unexpected archived file content: got %q want %q", got, want)
-	}
-}
-
-func TestWorkspaceCopyInRemovesSymlinkedRawDestinationRoot(t *testing.T) {
-	sourceRoot := t.TempDir()
-	if err := os.WriteFile(filepath.Join(sourceRoot, "main.txt"), []byte("payload\n"), 0o644); err != nil {
-		t.Fatalf("write workspace file: %v", err)
-	}
-
-	var (
-		mu               sync.Mutex
-		commands         [][]string
-		removedPath      string
-		removedRecursive bool
-		destination      string
-	)
-	adapter := &copyIntegrationAdapter{
-		statFn: func(_ context.Context, _ string, path string) (*backend.SandboxPathInfo, error) {
-			return &backend.SandboxPathInfo{
-				Path:          path,
-				Type:          backend.SandboxPathTypeSymlink,
-				SymlinkTarget: "/",
-			}, nil
-		},
-		removeFn: func(_ context.Context, _ string, path string, recursive bool) error {
-			removedPath = path
-			removedRecursive = recursive
-			return nil
-		},
-		extractFn: func(_ context.Context, _ string, dest string, r io.Reader) (int64, error) {
-			destination = dest
-			return io.Copy(io.Discard, r)
-		},
-	}
-	host, _ := startIntegrationServer(t, adapter)
-	sandboxID := createWorkspaceCopyTestSandboxWithRepository(t, host, "/workspace-app")
-	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
-		mu.Lock()
-		commands = append(commands, append([]string(nil), req.Command...))
-		mu.Unlock()
-		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
-	}
-	stdout, _ := makeStdoutCapture(t)
-	stderr, _ := makeStdoutCapture(t)
-
-	cmd := WorkspaceCopyInCommand{
-		clientFlags: clientFlags{Host: host},
-		Chdir:       sourceRoot,
-		SandboxID:   sandboxID,
-	}
-	if err := cmd.Run(&runtimeContext{
-		CWD:           sourceRoot,
-		Loader:        repositoryNotFoundLoader{},
-		Config:        runtimeconfig.Config{},
-		Observability: newTestObservability(t),
-		Stdout:        stdout,
-		Stderr:        stderr,
-	}); err != nil {
-		t.Fatalf("WorkspaceCopyInCommand.Run returned error: %v", err)
-	}
-
-	mu.Lock()
-	defer mu.Unlock()
-	if len(commands) != 0 {
-		t.Fatalf("expected symlinked raw workspace destination to skip clean execution, got %d command(s)", len(commands))
-	}
-	if got, want := removedPath, "/workspace-app"; got != want {
-		t.Fatalf("unexpected removed path: got %q want %q", got, want)
-	}
-	if removedRecursive {
-		t.Fatal("expected symlinked raw workspace destination to be removed non-recursively")
-	}
-	if got, want := destination, "/workspace-app"; got != want {
-		t.Fatalf("unexpected extract destination: got %q want %q", got, want)
-	}
-}
-
-func TestRawWorkspaceCopyFollowsSymlinkedSourceRoot(t *testing.T) {
-	realRoot := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(realRoot, "app"), 0o755); err != nil {
-		t.Fatalf("create app dir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(realRoot, "app/main.txt"), []byte("payload\n"), 0o644); err != nil {
-		t.Fatalf("write workspace file: %v", err)
-	}
-
-	linkRoot := filepath.Join(t.TempDir(), "workspace-link")
-	if err := os.Symlink(realRoot, linkRoot); err != nil {
-		t.Fatalf("create workspace symlink: %v", err)
-	}
-
-	entries, err := rawWorkspacePlan(linkRoot, "/workspace")
-	if err != nil {
-		t.Fatalf("rawWorkspacePlan returned error: %v", err)
-	}
-	foundPlanEntry := false
-	for _, entry := range entries {
-		if entry.Action == "write" && entry.Path == "/workspace/app/main.txt" {
-			foundPlanEntry = true
-			break
-		}
-	}
-	if !foundPlanEntry {
-		t.Fatalf("expected symlinked workspace root plan to include app/main.txt, got %#v", entries)
-	}
-
-	var archive bytes.Buffer
-	if err := writeRawWorkspaceTar(&archive, linkRoot); err != nil {
-		t.Fatalf("writeRawWorkspaceTar returned error: %v", err)
-	}
-	tr := tar.NewReader(&archive)
-	files := map[string]string{}
-	for {
-		header, err := tr.Next()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			t.Fatalf("read archive: %v", err)
-		}
-		if header.Typeflag != tar.TypeReg {
-			continue
-		}
-		data, err := io.ReadAll(tr)
-		if err != nil {
-			t.Fatalf("read archived file: %v", err)
-		}
-		files[header.Name] = string(data)
-	}
-	if got, want := files["app/main.txt"], "payload\n"; got != want {
-		t.Fatalf("unexpected archived file content: got %q want %q; files=%#v", got, want, files)
-	}
-}
-
-func TestWorkspaceCopyInRejectsUnsafeRawDestinationRoot(t *testing.T) {
-	sourceRoot := t.TempDir()
-	err := copyRawWorkspaceToSandbox(context.Background(), &runtimeContext{}, nil, workspaceCopyOptions{
-		CWD:         sourceRoot,
-		SandboxID:   "cr_123",
-		Destination: "/",
-	})
-	if err == nil {
-		t.Fatal("expected unsafe raw workspace destination to be rejected")
-	}
-	if !strings.Contains(err.Error(), "unsafe for raw workspace copy-in") {
-		t.Fatalf("expected unsafe destination error, got %v", err)
-	}
-}
-
-func TestWorkspaceCopyInRejectsRawCopyWhenSandboxWorkspaceRootUnknown(t *testing.T) {
+func TestWorkspaceCopyInRejectsNonGitWorkspace(t *testing.T) {
 	sourceRoot := t.TempDir()
 	adapter := &copyIntegrationAdapter{}
 	host, _ := startIntegrationServer(t, adapter)
-	sandboxID := createWorkspaceCopyTestSandbox(t, host, copyTestPolicy())
-
+	sandboxID := createWorkspaceCopyTestSandboxWithRepository(t, host, "/workspace-app")
 	stdout, _ := makeStdoutCapture(t)
 	stderr, _ := makeStdoutCapture(t)
+
 	cmd := WorkspaceCopyInCommand{
 		clientFlags: clientFlags{Host: host},
 		Chdir:       sourceRoot,
@@ -2246,10 +2160,10 @@ func TestWorkspaceCopyInRejectsRawCopyWhenSandboxWorkspaceRootUnknown(t *testing
 		Stderr:        stderr,
 	})
 	if err == nil {
-		t.Fatal("expected raw workspace copy-in to reject sandbox without recorded workspace root")
+		t.Fatal("expected non-Git workspace copy-in to be rejected")
 	}
-	if !strings.Contains(err.Error(), "does not have a recorded workspace root") {
-		t.Fatalf("expected recorded workspace root error, got %v", err)
+	if !strings.Contains(err.Error(), "requires a local Git repository checkout") {
+		t.Fatalf("expected Git checkout error, got %v", err)
 	}
 }
 
@@ -2285,31 +2199,35 @@ func TestWorkspaceCopyInRejectsGitCopyWhenSandboxWorkspaceRootUnknown(t *testing
 	}
 }
 
-func TestTopLevelCopyInRejectsNonGitWorkspaceWhenCreatingSandbox(t *testing.T) {
-	cwd := t.TempDir()
-	_, err := resolveExecutionSandbox(
-		context.Background(),
-		nil,
-		&runtimeContext{
-			CWD:    cwd,
-			Loader: repositoryNotFoundLoader{},
-		},
-		cwd,
-		"",
-		"",
-		"",
-		"",
-		"",
-		0,
-		false,
-		repositoryOverrideFlags{},
-		workspaceCopyFlags{CopyIn: true},
-	)
-	if err == nil {
-		t.Fatal("expected non-Git top-level --copy-in to be rejected before sandbox creation")
-	}
-	if !strings.Contains(err.Error(), "non-Git workspaces") {
-		t.Fatalf("expected non-Git copy error, got %v", err)
+func TestTopLevelCopyInRejectsNonGitWorkspace(t *testing.T) {
+	for _, existingSandboxID := range []string{"", "cr_existing"} {
+		t.Run(fmt.Sprintf("existing=%t", existingSandboxID != ""), func(t *testing.T) {
+			cwd := t.TempDir()
+			_, err := resolveExecutionSandbox(
+				context.Background(),
+				nil,
+				&runtimeContext{
+					CWD:    cwd,
+					Loader: repositoryNotFoundLoader{},
+				},
+				cwd,
+				"",
+				"",
+				existingSandboxID,
+				"",
+				"",
+				0,
+				false,
+				repositoryOverrideFlags{},
+				workspaceCopyFlags{CopyIn: true},
+			)
+			if err == nil {
+				t.Fatal("expected non-Git top-level --copy-in to be rejected")
+			}
+			if !strings.Contains(err.Error(), "requires a local Git repository checkout") {
+				t.Fatalf("expected non-Git copy error, got %v", err)
+			}
+		})
 	}
 }
 
@@ -2474,32 +2392,18 @@ func setupWorkspaceCopyOutManifestBaseWithLocalMutate(t *testing.T, localMutate,
 	}
 }
 
-func assertWorkspaceCopyOutRecoveryPayload(t *testing.T, sandboxID string) {
+func assertNoWorkspaceCopyOutRecoveryPayload(t *testing.T) {
 	t.Helper()
 	recoveryRoot := filepath.Join(os.Getenv("XDG_STATE_HOME"), "cleanroom", "workspace-copy-out")
 	entries, err := os.ReadDir(recoveryRoot)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return
+		}
 		t.Fatalf("read workspace copy-out recovery root: %v", err)
 	}
-	prefix := safeWorkspaceStateName(sandboxID) + "-"
-	var matches []os.DirEntry
-	for _, entry := range entries {
-		if entry.IsDir() && strings.HasPrefix(entry.Name(), prefix) {
-			matches = append(matches, entry)
-		}
-	}
-	if len(matches) != 1 {
-		t.Fatalf("expected one recovery payload for %q, got %d", sandboxID, len(matches))
-	}
-	payloadDir := filepath.Join(recoveryRoot, matches[0].Name())
-	for _, name := range []string{"changes.patch", "manifest.json"} {
-		info, err := os.Stat(filepath.Join(payloadDir, name))
-		if err != nil {
-			t.Fatalf("expected recovery payload %s: %v", name, err)
-		}
-		if info.Size() == 0 {
-			t.Fatalf("expected non-empty recovery payload %s", name)
-		}
+	if len(entries) != 0 {
+		t.Fatalf("expected no workspace copy-out recovery payloads, got %d", len(entries))
 	}
 }
 

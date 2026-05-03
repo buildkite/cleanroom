@@ -1,16 +1,13 @@
 package cli
 
 import (
-	"archive/tar"
 	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"os/exec"
 	posixpath "path"
@@ -18,11 +15,9 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/buildkite/cleanroom/internal/controlclient"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
-	"github.com/buildkite/cleanroom/internal/paths"
 	"github.com/buildkite/cleanroom/internal/repositorychangeset"
 	"github.com/buildkite/cleanroom/internal/repositorycheckout"
 )
@@ -44,6 +39,7 @@ type WorkspaceCopyOutCommand struct {
 	clientFlags
 	Chdir     string `short:"c" help:"Change to this local directory before planning the workspace copy-out"`
 	DryRun    bool   `name:"dry-run" help:"Show the local workspace paths that would be copied out without modifying local files"`
+	Force     bool   `help:"Overwrite conflicting local workspace paths with sandbox changes"`
 	SandboxID string `arg:"" required:"" help:"Sandbox ID to copy out from"`
 }
 
@@ -60,6 +56,7 @@ type workspaceCopyOptions struct {
 	Binding       *workspaceBinding
 	Destination   string
 	ForceGitReset bool
+	ForceCopyOut  bool
 	LaunchSeconds int64
 	PlanOutput    io.Writer
 }
@@ -69,25 +66,9 @@ type workspacePlanEntry struct {
 	Path   string
 }
 
-type workspaceCopyOutRecoveryPayload struct {
-	Directory string
-	PatchPath string
-}
-
-type workspaceCopyOutRecoveryManifest struct {
-	CreatedAt         string                         `json:"created_at"`
-	SandboxID         string                         `json:"sandbox_id"`
-	LocalRoot         string                         `json:"local_root"`
-	SandboxRemoteURL  string                         `json:"sandbox_remote_url"`
-	SandboxCommitSHA  string                         `json:"sandbox_commit_sha"`
-	SandboxBranch     string                         `json:"sandbox_branch,omitempty"`
-	SandboxWorkspace  string                         `json:"sandbox_workspace"`
-	CandidateWorktree []workspaceCopyOutRecoveryFile `json:"candidate_worktree"`
-}
-
-type workspaceCopyOutRecoveryFile struct {
-	Action string `json:"action"`
-	Path   string `json:"path"`
+type workspaceCopyOutConflict struct {
+	Path   string
+	Reason string
 }
 
 func (c *WorkspaceCopyInCommand) Run(ctx *runtimeContext) error {
@@ -125,6 +106,7 @@ func (c *WorkspaceCopyOutCommand) Run(ctx *runtimeContext) error {
 	if err != nil {
 		return err
 	}
+	opts.ForceCopyOut = c.Force
 	return copyWorkspaceOut(context.Background(), ctx, client, opts)
 }
 
@@ -184,7 +166,7 @@ func copyWorkspaceToSandbox(callCtx context.Context, ctx *runtimeContext, client
 	if opts.Repository != nil {
 		return copyGitWorkspaceToSandbox(callCtx, ctx, client, opts)
 	}
-	return copyRawWorkspaceToSandbox(callCtx, ctx, client, opts)
+	return errors.New("workspace copy-in requires a local Git repository checkout")
 }
 
 func copyGitWorkspaceToSandbox(callCtx context.Context, ctx *runtimeContext, client *controlclient.Client, opts workspaceCopyOptions) error {
@@ -237,25 +219,27 @@ func copyWorkspaceOut(callCtx context.Context, ctx *runtimeContext, client *cont
 	}
 	if opts.DryRun {
 		var files []repositorychangeset.File
-		if useGitWorkspaceCopyOutApplyBase(opts.Binding, opts.Repository, checkout) {
+		if opts.ForceCopyOut || useGitWorkspaceCopyOutApplyBase(opts.Binding, opts.Repository, checkout) {
 			var patch []byte
 			files, patch, err = captureGitWorkspaceCopyOutPayload(callCtx, ctx, client, opts, checkout)
 			if err != nil {
 				return err
 			}
 			if len(files) > 0 {
+				var cleanupApply func()
 				patchPath, cleanup, err := writeTemporaryWorkspaceCopyOutPatch(patch)
 				if err != nil {
 					return err
 				}
 				defer cleanup()
-				if err := ensureGitWorkspaceCopyOutSafe(opts.Repository, checkout, opts.Binding, files); err != nil {
+				if err := ensureGitWorkspaceCopyOutSafe(opts.Repository, checkout, opts.Binding, files, opts.ForceCopyOut); err != nil {
 					return err
 				}
-				files, _, err = prepareGitWorkspaceCopyOutApplyPatch(opts.Repository, checkout, files, patchPath, "")
+				files, _, cleanupApply, err = prepareGitWorkspaceCopyOutApplyPatch(opts.Repository, checkout, files, patchPath)
 				if err != nil {
 					return err
 				}
+				defer cleanupApply()
 			}
 		} else {
 			command := repositorychangeset.WorktreeNameStatusCommand(checkout)
@@ -285,21 +269,32 @@ func copyWorkspaceOut(callCtx context.Context, ctx *runtimeContext, client *cont
 	if len(files) == 0 {
 		return nil
 	}
-	recovery, err := writeWorkspaceCopyOutRecoveryPayload(opts, checkout, files, patch)
+	patchPath, cleanupPatch, err := writeTemporaryWorkspaceCopyOutPatch(patch)
 	if err != nil {
 		return err
 	}
-	if err := ensureGitWorkspaceCopyOutSafe(opts.Repository, checkout, opts.Binding, files); err != nil {
-		return fmt.Errorf("%w; sandbox changes saved to %s", err, recovery.Directory)
+	defer cleanupPatch()
+	if err := ensureGitWorkspaceCopyOutSafe(opts.Repository, checkout, opts.Binding, files, opts.ForceCopyOut); err != nil {
+		return err
 	}
-	applyPath := recovery.PatchPath
-	if useGitWorkspaceCopyOutApplyBase(opts.Binding, opts.Repository, checkout) {
-		files, applyPath, err = prepareGitWorkspaceCopyOutApplyPatch(opts.Repository, checkout, files, recovery.PatchPath, recovery.Directory)
+	applyPath := patchPath
+	cleanupApply := func() {}
+	if opts.ForceCopyOut || useGitWorkspaceCopyOutApplyBase(opts.Binding, opts.Repository, checkout) {
+		files, applyPath, cleanupApply, err = prepareGitWorkspaceCopyOutApplyPatch(opts.Repository, checkout, files, patchPath)
 		if err != nil {
-			return fmt.Errorf("%w; sandbox changes saved to %s", err, recovery.Directory)
+			return err
 		}
+		defer cleanupApply()
 		if len(files) == 0 {
 			return nil
+		}
+	}
+	if opts.ForceCopyOut {
+		if err := resetGitWorkspaceCopyOutForceIndex(opts.Repository.RootDir, files); err != nil {
+			return err
+		}
+		if err := removeGitWorkspaceCopyOutForceObstacles(opts.Repository.RootDir, files); err != nil {
+			return err
 		}
 	}
 	entries, err := gitWorkspaceCopyOutPlanFiles(opts.CWD, files)
@@ -307,7 +302,7 @@ func copyWorkspaceOut(callCtx context.Context, ctx *runtimeContext, client *cont
 		return err
 	}
 	if err := applyGitWorkspaceCopyOutPatch(opts.Repository.RootDir, applyPath); err != nil {
-		return fmt.Errorf("%w; sandbox changes saved to %s", err, recovery.Directory)
+		return err
 	}
 	return printWorkspacePlan(workspacePlanOutput(ctx, opts), entries)
 }
@@ -392,7 +387,7 @@ func validateWorkspaceCopyOutLocalRepository(local *resolvedRepositoryCheckout, 
 	return nil
 }
 
-func ensureGitWorkspaceCopyOutSafe(local *resolvedRepositoryCheckout, checkout *repositorycheckout.Checkout, binding *workspaceBinding, files []repositorychangeset.File) error {
+func ensureGitWorkspaceCopyOutSafe(local *resolvedRepositoryCheckout, checkout *repositorycheckout.Checkout, binding *workspaceBinding, files []repositorychangeset.File, force bool) error {
 	if local == nil || strings.TrimSpace(local.RootDir) == "" {
 		return errors.New("workspace copy-out requires a local Git repository checkout matching the sandbox repository")
 	}
@@ -405,17 +400,27 @@ func ensureGitWorkspaceCopyOutSafe(local *resolvedRepositoryCheckout, checkout *
 		return errors.New("workspace copy-out requires local and sandbox repository commits")
 	}
 	if binding == nil && !strings.EqualFold(localCommit, sandboxCommit) {
-		return fmt.Errorf("workspace copy-out requires local checkout HEAD %s to match sandbox baseline %s", shortGitSHA(localCommit), shortGitSHA(sandboxCommit))
+		if !force {
+			return fmt.Errorf("workspace copy-out requires local checkout HEAD %s to match sandbox baseline %s; rerun with --force to overwrite local target paths", shortGitSHA(localCommit), shortGitSHA(sandboxCommit))
+		}
+	}
+	if force {
+		return nil
 	}
 	if binding != nil {
 		return ensureGitWorkspaceCopyOutSafeWithBinding(local.RootDir, sandboxCommit, binding, files)
 	}
+	var conflicts []workspaceCopyOutConflict
 	for _, file := range files {
-		if err := ensureGitWorkspaceCopyOutPathSafe(local.RootDir, sandboxCommit, file.Path); err != nil {
+		conflict, err := gitWorkspaceCopyOutPathConflict(local.RootDir, sandboxCommit, file.Path)
+		if err != nil {
 			return err
 		}
+		if conflict != nil {
+			conflicts = append(conflicts, *conflict)
+		}
 	}
-	return nil
+	return workspaceCopyOutConflictError(conflicts)
 }
 
 func ensureGitWorkspaceCopyOutSafeWithBinding(localRoot, baseCommit string, binding *workspaceBinding, files []repositorychangeset.File) error {
@@ -439,6 +444,7 @@ func ensureGitWorkspaceCopyOutSafeWithBinding(localRoot, baseCommit string, bind
 	if err != nil {
 		return err
 	}
+	var conflicts []workspaceCopyOutConflict
 	for _, path := range paths {
 		expected, ok := manifest[path]
 		if !ok {
@@ -447,20 +453,28 @@ func ensureGitWorkspaceCopyOutSafeWithBinding(localRoot, baseCommit string, bind
 				return err
 			}
 		}
-		if err := ensureGitWorkspaceFileMatchesExpected(localRoot, path, current[path], expected); err != nil {
+		conflict, err := gitWorkspaceFileConflict(localRoot, path, current[path], expected)
+		if err != nil {
 			return err
+		}
+		if conflict != nil {
+			conflicts = append(conflicts, *conflict)
 		}
 		if staged[path] {
 			index, err := gitWorkspaceIndexFile(localRoot, nil, path)
 			if err != nil {
 				return err
 			}
-			if err := ensureGitWorkspaceFileMatchesExpected(localRoot, path, index, expected); err != nil {
+			conflict, err := gitWorkspaceFileConflict(localRoot, path, index, expected)
+			if err != nil {
 				return err
+			}
+			if conflict != nil {
+				conflicts = append(conflicts, *conflict)
 			}
 		}
 	}
-	return nil
+	return workspaceCopyOutConflictError(conflicts)
 }
 
 func workspaceCopyInManifestMap(binding *workspaceBinding) (map[string]workspaceBindingFile, error) {
@@ -495,57 +509,57 @@ func workspaceCopyInManifestMap(binding *workspaceBinding) (map[string]workspace
 	return manifest, nil
 }
 
-func ensureGitWorkspaceFileMatchesExpected(localRoot, rel string, current, expected workspaceBindingFile) error {
+func gitWorkspaceFileConflict(localRoot, rel string, current, expected workspaceBindingFile) (*workspaceCopyOutConflict, error) {
 	if expected.Deleted {
 		if !current.Deleted {
-			return fmt.Errorf("local workspace path %q changed independently; refusing workspace copy-out", rel)
+			return &workspaceCopyOutConflict{Path: rel, Reason: "changed independently"}, nil
 		}
 		localPath, err := workspaceLocalPath(localRoot, rel)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if _, err := os.Lstat(localPath); err == nil {
-			return fmt.Errorf("local workspace path %q exists outside workspace copy-in base; refusing workspace copy-out", rel)
+			return &workspaceCopyOutConflict{Path: rel, Reason: "exists outside workspace copy-in base"}, nil
 		} else if !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("inspect local workspace path %q: %w", rel, err)
+			return nil, fmt.Errorf("inspect local workspace path %q: %w", rel, err)
 		}
-		return nil
+		return nil, nil
 	}
 	if current.Deleted || current.SHA256 != expected.SHA256 || current.Mode != expected.Mode {
-		return fmt.Errorf("local workspace path %q changed independently; refusing workspace copy-out", rel)
+		return &workspaceCopyOutConflict{Path: rel, Reason: "changed independently"}, nil
 	}
-	return nil
+	return nil, nil
 }
 
-func ensureGitWorkspaceCopyOutPathSafe(localRoot, baseCommit, rel string) error {
+func gitWorkspaceCopyOutPathConflict(localRoot, baseCommit, rel string) (*workspaceCopyOutConflict, error) {
 	normalized, err := workspaceRelativePath(rel)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	status, err := gitOutput(localRoot, "status", "--porcelain", "--", normalized)
 	if err != nil {
-		return fmt.Errorf("inspect local workspace path %q: %w", normalized, err)
+		return nil, fmt.Errorf("inspect local workspace path %q: %w", normalized, err)
 	}
 	if strings.TrimSpace(status) != "" {
-		return fmt.Errorf("local workspace path %q changed independently; refusing workspace copy-out", normalized)
+		return &workspaceCopyOutConflict{Path: normalized, Reason: "changed independently"}, nil
 	}
 	existsInBaseline, err := gitPathExistsInCommit(localRoot, baseCommit, normalized)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if existsInBaseline {
-		return nil
+		return nil, nil
 	}
 	localPath, err := workspaceLocalPath(localRoot, normalized)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if _, err := os.Lstat(localPath); err == nil {
-		return fmt.Errorf("local workspace path %q exists outside sandbox baseline; refusing workspace copy-out", normalized)
+		return &workspaceCopyOutConflict{Path: normalized, Reason: "exists outside sandbox baseline"}, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("inspect local workspace path %q: %w", normalized, err)
+		return nil, fmt.Errorf("inspect local workspace path %q: %w", normalized, err)
 	}
-	return nil
+	return nil, nil
 }
 
 func gitPathExistsInCommit(localRoot, commit, rel string) (bool, error) {
@@ -554,6 +568,45 @@ func gitPathExistsInCommit(localRoot, commit, rel string) (bool, error) {
 		return false, fmt.Errorf("inspect sandbox baseline path %q: %w", rel, err)
 	}
 	return strings.Trim(output, "\x00 \n\r\t") != "", nil
+}
+
+func workspaceCopyOutConflictError(conflicts []workspaceCopyOutConflict) error {
+	if len(conflicts) == 0 {
+		return nil
+	}
+	byPath := make(map[string]workspaceCopyOutConflict, len(conflicts))
+	for _, conflict := range conflicts {
+		path := strings.TrimSpace(conflict.Path)
+		reason := strings.TrimSpace(conflict.Reason)
+		if path == "" {
+			continue
+		}
+		if reason == "" {
+			reason = "changed independently"
+		}
+		if _, ok := byPath[path]; !ok {
+			byPath[path] = workspaceCopyOutConflict{Path: path, Reason: reason}
+		}
+	}
+	if len(byPath) == 0 {
+		return nil
+	}
+	paths := make([]string, 0, len(byPath))
+	for path := range byPath {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	if len(paths) == 1 {
+		conflict := byPath[paths[0]]
+		return fmt.Errorf("local workspace path %q %s; refusing workspace copy-out; rerun with --force to overwrite local target paths", conflict.Path, conflict.Reason)
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "workspace copy-out found %d local conflicts; refusing workspace copy-out; rerun with --force to overwrite local target paths:", len(paths))
+	for _, path := range paths {
+		conflict := byPath[path]
+		fmt.Fprintf(&b, "\n- %s: %s", conflict.Path, conflict.Reason)
+	}
+	return errors.New(b.String())
 }
 
 func captureGitWorkspaceCopyOutPayload(callCtx context.Context, ctx *runtimeContext, client *controlclient.Client, opts workspaceCopyOptions, checkout *repositorycheckout.Checkout) ([]repositorychangeset.File, []byte, error) {
@@ -591,29 +644,68 @@ func useGitWorkspaceCopyOutApplyBase(binding *workspaceBinding, local *resolvedR
 	return localCommit != "" && sandboxCommit != "" && !strings.EqualFold(localCommit, sandboxCommit)
 }
 
-func prepareGitWorkspaceCopyOutApplyPatch(local *resolvedRepositoryCheckout, checkout *repositorycheckout.Checkout, files []repositorychangeset.File, sandboxPatchPath, recoveryDir string) ([]repositorychangeset.File, string, error) {
+func prepareGitWorkspaceCopyOutApplyPatch(local *resolvedRepositoryCheckout, checkout *repositorycheckout.Checkout, files []repositorychangeset.File, sandboxPatchPath string) ([]repositorychangeset.File, string, func(), error) {
 	if local == nil || strings.TrimSpace(local.RootDir) == "" {
-		return nil, "", errors.New("workspace copy-out requires a local Git repository checkout matching the sandbox repository")
+		return nil, "", nil, errors.New("workspace copy-out requires a local Git repository checkout matching the sandbox repository")
 	}
 	if checkout == nil || strings.TrimSpace(checkout.CommitSHA) == "" {
-		return nil, "", errors.New("workspace copy-out requires a sandbox repository baseline")
+		return nil, "", nil, errors.New("workspace copy-out requires a sandbox repository baseline")
 	}
 	nameStatus, patch, err := buildGitWorkspaceCopyOutPatchFromLocalBase(local.RootDir, checkout.CommitSHA, sandboxPatchPath, files)
 	if err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
 	applyFiles, err := parseGitNameStatusWorkspaceFiles(nameStatus)
 	if err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
-	if len(applyFiles) == 0 || strings.TrimSpace(recoveryDir) == "" {
-		return applyFiles, "", nil
+	if len(applyFiles) == 0 {
+		return applyFiles, "", func() {}, nil
 	}
-	patchPath := filepath.Join(recoveryDir, "local-apply.patch")
-	if err := os.WriteFile(patchPath, patch, 0o600); err != nil {
-		return nil, "", fmt.Errorf("write workspace copy-out local apply patch: %w", err)
+	patchPath, cleanup, err := writeTemporaryWorkspaceCopyOutPatch(patch)
+	if err != nil {
+		return nil, "", nil, fmt.Errorf("write workspace copy-out local apply patch: %w", err)
 	}
-	return applyFiles, patchPath, nil
+	return applyFiles, patchPath, cleanup, nil
+}
+
+func resetGitWorkspaceCopyOutForceIndex(localRoot string, files []repositorychangeset.File) error {
+	paths, err := workspaceCopyOutPaths(files)
+	if err != nil {
+		return err
+	}
+	if len(paths) == 0 {
+		return nil
+	}
+	args := append([]string{"reset", "-q", "--"}, gitWorkspacePathspecs(paths)...)
+	if _, err := gitOutputRaw(localRoot, nil, args...); err != nil {
+		return fmt.Errorf("reset staged workspace copy-out target paths: %w", err)
+	}
+	return nil
+}
+
+func removeGitWorkspaceCopyOutForceObstacles(localRoot string, files []repositorychangeset.File) error {
+	paths, err := workspaceCopyOutPaths(files)
+	if err != nil {
+		return err
+	}
+	current, err := gitWorkspaceCurrentFiles(localRoot, paths)
+	if err != nil {
+		return err
+	}
+	for _, path := range paths {
+		if !current[path].Deleted {
+			continue
+		}
+		localPath, err := workspaceLocalPath(localRoot, path)
+		if err != nil {
+			return err
+		}
+		if err := os.RemoveAll(localPath); err != nil {
+			return fmt.Errorf("remove local workspace path %q before forced copy-out: %w", path, err)
+		}
+	}
+	return nil
 }
 
 func buildGitWorkspaceCopyOutPatchFromLocalBase(localRoot, baseCommit, sandboxPatchPath string, files []repositorychangeset.File) ([]byte, []byte, error) {
@@ -921,70 +1013,6 @@ func applyGitWorkspaceCopyOutPatch(localRoot, patchPath string) error {
 	return nil
 }
 
-func writeWorkspaceCopyOutRecoveryPayload(opts workspaceCopyOptions, checkout *repositorycheckout.Checkout, files []repositorychangeset.File, patch []byte) (*workspaceCopyOutRecoveryPayload, error) {
-	base, err := paths.StateBaseDir()
-	if err != nil {
-		return nil, fmt.Errorf("resolve workspace copy-out state directory: %w", err)
-	}
-	recoveryRoot := filepath.Join(base, "workspace-copy-out")
-	if err := os.MkdirAll(recoveryRoot, 0o700); err != nil {
-		return nil, fmt.Errorf("create workspace copy-out state directory: %w", err)
-	}
-	payloadDir, err := os.MkdirTemp(recoveryRoot, safeWorkspaceStateName(opts.SandboxID)+"-")
-	if err != nil {
-		return nil, fmt.Errorf("create workspace copy-out recovery payload: %w", err)
-	}
-	patchPath := filepath.Join(payloadDir, "changes.patch")
-	if err := os.WriteFile(patchPath, patch, 0o600); err != nil {
-		return nil, fmt.Errorf("write workspace copy-out recovery patch: %w", err)
-	}
-	manifest := workspaceCopyOutRecoveryManifest{
-		CreatedAt:         time.Now().UTC().Format(time.RFC3339Nano),
-		SandboxID:         strings.TrimSpace(opts.SandboxID),
-		LocalRoot:         strings.TrimSpace(opts.CWD),
-		CandidateWorktree: workspaceCopyOutRecoveryFiles(files),
-	}
-	if checkout != nil {
-		manifest.SandboxRemoteURL = strings.TrimSpace(checkout.RemoteURL)
-		manifest.SandboxCommitSHA = strings.TrimSpace(checkout.CommitSHA)
-		manifest.SandboxBranch = strings.TrimSpace(checkout.Branch)
-		manifest.SandboxWorkspace = strings.TrimSpace(checkout.DestinationDir)
-	}
-	data, err := json.MarshalIndent(manifest, "", "  ")
-	if err != nil {
-		return nil, fmt.Errorf("encode workspace copy-out recovery manifest: %w", err)
-	}
-	data = append(data, '\n')
-	if err := os.WriteFile(filepath.Join(payloadDir, "manifest.json"), data, 0o600); err != nil {
-		return nil, fmt.Errorf("write workspace copy-out recovery manifest: %w", err)
-	}
-	return &workspaceCopyOutRecoveryPayload{
-		Directory: payloadDir,
-		PatchPath: patchPath,
-	}, nil
-}
-
-func workspaceCopyOutRecoveryFiles(files []repositorychangeset.File) []workspaceCopyOutRecoveryFile {
-	recoveryFiles := make([]workspaceCopyOutRecoveryFile, 0, len(files))
-	for _, file := range files {
-		action := "write"
-		if file.Deleted {
-			action = "delete"
-		}
-		recoveryFiles = append(recoveryFiles, workspaceCopyOutRecoveryFile{
-			Action: action,
-			Path:   file.Path,
-		})
-	}
-	sort.Slice(recoveryFiles, func(i, j int) bool {
-		if recoveryFiles[i].Action != recoveryFiles[j].Action {
-			return recoveryFiles[i].Action < recoveryFiles[j].Action
-		}
-		return recoveryFiles[i].Path < recoveryFiles[j].Path
-	})
-	return recoveryFiles
-}
-
 func safeWorkspaceStateName(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -1225,90 +1253,6 @@ func hasWindowsDriveAbsolutePathPrefix(path string) bool {
 	return (drive >= 'A' && drive <= 'Z') || (drive >= 'a' && drive <= 'z')
 }
 
-func copyRawWorkspaceToSandbox(callCtx context.Context, ctx *runtimeContext, client *controlclient.Client, opts workspaceCopyOptions) error {
-	destination := strings.TrimSpace(opts.Destination)
-	if destination == "" {
-		var err error
-		destination, err = resolveSandboxWorkspaceDestination(callCtx, client, opts.SandboxID)
-		if err != nil {
-			return err
-		}
-	}
-	if err := validateRawWorkspaceDestinationRoot(destination); err != nil {
-		return err
-	}
-	if opts.DryRun {
-		entries, err := rawWorkspacePlan(opts.CWD, destination)
-		if err != nil {
-			return err
-		}
-		return printWorkspacePlan(runtimeStdout(ctx), entries)
-	}
-	if _, err := rawWorkspacePlan(opts.CWD, destination); err != nil {
-		return err
-	}
-	if err := cleanRawWorkspaceDestination(callCtx, ctx, client, opts.SandboxID, destination, opts.LaunchSeconds); err != nil {
-		return err
-	}
-	if err := extractRawWorkspaceArchive(callCtx, client, opts.SandboxID, destination, opts.CWD); err != nil {
-		return err
-	}
-	return nil
-}
-
-func cleanRawWorkspaceDestination(callCtx context.Context, ctx *runtimeContext, client *controlclient.Client, sandboxID, destination string, launchSeconds int64) error {
-	statResp, err := client.StatSandboxPath(tracePreservingContext(callCtx), &cleanroomv1.StatSandboxPathRequest{
-		SandboxId: sandboxID,
-		Path:      destination,
-	})
-	if err != nil {
-		if isSandboxPathNotFoundError(err) {
-			return nil
-		}
-		return fmt.Errorf("inspect sandbox workspace destination: %w", err)
-	}
-	info := statResp.GetInfo()
-	if info == nil {
-		return errors.New("inspect sandbox workspace destination: missing path info")
-	}
-	if info.GetType() != cleanroomv1.SandboxPathType_SANDBOX_PATH_TYPE_DIRECTORY {
-		return removeRawWorkspaceDestinationRoot(callCtx, client, sandboxID, destination)
-	}
-	return runWorkspaceExecution(callCtx, ctx, client, sandboxID, nil, rawWorkspaceCleanCommand(destination), nil, launchSeconds)
-}
-
-func removeRawWorkspaceDestinationRoot(callCtx context.Context, client *controlclient.Client, sandboxID, destination string) error {
-	if _, err := client.RemoveSandboxPath(tracePreservingContext(callCtx), &cleanroomv1.RemoveSandboxPathRequest{
-		SandboxId: sandboxID,
-		Path:      destination,
-	}); err != nil {
-		if isSandboxPathNotFoundError(err) {
-			return nil
-		}
-		return fmt.Errorf("remove non-directory workspace destination: %w", err)
-	}
-	return nil
-}
-
-func rawWorkspaceCleanCommand(destination string) []string {
-	script := []string{
-		"set -eu",
-		"dest=" + workspaceShellQuote(destination),
-		`if [ -e "$dest" ] && [ ! -d "$dest" ]; then echo "workspace destination is not a directory: $dest" >&2; exit 1; fi`,
-		`mkdir -p "$dest"`,
-		`for entry in "$dest"/* "$dest"/.[!.]* "$dest"/..?*; do`,
-		`  [ -e "$entry" ] || [ -L "$entry" ] || continue`,
-		`  [ "$(basename "$entry")" = ".git" ] && continue`,
-		`  rm -rf -- "$entry"`,
-		`done`,
-	}
-	return []string{"sh", "-lc", strings.Join(script, "\n")}
-}
-
-func workspaceShellQuote(value string) string {
-	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
-}
-
 func resolveSandboxWorkspaceDestination(callCtx context.Context, client *controlclient.Client, sandboxID string) (string, error) {
 	repository, err := resolveSandboxRepositoryCheckout(callCtx, client, sandboxID)
 	if err != nil {
@@ -1358,233 +1302,6 @@ func resolveSandboxRepositoryCheckoutIfRecorded(callCtx context.Context, client 
 		return nil, nil
 	}
 	return sandbox.GetRepositoryCheckout(), nil
-}
-
-func validateRawWorkspaceDestinationRoot(destination string) error {
-	cleaned := posixpath.Clean(strings.TrimSpace(destination))
-	if cleaned == "." || cleaned == "" {
-		return errors.New("workspace destination root is required")
-	}
-	if !strings.HasPrefix(cleaned, "/") {
-		return fmt.Errorf("workspace destination root %q must be absolute", destination)
-	}
-	switch cleaned {
-	case "/",
-		"/bin",
-		"/boot",
-		"/dev",
-		"/etc",
-		"/home",
-		"/lib",
-		"/lib64",
-		"/proc",
-		"/root",
-		"/run",
-		"/sbin",
-		"/sys",
-		"/tmp",
-		"/usr",
-		"/var":
-		return fmt.Errorf("workspace destination root %q is unsafe for raw workspace copy-in", destination)
-	default:
-		return nil
-	}
-}
-
-func rawWorkspacePlan(sourceRoot, destination string) ([]workspacePlanEntry, error) {
-	entries := []workspacePlanEntry{{
-		Action: "delete",
-		Path:   destination,
-	}}
-	err := walkRawWorkspace(sourceRoot, func(path string, d fs.DirEntry, info fs.FileInfo, rel string) error {
-		if rel == "" {
-			return nil
-		}
-		if info.IsDir() {
-			return nil
-		}
-		entries = append(entries, workspacePlanEntry{
-			Action: "write",
-			Path:   workspaceRemotePath(destination, rel),
-		})
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	sortWorkspacePlan(entries)
-	return entries, nil
-}
-
-func extractRawWorkspaceArchive(callCtx context.Context, client *controlclient.Client, sandboxID, destination, sourceRoot string) error {
-	stream := client.ExtractSandboxArchive(tracePreservingContext(callCtx))
-	if err := stream.Send(&cleanroomv1.ExtractSandboxArchiveRequest{
-		Payload: &cleanroomv1.ExtractSandboxArchiveRequest_Init{Init: &cleanroomv1.ExtractSandboxArchiveInit{
-			SandboxId:   sandboxID,
-			Destination: destination,
-		}},
-	}); err != nil {
-		return fmt.Errorf("start sandbox workspace archive extract: %w", err)
-	}
-
-	reader, writer := io.Pipe()
-	writeDone := make(chan error, 1)
-	go func() {
-		err := writeRawWorkspaceTar(writer, sourceRoot)
-		if err != nil {
-			_ = writer.CloseWithError(err)
-		} else {
-			_ = writer.Close()
-		}
-		writeDone <- err
-	}()
-
-	buf := make([]byte, 32*1024)
-	for {
-		n, readErr := reader.Read(buf)
-		if n > 0 {
-			if err := stream.Send(&cleanroomv1.ExtractSandboxArchiveRequest{
-				Payload: &cleanroomv1.ExtractSandboxArchiveRequest_Data{Data: append([]byte(nil), buf[:n]...)},
-			}); err != nil {
-				_ = reader.CloseWithError(err)
-				<-writeDone
-				return fmt.Errorf("write sandbox workspace archive: %w", err)
-			}
-		}
-		if readErr != nil {
-			if !errors.Is(readErr, io.EOF) {
-				<-writeDone
-				return fmt.Errorf("read local workspace archive: %w", readErr)
-			}
-			break
-		}
-	}
-	if writeErr := <-writeDone; writeErr != nil {
-		return writeErr
-	}
-	if _, err := stream.CloseAndReceive(); err != nil {
-		return fmt.Errorf("extract sandbox workspace archive: %w", err)
-	}
-	return nil
-}
-
-func writeRawWorkspaceTar(w io.Writer, sourceRoot string) (err error) {
-	tw := tar.NewWriter(w)
-	defer func() {
-		if closeErr := tw.Close(); closeErr != nil && err == nil {
-			err = closeErr
-		}
-	}()
-	return walkRawWorkspace(sourceRoot, func(path string, d fs.DirEntry, info fs.FileInfo, rel string) error {
-		if rel == "" {
-			return nil
-		}
-		link := ""
-		if info.Mode()&os.ModeSymlink != 0 {
-			target, err := os.Readlink(path)
-			if err != nil {
-				return fmt.Errorf("read symlink %s: %w", path, err)
-			}
-			link = target
-		}
-
-		header, err := tar.FileInfoHeader(info, link)
-		if err != nil {
-			return fmt.Errorf("create archive header for %s: %w", path, err)
-		}
-		header.Name = filepath.ToSlash(rel)
-		header.Uid = 0
-		header.Gid = 0
-		header.Uname = ""
-		header.Gname = ""
-		if info.IsDir() {
-			header.Name = strings.TrimRight(header.Name, "/") + "/"
-		}
-		if err := tw.WriteHeader(header); err != nil {
-			return fmt.Errorf("write archive header for %s: %w", path, err)
-		}
-		if !info.Mode().IsRegular() {
-			return nil
-		}
-		file, err := os.Open(path)
-		if err != nil {
-			return fmt.Errorf("open %s: %w", path, err)
-		}
-		if _, err := io.Copy(tw, file); err != nil {
-			_ = file.Close()
-			return fmt.Errorf("archive %s: %w", path, err)
-		}
-		if err := file.Close(); err != nil {
-			return fmt.Errorf("close %s: %w", path, err)
-		}
-		return nil
-	})
-}
-
-func walkRawWorkspace(sourceRoot string, visit func(path string, d fs.DirEntry, info fs.FileInfo, rel string) error) error {
-	sourceRoot, err := resolveRawWorkspaceSourceRoot(sourceRoot)
-	if err != nil {
-		return err
-	}
-	return filepath.WalkDir(sourceRoot, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(sourceRoot, path)
-		if err != nil {
-			return err
-		}
-		if rel == "." {
-			rel = ""
-		}
-		if shouldSkipRawWorkspacePath(rel, d) {
-			if d.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		info, err := d.Info()
-		if err != nil {
-			return err
-		}
-		switch {
-		case info.IsDir(), info.Mode().IsRegular(), info.Mode()&os.ModeSymlink != 0:
-			return visit(path, d, info, filepath.ToSlash(rel))
-		default:
-			return fmt.Errorf("workspace copy-in cannot archive unsupported file %s", path)
-		}
-	})
-}
-
-func resolveRawWorkspaceSourceRoot(sourceRoot string) (string, error) {
-	sourceRoot = strings.TrimSpace(sourceRoot)
-	if sourceRoot == "" {
-		return "", errors.New("missing local workspace root")
-	}
-	cleaned := filepath.Clean(sourceRoot)
-	resolved, err := filepath.EvalSymlinks(cleaned)
-	if err != nil {
-		return "", fmt.Errorf("resolve workspace source root %q: %w", cleaned, err)
-	}
-	info, err := os.Stat(resolved)
-	if err != nil {
-		return "", fmt.Errorf("inspect workspace source root %q: %w", resolved, err)
-	}
-	if !info.IsDir() {
-		return "", fmt.Errorf("workspace source root %q is not a directory", cleaned)
-	}
-	return resolved, nil
-}
-
-func shouldSkipRawWorkspacePath(rel string, d fs.DirEntry) bool {
-	if rel == "" {
-		return false
-	}
-	name := filepath.Base(rel)
-	if name == ".git" {
-		return true
-	}
-	return d.IsDir() && name == ".cleanroom"
 }
 
 func workspaceRemotePath(root, rel string) string {

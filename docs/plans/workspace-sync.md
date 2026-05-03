@@ -14,8 +14,8 @@
   safety that requires a matching local Git checkout before copy-out planning.
 - PR #274 landed the first write-capable Phase 2 slice: Git-backed
   `workspace copy-out` applies sandbox changes to the matching local checkout,
-  saves a recoverable patch and manifest before applying, refuses local baseline
-  mismatches, and refuses target paths that changed independently.
+  refuses local baseline mismatches, and refuses target paths that changed
+  independently.
 - PR #275 landed client-side Git workspace binding metadata:
   `workspace copy-in` and top-level `--copy-in` record the trusted local root,
   canonical remote, baseline commit, sandbox workspace root, operation time, and
@@ -23,12 +23,15 @@
 - PR #276 landed Git-backed `workspace copy-out` from the recorded copy-in
   manifest base, so copy-out can safely write back after a prior copy-in that
   included dirty edits or local-only commits.
-- This changeset adds Git-backed top-level `--copy-out` and `--sync` automation
+- PR #280 landed Git-backed top-level `--copy-out` and `--sync` automation
   for `cleanroom exec` and `cleanroom console`. It composes the manual
   copy-in/copy-out operations, prevalidates existing sandbox copy-out targets,
   and runs copy-out before automatic sandbox termination.
-- Non-Git/raw copy-out writes and raw create-time workspace support remain
-  follow-up work.
+- This changeset removes copy-out recovery payload directories from the normal
+  UX, reports copy-out conflicts together, and adds
+  `workspace copy-out --force` as the explicit local overwrite path.
+- Non-Git workspace copy-in/copy-out is explicitly out of scope for now. The
+  supported workspace-sync surface is Git-backed.
 
 ## Summary
 
@@ -68,12 +71,10 @@ cleanroom cp ./fixture.json <sandbox-id>:/tmp/fixture.json
 cleanroom cp <sandbox-id>:/tmp/result.json ./result.json
 ```
 
-Workspace copy-in/copy-out should reuse existing substrates rather than redefine
-low-level copy semantics. For Git-backed source workspaces, copy-in and copy-out
-should use repository changesets as the transport. For non-Git source
-workspaces, they should use raw workspace transfer over the file/path/archive
-layer. That is an implementation choice; the user-facing behavior should be
-the same.
+Workspace copy-in/copy-out should reuse existing Git substrates rather than
+redefine low-level copy semantics. For the supported workspace-sync surface,
+the local workspace must be a Git worktree and copy-in/copy-out use repository
+changesets plus Git metadata for baseline, ignore, and conflict safety.
 
 The higher-level automation should stay small and literal:
 
@@ -112,9 +113,8 @@ Top-level flags:
 - Make copy-out safe by default: no silent overwrite of unrelated local changes,
   a dry-run path for previewing local effects, and clear conflict reporting.
 - Preserve the existing repo-aware checkout model for clean committed inputs.
-- Reuse the sandbox file/path/archive transfer layer for payload movement.
-- Keep `--copy-in` and `workspace copy-in` behavior identical; only the transport
-  should differ between Git and non-Git sources.
+- Keep `--copy-in` and `workspace copy-in` behavior identical for Git-backed
+  workspaces.
 
 ## Non-goals
 
@@ -125,8 +125,8 @@ Top-level flags:
 - Making `cleanroom sandbox create` infer repository policy or local workspace
   state.
 - Copying ignored workspace artifacts out by default.
-- Adding a copy-out conflict override such as `--force` or `--overwrite` in the
-  MVP.
+- Supporting non-Git workspace copy-in/copy-out in the current workspace-sync
+  UX. Use `cleanroom cp` for explicit file movement instead.
 - Supporting arbitrary local copy-out roots in the MVP.
 - Running copy-out automatically from `cleanroom sandbox rm`.
 - Replacing artifact upload/download APIs for non-workspace build outputs.
@@ -149,21 +149,13 @@ path. Recursive local directory upload, workspace baselines, conflict
 detection, dry-run copy-out planning, and workspace mirror semantics are out of
 scope for `cp`.
 
-Workspace commands should use a shared workspace planner with
-workspace-specific safety semantics. The planner selects the transport from
-the source workspace:
-
-- Git source: repository changeset.
-- Non-Git source: raw workspace transfer using the backend-neutral
-  file/path/archive layer.
+Workspace commands should use a shared Git workspace planner with
+workspace-specific safety semantics. The planner requires a local Git worktree;
+non-Git directories are not accepted by the supported workspace copy UX.
 
 Top-level `--copy-in` should call the same copy-in operation as
 `cleanroom workspace copy-in`; it is not a separate changeset-only mode. The
-first implementation keeps that guarantee for Git-backed workspaces. For
-non-Git workspaces, `cleanroom workspace copy-in` can use raw transfer against an
-existing sandbox, but top-level `--copy-in` must stay disabled until there is a
-create-time raw workspace primitive that runs before dependency and service
-bootstrap.
+implementation keeps that guarantee for Git-backed workspaces.
 
 Workspace commands must operate on the sandbox's recorded workspace root. For
 repository-backed sandboxes, that root is the resolved `repository.path`,
@@ -187,10 +179,9 @@ Default behavior:
 - mirror local additions, modifications, and deletes from the included
   workspace file set into the cleanroom workspace
 - skip `.git/`
-- if the source is a Git worktree, package and apply a repository changeset
-- if the source is not a Git worktree, use raw workspace transfer, but refuse
-  when the sandbox does not expose a recorded workspace root
-- honor Git ignore rules by default for Git-backed source workspaces
+- require the source to be a Git worktree, then package and apply a repository
+  changeset
+- honor Git ignore rules by default
 - record the local binding and manifest needed for later copy-out conflict
   checks
 
@@ -209,6 +200,7 @@ Copy cleanroom workspace changes back to the caller's local workspace.
 ```sh
 cleanroom workspace copy-out <sandbox-id>
 cleanroom workspace copy-out --dry-run <sandbox-id>
+cleanroom workspace copy-out --force <sandbox-id>
 ```
 
 Default behavior:
@@ -218,31 +210,31 @@ Default behavior:
 - destination: the caller's local repository/workspace root
 - mirror cleanroom additions, modifications, and deletes from the included
   workspace file set into the local workspace
-- if the source workspace is a Git worktree, produce a copy-out changeset
-  against the recorded cleanroom baseline
-- if the source workspace is not a Git worktree, use raw workspace transfer
-- honor Git ignore rules by default for Git-backed source workspaces; ignored
-  paths such as `node_modules/`, `.venv/`, and cache directories are not
-  copy-out candidates
+- require a local Git worktree whose repository identity matches the sandbox,
+  then produce a copy-out changeset against the recorded cleanroom baseline
+- honor Git ignore rules by default; ignored paths such as `node_modules/`,
+  `.venv/`, and cache directories are not copy-out candidates
 - refuse to overwrite or delete a local path that changed since the last
   copy-in or initial workspace baseline
-- leave a recoverable copy-out payload in Cleanroom state if local conflict
-  checks fail
+- with `--force`, overwrite or delete only the local target paths present in
+  the sandbox copy-out changeset while still requiring repository identity and
+  workspace-root safety checks
 
 `workspace copy-out --dry-run` answers "what would be written to my local
 checkout?" This is intentionally different from `workspace diff`.
 
 If local files diverged while the cleanroom was running, copy-out should fail
-closed and name the conflicting paths. A later conflict override can be added
-from concrete usage, but the initial copy-out path should be conflict-safe.
+closed, name all conflicting paths it can detect, and suggest `--force` for the
+explicit overwrite path.
 
-The first write-capable implementation is Git-backed only. Unbound copy-out
-writes require the local checkout `HEAD` to match the sandbox's recorded
-repository baseline. Bound copy-out writes use the recorded copy-in manifest as
-the local conflict and apply base, so a checkout that still matches its last
-copy-in state can receive sandbox changes even when its `HEAD` is not the
-sandbox baseline. If conflict checks fail, the command saves the sandbox patch
-in Cleanroom state and refuses to write.
+The first write-capable implementation is Git-backed only. By default, unbound
+copy-out writes require the local checkout `HEAD` to match the sandbox's
+recorded repository baseline. Bound copy-out writes use the recorded copy-in
+manifest as the local conflict and apply base, so a checkout that still matches
+its last copy-in state can receive sandbox changes even when its `HEAD` is not
+the sandbox baseline. If conflict checks fail, the command refuses to write.
+For top-level `exec --copy-out` and `console --copy-out`, the sandbox is
+preserved on copy-out failure so the sandbox itself remains the recovery object.
 
 ### `cleanroom workspace diff`
 
@@ -295,9 +287,7 @@ repository changeset path:
 4. record local binding metadata so later `workspace copy-in`,
    `workspace copy-out`, and automated copy-out operations know the local root.
 
-For non-Git source workspaces, the same `--copy-in` flag should eventually use raw
-workspace transfer instead of a changeset, but only once raw transfer can run as
-part of sandbox creation before bootstrap.
+Non-Git source workspaces are rejected by `--copy-in` for now.
 
 The existing changeset path already has the right ignore shape: it stages the
 working tree through Git, so ignored files are not part of the copied payload
@@ -425,9 +415,10 @@ The implementation should ask Git for this file set, using commands equivalent
 to `git ls-files` with standard excludes or the existing temporary-index
 changeset flow. It should not hand-parse `.gitignore`.
 
-For non-Git source workspaces, the default included file set is the raw
-workspace tree, excluding Cleanroom control metadata and destination-specific
-unsafe paths. There is no Git ignore model to infer, so raw copy is literal.
+Non-Git source workspaces are out of scope for the supported workspace copy UX.
+Without Git metadata there is no existing baseline, ignore model, or
+copy-in manifest to drive safe mirror semantics, so users should use
+`cleanroom cp` for explicit file movement instead.
 
 The safety mechanism is conflict detection and dry-run output, not making
 delete behavior a separate mode.
@@ -453,13 +444,13 @@ The refusal message should name the conflicting paths and suggest:
 
 ```sh
 cleanroom workspace copy-out --dry-run <sandbox-id>
+cleanroom workspace copy-out --force <sandbox-id>
 ```
 
-The copied-out payload should remain available under Cleanroom state so users can
-recover it manually if needed.
-
-The MVP should not provide a conflict override such as `--force` or
-`--overwrite`. A later override can be added from concrete usage.
+`--force` is the only conflict override in the current UX. It should overwrite
+or delete the local target paths present in the sandbox copy-out changeset, but
+it must not bypass repository identity, workspace-root, or path traversal
+safety checks.
 
 ### Local root binding is explicit
 
@@ -510,28 +501,19 @@ is independent of transport:
 - included/excluded reason, so dry runs can explain when ignored paths are not
   candidates
 
-The planner should then select one of two transports:
-
-- Git changeset transport when the source workspace is a Git worktree and the
-  destination has the compatible recorded baseline.
-- Raw transfer transport when the source workspace is not a Git worktree.
+The planner should use Git changeset transport when the source workspace is a
+Git worktree and the destination has the compatible recorded baseline.
 
 If the source is Git but the destination cannot accept the changeset because
 the baseline is missing or incompatible, fail with a clear error. Do not
 silently fall back to raw copy, because that changes ignore/delete semantics.
 
-For efficient raw-transfer implementation, the CLI can batch file changes into
-the existing archive-write path plus a workspace manifest. Copy-out can use the
-inverse shape: build a manifest and payload from the sandbox workspace root,
-stream it to the CLI through archive/read primitives, and let the CLI apply it
-to the local workspace after local conflict checks pass.
-
 `cleanroom cp` remains the one-file convenience layer over the same substrate.
 It should not grow workspace baselines or mirror behavior.
 
 Git remains useful for baseline, ignore, and diff calculation when the source
-workspace is a Git checkout. V1 should lean on that for safety while still
-supporting non-Git workspaces through raw transfer.
+workspace is a Git checkout. V1 should lean on that for safety and leave
+non-Git workspace mirroring out of scope.
 
 ## State and Metadata
 
@@ -545,7 +527,7 @@ Cleanroom should record workspace metadata per sandbox:
 - cleanroom workspace baseline manifest or tree digest
 - last workspace copy-in manifest used for copy-out conflict detection
 - ignore/source file-set mode used for the last workspace operation
-- selected source transport, either Git changeset or raw transfer
+- selected Git source file-set mode
 - last workspace operation time
 
 The server should store sandbox/workspace facts needed to operate inside the
@@ -559,8 +541,7 @@ The public CLI should lead the design. The transfer substrate now provides the
 low-level file/path/archive operations; workspace APIs should stay narrow and
 workspace-aware:
 
-- apply a workspace copy-in payload to a sandbox workspace, whether represented
-  as a Git changeset or a raw transfer manifest
+- apply a Git workspace copy-in payload to a sandbox workspace
 - produce a workspace diff against the cleanroom baseline
 - produce a workspace copy-out payload and manifest
 
@@ -586,7 +567,7 @@ This plan should rename that user-facing behavior to `--copy-in`:
 - `--copy-in` is the top-level one-shot copy-in flag for local workspace changes
 - `workspace copy-in` is the manual form of the same copy-in operation
 - Git source workspaces use repository changesets
-- non-Git source workspaces use raw workspace transfer
+- non-Git source workspaces are not supported by workspace copy-in/copy-out
 - `workspace copy-out` is the explicit copy-out primitive
 - `--copy-out` is the top-level copy-out automation
 - `--sync` composes copy-in with copy-out
@@ -634,6 +615,7 @@ Status: landed.
 
 ### Phase 1: Unified workspace copy-in
 
+- Status: landed for Git-backed workspaces.
 - Add a shared workspace copy-in planner used by both manual commands and
   top-level automation.
 - Add `cleanroom workspace copy-in`.
@@ -642,10 +624,7 @@ Status: landed.
 - Resolve the destination workspace root from `repository.path`, defaulting to
   `/workspace`.
 - Use repository changesets when the source workspace is a Git worktree.
-- Use raw workspace transfer for manual `workspace copy-in` when the source
-  workspace is not a Git worktree.
-- Reject top-level `--copy-in` for non-Git workspaces until raw transfer can be
-  attached to sandbox creation before bootstrap.
+- Reject workspace copy-in for non-Git workspaces in the supported UX.
 - Add tests that ignored files and directories, including a representative
   `node_modules/`, are not included in Git-backed copy unless tracked.
 - Add tests that `workspace copy-in` and top-level `--copy-in` produce the same
@@ -659,6 +638,7 @@ Status: landed.
 
 ### Phase 2: Workspace copy-out and diff
 
+- Status: landed for Git-backed workspaces.
 - PR #272: add `cleanroom workspace copy-out --dry-run`.
 - PR #274: add Git-backed `cleanroom workspace copy-out` writes.
 - PR #272: add `cleanroom workspace diff`.
@@ -666,23 +646,24 @@ Status: landed.
   to `/workspace`.
 - Covered by repository changeset tests: ignored cleanroom outputs are not
   included in Git-backed copy-out candidates by default.
-- PR #274: add copy-out tests proving local divergence fails closed with
-  no force or overwrite mode.
+- PR #274: add copy-out tests proving local divergence fails closed by default.
 - PR #274: add copy-out tests proving an unbound copy-out refuses to
   write unless the current working tree matches the sandbox repository baseline.
 - Require explicit sandbox IDs or support `--last` consistently with existing
   inspect commands.
 - PR #275: store Git local binding metadata in client-side Cleanroom
   state and prefer the bound local root during `workspace copy-out`.
-- This changeset: use the recorded copy-in manifest as the local conflict/apply
+- PR #276: use the recorded copy-in manifest as the local conflict/apply
   base.
-- Follow-up: add top-level `--copy-out` automation.
+- This changeset: add `workspace copy-out --force`, aggregate local copy-out
+  conflicts, and stop writing recovery payload directories.
 
 ### Phase 3: Safe top-level copy-out automation
 
-- Add `--copy-out` to `exec` and `console`.
-- Add `--sync` as an alias for `--copy-in --copy-out`.
-- Add integration tests for local divergence, delete propagation, and dry-run
+- Status: landed in PR #280.
+- PR #280: add `--copy-out` to `exec` and `console`.
+- PR #280: add `--sync` as an alias for `--copy-in --copy-out`.
+- PR #280: add integration tests for local divergence, delete propagation, and dry-run
   output.
 
 ### Phase 4: Optional live local-to-cleanroom copy
@@ -710,7 +691,11 @@ Status: landed.
 
 - Workspace commands support custom `repository.path` values and default to
   `/workspace`.
-- Copy-out has no conflict override in the MVP.
+- Workspace copy-in/copy-out is Git-backed only for now. Non-Git workspace
+  mirroring is out of scope; use `cleanroom cp` for explicit file movement.
+- Copy-out has one explicit conflict override: `workspace copy-out --force`.
+  It overwrites only local target paths from the sandbox copy-out changeset and
+  does not bypass repository identity or workspace-root safety.
 - Copy-out uses the bound local root or a matching current working tree; there is
   no arbitrary local-root override in the MVP.
 - Ignored generated artifacts remain excluded by default. Future support should
