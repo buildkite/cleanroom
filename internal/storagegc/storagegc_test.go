@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -142,7 +143,7 @@ func TestInventoryProtectsReferencesAndFindsOrphans(t *testing.T) {
 	assertEntry(t, report, KindRuntimeRootFS, "abc", false, "runtime rootfs cache preserved unless selected")
 	assertEntry(t, report, KindImageCache, "sha256:digest", false, "image cache metadata")
 
-	expectedOrphanSize, err := pathSize(filepath.Dir(orphanSnapshotRootFS))
+	expectedOrphanSize, err := pathSize(context.Background(), filepath.Dir(orphanSnapshotRootFS))
 	if err != nil {
 		t.Fatalf("size orphan snapshot fixture: %v", err)
 	}
@@ -203,6 +204,117 @@ func TestInventoryProtectsSandboxDirsWhenDaemonStateIsUnknown(t *testing.T) {
 		t.Fatalf("Inventory returned error: %v", err)
 	}
 	assertEntry(t, report, KindSandboxRuntime, "maybe-active", false, "daemon sandbox state unavailable")
+}
+
+func TestInventoryCanLimitKinds(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", filepath.Join(tmpDir, "state-home"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(tmpDir, "cache-home"))
+
+	stateBase := filepath.Join(tmpDir, "state-home", "cleanroom")
+	writeFile(t, filepath.Join(stateBase, "sandboxes", "sandbox-1", "disk.img"), "active")
+	writeFile(t, filepath.Join(stateBase, "sandboxes", "sandbox-2", "disk.img"), "active")
+
+	report, err := Inventory(context.Background(), InventoryOptions{
+		ActiveSandboxIDs:  []string{"sandbox-1"},
+		SandboxRuntimeIDs: []string{"sandbox-1"},
+		SandboxStateKnown: true,
+		SnapshotStore:     stubSnapshotStore{err: errors.New("snapshot store should not be used")},
+		CacheStore:        &stubCacheStore{err: errors.New("cache store should not be used")},
+		ImageManager:      &stubImageManager{err: errors.New("image manager should not be used")},
+		Kinds:             []string{KindSandboxRuntime},
+	})
+	if err != nil {
+		t.Fatalf("Inventory returned error: %v", err)
+	}
+	if got, want := len(report.Entries), 1; got != want {
+		t.Fatalf("unexpected entry count: got %d want %d", got, want)
+	}
+	assertEntry(t, report, KindSandboxRuntime, "sandbox-1", false, "known daemon sandbox")
+}
+
+func TestInventoryCanSkipSandboxRuntimeSizes(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", filepath.Join(tmpDir, "state-home"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(tmpDir, "cache-home"))
+
+	stateBase := filepath.Join(tmpDir, "state-home", "cleanroom")
+	writeFile(t, filepath.Join(stateBase, "sandboxes", "sandbox-1", "disk.img"), "active")
+
+	measured, err := Inventory(context.Background(), InventoryOptions{
+		SandboxRuntimeIDs: []string{"sandbox-1"},
+		SandboxStateKnown: true,
+		Kinds:             []string{KindSandboxRuntime},
+	})
+	if err != nil {
+		t.Fatalf("measured Inventory returned error: %v", err)
+	}
+	measuredEntry := findEntry(t, measured, KindSandboxRuntime, "sandbox-1")
+	if measuredEntry.SizeBytes <= 0 {
+		t.Fatalf("expected measured sandbox runtime size to be positive, got %d", measuredEntry.SizeBytes)
+	}
+
+	skipped, err := Inventory(context.Background(), InventoryOptions{
+		SandboxRuntimeIDs: []string{"sandbox-1"},
+		SandboxStateKnown: true,
+		Kinds:             []string{KindSandboxRuntime},
+		SkipSize:          true,
+	})
+	if err != nil {
+		t.Fatalf("skip-size Inventory returned error: %v", err)
+	}
+	skippedEntry := findEntry(t, skipped, KindSandboxRuntime, "sandbox-1")
+	if skippedEntry.SizeBytes != 0 {
+		t.Fatalf("expected skipped sandbox runtime size to be zero, got %d", skippedEntry.SizeBytes)
+	}
+	if got := skipped.Totals[KindSandboxRuntime].TotalBytes; got != 0 {
+		t.Fatalf("expected skipped sandbox runtime total bytes to be zero, got %d", got)
+	}
+}
+
+func TestInventoryStageCacheFilterKeepsSnapshotProtections(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", filepath.Join(tmpDir, "state-home"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(tmpDir, "cache-home"))
+
+	stateBase := filepath.Join(tmpDir, "state-home", "cleanroom")
+	stageRootFS := filepath.Join(stateBase, "snapshots", "firecracker", "stage-shared", "rootfs.ext4")
+	writeFile(t, stageRootFS, "cache")
+	now := time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC)
+
+	report, err := Inventory(context.Background(), InventoryOptions{
+		SandboxStateKnown: true,
+		SnapshotStore: stubSnapshotStore{records: []snapshotstore.Record{
+			{
+				SnapshotID: "snap-explicit",
+				Backend:    "firecracker",
+				StorageRef: stageRootFS,
+				CreatedAt:  now,
+			},
+		}},
+		CacheStore: &stubCacheStore{records: []cachestore.Record{
+			{
+				Stage:      "dependencies",
+				CacheKey:   "cache-shared",
+				Backend:    "firecracker",
+				StorageRef: stageRootFS,
+				CreatedAt:  now,
+				LastUsedAt: now,
+			},
+		}},
+		ImageManager: &stubImageManager{err: errors.New("image manager should not be used")},
+		Kinds:        []string{KindStageCache},
+	})
+	if err != nil {
+		t.Fatalf("Inventory returned error: %v", err)
+	}
+	if got, want := len(report.Entries), 1; got != want {
+		t.Fatalf("unexpected entry count: got %d want %d", got, want)
+	}
+	entry := findEntry(t, report, KindStageCache, "dependencies/cache-shared")
+	if !slices.Contains(entry.ProtectedBy, "snapshot metadata snap-explicit") {
+		t.Fatalf("expected snapshot protection, got %#v", entry.ProtectedBy)
+	}
 }
 
 func TestPlanPruneIncludesAllAndOlderThanCaches(t *testing.T) {
@@ -268,6 +380,49 @@ func TestPlanPruneIncludesAllAndOlderThanCaches(t *testing.T) {
 	assertPlanAction(t, allPlan, KindRuntimeRootFS, "old-runtime")
 	assertPlanAction(t, allPlan, KindStageCache, "dependencies/cache")
 	assertPlanAction(t, allPlan, KindImageCache, "sha256:image")
+}
+
+func TestPlanLifecyclePruneDeletesTerminatedSandboxRuntime(t *testing.T) {
+	tmpDir := t.TempDir()
+	runtimeDir := filepath.Join(tmpDir, "state", "cleanroom", "sandboxes", "sandbox-1")
+	writeFile(t, filepath.Join(runtimeDir, "rootfs.ext4"), "sandbox")
+	cacheDir := filepath.Join(tmpDir, "cache", "cleanroom")
+
+	report := Report{
+		StateBaseDir:      filepath.Join(tmpDir, "state", "cleanroom"),
+		CacheBaseDir:      cacheDir,
+		SandboxStateKnown: true,
+		Entries: []Entry{
+			{
+				Kind:        KindSandboxRuntime,
+				ID:          "sandbox-1",
+				Path:        runtimeDir,
+				SizeBytes:   7,
+				Reason:      "known daemon sandbox",
+				ProtectedBy: []string{"daemon state"},
+			},
+		},
+	}
+	plan := PlanLifecyclePrune(report, LifecycleOptions{TerminatedSandboxIDs: []string{"sandbox-1"}})
+	if got, want := len(plan.Actions), 1; got != want {
+		t.Fatalf("unexpected lifecycle action count: got %d want %d", got, want)
+	}
+	if got, want := plan.Actions[0].Reason, "terminated sandbox lifecycle cleanup"; got != want {
+		t.Fatalf("unexpected action reason: got %q want %q", got, want)
+	}
+	result, err := ExecutePrune(context.Background(), report, plan, ExecuteOptions{
+		CacheStore:   &stubCacheStore{err: errors.New("cache store should not be used")},
+		ImageManager: &stubImageManager{err: errors.New("image manager should not be used")},
+	})
+	if err != nil {
+		t.Fatalf("ExecutePrune returned error: %v", err)
+	}
+	if got, want := result.DeletedEntries, 1; got != want {
+		t.Fatalf("unexpected deleted entries: got %d want %d", got, want)
+	}
+	if _, err := os.Stat(runtimeDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected runtime dir to be removed, stat err: %v", err)
+	}
 }
 
 func TestPlanPruneSkipsStageCacheOutsideManagedSnapshotStorage(t *testing.T) {

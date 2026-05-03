@@ -165,6 +165,14 @@ This is what lets us clean up abandoned directories from older versions without 
    - After sandbox termination, opportunistically remove runtime dirs that belong to the terminated sandbox.
    - Consider a bounded background prune for system-managed caches only after the manual command has telemetry and tests.
 
+   First hook: sandbox termination and failed-create cleanup should call into the
+   shared `storagegc` inventory, lifecycle planning, and execution path for the
+   terminated sandbox runtime directory only. The service should enqueue this
+   work onto a bounded, serial background worker and skip recursive byte sizing
+   before deletion. This keeps automatic cleanup lifecycle-scoped, prevents a
+   burst of terminations from starting many filesystem removals at once, and
+   avoids introducing a daemon-wide background prune.
+
 ## Tests
 
 - Inventory reports byte totals for every known category.

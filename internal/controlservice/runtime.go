@@ -48,14 +48,17 @@ type serviceTimeouts struct {
 	attachPollInterval           time.Duration
 	interactiveSessionTokenTTL   time.Duration
 	bootstrapCleanupTimeout      time.Duration
+	storageCleanupTimeout        time.Duration
 }
 
 type serviceRuntime struct {
-	clock                   serviceClock
-	ids                     serviceIDSource
-	retention               *retentionPolicy
-	timeouts                *serviceTimeouts
-	defaultDownloadMaxBytes int64
+	clock                                    serviceClock
+	ids                                      serviceIDSource
+	retention                                *retentionPolicy
+	timeouts                                 *serviceTimeouts
+	defaultDownloadMaxBytes                  int64
+	terminatedSandboxStorageCleanup          func(string)
+	terminatedSandboxStorageCleanupQueueSize int
 }
 
 var defaultRetentionPolicy = retentionPolicy{
@@ -73,9 +76,12 @@ var defaultServiceTimeouts = serviceTimeouts{
 	attachPollInterval:           10 * time.Millisecond,
 	interactiveSessionTokenTTL:   30 * time.Second,
 	bootstrapCleanupTimeout:      10 * time.Second,
+	storageCleanupTimeout:        10 * time.Second,
 }
 
 const defaultDownloadMaxBytes int64 = 10 * 1024 * 1024
+
+const defaultTerminatedSandboxStorageCleanupQueueSize = 128
 
 func (s *Service) clock() serviceClock {
 	if s.runtime.clock != nil {
@@ -110,4 +116,11 @@ func (s *Service) downloadMaxBytesDefault() int64 {
 		return s.runtime.defaultDownloadMaxBytes
 	}
 	return defaultDownloadMaxBytes
+}
+
+func (s *Service) terminatedSandboxStorageCleanupQueueSize() int {
+	if s.runtime.terminatedSandboxStorageCleanupQueueSize > 0 {
+		return s.runtime.terminatedSandboxStorageCleanupQueueSize
+	}
+	return defaultTerminatedSandboxStorageCleanupQueueSize
 }

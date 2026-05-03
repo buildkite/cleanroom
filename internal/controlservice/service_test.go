@@ -4329,6 +4329,47 @@ func TestTerminateCreatedSandboxKeepsStateWhenTerminateFails(t *testing.T) {
 	}
 }
 
+func TestTerminateCreatedSandboxCleansRuntimeDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+	stateHome := filepath.Join(tmpDir, "state-home")
+	t.Setenv("XDG_STATE_HOME", stateHome)
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(tmpDir, "cache-home"))
+
+	adapter := &stubAdapter{}
+	svc := newTestService(adapter)
+	sb := &sandboxState{
+		ID:        "sandbox_test",
+		Status:    cleanroomv1.SandboxStatus_SANDBOX_STATUS_PROVISIONING,
+		CreatedAt: time.Unix(1_700_000_000, 0).UTC(),
+		UpdatedAt: time.Unix(1_700_000_000, 0).UTC(),
+		events:    newEventFeed[*cleanroomv1.SandboxEvent](0),
+		Done:      make(chan struct{}),
+	}
+	svc.mu.Lock()
+	svc.ensureMapsLocked()
+	svc.sandboxes[sb.ID] = sb
+	svc.mu.Unlock()
+
+	runtimeDir := filepath.Join(stateHome, "cleanroom", "sandboxes", sb.ID)
+	if err := os.MkdirAll(runtimeDir, 0o755); err != nil {
+		t.Fatalf("create runtime dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(runtimeDir, "rootfs.ext4"), []byte("runtime"), 0o644); err != nil {
+		t.Fatalf("write runtime file: %v", err)
+	}
+
+	if err := svc.terminateCreatedSandbox(context.Background(), adapter, sb.ID); err != nil {
+		t.Fatalf("terminateCreatedSandbox returned error: %v", err)
+	}
+	waitForPathRemoved(t, runtimeDir)
+	svc.mu.RLock()
+	_, ok := svc.sandboxes[sb.ID]
+	svc.mu.RUnlock()
+	if ok {
+		t.Fatal("expected sandbox state to be dropped after successful cleanup")
+	}
+}
+
 func TestCreateExecutionWrapsRepositoryBootstrapInService(t *testing.T) {
 	adapter := &stubAdapter{}
 	mirrors := &stubRepositoryMirrorStore{}
@@ -7148,6 +7189,181 @@ func TestTerminateSandboxPropagatesRequestContextToBackend(t *testing.T) {
 
 	if !errors.Is(terminateCtxErr, context.Canceled) {
 		t.Fatalf("expected backend terminate context to be canceled, got %v", terminateCtxErr)
+	}
+}
+
+func TestTerminateSandboxSchedulesStorageCleanupAsync(t *testing.T) {
+	adapter := &stubAdapter{}
+	svc := newTestService(adapter)
+
+	started := make(chan string, 1)
+	release := make(chan struct{})
+	defer close(release)
+	svc.runtime.terminatedSandboxStorageCleanup = func(sandboxID string) {
+		started <- sandboxID
+		<-release
+	}
+
+	createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createResp.GetSandbox().GetSandboxId()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := svc.TerminateSandbox(context.Background(), &cleanroomv1.TerminateSandboxRequest{SandboxId: sandboxID})
+		done <- err
+	}()
+
+	select {
+	case got := <-started:
+		if got != sandboxID {
+			t.Fatalf("unexpected cleanup sandbox id: got %q want %q", got, sandboxID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for storage cleanup to start")
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("TerminateSandbox returned error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("TerminateSandbox blocked behind storage cleanup")
+	}
+}
+
+func TestTerminateSandboxStorageCleanupWorkerRunsSeriallyAndDedupes(t *testing.T) {
+	adapter := &stubAdapter{}
+	svc := newTestService(adapter)
+	svc.runtime.terminatedSandboxStorageCleanupQueueSize = 4
+
+	started := make(chan string, 3)
+	finished := make(chan string, 3)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	closeRelease := func() {
+		releaseOnce.Do(func() {
+			close(release)
+		})
+	}
+	defer closeRelease()
+
+	svc.runtime.terminatedSandboxStorageCleanup = func(sandboxID string) {
+		started <- sandboxID
+		<-release
+		finished <- sandboxID
+	}
+
+	svc.scheduleTerminatedSandboxStorageCleanup("sandbox-1")
+	svc.scheduleTerminatedSandboxStorageCleanup("sandbox-1")
+	svc.scheduleTerminatedSandboxStorageCleanup("sandbox-2")
+
+	select {
+	case got := <-started:
+		if got != "sandbox-1" {
+			t.Fatalf("unexpected first cleanup: got %q want sandbox-1", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for first storage cleanup")
+	}
+	select {
+	case got := <-started:
+		t.Fatalf("storage cleanup worker started %q while first cleanup was still running", got)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	closeRelease()
+
+	select {
+	case got := <-finished:
+		if got != "sandbox-1" {
+			t.Fatalf("unexpected first completed cleanup: got %q want sandbox-1", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for first storage cleanup to finish")
+	}
+	select {
+	case got := <-started:
+		if got != "sandbox-2" {
+			t.Fatalf("unexpected second cleanup: got %q want sandbox-2", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for second storage cleanup")
+	}
+	select {
+	case got := <-finished:
+		if got != "sandbox-2" {
+			t.Fatalf("unexpected second completed cleanup: got %q want sandbox-2", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for second storage cleanup to finish")
+	}
+	select {
+	case got := <-started:
+		t.Fatalf("duplicate cleanup was not deduped, started %q", got)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func TestTerminateSandboxCleansUpRuntimeDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+	stateHome := filepath.Join(tmpDir, "state-home")
+	t.Setenv("XDG_STATE_HOME", stateHome)
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(tmpDir, "cache-home"))
+
+	adapter := &stubAdapter{}
+	svc := newTestService(adapter)
+
+	createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{Policy: testPolicy()})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createResp.GetSandbox().GetSandboxId()
+	runtimeDir := filepath.Join(stateHome, "cleanroom", "sandboxes", sandboxID)
+	if err := os.MkdirAll(runtimeDir, 0o755); err != nil {
+		t.Fatalf("create runtime dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(runtimeDir, "rootfs.ext4"), []byte("runtime"), 0o644); err != nil {
+		t.Fatalf("write runtime file: %v", err)
+	}
+
+	if _, err := svc.TerminateSandbox(context.Background(), &cleanroomv1.TerminateSandboxRequest{SandboxId: sandboxID}); err != nil {
+		t.Fatalf("TerminateSandbox returned error: %v", err)
+	}
+	waitForPathRemoved(t, runtimeDir)
+
+	getResp, err := svc.GetSandbox(context.Background(), &cleanroomv1.GetSandboxRequest{SandboxId: sandboxID})
+	if err != nil {
+		t.Fatalf("GetSandbox returned error: %v", err)
+	}
+	if got, want := getResp.GetSandbox().GetStatus(), cleanroomv1.SandboxStatus_SANDBOX_STATUS_STOPPED; got != want {
+		t.Fatalf("unexpected sandbox status: got %v want %v", got, want)
+	}
+}
+
+func waitForPathRemoved(t *testing.T, path string) {
+	t.Helper()
+
+	deadline := time.After(2 * time.Second)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		_, err := os.Stat(path)
+		if errors.Is(err, os.ErrNotExist) {
+			return
+		}
+		if err != nil {
+			t.Fatalf("stat %s: %v", path, err)
+		}
+
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for %s to be removed", path)
+		case <-ticker.C:
+		}
 	}
 }
 
