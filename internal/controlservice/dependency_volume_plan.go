@@ -57,6 +57,10 @@ type dependencyBlockVolumeRuntimeDecision struct {
 }
 
 func dependencyBlockVolumeRuntimeDecisionForAdapter(adapter backend.Adapter) dependencyBlockVolumeRuntimeDecision {
+	return blockVolumeRuntimeDecisionForAdapter(adapter)
+}
+
+func blockVolumeRuntimeDecisionForAdapter(adapter backend.Adapter) dependencyBlockVolumeRuntimeDecision {
 	if adapter == nil {
 		return dependencyBlockVolumeRuntimeDecision{FallbackReason: "backend adapter unavailable"}
 	}
@@ -81,29 +85,29 @@ func (s *Service) lookupDependencyBlockVolumePlanForCreateSandbox(
 	changeset *repositorychangeset.Changeset,
 	commitBundle *repositorybundle.Bundle,
 	runtimeBaseKey string,
-) {
+) (dependencyBlockVolumePlan, bool) {
 	blockCount := 0
 	if compiled != nil {
 		blockCount = len(compiled.Dependencies.Blocks)
 	}
-	decision := dependencyBlockVolumeRuntimeDecisionForAdapter(adapter)
+	decision := blockVolumeRuntimeDecisionForAdapter(adapter)
 	if !decision.Enabled {
 		s.logDependencyBlockVolumeCacheFallback(backendName, blockCount, decision.FallbackReason)
-		return
+		return dependencyBlockVolumePlan{}, false
 	}
 
 	if _, err := s.cacheStoreOrErr(); err != nil {
 		s.logDependencyBlockVolumeCacheFallback(backendName, blockCount, err.Error())
-		return
+		return dependencyBlockVolumePlan{}, false
 	}
 
 	plan, ok, err := s.finalizeDependencyBlockVolumePlan(ctx, compiled, repository, changeset, commitBundle, backendName, runtimeBaseKey)
 	if err != nil {
 		s.logDependencyStageWarning("resolve dependency block-volume cache keys", "", err)
-		return
+		return dependencyBlockVolumePlan{}, false
 	}
 	if !ok {
-		return
+		return dependencyBlockVolumePlan{}, false
 	}
 
 	err = s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.lookup_dependency_block_volume_caches", cachePhaseAttributes(
@@ -120,9 +124,10 @@ func (s *Service) lookupDependencyBlockVolumePlanForCreateSandbox(
 	})
 	if err != nil {
 		s.logDependencyStageWarning("lookup dependency block-volume caches", "", err)
-		return
+		return dependencyBlockVolumePlan{}, false
 	}
 	s.logDependencyBlockVolumeCacheLookup(backendName, plan)
+	return plan, true
 }
 
 func (s *Service) finalizeDependencyBlockVolumePlan(

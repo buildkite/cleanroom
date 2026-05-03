@@ -377,6 +377,8 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	workspaceStageKey := ""
 	workspaceStageCachingEnabled := false
 	dependencyStagePlan := dependencyStagePlan{}
+	dependencyBlockVolumePlan := dependencyBlockVolumePlan{}
+	dependencyBlockVolumePlanAvailable := false
 	dependencyStageBootstrapEnabled := false
 	dependencyStageCachingEnabled := false
 	servicesStagePlan := servicesStagePlan{}
@@ -604,7 +606,17 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 			}
 
 			if dependencyStageBootstrapEnabled && restoredDependencyResp == nil {
-				s.lookupDependencyBlockVolumePlanForCreateSandbox(ctx, adapter, backendName, compiled, repository, changeset, commitBundle, workspaceStageRuntimeBaseKey)
+				dependencyBlockVolumePlan, dependencyBlockVolumePlanAvailable = s.lookupDependencyBlockVolumePlanForCreateSandbox(ctx, adapter, backendName, compiled, repository, changeset, commitBundle, workspaceStageRuntimeBaseKey)
+			}
+			if servicesStageBootstrapEnabled && restoredDependencyResp == nil {
+				decision := blockVolumeRuntimeDecisionForAdapter(adapter)
+				if !decision.Enabled {
+					s.logServiceBlockVolumeCacheFallback(backendName, len(compiled.Services.Blocks), decision.FallbackReason)
+				} else if dependencyStageBootstrapEnabled && !dependencyBlockVolumePlanAvailable {
+					s.logServiceBlockVolumeCacheFallback(backendName, len(compiled.Services.Blocks), "dependency block-volume plan unavailable")
+				} else {
+					s.lookupServiceBlockVolumePlanForCreateSandbox(ctx, backendName, compiled, repository, changeset, commitBundle, workspaceStageRuntimeBaseKey, dependencyBlockVolumePlan)
+				}
 			}
 
 			if restoredDependencyResp == nil {
