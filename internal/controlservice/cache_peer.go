@@ -15,7 +15,10 @@ import (
 
 	"github.com/buildkite/cleanroom/internal/cachestore"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
+	"github.com/buildkite/cleanroom/internal/observability"
 	"github.com/buildkite/cleanroom/internal/volumestore"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -93,6 +96,11 @@ func (s *Service) LookupCachePeer(ctx context.Context, req *cleanroomv1.LookupCa
 	if req == nil {
 		return nil, errors.New("missing cache peer lookup request")
 	}
+	lookupStage := strings.TrimSpace(req.GetStage())
+	lookupResult := observability.CacheResultFailed
+	defer func() {
+		s.recordCachePeerLookup(ctx, lookupStage, lookupResult)
+	}()
 	if strings.TrimSpace(req.GetStage()) == "" {
 		return nil, errors.New("missing cache peer lookup stage")
 	}
@@ -105,6 +113,7 @@ func (s *Service) LookupCachePeer(ctx context.Context, req *cleanroomv1.LookupCa
 		return nil, err
 	}
 	if missReason != "" {
+		lookupResult = observability.CacheResultMiss
 		return cachePeerMiss(missReason), nil
 	}
 
@@ -129,6 +138,7 @@ func (s *Service) LookupCachePeer(ctx context.Context, req *cleanroomv1.LookupCa
 		ExpiresAt:             expiresAt,
 	}
 	s.storeCachePeerExport(export)
+	lookupResult = observability.CacheResultHit
 
 	return &cleanroomv1.LookupCachePeerResponse{
 		Candidate: &cleanroomv1.CachePeerCandidate{
@@ -156,10 +166,27 @@ func (s *Service) ExportCachePeerZFSIncremental(ctx context.Context, token strin
 	if dst == nil {
 		return errors.New("missing cache peer export writer")
 	}
+	ctx, span := s.Observability.Tracer("github.com/buildkite/cleanroom/internal/controlservice").Start(ctx, "cleanroom.cache_peer.export")
+	defer span.End()
+
+	release, err := s.acquireCachePeerExportSlot(ctx)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return err
+	}
+	defer release()
+
 	export, ok := s.consumeCachePeerExport(strings.TrimSpace(token), s.clock().Now())
 	if !ok {
+		span.SetAttributes(attribute.String(observability.AttrCacheResult, observability.CacheResultMiss))
+		span.SetStatus(codes.Error, ErrCachePeerExportTokenNotFound.Error())
 		return ErrCachePeerExportTokenNotFound
 	}
+	span.SetAttributes(
+		attribute.String(observability.AttrCacheStage, strings.TrimSpace(export.Stage)),
+		attribute.String(observability.AttrCachePeerDirection, observability.CachePeerDirectionExport),
+	)
 	match, missReason, err := s.planCachePeerExport(ctx, cachePeerLookup{
 		Stage:                 export.Stage,
 		CacheKey:              export.CacheKey,
@@ -173,15 +200,54 @@ func (s *Service) ExportCachePeerZFSIncremental(ctx context.Context, token strin
 		ParentZFSSnapshotGUID: export.ParentZFSSnapshotGUID,
 	})
 	if err != nil {
+		span.RecordError(err)
+		span.SetAttributes(attribute.String(observability.AttrCacheResult, observability.CacheResultFailed))
+		span.SetStatus(codes.Error, err.Error())
 		return err
 	}
 	if missReason != "" {
-		return fmt.Errorf("cache peer export candidate no longer valid: %s", missReason)
+		err := fmt.Errorf("cache peer export candidate no longer valid: %s", missReason)
+		span.SetAttributes(
+			attribute.String(observability.AttrCacheResult, observability.CacheResultFailed),
+			attribute.String(observability.AttrCachePeerFallback, missReason),
+		)
+		span.SetStatus(codes.Error, err.Error())
+		return err
 	}
 	if match.ChildMetadata.SnapshotGUID != export.ZFSSnapshotGUID {
-		return fmt.Errorf("cache peer export candidate no longer valid: zfs snapshot guid mismatch")
+		err := fmt.Errorf("cache peer export candidate no longer valid: zfs snapshot guid mismatch")
+		span.SetAttributes(attribute.String(observability.AttrCacheResult, observability.CacheResultFailed))
+		span.SetStatus(codes.Error, err.Error())
+		return err
 	}
-	return s.CachePeerTransferDriver.ExportIncrementalSnapshot(ctx, match.Plan, dst)
+	writer := &cachePeerCountingWriter{dst: dst}
+	started := s.clock().Now()
+	err = s.CachePeerTransferDriver.ExportIncrementalSnapshot(ctx, match.Plan, writer)
+	duration := s.clock().Now().Sub(started)
+	result := observability.CacheResultExported
+	if err != nil {
+		result = observability.CacheResultFailed
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	} else {
+		span.SetStatus(codes.Ok, "")
+		s.logCachePeerExportCompleted(ctx, export.Stage, writer.bytes, duration)
+	}
+	s.recordCachePeerTransfer(ctx, export.Stage, observability.CachePeerDirectionExport, result, writer.bytes, duration)
+	span.SetAttributes(attribute.String(observability.AttrCacheResult, result))
+	return err
+}
+
+func (s *Service) acquireCachePeerExportSlot(ctx context.Context) (func(), error) {
+	s.cachePeerExportSlotsOnce.Do(func() {
+		s.cachePeerExportSlots = make(chan struct{}, s.cachePeerExportConcurrency())
+	})
+	select {
+	case s.cachePeerExportSlots <- struct{}{}:
+		return func() { <-s.cachePeerExportSlots }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 type cachePeerLookup struct {

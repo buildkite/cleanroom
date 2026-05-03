@@ -151,12 +151,19 @@ The sender side of the peer protocol has landed:
 - dependency and services child exports only, with an explicit parent stage,
   parent cache key, and parent ZFS GUID
 
-The next slice is receiver-side import orchestration:
+The receiver-side import orchestration has landed:
 
 - receiver-side import orchestration around the proven local ZFS primitive
 - cache publication only after receiver-side metadata validation
 - dependency/services import attempts only after the receiver already has the
   workspace or dependency parent locally
+
+The hardening slice adds observability and fallback safety:
+
+- cache peer lookup, import, export, byte, duration, and fallback metrics
+- structured logs and trace attributes for import/export decisions
+- explicit proof that failed peer imports clean up and fall back to local build
+- bounded sender-side concurrent exports
 
 ## Design Principles
 
@@ -475,7 +482,7 @@ storage refs unsafe.
 
 Add structured logs, traces, and metrics for:
 
-- peer lookup count, hit, miss, and error
+- peer lookup count, hit, miss, and failure
 - chosen peer
 - parent GUID match or mismatch
 - export bytes and duration
@@ -489,7 +496,7 @@ Suggested metric names:
 ```text
 cleanroom_cache_peer_lookup_total{stage,result}
 cleanroom_cache_peer_transfer_bytes_total{stage,direction}
-cleanroom_cache_peer_transfer_duration_seconds{stage,result}
+cleanroom_cache_peer_transfer_duration_seconds{stage,direction,result}
 cleanroom_cache_peer_import_total{stage,result}
 ```
 
@@ -509,6 +516,8 @@ The peer API exposes powerful local cache data. Keep v1 conservative:
 - expire transfer tokens quickly
 - avoid logging bearer tokens or transfer tokens
 - rate-limit concurrent exports per peer
+- bound receiver lookup/export HTTP waits so blackholed peers do not stall
+  cache-miss handling
 - validate imported metadata locally before publishing
 
 ## Code Touchpoints
@@ -590,11 +599,12 @@ Status: landed for dependency and services stage caches.
 
 ### 6. Observability and fallback hardening
 
-Status: next.
+Status: landed.
 
 - Add logs, traces, and metrics.
 - Ensure every peer miss or failed import falls back to local build.
 - Ensure failed import leaves no ready metadata and no temporary ZFS dataset.
+- Limit concurrent sender exports so one peer cannot exhaust ZFS send workers.
 
 ### 7. End-to-end validation
 
@@ -616,6 +626,10 @@ Status: next.
   those records, and skip local bootstrap work
 - duplicate imports coalesce
 - import failure does not publish metadata
+- failed peer imports fall back to local build after deleting the imported
+  snapshot
+- peer lookup, import, export, byte, and duration metrics use bounded labels
+- sender exports respect the per-daemon concurrency limit
 
 ### ZFS driver tests
 

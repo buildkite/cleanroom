@@ -6,13 +6,17 @@ import (
 	"io"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/buildkite/cleanroom/internal/cachestore"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
+	"github.com/buildkite/cleanroom/internal/observability"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 	"github.com/buildkite/cleanroom/internal/volumestore"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
 type stubCachePeerTransferDriver struct {
@@ -21,6 +25,8 @@ type stubCachePeerTransferDriver struct {
 	planRequests      []volumestore.IncrementalSnapshotExportRequest
 	exportPlans       []volumestore.IncrementalSnapshotExportPlan
 	exportPayload     string
+	exportFn          func(context.Context, volumestore.IncrementalSnapshotExportPlan, io.Writer) error
+	importErr         error
 	importRequests    []volumestore.IncrementalSnapshotImportRequest
 	importPayloads    []string
 	importSnapshots   map[string]volumestore.Snapshot
@@ -51,8 +57,11 @@ func (d *stubCachePeerTransferDriver) PlanIncrementalSnapshotExport(_ context.Co
 	}, nil
 }
 
-func (d *stubCachePeerTransferDriver) ExportIncrementalSnapshot(_ context.Context, plan volumestore.IncrementalSnapshotExportPlan, dst io.Writer) error {
+func (d *stubCachePeerTransferDriver) ExportIncrementalSnapshot(ctx context.Context, plan volumestore.IncrementalSnapshotExportPlan, dst io.Writer) error {
 	d.exportPlans = append(d.exportPlans, plan)
+	if d.exportFn != nil {
+		return d.exportFn(ctx, plan, dst)
+	}
 	_, err := io.WriteString(dst, d.exportPayload)
 	return err
 }
@@ -62,6 +71,9 @@ func (d *stubCachePeerTransferDriver) ImportIncrementalSnapshot(_ context.Contex
 	payload, err := io.ReadAll(src)
 	if err != nil {
 		return volumestore.Snapshot{}, err
+	}
+	if d.importErr != nil {
+		return volumestore.Snapshot{}, d.importErr
 	}
 	d.importPayloads = append(d.importPayloads, string(payload))
 	if d.importSnapshots != nil {
@@ -94,6 +106,18 @@ func TestLookupCachePeerDependencyStageMintsBoundExportToken(t *testing.T) {
 	})
 	transfer := &stubCachePeerTransferDriver{exportPayload: "zfs-stream"}
 	svc := newTestService(&stubAdapter{})
+	reader := sdkmetric.NewManualReader()
+	meterProvider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	tracerProvider := sdktrace.NewTracerProvider()
+	defer func() {
+		_ = meterProvider.Shutdown(context.Background())
+		_ = tracerProvider.Shutdown(context.Background())
+	}()
+	obs, err := observability.NewWithProviders(tracerProvider, meterProvider)
+	if err != nil {
+		t.Fatalf("NewWithProviders returned error: %v", err)
+	}
+	svc.Observability = obs
 	svc.CacheStore = store
 	svc.CachePeerTransferDriver = transfer
 	now := time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC)
@@ -147,6 +171,98 @@ func TestLookupCachePeerDependencyStageMintsBoundExportToken(t *testing.T) {
 	}
 	if err := svc.ExportCachePeerZFSIncremental(context.Background(), candidate.GetTransferToken(), &stream); err != ErrCachePeerExportTokenNotFound {
 		t.Fatalf("expected single-use token error, got %v", err)
+	}
+
+	metrics := collectResourceMetrics(t, reader)
+	requireInt64SumMetricValue(t, metrics, observability.MetricCachePeerLookupTotal, map[string]string{
+		observability.MetricLabelStage:  dependencyStageName,
+		observability.MetricLabelResult: observability.CacheResultHit,
+	}, 1)
+	requireInt64SumMetricValue(t, metrics, observability.MetricCachePeerTransferBytesTotal, map[string]string{
+		observability.MetricLabelStage:     dependencyStageName,
+		observability.MetricLabelDirection: observability.CachePeerDirectionExport,
+		observability.MetricLabelResult:    observability.CacheResultExported,
+	}, int64(len("zfs-stream")))
+	requireHistogramMetricCount(t, metrics, observability.MetricCachePeerTransferDuration, map[string]string{
+		observability.MetricLabelStage:     dependencyStageName,
+		observability.MetricLabelDirection: observability.CachePeerDirectionExport,
+		observability.MetricLabelResult:    observability.CacheResultExported,
+	}, 1)
+}
+
+func TestExportCachePeerZFSIncrementalLimitsConcurrentExports(t *testing.T) {
+	store := newMemoryCacheStore()
+	insertCachePeerRecord(t, store, cachePeerRecordOptions{
+		Stage:        workspaceStageName,
+		CacheKey:     "workspace-parent",
+		StorageRef:   "tank/cleanroom/snapshots/workspace@base",
+		SnapshotGUID: "parent-guid",
+	})
+	insertCachePeerRecord(t, store, cachePeerRecordOptions{
+		Stage:              dependencyStageName,
+		CacheKey:           "dependency-child",
+		ParentCacheKey:     "workspace-parent",
+		StorageRef:         "tank/cleanroom/snapshots/dependency@base",
+		SnapshotGUID:       "child-guid",
+		ParentSnapshotGUID: "parent-guid",
+		ProducerVersion:    dependencyStageProducerVersion,
+	})
+
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
+	var active atomic.Int32
+	transfer := &stubCachePeerTransferDriver{
+		exportFn: func(_ context.Context, _ volumestore.IncrementalSnapshotExportPlan, dst io.Writer) error {
+			if got := active.Add(1); got > 1 {
+				t.Errorf("expected one active export at a time, got %d", got)
+			}
+			started <- struct{}{}
+			<-release
+			active.Add(-1)
+			_, err := io.WriteString(dst, "zfs-stream")
+			return err
+		},
+	}
+	svc := newTestService(&stubAdapter{})
+	svc.CacheStore = store
+	svc.CachePeerTransferDriver = transfer
+	svc.runtime.cachePeerExportConcurrency = 1
+
+	first, err := svc.LookupCachePeer(context.Background(), dependencyCachePeerLookupRequest())
+	if err != nil {
+		t.Fatalf("first LookupCachePeer returned error: %v", err)
+	}
+	second, err := svc.LookupCachePeer(context.Background(), dependencyCachePeerLookupRequest())
+	if err != nil {
+		t.Fatalf("second LookupCachePeer returned error: %v", err)
+	}
+
+	errCh := make(chan error, 2)
+	go func() {
+		var stream bytes.Buffer
+		errCh <- svc.ExportCachePeerZFSIncremental(context.Background(), first.GetCandidate().GetTransferToken(), &stream)
+	}()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for first export to start")
+	}
+
+	go func() {
+		var stream bytes.Buffer
+		errCh <- svc.ExportCachePeerZFSIncremental(context.Background(), second.GetCandidate().GetTransferToken(), &stream)
+	}()
+	select {
+	case <-started:
+		t.Fatal("second export started before first export released its slot")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(release)
+	for range 2 {
+		if err := <-errCh; err != nil {
+			t.Fatalf("ExportCachePeerZFSIncremental returned error: %v", err)
+		}
 	}
 }
 

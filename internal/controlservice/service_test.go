@@ -67,6 +67,7 @@ type stubAdapter struct {
 	createSnapshotReq          backend.SnapshotRequest
 	snapshotCacheOutputsReq    backend.SnapshotCacheOutputVolumesRequest
 	deleteSnapshotReq          backend.DeleteSnapshotRequest
+	deleteSnapshotRequests     []backend.DeleteSnapshotRequest
 	runCalls                   int
 	provisionCalls             int
 	provisionFromSnapshotCalls int
@@ -166,6 +167,7 @@ func (s *stubAdapter) ProvisionSandboxFromSnapshot(ctx context.Context, req back
 
 func (s *stubAdapter) DeleteSnapshot(ctx context.Context, req backend.DeleteSnapshotRequest) error {
 	s.deleteSnapshotReq = req
+	s.deleteSnapshotRequests = append(s.deleteSnapshotRequests, req)
 	s.deleteSnapshotCalls++
 	if s.deleteSnapshotFn != nil {
 		return s.deleteSnapshotFn(ctx, req)

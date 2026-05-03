@@ -18,11 +18,14 @@ import (
 	"github.com/buildkite/cleanroom/internal/cachestore"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/gen/cleanroom/v1/cleanroomv1connect"
+	"github.com/buildkite/cleanroom/internal/observability"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/repositorychangeset"
 	"github.com/buildkite/cleanroom/internal/repositorycheckout"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 	"github.com/buildkite/cleanroom/internal/volumestore"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const cachePeerZFSIncrementalExportPathPrefix = "/v1/cache/export/zfs-incremental/"
@@ -265,15 +268,21 @@ func (s *Service) importCachePeerStage(ctx context.Context, adapter backend.Snap
 		return cachePeerImportResult{}, err
 	}
 	if !ok {
+		s.recordCachePeerImport(ctx, opts.Stage, observability.CacheResultFallback)
+		trace.SpanFromContext(ctx).SetAttributes(attribute.String(observability.AttrCachePeerFallback, "parent record not found"))
 		return cachePeerImportResult{}, nil
 	}
 	if strings.TrimSpace(parent.Backend) != opts.Backend || strings.TrimSpace(parent.StorageDriver) != opts.StorageDriver {
+		s.recordCachePeerImport(ctx, opts.Stage, observability.CacheResultFallback)
+		trace.SpanFromContext(ctx).SetAttributes(attribute.String(observability.AttrCachePeerFallback, "parent record incompatible"))
 		return cachePeerImportResult{}, nil
 	}
 	parentDesc, err := s.CachePeerTransferDriver.DescribeSnapshot(ctx, volumestore.DescribeSnapshotRequest{
 		SnapshotRef: strings.TrimSpace(parent.StorageRef),
 	})
 	if err != nil || strings.TrimSpace(parentDesc.SnapshotGUID) == "" {
+		s.recordCachePeerImport(ctx, opts.Stage, observability.CacheResultFallback)
+		trace.SpanFromContext(ctx).SetAttributes(attribute.String(observability.AttrCachePeerFallback, "parent snapshot metadata unavailable"))
 		return cachePeerImportResult{}, err
 	}
 
@@ -290,6 +299,11 @@ func (s *Service) importCachePeerStage(ctx context.Context, adapter backend.Snap
 		ParentZfsSnapshotGuid: parentDesc.SnapshotGUID,
 	}
 	matches := s.lookupCachePeerImportCandidates(ctx, lookupReq)
+	trace.SpanFromContext(ctx).SetAttributes(attribute.Int(observability.AttrCachePeerCandidates, len(matches)))
+	if len(matches) == 0 {
+		s.recordCachePeerImport(ctx, opts.Stage, observability.CacheResultFallback)
+		trace.SpanFromContext(ctx).SetAttributes(attribute.String(observability.AttrCachePeerFallback, "no peer candidate"))
+	}
 	for _, match := range matches {
 		result, handled, err := s.importCachePeerCandidate(ctx, adapter, store, parent, parentDesc, firecrackerCfg, opts, match)
 		if err != nil || handled {
@@ -311,27 +325,35 @@ func (s *Service) importCachePeerCandidate(
 ) (cachePeerImportResult, bool, error) {
 	exportResp, err := s.openCachePeerExport(ctx, match)
 	if err != nil {
-		if s.Logger != nil {
-			s.Logger.Debug("cache peer export failed", "peer", match.peer.URL, "error", err)
-		}
+		s.recordCachePeerImport(ctx, opts.Stage, observability.CacheResultFallback)
+		trace.SpanFromContext(ctx).SetAttributes(attribute.String(observability.AttrCachePeerFallback, "export failed"))
+		s.logCachePeerImportFallback(ctx, opts.Stage, match.peer.URL, "export failed", err)
 		return cachePeerImportResult{}, false, nil
 	}
 	defer exportResp.Body.Close()
 
 	snapshotID := newSnapshotID()
+	stream := &cachePeerCountingReadCloser{ReadCloser: exportResp.Body}
+	transferStarted := s.clock().Now()
 	imported, err := s.CachePeerTransferDriver.ImportIncrementalSnapshot(ctx, volumestore.IncrementalSnapshotImportRequest{
 		SnapshotID:           snapshotID,
 		ParentSnapshotRef:    strings.TrimSpace(parent.StorageRef),
 		ParentSnapshotGUID:   parentDesc.SnapshotGUID,
 		ExpectedSnapshotGUID: match.candidate.GetZfsSnapshotGuid(),
-	}, exportResp.Body)
+	}, stream)
+	transferDuration := s.clock().Now().Sub(transferStarted)
 	if err != nil {
-		if s.Logger != nil {
-			s.Logger.Debug("cache peer import failed", "peer", match.peer.URL, "error", err)
-		}
+		s.recordCachePeerTransfer(ctx, opts.Stage, observability.CachePeerDirectionImport, observability.CacheResultFailed, stream.bytes, transferDuration)
+		s.recordCachePeerImport(ctx, opts.Stage, observability.CacheResultFallback)
+		trace.SpanFromContext(ctx).SetAttributes(attribute.String(observability.AttrCachePeerFallback, "import failed"))
+		s.logCachePeerImportFallback(ctx, opts.Stage, match.peer.URL, "import failed", err)
 		return cachePeerImportResult{}, false, nil
 	}
 	if err := validateImportedCachePeerSnapshot(imported, parentDesc.SnapshotGUID, match.candidate.GetZfsSnapshotGuid()); err != nil {
+		s.recordCachePeerTransfer(ctx, opts.Stage, observability.CachePeerDirectionImport, observability.CacheResultFailed, stream.bytes, transferDuration)
+		s.recordCachePeerImport(ctx, opts.Stage, observability.CacheResultFallback)
+		trace.SpanFromContext(ctx).SetAttributes(attribute.String(observability.AttrCachePeerFallback, "import validation failed"))
+		s.logCachePeerImportFallback(ctx, opts.Stage, match.peer.URL, "import validation failed", err)
 		_ = adapter.DeleteSnapshot(context.Background(), backend.DeleteSnapshotRequest{
 			SnapshotID:        snapshotID,
 			StorageRef:        imported.StorageRef,
@@ -349,11 +371,22 @@ func (s *Service) importCachePeerCandidate(
 			FirecrackerConfig: withSnapshotDriver(opts.Backend, firecrackerCfg, opts.StorageDriver),
 		})
 		if lookupErr != nil {
+			s.recordCachePeerTransfer(ctx, opts.Stage, observability.CachePeerDirectionImport, observability.CacheResultFailed, stream.bytes, transferDuration)
+			s.recordCachePeerImport(ctx, opts.Stage, observability.CacheResultFallback)
+			trace.SpanFromContext(ctx).SetAttributes(attribute.String(observability.AttrCachePeerFallback, "metadata conflict lookup failed"))
+			s.logCachePeerImportFallback(ctx, opts.Stage, match.peer.URL, "metadata conflict lookup failed", lookupErr)
 			return cachePeerImportResult{}, true, fmt.Errorf("persist imported cache peer record: %w (lookup after conflict failed: %v)", err, lookupErr)
 		}
 		if found {
+			s.recordCachePeerTransfer(ctx, opts.Stage, observability.CachePeerDirectionImport, observability.CacheResultImported, stream.bytes, transferDuration)
+			s.recordCachePeerImport(ctx, opts.Stage, observability.CacheResultImported)
+			s.logCachePeerImportCompleted(ctx, opts.Stage, match.peer.URL, stream.bytes, transferDuration)
 			return cachePeerImportResult{record: existing, imported: true}, true, nil
 		}
+		s.recordCachePeerTransfer(ctx, opts.Stage, observability.CachePeerDirectionImport, observability.CacheResultFailed, stream.bytes, transferDuration)
+		s.recordCachePeerImport(ctx, opts.Stage, observability.CacheResultFallback)
+		trace.SpanFromContext(ctx).SetAttributes(attribute.String(observability.AttrCachePeerFallback, "metadata create failed"))
+		s.logCachePeerImportFallback(ctx, opts.Stage, match.peer.URL, "metadata create failed", err)
 		return cachePeerImportResult{}, true, fmt.Errorf("persist imported cache peer record: %w", err)
 	}
 
@@ -365,6 +398,10 @@ func (s *Service) importCachePeerCandidate(
 			StorageRef:        imported.StorageRef,
 			FirecrackerConfig: withSnapshotDriver(opts.Backend, firecrackerCfg, opts.StorageDriver),
 		})
+		s.recordCachePeerTransfer(ctx, opts.Stage, observability.CachePeerDirectionImport, observability.CacheResultFailed, stream.bytes, transferDuration)
+		s.recordCachePeerImport(ctx, opts.Stage, observability.CacheResultFallback)
+		trace.SpanFromContext(ctx).SetAttributes(attribute.String(observability.AttrCachePeerFallback, "metadata validation failed"))
+		s.logCachePeerImportFallback(ctx, opts.Stage, match.peer.URL, "metadata validation failed", err)
 		return cachePeerImportResult{}, true, err
 	}
 	if !found {
@@ -377,8 +414,15 @@ func (s *Service) importCachePeerCandidate(
 		if strings.TrimSpace(reason) == "" {
 			reason = "unknown validation miss"
 		}
+		s.recordCachePeerTransfer(ctx, opts.Stage, observability.CachePeerDirectionImport, observability.CacheResultFailed, stream.bytes, transferDuration)
+		s.recordCachePeerImport(ctx, opts.Stage, observability.CacheResultFallback)
+		trace.SpanFromContext(ctx).SetAttributes(attribute.String(observability.AttrCachePeerFallback, reason))
+		s.logCachePeerImportFallback(ctx, opts.Stage, match.peer.URL, reason, nil)
 		return cachePeerImportResult{}, true, fmt.Errorf("imported cache peer record failed validation: %s", reason)
 	}
+	s.recordCachePeerTransfer(ctx, opts.Stage, observability.CachePeerDirectionImport, observability.CacheResultImported, stream.bytes, transferDuration)
+	s.recordCachePeerImport(ctx, opts.Stage, observability.CacheResultImported)
+	s.logCachePeerImportCompleted(ctx, opts.Stage, match.peer.URL, stream.bytes, transferDuration)
 	return cachePeerImportResult{record: validated, imported: true}, true, nil
 }
 
@@ -394,6 +438,7 @@ func (s *Service) lookupCachePeerImportCandidates(ctx context.Context, req *clea
 		connectReq.Header().Set("Authorization", "Bearer "+token)
 		resp, err := client.LookupCachePeer(ctx, connectReq)
 		if err != nil {
+			s.recordCachePeerLookup(ctx, req.GetStage(), observability.CacheResultFailed)
 			if s.Logger != nil {
 				s.Logger.Debug("cache peer lookup failed", "peer", peer.URL, "error", err)
 			}
@@ -401,14 +446,17 @@ func (s *Service) lookupCachePeerImportCandidates(ctx context.Context, req *clea
 		}
 		candidate := resp.Msg.GetCandidate()
 		if candidate == nil {
+			s.recordCachePeerLookup(ctx, req.GetStage(), observability.CacheResultMiss)
 			continue
 		}
 		if !cachePeerCandidateMatchesRequest(candidate, req, s.clock().Now()) {
+			s.recordCachePeerLookup(ctx, req.GetStage(), observability.CacheResultMiss)
 			if s.Logger != nil {
 				s.Logger.Debug("cache peer candidate rejected", "peer", peer.URL)
 			}
 			continue
 		}
+		s.recordCachePeerLookup(ctx, req.GetStage(), observability.CacheResultHit)
 		matches = append(matches, cachePeerCandidateMatch{peer: peer, token: token, candidate: candidate})
 	}
 	return matches

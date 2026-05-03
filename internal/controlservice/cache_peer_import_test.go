@@ -14,10 +14,13 @@ import (
 	"github.com/buildkite/cleanroom/internal/cachestore"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/gen/cleanroom/v1/cleanroomv1connect"
+	"github.com/buildkite/cleanroom/internal/observability"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/repositorycheckout"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 	"github.com/buildkite/cleanroom/internal/volumestore"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -87,6 +90,18 @@ func TestCreateSandboxImportsDependencyStageCacheFromPeer(t *testing.T) {
 		"go.sum": "example.com/test v0.0.0 h1:abc123\n",
 	})
 	svc := newTestService(adapter)
+	reader := sdkmetric.NewManualReader()
+	meterProvider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	tracerProvider := sdktrace.NewTracerProvider()
+	defer func() {
+		_ = meterProvider.Shutdown(context.Background())
+		_ = tracerProvider.Shutdown(context.Background())
+	}()
+	obs, err := observability.NewWithProviders(tracerProvider, meterProvider)
+	if err != nil {
+		t.Fatalf("NewWithProviders returned error: %v", err)
+	}
+	svc.Observability = obs
 	svc.RepositoryStore = mirrors
 	svc.Config.Backends.Firecracker.Snapshots.Driver = "zfs"
 
@@ -211,6 +226,26 @@ func TestCreateSandboxImportsDependencyStageCacheFromPeer(t *testing.T) {
 	if got, want := record.DependencyKeyFilesDigest, dependencyPlan.KeyFilesDigest; got != want {
 		t.Fatalf("unexpected dependency key digest: got %q want %q", got, want)
 	}
+
+	metrics := collectResourceMetrics(t, reader)
+	requireInt64SumMetricValue(t, metrics, observability.MetricCachePeerLookupTotal, map[string]string{
+		observability.MetricLabelStage:  dependencyStageName,
+		observability.MetricLabelResult: observability.CacheResultHit,
+	}, 1)
+	requireInt64SumMetricValue(t, metrics, observability.MetricCachePeerImportTotal, map[string]string{
+		observability.MetricLabelStage:  dependencyStageName,
+		observability.MetricLabelResult: observability.CacheResultImported,
+	}, 1)
+	requireInt64SumMetricValue(t, metrics, observability.MetricCachePeerTransferBytesTotal, map[string]string{
+		observability.MetricLabelStage:     dependencyStageName,
+		observability.MetricLabelDirection: observability.CachePeerDirectionImport,
+		observability.MetricLabelResult:    observability.CacheResultImported,
+	}, int64(len("zfs-stream")))
+	requireHistogramMetricCount(t, metrics, observability.MetricCachePeerTransferDuration, map[string]string{
+		observability.MetricLabelStage:     dependencyStageName,
+		observability.MetricLabelDirection: observability.CachePeerDirectionImport,
+		observability.MetricLabelResult:    observability.CacheResultImported,
+	}, 1)
 }
 
 func TestImportDependencyStageCacheFromPeerCleansUpInvalidSnapshot(t *testing.T) {
@@ -316,6 +351,140 @@ func TestImportDependencyStageCacheFromPeerCleansUpInvalidSnapshot(t *testing.T)
 	} else if found {
 		t.Fatal("expected invalid import to leave no dependency cache metadata")
 	}
+}
+
+func TestCreateSandboxFallsBackAfterInvalidPeerImport(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("CLEANROOM_CACHE_PEER_TOKEN", "receiver-token")
+
+	adapter := &stubAdapter{}
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"go.mod": "module example.com/test\n\ngo 1.26.2\n",
+		"go.sum": "example.com/test v0.0.0 h1:abc123\n",
+	})
+	svc := newTestService(adapter)
+	reader := sdkmetric.NewManualReader()
+	meterProvider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	tracerProvider := sdktrace.NewTracerProvider()
+	defer func() {
+		_ = meterProvider.Shutdown(context.Background())
+		_ = tracerProvider.Shutdown(context.Background())
+	}()
+	obs, err := observability.NewWithProviders(tracerProvider, meterProvider)
+	if err != nil {
+		t.Fatalf("NewWithProviders returned error: %v", err)
+	}
+	svc.Observability = obs
+	svc.RepositoryStore = mirrors
+	svc.Config.Backends.Firecracker.Snapshots.Driver = "zfs"
+
+	compiled, err := policy.FromProto(testRepositoryDependencyPolicy())
+	if err != nil {
+		t.Fatalf("FromProto returned error: %v", err)
+	}
+	repository := repositorycheckout.FromProto(repositoryCheckout)
+	workspaceKey := workspaceStageCacheKey("firecracker", "runtime-base:test", compiled.Hash, repository, nil)
+	dependencyPlan, ok := dependencyStagePlanForRepository(compiled, repository)
+	if !ok {
+		t.Fatal("expected dependency stage plan")
+	}
+	dependencyPlan, ok, err = svc.finalizeDependencyStagePlan(context.Background(), compiled, repository, nil, nil, "firecracker", workspaceKey, "runtime-base:test", dependencyPlan)
+	if err != nil {
+		t.Fatalf("finalizeDependencyStagePlan returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected finalized dependency stage plan")
+	}
+
+	cacheStore := requireMemoryCacheStore(t, svc)
+	insertImportedPeerParentRecord(t, cacheStore, importedPeerParentRecordOptions{
+		Stage:           workspaceStageName,
+		CacheKey:        workspaceKey,
+		StorageRef:      "tank/local/workspace@base",
+		SnapshotGUID:    "workspace-guid",
+		ProducerVersion: workspaceStageProducerVersion,
+	})
+
+	wrongMetadata := encodeZFSMetadataForTest(t, "tank/local/imports/dependency@base", "wrong-dependency-guid", "workspace-guid")
+	transfer := &stubCachePeerTransferDriver{
+		describeSnapshots: map[string]volumestore.SnapshotDescription{
+			"tank/local/workspace@base": {
+				SnapshotRef:  "tank/local/workspace@base",
+				StorageRef:   "tank/local/workspace@base",
+				SnapshotGUID: "workspace-guid",
+			},
+		},
+		importSnapshot: volumestore.Snapshot{
+			StorageRef:     "tank/local/imports/dependency@base",
+			DriverMetadata: wrongMetadata,
+		},
+	}
+	svc.CachePeerTransferDriver = transfer
+
+	peer := newTestCachePeerImportServer(t, &cleanroomv1.CachePeerCandidate{
+		TransferToken:         "peer-token",
+		Stage:                 dependencyStageName,
+		CacheKey:              dependencyPlan.CacheKey,
+		ParentStage:           workspaceStageName,
+		ParentCacheKey:        workspaceKey,
+		Backend:               "firecracker",
+		StorageDriver:         "zfs",
+		Architecture:          runtime.GOARCH,
+		ProducerVersion:       dependencyStageProducerVersion,
+		PolicyHash:            compiled.Hash,
+		ZfsSnapshotGuid:       "dependency-guid",
+		ZfsParentSnapshotGuid: "workspace-guid",
+		ExpiresAt:             timestamppb.New(time.Now().Add(time.Hour)),
+	})
+	svc.Config.Cache.Peers = []runtimeconfig.CachePeerConfig{{URL: peer.URL, TokenEnv: "CLEANROOM_CACHE_PEER_TOKEN"}}
+
+	resp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy:             testRepositoryDependencyPolicy(),
+		RepositoryCheckout: repositoryCheckout,
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	if resp.GetSandbox() == nil {
+		t.Fatal("expected sandbox after peer import fallback")
+	}
+	foundPeerCleanup := false
+	for _, req := range adapter.deleteSnapshotRequests {
+		if req.StorageRef == "tank/local/imports/dependency@base" {
+			foundPeerCleanup = true
+			break
+		}
+	}
+	if !foundPeerCleanup {
+		t.Fatalf("expected invalid peer import snapshot cleanup, got delete requests %#v", adapter.deleteSnapshotRequests)
+	}
+	if got := adapter.runCalls; got == 0 {
+		t.Fatal("expected local dependency bootstrap after peer import failed")
+	}
+	if got := adapter.createSnapshotCalls; got == 0 {
+		t.Fatal("expected local dependency snapshot publication after peer import failed")
+	}
+	record, found, err := cacheStore.GetReady(context.Background(), dependencyStageName, dependencyPlan.CacheKey)
+	if err != nil {
+		t.Fatalf("GetReady returned error: %v", err)
+	}
+	if !found {
+		t.Fatal("expected local dependency cache metadata after fallback")
+	}
+	if record.ImportedFromPeer {
+		t.Fatal("expected fallback dependency cache record to be local, not peer-imported")
+	}
+
+	metrics := collectResourceMetrics(t, reader)
+	requireInt64SumMetricValue(t, metrics, observability.MetricCachePeerImportTotal, map[string]string{
+		observability.MetricLabelStage:  dependencyStageName,
+		observability.MetricLabelResult: observability.CacheResultFallback,
+	}, 1)
+	requireInt64SumMetricValue(t, metrics, observability.MetricCachePeerTransferBytesTotal, map[string]string{
+		observability.MetricLabelStage:     dependencyStageName,
+		observability.MetricLabelDirection: observability.CachePeerDirectionImport,
+		observability.MetricLabelResult:    observability.CacheResultFailed,
+	}, int64(len("zfs-stream")))
 }
 
 func TestImportDependencyStageCacheFromPeersContinuesAfterExportFailure(t *testing.T) {
