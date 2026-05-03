@@ -1482,6 +1482,66 @@ func TestWorkspaceCopyOutForceClearsStagedDivergenceFromCopyInManifestBase(t *te
 	assertNoWorkspaceCopyOutRecoveryPayload(t)
 }
 
+func TestWorkspaceCopyOutForceInvalidPatchPreservesStagedTargets(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	localRoot := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
+	baseCommit := headCommit(t, localRoot)
+	readmePath := filepath.Join(localRoot, "README.md")
+	if err := os.WriteFile(readmePath, []byte("staged divergent\n"), 0o644); err != nil {
+		t.Fatalf("write staged divergent README: %v", err)
+	}
+	runGitInDir(t, localRoot, "add", "README.md")
+	if err := os.WriteFile(readmePath, []byte("hello\n"), 0o644); err != nil {
+		t.Fatalf("restore working tree README: %v", err)
+	}
+
+	adapter := &integrationAdapter{}
+	host, _ := startIntegrationServer(t, adapter)
+	sandboxID := createWorkspaceCopyTestSandboxWithRepositoryCommitBranch(t, host, "/sandbox-workspace", baseCommit, "main")
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+		command := strings.Join(req.Command, " ")
+		switch {
+		case strings.Contains(command, "cleanroom-copy-out-v1"):
+			if stream.OnStdout != nil {
+				stream.OnStdout(workspaceCopyOutTestPayload([]byte("M\x00README.md\x00"), []byte("not a git patch\n")))
+			}
+		default:
+			t.Fatalf("unexpected workspace copy-out command: %q", command)
+		}
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+	}
+
+	stdout, _ := makeStdoutCapture(t)
+	stderr, _ := makeStdoutCapture(t)
+	cmd := WorkspaceCopyOutCommand{
+		clientFlags: clientFlags{Host: host},
+		Chdir:       localRoot,
+		Force:       true,
+		SandboxID:   sandboxID,
+	}
+	err := cmd.Run(&runtimeContext{
+		CWD:           localRoot,
+		Loader:        repositoryNotFoundLoader{},
+		Config:        runtimeconfig.Config{},
+		Observability: newTestObservability(t),
+		Stdout:        stdout,
+		Stderr:        stderr,
+	})
+	if err == nil {
+		t.Fatal("expected invalid sandbox patch to fail")
+	}
+	if !strings.Contains(err.Error(), "apply sandbox workspace copy-out patch to temporary index") {
+		t.Fatalf("expected temporary index apply error, got %v", err)
+	}
+	if staged := gitOutputBytes(t, localRoot, "diff", "--cached", "--name-only", "--", "README.md"); string(staged) != "README.md\n" {
+		t.Fatalf("force copy-out should preserve staged target content on patch prep failure, got cached diff %q", staged)
+	}
+	if staged := gitOutputBytes(t, localRoot, "show", ":README.md"); string(staged) != "staged divergent\n" {
+		t.Fatalf("unexpected staged README after failed force copy-out: got %q", staged)
+	}
+	assertNoWorkspaceCopyOutRecoveryPayload(t)
+}
+
 func TestWorkspaceCopyOutForceReplacesLocalDirectoryObstacleFromCopyInManifestBase(t *testing.T) {
 	fixture := setupWorkspaceCopyOutManifestBase(t, func(localRoot string) {
 		if err := os.WriteFile(filepath.Join(localRoot, "obstacle-target"), []byte("sandbox\n"), 0o644); err != nil {
@@ -1611,6 +1671,31 @@ func TestWorkspaceCopyOutForceClearsStagedParentFileObstacleFromCopyInManifestBa
 		t.Fatalf("force copy-out should clear staged parent obstacle, got cached diff %q", staged)
 	}
 	assertNoWorkspaceCopyOutRecoveryPayload(t)
+}
+
+func TestWorkspaceCopyOutForceQuarantineRestoreKeepsBackupOnFailure(t *testing.T) {
+	tempRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tempRoot, "survivor"), []byte("stashed\n"), 0o644); err != nil {
+		t.Fatalf("write quarantine survivor: %v", err)
+	}
+	q := &workspaceCopyOutForceQuarantine{
+		tempRoot: tempRoot,
+		moves: []workspaceCopyOutForceMove{{
+			path:     "obstacle-target",
+			original: filepath.Join(t.TempDir(), "obstacle-target"),
+			stashed:  filepath.Join(tempRoot, "missing"),
+		}},
+	}
+	err := q.Restore()
+	if err == nil {
+		t.Fatal("expected quarantine restore failure")
+	}
+	if !strings.Contains(err.Error(), tempRoot) {
+		t.Fatalf("expected restore error to include quarantine backup path %q, got %v", tempRoot, err)
+	}
+	if _, err := os.Stat(filepath.Join(tempRoot, "survivor")); err != nil {
+		t.Fatalf("expected failed restore to keep quarantine data: %v", err)
+	}
 }
 
 func TestWorkspaceCopyOutRejectsLocalModeDivergenceFromCopyInManifestBase(t *testing.T) {
