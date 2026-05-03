@@ -1813,6 +1813,56 @@ func TestWorkspaceCopyOutForceQuarantineTempDirUsesRepoRoot(t *testing.T) {
 	}
 }
 
+func TestGitWorkspaceCurrentTreeOmitsForceObstaclePaths(t *testing.T) {
+	localRoot := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
+	quarantinePath := filepath.Join(localRoot, ".cleanroom-copy-out-obstacles-test")
+	if err := os.MkdirAll(quarantinePath, 0o755); err != nil {
+		t.Fatalf("create quarantine path: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(quarantinePath, "backup.txt"), []byte("backup\n"), 0o644); err != nil {
+		t.Fatalf("write quarantine backup: %v", err)
+	}
+
+	tree, err := gitWorkspaceCurrentTree(localRoot, []string{".cleanroom-copy-out-obstacles-test"})
+	if err != nil {
+		t.Fatalf("gitWorkspaceCurrentTree returned error: %v", err)
+	}
+	output, err := gitOutputRaw(localRoot, nil, "ls-tree", "-r", "--name-only", tree)
+	if err != nil {
+		t.Fatalf("inspect temporary tree: %v", err)
+	}
+	if strings.Contains(string(output), ".cleanroom-copy-out-obstacles-test") {
+		t.Fatalf("temporary local tree should omit quarantine path, got %q", output)
+	}
+}
+
+func TestWorkspaceCopyOutForceIndexSnapshotRestoresStagedObstacle(t *testing.T) {
+	localRoot := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
+	obstaclePath := filepath.Join(localRoot, "nested")
+	if err := os.WriteFile(obstaclePath, []byte("staged parent obstacle\n"), 0o644); err != nil {
+		t.Fatalf("write staged parent obstacle: %v", err)
+	}
+	runGitInDir(t, localRoot, "add", "nested")
+
+	restoreIndex, cleanupIndex, err := snapshotGitWorkspaceCopyOutForceIndex(localRoot, nil, []string{"nested"})
+	if err != nil {
+		t.Fatalf("snapshotGitWorkspaceCopyOutForceIndex returned error: %v", err)
+	}
+	defer cleanupIndex()
+	if err := resetGitWorkspaceCopyOutForceIndex(localRoot, nil, []string{"nested"}); err != nil {
+		t.Fatalf("resetGitWorkspaceCopyOutForceIndex returned error: %v", err)
+	}
+	if staged := gitOutputBytes(t, localRoot, "diff", "--cached", "--name-only", "--", "nested"); len(staged) != 0 {
+		t.Fatalf("expected staged obstacle to be reset, got cached diff %q", staged)
+	}
+	if err := restoreIndex(); err != nil {
+		t.Fatalf("restore staged force index: %v", err)
+	}
+	if staged := gitOutputBytes(t, localRoot, "show", ":nested"); string(staged) != "staged parent obstacle\n" {
+		t.Fatalf("unexpected restored staged obstacle: got %q", staged)
+	}
+}
+
 func TestWorkspaceCopyOutRejectsLocalModeDivergenceFromCopyInManifestBase(t *testing.T) {
 	fixture := setupWorkspaceCopyOutManifestBase(t, func(localRoot string) {
 		if err := os.WriteFile(filepath.Join(localRoot, "README.md"), []byte("local\nsandbox\n"), 0o644); err != nil {

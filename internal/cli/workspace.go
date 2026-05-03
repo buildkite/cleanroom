@@ -301,7 +301,15 @@ func copyWorkspaceOut(callCtx context.Context, ctx *runtimeContext, client *cont
 		}
 	}
 	if opts.ForceCopyOut || useGitWorkspaceCopyOutApplyBase(opts.Binding, opts.Repository, checkout) {
-		files, applyPath, cleanupApply, err = prepareGitWorkspaceCopyOutApplyPatch(opts.Repository, checkout, files, patchPath)
+		var omittedPaths []string
+		if forceQuarantine != nil {
+			omittedPaths, err = forceQuarantine.OmittedPaths(opts.Repository.RootDir)
+			if err != nil {
+				err = errors.Join(err, forceQuarantine.Restore())
+				return err
+			}
+		}
+		files, applyPath, cleanupApply, err = prepareGitWorkspaceCopyOutApplyPatchWithOmittedPaths(opts.Repository, checkout, files, patchPath, omittedPaths)
 		if err != nil {
 			if forceQuarantine != nil {
 				err = errors.Join(err, forceQuarantine.Restore())
@@ -331,12 +339,19 @@ func copyWorkspaceOut(callCtx context.Context, ctx *runtimeContext, client *cont
 		}
 		return err
 	}
+	restoreForceIndex := func() error { return nil }
+	cleanupForceIndex := func() {}
 	if opts.ForceCopyOut {
-		var obstaclePaths []string
-		if forceQuarantine != nil {
-			obstaclePaths = forceQuarantine.Paths()
+		restoreForceIndex, cleanupForceIndex, err = snapshotGitWorkspaceCopyOutForceIndex(opts.Repository.RootDir, files, obstaclePaths)
+		if err != nil {
+			if forceQuarantine != nil {
+				err = errors.Join(err, forceQuarantine.Restore())
+			}
+			return err
 		}
+		defer cleanupForceIndex()
 		if err := resetGitWorkspaceCopyOutForceIndex(opts.Repository.RootDir, files, obstaclePaths); err != nil {
+			err = errors.Join(err, restoreForceIndex())
 			if forceQuarantine != nil {
 				err = errors.Join(err, forceQuarantine.Restore())
 			}
@@ -345,6 +360,9 @@ func copyWorkspaceOut(callCtx context.Context, ctx *runtimeContext, client *cont
 	}
 	if len(files) > 0 {
 		if err := applyGitWorkspaceCopyOutPatch(opts.Repository.RootDir, applyPath); err != nil {
+			if opts.ForceCopyOut {
+				err = errors.Join(err, restoreForceIndex())
+			}
 			if forceQuarantine != nil {
 				err = errors.Join(err, forceQuarantine.Restore())
 			}
@@ -788,6 +806,38 @@ func resetGitWorkspaceCopyOutForceIndex(localRoot string, files []repositorychan
 	return nil
 }
 
+func snapshotGitWorkspaceCopyOutForceIndex(localRoot string, files []repositorychangeset.File, extraPaths []string) (func() error, func(), error) {
+	paths, err := workspaceCopyOutPaths(files)
+	if err != nil {
+		return nil, nil, err
+	}
+	paths, err = mergeWorkspaceCopyOutPaths(paths, extraPaths)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(paths) == 0 {
+		return func() error { return nil }, func() {}, nil
+	}
+	args := append([]string{"diff", "--cached", "--binary", "--full-index", "--no-ext-diff", "--no-color", "--no-renames", "--"}, gitWorkspacePathspecs(paths)...)
+	patch, err := gitOutputRaw(localRoot, nil, args...)
+	if err != nil {
+		return nil, nil, fmt.Errorf("snapshot staged workspace copy-out target paths: %w", err)
+	}
+	if len(bytes.TrimSpace(patch)) == 0 {
+		return func() error { return nil }, func() {}, nil
+	}
+	patchPath, cleanup, err := writeTemporaryWorkspaceCopyOutPatch(patch)
+	if err != nil {
+		return nil, nil, err
+	}
+	return func() error {
+		if _, err := gitOutputRaw(localRoot, nil, "apply", "--cached", "--binary", "--whitespace=nowarn", patchPath); err != nil {
+			return fmt.Errorf("restore staged workspace copy-out target paths: %w", err)
+		}
+		return nil
+	}, cleanup, nil
+}
+
 func mergeWorkspaceCopyOutPaths(paths ...[]string) ([]string, error) {
 	seen := make(map[string]struct{})
 	var out []string
@@ -986,6 +1036,30 @@ func (q *workspaceCopyOutForceQuarantine) Paths() []string {
 	return paths
 }
 
+func (q *workspaceCopyOutForceQuarantine) OmittedPaths(localRoot string) ([]string, error) {
+	if q == nil {
+		return nil, nil
+	}
+	paths := q.Paths()
+	if strings.TrimSpace(q.tempRoot) == "" {
+		return paths, nil
+	}
+	rel, err := filepath.Rel(localRoot, q.tempRoot)
+	if err != nil {
+		return nil, fmt.Errorf("resolve forced copy-out quarantine path: %w", err)
+	}
+	rel = filepath.ToSlash(rel)
+	if strings.HasPrefix(rel, "../") || rel == ".." || filepath.IsAbs(rel) {
+		return nil, fmt.Errorf("forced copy-out quarantine path %q is outside local workspace root %q", q.tempRoot, localRoot)
+	}
+	path, err := workspaceRelativePath(rel)
+	if err != nil {
+		return nil, err
+	}
+	paths = append(paths, path)
+	return paths, nil
+}
+
 func buildGitWorkspaceCopyOutPatchFromLocalBase(localRoot, baseCommit, sandboxPatchPath string, files []repositorychangeset.File, omittedLocalPaths []string) ([]byte, []byte, error) {
 	paths, err := workspaceCopyOutPaths(files)
 	if err != nil {
@@ -1026,12 +1100,16 @@ func gitWorkspaceCurrentTree(localRoot string, omittedLocalPaths []string) (stri
 	if _, err := gitOutputRaw(localRoot, env, "read-tree", "HEAD"); err != nil {
 		return "", fmt.Errorf("initialize local workspace copy-out index: %w", err)
 	}
-	if _, err := gitOutputRaw(localRoot, env, "add", "-A", "--all", "."); err != nil {
-		return "", fmt.Errorf("stage local workspace copy-out base: %w", err)
-	}
 	omittedPaths, err := mergeWorkspaceCopyOutPaths(omittedLocalPaths)
 	if err != nil {
 		return "", err
+	}
+	addArgs := []string{"add", "-A", "--all", "."}
+	if len(omittedPaths) > 0 {
+		addArgs = append(addArgs, gitWorkspaceExcludePathspecs(omittedPaths)...)
+	}
+	if _, err := gitOutputRaw(localRoot, env, addArgs...); err != nil {
+		return "", fmt.Errorf("stage local workspace copy-out base: %w", err)
 	}
 	if len(omittedPaths) > 0 {
 		args := append([]string{"rm", "-r", "--cached", "--ignore-unmatch", "--"}, gitWorkspacePathspecs(omittedPaths)...)
@@ -1228,8 +1306,20 @@ func gitWorkspacePathspecs(paths []string) []string {
 	return pathspecs
 }
 
+func gitWorkspaceExcludePathspecs(paths []string) []string {
+	pathspecs := make([]string, 0, len(paths))
+	for _, path := range paths {
+		pathspecs = append(pathspecs, gitWorkspaceExcludePathspec(path))
+	}
+	return pathspecs
+}
+
 func gitWorkspacePathspec(path string) string {
 	return ":(literal)" + path
+}
+
+func gitWorkspaceExcludePathspec(path string) string {
+	return ":(exclude,literal)" + path
 }
 
 func temporaryGitIndex() (string, func(), error) {
