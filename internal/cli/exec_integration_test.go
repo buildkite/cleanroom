@@ -2224,6 +2224,31 @@ func TestExecIntegrationRejectsChdirWhenReusingSandbox(t *testing.T) {
 	}
 }
 
+func TestExecIntegrationRejectsChdirWhenCopyingOutFromReusedSandbox(t *testing.T) {
+	cwd := t.TempDir()
+	outcome := runExecWithCapture(ExecCommand{
+		clientFlags: clientFlags{Host: "tssvc://cleanroom"},
+		Chdir:       cwd,
+		In:          "cr_123",
+		workspaceCopyFlags: workspaceCopyFlags{
+			CopyOut: true,
+		},
+		Command: []string{"echo", "ok"},
+	}, runtimeContext{
+		CWD:    cwd,
+		Loader: failingLoader{},
+	})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err == nil {
+		t.Fatal("expected ExecCommand.Run to reject --chdir with --in --copy-out")
+	}
+	if got, want := outcome.err.Error(), "--chdir cannot be used with --in"; !strings.Contains(got, want) {
+		t.Fatalf("expected error to contain %q, got %q", want, got)
+	}
+}
+
 func TestExecIntegrationRejectsChdirWhenCreatingFromSnapshot(t *testing.T) {
 	cwd := t.TempDir()
 	outcome := runExecWithCapture(ExecCommand{

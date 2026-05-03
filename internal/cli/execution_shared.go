@@ -354,7 +354,7 @@ func validateExecutionSandboxArgs(chdir, existingSandboxID, fromSnapshot string,
 	if snapshotID != "" && dangerouslyAllowAll {
 		return errors.New("--dangerously-allow-all cannot be used with --from")
 	}
-	if sandboxID != "" && hasChdir && !copyFlags.copyIn() && !copyFlags.copyOut() {
+	if sandboxID != "" && hasChdir && !copyFlags.copyIn() {
 		return errors.New("--chdir cannot be used with --in")
 	}
 	if snapshotID != "" && hasChdir {
