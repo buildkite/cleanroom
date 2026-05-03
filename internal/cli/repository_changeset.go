@@ -62,7 +62,7 @@ func validateTopLevelWorkspaceCopyTransport(repository *resolvedRepositoryChecko
 	if !copyWorkspace || repository != nil {
 		return nil
 	}
-	return errors.New("top-level workspace copy for non-Git workspaces is not supported yet; create or select the sandbox, then use cleanroom workspace copy-in or cleanroom workspace copy-out explicitly")
+	return errors.New("workspace copy requires a local Git repository checkout")
 }
 
 type repositoryLocalChanges struct {

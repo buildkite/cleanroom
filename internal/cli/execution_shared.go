@@ -71,7 +71,7 @@ func resolveExecutionSandbox(
 		if err != nil {
 			return nil, err
 		}
-		if err := validateTopLevelWorkspaceCopyTransport(repository, (copyIn || copyOut) && existingSandboxID == ""); err != nil {
+		if err := validateTopLevelWorkspaceCopyTransport(repository, copyIn || (copyOut && existingSandboxID == "")); err != nil {
 			return nil, err
 		}
 		if existingSandboxID == "" {

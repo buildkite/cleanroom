@@ -525,7 +525,7 @@ func TestWorkspaceCopyOutAndDiffParse(t *testing.T) {
 	t.Run("copy-out", func(t *testing.T) {
 		c := &CLI{}
 		parser := newParserForTest(t, c)
-		if _, err := parser.Parse([]string{"workspace", "copy-out", "--dry-run", "cr_123"}); err != nil {
+		if _, err := parser.Parse([]string{"workspace", "copy-out", "--dry-run", "--force", "cr_123"}); err != nil {
 			t.Fatalf("parse workspace copy-out returned error: %v", err)
 		}
 		if got, want := c.Workspace.CopyOut.SandboxID, "cr_123"; got != want {
@@ -533,6 +533,9 @@ func TestWorkspaceCopyOutAndDiffParse(t *testing.T) {
 		}
 		if !c.Workspace.CopyOut.DryRun {
 			t.Fatal("expected workspace copy-out dry-run flag to be set")
+		}
+		if !c.Workspace.CopyOut.Force {
+			t.Fatal("expected workspace copy-out force flag to be set")
 		}
 	})
 
