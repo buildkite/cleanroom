@@ -165,6 +165,31 @@ func TestLookupDependencyBlockVolumeCachesReportsPartialHit(t *testing.T) {
 	}
 }
 
+func TestLookupDependencyBlockVolumeCachesTreatsMissingStoreAsMiss(t *testing.T) {
+	svc := newTestService(&stubAdapter{})
+	svc.CacheStore = nil
+	plan := dependencyBlockVolumePlan{
+		ReuseNamespace: "https://github.com/buildkite/cleanroom.git",
+		Blocks: []dependencyBlockVolumeBlockPlan{
+			{
+				BlockName: "go-modules",
+				CacheKey:  "dependency-volume:v1:test",
+			},
+		},
+	}
+
+	got, err := svc.lookupDependencyBlockVolumeCaches(context.Background(), "firecracker", &policy.CompiledPolicy{Hash: "sha256:test"}, plan)
+	if err != nil {
+		t.Fatalf("lookupDependencyBlockVolumeCaches returned error: %v", err)
+	}
+	if got.Blocks[0].CacheHit {
+		t.Fatal("did not expect cache hit when cache store is unavailable")
+	}
+	if got.Blocks[0].LookupReason != "" {
+		t.Fatalf("expected missing cache store to leave lookup reason unchanged, got %q", got.Blocks[0].LookupReason)
+	}
+}
+
 func TestDependencyBlockVolumeRuntimeDecisionRequiresOutputVolumesAndOverlay(t *testing.T) {
 	tests := []struct {
 		name       string

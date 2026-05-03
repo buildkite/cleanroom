@@ -174,7 +174,7 @@ func (s *Service) lookupDependencyBlockVolumeCaches(ctx context.Context, backend
 	}
 	store, err := s.cacheStoreOrErr()
 	if err != nil {
-		return plan, err
+		return plan, nil
 	}
 
 	out := dependencyBlockVolumePlan{
