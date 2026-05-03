@@ -598,13 +598,14 @@ func (s *Service) restorePortableDependencyStageCache(
 	commitBundle *repositorybundle.Bundle,
 	options *cleanroomv1.SandboxOptions,
 	record cachestore.Record,
+	cacheOutputVolumes []backend.CacheOutputVolumeSpec,
 	reporter CreateSandboxReporter,
 ) (*cleanroomv1.CreateSandboxResponse, error) {
 	restoreReq := &cleanroomv1.CreateSandboxRequest{
 		Backend: backendName,
 		Options: options,
 	}
-	restoreResp, err := s.createSandboxFromCacheRecord(ctx, restoreReq, compiled, record, reporter)
+	restoreResp, err := s.createSandboxFromCacheRecord(ctx, restoreReq, compiled, record, cacheOutputVolumes, reporter)
 	if err != nil {
 		return nil, err
 	}

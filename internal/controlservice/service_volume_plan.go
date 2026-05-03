@@ -61,7 +61,7 @@ func (s *Service) maybeLookupServiceBlockVolumePlanForCreateSandbox(
 	dependencyStageBootstrapEnabled bool,
 	dependencyPlan dependencyBlockVolumePlan,
 	dependencyPlanAvailable bool,
-) {
+) (serviceBlockVolumePlan, bool) {
 	blockCount := 0
 	if compiled != nil {
 		blockCount = len(compiled.Services.Blocks)
@@ -69,13 +69,13 @@ func (s *Service) maybeLookupServiceBlockVolumePlanForCreateSandbox(
 	decision := blockVolumeRuntimeDecisionForAdapter(adapter)
 	if !decision.Enabled {
 		s.logServiceBlockVolumeCacheFallback(backendName, blockCount, decision.FallbackReason)
-		return
+		return serviceBlockVolumePlan{}, false
 	}
 	if dependencyStageBootstrapEnabled && !dependencyPlanAvailable {
 		s.logServiceBlockVolumeCacheFallback(backendName, blockCount, "dependency block-volume plan unavailable")
-		return
+		return serviceBlockVolumePlan{}, false
 	}
-	s.lookupServiceBlockVolumePlanForCreateSandbox(ctx, backendName, compiled, repository, changeset, commitBundle, runtimeBaseKey, dependencyPlan)
+	return s.lookupServiceBlockVolumePlanForCreateSandbox(ctx, backendName, compiled, repository, changeset, commitBundle, runtimeBaseKey, dependencyPlan)
 }
 
 func (s *Service) lookupServiceBlockVolumePlanForCreateSandbox(
@@ -87,23 +87,23 @@ func (s *Service) lookupServiceBlockVolumePlanForCreateSandbox(
 	commitBundle *repositorybundle.Bundle,
 	runtimeBaseKey string,
 	dependencyPlan dependencyBlockVolumePlan,
-) {
+) (serviceBlockVolumePlan, bool) {
 	blockCount := 0
 	if compiled != nil {
 		blockCount = len(compiled.Services.Blocks)
 	}
 	if _, err := s.cacheStoreOrErr(); err != nil {
 		s.logServiceBlockVolumeCacheFallback(backendName, blockCount, err.Error())
-		return
+		return serviceBlockVolumePlan{}, false
 	}
 
 	plan, ok, err := s.finalizeServiceBlockVolumePlan(ctx, compiled, repository, changeset, commitBundle, backendName, runtimeBaseKey, dependencyPlan)
 	if err != nil {
 		s.logServicesStageWarning("resolve service block-volume cache keys", "", err)
-		return
+		return serviceBlockVolumePlan{}, false
 	}
 	if !ok {
-		return
+		return serviceBlockVolumePlan{}, false
 	}
 
 	err = s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.lookup_service_block_volume_caches", cachePhaseAttributes(
@@ -120,9 +120,10 @@ func (s *Service) lookupServiceBlockVolumePlanForCreateSandbox(
 	})
 	if err != nil {
 		s.logServicesStageWarning("lookup service block-volume caches", "", err)
-		return
+		return serviceBlockVolumePlan{}, false
 	}
 	s.logServiceBlockVolumeCacheLookup(backendName, plan)
+	return plan, true
 }
 
 func (s *Service) finalizeServiceBlockVolumePlan(

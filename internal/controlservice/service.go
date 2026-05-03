@@ -379,9 +379,13 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	dependencyStagePlan := dependencyStagePlan{}
 	dependencyBlockVolumePlan := dependencyBlockVolumePlan{}
 	dependencyBlockVolumePlanAvailable := false
+	dependencyCacheOutputVolumes := []backend.CacheOutputVolumeSpec(nil)
 	dependencyStageBootstrapEnabled := false
 	dependencyStageCachingEnabled := false
 	servicesStagePlan := servicesStagePlan{}
+	serviceBlockVolumePlan := serviceBlockVolumePlan{}
+	serviceBlockVolumePlanAvailable := false
+	serviceCacheOutputVolumes := []backend.CacheOutputVolumeSpec(nil)
 	servicesStageBootstrapEnabled := false
 	servicesStageCachingEnabled := false
 	var restoredWorkspaceResp *cleanroomv1.CreateSandboxResponse
@@ -458,7 +462,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 						attribute.String(observability.AttrBackend, backendName),
 					), func(ctx context.Context) error {
 						var err error
-						restoreResp, err = s.createSandboxFromCacheRecord(ctx, restoreReq, compiled, record, reporter)
+						restoreResp, err = s.createSandboxFromCacheRecord(ctx, restoreReq, compiled, record, nil, reporter)
 						setCacheResultSpanAttribute(ctx, map[bool]string{true: observability.CacheResultFailed, false: observability.CacheResultRestored}[err != nil])
 						return err
 					})
@@ -482,6 +486,29 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 				} else {
 					s.logServicesStageCacheMiss(backendName, servicesStagePlan.CacheKey)
 					emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_LOOKUP_SERVICES_STAGE_CACHE, "services stage cache miss")
+				}
+			}
+
+			if dependencyStageBootstrapEnabled {
+				dependencyBlockVolumePlan, dependencyBlockVolumePlanAvailable = s.lookupDependencyBlockVolumePlanForCreateSandbox(ctx, adapter, backendName, compiled, repository, changeset, commitBundle, workspaceStageRuntimeBaseKey)
+				if dependencyBlockVolumePlanAvailable {
+					var err error
+					dependencyCacheOutputVolumes, err = dependencyBlockVolumeOutputSpecs(dependencyBlockVolumePlan)
+					if err != nil {
+						dependencyCacheOutputVolumes = nil
+						s.logDependencyStageWarning("prepare dependency block output volume specs", "", err)
+					}
+				}
+			}
+			if servicesStageBootstrapEnabled {
+				serviceBlockVolumePlan, serviceBlockVolumePlanAvailable = s.maybeLookupServiceBlockVolumePlanForCreateSandbox(ctx, adapter, backendName, compiled, repository, changeset, commitBundle, workspaceStageRuntimeBaseKey, dependencyStageBootstrapEnabled, dependencyBlockVolumePlan, dependencyBlockVolumePlanAvailable)
+				if serviceBlockVolumePlanAvailable {
+					var err error
+					serviceCacheOutputVolumes, err = serviceBlockVolumeOutputSpecs(serviceBlockVolumePlan)
+					if err != nil {
+						serviceCacheOutputVolumes = nil
+						s.logServicesStageWarning("prepare service block output volume specs", "", err)
+					}
 				}
 			}
 
@@ -519,7 +546,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 						attribute.String(observability.AttrBackend, backendName),
 					), func(ctx context.Context) error {
 						var err error
-						restoreResp, err = s.createSandboxFromCacheRecord(ctx, restoreReq, compiled, record, reporter)
+						restoreResp, err = s.createSandboxFromCacheRecord(ctx, restoreReq, compiled, record, serviceCacheOutputVolumes, reporter)
 						setCacheResultSpanAttribute(ctx, map[bool]string{true: observability.CacheResultFailed, false: observability.CacheResultRestored}[err != nil])
 						return err
 					})
@@ -577,7 +604,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 							attribute.String(observability.AttrBackend, backendName),
 						), func(ctx context.Context) error {
 							var err error
-							restoreResp, err = s.restorePortableDependencyStageCache(ctx, adapter, backendName, compiled, firecrackerCfg, repository, changeset, commitBundle, req.GetOptions(), portableRecord, reporter)
+							restoreResp, err = s.restorePortableDependencyStageCache(ctx, adapter, backendName, compiled, firecrackerCfg, repository, changeset, commitBundle, req.GetOptions(), portableRecord, serviceCacheOutputVolumes, reporter)
 							setCacheResultSpanAttribute(ctx, map[bool]string{true: observability.CacheResultFailed, false: observability.CacheResultRestored}[err != nil])
 							return err
 						})
@@ -603,13 +630,6 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 						emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_LOOKUP_DEPENDENCY_STAGE_CACHE, "portable dependency stage cache miss")
 					}
 				}
-			}
-
-			if dependencyStageBootstrapEnabled && restoredDependencyResp == nil {
-				dependencyBlockVolumePlan, dependencyBlockVolumePlanAvailable = s.lookupDependencyBlockVolumePlanForCreateSandbox(ctx, adapter, backendName, compiled, repository, changeset, commitBundle, workspaceStageRuntimeBaseKey)
-			}
-			if servicesStageBootstrapEnabled && restoredDependencyResp == nil {
-				s.maybeLookupServiceBlockVolumePlanForCreateSandbox(ctx, adapter, backendName, compiled, repository, changeset, commitBundle, workspaceStageRuntimeBaseKey, dependencyStageBootstrapEnabled, dependencyBlockVolumePlan, dependencyBlockVolumePlanAvailable)
 			}
 
 			if restoredDependencyResp == nil {
@@ -646,7 +666,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 						attribute.String(observability.AttrBackend, backendName),
 					), func(ctx context.Context) error {
 						var err error
-						restoreResp, err = s.createSandboxFromCacheRecord(ctx, restoreReq, compiled, record, reporter)
+						restoreResp, err = s.createSandboxFromCacheRecord(ctx, restoreReq, compiled, record, appendCacheOutputVolumeSpecs(dependencyCacheOutputVolumes, serviceCacheOutputVolumes), reporter)
 						setCacheResultSpanAttribute(ctx, map[bool]string{true: observability.CacheResultFailed, false: observability.CacheResultRestored}[err != nil])
 						return err
 					})
@@ -682,11 +702,6 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 		sandboxID := restoredDependencyResp.GetSandbox().GetSandboxId()
 		span.SetAttributes(attribute.String("cleanroom.sandbox.id", sandboxID))
 		if servicesStageBootstrapEnabled {
-			if dependencyStageBootstrapEnabled && !dependencyBlockVolumePlanAvailable && blockVolumeRuntimeDecisionForAdapter(adapter).Enabled {
-				dependencyBlockVolumePlan, dependencyBlockVolumePlanAvailable = s.lookupDependencyBlockVolumePlanForCreateSandbox(ctx, adapter, backendName, compiled, repository, changeset, commitBundle, workspaceStageRuntimeBaseKey)
-			}
-			s.maybeLookupServiceBlockVolumePlanForCreateSandbox(ctx, adapter, backendName, compiled, repository, changeset, commitBundle, workspaceStageRuntimeBaseKey, dependencyStageBootstrapEnabled, dependencyBlockVolumePlan, dependencyBlockVolumePlanAvailable)
-
 			bootstrapAttrs := []attribute.KeyValue{
 				attribute.String(observability.AttrBackend, backendName),
 				attribute.String(observability.AttrSandboxID, sandboxID),
@@ -813,9 +828,10 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	}
 	emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_PROVISION_SANDBOX, "provisioning sandbox")
 	if err := adapter.ProvisionSandbox(ctx, backend.ProvisionRequest{
-		SandboxID:         sandboxID,
-		Policy:            compiled,
-		FirecrackerConfig: firecrackerCfg,
+		SandboxID:          sandboxID,
+		Policy:             compiled,
+		CacheOutputVolumes: appendCacheOutputVolumeSpecs(dependencyCacheOutputVolumes, serviceCacheOutputVolumes),
+		FirecrackerConfig:  firecrackerCfg,
 	}); err != nil {
 		if stateErr := s.dropProvisioningSandboxAfterCreateError(sandboxID); stateErr != nil {
 			return nil, stateErr
@@ -1048,7 +1064,7 @@ func (s *Service) createSandboxFromSnapshotRecord(ctx context.Context, req *clea
 	if err != nil {
 		return nil, err
 	}
-	return s.createSandboxFromStoredRootFS(ctx, req, source, nil, reporter)
+	return s.createSandboxFromStoredRootFS(ctx, req, source, nil, nil, reporter)
 }
 
 func (s *Service) GetSandbox(_ context.Context, req *cleanroomv1.GetSandboxRequest) (*cleanroomv1.GetSandboxResponse, error) {

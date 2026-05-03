@@ -348,6 +348,9 @@ func blockVolumeOutputRecordMissReason(outputs policy.StageBlockOutputs, records
 	}
 
 	seen := make(map[string]struct{}, len(records))
+	storageDriver := ""
+	storageRef := ""
+	sourceSnapshotRef := ""
 	for _, record := range records {
 		kind := strings.TrimSpace(record.Kind)
 		path := strings.TrimSpace(record.Path)
@@ -362,6 +365,18 @@ func blockVolumeOutputRecordMissReason(outputs policy.StageBlockOutputs, records
 		if strings.TrimSpace(record.VolumeSubpath) == "" ||
 			strings.TrimSpace(record.StorageDriver) == "" ||
 			strings.TrimSpace(record.StorageRef) == "" {
+			return observability.CacheLookupReasonRecordNotFound
+		}
+		recordStorageDriver := strings.TrimSpace(record.StorageDriver)
+		recordStorageRef := strings.TrimSpace(record.StorageRef)
+		recordSourceSnapshotRef := blockVolumeSourceSnapshotRef(record)
+		if storageDriver == "" && storageRef == "" && sourceSnapshotRef == "" {
+			storageDriver = recordStorageDriver
+			storageRef = recordStorageRef
+			sourceSnapshotRef = recordSourceSnapshotRef
+			continue
+		}
+		if recordStorageDriver != storageDriver || recordStorageRef != storageRef || recordSourceSnapshotRef != sourceSnapshotRef {
 			return observability.CacheLookupReasonRecordNotFound
 		}
 	}

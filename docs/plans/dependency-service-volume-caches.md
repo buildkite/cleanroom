@@ -773,15 +773,54 @@ Completed in phase 2:
   aggregate services stage cache misses and an aggregate dependency stage cache
   restores
 
-Remaining phase 2 work:
+Follow-up runtime work after phase 2:
 
-- prepare and attach output volumes before VM launch
 - run missed dependency blocks from isolated input projections
 - restore hit output records before later dependency blocks run
 - publish output records after successful missed blocks
 - run missed service blocks from isolated input projections
 - restore hit service output records before later service blocks run
 - publish service output records after successful missed blocks
+
+### Phase 3 PR Status
+
+The third implementation PR continues the runtime-control layer by turning
+block-volume lookup results into backend launch-time volume specs. It still does
+not make any backend attach, mount, restore, execute, or snapshot those volumes;
+aggregate dependency and service bootstrap commands continue to run.
+
+Completed in phase 3:
+
+- control service converts dependency and service block-volume plans into
+  `backend.CacheOutputVolumeSpec` values with stable volume IDs, declared
+  directory mappings, declared file mappings, and cache-hit source storage refs
+- cache-hit output records must describe one aggregate output volume per block
+  before the record can be consumed as a launch spec
+- service block-volume lookup returns its computed plan to the caller instead
+  of being logging-only
+- sandbox creation now computes dependency and service block-volume plans after
+  a services-stage cache miss and before dependency-stage or workspace-stage
+  restores, so later launch requests can carry all needed output-volume specs
+- dependency-stage and portable dependency-stage restores receive service
+  output-volume specs only, because dependency outputs are already present in
+  the restored rootfs and should not be shadowed by dependency sidecar mounts
+- workspace-stage restores and cold provisions receive dependency plus service
+  output-volume specs because those phases still need to run dependency and
+  service bootstrap work
+- tests cover spec construction for cache hits and misses, cold provision
+  request wiring, and dependency-stage restore request wiring
+
+Remaining phase 3 work:
+
+- implement backend preparation and attachment of output volumes before VM
+  launch
+- mount declared `outputs.dirs` and restore declared `outputs.files` inside the
+  guest before block commands run
+- run missed dependency and service blocks from isolated input projections
+- restore hit output records before later blocks run
+- snapshot and publish output records after successful missed blocks
+- keep aggregate exact full-rootfs stage caches as the fallback path until
+  per-block execution is complete
 
 ## Tests
 
