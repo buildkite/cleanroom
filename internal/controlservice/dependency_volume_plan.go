@@ -172,7 +172,7 @@ func (s *Service) finalizeDependencyBlockVolumeBlockPlan(
 	block policy.StageBlock,
 	priorOutputKeys []string,
 ) (dependencyBlockVolumeBlockPlan, error) {
-	inputDigest, err := s.stageKeyFilesDigest(ctx, repository, changeset, commitBundle, block.Inputs.Files, dependencyVolumeStageName+" "+block.Name)
+	inputDigest, err := s.stageInputFilesDigest(ctx, repository, changeset, commitBundle, block.Inputs.Files, dependencyVolumeStageName+" "+block.Name)
 	if err != nil {
 		return dependencyBlockVolumeBlockPlan{}, err
 	}
@@ -326,11 +326,50 @@ func dependencyBlockVolumeRecordMissReason(record cachestore.Record, backendName
 		strings.TrimSpace(record.CommandDigest) != strings.TrimSpace(block.CommandDigest) ||
 		strings.TrimSpace(record.EnvDigest) != strings.TrimSpace(block.EnvDigest) ||
 		strings.TrimSpace(record.NormalizedOutputsDigest) != strings.TrimSpace(block.NormalizedOutputsDigest) ||
-		strings.TrimSpace(record.ProducerVersion) != strings.TrimSpace(block.ProducerVersion) ||
-		len(record.OutputRecords) == 0 {
+		strings.TrimSpace(record.ProducerVersion) != strings.TrimSpace(block.ProducerVersion) {
 		return observability.CacheLookupReasonRecordNotFound
 	}
+	if reason := blockVolumeOutputRecordMissReason(block.Outputs, record.OutputRecords); reason != "" {
+		return reason
+	}
 	return ""
+}
+
+func blockVolumeOutputRecordMissReason(outputs policy.StageBlockOutputs, records []cachestore.OutputRecord) string {
+	expected := make(map[string]struct{}, len(outputs.Dirs)+len(outputs.Files))
+	for _, dir := range outputs.Dirs {
+		expected[blockVolumeOutputRecordKey("dir", dir)] = struct{}{}
+	}
+	for _, file := range outputs.Files {
+		expected[blockVolumeOutputRecordKey("file", file)] = struct{}{}
+	}
+	if len(expected) == 0 || len(records) != len(expected) {
+		return observability.CacheLookupReasonRecordNotFound
+	}
+
+	seen := make(map[string]struct{}, len(records))
+	for _, record := range records {
+		kind := strings.TrimSpace(record.Kind)
+		path := strings.TrimSpace(record.Path)
+		key := blockVolumeOutputRecordKey(kind, path)
+		if _, ok := expected[key]; !ok {
+			return observability.CacheLookupReasonRecordNotFound
+		}
+		if _, ok := seen[key]; ok {
+			return observability.CacheLookupReasonRecordNotFound
+		}
+		seen[key] = struct{}{}
+		if strings.TrimSpace(record.VolumeSubpath) == "" ||
+			strings.TrimSpace(record.StorageDriver) == "" ||
+			strings.TrimSpace(record.StorageRef) == "" {
+			return observability.CacheLookupReasonRecordNotFound
+		}
+	}
+	return ""
+}
+
+func blockVolumeOutputRecordKey(kind, path string) string {
+	return strings.TrimSpace(kind) + "\x00" + strings.TrimSpace(path)
 }
 
 type envEntry struct {

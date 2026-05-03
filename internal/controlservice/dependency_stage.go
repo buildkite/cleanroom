@@ -51,6 +51,12 @@ type stageKeyFileDigest struct {
 	Deleted bool   `json:"deleted,omitempty"`
 }
 
+type stageInputFileDigest struct {
+	Path   string `json:"path"`
+	Mode   string `json:"mode"`
+	SHA256 string `json:"sha256"`
+}
+
 func dependencyStagePlanForRepository(compiled *policy.CompiledPolicy, repository *repositorycheckout.Checkout) (dependencyStagePlan, bool) {
 	if compiled == nil || repository == nil || !compiled.Dependencies.Enabled() {
 		return dependencyStagePlan{}, false
@@ -183,6 +189,62 @@ func (s *Service) stageKeyFilesDigest(ctx context.Context, repository *repositor
 	return digest, nil
 }
 
+func (s *Service) stageInputFilesDigest(ctx context.Context, repository *repositorycheckout.Checkout, changeset *repositorychangeset.Changeset, commitBundle *repositorybundle.Bundle, files []string, stageName string) (string, error) {
+	if len(files) == 0 {
+		return "", nil
+	}
+	if repository == nil {
+		return "", fmt.Errorf("%s input files require a repository checkout", stageName)
+	}
+	if s.RepositoryStore == nil {
+		return "", fmt.Errorf("%s input files require repository store", stageName)
+	}
+	if commitBundle != nil {
+		prerequisiteCommit, err := s.ensureRepositoryCommitBundlePrerequisites(ctx, repository, commitBundle)
+		if err != nil {
+			return "", err
+		}
+		var digest string
+		err = s.RepositoryStore.WithRepository(ctx, repository.RemoteURL, prerequisiteCommit, repositorystore.FetchHints{}, func(repoDir string) error {
+			return commitBundle.WithRepository(ctx, repoDir, func(bundleRepoDir string) error {
+				var err error
+				if changeset != nil {
+					digest, err = stageInputFilesDigestWithChangeset(bundleRepoDir, changeset, files, stageName)
+				} else {
+					digest, err = stageInputFilesDigestAtCommit(ctx, bundleRepoDir, repository.CommitSHA, files, stageName)
+				}
+				return err
+			})
+		})
+		if err != nil {
+			return "", err
+		}
+		return digest, nil
+	}
+	if changeset != nil {
+		var digest string
+		err := s.RepositoryStore.WithRepository(ctx, repository.RemoteURL, repository.CommitSHA, repositorystore.FetchHints{}, func(repoDir string) error {
+			var err error
+			digest, err = stageInputFilesDigestWithChangeset(repoDir, changeset, files, stageName)
+			return err
+		})
+		if err != nil {
+			return "", err
+		}
+		return digest, nil
+	}
+	var digest string
+	err := s.RepositoryStore.WithRepository(ctx, repository.RemoteURL, repository.CommitSHA, repositorystore.FetchHints{}, func(repoDir string) error {
+		var err error
+		digest, err = stageInputFilesDigestAtCommit(ctx, repoDir, repository.CommitSHA, files, stageName)
+		return err
+	})
+	if err != nil {
+		return "", err
+	}
+	return digest, nil
+}
+
 func stageKeyFilesDigestWithChangeset(repoDir string, changeset *repositorychangeset.Changeset, files []string, stageName string) (string, error) {
 	manifest := make([]stageKeyFileDigest, 0, len(files))
 	digests, err := changeset.DigestPathsFromBase(strings.TrimSpace(repoDir), files)
@@ -204,6 +266,22 @@ func stageKeyFilesDigestWithChangeset(repoDir string, changeset *repositorychang
 
 	sum := sha256.Sum256(payload)
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
+}
+
+func stageInputFilesDigestWithChangeset(repoDir string, changeset *repositorychangeset.Changeset, files []string, stageName string) (string, error) {
+	digests, err := changeset.DigestRegularFilesFromBase(strings.TrimSpace(repoDir), files)
+	if err != nil {
+		return "", fmt.Errorf("read %s input files from repository changeset: %w", stageName, err)
+	}
+	manifest := make([]stageInputFileDigest, 0, len(digests))
+	for _, file := range digests {
+		manifest = append(manifest, stageInputFileDigest{
+			Path:   file.Path,
+			Mode:   file.Mode,
+			SHA256: file.SHA256,
+		})
+	}
+	return digestStageInputFileManifest(manifest, stageName)
 }
 
 func stageKeyFilesDigestAtCommit(ctx context.Context, repoDir, commitSHA string, files []string, stageName string) (string, error) {
@@ -233,6 +311,50 @@ func stageKeyFilesDigestAtCommit(ctx context.Context, repoDir, commitSHA string,
 		return "", fmt.Errorf("marshal %s key file manifest: %w", stageName, err)
 	}
 
+	sum := sha256.Sum256(payload)
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
+}
+
+func stageInputFilesDigestAtCommit(ctx context.Context, repoDir, commitSHA string, files []string, stageName string) (string, error) {
+	trimmedCommitSHA := strings.TrimSpace(commitSHA)
+	if trimmedCommitSHA == "" {
+		return "", fmt.Errorf("%s input file commit SHA is empty", stageName)
+	}
+	expandedFiles, err := expandStageKeyFilesAtCommit(ctx, repoDir, trimmedCommitSHA, files, stageName)
+	if err != nil {
+		return "", err
+	}
+
+	manifest := make([]stageInputFileDigest, 0, len(expandedFiles))
+	for _, file := range expandedFiles {
+		entry, ok, err := gitTreeEntryAtCommit(ctx, strings.TrimSpace(repoDir), trimmedCommitSHA, file)
+		if err != nil {
+			return "", fmt.Errorf("inspect %s input file %q: %w", stageName, file, err)
+		}
+		if !ok {
+			return "", fmt.Errorf("%s input file %q does not exist", stageName, file)
+		}
+		if !isRegularGitTreeFile(entry) {
+			return "", fmt.Errorf("%s input file %q is %s; inputs.files must name regular files", stageName, file, gitTreeEntryKind(entry))
+		}
+		digest, err := gitFileDigestAtCommit(ctx, strings.TrimSpace(repoDir), trimmedCommitSHA, file)
+		if err != nil {
+			return "", fmt.Errorf("read %s input file %q: %w", stageName, file, err)
+		}
+		manifest = append(manifest, stageInputFileDigest{
+			Path:   file,
+			Mode:   entry.Mode,
+			SHA256: digest,
+		})
+	}
+	return digestStageInputFileManifest(manifest, stageName)
+}
+
+func digestStageInputFileManifest(manifest []stageInputFileDigest, stageName string) (string, error) {
+	payload, err := json.Marshal(manifest)
+	if err != nil {
+		return "", fmt.Errorf("marshal %s input file manifest: %w", stageName, err)
+	}
 	sum := sha256.Sum256(payload)
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
@@ -320,6 +442,63 @@ func gitFileDigestAtCommit(ctx context.Context, repoDir, commitSHA, file string)
 
 	sum := sha256.Sum256(output)
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
+}
+
+type gitTreeEntry struct {
+	Mode string
+	Type string
+}
+
+func gitTreeEntryAtCommit(ctx context.Context, repoDir, commitSHA, file string) (gitTreeEntry, bool, error) {
+	cmd := exec.CommandContext(ctx, "git", "-C", repoDir, "ls-tree", "-z", commitSHA, "--", literalStageGitPathspec(file))
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		message := strings.TrimSpace(string(output))
+		if message == "" {
+			message = err.Error()
+		}
+		return gitTreeEntry{}, false, fmt.Errorf("%s", message)
+	}
+	output = bytes.TrimRight(output, "\x00")
+	if len(bytes.TrimSpace(output)) == 0 {
+		return gitTreeEntry{}, false, nil
+	}
+	for _, raw := range bytes.Split(output, []byte{0}) {
+		metadata, rawPath, ok := bytes.Cut(raw, []byte{'\t'})
+		if !ok {
+			return gitTreeEntry{}, false, fmt.Errorf("parse git tree entry %q", string(raw))
+		}
+		if path.Clean(strings.ReplaceAll(string(rawPath), "\\", "/")) != file {
+			continue
+		}
+		fields := strings.Fields(string(metadata))
+		if len(fields) < 3 {
+			return gitTreeEntry{}, false, fmt.Errorf("parse git tree entry %q", string(raw))
+		}
+		return gitTreeEntry{Mode: fields[0], Type: fields[1]}, true, nil
+	}
+	return gitTreeEntry{}, false, nil
+}
+
+func isRegularGitTreeFile(entry gitTreeEntry) bool {
+	return strings.TrimSpace(entry.Type) == "blob" && (entry.Mode == "100644" || entry.Mode == "100755")
+}
+
+func gitTreeEntryKind(entry gitTreeEntry) string {
+	switch strings.TrimSpace(entry.Mode) {
+	case "040000":
+		return "a directory"
+	case "120000":
+		return "a symlink"
+	case "160000":
+		return "a gitlink"
+	default:
+		return "not a regular file"
+	}
+}
+
+func literalStageGitPathspec(normalizedPath string) string {
+	return ":(literal)" + normalizedPath
 }
 
 func (s *Service) lookupDependencyStageCache(ctx context.Context, backendName string, compiled *policy.CompiledPolicy, repository *repositorycheckout.Checkout, changeset *repositorychangeset.Changeset, plan dependencyStagePlan) (cachestore.Record, bool, string, error) {

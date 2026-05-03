@@ -173,7 +173,7 @@ func (s *Service) finalizeServiceBlockVolumeBlockPlan(
 	block policy.StageBlock,
 	priorServiceOutputKeys []string,
 ) (serviceBlockVolumeBlockPlan, error) {
-	inputDigest, err := s.stageKeyFilesDigest(ctx, repository, changeset, commitBundle, block.Inputs.Files, serviceVolumeStageName+" "+block.Name)
+	inputDigest, err := s.stageInputFilesDigest(ctx, repository, changeset, commitBundle, block.Inputs.Files, serviceVolumeStageName+" "+block.Name)
 	if err != nil {
 		return serviceBlockVolumeBlockPlan{}, err
 	}
@@ -345,9 +345,11 @@ func serviceBlockVolumeRecordMissReason(record cachestore.Record, backendName st
 		strings.TrimSpace(record.CommandDigest) != strings.TrimSpace(block.CommandDigest) ||
 		strings.TrimSpace(record.EnvDigest) != strings.TrimSpace(block.EnvDigest) ||
 		strings.TrimSpace(record.NormalizedOutputsDigest) != strings.TrimSpace(block.NormalizedOutputsDigest) ||
-		strings.TrimSpace(record.ProducerVersion) != strings.TrimSpace(block.ProducerVersion) ||
-		len(record.OutputRecords) == 0 {
+		strings.TrimSpace(record.ProducerVersion) != strings.TrimSpace(block.ProducerVersion) {
 		return observability.CacheLookupReasonRecordNotFound
+	}
+	if reason := blockVolumeOutputRecordMissReason(block.Outputs, record.OutputRecords); reason != "" {
+		return reason
 	}
 	return ""
 }

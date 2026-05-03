@@ -177,6 +177,62 @@ func TestLookupServiceBlockVolumeCachesReportsPartialHit(t *testing.T) {
 	}
 }
 
+func TestLookupServiceBlockVolumeCachesRejectsMismatchedOutputRecords(t *testing.T) {
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"mise.toml":           "go = \"1.26.2\"\n",
+		"go.mod":              "module example.com/test\n\ngo 1.26.2\n",
+		"go.sum":              "example.com/test v0.0.0 h1:abc123\n",
+		"docker-compose.yml":  "services:\n  postgres:\n    image: postgres:17\n",
+		"db/schema.sql":       "create table widgets (id serial primary key);\n",
+		"db/seed.sql":         "insert into widgets default values;\n",
+		"scripts/prepare-db":  "#!/bin/sh\ntrue\n",
+		"scripts/prepare-app": "#!/bin/sh\ntrue\n",
+	})
+	svc := newTestService(&stubAdapter{})
+	svc.RepositoryStore = mirrors
+
+	compiled, err := policy.FromProto(testRepositoryTwoDependencyTwoServiceBlocksPolicy())
+	if err != nil {
+		t.Fatalf("FromProto returned error: %v", err)
+	}
+	repository := repositorycheckout.FromProto(repositoryCheckout)
+	dependencyPlan, ok, err := svc.finalizeDependencyBlockVolumePlan(context.Background(), compiled, repository, nil, nil, "firecracker", "runtime-base:test")
+	if err != nil {
+		t.Fatalf("finalizeDependencyBlockVolumePlan returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected dependency block-volume plan")
+	}
+	plan, ok, err := svc.finalizeServiceBlockVolumePlan(context.Background(), compiled, repository, nil, nil, "firecracker", "runtime-base:test", dependencyPlan)
+	if err != nil {
+		t.Fatalf("finalizeServiceBlockVolumePlan returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected service block-volume plan")
+	}
+
+	record := serviceBlockVolumeTestRecord(compiled, plan.Blocks[0])
+	record.OutputRecords[0].Kind = "file"
+	cacheStore, ok := svc.CacheStore.(*memoryCacheStore)
+	if !ok {
+		t.Fatalf("expected memory cache store, got %T", svc.CacheStore)
+	}
+	if err := cacheStore.Create(context.Background(), record); err != nil {
+		t.Fatalf("Create cache record returned error: %v", err)
+	}
+
+	lookedUp, err := svc.lookupServiceBlockVolumeCaches(context.Background(), "firecracker", compiled, plan)
+	if err != nil {
+		t.Fatalf("lookupServiceBlockVolumeCaches returned error: %v", err)
+	}
+	if lookedUp.Blocks[0].CacheHit {
+		t.Fatal("did not expect cache hit with mismatched output record kind")
+	}
+	if got, want := lookedUp.Blocks[0].LookupReason, observability.CacheLookupReasonRecordNotFound; got != want {
+		t.Fatalf("unexpected lookup reason: got %q want %q", got, want)
+	}
+}
+
 func TestCreateSandboxSkipsServiceBlockVolumeLookupWhenBackendUnsupported(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	adapter := &stubAdapter{}
