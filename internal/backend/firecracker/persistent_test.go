@@ -8,6 +8,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -23,7 +24,7 @@ func TestProvisionSandboxRejectsConcurrentProvisionForSameID(t *testing.T) {
 	block := make(chan struct{})
 	started := make(chan struct{})
 	adapter := &Adapter{
-		launchSandboxVMFn: func(_ context.Context, sandboxID string, _ *policy.CompiledPolicy, _ backend.FirecrackerConfig) (*sandboxInstance, error) {
+		launchSandboxVMFn: func(_ context.Context, sandboxID string, _ *policy.CompiledPolicy, _ backend.FirecrackerConfig, _ []backend.CacheOutputVolumeSpec) (*sandboxInstance, error) {
 			if sandboxID != "cr-test" {
 				t.Fatalf("unexpected sandbox id %q", sandboxID)
 			}
@@ -60,7 +61,7 @@ func TestProvisionSandboxRejectsStageScopedNetworkPolicy(t *testing.T) {
 	t.Parallel()
 
 	adapter := &Adapter{
-		launchSandboxVMFn: func(context.Context, string, *policy.CompiledPolicy, backend.FirecrackerConfig) (*sandboxInstance, error) {
+		launchSandboxVMFn: func(context.Context, string, *policy.CompiledPolicy, backend.FirecrackerConfig, []backend.CacheOutputVolumeSpec) (*sandboxInstance, error) {
 			t.Fatal("launchSandboxVMFn should not be called")
 			return nil, nil
 		},
@@ -75,6 +76,37 @@ func TestProvisionSandboxRejectsStageScopedNetworkPolicy(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "stage-scoped network") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestProvisionSandboxForwardsCacheOutputVolumes(t *testing.T) {
+	t.Parallel()
+
+	specs := testCacheOutputVolumeSpecs()
+	var gotSpecs []backend.CacheOutputVolumeSpec
+	adapter := &Adapter{
+		launchSandboxVMFn: func(_ context.Context, sandboxID string, _ *policy.CompiledPolicy, _ backend.FirecrackerConfig, cacheOutputVolumes []backend.CacheOutputVolumeSpec) (*sandboxInstance, error) {
+			if sandboxID != "cr-test" {
+				t.Fatalf("unexpected sandbox id %q", sandboxID)
+			}
+			gotSpecs = append([]backend.CacheOutputVolumeSpec(nil), cacheOutputVolumes...)
+			return &sandboxInstance{SandboxID: sandboxID}, nil
+		},
+	}
+	compiled := &policy.CompiledPolicy{
+		NetworkDefault: "deny",
+		ImageRef:       "ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+	}
+
+	if err := adapter.ProvisionSandbox(context.Background(), backend.ProvisionRequest{
+		SandboxID:          "cr-test",
+		Policy:             compiled,
+		CacheOutputVolumes: specs,
+	}); err != nil {
+		t.Fatalf("ProvisionSandbox returned error: %v", err)
+	}
+	if !reflect.DeepEqual(gotSpecs, specs) {
+		t.Fatalf("unexpected cache output volume specs: got %#v want %#v", gotSpecs, specs)
 	}
 }
 

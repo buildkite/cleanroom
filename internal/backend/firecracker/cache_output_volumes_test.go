@@ -1,0 +1,239 @@
+package firecracker
+
+import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+
+	"github.com/buildkite/cleanroom/internal/backend"
+	"github.com/buildkite/cleanroom/internal/volumestore"
+)
+
+func TestCapabilitiesAdvertiseCacheOutputVolumesWithoutOverlayCapture(t *testing.T) {
+	t.Parallel()
+
+	caps := (&Adapter{}).Capabilities()
+	if !caps[backend.CapabilitySandboxCacheOutputVolumes] {
+		t.Fatalf("expected %s capability", backend.CapabilitySandboxCacheOutputVolumes)
+	}
+	if caps[backend.CapabilitySandboxOverlayWriteCapture] {
+		t.Fatalf("did not expect %s capability before overlay execution is implemented", backend.CapabilitySandboxOverlayWriteCapture)
+	}
+}
+
+func TestPrepareCacheOutputVolumesClonesHitsAndCreatesMisses(t *testing.T) {
+	runDir := t.TempDir()
+	prevDriverFn := rootFSVolumeStoreDriverFn
+	prevCreateEmpty := createEmptyCacheOutputExt4ImageFn
+	prevMinimumBytes := cacheOutputVolumeMinimumBytes
+	t.Cleanup(func() {
+		rootFSVolumeStoreDriverFn = prevDriverFn
+		createEmptyCacheOutputExt4ImageFn = prevCreateEmpty
+		cacheOutputVolumeMinimumBytes = prevMinimumBytes
+	})
+	cacheOutputVolumeMinimumBytes = 0
+
+	var cloneReqs []volumestore.CloneSnapshotToVolumeRequest
+	var createReqs []volumestore.CreateWritableVolumeRequest
+	var destroyReqs []volumestore.DestroyVolumeRequest
+	rootFSVolumeStoreDriverFn = func(backend.FirecrackerConfig) (volumestore.Driver, error) {
+		return testVolumeDriver{
+			ensureBaseVolumeFn: func(_ context.Context, req volumestore.EnsureBaseVolumeRequest) (volumestore.BaseVolume, error) {
+				if strings.TrimSpace(req.SourcePath) == "" {
+					t.Fatal("expected source path for empty cache output base volume")
+				}
+				return volumestore.BaseVolume{Ref: "base:" + filepath.Base(req.SourcePath)}, nil
+			},
+			createWritableVolumeFn: func(_ context.Context, req volumestore.CreateWritableVolumeRequest) (volumestore.WritableVolume, error) {
+				createReqs = append(createReqs, req)
+				return volumestore.WritableVolume{
+					Ref:            "volume:" + req.VolumeID,
+					AttachmentPath: req.AttachmentPath,
+				}, nil
+			},
+			cloneSnapshotToVolumeFn: func(_ context.Context, req volumestore.CloneSnapshotToVolumeRequest) (volumestore.WritableVolume, error) {
+				cloneReqs = append(cloneReqs, req)
+				return volumestore.WritableVolume{
+					Ref:            "volume:" + req.VolumeID,
+					AttachmentPath: req.AttachmentPath,
+				}, nil
+			},
+			destroyVolumeFn: func(_ context.Context, req volumestore.DestroyVolumeRequest) error {
+				destroyReqs = append(destroyReqs, req)
+				return nil
+			},
+		}, nil
+	}
+	createEmptyCacheOutputExt4ImageFn = func(_ context.Context, path string, minimumBytes int64) error {
+		if got, want := minimumBytes, cacheOutputVolumeMinimumBytes; got != want {
+			t.Fatalf("unexpected empty volume minimum bytes: got %d want %d", got, want)
+		}
+		return os.WriteFile(path, []byte("empty-ext4"), 0o644)
+	}
+
+	specs := []backend.CacheOutputVolumeSpec{
+		{
+			Stage:             "dependency-volume",
+			BlockName:         "toolchains",
+			CacheKey:          "dependency-volume:v1:toolchains",
+			VolumeID:          "dependency-volume-abc123",
+			SourceSnapshotRef: "snapshot:toolchains",
+			StorageDriver:     "file",
+			StorageRef:        "snapshot:toolchains",
+			DirMappings: []backend.CacheOutputDirMapping{
+				{GuestPath: "/root/.local/share/mise", Subpath: "dirs/0"},
+			},
+		},
+		{
+			Stage:     "service-volume",
+			BlockName: "postgres",
+			CacheKey:  "service-volume:v1:postgres",
+			VolumeID:  "service-volume-def456",
+			DirMappings: []backend.CacheOutputDirMapping{
+				{GuestPath: "/var/lib/cleanroom/services/postgres", Subpath: "dirs/0"},
+			},
+		},
+	}
+
+	prepared, cleanup, err := prepareCacheOutputVolumes(context.Background(), nil, backend.FirecrackerConfig{}, "sandbox-1", runDir, specs)
+	if err != nil {
+		t.Fatalf("prepareCacheOutputVolumes returned error: %v", err)
+	}
+	if got, want := len(prepared), 2; got != want {
+		t.Fatalf("unexpected prepared volume count: got %d want %d", got, want)
+	}
+	if got, want := len(cloneReqs), 1; got != want {
+		t.Fatalf("unexpected clone request count: got %d want %d", got, want)
+	}
+	if got, want := cloneReqs[0].SnapshotRef, "snapshot:toolchains"; got != want {
+		t.Fatalf("unexpected clone snapshot ref: got %q want %q", got, want)
+	}
+	if got, want := len(createReqs), 1; got != want {
+		t.Fatalf("unexpected create request count: got %d want %d", got, want)
+	}
+	if got, want := createReqs[0].BaseRef, "base:cache-output-empty-base.ext4"; got != want {
+		t.Fatalf("unexpected miss base ref: got %q want suffix %q", createReqs[0].BaseRef, want)
+	}
+	wantDrives := []drive{
+		{DriveID: "cacheout0", PathOnHost: filepath.Join(runDir, "cache-output-00.ext4")},
+		{DriveID: "cacheout1", PathOnHost: filepath.Join(runDir, "cache-output-01.ext4")},
+	}
+	gotDrives := cacheOutputVolumeDrives(prepared)
+	for i := range gotDrives {
+		gotDrives[i].IsReadOnly = false
+		gotDrives[i].IsRootDevice = false
+	}
+	if !reflect.DeepEqual(gotDrives, wantDrives) {
+		t.Fatalf("unexpected cache output drives: got %#v want %#v", gotDrives, wantDrives)
+	}
+
+	cleanup()
+	if got, want := len(destroyReqs), 2; got != want {
+		t.Fatalf("unexpected destroy request count: got %d want %d", got, want)
+	}
+	if got, want := destroyReqs[0].VolumeRef, prepared[1].Volume.Ref; got != want {
+		t.Fatalf("expected reverse cleanup order first ref %q, got %q", want, got)
+	}
+}
+
+func TestPrepareCacheOutputVolumesRejectsMalformedSpecs(t *testing.T) {
+	t.Parallel()
+
+	_, _, err := prepareCacheOutputVolumes(context.Background(), nil, backend.FirecrackerConfig{}, "sandbox-1", t.TempDir(), []backend.CacheOutputVolumeSpec{
+		{
+			Stage:     "dependency-volume",
+			BlockName: "toolchains",
+			CacheKey:  "dependency-volume:v1:toolchains",
+			VolumeID:  "dependency-volume-abc123",
+		},
+	})
+	if err == nil {
+		t.Fatal("expected malformed spec to fail")
+	}
+	if !strings.Contains(err.Error(), "missing output mappings") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestPrepareCacheOutputVolumesCleansUpOnFailure(t *testing.T) {
+	runDir := t.TempDir()
+	prevDriverFn := rootFSVolumeStoreDriverFn
+	prevMinimumBytes := cacheOutputVolumeMinimumBytes
+	t.Cleanup(func() {
+		rootFSVolumeStoreDriverFn = prevDriverFn
+		cacheOutputVolumeMinimumBytes = prevMinimumBytes
+	})
+	cacheOutputVolumeMinimumBytes = 0
+
+	var destroyReqs []volumestore.DestroyVolumeRequest
+	rootFSVolumeStoreDriverFn = func(backend.FirecrackerConfig) (volumestore.Driver, error) {
+		return testVolumeDriver{
+			cloneSnapshotToVolumeFn: func(_ context.Context, req volumestore.CloneSnapshotToVolumeRequest) (volumestore.WritableVolume, error) {
+				if strings.Contains(req.SnapshotRef, "bad") {
+					return volumestore.WritableVolume{}, errors.New("clone failed")
+				}
+				return volumestore.WritableVolume{
+					Ref:            "volume:" + req.VolumeID,
+					AttachmentPath: req.AttachmentPath,
+				}, nil
+			},
+			destroyVolumeFn: func(_ context.Context, req volumestore.DestroyVolumeRequest) error {
+				destroyReqs = append(destroyReqs, req)
+				return nil
+			},
+		}, nil
+	}
+
+	_, _, err := prepareCacheOutputVolumes(context.Background(), nil, backend.FirecrackerConfig{}, "sandbox-1", runDir, []backend.CacheOutputVolumeSpec{
+		{
+			Stage:             "dependency-volume",
+			BlockName:         "toolchains",
+			CacheKey:          "dependency-volume:v1:toolchains",
+			VolumeID:          "dependency-volume-abc123",
+			SourceSnapshotRef: "snapshot:good",
+			DirMappings: []backend.CacheOutputDirMapping{
+				{GuestPath: "/root/.local/share/mise", Subpath: "dirs/0"},
+			},
+		},
+		{
+			Stage:             "dependency-volume",
+			BlockName:         "go-modules",
+			CacheKey:          "dependency-volume:v1:go-modules",
+			VolumeID:          "dependency-volume-def456",
+			SourceSnapshotRef: "snapshot:bad",
+			DirMappings: []backend.CacheOutputDirMapping{
+				{GuestPath: "/root/go/pkg/mod", Subpath: "dirs/0"},
+			},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected prepareCacheOutputVolumes to fail")
+	}
+	if !strings.Contains(err.Error(), "clone failed") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got, want := len(destroyReqs), 1; got != want {
+		t.Fatalf("expected prepared volume cleanup, got %d destroy requests want %d", got, want)
+	}
+}
+
+func testCacheOutputVolumeSpecs() []backend.CacheOutputVolumeSpec {
+	return []backend.CacheOutputVolumeSpec{
+		{
+			Stage:             "dependency-volume",
+			BlockName:         "toolchains",
+			CacheKey:          "dependency-volume:v1:toolchains",
+			VolumeID:          "dependency-volume-abc123",
+			SourceSnapshotRef: "snapshot:toolchains",
+			StorageDriver:     "file",
+			StorageRef:        "snapshot:toolchains",
+			DirMappings: []backend.CacheOutputDirMapping{
+				{GuestPath: "/root/.local/share/mise", Subpath: "dirs/0"},
+			},
+		},
+	}
+}

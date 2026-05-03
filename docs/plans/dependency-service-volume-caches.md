@@ -812,8 +812,6 @@ Completed in phase 3:
 
 Remaining phase 3 work:
 
-- implement backend preparation and attachment of output volumes before VM
-  launch
 - mount declared `outputs.dirs` and restore declared `outputs.files` inside the
   guest before block commands run
 - run missed dependency and service blocks from isolated input projections
@@ -821,6 +819,48 @@ Remaining phase 3 work:
 - snapshot and publish output records after successful missed blocks
 - keep aggregate exact full-rootfs stage caches as the fallback path until
   per-block execution is complete
+
+### Phase 4 PR Status
+
+The fourth implementation PR starts the backend side of the runtime path for
+Firecracker. It consumes the launch-time `backend.CacheOutputVolumeSpec` list
+and prepares writable sidecar ext4 volumes before the VM starts. It still does
+not mount those volumes in the guest, restore file outputs, run block commands,
+capture writes, or publish block output snapshots; aggregate dependency and
+service bootstrap commands remain the runtime fallback.
+
+Completed in phase 4:
+
+- Firecracker advertises `sandbox.cache_output_volumes` but intentionally does
+  not advertise `sandbox.overlay_write_capture` until the guest execution path
+  exists
+- cold provisions and snapshot restores forward cache output volume specs into
+  Firecracker launch
+- Firecracker validates cache output volume specs before launch, rejects
+  malformed specs, and rejects duplicate runtime volume IDs
+- cache hits prepare writable volumes by cloning or copying the recorded source
+  storage ref
+- cache misses create an empty ext4 source image and prepare a writable output
+  volume from it
+- prepared output volumes are attached as non-root, writable Firecracker block
+  devices alongside the rootfs
+- output volume cleanup is included in all launch failure and sandbox cleanup
+  paths
+- tests cover capability reporting, launch request forwarding, hit and miss
+  volume preparation, malformed specs, and cleanup on partial prepare failure
+
+Remaining runtime work after phase 4:
+
+- mount output block devices in the guest at Cleanroom-managed locations
+- map declared `outputs.dirs` into the command view and restore declared
+  `outputs.files` from output volumes
+- run missed dependency and service blocks from isolated input projections
+- inspect overlay write capture results and warn/fallback on escaped writes
+- snapshot and publish output records after successful missed blocks
+- advertise `sandbox.overlay_write_capture` once escaped-write detection and
+  isolated block execution are wired through
+- decide whether output volume sizing stays internal or becomes policy-visible
+  after real workloads show the right default
 
 ## Tests
 
