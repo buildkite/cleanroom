@@ -82,10 +82,13 @@ func (s *Server) Handler() http.Handler {
 
 	sandboxPath, sandboxHandler := cleanroomv1connect.NewSandboxServiceHandler(s, handlerOptions...)
 	snapshotPath, snapshotHandler := cleanroomv1connect.NewSnapshotServiceHandler(s, handlerOptions...)
+	cachePeerPath, cachePeerHandler := cleanroomv1connect.NewCachePeerServiceHandler(s, handlerOptions...)
 	executionPath, executionHandler := cleanroomv1connect.NewExecutionServiceHandler(s, handlerOptions...)
 	mux.Handle(sandboxPath, sandboxHandler)
 	mux.Handle(snapshotPath, snapshotHandler)
+	mux.Handle(cachePeerPath, cachePeerHandler)
 	mux.Handle(executionPath, executionHandler)
+	mux.HandleFunc(cachePeerZFSIncrementalExportPathPrefix, s.handleCachePeerZFSIncrementalExport)
 
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -96,6 +99,65 @@ func (s *Server) Handler() http.Handler {
 		return markLoopbackInternalWorkspaceCopyInRequests(handler)
 	}
 	return handler
+}
+
+const cachePeerZFSIncrementalExportPathPrefix = "/v1/cache/export/zfs-incremental/"
+
+func (s *Server) LookupCachePeer(ctx context.Context, req *connect.Request[cleanroomv1.LookupCachePeerRequest]) (*connect.Response[cleanroomv1.LookupCachePeerResponse], error) {
+	if err := s.service.AuthorizeCachePeerBearer(req.Header().Get("Authorization")); err != nil {
+		return nil, connect.NewError(connect.CodeUnauthenticated, err)
+	}
+	resp, err := s.service.LookupCachePeer(ctx, req.Msg)
+	if err != nil {
+		return nil, toConnectError(err)
+	}
+	return connect.NewResponse(resp), nil
+}
+
+func (s *Server) handleCachePeerZFSIncrementalExport(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := s.service.AuthorizeCachePeerBearer(req.Header.Get("Authorization")); err != nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	token := strings.TrimSpace(strings.TrimPrefix(req.URL.Path, cachePeerZFSIncrementalExportPathPrefix))
+	if token == "" || strings.Contains(token, "/") {
+		http.NotFound(w, req)
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	tracker := &cachePeerExportResponseWriter{ResponseWriter: w}
+	if err := s.service.ExportCachePeerZFSIncremental(req.Context(), token, tracker); err != nil {
+		if tracker.bodyStarted {
+			if s.logger != nil {
+				s.logger.Warn("cache peer zfs export failed after streaming started", "error", err)
+			}
+			return
+		}
+		if errors.Is(err, controlservice.ErrCachePeerExportTokenNotFound) {
+			http.NotFound(w, req)
+			return
+		}
+		if s.logger != nil {
+			s.logger.Warn("cache peer zfs export failed", "error", err)
+		}
+		http.Error(w, "cache peer export failed", http.StatusInternalServerError)
+	}
+}
+
+type cachePeerExportResponseWriter struct {
+	http.ResponseWriter
+	bodyStarted bool
+}
+
+func (w *cachePeerExportResponseWriter) Write(data []byte) (int, error) {
+	if len(data) > 0 {
+		w.bodyStarted = true
+	}
+	return w.ResponseWriter.Write(data)
 }
 
 func (s *Server) CreateSandbox(ctx context.Context, req *connect.Request[cleanroomv1.CreateSandboxRequest]) (*connect.Response[cleanroomv1.CreateSandboxResponse], error) {

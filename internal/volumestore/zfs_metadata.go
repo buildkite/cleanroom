@@ -46,3 +46,17 @@ func EncodeZFSDriverMetadata(metadata ZFSDriverMetadata) (string, error) {
 	}
 	return string(out), nil
 }
+
+// DecodeZFSDriverMetadata parses the stable JSON representation persisted in
+// cache records and exchanged with peers.
+func DecodeZFSDriverMetadata(raw string) (ZFSDriverMetadata, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ZFSDriverMetadata{}, fmt.Errorf("decode zfs driver metadata: empty metadata")
+	}
+	var metadata ZFSDriverMetadata
+	if err := json.Unmarshal([]byte(raw), &metadata); err != nil {
+		return ZFSDriverMetadata{}, fmt.Errorf("decode zfs driver metadata: %w", err)
+	}
+	return metadata, nil
+}

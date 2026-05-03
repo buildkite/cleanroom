@@ -166,9 +166,13 @@ func TestNewZFSImportDatasetStoreRequiresZFSDriverAndDataset(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := NewZFSImportDatasetStore(tt.cfg)
-			if (got != nil) != tt.want {
-				t.Fatalf("NewZFSImportDatasetStore() configured=%v, want %v", got != nil, tt.want)
+			importStore := NewZFSImportDatasetStore(tt.cfg)
+			if (importStore != nil) != tt.want {
+				t.Fatalf("NewZFSImportDatasetStore() configured=%v, want %v", importStore != nil, tt.want)
+			}
+			transferDriver := NewZFSIncrementalTransferDriver(tt.cfg)
+			if (transferDriver != nil) != tt.want {
+				t.Fatalf("NewZFSIncrementalTransferDriver() configured=%v, want %v", transferDriver != nil, tt.want)
 			}
 		})
 	}

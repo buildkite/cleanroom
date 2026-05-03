@@ -4387,6 +4387,338 @@ func (x *DeleteSnapshotResponse) GetMessage() string {
 	return ""
 }
 
+type LookupCachePeerRequest struct {
+	state                 protoimpl.MessageState `protogen:"open.v1"`
+	Stage                 string                 `protobuf:"bytes,1,opt,name=stage,proto3" json:"stage,omitempty"`
+	CacheKey              string                 `protobuf:"bytes,2,opt,name=cache_key,json=cacheKey,proto3" json:"cache_key,omitempty"`
+	Backend               string                 `protobuf:"bytes,3,opt,name=backend,proto3" json:"backend,omitempty"`
+	StorageDriver         string                 `protobuf:"bytes,4,opt,name=storage_driver,json=storageDriver,proto3" json:"storage_driver,omitempty"`
+	Architecture          string                 `protobuf:"bytes,5,opt,name=architecture,proto3" json:"architecture,omitempty"`
+	ProducerVersion       string                 `protobuf:"bytes,6,opt,name=producer_version,json=producerVersion,proto3" json:"producer_version,omitempty"`
+	PolicyHash            string                 `protobuf:"bytes,7,opt,name=policy_hash,json=policyHash,proto3" json:"policy_hash,omitempty"`
+	ParentCacheKey        string                 `protobuf:"bytes,8,opt,name=parent_cache_key,json=parentCacheKey,proto3" json:"parent_cache_key,omitempty"`
+	ParentZfsSnapshotGuid string                 `protobuf:"bytes,9,opt,name=parent_zfs_snapshot_guid,json=parentZfsSnapshotGuid,proto3" json:"parent_zfs_snapshot_guid,omitempty"`
+	ParentStage           string                 `protobuf:"bytes,10,opt,name=parent_stage,json=parentStage,proto3" json:"parent_stage,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
+}
+
+func (x *LookupCachePeerRequest) Reset() {
+	*x = LookupCachePeerRequest{}
+	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[65]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LookupCachePeerRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LookupCachePeerRequest) ProtoMessage() {}
+
+func (x *LookupCachePeerRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[65]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LookupCachePeerRequest.ProtoReflect.Descriptor instead.
+func (*LookupCachePeerRequest) Descriptor() ([]byte, []int) {
+	return file_proto_cleanroom_v1_control_proto_rawDescGZIP(), []int{65}
+}
+
+func (x *LookupCachePeerRequest) GetStage() string {
+	if x != nil {
+		return x.Stage
+	}
+	return ""
+}
+
+func (x *LookupCachePeerRequest) GetCacheKey() string {
+	if x != nil {
+		return x.CacheKey
+	}
+	return ""
+}
+
+func (x *LookupCachePeerRequest) GetBackend() string {
+	if x != nil {
+		return x.Backend
+	}
+	return ""
+}
+
+func (x *LookupCachePeerRequest) GetStorageDriver() string {
+	if x != nil {
+		return x.StorageDriver
+	}
+	return ""
+}
+
+func (x *LookupCachePeerRequest) GetArchitecture() string {
+	if x != nil {
+		return x.Architecture
+	}
+	return ""
+}
+
+func (x *LookupCachePeerRequest) GetProducerVersion() string {
+	if x != nil {
+		return x.ProducerVersion
+	}
+	return ""
+}
+
+func (x *LookupCachePeerRequest) GetPolicyHash() string {
+	if x != nil {
+		return x.PolicyHash
+	}
+	return ""
+}
+
+func (x *LookupCachePeerRequest) GetParentCacheKey() string {
+	if x != nil {
+		return x.ParentCacheKey
+	}
+	return ""
+}
+
+func (x *LookupCachePeerRequest) GetParentZfsSnapshotGuid() string {
+	if x != nil {
+		return x.ParentZfsSnapshotGuid
+	}
+	return ""
+}
+
+func (x *LookupCachePeerRequest) GetParentStage() string {
+	if x != nil {
+		return x.ParentStage
+	}
+	return ""
+}
+
+type LookupCachePeerResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Candidate     *CachePeerCandidate    `protobuf:"bytes,1,opt,name=candidate,proto3" json:"candidate,omitempty"`
+	MissReason    string                 `protobuf:"bytes,2,opt,name=miss_reason,json=missReason,proto3" json:"miss_reason,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LookupCachePeerResponse) Reset() {
+	*x = LookupCachePeerResponse{}
+	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[66]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LookupCachePeerResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LookupCachePeerResponse) ProtoMessage() {}
+
+func (x *LookupCachePeerResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[66]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LookupCachePeerResponse.ProtoReflect.Descriptor instead.
+func (*LookupCachePeerResponse) Descriptor() ([]byte, []int) {
+	return file_proto_cleanroom_v1_control_proto_rawDescGZIP(), []int{66}
+}
+
+func (x *LookupCachePeerResponse) GetCandidate() *CachePeerCandidate {
+	if x != nil {
+		return x.Candidate
+	}
+	return nil
+}
+
+func (x *LookupCachePeerResponse) GetMissReason() string {
+	if x != nil {
+		return x.MissReason
+	}
+	return ""
+}
+
+type CachePeerCandidate struct {
+	state                 protoimpl.MessageState `protogen:"open.v1"`
+	TransferToken         string                 `protobuf:"bytes,1,opt,name=transfer_token,json=transferToken,proto3" json:"transfer_token,omitempty"`
+	Stage                 string                 `protobuf:"bytes,2,opt,name=stage,proto3" json:"stage,omitempty"`
+	CacheKey              string                 `protobuf:"bytes,3,opt,name=cache_key,json=cacheKey,proto3" json:"cache_key,omitempty"`
+	BackingSnapshotId     string                 `protobuf:"bytes,4,opt,name=backing_snapshot_id,json=backingSnapshotId,proto3" json:"backing_snapshot_id,omitempty"`
+	StorageRef            string                 `protobuf:"bytes,5,opt,name=storage_ref,json=storageRef,proto3" json:"storage_ref,omitempty"`
+	ParentCacheKey        string                 `protobuf:"bytes,6,opt,name=parent_cache_key,json=parentCacheKey,proto3" json:"parent_cache_key,omitempty"`
+	ZfsSnapshotGuid       string                 `protobuf:"bytes,7,opt,name=zfs_snapshot_guid,json=zfsSnapshotGuid,proto3" json:"zfs_snapshot_guid,omitempty"`
+	ZfsParentSnapshotGuid string                 `protobuf:"bytes,8,opt,name=zfs_parent_snapshot_guid,json=zfsParentSnapshotGuid,proto3" json:"zfs_parent_snapshot_guid,omitempty"`
+	ProducerVersion       string                 `protobuf:"bytes,9,opt,name=producer_version,json=producerVersion,proto3" json:"producer_version,omitempty"`
+	Backend               string                 `protobuf:"bytes,10,opt,name=backend,proto3" json:"backend,omitempty"`
+	StorageDriver         string                 `protobuf:"bytes,11,opt,name=storage_driver,json=storageDriver,proto3" json:"storage_driver,omitempty"`
+	Architecture          string                 `protobuf:"bytes,12,opt,name=architecture,proto3" json:"architecture,omitempty"`
+	PolicyHash            string                 `protobuf:"bytes,13,opt,name=policy_hash,json=policyHash,proto3" json:"policy_hash,omitempty"`
+	EstimatedBytes        int64                  `protobuf:"varint,14,opt,name=estimated_bytes,json=estimatedBytes,proto3" json:"estimated_bytes,omitempty"`
+	ExpiresAt             *timestamppb.Timestamp `protobuf:"bytes,15,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`
+	ParentStage           string                 `protobuf:"bytes,16,opt,name=parent_stage,json=parentStage,proto3" json:"parent_stage,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
+}
+
+func (x *CachePeerCandidate) Reset() {
+	*x = CachePeerCandidate{}
+	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[67]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CachePeerCandidate) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CachePeerCandidate) ProtoMessage() {}
+
+func (x *CachePeerCandidate) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[67]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CachePeerCandidate.ProtoReflect.Descriptor instead.
+func (*CachePeerCandidate) Descriptor() ([]byte, []int) {
+	return file_proto_cleanroom_v1_control_proto_rawDescGZIP(), []int{67}
+}
+
+func (x *CachePeerCandidate) GetTransferToken() string {
+	if x != nil {
+		return x.TransferToken
+	}
+	return ""
+}
+
+func (x *CachePeerCandidate) GetStage() string {
+	if x != nil {
+		return x.Stage
+	}
+	return ""
+}
+
+func (x *CachePeerCandidate) GetCacheKey() string {
+	if x != nil {
+		return x.CacheKey
+	}
+	return ""
+}
+
+func (x *CachePeerCandidate) GetBackingSnapshotId() string {
+	if x != nil {
+		return x.BackingSnapshotId
+	}
+	return ""
+}
+
+func (x *CachePeerCandidate) GetStorageRef() string {
+	if x != nil {
+		return x.StorageRef
+	}
+	return ""
+}
+
+func (x *CachePeerCandidate) GetParentCacheKey() string {
+	if x != nil {
+		return x.ParentCacheKey
+	}
+	return ""
+}
+
+func (x *CachePeerCandidate) GetZfsSnapshotGuid() string {
+	if x != nil {
+		return x.ZfsSnapshotGuid
+	}
+	return ""
+}
+
+func (x *CachePeerCandidate) GetZfsParentSnapshotGuid() string {
+	if x != nil {
+		return x.ZfsParentSnapshotGuid
+	}
+	return ""
+}
+
+func (x *CachePeerCandidate) GetProducerVersion() string {
+	if x != nil {
+		return x.ProducerVersion
+	}
+	return ""
+}
+
+func (x *CachePeerCandidate) GetBackend() string {
+	if x != nil {
+		return x.Backend
+	}
+	return ""
+}
+
+func (x *CachePeerCandidate) GetStorageDriver() string {
+	if x != nil {
+		return x.StorageDriver
+	}
+	return ""
+}
+
+func (x *CachePeerCandidate) GetArchitecture() string {
+	if x != nil {
+		return x.Architecture
+	}
+	return ""
+}
+
+func (x *CachePeerCandidate) GetPolicyHash() string {
+	if x != nil {
+		return x.PolicyHash
+	}
+	return ""
+}
+
+func (x *CachePeerCandidate) GetEstimatedBytes() int64 {
+	if x != nil {
+		return x.EstimatedBytes
+	}
+	return 0
+}
+
+func (x *CachePeerCandidate) GetExpiresAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.ExpiresAt
+	}
+	return nil
+}
+
+func (x *CachePeerCandidate) GetParentStage() string {
+	if x != nil {
+		return x.ParentStage
+	}
+	return ""
+}
+
 type Execution struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	ExecutionId   string                 `protobuf:"bytes,1,opt,name=execution_id,json=executionId,proto3" json:"execution_id,omitempty"`
@@ -4404,7 +4736,7 @@ type Execution struct {
 
 func (x *Execution) Reset() {
 	*x = Execution{}
-	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[65]
+	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[68]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4416,7 +4748,7 @@ func (x *Execution) String() string {
 func (*Execution) ProtoMessage() {}
 
 func (x *Execution) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[65]
+	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[68]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4429,7 +4761,7 @@ func (x *Execution) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Execution.ProtoReflect.Descriptor instead.
 func (*Execution) Descriptor() ([]byte, []int) {
-	return file_proto_cleanroom_v1_control_proto_rawDescGZIP(), []int{65}
+	return file_proto_cleanroom_v1_control_proto_rawDescGZIP(), []int{68}
 }
 
 func (x *Execution) GetExecutionId() string {
@@ -4507,7 +4839,7 @@ type ExecutionOptions struct {
 
 func (x *ExecutionOptions) Reset() {
 	*x = ExecutionOptions{}
-	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[66]
+	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[69]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4519,7 +4851,7 @@ func (x *ExecutionOptions) String() string {
 func (*ExecutionOptions) ProtoMessage() {}
 
 func (x *ExecutionOptions) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[66]
+	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[69]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4532,7 +4864,7 @@ func (x *ExecutionOptions) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExecutionOptions.ProtoReflect.Descriptor instead.
 func (*ExecutionOptions) Descriptor() ([]byte, []int) {
-	return file_proto_cleanroom_v1_control_proto_rawDescGZIP(), []int{66}
+	return file_proto_cleanroom_v1_control_proto_rawDescGZIP(), []int{69}
 }
 
 func (x *ExecutionOptions) GetLaunchSeconds() int64 {
@@ -4577,7 +4909,7 @@ type CreateExecutionRequest struct {
 
 func (x *CreateExecutionRequest) Reset() {
 	*x = CreateExecutionRequest{}
-	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[67]
+	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[70]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4589,7 +4921,7 @@ func (x *CreateExecutionRequest) String() string {
 func (*CreateExecutionRequest) ProtoMessage() {}
 
 func (x *CreateExecutionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[67]
+	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[70]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4602,7 +4934,7 @@ func (x *CreateExecutionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateExecutionRequest.ProtoReflect.Descriptor instead.
 func (*CreateExecutionRequest) Descriptor() ([]byte, []int) {
-	return file_proto_cleanroom_v1_control_proto_rawDescGZIP(), []int{67}
+	return file_proto_cleanroom_v1_control_proto_rawDescGZIP(), []int{70}
 }
 
 func (x *CreateExecutionRequest) GetSandboxId() string {
@@ -4656,7 +4988,7 @@ type CreateExecutionResponse struct {
 
 func (x *CreateExecutionResponse) Reset() {
 	*x = CreateExecutionResponse{}
-	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[68]
+	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[71]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4668,7 +5000,7 @@ func (x *CreateExecutionResponse) String() string {
 func (*CreateExecutionResponse) ProtoMessage() {}
 
 func (x *CreateExecutionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[68]
+	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[71]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4681,7 +5013,7 @@ func (x *CreateExecutionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateExecutionResponse.ProtoReflect.Descriptor instead.
 func (*CreateExecutionResponse) Descriptor() ([]byte, []int) {
-	return file_proto_cleanroom_v1_control_proto_rawDescGZIP(), []int{68}
+	return file_proto_cleanroom_v1_control_proto_rawDescGZIP(), []int{71}
 }
 
 func (x *CreateExecutionResponse) GetExecution() *Execution {
@@ -4703,7 +5035,7 @@ type AttachExecutionRequest struct {
 
 func (x *AttachExecutionRequest) Reset() {
 	*x = AttachExecutionRequest{}
-	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[69]
+	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[72]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4715,7 +5047,7 @@ func (x *AttachExecutionRequest) String() string {
 func (*AttachExecutionRequest) ProtoMessage() {}
 
 func (x *AttachExecutionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[69]
+	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[72]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4728,7 +5060,7 @@ func (x *AttachExecutionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AttachExecutionRequest.ProtoReflect.Descriptor instead.
 func (*AttachExecutionRequest) Descriptor() ([]byte, []int) {
-	return file_proto_cleanroom_v1_control_proto_rawDescGZIP(), []int{69}
+	return file_proto_cleanroom_v1_control_proto_rawDescGZIP(), []int{72}
 }
 
 func (x *AttachExecutionRequest) GetSandboxId() string {
@@ -4773,7 +5105,7 @@ type AttachExecutionResponse struct {
 
 func (x *AttachExecutionResponse) Reset() {
 	*x = AttachExecutionResponse{}
-	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[70]
+	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[73]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4785,7 +5117,7 @@ func (x *AttachExecutionResponse) String() string {
 func (*AttachExecutionResponse) ProtoMessage() {}
 
 func (x *AttachExecutionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[70]
+	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[73]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4798,7 +5130,7 @@ func (x *AttachExecutionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AttachExecutionResponse.ProtoReflect.Descriptor instead.
 func (*AttachExecutionResponse) Descriptor() ([]byte, []int) {
-	return file_proto_cleanroom_v1_control_proto_rawDescGZIP(), []int{70}
+	return file_proto_cleanroom_v1_control_proto_rawDescGZIP(), []int{73}
 }
 
 func (x *AttachExecutionResponse) GetSessionId() string {
@@ -4853,7 +5185,7 @@ type GetExecutionRequest struct {
 
 func (x *GetExecutionRequest) Reset() {
 	*x = GetExecutionRequest{}
-	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[71]
+	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[74]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4865,7 +5197,7 @@ func (x *GetExecutionRequest) String() string {
 func (*GetExecutionRequest) ProtoMessage() {}
 
 func (x *GetExecutionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[71]
+	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[74]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4878,7 +5210,7 @@ func (x *GetExecutionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetExecutionRequest.ProtoReflect.Descriptor instead.
 func (*GetExecutionRequest) Descriptor() ([]byte, []int) {
-	return file_proto_cleanroom_v1_control_proto_rawDescGZIP(), []int{71}
+	return file_proto_cleanroom_v1_control_proto_rawDescGZIP(), []int{74}
 }
 
 func (x *GetExecutionRequest) GetSandboxId() string {
@@ -4904,7 +5236,7 @@ type GetExecutionResponse struct {
 
 func (x *GetExecutionResponse) Reset() {
 	*x = GetExecutionResponse{}
-	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[72]
+	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[75]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4916,7 +5248,7 @@ func (x *GetExecutionResponse) String() string {
 func (*GetExecutionResponse) ProtoMessage() {}
 
 func (x *GetExecutionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[72]
+	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[75]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4929,7 +5261,7 @@ func (x *GetExecutionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetExecutionResponse.ProtoReflect.Descriptor instead.
 func (*GetExecutionResponse) Descriptor() ([]byte, []int) {
-	return file_proto_cleanroom_v1_control_proto_rawDescGZIP(), []int{72}
+	return file_proto_cleanroom_v1_control_proto_rawDescGZIP(), []int{75}
 }
 
 func (x *GetExecutionResponse) GetExecution() *Execution {
@@ -4949,7 +5281,7 @@ type InspectExecutionRequest struct {
 
 func (x *InspectExecutionRequest) Reset() {
 	*x = InspectExecutionRequest{}
-	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[73]
+	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[76]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4961,7 +5293,7 @@ func (x *InspectExecutionRequest) String() string {
 func (*InspectExecutionRequest) ProtoMessage() {}
 
 func (x *InspectExecutionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[73]
+	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[76]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4974,7 +5306,7 @@ func (x *InspectExecutionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InspectExecutionRequest.ProtoReflect.Descriptor instead.
 func (*InspectExecutionRequest) Descriptor() ([]byte, []int) {
-	return file_proto_cleanroom_v1_control_proto_rawDescGZIP(), []int{73}
+	return file_proto_cleanroom_v1_control_proto_rawDescGZIP(), []int{76}
 }
 
 func (x *InspectExecutionRequest) GetSandboxId() string {
@@ -5011,7 +5343,7 @@ type InspectExecutionResponse struct {
 
 func (x *InspectExecutionResponse) Reset() {
 	*x = InspectExecutionResponse{}
-	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[74]
+	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[77]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5023,7 +5355,7 @@ func (x *InspectExecutionResponse) String() string {
 func (*InspectExecutionResponse) ProtoMessage() {}
 
 func (x *InspectExecutionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[74]
+	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[77]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5036,7 +5368,7 @@ func (x *InspectExecutionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InspectExecutionResponse.ProtoReflect.Descriptor instead.
 func (*InspectExecutionResponse) Descriptor() ([]byte, []int) {
-	return file_proto_cleanroom_v1_control_proto_rawDescGZIP(), []int{74}
+	return file_proto_cleanroom_v1_control_proto_rawDescGZIP(), []int{77}
 }
 
 func (x *InspectExecutionResponse) GetExecution() *Execution {
@@ -5134,7 +5466,7 @@ type CancelExecutionRequest struct {
 
 func (x *CancelExecutionRequest) Reset() {
 	*x = CancelExecutionRequest{}
-	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[75]
+	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[78]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5146,7 +5478,7 @@ func (x *CancelExecutionRequest) String() string {
 func (*CancelExecutionRequest) ProtoMessage() {}
 
 func (x *CancelExecutionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[75]
+	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[78]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5159,7 +5491,7 @@ func (x *CancelExecutionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CancelExecutionRequest.ProtoReflect.Descriptor instead.
 func (*CancelExecutionRequest) Descriptor() ([]byte, []int) {
-	return file_proto_cleanroom_v1_control_proto_rawDescGZIP(), []int{75}
+	return file_proto_cleanroom_v1_control_proto_rawDescGZIP(), []int{78}
 }
 
 func (x *CancelExecutionRequest) GetSandboxId() string {
@@ -5195,7 +5527,7 @@ type CancelExecutionResponse struct {
 
 func (x *CancelExecutionResponse) Reset() {
 	*x = CancelExecutionResponse{}
-	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[76]
+	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[79]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5207,7 +5539,7 @@ func (x *CancelExecutionResponse) String() string {
 func (*CancelExecutionResponse) ProtoMessage() {}
 
 func (x *CancelExecutionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[76]
+	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[79]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5220,7 +5552,7 @@ func (x *CancelExecutionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CancelExecutionResponse.ProtoReflect.Descriptor instead.
 func (*CancelExecutionResponse) Descriptor() ([]byte, []int) {
-	return file_proto_cleanroom_v1_control_proto_rawDescGZIP(), []int{76}
+	return file_proto_cleanroom_v1_control_proto_rawDescGZIP(), []int{79}
 }
 
 func (x *CancelExecutionResponse) GetSandboxId() string {
@@ -5262,7 +5594,7 @@ type WriteExecutionStdinRequest struct {
 
 func (x *WriteExecutionStdinRequest) Reset() {
 	*x = WriteExecutionStdinRequest{}
-	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[77]
+	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[80]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5274,7 +5606,7 @@ func (x *WriteExecutionStdinRequest) String() string {
 func (*WriteExecutionStdinRequest) ProtoMessage() {}
 
 func (x *WriteExecutionStdinRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[77]
+	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[80]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5287,7 +5619,7 @@ func (x *WriteExecutionStdinRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WriteExecutionStdinRequest.ProtoReflect.Descriptor instead.
 func (*WriteExecutionStdinRequest) Descriptor() ([]byte, []int) {
-	return file_proto_cleanroom_v1_control_proto_rawDescGZIP(), []int{77}
+	return file_proto_cleanroom_v1_control_proto_rawDescGZIP(), []int{80}
 }
 
 func (x *WriteExecutionStdinRequest) GetSandboxId() string {
@@ -5319,7 +5651,7 @@ type WriteExecutionStdinResponse struct {
 
 func (x *WriteExecutionStdinResponse) Reset() {
 	*x = WriteExecutionStdinResponse{}
-	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[78]
+	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[81]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5331,7 +5663,7 @@ func (x *WriteExecutionStdinResponse) String() string {
 func (*WriteExecutionStdinResponse) ProtoMessage() {}
 
 func (x *WriteExecutionStdinResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[78]
+	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[81]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5344,7 +5676,7 @@ func (x *WriteExecutionStdinResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WriteExecutionStdinResponse.ProtoReflect.Descriptor instead.
 func (*WriteExecutionStdinResponse) Descriptor() ([]byte, []int) {
-	return file_proto_cleanroom_v1_control_proto_rawDescGZIP(), []int{78}
+	return file_proto_cleanroom_v1_control_proto_rawDescGZIP(), []int{81}
 }
 
 type CloseExecutionStdinRequest struct {
@@ -5357,7 +5689,7 @@ type CloseExecutionStdinRequest struct {
 
 func (x *CloseExecutionStdinRequest) Reset() {
 	*x = CloseExecutionStdinRequest{}
-	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[79]
+	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[82]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5369,7 +5701,7 @@ func (x *CloseExecutionStdinRequest) String() string {
 func (*CloseExecutionStdinRequest) ProtoMessage() {}
 
 func (x *CloseExecutionStdinRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[79]
+	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[82]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5382,7 +5714,7 @@ func (x *CloseExecutionStdinRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CloseExecutionStdinRequest.ProtoReflect.Descriptor instead.
 func (*CloseExecutionStdinRequest) Descriptor() ([]byte, []int) {
-	return file_proto_cleanroom_v1_control_proto_rawDescGZIP(), []int{79}
+	return file_proto_cleanroom_v1_control_proto_rawDescGZIP(), []int{82}
 }
 
 func (x *CloseExecutionStdinRequest) GetSandboxId() string {
@@ -5407,7 +5739,7 @@ type CloseExecutionStdinResponse struct {
 
 func (x *CloseExecutionStdinResponse) Reset() {
 	*x = CloseExecutionStdinResponse{}
-	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[80]
+	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[83]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5419,7 +5751,7 @@ func (x *CloseExecutionStdinResponse) String() string {
 func (*CloseExecutionStdinResponse) ProtoMessage() {}
 
 func (x *CloseExecutionStdinResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[80]
+	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[83]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5432,7 +5764,7 @@ func (x *CloseExecutionStdinResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CloseExecutionStdinResponse.ProtoReflect.Descriptor instead.
 func (*CloseExecutionStdinResponse) Descriptor() ([]byte, []int) {
-	return file_proto_cleanroom_v1_control_proto_rawDescGZIP(), []int{80}
+	return file_proto_cleanroom_v1_control_proto_rawDescGZIP(), []int{83}
 }
 
 type StreamExecutionRequest struct {
@@ -5446,7 +5778,7 @@ type StreamExecutionRequest struct {
 
 func (x *StreamExecutionRequest) Reset() {
 	*x = StreamExecutionRequest{}
-	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[81]
+	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[84]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5458,7 +5790,7 @@ func (x *StreamExecutionRequest) String() string {
 func (*StreamExecutionRequest) ProtoMessage() {}
 
 func (x *StreamExecutionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[81]
+	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[84]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5471,7 +5803,7 @@ func (x *StreamExecutionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StreamExecutionRequest.ProtoReflect.Descriptor instead.
 func (*StreamExecutionRequest) Descriptor() ([]byte, []int) {
-	return file_proto_cleanroom_v1_control_proto_rawDescGZIP(), []int{81}
+	return file_proto_cleanroom_v1_control_proto_rawDescGZIP(), []int{84}
 }
 
 func (x *StreamExecutionRequest) GetSandboxId() string {
@@ -5506,7 +5838,7 @@ type ExecutionExit struct {
 
 func (x *ExecutionExit) Reset() {
 	*x = ExecutionExit{}
-	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[82]
+	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[85]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5518,7 +5850,7 @@ func (x *ExecutionExit) String() string {
 func (*ExecutionExit) ProtoMessage() {}
 
 func (x *ExecutionExit) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[82]
+	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[85]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5531,7 +5863,7 @@ func (x *ExecutionExit) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExecutionExit.ProtoReflect.Descriptor instead.
 func (*ExecutionExit) Descriptor() ([]byte, []int) {
-	return file_proto_cleanroom_v1_control_proto_rawDescGZIP(), []int{82}
+	return file_proto_cleanroom_v1_control_proto_rawDescGZIP(), []int{85}
 }
 
 func (x *ExecutionExit) GetExitCode() int32 {
@@ -5577,7 +5909,7 @@ type ExecutionStreamEvent struct {
 
 func (x *ExecutionStreamEvent) Reset() {
 	*x = ExecutionStreamEvent{}
-	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[83]
+	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[86]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5589,7 +5921,7 @@ func (x *ExecutionStreamEvent) String() string {
 func (*ExecutionStreamEvent) ProtoMessage() {}
 
 func (x *ExecutionStreamEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[83]
+	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[86]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5602,7 +5934,7 @@ func (x *ExecutionStreamEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExecutionStreamEvent.ProtoReflect.Descriptor instead.
 func (*ExecutionStreamEvent) Descriptor() ([]byte, []int) {
-	return file_proto_cleanroom_v1_control_proto_rawDescGZIP(), []int{83}
+	return file_proto_cleanroom_v1_control_proto_rawDescGZIP(), []int{86}
 }
 
 func (x *ExecutionStreamEvent) GetSandboxId() string {
@@ -5742,7 +6074,7 @@ type SandboxPortOpenResult struct {
 
 func (x *SandboxPortOpenResult) Reset() {
 	*x = SandboxPortOpenResult{}
-	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[84]
+	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[87]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5754,7 +6086,7 @@ func (x *SandboxPortOpenResult) String() string {
 func (*SandboxPortOpenResult) ProtoMessage() {}
 
 func (x *SandboxPortOpenResult) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[84]
+	mi := &file_proto_cleanroom_v1_control_proto_msgTypes[87]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5767,7 +6099,7 @@ func (x *SandboxPortOpenResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SandboxPortOpenResult.ProtoReflect.Descriptor instead.
 func (*SandboxPortOpenResult) Descriptor() ([]byte, []int) {
-	return file_proto_cleanroom_v1_control_proto_rawDescGZIP(), []int{84}
+	return file_proto_cleanroom_v1_control_proto_rawDescGZIP(), []int{87}
 }
 
 func (x *SandboxPortOpenResult) GetError() string {
@@ -6107,7 +6439,45 @@ const file_proto_cleanroom_v1_control_proto_rawDesc = "" +
 	"\vsnapshot_id\x18\x01 \x01(\tR\n" +
 	"snapshotId\x12\x18\n" +
 	"\adeleted\x18\x02 \x01(\bR\adeleted\x12\x18\n" +
-	"\amessage\x18\x03 \x01(\tR\amessage\"\x84\x03\n" +
+	"\amessage\x18\x03 \x01(\tR\amessage\"\x82\x03\n" +
+	"\x16LookupCachePeerRequest\x12\x14\n" +
+	"\x05stage\x18\x01 \x01(\tR\x05stage\x12\x1b\n" +
+	"\tcache_key\x18\x02 \x01(\tR\bcacheKey\x12\x18\n" +
+	"\abackend\x18\x03 \x01(\tR\abackend\x12%\n" +
+	"\x0estorage_driver\x18\x04 \x01(\tR\rstorageDriver\x12\"\n" +
+	"\farchitecture\x18\x05 \x01(\tR\farchitecture\x12)\n" +
+	"\x10producer_version\x18\x06 \x01(\tR\x0fproducerVersion\x12\x1f\n" +
+	"\vpolicy_hash\x18\a \x01(\tR\n" +
+	"policyHash\x12(\n" +
+	"\x10parent_cache_key\x18\b \x01(\tR\x0eparentCacheKey\x127\n" +
+	"\x18parent_zfs_snapshot_guid\x18\t \x01(\tR\x15parentZfsSnapshotGuid\x12!\n" +
+	"\fparent_stage\x18\n" +
+	" \x01(\tR\vparentStage\"z\n" +
+	"\x17LookupCachePeerResponse\x12>\n" +
+	"\tcandidate\x18\x01 \x01(\v2 .cleanroom.v1.CachePeerCandidateR\tcandidate\x12\x1f\n" +
+	"\vmiss_reason\x18\x02 \x01(\tR\n" +
+	"missReason\"\x86\x05\n" +
+	"\x12CachePeerCandidate\x12%\n" +
+	"\x0etransfer_token\x18\x01 \x01(\tR\rtransferToken\x12\x14\n" +
+	"\x05stage\x18\x02 \x01(\tR\x05stage\x12\x1b\n" +
+	"\tcache_key\x18\x03 \x01(\tR\bcacheKey\x12.\n" +
+	"\x13backing_snapshot_id\x18\x04 \x01(\tR\x11backingSnapshotId\x12\x1f\n" +
+	"\vstorage_ref\x18\x05 \x01(\tR\n" +
+	"storageRef\x12(\n" +
+	"\x10parent_cache_key\x18\x06 \x01(\tR\x0eparentCacheKey\x12*\n" +
+	"\x11zfs_snapshot_guid\x18\a \x01(\tR\x0fzfsSnapshotGuid\x127\n" +
+	"\x18zfs_parent_snapshot_guid\x18\b \x01(\tR\x15zfsParentSnapshotGuid\x12)\n" +
+	"\x10producer_version\x18\t \x01(\tR\x0fproducerVersion\x12\x18\n" +
+	"\abackend\x18\n" +
+	" \x01(\tR\abackend\x12%\n" +
+	"\x0estorage_driver\x18\v \x01(\tR\rstorageDriver\x12\"\n" +
+	"\farchitecture\x18\f \x01(\tR\farchitecture\x12\x1f\n" +
+	"\vpolicy_hash\x18\r \x01(\tR\n" +
+	"policyHash\x12'\n" +
+	"\x0festimated_bytes\x18\x0e \x01(\x03R\x0eestimatedBytes\x129\n" +
+	"\n" +
+	"expires_at\x18\x0f \x01(\v2\x1a.google.protobuf.TimestampR\texpiresAt\x12!\n" +
+	"\fparent_stage\x18\x10 \x01(\tR\vparentStage\"\x84\x03\n" +
 	"\tExecution\x12!\n" +
 	"\fexecution_id\x18\x01 \x01(\tR\vexecutionId\x12\x1d\n" +
 	"\n" +
@@ -6293,7 +6663,9 @@ const file_proto_cleanroom_v1_control_proto_rawDesc = "" +
 	"\x0eCreateSnapshot\x12#.cleanroom.v1.CreateSnapshotRequest\x1a$.cleanroom.v1.CreateSnapshotResponse\x12R\n" +
 	"\vGetSnapshot\x12 .cleanroom.v1.GetSnapshotRequest\x1a!.cleanroom.v1.GetSnapshotResponse\x12X\n" +
 	"\rListSnapshots\x12\".cleanroom.v1.ListSnapshotsRequest\x1a#.cleanroom.v1.ListSnapshotsResponse\x12[\n" +
-	"\x0eDeleteSnapshot\x12#.cleanroom.v1.DeleteSnapshotRequest\x1a$.cleanroom.v1.DeleteSnapshotResponse2\x80\a\n" +
+	"\x0eDeleteSnapshot\x12#.cleanroom.v1.DeleteSnapshotRequest\x1a$.cleanroom.v1.DeleteSnapshotResponse2r\n" +
+	"\x10CachePeerService\x12^\n" +
+	"\x0fLookupCachePeer\x12$.cleanroom.v1.LookupCachePeerRequest\x1a%.cleanroom.v1.LookupCachePeerResponse2\x80\a\n" +
 	"\x10ExecutionService\x12[\n" +
 	"\x0eListExecutions\x12#.cleanroom.v1.ListExecutionsRequest\x1a$.cleanroom.v1.ListExecutionsResponse\x12^\n" +
 	"\x0fCreateExecution\x12$.cleanroom.v1.CreateExecutionRequest\x1a%.cleanroom.v1.CreateExecutionResponse\x12^\n" +
@@ -6318,7 +6690,7 @@ func file_proto_cleanroom_v1_control_proto_rawDescGZIP() []byte {
 }
 
 var file_proto_cleanroom_v1_control_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
-var file_proto_cleanroom_v1_control_proto_msgTypes = make([]protoimpl.MessageInfo, 87)
+var file_proto_cleanroom_v1_control_proto_msgTypes = make([]protoimpl.MessageInfo, 90)
 var file_proto_cleanroom_v1_control_proto_goTypes = []any{
 	(SandboxStatus)(0),                    // 0: cleanroom.v1.SandboxStatus
 	(CreateSandboxPhase)(0),               // 1: cleanroom.v1.CreateSandboxPhase
@@ -6390,164 +6762,171 @@ var file_proto_cleanroom_v1_control_proto_goTypes = []any{
 	(*ListSnapshotsResponse)(nil),         // 67: cleanroom.v1.ListSnapshotsResponse
 	(*DeleteSnapshotRequest)(nil),         // 68: cleanroom.v1.DeleteSnapshotRequest
 	(*DeleteSnapshotResponse)(nil),        // 69: cleanroom.v1.DeleteSnapshotResponse
-	(*Execution)(nil),                     // 70: cleanroom.v1.Execution
-	(*ExecutionOptions)(nil),              // 71: cleanroom.v1.ExecutionOptions
-	(*CreateExecutionRequest)(nil),        // 72: cleanroom.v1.CreateExecutionRequest
-	(*CreateExecutionResponse)(nil),       // 73: cleanroom.v1.CreateExecutionResponse
-	(*AttachExecutionRequest)(nil),        // 74: cleanroom.v1.AttachExecutionRequest
-	(*AttachExecutionResponse)(nil),       // 75: cleanroom.v1.AttachExecutionResponse
-	(*GetExecutionRequest)(nil),           // 76: cleanroom.v1.GetExecutionRequest
-	(*GetExecutionResponse)(nil),          // 77: cleanroom.v1.GetExecutionResponse
-	(*InspectExecutionRequest)(nil),       // 78: cleanroom.v1.InspectExecutionRequest
-	(*InspectExecutionResponse)(nil),      // 79: cleanroom.v1.InspectExecutionResponse
-	(*CancelExecutionRequest)(nil),        // 80: cleanroom.v1.CancelExecutionRequest
-	(*CancelExecutionResponse)(nil),       // 81: cleanroom.v1.CancelExecutionResponse
-	(*WriteExecutionStdinRequest)(nil),    // 82: cleanroom.v1.WriteExecutionStdinRequest
-	(*WriteExecutionStdinResponse)(nil),   // 83: cleanroom.v1.WriteExecutionStdinResponse
-	(*CloseExecutionStdinRequest)(nil),    // 84: cleanroom.v1.CloseExecutionStdinRequest
-	(*CloseExecutionStdinResponse)(nil),   // 85: cleanroom.v1.CloseExecutionStdinResponse
-	(*StreamExecutionRequest)(nil),        // 86: cleanroom.v1.StreamExecutionRequest
-	(*ExecutionExit)(nil),                 // 87: cleanroom.v1.ExecutionExit
-	(*ExecutionStreamEvent)(nil),          // 88: cleanroom.v1.ExecutionStreamEvent
-	(*SandboxPortOpenResult)(nil),         // 89: cleanroom.v1.SandboxPortOpenResult
-	nil,                                   // 90: cleanroom.v1.Sandbox.BackendCapabilitiesEntry
-	nil,                                   // 91: cleanroom.v1.PolicyBlock.EnvEntry
-	(*timestamppb.Timestamp)(nil),         // 92: google.protobuf.Timestamp
-	(*structpb.Struct)(nil),               // 93: google.protobuf.Struct
+	(*LookupCachePeerRequest)(nil),        // 70: cleanroom.v1.LookupCachePeerRequest
+	(*LookupCachePeerResponse)(nil),       // 71: cleanroom.v1.LookupCachePeerResponse
+	(*CachePeerCandidate)(nil),            // 72: cleanroom.v1.CachePeerCandidate
+	(*Execution)(nil),                     // 73: cleanroom.v1.Execution
+	(*ExecutionOptions)(nil),              // 74: cleanroom.v1.ExecutionOptions
+	(*CreateExecutionRequest)(nil),        // 75: cleanroom.v1.CreateExecutionRequest
+	(*CreateExecutionResponse)(nil),       // 76: cleanroom.v1.CreateExecutionResponse
+	(*AttachExecutionRequest)(nil),        // 77: cleanroom.v1.AttachExecutionRequest
+	(*AttachExecutionResponse)(nil),       // 78: cleanroom.v1.AttachExecutionResponse
+	(*GetExecutionRequest)(nil),           // 79: cleanroom.v1.GetExecutionRequest
+	(*GetExecutionResponse)(nil),          // 80: cleanroom.v1.GetExecutionResponse
+	(*InspectExecutionRequest)(nil),       // 81: cleanroom.v1.InspectExecutionRequest
+	(*InspectExecutionResponse)(nil),      // 82: cleanroom.v1.InspectExecutionResponse
+	(*CancelExecutionRequest)(nil),        // 83: cleanroom.v1.CancelExecutionRequest
+	(*CancelExecutionResponse)(nil),       // 84: cleanroom.v1.CancelExecutionResponse
+	(*WriteExecutionStdinRequest)(nil),    // 85: cleanroom.v1.WriteExecutionStdinRequest
+	(*WriteExecutionStdinResponse)(nil),   // 86: cleanroom.v1.WriteExecutionStdinResponse
+	(*CloseExecutionStdinRequest)(nil),    // 87: cleanroom.v1.CloseExecutionStdinRequest
+	(*CloseExecutionStdinResponse)(nil),   // 88: cleanroom.v1.CloseExecutionStdinResponse
+	(*StreamExecutionRequest)(nil),        // 89: cleanroom.v1.StreamExecutionRequest
+	(*ExecutionExit)(nil),                 // 90: cleanroom.v1.ExecutionExit
+	(*ExecutionStreamEvent)(nil),          // 91: cleanroom.v1.ExecutionStreamEvent
+	(*SandboxPortOpenResult)(nil),         // 92: cleanroom.v1.SandboxPortOpenResult
+	nil,                                   // 93: cleanroom.v1.Sandbox.BackendCapabilitiesEntry
+	nil,                                   // 94: cleanroom.v1.PolicyBlock.EnvEntry
+	(*timestamppb.Timestamp)(nil),         // 95: google.protobuf.Timestamp
+	(*structpb.Struct)(nil),               // 96: google.protobuf.Struct
 }
 var file_proto_cleanroom_v1_control_proto_depIdxs = []int32{
-	0,  // 0: cleanroom.v1.Sandbox.status:type_name -> cleanroom.v1.SandboxStatus
-	92, // 1: cleanroom.v1.Sandbox.created_at:type_name -> google.protobuf.Timestamp
-	92, // 2: cleanroom.v1.Sandbox.updated_at:type_name -> google.protobuf.Timestamp
-	24, // 3: cleanroom.v1.Sandbox.repository_checkout:type_name -> cleanroom.v1.RepositoryCheckout
-	90, // 4: cleanroom.v1.Sandbox.backend_capabilities:type_name -> cleanroom.v1.Sandbox.BackendCapabilitiesEntry
-	8,  // 5: cleanroom.v1.SandboxPortFrame.open:type_name -> cleanroom.v1.SandboxPortOpen
-	9,  // 6: cleanroom.v1.SandboxPortFrame.close_write:type_name -> cleanroom.v1.SandboxPortCloseWrite
-	89, // 7: cleanroom.v1.SandboxPortFrame.open_result:type_name -> cleanroom.v1.SandboxPortOpenResult
-	92, // 8: cleanroom.v1.Snapshot.created_at:type_name -> google.protobuf.Timestamp
-	24, // 9: cleanroom.v1.Snapshot.repository_checkout:type_name -> cleanroom.v1.RepositoryCheckout
-	13, // 10: cleanroom.v1.PolicyBlock.inputs:type_name -> cleanroom.v1.PolicyBlockInputs
-	91, // 11: cleanroom.v1.PolicyBlock.env:type_name -> cleanroom.v1.PolicyBlock.EnvEntry
-	14, // 12: cleanroom.v1.PolicyBlock.outputs:type_name -> cleanroom.v1.PolicyBlockOutputs
-	15, // 13: cleanroom.v1.PolicyServices.blocks:type_name -> cleanroom.v1.PolicyBlock
-	15, // 14: cleanroom.v1.PolicyDependencies.blocks:type_name -> cleanroom.v1.PolicyBlock
-	11, // 15: cleanroom.v1.PolicyNetwork.allow:type_name -> cleanroom.v1.PolicyAllowRule
-	19, // 16: cleanroom.v1.PolicyNetworkStages.workspace:type_name -> cleanroom.v1.PolicyNetwork
-	19, // 17: cleanroom.v1.PolicyNetworkStages.dependencies:type_name -> cleanroom.v1.PolicyNetwork
-	19, // 18: cleanroom.v1.PolicyNetworkStages.services:type_name -> cleanroom.v1.PolicyNetwork
-	19, // 19: cleanroom.v1.PolicyNetworkStages.execution:type_name -> cleanroom.v1.PolicyNetwork
-	11, // 20: cleanroom.v1.Policy.allow:type_name -> cleanroom.v1.PolicyAllowRule
-	16, // 21: cleanroom.v1.Policy.services:type_name -> cleanroom.v1.PolicyServices
-	17, // 22: cleanroom.v1.Policy.dependencies:type_name -> cleanroom.v1.PolicyDependencies
-	18, // 23: cleanroom.v1.Policy.run:type_name -> cleanroom.v1.PolicyRun
-	21, // 24: cleanroom.v1.Policy.resources:type_name -> cleanroom.v1.PolicyResources
-	20, // 25: cleanroom.v1.Policy.network_stages:type_name -> cleanroom.v1.PolicyNetworkStages
-	12, // 26: cleanroom.v1.Policy.docker:type_name -> cleanroom.v1.PolicyDocker
-	25, // 27: cleanroom.v1.RepositoryChangeset.files:type_name -> cleanroom.v1.RepositoryChangesetFile
-	23, // 28: cleanroom.v1.CreateSandboxRequest.options:type_name -> cleanroom.v1.SandboxOptions
-	22, // 29: cleanroom.v1.CreateSandboxRequest.policy:type_name -> cleanroom.v1.Policy
-	24, // 30: cleanroom.v1.CreateSandboxRequest.repository_checkout:type_name -> cleanroom.v1.RepositoryCheckout
-	26, // 31: cleanroom.v1.CreateSandboxRequest.repository_changeset:type_name -> cleanroom.v1.RepositoryChangeset
-	27, // 32: cleanroom.v1.CreateSandboxRequest.repository_commit_bundle:type_name -> cleanroom.v1.RepositoryCommitBundle
-	5,  // 33: cleanroom.v1.CreateSandboxResponse.sandbox:type_name -> cleanroom.v1.Sandbox
-	1,  // 34: cleanroom.v1.CreateSandboxEvent.phase:type_name -> cleanroom.v1.CreateSandboxPhase
-	29, // 35: cleanroom.v1.CreateSandboxEvent.response:type_name -> cleanroom.v1.CreateSandboxResponse
-	92, // 36: cleanroom.v1.CreateSandboxEvent.occurred_at:type_name -> google.protobuf.Timestamp
-	5,  // 37: cleanroom.v1.GetSandboxResponse.sandbox:type_name -> cleanroom.v1.Sandbox
-	5,  // 38: cleanroom.v1.ListSandboxesResponse.sandboxes:type_name -> cleanroom.v1.Sandbox
-	70, // 39: cleanroom.v1.ListExecutionsResponse.executions:type_name -> cleanroom.v1.Execution
-	2,  // 40: cleanroom.v1.SandboxPathInfo.type:type_name -> cleanroom.v1.SandboxPathType
-	92, // 41: cleanroom.v1.SandboxPathInfo.mtime:type_name -> google.protobuf.Timestamp
-	41, // 42: cleanroom.v1.StatSandboxPathResponse.info:type_name -> cleanroom.v1.SandboxPathInfo
-	41, // 43: cleanroom.v1.WalkSandboxTreeResponse.info:type_name -> cleanroom.v1.SandboxPathInfo
-	92, // 44: cleanroom.v1.WriteSandboxFileInit.mtime:type_name -> google.protobuf.Timestamp
-	48, // 45: cleanroom.v1.WriteSandboxFileRequest.init:type_name -> cleanroom.v1.WriteSandboxFileInit
-	55, // 46: cleanroom.v1.ExtractSandboxArchiveRequest.init:type_name -> cleanroom.v1.ExtractSandboxArchiveInit
-	0,  // 47: cleanroom.v1.SandboxEvent.status:type_name -> cleanroom.v1.SandboxStatus
-	92, // 48: cleanroom.v1.SandboxEvent.occurred_at:type_name -> google.protobuf.Timestamp
-	10, // 49: cleanroom.v1.CreateSnapshotResponse.snapshot:type_name -> cleanroom.v1.Snapshot
-	10, // 50: cleanroom.v1.GetSnapshotResponse.snapshot:type_name -> cleanroom.v1.Snapshot
-	10, // 51: cleanroom.v1.ListSnapshotsResponse.snapshots:type_name -> cleanroom.v1.Snapshot
-	3,  // 52: cleanroom.v1.Execution.status:type_name -> cleanroom.v1.ExecutionStatus
-	92, // 53: cleanroom.v1.Execution.started_at:type_name -> google.protobuf.Timestamp
-	92, // 54: cleanroom.v1.Execution.finished_at:type_name -> google.protobuf.Timestamp
-	4,  // 55: cleanroom.v1.Execution.kind:type_name -> cleanroom.v1.ExecutionKind
-	71, // 56: cleanroom.v1.CreateExecutionRequest.options:type_name -> cleanroom.v1.ExecutionOptions
-	4,  // 57: cleanroom.v1.CreateExecutionRequest.kind:type_name -> cleanroom.v1.ExecutionKind
-	24, // 58: cleanroom.v1.CreateExecutionRequest.repository_checkout:type_name -> cleanroom.v1.RepositoryCheckout
-	70, // 59: cleanroom.v1.CreateExecutionResponse.execution:type_name -> cleanroom.v1.Execution
-	92, // 60: cleanroom.v1.AttachExecutionResponse.expires_at:type_name -> google.protobuf.Timestamp
-	70, // 61: cleanroom.v1.GetExecutionResponse.execution:type_name -> cleanroom.v1.Execution
-	70, // 62: cleanroom.v1.InspectExecutionResponse.execution:type_name -> cleanroom.v1.Execution
-	93, // 63: cleanroom.v1.InspectExecutionResponse.observability:type_name -> google.protobuf.Struct
-	3,  // 64: cleanroom.v1.CancelExecutionResponse.status:type_name -> cleanroom.v1.ExecutionStatus
-	3,  // 65: cleanroom.v1.ExecutionExit.status:type_name -> cleanroom.v1.ExecutionStatus
-	3,  // 66: cleanroom.v1.ExecutionStreamEvent.status:type_name -> cleanroom.v1.ExecutionStatus
-	87, // 67: cleanroom.v1.ExecutionStreamEvent.exit:type_name -> cleanroom.v1.ExecutionExit
-	92, // 68: cleanroom.v1.ExecutionStreamEvent.occurred_at:type_name -> google.protobuf.Timestamp
-	28, // 69: cleanroom.v1.SandboxService.CreateSandbox:input_type -> cleanroom.v1.CreateSandboxRequest
-	28, // 70: cleanroom.v1.SandboxService.CreateSandboxStream:input_type -> cleanroom.v1.CreateSandboxRequest
-	31, // 71: cleanroom.v1.SandboxService.GetSandbox:input_type -> cleanroom.v1.GetSandboxRequest
-	33, // 72: cleanroom.v1.SandboxService.ListSandboxes:input_type -> cleanroom.v1.ListSandboxesRequest
-	37, // 73: cleanroom.v1.SandboxService.DownloadSandboxFile:input_type -> cleanroom.v1.DownloadSandboxFileRequest
-	39, // 74: cleanroom.v1.SandboxService.UploadSandboxFile:input_type -> cleanroom.v1.UploadSandboxFileRequest
-	42, // 75: cleanroom.v1.SandboxService.StatSandboxPath:input_type -> cleanroom.v1.StatSandboxPathRequest
-	44, // 76: cleanroom.v1.SandboxService.WalkSandboxTree:input_type -> cleanroom.v1.WalkSandboxTreeRequest
-	46, // 77: cleanroom.v1.SandboxService.ReadSandboxFile:input_type -> cleanroom.v1.ReadSandboxFileRequest
-	49, // 78: cleanroom.v1.SandboxService.WriteSandboxFile:input_type -> cleanroom.v1.WriteSandboxFileRequest
-	51, // 79: cleanroom.v1.SandboxService.RemoveSandboxPath:input_type -> cleanroom.v1.RemoveSandboxPathRequest
-	53, // 80: cleanroom.v1.SandboxService.ArchiveSandboxPaths:input_type -> cleanroom.v1.ArchiveSandboxPathsRequest
-	56, // 81: cleanroom.v1.SandboxService.ExtractSandboxArchive:input_type -> cleanroom.v1.ExtractSandboxArchiveRequest
-	58, // 82: cleanroom.v1.SandboxService.TerminateSandbox:input_type -> cleanroom.v1.TerminateSandboxRequest
-	60, // 83: cleanroom.v1.SandboxService.StreamSandboxEvents:input_type -> cleanroom.v1.StreamSandboxEventsRequest
-	7,  // 84: cleanroom.v1.SandboxService.DialSandboxPort:input_type -> cleanroom.v1.SandboxPortFrame
-	62, // 85: cleanroom.v1.SnapshotService.CreateSnapshot:input_type -> cleanroom.v1.CreateSnapshotRequest
-	64, // 86: cleanroom.v1.SnapshotService.GetSnapshot:input_type -> cleanroom.v1.GetSnapshotRequest
-	66, // 87: cleanroom.v1.SnapshotService.ListSnapshots:input_type -> cleanroom.v1.ListSnapshotsRequest
-	68, // 88: cleanroom.v1.SnapshotService.DeleteSnapshot:input_type -> cleanroom.v1.DeleteSnapshotRequest
-	35, // 89: cleanroom.v1.ExecutionService.ListExecutions:input_type -> cleanroom.v1.ListExecutionsRequest
-	72, // 90: cleanroom.v1.ExecutionService.CreateExecution:input_type -> cleanroom.v1.CreateExecutionRequest
-	74, // 91: cleanroom.v1.ExecutionService.AttachExecution:input_type -> cleanroom.v1.AttachExecutionRequest
-	76, // 92: cleanroom.v1.ExecutionService.GetExecution:input_type -> cleanroom.v1.GetExecutionRequest
-	78, // 93: cleanroom.v1.ExecutionService.InspectExecution:input_type -> cleanroom.v1.InspectExecutionRequest
-	80, // 94: cleanroom.v1.ExecutionService.CancelExecution:input_type -> cleanroom.v1.CancelExecutionRequest
-	82, // 95: cleanroom.v1.ExecutionService.WriteExecutionStdin:input_type -> cleanroom.v1.WriteExecutionStdinRequest
-	84, // 96: cleanroom.v1.ExecutionService.CloseExecutionStdin:input_type -> cleanroom.v1.CloseExecutionStdinRequest
-	86, // 97: cleanroom.v1.ExecutionService.StreamExecution:input_type -> cleanroom.v1.StreamExecutionRequest
-	29, // 98: cleanroom.v1.SandboxService.CreateSandbox:output_type -> cleanroom.v1.CreateSandboxResponse
-	30, // 99: cleanroom.v1.SandboxService.CreateSandboxStream:output_type -> cleanroom.v1.CreateSandboxEvent
-	32, // 100: cleanroom.v1.SandboxService.GetSandbox:output_type -> cleanroom.v1.GetSandboxResponse
-	34, // 101: cleanroom.v1.SandboxService.ListSandboxes:output_type -> cleanroom.v1.ListSandboxesResponse
-	38, // 102: cleanroom.v1.SandboxService.DownloadSandboxFile:output_type -> cleanroom.v1.DownloadSandboxFileResponse
-	40, // 103: cleanroom.v1.SandboxService.UploadSandboxFile:output_type -> cleanroom.v1.UploadSandboxFileResponse
-	43, // 104: cleanroom.v1.SandboxService.StatSandboxPath:output_type -> cleanroom.v1.StatSandboxPathResponse
-	45, // 105: cleanroom.v1.SandboxService.WalkSandboxTree:output_type -> cleanroom.v1.WalkSandboxTreeResponse
-	47, // 106: cleanroom.v1.SandboxService.ReadSandboxFile:output_type -> cleanroom.v1.ReadSandboxFileResponse
-	50, // 107: cleanroom.v1.SandboxService.WriteSandboxFile:output_type -> cleanroom.v1.WriteSandboxFileResponse
-	52, // 108: cleanroom.v1.SandboxService.RemoveSandboxPath:output_type -> cleanroom.v1.RemoveSandboxPathResponse
-	54, // 109: cleanroom.v1.SandboxService.ArchiveSandboxPaths:output_type -> cleanroom.v1.ArchiveSandboxPathsResponse
-	57, // 110: cleanroom.v1.SandboxService.ExtractSandboxArchive:output_type -> cleanroom.v1.ExtractSandboxArchiveResponse
-	59, // 111: cleanroom.v1.SandboxService.TerminateSandbox:output_type -> cleanroom.v1.TerminateSandboxResponse
-	61, // 112: cleanroom.v1.SandboxService.StreamSandboxEvents:output_type -> cleanroom.v1.SandboxEvent
-	7,  // 113: cleanroom.v1.SandboxService.DialSandboxPort:output_type -> cleanroom.v1.SandboxPortFrame
-	63, // 114: cleanroom.v1.SnapshotService.CreateSnapshot:output_type -> cleanroom.v1.CreateSnapshotResponse
-	65, // 115: cleanroom.v1.SnapshotService.GetSnapshot:output_type -> cleanroom.v1.GetSnapshotResponse
-	67, // 116: cleanroom.v1.SnapshotService.ListSnapshots:output_type -> cleanroom.v1.ListSnapshotsResponse
-	69, // 117: cleanroom.v1.SnapshotService.DeleteSnapshot:output_type -> cleanroom.v1.DeleteSnapshotResponse
-	36, // 118: cleanroom.v1.ExecutionService.ListExecutions:output_type -> cleanroom.v1.ListExecutionsResponse
-	73, // 119: cleanroom.v1.ExecutionService.CreateExecution:output_type -> cleanroom.v1.CreateExecutionResponse
-	75, // 120: cleanroom.v1.ExecutionService.AttachExecution:output_type -> cleanroom.v1.AttachExecutionResponse
-	77, // 121: cleanroom.v1.ExecutionService.GetExecution:output_type -> cleanroom.v1.GetExecutionResponse
-	79, // 122: cleanroom.v1.ExecutionService.InspectExecution:output_type -> cleanroom.v1.InspectExecutionResponse
-	81, // 123: cleanroom.v1.ExecutionService.CancelExecution:output_type -> cleanroom.v1.CancelExecutionResponse
-	83, // 124: cleanroom.v1.ExecutionService.WriteExecutionStdin:output_type -> cleanroom.v1.WriteExecutionStdinResponse
-	85, // 125: cleanroom.v1.ExecutionService.CloseExecutionStdin:output_type -> cleanroom.v1.CloseExecutionStdinResponse
-	88, // 126: cleanroom.v1.ExecutionService.StreamExecution:output_type -> cleanroom.v1.ExecutionStreamEvent
-	98, // [98:127] is the sub-list for method output_type
-	69, // [69:98] is the sub-list for method input_type
-	69, // [69:69] is the sub-list for extension type_name
-	69, // [69:69] is the sub-list for extension extendee
-	0,  // [0:69] is the sub-list for field type_name
+	0,   // 0: cleanroom.v1.Sandbox.status:type_name -> cleanroom.v1.SandboxStatus
+	95,  // 1: cleanroom.v1.Sandbox.created_at:type_name -> google.protobuf.Timestamp
+	95,  // 2: cleanroom.v1.Sandbox.updated_at:type_name -> google.protobuf.Timestamp
+	24,  // 3: cleanroom.v1.Sandbox.repository_checkout:type_name -> cleanroom.v1.RepositoryCheckout
+	93,  // 4: cleanroom.v1.Sandbox.backend_capabilities:type_name -> cleanroom.v1.Sandbox.BackendCapabilitiesEntry
+	8,   // 5: cleanroom.v1.SandboxPortFrame.open:type_name -> cleanroom.v1.SandboxPortOpen
+	9,   // 6: cleanroom.v1.SandboxPortFrame.close_write:type_name -> cleanroom.v1.SandboxPortCloseWrite
+	92,  // 7: cleanroom.v1.SandboxPortFrame.open_result:type_name -> cleanroom.v1.SandboxPortOpenResult
+	95,  // 8: cleanroom.v1.Snapshot.created_at:type_name -> google.protobuf.Timestamp
+	24,  // 9: cleanroom.v1.Snapshot.repository_checkout:type_name -> cleanroom.v1.RepositoryCheckout
+	13,  // 10: cleanroom.v1.PolicyBlock.inputs:type_name -> cleanroom.v1.PolicyBlockInputs
+	94,  // 11: cleanroom.v1.PolicyBlock.env:type_name -> cleanroom.v1.PolicyBlock.EnvEntry
+	14,  // 12: cleanroom.v1.PolicyBlock.outputs:type_name -> cleanroom.v1.PolicyBlockOutputs
+	15,  // 13: cleanroom.v1.PolicyServices.blocks:type_name -> cleanroom.v1.PolicyBlock
+	15,  // 14: cleanroom.v1.PolicyDependencies.blocks:type_name -> cleanroom.v1.PolicyBlock
+	11,  // 15: cleanroom.v1.PolicyNetwork.allow:type_name -> cleanroom.v1.PolicyAllowRule
+	19,  // 16: cleanroom.v1.PolicyNetworkStages.workspace:type_name -> cleanroom.v1.PolicyNetwork
+	19,  // 17: cleanroom.v1.PolicyNetworkStages.dependencies:type_name -> cleanroom.v1.PolicyNetwork
+	19,  // 18: cleanroom.v1.PolicyNetworkStages.services:type_name -> cleanroom.v1.PolicyNetwork
+	19,  // 19: cleanroom.v1.PolicyNetworkStages.execution:type_name -> cleanroom.v1.PolicyNetwork
+	11,  // 20: cleanroom.v1.Policy.allow:type_name -> cleanroom.v1.PolicyAllowRule
+	16,  // 21: cleanroom.v1.Policy.services:type_name -> cleanroom.v1.PolicyServices
+	17,  // 22: cleanroom.v1.Policy.dependencies:type_name -> cleanroom.v1.PolicyDependencies
+	18,  // 23: cleanroom.v1.Policy.run:type_name -> cleanroom.v1.PolicyRun
+	21,  // 24: cleanroom.v1.Policy.resources:type_name -> cleanroom.v1.PolicyResources
+	20,  // 25: cleanroom.v1.Policy.network_stages:type_name -> cleanroom.v1.PolicyNetworkStages
+	12,  // 26: cleanroom.v1.Policy.docker:type_name -> cleanroom.v1.PolicyDocker
+	25,  // 27: cleanroom.v1.RepositoryChangeset.files:type_name -> cleanroom.v1.RepositoryChangesetFile
+	23,  // 28: cleanroom.v1.CreateSandboxRequest.options:type_name -> cleanroom.v1.SandboxOptions
+	22,  // 29: cleanroom.v1.CreateSandboxRequest.policy:type_name -> cleanroom.v1.Policy
+	24,  // 30: cleanroom.v1.CreateSandboxRequest.repository_checkout:type_name -> cleanroom.v1.RepositoryCheckout
+	26,  // 31: cleanroom.v1.CreateSandboxRequest.repository_changeset:type_name -> cleanroom.v1.RepositoryChangeset
+	27,  // 32: cleanroom.v1.CreateSandboxRequest.repository_commit_bundle:type_name -> cleanroom.v1.RepositoryCommitBundle
+	5,   // 33: cleanroom.v1.CreateSandboxResponse.sandbox:type_name -> cleanroom.v1.Sandbox
+	1,   // 34: cleanroom.v1.CreateSandboxEvent.phase:type_name -> cleanroom.v1.CreateSandboxPhase
+	29,  // 35: cleanroom.v1.CreateSandboxEvent.response:type_name -> cleanroom.v1.CreateSandboxResponse
+	95,  // 36: cleanroom.v1.CreateSandboxEvent.occurred_at:type_name -> google.protobuf.Timestamp
+	5,   // 37: cleanroom.v1.GetSandboxResponse.sandbox:type_name -> cleanroom.v1.Sandbox
+	5,   // 38: cleanroom.v1.ListSandboxesResponse.sandboxes:type_name -> cleanroom.v1.Sandbox
+	73,  // 39: cleanroom.v1.ListExecutionsResponse.executions:type_name -> cleanroom.v1.Execution
+	2,   // 40: cleanroom.v1.SandboxPathInfo.type:type_name -> cleanroom.v1.SandboxPathType
+	95,  // 41: cleanroom.v1.SandboxPathInfo.mtime:type_name -> google.protobuf.Timestamp
+	41,  // 42: cleanroom.v1.StatSandboxPathResponse.info:type_name -> cleanroom.v1.SandboxPathInfo
+	41,  // 43: cleanroom.v1.WalkSandboxTreeResponse.info:type_name -> cleanroom.v1.SandboxPathInfo
+	95,  // 44: cleanroom.v1.WriteSandboxFileInit.mtime:type_name -> google.protobuf.Timestamp
+	48,  // 45: cleanroom.v1.WriteSandboxFileRequest.init:type_name -> cleanroom.v1.WriteSandboxFileInit
+	55,  // 46: cleanroom.v1.ExtractSandboxArchiveRequest.init:type_name -> cleanroom.v1.ExtractSandboxArchiveInit
+	0,   // 47: cleanroom.v1.SandboxEvent.status:type_name -> cleanroom.v1.SandboxStatus
+	95,  // 48: cleanroom.v1.SandboxEvent.occurred_at:type_name -> google.protobuf.Timestamp
+	10,  // 49: cleanroom.v1.CreateSnapshotResponse.snapshot:type_name -> cleanroom.v1.Snapshot
+	10,  // 50: cleanroom.v1.GetSnapshotResponse.snapshot:type_name -> cleanroom.v1.Snapshot
+	10,  // 51: cleanroom.v1.ListSnapshotsResponse.snapshots:type_name -> cleanroom.v1.Snapshot
+	72,  // 52: cleanroom.v1.LookupCachePeerResponse.candidate:type_name -> cleanroom.v1.CachePeerCandidate
+	95,  // 53: cleanroom.v1.CachePeerCandidate.expires_at:type_name -> google.protobuf.Timestamp
+	3,   // 54: cleanroom.v1.Execution.status:type_name -> cleanroom.v1.ExecutionStatus
+	95,  // 55: cleanroom.v1.Execution.started_at:type_name -> google.protobuf.Timestamp
+	95,  // 56: cleanroom.v1.Execution.finished_at:type_name -> google.protobuf.Timestamp
+	4,   // 57: cleanroom.v1.Execution.kind:type_name -> cleanroom.v1.ExecutionKind
+	74,  // 58: cleanroom.v1.CreateExecutionRequest.options:type_name -> cleanroom.v1.ExecutionOptions
+	4,   // 59: cleanroom.v1.CreateExecutionRequest.kind:type_name -> cleanroom.v1.ExecutionKind
+	24,  // 60: cleanroom.v1.CreateExecutionRequest.repository_checkout:type_name -> cleanroom.v1.RepositoryCheckout
+	73,  // 61: cleanroom.v1.CreateExecutionResponse.execution:type_name -> cleanroom.v1.Execution
+	95,  // 62: cleanroom.v1.AttachExecutionResponse.expires_at:type_name -> google.protobuf.Timestamp
+	73,  // 63: cleanroom.v1.GetExecutionResponse.execution:type_name -> cleanroom.v1.Execution
+	73,  // 64: cleanroom.v1.InspectExecutionResponse.execution:type_name -> cleanroom.v1.Execution
+	96,  // 65: cleanroom.v1.InspectExecutionResponse.observability:type_name -> google.protobuf.Struct
+	3,   // 66: cleanroom.v1.CancelExecutionResponse.status:type_name -> cleanroom.v1.ExecutionStatus
+	3,   // 67: cleanroom.v1.ExecutionExit.status:type_name -> cleanroom.v1.ExecutionStatus
+	3,   // 68: cleanroom.v1.ExecutionStreamEvent.status:type_name -> cleanroom.v1.ExecutionStatus
+	90,  // 69: cleanroom.v1.ExecutionStreamEvent.exit:type_name -> cleanroom.v1.ExecutionExit
+	95,  // 70: cleanroom.v1.ExecutionStreamEvent.occurred_at:type_name -> google.protobuf.Timestamp
+	28,  // 71: cleanroom.v1.SandboxService.CreateSandbox:input_type -> cleanroom.v1.CreateSandboxRequest
+	28,  // 72: cleanroom.v1.SandboxService.CreateSandboxStream:input_type -> cleanroom.v1.CreateSandboxRequest
+	31,  // 73: cleanroom.v1.SandboxService.GetSandbox:input_type -> cleanroom.v1.GetSandboxRequest
+	33,  // 74: cleanroom.v1.SandboxService.ListSandboxes:input_type -> cleanroom.v1.ListSandboxesRequest
+	37,  // 75: cleanroom.v1.SandboxService.DownloadSandboxFile:input_type -> cleanroom.v1.DownloadSandboxFileRequest
+	39,  // 76: cleanroom.v1.SandboxService.UploadSandboxFile:input_type -> cleanroom.v1.UploadSandboxFileRequest
+	42,  // 77: cleanroom.v1.SandboxService.StatSandboxPath:input_type -> cleanroom.v1.StatSandboxPathRequest
+	44,  // 78: cleanroom.v1.SandboxService.WalkSandboxTree:input_type -> cleanroom.v1.WalkSandboxTreeRequest
+	46,  // 79: cleanroom.v1.SandboxService.ReadSandboxFile:input_type -> cleanroom.v1.ReadSandboxFileRequest
+	49,  // 80: cleanroom.v1.SandboxService.WriteSandboxFile:input_type -> cleanroom.v1.WriteSandboxFileRequest
+	51,  // 81: cleanroom.v1.SandboxService.RemoveSandboxPath:input_type -> cleanroom.v1.RemoveSandboxPathRequest
+	53,  // 82: cleanroom.v1.SandboxService.ArchiveSandboxPaths:input_type -> cleanroom.v1.ArchiveSandboxPathsRequest
+	56,  // 83: cleanroom.v1.SandboxService.ExtractSandboxArchive:input_type -> cleanroom.v1.ExtractSandboxArchiveRequest
+	58,  // 84: cleanroom.v1.SandboxService.TerminateSandbox:input_type -> cleanroom.v1.TerminateSandboxRequest
+	60,  // 85: cleanroom.v1.SandboxService.StreamSandboxEvents:input_type -> cleanroom.v1.StreamSandboxEventsRequest
+	7,   // 86: cleanroom.v1.SandboxService.DialSandboxPort:input_type -> cleanroom.v1.SandboxPortFrame
+	62,  // 87: cleanroom.v1.SnapshotService.CreateSnapshot:input_type -> cleanroom.v1.CreateSnapshotRequest
+	64,  // 88: cleanroom.v1.SnapshotService.GetSnapshot:input_type -> cleanroom.v1.GetSnapshotRequest
+	66,  // 89: cleanroom.v1.SnapshotService.ListSnapshots:input_type -> cleanroom.v1.ListSnapshotsRequest
+	68,  // 90: cleanroom.v1.SnapshotService.DeleteSnapshot:input_type -> cleanroom.v1.DeleteSnapshotRequest
+	70,  // 91: cleanroom.v1.CachePeerService.LookupCachePeer:input_type -> cleanroom.v1.LookupCachePeerRequest
+	35,  // 92: cleanroom.v1.ExecutionService.ListExecutions:input_type -> cleanroom.v1.ListExecutionsRequest
+	75,  // 93: cleanroom.v1.ExecutionService.CreateExecution:input_type -> cleanroom.v1.CreateExecutionRequest
+	77,  // 94: cleanroom.v1.ExecutionService.AttachExecution:input_type -> cleanroom.v1.AttachExecutionRequest
+	79,  // 95: cleanroom.v1.ExecutionService.GetExecution:input_type -> cleanroom.v1.GetExecutionRequest
+	81,  // 96: cleanroom.v1.ExecutionService.InspectExecution:input_type -> cleanroom.v1.InspectExecutionRequest
+	83,  // 97: cleanroom.v1.ExecutionService.CancelExecution:input_type -> cleanroom.v1.CancelExecutionRequest
+	85,  // 98: cleanroom.v1.ExecutionService.WriteExecutionStdin:input_type -> cleanroom.v1.WriteExecutionStdinRequest
+	87,  // 99: cleanroom.v1.ExecutionService.CloseExecutionStdin:input_type -> cleanroom.v1.CloseExecutionStdinRequest
+	89,  // 100: cleanroom.v1.ExecutionService.StreamExecution:input_type -> cleanroom.v1.StreamExecutionRequest
+	29,  // 101: cleanroom.v1.SandboxService.CreateSandbox:output_type -> cleanroom.v1.CreateSandboxResponse
+	30,  // 102: cleanroom.v1.SandboxService.CreateSandboxStream:output_type -> cleanroom.v1.CreateSandboxEvent
+	32,  // 103: cleanroom.v1.SandboxService.GetSandbox:output_type -> cleanroom.v1.GetSandboxResponse
+	34,  // 104: cleanroom.v1.SandboxService.ListSandboxes:output_type -> cleanroom.v1.ListSandboxesResponse
+	38,  // 105: cleanroom.v1.SandboxService.DownloadSandboxFile:output_type -> cleanroom.v1.DownloadSandboxFileResponse
+	40,  // 106: cleanroom.v1.SandboxService.UploadSandboxFile:output_type -> cleanroom.v1.UploadSandboxFileResponse
+	43,  // 107: cleanroom.v1.SandboxService.StatSandboxPath:output_type -> cleanroom.v1.StatSandboxPathResponse
+	45,  // 108: cleanroom.v1.SandboxService.WalkSandboxTree:output_type -> cleanroom.v1.WalkSandboxTreeResponse
+	47,  // 109: cleanroom.v1.SandboxService.ReadSandboxFile:output_type -> cleanroom.v1.ReadSandboxFileResponse
+	50,  // 110: cleanroom.v1.SandboxService.WriteSandboxFile:output_type -> cleanroom.v1.WriteSandboxFileResponse
+	52,  // 111: cleanroom.v1.SandboxService.RemoveSandboxPath:output_type -> cleanroom.v1.RemoveSandboxPathResponse
+	54,  // 112: cleanroom.v1.SandboxService.ArchiveSandboxPaths:output_type -> cleanroom.v1.ArchiveSandboxPathsResponse
+	57,  // 113: cleanroom.v1.SandboxService.ExtractSandboxArchive:output_type -> cleanroom.v1.ExtractSandboxArchiveResponse
+	59,  // 114: cleanroom.v1.SandboxService.TerminateSandbox:output_type -> cleanroom.v1.TerminateSandboxResponse
+	61,  // 115: cleanroom.v1.SandboxService.StreamSandboxEvents:output_type -> cleanroom.v1.SandboxEvent
+	7,   // 116: cleanroom.v1.SandboxService.DialSandboxPort:output_type -> cleanroom.v1.SandboxPortFrame
+	63,  // 117: cleanroom.v1.SnapshotService.CreateSnapshot:output_type -> cleanroom.v1.CreateSnapshotResponse
+	65,  // 118: cleanroom.v1.SnapshotService.GetSnapshot:output_type -> cleanroom.v1.GetSnapshotResponse
+	67,  // 119: cleanroom.v1.SnapshotService.ListSnapshots:output_type -> cleanroom.v1.ListSnapshotsResponse
+	69,  // 120: cleanroom.v1.SnapshotService.DeleteSnapshot:output_type -> cleanroom.v1.DeleteSnapshotResponse
+	71,  // 121: cleanroom.v1.CachePeerService.LookupCachePeer:output_type -> cleanroom.v1.LookupCachePeerResponse
+	36,  // 122: cleanroom.v1.ExecutionService.ListExecutions:output_type -> cleanroom.v1.ListExecutionsResponse
+	76,  // 123: cleanroom.v1.ExecutionService.CreateExecution:output_type -> cleanroom.v1.CreateExecutionResponse
+	78,  // 124: cleanroom.v1.ExecutionService.AttachExecution:output_type -> cleanroom.v1.AttachExecutionResponse
+	80,  // 125: cleanroom.v1.ExecutionService.GetExecution:output_type -> cleanroom.v1.GetExecutionResponse
+	82,  // 126: cleanroom.v1.ExecutionService.InspectExecution:output_type -> cleanroom.v1.InspectExecutionResponse
+	84,  // 127: cleanroom.v1.ExecutionService.CancelExecution:output_type -> cleanroom.v1.CancelExecutionResponse
+	86,  // 128: cleanroom.v1.ExecutionService.WriteExecutionStdin:output_type -> cleanroom.v1.WriteExecutionStdinResponse
+	88,  // 129: cleanroom.v1.ExecutionService.CloseExecutionStdin:output_type -> cleanroom.v1.CloseExecutionStdinResponse
+	91,  // 130: cleanroom.v1.ExecutionService.StreamExecution:output_type -> cleanroom.v1.ExecutionStreamEvent
+	101, // [101:131] is the sub-list for method output_type
+	71,  // [71:101] is the sub-list for method input_type
+	71,  // [71:71] is the sub-list for extension type_name
+	71,  // [71:71] is the sub-list for extension extendee
+	0,   // [0:71] is the sub-list for field type_name
 }
 
 func init() { file_proto_cleanroom_v1_control_proto_init() }
@@ -6579,7 +6958,7 @@ func file_proto_cleanroom_v1_control_proto_init() {
 		(*ExtractSandboxArchiveRequest_Init)(nil),
 		(*ExtractSandboxArchiveRequest_Data)(nil),
 	}
-	file_proto_cleanroom_v1_control_proto_msgTypes[83].OneofWrappers = []any{
+	file_proto_cleanroom_v1_control_proto_msgTypes[86].OneofWrappers = []any{
 		(*ExecutionStreamEvent_Stdout)(nil),
 		(*ExecutionStreamEvent_Stderr)(nil),
 		(*ExecutionStreamEvent_Exit)(nil),
@@ -6592,9 +6971,9 @@ func file_proto_cleanroom_v1_control_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_cleanroom_v1_control_proto_rawDesc), len(file_proto_cleanroom_v1_control_proto_rawDesc)),
 			NumEnums:      5,
-			NumMessages:   87,
+			NumMessages:   90,
 			NumExtensions: 0,
-			NumServices:   3,
+			NumServices:   4,
 		},
 		GoTypes:           file_proto_cleanroom_v1_control_proto_goTypes,
 		DependencyIndexes: file_proto_cleanroom_v1_control_proto_depIdxs,
