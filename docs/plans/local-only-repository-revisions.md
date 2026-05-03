@@ -1,39 +1,43 @@
 # Local-Only Repository Revisions Plan
 
+**Status:** Landed; use `--copy-in`
+**Last reviewed:** 2026-05-03
+
 ## Summary
 
-Teach `--include-local-changes` to include the full local repository state needed
-to reproduce the current workspace:
+Teach `--copy-in` to include the full local repository state needed to
+reproduce the current workspace:
 
 - local-only committed Git history, carried as a Git bundle
 - uncommitted and untracked worktree changes, carried as the existing changeset
   overlay
 
-The later UX cleanup can rename or replace this behavior with `--copy-in`. For
-this phase, keep the existing flag and broaden what it includes.
+The older `--include-local-changes` flag has been removed. `--copy-in` is the
+supported user-facing request-time changeset surface.
 
 ## Problem
 
-Repo-aware commands currently resolve the local repository remote URL and
-committed `HEAD`, then ask the control plane to materialize that exact checkout
-inside the sandbox.
+Before this work, repo-aware commands resolved the local repository remote URL
+and committed `HEAD`, then asked the control plane to materialize that exact
+checkout inside the sandbox.
 
-That fails when `HEAD` is a local-only commit because the remote-backed
+That failed when `HEAD` was a local-only commit because the remote-backed
 repository store cannot fetch it. The commit object exists in the local clone,
 but it has not been pushed to the configured remote.
 
-The existing `--include-local-changes` path can package dirty worktree changes,
-but it assumes the base commit is already fetchable by the sandbox. That means it
-cannot represent the common workflow where a developer has both local commits and
-uncommitted edits.
+The old dirty-worktree changeset path could package uncommitted worktree
+changes, but it assumed the base commit was already fetchable by the sandbox.
+That meant it could not represent the common workflow where a developer had
+both local commits and uncommitted edits.
 
 ## Target Model
 
-Without `--include-local-changes`, repo-aware checkout stays remote-backed. If
-the resolved `HEAD` is not available from the configured remote, fail clearly and
-suggest pushing the branch or using `--include-local-changes`.
+The landed model keeps repo-aware checkout remote-backed unless copy-in is
+explicitly requested. Without `--copy-in`, if the resolved `HEAD` is not
+available from the configured remote, Cleanroom fails clearly and suggests
+pushing the branch or using `--copy-in`.
 
-With `--include-local-changes`, Cleanroom packages local repository state in two
+With `--copy-in`, Cleanroom packages local repository state in two
 layers:
 
 1. A Git bundle for local-only committed history.
@@ -48,7 +52,7 @@ The guest ends with:
 
 ## Git Bundle Layer
 
-The CLI should create a bundle for objects reachable from local `HEAD` but not
+The CLI creates a bundle for objects reachable from local `HEAD` but not
 reachable from the configured remote-tracking refs:
 
 ```sh
@@ -67,12 +71,12 @@ The control plane must verify:
 - the bundle contains the requested target commit
 - after remote checkout plus bundle fetch, the target commit is reachable
 
-If the bundle has missing remote prerequisites, fail clearly instead of uploading
-or accepting a large full-history bundle in the first version.
+If the bundle has missing remote prerequisites, Cleanroom fails clearly instead
+of uploading or accepting a large full-history bundle in the first version.
 
 ## API Shape
 
-Start simple by sending the bundle inline on sandbox creation:
+The landed API sends the bundle inline on sandbox creation:
 
 ```proto
 message CreateSandboxRequest {
@@ -89,17 +93,17 @@ message RepositoryCommitBundle {
 }
 ```
 
-Cleanroom should enforce an explicit bundle size limit before sending and after
+Cleanroom enforces an explicit bundle size limit before sending and after
 receiving the request. A first default of 64 MiB is enough for typical short WIP
 branches while still producing a clear failure mode for large histories.
 
 ## Guest Checkout Shape
 
-For remote-available commits without `--include-local-changes`, checkout stays
+For remote-available commits without `--copy-in`, checkout stays
 unchanged.
 
-For `--include-local-changes` with a local-only commit, bootstrap should fetch
-the bundle before checkout verification:
+For `--copy-in` with a local-only commit, bootstrap fetches the bundle
+before checkout verification:
 
 ```sh
 git clone --filter=blob:none --no-checkout --progress "$remote" "$dest"
@@ -118,8 +122,8 @@ remote control planes.
 ## Worktree Overlay Layer
 
 After the guest checks out the local target commit, apply the existing
-`--include-local-changes` worktree changeset if the host worktree has
-uncommitted or untracked changes.
+`--copy-in` worktree changeset if the host worktree has uncommitted or
+untracked changes.
 
 The overlay base should be the local target commit, not the remote merge base.
 That preserves the current patch-style validation while allowing the target
@@ -136,12 +140,12 @@ Cache lineage should use stable content identities:
 
 Do not key cache reuse on request-scoped names such as `source_id`.
 
-## Incremental Slices
+## Landed Slices
 
 1. Detect when the resolved repository commit is not fetchable from the
    configured remote.
-2. Under `--include-local-changes`, create a Git bundle for objects reachable
-   from `HEAD` and not reachable from the configured remote-tracking refs.
+2. Under `--copy-in`, create a Git bundle for objects reachable from `HEAD` and
+   not reachable from the configured remote-tracking refs.
 3. Add an inline `RepositoryCommitBundle` request payload for local-only
    committed history, with digest and size validation.
 4. Verify bundle prerequisites against the canonical remote.
@@ -157,8 +161,6 @@ Do not key cache reuse on request-scoped names such as `source_id`.
 
 ## Deferred
 
-- Rename or replace `--include-local-changes` with `--copy-in` once the broader
-  copy-in UX is ready.
 - Client-streamed bundle upload for larger histories if the inline request limit
   proves too restrictive.
 - Full-history bundles when no remote-available base exists.
