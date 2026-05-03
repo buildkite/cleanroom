@@ -230,14 +230,32 @@ func (s *Service) importCachePeerStage(ctx context.Context, adapter backend.Snap
 		ParentCacheKey:        opts.ParentCacheKey,
 		ParentZfsSnapshotGuid: parentDesc.SnapshotGUID,
 	}
-	match, ok := s.lookupCachePeerImportCandidate(ctx, lookupReq)
-	if !ok {
-		return cachePeerImportResult{}, nil
+	matches := s.lookupCachePeerImportCandidates(ctx, lookupReq)
+	for _, match := range matches {
+		result, handled, err := s.importCachePeerCandidate(ctx, adapter, store, parent, parentDesc, firecrackerCfg, opts, match)
+		if err != nil || handled {
+			return result, err
+		}
 	}
+	return cachePeerImportResult{}, nil
+}
 
+func (s *Service) importCachePeerCandidate(
+	ctx context.Context,
+	adapter backend.SnapshottingAdapter,
+	store cacheMetadataStore,
+	parent cachestore.Record,
+	parentDesc volumestore.SnapshotDescription,
+	firecrackerCfg backend.FirecrackerConfig,
+	opts cachePeerImportOptions,
+	match cachePeerCandidateMatch,
+) (cachePeerImportResult, bool, error) {
 	exportResp, err := s.openCachePeerExport(ctx, match)
 	if err != nil {
-		return cachePeerImportResult{}, nil
+		if s.Logger != nil {
+			s.Logger.Debug("cache peer export failed", "peer", match.peer.URL, "error", err)
+		}
+		return cachePeerImportResult{}, false, nil
 	}
 	defer exportResp.Body.Close()
 
@@ -249,7 +267,10 @@ func (s *Service) importCachePeerStage(ctx context.Context, adapter backend.Snap
 		ExpectedSnapshotGUID: match.candidate.GetZfsSnapshotGuid(),
 	}, exportResp.Body)
 	if err != nil {
-		return cachePeerImportResult{}, nil
+		if s.Logger != nil {
+			s.Logger.Debug("cache peer import failed", "peer", match.peer.URL, "error", err)
+		}
+		return cachePeerImportResult{}, false, nil
 	}
 	if err := validateImportedCachePeerSnapshot(imported, parentDesc.SnapshotGUID, match.candidate.GetZfsSnapshotGuid()); err != nil {
 		_ = adapter.DeleteSnapshot(context.Background(), backend.DeleteSnapshotRequest{
@@ -257,7 +278,7 @@ func (s *Service) importCachePeerStage(ctx context.Context, adapter backend.Snap
 			StorageRef:        imported.StorageRef,
 			FirecrackerConfig: withSnapshotDriver(opts.Backend, firecrackerCfg, opts.StorageDriver),
 		})
-		return cachePeerImportResult{}, err
+		return cachePeerImportResult{}, true, err
 	}
 
 	record := opts.NewRecord(snapshotID, imported, s.clock().Now())
@@ -269,12 +290,12 @@ func (s *Service) importCachePeerStage(ctx context.Context, adapter backend.Snap
 			FirecrackerConfig: withSnapshotDriver(opts.Backend, firecrackerCfg, opts.StorageDriver),
 		})
 		if lookupErr != nil {
-			return cachePeerImportResult{}, fmt.Errorf("persist imported cache peer record: %w (lookup after conflict failed: %v)", err, lookupErr)
+			return cachePeerImportResult{}, true, fmt.Errorf("persist imported cache peer record: %w (lookup after conflict failed: %v)", err, lookupErr)
 		}
 		if found {
-			return cachePeerImportResult{record: existing, imported: true}, nil
+			return cachePeerImportResult{record: existing, imported: true}, true, nil
 		}
-		return cachePeerImportResult{}, fmt.Errorf("persist imported cache peer record: %w", err)
+		return cachePeerImportResult{}, true, fmt.Errorf("persist imported cache peer record: %w", err)
 	}
 
 	validated, found, reason, err := opts.ValidateRecord(ctx)
@@ -285,7 +306,7 @@ func (s *Service) importCachePeerStage(ctx context.Context, adapter backend.Snap
 			StorageRef:        imported.StorageRef,
 			FirecrackerConfig: withSnapshotDriver(opts.Backend, firecrackerCfg, opts.StorageDriver),
 		})
-		return cachePeerImportResult{}, err
+		return cachePeerImportResult{}, true, err
 	}
 	if !found {
 		_ = store.Delete(context.Background(), record.Stage, record.CacheKey)
@@ -297,12 +318,13 @@ func (s *Service) importCachePeerStage(ctx context.Context, adapter backend.Snap
 		if strings.TrimSpace(reason) == "" {
 			reason = "unknown validation miss"
 		}
-		return cachePeerImportResult{}, fmt.Errorf("imported cache peer record failed validation: %s", reason)
+		return cachePeerImportResult{}, true, fmt.Errorf("imported cache peer record failed validation: %s", reason)
 	}
-	return cachePeerImportResult{record: validated, imported: true}, nil
+	return cachePeerImportResult{record: validated, imported: true}, true, nil
 }
 
-func (s *Service) lookupCachePeerImportCandidate(ctx context.Context, req *cleanroomv1.LookupCachePeerRequest) (cachePeerCandidateMatch, bool) {
+func (s *Service) lookupCachePeerImportCandidates(ctx context.Context, req *cleanroomv1.LookupCachePeerRequest) []cachePeerCandidateMatch {
+	matches := make([]cachePeerCandidateMatch, 0, len(s.Config.Cache.Peers))
 	for _, peer := range s.Config.Cache.Peers {
 		token := cachePeerTokenForConfig(peer)
 		if strings.TrimSpace(peer.URL) == "" || token == "" {
@@ -328,9 +350,9 @@ func (s *Service) lookupCachePeerImportCandidate(ctx context.Context, req *clean
 			}
 			continue
 		}
-		return cachePeerCandidateMatch{peer: peer, token: token, candidate: candidate}, true
+		matches = append(matches, cachePeerCandidateMatch{peer: peer, token: token, candidate: candidate})
 	}
-	return cachePeerCandidateMatch{}, false
+	return matches
 }
 
 func (s *Service) openCachePeerExport(ctx context.Context, match cachePeerCandidateMatch) (*http.Response, error) {
