@@ -2,6 +2,7 @@ package controlserver
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -163,8 +164,82 @@ func TestCachePeerLookupAndExportOverHTTP(t *testing.T) {
 	}
 }
 
+func TestCachePeerExportDoesNotAppendHTTPErrorAfterStreamStarts(t *testing.T) {
+	t.Setenv("CLEANROOM_CACHE_PEER_TOKEN", "shared-secret")
+	store := newHandlerCacheStore()
+	insertHandlerCachePeerRecord(t, store, handlerCachePeerRecordOptions{
+		Stage:        "workspace",
+		CacheKey:     "workspace-parent",
+		StorageRef:   "tank/cleanroom/snapshots/workspace@base",
+		SnapshotGUID: "parent-guid",
+	})
+	insertHandlerCachePeerRecord(t, store, handlerCachePeerRecordOptions{
+		Stage:              "dependency",
+		CacheKey:           "dependency-child",
+		ParentCacheKey:     "workspace-parent",
+		StorageRef:         "tank/cleanroom/snapshots/dependency@base",
+		SnapshotGUID:       "child-guid",
+		ParentSnapshotGUID: "parent-guid",
+		ProducerVersion:    "cleanroom/dependency-stage-v1",
+	})
+
+	service := newHandlerTestService(newHandlerTestAdapter())
+	service.Config.Cache = runtimeconfig.CacheConfig{
+		Peers: []runtimeconfig.CachePeerConfig{{URL: "https://peer.example", TokenEnv: "CLEANROOM_CACHE_PEER_TOKEN"}},
+	}
+	service.CacheStore = store
+	service.CachePeerTransferDriver = &handlerCachePeerTransferDriver{
+		writeBeforeErr: "partial-zfs-stream",
+		exportErr:      errors.New("zfs send interrupted"),
+	}
+	httpServer := httptest.NewServer(New(service, nil).Handler())
+	defer httpServer.Close()
+
+	client := cleanroomv1connect.NewCachePeerServiceClient(http.DefaultClient, httpServer.URL)
+	lookupReq := connect.NewRequest(&cleanroomv1.LookupCachePeerRequest{
+		Stage:                 "dependency",
+		CacheKey:              "dependency-child",
+		Backend:               "firecracker",
+		StorageDriver:         "zfs",
+		Architecture:          runtime.GOARCH,
+		ProducerVersion:       "cleanroom/dependency-stage-v1",
+		PolicyHash:            "policy-hash",
+		ParentStage:           "workspace",
+		ParentCacheKey:        "workspace-parent",
+		ParentZfsSnapshotGuid: "parent-guid",
+	})
+	lookupReq.Header().Set("Authorization", "Bearer shared-secret")
+	lookupResp, err := client.LookupCachePeer(context.Background(), lookupReq)
+	if err != nil {
+		t.Fatalf("LookupCachePeer returned error: %v", err)
+	}
+
+	exportReq, err := http.NewRequest(http.MethodGet, httpServer.URL+cachePeerZFSIncrementalExportPathPrefix+lookupResp.Msg.GetCandidate().GetTransferToken(), nil)
+	if err != nil {
+		t.Fatalf("create export request: %v", err)
+	}
+	exportReq.Header.Set("Authorization", "Bearer shared-secret")
+	exportResp, err := http.DefaultClient.Do(exportReq)
+	if err != nil {
+		t.Fatalf("GET export returned error: %v", err)
+	}
+	defer exportResp.Body.Close()
+	body, err := io.ReadAll(exportResp.Body)
+	if err != nil {
+		t.Fatalf("read export body: %v", err)
+	}
+	if got, want := exportResp.StatusCode, http.StatusOK; got != want {
+		t.Fatalf("unexpected export status: got %d want %d body=%q", got, want, string(body))
+	}
+	if got, want := string(body), "partial-zfs-stream"; got != want {
+		t.Fatalf("unexpected export body: got %q want %q", got, want)
+	}
+}
+
 type handlerCachePeerTransferDriver struct {
-	payload string
+	payload        string
+	writeBeforeErr string
+	exportErr      error
 }
 
 func (d *handlerCachePeerTransferDriver) DescribeSnapshot(context.Context, volumestore.DescribeSnapshotRequest) (volumestore.SnapshotDescription, error) {
@@ -182,6 +257,14 @@ func (d *handlerCachePeerTransferDriver) PlanIncrementalSnapshotExport(_ context
 }
 
 func (d *handlerCachePeerTransferDriver) ExportIncrementalSnapshot(_ context.Context, _ volumestore.IncrementalSnapshotExportPlan, dst io.Writer) error {
+	if d.writeBeforeErr != "" {
+		if _, err := io.WriteString(dst, d.writeBeforeErr); err != nil {
+			return err
+		}
+	}
+	if d.exportErr != nil {
+		return d.exportErr
+	}
 	_, err := io.WriteString(dst, d.payload)
 	return err
 }

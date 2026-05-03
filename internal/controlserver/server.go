@@ -129,7 +129,14 @@ func (s *Server) handleCachePeerZFSIncrementalExport(w http.ResponseWriter, req 
 		return
 	}
 	w.Header().Set("Content-Type", "application/octet-stream")
-	if err := s.service.ExportCachePeerZFSIncremental(req.Context(), token, w); err != nil {
+	tracker := &cachePeerExportResponseWriter{ResponseWriter: w}
+	if err := s.service.ExportCachePeerZFSIncremental(req.Context(), token, tracker); err != nil {
+		if tracker.bodyStarted {
+			if s.logger != nil {
+				s.logger.Warn("cache peer zfs export failed after streaming started", "error", err)
+			}
+			return
+		}
 		if errors.Is(err, controlservice.ErrCachePeerExportTokenNotFound) {
 			http.NotFound(w, req)
 			return
@@ -139,6 +146,18 @@ func (s *Server) handleCachePeerZFSIncrementalExport(w http.ResponseWriter, req 
 		}
 		http.Error(w, "cache peer export failed", http.StatusInternalServerError)
 	}
+}
+
+type cachePeerExportResponseWriter struct {
+	http.ResponseWriter
+	bodyStarted bool
+}
+
+func (w *cachePeerExportResponseWriter) Write(data []byte) (int, error) {
+	if len(data) > 0 {
+		w.bodyStarted = true
+	}
+	return w.ResponseWriter.Write(data)
 }
 
 func (s *Server) CreateSandbox(ctx context.Context, req *connect.Request[cleanroomv1.CreateSandboxRequest]) (*connect.Response[cleanroomv1.CreateSandboxResponse], error) {
