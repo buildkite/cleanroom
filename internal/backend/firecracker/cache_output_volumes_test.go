@@ -392,6 +392,159 @@ func TestSnapshotCacheOutputVolumesSnapshotsPreparedVolumes(t *testing.T) {
 	}
 }
 
+func TestSnapshotCacheOutputVolumesResumesBeforeCleaningUpAfterSnapshotFailure(t *testing.T) {
+	prevSignal := sendProcessSignal
+	prevDriverFn := snapshotVolumeStoreDriverFn
+	t.Cleanup(func() {
+		sendProcessSignal = prevSignal
+		snapshotVolumeStoreDriverFn = prevDriverFn
+	})
+
+	var calls []string
+	sendProcessSignal = func(_ *os.Process, sig syscall.Signal) error {
+		switch sig {
+		case syscall.SIGSTOP:
+			calls = append(calls, "signal:stop")
+		case syscall.SIGCONT:
+			calls = append(calls, "signal:cont")
+		default:
+			calls = append(calls, "signal:"+sig.String())
+		}
+		return nil
+	}
+	snapshotVolumeStoreDriverFn = func(backend.FirecrackerConfig) (volumestore.Driver, error) {
+		return testVolumeDriver{
+			snapshotVolumeFn: func(_ context.Context, req volumestore.SnapshotVolumeRequest) (volumestore.Snapshot, error) {
+				calls = append(calls, "snapshot:"+req.SnapshotID)
+				if req.SnapshotID == "snapshot-second" {
+					return volumestore.Snapshot{}, errors.New("snapshot failed")
+				}
+				return volumestore.Snapshot{StorageRef: "snapshot:first"}, nil
+			},
+			destroySnapshotFn: func(_ context.Context, req volumestore.DestroySnapshotRequest) error {
+				calls = append(calls, "cleanup:"+req.SnapshotRef)
+				return nil
+			},
+		}, nil
+	}
+
+	adapter := cacheOutputSnapshotTestAdapter([]preparedCacheOutputVolume{
+		{
+			Spec:   backend.CacheOutputVolumeSpec{VolumeID: "volume-first"},
+			Volume: volumestore.WritableVolume{Ref: "/tmp/volume-first.ext4"},
+		},
+		{
+			Spec:   backend.CacheOutputVolumeSpec{VolumeID: "volume-second"},
+			Volume: volumestore.WritableVolume{Ref: "/tmp/volume-second.ext4"},
+		},
+	})
+	result, err := adapter.SnapshotCacheOutputVolumes(context.Background(), backend.SnapshotCacheOutputVolumesRequest{
+		SandboxID: "cr-test",
+		Volumes: []backend.CacheOutputVolumeSnapshotRequest{
+			{VolumeID: "volume-first", SnapshotID: "snapshot-first"},
+			{VolumeID: "volume-second", SnapshotID: "snapshot-second"},
+		},
+		FirecrackerConfig: backend.FirecrackerConfig{
+			Snapshots: backend.SnapshotConfig{Enabled: true},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected SnapshotCacheOutputVolumes to fail")
+	}
+	if result != nil {
+		t.Fatalf("expected nil result, got %#v", result)
+	}
+	if !strings.Contains(err.Error(), "snapshot failed") {
+		t.Fatalf("expected snapshot error, got %v", err)
+	}
+	want := []string{
+		"signal:stop",
+		"snapshot:snapshot-first",
+		"snapshot:snapshot-second",
+		"signal:cont",
+		"cleanup:snapshot:first",
+	}
+	if !reflect.DeepEqual(calls, want) {
+		t.Fatalf("unexpected call order: got %v want %v", calls, want)
+	}
+}
+
+func TestSnapshotCacheOutputVolumesReportsResumeFailureAfterSnapshotFailure(t *testing.T) {
+	prevSignal := sendProcessSignal
+	prevDriverFn := snapshotVolumeStoreDriverFn
+	t.Cleanup(func() {
+		sendProcessSignal = prevSignal
+		snapshotVolumeStoreDriverFn = prevDriverFn
+	})
+
+	sendProcessSignal = func(_ *os.Process, sig syscall.Signal) error {
+		if sig == syscall.SIGCONT {
+			return os.ErrPermission
+		}
+		return nil
+	}
+	snapshotVolumeStoreDriverFn = func(backend.FirecrackerConfig) (volumestore.Driver, error) {
+		return testVolumeDriver{
+			snapshotVolumeFn: func(_ context.Context, req volumestore.SnapshotVolumeRequest) (volumestore.Snapshot, error) {
+				if req.SnapshotID == "snapshot-second" {
+					return volumestore.Snapshot{}, errors.New("snapshot failed")
+				}
+				return volumestore.Snapshot{StorageRef: "snapshot:first"}, nil
+			},
+			destroySnapshotFn: func(context.Context, volumestore.DestroySnapshotRequest) error { return nil },
+		}, nil
+	}
+
+	adapter := cacheOutputSnapshotTestAdapter([]preparedCacheOutputVolume{
+		{
+			Spec:   backend.CacheOutputVolumeSpec{VolumeID: "volume-first"},
+			Volume: volumestore.WritableVolume{Ref: "/tmp/volume-first.ext4"},
+		},
+		{
+			Spec:   backend.CacheOutputVolumeSpec{VolumeID: "volume-second"},
+			Volume: volumestore.WritableVolume{Ref: "/tmp/volume-second.ext4"},
+		},
+	})
+	result, err := adapter.SnapshotCacheOutputVolumes(context.Background(), backend.SnapshotCacheOutputVolumesRequest{
+		SandboxID: "cr-test",
+		Volumes: []backend.CacheOutputVolumeSnapshotRequest{
+			{VolumeID: "volume-first", SnapshotID: "snapshot-first"},
+			{VolumeID: "volume-second", SnapshotID: "snapshot-second"},
+		},
+		FirecrackerConfig: backend.FirecrackerConfig{
+			Snapshots: backend.SnapshotConfig{Enabled: true},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected SnapshotCacheOutputVolumes to fail")
+	}
+	if result != nil {
+		t.Fatalf("expected nil result, got %#v", result)
+	}
+	message := err.Error()
+	if !strings.Contains(message, "snapshot failed") || !strings.Contains(message, "resume firecracker sandbox") {
+		t.Fatalf("expected snapshot and resume errors, got %v", err)
+	}
+}
+
+func cacheOutputSnapshotTestAdapter(volumes []preparedCacheOutputVolume) *Adapter {
+	return &Adapter{
+		runGuestCommandFn: func(context.Context, context.Context, <-chan struct{}, func() error, string, uint32, vsockexec.ExecRequest, backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error) {
+			return vsockexec.ExecResponse{ExitCode: 0}, guestExecTiming{}, nil
+		},
+		sandboxes: map[string]*sandboxInstance{
+			"cr-test": {
+				SandboxID:          "cr-test",
+				VsockPath:          "/tmp/fake.sock",
+				GuestPort:          10700,
+				fcCmd:              &exec.Cmd{Process: &os.Process{Pid: 42}},
+				exitedCh:           make(chan struct{}),
+				cacheOutputVolumes: volumes,
+			},
+		},
+	}
+}
+
 func testCacheOutputVolumeSpecs() []backend.CacheOutputVolumeSpec {
 	return []backend.CacheOutputVolumeSpec{
 		{

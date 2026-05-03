@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/ext4image"
@@ -22,6 +23,7 @@ import (
 
 const defaultCacheOutputVolumeMinimumBytes int64 = 512 << 20
 const cacheOutputGuestMountRoot = "/run/cleanroom/cache-output-volumes"
+const cacheOutputSnapshotCleanupTimeout = 10 * time.Second
 
 var (
 	cacheOutputVolumeMinimumBytes     = defaultCacheOutputVolumeMinimumBytes
@@ -75,19 +77,19 @@ func (a *Adapter) SnapshotCacheOutputVolumes(ctx context.Context, req backend.Sn
 	}
 	snapshotLogger := observability.WithLoggerFields(observability.WithTraceContext(baseFirecrackerLogger(a.Logger), ctx), observability.LogFieldSandboxID, sandboxID)
 	created := make([]backend.CacheOutputVolumeSnapshot, 0, len(req.Volumes))
-	paused := true
+	var cleanupAfterResume []backend.CacheOutputVolumeSnapshot
 	defer func() {
-		if !paused {
-			return
+		resumeErr := resumeSandboxProcess(instance)
+		if resumeErr != nil && retErr == nil {
+			cleanupAfterResume = append(cleanupAfterResume, created...)
 		}
-		if err := resumeSandboxProcess(instance); err != nil && retErr == nil {
-			cleanupErr := cleanupCacheOutputVolumeSnapshots(context.Background(), snapshotLogger, req.FirecrackerConfig, created)
+		if cleanupErr := cleanupCacheOutputVolumeSnapshotsWithTimeout(snapshotLogger, req.FirecrackerConfig, cleanupAfterResume); cleanupErr != nil {
 			result = nil
-			if cleanupErr != nil {
-				retErr = fmt.Errorf("resume firecracker sandbox after cache output snapshot: %w (cleanup snapshots failed: %v)", err, cleanupErr)
-				return
-			}
-			retErr = fmt.Errorf("resume firecracker sandbox after cache output snapshot: %w", err)
+			retErr = errors.Join(retErr, fmt.Errorf("cleanup cache output snapshots after failure: %w", cleanupErr))
+		}
+		if resumeErr != nil {
+			result = nil
+			retErr = errors.Join(retErr, fmt.Errorf("resume firecracker sandbox after cache output snapshot: %w", resumeErr))
 		}
 	}()
 
@@ -96,16 +98,22 @@ func (a *Adapter) SnapshotCacheOutputVolumes(ctx context.Context, req backend.Sn
 	for i, volumeReq := range req.Volumes {
 		snapshot, err := snapshotCacheOutputVolume(ctx, snapshotLogger, req.FirecrackerConfig, volumesByID, flushedDrivers, volumeReq)
 		if err != nil {
-			cleanupErr := cleanupCacheOutputVolumeSnapshots(context.Background(), snapshotLogger, req.FirecrackerConfig, created)
-			if cleanupErr != nil {
-				return nil, fmt.Errorf("snapshot cache output volume %d: %w (cleanup snapshots failed: %v)", i, err, cleanupErr)
-			}
+			cleanupAfterResume = append(cleanupAfterResume, created...)
 			return nil, fmt.Errorf("snapshot cache output volume %d: %w", i, err)
 		}
 		created = append(created, snapshot)
 		out.Volumes = append(out.Volumes, snapshot)
 	}
 	return out, nil
+}
+
+func cleanupCacheOutputVolumeSnapshotsWithTimeout(logger *charmlog.Logger, cfg backend.FirecrackerConfig, snapshots []backend.CacheOutputVolumeSnapshot) error {
+	if len(snapshots) == 0 {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), cacheOutputSnapshotCleanupTimeout)
+	defer cancel()
+	return cleanupCacheOutputVolumeSnapshots(ctx, logger, cfg, snapshots)
 }
 
 func snapshotCacheOutputVolume(
