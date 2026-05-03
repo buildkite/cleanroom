@@ -1672,6 +1672,51 @@ func TestWorkspaceCopyOutForceDeletesLocalDirectoryObstacleFromCopyInManifestBas
 	assertNoWorkspaceCopyOutRecoveryPayload(t)
 }
 
+func TestWorkspaceCopyOutForceDryRunPlansDeletedLocalDirectoryObstacleFromCopyInManifestBase(t *testing.T) {
+	fixture := setupWorkspaceCopyOutManifestBase(t, func(localRoot string) {
+		if err := os.Remove(filepath.Join(localRoot, "README.md")); err != nil {
+			t.Fatalf("delete sandbox README: %v", err)
+		}
+	})
+	readmePath := filepath.Join(fixture.localRoot, "README.md")
+	if err := os.Remove(readmePath); err != nil {
+		t.Fatalf("remove local README file: %v", err)
+	}
+	if err := os.MkdirAll(readmePath, 0o755); err != nil {
+		t.Fatalf("create local README directory obstacle: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(readmePath, "keep.txt"), []byte("local obstacle\n"), 0o644); err != nil {
+		t.Fatalf("write local README obstacle file: %v", err)
+	}
+
+	stdout, stdoutText := makeStdoutCapture(t)
+	stderr, _ := makeStdoutCapture(t)
+	cmd := WorkspaceCopyOutCommand{
+		clientFlags: clientFlags{Host: fixture.host},
+		DryRun:      true,
+		Force:       true,
+		SandboxID:   fixture.sandboxID,
+	}
+	if err := cmd.Run(&runtimeContext{
+		CWD:           t.TempDir(),
+		Loader:        repositoryNotFoundLoader{},
+		Config:        runtimeconfig.Config{},
+		Observability: newTestObservability(t),
+		Stdout:        stdout,
+		Stderr:        stderr,
+	}); err != nil {
+		t.Fatalf("WorkspaceCopyOutCommand.Run returned error: %v", err)
+	}
+	expected := "delete\t" + filepath.Join(fixture.resolvedLocalRoot, "README.md") + "\n"
+	if got := stdoutText(); got != expected {
+		t.Fatalf("unexpected dry-run copy-out output: got %q want %q", got, expected)
+	}
+	if got, err := os.ReadFile(filepath.Join(readmePath, "keep.txt")); err != nil || string(got) != "local obstacle\n" {
+		t.Fatalf("force dry-run should leave local README obstacle untouched, got %q err %v", got, err)
+	}
+	assertNoWorkspaceCopyOutRecoveryPayload(t)
+}
+
 func TestWorkspaceCopyOutForceClearsStagedParentFileObstacleFromCopyInManifestBase(t *testing.T) {
 	fixture := setupWorkspaceCopyOutManifestBase(t, func(localRoot string) {
 		if err := os.MkdirAll(filepath.Join(localRoot, "nested"), 0o755); err != nil {

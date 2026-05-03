@@ -229,6 +229,7 @@ func copyWorkspaceOut(callCtx context.Context, ctx *runtimeContext, client *cont
 				return err
 			}
 			if len(files) > 0 {
+				var obstaclePaths []string
 				var cleanupApply func()
 				patchPath, cleanup, err := writeTemporaryWorkspaceCopyOutPatch(patch)
 				if err != nil {
@@ -238,11 +239,21 @@ func copyWorkspaceOut(callCtx context.Context, ctx *runtimeContext, client *cont
 				if err := ensureGitWorkspaceCopyOutSafe(opts.Repository, checkout, opts.Binding, files, opts.ForceCopyOut, opts.ForceOutHint); err != nil {
 					return err
 				}
-				files, _, cleanupApply, err = prepareGitWorkspaceCopyOutApplyPatch(opts.Repository, checkout, files, patchPath)
+				if opts.ForceCopyOut {
+					obstaclePaths, err = gitWorkspaceCopyOutForceObstaclePathsForFiles(opts.Repository.RootDir, files)
+					if err != nil {
+						return err
+					}
+				}
+				files, _, cleanupApply, err = prepareGitWorkspaceCopyOutApplyPatchWithOmittedPaths(opts.Repository, checkout, files, patchPath, obstaclePaths)
 				if err != nil {
 					return err
 				}
 				defer cleanupApply()
+				files, err = gitWorkspaceCopyOutForcePlanFiles(files, obstaclePaths)
+				if err != nil {
+					return err
+				}
 			}
 		} else {
 			command := repositorychangeset.WorktreeNameStatusCommand(checkout)
@@ -302,7 +313,11 @@ func copyWorkspaceOut(callCtx context.Context, ctx *runtimeContext, client *cont
 			return nil
 		}
 	}
-	planFiles, err := gitWorkspaceCopyOutForcePlanFiles(files, forceQuarantine)
+	var obstaclePaths []string
+	if forceQuarantine != nil {
+		obstaclePaths = forceQuarantine.Paths()
+	}
+	planFiles, err := gitWorkspaceCopyOutForcePlanFiles(files, obstaclePaths)
 	if err != nil {
 		if forceQuarantine != nil {
 			err = errors.Join(err, forceQuarantine.Restore())
@@ -342,8 +357,8 @@ func copyWorkspaceOut(callCtx context.Context, ctx *runtimeContext, client *cont
 	return printWorkspacePlan(workspacePlanOutput(ctx, opts), entries)
 }
 
-func gitWorkspaceCopyOutForcePlanFiles(files []repositorychangeset.File, quarantine *workspaceCopyOutForceQuarantine) ([]repositorychangeset.File, error) {
-	if quarantine == nil {
+func gitWorkspaceCopyOutForcePlanFiles(files []repositorychangeset.File, obstaclePaths []string) ([]repositorychangeset.File, error) {
+	if len(obstaclePaths) == 0 {
 		return files, nil
 	}
 	seen := make(map[string]struct{}, len(files))
@@ -355,7 +370,7 @@ func gitWorkspaceCopyOutForcePlanFiles(files []repositorychangeset.File, quarant
 		}
 		seen[path] = struct{}{}
 	}
-	for _, path := range quarantine.Paths() {
+	for _, path := range obstaclePaths {
 		path, err := workspaceRelativePath(path)
 		if err != nil {
 			return nil, err
@@ -726,13 +741,17 @@ func useGitWorkspaceCopyOutApplyBase(binding *workspaceBinding, local *resolvedR
 }
 
 func prepareGitWorkspaceCopyOutApplyPatch(local *resolvedRepositoryCheckout, checkout *repositorycheckout.Checkout, files []repositorychangeset.File, sandboxPatchPath string) ([]repositorychangeset.File, string, func(), error) {
+	return prepareGitWorkspaceCopyOutApplyPatchWithOmittedPaths(local, checkout, files, sandboxPatchPath, nil)
+}
+
+func prepareGitWorkspaceCopyOutApplyPatchWithOmittedPaths(local *resolvedRepositoryCheckout, checkout *repositorycheckout.Checkout, files []repositorychangeset.File, sandboxPatchPath string, omittedLocalPaths []string) ([]repositorychangeset.File, string, func(), error) {
 	if local == nil || strings.TrimSpace(local.RootDir) == "" {
 		return nil, "", nil, errors.New("workspace copy-out requires a local Git repository checkout matching the sandbox repository")
 	}
 	if checkout == nil || strings.TrimSpace(checkout.CommitSHA) == "" {
 		return nil, "", nil, errors.New("workspace copy-out requires a sandbox repository baseline")
 	}
-	nameStatus, patch, err := buildGitWorkspaceCopyOutPatchFromLocalBase(local.RootDir, checkout.CommitSHA, sandboxPatchPath, files)
+	nameStatus, patch, err := buildGitWorkspaceCopyOutPatchFromLocalBase(local.RootDir, checkout.CommitSHA, sandboxPatchPath, files, omittedLocalPaths)
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -801,11 +820,7 @@ type workspaceCopyOutForceMove struct {
 }
 
 func quarantineGitWorkspaceCopyOutForceObstacles(localRoot string, files []repositorychangeset.File) (*workspaceCopyOutForceQuarantine, error) {
-	paths, err := workspaceCopyOutPaths(files)
-	if err != nil {
-		return nil, err
-	}
-	candidates, err := gitWorkspaceCopyOutForceObstaclePaths(localRoot, files, paths)
+	candidates, err := gitWorkspaceCopyOutForceObstaclePathsForFiles(localRoot, files)
 	if err != nil {
 		return nil, err
 	}
@@ -851,7 +866,15 @@ func quarantineGitWorkspaceCopyOutForceObstacles(localRoot string, files []repos
 	return q, nil
 }
 
-func gitWorkspaceCopyOutForceObstaclePaths(localRoot string, _ []repositorychangeset.File, paths []string) ([]string, error) {
+func gitWorkspaceCopyOutForceObstaclePathsForFiles(localRoot string, files []repositorychangeset.File) ([]string, error) {
+	paths, err := workspaceCopyOutPaths(files)
+	if err != nil {
+		return nil, err
+	}
+	return gitWorkspaceCopyOutForceObstaclePaths(localRoot, paths)
+}
+
+func gitWorkspaceCopyOutForceObstaclePaths(localRoot string, paths []string) ([]string, error) {
 	candidates := make(map[string]struct{})
 	for _, target := range paths {
 		parts := strings.Split(target, "/")
@@ -963,7 +986,7 @@ func (q *workspaceCopyOutForceQuarantine) Paths() []string {
 	return paths
 }
 
-func buildGitWorkspaceCopyOutPatchFromLocalBase(localRoot, baseCommit, sandboxPatchPath string, files []repositorychangeset.File) ([]byte, []byte, error) {
+func buildGitWorkspaceCopyOutPatchFromLocalBase(localRoot, baseCommit, sandboxPatchPath string, files []repositorychangeset.File, omittedLocalPaths []string) ([]byte, []byte, error) {
 	paths, err := workspaceCopyOutPaths(files)
 	if err != nil {
 		return nil, nil, err
@@ -972,7 +995,7 @@ func buildGitWorkspaceCopyOutPatchFromLocalBase(localRoot, baseCommit, sandboxPa
 		return nil, nil, nil
 	}
 	pathspecs := gitWorkspacePathspecs(paths)
-	localTree, err := gitWorkspaceCurrentTree(localRoot)
+	localTree, err := gitWorkspaceCurrentTree(localRoot, omittedLocalPaths)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -993,7 +1016,7 @@ func buildGitWorkspaceCopyOutPatchFromLocalBase(localRoot, baseCommit, sandboxPa
 	return nameStatus, patch, nil
 }
 
-func gitWorkspaceCurrentTree(localRoot string) (string, error) {
+func gitWorkspaceCurrentTree(localRoot string, omittedLocalPaths []string) (string, error) {
 	indexPath, cleanup, err := temporaryGitIndex()
 	if err != nil {
 		return "", err
@@ -1005,6 +1028,16 @@ func gitWorkspaceCurrentTree(localRoot string) (string, error) {
 	}
 	if _, err := gitOutputRaw(localRoot, env, "add", "-A", "--all", "."); err != nil {
 		return "", fmt.Errorf("stage local workspace copy-out base: %w", err)
+	}
+	omittedPaths, err := mergeWorkspaceCopyOutPaths(omittedLocalPaths)
+	if err != nil {
+		return "", err
+	}
+	if len(omittedPaths) > 0 {
+		args := append([]string{"rm", "-r", "--cached", "--ignore-unmatch", "--"}, gitWorkspacePathspecs(omittedPaths)...)
+		if _, err := gitOutputRaw(localRoot, env, args...); err != nil {
+			return "", fmt.Errorf("omit forced workspace copy-out obstacles from local tree: %w", err)
+		}
 	}
 	tree, err := gitOutputRaw(localRoot, env, "write-tree")
 	if err != nil {
