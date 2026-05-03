@@ -71,15 +71,32 @@ func PathExists(imagePath, path string) bool {
 
 // PathType returns the ext4 inode type for the given path.
 func PathType(imagePath, path string) PathKind {
-	resolvedPath, err := resolvePath(imagePath, path)
+	kind, err := PathTypeWithError(imagePath, path)
 	if err != nil {
 		return PathKindUnknown
+	}
+	return kind
+}
+
+// PathTypeWithError returns the ext4 inode type for the given path, preserving
+// host-side inspection errors so callers can distinguish a missing path from an
+// unreadable image.
+func PathTypeWithError(imagePath, path string) (PathKind, error) {
+	resolvedPath, err := resolvePath(imagePath, path)
+	if err != nil {
+		if isMissingPathError(err) {
+			return PathKindUnknown, nil
+		}
+		return PathKindUnknown, err
 	}
 	output, err := statPathDirect(imagePath, resolvedPath)
 	if err != nil {
-		return PathKindUnknown
+		if isMissingPathError(err) {
+			return PathKindUnknown, nil
+		}
+		return PathKindUnknown, err
 	}
-	return DebugFSStatType(output)
+	return DebugFSStatType(output), nil
 }
 
 // DebugFSCommandOutputError extracts actionable debugfs stderr/stdout error text.
@@ -102,7 +119,12 @@ func DebugFSCommandOutputError(output string) string {
 			strings.Contains(lower, "ext2_lookup") ||
 			strings.Contains(lower, "command not found") ||
 			strings.Contains(lower, "no such file or directory") ||
-			strings.Contains(lower, "not a directory") {
+			strings.Contains(lower, "not a directory") ||
+			strings.Contains(lower, "filesystem not open") ||
+			strings.Contains(lower, "while trying to open") ||
+			strings.Contains(lower, "short read") ||
+			strings.Contains(lower, "checksum does not match") ||
+			strings.Contains(lower, "bad magic number") {
 			return msg
 		}
 	}
