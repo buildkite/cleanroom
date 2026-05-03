@@ -42,6 +42,14 @@ func TestCapabilitiesMatchImplicitDefaultNetworkMode(t *testing.T) {
 	} else if caps[backend.CapabilitySandboxPortDial] {
 		t.Fatalf("expected %s=false", backend.CapabilitySandboxPortDial)
 	}
+	if runtime.GOOS == "darwin" {
+		if !caps[backend.CapabilitySandboxCacheOutputVolumes] {
+			t.Fatalf("expected %s=true on darwin", backend.CapabilitySandboxCacheOutputVolumes)
+		}
+	}
+	if caps[backend.CapabilitySandboxOverlayWriteCapture] {
+		t.Fatalf("expected %s=false until escaped-write capture is wired through", backend.CapabilitySandboxOverlayWriteCapture)
+	}
 }
 
 func TestCapabilitiesDeclareAllowlistFilteringForFileHandleMode(t *testing.T) {
@@ -68,5 +76,11 @@ func TestCapabilitiesDeclareAllowlistFilteringForFileHandleMode(t *testing.T) {
 	}
 	if !caps[backend.CapabilitySandboxPortDial] {
 		t.Fatalf("expected %s=true", backend.CapabilitySandboxPortDial)
+	}
+	if !caps[backend.CapabilitySandboxCacheOutputVolumes] {
+		t.Fatalf("expected %s=true", backend.CapabilitySandboxCacheOutputVolumes)
+	}
+	if caps[backend.CapabilitySandboxOverlayWriteCapture] {
+		t.Fatalf("expected %s=false until escaped-write capture is wired through", backend.CapabilitySandboxOverlayWriteCapture)
 	}
 }

@@ -10,6 +10,7 @@ private struct ControlRequest: Decodable {
     let op: String
     let kernelPath: String?
     let rootFSPath: String?
+    let sidecarDiskPaths: [String]?
     let bootArgs: String?
     let networkMode: String?
     let vmnetSubnetCIDR: String?
@@ -32,6 +33,7 @@ private struct ControlRequest: Decodable {
         case op
         case kernelPath = "kernel_path"
         case rootFSPath = "rootfs_path"
+        case sidecarDiskPaths = "sidecar_disk_paths"
         case bootArgs = "boot_args"
         case networkMode = "network_mode"
         case vmnetSubnetCIDR = "vmnet_subnet_cidr"
@@ -484,12 +486,16 @@ private final class VMRuntime {
 
         let kernelPath = try requireAbsolutePath(req.kernelPath, field: "kernel_path")
         let rootFSPath = try requireAbsolutePath(req.rootFSPath, field: "rootfs_path")
+        let sidecarDiskPaths = try requireAbsolutePaths(req.sidecarDiskPaths ?? [], field: "sidecar_disk_paths")
         let runDir = try requireAbsolutePath(req.runDir, field: "run_dir")
         let proxySocketPath = try requireAbsolutePath(req.proxySocketPath, field: "proxy_socket_path")
         let consoleLogPath = try requireAbsolutePath(req.consoleLogPath, field: "console_log_path")
 
         try requireFile(kernelPath, field: "kernel_path")
         try requireFile(rootFSPath, field: "rootfs_path")
+        for (index, path) in sidecarDiskPaths.enumerated() {
+            try requireFile(path, field: "sidecar_disk_paths[\(index)]")
+        }
         try ensureDirectory(runDir)
         try ensureDirectory((proxySocketPath as NSString).deletingLastPathComponent)
         try ensureDirectory((consoleLogPath as NSString).deletingLastPathComponent)
@@ -521,6 +527,7 @@ private final class VMRuntime {
             runDir: runDir,
             kernelPath: kernelPath,
             rootFSPath: rootFSPath,
+            sidecarDiskPaths: sidecarDiskPaths,
             bootArgs: bootArgs,
             networkMode: req.networkMode?.trimmingCharacters(in: .whitespacesAndNewlines),
             vmnetSubnetCIDR: req.vmnetSubnetCIDR?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -875,6 +882,7 @@ private final class VMRuntime {
         runDir: String,
         kernelPath: String,
         rootFSPath: String,
+        sidecarDiskPaths: [String],
         bootArgs: String,
         networkMode: String?,
         vmnetSubnetCIDR: String?,
@@ -951,7 +959,13 @@ private final class VMRuntime {
 
         let diskAttachment = try VZDiskImageStorageDeviceAttachment(url: rootFSURL, readOnly: false)
         let blockDevice = VZVirtioBlockDeviceConfiguration(attachment: diskAttachment)
-        config.storageDevices = [blockDevice]
+        var storageDevices: [VZStorageDeviceConfiguration] = [blockDevice]
+        for sidecarPath in sidecarDiskPaths {
+            let sidecarURL = URL(fileURLWithPath: sidecarPath)
+            let sidecarAttachment = try VZDiskImageStorageDeviceAttachment(url: sidecarURL, readOnly: false)
+            storageDevices.append(VZVirtioBlockDeviceConfiguration(attachment: sidecarAttachment))
+        }
+        config.storageDevices = storageDevices
         config.networkDevices = [networkDevice]
 
         config.entropyDevices = [VZVirtioEntropyDeviceConfiguration()]
@@ -1213,6 +1227,12 @@ private func requireAbsolutePath(_ rawValue: String?, field: String) throws -> S
         throw HelperError.invalidRequest("\(field) must be absolute")
     }
     return path
+}
+
+private func requireAbsolutePaths(_ rawValues: [String], field: String) throws -> [String] {
+    try rawValues.enumerated().map { index, value in
+        try requireAbsolutePath(value, field: "\(field)[\(index)]")
+    }
 }
 
 private func requireFile(_ path: String, field: String) throws {
