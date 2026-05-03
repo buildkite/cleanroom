@@ -20,11 +20,14 @@
   `workspace copy-in` and top-level `--copy-in` record the trusted local root,
   canonical remote, baseline commit, sandbox workspace root, operation time, and
   copy-in manifest; `workspace copy-out` prefers that bound root.
-- This changeset should make Git-backed `workspace copy-out` use the recorded
-  copy-in manifest as the local conflict and apply base, so copy-out can safely
-  write back after a prior copy-in that included dirty edits or local-only
-  commits.
-- Non-Git/raw copy-out writes, top-level `--copy-out`, and `--sync` remain
+- PR #276 landed Git-backed `workspace copy-out` from the recorded copy-in
+  manifest base, so copy-out can safely write back after a prior copy-in that
+  included dirty edits or local-only commits.
+- This changeset adds Git-backed top-level `--copy-out` and `--sync` automation
+  for `cleanroom exec` and `cleanroom console`. It composes the manual
+  copy-in/copy-out operations, prevalidates existing sandbox copy-out targets,
+  and runs copy-out before automatic sandbox termination.
+- Non-Git/raw copy-out writes and raw create-time workspace support remain
   follow-up work.
 
 ## Summary
@@ -310,6 +313,18 @@ Supported on:
 For an automatically-created sandbox, `--copy-out` should run
 `workspace copy-out` after the execution/session exits and before the CLI
 terminates the sandbox.
+
+The first implementation is Git-backed only. For an existing sandbox, the CLI
+prevalidates the local copy-out target against the sandbox's recorded repository
+before running the command, then lets the command run in the sandbox's recorded
+checkout. The local checkout is only the copy-out destination. For a newly
+created sandbox, top-level `--copy-out` requires a local Git checkout so the
+sandbox and local destination share a repository identity.
+
+Copy-out should run after a successful command and after a command that exits
+non-zero, because the workspace may still contain useful generated fixes. It
+should not run after setup, transport, or forced-detach failures where the CLI
+cannot confidently observe the final workspace state.
 
 For `--keep`, copy-out should still run after the execution/session exits, but
 the sandbox should remain available. The user can run more explicit

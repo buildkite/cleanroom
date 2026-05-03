@@ -444,6 +444,68 @@ func TestTopLevelCommandsParseCopyInFlag(t *testing.T) {
 	})
 }
 
+func TestTopLevelCommandsParseCopyOutAndSyncFlags(t *testing.T) {
+	t.Run("exec copy-out", func(t *testing.T) {
+		c := &CLI{}
+		parser := newParserForTest(t, c)
+		if _, err := parser.Parse([]string{"exec", "--copy-out", "--", "echo", "ok"}); err != nil {
+			t.Fatalf("parse exec --copy-out returned error: %v", err)
+		}
+		if !c.Exec.CopyOut {
+			t.Fatal("expected exec copy-out flag to be set")
+		}
+	})
+
+	t.Run("exec sync", func(t *testing.T) {
+		c := &CLI{}
+		parser := newParserForTest(t, c)
+		if _, err := parser.Parse([]string{"exec", "--sync", "--", "echo", "ok"}); err != nil {
+			t.Fatalf("parse exec --sync returned error: %v", err)
+		}
+		if !c.Exec.Sync || !c.Exec.copyIn() || !c.Exec.copyOut() {
+			t.Fatalf("expected exec sync to imply copy-in and copy-out, got %+v", c.Exec.workspaceCopyFlags)
+		}
+	})
+
+	t.Run("console copy-out", func(t *testing.T) {
+		c := &CLI{}
+		parser := newParserForTest(t, c)
+		if _, err := parser.Parse([]string{"console", "--copy-out"}); err != nil {
+			t.Fatalf("parse console --copy-out returned error: %v", err)
+		}
+		if !c.Console.CopyOut {
+			t.Fatal("expected console copy-out flag to be set")
+		}
+	})
+
+	t.Run("console sync", func(t *testing.T) {
+		c := &CLI{}
+		parser := newParserForTest(t, c)
+		if _, err := parser.Parse([]string{"console", "--sync"}); err != nil {
+			t.Fatalf("parse console --sync returned error: %v", err)
+		}
+		if !c.Console.Sync || !c.Console.copyIn() || !c.Console.copyOut() {
+			t.Fatalf("expected console sync to imply copy-in and copy-out, got %+v", c.Console.workspaceCopyFlags)
+		}
+	})
+
+	t.Run("create rejects copy-out", func(t *testing.T) {
+		c := &CLI{}
+		parser := newParserForTest(t, c)
+		if _, err := parser.Parse([]string{"create", "--copy-out"}); err == nil {
+			t.Fatal("expected create --copy-out to be rejected")
+		}
+	})
+
+	t.Run("create rejects sync", func(t *testing.T) {
+		c := &CLI{}
+		parser := newParserForTest(t, c)
+		if _, err := parser.Parse([]string{"create", "--sync"}); err == nil {
+			t.Fatal("expected create --sync to be rejected")
+		}
+	})
+}
+
 func TestWorkspaceCopyInParses(t *testing.T) {
 	c := &CLI{}
 	parser := newParserForTest(t, c)

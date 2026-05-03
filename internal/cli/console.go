@@ -93,6 +93,9 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) (runErr error) {
 	if err != nil {
 		return err
 	}
+	if err := validateWorkspaceCopyOutBeforeExecution(rootCtx, ctx, client, cwd, c.Chdir, c.In, c.LaunchSeconds, c.workspaceCopyFlags); err != nil {
+		return err
+	}
 
 	target, err := resolveExecutionSandbox(rootCtx, client, ctx, cwd, host, c.Backend, c.In, c.From, c.Image, c.LaunchSeconds, c.DangerouslyAllowAll, c.repositoryOverrideFlags, c.workspaceCopyFlags)
 	if err != nil {
@@ -142,13 +145,24 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) (runErr error) {
 		}
 	}
 	detached := false
+	preserveSandbox := false
 	autoTerminateSandbox := createdSandbox && !c.Keep
 	defer func() {
-		if detached || sandboxID == "" || !autoTerminateSandbox {
+		if detached || preserveSandbox || sandboxID == "" || !autoTerminateSandbox {
 			return
 		}
 		terminateSandboxBestEffort(rootCtx, client, sandboxID, 0, logger, "terminate sandbox after console failed")
 	}()
+	copyWorkspaceOutAfterRun := func(executionErr error) error {
+		copyOutErr := copyWorkspaceOutAfterExecution(rootCtx, ctx, client, cwd, c.Chdir, sandboxID, c.LaunchSeconds, c.workspaceCopyFlags)
+		if copyOutErr != nil && autoTerminateSandbox {
+			preserveSandbox = true
+			if err := printSandboxID(); err != nil {
+				copyOutErr = errors.Join(copyOutErr, err)
+			}
+		}
+		return joinExecutionAndWorkspaceCopyOutError(executionErr, copyOutErr)
+	}
 	if c.preAttach != nil {
 		if err := c.preAttach(rootCtx, client, sandboxID); err != nil {
 			return err
@@ -176,6 +190,10 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) (runErr error) {
 		if autoTerminateSandbox {
 			terminateSandboxBestEffort(rootCtx, client, sandboxID, sandboxTerminateTimeout, logger, "terminate sandbox after detach failed")
 		}
+		return err
+	}
+	if shouldRunWorkspaceCopyOutAfterExecution(err) {
+		return copyWorkspaceOutAfterRun(err)
 	}
 	return err
 }

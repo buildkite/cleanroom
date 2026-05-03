@@ -104,6 +104,9 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 	if err != nil {
 		return err
 	}
+	if err := validateWorkspaceCopyOutBeforeExecution(rootCtx, ctx, client, cwd, e.Chdir, e.In, e.LaunchSeconds, e.workspaceCopyFlags); err != nil {
+		return err
+	}
 
 	target, err := resolveExecutionSandbox(rootCtx, client, ctx, cwd, host, e.Backend, e.In, e.From, e.Image, e.LaunchSeconds, e.DangerouslyAllowAll, e.repositoryOverrideFlags, e.workspaceCopyFlags)
 	if err != nil {
@@ -177,13 +180,24 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 		}
 	}
 	detached := false
+	preserveSandbox := false
 	autoTerminateSandbox := createdSandbox && !e.Keep
 	defer func() {
-		if detached || !autoTerminateSandbox || sandboxID == "" {
+		if detached || preserveSandbox || !autoTerminateSandbox || sandboxID == "" {
 			return
 		}
 		terminateSandboxBestEffort(rootCtx, client, sandboxID, 0, logger, "terminate sandbox after exec failed")
 	}()
+	copyWorkspaceOutAfterRun := func(executionErr error) error {
+		copyOutErr := copyWorkspaceOutAfterExecution(rootCtx, ctx, client, cwd, e.Chdir, sandboxID, e.LaunchSeconds, e.workspaceCopyFlags)
+		if copyOutErr != nil && autoTerminateSandbox {
+			preserveSandbox = true
+			if err := printSandboxID(); err != nil {
+				copyOutErr = errors.Join(copyOutErr, err)
+			}
+		}
+		return joinExecutionAndWorkspaceCopyOutError(executionErr, copyOutErr)
+	}
 	exposureManager, exposed, err := startClientExposures(rootCtx, client, sandboxID, exposures)
 	if err != nil {
 		return err
@@ -219,6 +233,10 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 			if autoTerminateSandbox {
 				terminateSandboxBestEffort(rootCtx, client, sandboxID, sandboxTerminateTimeout, logger, "terminate sandbox after detach failed")
 			}
+			return err
+		}
+		if shouldRunWorkspaceCopyOutAfterExecution(err) {
+			return copyWorkspaceOutAfterRun(err)
 		}
 		return err
 	}
@@ -338,8 +356,12 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 	if !haveExitCode {
 		return errors.New("execution stream ended without exit status")
 	}
+	var executionErr error
 	if exitCode != 0 {
-		return exitCodeError{code: exitCode}
+		executionErr = exitCodeError{code: exitCode}
 	}
-	return nil
+	if shouldRunWorkspaceCopyOutAfterExecution(executionErr) {
+		return copyWorkspaceOutAfterRun(executionErr)
+	}
+	return executionErr
 }

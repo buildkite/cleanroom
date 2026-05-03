@@ -5,8 +5,10 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,6 +20,130 @@ func runConsoleWithCapture(cmd ConsoleCommand, stdinData string, ctx runtimeCont
 	return runWithCapture(func(runCtx *runtimeContext) error {
 		return cmd.Run(runCtx)
 	}, &stdinData, ctx)
+}
+
+func TestConsoleIntegrationCopyOutAppliesSandboxChangesAfterSession(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	localRoot := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
+	resolvedLocalRoot, err := gitOutput(localRoot, "rev-parse", "--show-toplevel")
+	if err != nil {
+		t.Fatalf("resolve local repository root: %v", err)
+	}
+	baseCommit, copyOutPayload := prepareReadmeWorkspaceCopyOutPayload(t, localRoot, "console sandbox\n")
+
+	adapter := &integrationAdapter{}
+	host, _ := startIntegrationServer(t, adapter)
+	sandboxID := createWorkspaceCopyTestSandboxWithRepositoryCommitBranch(t, host, "/sandbox-workspace", baseCommit, "main")
+
+	var (
+		mu       sync.Mutex
+		commands []string
+	)
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+		command := strings.Join(req.Command, " ")
+		mu.Lock()
+		commands = append(commands, command)
+		mu.Unlock()
+		if strings.Contains(command, "cleanroom-copy-out-v1") {
+			if stream.OnStdout != nil {
+				stream.OnStdout(copyOutPayload)
+			}
+			return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+		}
+		if stream.OnStdout != nil {
+			stream.OnStdout([]byte("console ran\n"))
+		}
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+	}
+
+	outcome := runConsoleWithCapture(ConsoleCommand{
+		clientFlags:        clientFlags{Host: host},
+		In:                 sandboxID,
+		workspaceCopyFlags: workspaceCopyFlags{CopyOut: true},
+		Command:            []string{"sh"},
+	}, "exit\n", runtimeContext{
+		CWD:    localRoot,
+		Loader: workspaceCopyRepositoryLoader(),
+	})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err != nil {
+		t.Fatalf("ConsoleCommand.Run returned error: %v", outcome.err)
+	}
+	if got := mustReadFile(t, filepath.Join(localRoot, "README.md")); got != "console sandbox\n" {
+		t.Fatalf("unexpected copied-out README: got %q", got)
+	}
+	if !strings.Contains(outcome.stdout, "console ran\n") {
+		t.Fatalf("expected console stdout, got %q", outcome.stdout)
+	}
+	if strings.Contains(outcome.stdout, "write\t"+filepath.Join(resolvedLocalRoot, "README.md")+"\n") {
+		t.Fatalf("copy-out plan should not be written to stdout, got %q", outcome.stdout)
+	}
+	if !strings.Contains(outcome.stderr, "write\t"+filepath.Join(resolvedLocalRoot, "README.md")+"\n") {
+		t.Fatalf("expected copy-out plan in stderr, got %q", outcome.stderr)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if got, want := len(commands), 2; got != want {
+		t.Fatalf("expected console command plus workspace copy-out command, got %d: %v", got, commands)
+	}
+	if !strings.Contains(commands[1], "cleanroom-copy-out-v1") {
+		t.Fatalf("expected copy-out command second, got %q", commands[1])
+	}
+}
+
+func TestConsoleIntegrationCopyOutFailurePreservesCreatedSandbox(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	localRoot := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
+
+	adapter := &snapshotIntegrationAdapter{}
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+		command := strings.Join(req.Command, " ")
+		if strings.Contains(command, "cleanroom-copy-out-v1") {
+			return nil, errors.New("copy-out unavailable")
+		}
+		if stream.OnStdout != nil {
+			stream.OnStdout([]byte("console ran\n"))
+		}
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+	}
+	host, _ := startIntegrationServer(t, adapter)
+
+	outcome := runConsoleWithCapture(ConsoleCommand{
+		clientFlags:        clientFlags{Host: host},
+		workspaceCopyFlags: workspaceCopyFlags{CopyOut: true},
+		Command:            []string{"sh"},
+	}, "exit\n", runtimeContext{
+		CWD:    localRoot,
+		Loader: workspaceCopyRepositoryLoader(),
+	})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err == nil {
+		t.Fatal("expected copy-out failure")
+	}
+	if !strings.Contains(outcome.err.Error(), "workspace copy-out") {
+		t.Fatalf("expected workspace copy-out error, got %v", outcome.err)
+	}
+	if !strings.Contains(outcome.stdout, "console ran\n") {
+		t.Fatalf("expected console stdout, got %q", outcome.stdout)
+	}
+	sandboxID := parseSandboxID(outcome.stderr)
+	if sandboxID == "" {
+		t.Fatalf("expected sandbox id in stderr when preserving sandbox, got %q", outcome.stderr)
+	}
+	client := mustNewControlClient(t, host)
+	requireSandboxStatus(t, client, sandboxID, cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY)
+
+	adapter.mu.Lock()
+	terminateCalls := adapter.terminateCalls
+	adapter.mu.Unlock()
+	if terminateCalls != 0 {
+		t.Fatalf("expected copy-out failure to preserve created sandbox, got %d terminate calls", terminateCalls)
+	}
 }
 
 func TestConsoleIntegrationForwardsStdinAndStreamsOutput(t *testing.T) {
@@ -504,6 +630,31 @@ func TestConsoleIntegrationRejectsChdirWhenReusingSandbox(t *testing.T) {
 	}
 	if outcome.err == nil {
 		t.Fatal("expected ConsoleCommand.Run to reject --chdir with --in")
+	}
+	if got, want := outcome.err.Error(), "--chdir cannot be used with --in"; !strings.Contains(got, want) {
+		t.Fatalf("expected error to contain %q, got %q", want, got)
+	}
+}
+
+func TestConsoleIntegrationRejectsChdirWhenCopyingOutFromReusedSandbox(t *testing.T) {
+	cwd := t.TempDir()
+	outcome := runConsoleWithCapture(ConsoleCommand{
+		clientFlags: clientFlags{Host: "tssvc://cleanroom"},
+		Chdir:       cwd,
+		In:          "cr_123",
+		workspaceCopyFlags: workspaceCopyFlags{
+			CopyOut: true,
+		},
+		Command: []string{"sh"},
+	}, "", runtimeContext{
+		CWD:    cwd,
+		Loader: failingLoader{},
+	})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err == nil {
+		t.Fatal("expected ConsoleCommand.Run to reject --chdir with --in --copy-out")
 	}
 	if got, want := outcome.err.Error(), "--chdir cannot be used with --in"; !strings.Contains(got, want) {
 		t.Fatalf("expected error to contain %q, got %q", want, got)

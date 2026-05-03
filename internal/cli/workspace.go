@@ -61,6 +61,7 @@ type workspaceCopyOptions struct {
 	Destination   string
 	ForceGitReset bool
 	LaunchSeconds int64
+	PlanOutput    io.Writer
 }
 
 type workspacePlanEntry struct {
@@ -116,42 +117,51 @@ func (c *WorkspaceCopyOutCommand) Run(ctx *runtimeContext) error {
 	if err != nil {
 		return err
 	}
-	binding, err := readWorkspaceBinding(c.SandboxID)
+	client, err := c.connect(ctx)
 	if err != nil {
 		return err
 	}
+	opts, err := resolveWorkspaceCopyOutOptions(ctx, cwd, c.Chdir, c.SandboxID, c.DryRun, 0)
+	if err != nil {
+		return err
+	}
+	return copyWorkspaceOut(context.Background(), ctx, client, opts)
+}
+
+func resolveWorkspaceCopyOutOptions(ctx *runtimeContext, cwd, chdir, sandboxID string, dryRun bool, launchSeconds int64) (workspaceCopyOptions, error) {
+	binding, err := readWorkspaceBinding(sandboxID)
+	if err != nil {
+		return workspaceCopyOptions{}, err
+	}
 	repositoryRoot := cwd
 	if binding != nil && binding.Transport == workspaceBindingTransportGit && strings.TrimSpace(binding.LocalRoot) != "" {
-		if strings.TrimSpace(c.Chdir) != "" {
+		if strings.TrimSpace(chdir) != "" {
 			chdirRepository, err := resolveWorkspaceCopyRepositoryCheckout(cwd, ctx.Loader)
 			if err != nil {
-				return err
+				return workspaceCopyOptions{}, err
 			}
 			if chdirRepository == nil || !sameWorkspaceLocalRoot(chdirRepository.RootDir, binding.LocalRoot) {
-				return fmt.Errorf("workspace copy-out sandbox %q is bound to local root %q, but --chdir resolved to %q", c.SandboxID, binding.LocalRoot, cwd)
+				return workspaceCopyOptions{}, fmt.Errorf("workspace copy-out sandbox %q is bound to local root %q, but --chdir resolved to %q", sandboxID, binding.LocalRoot, cwd)
 			}
 		}
 		repositoryRoot = binding.LocalRoot
 	}
 	repository, err := resolveWorkspaceCopyRepositoryCheckout(repositoryRoot, ctx.Loader)
 	if err != nil {
-		return err
+		return workspaceCopyOptions{}, err
 	}
 	localRoot := cwd
 	if repository != nil && strings.TrimSpace(repository.RootDir) != "" {
 		localRoot = repository.RootDir
 	}
-	client, err := c.connect(ctx)
-	if err != nil {
-		return err
-	}
-	return copyWorkspaceOut(context.Background(), ctx, client, workspaceCopyOptions{
-		CWD:        localRoot,
-		SandboxID:  c.SandboxID,
-		DryRun:     c.DryRun,
-		Repository: repository,
-		Binding:    binding,
-	})
+	return workspaceCopyOptions{
+		CWD:           localRoot,
+		SandboxID:     sandboxID,
+		DryRun:        dryRun,
+		Repository:    repository,
+		Binding:       binding,
+		LaunchSeconds: launchSeconds,
+	}, nil
 }
 
 func (c *WorkspaceDiffCommand) Run(ctx *runtimeContext) error {
@@ -221,20 +231,8 @@ func copyGitWorkspaceToSandbox(callCtx context.Context, ctx *runtimeContext, cli
 }
 
 func copyWorkspaceOut(callCtx context.Context, ctx *runtimeContext, client *controlclient.Client, opts workspaceCopyOptions) error {
-	if strings.TrimSpace(opts.SandboxID) == "" {
-		return errors.New("missing sandbox id")
-	}
-	if strings.TrimSpace(opts.CWD) == "" {
-		return errors.New("missing local workspace root")
-	}
-	checkout, err := sandboxRepositoryCheckout(callCtx, client, opts.SandboxID)
+	checkout, err := validateWorkspaceCopyOutInputs(callCtx, client, opts)
 	if err != nil {
-		return err
-	}
-	if err := validateWorkspaceBinding(opts.Binding, opts.SandboxID, checkout); err != nil {
-		return err
-	}
-	if err := validateWorkspaceCopyOutLocalRepository(opts.Repository, checkout); err != nil {
 		return err
 	}
 	if opts.DryRun {
@@ -277,7 +275,7 @@ func copyWorkspaceOut(callCtx context.Context, ctx *runtimeContext, client *cont
 		if err != nil {
 			return err
 		}
-		return printWorkspacePlan(runtimeStdout(ctx), entries)
+		return printWorkspacePlan(workspacePlanOutput(ctx, opts), entries)
 	}
 
 	files, patch, err := captureGitWorkspaceCopyOutPayload(callCtx, ctx, client, opts, checkout)
@@ -311,7 +309,34 @@ func copyWorkspaceOut(callCtx context.Context, ctx *runtimeContext, client *cont
 	if err := applyGitWorkspaceCopyOutPatch(opts.Repository.RootDir, applyPath); err != nil {
 		return fmt.Errorf("%w; sandbox changes saved to %s", err, recovery.Directory)
 	}
-	return printWorkspacePlan(runtimeStdout(ctx), entries)
+	return printWorkspacePlan(workspacePlanOutput(ctx, opts), entries)
+}
+
+func workspacePlanOutput(ctx *runtimeContext, opts workspaceCopyOptions) io.Writer {
+	if opts.PlanOutput != nil {
+		return opts.PlanOutput
+	}
+	return runtimeStdout(ctx)
+}
+
+func validateWorkspaceCopyOutInputs(callCtx context.Context, client *controlclient.Client, opts workspaceCopyOptions) (*repositorycheckout.Checkout, error) {
+	if strings.TrimSpace(opts.SandboxID) == "" {
+		return nil, errors.New("missing sandbox id")
+	}
+	if strings.TrimSpace(opts.CWD) == "" {
+		return nil, errors.New("missing local workspace root")
+	}
+	checkout, err := sandboxRepositoryCheckout(callCtx, client, opts.SandboxID)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateWorkspaceBinding(opts.Binding, opts.SandboxID, checkout); err != nil {
+		return nil, err
+	}
+	if err := validateWorkspaceCopyOutLocalRepository(opts.Repository, checkout); err != nil {
+		return nil, err
+	}
+	return checkout, nil
 }
 
 func previewWorkspaceCopyOut(callCtx context.Context, ctx *runtimeContext, client *controlclient.Client, opts workspaceCopyOptions) error {
