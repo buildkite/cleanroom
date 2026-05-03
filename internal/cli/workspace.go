@@ -228,6 +228,10 @@ func copyWorkspaceOut(callCtx context.Context, ctx *runtimeContext, client *cont
 			if err != nil {
 				return err
 			}
+			files, err = addGitWorkspaceCopyOutManifestReverts(opts.Repository.RootDir, checkout.CommitSHA, opts.Binding, files)
+			if err != nil {
+				return err
+			}
 			if len(files) > 0 {
 				var obstaclePaths []string
 				var cleanupApply func()
@@ -277,6 +281,10 @@ func copyWorkspaceOut(callCtx context.Context, ctx *runtimeContext, client *cont
 	}
 
 	files, patch, err := captureGitWorkspaceCopyOutPayload(callCtx, ctx, client, opts, checkout)
+	if err != nil {
+		return err
+	}
+	files, err = addGitWorkspaceCopyOutManifestReverts(opts.Repository.RootDir, checkout.CommitSHA, opts.Binding, files)
 	if err != nil {
 		return err
 	}
@@ -373,6 +381,49 @@ func copyWorkspaceOut(callCtx context.Context, ctx *runtimeContext, client *cont
 		forceQuarantine.Cleanup()
 	}
 	return printWorkspacePlan(workspacePlanOutput(ctx, opts), entries)
+}
+
+func addGitWorkspaceCopyOutManifestReverts(localRoot, baseCommit string, binding *workspaceBinding, files []repositorychangeset.File) ([]repositorychangeset.File, error) {
+	manifest, err := workspaceCopyInManifestMap(binding)
+	if err != nil {
+		return nil, err
+	}
+	if len(manifest) == 0 {
+		return files, nil
+	}
+	seen := make(map[string]struct{}, len(files))
+	for _, file := range files {
+		path, err := workspaceRelativePath(file.Path)
+		if err != nil {
+			return nil, err
+		}
+		seen[path] = struct{}{}
+	}
+	paths := make([]string, 0, len(manifest))
+	for path := range manifest {
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	if len(paths) == 0 {
+		return files, nil
+	}
+	out := append([]repositorychangeset.File(nil), files...)
+	for _, path := range paths {
+		baseFile, err := gitWorkspaceCommitFile(localRoot, baseCommit, path)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, repositorychangeset.File{
+			Path:    path,
+			SHA256:  baseFile.SHA256,
+			Mode:    baseFile.Mode,
+			Deleted: baseFile.Deleted,
+		})
+	}
+	return out, nil
 }
 
 func gitWorkspaceCopyOutForcePlanFiles(files []repositorychangeset.File, obstaclePaths []string) ([]repositorychangeset.File, error) {
@@ -1134,8 +1185,12 @@ func gitWorkspaceSandboxTree(localRoot, baseCommit, sandboxPatchPath string) (st
 	if _, err := gitOutputRaw(localRoot, env, "read-tree", strings.ToLower(strings.TrimSpace(baseCommit))); err != nil {
 		return "", fmt.Errorf("initialize sandbox workspace copy-out index: %w", err)
 	}
-	if _, err := gitOutputRaw(localRoot, env, "apply", "--cached", "--binary", "--whitespace=nowarn", sandboxPatchPath); err != nil {
-		return "", fmt.Errorf("apply sandbox workspace copy-out patch to temporary index: %w", err)
+	if info, err := os.Stat(sandboxPatchPath); err != nil {
+		return "", fmt.Errorf("inspect sandbox workspace copy-out patch: %w", err)
+	} else if info.Size() > 0 {
+		if _, err := gitOutputRaw(localRoot, env, "apply", "--cached", "--binary", "--whitespace=nowarn", sandboxPatchPath); err != nil {
+			return "", fmt.Errorf("apply sandbox workspace copy-out patch to temporary index: %w", err)
+		}
 	}
 	tree, err := gitOutputRaw(localRoot, env, "write-tree")
 	if err != nil {
