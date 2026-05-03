@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/cachekey"
 	"github.com/buildkite/cleanroom/internal/cachestore"
 	"github.com/buildkite/cleanroom/internal/observability"
@@ -46,6 +47,35 @@ type serviceBlockVolumeBlockPlan struct {
 	CacheHit                     bool
 	LookupReason                 string
 	CacheRecord                  cachestore.Record
+}
+
+func (s *Service) maybeLookupServiceBlockVolumePlanForCreateSandbox(
+	ctx context.Context,
+	adapter backend.Adapter,
+	backendName string,
+	compiled *policy.CompiledPolicy,
+	repository *repositorycheckout.Checkout,
+	changeset *repositorychangeset.Changeset,
+	commitBundle *repositorybundle.Bundle,
+	runtimeBaseKey string,
+	dependencyStageBootstrapEnabled bool,
+	dependencyPlan dependencyBlockVolumePlan,
+	dependencyPlanAvailable bool,
+) {
+	blockCount := 0
+	if compiled != nil {
+		blockCount = len(compiled.Services.Blocks)
+	}
+	decision := blockVolumeRuntimeDecisionForAdapter(adapter)
+	if !decision.Enabled {
+		s.logServiceBlockVolumeCacheFallback(backendName, blockCount, decision.FallbackReason)
+		return
+	}
+	if dependencyStageBootstrapEnabled && !dependencyPlanAvailable {
+		s.logServiceBlockVolumeCacheFallback(backendName, blockCount, "dependency block-volume plan unavailable")
+		return
+	}
+	s.lookupServiceBlockVolumePlanForCreateSandbox(ctx, backendName, compiled, repository, changeset, commitBundle, runtimeBaseKey, dependencyPlan)
 }
 
 func (s *Service) lookupServiceBlockVolumePlanForCreateSandbox(

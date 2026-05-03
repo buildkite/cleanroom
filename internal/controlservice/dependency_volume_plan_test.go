@@ -469,6 +469,10 @@ func (s *recordingCacheStore) getReadyKeys(stage string) []string {
 	return keys
 }
 
+func (s *recordingCacheStore) resetLookups() {
+	s.lookups = nil
+}
+
 func dependencyBlockVolumeTestRecord(compiled *policy.CompiledPolicy, block dependencyBlockVolumeBlockPlan) cachestore.Record {
 	return cachestore.Record{
 		CacheKey:                block.CacheKey,

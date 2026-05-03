@@ -609,14 +609,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 				dependencyBlockVolumePlan, dependencyBlockVolumePlanAvailable = s.lookupDependencyBlockVolumePlanForCreateSandbox(ctx, adapter, backendName, compiled, repository, changeset, commitBundle, workspaceStageRuntimeBaseKey)
 			}
 			if servicesStageBootstrapEnabled && restoredDependencyResp == nil {
-				decision := blockVolumeRuntimeDecisionForAdapter(adapter)
-				if !decision.Enabled {
-					s.logServiceBlockVolumeCacheFallback(backendName, len(compiled.Services.Blocks), decision.FallbackReason)
-				} else if dependencyStageBootstrapEnabled && !dependencyBlockVolumePlanAvailable {
-					s.logServiceBlockVolumeCacheFallback(backendName, len(compiled.Services.Blocks), "dependency block-volume plan unavailable")
-				} else {
-					s.lookupServiceBlockVolumePlanForCreateSandbox(ctx, backendName, compiled, repository, changeset, commitBundle, workspaceStageRuntimeBaseKey, dependencyBlockVolumePlan)
-				}
+				s.maybeLookupServiceBlockVolumePlanForCreateSandbox(ctx, adapter, backendName, compiled, repository, changeset, commitBundle, workspaceStageRuntimeBaseKey, dependencyStageBootstrapEnabled, dependencyBlockVolumePlan, dependencyBlockVolumePlanAvailable)
 			}
 
 			if restoredDependencyResp == nil {
@@ -689,6 +682,11 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 		sandboxID := restoredDependencyResp.GetSandbox().GetSandboxId()
 		span.SetAttributes(attribute.String("cleanroom.sandbox.id", sandboxID))
 		if servicesStageBootstrapEnabled {
+			if dependencyStageBootstrapEnabled && !dependencyBlockVolumePlanAvailable && blockVolumeRuntimeDecisionForAdapter(adapter).Enabled {
+				dependencyBlockVolumePlan, dependencyBlockVolumePlanAvailable = s.lookupDependencyBlockVolumePlanForCreateSandbox(ctx, adapter, backendName, compiled, repository, changeset, commitBundle, workspaceStageRuntimeBaseKey)
+			}
+			s.maybeLookupServiceBlockVolumePlanForCreateSandbox(ctx, adapter, backendName, compiled, repository, changeset, commitBundle, workspaceStageRuntimeBaseKey, dependencyStageBootstrapEnabled, dependencyBlockVolumePlan, dependencyBlockVolumePlanAvailable)
+
 			bootstrapAttrs := []attribute.KeyValue{
 				attribute.String(observability.AttrBackend, backendName),
 				attribute.String(observability.AttrSandboxID, sandboxID),

@@ -753,14 +753,18 @@ Completed in phase 2:
   digest, input manifest digest, normalized output declarations, ordered
   dependency output keys, and prior service output keys
 - sandbox creation now evaluates service block-volume lookup after services
-  stage restore misses and after dependency block-volume planning is available
-  for policies with dependency blocks
+  stage restore misses, including after dependency-stage cache restores, once
+  dependency block-volume planning is available for policies with dependency
+  blocks
 - service block-volume lookup observability records block counts, hit counts,
   miss counts, and logs fallback and lookup summaries
 - tests cover service keying, dependency-output invalidation, prior-service
   invalidation, partial service cache hits, unsupported backend fallback, missing
   store fallback, partial `CreateSandbox` hits, and all-hit lookup behavior while
   confirming the aggregate services bootstrap still runs
+- regression coverage proves service block-volume lookup still runs when the
+  aggregate services stage cache misses and an aggregate dependency stage cache
+  restores
 
 Remaining phase 2 work:
 

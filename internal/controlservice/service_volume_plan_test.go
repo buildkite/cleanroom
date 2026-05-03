@@ -324,6 +324,88 @@ func TestCreateSandboxLooksUpServiceBlockVolumeCaches(t *testing.T) {
 	}
 }
 
+func TestCreateSandboxLooksUpServiceBlockVolumesAfterDependencyStageRestore(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	adapter := dependencyBlockVolumeRuntimeAdapter()
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"mise.toml":           "go = \"1.26.2\"\n",
+		"go.mod":              "module example.com/test\n\ngo 1.26.2\n",
+		"go.sum":              "example.com/test v0.0.0 h1:abc123\n",
+		"docker-compose.yml":  "services:\n  postgres:\n    image: postgres:17\n",
+		"db/schema.sql":       "create table widgets (id serial primary key);\n",
+		"db/seed.sql":         "insert into widgets default values;\n",
+		"scripts/prepare-db":  "#!/bin/sh\ntrue\n",
+		"scripts/prepare-app": "#!/bin/sh\ntrue\n",
+	})
+	svc := newTestServiceWithSnapshotStore(adapter, newMemorySnapshotStore())
+	svc.RepositoryStore = mirrors
+	cacheStore := &recordingCacheStore{inner: newMemoryCacheStore()}
+	svc.CacheStore = cacheStore
+
+	req := &cleanroomv1.CreateSandboxRequest{
+		Policy:             testRepositoryTwoDependencyTwoServiceBlocksPolicy(),
+		RepositoryCheckout: repositoryCheckout,
+	}
+	if _, err := svc.CreateSandbox(context.Background(), req); err != nil {
+		t.Fatalf("first CreateSandbox returned error: %v", err)
+	}
+
+	records, err := cacheStore.List(context.Background())
+	if err != nil {
+		t.Fatalf("List cache records returned error: %v", err)
+	}
+	for _, record := range records {
+		if record.Stage == servicesStageName {
+			if err := cacheStore.Delete(context.Background(), record.Stage, record.CacheKey); err != nil {
+				t.Fatalf("Delete services cache record returned error: %v", err)
+			}
+		}
+	}
+
+	compiled, err := policy.FromProto(testRepositoryTwoDependencyTwoServiceBlocksPolicy())
+	if err != nil {
+		t.Fatalf("FromProto returned error: %v", err)
+	}
+	repository := repositorycheckout.FromProto(repositoryCheckout)
+	dependencyPlan, ok, err := svc.finalizeDependencyBlockVolumePlan(context.Background(), compiled, repository, nil, nil, "firecracker", "runtime-base:test")
+	if err != nil {
+		t.Fatalf("finalizeDependencyBlockVolumePlan returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected dependency block-volume plan")
+	}
+	servicePlan, ok, err := svc.finalizeServiceBlockVolumePlan(context.Background(), compiled, repository, nil, nil, "firecracker", "runtime-base:test", dependencyPlan)
+	if err != nil {
+		t.Fatalf("finalizeServiceBlockVolumePlan returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected service block-volume plan")
+	}
+	for i := range servicePlan.Blocks {
+		if err := cacheStore.Create(context.Background(), serviceBlockVolumeTestRecord(compiled, servicePlan.Blocks[i])); err != nil {
+			t.Fatalf("Create service block-volume record %d returned error: %v", i, err)
+		}
+	}
+	cacheStore.resetLookups()
+
+	secondResp, err := svc.CreateSandbox(context.Background(), req)
+	if err != nil {
+		t.Fatalf("second CreateSandbox returned error: %v", err)
+	}
+	if got, want := secondResp.GetSourceKind(), "dependency stage cache"; got != want {
+		t.Fatalf("unexpected response source kind: got %q want %q", got, want)
+	}
+	if got, want := cacheStore.getReadyCount(serviceVolumeStageName), len(servicePlan.Blocks); got != want {
+		t.Fatalf("unexpected service block-volume lookup count after dependency restore: got %d want %d", got, want)
+	}
+	if got, want := cacheStore.getReadyHitCount(serviceVolumeStageName), len(servicePlan.Blocks); got != want {
+		t.Fatalf("unexpected service block-volume hit count after dependency restore: got %d want %d", got, want)
+	}
+	if got, want := adapter.runCalls, 4; got != want {
+		t.Fatalf("expected aggregate services bootstrap to still run after dependency restore, got %d want %d", got, want)
+	}
+}
+
 func testRepositoryTwoDependencyTwoServiceBlocksPolicy() *cleanroomv1.Policy {
 	policyProto := testRepositoryTwoDependencyBlocksPolicy()
 	policyProto.Docker = &cleanroomv1.PolicyDocker{Required: true}
