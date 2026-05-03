@@ -700,8 +700,7 @@ Current runtime behavior after phase 1:
 
 Remaining work:
 
-- build per-block dependency and service planning instead of only aggregate
-  bootstrap planning
+- wire dependency block-volume planning into the sandbox creation runtime path
 - materialize isolated declared-input projections before running cacheable
   blocks
 - implement the guest overlay write-capture runner
@@ -717,6 +716,33 @@ Remaining work:
 Steps 8 and 9 remain the main backend slices. Steps 10 and 11 should now build
 on the phase 1 request fields and metadata, with stub-adapter tests before the
 Firecracker implementation.
+
+### Phase 2 PR Status
+
+The second implementation PR starts the runtime-control layer without changing
+the sandbox execution path yet. Existing dependency bootstraps still run through
+the aggregate dependency stage cache.
+
+Completed in phase 2:
+
+- dependency block-volume planner computes one cache key per ordered dependency
+  block from backend, runtime key, reuse namespace, policy hash, command digest,
+  env digest, input manifest digest, normalized output declarations, and prior
+  dependency output keys
+- dependency block-volume cache lookup marks per-block hits and misses using the
+  cache metadata fields introduced in phase 1
+- runtime fallback decision requires backend support for cache output volumes and
+  overlay write capture before the future block-volume path can be selected
+- tests cover ordered keying, prior-block invalidation, partial cache hits, and
+  fallback when backend capabilities are missing
+
+Remaining phase 2 work:
+
+- make dependency sandbox creation consume the block-volume plan
+- prepare and attach output volumes before VM launch
+- run missed dependency blocks from isolated input projections
+- restore hit output records before later dependency blocks run
+- publish output records after successful missed blocks
 
 ## Tests
 
