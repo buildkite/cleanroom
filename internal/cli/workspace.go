@@ -4,12 +4,15 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	posixpath "path"
 	"path/filepath"
 	"sort"
@@ -235,17 +238,40 @@ func copyWorkspaceOut(callCtx context.Context, ctx *runtimeContext, client *cont
 		return err
 	}
 	if opts.DryRun {
-		command := repositorychangeset.WorktreeNameStatusCommand(checkout)
-		if len(command) == 0 {
-			return errors.New("sandbox repository checkout is missing the information needed to plan workspace copy-out")
-		}
-		output, err := runWorkspaceExecutionCapture(callCtx, ctx, client, opts.SandboxID, command, opts.LaunchSeconds)
-		if err != nil {
-			return err
-		}
-		files, err := parseGitNameStatusWorkspaceFiles(output)
-		if err != nil {
-			return err
+		var files []repositorychangeset.File
+		if useGitWorkspaceCopyOutApplyBase(opts.Binding, opts.Repository, checkout) {
+			var patch []byte
+			files, patch, err = captureGitWorkspaceCopyOutPayload(callCtx, ctx, client, opts, checkout)
+			if err != nil {
+				return err
+			}
+			if len(files) > 0 {
+				patchPath, cleanup, err := writeTemporaryWorkspaceCopyOutPatch(patch)
+				if err != nil {
+					return err
+				}
+				defer cleanup()
+				if err := ensureGitWorkspaceCopyOutSafe(opts.Repository, checkout, opts.Binding, files); err != nil {
+					return err
+				}
+				files, _, err = prepareGitWorkspaceCopyOutApplyPatch(opts.Repository, checkout, files, patchPath, "")
+				if err != nil {
+					return err
+				}
+			}
+		} else {
+			command := repositorychangeset.WorktreeNameStatusCommand(checkout)
+			if len(command) == 0 {
+				return errors.New("sandbox repository checkout is missing the information needed to plan workspace copy-out")
+			}
+			output, err := runWorkspaceExecutionCapture(callCtx, ctx, client, opts.SandboxID, command, opts.LaunchSeconds)
+			if err != nil {
+				return err
+			}
+			files, err = parseGitNameStatusWorkspaceFiles(output)
+			if err != nil {
+				return err
+			}
 		}
 		entries, err := gitWorkspaceCopyOutPlanFiles(opts.CWD, files)
 		if err != nil {
@@ -254,23 +280,7 @@ func copyWorkspaceOut(callCtx context.Context, ctx *runtimeContext, client *cont
 		return printWorkspacePlan(runtimeStdout(ctx), entries)
 	}
 
-	command := repositorychangeset.WorktreeCopyOutCommand(checkout)
-	if len(command) == 0 {
-		return errors.New("sandbox repository checkout is missing the information needed to copy workspace changes out")
-	}
-	output, err := runWorkspaceExecutionCapture(callCtx, ctx, client, opts.SandboxID, command, opts.LaunchSeconds)
-	if err != nil {
-		return err
-	}
-	nameStatus, patch, err := parseGitWorkspaceCopyOutPayload(output)
-	if err != nil {
-		return err
-	}
-	files, err := parseGitNameStatusWorkspaceFiles(nameStatus)
-	if err != nil {
-		return err
-	}
-	entries, err := gitWorkspaceCopyOutPlanFiles(opts.CWD, files)
+	files, patch, err := captureGitWorkspaceCopyOutPayload(callCtx, ctx, client, opts, checkout)
 	if err != nil {
 		return err
 	}
@@ -281,10 +291,24 @@ func copyWorkspaceOut(callCtx context.Context, ctx *runtimeContext, client *cont
 	if err != nil {
 		return err
 	}
-	if err := ensureGitWorkspaceCopyOutSafe(opts.Repository, checkout, files); err != nil {
+	if err := ensureGitWorkspaceCopyOutSafe(opts.Repository, checkout, opts.Binding, files); err != nil {
 		return fmt.Errorf("%w; sandbox changes saved to %s", err, recovery.Directory)
 	}
-	if err := applyGitWorkspaceCopyOutPatch(opts.Repository.RootDir, recovery.PatchPath); err != nil {
+	applyPath := recovery.PatchPath
+	if useGitWorkspaceCopyOutApplyBase(opts.Binding, opts.Repository, checkout) {
+		files, applyPath, err = prepareGitWorkspaceCopyOutApplyPatch(opts.Repository, checkout, files, recovery.PatchPath, recovery.Directory)
+		if err != nil {
+			return fmt.Errorf("%w; sandbox changes saved to %s", err, recovery.Directory)
+		}
+		if len(files) == 0 {
+			return nil
+		}
+	}
+	entries, err := gitWorkspaceCopyOutPlanFiles(opts.CWD, files)
+	if err != nil {
+		return err
+	}
+	if err := applyGitWorkspaceCopyOutPatch(opts.Repository.RootDir, applyPath); err != nil {
 		return fmt.Errorf("%w; sandbox changes saved to %s", err, recovery.Directory)
 	}
 	return printWorkspacePlan(runtimeStdout(ctx), entries)
@@ -343,7 +367,7 @@ func validateWorkspaceCopyOutLocalRepository(local *resolvedRepositoryCheckout, 
 	return nil
 }
 
-func ensureGitWorkspaceCopyOutSafe(local *resolvedRepositoryCheckout, checkout *repositorycheckout.Checkout, files []repositorychangeset.File) error {
+func ensureGitWorkspaceCopyOutSafe(local *resolvedRepositoryCheckout, checkout *repositorycheckout.Checkout, binding *workspaceBinding, files []repositorychangeset.File) error {
 	if local == nil || strings.TrimSpace(local.RootDir) == "" {
 		return errors.New("workspace copy-out requires a local Git repository checkout matching the sandbox repository")
 	}
@@ -355,13 +379,115 @@ func ensureGitWorkspaceCopyOutSafe(local *resolvedRepositoryCheckout, checkout *
 	if localCommit == "" || sandboxCommit == "" {
 		return errors.New("workspace copy-out requires local and sandbox repository commits")
 	}
-	if !strings.EqualFold(localCommit, sandboxCommit) {
+	if binding == nil && !strings.EqualFold(localCommit, sandboxCommit) {
 		return fmt.Errorf("workspace copy-out requires local checkout HEAD %s to match sandbox baseline %s", shortGitSHA(localCommit), shortGitSHA(sandboxCommit))
+	}
+	if binding != nil {
+		return ensureGitWorkspaceCopyOutSafeWithBinding(local.RootDir, sandboxCommit, binding, files)
 	}
 	for _, file := range files {
 		if err := ensureGitWorkspaceCopyOutPathSafe(local.RootDir, sandboxCommit, file.Path); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func ensureGitWorkspaceCopyOutSafeWithBinding(localRoot, baseCommit string, binding *workspaceBinding, files []repositorychangeset.File) error {
+	manifest, err := workspaceCopyInManifestMap(binding)
+	if err != nil {
+		return err
+	}
+	paths := make([]string, 0, len(files))
+	for _, file := range files {
+		path, err := workspaceRelativePath(file.Path)
+		if err != nil {
+			return err
+		}
+		paths = append(paths, path)
+	}
+	current, err := gitWorkspaceCurrentFiles(localRoot, paths)
+	if err != nil {
+		return err
+	}
+	staged, err := gitWorkspaceStagedPaths(localRoot, paths)
+	if err != nil {
+		return err
+	}
+	for _, path := range paths {
+		expected, ok := manifest[path]
+		if !ok {
+			expected, err = gitWorkspaceCommitFile(localRoot, baseCommit, path)
+			if err != nil {
+				return err
+			}
+		}
+		if err := ensureGitWorkspaceFileMatchesExpected(localRoot, path, current[path], expected); err != nil {
+			return err
+		}
+		if staged[path] {
+			index, err := gitWorkspaceIndexFile(localRoot, nil, path)
+			if err != nil {
+				return err
+			}
+			if err := ensureGitWorkspaceFileMatchesExpected(localRoot, path, index, expected); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func workspaceCopyInManifestMap(binding *workspaceBinding) (map[string]workspaceBindingFile, error) {
+	manifest := make(map[string]workspaceBindingFile)
+	if binding == nil {
+		return manifest, nil
+	}
+	for _, file := range binding.CopyInManifest {
+		path, err := workspaceRelativePath(file.Path)
+		if err != nil {
+			return nil, err
+		}
+		if _, exists := manifest[path]; exists {
+			return nil, fmt.Errorf("workspace binding copy-in manifest path %q is duplicated", path)
+		}
+		entry := workspaceBindingFile{
+			Path:    path,
+			SHA256:  strings.TrimSpace(file.SHA256),
+			Mode:    strings.TrimSpace(file.Mode),
+			Deleted: file.Deleted,
+		}
+		if entry.Deleted {
+			entry.SHA256 = ""
+			entry.Mode = ""
+		} else if entry.SHA256 == "" {
+			return nil, fmt.Errorf("workspace binding copy-in manifest path %q is missing sha256", path)
+		} else if entry.Mode == "" {
+			return nil, fmt.Errorf("workspace binding copy-in manifest path %q is missing git mode", path)
+		}
+		manifest[path] = entry
+	}
+	return manifest, nil
+}
+
+func ensureGitWorkspaceFileMatchesExpected(localRoot, rel string, current, expected workspaceBindingFile) error {
+	if expected.Deleted {
+		if !current.Deleted {
+			return fmt.Errorf("local workspace path %q changed independently; refusing workspace copy-out", rel)
+		}
+		localPath, err := workspaceLocalPath(localRoot, rel)
+		if err != nil {
+			return err
+		}
+		if _, err := os.Lstat(localPath); err == nil {
+			return fmt.Errorf("local workspace path %q exists outside workspace copy-in base; refusing workspace copy-out", rel)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("inspect local workspace path %q: %w", rel, err)
+		}
+		return nil
+	}
+	if current.Deleted || current.SHA256 != expected.SHA256 || current.Mode != expected.Mode {
+		return fmt.Errorf("local workspace path %q changed independently; refusing workspace copy-out", rel)
 	}
 	return nil
 }
@@ -403,6 +529,358 @@ func gitPathExistsInCommit(localRoot, commit, rel string) (bool, error) {
 		return false, fmt.Errorf("inspect sandbox baseline path %q: %w", rel, err)
 	}
 	return strings.Trim(output, "\x00 \n\r\t") != "", nil
+}
+
+func captureGitWorkspaceCopyOutPayload(callCtx context.Context, ctx *runtimeContext, client *controlclient.Client, opts workspaceCopyOptions, checkout *repositorycheckout.Checkout) ([]repositorychangeset.File, []byte, error) {
+	command := repositorychangeset.WorktreeCopyOutCommand(checkout)
+	if len(command) == 0 {
+		return nil, nil, errors.New("sandbox repository checkout is missing the information needed to copy workspace changes out")
+	}
+	output, err := runWorkspaceExecutionCapture(callCtx, ctx, client, opts.SandboxID, command, opts.LaunchSeconds)
+	if err != nil {
+		return nil, nil, err
+	}
+	nameStatus, patch, err := parseGitWorkspaceCopyOutPayload(output)
+	if err != nil {
+		return nil, nil, err
+	}
+	files, err := parseGitNameStatusWorkspaceFiles(nameStatus)
+	if err != nil {
+		return nil, nil, err
+	}
+	return files, patch, nil
+}
+
+func useGitWorkspaceCopyOutApplyBase(binding *workspaceBinding, local *resolvedRepositoryCheckout, checkout *repositorycheckout.Checkout) bool {
+	if binding == nil {
+		return false
+	}
+	if len(binding.CopyInManifest) > 0 {
+		return true
+	}
+	if local == nil || checkout == nil {
+		return false
+	}
+	localCommit := strings.TrimSpace(local.CommitSHA)
+	sandboxCommit := strings.TrimSpace(checkout.CommitSHA)
+	return localCommit != "" && sandboxCommit != "" && !strings.EqualFold(localCommit, sandboxCommit)
+}
+
+func prepareGitWorkspaceCopyOutApplyPatch(local *resolvedRepositoryCheckout, checkout *repositorycheckout.Checkout, files []repositorychangeset.File, sandboxPatchPath, recoveryDir string) ([]repositorychangeset.File, string, error) {
+	if local == nil || strings.TrimSpace(local.RootDir) == "" {
+		return nil, "", errors.New("workspace copy-out requires a local Git repository checkout matching the sandbox repository")
+	}
+	if checkout == nil || strings.TrimSpace(checkout.CommitSHA) == "" {
+		return nil, "", errors.New("workspace copy-out requires a sandbox repository baseline")
+	}
+	nameStatus, patch, err := buildGitWorkspaceCopyOutPatchFromLocalBase(local.RootDir, checkout.CommitSHA, sandboxPatchPath, files)
+	if err != nil {
+		return nil, "", err
+	}
+	applyFiles, err := parseGitNameStatusWorkspaceFiles(nameStatus)
+	if err != nil {
+		return nil, "", err
+	}
+	if len(applyFiles) == 0 || strings.TrimSpace(recoveryDir) == "" {
+		return applyFiles, "", nil
+	}
+	patchPath := filepath.Join(recoveryDir, "local-apply.patch")
+	if err := os.WriteFile(patchPath, patch, 0o600); err != nil {
+		return nil, "", fmt.Errorf("write workspace copy-out local apply patch: %w", err)
+	}
+	return applyFiles, patchPath, nil
+}
+
+func buildGitWorkspaceCopyOutPatchFromLocalBase(localRoot, baseCommit, sandboxPatchPath string, files []repositorychangeset.File) ([]byte, []byte, error) {
+	paths, err := workspaceCopyOutPaths(files)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(paths) == 0 {
+		return nil, nil, nil
+	}
+	pathspecs := gitWorkspacePathspecs(paths)
+	localTree, err := gitWorkspaceCurrentTree(localRoot)
+	if err != nil {
+		return nil, nil, err
+	}
+	sandboxTree, err := gitWorkspaceSandboxTree(localRoot, baseCommit, sandboxPatchPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	nameStatusArgs := append([]string{"diff", "--name-status", "--no-renames", "-z", localTree, sandboxTree, "--"}, pathspecs...)
+	nameStatus, err := gitOutputRaw(localRoot, nil, nameStatusArgs...)
+	if err != nil {
+		return nil, nil, fmt.Errorf("build workspace copy-out local name-status: %w", err)
+	}
+	patchArgs := append([]string{"diff", "--binary", "--full-index", "--no-ext-diff", "--no-color", "--no-renames", localTree, sandboxTree, "--"}, pathspecs...)
+	patch, err := gitOutputRaw(localRoot, nil, patchArgs...)
+	if err != nil {
+		return nil, nil, fmt.Errorf("build workspace copy-out local patch: %w", err)
+	}
+	return nameStatus, patch, nil
+}
+
+func gitWorkspaceCurrentTree(localRoot string) (string, error) {
+	indexPath, cleanup, err := temporaryGitIndex()
+	if err != nil {
+		return "", err
+	}
+	defer cleanup()
+	env := append(os.Environ(), "GIT_INDEX_FILE="+indexPath)
+	if _, err := gitOutputRaw(localRoot, env, "read-tree", "HEAD"); err != nil {
+		return "", fmt.Errorf("initialize local workspace copy-out index: %w", err)
+	}
+	if _, err := gitOutputRaw(localRoot, env, "add", "-A", "--all", "."); err != nil {
+		return "", fmt.Errorf("stage local workspace copy-out base: %w", err)
+	}
+	tree, err := gitOutputRaw(localRoot, env, "write-tree")
+	if err != nil {
+		return "", fmt.Errorf("write local workspace copy-out tree: %w", err)
+	}
+	return strings.TrimSpace(string(tree)), nil
+}
+
+func gitWorkspaceSandboxTree(localRoot, baseCommit, sandboxPatchPath string) (string, error) {
+	indexPath, cleanup, err := temporaryGitIndex()
+	if err != nil {
+		return "", err
+	}
+	defer cleanup()
+	env := append(os.Environ(), "GIT_INDEX_FILE="+indexPath)
+	if _, err := gitOutputRaw(localRoot, env, "read-tree", strings.ToLower(strings.TrimSpace(baseCommit))); err != nil {
+		return "", fmt.Errorf("initialize sandbox workspace copy-out index: %w", err)
+	}
+	if _, err := gitOutputRaw(localRoot, env, "apply", "--cached", "--binary", "--whitespace=nowarn", sandboxPatchPath); err != nil {
+		return "", fmt.Errorf("apply sandbox workspace copy-out patch to temporary index: %w", err)
+	}
+	tree, err := gitOutputRaw(localRoot, env, "write-tree")
+	if err != nil {
+		return "", fmt.Errorf("write sandbox workspace copy-out tree: %w", err)
+	}
+	return strings.TrimSpace(string(tree)), nil
+}
+
+func gitWorkspaceCurrentFiles(localRoot string, paths []string) (map[string]workspaceBindingFile, error) {
+	indexPath, cleanup, err := temporaryGitIndex()
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+	env := append(os.Environ(), "GIT_INDEX_FILE="+indexPath)
+	if _, err := gitOutputRaw(localRoot, env, "read-tree", "HEAD"); err != nil {
+		return nil, fmt.Errorf("initialize local workspace manifest index: %w", err)
+	}
+	if _, err := gitOutputRaw(localRoot, env, "add", "-A", "--all", "."); err != nil {
+		return nil, fmt.Errorf("stage local workspace manifest state: %w", err)
+	}
+	files := make(map[string]workspaceBindingFile, len(paths))
+	for _, path := range paths {
+		file, err := gitWorkspaceIndexFile(localRoot, env, path)
+		if err != nil {
+			return nil, err
+		}
+		files[path] = file
+	}
+	return files, nil
+}
+
+func gitWorkspaceStagedPaths(localRoot string, paths []string) (map[string]bool, error) {
+	staged := make(map[string]bool)
+	if len(paths) == 0 {
+		return staged, nil
+	}
+	args := append([]string{"diff", "--cached", "--name-only", "--no-renames", "-z", "--"}, gitWorkspacePathspecs(paths)...)
+	output, err := gitOutputRaw(localRoot, nil, args...)
+	if err != nil {
+		return nil, fmt.Errorf("inspect staged local workspace paths: %w", err)
+	}
+	for _, rawPath := range splitNullTerminatedWorkspaceFields(output) {
+		path, err := workspaceRelativePath(rawPath)
+		if err != nil {
+			return nil, err
+		}
+		staged[path] = true
+	}
+	return staged, nil
+}
+
+func gitWorkspaceCommitFile(localRoot, commit, rel string) (workspaceBindingFile, error) {
+	file := workspaceBindingFile{Path: rel}
+	mode, exists, err := gitWorkspacePathModeInCommit(localRoot, commit, rel)
+	if err != nil {
+		return file, err
+	}
+	if !exists {
+		file.Deleted = true
+		return file, nil
+	}
+	file.Mode = mode
+	blob, err := gitOutputRaw(localRoot, nil, "show", strings.TrimSpace(commit)+":"+rel)
+	if err != nil {
+		return file, fmt.Errorf("read sandbox baseline path %q: %w", rel, err)
+	}
+	file.SHA256 = workspaceSHA256Digest(blob)
+	return file, nil
+}
+
+func gitWorkspaceIndexFile(localRoot string, env []string, rel string) (workspaceBindingFile, error) {
+	file := workspaceBindingFile{Path: rel}
+	mode, exists, err := gitWorkspacePathModeInIndex(localRoot, env, rel)
+	if err != nil {
+		return file, err
+	}
+	if !exists {
+		file.Deleted = true
+		return file, nil
+	}
+	file.Mode = mode
+	blob, err := gitOutputRaw(localRoot, env, "show", ":"+rel)
+	if err != nil {
+		return file, fmt.Errorf("read local workspace path %q from temporary index: %w", rel, err)
+	}
+	file.SHA256 = workspaceSHA256Digest(blob)
+	return file, nil
+}
+
+func gitWorkspacePathModeInIndex(localRoot string, env []string, rel string) (string, bool, error) {
+	output, err := gitOutputRaw(localRoot, env, "ls-files", "--stage", "-z", "--", gitWorkspacePathspec(rel))
+	if err != nil {
+		return "", false, fmt.Errorf("inspect local workspace path %q in temporary index: %w", rel, err)
+	}
+	mode, exists, err := gitWorkspaceEntryMode(output, rel)
+	if err != nil {
+		return "", false, fmt.Errorf("parse local workspace path %q in temporary index: %w", rel, err)
+	}
+	return mode, exists, nil
+}
+
+func gitWorkspacePathModeInCommit(localRoot, commit, rel string) (string, bool, error) {
+	output, err := gitOutputRaw(localRoot, nil, "ls-tree", "-z", strings.TrimSpace(commit), "--", gitWorkspacePathspec(rel))
+	if err != nil {
+		return "", false, fmt.Errorf("inspect sandbox baseline path %q: %w", rel, err)
+	}
+	mode, exists, err := gitWorkspaceEntryMode(output, rel)
+	if err != nil {
+		return "", false, fmt.Errorf("parse sandbox baseline path %q: %w", rel, err)
+	}
+	return mode, exists, nil
+}
+
+func gitWorkspaceEntryMode(output []byte, rel string) (string, bool, error) {
+	normalized, err := workspaceRelativePath(rel)
+	if err != nil {
+		return "", false, err
+	}
+	output = bytes.TrimRight(output, "\x00")
+	if len(bytes.TrimSpace(output)) == 0 {
+		return "", false, nil
+	}
+	for _, entry := range bytes.Split(output, []byte{0}) {
+		metadata, rawPath, ok := bytes.Cut(entry, []byte{'\t'})
+		if !ok {
+			return "", false, fmt.Errorf("parse git entry %q", string(entry))
+		}
+		path, err := workspaceRelativePath(string(rawPath))
+		if err != nil {
+			return "", false, err
+		}
+		if path != normalized {
+			continue
+		}
+		fields := strings.Fields(string(metadata))
+		if len(fields) < 3 || strings.TrimSpace(fields[0]) == "" {
+			return "", false, fmt.Errorf("parse git entry %q", string(entry))
+		}
+		return fields[0], true, nil
+	}
+	return "", false, nil
+}
+
+func workspaceCopyOutPaths(files []repositorychangeset.File) ([]string, error) {
+	paths := make([]string, 0, len(files))
+	seen := make(map[string]struct{}, len(files))
+	for _, file := range files {
+		path, err := workspaceRelativePath(file.Path)
+		if err != nil {
+			return nil, err
+		}
+		if _, exists := seen[path]; exists {
+			continue
+		}
+		seen[path] = struct{}{}
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	return paths, nil
+}
+
+func gitWorkspacePathspecs(paths []string) []string {
+	pathspecs := make([]string, 0, len(paths))
+	for _, path := range paths {
+		pathspecs = append(pathspecs, gitWorkspacePathspec(path))
+	}
+	return pathspecs
+}
+
+func gitWorkspacePathspec(path string) string {
+	return ":(literal)" + path
+}
+
+func temporaryGitIndex() (string, func(), error) {
+	indexFile, err := os.CreateTemp("", "cleanroom-workspace-copy-out-index-*")
+	if err != nil {
+		return "", nil, fmt.Errorf("create temporary git index: %w", err)
+	}
+	indexPath := indexFile.Name()
+	if err := indexFile.Close(); err != nil {
+		_ = os.Remove(indexPath)
+		return "", nil, fmt.Errorf("close temporary git index %q: %w", indexPath, err)
+	}
+	return indexPath, func() { _ = os.Remove(indexPath) }, nil
+}
+
+func writeTemporaryWorkspaceCopyOutPatch(patch []byte) (string, func(), error) {
+	patchFile, err := os.CreateTemp("", "cleanroom-workspace-copy-out-*.patch")
+	if err != nil {
+		return "", nil, fmt.Errorf("create temporary workspace copy-out patch: %w", err)
+	}
+	patchPath := patchFile.Name()
+	if _, err := patchFile.Write(patch); err != nil {
+		_ = patchFile.Close()
+		_ = os.Remove(patchPath)
+		return "", nil, fmt.Errorf("write temporary workspace copy-out patch: %w", err)
+	}
+	if err := patchFile.Close(); err != nil {
+		_ = os.Remove(patchPath)
+		return "", nil, fmt.Errorf("close temporary workspace copy-out patch %q: %w", patchPath, err)
+	}
+	return patchPath, func() { _ = os.Remove(patchPath) }, nil
+}
+
+func gitOutputRaw(dir string, env []string, args ...string) ([]byte, error) {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	if env != nil {
+		cmd.Env = env
+	}
+	out, err := cmd.Output()
+	if err != nil {
+		msg := err.Error()
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			if stderr := strings.TrimSpace(string(exitErr.Stderr)); stderr != "" {
+				msg = stderr
+			}
+		}
+		return nil, errors.New(msg)
+	}
+	return out, nil
+}
+
+func workspaceSHA256Digest(data []byte) string {
+	sum := sha256.Sum256(data)
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 func applyGitWorkspaceCopyOutPatch(localRoot, patchPath string) error {
