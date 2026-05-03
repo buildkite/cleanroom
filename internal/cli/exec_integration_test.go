@@ -372,6 +372,273 @@ func runExecWithCapture(cmd ExecCommand, ctx runtimeContext) execOutcome {
 	}, &emptyStdin, ctx)
 }
 
+func TestExecIntegrationCopyOutAppliesSandboxChangesAfterCommand(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	localRoot := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
+	resolvedLocalRoot, err := gitOutput(localRoot, "rev-parse", "--show-toplevel")
+	if err != nil {
+		t.Fatalf("resolve local repository root: %v", err)
+	}
+	baseCommit, copyOutPayload := prepareReadmeWorkspaceCopyOutPayload(t, localRoot, "sandbox\n")
+
+	adapter := &integrationAdapter{}
+	host, _ := startIntegrationServer(t, adapter)
+	sandboxID := createWorkspaceCopyTestSandboxWithRepositoryCommitBranch(t, host, "/sandbox-workspace", baseCommit, "main")
+
+	var (
+		mu       sync.Mutex
+		commands []string
+	)
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+		command := strings.Join(req.Command, " ")
+		mu.Lock()
+		commands = append(commands, command)
+		mu.Unlock()
+		switch {
+		case strings.Contains(command, "cleanroom-copy-out-v1"):
+			if stream.OnStdout != nil {
+				stream.OnStdout(copyOutPayload)
+			}
+		default:
+			if stream.OnStdout != nil {
+				stream.OnStdout([]byte("command ran\n"))
+			}
+		}
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+	}
+
+	outcome := runExecWithCapture(ExecCommand{
+		clientFlags:        clientFlags{Host: host},
+		In:                 sandboxID,
+		workspaceCopyFlags: workspaceCopyFlags{CopyOut: true},
+		Command:            []string{"echo", "ok"},
+	}, runtimeContext{
+		CWD:    localRoot,
+		Loader: workspaceCopyRepositoryLoader(),
+	})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err != nil {
+		t.Fatalf("ExecCommand.Run returned error: %v", outcome.err)
+	}
+	if got := mustReadFile(t, filepath.Join(localRoot, "README.md")); got != "sandbox\n" {
+		t.Fatalf("unexpected copied-out README: got %q", got)
+	}
+	if !strings.Contains(outcome.stdout, "command ran\n") {
+		t.Fatalf("expected command stdout, got %q", outcome.stdout)
+	}
+	if strings.Contains(outcome.stdout, "write\t"+filepath.Join(resolvedLocalRoot, "README.md")+"\n") {
+		t.Fatalf("copy-out plan should not be written to stdout, got %q", outcome.stdout)
+	}
+	if !strings.Contains(outcome.stderr, "write\t"+filepath.Join(resolvedLocalRoot, "README.md")+"\n") {
+		t.Fatalf("expected copy-out plan in stderr, got %q", outcome.stderr)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if got, want := len(commands), 2; got != want {
+		t.Fatalf("expected user command plus workspace copy-out command, got %d: %v", got, commands)
+	}
+	if strings.Contains(commands[0], "cleanroom-copy-out-v1") {
+		t.Fatalf("expected user command before copy-out, got %q", commands[0])
+	}
+	if !strings.Contains(commands[1], "cleanroom-copy-out-v1") {
+		t.Fatalf("expected copy-out command second, got %q", commands[1])
+	}
+}
+
+func TestExecIntegrationCopyOutRunsAfterNonZeroExit(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	localRoot := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
+	resolvedLocalRoot, err := gitOutput(localRoot, "rev-parse", "--show-toplevel")
+	if err != nil {
+		t.Fatalf("resolve local repository root: %v", err)
+	}
+	baseCommit, copyOutPayload := prepareReadmeWorkspaceCopyOutPayload(t, localRoot, "sandbox after failure\n")
+
+	adapter := &integrationAdapter{}
+	host, _ := startIntegrationServer(t, adapter)
+	sandboxID := createWorkspaceCopyTestSandboxWithRepositoryCommitBranch(t, host, "/sandbox-workspace", baseCommit, "main")
+
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+		command := strings.Join(req.Command, " ")
+		if strings.Contains(command, "cleanroom-copy-out-v1") {
+			if stream.OnStdout != nil {
+				stream.OnStdout(copyOutPayload)
+			}
+			return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+		}
+		if stream.OnStderr != nil {
+			stream.OnStderr([]byte("failed\n"))
+		}
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 7, Message: "failed"}, nil
+	}
+
+	outcome := runExecWithCapture(ExecCommand{
+		clientFlags:        clientFlags{Host: host},
+		In:                 sandboxID,
+		workspaceCopyFlags: workspaceCopyFlags{CopyOut: true},
+		Command:            []string{"false"},
+	}, runtimeContext{
+		CWD:    localRoot,
+		Loader: workspaceCopyRepositoryLoader(),
+	})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	var exitErr exitCodeError
+	if !errors.As(outcome.err, &exitErr) || exitErr.ExitCode() != 7 {
+		t.Fatalf("expected exit code 7 after copy-out, got %v", outcome.err)
+	}
+	if got := mustReadFile(t, filepath.Join(localRoot, "README.md")); got != "sandbox after failure\n" {
+		t.Fatalf("unexpected copied-out README after failure: got %q", got)
+	}
+	if strings.Contains(outcome.stdout, "write\t"+filepath.Join(resolvedLocalRoot, "README.md")+"\n") {
+		t.Fatalf("copy-out plan should not be written to stdout, got %q", outcome.stdout)
+	}
+	if !strings.Contains(outcome.stderr, "failed\n") {
+		t.Fatalf("expected command stderr, got %q", outcome.stderr)
+	}
+	if !strings.Contains(outcome.stderr, "write\t"+filepath.Join(resolvedLocalRoot, "README.md")+"\n") {
+		t.Fatalf("expected copy-out plan in stderr, got %q", outcome.stderr)
+	}
+}
+
+func TestExecIntegrationCopyOutFailurePreservesCreatedSandbox(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	localRoot := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
+
+	adapter := &snapshotIntegrationAdapter{}
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+		command := strings.Join(req.Command, " ")
+		if strings.Contains(command, "cleanroom-copy-out-v1") {
+			return nil, errors.New("copy-out unavailable")
+		}
+		if stream.OnStdout != nil {
+			stream.OnStdout([]byte("command ran\n"))
+		}
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+	}
+	host, _ := startIntegrationServer(t, adapter)
+
+	outcome := runExecWithCapture(ExecCommand{
+		clientFlags:        clientFlags{Host: host},
+		workspaceCopyFlags: workspaceCopyFlags{CopyOut: true},
+		Command:            []string{"echo", "ok"},
+	}, runtimeContext{
+		CWD:    localRoot,
+		Loader: workspaceCopyRepositoryLoader(),
+	})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err == nil {
+		t.Fatal("expected copy-out failure")
+	}
+	if !strings.Contains(outcome.err.Error(), "workspace copy-out") {
+		t.Fatalf("expected workspace copy-out error, got %v", outcome.err)
+	}
+	if !strings.Contains(outcome.stdout, "command ran\n") {
+		t.Fatalf("expected command stdout, got %q", outcome.stdout)
+	}
+	sandboxID := parseSandboxID(outcome.stderr)
+	if sandboxID == "" {
+		t.Fatalf("expected sandbox id in stderr when preserving sandbox, got %q", outcome.stderr)
+	}
+	client := mustNewControlClient(t, host)
+	requireSandboxStatus(t, client, sandboxID, cleanroomv1.SandboxStatus_SANDBOX_STATUS_READY)
+
+	adapter.mu.Lock()
+	terminateCalls := adapter.terminateCalls
+	adapter.mu.Unlock()
+	if terminateCalls != 0 {
+		t.Fatalf("expected copy-out failure to preserve created sandbox, got %d terminate calls", terminateCalls)
+	}
+}
+
+func TestExecIntegrationCopyOutRejectsBaselineMismatchBeforeCommand(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	localRoot := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
+	baseCommit := headCommit(t, localRoot)
+	commitFile(t, localRoot, "local.txt", "local\n", "local commit")
+
+	adapter := &integrationAdapter{}
+	host, _ := startIntegrationServer(t, adapter)
+	sandboxID := createWorkspaceCopyTestSandboxWithRepositoryCommitBranch(t, host, "/sandbox-workspace", baseCommit, "main")
+
+	var executionCalled bool
+	adapter.runStreamFn = func(_ context.Context, _ backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
+		executionCalled = true
+		return &backend.ExecutionResult{ExitCode: 0, Message: "ok"}, nil
+	}
+
+	outcome := runExecWithCapture(ExecCommand{
+		clientFlags:        clientFlags{Host: host},
+		In:                 sandboxID,
+		workspaceCopyFlags: workspaceCopyFlags{CopyOut: true},
+		Command:            []string{"echo", "ok"},
+	}, runtimeContext{
+		CWD:    localRoot,
+		Loader: repositoryNotFoundLoader{},
+	})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err == nil {
+		t.Fatal("expected baseline mismatch to be rejected")
+	}
+	if !strings.Contains(outcome.err.Error(), "requires local checkout HEAD") {
+		t.Fatalf("expected baseline mismatch error, got %v", outcome.err)
+	}
+	if executionCalled {
+		t.Fatal("expected copy-out validation to fail before running command")
+	}
+}
+
+func TestWorkspaceCopyOutPrevalidationAllowsSyncBaselineMismatch(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	localRoot := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
+	baseCommit := headCommit(t, localRoot)
+	commitFile(t, localRoot, "local.txt", "local\n", "local commit")
+
+	host, _ := startIntegrationServer(t, &integrationAdapter{})
+	sandboxID := createWorkspaceCopyTestSandboxWithRepositoryCommitBranch(t, host, "/sandbox-workspace", baseCommit, "main")
+	client := mustNewControlClient(t, host)
+
+	err := validateWorkspaceCopyOutBeforeExecution(context.Background(), &runtimeContext{
+		CWD:    localRoot,
+		Loader: repositoryNotFoundLoader{},
+	}, client, localRoot, "", sandboxID, 0, workspaceCopyFlags{Sync: true})
+	if err != nil {
+		t.Fatalf("expected --sync prevalidation to allow copy-in to establish the copy-out base, got %v", err)
+	}
+}
+
+func prepareReadmeWorkspaceCopyOutPayload(t *testing.T, localRoot, content string) (string, []byte) {
+	t.Helper()
+
+	baseCommit := headCommit(t, localRoot)
+	if err := os.WriteFile(filepath.Join(localRoot, "README.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write sandbox readme: %v", err)
+	}
+	runGitInDir(t, localRoot, "add", "README.md")
+	nameStatus := gitOutputBytes(t, localRoot, "diff", "--cached", "--name-status", "--no-renames", "-z", baseCommit)
+	patch := gitOutputBytes(t, localRoot, "diff", "--cached", "--binary", "--full-index", "--no-ext-diff", "--no-color", "--no-renames", baseCommit)
+	runGitInDir(t, localRoot, "reset", "--hard", baseCommit)
+	return baseCommit, workspaceCopyOutTestPayload(nameStatus, patch)
+}
+
+func mustReadFile(t *testing.T, path string) string {
+	t.Helper()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(data)
+}
+
 func newTestObservability(t *testing.T) *observability.Runtime {
 	t.Helper()
 

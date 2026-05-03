@@ -10,19 +10,49 @@ import (
 	"github.com/buildkite/cleanroom/internal/repositorychangeset"
 )
 
-type workspaceCopyFlags struct {
+type workspaceCopyInFlags struct {
 	CopyIn bool `name:"copy-in" help:"Copy local workspace changes into the sandbox workspace before running"`
 }
 
-func (f workspaceCopyFlags) validate(_ string, fromSnapshot string, repositoryOverride repositoryOverrideFlags) error {
-	if !f.CopyIn {
+func (f workspaceCopyInFlags) validate(fromSnapshot string, repositoryOverride repositoryOverrideFlags) error {
+	switch {
+	case f.CopyIn && strings.TrimSpace(fromSnapshot) != "":
+		return errors.New("--copy-in cannot be used with --from")
+	case f.CopyIn && repositoryOverride.hasRepositoryOverride():
+		return errors.New("--copy-in cannot be used with --repo-url or --repo-commit")
+	default:
 		return nil
 	}
+}
+
+type workspaceCopyFlags struct {
+	CopyIn  bool `name:"copy-in" help:"Copy local workspace changes into the sandbox workspace before running"`
+	CopyOut bool `name:"copy-out" help:"Copy sandbox workspace changes back to the local workspace after running"`
+	Sync    bool `name:"sync" help:"Equivalent to --copy-in --copy-out"`
+}
+
+func (f workspaceCopyFlags) copyIn() bool {
+	return f.CopyIn || f.Sync
+}
+
+func (f workspaceCopyFlags) copyOut() bool {
+	return f.CopyOut || f.Sync
+}
+
+func (f workspaceCopyFlags) validate(fromSnapshot string, repositoryOverride repositoryOverrideFlags) error {
 	switch {
-	case strings.TrimSpace(fromSnapshot) != "":
+	case f.Sync && strings.TrimSpace(fromSnapshot) != "":
+		return errors.New("--sync cannot be used with --from")
+	case f.CopyIn && strings.TrimSpace(fromSnapshot) != "":
 		return errors.New("--copy-in cannot be used with --from")
-	case repositoryOverride.hasRepositoryOverride():
+	case f.CopyOut && strings.TrimSpace(fromSnapshot) != "":
+		return errors.New("--copy-out cannot be used with --from")
+	case f.Sync && repositoryOverride.hasRepositoryOverride():
+		return errors.New("--sync cannot be used with --repo-url or --repo-commit")
+	case f.CopyIn && repositoryOverride.hasRepositoryOverride():
 		return errors.New("--copy-in cannot be used with --repo-url or --repo-commit")
+	case f.CopyOut && repositoryOverride.hasRepositoryOverride():
+		return errors.New("--copy-out cannot be used with --repo-url or --repo-commit")
 	default:
 		return nil
 	}
@@ -32,7 +62,7 @@ func validateTopLevelWorkspaceCopyTransport(repository *resolvedRepositoryChecko
 	if !copyWorkspace || repository != nil {
 		return nil
 	}
-	return errors.New("--copy-in for non-Git workspaces cannot be used while creating a sandbox yet; create the sandbox first, then run cleanroom workspace copy-in <sandbox-id>")
+	return errors.New("top-level workspace copy for non-Git workspaces is not supported yet; create or select the sandbox, then use cleanroom workspace copy-in or cleanroom workspace copy-out explicitly")
 }
 
 type repositoryLocalChanges struct {

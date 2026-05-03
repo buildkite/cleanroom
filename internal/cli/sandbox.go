@@ -58,7 +58,7 @@ type CreateCommand struct {
 	From    string `name:"from" help:"Create the sandbox from an existing snapshot ID"`
 	Image   string `help:"Override sandbox image ref (tag, digest, or local Docker image)"`
 	repositoryOverrideFlags
-	workspaceCopyFlags
+	workspaceCopyInFlags
 	DangerouslyAllowAll bool  `name:"dangerously-allow-all" help:"Disable network egress filtering for a newly created sandbox"`
 	LaunchSeconds       int64 `help:"VM boot/guest-agent readiness timeout in seconds"`
 	JSON                bool  `help:"Print sandbox as JSON"`
@@ -365,7 +365,7 @@ func (c *CreateCommand) validate() error {
 	if _, err := c.repositoryOverrideFlags.resolve(".", nil); err != nil {
 		return err
 	}
-	if err := c.workspaceCopyFlags.validate("", c.From, c.repositoryOverrideFlags); err != nil {
+	if err := c.workspaceCopyInFlags.validate(c.From, c.repositoryOverrideFlags); err != nil {
 		return err
 	}
 	if c.repositoryOverrideFlags.hasRepositoryOverride() && strings.TrimSpace(c.From) != "" {

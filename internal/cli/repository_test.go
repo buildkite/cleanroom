@@ -964,9 +964,9 @@ func TestCreateCommandCopyInSuppressesDirtyWarning(t *testing.T) {
 	}
 
 	outcome := runCreateAliasWithCapture(CreateCommand{
-		clientFlags:        clientFlags{Host: host},
-		Chdir:              repoDir,
-		workspaceCopyFlags: workspaceCopyFlags{CopyIn: true},
+		clientFlags:          clientFlags{Host: host},
+		Chdir:                repoDir,
+		workspaceCopyInFlags: workspaceCopyInFlags{CopyIn: true},
 	}, runtimeContext{
 		CWD: repoDir,
 		Loader: repositoryIntegrationLoader{
@@ -1035,9 +1035,9 @@ func TestCreateCommandCopyInWarnsWhenBindingCannotBeSaved(t *testing.T) {
 	}
 
 	outcome := runCreateAliasWithCapture(CreateCommand{
-		clientFlags:        clientFlags{Host: host},
-		Chdir:              repoDir,
-		workspaceCopyFlags: workspaceCopyFlags{CopyIn: true},
+		clientFlags:          clientFlags{Host: host},
+		Chdir:                repoDir,
+		workspaceCopyInFlags: workspaceCopyInFlags{CopyIn: true},
 	}, runtimeContext{
 		CWD: repoDir,
 		Loader: repositoryIntegrationLoader{
@@ -1106,9 +1106,9 @@ func TestCreateCommandCopyInIncludesLocalOnlyCommits(t *testing.T) {
 	}
 
 	outcome := runCreateAliasWithCapture(CreateCommand{
-		clientFlags:        clientFlags{Host: host},
-		Chdir:              repoDir,
-		workspaceCopyFlags: workspaceCopyFlags{CopyIn: true},
+		clientFlags:          clientFlags{Host: host},
+		Chdir:                repoDir,
+		workspaceCopyInFlags: workspaceCopyInFlags{CopyIn: true},
 	}, runtimeContext{
 		CWD: repoDir,
 		Loader: repositoryIntegrationLoader{
