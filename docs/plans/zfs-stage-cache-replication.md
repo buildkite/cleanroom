@@ -567,7 +567,7 @@ Status: landed.
 
 ### 4. Static peer lookup API
 
-Status: sender side landed; receiver client is next.
+Status: landed.
 
 - Add runtime config for peer URLs and token env vars.
 - Add lookup RPC and export HTTP endpoint.
@@ -577,7 +577,7 @@ Status: sender side landed; receiver client is next.
 
 ### 5. Receiver-side peer import
 
-Status: next.
+Status: landed for dependency and services stage caches.
 
 - On local stage-cache miss, query configured peers when parent ZFS lineage is
   available.
@@ -589,6 +589,8 @@ Status: next.
 - Publish the imported cache record and use the existing restore path.
 
 ### 6. Observability and fallback hardening
+
+Status: next.
 
 - Add logs, traces, and metrics.
 - Ensure every peer miss or failed import falls back to local build.
@@ -610,6 +612,8 @@ Status: next.
 - peer lookup rejects missing, non-ready, backend mismatch, driver mismatch,
   policy mismatch, producer mismatch, and parent GUID mismatch
 - transfer token binds exact request fields and expires
+- dependency and services receiver imports publish local records, restore from
+  those records, and skip local bootstrap work
 - duplicate imports coalesce
 - import failure does not publish metadata
 
