@@ -16,6 +16,7 @@ const zfsManagedSnapshotName = "base"
 const zfsBaseNamespace = "base"
 const zfsSandboxNamespace = "sandboxes"
 const zfsSnapshotNamespace = "snapshots"
+const zfsSnapshotImportNamespace = "imports"
 
 type ZFSCommandRunner interface {
 	Run(ctx context.Context, command string, args ...string) error
@@ -367,7 +368,7 @@ func (d *ZFSDriver) ImportIncrementalSnapshot(ctx context.Context, req Increment
 		return Snapshot{}, errors.New("zfs command runner does not support streaming input")
 	}
 
-	storedDataset := d.datasetPath(zfsSnapshotNamespace, snapshotID)
+	storedDataset := d.importDataset(snapshotID)
 	storedSnapshotRef := d.snapshotRef(storedDataset, zfsManagedSnapshotName)
 	if _, err := d.cloneSnapshot(ctx, parent.SnapshotRef, storedDataset); err != nil {
 		return Snapshot{}, err
@@ -510,6 +511,10 @@ func (d *ZFSDriver) snapshotRef(dataset, snapshotName string) string {
 	return dataset + "@" + sanitizeZFSDatasetComponent(snapshotName)
 }
 
+func (d *ZFSDriver) importDataset(snapshotID string) string {
+	return d.datasetPath(zfsSnapshotNamespace, zfsSnapshotImportNamespace, snapshotID)
+}
+
 func storedZFSSnapshotDataset(snapshotRef string) (string, bool) {
 	dataset := datasetFromSnapshotRef(snapshotRef)
 	if dataset == "" {
@@ -566,13 +571,19 @@ func ZFSDatasetRootFromManagedRef(ref string) (string, bool) {
 		}
 	}
 
-	switch components[len(components)-2] {
-	case zfsBaseNamespace, zfsSandboxNamespace, zfsSnapshotNamespace:
-	default:
-		return "", false
+	var rootComponents []string
+	if len(components) >= 4 && components[len(components)-3] == zfsSnapshotNamespace && components[len(components)-2] == zfsSnapshotImportNamespace {
+		rootComponents = components[:len(components)-3]
+	} else {
+		switch components[len(components)-2] {
+		case zfsBaseNamespace, zfsSandboxNamespace, zfsSnapshotNamespace:
+		default:
+			return "", false
+		}
+		rootComponents = components[:len(components)-2]
 	}
 
-	root := strings.TrimSpace(strings.Join(components[:len(components)-2], "/"))
+	root := strings.TrimSpace(strings.Join(rootComponents, "/"))
 	if root == "" {
 		return "", false
 	}

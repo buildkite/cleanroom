@@ -423,7 +423,7 @@ exit 2
 	if !ok {
 		t.Fatalf("expected helper runner to support input streaming")
 	}
-	if err := inputStreamer.InputFrom(context.Background(), strings.NewReader("incoming-stream"), "zfs", "receive", "-u", "-F", "tank/cleanroom/snapshots/imported"); err != nil {
+	if err := inputStreamer.InputFrom(context.Background(), strings.NewReader("incoming-stream"), "zfs", "receive", "-u", "-F", "tank/cleanroom/snapshots/imports/imported"); err != nil {
 		t.Fatalf("InputFrom returned error: %v", err)
 	}
 	inputBytes, err := os.ReadFile(inputPath)
@@ -440,7 +440,7 @@ exit 2
 	}
 	wantLog := strings.Join([]string{
 		"zfs send -i tank/cleanroom/snapshots/parent@base tank/cleanroom/snapshots/child@base",
-		"zfs receive -u -F tank/cleanroom/snapshots/imported",
+		"zfs receive -u -F tank/cleanroom/snapshots/imports/imported",
 	}, "\n")
 	if got := strings.TrimSpace(string(logBytes)); got != wantLog {
 		t.Fatalf("unexpected helper log:\n got: %q\nwant: %q", got, wantLog)

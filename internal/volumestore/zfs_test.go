@@ -508,7 +508,7 @@ func TestZFSDriverExportsIncrementalSnapshotStream(t *testing.T) {
 
 func TestZFSDriverImportsIncrementalSnapshotStream(t *testing.T) {
 	parentRef := "tank/cleanroom/snapshots/parent@base"
-	importedRef := "tank/cleanroom/snapshots/imported@base"
+	importedRef := "tank/cleanroom/snapshots/imports/imported@base"
 	runner := &zfsTestRunner{
 		exists: map[string]bool{
 			parentRef: true,
@@ -547,9 +547,9 @@ func TestZFSDriverImportsIncrementalSnapshotStream(t *testing.T) {
 
 	wantCommands := []string{
 		"zfs get -H -o value guid " + parentRef,
-		"zfs list -H -o name tank/cleanroom/snapshots/imported",
-		"zfs clone -p " + parentRef + " tank/cleanroom/snapshots/imported",
-		"zfs receive -u -F tank/cleanroom/snapshots/imported",
+		"zfs list -H -o name tank/cleanroom/snapshots/imports/imported",
+		"zfs clone -p " + parentRef + " tank/cleanroom/snapshots/imports/imported",
+		"zfs receive -u -F tank/cleanroom/snapshots/imports/imported",
 		"zfs get -H -o value guid " + importedRef,
 	}
 	if got, want := runner.commands, wantCommands; strings.Join(got, "\n") != strings.Join(want, "\n") {
@@ -587,16 +587,16 @@ func TestZFSDriverCleansUpFailedIncrementalImport(t *testing.T) {
 	if !strings.Contains(err.Error(), "receive zfs incremental snapshot") {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if runner.exists["tank/cleanroom/snapshots/imported"] || runner.exists["tank/cleanroom/snapshots/imported@base"] {
+	if runner.exists["tank/cleanroom/snapshots/imports/imported"] || runner.exists["tank/cleanroom/snapshots/imports/imported@base"] {
 		t.Fatalf("expected failed import dataset to be destroyed, refs: %v", runner.exists)
 	}
 
 	wantCommands := []string{
 		"zfs get -H -o value guid " + parentRef,
-		"zfs list -H -o name tank/cleanroom/snapshots/imported",
-		"zfs clone -p " + parentRef + " tank/cleanroom/snapshots/imported",
-		"zfs receive -u -F tank/cleanroom/snapshots/imported",
-		"zfs destroy -r tank/cleanroom/snapshots/imported",
+		"zfs list -H -o name tank/cleanroom/snapshots/imports/imported",
+		"zfs clone -p " + parentRef + " tank/cleanroom/snapshots/imports/imported",
+		"zfs receive -u -F tank/cleanroom/snapshots/imports/imported",
+		"zfs destroy -r tank/cleanroom/snapshots/imports/imported",
 	}
 	if got, want := runner.commands, wantCommands; strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("unexpected zfs commands:\n got: %v\nwant: %v", got, want)
@@ -719,6 +719,8 @@ func TestZFSDatasetRootFromManagedRef(t *testing.T) {
 		"tank/cleanroom/base/runtime-key@base":                  "tank/cleanroom",
 		"tank/cleanroom/sandboxes/sandbox-1":                    "tank/cleanroom",
 		"tank/cleanroom/snapshots/golden@base":                  "tank/cleanroom",
+		"tank/cleanroom/snapshots/imports/imported@base":        "tank/cleanroom",
+		"tank/cleanroom/snapshots/imports/imported":             "tank/cleanroom",
 		"tank/cleanroom/sandboxes/source@snap-golden":           "tank/cleanroom",
 		"tank/snapshots/cleanroom/sandboxes/sandbox-1":          "tank/snapshots/cleanroom",
 		"tank/base/cleanroom/snapshots/golden@base":             "tank/base/cleanroom",
