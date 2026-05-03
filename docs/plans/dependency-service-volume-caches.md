@@ -851,12 +851,51 @@ Completed in phase 4:
 
 Remaining runtime work after phase 4:
 
-- mount output block devices in the guest at Cleanroom-managed locations
-- map declared `outputs.dirs` into the command view and restore declared
-  `outputs.files` from output volumes
 - run missed dependency and service blocks from isolated input projections
 - inspect overlay write capture results and warn/fallback on escaped writes
 - snapshot and publish output records after successful missed blocks
+- advertise `sandbox.overlay_write_capture` once escaped-write detection and
+  isolated block execution are wired through
+- decide whether output volume sizing stays internal or becomes policy-visible
+  after real workloads show the right default
+
+### Phase 5 PR Status
+
+The fifth implementation PR wires the prepared Firecracker output volumes into
+the guest execution protocol. It still keeps the block-volume runtime inactive
+because Firecracker does not advertise `sandbox.overlay_write_capture` yet, and
+it does not run per-block dependency or service commands.
+
+Completed in phase 5:
+
+- Firecracker derives a deterministic guest mount plan from prepared output
+  volumes, using `/dev/vdb`, `/dev/vdc`, and later virtio block device names in
+  the same order as the non-root drives
+- sandbox executions forward the mount plan to the Linux guest agent through
+  the internal vsock exec request
+- the guest agent mounts each cache output ext4 device at a Cleanroom-managed
+  path under `/run/cleanroom/cache-output-volumes`
+- declared `outputs.dirs` are created inside the output volume and bind-mounted
+  at the declared guest path before the command runs
+- cache hits require declared directory output subpaths to already exist inside
+  the restored output volume rather than creating empty replacements
+- declared directory output targets must be absent or empty directories before
+  the bind mount, so image-provided files are not silently hidden
+- declared `outputs.files` are restored by copying regular files out of the
+  output volume on cache hits, and missing file outputs are skipped on misses
+- the guest agent rejects changed mount plans after the first setup in a VM, so
+  repeated exec requests do not clobber restored file outputs
+- tests cover mount-plan construction, request forwarding, guest mount actions,
+  path validation, non-empty directory rejection, file restoration, and changed
+  plan rejection
+
+Remaining runtime work after phase 5:
+
+- run missed dependency and service blocks from isolated input projections
+- inspect overlay write capture results and warn/fallback on escaped writes
+- snapshot and publish output records after successful missed blocks
+- materialize captured file outputs into both the output volume and sandbox root
+  after a missed block run
 - advertise `sandbox.overlay_write_capture` once escaped-write detection and
   isolated block execution are wired through
 - decide whether output volume sizing stays internal or becomes policy-visible

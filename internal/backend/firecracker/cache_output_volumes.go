@@ -15,10 +15,12 @@ import (
 	"github.com/buildkite/cleanroom/internal/ext4image"
 	"github.com/buildkite/cleanroom/internal/hosttools"
 	"github.com/buildkite/cleanroom/internal/volumestore"
+	"github.com/buildkite/cleanroom/internal/vsockexec"
 	charmlog "github.com/charmbracelet/log"
 )
 
 const defaultCacheOutputVolumeMinimumBytes int64 = 512 << 20
+const cacheOutputGuestMountRoot = "/run/cleanroom/cache-output-volumes"
 
 var (
 	cacheOutputVolumeMinimumBytes     = defaultCacheOutputVolumeMinimumBytes
@@ -295,4 +297,73 @@ func cacheOutputDriveID(index int) string {
 func cacheOutputRuntimeVolumeID(sandboxID, specVolumeID string, index int) string {
 	sum := sha256.Sum256([]byte(strings.TrimSpace(sandboxID) + "\x00" + strings.TrimSpace(specVolumeID)))
 	return fmt.Sprintf("%s-cache-output-%02d-%s", strings.TrimSpace(sandboxID), index, hex.EncodeToString(sum[:6]))
+}
+
+func cacheOutputVolumeMounts(volumes []preparedCacheOutputVolume) []vsockexec.CacheOutputMount {
+	if len(volumes) == 0 {
+		return nil
+	}
+	mounts := make([]vsockexec.CacheOutputMount, 0, len(volumes))
+	for i, volume := range volumes {
+		mount := vsockexec.CacheOutputMount{
+			DevicePath:    cacheOutputDevicePath(i),
+			MountPath:     cacheOutputGuestMountPath(volume.Drive.DriveID),
+			SourcePresent: cacheOutputSpecHasSource(volume.Spec),
+		}
+		for _, mapping := range volume.Spec.DirMappings {
+			mount.DirMappings = append(mount.DirMappings, vsockexec.CacheOutputDirMount{
+				GuestPath: strings.TrimSpace(mapping.GuestPath),
+				Subpath:   strings.TrimSpace(mapping.Subpath),
+			})
+		}
+		for _, mapping := range volume.Spec.FileMappings {
+			mount.FileMappings = append(mount.FileMappings, vsockexec.CacheOutputFileMount{
+				GuestPath: strings.TrimSpace(mapping.GuestPath),
+				Subpath:   strings.TrimSpace(mapping.Subpath),
+				Mode:      uint32(mapping.Mode.Perm()),
+			})
+		}
+		mounts = append(mounts, mount)
+	}
+	return mounts
+}
+
+func cloneCacheOutputMounts(mounts []vsockexec.CacheOutputMount) []vsockexec.CacheOutputMount {
+	if len(mounts) == 0 {
+		return nil
+	}
+	out := make([]vsockexec.CacheOutputMount, len(mounts))
+	for i, mount := range mounts {
+		out[i] = mount
+		out[i].DirMappings = append([]vsockexec.CacheOutputDirMount(nil), mount.DirMappings...)
+		out[i].FileMappings = append([]vsockexec.CacheOutputFileMount(nil), mount.FileMappings...)
+	}
+	return out
+}
+
+func cacheOutputGuestMountPath(driveID string) string {
+	return filepath.Join(cacheOutputGuestMountRoot, strings.TrimSpace(driveID))
+}
+
+func cacheOutputSpecHasSource(spec backend.CacheOutputVolumeSpec) bool {
+	return strings.TrimSpace(spec.SourceSnapshotRef) != "" || strings.TrimSpace(spec.StorageRef) != ""
+}
+
+func cacheOutputDevicePath(index int) string {
+	return "/dev/" + virtioBlockDeviceName(index+1)
+}
+
+func virtioBlockDeviceName(index int) string {
+	if index < 0 {
+		index = 0
+	}
+	letters := ""
+	for {
+		letters = string(rune('a'+index%26)) + letters
+		index = index/26 - 1
+		if index < 0 {
+			break
+		}
+	}
+	return "vd" + letters
 }

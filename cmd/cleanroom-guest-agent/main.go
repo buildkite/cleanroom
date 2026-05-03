@@ -78,6 +78,10 @@ func handleConn(conn io.ReadWriteCloser) {
 	if len(req.EntropySeed) > 0 {
 		_ = injectEntropy(req.EntropySeed)
 	}
+	if err := setupCacheOutputMountsOnce(req.CacheOutputMounts); err != nil {
+		sendErrorResponse(conn, err)
+		return
+	}
 
 	if req.TTY {
 		handleConnTTY(conn, dec, req)
