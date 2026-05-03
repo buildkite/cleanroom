@@ -2,7 +2,7 @@
 
 **Spec reference:** `spec.md` sections 5.1.1, 5.2, 6.4
 **Status:** Proposed
-**Last reviewed:** 2026-05-02
+**Last reviewed:** 2026-05-03
 
 ## Summary
 
@@ -700,7 +700,10 @@ Current runtime behavior after phase 1:
 
 Remaining work:
 
-- wire dependency block-volume planning into the sandbox creation runtime path
+- extend dependency block-volume runtime wiring from lookup-only planning to
+  output-volume preparation, restore, execution, and publication
+- extend service block-volume runtime wiring from lookup-only planning to
+  output-volume preparation, restore, execution, and publication
 - materialize isolated declared-input projections before running cacheable
   blocks
 - implement the guest overlay write-capture runner
@@ -720,8 +723,8 @@ Firecracker implementation.
 ### Phase 2 PR Status
 
 The second implementation PR starts the runtime-control layer without changing
-the sandbox execution path yet. Existing dependency bootstraps still run through
-the aggregate dependency stage cache.
+the sandbox execution path yet. Existing dependency and service bootstraps still
+run through the aggregate stage cache paths, even when block-volume records hit.
 
 Completed in phase 2:
 
@@ -733,16 +736,45 @@ Completed in phase 2:
   cache metadata fields introduced in phase 1
 - runtime fallback decision requires backend support for cache output volumes and
   overlay write capture before the future block-volume path can be selected
+- sandbox creation now evaluates dependency block-volume lookup after exact and
+  portable dependency-stage cache restore fail or miss, and before workspace
+  cache restore or fresh provisioning
+- unsupported backends and missing cache metadata stores fall back to the
+  aggregate dependency stage path before doing per-block key resolution
+- dependency block-volume lookup observability records block counts, hit counts,
+  miss counts, and logs fallback and lookup summaries
 - tests cover ordered keying, prior-block invalidation, partial cache hits, and
   fallback when backend capabilities are missing
+- `CreateSandbox` tests cover unsupported backend fallback, missing store
+  fallback, partial dependency block-volume hits, and all-hit lookup behavior
+  while confirming the aggregate dependency bootstrap still runs
+- service block-volume planner computes one cache key per ordered service block
+  from backend, runtime key, reuse namespace, policy hash, command digest, env
+  digest, input manifest digest, normalized output declarations, ordered
+  dependency output keys, and prior service output keys
+- sandbox creation now evaluates service block-volume lookup after services
+  stage restore misses, including after dependency-stage cache restores, once
+  dependency block-volume planning is available for policies with dependency
+  blocks
+- service block-volume lookup observability records block counts, hit counts,
+  miss counts, and logs fallback and lookup summaries
+- tests cover service keying, dependency-output invalidation, prior-service
+  invalidation, partial service cache hits, unsupported backend fallback, missing
+  store fallback, partial `CreateSandbox` hits, and all-hit lookup behavior while
+  confirming the aggregate services bootstrap still runs
+- regression coverage proves service block-volume lookup still runs when the
+  aggregate services stage cache misses and an aggregate dependency stage cache
+  restores
 
 Remaining phase 2 work:
 
-- make dependency sandbox creation consume the block-volume plan
 - prepare and attach output volumes before VM launch
 - run missed dependency blocks from isolated input projections
 - restore hit output records before later dependency blocks run
 - publish output records after successful missed blocks
+- run missed service blocks from isolated input projections
+- restore hit service output records before later service blocks run
+- publish service output records after successful missed blocks
 
 ## Tests
 

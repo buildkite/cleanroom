@@ -377,6 +377,8 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	workspaceStageKey := ""
 	workspaceStageCachingEnabled := false
 	dependencyStagePlan := dependencyStagePlan{}
+	dependencyBlockVolumePlan := dependencyBlockVolumePlan{}
+	dependencyBlockVolumePlanAvailable := false
 	dependencyStageBootstrapEnabled := false
 	dependencyStageCachingEnabled := false
 	servicesStagePlan := servicesStagePlan{}
@@ -603,6 +605,13 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 				}
 			}
 
+			if dependencyStageBootstrapEnabled && restoredDependencyResp == nil {
+				dependencyBlockVolumePlan, dependencyBlockVolumePlanAvailable = s.lookupDependencyBlockVolumePlanForCreateSandbox(ctx, adapter, backendName, compiled, repository, changeset, commitBundle, workspaceStageRuntimeBaseKey)
+			}
+			if servicesStageBootstrapEnabled && restoredDependencyResp == nil {
+				s.maybeLookupServiceBlockVolumePlanForCreateSandbox(ctx, adapter, backendName, compiled, repository, changeset, commitBundle, workspaceStageRuntimeBaseKey, dependencyStageBootstrapEnabled, dependencyBlockVolumePlan, dependencyBlockVolumePlanAvailable)
+			}
+
 			if restoredDependencyResp == nil {
 				emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_LOOKUP_WORKSPACE_STAGE_CACHE, "checking workspace stage cache")
 				var record cachestore.Record
@@ -673,6 +682,11 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 		sandboxID := restoredDependencyResp.GetSandbox().GetSandboxId()
 		span.SetAttributes(attribute.String("cleanroom.sandbox.id", sandboxID))
 		if servicesStageBootstrapEnabled {
+			if dependencyStageBootstrapEnabled && !dependencyBlockVolumePlanAvailable && blockVolumeRuntimeDecisionForAdapter(adapter).Enabled {
+				dependencyBlockVolumePlan, dependencyBlockVolumePlanAvailable = s.lookupDependencyBlockVolumePlanForCreateSandbox(ctx, adapter, backendName, compiled, repository, changeset, commitBundle, workspaceStageRuntimeBaseKey)
+			}
+			s.maybeLookupServiceBlockVolumePlanForCreateSandbox(ctx, adapter, backendName, compiled, repository, changeset, commitBundle, workspaceStageRuntimeBaseKey, dependencyStageBootstrapEnabled, dependencyBlockVolumePlan, dependencyBlockVolumePlanAvailable)
+
 			bootstrapAttrs := []attribute.KeyValue{
 				attribute.String(observability.AttrBackend, backendName),
 				attribute.String(observability.AttrSandboxID, sandboxID),
