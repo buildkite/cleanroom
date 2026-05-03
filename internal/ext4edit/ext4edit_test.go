@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/buildkite/cleanroom/internal/hosttools"
@@ -78,6 +79,16 @@ func TestDebugFSCommandOutputErrorReportsUnknownCommand(t *testing.T) {
 	}
 }
 
+func TestDebugFSCommandOutputErrorReportsUnreadableFilesystem(t *testing.T) {
+	t.Parallel()
+
+	output := "debugfs 1.47.3 (8-Jul-2025)\nInode bitmap checksum does not match bitmap while reading allocation bitmaps\nstat: Filesystem not open\n"
+	got := DebugFSCommandOutputError(output)
+	if got == "" {
+		t.Fatal("expected unreadable-filesystem debugfs output to be treated as an error")
+	}
+}
+
 func TestDebugFSCommandOutputErrorIgnoresSuccessfulOutput(t *testing.T) {
 	t.Parallel()
 
@@ -102,6 +113,31 @@ func TestDebugFSStatTypeParsesSymlink(t *testing.T) {
 	output := "debugfs 1.47.3 (8-Jul-2025)\nInode: 82   Type: symlink    Mode:  0755   Flags: 0x0\n"
 	if got, want := DebugFSStatType(output), PathKindSymlink; got != want {
 		t.Fatalf("unexpected stat type: got %q want %q", got, want)
+	}
+}
+
+func TestPathTypeWithErrorReturnsInspectionError(t *testing.T) {
+	t.Parallel()
+
+	debugfsBinary, _, ok := requireDebugFSTools(t)
+	if !ok {
+		return
+	}
+	if debugfsBinary == "" {
+		t.Fatal("expected debugfs path")
+	}
+
+	imagePath := filepath.Join(t.TempDir(), "not-ext4.img")
+	if err := os.WriteFile(imagePath, []byte("not an ext4 image"), 0o600); err != nil {
+		t.Fatalf("write invalid image: %v", err)
+	}
+
+	_, err := PathTypeWithError(imagePath, "/")
+	if err == nil {
+		t.Fatal("expected invalid image inspection to fail")
+	}
+	if !strings.Contains(err.Error(), "debugfs") {
+		t.Fatalf("expected debugfs error, got %v", err)
 	}
 }
 

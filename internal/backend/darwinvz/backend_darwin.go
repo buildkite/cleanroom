@@ -1053,6 +1053,10 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 		observation.Error = err.Error()
 		return nil, fmt.Errorf("resize writable rootfs: %w", err)
 	}
+	if err := validateRootFSInspectable(vmRootFSPath); err != nil {
+		observation.Error = err.Error()
+		return nil, fmt.Errorf("validate writable rootfs: %w", err)
+	}
 	observation.RootFSCopyMS = time.Since(copyStart).Milliseconds()
 	defer func() {
 		_ = driver.DestroyVolume(context.Background(), volumestore.DestroyVolumeRequest{VolumeRef: vmRootFSPath})
@@ -1333,6 +1337,9 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 	vmRootFSPath = writableVolume.AttachmentPath
 	if err := ext4image.EnsureMinimumSize(ctx, vmRootFSPath, cfg.MinimumRootFSBytes); err != nil {
 		return nil, fmt.Errorf("resize persistent rootfs: %w", err)
+	}
+	if err := validateRootFSInspectable(vmRootFSPath); err != nil {
+		return nil, fmt.Errorf("validate persistent rootfs: %w", err)
 	}
 	rootFSCopyMS := time.Since(copyStart).Milliseconds()
 
@@ -2443,6 +2450,17 @@ func ext4PathType(imagePath, path string) ext4PathKind {
 	default:
 		return ext4PathKindUnknown
 	}
+}
+
+func validateRootFSInspectable(rootFSPath string) error {
+	kind, err := ext4edit.PathTypeWithError(rootFSPath, "/")
+	if err != nil {
+		return fmt.Errorf("inspect ext4 rootfs %q: %w", rootFSPath, err)
+	}
+	if kind != ext4edit.PathKindDirectory {
+		return fmt.Errorf("inspect ext4 rootfs %q: root path has type %q", rootFSPath, kind)
+	}
+	return nil
 }
 
 func (a *Adapter) resolveKernelPath(ctx context.Context, configuredPath string) (path, notice string, err error) {
