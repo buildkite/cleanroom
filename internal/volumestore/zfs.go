@@ -385,6 +385,10 @@ func (d *ZFSDriver) ImportIncrementalSnapshot(ctx context.Context, req Increment
 		return Snapshot{}, fmt.Errorf("receive zfs incremental snapshot into %q: %w", storedDataset, err)
 	}
 
+	if err := d.runner.Run(ctx, "zfs", "promote", storedDataset); err != nil {
+		return Snapshot{}, fmt.Errorf("promote imported zfs dataset %q: %w", storedDataset, err)
+	}
+
 	desc, err := d.DescribeSnapshot(ctx, DescribeSnapshotRequest{
 		SnapshotRef:        storedSnapshotRef,
 		ParentSnapshotGUID: parent.SnapshotGUID,
