@@ -100,6 +100,44 @@ func TestSandboxCreateIntegrationJSONOutput(t *testing.T) {
 	}
 }
 
+func TestTopLevelCreateIntegrationReportsExposureSetupFailureAfterCreate(t *testing.T) {
+	adapter := &snapshotIntegrationAdapter{}
+	host, _ := startIntegrationServer(t, adapter)
+	cwd := t.TempDir()
+
+	outcome := runCreateAliasWithCapture(CreateCommand{
+		clientFlags: clientFlags{Host: host},
+		Chdir:       cwd,
+		Expose:      []string{"3000"},
+	}, runtimeContext{
+		CWD:    cwd,
+		Loader: integrationLoader{},
+	})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err == nil {
+		t.Fatal("expected CreateCommand.Run to fail during exposure setup")
+	}
+	if !strings.Contains(outcome.err.Error(), "does not support sandbox port dialing") {
+		t.Fatalf("unexpected CreateCommand.Run error: %v", outcome.err)
+	}
+	if strings.TrimSpace(outcome.stdout) == "" {
+		t.Fatalf("expected sandbox id before exposure setup error, got %q", outcome.stdout)
+	}
+
+	adapter.mu.Lock()
+	provisionCalls := adapter.provisionCalls
+	terminateCalls := adapter.terminateCalls
+	adapter.mu.Unlock()
+	if got, want := provisionCalls, 1; got != want {
+		t.Fatalf("expected one sandbox provision, got %d", got)
+	}
+	if got, want := terminateCalls, 0; got != want {
+		t.Fatalf("expected create to leave the created sandbox for inspection, got %d terminations", got)
+	}
+}
+
 func TestSandboxCreateIntegrationDangerouslyAllowAllSetsAllowNetworkDefault(t *testing.T) {
 	restore := stubPolicyUpdateResolver(t, func(_ context.Context, source string) (string, error) {
 		if got, want := source, defaultBumpRefSource; got != want {

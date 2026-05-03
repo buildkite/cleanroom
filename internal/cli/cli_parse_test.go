@@ -207,16 +207,18 @@ func TestSystemCommandsParse(t *testing.T) {
 	}
 }
 
-func TestSandboxCreateRejectsExposureFlags(t *testing.T) {
+func TestSandboxCreateParsesExposureFlags(t *testing.T) {
 	c := &CLI{}
 	parser := newParserForTest(t, c)
 
-	_, err := parser.Parse([]string{"sandbox", "create", "--expose", "15432:5432"})
-	if err == nil {
-		t.Fatal("expected sandbox create --expose to be rejected")
+	if _, err := parser.Parse([]string{"sandbox", "create", "--expose", "15432:5432", "--expose-https", "buildkite:3000"}); err != nil {
+		t.Fatalf("parse sandbox create exposure flags returned error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "unknown flag") || !strings.Contains(err.Error(), "--expose") {
-		t.Fatalf("expected unknown flag parse error, got %v", err)
+	if got, want := c.Sandbox.Create.Expose, []string{"15432:5432"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected sandbox create --expose values: got %v want %v", got, want)
+	}
+	if got, want := c.Sandbox.Create.ExposeHTTPS, []string{"buildkite:3000"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected sandbox create --expose-https values: got %v want %v", got, want)
 	}
 }
 
@@ -406,6 +408,21 @@ func TestTopLevelCreateParsesDangerouslyAllowAll(t *testing.T) {
 	}
 	if !c.Create.DangerouslyAllowAll {
 		t.Fatal("expected create dangerously-allow-all flag to be set")
+	}
+}
+
+func TestTopLevelCreateParsesExposureFlags(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"create", "--expose", "5432", "--expose-https", "buildkite:3000"}); err != nil {
+		t.Fatalf("parse create exposure flags returned error: %v", err)
+	}
+	if got, want := c.Create.Expose, []string{"5432"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected create --expose values: got %v want %v", got, want)
+	}
+	if got, want := c.Create.ExposeHTTPS, []string{"buildkite:3000"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected create --expose-https values: got %v want %v", got, want)
 	}
 }
 
@@ -689,6 +706,24 @@ func TestConsoleParsesRepeatedEnvFlags(t *testing.T) {
 	}
 	if got, want := c.Console.Env, []string{"OPENAI_API_KEY", "DEBUG=1"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("unexpected console env flags: got %v want %v", got, want)
+	}
+}
+
+func TestConsoleParsesExposureFlags(t *testing.T) {
+	c := &CLI{}
+	parser := newParserForTest(t, c)
+
+	if _, err := parser.Parse([]string{"console", "--expose", "5432", "--expose-https", "buildkite:3000", "--", "sh"}); err != nil {
+		t.Fatalf("parse console exposure flags returned error: %v", err)
+	}
+	if got, want := c.Console.Expose, []string{"5432"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected console --expose values: got %v want %v", got, want)
+	}
+	if got, want := c.Console.ExposeHTTPS, []string{"buildkite:3000"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected console --expose-https values: got %v want %v", got, want)
+	}
+	if got, want := trimPassthroughSeparator(c.Console.Command), []string{"sh"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected console command: got %v want %v", got, want)
 	}
 }
 

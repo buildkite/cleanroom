@@ -614,6 +614,46 @@ func TestConsoleIntegrationRejectsKeepWhenReusingSandbox(t *testing.T) {
 	}
 }
 
+func TestConsoleIntegrationTerminatesCreatedSandboxWhenExposureSetupFails(t *testing.T) {
+	adapter := &snapshotIntegrationAdapter{}
+	host, _ := startIntegrationServer(t, adapter)
+	cwd := t.TempDir()
+
+	outcome := runConsoleWithCapture(ConsoleCommand{
+		clientFlags: clientFlags{Host: host},
+		Chdir:       cwd,
+		Expose:      []string{"3000"},
+		Command:     []string{"sh"},
+	}, "exit\n", runtimeContext{
+		CWD:    cwd,
+		Loader: integrationLoader{},
+	})
+	if outcome.cause != nil {
+		t.Fatalf("capture failure: %v", outcome.cause)
+	}
+	if outcome.err == nil {
+		t.Fatal("expected ConsoleCommand.Run to fail during exposure setup")
+	}
+	if !strings.Contains(outcome.err.Error(), "does not support sandbox port dialing") {
+		t.Fatalf("unexpected ConsoleCommand.Run error: %v", outcome.err)
+	}
+
+	adapter.mu.Lock()
+	sandboxID := adapter.provisionReq.SandboxID
+	terminateCalls := adapter.terminateCalls
+	runInSandboxCalls := adapter.runInSandboxCalls
+	adapter.mu.Unlock()
+	if sandboxID == "" {
+		t.Fatal("expected sandbox to be provisioned before exposure setup")
+	}
+	if got, want := terminateCalls, 1; got != want {
+		t.Fatalf("expected created sandbox to be terminated after exposure setup failure: got %d", got)
+	}
+	if got, want := runInSandboxCalls, 0; got != want {
+		t.Fatalf("expected console execution not to start after exposure setup failure: got %d", got)
+	}
+}
+
 func TestConsoleIntegrationRejectsChdirWhenReusingSandbox(t *testing.T) {
 	cwd := t.TempDir()
 	outcome := runConsoleWithCapture(ConsoleCommand{

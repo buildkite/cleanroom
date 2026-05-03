@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"strings"
@@ -92,6 +93,13 @@ func runForegroundClientExposures(ctx *runtimeContext, flags clientFlags, sandbo
 		return err
 	}
 
+	return runForegroundClientExposuresWithClient(ctx.Stdout, client, sandboxID, requested)
+}
+
+func runForegroundClientExposuresWithClient(w io.Writer, client *controlclient.Client, sandboxID string, requested []*cleanroomv1.PortExposure) error {
+	if len(requested) == 0 {
+		return nil
+	}
 	exposureCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	manager, registered, err := startClientExposures(exposureCtx, client, sandboxID, requested)
@@ -99,10 +107,10 @@ func runForegroundClientExposures(ctx *runtimeContext, flags clientFlags, sandbo
 		return err
 	}
 	defer manager.Close()
-	if err := writeExposureLines(ctx.Stdout, registered); err != nil {
+	if err := writeExposureLines(w, registered); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintln(ctx.Stdout, "press Ctrl-C to stop exposing ports"); err != nil {
+	if _, err := fmt.Fprintln(w, "press Ctrl-C to stop exposing ports"); err != nil {
 		return err
 	}
 

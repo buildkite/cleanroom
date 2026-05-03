@@ -26,6 +26,8 @@ type ConsoleCommand struct {
 	Keep                bool     `help:"Keep a newly created sandbox after the console exits"`
 	DangerouslyAllowAll bool     `name:"dangerously-allow-all" help:"Disable network egress filtering for a newly created sandbox"`
 	Env                 []string `short:"e" name:"env" help:"Set guest environment variables; use KEY to inherit from the local environment or KEY=VALUE to set an explicit value"`
+	Expose              []string `name:"expose" help:"Expose raw TCP as <guest-port> or <host-port>:<guest-port>"`
+	ExposeHTTPS         []string `name:"expose-https" help:"Expose HTTPS as [name:]<guest-port> under cleanroom.localhost"`
 	PrintSandboxID      bool     `name:"print-sandbox-id" help:"Print resolved sandbox_id=<id> to stderr before attaching"`
 
 	LaunchSeconds int64 `help:"VM boot/guest-agent readiness timeout in seconds"`
@@ -90,6 +92,10 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) (runErr error) {
 		return err
 	}
 	executionEnv, err := resolveExecutionEnv(c.Env)
+	if err != nil {
+		return err
+	}
+	exposures, err := parseExposureFlags(c.Expose, c.ExposeHTTPS)
 	if err != nil {
 		return err
 	}
@@ -165,6 +171,16 @@ func (c *ConsoleCommand) Run(ctx *runtimeContext) (runErr error) {
 	}
 	if c.preAttach != nil {
 		if err := c.preAttach(rootCtx, client, sandboxID); err != nil {
+			return err
+		}
+	}
+	exposureManager, exposed, err := startClientExposures(rootCtx, client, sandboxID, exposures)
+	if err != nil {
+		return err
+	}
+	if exposureManager != nil {
+		defer exposureManager.Close()
+		if err := writeExposureLines(os.Stderr, exposed); err != nil {
 			return err
 		}
 	}
