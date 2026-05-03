@@ -47,6 +47,30 @@ func TestCacheOutputMountActionsMapsDirsAndRestoresFiles(t *testing.T) {
 	}
 }
 
+func TestCacheOutputMountActionsLeavesUnspecifiedFileModeUnset(t *testing.T) {
+	t.Parallel()
+
+	actions, err := cacheOutputMountActions([]vsockexec.CacheOutputMount{
+		{
+			DevicePath:    "/dev/vdb",
+			MountPath:     "/run/cleanroom/cache-output-volumes/cacheout0",
+			SourcePresent: true,
+			FileMappings: []vsockexec.CacheOutputFileMount{
+				{GuestPath: "/usr/local/bin/tool", Subpath: "files/0"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("cacheOutputMountActions returned error: %v", err)
+	}
+	if got, want := actions[len(actions)-1].Kind, cacheOutputActionRestoreFile; got != want {
+		t.Fatalf("unexpected final action kind: got %q want %q", got, want)
+	}
+	if got := actions[len(actions)-1].Mode; got != 0 {
+		t.Fatalf("unexpected restore file mode: got %v want 0", got)
+	}
+}
+
 func TestEnsureCacheOutputDirRejectsNonEmptyMountpoint(t *testing.T) {
 	t.Parallel()
 

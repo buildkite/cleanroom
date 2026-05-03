@@ -128,10 +128,6 @@ func cacheOutputMountActions(mounts []vsockexec.CacheOutputMount) ([]cacheOutput
 			if err != nil {
 				return nil, fmt.Errorf("cache output mount %d file mapping %d: %w", i, j, err)
 			}
-			mode := fs.FileMode(mapping.Mode).Perm()
-			if mode == 0 {
-				mode = 0o644
-			}
 			actions = append(actions,
 				cacheOutputMountAction{Kind: cacheOutputActionMkdir, Target: filepath.Dir(guestPath), Mode: 0o755},
 				cacheOutputMountAction{
@@ -140,7 +136,7 @@ func cacheOutputMountActions(mounts []vsockexec.CacheOutputMount) ([]cacheOutput
 					Target:        guestPath,
 					VolumeRoot:    mountPath,
 					VolumeSubpath: cleanSubpath,
-					Mode:          mode,
+					Mode:          fs.FileMode(mapping.Mode).Perm(),
 					Required:      mount.SourcePresent,
 				},
 			)
