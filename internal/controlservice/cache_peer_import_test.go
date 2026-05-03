@@ -7,10 +7,12 @@ import (
 	"net/http/httptest"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/cachestore"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/gen/cleanroom/v1/cleanroomv1connect"
@@ -78,6 +80,50 @@ func TestCachePeerTimeoutConnReadTimesOutWhenIdle(t *testing.T) {
 	if elapsed := time.Since(start); elapsed > time.Second {
 		t.Fatalf("idle read timeout took too long: %s", elapsed)
 	}
+}
+
+func TestLookupCachePeerImportCandidatesReturnsFirstMatchWithoutWaitingForSlowPeer(t *testing.T) {
+	t.Setenv("CLEANROOM_CACHE_PEER_TOKEN", "receiver-token")
+
+	req := &cleanroomv1.LookupCachePeerRequest{
+		Stage:                 dependencyStageName,
+		CacheKey:              "dependency-child",
+		Backend:               "firecracker",
+		StorageDriver:         "zfs",
+		Architecture:          runtime.GOARCH,
+		ProducerVersion:       dependencyStageProducerVersion,
+		PolicyHash:            "policy-hash",
+		ParentStage:           workspaceStageName,
+		ParentCacheKey:        "workspace-parent",
+		ParentZfsSnapshotGuid: "workspace-guid",
+	}
+	goodPeer := newTestCachePeerImportServer(t, cachePeerImportTestCandidate(req.GetCacheKey(), req.GetParentCacheKey(), req.GetPolicyHash(), "good-token"))
+	slowPeer := newTestCachePeerImportServer(t, cachePeerImportTestCandidate(req.GetCacheKey(), req.GetParentCacheKey(), req.GetPolicyHash(), "slow-token"))
+	slowPeer.lookupBlock = make(chan struct{})
+	defer close(slowPeer.lookupBlock)
+
+	svc := newTestService(&stubAdapter{})
+	svc.Config.Cache.Peers = []runtimeconfig.CachePeerConfig{
+		{URL: goodPeer.URL, TokenEnv: "CLEANROOM_CACHE_PEER_TOKEN"},
+		{URL: slowPeer.URL, TokenEnv: "CLEANROOM_CACHE_PEER_TOKEN"},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	matches := svc.lookupCachePeerImportCandidates(ctx, req)
+
+	select {
+	case match, ok := <-matches:
+		if !ok {
+			t.Fatal("expected a peer candidate")
+		}
+		if got, want := match.candidate.GetTransferToken(), "good-token"; got != want {
+			t.Fatalf("unexpected candidate token: got %q want %q", got, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for first peer candidate")
+	}
+	cancel()
 }
 
 func TestCreateSandboxImportsDependencyStageCacheFromPeer(t *testing.T) {
@@ -332,8 +378,8 @@ func TestImportDependencyStageCacheFromPeerCleansUpInvalidSnapshot(t *testing.T)
 		nil,
 		dependencyPlan,
 	)
-	if err == nil {
-		t.Fatal("expected invalid peer snapshot metadata to fail")
+	if err != nil {
+		t.Fatalf("importDependencyStageCacheFromPeers returned error: %v", err)
 	}
 	if imported {
 		t.Fatalf("expected invalid import to report imported=false, got record %#v", record)
@@ -579,6 +625,164 @@ func TestImportDependencyStageCacheFromPeersContinuesAfterExportFailure(t *testi
 		t.Fatalf("expected second peer export to be attempted once, got %d", got)
 	}
 	requireCachePeerImportRequest(t, transfer, "tank/local/workspace@base", "workspace-guid", "dependency-guid", "good-zfs-stream")
+	if _, found, err := cacheStore.GetReady(context.Background(), dependencyStageName, dependencyPlan.CacheKey); err != nil {
+		t.Fatalf("GetReady returned error: %v", err)
+	} else if !found {
+		t.Fatal("expected successful second-peer import to publish cache metadata")
+	}
+}
+
+func TestImportDependencyStageCacheFromPeersContinuesAfterValidationFailure(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("CLEANROOM_CACHE_PEER_TOKEN", "receiver-token")
+
+	badCleanup := make(chan struct{})
+	var badCleanupOnce sync.Once
+	adapter := &stubAdapter{
+		deleteSnapshotFn: func(_ context.Context, req backend.DeleteSnapshotRequest) error {
+			if req.StorageRef == "tank/local/imports/bad-dependency@base" {
+				badCleanupOnce.Do(func() { close(badCleanup) })
+			}
+			return nil
+		},
+	}
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"go.mod": "module example.com/test\n\ngo 1.26.2\n",
+		"go.sum": "example.com/test v0.0.0 h1:abc123\n",
+	})
+	svc := newTestService(adapter)
+	svc.RepositoryStore = mirrors
+	svc.Config.Backends.Firecracker.Snapshots.Driver = "zfs"
+
+	compiled, err := policy.FromProto(testRepositoryDependencyPolicy())
+	if err != nil {
+		t.Fatalf("FromProto returned error: %v", err)
+	}
+	repository := repositorycheckout.FromProto(repositoryCheckout)
+	workspaceKey := workspaceStageCacheKey("firecracker", "runtime-base:test", compiled.Hash, repository, nil)
+	dependencyPlan, ok := dependencyStagePlanForRepository(compiled, repository)
+	if !ok {
+		t.Fatal("expected dependency stage plan")
+	}
+	dependencyPlan, ok, err = svc.finalizeDependencyStagePlan(context.Background(), compiled, repository, nil, nil, "firecracker", workspaceKey, "runtime-base:test", dependencyPlan)
+	if err != nil {
+		t.Fatalf("finalizeDependencyStagePlan returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected finalized dependency stage plan")
+	}
+
+	cacheStore := requireMemoryCacheStore(t, svc)
+	insertImportedPeerParentRecord(t, cacheStore, importedPeerParentRecordOptions{
+		Stage:           workspaceStageName,
+		CacheKey:        workspaceKey,
+		StorageRef:      "tank/local/workspace@base",
+		SnapshotGUID:    "workspace-guid",
+		ProducerVersion: workspaceStageProducerVersion,
+	})
+
+	badMetadata := encodeZFSMetadataForTest(t, "tank/local/imports/bad-dependency@base", "wrong-dependency-guid", "workspace-guid")
+	goodMetadata := encodeZFSMetadataForTest(t, "tank/local/imports/dependency@base", "dependency-guid", "workspace-guid")
+	transfer := &stubCachePeerTransferDriver{
+		describeSnapshots: map[string]volumestore.SnapshotDescription{
+			"tank/local/workspace@base": {
+				SnapshotRef:  "tank/local/workspace@base",
+				StorageRef:   "tank/local/workspace@base",
+				SnapshotGUID: "workspace-guid",
+			},
+		},
+		importSnapshots: map[string]volumestore.Snapshot{
+			"bad-dependency-guid": {
+				StorageRef:     "tank/local/imports/bad-dependency@base",
+				DriverMetadata: badMetadata,
+			},
+			"dependency-guid": {
+				StorageRef:     "tank/local/imports/dependency@base",
+				DriverMetadata: goodMetadata,
+			},
+		},
+	}
+	svc.CachePeerTransferDriver = transfer
+
+	badCandidate := cachePeerImportTestCandidate(dependencyPlan.CacheKey, workspaceKey, compiled.Hash, "bad-token")
+	badCandidate.ZfsSnapshotGuid = "bad-dependency-guid"
+	badPeer := newTestCachePeerImportServerWithExport(t, badCandidate, http.StatusOK, "bad-zfs-stream")
+	goodCandidate := cachePeerImportTestCandidate(dependencyPlan.CacheKey, workspaceKey, compiled.Hash, "good-token")
+	goodPeer := newTestCachePeerImportServerWithExport(t, goodCandidate, http.StatusOK, "good-zfs-stream")
+	goodPeer.lookupBlock = make(chan struct{})
+	var releaseGoodOnce sync.Once
+	releaseGoodPeer := func() {
+		releaseGoodOnce.Do(func() { close(goodPeer.lookupBlock) })
+	}
+	defer releaseGoodPeer()
+	svc.Config.Cache.Peers = []runtimeconfig.CachePeerConfig{
+		{URL: badPeer.URL, TokenEnv: "CLEANROOM_CACHE_PEER_TOKEN"},
+		{URL: goodPeer.URL, TokenEnv: "CLEANROOM_CACHE_PEER_TOKEN"},
+	}
+
+	type importResult struct {
+		record   cachestore.Record
+		imported bool
+		err      error
+	}
+	resultCh := make(chan importResult, 1)
+	go func() {
+		record, imported, err := svc.importDependencyStageCacheFromPeers(
+			context.Background(),
+			adapter,
+			"firecracker",
+			compiled,
+			runtimeconfig.MergeBackendConfig(svc.Config, "firecracker", 0),
+			repository,
+			nil,
+			dependencyPlan,
+		)
+		resultCh <- importResult{record: record, imported: imported, err: err}
+	}()
+
+	select {
+	case <-badCleanup:
+		releaseGoodPeer()
+	case result := <-resultCh:
+		releaseGoodPeer()
+		if result.err == nil {
+			t.Fatal("import completed before the bad peer validation cleanup")
+		}
+		t.Fatalf("importDependencyStageCacheFromPeers returned before trying the second peer: %v", result.err)
+	case <-time.After(time.Second):
+		releaseGoodPeer()
+		t.Fatal("timed out waiting for bad peer validation cleanup")
+	}
+
+	var result importResult
+	select {
+	case result = <-resultCh:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for second peer import")
+	}
+	record, imported, err := result.record, result.imported, result.err
+	if err != nil {
+		t.Fatalf("importDependencyStageCacheFromPeers returned error: %v", err)
+	}
+	if !imported {
+		t.Fatal("expected import to continue to second peer after validation failure")
+	}
+	if got, want := record.StorageRef, "tank/local/imports/dependency@base"; got != want {
+		t.Fatalf("unexpected imported storage ref: got %q want %q", got, want)
+	}
+	if got, want := transfer.importPayloads, []string{"bad-zfs-stream", "good-zfs-stream"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("unexpected import payloads: got %#v want %#v", got, want)
+	}
+	foundBadCleanup := false
+	for _, req := range adapter.deleteSnapshotRequests {
+		if req.StorageRef == "tank/local/imports/bad-dependency@base" {
+			foundBadCleanup = true
+			break
+		}
+	}
+	if !foundBadCleanup {
+		t.Fatalf("expected failed validation import cleanup, got delete requests %#v", adapter.deleteSnapshotRequests)
+	}
 	if _, found, err := cacheStore.GetReady(context.Background(), dependencyStageName, dependencyPlan.CacheKey); err != nil {
 		t.Fatalf("GetReady returned error: %v", err)
 	} else if !found {
@@ -867,6 +1071,7 @@ func TestCreateSandboxImportsServicesStageAfterDependencyPeerImport(t *testing.T
 
 type testCachePeerImportServer struct {
 	*httptest.Server
+	mu             sync.Mutex
 	requests       []*cleanroomv1.LookupCachePeerRequest
 	lookupAuth     []string
 	exportAuth     []string
@@ -874,6 +1079,7 @@ type testCachePeerImportServer struct {
 	candidate      *cleanroomv1.CachePeerCandidate
 	candidates     []*cleanroomv1.CachePeerCandidate
 	exports        map[string]testCachePeerExport
+	lookupBlock    chan struct{}
 }
 
 type testCachePeerExport struct {
@@ -966,10 +1172,20 @@ func cachePeerImportTestServicesCandidate(cacheKey, parentCacheKey, policyHash, 
 	}
 }
 
-func (p *testCachePeerImportServer) LookupCachePeer(_ context.Context, req *connect.Request[cleanroomv1.LookupCachePeerRequest]) (*connect.Response[cleanroomv1.LookupCachePeerResponse], error) {
+func (p *testCachePeerImportServer) LookupCachePeer(ctx context.Context, req *connect.Request[cleanroomv1.LookupCachePeerRequest]) (*connect.Response[cleanroomv1.LookupCachePeerResponse], error) {
+	if p.lookupBlock != nil {
+		select {
+		case <-p.lookupBlock:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	p.mu.Lock()
 	p.lookupAuth = append(p.lookupAuth, req.Header().Get("Authorization"))
 	p.requests = append(p.requests, req.Msg)
-	for _, candidate := range p.candidates {
+	candidates := append([]*cleanroomv1.CachePeerCandidate(nil), p.candidates...)
+	p.mu.Unlock()
+	for _, candidate := range candidates {
 		if cachePeerCandidateMatchesRequest(candidate, req.Msg, time.Now().Add(-time.Second)) {
 			return connect.NewResponse(&cleanroomv1.LookupCachePeerResponse{Candidate: candidate}), nil
 		}

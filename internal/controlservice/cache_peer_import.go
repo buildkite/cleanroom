@@ -11,6 +11,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"connectrpc.com/connect"
@@ -298,17 +299,22 @@ func (s *Service) importCachePeerStage(ctx context.Context, adapter backend.Snap
 		ParentCacheKey:        opts.ParentCacheKey,
 		ParentZfsSnapshotGuid: parentDesc.SnapshotGUID,
 	}
-	matches := s.lookupCachePeerImportCandidates(ctx, lookupReq)
-	trace.SpanFromContext(ctx).SetAttributes(attribute.Int(observability.AttrCachePeerCandidates, len(matches)))
-	if len(matches) == 0 {
-		s.recordCachePeerImport(ctx, opts.Stage, observability.CacheResultFallback)
-		trace.SpanFromContext(ctx).SetAttributes(attribute.String(observability.AttrCachePeerFallback, "no peer candidate"))
-	}
-	for _, match := range matches {
+	lookupCtx, cancelLookups := context.WithCancel(ctx)
+	defer cancelLookups()
+	candidateCount := 0
+	for match := range s.lookupCachePeerImportCandidates(lookupCtx, lookupReq) {
+		candidateCount++
 		result, handled, err := s.importCachePeerCandidate(ctx, adapter, store, parent, parentDesc, firecrackerCfg, opts, match)
 		if err != nil || handled {
+			trace.SpanFromContext(ctx).SetAttributes(attribute.Int(observability.AttrCachePeerCandidates, candidateCount))
+			cancelLookups()
 			return result, err
 		}
+	}
+	trace.SpanFromContext(ctx).SetAttributes(attribute.Int(observability.AttrCachePeerCandidates, candidateCount))
+	if candidateCount == 0 {
+		s.recordCachePeerImport(ctx, opts.Stage, observability.CacheResultFallback)
+		trace.SpanFromContext(ctx).SetAttributes(attribute.String(observability.AttrCachePeerFallback, "no peer candidate"))
 	}
 	return cachePeerImportResult{}, nil
 }
@@ -359,7 +365,7 @@ func (s *Service) importCachePeerCandidate(
 			StorageRef:        imported.StorageRef,
 			FirecrackerConfig: withSnapshotDriver(opts.Backend, firecrackerCfg, opts.StorageDriver),
 		})
-		return cachePeerImportResult{}, true, err
+		return cachePeerImportResult{}, false, nil
 	}
 
 	record := opts.NewRecord(snapshotID, imported, s.clock().Now())
@@ -426,40 +432,77 @@ func (s *Service) importCachePeerCandidate(
 	return cachePeerImportResult{record: validated, imported: true}, true, nil
 }
 
-func (s *Service) lookupCachePeerImportCandidates(ctx context.Context, req *cleanroomv1.LookupCachePeerRequest) []cachePeerCandidateMatch {
-	matches := make([]cachePeerCandidateMatch, 0, len(s.Config.Cache.Peers))
+type cachePeerLookupTarget struct {
+	peer  runtimeconfig.CachePeerConfig
+	token string
+}
+
+func (s *Service) lookupCachePeerImportCandidates(ctx context.Context, req *cleanroomv1.LookupCachePeerRequest) <-chan cachePeerCandidateMatch {
+	targets := make([]cachePeerLookupTarget, 0, len(s.Config.Cache.Peers))
 	for _, peer := range s.Config.Cache.Peers {
 		token := cachePeerTokenForConfig(peer)
 		if strings.TrimSpace(peer.URL) == "" || token == "" {
 			continue
 		}
-		client := cleanroomv1connect.NewCachePeerServiceClient(cachePeerLookupHTTPClient, strings.TrimRight(strings.TrimSpace(peer.URL), "/"))
-		connectReq := connect.NewRequest(req)
-		connectReq.Header().Set("Authorization", "Bearer "+token)
-		resp, err := client.LookupCachePeer(ctx, connectReq)
-		if err != nil {
-			s.recordCachePeerLookup(ctx, req.GetStage(), observability.CachePeerLookupDirectionOutbound, observability.CacheResultFailed)
-			if s.Logger != nil {
-				s.Logger.Debug("cache peer lookup failed", "peer", peer.URL, "error", err)
-			}
-			continue
-		}
-		candidate := resp.Msg.GetCandidate()
-		if candidate == nil {
-			s.recordCachePeerLookup(ctx, req.GetStage(), observability.CachePeerLookupDirectionOutbound, observability.CacheResultMiss)
-			continue
-		}
-		if !cachePeerCandidateMatchesRequest(candidate, req, s.clock().Now()) {
-			s.recordCachePeerLookup(ctx, req.GetStage(), observability.CachePeerLookupDirectionOutbound, observability.CacheResultMiss)
-			if s.Logger != nil {
-				s.Logger.Debug("cache peer candidate rejected", "peer", peer.URL)
-			}
-			continue
-		}
-		s.recordCachePeerLookup(ctx, req.GetStage(), observability.CachePeerLookupDirectionOutbound, observability.CacheResultHit)
-		matches = append(matches, cachePeerCandidateMatch{peer: peer, token: token, candidate: candidate})
+		targets = append(targets, cachePeerLookupTarget{peer: peer, token: token})
 	}
+	matches := make(chan cachePeerCandidateMatch)
+	if len(targets) == 0 {
+		close(matches)
+		return matches
+	}
+	var wg sync.WaitGroup
+	wg.Add(len(targets))
+	for _, target := range targets {
+		target := target
+		go func() {
+			defer wg.Done()
+			match, ok := s.lookupCachePeerImportCandidate(ctx, req, target)
+			if !ok {
+				return
+			}
+			select {
+			case matches <- match:
+			case <-ctx.Done():
+			}
+		}()
+	}
+	go func() {
+		wg.Wait()
+		close(matches)
+	}()
 	return matches
+}
+
+func (s *Service) lookupCachePeerImportCandidate(ctx context.Context, req *cleanroomv1.LookupCachePeerRequest, target cachePeerLookupTarget) (cachePeerCandidateMatch, bool) {
+	client := cleanroomv1connect.NewCachePeerServiceClient(cachePeerLookupHTTPClient, strings.TrimRight(strings.TrimSpace(target.peer.URL), "/"))
+	connectReq := connect.NewRequest(req)
+	connectReq.Header().Set("Authorization", "Bearer "+target.token)
+	resp, err := client.LookupCachePeer(ctx, connectReq)
+	if err != nil {
+		if ctx.Err() != nil {
+			return cachePeerCandidateMatch{}, false
+		}
+		s.recordCachePeerLookup(ctx, req.GetStage(), observability.CachePeerLookupDirectionOutbound, observability.CacheResultFailed)
+		if s.Logger != nil {
+			s.Logger.Debug("cache peer lookup failed", "peer", target.peer.URL, "error", err)
+		}
+		return cachePeerCandidateMatch{}, false
+	}
+	candidate := resp.Msg.GetCandidate()
+	if candidate == nil {
+		s.recordCachePeerLookup(ctx, req.GetStage(), observability.CachePeerLookupDirectionOutbound, observability.CacheResultMiss)
+		return cachePeerCandidateMatch{}, false
+	}
+	if !cachePeerCandidateMatchesRequest(candidate, req, s.clock().Now()) {
+		s.recordCachePeerLookup(ctx, req.GetStage(), observability.CachePeerLookupDirectionOutbound, observability.CacheResultMiss)
+		if s.Logger != nil {
+			s.Logger.Debug("cache peer candidate rejected", "peer", target.peer.URL)
+		}
+		return cachePeerCandidateMatch{}, false
+	}
+	s.recordCachePeerLookup(ctx, req.GetStage(), observability.CachePeerLookupDirectionOutbound, observability.CacheResultHit)
+	return cachePeerCandidateMatch{peer: target.peer, token: target.token, candidate: candidate}, true
 }
 
 func (s *Service) openCachePeerExport(ctx context.Context, match cachePeerCandidateMatch) (*http.Response, error) {
