@@ -214,7 +214,7 @@ func copyInputProjectionFile(sourceRoot, targetRoot, rel string) error {
 func openInputProjectionFile(sourceRoot, rel string) (*os.File, os.FileMode, error) {
 	dirFD, err := unix.Open(sourceRoot, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	if err != nil {
-		if errors.Is(err, unix.ELOOP) {
+		if inputProjectionPathIsSymlink(sourceRoot) {
 			return nil, 0, fmt.Errorf("input projection source root %s is a symlink", sourceRoot)
 		}
 		return nil, 0, fmt.Errorf("open input projection source root %s: %w", sourceRoot, err)
@@ -232,7 +232,7 @@ func openInputProjectionFile(sourceRoot, rel string) (*os.File, os.FileMode, err
 		if i < len(components)-1 {
 			nextFD, err := unix.Openat(dirFD, component, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 			if err != nil {
-				if errors.Is(err, unix.ELOOP) {
+				if inputProjectionComponentIsSymlink(dirFD, component) {
 					return nil, 0, fmt.Errorf("input projection path %s contains a symlink component", currentPath)
 				}
 				return nil, 0, fmt.Errorf("open input projection directory %s: %w", currentPath, err)
@@ -244,7 +244,7 @@ func openInputProjectionFile(sourceRoot, rel string) (*os.File, os.FileMode, err
 
 		fileFD, err := unix.Openat(dirFD, component, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 		if err != nil {
-			if errors.Is(err, unix.ELOOP) {
+			if inputProjectionComponentIsSymlink(dirFD, component) {
 				return nil, 0, fmt.Errorf("input projection file %s is a symlink", currentPath)
 			}
 			return nil, 0, fmt.Errorf("open input projection file %s: %w", currentPath, err)
@@ -263,6 +263,22 @@ func openInputProjectionFile(sourceRoot, rel string) (*os.File, os.FileMode, err
 	}
 
 	return nil, 0, fmt.Errorf("input projection path %q cannot be empty", rel)
+}
+
+func inputProjectionPathIsSymlink(path string) bool {
+	var stat unix.Stat_t
+	if err := unix.Lstat(path, &stat); err != nil {
+		return false
+	}
+	return stat.Mode&unix.S_IFMT == unix.S_IFLNK
+}
+
+func inputProjectionComponentIsSymlink(dirFD int, name string) bool {
+	var stat unix.Stat_t
+	if err := unix.Fstatat(dirFD, name, &stat, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		return false
+	}
+	return stat.Mode&unix.S_IFMT == unix.S_IFLNK
 }
 
 func normalizeInputProjectionTimes(targetRoot string) error {
