@@ -19,6 +19,7 @@ import (
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 	"github.com/buildkite/cleanroom/internal/storagegc"
+	"github.com/buildkite/cleanroom/internal/volumestore"
 	"golang.org/x/term"
 )
 
@@ -47,6 +48,7 @@ var systemPlanPrune = storagegc.PlanPrune
 var systemExecutePrune = storagegc.ExecutePrune
 var systemListSandboxIDs = listSystemSandboxIDs
 var systemZFSImportDatasetStore = defaultSystemZFSImportDatasetStore
+var systemCachePeerTransferDriver = defaultSystemCachePeerTransferDriver
 var systemIsTerminal = func(f *os.File) bool {
 	return f != nil && term.IsTerminal(int(f.Fd()))
 }
@@ -149,6 +151,14 @@ func defaultSystemZFSImportDatasetStore(cfg runtimeconfig.Config) storagegc.ZFSI
 		return nil
 	}
 	return store
+}
+
+func defaultSystemCachePeerTransferDriver(cfg runtimeconfig.Config) volumestore.IncrementalSnapshotTransferDriver {
+	driver := backendfirecracker.NewZFSIncrementalTransferDriver(runtimeconfig.MergeBackendConfig(cfg, "firecracker", 0))
+	if driver == nil {
+		return nil
+	}
+	return driver
 }
 
 func listSystemSandboxIDs(ctx context.Context, runtimeCtx *runtimeContext, flags clientFlags) ([]string, bool, error) {

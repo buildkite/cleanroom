@@ -2,6 +2,7 @@ package firecracker
 
 import (
 	"context"
+	"io"
 	"strings"
 
 	"github.com/buildkite/cleanroom/internal/backend"
@@ -13,10 +14,7 @@ type ZFSImportDatasetStore struct {
 }
 
 func NewZFSImportDatasetStore(cfg backend.FirecrackerConfig) *ZFSImportDatasetStore {
-	if !strings.EqualFold(strings.TrimSpace(cfg.Snapshots.Driver), "zfs") {
-		return nil
-	}
-	if strings.TrimSpace(cfg.Snapshots.ZFSDataset) == "" {
+	if !firecrackerZFSDriverConfigured(cfg) {
 		return nil
 	}
 	return &ZFSImportDatasetStore{cfg: cfg}
@@ -39,8 +37,63 @@ func (s *ZFSImportDatasetStore) DestroyZFSImportDataset(ctx context.Context, dat
 }
 
 func (s *ZFSImportDatasetStore) openDriver() (*volumestore.ZFSDriver, error) {
+	return openFirecrackerZFSDriver(s.cfg)
+}
+
+type ZFSIncrementalTransferDriver struct {
+	cfg backend.FirecrackerConfig
+}
+
+func NewZFSIncrementalTransferDriver(cfg backend.FirecrackerConfig) *ZFSIncrementalTransferDriver {
+	if !firecrackerZFSDriverConfigured(cfg) {
+		return nil
+	}
+	return &ZFSIncrementalTransferDriver{cfg: cfg}
+}
+
+func (d *ZFSIncrementalTransferDriver) DescribeSnapshot(ctx context.Context, req volumestore.DescribeSnapshotRequest) (volumestore.SnapshotDescription, error) {
+	driver, err := d.openDriver()
+	if err != nil {
+		return volumestore.SnapshotDescription{}, err
+	}
+	return driver.DescribeSnapshot(ctx, req)
+}
+
+func (d *ZFSIncrementalTransferDriver) PlanIncrementalSnapshotExport(ctx context.Context, req volumestore.IncrementalSnapshotExportRequest) (volumestore.IncrementalSnapshotExportPlan, error) {
+	driver, err := d.openDriver()
+	if err != nil {
+		return volumestore.IncrementalSnapshotExportPlan{}, err
+	}
+	return driver.PlanIncrementalSnapshotExport(ctx, req)
+}
+
+func (d *ZFSIncrementalTransferDriver) ExportIncrementalSnapshot(ctx context.Context, plan volumestore.IncrementalSnapshotExportPlan, dst io.Writer) error {
+	driver, err := d.openDriver()
+	if err != nil {
+		return err
+	}
+	return driver.ExportIncrementalSnapshot(ctx, plan, dst)
+}
+
+func (d *ZFSIncrementalTransferDriver) ImportIncrementalSnapshot(ctx context.Context, req volumestore.IncrementalSnapshotImportRequest, src io.Reader) (volumestore.Snapshot, error) {
+	driver, err := d.openDriver()
+	if err != nil {
+		return volumestore.Snapshot{}, err
+	}
+	return driver.ImportIncrementalSnapshot(ctx, req, src)
+}
+
+func (d *ZFSIncrementalTransferDriver) openDriver() (*volumestore.ZFSDriver, error) {
+	return openFirecrackerZFSDriver(d.cfg)
+}
+
+func openFirecrackerZFSDriver(cfg backend.FirecrackerConfig) (*volumestore.ZFSDriver, error) {
 	return volumestore.NewZFSDriver(volumestore.ZFSDriverOptions{
-		DatasetRoot: strings.TrimSpace(s.cfg.Snapshots.ZFSDataset),
-		Runner:      hostRuntimeVolumeCommandRunner{runner: newPrivilegedCommandRunner(s.cfg)},
+		DatasetRoot: strings.TrimSpace(cfg.Snapshots.ZFSDataset),
+		Runner:      hostRuntimeVolumeCommandRunner{runner: newPrivilegedCommandRunner(cfg)},
 	})
+}
+
+func firecrackerZFSDriverConfigured(cfg backend.FirecrackerConfig) bool {
+	return strings.EqualFold(strings.TrimSpace(cfg.Snapshots.Driver), "zfs") && strings.TrimSpace(cfg.Snapshots.ZFSDataset) != ""
 }

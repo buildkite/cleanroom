@@ -340,14 +340,15 @@ func newControlService(ctx *runtimeContext, logger *log.Logger, mirrors gateway.
 		return service, nil
 	}
 	service := &controlservice.Service{
-		Loader:                ctx.Loader,
-		Config:                ctx.Config,
-		Backends:              ctx.Backends,
-		Logger:                logger,
-		Observability:         ctx.Observability,
-		RepositoryStore:       repositorystore.NewMirrorBacked(mirrors),
-		SnapshotStore:         snapshotMetadataStore,
-		ZFSImportDatasetStore: systemZFSImportDatasetStore(ctx.Config),
+		Loader:                  ctx.Loader,
+		Config:                  ctx.Config,
+		Backends:                ctx.Backends,
+		Logger:                  logger,
+		Observability:           ctx.Observability,
+		RepositoryStore:         repositorystore.NewMirrorBacked(mirrors),
+		SnapshotStore:           snapshotMetadataStore,
+		ZFSImportDatasetStore:   systemZFSImportDatasetStore(ctx.Config),
+		CachePeerTransferDriver: systemCachePeerTransferDriver(ctx.Config),
 	}
 	if cacheMetadataStore != nil {
 		service.CacheStore = cacheMetadataStore

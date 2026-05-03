@@ -60,6 +60,7 @@ type serviceRuntime struct {
 	terminatedSandboxStorageCleanup func(string)
 	zfsImportDatasetStorageCleanup  func()
 	storageCleanupQueueSize         int
+	cachePeerExportTokenTTL         time.Duration
 }
 
 var defaultRetentionPolicy = retentionPolicy{
@@ -83,6 +84,7 @@ var defaultServiceTimeouts = serviceTimeouts{
 const defaultDownloadMaxBytes int64 = 10 * 1024 * 1024
 
 const defaultStorageCleanupQueueSize = 128
+const defaultCachePeerExportTokenTTL = 5 * time.Minute
 
 func (s *Service) clock() serviceClock {
 	if s.runtime.clock != nil {
@@ -124,4 +126,11 @@ func (s *Service) storageCleanupQueueSize() int {
 		return s.runtime.storageCleanupQueueSize
 	}
 	return defaultStorageCleanupQueueSize
+}
+
+func (s *Service) cachePeerExportTokenTTL() time.Duration {
+	if s.runtime.cachePeerExportTokenTTL > 0 {
+		return s.runtime.cachePeerExportTokenTTL
+	}
+	return defaultCachePeerExportTokenTTL
 }

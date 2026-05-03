@@ -29,6 +29,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 	"github.com/buildkite/cleanroom/internal/snapshotstore"
 	"github.com/buildkite/cleanroom/internal/storagegc"
+	"github.com/buildkite/cleanroom/internal/volumestore"
 	"github.com/charmbracelet/log"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -55,10 +56,13 @@ type Service struct {
 	// adapters, sandbox state, and metadata persistence in one operation chain.
 	// If this grows again, extract a dedicated snapshot manager rather than
 	// adding more snapshot-specific branching here.
-	SnapshotStore         snapshotMetadataStore
-	CacheStore            cacheMetadataStore
-	ZFSImportDatasetStore storagegc.ZFSImportDatasetStore
-	ChangesetStore        changesetMetadataStore
+	SnapshotStore           snapshotMetadataStore
+	CacheStore              cacheMetadataStore
+	ZFSImportDatasetStore   storagegc.ZFSImportDatasetStore
+	CachePeerTransferDriver volumestore.IncrementalSnapshotTransferDriver
+	ChangesetStore          changesetMetadataStore
+	cachePeerExportsMu      sync.Mutex
+	cachePeerExports        map[string]cachePeerExport
 
 	mu                sync.RWMutex
 	sandboxes         map[string]*sandboxState

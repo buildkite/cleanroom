@@ -33,6 +33,10 @@ service SnapshotService {
   rpc DeleteSnapshot(DeleteSnapshotRequest) returns (DeleteSnapshotResponse);
 }
 
+service CachePeerService {
+  rpc LookupCachePeer(LookupCachePeerRequest) returns (LookupCachePeerResponse);
+}
+
 service ExecutionService {
   rpc ListExecutions(ListExecutionsRequest) returns (ListExecutionsResponse);
   rpc CreateExecution(CreateExecutionRequest) returns (CreateExecutionResponse);
@@ -485,6 +489,43 @@ message DeleteSnapshotResponse {
   string snapshot_id = 1;
   bool deleted = 2;
   string message = 3;
+}
+
+message LookupCachePeerRequest {
+  string stage = 1;
+  string cache_key = 2;
+  string backend = 3;
+  string storage_driver = 4;
+  string architecture = 5;
+  string producer_version = 6;
+  string policy_hash = 7;
+  string parent_cache_key = 8;
+  string parent_zfs_snapshot_guid = 9;
+  string parent_stage = 10;
+}
+
+message LookupCachePeerResponse {
+  CachePeerCandidate candidate = 1;
+  string miss_reason = 2;
+}
+
+message CachePeerCandidate {
+  string transfer_token = 1;
+  string stage = 2;
+  string cache_key = 3;
+  string backing_snapshot_id = 4;
+  string storage_ref = 5;
+  string parent_cache_key = 6;
+  string zfs_snapshot_guid = 7;
+  string zfs_parent_snapshot_guid = 8;
+  string producer_version = 9;
+  string backend = 10;
+  string storage_driver = 11;
+  string architecture = 12;
+  string policy_hash = 13;
+  int64 estimated_bytes = 14;
+  google.protobuf.Timestamp expires_at = 15;
+  string parent_stage = 16;
 }
 
 message Execution {

@@ -13,11 +13,13 @@ The first slice is deliberately narrow:
 
 - `firecracker` backend only
 - `zfs` snapshot driver only
-- system-managed stage caches only: workspace, dependency, and services
+- system-managed dependency and services stage children only
 - configured peers only
 - incremental transfer only when the receiver already has the parent snapshot
 - no full snapshot export, APFS support, user snapshots, generic binary diff, or
   scheduler in v1
+- no remote workspace-stage fill until runtime/base lineage has a dedicated
+  parent contract
 
 This keeps the hot path fast over the wire and fast to apply:
 
@@ -33,14 +35,14 @@ the peer transfer is a miss and Cleanroom builds the stage locally.
 
 Host-local stage caches already skip repeated repository and dependency work on
 one machine. A new host in the same queue or host pool still has to rebuild the
-same workspace, dependency, or services stage unless its local cache is warm.
+same dependency or services stage unless its local cache is warm.
 
 Full snapshot export is too expensive for the target use case. The useful case
 is usually adjacent hosts that share the lower stage already:
 
 - both hosts have the same runtime base
-- both hosts have the same workspace stage and want a dependency or services
-  child
+- both hosts have the same workspace stage and one host wants a dependency or
+  services child
 - both hosts have an older dependency stage and one host wants the newer
   services stage
 
@@ -51,6 +53,8 @@ to full rootfs size.
 
 - Reuse Cleanroom system stage caches across adjacent hosts without rebuilding.
 - Use ZFS-native incremental send/receive for the first fast path.
+- Start with dependency and services children whose parent cache already exists
+  locally on the receiver.
 - Keep cache identity and trust decisions in the Cleanroom control plane.
 - Keep driver-specific transfer complexity inside the ZFS volume driver and
   Firecracker host runtime.
@@ -140,12 +144,19 @@ The local ZFS transfer primitive has landed:
 - inventory and prune unreferenced import datasets through `system df`,
   `system prune`, and daemon startup cleanup
 
-The active next slice is the peer protocol:
+The sender side of the peer protocol has landed:
 
 - lookup RPC and export HTTP endpoint
 - sender-side transfer tokens
+- dependency and services child exports only, with an explicit parent stage,
+  parent cache key, and parent ZFS GUID
+
+The next slice is receiver-side import orchestration:
+
 - receiver-side import orchestration around the proven local ZFS primitive
 - cache publication only after receiver-side metadata validation
+- dependency/services import attempts only after the receiver already has the
+  workspace or dependency parent locally
 
 ## Design Principles
 
@@ -267,6 +278,7 @@ storage_driver
 architecture
 producer_version
 policy_hash
+parent_stage
 parent_cache_key
 parent_zfs_snapshot_guid
 ```
@@ -286,10 +298,16 @@ candidate:
   cache_key
   backing_snapshot_id
   storage_ref
+  parent_stage
   parent_cache_key
   zfs_snapshot_guid
   zfs_parent_snapshot_guid
   producer_version
+  backend
+  storage_driver
+  architecture
+  policy_hash
+  estimated_bytes
   expires_at
 ```
 
@@ -406,7 +424,7 @@ When a peer lookup arrives:
 3. Reject non-ready records.
 4. Reject non-`firecracker` or non-`zfs` records.
 5. Compare backend, driver, architecture, producer version, policy hash,
-   parent cache key, and parent ZFS GUID.
+   parent stage, parent cache key, and parent ZFS GUID.
 6. Ask the ZFS driver for an incremental export plan.
 7. Mint a short-lived transfer token bound to the candidate and request.
 
@@ -483,6 +501,7 @@ labels.
 The peer API exposes powerful local cache data. Keep v1 conservative:
 
 - require authentication for lookup and export
+- accept v1 bearer tokens only from configured `cache.peers[*].token_env`
 - restrict exports to system stage caches
 - never export user snapshots
 - never export non-ready records
@@ -499,7 +518,7 @@ The peer API exposes powerful local cache data. Keep v1 conservative:
 | `internal/runtimeconfig/config.go` | Add `CacheConfig` with configured peers. |
 | `proto/cleanroom/v1/control.proto` | Add peer cache lookup RPC messages or a new peer cache service. |
 | `internal/controlservice/service.go` | Hook peer import into stage-cache miss handling before local build. |
-| `internal/controlservice/workspace_stage.go` | Include peer import for workspace-stage misses once parent runtime/base lineage is available. |
+| `internal/controlservice/workspace_stage.go` | Keep workspace-stage peer import out of the v1 slice until parent runtime/base lineage has a dedicated contract. |
 | `internal/controlservice/dependency_stage.go` | Include peer import for exact dependency and portable dependency records where parent lineage can be proven. |
 | `internal/controlservice/services_stage.go` | Include peer import for services-stage misses where parent dependency/workspace lineage can be proven. |
 | `internal/cachestore/store.go` | Add driver lineage metadata, architecture/runtime fields, and storage-size fields. |
@@ -548,7 +567,7 @@ Status: landed.
 
 ### 4. Static peer lookup API
 
-Status: next.
+Status: sender side landed; receiver client is next.
 
 - Add runtime config for peer URLs and token env vars.
 - Add lookup RPC and export HTTP endpoint.
@@ -558,8 +577,12 @@ Status: next.
 
 ### 5. Receiver-side peer import
 
+Status: next.
+
 - On local stage-cache miss, query configured peers when parent ZFS lineage is
   available.
+- Attempt v1 peer import only for dependency and services stage children, not
+  workspace-stage misses.
 - Coalesce duplicate imports for the same `stage/cache_key`.
 - Stream export response directly into `ImportIncremental`.
 - Validate imported metadata locally.
@@ -619,6 +642,8 @@ Status: next.
 
 ## Future Work
 
+- Workspace-stage peer import once runtime/base lineage has a dedicated parent
+  identity and validation contract.
 - Scheduler or peer registry for larger pools.
 - Dragonfly-style piece scheduling and fanout if one sender becomes a
   bottleneck.
@@ -629,13 +654,10 @@ Status: next.
 
 ## Open Questions
 
-- Does the current ZFS `SnapshotVolume` promotion flow preserve the exact
-  sendable parent relationship needed for incremental stage transfer, or do we
-  need to preserve bookmarks during stage publication?
 - Should peer lookup happen before or after portable dependency-stage lookup?
 - Should imported records preserve the sender's `created_at`, or should they
   use receiver import time with sender provenance in driver metadata?
-- What is the smallest safe authentication setup for first deployment: bearer
-  token, mTLS, or both?
+- Do we need separate inbound and outbound peer auth config before exposing
+  this outside one trusted host pool?
 - Should peer transfer be opportunistic only, or should policies later be able
   to require remote cache import before rebuilding?

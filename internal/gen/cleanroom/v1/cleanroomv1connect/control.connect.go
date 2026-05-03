@@ -25,6 +25,8 @@ const (
 	SandboxServiceName = "cleanroom.v1.SandboxService"
 	// SnapshotServiceName is the fully-qualified name of the SnapshotService service.
 	SnapshotServiceName = "cleanroom.v1.SnapshotService"
+	// CachePeerServiceName is the fully-qualified name of the CachePeerService service.
+	CachePeerServiceName = "cleanroom.v1.CachePeerService"
 	// ExecutionServiceName is the fully-qualified name of the ExecutionService service.
 	ExecutionServiceName = "cleanroom.v1.ExecutionService"
 )
@@ -97,6 +99,9 @@ const (
 	// SnapshotServiceDeleteSnapshotProcedure is the fully-qualified name of the SnapshotService's
 	// DeleteSnapshot RPC.
 	SnapshotServiceDeleteSnapshotProcedure = "/cleanroom.v1.SnapshotService/DeleteSnapshot"
+	// CachePeerServiceLookupCachePeerProcedure is the fully-qualified name of the CachePeerService's
+	// LookupCachePeer RPC.
+	CachePeerServiceLookupCachePeerProcedure = "/cleanroom.v1.CachePeerService/LookupCachePeer"
 	// ExecutionServiceListExecutionsProcedure is the fully-qualified name of the ExecutionService's
 	// ListExecutions RPC.
 	ExecutionServiceListExecutionsProcedure = "/cleanroom.v1.ExecutionService/ListExecutions"
@@ -732,6 +737,76 @@ func (UnimplementedSnapshotServiceHandler) ListSnapshots(context.Context, *conne
 
 func (UnimplementedSnapshotServiceHandler) DeleteSnapshot(context.Context, *connect.Request[v1.DeleteSnapshotRequest]) (*connect.Response[v1.DeleteSnapshotResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cleanroom.v1.SnapshotService.DeleteSnapshot is not implemented"))
+}
+
+// CachePeerServiceClient is a client for the cleanroom.v1.CachePeerService service.
+type CachePeerServiceClient interface {
+	LookupCachePeer(context.Context, *connect.Request[v1.LookupCachePeerRequest]) (*connect.Response[v1.LookupCachePeerResponse], error)
+}
+
+// NewCachePeerServiceClient constructs a client for the cleanroom.v1.CachePeerService service. By
+// default, it uses the Connect protocol with the binary Protobuf Codec, asks for gzipped responses,
+// and sends uncompressed requests. To use the gRPC or gRPC-Web protocols, supply the
+// connect.WithGRPC() or connect.WithGRPCWeb() options.
+//
+// The URL supplied here should be the base URL for the Connect or gRPC server (for example,
+// http://api.acme.com or https://acme.com/grpc).
+func NewCachePeerServiceClient(httpClient connect.HTTPClient, baseURL string, opts ...connect.ClientOption) CachePeerServiceClient {
+	baseURL = strings.TrimRight(baseURL, "/")
+	cachePeerServiceMethods := v1.File_proto_cleanroom_v1_control_proto.Services().ByName("CachePeerService").Methods()
+	return &cachePeerServiceClient{
+		lookupCachePeer: connect.NewClient[v1.LookupCachePeerRequest, v1.LookupCachePeerResponse](
+			httpClient,
+			baseURL+CachePeerServiceLookupCachePeerProcedure,
+			connect.WithSchema(cachePeerServiceMethods.ByName("LookupCachePeer")),
+			connect.WithClientOptions(opts...),
+		),
+	}
+}
+
+// cachePeerServiceClient implements CachePeerServiceClient.
+type cachePeerServiceClient struct {
+	lookupCachePeer *connect.Client[v1.LookupCachePeerRequest, v1.LookupCachePeerResponse]
+}
+
+// LookupCachePeer calls cleanroom.v1.CachePeerService.LookupCachePeer.
+func (c *cachePeerServiceClient) LookupCachePeer(ctx context.Context, req *connect.Request[v1.LookupCachePeerRequest]) (*connect.Response[v1.LookupCachePeerResponse], error) {
+	return c.lookupCachePeer.CallUnary(ctx, req)
+}
+
+// CachePeerServiceHandler is an implementation of the cleanroom.v1.CachePeerService service.
+type CachePeerServiceHandler interface {
+	LookupCachePeer(context.Context, *connect.Request[v1.LookupCachePeerRequest]) (*connect.Response[v1.LookupCachePeerResponse], error)
+}
+
+// NewCachePeerServiceHandler builds an HTTP handler from the service implementation. It returns the
+// path on which to mount the handler and the handler itself.
+//
+// By default, handlers support the Connect, gRPC, and gRPC-Web protocols with the binary Protobuf
+// and JSON codecs. They also support gzip compression.
+func NewCachePeerServiceHandler(svc CachePeerServiceHandler, opts ...connect.HandlerOption) (string, http.Handler) {
+	cachePeerServiceMethods := v1.File_proto_cleanroom_v1_control_proto.Services().ByName("CachePeerService").Methods()
+	cachePeerServiceLookupCachePeerHandler := connect.NewUnaryHandler(
+		CachePeerServiceLookupCachePeerProcedure,
+		svc.LookupCachePeer,
+		connect.WithSchema(cachePeerServiceMethods.ByName("LookupCachePeer")),
+		connect.WithHandlerOptions(opts...),
+	)
+	return "/cleanroom.v1.CachePeerService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case CachePeerServiceLookupCachePeerProcedure:
+			cachePeerServiceLookupCachePeerHandler.ServeHTTP(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+}
+
+// UnimplementedCachePeerServiceHandler returns CodeUnimplemented from all methods.
+type UnimplementedCachePeerServiceHandler struct{}
+
+func (UnimplementedCachePeerServiceHandler) LookupCachePeer(context.Context, *connect.Request[v1.LookupCachePeerRequest]) (*connect.Response[v1.LookupCachePeerResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cleanroom.v1.CachePeerService.LookupCachePeer is not implemented"))
 }
 
 // ExecutionServiceClient is a client for the cleanroom.v1.ExecutionService service.
