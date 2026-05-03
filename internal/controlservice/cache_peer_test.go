@@ -5,6 +5,7 @@ import (
 	"context"
 	"io"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,12 +16,26 @@ import (
 )
 
 type stubCachePeerTransferDriver struct {
-	planRequests  []volumestore.IncrementalSnapshotExportRequest
-	exportPlans   []volumestore.IncrementalSnapshotExportPlan
-	exportPayload string
+	describeSnapshots map[string]volumestore.SnapshotDescription
+	describeRequests  []volumestore.DescribeSnapshotRequest
+	planRequests      []volumestore.IncrementalSnapshotExportRequest
+	exportPlans       []volumestore.IncrementalSnapshotExportPlan
+	exportPayload     string
+	importRequests    []volumestore.IncrementalSnapshotImportRequest
+	importPayloads    []string
+	importSnapshot    volumestore.Snapshot
 }
 
-func (d *stubCachePeerTransferDriver) DescribeSnapshot(context.Context, volumestore.DescribeSnapshotRequest) (volumestore.SnapshotDescription, error) {
+func (d *stubCachePeerTransferDriver) DescribeSnapshot(_ context.Context, req volumestore.DescribeSnapshotRequest) (volumestore.SnapshotDescription, error) {
+	d.describeRequests = append(d.describeRequests, req)
+	if d.describeSnapshots != nil {
+		if desc, ok := d.describeSnapshots[req.SnapshotRef]; ok {
+			return desc, nil
+		}
+		if desc, ok := d.describeSnapshots[req.StorageRef]; ok {
+			return desc, nil
+		}
+	}
 	return volumestore.SnapshotDescription{}, nil
 }
 
@@ -41,7 +56,16 @@ func (d *stubCachePeerTransferDriver) ExportIncrementalSnapshot(_ context.Contex
 	return err
 }
 
-func (d *stubCachePeerTransferDriver) ImportIncrementalSnapshot(context.Context, volumestore.IncrementalSnapshotImportRequest, io.Reader) (volumestore.Snapshot, error) {
+func (d *stubCachePeerTransferDriver) ImportIncrementalSnapshot(_ context.Context, req volumestore.IncrementalSnapshotImportRequest, src io.Reader) (volumestore.Snapshot, error) {
+	d.importRequests = append(d.importRequests, req)
+	payload, err := io.ReadAll(src)
+	if err != nil {
+		return volumestore.Snapshot{}, err
+	}
+	d.importPayloads = append(d.importPayloads, string(payload))
+	if strings.TrimSpace(d.importSnapshot.StorageRef) != "" || strings.TrimSpace(d.importSnapshot.DriverMetadata) != "" {
+		return d.importSnapshot, nil
+	}
 	return volumestore.Snapshot{}, nil
 }
 
