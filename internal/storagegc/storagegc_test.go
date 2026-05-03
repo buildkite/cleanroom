@@ -58,6 +58,21 @@ func (m *stubImageManager) Remove(_ context.Context, selector string) ([]imagemg
 	return nil, nil
 }
 
+type stubZFSImportDatasetStore struct {
+	datasets  []string
+	err       error
+	destroyed []string
+}
+
+func (s *stubZFSImportDatasetStore) ListZFSImportDatasets(context.Context) ([]string, error) {
+	return s.datasets, s.err
+}
+
+func (s *stubZFSImportDatasetStore) DestroyZFSImportDataset(_ context.Context, dataset string) error {
+	s.destroyed = append(s.destroyed, dataset)
+	return nil
+}
+
 func TestInventoryProtectsReferencesAndFindsOrphans(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", filepath.Join(tmpDir, "state-home"))
@@ -317,6 +332,65 @@ func TestInventoryStageCacheFilterKeepsSnapshotProtections(t *testing.T) {
 	}
 }
 
+func TestInventoryProtectsReferencedZFSImportDatasets(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", filepath.Join(tmpDir, "state-home"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(tmpDir, "cache-home"))
+
+	store := &stubZFSImportDatasetStore{datasets: []string{
+		"tank/cleanroom/snapshots/imports/explicit",
+		"tank/cleanroom/snapshots/imports/cache",
+		"tank/cleanroom/snapshots/imports/stale",
+	}}
+	report, err := Inventory(context.Background(), InventoryOptions{
+		SnapshotStore: stubSnapshotStore{records: []snapshotstore.Record{{
+			SnapshotID: "snap-explicit",
+			Backend:    "firecracker",
+			StorageRef: "tank/cleanroom/snapshots/imports/explicit@base",
+		}}},
+		CacheStore: &stubCacheStore{records: []cachestore.Record{{
+			Stage:      "dependencies",
+			CacheKey:   "cache",
+			Backend:    "firecracker",
+			StorageRef: "tank/cleanroom/snapshots/imports/cache@base",
+		}}},
+		ImageManager:          &stubImageManager{err: errors.New("image manager should not be used")},
+		ZFSImportDatasetStore: store,
+		Kinds:                 []string{KindZFSImportDataset},
+		SkipSize:              true,
+	})
+	if err != nil {
+		t.Fatalf("Inventory returned error: %v", err)
+	}
+
+	explicit := findEntry(t, report, KindZFSImportDataset, "explicit")
+	if explicit.Reclaimable {
+		t.Fatalf("expected explicit import dataset to be protected")
+	}
+	if !slices.Contains(explicit.ProtectedBy, "snapshot metadata snap-explicit") {
+		t.Fatalf("expected snapshot protection, got %#v", explicit.ProtectedBy)
+	}
+
+	cache := findEntry(t, report, KindZFSImportDataset, "cache")
+	if cache.Reclaimable {
+		t.Fatalf("expected cache import dataset to be protected")
+	}
+	if !slices.Contains(cache.ProtectedBy, "stage-cache metadata dependencies/cache") {
+		t.Fatalf("expected stage-cache protection, got %#v", cache.ProtectedBy)
+	}
+
+	stale := findEntry(t, report, KindZFSImportDataset, "stale")
+	if !stale.Reclaimable {
+		t.Fatalf("expected stale import dataset to be reclaimable")
+	}
+	if got, want := stale.Reason, "unreferenced zfs import dataset"; got != want {
+		t.Fatalf("unexpected stale reason: got %q want %q", got, want)
+	}
+	if got, want := stale.StorageRef, "tank/cleanroom/snapshots/imports/stale"; got != want {
+		t.Fatalf("unexpected stale storage ref: got %q want %q", got, want)
+	}
+}
+
 func TestPlanPruneIncludesAllAndOlderThanCaches(t *testing.T) {
 	now := time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC)
 	report := Report{
@@ -382,6 +456,44 @@ func TestPlanPruneIncludesAllAndOlderThanCaches(t *testing.T) {
 	assertPlanAction(t, allPlan, KindImageCache, "sha256:image")
 }
 
+func TestPlanAndExecutePruneDestroysUnreferencedZFSImportDatasets(t *testing.T) {
+	report := Report{
+		Entries: []Entry{
+			{
+				Kind:        KindZFSImportDataset,
+				ID:          "protected",
+				StorageRef:  "tank/cleanroom/snapshots/imports/protected",
+				Reason:      "referenced zfs import dataset",
+				ProtectedBy: []string{"stage-cache metadata dependencies/cache"},
+			},
+			{
+				Kind:        KindZFSImportDataset,
+				ID:          "stale",
+				StorageRef:  "tank/cleanroom/snapshots/imports/stale",
+				Reclaimable: true,
+				Reason:      "unreferenced zfs import dataset",
+			},
+		},
+	}
+	plan := PlanPrune(report, PruneOptions{})
+	if got, want := len(plan.Actions), 1; got != want {
+		t.Fatalf("unexpected prune action count: got %d want %d", got, want)
+	}
+	assertPlanAction(t, plan, KindZFSImportDataset, "stale")
+
+	store := &stubZFSImportDatasetStore{}
+	result, err := ExecutePrune(context.Background(), report, plan, ExecuteOptions{ZFSImportDatasetStore: store})
+	if err != nil {
+		t.Fatalf("ExecutePrune returned error: %v", err)
+	}
+	if got, want := result.DeletedEntries, 1; got != want {
+		t.Fatalf("unexpected deleted entries: got %d want %d", got, want)
+	}
+	if got, want := store.destroyed, []string{"tank/cleanroom/snapshots/imports/stale"}; len(got) != len(want) || got[0] != want[0] {
+		t.Fatalf("unexpected destroyed datasets: got %v want %v", got, want)
+	}
+}
+
 func TestPlanLifecyclePruneDeletesTerminatedSandboxRuntime(t *testing.T) {
 	tmpDir := t.TempDir()
 	runtimeDir := filepath.Join(tmpDir, "state", "cleanroom", "sandboxes", "sandbox-1")
@@ -422,6 +534,43 @@ func TestPlanLifecyclePruneDeletesTerminatedSandboxRuntime(t *testing.T) {
 	}
 	if _, err := os.Stat(runtimeDir); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("expected runtime dir to be removed, stat err: %v", err)
+	}
+}
+
+func TestPlanLifecyclePruneIncludesUnreferencedZFSImportDatasets(t *testing.T) {
+	report := Report{
+		SandboxStateKnown: false,
+		Entries: []Entry{
+			{
+				Kind:        KindSandboxRuntime,
+				ID:          "sandbox-1",
+				Path:        "/tmp/sandbox-1",
+				Reclaimable: true,
+			},
+			{
+				Kind:        KindZFSImportDataset,
+				ID:          "stale",
+				StorageRef:  "tank/cleanroom/snapshots/imports/stale",
+				Reclaimable: true,
+			},
+			{
+				Kind:        KindZFSImportDataset,
+				ID:          "protected",
+				StorageRef:  "tank/cleanroom/snapshots/imports/protected",
+				ProtectedBy: []string{"snapshot metadata snap"},
+			},
+		},
+	}
+	plan := PlanLifecyclePrune(report, LifecycleOptions{
+		TerminatedSandboxIDs: []string{"sandbox-1"},
+		ZFSImportDatasets:    true,
+	})
+	if got, want := len(plan.Actions), 1; got != want {
+		t.Fatalf("unexpected lifecycle action count: got %d want %d", got, want)
+	}
+	assertPlanAction(t, plan, KindZFSImportDataset, "stale")
+	if got, want := plan.Actions[0].Reason, "stale zfs import dataset lifecycle cleanup"; got != want {
+		t.Fatalf("unexpected action reason: got %q want %q", got, want)
 	}
 }
 

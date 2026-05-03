@@ -50,14 +50,15 @@ type Service struct {
 	RepositoryStore repositorystore.RepositoryStore
 	runtime         serviceRuntime
 	interactive     interactiveSessionBroker
-	storageCleanup  terminatedSandboxStorageCleanupScheduler
+	storageCleanup  storageCleanupScheduler
 	// Snapshot lifecycle still lives on Service because it coordinates backend
 	// adapters, sandbox state, and metadata persistence in one operation chain.
 	// If this grows again, extract a dedicated snapshot manager rather than
 	// adding more snapshot-specific branching here.
-	SnapshotStore  snapshotMetadataStore
-	CacheStore     cacheMetadataStore
-	ChangesetStore changesetMetadataStore
+	SnapshotStore         snapshotMetadataStore
+	CacheStore            cacheMetadataStore
+	ZFSImportDatasetStore storagegc.ZFSImportDatasetStore
+	ChangesetStore        changesetMetadataStore
 
 	mu                sync.RWMutex
 	sandboxes         map[string]*sandboxState
@@ -66,11 +67,31 @@ type Service struct {
 	snapshotDeletions map[string]struct{}
 }
 
-type terminatedSandboxStorageCleanupScheduler struct {
+type storageCleanupScheduler struct {
 	once   sync.Once
-	queue  chan string
+	queue  chan storageCleanupJob
 	mu     sync.Mutex
 	queued map[string]struct{}
+}
+
+type storageCleanupJob struct {
+	Kind string
+	ID   string
+}
+
+const (
+	storageCleanupKindTerminatedSandbox = "terminated-sandbox"
+	storageCleanupKindZFSImportDatasets = "zfs-import-datasets"
+	storageCleanupZFSImportDatasetsID   = "imports"
+)
+
+func (j storageCleanupJob) key() string {
+	kind := strings.TrimSpace(j.Kind)
+	id := strings.TrimSpace(j.ID)
+	if kind == "" || id == "" {
+		return ""
+	}
+	return kind + ":" + id
 }
 
 type sandboxState struct {
@@ -2313,54 +2334,86 @@ func (s *Service) terminateCreatedSandbox(ctx context.Context, adapter backend.A
 	return err
 }
 
+func (s *Service) ScheduleStartupStorageCleanup() {
+	s.scheduleZFSImportDatasetStorageCleanup()
+}
+
 func (s *Service) scheduleTerminatedSandboxStorageCleanup(sandboxID string) {
 	sandboxID = strings.TrimSpace(sandboxID)
 	if sandboxID == "" {
 		return
 	}
-	scheduler := s.startTerminatedSandboxStorageCleanupWorker()
+	s.scheduleStorageCleanup(storageCleanupJob{Kind: storageCleanupKindTerminatedSandbox, ID: sandboxID})
+}
+
+func (s *Service) scheduleZFSImportDatasetStorageCleanup() {
+	if s.ZFSImportDatasetStore == nil {
+		return
+	}
+	s.scheduleStorageCleanup(storageCleanupJob{Kind: storageCleanupKindZFSImportDatasets, ID: storageCleanupZFSImportDatasetsID})
+}
+
+func (s *Service) scheduleStorageCleanup(job storageCleanupJob) {
+	key := job.key()
+	if key == "" {
+		return
+	}
+	scheduler := s.startStorageCleanupWorker()
 
 	scheduler.mu.Lock()
-	if _, ok := scheduler.queued[sandboxID]; ok {
+	if _, ok := scheduler.queued[key]; ok {
 		scheduler.mu.Unlock()
 		return
 	}
-	scheduler.queued[sandboxID] = struct{}{}
+	scheduler.queued[key] = struct{}{}
 	queue := scheduler.queue
 	scheduler.mu.Unlock()
 
 	select {
-	case queue <- sandboxID:
+	case queue <- job:
 	default:
 		scheduler.mu.Lock()
-		delete(scheduler.queued, sandboxID)
+		delete(scheduler.queued, key)
 		scheduler.mu.Unlock()
 		if s.Logger != nil {
-			s.Logger.Warn("terminated sandbox storage cleanup queue full", "sandbox_id", sandboxID, "queue_size", cap(queue))
+			s.Logger.Warn("storage cleanup queue full", "kind", job.Kind, "id", job.ID, "queue_size", cap(queue))
 		}
 	}
 }
 
-func (s *Service) startTerminatedSandboxStorageCleanupWorker() *terminatedSandboxStorageCleanupScheduler {
+func (s *Service) startStorageCleanupWorker() *storageCleanupScheduler {
 	scheduler := &s.storageCleanup
 	scheduler.once.Do(func() {
-		scheduler.queue = make(chan string, s.terminatedSandboxStorageCleanupQueueSize())
+		scheduler.queue = make(chan storageCleanupJob, s.storageCleanupQueueSize())
 		scheduler.queued = make(map[string]struct{})
 		// The worker lives for the service lifetime; cleanup is best-effort and
 		// does not have a separate shutdown path.
-		go s.runTerminatedSandboxStorageCleanupWorker()
+		go s.runStorageCleanupWorker()
 	})
 	return scheduler
 }
 
-func (s *Service) runTerminatedSandboxStorageCleanupWorker() {
+func (s *Service) runStorageCleanupWorker() {
 	scheduler := &s.storageCleanup
-	for sandboxID := range scheduler.queue {
-		s.runTerminatedSandboxStorageCleanup(sandboxID)
+	for job := range scheduler.queue {
+		s.runStorageCleanup(job)
 
 		scheduler.mu.Lock()
-		delete(scheduler.queued, sandboxID)
+		delete(scheduler.queued, job.key())
 		scheduler.mu.Unlock()
+	}
+}
+
+func (s *Service) runStorageCleanup(job storageCleanupJob) {
+	switch job.Kind {
+	case storageCleanupKindTerminatedSandbox:
+		s.runTerminatedSandboxStorageCleanup(job.ID)
+	case storageCleanupKindZFSImportDatasets:
+		s.runZFSImportDatasetStorageCleanup()
+	default:
+		if s.Logger != nil {
+			s.Logger.Warn("unknown storage cleanup job", "kind", job.Kind, "id", job.ID)
+		}
 	}
 }
 
@@ -2370,6 +2423,14 @@ func (s *Service) runTerminatedSandboxStorageCleanup(sandboxID string) {
 		cleanup = s.cleanupTerminatedSandboxStorage
 	}
 	cleanup(sandboxID)
+}
+
+func (s *Service) runZFSImportDatasetStorageCleanup() {
+	cleanup := s.runtime.zfsImportDatasetStorageCleanup
+	if cleanup == nil {
+		cleanup = s.cleanupZFSImportDatasets
+	}
+	cleanup()
 }
 
 func (s *Service) cleanupTerminatedSandboxStorage(sandboxID string) {
@@ -2409,6 +2470,49 @@ func (s *Service) cleanupTerminatedSandboxStorage(sandboxID string) {
 	if s.Logger != nil && result.DeletedEntries > 0 {
 		s.Logger.Info("cleaned up terminated sandbox storage",
 			"sandbox_id", sandboxID,
+			"deleted_entries", result.DeletedEntries,
+			"reclaimed_bytes", result.ReclaimedBytes,
+		)
+	}
+}
+
+func (s *Service) cleanupZFSImportDatasets() {
+	if s.ZFSImportDatasetStore == nil {
+		return
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), s.timeouts().storageCleanupTimeout)
+	defer cancel()
+
+	report, err := storagegc.Inventory(cleanupCtx, storagegc.InventoryOptions{
+		Config:                s.Config,
+		SnapshotStore:         s.SnapshotStore,
+		CacheStore:            s.CacheStore,
+		ZFSImportDatasetStore: s.ZFSImportDatasetStore,
+		Now:                   s.clock().Now(),
+		Kinds:                 []string{storagegc.KindZFSImportDataset},
+		SkipSize:              true,
+	})
+	if err != nil {
+		if s.Logger != nil {
+			s.Logger.Warn("inventory zfs import datasets for cleanup failed", "error", err)
+		}
+		return
+	}
+	plan := storagegc.PlanLifecyclePrune(report, storagegc.LifecycleOptions{ZFSImportDatasets: true})
+	if len(plan.Actions) == 0 {
+		return
+	}
+	result, err := storagegc.ExecutePrune(cleanupCtx, report, plan, storagegc.ExecuteOptions{
+		ZFSImportDatasetStore: s.ZFSImportDatasetStore,
+	})
+	if err != nil {
+		if s.Logger != nil {
+			s.Logger.Warn("cleanup zfs import datasets failed", "error", err)
+		}
+		return
+	}
+	if s.Logger != nil && result.DeletedEntries > 0 {
+		s.Logger.Info("cleaned up zfs import datasets",
 			"deleted_entries", result.DeletedEntries,
 			"reclaimed_bytes", result.ReclaimedBytes,
 		)

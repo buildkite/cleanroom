@@ -52,13 +52,14 @@ type serviceTimeouts struct {
 }
 
 type serviceRuntime struct {
-	clock                                    serviceClock
-	ids                                      serviceIDSource
-	retention                                *retentionPolicy
-	timeouts                                 *serviceTimeouts
-	defaultDownloadMaxBytes                  int64
-	terminatedSandboxStorageCleanup          func(string)
-	terminatedSandboxStorageCleanupQueueSize int
+	clock                           serviceClock
+	ids                             serviceIDSource
+	retention                       *retentionPolicy
+	timeouts                        *serviceTimeouts
+	defaultDownloadMaxBytes         int64
+	terminatedSandboxStorageCleanup func(string)
+	zfsImportDatasetStorageCleanup  func()
+	storageCleanupQueueSize         int
 }
 
 var defaultRetentionPolicy = retentionPolicy{
@@ -81,7 +82,7 @@ var defaultServiceTimeouts = serviceTimeouts{
 
 const defaultDownloadMaxBytes int64 = 10 * 1024 * 1024
 
-const defaultTerminatedSandboxStorageCleanupQueueSize = 128
+const defaultStorageCleanupQueueSize = 128
 
 func (s *Service) clock() serviceClock {
 	if s.runtime.clock != nil {
@@ -118,9 +119,9 @@ func (s *Service) downloadMaxBytesDefault() int64 {
 	return defaultDownloadMaxBytes
 }
 
-func (s *Service) terminatedSandboxStorageCleanupQueueSize() int {
-	if s.runtime.terminatedSandboxStorageCleanupQueueSize > 0 {
-		return s.runtime.terminatedSandboxStorageCleanupQueueSize
+func (s *Service) storageCleanupQueueSize() int {
+	if s.runtime.storageCleanupQueueSize > 0 {
+		return s.runtime.storageCleanupQueueSize
 	}
-	return defaultTerminatedSandboxStorageCleanupQueueSize
+	return defaultStorageCleanupQueueSize
 }

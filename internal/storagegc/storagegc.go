@@ -28,6 +28,7 @@ const (
 	KindContentCache      = "content-cache"
 	KindExecutionArtifact = "execution-artifacts"
 	KindChangesetStore    = "changesets"
+	KindZFSImportDataset  = "zfs-import-dataset"
 )
 
 const DefaultExecutionMaxAge = 24 * time.Hour
@@ -46,18 +47,24 @@ type ImageManager interface {
 	Remove(context.Context, string) ([]imagemgr.Record, error)
 }
 
+type ZFSImportDatasetStore interface {
+	ListZFSImportDatasets(context.Context) ([]string, error)
+	DestroyZFSImportDataset(context.Context, string) error
+}
+
 type InventoryOptions struct {
 	Config           runtimeconfig.Config
 	ActiveSandboxIDs []string
 	// SandboxRuntimeIDs limits sandbox-runtime scanning to specific sandbox ids.
 	// Empty means scan every sandbox runtime directory.
-	SandboxRuntimeIDs []string
-	SandboxStateKnown bool
-	SnapshotStore     SnapshotLister
-	CacheStore        CacheStore
-	ImageManager      ImageManager
-	Now               time.Time
-	ExecutionMaxAge   time.Duration
+	SandboxRuntimeIDs     []string
+	SandboxStateKnown     bool
+	SnapshotStore         SnapshotLister
+	CacheStore            CacheStore
+	ImageManager          ImageManager
+	ZFSImportDatasetStore ZFSImportDatasetStore
+	Now                   time.Time
+	ExecutionMaxAge       time.Duration
 	// SkipSize avoids recursive filesystem sizing. It is intended for
 	// lifecycle cleanup paths where deletion is targeted and byte accounting is
 	// not user-facing.
@@ -110,6 +117,7 @@ type PruneOptions struct {
 // just completed the owning lifecycle transition.
 type LifecycleOptions struct {
 	TerminatedSandboxIDs []string
+	ZFSImportDatasets    bool
 }
 
 type Action struct {
@@ -127,8 +135,9 @@ type Plan struct {
 }
 
 type ExecuteOptions struct {
-	CacheStore   CacheStore
-	ImageManager ImageManager
+	CacheStore            CacheStore
+	ImageManager          ImageManager
+	ZFSImportDatasetStore ZFSImportDatasetStore
 }
 
 type Result struct {
@@ -171,7 +180,8 @@ func Inventory(ctx context.Context, opts InventoryOptions) (Report, error) {
 
 	includedKinds := stringSet(opts.Kinds)
 	referencedSnapshotPaths := map[string][]string{}
-	if inventoryIncludes(includedKinds, KindSnapshot) || inventoryIncludes(includedKinds, KindStageCache) || inventoryIncludes(includedKinds, KindOrphanSnapshot) {
+	referencedZFSImportDatasets := map[string][]string{}
+	if inventoryIncludes(includedKinds, KindSnapshot) || inventoryIncludes(includedKinds, KindStageCache) || inventoryIncludes(includedKinds, KindOrphanSnapshot) || inventoryIncludes(includedKinds, KindZFSImportDataset) {
 		snapshotStore := opts.SnapshotStore
 		if snapshotStore == nil {
 			store, err := snapshotstore.New(snapshotstore.Options{})
@@ -194,13 +204,14 @@ func Inventory(ctx context.Context, opts InventoryOptions) (Report, error) {
 				}
 				addPathReference(referencedSnapshotPaths, entry.Path, "snapshot metadata "+record.SnapshotID)
 			}
+			addZFSImportDatasetReference(referencedZFSImportDatasets, record.StorageRef, "snapshot metadata "+record.SnapshotID)
 			if inventoryIncludes(includedKinds, KindSnapshot) {
 				report.Entries = append(report.Entries, entry)
 			}
 		}
 	}
 
-	if inventoryIncludes(includedKinds, KindStageCache) || inventoryIncludes(includedKinds, KindOrphanSnapshot) {
+	if inventoryIncludes(includedKinds, KindStageCache) || inventoryIncludes(includedKinds, KindOrphanSnapshot) || inventoryIncludes(includedKinds, KindZFSImportDataset) {
 		cacheStore := opts.CacheStore
 		if cacheStore == nil {
 			store, err := cachestore.New(cachestore.Options{})
@@ -227,6 +238,7 @@ func Inventory(ctx context.Context, opts InventoryOptions) (Report, error) {
 				}
 				addPathReference(referencedSnapshotPaths, entry.Path, "stage-cache metadata "+record.Stage+"/"+record.CacheKey)
 			}
+			addZFSImportDatasetReference(referencedZFSImportDatasets, record.StorageRef, "stage-cache metadata "+record.Stage+"/"+record.CacheKey)
 			if inventoryIncludes(includedKinds, KindStageCache) {
 				report.Entries = append(report.Entries, entry)
 			}
@@ -248,6 +260,14 @@ func Inventory(ctx context.Context, opts InventoryOptions) (Report, error) {
 			return Report{}, err
 		}
 		report.Entries = append(report.Entries, orphanSnapshots...)
+	}
+
+	if inventoryIncludes(includedKinds, KindZFSImportDataset) && opts.ZFSImportDatasetStore != nil {
+		importDatasets, err := scanZFSImportDatasets(ctx, opts.ZFSImportDatasetStore, referencedZFSImportDatasets)
+		if err != nil {
+			return Report{}, err
+		}
+		report.Entries = append(report.Entries, importDatasets...)
 	}
 
 	if inventoryIncludes(includedKinds, KindRuntimeRootFS) {
@@ -375,39 +395,57 @@ func PlanPrune(report Report, opts PruneOptions) Plan {
 // completed a lifecycle transition. It is intentionally narrower than
 // PlanPrune and does not apply age or --all policy.
 func PlanLifecyclePrune(report Report, opts LifecycleOptions) Plan {
-	if !report.SandboxStateKnown {
-		return Plan{}
-	}
 	terminatedSandboxes := stringSet(opts.TerminatedSandboxIDs)
-	if len(terminatedSandboxes) == 0 {
+	if len(terminatedSandboxes) == 0 && !opts.ZFSImportDatasets {
 		return Plan{}
 	}
 
 	plan := Plan{}
 	for _, entry := range report.Entries {
-		if entry.Kind != KindSandboxRuntime {
+		switch entry.Kind {
+		case KindSandboxRuntime:
+			if !report.SandboxStateKnown {
+				continue
+			}
+			if _, ok := terminatedSandboxes[entry.ID]; !ok {
+				continue
+			}
+			actionPath, ok := deletionPathForReport(report, entry)
+			if !ok || actionPath == "" {
+				continue
+			}
+			action := Action{
+				Kind:      entry.Kind,
+				ID:        entry.ID,
+				Path:      actionPath,
+				SizeBytes: entry.SizeBytes,
+				Reason:    "terminated sandbox lifecycle cleanup",
+				Entry:     entry,
+			}
+			plan.Actions = append(plan.Actions, action)
+			plan.ReclaimableBytes += action.SizeBytes
+		case KindZFSImportDataset:
+			if !opts.ZFSImportDatasets || !entry.Reclaimable {
+				continue
+			}
+			action := Action{
+				Kind:      entry.Kind,
+				ID:        entry.ID,
+				SizeBytes: entry.SizeBytes,
+				Reason:    "stale zfs import dataset lifecycle cleanup",
+				Entry:     entry,
+			}
+			plan.Actions = append(plan.Actions, action)
+			plan.ReclaimableBytes += action.SizeBytes
+		default:
 			continue
 		}
-		if _, ok := terminatedSandboxes[entry.ID]; !ok {
-			continue
-		}
-		actionPath, ok := deletionPathForReport(report, entry)
-		if !ok || actionPath == "" {
-			continue
-		}
-		action := Action{
-			Kind:      entry.Kind,
-			ID:        entry.ID,
-			Path:      actionPath,
-			SizeBytes: entry.SizeBytes,
-			Reason:    "terminated sandbox lifecycle cleanup",
-			Entry:     entry,
-		}
-		plan.Actions = append(plan.Actions, action)
-		plan.ReclaimableBytes += action.SizeBytes
 	}
 	sort.Slice(plan.Actions, func(i, j int) bool {
-		return plan.Actions[i].ID < plan.Actions[j].ID
+		if plan.Actions[i].Kind == plan.Actions[j].Kind {
+			return plan.Actions[i].ID < plan.Actions[j].ID
+		}
+		return plan.Actions[i].Kind < plan.Actions[j].Kind
 	})
 	return plan
 }
@@ -430,6 +468,7 @@ func ExecutePrune(ctx context.Context, report Report, plan Plan, opts ExecuteOpt
 
 	cacheStore := opts.CacheStore
 	imageManager := opts.ImageManager
+	zfsImportDatasetStore := opts.ZFSImportDatasetStore
 	for _, action := range plan.Actions {
 		switch action.Kind {
 		case KindStageCache:
@@ -448,6 +487,10 @@ func ExecutePrune(ctx context.Context, report Report, plan Plan, opts ExecuteOpt
 				}
 				imageManager = manager
 			}
+		case KindZFSImportDataset:
+			if zfsImportDatasetStore == nil {
+				return Result{}, errors.New("zfs import dataset store is not configured")
+			}
 		}
 	}
 
@@ -456,7 +499,7 @@ func ExecutePrune(ctx context.Context, report Report, plan Plan, opts ExecuteOpt
 		if err := ctx.Err(); err != nil {
 			return result, err
 		}
-		if err := executeAction(ctx, report, action, roots, cacheStore, imageManager); err != nil {
+		if err := executeAction(ctx, report, action, roots, cacheStore, imageManager, zfsImportDatasetStore); err != nil {
 			return result, err
 		}
 		result.DeletedEntries++
@@ -465,7 +508,7 @@ func ExecutePrune(ctx context.Context, report Report, plan Plan, opts ExecuteOpt
 	return result, nil
 }
 
-func executeAction(ctx context.Context, report Report, action Action, roots []string, cacheStore CacheStore, imageManager ImageManager) error {
+func executeAction(ctx context.Context, report Report, action Action, roots []string, cacheStore CacheStore, imageManager ImageManager, zfsImportDatasetStore ZFSImportDatasetStore) error {
 	switch action.Kind {
 	case KindImageCache:
 		if imageManager == nil {
@@ -487,6 +530,14 @@ func executeAction(ctx context.Context, report Report, action Action, roots []st
 			return fmt.Errorf("delete stage-cache metadata %q/%q: %w", action.Entry.Stage, action.Entry.CacheKey, err)
 		}
 		return removeOwnedPath(stageCachePath, roots)
+	case KindZFSImportDataset:
+		if zfsImportDatasetStore == nil {
+			return errors.New("zfs import dataset store is not configured")
+		}
+		if err := zfsImportDatasetStore.DestroyZFSImportDataset(ctx, action.Entry.StorageRef); err != nil {
+			return fmt.Errorf("destroy zfs import dataset %q: %w", action.Entry.StorageRef, err)
+		}
+		return nil
 	default:
 		return removeOwnedPath(action.Path, roots)
 	}
@@ -632,6 +683,42 @@ func scanOrphanSnapshotDirs(ctx context.Context, snapshotRoots []string, refs ma
 				})
 			}
 		}
+	}
+	return out, nil
+}
+
+func scanZFSImportDatasets(ctx context.Context, store ZFSImportDatasetStore, refs map[string][]string) ([]Entry, error) {
+	datasets, err := store.ListZFSImportDatasets(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list zfs import datasets: %w", err)
+	}
+	out := make([]Entry, 0, len(datasets))
+	seen := map[string]struct{}{}
+	for _, dataset := range datasets {
+		dataset = strings.TrimSpace(dataset)
+		if dataset == "" {
+			continue
+		}
+		if _, ok := zfsImportDatasetFromRef(dataset); !ok {
+			continue
+		}
+		if _, ok := seen[dataset]; ok {
+			continue
+		}
+		seen[dataset] = struct{}{}
+		entry := Entry{
+			Kind:        KindZFSImportDataset,
+			ID:          zfsImportDatasetID(dataset),
+			StorageRef:  dataset,
+			Reclaimable: true,
+			Reason:      "unreferenced zfs import dataset",
+		}
+		if protections := refs[dataset]; len(protections) > 0 {
+			entry.Reclaimable = false
+			entry.Reason = "zfs import dataset referenced by metadata"
+			entry.ProtectedBy = append(entry.ProtectedBy, protections...)
+		}
+		out = append(out, entry)
 	}
 	return out, nil
 }
@@ -795,6 +882,42 @@ func storageRefPath(storageRef string) string {
 		return ""
 	}
 	return cleanPath(ref)
+}
+
+func addZFSImportDatasetReference(refs map[string][]string, storageRef, reason string) {
+	dataset, ok := zfsImportDatasetFromRef(storageRef)
+	if !ok {
+		return
+	}
+	refs[dataset] = append(refs[dataset], reason)
+}
+
+func zfsImportDatasetFromRef(ref string) (string, bool) {
+	dataset := strings.TrimSpace(ref)
+	if dataset == "" || filepath.IsAbs(dataset) {
+		return "", false
+	}
+	if before, _, ok := strings.Cut(dataset, "@"); ok {
+		dataset = before
+	}
+	components := strings.Split(dataset, "/")
+	if len(components) < 4 {
+		return "", false
+	}
+	if components[len(components)-3] != "snapshots" || components[len(components)-2] != "imports" || strings.TrimSpace(components[len(components)-1]) == "" {
+		return "", false
+	}
+	for _, component := range components {
+		if strings.TrimSpace(component) == "" {
+			return "", false
+		}
+	}
+	return dataset, true
+}
+
+func zfsImportDatasetID(dataset string) string {
+	_, dataset = filepath.Split(strings.TrimSpace(dataset))
+	return dataset
 }
 
 func deletionPathForReport(report Report, entry Entry) (string, bool) {

@@ -169,6 +169,7 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 	if err != nil {
 		return err
 	}
+	service.ScheduleStartupStorageCleanup()
 	serverInterceptors := make([]connect.Interceptor, 0, 1)
 	if interceptor := ctx.Observability.ConnectInterceptor(); interceptor != nil {
 		serverInterceptors = append(serverInterceptors, interceptor)
@@ -339,13 +340,14 @@ func newControlService(ctx *runtimeContext, logger *log.Logger, mirrors gateway.
 		return service, nil
 	}
 	service := &controlservice.Service{
-		Loader:          ctx.Loader,
-		Config:          ctx.Config,
-		Backends:        ctx.Backends,
-		Logger:          logger,
-		Observability:   ctx.Observability,
-		RepositoryStore: repositorystore.NewMirrorBacked(mirrors),
-		SnapshotStore:   snapshotMetadataStore,
+		Loader:                ctx.Loader,
+		Config:                ctx.Config,
+		Backends:              ctx.Backends,
+		Logger:                logger,
+		Observability:         ctx.Observability,
+		RepositoryStore:       repositorystore.NewMirrorBacked(mirrors),
+		SnapshotStore:         snapshotMetadataStore,
+		ZFSImportDatasetStore: systemZFSImportDatasetStore(ctx.Config),
 	}
 	if cacheMetadataStore != nil {
 		service.CacheStore = cacheMetadataStore

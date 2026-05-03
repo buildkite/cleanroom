@@ -129,14 +129,23 @@ The foundation slice has landed:
 - helper-gated ZFS metadata reads for mixed-version root-helper deployments
 - incremental export planning with `zfs send -nP -i`
 
-The active slice is the local ZFS transfer primitive:
+The local ZFS transfer primitive has landed:
 
 - stream an already validated incremental export with `zfs send -i`
 - receive a stream into an unpublished managed ZFS dataset cloned from the
   local parent snapshot
 - destroy the unpublished dataset on receive or validation failure
-- keep peer lookup, transfer tokens, and receiver-side cache publication out of
-  scope until the local driver path is proven
+- prove the clone, receive, promote, and describe contract with a gated real
+  ZFS integration test
+- inventory and prune unreferenced import datasets through `system df`,
+  `system prune`, and daemon startup cleanup
+
+The active next slice is the peer protocol:
+
+- lookup RPC and export HTTP endpoint
+- sender-side transfer tokens
+- receiver-side import orchestration around the proven local ZFS primitive
+- cache publication only after receiver-side metadata validation
 
 ## Design Principles
 
@@ -434,6 +443,12 @@ Before adding broad retention policy, add the minimum safe cleanup model:
 - in-flight exports and imports pin their source and destination refs
 - temporary receive datasets are destroyed on failure and on daemon startup
   cleanup
+- `system df` and `system prune` include Firecracker/ZFS import datasets when
+  the host is configured for the ZFS snapshot driver
+- daemon startup queues import cleanup onto the same bounded background worker
+  used for terminated sandbox storage cleanup
+- cleanup only destroys direct children under `snapshots/imports/<id>` that are
+  not referenced by snapshot or cache metadata
 
 Full quota-based eviction can follow this plan, but v1 must not make shared
 storage refs unsafe.
@@ -491,7 +506,9 @@ The peer API exposes powerful local cache data. Keep v1 conservative:
 | `internal/volumestore/store.go` | Add optional incremental snapshot transfer interface. |
 | `internal/volumestore/zfs.go` | Implement ZFS description, incremental export, and incremental import. |
 | `internal/backend/firecracker/host_runtime.go` | Add helper-backed ZFS send/receive operations if direct `zfs` access stays behind the privileged helper. |
-| `scripts/cleanroom-root-helper.sh` | Allow narrowly scoped `zfs get guid`, `zfs send`, and `zfs receive` operations for managed Cleanroom refs only. |
+| `internal/storagegc/storagegc.go` | Inventory and prune unreferenced ZFS import datasets without touching referenced cache storage. |
+| `internal/cli/system.go` | Include ZFS import datasets in `system df` and `system prune` on Firecracker/ZFS hosts. |
+| `scripts/cleanroom-root-helper.sh` | Allow narrowly scoped `zfs get guid`, `zfs send`, `zfs receive`, and import-namespace `zfs list` operations for managed Cleanroom refs only. |
 | `internal/observability/*` | Add peer cache transfer span attributes and metrics. |
 
 ## Implementation Order
@@ -507,7 +524,7 @@ Status: landed.
 
 ### 2. ZFS incremental transfer contract
 
-Status: active.
+Status: landed.
 
 - Add the optional transfer interface in `internal/volumestore`.
 - Implement `DescribeSnapshot` for ZFS using ZFS GUID properties.
@@ -521,6 +538,8 @@ prevents incremental send, fix the ZFS driver before adding peer APIs.
 
 ### 3. Import into temporary storage
 
+Status: landed.
+
 - Implement ZFS incremental receive into an unpublished managed dataset cloned
   from the local parent snapshot.
 - Return a local `Snapshot` only after receive succeeds.
@@ -528,6 +547,8 @@ prevents incremental send, fix the ZFS driver before adding peer APIs.
 - Add daemon startup cleanup for stale temporary import datasets.
 
 ### 4. Static peer lookup API
+
+Status: next.
 
 - Add runtime config for peer URLs and token env vars.
 - Add lookup RPC and export HTTP endpoint.

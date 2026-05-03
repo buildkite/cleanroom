@@ -15,7 +15,9 @@ import (
 	"text/tabwriter"
 	"time"
 
+	backendfirecracker "github.com/buildkite/cleanroom/internal/backend/firecracker"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
+	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 	"github.com/buildkite/cleanroom/internal/storagegc"
 	"golang.org/x/term"
 )
@@ -44,12 +46,14 @@ var systemInventory = storagegc.Inventory
 var systemPlanPrune = storagegc.PlanPrune
 var systemExecutePrune = storagegc.ExecutePrune
 var systemListSandboxIDs = listSystemSandboxIDs
+var systemZFSImportDatasetStore = defaultSystemZFSImportDatasetStore
 var systemIsTerminal = func(f *os.File) bool {
 	return f != nil && term.IsTerminal(int(f.Fd()))
 }
 
 func (c *SystemDFCommand) Run(ctx *runtimeContext) error {
-	report, warning, err := loadSystemInventory(context.Background(), ctx, c.clientFlags, false, 0)
+	zfsImportDatasetStore := systemZFSImportDatasetStore(ctx.Config)
+	report, warning, err := loadSystemInventory(context.Background(), ctx, c.clientFlags, false, 0, zfsImportDatasetStore)
 	if err != nil {
 		return err
 	}
@@ -69,7 +73,8 @@ func (c *SystemPruneCommand) Run(ctx *runtimeContext) error {
 	if err != nil {
 		return err
 	}
-	report, _, err := loadSystemInventory(context.Background(), ctx, c.clientFlags, true, 0)
+	zfsImportDatasetStore := systemZFSImportDatasetStore(ctx.Config)
+	report, _, err := loadSystemInventory(context.Background(), ctx, c.clientFlags, true, 0, zfsImportDatasetStore)
 	if err != nil {
 		return err
 	}
@@ -101,7 +106,9 @@ func (c *SystemPruneCommand) Run(ctx *runtimeContext) error {
 		}
 	}
 
-	result, err := systemExecutePrune(context.Background(), report, plan, storagegc.ExecuteOptions{})
+	result, err := systemExecutePrune(context.Background(), report, plan, storagegc.ExecuteOptions{
+		ZFSImportDatasetStore: zfsImportDatasetStore,
+	})
 	if err != nil {
 		return err
 	}
@@ -115,7 +122,7 @@ func (c *SystemPruneCommand) Run(ctx *runtimeContext) error {
 	return err
 }
 
-func loadSystemInventory(ctx context.Context, runtimeCtx *runtimeContext, flags clientFlags, requireSandboxState bool, executionMaxAge time.Duration) (storagegc.Report, error, error) {
+func loadSystemInventory(ctx context.Context, runtimeCtx *runtimeContext, flags clientFlags, requireSandboxState bool, executionMaxAge time.Duration, zfsImportDatasetStore storagegc.ZFSImportDatasetStore) (storagegc.Report, error, error) {
 	sandboxIDs, stateKnown, listErr := systemListSandboxIDs(ctx, runtimeCtx, flags)
 	if listErr != nil && requireSandboxState {
 		return storagegc.Report{}, nil, fmt.Errorf("list sandboxes before prune: %w", listErr)
@@ -124,15 +131,24 @@ func loadSystemInventory(ctx context.Context, runtimeCtx *runtimeContext, flags 
 		executionMaxAge = storagegc.DefaultExecutionMaxAge
 	}
 	report, err := systemInventory(ctx, storagegc.InventoryOptions{
-		Config:            runtimeCtx.Config,
-		ActiveSandboxIDs:  sandboxIDs,
-		SandboxStateKnown: stateKnown,
-		ExecutionMaxAge:   executionMaxAge,
+		Config:                runtimeCtx.Config,
+		ActiveSandboxIDs:      sandboxIDs,
+		SandboxStateKnown:     stateKnown,
+		ExecutionMaxAge:       executionMaxAge,
+		ZFSImportDatasetStore: zfsImportDatasetStore,
 	})
 	if err != nil {
 		return storagegc.Report{}, nil, err
 	}
 	return report, listErr, nil
+}
+
+func defaultSystemZFSImportDatasetStore(cfg runtimeconfig.Config) storagegc.ZFSImportDatasetStore {
+	store := backendfirecracker.NewZFSImportDatasetStore(runtimeconfig.MergeBackendConfig(cfg, "firecracker", 0))
+	if store == nil {
+		return nil
+	}
+	return store
 }
 
 func listSystemSandboxIDs(ctx context.Context, runtimeCtx *runtimeContext, flags clientFlags) ([]string, bool, error) {
