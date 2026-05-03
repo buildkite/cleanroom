@@ -17,6 +17,7 @@ type ExecRequest struct {
 	Command           []string           `json:"command"`
 	Dir               string             `json:"dir,omitempty"`
 	Env               []string           `json:"env,omitempty"`
+	ClosedEnv         bool               `json:"closed_env,omitempty"`
 	EntropySeed       []byte             `json:"entropy_seed,omitempty"`
 	TTY               bool               `json:"tty,omitempty"`
 	CacheOutputMounts []CacheOutputMount `json:"cache_output_mounts,omitempty"`

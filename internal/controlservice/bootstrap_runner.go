@@ -28,6 +28,7 @@ func (s *Service) runPersistentSandboxCommand(
 
 type persistentSandboxCommandOptions struct {
 	Dir             string
+	ClosedEnv       bool
 	InputProjection *backend.InputProjection
 }
 
@@ -50,6 +51,7 @@ func (s *Service) runPersistentSandboxCommandWithOptions(
 		Command:           append([]string(nil), command...),
 		Dir:               strings.TrimSpace(opts.Dir),
 		Env:               append([]string(nil), env...),
+		ClosedEnv:         opts.ClosedEnv,
 		InputProjection:   cloneInputProjection(opts.InputProjection),
 		Policy:            compiled,
 		NetworkStage:      networkStage,

@@ -315,6 +315,7 @@ type ExecutionRequest struct {
 	Command         []string
 	Dir             string
 	Env             []string
+	ClosedEnv       bool
 	TTY             bool
 	InputProjection *InputProjection
 	Policy          *policy.CompiledPolicy

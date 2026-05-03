@@ -51,6 +51,8 @@ func TestSetupInputProjectionCopiesDeclaredFilesAndSetsDir(t *testing.T) {
 		t.Fatalf("stat projected main.go: %v", err)
 	} else if got, want := info.Mode().Perm(), os.FileMode(0o600); got != want {
 		t.Fatalf("unexpected projected mode: got %v want %v", got, want)
+	} else if !info.ModTime().Equal(inputProjectionTimestamp) {
+		t.Fatalf("unexpected projected mtime: got %s want %s", info.ModTime(), inputProjectionTimestamp)
 	}
 }
 

@@ -102,7 +102,7 @@ func handleConnTTY(conn io.ReadWriteCloser, dec *json.Decoder, req vsockexec.Exe
 	if req.Dir != "" {
 		cmd.Dir = req.Dir
 	}
-	env, err := buildCommandEnv(req.Env)
+	env, err := buildCommandEnv(req.Env, !req.ClosedEnv)
 	if err != nil {
 		sendErrorResponse(conn, err)
 		return
@@ -136,7 +136,7 @@ func handleConnPipes(conn io.ReadWriteCloser, dec *json.Decoder, req vsockexec.E
 	if req.Dir != "" {
 		cmd.Dir = req.Dir
 	}
-	env, err := buildCommandEnv(req.Env)
+	env, err := buildCommandEnv(req.Env, !req.ClosedEnv)
 	if err != nil {
 		sendErrorResponse(conn, err)
 		return
@@ -310,19 +310,21 @@ func (w streamFrameWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func buildCommandEnv(requestEnv []string) ([]string, error) {
-	// Start from the current process environment so caller-provided values can
-	// override, while ensuring we have baseline HOME/PATH defaults for lookups.
+func buildCommandEnv(requestEnv []string, inheritAmbient bool) ([]string, error) {
 	base := map[string]string{}
 	requestKeys := make(map[string]struct{}, len(requestEnv))
-	for _, entry := range os.Environ() {
-		parts := strings.SplitN(entry, "=", 2)
-		key := parts[0]
-		value := ""
-		if len(parts) == 2 {
-			value = parts[1]
+	if inheritAmbient {
+		// Start from the current process environment so caller-provided values can
+		// override, while ensuring we have baseline HOME/PATH defaults for lookups.
+		for _, entry := range os.Environ() {
+			parts := strings.SplitN(entry, "=", 2)
+			key := parts[0]
+			value := ""
+			if len(parts) == 2 {
+				value = parts[1]
+			}
+			base[key] = value
 		}
-		base[key] = value
 	}
 
 	for _, entry := range requestEnv {

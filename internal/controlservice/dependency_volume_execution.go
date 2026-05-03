@@ -95,6 +95,7 @@ func (s *Service) bootstrapDependencyBlockVolumeBlock(
 		nil,
 		persistentSandboxCommandOptions{
 			Dir:             sourceRoot,
+			ClosedEnv:       true,
 			InputProjection: inputProjection,
 		},
 		reporter,

@@ -921,6 +921,12 @@ Completed in phase 6:
 - when requested, the guest agent creates a per-command mount namespace and
   bind-mounts the projection read-only over the source workspace root before
   running the command
+- dependency block-volume misses run with a closed command environment instead
+  of inheriting ambient guest-agent or image environment variables
+- the guest agent hides the projection backing root inside the per-command mount
+  namespace after binding the projection over the source workspace
+- projected input files and directories receive deterministic timestamps so
+  command-visible mtimes do not vary under the same cache key
 - dependency block-volume misses now run as individual block commands from the
   projected workspace when the block-volume runtime path is available
 - dependency block-volume hits are skipped because their output volumes are

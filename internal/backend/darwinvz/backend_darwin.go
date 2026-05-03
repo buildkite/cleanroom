@@ -1179,10 +1179,11 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 		Command:         append([]string(nil), req.Command...),
 		Dir:             strings.TrimSpace(req.Dir),
 		Env:             append([]string(nil), req.Env...),
+		ClosedEnv:       req.ClosedEnv,
 		TTY:             req.TTY,
 		InputProjection: darwinVZInputProjection(req.InputProjection),
 	}
-	if a.GatewayRegistry != nil && gatewayScopeToken != "" {
+	if !req.ClosedEnv && a.GatewayRegistry != nil && gatewayScopeToken != "" {
 		gwPort := a.GatewayPort
 		if gwPort <= 0 {
 			gwPort = gateway.DefaultPort
@@ -1619,10 +1620,11 @@ func (a *Adapter) executeInSandbox(bootCtx context.Context, runCtx context.Conte
 		Command:         append([]string(nil), req.Command...),
 		Dir:             strings.TrimSpace(req.Dir),
 		Env:             append([]string(nil), req.Env...),
+		ClosedEnv:       req.ClosedEnv,
 		TTY:             req.TTY,
 		InputProjection: darwinVZInputProjection(req.InputProjection),
 	}
-	if a.GatewayRegistry != nil && gatewayScopeToken != "" {
+	if !req.ClosedEnv && a.GatewayRegistry != nil && gatewayScopeToken != "" {
 		gwPort := a.GatewayPort
 		if gwPort <= 0 {
 			gwPort = gateway.DefaultPort

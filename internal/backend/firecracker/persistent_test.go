@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/vsockexec"
+	"go.opentelemetry.io/otel/trace"
 )
 
 func TestProvisionSandboxRejectsConcurrentProvisionForSameID(t *testing.T) {
@@ -281,10 +283,12 @@ func TestRunInSandboxForwardsInputProjection(t *testing.T) {
 		MountSourceReadOnly: true,
 	}
 	var gotDir string
+	var gotClosedEnv bool
 	var gotProjection *vsockexec.InputProjection
 	adapter := &Adapter{}
 	adapter.runGuestCommandFn = func(_ context.Context, _ context.Context, _ <-chan struct{}, _ func() error, _ string, _ uint32, req vsockexec.ExecRequest, _ backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error) {
 		gotDir = req.Dir
+		gotClosedEnv = req.ClosedEnv
 		gotProjection = req.InputProjection
 		return vsockexec.ExecResponse{ExitCode: 0}, guestExecTiming{}, nil
 	}
@@ -301,6 +305,7 @@ func TestRunInSandboxForwardsInputProjection(t *testing.T) {
 		ExecutionID:     "run-123",
 		Command:         []string{"true"},
 		Dir:             "/workspace",
+		ClosedEnv:       true,
 		InputProjection: wantProjection,
 	}, backend.OutputStream{}); err != nil {
 		t.Fatalf("RunInSandbox returned error: %v", err)
@@ -308,11 +313,67 @@ func TestRunInSandboxForwardsInputProjection(t *testing.T) {
 	if got, want := gotDir, "/workspace"; got != want {
 		t.Fatalf("unexpected dir: got %q want %q", got, want)
 	}
+	if !gotClosedEnv {
+		t.Fatal("expected closed env to be forwarded")
+	}
 	want := vsockInputProjection(wantProjection)
 	if !reflect.DeepEqual(gotProjection, want) {
 		t.Fatalf("unexpected input projection: got %#v want %#v", gotProjection, want)
 	}
 }
+
+func TestRunInSandboxClosedEnvSkipsGatewayEnv(t *testing.T) {
+	t.Parallel()
+
+	var gotEnv []string
+	adapter := &Adapter{
+		GatewayRegistry: testGatewayRegistry{},
+		GatewayPort:     8170,
+	}
+	adapter.runGuestCommandFn = func(_ context.Context, _ context.Context, _ <-chan struct{}, _ func() error, _ string, _ uint32, req vsockexec.ExecRequest, _ backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error) {
+		gotEnv = append([]string(nil), req.Env...)
+		return vsockexec.ExecResponse{ExitCode: 0}, guestExecTiming{}, nil
+	}
+	adapter.sandboxes = map[string]*sandboxInstance{
+		"cr-test": {
+			SandboxID: "cr-test",
+			VsockPath: "/tmp/fake.sock",
+			GuestPort: 10700,
+			HostIP:    "192.168.127.1",
+			Policy: &policy.CompiledPolicy{
+				Version:        1,
+				NetworkDefault: "deny",
+				Allow:          []policy.AllowRule{{Host: "github.com", Ports: []int{443}}},
+			},
+		},
+	}
+
+	if _, err := adapter.RunInSandbox(context.Background(), backend.ExecutionRequest{
+		SandboxID:   "cr-test",
+		ExecutionID: "run-closed-env",
+		Command:     []string{"true"},
+		Env:         []string{"DECLARED=value"},
+		ClosedEnv:   true,
+	}, backend.OutputStream{}); err != nil {
+		t.Fatalf("RunInSandbox returned error: %v", err)
+	}
+	if !slices.Contains(gotEnv, "DECLARED=value") {
+		t.Fatalf("expected declared env to be forwarded, got %v", gotEnv)
+	}
+	for _, entry := range gotEnv {
+		if strings.HasPrefix(entry, "GIT_CONFIG_") {
+			t.Fatalf("did not expect gateway env in closed environment, got %v", gotEnv)
+		}
+	}
+}
+
+type testGatewayRegistry struct{}
+
+func (testGatewayRegistry) Register(string, string, *policy.CompiledPolicy) error { return nil }
+func (testGatewayRegistry) Release(string)                                        {}
+func (testGatewayRegistry) SetActiveExecutionTrace(string, string, trace.SpanContext) {
+}
+func (testGatewayRegistry) ClearActiveExecutionTrace(string, string) {}
 
 func TestRunInSandboxWritesRunObservabilityForStatusCommand(t *testing.T) {
 	t.Parallel()

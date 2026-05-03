@@ -12,12 +12,14 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/buildkite/cleanroom/internal/vsockexec"
 	"golang.org/x/sys/unix"
 )
 
 var inputProjectionRoot = "/run/cleanroom/input-projections"
+var inputProjectionTimestamp = time.Unix(0, 0).UTC()
 
 func setupInputProjection(req vsockexec.ExecRequest) (vsockexec.ExecRequest, func(), error) {
 	projection := req.InputProjection
@@ -98,6 +100,9 @@ func materializeInputProjection(sourceRoot, targetRoot string, inputs []string) 
 		if err := copyInputProjectionFile(sourceRoot, targetRoot, rel); err != nil {
 			return err
 		}
+	}
+	if err := normalizeInputProjectionTimes(targetRoot); err != nil {
+		return err
 	}
 	return nil
 }
@@ -218,6 +223,18 @@ func copyInputProjectionFile(sourceRoot, targetRoot, rel string) error {
 	return nil
 }
 
+func normalizeInputProjectionTimes(targetRoot string) error {
+	return filepath.WalkDir(targetRoot, func(path string, _ os.DirEntry, err error) error {
+		if err != nil {
+			return fmt.Errorf("walk input projection path %s: %w", path, err)
+		}
+		if err := os.Chtimes(path, inputProjectionTimestamp, inputProjectionTimestamp); err != nil {
+			return fmt.Errorf("set deterministic input projection timestamp %s: %w", path, err)
+		}
+		return nil
+	})
+}
+
 func bindInputProjectionOverSource(sourceRoot, targetRoot string) (func(), error) {
 	runtime.LockOSThread()
 	oldNS, err := os.Open("/proc/self/ns/mnt")
@@ -251,5 +268,20 @@ func bindInputProjectionOverSource(sourceRoot, targetRoot string) (func(), error
 		cleanup()
 		return nil, fmt.Errorf("remount input projection %s read-only: %w", sourceRoot, err)
 	}
+	if err := hideInputProjectionBackingRoot(); err != nil {
+		cleanup()
+		return nil, err
+	}
 	return cleanup, nil
+}
+
+func hideInputProjectionBackingRoot() error {
+	root, err := cleanInputProjectionRoot("root", inputProjectionRoot)
+	if err != nil {
+		return err
+	}
+	if err := unix.Mount("tmpfs", root, "tmpfs", unix.MS_NOSUID|unix.MS_NODEV|unix.MS_NOEXEC|unix.MS_RDONLY, "size=4k,mode=0555"); err != nil {
+		return fmt.Errorf("hide input projection backing root %s: %w", root, err)
+	}
+	return nil
 }

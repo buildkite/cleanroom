@@ -502,6 +502,9 @@ func TestBootstrapDependencyBlockVolumePlanRunsMissesFromInputProjection(t *test
 	if got, want := req.Dir, "/workspace"; got != want {
 		t.Fatalf("unexpected dir: got %q want %q", got, want)
 	}
+	if !req.ClosedEnv {
+		t.Fatal("expected dependency block execution to use a closed environment")
+	}
 	if !slices.Contains(req.Env, "GOMODCACHE=/root/go/pkg/mod") {
 		t.Fatalf("expected GOMODCACHE env, got %v", req.Env)
 	}
