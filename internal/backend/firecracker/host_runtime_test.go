@@ -2,6 +2,10 @@ package firecracker
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/buildkite/cleanroom/internal/backend"
@@ -175,6 +179,72 @@ func TestPrepareWritableRootVolumeUsesHostRuntimeForZFS(t *testing.T) {
 	cleanupVolume()
 	if got, want := destroyedVolume, "tank/cleanroom/sandboxes/exec-1"; got != want {
 		t.Fatalf("unexpected destroyed zfs volume ref: got %q want %q", got, want)
+	}
+}
+
+func TestCreateZFSSnapshotCleansUpWhenMetadataReadFails(t *testing.T) {
+	var commands []string
+	exists := map[string]bool{
+		"tank/cleanroom/sandboxes/cr-test": true,
+	}
+	runtime := &runnerBackedHostRuntime{
+		cfg: backend.FirecrackerConfig{
+			Snapshots: backend.SnapshotConfig{ZFSDataset: "tank/cleanroom"},
+		},
+		runner: testPrivilegedCommandRunner{
+			run: func(_ context.Context, args ...string) error {
+				commands = append(commands, strings.Join(args, " "))
+				if len(args) == 0 || args[0] != "zfs" {
+					return nil
+				}
+				switch args[1] {
+				case "snapshot":
+					exists[args[2]] = true
+				case "clone":
+					exists[args[4]] = true
+				case "destroy":
+					target := args[len(args)-1]
+					for ref := range exists {
+						if ref == target || strings.HasPrefix(ref, target+"@") || strings.HasPrefix(ref, target+"/") {
+							delete(exists, ref)
+						}
+					}
+				}
+				return nil
+			},
+			output: func(_ context.Context, args ...string) ([]byte, error) {
+				commands = append(commands, strings.Join(args, " "))
+				if len(args) == 7 && args[0] == "zfs" && args[1] == "get" && args[2] == "-H" && args[3] == "-o" && args[4] == "value" && args[5] == "guid" {
+					return nil, errors.New("zfs get guid denied")
+				}
+				if len(args) == 6 && args[0] == "zfs" && args[1] == "list" && args[2] == "-H" && args[3] == "-o" && args[4] == "name" {
+					if exists[args[5]] {
+						return []byte(args[5] + "\n"), nil
+					}
+					return nil, errors.New("cannot open dataset: dataset does not exist")
+				}
+				return nil, fmt.Errorf("unexpected command: %s", strings.Join(args, " "))
+			},
+		},
+	}
+
+	_, err := runtime.CreateZFSSnapshot(context.Background(), zfsSnapshotRequest{
+		SnapshotID: "snap-test",
+		VolumeRef:  "tank/cleanroom/sandboxes/cr-test",
+	})
+	if err == nil {
+		t.Fatal("expected CreateZFSSnapshot to fail")
+	}
+	if !strings.Contains(err.Error(), "describe zfs snapshot metadata") {
+		t.Fatalf("expected metadata error, got %v", err)
+	}
+
+	wantCleanup := "zfs destroy -r tank/cleanroom/snapshots/snap-test"
+	if !slices.Contains(commands, wantCleanup) {
+		t.Fatalf("expected cleanup command %q, got %v", wantCleanup, commands)
+	}
+	if exists["tank/cleanroom/snapshots/snap-test"] || exists["tank/cleanroom/snapshots/snap-test@base"] {
+		t.Fatalf("expected stored snapshot dataset to be cleaned up, remaining refs: %v", exists)
 	}
 }
 

@@ -241,10 +241,16 @@ func (r *runnerBackedHostRuntime) CreateZFSSnapshot(ctx context.Context, req zfs
 	}
 	desc, err := driver.DescribeSnapshot(ctx, volumestore.DescribeSnapshotRequest{StorageRef: snapshot.StorageRef})
 	if err != nil {
+		if cleanupErr := driver.DestroySnapshot(context.Background(), volumestore.DestroySnapshotRequest{SnapshotRef: snapshot.StorageRef}); cleanupErr != nil {
+			return zfsSnapshot{}, fmt.Errorf("describe zfs snapshot metadata: %w (cleanup snapshot %q failed: %v)", err, snapshot.StorageRef, cleanupErr)
+		}
 		return zfsSnapshot{}, fmt.Errorf("describe zfs snapshot metadata: %w", err)
 	}
 	driverMetadata, err := volumestore.EncodeZFSDriverMetadata(volumestore.ZFSDriverMetadataFromDescription(desc))
 	if err != nil {
+		if cleanupErr := driver.DestroySnapshot(context.Background(), volumestore.DestroySnapshotRequest{SnapshotRef: snapshot.StorageRef}); cleanupErr != nil {
+			return zfsSnapshot{}, fmt.Errorf("%w (cleanup snapshot %q failed: %v)", err, snapshot.StorageRef, cleanupErr)
+		}
 		return zfsSnapshot{}, err
 	}
 	return zfsSnapshot{
