@@ -36,11 +36,11 @@ func TestCacheOutputMountActionsMapsDirsAndRestoresFiles(t *testing.T) {
 	want := []cacheOutputMountAction{
 		{Kind: cacheOutputActionMkdir, Target: "/run/cleanroom/cache-output-volumes/cacheout0", Mode: 0o755},
 		{Kind: cacheOutputActionMount, Source: "/dev/vdb", Target: "/run/cleanroom/cache-output-volumes/cacheout0", FSType: "ext4"},
-		{Kind: cacheOutputActionMkdir, Target: "/run/cleanroom/cache-output-volumes/cacheout0/dirs/0", Mode: 0o755, RequireExisting: true},
+		{Kind: cacheOutputActionMkdir, Source: "/run/cleanroom/cache-output-volumes/cacheout0/dirs/0", VolumeRoot: "/run/cleanroom/cache-output-volumes/cacheout0", VolumeSubpath: "dirs/0", Mode: 0o755, RequireExisting: true},
 		{Kind: cacheOutputActionMkdir, Target: "/root/.local/share/mise", Mode: 0o755, RequireEmpty: true},
-		{Kind: cacheOutputActionBind, Source: "/run/cleanroom/cache-output-volumes/cacheout0/dirs/0", Target: "/root/.local/share/mise", Flags: unix.MS_BIND},
+		{Kind: cacheOutputActionBind, Source: "/run/cleanroom/cache-output-volumes/cacheout0/dirs/0", Target: "/root/.local/share/mise", VolumeRoot: "/run/cleanroom/cache-output-volumes/cacheout0", VolumeSubpath: "dirs/0", Flags: unix.MS_BIND},
 		{Kind: cacheOutputActionMkdir, Target: "/root/.config/mise", Mode: 0o755},
-		{Kind: cacheOutputActionRestoreFile, Source: "/run/cleanroom/cache-output-volumes/cacheout0/files/0", Target: "/root/.config/mise/config.toml", Mode: 0o600, Required: true},
+		{Kind: cacheOutputActionRestoreFile, Source: "/run/cleanroom/cache-output-volumes/cacheout0/files/0", Target: "/root/.config/mise/config.toml", VolumeRoot: "/run/cleanroom/cache-output-volumes/cacheout0", VolumeSubpath: "files/0", Mode: 0o600, Required: true},
 	}
 	if !reflect.DeepEqual(actions, want) {
 		t.Fatalf("unexpected actions:\n got %#v\nwant %#v", actions, want)
@@ -72,6 +72,51 @@ func TestEnsureCacheOutputDirRequiresExistingHitSource(t *testing.T) {
 		t.Fatal("expected missing hit source directory to fail")
 	}
 	if !strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestEnsureCacheOutputVolumeDirRejectsSymlinkParent(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(root, "dirs")); err != nil {
+		t.Fatalf("create symlink: %v", err)
+	}
+
+	_, err := ensureCacheOutputVolumeDir(root, "dirs/0", 0o755, false)
+	if err == nil {
+		t.Fatal("expected symlink parent to fail")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestOpenCacheOutputVolumeFileRejectsSymlinkFile(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "files"), 0o755); err != nil {
+		t.Fatalf("create files dir: %v", err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside")
+	if err := os.WriteFile(outside, []byte("outside"), 0o644); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "files", "0")); err != nil {
+		t.Fatalf("create symlink: %v", err)
+	}
+
+	file, _, err := openCacheOutputVolumeFile(root, "files/0", true)
+	if file != nil {
+		_ = file.Close()
+	}
+	if err == nil {
+		t.Fatal("expected symlink file to fail")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -134,6 +179,42 @@ func TestRestoreCacheOutputFileCopiesHitAndSkipsMissingMiss(t *testing.T) {
 	}
 	if _, err := os.Stat(missingTarget); !os.IsNotExist(err) {
 		t.Fatalf("expected missing non-required file not to be created, got err=%v", err)
+	}
+}
+
+func TestRestoreCacheOutputFileReplacesExistingTarget(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "volume", "files", "0")
+	targetPath := filepath.Join(dir, "root", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(sourcePath), 0o755); err != nil {
+		t.Fatalf("create source dir: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		t.Fatalf("create target dir: %v", err)
+	}
+	if err := os.WriteFile(sourcePath, []byte("new"), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	if err := os.WriteFile(targetPath, []byte("old"), 0o644); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+
+	if err := restoreCacheOutputFile(sourcePath, targetPath, 0o600, true); err != nil {
+		t.Fatalf("restoreCacheOutputFile returned error: %v", err)
+	}
+	data, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatalf("read target: %v", err)
+	}
+	if got, want := string(data), "new"; got != want {
+		t.Fatalf("unexpected restored file content: got %q want %q", got, want)
+	}
+	if entries, err := os.ReadDir(filepath.Dir(targetPath)); err != nil {
+		t.Fatalf("read target dir: %v", err)
+	} else if len(entries) != 1 {
+		t.Fatalf("expected only restored target in directory, got %d entries", len(entries))
 	}
 }
 
