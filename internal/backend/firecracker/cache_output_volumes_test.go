@@ -11,6 +11,7 @@ import (
 
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/volumestore"
+	"github.com/buildkite/cleanroom/internal/vsockexec"
 )
 
 func TestCapabilitiesAdvertiseCacheOutputVolumesWithoutOverlayCapture(t *testing.T) {
@@ -137,6 +138,74 @@ func TestPrepareCacheOutputVolumesClonesHitsAndCreatesMisses(t *testing.T) {
 	}
 	if got, want := destroyReqs[0].VolumeRef, prepared[1].Volume.Ref; got != want {
 		t.Fatalf("expected reverse cleanup order first ref %q, got %q", want, got)
+	}
+}
+
+func TestCacheOutputVolumeMountsBuildsDeterministicGuestPlan(t *testing.T) {
+	t.Parallel()
+
+	mounts := cacheOutputVolumeMounts([]preparedCacheOutputVolume{
+		{
+			Spec: backend.CacheOutputVolumeSpec{
+				SourceSnapshotRef: "snapshot:toolchains",
+				StorageRef:        "snapshot:toolchains",
+				DirMappings: []backend.CacheOutputDirMapping{
+					{GuestPath: " /root/.local/share/mise ", Subpath: " dirs/0 "},
+				},
+				FileMappings: []backend.CacheOutputFileMapping{
+					{GuestPath: " /root/.config/mise/config.toml ", Subpath: " files/0 ", Mode: 0o600},
+				},
+			},
+			Drive: drive{DriveID: "cacheout0"},
+		},
+		{
+			Spec: backend.CacheOutputVolumeSpec{
+				DirMappings: []backend.CacheOutputDirMapping{
+					{GuestPath: "/root/go/pkg/mod", Subpath: "dirs/0"},
+				},
+			},
+			Drive: drive{DriveID: "cacheout1"},
+		},
+	})
+
+	want := []vsockexec.CacheOutputMount{
+		{
+			DevicePath:    "/dev/vdb",
+			MountPath:     "/run/cleanroom/cache-output-volumes/cacheout0",
+			SourcePresent: true,
+			DirMappings: []vsockexec.CacheOutputDirMount{
+				{GuestPath: "/root/.local/share/mise", Subpath: "dirs/0"},
+			},
+			FileMappings: []vsockexec.CacheOutputFileMount{
+				{GuestPath: "/root/.config/mise/config.toml", Subpath: "files/0", Mode: 0o600},
+			},
+		},
+		{
+			DevicePath: "/dev/vdc",
+			MountPath:  "/run/cleanroom/cache-output-volumes/cacheout1",
+			DirMappings: []vsockexec.CacheOutputDirMount{
+				{GuestPath: "/root/go/pkg/mod", Subpath: "dirs/0"},
+			},
+		},
+	}
+	if !reflect.DeepEqual(mounts, want) {
+		t.Fatalf("unexpected cache output mounts: got %#v want %#v", mounts, want)
+	}
+}
+
+func TestCacheOutputDevicePathUsesVirtioBlockOrderAfterRoot(t *testing.T) {
+	t.Parallel()
+
+	tests := map[int]string{
+		0:  "/dev/vdb",
+		1:  "/dev/vdc",
+		24: "/dev/vdz",
+		25: "/dev/vdaa",
+	}
+	for index, want := range tests {
+		if got := cacheOutputDevicePath(index); got != want {
+			t.Fatalf("cacheOutputDevicePath(%d) = %q, want %q", index, got, want)
+		}
 	}
 }
 

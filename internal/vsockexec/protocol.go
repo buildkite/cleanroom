@@ -14,11 +14,31 @@ const (
 )
 
 type ExecRequest struct {
-	Command     []string `json:"command"`
-	Dir         string   `json:"dir,omitempty"`
-	Env         []string `json:"env,omitempty"`
-	EntropySeed []byte   `json:"entropy_seed,omitempty"`
-	TTY         bool     `json:"tty,omitempty"`
+	Command           []string           `json:"command"`
+	Dir               string             `json:"dir,omitempty"`
+	Env               []string           `json:"env,omitempty"`
+	EntropySeed       []byte             `json:"entropy_seed,omitempty"`
+	TTY               bool               `json:"tty,omitempty"`
+	CacheOutputMounts []CacheOutputMount `json:"cache_output_mounts,omitempty"`
+}
+
+type CacheOutputMount struct {
+	DevicePath    string                 `json:"device_path"`
+	MountPath     string                 `json:"mount_path"`
+	SourcePresent bool                   `json:"source_present,omitempty"`
+	DirMappings   []CacheOutputDirMount  `json:"dir_mappings,omitempty"`
+	FileMappings  []CacheOutputFileMount `json:"file_mappings,omitempty"`
+}
+
+type CacheOutputDirMount struct {
+	GuestPath string `json:"guest_path"`
+	Subpath   string `json:"subpath"`
+}
+
+type CacheOutputFileMount struct {
+	GuestPath string `json:"guest_path"`
+	Subpath   string `json:"subpath"`
+	Mode      uint32 `json:"mode,omitempty"`
 }
 
 type ExecResponse struct {

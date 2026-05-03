@@ -88,26 +88,27 @@ type gatewayRegistry interface {
 }
 
 type sandboxInstance struct {
-	SandboxID      string
-	RunDir         string
-	ConfigPath     string
-	VsockPath      string
-	GuestPort      uint32
-	Policy         *policy.CompiledPolicy
-	ImageRef       string
-	ImageDigest    string
-	CommandTimeout int64
-	HostIP         string
-	GuestIP        string
-	fcCmd          *exec.Cmd
-	exitedCh       chan struct{}
-	exitMu         sync.RWMutex
-	exitErr        error
-	exitReady      bool
-	cleanupNetwork func()
-	cleanupVolume  func()
-	vmRootFSPath   string
-	volumeRef      string
+	SandboxID         string
+	RunDir            string
+	ConfigPath        string
+	VsockPath         string
+	GuestPort         uint32
+	Policy            *policy.CompiledPolicy
+	ImageRef          string
+	ImageDigest       string
+	CommandTimeout    int64
+	HostIP            string
+	GuestIP           string
+	fcCmd             *exec.Cmd
+	exitedCh          chan struct{}
+	exitMu            sync.RWMutex
+	exitErr           error
+	exitReady         bool
+	cleanupNetwork    func()
+	cleanupVolume     func()
+	vmRootFSPath      string
+	volumeRef         string
+	cacheOutputMounts []vsockexec.CacheOutputMount
 
 	warnings backend.WarningEmitter
 }
@@ -810,9 +811,10 @@ func (a *Adapter) DeleteSnapshot(ctx context.Context, req backend.DeleteSnapshot
 
 func (a *Adapter) executeInSandbox(ctx context.Context, instance *sandboxInstance, launchSeconds int64, command, env []string, tty bool, stream backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error) {
 	guestReq := vsockexec.ExecRequest{
-		Command: append([]string(nil), command...),
-		Env:     append([]string(nil), env...),
-		TTY:     tty,
+		Command:           append([]string(nil), command...),
+		Env:               append([]string(nil), env...),
+		TTY:               tty,
+		CacheOutputMounts: cloneCacheOutputMounts(instance.cacheOutputMounts),
 	}
 	entropy := make([]byte, 64)
 	if _, err := cryptorand.Read(entropy); err == nil {
@@ -1941,23 +1943,24 @@ func (a *Adapter) launchSandboxVMFromRootFS(ctx context.Context, sandboxID strin
 	}
 
 	instance := &sandboxInstance{
-		SandboxID:      sandboxID,
-		RunDir:         runDir,
-		ConfigPath:     configPath,
-		VsockPath:      vsockPath,
-		GuestPort:      cfg.GuestPort,
-		Policy:         compiled,
-		ImageRef:       compiled.ImageRef,
-		ImageDigest:    compiled.ImageDigest,
-		CommandTimeout: cfg.LaunchSeconds,
-		HostIP:         networkCfg.HostIP,
-		GuestIP:        networkCfg.GuestIP,
-		fcCmd:          fcCmd,
-		exitedCh:       make(chan struct{}),
-		cleanupNetwork: cleanupNetwork,
-		cleanupVolume:  cleanupStorage,
-		vmRootFSPath:   vmRootFSPath,
-		volumeRef:      writableVolume.Ref,
+		SandboxID:         sandboxID,
+		RunDir:            runDir,
+		ConfigPath:        configPath,
+		VsockPath:         vsockPath,
+		GuestPort:         cfg.GuestPort,
+		Policy:            compiled,
+		ImageRef:          compiled.ImageRef,
+		ImageDigest:       compiled.ImageDigest,
+		CommandTimeout:    cfg.LaunchSeconds,
+		HostIP:            networkCfg.HostIP,
+		GuestIP:           networkCfg.GuestIP,
+		fcCmd:             fcCmd,
+		exitedCh:          make(chan struct{}),
+		cleanupNetwork:    cleanupNetwork,
+		cleanupVolume:     cleanupStorage,
+		vmRootFSPath:      vmRootFSPath,
+		volumeRef:         writableVolume.Ref,
+		cacheOutputMounts: cacheOutputVolumeMounts(cacheOutputVolumes),
 	}
 	instanceRef.Store(instance)
 	go func() {
