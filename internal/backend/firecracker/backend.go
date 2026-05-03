@@ -119,6 +119,7 @@ const defaultPrivilegedHelperPath = "/usr/local/sbin/cleanroom-root-helper"
 const helperCapabilityFirecrackerNetwork = "firecracker-network"
 const helperCapabilityFirecrackerTrustedDNS = "firecracker-trusted-dns"
 const helperCapabilityFirecrackerZFS = "firecracker-zfs"
+const helperCapabilityFirecrackerZFSMetadata = "firecracker-zfs-metadata"
 const helperCapabilityFirecrackerNFLog = "firecracker-nflog"
 const snapshotSyncTimeoutSeconds = 10
 const networkCleanupTimeout = 5 * time.Second
@@ -2434,6 +2435,10 @@ func helperCapabilities(ctx context.Context, cfg backend.FirecrackerConfig) ([]s
 		return nil, err
 	}
 
+	return parseHelperCapabilities(out), nil
+}
+
+func parseHelperCapabilities(out []byte) []string {
 	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
 	caps := make([]string, 0, len(lines))
 	seen := make(map[string]struct{}, len(lines))
@@ -2448,7 +2453,16 @@ func helperCapabilities(ctx context.Context, cfg backend.FirecrackerConfig) ([]s
 		seen[cap] = struct{}{}
 		caps = append(caps, cap)
 	}
-	return caps, nil
+	return caps
+}
+
+func (r helperPrivilegedCommandRunner) supportsZFSSnapshotMetadata(ctx context.Context) (bool, error) {
+	out, err := r.Output(ctx, "capabilities")
+	if err != nil {
+		return false, err
+	}
+	caps := parseHelperCapabilities(out)
+	return len(helperMissingCapabilities(caps, []string{helperCapabilityFirecrackerZFSMetadata})) == 0, nil
 }
 
 func helperVersion(ctx context.Context, cfg backend.FirecrackerConfig) (string, error) {

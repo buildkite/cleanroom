@@ -12,7 +12,7 @@ set -euo pipefail
 # - Helper updates must land on hosts before branches that depend on new capabilities can pass.
 
 helper_contract_version() {
-  echo "7"
+  echo "8"
 }
 
 helper_has_zfs() {
@@ -29,6 +29,7 @@ EOF
 
   if helper_has_zfs; then
     echo "firecracker-zfs"
+    echo "firecracker-zfs-metadata"
   fi
 }
 

@@ -22,6 +22,7 @@ func TestCleanroomRootHelperDeclaresCapabilitiesAndZFSSupport(t *testing.T) {
 		"firecracker-network",
 		"firecracker-trusted-dns",
 		"firecracker-zfs",
+		"firecracker-zfs-metadata",
 		"    version)",
 		"    capabilities)",
 		"is_runtime_rootfs_image()",

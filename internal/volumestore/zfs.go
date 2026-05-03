@@ -22,15 +22,17 @@ type ZFSCommandRunner interface {
 }
 
 type ZFSDriverOptions struct {
-	DatasetRoot string
-	Runner      ZFSCommandRunner
-	Stat        func(string) (os.FileInfo, error)
+	DatasetRoot             string
+	Runner                  ZFSCommandRunner
+	Stat                    func(string) (os.FileInfo, error)
+	DisableSnapshotMetadata bool
 }
 
 type ZFSDriver struct {
-	datasetRoot string
-	runner      ZFSCommandRunner
-	stat        func(string) (os.FileInfo, error)
+	datasetRoot             string
+	runner                  ZFSCommandRunner
+	stat                    func(string) (os.FileInfo, error)
+	disableSnapshotMetadata bool
 }
 
 func NewZFSDriver(opts ZFSDriverOptions) (*ZFSDriver, error) {
@@ -48,9 +50,10 @@ func NewZFSDriver(opts ZFSDriverOptions) (*ZFSDriver, error) {
 	}
 
 	return &ZFSDriver{
-		datasetRoot: datasetRoot,
-		runner:      opts.Runner,
-		stat:        statFn,
+		datasetRoot:             datasetRoot,
+		runner:                  opts.Runner,
+		stat:                    statFn,
+		disableSnapshotMetadata: opts.DisableSnapshotMetadata,
 	}, nil
 }
 
@@ -126,9 +129,13 @@ func (d *ZFSDriver) SnapshotVolume(ctx context.Context, req SnapshotVolumeReques
 	if snapshotID == "" {
 		return Snapshot{}, errors.New("zfs volume driver requires snapshot id")
 	}
-	parentSnapshotGUID, err := d.parentSnapshotGUIDForVolume(ctx, volumeRef)
-	if err != nil {
-		return Snapshot{}, err
+	var parentSnapshotGUID string
+	if !d.disableSnapshotMetadata {
+		var err error
+		parentSnapshotGUID, err = d.parentSnapshotGUIDForVolume(ctx, volumeRef)
+		if err != nil {
+			return Snapshot{}, err
+		}
 	}
 
 	sourceSnapshotRef := d.snapshotRef(volumeRef, "snap-"+snapshotID)

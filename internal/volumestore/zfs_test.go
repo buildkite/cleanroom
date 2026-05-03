@@ -240,6 +240,38 @@ func TestZFSDriverSnapshotSurvivesSourceVolumeDestroy(t *testing.T) {
 	}
 }
 
+func TestZFSDriverSnapshotVolumeCanSkipParentMetadata(t *testing.T) {
+	runner := &zfsTestRunner{
+		exists: map[string]bool{
+			"tank/cleanroom/sandboxes/sandbox-1": true,
+		},
+	}
+	driver, err := NewZFSDriver(ZFSDriverOptions{
+		DatasetRoot:             "tank/cleanroom",
+		Runner:                  runner,
+		DisableSnapshotMetadata: true,
+	})
+	if err != nil {
+		t.Fatalf("NewZFSDriver returned error: %v", err)
+	}
+
+	snapshot, err := driver.SnapshotVolume(context.Background(), SnapshotVolumeRequest{
+		SnapshotID: "golden",
+		VolumeRef:  "tank/cleanroom/sandboxes/sandbox-1",
+	})
+	if err != nil {
+		t.Fatalf("SnapshotVolume returned error: %v", err)
+	}
+	if snapshot.ParentSnapshotGUID != "" {
+		t.Fatalf("expected empty parent guid when metadata is disabled, got %q", snapshot.ParentSnapshotGUID)
+	}
+	for _, command := range runner.commands {
+		if strings.HasPrefix(command, "zfs get ") {
+			t.Fatalf("expected snapshot metadata to be skipped, got commands: %v", runner.commands)
+		}
+	}
+}
+
 func TestZFSDriverEnsureBaseVolumeUsesMinimumBytesNamespace(t *testing.T) {
 	sourcePath := filepath.Join(t.TempDir(), "prepared.ext4")
 	if err := os.WriteFile(sourcePath, []byte("base-bytes"), 0o644); err != nil {
