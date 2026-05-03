@@ -1300,6 +1300,66 @@ func TestWorkspaceCopyOutDryRunUsesCopyInManifestBase(t *testing.T) {
 	}
 }
 
+func TestWorkspaceCopyOutDryRunDeletesUntrackedCopyInManifestPath(t *testing.T) {
+	fixture := setupWorkspaceCopyOutUntrackedDeletionFixture(t)
+
+	stdout, stdoutText := makeStdoutCapture(t)
+	stderr, _ := makeStdoutCapture(t)
+	cmd := WorkspaceCopyOutCommand{
+		clientFlags: clientFlags{Host: fixture.host},
+		DryRun:      true,
+		SandboxID:   fixture.sandboxID,
+	}
+	if err := cmd.Run(&runtimeContext{
+		CWD:           t.TempDir(),
+		Loader:        repositoryNotFoundLoader{},
+		Config:        runtimeconfig.Config{},
+		Observability: newTestObservability(t),
+		Stdout:        stdout,
+		Stderr:        stderr,
+	}); err != nil {
+		t.Fatalf("WorkspaceCopyOutCommand.Run returned error: %v", err)
+	}
+
+	expected := "delete\t" + filepath.Join(fixture.resolvedLocalRoot, "copyin-delete.txt") + "\n"
+	if got := stdoutText(); got != expected {
+		t.Fatalf("unexpected copy-out dry-run output: got %q want %q", got, expected)
+	}
+	if got, err := os.ReadFile(filepath.Join(fixture.localRoot, "copyin-delete.txt")); err != nil || string(got) != "copy me in\n" {
+		t.Fatalf("dry-run should leave local copy-in file untouched, got %q err %v", got, err)
+	}
+}
+
+func TestWorkspaceCopyOutDeletesUntrackedCopyInManifestPath(t *testing.T) {
+	fixture := setupWorkspaceCopyOutUntrackedDeletionFixture(t)
+
+	stdout, stdoutText := makeStdoutCapture(t)
+	stderr, _ := makeStdoutCapture(t)
+	cmd := WorkspaceCopyOutCommand{
+		clientFlags: clientFlags{Host: fixture.host},
+		SandboxID:   fixture.sandboxID,
+	}
+	if err := cmd.Run(&runtimeContext{
+		CWD:           t.TempDir(),
+		Loader:        repositoryNotFoundLoader{},
+		Config:        runtimeconfig.Config{},
+		Observability: newTestObservability(t),
+		Stdout:        stdout,
+		Stderr:        stderr,
+	}); err != nil {
+		t.Fatalf("WorkspaceCopyOutCommand.Run returned error: %v", err)
+	}
+
+	expected := "delete\t" + filepath.Join(fixture.resolvedLocalRoot, "copyin-delete.txt") + "\n"
+	if got := stdoutText(); got != expected {
+		t.Fatalf("unexpected copy-out output: got %q want %q", got, expected)
+	}
+	if _, err := os.Stat(filepath.Join(fixture.localRoot, "copyin-delete.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("copy-out should delete local copy-in file, got err %v", err)
+	}
+	assertNoWorkspaceCopyOutRecoveryPayload(t)
+}
+
 func TestWorkspaceCopyOutRejectsLocalDivergenceFromCopyInManifestBase(t *testing.T) {
 	fixture := setupWorkspaceCopyOutManifestBase(t, func(localRoot string) {
 		if err := os.WriteFile(filepath.Join(localRoot, "README.md"), []byte("local\nsandbox\n"), 0o644); err != nil {
@@ -2758,6 +2818,64 @@ func setupWorkspaceCopyOutManifestBaseWithLocalMutate(t *testing.T, localMutate,
 		case strings.Contains(command, "cleanroom-copy-out-v1"):
 			if stream.OnStdout != nil {
 				stream.OnStdout(workspaceCopyOutTestPayload(nameStatus, patch))
+			}
+		default:
+			t.Fatalf("unexpected workspace copy-out command: %q", command)
+		}
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+	}
+
+	return workspaceCopyOutManifestFixture{
+		localRoot:         localRoot,
+		resolvedLocalRoot: resolvedLocalRoot,
+		host:              host,
+		sandboxID:         sandboxID,
+	}
+}
+
+func setupWorkspaceCopyOutUntrackedDeletionFixture(t *testing.T) workspaceCopyOutManifestFixture {
+	t.Helper()
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	localRoot := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
+	resolvedLocalRoot, err := gitOutput(localRoot, "rev-parse", "--show-toplevel")
+	if err != nil {
+		t.Fatalf("resolve local repository root: %v", err)
+	}
+	baseCommit := headCommit(t, localRoot)
+	checkout := &repositorycheckout.Checkout{
+		RemoteURL:      "https://github.com/buildkite/cleanroom.git",
+		CommitSHA:      baseCommit,
+		DestinationDir: "/sandbox-workspace",
+		Branch:         "main",
+	}
+	if err := os.WriteFile(filepath.Join(localRoot, "copyin-delete.txt"), []byte("copy me in\n"), 0o644); err != nil {
+		t.Fatalf("write untracked copy-in file: %v", err)
+	}
+	changeset, err := repositorychangeset.BuildFromWorkingTree(localRoot, checkout)
+	if err != nil {
+		t.Fatalf("build copy-in manifest changeset: %v", err)
+	}
+	if changeset == nil {
+		t.Fatal("expected copy-in manifest changeset")
+	}
+	repository, err := resolveWorkspaceCopyRepositoryCheckout(localRoot, repositoryNotFoundLoader{})
+	if err != nil {
+		t.Fatalf("resolve local repository checkout: %v", err)
+	}
+
+	adapter := &integrationAdapter{}
+	host, _ := startIntegrationServer(t, adapter)
+	sandboxID := createWorkspaceCopyTestSandboxWithRepositoryCommitBranch(t, host, "/sandbox-workspace", baseCommit, "main")
+	if err := recordGitWorkspaceBinding(sandboxID, repository, checkout, changeset.Files, "copy-in"); err != nil {
+		t.Fatalf("record workspace binding: %v", err)
+	}
+
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+		command := strings.Join(req.Command, " ")
+		switch {
+		case strings.Contains(command, "cleanroom-copy-out-v1"):
+			if stream.OnStdout != nil {
+				stream.OnStdout(workspaceCopyOutTestPayload(nil, nil))
 			}
 		default:
 			t.Fatalf("unexpected workspace copy-out command: %q", command)
