@@ -77,6 +77,7 @@ is_cleanroom_zfs_stored_snapshot_ref tank/cleanroom/snapshots/imports/imported@b
 ! is_cleanroom_zfs_stored_snapshot_ref tank/cleanroom/base/runtime@base
 ! is_cleanroom_zfs_stored_snapshot_ref tank/cleanroom/sandboxes/sandbox@snap-child
 ! is_cleanroom_zfs_stored_snapshot_ref tank/cleanroom/snapshots/child@snap-child
+! is_cleanroom_zfs_stored_snapshot_ref tank/cleanroom/snapshots/imports@base
 ! is_cleanroom_zfs_stored_snapshot_ref tank/cleanroom/snapshots/imports/imported/nested@base
 
 is_cleanroom_zfs_snapshot_import_dataset tank/cleanroom/snapshots/imports/imported

@@ -138,7 +138,7 @@ is_cleanroom_zfs_stored_snapshot_ref() {
   local i
 
   for ((i = 0; i <= component_count - 3; i++)); do
-    if [[ "${components[$i]}" == "cleanroom" && "${components[$((i + 1))]}" == "snapshots" && $((component_count - i)) -eq 3 ]]; then
+    if [[ "${components[$i]}" == "cleanroom" && "${components[$((i + 1))]}" == "snapshots" && "${components[$((i + 2))]}" != "imports" && $((component_count - i)) -eq 3 ]]; then
       return 0
     fi
     if [[ "${components[$i]}" == "cleanroom" && "${components[$((i + 1))]}" == "snapshots" && "${components[$((i + 2))]}" == "imports" && $((component_count - i)) -eq 4 ]]; then
