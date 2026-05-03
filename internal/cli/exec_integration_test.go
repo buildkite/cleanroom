@@ -596,7 +596,7 @@ func TestExecIntegrationCopyOutRejectsBaselineMismatchBeforeCommand(t *testing.T
 	}
 }
 
-func TestWorkspaceCopyOutPrevalidationAllowsSyncBaselineMismatch(t *testing.T) {
+func TestWorkspaceCopyOutPrevalidationAllowsSyncToReplaceStaleBinding(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	localRoot := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
 	baseCommit := headCommit(t, localRoot)
@@ -606,12 +606,26 @@ func TestWorkspaceCopyOutPrevalidationAllowsSyncBaselineMismatch(t *testing.T) {
 	sandboxID := createWorkspaceCopyTestSandboxWithRepositoryCommitBranch(t, host, "/sandbox-workspace", baseCommit, "main")
 	client := mustNewControlClient(t, host)
 
+	if err := writeWorkspaceBinding(&workspaceBinding{
+		Version:             workspaceBindingVersion,
+		SandboxID:           sandboxID,
+		LocalRoot:           filepath.Join(localRoot, "moved"),
+		SandboxWorkspace:    "/sandbox-workspace",
+		RepositoryRemoteURL: "https://github.com/buildkite/cleanroom.git",
+		RepositoryCommitSHA: "0000000000000000000000000000000000000000",
+		Transport:           workspaceBindingTransportGit,
+		LastOperation:       "copy-in",
+		LastOperationAt:     time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatalf("write stale workspace binding: %v", err)
+	}
+
 	err := validateWorkspaceCopyOutBeforeExecution(context.Background(), &runtimeContext{
 		CWD:    localRoot,
 		Loader: repositoryNotFoundLoader{},
 	}, client, localRoot, "", sandboxID, 0, workspaceCopyFlags{Sync: true})
 	if err != nil {
-		t.Fatalf("expected --sync prevalidation to allow copy-in to establish the copy-out base, got %v", err)
+		t.Fatalf("expected --sync prevalidation to allow copy-in to replace the stale copy-out binding, got %v", err)
 	}
 }
 

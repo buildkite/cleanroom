@@ -168,6 +168,9 @@ func validateWorkspaceCopyOutBeforeExecution(callCtx context.Context, ctx *runti
 	if !copyFlags.copyOut() || strings.TrimSpace(existingSandboxID) == "" {
 		return nil
 	}
+	if copyFlags.copyIn() {
+		return nil
+	}
 	opts, err := resolveWorkspaceCopyOutOptions(ctx, cwd, chdir, existingSandboxID, false, launchSeconds)
 	if err != nil {
 		return err
@@ -175,9 +178,6 @@ func validateWorkspaceCopyOutBeforeExecution(callCtx context.Context, ctx *runti
 	checkout, err := validateWorkspaceCopyOutInputs(callCtx, client, opts)
 	if err != nil {
 		return err
-	}
-	if copyFlags.copyIn() {
-		return nil
 	}
 	return validateWorkspaceCopyOutBaselineBeforeExecution(opts, checkout)
 }
