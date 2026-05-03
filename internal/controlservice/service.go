@@ -603,6 +603,10 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 				}
 			}
 
+			if dependencyStageBootstrapEnabled && restoredDependencyResp == nil {
+				s.lookupDependencyBlockVolumePlanForCreateSandbox(ctx, adapter, backendName, compiled, repository, changeset, commitBundle, workspaceStageRuntimeBaseKey)
+			}
+
 			if restoredDependencyResp == nil {
 				emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_LOOKUP_WORKSPACE_STAGE_CACHE, "checking workspace stage cache")
 				var record cachestore.Record

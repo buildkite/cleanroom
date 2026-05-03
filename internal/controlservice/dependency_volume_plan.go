@@ -17,6 +17,8 @@ import (
 	"github.com/buildkite/cleanroom/internal/repositorybundle"
 	"github.com/buildkite/cleanroom/internal/repositorychangeset"
 	"github.com/buildkite/cleanroom/internal/repositorycheckout"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -68,6 +70,59 @@ func dependencyBlockVolumeRuntimeDecisionForAdapter(adapter backend.Adapter) dep
 		}
 	}
 	return dependencyBlockVolumeRuntimeDecision{Enabled: true}
+}
+
+func (s *Service) lookupDependencyBlockVolumePlanForCreateSandbox(
+	ctx context.Context,
+	adapter backend.Adapter,
+	backendName string,
+	compiled *policy.CompiledPolicy,
+	repository *repositorycheckout.Checkout,
+	changeset *repositorychangeset.Changeset,
+	commitBundle *repositorybundle.Bundle,
+	runtimeBaseKey string,
+) {
+	blockCount := 0
+	if compiled != nil {
+		blockCount = len(compiled.Dependencies.Blocks)
+	}
+	decision := dependencyBlockVolumeRuntimeDecisionForAdapter(adapter)
+	if !decision.Enabled {
+		s.logDependencyBlockVolumeCacheFallback(backendName, blockCount, decision.FallbackReason)
+		return
+	}
+
+	if _, err := s.cacheStoreOrErr(); err != nil {
+		s.logDependencyBlockVolumeCacheFallback(backendName, blockCount, err.Error())
+		return
+	}
+
+	plan, ok, err := s.finalizeDependencyBlockVolumePlan(ctx, compiled, repository, changeset, commitBundle, backendName, runtimeBaseKey)
+	if err != nil {
+		s.logDependencyStageWarning("resolve dependency block-volume cache keys", "", err)
+		return
+	}
+	if !ok {
+		return
+	}
+
+	err = s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.lookup_dependency_block_volume_caches", cachePhaseAttributes(
+		observability.CacheStageDependency,
+		observability.CacheOperationLookup,
+		repository,
+		attribute.String(observability.AttrBackend, backendName),
+		attribute.Int("cleanroom.cache.block_count", len(plan.Blocks)),
+	), func(ctx context.Context) error {
+		var lookupErr error
+		plan, lookupErr = s.lookupDependencyBlockVolumeCaches(ctx, backendName, compiled, plan)
+		setDependencyBlockVolumeLookupSpanAttributes(ctx, plan, lookupErr)
+		return lookupErr
+	})
+	if err != nil {
+		s.logDependencyStageWarning("lookup dependency block-volume caches", "", err)
+		return
+	}
+	s.logDependencyBlockVolumeCacheLookup(backendName, plan)
 }
 
 func (s *Service) finalizeDependencyBlockVolumePlan(
@@ -201,6 +256,58 @@ func (s *Service) lookupDependencyBlockVolumeCaches(ctx context.Context, backend
 		block.CacheRecord = record
 	}
 	return out, nil
+}
+
+func dependencyBlockVolumePlanHitMissCounts(plan dependencyBlockVolumePlan) (hits, misses int) {
+	for _, block := range plan.Blocks {
+		if block.CacheHit {
+			hits++
+			continue
+		}
+		misses++
+	}
+	return hits, misses
+}
+
+func setDependencyBlockVolumeLookupSpanAttributes(ctx context.Context, plan dependencyBlockVolumePlan, err error) {
+	hits, misses := dependencyBlockVolumePlanHitMissCounts(plan)
+	result := observability.CacheResultFailed
+	if err == nil {
+		result = observability.CacheResultMiss
+		if len(plan.Blocks) > 0 && misses == 0 {
+			result = observability.CacheResultHit
+		}
+	}
+	trace.SpanFromContext(ctx).SetAttributes(
+		attribute.String(observability.AttrCacheResult, result),
+		attribute.Int("cleanroom.cache.hit_count", hits),
+		attribute.Int("cleanroom.cache.miss_count", misses),
+	)
+}
+
+func (s *Service) logDependencyBlockVolumeCacheFallback(backendName string, blockCount int, reason string) {
+	if s == nil || s.Logger == nil {
+		return
+	}
+	s.Logger.Debug("dependency block-volume cache fallback",
+		observability.LogFieldBackend, backendName,
+		"blocks", blockCount,
+		"reason", strings.TrimSpace(reason),
+	)
+}
+
+func (s *Service) logDependencyBlockVolumeCacheLookup(backendName string, plan dependencyBlockVolumePlan) {
+	if s == nil || s.Logger == nil {
+		return
+	}
+	hits, misses := dependencyBlockVolumePlanHitMissCounts(plan)
+	s.Logger.Debug("dependency block-volume cache lookup",
+		observability.LogFieldBackend, backendName,
+		"blocks", len(plan.Blocks),
+		"hits", hits,
+		"misses", misses,
+		"reuse_namespace", plan.ReuseNamespace,
+	)
 }
 
 func dependencyBlockVolumeRecordMissReason(record cachestore.Record, backendName string, compiled *policy.CompiledPolicy, block dependencyBlockVolumeBlockPlan) string {

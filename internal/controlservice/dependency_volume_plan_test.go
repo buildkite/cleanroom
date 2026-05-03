@@ -190,6 +190,131 @@ func TestLookupDependencyBlockVolumeCachesTreatsMissingStoreAsMiss(t *testing.T)
 	}
 }
 
+func TestCreateSandboxSkipsDependencyBlockVolumeLookupWhenBackendUnsupported(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	adapter := &stubAdapter{}
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"mise.toml": "go = \"1.26.2\"\n",
+		"go.mod":    "module example.com/test\n\ngo 1.26.2\n",
+		"go.sum":    "example.com/test v0.0.0 h1:abc123\n",
+	})
+	svc := newTestService(adapter)
+	svc.RepositoryStore = mirrors
+	cacheStore := &recordingCacheStore{inner: newMemoryCacheStore()}
+	svc.CacheStore = cacheStore
+
+	if _, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy:             testRepositoryTwoDependencyBlocksPolicy(),
+		RepositoryCheckout: repositoryCheckout,
+	}); err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	if got := cacheStore.getReadyCount(dependencyVolumeStageName); got != 0 {
+		t.Fatalf("expected unsupported backend to skip dependency block-volume cache lookups, got %d", got)
+	}
+	if got, want := adapter.runCalls, 2; got != want {
+		t.Fatalf("expected aggregate repository + dependency bootstrap executions, got %d want %d", got, want)
+	}
+}
+
+func TestCreateSandboxFallsBackWhenDependencyBlockVolumeStoreMissing(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	adapter := dependencyBlockVolumeRuntimeAdapter()
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"mise.toml": "go = \"1.26.2\"\n",
+		"go.mod":    "module example.com/test\n\ngo 1.26.2\n",
+		"go.sum":    "example.com/test v0.0.0 h1:abc123\n",
+	})
+	svc := newTestService(adapter)
+	svc.RepositoryStore = mirrors
+	svc.CacheStore = nil
+
+	if _, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy:             testRepositoryTwoDependencyBlocksPolicy(),
+		RepositoryCheckout: repositoryCheckout,
+	}); err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	if got, want := adapter.runCalls, 2; got != want {
+		t.Fatalf("expected aggregate repository + dependency bootstrap executions, got %d want %d", got, want)
+	}
+}
+
+func TestCreateSandboxLooksUpDependencyBlockVolumeCaches(t *testing.T) {
+	tests := []struct {
+		name     string
+		records  int
+		wantHits int
+	}{
+		{
+			name:     "partial hit",
+			records:  1,
+			wantHits: 1,
+		},
+		{
+			name:     "all hit",
+			records:  2,
+			wantHits: 2,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("XDG_STATE_HOME", t.TempDir())
+			adapter := dependencyBlockVolumeRuntimeAdapter()
+			mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+				"mise.toml": "go = \"1.26.2\"\n",
+				"go.mod":    "module example.com/test\n\ngo 1.26.2\n",
+				"go.sum":    "example.com/test v0.0.0 h1:abc123\n",
+			})
+			svc := newTestService(adapter)
+			svc.RepositoryStore = mirrors
+			cacheStore := &recordingCacheStore{inner: newMemoryCacheStore()}
+			svc.CacheStore = cacheStore
+
+			compiled, err := policy.FromProto(testRepositoryTwoDependencyBlocksPolicy())
+			if err != nil {
+				t.Fatalf("FromProto returned error: %v", err)
+			}
+			repository := repositorycheckout.FromProto(repositoryCheckout)
+			plan, ok, err := svc.finalizeDependencyBlockVolumePlan(context.Background(), compiled, repository, nil, nil, "firecracker", "runtime-base:test")
+			if err != nil {
+				t.Fatalf("finalizeDependencyBlockVolumePlan returned error: %v", err)
+			}
+			if !ok {
+				t.Fatal("expected dependency block-volume plan")
+			}
+			for i := 0; i < tc.records; i++ {
+				if err := cacheStore.Create(context.Background(), dependencyBlockVolumeTestRecord(compiled, plan.Blocks[i])); err != nil {
+					t.Fatalf("Create dependency block-volume record %d returned error: %v", i, err)
+				}
+			}
+
+			if _, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+				Policy:             testRepositoryTwoDependencyBlocksPolicy(),
+				RepositoryCheckout: repositoryCheckout,
+			}); err != nil {
+				t.Fatalf("CreateSandbox returned error: %v", err)
+			}
+			if got, want := cacheStore.getReadyCount(dependencyVolumeStageName), len(plan.Blocks); got != want {
+				t.Fatalf("unexpected dependency block-volume lookup count: got %d want %d", got, want)
+			}
+			if got := cacheStore.getReadyHitCount(dependencyVolumeStageName); got != tc.wantHits {
+				t.Fatalf("unexpected dependency block-volume hit count: got %d want %d", got, tc.wantHits)
+			}
+			gotKeys := cacheStore.getReadyKeys(dependencyVolumeStageName)
+			for i, wantKey := range []string{plan.Blocks[0].CacheKey, plan.Blocks[1].CacheKey} {
+				if got := gotKeys[i]; got != wantKey {
+					t.Fatalf("unexpected lookup key %d: got %q want %q", i, got, wantKey)
+				}
+			}
+			if got, want := adapter.runCalls, 2; got != want {
+				t.Fatalf("expected aggregate repository + dependency bootstrap executions, got %d want %d", got, want)
+			}
+		})
+	}
+}
+
 func TestDependencyBlockVolumeRuntimeDecisionRequiresOutputVolumesAndOverlay(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -264,6 +389,84 @@ func testRepositoryTwoDependencyBlocksPolicy() *cleanroomv1.Policy {
 		},
 	}
 	return policyProto
+}
+
+func dependencyBlockVolumeRuntimeAdapter() *portDialAdapter {
+	return &portDialAdapter{capabilities: map[string]bool{
+		backend.CapabilitySandboxCacheOutputVolumes:  true,
+		backend.CapabilitySandboxOverlayWriteCapture: true,
+	}}
+}
+
+type recordingCacheStore struct {
+	inner   cacheMetadataStore
+	lookups []recordingCacheStoreLookup
+}
+
+type recordingCacheStoreLookup struct {
+	stage    string
+	cacheKey string
+	hit      bool
+}
+
+func (s *recordingCacheStore) Create(ctx context.Context, record cachestore.Record) error {
+	return s.inner.Create(ctx, record)
+}
+
+func (s *recordingCacheStore) Upsert(ctx context.Context, record cachestore.Record) error {
+	return s.inner.Upsert(ctx, record)
+}
+
+func (s *recordingCacheStore) GetReady(ctx context.Context, stage, cacheKey string) (cachestore.Record, bool, error) {
+	record, ok, err := s.inner.GetReady(ctx, stage, cacheKey)
+	s.lookups = append(s.lookups, recordingCacheStoreLookup{
+		stage:    stage,
+		cacheKey: cacheKey,
+		hit:      ok,
+	})
+	return record, ok, err
+}
+
+func (s *recordingCacheStore) Touch(ctx context.Context, stage, cacheKey string) error {
+	return s.inner.Touch(ctx, stage, cacheKey)
+}
+
+func (s *recordingCacheStore) List(ctx context.Context) ([]cachestore.Record, error) {
+	return s.inner.List(ctx)
+}
+
+func (s *recordingCacheStore) Delete(ctx context.Context, stage, cacheKey string) error {
+	return s.inner.Delete(ctx, stage, cacheKey)
+}
+
+func (s *recordingCacheStore) getReadyCount(stage string) int {
+	count := 0
+	for _, lookup := range s.lookups {
+		if lookup.stage == stage {
+			count++
+		}
+	}
+	return count
+}
+
+func (s *recordingCacheStore) getReadyHitCount(stage string) int {
+	count := 0
+	for _, lookup := range s.lookups {
+		if lookup.stage == stage && lookup.hit {
+			count++
+		}
+	}
+	return count
+}
+
+func (s *recordingCacheStore) getReadyKeys(stage string) []string {
+	keys := make([]string, 0, len(s.lookups))
+	for _, lookup := range s.lookups {
+		if lookup.stage == stage {
+			keys = append(keys, lookup.cacheKey)
+		}
+	}
+	return keys
 }
 
 func dependencyBlockVolumeTestRecord(compiled *policy.CompiledPolicy, block dependencyBlockVolumeBlockPlan) cachestore.Record {
