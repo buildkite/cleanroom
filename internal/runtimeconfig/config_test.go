@@ -64,6 +64,88 @@ backends:
 	}
 }
 
+func TestLoadParsesCachePeers(t *testing.T) {
+	cfg, err := loadConfigFromContent(t, `default_backend: firecracker
+cache:
+  peers:
+    - url: " https://cleanroom-a.internal:8989 "
+      token_env: " CLEANROOM_CACHE_PEER_TOKEN "
+    - url: ""
+      token_env: ""
+    - url: http://127.0.0.1:8989
+      token_env: CLEANROOM_LOCAL_TOKEN
+`)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if got, want := len(cfg.Cache.Peers), 2; got != want {
+		t.Fatalf("unexpected cache peer count: got %d want %d", got, want)
+	}
+	if got, want := cfg.Cache.Peers[0].URL, "https://cleanroom-a.internal:8989"; got != want {
+		t.Fatalf("unexpected first peer URL: got %q want %q", got, want)
+	}
+	if got, want := cfg.Cache.Peers[0].TokenEnv, "CLEANROOM_CACHE_PEER_TOKEN"; got != want {
+		t.Fatalf("unexpected first peer token env: got %q want %q", got, want)
+	}
+	if got, want := cfg.Cache.Peers[1].URL, "http://127.0.0.1:8989"; got != want {
+		t.Fatalf("unexpected second peer URL: got %q want %q", got, want)
+	}
+	if got, want := cfg.Cache.Peers[1].TokenEnv, "CLEANROOM_LOCAL_TOKEN"; got != want {
+		t.Fatalf("unexpected second peer token env: got %q want %q", got, want)
+	}
+}
+
+func TestLoadRejectsInvalidCachePeers(t *testing.T) {
+	tests := []struct {
+		name    string
+		peer    string
+		wantErr string
+	}{
+		{
+			name: "missing url",
+			peer: `    - token_env: CLEANROOM_CACHE_PEER_TOKEN
+`,
+			wantErr: "cache.peers[0].url is required",
+		},
+		{
+			name: "unsupported scheme",
+			peer: `    - url: ftp://cleanroom-a.internal:8989
+      token_env: CLEANROOM_CACHE_PEER_TOKEN
+`,
+			wantErr: `unsupported cache.peers[0].url scheme "ftp"`,
+		},
+		{
+			name: "missing host",
+			peer: `    - url: https:///cache-peer
+      token_env: CLEANROOM_CACHE_PEER_TOKEN
+`,
+			wantErr: "cache.peers[0].url must include a host",
+		},
+		{
+			name: "missing token env",
+			peer: `    - url: https://cleanroom-a.internal:8989
+`,
+			wantErr: "cache.peers[0].token_env is required",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := loadConfigFromContent(t, `default_backend: firecracker
+cache:
+  peers:
+`+tt.peer)
+			if err == nil {
+				t.Fatal("expected Load to reject invalid cache peer")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("expected error to contain %q, got %v", tt.wantErr, err)
+			}
+		})
+	}
+}
+
 func TestLoadSupportsDarwinVZMinimumRootFSBytes(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", tmp)
@@ -1359,4 +1441,20 @@ func TestMergeBackendConfig(t *testing.T) {
 	if got, want := darwinCfg.BinaryPath, "firecracker-bin"; got != want {
 		t.Fatalf("unexpected retained binary path: got %q want %q", got, want)
 	}
+}
+
+func loadConfigFromContent(t *testing.T, content string) (Config, error) {
+	t.Helper()
+
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	configPath := filepath.Join(tmp, "cleanroom", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, _, err := Load()
+	return cfg, err
 }

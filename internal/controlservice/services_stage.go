@@ -24,6 +24,7 @@ const (
 type servicesStagePlan struct {
 	CacheKey              string
 	ParentStageCacheKey   string
+	RuntimeBaseKey        string
 	BootstrapCommand      []string
 	BootstrapRecipeDigest string
 	KeyFiles              []string
@@ -55,6 +56,7 @@ func (s *Service) finalizeServicesStagePlan(
 	changeset *repositorychangeset.Changeset,
 	commitBundle *repositorybundle.Bundle,
 	parentStageKey string,
+	runtimeBaseKey string,
 	plan servicesStagePlan,
 ) (servicesStagePlan, bool, error) {
 	if compiled == nil || repository == nil || strings.TrimSpace(parentStageKey) == "" {
@@ -78,6 +80,7 @@ func (s *Service) finalizeServicesStagePlan(
 
 	plan.CacheKey = cacheKey
 	plan.ParentStageCacheKey = strings.TrimSpace(parentStageKey)
+	plan.RuntimeBaseKey = strings.TrimSpace(runtimeBaseKey)
 	plan.KeyFilesDigest = strings.TrimSpace(keyFilesDigest)
 	return plan, true, nil
 }
@@ -161,6 +164,7 @@ func (s *Service) maybePublishServicesStageCache(
 		return
 	}
 
+	now := s.clock().Now()
 	record := cachestore.Record{
 		CacheKey:               plan.CacheKey,
 		Stage:                  servicesStageName,
@@ -175,10 +179,11 @@ func (s *Service) maybePublishServicesStageCache(
 		ParentCacheKey:         plan.ParentStageCacheKey,
 		StorageDriver:          snapshotCfg.Snapshots.Driver,
 		StorageRef:             strings.TrimSpace(result.StorageRef),
-		CreatedAt:              s.clock().Now(),
-		LastUsedAt:             s.clock().Now(),
+		CreatedAt:              now,
+		LastUsedAt:             now,
 		ProducerVersion:        servicesStageProducerVersion,
 	}
+	populateStageCacheRecordMetadata(&record, plan.RuntimeBaseKey, result, now)
 
 	persist := store.Create
 	if replacedRecord != nil && strings.TrimSpace(replacedRecord.CacheKey) == plan.CacheKey {

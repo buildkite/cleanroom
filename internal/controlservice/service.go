@@ -414,7 +414,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 					}
 				}
 				if parentStageKey != "" {
-					servicesStagePlan, servicesStageCachingEnabled, err = s.finalizeServicesStagePlan(ctx, compiled, repository, changeset, commitBundle, parentStageKey, servicesStagePlan)
+					servicesStagePlan, servicesStageCachingEnabled, err = s.finalizeServicesStagePlan(ctx, compiled, repository, changeset, commitBundle, parentStageKey, workspaceStageRuntimeBaseKey, servicesStagePlan)
 					if err != nil {
 						servicesStageCachingEnabled = false
 						s.logServicesStageWarning("resolve services stage cache key", "", err)

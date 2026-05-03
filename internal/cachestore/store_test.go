@@ -24,6 +24,8 @@ func TestStoreCreateGetReadyListDelete(t *testing.T) {
 		State:             "ready",
 		BackingSnapshotID: "snapshot-workspace-test",
 		Backend:           "firecracker",
+		Architecture:      "arm64",
+		RuntimeBaseKey:    "runtime-base:test",
 		PolicyHash:        "policy-hash",
 		Policy: &cleanroomv1.Policy{
 			Version:        1,
@@ -45,6 +47,9 @@ func TestStoreCreateGetReadyListDelete(t *testing.T) {
 		ReuseMode:                "portable",
 		StorageRef:               "/tmp/workspace-test.ext4",
 		StorageDriver:            "file",
+		StorageSizeBytes:         12345,
+		ExclusiveSizeBytes:       2345,
+		DriverMetadata:           `{"version":1,"driver":"file"}`,
 		InputManifestDigest:      "sha256:manifest",
 		CommandDigest:            "sha256:command",
 		EnvDigest:                "sha256:env",
@@ -63,8 +68,10 @@ func TestStoreCreateGetReadyListDelete(t *testing.T) {
 			},
 		},
 		CheckoutRefreshRequired: true,
+		ImportedFromPeer:        true,
 		CreatedAt:               time.Unix(1700000000, 123).UTC(),
 		LastUsedAt:              time.Unix(1700000001, 456).UTC(),
+		LastValidatedAt:         time.Unix(1700000002, 789).UTC(),
 		ProducerVersion:         "cleanroom-test/1",
 	}
 	if err := store.Create(context.Background(), record); err != nil {
@@ -78,7 +85,7 @@ func TestStoreCreateGetReadyListDelete(t *testing.T) {
 	if !ok {
 		t.Fatal("expected stored ready cache")
 	}
-	if got.CacheKey != record.CacheKey || got.Stage != record.Stage || got.State != record.State || got.PolicyHash != record.PolicyHash || got.StorageRef != record.StorageRef || got.StorageDriver != record.StorageDriver || got.ParentCacheKey != record.ParentCacheKey || got.ReuseMode != record.ReuseMode || got.RepositoryChangesetID != record.RepositoryChangesetID || got.InputManifestDigest != record.InputManifestDigest || got.CommandDigest != record.CommandDigest || got.EnvDigest != record.EnvDigest || got.NormalizedOutputsDigest != record.NormalizedOutputsDigest || got.OutputManifestDigest != record.OutputManifestDigest || got.DependencyKeyFilesDigest != record.DependencyKeyFilesDigest || got.CheckoutRefreshRequired != record.CheckoutRefreshRequired || got.ProducerVersion != record.ProducerVersion {
+	if got.CacheKey != record.CacheKey || got.Stage != record.Stage || got.State != record.State || got.PolicyHash != record.PolicyHash || got.StorageRef != record.StorageRef || got.StorageDriver != record.StorageDriver || got.StorageSizeBytes != record.StorageSizeBytes || got.ExclusiveSizeBytes != record.ExclusiveSizeBytes || got.DriverMetadata != record.DriverMetadata || got.Architecture != record.Architecture || got.RuntimeBaseKey != record.RuntimeBaseKey || got.ParentCacheKey != record.ParentCacheKey || got.ReuseMode != record.ReuseMode || got.RepositoryChangesetID != record.RepositoryChangesetID || got.InputManifestDigest != record.InputManifestDigest || got.CommandDigest != record.CommandDigest || got.EnvDigest != record.EnvDigest || got.NormalizedOutputsDigest != record.NormalizedOutputsDigest || got.OutputManifestDigest != record.OutputManifestDigest || got.DependencyKeyFilesDigest != record.DependencyKeyFilesDigest || got.CheckoutRefreshRequired != record.CheckoutRefreshRequired || got.ImportedFromPeer != record.ImportedFromPeer || got.ProducerVersion != record.ProducerVersion {
 		t.Fatalf("unexpected cache record: %#v", got)
 	}
 	if got, want := len(got.OutputRecords), len(record.OutputRecords); got != want {
@@ -92,6 +99,9 @@ func TestStoreCreateGetReadyListDelete(t *testing.T) {
 	}
 	if !got.LastUsedAt.Equal(record.LastUsedAt) {
 		t.Fatalf("unexpected last_used_at: got %s want %s", got.LastUsedAt.Format(time.RFC3339Nano), record.LastUsedAt.Format(time.RFC3339Nano))
+	}
+	if !got.LastValidatedAt.Equal(record.LastValidatedAt) {
+		t.Fatalf("unexpected last_validated_at: got %s want %s", got.LastValidatedAt.Format(time.RFC3339Nano), record.LastValidatedAt.Format(time.RFC3339Nano))
 	}
 	if got.Policy == nil || got.Policy.GetImageRef() != record.Policy.GetImageRef() {
 		t.Fatalf("unexpected stored policy: %#v", got.Policy)

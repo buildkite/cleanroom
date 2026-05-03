@@ -23,6 +23,8 @@ type Record struct {
 	State                    string
 	BackingSnapshotID        string
 	Backend                  string
+	Architecture             string
+	RuntimeBaseKey           string
 	PolicyHash               string
 	Policy                   *cleanroomv1.Policy
 	Repository               *cleanroomv1.RepositoryCheckout
@@ -31,6 +33,9 @@ type Record struct {
 	ParentCacheKey           string
 	StorageDriver            string
 	StorageRef               string
+	StorageSizeBytes         int64
+	ExclusiveSizeBytes       int64
+	DriverMetadata           string
 	InputManifestDigest      string
 	CommandDigest            string
 	EnvDigest                string
@@ -39,8 +44,10 @@ type Record struct {
 	DependencyKeyFilesDigest string
 	OutputRecords            []OutputRecord
 	CheckoutRefreshRequired  bool
+	ImportedFromPeer         bool
 	CreatedAt                time.Time
 	LastUsedAt               time.Time
+	LastValidatedAt          time.Time
 	ProducerVersion          string
 }
 
@@ -162,6 +169,8 @@ func (s *Store) persist(ctx context.Context, record Record, replace bool) error 
 			state,
 			backing_snapshot_id,
 			backend,
+			architecture,
+			runtime_base_key,
 			policy_hash,
 			policy_proto,
 			repository_proto,
@@ -170,6 +179,9 @@ func (s *Store) persist(ctx context.Context, record Record, replace bool) error 
 			parent_cache_key,
 			storage_driver,
 			storage_ref,
+			storage_size_bytes,
+			exclusive_size_bytes,
+			driver_metadata,
 			input_manifest_digest,
 			command_digest,
 			env_digest,
@@ -178,10 +190,12 @@ func (s *Store) persist(ctx context.Context, record Record, replace bool) error 
 			dependency_key_files_digest,
 			output_records_json,
 			checkout_refresh_required,
+			imported_from_peer,
 			created_at_unix_nano,
 			last_used_at_unix_nano,
+			last_validated_at_unix_nano,
 			producer_version
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 	if replace {
 		verb = "upsert"
@@ -193,6 +207,8 @@ func (s *Store) persist(ctx context.Context, record Record, replace bool) error 
 				state,
 				backing_snapshot_id,
 				backend,
+				architecture,
+				runtime_base_key,
 				policy_hash,
 				policy_proto,
 				repository_proto,
@@ -201,6 +217,9 @@ func (s *Store) persist(ctx context.Context, record Record, replace bool) error 
 				parent_cache_key,
 				storage_driver,
 				storage_ref,
+				storage_size_bytes,
+				exclusive_size_bytes,
+				driver_metadata,
 				input_manifest_digest,
 				command_digest,
 				env_digest,
@@ -209,15 +228,19 @@ func (s *Store) persist(ctx context.Context, record Record, replace bool) error 
 				dependency_key_files_digest,
 				output_records_json,
 				checkout_refresh_required,
+				imported_from_peer,
 				created_at_unix_nano,
 				last_used_at_unix_nano,
+				last_validated_at_unix_nano,
 				producer_version
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(stage, cache_key) DO UPDATE SET
 				reuse_mode = excluded.reuse_mode,
 				state = excluded.state,
 				backing_snapshot_id = excluded.backing_snapshot_id,
 				backend = excluded.backend,
+				architecture = excluded.architecture,
+				runtime_base_key = excluded.runtime_base_key,
 				policy_hash = excluded.policy_hash,
 				policy_proto = excluded.policy_proto,
 				repository_proto = excluded.repository_proto,
@@ -226,6 +249,9 @@ func (s *Store) persist(ctx context.Context, record Record, replace bool) error 
 				parent_cache_key = excluded.parent_cache_key,
 				storage_driver = excluded.storage_driver,
 				storage_ref = excluded.storage_ref,
+				storage_size_bytes = excluded.storage_size_bytes,
+				exclusive_size_bytes = excluded.exclusive_size_bytes,
+				driver_metadata = excluded.driver_metadata,
 				input_manifest_digest = excluded.input_manifest_digest,
 				command_digest = excluded.command_digest,
 				env_digest = excluded.env_digest,
@@ -234,8 +260,10 @@ func (s *Store) persist(ctx context.Context, record Record, replace bool) error 
 				dependency_key_files_digest = excluded.dependency_key_files_digest,
 				output_records_json = excluded.output_records_json,
 				checkout_refresh_required = excluded.checkout_refresh_required,
+				imported_from_peer = excluded.imported_from_peer,
 				created_at_unix_nano = excluded.created_at_unix_nano,
 				last_used_at_unix_nano = excluded.last_used_at_unix_nano,
+				last_validated_at_unix_nano = excluded.last_validated_at_unix_nano,
 				producer_version = excluded.producer_version
 		`
 	}
@@ -247,6 +275,8 @@ func (s *Store) persist(ctx context.Context, record Record, replace bool) error 
 		record.State,
 		record.BackingSnapshotID,
 		record.Backend,
+		nullableString(record.Architecture),
+		nullableString(record.RuntimeBaseKey),
 		record.PolicyHash,
 		policyBytes,
 		repositoryBytes,
@@ -255,6 +285,9 @@ func (s *Store) persist(ctx context.Context, record Record, replace bool) error 
 		nullableString(record.ParentCacheKey),
 		record.StorageDriver,
 		record.StorageRef,
+		record.StorageSizeBytes,
+		record.ExclusiveSizeBytes,
+		nullableString(record.DriverMetadata),
 		nullableString(record.InputManifestDigest),
 		nullableString(record.CommandDigest),
 		nullableString(record.EnvDigest),
@@ -263,8 +296,10 @@ func (s *Store) persist(ctx context.Context, record Record, replace bool) error 
 		nullableString(record.DependencyKeyFilesDigest),
 		nullableBytes(outputRecordsBytes),
 		boolToInt(record.CheckoutRefreshRequired),
+		boolToInt(record.ImportedFromPeer),
 		record.CreatedAt.UTC().UnixNano(),
 		record.LastUsedAt.UTC().UnixNano(),
+		unixNanoOrZero(record.LastValidatedAt),
 		record.ProducerVersion,
 	); err != nil {
 		return fmt.Errorf("%s cache metadata %q/%q: %w", verb, record.Stage, record.CacheKey, err)
@@ -287,6 +322,8 @@ func (s *Store) GetReady(ctx context.Context, stage, cacheKey string) (Record, b
 			state,
 			backing_snapshot_id,
 			backend,
+			architecture,
+			runtime_base_key,
 			policy_hash,
 			policy_proto,
 			repository_proto,
@@ -295,6 +332,9 @@ func (s *Store) GetReady(ctx context.Context, stage, cacheKey string) (Record, b
 			parent_cache_key,
 			storage_driver,
 			storage_ref,
+			storage_size_bytes,
+			exclusive_size_bytes,
+			driver_metadata,
 			input_manifest_digest,
 			command_digest,
 			env_digest,
@@ -303,8 +343,10 @@ func (s *Store) GetReady(ctx context.Context, stage, cacheKey string) (Record, b
 			dependency_key_files_digest,
 			output_records_json,
 			checkout_refresh_required,
+			imported_from_peer,
 			created_at_unix_nano,
 			last_used_at_unix_nano,
+			last_validated_at_unix_nano,
 			producer_version
 		FROM cache_entries
 		WHERE stage = ? AND cache_key = ? AND state = 'ready'
@@ -364,6 +406,8 @@ func (s *Store) List(ctx context.Context) ([]Record, error) {
 			state,
 			backing_snapshot_id,
 			backend,
+			architecture,
+			runtime_base_key,
 			policy_hash,
 			policy_proto,
 			repository_proto,
@@ -372,6 +416,9 @@ func (s *Store) List(ctx context.Context) ([]Record, error) {
 			parent_cache_key,
 			storage_driver,
 			storage_ref,
+			storage_size_bytes,
+			exclusive_size_bytes,
+			driver_metadata,
 			input_manifest_digest,
 			command_digest,
 			env_digest,
@@ -380,8 +427,10 @@ func (s *Store) List(ctx context.Context) ([]Record, error) {
 			dependency_key_files_digest,
 			output_records_json,
 			checkout_refresh_required,
+			imported_from_peer,
 			created_at_unix_nano,
 			last_used_at_unix_nano,
+			last_validated_at_unix_nano,
 			producer_version
 		FROM cache_entries
 		ORDER BY created_at_unix_nano ASC, cache_key ASC
@@ -446,6 +495,8 @@ func (s *Store) initDB(ctx context.Context) error {
 			reuse_mode TEXT,
 			state TEXT NOT NULL,
 			backend TEXT NOT NULL,
+			architecture TEXT,
+			runtime_base_key TEXT,
 			policy_hash TEXT NOT NULL,
 			policy_proto BLOB NOT NULL,
 			repository_proto BLOB,
@@ -454,6 +505,9 @@ func (s *Store) initDB(ctx context.Context) error {
 			parent_cache_key TEXT,
 			storage_driver TEXT NOT NULL DEFAULT 'file',
 			storage_ref TEXT NOT NULL,
+			storage_size_bytes INTEGER NOT NULL DEFAULT 0,
+			exclusive_size_bytes INTEGER NOT NULL DEFAULT 0,
+			driver_metadata TEXT,
 			input_manifest_digest TEXT,
 			command_digest TEXT,
 			env_digest TEXT,
@@ -462,8 +516,10 @@ func (s *Store) initDB(ctx context.Context) error {
 			dependency_key_files_digest TEXT,
 			output_records_json BLOB,
 			checkout_refresh_required INTEGER NOT NULL DEFAULT 0,
+			imported_from_peer INTEGER NOT NULL DEFAULT 0,
 			created_at_unix_nano INTEGER NOT NULL,
 			last_used_at_unix_nano INTEGER NOT NULL,
+			last_validated_at_unix_nano INTEGER NOT NULL DEFAULT 0,
 			producer_version TEXT NOT NULL,
 			PRIMARY KEY (stage, cache_key)
 		);
@@ -475,6 +531,12 @@ func (s *Store) initDB(ctx context.Context) error {
 	}
 	if _, err := db.ExecContext(ctx, `ALTER TABLE cache_entries ADD COLUMN backing_snapshot_id TEXT NOT NULL DEFAULT ''`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
 		return fmt.Errorf("ensure cache metadata backing_snapshot_id column: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `ALTER TABLE cache_entries ADD COLUMN architecture TEXT`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		return fmt.Errorf("ensure cache metadata architecture column: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `ALTER TABLE cache_entries ADD COLUMN runtime_base_key TEXT`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		return fmt.Errorf("ensure cache metadata runtime_base_key column: %w", err)
 	}
 	if _, err := db.ExecContext(ctx, `ALTER TABLE cache_entries ADD COLUMN repository_has_changeset INTEGER NOT NULL DEFAULT 0`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
 		return fmt.Errorf("ensure cache metadata repository_has_changeset column: %w", err)
@@ -506,6 +568,21 @@ func (s *Store) initDB(ctx context.Context) error {
 	if _, err := db.ExecContext(ctx, `ALTER TABLE cache_entries ADD COLUMN output_records_json BLOB`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
 		return fmt.Errorf("ensure cache metadata output_records_json column: %w", err)
 	}
+	if _, err := db.ExecContext(ctx, `ALTER TABLE cache_entries ADD COLUMN storage_size_bytes INTEGER NOT NULL DEFAULT 0`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		return fmt.Errorf("ensure cache metadata storage_size_bytes column: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `ALTER TABLE cache_entries ADD COLUMN exclusive_size_bytes INTEGER NOT NULL DEFAULT 0`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		return fmt.Errorf("ensure cache metadata exclusive_size_bytes column: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `ALTER TABLE cache_entries ADD COLUMN driver_metadata TEXT`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		return fmt.Errorf("ensure cache metadata driver_metadata column: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `ALTER TABLE cache_entries ADD COLUMN imported_from_peer INTEGER NOT NULL DEFAULT 0`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		return fmt.Errorf("ensure cache metadata imported_from_peer column: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `ALTER TABLE cache_entries ADD COLUMN last_validated_at_unix_nano INTEGER NOT NULL DEFAULT 0`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		return fmt.Errorf("ensure cache metadata last_validated_at_unix_nano column: %w", err)
+	}
 	return nil
 }
 
@@ -520,9 +597,13 @@ func scanRecord(row recordScanner) (Record, error) {
 		repositoryBytes          []byte
 		repositoryHasChangeset   int
 		checkoutRefreshRequired  int
+		importedFromPeer         int
 		reuseMode                sql.NullString
+		architecture             sql.NullString
+		runtimeBaseKey           sql.NullString
 		repositoryChangesetID    sql.NullString
 		parentCacheKey           sql.NullString
+		driverMetadata           sql.NullString
 		inputDigest              sql.NullString
 		commandDigest            sql.NullString
 		envDigest                sql.NullString
@@ -532,6 +613,7 @@ func scanRecord(row recordScanner) (Record, error) {
 		outputRecordsBytes       []byte
 		createdAtNano            int64
 		lastUsedAtNano           int64
+		lastValidatedAtNano      int64
 	)
 	if err := row.Scan(
 		&record.CacheKey,
@@ -540,6 +622,8 @@ func scanRecord(row recordScanner) (Record, error) {
 		&record.State,
 		&record.BackingSnapshotID,
 		&record.Backend,
+		&architecture,
+		&runtimeBaseKey,
 		&record.PolicyHash,
 		&policyBytes,
 		&repositoryBytes,
@@ -548,6 +632,9 @@ func scanRecord(row recordScanner) (Record, error) {
 		&parentCacheKey,
 		&record.StorageDriver,
 		&record.StorageRef,
+		&record.StorageSizeBytes,
+		&record.ExclusiveSizeBytes,
+		&driverMetadata,
 		&inputDigest,
 		&commandDigest,
 		&envDigest,
@@ -556,8 +643,10 @@ func scanRecord(row recordScanner) (Record, error) {
 		&dependencyKeyFilesDigest,
 		&outputRecordsBytes,
 		&checkoutRefreshRequired,
+		&importedFromPeer,
 		&createdAtNano,
 		&lastUsedAtNano,
+		&lastValidatedAtNano,
 		&record.ProducerVersion,
 	); err != nil {
 		return Record{}, err
@@ -577,11 +666,20 @@ func scanRecord(row recordScanner) (Record, error) {
 	if repositoryChangesetID.Valid {
 		record.RepositoryChangesetID = repositoryChangesetID.String
 	}
+	if architecture.Valid {
+		record.Architecture = architecture.String
+	}
+	if runtimeBaseKey.Valid {
+		record.RuntimeBaseKey = runtimeBaseKey.String
+	}
 	if parentCacheKey.Valid {
 		record.ParentCacheKey = parentCacheKey.String
 	}
 	if reuseMode.Valid {
 		record.ReuseMode = reuseMode.String
+	}
+	if driverMetadata.Valid {
+		record.DriverMetadata = driverMetadata.String
 	}
 	if inputDigest.Valid {
 		record.InputManifestDigest = inputDigest.String
@@ -607,8 +705,12 @@ func scanRecord(row recordScanner) (Record, error) {
 		}
 	}
 	record.CheckoutRefreshRequired = checkoutRefreshRequired != 0
+	record.ImportedFromPeer = importedFromPeer != 0
 	record.CreatedAt = time.Unix(0, createdAtNano).UTC()
 	record.LastUsedAt = time.Unix(0, lastUsedAtNano).UTC()
+	if lastValidatedAtNano != 0 {
+		record.LastValidatedAt = time.Unix(0, lastValidatedAtNano).UTC()
+	}
 	return record, nil
 }
 
@@ -631,6 +733,13 @@ func boolToInt(value bool) int {
 		return 1
 	}
 	return 0
+}
+
+func unixNanoOrZero(value time.Time) int64 {
+	if value.IsZero() {
+		return 0
+	}
+	return value.UTC().UnixNano()
 }
 
 func defaultMetadataDBPath() (string, error) {

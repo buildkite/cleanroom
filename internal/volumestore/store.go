@@ -12,6 +12,17 @@ type Driver interface {
 	DestroySnapshot(context.Context, DestroySnapshotRequest) error
 }
 
+// SnapshotDescriber reports driver-native metadata for an immutable snapshot.
+type SnapshotDescriber interface {
+	DescribeSnapshot(context.Context, DescribeSnapshotRequest) (SnapshotDescription, error)
+}
+
+// IncrementalSnapshotTransferDriver plans native incremental snapshot exports.
+type IncrementalSnapshotTransferDriver interface {
+	SnapshotDescriber
+	PlanIncrementalSnapshotExport(context.Context, IncrementalSnapshotExportRequest) (IncrementalSnapshotExportPlan, error)
+}
+
 type EnsureBaseVolumeRequest struct {
 	BaseID       string
 	SourcePath   string
@@ -45,8 +56,49 @@ type SnapshotVolumeRequest struct {
 }
 
 type Snapshot struct {
-	Ref        string
-	StorageRef string
+	Ref                string
+	StorageRef         string
+	ParentSnapshotGUID string
+	StorageSizeBytes   int64
+	ExclusiveSizeBytes int64
+	DriverMetadata     string
+}
+
+// DescribeSnapshotRequest identifies a snapshot by its driver-native ref.
+type DescribeSnapshotRequest struct {
+	SnapshotRef        string
+	StorageRef         string
+	ParentSnapshotGUID string
+}
+
+// SnapshotDescription is the driver-neutral metadata needed to validate a
+// transfer candidate before importing it into local cache storage.
+type SnapshotDescription struct {
+	SnapshotRef        string
+	StorageRef         string
+	SnapshotGUID       string
+	ParentSnapshotGUID string
+	StorageSizeBytes   int64
+	ExclusiveSizeBytes int64
+}
+
+// IncrementalSnapshotExportRequest asks a driver to validate an incremental
+// transfer from one local snapshot to another.
+type IncrementalSnapshotExportRequest struct {
+	FromSnapshotRef  string
+	FromSnapshotGUID string
+	ToSnapshotRef    string
+	ToSnapshotGUID   string
+}
+
+// IncrementalSnapshotExportPlan describes an incremental transfer that can be
+// produced by the driver.
+type IncrementalSnapshotExportPlan struct {
+	FromSnapshotRef  string
+	FromSnapshotGUID string
+	ToSnapshotRef    string
+	ToSnapshotGUID   string
+	EstimatedBytes   int64
 }
 
 type DestroyVolumeRequest struct {

@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -2393,7 +2394,12 @@ func TestCreateSandboxPublishesWorkspaceStageCache(t *testing.T) {
 	store := newMemorySnapshotStore()
 	adapter := &stubAdapter{
 		createSnapshotFn: func(_ context.Context, req backend.SnapshotRequest) (*backend.SnapshotResult, error) {
-			return &backend.SnapshotResult{StorageRef: "/snapshots/" + req.SnapshotID + ".ext4"}, nil
+			return &backend.SnapshotResult{
+				StorageRef:         "/snapshots/" + req.SnapshotID + ".ext4",
+				StorageSizeBytes:   8192,
+				ExclusiveSizeBytes: 4096,
+				DriverMetadata:     `{"version":1,"driver":"file"}`,
+			}, nil
 		},
 	}
 	mirrors := &stubRepositoryMirrorStore{}
@@ -2448,6 +2454,21 @@ func TestCreateSandboxPublishesWorkspaceStageCache(t *testing.T) {
 	if got, want := record.ParentCacheKey, "runtime-base:test"; got != want {
 		t.Fatalf("unexpected parent cache key: got %q want %q", got, want)
 	}
+	if got, want := record.RuntimeBaseKey, "runtime-base:test"; got != want {
+		t.Fatalf("unexpected runtime base key: got %q want %q", got, want)
+	}
+	if got, want := record.Architecture, runtime.GOARCH; got != want {
+		t.Fatalf("unexpected architecture: got %q want %q", got, want)
+	}
+	if got, want := record.StorageSizeBytes, int64(8192); got != want {
+		t.Fatalf("unexpected storage size bytes: got %d want %d", got, want)
+	}
+	if got, want := record.ExclusiveSizeBytes, int64(4096); got != want {
+		t.Fatalf("unexpected exclusive size bytes: got %d want %d", got, want)
+	}
+	if got, want := record.DriverMetadata, `{"version":1,"driver":"file"}`; got != want {
+		t.Fatalf("unexpected driver metadata: got %q want %q", got, want)
+	}
 	if got, want := record.PolicyHash, compiled.Hash; got != want {
 		t.Fatalf("unexpected policy hash: got %q want %q", got, want)
 	}
@@ -2466,6 +2487,9 @@ func TestCreateSandboxPublishesWorkspaceStageCache(t *testing.T) {
 	}
 	if got, want := record.CreatedAt, publishedAt; !got.Equal(want) {
 		t.Fatalf("unexpected workspace stage created_at: got %s want %s", got.Format(time.RFC3339Nano), want.Format(time.RFC3339Nano))
+	}
+	if got, want := record.LastValidatedAt, publishedAt; !got.Equal(want) {
+		t.Fatalf("unexpected workspace stage last_validated_at: got %s want %s", got.Format(time.RFC3339Nano), want.Format(time.RFC3339Nano))
 	}
 }
 
@@ -3400,7 +3424,7 @@ func TestCreateSandboxPublishesServicesStageCacheForConfiguredServices(t *testin
 	if !ok {
 		t.Fatal("expected configured services stage plan to be enabled")
 	}
-	servicesPlan, ok, err = svc.finalizeServicesStagePlan(context.Background(), compiled, repository, nil, nil, dependencyPlan.CacheKey, servicesPlan)
+	servicesPlan, ok, err = svc.finalizeServicesStagePlan(context.Background(), compiled, repository, nil, nil, dependencyPlan.CacheKey, "runtime-base:test", servicesPlan)
 	if err != nil {
 		t.Fatalf("finalizeServicesStagePlan returned error: %v", err)
 	}

@@ -68,7 +68,10 @@ type zfsSnapshotRequest struct {
 }
 
 type zfsSnapshot struct {
-	StorageRef string
+	StorageRef         string
+	StorageSizeBytes   int64
+	ExclusiveSizeBytes int64
+	DriverMetadata     string
 }
 
 type runnerBackedHostRuntime struct {
@@ -79,6 +82,10 @@ type runnerBackedHostRuntime struct {
 
 type hostRuntimeVolumeCommandRunner struct {
 	runner privilegedCommandRunner
+}
+
+type zfsSnapshotMetadataSupporter interface {
+	supportsZFSSnapshotMetadata(context.Context) (bool, error)
 }
 
 var newHostRuntimeFn hostRuntimeFactory = newRunnerBackedHostRuntime
@@ -163,7 +170,7 @@ func (r *runnerBackedHostRuntime) ValidateZFSDatasetRoot(ctx context.Context, da
 }
 
 func (r *runnerBackedHostRuntime) PrepareZFSWritableVolume(ctx context.Context, req zfsWritableVolumeRequest) (zfsWritableVolume, error) {
-	driver, err := r.openZFSVolumeStore(r.cfg.Snapshots.ZFSDataset)
+	driver, err := r.openZFSVolumeStore(r.cfg.Snapshots.ZFSDataset, false)
 	if err != nil {
 		return zfsWritableVolume{}, err
 	}
@@ -225,7 +232,14 @@ func (r *runnerBackedHostRuntime) PrepareZFSWritableVolume(ctx context.Context, 
 }
 
 func (r *runnerBackedHostRuntime) CreateZFSSnapshot(ctx context.Context, req zfsSnapshotRequest) (zfsSnapshot, error) {
-	driver, err := r.openZFSVolumeStore(r.cfg.Snapshots.ZFSDataset)
+	metadataAvailable, metadataErr := zfsSnapshotMetadataAvailable(ctx, r.runner)
+	if metadataErr != nil {
+		metadataAvailable = false
+		if r.logger != nil {
+			r.logger.Debug("skipping zfs snapshot metadata reads", "error", metadataErr)
+		}
+	}
+	driver, err := r.openZFSVolumeStore(r.cfg.Snapshots.ZFSDataset, !metadataAvailable)
 	if err != nil {
 		return zfsSnapshot{}, err
 	}
@@ -236,11 +250,40 @@ func (r *runnerBackedHostRuntime) CreateZFSSnapshot(ctx context.Context, req zfs
 	if err != nil {
 		return zfsSnapshot{}, err
 	}
-	return zfsSnapshot{StorageRef: snapshot.StorageRef}, nil
+	if !metadataAvailable {
+		return zfsSnapshot{
+			StorageRef:         snapshot.StorageRef,
+			StorageSizeBytes:   snapshot.StorageSizeBytes,
+			ExclusiveSizeBytes: snapshot.ExclusiveSizeBytes,
+		}, nil
+	}
+	desc, err := driver.DescribeSnapshot(ctx, volumestore.DescribeSnapshotRequest{
+		StorageRef:         snapshot.StorageRef,
+		ParentSnapshotGUID: snapshot.ParentSnapshotGUID,
+	})
+	if err != nil {
+		if cleanupErr := driver.DestroySnapshot(context.Background(), volumestore.DestroySnapshotRequest{SnapshotRef: snapshot.StorageRef}); cleanupErr != nil {
+			return zfsSnapshot{}, fmt.Errorf("describe zfs snapshot metadata: %w (cleanup snapshot %q failed: %v)", err, snapshot.StorageRef, cleanupErr)
+		}
+		return zfsSnapshot{}, fmt.Errorf("describe zfs snapshot metadata: %w", err)
+	}
+	driverMetadata, err := volumestore.EncodeZFSDriverMetadata(volumestore.ZFSDriverMetadataFromDescription(desc))
+	if err != nil {
+		if cleanupErr := driver.DestroySnapshot(context.Background(), volumestore.DestroySnapshotRequest{SnapshotRef: snapshot.StorageRef}); cleanupErr != nil {
+			return zfsSnapshot{}, fmt.Errorf("%w (cleanup snapshot %q failed: %v)", err, snapshot.StorageRef, cleanupErr)
+		}
+		return zfsSnapshot{}, err
+	}
+	return zfsSnapshot{
+		StorageRef:         snapshot.StorageRef,
+		StorageSizeBytes:   snapshot.StorageSizeBytes,
+		ExclusiveSizeBytes: snapshot.ExclusiveSizeBytes,
+		DriverMetadata:     driverMetadata,
+	}, nil
 }
 
 func (r *runnerBackedHostRuntime) DestroyZFSVolume(ctx context.Context, volumeRef string) error {
-	driver, err := r.openZFSVolumeStore(r.cfg.Snapshots.ZFSDataset)
+	driver, err := r.openZFSVolumeStore(r.cfg.Snapshots.ZFSDataset, false)
 	if err != nil {
 		return err
 	}
@@ -248,18 +291,27 @@ func (r *runnerBackedHostRuntime) DestroyZFSVolume(ctx context.Context, volumeRe
 }
 
 func (r *runnerBackedHostRuntime) DestroyZFSSnapshot(ctx context.Context, snapshotRef string) error {
-	driver, err := r.openZFSVolumeStore(r.cfg.Snapshots.ZFSDataset)
+	driver, err := r.openZFSVolumeStore(r.cfg.Snapshots.ZFSDataset, false)
 	if err != nil {
 		return err
 	}
 	return driver.DestroySnapshot(ctx, volumestore.DestroySnapshotRequest{SnapshotRef: snapshotRef})
 }
 
-func (r *runnerBackedHostRuntime) openZFSVolumeStore(datasetRoot string) (*volumestore.ZFSDriver, error) {
+func (r *runnerBackedHostRuntime) openZFSVolumeStore(datasetRoot string, disableSnapshotMetadata bool) (*volumestore.ZFSDriver, error) {
 	return volumestore.NewZFSDriver(volumestore.ZFSDriverOptions{
-		DatasetRoot: datasetRoot,
-		Runner:      hostRuntimeVolumeCommandRunner{runner: r.runner},
+		DatasetRoot:             datasetRoot,
+		Runner:                  hostRuntimeVolumeCommandRunner{runner: r.runner},
+		DisableSnapshotMetadata: disableSnapshotMetadata,
 	})
+}
+
+func zfsSnapshotMetadataAvailable(ctx context.Context, runner privilegedCommandRunner) (bool, error) {
+	supporter, ok := runner.(zfsSnapshotMetadataSupporter)
+	if !ok {
+		return true, nil
+	}
+	return supporter.supportsZFSSnapshotMetadata(ctx)
 }
 
 func (r hostRuntimeVolumeCommandRunner) Run(ctx context.Context, command string, args ...string) error {

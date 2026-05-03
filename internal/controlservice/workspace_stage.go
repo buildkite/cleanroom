@@ -156,6 +156,7 @@ func (s *Service) maybePublishWorkspaceStageCache(
 		return
 	}
 
+	now := s.clock().Now()
 	record := cachestore.Record{
 		CacheKey:               cacheKey,
 		Stage:                  workspaceStageName,
@@ -170,10 +171,11 @@ func (s *Service) maybePublishWorkspaceStageCache(
 		ParentCacheKey:         strings.TrimSpace(runtimeBaseKey),
 		StorageDriver:          snapshotCfg.Snapshots.Driver,
 		StorageRef:             strings.TrimSpace(result.StorageRef),
-		CreatedAt:              s.clock().Now(),
-		LastUsedAt:             s.clock().Now(),
+		CreatedAt:              now,
+		LastUsedAt:             now,
 		ProducerVersion:        workspaceStageProducerVersion,
 	}
+	populateStageCacheRecordMetadata(&record, runtimeBaseKey, result, now)
 
 	persist := store.Create
 	if replacedRecord != nil && strings.TrimSpace(replacedRecord.CacheKey) == cacheKey {
