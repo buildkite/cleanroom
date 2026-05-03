@@ -99,8 +99,13 @@ gateway:
   oci:
     registries:
       ghcr.io: https://ghcr.io
+      public.ecr.aws: https://public.ecr.aws
       registry.internal:5000: https://registry.internal:5000
 ```
+
+The map key is the registry name used by the guest, and the value is the
+host-side upstream used by the cache. Keys are normalized as registry hosts;
+they are not arbitrary aliases.
 
 Not wired yet:
 
@@ -121,10 +126,25 @@ Current scope:
 - pull-style `GET` and `HEAD` requests only
 - mirror traffic routed to the same `docker.io` -> `registry-1.docker.io`
   upstream mapping used by `/registry/`
+- guest `dockerd` pulls for runtime-configured non-Docker-Hub registries are
+  mirrored through `/registry/<host>/` by generated Docker registry host config.
+  For example, `gateway.oci.registries.public.ecr.aws` makes guest pulls from
+  `public.ecr.aws/...` use
+  `http://gateway.cleanroom.internal:8170/registry/public.ecr.aws/...` inside
+  the guest.
+
+Policy still applies to the registry host from the map key. A sandbox must
+allow `public.ecr.aws:443` for the `public.ecr.aws` mirror path to fetch
+upstream, even though the guest talks to the Cleanroom gateway over HTTP.
+Registries that are not present in `gateway.oci.registries` are not installed
+as guest `dockerd` registry mirrors; they either use Docker's normal direct
+registry path subject to network policy, or fail when direct egress is denied.
+Configured registry host config points the registry namespace's server at the
+Cleanroom gateway, so configured non-Docker-Hub pulls do not have a direct
+upstream fallback inside `dockerd`.
 
 Not wired yet:
 
-- guest daemon rewrites for non-Docker-Hub registries
 - Docker push or other write operations through the mirror
 
 ## Go module proxy route

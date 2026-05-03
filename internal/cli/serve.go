@@ -137,10 +137,11 @@ func (s *ServeCommand) runServer(ctx *runtimeContext) error {
 	}
 
 	configureGatewayBackends(ctx.Backends, gwRegistry, gwPort, gwServer.Addr(), darwinGatewayHost, gateway.ProxyRoutes{
-		DockerHubMirror: contentCache != nil && contentCache.HasOCIHandler(),
-		RubyGems:        contentCache != nil && contentCache.HasRubyGemsHandler(),
-		GoProxy:         contentCache != nil && contentCache.HasGoProxyHandler() && contentCache.HasSumDBHandler(),
-		Fetch:           contentCache != nil && contentCache.FetchAllowsHost("dl.google.com"),
+		DockerHubMirror:       contentCache != nil && contentCache.HasOCIHandler(),
+		DockerRegistryMirrors: dockerRegistryMirrorHosts(contentCache),
+		RubyGems:              contentCache != nil && contentCache.HasRubyGemsHandler(),
+		GoProxy:               contentCache != nil && contentCache.HasGoProxyHandler() && contentCache.HasSumDBHandler(),
+		Fetch:                 contentCache != nil && contentCache.FetchAllowsHost("dl.google.com"),
 	})
 
 	if fcAdapter, ok := ctx.Backends["firecracker"].(*firecracker.Adapter); ok && fcAdapter.GatewayRegistry != nil {
@@ -270,6 +271,13 @@ func configureBackendLogging(backends map[string]backend.Adapter, logger *log.Lo
 			observability.LogFieldBackend, "firecracker",
 		)
 	}
+}
+
+func dockerRegistryMirrorHosts(contentCache *gateway.ContentCache) []string {
+	if contentCache == nil || !contentCache.HasOCIHandler() {
+		return nil
+	}
+	return contentCache.OCIMirrorHosts()
 }
 
 func configureGatewayBackends(backends map[string]backend.Adapter, gwRegistry *gateway.Registry, gwPort int, gwListenAddr, darwinGatewayHost string, routes gateway.ProxyRoutes) {

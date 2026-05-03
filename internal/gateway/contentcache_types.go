@@ -87,6 +87,7 @@ type ContentCache struct {
 	ociHandlers     map[string]ociHandlerEntry
 	buildOCIHandler ociHandlerFactory
 	resolveOCIRoute ociRouteResolver
+	ociMirrorHosts  []string
 
 	goProxy  goProxyHandlerEntry
 	sumdb    sumDBHandlerEntry
@@ -172,6 +173,17 @@ func (c *ContentCache) GitHandlerForHost(host string) (http.Handler, error) {
 // HasOCIHandler reports whether OCI caching is configured.
 func (c *ContentCache) HasOCIHandler() bool {
 	return c != nil && c.buildOCIHandler != nil
+}
+
+// OCIMirrorHosts returns the runtime-configured registry hosts that are safe to
+// expose to guest container runtimes as explicit registry mirrors.
+func (c *ContentCache) OCIMirrorHosts() []string {
+	if c == nil || len(c.ociMirrorHosts) == 0 {
+		return nil
+	}
+	out := make([]string, len(c.ociMirrorHosts))
+	copy(out, c.ociMirrorHosts)
+	return out
 }
 
 // HasGoProxyHandler reports whether Go module proxy caching is configured.

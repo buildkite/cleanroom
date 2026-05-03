@@ -73,7 +73,13 @@ func TestConfigureGatewayBackendsConfiguresDarwinVZGateway(t *testing.T) {
 		"darwin-vz":   darwinAdapter,
 	}
 
-	configureGatewayBackends(backends, gwRegistry, 8170, "0.0.0.0:8170", "192.168.64.1", gateway.ProxyRoutes{DockerHubMirror: true, RubyGems: true, GoProxy: true, Fetch: true})
+	configureGatewayBackends(backends, gwRegistry, 8170, "0.0.0.0:8170", "192.168.64.1", gateway.ProxyRoutes{
+		DockerHubMirror:       true,
+		DockerRegistryMirrors: []string{"ghcr.io"},
+		RubyGems:              true,
+		GoProxy:               true,
+		Fetch:                 true,
+	})
 
 	if fcAdapter.GatewayRegistry == nil {
 		t.Fatal("expected firecracker adapter to use the host gateway registry")
@@ -83,6 +89,9 @@ func TestConfigureGatewayBackendsConfiguresDarwinVZGateway(t *testing.T) {
 	}
 	if !fcAdapter.GatewayRoutes.DockerHubMirror {
 		t.Fatal("expected firecracker adapter to receive live docker hub mirror state")
+	}
+	if got, want := fcAdapter.GatewayRoutes.DockerRegistryMirrors, []string{"ghcr.io"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected firecracker docker registry mirrors: got %v want %v", got, want)
 	}
 	if !fcAdapter.GatewayRoutes.RubyGems {
 		t.Fatal("expected firecracker adapter to receive live rubygems route state")
@@ -104,6 +113,9 @@ func TestConfigureGatewayBackendsConfiguresDarwinVZGateway(t *testing.T) {
 	}
 	if !darwinAdapter.GatewayRoutes.DockerHubMirror {
 		t.Fatal("expected darwin-vz adapter to receive live docker hub mirror state")
+	}
+	if got, want := darwinAdapter.GatewayRoutes.DockerRegistryMirrors, []string{"ghcr.io"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected darwin-vz docker registry mirrors: got %v want %v", got, want)
 	}
 	if !darwinAdapter.GatewayRoutes.RubyGems {
 		t.Fatal("expected darwin-vz adapter to receive live rubygems route state")

@@ -236,9 +236,30 @@ if [ "$DOCKER_REQUIRED" = "1" ] && command -v dockerd >/dev/null 2>&1; then
   DOCKER_IPTABLES="$(arg_value cleanroom_service_docker_iptables || true)"
   DOCKER_MIRROR_HOST="$(arg_value cleanroom_service_docker_registry_mirror_host || true)"
   DOCKER_MIRROR_PORT="$(arg_value cleanroom_service_docker_registry_mirror_port || true)"
+  DOCKER_MIRROR_REGISTRIES="$(arg_value cleanroom_service_docker_registry_mirror_registries || true)"
   case "$DOCKER_MIRROR_PORT" in
     ''|*[!0-9]*) DOCKER_MIRROR_PORT="" ;;
   esac
+
+  if [ -n "$DOCKER_MIRROR_HOST" ] && [ -n "$DOCKER_MIRROR_PORT" ] && [ -n "$DOCKER_MIRROR_REGISTRIES" ]; then
+    old_ifs="$IFS"
+    IFS=','
+    for registry in $DOCKER_MIRROR_REGISTRIES; do
+      IFS="$old_ifs"
+      case "$registry" in
+        ''|*/*|*[[:space:]]*) ;;
+        *)
+          mirror_dir="/etc/docker/certs.d/$registry"
+          mkdir -p "$mirror_dir" 2>/dev/null || true
+          {
+            printf 'server = "http://%s:%s/registry/%s"\n' "$DOCKER_MIRROR_HOST" "$DOCKER_MIRROR_PORT" "$registry"
+          } > "$mirror_dir/hosts.toml" 2>/dev/null || true
+        ;;
+      esac
+      IFS=','
+    done
+    IFS="$old_ifs"
+  fi
 
   DOCKER_ARGS="--host=unix:///var/run/docker.sock --storage-driver=$DOCKER_STORAGE_DRIVER"
   if [ "$DOCKER_IPTABLES" = "0" ] || [ "$DOCKER_IPTABLES" = "false" ]; then
@@ -2580,7 +2601,7 @@ func dockerServiceBootArgs(compiled *policy.CompiledPolicy, cfg backend.Firecrac
 		storageDriver,
 		iptables,
 	)
-	if routes.DockerHubMirror && gatewayPort > 0 {
+	if (routes.DockerHubMirror || len(routes.DockerRegistryMirrors) > 0) && gatewayPort > 0 {
 		host := sanitizeKernelArgValue(gateway.GuestGatewayHostname)
 		if host != "" {
 			args += fmt.Sprintf(
@@ -2590,7 +2611,34 @@ func dockerServiceBootArgs(compiled *policy.CompiledPolicy, cfg backend.Firecrac
 			)
 		}
 	}
+	if len(routes.DockerRegistryMirrors) > 0 && gatewayPort > 0 {
+		if registries := sanitizeRegistryMirrorList(routes.DockerRegistryMirrors); registries != "" {
+			args += fmt.Sprintf(" cleanroom_service_docker_registry_mirror_registries=%s", registries)
+		}
+	}
 	return args
+}
+
+func sanitizeRegistryMirrorList(registries []string) string {
+	out := make([]string, 0, len(registries))
+	for _, registry := range registries {
+		registry = strings.ToLower(strings.TrimSpace(registry))
+		if registry == "" {
+			continue
+		}
+		valid := true
+		for _, r := range registry {
+			isAlphaNum := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
+			if !isAlphaNum && r != '.' && r != '-' && r != ':' {
+				valid = false
+				break
+			}
+		}
+		if valid {
+			out = append(out, registry)
+		}
+	}
+	return strings.Join(out, ",")
 }
 
 func sanitizeKernelArgValue(value string) string {

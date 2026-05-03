@@ -20,6 +20,29 @@ func registryTestScopeWithRules(rules ...policy.AllowRule) *SandboxScope {
 	}
 }
 
+func TestConfiguredOCIMirrorHostsOnlyIncludesConfiguredNonDockerHubRegistries(t *testing.T) {
+	t.Parallel()
+
+	got := configuredOCIMirrorHosts(map[string]string{
+		"ghcr.io":            "https://ghcr.io",
+		" public.ecr.aws ":   " https://public.ecr.aws ",
+		"docker.io":          "https://registry-1.docker.io",
+		"index.docker.io":    "https://registry-1.docker.io",
+		"registry.internal/": "https://registry.internal",
+		"":                   "https://example.invalid",
+	})
+
+	want := []string{"ghcr.io", "public.ecr.aws"}
+	if len(got) != len(want) {
+		t.Fatalf("unexpected mirror host count: got %v want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("unexpected mirror host at %d: got %q want %q (all: %v)", i, got[i], want[i], got)
+		}
+	}
+}
+
 func TestNewGitContentCacheHTTPClientDoesNotFollowRedirects(t *testing.T) {
 	t.Parallel()
 
