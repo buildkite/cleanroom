@@ -1482,6 +1482,387 @@ func TestWorkspaceCopyOutForceClearsStagedDivergenceFromCopyInManifestBase(t *te
 	assertNoWorkspaceCopyOutRecoveryPayload(t)
 }
 
+func TestWorkspaceCopyOutForceInvalidPatchPreservesStagedTargets(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	localRoot := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
+	baseCommit := headCommit(t, localRoot)
+	readmePath := filepath.Join(localRoot, "README.md")
+	if err := os.WriteFile(readmePath, []byte("staged divergent\n"), 0o644); err != nil {
+		t.Fatalf("write staged divergent README: %v", err)
+	}
+	runGitInDir(t, localRoot, "add", "README.md")
+	if err := os.WriteFile(readmePath, []byte("hello\n"), 0o644); err != nil {
+		t.Fatalf("restore working tree README: %v", err)
+	}
+
+	adapter := &integrationAdapter{}
+	host, _ := startIntegrationServer(t, adapter)
+	sandboxID := createWorkspaceCopyTestSandboxWithRepositoryCommitBranch(t, host, "/sandbox-workspace", baseCommit, "main")
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
+		command := strings.Join(req.Command, " ")
+		switch {
+		case strings.Contains(command, "cleanroom-copy-out-v1"):
+			if stream.OnStdout != nil {
+				stream.OnStdout(workspaceCopyOutTestPayload([]byte("M\x00README.md\x00"), []byte("not a git patch\n")))
+			}
+		default:
+			t.Fatalf("unexpected workspace copy-out command: %q", command)
+		}
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0, Message: "ok"}, nil
+	}
+
+	stdout, _ := makeStdoutCapture(t)
+	stderr, _ := makeStdoutCapture(t)
+	cmd := WorkspaceCopyOutCommand{
+		clientFlags: clientFlags{Host: host},
+		Chdir:       localRoot,
+		Force:       true,
+		SandboxID:   sandboxID,
+	}
+	err := cmd.Run(&runtimeContext{
+		CWD:           localRoot,
+		Loader:        repositoryNotFoundLoader{},
+		Config:        runtimeconfig.Config{},
+		Observability: newTestObservability(t),
+		Stdout:        stdout,
+		Stderr:        stderr,
+	})
+	if err == nil {
+		t.Fatal("expected invalid sandbox patch to fail")
+	}
+	if !strings.Contains(err.Error(), "apply sandbox workspace copy-out patch to temporary index") {
+		t.Fatalf("expected temporary index apply error, got %v", err)
+	}
+	if staged := gitOutputBytes(t, localRoot, "diff", "--cached", "--name-only", "--", "README.md"); string(staged) != "README.md\n" {
+		t.Fatalf("force copy-out should preserve staged target content on patch prep failure, got cached diff %q", staged)
+	}
+	if staged := gitOutputBytes(t, localRoot, "show", ":README.md"); string(staged) != "staged divergent\n" {
+		t.Fatalf("unexpected staged README after failed force copy-out: got %q", staged)
+	}
+	assertNoWorkspaceCopyOutRecoveryPayload(t)
+}
+
+func TestWorkspaceCopyOutForceReplacesLocalDirectoryObstacleFromCopyInManifestBase(t *testing.T) {
+	fixture := setupWorkspaceCopyOutManifestBase(t, func(localRoot string) {
+		if err := os.WriteFile(filepath.Join(localRoot, "obstacle-target"), []byte("sandbox\n"), 0o644); err != nil {
+			t.Fatalf("write sandbox obstacle target: %v", err)
+		}
+	})
+	obstacleDir := filepath.Join(fixture.localRoot, "obstacle-target")
+	if err := os.MkdirAll(obstacleDir, 0o755); err != nil {
+		t.Fatalf("create local obstacle directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(obstacleDir, "keep.txt"), []byte("local obstacle\n"), 0o644); err != nil {
+		t.Fatalf("write local obstacle file: %v", err)
+	}
+
+	stdout, _ := makeStdoutCapture(t)
+	stderr, _ := makeStdoutCapture(t)
+	cmd := WorkspaceCopyOutCommand{
+		clientFlags: clientFlags{Host: fixture.host},
+		Force:       true,
+		SandboxID:   fixture.sandboxID,
+	}
+	if err := cmd.Run(&runtimeContext{
+		CWD:           t.TempDir(),
+		Loader:        repositoryNotFoundLoader{},
+		Config:        runtimeconfig.Config{},
+		Observability: newTestObservability(t),
+		Stdout:        stdout,
+		Stderr:        stderr,
+	}); err != nil {
+		t.Fatalf("WorkspaceCopyOutCommand.Run returned error: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(fixture.localRoot, "obstacle-target"))
+	if err != nil {
+		t.Fatalf("read copied-out obstacle target: %v", err)
+	}
+	if string(got) != "sandbox\n" {
+		t.Fatalf("unexpected obstacle target content: got %q", got)
+	}
+	assertNoWorkspaceCopyOutRecoveryPayload(t)
+}
+
+func TestWorkspaceCopyOutForceReplacesIgnoredLocalDirectoryObstacleFromCopyInManifestBase(t *testing.T) {
+	fixture := setupWorkspaceCopyOutManifestBaseWithLocalMutate(t, func(localRoot string) {
+		if err := os.WriteFile(filepath.Join(localRoot, ".gitignore"), []byte("obstacle-target/keep.txt\n"), 0o644); err != nil {
+			t.Fatalf("write gitignore: %v", err)
+		}
+	}, func(localRoot string) {
+		if err := os.WriteFile(filepath.Join(localRoot, "obstacle-target"), []byte("sandbox\n"), 0o644); err != nil {
+			t.Fatalf("write sandbox obstacle target: %v", err)
+		}
+	})
+	obstacleDir := filepath.Join(fixture.localRoot, "obstacle-target")
+	if err := os.MkdirAll(obstacleDir, 0o755); err != nil {
+		t.Fatalf("create local ignored obstacle directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(obstacleDir, "keep.txt"), []byte("ignored obstacle\n"), 0o644); err != nil {
+		t.Fatalf("write local ignored obstacle file: %v", err)
+	}
+
+	stdout, _ := makeStdoutCapture(t)
+	stderr, _ := makeStdoutCapture(t)
+	cmd := WorkspaceCopyOutCommand{
+		clientFlags: clientFlags{Host: fixture.host},
+		Force:       true,
+		SandboxID:   fixture.sandboxID,
+	}
+	if err := cmd.Run(&runtimeContext{
+		CWD:           t.TempDir(),
+		Loader:        repositoryNotFoundLoader{},
+		Config:        runtimeconfig.Config{},
+		Observability: newTestObservability(t),
+		Stdout:        stdout,
+		Stderr:        stderr,
+	}); err != nil {
+		t.Fatalf("WorkspaceCopyOutCommand.Run returned error: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(fixture.localRoot, "obstacle-target"))
+	if err != nil {
+		t.Fatalf("read copied-out obstacle target: %v", err)
+	}
+	if string(got) != "sandbox\n" {
+		t.Fatalf("unexpected obstacle target content: got %q", got)
+	}
+	assertNoWorkspaceCopyOutRecoveryPayload(t)
+}
+
+func TestWorkspaceCopyOutForceDeletesLocalDirectoryObstacleFromCopyInManifestBase(t *testing.T) {
+	fixture := setupWorkspaceCopyOutManifestBase(t, func(localRoot string) {
+		if err := os.Remove(filepath.Join(localRoot, "README.md")); err != nil {
+			t.Fatalf("delete sandbox README: %v", err)
+		}
+	})
+	readmePath := filepath.Join(fixture.localRoot, "README.md")
+	if err := os.Remove(readmePath); err != nil {
+		t.Fatalf("remove local README file: %v", err)
+	}
+	if err := os.MkdirAll(readmePath, 0o755); err != nil {
+		t.Fatalf("create local README directory obstacle: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(readmePath, "keep.txt"), []byte("local obstacle\n"), 0o644); err != nil {
+		t.Fatalf("write local README obstacle file: %v", err)
+	}
+
+	stdout, stdoutText := makeStdoutCapture(t)
+	stderr, _ := makeStdoutCapture(t)
+	cmd := WorkspaceCopyOutCommand{
+		clientFlags: clientFlags{Host: fixture.host},
+		Force:       true,
+		SandboxID:   fixture.sandboxID,
+	}
+	if err := cmd.Run(&runtimeContext{
+		CWD:           t.TempDir(),
+		Loader:        repositoryNotFoundLoader{},
+		Config:        runtimeconfig.Config{},
+		Observability: newTestObservability(t),
+		Stdout:        stdout,
+		Stderr:        stderr,
+	}); err != nil {
+		t.Fatalf("WorkspaceCopyOutCommand.Run returned error: %v", err)
+	}
+	if _, err := os.Lstat(readmePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("force copy-out should delete local README directory obstacle, got err %v", err)
+	}
+	expected := "delete\t" + filepath.Join(fixture.resolvedLocalRoot, "README.md") + "\n"
+	if got := stdoutText(); got != expected {
+		t.Fatalf("unexpected copy-out output: got %q want %q", got, expected)
+	}
+	assertNoWorkspaceCopyOutRecoveryPayload(t)
+}
+
+func TestWorkspaceCopyOutForceDryRunPlansDeletedLocalDirectoryObstacleFromCopyInManifestBase(t *testing.T) {
+	fixture := setupWorkspaceCopyOutManifestBase(t, func(localRoot string) {
+		if err := os.Remove(filepath.Join(localRoot, "README.md")); err != nil {
+			t.Fatalf("delete sandbox README: %v", err)
+		}
+	})
+	readmePath := filepath.Join(fixture.localRoot, "README.md")
+	if err := os.Remove(readmePath); err != nil {
+		t.Fatalf("remove local README file: %v", err)
+	}
+	if err := os.MkdirAll(readmePath, 0o755); err != nil {
+		t.Fatalf("create local README directory obstacle: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(readmePath, "keep.txt"), []byte("local obstacle\n"), 0o644); err != nil {
+		t.Fatalf("write local README obstacle file: %v", err)
+	}
+
+	stdout, stdoutText := makeStdoutCapture(t)
+	stderr, _ := makeStdoutCapture(t)
+	cmd := WorkspaceCopyOutCommand{
+		clientFlags: clientFlags{Host: fixture.host},
+		DryRun:      true,
+		Force:       true,
+		SandboxID:   fixture.sandboxID,
+	}
+	if err := cmd.Run(&runtimeContext{
+		CWD:           t.TempDir(),
+		Loader:        repositoryNotFoundLoader{},
+		Config:        runtimeconfig.Config{},
+		Observability: newTestObservability(t),
+		Stdout:        stdout,
+		Stderr:        stderr,
+	}); err != nil {
+		t.Fatalf("WorkspaceCopyOutCommand.Run returned error: %v", err)
+	}
+	expected := "delete\t" + filepath.Join(fixture.resolvedLocalRoot, "README.md") + "\n"
+	if got := stdoutText(); got != expected {
+		t.Fatalf("unexpected dry-run copy-out output: got %q want %q", got, expected)
+	}
+	if got, err := os.ReadFile(filepath.Join(readmePath, "keep.txt")); err != nil || string(got) != "local obstacle\n" {
+		t.Fatalf("force dry-run should leave local README obstacle untouched, got %q err %v", got, err)
+	}
+	assertNoWorkspaceCopyOutRecoveryPayload(t)
+}
+
+func TestWorkspaceCopyOutForceClearsStagedParentFileObstacleFromCopyInManifestBase(t *testing.T) {
+	fixture := setupWorkspaceCopyOutManifestBase(t, func(localRoot string) {
+		if err := os.MkdirAll(filepath.Join(localRoot, "nested"), 0o755); err != nil {
+			t.Fatalf("create sandbox nested directory: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(localRoot, "nested", "file.txt"), []byte("sandbox\n"), 0o644); err != nil {
+			t.Fatalf("write sandbox nested file: %v", err)
+		}
+	})
+	parentPath := filepath.Join(fixture.localRoot, "nested")
+	if err := os.WriteFile(parentPath, []byte("staged parent obstacle\n"), 0o644); err != nil {
+		t.Fatalf("write staged parent obstacle: %v", err)
+	}
+	runGitInDir(t, fixture.localRoot, "add", "nested")
+
+	stdout, _ := makeStdoutCapture(t)
+	stderr, _ := makeStdoutCapture(t)
+	cmd := WorkspaceCopyOutCommand{
+		clientFlags: clientFlags{Host: fixture.host},
+		Force:       true,
+		SandboxID:   fixture.sandboxID,
+	}
+	if err := cmd.Run(&runtimeContext{
+		CWD:           t.TempDir(),
+		Loader:        repositoryNotFoundLoader{},
+		Config:        runtimeconfig.Config{},
+		Observability: newTestObservability(t),
+		Stdout:        stdout,
+		Stderr:        stderr,
+	}); err != nil {
+		t.Fatalf("WorkspaceCopyOutCommand.Run returned error: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(fixture.localRoot, "nested", "file.txt"))
+	if err != nil {
+		t.Fatalf("read copied-out nested file: %v", err)
+	}
+	if string(got) != "sandbox\n" {
+		t.Fatalf("unexpected nested file content: got %q", got)
+	}
+	if staged := gitOutputBytes(t, fixture.localRoot, "diff", "--cached", "--name-only", "--", "nested"); len(staged) != 0 {
+		t.Fatalf("force copy-out should clear staged parent obstacle, got cached diff %q", staged)
+	}
+	assertNoWorkspaceCopyOutRecoveryPayload(t)
+}
+
+func TestWorkspaceCopyOutForceQuarantineRestoreKeepsBackupOnFailure(t *testing.T) {
+	tempRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tempRoot, "survivor"), []byte("stashed\n"), 0o644); err != nil {
+		t.Fatalf("write quarantine survivor: %v", err)
+	}
+	q := &workspaceCopyOutForceQuarantine{
+		tempRoot: tempRoot,
+		moves: []workspaceCopyOutForceMove{{
+			path:     "obstacle-target",
+			original: filepath.Join(t.TempDir(), "obstacle-target"),
+			stashed:  filepath.Join(tempRoot, "missing"),
+		}},
+	}
+	err := q.Restore()
+	if err == nil {
+		t.Fatal("expected quarantine restore failure")
+	}
+	if !strings.Contains(err.Error(), tempRoot) {
+		t.Fatalf("expected restore error to include quarantine backup path %q, got %v", tempRoot, err)
+	}
+	if _, err := os.Stat(filepath.Join(tempRoot, "survivor")); err != nil {
+		t.Fatalf("expected failed restore to keep quarantine data: %v", err)
+	}
+}
+
+func TestWorkspaceCopyOutForceQuarantineTempDirUsesRepoRoot(t *testing.T) {
+	localRoot := t.TempDir()
+	obstacleDir := filepath.Join(localRoot, "obstacle-target")
+	if err := os.MkdirAll(obstacleDir, 0o755); err != nil {
+		t.Fatalf("create obstacle directory: %v", err)
+	}
+	q, err := quarantineGitWorkspaceCopyOutForceObstacles(localRoot, []repositorychangeset.File{{
+		Path: "obstacle-target",
+	}})
+	if err != nil {
+		t.Fatalf("quarantineGitWorkspaceCopyOutForceObstacles returned error: %v", err)
+	}
+	if q == nil {
+		t.Fatal("expected obstacle quarantine")
+	}
+	if filepath.Dir(q.tempRoot) != localRoot {
+		t.Fatalf("expected quarantine temp dir under repo root %q, got %q", localRoot, q.tempRoot)
+	}
+	if err := q.Restore(); err != nil {
+		t.Fatalf("restore quarantine: %v", err)
+	}
+	if _, err := os.Stat(obstacleDir); err != nil {
+		t.Fatalf("expected obstacle to be restored: %v", err)
+	}
+}
+
+func TestGitWorkspaceCurrentTreeOmitsForceObstaclePaths(t *testing.T) {
+	localRoot := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
+	quarantinePath := filepath.Join(localRoot, ".cleanroom-copy-out-obstacles-test")
+	if err := os.MkdirAll(quarantinePath, 0o755); err != nil {
+		t.Fatalf("create quarantine path: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(quarantinePath, "backup.txt"), []byte("backup\n"), 0o644); err != nil {
+		t.Fatalf("write quarantine backup: %v", err)
+	}
+
+	tree, err := gitWorkspaceCurrentTree(localRoot, []string{".cleanroom-copy-out-obstacles-test"})
+	if err != nil {
+		t.Fatalf("gitWorkspaceCurrentTree returned error: %v", err)
+	}
+	output, err := gitOutputRaw(localRoot, nil, "ls-tree", "-r", "--name-only", tree)
+	if err != nil {
+		t.Fatalf("inspect temporary tree: %v", err)
+	}
+	if strings.Contains(string(output), ".cleanroom-copy-out-obstacles-test") {
+		t.Fatalf("temporary local tree should omit quarantine path, got %q", output)
+	}
+}
+
+func TestWorkspaceCopyOutForceIndexSnapshotRestoresStagedObstacle(t *testing.T) {
+	localRoot := initGitRepository(t, "https://github.com/buildkite/cleanroom.git")
+	obstaclePath := filepath.Join(localRoot, "nested")
+	if err := os.WriteFile(obstaclePath, []byte("staged parent obstacle\n"), 0o644); err != nil {
+		t.Fatalf("write staged parent obstacle: %v", err)
+	}
+	runGitInDir(t, localRoot, "add", "nested")
+
+	restoreIndex, cleanupIndex, err := snapshotGitWorkspaceCopyOutForceIndex(localRoot, nil, []string{"nested"})
+	if err != nil {
+		t.Fatalf("snapshotGitWorkspaceCopyOutForceIndex returned error: %v", err)
+	}
+	defer cleanupIndex()
+	if err := resetGitWorkspaceCopyOutForceIndex(localRoot, nil, []string{"nested"}); err != nil {
+		t.Fatalf("resetGitWorkspaceCopyOutForceIndex returned error: %v", err)
+	}
+	if staged := gitOutputBytes(t, localRoot, "diff", "--cached", "--name-only", "--", "nested"); len(staged) != 0 {
+		t.Fatalf("expected staged obstacle to be reset, got cached diff %q", staged)
+	}
+	if err := restoreIndex(); err != nil {
+		t.Fatalf("restore staged force index: %v", err)
+	}
+	if staged := gitOutputBytes(t, localRoot, "show", ":nested"); string(staged) != "staged parent obstacle\n" {
+		t.Fatalf("unexpected restored staged obstacle: got %q", staged)
+	}
+}
+
 func TestWorkspaceCopyOutRejectsLocalModeDivergenceFromCopyInManifestBase(t *testing.T) {
 	fixture := setupWorkspaceCopyOutManifestBase(t, func(localRoot string) {
 		if err := os.WriteFile(filepath.Join(localRoot, "README.md"), []byte("local\nsandbox\n"), 0o644); err != nil {

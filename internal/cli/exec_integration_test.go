@@ -591,6 +591,9 @@ func TestExecIntegrationCopyOutRejectsBaselineMismatchBeforeCommand(t *testing.T
 	if !strings.Contains(outcome.err.Error(), "requires local checkout HEAD") {
 		t.Fatalf("expected baseline mismatch error, got %v", outcome.err)
 	}
+	if want := "cleanroom workspace copy-out --force " + sandboxID; !strings.Contains(outcome.err.Error(), want) {
+		t.Fatalf("expected copy-out force guidance %q, got %v", want, outcome.err)
+	}
 	if executionCalled {
 		t.Fatal("expected copy-out validation to fail before running command")
 	}
