@@ -1698,6 +1698,32 @@ func TestWorkspaceCopyOutForceQuarantineRestoreKeepsBackupOnFailure(t *testing.T
 	}
 }
 
+func TestWorkspaceCopyOutForceQuarantineTempDirUsesRepoRoot(t *testing.T) {
+	localRoot := t.TempDir()
+	obstacleDir := filepath.Join(localRoot, "obstacle-target")
+	if err := os.MkdirAll(obstacleDir, 0o755); err != nil {
+		t.Fatalf("create obstacle directory: %v", err)
+	}
+	q, err := quarantineGitWorkspaceCopyOutForceObstacles(localRoot, []repositorychangeset.File{{
+		Path: "obstacle-target",
+	}})
+	if err != nil {
+		t.Fatalf("quarantineGitWorkspaceCopyOutForceObstacles returned error: %v", err)
+	}
+	if q == nil {
+		t.Fatal("expected obstacle quarantine")
+	}
+	if filepath.Dir(q.tempRoot) != localRoot {
+		t.Fatalf("expected quarantine temp dir under repo root %q, got %q", localRoot, q.tempRoot)
+	}
+	if err := q.Restore(); err != nil {
+		t.Fatalf("restore quarantine: %v", err)
+	}
+	if _, err := os.Stat(obstacleDir); err != nil {
+		t.Fatalf("expected obstacle to be restored: %v", err)
+	}
+}
+
 func TestWorkspaceCopyOutRejectsLocalModeDivergenceFromCopyInManifestBase(t *testing.T) {
 	fixture := setupWorkspaceCopyOutManifestBase(t, func(localRoot string) {
 		if err := os.WriteFile(filepath.Join(localRoot, "README.md"), []byte("local\nsandbox\n"), 0o644); err != nil {

@@ -778,7 +778,7 @@ func quarantineGitWorkspaceCopyOutForceObstacles(localRoot string, files []repos
 	if len(candidates) == 0 {
 		return nil, nil
 	}
-	tempRoot, err := os.MkdirTemp(filepath.Dir(localRoot), ".cleanroom-copy-out-obstacles-*")
+	tempRoot, err := os.MkdirTemp(localRoot, ".cleanroom-copy-out-obstacles-*")
 	if err != nil {
 		return nil, fmt.Errorf("create forced copy-out obstacle quarantine: %w", err)
 	}
