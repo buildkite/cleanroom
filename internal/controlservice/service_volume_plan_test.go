@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/cachestore"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/observability"
@@ -442,6 +443,10 @@ func TestCreateSandboxLooksUpServiceBlockVolumesAfterDependencyStageRestore(t *t
 			t.Fatalf("Create service block-volume record %d returned error: %v", i, err)
 		}
 	}
+	lookedUpServicePlan, err := svc.lookupServiceBlockVolumeCaches(context.Background(), "firecracker", compiled, servicePlan)
+	if err != nil {
+		t.Fatalf("lookupServiceBlockVolumeCaches returned error: %v", err)
+	}
 	cacheStore.resetLookups()
 
 	secondResp, err := svc.CreateSandbox(context.Background(), req)
@@ -457,9 +462,136 @@ func TestCreateSandboxLooksUpServiceBlockVolumesAfterDependencyStageRestore(t *t
 	if got, want := cacheStore.getReadyHitCount(serviceVolumeStageName), len(servicePlan.Blocks); got != want {
 		t.Fatalf("unexpected service block-volume hit count after dependency restore: got %d want %d", got, want)
 	}
+	if got, want := adapter.provisionFromSnapshotReq.CacheOutputVolumes, serviceBlockVolumeOutputSpecsForTest(t, lookedUpServicePlan); !cacheOutputVolumeSpecsEqual(got, want) {
+		t.Fatalf("unexpected dependency-stage restore output volume specs:\ngot:  %#v\nwant: %#v", got, want)
+	}
 	if got, want := adapter.runCalls, 4; got != want {
 		t.Fatalf("expected aggregate services bootstrap to still run after dependency restore, got %d want %d", got, want)
 	}
+}
+
+func TestCreateSandboxPassesBlockVolumeSpecsToColdProvision(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	adapter := dependencyBlockVolumeRuntimeAdapter()
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"mise.toml":           "go = \"1.26.2\"\n",
+		"go.mod":              "module example.com/test\n\ngo 1.26.2\n",
+		"go.sum":              "example.com/test v0.0.0 h1:abc123\n",
+		"docker-compose.yml":  "services:\n  postgres:\n    image: postgres:17\n",
+		"db/schema.sql":       "create table widgets (id serial primary key);\n",
+		"db/seed.sql":         "insert into widgets default values;\n",
+		"scripts/prepare-db":  "#!/bin/sh\ntrue\n",
+		"scripts/prepare-app": "#!/bin/sh\ntrue\n",
+	})
+	svc := newTestService(adapter)
+	svc.RepositoryStore = mirrors
+	cacheStore := newMemoryCacheStore()
+	svc.CacheStore = cacheStore
+
+	compiled, err := policy.FromProto(testRepositoryTwoDependencyTwoServiceBlocksPolicy())
+	if err != nil {
+		t.Fatalf("FromProto returned error: %v", err)
+	}
+	repository := repositorycheckout.FromProto(repositoryCheckout)
+	dependencyPlan, ok, err := svc.finalizeDependencyBlockVolumePlan(context.Background(), compiled, repository, nil, nil, "firecracker", "runtime-base:test")
+	if err != nil {
+		t.Fatalf("finalizeDependencyBlockVolumePlan returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected dependency block-volume plan")
+	}
+	servicePlan, ok, err := svc.finalizeServiceBlockVolumePlan(context.Background(), compiled, repository, nil, nil, "firecracker", "runtime-base:test", dependencyPlan)
+	if err != nil {
+		t.Fatalf("finalizeServiceBlockVolumePlan returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected service block-volume plan")
+	}
+	if err := cacheStore.Create(context.Background(), dependencyBlockVolumeTestRecord(compiled, dependencyPlan.Blocks[0])); err != nil {
+		t.Fatalf("Create dependency block-volume record returned error: %v", err)
+	}
+	if err := cacheStore.Create(context.Background(), serviceBlockVolumeTestRecord(compiled, servicePlan.Blocks[0])); err != nil {
+		t.Fatalf("Create service block-volume record returned error: %v", err)
+	}
+	lookedUpDependencyPlan, err := svc.lookupDependencyBlockVolumeCaches(context.Background(), "firecracker", compiled, dependencyPlan)
+	if err != nil {
+		t.Fatalf("lookupDependencyBlockVolumeCaches returned error: %v", err)
+	}
+	lookedUpServicePlan, err := svc.lookupServiceBlockVolumeCaches(context.Background(), "firecracker", compiled, servicePlan)
+	if err != nil {
+		t.Fatalf("lookupServiceBlockVolumeCaches returned error: %v", err)
+	}
+
+	if _, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy:             testRepositoryTwoDependencyTwoServiceBlocksPolicy(),
+		RepositoryCheckout: repositoryCheckout,
+	}); err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+
+	dependencySpecs := dependencyBlockVolumeOutputSpecsForTest(t, lookedUpDependencyPlan)
+	serviceSpecs := serviceBlockVolumeOutputSpecsForTest(t, lookedUpServicePlan)
+	want := appendCacheOutputVolumeSpecs(dependencySpecs, serviceSpecs)
+	if got := adapter.provisionReq.CacheOutputVolumes; !cacheOutputVolumeSpecsEqual(got, want) {
+		t.Fatalf("unexpected cold provision output volume specs:\ngot:  %#v\nwant: %#v", got, want)
+	}
+	hit := requireCacheOutputVolumeSpec(t, adapter.provisionReq.CacheOutputVolumes, dependencyVolumeStageName, dependencyPlan.Blocks[0].BlockName)
+	if got, want := hit.SourceSnapshotRef, "snapshot:"+dependencyPlan.Blocks[0].BlockName; got != want {
+		t.Fatalf("unexpected dependency hit snapshot ref: got %q want %q", got, want)
+	}
+	miss := requireCacheOutputVolumeSpec(t, adapter.provisionReq.CacheOutputVolumes, serviceVolumeStageName, servicePlan.Blocks[1].BlockName)
+	if miss.StorageRef != "" || miss.SourceSnapshotRef != "" {
+		t.Fatalf("expected service miss spec without source storage, got storage=%q snapshot=%q", miss.StorageRef, miss.SourceSnapshotRef)
+	}
+}
+
+func dependencyBlockVolumeOutputSpecsForTest(t *testing.T, plan dependencyBlockVolumePlan) []backend.CacheOutputVolumeSpec {
+	t.Helper()
+	specs, err := dependencyBlockVolumeOutputSpecs(plan)
+	if err != nil {
+		t.Fatalf("dependencyBlockVolumeOutputSpecs returned error: %v", err)
+	}
+	return specs
+}
+
+func serviceBlockVolumeOutputSpecsForTest(t *testing.T, plan serviceBlockVolumePlan) []backend.CacheOutputVolumeSpec {
+	t.Helper()
+	specs, err := serviceBlockVolumeOutputSpecs(plan)
+	if err != nil {
+		t.Fatalf("serviceBlockVolumeOutputSpecs returned error: %v", err)
+	}
+	return specs
+}
+
+func cacheOutputVolumeSpecsEqual(left, right []backend.CacheOutputVolumeSpec) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i].Stage != right[i].Stage ||
+			left[i].BlockName != right[i].BlockName ||
+			left[i].CacheKey != right[i].CacheKey ||
+			left[i].VolumeID != right[i].VolumeID ||
+			left[i].SourceSnapshotRef != right[i].SourceSnapshotRef ||
+			left[i].StorageDriver != right[i].StorageDriver ||
+			left[i].StorageRef != right[i].StorageRef {
+			return false
+		}
+		if len(left[i].DirMappings) != len(right[i].DirMappings) || len(left[i].FileMappings) != len(right[i].FileMappings) {
+			return false
+		}
+		for j := range left[i].DirMappings {
+			if left[i].DirMappings[j] != right[i].DirMappings[j] {
+				return false
+			}
+		}
+		for j := range left[i].FileMappings {
+			if left[i].FileMappings[j] != right[i].FileMappings[j] {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func testRepositoryTwoDependencyTwoServiceBlocksPolicy() *cleanroomv1.Policy {
