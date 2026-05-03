@@ -24,13 +24,15 @@ type SandboxCommand struct {
 
 type SandboxCreateCommand struct {
 	clientFlags
-	Backend             string `help:"Execution backend (defaults to runtime config or host default)"`
-	From                string `name:"from" help:"Create the sandbox from an existing snapshot ID"`
-	Image               string `help:"Override sandbox image ref (tag, digest, or local Docker image)"`
-	Docker              bool   `help:"Enable the guest Docker service for this repo-agnostic sandbox"`
-	DangerouslyAllowAll bool   `name:"dangerously-allow-all" help:"Disable network egress filtering for this repo-agnostic sandbox"`
-	LaunchSeconds       int64  `help:"VM boot/guest-agent readiness timeout in seconds"`
-	JSON                bool   `help:"Print sandbox as JSON"`
+	Backend             string   `help:"Execution backend (defaults to runtime config or host default)"`
+	From                string   `name:"from" help:"Create the sandbox from an existing snapshot ID"`
+	Image               string   `help:"Override sandbox image ref (tag, digest, or local Docker image)"`
+	Docker              bool     `help:"Enable the guest Docker service for this repo-agnostic sandbox"`
+	DangerouslyAllowAll bool     `name:"dangerously-allow-all" help:"Disable network egress filtering for this repo-agnostic sandbox"`
+	Expose              []string `name:"expose" help:"Expose raw TCP as <guest-port> or <host-port>:<guest-port>"`
+	ExposeHTTPS         []string `name:"expose-https" help:"Expose HTTPS as [name:]<guest-port> under cleanroom.localhost"`
+	LaunchSeconds       int64    `help:"VM boot/guest-agent readiness timeout in seconds"`
+	JSON                bool     `help:"Print sandbox as JSON"`
 }
 
 type SandboxListCommand struct {
@@ -59,9 +61,11 @@ type CreateCommand struct {
 	Image   string `help:"Override sandbox image ref (tag, digest, or local Docker image)"`
 	repositoryOverrideFlags
 	workspaceCopyInFlags
-	DangerouslyAllowAll bool  `name:"dangerously-allow-all" help:"Disable network egress filtering for a newly created sandbox"`
-	LaunchSeconds       int64 `help:"VM boot/guest-agent readiness timeout in seconds"`
-	JSON                bool  `help:"Print sandbox as JSON"`
+	DangerouslyAllowAll bool     `name:"dangerously-allow-all" help:"Disable network egress filtering for a newly created sandbox"`
+	Expose              []string `name:"expose" help:"Expose raw TCP as <guest-port> or <host-port>:<guest-port>"`
+	ExposeHTTPS         []string `name:"expose-https" help:"Expose HTTPS as [name:]<guest-port> under cleanroom.localhost"`
+	LaunchSeconds       int64    `help:"VM boot/guest-agent readiness timeout in seconds"`
+	JSON                bool     `help:"Print sandbox as JSON"`
 }
 
 func (c *SandboxListCommand) Run(ctx *runtimeContext) error {
@@ -247,7 +251,11 @@ func (c *SandboxTerminateCommand) Run(ctx *runtimeContext) error {
 	return err
 }
 
-func runSandboxCreate(ctx *runtimeContext, connectFlags clientFlags, backend, from, imageRefOverride string, requireDockerService, dangerouslyAllowAll bool, launchSeconds int64, outputJSON bool) error {
+func runSandboxCreate(ctx *runtimeContext, connectFlags clientFlags, backend, from, imageRefOverride string, requireDockerService, dangerouslyAllowAll bool, exposureSpecs, httpsExposureSpecs []string, launchSeconds int64, outputJSON bool) error {
+	exposures, err := parseExposureFlags(exposureSpecs, httpsExposureSpecs)
+	if err != nil {
+		return err
+	}
 	resolvedHost := connectFlags.resolvedHost(ctx.Config)
 	client, err := connectFlags.connect(ctx)
 	if err != nil {
@@ -300,17 +308,19 @@ func runSandboxCreate(ctx *runtimeContext, connectFlags clientFlags, backend, fr
 	if outputJSON {
 		enc := json.NewEncoder(ctx.Stdout)
 		enc.SetIndent("", "  ")
-		return enc.Encode(sandbox)
+		if err := enc.Encode(sandbox); err != nil {
+			return err
+		}
+	} else {
+		if _, err := fmt.Fprintln(ctx.Stdout, sandboxID); err != nil {
+			return err
+		}
 	}
-
-	if _, err := fmt.Fprintln(ctx.Stdout, sandboxID); err != nil {
-		return err
-	}
-	return nil
+	return runForegroundClientExposuresWithClient(os.Stderr, client, sandboxID, exposures)
 }
 
 func (c *SandboxCreateCommand) Run(ctx *runtimeContext) error {
-	return runSandboxCreate(ctx, c.clientFlags, c.Backend, c.From, c.Image, c.Docker, c.DangerouslyAllowAll, c.LaunchSeconds, c.JSON)
+	return runSandboxCreate(ctx, c.clientFlags, c.Backend, c.From, c.Image, c.Docker, c.DangerouslyAllowAll, c.Expose, c.ExposeHTTPS, c.LaunchSeconds, c.JSON)
 }
 
 func (c *CreateCommand) Run(ctx *runtimeContext) error {
@@ -318,7 +328,11 @@ func (c *CreateCommand) Run(ctx *runtimeContext) error {
 		return err
 	}
 	if strings.TrimSpace(c.From) != "" {
-		return runSandboxCreate(ctx, c.clientFlags, c.Backend, c.From, c.Image, false, c.DangerouslyAllowAll, c.LaunchSeconds, c.JSON)
+		return runSandboxCreate(ctx, c.clientFlags, c.Backend, c.From, c.Image, false, c.DangerouslyAllowAll, c.Expose, c.ExposeHTTPS, c.LaunchSeconds, c.JSON)
+	}
+	exposures, err := parseExposureFlags(c.Expose, c.ExposeHTTPS)
+	if err != nil {
+		return err
 	}
 	host := c.resolvedHost(ctx.Config)
 	client, err := c.connect(ctx)
@@ -353,12 +367,15 @@ func (c *CreateCommand) Run(ctx *runtimeContext) error {
 	if c.JSON {
 		enc := json.NewEncoder(ctx.Stdout)
 		enc.SetIndent("", "  ")
-		return enc.Encode(sandbox)
+		if err := enc.Encode(sandbox); err != nil {
+			return err
+		}
+	} else {
+		if _, err := fmt.Fprintln(ctx.Stdout, sandboxID); err != nil {
+			return err
+		}
 	}
-	if _, err := fmt.Fprintln(ctx.Stdout, sandboxID); err != nil {
-		return err
-	}
-	return nil
+	return runForegroundClientExposuresWithClient(os.Stderr, client, sandboxID, exposures)
 }
 
 func (c *CreateCommand) validate() error {
