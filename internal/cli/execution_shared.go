@@ -199,7 +199,7 @@ func validateWorkspaceCopyOutBaselineBeforeExecution(opts workspaceCopyOptions, 
 		return errors.New("workspace copy-out requires local and sandbox repository commits")
 	}
 	if !strings.EqualFold(localCommit, sandboxCommit) {
-		return fmt.Errorf("workspace copy-out requires local checkout HEAD %s to match sandbox baseline %s", shortGitSHA(localCommit), shortGitSHA(sandboxCommit))
+		return fmt.Errorf("workspace copy-out requires local checkout HEAD %s to match sandbox baseline %s; %s", shortGitSHA(localCommit), shortGitSHA(sandboxCommit), workspaceCopyOutForceSuggestion(opts.ForceOutHint))
 	}
 	return nil
 }
