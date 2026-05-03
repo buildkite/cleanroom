@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -25,6 +26,64 @@ import (
 )
 
 const cachePeerZFSIncrementalExportPathPrefix = "/v1/cache/export/zfs-incremental/"
+
+const (
+	cachePeerLookupTimeout               = 5 * time.Second
+	cachePeerExportDialTimeout           = 5 * time.Second
+	cachePeerExportReadIdleTimeout       = 30 * time.Second
+	cachePeerExportResponseHeaderTimeout = 10 * time.Second
+)
+
+var (
+	cachePeerLookupHTTPClient = &http.Client{
+		Timeout: cachePeerLookupTimeout,
+	}
+	cachePeerExportHTTPClient = &http.Client{
+		Transport: newCachePeerExportTransport(),
+	}
+)
+
+// Export streams can be much larger than lookup RPCs, so avoid a fixed total
+// client timeout and bound setup plus idle reads instead.
+func newCachePeerExportTransport() *http.Transport {
+	dialer := &net.Dialer{
+		Timeout:   cachePeerExportDialTimeout,
+		KeepAlive: 30 * time.Second,
+	}
+	return &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			conn, err := dialer.DialContext(ctx, network, address)
+			if err != nil {
+				return nil, err
+			}
+			return &cachePeerTimeoutConn{
+				Conn:            conn,
+				readIdleTimeout: cachePeerExportReadIdleTimeout,
+			}, nil
+		},
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          100,
+		TLSHandshakeTimeout:   cachePeerExportDialTimeout,
+		ResponseHeaderTimeout: cachePeerExportResponseHeaderTimeout,
+		ExpectContinueTimeout: time.Second,
+		IdleConnTimeout:       90 * time.Second,
+	}
+}
+
+type cachePeerTimeoutConn struct {
+	net.Conn
+	readIdleTimeout time.Duration
+}
+
+func (c *cachePeerTimeoutConn) Read(p []byte) (int, error) {
+	if c.readIdleTimeout > 0 {
+		if err := c.Conn.SetReadDeadline(time.Now().Add(c.readIdleTimeout)); err != nil {
+			return 0, err
+		}
+	}
+	return c.Conn.Read(p)
+}
 
 type cachePeerImportResult struct {
 	record   cachestore.Record
@@ -330,7 +389,7 @@ func (s *Service) lookupCachePeerImportCandidates(ctx context.Context, req *clea
 		if strings.TrimSpace(peer.URL) == "" || token == "" {
 			continue
 		}
-		client := cleanroomv1connect.NewCachePeerServiceClient(http.DefaultClient, strings.TrimRight(strings.TrimSpace(peer.URL), "/"))
+		client := cleanroomv1connect.NewCachePeerServiceClient(cachePeerLookupHTTPClient, strings.TrimRight(strings.TrimSpace(peer.URL), "/"))
 		connectReq := connect.NewRequest(req)
 		connectReq.Header().Set("Authorization", "Bearer "+token)
 		resp, err := client.LookupCachePeer(ctx, connectReq)
@@ -365,7 +424,7 @@ func (s *Service) openCachePeerExport(ctx context.Context, match cachePeerCandid
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+match.token)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := cachePeerExportHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}

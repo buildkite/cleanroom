@@ -2,6 +2,7 @@ package controlservice
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
@@ -19,6 +20,62 @@ import (
 	"github.com/buildkite/cleanroom/internal/volumestore"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
+
+func TestCachePeerImportHTTPClientsHaveBoundedTimeouts(t *testing.T) {
+	if cachePeerLookupHTTPClient == http.DefaultClient {
+		t.Fatal("lookup client must not use http.DefaultClient")
+	}
+	if cachePeerLookupHTTPClient.Timeout <= 0 {
+		t.Fatal("lookup client must have a total timeout")
+	}
+
+	if cachePeerExportHTTPClient == http.DefaultClient {
+		t.Fatal("export client must not use http.DefaultClient")
+	}
+	if cachePeerExportHTTPClient.Timeout != 0 {
+		t.Fatal("export client must not set a total timeout; large streams can outlive a lookup deadline")
+	}
+	transport, ok := cachePeerExportHTTPClient.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("export client transport = %T, want *http.Transport", cachePeerExportHTTPClient.Transport)
+	}
+	if transport.DialContext == nil {
+		t.Fatal("export transport must bound dial time")
+	}
+	if cachePeerExportReadIdleTimeout <= 0 {
+		t.Fatal("export transport must bound idle body reads")
+	}
+	if transport.TLSHandshakeTimeout <= 0 {
+		t.Fatal("export transport must bound TLS handshakes")
+	}
+	if transport.ResponseHeaderTimeout <= 0 {
+		t.Fatal("export transport must bound response headers")
+	}
+	if transport.ExpectContinueTimeout <= 0 {
+		t.Fatal("export transport must bound expect-continue waits")
+	}
+}
+
+func TestCachePeerTimeoutConnReadTimesOutWhenIdle(t *testing.T) {
+	reader, writer := net.Pipe()
+	t.Cleanup(func() {
+		_ = reader.Close()
+		_ = writer.Close()
+	})
+
+	conn := &cachePeerTimeoutConn{
+		Conn:            reader,
+		readIdleTimeout: 10 * time.Millisecond,
+	}
+	start := time.Now()
+	_, err := conn.Read(make([]byte, 1))
+	if err == nil {
+		t.Fatal("expected idle read timeout")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("idle read timeout took too long: %s", elapsed)
+	}
+}
 
 func TestCreateSandboxImportsDependencyStageCacheFromPeer(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
