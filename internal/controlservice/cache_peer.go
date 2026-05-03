@@ -28,6 +28,7 @@ const (
 	cachePeerMissUnsupportedStage      = "unsupported stage"
 	cachePeerMissUnsupportedBackend    = "unsupported backend"
 	cachePeerMissUnsupportedDriver     = "unsupported storage driver"
+	cachePeerMissCacheStoreUnavailable = "cache metadata unavailable"
 	cachePeerMissRecordNotFound        = "record not found"
 	cachePeerMissParentRecordNotFound  = "parent record not found"
 	cachePeerMissRecordMismatch        = "record metadata mismatch"
@@ -241,7 +242,7 @@ func (s *Service) planCachePeerExport(ctx context.Context, lookup cachePeerLooku
 
 	store, err := s.cacheStoreOrErr()
 	if err != nil {
-		return cachePeerExportMatch{}, "", err
+		return cachePeerExportMatch{}, cachePeerMissCacheStoreUnavailable, nil
 	}
 	child, ok, err := store.GetReady(ctx, lookup.Stage, lookup.CacheKey)
 	if err != nil {

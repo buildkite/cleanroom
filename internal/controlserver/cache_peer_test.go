@@ -38,6 +38,43 @@ func TestCachePeerLookupRequiresBearerToken(t *testing.T) {
 	}
 }
 
+func TestCachePeerLookupReturnsMissWhenCacheStoreUnavailable(t *testing.T) {
+	t.Setenv("CLEANROOM_CACHE_PEER_TOKEN", "shared-secret")
+	service := newHandlerTestService(newHandlerTestAdapter())
+	service.Config.Cache = runtimeconfig.CacheConfig{
+		Peers: []runtimeconfig.CachePeerConfig{{URL: "https://peer.example", TokenEnv: "CLEANROOM_CACHE_PEER_TOKEN"}},
+	}
+	service.CacheStore = nil
+	service.CachePeerTransferDriver = &handlerCachePeerTransferDriver{payload: "zfs-stream"}
+	httpServer := httptest.NewServer(New(service, nil).Handler())
+	defer httpServer.Close()
+
+	client := cleanroomv1connect.NewCachePeerServiceClient(http.DefaultClient, httpServer.URL)
+	lookupReq := connect.NewRequest(&cleanroomv1.LookupCachePeerRequest{
+		Stage:                 "dependency",
+		CacheKey:              "dependency-child",
+		Backend:               "firecracker",
+		StorageDriver:         "zfs",
+		Architecture:          runtime.GOARCH,
+		ProducerVersion:       "cleanroom/dependency-stage-v1",
+		PolicyHash:            "policy-hash",
+		ParentStage:           "workspace",
+		ParentCacheKey:        "workspace-parent",
+		ParentZfsSnapshotGuid: "parent-guid",
+	})
+	lookupReq.Header().Set("Authorization", "Bearer shared-secret")
+	lookupResp, err := client.LookupCachePeer(context.Background(), lookupReq)
+	if err != nil {
+		t.Fatalf("LookupCachePeer returned error: %v", err)
+	}
+	if lookupResp.Msg.GetCandidate() != nil {
+		t.Fatalf("expected miss, got candidate %#v", lookupResp.Msg.GetCandidate())
+	}
+	if got, want := lookupResp.Msg.GetMissReason(), "cache metadata unavailable"; got != want {
+		t.Fatalf("unexpected miss reason: got %q want %q", got, want)
+	}
+}
+
 func TestCachePeerLookupAndExportOverHTTP(t *testing.T) {
 	t.Setenv("CLEANROOM_CACHE_PEER_TOKEN", "shared-secret")
 	store := newHandlerCacheStore()

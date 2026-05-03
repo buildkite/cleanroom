@@ -202,6 +202,23 @@ func TestLookupCachePeerMissesOnParentGUIDMismatch(t *testing.T) {
 	}
 }
 
+func TestLookupCachePeerMissesWhenCacheStoreUnavailable(t *testing.T) {
+	svc := newTestService(&stubAdapter{})
+	svc.CacheStore = nil
+	svc.CachePeerTransferDriver = &stubCachePeerTransferDriver{}
+
+	resp, err := svc.LookupCachePeer(context.Background(), dependencyCachePeerLookupRequest())
+	if err != nil {
+		t.Fatalf("LookupCachePeer returned error: %v", err)
+	}
+	if resp.GetCandidate() != nil {
+		t.Fatalf("expected miss, got candidate %#v", resp.GetCandidate())
+	}
+	if got, want := resp.GetMissReason(), cachePeerMissCacheStoreUnavailable; got != want {
+		t.Fatalf("unexpected miss reason: got %q want %q", got, want)
+	}
+}
+
 func TestLookupCachePeerMissesForIncompatibleRequests(t *testing.T) {
 	tests := []struct {
 		name   string
