@@ -182,30 +182,18 @@ func cleanInputProjectionRelativePath(value string) (string, error) {
 }
 
 func copyInputProjectionFile(sourceRoot, targetRoot, rel string) error {
-	sourcePath := filepath.Join(sourceRoot, filepath.FromSlash(rel))
 	targetPath := filepath.Join(targetRoot, filepath.FromSlash(rel))
-
-	info, err := os.Lstat(sourcePath)
-	if err != nil {
-		return fmt.Errorf("stat input projection file %s: %w", sourcePath, err)
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("input projection file %s is a symlink", sourcePath)
-	}
-	if !info.Mode().IsRegular() {
-		return fmt.Errorf("input projection file %s is not a regular file", sourcePath)
-	}
 
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
 		return fmt.Errorf("create input projection directory %s: %w", filepath.Dir(targetPath), err)
 	}
-	source, err := os.Open(sourcePath)
+	source, mode, err := openInputProjectionFile(sourceRoot, rel)
 	if err != nil {
-		return fmt.Errorf("open input projection file %s: %w", sourcePath, err)
+		return err
 	}
 	defer source.Close()
 
-	target, err := os.OpenFile(targetPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode().Perm())
+	target, err := os.OpenFile(targetPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode.Perm())
 	if err != nil {
 		return fmt.Errorf("create input projection file %s: %w", targetPath, err)
 	}
@@ -213,7 +201,7 @@ func copyInputProjectionFile(sourceRoot, targetRoot, rel string) error {
 		_ = target.Close()
 		return fmt.Errorf("copy input projection file %s: %w", rel, err)
 	}
-	if err := target.Chmod(info.Mode().Perm()); err != nil {
+	if err := target.Chmod(mode.Perm()); err != nil {
 		_ = target.Close()
 		return fmt.Errorf("chmod input projection file %s: %w", targetPath, err)
 	}
@@ -221,6 +209,60 @@ func copyInputProjectionFile(sourceRoot, targetRoot, rel string) error {
 		return fmt.Errorf("close input projection file %s: %w", targetPath, err)
 	}
 	return nil
+}
+
+func openInputProjectionFile(sourceRoot, rel string) (*os.File, os.FileMode, error) {
+	dirFD, err := unix.Open(sourceRoot, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		if errors.Is(err, unix.ELOOP) {
+			return nil, 0, fmt.Errorf("input projection source root %s is a symlink", sourceRoot)
+		}
+		return nil, 0, fmt.Errorf("open input projection source root %s: %w", sourceRoot, err)
+	}
+	defer func() {
+		if dirFD >= 0 {
+			_ = unix.Close(dirFD)
+		}
+	}()
+
+	components := strings.Split(rel, "/")
+	currentPath := sourceRoot
+	for i, component := range components {
+		currentPath = filepath.Join(currentPath, component)
+		if i < len(components)-1 {
+			nextFD, err := unix.Openat(dirFD, component, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+			if err != nil {
+				if errors.Is(err, unix.ELOOP) {
+					return nil, 0, fmt.Errorf("input projection path %s contains a symlink component", currentPath)
+				}
+				return nil, 0, fmt.Errorf("open input projection directory %s: %w", currentPath, err)
+			}
+			_ = unix.Close(dirFD)
+			dirFD = nextFD
+			continue
+		}
+
+		fileFD, err := unix.Openat(dirFD, component, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+		if err != nil {
+			if errors.Is(err, unix.ELOOP) {
+				return nil, 0, fmt.Errorf("input projection file %s is a symlink", currentPath)
+			}
+			return nil, 0, fmt.Errorf("open input projection file %s: %w", currentPath, err)
+		}
+
+		var stat unix.Stat_t
+		if err := unix.Fstat(fileFD, &stat); err != nil {
+			_ = unix.Close(fileFD)
+			return nil, 0, fmt.Errorf("stat input projection file %s: %w", currentPath, err)
+		}
+		if stat.Mode&unix.S_IFMT != unix.S_IFREG {
+			_ = unix.Close(fileFD)
+			return nil, 0, fmt.Errorf("input projection file %s is not a regular file", currentPath)
+		}
+		return os.NewFile(uintptr(fileFD), currentPath), os.FileMode(stat.Mode & 0o777), nil
+	}
+
+	return nil, 0, fmt.Errorf("input projection path %q cannot be empty", rel)
 }
 
 func normalizeInputProjectionTimes(targetRoot string) error {

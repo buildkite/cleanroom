@@ -3,6 +3,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -99,6 +100,41 @@ func TestInputProjectionRejectsSymlink(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "symlink") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestInputProjectionRejectsSymlinkedParent(t *testing.T) {
+	restoreRoot := setTestInputProjectionRoot(t)
+	sourceRoot := t.TempDir()
+	escapeRoot := t.TempDir()
+	defer restoreRoot()
+	targetRoot := filepath.Join(inputProjectionRoot, "dependency", "toolchains")
+	if err := os.WriteFile(filepath.Join(escapeRoot, "passwd"), []byte("not from workspace\n"), 0o644); err != nil {
+		t.Fatalf("write escaped file: %v", err)
+	}
+	if err := os.Symlink(escapeRoot, filepath.Join(sourceRoot, "deps")); err != nil {
+		t.Fatalf("create symlinked parent: %v", err)
+	}
+
+	_, cleanup, err := setupInputProjection(vsockexec.ExecRequest{
+		Command: []string{"true"},
+		InputProjection: &vsockexec.InputProjection{
+			SourceRoot: sourceRoot,
+			TargetRoot: targetRoot,
+			Files:      []string{"deps/passwd"},
+		},
+	})
+	if cleanup != nil {
+		defer cleanup()
+	}
+	if err == nil {
+		t.Fatal("expected symlinked parent input to fail")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(targetRoot, "deps", "passwd")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("projected escaped file unexpectedly exists: %v", err)
 	}
 }
 
