@@ -1,9 +1,11 @@
 package volumestore
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +18,8 @@ type zfsTestRunner struct {
 	origins       map[string]string
 	guids         map[string]string
 	sendEstimates map[string]int64
+	receiveErr    error
+	promoteErr    error
 }
 
 func (r *zfsTestRunner) Run(_ context.Context, command string, args ...string) error {
@@ -42,6 +46,9 @@ func (r *zfsTestRunner) Run(_ context.Context, command string, args ...string) e
 			r.origins[args[3]] = args[2]
 		}
 	case "promote":
+		if r.promoteErr != nil {
+			return r.promoteErr
+		}
 		if len(args) == 2 {
 			delete(r.origins, args[1])
 		}
@@ -117,6 +124,46 @@ func (r *zfsTestRunner) Output(_ context.Context, command string, args ...string
 		return []byte(fmt.Sprintf("incremental\t%s\t%s\nsize\t%d\n", fromRef, toRef, estimate)), nil
 	}
 	return nil, fmt.Errorf("unsupported output command: %s %s", command, strings.Join(args, " "))
+}
+
+func (r *zfsTestRunner) OutputTo(_ context.Context, dst io.Writer, command string, args ...string) error {
+	r.commands = append(r.commands, strings.Join(append([]string{command}, args...), " "))
+	if command == "zfs" && len(args) == 4 && args[0] == "send" && args[1] == "-i" {
+		fromRef := args[2]
+		toRef := args[3]
+		if !r.exists[fromRef] || !r.exists[toRef] {
+			return errors.New("could not find any snapshots to send")
+		}
+		_, err := fmt.Fprintf(dst, "stream:%s:%s", fromRef, toRef)
+		return err
+	}
+	return fmt.Errorf("unsupported output stream command: %s %s", command, strings.Join(args, " "))
+}
+
+func (r *zfsTestRunner) InputFrom(_ context.Context, src io.Reader, command string, args ...string) error {
+	r.commands = append(r.commands, strings.Join(append([]string{command}, args...), " "))
+	if command != "zfs" || len(args) != 4 || args[0] != "receive" || args[1] != "-u" || args[2] != "-F" {
+		return fmt.Errorf("unsupported input stream command: %s %s", command, strings.Join(args, " "))
+	}
+	if r.receiveErr != nil {
+		return r.receiveErr
+	}
+	dataset := args[3]
+	if !r.exists[dataset] {
+		return errors.New("cannot receive into missing dataset")
+	}
+	if _, err := io.ReadAll(src); err != nil {
+		return err
+	}
+	snapshotRef := dataset + "@base"
+	r.exists[snapshotRef] = true
+	if r.guids == nil {
+		r.guids = map[string]string{}
+	}
+	if strings.TrimSpace(r.guids[snapshotRef]) == "" {
+		r.guids[snapshotRef] = "guid-" + strings.ReplaceAll(snapshotRef, "/", "-")
+	}
+	return nil
 }
 
 func TestZFSDriverEnsureBaseVolumeAndCloneLifecycle(t *testing.T) {
@@ -414,6 +461,200 @@ func TestZFSDriverPlansIncrementalSnapshotExport(t *testing.T) {
 	}
 }
 
+func TestZFSDriverExportsIncrementalSnapshotStream(t *testing.T) {
+	fromRef := "tank/cleanroom/snapshots/parent@base"
+	toRef := "tank/cleanroom/snapshots/child@base"
+	runner := &zfsTestRunner{
+		exists: map[string]bool{
+			fromRef: true,
+			toRef:   true,
+		},
+		guids: map[string]string{
+			fromRef: "parent-guid",
+			toRef:   "child-guid",
+		},
+		sendEstimates: map[string]int64{
+			fromRef + "\x00" + toRef: 4096,
+		},
+	}
+	driver, err := NewZFSDriver(ZFSDriverOptions{
+		DatasetRoot: "tank/cleanroom",
+		Runner:      runner,
+	})
+	if err != nil {
+		t.Fatalf("NewZFSDriver returned error: %v", err)
+	}
+
+	var stream bytes.Buffer
+	err = driver.ExportIncrementalSnapshot(context.Background(), IncrementalSnapshotExportPlan{
+		FromSnapshotRef:  fromRef,
+		FromSnapshotGUID: "parent-guid",
+		ToSnapshotRef:    toRef,
+		ToSnapshotGUID:   "child-guid",
+	}, &stream)
+	if err != nil {
+		t.Fatalf("ExportIncrementalSnapshot returned error: %v", err)
+	}
+	if got, want := stream.String(), "stream:"+fromRef+":"+toRef; got != want {
+		t.Fatalf("unexpected stream: got %q want %q", got, want)
+	}
+
+	wantCommands := []string{
+		"zfs get -H -o value guid " + fromRef,
+		"zfs get -H -o value guid " + toRef,
+		"zfs send -nP -i " + fromRef + " " + toRef,
+		"zfs send -i " + fromRef + " " + toRef,
+	}
+	if got, want := runner.commands, wantCommands; strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("unexpected zfs commands:\n got: %v\nwant: %v", got, want)
+	}
+}
+
+func TestZFSDriverImportsIncrementalSnapshotStream(t *testing.T) {
+	parentRef := "tank/cleanroom/snapshots/parent@base"
+	importedRef := "tank/cleanroom/snapshots/imports/imported@base"
+	runner := &zfsTestRunner{
+		exists: map[string]bool{
+			parentRef: true,
+		},
+		guids: map[string]string{
+			parentRef:   "parent-guid",
+			importedRef: "child-guid",
+		},
+	}
+	driver, err := NewZFSDriver(ZFSDriverOptions{
+		DatasetRoot: "tank/cleanroom",
+		Runner:      runner,
+	})
+	if err != nil {
+		t.Fatalf("NewZFSDriver returned error: %v", err)
+	}
+
+	snapshot, err := driver.ImportIncrementalSnapshot(context.Background(), IncrementalSnapshotImportRequest{
+		SnapshotID:           "imported",
+		ParentSnapshotRef:    parentRef,
+		ParentSnapshotGUID:   "parent-guid",
+		ExpectedSnapshotGUID: "child-guid",
+	}, strings.NewReader("stream-bytes"))
+	if err != nil {
+		t.Fatalf("ImportIncrementalSnapshot returned error: %v", err)
+	}
+	if got, want := snapshot.StorageRef, importedRef; got != want {
+		t.Fatalf("unexpected storage ref: got %q want %q", got, want)
+	}
+	if got, want := snapshot.ParentSnapshotGUID, "parent-guid"; got != want {
+		t.Fatalf("unexpected parent guid: got %q want %q", got, want)
+	}
+	if !strings.Contains(snapshot.DriverMetadata, `"zfs_snapshot_guid":"child-guid"`) {
+		t.Fatalf("expected driver metadata to contain child guid, got %s", snapshot.DriverMetadata)
+	}
+
+	wantCommands := []string{
+		"zfs get -H -o value guid " + parentRef,
+		"zfs list -H -o name tank/cleanroom/snapshots/imports/imported",
+		"zfs clone -p " + parentRef + " tank/cleanroom/snapshots/imports/imported",
+		"zfs receive -u -F tank/cleanroom/snapshots/imports/imported",
+		"zfs promote tank/cleanroom/snapshots/imports/imported",
+		"zfs get -H -o value guid " + importedRef,
+	}
+	if got, want := runner.commands, wantCommands; strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("unexpected zfs commands:\n got: %v\nwant: %v", got, want)
+	}
+}
+
+func TestZFSDriverCleansUpFailedIncrementalImport(t *testing.T) {
+	parentRef := "tank/cleanroom/snapshots/parent@base"
+	runner := &zfsTestRunner{
+		exists: map[string]bool{
+			parentRef: true,
+		},
+		guids: map[string]string{
+			parentRef: "parent-guid",
+		},
+		receiveErr: errors.New("receive failed"),
+	}
+	driver, err := NewZFSDriver(ZFSDriverOptions{
+		DatasetRoot: "tank/cleanroom",
+		Runner:      runner,
+	})
+	if err != nil {
+		t.Fatalf("NewZFSDriver returned error: %v", err)
+	}
+
+	_, err = driver.ImportIncrementalSnapshot(context.Background(), IncrementalSnapshotImportRequest{
+		SnapshotID:         "imported",
+		ParentSnapshotRef:  parentRef,
+		ParentSnapshotGUID: "parent-guid",
+	}, strings.NewReader("stream-bytes"))
+	if err == nil {
+		t.Fatal("expected ImportIncrementalSnapshot to fail")
+	}
+	if !strings.Contains(err.Error(), "receive zfs incremental snapshot") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if runner.exists["tank/cleanroom/snapshots/imports/imported"] || runner.exists["tank/cleanroom/snapshots/imports/imported@base"] {
+		t.Fatalf("expected failed import dataset to be destroyed, refs: %v", runner.exists)
+	}
+
+	wantCommands := []string{
+		"zfs get -H -o value guid " + parentRef,
+		"zfs list -H -o name tank/cleanroom/snapshots/imports/imported",
+		"zfs clone -p " + parentRef + " tank/cleanroom/snapshots/imports/imported",
+		"zfs receive -u -F tank/cleanroom/snapshots/imports/imported",
+		"zfs destroy -r tank/cleanroom/snapshots/imports/imported",
+	}
+	if got, want := runner.commands, wantCommands; strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("unexpected zfs commands:\n got: %v\nwant: %v", got, want)
+	}
+}
+
+func TestZFSDriverCleansUpFailedIncrementalImportPromote(t *testing.T) {
+	parentRef := "tank/cleanroom/snapshots/parent@base"
+	runner := &zfsTestRunner{
+		exists: map[string]bool{
+			parentRef: true,
+		},
+		guids: map[string]string{
+			parentRef: "parent-guid",
+		},
+		promoteErr: errors.New("promote failed"),
+	}
+	driver, err := NewZFSDriver(ZFSDriverOptions{
+		DatasetRoot: "tank/cleanroom",
+		Runner:      runner,
+	})
+	if err != nil {
+		t.Fatalf("NewZFSDriver returned error: %v", err)
+	}
+
+	_, err = driver.ImportIncrementalSnapshot(context.Background(), IncrementalSnapshotImportRequest{
+		SnapshotID:         "imported",
+		ParentSnapshotRef:  parentRef,
+		ParentSnapshotGUID: "parent-guid",
+	}, strings.NewReader("stream-bytes"))
+	if err == nil {
+		t.Fatal("expected ImportIncrementalSnapshot to fail")
+	}
+	if !strings.Contains(err.Error(), "promote imported zfs dataset") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if runner.exists["tank/cleanroom/snapshots/imports/imported"] || runner.exists["tank/cleanroom/snapshots/imports/imported@base"] {
+		t.Fatalf("expected failed import dataset to be destroyed, refs: %v", runner.exists)
+	}
+
+	wantCommands := []string{
+		"zfs get -H -o value guid " + parentRef,
+		"zfs list -H -o name tank/cleanroom/snapshots/imports/imported",
+		"zfs clone -p " + parentRef + " tank/cleanroom/snapshots/imports/imported",
+		"zfs receive -u -F tank/cleanroom/snapshots/imports/imported",
+		"zfs promote tank/cleanroom/snapshots/imports/imported",
+		"zfs destroy -r tank/cleanroom/snapshots/imports/imported",
+	}
+	if got, want := runner.commands, wantCommands; strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("unexpected zfs commands:\n got: %v\nwant: %v", got, want)
+	}
+}
+
 func TestZFSDriverRejectsIncrementalExportParentGUIDMismatch(t *testing.T) {
 	fromRef := "tank/cleanroom/snapshots/parent@base"
 	toRef := "tank/cleanroom/snapshots/child@base"
@@ -530,6 +771,8 @@ func TestZFSDatasetRootFromManagedRef(t *testing.T) {
 		"tank/cleanroom/base/runtime-key@base":                  "tank/cleanroom",
 		"tank/cleanroom/sandboxes/sandbox-1":                    "tank/cleanroom",
 		"tank/cleanroom/snapshots/golden@base":                  "tank/cleanroom",
+		"tank/cleanroom/snapshots/imports/imported@base":        "tank/cleanroom",
+		"tank/cleanroom/snapshots/imports/imported":             "tank/cleanroom",
 		"tank/cleanroom/sandboxes/source@snap-golden":           "tank/cleanroom",
 		"tank/snapshots/cleanroom/sandboxes/sandbox-1":          "tank/snapshots/cleanroom",
 		"tank/base/cleanroom/snapshots/golden@base":             "tank/base/cleanroom",

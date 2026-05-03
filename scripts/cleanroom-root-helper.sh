@@ -12,7 +12,7 @@ set -euo pipefail
 # - Helper updates must land on hosts before branches that depend on new capabilities can pass.
 
 helper_contract_version() {
-  echo "8"
+  echo "9"
 }
 
 helper_has_zfs() {
@@ -30,6 +30,7 @@ EOF
   if helper_has_zfs; then
     echo "firecracker-zfs"
     echo "firecracker-zfs-metadata"
+    echo "firecracker-zfs-transfer"
   fi
 }
 
@@ -121,6 +122,47 @@ is_cleanroom_zfs_snapshot_ref() {
   local v="$1"
   is_zfs_snapshot_ref "$v" || return 1
   contains_cleanroom_zfs_namespace "$v"
+}
+
+is_cleanroom_zfs_stored_snapshot_ref() {
+  local v="$1"
+  is_cleanroom_zfs_snapshot_ref "$v" || return 1
+
+  local dataset="${v%@*}"
+  local snapshot_name="${v##*@}"
+  [[ "$snapshot_name" == "base" ]] || return 1
+
+  local IFS='/'
+  read -r -a components <<<"$dataset"
+  local component_count="${#components[@]}"
+  local i
+
+  for ((i = 0; i <= component_count - 3; i++)); do
+    if [[ "${components[$i]}" == "cleanroom" && "${components[$((i + 1))]}" == "snapshots" && "${components[$((i + 2))]}" != "imports" && $((component_count - i)) -eq 3 ]]; then
+      return 0
+    fi
+    if [[ "${components[$i]}" == "cleanroom" && "${components[$((i + 1))]}" == "snapshots" && "${components[$((i + 2))]}" == "imports" && $((component_count - i)) -eq 4 ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+is_cleanroom_zfs_snapshot_import_dataset() {
+  local v="$1"
+  is_cleanroom_zfs_dataset "$v" || return 1
+
+  local IFS='/'
+  read -r -a components <<<"$v"
+  local component_count="${#components[@]}"
+  local i
+
+  for ((i = 0; i <= component_count - 4; i++)); do
+    if [[ "${components[$i]}" == "cleanroom" && "${components[$((i + 1))]}" == "snapshots" && "${components[$((i + 2))]}" == "imports" && $((component_count - i)) -eq 4 ]]; then
+      return 0
+    fi
+  done
+  return 1
 }
 
 is_zvol_device_path() {
@@ -399,7 +441,18 @@ run_zfs() {
 
   if [[ "$#" -eq 5 && "$1" == "send" && "$2" == "-nP" && "$3" == "-i" ]]; then
     is_cleanroom_zfs_snapshot_ref "$4" || die "zfs send: unsupported parent snapshot '$4'"
-    is_cleanroom_zfs_snapshot_ref "$5" || die "zfs send: unsupported child snapshot '$5'"
+    is_cleanroom_zfs_stored_snapshot_ref "$5" || die "zfs send: unsupported child snapshot '$5'"
+    exec "$bin" "$@"
+  fi
+
+  if [[ "$#" -eq 4 && "$1" == "send" && "$2" == "-i" ]]; then
+    is_cleanroom_zfs_snapshot_ref "$3" || die "zfs send: unsupported parent snapshot '$3'"
+    is_cleanroom_zfs_stored_snapshot_ref "$4" || die "zfs send: unsupported child snapshot '$4'"
+    exec "$bin" "$@"
+  fi
+
+  if [[ "$#" -eq 4 && "$1" == "receive" && "$2" == "-u" && "$3" == "-F" ]]; then
+    is_cleanroom_zfs_snapshot_import_dataset "$4" || die "zfs receive: unsupported dataset '$4'"
     exec "$bin" "$@"
   fi
 
