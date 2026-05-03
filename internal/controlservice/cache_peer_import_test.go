@@ -501,6 +501,143 @@ func TestCreateSandboxImportsServicesStageCacheFromPeer(t *testing.T) {
 	}
 }
 
+func TestCreateSandboxImportsServicesStageAfterDependencyPeerImport(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("CLEANROOM_CACHE_PEER_TOKEN", "receiver-token")
+
+	adapter := &stubAdapter{}
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"go.mod":             "module example.com/test\n\ngo 1.26.2\n",
+		"go.sum":             "example.com/test v0.0.0 h1:abc123\n",
+		"docker-compose.yml": "services:\n  postgres:\n    image: postgres:17\n",
+	})
+	svc := newTestService(adapter)
+	svc.RepositoryStore = mirrors
+	svc.Config.Backends.Firecracker.Snapshots.Driver = "zfs"
+
+	compiled, err := policy.FromProto(testRepositoryDependencyAndServicesPolicy())
+	if err != nil {
+		t.Fatalf("FromProto returned error: %v", err)
+	}
+	repository := repositorycheckout.FromProto(repositoryCheckout)
+	workspaceKey := workspaceStageCacheKey("firecracker", "runtime-base:test", compiled.Hash, repository, nil)
+	dependencyPlan, ok := dependencyStagePlanForRepository(compiled, repository)
+	if !ok {
+		t.Fatal("expected dependency stage plan")
+	}
+	dependencyPlan, ok, err = svc.finalizeDependencyStagePlan(context.Background(), compiled, repository, nil, nil, "firecracker", workspaceKey, "runtime-base:test", dependencyPlan)
+	if err != nil {
+		t.Fatalf("finalizeDependencyStagePlan returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected finalized dependency stage plan")
+	}
+	servicesPlan, ok := servicesStagePlanForRepository(compiled, repository)
+	if !ok {
+		t.Fatal("expected services stage plan")
+	}
+	servicesPlan, ok, err = svc.finalizeServicesStagePlan(context.Background(), compiled, repository, nil, nil, dependencyPlan.CacheKey, "runtime-base:test", servicesPlan)
+	if err != nil {
+		t.Fatalf("finalizeServicesStagePlan returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected finalized services stage plan")
+	}
+
+	cacheStore := requireMemoryCacheStore(t, svc)
+	insertImportedPeerParentRecord(t, cacheStore, importedPeerParentRecordOptions{
+		Stage:           workspaceStageName,
+		CacheKey:        workspaceKey,
+		StorageRef:      "tank/local/workspace@base",
+		SnapshotGUID:    "workspace-guid",
+		ProducerVersion: workspaceStageProducerVersion,
+	})
+
+	dependencyMetadata := encodeZFSMetadataForTest(t, "tank/local/imports/dependency@base", "dependency-guid", "workspace-guid")
+	servicesMetadata := encodeZFSMetadataForTest(t, "tank/local/imports/services@base", "services-guid", "dependency-guid")
+	transfer := &stubCachePeerTransferDriver{
+		describeSnapshots: map[string]volumestore.SnapshotDescription{
+			"tank/local/workspace@base": {
+				SnapshotRef:  "tank/local/workspace@base",
+				StorageRef:   "tank/local/workspace@base",
+				SnapshotGUID: "workspace-guid",
+			},
+			"tank/local/imports/dependency@base": {
+				SnapshotRef:  "tank/local/imports/dependency@base",
+				StorageRef:   "tank/local/imports/dependency@base",
+				SnapshotGUID: "dependency-guid",
+			},
+		},
+		importSnapshots: map[string]volumestore.Snapshot{
+			"dependency-guid": {
+				StorageRef:     "tank/local/imports/dependency@base",
+				DriverMetadata: dependencyMetadata,
+			},
+			"services-guid": {
+				StorageRef:     "tank/local/imports/services@base",
+				DriverMetadata: servicesMetadata,
+			},
+		},
+	}
+	svc.CachePeerTransferDriver = transfer
+
+	dependencyCandidate := cachePeerImportTestCandidate(dependencyPlan.CacheKey, workspaceKey, compiled.Hash, "dependency-token")
+	servicesCandidate := cachePeerImportTestServicesCandidate(servicesPlan.CacheKey, dependencyPlan.CacheKey, compiled.Hash, "services-token")
+	peer := newTestCachePeerImportServerWithCandidates(t, []*cleanroomv1.CachePeerCandidate{dependencyCandidate, servicesCandidate}, map[string]testCachePeerExport{
+		"dependency-token": {Status: http.StatusOK, Payload: "dependency-zfs-stream"},
+		"services-token":   {Status: http.StatusOK, Payload: "services-zfs-stream"},
+	})
+	svc.Config.Cache.Peers = []runtimeconfig.CachePeerConfig{{URL: peer.URL, TokenEnv: "CLEANROOM_CACHE_PEER_TOKEN"}}
+
+	resp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy:             testRepositoryDependencyAndServicesPolicy(),
+		RepositoryCheckout: repositoryCheckout,
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	if got, want := resp.GetSourceKind(), "services stage cache"; got != want {
+		t.Fatalf("unexpected source kind: got %q want %q", got, want)
+	}
+	if got, want := adapter.provisionFromSnapshotCalls, 1; got != want {
+		t.Fatalf("expected direct services cache restore once, got %d want %d", got, want)
+	}
+	if got, want := adapter.provisionCalls, 0; got != want {
+		t.Fatalf("expected remote dependency+services imports to skip cold provision, got %d want %d", got, want)
+	}
+	if got, want := adapter.runCalls, 0; got != want {
+		t.Fatalf("expected remote dependency+services imports to skip bootstraps, got %d want %d", got, want)
+	}
+	if got, want := transfer.importPayloads, []string{"dependency-zfs-stream", "services-zfs-stream"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("unexpected import payloads: got %#v want %#v", got, want)
+	}
+	if got, want := len(transfer.importRequests), 2; got != want {
+		t.Fatalf("expected dependency and services import requests, got %d", got)
+	}
+	if got, want := transfer.importRequests[0].ParentSnapshotGUID, "workspace-guid"; got != want {
+		t.Fatalf("unexpected dependency import parent guid: got %q want %q", got, want)
+	}
+	if got, want := transfer.importRequests[1].ParentSnapshotGUID, "dependency-guid"; got != want {
+		t.Fatalf("unexpected services import parent guid: got %q want %q", got, want)
+	}
+	if got, want := transfer.importRequests[1].ParentSnapshotRef, "tank/local/imports/dependency@base"; got != want {
+		t.Fatalf("unexpected services import parent ref: got %q want %q", got, want)
+	}
+	if got, want := peer.exportRequests, 2; got != want {
+		t.Fatalf("expected dependency and services exports, got %d", got)
+	}
+	if _, found, err := cacheStore.GetReady(context.Background(), dependencyStageName, dependencyPlan.CacheKey); err != nil {
+		t.Fatalf("GetReady dependency returned error: %v", err)
+	} else if !found {
+		t.Fatal("expected imported dependency cache metadata")
+	}
+	if _, found, err := cacheStore.GetReady(context.Background(), servicesStageName, servicesPlan.CacheKey); err != nil {
+		t.Fatalf("GetReady services returned error: %v", err)
+	} else if !found {
+		t.Fatal("expected imported services cache metadata")
+	}
+}
+
 type testCachePeerImportServer struct {
 	*httptest.Server
 	requests       []*cleanroomv1.LookupCachePeerRequest
@@ -508,6 +645,13 @@ type testCachePeerImportServer struct {
 	exportAuth     []string
 	exportRequests int
 	candidate      *cleanroomv1.CachePeerCandidate
+	candidates     []*cleanroomv1.CachePeerCandidate
+	exports        map[string]testCachePeerExport
+}
+
+type testCachePeerExport struct {
+	Status  int
+	Payload string
 }
 
 func newTestCachePeerImportServer(t *testing.T, candidate *cleanroomv1.CachePeerCandidate) *testCachePeerImportServer {
@@ -515,26 +659,44 @@ func newTestCachePeerImportServer(t *testing.T, candidate *cleanroomv1.CachePeer
 }
 
 func newTestCachePeerImportServerWithExport(t *testing.T, candidate *cleanroomv1.CachePeerCandidate, status int, payload string) *testCachePeerImportServer {
-	t.Helper()
-	peer := &testCachePeerImportServer{candidate: candidate}
-	mux := http.NewServeMux()
-	path, handler := cleanroomv1connect.NewCachePeerServiceHandler(peer)
-	mux.Handle(path, handler)
 	token := "peer-token"
 	if candidate != nil && strings.TrimSpace(candidate.GetTransferToken()) != "" {
 		token = candidate.GetTransferToken()
 	}
-	if status == 0 {
-		status = http.StatusOK
+	return newTestCachePeerImportServerWithCandidates(t, []*cleanroomv1.CachePeerCandidate{candidate}, map[string]testCachePeerExport{
+		token: {Status: status, Payload: payload},
+	})
+}
+
+func newTestCachePeerImportServerWithCandidates(t *testing.T, candidates []*cleanroomv1.CachePeerCandidate, exports map[string]testCachePeerExport) *testCachePeerImportServer {
+	t.Helper()
+	peer := &testCachePeerImportServer{
+		candidates: candidates,
+		exports:    exports,
 	}
-	mux.HandleFunc(cachePeerZFSIncrementalExportPathPrefix+token, func(w http.ResponseWriter, r *http.Request) {
+	if len(candidates) > 0 {
+		peer.candidate = candidates[0]
+	}
+	mux := http.NewServeMux()
+	path, handler := cleanroomv1connect.NewCachePeerServiceHandler(peer)
+	mux.Handle(path, handler)
+	mux.HandleFunc(cachePeerZFSIncrementalExportPathPrefix, func(w http.ResponseWriter, r *http.Request) {
 		peer.exportRequests++
 		peer.exportAuth = append(peer.exportAuth, r.Header.Get("Authorization"))
-		if status != http.StatusOK {
-			http.Error(w, "export failed", status)
+		token := strings.TrimPrefix(r.URL.Path, cachePeerZFSIncrementalExportPathPrefix)
+		export, ok := peer.exports[token]
+		if !ok {
+			http.NotFound(w, r)
 			return
 		}
-		_, _ = w.Write([]byte(payload))
+		if export.Status == 0 {
+			export.Status = http.StatusOK
+		}
+		if export.Status != http.StatusOK {
+			http.Error(w, "export failed", export.Status)
+			return
+		}
+		_, _ = w.Write([]byte(export.Payload))
 	})
 	peer.Server = httptest.NewServer(mux)
 	t.Cleanup(peer.Close)
@@ -559,10 +721,33 @@ func cachePeerImportTestCandidate(cacheKey, parentCacheKey, policyHash, token st
 	}
 }
 
+func cachePeerImportTestServicesCandidate(cacheKey, parentCacheKey, policyHash, token string) *cleanroomv1.CachePeerCandidate {
+	return &cleanroomv1.CachePeerCandidate{
+		TransferToken:         token,
+		Stage:                 servicesStageName,
+		CacheKey:              cacheKey,
+		ParentStage:           dependencyStageName,
+		ParentCacheKey:        parentCacheKey,
+		Backend:               "firecracker",
+		StorageDriver:         "zfs",
+		Architecture:          runtime.GOARCH,
+		ProducerVersion:       servicesStageProducerVersion,
+		PolicyHash:            policyHash,
+		ZfsSnapshotGuid:       "services-guid",
+		ZfsParentSnapshotGuid: "dependency-guid",
+		ExpiresAt:             timestamppb.New(time.Now().Add(time.Hour)),
+	}
+}
+
 func (p *testCachePeerImportServer) LookupCachePeer(_ context.Context, req *connect.Request[cleanroomv1.LookupCachePeerRequest]) (*connect.Response[cleanroomv1.LookupCachePeerResponse], error) {
 	p.lookupAuth = append(p.lookupAuth, req.Header().Get("Authorization"))
 	p.requests = append(p.requests, req.Msg)
-	return connect.NewResponse(&cleanroomv1.LookupCachePeerResponse{Candidate: p.candidate}), nil
+	for _, candidate := range p.candidates {
+		if cachePeerCandidateMatchesRequest(candidate, req.Msg, time.Now().Add(-time.Second)) {
+			return connect.NewResponse(&cleanroomv1.LookupCachePeerResponse{Candidate: candidate}), nil
+		}
+	}
+	return connect.NewResponse(&cleanroomv1.LookupCachePeerResponse{}), nil
 }
 
 func requireMemoryCacheStore(t *testing.T, svc *Service) *memoryCacheStore {

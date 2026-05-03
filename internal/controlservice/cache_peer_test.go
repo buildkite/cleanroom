@@ -23,6 +23,7 @@ type stubCachePeerTransferDriver struct {
 	exportPayload     string
 	importRequests    []volumestore.IncrementalSnapshotImportRequest
 	importPayloads    []string
+	importSnapshots   map[string]volumestore.Snapshot
 	importSnapshot    volumestore.Snapshot
 }
 
@@ -63,6 +64,11 @@ func (d *stubCachePeerTransferDriver) ImportIncrementalSnapshot(_ context.Contex
 		return volumestore.Snapshot{}, err
 	}
 	d.importPayloads = append(d.importPayloads, string(payload))
+	if d.importSnapshots != nil {
+		if snapshot, ok := d.importSnapshots[req.ExpectedSnapshotGUID]; ok {
+			return snapshot, nil
+		}
+	}
 	if strings.TrimSpace(d.importSnapshot.StorageRef) != "" || strings.TrimSpace(d.importSnapshot.DriverMetadata) != "" {
 		return d.importSnapshot, nil
 	}
