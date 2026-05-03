@@ -97,6 +97,16 @@ func (r *zfsTestRunner) Output(_ context.Context, command string, args ...string
 		}
 		return []byte("guid-" + strings.ReplaceAll(ref, "/", "-") + "\n"), nil
 	}
+	if command == "zfs" && len(args) == 6 && args[0] == "get" && args[1] == "-H" && args[2] == "-o" && args[3] == "value" && args[4] == "origin" {
+		ref := args[5]
+		if !r.exists[ref] {
+			return nil, errors.New("cannot open dataset: dataset does not exist")
+		}
+		if origin := strings.TrimSpace(r.origins[ref]); origin != "" {
+			return []byte(origin + "\n"), nil
+		}
+		return []byte("-\n"), nil
+	}
 	if command == "zfs" && len(args) == 5 && args[0] == "send" && args[1] == "-nP" && args[2] == "-i" {
 		fromRef := args[3]
 		toRef := args[4]
@@ -211,6 +221,7 @@ func TestZFSDriverSnapshotSurvivesSourceVolumeDestroy(t *testing.T) {
 	}
 
 	wantCommands := []string{
+		"zfs get -H -o value origin tank/cleanroom/sandboxes/sandbox-1",
 		"zfs list -H -o name tank/cleanroom/snapshots/golden",
 		"zfs snapshot tank/cleanroom/sandboxes/sandbox-1@snap-golden",
 		"zfs list -H -o name tank/cleanroom/snapshots/golden",
@@ -286,7 +297,8 @@ func TestZFSDriverDescribeSnapshotReturnsGUIDMetadata(t *testing.T) {
 	}
 
 	desc, err := driver.DescribeSnapshot(context.Background(), DescribeSnapshotRequest{
-		StorageRef: "tank/cleanroom/snapshots/golden@base",
+		StorageRef:         "tank/cleanroom/snapshots/golden@base",
+		ParentSnapshotGUID: "parent-guid",
 	})
 	if err != nil {
 		t.Fatalf("DescribeSnapshot returned error: %v", err)
@@ -297,13 +309,16 @@ func TestZFSDriverDescribeSnapshotReturnsGUIDMetadata(t *testing.T) {
 	if got, want := desc.SnapshotGUID, "123456789"; got != want {
 		t.Fatalf("unexpected snapshot guid: got %q want %q", got, want)
 	}
+	if got, want := desc.ParentSnapshotGUID, "parent-guid"; got != want {
+		t.Fatalf("unexpected parent snapshot guid: got %q want %q", got, want)
+	}
 
 	metadata, err := EncodeZFSDriverMetadata(ZFSDriverMetadataFromDescription(desc))
 	if err != nil {
 		t.Fatalf("EncodeZFSDriverMetadata returned error: %v", err)
 	}
-	if !strings.Contains(metadata, `"zfs_snapshot_guid":"123456789"`) {
-		t.Fatalf("expected metadata to contain snapshot guid, got %s", metadata)
+	if !strings.Contains(metadata, `"zfs_snapshot_guid":"123456789"`) || !strings.Contains(metadata, `"zfs_parent_snapshot_guid":"parent-guid"`) {
+		t.Fatalf("expected metadata to contain snapshot lineage, got %s", metadata)
 	}
 
 	wantCommands := []string{
@@ -403,6 +418,55 @@ func TestZFSDriverRejectsIncrementalExportParentGUIDMismatch(t *testing.T) {
 
 	wantCommands := []string{
 		"zfs get -H -o value guid " + fromRef,
+	}
+	if got, want := runner.commands, wantCommands; strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("unexpected zfs commands:\n got: %v\nwant: %v", got, want)
+	}
+}
+
+func TestZFSDriverSnapshotVolumeRecordsParentGUID(t *testing.T) {
+	originRef := "tank/cleanroom/base/runtime-key@base"
+	runner := &zfsTestRunner{
+		exists: map[string]bool{
+			originRef:                            true,
+			"tank/cleanroom/sandboxes/sandbox-1": true,
+		},
+		origins: map[string]string{
+			"tank/cleanroom/sandboxes/sandbox-1": originRef,
+		},
+		guids: map[string]string{
+			originRef: "parent-guid",
+		},
+	}
+	driver, err := NewZFSDriver(ZFSDriverOptions{
+		DatasetRoot: "tank/cleanroom",
+		Runner:      runner,
+	})
+	if err != nil {
+		t.Fatalf("NewZFSDriver returned error: %v", err)
+	}
+
+	snapshot, err := driver.SnapshotVolume(context.Background(), SnapshotVolumeRequest{
+		SnapshotID: "golden",
+		VolumeRef:  "tank/cleanroom/sandboxes/sandbox-1",
+	})
+	if err != nil {
+		t.Fatalf("SnapshotVolume returned error: %v", err)
+	}
+	if got, want := snapshot.ParentSnapshotGUID, "parent-guid"; got != want {
+		t.Fatalf("unexpected parent snapshot guid: got %q want %q", got, want)
+	}
+
+	wantCommands := []string{
+		"zfs get -H -o value origin tank/cleanroom/sandboxes/sandbox-1",
+		"zfs get -H -o value guid " + originRef,
+		"zfs list -H -o name tank/cleanroom/snapshots/golden",
+		"zfs snapshot tank/cleanroom/sandboxes/sandbox-1@snap-golden",
+		"zfs list -H -o name tank/cleanroom/snapshots/golden",
+		"zfs clone -p tank/cleanroom/sandboxes/sandbox-1@snap-golden tank/cleanroom/snapshots/golden",
+		"zfs promote tank/cleanroom/snapshots/golden",
+		"zfs snapshot tank/cleanroom/snapshots/golden@base",
+		"zfs destroy tank/cleanroom/sandboxes/sandbox-1@snap-golden",
 	}
 	if got, want := runner.commands, wantCommands; strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("unexpected zfs commands:\n got: %v\nwant: %v", got, want)

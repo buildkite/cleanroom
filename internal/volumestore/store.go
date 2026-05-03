@@ -58,6 +58,7 @@ type SnapshotVolumeRequest struct {
 type Snapshot struct {
 	Ref                string
 	StorageRef         string
+	ParentSnapshotGUID string
 	StorageSizeBytes   int64
 	ExclusiveSizeBytes int64
 	DriverMetadata     string
@@ -65,8 +66,9 @@ type Snapshot struct {
 
 // DescribeSnapshotRequest identifies a snapshot by its driver-native ref.
 type DescribeSnapshotRequest struct {
-	SnapshotRef string
-	StorageRef  string
+	SnapshotRef        string
+	StorageRef         string
+	ParentSnapshotGUID string
 }
 
 // SnapshotDescription is the driver-neutral metadata needed to validate a

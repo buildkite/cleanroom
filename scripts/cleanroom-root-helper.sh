@@ -391,7 +391,7 @@ run_zfs() {
     exec "$bin" "$@"
   fi
 
-  if [[ "$#" -eq 6 && "$1" == "get" && "$2" == "-H" && "$3" == "-o" && "$4" == "value" && "$5" == "guid" ]]; then
+  if [[ "$#" -eq 6 && "$1" == "get" && "$2" == "-H" && "$3" == "-o" && "$4" == "value" && ( "$5" == "guid" || "$5" == "origin" ) ]]; then
     is_cleanroom_zfs_dataset "$6" || is_cleanroom_zfs_snapshot_ref "$6" || die "zfs get: unsupported ref '$6'"
     exec "$bin" "$@"
   fi

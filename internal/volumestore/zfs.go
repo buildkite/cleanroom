@@ -126,6 +126,10 @@ func (d *ZFSDriver) SnapshotVolume(ctx context.Context, req SnapshotVolumeReques
 	if snapshotID == "" {
 		return Snapshot{}, errors.New("zfs volume driver requires snapshot id")
 	}
+	parentSnapshotGUID, err := d.parentSnapshotGUIDForVolume(ctx, volumeRef)
+	if err != nil {
+		return Snapshot{}, err
+	}
 
 	sourceSnapshotRef := d.snapshotRef(volumeRef, "snap-"+snapshotID)
 	storedDataset := d.datasetPath(zfsSnapshotNamespace, snapshotID)
@@ -170,7 +174,7 @@ func (d *ZFSDriver) SnapshotVolume(ctx context.Context, req SnapshotVolumeReques
 	}
 	storedDatasetCreated = false
 
-	return Snapshot{Ref: storedSnapshotRef, StorageRef: storedSnapshotRef}, nil
+	return Snapshot{Ref: storedSnapshotRef, StorageRef: storedSnapshotRef, ParentSnapshotGUID: parentSnapshotGUID}, nil
 }
 
 func (d *ZFSDriver) CloneSnapshotToVolume(ctx context.Context, req CloneSnapshotToVolumeRequest) (WritableVolume, error) {
@@ -250,9 +254,10 @@ func (d *ZFSDriver) DescribeSnapshot(ctx context.Context, req DescribeSnapshotRe
 		return SnapshotDescription{}, err
 	}
 	return SnapshotDescription{
-		SnapshotRef:  snapshotRef,
-		StorageRef:   snapshotRef,
-		SnapshotGUID: guid,
+		SnapshotRef:        snapshotRef,
+		StorageRef:         snapshotRef,
+		SnapshotGUID:       guid,
+		ParentSnapshotGUID: strings.TrimSpace(req.ParentSnapshotGUID),
 	}, nil
 }
 
@@ -332,6 +337,43 @@ func (d *ZFSDriver) snapshotGUID(ctx context.Context, snapshotRef string) (strin
 		return "", fmt.Errorf("zfs snapshot %q has no guid", snapshotRef)
 	}
 	return guid, nil
+}
+
+func (d *ZFSDriver) parentSnapshotGUIDForVolume(ctx context.Context, volumeRef string) (string, error) {
+	origin, err := d.datasetOriginSnapshotRef(ctx, volumeRef)
+	if err != nil {
+		return "", err
+	}
+	if origin == "" {
+		return "", nil
+	}
+	return d.snapshotGUID(ctx, origin)
+}
+
+func (d *ZFSDriver) datasetOriginSnapshotRef(ctx context.Context, dataset string) (string, error) {
+	dataset = strings.TrimSpace(dataset)
+	if dataset == "" {
+		return "", errors.New("zfs dataset ref is required")
+	}
+	root, ok := ZFSDatasetRootFromManagedRef(dataset)
+	if !ok {
+		return "", fmt.Errorf("zfs dataset ref %q is not a managed cleanroom ref", dataset)
+	}
+	if root != d.datasetRoot {
+		return "", fmt.Errorf("zfs dataset ref %q belongs to dataset root %q, expected %q", dataset, root, d.datasetRoot)
+	}
+	out, err := d.runner.Output(ctx, "zfs", "get", "-H", "-o", "value", "origin", dataset)
+	if err != nil {
+		return "", fmt.Errorf("read zfs origin for %q: %w", dataset, err)
+	}
+	origin := strings.TrimSpace(string(out))
+	if origin == "" || origin == "-" {
+		return "", nil
+	}
+	if err := d.validateManagedSnapshotRef(origin); err != nil {
+		return "", fmt.Errorf("read zfs origin for %q: %w", dataset, err)
+	}
+	return origin, nil
 }
 
 func (d *ZFSDriver) estimateIncrementalSend(ctx context.Context, fromSnapshotRef, toSnapshotRef string) (int64, error) {

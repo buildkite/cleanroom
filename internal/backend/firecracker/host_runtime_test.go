@@ -214,6 +214,9 @@ func TestCreateZFSSnapshotCleansUpWhenMetadataReadFails(t *testing.T) {
 			},
 			output: func(_ context.Context, args ...string) ([]byte, error) {
 				commands = append(commands, strings.Join(args, " "))
+				if len(args) == 7 && args[0] == "zfs" && args[1] == "get" && args[2] == "-H" && args[3] == "-o" && args[4] == "value" && args[5] == "origin" {
+					return []byte("-\n"), nil
+				}
 				if len(args) == 7 && args[0] == "zfs" && args[1] == "get" && args[2] == "-H" && args[3] == "-o" && args[4] == "value" && args[5] == "guid" {
 					return nil, errors.New("zfs get guid denied")
 				}
