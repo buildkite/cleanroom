@@ -697,6 +697,9 @@ func removeGitWorkspaceCopyOutForceObstacles(localRoot string, files []repositor
 		if !current[path].Deleted {
 			continue
 		}
+		if workspaceCopyOutHasDescendant(path, paths) {
+			continue
+		}
 		localPath, err := workspaceLocalPath(localRoot, path)
 		if err != nil {
 			return err
@@ -706,6 +709,16 @@ func removeGitWorkspaceCopyOutForceObstacles(localRoot string, files []repositor
 		}
 	}
 	return nil
+}
+
+func workspaceCopyOutHasDescendant(path string, paths []string) bool {
+	prefix := strings.TrimRight(path, "/") + "/"
+	for _, candidate := range paths {
+		if strings.HasPrefix(candidate, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func buildGitWorkspaceCopyOutPatchFromLocalBase(localRoot, baseCommit, sandboxPatchPath string, files []repositorychangeset.File) ([]byte, []byte, error) {
