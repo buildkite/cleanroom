@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 	"github.com/buildkite/cleanroom/internal/storagegc"
 )
 
@@ -76,6 +77,64 @@ func TestSystemPruneOlderThanDoesNotOverrideExecutionRetention(t *testing.T) {
 	}
 	if got, want := gotOlderThan, 7*24*time.Hour; got != want {
 		t.Fatalf("unexpected prune older-than: got %s want %s", got, want)
+	}
+}
+
+type testSystemZFSImportDatasetStore struct{}
+
+func (testSystemZFSImportDatasetStore) ListZFSImportDatasets(context.Context) ([]string, error) {
+	return nil, nil
+}
+
+func (testSystemZFSImportDatasetStore) DestroyZFSImportDataset(context.Context, string) error {
+	return nil
+}
+
+func TestSystemPruneThreadsZFSImportDatasetStore(t *testing.T) {
+	previousListSandboxIDs := systemListSandboxIDs
+	previousInventory := systemInventory
+	previousPlanPrune := systemPlanPrune
+	previousExecutePrune := systemExecutePrune
+	previousZFSImportDatasetStore := systemZFSImportDatasetStore
+	t.Cleanup(func() {
+		systemListSandboxIDs = previousListSandboxIDs
+		systemInventory = previousInventory
+		systemPlanPrune = previousPlanPrune
+		systemExecutePrune = previousExecutePrune
+		systemZFSImportDatasetStore = previousZFSImportDatasetStore
+	})
+
+	store := testSystemZFSImportDatasetStore{}
+	systemZFSImportDatasetStore = func(runtimeconfig.Config) storagegc.ZFSImportDatasetStore {
+		return store
+	}
+	systemListSandboxIDs = func(context.Context, *runtimeContext, clientFlags) ([]string, bool, error) {
+		return nil, true, nil
+	}
+	systemInventory = func(_ context.Context, opts storagegc.InventoryOptions) (storagegc.Report, error) {
+		if opts.ZFSImportDatasetStore != store {
+			t.Fatalf("inventory zfs import dataset store = %#v, want %#v", opts.ZFSImportDatasetStore, store)
+		}
+		return storagegc.Report{GeneratedAt: time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC)}, nil
+	}
+	systemPlanPrune = func(storagegc.Report, storagegc.PruneOptions) storagegc.Plan {
+		return storagegc.Plan{Actions: []storagegc.Action{{
+			Kind: storagegc.KindZFSImportDataset,
+			ID:   "stale",
+		}}}
+	}
+	systemExecutePrune = func(_ context.Context, _ storagegc.Report, _ storagegc.Plan, opts storagegc.ExecuteOptions) (storagegc.Result, error) {
+		if opts.ZFSImportDatasetStore != store {
+			t.Fatalf("execute zfs import dataset store = %#v, want %#v", opts.ZFSImportDatasetStore, store)
+		}
+		return storagegc.Result{DeletedEntries: 1}, nil
+	}
+
+	stdout, _ := makeStdoutCapture(t)
+	t.Cleanup(func() { _ = stdout.Close() })
+
+	if err := (&SystemPruneCommand{Force: true}).Run(&runtimeContext{Stdout: stdout}); err != nil {
+		t.Fatalf("SystemPruneCommand.Run returned error: %v", err)
 	}
 }
 

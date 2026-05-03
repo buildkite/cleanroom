@@ -135,6 +135,45 @@ func TestSetupGatewayFirewallUsesHostRuntime(t *testing.T) {
 	}
 }
 
+func TestNewZFSImportDatasetStoreRequiresZFSDriverAndDataset(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  backend.FirecrackerConfig
+		want bool
+	}{
+		{
+			name: "file driver",
+			cfg: backend.FirecrackerConfig{Snapshots: backend.SnapshotConfig{
+				Driver:     "file",
+				ZFSDataset: "tank/cleanroom",
+			}},
+		},
+		{
+			name: "missing dataset",
+			cfg: backend.FirecrackerConfig{Snapshots: backend.SnapshotConfig{
+				Driver: "zfs",
+			}},
+		},
+		{
+			name: "zfs driver and dataset",
+			cfg: backend.FirecrackerConfig{Snapshots: backend.SnapshotConfig{
+				Driver:     "zfs",
+				ZFSDataset: "tank/cleanroom",
+			}},
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := NewZFSImportDatasetStore(tt.cfg)
+			if (got != nil) != tt.want {
+				t.Fatalf("NewZFSImportDatasetStore() configured=%v, want %v", got != nil, tt.want)
+			}
+		})
+	}
+}
+
 func TestPrepareWritableRootVolumeUsesHostRuntimeForZFS(t *testing.T) {
 	prevHostRuntimeFn := newHostRuntimeFn
 	t.Cleanup(func() { newHostRuntimeFn = prevHostRuntimeFn })

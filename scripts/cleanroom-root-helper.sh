@@ -165,6 +165,23 @@ is_cleanroom_zfs_snapshot_import_dataset() {
   return 1
 }
 
+is_cleanroom_zfs_snapshot_import_namespace_dataset() {
+  local v="$1"
+  is_cleanroom_zfs_dataset "$v" || return 1
+
+  local IFS='/'
+  read -r -a components <<<"$v"
+  local component_count="${#components[@]}"
+  local i
+
+  for ((i = 0; i <= component_count - 3; i++)); do
+    if [[ "${components[$i]}" == "cleanroom" && "${components[$((i + 1))]}" == "snapshots" && "${components[$((i + 2))]}" == "imports" && $((component_count - i)) -eq 3 ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 is_zvol_device_path() {
   local p="$1"
   [[ "$p" == /dev/zvol/* ]] || return 1
@@ -431,6 +448,11 @@ run_zfs() {
 
   if [[ "$#" -eq 7 && "$1" == "list" && "$2" == "-H" && "$3" == "-d" && "$4" == "0" && "$5" == "-o" && "$6" == "name" ]]; then
     is_cleanroom_zfs_dataset "$7" || die "zfs list -d 0: unsupported dataset '$7'"
+    exec "$bin" "$@"
+  fi
+
+  if [[ "$#" -eq 7 && "$1" == "list" && "$2" == "-H" && "$3" == "-d" && "$4" == "1" && "$5" == "-o" && "$6" == "name" ]]; then
+    is_cleanroom_zfs_snapshot_import_namespace_dataset "$7" || die "zfs list -d 1: unsupported dataset '$7'"
     exec "$bin" "$@"
   fi
 

@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode"
@@ -416,6 +417,39 @@ func (d *ZFSDriver) ImportIncrementalSnapshot(ctx context.Context, req Increment
 	}, nil
 }
 
+func (d *ZFSDriver) ListZFSImportDatasets(ctx context.Context) ([]string, error) {
+	importNamespace := d.importNamespaceDataset()
+	out, err := d.runner.Output(ctx, "zfs", "list", "-H", "-d", "1", "-o", "name", importNamespace)
+	if err != nil {
+		if isZFSMissingError(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("list zfs import datasets under %q: %w", importNamespace, err)
+	}
+
+	var datasets []string
+	for _, line := range strings.Split(string(out), "\n") {
+		dataset := strings.TrimSpace(line)
+		if dataset == "" || dataset == importNamespace {
+			continue
+		}
+		if !d.isImportDataset(dataset) {
+			continue
+		}
+		datasets = append(datasets, dataset)
+	}
+	slices.Sort(datasets)
+	return datasets, nil
+}
+
+func (d *ZFSDriver) DestroyZFSImportDataset(ctx context.Context, dataset string) error {
+	dataset = strings.TrimSpace(dataset)
+	if !d.isImportDataset(dataset) {
+		return fmt.Errorf("zfs import dataset %q is not under %q", dataset, d.importNamespaceDataset())
+	}
+	return d.DestroyVolume(ctx, DestroyVolumeRequest{VolumeRef: dataset})
+}
+
 func (d *ZFSDriver) datasetPath(parts ...string) string {
 	items := []string{d.datasetRoot}
 	for _, part := range parts {
@@ -517,6 +551,20 @@ func (d *ZFSDriver) snapshotRef(dataset, snapshotName string) string {
 
 func (d *ZFSDriver) importDataset(snapshotID string) string {
 	return d.datasetPath(zfsSnapshotNamespace, zfsSnapshotImportNamespace, snapshotID)
+}
+
+func (d *ZFSDriver) importNamespaceDataset() string {
+	return d.datasetPath(zfsSnapshotNamespace, zfsSnapshotImportNamespace)
+}
+
+func (d *ZFSDriver) isImportDataset(dataset string) bool {
+	dataset = strings.Trim(strings.TrimSpace(dataset), "/")
+	namespace := d.importNamespaceDataset()
+	if dataset == namespace {
+		return false
+	}
+	rel, ok := strings.CutPrefix(dataset, namespace+"/")
+	return ok && rel != "" && !strings.Contains(rel, "/")
 }
 
 func storedZFSSnapshotDataset(snapshotRef string) (string, bool) {

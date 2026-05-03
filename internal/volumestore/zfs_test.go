@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -87,6 +88,25 @@ func (r *zfsTestRunner) Run(_ context.Context, command string, args ...string) e
 
 func (r *zfsTestRunner) Output(_ context.Context, command string, args ...string) ([]byte, error) {
 	r.commands = append(r.commands, strings.Join(append([]string{command}, args...), " "))
+	if command == "zfs" && len(args) == 7 && args[0] == "list" && args[1] == "-H" && args[2] == "-d" && args[3] == "1" && args[4] == "-o" && args[5] == "name" {
+		parent := args[6]
+		if !r.exists[parent] {
+			return nil, errors.New("cannot open dataset: dataset does not exist")
+		}
+		var refs []string
+		for ref := range r.exists {
+			if ref == parent {
+				refs = append(refs, ref)
+				continue
+			}
+			child, ok := strings.CutPrefix(ref, parent+"/")
+			if ok && child != "" && !strings.Contains(child, "/") && !strings.Contains(child, "@") {
+				refs = append(refs, ref)
+			}
+		}
+		slices.Sort(refs)
+		return []byte(strings.Join(refs, "\n") + "\n"), nil
+	}
 	if command == "zfs" && len(args) == 5 && args[0] == "list" {
 		ref := args[4]
 		if r.exists[ref] {
@@ -164,6 +184,78 @@ func (r *zfsTestRunner) InputFrom(_ context.Context, src io.Reader, command stri
 		r.guids[snapshotRef] = "guid-" + strings.ReplaceAll(snapshotRef, "/", "-")
 	}
 	return nil
+}
+
+func TestZFSDriverListsImportDatasets(t *testing.T) {
+	runner := &zfsTestRunner{
+		exists: map[string]bool{
+			"tank/cleanroom/snapshots/imports":                   true,
+			"tank/cleanroom/snapshots/imports/imported-b":        true,
+			"tank/cleanroom/snapshots/imports/imported-a":        true,
+			"tank/cleanroom/snapshots/imports/imported-a@base":   true,
+			"tank/cleanroom/snapshots/imports/imported-a/nested": true,
+			"tank/cleanroom/snapshots/golden":                    true,
+		},
+	}
+	driver, err := NewZFSDriver(ZFSDriverOptions{
+		DatasetRoot: "tank/cleanroom",
+		Runner:      runner,
+	})
+	if err != nil {
+		t.Fatalf("NewZFSDriver returned error: %v", err)
+	}
+
+	datasets, err := driver.ListZFSImportDatasets(context.Background())
+	if err != nil {
+		t.Fatalf("ListZFSImportDatasets returned error: %v", err)
+	}
+	want := []string{
+		"tank/cleanroom/snapshots/imports/imported-a",
+		"tank/cleanroom/snapshots/imports/imported-b",
+	}
+	if strings.Join(datasets, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("unexpected import datasets:\n got: %v\nwant: %v", datasets, want)
+	}
+
+	wantCommands := []string{
+		"zfs list -H -d 1 -o name tank/cleanroom/snapshots/imports",
+	}
+	if got := runner.commands; strings.Join(got, "\n") != strings.Join(wantCommands, "\n") {
+		t.Fatalf("unexpected zfs commands:\n got: %v\nwant: %v", got, wantCommands)
+	}
+}
+
+func TestZFSDriverDestroyImportDatasetRejectsNamespaceAndNestedDatasets(t *testing.T) {
+	runner := &zfsTestRunner{exists: map[string]bool{
+		"tank/cleanroom/snapshots/imports/imported": true,
+	}}
+	driver, err := NewZFSDriver(ZFSDriverOptions{
+		DatasetRoot: "tank/cleanroom",
+		Runner:      runner,
+	})
+	if err != nil {
+		t.Fatalf("NewZFSDriver returned error: %v", err)
+	}
+
+	for _, dataset := range []string{
+		"tank/cleanroom/snapshots/imports",
+		"tank/cleanroom/snapshots/imports/imported/nested",
+		"tank/cleanroom/snapshots/golden",
+	} {
+		if err := driver.DestroyZFSImportDataset(context.Background(), dataset); err == nil {
+			t.Fatalf("expected DestroyZFSImportDataset to reject %q", dataset)
+		}
+	}
+	if err := driver.DestroyZFSImportDataset(context.Background(), "tank/cleanroom/snapshots/imports/imported"); err != nil {
+		t.Fatalf("DestroyZFSImportDataset returned error: %v", err)
+	}
+
+	wantCommands := []string{
+		"zfs destroy -r tank/cleanroom/snapshots/imports/imported",
+	}
+	if got := runner.commands; strings.Join(got, "\n") != strings.Join(wantCommands, "\n") {
+		t.Fatalf("unexpected zfs commands:\n got: %v\nwant: %v", got, wantCommands)
+	}
 }
 
 func TestZFSDriverEnsureBaseVolumeAndCloneLifecycle(t *testing.T) {

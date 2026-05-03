@@ -21,7 +21,7 @@ The immediate problem is orphaned host state. A local inspection showed `~/.loca
 
 ## Non-Goals
 
-- Do not add background deletion in the first slice. The initial workflow is explicit and user initiated.
+- Do not add broad background deletion. Lifecycle-scoped cleanup can use the same inventory and prune executor once the manual command proves the deletion model.
 - Do not delete explicit snapshots by default. Users should opt in with `--all` or a snapshot-specific command.
 - Do not blindly remove content-cache storage while the gateway may be using it.
 - Do not make cache policy part of `cleanroom.yaml`. This is host maintenance, not project policy.
@@ -49,6 +49,7 @@ cleanroom system prune [--dry-run] [--force] [--older-than duration] [--all]
 - Orphan backend snapshot directories not referenced by snapshot metadata or stage-cache metadata.
 - Old execution artifacts that exceed the existing service retention window.
 - Stale prepared runtime rootfs cache entries when they are not the current runtime key.
+- Unreferenced ZFS import datasets under the Firecracker/ZFS managed import namespace.
 
 `system prune --all` expands the candidate set to system-managed caches:
 
@@ -65,6 +66,7 @@ Without `--force`, `system prune` should prompt on TTY and refuse on non-TTY. `-
 | Sandbox runtime dirs | `StateBaseDir()/sandboxes` | Backend adapters | Orphans only |
 | Explicit snapshots | `StateBaseDir()/snapshots` plus `snapshotstore` | Snapshot service | No |
 | Stage-cache snapshots | `StateBaseDir()/snapshots` plus `cachestore` | Dependency cache | Only with policy or `--all` |
+| ZFS import datasets | `<zfs dataset>/snapshots/imports` plus snapshot/cache metadata | Firecracker ZFS stage transfer | Unreferenced only |
 | Images | `CacheBaseDir()/images` plus image metadata in state | Image manager | No |
 | Runtime rootfs cache | `CacheBaseDir()/<backend>/runtime-rootfs` | Backend adapters | Stale entries |
 | Repository mirrors | `StateBaseDir()/repos` | Git gateway | No |
@@ -114,6 +116,7 @@ The inventory should build a reference set before considering deletion:
 - Live daemon sandbox ids from the control service protect matching sandbox runtime directories.
 - Explicit snapshot records from `snapshotstore.List` protect their `StorageRef`.
 - Stage-cache records from `cachestore.List` protect their backing snapshot storage unless the prune policy explicitly includes stage caches.
+- Snapshot and stage-cache records protect direct ZFS import datasets when their `StorageRef` points at `<dataset>/snapshots/imports/<id>@base`.
 - Known image records protect image filesystem layers and metadata.
 - The currently selected backend runtime rootfs key protects the matching prepared runtime rootfs file.
 - Recent execution artifacts remain protected according to the existing control-service retention settings.
@@ -125,6 +128,7 @@ Entries that are missing metadata but live under a cleanroom-owned root can beco
 Use typed deletion paths when metadata exists:
 
 - Stage-cache records should be deleted through `cachestore.Delete` and the owning volume store deletion path.
+- ZFS import datasets should be destroyed through the Firecracker/ZFS volume driver, restricted to direct children under the import namespace.
 - Explicit snapshots should be deleted only by snapshot-specific commands or `system prune --all --snapshots`, through `snapshotstore.Delete` and the owning volume store.
 - Images should be deleted through the image manager.
 
@@ -173,10 +177,16 @@ This is what lets us clean up abandoned directories from older versions without 
    burst of terminations from starting many filesystem removals at once, and
    avoids introducing a daemon-wide background prune.
 
+   The same worker can also run a startup-only ZFS import cleanup job on
+   Firecracker/ZFS hosts. That job inventories direct import datasets, protects
+   anything referenced by snapshot or cache metadata, and destroys only
+   unreferenced import datasets through the ZFS driver.
+
 ## Tests
 
 - Inventory reports byte totals for every known category.
 - Referenced snapshot and stage-cache storage is protected.
+- Referenced ZFS import datasets are protected; unreferenced direct import datasets are reclaimable and destroyed through the ZFS driver.
 - Unreferenced snapshot directories under the backend snapshot root are reclaimable.
 - Active sandbox runtime directories are protected even if their filesystem metadata is stale.
 - Orphan sandbox runtime directories are reclaimable without relying on id prefix format.

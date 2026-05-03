@@ -1381,6 +1381,25 @@ func (s *memoryCacheStore) Delete(_ context.Context, stage, cacheKey string) err
 	return nil
 }
 
+type memoryZFSImportDatasetStore struct {
+	mu        sync.Mutex
+	datasets  []string
+	destroyed []string
+}
+
+func (s *memoryZFSImportDatasetStore) ListZFSImportDatasets(context.Context) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.datasets...), nil
+}
+
+func (s *memoryZFSImportDatasetStore) DestroyZFSImportDataset(_ context.Context, dataset string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.destroyed = append(s.destroyed, dataset)
+	return nil
+}
+
 type memoryChangesetStore struct {
 	mu      sync.Mutex
 	records map[string]changesetstore.Record
@@ -7261,7 +7280,7 @@ func TestTerminateSandboxSchedulesStorageCleanupAsync(t *testing.T) {
 func TestTerminateSandboxStorageCleanupWorkerRunsSeriallyAndDedupes(t *testing.T) {
 	adapter := &stubAdapter{}
 	svc := newTestService(adapter)
-	svc.runtime.terminatedSandboxStorageCleanupQueueSize = 4
+	svc.runtime.storageCleanupQueueSize = 4
 
 	started := make(chan string, 3)
 	finished := make(chan string, 3)
@@ -7328,6 +7347,68 @@ func TestTerminateSandboxStorageCleanupWorkerRunsSeriallyAndDedupes(t *testing.T
 	case got := <-started:
 		t.Fatalf("duplicate cleanup was not deduped, started %q", got)
 	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func TestScheduleStartupStorageCleanupQueuesZFSImportCleanup(t *testing.T) {
+	adapter := &stubAdapter{}
+	svc := newTestService(adapter)
+	svc.ZFSImportDatasetStore = &memoryZFSImportDatasetStore{}
+
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	defer close(release)
+	svc.runtime.zfsImportDatasetStorageCleanup = func() {
+		started <- struct{}{}
+		<-release
+	}
+
+	svc.ScheduleStartupStorageCleanup()
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for zfs import storage cleanup to start")
+	}
+}
+
+func TestZFSImportDatasetStorageCleanupDestroysOnlyUnreferencedImports(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", filepath.Join(tmpDir, "state-home"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(tmpDir, "cache-home"))
+
+	snapshotStore := newMemorySnapshotStore()
+	if err := snapshotStore.Create(context.Background(), snapshotstore.Record{
+		SnapshotID: "snap-import",
+		Backend:    "firecracker",
+		StorageRef: "tank/cleanroom/snapshots/imports/protected-snapshot@base",
+	}); err != nil {
+		t.Fatalf("create snapshot record: %v", err)
+	}
+	cacheStore := newMemoryCacheStore()
+	if err := cacheStore.Upsert(context.Background(), cachestore.Record{
+		Stage:      "dependencies",
+		CacheKey:   "cache-import",
+		Backend:    "firecracker",
+		StorageRef: "tank/cleanroom/snapshots/imports/protected-cache@base",
+	}); err != nil {
+		t.Fatalf("create cache record: %v", err)
+	}
+	zfsStore := &memoryZFSImportDatasetStore{datasets: []string{
+		"tank/cleanroom/snapshots/imports/protected-snapshot",
+		"tank/cleanroom/snapshots/imports/protected-cache",
+		"tank/cleanroom/snapshots/imports/stale",
+	}}
+	svc := newTestServiceWithSnapshotStore(&stubAdapter{}, snapshotStore)
+	svc.CacheStore = cacheStore
+	svc.ZFSImportDatasetStore = zfsStore
+
+	svc.cleanupZFSImportDatasets()
+
+	zfsStore.mu.Lock()
+	defer zfsStore.mu.Unlock()
+	if got, want := zfsStore.destroyed, []string{"tank/cleanroom/snapshots/imports/stale"}; len(got) != len(want) || got[0] != want[0] {
+		t.Fatalf("unexpected destroyed datasets: got %v want %v", got, want)
 	}
 }
 

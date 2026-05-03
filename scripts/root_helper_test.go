@@ -35,6 +35,7 @@ func TestCleanroomRootHelperDeclaresCapabilitiesAndZFSSupport(t *testing.T) {
 		"is_cleanroom_zfs_snapshot_ref()",
 		"is_cleanroom_zfs_stored_snapshot_ref()",
 		"is_cleanroom_zfs_snapshot_import_dataset()",
+		"is_cleanroom_zfs_snapshot_import_namespace_dataset()",
 		"is_zvol_device_path()",
 		"run_zfs()",
 		"zfs get: unsupported ref",
@@ -44,6 +45,7 @@ func TestCleanroomRootHelperDeclaresCapabilitiesAndZFSSupport(t *testing.T) {
 		`is_cleanroom_zfs_stored_snapshot_ref "$5"`,
 		`is_cleanroom_zfs_stored_snapshot_ref "$4"`,
 		`is_cleanroom_zfs_snapshot_import_dataset "$4"`,
+		`is_cleanroom_zfs_snapshot_import_namespace_dataset "$7"`,
 		"zfs set: unsupported dataset",
 		"zfs promote: unsupported dataset",
 		"run_dd()",
@@ -85,6 +87,11 @@ is_cleanroom_zfs_snapshot_import_dataset tank/cleanroom/snapshots/imports/import
 ! is_cleanroom_zfs_snapshot_import_dataset tank/cleanroom/base/imported
 ! is_cleanroom_zfs_snapshot_import_dataset tank/cleanroom/sandboxes/imported
 ! is_cleanroom_zfs_snapshot_import_dataset tank/cleanroom/snapshots/imports/imported/nested
+
+is_cleanroom_zfs_snapshot_import_namespace_dataset tank/cleanroom/snapshots/imports
+! is_cleanroom_zfs_snapshot_import_namespace_dataset tank/cleanroom/snapshots/imports/imported
+! is_cleanroom_zfs_snapshot_import_namespace_dataset tank/cleanroom/snapshots/imports/imported/nested
+! is_cleanroom_zfs_snapshot_import_namespace_dataset tank/cleanroom/snapshots
 `
 	cmd := exec.Command("bash", "-c", checks)
 	if out, err := cmd.CombinedOutput(); err != nil {
