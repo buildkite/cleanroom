@@ -298,16 +298,18 @@ func copyWorkspaceOut(callCtx context.Context, ctx *runtimeContext, client *cont
 			return err
 		}
 		defer cleanupApply()
-		if len(files) == 0 {
-			if forceQuarantine != nil {
-				if err := forceQuarantine.Restore(); err != nil {
-					return err
-				}
-			}
+		if len(files) == 0 && forceQuarantine == nil {
 			return nil
 		}
 	}
-	entries, err := gitWorkspaceCopyOutPlanFiles(opts.CWD, files)
+	planFiles, err := gitWorkspaceCopyOutForcePlanFiles(files, forceQuarantine)
+	if err != nil {
+		if forceQuarantine != nil {
+			err = errors.Join(err, forceQuarantine.Restore())
+		}
+		return err
+	}
+	entries, err := gitWorkspaceCopyOutPlanFiles(opts.CWD, planFiles)
 	if err != nil {
 		if forceQuarantine != nil {
 			err = errors.Join(err, forceQuarantine.Restore())
@@ -326,16 +328,48 @@ func copyWorkspaceOut(callCtx context.Context, ctx *runtimeContext, client *cont
 			return err
 		}
 	}
-	if err := applyGitWorkspaceCopyOutPatch(opts.Repository.RootDir, applyPath); err != nil {
-		if forceQuarantine != nil {
-			err = errors.Join(err, forceQuarantine.Restore())
+	if len(files) > 0 {
+		if err := applyGitWorkspaceCopyOutPatch(opts.Repository.RootDir, applyPath); err != nil {
+			if forceQuarantine != nil {
+				err = errors.Join(err, forceQuarantine.Restore())
+			}
+			return err
 		}
-		return err
 	}
 	if forceQuarantine != nil {
 		forceQuarantine.Cleanup()
 	}
 	return printWorkspacePlan(workspacePlanOutput(ctx, opts), entries)
+}
+
+func gitWorkspaceCopyOutForcePlanFiles(files []repositorychangeset.File, quarantine *workspaceCopyOutForceQuarantine) ([]repositorychangeset.File, error) {
+	if quarantine == nil {
+		return files, nil
+	}
+	seen := make(map[string]struct{}, len(files))
+	planFiles := append([]repositorychangeset.File(nil), files...)
+	for _, file := range files {
+		path, err := workspaceRelativePath(file.Path)
+		if err != nil {
+			return nil, err
+		}
+		seen[path] = struct{}{}
+	}
+	for _, path := range quarantine.Paths() {
+		path, err := workspaceRelativePath(path)
+		if err != nil {
+			return nil, err
+		}
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		planFiles = append(planFiles, repositorychangeset.File{
+			Path:    path,
+			Deleted: true,
+		})
+	}
+	return planFiles, nil
 }
 
 func workspacePlanOutput(ctx *runtimeContext, opts workspaceCopyOptions) io.Writer {
@@ -817,20 +851,9 @@ func quarantineGitWorkspaceCopyOutForceObstacles(localRoot string, files []repos
 	return q, nil
 }
 
-func gitWorkspaceCopyOutForceObstaclePaths(localRoot string, files []repositorychangeset.File, paths []string) ([]string, error) {
-	deleted := make(map[string]bool, len(files))
-	for _, file := range files {
-		path, err := workspaceRelativePath(file.Path)
-		if err != nil {
-			return nil, err
-		}
-		deleted[path] = file.Deleted
-	}
+func gitWorkspaceCopyOutForceObstaclePaths(localRoot string, _ []repositorychangeset.File, paths []string) ([]string, error) {
 	candidates := make(map[string]struct{})
 	for _, target := range paths {
-		if deleted[target] {
-			continue
-		}
 		parts := strings.Split(target, "/")
 		for i := 1; i < len(parts); i++ {
 			prefix := strings.Join(parts[:i], "/")
