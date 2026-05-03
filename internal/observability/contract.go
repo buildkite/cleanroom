@@ -127,6 +127,9 @@ const (
 	CachePeerDirectionImport = "import"
 	CachePeerDirectionExport = "export"
 
+	CachePeerLookupDirectionInbound  = "inbound"
+	CachePeerLookupDirectionOutbound = "outbound"
+
 	CacheLookupReasonRecordNotFound         = "cache_record_not_found"
 	CacheLookupReasonBackendMismatch        = "backend_mismatch"
 	CacheLookupReasonPolicyHashMismatch     = "policy_hash_mismatch"

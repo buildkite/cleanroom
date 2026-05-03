@@ -438,7 +438,7 @@ func (s *Service) lookupCachePeerImportCandidates(ctx context.Context, req *clea
 		connectReq.Header().Set("Authorization", "Bearer "+token)
 		resp, err := client.LookupCachePeer(ctx, connectReq)
 		if err != nil {
-			s.recordCachePeerLookup(ctx, req.GetStage(), observability.CacheResultFailed)
+			s.recordCachePeerLookup(ctx, req.GetStage(), observability.CachePeerLookupDirectionOutbound, observability.CacheResultFailed)
 			if s.Logger != nil {
 				s.Logger.Debug("cache peer lookup failed", "peer", peer.URL, "error", err)
 			}
@@ -446,17 +446,17 @@ func (s *Service) lookupCachePeerImportCandidates(ctx context.Context, req *clea
 		}
 		candidate := resp.Msg.GetCandidate()
 		if candidate == nil {
-			s.recordCachePeerLookup(ctx, req.GetStage(), observability.CacheResultMiss)
+			s.recordCachePeerLookup(ctx, req.GetStage(), observability.CachePeerLookupDirectionOutbound, observability.CacheResultMiss)
 			continue
 		}
 		if !cachePeerCandidateMatchesRequest(candidate, req, s.clock().Now()) {
-			s.recordCachePeerLookup(ctx, req.GetStage(), observability.CacheResultMiss)
+			s.recordCachePeerLookup(ctx, req.GetStage(), observability.CachePeerLookupDirectionOutbound, observability.CacheResultMiss)
 			if s.Logger != nil {
 				s.Logger.Debug("cache peer candidate rejected", "peer", peer.URL)
 			}
 			continue
 		}
-		s.recordCachePeerLookup(ctx, req.GetStage(), observability.CacheResultHit)
+		s.recordCachePeerLookup(ctx, req.GetStage(), observability.CachePeerLookupDirectionOutbound, observability.CacheResultHit)
 		matches = append(matches, cachePeerCandidateMatch{peer: peer, token: token, candidate: candidate})
 	}
 	return matches

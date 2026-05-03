@@ -494,7 +494,7 @@ Add structured logs, traces, and metrics for:
 Suggested metric names:
 
 ```text
-cleanroom_cache_peer_lookup_total{stage,result}
+cleanroom_cache_peer_lookup_total{stage,direction,result}
 cleanroom_cache_peer_transfer_bytes_total{stage,direction}
 cleanroom_cache_peer_transfer_duration_seconds{stage,direction,result}
 cleanroom_cache_peer_import_total{stage,result}

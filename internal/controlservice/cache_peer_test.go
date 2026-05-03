@@ -175,8 +175,9 @@ func TestLookupCachePeerDependencyStageMintsBoundExportToken(t *testing.T) {
 
 	metrics := collectResourceMetrics(t, reader)
 	requireInt64SumMetricValue(t, metrics, observability.MetricCachePeerLookupTotal, map[string]string{
-		observability.MetricLabelStage:  dependencyStageName,
-		observability.MetricLabelResult: observability.CacheResultHit,
+		observability.MetricLabelStage:     dependencyStageName,
+		observability.MetricLabelDirection: observability.CachePeerLookupDirectionInbound,
+		observability.MetricLabelResult:    observability.CacheResultHit,
 	}, 1)
 	requireInt64SumMetricValue(t, metrics, observability.MetricCachePeerTransferBytesTotal, map[string]string{
 		observability.MetricLabelStage:     dependencyStageName,
@@ -187,6 +188,39 @@ func TestLookupCachePeerDependencyStageMintsBoundExportToken(t *testing.T) {
 		observability.MetricLabelStage:     dependencyStageName,
 		observability.MetricLabelDirection: observability.CachePeerDirectionExport,
 		observability.MetricLabelResult:    observability.CacheResultExported,
+	}, 1)
+}
+
+func TestLookupCachePeerMetricNormalizesUnsupportedStage(t *testing.T) {
+	svc := newTestService(&stubAdapter{})
+	reader := sdkmetric.NewManualReader()
+	meterProvider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	tracerProvider := sdktrace.NewTracerProvider()
+	defer func() {
+		_ = meterProvider.Shutdown(context.Background())
+		_ = tracerProvider.Shutdown(context.Background())
+	}()
+	obs, err := observability.NewWithProviders(tracerProvider, meterProvider)
+	if err != nil {
+		t.Fatalf("NewWithProviders returned error: %v", err)
+	}
+	svc.Observability = obs
+
+	req := dependencyCachePeerLookupRequest()
+	req.Stage = "workspace:" + strings.Repeat("x", 64)
+	resp, err := svc.LookupCachePeer(context.Background(), req)
+	if err != nil {
+		t.Fatalf("LookupCachePeer returned error: %v", err)
+	}
+	if got, want := resp.GetMissReason(), cachePeerMissUnsupportedStage; got != want {
+		t.Fatalf("unexpected miss reason: got %q want %q", got, want)
+	}
+
+	metrics := collectResourceMetrics(t, reader)
+	requireInt64SumMetricValue(t, metrics, observability.MetricCachePeerLookupTotal, map[string]string{
+		observability.MetricLabelStage:     "unsupported",
+		observability.MetricLabelDirection: observability.CachePeerLookupDirectionInbound,
+		observability.MetricLabelResult:    observability.CacheResultMiss,
 	}, 1)
 }
 

@@ -99,7 +99,7 @@ func (s *Service) LookupCachePeer(ctx context.Context, req *cleanroomv1.LookupCa
 	lookupStage := strings.TrimSpace(req.GetStage())
 	lookupResult := observability.CacheResultFailed
 	defer func() {
-		s.recordCachePeerLookup(ctx, lookupStage, lookupResult)
+		s.recordCachePeerLookup(ctx, lookupStage, observability.CachePeerLookupDirectionInbound, lookupResult)
 	}()
 	if strings.TrimSpace(req.GetStage()) == "" {
 		return nil, errors.New("missing cache peer lookup stage")

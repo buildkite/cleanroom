@@ -229,8 +229,9 @@ func TestCreateSandboxImportsDependencyStageCacheFromPeer(t *testing.T) {
 
 	metrics := collectResourceMetrics(t, reader)
 	requireInt64SumMetricValue(t, metrics, observability.MetricCachePeerLookupTotal, map[string]string{
-		observability.MetricLabelStage:  dependencyStageName,
-		observability.MetricLabelResult: observability.CacheResultHit,
+		observability.MetricLabelStage:     dependencyStageName,
+		observability.MetricLabelDirection: observability.CachePeerLookupDirectionOutbound,
+		observability.MetricLabelResult:    observability.CacheResultHit,
 	}, 1)
 	requireInt64SumMetricValue(t, metrics, observability.MetricCachePeerImportTotal, map[string]string{
 		observability.MetricLabelStage:  dependencyStageName,

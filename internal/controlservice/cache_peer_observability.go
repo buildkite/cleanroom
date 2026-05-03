@@ -11,9 +11,33 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-func (s *Service) recordCachePeerLookup(ctx context.Context, stage, result string) {
+func (s *Service) recordCachePeerLookup(ctx context.Context, stage, direction, result string) {
 	if metrics := s.serviceMetrics(); metrics != nil {
-		metrics.RecordCachePeerLookup(ctx, stage, result)
+		metrics.RecordCachePeerLookup(ctx, normalizeCachePeerLookupMetricStage(stage), normalizeCachePeerLookupMetricDirection(direction), result)
+	}
+}
+
+func normalizeCachePeerLookupMetricStage(stage string) string {
+	switch strings.TrimSpace(stage) {
+	case "":
+		return "unknown"
+	case dependencyStageName:
+		return dependencyStageName
+	case servicesStageName:
+		return servicesStageName
+	default:
+		return "unsupported"
+	}
+}
+
+func normalizeCachePeerLookupMetricDirection(direction string) string {
+	switch strings.TrimSpace(direction) {
+	case observability.CachePeerLookupDirectionInbound:
+		return observability.CachePeerLookupDirectionInbound
+	case observability.CachePeerLookupDirectionOutbound:
+		return observability.CachePeerLookupDirectionOutbound
+	default:
+		return "unknown"
 	}
 }
 

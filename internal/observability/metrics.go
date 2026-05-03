@@ -48,7 +48,7 @@ func NewServiceMetrics(provider metric.MeterProvider) (*ServiceMetrics, error) {
 	}
 	cachePeerLookupTotal, err := meter.Int64Counter(
 		MetricCachePeerLookupTotal,
-		metric.WithDescription("Cache peer lookup attempts by stage and result"),
+		metric.WithDescription("Cache peer lookup attempts by stage, direction, and result"),
 	)
 	if err != nil {
 		return nil, err
@@ -111,12 +111,13 @@ func (m *ServiceMetrics) RecordExecution(ctx context.Context, backendName, kind,
 	m.executionDuration.Record(ctx, duration.Seconds(), attrs)
 }
 
-func (m *ServiceMetrics) RecordCachePeerLookup(ctx context.Context, stage, result string) {
+func (m *ServiceMetrics) RecordCachePeerLookup(ctx context.Context, stage, direction, result string) {
 	if m == nil {
 		return
 	}
 	m.cachePeerLookupTotal.Add(ctx, 1, metric.WithAttributes(
 		attribute.String(MetricLabelStage, normalizeMetricValue(stage, "unknown")),
+		attribute.String(MetricLabelDirection, normalizeMetricValue(direction, "unknown")),
 		attribute.String(MetricLabelResult, normalizeMetricValue(result, "unknown")),
 	))
 }
