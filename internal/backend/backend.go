@@ -310,14 +310,23 @@ type OutputStream struct {
 }
 
 type ExecutionRequest struct {
-	SandboxID    string
-	ExecutionID  string
-	Command      []string
-	Env          []string
-	TTY          bool
-	Policy       *policy.CompiledPolicy
-	NetworkStage policy.NetworkStage
+	SandboxID       string
+	ExecutionID     string
+	Command         []string
+	Dir             string
+	Env             []string
+	TTY             bool
+	InputProjection *InputProjection
+	Policy          *policy.CompiledPolicy
+	NetworkStage    policy.NetworkStage
 	FirecrackerConfig
+}
+
+type InputProjection struct {
+	SourceRoot          string
+	TargetRoot          string
+	Files               []string
+	MountSourceReadOnly bool
 }
 
 type FirecrackerConfig struct {

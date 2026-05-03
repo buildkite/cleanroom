@@ -1,0 +1,119 @@
+package controlservice
+
+import (
+	"context"
+	"fmt"
+	"path/filepath"
+	"sort"
+	"strings"
+
+	"github.com/buildkite/cleanroom/internal/backend"
+	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
+	"github.com/buildkite/cleanroom/internal/observability"
+	"github.com/buildkite/cleanroom/internal/policy"
+	"github.com/buildkite/cleanroom/internal/repositorycheckout"
+	"go.opentelemetry.io/otel/attribute"
+)
+
+const dependencyInputProjectionRoot = "/run/cleanroom/input-projections/dependencies"
+
+func (s *Service) bootstrapDependencyBlockVolumePlanInPersistentSandbox(
+	ctx context.Context,
+	adapter backend.Adapter,
+	sandboxID string,
+	compiled *policy.CompiledPolicy,
+	firecrackerCfg backend.FirecrackerConfig,
+	repository *repositorycheckout.Checkout,
+	plan dependencyBlockVolumePlan,
+	reporter CreateSandboxReporter,
+) error {
+	if adapter == nil || compiled == nil || repository == nil || strings.TrimSpace(sandboxID) == "" || len(plan.Blocks) == 0 {
+		return nil
+	}
+
+	for _, block := range plan.Blocks {
+		blockName := strings.TrimSpace(block.BlockName)
+		if block.CacheHit {
+			emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_BOOTSTRAP_DEPENDENCIES, "restoring dependency outputs: "+blockName)
+			continue
+		}
+
+		attrs := []attribute.KeyValue{
+			attribute.String(observability.AttrBackend, adapter.Name()),
+			attribute.String(observability.AttrSandboxID, sandboxID),
+			attribute.String("cleanroom.cache.block", blockName),
+			attribute.Int(observability.AttrCommandArgc, len(block.Command)),
+		}
+		if commitSHA := strings.TrimSpace(repository.CommitSHA); commitSHA != "" {
+			attrs = append(attrs, attribute.String(observability.AttrRepositoryCommitSHA, commitSHA))
+		}
+
+		emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_BOOTSTRAP_DEPENDENCIES, "running dependency bootstrap: "+blockName)
+		if err := s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.bootstrap_dependency_block", attrs, func(ctx context.Context) error {
+			return s.bootstrapDependencyBlockVolumeBlock(ctx, adapter, sandboxID, compiled, firecrackerCfg, repository, block, reporter)
+		}); err != nil {
+			return fmt.Errorf("dependency block %q: %w", blockName, err)
+		}
+	}
+	return nil
+}
+
+func (s *Service) bootstrapDependencyBlockVolumeBlock(
+	ctx context.Context,
+	adapter backend.Adapter,
+	sandboxID string,
+	compiled *policy.CompiledPolicy,
+	firecrackerCfg backend.FirecrackerConfig,
+	repository *repositorycheckout.Checkout,
+	block dependencyBlockVolumeBlockPlan,
+	reporter CreateSandboxReporter,
+) error {
+	if len(block.Command) == 0 {
+		return nil
+	}
+	sourceRoot := strings.TrimSpace(repository.DestinationDir)
+	if sourceRoot == "" {
+		sourceRoot = "/workspace"
+	}
+	inputProjection := &backend.InputProjection{
+		SourceRoot:          sourceRoot,
+		TargetRoot:          filepath.Join(dependencyInputProjectionRoot, strings.TrimSpace(block.BlockName)),
+		Files:               append([]string(nil), block.Inputs...),
+		MountSourceReadOnly: true,
+	}
+	env := stageBlockEnvList(block.Env)
+	_, result, stdout, stderr, err := s.runPersistentBootstrapCommandWithOptions(
+		ctx,
+		adapter,
+		sandboxID,
+		compiled,
+		firecrackerCfg,
+		cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_BOOTSTRAP_DEPENDENCIES,
+		policy.NetworkStageDependencies,
+		block.Command,
+		env,
+		nil,
+		persistentSandboxCommandOptions{
+			Dir:             sourceRoot,
+			InputProjection: inputProjection,
+		},
+		reporter,
+	)
+	return persistentBootstrapCommandError(result, stdout, stderr, err, "dependency block bootstrap returned no result", "dependency block bootstrap failed with exit code %d")
+}
+
+func stageBlockEnvList(env map[string]string) []string {
+	if len(env) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(env))
+	for key := range env {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	out := make([]string, 0, len(keys))
+	for _, key := range keys {
+		out = append(out, key+"="+env[key])
+	}
+	return out
+}

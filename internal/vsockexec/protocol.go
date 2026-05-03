@@ -20,6 +20,14 @@ type ExecRequest struct {
 	EntropySeed       []byte             `json:"entropy_seed,omitempty"`
 	TTY               bool               `json:"tty,omitempty"`
 	CacheOutputMounts []CacheOutputMount `json:"cache_output_mounts,omitempty"`
+	InputProjection   *InputProjection   `json:"input_projection,omitempty"`
+}
+
+type InputProjection struct {
+	SourceRoot          string   `json:"source_root"`
+	TargetRoot          string   `json:"target_root"`
+	Files               []string `json:"files,omitempty"`
+	MountSourceReadOnly bool     `json:"mount_source_read_only,omitempty"`
 }
 
 type CacheOutputMount struct {

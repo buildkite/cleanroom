@@ -82,6 +82,13 @@ func handleConn(conn io.ReadWriteCloser) {
 		sendErrorResponse(conn, err)
 		return
 	}
+	projectedReq, cleanupInputProjection, err := setupInputProjection(req)
+	if err != nil {
+		sendErrorResponse(conn, err)
+		return
+	}
+	defer cleanupInputProjection()
+	req = projectedReq
 
 	if req.TTY {
 		handleConnTTY(conn, dec, req)

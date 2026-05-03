@@ -891,13 +891,57 @@ Completed in phase 5:
 
 Remaining runtime work after phase 5:
 
-- run missed dependency and service blocks from isolated input projections
+- run missed service blocks from isolated input projections
 - inspect overlay write capture results and warn/fallback on escaped writes
 - snapshot and publish output records after successful missed blocks
 - materialize captured file outputs into both the output volume and sandbox root
   after a missed block run
 - advertise `sandbox.overlay_write_capture` once escaped-write detection and
   isolated block execution are wired through
+- decide whether output volume sizing stays internal or becomes policy-visible
+  after real workloads show the right default
+
+### Phase 6 PR Status
+
+The sixth implementation PR adds the dependency-block execution substrate needed
+for the v0.7 experimental path. It is still not the full publishable
+file-keyed cache path because escaped-write inspection and block output
+publication remain disabled.
+
+Completed in phase 6:
+
+- backend execution requests can carry an isolated input projection with a
+  source root, managed target root, declared files, and a read-only bind option
+- Firecracker and darwin-vz forward execution working directories and input
+  projection metadata through the guest exec protocol
+- the Linux guest agent materializes declared regular files and glob matches
+  into a managed projection under `/run/cleanroom/input-projections`
+- input projection materialization rejects absolute paths, `..` escapes,
+  missing inputs, directories, symlinks, and other non-regular files
+- when requested, the guest agent creates a per-command mount namespace and
+  bind-mounts the projection read-only over the source workspace root before
+  running the command
+- dependency block-volume misses now run as individual block commands from the
+  projected workspace when the block-volume runtime path is available
+- dependency block-volume hits are skipped because their output volumes are
+  already restored at VM launch
+- exact full-rootfs dependency-stage publication is skipped when the
+  block-volume runtime path is selected, because declared directory outputs are
+  mounted from sidecar volumes and would not be captured by a rootfs snapshot
+
+Remaining runtime work after phase 6:
+
+- publish a replacement cache artifact for dependency block misses; until then
+  this path is execution substrate rather than reusable block-volume caching
+- inspect overlay write capture results and warn/fallback on escaped writes
+- snapshot and publish dependency output records after successful missed blocks
+- materialize captured dependency file outputs into both the output volume and
+  sandbox root after a missed block run
+- run missed service blocks from isolated input projections
+- snapshot and publish service output records after successful missed service
+  blocks
+- advertise `sandbox.overlay_write_capture` once escaped-write detection and
+  block output publication are wired through
 - decide whether output volume sizing stays internal or becomes policy-visible
   after real workloads show the right default
 

@@ -374,8 +374,8 @@ func TestCreateSandboxLooksUpServiceBlockVolumeCaches(t *testing.T) {
 					t.Fatalf("unexpected lookup key %d: got %q want %q", i, got, wantKey)
 				}
 			}
-			if got, want := adapter.runCalls, 3; got != want {
-				t.Fatalf("expected aggregate repository + dependency + services bootstrap executions, got %d want %d", got, want)
+			if got, want := adapter.runCalls, 4; got != want {
+				t.Fatalf("expected repository + dependency block misses + aggregate services bootstrap executions, got %d want %d", got, want)
 			}
 		})
 	}
@@ -424,6 +424,35 @@ func TestCreateSandboxLooksUpServiceBlockVolumesAfterDependencyStageRestore(t *t
 		t.Fatalf("FromProto returned error: %v", err)
 	}
 	repository := repositorycheckout.FromProto(repositoryCheckout)
+	aggregateDependencyPlan, aggregateDependencyEnabled := dependencyStagePlanForRepository(compiled, repository)
+	if !aggregateDependencyEnabled {
+		t.Fatal("expected aggregate dependency stage plan")
+	}
+	workspaceKey := workspaceStageCacheKey("firecracker", "runtime-base:test", compiled.Hash, repository, nil)
+	aggregateDependencyPlan, aggregateDependencyEnabled, err = svc.finalizeDependencyStagePlan(context.Background(), compiled, repository, nil, nil, "firecracker", workspaceKey, "runtime-base:test", aggregateDependencyPlan)
+	if err != nil {
+		t.Fatalf("finalizeDependencyStagePlan returned error: %v", err)
+	}
+	if !aggregateDependencyEnabled {
+		t.Fatal("expected finalized aggregate dependency stage plan")
+	}
+	if err := cacheStore.Create(context.Background(), cachestore.Record{
+		CacheKey:          aggregateDependencyPlan.CacheKey,
+		Stage:             dependencyStageName,
+		ReuseMode:         dependencyStageReuseExact,
+		State:             cacheStateReady,
+		BackingSnapshotID: "snapshot-dependency",
+		Backend:           "firecracker",
+		PolicyHash:        compiled.Hash,
+		Policy:            compiled.ToProto(),
+		Repository:        cloneRepositoryCheckout(normalizeRepositoryCheckoutForComparison(repository)).ToProto(),
+		ParentCacheKey:    aggregateDependencyPlan.ParentWorkspaceCacheKey,
+		StorageRef:        "/snapshots/dependency.ext4",
+		ProducerVersion:   dependencyStageProducerVersion,
+	}); err != nil {
+		t.Fatalf("Create aggregate dependency stage record returned error: %v", err)
+	}
+
 	dependencyPlan, ok, err := svc.finalizeDependencyBlockVolumePlan(context.Background(), compiled, repository, nil, nil, "firecracker", "runtime-base:test")
 	if err != nil {
 		t.Fatalf("finalizeDependencyBlockVolumePlan returned error: %v", err)
@@ -465,8 +494,8 @@ func TestCreateSandboxLooksUpServiceBlockVolumesAfterDependencyStageRestore(t *t
 	if got, want := adapter.provisionFromSnapshotReq.CacheOutputVolumes, serviceBlockVolumeOutputSpecsForTest(t, lookedUpServicePlan); !cacheOutputVolumeSpecsEqual(got, want) {
 		t.Fatalf("unexpected dependency-stage restore output volume specs:\ngot:  %#v\nwant: %#v", got, want)
 	}
-	if got, want := adapter.runCalls, 4; got != want {
-		t.Fatalf("expected aggregate services bootstrap to still run after dependency restore, got %d want %d", got, want)
+	if got, want := adapter.runCalls, 5; got != want {
+		t.Fatalf("expected dependency block misses on first create plus aggregate services bootstrap after dependency restore, got %d want %d", got, want)
 	}
 }
 

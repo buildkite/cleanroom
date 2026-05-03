@@ -271,6 +271,49 @@ func TestRunInSandboxForwardsCacheOutputMounts(t *testing.T) {
 	}
 }
 
+func TestRunInSandboxForwardsInputProjection(t *testing.T) {
+	t.Parallel()
+
+	wantProjection := &backend.InputProjection{
+		SourceRoot:          "/workspace",
+		TargetRoot:          "/run/cleanroom/input-projections/dependencies/go-modules",
+		Files:               []string{"go.mod", "go.sum"},
+		MountSourceReadOnly: true,
+	}
+	var gotDir string
+	var gotProjection *vsockexec.InputProjection
+	adapter := &Adapter{}
+	adapter.runGuestCommandFn = func(_ context.Context, _ context.Context, _ <-chan struct{}, _ func() error, _ string, _ uint32, req vsockexec.ExecRequest, _ backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error) {
+		gotDir = req.Dir
+		gotProjection = req.InputProjection
+		return vsockexec.ExecResponse{ExitCode: 0}, guestExecTiming{}, nil
+	}
+	adapter.sandboxes = map[string]*sandboxInstance{
+		"cr-test": {
+			SandboxID: "cr-test",
+			VsockPath: "/tmp/fake.sock",
+			GuestPort: 10700,
+		},
+	}
+
+	if _, err := adapter.RunInSandbox(context.Background(), backend.ExecutionRequest{
+		SandboxID:       "cr-test",
+		ExecutionID:     "run-123",
+		Command:         []string{"true"},
+		Dir:             "/workspace",
+		InputProjection: wantProjection,
+	}, backend.OutputStream{}); err != nil {
+		t.Fatalf("RunInSandbox returned error: %v", err)
+	}
+	if got, want := gotDir, "/workspace"; got != want {
+		t.Fatalf("unexpected dir: got %q want %q", got, want)
+	}
+	want := vsockInputProjection(wantProjection)
+	if !reflect.DeepEqual(gotProjection, want) {
+		t.Fatalf("unexpected input projection: got %#v want %#v", gotProjection, want)
+	}
+}
+
 func TestRunInSandboxWritesRunObservabilityForStatusCommand(t *testing.T) {
 	t.Parallel()
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -392,8 +393,8 @@ func TestCreateSandboxLooksUpDependencyBlockVolumeCaches(t *testing.T) {
 					t.Fatalf("unexpected lookup key %d: got %q want %q", i, got, wantKey)
 				}
 			}
-			if got, want := adapter.runCalls, 2; got != want {
-				t.Fatalf("expected aggregate repository + dependency bootstrap executions, got %d want %d", got, want)
+			if got, want := adapter.runCalls, 1+len(plan.Blocks)-tc.wantHits; got != want {
+				t.Fatalf("expected repository plus dependency block miss executions, got %d want %d", got, want)
 			}
 		})
 	}
@@ -441,6 +442,83 @@ func TestDependencyBlockVolumeRuntimeDecisionRequiresOutputVolumesAndOverlay(t *
 				t.Fatalf("expected empty fallback reason for enabled decision, got %q", decision.FallbackReason)
 			}
 		})
+	}
+}
+
+func TestBootstrapDependencyBlockVolumePlanRunsMissesFromInputProjection(t *testing.T) {
+	t.Parallel()
+
+	compiled, err := policy.FromProto(testRepositoryTwoDependencyBlocksPolicy())
+	if err != nil {
+		t.Fatalf("policy.FromProto returned error: %v", err)
+	}
+	repository := repositorycheckout.FromProto(testRepositoryCheckoutProto())
+	plan := dependencyBlockVolumePlan{
+		Blocks: []dependencyBlockVolumeBlockPlan{
+			{
+				BlockName: "toolchains",
+				Command:   append([]string(nil), compiled.Dependencies.Blocks[0].Command...),
+				Env:       cloneDependencyBlockEnv(compiled.Dependencies.Blocks[0].Env),
+				Inputs:    append([]string(nil), compiled.Dependencies.Blocks[0].Inputs.Files...),
+				CacheHit:  true,
+			},
+			{
+				BlockName: "go-modules",
+				Command:   append([]string(nil), compiled.Dependencies.Blocks[1].Command...),
+				Env:       cloneDependencyBlockEnv(compiled.Dependencies.Blocks[1].Env),
+				Inputs:    append([]string(nil), compiled.Dependencies.Blocks[1].Inputs.Files...),
+			},
+		},
+	}
+
+	var gotReqs []backend.ExecutionRequest
+	adapter := &stubAdapter{
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
+			gotReqs = append(gotReqs, req)
+			return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0}, nil
+		},
+	}
+	svc := newTestService(adapter)
+	err = svc.bootstrapDependencyBlockVolumePlanInPersistentSandbox(
+		context.Background(),
+		adapter,
+		"cr-test",
+		compiled,
+		backend.FirecrackerConfig{},
+		repository,
+		plan,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("bootstrapDependencyBlockVolumePlanInPersistentSandbox returned error: %v", err)
+	}
+	if got, want := len(gotReqs), 1; got != want {
+		t.Fatalf("unexpected run count: got %d want %d", got, want)
+	}
+	req := gotReqs[0]
+	if got, want := strings.Join(req.Command, "\x00"), strings.Join(compiled.Dependencies.Blocks[1].Command, "\x00"); got != want {
+		t.Fatalf("unexpected command: got %q want %q", got, want)
+	}
+	if got, want := req.Dir, "/workspace"; got != want {
+		t.Fatalf("unexpected dir: got %q want %q", got, want)
+	}
+	if !slices.Contains(req.Env, "GOMODCACHE=/root/go/pkg/mod") {
+		t.Fatalf("expected GOMODCACHE env, got %v", req.Env)
+	}
+	if req.InputProjection == nil {
+		t.Fatal("expected input projection")
+	}
+	if got, want := req.InputProjection.SourceRoot, "/workspace"; got != want {
+		t.Fatalf("unexpected projection source root: got %q want %q", got, want)
+	}
+	if got, want := req.InputProjection.TargetRoot, "/run/cleanroom/input-projections/dependencies/go-modules"; got != want {
+		t.Fatalf("unexpected projection target root: got %q want %q", got, want)
+	}
+	if !slices.Equal(req.InputProjection.Files, []string{"go.mod", "go.sum"}) {
+		t.Fatalf("unexpected projection files: got %v", req.InputProjection.Files)
+	}
+	if !req.InputProjection.MountSourceReadOnly {
+		t.Fatal("expected projection to be mounted read-only over source")
 	}
 }
 

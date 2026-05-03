@@ -341,6 +341,18 @@ func cloneCacheOutputMounts(mounts []vsockexec.CacheOutputMount) []vsockexec.Cac
 	return out
 }
 
+func vsockInputProjection(projection *backend.InputProjection) *vsockexec.InputProjection {
+	if projection == nil {
+		return nil
+	}
+	return &vsockexec.InputProjection{
+		SourceRoot:          strings.TrimSpace(projection.SourceRoot),
+		TargetRoot:          strings.TrimSpace(projection.TargetRoot),
+		Files:               append([]string(nil), projection.Files...),
+		MountSourceReadOnly: projection.MountSourceReadOnly,
+	}
+}
+
 func cacheOutputGuestMountPath(driveID string) string {
 	return filepath.Join(cacheOutputGuestMountRoot, strings.TrimSpace(driveID))
 }
