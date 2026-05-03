@@ -232,6 +232,36 @@ cleanroom cp ./fixture.json <id>:/tmp/fixture.json
 cleanroom cp <id>:/tmp/result.json ./result.json
 ```
 
+Copy workspace changes through the Git-backed workspace sync flow:
+
+```bash
+# Copy local tracked and unignored workspace changes into an existing sandbox
+cleanroom workspace copy-in --dry-run <id>
+cleanroom workspace copy-in <id>
+
+# Inspect sandbox changes before writing anything locally
+cleanroom workspace diff <id>
+cleanroom workspace copy-out --dry-run <id>
+
+# Copy sandbox workspace changes back into the matching local checkout
+cleanroom workspace copy-out <id>
+cleanroom workspace copy-out --force <id>
+```
+
+Top-level commands can run the same operations automatically:
+
+```bash
+cleanroom exec --copy-in -- npm test
+cleanroom exec --copy-out -- npm run fmt
+cleanroom exec --sync -- npm run generate
+cleanroom console --sync -- sh
+```
+
+Workspace copy-in/copy-out currently requires a matching local Git worktree.
+Ignored paths such as dependency directories and build caches are excluded by
+default. Copy-out refuses local conflicts unless `--force` is used, and
+non-Git directories should use explicit `cleanroom cp` paths for now.
+
 Keep a sandbox created by `exec`:
 
 ```bash

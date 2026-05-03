@@ -2,7 +2,7 @@
 
 **Spec reference:** `spec.md` sections 5.1.1, 5.4, 5.4.2
 **Related plan:** `docs/plans/sandbox-transfer-invariants.md`
-**Status:** In progress
+**Status:** Git-backed MVP landed; optional live-copy and copy-out-on-terminate deferred
 **Last reviewed:** 2026-05-03
 
 ## Implementation Status
@@ -27,17 +27,21 @@
   for `cleanroom exec` and `cleanroom console`. It composes the manual
   copy-in/copy-out operations, prevalidates existing sandbox copy-out targets,
   and runs copy-out before automatic sandbox termination.
-- This changeset removes copy-out recovery payload directories from the normal
-  UX, reports copy-out conflicts together, and adds
+- PR #283 removed copy-out recovery payload directories from the normal UX,
+  reports copy-out conflicts together, and adds
   `workspace copy-out --force` as the explicit local overwrite path.
 - Non-Git workspace copy-in/copy-out is explicitly out of scope for now. The
   supported workspace-sync surface is Git-backed.
+- The Git-backed MVP in Phases 1-3 is landed. Remaining phases are optional
+  follow-ups: live local-to-cleanroom copy and copy-out-on-terminate for kept
+  sandboxes.
 
 ## Summary
 
-Replace the current `--include-local-changes` UX with a clearer `--copy-in` flag
-and add explicit workspace copy-in/copy-out primitives for the common "edit
-locally, run in Cleanroom, bring changes back" workflow.
+Use explicit `--copy-in`, `--copy-out`, and `--sync` flags plus manual
+workspace commands for the common "edit locally, run in Cleanroom, bring
+changes back" workflow. These commands replace the earlier local-changes flag
+with directional workspace vocabulary.
 
 In this plan, "workspace" means the project tree inside the cleanroom at the
 resolved repository path, normally `/workspace`. It does not mean the full
@@ -104,8 +108,8 @@ Top-level flags:
   operations to `/workspace`.
 - Keep ordinary `exec`, `console`, and `create` startup fast by avoiding
   implicit whole-tree copy operations.
-- Replace `--include-local-changes` with `--copy-in` instead of carrying both
-  names long term.
+- Keep `--copy-in` as the supported replacement for the old local-changes flag
+  instead of carrying both names long term.
 - Exclude ignored dependency/cache/runtime directories from copy-in/copy-out by
   default, so a Linux `node_modules/` never gets copied back to a macOS
   checkout unless the user deliberately asks for that exact path.
@@ -274,7 +278,8 @@ Supported on:
 - `cleanroom console`
 - `cleanroom create`
 
-`--copy-in` replaces `--include-local-changes` as the top-level copy-in flag.
+`--copy-in` is the top-level copy-in flag. The old local-changes flag has been
+removed.
 
 For Git-backed source workspaces, the implementation should reuse the existing
 repository changeset path:
@@ -559,10 +564,10 @@ scoping, baseline tracking, mirror planning, and conflict metadata.
 
 ## Interaction With Existing Local Changesets
 
-`--include-local-changes` currently packages local dirty state as an explicit
-repository changeset during sandbox creation.
+The removed local-changes flag previously packaged local dirty state as an
+explicit repository changeset during sandbox creation.
 
-This plan should rename that user-facing behavior to `--copy-in`:
+The supported user-facing behavior is now `--copy-in`:
 
 - `--copy-in` is the top-level one-shot copy-in flag for local workspace changes
 - `workspace copy-in` is the manual form of the same copy-in operation
@@ -576,10 +581,7 @@ The term "repository changeset" should remain an implementation and diagnostic
 term. CLI help and docs for the happy path should describe the behavior as
 copying workspace changes.
 
-Because Cleanroom is pre-1.0, prefer removing `--include-local-changes` rather
-than keeping a long compatibility path. If a short alias is kept during
-transition, it should be documented as equivalent to `--copy-in` and then deleted
-before v1.
+Because Cleanroom is pre-1.0, no compatibility alias is kept for the old flag.
 
 ## CI and Hermetic Workflows
 
@@ -629,8 +631,7 @@ Status: landed.
   `node_modules/`, are not included in Git-backed copy unless tracked.
 - Add tests that `workspace copy-in` and top-level `--copy-in` produce the same
   destination contents for Git sources.
-- Remove or immediately deprecate `--include-local-changes` as the old spelling
-  of the same behavior.
+- Remove the old local-changes flag rather than carrying it as an alias.
 - Apply copied changes after exact checkout setup and before command execution
   or console entry.
 - Store enough local binding metadata for later copy-out work.
@@ -655,7 +656,7 @@ Status: landed.
   state and prefer the bound local root during `workspace copy-out`.
 - PR #276: use the recorded copy-in manifest as the local conflict/apply
   base.
-- This changeset: add `workspace copy-out --force`, aggregate local copy-out
+- PR #283: add `workspace copy-out --force`, aggregate local copy-out
   conflicts, and stop writing recovery payload directories.
 
 ### Phase 3: Safe top-level copy-out automation
