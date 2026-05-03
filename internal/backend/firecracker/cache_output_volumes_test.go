@@ -1,12 +1,15 @@
 package firecracker
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/buildkite/cleanroom/internal/backend"
@@ -287,6 +290,105 @@ func TestPrepareCacheOutputVolumesCleansUpOnFailure(t *testing.T) {
 	}
 	if got, want := len(destroyReqs), 1; got != want {
 		t.Fatalf("expected prepared volume cleanup, got %d destroy requests want %d", got, want)
+	}
+}
+
+func TestSnapshotCacheOutputVolumesSnapshotsPreparedVolumes(t *testing.T) {
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+
+	volumePath := filepath.Join(t.TempDir(), "output-volume.ext4")
+	volumeBytes := []byte("dependency output volume bytes")
+	if err := os.WriteFile(volumePath, volumeBytes, 0o644); err != nil {
+		t.Fatalf("write output volume: %v", err)
+	}
+
+	var signals []syscall.Signal
+	prevSignal := sendProcessSignal
+	sendProcessSignal = func(_ *os.Process, sig syscall.Signal) error {
+		signals = append(signals, sig)
+		return nil
+	}
+	t.Cleanup(func() { sendProcessSignal = prevSignal })
+
+	adapter := &Adapter{
+		runGuestCommandFn: func(_ context.Context, _ context.Context, _ <-chan struct{}, _ func() error, _ string, _ uint32, req vsockexec.ExecRequest, _ backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error) {
+			if len(req.Command) != 1 || req.Command[0] != "sync" {
+				t.Fatalf("unexpected command: %v", req.Command)
+			}
+			return vsockexec.ExecResponse{ExitCode: 0}, guestExecTiming{}, nil
+		},
+		sandboxes: map[string]*sandboxInstance{
+			"cr-test": {
+				SandboxID: "cr-test",
+				VsockPath: "/tmp/fake.sock",
+				GuestPort: 10700,
+				fcCmd:     &exec.Cmd{Process: &os.Process{Pid: 42}},
+				exitedCh:  make(chan struct{}),
+				cacheOutputVolumes: []preparedCacheOutputVolume{
+					{
+						Spec: backend.CacheOutputVolumeSpec{
+							Stage:     "dependency-volume",
+							BlockName: "go-modules",
+							CacheKey:  "dependency-volume:v1:test",
+							VolumeID:  "volume-test",
+						},
+						Volume: volumestore.WritableVolume{
+							Ref:            volumePath,
+							AttachmentPath: volumePath,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	result, err := adapter.SnapshotCacheOutputVolumes(context.Background(), backend.SnapshotCacheOutputVolumesRequest{
+		SandboxID: "cr-test",
+		Volumes: []backend.CacheOutputVolumeSnapshotRequest{
+			{
+				Stage:      "dependency-volume",
+				BlockName:  "go-modules",
+				CacheKey:   "dependency-volume:v1:test",
+				VolumeID:   "volume-test",
+				SnapshotID: "snapshot-test",
+			},
+		},
+		FirecrackerConfig: backend.FirecrackerConfig{
+			Snapshots: backend.SnapshotConfig{Enabled: true},
+		},
+	})
+	if err != nil {
+		t.Fatalf("SnapshotCacheOutputVolumes returned error: %v", err)
+	}
+	if got, want := len(result.Volumes), 1; got != want {
+		t.Fatalf("unexpected snapshot count: got %d want %d", got, want)
+	}
+	snapshot := result.Volumes[0]
+	if got, want := snapshot.StorageDriver, "file"; got != want {
+		t.Fatalf("unexpected storage driver: got %q want %q", got, want)
+	}
+	if got, want := snapshot.StorageRef, filepath.Join(stateHome, "cleanroom", "snapshots", "firecracker", "snapshot-test", "rootfs.ext4"); got != want {
+		t.Fatalf("unexpected storage ref: got %q want %q", got, want)
+	}
+	if got, want := snapshot.Stage, "dependency-volume"; got != want {
+		t.Fatalf("unexpected stage: got %q want %q", got, want)
+	}
+	if got, want := snapshot.BlockName, "go-modules"; got != want {
+		t.Fatalf("unexpected block name: got %q want %q", got, want)
+	}
+	if got, want := snapshot.VolumeID, "volume-test"; got != want {
+		t.Fatalf("unexpected volume id: got %q want %q", got, want)
+	}
+	data, err := os.ReadFile(snapshot.StorageRef)
+	if err != nil {
+		t.Fatalf("read output volume snapshot: %v", err)
+	}
+	if !bytes.Equal(data, volumeBytes) {
+		t.Fatalf("snapshot bytes mismatch: got %q want %q", data, volumeBytes)
+	}
+	if want := []syscall.Signal{syscall.SIGSTOP, syscall.SIGCONT}; !reflect.DeepEqual(signals, want) {
+		t.Fatalf("unexpected signals: got %v want %v", signals, want)
 	}
 }
 

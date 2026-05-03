@@ -1,7 +1,7 @@
 # Dependency and Service Volume Cache Plan
 
 **Spec reference:** `spec.md` sections 5.1.1, 5.2, 6.4
-**Status:** Proposed
+**Status:** In implementation
 **Last reviewed:** 2026-05-03
 
 ## Summary
@@ -935,12 +935,37 @@ Completed in phase 6:
   block-volume runtime path is selected, because declared directory outputs are
   mounted from sidecar volumes and would not be captured by a rootfs snapshot
 
-Remaining runtime work after phase 6:
+### Phase 7 PR Status
 
-- publish a replacement cache artifact for dependency block misses; until then
-  this path is execution substrate rather than reusable block-volume caching
+The seventh implementation PR adds dependency block cache publication plumbing.
+This is the first slice that can write `dependency-volume` cache metadata for
+missed dependency blocks, but the end-to-end Firecracker path remains gated by
+the existing block-volume runtime decision. Firecracker can snapshot attached
+cache output volumes now, but it still does not advertise
+`sandbox.overlay_write_capture`, so the default runtime does not publish
+file-keyed dependency volume caches until escaped-write capture is wired.
+
+Completed in phase 7:
+
+- backend adapters can implement `SnapshotCacheOutputVolumes` for cache output
+  volumes attached to a running persistent sandbox
+- Firecracker keeps prepared cache output volume handles on the sandbox instance
+  and can sync the guest, pause the VM, snapshot requested output volumes, clean
+  up partial snapshots on failure, and resume the VM
+- after dependency block misses run successfully, control-service snapshots
+  directory-only dependency output volumes and persists `dependency-volume`
+  records with block input, command, environment, output, prior-block, runtime,
+  and storage metadata
+- dependency block cache publication is wired for both restored-workspace and
+  fresh-provision dependency bootstrap paths
+- dependency blocks with `outputs.files` are explicitly skipped for publication
+  until file output capture/materialization is implemented
+- exact full-rootfs dependency-stage publication remains skipped whenever the
+  block-volume runtime path is selected
+
+Remaining runtime work after phase 7:
+
 - inspect overlay write capture results and warn/fallback on escaped writes
-- snapshot and publish dependency output records after successful missed blocks
 - materialize captured dependency file outputs into both the output volume and
   sandbox root after a missed block run
 - run missed service blocks from isolated input projections

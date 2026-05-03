@@ -381,7 +381,8 @@ func TestCreateSandboxLooksUpDependencyBlockVolumeCaches(t *testing.T) {
 			}); err != nil {
 				t.Fatalf("CreateSandbox returned error: %v", err)
 			}
-			if got, want := cacheStore.getReadyCount(dependencyVolumeStageName), len(plan.Blocks); got != want {
+			expectedLookups := len(plan.Blocks) + len(plan.Blocks) - tc.wantHits
+			if got, want := cacheStore.getReadyCount(dependencyVolumeStageName), expectedLookups; got != want {
 				t.Fatalf("unexpected dependency block-volume lookup count: got %d want %d", got, want)
 			}
 			if got := cacheStore.getReadyHitCount(dependencyVolumeStageName); got != tc.wantHits {

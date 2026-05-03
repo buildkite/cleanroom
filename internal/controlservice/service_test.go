@@ -49,6 +49,7 @@ type stubAdapter struct {
 	provisionFn                func(context.Context, backend.ProvisionRequest) error
 	provisionFromSnapshotFn    func(context.Context, backend.ProvisionFromSnapshotRequest) error
 	createSnapshotFn           func(context.Context, backend.SnapshotRequest) (*backend.SnapshotResult, error)
+	snapshotCacheOutputsFn     func(context.Context, backend.SnapshotCacheOutputVolumesRequest) (*backend.SnapshotCacheOutputVolumesResult, error)
 	deleteSnapshotFn           func(context.Context, backend.DeleteSnapshotRequest) error
 	terminateFn                func(context.Context, string) error
 	downloadFn                 func(context.Context, string, string, int64) ([]byte, error)
@@ -64,11 +65,13 @@ type stubAdapter struct {
 	provisionReq               backend.ProvisionRequest
 	provisionFromSnapshotReq   backend.ProvisionFromSnapshotRequest
 	createSnapshotReq          backend.SnapshotRequest
+	snapshotCacheOutputsReq    backend.SnapshotCacheOutputVolumesRequest
 	deleteSnapshotReq          backend.DeleteSnapshotRequest
 	runCalls                   int
 	provisionCalls             int
 	provisionFromSnapshotCalls int
 	createSnapshotCalls        int
+	snapshotCacheOutputsCalls  int
 	deleteSnapshotCalls        int
 	terminateCalls             int
 	runtimeBaseKeyOverride     string
@@ -141,6 +144,31 @@ func (s *stubAdapter) CreateSnapshot(ctx context.Context, req backend.SnapshotRe
 		return s.createSnapshotFn(ctx, req)
 	}
 	return &backend.SnapshotResult{StorageRef: "/tmp/snapshot.ext4"}, nil
+}
+
+func (s *stubAdapter) SnapshotCacheOutputVolumes(ctx context.Context, req backend.SnapshotCacheOutputVolumesRequest) (*backend.SnapshotCacheOutputVolumesResult, error) {
+	s.snapshotCacheOutputsReq = req
+	s.snapshotCacheOutputsCalls++
+	if s.snapshotCacheOutputsFn != nil {
+		return s.snapshotCacheOutputsFn(ctx, req)
+	}
+	result := &backend.SnapshotCacheOutputVolumesResult{
+		Volumes: make([]backend.CacheOutputVolumeSnapshot, 0, len(req.Volumes)),
+	}
+	for _, volume := range req.Volumes {
+		result.Volumes = append(result.Volumes, backend.CacheOutputVolumeSnapshot{
+			Stage:              volume.Stage,
+			BlockName:          volume.BlockName,
+			CacheKey:           volume.CacheKey,
+			VolumeID:           volume.VolumeID,
+			SnapshotID:         volume.SnapshotID,
+			StorageDriver:      "file",
+			StorageRef:         "/tmp/" + volume.VolumeID + ".ext4",
+			StorageSizeBytes:   1024,
+			ExclusiveSizeBytes: 1024,
+		})
+	}
+	return result, nil
 }
 
 func (s *stubAdapter) ProvisionSandboxFromSnapshot(ctx context.Context, req backend.ProvisionFromSnapshotRequest) error {

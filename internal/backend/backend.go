@@ -171,6 +171,13 @@ type SnapshottingAdapter interface {
 	DeleteSnapshot(ctx context.Context, req DeleteSnapshotRequest) error
 }
 
+// CacheOutputVolumeSnapshotter snapshots cache output volumes that were
+// attached to an already-provisioned sandbox.
+type CacheOutputVolumeSnapshotter interface {
+	Adapter
+	SnapshotCacheOutputVolumes(ctx context.Context, req SnapshotCacheOutputVolumesRequest) (*SnapshotCacheOutputVolumesResult, error)
+}
+
 // RuntimeBaseKeyProvider returns a stable identifier for the backend runtime
 // base that a reusable workspace stage depends on.
 type RuntimeBaseKeyProvider interface {
@@ -251,6 +258,37 @@ type SnapshotRequest struct {
 }
 
 type SnapshotResult struct {
+	StorageRef         string
+	StorageSizeBytes   int64
+	ExclusiveSizeBytes int64
+	DriverMetadata     string
+}
+
+type SnapshotCacheOutputVolumesRequest struct {
+	SandboxID string
+	Volumes   []CacheOutputVolumeSnapshotRequest
+	FirecrackerConfig
+}
+
+type CacheOutputVolumeSnapshotRequest struct {
+	Stage      string
+	BlockName  string
+	CacheKey   string
+	VolumeID   string
+	SnapshotID string
+}
+
+type SnapshotCacheOutputVolumesResult struct {
+	Volumes []CacheOutputVolumeSnapshot
+}
+
+type CacheOutputVolumeSnapshot struct {
+	Stage              string
+	BlockName          string
+	CacheKey           string
+	VolumeID           string
+	SnapshotID         string
+	StorageDriver      string
 	StorageRef         string
 	StorageSizeBytes   int64
 	ExclusiveSizeBytes int64

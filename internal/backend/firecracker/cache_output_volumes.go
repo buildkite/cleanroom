@@ -14,6 +14,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/ext4image"
 	"github.com/buildkite/cleanroom/internal/hosttools"
+	"github.com/buildkite/cleanroom/internal/observability"
 	"github.com/buildkite/cleanroom/internal/volumestore"
 	"github.com/buildkite/cleanroom/internal/vsockexec"
 	charmlog "github.com/charmbracelet/log"
@@ -31,6 +32,172 @@ type preparedCacheOutputVolume struct {
 	Spec   backend.CacheOutputVolumeSpec
 	Drive  drive
 	Volume volumestore.WritableVolume
+}
+
+func (a *Adapter) SnapshotCacheOutputVolumes(ctx context.Context, req backend.SnapshotCacheOutputVolumesRequest) (result *backend.SnapshotCacheOutputVolumesResult, retErr error) {
+	sandboxID := strings.TrimSpace(req.SandboxID)
+	if sandboxID == "" {
+		return nil, errors.New("missing sandbox_id")
+	}
+	if len(req.Volumes) == 0 {
+		return &backend.SnapshotCacheOutputVolumesResult{}, nil
+	}
+
+	a.sandboxMu.Lock()
+	instance, ok := a.sandboxes[sandboxID]
+	a.sandboxMu.Unlock()
+	if !ok {
+		return nil, fmt.Errorf("unknown sandbox %q", sandboxID)
+	}
+	if err := instance.exitedErrOrNil(); err != nil {
+		return nil, fmt.Errorf("sandbox %q is not running: %w", sandboxID, err)
+	}
+
+	volumesByID := make(map[string]preparedCacheOutputVolume, len(instance.cacheOutputVolumes))
+	for _, volume := range instance.cacheOutputVolumes {
+		volumesByID[strings.TrimSpace(volume.Spec.VolumeID)] = volume
+	}
+
+	syncResp, _, err := a.executeInSandbox(ctx, instance, snapshotSyncTimeoutSeconds, []string{"sync"}, "", nil, false, nil, false, backend.OutputStream{})
+	if err != nil {
+		return nil, fmt.Errorf("sync sandbox filesystem before cache output snapshot: %w", err)
+	}
+	if syncResp.ExitCode != 0 {
+		guestErr := strings.TrimSpace(syncResp.Error)
+		if guestErr != "" {
+			return nil, fmt.Errorf("sync sandbox filesystem before cache output snapshot: guest sync command exited with code %d: %s", syncResp.ExitCode, guestErr)
+		}
+		return nil, fmt.Errorf("sync sandbox filesystem before cache output snapshot: guest sync command exited with code %d", syncResp.ExitCode)
+	}
+
+	if err := pauseSandboxProcess(instance); err != nil {
+		return nil, err
+	}
+	snapshotLogger := observability.WithLoggerFields(observability.WithTraceContext(baseFirecrackerLogger(a.Logger), ctx), observability.LogFieldSandboxID, sandboxID)
+	created := make([]backend.CacheOutputVolumeSnapshot, 0, len(req.Volumes))
+	paused := true
+	defer func() {
+		if !paused {
+			return
+		}
+		if err := resumeSandboxProcess(instance); err != nil && retErr == nil {
+			cleanupErr := cleanupCacheOutputVolumeSnapshots(context.Background(), snapshotLogger, req.FirecrackerConfig, created)
+			result = nil
+			if cleanupErr != nil {
+				retErr = fmt.Errorf("resume firecracker sandbox after cache output snapshot: %w (cleanup snapshots failed: %v)", err, cleanupErr)
+				return
+			}
+			retErr = fmt.Errorf("resume firecracker sandbox after cache output snapshot: %w", err)
+		}
+	}()
+
+	flushedDrivers := map[string]struct{}{}
+	out := &backend.SnapshotCacheOutputVolumesResult{Volumes: make([]backend.CacheOutputVolumeSnapshot, 0, len(req.Volumes))}
+	for i, volumeReq := range req.Volumes {
+		snapshot, err := snapshotCacheOutputVolume(ctx, snapshotLogger, req.FirecrackerConfig, volumesByID, flushedDrivers, volumeReq)
+		if err != nil {
+			cleanupErr := cleanupCacheOutputVolumeSnapshots(context.Background(), snapshotLogger, req.FirecrackerConfig, created)
+			if cleanupErr != nil {
+				return nil, fmt.Errorf("snapshot cache output volume %d: %w (cleanup snapshots failed: %v)", i, err, cleanupErr)
+			}
+			return nil, fmt.Errorf("snapshot cache output volume %d: %w", i, err)
+		}
+		created = append(created, snapshot)
+		out.Volumes = append(out.Volumes, snapshot)
+	}
+	return out, nil
+}
+
+func snapshotCacheOutputVolume(
+	ctx context.Context,
+	logger *charmlog.Logger,
+	cfg backend.FirecrackerConfig,
+	volumesByID map[string]preparedCacheOutputVolume,
+	flushedDrivers map[string]struct{},
+	req backend.CacheOutputVolumeSnapshotRequest,
+) (backend.CacheOutputVolumeSnapshot, error) {
+	volumeID := strings.TrimSpace(req.VolumeID)
+	if volumeID == "" {
+		return backend.CacheOutputVolumeSnapshot{}, errors.New("missing volume id")
+	}
+	snapshotID := strings.TrimSpace(req.SnapshotID)
+	if snapshotID == "" {
+		return backend.CacheOutputVolumeSnapshot{}, fmt.Errorf("cache output volume %q missing snapshot id", volumeID)
+	}
+	prepared, ok := volumesByID[volumeID]
+	if !ok {
+		return backend.CacheOutputVolumeSnapshot{}, fmt.Errorf("cache output volume %q is not attached", volumeID)
+	}
+	volumeRef := strings.TrimSpace(prepared.Volume.Ref)
+	if volumeRef == "" {
+		return backend.CacheOutputVolumeSnapshot{}, fmt.Errorf("cache output volume %q has no snapshot-capable ref", volumeID)
+	}
+
+	driverCfg, err := snapshotConfigForStorageRef(cfg, volumeRef)
+	if err != nil {
+		return backend.CacheOutputVolumeSnapshot{}, err
+	}
+	if err := validateSnapshotStorageConfig(driverCfg); err != nil {
+		return backend.CacheOutputVolumeSnapshot{}, err
+	}
+	driverName := normalizedSnapshotDriverName(driverCfg)
+	if _, ok := flushedDrivers[driverName]; !ok {
+		if err := flushSnapshotHostFilesystem(ctx, driverName); err != nil {
+			return backend.CacheOutputVolumeSnapshot{}, err
+		}
+		flushedDrivers[driverName] = struct{}{}
+	}
+
+	result, err := createSnapshotStorage(ctx, logger, driverCfg, snapshotID, volumeRef)
+	if err != nil {
+		return backend.CacheOutputVolumeSnapshot{}, err
+	}
+	if result == nil {
+		return backend.CacheOutputVolumeSnapshot{}, errors.New("snapshot storage returned no result")
+	}
+	storageRef := strings.TrimSpace(result.StorageRef)
+	if storageRef == "" {
+		return backend.CacheOutputVolumeSnapshot{}, errors.New("snapshot storage returned empty storage ref")
+	}
+	return backend.CacheOutputVolumeSnapshot{
+		Stage:              strings.TrimSpace(req.Stage),
+		BlockName:          strings.TrimSpace(req.BlockName),
+		CacheKey:           strings.TrimSpace(req.CacheKey),
+		VolumeID:           volumeID,
+		SnapshotID:         snapshotID,
+		StorageDriver:      driverName,
+		StorageRef:         storageRef,
+		StorageSizeBytes:   result.StorageSizeBytes,
+		ExclusiveSizeBytes: result.ExclusiveSizeBytes,
+		DriverMetadata:     strings.TrimSpace(result.DriverMetadata),
+	}, nil
+}
+
+func cleanupCacheOutputVolumeSnapshots(ctx context.Context, logger *charmlog.Logger, cfg backend.FirecrackerConfig, snapshots []backend.CacheOutputVolumeSnapshot) error {
+	var errs []error
+	for i := len(snapshots) - 1; i >= 0; i-- {
+		storageRef := strings.TrimSpace(snapshots[i].StorageRef)
+		if storageRef == "" {
+			continue
+		}
+		driverCfg, err := snapshotConfigForStorageRef(cfg, storageRef)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if err := destroySnapshotStorage(ctx, logger, driverCfg, storageRef); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func normalizedSnapshotDriverName(cfg backend.FirecrackerConfig) string {
+	driverName := strings.ToLower(strings.TrimSpace(cfg.Snapshots.Driver))
+	if driverName == "" {
+		return "file"
+	}
+	return driverName
 }
 
 func prepareCacheOutputVolumes(ctx context.Context, logger *charmlog.Logger, cfg backend.FirecrackerConfig, sandboxID, runDir string, specs []backend.CacheOutputVolumeSpec) ([]preparedCacheOutputVolume, func(), error) {

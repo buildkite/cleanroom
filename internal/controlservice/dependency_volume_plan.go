@@ -23,6 +23,7 @@ import (
 
 const (
 	dependencyVolumeStageName           = "dependency-volume"
+	dependencyVolumeReuseMode           = "file-keyed-volume"
 	dependencyVolumeProducerVersion     = "cleanroom/dependency-volume-v1"
 	dependencyVolumeOutputLayoutVersion = "aggregate-v1"
 )
@@ -39,6 +40,7 @@ type dependencyBlockVolumeBlockPlan struct {
 	Inputs                          []string
 	Outputs                         policy.StageBlockOutputs
 	CacheKey                        string
+	RuntimeBaseKey                  string
 	CommandDigest                   string
 	EnvDigest                       string
 	InputManifestDigest             string
@@ -218,6 +220,7 @@ func (s *Service) finalizeDependencyBlockVolumeBlockPlan(
 		Inputs:                          append([]string(nil), block.Inputs.Files...),
 		Outputs:                         cloneStageBlockOutputs(block.Outputs),
 		CacheKey:                        cacheKey,
+		RuntimeBaseKey:                  strings.TrimSpace(runtimeBaseKey),
 		CommandDigest:                   commandDigest,
 		EnvDigest:                       envDigest,
 		InputManifestDigest:             strings.TrimSpace(inputDigest),
