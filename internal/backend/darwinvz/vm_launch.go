@@ -46,22 +46,23 @@ type darwinVZConfigFile struct {
 }
 
 type darwinVZVMStartRequest struct {
-	SandboxID      string
-	ConfigPath     string
-	BackendName    string
-	RunDir         string
-	KernelPath     string
-	RootFSPath     string
-	BootArgs       string
-	ConsoleLogPath string
-	NetworkCfg     darwinVZNetwork
-	HostGatewayURL string
-	GatewayPort    int
-	Policy         *policy.CompiledPolicy
-	VCPUs          int64
-	MemoryMiB      int64
-	GuestPort      uint32
-	LaunchSeconds  int64
+	SandboxID        string
+	ConfigPath       string
+	BackendName      string
+	RunDir           string
+	KernelPath       string
+	RootFSPath       string
+	SidecarDiskPaths []string
+	BootArgs         string
+	ConsoleLogPath   string
+	NetworkCfg       darwinVZNetwork
+	HostGatewayURL   string
+	GatewayPort      int
+	Policy           *policy.CompiledPolicy
+	VCPUs            int64
+	MemoryMiB        int64
+	GuestPort        uint32
+	LaunchSeconds    int64
 }
 
 type darwinVZVMStartResult struct {
@@ -123,6 +124,7 @@ func startDarwinVZHelperVM(ctx context.Context, helper *helperSession, req darwi
 		Op:                   "StartVM",
 		KernelPath:           req.KernelPath,
 		RootFSPath:           req.RootFSPath,
+		SidecarDiskPaths:     append([]string(nil), req.SidecarDiskPaths...),
 		BootArgs:             req.BootArgs,
 		NetworkMode:          req.NetworkCfg.Mode,
 		VMNetSubnetCIDR:      req.NetworkCfg.SubnetCIDR,

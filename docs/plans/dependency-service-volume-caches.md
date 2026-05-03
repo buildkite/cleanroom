@@ -498,13 +498,14 @@ dependency/service command. It should also add the guest overlay write-capture
 runner for missed cacheable blocks. Firecracker hotplug is out of scope for the
 first slice.
 
-Darwin-VZ should initially report `sandbox.cache_output_volumes` as unsupported
-unless the backend grows additional disk attach and guest mount support. Its
-current docs state that `/workspace` lives on the rootfs, and current launch code
-prepares a single writable rootfs image. It may still report
-`sandbox.overlay_write_capture` independently once the guest runner has a
-supported mount-namespace path; the local experiment showed the guest kernel and
-root execution environment are capable of the basic overlayfs operations.
+Darwin-VZ now reports `sandbox.cache_output_volumes` after gaining launch-time
+sidecar disk attachment and guest mount-plan forwarding. Its block-volume path
+uses the same ext4 aggregate output volume shape as Firecracker, but with
+Virtualization.framework storage devices attached by the macOS helper before VM
+start. It still does not report `sandbox.overlay_write_capture`; the local
+experiment showed the guest kernel and root execution environment are capable of
+the basic overlayfs operations, but escaped-write detection and publish gating
+must be wired through before the full block-volume runtime path can be enabled.
 
 Backends without `sandbox.cache_output_volumes` should still run the new block
 schema with the same isolated input-projection semantics, using ordinary rootfs
@@ -950,6 +951,43 @@ Remaining runtime work after phase 6:
   block output publication are wired through
 - decide whether output volume sizing stays internal or becomes policy-visible
   after real workloads show the right default
+
+### Darwin-VZ Sidecar Volume Status
+
+The darwin-vz backend now consumes launch-time `backend.CacheOutputVolumeSpec`
+values for persistent sandbox provisions and snapshot restores. It prepares
+writable sidecar ext4 volumes through the existing darwin-vz volume-store
+driver, passes their attachment paths to the Swift helper, and forwards the
+derived guest mount plan through the existing Linux guest-agent protocol.
+
+Completed in the darwin-vz sidecar slice:
+
+- darwin-vz advertises `sandbox.cache_output_volumes` but intentionally does not
+  advertise `sandbox.overlay_write_capture`
+- persistent provisions and snapshot restores forward cache output volume specs
+  into darwin-vz launch
+- cache hits prepare writable volumes from recorded source refs; misses create
+  empty ext4 output volume sources
+- the Swift helper accepts extra sidecar disk image paths and appends them as
+  writable `VZVirtioBlockDeviceConfiguration` storage devices after the rootfs
+- darwin-vz derives deterministic guest mount plans using `/dev/vdb`,
+  `/dev/vdc`, and later virtio block names in the same order as the sidecar
+  storage devices
+- sandbox executions forward the cache output mount plan to the Linux guest
+  agent, reusing the existing guest mount, bind, and file-restore behavior
+- sidecar volume cleanup runs on launch failure, readiness-probe failure, and
+  sandbox termination
+
+Remaining darwin-vz runtime work:
+
+- add escaped-write capture to the block runner and only then advertise
+  `sandbox.overlay_write_capture`
+- snapshot and publish dependency and service output records after successful
+  missed blocks
+- materialize captured file outputs into both the output volume and sandbox root
+  after a missed block run
+- add a macOS smoke test that proves a restored darwin-vz sidecar volume appears
+  at the declared guest path
 
 ## Tests
 

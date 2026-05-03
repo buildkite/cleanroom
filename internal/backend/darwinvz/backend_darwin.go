@@ -65,7 +65,7 @@ type Adapter struct {
 	sandboxMu          sync.Mutex
 	sandboxes          map[string]*sandboxInstance
 	provisioning       map[string]struct{}
-	launchSandboxVMFn  func(context.Context, string, *policy.CompiledPolicy, backend.FirecrackerConfig) (*sandboxInstance, error)
+	launchSandboxVMFn  func(context.Context, string, *policy.CompiledPolicy, backend.FirecrackerConfig, []backend.CacheOutputVolumeSpec) (*sandboxInstance, error)
 	executeInSandboxFn func(context.Context, context.Context, *sandboxInstance, backend.ExecutionRequest, backend.OutputStream) (*backend.ExecutionResult, error)
 	helperRequestFn    func(context.Context, *helperSession, helperControlRequest) (helperControlResponse, error)
 
@@ -114,6 +114,8 @@ type sandboxInstance struct {
 	Helper              *helperSession
 	VMID                string
 	vmRootFSPath        string
+	cacheOutputMounts   []vsockexec.CacheOutputMount
+	cleanupCacheOutputs func()
 	exitedCh            chan struct{}
 	exitMu              sync.RWMutex
 	exitErr             error
@@ -304,12 +306,13 @@ func (a *Adapter) Capabilities() map[string]bool {
 	}
 	dnsControlSupported := configuredMode == darwinVZNetworkModeFileHandle
 	return map[string]bool{
-		backend.CapabilityNetworkDefaultDeny:       true,
-		backend.CapabilityNetworkAllowlistEgress:   allowlistSupported,
-		backend.CapabilityNetworkStageScopedEgress: allowlistSupported && dnsControlSupported,
-		backend.CapabilityDNSControlOrEquivalent:   dnsControlSupported,
-		backend.CapabilityNetworkGuestInterface:    true,
-		backend.CapabilitySandboxPortDial:          configuredMode == darwinVZNetworkModeFileHandle,
+		backend.CapabilityNetworkDefaultDeny:        true,
+		backend.CapabilityNetworkAllowlistEgress:    allowlistSupported,
+		backend.CapabilityNetworkStageScopedEgress:  allowlistSupported && dnsControlSupported,
+		backend.CapabilityDNSControlOrEquivalent:    dnsControlSupported,
+		backend.CapabilityNetworkGuestInterface:     true,
+		backend.CapabilitySandboxPortDial:           configuredMode == darwinVZNetworkModeFileHandle,
+		backend.CapabilitySandboxCacheOutputVolumes: true,
 	}
 }
 
@@ -336,7 +339,7 @@ func (a *Adapter) ProvisionSandbox(ctx context.Context, req backend.ProvisionReq
 	if req.Policy == nil {
 		return errors.New("missing compiled policy")
 	}
-	return a.provisionSandbox(ctx, sandboxID, req.Policy, req.FirecrackerConfig)
+	return a.provisionSandbox(ctx, sandboxID, req.Policy, req.FirecrackerConfig, req.CacheOutputVolumes)
 }
 
 func (a *Adapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest, stream backend.OutputStream) (result *backend.ExecutionResult, retErr error) {
@@ -707,7 +710,7 @@ func (a *Adapter) ProvisionSandboxFromSnapshot(ctx context.Context, req backend.
 
 	cfg := req.FirecrackerConfig
 	cfg.RootFSPath = storageRef
-	return a.provisionSandbox(ctx, sandboxID, req.Policy, cfg)
+	return a.provisionSandbox(ctx, sandboxID, req.Policy, cfg, req.CacheOutputVolumes)
 }
 
 func (a *Adapter) DeleteSnapshot(ctx context.Context, req backend.DeleteSnapshotRequest) error {
@@ -1236,7 +1239,7 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 	}, nil
 }
 
-func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compiled *policy.CompiledPolicy, cfg backend.FirecrackerConfig) (*sandboxInstance, error) {
+func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compiled *policy.CompiledPolicy, cfg backend.FirecrackerConfig, cacheOutputVolumeSpecs []backend.CacheOutputVolumeSpec) (*sandboxInstance, error) {
 	if compiled == nil {
 		return nil, errors.New("missing compiled policy")
 	}
@@ -1376,28 +1379,40 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 		}
 	}()
 
+	cacheOutputVolumes, cleanupCacheOutputs, err := prepareDarwinVZCacheOutputVolumes(ctx, cfg, sandboxID, runDir, cacheOutputVolumeSpecs)
+	if err != nil {
+		return nil, err
+	}
+	cacheOutputsNeedCleanup := true
+	defer func() {
+		if cacheOutputsNeedCleanup {
+			cleanupCacheOutputs()
+		}
+	}()
+
 	log.Debug("darwin-vz launch sandbox vm: starting helper-managed vm",
 		"sandbox_id", sandboxID,
 		"network_mode", strings.TrimSpace(networkCfg.Mode),
 		"launch_seconds", cfg.LaunchSeconds,
 	)
 	startedVM, err := startDarwinVZHelperVM(ctx, helper, darwinVZVMStartRequest{
-		SandboxID:      sandboxID,
-		ConfigPath:     configPath,
-		BackendName:    a.Name(),
-		RunDir:         runDir,
-		KernelPath:     kernelPath,
-		RootFSPath:     vmRootFSPath,
-		BootArgs:       bootArgs,
-		ConsoleLogPath: consolePath,
-		NetworkCfg:     networkCfg,
-		HostGatewayURL: a.GatewayBridgeURL,
-		GatewayPort:    a.GatewayPort,
-		Policy:         compiled,
-		VCPUs:          cfg.VCPUs,
-		MemoryMiB:      cfg.MemoryMiB,
-		GuestPort:      cfg.GuestPort,
-		LaunchSeconds:  cfg.LaunchSeconds,
+		SandboxID:        sandboxID,
+		ConfigPath:       configPath,
+		BackendName:      a.Name(),
+		RunDir:           runDir,
+		KernelPath:       kernelPath,
+		RootFSPath:       vmRootFSPath,
+		SidecarDiskPaths: darwinVZCacheOutputDiskPaths(cacheOutputVolumes),
+		BootArgs:         bootArgs,
+		ConsoleLogPath:   consolePath,
+		NetworkCfg:       networkCfg,
+		HostGatewayURL:   a.GatewayBridgeURL,
+		GatewayPort:      a.GatewayPort,
+		Policy:           compiled,
+		VCPUs:            cfg.VCPUs,
+		MemoryMiB:        cfg.MemoryMiB,
+		GuestPort:        cfg.GuestPort,
+		LaunchSeconds:    cfg.LaunchSeconds,
 	})
 	if err != nil {
 		return nil, err
@@ -1435,13 +1450,15 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 			HelperTimingMS: startedVM.TimingMS,
 			Network:        startedVM.NetworkMetadata,
 		},
-		NetworkMetadata:   startedVM.NetworkMetadata,
-		FileHandleGateway: startedVM.FileHandleGW,
-		CommandTimeout:    cfg.LaunchSeconds,
-		Helper:            helper,
-		VMID:              startedVM.VMID,
-		vmRootFSPath:      vmRootFSPath,
-		exitedCh:          make(chan struct{}),
+		NetworkMetadata:     startedVM.NetworkMetadata,
+		FileHandleGateway:   startedVM.FileHandleGW,
+		CommandTimeout:      cfg.LaunchSeconds,
+		Helper:              helper,
+		VMID:                startedVM.VMID,
+		vmRootFSPath:        vmRootFSPath,
+		cacheOutputMounts:   darwinVZCacheOutputVolumeMounts(cacheOutputVolumes),
+		cleanupCacheOutputs: cleanupCacheOutputs,
+		exitedCh:            make(chan struct{}),
 	}
 	go func() {
 		err, ok := <-helper.done
@@ -1463,13 +1480,14 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 		return nil, err
 	}
 
+	cacheOutputsNeedCleanup = false
 	helperNeedsClose = false
 	fileHandleGatewayNeedsClose = false
 	cleanupRunDir = false
 	return instance, nil
 }
 
-func (a *Adapter) provisionSandbox(ctx context.Context, sandboxID string, compiled *policy.CompiledPolicy, cfg backend.FirecrackerConfig) error {
+func (a *Adapter) provisionSandbox(ctx context.Context, sandboxID string, compiled *policy.CompiledPolicy, cfg backend.FirecrackerConfig, cacheOutputVolumes []backend.CacheOutputVolumeSpec) error {
 	a.sandboxMu.Lock()
 	if a.sandboxes == nil {
 		a.sandboxes = map[string]*sandboxInstance{}
@@ -1488,7 +1506,7 @@ func (a *Adapter) provisionSandbox(ctx context.Context, sandboxID string, compil
 	a.provisioning[sandboxID] = struct{}{}
 	a.sandboxMu.Unlock()
 
-	instance, err := a.launchSandbox(ctx, sandboxID, compiled, cfg)
+	instance, err := a.launchSandbox(ctx, sandboxID, compiled, cfg, cacheOutputVolumes)
 	if err != nil {
 		a.sandboxMu.Lock()
 		delete(a.provisioning, sandboxID)
@@ -1507,12 +1525,12 @@ func (a *Adapter) provisionSandbox(ctx context.Context, sandboxID string, compil
 	return nil
 }
 
-func (a *Adapter) launchSandbox(ctx context.Context, sandboxID string, compiled *policy.CompiledPolicy, cfg backend.FirecrackerConfig) (*sandboxInstance, error) {
+func (a *Adapter) launchSandbox(ctx context.Context, sandboxID string, compiled *policy.CompiledPolicy, cfg backend.FirecrackerConfig, cacheOutputVolumes []backend.CacheOutputVolumeSpec) (*sandboxInstance, error) {
 	launch := a.launchSandboxVMFn
 	if launch == nil {
 		launch = a.launchSandboxVM
 	}
-	return launch(ctx, sandboxID, compiled, cfg)
+	return launch(ctx, sandboxID, compiled, cfg, cacheOutputVolumes)
 }
 
 func (a *Adapter) executeInSandbox(bootCtx context.Context, runCtx context.Context, instance *sandboxInstance, req backend.ExecutionRequest, stream backend.OutputStream) (*backend.ExecutionResult, error) {
@@ -1617,12 +1635,13 @@ func (a *Adapter) executeInSandbox(bootCtx context.Context, runCtx context.Conte
 	}
 
 	guestReq := vsockexec.ExecRequest{
-		Command:         append([]string(nil), req.Command...),
-		Dir:             strings.TrimSpace(req.Dir),
-		Env:             append([]string(nil), req.Env...),
-		ClosedEnv:       req.ClosedEnv,
-		TTY:             req.TTY,
-		InputProjection: darwinVZInputProjection(req.InputProjection),
+		Command:           append([]string(nil), req.Command...),
+		Dir:               strings.TrimSpace(req.Dir),
+		Env:               append([]string(nil), req.Env...),
+		ClosedEnv:         req.ClosedEnv,
+		TTY:               req.TTY,
+		CacheOutputMounts: cloneDarwinVZCacheOutputMounts(instance.cacheOutputMounts),
+		InputProjection:   darwinVZInputProjection(req.InputProjection),
 	}
 	if !req.ClosedEnv && a.GatewayRegistry != nil && gatewayScopeToken != "" {
 		gwPort := a.GatewayPort
@@ -1877,6 +1896,9 @@ func (s *sandboxInstance) shutdown() {
 	}
 	if s.FileHandleGateway != nil {
 		_ = s.FileHandleGateway.Close()
+	}
+	if s.cleanupCacheOutputs != nil {
+		s.cleanupCacheOutputs()
 	}
 	if strings.TrimSpace(s.RunDir) != "" {
 		_ = os.RemoveAll(s.RunDir)

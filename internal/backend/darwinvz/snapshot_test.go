@@ -90,7 +90,7 @@ func TestProvisionSandboxFromSnapshotUsesSnapshotRootFS(t *testing.T) {
 		gotCfg     backend.FirecrackerConfig
 	)
 	adapter := &Adapter{
-		launchSandboxVMFn: func(_ context.Context, sandboxID string, compiled *policy.CompiledPolicy, cfg backend.FirecrackerConfig) (*sandboxInstance, error) {
+		launchSandboxVMFn: func(_ context.Context, sandboxID string, compiled *policy.CompiledPolicy, cfg backend.FirecrackerConfig, _ []backend.CacheOutputVolumeSpec) (*sandboxInstance, error) {
 			gotSandbox = sandboxID
 			gotPolicy = compiled
 			gotCfg = cfg
@@ -136,7 +136,7 @@ func TestProvisionSandboxFromSnapshotRejectsMissingSnapshotRootFS(t *testing.T) 
 	missingSnapshotPath := filepath.Join(t.TempDir(), "missing-rootfs.ext4")
 	launchCalled := false
 	adapter := &Adapter{
-		launchSandboxVMFn: func(_ context.Context, sandboxID string, _ *policy.CompiledPolicy, _ backend.FirecrackerConfig) (*sandboxInstance, error) {
+		launchSandboxVMFn: func(_ context.Context, sandboxID string, _ *policy.CompiledPolicy, _ backend.FirecrackerConfig, _ []backend.CacheOutputVolumeSpec) (*sandboxInstance, error) {
 			launchCalled = true
 			return &sandboxInstance{SandboxID: sandboxID}, nil
 		},

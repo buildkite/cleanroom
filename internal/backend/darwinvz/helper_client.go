@@ -28,26 +28,27 @@ var (
 )
 
 type helperControlRequest struct {
-	Op                              string `json:"op"`
-	KernelPath                      string `json:"kernel_path,omitempty"`
-	RootFSPath                      string `json:"rootfs_path,omitempty"`
-	BootArgs                        string `json:"boot_args,omitempty"`
-	NetworkMode                     string `json:"network_mode,omitempty"`
-	VMNetSubnetCIDR                 string `json:"vmnet_subnet_cidr,omitempty"`
-	VMNetExternalInterface          string `json:"vmnet_external_interface,omitempty"`
-	VMNetDisableNAT44               bool   `json:"vmnet_disable_nat44,omitempty"`
-	VMNetDisableNAT66               bool   `json:"vmnet_disable_nat66,omitempty"`
-	VMNetDisableDNSProxy            bool   `json:"vmnet_disable_dns_proxy,omitempty"`
-	VMNetDisableRouterAdvertisement bool   `json:"vmnet_disable_router_advertisement,omitempty"`
-	VCPUs                           int64  `json:"vcpus,omitempty"`
-	MemoryMiB                       int64  `json:"memory_mib,omitempty"`
-	GuestPort                       uint32 `json:"guest_port,omitempty"`
-	LaunchSeconds                   int64  `json:"launch_seconds,omitempty"`
-	RunDir                          string `json:"run_dir,omitempty"`
-	FileHandleSocketPath            string `json:"filehandle_socket_path,omitempty"`
-	ProxySocketPath                 string `json:"proxy_socket_path,omitempty"`
-	ConsoleLogPath                  string `json:"console_log_path,omitempty"`
-	VMID                            string `json:"vm_id,omitempty"`
+	Op                              string   `json:"op"`
+	KernelPath                      string   `json:"kernel_path,omitempty"`
+	RootFSPath                      string   `json:"rootfs_path,omitempty"`
+	SidecarDiskPaths                []string `json:"sidecar_disk_paths,omitempty"`
+	BootArgs                        string   `json:"boot_args,omitempty"`
+	NetworkMode                     string   `json:"network_mode,omitempty"`
+	VMNetSubnetCIDR                 string   `json:"vmnet_subnet_cidr,omitempty"`
+	VMNetExternalInterface          string   `json:"vmnet_external_interface,omitempty"`
+	VMNetDisableNAT44               bool     `json:"vmnet_disable_nat44,omitempty"`
+	VMNetDisableNAT66               bool     `json:"vmnet_disable_nat66,omitempty"`
+	VMNetDisableDNSProxy            bool     `json:"vmnet_disable_dns_proxy,omitempty"`
+	VMNetDisableRouterAdvertisement bool     `json:"vmnet_disable_router_advertisement,omitempty"`
+	VCPUs                           int64    `json:"vcpus,omitempty"`
+	MemoryMiB                       int64    `json:"memory_mib,omitempty"`
+	GuestPort                       uint32   `json:"guest_port,omitempty"`
+	LaunchSeconds                   int64    `json:"launch_seconds,omitempty"`
+	RunDir                          string   `json:"run_dir,omitempty"`
+	FileHandleSocketPath            string   `json:"filehandle_socket_path,omitempty"`
+	ProxySocketPath                 string   `json:"proxy_socket_path,omitempty"`
+	ConsoleLogPath                  string   `json:"console_log_path,omitempty"`
+	VMID                            string   `json:"vm_id,omitempty"`
 }
 
 type helperControlResponse struct {

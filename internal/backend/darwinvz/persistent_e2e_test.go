@@ -183,6 +183,119 @@ func TestPersistentSandboxE2E(t *testing.T) {
 	}
 }
 
+func TestPersistentSandboxCacheOutputVolumeE2E(t *testing.T) {
+	if strings.TrimSpace(os.Getenv(darwinVZE2EEnvEnabled)) == "" {
+		t.Skipf("set %s=1 to run real darwin-vz cache output volume e2e", darwinVZE2EEnvEnabled)
+	}
+	if testing.Short() {
+		t.Skip("skipping darwin-vz e2e in short mode")
+	}
+
+	helperPath, err := resolveHelperBinaryPath()
+	if err != nil {
+		t.Fatalf("resolve helper binary: %v", err)
+	}
+	hasEntitlement, err := helperHasVirtualizationEntitlement(helperPath)
+	if err != nil {
+		t.Fatalf("verify helper entitlement: %v", err)
+	}
+	if !hasEntitlement {
+		t.Fatalf("helper %q is missing com.apple.security.virtualization entitlement", helperPath)
+	}
+	if _, _, err := New().getGuestAgentBinary(); err != nil {
+		t.Fatalf("resolve guest agent binary: %v", err)
+	}
+
+	rootFSOverride := strings.TrimSpace(os.Getenv(darwinVZE2EEnvRootFS))
+	if rootFSOverride == "" {
+		if _, err := hosttools.ResolveE2FSProgsBinary("mkfs.ext4"); err != nil {
+			t.Fatalf("resolve mkfs.ext4: %v", err)
+		}
+		if _, err := hosttools.ResolveE2FSProgsBinary("debugfs"); err != nil {
+			t.Fatalf("resolve debugfs: %v", err)
+		}
+	}
+
+	imageRef := strings.TrimSpace(os.Getenv(darwinVZE2EEnvImageRef))
+	if imageRef == "" {
+		imageRef = defaultDarwinVZE2EImageRef()
+	}
+
+	cfg := backend.FirecrackerConfig{
+		KernelImagePath: strings.TrimSpace(os.Getenv(darwinVZE2EEnvKernelImage)),
+		RootFSPath:      rootFSOverride,
+		VCPUs:           1,
+		MemoryMiB:       1024,
+		LaunchSeconds:   90,
+	}
+	compiled := &policy.CompiledPolicy{
+		Version:        1,
+		ImageRef:       imageRef,
+		NetworkDefault: "deny",
+	}
+	sandboxID := fmt.Sprintf("cr-e2e-cache-output-%d", time.Now().UnixNano())
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	outputDir := "/var/lib/cleanroom-cache-output-e2e"
+	adapter := New()
+	if err := adapter.ProvisionSandbox(ctx, backend.ProvisionRequest{
+		SandboxID: sandboxID,
+		Policy:    compiled,
+		CacheOutputVolumes: []backend.CacheOutputVolumeSpec{
+			{
+				Stage:     "dependency-volume",
+				BlockName: "cache-output-e2e",
+				CacheKey:  "dependency-volume:v1:cache-output-e2e",
+				VolumeID:  "dependency-volume-cache-output-e2e",
+				DirMappings: []backend.CacheOutputDirMapping{
+					{GuestPath: outputDir, Subpath: "dirs/0"},
+				},
+			},
+		},
+		FirecrackerConfig: cfg,
+	}); err != nil {
+		t.Fatalf("ProvisionSandbox returned error: %v", err)
+	}
+	defer func() {
+		if err := adapter.TerminateSandbox(context.Background(), sandboxID); err != nil {
+			t.Fatalf("deferred TerminateSandbox returned error: %v", err)
+		}
+	}()
+
+	writeValue := "darwin-vz-cache-output-volume"
+	runPersistentCommand(ctx, t, adapter, sandboxID, compiled, cfg, "cache-output-write", nil, "sh", "-lc", fmt.Sprintf("printf '%s' > %s/value", writeValue, outputDir))
+	var stdout bytes.Buffer
+	runPersistentCommand(ctx, t, adapter, sandboxID, compiled, cfg, "cache-output-read", &stdout, "sh", "-lc", "cat "+outputDir+"/value")
+	if got, want := stdout.String(), writeValue; got != want {
+		t.Fatalf("unexpected cache output volume contents: got %q want %q", got, want)
+	}
+}
+
+func runPersistentCommand(ctx context.Context, t *testing.T, adapter *Adapter, sandboxID string, compiled *policy.CompiledPolicy, cfg backend.FirecrackerConfig, executionID string, stdout *bytes.Buffer, command ...string) {
+	t.Helper()
+
+	stream := backend.OutputStream{}
+	if stdout != nil {
+		stream.OnStdout = func(chunk []byte) {
+			_, _ = stdout.Write(chunk)
+		}
+	}
+	result, err := adapter.RunInSandbox(ctx, backend.ExecutionRequest{
+		SandboxID:         sandboxID,
+		ExecutionID:       executionID,
+		Command:           command,
+		Policy:            compiled,
+		FirecrackerConfig: cfg,
+	}, stream)
+	if err != nil {
+		t.Fatalf("%s RunInSandbox returned error: %v", executionID, err)
+	}
+	if result.ExitCode != 0 {
+		t.Fatalf("%s exit code = %d, want 0", executionID, result.ExitCode)
+	}
+}
+
 func TestPersistentSandboxE2EExecStreamingDoesNotHang(t *testing.T) {
 	if strings.TrimSpace(os.Getenv(darwinVZE2EEnvEnabled)) == "" {
 		t.Skipf("set %s=1 to run real darwin-vz persistence e2e", darwinVZE2EEnvEnabled)

@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -36,6 +37,12 @@ func TestCapabilitiesExposeSnapshotAndFileTransfer(t *testing.T) {
 	if !caps[backend.CapabilityNetworkStageScopedEgress] {
 		t.Fatalf("expected %s=true", backend.CapabilityNetworkStageScopedEgress)
 	}
+	if !caps[backend.CapabilitySandboxCacheOutputVolumes] {
+		t.Fatalf("expected %s=true", backend.CapabilitySandboxCacheOutputVolumes)
+	}
+	if caps[backend.CapabilitySandboxOverlayWriteCapture] {
+		t.Fatalf("expected %s=false until escaped-write capture is wired through", backend.CapabilitySandboxOverlayWriteCapture)
+	}
 	for _, key := range []string{
 		backend.CapabilitySandboxPathStat,
 		backend.CapabilitySandboxTreeWalk,
@@ -57,7 +64,7 @@ func TestProvisionSandboxRejectsConcurrentProvisionForSameID(t *testing.T) {
 	block := make(chan struct{})
 	started := make(chan struct{})
 	adapter := &Adapter{
-		launchSandboxVMFn: func(_ context.Context, sandboxID string, _ *policy.CompiledPolicy, _ backend.FirecrackerConfig) (*sandboxInstance, error) {
+		launchSandboxVMFn: func(_ context.Context, sandboxID string, _ *policy.CompiledPolicy, _ backend.FirecrackerConfig, _ []backend.CacheOutputVolumeSpec) (*sandboxInstance, error) {
 			if sandboxID != "cr-test" {
 				t.Fatalf("unexpected sandbox id %q", sandboxID)
 			}
@@ -99,6 +106,46 @@ func TestProvisionSandboxRejectsConcurrentProvisionForSameID(t *testing.T) {
 	close(block)
 	if err := <-errCh; err != nil {
 		t.Fatalf("first provision returned error: %v", err)
+	}
+}
+
+func TestProvisionSandboxForwardsCacheOutputVolumes(t *testing.T) {
+	t.Parallel()
+
+	specs := []backend.CacheOutputVolumeSpec{
+		{
+			Stage:     "dependency-volume",
+			BlockName: "toolchains",
+			CacheKey:  "dependency-volume:v1:toolchains",
+			VolumeID:  "dependency-volume-abc123",
+			DirMappings: []backend.CacheOutputDirMapping{
+				{GuestPath: "/root/.local/share/mise", Subpath: "dirs/0"},
+			},
+			FileMappings: []backend.CacheOutputFileMapping{
+				{GuestPath: "/root/.config/mise/config.toml", Subpath: "files/0", Mode: 0o600},
+			},
+		},
+	}
+	var got []backend.CacheOutputVolumeSpec
+	adapter := &Adapter{
+		launchSandboxVMFn: func(_ context.Context, sandboxID string, _ *policy.CompiledPolicy, _ backend.FirecrackerConfig, cacheOutputVolumes []backend.CacheOutputVolumeSpec) (*sandboxInstance, error) {
+			if sandboxID != "cr-test" {
+				t.Fatalf("unexpected sandbox id %q", sandboxID)
+			}
+			got = append([]backend.CacheOutputVolumeSpec(nil), cacheOutputVolumes...)
+			return &sandboxInstance{SandboxID: sandboxID}, nil
+		},
+	}
+
+	if err := adapter.ProvisionSandbox(context.Background(), backend.ProvisionRequest{
+		SandboxID:          "cr-test",
+		Policy:             &policy.CompiledPolicy{NetworkDefault: "deny"},
+		CacheOutputVolumes: specs,
+	}); err != nil {
+		t.Fatalf("ProvisionSandbox returned error: %v", err)
+	}
+	if !reflect.DeepEqual(got, specs) {
+		t.Fatalf("unexpected cache output specs: got %#v want %#v", got, specs)
 	}
 }
 
