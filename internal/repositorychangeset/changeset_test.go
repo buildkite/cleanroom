@@ -331,6 +331,38 @@ func TestDigestPathsFromBaseUsesPatchedContents(t *testing.T) {
 	}
 }
 
+func TestDigestRegularFilesFromBaseRejectsSymlink(t *testing.T) {
+	repoDir := initGitRepository(t)
+	if err := os.WriteFile(filepath.Join(repoDir, "real.lock"), []byte("real\n"), 0o644); err != nil {
+		t.Fatalf("write real.lock: %v", err)
+	}
+	if err := os.Symlink("real.lock", filepath.Join(repoDir, "link.lock")); err != nil {
+		t.Fatalf("symlink link.lock: %v", err)
+	}
+
+	checkout := &repositorycheckout.Checkout{
+		RemoteURL:      "https://github.com/buildkite/cleanroom.git",
+		CommitSHA:      headCommit(t, repoDir),
+		DestinationDir: "/workspace",
+	}
+
+	changeset, err := BuildFromWorkingTree(repoDir, checkout)
+	if err != nil {
+		t.Fatalf("BuildFromWorkingTree returned error: %v", err)
+	}
+	if changeset == nil {
+		t.Fatal("expected changeset")
+	}
+
+	_, err = changeset.DigestRegularFilesFromBase(repoDir, []string{"link.lock"})
+	if err == nil {
+		t.Fatal("expected symlink input to fail")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected symlink error, got %v", err)
+	}
+}
+
 func TestResetCommandsUseDoubleForceClean(t *testing.T) {
 	checkout := &repositorycheckout.Checkout{
 		CommitSHA:      "0123456789abcdef0123456789abcdef01234567",

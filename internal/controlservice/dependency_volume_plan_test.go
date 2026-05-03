@@ -2,6 +2,8 @@ package controlservice
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -113,6 +115,44 @@ func TestFinalizeDependencyBlockVolumePlanBuildsOrderedKeys(t *testing.T) {
 	}
 }
 
+func TestFinalizeDependencyBlockVolumePlanRejectsSymlinkInput(t *testing.T) {
+	repoDir := t.TempDir()
+	runTestGit(t, repoDir, "init")
+	runTestGit(t, repoDir, "config", "user.email", "test@example.com")
+	runTestGit(t, repoDir, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(repoDir, "real.lock"), []byte("real\n"), 0o644); err != nil {
+		t.Fatalf("write real.lock: %v", err)
+	}
+	if err := os.Symlink("real.lock", filepath.Join(repoDir, "link.lock")); err != nil {
+		t.Fatalf("symlink link.lock: %v", err)
+	}
+	runTestGit(t, repoDir, "add", ".")
+	runTestGit(t, repoDir, "commit", "-m", "test")
+	repositoryCheckout := &cleanroomv1.RepositoryCheckout{
+		RemoteUrl:      "https://github.com/buildkite/cleanroom.git",
+		CommitSha:      strings.TrimSpace(runTestGit(t, repoDir, "rev-parse", "HEAD")),
+		DestinationDir: "/workspace",
+	}
+
+	svc := newTestService(&stubAdapter{})
+	svc.RepositoryStore = &stubRepositoryMirrorStore{mirrorPath: repoDir}
+	policyProto := testRepositoryTwoDependencyBlocksPolicy()
+	policyProto.Dependencies.Blocks[0].Inputs.Files = []string{"link.lock"}
+	compiled, err := policy.FromProto(policyProto)
+	if err != nil {
+		t.Fatalf("FromProto returned error: %v", err)
+	}
+	repository := repositorycheckout.FromProto(repositoryCheckout)
+
+	_, _, err = svc.finalizeDependencyBlockVolumePlan(context.Background(), compiled, repository, nil, nil, "firecracker", "runtime-base:test")
+	if err == nil {
+		t.Fatal("expected symlink input to fail")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected symlink error, got %v", err)
+	}
+}
+
 func TestLookupDependencyBlockVolumeCachesReportsPartialHit(t *testing.T) {
 	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
 		"mise.toml": "go = \"1.26.2\"\n",
@@ -162,6 +202,50 @@ func TestLookupDependencyBlockVolumeCachesReportsPartialHit(t *testing.T) {
 	}
 	if got, want := lookedUp.Blocks[1].LookupReason, observability.CacheLookupReasonRecordNotFound; got != want {
 		t.Fatalf("unexpected second block miss reason: got %q want %q", got, want)
+	}
+}
+
+func TestLookupDependencyBlockVolumeCachesRejectsMismatchedOutputRecords(t *testing.T) {
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"mise.toml": "go = \"1.26.2\"\n",
+		"go.mod":    "module example.com/test\n\ngo 1.26.2\n",
+		"go.sum":    "example.com/test v0.0.0 h1:abc123\n",
+	})
+	svc := newTestService(&stubAdapter{})
+	svc.RepositoryStore = mirrors
+
+	compiled, err := policy.FromProto(testRepositoryTwoDependencyBlocksPolicy())
+	if err != nil {
+		t.Fatalf("FromProto returned error: %v", err)
+	}
+	repository := repositorycheckout.FromProto(repositoryCheckout)
+	plan, ok, err := svc.finalizeDependencyBlockVolumePlan(context.Background(), compiled, repository, nil, nil, "firecracker", "runtime-base:test")
+	if err != nil {
+		t.Fatalf("finalizeDependencyBlockVolumePlan returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected dependency block volume plan")
+	}
+
+	record := dependencyBlockVolumeTestRecord(compiled, plan.Blocks[0])
+	record.OutputRecords[0].Path = "/root/other"
+	cacheStore, ok := svc.CacheStore.(*memoryCacheStore)
+	if !ok {
+		t.Fatalf("expected memory cache store, got %T", svc.CacheStore)
+	}
+	if err := cacheStore.Create(context.Background(), record); err != nil {
+		t.Fatalf("Create cache record returned error: %v", err)
+	}
+
+	lookedUp, err := svc.lookupDependencyBlockVolumeCaches(context.Background(), "firecracker", compiled, plan)
+	if err != nil {
+		t.Fatalf("lookupDependencyBlockVolumeCaches returned error: %v", err)
+	}
+	if lookedUp.Blocks[0].CacheHit {
+		t.Fatal("did not expect cache hit with mismatched output record path")
+	}
+	if got, want := lookedUp.Blocks[0].LookupReason, observability.CacheLookupReasonRecordNotFound; got != want {
+		t.Fatalf("unexpected lookup reason: got %q want %q", got, want)
 	}
 }
 

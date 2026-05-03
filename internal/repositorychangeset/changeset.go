@@ -107,6 +107,14 @@ func BuildFromWorkingTree(repoRoot string, checkout *repositorycheckout.Checkout
 }
 
 func (c *Changeset) DigestPathsFromBase(repoRoot string, paths []string) ([]File, error) {
+	return c.digestPathsFromBase(repoRoot, paths, false)
+}
+
+func (c *Changeset) DigestRegularFilesFromBase(repoRoot string, paths []string) ([]File, error) {
+	return c.digestPathsFromBase(repoRoot, paths, true)
+}
+
+func (c *Changeset) digestPathsFromBase(repoRoot string, paths []string, regularFilesOnly bool) ([]File, error) {
 	if c == nil {
 		return nil, errors.New("repository changeset is required")
 	}
@@ -159,7 +167,12 @@ func (c *Changeset) DigestPathsFromBase(repoRoot string, paths []string) ([]File
 		return nil, fmt.Errorf("apply repository changeset patch to temporary git index: %w", err)
 	}
 
-	expandedPaths, err := expandDigestPathsInIndex(repoRoot, env, baseCommitSHA, paths)
+	var expandedPaths []string
+	if regularFilesOnly {
+		expandedPaths, err = expandRegularDigestPathsInIndex(repoRoot, env, paths)
+	} else {
+		expandedPaths, err = expandDigestPathsInIndex(repoRoot, env, baseCommitSHA, paths)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -171,11 +184,17 @@ func (c *Changeset) DigestPathsFromBase(repoRoot string, paths []string) ([]File
 			return nil, fmt.Errorf("check repository changeset path %q in temporary git index: %w", normalizedPath, err)
 		}
 		if !exists {
+			if regularFilesOnly {
+				return nil, fmt.Errorf("repository changeset input path %q does not exist", normalizedPath)
+			}
 			file.Deleted = true
 			files = append(files, file)
 			continue
 		}
 		file.Mode = mode
+		if regularFilesOnly && !isRegularGitFileMode(mode) {
+			return nil, fmt.Errorf("repository changeset input path %q is %s; inputs.files must name regular files", normalizedPath, gitModeKind(mode))
+		}
 
 		blob, err := gitOutput(repoRoot, env, "show", ":"+normalizedPath)
 		if err != nil {
@@ -235,6 +254,57 @@ func expandDigestPathsInIndex(repoRoot string, env []string, baseCommitSHA strin
 		}
 		if matches == 0 {
 			return nil, fmt.Errorf("repository changeset digest path glob %q matched no files", normalizedPath)
+		}
+	}
+	sort.Strings(expanded)
+	return expanded, nil
+}
+
+func expandRegularDigestPathsInIndex(repoRoot string, env []string, paths []string) ([]string, error) {
+	seen := make(map[string]struct{}, len(paths))
+	var expanded []string
+	var indexPaths []string
+	for _, rawPath := range paths {
+		normalizedPath := normalizePath(rawPath)
+		if normalizedPath == "" {
+			return nil, fmt.Errorf("repository changeset input path %q is invalid", rawPath)
+		}
+		if !strings.ContainsAny(normalizedPath, "*?[") {
+			if _, exists := seen[normalizedPath]; exists {
+				continue
+			}
+			seen[normalizedPath] = struct{}{}
+			expanded = append(expanded, normalizedPath)
+			continue
+		}
+		if _, err := path.Match(normalizedPath, ""); err != nil {
+			return nil, fmt.Errorf("repository changeset input path glob %q is invalid: %w", normalizedPath, err)
+		}
+		if indexPaths == nil {
+			var err error
+			indexPaths, err = listIndexPaths(repoRoot, env)
+			if err != nil {
+				return nil, err
+			}
+		}
+		matches := 0
+		for _, candidate := range indexPaths {
+			matched, err := path.Match(normalizedPath, candidate)
+			if err != nil {
+				return nil, fmt.Errorf("repository changeset input path glob %q is invalid: %w", normalizedPath, err)
+			}
+			if !matched {
+				continue
+			}
+			matches++
+			if _, exists := seen[candidate]; exists {
+				continue
+			}
+			seen[candidate] = struct{}{}
+			expanded = append(expanded, candidate)
+		}
+		if matches == 0 {
+			return nil, fmt.Errorf("repository changeset input path glob %q matched no files", normalizedPath)
 		}
 	}
 	sort.Strings(expanded)
@@ -648,6 +718,28 @@ func gitIndexMode(output []byte, normalizedPath string) (string, bool, error) {
 		return fields[0], true, nil
 	}
 	return "", false, nil
+}
+
+func isRegularGitFileMode(mode string) bool {
+	switch strings.TrimSpace(mode) {
+	case "100644", "100755":
+		return true
+	default:
+		return false
+	}
+}
+
+func gitModeKind(mode string) string {
+	switch strings.TrimSpace(mode) {
+	case "040000":
+		return "a directory"
+	case "120000":
+		return "a symlink"
+	case "160000":
+		return "a gitlink"
+	default:
+		return "not a regular file"
+	}
 }
 
 func literalGitPathspec(normalizedPath string) string {

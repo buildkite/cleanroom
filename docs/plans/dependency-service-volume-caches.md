@@ -734,6 +734,11 @@ Completed in phase 2:
   dependency output keys
 - dependency block-volume cache lookup marks per-block hits and misses using the
   cache metadata fields introduced in phase 1
+- dependency and service block-volume keys use strict regular-file input
+  manifests, rejecting symlinks, directories, gitlinks, missing paths, and
+  deleted paths before file-keyed cache reuse
+- dependency and service block-volume hits validate cached output records against
+  the declared output kind/path set before treating metadata as restorable
 - runtime fallback decision requires backend support for cache output volumes and
   overlay write capture before the future block-volume path can be selected
 - sandbox creation now evaluates dependency block-volume lookup after exact and
@@ -745,6 +750,8 @@ Completed in phase 2:
   miss counts, and logs fallback and lookup summaries
 - tests cover ordered keying, prior-block invalidation, partial cache hits, and
   fallback when backend capabilities are missing
+- tests cover strict input validation and output-record mismatch rejection before
+  block-volume records are treated as hits
 - `CreateSandbox` tests cover unsupported backend fallback, missing store
   fallback, partial dependency block-volume hits, and all-hit lookup behavior
   while confirming the aggregate dependency bootstrap still runs
