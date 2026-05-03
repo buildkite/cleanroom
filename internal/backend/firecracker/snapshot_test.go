@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"syscall"
 	"testing"
@@ -666,12 +667,15 @@ func TestProvisionSandboxFromSnapshotUsesSnapshotRootFS(t *testing.T) {
 		gotRootFS  string
 		gotSandbox string
 		gotPolicy  *policy.CompiledPolicy
+		gotSpecs   []backend.CacheOutputVolumeSpec
 	)
+	specs := testCacheOutputVolumeSpecs()
 	adapter := &Adapter{
-		launchSandboxVMFromRootFSFn: func(_ context.Context, sandboxID string, compiled *policy.CompiledPolicy, _ backend.FirecrackerConfig, sourceRootFSPath string) (*sandboxInstance, error) {
+		launchSandboxVMFromRootFSFn: func(_ context.Context, sandboxID string, compiled *policy.CompiledPolicy, _ backend.FirecrackerConfig, sourceRootFSPath string, cacheOutputVolumes []backend.CacheOutputVolumeSpec) (*sandboxInstance, error) {
 			gotSandbox = sandboxID
 			gotPolicy = compiled
 			gotRootFS = sourceRootFSPath
+			gotSpecs = append([]backend.CacheOutputVolumeSpec(nil), cacheOutputVolumes...)
 			return &sandboxInstance{SandboxID: sandboxID}, nil
 		},
 	}
@@ -683,10 +687,11 @@ func TestProvisionSandboxFromSnapshotUsesSnapshotRootFS(t *testing.T) {
 	}
 
 	if err := adapter.ProvisionSandboxFromSnapshot(context.Background(), backend.ProvisionFromSnapshotRequest{
-		SandboxID:  "cr-test",
-		SnapshotID: "snap-test",
-		StorageRef: "/tmp/snap-test.ext4",
-		Policy:     compiled,
+		SandboxID:          "cr-test",
+		SnapshotID:         "snap-test",
+		StorageRef:         "/tmp/snap-test.ext4",
+		Policy:             compiled,
+		CacheOutputVolumes: specs,
 	}); err != nil {
 		t.Fatalf("ProvisionSandboxFromSnapshot returned error: %v", err)
 	}
@@ -698,6 +703,9 @@ func TestProvisionSandboxFromSnapshotUsesSnapshotRootFS(t *testing.T) {
 	}
 	if gotPolicy != compiled {
 		t.Fatal("expected compiled policy to be forwarded")
+	}
+	if !reflect.DeepEqual(gotSpecs, specs) {
+		t.Fatalf("unexpected cache output volume specs: got %#v want %#v", gotSpecs, specs)
 	}
 	if _, ok := adapter.sandboxes["cr-test"]; !ok {
 		t.Fatal("expected provisioned sandbox to be stored")

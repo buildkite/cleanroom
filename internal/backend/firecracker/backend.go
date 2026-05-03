@@ -65,8 +65,8 @@ type Adapter struct {
 	sandboxMu                   sync.Mutex
 	sandboxes                   map[string]*sandboxInstance
 	provisioning                map[string]struct{}
-	launchSandboxVMFn           func(context.Context, string, *policy.CompiledPolicy, backend.FirecrackerConfig) (*sandboxInstance, error)
-	launchSandboxVMFromRootFSFn func(context.Context, string, *policy.CompiledPolicy, backend.FirecrackerConfig, string) (*sandboxInstance, error)
+	launchSandboxVMFn           func(context.Context, string, *policy.CompiledPolicy, backend.FirecrackerConfig, []backend.CacheOutputVolumeSpec) (*sandboxInstance, error)
+	launchSandboxVMFromRootFSFn func(context.Context, string, *policy.CompiledPolicy, backend.FirecrackerConfig, string, []backend.CacheOutputVolumeSpec) (*sandboxInstance, error)
 	runGuestCommandFn           func(context.Context, context.Context, <-chan struct{}, func() error, string, uint32, vsockexec.ExecRequest, backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error)
 
 	GatewayRegistry gatewayRegistry
@@ -334,11 +334,12 @@ func (a *Adapter) Name() string {
 
 func (a *Adapter) Capabilities() map[string]bool {
 	return map[string]bool{
-		backend.CapabilityNetworkDefaultDeny:     true,
-		backend.CapabilityNetworkAllowlistEgress: true,
-		backend.CapabilityDNSControlOrEquivalent: true,
-		backend.CapabilityNetworkGuestInterface:  true,
-		backend.CapabilitySandboxPortDial:        true,
+		backend.CapabilityNetworkDefaultDeny:        true,
+		backend.CapabilityNetworkAllowlistEgress:    true,
+		backend.CapabilityDNSControlOrEquivalent:    true,
+		backend.CapabilityNetworkGuestInterface:     true,
+		backend.CapabilitySandboxPortDial:           true,
+		backend.CapabilitySandboxCacheOutputVolumes: true,
 	}
 }
 
@@ -392,7 +393,7 @@ func (a *Adapter) ProvisionSandbox(ctx context.Context, req backend.ProvisionReq
 		launch = a.launchSandboxVM
 	}
 
-	instance, err := launch(ctx, sandboxID, req.Policy, req.FirecrackerConfig)
+	instance, err := launch(ctx, sandboxID, req.Policy, req.FirecrackerConfig, req.CacheOutputVolumes)
 	if err != nil {
 		a.sandboxMu.Lock()
 		delete(a.provisioning, sandboxID)
@@ -773,7 +774,7 @@ func (a *Adapter) ProvisionSandboxFromSnapshot(ctx context.Context, req backend.
 	if launch == nil {
 		launch = a.launchSandboxVMFromRootFS
 	}
-	instance, err := launch(ctx, sandboxID, req.Policy, req.FirecrackerConfig, storageRef)
+	instance, err := launch(ctx, sandboxID, req.Policy, req.FirecrackerConfig, storageRef, req.CacheOutputVolumes)
 	if err != nil {
 		a.sandboxMu.Lock()
 		delete(a.provisioning, sandboxID)
@@ -1708,7 +1709,7 @@ func (a *Adapter) getImageManager() (imageEnsurer, error) {
 	return a.imageManager, nil
 }
 
-func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compiled *policy.CompiledPolicy, cfg backend.FirecrackerConfig) (*sandboxInstance, error) {
+func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compiled *policy.CompiledPolicy, cfg backend.FirecrackerConfig, cacheOutputVolumeSpecs []backend.CacheOutputVolumeSpec) (*sandboxInstance, error) {
 	if compiled == nil {
 		return nil, errors.New("missing compiled policy")
 	}
@@ -1720,7 +1721,7 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 	if err != nil {
 		return nil, err
 	}
-	instance, err := a.launchSandboxVMFromRootFS(ctx, sandboxID, compiled, cfg, preparedRootFSPath)
+	instance, err := a.launchSandboxVMFromRootFS(ctx, sandboxID, compiled, cfg, preparedRootFSPath, cacheOutputVolumeSpecs)
 	if err != nil {
 		return nil, err
 	}
@@ -1729,7 +1730,7 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 	return instance, nil
 }
 
-func (a *Adapter) launchSandboxVMFromRootFS(ctx context.Context, sandboxID string, compiled *policy.CompiledPolicy, cfg backend.FirecrackerConfig, sourceRootFSPath string) (*sandboxInstance, error) {
+func (a *Adapter) launchSandboxVMFromRootFS(ctx context.Context, sandboxID string, compiled *policy.CompiledPolicy, cfg backend.FirecrackerConfig, sourceRootFSPath string, cacheOutputVolumeSpecs []backend.CacheOutputVolumeSpec) (*sandboxInstance, error) {
 	if compiled == nil {
 		return nil, errors.New("missing compiled policy")
 	}
@@ -1795,6 +1796,22 @@ func (a *Adapter) launchSandboxVMFromRootFS(ctx context.Context, sandboxID strin
 		return nil, fmt.Errorf("prepare persistent rootfs: %w", err)
 	}
 	vmRootFSPath := writableVolume.AttachmentPath
+	cacheOutputVolumes, cleanupCacheOutputVolumes, err := prepareCacheOutputVolumes(
+		ctx,
+		observability.WithLoggerFields(observability.WithTraceContext(baseFirecrackerLogger(a.Logger), ctx), observability.LogFieldSandboxID, sandboxID),
+		cfg,
+		sandboxID,
+		runDir,
+		cacheOutputVolumeSpecs,
+	)
+	if err != nil {
+		cleanupVolume()
+		return nil, fmt.Errorf("prepare cache output volumes: %w", err)
+	}
+	cleanupStorage := func() {
+		cleanupCacheOutputVolumes()
+		cleanupVolume()
+	}
 
 	sandboxLogger := observability.WithLoggerFields(observability.WithTraceContext(baseFirecrackerLogger(a.Logger), ctx), observability.LogFieldSandboxID, sandboxID)
 	hostRuntime := hostRuntimeForConfigWithLogger(cfg, sandboxLogger)
@@ -1831,7 +1848,7 @@ func (a *Adapter) launchSandboxVMFromRootFS(ctx context.Context, sandboxID strin
 		OnBlocked:   nflogOnBlocked,
 	})
 	if err != nil {
-		cleanupVolume()
+		cleanupStorage()
 		return nil, fmt.Errorf("setup host network: %w", err)
 	}
 	networkCfg := networkLease.Config
@@ -1842,7 +1859,7 @@ func (a *Adapter) launchSandboxVMFromRootFS(ctx context.Context, sandboxID strin
 	if a.GatewayRegistry != nil {
 		if err := a.GatewayRegistry.Register(networkCfg.GuestIP, sandboxID, compiled); err != nil {
 			cleanupNetwork()
-			cleanupVolume()
+			cleanupStorage()
 			return nil, fmt.Errorf("register sandbox in gateway: %w", err)
 		}
 	}
@@ -1852,7 +1869,7 @@ func (a *Adapter) launchSandboxVMFromRootFS(ctx context.Context, sandboxID strin
 			a.GatewayRegistry.Release(networkCfg.GuestIP)
 		}
 		cleanupNetwork()
-		cleanupVolume()
+		cleanupStorage()
 	}
 
 	vsockPath := filepath.Join(runDir, "vsock.sock")
@@ -1869,12 +1886,12 @@ func (a *Adapter) launchSandboxVMFromRootFS(ctx context.Context, sandboxID strin
 				dockerBootArgs,
 			),
 		},
-		Drives: []drive{{
+		Drives: append([]drive{{
 			DriveID:      "rootfs",
 			PathOnHost:   vmRootFSPath,
 			IsRootDevice: true,
 			IsReadOnly:   false,
-		}},
+		}}, cacheOutputVolumeDrives(cacheOutputVolumes)...),
 		MachineConfig: machineConfig{
 			VCPUCount:  cfg.VCPUs,
 			MemSizeMiB: cfg.MemoryMiB,
@@ -1938,7 +1955,7 @@ func (a *Adapter) launchSandboxVMFromRootFS(ctx context.Context, sandboxID strin
 		fcCmd:          fcCmd,
 		exitedCh:       make(chan struct{}),
 		cleanupNetwork: cleanupNetwork,
-		cleanupVolume:  cleanupVolume,
+		cleanupVolume:  cleanupStorage,
 		vmRootFSPath:   vmRootFSPath,
 		volumeRef:      writableVolume.Ref,
 	}
