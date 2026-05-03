@@ -1,8 +1,8 @@
 # Firecracker ZFS Stage Cache Replication Plan
 
 **Spec reference:** `spec.md` sections 5.1.1, 5.2, 6.4
-**Status:** Proposed
-**Last reviewed:** 2026-05-02
+**Status:** Active
+**Last reviewed:** 2026-05-03
 
 ## Summary
 
@@ -117,6 +117,26 @@ type Driver interface {
 This plan adds an optional transfer capability beside the local volume-store
 operations. Local clone/restore remains the normal execution path after an
 import succeeds.
+
+## Current Progress
+
+The foundation slice has landed:
+
+- runtime `cache.peers` config shape
+- cache record lineage fields for architecture, runtime base, sizing, driver
+  metadata, import provenance, and validation time
+- ZFS snapshot description metadata with snapshot GUID and parent GUID capture
+- helper-gated ZFS metadata reads for mixed-version root-helper deployments
+- incremental export planning with `zfs send -nP -i`
+
+The active slice is the local ZFS transfer primitive:
+
+- stream an already validated incremental export with `zfs send -i`
+- receive a stream into an unpublished managed ZFS dataset cloned from the
+  local parent snapshot
+- destroy the unpublished dataset on receive or validation failure
+- keep peer lookup, transfer tokens, and receiver-side cache publication out of
+  scope until the local driver path is proven
 
 ## Design Principles
 
@@ -311,10 +331,9 @@ Add an optional interface beside `volumestore.Driver`:
 ```go
 type IncrementalSnapshotTransferDriver interface {
     DescribeSnapshot(context.Context, DescribeSnapshotRequest) (SnapshotDescription, error)
-    CanExportIncremental(context.Context, CanExportIncrementalRequest) (IncrementalTransferPlan, error)
-    ExportIncremental(context.Context, IncrementalTransferPlan, io.Writer) error
-    ImportIncremental(context.Context, ImportIncrementalRequest, io.Reader) (Snapshot, error)
-    DestroyImportedSnapshot(context.Context, DestroySnapshotRequest) error
+    PlanIncrementalSnapshotExport(context.Context, IncrementalSnapshotExportRequest) (IncrementalSnapshotExportPlan, error)
+    ExportIncrementalSnapshot(context.Context, IncrementalSnapshotExportPlan, io.Writer) error
+    ImportIncrementalSnapshot(context.Context, IncrementalSnapshotImportRequest, io.Reader) (Snapshot, error)
 }
 ```
 
@@ -479,6 +498,8 @@ The peer API exposes powerful local cache data. Keep v1 conservative:
 
 ### 1. Metadata and local description
 
+Status: landed.
+
 - Add cache metadata fields needed to describe ZFS lineage.
 - Teach ZFS stage publication to record snapshot GUID and parent GUID.
 - Add tests that published workspace, dependency, and services records carry
@@ -486,9 +507,12 @@ The peer API exposes powerful local cache data. Keep v1 conservative:
 
 ### 2. ZFS incremental transfer contract
 
+Status: active.
+
 - Add the optional transfer interface in `internal/volumestore`.
 - Implement `DescribeSnapshot` for ZFS using ZFS GUID properties.
-- Implement `CanExportIncremental` with strict parent GUID checks.
+- Implement incremental export planning with strict parent GUID checks.
+- Stream validated exports with `zfs send -i`.
 - Add real or helper-backed ZFS tests proving the current snapshot lineage can
   produce an incremental stream.
 
@@ -497,7 +521,8 @@ prevents incremental send, fix the ZFS driver before adding peer APIs.
 
 ### 3. Import into temporary storage
 
-- Implement ZFS incremental receive into a temporary managed dataset.
+- Implement ZFS incremental receive into an unpublished managed dataset cloned
+  from the local parent snapshot.
 - Return a local `Snapshot` only after receive succeeds.
 - Destroy temp datasets on failure.
 - Add daemon startup cleanup for stale temporary import datasets.

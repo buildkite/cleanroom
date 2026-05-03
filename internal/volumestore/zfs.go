@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -19,6 +20,14 @@ const zfsSnapshotNamespace = "snapshots"
 type ZFSCommandRunner interface {
 	Run(ctx context.Context, command string, args ...string) error
 	Output(ctx context.Context, command string, args ...string) ([]byte, error)
+}
+
+type ZFSCommandOutputStreamer interface {
+	OutputTo(ctx context.Context, dst io.Writer, command string, args ...string) error
+}
+
+type ZFSCommandInputStreamer interface {
+	InputFrom(ctx context.Context, src io.Reader, command string, args ...string) error
 }
 
 type ZFSDriverOptions struct {
@@ -301,6 +310,104 @@ func (d *ZFSDriver) PlanIncrementalSnapshotExport(ctx context.Context, req Incre
 		ToSnapshotRef:    to.SnapshotRef,
 		ToSnapshotGUID:   to.SnapshotGUID,
 		EstimatedBytes:   estimatedBytes,
+	}, nil
+}
+
+func (d *ZFSDriver) ExportIncrementalSnapshot(ctx context.Context, plan IncrementalSnapshotExportPlan, dst io.Writer) error {
+	if dst == nil {
+		return errors.New("zfs incremental export requires output writer")
+	}
+	validated, err := d.PlanIncrementalSnapshotExport(ctx, IncrementalSnapshotExportRequest{
+		FromSnapshotRef:  plan.FromSnapshotRef,
+		FromSnapshotGUID: plan.FromSnapshotGUID,
+		ToSnapshotRef:    plan.ToSnapshotRef,
+		ToSnapshotGUID:   plan.ToSnapshotGUID,
+	})
+	if err != nil {
+		return err
+	}
+
+	streamer, ok := d.runner.(ZFSCommandOutputStreamer)
+	if !ok {
+		return errors.New("zfs command runner does not support streaming output")
+	}
+	if err := streamer.OutputTo(ctx, dst, "zfs", "send", "-i", validated.FromSnapshotRef, validated.ToSnapshotRef); err != nil {
+		return fmt.Errorf("export zfs incremental send from %q to %q: %w", validated.FromSnapshotRef, validated.ToSnapshotRef, err)
+	}
+	return nil
+}
+
+func (d *ZFSDriver) ImportIncrementalSnapshot(ctx context.Context, req IncrementalSnapshotImportRequest, src io.Reader) (Snapshot, error) {
+	if src == nil {
+		return Snapshot{}, errors.New("zfs incremental import requires input reader")
+	}
+	snapshotID := sanitizeZFSDatasetComponent(req.SnapshotID)
+	if snapshotID == "" {
+		return Snapshot{}, errors.New("zfs incremental import requires snapshot id")
+	}
+	parentSnapshotRef := strings.TrimSpace(req.ParentSnapshotRef)
+	if err := d.validateManagedSnapshotRef(parentSnapshotRef); err != nil {
+		return Snapshot{}, err
+	}
+	expectedParentGUID := strings.TrimSpace(req.ParentSnapshotGUID)
+	if expectedParentGUID == "" {
+		return Snapshot{}, errors.New("zfs incremental import requires parent snapshot guid")
+	}
+
+	parent, err := d.DescribeSnapshot(ctx, DescribeSnapshotRequest{SnapshotRef: parentSnapshotRef})
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("describe zfs incremental import parent snapshot: %w", err)
+	}
+	if parent.SnapshotGUID != expectedParentGUID {
+		return Snapshot{}, fmt.Errorf("zfs incremental import parent guid mismatch for %q: got %q want %q", parent.SnapshotRef, parent.SnapshotGUID, expectedParentGUID)
+	}
+
+	streamer, ok := d.runner.(ZFSCommandInputStreamer)
+	if !ok {
+		return Snapshot{}, errors.New("zfs command runner does not support streaming input")
+	}
+
+	storedDataset := d.datasetPath(zfsSnapshotNamespace, snapshotID)
+	storedSnapshotRef := d.snapshotRef(storedDataset, zfsManagedSnapshotName)
+	if _, err := d.cloneSnapshot(ctx, parent.SnapshotRef, storedDataset); err != nil {
+		return Snapshot{}, err
+	}
+	importComplete := false
+	defer func() {
+		if importComplete {
+			return
+		}
+		_ = d.DestroyVolume(context.Background(), DestroyVolumeRequest{VolumeRef: storedDataset})
+	}()
+
+	if err := streamer.InputFrom(ctx, src, "zfs", "receive", "-u", "-F", storedDataset); err != nil {
+		return Snapshot{}, fmt.Errorf("receive zfs incremental snapshot into %q: %w", storedDataset, err)
+	}
+
+	desc, err := d.DescribeSnapshot(ctx, DescribeSnapshotRequest{
+		SnapshotRef:        storedSnapshotRef,
+		ParentSnapshotGUID: parent.SnapshotGUID,
+	})
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("describe imported zfs snapshot: %w", err)
+	}
+	expectedSnapshotGUID := strings.TrimSpace(req.ExpectedSnapshotGUID)
+	if expectedSnapshotGUID != "" && desc.SnapshotGUID != expectedSnapshotGUID {
+		return Snapshot{}, fmt.Errorf("zfs incremental import snapshot guid mismatch for %q: got %q want %q", desc.SnapshotRef, desc.SnapshotGUID, expectedSnapshotGUID)
+	}
+
+	driverMetadata, err := EncodeZFSDriverMetadata(ZFSDriverMetadataFromDescription(desc))
+	if err != nil {
+		return Snapshot{}, err
+	}
+	importComplete = true
+	return Snapshot{
+		Ref:                desc.SnapshotRef,
+		StorageRef:         desc.StorageRef,
+		ParentSnapshotGUID: desc.ParentSnapshotGUID,
+		StorageSizeBytes:   desc.StorageSizeBytes,
+		ExclusiveSizeBytes: desc.ExclusiveSizeBytes,
+		DriverMetadata:     driverMetadata,
 	}, nil
 }
 

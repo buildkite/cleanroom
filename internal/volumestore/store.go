@@ -1,6 +1,9 @@
 package volumestore
 
-import "context"
+import (
+	"context"
+	"io"
+)
 
 type Driver interface {
 	Name() string
@@ -21,6 +24,8 @@ type SnapshotDescriber interface {
 type IncrementalSnapshotTransferDriver interface {
 	SnapshotDescriber
 	PlanIncrementalSnapshotExport(context.Context, IncrementalSnapshotExportRequest) (IncrementalSnapshotExportPlan, error)
+	ExportIncrementalSnapshot(context.Context, IncrementalSnapshotExportPlan, io.Writer) error
+	ImportIncrementalSnapshot(context.Context, IncrementalSnapshotImportRequest, io.Reader) (Snapshot, error)
 }
 
 type EnsureBaseVolumeRequest struct {
@@ -99,6 +104,15 @@ type IncrementalSnapshotExportPlan struct {
 	ToSnapshotRef    string
 	ToSnapshotGUID   string
 	EstimatedBytes   int64
+}
+
+// IncrementalSnapshotImportRequest asks a driver to receive an incremental
+// snapshot stream on top of a local parent snapshot.
+type IncrementalSnapshotImportRequest struct {
+	SnapshotID           string
+	ParentSnapshotRef    string
+	ParentSnapshotGUID   string
+	ExpectedSnapshotGUID string
 }
 
 type DestroyVolumeRequest struct {

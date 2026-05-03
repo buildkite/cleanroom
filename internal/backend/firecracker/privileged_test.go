@@ -1,7 +1,9 @@
 package firecracker
 
 import (
+	"bytes"
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -367,6 +369,81 @@ func TestRunRootCommandOutputInvokesHelper(t *testing.T) {
 	}
 	if got := strings.TrimSpace(string(logBytes)); got != "capabilities" {
 		t.Fatalf("unexpected helper invocation: got %q want %q", got, "capabilities")
+	}
+}
+
+func TestPrivilegedRunnerStreamsThroughHelper(t *testing.T) {
+	tmpDir := t.TempDir()
+	sudoLogPath := filepath.Join(tmpDir, "sudo.log")
+	logPath := filepath.Join(tmpDir, "helper.log")
+	inputPath := filepath.Join(tmpDir, "helper.input")
+	helperPath := filepath.Join(tmpDir, "cleanroom-root-helper")
+	setupFakeSudo(t, sudoLogPath)
+
+	helperScript := `#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "$HELPER_LOG_PATH"
+if [ "$1" = "zfs" ] && [ "$2" = "send" ]; then
+  printf 'stream-bytes'
+  exit 0
+fi
+if [ "$1" = "zfs" ] && [ "$2" = "receive" ]; then
+  cat > "$HELPER_INPUT_PATH"
+  exit 0
+fi
+echo "unexpected helper args: $*" >&2
+exit 2
+`
+	if err := os.WriteFile(helperPath, []byte(helperScript), 0o755); err != nil {
+		t.Fatalf("write helper script: %v", err)
+	}
+	t.Setenv("HELPER_LOG_PATH", logPath)
+	t.Setenv("HELPER_INPUT_PATH", inputPath)
+
+	runner := newPrivilegedCommandRunner(backend.FirecrackerConfig{
+		PrivilegedHelperPath: helperPath,
+	})
+	outputStreamer, ok := runner.(interface {
+		OutputTo(context.Context, io.Writer, ...string) error
+	})
+	if !ok {
+		t.Fatalf("expected helper runner to support output streaming")
+	}
+	var out bytes.Buffer
+	if err := outputStreamer.OutputTo(context.Background(), &out, "zfs", "send", "-i", "tank/cleanroom/snapshots/parent@base", "tank/cleanroom/snapshots/child@base"); err != nil {
+		t.Fatalf("OutputTo returned error: %v", err)
+	}
+	if got, want := out.String(), "stream-bytes"; got != want {
+		t.Fatalf("unexpected streamed output: got %q want %q", got, want)
+	}
+
+	inputStreamer, ok := runner.(interface {
+		InputFrom(context.Context, io.Reader, ...string) error
+	})
+	if !ok {
+		t.Fatalf("expected helper runner to support input streaming")
+	}
+	if err := inputStreamer.InputFrom(context.Background(), strings.NewReader("incoming-stream"), "zfs", "receive", "-u", "-F", "tank/cleanroom/snapshots/imported"); err != nil {
+		t.Fatalf("InputFrom returned error: %v", err)
+	}
+	inputBytes, err := os.ReadFile(inputPath)
+	if err != nil {
+		t.Fatalf("read helper input: %v", err)
+	}
+	if got, want := string(inputBytes), "incoming-stream"; got != want {
+		t.Fatalf("unexpected streamed input: got %q want %q", got, want)
+	}
+
+	logBytes, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read helper log: %v", err)
+	}
+	wantLog := strings.Join([]string{
+		"zfs send -i tank/cleanroom/snapshots/parent@base tank/cleanroom/snapshots/child@base",
+		"zfs receive -u -F tank/cleanroom/snapshots/imported",
+	}, "\n")
+	if got := strings.TrimSpace(string(logBytes)); got != wantLog {
+		t.Fatalf("unexpected helper log:\n got: %q\nwant: %q", got, wantLog)
 	}
 }
 

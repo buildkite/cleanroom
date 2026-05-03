@@ -3,6 +3,7 @@ package firecracker
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -320,6 +321,26 @@ func (r hostRuntimeVolumeCommandRunner) Run(ctx context.Context, command string,
 
 func (r hostRuntimeVolumeCommandRunner) Output(ctx context.Context, command string, args ...string) ([]byte, error) {
 	return r.runner.Output(ctx, append([]string{command}, args...)...)
+}
+
+func (r hostRuntimeVolumeCommandRunner) OutputTo(ctx context.Context, dst io.Writer, command string, args ...string) error {
+	streamer, ok := r.runner.(interface {
+		OutputTo(context.Context, io.Writer, ...string) error
+	})
+	if !ok {
+		return fmt.Errorf("privileged command runner does not support streaming output")
+	}
+	return streamer.OutputTo(ctx, dst, append([]string{command}, args...)...)
+}
+
+func (r hostRuntimeVolumeCommandRunner) InputFrom(ctx context.Context, src io.Reader, command string, args ...string) error {
+	streamer, ok := r.runner.(interface {
+		InputFrom(context.Context, io.Reader, ...string) error
+	})
+	if !ok {
+		return fmt.Errorf("privileged command runner does not support streaming input")
+	}
+	return streamer.InputFrom(ctx, src, append([]string{command}, args...)...)
 }
 
 func validateZFSDatasetRootWithRunner(ctx context.Context, runner privilegedCommandRunner, dataset string) error {

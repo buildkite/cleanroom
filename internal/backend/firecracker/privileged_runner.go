@@ -1,10 +1,13 @@
 package firecracker
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"strings"
 
 	"github.com/buildkite/cleanroom/internal/backend"
@@ -95,6 +98,34 @@ func (directPrivilegedCommandRunner) Output(ctx context.Context, args ...string)
 	return runCombinedCommandOutput(ctx, append([]string{binary}, args[1:]...), args)
 }
 
+func (directPrivilegedCommandRunner) OutputTo(ctx context.Context, dst io.Writer, args ...string) error {
+	if len(args) == 0 {
+		return errors.New("missing privileged command")
+	}
+	if dst == nil {
+		return errors.New("missing privileged command output writer")
+	}
+	binary, err := directPrivilegedCommandPathResolver(args[0])
+	if err != nil {
+		return err
+	}
+	return runCommandWithIO(ctx, append([]string{binary}, args[1:]...), args, nil, dst)
+}
+
+func (directPrivilegedCommandRunner) InputFrom(ctx context.Context, src io.Reader, args ...string) error {
+	if len(args) == 0 {
+		return errors.New("missing privileged command")
+	}
+	if src == nil {
+		return errors.New("missing privileged command input reader")
+	}
+	binary, err := directPrivilegedCommandPathResolver(args[0])
+	if err != nil {
+		return err
+	}
+	return runCommandWithIO(ctx, append([]string{binary}, args[1:]...), args, src, nil)
+}
+
 func (r directPrivilegedCommandRunner) RunBatch(ctx context.Context, commands [][]string) error {
 	for _, args := range commands {
 		if len(args) == 0 {
@@ -131,6 +162,36 @@ func (r helperPrivilegedCommandRunner) Output(ctx context.Context, args ...strin
 	return runCombinedCommandOutput(ctx, append([]string{"sudo", "-n", helperPath}, args...), append([]string{"helper"}, args...))
 }
 
+func (r helperPrivilegedCommandRunner) OutputTo(ctx context.Context, dst io.Writer, args ...string) error {
+	if len(args) == 0 {
+		return errors.New("missing privileged command")
+	}
+	if dst == nil {
+		return errors.New("missing privileged command output writer")
+	}
+
+	helperPath := resolvePrivilegedHelperPath(r.cfg)
+	if strings.TrimSpace(helperPath) == "" {
+		return errors.New("missing privileged helper path")
+	}
+	return runCommandWithIO(ctx, append([]string{"sudo", "-n", helperPath}, args...), append([]string{"helper"}, args...), nil, dst)
+}
+
+func (r helperPrivilegedCommandRunner) InputFrom(ctx context.Context, src io.Reader, args ...string) error {
+	if len(args) == 0 {
+		return errors.New("missing privileged command")
+	}
+	if src == nil {
+		return errors.New("missing privileged command input reader")
+	}
+
+	helperPath := resolvePrivilegedHelperPath(r.cfg)
+	if strings.TrimSpace(helperPath) == "" {
+		return errors.New("missing privileged helper path")
+	}
+	return runCommandWithIO(ctx, append([]string{"sudo", "-n", helperPath}, args...), append([]string{"helper"}, args...), src, nil)
+}
+
 func (r helperPrivilegedCommandRunner) RunBatch(ctx context.Context, commands [][]string) error {
 	for _, args := range commands {
 		if len(args) == 0 {
@@ -153,4 +214,22 @@ func runRootCommandOutput(ctx context.Context, cfg backend.FirecrackerConfig, ar
 
 func runRootCommandBatch(ctx context.Context, cfg backend.FirecrackerConfig, commands [][]string) error {
 	return newPrivilegedCommandRunner(cfg).RunBatch(ctx, commands)
+}
+
+func runCommandWithIO(ctx context.Context, command []string, errorContext []string, stdin io.Reader, stdout io.Writer) error {
+	cmd := exec.CommandContext(ctx, command[0], command[1:]...)
+	cmd.Stdin = stdin
+	cmd.Stdout = stdout
+
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = "no stderr output"
+		}
+		return fmt.Errorf("%s: %w (%s)", strings.Join(errorContext, " "), err, msg)
+	}
+	return nil
 }
