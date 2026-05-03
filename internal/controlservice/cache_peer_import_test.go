@@ -592,23 +592,56 @@ func TestImportDependencyStageCacheFromPeersContinuesAfterExportFailure(t *testi
 
 	firstCandidate := cachePeerImportTestCandidate(dependencyPlan.CacheKey, workspaceKey, compiled.Hash, "bad-token")
 	badPeer := newTestCachePeerImportServerWithExport(t, firstCandidate, http.StatusInternalServerError, "")
+	badPeer.exportNotify = make(chan struct{})
 	secondCandidate := cachePeerImportTestCandidate(dependencyPlan.CacheKey, workspaceKey, compiled.Hash, "good-token")
 	goodPeer := newTestCachePeerImportServerWithExport(t, secondCandidate, http.StatusOK, "good-zfs-stream")
+	goodPeer.lookupBlock = make(chan struct{})
+	var releaseGoodOnce sync.Once
+	releaseGoodPeer := func() {
+		releaseGoodOnce.Do(func() { close(goodPeer.lookupBlock) })
+	}
+	defer releaseGoodPeer()
 	svc.Config.Cache.Peers = []runtimeconfig.CachePeerConfig{
 		{URL: badPeer.URL, TokenEnv: "CLEANROOM_CACHE_PEER_TOKEN"},
 		{URL: goodPeer.URL, TokenEnv: "CLEANROOM_CACHE_PEER_TOKEN"},
 	}
 
-	record, imported, err := svc.importDependencyStageCacheFromPeers(
-		context.Background(),
-		adapter,
-		"firecracker",
-		compiled,
-		runtimeconfig.MergeBackendConfig(svc.Config, "firecracker", 0),
-		repository,
-		nil,
-		dependencyPlan,
-	)
+	type importResult struct {
+		record   cachestore.Record
+		imported bool
+		err      error
+	}
+	resultCh := make(chan importResult, 1)
+	go func() {
+		record, imported, err := svc.importDependencyStageCacheFromPeers(
+			context.Background(),
+			adapter,
+			"firecracker",
+			compiled,
+			runtimeconfig.MergeBackendConfig(svc.Config, "firecracker", 0),
+			repository,
+			nil,
+			dependencyPlan,
+		)
+		resultCh <- importResult{record: record, imported: imported, err: err}
+	}()
+	select {
+	case <-badPeer.exportNotify:
+		releaseGoodPeer()
+	case result := <-resultCh:
+		releaseGoodPeer()
+		t.Fatalf("import completed before the bad peer export was attempted: imported=%v err=%v", result.imported, result.err)
+	case <-time.After(time.Second):
+		releaseGoodPeer()
+		t.Fatal("timed out waiting for bad peer export")
+	}
+	var result importResult
+	select {
+	case result = <-resultCh:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for second peer import")
+	}
+	record, imported, err := result.record, result.imported, result.err
 	if err != nil {
 		t.Fatalf("importDependencyStageCacheFromPeers returned error: %v", err)
 	}
@@ -1071,15 +1104,17 @@ func TestCreateSandboxImportsServicesStageAfterDependencyPeerImport(t *testing.T
 
 type testCachePeerImportServer struct {
 	*httptest.Server
-	mu             sync.Mutex
-	requests       []*cleanroomv1.LookupCachePeerRequest
-	lookupAuth     []string
-	exportAuth     []string
-	exportRequests int
-	candidate      *cleanroomv1.CachePeerCandidate
-	candidates     []*cleanroomv1.CachePeerCandidate
-	exports        map[string]testCachePeerExport
-	lookupBlock    chan struct{}
+	mu               sync.Mutex
+	requests         []*cleanroomv1.LookupCachePeerRequest
+	lookupAuth       []string
+	exportAuth       []string
+	exportRequests   int
+	candidate        *cleanroomv1.CachePeerCandidate
+	candidates       []*cleanroomv1.CachePeerCandidate
+	exports          map[string]testCachePeerExport
+	lookupBlock      chan struct{}
+	exportNotify     chan struct{}
+	exportNotifyOnce sync.Once
 }
 
 type testCachePeerExport struct {
@@ -1114,8 +1149,14 @@ func newTestCachePeerImportServerWithCandidates(t *testing.T, candidates []*clea
 	path, handler := cleanroomv1connect.NewCachePeerServiceHandler(peer)
 	mux.Handle(path, handler)
 	mux.HandleFunc(cachePeerZFSIncrementalExportPathPrefix, func(w http.ResponseWriter, r *http.Request) {
+		peer.mu.Lock()
 		peer.exportRequests++
 		peer.exportAuth = append(peer.exportAuth, r.Header.Get("Authorization"))
+		exportNotify := peer.exportNotify
+		peer.mu.Unlock()
+		if exportNotify != nil {
+			peer.exportNotifyOnce.Do(func() { close(exportNotify) })
+		}
 		token := strings.TrimPrefix(r.URL.Path, cachePeerZFSIncrementalExportPathPrefix)
 		export, ok := peer.exports[token]
 		if !ok {
