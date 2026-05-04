@@ -874,6 +874,9 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 			}
 			emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_BOOTSTRAP_SERVICES, "running services bootstrap")
 			if err := s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.bootstrap_services", bootstrapAttrs, func(ctx context.Context) error {
+				if serviceBlockVolumePlanAvailable {
+					return s.bootstrapServiceBlockVolumePlanInPersistentSandbox(ctx, adapter, sandboxID, compiled, firecrackerCfg, repository, serviceBlockVolumePlan, reporter)
+				}
 				return s.bootstrapServicesStageInPersistentSandbox(ctx, adapter, sandboxID, compiled, firecrackerCfg, servicesStagePlan, reporter)
 			}); err != nil {
 				cleanupErr := s.terminateCreatedSandbox(context.Background(), adapter, sandboxID)
@@ -935,6 +938,9 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 			}
 			emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_BOOTSTRAP_SERVICES, "running services bootstrap")
 			if err := s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.bootstrap_services", bootstrapAttrs, func(ctx context.Context) error {
+				if serviceBlockVolumePlanAvailable {
+					return s.bootstrapServiceBlockVolumePlanInPersistentSandbox(ctx, adapter, sandboxID, compiled, firecrackerCfg, repository, serviceBlockVolumePlan, reporter)
+				}
 				return s.bootstrapServicesStageInPersistentSandbox(ctx, adapter, sandboxID, compiled, firecrackerCfg, servicesStagePlan, reporter)
 			}); err != nil {
 				cleanupErr := s.terminateCreatedSandbox(context.Background(), adapter, sandboxID)
@@ -1123,6 +1129,9 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 		}
 		emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_BOOTSTRAP_SERVICES, "running services bootstrap")
 		if err := s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.bootstrap_services", bootstrapAttrs, func(ctx context.Context) error {
+			if serviceBlockVolumePlanAvailable {
+				return s.bootstrapServiceBlockVolumePlanInPersistentSandbox(ctx, adapter, sandboxID, compiled, firecrackerCfg, repository, serviceBlockVolumePlan, reporter)
+			}
 			return s.bootstrapServicesStageInPersistentSandbox(ctx, adapter, sandboxID, compiled, firecrackerCfg, servicesStagePlan, reporter)
 		}); err != nil {
 			if terminateErr := s.terminateCreatedSandbox(context.Background(), adapter, sandboxID); terminateErr != nil {

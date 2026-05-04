@@ -1,0 +1,103 @@
+package controlservice
+
+import (
+	"context"
+	"fmt"
+	"path/filepath"
+	"strings"
+
+	"github.com/buildkite/cleanroom/internal/backend"
+	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
+	"github.com/buildkite/cleanroom/internal/observability"
+	"github.com/buildkite/cleanroom/internal/policy"
+	"github.com/buildkite/cleanroom/internal/repositorycheckout"
+	"go.opentelemetry.io/otel/attribute"
+)
+
+const serviceInputProjectionRoot = "/run/cleanroom/input-projections/services"
+
+func (s *Service) bootstrapServiceBlockVolumePlanInPersistentSandbox(
+	ctx context.Context,
+	adapter backend.Adapter,
+	sandboxID string,
+	compiled *policy.CompiledPolicy,
+	firecrackerCfg backend.FirecrackerConfig,
+	repository *repositorycheckout.Checkout,
+	plan serviceBlockVolumePlan,
+	reporter CreateSandboxReporter,
+) error {
+	if adapter == nil || compiled == nil || repository == nil || strings.TrimSpace(sandboxID) == "" || len(plan.Blocks) == 0 {
+		return nil
+	}
+
+	for _, block := range plan.Blocks {
+		blockName := strings.TrimSpace(block.BlockName)
+		if block.CacheHit {
+			emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_BOOTSTRAP_SERVICES, "restoring service outputs: "+blockName)
+			continue
+		}
+
+		attrs := []attribute.KeyValue{
+			attribute.String(observability.AttrBackend, adapter.Name()),
+			attribute.String(observability.AttrSandboxID, sandboxID),
+			attribute.String("cleanroom.cache.block", blockName),
+			attribute.Int(observability.AttrCommandArgc, len(block.Command)),
+		}
+		if commitSHA := strings.TrimSpace(repository.CommitSHA); commitSHA != "" {
+			attrs = append(attrs, attribute.String(observability.AttrRepositoryCommitSHA, commitSHA))
+		}
+
+		emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_BOOTSTRAP_SERVICES, "running service bootstrap: "+blockName)
+		if err := s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.bootstrap_service_block", attrs, func(ctx context.Context) error {
+			return s.bootstrapServiceBlockVolumeBlock(ctx, adapter, sandboxID, compiled, firecrackerCfg, repository, block, reporter)
+		}); err != nil {
+			return fmt.Errorf("service block %q: %w", blockName, err)
+		}
+	}
+	return nil
+}
+
+func (s *Service) bootstrapServiceBlockVolumeBlock(
+	ctx context.Context,
+	adapter backend.Adapter,
+	sandboxID string,
+	compiled *policy.CompiledPolicy,
+	firecrackerCfg backend.FirecrackerConfig,
+	repository *repositorycheckout.Checkout,
+	block serviceBlockVolumeBlockPlan,
+	reporter CreateSandboxReporter,
+) error {
+	if len(block.Command) == 0 {
+		return nil
+	}
+	sourceRoot := strings.TrimSpace(repository.DestinationDir)
+	if sourceRoot == "" {
+		sourceRoot = "/workspace"
+	}
+	inputProjection := &backend.InputProjection{
+		SourceRoot:          sourceRoot,
+		TargetRoot:          filepath.Join(serviceInputProjectionRoot, strings.TrimSpace(block.BlockName)),
+		Files:               append([]string(nil), block.Inputs...),
+		MountSourceReadOnly: true,
+	}
+	env := stageBlockEnvList(block.Env)
+	_, result, stdout, stderr, err := s.runPersistentBootstrapCommandWithOptions(
+		ctx,
+		adapter,
+		sandboxID,
+		compiled,
+		firecrackerCfg,
+		cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_BOOTSTRAP_SERVICES,
+		policy.NetworkStageServices,
+		block.Command,
+		env,
+		nil,
+		persistentSandboxCommandOptions{
+			Dir:             sourceRoot,
+			ClosedEnv:       true,
+			InputProjection: inputProjection,
+		},
+		reporter,
+	)
+	return persistentBootstrapCommandError(result, stdout, stderr, err, "service block bootstrap returned no result", "service block bootstrap failed with exit code %d")
+}
