@@ -230,6 +230,35 @@ func TestDecodeStreamResponseReturnsOnlyExitMetadata(t *testing.T) {
 	}
 }
 
+func TestDecodeStreamResponseIncludesOverlayCapture(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	if err := EncodeStreamFrame(&buf, ExecStreamFrame{
+		Type:     "exit",
+		ExitCode: 0,
+		OverlayCapture: &OverlayCaptureResult{
+			EscapedWrites: []OverlayCaptureEntry{{Path: "/etc/profile", Kind: "write", Mode: 0o644}},
+		},
+	}); err != nil {
+		t.Fatalf("EncodeStreamFrame exit: %v", err)
+	}
+
+	res, err := DecodeStreamResponse(&buf, StreamCallbacks{})
+	if err != nil {
+		t.Fatalf("DecodeStreamResponse: %v", err)
+	}
+	if res.OverlayCapture == nil {
+		t.Fatal("expected overlay capture result")
+	}
+	if got, want := len(res.OverlayCapture.EscapedWrites), 1; got != want {
+		t.Fatalf("unexpected escaped write count: got %d want %d", got, want)
+	}
+	if got, want := res.OverlayCapture.EscapedWrites[0], (OverlayCaptureEntry{Path: "/etc/profile", Kind: "write", Mode: 0o644}); got != want {
+		t.Fatalf("unexpected escaped write: got %#v want %#v", got, want)
+	}
+}
+
 func TestDecodeStreamResponseRejectsUntypedPayload(t *testing.T) {
 	t.Parallel()
 
