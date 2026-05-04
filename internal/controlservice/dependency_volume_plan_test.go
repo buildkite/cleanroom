@@ -747,6 +747,8 @@ func TestBootstrapDependencyBlockVolumePlanRunsMissesFromInputProjection(t *test
 				Command:   append([]string(nil), compiled.Dependencies.Blocks[1].Command...),
 				Env:       cloneDependencyBlockEnv(compiled.Dependencies.Blocks[1].Env),
 				Inputs:    append([]string(nil), compiled.Dependencies.Blocks[1].Inputs.Files...),
+				Outputs:   compiled.Dependencies.Blocks[1].Outputs,
+				CacheKey:  "dependency-volume:go-modules",
 			},
 		},
 	}
@@ -806,6 +808,21 @@ func TestBootstrapDependencyBlockVolumePlanRunsMissesFromInputProjection(t *test
 	}
 	if !req.InputProjection.MountSourceReadOnly {
 		t.Fatal("expected projection to be mounted read-only over source")
+	}
+	if req.OverlayCapture == nil {
+		t.Fatal("expected overlay capture request")
+	}
+	if got, want := req.OverlayCapture.UpperDir, filepath.Join(blockVolumeOverlayCaptureRoot, blockVolumeID(dependencyVolumeStageName, plan.Blocks[1].CacheKey), "upper"); got != want {
+		t.Fatalf("unexpected overlay capture upper dir: got %q want %q", got, want)
+	}
+	if !slices.Equal(req.OverlayCapture.BaselinePaths, plan.Blocks[1].Outputs.Dirs) {
+		t.Fatalf("unexpected overlay capture baseline paths: got %v want %v", req.OverlayCapture.BaselinePaths, plan.Blocks[1].Outputs.Dirs)
+	}
+	if !slices.Equal(req.OverlayCapture.DeclaredFileOutputs, plan.Blocks[1].Outputs.Files) {
+		t.Fatalf("unexpected overlay capture file outputs: got %v want %v", req.OverlayCapture.DeclaredFileOutputs, plan.Blocks[1].Outputs.Files)
+	}
+	if !slices.Equal(req.OverlayCapture.IgnoredPrefixes, blockVolumeOverlayCaptureIgnoredPrefixes) {
+		t.Fatalf("unexpected overlay capture ignored prefixes: got %v want %v", req.OverlayCapture.IgnoredPrefixes, blockVolumeOverlayCaptureIgnoredPrefixes)
 	}
 }
 

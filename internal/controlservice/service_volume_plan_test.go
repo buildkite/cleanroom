@@ -2,6 +2,7 @@ package controlservice
 
 import (
 	"context"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -915,6 +916,8 @@ func TestBootstrapServiceBlockVolumePlanRunsMissesFromInputProjection(t *testing
 				Command:   append([]string(nil), compiled.Services.Blocks[1].Command...),
 				Env:       cloneDependencyBlockEnv(compiled.Services.Blocks[1].Env),
 				Inputs:    append([]string(nil), compiled.Services.Blocks[1].Inputs.Files...),
+				Outputs:   compiled.Services.Blocks[1].Outputs,
+				CacheKey:  "service-volume:app-service",
 			},
 		},
 	}
@@ -977,6 +980,21 @@ func TestBootstrapServiceBlockVolumePlanRunsMissesFromInputProjection(t *testing
 	}
 	if !req.InputProjection.MountSourceReadOnly {
 		t.Fatal("expected projection to be mounted read-only over source")
+	}
+	if req.OverlayCapture == nil {
+		t.Fatal("expected overlay capture request")
+	}
+	if got, want := req.OverlayCapture.UpperDir, filepath.Join(blockVolumeOverlayCaptureRoot, blockVolumeID(serviceVolumeStageName, plan.Blocks[1].CacheKey), "upper"); got != want {
+		t.Fatalf("unexpected overlay capture upper dir: got %q want %q", got, want)
+	}
+	if !slices.Equal(req.OverlayCapture.BaselinePaths, plan.Blocks[1].Outputs.Dirs) {
+		t.Fatalf("unexpected overlay capture baseline paths: got %v want %v", req.OverlayCapture.BaselinePaths, plan.Blocks[1].Outputs.Dirs)
+	}
+	if !slices.Equal(req.OverlayCapture.DeclaredFileOutputs, plan.Blocks[1].Outputs.Files) {
+		t.Fatalf("unexpected overlay capture file outputs: got %v want %v", req.OverlayCapture.DeclaredFileOutputs, plan.Blocks[1].Outputs.Files)
+	}
+	if !slices.Equal(req.OverlayCapture.IgnoredPrefixes, blockVolumeOverlayCaptureIgnoredPrefixes) {
+		t.Fatalf("unexpected overlay capture ignored prefixes: got %v want %v", req.OverlayCapture.IgnoredPrefixes, blockVolumeOverlayCaptureIgnoredPrefixes)
 	}
 }
 

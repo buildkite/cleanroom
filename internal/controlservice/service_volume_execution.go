@@ -123,6 +123,7 @@ func (s *Service) bootstrapServiceBlockVolumeBlock(
 			ClosedEnv:               true,
 			InputProjection:         inputProjection,
 			CacheOutputFileCaptures: serviceBlockVolumeFileCaptures(block),
+			OverlayCapture:          serviceBlockVolumeOverlayCapture(block),
 		},
 		reporter,
 	)
