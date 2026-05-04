@@ -121,6 +121,38 @@ func TestDecodeResponseForwardsStreamCallbacks(t *testing.T) {
 	}
 }
 
+func TestOverlayCaptureConversionClonesRequestsAndResults(t *testing.T) {
+	capture := &backend.OverlayCapture{
+		UpperDir:            "/run/cleanroom/overlay/upper",
+		BaselinePaths:       []string{"/workspace"},
+		DeclaredFileOutputs: []string{"/workspace/dist/result.txt"},
+		IgnoredPrefixes:     []string{"/tmp"},
+	}
+	req := ToVSOCKOverlayCapture(capture)
+	if req == nil {
+		t.Fatal("expected vsock overlay capture request")
+	}
+	capture.BaselinePaths[0] = "/changed"
+	if got, want := req.BaselinePaths[0], "/workspace"; got != want {
+		t.Fatalf("overlay capture request was not cloned: got %q want %q", got, want)
+	}
+
+	result := FromVSOCKOverlayCaptureResult(&vsockexec.OverlayCaptureResult{
+		Entries: []vsockexec.OverlayCaptureEntry{
+			{Path: "/workspace/dist/result.txt", Kind: "write", Mode: 0o644},
+		},
+		EscapedWrites: []vsockexec.OverlayCaptureEntry{
+			{Path: "/etc/profile", Kind: "write", Mode: 0o644},
+		},
+	})
+	if result == nil {
+		t.Fatal("expected backend overlay capture result")
+	}
+	if got, want := result.EscapedWrites[0], (backend.OverlayCaptureEntry{Path: "/etc/profile", Kind: "write", Mode: 0o644}); got != want {
+		t.Fatalf("unexpected escaped write: got %#v want %#v", got, want)
+	}
+}
+
 type fakeConn struct {
 	deadline       time.Time
 	setDeadlineErr error

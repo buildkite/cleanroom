@@ -1185,6 +1185,7 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 		ClosedEnv:       req.ClosedEnv,
 		TTY:             req.TTY,
 		InputProjection: darwinVZInputProjection(req.InputProjection),
+		OverlayCapture:  guestexec.ToVSOCKOverlayCapture(req.OverlayCapture),
 	}
 	if !req.ClosedEnv && a.GatewayRegistry != nil && gatewayScopeToken != "" {
 		gwPort := a.GatewayPort
@@ -1228,14 +1229,15 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 	observation.GuestError = guestRes.Error
 
 	return &backend.ExecutionResult{
-		ExecutionID: req.ExecutionID,
-		ExitCode:    guestRes.ExitCode,
-		LaunchedVM:  true,
-		PlanPath:    vmPlanPath,
-		RunDir:      runDir,
-		ImageRef:    resolvedImageRef,
-		ImageDigest: resolvedImageDigest,
-		Message:     message,
+		ExecutionID:    req.ExecutionID,
+		ExitCode:       guestRes.ExitCode,
+		LaunchedVM:     true,
+		PlanPath:       vmPlanPath,
+		RunDir:         runDir,
+		ImageRef:       resolvedImageRef,
+		ImageDigest:    resolvedImageDigest,
+		Message:        message,
+		OverlayCapture: guestexec.FromVSOCKOverlayCaptureResult(guestRes.OverlayCapture),
 	}, nil
 }
 
@@ -1642,6 +1644,7 @@ func (a *Adapter) executeInSandbox(bootCtx context.Context, runCtx context.Conte
 		TTY:               req.TTY,
 		CacheOutputMounts: cloneDarwinVZCacheOutputMounts(instance.cacheOutputMounts),
 		InputProjection:   darwinVZInputProjection(req.InputProjection),
+		OverlayCapture:    guestexec.ToVSOCKOverlayCapture(req.OverlayCapture),
 	}
 	if !req.ClosedEnv && a.GatewayRegistry != nil && gatewayScopeToken != "" {
 		gwPort := a.GatewayPort
@@ -1672,14 +1675,15 @@ func (a *Adapter) executeInSandbox(bootCtx context.Context, runCtx context.Conte
 	}
 
 	return &backend.ExecutionResult{
-		ExecutionID: req.ExecutionID,
-		ExitCode:    guestRes.ExitCode,
-		LaunchedVM:  false,
-		PlanPath:    instance.ConfigPath,
-		RunDir:      req.RunDir,
-		ImageRef:    instance.ImageRef,
-		ImageDigest: instance.ImageDigest,
-		Message:     darwinVZResultMessage(guestRes.Error),
+		ExecutionID:    req.ExecutionID,
+		ExitCode:       guestRes.ExitCode,
+		LaunchedVM:     false,
+		PlanPath:       instance.ConfigPath,
+		RunDir:         req.RunDir,
+		ImageRef:       instance.ImageRef,
+		ImageDigest:    instance.ImageDigest,
+		Message:        darwinVZResultMessage(guestRes.Error),
+		OverlayCapture: guestexec.FromVSOCKOverlayCaptureResult(guestRes.OverlayCapture),
 	}, nil
 }
 

@@ -322,6 +322,62 @@ func TestRunInSandboxForwardsInputProjection(t *testing.T) {
 	}
 }
 
+func TestRunInSandboxForwardsOverlayCapture(t *testing.T) {
+	t.Parallel()
+
+	wantCapture := &backend.OverlayCapture{
+		UpperDir:            "/run/cleanroom/overlay/upper",
+		BaselinePaths:       []string{"/workspace"},
+		DeclaredFileOutputs: []string{"/workspace/dist/result.txt"},
+		IgnoredPrefixes:     []string{"/tmp"},
+	}
+	wantGuestCapture := &vsockexec.OverlayCapture{
+		UpperDir:            "/run/cleanroom/overlay/upper",
+		BaselinePaths:       []string{"/workspace"},
+		DeclaredFileOutputs: []string{"/workspace/dist/result.txt"},
+		IgnoredPrefixes:     []string{"/tmp"},
+	}
+	var gotCapture *vsockexec.OverlayCapture
+	adapter := &Adapter{}
+	adapter.runGuestCommandFn = func(_ context.Context, _ context.Context, _ <-chan struct{}, _ func() error, _ string, _ uint32, req vsockexec.ExecRequest, _ backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error) {
+		gotCapture = req.OverlayCapture
+		return vsockexec.ExecResponse{
+			ExitCode: 0,
+			OverlayCapture: &vsockexec.OverlayCaptureResult{
+				EscapedWrites: []vsockexec.OverlayCaptureEntry{
+					{Path: "/etc/profile", Kind: "write", Mode: 0o644},
+				},
+			},
+		}, guestExecTiming{}, nil
+	}
+	adapter.sandboxes = map[string]*sandboxInstance{
+		"cr-test": {
+			SandboxID: "cr-test",
+			VsockPath: "/tmp/fake.sock",
+			GuestPort: 10700,
+		},
+	}
+
+	result, err := adapter.RunInSandbox(context.Background(), backend.ExecutionRequest{
+		SandboxID:      "cr-test",
+		ExecutionID:    "run-123",
+		Command:        []string{"true"},
+		OverlayCapture: wantCapture,
+	}, backend.OutputStream{})
+	if err != nil {
+		t.Fatalf("RunInSandbox returned error: %v", err)
+	}
+	if !reflect.DeepEqual(gotCapture, wantGuestCapture) {
+		t.Fatalf("unexpected overlay capture request: got %#v want %#v", gotCapture, wantGuestCapture)
+	}
+	if result.OverlayCapture == nil {
+		t.Fatal("expected overlay capture result")
+	}
+	if got, want := result.OverlayCapture.EscapedWrites[0], (backend.OverlayCaptureEntry{Path: "/etc/profile", Kind: "write", Mode: 0o644}); got != want {
+		t.Fatalf("unexpected escaped write: got %#v want %#v", got, want)
+	}
+}
+
 func TestRunInSandboxClosedEnvSkipsGatewayEnv(t *testing.T) {
 	t.Parallel()
 

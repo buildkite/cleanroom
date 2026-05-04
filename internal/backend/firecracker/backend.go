@@ -503,7 +503,7 @@ func (a *Adapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest
 		defer a.GatewayRegistry.ClearActiveExecutionTrace(sandboxID, req.ExecutionID)
 	}
 
-	guestResult, timing, err := a.executeInSandbox(ctx, instance, req.LaunchSeconds, req.Command, req.Dir, req.Env, req.ClosedEnv, req.InputProjection, req.TTY, stream)
+	guestResult, timing, err := a.executeInSandbox(ctx, instance, req.LaunchSeconds, req.Command, req.Dir, req.Env, req.ClosedEnv, req.InputProjection, req.OverlayCapture, req.TTY, stream)
 	if err != nil {
 		observation.ExitCode = 1
 		observation.GuestError = err.Error()
@@ -520,14 +520,15 @@ func (a *Adapter) RunInSandbox(ctx context.Context, req backend.ExecutionRequest
 	}
 
 	result = &backend.ExecutionResult{
-		ExecutionID: req.ExecutionID,
-		ExitCode:    guestResult.ExitCode,
-		LaunchedVM:  false,
-		PlanPath:    instance.ConfigPath,
-		RunDir:      runDir,
-		ImageRef:    instance.ImageRef,
-		ImageDigest: instance.ImageDigest,
-		Message:     message,
+		ExecutionID:    req.ExecutionID,
+		ExitCode:       guestResult.ExitCode,
+		LaunchedVM:     false,
+		PlanPath:       instance.ConfigPath,
+		RunDir:         runDir,
+		ImageRef:       instance.ImageRef,
+		ImageDigest:    instance.ImageDigest,
+		Message:        message,
+		OverlayCapture: guestexec.FromVSOCKOverlayCaptureResult(guestResult.OverlayCapture),
 	}
 	return result, nil
 }
@@ -594,7 +595,7 @@ func (a *Adapter) runFileTransferCommand(ctx context.Context, sandboxID string, 
 	if err != nil {
 		return nil, err
 	}
-	result, _, err := a.executeInSandbox(ctx, instance, 0, cmd, "", nil, false, nil, false, stream)
+	result, _, err := a.executeInSandbox(ctx, instance, 0, cmd, "", nil, false, nil, nil, false, stream)
 	if err != nil {
 		return nil, err
 	}
@@ -672,7 +673,7 @@ func (a *Adapter) CreateSnapshot(ctx context.Context, req backend.SnapshotReques
 		return nil, fmt.Errorf("sandbox %q is not running: %w", sandboxID, err)
 	}
 
-	syncResp, _, err := a.executeInSandbox(ctx, instance, snapshotSyncTimeoutSeconds, []string{"sync"}, "", nil, false, nil, false, backend.OutputStream{})
+	syncResp, _, err := a.executeInSandbox(ctx, instance, snapshotSyncTimeoutSeconds, []string{"sync"}, "", nil, false, nil, nil, false, backend.OutputStream{})
 	if err != nil {
 		return nil, fmt.Errorf("sync sandbox filesystem before snapshot: %w", err)
 	}
@@ -809,7 +810,7 @@ func (a *Adapter) DeleteSnapshot(ctx context.Context, req backend.DeleteSnapshot
 	return nil
 }
 
-func (a *Adapter) executeInSandbox(ctx context.Context, instance *sandboxInstance, launchSeconds int64, command []string, dir string, env []string, closedEnv bool, inputProjection *backend.InputProjection, tty bool, stream backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error) {
+func (a *Adapter) executeInSandbox(ctx context.Context, instance *sandboxInstance, launchSeconds int64, command []string, dir string, env []string, closedEnv bool, inputProjection *backend.InputProjection, overlayCapture *backend.OverlayCapture, tty bool, stream backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error) {
 	guestReq := vsockexec.ExecRequest{
 		Command:           append([]string(nil), command...),
 		Dir:               strings.TrimSpace(dir),
@@ -818,6 +819,7 @@ func (a *Adapter) executeInSandbox(ctx context.Context, instance *sandboxInstanc
 		TTY:               tty,
 		CacheOutputMounts: cloneCacheOutputMounts(instance.cacheOutputMounts),
 		InputProjection:   vsockInputProjection(inputProjection),
+		OverlayCapture:    guestexec.ToVSOCKOverlayCapture(overlayCapture),
 	}
 	entropy := make([]byte, 64)
 	if _, err := cryptorand.Read(entropy); err == nil {
@@ -1325,6 +1327,7 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 		ClosedEnv:       req.ClosedEnv,
 		TTY:             req.TTY,
 		InputProjection: vsockInputProjection(req.InputProjection),
+		OverlayCapture:  guestexec.ToVSOCKOverlayCapture(req.OverlayCapture),
 	}
 	entropy := make([]byte, 64)
 	if _, err := cryptorand.Read(entropy); err == nil {
@@ -1354,14 +1357,15 @@ func (a *Adapter) run(ctx context.Context, req backend.ExecutionRequest, stream 
 	timingSummary := fmt.Sprintf("timings boot=%s vsock_wait=%s exec=%s", vmReady, guestTiming.WaitForAgent, guestTiming.CommandRun)
 
 	return &backend.ExecutionResult{
-		ExecutionID: req.ExecutionID,
-		ExitCode:    guestResult.ExitCode,
-		LaunchedVM:  true,
-		PlanPath:    cfgPath,
-		RunDir:      runDir,
-		ImageRef:    imageArtifact.Ref,
-		ImageDigest: imageArtifact.Digest,
-		Message:     message + "; " + timingSummary,
+		ExecutionID:    req.ExecutionID,
+		ExitCode:       guestResult.ExitCode,
+		LaunchedVM:     true,
+		PlanPath:       cfgPath,
+		RunDir:         runDir,
+		ImageRef:       imageArtifact.Ref,
+		ImageDigest:    imageArtifact.Digest,
+		Message:        message + "; " + timingSummary,
+		OverlayCapture: guestexec.FromVSOCKOverlayCaptureResult(guestResult.OverlayCapture),
 	}, nil
 }
 

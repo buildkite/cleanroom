@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"io/fs"
 	"sync"
 	"time"
 
@@ -80,6 +81,43 @@ func DecodeResponse(r io.Reader, stream backend.OutputStream) (vsockexec.ExecRes
 		OnStdout: stream.OnStdout,
 		OnStderr: stream.OnStderr,
 	})
+}
+
+func ToVSOCKOverlayCapture(capture *backend.OverlayCapture) *vsockexec.OverlayCapture {
+	if capture == nil {
+		return nil
+	}
+	return &vsockexec.OverlayCapture{
+		UpperDir:            capture.UpperDir,
+		BaselinePaths:       append([]string(nil), capture.BaselinePaths...),
+		DeclaredFileOutputs: append([]string(nil), capture.DeclaredFileOutputs...),
+		IgnoredPrefixes:     append([]string(nil), capture.IgnoredPrefixes...),
+	}
+}
+
+func FromVSOCKOverlayCaptureResult(result *vsockexec.OverlayCaptureResult) *backend.OverlayCaptureResult {
+	if result == nil {
+		return nil
+	}
+	return &backend.OverlayCaptureResult{
+		Entries:       backendOverlayCaptureEntries(result.Entries),
+		EscapedWrites: backendOverlayCaptureEntries(result.EscapedWrites),
+	}
+}
+
+func backendOverlayCaptureEntries(entries []vsockexec.OverlayCaptureEntry) []backend.OverlayCaptureEntry {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]backend.OverlayCaptureEntry, 0, len(entries))
+	for _, entry := range entries {
+		out = append(out, backend.OverlayCaptureEntry{
+			Path: entry.Path,
+			Kind: entry.Kind,
+			Mode: fs.FileMode(entry.Mode),
+		})
+	}
+	return out
 }
 
 type inputFrameSender struct {
