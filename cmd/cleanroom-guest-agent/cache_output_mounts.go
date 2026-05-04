@@ -516,7 +516,11 @@ func captureCacheOutputFile(capture vsockexec.CacheOutputFileCapture, sourceRoot
 	if _, err := source.Seek(0, io.SeekStart); err != nil {
 		return fmt.Errorf("rewind cache output file source %s: %w", sourcePath, err)
 	}
-	return copyCacheOutputFileWithParentMode(source, sourcePath, guestPath, fs.FileMode(capture.Mode).Perm(), false)
+	targetPath, err := cacheOutputMaterializationTarget(string(filepath.Separator), guestPath)
+	if err != nil {
+		return err
+	}
+	return copyCacheOutputFileWithParentMode(source, sourcePath, targetPath, fs.FileMode(capture.Mode).Perm(), false)
 }
 
 func cacheOutputCaptureSourcePath(guestPath, sourceRoot string) (string, error) {
@@ -529,6 +533,10 @@ func cacheOutputCaptureSourcePath(guestPath, sourceRoot string) (string, error) 
 		return "", err
 	}
 	return filepath.Join(sourceRoot, strings.TrimPrefix(guestPath, string(filepath.Separator))), nil
+}
+
+func cacheOutputMaterializationTarget(root, guestPath string) (string, error) {
+	return resolveOverlayCaptureGuestTarget(root, guestPath, 0)
 }
 
 func openCacheOutputCaptureSource(path string) (*os.File, error) {

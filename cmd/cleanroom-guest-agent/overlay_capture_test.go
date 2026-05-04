@@ -153,6 +153,57 @@ func TestOverlayCaptureGuestTargetResolvesRelativeSymlinkInsideMergedRoot(t *tes
 	}
 }
 
+func TestOverlayCaptureInputProjectionBindUsesTargetRootWhenNotMountedOverSource(t *testing.T) {
+	t.Parallel()
+
+	source, target, readOnly, ok, err := overlayCaptureInputProjectionBind(vsockexec.ExecRequest{
+		InputProjection: &vsockexec.InputProjection{
+			SourceRoot:          "/workspace",
+			TargetRoot:          "/run/cleanroom/input-projections/dependencies/toolchain",
+			MountSourceReadOnly: false,
+		},
+	}, "/merged")
+	if err != nil {
+		t.Fatalf("overlayCaptureInputProjectionBind returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected input projection bind")
+	}
+	if source != "/run/cleanroom/input-projections/dependencies/toolchain" {
+		t.Fatalf("unexpected source: %q", source)
+	}
+	if target != "/merged/run/cleanroom/input-projections/dependencies/toolchain" {
+		t.Fatalf("unexpected target: %q", target)
+	}
+	if readOnly {
+		t.Fatal("did not expect read-only bind for target-root projection")
+	}
+}
+
+func TestOverlayCaptureInputProjectionBindUsesSourceRootWhenMountedReadOnly(t *testing.T) {
+	t.Parallel()
+
+	source, target, readOnly, ok, err := overlayCaptureInputProjectionBind(vsockexec.ExecRequest{
+		InputProjection: &vsockexec.InputProjection{
+			SourceRoot:          "/workspace",
+			TargetRoot:          "/run/cleanroom/input-projections/dependencies/toolchain",
+			MountSourceReadOnly: true,
+		},
+	}, "/merged")
+	if err != nil {
+		t.Fatalf("overlayCaptureInputProjectionBind returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected input projection bind")
+	}
+	if source != "/workspace" || target != "/merged/workspace" {
+		t.Fatalf("unexpected bind: source %q target %q", source, target)
+	}
+	if !readOnly {
+		t.Fatal("expected read-only bind for source-root projection")
+	}
+}
+
 func TestNewGuestCommandUsesOverlayRootAsChroot(t *testing.T) {
 	t.Parallel()
 

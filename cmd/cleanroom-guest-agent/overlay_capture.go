@@ -156,19 +156,42 @@ func prepareOverlayCaptureLayout(layout overlayCaptureLayout) error {
 }
 
 func bindOverlayCaptureInputProjection(req vsockexec.ExecRequest, mergedRoot string, mounted *[]string) error {
+	source, target, readOnly, ok, err := overlayCaptureInputProjectionBind(req, mergedRoot)
+	if err != nil || !ok {
+		return err
+	}
+	return bindOverlayCapturePath(source, target, readOnly, mounted)
+}
+
+func overlayCaptureInputProjectionBind(req vsockexec.ExecRequest, mergedRoot string) (string, string, bool, bool, error) {
 	projection := req.InputProjection
-	if projection == nil || !projection.MountSourceReadOnly {
-		return nil
+	if projection == nil {
+		return "", "", false, false, nil
 	}
-	sourceRoot, err := cleanOverlayCaptureAbsolutePath("input projection source root", projection.SourceRoot)
+	source := ""
+	targetGuestPath := ""
+	readOnly := false
+	if projection.MountSourceReadOnly {
+		sourceRoot, err := cleanOverlayCaptureAbsolutePath("input projection source root", projection.SourceRoot)
+		if err != nil {
+			return "", "", false, false, err
+		}
+		source = sourceRoot
+		targetGuestPath = sourceRoot
+		readOnly = true
+	} else {
+		targetRoot, err := cleanOverlayCaptureAbsolutePath("input projection target root", projection.TargetRoot)
+		if err != nil {
+			return "", "", false, false, err
+		}
+		source = targetRoot
+		targetGuestPath = targetRoot
+	}
+	target, err := overlayCaptureGuestTarget(mergedRoot, targetGuestPath)
 	if err != nil {
-		return err
+		return "", "", false, false, err
 	}
-	target, err := overlayCaptureGuestTarget(mergedRoot, sourceRoot)
-	if err != nil {
-		return err
-	}
-	return bindOverlayCapturePath(sourceRoot, target, true, mounted)
+	return source, target, readOnly, true, nil
 }
 
 func bindOverlayCaptureGuestPath(mergedRoot, guestPath string, readOnly bool, mounted *[]string) error {

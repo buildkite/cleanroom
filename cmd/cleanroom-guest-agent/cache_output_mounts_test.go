@@ -373,6 +373,26 @@ func TestCaptureCacheOutputFilesReadsFromOverlayAndMaterializesGuestFile(t *test
 	}
 }
 
+func TestCacheOutputMaterializationTargetResolvesAbsoluteSymlinkInsideRoot(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "var"), 0o755); err != nil {
+		t.Fatalf("create var: %v", err)
+	}
+	if err := os.Symlink("/run", filepath.Join(root, "var", "run")); err != nil {
+		t.Fatalf("create var/run symlink: %v", err)
+	}
+
+	got, err := cacheOutputMaterializationTarget(root, "/var/run/tool/index.json")
+	if err != nil {
+		t.Fatalf("cacheOutputMaterializationTarget returned error: %v", err)
+	}
+	if want := filepath.Join(root, "run", "tool", "index.json"); got != want {
+		t.Fatalf("unexpected target: got %q want %q", got, want)
+	}
+}
+
 func TestSetupCacheOutputMountsOnceRejectsChangedPlan(t *testing.T) {
 	cacheOutputMountState.Lock()
 	previousSignature := cacheOutputMountState.signature
