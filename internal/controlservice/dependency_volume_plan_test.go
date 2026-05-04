@@ -759,7 +759,7 @@ func TestBootstrapDependencyBlockVolumePlanRunsMissesFromInputProjection(t *test
 		},
 	}
 	svc := newTestService(adapter)
-	err = svc.bootstrapDependencyBlockVolumePlanInPersistentSandbox(
+	publishable, err := svc.bootstrapDependencyBlockVolumePlanInPersistentSandbox(
 		context.Background(),
 		adapter,
 		"cr-test",
@@ -772,6 +772,9 @@ func TestBootstrapDependencyBlockVolumePlanRunsMissesFromInputProjection(t *test
 	)
 	if err != nil {
 		t.Fatalf("bootstrapDependencyBlockVolumePlanInPersistentSandbox returned error: %v", err)
+	}
+	if !publishable {
+		t.Fatal("expected dependency block volume plan to remain publishable")
 	}
 	if got, want := len(gotReqs), 1; got != want {
 		t.Fatalf("unexpected run count: got %d want %d", got, want)
@@ -803,6 +806,82 @@ func TestBootstrapDependencyBlockVolumePlanRunsMissesFromInputProjection(t *test
 	}
 	if !req.InputProjection.MountSourceReadOnly {
 		t.Fatal("expected projection to be mounted read-only over source")
+	}
+}
+
+func TestBootstrapDependencyBlockVolumePlanStopsPublishingAfterEscapedWrites(t *testing.T) {
+	compiled, err := policy.FromProto(testRepositoryTwoDependencyBlocksPolicy())
+	if err != nil {
+		t.Fatalf("policy.FromProto returned error: %v", err)
+	}
+	repository := repositorycheckout.FromProto(testRepositoryCheckoutProto())
+	plan := dependencyBlockVolumePlan{
+		Blocks: []dependencyBlockVolumeBlockPlan{
+			{
+				BlockName: "toolchains",
+				Command:   append([]string(nil), compiled.Dependencies.Blocks[0].Command...),
+				Env:       cloneDependencyBlockEnv(compiled.Dependencies.Blocks[0].Env),
+				Inputs:    append([]string(nil), compiled.Dependencies.Blocks[0].Inputs.Files...),
+				Outputs:   compiled.Dependencies.Blocks[0].Outputs,
+				CacheKey:  "dependency-volume:toolchains",
+			},
+			{
+				BlockName: "go-modules",
+				Command:   append([]string(nil), compiled.Dependencies.Blocks[1].Command...),
+				Env:       cloneDependencyBlockEnv(compiled.Dependencies.Blocks[1].Env),
+				Inputs:    append([]string(nil), compiled.Dependencies.Blocks[1].Inputs.Files...),
+				Outputs:   compiled.Dependencies.Blocks[1].Outputs,
+				CacheKey:  "dependency-volume:go-modules",
+			},
+		},
+	}
+
+	runCalls := 0
+	adapter := &stubAdapter{
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
+			runCalls++
+			result := &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0}
+			if runCalls == 1 {
+				result.OverlayCapture = &backend.OverlayCaptureResult{
+					EscapedWrites: []backend.OverlayCaptureEntry{{Path: "/etc/profile", Kind: "write", Mode: 0o644}},
+				}
+			}
+			return result, nil
+		},
+		snapshotCacheOutputsFn: func(context.Context, backend.SnapshotCacheOutputVolumesRequest) (*backend.SnapshotCacheOutputVolumesResult, error) {
+			t.Fatal("did not expect dependency block-volume snapshot after escaped writes")
+			return nil, nil
+		},
+	}
+	svc := newTestService(adapter)
+	var warnings []string
+	publishable, err := svc.bootstrapDependencyBlockVolumePlanInPersistentSandbox(
+		context.Background(),
+		adapter,
+		"cr-test",
+		dependencyBlockVolumePublishConfig{Adapter: adapter, Backend: "firecracker", Repository: repository},
+		compiled,
+		backend.FirecrackerConfig{},
+		repository,
+		plan,
+		CreateSandboxReporterFuncs{OnWarning: func(_ cleanroomv1.CreateSandboxPhase, warning string) {
+			warnings = append(warnings, warning)
+		}},
+	)
+	if err != nil {
+		t.Fatalf("bootstrapDependencyBlockVolumePlanInPersistentSandbox returned error: %v", err)
+	}
+	if publishable {
+		t.Fatal("expected dependency block volume plan to stop being publishable")
+	}
+	if got, want := runCalls, 2; got != want {
+		t.Fatalf("unexpected run count: got %d want %d", got, want)
+	}
+	if got := adapter.snapshotCacheOutputsCalls; got != 0 {
+		t.Fatalf("unexpected cache output snapshot calls: got %d", got)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "/etc/profile") {
+		t.Fatalf("expected escaped-write warning, got %v", warnings)
 	}
 }
 

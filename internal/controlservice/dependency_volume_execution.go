@@ -35,11 +35,12 @@ func (s *Service) bootstrapDependencyBlockVolumePlanInPersistentSandbox(
 	repository *repositorycheckout.Checkout,
 	plan dependencyBlockVolumePlan,
 	reporter CreateSandboxReporter,
-) error {
+) (bool, error) {
 	if adapter == nil || compiled == nil || repository == nil || strings.TrimSpace(sandboxID) == "" || len(plan.Blocks) == 0 {
-		return nil
+		return true, nil
 	}
 
+	publishable := true
 	for _, block := range plan.Blocks {
 		blockName := strings.TrimSpace(block.BlockName)
 		if block.CacheHit {
@@ -58,12 +59,20 @@ func (s *Service) bootstrapDependencyBlockVolumePlanInPersistentSandbox(
 		}
 
 		emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_BOOTSTRAP_DEPENDENCIES, "running dependency bootstrap: "+blockName)
+		var result *backend.ExecutionResult
 		if err := s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.bootstrap_dependency_block", attrs, func(ctx context.Context) error {
-			return s.bootstrapDependencyBlockVolumeBlock(ctx, adapter, sandboxID, compiled, firecrackerCfg, repository, block, reporter)
+			var err error
+			result, err = s.bootstrapDependencyBlockVolumeBlock(ctx, adapter, sandboxID, compiled, firecrackerCfg, repository, block, reporter)
+			return err
 		}); err != nil {
-			return fmt.Errorf("dependency block %q: %w", blockName, err)
+			return publishable, fmt.Errorf("dependency block %q: %w", blockName, err)
 		}
-		if publish.Adapter != nil {
+		if warning := blockVolumeEscapedWriteWarning("dependency", blockName, result); warning != "" {
+			publishable = false
+			emitCreateSandboxWarning(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_BOOTSTRAP_DEPENDENCIES, warning)
+			s.logDependencyStageWarning("publish dependency block-volume caches", sandboxID, fmt.Errorf("%s", warning))
+		}
+		if publishable && publish.Adapter != nil {
 			emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_PUBLISH_DEPENDENCY_STAGE_CACHE, "publishing dependency outputs: "+blockName)
 			s.maybePublishDependencyBlockVolumeCaches(ctx, publish.Adapter, sandboxID, publish.Backend, compiled, firecrackerCfg, publish.Repository, publish.Changeset, dependencyBlockVolumePlan{
 				ReuseNamespace: plan.ReuseNamespace,
@@ -71,7 +80,7 @@ func (s *Service) bootstrapDependencyBlockVolumePlanInPersistentSandbox(
 			})
 		}
 	}
-	return nil
+	return publishable, nil
 }
 
 func (s *Service) bootstrapDependencyBlockVolumeBlock(
@@ -83,9 +92,9 @@ func (s *Service) bootstrapDependencyBlockVolumeBlock(
 	repository *repositorycheckout.Checkout,
 	block dependencyBlockVolumeBlockPlan,
 	reporter CreateSandboxReporter,
-) error {
+) (*backend.ExecutionResult, error) {
 	if len(block.Command) == 0 {
-		return nil
+		return nil, nil
 	}
 	sourceRoot := strings.TrimSpace(repository.DestinationDir)
 	if sourceRoot == "" {
@@ -117,7 +126,7 @@ func (s *Service) bootstrapDependencyBlockVolumeBlock(
 		},
 		reporter,
 	)
-	return persistentBootstrapCommandError(result, stdout, stderr, err, "dependency block bootstrap returned no result", "dependency block bootstrap failed with exit code %d")
+	return result, persistentBootstrapCommandError(result, stdout, stderr, err, "dependency block bootstrap returned no result", "dependency block bootstrap failed with exit code %d")
 }
 
 func stageBlockEnvList(env map[string]string) []string {
