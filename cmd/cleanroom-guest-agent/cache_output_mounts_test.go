@@ -393,6 +393,26 @@ func TestCacheOutputMaterializationTargetResolvesAbsoluteSymlinkInsideRoot(t *te
 	}
 }
 
+func TestCacheOutputCaptureSourcePathResolvesAbsoluteSymlinkInsideSourceRoot(t *testing.T) {
+	t.Parallel()
+
+	sourceRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(sourceRoot, "var"), 0o755); err != nil {
+		t.Fatalf("create var: %v", err)
+	}
+	if err := os.Symlink("/run", filepath.Join(sourceRoot, "var", "run")); err != nil {
+		t.Fatalf("create var/run symlink: %v", err)
+	}
+
+	got, err := cacheOutputCaptureSourcePath("/var/run/tool/index.json", sourceRoot)
+	if err != nil {
+		t.Fatalf("cacheOutputCaptureSourcePath returned error: %v", err)
+	}
+	if want := filepath.Join(sourceRoot, "run", "tool", "index.json"); got != want {
+		t.Fatalf("unexpected source: got %q want %q", got, want)
+	}
+}
+
 func TestSetupCacheOutputMountsOnceRejectsChangedPlan(t *testing.T) {
 	cacheOutputMountState.Lock()
 	previousSignature := cacheOutputMountState.signature

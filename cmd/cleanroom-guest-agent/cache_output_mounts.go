@@ -532,7 +532,7 @@ func cacheOutputCaptureSourcePath(guestPath, sourceRoot string) (string, error) 
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(sourceRoot, strings.TrimPrefix(guestPath, string(filepath.Separator))), nil
+	return resolveOverlayCaptureGuestTarget(sourceRoot, guestPath, 0)
 }
 
 func cacheOutputMaterializationTarget(root, guestPath string) (string, error) {
