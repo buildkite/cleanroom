@@ -296,19 +296,22 @@ func TestCreateSandboxFallsBackWhenServiceBlockVolumeStoreMissing(t *testing.T) 
 
 func TestCreateSandboxLooksUpServiceBlockVolumeCaches(t *testing.T) {
 	tests := []struct {
-		name     string
-		records  int
-		wantHits int
+		name         string
+		records      int
+		wantHits     int
+		wantRunCalls int
 	}{
 		{
-			name:     "partial hit",
-			records:  1,
-			wantHits: 1,
+			name:         "partial hit",
+			records:      1,
+			wantHits:     1,
+			wantRunCalls: 4,
 		},
 		{
-			name:     "all hit",
-			records:  2,
-			wantHits: 2,
+			name:         "all hit",
+			records:      2,
+			wantHits:     2,
+			wantRunCalls: 3,
 		},
 	}
 
@@ -374,8 +377,8 @@ func TestCreateSandboxLooksUpServiceBlockVolumeCaches(t *testing.T) {
 					t.Fatalf("unexpected lookup key %d: got %q want %q", i, got, wantKey)
 				}
 			}
-			if got, want := adapter.runCalls, 4; got != want {
-				t.Fatalf("expected repository + dependency block misses + aggregate services bootstrap executions, got %d want %d", got, want)
+			if got, want := adapter.runCalls, tc.wantRunCalls; got != want {
+				t.Fatalf("unexpected bootstrap execution count: got %d want %d", got, want)
 			}
 		})
 	}
@@ -571,6 +574,89 @@ func TestCreateSandboxPassesBlockVolumeSpecsToColdProvision(t *testing.T) {
 	miss := requireCacheOutputVolumeSpec(t, adapter.provisionReq.CacheOutputVolumes, serviceVolumeStageName, servicePlan.Blocks[1].BlockName)
 	if miss.StorageRef != "" || miss.SourceSnapshotRef != "" {
 		t.Fatalf("expected service miss spec without source storage, got storage=%q snapshot=%q", miss.StorageRef, miss.SourceSnapshotRef)
+	}
+}
+
+func TestBootstrapServiceBlockVolumePlanRunsMissesFromInputProjection(t *testing.T) {
+	t.Parallel()
+
+	compiled, err := policy.FromProto(testRepositoryTwoDependencyTwoServiceBlocksPolicy())
+	if err != nil {
+		t.Fatalf("policy.FromProto returned error: %v", err)
+	}
+	repository := repositorycheckout.FromProto(testRepositoryCheckoutProto())
+	plan := serviceBlockVolumePlan{
+		Blocks: []serviceBlockVolumeBlockPlan{
+			{
+				BlockName: "postgres-data",
+				Command:   append([]string(nil), compiled.Services.Blocks[0].Command...),
+				Env:       cloneDependencyBlockEnv(compiled.Services.Blocks[0].Env),
+				Inputs:    append([]string(nil), compiled.Services.Blocks[0].Inputs.Files...),
+				CacheHit:  true,
+			},
+			{
+				BlockName: "app-service",
+				Command:   append([]string(nil), compiled.Services.Blocks[1].Command...),
+				Env:       cloneDependencyBlockEnv(compiled.Services.Blocks[1].Env),
+				Inputs:    append([]string(nil), compiled.Services.Blocks[1].Inputs.Files...),
+			},
+		},
+	}
+
+	var gotReqs []backend.ExecutionRequest
+	adapter := &stubAdapter{
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
+			gotReqs = append(gotReqs, req)
+			return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0}, nil
+		},
+	}
+	svc := newTestService(adapter)
+	err = svc.bootstrapServiceBlockVolumePlanInPersistentSandbox(
+		context.Background(),
+		adapter,
+		"cr-test",
+		compiled,
+		backend.FirecrackerConfig{},
+		repository,
+		plan,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("bootstrapServiceBlockVolumePlanInPersistentSandbox returned error: %v", err)
+	}
+	if got, want := len(gotReqs), 1; got != want {
+		t.Fatalf("unexpected run count: got %d want %d", got, want)
+	}
+	req := gotReqs[0]
+	if got, want := strings.Join(req.Command, "\x00"), strings.Join(compiled.Services.Blocks[1].Command, "\x00"); got != want {
+		t.Fatalf("unexpected command: got %q want %q", got, want)
+	}
+	if got, want := req.NetworkStage, policy.NetworkStageServices; got != want {
+		t.Fatalf("unexpected network stage: got %q want %q", got, want)
+	}
+	if got, want := req.Dir, "/workspace"; got != want {
+		t.Fatalf("unexpected dir: got %q want %q", got, want)
+	}
+	if !req.ClosedEnv {
+		t.Fatal("expected service block execution to use a closed environment")
+	}
+	if !strings.Contains(strings.Join(req.Env, "\n"), "APP_SERVICE_DATA=/var/lib/cleanroom/services/app") {
+		t.Fatalf("expected APP_SERVICE_DATA env, got %v", req.Env)
+	}
+	if req.InputProjection == nil {
+		t.Fatal("expected input projection")
+	}
+	if got, want := req.InputProjection.SourceRoot, "/workspace"; got != want {
+		t.Fatalf("unexpected projection source root: got %q want %q", got, want)
+	}
+	if got, want := req.InputProjection.TargetRoot, "/run/cleanroom/input-projections/services/app-service"; got != want {
+		t.Fatalf("unexpected projection target root: got %q want %q", got, want)
+	}
+	if got, want := strings.Join(req.InputProjection.Files, "\x00"), strings.Join([]string{"db/seed.sql", "docker-compose.yml", "scripts/prepare-app"}, "\x00"); got != want {
+		t.Fatalf("unexpected projection files: got %v", req.InputProjection.Files)
+	}
+	if !req.InputProjection.MountSourceReadOnly {
+		t.Fatal("expected projection to be mounted read-only over source")
 	}
 }
 
