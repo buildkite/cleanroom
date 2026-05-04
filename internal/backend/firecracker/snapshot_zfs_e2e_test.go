@@ -35,6 +35,139 @@ func defaultFirecrackerZFSE2EDataset() string {
 	return "cleanroom/data"
 }
 
+func TestOverlayCaptureCacheOutputZFSE2E(t *testing.T) {
+	if strings.TrimSpace(os.Getenv(firecrackerZFSE2EEnvEnabled)) == "" {
+		t.Skipf("set %s=1 to run real firecracker overlay capture e2e", firecrackerZFSE2EEnvEnabled)
+	}
+	if testing.Short() {
+		t.Skip("skipping firecracker zfs e2e in short mode")
+	}
+
+	imageRef := strings.TrimSpace(os.Getenv(firecrackerZFSE2EEnvImageRef))
+	if imageRef == "" {
+		imageRef = defaultFirecrackerZFSE2EImageRef()
+	}
+	cfg := backend.FirecrackerConfig{
+		BinaryPath:           strings.TrimSpace(os.Getenv(firecrackerZFSE2EEnvBinary)),
+		KernelImagePath:      strings.TrimSpace(os.Getenv(firecrackerZFSE2EEnvKernelImage)),
+		PrivilegedHelperPath: strings.TrimSpace(os.Getenv(firecrackerZFSE2EEnvHelper)),
+		VCPUs:                1,
+		MemoryMiB:            1024,
+		LaunchSeconds:        120,
+		Snapshots: backend.SnapshotConfig{
+			Enabled:               true,
+			Driver:                "zfs",
+			ZFSDataset:            strings.TrimSpace(os.Getenv(firecrackerZFSE2EEnvDataset)),
+			QuiesceTimeoutSeconds: 15,
+		},
+	}
+	if cfg.Snapshots.ZFSDataset == "" {
+		cfg.Snapshots.ZFSDataset = defaultFirecrackerZFSE2EDataset()
+	}
+
+	compiled := &policy.CompiledPolicy{
+		Version:        1,
+		ImageRef:       imageRef,
+		NetworkDefault: "deny",
+	}
+	adapter := New()
+
+	report, err := adapter.Doctor(context.Background(), backend.DoctorRequest{
+		Policy:            compiled,
+		FirecrackerConfig: cfg,
+	})
+	if err != nil {
+		t.Fatalf("Doctor returned error: %v", err)
+	}
+	if failures := firecrackerDoctorFailures(report); len(failures) > 0 {
+		t.Fatalf("firecracker doctor reported failures:\n%s", strings.Join(failures, "\n"))
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	sandboxID := fmt.Sprintf("cr-overlay-e2e-%d", time.Now().UnixNano())
+	outputDir := "/var/lib/cleanroom-overlay-output-e2e"
+	declaredFile := "/root/cleanroom-overlay-file-e2e.txt"
+	escapedFile := fmt.Sprintf("/etc/%s-escaped", sandboxID)
+	if err := adapter.ProvisionSandbox(ctx, backend.ProvisionRequest{
+		SandboxID: sandboxID,
+		Policy:    compiled,
+		CacheOutputVolumes: []backend.CacheOutputVolumeSpec{
+			{
+				Stage:     "dependency-volume",
+				BlockName: "overlay-e2e",
+				CacheKey:  "dependency-volume:v1:overlay-e2e",
+				VolumeID:  "dependency-volume-overlay-e2e",
+				DirMappings: []backend.CacheOutputDirMapping{
+					{GuestPath: outputDir, Subpath: "dirs/0"},
+				},
+				FileMappings: []backend.CacheOutputFileMapping{
+					{GuestPath: declaredFile, Subpath: "files/declared.txt", Mode: 0o644},
+				},
+			},
+		},
+		FirecrackerConfig: cfg,
+	}); err != nil {
+		t.Fatalf("ProvisionSandbox returned error: %v", err)
+	}
+	terminated := false
+	defer func() {
+		if terminated {
+			return
+		}
+		if err := adapter.TerminateSandbox(context.Background(), sandboxID); err != nil {
+			t.Errorf("deferred TerminateSandbox returned error: %v", err)
+		}
+	}()
+
+	result, err := adapter.RunInSandbox(ctx, backend.ExecutionRequest{
+		SandboxID:   sandboxID,
+		ExecutionID: "overlay-capture",
+		Command: []string{
+			"sh",
+			"-lc",
+			fmt.Sprintf("printf dir-output > %s/value; printf file-output > %s; printf escaped > %s", outputDir, declaredFile, escapedFile),
+		},
+		Policy: compiled,
+		CacheOutputFileCaptures: []backend.CacheOutputFileCapture{
+			{VolumeID: "dependency-volume-overlay-e2e", GuestPath: declaredFile, VolumeSubpath: "files/declared.txt", Mode: 0o644},
+		},
+		OverlayCapture: &backend.OverlayCapture{
+			UpperDir:            fmt.Sprintf("/run/cleanroom/overlay-captures/%s/upper", sandboxID),
+			BaselinePaths:       []string{outputDir},
+			DeclaredFileOutputs: []string{declaredFile},
+			IgnoredPrefixes:     []string{"/tmp", "/var/tmp", "/run"},
+		},
+		FirecrackerConfig: backend.FirecrackerConfig{LaunchSeconds: cfg.LaunchSeconds},
+	}, backend.OutputStream{})
+	if err != nil {
+		t.Fatalf("overlay RunInSandbox returned error: %v", err)
+	}
+	if result.ExitCode != 0 {
+		t.Fatalf("overlay exit code = %d, want 0: %s", result.ExitCode, result.Message)
+	}
+	if result.OverlayCapture == nil {
+		t.Fatal("expected overlay capture result")
+	}
+	firecrackerRequireOverlayCaptureEntry(t, result.OverlayCapture.Entries, backend.OverlayCaptureEntry{Path: declaredFile, Kind: "write", Mode: 0o644})
+	firecrackerRequireNoOverlayCapturePath(t, result.OverlayCapture.EscapedWrites, declaredFile)
+	firecrackerRequireOverlayCaptureEntry(t, result.OverlayCapture.EscapedWrites, backend.OverlayCaptureEntry{Path: escapedFile, Kind: "write", Mode: 0o644})
+
+	if got, want := firecrackerRunPersistentCommand(ctx, t, adapter, sandboxID, compiled, cfg, "overlay-read-dir", "sh", "-lc", "cat "+outputDir+"/value"), "dir-output"; got != want {
+		t.Fatalf("unexpected cache output dir contents: got %q want %q", got, want)
+	}
+	if got, want := firecrackerRunPersistentCommand(ctx, t, adapter, sandboxID, compiled, cfg, "overlay-read-file", "sh", "-lc", "cat "+declaredFile), "file-output"; got != want {
+		t.Fatalf("unexpected captured file contents: got %q want %q", got, want)
+	}
+	firecrackerRunPersistentCommand(ctx, t, adapter, sandboxID, compiled, cfg, "overlay-escaped-absent", "test", "!", "-e", escapedFile)
+
+	if err := adapter.TerminateSandbox(ctx, sandboxID); err != nil {
+		t.Fatalf("TerminateSandbox returned error: %v", err)
+	}
+	terminated = true
+}
+
 func TestSnapshotLifecycleZFSE2E(t *testing.T) {
 	if strings.TrimSpace(os.Getenv(firecrackerZFSE2EEnvEnabled)) == "" {
 		t.Skipf("set %s=1 to run real firecracker zfs snapshot e2e", firecrackerZFSE2EEnvEnabled)
@@ -230,6 +363,49 @@ func TestSnapshotLifecycleZFSE2E(t *testing.T) {
 	}
 	deletedSnapshot = true
 	firecrackerRequireZFSRefState(t, ctx, cfg, snapshotStorageRef, false)
+}
+
+func firecrackerRunPersistentCommand(ctx context.Context, t *testing.T, adapter *Adapter, sandboxID string, compiled *policy.CompiledPolicy, cfg backend.FirecrackerConfig, executionID string, command ...string) string {
+	t.Helper()
+
+	var stdout bytes.Buffer
+	result, err := adapter.RunInSandbox(ctx, backend.ExecutionRequest{
+		SandboxID:   sandboxID,
+		ExecutionID: executionID,
+		Command:     command,
+		Policy:      compiled,
+		FirecrackerConfig: backend.FirecrackerConfig{
+			LaunchSeconds: cfg.LaunchSeconds,
+		},
+	}, backend.OutputStream{OnStdout: func(chunk []byte) {
+		_, _ = stdout.Write(chunk)
+	}})
+	if err != nil {
+		t.Fatalf("%s returned error: %v", executionID, err)
+	}
+	if result.ExitCode != 0 {
+		t.Fatalf("%s exit code=%d stdout=%q", executionID, result.ExitCode, stdout.String())
+	}
+	return strings.TrimSpace(stdout.String())
+}
+
+func firecrackerRequireOverlayCaptureEntry(t *testing.T, entries []backend.OverlayCaptureEntry, want backend.OverlayCaptureEntry) {
+	t.Helper()
+	for _, got := range entries {
+		if got.Path == want.Path && got.Kind == want.Kind && got.Mode.Perm() == want.Mode.Perm() {
+			return
+		}
+	}
+	t.Fatalf("missing overlay capture entry %#v in %#v", want, entries)
+}
+
+func firecrackerRequireNoOverlayCapturePath(t *testing.T, entries []backend.OverlayCaptureEntry, path string) {
+	t.Helper()
+	for _, got := range entries {
+		if got.Path == path {
+			t.Fatalf("unexpected overlay capture entry for %s in %#v", path, entries)
+		}
+	}
 }
 
 func firecrackerSandboxVolumeRef(t *testing.T, adapter *Adapter, sandboxID string) string {
