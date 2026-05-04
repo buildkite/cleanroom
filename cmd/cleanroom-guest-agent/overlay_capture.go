@@ -101,13 +101,12 @@ func enterOverlayCaptureMountNamespace() (func(), error) {
 		return nil, fmt.Errorf("open current overlay capture mount namespace: %w", err)
 	}
 	cleanup := func() {
+		defer runtime.UnlockOSThread()
+		defer oldNS.Close()
 		if err := unix.Setns(int(oldNS.Fd()), unix.CLONE_NEWNS); err != nil {
 			fmt.Fprintf(os.Stderr, "restore overlay capture mount namespace: %v\n", err)
-			_ = oldNS.Close()
 			return
 		}
-		_ = oldNS.Close()
-		runtime.UnlockOSThread()
 	}
 	if err := unix.Unshare(unix.CLONE_NEWNS); err != nil {
 		cleanup()
