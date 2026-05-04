@@ -18,10 +18,11 @@ import (
 const serviceInputProjectionRoot = "/run/cleanroom/input-projections/services"
 
 type serviceBlockVolumePublishConfig struct {
-	Adapter    backend.CacheOutputVolumeSnapshottingAdapter
-	Backend    string
-	Changeset  *repositorychangeset.Changeset
-	Repository *repositorycheckout.Checkout
+	Adapter            backend.CacheOutputVolumeSnapshottingAdapter
+	Backend            string
+	Changeset          *repositorychangeset.Changeset
+	Repository         *repositorycheckout.Checkout
+	ForceExactFallback bool
 }
 
 func (s *Service) bootstrapServiceBlockVolumePlanInPersistentSandbox(
@@ -39,9 +40,17 @@ func (s *Service) bootstrapServiceBlockVolumePlanInPersistentSandbox(
 		return true, nil
 	}
 
-	publishable := true
+	publishable := !publish.ForceExactFallback
 	for _, block := range plan.Blocks {
 		blockName := strings.TrimSpace(block.BlockName)
+		if !publishable {
+			// Later block-volume hits are unsafe once this phase, or the
+			// dependency phase it builds on, needed exact fallback.
+			if _, err := s.bootstrapServiceBlockVolumeFallback(ctx, adapter, sandboxID, compiled, firecrackerCfg, repository, block, true, reporter); err != nil {
+				return publishable, fmt.Errorf("service block %q fallback: %w", blockName, err)
+			}
+			continue
+		}
 		if block.CacheHit {
 			emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_BOOTSTRAP_SERVICES, "restoring service outputs: "+blockName)
 			continue
@@ -70,6 +79,9 @@ func (s *Service) bootstrapServiceBlockVolumePlanInPersistentSandbox(
 			publishable = false
 			emitCreateSandboxWarning(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_BOOTSTRAP_SERVICES, warning)
 			s.logServicesStageWarning("publish service block-volume caches", sandboxID, fmt.Errorf("%s", warning))
+			if _, err := s.bootstrapServiceBlockVolumeFallback(ctx, adapter, sandboxID, compiled, firecrackerCfg, repository, block, true, reporter); err != nil {
+				return publishable, fmt.Errorf("service block %q fallback: %w", blockName, err)
+			}
 		}
 		if publishable && publish.Adapter != nil {
 			emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_PUBLISH_SERVICES_STAGE_CACHE, "publishing service outputs: "+blockName)
@@ -81,6 +93,40 @@ func (s *Service) bootstrapServiceBlockVolumePlanInPersistentSandbox(
 		}
 	}
 	return publishable, nil
+}
+
+func (s *Service) bootstrapServiceBlockVolumeFallback(
+	ctx context.Context,
+	adapter backend.Adapter,
+	sandboxID string,
+	compiled *policy.CompiledPolicy,
+	firecrackerCfg backend.FirecrackerConfig,
+	repository *repositorycheckout.Checkout,
+	block serviceBlockVolumeBlockPlan,
+	resetOutputs bool,
+	reporter CreateSandboxReporter,
+) (*backend.ExecutionResult, error) {
+	if len(block.Command) == 0 {
+		return nil, nil
+	}
+	sourceRoot := blockVolumeSourceRoot(repository)
+	return s.runBlockVolumeExactFallback(
+		ctx,
+		adapter,
+		sandboxID,
+		compiled,
+		firecrackerCfg,
+		cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_BOOTSTRAP_SERVICES,
+		policy.NetworkStageServices,
+		"service",
+		strings.TrimSpace(block.BlockName),
+		sourceRoot,
+		block.Command,
+		stageBlockEnvList(block.Env),
+		block.Outputs,
+		resetOutputs,
+		reporter,
+	)
 }
 
 func (s *Service) bootstrapServiceBlockVolumeBlock(

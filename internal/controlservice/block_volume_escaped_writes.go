@@ -12,7 +12,7 @@ func blockVolumeEscapedWriteWarning(stage, blockName string, result *backend.Exe
 		return ""
 	}
 	count := len(result.OverlayCapture.EscapedWrites)
-	return fmt.Sprintf("%s block %q wrote outside declared outputs (%d escaped writes: %s); skipping block-volume cache publication", stage, blockName, count, blockVolumeEscapedWriteSummary(result.OverlayCapture.EscapedWrites))
+	return fmt.Sprintf("%s block %q wrote outside declared outputs (%d escaped writes: %s); skipping block-volume cache publication and rerunning without overlay capture", stage, blockName, count, blockVolumeEscapedWriteSummary(result.OverlayCapture.EscapedWrites))
 }
 
 func blockVolumeEscapedWriteSummary(entries []backend.OverlayCaptureEntry) string {

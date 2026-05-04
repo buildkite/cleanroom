@@ -43,6 +43,15 @@ func (s *Service) bootstrapDependencyBlockVolumePlanInPersistentSandbox(
 	publishable := true
 	for _, block := range plan.Blocks {
 		blockName := strings.TrimSpace(block.BlockName)
+		if !publishable {
+			// Later block-volume hits are unsafe once an earlier block needed
+			// exact fallback; their keys assume prior blocks are represented by
+			// declared output cache identities only.
+			if _, err := s.bootstrapDependencyBlockVolumeFallback(ctx, adapter, sandboxID, compiled, firecrackerCfg, repository, block, true, reporter); err != nil {
+				return publishable, fmt.Errorf("dependency block %q fallback: %w", blockName, err)
+			}
+			continue
+		}
 		if block.CacheHit {
 			emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_BOOTSTRAP_DEPENDENCIES, "restoring dependency outputs: "+blockName)
 			continue
@@ -71,6 +80,9 @@ func (s *Service) bootstrapDependencyBlockVolumePlanInPersistentSandbox(
 			publishable = false
 			emitCreateSandboxWarning(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_BOOTSTRAP_DEPENDENCIES, warning)
 			s.logDependencyStageWarning("publish dependency block-volume caches", sandboxID, fmt.Errorf("%s", warning))
+			if _, err := s.bootstrapDependencyBlockVolumeFallback(ctx, adapter, sandboxID, compiled, firecrackerCfg, repository, block, true, reporter); err != nil {
+				return publishable, fmt.Errorf("dependency block %q fallback: %w", blockName, err)
+			}
 		}
 		if publishable && publish.Adapter != nil {
 			emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_PUBLISH_DEPENDENCY_STAGE_CACHE, "publishing dependency outputs: "+blockName)
@@ -81,6 +93,40 @@ func (s *Service) bootstrapDependencyBlockVolumePlanInPersistentSandbox(
 		}
 	}
 	return publishable, nil
+}
+
+func (s *Service) bootstrapDependencyBlockVolumeFallback(
+	ctx context.Context,
+	adapter backend.Adapter,
+	sandboxID string,
+	compiled *policy.CompiledPolicy,
+	firecrackerCfg backend.FirecrackerConfig,
+	repository *repositorycheckout.Checkout,
+	block dependencyBlockVolumeBlockPlan,
+	resetOutputs bool,
+	reporter CreateSandboxReporter,
+) (*backend.ExecutionResult, error) {
+	if len(block.Command) == 0 {
+		return nil, nil
+	}
+	sourceRoot := blockVolumeSourceRoot(repository)
+	return s.runBlockVolumeExactFallback(
+		ctx,
+		adapter,
+		sandboxID,
+		compiled,
+		firecrackerCfg,
+		cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_BOOTSTRAP_DEPENDENCIES,
+		policy.NetworkStageDependencies,
+		"dependency",
+		strings.TrimSpace(block.BlockName),
+		sourceRoot,
+		block.Command,
+		stageBlockEnvList(block.Env),
+		block.Outputs,
+		resetOutputs,
+		reporter,
+	)
 }
 
 func (s *Service) bootstrapDependencyBlockVolumeBlock(
