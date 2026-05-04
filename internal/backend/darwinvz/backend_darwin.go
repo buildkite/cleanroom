@@ -115,6 +115,7 @@ type sandboxInstance struct {
 	VMID                string
 	vmRootFSPath        string
 	cacheOutputMounts   []vsockexec.CacheOutputMount
+	cacheOutputVolumes  []preparedDarwinVZCacheOutputVolume
 	cleanupCacheOutputs func()
 	exitedCh            chan struct{}
 	exitMu              sync.RWMutex
@@ -1459,6 +1460,7 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 		VMID:                startedVM.VMID,
 		vmRootFSPath:        vmRootFSPath,
 		cacheOutputMounts:   darwinVZCacheOutputVolumeMounts(cacheOutputVolumes),
+		cacheOutputVolumes:  cacheOutputVolumes,
 		cleanupCacheOutputs: cleanupCacheOutputs,
 		exitedCh:            make(chan struct{}),
 	}

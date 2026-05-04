@@ -171,6 +171,11 @@ type SnapshottingAdapter interface {
 	DeleteSnapshot(ctx context.Context, req DeleteSnapshotRequest) error
 }
 
+type CacheOutputVolumeSnapshottingAdapter interface {
+	Adapter
+	SnapshotCacheOutputVolumes(ctx context.Context, req SnapshotCacheOutputVolumesRequest) (*SnapshotCacheOutputVolumesResult, error)
+}
+
 // RuntimeBaseKeyProvider returns a stable identifier for the backend runtime
 // base that a reusable workspace stage depends on.
 type RuntimeBaseKeyProvider interface {
@@ -287,6 +292,38 @@ type CacheOutputFileMapping struct {
 	GuestPath string
 	Subpath   string
 	Mode      fs.FileMode
+}
+
+type SnapshotCacheOutputVolumesRequest struct {
+	SandboxID        string
+	SnapshotIDPrefix string
+	VolumeIDs        []string
+	FirecrackerConfig
+}
+
+type SnapshotCacheOutputVolumesResult struct {
+	Volumes []CacheOutputVolumeSnapshot
+}
+
+type CacheOutputVolumeSnapshot struct {
+	Stage              string
+	BlockName          string
+	CacheKey           string
+	VolumeID           string
+	StorageDriver      string
+	StorageRef         string
+	SnapshotRef        string
+	StorageSizeBytes   int64
+	ExclusiveSizeBytes int64
+	DriverMetadata     string
+	Outputs            []CacheOutputVolumeSnapshotOutput
+}
+
+type CacheOutputVolumeSnapshotOutput struct {
+	Kind          string
+	GuestPath     string
+	VolumeSubpath string
+	Mode          fs.FileMode
 }
 
 type DeleteSnapshotRequest struct {
