@@ -462,16 +462,16 @@ func restoreCacheOutputFileFrom(source *os.File, sourcePath, targetPath string, 
 	return nil
 }
 
-func captureCacheOutputFiles(captures []vsockexec.CacheOutputFileCapture) error {
+func captureCacheOutputFiles(captures []vsockexec.CacheOutputFileCapture, sourceRoot string) error {
 	for i, capture := range captures {
-		if err := captureCacheOutputFile(capture); err != nil {
+		if err := captureCacheOutputFile(capture, sourceRoot); err != nil {
 			return fmt.Errorf("capture cache output file %d: %w", i, err)
 		}
 	}
 	return nil
 }
 
-func captureCacheOutputFile(capture vsockexec.CacheOutputFileCapture) error {
+func captureCacheOutputFile(capture vsockexec.CacheOutputFileCapture, sourceRoot string) error {
 	guestPath, err := cleanAbsoluteCacheOutputPath("guest path", capture.GuestPath)
 	if err != nil {
 		return err
@@ -488,7 +488,11 @@ func captureCacheOutputFile(capture vsockexec.CacheOutputFileCapture) error {
 		return err
 	}
 
-	source, err := openCacheOutputCaptureSource(guestPath)
+	sourcePath, err := cacheOutputCaptureSourcePath(guestPath, sourceRoot)
+	if err != nil {
+		return err
+	}
+	source, err := openCacheOutputCaptureSource(sourcePath)
 	if err != nil {
 		return err
 	}
@@ -503,7 +507,28 @@ func captureCacheOutputFile(capture vsockexec.CacheOutputFileCapture) error {
 			return err
 		}
 	}
-	return copyCacheOutputFile(source, guestPath, filepath.Join(targetDir, filepath.Base(subpath)), fs.FileMode(capture.Mode).Perm())
+	if err := copyCacheOutputFile(source, sourcePath, filepath.Join(targetDir, filepath.Base(subpath)), fs.FileMode(capture.Mode).Perm()); err != nil {
+		return err
+	}
+	if strings.TrimSpace(sourceRoot) == "" {
+		return nil
+	}
+	if _, err := source.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("rewind cache output file source %s: %w", sourcePath, err)
+	}
+	return copyCacheOutputFileWithParentMode(source, sourcePath, guestPath, fs.FileMode(capture.Mode).Perm(), false)
+}
+
+func cacheOutputCaptureSourcePath(guestPath, sourceRoot string) (string, error) {
+	sourceRoot = strings.TrimSpace(sourceRoot)
+	if sourceRoot == "" {
+		return guestPath, nil
+	}
+	sourceRoot, err := cleanAbsoluteCacheOutputPath("source root", sourceRoot)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(sourceRoot, strings.TrimPrefix(guestPath, string(filepath.Separator))), nil
 }
 
 func openCacheOutputCaptureSource(path string) (*os.File, error) {
@@ -525,6 +550,10 @@ func openCacheOutputCaptureSource(path string) (*os.File, error) {
 }
 
 func copyCacheOutputFile(source *os.File, sourcePath, targetPath string, mode fs.FileMode) error {
+	return copyCacheOutputFileWithParentMode(source, sourcePath, targetPath, mode, true)
+}
+
+func copyCacheOutputFileWithParentMode(source *os.File, sourcePath, targetPath string, mode fs.FileMode, requireParent bool) error {
 	info, err := source.Stat()
 	if err != nil {
 		return fmt.Errorf("stat cache output file source %s: %w", sourcePath, err)
@@ -540,7 +569,7 @@ func copyCacheOutputFile(source *os.File, sourcePath, targetPath string, mode fs
 	}
 
 	targetDir := filepath.Dir(targetPath)
-	if err := ensureCacheOutputDir(targetDir, 0o755, true, false); err != nil {
+	if err := ensureCacheOutputDir(targetDir, 0o755, requireParent, false); err != nil {
 		return err
 	}
 	tmp, err := os.CreateTemp(targetDir, "."+filepath.Base(targetPath)+".cleanroom-cache-capture-*")

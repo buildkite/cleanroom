@@ -952,6 +952,40 @@ Remaining runtime work after phase 6:
 - decide whether output volume sizing stays internal or becomes policy-visible
   after real workloads show the right default
 
+### Guest Overlay Runner Status
+
+The guest-agent overlay runner slice turns an `overlay_capture` execution
+request into real Linux guest setup, but backend capability advertisement remains
+gated until it is exercised against managed VM roots.
+
+Completed in the guest overlay runner slice:
+
+- the Linux guest agent creates a per-execution mount namespace for overlay
+  capture requests
+- each request gets fresh `upper`, `work`, and `merged` directories under the
+  requested overlay capture root
+- the current rootfs is mounted as the overlay lowerdir and commands execute
+  inside the merged root with `chroot`
+- scratch paths such as `/tmp`, `/var/tmp`, and `/run` are mounted as tmpfs
+  inside the merged root before declared outputs are rebound
+- the read-only input projection is rebound inside the merged root when present
+- declared output directories are rebound inside the merged root so their writes
+  land in the sidecar output volumes rather than the overlay upperdir
+- declared file outputs are captured from the merged root, copied into the
+  aggregate output store, and materialized back into the sandbox root for later
+  blocks
+- an opt-in privileged guest-agent E2E documents the expected behavior on a
+  non-overlay Linux root filesystem
+
+Remaining overlay-capture runtime work:
+
+- run the opt-in guest-agent E2E inside the managed Firecracker and darwin-vz
+  guest roots instead of Docker's overlay-backed rootfs
+- wire escaped-write fallback so Cleanroom restarts from the pre-block state and
+  reruns through the exact full-rootfs path before later phases continue
+- advertise `sandbox.overlay_write_capture` only after the managed VM validation
+  and fallback path are in place
+
 ### Darwin-VZ Sidecar Volume Status
 
 The darwin-vz backend now consumes launch-time `backend.CacheOutputVolumeSpec`
