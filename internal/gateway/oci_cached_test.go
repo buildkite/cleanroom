@@ -471,6 +471,21 @@ func TestResolveOCIRegistryRouteUsesDockerHubAlias(t *testing.T) {
 	}
 }
 
+func TestNormalizeOCIRegistryMappingsIncludesBuiltInPublicRegistries(t *testing.T) {
+	t.Parallel()
+
+	routes, err := normalizeOCIRegistryMappings(nil)
+	if err != nil {
+		t.Fatalf("normalizeOCIRegistryMappings returned error: %v", err)
+	}
+	if got, want := routes["ghcr.io"], "https://ghcr.io"; got != want {
+		t.Fatalf("ghcr.io mapping = %q, want %q", got, want)
+	}
+	if got, want := routes["public.ecr.aws"], "https://public.ecr.aws"; got != want {
+		t.Fatalf("public.ecr.aws mapping = %q, want %q", got, want)
+	}
+}
+
 func TestNormalizeOCIRegistryMappingsRejectsSymbolicPrefix(t *testing.T) {
 	t.Parallel()
 

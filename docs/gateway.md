@@ -86,20 +86,19 @@ the sandbox policy, and only then allows the upstream fetch.
 Current scope:
 
 - OCI pull-style `GET` and `HEAD` requests
-- built-in prefix mapping for Docker Hub (`docker.io` ->
-  `https://registry-1.docker.io`)
-- additional registry-prefix mappings configured via
+- built-in prefix mappings for Docker Hub (`docker.io` ->
+  `https://registry-1.docker.io`), GitHub Container Registry (`ghcr.io`), and
+  Amazon ECR Public (`public.ecr.aws`)
+- additional or overridden registry-prefix mappings configured via
   `gateway.oci.registries` in runtime config
 - custom registry keys must be real registry hosts, not arbitrary aliases
 
-Example runtime config:
+Example runtime config for additional registries:
 
 ```yaml
 gateway:
   oci:
     registries:
-      ghcr.io: https://ghcr.io
-      public.ecr.aws: https://public.ecr.aws
       registry.internal:5000: https://registry.internal:5000
 ```
 
@@ -126,10 +125,9 @@ Current scope:
 - pull-style `GET` and `HEAD` requests only
 - mirror traffic routed to the same `docker.io` -> `registry-1.docker.io`
   upstream mapping used by `/registry/`
-- guest `dockerd` pulls for runtime-configured non-Docker-Hub registries are
-  mirrored through `/registry/<host>/` by generated Docker registry host config.
-  For example, `gateway.oci.registries.public.ecr.aws` makes guest pulls from
-  `public.ecr.aws/...` use
+- guest `dockerd` pulls for built-in or runtime-configured non-Docker-Hub
+  registries are mirrored through `/registry/<host>/` by generated Docker
+  registry host config. For example, guest pulls from `public.ecr.aws/...` use
   `http://gateway.cleanroom.internal:8170/registry/public.ecr.aws/...` inside
   the guest.
 
@@ -137,8 +135,9 @@ Policy still applies to the registry host from the map key. A sandbox must
 allow `public.ecr.aws:443` for the `public.ecr.aws` mirror path to fetch
 upstream, even though the guest talks to the Cleanroom gateway over HTTP.
 Registries that are not present in `gateway.oci.registries` are not installed
-as guest `dockerd` registry mirrors; they either use Docker's normal direct
-registry path subject to network policy, or fail when direct egress is denied.
+as guest `dockerd` registry mirrors unless they are one of the built-in public
+registry hosts. Other registries either use Docker's normal direct registry path
+subject to network policy, or fail when direct egress is denied.
 Configured registry host config points the registry namespace's server at the
 Cleanroom gateway, so configured non-Docker-Hub pulls do not have a direct
 upstream fallback inside `dockerd`.

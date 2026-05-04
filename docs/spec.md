@@ -473,8 +473,8 @@ These rules are installed during sandbox network setup and torn down during clea
 - The gateway resolves a registry prefix from the request path, maps it to an upstream registry URL, and applies the sandbox allowlist against the mapped policy host and port before forwarding upstream.
 - Current route scope is OCI pull-style `GET` and `HEAD` traffic.
 - The gateway also exposes a Docker Hub-compatible `/v2/` mirror endpoint backed by the same OCI cache so guest `dockerd` can use the shared gateway as a Docker Hub registry mirror.
-- Guest `dockerd` also gets generated Docker registry-host config for non-Docker-Hub registries explicitly configured in runtime config under `gateway.oci.registries`, pointing those registry namespaces' server endpoint at the gateway `/registry/<host>/` path without a direct upstream fallback.
-- Current Docker mirror scope is pull-style `GET` and `HEAD` traffic for Docker Hub and runtime-configured registry hosts.
+- Guest `dockerd` also gets generated Docker registry-host config for built-in public registries (`ghcr.io`, `public.ecr.aws`) and non-Docker-Hub registries explicitly configured in runtime config under `gateway.oci.registries`, pointing those registry namespaces' server endpoint at the gateway `/registry/<host>/` path without a direct upstream fallback.
+- Current Docker mirror scope is pull-style `GET` and `HEAD` traffic for Docker Hub, built-in public registry hosts, and runtime-configured registry hosts.
 - The gateway exposes a `/goproxy/` route backed by embedded `content-cache` Go module proxy handlers, including mirrored sumdb traffic under `/goproxy/sumdb/`.
 - Current Go module scope includes `GOPROXY` metadata requests, module zip downloads, and mirrored checksum-database requests.
 - The gateway also exposes a `/rubygems/` route backed by embedded `content-cache` RubyGems handlers for Bundler mirror traffic to `rubygems.org`.
