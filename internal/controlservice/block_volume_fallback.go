@@ -133,7 +133,7 @@ func blockVolumeOutputResetCommand(outputs policy.StageBlockOutputs) []string {
 		script.WriteString("  rm -f -- " + quoted + "\n")
 		script.WriteString("  mkdir -p -- " + quoted + "\n")
 		script.WriteString("elif [ -d " + quoted + " ]; then\n")
-		script.WriteString("  rm -rf -- " + quoted + "/* " + quoted + "/.[!.]* " + quoted + "/..?*\n")
+		script.WriteString("  find " + quoted + " -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +\n")
 		script.WriteString("else\n")
 		script.WriteString("  rm -rf -- " + quoted + "\n")
 		script.WriteString("  mkdir -p -- " + quoted + "\n")

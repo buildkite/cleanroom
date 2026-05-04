@@ -41,6 +41,34 @@ func TestBlockVolumeOutputResetCommandDoesNotFollowOutputDirSymlink(t *testing.T
 	}
 }
 
+func TestBlockVolumeOutputResetCommandClearsOutputDirEntries(t *testing.T) {
+	tempDir := t.TempDir()
+	outputDir := filepath.Join(tempDir, "output")
+	if err := os.MkdirAll(filepath.Join(outputDir, "nested"), 0o755); err != nil {
+		t.Fatalf("create nested output dir: %v", err)
+	}
+	for _, path := range []string{
+		filepath.Join(outputDir, "regular"),
+		filepath.Join(outputDir, ".hidden"),
+		filepath.Join(outputDir, "..prefixed"),
+		filepath.Join(outputDir, "nested", "value"),
+	} {
+		if err := os.WriteFile(path, []byte("stale"), 0o644); err != nil {
+			t.Fatalf("write stale output %s: %v", path, err)
+		}
+	}
+
+	runBlockVolumeResetCommand(t, policy.StageBlockOutputs{Dirs: []string{outputDir}})
+
+	entries, err := os.ReadDir(outputDir)
+	if err != nil {
+		t.Fatalf("read output dir after reset: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("expected output dir to be empty after reset, got %v", entries)
+	}
+}
+
 func TestBlockVolumeOutputResetCommandRemovesWrongTypeFileOutput(t *testing.T) {
 	tempDir := t.TempDir()
 	outputFile := filepath.Join(tempDir, "file-output")
