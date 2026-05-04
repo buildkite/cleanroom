@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"unsafe"
 
 	"github.com/buildkite/cleanroom/internal/gateway"
@@ -89,19 +90,22 @@ func handleConn(conn io.ReadWriteCloser) {
 	}
 	defer cleanupInputProjection()
 	req = projectedReq
+	overlayRoot, cleanupOverlayCapture, err := setupOverlayCapture(req)
+	if err != nil {
+		sendErrorResponse(conn, err)
+		return
+	}
+	defer cleanupOverlayCapture()
 
 	if req.TTY {
-		handleConnTTY(conn, dec, req)
+		handleConnTTY(conn, dec, req, overlayRoot)
 	} else {
-		handleConnPipes(conn, dec, req)
+		handleConnPipes(conn, dec, req, overlayRoot)
 	}
 }
 
-func handleConnTTY(conn io.ReadWriteCloser, dec *json.Decoder, req vsockexec.ExecRequest) {
-	cmd := exec.Command(req.Command[0], req.Command[1:]...)
-	if req.Dir != "" {
-		cmd.Dir = req.Dir
-	}
+func handleConnTTY(conn io.ReadWriteCloser, dec *json.Decoder, req vsockexec.ExecRequest, overlayRoot string) {
+	cmd := newGuestCommand(req, overlayRoot)
 	env, err := buildCommandEnv(req.Env, !req.ClosedEnv)
 	if err != nil {
 		sendErrorResponse(conn, err)
@@ -130,16 +134,13 @@ func handleConnTTY(conn io.ReadWriteCloser, dec *json.Decoder, req vsockexec.Exe
 
 	waitErr := cmd.Wait()
 	if waitErr == nil {
-		waitErr = captureCacheOutputFiles(req.CacheOutputFileCaptures)
+		waitErr = captureCacheOutputFiles(req.CacheOutputFileCaptures, overlayRoot)
 	}
 	sendExitResult(sender, waitErr, req.OverlayCapture)
 }
 
-func handleConnPipes(conn io.ReadWriteCloser, dec *json.Decoder, req vsockexec.ExecRequest) {
-	cmd := exec.Command(req.Command[0], req.Command[1:]...)
-	if req.Dir != "" {
-		cmd.Dir = req.Dir
-	}
+func handleConnPipes(conn io.ReadWriteCloser, dec *json.Decoder, req vsockexec.ExecRequest, overlayRoot string) {
+	cmd := newGuestCommand(req, overlayRoot)
 	env, err := buildCommandEnv(req.Env, !req.ClosedEnv)
 	if err != nil {
 		sendErrorResponse(conn, err)
@@ -186,9 +187,26 @@ func handleConnPipes(conn io.ReadWriteCloser, dec *json.Decoder, req vsockexec.E
 	wg.Wait()
 	waitErr := cmd.Wait()
 	if waitErr == nil {
-		waitErr = captureCacheOutputFiles(req.CacheOutputFileCaptures)
+		waitErr = captureCacheOutputFiles(req.CacheOutputFileCaptures, overlayRoot)
 	}
 	sendExitResult(sender, waitErr, req.OverlayCapture)
+}
+
+func newGuestCommand(req vsockexec.ExecRequest, overlayRoot string) *exec.Cmd {
+	cmd := exec.Command(req.Command[0], req.Command[1:]...)
+	if req.Dir != "" {
+		cmd.Dir = req.Dir
+	}
+	if strings.TrimSpace(overlayRoot) != "" {
+		cmd.SysProcAttr = &syscall.SysProcAttr{Chroot: overlayRoot}
+		reqDir := strings.TrimSpace(req.Dir)
+		if reqDir == "" {
+			cmd.Dir = "/"
+		} else if !filepath.IsAbs(reqDir) {
+			cmd.Dir = filepath.Clean(string(filepath.Separator) + reqDir)
+		}
+	}
+	return cmd
 }
 
 func readInputFrames(dec *json.Decoder, w io.Writer, closeStdin func(), resizeFn func(cols, rows uint16)) {

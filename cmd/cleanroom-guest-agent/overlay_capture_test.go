@@ -72,6 +72,177 @@ func TestSendExitResultIncludesOverlayCapture(t *testing.T) {
 	assertOverlayCaptureEntry(t, res.OverlayCapture.EscapedWrites, vsockexec.OverlayCaptureEntry{Path: "/etc/profile", Kind: "write", Mode: 0o644})
 }
 
+func TestOverlayCaptureLayoutUsesSiblingWorkAndMergedRoots(t *testing.T) {
+	t.Parallel()
+
+	layout, err := newOverlayCaptureLayout("/run/cleanroom/overlay-captures/dependency-cache/upper")
+	if err != nil {
+		t.Fatalf("newOverlayCaptureLayout returned error: %v", err)
+	}
+	if got, want := layout.BaseDir, "/run/cleanroom/overlay-captures/dependency-cache"; got != want {
+		t.Fatalf("unexpected base dir: got %q want %q", got, want)
+	}
+	if got, want := layout.WorkDir, "/run/cleanroom/overlay-captures/dependency-cache/work"; got != want {
+		t.Fatalf("unexpected work dir: got %q want %q", got, want)
+	}
+	if got, want := layout.MergedRoot, "/run/cleanroom/overlay-captures/dependency-cache/merged"; got != want {
+		t.Fatalf("unexpected merged root: got %q want %q", got, want)
+	}
+}
+
+func TestOverlayCaptureLayoutRejectsUnsafeUpperDir(t *testing.T) {
+	t.Parallel()
+
+	if _, err := newOverlayCaptureLayout("relative/upper"); err == nil {
+		t.Fatal("expected relative upperdir to fail")
+	}
+	if _, err := newOverlayCaptureLayout("/"); err == nil {
+		t.Fatal("expected root upperdir to fail")
+	}
+	if _, err := newOverlayCaptureLayout("/var/tmp/upper"); err == nil {
+		t.Fatal("expected upperdir outside managed root to fail")
+	}
+}
+
+func TestOverlayCaptureGuestTargetStaysUnderMergedRoot(t *testing.T) {
+	t.Parallel()
+
+	got, err := overlayCaptureGuestTarget("/merged", "/home/cleanroom/.cache")
+	if err != nil {
+		t.Fatalf("overlayCaptureGuestTarget returned error: %v", err)
+	}
+	if want := "/merged/home/cleanroom/.cache"; got != want {
+		t.Fatalf("unexpected guest target: got %q want %q", got, want)
+	}
+}
+
+func TestOverlayCaptureGuestTargetResolvesAbsoluteSymlinkInsideMergedRoot(t *testing.T) {
+	t.Parallel()
+
+	mergedRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(mergedRoot, "var"), 0o755); err != nil {
+		t.Fatalf("create var: %v", err)
+	}
+	if err := os.Symlink("/run", filepath.Join(mergedRoot, "var", "run")); err != nil {
+		t.Fatalf("create var/run symlink: %v", err)
+	}
+
+	got, err := overlayCaptureGuestTarget(mergedRoot, "/var/run/service")
+	if err != nil {
+		t.Fatalf("overlayCaptureGuestTarget returned error: %v", err)
+	}
+	if want := filepath.Join(mergedRoot, "run", "service"); got != want {
+		t.Fatalf("unexpected guest target: got %q want %q", got, want)
+	}
+}
+
+func TestOverlayCaptureGuestTargetResolvesRelativeSymlinkInsideMergedRoot(t *testing.T) {
+	t.Parallel()
+
+	mergedRoot := t.TempDir()
+	if err := os.Symlink("usr/lib64", filepath.Join(mergedRoot, "lib64")); err != nil {
+		t.Fatalf("create lib64 symlink: %v", err)
+	}
+
+	got, err := overlayCaptureGuestTarget(mergedRoot, "/lib64/pkg")
+	if err != nil {
+		t.Fatalf("overlayCaptureGuestTarget returned error: %v", err)
+	}
+	if want := filepath.Join(mergedRoot, "usr", "lib64", "pkg"); got != want {
+		t.Fatalf("unexpected guest target: got %q want %q", got, want)
+	}
+}
+
+func TestOverlayCaptureInputProjectionBindUsesTargetRootWhenNotMountedOverSource(t *testing.T) {
+	t.Parallel()
+
+	source, target, readOnly, ok, err := overlayCaptureInputProjectionBind(vsockexec.ExecRequest{
+		InputProjection: &vsockexec.InputProjection{
+			SourceRoot:          "/workspace",
+			TargetRoot:          "/run/cleanroom/input-projections/dependencies/toolchain",
+			MountSourceReadOnly: false,
+		},
+	}, "/merged")
+	if err != nil {
+		t.Fatalf("overlayCaptureInputProjectionBind returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected input projection bind")
+	}
+	if source != "/run/cleanroom/input-projections/dependencies/toolchain" {
+		t.Fatalf("unexpected source: %q", source)
+	}
+	if target != "/merged/run/cleanroom/input-projections/dependencies/toolchain" {
+		t.Fatalf("unexpected target: %q", target)
+	}
+	if readOnly {
+		t.Fatal("did not expect read-only bind for target-root projection")
+	}
+}
+
+func TestOverlayCaptureInputProjectionBindUsesSourceRootWhenMountedReadOnly(t *testing.T) {
+	t.Parallel()
+
+	source, target, readOnly, ok, err := overlayCaptureInputProjectionBind(vsockexec.ExecRequest{
+		InputProjection: &vsockexec.InputProjection{
+			SourceRoot:          "/workspace",
+			TargetRoot:          "/run/cleanroom/input-projections/dependencies/toolchain",
+			MountSourceReadOnly: true,
+		},
+	}, "/merged")
+	if err != nil {
+		t.Fatalf("overlayCaptureInputProjectionBind returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected input projection bind")
+	}
+	if source != "/workspace" || target != "/merged/workspace" {
+		t.Fatalf("unexpected bind: source %q target %q", source, target)
+	}
+	if !readOnly {
+		t.Fatal("expected read-only bind for source-root projection")
+	}
+}
+
+func TestNewGuestCommandUsesOverlayRootAsChroot(t *testing.T) {
+	t.Parallel()
+
+	cmd := newGuestCommand(vsockexec.ExecRequest{Command: []string{"sh", "-lc", "true"}, Dir: "/workspace"}, "/run/cleanroom/overlay/merged")
+	if cmd.SysProcAttr == nil {
+		t.Fatal("expected SysProcAttr")
+	}
+	if got, want := cmd.SysProcAttr.Chroot, "/run/cleanroom/overlay/merged"; got != want {
+		t.Fatalf("unexpected chroot: got %q want %q", got, want)
+	}
+	if got, want := cmd.Dir, "/workspace"; got != want {
+		t.Fatalf("unexpected command dir: got %q want %q", got, want)
+	}
+}
+
+func TestNewGuestCommandNormalizesOverlayRootRelativeDirs(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		dir  string
+		want string
+	}{
+		{name: "empty", dir: "", want: "/"},
+		{name: "dot", dir: ".", want: "/"},
+		{name: "relative", dir: "workspace/subdir", want: "/workspace/subdir"},
+		{name: "relative parent", dir: "../workspace", want: "/workspace"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			cmd := newGuestCommand(vsockexec.ExecRequest{Command: []string{"sh", "-lc", "true"}, Dir: tc.dir}, "/run/cleanroom/overlay/merged")
+			if got := cmd.Dir; got != tc.want {
+				t.Fatalf("unexpected command dir: got %q want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func assertOverlayCaptureEntry(t *testing.T, entries []vsockexec.OverlayCaptureEntry, want vsockexec.OverlayCaptureEntry) {
 	t.Helper()
 	for _, got := range entries {
@@ -90,5 +261,14 @@ func writeOverlayCaptureTestFile(t *testing.T, root, rel string) {
 	}
 	if err := os.WriteFile(path, []byte(rel), 0o644); err != nil {
 		t.Fatalf("write %s: %v", rel, err)
+	}
+}
+
+func setTestOverlayCaptureRoot(t *testing.T, root string) func() {
+	t.Helper()
+	previous := overlayCaptureRoot
+	overlayCaptureRoot = root
+	return func() {
+		overlayCaptureRoot = previous
 	}
 }

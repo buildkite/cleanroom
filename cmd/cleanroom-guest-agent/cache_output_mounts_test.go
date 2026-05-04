@@ -265,7 +265,7 @@ func TestCaptureCacheOutputFilesCopiesDeclaredOutputToVolume(t *testing.T) {
 			Subpath:   "files/0",
 			Mode:      0o600,
 		},
-	})
+	}, "")
 	if err != nil {
 		t.Fatalf("captureCacheOutputFiles returned error: %v", err)
 	}
@@ -305,7 +305,7 @@ func TestCaptureCacheOutputFilesRequiresRegularSource(t *testing.T) {
 			MountPath: mountPath,
 			Subpath:   "files/0",
 		},
-	})
+	}, "")
 	if err == nil {
 		t.Fatal("expected symlink source to fail")
 	}
@@ -326,9 +326,90 @@ func TestCaptureCacheOutputFilesRequiresSource(t *testing.T) {
 			MountPath: mountPath,
 			Subpath:   "files/0",
 		},
-	})
+	}, "")
 	if err == nil {
 		t.Fatal("expected missing source to fail")
+	}
+}
+
+func TestCaptureCacheOutputFilesReadsFromOverlayAndMaterializesGuestFile(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	overlayRoot := filepath.Join(dir, "merged")
+	guestPath := filepath.Join(dir, "guest", "root", ".cache", "tool", "index.json")
+	overlaySource := filepath.Join(overlayRoot, strings.TrimPrefix(guestPath, string(filepath.Separator)))
+	if err := os.MkdirAll(filepath.Dir(overlaySource), 0o755); err != nil {
+		t.Fatalf("create overlay source parent: %v", err)
+	}
+	if err := os.WriteFile(overlaySource, []byte("index"), 0o644); err != nil {
+		t.Fatalf("write overlay source: %v", err)
+	}
+	mountPath := filepath.Join(dir, "volume")
+	if err := os.MkdirAll(mountPath, 0o755); err != nil {
+		t.Fatalf("create mount path: %v", err)
+	}
+
+	err := captureCacheOutputFiles([]vsockexec.CacheOutputFileCapture{
+		{
+			GuestPath: guestPath,
+			MountPath: mountPath,
+			Subpath:   "files/0",
+			Mode:      0o600,
+		},
+	}, overlayRoot)
+	if err != nil {
+		t.Fatalf("captureCacheOutputFiles returned error: %v", err)
+	}
+	if data, err := os.ReadFile(filepath.Join(mountPath, "files", "0")); err != nil {
+		t.Fatalf("read captured file: %v", err)
+	} else if got, want := string(data), "index"; got != want {
+		t.Fatalf("unexpected captured data: got %q want %q", got, want)
+	}
+	if data, err := os.ReadFile(guestPath); err != nil {
+		t.Fatalf("read materialized guest file: %v", err)
+	} else if got, want := string(data), "index"; got != want {
+		t.Fatalf("unexpected materialized data: got %q want %q", got, want)
+	}
+}
+
+func TestCacheOutputMaterializationTargetResolvesAbsoluteSymlinkInsideRoot(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "var"), 0o755); err != nil {
+		t.Fatalf("create var: %v", err)
+	}
+	if err := os.Symlink("/run", filepath.Join(root, "var", "run")); err != nil {
+		t.Fatalf("create var/run symlink: %v", err)
+	}
+
+	got, err := cacheOutputMaterializationTarget(root, "/var/run/tool/index.json")
+	if err != nil {
+		t.Fatalf("cacheOutputMaterializationTarget returned error: %v", err)
+	}
+	if want := filepath.Join(root, "run", "tool", "index.json"); got != want {
+		t.Fatalf("unexpected target: got %q want %q", got, want)
+	}
+}
+
+func TestCacheOutputCaptureSourcePathResolvesAbsoluteSymlinkInsideSourceRoot(t *testing.T) {
+	t.Parallel()
+
+	sourceRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(sourceRoot, "var"), 0o755); err != nil {
+		t.Fatalf("create var: %v", err)
+	}
+	if err := os.Symlink("/run", filepath.Join(sourceRoot, "var", "run")); err != nil {
+		t.Fatalf("create var/run symlink: %v", err)
+	}
+
+	got, err := cacheOutputCaptureSourcePath("/var/run/tool/index.json", sourceRoot)
+	if err != nil {
+		t.Fatalf("cacheOutputCaptureSourcePath returned error: %v", err)
+	}
+	if want := filepath.Join(sourceRoot, "run", "tool", "index.json"); got != want {
+		t.Fatalf("unexpected source: got %q want %q", got, want)
 	}
 }
 
