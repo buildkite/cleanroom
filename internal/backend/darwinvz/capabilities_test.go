@@ -46,9 +46,11 @@ func TestCapabilitiesMatchImplicitDefaultNetworkMode(t *testing.T) {
 		if !caps[backend.CapabilitySandboxCacheOutputVolumes] {
 			t.Fatalf("expected %s=true on darwin", backend.CapabilitySandboxCacheOutputVolumes)
 		}
-	}
-	if caps[backend.CapabilitySandboxOverlayWriteCapture] {
-		t.Fatalf("expected %s=false until escaped-write capture is wired through", backend.CapabilitySandboxOverlayWriteCapture)
+		if !caps[backend.CapabilitySandboxOverlayWriteCapture] {
+			t.Fatalf("expected %s=true on darwin", backend.CapabilitySandboxOverlayWriteCapture)
+		}
+	} else if caps[backend.CapabilitySandboxOverlayWriteCapture] {
+		t.Fatalf("expected %s=false", backend.CapabilitySandboxOverlayWriteCapture)
 	}
 }
 
@@ -80,7 +82,7 @@ func TestCapabilitiesDeclareAllowlistFilteringForFileHandleMode(t *testing.T) {
 	if !caps[backend.CapabilitySandboxCacheOutputVolumes] {
 		t.Fatalf("expected %s=true", backend.CapabilitySandboxCacheOutputVolumes)
 	}
-	if caps[backend.CapabilitySandboxOverlayWriteCapture] {
-		t.Fatalf("expected %s=false until escaped-write capture is wired through", backend.CapabilitySandboxOverlayWriteCapture)
+	if !caps[backend.CapabilitySandboxOverlayWriteCapture] {
+		t.Fatalf("expected %s=true", backend.CapabilitySandboxOverlayWriteCapture)
 	}
 }

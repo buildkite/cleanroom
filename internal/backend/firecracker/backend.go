@@ -357,12 +357,13 @@ func (a *Adapter) Name() string {
 
 func (a *Adapter) Capabilities() map[string]bool {
 	return map[string]bool{
-		backend.CapabilityNetworkDefaultDeny:        true,
-		backend.CapabilityNetworkAllowlistEgress:    true,
-		backend.CapabilityDNSControlOrEquivalent:    true,
-		backend.CapabilityNetworkGuestInterface:     true,
-		backend.CapabilitySandboxPortDial:           true,
-		backend.CapabilitySandboxCacheOutputVolumes: true,
+		backend.CapabilityNetworkDefaultDeny:         true,
+		backend.CapabilityNetworkAllowlistEgress:     true,
+		backend.CapabilityDNSControlOrEquivalent:     true,
+		backend.CapabilityNetworkGuestInterface:      true,
+		backend.CapabilitySandboxPortDial:            true,
+		backend.CapabilitySandboxCacheOutputVolumes:  true,
+		backend.CapabilitySandboxOverlayWriteCapture: true,
 	}
 }
 
