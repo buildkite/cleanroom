@@ -199,6 +199,9 @@ func newGuestCommand(req vsockexec.ExecRequest, overlayRoot string) *exec.Cmd {
 	}
 	if strings.TrimSpace(overlayRoot) != "" {
 		cmd.SysProcAttr = &syscall.SysProcAttr{Chroot: overlayRoot}
+		if strings.TrimSpace(cmd.Dir) == "" {
+			cmd.Dir = "/"
+		}
 	}
 	return cmd
 }
