@@ -120,7 +120,7 @@ func blockVolumeOutputResetCommand(outputs policy.StageBlockOutputs) []string {
 		if path == "" {
 			continue
 		}
-		script.WriteString("rm -f -- " + blockVolumeShellQuote(path) + "\n")
+		script.WriteString("rm -rf -- " + blockVolumeShellQuote(path) + "\n")
 		wrote = true
 	}
 	for _, path := range outputs.Dirs {
@@ -129,7 +129,10 @@ func blockVolumeOutputResetCommand(outputs policy.StageBlockOutputs) []string {
 			continue
 		}
 		quoted := blockVolumeShellQuote(path)
-		script.WriteString("if [ -d " + quoted + " ]; then\n")
+		script.WriteString("if [ -L " + quoted + " ]; then\n")
+		script.WriteString("  rm -f -- " + quoted + "\n")
+		script.WriteString("  mkdir -p -- " + quoted + "\n")
+		script.WriteString("elif [ -d " + quoted + " ]; then\n")
 		script.WriteString("  rm -rf -- " + quoted + "/* " + quoted + "/.[!.]* " + quoted + "/..?*\n")
 		script.WriteString("else\n")
 		script.WriteString("  rm -rf -- " + quoted + "\n")
