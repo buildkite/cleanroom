@@ -34,11 +34,12 @@ func (s *Service) bootstrapServiceBlockVolumePlanInPersistentSandbox(
 	repository *repositorycheckout.Checkout,
 	plan serviceBlockVolumePlan,
 	reporter CreateSandboxReporter,
-) error {
+) (bool, error) {
 	if adapter == nil || compiled == nil || repository == nil || strings.TrimSpace(sandboxID) == "" || len(plan.Blocks) == 0 {
-		return nil
+		return true, nil
 	}
 
+	publishable := true
 	for _, block := range plan.Blocks {
 		blockName := strings.TrimSpace(block.BlockName)
 		if block.CacheHit {
@@ -57,12 +58,20 @@ func (s *Service) bootstrapServiceBlockVolumePlanInPersistentSandbox(
 		}
 
 		emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_BOOTSTRAP_SERVICES, "running service bootstrap: "+blockName)
+		var result *backend.ExecutionResult
 		if err := s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.bootstrap_service_block", attrs, func(ctx context.Context) error {
-			return s.bootstrapServiceBlockVolumeBlock(ctx, adapter, sandboxID, compiled, firecrackerCfg, repository, block, reporter)
+			var err error
+			result, err = s.bootstrapServiceBlockVolumeBlock(ctx, adapter, sandboxID, compiled, firecrackerCfg, repository, block, reporter)
+			return err
 		}); err != nil {
-			return fmt.Errorf("service block %q: %w", blockName, err)
+			return publishable, fmt.Errorf("service block %q: %w", blockName, err)
 		}
-		if publish.Adapter != nil {
+		if warning := blockVolumeEscapedWriteWarning("service", blockName, result); warning != "" {
+			publishable = false
+			emitCreateSandboxWarning(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_BOOTSTRAP_SERVICES, warning)
+			s.logServicesStageWarning("publish service block-volume caches", sandboxID, fmt.Errorf("%s", warning))
+		}
+		if publishable && publish.Adapter != nil {
 			emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_PUBLISH_SERVICES_STAGE_CACHE, "publishing service outputs: "+blockName)
 			s.maybePublishServiceBlockVolumeCaches(ctx, publish.Adapter, sandboxID, publish.Backend, compiled, firecrackerCfg, publish.Repository, publish.Changeset, serviceBlockVolumePlan{
 				ReuseNamespace:       plan.ReuseNamespace,
@@ -71,7 +80,7 @@ func (s *Service) bootstrapServiceBlockVolumePlanInPersistentSandbox(
 			})
 		}
 	}
-	return nil
+	return publishable, nil
 }
 
 func (s *Service) bootstrapServiceBlockVolumeBlock(
@@ -83,9 +92,9 @@ func (s *Service) bootstrapServiceBlockVolumeBlock(
 	repository *repositorycheckout.Checkout,
 	block serviceBlockVolumeBlockPlan,
 	reporter CreateSandboxReporter,
-) error {
+) (*backend.ExecutionResult, error) {
 	if len(block.Command) == 0 {
-		return nil
+		return nil, nil
 	}
 	sourceRoot := strings.TrimSpace(repository.DestinationDir)
 	if sourceRoot == "" {
@@ -117,5 +126,5 @@ func (s *Service) bootstrapServiceBlockVolumeBlock(
 		},
 		reporter,
 	)
-	return persistentBootstrapCommandError(result, stdout, stderr, err, "service block bootstrap returned no result", "service block bootstrap failed with exit code %d")
+	return result, persistentBootstrapCommandError(result, stdout, stderr, err, "service block bootstrap returned no result", "service block bootstrap failed with exit code %d")
 }

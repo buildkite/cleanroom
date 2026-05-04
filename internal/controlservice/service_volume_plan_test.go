@@ -927,7 +927,7 @@ func TestBootstrapServiceBlockVolumePlanRunsMissesFromInputProjection(t *testing
 		},
 	}
 	svc := newTestService(adapter)
-	err = svc.bootstrapServiceBlockVolumePlanInPersistentSandbox(
+	publishable, err := svc.bootstrapServiceBlockVolumePlanInPersistentSandbox(
 		context.Background(),
 		adapter,
 		"cr-test",
@@ -940,6 +940,9 @@ func TestBootstrapServiceBlockVolumePlanRunsMissesFromInputProjection(t *testing
 	)
 	if err != nil {
 		t.Fatalf("bootstrapServiceBlockVolumePlanInPersistentSandbox returned error: %v", err)
+	}
+	if !publishable {
+		t.Fatal("expected service block volume plan to remain publishable")
 	}
 	if got, want := len(gotReqs), 1; got != want {
 		t.Fatalf("unexpected run count: got %d want %d", got, want)
@@ -974,6 +977,139 @@ func TestBootstrapServiceBlockVolumePlanRunsMissesFromInputProjection(t *testing
 	}
 	if !req.InputProjection.MountSourceReadOnly {
 		t.Fatal("expected projection to be mounted read-only over source")
+	}
+}
+
+func TestBootstrapServiceBlockVolumePlanStopsPublishingAfterEscapedWrites(t *testing.T) {
+	compiled, err := policy.FromProto(testRepositoryTwoDependencyTwoServiceBlocksPolicy())
+	if err != nil {
+		t.Fatalf("policy.FromProto returned error: %v", err)
+	}
+	repository := repositorycheckout.FromProto(testRepositoryCheckoutProto())
+	plan := serviceBlockVolumePlan{
+		Blocks: []serviceBlockVolumeBlockPlan{
+			{
+				BlockName: "postgres-data",
+				Command:   append([]string(nil), compiled.Services.Blocks[0].Command...),
+				Env:       cloneDependencyBlockEnv(compiled.Services.Blocks[0].Env),
+				Inputs:    append([]string(nil), compiled.Services.Blocks[0].Inputs.Files...),
+				Outputs:   compiled.Services.Blocks[0].Outputs,
+				CacheKey:  "service-volume:postgres-data",
+			},
+			{
+				BlockName: "app-service",
+				Command:   append([]string(nil), compiled.Services.Blocks[1].Command...),
+				Env:       cloneDependencyBlockEnv(compiled.Services.Blocks[1].Env),
+				Inputs:    append([]string(nil), compiled.Services.Blocks[1].Inputs.Files...),
+				Outputs:   compiled.Services.Blocks[1].Outputs,
+				CacheKey:  "service-volume:app-service",
+			},
+		},
+	}
+
+	runCalls := 0
+	adapter := &stubAdapter{
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
+			runCalls++
+			result := &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0}
+			if runCalls == 1 {
+				result.OverlayCapture = &backend.OverlayCaptureResult{
+					EscapedWrites: []backend.OverlayCaptureEntry{{Path: "/usr/local/bin/tool", Kind: "write", Mode: 0o755}},
+				}
+			}
+			return result, nil
+		},
+		snapshotCacheOutputsFn: func(context.Context, backend.SnapshotCacheOutputVolumesRequest) (*backend.SnapshotCacheOutputVolumesResult, error) {
+			t.Fatal("did not expect service block-volume snapshot after escaped writes")
+			return nil, nil
+		},
+	}
+	svc := newTestService(adapter)
+	var warnings []string
+	publishable, err := svc.bootstrapServiceBlockVolumePlanInPersistentSandbox(
+		context.Background(),
+		adapter,
+		"cr-test",
+		serviceBlockVolumePublishConfig{Adapter: adapter, Backend: "firecracker", Repository: repository},
+		compiled,
+		backend.FirecrackerConfig{},
+		repository,
+		plan,
+		CreateSandboxReporterFuncs{OnWarning: func(_ cleanroomv1.CreateSandboxPhase, warning string) {
+			warnings = append(warnings, warning)
+		}},
+	)
+	if err != nil {
+		t.Fatalf("bootstrapServiceBlockVolumePlanInPersistentSandbox returned error: %v", err)
+	}
+	if publishable {
+		t.Fatal("expected service block volume plan to stop being publishable")
+	}
+	if got, want := runCalls, 2; got != want {
+		t.Fatalf("unexpected run count: got %d want %d", got, want)
+	}
+	if got := adapter.snapshotCacheOutputsCalls; got != 0 {
+		t.Fatalf("unexpected cache output snapshot calls: got %d", got)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "/usr/local/bin/tool") {
+		t.Fatalf("expected escaped-write warning, got %v", warnings)
+	}
+}
+
+func TestCreateSandboxSkipsServiceBlockVolumePublicationAfterDependencyEscapedWrites(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	adapter := dependencyBlockVolumeRuntimeAdapter()
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"mise.toml":           "go = \"1.26.2\"\n",
+		"go.mod":              "module example.com/test\n\ngo 1.26.2\n",
+		"go.sum":              "example.com/test v0.0.0 h1:abc123\n",
+		"docker-compose.yml":  "services:\n  postgres:\n    image: postgres:17\n",
+		"db/schema.sql":       "create table widgets (id serial primary key);\n",
+		"db/seed.sql":         "insert into widgets default values;\n",
+		"scripts/prepare-db":  "#!/bin/sh\ntrue\n",
+		"scripts/prepare-app": "#!/bin/sh\ntrue\n",
+	})
+	svc := newTestService(adapter)
+	svc.RepositoryStore = mirrors
+	cacheStore := newMemoryCacheStore()
+	svc.CacheStore = cacheStore
+
+	dependencyEscaped := false
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
+		result := &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0}
+		if req.NetworkStage == policy.NetworkStageDependencies && req.ClosedEnv && !dependencyEscaped {
+			dependencyEscaped = true
+			result.OverlayCapture = &backend.OverlayCaptureResult{
+				EscapedWrites: []backend.OverlayCaptureEntry{{Path: "/etc/profile", Kind: "write", Mode: 0o644}},
+			}
+		}
+		return result, nil
+	}
+	adapter.snapshotCacheOutputsFn = func(context.Context, backend.SnapshotCacheOutputVolumesRequest) (*backend.SnapshotCacheOutputVolumesResult, error) {
+		t.Fatal("did not expect dependency or service block-volume snapshots after dependency escaped writes")
+		return nil, nil
+	}
+
+	if _, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy:             testRepositoryTwoDependencyTwoServiceBlocksPolicy(),
+		RepositoryCheckout: repositoryCheckout,
+	}); err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	if !dependencyEscaped {
+		t.Fatal("expected dependency block execution to report escaped writes")
+	}
+	if got := adapter.snapshotCacheOutputsCalls; got != 0 {
+		t.Fatalf("unexpected cache output snapshot calls: got %d", got)
+	}
+	records, err := cacheStore.List(context.Background())
+	if err != nil {
+		t.Fatalf("List returned error: %v", err)
+	}
+	for _, record := range records {
+		if record.Stage == dependencyVolumeStageName || record.Stage == serviceVolumeStageName {
+			t.Fatalf("did not expect block-volume cache record after dependency escaped writes, got %#v", record)
+		}
 	}
 }
 
