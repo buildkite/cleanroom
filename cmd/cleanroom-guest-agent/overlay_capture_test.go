@@ -219,6 +219,30 @@ func TestNewGuestCommandUsesOverlayRootAsChroot(t *testing.T) {
 	}
 }
 
+func TestNewGuestCommandNormalizesOverlayRootRelativeDirs(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		dir  string
+		want string
+	}{
+		{name: "empty", dir: "", want: "/"},
+		{name: "dot", dir: ".", want: "/"},
+		{name: "relative", dir: "workspace/subdir", want: "/workspace/subdir"},
+		{name: "relative parent", dir: "../workspace", want: "/workspace"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			cmd := newGuestCommand(vsockexec.ExecRequest{Command: []string{"sh", "-lc", "true"}, Dir: tc.dir}, "/run/cleanroom/overlay/merged")
+			if got := cmd.Dir; got != tc.want {
+				t.Fatalf("unexpected command dir: got %q want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func assertOverlayCaptureEntry(t *testing.T, entries []vsockexec.OverlayCaptureEntry, want vsockexec.OverlayCaptureEntry) {
 	t.Helper()
 	for _, got := range entries {
