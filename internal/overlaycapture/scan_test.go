@@ -46,6 +46,27 @@ func TestScanReportsEscapedWrites(t *testing.T) {
 	}
 }
 
+func TestScanCanonicalizesSymlinkedUpperDir(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	upperDir := filepath.Join(tempDir, "upper")
+	if err := os.MkdirAll(upperDir, 0o755); err != nil {
+		t.Fatalf("create upperdir: %v", err)
+	}
+	writeFile(t, upperDir, "etc/profile")
+	upperLink := filepath.Join(tempDir, "upper-link")
+	if err := os.Symlink(upperDir, upperLink); err != nil {
+		t.Fatalf("create upperdir symlink: %v", err)
+	}
+
+	result, err := Scan(upperLink, Options{})
+	if err != nil {
+		t.Fatalf("Scan returned error: %v", err)
+	}
+	assertEntry(t, result.EscapedWrites, Entry{Path: "/etc/profile", Kind: EntryKindWrite, Mode: 0o644})
+}
+
 func TestScanIgnoresScratchPrefixWithoutIgnoringSibling(t *testing.T) {
 	t.Parallel()
 

@@ -45,6 +45,14 @@ func Scan(upperDir string, opts Options) (Result, error) {
 	if !filepath.IsAbs(upperDir) {
 		return Result{}, fmt.Errorf("overlay upperdir %q is not absolute", upperDir)
 	}
+	resolvedUpperDir, err := filepath.EvalSymlinks(upperDir)
+	if err != nil {
+		return Result{}, fmt.Errorf("resolve overlay upperdir %s: %w", upperDir, err)
+	}
+	upperDir = filepath.Clean(resolvedUpperDir)
+	if !filepath.IsAbs(upperDir) {
+		return Result{}, fmt.Errorf("resolved overlay upperdir %q is not absolute", upperDir)
+	}
 	info, err := os.Stat(upperDir)
 	if err != nil {
 		return Result{}, fmt.Errorf("stat overlay upperdir %s: %w", upperDir, err)
