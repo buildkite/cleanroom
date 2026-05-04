@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -190,6 +191,85 @@ func TestRunInSandboxUsesRequestLaunchSecondsOverride(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed < 2*time.Second {
 		t.Fatalf("expected launch-seconds override to increase timeout, elapsed=%s err=%v", elapsed, err)
+	}
+}
+
+func TestExecuteInSandboxForwardsOverlayCapture(t *testing.T) {
+	t.Parallel()
+
+	socketPath := filepath.Join("/tmp", "cr-ov-"+strconv.FormatInt(time.Now().UnixNano(), 36)+".sock")
+	defer os.Remove(socketPath)
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen unix socket: %v", err)
+	}
+	defer listener.Close()
+
+	wantCapture := &vsockexec.OverlayCapture{
+		UpperDir:            "/run/cleanroom/overlay/upper",
+		BaselinePaths:       []string{"/workspace"},
+		DeclaredFileOutputs: []string{"/workspace/dist/result.txt"},
+		IgnoredPrefixes:     []string{"/tmp"},
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		conn, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			t.Errorf("accept guest exec connection: %v", acceptErr)
+			return
+		}
+		defer conn.Close()
+
+		var req vsockexec.ExecRequest
+		if decodeErr := json.NewDecoder(conn).Decode(&req); decodeErr != nil {
+			t.Errorf("decode guest exec request: %v", decodeErr)
+			return
+		}
+		if !reflect.DeepEqual(req.OverlayCapture, wantCapture) {
+			t.Errorf("unexpected overlay capture request: got %#v want %#v", req.OverlayCapture, wantCapture)
+		}
+		if encodeErr := vsockexec.EncodeStreamFrame(conn, vsockexec.ExecStreamFrame{
+			Type:     "exit",
+			ExitCode: 0,
+			OverlayCapture: &vsockexec.OverlayCaptureResult{
+				EscapedWrites: []vsockexec.OverlayCaptureEntry{
+					{Path: "/etc/profile", Kind: "write", Mode: 0o644},
+				},
+			},
+		}); encodeErr != nil {
+			t.Errorf("encode guest exec response: %v", encodeErr)
+		}
+	}()
+
+	adapter := &Adapter{}
+	result, err := adapter.executeInSandbox(context.Background(), context.Background(), &sandboxInstance{
+		SandboxID:       "cr-test",
+		ProxySocketPath: socketPath,
+		Policy:          &policy.CompiledPolicy{NetworkDefault: "deny"},
+		Helper:          &helperSession{},
+		exitedCh:        make(chan struct{}),
+	}, backend.ExecutionRequest{
+		SandboxID:   "cr-test",
+		ExecutionID: "run-123",
+		Command:     []string{"true"},
+		Policy:      &policy.CompiledPolicy{NetworkDefault: "deny"},
+		OverlayCapture: &backend.OverlayCapture{
+			UpperDir:            "/run/cleanroom/overlay/upper",
+			BaselinePaths:       []string{"/workspace"},
+			DeclaredFileOutputs: []string{"/workspace/dist/result.txt"},
+			IgnoredPrefixes:     []string{"/tmp"},
+		},
+	}, backend.OutputStream{})
+	if err != nil {
+		t.Fatalf("executeInSandbox returned error: %v", err)
+	}
+	<-done
+	if result.OverlayCapture == nil {
+		t.Fatal("expected overlay capture result")
+	}
+	if got, want := result.OverlayCapture.EscapedWrites[0], (backend.OverlayCaptureEntry{Path: "/etc/profile", Kind: "write", Mode: 0o644}); got != want {
+		t.Fatalf("unexpected escaped write: got %#v want %#v", got, want)
 	}
 }
 

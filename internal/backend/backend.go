@@ -318,6 +318,7 @@ type ExecutionRequest struct {
 	ClosedEnv       bool
 	TTY             bool
 	InputProjection *InputProjection
+	OverlayCapture  *OverlayCapture
 	Policy          *policy.CompiledPolicy
 	NetworkStage    policy.NetworkStage
 	FirecrackerConfig
@@ -328,6 +329,24 @@ type InputProjection struct {
 	TargetRoot          string
 	Files               []string
 	MountSourceReadOnly bool
+}
+
+type OverlayCapture struct {
+	UpperDir            string
+	BaselinePaths       []string
+	DeclaredFileOutputs []string
+	IgnoredPrefixes     []string
+}
+
+type OverlayCaptureResult struct {
+	Entries       []OverlayCaptureEntry
+	EscapedWrites []OverlayCaptureEntry
+}
+
+type OverlayCaptureEntry struct {
+	Path string
+	Kind string
+	Mode fs.FileMode
 }
 
 type FirecrackerConfig struct {
@@ -366,14 +385,15 @@ type SnapshotConfig struct {
 }
 
 type ExecutionResult struct {
-	ExecutionID string
-	ExitCode    int
-	LaunchedVM  bool
-	PlanPath    string
-	RunDir      string
-	ImageRef    string
-	ImageDigest string
-	Message     string
+	ExecutionID    string
+	ExitCode       int
+	LaunchedVM     bool
+	PlanPath       string
+	RunDir         string
+	ImageRef       string
+	ImageDigest    string
+	Message        string
+	OverlayCapture *OverlayCaptureResult
 }
 
 type DoctorRequest struct {
