@@ -88,27 +88,28 @@ type gatewayRegistry interface {
 }
 
 type sandboxInstance struct {
-	SandboxID         string
-	RunDir            string
-	ConfigPath        string
-	VsockPath         string
-	GuestPort         uint32
-	Policy            *policy.CompiledPolicy
-	ImageRef          string
-	ImageDigest       string
-	CommandTimeout    int64
-	HostIP            string
-	GuestIP           string
-	fcCmd             *exec.Cmd
-	exitedCh          chan struct{}
-	exitMu            sync.RWMutex
-	exitErr           error
-	exitReady         bool
-	cleanupNetwork    func()
-	cleanupVolume     func()
-	vmRootFSPath      string
-	volumeRef         string
-	cacheOutputMounts []vsockexec.CacheOutputMount
+	SandboxID          string
+	RunDir             string
+	ConfigPath         string
+	VsockPath          string
+	GuestPort          uint32
+	Policy             *policy.CompiledPolicy
+	ImageRef           string
+	ImageDigest        string
+	CommandTimeout     int64
+	HostIP             string
+	GuestIP            string
+	fcCmd              *exec.Cmd
+	exitedCh           chan struct{}
+	exitMu             sync.RWMutex
+	exitErr            error
+	exitReady          bool
+	cleanupNetwork     func()
+	cleanupVolume      func()
+	vmRootFSPath       string
+	volumeRef          string
+	cacheOutputMounts  []vsockexec.CacheOutputMount
+	cacheOutputVolumes []preparedCacheOutputVolume
 
 	warnings backend.WarningEmitter
 }
@@ -1975,24 +1976,25 @@ func (a *Adapter) launchSandboxVMFromRootFS(ctx context.Context, sandboxID strin
 	}
 
 	instance := &sandboxInstance{
-		SandboxID:         sandboxID,
-		RunDir:            runDir,
-		ConfigPath:        configPath,
-		VsockPath:         vsockPath,
-		GuestPort:         cfg.GuestPort,
-		Policy:            compiled,
-		ImageRef:          compiled.ImageRef,
-		ImageDigest:       compiled.ImageDigest,
-		CommandTimeout:    cfg.LaunchSeconds,
-		HostIP:            networkCfg.HostIP,
-		GuestIP:           networkCfg.GuestIP,
-		fcCmd:             fcCmd,
-		exitedCh:          make(chan struct{}),
-		cleanupNetwork:    cleanupNetwork,
-		cleanupVolume:     cleanupStorage,
-		vmRootFSPath:      vmRootFSPath,
-		volumeRef:         writableVolume.Ref,
-		cacheOutputMounts: cacheOutputVolumeMounts(cacheOutputVolumes),
+		SandboxID:          sandboxID,
+		RunDir:             runDir,
+		ConfigPath:         configPath,
+		VsockPath:          vsockPath,
+		GuestPort:          cfg.GuestPort,
+		Policy:             compiled,
+		ImageRef:           compiled.ImageRef,
+		ImageDigest:        compiled.ImageDigest,
+		CommandTimeout:     cfg.LaunchSeconds,
+		HostIP:             networkCfg.HostIP,
+		GuestIP:            networkCfg.GuestIP,
+		fcCmd:              fcCmd,
+		exitedCh:           make(chan struct{}),
+		cleanupNetwork:     cleanupNetwork,
+		cleanupVolume:      cleanupStorage,
+		vmRootFSPath:       vmRootFSPath,
+		volumeRef:          writableVolume.Ref,
+		cacheOutputMounts:  cacheOutputVolumeMounts(cacheOutputVolumes),
+		cacheOutputVolumes: cacheOutputVolumes,
 	}
 	instanceRef.Store(instance)
 	go func() {
