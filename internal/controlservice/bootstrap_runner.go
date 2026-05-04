@@ -27,9 +27,10 @@ func (s *Service) runPersistentSandboxCommand(
 }
 
 type persistentSandboxCommandOptions struct {
-	Dir             string
-	ClosedEnv       bool
-	InputProjection *backend.InputProjection
+	Dir                     string
+	ClosedEnv               bool
+	InputProjection         *backend.InputProjection
+	CacheOutputFileCaptures []backend.CacheOutputFileCapture
 }
 
 func (s *Service) runPersistentSandboxCommandWithOptions(
@@ -46,17 +47,27 @@ func (s *Service) runPersistentSandboxCommandWithOptions(
 	stream backend.OutputStream,
 ) (*backend.ExecutionResult, error) {
 	return adapter.RunInSandbox(ctx, backend.ExecutionRequest{
-		SandboxID:         sandboxID,
-		ExecutionID:       executionID,
-		Command:           append([]string(nil), command...),
-		Dir:               strings.TrimSpace(opts.Dir),
-		Env:               append([]string(nil), env...),
-		ClosedEnv:         opts.ClosedEnv,
-		InputProjection:   cloneInputProjection(opts.InputProjection),
-		Policy:            compiled,
-		NetworkStage:      networkStage,
-		FirecrackerConfig: withRunDir(firecrackerCfg, internalBootstrapArtifactsDir(sandboxID, executionID)),
+		SandboxID:               sandboxID,
+		ExecutionID:             executionID,
+		Command:                 append([]string(nil), command...),
+		Dir:                     strings.TrimSpace(opts.Dir),
+		Env:                     append([]string(nil), env...),
+		ClosedEnv:               opts.ClosedEnv,
+		InputProjection:         cloneInputProjection(opts.InputProjection),
+		CacheOutputFileCaptures: cloneCacheOutputFileCaptures(opts.CacheOutputFileCaptures),
+		Policy:                  compiled,
+		NetworkStage:            networkStage,
+		FirecrackerConfig:       withRunDir(firecrackerCfg, internalBootstrapArtifactsDir(sandboxID, executionID)),
 	}, stream)
+}
+
+func cloneCacheOutputFileCaptures(captures []backend.CacheOutputFileCapture) []backend.CacheOutputFileCapture {
+	if len(captures) == 0 {
+		return nil
+	}
+	out := make([]backend.CacheOutputFileCapture, len(captures))
+	copy(out, captures)
+	return out
 }
 
 func (s *Service) runPersistentBootstrapCommand(

@@ -461,3 +461,116 @@ func restoreCacheOutputFileFrom(source *os.File, sourcePath, targetPath string, 
 	}
 	return nil
 }
+
+func captureCacheOutputFiles(captures []vsockexec.CacheOutputFileCapture) error {
+	for i, capture := range captures {
+		if err := captureCacheOutputFile(capture); err != nil {
+			return fmt.Errorf("capture cache output file %d: %w", i, err)
+		}
+	}
+	return nil
+}
+
+func captureCacheOutputFile(capture vsockexec.CacheOutputFileCapture) error {
+	guestPath, err := cleanAbsoluteCacheOutputPath("guest path", capture.GuestPath)
+	if err != nil {
+		return err
+	}
+	mountPath, err := cleanAbsoluteCacheOutputPath("mount path", capture.MountPath)
+	if err != nil {
+		return err
+	}
+	subpath, err := cleanCacheOutputSubpath(capture.Subpath)
+	if err != nil {
+		return err
+	}
+	if err := requireCacheOutputDirNoSymlink(mountPath); err != nil {
+		return err
+	}
+
+	source, err := openCacheOutputCaptureSource(guestPath)
+	if err != nil {
+		return err
+	}
+	defer source.Close()
+
+	targetDirSubpath := filepath.Dir(subpath)
+	targetDir := mountPath
+	if targetDirSubpath != "." {
+		var err error
+		targetDir, err = ensureCacheOutputVolumeDir(mountPath, targetDirSubpath, 0o755, false)
+		if err != nil {
+			return err
+		}
+	}
+	return copyCacheOutputFile(source, guestPath, filepath.Join(targetDir, filepath.Base(subpath)), fs.FileMode(capture.Mode).Perm())
+}
+
+func openCacheOutputCaptureSource(path string) (*os.File, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, fmt.Errorf("stat cache output file source %s: %w", path, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("cache output file source %s is a symlink", path)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("cache output file source %s is not a regular file", path)
+	}
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, fmt.Errorf("open cache output file source %s: %w", path, err)
+	}
+	return os.NewFile(uintptr(fd), path), nil
+}
+
+func copyCacheOutputFile(source *os.File, sourcePath, targetPath string, mode fs.FileMode) error {
+	info, err := source.Stat()
+	if err != nil {
+		return fmt.Errorf("stat cache output file source %s: %w", sourcePath, err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("cache output file source %s is not a regular file", sourcePath)
+	}
+	if mode == 0 {
+		mode = info.Mode().Perm()
+	}
+	if mode == 0 {
+		mode = 0o644
+	}
+
+	targetDir := filepath.Dir(targetPath)
+	if err := ensureCacheOutputDir(targetDir, 0o755, true, false); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(targetDir, "."+filepath.Base(targetPath)+".cleanroom-cache-capture-*")
+	if err != nil {
+		return fmt.Errorf("create temporary cache output file target for %s: %w", targetPath, err)
+	}
+	tmpPath := tmp.Name()
+	_, copyErr := io.Copy(tmp, source)
+	chmodErr := tmp.Chmod(mode.Perm())
+	syncErr := tmp.Sync()
+	closeErr := tmp.Close()
+	if copyErr != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("copy cache output file %s to %s: %w", sourcePath, targetPath, copyErr)
+	}
+	if chmodErr != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("chmod temporary cache output file target %s: %w", tmpPath, chmodErr)
+	}
+	if syncErr != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("sync temporary cache output file target %s: %w", tmpPath, syncErr)
+	}
+	if closeErr != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("close temporary cache output file target %s: %w", tmpPath, closeErr)
+	}
+	if err := os.Rename(tmpPath, targetPath); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("replace cache output file target %s: %w", targetPath, err)
+	}
+	return nil
+}

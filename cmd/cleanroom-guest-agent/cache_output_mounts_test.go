@@ -242,6 +242,96 @@ func TestRestoreCacheOutputFileReplacesExistingTarget(t *testing.T) {
 	}
 }
 
+func TestCaptureCacheOutputFilesCopiesDeclaredOutputToVolume(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "root", ".cache", "tool", "index.json")
+	if err := os.MkdirAll(filepath.Dir(sourcePath), 0o755); err != nil {
+		t.Fatalf("create source parent: %v", err)
+	}
+	if err := os.WriteFile(sourcePath, []byte("index"), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	mountPath := filepath.Join(dir, "volume")
+	if err := os.MkdirAll(mountPath, 0o755); err != nil {
+		t.Fatalf("create mount path: %v", err)
+	}
+
+	err := captureCacheOutputFiles([]vsockexec.CacheOutputFileCapture{
+		{
+			GuestPath: sourcePath,
+			MountPath: mountPath,
+			Subpath:   "files/0",
+			Mode:      0o600,
+		},
+	})
+	if err != nil {
+		t.Fatalf("captureCacheOutputFiles returned error: %v", err)
+	}
+	targetPath := filepath.Join(mountPath, "files", "0")
+	data, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatalf("read captured file: %v", err)
+	}
+	if got, want := string(data), "index"; got != want {
+		t.Fatalf("unexpected captured data: got %q want %q", got, want)
+	}
+	info, err := os.Stat(targetPath)
+	if err != nil {
+		t.Fatalf("stat captured file: %v", err)
+	}
+	if got, want := info.Mode().Perm(), os.FileMode(0o600); got != want {
+		t.Fatalf("unexpected captured mode: got %v want %v", got, want)
+	}
+}
+
+func TestCaptureCacheOutputFilesRequiresRegularSource(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "source")
+	if err := os.Symlink("/etc/passwd", sourcePath); err != nil {
+		t.Fatalf("create source symlink: %v", err)
+	}
+	mountPath := filepath.Join(dir, "volume")
+	if err := os.MkdirAll(mountPath, 0o755); err != nil {
+		t.Fatalf("create mount path: %v", err)
+	}
+
+	err := captureCacheOutputFiles([]vsockexec.CacheOutputFileCapture{
+		{
+			GuestPath: sourcePath,
+			MountPath: mountPath,
+			Subpath:   "files/0",
+		},
+	})
+	if err == nil {
+		t.Fatal("expected symlink source to fail")
+	}
+}
+
+func TestCaptureCacheOutputFilesRequiresSource(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	mountPath := filepath.Join(dir, "volume")
+	if err := os.MkdirAll(mountPath, 0o755); err != nil {
+		t.Fatalf("create mount path: %v", err)
+	}
+
+	err := captureCacheOutputFiles([]vsockexec.CacheOutputFileCapture{
+		{
+			GuestPath: filepath.Join(dir, "missing"),
+			MountPath: mountPath,
+			Subpath:   "files/0",
+		},
+	})
+	if err == nil {
+		t.Fatal("expected missing source to fail")
+	}
+}
+
 func TestSetupCacheOutputMountsOnceRejectsChangedPlan(t *testing.T) {
 	cacheOutputMountState.Lock()
 	previousSignature := cacheOutputMountState.signature

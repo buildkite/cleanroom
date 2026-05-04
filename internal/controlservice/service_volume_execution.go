@@ -110,9 +110,10 @@ func (s *Service) bootstrapServiceBlockVolumeBlock(
 		env,
 		nil,
 		persistentSandboxCommandOptions{
-			Dir:             sourceRoot,
-			ClosedEnv:       true,
-			InputProjection: inputProjection,
+			Dir:                     sourceRoot,
+			ClosedEnv:               true,
+			InputProjection:         inputProjection,
+			CacheOutputFileCaptures: serviceBlockVolumeFileCaptures(block),
 		},
 		reporter,
 	)

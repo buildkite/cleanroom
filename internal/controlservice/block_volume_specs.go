@@ -50,6 +50,30 @@ func serviceBlockVolumeOutputSpecs(plan serviceBlockVolumePlan) ([]backend.Cache
 	return blockVolumeOutputSpecs(blocks)
 }
 
+func dependencyBlockVolumeFileCaptures(block dependencyBlockVolumeBlockPlan) []backend.CacheOutputFileCapture {
+	return blockVolumeFileCaptures(dependencyVolumeStageName, block.CacheKey, block.Outputs)
+}
+
+func serviceBlockVolumeFileCaptures(block serviceBlockVolumeBlockPlan) []backend.CacheOutputFileCapture {
+	return blockVolumeFileCaptures(serviceVolumeStageName, block.CacheKey, block.Outputs)
+}
+
+func blockVolumeFileCaptures(stage, cacheKey string, outputs policy.StageBlockOutputs) []backend.CacheOutputFileCapture {
+	if len(outputs.Files) == 0 {
+		return nil
+	}
+	volumeID := blockVolumeID(stage, cacheKey)
+	captures := make([]backend.CacheOutputFileCapture, 0, len(outputs.Files))
+	for i, file := range outputs.Files {
+		captures = append(captures, backend.CacheOutputFileCapture{
+			VolumeID:      volumeID,
+			GuestPath:     strings.TrimSpace(file),
+			VolumeSubpath: blockVolumeOutputSubpath("files", i),
+		})
+	}
+	return captures
+}
+
 func blockVolumeOutputSpecs(blocks []blockVolumeOutputSpecBlock) ([]backend.CacheOutputVolumeSpec, error) {
 	if len(blocks) == 0 {
 		return nil, nil
