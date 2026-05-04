@@ -81,7 +81,7 @@ func (a *Adapter) SnapshotCacheOutputVolumes(ctx context.Context, req backend.Sn
 	}
 	syncCtx, cancel := context.WithTimeout(ctx, time.Duration(connectSeconds)*time.Second)
 	defer cancel()
-	syncResult, err := executeInSandbox(syncCtx, ctx, instance, backend.ExecutionRequest{
+	syncResult, err := executeInSandbox(syncCtx, syncCtx, instance, backend.ExecutionRequest{
 		SandboxID: sandboxID,
 		Command:   []string{"sync"},
 		Policy:    instance.Policy,

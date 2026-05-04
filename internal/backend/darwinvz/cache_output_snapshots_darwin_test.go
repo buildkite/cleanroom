@@ -29,11 +29,19 @@ func TestSnapshotCacheOutputVolumesSyncsPausesAndSnapshotsSelectedVolumes(t *tes
 	var syncCommands [][]string
 	var helperOps []string
 	adapter := &Adapter{
-		executeInSandboxFn: func(_ context.Context, _ context.Context, instance *sandboxInstance, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
+		executeInSandboxFn: func(bootCtx context.Context, runCtx context.Context, instance *sandboxInstance, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
 			if instance == nil || instance.SandboxID != "cr-test" {
 				t.Fatalf("unexpected sandbox instance: %#v", instance)
 			}
 			syncCommands = append(syncCommands, append([]string(nil), req.Command...))
+			bootDeadline, bootOK := bootCtx.Deadline()
+			runDeadline, runOK := runCtx.Deadline()
+			if !bootOK || !runOK {
+				t.Fatalf("expected sync contexts to carry deadlines: boot=%v run=%v", bootOK, runOK)
+			}
+			if !bootDeadline.Equal(runDeadline) {
+				t.Fatalf("expected run context to use sync timeout deadline: boot=%s run=%s", bootDeadline, runDeadline)
+			}
 			return &backend.ExecutionResult{ExitCode: 0}, nil
 		},
 		helperRequestFn: func(_ context.Context, helper *helperSession, req helperControlRequest) (helperControlResponse, error) {
