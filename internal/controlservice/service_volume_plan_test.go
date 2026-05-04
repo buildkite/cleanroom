@@ -562,6 +562,77 @@ func TestCreateSandboxPublishesServiceBlockVolumeCachesForMisses(t *testing.T) {
 	}
 }
 
+func TestCreateSandboxSkipsServiceBlockVolumePublicationForFileOutputs(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	adapter := dependencyBlockVolumeRuntimeAdapter()
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"mise.toml":          "go = \"1.26.2\"\n",
+		"go.mod":             "module example.com/test\n\ngo 1.26.2\n",
+		"go.sum":             "example.com/test v0.0.0 h1:abc123\n",
+		"docker-compose.yml": "services:\n  postgres:\n    image: postgres:17\n",
+		"db/schema.sql":      "create table widgets (id serial primary key);\n",
+		"scripts/prepare-db": "#!/bin/sh\ntrue\n",
+	})
+	svc := newTestService(adapter)
+	svc.RepositoryStore = mirrors
+	cacheStore := newMemoryCacheStore()
+	svc.CacheStore = cacheStore
+
+	policyProto := testRepositoryTwoDependencyBlocksPolicy()
+	policyProto.Docker = &cleanroomv1.PolicyDocker{Required: true}
+	policyProto.Services = &cleanroomv1.PolicyServices{
+		Blocks: []*cleanroomv1.PolicyBlock{
+			{
+				Name:    "postgres-config",
+				Command: []string{"sh", "-lc", "mkdir -p /var/lib/cleanroom/services && touch /var/lib/cleanroom/services/postgres.conf"},
+				Inputs: &cleanroomv1.PolicyBlockInputs{
+					Files: []string{"docker-compose.yml", "db/schema.sql", "scripts/prepare-db"},
+				},
+				Outputs: &cleanroomv1.PolicyBlockOutputs{
+					Files: []string{"/var/lib/cleanroom/services/postgres.conf"},
+				},
+			},
+		},
+	}
+
+	compiled, err := policy.FromProto(policyProto)
+	if err != nil {
+		t.Fatalf("FromProto returned error: %v", err)
+	}
+	repository := repositorycheckout.FromProto(repositoryCheckout)
+	dependencyPlan, ok, err := svc.finalizeDependencyBlockVolumePlan(context.Background(), compiled, repository, nil, nil, "firecracker", "runtime-base:test")
+	if err != nil {
+		t.Fatalf("finalizeDependencyBlockVolumePlan returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected dependency block-volume plan")
+	}
+	for _, block := range dependencyPlan.Blocks {
+		if err := cacheStore.Create(context.Background(), dependencyBlockVolumeTestRecord(compiled, block)); err != nil {
+			t.Fatalf("Create dependency block-volume record returned error: %v", err)
+		}
+	}
+
+	if _, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy:             policyProto,
+		RepositoryCheckout: repositoryCheckout,
+	}); err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	if got := adapter.snapshotCacheOutputsCalls; got != 0 {
+		t.Fatalf("did not expect cache output snapshots for file-output service block, got %d", got)
+	}
+	records, err := cacheStore.List(context.Background())
+	if err != nil {
+		t.Fatalf("List returned error: %v", err)
+	}
+	for _, record := range records {
+		if record.Stage == serviceVolumeStageName {
+			t.Fatalf("did not expect service block-volume record for file-output block: %#v", record)
+		}
+	}
+}
+
 func TestCreateSandboxLooksUpServiceBlockVolumesAfterDependencyStageRestore(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	adapter := dependencyBlockVolumeRuntimeAdapter()

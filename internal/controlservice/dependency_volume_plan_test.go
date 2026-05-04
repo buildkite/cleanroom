@@ -562,6 +562,52 @@ func TestCreateSandboxPublishesDependencyBlockVolumeCachesForMisses(t *testing.T
 	}
 }
 
+func TestCreateSandboxSkipsDependencyBlockVolumePublicationForFileOutputs(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	adapter := dependencyBlockVolumeRuntimeAdapter()
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"mise.toml": "go = \"1.26.2\"\n",
+		"tool.lock": "tool v1\n",
+	})
+	svc := newTestService(adapter)
+	svc.RepositoryStore = mirrors
+	cacheStore := newMemoryCacheStore()
+	svc.CacheStore = cacheStore
+
+	policyProto := testRepositoryPolicy()
+	policyProto.Dependencies = &cleanroomv1.PolicyDependencies{
+		Blocks: []*cleanroomv1.PolicyBlock{
+			{
+				Name:    "tool-index",
+				Command: []string{"sh", "-lc", "mkdir -p /root/.cache/tool && touch /root/.cache/tool/index.json"},
+				Inputs:  &cleanroomv1.PolicyBlockInputs{Files: []string{"mise.toml", "tool.lock"}},
+				Outputs: &cleanroomv1.PolicyBlockOutputs{
+					Files: []string{"/root/.cache/tool/index.json"},
+				},
+			},
+		},
+	}
+
+	if _, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy:             policyProto,
+		RepositoryCheckout: repositoryCheckout,
+	}); err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	if got := adapter.snapshotCacheOutputsCalls; got != 0 {
+		t.Fatalf("did not expect cache output snapshots for file-output dependency block, got %d", got)
+	}
+	records, err := cacheStore.List(context.Background())
+	if err != nil {
+		t.Fatalf("List returned error: %v", err)
+	}
+	for _, record := range records {
+		if record.Stage == dependencyVolumeStageName {
+			t.Fatalf("did not expect dependency block-volume record for file-output block: %#v", record)
+		}
+	}
+}
+
 func TestDependencyBlockVolumeRuntimeDecisionRequiresOutputVolumesAndOverlay(t *testing.T) {
 	tests := []struct {
 		name       string
