@@ -273,6 +273,59 @@ func TestRunInSandboxForwardsCacheOutputMounts(t *testing.T) {
 	}
 }
 
+func TestRunInSandboxForwardsCacheOutputFileCaptures(t *testing.T) {
+	t.Parallel()
+
+	var gotCaptures []vsockexec.CacheOutputFileCapture
+	adapter := &Adapter{}
+	adapter.runGuestCommandFn = func(_ context.Context, _ context.Context, _ <-chan struct{}, _ func() error, _ string, _ uint32, req vsockexec.ExecRequest, _ backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error) {
+		gotCaptures = append([]vsockexec.CacheOutputFileCapture(nil), req.CacheOutputFileCaptures...)
+		return vsockexec.ExecResponse{ExitCode: 0}, guestExecTiming{}, nil
+	}
+	adapter.sandboxes = map[string]*sandboxInstance{
+		"cr-test": {
+			SandboxID: "cr-test",
+			VsockPath: "/tmp/fake.sock",
+			GuestPort: 10700,
+			cacheOutputVolumes: []preparedCacheOutputVolume{
+				{
+					Spec: backend.CacheOutputVolumeSpec{VolumeID: "volume-a"},
+					Drive: drive{
+						DriveID: "cacheout0",
+					},
+				},
+			},
+		},
+	}
+
+	if _, err := adapter.RunInSandbox(context.Background(), backend.ExecutionRequest{
+		SandboxID:   "cr-test",
+		ExecutionID: "run-123",
+		Command:     []string{"true"},
+		CacheOutputFileCaptures: []backend.CacheOutputFileCapture{
+			{
+				VolumeID:      "volume-a",
+				GuestPath:     "/root/.config/tool/index.json",
+				VolumeSubpath: "files/0",
+				Mode:          0o600,
+			},
+		},
+	}, backend.OutputStream{}); err != nil {
+		t.Fatalf("RunInSandbox returned error: %v", err)
+	}
+	want := []vsockexec.CacheOutputFileCapture{
+		{
+			GuestPath: "/root/.config/tool/index.json",
+			MountPath: "/run/cleanroom/cache-output-volumes/cacheout0",
+			Subpath:   "files/0",
+			Mode:      0o600,
+		},
+	}
+	if !reflect.DeepEqual(gotCaptures, want) {
+		t.Fatalf("unexpected cache output file captures: got %#v want %#v", gotCaptures, want)
+	}
+}
+
 func TestRunInSandboxForwardsInputProjection(t *testing.T) {
 	t.Parallel()
 

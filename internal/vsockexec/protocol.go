@@ -14,15 +14,16 @@ const (
 )
 
 type ExecRequest struct {
-	Command           []string           `json:"command"`
-	Dir               string             `json:"dir,omitempty"`
-	Env               []string           `json:"env,omitempty"`
-	ClosedEnv         bool               `json:"closed_env,omitempty"`
-	EntropySeed       []byte             `json:"entropy_seed,omitempty"`
-	TTY               bool               `json:"tty,omitempty"`
-	CacheOutputMounts []CacheOutputMount `json:"cache_output_mounts,omitempty"`
-	InputProjection   *InputProjection   `json:"input_projection,omitempty"`
-	OverlayCapture    *OverlayCapture    `json:"overlay_capture,omitempty"`
+	Command                 []string                 `json:"command"`
+	Dir                     string                   `json:"dir,omitempty"`
+	Env                     []string                 `json:"env,omitempty"`
+	ClosedEnv               bool                     `json:"closed_env,omitempty"`
+	EntropySeed             []byte                   `json:"entropy_seed,omitempty"`
+	TTY                     bool                     `json:"tty,omitempty"`
+	CacheOutputMounts       []CacheOutputMount       `json:"cache_output_mounts,omitempty"`
+	CacheOutputFileCaptures []CacheOutputFileCapture `json:"cache_output_file_captures,omitempty"`
+	InputProjection         *InputProjection         `json:"input_projection,omitempty"`
+	OverlayCapture          *OverlayCapture          `json:"overlay_capture,omitempty"`
 }
 
 type InputProjection struct {
@@ -47,6 +48,13 @@ type CacheOutputDirMount struct {
 
 type CacheOutputFileMount struct {
 	GuestPath string `json:"guest_path"`
+	Subpath   string `json:"subpath"`
+	Mode      uint32 `json:"mode,omitempty"`
+}
+
+type CacheOutputFileCapture struct {
+	GuestPath string `json:"guest_path"`
+	MountPath string `json:"mount_path"`
 	Subpath   string `json:"subpath"`
 	Mode      uint32 `json:"mode,omitempty"`
 }

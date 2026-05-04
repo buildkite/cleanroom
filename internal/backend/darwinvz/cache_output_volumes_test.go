@@ -89,6 +89,38 @@ func TestDarwinVZCacheOutputDiskPathsPreserveLaunchOrder(t *testing.T) {
 	}
 }
 
+func TestDarwinVZCacheOutputFileCapturesUsePreparedMountPath(t *testing.T) {
+	t.Parallel()
+
+	captures, err := darwinVZCacheOutputFileCaptures([]preparedDarwinVZCacheOutputVolume{
+		{
+			Spec:      backend.CacheOutputVolumeSpec{VolumeID: "volume-a"},
+			MountPath: "/run/cleanroom/cache-output-volumes/cacheout0",
+		},
+	}, []backend.CacheOutputFileCapture{
+		{
+			VolumeID:      "volume-a",
+			GuestPath:     "/root/.config/tool/index.json",
+			VolumeSubpath: "files/0",
+			Mode:          0o600,
+		},
+	})
+	if err != nil {
+		t.Fatalf("darwinVZCacheOutputFileCaptures returned error: %v", err)
+	}
+	want := []vsockexec.CacheOutputFileCapture{
+		{
+			GuestPath: "/root/.config/tool/index.json",
+			MountPath: "/run/cleanroom/cache-output-volumes/cacheout0",
+			Subpath:   "files/0",
+			Mode:      0o600,
+		},
+	}
+	if !reflect.DeepEqual(captures, want) {
+		t.Fatalf("unexpected cache output file captures: got %#v want %#v", captures, want)
+	}
+}
+
 func TestDarwinVZCacheOutputDevicePathSkipsRootDisk(t *testing.T) {
 	t.Parallel()
 

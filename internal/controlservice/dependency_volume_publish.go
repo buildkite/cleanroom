@@ -37,12 +37,8 @@ func (s *Service) maybePublishDependencyBlockVolumeCaches(
 	if len(missed) == 0 {
 		return
 	}
-	publishable := publishableDependencyBlockVolumeBlocks(missed)
-	if len(publishable) == 0 {
-		return
-	}
-	volumeIDs := make([]string, 0, len(publishable))
-	for _, block := range publishable {
+	volumeIDs := make([]string, 0, len(missed))
+	for _, block := range missed {
 		volumeIDs = append(volumeIDs, blockVolumeID(dependencyVolumeStageName, block.CacheKey))
 	}
 
@@ -66,9 +62,9 @@ func (s *Service) maybePublishDependencyBlockVolumeCaches(
 	}
 
 	now := s.clock().Now()
-	records := make([]cachestore.Record, 0, len(publishable))
-	snapshots := make([]backend.CacheOutputVolumeSnapshot, 0, len(publishable))
-	for _, block := range publishable {
+	records := make([]cachestore.Record, 0, len(missed))
+	snapshots := make([]backend.CacheOutputVolumeSnapshot, 0, len(missed))
+	for _, block := range missed {
 		volumeID := blockVolumeID(dependencyVolumeStageName, block.CacheKey)
 		snapshot := snapshotsByVolumeID[volumeID]
 		snapshots = append(snapshots, snapshot)
@@ -99,17 +95,6 @@ func missedDependencyBlockVolumeBlocks(plan dependencyBlockVolumePlan) []depende
 		}
 	}
 	return missed
-}
-
-func publishableDependencyBlockVolumeBlocks(blocks []dependencyBlockVolumeBlockPlan) []dependencyBlockVolumeBlockPlan {
-	publishable := make([]dependencyBlockVolumeBlockPlan, 0, len(blocks))
-	for _, block := range blocks {
-		if len(block.Outputs.Files) > 0 {
-			continue
-		}
-		publishable = append(publishable, block)
-	}
-	return publishable
 }
 
 func dependencyBlockVolumeSnapshotsByVolumeID(volumeIDs []string, result *backend.SnapshotCacheOutputVolumesResult) (map[string]backend.CacheOutputVolumeSnapshot, error) {

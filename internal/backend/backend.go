@@ -348,17 +348,18 @@ type OutputStream struct {
 }
 
 type ExecutionRequest struct {
-	SandboxID       string
-	ExecutionID     string
-	Command         []string
-	Dir             string
-	Env             []string
-	ClosedEnv       bool
-	TTY             bool
-	InputProjection *InputProjection
-	OverlayCapture  *OverlayCapture
-	Policy          *policy.CompiledPolicy
-	NetworkStage    policy.NetworkStage
+	SandboxID               string
+	ExecutionID             string
+	Command                 []string
+	Dir                     string
+	Env                     []string
+	ClosedEnv               bool
+	TTY                     bool
+	InputProjection         *InputProjection
+	CacheOutputFileCaptures []CacheOutputFileCapture
+	OverlayCapture          *OverlayCapture
+	Policy                  *policy.CompiledPolicy
+	NetworkStage            policy.NetworkStage
 	FirecrackerConfig
 }
 
@@ -367,6 +368,13 @@ type InputProjection struct {
 	TargetRoot          string
 	Files               []string
 	MountSourceReadOnly bool
+}
+
+type CacheOutputFileCapture struct {
+	VolumeID      string
+	GuestPath     string
+	VolumeSubpath string
+	Mode          fs.FileMode
 }
 
 type OverlayCapture struct {

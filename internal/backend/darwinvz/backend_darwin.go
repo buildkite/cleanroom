@@ -1638,15 +1638,21 @@ func (a *Adapter) executeInSandbox(bootCtx context.Context, runCtx context.Conte
 		}
 	}
 
+	cacheOutputCaptures, err := darwinVZCacheOutputFileCaptures(instance.cacheOutputVolumes, req.CacheOutputFileCaptures)
+	if err != nil {
+		return nil, err
+	}
+
 	guestReq := vsockexec.ExecRequest{
-		Command:           append([]string(nil), req.Command...),
-		Dir:               strings.TrimSpace(req.Dir),
-		Env:               append([]string(nil), req.Env...),
-		ClosedEnv:         req.ClosedEnv,
-		TTY:               req.TTY,
-		CacheOutputMounts: cloneDarwinVZCacheOutputMounts(instance.cacheOutputMounts),
-		InputProjection:   darwinVZInputProjection(req.InputProjection),
-		OverlayCapture:    guestexec.ToVSOCKOverlayCapture(req.OverlayCapture),
+		Command:                 append([]string(nil), req.Command...),
+		Dir:                     strings.TrimSpace(req.Dir),
+		Env:                     append([]string(nil), req.Env...),
+		ClosedEnv:               req.ClosedEnv,
+		TTY:                     req.TTY,
+		CacheOutputMounts:       cloneDarwinVZCacheOutputMounts(instance.cacheOutputMounts),
+		CacheOutputFileCaptures: cacheOutputCaptures,
+		InputProjection:         darwinVZInputProjection(req.InputProjection),
+		OverlayCapture:          guestexec.ToVSOCKOverlayCapture(req.OverlayCapture),
 	}
 	if !req.ClosedEnv && a.GatewayRegistry != nil && gatewayScopeToken != "" {
 		gwPort := a.GatewayPort

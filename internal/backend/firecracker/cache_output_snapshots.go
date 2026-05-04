@@ -72,7 +72,7 @@ func (a *Adapter) SnapshotCacheOutputVolumes(ctx context.Context, req backend.Sn
 		})
 	}
 
-	syncResp, _, err := a.executeInSandbox(ctx, instance, snapshotSyncTimeoutSeconds, []string{"sync"}, "", nil, false, nil, nil, false, backend.OutputStream{})
+	syncResp, _, err := a.executeInSandbox(ctx, instance, snapshotSyncTimeoutSeconds, []string{"sync"}, "", nil, false, nil, nil, nil, false, backend.OutputStream{})
 	if err != nil {
 		return nil, fmt.Errorf("sync sandbox filesystem before cache output snapshot: %w", err)
 	}

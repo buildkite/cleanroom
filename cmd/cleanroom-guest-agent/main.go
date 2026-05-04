@@ -128,7 +128,11 @@ func handleConnTTY(conn io.ReadWriteCloser, dec *json.Decoder, req vsockexec.Exe
 	// PTY read returns EIO when the slave side closes; ignore the error.
 	_, _ = io.Copy(streamFrameWriter{send: sender.Send, kind: "stdout"}, ptmx)
 
-	sendExitResult(sender, cmd.Wait(), req.OverlayCapture)
+	waitErr := cmd.Wait()
+	if waitErr == nil {
+		waitErr = captureCacheOutputFiles(req.CacheOutputFileCaptures)
+	}
+	sendExitResult(sender, waitErr, req.OverlayCapture)
 }
 
 func handleConnPipes(conn io.ReadWriteCloser, dec *json.Decoder, req vsockexec.ExecRequest) {
@@ -181,6 +185,9 @@ func handleConnPipes(conn io.ReadWriteCloser, dec *json.Decoder, req vsockexec.E
 
 	wg.Wait()
 	waitErr := cmd.Wait()
+	if waitErr == nil {
+		waitErr = captureCacheOutputFiles(req.CacheOutputFileCaptures)
+	}
 	sendExitResult(sender, waitErr, req.OverlayCapture)
 }
 

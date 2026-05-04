@@ -562,7 +562,7 @@ func TestCreateSandboxPublishesDependencyBlockVolumeCachesForMisses(t *testing.T
 	}
 }
 
-func TestCreateSandboxSkipsDependencyBlockVolumePublicationForFileOutputs(t *testing.T) {
+func TestCreateSandboxPublishesDependencyBlockVolumeFileOutputs(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	adapter := dependencyBlockVolumeRuntimeAdapter()
 	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
@@ -587,6 +587,58 @@ func TestCreateSandboxSkipsDependencyBlockVolumePublicationForFileOutputs(t *tes
 			},
 		},
 	}
+	compiled, err := policy.FromProto(policyProto)
+	if err != nil {
+		t.Fatalf("FromProto returned error: %v", err)
+	}
+	repository := repositorycheckout.FromProto(repositoryCheckout)
+	plan, ok, err := svc.finalizeDependencyBlockVolumePlan(context.Background(), compiled, repository, nil, nil, "firecracker", "runtime-base:test")
+	if err != nil {
+		t.Fatalf("finalizeDependencyBlockVolumePlan returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected dependency block-volume plan")
+	}
+	block := plan.Blocks[0]
+	volumeID := blockVolumeID(dependencyVolumeStageName, block.CacheKey)
+	capturedFileOutput := false
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
+		if len(req.CacheOutputFileCaptures) > 0 {
+			capturedFileOutput = true
+			if got, want := req.CacheOutputFileCaptures, []backend.CacheOutputFileCapture{{
+				VolumeID:      volumeID,
+				GuestPath:     block.Outputs.Files[0],
+				VolumeSubpath: "files/0",
+			}}; !slices.Equal(got, want) {
+				t.Fatalf("unexpected cache output file captures: got %#v want %#v", got, want)
+			}
+		}
+		return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0}, nil
+	}
+	adapter.snapshotCacheOutputsFn = func(_ context.Context, req backend.SnapshotCacheOutputVolumesRequest) (*backend.SnapshotCacheOutputVolumesResult, error) {
+		if got, want := req.VolumeIDs, []string{volumeID}; !slices.Equal(got, want) {
+			t.Fatalf("unexpected snapshot volume ids: got %v want %v", got, want)
+		}
+		return &backend.SnapshotCacheOutputVolumesResult{Volumes: []backend.CacheOutputVolumeSnapshot{
+			{
+				Stage:         dependencyVolumeStageName,
+				BlockName:     block.BlockName,
+				CacheKey:      block.CacheKey,
+				VolumeID:      volumeID,
+				SnapshotID:    req.SnapshotIDPrefix + "-" + block.BlockName,
+				StorageDriver: "file",
+				StorageRef:    "/snapshots/" + block.BlockName + ".ext4",
+				SnapshotRef:   "snapshot:" + block.BlockName,
+				Outputs: []backend.CacheOutputVolumeSnapshotOutput{
+					{
+						Kind:          "file",
+						GuestPath:     block.Outputs.Files[0],
+						VolumeSubpath: "files/0",
+					},
+				},
+			},
+		}}, nil
+	}
 
 	if _, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
 		Policy:             policyProto,
@@ -594,17 +646,37 @@ func TestCreateSandboxSkipsDependencyBlockVolumePublicationForFileOutputs(t *tes
 	}); err != nil {
 		t.Fatalf("CreateSandbox returned error: %v", err)
 	}
-	if got := adapter.snapshotCacheOutputsCalls; got != 0 {
-		t.Fatalf("did not expect cache output snapshots for file-output dependency block, got %d", got)
+	if !capturedFileOutput {
+		t.Fatal("expected dependency block execution to capture declared file output")
+	}
+	if got, want := adapter.snapshotCacheOutputsCalls, 1; got != want {
+		t.Fatalf("unexpected cache output snapshot calls: got %d want %d", got, want)
 	}
 	records, err := cacheStore.List(context.Background())
 	if err != nil {
 		t.Fatalf("List returned error: %v", err)
 	}
-	for _, record := range records {
-		if record.Stage == dependencyVolumeStageName {
-			t.Fatalf("did not expect dependency block-volume record for file-output block: %#v", record)
+	var record cachestore.Record
+	for _, candidate := range records {
+		if candidate.Stage == dependencyVolumeStageName {
+			record = candidate
 		}
+	}
+	if record.CacheKey == "" {
+		t.Fatal("expected dependency block-volume record for file-output block")
+	}
+	if got, want := len(record.OutputRecords), 1; got != want {
+		t.Fatalf("unexpected output record count: got %d want %d", got, want)
+	}
+	output := record.OutputRecords[0]
+	if got, want := output.Kind, "file"; got != want {
+		t.Fatalf("unexpected output kind: got %q want %q", got, want)
+	}
+	if got, want := output.Path, block.Outputs.Files[0]; got != want {
+		t.Fatalf("unexpected output path: got %q want %q", got, want)
+	}
+	if got, want := output.VolumeSubpath, "files/0"; got != want {
+		t.Fatalf("unexpected output subpath: got %q want %q", got, want)
 	}
 }
 

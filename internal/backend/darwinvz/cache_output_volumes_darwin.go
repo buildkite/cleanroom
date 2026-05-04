@@ -287,6 +287,34 @@ func darwinVZCacheOutputVolumeMounts(volumes []preparedDarwinVZCacheOutputVolume
 	return mounts
 }
 
+func darwinVZCacheOutputFileCaptures(volumes []preparedDarwinVZCacheOutputVolume, captures []backend.CacheOutputFileCapture) ([]vsockexec.CacheOutputFileCapture, error) {
+	if len(captures) == 0 {
+		return nil, nil
+	}
+	mountsByVolumeID := make(map[string]string, len(volumes))
+	for _, volume := range volumes {
+		mountsByVolumeID[strings.TrimSpace(volume.Spec.VolumeID)] = strings.TrimSpace(volume.MountPath)
+	}
+	out := make([]vsockexec.CacheOutputFileCapture, 0, len(captures))
+	for i, capture := range captures {
+		volumeID := strings.TrimSpace(capture.VolumeID)
+		if volumeID == "" {
+			return nil, fmt.Errorf("cache output file capture %d missing volume id", i)
+		}
+		mountPath, ok := mountsByVolumeID[volumeID]
+		if !ok {
+			return nil, fmt.Errorf("cache output file capture %d references unknown volume id %q", i, capture.VolumeID)
+		}
+		out = append(out, vsockexec.CacheOutputFileCapture{
+			GuestPath: strings.TrimSpace(capture.GuestPath),
+			MountPath: mountPath,
+			Subpath:   strings.TrimSpace(capture.VolumeSubpath),
+			Mode:      uint32(capture.Mode.Perm()),
+		})
+	}
+	return out, nil
+}
+
 func cloneDarwinVZCacheOutputMounts(mounts []vsockexec.CacheOutputMount) []vsockexec.CacheOutputMount {
 	if len(mounts) == 0 {
 		return nil
