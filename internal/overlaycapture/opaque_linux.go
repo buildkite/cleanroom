@@ -24,18 +24,27 @@ func overlayEntryIsWhiteout(path string, info fs.FileInfo) bool {
 }
 
 func overlayDirIsOpaque(path string) bool {
-	return overlayXattrValueIs(path, "trusted.overlay.opaque", 'y') || overlayXattrValueIs(path, "user.overlay.opaque", 'y')
+	return overlayXattrValueIn(path, "trusted.overlay.opaque", 'y', 'x') ||
+		overlayXattrValueIn(path, "user.overlay.opaque", 'y', 'x')
 }
 
 func hasOverlayXattr(path, name string) bool {
 	_, err := unix.Getxattr(path, name, nil)
-	return err == nil || (err != nil && !xattrMissing(err) && overlayXattrValueIs(path, name, 0))
+	return err == nil || (err != nil && !xattrMissing(err) && overlayXattrValueIn(path, name, 0))
 }
 
-func overlayXattrValueIs(path, name string, want byte) bool {
+func overlayXattrValueIn(path, name string, allowed ...byte) bool {
 	value := make([]byte, 1)
 	n, err := unix.Getxattr(path, name, value)
-	return err == nil && n == 1 && (want == 0 || value[0] == want)
+	if err != nil || n != 1 {
+		return false
+	}
+	for _, want := range allowed {
+		if want == 0 || value[0] == want {
+			return true
+		}
+	}
+	return false
 }
 
 func xattrMissing(err error) bool {
