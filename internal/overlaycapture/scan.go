@@ -80,25 +80,16 @@ func Scan(upperDir string, opts Options) (Result, error) {
 			return filepath.SkipDir
 		}
 
-		name := dirent.Name()
-		if name == ".wh..wh..opq" {
-			entry := Entry{Path: upperdirRelGuestPath(filepath.Dir(rel)), Kind: EntryKindOpaqueDir}
-			entries = append(entries, entry)
-			return nil
-		}
-		if target, ok := whiteoutPath(rel); ok {
-			entry := Entry{Path: target, Kind: EntryKindDelete}
-			entries = append(entries, entry)
-			return nil
-		}
-
 		info, err := dirent.Info()
 		if err != nil {
 			return fmt.Errorf("stat overlay upperdir path %s: %w", current, err)
 		}
 		entry := Entry{Path: guestPath, Kind: EntryKindWrite, Mode: info.Mode()}
-		if info.Mode()&fs.ModeCharDevice != 0 {
+		if overlayEntryIsWhiteout(current, info) {
 			entry.Kind = EntryKindDelete
+			if target, ok := whiteoutPath(rel); ok {
+				entry.Path = target
+			}
 		} else if dirent.IsDir() && overlayDirIsOpaque(current) {
 			entry.Kind = EntryKindOpaqueDir
 		}
@@ -157,6 +148,9 @@ func newFilter(opts Options) (filter, error) {
 		cleaned, err := cleanGuestPath("ignored prefix", value)
 		if err != nil {
 			return filter{}, err
+		}
+		if cleaned == "/" {
+			return filter{}, errors.New("ignored prefix cannot be /")
 		}
 		out.ignoredPrefixes = append(out.ignoredPrefixes, cleaned)
 	}

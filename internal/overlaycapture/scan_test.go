@@ -65,7 +65,7 @@ func TestScanIgnoresScratchPrefixWithoutIgnoringSibling(t *testing.T) {
 	assertEntry(t, result.EscapedWrites, Entry{Path: "/tmpish/cache", Kind: EntryKindWrite, Mode: 0o644})
 }
 
-func TestScanReportsWhiteoutsAsDeletes(t *testing.T) {
+func TestScanDoesNotTreatRegularWhiteoutNamedFilesAsDeletes(t *testing.T) {
 	t.Parallel()
 
 	upperDir := t.TempDir()
@@ -76,25 +76,24 @@ func TestScanReportsWhiteoutsAsDeletes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Scan returned error: %v", err)
 	}
-	assertEntry(t, result.Entries, Entry{Path: "/home/user/deleted", Kind: EntryKindDelete})
-	assertEntry(t, result.EscapedWrites, Entry{Path: "/home/user/deleted", Kind: EntryKindDelete})
-	assertEntry(t, result.Entries, Entry{Path: "/var/lib/app", Kind: EntryKindOpaqueDir})
-	assertEntry(t, result.EscapedWrites, Entry{Path: "/var/lib/app", Kind: EntryKindOpaqueDir})
+	assertEntry(t, result.Entries, Entry{Path: "/home/user/.wh.deleted", Kind: EntryKindWrite})
+	assertEntry(t, result.EscapedWrites, Entry{Path: "/home/user/.wh.deleted", Kind: EntryKindWrite})
+	assertEntry(t, result.Entries, Entry{Path: "/var/lib/app/.wh..wh..opq", Kind: EntryKindWrite})
+	assertEntry(t, result.EscapedWrites, Entry{Path: "/var/lib/app/.wh..wh..opq", Kind: EntryKindWrite})
 }
 
 func TestScanDoesNotAllowDeleteOfBaselinePath(t *testing.T) {
 	t.Parallel()
 
-	upperDir := t.TempDir()
-	writeFile(t, upperDir, "mnt/.wh.cache")
-
-	result, err := Scan(upperDir, Options{
+	filter, err := newFilter(Options{
 		BaselinePaths: []string{"/mnt", "/mnt/cache"},
 	})
 	if err != nil {
-		t.Fatalf("Scan returned error: %v", err)
+		t.Fatalf("newFilter returned error: %v", err)
 	}
-	assertEntry(t, result.EscapedWrites, Entry{Path: "/mnt/cache", Kind: EntryKindDelete})
+	if filter.allowed(Entry{Path: "/mnt/cache", Kind: EntryKindDelete}) {
+		t.Fatal("baseline delete was allowed")
+	}
 }
 
 func TestScanRejectsEscapingOptions(t *testing.T) {
@@ -105,6 +104,17 @@ func TestScanRejectsEscapingOptions(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected relative declared file output to fail")
+	}
+}
+
+func TestScanRejectsRootIgnoredPrefix(t *testing.T) {
+	t.Parallel()
+
+	_, err := Scan(t.TempDir(), Options{
+		IgnoredPrefixes: []string{"/"},
+	})
+	if err == nil {
+		t.Fatal("expected root ignored prefix to fail")
 	}
 }
 
