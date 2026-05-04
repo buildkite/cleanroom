@@ -46,6 +46,21 @@ func TestScanReportsEscapedWrites(t *testing.T) {
 	}
 }
 
+func TestScanReportsDeclaredFileOutputDirectoryAsEscaped(t *testing.T) {
+	t.Parallel()
+
+	upperDir := t.TempDir()
+	mkdir(t, upperDir, "workspace/result.txt")
+
+	result, err := Scan(upperDir, Options{
+		DeclaredFileOutputs: []string{"/workspace/result.txt"},
+	})
+	if err != nil {
+		t.Fatalf("Scan returned error: %v", err)
+	}
+	assertEntry(t, result.EscapedWrites, Entry{Path: "/workspace/result.txt", Kind: EntryKindWrite})
+}
+
 func TestScanCanonicalizesSymlinkedUpperDir(t *testing.T) {
 	t.Parallel()
 

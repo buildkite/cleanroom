@@ -170,7 +170,7 @@ func (f filter) allowed(entry Entry) bool {
 	if _, ok := f.baseline[entry.Path]; ok && entry.Kind == EntryKindWrite && entry.Mode.IsDir() {
 		return true
 	}
-	if _, ok := f.fileOutputs[entry.Path]; ok {
+	if _, ok := f.fileOutputs[entry.Path]; ok && entry.Kind == EntryKindWrite && entry.Mode.IsRegular() {
 		return true
 	}
 	if _, ok := f.fileAncestors[entry.Path]; ok && entry.Kind == EntryKindWrite && entry.Mode.IsDir() {
