@@ -14,15 +14,15 @@ import (
 	"github.com/buildkite/cleanroom/internal/vsockexec"
 )
 
-func TestCapabilitiesAdvertiseCacheOutputVolumesWithoutOverlayCapture(t *testing.T) {
+func TestCapabilitiesAdvertiseCacheOutputVolumesWithOverlayCapture(t *testing.T) {
 	t.Parallel()
 
 	caps := (&Adapter{}).Capabilities()
 	if !caps[backend.CapabilitySandboxCacheOutputVolumes] {
 		t.Fatalf("expected %s capability", backend.CapabilitySandboxCacheOutputVolumes)
 	}
-	if caps[backend.CapabilitySandboxOverlayWriteCapture] {
-		t.Fatalf("did not expect %s capability before overlay execution is implemented", backend.CapabilitySandboxOverlayWriteCapture)
+	if !caps[backend.CapabilitySandboxOverlayWriteCapture] {
+		t.Fatalf("expected %s capability", backend.CapabilitySandboxOverlayWriteCapture)
 	}
 }
 

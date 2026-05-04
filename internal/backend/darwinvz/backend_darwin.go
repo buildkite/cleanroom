@@ -307,13 +307,14 @@ func (a *Adapter) Capabilities() map[string]bool {
 	}
 	dnsControlSupported := configuredMode == darwinVZNetworkModeFileHandle
 	return map[string]bool{
-		backend.CapabilityNetworkDefaultDeny:        true,
-		backend.CapabilityNetworkAllowlistEgress:    allowlistSupported,
-		backend.CapabilityNetworkStageScopedEgress:  allowlistSupported && dnsControlSupported,
-		backend.CapabilityDNSControlOrEquivalent:    dnsControlSupported,
-		backend.CapabilityNetworkGuestInterface:     true,
-		backend.CapabilitySandboxPortDial:           configuredMode == darwinVZNetworkModeFileHandle,
-		backend.CapabilitySandboxCacheOutputVolumes: true,
+		backend.CapabilityNetworkDefaultDeny:         true,
+		backend.CapabilityNetworkAllowlistEgress:     allowlistSupported,
+		backend.CapabilityNetworkStageScopedEgress:   allowlistSupported && dnsControlSupported,
+		backend.CapabilityDNSControlOrEquivalent:     dnsControlSupported,
+		backend.CapabilityNetworkGuestInterface:      true,
+		backend.CapabilitySandboxPortDial:            configuredMode == darwinVZNetworkModeFileHandle,
+		backend.CapabilitySandboxCacheOutputVolumes:  true,
+		backend.CapabilitySandboxOverlayWriteCapture: true,
 	}
 }
 
