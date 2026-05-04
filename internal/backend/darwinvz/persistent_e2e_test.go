@@ -272,6 +272,137 @@ func TestPersistentSandboxCacheOutputVolumeE2E(t *testing.T) {
 	}
 }
 
+func TestPersistentSandboxOverlayCaptureE2E(t *testing.T) {
+	if strings.TrimSpace(os.Getenv(darwinVZE2EEnvEnabled)) == "" {
+		t.Skipf("set %s=1 to run real darwin-vz overlay capture e2e", darwinVZE2EEnvEnabled)
+	}
+	if testing.Short() {
+		t.Skip("skipping darwin-vz e2e in short mode")
+	}
+
+	helperPath, err := resolveHelperBinaryPath()
+	if err != nil {
+		t.Fatalf("resolve helper binary: %v", err)
+	}
+	hasEntitlement, err := helperHasVirtualizationEntitlement(helperPath)
+	if err != nil {
+		t.Fatalf("verify helper entitlement: %v", err)
+	}
+	if !hasEntitlement {
+		t.Fatalf("helper %q is missing com.apple.security.virtualization entitlement", helperPath)
+	}
+	if _, _, err := New().getGuestAgentBinary(); err != nil {
+		t.Fatalf("resolve guest agent binary: %v", err)
+	}
+
+	rootFSOverride := strings.TrimSpace(os.Getenv(darwinVZE2EEnvRootFS))
+	if rootFSOverride == "" {
+		if _, err := hosttools.ResolveE2FSProgsBinary("mkfs.ext4"); err != nil {
+			t.Fatalf("resolve mkfs.ext4: %v", err)
+		}
+		if _, err := hosttools.ResolveE2FSProgsBinary("debugfs"); err != nil {
+			t.Fatalf("resolve debugfs: %v", err)
+		}
+	}
+
+	imageRef := strings.TrimSpace(os.Getenv(darwinVZE2EEnvImageRef))
+	if imageRef == "" {
+		imageRef = defaultDarwinVZE2EImageRef()
+	}
+
+	cfg := backend.FirecrackerConfig{
+		KernelImagePath: strings.TrimSpace(os.Getenv(darwinVZE2EEnvKernelImage)),
+		RootFSPath:      rootFSOverride,
+		VCPUs:           1,
+		MemoryMiB:       1024,
+		LaunchSeconds:   90,
+	}
+	compiled := &policy.CompiledPolicy{
+		Version:        1,
+		ImageRef:       imageRef,
+		NetworkDefault: "deny",
+	}
+	sandboxID := fmt.Sprintf("cr-e2e-overlay-%d", time.Now().UnixNano())
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	outputDir := "/var/lib/cleanroom-overlay-output-e2e"
+	declaredFile := "/root/cleanroom-overlay-file-e2e.txt"
+	escapedFile := fmt.Sprintf("/etc/%s-escaped", sandboxID)
+	adapter := New()
+	if err := adapter.ProvisionSandbox(ctx, backend.ProvisionRequest{
+		SandboxID: sandboxID,
+		Policy:    compiled,
+		CacheOutputVolumes: []backend.CacheOutputVolumeSpec{
+			{
+				Stage:     "dependency-volume",
+				BlockName: "overlay-e2e",
+				CacheKey:  "dependency-volume:v1:overlay-e2e",
+				VolumeID:  "dependency-volume-overlay-e2e",
+				DirMappings: []backend.CacheOutputDirMapping{
+					{GuestPath: outputDir, Subpath: "dirs/0"},
+				},
+				FileMappings: []backend.CacheOutputFileMapping{
+					{GuestPath: declaredFile, Subpath: "files/declared.txt", Mode: 0o644},
+				},
+			},
+		},
+		FirecrackerConfig: cfg,
+	}); err != nil {
+		t.Fatalf("ProvisionSandbox returned error: %v", err)
+	}
+	defer func() {
+		if err := adapter.TerminateSandbox(context.Background(), sandboxID); err != nil {
+			t.Fatalf("deferred TerminateSandbox returned error: %v", err)
+		}
+	}()
+
+	result, err := adapter.RunInSandbox(ctx, backend.ExecutionRequest{
+		SandboxID:   sandboxID,
+		ExecutionID: "overlay-capture",
+		Command: []string{
+			"sh",
+			"-lc",
+			fmt.Sprintf("printf dir-output > %s/value; printf file-output > %s; printf escaped > %s", outputDir, declaredFile, escapedFile),
+		},
+		Policy: compiled,
+		CacheOutputFileCaptures: []backend.CacheOutputFileCapture{
+			{VolumeID: "dependency-volume-overlay-e2e", GuestPath: declaredFile, VolumeSubpath: "files/declared.txt", Mode: 0o644},
+		},
+		OverlayCapture: &backend.OverlayCapture{
+			UpperDir:            fmt.Sprintf("/run/cleanroom/overlay-captures/%s/upper", sandboxID),
+			BaselinePaths:       []string{outputDir},
+			DeclaredFileOutputs: []string{declaredFile},
+			IgnoredPrefixes:     []string{"/tmp", "/var/tmp", "/run"},
+		},
+		FirecrackerConfig: cfg,
+	}, backend.OutputStream{})
+	if err != nil {
+		t.Fatalf("overlay RunInSandbox returned error: %v", err)
+	}
+	if result.ExitCode != 0 {
+		t.Fatalf("overlay exit code = %d, want 0: %s", result.ExitCode, result.Message)
+	}
+	if result.OverlayCapture == nil {
+		t.Fatal("expected overlay capture result")
+	}
+	requireOverlayCaptureEntry(t, result.OverlayCapture.Entries, backend.OverlayCaptureEntry{Path: declaredFile, Kind: "write", Mode: 0o644})
+	requireNoOverlayCapturePath(t, result.OverlayCapture.EscapedWrites, declaredFile)
+	requireOverlayCaptureEntry(t, result.OverlayCapture.EscapedWrites, backend.OverlayCaptureEntry{Path: escapedFile, Kind: "write", Mode: 0o644})
+
+	var stdout bytes.Buffer
+	runPersistentCommand(ctx, t, adapter, sandboxID, compiled, cfg, "overlay-read-dir", &stdout, "sh", "-lc", "cat "+outputDir+"/value")
+	if got, want := stdout.String(), "dir-output"; got != want {
+		t.Fatalf("unexpected cache output dir contents: got %q want %q", got, want)
+	}
+	stdout.Reset()
+	runPersistentCommand(ctx, t, adapter, sandboxID, compiled, cfg, "overlay-read-file", &stdout, "sh", "-lc", "cat "+declaredFile)
+	if got, want := stdout.String(), "file-output"; got != want {
+		t.Fatalf("unexpected captured file contents: got %q want %q", got, want)
+	}
+	runPersistentCommand(ctx, t, adapter, sandboxID, compiled, cfg, "overlay-escaped-absent", nil, "test", "!", "-e", escapedFile)
+}
+
 func runPersistentCommand(ctx context.Context, t *testing.T, adapter *Adapter, sandboxID string, compiled *policy.CompiledPolicy, cfg backend.FirecrackerConfig, executionID string, stdout *bytes.Buffer, command ...string) {
 	t.Helper()
 
@@ -293,6 +424,25 @@ func runPersistentCommand(ctx context.Context, t *testing.T, adapter *Adapter, s
 	}
 	if result.ExitCode != 0 {
 		t.Fatalf("%s exit code = %d, want 0", executionID, result.ExitCode)
+	}
+}
+
+func requireOverlayCaptureEntry(t *testing.T, entries []backend.OverlayCaptureEntry, want backend.OverlayCaptureEntry) {
+	t.Helper()
+	for _, got := range entries {
+		if got.Path == want.Path && got.Kind == want.Kind && got.Mode.Perm() == want.Mode.Perm() {
+			return
+		}
+	}
+	t.Fatalf("missing overlay capture entry %#v in %#v", want, entries)
+}
+
+func requireNoOverlayCapturePath(t *testing.T, entries []backend.OverlayCaptureEntry, path string) {
+	t.Helper()
+	for _, got := range entries {
+		if got.Path == path {
+			t.Fatalf("unexpected overlay capture entry for %s in %#v", path, entries)
+		}
 	}
 }
 
