@@ -31,6 +31,7 @@ type persistentSandboxCommandOptions struct {
 	ClosedEnv               bool
 	InputProjection         *backend.InputProjection
 	CacheOutputFileCaptures []backend.CacheOutputFileCapture
+	OverlayCapture          *backend.OverlayCapture
 }
 
 func (s *Service) runPersistentSandboxCommandWithOptions(
@@ -55,10 +56,23 @@ func (s *Service) runPersistentSandboxCommandWithOptions(
 		ClosedEnv:               opts.ClosedEnv,
 		InputProjection:         cloneInputProjection(opts.InputProjection),
 		CacheOutputFileCaptures: cloneCacheOutputFileCaptures(opts.CacheOutputFileCaptures),
+		OverlayCapture:          cloneOverlayCapture(opts.OverlayCapture),
 		Policy:                  compiled,
 		NetworkStage:            networkStage,
 		FirecrackerConfig:       withRunDir(firecrackerCfg, internalBootstrapArtifactsDir(sandboxID, executionID)),
 	}, stream)
+}
+
+func cloneOverlayCapture(capture *backend.OverlayCapture) *backend.OverlayCapture {
+	if capture == nil {
+		return nil
+	}
+	return &backend.OverlayCapture{
+		UpperDir:            capture.UpperDir,
+		BaselinePaths:       append([]string(nil), capture.BaselinePaths...),
+		DeclaredFileOutputs: append([]string(nil), capture.DeclaredFileOutputs...),
+		IgnoredPrefixes:     append([]string(nil), capture.IgnoredPrefixes...),
+	}
 }
 
 func cloneCacheOutputFileCaptures(captures []backend.CacheOutputFileCapture) []backend.CacheOutputFileCapture {
