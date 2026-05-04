@@ -849,16 +849,17 @@ func TestBootstrapDependencyBlockVolumePlanStopsPublishingAfterEscapedWrites(t *
 				Inputs:    append([]string(nil), compiled.Dependencies.Blocks[1].Inputs.Files...),
 				Outputs:   compiled.Dependencies.Blocks[1].Outputs,
 				CacheKey:  "dependency-volume:go-modules",
+				CacheHit:  true,
 			},
 		},
 	}
 
-	runCalls := 0
+	var gotReqs []backend.ExecutionRequest
 	adapter := &stubAdapter{
 		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
-			runCalls++
+			gotReqs = append(gotReqs, req)
 			result := &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0}
-			if runCalls == 1 {
+			if len(gotReqs) == 1 {
 				result.OverlayCapture = &backend.OverlayCaptureResult{
 					EscapedWrites: []backend.OverlayCaptureEntry{{Path: "/etc/profile", Kind: "write", Mode: 0o644}},
 				}
@@ -891,14 +892,71 @@ func TestBootstrapDependencyBlockVolumePlanStopsPublishingAfterEscapedWrites(t *
 	if publishable {
 		t.Fatal("expected dependency block volume plan to stop being publishable")
 	}
-	if got, want := runCalls, 2; got != want {
+	if got, want := len(gotReqs), 5; got != want {
 		t.Fatalf("unexpected run count: got %d want %d", got, want)
 	}
+	if gotReqs[0].OverlayCapture == nil {
+		t.Fatal("expected first dependency block attempt to use overlay capture")
+	}
+	assertBlockVolumeResetRequest(t, gotReqs[1], policy.NetworkStageDependencies)
+	assertBlockVolumeFallbackRequest(t, gotReqs[2], compiled.Dependencies.Blocks[0].Command, policy.NetworkStageDependencies)
+	assertBlockVolumeResetRequest(t, gotReqs[3], policy.NetworkStageDependencies)
+	assertBlockVolumeFallbackRequest(t, gotReqs[4], compiled.Dependencies.Blocks[1].Command, policy.NetworkStageDependencies)
 	if got := adapter.snapshotCacheOutputsCalls; got != 0 {
 		t.Fatalf("unexpected cache output snapshot calls: got %d", got)
 	}
 	if len(warnings) != 1 || !strings.Contains(warnings[0], "/etc/profile") {
 		t.Fatalf("expected escaped-write warning, got %v", warnings)
+	}
+}
+
+func assertBlockVolumeResetRequest(t *testing.T, req backend.ExecutionRequest, networkStage policy.NetworkStage) {
+	t.Helper()
+	if got, want := req.NetworkStage, networkStage; got != want {
+		t.Fatalf("unexpected reset network stage: got %q want %q", got, want)
+	}
+	if got, want := strings.Join(req.Command[:min(len(req.Command), 2)], "\x00"), "sh\x00-lc"; got != want {
+		t.Fatalf("unexpected reset command prefix: got %v want sh -lc", req.Command)
+	}
+	if len(req.Command) < 3 || !strings.Contains(req.Command[2], "rm -rf --") {
+		t.Fatalf("expected reset command to remove output contents, got %v", req.Command)
+	}
+	if !req.ClosedEnv {
+		t.Fatal("expected reset request to use a closed environment")
+	}
+	if req.InputProjection != nil {
+		t.Fatalf("reset request should not use input projection: %#v", req.InputProjection)
+	}
+	if len(req.CacheOutputFileCaptures) != 0 {
+		t.Fatalf("reset request should not capture output files: %#v", req.CacheOutputFileCaptures)
+	}
+	if req.OverlayCapture != nil {
+		t.Fatalf("reset request should not use overlay capture: %#v", req.OverlayCapture)
+	}
+}
+
+func assertBlockVolumeFallbackRequest(t *testing.T, req backend.ExecutionRequest, command []string, networkStage policy.NetworkStage) {
+	t.Helper()
+	if got, want := strings.Join(req.Command, "\x00"), strings.Join(command, "\x00"); got != want {
+		t.Fatalf("unexpected fallback command: got %q want %q", got, want)
+	}
+	if got, want := req.NetworkStage, networkStage; got != want {
+		t.Fatalf("unexpected fallback network stage: got %q want %q", got, want)
+	}
+	if got, want := req.Dir, "/workspace"; got != want {
+		t.Fatalf("unexpected fallback dir: got %q want %q", got, want)
+	}
+	if !req.ClosedEnv {
+		t.Fatal("expected fallback request to use a closed environment")
+	}
+	if req.InputProjection != nil {
+		t.Fatalf("fallback request should not use input projection: %#v", req.InputProjection)
+	}
+	if len(req.CacheOutputFileCaptures) != 0 {
+		t.Fatalf("fallback request should not capture output files: %#v", req.CacheOutputFileCaptures)
+	}
+	if req.OverlayCapture != nil {
+		t.Fatalf("fallback request should not use overlay capture: %#v", req.OverlayCapture)
 	}
 }
 

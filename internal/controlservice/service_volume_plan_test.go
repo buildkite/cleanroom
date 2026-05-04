@@ -1021,16 +1021,17 @@ func TestBootstrapServiceBlockVolumePlanStopsPublishingAfterEscapedWrites(t *tes
 				Inputs:    append([]string(nil), compiled.Services.Blocks[1].Inputs.Files...),
 				Outputs:   compiled.Services.Blocks[1].Outputs,
 				CacheKey:  "service-volume:app-service",
+				CacheHit:  true,
 			},
 		},
 	}
 
-	runCalls := 0
+	var gotReqs []backend.ExecutionRequest
 	adapter := &stubAdapter{
 		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
-			runCalls++
+			gotReqs = append(gotReqs, req)
 			result := &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0}
-			if runCalls == 1 {
+			if len(gotReqs) == 1 {
 				result.OverlayCapture = &backend.OverlayCaptureResult{
 					EscapedWrites: []backend.OverlayCaptureEntry{{Path: "/usr/local/bin/tool", Kind: "write", Mode: 0o755}},
 				}
@@ -1063,14 +1064,90 @@ func TestBootstrapServiceBlockVolumePlanStopsPublishingAfterEscapedWrites(t *tes
 	if publishable {
 		t.Fatal("expected service block volume plan to stop being publishable")
 	}
-	if got, want := runCalls, 2; got != want {
+	if got, want := len(gotReqs), 5; got != want {
 		t.Fatalf("unexpected run count: got %d want %d", got, want)
 	}
+	if gotReqs[0].OverlayCapture == nil {
+		t.Fatal("expected first service block attempt to use overlay capture")
+	}
+	assertBlockVolumeResetRequest(t, gotReqs[1], policy.NetworkStageServices)
+	assertBlockVolumeFallbackRequest(t, gotReqs[2], compiled.Services.Blocks[0].Command, policy.NetworkStageServices)
+	assertBlockVolumeResetRequest(t, gotReqs[3], policy.NetworkStageServices)
+	assertBlockVolumeFallbackRequest(t, gotReqs[4], compiled.Services.Blocks[1].Command, policy.NetworkStageServices)
 	if got := adapter.snapshotCacheOutputsCalls; got != 0 {
 		t.Fatalf("unexpected cache output snapshot calls: got %d", got)
 	}
 	if len(warnings) != 1 || !strings.Contains(warnings[0], "/usr/local/bin/tool") {
 		t.Fatalf("expected escaped-write warning, got %v", warnings)
+	}
+}
+
+func TestBootstrapServiceBlockVolumePlanForceExactFallbackIgnoresCacheHits(t *testing.T) {
+	compiled, err := policy.FromProto(testRepositoryTwoDependencyTwoServiceBlocksPolicy())
+	if err != nil {
+		t.Fatalf("policy.FromProto returned error: %v", err)
+	}
+	repository := repositorycheckout.FromProto(testRepositoryCheckoutProto())
+	plan := serviceBlockVolumePlan{
+		Blocks: []serviceBlockVolumeBlockPlan{
+			{
+				BlockName: "postgres-data",
+				Command:   append([]string(nil), compiled.Services.Blocks[0].Command...),
+				Env:       cloneDependencyBlockEnv(compiled.Services.Blocks[0].Env),
+				Inputs:    append([]string(nil), compiled.Services.Blocks[0].Inputs.Files...),
+				Outputs:   compiled.Services.Blocks[0].Outputs,
+				CacheKey:  "service-volume:postgres-data",
+				CacheHit:  true,
+			},
+			{
+				BlockName: "app-service",
+				Command:   append([]string(nil), compiled.Services.Blocks[1].Command...),
+				Env:       cloneDependencyBlockEnv(compiled.Services.Blocks[1].Env),
+				Inputs:    append([]string(nil), compiled.Services.Blocks[1].Inputs.Files...),
+				Outputs:   compiled.Services.Blocks[1].Outputs,
+				CacheKey:  "service-volume:app-service",
+			},
+		},
+	}
+
+	var gotReqs []backend.ExecutionRequest
+	adapter := &stubAdapter{
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
+			gotReqs = append(gotReqs, req)
+			return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0}, nil
+		},
+		snapshotCacheOutputsFn: func(context.Context, backend.SnapshotCacheOutputVolumesRequest) (*backend.SnapshotCacheOutputVolumesResult, error) {
+			t.Fatal("did not expect service block-volume snapshot during forced fallback")
+			return nil, nil
+		},
+	}
+	svc := newTestService(adapter)
+	publishable, err := svc.bootstrapServiceBlockVolumePlanInPersistentSandbox(
+		context.Background(),
+		adapter,
+		"cr-test",
+		serviceBlockVolumePublishConfig{ForceExactFallback: true},
+		compiled,
+		backend.FirecrackerConfig{},
+		repository,
+		plan,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("bootstrapServiceBlockVolumePlanInPersistentSandbox returned error: %v", err)
+	}
+	if publishable {
+		t.Fatal("expected forced fallback to remain unpublishable")
+	}
+	if got, want := len(gotReqs), 4; got != want {
+		t.Fatalf("unexpected run count: got %d want %d", got, want)
+	}
+	assertBlockVolumeResetRequest(t, gotReqs[0], policy.NetworkStageServices)
+	assertBlockVolumeFallbackRequest(t, gotReqs[1], compiled.Services.Blocks[0].Command, policy.NetworkStageServices)
+	assertBlockVolumeResetRequest(t, gotReqs[2], policy.NetworkStageServices)
+	assertBlockVolumeFallbackRequest(t, gotReqs[3], compiled.Services.Blocks[1].Command, policy.NetworkStageServices)
+	if got := adapter.snapshotCacheOutputsCalls; got != 0 {
+		t.Fatalf("unexpected cache output snapshot calls: got %d", got)
 	}
 }
 

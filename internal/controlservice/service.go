@@ -885,6 +885,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 					}
 					if !dependencyBlockVolumePublicationSafe {
 						publishConfig.Adapter = nil
+						publishConfig.ForceExactFallback = true
 					}
 					_, err := s.bootstrapServiceBlockVolumePlanInPersistentSandbox(ctx, adapter, sandboxID, publishConfig, compiled, firecrackerCfg, repository, serviceBlockVolumePlan, reporter)
 					return err
@@ -970,6 +971,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 					}
 					if !dependencyBlockVolumePublicationSafe {
 						publishConfig.Adapter = nil
+						publishConfig.ForceExactFallback = true
 					}
 					_, err := s.bootstrapServiceBlockVolumePlanInPersistentSandbox(ctx, adapter, sandboxID, publishConfig, compiled, firecrackerCfg, repository, serviceBlockVolumePlan, reporter)
 					return err
@@ -1182,6 +1184,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 				}
 				if !dependencyBlockVolumePublicationSafe {
 					publishConfig.Adapter = nil
+					publishConfig.ForceExactFallback = true
 				}
 				_, err := s.bootstrapServiceBlockVolumePlanInPersistentSandbox(ctx, adapter, sandboxID, publishConfig, compiled, firecrackerCfg, repository, serviceBlockVolumePlan, reporter)
 				return err
