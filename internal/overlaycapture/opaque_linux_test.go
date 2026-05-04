@@ -33,6 +33,6 @@ func TestScanReportsOverlayWhiteoutXattrAsDelete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Scan returned error: %v", err)
 	}
-	assertEntry(t, result.Entries, Entry{Path: "/workspace/cache", Kind: EntryKindDelete})
-	assertEntry(t, result.EscapedWrites, Entry{Path: "/workspace/cache", Kind: EntryKindDelete})
+	assertEntry(t, result.Entries, Entry{Path: "/workspace/.wh.cache", Kind: EntryKindDelete})
+	assertEntry(t, result.EscapedWrites, Entry{Path: "/workspace/.wh.cache", Kind: EntryKindDelete})
 }

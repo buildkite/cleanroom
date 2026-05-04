@@ -87,9 +87,6 @@ func Scan(upperDir string, opts Options) (Result, error) {
 		entry := Entry{Path: guestPath, Kind: EntryKindWrite, Mode: info.Mode()}
 		if overlayEntryIsWhiteout(current, info) {
 			entry.Kind = EntryKindDelete
-			if target, ok := whiteoutPath(rel); ok {
-				entry.Path = target
-			}
 		} else if dirent.IsDir() && overlayDirIsOpaque(current) {
 			entry.Kind = EntryKindOpaqueDir
 		}
@@ -200,22 +197,6 @@ func upperdirRelGuestPath(rel string) string {
 		return "/"
 	}
 	return path.Clean("/" + rel)
-}
-
-func whiteoutPath(rel string) (string, bool) {
-	name := filepath.Base(rel)
-	if name == ".wh..wh..opq" || !strings.HasPrefix(name, ".wh.") {
-		return "", false
-	}
-	target := strings.TrimPrefix(name, ".wh.")
-	if target == "" {
-		return "", false
-	}
-	parent := filepath.Dir(rel)
-	if parent == "." {
-		return "/" + target, true
-	}
-	return upperdirRelGuestPath(filepath.Join(parent, target)), true
 }
 
 func sortEntries(entries []Entry) {
