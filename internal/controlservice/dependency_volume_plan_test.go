@@ -400,6 +400,168 @@ func TestCreateSandboxLooksUpDependencyBlockVolumeCaches(t *testing.T) {
 	}
 }
 
+func TestCreateSandboxPublishesDependencyBlockVolumeCachesForMisses(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	adapter := dependencyBlockVolumeRuntimeAdapter()
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"mise.toml": "go = \"1.26.2\"\n",
+		"go.mod":    "module example.com/test\n\ngo 1.26.2\n",
+		"go.sum":    "example.com/test v0.0.0 h1:abc123\n",
+	})
+	svc := newTestService(adapter)
+	svc.RepositoryStore = mirrors
+
+	compiled, err := policy.FromProto(testRepositoryTwoDependencyBlocksPolicy())
+	if err != nil {
+		t.Fatalf("FromProto returned error: %v", err)
+	}
+	repository := repositorycheckout.FromProto(repositoryCheckout)
+	plan, ok, err := svc.finalizeDependencyBlockVolumePlan(context.Background(), compiled, repository, nil, nil, "firecracker", "runtime-base:test")
+	if err != nil {
+		t.Fatalf("finalizeDependencyBlockVolumePlan returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected dependency block-volume plan")
+	}
+	blockByVolumeID := make(map[string]dependencyBlockVolumeBlockPlan, len(plan.Blocks))
+	wantVolumeIDs := make([]string, 0, len(plan.Blocks))
+	for _, block := range plan.Blocks {
+		volumeID := blockVolumeID(dependencyVolumeStageName, block.CacheKey)
+		blockByVolumeID[volumeID] = block
+		wantVolumeIDs = append(wantVolumeIDs, volumeID)
+	}
+	gotSnapshotVolumeIDs := make([]string, 0, len(plan.Blocks))
+
+	adapter.snapshotCacheOutputsFn = func(_ context.Context, req backend.SnapshotCacheOutputVolumesRequest) (*backend.SnapshotCacheOutputVolumesResult, error) {
+		if got, want := req.SandboxID, adapter.provisionReq.SandboxID; got != want {
+			t.Fatalf("unexpected snapshot sandbox id: got %q want %q", got, want)
+		}
+		if strings.TrimSpace(req.SnapshotIDPrefix) == "" {
+			t.Fatal("expected snapshot id prefix")
+		}
+		if got, want := len(req.VolumeIDs), 1; got != want {
+			t.Fatalf("unexpected snapshot volume id count: got %d want %d (%v)", got, want, req.VolumeIDs)
+		}
+		volumeID := req.VolumeIDs[0]
+		gotSnapshotVolumeIDs = append(gotSnapshotVolumeIDs, volumeID)
+		block, ok := blockByVolumeID[volumeID]
+		if !ok {
+			t.Fatalf("unexpected snapshot volume id %q", volumeID)
+		}
+		return &backend.SnapshotCacheOutputVolumesResult{Volumes: []backend.CacheOutputVolumeSnapshot{
+			{
+				Stage:              dependencyVolumeStageName,
+				BlockName:          block.BlockName,
+				CacheKey:           block.CacheKey,
+				VolumeID:           volumeID,
+				SnapshotID:         req.SnapshotIDPrefix + "-" + block.BlockName,
+				StorageDriver:      "file",
+				StorageRef:         "/snapshots/" + block.BlockName + ".ext4",
+				SnapshotRef:        "snapshot:" + block.BlockName,
+				StorageSizeBytes:   100,
+				ExclusiveSizeBytes: 10,
+				DriverMetadata:     "metadata:" + block.BlockName,
+				Outputs: []backend.CacheOutputVolumeSnapshotOutput{
+					{
+						Kind:          "dir",
+						GuestPath:     block.Outputs.Dirs[0],
+						VolumeSubpath: "dir/0",
+					},
+				},
+			},
+		}}, nil
+	}
+
+	if _, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy:             testRepositoryTwoDependencyBlocksPolicy(),
+		RepositoryCheckout: repositoryCheckout,
+	}); err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	if got, want := adapter.snapshotCacheOutputsCalls, len(plan.Blocks); got != want {
+		t.Fatalf("unexpected cache output snapshot calls: got %d want %d", got, want)
+	}
+	if !slices.Equal(gotSnapshotVolumeIDs, wantVolumeIDs) {
+		t.Fatalf("unexpected snapshot volume ids: got %v want %v", gotSnapshotVolumeIDs, wantVolumeIDs)
+	}
+	if got, want := adapter.runCalls, 1+len(plan.Blocks); got != want {
+		t.Fatalf("expected repository plus dependency block miss executions, got %d want %d", got, want)
+	}
+
+	cacheStore, ok := svc.CacheStore.(*memoryCacheStore)
+	if !ok {
+		t.Fatalf("expected memory cache store, got %T", svc.CacheStore)
+	}
+	records, err := cacheStore.List(context.Background())
+	if err != nil {
+		t.Fatalf("List returned error: %v", err)
+	}
+	recordsByKey := make(map[string]cachestore.Record)
+	for _, record := range records {
+		if record.Stage == dependencyVolumeStageName {
+			recordsByKey[record.CacheKey] = record
+		}
+	}
+	if got, want := len(recordsByKey), len(plan.Blocks); got != want {
+		t.Fatalf("unexpected dependency block-volume record count: got %d want %d", got, want)
+	}
+	for _, block := range plan.Blocks {
+		record, ok := recordsByKey[block.CacheKey]
+		if !ok {
+			t.Fatalf("missing dependency block-volume record for %q", block.BlockName)
+		}
+		if got := record.BackingSnapshotID; strings.TrimSpace(got) == "" || !strings.HasSuffix(got, "-"+block.BlockName) {
+			t.Fatalf("expected generated backing snapshot id for %s, got %q", block.BlockName, got)
+		}
+		if got, want := record.Backend, "firecracker"; got != want {
+			t.Fatalf("unexpected backend: got %q want %q", got, want)
+		}
+		if got, want := record.PolicyHash, compiled.Hash; got != want {
+			t.Fatalf("unexpected policy hash: got %q want %q", got, want)
+		}
+		if got, want := record.InputManifestDigest, block.InputManifestDigest; got != want {
+			t.Fatalf("unexpected input digest for %s: got %q want %q", block.BlockName, got, want)
+		}
+		if got, want := record.CommandDigest, block.CommandDigest; got != want {
+			t.Fatalf("unexpected command digest for %s: got %q want %q", block.BlockName, got, want)
+		}
+		if got, want := record.EnvDigest, block.EnvDigest; got != want {
+			t.Fatalf("unexpected env digest for %s: got %q want %q", block.BlockName, got, want)
+		}
+		if got, want := record.NormalizedOutputsDigest, block.NormalizedOutputsDigest; got != want {
+			t.Fatalf("unexpected outputs digest for %s: got %q want %q", block.BlockName, got, want)
+		}
+		if got, want := record.ProducerVersion, block.ProducerVersion; got != want {
+			t.Fatalf("unexpected producer version for %s: got %q want %q", block.BlockName, got, want)
+		}
+		if got, want := record.StorageRef, "/snapshots/"+block.BlockName+".ext4"; got != want {
+			t.Fatalf("unexpected storage ref for %s: got %q want %q", block.BlockName, got, want)
+		}
+		if got, want := record.StorageDriver, "file"; got != want {
+			t.Fatalf("unexpected storage driver for %s: got %q want %q", block.BlockName, got, want)
+		}
+		if got, want := len(record.OutputRecords), 1; got != want {
+			t.Fatalf("unexpected output record count for %s: got %d want %d", block.BlockName, got, want)
+		}
+		output := record.OutputRecords[0]
+		if got, want := output.Kind, "dir"; got != want {
+			t.Fatalf("unexpected output kind for %s: got %q want %q", block.BlockName, got, want)
+		}
+		if got, want := output.Path, block.Outputs.Dirs[0]; got != want {
+			t.Fatalf("unexpected output path for %s: got %q want %q", block.BlockName, got, want)
+		}
+		if got, want := output.VolumeSubpath, "dir/0"; got != want {
+			t.Fatalf("unexpected output subpath for %s: got %q want %q", block.BlockName, got, want)
+		}
+		if got, want := output.StorageRef, record.StorageRef; got != want {
+			t.Fatalf("unexpected output storage ref for %s: got %q want %q", block.BlockName, got, want)
+		}
+		if got, want := output.SnapshotRef, "snapshot:"+block.BlockName; got != want {
+			t.Fatalf("unexpected output snapshot ref for %s: got %q want %q", block.BlockName, got, want)
+		}
+	}
+}
+
 func TestDependencyBlockVolumeRuntimeDecisionRequiresOutputVolumesAndOverlay(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -483,6 +645,7 @@ func TestBootstrapDependencyBlockVolumePlanRunsMissesFromInputProjection(t *test
 		context.Background(),
 		adapter,
 		"cr-test",
+		dependencyBlockVolumePublishConfig{},
 		compiled,
 		backend.FirecrackerConfig{},
 		repository,

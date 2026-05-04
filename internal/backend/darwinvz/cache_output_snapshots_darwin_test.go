@@ -92,6 +92,9 @@ func TestSnapshotCacheOutputVolumesSyncsPausesAndSnapshotsSelectedVolumes(t *tes
 	if got, want := snapshot.StorageRef, wantStorageRef; got != want {
 		t.Fatalf("unexpected storage ref: got %q want %q", got, want)
 	}
+	if got, want := snapshot.SnapshotID, snapshotID; got != want {
+		t.Fatalf("unexpected snapshot id: got %q want %q", got, want)
+	}
 	if got, want := snapshot.SnapshotRef, wantStorageRef; got != want {
 		t.Fatalf("unexpected snapshot ref: got %q want %q", got, want)
 	}

@@ -418,6 +418,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	var restoredWorkspaceResp *cleanroomv1.CreateSandboxResponse
 	var restoredDependencyResp *cleanroomv1.CreateSandboxResponse
 	snapshotAdapter, snapshotCapable := adapter.(backend.SnapshottingAdapter)
+	cacheOutputSnapshotAdapter, _ := adapter.(backend.CacheOutputVolumeSnapshottingAdapter)
 	if repository != nil {
 		dependencyStagePlan, dependencyStageBootstrapEnabled = dependencyStagePlanForRepository(compiled, repository)
 		servicesStagePlan, servicesStageBootstrapEnabled = servicesStagePlanForRepository(compiled, repository)
@@ -910,7 +911,12 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 			emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_BOOTSTRAP_DEPENDENCIES, "running dependency bootstrap")
 			if err := s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.bootstrap_dependencies", bootstrapAttrs, func(ctx context.Context) error {
 				if dependencyBlockVolumePlanAvailable {
-					return s.bootstrapDependencyBlockVolumePlanInPersistentSandbox(ctx, adapter, sandboxID, compiled, firecrackerCfg, repository, dependencyBlockVolumePlan, reporter)
+					return s.bootstrapDependencyBlockVolumePlanInPersistentSandbox(ctx, adapter, sandboxID, dependencyBlockVolumePublishConfig{
+						Adapter:    cacheOutputSnapshotAdapter,
+						Backend:    backendName,
+						Changeset:  changeset,
+						Repository: repository,
+					}, compiled, firecrackerCfg, repository, dependencyBlockVolumePlan, reporter)
 				}
 				return s.bootstrapDependencyStageInPersistentSandbox(ctx, adapter, sandboxID, compiled, firecrackerCfg, dependencyStagePlan, reporter)
 			}); err != nil {
@@ -1090,7 +1096,12 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 		emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_BOOTSTRAP_DEPENDENCIES, "running dependency bootstrap")
 		if err := s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.bootstrap_dependencies", bootstrapAttrs, func(ctx context.Context) error {
 			if dependencyBlockVolumePlanAvailable {
-				return s.bootstrapDependencyBlockVolumePlanInPersistentSandbox(ctx, adapter, sandboxID, compiled, firecrackerCfg, repository, dependencyBlockVolumePlan, reporter)
+				return s.bootstrapDependencyBlockVolumePlanInPersistentSandbox(ctx, adapter, sandboxID, dependencyBlockVolumePublishConfig{
+					Adapter:    cacheOutputSnapshotAdapter,
+					Backend:    backendName,
+					Changeset:  changeset,
+					Repository: repository,
+				}, compiled, firecrackerCfg, repository, dependencyBlockVolumePlan, reporter)
 			}
 			return s.bootstrapDependencyStageInPersistentSandbox(ctx, adapter, sandboxID, compiled, firecrackerCfg, dependencyStagePlan, reporter)
 		}); err != nil {
