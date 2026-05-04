@@ -1,8 +1,8 @@
 # Dependency and Service Volume Cache Plan
 
 **Spec reference:** `spec.md` sections 5.1.1, 5.2, 6.4
-**Status:** Proposed
-**Last reviewed:** 2026-05-03
+**Status:** Ready for initial Firecracker and darwin-vz release
+**Last reviewed:** 2026-05-04
 
 ## Summary
 
@@ -14,6 +14,34 @@ the right fallback for exact workspace reuse, but it makes portable dependency
 reuse awkward because dependency outputs can be wiped by repository refresh. The
 target model here is different: declared input files produce declared output
 directories and files, and Cleanroom backs those outputs with cacheable storage.
+
+## Release Readiness Snapshot
+
+The initial Firecracker and darwin-vz implementation is now in place for
+dependency and service block-volume caches:
+
+- policy, proto, cache-key, metadata, and backend request contracts are wired
+- Firecracker and darwin-vz prepare sidecar output volumes before VM launch,
+  mount declared directory outputs in the guest, restore file outputs on hits,
+  and snapshot output volumes after misses
+- dependency and service misses run from isolated declared-input projections
+  with closed environments
+- overlay write capture isolates persistent writes, allows declared file and
+  directory outputs, and reports escaped writes
+- escaped writes warn, skip file-keyed publication, reset declared outputs, and
+  rerun the block through the exact full-rootfs path before later phases
+  continue
+- Firecracker and darwin-vz advertise both `sandbox.cache_output_volumes` and
+  `sandbox.overlay_write_capture`
+- control-service coverage proves a source-only commit reuses dependency and
+  service output volumes without rerunning the block commands
+- opt-in managed-VM E2Es cover Firecracker ZFS and darwin-vz overlay capture
+  with cache output volumes
+
+Remaining work is release hardening rather than core enablement: run more
+real-workload smoke tests, decide whether output volume sizing needs a
+policy-visible control, and revisit escaped writes becoming hard failures once
+users have had time to migrate declarations.
 
 ## Problem
 
@@ -309,22 +337,26 @@ root after the overlay run. Ancestor directories created only to reach declared
 file outputs are also allowed. Any other persistent upperdir entry is an escaped
 write.
 
-If escaped writes are found, the first implementation should warn, skip
-file-keyed cache publication, restart from the pre-block state, and rerun the
-block through the exact full-rootfs path. It must not discard the upperdir and
-continue as if the block succeeded normally, because later commands would see a
-sandbox that differs from the command's real effects.
+If escaped writes are found, the initial implementation warns, skips file-keyed
+cache publication, resets declared outputs, and reruns the block through the
+exact full-rootfs path before later phases continue. Escaped writes remain
+isolated in the overlay upperdir, so the fallback starts from the original rootfs
+view plus reset declared outputs rather than applying the partial overlay result.
+It must not discard the upperdir and continue as if the block succeeded normally,
+because later commands would see a sandbox that differs from the command's real
+effects.
 
 Once the feature is stable, escaped writes should become hard failures for
-cacheable blocks. The first slice uses exact fallback to keep existing workflows
-moving while users learn the declaration contract.
+cacheable blocks. The initial implementation uses exact fallback to keep
+existing workflows moving while users learn the declaration contract.
 
 A local `darwin-vz` experiment on 2026-05-02 validated the basic guest
 mechanism: the managed Linux guest exposes overlayfs, root commands can mount an
 overlay with `/` as the lowerdir, writes and whiteout deletes appear in the
 upperdir, and bind-mounted declared output directories do not appear in the
-upperdir except for setup-created mountpoints. That proves the mechanism is
-viable, but not that every backend can attach reusable output volumes yet.
+upperdir except for setup-created mountpoints. Later managed-VM E2Es exercised
+the same overlay-capture and cache-output-volume path through darwin-vz and
+Firecracker.
 
 ## Cache Keys
 
@@ -489,33 +521,28 @@ metadata for the control service to persist cache records and clean up failed
 attempts. File mappings are used by the guest runner to extract and restore
 individual file outputs from the aggregate output store.
 
-Firecracker is the first target. It already has a volume-store abstraction in
+Firecracker was the first target. It already had a volume-store abstraction in
 `internal/volumestore/store.go` and ZFS-backed clone support in
-`internal/backend/firecracker/backend.go`. The first Firecracker slice can
-extend the launch drives list with one additional block device per aggregate
-output volume, then run guest-side mount or bind setup before the
-dependency/service command. It should also add the guest overlay write-capture
-runner for missed cacheable blocks. Firecracker hotplug is out of scope for the
-first slice.
+`internal/backend/firecracker/backend.go`. The implementation now extends the
+launch drives list with one additional block device per aggregate output
+volume, runs guest-side mount or bind setup before dependency/service commands,
+and uses the guest overlay write-capture runner for missed cacheable blocks.
+Firecracker hotplug remains out of scope for the initial release.
 
-Darwin-VZ now reports `sandbox.cache_output_volumes` after gaining launch-time
-sidecar disk attachment and guest mount-plan forwarding. Its block-volume path
-uses the same ext4 aggregate output volume shape as Firecracker, but with
-Virtualization.framework storage devices attached by the macOS helper before VM
-start. It still does not report `sandbox.overlay_write_capture`; the local
-experiment showed the guest kernel and root execution environment are capable of
-the basic overlayfs operations, but escaped-write detection and publish gating
-must be wired through before the full block-volume runtime path can be enabled.
+Darwin-VZ reports `sandbox.cache_output_volumes` and
+`sandbox.overlay_write_capture` on macOS after gaining launch-time sidecar disk
+attachment, guest mount-plan forwarding, managed-VM overlay validation, and
+escaped-write fallback. Its block-volume path uses the same ext4 aggregate
+output volume shape as Firecracker, but with Virtualization.framework storage
+devices attached by the macOS helper before VM start.
 
-Backends without `sandbox.cache_output_volumes` should still run the new block
-schema with the same isolated input-projection semantics, using ordinary rootfs
-directories at the normalized output directories and ordinary rootfs files at
-the normalized output file paths instead of sidecar volumes. They do not publish
-volume caches, but they may still publish exact full-rootfs stage caches after
-the projected block commands run. If they support
-`sandbox.overlay_write_capture`, they can still report escaped writes for
-diagnostics. This keeps command behavior stable across backends while allowing
-fast volume restore only where supported.
+Backends without both `sandbox.cache_output_volumes` and
+`sandbox.overlay_write_capture` currently fail closed to the aggregate
+full-rootfs dependency/services stage path instead of selecting per-block volume
+caching. They may still publish exact full-rootfs stage caches. Running the new
+block schema through isolated input projections without sidecar volume
+publication remains a possible future portability layer, but it is not part of
+the initial release.
 
 ## Metadata Store
 
@@ -602,11 +629,11 @@ For dependency and service volume blocks:
   published and are not escaped writes
 - any other persistent upperdir entry is an escaped write
 
-Escaped writes prevent file-keyed volume cache publication. In the first
-implementation, Cleanroom should warn and rerun the block through exact
-full-rootfs fallback so the sandbox still contains the command's real effects.
-After the feature is stable, cacheable blocks should fail hard on escaped writes.
-The user schema should still avoid a confusing `mode` field.
+Escaped writes prevent file-keyed volume cache publication. The initial
+implementation warns, resets declared outputs, and reruns the block through
+exact full-rootfs fallback so the sandbox still contains the command's real
+effects. After the feature is stable, cacheable blocks should fail hard on
+escaped writes. The user schema should still avoid a confusing `mode` field.
 
 ## Observability
 
@@ -689,7 +716,7 @@ Completed in phase 1:
   glob expansion, generated proto round trips, CLI Docker policy creation, and
   existing dependency/services stage-cache behavior
 
-Current runtime behavior after phase 1:
+Runtime behavior immediately after phase 1:
 
 - dependency and service blocks are compiled into the existing aggregate
   dependency/services stage bootstrap command
@@ -699,7 +726,7 @@ Current runtime behavior after phase 1:
 - overlayfs write capture is represented as a backend capability contract, but
   no backend runner enforces escaped-write detection yet
 
-Remaining work:
+Remaining work after phase 1, now completed by later slices:
 
 - extend dependency block-volume runtime wiring from lookup-only planning to
   output-volume preparation, restore, execution, and publication
@@ -774,7 +801,7 @@ Completed in phase 2:
   aggregate services stage cache misses and an aggregate dependency stage cache
   restores
 
-Follow-up runtime work after phase 2:
+Resolved in later slices after phase 2:
 
 - run missed dependency blocks from isolated input projections
 - restore hit output records before later dependency blocks run
@@ -811,7 +838,7 @@ Completed in phase 3:
 - tests cover spec construction for cache hits and misses, cold provision
   request wiring, and dependency-stage restore request wiring
 
-Remaining phase 3 work:
+Resolved in later slices after phase 3:
 
 - mount declared `outputs.dirs` and restore declared `outputs.files` inside the
   guest before block commands run
@@ -825,16 +852,15 @@ Remaining phase 3 work:
 
 The fourth implementation PR starts the backend side of the runtime path for
 Firecracker. It consumes the launch-time `backend.CacheOutputVolumeSpec` list
-and prepares writable sidecar ext4 volumes before the VM starts. It still does
-not mount those volumes in the guest, restore file outputs, run block commands,
-capture writes, or publish block output snapshots; aggregate dependency and
-service bootstrap commands remain the runtime fallback.
+and prepares writable sidecar ext4 volumes before the VM starts. At this point
+it still did not mount those volumes in the guest, restore file outputs, run
+block commands, capture writes, or publish block output snapshots; later slices
+completed that runtime path.
 
 Completed in phase 4:
 
-- Firecracker advertises `sandbox.cache_output_volumes` but intentionally does
-  not advertise `sandbox.overlay_write_capture` until the guest execution path
-  exists
+- Firecracker advertises `sandbox.cache_output_volumes`; overlay write capture
+  remained gated until later slices validated the guest execution path
 - cold provisions and snapshot restores forward cache output volume specs into
   Firecracker launch
 - Firecracker validates cache output volume specs before launch, rejects
@@ -850,22 +876,26 @@ Completed in phase 4:
 - tests cover capability reporting, launch request forwarding, hit and miss
   volume preparation, malformed specs, and cleanup on partial prepare failure
 
-Remaining runtime work after phase 4:
+Resolved in later slices after phase 4:
 
 - run missed dependency and service blocks from isolated input projections
 - inspect overlay write capture results and warn/fallback on escaped writes
 - snapshot and publish output records after successful missed blocks
-- advertise `sandbox.overlay_write_capture` once escaped-write detection and
-  isolated block execution are wired through
+- advertise `sandbox.overlay_write_capture` after escaped-write detection and
+  isolated block execution were wired through
+
+Still deferred after phase 4:
+
 - decide whether output volume sizing stays internal or becomes policy-visible
   after real workloads show the right default
 
 ### Phase 5 PR Status
 
 The fifth implementation PR wires the prepared Firecracker output volumes into
-the guest execution protocol. It still keeps the block-volume runtime inactive
-because Firecracker does not advertise `sandbox.overlay_write_capture` yet, and
-it does not run per-block dependency or service commands.
+the guest execution protocol. At this point it still kept the block-volume
+runtime inactive because Firecracker did not yet advertise
+`sandbox.overlay_write_capture`, and it did not run per-block dependency or
+service commands.
 
 Completed in phase 5:
 
@@ -890,24 +920,27 @@ Completed in phase 5:
   path validation, non-empty directory rejection, file restoration, and changed
   plan rejection
 
-Remaining runtime work after phase 5:
+Resolved in later slices after phase 5:
 
 - run missed service blocks from isolated input projections
 - inspect overlay write capture results and warn/fallback on escaped writes
 - snapshot and publish output records after successful missed blocks
 - materialize captured file outputs into both the output volume and sandbox root
   after a missed block run
-- advertise `sandbox.overlay_write_capture` once escaped-write detection and
-  isolated block execution are wired through
+- advertise `sandbox.overlay_write_capture` after escaped-write detection and
+  isolated block execution were wired through
+
+Still deferred after phase 5:
+
 - decide whether output volume sizing stays internal or becomes policy-visible
   after real workloads show the right default
 
 ### Phase 6 PR Status
 
 The sixth implementation PR adds the dependency-block execution substrate needed
-for the v0.7 experimental path. It is still not the full publishable
-file-keyed cache path because escaped-write inspection and block output
-publication remain disabled.
+for the v0.7 experimental path. At this point it was still not the full
+publishable file-keyed cache path because escaped-write inspection and block
+output publication remained disabled.
 
 Completed in phase 6:
 
@@ -936,10 +969,9 @@ Completed in phase 6:
   block-volume runtime path is selected, because declared directory outputs are
   mounted from sidecar volumes and would not be captured by a rootfs snapshot
 
-Remaining runtime work after phase 6:
+Resolved in later slices after phase 6:
 
-- publish a replacement cache artifact for dependency block misses; until then
-  this path is execution substrate rather than reusable block-volume caching
+- publish a replacement cache artifact for dependency block misses
 - inspect overlay write capture results and warn/fallback on escaped writes
 - snapshot and publish dependency output records after successful missed blocks
 - materialize captured dependency file outputs into both the output volume and
@@ -947,16 +979,20 @@ Remaining runtime work after phase 6:
 - run missed service blocks from isolated input projections
 - snapshot and publish service output records after successful missed service
   blocks
-- advertise `sandbox.overlay_write_capture` once escaped-write detection and
-  block output publication are wired through
+- advertise `sandbox.overlay_write_capture` after escaped-write detection and
+  block output publication were wired through
+
+Still deferred after phase 6:
+
 - decide whether output volume sizing stays internal or becomes policy-visible
   after real workloads show the right default
 
 ### Guest Overlay Runner Status
 
 The guest-agent overlay runner slice turns an `overlay_capture` execution
-request into real Linux guest setup, but backend capability advertisement remains
-gated until it is exercised against managed VM roots.
+request into real Linux guest setup. Backend capability advertisement remained
+gated until the path was exercised against managed VM roots and escaped-write
+fallback was wired through; that gate is now open for Firecracker and darwin-vz.
 
 Completed in the guest overlay runner slice:
 
@@ -977,14 +1013,14 @@ Completed in the guest overlay runner slice:
 - an opt-in privileged guest-agent E2E documents the expected behavior on a
   non-overlay Linux root filesystem
 
-Remaining overlay-capture runtime work:
+Resolved after the guest overlay runner slice:
 
-- run the opt-in guest-agent E2E inside the managed Firecracker and darwin-vz
-  guest roots instead of Docker's overlay-backed rootfs
-- wire escaped-write fallback so Cleanroom restarts from the pre-block state and
-  reruns through the exact full-rootfs path before later phases continue
-- advertise `sandbox.overlay_write_capture` only after the managed VM validation
-  and fallback path are in place
+- opt-in managed-VM E2Es exercise overlay capture inside Firecracker and
+  darwin-vz guest roots
+- escaped-write fallback skips block-volume publication, resets declared
+  outputs, and reruns through the exact full-rootfs path before later phases
+  continue
+- Firecracker and darwin-vz advertise `sandbox.overlay_write_capture`
 
 ### Darwin-VZ Sidecar Volume Status
 
@@ -994,10 +1030,10 @@ writable sidecar ext4 volumes through the existing darwin-vz volume-store
 driver, passes their attachment paths to the Swift helper, and forwards the
 derived guest mount plan through the existing Linux guest-agent protocol.
 
-Completed in the darwin-vz sidecar slice:
+Completed in the darwin-vz sidecar slice and later release-readiness slices:
 
-- darwin-vz advertises `sandbox.cache_output_volumes` but intentionally does not
-  advertise `sandbox.overlay_write_capture`
+- darwin-vz advertises `sandbox.cache_output_volumes` and, on macOS,
+  `sandbox.overlay_write_capture`
 - persistent provisions and snapshot restores forward cache output volume specs
   into darwin-vz launch
 - cache hits prepare writable volumes from recorded source refs; misses create
@@ -1011,17 +1047,15 @@ Completed in the darwin-vz sidecar slice:
   agent, reusing the existing guest mount, bind, and file-restore behavior
 - sidecar volume cleanup runs on launch failure, readiness-probe failure, and
   sandbox termination
+- opt-in darwin-vz E2Es cover cache output volume mount/restore behavior and
+  overlay capture with declared directory outputs, declared file outputs, and
+  escaped-write detection
 
-Remaining darwin-vz runtime work:
+Remaining darwin-vz follow-up work:
 
-- add escaped-write capture to the block runner and only then advertise
-  `sandbox.overlay_write_capture`
-- snapshot and publish dependency and service output records after successful
-  missed blocks
-- materialize captured file outputs into both the output volume and sandbox root
-  after a missed block run
-- add a macOS smoke test that proves a restored darwin-vz sidecar volume appears
-  at the declared guest path
+- keep expanding macOS smoke coverage with real dependency/service workloads
+- decide whether output volume sizing stays internal or becomes policy-visible
+  after real workloads show the right default
 
 ## Tests
 
@@ -1064,10 +1098,17 @@ Minimum coverage:
   sandbox root
 - persistent writes outside declared outputs prevent portable volume cache
   publication and trigger exact fallback before later phases continue
+- a source-only commit reuses dependency and service output volumes without
+  rerunning block commands when declared inputs are unchanged
 - Firecracker launch includes cache output block devices before the VM starts
+- Firecracker and darwin-vz advertise `sandbox.overlay_write_capture` only where
+  the managed VM path supports sidecar output volumes, overlay capture, and
+  fallback
 - backend cleanup runs when command execution, snapshot publication, or metadata
   persistence fails
 - Firecracker ZFS path clones output volumes rather than copying ext4 bytes
+- opt-in managed-VM E2Es cover Firecracker ZFS and darwin-vz overlay capture
+  with cache output volumes
 
 ## Settled Decisions
 
