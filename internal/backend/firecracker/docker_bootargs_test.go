@@ -41,6 +41,45 @@ func TestDockerServiceBootArgsUsesPolicyAndRuntimeSettings(t *testing.T) {
 	}
 }
 
+func TestDockerServiceBootArgsIncludesConfiguredRegistryMirrors(t *testing.T) {
+	compiled := &policy.CompiledPolicy{
+		Docker: policy.DockerService{Required: true},
+	}
+
+	got := dockerServiceBootArgs(compiled, backend.FirecrackerConfig{}, 8170, gateway.ProxyRoutes{
+		DockerHubMirror:       true,
+		DockerRegistryMirrors: []string{"public.ecr.aws", "ghcr.io", "bad/path"},
+	})
+	for _, want := range []string{
+		"cleanroom_service_docker_registry_mirror_host=gateway.cleanroom.internal",
+		"cleanroom_service_docker_registry_mirror_port=8170",
+		"cleanroom_service_docker_registry_mirror_registries=public.ecr.aws,ghcr.io",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected %q in docker boot args %q", want, got)
+		}
+	}
+}
+
+func TestDockerServiceBootArgsConfiguredRegistryMirrorsCarryGatewayEndpoint(t *testing.T) {
+	compiled := &policy.CompiledPolicy{
+		Docker: policy.DockerService{Required: true},
+	}
+
+	got := dockerServiceBootArgs(compiled, backend.FirecrackerConfig{}, 8170, gateway.ProxyRoutes{
+		DockerRegistryMirrors: []string{"public.ecr.aws"},
+	})
+	for _, want := range []string{
+		"cleanroom_service_docker_registry_mirror_host=gateway.cleanroom.internal",
+		"cleanroom_service_docker_registry_mirror_port=8170",
+		"cleanroom_service_docker_registry_mirror_registries=public.ecr.aws",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected %q in docker boot args %q", want, got)
+		}
+	}
+}
+
 func TestDockerServiceBootArgsUsesSafeDefaults(t *testing.T) {
 	compiled := &policy.CompiledPolicy{
 		Docker: policy.DockerService{Required: true},
@@ -68,5 +107,8 @@ func TestDockerServiceBootArgsSkipsMirrorWithoutLiveRoute(t *testing.T) {
 	}
 	if strings.Contains(got, "cleanroom_service_docker_registry_mirror_port") {
 		t.Fatalf("did not expect docker mirror port in boot args %q", got)
+	}
+	if strings.Contains(got, "cleanroom_service_docker_registry_mirror_registries") {
+		t.Fatalf("did not expect docker mirror registries in boot args %q", got)
 	}
 }

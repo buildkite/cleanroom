@@ -180,9 +180,30 @@ if [ "$DOCKER_REQUIRED" = "1" ] && command -v dockerd >/dev/null 2>&1; then
   DOCKER_IPTABLES="$(arg_value cleanroom_service_docker_iptables || true)"
   DOCKER_MIRROR_HOST="$(arg_value cleanroom_service_docker_registry_mirror_host || true)"
   DOCKER_MIRROR_PORT="$(arg_value cleanroom_service_docker_registry_mirror_port || true)"
+  DOCKER_MIRROR_REGISTRIES="$(arg_value cleanroom_service_docker_registry_mirror_registries || true)"
   case "$DOCKER_MIRROR_PORT" in
     ''|*[!0-9]*) DOCKER_MIRROR_PORT="" ;;
   esac
+
+  if [ -n "$DOCKER_MIRROR_HOST" ] && [ -n "$DOCKER_MIRROR_PORT" ] && [ -n "$DOCKER_MIRROR_REGISTRIES" ]; then
+    old_ifs="$IFS"
+    IFS=','
+    for registry in $DOCKER_MIRROR_REGISTRIES; do
+      IFS="$old_ifs"
+      case "$registry" in
+        ''|*/*|*[[:space:]]*) ;;
+        *)
+          mirror_dir="/etc/docker/certs.d/$registry"
+          mkdir -p "$mirror_dir" 2>/dev/null || true
+          {
+            printf 'server = "http://%s:%s/registry/%s"\n' "$DOCKER_MIRROR_HOST" "$DOCKER_MIRROR_PORT" "$registry"
+          } > "$mirror_dir/hosts.toml" 2>/dev/null || true
+        ;;
+      esac
+      IFS=','
+    done
+    IFS="$old_ifs"
+  fi
 
   DOCKER_ARGS="--host=unix:///var/run/docker.sock --storage-driver=$DOCKER_STORAGE_DRIVER"
   if [ "$DOCKER_IPTABLES" = "0" ] || [ "$DOCKER_IPTABLES" = "false" ]; then

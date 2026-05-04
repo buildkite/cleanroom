@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -209,9 +210,10 @@ func NewContentCache(cfg ContentCacheConfig) (*ContentCache, error) {
 	}
 
 	cache := &ContentCache{
-		closer:      db,
-		gitHandlers: make(map[string]http.Handler),
-		ociHandlers: make(map[string]ociHandlerEntry),
+		closer:         db,
+		gitHandlers:    make(map[string]http.Handler),
+		ociHandlers:    make(map[string]ociHandlerEntry),
+		ociMirrorHosts: configuredOCIMirrorHosts(cfg.OCIRegistries),
 	}
 	goProxyUpstreamURL := strings.TrimSpace(ccgoproxy.DefaultUpstreamURL)
 	goProxyPolicyHost, goProxyPolicyPort, err := registryHostPort(goProxyUpstreamURL)
@@ -460,6 +462,36 @@ func normalizeOCIRegistryMappings(registries map[string]string) (map[string]stri
 		out[normalizedPrefix] = normalizedURL
 	}
 	return out, nil
+}
+
+func configuredOCIMirrorHosts(registries map[string]string) []string {
+	if len(registries) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(registries))
+	seen := make(map[string]struct{}, len(registries))
+	for prefix := range registries {
+		normalizedPrefix := strings.ToLower(strings.TrimSpace(prefix))
+		if normalizedPrefix == "" || strings.Contains(normalizedPrefix, "/") || !isRegistryHostPrefix(normalizedPrefix) || isDockerHubMirrorPrefix(normalizedPrefix) {
+			continue
+		}
+		if _, ok := seen[normalizedPrefix]; ok {
+			continue
+		}
+		seen[normalizedPrefix] = struct{}{}
+		out = append(out, normalizedPrefix)
+	}
+	slices.Sort(out)
+	return out
+}
+
+func isDockerHubMirrorPrefix(prefix string) bool {
+	switch strings.ToLower(strings.TrimSpace(prefix)) {
+	case "docker.io", "index.docker.io", "registry-1.docker.io":
+		return true
+	default:
+		return false
+	}
 }
 
 func resolveOCIRegistryRoute(prefix string, registries map[string]string) (ociRoute, error) {

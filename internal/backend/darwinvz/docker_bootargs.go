@@ -35,7 +35,7 @@ func dockerServiceBootArgs(compiled *policy.CompiledPolicy, cfg backend.Firecrac
 		storageDriver,
 		iptables,
 	)
-	if routes.DockerHubMirror && gatewayPort > 0 {
+	if (routes.DockerHubMirror || len(routes.DockerRegistryMirrors) > 0) && gatewayPort > 0 {
 		host := sanitizeKernelArgValue(gateway.GuestGatewayHostname)
 		if host != "" {
 			args += fmt.Sprintf(
@@ -45,7 +45,34 @@ func dockerServiceBootArgs(compiled *policy.CompiledPolicy, cfg backend.Firecrac
 			)
 		}
 	}
+	if len(routes.DockerRegistryMirrors) > 0 && gatewayPort > 0 {
+		if registries := sanitizeRegistryMirrorList(routes.DockerRegistryMirrors); registries != "" {
+			args += fmt.Sprintf(" cleanroom_service_docker_registry_mirror_registries=%s", registries)
+		}
+	}
 	return args
+}
+
+func sanitizeRegistryMirrorList(registries []string) string {
+	out := make([]string, 0, len(registries))
+	for _, registry := range registries {
+		registry = strings.ToLower(strings.TrimSpace(registry))
+		if registry == "" {
+			continue
+		}
+		valid := true
+		for _, r := range registry {
+			isAlphaNum := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
+			if !isAlphaNum && r != '.' && r != '-' && r != ':' {
+				valid = false
+				break
+			}
+		}
+		if valid {
+			out = append(out, registry)
+		}
+	}
+	return strings.Join(out, ",")
 }
 
 func sanitizeKernelArgValue(value string) string {

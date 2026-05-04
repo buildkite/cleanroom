@@ -35,10 +35,11 @@ const (
 
 // ProxyRoutes describes which gateway-backed guest proxy routes are live.
 type ProxyRoutes struct {
-	DockerHubMirror bool
-	RubyGems        bool
-	GoProxy         bool
-	Fetch           bool
+	DockerHubMirror       bool
+	DockerRegistryMirrors []string
+	RubyGems              bool
+	GoProxy               bool
+	Fetch                 bool
 }
 
 // GitProxyEnvVars returns git config environment variables that rewrite allowed

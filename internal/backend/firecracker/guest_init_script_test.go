@@ -24,11 +24,26 @@ func TestGuestInitScriptAutostartsDockerWhenAvailable(t *testing.T) {
 	if !strings.Contains(guestInitScriptTemplate, "DOCKER_MIRROR_PORT=\"$(arg_value cleanroom_service_docker_registry_mirror_port || true)\"") {
 		t.Fatal("expected docker registry mirror port boot arg lookup in init script")
 	}
+	if !strings.Contains(guestInitScriptTemplate, "DOCKER_MIRROR_REGISTRIES=\"$(arg_value cleanroom_service_docker_registry_mirror_registries || true)\"") {
+		t.Fatal("expected docker registry mirror registries boot arg lookup in init script")
+	}
 	if !strings.Contains(guestInitScriptTemplate, "--registry-mirror=http://$DOCKER_MIRROR_HOST:$DOCKER_MIRROR_PORT") {
 		t.Fatal("expected init script to configure dockerd registry mirror when provided")
 	}
 	if !strings.Contains(guestInitScriptTemplate, "--insecure-registry=$DOCKER_MIRROR_HOST:$DOCKER_MIRROR_PORT") {
 		t.Fatal("expected init script to mark the dockerd mirror as insecure for guest HTTP access")
+	}
+	if !strings.Contains(guestInitScriptTemplate, `mirror_dir="/etc/docker/certs.d/$registry"`) {
+		t.Fatal("expected init script to configure per-registry Docker host config")
+	}
+	if strings.Contains(guestInitScriptTemplate, `/etc/containerd/certs.d`) {
+		t.Fatal("expected init script to write registry host config where dockerd reads it")
+	}
+	if !strings.Contains(guestInitScriptTemplate, `printf 'server = "http://%s:%s/registry/%s"\n' "$DOCKER_MIRROR_HOST" "$DOCKER_MIRROR_PORT" "$registry"`) {
+		t.Fatal("expected init script to make the Cleanroom registry gateway path authoritative")
+	}
+	if strings.Contains(guestInitScriptTemplate, `printf 'server = "https://%s"\n' "$registry"`) {
+		t.Fatal("expected init script not to configure direct upstream fallback")
 	}
 	if !strings.Contains(guestInitScriptTemplate, "docker version >/dev/null 2>&1") {
 		t.Fatal("expected init script to wait for dockerd API readiness")
