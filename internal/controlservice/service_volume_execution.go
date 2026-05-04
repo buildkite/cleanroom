@@ -10,16 +10,25 @@ import (
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/observability"
 	"github.com/buildkite/cleanroom/internal/policy"
+	"github.com/buildkite/cleanroom/internal/repositorychangeset"
 	"github.com/buildkite/cleanroom/internal/repositorycheckout"
 	"go.opentelemetry.io/otel/attribute"
 )
 
 const serviceInputProjectionRoot = "/run/cleanroom/input-projections/services"
 
+type serviceBlockVolumePublishConfig struct {
+	Adapter    backend.CacheOutputVolumeSnapshottingAdapter
+	Backend    string
+	Changeset  *repositorychangeset.Changeset
+	Repository *repositorycheckout.Checkout
+}
+
 func (s *Service) bootstrapServiceBlockVolumePlanInPersistentSandbox(
 	ctx context.Context,
 	adapter backend.Adapter,
 	sandboxID string,
+	publish serviceBlockVolumePublishConfig,
 	compiled *policy.CompiledPolicy,
 	firecrackerCfg backend.FirecrackerConfig,
 	repository *repositorycheckout.Checkout,
@@ -52,6 +61,14 @@ func (s *Service) bootstrapServiceBlockVolumePlanInPersistentSandbox(
 			return s.bootstrapServiceBlockVolumeBlock(ctx, adapter, sandboxID, compiled, firecrackerCfg, repository, block, reporter)
 		}); err != nil {
 			return fmt.Errorf("service block %q: %w", blockName, err)
+		}
+		if publish.Adapter != nil {
+			emitCreateSandboxMessage(reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_PUBLISH_SERVICES_STAGE_CACHE, "publishing service outputs: "+blockName)
+			s.maybePublishServiceBlockVolumeCaches(ctx, publish.Adapter, sandboxID, publish.Backend, compiled, firecrackerCfg, publish.Repository, publish.Changeset, serviceBlockVolumePlan{
+				ReuseNamespace:       plan.ReuseNamespace,
+				DependencyOutputKeys: append([]string(nil), plan.DependencyOutputKeys...),
+				Blocks:               []serviceBlockVolumeBlockPlan{block},
+			})
 		}
 	}
 	return nil
