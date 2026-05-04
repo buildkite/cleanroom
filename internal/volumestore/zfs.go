@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 )
 
@@ -18,11 +19,15 @@ const zfsBaseNamespace = "base"
 const zfsSandboxNamespace = "sandboxes"
 const zfsSnapshotNamespace = "snapshots"
 const zfsSnapshotImportNamespace = "imports"
+const zfsDeviceWaitTimeout = 5 * time.Second
+const zfsDeviceWaitInterval = 100 * time.Millisecond
 
 type ZFSCommandRunner interface {
 	Run(ctx context.Context, command string, args ...string) error
 	Output(ctx context.Context, command string, args ...string) ([]byte, error)
 }
+
+type ZFSDeviceWaiter func(context.Context, string) error
 
 type ZFSCommandOutputStreamer interface {
 	OutputTo(ctx context.Context, dst io.Writer, command string, args ...string) error
@@ -36,6 +41,7 @@ type ZFSDriverOptions struct {
 	DatasetRoot             string
 	Runner                  ZFSCommandRunner
 	Stat                    func(string) (os.FileInfo, error)
+	DeviceWaiter            ZFSDeviceWaiter
 	DisableSnapshotMetadata bool
 }
 
@@ -43,6 +49,7 @@ type ZFSDriver struct {
 	datasetRoot             string
 	runner                  ZFSCommandRunner
 	stat                    func(string) (os.FileInfo, error)
+	deviceWaiter            ZFSDeviceWaiter
 	disableSnapshotMetadata bool
 }
 
@@ -59,11 +66,23 @@ func NewZFSDriver(opts ZFSDriverOptions) (*ZFSDriver, error) {
 	if statFn == nil {
 		statFn = os.Stat
 	}
+	deviceWaiter := opts.DeviceWaiter
+	if deviceWaiter == nil {
+		if runnerWaiter, ok := opts.Runner.(interface {
+			WaitForDevicePath(context.Context, string) error
+		}); ok {
+			deviceWaiter = runnerWaiter.WaitForDevicePath
+		}
+	}
+	if deviceWaiter == nil {
+		deviceWaiter = WaitForZvolDevicePath
+	}
 
 	return &ZFSDriver{
 		datasetRoot:             datasetRoot,
 		runner:                  opts.Runner,
 		stat:                    statFn,
+		deviceWaiter:            deviceWaiter,
 		disableSnapshotMetadata: opts.DisableSnapshotMetadata,
 	}, nil
 }
@@ -98,7 +117,12 @@ func (d *ZFSDriver) EnsureBaseVolume(ctx context.Context, req EnsureBaseVolumeRe
 		if err := d.runner.Run(ctx, "zfs", "create", "-p", "-V", strconv.FormatInt(volumeSize, 10), baseDataset); err != nil {
 			return BaseVolume{}, fmt.Errorf("create zfs base volume %q: %w", baseDataset, err)
 		}
-		if err := d.runner.Run(ctx, "dd", "if="+sourcePath, "of="+zvolDevicePath(baseDataset), "bs=4M", "conv=fsync", "status=none"); err != nil {
+		devicePath := zvolDevicePath(baseDataset)
+		if err := d.deviceWaiter(ctx, devicePath); err != nil {
+			_ = d.runner.Run(context.Background(), "zfs", "destroy", "-r", baseDataset)
+			return BaseVolume{}, fmt.Errorf("wait for zfs base volume device %q: %w", devicePath, err)
+		}
+		if err := d.runner.Run(ctx, "dd", "if="+sourcePath, "of="+devicePath, "bs=4M", "conv=fsync", "status=none"); err != nil {
 			_ = d.runner.Run(context.Background(), "zfs", "destroy", "-r", baseDataset)
 			return BaseVolume{}, fmt.Errorf("initialize zfs base volume %q: %w", baseDataset, err)
 		}
@@ -653,9 +677,14 @@ func (d *ZFSDriver) cloneSnapshot(ctx context.Context, snapshotRef, dataset stri
 	if err := d.runner.Run(ctx, "zfs", "clone", "-p", snapshotRef, dataset); err != nil {
 		return WritableVolume{}, fmt.Errorf("clone zfs snapshot %q into %q: %w", snapshotRef, dataset, err)
 	}
+	devicePath := zvolDevicePath(dataset)
+	if err := d.deviceWaiter(ctx, devicePath); err != nil {
+		_ = d.runner.Run(context.Background(), "zfs", "destroy", "-r", dataset)
+		return WritableVolume{}, fmt.Errorf("wait for zfs clone device %q: %w", devicePath, err)
+	}
 	return WritableVolume{
 		Ref:            dataset,
-		AttachmentPath: zvolDevicePath(dataset),
+		AttachmentPath: devicePath,
 	}, nil
 }
 
@@ -708,6 +737,34 @@ func sanitizeZFSDatasetComponent(value string) string {
 
 func zvolDevicePath(dataset string) string {
 	return filepath.Join(append([]string{"/dev/zvol"}, strings.Split(strings.TrimSpace(dataset), "/")...)...)
+}
+
+func WaitForZvolDevicePath(ctx context.Context, path string) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return errors.New("missing zvol device path")
+	}
+
+	deadline := time.NewTimer(zfsDeviceWaitTimeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(zfsDeviceWaitInterval)
+	defer ticker.Stop()
+
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return nil
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("inspect zvol device path %q: %w", path, err)
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline.C:
+			return fmt.Errorf("timed out waiting for zvol device path %q", path)
+		case <-ticker.C:
+		}
+	}
 }
 
 func parseZFSSendEstimateBytes(out []byte) int64 {
