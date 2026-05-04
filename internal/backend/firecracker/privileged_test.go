@@ -80,6 +80,10 @@ func (r testPrivilegedCommandRunner) Output(ctx context.Context, args ...string)
 	return r.output(ctx, args...)
 }
 
+func (r testPrivilegedCommandRunner) WaitForDevicePath(context.Context, string) error {
+	return nil
+}
+
 func (r testPrivilegedCommandRunner) RunBatch(ctx context.Context, commands [][]string) error {
 	if r.runBatch == nil {
 		return nil

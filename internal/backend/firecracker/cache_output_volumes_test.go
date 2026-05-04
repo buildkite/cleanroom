@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/buildkite/cleanroom/internal/backend"
+	"github.com/buildkite/cleanroom/internal/ext4image"
 	"github.com/buildkite/cleanroom/internal/volumestore"
 	"github.com/buildkite/cleanroom/internal/vsockexec"
 )
@@ -138,6 +139,27 @@ func TestPrepareCacheOutputVolumesClonesHitsAndCreatesMisses(t *testing.T) {
 	}
 	if got, want := destroyReqs[0].VolumeRef, prepared[1].Volume.Ref; got != want {
 		t.Fatalf("expected reverse cleanup order first ref %q, got %q", want, got)
+	}
+}
+
+func TestCreateEmptyCacheOutputExt4ImageCreatesMissingFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	mkfsPath := filepath.Join(tmpDir, "mkfs.ext4")
+	if err := os.WriteFile(mkfsPath, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake mkfs.ext4: %v", err)
+	}
+	t.Setenv("PATH", tmpDir)
+
+	imagePath := filepath.Join(tmpDir, "nested", "cache-output-empty-base.ext4")
+	if err := createEmptyCacheOutputExt4Image(context.Background(), imagePath, 1); err != nil {
+		t.Fatalf("createEmptyCacheOutputExt4Image returned error: %v", err)
+	}
+	info, err := os.Stat(imagePath)
+	if err != nil {
+		t.Fatalf("stat image: %v", err)
+	}
+	if got, want := info.Size(), ext4image.AlignBytes(1); got != want {
+		t.Fatalf("unexpected image size: got %d want %d", got, want)
 	}
 }
 

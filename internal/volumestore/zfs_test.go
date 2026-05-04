@@ -86,6 +86,10 @@ func (r *zfsTestRunner) Run(_ context.Context, command string, args ...string) e
 	return nil
 }
 
+func (r *zfsTestRunner) WaitForDevicePath(context.Context, string) error {
+	return nil
+}
+
 func (r *zfsTestRunner) Output(_ context.Context, command string, args ...string) ([]byte, error) {
 	r.commands = append(r.commands, strings.Join(append([]string{command}, args...), " "))
 	if command == "zfs" && len(args) == 7 && args[0] == "list" && args[1] == "-H" && args[2] == "-d" && args[3] == "1" && args[4] == "-o" && args[5] == "name" {
@@ -306,6 +310,82 @@ func TestZFSDriverEnsureBaseVolumeAndCloneLifecycle(t *testing.T) {
 		"zfs snapshot tank/cleanroom/base/runtime-key@base",
 		"zfs list -H -o name tank/cleanroom/sandboxes/sandbox-1",
 		"zfs clone -p tank/cleanroom/base/runtime-key@base tank/cleanroom/sandboxes/sandbox-1",
+	}
+	if got, want := runner.commands, wantCommands; strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("unexpected zfs commands:\n got: %v\nwant: %v", got, want)
+	}
+}
+
+func TestZFSDriverEnsureBaseVolumeWaitsForZvolDeviceBeforeDD(t *testing.T) {
+	sourcePath := filepath.Join(t.TempDir(), "prepared.ext4")
+	if err := os.WriteFile(sourcePath, []byte("base-bytes"), 0o644); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+
+	runner := &zfsTestRunner{exists: map[string]bool{}}
+	driver, err := NewZFSDriver(ZFSDriverOptions{
+		DatasetRoot: "tank/cleanroom",
+		Runner:      runner,
+		DeviceWaiter: func(_ context.Context, path string) error {
+			runner.commands = append(runner.commands, "wait "+path)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewZFSDriver returned error: %v", err)
+	}
+
+	if _, err := driver.EnsureBaseVolume(context.Background(), EnsureBaseVolumeRequest{
+		BaseID:     "runtime-key",
+		SourcePath: sourcePath,
+	}); err != nil {
+		t.Fatalf("EnsureBaseVolume returned error: %v", err)
+	}
+
+	wantCommands := []string{
+		"zfs list -H -o name tank/cleanroom/base/runtime-key",
+		"zfs create -p -V 10 tank/cleanroom/base/runtime-key",
+		"wait /dev/zvol/tank/cleanroom/base/runtime-key",
+		"dd if=" + sourcePath + " of=/dev/zvol/tank/cleanroom/base/runtime-key bs=4M conv=fsync status=none",
+		"zfs list -H -o name tank/cleanroom/base/runtime-key@base",
+		"zfs snapshot tank/cleanroom/base/runtime-key@base",
+	}
+	if got, want := runner.commands, wantCommands; strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("unexpected zfs commands:\n got: %v\nwant: %v", got, want)
+	}
+}
+
+func TestZFSDriverCloneWaitsForZvolDeviceBeforeReturn(t *testing.T) {
+	runner := &zfsTestRunner{exists: map[string]bool{
+		"tank/cleanroom/base/runtime-key@base": true,
+	}}
+	driver, err := NewZFSDriver(ZFSDriverOptions{
+		DatasetRoot: "tank/cleanroom",
+		Runner:      runner,
+		DeviceWaiter: func(_ context.Context, path string) error {
+			runner.commands = append(runner.commands, "wait "+path)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewZFSDriver returned error: %v", err)
+	}
+
+	volume, err := driver.CreateWritableVolume(context.Background(), CreateWritableVolumeRequest{
+		VolumeID: "sandbox-1",
+		BaseRef:  "tank/cleanroom/base/runtime-key@base",
+	})
+	if err != nil {
+		t.Fatalf("CreateWritableVolume returned error: %v", err)
+	}
+	if got, want := volume.AttachmentPath, "/dev/zvol/tank/cleanroom/sandboxes/sandbox-1"; got != want {
+		t.Fatalf("unexpected attachment path: got %q want %q", got, want)
+	}
+
+	wantCommands := []string{
+		"zfs list -H -o name tank/cleanroom/sandboxes/sandbox-1",
+		"zfs clone -p tank/cleanroom/base/runtime-key@base tank/cleanroom/sandboxes/sandbox-1",
+		"wait /dev/zvol/tank/cleanroom/sandboxes/sandbox-1",
 	}
 	if got, want := runner.commands, wantCommands; strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("unexpected zfs commands:\n got: %v\nwant: %v", got, want)

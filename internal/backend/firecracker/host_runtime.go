@@ -323,6 +323,15 @@ func (r hostRuntimeVolumeCommandRunner) Output(ctx context.Context, command stri
 	return r.runner.Output(ctx, append([]string{command}, args...)...)
 }
 
+func (r hostRuntimeVolumeCommandRunner) WaitForDevicePath(ctx context.Context, path string) error {
+	if waiter, ok := r.runner.(interface {
+		WaitForDevicePath(context.Context, string) error
+	}); ok {
+		return waiter.WaitForDevicePath(ctx, path)
+	}
+	return volumestore.WaitForZvolDevicePath(ctx, path)
+}
+
 func (r hostRuntimeVolumeCommandRunner) OutputTo(ctx context.Context, dst io.Writer, command string, args ...string) error {
 	streamer, ok := r.runner.(interface {
 		OutputTo(context.Context, io.Writer, ...string) error

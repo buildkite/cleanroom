@@ -166,8 +166,16 @@ func createEmptyCacheOutputExt4Image(ctx context.Context, path string, minimumBy
 		return fmt.Errorf("create empty cache output image directory: %w", err)
 	}
 	sizeBytes := ext4image.AlignBytes(minimumBytes)
-	if err := os.Truncate(path, sizeBytes); err != nil {
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0o600)
+	if err != nil {
+		return fmt.Errorf("create empty cache output image %q: %w", path, err)
+	}
+	if err := file.Truncate(sizeBytes); err != nil {
+		_ = file.Close()
 		return fmt.Errorf("truncate empty cache output image %q to %d bytes: %w", path, sizeBytes, err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close empty cache output image %q: %w", path, err)
 	}
 	mkfsPath, err := hosttools.ResolveE2FSProgsBinary("mkfs.ext4")
 	if err != nil {
