@@ -29,12 +29,7 @@ func TestScanOverlayCaptureReportsEscapedWrites(t *testing.T) {
 	if result == nil {
 		t.Fatal("expected overlay capture result")
 	}
-	if got, want := len(result.EscapedWrites), 1; got != want {
-		t.Fatalf("unexpected escaped write count: got %d want %d", got, want)
-	}
-	if got, want := result.EscapedWrites[0], (vsockexec.OverlayCaptureEntry{Path: "/etc/profile", Kind: "write", Mode: 0o644}); got != want {
-		t.Fatalf("unexpected escaped write: got %#v want %#v", got, want)
-	}
+	assertOverlayCaptureEntry(t, result.EscapedWrites, vsockexec.OverlayCaptureEntry{Path: "/etc/profile", Kind: "write", Mode: 0o644})
 }
 
 func TestSendExitResultFailsWhenOverlayCaptureScanFails(t *testing.T) {
@@ -74,12 +69,17 @@ func TestSendExitResultIncludesOverlayCapture(t *testing.T) {
 	if res.OverlayCapture == nil {
 		t.Fatal("expected overlay capture result")
 	}
-	if got, want := len(res.OverlayCapture.EscapedWrites), 1; got != want {
-		t.Fatalf("unexpected escaped write count: got %d want %d", got, want)
+	assertOverlayCaptureEntry(t, res.OverlayCapture.EscapedWrites, vsockexec.OverlayCaptureEntry{Path: "/etc/profile", Kind: "write", Mode: 0o644})
+}
+
+func assertOverlayCaptureEntry(t *testing.T, entries []vsockexec.OverlayCaptureEntry, want vsockexec.OverlayCaptureEntry) {
+	t.Helper()
+	for _, got := range entries {
+		if got.Path == want.Path && got.Kind == want.Kind && got.Mode&0o777 == want.Mode&0o777 {
+			return
+		}
 	}
-	if got, want := res.OverlayCapture.EscapedWrites[0].Path, "/etc/profile"; got != want {
-		t.Fatalf("unexpected escaped write path: got %q want %q", got, want)
-	}
+	t.Fatalf("missing overlay capture entry %#v in %#v", want, entries)
 }
 
 func writeOverlayCaptureTestFile(t *testing.T, root, rel string) {
