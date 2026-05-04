@@ -49,6 +49,7 @@ type stubAdapter struct {
 	provisionFn                func(context.Context, backend.ProvisionRequest) error
 	provisionFromSnapshotFn    func(context.Context, backend.ProvisionFromSnapshotRequest) error
 	createSnapshotFn           func(context.Context, backend.SnapshotRequest) (*backend.SnapshotResult, error)
+	snapshotCacheOutputsFn     func(context.Context, backend.SnapshotCacheOutputVolumesRequest) (*backend.SnapshotCacheOutputVolumesResult, error)
 	deleteSnapshotFn           func(context.Context, backend.DeleteSnapshotRequest) error
 	terminateFn                func(context.Context, string) error
 	downloadFn                 func(context.Context, string, string, int64) ([]byte, error)
@@ -64,11 +65,13 @@ type stubAdapter struct {
 	provisionReq               backend.ProvisionRequest
 	provisionFromSnapshotReq   backend.ProvisionFromSnapshotRequest
 	createSnapshotReq          backend.SnapshotRequest
+	snapshotCacheOutputsReq    backend.SnapshotCacheOutputVolumesRequest
 	deleteSnapshotReq          backend.DeleteSnapshotRequest
 	runCalls                   int
 	provisionCalls             int
 	provisionFromSnapshotCalls int
 	createSnapshotCalls        int
+	snapshotCacheOutputsCalls  int
 	deleteSnapshotCalls        int
 	terminateCalls             int
 	runtimeBaseKeyOverride     string
@@ -141,6 +144,15 @@ func (s *stubAdapter) CreateSnapshot(ctx context.Context, req backend.SnapshotRe
 		return s.createSnapshotFn(ctx, req)
 	}
 	return &backend.SnapshotResult{StorageRef: "/tmp/snapshot.ext4"}, nil
+}
+
+func (s *stubAdapter) SnapshotCacheOutputVolumes(ctx context.Context, req backend.SnapshotCacheOutputVolumesRequest) (*backend.SnapshotCacheOutputVolumesResult, error) {
+	s.snapshotCacheOutputsReq = req
+	s.snapshotCacheOutputsCalls++
+	if s.snapshotCacheOutputsFn != nil {
+		return s.snapshotCacheOutputsFn(ctx, req)
+	}
+	return &backend.SnapshotCacheOutputVolumesResult{}, nil
 }
 
 func (s *stubAdapter) ProvisionSandboxFromSnapshot(ctx context.Context, req backend.ProvisionFromSnapshotRequest) error {

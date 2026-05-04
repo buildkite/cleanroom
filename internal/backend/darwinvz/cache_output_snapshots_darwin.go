@@ -167,6 +167,7 @@ func (a *Adapter) SnapshotCacheOutputVolumes(ctx context.Context, req backend.Sn
 			BlockName:          strings.TrimSpace(volume.Spec.BlockName),
 			CacheKey:           strings.TrimSpace(volume.Spec.CacheKey),
 			VolumeID:           strings.TrimSpace(volume.Spec.VolumeID),
+			SnapshotID:         strings.TrimSpace(target.snapshotID),
 			StorageDriver:      storageDriver,
 			StorageRef:         storageRef,
 			SnapshotRef:        snapshotRef,

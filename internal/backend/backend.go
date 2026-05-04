@@ -310,6 +310,7 @@ type CacheOutputVolumeSnapshot struct {
 	BlockName          string
 	CacheKey           string
 	VolumeID           string
+	SnapshotID         string
 	StorageDriver      string
 	StorageRef         string
 	SnapshotRef        string

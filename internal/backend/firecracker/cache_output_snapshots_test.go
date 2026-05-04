@@ -110,6 +110,9 @@ func TestSnapshotCacheOutputVolumesSyncsPausesAndSnapshotsSelectedVolumes(t *tes
 	if got, want := snapshot.VolumeID, "volume-a"; got != want {
 		t.Fatalf("unexpected volume id: got %q want %q", got, want)
 	}
+	if got, want := snapshot.SnapshotID, cacheOutputSnapshotID("cacheout", "volume-a"); got != want {
+		t.Fatalf("unexpected snapshot id: got %q want %q", got, want)
+	}
 	if got, want := snapshot.StorageDriver, "file"; got != want {
 		t.Fatalf("unexpected storage driver: got %q want %q", got, want)
 	}
