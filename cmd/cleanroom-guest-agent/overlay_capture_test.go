@@ -107,7 +107,48 @@ func TestOverlayCaptureLayoutRejectsUnsafeUpperDir(t *testing.T) {
 func TestOverlayCaptureGuestTargetStaysUnderMergedRoot(t *testing.T) {
 	t.Parallel()
 
-	if got, want := overlayCaptureGuestTarget("/merged", "/home/cleanroom/.cache"), "/merged/home/cleanroom/.cache"; got != want {
+	got, err := overlayCaptureGuestTarget("/merged", "/home/cleanroom/.cache")
+	if err != nil {
+		t.Fatalf("overlayCaptureGuestTarget returned error: %v", err)
+	}
+	if want := "/merged/home/cleanroom/.cache"; got != want {
+		t.Fatalf("unexpected guest target: got %q want %q", got, want)
+	}
+}
+
+func TestOverlayCaptureGuestTargetResolvesAbsoluteSymlinkInsideMergedRoot(t *testing.T) {
+	t.Parallel()
+
+	mergedRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(mergedRoot, "var"), 0o755); err != nil {
+		t.Fatalf("create var: %v", err)
+	}
+	if err := os.Symlink("/run", filepath.Join(mergedRoot, "var", "run")); err != nil {
+		t.Fatalf("create var/run symlink: %v", err)
+	}
+
+	got, err := overlayCaptureGuestTarget(mergedRoot, "/var/run/service")
+	if err != nil {
+		t.Fatalf("overlayCaptureGuestTarget returned error: %v", err)
+	}
+	if want := filepath.Join(mergedRoot, "run", "service"); got != want {
+		t.Fatalf("unexpected guest target: got %q want %q", got, want)
+	}
+}
+
+func TestOverlayCaptureGuestTargetResolvesRelativeSymlinkInsideMergedRoot(t *testing.T) {
+	t.Parallel()
+
+	mergedRoot := t.TempDir()
+	if err := os.Symlink("usr/lib64", filepath.Join(mergedRoot, "lib64")); err != nil {
+		t.Fatalf("create lib64 symlink: %v", err)
+	}
+
+	got, err := overlayCaptureGuestTarget(mergedRoot, "/lib64/pkg")
+	if err != nil {
+		t.Fatalf("overlayCaptureGuestTarget returned error: %v", err)
+	}
+	if want := filepath.Join(mergedRoot, "usr", "lib64", "pkg"); got != want {
 		t.Fatalf("unexpected guest target: got %q want %q", got, want)
 	}
 }

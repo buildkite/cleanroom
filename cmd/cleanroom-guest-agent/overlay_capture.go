@@ -164,7 +164,11 @@ func bindOverlayCaptureInputProjection(req vsockexec.ExecRequest, mergedRoot str
 	if err != nil {
 		return err
 	}
-	return bindOverlayCapturePath(sourceRoot, overlayCaptureGuestTarget(mergedRoot, sourceRoot), true, mounted)
+	target, err := overlayCaptureGuestTarget(mergedRoot, sourceRoot)
+	if err != nil {
+		return err
+	}
+	return bindOverlayCapturePath(sourceRoot, target, true, mounted)
 }
 
 func bindOverlayCaptureGuestPath(mergedRoot, guestPath string, readOnly bool, mounted *[]string) error {
@@ -172,7 +176,11 @@ func bindOverlayCaptureGuestPath(mergedRoot, guestPath string, readOnly bool, mo
 	if err != nil {
 		return err
 	}
-	return bindOverlayCapturePath(source, overlayCaptureGuestTarget(mergedRoot, source), readOnly, mounted)
+	target, err := overlayCaptureGuestTarget(mergedRoot, source)
+	if err != nil {
+		return err
+	}
+	return bindOverlayCapturePath(source, target, readOnly, mounted)
 }
 
 func bindOverlayCapturePath(source, target string, readOnly bool, mounted *[]string) error {
@@ -202,7 +210,10 @@ func bindOverlayCapturePath(source, target string, readOnly bool, mounted *[]str
 }
 
 func mountOverlayCaptureScratchPath(mergedRoot, guestPath, data string, mounted *[]string) error {
-	target := overlayCaptureGuestTarget(mergedRoot, guestPath)
+	target, err := overlayCaptureGuestTarget(mergedRoot, guestPath)
+	if err != nil {
+		return err
+	}
 	if err := ensureOverlayCaptureDir(target); err != nil {
 		return err
 	}
@@ -228,9 +239,53 @@ func cleanOverlayCaptureAbsolutePath(name, value string) (string, error) {
 	return cleaned, nil
 }
 
-func overlayCaptureGuestTarget(mergedRoot, guestPath string) string {
-	guestPath = filepath.Clean(guestPath)
-	return filepath.Join(mergedRoot, strings.TrimPrefix(guestPath, string(filepath.Separator)))
+func overlayCaptureGuestTarget(mergedRoot, guestPath string) (string, error) {
+	mergedRoot, err := cleanOverlayCaptureAbsolutePath("overlay merged root", mergedRoot)
+	if err != nil {
+		return "", err
+	}
+	guestPath, err = cleanOverlayCaptureAbsolutePath("overlay capture guest path", guestPath)
+	if err != nil {
+		return "", err
+	}
+	return resolveOverlayCaptureGuestTarget(mergedRoot, guestPath, 0)
+}
+
+func resolveOverlayCaptureGuestTarget(mergedRoot, guestPath string, depth int) (string, error) {
+	if depth > 32 {
+		return "", fmt.Errorf("overlay capture guest path %q has too many symlinks", guestPath)
+	}
+	parts := strings.Split(strings.TrimPrefix(filepath.Clean(guestPath), string(filepath.Separator)), string(filepath.Separator))
+	currentTarget := filepath.Clean(mergedRoot)
+	currentGuest := string(filepath.Separator)
+	for i, part := range parts {
+		if part == "" {
+			continue
+		}
+		candidate := filepath.Join(currentTarget, part)
+		info, err := os.Lstat(candidate)
+		if err == nil && info.Mode()&os.ModeSymlink != 0 {
+			link, err := os.Readlink(candidate)
+			if err != nil {
+				return "", fmt.Errorf("read overlay capture path symlink %s: %w", candidate, err)
+			}
+			remaining := filepath.Join(parts[i+1:]...)
+			baseGuest := filepath.Dir(filepath.Join(currentGuest, part))
+			nextGuest := ""
+			if filepath.IsAbs(link) {
+				nextGuest = filepath.Join(link, remaining)
+			} else {
+				nextGuest = filepath.Join(baseGuest, link, remaining)
+			}
+			return resolveOverlayCaptureGuestTarget(mergedRoot, nextGuest, depth+1)
+		}
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("stat overlay capture path %s: %w", candidate, err)
+		}
+		currentTarget = candidate
+		currentGuest = filepath.Join(currentGuest, part)
+	}
+	return currentTarget, nil
 }
 
 func ensureOverlayCaptureDir(path string) error {
