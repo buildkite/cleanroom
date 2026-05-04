@@ -2,6 +2,7 @@ package controlservice
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -894,6 +895,144 @@ func TestCreateSandboxPassesBlockVolumeSpecsToColdProvision(t *testing.T) {
 	}
 }
 
+func TestCreateSandboxReusesDependencyAndServiceBlockVolumesAfterSourceOnlyChange(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	adapter := dependencyBlockVolumeRuntimeAdapter()
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"mise.toml":           "go = \"1.26.2\"\n",
+		"go.mod":              "module example.com/test\n\ngo 1.26.2\n",
+		"go.sum":              "example.com/test v0.0.0 h1:abc123\n",
+		"docker-compose.yml":  "services:\n  postgres:\n    image: postgres:17\n",
+		"db/schema.sql":       "create table widgets (id serial primary key);\n",
+		"db/seed.sql":         "insert into widgets default values;\n",
+		"scripts/prepare-db":  "#!/bin/sh\ntrue\n",
+		"scripts/prepare-app": "#!/bin/sh\ntrue\n",
+		"app.go":              "package main\n\nfunc main() {}\n",
+	})
+	svc := newTestService(adapter)
+	svc.RepositoryStore = mirrors
+	cacheStore := &recordingCacheStore{inner: newMemoryCacheStore()}
+	svc.CacheStore = cacheStore
+
+	compiled, err := policy.FromProto(testRepositoryTwoDependencyTwoServiceBlocksPolicy())
+	if err != nil {
+		t.Fatalf("FromProto returned error: %v", err)
+	}
+	repository := repositorycheckout.FromProto(repositoryCheckout)
+	dependencyPlan, ok, err := svc.finalizeDependencyBlockVolumePlan(context.Background(), compiled, repository, nil, nil, "firecracker", "runtime-base:test")
+	if err != nil {
+		t.Fatalf("finalizeDependencyBlockVolumePlan returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected dependency block-volume plan")
+	}
+	servicePlan, ok, err := svc.finalizeServiceBlockVolumePlan(context.Background(), compiled, repository, nil, nil, "firecracker", "runtime-base:test", dependencyPlan)
+	if err != nil {
+		t.Fatalf("finalizeServiceBlockVolumePlan returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected service block-volume plan")
+	}
+	wantBlockExecutions := len(dependencyPlan.Blocks) + len(servicePlan.Blocks)
+
+	var blockExecutions []backend.ExecutionRequest
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
+		if req.InputProjection != nil {
+			if req.OverlayCapture == nil {
+				t.Fatalf("block-volume execution %q did not request overlay capture", strings.Join(req.Command, " "))
+			}
+			blockExecutions = append(blockExecutions, req)
+		}
+		return &backend.ExecutionResult{
+			ExecutionID:    req.ExecutionID,
+			ExitCode:       0,
+			LaunchedVM:     false,
+			PlanPath:       "/tmp/plan",
+			RunDir:         "/tmp/run",
+			Message:        "ok",
+			OverlayCapture: &backend.OverlayCaptureResult{},
+		}, nil
+	}
+	adapter.snapshotCacheOutputsFn = func(_ context.Context, req backend.SnapshotCacheOutputVolumesRequest) (*backend.SnapshotCacheOutputVolumesResult, error) {
+		specsByVolumeID := make(map[string]backend.CacheOutputVolumeSpec, len(adapter.provisionReq.CacheOutputVolumes))
+		for _, spec := range adapter.provisionReq.CacheOutputVolumes {
+			specsByVolumeID[spec.VolumeID] = spec
+		}
+		result := &backend.SnapshotCacheOutputVolumesResult{
+			Volumes: make([]backend.CacheOutputVolumeSnapshot, 0, len(req.VolumeIDs)),
+		}
+		for _, volumeID := range req.VolumeIDs {
+			spec, ok := specsByVolumeID[volumeID]
+			if !ok {
+				t.Fatalf("snapshot requested unknown cache output volume %q", volumeID)
+			}
+			result.Volumes = append(result.Volumes, blockVolumeReuseTestSnapshot(req.SnapshotIDPrefix, spec))
+		}
+		return result, nil
+	}
+
+	req := &cleanroomv1.CreateSandboxRequest{
+		Policy:             testRepositoryTwoDependencyTwoServiceBlocksPolicy(),
+		RepositoryCheckout: repositoryCheckout,
+	}
+	if _, err := svc.CreateSandbox(context.Background(), req); err != nil {
+		t.Fatalf("first CreateSandbox returned error: %v", err)
+	}
+	if got, want := len(blockExecutions), wantBlockExecutions; got != want {
+		t.Fatalf("expected first create to run %d dependency/service blocks, got %d", want, got)
+	}
+	if got, want := adapter.snapshotCacheOutputsCalls, wantBlockExecutions; got != want {
+		t.Fatalf("expected first create to snapshot %d block volumes, got %d", want, got)
+	}
+
+	cacheStore.resetLookups()
+	firstRunCalls := adapter.runCalls
+	firstSnapshotCalls := adapter.snapshotCacheOutputsCalls
+	if err := os.WriteFile(filepath.Join(mirrors.mirrorPath, "app.go"), []byte("package main\n\nfunc main() { println(\"changed\") }\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(app.go) returned error: %v", err)
+	}
+	runTestGit(t, mirrors.mirrorPath, "add", "app.go")
+	runTestGit(t, mirrors.mirrorPath, "commit", "-m", "source-only change")
+	updatedCheckout := *repositoryCheckout
+	updatedCheckout.CommitSha = strings.TrimSpace(runTestGit(t, mirrors.mirrorPath, "rev-parse", "HEAD"))
+
+	if _, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy:             testRepositoryTwoDependencyTwoServiceBlocksPolicy(),
+		RepositoryCheckout: &updatedCheckout,
+	}); err != nil {
+		t.Fatalf("second CreateSandbox returned error: %v", err)
+	}
+	if got, want := adapter.runCalls, firstRunCalls+1; got != want {
+		t.Fatalf("expected source-only create to run only repository bootstrap, got total run calls %d want %d", got, want)
+	}
+	if got, want := len(blockExecutions), wantBlockExecutions; got != want {
+		t.Fatalf("expected source-only create to skip dependency/service block executions, got %d total block executions want %d", got, want)
+	}
+	if got, want := adapter.snapshotCacheOutputsCalls, firstSnapshotCalls; got != want {
+		t.Fatalf("expected source-only create to avoid republishing block volumes, got snapshot calls %d want %d", got, want)
+	}
+	if got, want := cacheStore.getReadyCount(dependencyVolumeStageName), len(dependencyPlan.Blocks); got != want {
+		t.Fatalf("expected source-only create to look up %d dependency block volumes, got %d", want, got)
+	}
+	if got, want := cacheStore.getReadyHitCount(dependencyVolumeStageName), len(dependencyPlan.Blocks); got != want {
+		t.Fatalf("expected source-only create to hit %d dependency block volumes, got %d", want, got)
+	}
+	if got, want := cacheStore.getReadyCount(serviceVolumeStageName), len(servicePlan.Blocks); got != want {
+		t.Fatalf("expected source-only create to look up %d service block volumes, got %d", want, got)
+	}
+	if got, want := cacheStore.getReadyHitCount(serviceVolumeStageName), len(servicePlan.Blocks); got != want {
+		t.Fatalf("expected source-only create to hit %d service block volumes, got %d", want, got)
+	}
+	if got, want := len(adapter.provisionReq.CacheOutputVolumes), wantBlockExecutions; got != want {
+		t.Fatalf("expected source-only create to attach %d restored block volumes, got %d", want, got)
+	}
+	for _, spec := range adapter.provisionReq.CacheOutputVolumes {
+		if strings.TrimSpace(spec.StorageRef) == "" || strings.TrimSpace(spec.SourceSnapshotRef) == "" {
+			t.Fatalf("expected source-only create to restore volume %q from cached storage, got storage=%q source_snapshot=%q", spec.VolumeID, spec.StorageRef, spec.SourceSnapshotRef)
+		}
+	}
+}
+
 func TestBootstrapServiceBlockVolumePlanRunsMissesFromInputProjection(t *testing.T) {
 	t.Parallel()
 
@@ -1320,4 +1459,33 @@ func serviceBlockVolumeTestRecord(compiled *policy.CompiledPolicy, block service
 		},
 		ProducerVersion: block.ProducerVersion,
 	}
+}
+
+func blockVolumeReuseTestSnapshot(snapshotIDPrefix string, spec backend.CacheOutputVolumeSpec) backend.CacheOutputVolumeSnapshot {
+	storageRef := "/snapshots/" + spec.VolumeID + ".ext4"
+	snapshot := backend.CacheOutputVolumeSnapshot{
+		Stage:         spec.Stage,
+		BlockName:     spec.BlockName,
+		CacheKey:      spec.CacheKey,
+		VolumeID:      spec.VolumeID,
+		SnapshotID:    snapshotIDPrefix + "-" + spec.BlockName,
+		StorageDriver: "file",
+		StorageRef:    storageRef,
+		SnapshotRef:   "snapshot:" + spec.BlockName,
+	}
+	for _, dir := range spec.DirMappings {
+		snapshot.Outputs = append(snapshot.Outputs, backend.CacheOutputVolumeSnapshotOutput{
+			Kind:          "dir",
+			GuestPath:     dir.GuestPath,
+			VolumeSubpath: dir.Subpath,
+		})
+	}
+	for _, file := range spec.FileMappings {
+		snapshot.Outputs = append(snapshot.Outputs, backend.CacheOutputVolumeSnapshotOutput{
+			Kind:          "file",
+			GuestPath:     file.GuestPath,
+			VolumeSubpath: file.Subpath,
+		})
+	}
+	return snapshot
 }
