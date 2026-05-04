@@ -128,7 +128,7 @@ func handleConnTTY(conn io.ReadWriteCloser, dec *json.Decoder, req vsockexec.Exe
 	// PTY read returns EIO when the slave side closes; ignore the error.
 	_, _ = io.Copy(streamFrameWriter{send: sender.Send, kind: "stdout"}, ptmx)
 
-	sendExitResult(sender, cmd.Wait())
+	sendExitResult(sender, cmd.Wait(), req.OverlayCapture)
 }
 
 func handleConnPipes(conn io.ReadWriteCloser, dec *json.Decoder, req vsockexec.ExecRequest) {
@@ -181,15 +181,7 @@ func handleConnPipes(conn io.ReadWriteCloser, dec *json.Decoder, req vsockexec.E
 
 	wg.Wait()
 	waitErr := cmd.Wait()
-	exitCode, errMsg := exitResult(waitErr)
-
-	if err := sender.Send(vsockexec.ExecStreamFrame{
-		Type:     "exit",
-		ExitCode: exitCode,
-		Error:    errMsg,
-	}); err != nil {
-		return
-	}
+	sendExitResult(sender, waitErr, req.OverlayCapture)
 }
 
 func readInputFrames(dec *json.Decoder, w io.Writer, closeStdin func(), resizeFn func(cols, rows uint16)) {
@@ -236,12 +228,24 @@ func sendErrorResponse(w io.Writer, err error) {
 	}
 }
 
-func sendExitResult(sender *frameSender, waitErr error) {
+func sendExitResult(sender *frameSender, waitErr error, capture *vsockexec.OverlayCapture) {
 	exitCode, errMsg := exitResult(waitErr)
+	captureResult, captureErr := scanOverlayCapture(capture)
+	if captureErr != nil {
+		if exitCode == 0 {
+			exitCode = 1
+		}
+		if errMsg == "" {
+			errMsg = captureErr.Error()
+		} else {
+			errMsg += "; " + captureErr.Error()
+		}
+	}
 	if err := sender.Send(vsockexec.ExecStreamFrame{
-		Type:     "exit",
-		ExitCode: exitCode,
-		Error:    errMsg,
+		Type:           "exit",
+		ExitCode:       exitCode,
+		Error:          errMsg,
+		OverlayCapture: captureResult,
 	}); err != nil {
 		return
 	}

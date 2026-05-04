@@ -22,6 +22,7 @@ type ExecRequest struct {
 	TTY               bool               `json:"tty,omitempty"`
 	CacheOutputMounts []CacheOutputMount `json:"cache_output_mounts,omitempty"`
 	InputProjection   *InputProjection   `json:"input_projection,omitempty"`
+	OverlayCapture    *OverlayCapture    `json:"overlay_capture,omitempty"`
 }
 
 type InputProjection struct {
@@ -50,17 +51,37 @@ type CacheOutputFileMount struct {
 	Mode      uint32 `json:"mode,omitempty"`
 }
 
+type OverlayCapture struct {
+	UpperDir            string   `json:"upper_dir"`
+	BaselinePaths       []string `json:"baseline_paths,omitempty"`
+	DeclaredFileOutputs []string `json:"declared_file_outputs,omitempty"`
+	IgnoredPrefixes     []string `json:"ignored_prefixes,omitempty"`
+}
+
+type OverlayCaptureResult struct {
+	Entries       []OverlayCaptureEntry `json:"entries,omitempty"`
+	EscapedWrites []OverlayCaptureEntry `json:"escaped_writes,omitempty"`
+}
+
+type OverlayCaptureEntry struct {
+	Path string `json:"path"`
+	Kind string `json:"kind"`
+	Mode uint32 `json:"mode,omitempty"`
+}
+
 type ExecResponse struct {
-	ExitCode int    `json:"exit_code"`
-	Error    string `json:"error,omitempty"`
+	ExitCode       int                   `json:"exit_code"`
+	Error          string                `json:"error,omitempty"`
+	OverlayCapture *OverlayCaptureResult `json:"overlay_capture,omitempty"`
 }
 
 // ExecStreamFrame is sent from guest to host. Types: stdout|stderr|exit.
 type ExecStreamFrame struct {
-	Type     string `json:"type,omitempty"` // stdout|stderr|exit
-	Data     []byte `json:"data,omitempty"`
-	ExitCode int    `json:"exit_code,omitempty"`
-	Error    string `json:"error,omitempty"`
+	Type           string                `json:"type,omitempty"` // stdout|stderr|exit
+	Data           []byte                `json:"data,omitempty"`
+	ExitCode       int                   `json:"exit_code,omitempty"`
+	Error          string                `json:"error,omitempty"`
+	OverlayCapture *OverlayCaptureResult `json:"overlay_capture,omitempty"`
 }
 
 func DecodeRequest(r io.Reader) (ExecRequest, error) {
@@ -158,6 +179,11 @@ func DecodeStreamResponse(r io.Reader, callbacks StreamCallbacks) (ExecResponse,
 			}
 			if errRaw, ok := raw["error"]; ok {
 				if err := json.Unmarshal(errRaw, &out.Error); err != nil {
+					return ExecResponse{}, err
+				}
+			}
+			if captureRaw, ok := raw["overlay_capture"]; ok {
+				if err := json.Unmarshal(captureRaw, &out.OverlayCapture); err != nil {
 					return ExecResponse{}, err
 				}
 			}
