@@ -20,12 +20,6 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-type blockVolumePlan struct {
-	ReuseNamespace       string
-	DependencyOutputKeys []string
-	Blocks               []blockVolumeBlockPlan
-}
-
 type blockVolumeBlockPlan struct {
 	BlockName                       string
 	Command                         []string
@@ -47,10 +41,20 @@ type blockVolumeBlockPlan struct {
 	CacheRecord                     cachestore.Record
 }
 
-type dependencyBlockVolumePlan blockVolumePlan
-type dependencyBlockVolumeBlockPlan = blockVolumeBlockPlan
-type serviceBlockVolumePlan blockVolumePlan
-type serviceBlockVolumeBlockPlan = blockVolumeBlockPlan
+type dependencyBlockVolumePlan struct {
+	ReuseNamespace string
+	Blocks         []dependencyBlockVolumeBlockPlan
+}
+
+type dependencyBlockVolumeBlockPlan blockVolumeBlockPlan
+
+type serviceBlockVolumePlan struct {
+	ReuseNamespace       string
+	DependencyOutputKeys []string
+	Blocks               []serviceBlockVolumeBlockPlan
+}
+
+type serviceBlockVolumeBlockPlan blockVolumeBlockPlan
 
 type blockVolumeRuntimeDecision struct {
 	Enabled        bool
@@ -118,43 +122,26 @@ func (s *Service) finalizeBlockVolumeBlockPlanBase(
 	}, nil
 }
 
-func (s *Service) lookupBlockVolumeCaches(ctx context.Context, stageName, backendName string, compiled *policy.CompiledPolicy, plan blockVolumePlan) (blockVolumePlan, error) {
-	if len(plan.Blocks) == 0 {
-		return plan, nil
-	}
-	store, err := s.cacheStoreOrErr()
+func lookupBlockVolumeCache(ctx context.Context, store cacheMetadataStore, stageName, backendName string, compiled *policy.CompiledPolicy, block blockVolumeBlockPlan) (blockVolumeBlockPlan, error) {
+	record, ok, err := store.GetReady(ctx, stageName, block.CacheKey)
 	if err != nil {
-		return plan, nil
+		return block, err
 	}
-
-	out := blockVolumePlan{
-		ReuseNamespace:       plan.ReuseNamespace,
-		DependencyOutputKeys: append([]string(nil), plan.DependencyOutputKeys...),
-		Blocks:               make([]blockVolumeBlockPlan, len(plan.Blocks)),
+	if !ok {
+		block.LookupReason = observability.CacheLookupReasonRecordNotFound
+		return block, nil
 	}
-	copy(out.Blocks, plan.Blocks)
-	for i := range out.Blocks {
-		block := &out.Blocks[i]
-		record, ok, err := store.GetReady(ctx, stageName, block.CacheKey)
-		if err != nil {
-			return out, err
-		}
-		if !ok {
-			block.LookupReason = observability.CacheLookupReasonRecordNotFound
-			continue
-		}
-		if reason := blockVolumeRecordMissReason(record, backendName, compiled, *block); reason != "" {
-			block.LookupReason = reason
-			continue
-		}
-		block.CacheHit = true
-		block.LookupReason = ""
-		block.CacheRecord = record
+	if reason := blockVolumeRecordMissReason(record, backendName, compiled, block); reason != "" {
+		block.LookupReason = reason
+		return block, nil
 	}
-	return out, nil
+	block.CacheHit = true
+	block.LookupReason = ""
+	block.CacheRecord = record
+	return block, nil
 }
 
-func blockVolumePlanCacheKeys(plan blockVolumePlan) []string {
+func dependencyBlockVolumePlanCacheKeys(plan dependencyBlockVolumePlan) []string {
 	if len(plan.Blocks) == 0 {
 		return nil
 	}
@@ -165,27 +152,11 @@ func blockVolumePlanCacheKeys(plan blockVolumePlan) []string {
 	return keys
 }
 
-func dependencyBlockVolumePlanCacheKeys(plan dependencyBlockVolumePlan) []string {
-	return blockVolumePlanCacheKeys(blockVolumePlan(plan))
-}
-
-func blockVolumePlanHitMissCounts(plan blockVolumePlan) (hits, misses int) {
-	for _, block := range plan.Blocks {
-		if block.CacheHit {
-			hits++
-			continue
-		}
-		misses++
-	}
-	return hits, misses
-}
-
-func setBlockVolumeLookupSpanAttributes(ctx context.Context, plan blockVolumePlan, err error) {
-	hits, misses := blockVolumePlanHitMissCounts(plan)
+func setBlockVolumeLookupSpanAttributes(ctx context.Context, blockCount, hits, misses int, err error) {
 	result := observability.CacheResultFailed
 	if err == nil {
 		result = observability.CacheResultMiss
-		if len(plan.Blocks) > 0 && misses == 0 {
+		if blockCount > 0 && misses == 0 {
 			result = observability.CacheResultHit
 		}
 	}

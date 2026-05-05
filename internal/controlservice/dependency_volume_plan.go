@@ -64,7 +64,8 @@ func (s *Service) lookupDependencyBlockVolumePlanForCreateSandbox(
 	), func(ctx context.Context) error {
 		var lookupErr error
 		plan, lookupErr = s.lookupDependencyBlockVolumeCaches(ctx, backendName, compiled, plan)
-		setBlockVolumeLookupSpanAttributes(ctx, blockVolumePlan(plan), lookupErr)
+		hits, misses := dependencyBlockVolumePlanHitMissCounts(plan)
+		setBlockVolumeLookupSpanAttributes(ctx, len(plan.Blocks), hits, misses, lookupErr)
 		return lookupErr
 	})
 	if err != nil {
@@ -148,12 +149,42 @@ func (s *Service) finalizeDependencyBlockVolumeBlockPlan(
 	blockPlan.PriorDependencyOutputKeysDigest = priorDigest
 	blockPlan.OutputVolumeLayoutVersion = dependencyVolumeOutputLayoutVersion
 	blockPlan.ProducerVersion = dependencyVolumeProducerVersion
-	return blockPlan, nil
+	return dependencyBlockVolumeBlockPlan(blockPlan), nil
 }
 
 func (s *Service) lookupDependencyBlockVolumeCaches(ctx context.Context, backendName string, compiled *policy.CompiledPolicy, plan dependencyBlockVolumePlan) (dependencyBlockVolumePlan, error) {
-	out, err := s.lookupBlockVolumeCaches(ctx, dependencyVolumeStageName, backendName, compiled, blockVolumePlan(plan))
-	return dependencyBlockVolumePlan(out), err
+	if len(plan.Blocks) == 0 {
+		return plan, nil
+	}
+	store, err := s.cacheStoreOrErr()
+	if err != nil {
+		return plan, nil
+	}
+
+	out := dependencyBlockVolumePlan{
+		ReuseNamespace: plan.ReuseNamespace,
+		Blocks:         make([]dependencyBlockVolumeBlockPlan, len(plan.Blocks)),
+	}
+	copy(out.Blocks, plan.Blocks)
+	for i := range out.Blocks {
+		block, err := lookupBlockVolumeCache(ctx, store, dependencyVolumeStageName, backendName, compiled, blockVolumeBlockPlan(out.Blocks[i]))
+		if err != nil {
+			return out, err
+		}
+		out.Blocks[i] = dependencyBlockVolumeBlockPlan(block)
+	}
+	return out, nil
+}
+
+func dependencyBlockVolumePlanHitMissCounts(plan dependencyBlockVolumePlan) (hits, misses int) {
+	for _, block := range plan.Blocks {
+		if block.CacheHit {
+			hits++
+			continue
+		}
+		misses++
+	}
+	return hits, misses
 }
 
 func (s *Service) logDependencyBlockVolumeCacheFallback(backendName string, blockCount int, reason string) {
@@ -171,7 +202,7 @@ func (s *Service) logDependencyBlockVolumeCacheLookup(backendName string, plan d
 	if s == nil || s.Logger == nil {
 		return
 	}
-	hits, misses := blockVolumePlanHitMissCounts(blockVolumePlan(plan))
+	hits, misses := dependencyBlockVolumePlanHitMissCounts(plan)
 	s.Logger.Debug("dependency block-volume cache lookup",
 		observability.LogFieldBackend, backendName,
 		"blocks", len(plan.Blocks),
