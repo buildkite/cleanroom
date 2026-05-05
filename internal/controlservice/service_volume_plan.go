@@ -7,14 +7,12 @@ import (
 
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/cachekey"
-	"github.com/buildkite/cleanroom/internal/cachestore"
 	"github.com/buildkite/cleanroom/internal/observability"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/repositorybundle"
 	"github.com/buildkite/cleanroom/internal/repositorychangeset"
 	"github.com/buildkite/cleanroom/internal/repositorycheckout"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -22,32 +20,6 @@ const (
 	serviceVolumeProducerVersion     = "cleanroom/service-volume-v1"
 	serviceVolumeOutputLayoutVersion = "aggregate-v1"
 )
-
-type serviceBlockVolumePlan struct {
-	ReuseNamespace       string
-	DependencyOutputKeys []string
-	Blocks               []serviceBlockVolumeBlockPlan
-}
-
-type serviceBlockVolumeBlockPlan struct {
-	BlockName                    string
-	Command                      []string
-	Env                          map[string]string
-	Inputs                       []string
-	Outputs                      policy.StageBlockOutputs
-	CacheKey                     string
-	CommandDigest                string
-	EnvDigest                    string
-	InputManifestDigest          string
-	NormalizedOutputsDigest      string
-	DependencyOutputKeysDigest   string
-	PriorServiceOutputKeysDigest string
-	OutputVolumeLayoutVersion    string
-	ProducerVersion              string
-	CacheHit                     bool
-	LookupReason                 string
-	CacheRecord                  cachestore.Record
-}
 
 func (s *Service) maybeLookupServiceBlockVolumePlanForCreateSandbox(
 	ctx context.Context,
@@ -115,7 +87,7 @@ func (s *Service) lookupServiceBlockVolumePlanForCreateSandbox(
 	), func(ctx context.Context) error {
 		var lookupErr error
 		plan, lookupErr = s.lookupServiceBlockVolumeCaches(ctx, backendName, compiled, plan)
-		setServiceBlockVolumeLookupSpanAttributes(ctx, plan, lookupErr)
+		setBlockVolumeLookupSpanAttributes(ctx, blockVolumePlan(plan), lookupErr)
 		return lookupErr
 	})
 	if err != nil {
@@ -174,21 +146,9 @@ func (s *Service) finalizeServiceBlockVolumeBlockPlan(
 	block policy.StageBlock,
 	priorServiceOutputKeys []string,
 ) (serviceBlockVolumeBlockPlan, error) {
-	inputDigest, err := s.stageInputFilesDigest(ctx, repository, changeset, commitBundle, block.Inputs.Files, serviceVolumeStageName+" "+block.Name)
+	blockPlan, err := s.finalizeBlockVolumeBlockPlanBase(ctx, repository, changeset, commitBundle, serviceVolumeStageName, "service", block)
 	if err != nil {
 		return serviceBlockVolumeBlockPlan{}, err
-	}
-	commandDigest, err := digestCanonicalJSON(block.Command)
-	if err != nil {
-		return serviceBlockVolumeBlockPlan{}, fmt.Errorf("digest service block %q command: %w", block.Name, err)
-	}
-	envDigest, err := digestCanonicalJSON(sortedEnvEntries(block.Env))
-	if err != nil {
-		return serviceBlockVolumeBlockPlan{}, fmt.Errorf("digest service block %q env: %w", block.Name, err)
-	}
-	outputsDigest, err := digestCanonicalJSON(block.Outputs)
-	if err != nil {
-		return serviceBlockVolumeBlockPlan{}, fmt.Errorf("digest service block %q outputs: %w", block.Name, err)
 	}
 	dependencyDigest, err := digestCanonicalJSON(append([]string{}, dependencyOutputKeys...))
 	if err != nil {
@@ -205,10 +165,10 @@ func (s *Service) finalizeServiceBlockVolumeBlockPlan(
 		ReuseNamespace:               strings.TrimSpace(reuseNamespace),
 		CompiledPolicyHash:           strings.TrimSpace(compiled.Hash),
 		BlockName:                    strings.TrimSpace(block.Name),
-		CommandDigest:                commandDigest,
-		EnvDigest:                    envDigest,
-		InputManifestDigest:          strings.TrimSpace(inputDigest),
-		NormalizedOutputsDigest:      outputsDigest,
+		CommandDigest:                blockPlan.CommandDigest,
+		EnvDigest:                    blockPlan.EnvDigest,
+		InputManifestDigest:          blockPlan.InputManifestDigest,
+		NormalizedOutputsDigest:      blockPlan.NormalizedOutputsDigest,
 		DependencyOutputKeysDigest:   dependencyDigest,
 		PriorServiceOutputKeysDigest: priorDigest,
 		OutputVolumeLayoutVersion:    serviceVolumeOutputLayoutVersion,
@@ -218,96 +178,17 @@ func (s *Service) finalizeServiceBlockVolumeBlockPlan(
 		return serviceBlockVolumeBlockPlan{}, fmt.Errorf("service block %q produced an empty cache key", block.Name)
 	}
 
-	return serviceBlockVolumeBlockPlan{
-		BlockName:                    block.Name,
-		Command:                      append([]string(nil), block.Command...),
-		Env:                          cloneDependencyBlockEnv(block.Env),
-		Inputs:                       append([]string(nil), block.Inputs.Files...),
-		Outputs:                      cloneStageBlockOutputs(block.Outputs),
-		CacheKey:                     cacheKey,
-		CommandDigest:                commandDigest,
-		EnvDigest:                    envDigest,
-		InputManifestDigest:          strings.TrimSpace(inputDigest),
-		NormalizedOutputsDigest:      outputsDigest,
-		DependencyOutputKeysDigest:   dependencyDigest,
-		PriorServiceOutputKeysDigest: priorDigest,
-		OutputVolumeLayoutVersion:    serviceVolumeOutputLayoutVersion,
-		ProducerVersion:              serviceVolumeProducerVersion,
-	}, nil
+	blockPlan.CacheKey = cacheKey
+	blockPlan.DependencyOutputKeysDigest = dependencyDigest
+	blockPlan.PriorServiceOutputKeysDigest = priorDigest
+	blockPlan.OutputVolumeLayoutVersion = serviceVolumeOutputLayoutVersion
+	blockPlan.ProducerVersion = serviceVolumeProducerVersion
+	return blockPlan, nil
 }
 
 func (s *Service) lookupServiceBlockVolumeCaches(ctx context.Context, backendName string, compiled *policy.CompiledPolicy, plan serviceBlockVolumePlan) (serviceBlockVolumePlan, error) {
-	if len(plan.Blocks) == 0 {
-		return plan, nil
-	}
-	store, err := s.cacheStoreOrErr()
-	if err != nil {
-		return plan, nil
-	}
-
-	out := serviceBlockVolumePlan{
-		ReuseNamespace:       plan.ReuseNamespace,
-		DependencyOutputKeys: append([]string(nil), plan.DependencyOutputKeys...),
-		Blocks:               make([]serviceBlockVolumeBlockPlan, len(plan.Blocks)),
-	}
-	copy(out.Blocks, plan.Blocks)
-	for i := range out.Blocks {
-		block := &out.Blocks[i]
-		record, ok, err := store.GetReady(ctx, serviceVolumeStageName, block.CacheKey)
-		if err != nil {
-			return out, err
-		}
-		if !ok {
-			block.LookupReason = observability.CacheLookupReasonRecordNotFound
-			continue
-		}
-		if reason := serviceBlockVolumeRecordMissReason(record, backendName, compiled, *block); reason != "" {
-			block.LookupReason = reason
-			continue
-		}
-		block.CacheHit = true
-		block.LookupReason = ""
-		block.CacheRecord = record
-	}
-	return out, nil
-}
-
-func dependencyBlockVolumePlanCacheKeys(plan dependencyBlockVolumePlan) []string {
-	if len(plan.Blocks) == 0 {
-		return nil
-	}
-	keys := make([]string, 0, len(plan.Blocks))
-	for _, block := range plan.Blocks {
-		keys = append(keys, block.CacheKey)
-	}
-	return keys
-}
-
-func serviceBlockVolumePlanHitMissCounts(plan serviceBlockVolumePlan) (hits, misses int) {
-	for _, block := range plan.Blocks {
-		if block.CacheHit {
-			hits++
-			continue
-		}
-		misses++
-	}
-	return hits, misses
-}
-
-func setServiceBlockVolumeLookupSpanAttributes(ctx context.Context, plan serviceBlockVolumePlan, err error) {
-	hits, misses := serviceBlockVolumePlanHitMissCounts(plan)
-	result := observability.CacheResultFailed
-	if err == nil {
-		result = observability.CacheResultMiss
-		if len(plan.Blocks) > 0 && misses == 0 {
-			result = observability.CacheResultHit
-		}
-	}
-	trace.SpanFromContext(ctx).SetAttributes(
-		attribute.String(observability.AttrCacheResult, result),
-		attribute.Int("cleanroom.cache.hit_count", hits),
-		attribute.Int("cleanroom.cache.miss_count", misses),
-	)
+	out, err := s.lookupBlockVolumeCaches(ctx, serviceVolumeStageName, backendName, compiled, blockVolumePlan(plan))
+	return serviceBlockVolumePlan(out), err
 }
 
 func (s *Service) logServiceBlockVolumeCacheFallback(backendName string, blockCount int, reason string) {
@@ -325,7 +206,7 @@ func (s *Service) logServiceBlockVolumeCacheLookup(backendName string, plan serv
 	if s == nil || s.Logger == nil {
 		return
 	}
-	hits, misses := serviceBlockVolumePlanHitMissCounts(plan)
+	hits, misses := blockVolumePlanHitMissCounts(blockVolumePlan(plan))
 	s.Logger.Debug("service block-volume cache lookup",
 		observability.LogFieldBackend, backendName,
 		"blocks", len(plan.Blocks),
@@ -333,24 +214,4 @@ func (s *Service) logServiceBlockVolumeCacheLookup(backendName string, plan serv
 		"misses", misses,
 		"reuse_namespace", plan.ReuseNamespace,
 	)
-}
-
-func serviceBlockVolumeRecordMissReason(record cachestore.Record, backendName string, compiled *policy.CompiledPolicy, block serviceBlockVolumeBlockPlan) string {
-	if strings.TrimSpace(record.Backend) != strings.TrimSpace(backendName) {
-		return observability.CacheLookupReasonBackendMismatch
-	}
-	if compiled == nil || strings.TrimSpace(record.PolicyHash) != strings.TrimSpace(compiled.Hash) {
-		return observability.CacheLookupReasonPolicyHashMismatch
-	}
-	if strings.TrimSpace(record.InputManifestDigest) != strings.TrimSpace(block.InputManifestDigest) ||
-		strings.TrimSpace(record.CommandDigest) != strings.TrimSpace(block.CommandDigest) ||
-		strings.TrimSpace(record.EnvDigest) != strings.TrimSpace(block.EnvDigest) ||
-		strings.TrimSpace(record.NormalizedOutputsDigest) != strings.TrimSpace(block.NormalizedOutputsDigest) ||
-		strings.TrimSpace(record.ProducerVersion) != strings.TrimSpace(block.ProducerVersion) {
-		return observability.CacheLookupReasonRecordNotFound
-	}
-	if reason := blockVolumeOutputRecordMissReason(block.Outputs, record.OutputRecords); reason != "" {
-		return reason
-	}
-	return ""
 }

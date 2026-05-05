@@ -2,23 +2,17 @@ package controlservice
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"fmt"
-	"sort"
 	"strings"
 
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/cachekey"
-	"github.com/buildkite/cleanroom/internal/cachestore"
 	"github.com/buildkite/cleanroom/internal/observability"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/repositorybundle"
 	"github.com/buildkite/cleanroom/internal/repositorychangeset"
 	"github.com/buildkite/cleanroom/internal/repositorycheckout"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -26,55 +20,6 @@ const (
 	dependencyVolumeProducerVersion     = "cleanroom/dependency-volume-v1"
 	dependencyVolumeOutputLayoutVersion = "aggregate-v1"
 )
-
-type dependencyBlockVolumePlan struct {
-	ReuseNamespace string
-	Blocks         []dependencyBlockVolumeBlockPlan
-}
-
-type dependencyBlockVolumeBlockPlan struct {
-	BlockName                       string
-	Command                         []string
-	Env                             map[string]string
-	Inputs                          []string
-	Outputs                         policy.StageBlockOutputs
-	CacheKey                        string
-	CommandDigest                   string
-	EnvDigest                       string
-	InputManifestDigest             string
-	NormalizedOutputsDigest         string
-	PriorDependencyOutputKeysDigest string
-	OutputVolumeLayoutVersion       string
-	ProducerVersion                 string
-	CacheHit                        bool
-	LookupReason                    string
-	CacheRecord                     cachestore.Record
-}
-
-type dependencyBlockVolumeRuntimeDecision struct {
-	Enabled        bool
-	FallbackReason string
-}
-
-func dependencyBlockVolumeRuntimeDecisionForAdapter(adapter backend.Adapter) dependencyBlockVolumeRuntimeDecision {
-	return blockVolumeRuntimeDecisionForAdapter(adapter)
-}
-
-func blockVolumeRuntimeDecisionForAdapter(adapter backend.Adapter) dependencyBlockVolumeRuntimeDecision {
-	if adapter == nil {
-		return dependencyBlockVolumeRuntimeDecision{FallbackReason: "backend adapter unavailable"}
-	}
-	caps := backend.CapabilitiesForAdapter(adapter)
-	for _, required := range []string{
-		backend.CapabilitySandboxCacheOutputVolumes,
-		backend.CapabilitySandboxOverlayWriteCapture,
-	} {
-		if !caps[required] {
-			return dependencyBlockVolumeRuntimeDecision{FallbackReason: "backend missing capability " + required}
-		}
-	}
-	return dependencyBlockVolumeRuntimeDecision{Enabled: true}
-}
 
 func (s *Service) lookupDependencyBlockVolumePlanForCreateSandbox(
 	ctx context.Context,
@@ -119,7 +64,7 @@ func (s *Service) lookupDependencyBlockVolumePlanForCreateSandbox(
 	), func(ctx context.Context) error {
 		var lookupErr error
 		plan, lookupErr = s.lookupDependencyBlockVolumeCaches(ctx, backendName, compiled, plan)
-		setDependencyBlockVolumeLookupSpanAttributes(ctx, plan, lookupErr)
+		setBlockVolumeLookupSpanAttributes(ctx, blockVolumePlan(plan), lookupErr)
 		return lookupErr
 	})
 	if err != nil {
@@ -172,21 +117,9 @@ func (s *Service) finalizeDependencyBlockVolumeBlockPlan(
 	block policy.StageBlock,
 	priorOutputKeys []string,
 ) (dependencyBlockVolumeBlockPlan, error) {
-	inputDigest, err := s.stageInputFilesDigest(ctx, repository, changeset, commitBundle, block.Inputs.Files, dependencyVolumeStageName+" "+block.Name)
+	blockPlan, err := s.finalizeBlockVolumeBlockPlanBase(ctx, repository, changeset, commitBundle, dependencyVolumeStageName, "dependency", block)
 	if err != nil {
 		return dependencyBlockVolumeBlockPlan{}, err
-	}
-	commandDigest, err := digestCanonicalJSON(block.Command)
-	if err != nil {
-		return dependencyBlockVolumeBlockPlan{}, fmt.Errorf("digest dependency block %q command: %w", block.Name, err)
-	}
-	envDigest, err := digestCanonicalJSON(sortedEnvEntries(block.Env))
-	if err != nil {
-		return dependencyBlockVolumeBlockPlan{}, fmt.Errorf("digest dependency block %q env: %w", block.Name, err)
-	}
-	outputsDigest, err := digestCanonicalJSON(block.Outputs)
-	if err != nil {
-		return dependencyBlockVolumeBlockPlan{}, fmt.Errorf("digest dependency block %q outputs: %w", block.Name, err)
 	}
 	priorDigest, err := digestCanonicalJSON(append([]string{}, priorOutputKeys...))
 	if err != nil {
@@ -199,10 +132,10 @@ func (s *Service) finalizeDependencyBlockVolumeBlockPlan(
 		ReuseNamespace:                  strings.TrimSpace(reuseNamespace),
 		CompiledPolicyHash:              strings.TrimSpace(compiled.Hash),
 		BlockName:                       strings.TrimSpace(block.Name),
-		CommandDigest:                   commandDigest,
-		EnvDigest:                       envDigest,
-		InputManifestDigest:             strings.TrimSpace(inputDigest),
-		NormalizedOutputsDigest:         outputsDigest,
+		CommandDigest:                   blockPlan.CommandDigest,
+		EnvDigest:                       blockPlan.EnvDigest,
+		InputManifestDigest:             blockPlan.InputManifestDigest,
+		NormalizedOutputsDigest:         blockPlan.NormalizedOutputsDigest,
 		PriorDependencyOutputKeysDigest: priorDigest,
 		OutputVolumeLayoutVersion:       dependencyVolumeOutputLayoutVersion,
 		ProducerVersion:                 dependencyVolumeProducerVersion,
@@ -211,83 +144,16 @@ func (s *Service) finalizeDependencyBlockVolumeBlockPlan(
 		return dependencyBlockVolumeBlockPlan{}, fmt.Errorf("dependency block %q produced an empty cache key", block.Name)
 	}
 
-	return dependencyBlockVolumeBlockPlan{
-		BlockName:                       block.Name,
-		Command:                         append([]string(nil), block.Command...),
-		Env:                             cloneDependencyBlockEnv(block.Env),
-		Inputs:                          append([]string(nil), block.Inputs.Files...),
-		Outputs:                         cloneStageBlockOutputs(block.Outputs),
-		CacheKey:                        cacheKey,
-		CommandDigest:                   commandDigest,
-		EnvDigest:                       envDigest,
-		InputManifestDigest:             strings.TrimSpace(inputDigest),
-		NormalizedOutputsDigest:         outputsDigest,
-		PriorDependencyOutputKeysDigest: priorDigest,
-		OutputVolumeLayoutVersion:       dependencyVolumeOutputLayoutVersion,
-		ProducerVersion:                 dependencyVolumeProducerVersion,
-	}, nil
+	blockPlan.CacheKey = cacheKey
+	blockPlan.PriorDependencyOutputKeysDigest = priorDigest
+	blockPlan.OutputVolumeLayoutVersion = dependencyVolumeOutputLayoutVersion
+	blockPlan.ProducerVersion = dependencyVolumeProducerVersion
+	return blockPlan, nil
 }
 
 func (s *Service) lookupDependencyBlockVolumeCaches(ctx context.Context, backendName string, compiled *policy.CompiledPolicy, plan dependencyBlockVolumePlan) (dependencyBlockVolumePlan, error) {
-	if len(plan.Blocks) == 0 {
-		return plan, nil
-	}
-	store, err := s.cacheStoreOrErr()
-	if err != nil {
-		return plan, nil
-	}
-
-	out := dependencyBlockVolumePlan{
-		ReuseNamespace: plan.ReuseNamespace,
-		Blocks:         make([]dependencyBlockVolumeBlockPlan, len(plan.Blocks)),
-	}
-	copy(out.Blocks, plan.Blocks)
-	for i := range out.Blocks {
-		block := &out.Blocks[i]
-		record, ok, err := store.GetReady(ctx, dependencyVolumeStageName, block.CacheKey)
-		if err != nil {
-			return out, err
-		}
-		if !ok {
-			block.LookupReason = observability.CacheLookupReasonRecordNotFound
-			continue
-		}
-		if reason := dependencyBlockVolumeRecordMissReason(record, backendName, compiled, *block); reason != "" {
-			block.LookupReason = reason
-			continue
-		}
-		block.CacheHit = true
-		block.LookupReason = ""
-		block.CacheRecord = record
-	}
-	return out, nil
-}
-
-func dependencyBlockVolumePlanHitMissCounts(plan dependencyBlockVolumePlan) (hits, misses int) {
-	for _, block := range plan.Blocks {
-		if block.CacheHit {
-			hits++
-			continue
-		}
-		misses++
-	}
-	return hits, misses
-}
-
-func setDependencyBlockVolumeLookupSpanAttributes(ctx context.Context, plan dependencyBlockVolumePlan, err error) {
-	hits, misses := dependencyBlockVolumePlanHitMissCounts(plan)
-	result := observability.CacheResultFailed
-	if err == nil {
-		result = observability.CacheResultMiss
-		if len(plan.Blocks) > 0 && misses == 0 {
-			result = observability.CacheResultHit
-		}
-	}
-	trace.SpanFromContext(ctx).SetAttributes(
-		attribute.String(observability.AttrCacheResult, result),
-		attribute.Int("cleanroom.cache.hit_count", hits),
-		attribute.Int("cleanroom.cache.miss_count", misses),
-	)
+	out, err := s.lookupBlockVolumeCaches(ctx, dependencyVolumeStageName, backendName, compiled, blockVolumePlan(plan))
+	return dependencyBlockVolumePlan(out), err
 }
 
 func (s *Service) logDependencyBlockVolumeCacheFallback(backendName string, blockCount int, reason string) {
@@ -305,7 +171,7 @@ func (s *Service) logDependencyBlockVolumeCacheLookup(backendName string, plan d
 	if s == nil || s.Logger == nil {
 		return
 	}
-	hits, misses := dependencyBlockVolumePlanHitMissCounts(plan)
+	hits, misses := blockVolumePlanHitMissCounts(blockVolumePlan(plan))
 	s.Logger.Debug("dependency block-volume cache lookup",
 		observability.LogFieldBackend, backendName,
 		"blocks", len(plan.Blocks),
@@ -313,124 +179,4 @@ func (s *Service) logDependencyBlockVolumeCacheLookup(backendName string, plan d
 		"misses", misses,
 		"reuse_namespace", plan.ReuseNamespace,
 	)
-}
-
-func dependencyBlockVolumeRecordMissReason(record cachestore.Record, backendName string, compiled *policy.CompiledPolicy, block dependencyBlockVolumeBlockPlan) string {
-	if strings.TrimSpace(record.Backend) != strings.TrimSpace(backendName) {
-		return observability.CacheLookupReasonBackendMismatch
-	}
-	if compiled == nil || strings.TrimSpace(record.PolicyHash) != strings.TrimSpace(compiled.Hash) {
-		return observability.CacheLookupReasonPolicyHashMismatch
-	}
-	if strings.TrimSpace(record.InputManifestDigest) != strings.TrimSpace(block.InputManifestDigest) ||
-		strings.TrimSpace(record.CommandDigest) != strings.TrimSpace(block.CommandDigest) ||
-		strings.TrimSpace(record.EnvDigest) != strings.TrimSpace(block.EnvDigest) ||
-		strings.TrimSpace(record.NormalizedOutputsDigest) != strings.TrimSpace(block.NormalizedOutputsDigest) ||
-		strings.TrimSpace(record.ProducerVersion) != strings.TrimSpace(block.ProducerVersion) {
-		return observability.CacheLookupReasonRecordNotFound
-	}
-	if reason := blockVolumeOutputRecordMissReason(block.Outputs, record.OutputRecords); reason != "" {
-		return reason
-	}
-	return ""
-}
-
-func blockVolumeOutputRecordMissReason(outputs policy.StageBlockOutputs, records []cachestore.OutputRecord) string {
-	expected := make(map[string]struct{}, len(outputs.Dirs)+len(outputs.Files))
-	for _, dir := range outputs.Dirs {
-		expected[blockVolumeOutputRecordKey("dir", dir)] = struct{}{}
-	}
-	for _, file := range outputs.Files {
-		expected[blockVolumeOutputRecordKey("file", file)] = struct{}{}
-	}
-	if len(expected) == 0 || len(records) != len(expected) {
-		return observability.CacheLookupReasonRecordNotFound
-	}
-
-	seen := make(map[string]struct{}, len(records))
-	storageDriver := ""
-	storageRef := ""
-	sourceSnapshotRef := ""
-	for _, record := range records {
-		kind := strings.TrimSpace(record.Kind)
-		path := strings.TrimSpace(record.Path)
-		key := blockVolumeOutputRecordKey(kind, path)
-		if _, ok := expected[key]; !ok {
-			return observability.CacheLookupReasonRecordNotFound
-		}
-		if _, ok := seen[key]; ok {
-			return observability.CacheLookupReasonRecordNotFound
-		}
-		seen[key] = struct{}{}
-		if strings.TrimSpace(record.VolumeSubpath) == "" ||
-			strings.TrimSpace(record.StorageDriver) == "" ||
-			strings.TrimSpace(record.StorageRef) == "" {
-			return observability.CacheLookupReasonRecordNotFound
-		}
-		recordStorageDriver := strings.TrimSpace(record.StorageDriver)
-		recordStorageRef := strings.TrimSpace(record.StorageRef)
-		recordSourceSnapshotRef := blockVolumeSourceSnapshotRef(record)
-		if storageDriver == "" && storageRef == "" && sourceSnapshotRef == "" {
-			storageDriver = recordStorageDriver
-			storageRef = recordStorageRef
-			sourceSnapshotRef = recordSourceSnapshotRef
-			continue
-		}
-		if recordStorageDriver != storageDriver || recordStorageRef != storageRef || recordSourceSnapshotRef != sourceSnapshotRef {
-			return observability.CacheLookupReasonRecordNotFound
-		}
-	}
-	return ""
-}
-
-func blockVolumeOutputRecordKey(kind, path string) string {
-	return strings.TrimSpace(kind) + "\x00" + strings.TrimSpace(path)
-}
-
-type envEntry struct {
-	Name  string `json:"name"`
-	Value string `json:"value"`
-}
-
-func sortedEnvEntries(env map[string]string) []envEntry {
-	if len(env) == 0 {
-		return nil
-	}
-	keys := make([]string, 0, len(env))
-	for key := range env {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	entries := make([]envEntry, 0, len(keys))
-	for _, key := range keys {
-		entries = append(entries, envEntry{Name: key, Value: env[key]})
-	}
-	return entries
-}
-
-func cloneStageBlockOutputs(outputs policy.StageBlockOutputs) policy.StageBlockOutputs {
-	return policy.StageBlockOutputs{
-		Dirs:  append([]string(nil), outputs.Dirs...),
-		Files: append([]string(nil), outputs.Files...),
-	}
-}
-
-func cloneDependencyBlockEnv(env map[string]string) map[string]string {
-	if len(env) == 0 {
-		return nil
-	}
-	out := make(map[string]string, len(env))
-	for key, value := range env {
-		out[key] = value
-	}
-	return out
-}
-
-func digestCanonicalJSON(value any) (string, error) {
-	payload, err := json.Marshal(value)
-	if err != nil {
-		return "", err
-	}
-	sum := sha256.Sum256(payload)
-	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
