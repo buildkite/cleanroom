@@ -50,14 +50,6 @@ func serviceBlockVolumeOutputSpecs(plan serviceBlockVolumePlan) ([]backend.Cache
 	return blockVolumeOutputSpecs(blocks)
 }
 
-func dependencyBlockVolumeFileCaptures(block dependencyBlockVolumeBlockPlan) []backend.CacheOutputFileCapture {
-	return blockVolumeFileCaptures(dependencyVolumeStageName, block.CacheKey, block.Outputs)
-}
-
-func serviceBlockVolumeFileCaptures(block serviceBlockVolumeBlockPlan) []backend.CacheOutputFileCapture {
-	return blockVolumeFileCaptures(serviceVolumeStageName, block.CacheKey, block.Outputs)
-}
-
 func blockVolumeFileCaptures(stage, cacheKey string, outputs policy.StageBlockOutputs) []backend.CacheOutputFileCapture {
 	if len(outputs.Files) == 0 {
 		return nil

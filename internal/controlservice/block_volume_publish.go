@@ -26,6 +26,20 @@ type blockVolumePublishBlock struct {
 	CacheHit                bool
 }
 
+func blockVolumePublishBlockFromPlanBlock(block blockVolumeBlockPlan) blockVolumePublishBlock {
+	return blockVolumePublishBlock{
+		BlockName:               block.BlockName,
+		Outputs:                 block.Outputs,
+		CacheKey:                block.CacheKey,
+		CommandDigest:           block.CommandDigest,
+		EnvDigest:               block.EnvDigest,
+		InputManifestDigest:     block.InputManifestDigest,
+		NormalizedOutputsDigest: block.NormalizedOutputsDigest,
+		ProducerVersion:         block.ProducerVersion,
+		CacheHit:                block.CacheHit,
+	}
+}
+
 type blockVolumePublishPhase struct {
 	StageName               string
 	PublishWarning          string

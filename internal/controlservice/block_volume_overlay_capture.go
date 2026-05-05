@@ -11,14 +11,6 @@ const blockVolumeOverlayCaptureRoot = "/run/cleanroom/overlay-captures"
 
 var blockVolumeOverlayCaptureIgnoredPrefixes = []string{"/tmp", "/var/tmp", "/run"}
 
-func dependencyBlockVolumeOverlayCapture(block dependencyBlockVolumeBlockPlan) *backend.OverlayCapture {
-	return blockVolumeOverlayCapture(dependencyVolumeStageName, block.CacheKey, block.Outputs)
-}
-
-func serviceBlockVolumeOverlayCapture(block serviceBlockVolumeBlockPlan) *backend.OverlayCapture {
-	return blockVolumeOverlayCapture(serviceVolumeStageName, block.CacheKey, block.Outputs)
-}
-
 func blockVolumeOverlayCapture(stage, cacheKey string, outputs policy.StageBlockOutputs) *backend.OverlayCapture {
 	return &backend.OverlayCapture{
 		UpperDir:            filepath.Join(blockVolumeOverlayCaptureRoot, blockVolumeID(stage, cacheKey), "upper"),
