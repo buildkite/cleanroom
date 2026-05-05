@@ -369,7 +369,7 @@ func (m *Manager) registerHTTPS(ctx context.Context, ownerID, sandboxID string, 
 	if name == "" {
 		name = sandboxID
 	}
-	if err := validateDNSLabel(name); err != nil {
+	if err := validateHTTPSRouteName(name); err != nil {
 		return nil, err
 	}
 	host := name + "." + m.domain
@@ -523,8 +523,15 @@ func (m *Manager) newHTTPSProxy(r *route) (*httputil.ReverseProxy, *http.Transpo
 			return r.dialer(ctx, r.sandboxID, r.guestPort)
 		},
 	}
-	proxy := httputil.NewSingleHostReverseProxy(target)
-	proxy.Transport = transport
+	proxy := &httputil.ReverseProxy{
+		Transport: transport,
+		Rewrite: func(req *httputil.ProxyRequest) {
+			req.SetURL(target)
+			req.Out.Host = req.In.Host
+			req.SetXForwarded()
+			req.Out.Header.Set("X-Forwarded-Port", forwardedPort(req.In))
+		},
+	}
 	proxy.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, err error) {
 		if m.logger != nil {
 			m.logger.Warn("https exposure proxy failed", "sandbox_id", r.sandboxID, "guest_port", r.guestPort, "hostname", r.hostname, "error", err)
@@ -547,6 +554,9 @@ func (m *Manager) handleHTTPS(w http.ResponseWriter, req *http.Request) {
 	}
 	m.mu.RLock()
 	r := m.httpsRoutes[host]
+	if r == nil {
+		r = m.httpsRoutes[wildcardHost(host)]
+	}
 	m.mu.RUnlock()
 	if r == nil {
 		http.NotFound(w, req)
@@ -674,6 +684,40 @@ func validPort(port int32) (int, error) {
 	return int(port), nil
 }
 
+func validateDNSName(name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return errors.New("missing dns name")
+	}
+	for _, label := range strings.Split(name, ".") {
+		if label == "" {
+			return fmt.Errorf("dns name %q contains an empty label", name)
+		}
+		if err := validateDNSLabel(label); err != nil {
+			return fmt.Errorf("dns name %q: %w", name, err)
+		}
+	}
+	return nil
+}
+
+func validateHTTPSRouteName(name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return errors.New("missing dns name")
+	}
+	if strings.HasPrefix(name, "*.") {
+		suffix := strings.TrimPrefix(name, "*.")
+		if suffix == "" {
+			return fmt.Errorf("dns name %q must include a wildcard suffix", name)
+		}
+		return validateDNSName(suffix)
+	}
+	if strings.Contains(name, ".") {
+		return fmt.Errorf("dns name %q must be an exact single label or a leading wildcard", name)
+	}
+	return validateDNSLabel(name)
+}
+
 func validateDNSLabel(label string) error {
 	label = strings.TrimSpace(label)
 	if label == "" {
@@ -695,6 +739,36 @@ func validateDNSLabel(label string) error {
 		}
 	}
 	return nil
+}
+
+func forwardedPort(req *http.Request) string {
+	if req == nil {
+		return "80"
+	}
+	if _, port, err := net.SplitHostPort(strings.TrimSpace(req.Host)); err == nil && port != "" {
+		return port
+	}
+	if req.URL != nil {
+		if port := req.URL.Port(); port != "" {
+			return port
+		}
+	}
+	if req.TLS != nil {
+		return "443"
+	}
+	return "80"
+}
+
+func wildcardHost(host string) string {
+	host = normalizeDomain(host)
+	if host == "" {
+		return ""
+	}
+	labels := strings.Split(host, ".")
+	if len(labels) < 2 {
+		return ""
+	}
+	return "*." + strings.Join(labels[1:], ".")
 }
 
 func normalizeRequestHost(host string) string {

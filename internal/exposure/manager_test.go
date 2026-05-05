@@ -2,9 +2,12 @@ package exposure
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strconv"
 	"strings"
@@ -188,6 +191,37 @@ func TestRegisterHTTPSBuildsCleanroomLocalhostRoute(t *testing.T) {
 	manager.mu.RUnlock()
 	if ok {
 		t.Fatal("expected release owner to remove https route")
+	}
+}
+
+func TestRegisterHTTPSRejectsExplicitDottedRouteName(t *testing.T) {
+	t.Parallel()
+
+	manager := NewManager(Config{
+		HTTPSListen: net.JoinHostPort("127.0.0.1", strconv.Itoa(freeTCPPort(t))),
+		TLSDir:      t.TempDir(),
+	})
+	t.Cleanup(func() {
+		if err := manager.Close(); err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	})
+
+	_, err := manager.Register(context.Background(), RegisterRequest{
+		OwnerID:   "owner-1",
+		SandboxID: "sandbox-1",
+		Exposure: &cleanroomv1.PortExposure{
+			Protocol:  "https",
+			Name:      "api.buildkite",
+			GuestPort: 3000,
+		},
+		Dialer: testDialer,
+	})
+	if err == nil {
+		t.Fatal("expected dotted exact route to be rejected")
+	}
+	if !strings.Contains(err.Error(), "exact single label or a leading wildcard") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -408,6 +442,145 @@ func TestRegisterHTTPSReusesProxyTransport(t *testing.T) {
 	}
 }
 
+func TestHandleHTTPSPrefersExactRouteBeforeWildcard(t *testing.T) {
+	t.Parallel()
+
+	exactServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "exact")
+	}))
+	t.Cleanup(exactServer.Close)
+
+	wildcardServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "wildcard")
+	}))
+	t.Cleanup(wildcardServer.Close)
+
+	manager := NewManager(Config{TLSDir: t.TempDir()})
+	t.Cleanup(func() {
+		if err := manager.Close(); err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	})
+
+	registerHTTPSRouteForTest(t, manager, "owner-exact", "sandbox-exact", "buildkite", backendDialerFromURL(t, exactServer.URL))
+	registerHTTPSRouteForTest(t, manager, "owner-wildcard", "sandbox-wildcard", "*.buildkite", backendDialerFromURL(t, wildcardServer.URL))
+
+	tests := []struct {
+		name       string
+		host       string
+		wantStatus int
+		wantBody   string
+	}{
+		{name: "exact host", host: "buildkite.cleanroom.localhost", wantStatus: http.StatusOK, wantBody: "exact"},
+		{name: "single label wildcard", host: "api.buildkite.cleanroom.localhost", wantStatus: http.StatusOK, wantBody: "wildcard"},
+		{name: "another single label wildcard", host: "agent.buildkite.cleanroom.localhost", wantStatus: http.StatusOK, wantBody: "wildcard"},
+		{name: "base host does not match wildcard", host: "cleanroom.localhost", wantStatus: http.StatusNotFound, wantBody: "404 page not found\n"},
+		{name: "deeper host does not match wildcard", host: "foo.bar.buildkite.cleanroom.localhost", wantStatus: http.StatusNotFound, wantBody: "404 page not found\n"},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			req := httptest.NewRequest(http.MethodGet, "https://"+tc.host+"/", nil)
+			req.Host = tc.host
+			req.TLS = &tls.ConnectionState{}
+			rr := httptest.NewRecorder()
+
+			manager.handleHTTPS(rr, req)
+
+			if got, want := rr.Code, tc.wantStatus; got != want {
+				t.Fatalf("unexpected status: got %d want %d", got, want)
+			}
+			if got, want := rr.Body.String(), tc.wantBody; got != want {
+				t.Fatalf("unexpected body: got %q want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestHTTPSProxyForwardsTrustedHeadersAndPreservesHost(t *testing.T) {
+	t.Parallel()
+
+	type observedRequest struct {
+		host             string
+		xForwardedHost   string
+		xForwardedProto  string
+		xForwardedPort   string
+		xForwardedFor    string
+		clientHeaderSeen string
+	}
+
+	seen := make(chan observedRequest, 1)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		seen <- observedRequest{
+			host:             req.Host,
+			xForwardedHost:   req.Header.Get("X-Forwarded-Host"),
+			xForwardedProto:  req.Header.Get("X-Forwarded-Proto"),
+			xForwardedPort:   req.Header.Get("X-Forwarded-Port"),
+			xForwardedFor:    req.Header.Get("X-Forwarded-For"),
+			clientHeaderSeen: req.Header.Get("X-Client-Test"),
+		}
+		w.Header().Set("Location", "https://"+req.Host+"/redirected")
+		w.WriteHeader(http.StatusFound)
+	}))
+	t.Cleanup(backend.Close)
+
+	manager := NewManager(Config{TLSDir: t.TempDir()})
+	t.Cleanup(func() {
+		if err := manager.Close(); err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	})
+
+	registerHTTPSRouteForTest(t, manager, "owner-1", "sandbox-1", "*.buildkite", backendDialerFromURL(t, backend.URL))
+
+	req := httptest.NewRequest(http.MethodGet, "https://api.buildkite.cleanroom.localhost:8143/sessions", nil)
+	req.Host = "api.buildkite.cleanroom.localhost:8143"
+	req.RemoteAddr = "127.0.0.1:54321"
+	req.TLS = &tls.ConnectionState{}
+	req.Header.Set("X-Forwarded-Host", "malicious.example")
+	req.Header.Set("X-Forwarded-Proto", "http")
+	req.Header.Set("X-Forwarded-Port", "9999")
+	req.Header.Set("X-Forwarded-For", "203.0.113.10")
+	req.Header.Set("X-Client-Test", "kept")
+
+	rr := httptest.NewRecorder()
+	manager.handleHTTPS(rr, req)
+
+	if got, want := rr.Code, http.StatusFound; got != want {
+		t.Fatalf("unexpected status: got %d want %d", got, want)
+	}
+	if got, want := rr.Header().Get("Location"), "https://api.buildkite.cleanroom.localhost:8143/redirected"; got != want {
+		t.Fatalf("unexpected redirect location: got %q want %q", got, want)
+	}
+
+	select {
+	case got := <-seen:
+		if got.host != "api.buildkite.cleanroom.localhost:8143" {
+			t.Fatalf("unexpected host: %q", got.host)
+		}
+		if got.xForwardedHost != "api.buildkite.cleanroom.localhost:8143" {
+			t.Fatalf("unexpected X-Forwarded-Host: %q", got.xForwardedHost)
+		}
+		if got.xForwardedProto != "https" {
+			t.Fatalf("unexpected X-Forwarded-Proto: %q", got.xForwardedProto)
+		}
+		if got.xForwardedPort != "8143" {
+			t.Fatalf("unexpected X-Forwarded-Port: %q", got.xForwardedPort)
+		}
+		if got.xForwardedFor == "" || !strings.Contains(got.xForwardedFor, "127.0.0.1") {
+			t.Fatalf("unexpected X-Forwarded-For: %q", got.xForwardedFor)
+		}
+		if got.clientHeaderSeen != "kept" {
+			t.Fatalf("unexpected preserved header value: %q", got.clientHeaderSeen)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for backend request")
+	}
+}
+
 func TestDNSReturnsNoErrorForKnownNonAQueries(t *testing.T) {
 	t.Parallel()
 
@@ -558,6 +731,35 @@ func freeDNSListen(t *testing.T) string {
 
 func testDialer(context.Context, string, int) (net.Conn, error) {
 	return nil, io.EOF
+}
+
+func registerHTTPSRouteForTest(t *testing.T, manager *Manager, ownerID, sandboxID, name string, dialer Dialer) {
+	t.Helper()
+	_, err := manager.Register(context.Background(), RegisterRequest{
+		OwnerID:   ownerID,
+		SandboxID: sandboxID,
+		Exposure: &cleanroomv1.PortExposure{
+			Protocol:  "https",
+			Name:      name,
+			GuestPort: 3000,
+		},
+		Dialer: dialer,
+	})
+	if err != nil {
+		t.Fatalf("Register returned error: %v", err)
+	}
+}
+
+func backendDialerFromURL(t *testing.T, rawURL string) Dialer {
+	t.Helper()
+	target, err := url.Parse(rawURL)
+	if err != nil {
+		t.Fatalf("parse backend URL %q: %v", rawURL, err)
+	}
+	return func(ctx context.Context, _ string, _ int) (net.Conn, error) {
+		var dialer net.Dialer
+		return dialer.DialContext(ctx, "tcp", target.Host)
+	}
 }
 
 type captureDNSResponseWriter struct {

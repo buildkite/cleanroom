@@ -10,12 +10,12 @@ func TestParseExposureFlags(t *testing.T) {
 
 	exposures, err := parseExposureFlags(
 		[]string{"5432", "15432:5432"},
-		[]string{"buildkite:3000", "3001"},
+		[]string{"buildkite:3000", "*.buildkite:3001", "3002"},
 	)
 	if err != nil {
 		t.Fatalf("parseExposureFlags returned error: %v", err)
 	}
-	if got, want := len(exposures), 4; got != want {
+	if got, want := len(exposures), 5; got != want {
 		t.Fatalf("unexpected exposure count: got %d want %d", got, want)
 	}
 	if got := exposures[0]; got.GetProtocol() != exposureProtocolTCP || got.GetHostPort() != 5432 || got.GetGuestPort() != 5432 {
@@ -27,8 +27,11 @@ func TestParseExposureFlags(t *testing.T) {
 	if got := exposures[2]; got.GetProtocol() != exposureProtocolHTTPS || got.GetName() != "buildkite" || got.GetGuestPort() != 3000 {
 		t.Fatalf("unexpected third exposure: %#v", got)
 	}
-	if got := exposures[3]; got.GetProtocol() != exposureProtocolHTTPS || got.GetName() != "" || got.GetGuestPort() != 3001 {
+	if got := exposures[3]; got.GetProtocol() != exposureProtocolHTTPS || got.GetName() != "*.buildkite" || got.GetGuestPort() != 3001 {
 		t.Fatalf("unexpected fourth exposure: %#v", got)
+	}
+	if got := exposures[4]; got.GetProtocol() != exposureProtocolHTTPS || got.GetName() != "" || got.GetGuestPort() != 3002 {
+		t.Fatalf("unexpected fifth exposure: %#v", got)
 	}
 }
 
@@ -47,6 +50,13 @@ func TestParseExposureFlagsRejectsInvalidSpecs(t *testing.T) {
 		{name: "tcp out of range", tcpSpecs: []string{"70000"}, want: "out of range"},
 		{name: "https empty", httpsSpec: []string{""}, want: "empty exposure"},
 		{name: "https bad name", httpsSpec: []string{"Buildkite:3000"}, want: "lowercase"},
+		{name: "https explicit dotted exact name", httpsSpec: []string{"api.buildkite:3000"}, want: "exact single label or a leading wildcard"},
+		{name: "https empty dotted label", httpsSpec: []string{"api..buildkite:3000"}, want: "empty DNS label"},
+		{name: "https trailing dot", httpsSpec: []string{"buildkite.:3000"}, want: "empty DNS label"},
+		{name: "https bare wildcard", httpsSpec: []string{"*:3000"}, want: "must contain only lowercase"},
+		{name: "https missing wildcard suffix", httpsSpec: []string{"*.:3000"}, want: "wildcard suffix"},
+		{name: "https wildcard in middle", httpsSpec: []string{"foo.*.buildkite:3000"}, want: "exact single label or a leading wildcard"},
+		{name: "https wildcard uppercase suffix", httpsSpec: []string{"*.API.buildkite:3000"}, want: "lowercase"},
 		{name: "https too many parts", httpsSpec: []string{"buildkite:https:3000"}, want: "expected [name:]<guest-port>"},
 		{name: "https bad port", httpsSpec: []string{"buildkite:port"}, want: "port must be numeric"},
 	}
