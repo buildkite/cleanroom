@@ -1077,7 +1077,7 @@ Reviewable slices:
   publication is unsafe. This is implemented in the third refactor slice.
 - Slice 4: extract backend-neutral cache-output volume helpers shared by
   Firecracker and darwin-vz, while leaving VM pause, storage-driver, and launch
-  details in each adapter.
+  details in each adapter. This is implemented in the fourth refactor slice.
 - Slice 5: reconcile the older layered-cache plan and the unused
   `internal/inputmanifest` package with the implemented block-volume model.
 - Slice 6: simplify `CreateSandbox` cache orchestration once the narrower

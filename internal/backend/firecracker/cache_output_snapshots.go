@@ -2,14 +2,13 @@ package firecracker
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/buildkite/cleanroom/internal/backend"
+	"github.com/buildkite/cleanroom/internal/backend/cacheoutput"
 	"github.com/buildkite/cleanroom/internal/observability"
 )
 
@@ -152,36 +151,13 @@ func (a *Adapter) SnapshotCacheOutputVolumes(ctx context.Context, req backend.Sn
 }
 
 func selectCacheOutputVolumes(volumes []preparedCacheOutputVolume, volumeIDs []string) ([]preparedCacheOutputVolume, error) {
-	if len(volumeIDs) == 0 {
-		return append([]preparedCacheOutputVolume(nil), volumes...), nil
-	}
-	byID := make(map[string]preparedCacheOutputVolume, len(volumes))
-	for _, volume := range volumes {
-		byID[strings.TrimSpace(volume.Spec.VolumeID)] = volume
-	}
-	selected := make([]preparedCacheOutputVolume, 0, len(volumeIDs))
-	seen := make(map[string]struct{}, len(volumeIDs))
-	for _, id := range volumeIDs {
-		id = strings.TrimSpace(id)
-		if id == "" {
-			return nil, errors.New("cache output volume id cannot be empty")
-		}
-		if _, ok := seen[id]; ok {
-			return nil, fmt.Errorf("duplicate cache output volume id %q", id)
-		}
-		seen[id] = struct{}{}
-		volume, ok := byID[id]
-		if !ok {
-			return nil, fmt.Errorf("unknown cache output volume id %q", id)
-		}
-		selected = append(selected, volume)
-	}
-	return selected, nil
+	return cacheoutput.SelectByVolumeID(volumes, volumeIDs, func(volume preparedCacheOutputVolume) string {
+		return volume.Spec.VolumeID
+	})
 }
 
 func cacheOutputSnapshotID(prefix, volumeID string) string {
-	hash := sha256String(strings.TrimSpace(volumeID))
-	return strings.TrimSpace(prefix) + "-" + hash[:16]
+	return cacheoutput.SnapshotID(prefix, volumeID)
 }
 
 func cacheOutputSnapshotConfig(cfg backend.FirecrackerConfig, spec backend.CacheOutputVolumeSpec, volumeRef string) (backend.FirecrackerConfig, error) {
@@ -192,23 +168,7 @@ func cacheOutputSnapshotConfig(cfg backend.FirecrackerConfig, spec backend.Cache
 }
 
 func cacheOutputVolumeSnapshotOutputs(spec backend.CacheOutputVolumeSpec) []backend.CacheOutputVolumeSnapshotOutput {
-	out := make([]backend.CacheOutputVolumeSnapshotOutput, 0, len(spec.DirMappings)+len(spec.FileMappings))
-	for _, mapping := range spec.DirMappings {
-		out = append(out, backend.CacheOutputVolumeSnapshotOutput{
-			Kind:          "dir",
-			GuestPath:     strings.TrimSpace(mapping.GuestPath),
-			VolumeSubpath: strings.TrimSpace(mapping.Subpath),
-		})
-	}
-	for _, mapping := range spec.FileMappings {
-		out = append(out, backend.CacheOutputVolumeSnapshotOutput{
-			Kind:          "file",
-			GuestPath:     strings.TrimSpace(mapping.GuestPath),
-			VolumeSubpath: strings.TrimSpace(mapping.Subpath),
-			Mode:          mapping.Mode.Perm(),
-		})
-	}
-	return out
+	return cacheoutput.SnapshotOutputs(spec)
 }
 
 func effectiveSnapshotDriver(cfg backend.FirecrackerConfig) string {
@@ -217,9 +177,4 @@ func effectiveSnapshotDriver(cfg backend.FirecrackerConfig) string {
 		return "file"
 	}
 	return driver
-}
-
-func sha256String(value string) string {
-	sum := sha256.Sum256([]byte(value))
-	return hex.EncodeToString(sum[:])
 }
