@@ -89,14 +89,7 @@ func (d *DoctorCommand) Run(ctx *runtimeContext) error {
 		},
 	)
 	for _, key := range backend.SortedCapabilityKeys(capabilities) {
-		status := "warn"
-		message := fmt.Sprintf("%s: unsupported", key)
-		if capabilities[key] {
-			status = "pass"
-			message = fmt.Sprintf("%s: supported", key)
-		} else if disabledMessage, ok := disabledSnapshotCapabilityMessage(key, backendName, ctx.Config, ctx.ConfigPath, adapterCapabilities); ok {
-			message = disabledMessage
-		}
+		status, message := capabilityDoctorStatus(key, capabilities, backendName, ctx.Config, ctx.ConfigPath, adapterCapabilities)
 		checks = append(checks, backend.DoctorCheck{
 			Name:    capabilityCheckName(key),
 			Status:  status,
@@ -228,10 +221,60 @@ func applyRuntimeCapabilityOverrides(caps map[string]bool, backendName string, c
 	out := backend.CloneCapabilities(caps)
 	snapshotCfg, ok := runtimeconfig.SnapshotConfigForBackend(cfg, backendName)
 	if ok && snapshotCfg.Enabled {
+		out[backend.CapabilitySandboxCacheOutputFastClone] = out[backend.CapabilitySandboxCacheOutputVolumes] &&
+			cacheOutputFastCloneSupportedByConfig(backendName, snapshotCfg)
 		return out
 	}
 	out[backend.CapabilitySandboxSnapshot] = false
+	out[backend.CapabilitySandboxCacheOutputFastClone] = false
 	return out
+}
+
+func capabilityDoctorStatus(capabilityKey string, capabilities map[string]bool, backendName string, cfg runtimeconfig.Config, configPath string, adapterCaps map[string]bool) (string, string) {
+	if capabilityKey == backend.CapabilitySandboxCacheOutputFastClone {
+		return cacheOutputFastCloneDoctorStatus(capabilities[capabilityKey], backendName, cfg)
+	}
+	if capabilities[capabilityKey] {
+		return "pass", fmt.Sprintf("%s: supported", capabilityKey)
+	}
+	if disabledMessage, ok := disabledSnapshotCapabilityMessage(capabilityKey, backendName, cfg, configPath, adapterCaps); ok {
+		return "warn", disabledMessage
+	}
+	return "warn", fmt.Sprintf("%s: unsupported", capabilityKey)
+}
+
+func cacheOutputFastCloneDoctorStatus(supported bool, backendName string, cfg runtimeconfig.Config) (string, string) {
+	const capability = backend.CapabilitySandboxCacheOutputFastClone
+	snapshotCfg, ok := runtimeconfig.SnapshotConfigForBackend(cfg, backendName)
+	if !ok {
+		return "warn", fmt.Sprintf("%s: unsupported", capability)
+	}
+	driver := runtimeconfig.SnapshotDriverOrDefault(backendName, snapshotCfg.Driver)
+	if supported {
+		if strings.EqualFold(strings.TrimSpace(backendName), "darwin-vz") && strings.EqualFold(driver, "apfs") {
+			return "pass", fmt.Sprintf("%s: supported by configured snapshot driver %q; falls back to copying if clonefile is unavailable", capability, driver)
+		}
+		return "pass", fmt.Sprintf("%s: supported by configured snapshot driver %q", capability, driver)
+	}
+	if !snapshotCfg.Enabled {
+		return "warn", fmt.Sprintf("%s: requires snapshots to be enabled", capability)
+	}
+	if strings.EqualFold(strings.TrimSpace(backendName), "firecracker") && strings.EqualFold(driver, "zfs") && strings.TrimSpace(snapshotCfg.ZFSDataset) == "" {
+		return "warn", fmt.Sprintf("%s: unsupported because zfs snapshot driver requires snapshots.zfs_dataset", capability)
+	}
+	return "warn", fmt.Sprintf("%s: unsupported by configured snapshot driver %q", capability, driver)
+}
+
+func cacheOutputFastCloneSupportedByConfig(backendName string, snapshotCfg runtimeconfig.SnapshotConfig) bool {
+	driver := runtimeconfig.SnapshotDriverOrDefault(backendName, snapshotCfg.Driver)
+	switch strings.TrimSpace(backendName) {
+	case "darwin-vz":
+		return strings.EqualFold(driver, "apfs")
+	case "firecracker":
+		return strings.EqualFold(driver, "zfs") && strings.TrimSpace(snapshotCfg.ZFSDataset) != ""
+	default:
+		return false
+	}
 }
 
 func disabledSnapshotCapabilityMessage(capabilityKey, backendName string, cfg runtimeconfig.Config, configPath string, adapterCaps map[string]bool) (string, bool) {
