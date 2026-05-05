@@ -2,7 +2,7 @@
 
 **Spec reference:** `spec.md` sections 5.1.1, 5.2, 6.4
 **Status:** Ready for initial Firecracker and darwin-vz release
-**Last reviewed:** 2026-05-04
+**Last reviewed:** 2026-05-05
 
 ## Summary
 
@@ -1056,6 +1056,30 @@ Remaining darwin-vz follow-up work:
 - keep expanding macOS smoke coverage with real dependency/service workloads
 - decide whether output volume sizing stays internal or becomes policy-visible
   after real workloads show the right default
+
+## Refactoring Follow-up
+
+The release-ready implementation deliberately landed feature slices before
+collapsing duplication. The follow-up refactor should keep policy, cache keys,
+metadata, backend requests, and guest behavior stable while improving cohesion
+inside the control service and backend adapters.
+
+Reviewable slices:
+
+- Slice 1: consolidate dependency and service block-volume publication around
+  one shared snapshot, metadata, rollback, and logging path.
+- Slice 2: collapse dependency and service block-volume planning into a shared
+  block plan with explicit phase inputs for the cache-key differences.
+- Slice 3: collapse dependency and service block execution after the shared
+  plan shape exists, preserving the service fallback rule when dependency
+  publication is unsafe.
+- Slice 4: extract backend-neutral cache-output volume helpers shared by
+  Firecracker and darwin-vz, while leaving VM pause, storage-driver, and launch
+  details in each adapter.
+- Slice 5: reconcile the older layered-cache plan and the unused
+  `internal/inputmanifest` package with the implemented block-volume model.
+- Slice 6: simplify `CreateSandbox` cache orchestration once the narrower
+  duplication has been removed.
 
 ## Tests
 
