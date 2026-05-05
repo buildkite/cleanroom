@@ -61,6 +61,33 @@ func (doctorSnapshotAdapter) DeleteSnapshot(context.Context, backend.DeleteSnaps
 	return nil
 }
 
+type doctorCacheOutputAdapter struct{ doctorTestAdapter }
+
+func (doctorCacheOutputAdapter) Capabilities() map[string]bool {
+	return map[string]bool{
+		backend.CapabilityExecStreaming:               true,
+		backend.CapabilitySandboxSnapshot:             true,
+		backend.CapabilitySandboxFileDownload:         true,
+		backend.CapabilitySandboxFileUpload:           true,
+		backend.CapabilitySandboxPathStat:             true,
+		backend.CapabilitySandboxTreeWalk:             true,
+		backend.CapabilitySandboxFileRead:             true,
+		backend.CapabilitySandboxFileWrite:            true,
+		backend.CapabilitySandboxPathRemove:           true,
+		backend.CapabilitySandboxArchiveRead:          true,
+		backend.CapabilitySandboxArchiveWrite:         true,
+		backend.CapabilityNetworkDefaultDeny:          true,
+		backend.CapabilityNetworkAllowlistEgress:      true,
+		backend.CapabilityNetworkStageScopedEgress:    true,
+		backend.CapabilityDNSControlOrEquivalent:      true,
+		backend.CapabilityNetworkGuestInterface:       true,
+		backend.CapabilitySandboxPortDial:             true,
+		backend.CapabilitySandboxCacheOutputVolumes:   true,
+		backend.CapabilitySandboxCacheOutputFastClone: false,
+		backend.CapabilitySandboxOverlayWriteCapture:  true,
+	}
+}
+
 type doctorFailingLoader struct{}
 
 func (doctorFailingLoader) LoadAndCompile(string) (*policy.CompiledPolicy, string, error) {
@@ -69,6 +96,16 @@ func (doctorFailingLoader) LoadAndCompile(string) (*policy.CompiledPolicy, strin
 
 func (doctorFailingLoader) LoadRepository(string) (policy.RepositoryConfig, string, error) {
 	return policy.RepositoryConfig{}, "", errors.New("policy unavailable")
+}
+
+type doctorStaticLoader struct{}
+
+func (doctorStaticLoader) LoadAndCompile(cwd string) (*policy.CompiledPolicy, string, error) {
+	return &policy.CompiledPolicy{Hash: "policy_hash"}, filepath.Join(cwd, "cleanroom.yaml"), nil
+}
+
+func (doctorStaticLoader) LoadRepository(string) (policy.RepositoryConfig, string, error) {
+	return policy.RepositoryConfig{}, "", nil
 }
 
 func TestDoctorCommandJSONIncludesCapabilities(t *testing.T) {
@@ -165,6 +202,182 @@ func TestDoctorCommandJSONIncludesCapabilities(t *testing.T) {
 	}
 	if !foundCapabilityCheck {
 		t.Fatal("expected capability_network_guest_interface check in doctor output")
+	}
+}
+
+func TestApplyRuntimeCapabilityOverridesConfiguresFastCloneBySnapshotDriver(t *testing.T) {
+	baseCaps := map[string]bool{
+		backend.CapabilitySandboxSnapshot:           true,
+		backend.CapabilitySandboxCacheOutputVolumes: true,
+	}
+
+	tests := []struct {
+		name        string
+		backendName string
+		config      runtimeconfig.Config
+		wantFast    bool
+		wantSnap    bool
+	}{
+		{
+			name:        "darwin-vz default apfs",
+			backendName: "darwin-vz",
+			config: runtimeconfig.Config{
+				Backends: runtimeconfig.Backends{
+					DarwinVZ: runtimeconfig.DarwinVZConfig{
+						Snapshots: runtimeconfig.SnapshotConfig{Enabled: true},
+					},
+				},
+			},
+			wantFast: true,
+			wantSnap: true,
+		},
+		{
+			name:        "darwin-vz file",
+			backendName: "darwin-vz",
+			config: runtimeconfig.Config{
+				Backends: runtimeconfig.Backends{
+					DarwinVZ: runtimeconfig.DarwinVZConfig{
+						Snapshots: runtimeconfig.SnapshotConfig{Enabled: true, Driver: "file"},
+					},
+				},
+			},
+			wantFast: false,
+			wantSnap: true,
+		},
+		{
+			name:        "firecracker zfs",
+			backendName: "firecracker",
+			config: runtimeconfig.Config{
+				Backends: runtimeconfig.Backends{
+					Firecracker: runtimeconfig.FirecrackerConfig{
+						Snapshots: runtimeconfig.SnapshotConfig{Enabled: true, Driver: "zfs", ZFSDataset: "tank/cleanroom"},
+					},
+				},
+			},
+			wantFast: true,
+			wantSnap: true,
+		},
+		{
+			name:        "firecracker zfs without dataset",
+			backendName: "firecracker",
+			config: runtimeconfig.Config{
+				Backends: runtimeconfig.Backends{
+					Firecracker: runtimeconfig.FirecrackerConfig{
+						Snapshots: runtimeconfig.SnapshotConfig{Enabled: true, Driver: "zfs"},
+					},
+				},
+			},
+			wantFast: false,
+			wantSnap: true,
+		},
+		{
+			name:        "firecracker file",
+			backendName: "firecracker",
+			config: runtimeconfig.Config{
+				Backends: runtimeconfig.Backends{
+					Firecracker: runtimeconfig.FirecrackerConfig{
+						Snapshots: runtimeconfig.SnapshotConfig{Enabled: true, Driver: "file"},
+					},
+				},
+			},
+			wantFast: false,
+			wantSnap: true,
+		},
+		{
+			name:        "snapshots disabled",
+			backendName: "darwin-vz",
+			config: runtimeconfig.Config{
+				Backends: runtimeconfig.Backends{
+					DarwinVZ: runtimeconfig.DarwinVZConfig{
+						Snapshots: runtimeconfig.SnapshotConfig{Enabled: false, Driver: "apfs"},
+					},
+				},
+			},
+			wantFast: false,
+			wantSnap: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := applyRuntimeCapabilityOverrides(baseCaps, tt.backendName, tt.config)
+			if got[backend.CapabilitySandboxCacheOutputFastClone] != tt.wantFast {
+				t.Fatalf("unexpected %s: got %t want %t", backend.CapabilitySandboxCacheOutputFastClone, got[backend.CapabilitySandboxCacheOutputFastClone], tt.wantFast)
+			}
+			if got[backend.CapabilitySandboxSnapshot] != tt.wantSnap {
+				t.Fatalf("unexpected %s: got %t want %t", backend.CapabilitySandboxSnapshot, got[backend.CapabilitySandboxSnapshot], tt.wantSnap)
+			}
+		})
+	}
+}
+
+func TestDoctorCommandReportsConfiguredFastCloneCapability(t *testing.T) {
+	tmpDir := t.TempDir()
+	stdoutPath := filepath.Join(tmpDir, "doctor.json")
+	stdout, err := os.Create(stdoutPath)
+	if err != nil {
+		t.Fatalf("create stdout file: %v", err)
+	}
+
+	cmd := DoctorCommand{
+		Backend: "darwin-vz",
+		JSON:    true,
+	}
+	err = cmd.Run(&runtimeContext{
+		CWD:    tmpDir,
+		Stdout: stdout,
+		Loader: doctorStaticLoader{},
+		Config: runtimeconfig.Config{
+			Backends: runtimeconfig.Backends{
+				DarwinVZ: runtimeconfig.DarwinVZConfig{
+					Snapshots: runtimeconfig.SnapshotConfig{Enabled: true},
+				},
+			},
+		},
+		ConfigPath: filepath.Join(tmpDir, "config.yaml"),
+		Backends: map[string]backend.Adapter{
+			"darwin-vz": doctorCacheOutputAdapter{},
+		},
+	})
+	if closeErr := stdout.Close(); closeErr != nil {
+		t.Fatalf("close stdout file: %v", closeErr)
+	}
+	if err != nil {
+		t.Fatalf("DoctorCommand.Run returned error: %v", err)
+	}
+
+	raw, err := os.ReadFile(stdoutPath)
+	if err != nil {
+		t.Fatalf("read doctor output: %v", err)
+	}
+
+	var payload struct {
+		Capabilities map[string]bool       `json:"capabilities"`
+		Checks       []backend.DoctorCheck `json:"checks"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("unmarshal doctor JSON: %v", err)
+	}
+
+	if !payload.Capabilities[backend.CapabilitySandboxCacheOutputFastClone] {
+		t.Fatalf("expected %s=true", backend.CapabilitySandboxCacheOutputFastClone)
+	}
+
+	foundFastCloneCheck := false
+	for _, check := range payload.Checks {
+		if check.Name != "capability_sandbox_cache_output_fast_clone" {
+			continue
+		}
+		foundFastCloneCheck = true
+		if check.Status != "pass" {
+			t.Fatalf("expected fast clone capability check to pass, got %q", check.Status)
+		}
+		if !strings.Contains(check.Message, "supported by configured snapshot driver \"apfs\"") {
+			t.Fatalf("expected apfs support message, got %q", check.Message)
+		}
+	}
+	if !foundFastCloneCheck {
+		t.Fatal("expected capability_sandbox_cache_output_fast_clone check in doctor output")
 	}
 }
 
