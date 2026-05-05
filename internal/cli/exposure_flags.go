@@ -101,7 +101,7 @@ func parseHTTPSExposureSpec(spec string) (*cleanroomv1.PortExposure, error) {
 	if before, after, ok := strings.Cut(spec, ":"); ok {
 		name = strings.TrimSpace(before)
 		portSpec = strings.TrimSpace(after)
-		if err := validateExposureName(name); err != nil {
+		if err := validateHTTPSExposureName(name); err != nil {
 			return nil, fmt.Errorf("invalid --expose-https value %q: %w", spec, err)
 		}
 		if strings.Contains(portSpec, ":") {
@@ -135,23 +135,53 @@ func parseExposurePort(value string) (int, error) {
 	return port, nil
 }
 
-func validateExposureName(name string) error {
+func validateHTTPSExposureName(name string) error {
 	if name == "" {
 		return errors.New("missing route name")
 	}
-	if len(name) > 63 {
-		return fmt.Errorf("route name %q is longer than 63 characters", name)
+	if strings.HasPrefix(name, "*.") {
+		suffix := strings.TrimPrefix(name, "*.")
+		if suffix == "" {
+			return fmt.Errorf("route name %q must include a wildcard suffix", name)
+		}
+		for _, label := range strings.Split(suffix, ".") {
+			if err := validateExposureLabel(label, name); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
-	if name[0] == '-' || name[len(name)-1] == '-' {
-		return fmt.Errorf("route name %q cannot start or end with '-'", name)
+	if strings.Contains(name, ".") {
+		if strings.Contains(name, "*") {
+			return fmt.Errorf("route name %q must be an exact single label or a leading wildcard", name)
+		}
+		for _, label := range strings.Split(name, ".") {
+			if err := validateExposureLabel(label, name); err != nil {
+				return err
+			}
+		}
+		return fmt.Errorf("route name %q must be an exact single label or a leading wildcard", name)
 	}
-	for _, r := range name {
+	return validateExposureLabel(name, name)
+}
+
+func validateExposureLabel(label, fullName string) error {
+	if label == "" {
+		return fmt.Errorf("route name %q contains an empty DNS label", fullName)
+	}
+	if len(label) > 63 {
+		return fmt.Errorf("route name %q has a label longer than 63 characters", fullName)
+	}
+	if label[0] == '-' || label[len(label)-1] == '-' {
+		return fmt.Errorf("route name %q has a label that cannot start or end with '-'", fullName)
+	}
+	for _, r := range label {
 		switch {
 		case r >= 'a' && r <= 'z':
 		case r >= '0' && r <= '9':
 		case r == '-':
 		default:
-			return fmt.Errorf("route name %q must contain only lowercase letters, digits, and '-'", name)
+			return fmt.Errorf("route name %q must contain only lowercase letters, digits, and '-'", fullName)
 		}
 	}
 	return nil
