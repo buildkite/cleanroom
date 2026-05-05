@@ -4,7 +4,7 @@ This example runs a local Grafana + Prometheus + Tempo stack with an OpenTelemet
 
 The data flow is:
 
-- Cleanroom sends OTLP traces and metrics to the collector on `localhost:4317` or `localhost:4318`.
+- Cleanroom sends OTLP traces and metrics to the collector on `localhost:14317` or `localhost:14318`.
 - The collector forwards traces to Tempo.
 - The collector exposes OTLP metrics as a Prometheus scrape endpoint.
 - Tempo generates trace-derived service graph and span metrics and remote-writes them to Prometheus.
