@@ -37,17 +37,7 @@ func (s *Service) maybePublishDependencyBlockVolumeCaches(
 func dependencyBlockVolumePublishBlocks(plan dependencyBlockVolumePlan) []blockVolumePublishBlock {
 	blocks := make([]blockVolumePublishBlock, 0, len(plan.Blocks))
 	for _, block := range plan.Blocks {
-		blocks = append(blocks, blockVolumePublishBlock{
-			BlockName:               block.BlockName,
-			Outputs:                 block.Outputs,
-			CacheKey:                block.CacheKey,
-			CommandDigest:           block.CommandDigest,
-			EnvDigest:               block.EnvDigest,
-			InputManifestDigest:     block.InputManifestDigest,
-			NormalizedOutputsDigest: block.NormalizedOutputsDigest,
-			ProducerVersion:         block.ProducerVersion,
-			CacheHit:                block.CacheHit,
-		})
+		blocks = append(blocks, blockVolumePublishBlockFromPlanBlock(blockVolumeBlockPlan(block)))
 	}
 	return blocks
 }

@@ -1074,7 +1074,7 @@ Reviewable slices:
   implemented in the second refactor slice.
 - Slice 3: collapse dependency and service block execution after the shared
   plan shape exists, preserving the service fallback rule when dependency
-  publication is unsafe.
+  publication is unsafe. This is implemented in the third refactor slice.
 - Slice 4: extract backend-neutral cache-output volume helpers shared by
   Firecracker and darwin-vz, while leaving VM pause, storage-driver, and launch
   details in each adapter.
