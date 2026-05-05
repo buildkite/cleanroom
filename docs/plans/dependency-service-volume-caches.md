@@ -1080,6 +1080,7 @@ Reviewable slices:
   details in each adapter. This is implemented in the fourth refactor slice.
 - Slice 5: reconcile the older layered-cache plan and the unused
   `internal/inputmanifest` package with the implemented block-volume model.
+  This is implemented in the fifth refactor slice.
 - Slice 6: simplify `CreateSandbox` cache orchestration once the narrower
   duplication has been removed.
 

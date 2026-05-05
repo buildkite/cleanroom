@@ -2,7 +2,7 @@
 
 **Spec reference:** `spec.md` sections 5.1.1, 5.2, 6.4
 **Status:** In progress
-**Last reviewed:** 2026-04-13
+**Last reviewed:** 2026-05-05
 
 ## Summary
 
@@ -29,6 +29,15 @@ The system-cache pipeline uses stage terminology:
   when declared dependency inputs still match
 - services stage: dependency stage or workspace stage plus policy-constrained
   service preparation state on disk
+
+This document remains the plan for full-rootfs system stage caches. The
+declared input/output model for dependency and service output volumes now lives
+in `dependency-service-volume-caches.md`. That block-volume model is the path
+for repo-local outputs such as `node_modules`, package stores, generated files,
+and service data directories. The older idea of a standalone
+`internal/inputmanifest` package did not become the implementation; current
+input digests are computed in the control service from the repository tree or
+explicit changeset.
 
 Each stage output is a full sealed rootfs snapshot. Higher stages subsume lower
 stages. At runtime we do not mount separate runtime, workspace, dependency, and
@@ -1030,13 +1039,14 @@ This plan composes with the existing documents rather than replacing them.
 | `internal/gateway/mirror.go` | Already acts as the host-side git transport cache keyed by canonical remote URL. |
 | `internal/repositorycheckout/checkout.go` | Already uses exact remote URL and full commit SHA as the checkout source of truth; `branch` currently affects local checkout mode only. `BuildRefreshCommand` is also the checkout-refresh primitive needed after restoring a portable dependency stage. |
 | `internal/controlservice/workspace_stage.go` | Current workspace-stage orchestration already lives here using dedicated stage-cache metadata. |
-| `internal/controlservice/dependency_stage.go` | Dependency-stage orchestration entry point for policy-controlled bootstrap, declared key-file hashing, post-apply tree keying, exact dependency-stage publication, and the portable dependency-stage lookup/validation path. |
+| `internal/controlservice/dependency_stage.go` | Full-rootfs dependency-stage orchestration entry point for policy-controlled bootstrap, declared key-file hashing, post-apply tree keying, exact dependency-stage publication, and the portable dependency-stage lookup/validation path. |
+| `internal/controlservice/block_volume_*.go` | Implemented dependency and service block-volume cache planning, launch-time volume specs, isolated execution, escaped-write fallback, and publication for declared input/output blocks. |
 | `internal/snapshotstore/store.go` | Should remain the user snapshot store rather than being expanded into the system-cache store. |
 | `internal/changesetstore/*` | Landed store for explicit local changeset metadata and replay payloads, separate from both snapshots and stage caches. |
 | `internal/volumestore/store.go` | Already provides the backend-neutral clone/snapshot contract shared by both backends. |
 | `internal/backend/firecracker/backend.go` | Already routes normal execution and snapshot restore through writable root volume preparation; actual clone behavior depends on the configured driver. |
 | `internal/backend/darwinvz/backend_darwin.go` | Already fits the same one-rootfs model and can use APFS clone materialization. |
-| `internal/policy/policy.go` | Now carries the first dependency-bootstrap surface; still needs richer toolchain inputs, artifact allowlists, and strict offline warm-cache requirements. |
+| `internal/policy/policy.go` | Now carries ordered dependency and service blocks, declared block inputs and outputs, and `sandbox.docker.required`. Future work still needs richer toolchain inputs, artifact allowlists, and strict offline warm-cache requirements. |
 | `internal/cachestore/*` | Landed package for system-managed stage-cache metadata, separate from user snapshots. |
 
 ## Suggested Cache Metadata Model
@@ -1063,8 +1073,10 @@ producer_version
 ```
 
 This metadata should live in a dedicated `cachestore`, not in `snapshotstore`.
-Input manifests should be stored as explicit structured metadata rather than as
-opaque prose so determinism can be tested directly.
+Current cache records store deterministic input digest metadata. The
+block-volume implementation derives those digests through the control service's
+repository and changeset-aware input-file digest helpers rather than a separate
+manifest package.
 
 Suggested changeset record shape:
 
@@ -1111,6 +1123,9 @@ This metadata should live in a dedicated `changesetstore`, not in
 9. Add a dedicated `changesetstore` for durable host-local changeset metadata
    and replay payloads, and record the stable changeset ID in system stage-cache
    metadata when a stage includes explicit local changes.
+10. Add dependency and service block-volume caches for declared input/output
+    blocks. These cover repo-local and service-data outputs that are a poor fit
+    for portable full-rootfs dependency stages.
 
 ### Partial
 
@@ -1133,8 +1148,8 @@ and the dependency stage still needs richer lockfile/toolchain inputs.
    current workspace-plus-command-plus-key-files slice.
 2. Add lockfile parser inputs and artifact allowlists so dependency-stage keys
    can move beyond manually declared key files.
-3. Add explicit dependency output/preserve semantics if we want portable reuse
-   for repo-local outputs such as `node_modules` or `vendor/bundle`.
+3. Broaden block-volume output semantics only after the declared block model is
+   stable in real workloads.
 4. Add additional ecosystems only after the first explicit dependency-stage
    flow is solid.
 5. Add a user-facing `--changeset <id>` or equivalent reuse surface if durable
@@ -1181,6 +1196,11 @@ Current coverage exists for the implemented host-local stage-cache flow:
   refresh and skip dependency bootstrap only when they match
 - portable dependency-stage mismatches discard the restored child and fall back
   to the normal workspace-stage path
+- dependency and service block-volume cache keys include command, environment,
+  declared input-file digests, normalized output declarations, prior block
+  output identities, and service dependency output identities
+- dependency and service block-volume misses run from isolated input projections
+  with overlay write capture and exact full-rootfs fallback for escaped writes
 
 ### Policy enforcement
 
@@ -1208,8 +1228,9 @@ Current coverage exists for the implemented host-local stage-cache flow:
   whenever non-empty dependency key files are declared and outputs are portable?
 - What retention policy should apply to large dependency-stage caches relative
   to smaller workspace-stage caches?
-- How should Cleanroom detect or declare whether dependency outputs are
-  portable across `git clean`?
+- For full-rootfs portable dependency stages, how much of the remaining
+  portability model still matters once declared block-volume outputs cover
+  repo-local state?
 - Should workspace-stage identity continue to include the local checkout branch,
   or should branch stay outside reusable cache keys once checkout mode is
   modeled separately?
