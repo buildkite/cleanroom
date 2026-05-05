@@ -1067,9 +1067,11 @@ inside the control service and backend adapters.
 Reviewable slices:
 
 - Slice 1: consolidate dependency and service block-volume publication around
-  one shared snapshot, metadata, rollback, and logging path.
+  one shared snapshot, metadata, rollback, and logging path. This is implemented
+  in the first refactor slice.
 - Slice 2: collapse dependency and service block-volume planning into a shared
-  block plan with explicit phase inputs for the cache-key differences.
+  block plan with explicit phase inputs for the cache-key differences. This is
+  implemented in the second refactor slice.
 - Slice 3: collapse dependency and service block execution after the shared
   plan shape exists, preserving the service fallback rule when dependency
   publication is unsafe.
