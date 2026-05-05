@@ -175,8 +175,9 @@ func (c *ContentCache) HasOCIHandler() bool {
 	return c != nil && c.buildOCIHandler != nil
 }
 
-// OCIMirrorHosts returns the runtime-configured registry hosts that are safe to
-// expose to guest container runtimes as explicit registry mirrors.
+// OCIMirrorHosts returns the built-in and runtime-configured registry hosts
+// that are safe to expose to guest container runtimes as explicit registry
+// mirrors.
 func (c *ContentCache) OCIMirrorHosts() []string {
 	if c == nil || len(c.ociMirrorHosts) == 0 {
 		return nil

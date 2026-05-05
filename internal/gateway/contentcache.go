@@ -213,7 +213,7 @@ func NewContentCache(cfg ContentCacheConfig) (*ContentCache, error) {
 		closer:         db,
 		gitHandlers:    make(map[string]http.Handler),
 		ociHandlers:    make(map[string]ociHandlerEntry),
-		ociMirrorHosts: configuredOCIMirrorHosts(cfg.OCIRegistries),
+		ociMirrorHosts: ociMirrorHosts(cfg.OCIRegistries),
 	}
 	goProxyUpstreamURL := strings.TrimSpace(ccgoproxy.DefaultUpstreamURL)
 	goProxyPolicyHost, goProxyPolicyPort, err := registryHostPort(goProxyUpstreamURL)
@@ -437,11 +437,23 @@ func normalizeAllowedHostList(hosts []string) []string {
 	return out
 }
 
+var defaultOCIRegistryMappings = map[string]string{
+	"docker.io":            "https://registry-1.docker.io",
+	"index.docker.io":      "https://registry-1.docker.io",
+	"registry-1.docker.io": "https://registry-1.docker.io",
+	"ghcr.io":              "https://ghcr.io",
+	"public.ecr.aws":       "https://public.ecr.aws",
+}
+
+var defaultOCIMirrorHosts = []string{
+	"ghcr.io",
+	"public.ecr.aws",
+}
+
 func normalizeOCIRegistryMappings(registries map[string]string) (map[string]string, error) {
-	out := map[string]string{
-		"docker.io":            "https://registry-1.docker.io",
-		"index.docker.io":      "https://registry-1.docker.io",
-		"registry-1.docker.io": "https://registry-1.docker.io",
+	out := make(map[string]string, len(defaultOCIRegistryMappings)+len(registries))
+	for prefix, registryURL := range defaultOCIRegistryMappings {
+		out[prefix] = registryURL
 	}
 
 	for prefix, registryURL := range registries {
@@ -464,12 +476,17 @@ func normalizeOCIRegistryMappings(registries map[string]string) (map[string]stri
 	return out, nil
 }
 
-func configuredOCIMirrorHosts(registries map[string]string) []string {
-	if len(registries) == 0 {
-		return nil
+func ociMirrorHosts(registries map[string]string) []string {
+	out := make([]string, 0, len(defaultOCIMirrorHosts)+len(registries))
+	seen := make(map[string]struct{}, len(defaultOCIMirrorHosts)+len(registries))
+	for _, prefix := range defaultOCIMirrorHosts {
+		normalizedPrefix := strings.ToLower(strings.TrimSpace(prefix))
+		if normalizedPrefix == "" {
+			continue
+		}
+		seen[normalizedPrefix] = struct{}{}
+		out = append(out, normalizedPrefix)
 	}
-	out := make([]string, 0, len(registries))
-	seen := make(map[string]struct{}, len(registries))
 	for prefix := range registries {
 		normalizedPrefix := strings.ToLower(strings.TrimSpace(prefix))
 		if normalizedPrefix == "" || strings.Contains(normalizedPrefix, "/") || !isRegistryHostPrefix(normalizedPrefix) || isDockerHubMirrorPrefix(normalizedPrefix) {
