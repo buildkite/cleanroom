@@ -1082,7 +1082,8 @@ Reviewable slices:
   `internal/inputmanifest` package with the implemented block-volume model.
   This is implemented in the fifth refactor slice.
 - Slice 6: simplify `CreateSandbox` cache orchestration once the narrower
-  duplication has been removed.
+  duplication has been removed. This is implemented in the sixth refactor
+  slice.
 
 ## Tests
 
