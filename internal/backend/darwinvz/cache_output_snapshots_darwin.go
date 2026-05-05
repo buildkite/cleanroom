@@ -4,14 +4,13 @@ package darwinvz
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/buildkite/cleanroom/internal/backend"
+	"github.com/buildkite/cleanroom/internal/backend/cacheoutput"
 	"github.com/buildkite/cleanroom/internal/volumestore"
 )
 
@@ -195,31 +194,9 @@ func snapshotDarwinVZCacheOutputVolume(ctx context.Context, driver volumestore.D
 }
 
 func selectDarwinVZCacheOutputVolumes(volumes []preparedDarwinVZCacheOutputVolume, volumeIDs []string) ([]preparedDarwinVZCacheOutputVolume, error) {
-	if len(volumeIDs) == 0 {
-		return append([]preparedDarwinVZCacheOutputVolume(nil), volumes...), nil
-	}
-	byID := make(map[string]preparedDarwinVZCacheOutputVolume, len(volumes))
-	for _, volume := range volumes {
-		byID[strings.TrimSpace(volume.Spec.VolumeID)] = volume
-	}
-	selected := make([]preparedDarwinVZCacheOutputVolume, 0, len(volumeIDs))
-	seen := make(map[string]struct{}, len(volumeIDs))
-	for _, id := range volumeIDs {
-		id = strings.TrimSpace(id)
-		if id == "" {
-			return nil, errors.New("cache output volume id cannot be empty")
-		}
-		if _, ok := seen[id]; ok {
-			return nil, fmt.Errorf("duplicate cache output volume id %q", id)
-		}
-		seen[id] = struct{}{}
-		volume, ok := byID[id]
-		if !ok {
-			return nil, fmt.Errorf("unknown cache output volume id %q", id)
-		}
-		selected = append(selected, volume)
-	}
-	return selected, nil
+	return cacheoutput.SelectByVolumeID(volumes, volumeIDs, func(volume preparedDarwinVZCacheOutputVolume) string {
+		return volume.Spec.VolumeID
+	})
 }
 
 func darwinVZCacheOutputSnapshotConfig(cfg backend.FirecrackerConfig, spec backend.CacheOutputVolumeSpec) backend.FirecrackerConfig {
@@ -230,31 +207,9 @@ func darwinVZCacheOutputSnapshotConfig(cfg backend.FirecrackerConfig, spec backe
 }
 
 func darwinVZCacheOutputSnapshotID(prefix, volumeID string) string {
-	hash := darwinVZCacheOutputSnapshotHash(strings.TrimSpace(volumeID))
-	return strings.TrimSpace(prefix) + "-" + hash[:16]
+	return cacheoutput.SnapshotID(prefix, volumeID)
 }
 
 func darwinVZCacheOutputVolumeSnapshotOutputs(spec backend.CacheOutputVolumeSpec) []backend.CacheOutputVolumeSnapshotOutput {
-	out := make([]backend.CacheOutputVolumeSnapshotOutput, 0, len(spec.DirMappings)+len(spec.FileMappings))
-	for _, mapping := range spec.DirMappings {
-		out = append(out, backend.CacheOutputVolumeSnapshotOutput{
-			Kind:          "dir",
-			GuestPath:     strings.TrimSpace(mapping.GuestPath),
-			VolumeSubpath: strings.TrimSpace(mapping.Subpath),
-		})
-	}
-	for _, mapping := range spec.FileMappings {
-		out = append(out, backend.CacheOutputVolumeSnapshotOutput{
-			Kind:          "file",
-			GuestPath:     strings.TrimSpace(mapping.GuestPath),
-			VolumeSubpath: strings.TrimSpace(mapping.Subpath),
-			Mode:          mapping.Mode.Perm(),
-		})
-	}
-	return out
-}
-
-func darwinVZCacheOutputSnapshotHash(value string) string {
-	sum := sha256.Sum256([]byte(value))
-	return hex.EncodeToString(sum[:])
+	return cacheoutput.SnapshotOutputs(spec)
 }
