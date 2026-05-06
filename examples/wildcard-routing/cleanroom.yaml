@@ -1,0 +1,22 @@
+version: 1
+
+repository:
+  network:
+    allow: github.com:443
+
+exposure:
+  certificate_domains:
+    - "*.example.cleanroom.localhost"
+
+sandbox:
+  image:
+    ref: ghcr.io/buildkite/cleanroom-base/debian@sha256:28c3f638fabe1ed780f87b82cfb0c6dda2549c86b9e4edbe519e8250243411c5
+  resources:
+    memory: 2GiB
+    disk: 6GiB
+  network:
+    default: deny
+    execution:
+      allow:
+        - host: deb.debian.org
+          ports: [80]

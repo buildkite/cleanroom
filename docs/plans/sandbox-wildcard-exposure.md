@@ -318,6 +318,62 @@ New behavior:
 4. Verify the wildcard exposure behavior end to end against
    `buildkite/buildkite` running in Cleanroom mode.
 
+### Phase 6: Wildcard Routing Example
+
+Add a small repo example specifically for wildcard-routing verification. This
+should be simpler and more deterministic than `buildkite/buildkite`, and should
+exercise both host-based routing and forwarded-header-aware redirect behavior.
+
+Planned shape:
+
+1. Add a new example directory, for example `examples/wildcard-routing/`.
+2. Put `nginx` inside the guest as the single exposed service on port `80`.
+3. Expose the guest with:
+   - `--expose-https example:80`
+   - `--expose-https '*.example:80'`
+4. Configure project-level `exposure.certificate_domains` to include at least:
+   - `*.example.cleanroom.localhost`
+5. Configure `nginx` with separate virtual hosts for:
+   - `app.example.cleanroom.localhost`
+   - `s3.example.cleanroom.localhost`
+6. Route those virtual hosts to distinct in-guest handlers so the example can
+   prove Cleanroom preserves the original `Host` header across wildcard routes.
+7. Make one host return a simple success response that includes the host seen by
+   the backend.
+8. Make the other host issue a redirect whose destination is derived from
+   forwarded request metadata, with the redirect logic explicitly depending on
+   `X-Forwarded-For` so the example exercises trusted forwarded-header
+   propagation instead of only host matching.
+9. Keep the implementation backend-agnostic by using ordinary guest processes
+   and Cleanroom HTTPS exposure, without backend-specific networking behavior.
+
+Suggested guest topology:
+
+- `nginx` listens on `0.0.0.0:80`.
+- `server_name app.example.cleanroom.localhost` proxies to an app backend that
+  returns request details such as `Host`, `X-Forwarded-Host`,
+  `X-Forwarded-Proto`, `X-Forwarded-Port`, and `X-Forwarded-For`.
+- `server_name s3.example.cleanroom.localhost` proxies to a small redirect
+  backend that:
+  - reads `X-Forwarded-For`
+  - decides whether to redirect based on its presence or parsed client address
+  - emits an absolute `Location` using the forwarded host, proto, and port
+  - can redirect to `https://app.example.cleanroom.localhost:<port>/...` so the
+    example proves Cleanroom forwarded enough context for a guest-side proxy or
+    app to construct a correct external URL
+
+Implementation notes:
+
+- Prefer tiny guest backends implemented with standard library HTTP servers over
+  larger framework dependencies.
+- Keep backend behavior deterministic so README verification can use `curl`
+  assertions rather than browser-only checks.
+- Check in the `nginx` config as part of the example so the host routing rules
+  are visible and testable.
+- Use the example README to document both the exact route (`example`) and the
+  wildcard subdomain routes (`app.example`, `s3.example`), making it clear that
+  explicit dotted registrations are not required.
+
 ## Test Plan
 
 - Add parser tests for:
@@ -350,6 +406,12 @@ New behavior:
   - `X-Forwarded-Port` matches the HTTPS listener port
 - Add TLS tests proving that configured extra wildcard SANs allow direct HTTPS
   validation for nested hosts such as `api.buildkite.cleanroom.localhost`.
+- Add an example-level smoke test or scripted verification for:
+  - `https://app.example.cleanroom.localhost:<port>/`
+  - `https://s3.example.cleanroom.localhost:<port>/`
+  - a redirect response generated from forwarded headers
+  - a deeper non-match such as
+    `https://foo.bar.example.cleanroom.localhost:<port>/`
 
 ## buildkite/buildkite Verification Criteria
 
@@ -390,6 +452,33 @@ cleanroom exec \
   baseline-only SAN set, for example by verifying nested-host TLS validation
   still succeeds afterward.
 
+## Wildcard Example Verification Criteria
+
+- Configure `exposure.certificate_domains` to include
+  `*.example.cleanroom.localhost`.
+- Run `sudo cleanroom dns install` so nested example hosts validate against the
+  shared local certificate.
+- Start the example with one exact exposure and one wildcard exposure:
+
+```bash
+cleanroom exec \
+  --expose-https example:80 \
+  --expose-https '*.example:80' \
+  -- <example start command>
+```
+
+- Confirm `https://app.example.cleanroom.localhost:<port>/` reaches the guest
+  through the wildcard route and the backend sees the original host plus the
+  expected forwarded headers.
+- Confirm `https://s3.example.cleanroom.localhost:<port>/` reaches the guest
+  through the wildcard route and returns a redirect based on
+  `X-Forwarded-For`.
+- Confirm the redirect `Location` keeps the external `https` scheme, host, and
+  exposure port rather than falling back to the guest's internal listener view.
+- Confirm `https://foo.bar.example.cleanroom.localhost:<port>/` returns a
+  Cleanroom `404 page not found`, proving the wildcard still matches only one
+  leading label.
+
 ## Definition Of Done
 
 - Wildcard HTTPS exposure names such as `*.buildkite` are accepted.
@@ -401,3 +490,5 @@ cleanroom exec \
   exposure startup and does not overwrite configured nested-host certificates
   with a baseline-only SAN set.
 - Docs describe wildcard-only nested-host registration clearly.
+- The repo contains a runnable example that demonstrates wildcard subdomain
+  routing and a guest-generated redirect that depends on forwarded headers.
