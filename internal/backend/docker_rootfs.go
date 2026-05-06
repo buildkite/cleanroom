@@ -19,22 +19,22 @@ var dockerServiceDockerdPaths = []string{
 // ValidateDockerServiceRootFS fails fast when a Docker service policy is paired
 // with an image that cannot start dockerd from the guest's default PATH.
 func ValidateDockerServiceRootFS(rootFSPath, imageRef string, required bool) error {
-	return validateDockerServiceRootFS(rootFSPath, imageRef, required, ext4PathExists)
+	return validateDockerServiceRootFS(rootFSPath, imageRef, required, ext4PathKind)
 }
 
-func validateDockerServiceRootFS(rootFSPath, imageRef string, required bool, pathExists func(string, string) (bool, error)) error {
+func validateDockerServiceRootFS(rootFSPath, imageRef string, required bool, pathKind func(string, string) (ext4edit.PathKind, error)) error {
 	if !required {
 		return nil
 	}
-	if pathExists == nil {
+	if pathKind == nil {
 		return fmt.Errorf("sandbox.docker.required is true, but the selected sandbox image cannot be inspected for dockerd")
 	}
 	for _, path := range dockerServiceDockerdPaths {
-		exists, err := pathExists(rootFSPath, path)
+		kind, err := pathKind(rootFSPath, path)
 		if err != nil {
 			return fmt.Errorf("inspect rootfs for required docker service path %q: %w", path, err)
 		}
-		if exists {
+		if kind == ext4edit.PathKindRegular {
 			return nil
 		}
 	}
@@ -50,10 +50,6 @@ func validateDockerServiceRootFS(rootFSPath, imageRef string, required bool, pat
 	)
 }
 
-func ext4PathExists(rootFSPath, path string) (bool, error) {
-	kind, err := ext4edit.PathTypeWithError(rootFSPath, path)
-	if err != nil {
-		return false, err
-	}
-	return kind != ext4edit.PathKindUnknown, nil
+func ext4PathKind(rootFSPath, path string) (ext4edit.PathKind, error) {
+	return ext4edit.PathTypeWithError(rootFSPath, path)
 }
