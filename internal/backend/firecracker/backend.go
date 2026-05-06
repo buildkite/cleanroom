@@ -1812,6 +1812,12 @@ func (a *Adapter) launchSandboxVMFromRootFS(ctx context.Context, sandboxID strin
 	if err != nil {
 		return nil, err
 	}
+	if _, err := os.Stat(sourceRootFSPath); err != nil {
+		return nil, fmt.Errorf("rootfs %s: %w", sourceRootFSPath, err)
+	}
+	if err := backend.ValidateDockerServiceRootFS(sourceRootFSPath, compiled.ImageRef, compiled.RequiresDockerService()); err != nil {
+		return nil, err
+	}
 
 	runBaseDir, err := sandboxRuntimeBaseDir()
 	if err != nil {

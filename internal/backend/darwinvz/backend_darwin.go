@@ -1316,6 +1316,9 @@ func (a *Adapter) launchSandboxVM(ctx context.Context, sandboxID string, compile
 	if _, err := os.Stat(rootFSPath); err != nil {
 		return nil, fmt.Errorf("rootfs %s: %w", rootFSPath, err)
 	}
+	if err := backend.ValidateDockerServiceRootFS(rootFSPath, imageRef, compiled.RequiresDockerService()); err != nil {
+		return nil, err
+	}
 
 	driver, err := rootFSVolumeDriver(cfg)
 	if err != nil {
