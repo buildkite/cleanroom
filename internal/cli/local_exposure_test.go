@@ -130,7 +130,7 @@ func TestResolveExposureCertificateDomainsMergesRuntimeAndPolicyDomains(t *testi
 		},
 	}
 
-	got, err := resolveExposureCertificateDomains(ctx)
+	got, err := resolveExposureCertificateDomains(ctx, ctx.CWD)
 	if err != nil {
 		t.Fatalf("resolveExposureCertificateDomains returned error: %v", err)
 	}
@@ -138,4 +138,90 @@ func TestResolveExposureCertificateDomainsMergesRuntimeAndPolicyDomains(t *testi
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("unexpected merged domains: got %v want %v", got, want)
 	}
+}
+
+func TestResolveExposureCertificateDomainsUsesExplicitWorkingDirectory(t *testing.T) {
+	t.Parallel()
+
+	var loadedPath string
+	ctx := &runtimeContext{
+		CWD: "/shell",
+		Loader: localExposureLoaderFunc(func(path string) (policy.RepositoryConfig, string, error) {
+			loadedPath = path
+			if path != "/repo" {
+				return policy.RepositoryConfig{}, "", policy.ErrPolicyNotFound
+			}
+			return policy.RepositoryConfig{
+				Mode: "none",
+				ExposureCertificateDomains: []string{
+					"*.buildkite.cleanroom.localhost",
+					"api.buildkite.cleanroom.localhost",
+				},
+			}, "/repo/cleanroom.yaml", nil
+		}),
+	}
+
+	got, err := resolveExposureCertificateDomains(ctx, "/repo")
+	if err != nil {
+		t.Fatalf("resolveExposureCertificateDomains returned error: %v", err)
+	}
+	if loadedPath != "/repo" {
+		t.Fatalf("expected loader to use explicit cwd, got %q", loadedPath)
+	}
+	want := []string{"*.buildkite.cleanroom.localhost", "api.buildkite.cleanroom.localhost"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("unexpected merged domains: got %v want %v", got, want)
+	}
+}
+
+func TestResolveRequestedExposureCertificateDomainsSkipsPolicyLoadWithoutHTTPS(t *testing.T) {
+	t.Parallel()
+
+	ctx := &runtimeContext{
+		CWD: "/repo",
+		Loader: localExposureLoader{
+			err: errors.New("unexpected repository load"),
+		},
+	}
+
+	got, err := resolveRequestedExposureCertificateDomains(ctx, "", []*cleanroomv1.PortExposure{{
+		Protocol:  exposureProtocolTCP,
+		GuestPort: 3000,
+	}})
+	if err != nil {
+		t.Fatalf("resolveRequestedExposureCertificateDomains returned error: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("expected nil domains for TCP-only exposure, got %v", got)
+	}
+}
+
+func TestResolveRequestedExposureCertificateDomainsLoadsPolicyForHTTPS(t *testing.T) {
+	t.Parallel()
+
+	wantErr := errors.New("unexpected repository load")
+	ctx := &runtimeContext{
+		CWD: "/repo",
+		Loader: localExposureLoader{
+			err: wantErr,
+		},
+	}
+
+	_, err := resolveRequestedExposureCertificateDomains(ctx, "", []*cleanroomv1.PortExposure{{
+		Protocol:  exposureProtocolHTTPS,
+		GuestPort: 3000,
+	}})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("expected error %v, got %v", wantErr, err)
+	}
+}
+
+type localExposureLoaderFunc func(string) (policy.RepositoryConfig, string, error)
+
+func (f localExposureLoaderFunc) LoadAndCompile(string) (*policy.CompiledPolicy, string, error) {
+	return nil, "", errors.New("unexpected LoadAndCompile call")
+}
+
+func (f localExposureLoaderFunc) LoadRepository(path string) (policy.RepositoryConfig, string, error) {
+	return f(path)
 }

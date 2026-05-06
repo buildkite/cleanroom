@@ -217,7 +217,7 @@ func TestDNSInstallUsesSameEffectiveCertificateDomainsAsExposureStartup(t *testi
 			},
 		},
 	}
-	extraDomains, err := resolveExposureCertificateDomains(ctx)
+	extraDomains, err := resolveExposureCertificateDomains(ctx, ctx.CWD)
 	if err != nil {
 		t.Fatalf("resolveExposureCertificateDomains returned error: %v", err)
 	}

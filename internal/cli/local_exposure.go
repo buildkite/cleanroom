@@ -97,7 +97,7 @@ func runForegroundClientExposures(ctx *runtimeContext, flags clientFlags, sandbo
 		return err
 	}
 
-	extraCertificateDomains, err := resolveExposureCertificateDomains(ctx)
+	extraCertificateDomains, err := resolveRequestedExposureCertificateDomains(ctx, "", requested)
 	if err != nil {
 		return err
 	}
@@ -130,14 +130,18 @@ func runForegroundClientExposuresWithClient(w io.Writer, client *controlclient.C
 	return nil
 }
 
-func resolveExposureCertificateDomains(ctx *runtimeContext) ([]string, error) {
+func resolveExposureCertificateDomains(ctx *runtimeContext, cwd string) ([]string, error) {
 	if ctx == nil {
 		return nil, nil
 	}
 
 	domains := append([]string(nil), ctx.Config.Exposure.CertificateDomains...)
-	if ctx.Loader != nil && strings.TrimSpace(ctx.CWD) != "" {
-		repository, _, err := ctx.Loader.LoadRepository(ctx.CWD)
+	repositoryCWD := strings.TrimSpace(cwd)
+	if repositoryCWD == "" {
+		repositoryCWD = strings.TrimSpace(ctx.CWD)
+	}
+	if ctx.Loader != nil && repositoryCWD != "" {
+		repository, _, err := ctx.Loader.LoadRepository(repositoryCWD)
 		if err != nil && !errors.Is(err, policy.ErrPolicyNotFound) {
 			return nil, err
 		}
@@ -149,4 +153,13 @@ func resolveExposureCertificateDomains(ctx *runtimeContext) ([]string, error) {
 	}
 	slices.Sort(domains)
 	return slices.Compact(domains), nil
+}
+
+func resolveRequestedExposureCertificateDomains(ctx *runtimeContext, cwd string, requested []*cleanroomv1.PortExposure) ([]string, error) {
+	for _, req := range requested {
+		if req != nil && strings.TrimSpace(req.GetProtocol()) == exposureProtocolHTTPS {
+			return resolveExposureCertificateDomains(ctx, cwd)
+		}
+	}
+	return nil, nil
 }

@@ -100,7 +100,7 @@ func (c *DNSCommand) installDNS(ctx *runtimeContext) error {
 	if err != nil {
 		return err
 	}
-	extraDomains, err := resolveExposureCertificateDomains(certificateCtx)
+	extraDomains, err := resolveExposureCertificateDomains(certificateCtx, certificateCtx.CWD)
 	if err != nil {
 		return err
 	}
