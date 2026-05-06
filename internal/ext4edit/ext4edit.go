@@ -99,6 +99,54 @@ func PathTypeWithError(imagePath, path string) (PathKind, error) {
 	return DebugFSStatType(output), nil
 }
 
+// PathIsExecutable reports whether path resolves to a regular file with any
+// executable bit set.
+func PathIsExecutable(imagePath, path string) (bool, error) {
+	return pathIsExecutable(imagePath, path, 0)
+}
+
+func pathIsExecutable(imagePath, path string, symlinkDepth int) (bool, error) {
+	if symlinkDepth > 40 {
+		return false, fmt.Errorf("resolve symlink %q: too many nested symlinks", path)
+	}
+
+	resolvedPath, err := resolvePath(imagePath, path)
+	if err != nil {
+		if isMissingPathError(err) {
+			return false, nil
+		}
+		return false, err
+	}
+
+	output, err := statPathDirect(imagePath, resolvedPath)
+	if err != nil {
+		if isMissingPathError(err) {
+			return false, nil
+		}
+		return false, err
+	}
+
+	switch DebugFSStatType(output) {
+	case PathKindRegular:
+		mode, ok := DebugFSStatMode(output)
+		if !ok {
+			return false, fmt.Errorf("debugfs stat for %q did not include mode", resolvedPath)
+		}
+		return mode.Perm()&0o111 != 0, nil
+	case PathKindSymlink:
+		target, err := DebugFSStatLinkTarget(output)
+		if err != nil {
+			return false, fmt.Errorf("resolve symlink %q: %w", resolvedPath, err)
+		}
+		if !strings.HasPrefix(target, "/") {
+			target = filepath.Join(filepath.Dir(resolvedPath), target)
+		}
+		return pathIsExecutable(imagePath, target, symlinkDepth+1)
+	default:
+		return false, nil
+	}
+}
+
 // DebugFSCommandOutputError extracts actionable debugfs stderr/stdout error text.
 func DebugFSCommandOutputError(output string) string {
 	trimmed := strings.TrimSpace(output)
@@ -155,6 +203,28 @@ func DebugFSStatType(output string) PathKind {
 		}
 	}
 	return PathKindUnknown
+}
+
+// DebugFSStatMode parses a debugfs `stat` response into permission bits.
+func DebugFSStatMode(output string) (os.FileMode, bool) {
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+		line = strings.TrimSpace(line)
+		modeIndex := strings.Index(line, "Mode:")
+		if modeIndex == -1 {
+			continue
+		}
+		rest := line[modeIndex+len("Mode:"):]
+		fields := strings.Fields(rest)
+		if len(fields) == 0 {
+			return 0, false
+		}
+		parsed, err := strconv.ParseUint(fields[0], 8, 32)
+		if err != nil {
+			return 0, false
+		}
+		return os.FileMode(parsed) & os.ModePerm, true
+	}
+	return 0, false
 }
 
 // DebugFSStatLinkTarget parses a debugfs `stat` response for a symlink target.

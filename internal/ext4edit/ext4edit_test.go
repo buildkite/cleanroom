@@ -116,6 +116,40 @@ func TestDebugFSStatTypeParsesSymlink(t *testing.T) {
 	}
 }
 
+func TestDebugFSStatModeParsesPermissions(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name   string
+		output string
+		want   os.FileMode
+	}{
+		{
+			name:   "permissions only",
+			output: "debugfs 1.47.3 (8-Jul-2025)\nInode: 531   Type: regular    Mode:  0755   Flags: 0x80000\n",
+			want:   0o755,
+		},
+		{
+			name:   "mode with inode type bits",
+			output: "debugfs 1.47.3 (8-Jul-2025)\nInode: 531   Type: regular    Mode:  0100644   Flags: 0x80000\n",
+			want:   0o644,
+		},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, ok := DebugFSStatMode(tc.output)
+			if !ok {
+				t.Fatal("expected stat mode to parse")
+			}
+			if got != tc.want {
+				t.Fatalf("unexpected stat mode: got %#o want %#o", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestPathTypeWithErrorReturnsInspectionError(t *testing.T) {
 	t.Parallel()
 
@@ -138,6 +172,60 @@ func TestPathTypeWithErrorReturnsInspectionError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "debugfs") {
 		t.Fatalf("expected debugfs error, got %v", err)
+	}
+}
+
+func TestPathIsExecutableFollowsFinalSymlinkAndChecksMode(t *testing.T) {
+	debugfsBinary, mkfsBinary, ok := requireDebugFSTools(t)
+	if !ok {
+		return
+	}
+
+	imagePath := createExt4Image(t, mkfsBinary)
+	createExt4Dir(t, debugfsBinary, imagePath, "/usr")
+	createExt4Dir(t, debugfsBinary, imagePath, "/usr/bin")
+	createExt4Dir(t, debugfsBinary, imagePath, "/usr/local")
+	createExt4Dir(t, debugfsBinary, imagePath, "/usr/local/bin")
+
+	tmpDir := t.TempDir()
+	executableSrc := filepath.Join(tmpDir, "dockerd-real")
+	if err := os.WriteFile(executableSrc, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write executable source file: %v", err)
+	}
+	if err := InjectFile(imagePath, executableSrc, "/usr/local/bin/dockerd-real", 0o755); err != nil {
+		t.Fatalf("InjectFile executable: %v", err)
+	}
+	createExt4Symlink(t, debugfsBinary, imagePath, "/usr/bin/dockerd", "/usr/local/bin/dockerd-real")
+
+	nonExecutableSrc := filepath.Join(tmpDir, "not-dockerd")
+	if err := os.WriteFile(nonExecutableSrc, []byte("#!/bin/sh\nexit 0\n"), 0o644); err != nil {
+		t.Fatalf("write non-executable source file: %v", err)
+	}
+	if err := InjectFile(imagePath, nonExecutableSrc, "/usr/local/bin/not-dockerd", 0o644); err != nil {
+		t.Fatalf("InjectFile non-executable: %v", err)
+	}
+	createExt4Symlink(t, debugfsBinary, imagePath, "/usr/bin/not-dockerd", "/usr/local/bin/not-dockerd")
+	createExt4Symlink(t, debugfsBinary, imagePath, "/usr/bin/broken-dockerd", "/missing/dockerd")
+
+	for _, tc := range []struct {
+		path string
+		want bool
+	}{
+		{path: "/usr/bin/dockerd", want: true},
+		{path: "/usr/local/bin/dockerd-real", want: true},
+		{path: "/usr/bin/not-dockerd", want: false},
+		{path: "/usr/local/bin/not-dockerd", want: false},
+		{path: "/usr/bin/broken-dockerd", want: false},
+		{path: "/usr/bin/missing-dockerd", want: false},
+		{path: "/usr/bin", want: false},
+	} {
+		got, err := PathIsExecutable(imagePath, tc.path)
+		if err != nil {
+			t.Fatalf("PathIsExecutable(%q): %v", tc.path, err)
+		}
+		if got != tc.want {
+			t.Fatalf("PathIsExecutable(%q): got %v want %v", tc.path, got, tc.want)
+		}
 	}
 }
 

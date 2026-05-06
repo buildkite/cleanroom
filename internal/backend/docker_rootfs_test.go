@@ -4,17 +4,15 @@ import (
 	"errors"
 	"strings"
 	"testing"
-
-	"github.com/buildkite/cleanroom/internal/ext4edit"
 )
 
 func TestValidateDockerServiceRootFSSkipsWhenDockerNotRequired(t *testing.T) {
 	t.Parallel()
 
 	called := false
-	err := validateDockerServiceRootFS("rootfs.ext4", "example/image", false, func(string, string) (ext4edit.PathKind, error) {
+	err := validateDockerServiceRootFS("rootfs.ext4", "example/image", false, func(string, string) (bool, error) {
 		called = true
-		return ext4edit.PathKindUnknown, nil
+		return false, nil
 	})
 	if err != nil {
 		t.Fatalf("ValidateDockerServiceRootFS returned error: %v", err)
@@ -27,25 +25,25 @@ func TestValidateDockerServiceRootFSSkipsWhenDockerNotRequired(t *testing.T) {
 func TestValidateDockerServiceRootFSAcceptsDockerdOnPath(t *testing.T) {
 	t.Parallel()
 
-	err := validateDockerServiceRootFS("rootfs.ext4", "example/image", true, func(_, path string) (ext4edit.PathKind, error) {
+	err := validateDockerServiceRootFS("rootfs.ext4", "example/image", true, func(_, path string) (bool, error) {
 		if path == "/usr/local/sbin/dockerd" {
-			return ext4edit.PathKindRegular, nil
+			return true, nil
 		}
-		return ext4edit.PathKindUnknown, nil
+		return false, nil
 	})
 	if err != nil {
 		t.Fatalf("ValidateDockerServiceRootFS returned error: %v", err)
 	}
 }
 
-func TestValidateDockerServiceRootFSAcceptsSymlinkedDockerdOnPath(t *testing.T) {
+func TestValidateDockerServiceRootFSAcceptsExecutableDockerdOnLaterPath(t *testing.T) {
 	t.Parallel()
 
-	err := validateDockerServiceRootFS("rootfs.ext4", "example/image", true, func(_, path string) (ext4edit.PathKind, error) {
+	err := validateDockerServiceRootFS("rootfs.ext4", "example/image", true, func(_, path string) (bool, error) {
 		if path == "/usr/local/bin/dockerd" {
-			return ext4edit.PathKindSymlink, nil
+			return true, nil
 		}
-		return ext4edit.PathKindUnknown, nil
+		return false, nil
 	})
 	if err != nil {
 		t.Fatalf("ValidateDockerServiceRootFS returned error: %v", err)
@@ -55,8 +53,8 @@ func TestValidateDockerServiceRootFSAcceptsSymlinkedDockerdOnPath(t *testing.T) 
 func TestValidateDockerServiceRootFSRejectsMissingDockerd(t *testing.T) {
 	t.Parallel()
 
-	err := validateDockerServiceRootFS("rootfs.ext4", "ghcr.io/buildkite/cleanroom-base/alpine", true, func(string, string) (ext4edit.PathKind, error) {
-		return ext4edit.PathKindUnknown, nil
+	err := validateDockerServiceRootFS("rootfs.ext4", "ghcr.io/buildkite/cleanroom-base/alpine", true, func(string, string) (bool, error) {
+		return false, nil
 	})
 	if err == nil {
 		t.Fatal("expected error when docker is required but dockerd is missing")
@@ -77,8 +75,8 @@ func TestValidateDockerServiceRootFSPreservesInspectionErrors(t *testing.T) {
 	t.Parallel()
 
 	inspectErr := errors.New("debugfs unavailable")
-	err := validateDockerServiceRootFS("rootfs.ext4", "example/image", true, func(string, string) (ext4edit.PathKind, error) {
-		return ext4edit.PathKindUnknown, inspectErr
+	err := validateDockerServiceRootFS("rootfs.ext4", "example/image", true, func(string, string) (bool, error) {
+		return false, inspectErr
 	})
 	if err == nil {
 		t.Fatal("expected inspection error")
@@ -96,11 +94,11 @@ func TestValidateDockerServiceRootFSPreservesInspectionErrors(t *testing.T) {
 func TestValidateDockerServiceRootFSRejectsDockerdDirectory(t *testing.T) {
 	t.Parallel()
 
-	err := validateDockerServiceRootFS("rootfs.ext4", "example/image", true, func(_, path string) (ext4edit.PathKind, error) {
+	err := validateDockerServiceRootFS("rootfs.ext4", "example/image", true, func(_, path string) (bool, error) {
 		if path == "/usr/local/sbin/dockerd" {
-			return ext4edit.PathKindDirectory, nil
+			return false, nil
 		}
-		return ext4edit.PathKindUnknown, nil
+		return false, nil
 	})
 	if err == nil {
 		t.Fatal("expected directory placeholder to be rejected")
