@@ -42,6 +42,8 @@ func TestCleanroomRootHelperDeclaresCapabilitiesAndZFSSupport(t *testing.T) {
 		"zfs send: unsupported parent snapshot",
 		"zfs send: unsupported child snapshot",
 		"zfs receive: unsupported dataset",
+		`is_cleanroom_zfs_snapshot_import_namespace_dataset "$3"`,
+		"zfs create: unsupported dataset",
 		`is_cleanroom_zfs_stored_snapshot_ref "$5"`,
 		`is_cleanroom_zfs_stored_snapshot_ref "$4"`,
 		`is_cleanroom_zfs_snapshot_import_dataset "$4"`,
