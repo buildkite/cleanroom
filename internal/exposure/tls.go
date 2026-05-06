@@ -248,14 +248,6 @@ func validateAdditionalCertificateDomain(domain, name string) error {
 	return nil
 }
 
-func localCertificateMatchesDomain(cert *x509.Certificate, domain string) bool {
-	dnsNames, err := normalizeCertificateDNSNames(domain, nil)
-	if err != nil {
-		return false
-	}
-	return localCertificateMatchesDNSNames(cert, dnsNames)
-}
-
 func localCertificateMatchesDNSNames(cert *x509.Certificate, dnsNames []string) bool {
 	if cert == nil || cert.IsCA {
 		return false
