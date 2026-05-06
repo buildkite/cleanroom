@@ -131,9 +131,13 @@ Current scope:
   `http://gateway.cleanroom.internal:8170/registry/public.ecr.aws/...` inside
   the guest.
 
-Policy still applies to the registry host from the map key. A sandbox must
-allow `public.ecr.aws:443` for the `public.ecr.aws` mirror path to fetch
-upstream, even though the guest talks to the Cleanroom gateway over HTTP.
+The initial upstream request is authorized against the registry host from the
+map key. A sandbox must allow `public.ecr.aws:443` for the
+`public.ecr.aws` mirror path to fetch upstream, even though the guest talks to
+the Cleanroom gateway over HTTP. Upstream registry redirects are checked against
+the redirected host, so policies must also allow any registry CDN host needed
+for the image pull. For example, GHCR blob downloads commonly redirect to
+`pkg-containers.githubusercontent.com:443`.
 Registries that are not present in `gateway.oci.registries` are not installed
 as guest `dockerd` registry mirrors unless they are one of the built-in public
 registry hosts. Other registries either use Docker's normal direct registry path
