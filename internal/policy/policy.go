@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"github.com/buildkite/cleanroom/internal/bytesize"
+	"github.com/buildkite/cleanroom/internal/exposure"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/ociref"
 	"gopkg.in/yaml.v3"
@@ -32,8 +33,9 @@ var ErrPolicyNotFound = errors.New("policy not found")
 type Loader struct{}
 
 type rawPolicy struct {
-	Version    int            `yaml:"version"`
-	Repository *rawRepository `yaml:"repository"`
+	Version    int               `yaml:"version"`
+	Repository *rawRepository    `yaml:"repository"`
+	Exposure   rawExposureConfig `yaml:"exposure"`
 	Sandbox    struct {
 		Image struct {
 			Ref string `yaml:"ref"`
@@ -45,6 +47,10 @@ type rawPolicy struct {
 		Resources    rawResources       `yaml:"resources"`
 		Network      rawSandboxNetwork  `yaml:"network"`
 	} `yaml:"sandbox"`
+}
+
+type rawExposureConfig struct {
+	CertificateDomains []string `yaml:"certificate_domains"`
 }
 
 type rawRepository struct {
@@ -134,11 +140,12 @@ type CompiledPolicy struct {
 }
 
 type RepositoryConfig struct {
-	Implicit   bool   `json:"-"`
-	Mode       string `json:"mode"`
-	Remote     string `json:"remote"`
-	Path       string `json:"path"`
-	Submodules bool   `json:"submodules"`
+	Implicit                   bool     `json:"-"`
+	Mode                       string   `json:"mode"`
+	Remote                     string   `json:"remote"`
+	Path                       string   `json:"path"`
+	Submodules                 bool     `json:"submodules"`
+	ExposureCertificateDomains []string `json:"-"`
 }
 
 type Services struct {
@@ -310,6 +317,10 @@ func (l Loader) LoadRepository(root string) (RepositoryConfig, string, error) {
 	}
 
 	cfg, err := normalizeRepositoryConfig(raw.Repository)
+	if err != nil {
+		return RepositoryConfig{}, source, err
+	}
+	cfg.ExposureCertificateDomains, err = normalizeExposureCertificateDomains(raw.Exposure)
 	if err != nil {
 		return RepositoryConfig{}, source, err
 	}
@@ -825,6 +836,10 @@ func normalizeRepositoryConfig(raw *rawRepository) (RepositoryConfig, error) {
 		Path:       path,
 		Submodules: raw.Submodules,
 	}, nil
+}
+
+func normalizeExposureCertificateDomains(raw rawExposureConfig) ([]string, error) {
+	return exposure.NormalizeAdditionalCertificateDomains(exposure.Domain, raw.CertificateDomains)
 }
 
 func readPolicy(path string) (rawPolicy, error) {

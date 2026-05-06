@@ -3,6 +3,7 @@ package exposure
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"io"
 	"net"
@@ -578,6 +579,67 @@ func TestHTTPSProxyForwardsTrustedHeadersAndPreservesHost(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for backend request")
+	}
+}
+
+func TestHTTPSListenerServesDirectTLSForConfiguredNestedWildcardHosts(t *testing.T) {
+	t.Parallel()
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "nested-ok")
+	}))
+	t.Cleanup(backend.Close)
+
+	httpsPort := freeTCPPort(t)
+	manager := NewManager(Config{
+		HTTPSListen:             net.JoinHostPort("127.0.0.1", strconv.Itoa(httpsPort)),
+		ExtraCertificateDomains: []string{"*.buildkite.cleanroom.localhost"},
+		TLSDir:                  t.TempDir(),
+	})
+	t.Cleanup(func() {
+		if err := manager.Close(); err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	})
+
+	registerHTTPSRouteForTest(t, manager, "owner-exact", "sandbox-exact", "buildkite", backendDialerFromURL(t, backend.URL))
+	registerHTTPSRouteForTest(t, manager, "owner-wildcard", "sandbox-wildcard", "*.buildkite", backendDialerFromURL(t, backend.URL))
+
+	leafCert, err := EnsureLocalCertificateWithDomains(manager.domain, manager.tlsDir, []string{"*.buildkite.cleanroom.localhost"})
+	if err != nil {
+		t.Fatalf("EnsureLocalCertificateWithDomains returned error: %v", err)
+	}
+	roots := x509.NewCertPool()
+	roots.AddCert(leafCert.Cert)
+
+	client := &http.Client{
+		Transport: &http.Transport{
+			Proxy: nil,
+			TLSClientConfig: &tls.Config{
+				RootCAs: roots,
+			},
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				var dialer net.Dialer
+				return dialer.DialContext(ctx, "tcp", manager.httpsListen)
+			},
+		},
+	}
+	t.Cleanup(client.CloseIdleConnections)
+
+	resp, err := client.Get("https://api.buildkite.cleanroom.localhost/")
+	if err != nil {
+		t.Fatalf("https get nested wildcard host: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read nested wildcard response body: %v", err)
+	}
+	if got, want := resp.StatusCode, http.StatusOK; got != want {
+		t.Fatalf("unexpected nested wildcard status: got %d want %d", got, want)
+	}
+	if got, want := string(body), "nested-ok"; got != want {
+		t.Fatalf("unexpected nested wildcard body: got %q want %q", got, want)
 	}
 }
 

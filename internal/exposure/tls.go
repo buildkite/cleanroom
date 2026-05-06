@@ -12,6 +12,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -36,13 +37,20 @@ func DefaultTLSDir() (string, error) {
 }
 
 func EnsureLocalCertificate(domain, dir string) (*LocalCertificate, error) {
+	return EnsureLocalCertificateWithDomains(domain, dir, nil)
+}
+
+func EnsureLocalCertificateWithDomains(domain, dir string, extraDomains []string) (*LocalCertificate, error) {
 	domain = normalizeCertificateDomain(domain)
 	if domain == "" {
 		return nil, errors.New("missing exposure certificate domain")
 	}
+	dnsNames, err := normalizeCertificateDNSNames(domain, extraDomains)
+	if err != nil {
+		return nil, err
+	}
 	dir = strings.TrimSpace(dir)
 	if dir == "" {
-		var err error
 		dir, err = DefaultTLSDir()
 		if err != nil {
 			return nil, err
@@ -59,7 +67,7 @@ func EnsureLocalCertificate(domain, dir string) (*LocalCertificate, error) {
 		if err != nil {
 			return nil, err
 		}
-		if localCertificateMatchesDomain(cert.Cert, domain) {
+		if localCertificateMatchesDNSNames(cert.Cert, dnsNames) {
 			cert.CertPath = certPath
 			cert.KeyPath = keyPath
 			return cert, nil
@@ -72,7 +80,7 @@ func EnsureLocalCertificate(domain, dir string) (*LocalCertificate, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("create exposure TLS directory %s: %w", dir, err)
 	}
-	cert, err := generateLocalCertificate(domain)
+	cert, err := generateLocalCertificate(domain, dnsNames)
 	if err != nil {
 		return nil, err
 	}
@@ -108,7 +116,11 @@ func RemoveLocalCertificateFiles(dir string) error {
 }
 
 func GenerateServerCertificate(domain, dir string) (tls.Certificate, error) {
-	cert, err := EnsureLocalCertificate(domain, dir)
+	return GenerateServerCertificateWithDomains(domain, dir, nil)
+}
+
+func GenerateServerCertificateWithDomains(domain, dir string, extraDomains []string) (tls.Certificate, error) {
+	cert, err := EnsureLocalCertificateWithDomains(domain, dir, extraDomains)
 	if err != nil {
 		return tls.Certificate{}, err
 	}
@@ -141,7 +153,7 @@ func parseLocalCertificate(certPEM, keyPEM []byte) (*LocalCertificate, error) {
 	return &LocalCertificate{Cert: cert, Key: key, CertPEM: certPEM}, nil
 }
 
-func generateLocalCertificate(domain string) (*LocalCertificate, error) {
+func generateLocalCertificate(domain string, dnsNames []string) (*LocalCertificate, error) {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		return nil, fmt.Errorf("generate exposure certificate key: %w", err)
@@ -161,7 +173,7 @@ func generateLocalCertificate(domain string) (*LocalCertificate, error) {
 		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,
-		DNSNames:              []string{domain, "*." + domain},
+		DNSNames:              dnsNames,
 	}
 	certDER, err := x509.CreateCertificate(rand.Reader, tpl, tpl, &key.PublicKey, key)
 	if err != nil {
@@ -182,12 +194,88 @@ func normalizeCertificateDomain(domain string) string {
 	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(domain)), ".")
 }
 
+func NormalizeAdditionalCertificateDomains(domain string, extraDomains []string) ([]string, error) {
+	domain = normalizeCertificateDomain(domain)
+	if domain == "" {
+		return nil, errors.New("missing exposure certificate domain")
+	}
+	out := make([]string, 0, len(extraDomains))
+	for _, name := range extraDomains {
+		name = normalizeCertificateDomain(name)
+		if name == "" {
+			continue
+		}
+		if err := validateAdditionalCertificateDomain(domain, name); err != nil {
+			return nil, err
+		}
+		out = append(out, name)
+	}
+	slices.Sort(out)
+	return slices.Compact(out), nil
+}
+
+func normalizeCertificateDNSNames(domain string, extraDomains []string) ([]string, error) {
+	normalizedExtra, err := NormalizeAdditionalCertificateDomains(domain, extraDomains)
+	if err != nil {
+		return nil, err
+	}
+	dnsNames := append([]string{domain, "*." + domain}, normalizedExtra...)
+	slices.Sort(dnsNames)
+	return slices.Compact(dnsNames), nil
+}
+
+func validateAdditionalCertificateDomain(domain, name string) error {
+	switch {
+	case name == domain:
+	case name == "*."+domain:
+	case strings.HasPrefix(name, "*."):
+		suffix := strings.TrimPrefix(name, "*.")
+		if suffix == "" {
+			return fmt.Errorf("additional exposure certificate domain %q must include a wildcard suffix", name)
+		}
+		if !strings.EqualFold(suffix, domain) && !strings.HasSuffix(suffix, "."+domain) {
+			return fmt.Errorf("additional exposure certificate domain %q must be under %q", name, domain)
+		}
+		if err := validateDNSName(suffix); err != nil {
+			return fmt.Errorf("additional exposure certificate domain %q: %w", name, err)
+		}
+		if strings.Contains(suffix, "*") {
+			return fmt.Errorf("additional exposure certificate domain %q must use a single leading wildcard", name)
+		}
+	default:
+		if strings.Contains(name, "*") {
+			return fmt.Errorf("additional exposure certificate domain %q must use a single leading wildcard", name)
+		}
+		if !strings.EqualFold(name, domain) && !strings.HasSuffix(name, "."+domain) {
+			return fmt.Errorf("additional exposure certificate domain %q must be under %q", name, domain)
+		}
+		if err := validateDNSName(name); err != nil {
+			return fmt.Errorf("additional exposure certificate domain %q: %w", name, err)
+		}
+	}
+	return nil
+}
+
 func localCertificateMatchesDomain(cert *x509.Certificate, domain string) bool {
+	dnsNames, err := normalizeCertificateDNSNames(domain, nil)
+	if err != nil {
+		return false
+	}
+	return localCertificateMatchesDNSNames(cert, dnsNames)
+}
+
+func localCertificateMatchesDNSNames(cert *x509.Certificate, dnsNames []string) bool {
 	if cert == nil || cert.IsCA {
 		return false
 	}
 	if time.Until(cert.NotAfter) < 24*time.Hour {
 		return false
 	}
-	return cert.VerifyHostname(domain) == nil && cert.VerifyHostname("buildkite."+domain) == nil
+	actual := append([]string(nil), cert.DNSNames...)
+	for i := range actual {
+		actual[i] = normalizeCertificateDomain(actual[i])
+	}
+	slices.Sort(actual)
+	actual = slices.Compact(actual)
+	return slices.Equal(actual, dnsNames)
 }

@@ -228,7 +228,7 @@ The rewrite function should:
 5. Add regression tests for forwarded-header propagation and redirect-safe
    upstream request context.
 
-### Phase 4: Certificate SAN Regeneration
+### Phase 4: Static Extra Certificate Domains
 
 Current behavior:
 
@@ -248,39 +248,40 @@ Current behavior:
 New behavior:
 
 - HTTPS route registration remains the source of routing behavior.
-- The certificate becomes route-aware instead of static.
-- The active HTTPS route set determines the required SAN set for the shared
-  leaf certificate.
-- Route-set changes may therefore trigger certificate regeneration and reload.
+- The certificate remains static while the HTTPS listener is running.
+- Instead of deriving SANs from the live route set, Cleanroom loads a static
+  configured set of additional certificate domains alongside the default SANs.
+- These configured domains are used to build the shared exposure certificate at
+  startup time and do not require runtime certificate regeneration.
 
-1. Expand HTTPS certificate generation so the leaf certificate SAN set is
-   derived from the active HTTPS exposure routes rather than being fixed to the
-   base domain only.
-2. Keep the existing baseline SANs:
+1. Keep the existing baseline SANs:
    - `cleanroom.localhost`
    - `*.cleanroom.localhost`
-3. Treat the full active HTTPS route set as the source of truth.
-4. For each registered wildcard exposure such as `*.buildkite`, add the
-   corresponding nested wildcard SAN:
-   - `*.buildkite.cleanroom.localhost`
-5. For any future wildcard exposure such as `*.foo.bar.buildkite`, add:
-   - `*.foo.bar.buildkite.cleanroom.localhost`
-6. Adding or removing exact single-label HTTPS routes such as `buildkite:3000`
-   should usually not require certificate changes, because they are already
-   covered by `*.cleanroom.localhost`.
-7. Adding or removing wildcard HTTPS routes such as `*.buildkite:3000` should
-   trigger SAN recomputation and, when needed, certificate regeneration.
-8. Regenerate and reload the HTTPS certificate when the required SAN set
-   changes.
-9. On registration, treat certificate refresh as part of making the new route
-   active. If the route requires new SANs and certificate regeneration fails,
-   roll back the new route instead of advertising a hostname that cannot
-   complete TLS correctly.
-10. On route removal, certificate shrinking may be best-effort. If SAN
-    reduction fails after a route is removed, the stale certificate is broader
-    than necessary but existing exposures continue to function.
-11. Add regression coverage proving direct TLS validation succeeds for exposed
-   nested hosts such as `api.buildkite.cleanroom.localhost`.
+2. Add support for a static list of additional exposure certificate domains in
+   Cleanroom server configuration.
+3. Add support for the same list in project-level `cleanroom.yaml`, so a
+   repository can declare the extra nested wildcard domains it needs.
+4. Merge the project-level and server-level domain lists into one deduplicated
+   effective SAN set, in addition to the default SANs.
+5. Use the effective SAN set when loading or generating the shared local
+   exposure certificate.
+6. Treat these configured values as explicit certificate intent, not as derived
+   runtime state from active exposures.
+7. Do not reconfigure or regenerate the certificate when routes are added or
+   removed while the exposure server is already running.
+8. Require a fresh exposure-server start to pick up changes to the configured
+   extra domain list.
+9. Validate configured extra domains using the same wildcard shape constraints
+   as route names where applicable:
+   - allow exact domains when they are valid certificate SANs under
+     `cleanroom.localhost`
+   - allow leading wildcard domains such as `*.buildkite.cleanroom.localhost`
+   - reject malformed or unsupported wildcard shapes
+10. Keep the implementation backend-agnostic: configuration only changes the
+    SAN set presented by the local HTTPS exposure server.
+11. Add regression coverage proving direct TLS validation succeeds for nested
+    hosts covered by configured wildcard SANs such as
+    `api.buildkite.cleanroom.localhost`.
 
 ### Phase 5: Docs And End-To-End Verification
 
@@ -298,6 +299,10 @@ New behavior:
   - `*.foo.bar.buildkite:3000`
   - rejected explicit dotted names such as `api.buildkite:3000`
   - invalid wildcard shapes
+- Add configuration tests for:
+  - project-level extra certificate domains
+  - server-level extra certificate domains
+  - merged and deduplicated effective SANs
 - Add exposure-manager tests that issue requests for:
   - `buildkite.cleanroom.localhost`
   - `api.buildkite.cleanroom.localhost`
@@ -313,6 +318,8 @@ New behavior:
   - `X-Forwarded-Host` includes the external host and port
   - `X-Forwarded-Proto` is `https`
   - `X-Forwarded-Port` matches the HTTPS listener port
+- Add TLS tests proving that configured extra wildcard SANs allow direct HTTPS
+  validation for nested hosts such as `api.buildkite.cleanroom.localhost`.
 
 ## buildkite/buildkite Verification Criteria
 

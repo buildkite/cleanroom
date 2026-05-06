@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"slices"
 	"strings"
 	"syscall"
 
@@ -14,9 +15,10 @@ import (
 	"github.com/buildkite/cleanroom/internal/controlclient"
 	"github.com/buildkite/cleanroom/internal/exposure"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
+	"github.com/buildkite/cleanroom/internal/policy"
 )
 
-func startClientExposures(ctx context.Context, client *controlclient.Client, sandboxID string, requested []*cleanroomv1.PortExposure) (*exposure.Manager, []*cleanroomv1.PortExposure, error) {
+func startClientExposures(ctx context.Context, client *controlclient.Client, sandboxID string, requested []*cleanroomv1.PortExposure, extraCertificateDomains []string) (*exposure.Manager, []*cleanroomv1.PortExposure, error) {
 	if len(requested) == 0 {
 		return nil, nil, nil
 	}
@@ -31,7 +33,9 @@ func startClientExposures(ctx context.Context, client *controlclient.Client, san
 		return nil, nil, err
 	}
 
-	manager := exposure.NewManager(exposure.Config{})
+	manager := exposure.NewManager(exposure.Config{
+		ExtraCertificateDomains: extraCertificateDomains,
+	})
 	needsDNS := false
 	for _, req := range requested {
 		if req != nil && strings.TrimSpace(req.GetProtocol()) == exposureProtocolHTTPS {
@@ -93,16 +97,21 @@ func runForegroundClientExposures(ctx *runtimeContext, flags clientFlags, sandbo
 		return err
 	}
 
-	return runForegroundClientExposuresWithClient(ctx.Stdout, client, sandboxID, requested)
+	extraCertificateDomains, err := resolveExposureCertificateDomains(ctx)
+	if err != nil {
+		return err
+	}
+
+	return runForegroundClientExposuresWithClient(ctx.Stdout, client, sandboxID, requested, extraCertificateDomains)
 }
 
-func runForegroundClientExposuresWithClient(w io.Writer, client *controlclient.Client, sandboxID string, requested []*cleanroomv1.PortExposure) error {
+func runForegroundClientExposuresWithClient(w io.Writer, client *controlclient.Client, sandboxID string, requested []*cleanroomv1.PortExposure, extraCertificateDomains []string) error {
 	if len(requested) == 0 {
 		return nil
 	}
 	exposureCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	manager, registered, err := startClientExposures(exposureCtx, client, sandboxID, requested)
+	manager, registered, err := startClientExposures(exposureCtx, client, sandboxID, requested, extraCertificateDomains)
 	if err != nil {
 		return err
 	}
@@ -119,4 +128,25 @@ func runForegroundClientExposuresWithClient(w io.Writer, client *controlclient.C
 	defer stopSignals(signalCh)
 	<-signalCh
 	return nil
+}
+
+func resolveExposureCertificateDomains(ctx *runtimeContext) ([]string, error) {
+	if ctx == nil {
+		return nil, nil
+	}
+
+	domains := append([]string(nil), ctx.Config.Exposure.CertificateDomains...)
+	if ctx.Loader != nil && strings.TrimSpace(ctx.CWD) != "" {
+		repository, _, err := ctx.Loader.LoadRepository(ctx.CWD)
+		if err != nil && !errors.Is(err, policy.ErrPolicyNotFound) {
+			return nil, err
+		}
+		domains = append(domains, repository.ExposureCertificateDomains...)
+	}
+	domains, err := exposure.NormalizeAdditionalCertificateDomains(exposure.Domain, domains)
+	if err != nil {
+		return nil, err
+	}
+	slices.Sort(domains)
+	return slices.Compact(domains), nil
 }

@@ -15,6 +15,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/bytesize"
 	"github.com/buildkite/cleanroom/internal/endpoint"
+	"github.com/buildkite/cleanroom/internal/exposure"
 	"gopkg.in/yaml.v3"
 )
 
@@ -22,6 +23,7 @@ type Config struct {
 	DefaultBackend string              `yaml:"default_backend"`
 	ControlHost    string              `yaml:"control_host,omitempty"`
 	Cache          CacheConfig         `yaml:"cache,omitempty"`
+	Exposure       ExposureConfig      `yaml:"exposure,omitempty"`
 	Gateway        GatewayConfig       `yaml:"gateway,omitempty"`
 	Observability  ObservabilityConfig `yaml:"observability,omitempty"`
 	Backends       Backends            `yaml:"backends"`
@@ -41,6 +43,10 @@ type CachePeerConfig struct {
 type GatewayConfig struct {
 	Git GatewayGitConfig `yaml:"git,omitempty"`
 	OCI GatewayOCIConfig `yaml:"oci,omitempty"`
+}
+
+type ExposureConfig struct {
+	CertificateDomains []string `yaml:"certificate_domains,omitempty"`
 }
 
 type GatewayGitConfig struct {
@@ -85,6 +91,7 @@ type configFile struct {
 	DefaultBackend string              `yaml:"default_backend"`
 	ControlHost    string              `yaml:"control_host,omitempty"`
 	Cache          CacheConfig         `yaml:"cache,omitempty"`
+	Exposure       ExposureConfig      `yaml:"exposure,omitempty"`
 	Gateway        GatewayConfig       `yaml:"gateway,omitempty"`
 	Observability  ObservabilityConfig `yaml:"observability,omitempty"`
 	Backends       backendsFile        `yaml:"backends"`
@@ -101,6 +108,7 @@ func (f configFile) config() Config {
 		DefaultBackend: f.DefaultBackend,
 		ControlHost:    f.ControlHost,
 		Cache:          f.Cache,
+		Exposure:       f.Exposure,
 		Gateway:        f.Gateway,
 		Observability:  f.Observability,
 		Backends: Backends{
@@ -392,6 +400,7 @@ func normalizeConfig(cfg Config, inferredDefaultBackend string) Config {
 	}
 	cfg.ControlHost = strings.TrimSpace(cfg.ControlHost)
 	cfg.Cache.Peers = normalizeCachePeers(cfg.Cache.Peers)
+	cfg.Exposure.CertificateDomains = trimStringSlice(cfg.Exposure.CertificateDomains)
 	cfg.Gateway.Git.CacheHosts = trimStringSlice(cfg.Gateway.Git.CacheHosts)
 	cfg.Gateway.OCI.Registries = trimStringMap(cfg.Gateway.OCI.Registries)
 	cfg.Observability.DeploymentEnvironment = strings.TrimSpace(cfg.Observability.DeploymentEnvironment)
@@ -430,6 +439,9 @@ func validateConfig(cfg Config) error {
 		}
 	}
 	if err := validateCacheConfig(cfg.Cache); err != nil {
+		return err
+	}
+	if _, err := exposure.NormalizeAdditionalCertificateDomains(exposure.Domain, cfg.Exposure.CertificateDomains); err != nil {
 		return err
 	}
 	if err := validateDarwinVZRuntimeConfig(cfg.Backends.DarwinVZ); err != nil {

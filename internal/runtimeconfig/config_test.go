@@ -95,6 +95,35 @@ cache:
 	}
 }
 
+func TestLoadParsesExposureCertificateDomains(t *testing.T) {
+	cfg, err := loadConfigFromContent(t, `default_backend: firecracker
+exposure:
+  certificate_domains:
+    - "*.buildkite.cleanroom.localhost"
+    - "api.buildkite.cleanroom.localhost"
+`)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if got, want := strings.Join(cfg.Exposure.CertificateDomains, ","), "*.buildkite.cleanroom.localhost,api.buildkite.cleanroom.localhost"; got != want {
+		t.Fatalf("unexpected exposure certificate domains: got %q want %q", got, want)
+	}
+}
+
+func TestLoadRejectsInvalidExposureCertificateDomains(t *testing.T) {
+	_, err := loadConfigFromContent(t, `default_backend: firecracker
+exposure:
+  certificate_domains:
+    - "*.example.com"
+`)
+	if err == nil {
+		t.Fatal("expected invalid exposure certificate domains to be rejected")
+	}
+	if !strings.Contains(err.Error(), "must be under") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestLoadRejectsInvalidCachePeers(t *testing.T) {
 	tests := []struct {
 		name    string

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/controlservice"
 	"github.com/buildkite/cleanroom/internal/endpoint"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
+	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 )
 
@@ -45,7 +47,7 @@ func TestStartClientExposuresRejectsUnsupportedSandboxPortDial(t *testing.T) {
 	manager, _, err := startClientExposures(context.Background(), client, sandboxID, []*cleanroomv1.PortExposure{{
 		Protocol:  exposureProtocolTCP,
 		GuestPort: 3000,
-	}})
+	}}, nil)
 	if manager != nil {
 		_ = manager.Close()
 	}
@@ -89,4 +91,51 @@ func newLocalExposureTestClient(t *testing.T, adapter backend.Adapter) (*control
 		t.Fatal("CreateSandbox returned empty sandbox id")
 	}
 	return client, sandboxID
+}
+
+type localExposureLoader struct {
+	repository policy.RepositoryConfig
+	err        error
+}
+
+func (l localExposureLoader) LoadAndCompile(string) (*policy.CompiledPolicy, string, error) {
+	return nil, "", errors.New("unexpected LoadAndCompile call")
+}
+
+func (l localExposureLoader) LoadRepository(string) (policy.RepositoryConfig, string, error) {
+	if l.err != nil {
+		return policy.RepositoryConfig{}, "", l.err
+	}
+	return l.repository, "/repo/cleanroom.yaml", nil
+}
+
+func TestResolveExposureCertificateDomainsMergesRuntimeAndPolicyDomains(t *testing.T) {
+	t.Parallel()
+
+	ctx := &runtimeContext{
+		CWD: "/repo",
+		Config: runtimeconfig.Config{
+			Exposure: runtimeconfig.ExposureConfig{
+				CertificateDomains: []string{"*.buildkite.cleanroom.localhost"},
+			},
+		},
+		Loader: localExposureLoader{
+			repository: policy.RepositoryConfig{
+				Mode: "none",
+				ExposureCertificateDomains: []string{
+					"api.buildkite.cleanroom.localhost",
+					"*.buildkite.cleanroom.localhost",
+				},
+			},
+		},
+	}
+
+	got, err := resolveExposureCertificateDomains(ctx)
+	if err != nil {
+		t.Fatalf("resolveExposureCertificateDomains returned error: %v", err)
+	}
+	want := []string{"*.buildkite.cleanroom.localhost", "api.buildkite.cleanroom.localhost"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("unexpected merged domains: got %v want %v", got, want)
+	}
 }

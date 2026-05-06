@@ -5,6 +5,7 @@ import (
 	"encoding/pem"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -74,5 +75,83 @@ func TestGenerateServerCertificateUsesTrustedLeafCertificate(t *testing.T) {
 	}
 	if err := leaf.VerifyHostname("buildkite." + Domain); err != nil {
 		t.Fatalf("expected leaf to verify buildkite hostname: %v", err)
+	}
+}
+
+func TestEnsureLocalCertificateWithDomainsCreatesReusableLeafCertificate(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	extra := []string{"*.buildkite." + Domain}
+	first, err := EnsureLocalCertificateWithDomains(Domain, dir, extra)
+	if err != nil {
+		t.Fatalf("EnsureLocalCertificateWithDomains first call returned error: %v", err)
+	}
+	second, err := EnsureLocalCertificateWithDomains(Domain, dir, extra)
+	if err != nil {
+		t.Fatalf("EnsureLocalCertificateWithDomains second call returned error: %v", err)
+	}
+	if !first.Cert.Equal(second.Cert) {
+		t.Fatal("expected second call to reuse generated certificate")
+	}
+	if err := first.Cert.VerifyHostname("api.buildkite." + Domain); err != nil {
+		t.Fatalf("expected certificate to verify nested wildcard hostname: %v", err)
+	}
+	if err := first.Cert.VerifyHostname("foo.bar.buildkite." + Domain); err == nil {
+		t.Fatal("expected certificate not to verify deeper nested hostnames")
+	}
+}
+
+func TestNormalizeAdditionalCertificateDomains(t *testing.T) {
+	t.Parallel()
+
+	got, err := NormalizeAdditionalCertificateDomains(Domain, []string{
+		"*.Buildkite.cleanroom.localhost.",
+		"api.buildkite.cleanroom.localhost",
+		"*.buildkite.cleanroom.localhost",
+	})
+	if err != nil {
+		t.Fatalf("NormalizeAdditionalCertificateDomains returned error: %v", err)
+	}
+	want := []string{"*.buildkite.cleanroom.localhost", "api.buildkite.cleanroom.localhost"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected normalized domains: got %v want %v", got, want)
+	}
+}
+
+func TestNormalizeAdditionalCertificateDomainsRejectsUnsupportedDomains(t *testing.T) {
+	t.Parallel()
+
+	tests := []string{
+		"*.example.com",
+		"*.*.cleanroom.localhost",
+		"foo.*.cleanroom.localhost",
+	}
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc, func(t *testing.T) {
+			t.Parallel()
+
+			if _, err := NormalizeAdditionalCertificateDomains(Domain, []string{tc}); err == nil {
+				t.Fatalf("expected domain %q to be rejected", tc)
+			}
+		})
+	}
+}
+
+func TestGenerateServerCertificateWithDomainsUsesTrustedLeafCertificate(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	cert, err := GenerateServerCertificateWithDomains(Domain, dir, []string{"*.buildkite." + Domain})
+	if err != nil {
+		t.Fatalf("GenerateServerCertificateWithDomains returned error: %v", err)
+	}
+	leaf, err := x509.ParseCertificate(cert.Certificate[0])
+	if err != nil {
+		t.Fatalf("parse leaf certificate: %v", err)
+	}
+	if err := leaf.VerifyHostname("api.buildkite." + Domain); err != nil {
+		t.Fatalf("expected leaf to verify nested wildcard hostname: %v", err)
 	}
 }
