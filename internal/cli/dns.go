@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/buildkite/cleanroom/internal/exposure"
+	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 )
 
 type DNSCommand struct {
@@ -95,6 +96,14 @@ func (c *DNSCommand) installDNS(ctx *runtimeContext) error {
 	if err != nil {
 		return err
 	}
+	certificateCtx, err := dnsExposureCertificateContext(ctx)
+	if err != nil {
+		return err
+	}
+	extraDomains, err := resolveExposureCertificateDomains(certificateCtx)
+	if err != nil {
+		return err
+	}
 	certPath := filepath.Join(tlsDir, exposure.LocalCertificateFilename)
 	if _, err := dnsInstallReadFile(certPath); err == nil {
 		if err := removeExposureCertificateTrust(certPath); err != nil {
@@ -104,7 +113,7 @@ func (c *DNSCommand) installDNS(ctx *runtimeContext) error {
 		return fmt.Errorf("read exposure certificate %s: %w", certPath, err)
 	}
 	parentDirs := exposureTLSParentDirsToChown(tlsDir)
-	cert, err := exposure.EnsureLocalCertificate(exposure.Domain, tlsDir)
+	cert, err := exposure.EnsureLocalCertificateWithDomains(exposure.Domain, tlsDir, extraDomains)
 	if err != nil {
 		return fmt.Errorf("ensure exposure certificate: %w", err)
 	}
@@ -316,6 +325,33 @@ func dnsExposureTLSDir() (string, error) {
 		return filepath.Join(home, ".config", "cleanroom", "tls"), nil
 	}
 	return exposure.DefaultTLSDir()
+}
+
+func dnsExposureRuntimeConfigPath() (string, error) {
+	if configHome := strings.TrimSpace(dnsInstallGetenv("XDG_CONFIG_HOME")); configHome != "" {
+		return filepath.Join(configHome, "cleanroom", "config.yaml"), nil
+	}
+	if home := dnsExposureInvokingHomeDir(); home != "" {
+		return filepath.Join(home, ".config", "cleanroom", "config.yaml"), nil
+	}
+	return runtimeconfig.Path()
+}
+
+func dnsExposureCertificateContext(ctx *runtimeContext) (*runtimeContext, error) {
+	configPath, err := dnsExposureRuntimeConfigPath()
+	if err != nil {
+		return nil, err
+	}
+	cfg, _, err := runtimeconfig.LoadPath(configPath)
+	if err != nil {
+		return nil, err
+	}
+	if ctx == nil {
+		return &runtimeContext{Config: cfg}, nil
+	}
+	resolved := *ctx
+	resolved.Config = cfg
+	return &resolved, nil
 }
 
 func dnsExposureInvokingHomeDir() string {

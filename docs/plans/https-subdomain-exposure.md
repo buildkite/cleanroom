@@ -62,6 +62,8 @@ their internal request view and can emit incorrect redirect URLs.
 - Preserve the original client `Host` header when proxying to the guest.
 - Set trusted forwarded headers so upstream apps can build correct absolute
   URLs.
+- Keep the shared local exposure certificate inputs consistent between HTTPS
+  exposure startup and `cleanroom dns install`.
 - Avoid backend-specific behavior; this is a client-side exposure change only.
 
 ## Non-Goals
@@ -69,7 +71,8 @@ their internal request view and can emit incorrect redirect URLs.
 - Do not support explicit dotted exact names such as `api.buildkite`.
 - Do not add a separate wildcard-specific CLI flag.
 - Do not add broad suffix matching beyond the requested wildcard shape.
-- Do not change DNS installation or certificate trust setup.
+- Do not redesign DNS installation or macOS trust mechanics beyond making them
+  use the same shared exposure certificate inputs.
 - Do not store wildcard alias state in sandbox metadata.
 
 ## Proposed Behavior
@@ -237,6 +240,8 @@ Current behavior:
   `cleanroom.localhost`.
 - That certificate is reused across all sandboxes and HTTPS exposures on the
   local machine.
+- On macOS, `cleanroom dns install` also loads or generates that shared local
+  certificate and installs trust for it.
 - The current SAN set is fixed to:
   - `cleanroom.localhost`
   - `*.cleanroom.localhost`
@@ -244,6 +249,10 @@ Current behavior:
   `buildkite.cleanroom.localhost` work today, but nested hosts such as
   `api.buildkite.cleanroom.localhost` fail TLS hostname validation even when
   wildcard routing exists.
+- As currently implemented, the `cleanroom dns install` path still requests
+  only the baseline SAN set, so it does not yet honor configured extra
+  certificate domains and can replace an expanded certificate with the baseline
+  one.
 
 New behavior:
 
@@ -253,6 +262,10 @@ New behavior:
   configured set of additional certificate domains alongside the default SANs.
 - These configured domains are used to build the shared exposure certificate at
   startup time and do not require runtime certificate regeneration.
+- `cleanroom dns install` and HTTPS exposure startup resolve the same effective
+  SAN set and use the same certificate generation and reuse rules.
+- On macOS, rerunning `cleanroom dns install` after changing configured extra
+  certificate domains refreshes trust for the regenerated shared certificate.
 
 1. Keep the existing baseline SANs:
    - `cleanroom.localhost`
@@ -278,17 +291,29 @@ New behavior:
    - allow leading wildcard domains such as `*.buildkite.cleanroom.localhost`
    - reject malformed or unsupported wildcard shapes
 10. Keep the implementation backend-agnostic: configuration only changes the
-    SAN set presented by the local HTTPS exposure server.
-11. Add regression coverage proving direct TLS validation succeeds for nested
+    SAN set used by the shared local exposure certificate on the client.
+11. Update `cleanroom dns install` to resolve the same effective SAN set from
+    runtime config and project-level `cleanroom.yaml` as the HTTPS exposure
+    startup path.
+12. Use the same certificate load-or-generate path from `cleanroom dns
+    install`, so DNS trust installation cannot replace a configured expanded
+    certificate with a baseline-only certificate.
+13. Add regression coverage proving direct TLS validation succeeds for nested
     hosts covered by configured wildcard SANs such as
     `api.buildkite.cleanroom.localhost`.
+14. Add regression coverage proving `cleanroom dns install` and HTTPS exposure
+    startup reuse the same certificate material for the same effective SAN set.
 
 ### Phase 5: Docs And End-To-End Verification
 
 1. Update `docs/plans/sandbox-port-exposure.md` and the README examples to show
-   wildcard registrations instead of explicit dotted aliases.
+   wildcard registrations instead of explicit dotted aliases, and document the
+   `exposure.certificate_domains` plus `cleanroom dns install` workflow needed
+   for nested HTTPS trust.
 2. Build a local Cleanroom binary from the branch under test.
-3. Verify the wildcard exposure behavior end to end against
+3. Run `sudo cleanroom dns install` after configuring any extra exposure
+   certificate domains needed for nested hosts.
+4. Verify the wildcard exposure behavior end to end against
    `buildkite/buildkite` running in Cleanroom mode.
 
 ## Test Plan
@@ -303,6 +328,9 @@ New behavior:
   - project-level extra certificate domains
   - server-level extra certificate domains
   - merged and deduplicated effective SANs
+- Add `dns install` tests proving it resolves the same effective certificate
+  domains as HTTPS exposure startup and does not replace an expanded
+  certificate with the baseline SAN set.
 - Add exposure-manager tests that issue requests for:
   - `buildkite.cleanroom.localhost`
   - `api.buildkite.cleanroom.localhost`
@@ -323,6 +351,10 @@ New behavior:
 
 ## buildkite/buildkite Verification Criteria
 
+- Configure `exposure.certificate_domains` to include
+  `*.buildkite.cleanroom.localhost`.
+- Run `sudo cleanroom dns install` after configuring the extra certificate
+  domain so the trusted local certificate matches the effective SAN set.
 - Start `buildkite/buildkite` in Cleanroom mode using one exact exposure and
   one wildcard exposure:
 
@@ -351,6 +383,10 @@ cleanroom exec \
 - Confirm no external redirect generated by `buildkite/buildkite` falls back to
   `http`, drops the exposure port, or rewrites to a different host when reached
   through the wildcard exposure.
+- Confirm rerunning `sudo cleanroom dns install` after the extra certificate
+  domain is configured does not replace the trusted certificate with a
+  baseline-only SAN set, for example by verifying nested-host TLS validation
+  still succeeds afterward.
 
 ## Definition Of Done
 
@@ -359,4 +395,7 @@ cleanroom exec \
 - Exact and wildcard routes match as documented.
 - Unmatched base or deeper hosts still return `404 page not found`.
 - Upstream apps receive correct forwarded host, proto, and port headers.
+- On macOS, `cleanroom dns install` uses the same effective SAN set as HTTPS
+  exposure startup and does not overwrite configured nested-host certificates
+  with a baseline-only SAN set.
 - Docs describe wildcard-only nested-host registration clearly.
