@@ -6,6 +6,7 @@ import (
 	"io"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -298,6 +299,114 @@ func TestExportCachePeerZFSIncrementalLimitsConcurrentExports(t *testing.T) {
 			t.Fatalf("ExportCachePeerZFSIncremental returned error: %v", err)
 		}
 	}
+}
+
+func TestExportCachePeerZFSIncrementalConsumesTokenBeforeWaitingOnExportSlot(t *testing.T) {
+	store := newMemoryCacheStore()
+	insertCachePeerRecord(t, store, cachePeerRecordOptions{
+		Stage:        workspaceStageName,
+		CacheKey:     "workspace-parent",
+		StorageRef:   "tank/cleanroom/snapshots/workspace@base",
+		SnapshotGUID: "parent-guid",
+	})
+	insertCachePeerRecord(t, store, cachePeerRecordOptions{
+		Stage:              dependencyStageName,
+		CacheKey:           "dependency-child",
+		ParentCacheKey:     "workspace-parent",
+		StorageRef:         "tank/cleanroom/snapshots/dependency@base",
+		SnapshotGUID:       "child-guid",
+		ParentSnapshotGUID: "parent-guid",
+		ProducerVersion:    dependencyStageProducerVersion,
+	})
+
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	var exportCalls atomic.Int32
+	transfer := &stubCachePeerTransferDriver{
+		exportFn: func(_ context.Context, _ volumestore.IncrementalSnapshotExportPlan, dst io.Writer) error {
+			call := exportCalls.Add(1)
+			if call == 1 {
+				close(firstStarted)
+				<-releaseFirst
+			}
+			_, err := io.WriteString(dst, "zfs-stream")
+			return err
+		},
+	}
+	svc := newTestService(&stubAdapter{})
+	svc.CacheStore = store
+	svc.CachePeerTransferDriver = transfer
+	svc.runtime.cachePeerExportConcurrency = 1
+	now := time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC)
+	clock := &mutableServiceClock{now: now}
+	svc.runtime.clock = clock
+	svc.runtime.cachePeerExportTokenTTL = time.Minute
+
+	first, err := svc.LookupCachePeer(context.Background(), dependencyCachePeerLookupRequest())
+	if err != nil {
+		t.Fatalf("first LookupCachePeer returned error: %v", err)
+	}
+	second, err := svc.LookupCachePeer(context.Background(), dependencyCachePeerLookupRequest())
+	if err != nil {
+		t.Fatalf("second LookupCachePeer returned error: %v", err)
+	}
+
+	firstErr := make(chan error, 1)
+	go func() {
+		var stream bytes.Buffer
+		firstErr <- svc.ExportCachePeerZFSIncremental(context.Background(), first.GetCandidate().GetTransferToken(), &stream)
+	}()
+	select {
+	case <-firstStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for first export to start")
+	}
+
+	secondErr := make(chan error, 1)
+	go func() {
+		var stream bytes.Buffer
+		secondErr <- svc.ExportCachePeerZFSIncremental(context.Background(), second.GetCandidate().GetTransferToken(), &stream)
+	}()
+	select {
+	case err := <-secondErr:
+		t.Fatalf("second export returned before the first released its slot: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	clock.Set(now.Add(2 * time.Minute))
+	close(releaseFirst)
+	if err := <-firstErr; err != nil {
+		t.Fatalf("first ExportCachePeerZFSIncremental returned error: %v", err)
+	}
+	if err := <-secondErr; err != nil {
+		t.Fatalf("second ExportCachePeerZFSIncremental returned error after waiting for slot: %v", err)
+	}
+	if got, want := exportCalls.Load(), int32(2); got != want {
+		t.Fatalf("unexpected export calls: got %d want %d", got, want)
+	}
+}
+
+type mutableServiceClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func (c *mutableServiceClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *mutableServiceClock) After(d time.Duration) <-chan time.Time {
+	ch := make(chan time.Time, 1)
+	ch <- c.Now().Add(d)
+	return ch
+}
+
+func (c *mutableServiceClock) Set(now time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = now
 }
 
 func TestLookupCachePeerSupportsServicesStageWithExplicitParent(t *testing.T) {

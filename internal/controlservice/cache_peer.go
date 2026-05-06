@@ -169,6 +169,12 @@ func (s *Service) ExportCachePeerZFSIncremental(ctx context.Context, token strin
 	ctx, span := s.Observability.Tracer("github.com/buildkite/cleanroom/internal/controlservice").Start(ctx, "cleanroom.cache_peer.export")
 	defer span.End()
 
+	export, ok := s.consumeCachePeerExport(strings.TrimSpace(token), s.clock().Now())
+	if !ok {
+		span.SetAttributes(attribute.String(observability.AttrCacheResult, observability.CacheResultMiss))
+		span.SetStatus(codes.Error, ErrCachePeerExportTokenNotFound.Error())
+		return ErrCachePeerExportTokenNotFound
+	}
 	release, err := s.acquireCachePeerExportSlot(ctx)
 	if err != nil {
 		span.RecordError(err)
@@ -177,12 +183,6 @@ func (s *Service) ExportCachePeerZFSIncremental(ctx context.Context, token strin
 	}
 	defer release()
 
-	export, ok := s.consumeCachePeerExport(strings.TrimSpace(token), s.clock().Now())
-	if !ok {
-		span.SetAttributes(attribute.String(observability.AttrCacheResult, observability.CacheResultMiss))
-		span.SetStatus(codes.Error, ErrCachePeerExportTokenNotFound.Error())
-		return ErrCachePeerExportTokenNotFound
-	}
 	span.SetAttributes(
 		attribute.String(observability.AttrCacheStage, strings.TrimSpace(export.Stage)),
 		attribute.String(observability.AttrCachePeerDirection, observability.CachePeerDirectionExport),
