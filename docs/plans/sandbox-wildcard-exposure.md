@@ -1,4 +1,6 @@
-# HTTPS Wildcard Exposure Plan
+# Sandbox Wildcard Exposure Plan
+
+Builds on docs/plans/sandbox-port-exposure.md
 
 **Related:** `docs/plans/sandbox-port-exposure.md`
 **Status:** Proposed
@@ -258,8 +260,8 @@ New behavior:
 
 - HTTPS route registration remains the source of routing behavior.
 - The certificate remains static while the HTTPS listener is running.
-- Instead of deriving SANs from the live route set, Cleanroom loads a static
-  configured set of additional certificate domains alongside the default SANs.
+- Cleanroom loads a static configured set of additional certificate domains
+  alongside the default SANs.
 - These configured domains are used to build the shared exposure certificate at
   startup time and do not require runtime certificate regeneration.
 - `cleanroom dns install` and HTTPS exposure startup resolve the same effective
