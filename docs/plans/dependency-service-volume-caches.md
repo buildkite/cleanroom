@@ -2,7 +2,7 @@
 
 **Spec reference:** `spec.md` sections 5.1.1, 5.2, 6.4
 **Status:** Ready for initial Firecracker and darwin-vz release
-**Last reviewed:** 2026-05-05
+**Last reviewed:** 2026-05-06
 
 ## Summary
 
@@ -199,15 +199,16 @@ resolved from the post-changeset repository tree when a changeset is present.
 This must be string normalization, not shell expansion.
 
 The canonical home directory is the `HOME` value Cleanroom supplies in the
-closed block execution environment. Cleanroom must set that value before output
-path normalization. Block `env` values are literal strings, except leading `~`,
-`~/`, `$HOME`, `$HOME/`, `${HOME}`, and `${HOME}/` forms are expanded to the
-same canonical home directory, and leading `$WORKSPACE`, `$WORKSPACE/`,
-`${WORKSPACE}`, and `${WORKSPACE}/` forms are expanded to the canonical
-workspace root. Other `$...` values, URLs, relative paths, empty strings, and
-trailing spaces are preserved and included in the block environment digest as
-provided. The first implementation should not discover a different home
-directory from the image at runtime.
+closed block execution environment. Cleanroom sets that value before output path
+normalization and keeps the policy normalizer tied to the guest-agent default.
+Block `env` values are literal strings, except leading `~`, `~/`, `$HOME`,
+`$HOME/`, `${HOME}`, and `${HOME}/` forms are expanded to the same canonical
+home directory, and leading `$WORKSPACE`, `$WORKSPACE/`, `${WORKSPACE}`, and
+`${WORKSPACE}/` forms are expanded to the canonical workspace root. Other
+`$...` values, URLs, relative paths, empty strings, and trailing spaces are
+preserved and included in the block environment digest as provided. The first
+implementation should not discover a different home directory from the image at
+runtime.
 
 ## Semantics
 
@@ -290,14 +291,16 @@ manifest rather than by changing the reuse namespace.
 
 ### Environment and network determinism
 
-Block commands should receive a closed environment: Cleanroom's deterministic
-baseline variables plus the block's declared `env`. Host process environment
-values must not leak into file-keyed volume-cache commands unless they are
-explicitly declared and hashed.
+Block commands receive a closed environment: the block's declared `env` plus
+Cleanroom's fixed guest baseline defaults such as `HOME` and `PATH`. Host
+process environment values must not leak into file-keyed volume-cache commands
+unless they are explicitly declared and hashed.
 
-`dependency_env_digest` and `service_env_digest` include declared block env,
-Cleanroom-supplied cache path variables, `HOME`, working directory, and any
-other baseline values that can affect command behavior.
+`dependency_env_digest` and `service_env_digest` include only the declared block
+environment after Cleanroom path normalization. The repository working directory
+is covered by the compiled policy hash. Changes to Cleanroom baseline defaults
+that can affect command behavior must bump the dependency or service volume
+producer version instead of silently reusing old output-volume records.
 
 The compiled policy hash constrains network access, but it does not make mutable
 upstream responses deterministic. File-keyed volume cache is only safe for
@@ -1145,7 +1148,8 @@ Minimum coverage:
 - `sandbox.services` is an ordered service block list immediately.
 - Docker enablement moves to `sandbox.docker.required`.
 - `${HOME}` is the value Cleanroom sets in the closed block execution
-  environment and hashes into the block key.
+  environment. Declared env expansions are hashed into the block key; fixed
+  guest baseline defaults are covered by the producer version.
 - Escaped writes warn and trigger exact full-rootfs fallback in the first
   implementation.
 - Escaped writes should become hard failures for cacheable blocks once the

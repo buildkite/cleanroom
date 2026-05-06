@@ -18,6 +18,7 @@ import (
 
 	"github.com/buildkite/cleanroom/internal/bytesize"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
+	"github.com/buildkite/cleanroom/internal/guestenv"
 	"github.com/buildkite/cleanroom/internal/ociref"
 	"gopkg.in/yaml.v3"
 )
@@ -1316,7 +1317,7 @@ func normalizeBootstrapKeyFiles(raw []string, field string) ([]string, error) {
 }
 
 const (
-	defaultBlockHome      = "/root"
+	defaultBlockHome      = guestenv.DefaultHome
 	defaultBlockWorkspace = "/workspace"
 )
 

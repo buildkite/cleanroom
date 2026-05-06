@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/buildkite/cleanroom/internal/gateway"
+	"github.com/buildkite/cleanroom/internal/guestenv"
 	"github.com/buildkite/cleanroom/internal/vsockexec"
 )
 
@@ -83,11 +84,11 @@ func TestBuildCommandEnvCanDisableAmbientInheritance(t *testing.T) {
 	if got["DECLARED"] != "value" {
 		t.Fatalf("expected declared env to be present, got %q", got["DECLARED"])
 	}
-	if got["HOME"] != "/root" {
+	if got["HOME"] != guestenv.DefaultHome {
 		t.Fatalf("expected default HOME, got %q", got["HOME"])
 	}
-	if got["PATH"] == "" {
-		t.Fatal("expected default PATH")
+	if got["PATH"] != guestenv.DefaultPath {
+		t.Fatalf("expected default PATH, got %q", got["PATH"])
 	}
 }
 

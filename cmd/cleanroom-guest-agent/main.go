@@ -18,6 +18,7 @@ import (
 	"unsafe"
 
 	"github.com/buildkite/cleanroom/internal/gateway"
+	"github.com/buildkite/cleanroom/internal/guestenv"
 	"github.com/buildkite/cleanroom/internal/vsockexec"
 	"github.com/creack/pty"
 	"github.com/mdlayher/vsock"
@@ -373,10 +374,10 @@ func buildCommandEnv(requestEnv []string, inheritAmbient bool) ([]string, error)
 	configureGatewayGoEnv(base, requestKeys)
 
 	if strings.TrimSpace(base["HOME"]) == "" {
-		base["HOME"] = "/root"
+		base["HOME"] = guestenv.DefaultHome
 	}
 	if strings.TrimSpace(base["PATH"]) == "" {
-		base["PATH"] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/root/.local/bin"
+		base["PATH"] = guestenv.DefaultPath
 	}
 
 	out := make([]string, 0, len(base))
