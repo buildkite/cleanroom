@@ -36,10 +36,6 @@ func DefaultTLSDir() (string, error) {
 	return paths.TLSDir()
 }
 
-func EnsureLocalCertificate(domain, dir string) (*LocalCertificate, error) {
-	return EnsureLocalCertificateWithDomains(domain, dir, nil)
-}
-
 func EnsureLocalCertificateWithDomains(domain, dir string, extraDomains []string) (*LocalCertificate, error) {
 	domain = normalizeCertificateDomain(domain)
 	if domain == "" {

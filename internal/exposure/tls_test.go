@@ -13,13 +13,13 @@ func TestEnsureLocalCertificateCreatesReusableLeafCertificate(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	first, err := EnsureLocalCertificate(Domain, dir)
+	first, err := EnsureLocalCertificateWithDomains(Domain, dir, nil)
 	if err != nil {
-		t.Fatalf("EnsureLocalCertificate first call returned error: %v", err)
+		t.Fatalf("EnsureLocalCertificateWithDomains first call returned error: %v", err)
 	}
-	second, err := EnsureLocalCertificate(Domain, dir)
+	second, err := EnsureLocalCertificateWithDomains(Domain, dir, nil)
 	if err != nil {
-		t.Fatalf("EnsureLocalCertificate second call returned error: %v", err)
+		t.Fatalf("EnsureLocalCertificateWithDomains second call returned error: %v", err)
 	}
 	if !first.Cert.Equal(second.Cert) {
 		t.Fatal("expected second call to reuse generated certificate")
@@ -52,9 +52,9 @@ func TestGenerateServerCertificateUsesTrustedLeafCertificate(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	local, err := EnsureLocalCertificate(Domain, dir)
+	local, err := EnsureLocalCertificateWithDomains(Domain, dir, nil)
 	if err != nil {
-		t.Fatalf("EnsureLocalCertificate returned error: %v", err)
+		t.Fatalf("EnsureLocalCertificateWithDomains returned error: %v", err)
 	}
 	cert, err := GenerateServerCertificate(Domain, dir)
 	if err != nil {
