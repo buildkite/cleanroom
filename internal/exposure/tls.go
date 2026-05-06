@@ -111,10 +111,6 @@ func RemoveLocalCertificateFiles(dir string) error {
 	return removeErr
 }
 
-func GenerateServerCertificate(domain, dir string) (tls.Certificate, error) {
-	return GenerateServerCertificateWithDomains(domain, dir, nil)
-}
-
 func GenerateServerCertificateWithDomains(domain, dir string, extraDomains []string) (tls.Certificate, error) {
 	cert, err := EnsureLocalCertificateWithDomains(domain, dir, extraDomains)
 	if err != nil {
