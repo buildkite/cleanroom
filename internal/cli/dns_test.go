@@ -7,10 +7,13 @@ import (
 	"os/user"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/buildkite/cleanroom/internal/exposure"
+	"github.com/buildkite/cleanroom/internal/policy"
+	"github.com/buildkite/cleanroom/internal/runtimeconfig"
 )
 
 func TestResolverFileContent(t *testing.T) {
@@ -107,6 +110,163 @@ func TestDNSInstallTrustsLeafCertificateInInvokingUserKeychain(t *testing.T) {
 	}
 	if !reflect.DeepEqual(chownPaths, wantChownPaths) {
 		t.Fatalf("unexpected chown paths: got %v want %v", chownPaths, wantChownPaths)
+	}
+}
+
+func TestDNSInstallHonorsRuntimeConfigCertificateDomains(t *testing.T) {
+	home := t.TempDir()
+	resolverPath := filepath.Join(t.TempDir(), "resolver", exposure.Domain)
+	var calls [][]string
+	stubDNSInstallEnvironment(t, home, resolverPath, &calls)
+
+	configPath := filepath.Join(home, ".config", "cleanroom", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir runtime config dir: %v", err)
+	}
+	if err := os.WriteFile(configPath, []byte("exposure:\n  certificate_domains:\n    - '*.buildkite.cleanroom.localhost'\n    - api.buildkite.cleanroom.localhost\n"), 0o644); err != nil {
+		t.Fatalf("write runtime config: %v", err)
+	}
+
+	stdout, _ := makeStdoutCapture(t)
+	cmd := &DNSCommand{Action: "install"}
+	if err := cmd.Run(&runtimeContext{Stdout: stdout}); err != nil {
+		t.Fatalf("DNSCommand.Run returned error: %v", err)
+	}
+
+	certPath := filepath.Join(home, ".config", "cleanroom", "tls", exposure.LocalCertificateFilename)
+	got := readCertificateDNSNames(t, certPath)
+	want := []string{
+		exposure.Domain,
+		"*.cleanroom.localhost",
+		"*.buildkite.cleanroom.localhost",
+		"api.buildkite.cleanroom.localhost",
+	}
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Fatalf("unexpected certificate DNS names: got %v want %v", got, want)
+	}
+}
+
+func TestDNSInstallHonorsProjectPolicyCertificateDomains(t *testing.T) {
+	home := t.TempDir()
+	resolverPath := filepath.Join(t.TempDir(), "resolver", exposure.Domain)
+	var calls [][]string
+	stubDNSInstallEnvironment(t, home, resolverPath, &calls)
+
+	stdout, _ := makeStdoutCapture(t)
+	cmd := &DNSCommand{Action: "install"}
+	ctx := &runtimeContext{
+		CWD:    "/repo",
+		Stdout: stdout,
+		Loader: localExposureLoader{
+			repository: policy.RepositoryConfig{
+				Mode: "none",
+				ExposureCertificateDomains: []string{
+					"*.buildkite.cleanroom.localhost",
+					"api.buildkite.cleanroom.localhost",
+				},
+			},
+		},
+	}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("DNSCommand.Run returned error: %v", err)
+	}
+
+	certPath := filepath.Join(home, ".config", "cleanroom", "tls", exposure.LocalCertificateFilename)
+	got := readCertificateDNSNames(t, certPath)
+	want := []string{
+		exposure.Domain,
+		"*.cleanroom.localhost",
+		"*.buildkite.cleanroom.localhost",
+		"api.buildkite.cleanroom.localhost",
+	}
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Fatalf("unexpected certificate DNS names: got %v want %v", got, want)
+	}
+}
+
+func TestDNSInstallUsesSameEffectiveCertificateDomainsAsExposureStartup(t *testing.T) {
+	home := t.TempDir()
+	resolverPath := filepath.Join(t.TempDir(), "resolver", exposure.Domain)
+	var calls [][]string
+	stubDNSInstallEnvironment(t, home, resolverPath, &calls)
+
+	configPath := filepath.Join(home, ".config", "cleanroom", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir runtime config dir: %v", err)
+	}
+	if err := os.WriteFile(configPath, []byte("exposure:\n  certificate_domains:\n    - '*.buildkite.cleanroom.localhost'\n"), 0o644); err != nil {
+		t.Fatalf("write runtime config: %v", err)
+	}
+	cfg, _, err := runtimeconfig.LoadPath(configPath)
+	if err != nil {
+		t.Fatalf("LoadPath returned error: %v", err)
+	}
+
+	ctx := &runtimeContext{
+		CWD:    "/repo",
+		Config: cfg,
+		Loader: localExposureLoader{
+			repository: policy.RepositoryConfig{
+				Mode: "none",
+				ExposureCertificateDomains: []string{
+					"api.buildkite.cleanroom.localhost",
+					"*.buildkite.cleanroom.localhost",
+				},
+			},
+		},
+	}
+	extraDomains, err := resolveExposureCertificateDomains(ctx)
+	if err != nil {
+		t.Fatalf("resolveExposureCertificateDomains returned error: %v", err)
+	}
+
+	stdout, _ := makeStdoutCapture(t)
+	ctx.Stdout = stdout
+	cmd := &DNSCommand{Action: "install"}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("DNSCommand.Run returned error: %v", err)
+	}
+
+	certPath := filepath.Join(home, ".config", "cleanroom", "tls", exposure.LocalCertificateFilename)
+	got := readCertificateDNSNames(t, certPath)
+	want := append([]string{exposure.Domain, "*." + exposure.Domain}, extraDomains...)
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Fatalf("unexpected certificate DNS names: got %v want %v", got, want)
+	}
+}
+
+func TestDNSInstallReinstallDoesNotDowngradeExpandedCertificate(t *testing.T) {
+	home := t.TempDir()
+	resolverPath := filepath.Join(t.TempDir(), "resolver", exposure.Domain)
+	var calls [][]string
+	stubDNSInstallEnvironment(t, home, resolverPath, &calls)
+
+	configPath := filepath.Join(home, ".config", "cleanroom", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir runtime config dir: %v", err)
+	}
+	if err := os.WriteFile(configPath, []byte("exposure:\n  certificate_domains:\n    - '*.buildkite.cleanroom.localhost'\n"), 0o644); err != nil {
+		t.Fatalf("write runtime config: %v", err)
+	}
+
+	stdout, _ := makeStdoutCapture(t)
+	cmd := &DNSCommand{Action: "install"}
+	ctx := &runtimeContext{Stdout: stdout}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("first DNSCommand.Run returned error: %v", err)
+	}
+
+	certPath := filepath.Join(home, ".config", "cleanroom", "tls", exposure.LocalCertificateFilename)
+	first := readCertificateDNSNames(t, certPath)
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatalf("second DNSCommand.Run returned error: %v", err)
+	}
+	second := readCertificateDNSNames(t, certPath)
+	if !slices.Equal(second, first) {
+		t.Fatalf("expected reinstall to preserve expanded DNS names: first=%v second=%v", first, second)
 	}
 }
 
@@ -394,4 +554,24 @@ func pemDecodeCertificate(data []byte) ([]byte, bool) {
 		return nil, false
 	}
 	return block.Bytes, true
+}
+
+func readCertificateDNSNames(t *testing.T, certPath string) []string {
+	t.Helper()
+
+	certPEM, err := os.ReadFile(certPath)
+	if err != nil {
+		t.Fatalf("read certificate %s: %v", certPath, err)
+	}
+	block, ok := pemDecodeCertificate(certPEM)
+	if !ok {
+		t.Fatalf("decode certificate PEM %s: invalid certificate", certPath)
+	}
+	cert, err := x509.ParseCertificate(block)
+	if err != nil {
+		t.Fatalf("parse certificate %s: %v", certPath, err)
+	}
+	names := append([]string(nil), cert.DNSNames...)
+	slices.Sort(names)
+	return slices.Compact(names)
 }
