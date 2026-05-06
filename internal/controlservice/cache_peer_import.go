@@ -27,6 +27,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/volumestore"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
+	"google.golang.org/protobuf/proto"
 )
 
 const cachePeerZFSIncrementalExportPathPrefix = "/v1/cache/export/zfs-incremental/"
@@ -455,9 +456,10 @@ func (s *Service) lookupCachePeerImportCandidates(ctx context.Context, req *clea
 	wg.Add(len(targets))
 	for _, target := range targets {
 		target := target
+		lookupReq := proto.Clone(req).(*cleanroomv1.LookupCachePeerRequest)
 		go func() {
 			defer wg.Done()
-			match, ok := s.lookupCachePeerImportCandidate(ctx, req, target)
+			match, ok := s.lookupCachePeerImportCandidate(ctx, lookupReq, target)
 			if !ok {
 				return
 			}
