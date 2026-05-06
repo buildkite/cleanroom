@@ -16,7 +16,9 @@ import (
 )
 
 const (
-	serviceVolumeStageName           = "service-volume"
+	serviceVolumeStageName = "service-volume"
+	// Bump when service block-volume production semantics change, including
+	// guest baseline environment defaults that can affect command behavior.
 	serviceVolumeProducerVersion     = "cleanroom/service-volume-v1"
 	serviceVolumeOutputLayoutVersion = "aggregate-v1"
 )

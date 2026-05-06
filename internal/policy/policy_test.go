@@ -8,6 +8,7 @@ import (
 
 	"github.com/buildkite/cleanroom/internal/bytesize"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
+	"github.com/buildkite/cleanroom/internal/guestenv"
 	"gopkg.in/yaml.v3"
 )
 
@@ -593,7 +594,7 @@ func TestCompileNormalizesDependencyBootstrapConfig(t *testing.T) {
 	if got, want := compiled.Dependencies.KeyFiles, []string{"go.mod", "go.sum"}; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("unexpected dependency key files: got %v want %v", got, want)
 	}
-	if got, want := block.Outputs.Dirs, []string{"/root/go/pkg/mod"}; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+	if got, want := block.Outputs.Dirs, []string{guestenv.DefaultHome + "/go/pkg/mod"}; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("unexpected dependency outputs: got %v want %v", got, want)
 	}
 }
@@ -877,7 +878,7 @@ func TestCompilePreservesLiteralBlockEnvValues(t *testing.T) {
 	env := compiled.Dependencies.Blocks[0].Env
 	for key, want := range map[string]string{
 		"EMPTY":      "",
-		"GOCACHE":    "/root/.cache/go-build",
+		"GOCACHE":    guestenv.DefaultHome + "/.cache/go-build",
 		"GOPROXY":    "https://proxy.golang.org,direct",
 		"RAW_PATH":   "a/../b",
 		"TRAILING":   "value ",
@@ -1365,7 +1366,7 @@ func TestFromProtoRejectsOverlappingDependencyAndServiceOutputs(t *testing.T) {
 				"go",
 				[]string{"true"},
 				[]string{"go.mod"},
-				&cleanroomv1.PolicyBlockOutputs{Dirs: []string{"/root/go"}},
+				&cleanroomv1.PolicyBlockOutputs{Dirs: []string{guestenv.DefaultHome + "/go"}},
 			)},
 		},
 		Services: &cleanroomv1.PolicyServices{
@@ -1373,7 +1374,7 @@ func TestFromProtoRejectsOverlappingDependencyAndServiceOutputs(t *testing.T) {
 				"postgres",
 				[]string{"true"},
 				[]string{"docker-compose.yml"},
-				&cleanroomv1.PolicyBlockOutputs{Files: []string{"/root/go/service.state"}},
+				&cleanroomv1.PolicyBlockOutputs{Files: []string{guestenv.DefaultHome + "/go/service.state"}},
 			)},
 		},
 	})
