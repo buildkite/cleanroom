@@ -38,23 +38,25 @@ type RegisterRequest struct {
 }
 
 type Config struct {
-	Domain             string
-	TCPHost            string
-	DNSListen          string
-	HTTPSListen        string
-	AllowHTTPSFallback bool
-	TLSDir             string
-	Logger             *log.Logger
+	Domain                  string
+	TCPHost                 string
+	DNSListen               string
+	HTTPSListen             string
+	AllowHTTPSFallback      bool
+	ExtraCertificateDomains []string
+	TLSDir                  string
+	Logger                  *log.Logger
 }
 
 type Manager struct {
-	domain      string
-	tcpHost     string
-	dnsListen   string
-	httpsListen string
-	fixedHTTPS  bool
-	tlsDir      string
-	logger      *log.Logger
+	domain                  string
+	tcpHost                 string
+	dnsListen               string
+	httpsListen             string
+	fixedHTTPS              bool
+	extraCertificateDomains []string
+	tlsDir                  string
+	logger                  *log.Logger
 
 	mu          sync.RWMutex
 	byOwner     map[string][]*route
@@ -109,18 +111,19 @@ func NewManager(cfg Config) *Manager {
 		httpsListen = DefaultHTTPSListen
 	}
 	return &Manager{
-		domain:      domain,
-		tcpHost:     tcpHost,
-		dnsListen:   dnsListen,
-		httpsListen: httpsListen,
-		fixedHTTPS:  fixedHTTPS,
-		tlsDir:      strings.TrimSpace(cfg.TLSDir),
-		logger:      cfg.Logger,
-		byOwner:     map[string][]*route{},
-		tcpRoutes:   map[int]*route{},
-		httpsRoutes: map[string]*route{},
-		tcpServers:  map[int]*tcpServer{},
-		closed:      make(chan struct{}),
+		domain:                  domain,
+		tcpHost:                 tcpHost,
+		dnsListen:               dnsListen,
+		httpsListen:             httpsListen,
+		fixedHTTPS:              fixedHTTPS,
+		extraCertificateDomains: append([]string(nil), cfg.ExtraCertificateDomains...),
+		tlsDir:                  strings.TrimSpace(cfg.TLSDir),
+		logger:                  cfg.Logger,
+		byOwner:                 map[string][]*route{},
+		tcpRoutes:               map[int]*route{},
+		httpsRoutes:             map[string]*route{},
+		tcpServers:              map[int]*tcpServer{},
+		closed:                  make(chan struct{}),
 	}
 }
 
@@ -485,7 +488,7 @@ func (m *Manager) startHTTPS(ctx context.Context) error {
 		return nil
 	}
 
-	cert, err := GenerateServerCertificate(m.domain, m.tlsDir)
+	cert, err := GenerateServerCertificateWithDomains(m.domain, m.tlsDir, m.extraCertificateDomains)
 	if err != nil {
 		return err
 	}

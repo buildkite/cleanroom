@@ -296,6 +296,10 @@ func runSandboxCreate(ctx *runtimeContext, connectFlags clientFlags, backend, fr
 	if err != nil {
 		return err
 	}
+	extraCertificateDomains, err := resolveExposureCertificateDomains(ctx)
+	if err != nil {
+		return err
+	}
 	resolvedHost := connectFlags.resolvedHost(ctx.Config)
 	client, err := connectFlags.connect(ctx)
 	if err != nil {
@@ -356,7 +360,7 @@ func runSandboxCreate(ctx *runtimeContext, connectFlags clientFlags, backend, fr
 			return err
 		}
 	}
-	return runForegroundClientExposuresWithClient(os.Stderr, client, sandboxID, exposures)
+	return runForegroundClientExposuresWithClient(os.Stderr, client, sandboxID, exposures, extraCertificateDomains)
 }
 
 func (c *SandboxCreateCommand) Run(ctx *runtimeContext) error {
@@ -371,6 +375,10 @@ func (c *CreateCommand) Run(ctx *runtimeContext) error {
 		return runSandboxCreate(ctx, c.clientFlags, c.Backend, c.From, c.Image, false, c.DangerouslyAllowAll, c.Expose, c.ExposeHTTPS, c.LaunchSeconds, c.JSON)
 	}
 	exposures, err := parseExposureFlags(c.Expose, c.ExposeHTTPS)
+	if err != nil {
+		return err
+	}
+	extraCertificateDomains, err := resolveExposureCertificateDomains(ctx)
 	if err != nil {
 		return err
 	}
@@ -415,7 +423,7 @@ func (c *CreateCommand) Run(ctx *runtimeContext) error {
 			return err
 		}
 	}
-	return runForegroundClientExposuresWithClient(os.Stderr, client, sandboxID, exposures)
+	return runForegroundClientExposuresWithClient(os.Stderr, client, sandboxID, exposures, extraCertificateDomains)
 }
 
 func (c *CreateCommand) validate() error {

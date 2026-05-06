@@ -104,6 +104,10 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 	if err != nil {
 		return err
 	}
+	extraCertificateDomains, err := resolveExposureCertificateDomains(ctx)
+	if err != nil {
+		return err
+	}
 	if err := validateWorkspaceCopyOutBeforeExecution(rootCtx, ctx, client, cwd, e.Chdir, e.In, e.LaunchSeconds, e.workspaceCopyFlags); err != nil {
 		return err
 	}
@@ -198,7 +202,7 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 		}
 		return joinExecutionAndWorkspaceCopyOutError(executionErr, copyOutErr)
 	}
-	exposureManager, exposed, err := startClientExposures(rootCtx, client, sandboxID, exposures)
+	exposureManager, exposed, err := startClientExposures(rootCtx, client, sandboxID, exposures, extraCertificateDomains)
 	if err != nil {
 		return err
 	}

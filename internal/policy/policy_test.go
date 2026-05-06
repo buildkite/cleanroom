@@ -100,6 +100,67 @@ sandbox:
 	}
 }
 
+func TestLoadRepositoryParsesExposureCertificateDomains(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, PrimaryPolicyPath), []byte(`
+version: 1
+repository:
+  mode: none
+exposure:
+  certificate_domains:
+    - "*.buildkite.cleanroom.localhost"
+    - "api.buildkite.cleanroom.localhost"
+sandbox:
+  image:
+    ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  network:
+    default: deny
+`), 0o644); err != nil {
+		t.Fatalf("write policy: %v", err)
+	}
+
+	cfg, _, err := Loader{}.LoadRepository(dir)
+	if err != nil {
+		t.Fatalf("LoadRepository returned error: %v", err)
+	}
+	if cfg.Enabled() {
+		t.Fatal("expected repository mode none to stay disabled")
+	}
+	want := []string{"*.buildkite.cleanroom.localhost", "api.buildkite.cleanroom.localhost"}
+	if got := strings.Join(cfg.ExposureCertificateDomains, ","); got != strings.Join(want, ",") {
+		t.Fatalf("unexpected exposure certificate domains: got %v want %v", cfg.ExposureCertificateDomains, want)
+	}
+}
+
+func TestLoadRepositoryRejectsInvalidExposureCertificateDomains(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, PrimaryPolicyPath), []byte(`
+version: 1
+exposure:
+  certificate_domains:
+    - "*.example.com"
+sandbox:
+  image:
+    ref: ghcr.io/buildkite/cleanroom-base/alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  network:
+    default: deny
+`), 0o644); err != nil {
+		t.Fatalf("write policy: %v", err)
+	}
+
+	_, _, err := Loader{}.LoadRepository(dir)
+	if err == nil {
+		t.Fatal("expected invalid exposure certificate domains to be rejected")
+	}
+	if !strings.Contains(err.Error(), "must be under") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestCompileRejectsAllowDefault(t *testing.T) {
 	t.Parallel()
 
