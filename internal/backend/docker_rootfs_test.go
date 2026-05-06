@@ -26,7 +26,7 @@ func TestValidateDockerServiceRootFSAcceptsDockerdOnPath(t *testing.T) {
 	t.Parallel()
 
 	err := validateDockerServiceRootFS("rootfs.ext4", "example/image", true, func(_, path string) (bool, error) {
-		return path == "/usr/local/bin/dockerd", nil
+		return path == "/usr/local/sbin/dockerd", nil
 	})
 	if err != nil {
 		t.Fatalf("ValidateDockerServiceRootFS returned error: %v", err)

@@ -8,6 +8,7 @@ import (
 )
 
 var dockerServiceDockerdPaths = []string{
+	"/usr/local/sbin/dockerd",
 	"/usr/local/bin/dockerd",
 	"/usr/bin/dockerd",
 	"/usr/sbin/dockerd",
