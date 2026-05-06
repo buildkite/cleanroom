@@ -73,8 +73,6 @@ If Cleanroom chooses a different HTTPS listener port, pass that port to
 - a guest-generated redirect from `s3.example.cleanroom.localhost` to
   `app.example.cleanroom.localhost` whose query string is derived from the
   forwarded client chain
-- non-match behavior for deeper names such as
-  `foo.bar.example.cleanroom.localhost`
 
 ## Expected Results
 
@@ -84,8 +82,6 @@ If Cleanroom chooses a different HTTPS listener port, pass that port to
   original host plus forwarded headers
 - `https://s3.example.cleanroom.localhost:8143/` returns a redirect to
   `https://app.example.cleanroom.localhost:8143/from-s3?...`
-- `https://foo.bar.example.cleanroom.localhost:8143/` returns
-  `404 page not found`
 
 ## Notes
 
