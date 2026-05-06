@@ -302,9 +302,9 @@ func TestDNSInstallRefreshesExistingCertificateTrust(t *testing.T) {
 	var calls [][]string
 	stubDNSInstallEnvironment(t, home, resolverPath, &calls)
 	tlsDir := filepath.Join(home, ".config", "cleanroom", "tls")
-	cert, err := exposure.EnsureLocalCertificate(exposure.Domain, tlsDir)
+	cert, err := exposure.EnsureLocalCertificateWithDomains(exposure.Domain, tlsDir, nil)
 	if err != nil {
-		t.Fatalf("EnsureLocalCertificate returned error: %v", err)
+		t.Fatalf("EnsureLocalCertificateWithDomains returned error: %v", err)
 	}
 
 	stdout, _ := makeStdoutCapture(t)
@@ -386,9 +386,9 @@ func TestDNSStatusReportsCertificateTrust(t *testing.T) {
 		t.Fatalf("write resolver file: %v", err)
 	}
 	tlsDir := filepath.Join(home, ".config", "cleanroom", "tls")
-	cert, err := exposure.EnsureLocalCertificate(exposure.Domain, tlsDir)
+	cert, err := exposure.EnsureLocalCertificateWithDomains(exposure.Domain, tlsDir, nil)
 	if err != nil {
-		t.Fatalf("EnsureLocalCertificate returned error: %v", err)
+		t.Fatalf("EnsureLocalCertificateWithDomains returned error: %v", err)
 	}
 
 	status := (&DNSCommand{}).currentDNSStatus()
@@ -436,9 +436,9 @@ func TestDNSUninstallRemovesCertificateTrustAndFiles(t *testing.T) {
 		t.Fatalf("write resolver file: %v", err)
 	}
 	tlsDir := filepath.Join(home, ".config", "cleanroom", "tls")
-	cert, err := exposure.EnsureLocalCertificate(exposure.Domain, tlsDir)
+	cert, err := exposure.EnsureLocalCertificateWithDomains(exposure.Domain, tlsDir, nil)
 	if err != nil {
-		t.Fatalf("EnsureLocalCertificate returned error: %v", err)
+		t.Fatalf("EnsureLocalCertificateWithDomains returned error: %v", err)
 	}
 
 	stdout, _ := makeStdoutCapture(t)
@@ -470,9 +470,9 @@ func TestDNSUninstallRemovesCertificateTrustWhenResolverMissing(t *testing.T) {
 	var calls [][]string
 	stubDNSInstallEnvironment(t, home, resolverPath, &calls)
 	tlsDir := filepath.Join(home, ".config", "cleanroom", "tls")
-	cert, err := exposure.EnsureLocalCertificate(exposure.Domain, tlsDir)
+	cert, err := exposure.EnsureLocalCertificateWithDomains(exposure.Domain, tlsDir, nil)
 	if err != nil {
-		t.Fatalf("EnsureLocalCertificate returned error: %v", err)
+		t.Fatalf("EnsureLocalCertificateWithDomains returned error: %v", err)
 	}
 
 	stdout, readStdout := makeStdoutCapture(t)
