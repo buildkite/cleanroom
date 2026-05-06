@@ -104,7 +104,7 @@ func (e *ExecCommand) Run(ctx *runtimeContext) (runErr error) {
 	if err != nil {
 		return err
 	}
-	extraCertificateDomains, err := resolveExposureCertificateDomains(ctx)
+	extraCertificateDomains, err := resolveRequestedExposureCertificateDomains(ctx, cwd, exposures)
 	if err != nil {
 		return err
 	}

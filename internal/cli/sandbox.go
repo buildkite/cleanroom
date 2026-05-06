@@ -252,16 +252,16 @@ func (c *SandboxTerminateCommand) Run(ctx *runtimeContext) error {
 }
 
 func runSandboxCreate(ctx *runtimeContext, connectFlags clientFlags, backend, from, imageRefOverride string, requireDockerService, dangerouslyAllowAll bool, exposureSpecs, httpsExposureSpecs []string, launchSeconds int64, outputJSON bool) error {
+	resolvedHost := connectFlags.resolvedHost(ctx.Config)
+	client, err := connectFlags.connect(ctx)
+	if err != nil {
+		return err
+	}
 	exposures, err := parseExposureFlags(exposureSpecs, httpsExposureSpecs)
 	if err != nil {
 		return err
 	}
-	extraCertificateDomains, err := resolveExposureCertificateDomains(ctx)
-	if err != nil {
-		return err
-	}
-	resolvedHost := connectFlags.resolvedHost(ctx.Config)
-	client, err := connectFlags.connect(ctx)
+	extraCertificateDomains, err := resolveRequestedExposureCertificateDomains(ctx, "", exposures)
 	if err != nil {
 		return err
 	}
@@ -338,10 +338,6 @@ func (c *CreateCommand) Run(ctx *runtimeContext) error {
 	if err != nil {
 		return err
 	}
-	extraCertificateDomains, err := resolveExposureCertificateDomains(ctx)
-	if err != nil {
-		return err
-	}
 	host := c.resolvedHost(ctx.Config)
 	client, err := c.connect(ctx)
 	if err != nil {
@@ -349,6 +345,10 @@ func (c *CreateCommand) Run(ctx *runtimeContext) error {
 	}
 
 	cwd, err := resolveCWD(ctx.CWD, c.Chdir)
+	if err != nil {
+		return err
+	}
+	extraCertificateDomains, err := resolveRequestedExposureCertificateDomains(ctx, cwd, exposures)
 	if err != nil {
 		return err
 	}
