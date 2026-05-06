@@ -1,5 +1,7 @@
 # Sandbox Port Exposure Plan
 
+Built on by docs/plans/sandbox-port-exposure.md
+
 **Status:** Implemented in branch
 **Last reviewed:** 2026-05-02
 
