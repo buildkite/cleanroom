@@ -61,6 +61,7 @@ type serviceRuntime struct {
 	zfsImportDatasetStorageCleanup  func()
 	storageCleanupQueueSize         int
 	cachePeerExportTokenTTL         time.Duration
+	cachePeerExportConcurrency      int
 }
 
 var defaultRetentionPolicy = retentionPolicy{
@@ -85,6 +86,7 @@ const defaultDownloadMaxBytes int64 = 10 * 1024 * 1024
 
 const defaultStorageCleanupQueueSize = 128
 const defaultCachePeerExportTokenTTL = 5 * time.Minute
+const defaultCachePeerExportConcurrency = 2
 
 func (s *Service) clock() serviceClock {
 	if s.runtime.clock != nil {
@@ -133,4 +135,11 @@ func (s *Service) cachePeerExportTokenTTL() time.Duration {
 		return s.runtime.cachePeerExportTokenTTL
 	}
 	return defaultCachePeerExportTokenTTL
+}
+
+func (s *Service) cachePeerExportConcurrency() int {
+	if s.runtime.cachePeerExportConcurrency > 0 {
+		return s.runtime.cachePeerExportConcurrency
+	}
+	return defaultCachePeerExportConcurrency
 }

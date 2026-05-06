@@ -486,6 +486,11 @@ run_zfs() {
     return
   fi
 
+  if [[ "$#" -eq 3 && "$1" == "create" && "$2" == "-p" ]]; then
+    is_cleanroom_zfs_snapshot_import_namespace_dataset "$3" || die "zfs create: unsupported dataset '$3'"
+    exec "$bin" "$@"
+  fi
+
   if [[ "$#" -eq 2 && "$1" == "snapshot" ]]; then
     is_cleanroom_zfs_snapshot_ref "$2" || die "zfs snapshot: unsupported ref '$2'"
     exec "$bin" "$@"

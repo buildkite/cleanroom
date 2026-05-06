@@ -136,11 +136,11 @@ The foundation slice has landed:
 The local ZFS transfer primitive has landed:
 
 - stream an already validated incremental export with `zfs send -i`
-- receive a stream into an unpublished managed ZFS dataset cloned from the
-  local parent snapshot
+- receive a stream into a fresh unpublished managed ZFS import dataset under
+  `snapshots/imports`
 - destroy the unpublished dataset on receive or validation failure
-- prove the clone, receive, promote, and describe contract with a gated real
-  ZFS integration test
+- prove the receive, clone, and describe contract with a gated real ZFS
+  integration test
 - inventory and prune unreferenced import datasets through `system df`,
   `system prune`, and daemon startup cleanup
 
@@ -151,12 +151,28 @@ The sender side of the peer protocol has landed:
 - dependency and services child exports only, with an explicit parent stage,
   parent cache key, and parent ZFS GUID
 
-The next slice is receiver-side import orchestration:
+The receiver-side import orchestration has landed:
 
 - receiver-side import orchestration around the proven local ZFS primitive
 - cache publication only after receiver-side metadata validation
 - dependency/services import attempts only after the receiver already has the
   workspace or dependency parent locally
+
+The hardening slice adds observability and fallback safety:
+
+- cache peer lookup, import, export, byte, duration, and fallback metrics
+- structured logs and trace attributes for import/export decisions
+- explicit proof that failed peer imports clean up and fall back to local build
+- bounded sender-side concurrent exports
+
+The end-to-end validation slice has started:
+
+- gated real-ZFS peer-protocol test with two service instances, HTTP lookup and
+  export, incremental import, receiver-side metadata publication, and clone
+  proof from the imported snapshot
+- common parent lineage is seeded with a ZFS receive in the test setup, which
+  keeps the v1 requirement explicit instead of assuming independently-created
+  parent snapshots share a GUID
 
 ## Design Principles
 
@@ -348,8 +364,8 @@ incoming zfs stream reader
 temporary snapshot id
 ```
 
-The driver receives into a temporary dataset and returns a local `storage_ref`
-and ZFS metadata only after the stream is fully applied.
+The driver receives into a fresh temporary import dataset and returns a local
+`storage_ref` and ZFS metadata only after the stream is fully applied.
 
 ## ZFS Driver Capability
 
@@ -475,7 +491,7 @@ storage refs unsafe.
 
 Add structured logs, traces, and metrics for:
 
-- peer lookup count, hit, miss, and error
+- peer lookup count, hit, miss, and failure
 - chosen peer
 - parent GUID match or mismatch
 - export bytes and duration
@@ -487,9 +503,9 @@ Add structured logs, traces, and metrics for:
 Suggested metric names:
 
 ```text
-cleanroom_cache_peer_lookup_total{stage,result}
+cleanroom_cache_peer_lookup_total{stage,direction,result}
 cleanroom_cache_peer_transfer_bytes_total{stage,direction}
-cleanroom_cache_peer_transfer_duration_seconds{stage,result}
+cleanroom_cache_peer_transfer_duration_seconds{stage,direction,result}
 cleanroom_cache_peer_import_total{stage,result}
 ```
 
@@ -509,6 +525,8 @@ The peer API exposes powerful local cache data. Keep v1 conservative:
 - expire transfer tokens quickly
 - avoid logging bearer tokens or transfer tokens
 - rate-limit concurrent exports per peer
+- bound receiver lookup/export HTTP waits so blackholed peers do not stall
+  cache-miss handling
 - validate imported metadata locally before publishing
 
 ## Code Touchpoints
@@ -527,7 +545,7 @@ The peer API exposes powerful local cache data. Keep v1 conservative:
 | `internal/backend/firecracker/host_runtime.go` | Add helper-backed ZFS send/receive operations if direct `zfs` access stays behind the privileged helper. |
 | `internal/storagegc/storagegc.go` | Inventory and prune unreferenced ZFS import datasets without touching referenced cache storage. |
 | `internal/cli/system.go` | Include ZFS import datasets in `system df` and `system prune` on Firecracker/ZFS hosts. |
-| `scripts/cleanroom-root-helper.sh` | Allow narrowly scoped `zfs get guid`, `zfs send`, `zfs receive`, and import-namespace `zfs list` operations for managed Cleanroom refs only. |
+| `scripts/cleanroom-root-helper.sh` | Allow narrowly scoped `zfs get guid`, `zfs send`, `zfs receive`, import-namespace `zfs create`, and import-namespace `zfs list` operations for managed Cleanroom refs only. |
 | `internal/observability/*` | Add peer cache transfer span attributes and metrics. |
 
 ## Implementation Order
@@ -559,8 +577,8 @@ prevents incremental send, fix the ZFS driver before adding peer APIs.
 
 Status: landed.
 
-- Implement ZFS incremental receive into an unpublished managed dataset cloned
-  from the local parent snapshot.
+- Implement ZFS incremental receive into a fresh unpublished managed import
+  dataset under `snapshots/imports`.
 - Return a local `Snapshot` only after receive succeeds.
 - Destroy temp datasets on failure.
 - Add daemon startup cleanup for stale temporary import datasets.
@@ -590,19 +608,29 @@ Status: landed for dependency and services stage caches.
 
 ### 6. Observability and fallback hardening
 
-Status: next.
+Status: landed.
 
 - Add logs, traces, and metrics.
 - Ensure every peer miss or failed import falls back to local build.
 - Ensure failed import leaves no ready metadata and no temporary ZFS dataset.
+- Limit concurrent sender exports so one peer cannot exhaust ZFS send workers.
 
 ### 7. End-to-end validation
+
+- Status: active.
 
 - Add a two-daemon ZFS integration test gated behind an environment flag.
 - Build a parent stage on both hosts, build a child stage on one host, then
   prove the second host imports the child through incremental send/receive.
 - Verify the imported stage restores normally and skips the local bootstrap
   work it would otherwise have run.
+- The first landed test is `TestCachePeerZFSIncrementalImportWithRealZFS`,
+  gated by `CLEANROOM_CACHE_PEER_ZFS_E2E=1` and
+  `CLEANROOM_CACHE_PEER_ZFS_E2E_DATASET=<pool/cleanroom>`. It proves the real
+  ZFS and peer-protocol path on one Linux host with two service instances.
+- Before release, run a managed two-host smoke on adjacent Firecracker/ZFS hosts
+  using the same branch to prove daemon networking, runtime config, and host
+  setup in the target deployment shape.
 
 ## Testing Plan
 
@@ -616,6 +644,10 @@ Status: next.
   those records, and skip local bootstrap work
 - duplicate imports coalesce
 - import failure does not publish metadata
+- failed peer imports fall back to local build after deleting the imported
+  snapshot
+- peer lookup, import, export, byte, and duration metrics use bounded labels
+- sender exports respect the per-daemon concurrency limit
 
 ### ZFS driver tests
 

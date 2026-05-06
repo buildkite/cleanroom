@@ -12,9 +12,13 @@ import (
 )
 
 type ServiceMetrics struct {
-	sandboxCreateDuration metric.Float64Histogram
-	executionTotal        metric.Int64Counter
-	executionDuration     metric.Float64Histogram
+	sandboxCreateDuration     metric.Float64Histogram
+	executionTotal            metric.Int64Counter
+	executionDuration         metric.Float64Histogram
+	cachePeerLookupTotal      metric.Int64Counter
+	cachePeerTransferBytes    metric.Int64Counter
+	cachePeerTransferDuration metric.Float64Histogram
+	cachePeerImportTotal      metric.Int64Counter
 }
 
 func NewServiceMetrics(provider metric.MeterProvider) (*ServiceMetrics, error) {
@@ -42,10 +46,44 @@ func NewServiceMetrics(provider metric.MeterProvider) (*ServiceMetrics, error) {
 	if err != nil {
 		return nil, err
 	}
+	cachePeerLookupTotal, err := meter.Int64Counter(
+		MetricCachePeerLookupTotal,
+		metric.WithDescription("Cache peer lookup attempts by stage, direction, and result"),
+	)
+	if err != nil {
+		return nil, err
+	}
+	cachePeerTransferBytes, err := meter.Int64Counter(
+		MetricCachePeerTransferBytesTotal,
+		metric.WithDescription("Cache peer transfer bytes by stage, direction, and result"),
+		metric.WithUnit("By"),
+	)
+	if err != nil {
+		return nil, err
+	}
+	cachePeerTransferDuration, err := meter.Float64Histogram(
+		MetricCachePeerTransferDuration,
+		metric.WithDescription("Cache peer transfer duration by stage, direction, and result"),
+		metric.WithUnit("s"),
+	)
+	if err != nil {
+		return nil, err
+	}
+	cachePeerImportTotal, err := meter.Int64Counter(
+		MetricCachePeerImportTotal,
+		metric.WithDescription("Cache peer import attempts by stage and result"),
+	)
+	if err != nil {
+		return nil, err
+	}
 	return &ServiceMetrics{
-		sandboxCreateDuration: sandboxCreateDuration,
-		executionTotal:        executionTotal,
-		executionDuration:     executionDuration,
+		sandboxCreateDuration:     sandboxCreateDuration,
+		executionTotal:            executionTotal,
+		executionDuration:         executionDuration,
+		cachePeerLookupTotal:      cachePeerLookupTotal,
+		cachePeerTransferBytes:    cachePeerTransferBytes,
+		cachePeerTransferDuration: cachePeerTransferDuration,
+		cachePeerImportTotal:      cachePeerImportTotal,
 	}, nil
 }
 
@@ -71,6 +109,42 @@ func (m *ServiceMetrics) RecordExecution(ctx context.Context, backendName, kind,
 	)
 	m.executionTotal.Add(ctx, 1, attrs)
 	m.executionDuration.Record(ctx, duration.Seconds(), attrs)
+}
+
+func (m *ServiceMetrics) RecordCachePeerLookup(ctx context.Context, stage, direction, result string) {
+	if m == nil {
+		return
+	}
+	m.cachePeerLookupTotal.Add(ctx, 1, metric.WithAttributes(
+		attribute.String(MetricLabelStage, normalizeMetricValue(stage, "unknown")),
+		attribute.String(MetricLabelDirection, normalizeMetricValue(direction, "unknown")),
+		attribute.String(MetricLabelResult, normalizeMetricValue(result, "unknown")),
+	))
+}
+
+func (m *ServiceMetrics) RecordCachePeerTransfer(ctx context.Context, stage, direction, result string, bytes int64, duration time.Duration) {
+	if m == nil {
+		return
+	}
+	attrs := metric.WithAttributes(
+		attribute.String(MetricLabelStage, normalizeMetricValue(stage, "unknown")),
+		attribute.String(MetricLabelDirection, normalizeMetricValue(direction, "unknown")),
+		attribute.String(MetricLabelResult, normalizeMetricValue(result, "unknown")),
+	)
+	if bytes > 0 {
+		m.cachePeerTransferBytes.Add(ctx, bytes, attrs)
+	}
+	m.cachePeerTransferDuration.Record(ctx, duration.Seconds(), attrs)
+}
+
+func (m *ServiceMetrics) RecordCachePeerImport(ctx context.Context, stage, result string) {
+	if m == nil {
+		return
+	}
+	m.cachePeerImportTotal.Add(ctx, 1, metric.WithAttributes(
+		attribute.String(MetricLabelStage, normalizeMetricValue(stage, "unknown")),
+		attribute.String(MetricLabelResult, normalizeMetricValue(result, "unknown")),
+	))
 }
 
 type GatewayMetrics struct {

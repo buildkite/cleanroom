@@ -33,6 +33,8 @@ func (r *zfsTestRunner) Run(_ context.Context, command string, args ...string) e
 	case "create":
 		if len(args) == 5 {
 			r.exists[args[4]] = true
+		} else if len(args) == 3 {
+			r.exists[args[2]] = true
 		}
 	case "snapshot":
 		if len(args) == 2 {
@@ -173,13 +175,11 @@ func (r *zfsTestRunner) InputFrom(_ context.Context, src io.Reader, command stri
 		return r.receiveErr
 	}
 	dataset := args[3]
-	if !r.exists[dataset] {
-		return errors.New("cannot receive into missing dataset")
-	}
 	if _, err := io.ReadAll(src); err != nil {
 		return err
 	}
 	snapshotRef := dataset + "@base"
+	r.exists[dataset] = true
 	r.exists[snapshotRef] = true
 	if r.guids == nil {
 		r.guids = map[string]string{}
@@ -724,9 +724,9 @@ func TestZFSDriverImportsIncrementalSnapshotStream(t *testing.T) {
 	wantCommands := []string{
 		"zfs get -H -o value guid " + parentRef,
 		"zfs list -H -o name tank/cleanroom/snapshots/imports/imported",
-		"zfs clone -p " + parentRef + " tank/cleanroom/snapshots/imports/imported",
+		"zfs list -H -o name tank/cleanroom/snapshots/imports",
+		"zfs create -p tank/cleanroom/snapshots/imports",
 		"zfs receive -u -F tank/cleanroom/snapshots/imports/imported",
-		"zfs promote tank/cleanroom/snapshots/imports/imported",
 		"zfs get -H -o value guid " + importedRef,
 	}
 	if got, want := runner.commands, wantCommands; strings.Join(got, "\n") != strings.Join(want, "\n") {
@@ -771,55 +771,9 @@ func TestZFSDriverCleansUpFailedIncrementalImport(t *testing.T) {
 	wantCommands := []string{
 		"zfs get -H -o value guid " + parentRef,
 		"zfs list -H -o name tank/cleanroom/snapshots/imports/imported",
-		"zfs clone -p " + parentRef + " tank/cleanroom/snapshots/imports/imported",
+		"zfs list -H -o name tank/cleanroom/snapshots/imports",
+		"zfs create -p tank/cleanroom/snapshots/imports",
 		"zfs receive -u -F tank/cleanroom/snapshots/imports/imported",
-		"zfs destroy -r tank/cleanroom/snapshots/imports/imported",
-	}
-	if got, want := runner.commands, wantCommands; strings.Join(got, "\n") != strings.Join(want, "\n") {
-		t.Fatalf("unexpected zfs commands:\n got: %v\nwant: %v", got, want)
-	}
-}
-
-func TestZFSDriverCleansUpFailedIncrementalImportPromote(t *testing.T) {
-	parentRef := "tank/cleanroom/snapshots/parent@base"
-	runner := &zfsTestRunner{
-		exists: map[string]bool{
-			parentRef: true,
-		},
-		guids: map[string]string{
-			parentRef: "parent-guid",
-		},
-		promoteErr: errors.New("promote failed"),
-	}
-	driver, err := NewZFSDriver(ZFSDriverOptions{
-		DatasetRoot: "tank/cleanroom",
-		Runner:      runner,
-	})
-	if err != nil {
-		t.Fatalf("NewZFSDriver returned error: %v", err)
-	}
-
-	_, err = driver.ImportIncrementalSnapshot(context.Background(), IncrementalSnapshotImportRequest{
-		SnapshotID:         "imported",
-		ParentSnapshotRef:  parentRef,
-		ParentSnapshotGUID: "parent-guid",
-	}, strings.NewReader("stream-bytes"))
-	if err == nil {
-		t.Fatal("expected ImportIncrementalSnapshot to fail")
-	}
-	if !strings.Contains(err.Error(), "promote imported zfs dataset") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if runner.exists["tank/cleanroom/snapshots/imports/imported"] || runner.exists["tank/cleanroom/snapshots/imports/imported@base"] {
-		t.Fatalf("expected failed import dataset to be destroyed, refs: %v", runner.exists)
-	}
-
-	wantCommands := []string{
-		"zfs get -H -o value guid " + parentRef,
-		"zfs list -H -o name tank/cleanroom/snapshots/imports/imported",
-		"zfs clone -p " + parentRef + " tank/cleanroom/snapshots/imports/imported",
-		"zfs receive -u -F tank/cleanroom/snapshots/imports/imported",
-		"zfs promote tank/cleanroom/snapshots/imports/imported",
 		"zfs destroy -r tank/cleanroom/snapshots/imports/imported",
 	}
 	if got, want := runner.commands, wantCommands; strings.Join(got, "\n") != strings.Join(want, "\n") {

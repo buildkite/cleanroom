@@ -395,9 +395,24 @@ func (d *ZFSDriver) ImportIncrementalSnapshot(ctx context.Context, req Increment
 
 	storedDataset := d.importDataset(snapshotID)
 	storedSnapshotRef := d.snapshotRef(storedDataset, zfsManagedSnapshotName)
-	if _, err := d.cloneSnapshot(ctx, parent.SnapshotRef, storedDataset); err != nil {
+	exists, err := d.refExists(ctx, storedDataset)
+	if err != nil {
 		return Snapshot{}, err
 	}
+	if exists {
+		return Snapshot{}, fmt.Errorf("zfs import dataset %q already exists", storedDataset)
+	}
+	importNamespace := d.importNamespaceDataset()
+	namespaceExists, err := d.refExists(ctx, importNamespace)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	if !namespaceExists {
+		if err := d.runner.Run(ctx, "zfs", "create", "-p", importNamespace); err != nil {
+			return Snapshot{}, fmt.Errorf("create zfs import namespace %q: %w", importNamespace, err)
+		}
+	}
+
 	importComplete := false
 	defer func() {
 		if importComplete {
@@ -408,10 +423,6 @@ func (d *ZFSDriver) ImportIncrementalSnapshot(ctx context.Context, req Increment
 
 	if err := streamer.InputFrom(ctx, src, "zfs", "receive", "-u", "-F", storedDataset); err != nil {
 		return Snapshot{}, fmt.Errorf("receive zfs incremental snapshot into %q: %w", storedDataset, err)
-	}
-
-	if err := d.runner.Run(ctx, "zfs", "promote", storedDataset); err != nil {
-		return Snapshot{}, fmt.Errorf("promote imported zfs dataset %q: %w", storedDataset, err)
 	}
 
 	desc, err := d.DescribeSnapshot(ctx, DescribeSnapshotRequest{
