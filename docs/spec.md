@@ -470,7 +470,7 @@ These rules are installed during sandbox network setup and torn down during clea
 #### 6.2.4 Package registry proxy
 
 - The gateway exposes a `/registry/` route backed by embedded `content-cache` OCI handlers.
-- The gateway resolves a registry prefix from the request path, maps it to an upstream registry URL, and applies the sandbox allowlist against the mapped policy host and port before forwarding upstream.
+- The gateway resolves a registry prefix from the request path, maps it to an upstream registry URL, and applies the sandbox allowlist against the mapped policy host and port before forwarding upstream. Registry redirects are also policy-checked against the redirected host and port.
 - Current route scope is OCI pull-style `GET` and `HEAD` traffic.
 - The gateway also exposes a Docker Hub-compatible `/v2/` mirror endpoint backed by the same OCI cache so guest `dockerd` can use the shared gateway as a Docker Hub registry mirror.
 - Guest `dockerd` also gets generated Docker registry-host config for built-in public registries (`ghcr.io`, `public.ecr.aws`) and non-Docker-Hub registries explicitly configured in runtime config under `gateway.oci.registries`, pointing those registry namespaces' server endpoint at the gateway `/registry/<host>/` path without a direct upstream fallback.
