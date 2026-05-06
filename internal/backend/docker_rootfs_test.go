@@ -38,6 +38,20 @@ func TestValidateDockerServiceRootFSAcceptsDockerdOnPath(t *testing.T) {
 	}
 }
 
+func TestValidateDockerServiceRootFSAcceptsSymlinkedDockerdOnPath(t *testing.T) {
+	t.Parallel()
+
+	err := validateDockerServiceRootFS("rootfs.ext4", "example/image", true, func(_, path string) (ext4edit.PathKind, error) {
+		if path == "/usr/local/bin/dockerd" {
+			return ext4edit.PathKindSymlink, nil
+		}
+		return ext4edit.PathKindUnknown, nil
+	})
+	if err != nil {
+		t.Fatalf("ValidateDockerServiceRootFS returned error: %v", err)
+	}
+}
+
 func TestValidateDockerServiceRootFSRejectsMissingDockerd(t *testing.T) {
 	t.Parallel()
 

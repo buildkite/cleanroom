@@ -34,7 +34,7 @@ func validateDockerServiceRootFS(rootFSPath, imageRef string, required bool, pat
 		if err != nil {
 			return fmt.Errorf("inspect rootfs for required docker service path %q: %w", path, err)
 		}
-		if kind == ext4edit.PathKindRegular {
+		if kind == ext4edit.PathKindRegular || kind == ext4edit.PathKindSymlink {
 			return nil
 		}
 	}
