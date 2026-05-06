@@ -71,20 +71,18 @@ func TestCacheOutputMountActionsLeavesUnspecifiedFileModeUnset(t *testing.T) {
 	}
 }
 
-func TestEnsureCacheOutputDirRejectsNonEmptyMountpoint(t *testing.T) {
+func TestEnsureCacheOutputDirAllowsNonEmptyMountpoint(t *testing.T) {
 	t.Parallel()
 
+	// requireEmpty is no longer enforced; services started by the boot init
+	// script may have populated the directory before the guest agent runs.
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "existing"), []byte("image content"), 0o644); err != nil {
 		t.Fatalf("write existing file: %v", err)
 	}
 
-	err := ensureCacheOutputDir(dir, 0o755, false, true)
-	if err == nil {
-		t.Fatal("expected non-empty directory to fail")
-	}
-	if !strings.Contains(err.Error(), "not empty") {
-		t.Fatalf("unexpected error: %v", err)
+	if err := ensureCacheOutputDir(dir, 0o755, false, true); err != nil {
+		t.Fatalf("expected non-empty directory to be accepted, got: %v", err)
 	}
 }
 

@@ -19,7 +19,7 @@ import (
 	charmlog "github.com/charmbracelet/log"
 )
 
-const defaultCacheOutputVolumeMinimumBytes int64 = 512 << 20
+const defaultCacheOutputVolumeMinimumBytes int64 = 4 << 30
 const cacheOutputGuestMountRoot = "/run/cleanroom/cache-output-volumes"
 
 var (

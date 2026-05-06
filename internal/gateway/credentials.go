@@ -19,27 +19,56 @@ type CredentialProvider interface {
 }
 
 // EnvCredentialProvider reads credentials from environment variables at
-// construction time. It maps upstream hosts to bearer tokens:
+// construction time. It maps upstream hosts to tokens and the HTTP
+// authorization scheme expected by that host's git smart HTTP transport:
 //
-//	github.com -> CLEANROOM_GITHUB_TOKEN
-//	gitlab.com -> CLEANROOM_GITLAB_TOKEN
+//	github.com -> CLEANROOM_GITHUB_TOKEN (Basic, username "x-access-token")
+//	gitlab.com -> CLEANROOM_GITLAB_TOKEN (Bearer)
+//
+// GitHub's git HTTPS endpoint rejects "Authorization: Bearer <token>" and
+// requires HTTP Basic with the token as the password, so each host carries
+// its own scheme rather than assuming Bearer everywhere.
 type EnvCredentialProvider struct {
-	hostTokens map[string]string
+	hostCreds map[string]envHostCredential
+}
+
+type envHostCredential struct {
+	token  string
+	scheme envAuthScheme
+}
+
+type envAuthScheme int
+
+const (
+	envAuthSchemeBearer envAuthScheme = iota
+	envAuthSchemeBasic
+)
+
+type envHostConfig struct {
+	envVar        string
+	scheme        envAuthScheme
+	basicUsername string
 }
 
 // NewEnvCredentialProvider creates a provider from the current environment.
 func NewEnvCredentialProvider() *EnvCredentialProvider {
 	p := &EnvCredentialProvider{
-		hostTokens: make(map[string]string),
+		hostCreds: make(map[string]envHostCredential),
 	}
-	hostEnvMap := map[string]string{
-		"github.com": "CLEANROOM_GITHUB_TOKEN",
-		"gitlab.com": "CLEANROOM_GITLAB_TOKEN",
+	hostConfigs := map[string]envHostConfig{
+		"github.com": {envVar: "CLEANROOM_GITHUB_TOKEN", scheme: envAuthSchemeBasic, basicUsername: "x-access-token"},
+		"gitlab.com": {envVar: "CLEANROOM_GITLAB_TOKEN", scheme: envAuthSchemeBearer},
 	}
-	for host, envVar := range hostEnvMap {
-		if v := strings.TrimSpace(os.Getenv(envVar)); v != "" {
-			p.hostTokens[host] = v
+	for host, cfg := range hostConfigs {
+		v := strings.TrimSpace(os.Getenv(cfg.envVar))
+		if v == "" {
+			continue
 		}
+		token := v
+		if cfg.scheme == envAuthSchemeBasic {
+			token = base64.StdEncoding.EncodeToString([]byte(cfg.basicUsername + ":" + v))
+		}
+		p.hostCreds[host] = envHostCredential{token: token, scheme: cfg.scheme}
 	}
 	return p
 }
@@ -51,17 +80,22 @@ func (p *EnvCredentialProvider) Resolve(_ context.Context, remoteURL string) (st
 	if err != nil {
 		return "", err
 	}
-	token := p.hostTokens[host]
-	if token == "" {
+	cred, ok := p.hostCreds[host]
+	if !ok || cred.token == "" {
 		return "", nil
 	}
-	return "Bearer " + token, nil
+	switch cred.scheme {
+	case envAuthSchemeBasic:
+		return "Basic " + cred.token, nil
+	default:
+		return "Bearer " + cred.token, nil
+	}
 }
 
 // ConfiguredHosts returns a sorted list of upstream hosts with configured tokens.
 func (p *EnvCredentialProvider) ConfiguredHosts() []string {
-	hosts := make([]string, 0, len(p.hostTokens))
-	for host := range p.hostTokens {
+	hosts := make([]string, 0, len(p.hostCreds))
+	for host := range p.hostCreds {
 		hosts = append(hosts, host)
 	}
 	sort.Strings(hosts)
@@ -135,6 +169,12 @@ func gitCredentialFillFromHost(dir, input string) (string, error) {
 	cmd := exec.Command("git", "credential", "fill")
 	cmd.Dir = dir
 	cmd.Stdin = strings.NewReader(input)
+	// GIT_TERMINAL_PROMPT=0 prevents `git credential fill` from blocking on an
+	// interactive prompt when no credential helper is configured for the host.
+	// This provider runs against many hosts (OCI registries, package indexes,
+	// etc.); we want it to silently return no credentials rather than block
+	// the cleanroom server on stdin.
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", err

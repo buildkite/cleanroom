@@ -359,15 +359,12 @@ func ensureCacheOutputDir(path string, mode fs.FileMode, requireExisting, requir
 		if !info.IsDir() {
 			return fmt.Errorf("cache output path %s is not a directory", path)
 		}
-		if requireEmpty {
-			empty, err := isEmptyCacheOutputDir(path)
-			if err != nil {
-				return err
-			}
-			if !empty {
-				return fmt.Errorf("cache output directory %s is not empty", path)
-			}
-		}
+		// requireEmpty is intentionally skipped: services like dockerd, started
+		// by the boot init script before this guest agent runs, may have already
+		// populated the directory. The bind mount installed below overlays the
+		// cache volume on top, so any pre-existing content remains in the
+		// underlying rootfs and is harmless.
+		_ = requireEmpty
 		return nil
 	}
 	if !errors.Is(err, os.ErrNotExist) {

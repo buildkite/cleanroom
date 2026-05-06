@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestEnvCredentialProviderResolvesKnownHost(t *testing.T) {
+func TestEnvCredentialProviderResolvesGitHubAsBasic(t *testing.T) {
 	t.Setenv("CLEANROOM_GITHUB_TOKEN", "ghp_test123")
 	p := NewEnvCredentialProvider()
 
@@ -14,8 +14,22 @@ func TestEnvCredentialProviderResolvesKnownHost(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
-	if token != "Bearer ghp_test123" {
-		t.Fatalf("expected Bearer ghp_test123, got %q", token)
+	want := "Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:ghp_test123"))
+	if token != want {
+		t.Fatalf("expected %q, got %q", want, token)
+	}
+}
+
+func TestEnvCredentialProviderResolvesGitLabAsBearer(t *testing.T) {
+	t.Setenv("CLEANROOM_GITLAB_TOKEN", "glpat_test123")
+	p := NewEnvCredentialProvider()
+
+	token, err := p.Resolve(context.Background(), "https://gitlab.com/buildkite/cleanroom.git")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if token != "Bearer glpat_test123" {
+		t.Fatalf("expected Bearer glpat_test123, got %q", token)
 	}
 }
 
@@ -54,8 +68,9 @@ func TestEnvCredentialProviderCaseInsensitive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
-	if token != "Bearer ghp_token" {
-		t.Fatalf("expected Bearer ghp_token, got %q", token)
+	want := "Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:ghp_token"))
+	if token != want {
+		t.Fatalf("expected %q, got %q", want, token)
 	}
 }
 

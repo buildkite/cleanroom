@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/bmatcuk/doublestar/v4"
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/cachekey"
 	"github.com/buildkite/cleanroom/internal/cachestore"
@@ -286,6 +287,7 @@ func stageInputFilesDigestWithChangeset(repoDir string, changeset *repositorycha
 
 func stageKeyFilesDigestAtCommit(ctx context.Context, repoDir, commitSHA string, files []string, stageName string) (string, error) {
 	trimmedCommitSHA := strings.TrimSpace(commitSHA)
+	trimmedRepoDir := strings.TrimSpace(repoDir)
 	if trimmedCommitSHA == "" {
 		return "", fmt.Errorf("%s key file commit SHA is empty", stageName)
 	}
@@ -294,15 +296,16 @@ func stageKeyFilesDigestAtCommit(ctx context.Context, repoDir, commitSHA string,
 		return "", err
 	}
 
+	digests, err := gitFileDigestsAtCommit(ctx, trimmedRepoDir, trimmedCommitSHA, expandedFiles)
+	if err != nil {
+		return "", fmt.Errorf("read %s key files: %w", stageName, err)
+	}
+
 	manifest := make([]stageKeyFileDigest, 0, len(expandedFiles))
 	for _, file := range expandedFiles {
-		digest, err := gitFileDigestAtCommit(ctx, strings.TrimSpace(repoDir), trimmedCommitSHA, file)
-		if err != nil {
-			return "", fmt.Errorf("read %s key file %q: %w", stageName, file, err)
-		}
 		manifest = append(manifest, stageKeyFileDigest{
 			Path:   file,
-			SHA256: digest,
+			SHA256: digests[file],
 		})
 	}
 
@@ -317,6 +320,7 @@ func stageKeyFilesDigestAtCommit(ctx context.Context, repoDir, commitSHA string,
 
 func stageInputFilesDigestAtCommit(ctx context.Context, repoDir, commitSHA string, files []string, stageName string) (string, error) {
 	trimmedCommitSHA := strings.TrimSpace(commitSHA)
+	trimmedRepoDir := strings.TrimSpace(repoDir)
 	if trimmedCommitSHA == "" {
 		return "", fmt.Errorf("%s input file commit SHA is empty", stageName)
 	}
@@ -325,26 +329,31 @@ func stageInputFilesDigestAtCommit(ctx context.Context, repoDir, commitSHA strin
 		return "", err
 	}
 
-	manifest := make([]stageInputFileDigest, 0, len(expandedFiles))
+	entries, err := gitTreeEntriesForFiles(ctx, trimmedRepoDir, trimmedCommitSHA, expandedFiles)
+	if err != nil {
+		return "", fmt.Errorf("inspect %s input files: %w", stageName, err)
+	}
 	for _, file := range expandedFiles {
-		entry, ok, err := gitTreeEntryAtCommit(ctx, strings.TrimSpace(repoDir), trimmedCommitSHA, file)
-		if err != nil {
-			return "", fmt.Errorf("inspect %s input file %q: %w", stageName, file, err)
-		}
+		entry, ok := entries[file]
 		if !ok {
 			return "", fmt.Errorf("%s input file %q does not exist", stageName, file)
 		}
 		if !isRegularGitTreeFile(entry) {
 			return "", fmt.Errorf("%s input file %q is %s; inputs.files must name regular files", stageName, file, gitTreeEntryKind(entry))
 		}
-		digest, err := gitFileDigestAtCommit(ctx, strings.TrimSpace(repoDir), trimmedCommitSHA, file)
-		if err != nil {
-			return "", fmt.Errorf("read %s input file %q: %w", stageName, file, err)
-		}
+	}
+
+	digests, err := gitFileDigestsAtCommit(ctx, trimmedRepoDir, trimmedCommitSHA, expandedFiles)
+	if err != nil {
+		return "", fmt.Errorf("read %s input files: %w", stageName, err)
+	}
+
+	manifest := make([]stageInputFileDigest, 0, len(expandedFiles))
+	for _, file := range expandedFiles {
 		manifest = append(manifest, stageInputFileDigest{
 			Path:   file,
-			Mode:   entry.Mode,
-			SHA256: digest,
+			Mode:   entries[file].Mode,
+			SHA256: digests[file],
 		})
 	}
 	return digestStageInputFileManifest(manifest, stageName)
@@ -373,8 +382,8 @@ func expandStageKeyFilesAtCommit(ctx context.Context, repoDir, commitSHA string,
 			expanded = append(expanded, file)
 			continue
 		}
-		if _, err := path.Match(file, ""); err != nil {
-			return nil, fmt.Errorf("%s key file glob %q is invalid: %w", stageName, file, err)
+		if !doublestar.ValidatePattern(file) {
+			return nil, fmt.Errorf("%s key file glob %q is invalid", stageName, file)
 		}
 		if treeFiles == nil {
 			var err error
@@ -385,7 +394,7 @@ func expandStageKeyFilesAtCommit(ctx context.Context, repoDir, commitSHA string,
 		}
 		matches := 0
 		for _, candidate := range treeFiles {
-			matched, err := path.Match(file, candidate)
+			matched, err := doublestar.Match(file, candidate)
 			if err != nil {
 				return nil, fmt.Errorf("%s key file glob %q is invalid: %w", stageName, file, err)
 			}

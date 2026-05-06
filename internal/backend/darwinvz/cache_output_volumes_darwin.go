@@ -20,7 +20,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/vsockexec"
 )
 
-const defaultDarwinVZCacheOutputVolumeMinimumBytes int64 = 512 << 20
+const defaultDarwinVZCacheOutputVolumeMinimumBytes int64 = 4 << 30
 const darwinVZCacheOutputGuestMountRoot = "/run/cleanroom/cache-output-volumes"
 
 var (
