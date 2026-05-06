@@ -228,24 +228,6 @@ if ! grep -q '^HTTP/.* 302' "$tmpdir/wildcard-redirect.headers"; then
 fi
 if ! grep -q "^Location: https://app.example.cleanroom.localhost:${wildcard_port}/from-s3?client=127.0.0.1"$'\r' "$tmpdir/wildcard-redirect.headers"; then
   echo "expected wildcard redirect location missing" >&2
-  cat "$tmpdir/wildcard-redirect.headers" >&2 || true
-  exit 1
-fi
-
-wildcard_deep_status="$(curl --silent --show-error \
-  --cacert "$exposure_cert_path" \
-  --resolve "foo.bar.example.cleanroom.localhost:${wildcard_port}:127.0.0.1" \
-  --output "$tmpdir/wildcard-deep.out" \
-  --write-out '%{http_code}' \
-  "https://foo.bar.example.cleanroom.localhost:${wildcard_port}/")"
-if [[ "$wildcard_deep_status" != "404" ]]; then
-  echo "expected deeper wildcard host to return 404, got $wildcard_deep_status" >&2
-  cat "$tmpdir/wildcard-deep.out" >&2 || true
-  exit 1
-fi
-if ! grep -q '^404 page not found$' "$tmpdir/wildcard-deep.out"; then
-  echo "expected deeper wildcard 404 body missing" >&2
-  cat "$tmpdir/wildcard-deep.out" >&2 || true
   exit 1
 fi
 

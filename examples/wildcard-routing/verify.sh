@@ -25,6 +25,3 @@ echo
 echo "== wildcard redirect route =="
 curl_verify --dump-header - --output /dev/null "https://s3.example.cleanroom.localhost:${port}/"
 echo
-
-echo "== deeper host miss =="
-curl_verify --write-out '\nstatus=%{http_code}\n' "https://foo.bar.example.cleanroom.localhost:${port}/" || true
