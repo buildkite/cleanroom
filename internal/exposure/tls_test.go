@@ -56,9 +56,9 @@ func TestGenerateServerCertificateUsesTrustedLeafCertificate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnsureLocalCertificateWithDomains returned error: %v", err)
 	}
-	cert, err := GenerateServerCertificate(Domain, dir)
+	cert, err := GenerateServerCertificateWithDomains(Domain, dir, nil)
 	if err != nil {
-		t.Fatalf("GenerateServerCertificate returned error: %v", err)
+		t.Fatalf("GenerateServerCertificateWithDomains returned error: %v", err)
 	}
 	leaf, err := x509.ParseCertificate(cert.Certificate[0])
 	if err != nil {
