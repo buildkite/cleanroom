@@ -1,9 +1,5 @@
 version: 1
 
-repository:
-  network:
-    allow: github.com:443
-
 exposure:
   certificate_domains:
     - "*.example.cleanroom.localhost"
@@ -16,7 +12,8 @@ sandbox:
     disk: 6GiB
   network:
     default: deny
-    execution:
-      allow:
-        - host: deb.debian.org
-          ports: [80]
+    allow:
+      - host: github.com
+        ports: [443]
+      - host: deb.debian.org
+        ports: [80]
