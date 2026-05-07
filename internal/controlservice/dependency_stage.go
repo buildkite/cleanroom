@@ -464,10 +464,6 @@ func gitTreeEntryKind(entry gitTreeEntry) string {
 	}
 }
 
-func literalStageGitPathspec(normalizedPath string) string {
-	return ":(literal)" + normalizedPath
-}
-
 func (s *Service) lookupDependencyStageCache(ctx context.Context, backendName string, compiled *policy.CompiledPolicy, repository *repositorycheckout.Checkout, changeset *repositorychangeset.Changeset, plan dependencyStagePlan) (cachestore.Record, bool, string, error) {
 	if compiled == nil || repository == nil || strings.TrimSpace(plan.CacheKey) == "" {
 		return cachestore.Record{}, false, "", nil
