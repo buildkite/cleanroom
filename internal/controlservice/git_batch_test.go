@@ -225,6 +225,95 @@ func TestGitFileDigestsAtCommitMissingObject(t *testing.T) {
 	}
 }
 
+func TestGitTreeEntriesForFilesInWorktree(t *testing.T) {
+	repoDir := t.TempDir()
+	runTestGit(t, repoDir, "init")
+	runTestGit(t, repoDir, "config", "user.email", "test@example.com")
+	runTestGit(t, repoDir, "config", "user.name", "Test User")
+
+	if err := os.WriteFile(filepath.Join(repoDir, "regular.txt"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatalf("write regular.txt: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "executable.sh"), []byte("#!/bin/sh\n"), 0o644); err != nil {
+		t.Fatalf("write executable.sh: %v", err)
+	}
+	runTestGit(t, repoDir, "add", ".")
+	runTestGit(t, repoDir, "update-index", "--chmod=+x", "executable.sh")
+	runTestGit(t, repoDir, "commit", "-m", "init")
+
+	entries, err := gitTreeEntriesForFilesInWorktree(context.Background(), repoDir, []string{"regular.txt", "executable.sh", "missing.txt"})
+	if err != nil {
+		t.Fatalf("gitTreeEntriesForFilesInWorktree returned error: %v", err)
+	}
+
+	regular, ok := entries["regular.txt"]
+	if !ok {
+		t.Fatal("expected regular.txt in entries")
+	}
+	if got, want := regular.Mode, "100644"; got != want {
+		t.Fatalf("unexpected mode for regular.txt: got %q want %q", got, want)
+	}
+	if got, want := regular.Type, "blob"; got != want {
+		t.Fatalf("unexpected type for regular.txt: got %q want %q", got, want)
+	}
+
+	exec, ok := entries["executable.sh"]
+	if !ok {
+		t.Fatal("expected executable.sh in entries")
+	}
+	if got, want := exec.Mode, "100755"; got != want {
+		t.Fatalf("unexpected mode for executable.sh: got %q want %q", got, want)
+	}
+	if got, want := exec.Type, "blob"; got != want {
+		t.Fatalf("unexpected type for executable.sh: got %q want %q", got, want)
+	}
+
+	if _, ok := entries["missing.txt"]; ok {
+		t.Fatal("expected missing.txt to be absent from entries")
+	}
+}
+
+func TestGitFileDigestsInWorktree(t *testing.T) {
+	repoDir := t.TempDir()
+	runTestGit(t, repoDir, "init")
+	runTestGit(t, repoDir, "config", "user.email", "test@example.com")
+	runTestGit(t, repoDir, "config", "user.name", "Test User")
+
+	files := map[string][]byte{
+		"alpha.txt": []byte("alpha content\n"),
+		"beta.txt":  []byte("beta content\n"),
+		"empty.txt": []byte{},
+	}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(repoDir, name), content, 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	runTestGit(t, repoDir, "add", ".")
+	runTestGit(t, repoDir, "commit", "-m", "init")
+
+	digests, err := gitFileDigestsInWorktree(context.Background(), repoDir, []string{"alpha.txt", "beta.txt", "empty.txt"})
+	if err != nil {
+		t.Fatalf("gitFileDigestsInWorktree returned error: %v", err)
+	}
+
+	for name, content := range files {
+		sum := sha256.Sum256(content)
+		want := "sha256:" + hex.EncodeToString(sum[:])
+		if got := digests[name]; got != want {
+			t.Fatalf("unexpected digest for %s: got %q want %q", name, got, want)
+		}
+	}
+
+	_, err = gitFileDigestsInWorktree(context.Background(), repoDir, []string{"nothere.txt"})
+	if err == nil {
+		t.Fatal("expected error for path not staged in index")
+	}
+	if !strings.Contains(err.Error(), "is missing") {
+		t.Fatalf("expected 'is missing' in error, got: %v", err)
+	}
+}
+
 func TestGitFileDigestsAtCommitStress(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping stress test in short mode")
