@@ -112,6 +112,156 @@ func BuildFromWorkingTree(repoRoot string, checkout *repositorycheckout.Checkout
 
 type DigestPathsOptions struct {
 	Submodules bool
+	// ParentRemoteURL is the parent repository's remote URL, used to resolve
+	// relative submodule URLs (e.g. ../sister.git) found in .gitmodules.
+	ParentRemoteURL string
+	// EnsureSubmoduleMirror, when set, makes the changeset digest path resolve
+	// submodule contents from per-submodule git mirrors at the gitlink SHA
+	// recorded in the temporary index. When nil (the default), the path falls
+	// back to reading submodule contents from the user's working tree, which
+	// only works when repoRoot is a real working tree with initialised
+	// submodules.
+	EnsureSubmoduleMirror func(ctx context.Context, remoteURL, gitlinkSHA string) (mirrorDir string, err error)
+}
+
+// submoduleSource describes one submodule's location and how to read its
+// contents during digesting. Either WorktreeDir is set (and we use
+// gitbatch.*InWorktree against the working tree) or MirrorDir + GitlinkSHA
+// is set (and we use gitbatch.*ForFiles / gitbatch.FileDigestsAtCommit
+// against the bare submodule mirror at the recorded gitlink SHA).
+type submoduleSource struct {
+	Path       string
+	SourceDir  string
+	GitlinkSHA string // empty for worktree mode
+}
+
+// submoduleSet groups submoduleSource entries with helpers used during digest
+// expansion and resolution.
+type submoduleSet []submoduleSource
+
+func (s submoduleSet) Paths() []string {
+	out := make([]string, len(s))
+	for i, sub := range s {
+		out[i] = sub.Path
+	}
+	return out
+}
+
+func (s submoduleSet) FindForPath(p string) (submoduleSource, bool) {
+	var best submoduleSource
+	found := false
+	for _, sub := range s {
+		if strings.HasPrefix(p, sub.Path+"/") {
+			if !found || len(sub.Path) > len(best.Path) {
+				best = sub
+				found = true
+			}
+		}
+	}
+	return best, found
+}
+
+func loadSubmodulesForDigest(repoRoot string, env []string, opts DigestPathsOptions) (submoduleSet, error) {
+	if !opts.Submodules {
+		return nil, nil
+	}
+	if opts.EnsureSubmoduleMirror != nil {
+		mirrors, err := submodule.ListMirrorSubmodulesAtIndex(context.Background(), repoRoot, env, opts.ParentRemoteURL, opts.EnsureSubmoduleMirror)
+		if err != nil {
+			return nil, fmt.Errorf("list submodules from index: %w", err)
+		}
+		set := make(submoduleSet, 0, len(mirrors))
+		for _, m := range mirrors {
+			set = append(set, submoduleSource{Path: m.Path, SourceDir: m.MirrorDir, GitlinkSHA: m.GitlinkSHA})
+		}
+		return set, nil
+	}
+	worktrees, err := submodule.ListWorktreeSubmodules(repoRoot)
+	if err != nil {
+		return nil, fmt.Errorf("list submodules: %w", err)
+	}
+	set := make(submoduleSet, 0, len(worktrees))
+	for _, w := range worktrees {
+		set = append(set, submoduleSource{Path: w.Path, SourceDir: w.WorktreeDir})
+	}
+	return set, nil
+}
+
+func listSubmoduleFiles(sub submoduleSource) ([]string, error) {
+	if sub.GitlinkSHA != "" {
+		ms := submodule.MirrorSubmodule{Path: sub.Path, MirrorDir: sub.SourceDir, GitlinkSHA: sub.GitlinkSHA}
+		files, err := submodule.ListMirrorSubmoduleFilesAtSHA(context.Background(), ms)
+		if err != nil {
+			return nil, err
+		}
+		return files, nil
+	}
+	return submodule.ListWorktreeSubmoduleFiles(submodule.WorktreeSubmodule{Path: sub.Path, WorktreeDir: sub.SourceDir})
+}
+
+type submoduleResolutionKey struct {
+	sourceDir    string
+	strippedPath string
+}
+
+func resolveSubmoduleDigests(subs submoduleSet, expandedPaths []string) (map[string]submoduleResolutionKey, map[string]map[string]gitbatch.TreeEntry, map[string]map[string]string, error) {
+	subFiles := make(map[string]submoduleResolutionKey)
+	type sourceInfo struct {
+		dir        string
+		gitlinkSHA string
+	}
+	pathsBySource := make(map[string]sourceInfo)
+	stripped := make(map[string][]string)
+	for _, normalizedPath := range expandedPaths {
+		sub, ok := subs.FindForPath(normalizedPath)
+		if !ok {
+			continue
+		}
+		strippedPath := strings.TrimPrefix(normalizedPath, sub.Path+"/")
+		subFiles[normalizedPath] = submoduleResolutionKey{sourceDir: sub.SourceDir, strippedPath: strippedPath}
+		pathsBySource[sub.SourceDir] = sourceInfo{dir: sub.SourceDir, gitlinkSHA: sub.GitlinkSHA}
+		stripped[sub.SourceDir] = append(stripped[sub.SourceDir], strippedPath)
+	}
+
+	subEntries := make(map[string]map[string]gitbatch.TreeEntry)
+	subDigests := make(map[string]map[string]string)
+	for sourceDir, strippedPaths := range stripped {
+		info := pathsBySource[sourceDir]
+		entries, err := readSubmoduleTreeEntries(info.dir, info.gitlinkSHA, strippedPaths)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("read submodule index at %q: %w", sourceDir, err)
+		}
+		subEntries[sourceDir] = entries
+
+		var regularPaths []string
+		for _, sp := range strippedPaths {
+			if e, ok := entries[sp]; ok && isRegularGitFileMode(e.Mode) {
+				regularPaths = append(regularPaths, sp)
+			}
+		}
+		if len(regularPaths) > 0 {
+			digests, err := readSubmoduleFileDigests(info.dir, info.gitlinkSHA, regularPaths)
+			if err != nil {
+				return nil, nil, nil, fmt.Errorf("read submodule file digests at %q: %w", sourceDir, err)
+			}
+			subDigests[sourceDir] = digests
+		}
+	}
+	return subFiles, subEntries, subDigests, nil
+}
+
+func readSubmoduleTreeEntries(sourceDir, gitlinkSHA string, strippedPaths []string) (map[string]gitbatch.TreeEntry, error) {
+	if gitlinkSHA != "" {
+		return gitbatch.TreeEntriesForFiles(context.Background(), sourceDir, gitlinkSHA, strippedPaths)
+	}
+	return gitbatch.TreeEntriesForFilesInWorktree(context.Background(), sourceDir, strippedPaths)
+}
+
+func readSubmoduleFileDigests(sourceDir, gitlinkSHA string, regularPaths []string) (map[string]string, error) {
+	if gitlinkSHA != "" {
+		return gitbatch.FileDigestsAtCommit(context.Background(), sourceDir, gitlinkSHA, regularPaths)
+	}
+	return gitbatch.FileDigestsInWorktree(context.Background(), sourceDir, regularPaths)
 }
 
 func (c *Changeset) DigestPathsFromBase(repoRoot string, paths []string) ([]File, error) {
@@ -183,62 +333,24 @@ func (c *Changeset) digestPathsFromBase(repoRoot string, paths []string, regular
 		return nil, fmt.Errorf("apply repository changeset patch to temporary git index: %w", err)
 	}
 
-	var worktreeSubs []submodule.WorktreeSubmodule
-	if opts.Submodules {
-		worktreeSubs, err = submodule.ListWorktreeSubmodules(repoRoot)
-		if err != nil {
-			return nil, fmt.Errorf("list submodules: %w", err)
-		}
+	subs, err := loadSubmodulesForDigest(repoRoot, env, opts)
+	if err != nil {
+		return nil, err
 	}
 
 	var expandedPaths []string
 	if regularFilesOnly {
-		expandedPaths, err = expandRegularDigestPathsInIndex(repoRoot, env, paths, worktreeSubs)
+		expandedPaths, err = expandRegularDigestPathsInIndex(repoRoot, env, paths, subs)
 	} else {
-		expandedPaths, err = expandDigestPathsInIndex(repoRoot, env, baseCommitSHA, paths, worktreeSubs)
+		expandedPaths, err = expandDigestPathsInIndex(repoRoot, env, baseCommitSHA, paths, subs)
 	}
 	if err != nil {
 		return nil, err
 	}
 
-	type subFileKey struct {
-		sm           submodule.WorktreeSubmodule
-		strippedPath string
-	}
-	subFiles := make(map[string]subFileKey)
-	subsByPath := make(map[string][]string)
-	if len(worktreeSubs) > 0 {
-		for _, normalizedPath := range expandedPaths {
-			if sm, ok := submodule.FindSubmoduleForPath(normalizedPath, worktreeSubs); ok {
-				strippedPath := strings.TrimPrefix(normalizedPath, sm.Path+"/")
-				subFiles[normalizedPath] = subFileKey{sm: sm, strippedPath: strippedPath}
-				subsByPath[sm.WorktreeDir] = append(subsByPath[sm.WorktreeDir], strippedPath)
-			}
-		}
-	}
-
-	subEntries := make(map[string]map[string]gitbatch.TreeEntry)
-	subDigests := make(map[string]map[string]string)
-	for worktreeDir, strippedPaths := range subsByPath {
-		entries, entriesErr := gitbatch.TreeEntriesForFilesInWorktree(context.Background(), worktreeDir, strippedPaths)
-		if entriesErr != nil {
-			return nil, fmt.Errorf("read submodule index at %q: %w", worktreeDir, entriesErr)
-		}
-		subEntries[worktreeDir] = entries
-
-		var regularPaths []string
-		for _, sp := range strippedPaths {
-			if e, ok := entries[sp]; ok && isRegularGitFileMode(e.Mode) {
-				regularPaths = append(regularPaths, sp)
-			}
-		}
-		if len(regularPaths) > 0 {
-			digests, digestErr := gitbatch.FileDigestsInWorktree(context.Background(), worktreeDir, regularPaths)
-			if digestErr != nil {
-				return nil, fmt.Errorf("read submodule file digests at %q: %w", worktreeDir, digestErr)
-			}
-			subDigests[worktreeDir] = digests
-		}
+	subFiles, subEntries, subDigests, err := resolveSubmoduleDigests(subs, expandedPaths)
+	if err != nil {
+		return nil, err
 	}
 
 	files := make([]File, 0, len(expandedPaths))
@@ -246,7 +358,7 @@ func (c *Changeset) digestPathsFromBase(repoRoot string, paths []string, regular
 		file := File{Path: normalizedPath}
 
 		if key, inSub := subFiles[normalizedPath]; inSub {
-			entries := subEntries[key.sm.WorktreeDir]
+			entries := subEntries[key.sourceDir]
 			entry, exists := entries[key.strippedPath]
 			if !exists {
 				if regularFilesOnly {
@@ -260,7 +372,7 @@ func (c *Changeset) digestPathsFromBase(repoRoot string, paths []string, regular
 			if regularFilesOnly && !isRegularGitFileMode(entry.Mode) {
 				return nil, fmt.Errorf("repository changeset input path %q is %s; inputs.files must name regular files", normalizedPath, gitModeKind(entry.Mode))
 			}
-			digest, ok := subDigests[key.sm.WorktreeDir][key.strippedPath]
+			digest, ok := subDigests[key.sourceDir][key.strippedPath]
 			if !ok {
 				return nil, fmt.Errorf("read repository changeset path %q from submodule: missing digest", normalizedPath)
 			}
@@ -299,7 +411,7 @@ func (c *Changeset) digestPathsFromBase(repoRoot string, paths []string, regular
 	return files, nil
 }
 
-func expandDigestPathsInIndex(repoRoot string, env []string, baseCommitSHA string, paths []string, worktreeSubs []submodule.WorktreeSubmodule) ([]string, error) {
+func expandDigestPathsInIndex(repoRoot string, env []string, baseCommitSHA string, paths []string, subs submoduleSet) ([]string, error) {
 	seen := make(map[string]struct{}, len(paths))
 	var expanded []string
 	var indexPaths []string
@@ -326,8 +438,8 @@ func expandDigestPathsInIndex(repoRoot string, env []string, baseCommitSHA strin
 			if err != nil {
 				return nil, err
 			}
-			if len(worktreeSubs) > 0 {
-				candidates, err = mergeSubmoduleFiles(indexPaths, worktreeSubs)
+			if len(subs) > 0 {
+				candidates, err = mergeSubmoduleFiles(indexPaths, subs)
 				if err != nil {
 					return nil, err
 				}
@@ -362,7 +474,7 @@ func expandDigestPathsInIndex(repoRoot string, env []string, baseCommitSHA strin
 	return expanded, nil
 }
 
-func expandRegularDigestPathsInIndex(repoRoot string, env []string, paths []string, worktreeSubs []submodule.WorktreeSubmodule) ([]string, error) {
+func expandRegularDigestPathsInIndex(repoRoot string, env []string, paths []string, subs submoduleSet) ([]string, error) {
 	seen := make(map[string]struct{}, len(paths))
 	var expanded []string
 	var indexPaths []string
@@ -389,8 +501,8 @@ func expandRegularDigestPathsInIndex(repoRoot string, env []string, paths []stri
 			if err != nil {
 				return nil, err
 			}
-			if len(worktreeSubs) > 0 {
-				candidates, err = mergeSubmoduleFiles(indexPaths, worktreeSubs)
+			if len(subs) > 0 {
+				candidates, err = mergeSubmoduleFiles(indexPaths, subs)
 				if err != nil {
 					return nil, err
 				}
@@ -860,10 +972,10 @@ func literalGitPathspec(normalizedPath string) string {
 	return ":(literal)" + normalizedPath
 }
 
-func mergeSubmoduleFiles(indexPaths []string, worktreeSubs []submodule.WorktreeSubmodule) ([]string, error) {
-	smPaths := make(map[string]struct{}, len(worktreeSubs))
-	for _, sm := range worktreeSubs {
-		smPaths[sm.Path] = struct{}{}
+func mergeSubmoduleFiles(indexPaths []string, subs submoduleSet) ([]string, error) {
+	smPaths := make(map[string]struct{}, len(subs))
+	for _, sub := range subs {
+		smPaths[sub.Path] = struct{}{}
 	}
 	seen := make(map[string]struct{}, len(indexPaths))
 	merged := make([]string, 0, len(indexPaths))
@@ -874,10 +986,10 @@ func mergeSubmoduleFiles(indexPaths []string, worktreeSubs []submodule.WorktreeS
 		seen[p] = struct{}{}
 		merged = append(merged, p)
 	}
-	for _, sm := range worktreeSubs {
-		smFiles, err := submodule.ListWorktreeSubmoduleFiles(sm)
+	for _, sub := range subs {
+		smFiles, err := listSubmoduleFiles(sub)
 		if err != nil {
-			return nil, fmt.Errorf("list files for submodule %q: %w", sm.Path, err)
+			return nil, fmt.Errorf("list files for submodule %q: %w", sub.Path, err)
 		}
 		for _, f := range smFiles {
 			if _, exists := seen[f]; exists {

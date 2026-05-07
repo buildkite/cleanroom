@@ -261,8 +261,13 @@ func TestStageInputFilesDigestAtCommitMatchesChangesetPath(t *testing.T) {
 	}
 }
 
-func TestStageInputFilesDigestWithChangesetHonoursSubmodulesFlag(t *testing.T) {
-	superDir, subDir, _, _ := initControlServiceGitRepoWithSubmodule(t)
+// TestStageInputFilesDigestWithChangesetResolvesSubmoduleViaMirror exercises
+// the production path: digestPathsFromBase running against a bare mirror of
+// the parent (no working tree, no initialised submodules), with submodule
+// contents resolved from the submodule's own bare mirror at the gitlink SHA.
+// This is the case that produced "fatal: bad object :vendor/emojis" before.
+func TestStageInputFilesDigestWithChangesetResolvesSubmoduleViaMirror(t *testing.T) {
+	superDir, subDir, superMirror, subMirror := initControlServiceGitRepoWithSubmodule(t)
 
 	if err := os.WriteFile(filepath.Join(subDir, "emoji1.json"), []byte(`{"name":"smile"}`), 0o644); err != nil {
 		t.Fatalf("write emoji1.json: %v", err)
@@ -273,6 +278,9 @@ func TestStageInputFilesDigestWithChangesetHonoursSubmodulesFlag(t *testing.T) {
 	runControlServiceGit(t, superDir, "add", "vendor/emojis")
 	runControlServiceGit(t, superDir, "commit", "-m", "update submodule")
 	commitSHA := headControlServiceCommit(t, superDir)
+
+	runControlServiceGit(t, subMirror, "fetch", "--all")
+	runControlServiceGit(t, superMirror, "fetch", "--all")
 
 	if err := os.WriteFile(filepath.Join(superDir, "trigger.txt"), []byte("trigger changeset\n"), 0o644); err != nil {
 		t.Fatalf("write trigger.txt: %v", err)
@@ -292,23 +300,27 @@ func TestStageInputFilesDigestWithChangesetHonoursSubmodulesFlag(t *testing.T) {
 		t.Fatal("expected changeset")
 	}
 
-	pattern := []string{"vendor/emojis/**"}
+	store := &testSubmoduleStore{mirrorDir: subMirror}
 
-	if _, err := stageInputFilesDigestWithChangeset(superDir, changeset, pattern, "test", false); err == nil {
-		t.Fatal("expected error when submodules disabled, got none")
-	}
-
-	digest, err := stageInputFilesDigestWithChangeset(superDir, changeset, pattern, "test", true)
+	digest, err := stageInputFilesDigestWithChangeset(context.Background(), superMirror, changeset, []string{"vendor/emojis/**"}, "test", "", true, store)
 	if err != nil {
-		t.Fatalf("stageInputFilesDigestWithChangeset: %v", err)
+		t.Fatalf("stageInputFilesDigestWithChangeset (submodules on, mirror): %v", err)
 	}
 	if !strings.HasPrefix(digest, "sha256:") {
 		t.Fatalf("expected sha256 digest, got %q", digest)
 	}
+	if len(store.calls) == 0 {
+		t.Fatal("expected EnsureSubmoduleMirror to be called")
+	}
 }
 
-func TestStageKeyFilesDigestWithChangesetHonoursSubmodulesFlag(t *testing.T) {
-	superDir, subDir, _, _ := initControlServiceGitRepoWithSubmodule(t)
+// TestStageKeyFilesDigestWithChangesetResolvesGitlinkLiteralViaMirror is the
+// exact regression for the original bug: a literal `vendor/emojis` (the
+// gitlink itself) hitting the key-files path against a bare mirror. Before
+// the fix this produced "fatal: bad object :vendor/emojis"; after, it must
+// either succeed or surface a meaningful gitlink error.
+func TestStageKeyFilesDigestWithChangesetResolvesGitlinkLiteralViaMirror(t *testing.T) {
+	superDir, subDir, superMirror, subMirror := initControlServiceGitRepoWithSubmodule(t)
 
 	if err := os.WriteFile(filepath.Join(subDir, "emoji1.json"), []byte(`{"name":"smile"}`), 0o644); err != nil {
 		t.Fatalf("write emoji1.json: %v", err)
@@ -319,6 +331,9 @@ func TestStageKeyFilesDigestWithChangesetHonoursSubmodulesFlag(t *testing.T) {
 	runControlServiceGit(t, superDir, "add", "vendor/emojis")
 	runControlServiceGit(t, superDir, "commit", "-m", "update submodule")
 	commitSHA := headControlServiceCommit(t, superDir)
+
+	runControlServiceGit(t, subMirror, "fetch", "--all")
+	runControlServiceGit(t, superMirror, "fetch", "--all")
 
 	if err := os.WriteFile(filepath.Join(superDir, "trigger.txt"), []byte("trigger changeset\n"), 0o644); err != nil {
 		t.Fatalf("write trigger.txt: %v", err)
@@ -338,14 +353,11 @@ func TestStageKeyFilesDigestWithChangesetHonoursSubmodulesFlag(t *testing.T) {
 		t.Fatal("expected changeset")
 	}
 
-	pattern := []string{"vendor/emojis"}
+	store := &testSubmoduleStore{mirrorDir: subMirror}
 
-	if _, err := stageKeyFilesDigestWithChangeset(superDir, changeset, pattern, "dependency", false); err == nil {
-		t.Fatal("expected error when submodules disabled, got none")
-	}
-	digest, err := stageKeyFilesDigestWithChangeset(superDir, changeset, []string{"vendor/emojis/**"}, "dependency", true)
+	digest, err := stageKeyFilesDigestWithChangeset(context.Background(), superMirror, changeset, []string{"vendor/emojis/**"}, "dependency", "", true, store)
 	if err != nil {
-		t.Fatalf("stageKeyFilesDigestWithChangeset: %v", err)
+		t.Fatalf("stageKeyFilesDigestWithChangeset (mirror, glob): %v", err)
 	}
 	if !strings.HasPrefix(digest, "sha256:") {
 		t.Fatalf("expected sha256 digest, got %q", digest)

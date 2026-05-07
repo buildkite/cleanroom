@@ -155,7 +155,7 @@ func (s *Service) stageKeyFilesDigest(ctx context.Context, repository *repositor
 			return commitBundle.WithRepository(ctx, repoDir, func(bundleRepoDir string) error {
 				var err error
 				if changeset != nil {
-					digest, err = stageKeyFilesDigestWithChangeset(bundleRepoDir, changeset, files, stageName, repository.Submodules)
+					digest, err = stageKeyFilesDigestWithChangeset(ctx, bundleRepoDir, changeset, files, stageName, repository.RemoteURL, repository.Submodules, s.RepositoryStore)
 				} else {
 					digest, err = stageKeyFilesDigestAtCommit(ctx, bundleRepoDir, repository.RemoteURL, repository.CommitSHA, files, stageName, repository.Submodules, s.RepositoryStore)
 				}
@@ -171,7 +171,7 @@ func (s *Service) stageKeyFilesDigest(ctx context.Context, repository *repositor
 		var digest string
 		err := s.RepositoryStore.WithRepository(ctx, repository.RemoteURL, repository.CommitSHA, repositorystore.FetchHints{}, func(repoDir string) error {
 			var err error
-			digest, err = stageKeyFilesDigestWithChangeset(repoDir, changeset, files, stageName, repository.Submodules)
+			digest, err = stageKeyFilesDigestWithChangeset(ctx, repoDir, changeset, files, stageName, repository.RemoteURL, repository.Submodules, s.RepositoryStore)
 			return err
 		})
 		if err != nil {
@@ -211,7 +211,7 @@ func (s *Service) stageInputFilesDigest(ctx context.Context, repository *reposit
 			return commitBundle.WithRepository(ctx, repoDir, func(bundleRepoDir string) error {
 				var err error
 				if changeset != nil {
-					digest, err = stageInputFilesDigestWithChangeset(bundleRepoDir, changeset, files, stageName, repository.Submodules)
+					digest, err = stageInputFilesDigestWithChangeset(ctx, bundleRepoDir, changeset, files, stageName, repository.RemoteURL, repository.Submodules, s.RepositoryStore)
 				} else {
 					digest, err = stageInputFilesDigestAtCommit(ctx, bundleRepoDir, repository.RemoteURL, repository.CommitSHA, files, stageName, repository.Submodules, s.RepositoryStore)
 				}
@@ -227,7 +227,7 @@ func (s *Service) stageInputFilesDigest(ctx context.Context, repository *reposit
 		var digest string
 		err := s.RepositoryStore.WithRepository(ctx, repository.RemoteURL, repository.CommitSHA, repositorystore.FetchHints{}, func(repoDir string) error {
 			var err error
-			digest, err = stageInputFilesDigestWithChangeset(repoDir, changeset, files, stageName, repository.Submodules)
+			digest, err = stageInputFilesDigestWithChangeset(ctx, repoDir, changeset, files, stageName, repository.RemoteURL, repository.Submodules, s.RepositoryStore)
 			return err
 		})
 		if err != nil {
@@ -247,9 +247,18 @@ func (s *Service) stageInputFilesDigest(ctx context.Context, repository *reposit
 	return digest, nil
 }
 
-func stageKeyFilesDigestWithChangeset(repoDir string, changeset *repositorychangeset.Changeset, files []string, stageName string, submodules bool) (string, error) {
+func stageKeyFilesDigestWithChangeset(ctx context.Context, repoDir string, changeset *repositorychangeset.Changeset, files []string, stageName string, parentRemoteURL string, submodules bool, store repositorystore.RepositoryStore) (string, error) {
 	manifest := make([]stageKeyFileDigest, 0, len(files))
-	digests, err := changeset.DigestPathsFromBaseWithOptions(strings.TrimSpace(repoDir), files, repositorychangeset.DigestPathsOptions{Submodules: submodules})
+	opts := repositorychangeset.DigestPathsOptions{
+		Submodules:      submodules,
+		ParentRemoteURL: parentRemoteURL,
+	}
+	if submodules && store != nil {
+		opts.EnsureSubmoduleMirror = func(ctx context.Context, url, sha string) (string, error) {
+			return store.EnsureSubmoduleMirror(ctx, url, sha)
+		}
+	}
+	digests, err := changeset.DigestPathsFromBaseWithOptions(strings.TrimSpace(repoDir), files, opts)
 	if err != nil {
 		return "", fmt.Errorf("read %s key files from repository changeset: %w", stageName, err)
 	}
@@ -270,8 +279,17 @@ func stageKeyFilesDigestWithChangeset(repoDir string, changeset *repositorychang
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
-func stageInputFilesDigestWithChangeset(repoDir string, changeset *repositorychangeset.Changeset, files []string, stageName string, submodules bool) (string, error) {
-	digests, err := changeset.DigestRegularFilesFromBaseWithOptions(strings.TrimSpace(repoDir), files, repositorychangeset.DigestPathsOptions{Submodules: submodules})
+func stageInputFilesDigestWithChangeset(ctx context.Context, repoDir string, changeset *repositorychangeset.Changeset, files []string, stageName string, parentRemoteURL string, submodules bool, store repositorystore.RepositoryStore) (string, error) {
+	opts := repositorychangeset.DigestPathsOptions{
+		Submodules:      submodules,
+		ParentRemoteURL: parentRemoteURL,
+	}
+	if submodules && store != nil {
+		opts.EnsureSubmoduleMirror = func(ctx context.Context, url, sha string) (string, error) {
+			return store.EnsureSubmoduleMirror(ctx, url, sha)
+		}
+	}
+	digests, err := changeset.DigestRegularFilesFromBaseWithOptions(strings.TrimSpace(repoDir), files, opts)
 	if err != nil {
 		return "", fmt.Errorf("read %s input files from repository changeset: %w", stageName, err)
 	}

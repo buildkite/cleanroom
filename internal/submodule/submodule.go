@@ -158,6 +158,87 @@ func ListMirrorSubmodulesAtCommit(ctx context.Context, parentMirrorDir, parentRe
 	return result, nil
 }
 
+// ListMirrorSubmodulesAtIndex enumerates submodules from a temporary git
+// index. It reads .gitmodules from the index, resolves each entry's gitlink
+// SHA via `git ls-files --stage`, and ensures every submodule has a mirror
+// available. Returns an empty slice (with no error) when the index has no
+// .gitmodules.
+func ListMirrorSubmodulesAtIndex(ctx context.Context, repoRoot string, env []string, parentRemoteURL string, ensureMirror func(ctx context.Context, remoteURL, commitSHA string) (mirrorDir string, err error)) ([]MirrorSubmodule, error) {
+	raw, err := gitOutputWithEnv(repoRoot, env, "show", ":.gitmodules")
+	if err != nil {
+		msg := err.Error()
+		if strings.Contains(msg, "does not exist") || strings.Contains(msg, "exists on disk, but not") || strings.Contains(msg, "Path '.gitmodules' does not exist") {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read .gitmodules from index: %w", err)
+	}
+
+	entries, err := ParseGitmodules(raw)
+	if err != nil {
+		return nil, fmt.Errorf("parse .gitmodules from index: %w", err)
+	}
+
+	var result []MirrorSubmodule
+	for _, entry := range entries {
+		stageOut, err := gitOutputWithEnv(repoRoot, env, "ls-files", "--stage", "-z", "--", ":(literal)"+entry.Path)
+		if err != nil {
+			return nil, fmt.Errorf("ls-files for submodule %q in index: %w", entry.Path, err)
+		}
+		stageOut = bytes.TrimRight(stageOut, "\x00")
+		if len(bytes.TrimSpace(stageOut)) == 0 {
+			continue
+		}
+
+		gitlinkSHA, err := parseStageGitlinkSHA(stageOut, entry.Path)
+		if err != nil {
+			return nil, err
+		}
+
+		resolvedURL, err := ResolveSubmoduleURL(parentRemoteURL, entry.URL)
+		if err != nil {
+			return nil, fmt.Errorf("resolve submodule URL for %q: %w", entry.Path, err)
+		}
+
+		mirrorDir, err := ensureMirror(ctx, resolvedURL, gitlinkSHA)
+		if err != nil {
+			return nil, fmt.Errorf("ensure mirror for submodule %q: %w", entry.Path, err)
+		}
+
+		result = append(result, MirrorSubmodule{
+			Path:       entry.Path,
+			RemoteURL:  resolvedURL,
+			GitlinkSHA: gitlinkSHA,
+			MirrorDir:  mirrorDir,
+		})
+	}
+
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Path < result[j].Path
+	})
+	return result, nil
+}
+
+func parseStageGitlinkSHA(stageOut []byte, path string) (string, error) {
+	for _, raw := range bytes.Split(stageOut, []byte{0}) {
+		if len(raw) == 0 {
+			continue
+		}
+		meta, _, ok := bytes.Cut(raw, []byte{'\t'})
+		if !ok {
+			continue
+		}
+		fields := strings.Fields(string(meta))
+		if len(fields) < 3 {
+			continue
+		}
+		if fields[0] != "160000" {
+			return "", fmt.Errorf("submodule %q has unexpected mode %q (expected 160000)", path, fields[0])
+		}
+		return fields[1], nil
+	}
+	return "", fmt.Errorf("submodule %q not found in index", path)
+}
+
 func parseGitlinkSHA(treeOut []byte, path string) (string, error) {
 	line := strings.TrimSpace(string(bytes.TrimRight(treeOut, "\x00")))
 	meta, _, ok := strings.Cut(line, "\t")
@@ -271,6 +352,25 @@ func gitOutput(dir string, args ...string) ([]byte, error) {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
 	cmd.Env = os.Environ()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg == "" {
+			msg = err.Error()
+		}
+		return nil, errors.New(msg)
+	}
+	return out, nil
+}
+
+func gitOutputWithEnv(dir string, env []string, args ...string) ([]byte, error) {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	if env != nil {
+		cmd.Env = env
+	} else {
+		cmd.Env = os.Environ()
+	}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		msg := strings.TrimSpace(string(out))
