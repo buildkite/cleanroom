@@ -471,18 +471,20 @@ Telemetry should include:
 
 ## Current State
 
-Current main has useful pieces but not the intended semantics:
+Current main has the first implementation slice:
 
 - policy and proto support ordered dependency and service blocks
-- policy currently rejects `/workspace` outputs
-- dependency and service miss execution currently uses a read-only input
-  projection over the workspace
+- policy validation accepts repository-relative and workspace-local outputs
+- dependency and service miss execution runs against the normal writable
+  checkout with overlay capture
 - guest overlay capture exists
 - Firecracker and darwin-vz have sidecar output-volume support
-- publishing and restore paths are wired around the projection-first model
+- volume cache keys include repository destination and conservative repository
+  source identity
 
-The reset work should preserve the reusable backend pieces while changing the
-semantic center back to normal checkout execution plus overlay-first capture.
+Remaining slices should make source-only reuse safe by adding read auditing,
+then remove the conservative source-identity keying when observed reads prove
+the block only consumed declared mutable inputs.
 
 ## Delivery Strategy
 

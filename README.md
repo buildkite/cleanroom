@@ -137,12 +137,12 @@ sandbox:
   docker:
     required: true
   dependencies:
-    - name: gems
-      command: bundle install
+    - name: node
+      command: npm ci
       inputs:
-        files: [Gemfile.lock]
+        files: [package.json, package-lock.json]
       outputs:
-        dirs: ["${HOME}/.bundle"]
+        dirs: [node_modules]
   services:
     - name: database
       command: |

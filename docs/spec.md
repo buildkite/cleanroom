@@ -184,10 +184,15 @@ explicit request-time changeset input.
 - Service block commands accept either a YAML string or a YAML sequence; strings execute as `sh -lc <value>`, and strings are the preferred form.
 - Block `inputs.files` are repository-relative regular files or globs matching
   regular files. Literal paths must exist; globs must match at least one path.
-- Block `outputs.dirs` and `outputs.files` are absolute guest paths outside
-  `/workspace` and cannot be `/`; `${HOME}`, `$HOME`, and `~` expand to the
-  Cleanroom block execution home, while `${WORKSPACE}` and `$WORKSPACE` expand
-  to the Cleanroom workspace root before the workspace-output rejection runs.
+- Block `outputs.dirs` and `outputs.files` are guest paths written by the block.
+  Relative paths are repository-relative and resolve against `repository.path`;
+  for example `node_modules` resolves to `/workspace/node_modules` with the
+  default repository path. Absolute paths are also valid. Outputs cannot be `/`
+  or the repository root, must stay within the repository root when declared
+  with a relative path or `$WORKSPACE` prefix, and must not contain glob
+  characters. `${HOME}`, `$HOME`, and `~` expand to the Cleanroom block
+  execution home, while `${WORKSPACE}` and `$WORKSPACE` expand to the normalized
+  repository path.
 - Block `env` values are literal strings, except leading home-directory
   and workspace shorthand forms (`~`, `~/`, `$HOME`, `$HOME/`, `${HOME}`,
   `${HOME}/`, `$WORKSPACE`, `$WORKSPACE/`, `${WORKSPACE}`, `${WORKSPACE}/`)

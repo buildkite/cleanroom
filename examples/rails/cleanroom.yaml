@@ -10,9 +10,8 @@ sandbox:
   dependencies:
     - name: bundle
       env:
-        GEM_HOME: /usr/local/bundle
-        BUNDLE_PATH: /usr/local/bundle
-        BUNDLE_APP_CONFIG: /usr/local/bundle
+        BUNDLE_PATH: vendor/bundle
+        BUNDLE_APP_CONFIG: vendor/bundle/.bundle
       command:
         - sh
         - -lc
@@ -42,7 +41,7 @@ sandbox:
           - railties/railties.gemspec
       outputs:
         dirs:
-          - /usr/local/bundle
+          - vendor/bundle
   network:
     default: deny
     allow:
