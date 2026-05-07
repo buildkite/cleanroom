@@ -43,12 +43,15 @@ type cacheOutputMountAction struct {
 
 var cacheOutputMountState struct {
 	sync.Mutex
-	signature string
+	signature      string
+	mountedTargets []string
 }
 
 func setupCacheOutputMountsOnce(mounts []vsockexec.CacheOutputMount) error {
 	if len(mounts) == 0 {
-		return nil
+		cacheOutputMountState.Lock()
+		defer cacheOutputMountState.Unlock()
+		return clearCacheOutputMountStateLocked()
 	}
 	signature, err := cacheOutputMountSignature(mounts)
 	if err != nil {
@@ -63,10 +66,12 @@ func setupCacheOutputMountsOnce(mounts []vsockexec.CacheOutputMount) error {
 	if cacheOutputMountState.signature != "" {
 		return errors.New("cache output mount plan changed after setup")
 	}
-	if err := setupCacheOutputMounts(mounts); err != nil {
+	mountedTargets, err := setupCacheOutputMounts(mounts)
+	if err != nil {
 		return err
 	}
 	cacheOutputMountState.signature = signature
+	cacheOutputMountState.mountedTargets = mountedTargets
 	return nil
 }
 
@@ -78,16 +83,38 @@ func cacheOutputMountSignature(mounts []vsockexec.CacheOutputMount) (string, err
 	return string(data), nil
 }
 
-func setupCacheOutputMounts(mounts []vsockexec.CacheOutputMount) error {
+func setupCacheOutputMounts(mounts []vsockexec.CacheOutputMount) ([]string, error) {
 	actions, err := cacheOutputMountActions(mounts)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	mountedTargets := make([]string, 0, len(actions))
 	for _, action := range actions {
-		if err := executeCacheOutputMountAction(action); err != nil {
-			return err
+		mounted, err := executeCacheOutputMountAction(action)
+		if err != nil {
+			cleanupErr := unmountCacheOutputTargets(mountedTargets)
+			if cleanupErr != nil {
+				return nil, fmt.Errorf("%w; cleanup mounted cache output targets: %v", err, cleanupErr)
+			}
+			return nil, err
+		}
+		if mounted {
+			mountedTargets = append(mountedTargets, action.Target)
 		}
 	}
+	return mountedTargets, nil
+}
+
+func clearCacheOutputMountStateLocked() error {
+	if cacheOutputMountState.signature == "" {
+		cacheOutputMountState.mountedTargets = nil
+		return nil
+	}
+	if err := unmountCacheOutputTargets(cacheOutputMountState.mountedTargets); err != nil {
+		return err
+	}
+	cacheOutputMountState.signature = ""
+	cacheOutputMountState.mountedTargets = nil
 	return nil
 }
 
@@ -181,49 +208,71 @@ func cleanCacheOutputSubpath(value string) (string, error) {
 	return cleaned, nil
 }
 
-func executeCacheOutputMountAction(action cacheOutputMountAction) error {
+func executeCacheOutputMountAction(action cacheOutputMountAction) (bool, error) {
 	switch action.Kind {
 	case cacheOutputActionMkdir:
 		if action.VolumeRoot != "" {
 			_, err := ensureCacheOutputVolumeDir(action.VolumeRoot, action.VolumeSubpath, action.Mode, action.RequireExisting)
-			return err
+			return false, err
 		}
-		return ensureCacheOutputDir(action.Target, action.Mode, action.RequireExisting, action.RequireEmpty)
+		return false, ensureCacheOutputDir(action.Target, action.Mode, action.RequireExisting, action.RequireEmpty)
 	case cacheOutputActionMount:
 		if err := unix.Mount(action.Source, action.Target, action.FSType, action.Flags, action.Data); err != nil && err != unix.EBUSY {
-			return fmt.Errorf("mount cache output volume %s at %s: %w", action.Source, action.Target, err)
+			return false, fmt.Errorf("mount cache output volume %s at %s: %w", action.Source, action.Target, err)
+		} else if err == unix.EBUSY {
+			return false, nil
 		}
+		return true, nil
 	case cacheOutputActionBind:
 		sourcePath := action.Source
 		if action.VolumeRoot != "" {
 			resolved, err := ensureCacheOutputVolumeDir(action.VolumeRoot, action.VolumeSubpath, 0, true)
 			if err != nil {
-				return err
+				return false, err
 			}
 			sourcePath = resolved
 		}
 		if err := unix.Mount(sourcePath, action.Target, "", action.Flags, ""); err != nil && err != unix.EBUSY {
-			return fmt.Errorf("bind cache output path %s at %s: %w", sourcePath, action.Target, err)
+			return false, fmt.Errorf("bind cache output path %s at %s: %w", sourcePath, action.Target, err)
+		} else if err == unix.EBUSY {
+			return false, nil
 		}
+		return true, nil
 	case cacheOutputActionRestoreFile:
 		if action.VolumeRoot != "" {
 			source, sourcePath, err := openCacheOutputVolumeFile(action.VolumeRoot, action.VolumeSubpath, action.Required)
 			if err != nil {
-				return err
+				return false, err
 			}
 			if source == nil {
-				return nil
+				return false, nil
 			}
 			defer source.Close()
-			return restoreCacheOutputFileFrom(source, sourcePath, action.Target, action.Mode)
+			return false, restoreCacheOutputFileFrom(source, sourcePath, action.Target, action.Mode)
 		}
 		if err := restoreCacheOutputFile(action.Source, action.Target, action.Mode, action.Required); err != nil {
-			return err
+			return false, err
 		}
 	default:
-		return fmt.Errorf("unknown cache output mount action %q", action.Kind)
+		return false, fmt.Errorf("unknown cache output mount action %q", action.Kind)
 	}
-	return nil
+	return false, nil
+}
+
+var unmountCacheOutputTarget = unix.Unmount
+
+func unmountCacheOutputTargets(targets []string) error {
+	var errs []error
+	for i := len(targets) - 1; i >= 0; i-- {
+		target := strings.TrimSpace(targets[i])
+		if target == "" {
+			continue
+		}
+		if err := unmountCacheOutputTarget(target, unix.MNT_DETACH); err != nil && err != unix.EINVAL && err != unix.ENOENT {
+			errs = append(errs, fmt.Errorf("unmount cache output target %s: %w", target, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func ensureCacheOutputVolumeDir(root, subpath string, mode fs.FileMode, requireExisting bool) (string, error) {

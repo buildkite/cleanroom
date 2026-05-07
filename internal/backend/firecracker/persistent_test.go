@@ -273,6 +273,86 @@ func TestRunInSandboxForwardsCacheOutputMounts(t *testing.T) {
 	}
 }
 
+func TestRunFileTransferCommandForwardsCacheOutputMounts(t *testing.T) {
+	t.Parallel()
+
+	wantMounts := []vsockexec.CacheOutputMount{
+		{
+			DevicePath:    "/dev/vdb",
+			MountPath:     "/run/cleanroom/cache-output-volumes/cacheout0",
+			SourcePresent: true,
+			DirMappings: []vsockexec.CacheOutputDirMount{
+				{GuestPath: "/workspace/node_modules", Subpath: "dirs/0"},
+			},
+		},
+	}
+	var gotCommand []string
+	var gotMounts []vsockexec.CacheOutputMount
+	adapter := &Adapter{}
+	adapter.runGuestCommandFn = func(_ context.Context, _ context.Context, _ <-chan struct{}, _ func() error, _ string, _ uint32, req vsockexec.ExecRequest, _ backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error) {
+		gotCommand = append([]string(nil), req.Command...)
+		gotMounts = cloneCacheOutputMounts(req.CacheOutputMounts)
+		return vsockexec.ExecResponse{ExitCode: 0}, guestExecTiming{}, nil
+	}
+	adapter.sandboxes = map[string]*sandboxInstance{
+		"cr-test": {
+			SandboxID:         "cr-test",
+			VsockPath:         "/tmp/fake.sock",
+			GuestPort:         10700,
+			cacheOutputMounts: cloneCacheOutputMounts(wantMounts),
+		},
+	}
+
+	if _, err := adapter.runFileTransferCommand(context.Background(), "cr-test", []string{"stat", "/workspace/node_modules"}, backend.OutputStream{}); err != nil {
+		t.Fatalf("runFileTransferCommand returned error: %v", err)
+	}
+	if got, want := gotCommand, []string{"stat", "/workspace/node_modules"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected command: got %#v want %#v", got, want)
+	}
+	if !reflect.DeepEqual(gotMounts, wantMounts) {
+		t.Fatalf("unexpected cache output mounts: got %#v want %#v", gotMounts, wantMounts)
+	}
+}
+
+func TestRunInSandboxSkipsCacheOutputMountsForWorkspaceStage(t *testing.T) {
+	t.Parallel()
+
+	var gotMounts []vsockexec.CacheOutputMount
+	adapter := &Adapter{}
+	adapter.runGuestCommandFn = func(_ context.Context, _ context.Context, _ <-chan struct{}, _ func() error, _ string, _ uint32, req vsockexec.ExecRequest, _ backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error) {
+		gotMounts = cloneCacheOutputMounts(req.CacheOutputMounts)
+		return vsockexec.ExecResponse{ExitCode: 0}, guestExecTiming{}, nil
+	}
+	adapter.sandboxes = map[string]*sandboxInstance{
+		"cr-test": {
+			SandboxID: "cr-test",
+			VsockPath: "/tmp/fake.sock",
+			GuestPort: 10700,
+			cacheOutputMounts: []vsockexec.CacheOutputMount{
+				{
+					DevicePath: "/dev/vdb",
+					MountPath:  "/run/cleanroom/cache-output-volumes/cacheout0",
+					DirMappings: []vsockexec.CacheOutputDirMount{
+						{GuestPath: "/workspace/node_modules", Subpath: "dirs/0"},
+					},
+				},
+			},
+		},
+	}
+
+	if _, err := adapter.RunInSandbox(context.Background(), backend.ExecutionRequest{
+		SandboxID:    "cr-test",
+		ExecutionID:  "run-123",
+		Command:      []string{"true"},
+		NetworkStage: policy.NetworkStageWorkspace,
+	}, backend.OutputStream{}); err != nil {
+		t.Fatalf("RunInSandbox returned error: %v", err)
+	}
+	if len(gotMounts) != 0 {
+		t.Fatalf("workspace stage should not receive cache output mounts, got %#v", gotMounts)
+	}
+}
+
 func TestRunInSandboxForwardsCacheOutputFileCaptures(t *testing.T) {
 	t.Parallel()
 
