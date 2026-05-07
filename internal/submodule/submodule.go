@@ -38,12 +38,10 @@ func ListWorktreeSubmodules(repoRoot string) ([]WorktreeSubmodule, error) {
 			continue
 		}
 		prefix := line[0]
-		rest := line[1:]
-		fields := strings.Fields(rest)
-		if len(fields) < 2 {
-			return nil, fmt.Errorf("parse submodule status line %q", line)
+		smPath, err := parseSubmoduleStatusPath(line)
+		if err != nil {
+			return nil, err
 		}
-		smPath := fields[1]
 		switch prefix {
 		case '-':
 			return nil, fmt.Errorf("submodule %q is not initialised; run \"git submodule update --init\"", smPath)
@@ -66,6 +64,30 @@ func ListWorktreeSubmodules(repoRoot string) ([]WorktreeSubmodule, error) {
 	return result, nil
 }
 
+// parseSubmoduleStatusPath extracts the path from a single line of
+// `git submodule status` output. The format is `<char><sha> <path>[ (describe)]`,
+// where path may contain spaces, so splitting on whitespace is unsafe.
+func parseSubmoduleStatusPath(line string) (string, error) {
+	if len(line) < 42 {
+		return "", fmt.Errorf("parse submodule status line %q", line)
+	}
+	rest := line[1:]
+	sp := strings.IndexByte(rest, ' ')
+	if sp < 0 {
+		return "", fmt.Errorf("parse submodule status line %q", line)
+	}
+	smPath := rest[sp+1:]
+	if strings.HasSuffix(smPath, ")") {
+		if open := strings.LastIndex(smPath, " ("); open >= 0 {
+			smPath = smPath[:open]
+		}
+	}
+	if smPath == "" {
+		return "", fmt.Errorf("parse submodule status line %q", line)
+	}
+	return smPath, nil
+}
+
 func ListWorktreeSubmoduleFiles(sm WorktreeSubmodule) ([]string, error) {
 	out, err := gitOutput(sm.WorktreeDir, "ls-files", "-z")
 	if err != nil {
@@ -80,7 +102,7 @@ func ListWorktreeSubmoduleFiles(sm WorktreeSubmodule) ([]string, error) {
 	return result, nil
 }
 
-func ListMirrorSubmodulesAtCommit(ctx context.Context, parentMirrorDir, commitSHA string, ensureMirror func(ctx context.Context, remoteURL, commitSHA string) (mirrorDir string, err error)) ([]MirrorSubmodule, error) {
+func ListMirrorSubmodulesAtCommit(ctx context.Context, parentMirrorDir, parentRemoteURL, commitSHA string, ensureMirror func(ctx context.Context, remoteURL, commitSHA string) (mirrorDir string, err error)) ([]MirrorSubmodule, error) {
 	raw, err := gitOutputContext(ctx, parentMirrorDir, "show", commitSHA+":.gitmodules")
 	if err != nil {
 		msg := err.Error()
@@ -112,14 +134,19 @@ func ListMirrorSubmodulesAtCommit(ctx context.Context, parentMirrorDir, commitSH
 			return nil, err
 		}
 
-		mirrorDir, err := ensureMirror(ctx, entry.URL, gitlinkSHA)
+		resolvedURL, err := ResolveSubmoduleURL(parentRemoteURL, entry.URL)
+		if err != nil {
+			return nil, fmt.Errorf("resolve submodule URL for %q: %w", entry.Path, err)
+		}
+
+		mirrorDir, err := ensureMirror(ctx, resolvedURL, gitlinkSHA)
 		if err != nil {
 			return nil, fmt.Errorf("ensure mirror for submodule %q: %w", entry.Path, err)
 		}
 
 		result = append(result, MirrorSubmodule{
 			Path:       entry.Path,
-			RemoteURL:  entry.URL,
+			RemoteURL:  resolvedURL,
 			GitlinkSHA: gitlinkSHA,
 			MirrorDir:  mirrorDir,
 		})
@@ -188,6 +215,44 @@ func FindMirrorSubmoduleForPath(path string, mirrorSubs []MirrorSubmodule) (Mirr
 		}
 	}
 	return best, found
+}
+
+// ResolveSubmoduleURL resolves a submodule URL from .gitmodules against the
+// parent repository's remote URL, following git's resolve_relative_url rules.
+// Absolute URLs are returned as-is; only URLs beginning with `./` or `../`
+// are resolved relative to the parent.
+func ResolveSubmoduleURL(parentRemoteURL, submoduleURL string) (string, error) {
+	if !strings.HasPrefix(submoduleURL, "./") && !strings.HasPrefix(submoduleURL, "../") {
+		return submoduleURL, nil
+	}
+	if parentRemoteURL == "" {
+		return "", fmt.Errorf("relative submodule URL %q requires a parent remote URL", submoduleURL)
+	}
+
+	base := parentRemoteURL
+	scheme := ""
+	if i := strings.Index(base, "://"); i >= 0 {
+		scheme = base[:i+3]
+		base = base[i+3:]
+	}
+
+	sep := byte('/')
+	for {
+		switch {
+		case strings.HasPrefix(submoduleURL, "./"):
+			submoduleURL = submoduleURL[2:]
+		case strings.HasPrefix(submoduleURL, "../"):
+			submoduleURL = submoduleURL[3:]
+			slash := strings.LastIndexAny(base, "/:")
+			if slash < 0 {
+				return "", fmt.Errorf("cannot resolve relative submodule URL %q against parent %q", submoduleURL, parentRemoteURL)
+			}
+			sep = base[slash]
+			base = base[:slash]
+		default:
+			return scheme + base + string(sep) + submoduleURL, nil
+		}
+	}
 }
 
 func splitNullTerminated(data []byte) []string {

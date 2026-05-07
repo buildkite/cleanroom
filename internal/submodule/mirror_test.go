@@ -56,7 +56,7 @@ func TestListMirrorSubmodulesAtCommit(t *testing.T) {
 		return subMirrorDir, nil
 	}
 
-	subs, err := ListMirrorSubmodulesAtCommit(context.Background(), superMirrorDir, commitSHA, ensureMirror)
+	subs, err := ListMirrorSubmodulesAtCommit(context.Background(), superMirrorDir, "", commitSHA, ensureMirror)
 	if err != nil {
 		t.Fatalf("ListMirrorSubmodulesAtCommit returned error: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestListMirrorSubmodulesAtCommitNoGitmodules(t *testing.T) {
 		return "", nil
 	}
 
-	subs, err := ListMirrorSubmodulesAtCommit(context.Background(), mirrorDir, commitSHA, ensureMirror)
+	subs, err := ListMirrorSubmodulesAtCommit(context.Background(), mirrorDir, "", commitSHA, ensureMirror)
 	if err != nil {
 		t.Fatalf("ListMirrorSubmodulesAtCommit returned error: %v", err)
 	}

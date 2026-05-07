@@ -184,7 +184,7 @@ func TestStageInputFilesDigestAtCommitDigestsSubmoduleFiles(t *testing.T) {
 
 	store := &testSubmoduleStore{mirrorDir: subMirror}
 
-	digest, err := stageInputFilesDigestAtCommit(context.Background(), superMirror, commitSHA, []string{"vendor/emojis/**"}, "test", true, store)
+	digest, err := stageInputFilesDigestAtCommit(context.Background(), superMirror, "", commitSHA, []string{"vendor/emojis/**"}, "test", true, store)
 	if err != nil {
 		t.Fatalf("stageInputFilesDigestAtCommit: %v", err)
 	}
@@ -251,7 +251,7 @@ func TestStageInputFilesDigestAtCommitMatchesChangesetPath(t *testing.T) {
 	}
 
 	store := &testSubmoduleStore{mirrorDir: subMirror}
-	atCommitDigest, err := stageInputFilesDigestAtCommit(context.Background(), superMirror, commitSHA, pattern, "test", true, store)
+	atCommitDigest, err := stageInputFilesDigestAtCommit(context.Background(), superMirror, "", commitSHA, pattern, "test", true, store)
 	if err != nil {
 		t.Fatalf("stageInputFilesDigestAtCommit: %v", err)
 	}
@@ -278,7 +278,7 @@ func TestStageInputFilesDigestAtCommitNoGitmodulesAtCommit(t *testing.T) {
 
 	store := &testSubmoduleStore{mirrorDir: mirror}
 
-	digest, err := stageInputFilesDigestAtCommit(context.Background(), mirror, commitSHA, []string{"src/**"}, "test", true, store)
+	digest, err := stageInputFilesDigestAtCommit(context.Background(), mirror, "", commitSHA, []string{"src/**"}, "test", true, store)
 	if err != nil {
 		t.Fatalf("stageInputFilesDigestAtCommit: %v", err)
 	}
@@ -295,7 +295,7 @@ func TestStageInputFilesDigestAtCommitRejectsGitlinkLiteral(t *testing.T) {
 
 	store := &testSubmoduleStore{mirrorDir: subMirror}
 
-	_, err := stageInputFilesDigestAtCommit(context.Background(), superMirror, commitSHA, []string{"vendor/emojis"}, "test", true, store)
+	_, err := stageInputFilesDigestAtCommit(context.Background(), superMirror, "", commitSHA, []string{"vendor/emojis"}, "test", true, store)
 	if err == nil {
 		t.Fatal("expected error for gitlink literal")
 	}
@@ -312,7 +312,7 @@ func TestStageKeyFilesDigestAtCommitRejectsGitlinkLiteral(t *testing.T) {
 
 	store := &testSubmoduleStore{mirrorDir: subMirror}
 
-	_, err := stageKeyFilesDigestAtCommit(context.Background(), superMirror, commitSHA, []string{"vendor/emojis"}, "dependency", true, store)
+	_, err := stageKeyFilesDigestAtCommit(context.Background(), superMirror, "", commitSHA, []string{"vendor/emojis"}, "dependency", true, store)
 	if err == nil {
 		t.Fatal("expected error for gitlink literal")
 	}
@@ -327,7 +327,7 @@ func TestStageKeyFilesDigestAtCommitOptInErrorForSubmoduleGlob(t *testing.T) {
 
 	runControlServiceGit(t, superMirror, "fetch", "--all")
 
-	_, err := stageKeyFilesDigestAtCommit(context.Background(), superMirror, commitSHA, []string{"vendor/emojis/**"}, "dependency", false, nil)
+	_, err := stageKeyFilesDigestAtCommit(context.Background(), superMirror, "", commitSHA, []string{"vendor/emojis/**"}, "dependency", false, nil)
 	if err == nil {
 		t.Fatal("expected error for submodule glob with submodules disabled")
 	}

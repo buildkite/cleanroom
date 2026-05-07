@@ -189,3 +189,110 @@ func TestFindSubmoduleForPathNestedPicksDeepest(t *testing.T) {
 		t.Errorf("Path: got %q want %q", got, want)
 	}
 }
+
+func TestParseSubmoduleStatusPathPreservesSpaces(t *testing.T) {
+	cases := []struct {
+		name string
+		line string
+		want string
+	}{
+		{
+			name: "path with spaces and describe suffix",
+			line: " 1234567890123456789012345678901234567890 vendor/with space (heads/main)",
+			want: "vendor/with space",
+		},
+		{
+			name: "path with spaces and no describe suffix",
+			line: "+1234567890123456789012345678901234567890 vendor/with space",
+			want: "vendor/with space",
+		},
+		{
+			name: "simple path",
+			line: " 1234567890123456789012345678901234567890 vendor/emojis (v1.0)",
+			want: "vendor/emojis",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseSubmoduleStatusPath(tc.line)
+			if err != nil {
+				t.Fatalf("parseSubmoduleStatusPath: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("got %q want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestResolveSubmoduleURL(t *testing.T) {
+	cases := []struct {
+		name      string
+		parent    string
+		submodule string
+		want      string
+		wantErr   bool
+	}{
+		{
+			name:      "absolute https",
+			parent:    "https://example.com/parent.git",
+			submodule: "https://example.com/sister.git",
+			want:      "https://example.com/sister.git",
+		},
+		{
+			name:      "ssh-style absolute",
+			parent:    "https://example.com/parent.git",
+			submodule: "git@github.com:org/sister.git",
+			want:      "git@github.com:org/sister.git",
+		},
+		{
+			name:      "dot-slash relative",
+			parent:    "https://example.com/parent.git",
+			submodule: "./child.git",
+			want:      "https://example.com/parent.git/child.git",
+		},
+		{
+			name:      "dot-dot relative against https",
+			parent:    "https://example.com/org/parent.git",
+			submodule: "../sister.git",
+			want:      "https://example.com/org/sister.git",
+		},
+		{
+			name:      "two dot-dot segments",
+			parent:    "https://example.com/team/org/parent.git",
+			submodule: "../../sister.git",
+			want:      "https://example.com/team/sister.git",
+		},
+		{
+			name:      "ssh-form parent with relative",
+			parent:    "git@github.com:org/parent.git",
+			submodule: "../sister.git",
+			want:      "git@github.com:org/sister.git",
+		},
+		{
+			name:      "relative without parent errors",
+			parent:    "",
+			submodule: "../sister.git",
+			wantErr:   true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ResolveSubmoduleURL(tc.parent, tc.submodule)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got %q", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ResolveSubmoduleURL: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("got %q want %q", got, tc.want)
+			}
+		})
+	}
+}

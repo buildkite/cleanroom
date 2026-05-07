@@ -157,7 +157,7 @@ func (s *Service) stageKeyFilesDigest(ctx context.Context, repository *repositor
 				if changeset != nil {
 					digest, err = stageKeyFilesDigestWithChangeset(bundleRepoDir, changeset, files, stageName)
 				} else {
-					digest, err = stageKeyFilesDigestAtCommit(ctx, bundleRepoDir, repository.CommitSHA, files, stageName, repository.Submodules, s.RepositoryStore)
+					digest, err = stageKeyFilesDigestAtCommit(ctx, bundleRepoDir, repository.RemoteURL, repository.CommitSHA, files, stageName, repository.Submodules, s.RepositoryStore)
 				}
 				return err
 			})
@@ -182,7 +182,7 @@ func (s *Service) stageKeyFilesDigest(ctx context.Context, repository *repositor
 	var digest string
 	err := s.RepositoryStore.WithRepository(ctx, repository.RemoteURL, repository.CommitSHA, repositorystore.FetchHints{}, func(repoDir string) error {
 		var err error
-		digest, err = stageKeyFilesDigestAtCommit(ctx, repoDir, repository.CommitSHA, files, stageName, repository.Submodules, s.RepositoryStore)
+		digest, err = stageKeyFilesDigestAtCommit(ctx, repoDir, repository.RemoteURL, repository.CommitSHA, files, stageName, repository.Submodules, s.RepositoryStore)
 		return err
 	})
 	if err != nil {
@@ -213,7 +213,7 @@ func (s *Service) stageInputFilesDigest(ctx context.Context, repository *reposit
 				if changeset != nil {
 					digest, err = stageInputFilesDigestWithChangeset(bundleRepoDir, changeset, files, stageName)
 				} else {
-					digest, err = stageInputFilesDigestAtCommit(ctx, bundleRepoDir, repository.CommitSHA, files, stageName, repository.Submodules, s.RepositoryStore)
+					digest, err = stageInputFilesDigestAtCommit(ctx, bundleRepoDir, repository.RemoteURL, repository.CommitSHA, files, stageName, repository.Submodules, s.RepositoryStore)
 				}
 				return err
 			})
@@ -238,7 +238,7 @@ func (s *Service) stageInputFilesDigest(ctx context.Context, repository *reposit
 	var digest string
 	err := s.RepositoryStore.WithRepository(ctx, repository.RemoteURL, repository.CommitSHA, repositorystore.FetchHints{}, func(repoDir string) error {
 		var err error
-		digest, err = stageInputFilesDigestAtCommit(ctx, repoDir, repository.CommitSHA, files, stageName, repository.Submodules, s.RepositoryStore)
+		digest, err = stageInputFilesDigestAtCommit(ctx, repoDir, repository.RemoteURL, repository.CommitSHA, files, stageName, repository.Submodules, s.RepositoryStore)
 		return err
 	})
 	if err != nil {
@@ -286,7 +286,7 @@ func stageInputFilesDigestWithChangeset(repoDir string, changeset *repositorycha
 	return digestStageInputFileManifest(manifest, stageName)
 }
 
-func stageKeyFilesDigestAtCommit(ctx context.Context, repoDir, commitSHA string, files []string, stageName string, submodules bool, store repositorystore.RepositoryStore) (string, error) {
+func stageKeyFilesDigestAtCommit(ctx context.Context, repoDir, parentRemoteURL, commitSHA string, files []string, stageName string, submodules bool, store repositorystore.RepositoryStore) (string, error) {
 	trimmedCommitSHA := strings.TrimSpace(commitSHA)
 	if trimmedCommitSHA == "" {
 		return "", fmt.Errorf("%s key file commit SHA is empty", stageName)
@@ -295,7 +295,7 @@ func stageKeyFilesDigestAtCommit(ctx context.Context, repoDir, commitSHA string,
 	var mirrorSubs []submodule.MirrorSubmodule
 	if submodules && store != nil {
 		var err error
-		mirrorSubs, err = submodule.ListMirrorSubmodulesAtCommit(ctx, repoDir, trimmedCommitSHA, func(ctx context.Context, url, sha string) (string, error) {
+		mirrorSubs, err = submodule.ListMirrorSubmodulesAtCommit(ctx, repoDir, parentRemoteURL, trimmedCommitSHA, func(ctx context.Context, url, sha string) (string, error) {
 			return store.EnsureSubmoduleMirror(ctx, url, sha)
 		})
 		if err != nil {
@@ -375,7 +375,7 @@ func stageKeyFilesDigestAtCommit(ctx context.Context, repoDir, commitSHA string,
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
-func stageInputFilesDigestAtCommit(ctx context.Context, repoDir, commitSHA string, files []string, stageName string, submodules bool, store repositorystore.RepositoryStore) (string, error) {
+func stageInputFilesDigestAtCommit(ctx context.Context, repoDir, parentRemoteURL, commitSHA string, files []string, stageName string, submodules bool, store repositorystore.RepositoryStore) (string, error) {
 	trimmedCommitSHA := strings.TrimSpace(commitSHA)
 	if trimmedCommitSHA == "" {
 		return "", fmt.Errorf("%s input file commit SHA is empty", stageName)
@@ -384,7 +384,7 @@ func stageInputFilesDigestAtCommit(ctx context.Context, repoDir, commitSHA strin
 	var mirrorSubs []submodule.MirrorSubmodule
 	if submodules && store != nil {
 		var err error
-		mirrorSubs, err = submodule.ListMirrorSubmodulesAtCommit(ctx, repoDir, trimmedCommitSHA, func(ctx context.Context, url, sha string) (string, error) {
+		mirrorSubs, err = submodule.ListMirrorSubmodulesAtCommit(ctx, repoDir, parentRemoteURL, trimmedCommitSHA, func(ctx context.Context, url, sha string) (string, error) {
 			return store.EnsureSubmoduleMirror(ctx, url, sha)
 		})
 		if err != nil {
