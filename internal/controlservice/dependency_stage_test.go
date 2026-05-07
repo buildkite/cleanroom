@@ -261,6 +261,97 @@ func TestStageInputFilesDigestAtCommitMatchesChangesetPath(t *testing.T) {
 	}
 }
 
+func TestStageInputFilesDigestWithChangesetHonoursSubmodulesFlag(t *testing.T) {
+	superDir, subDir, _, _ := initControlServiceGitRepoWithSubmodule(t)
+
+	if err := os.WriteFile(filepath.Join(subDir, "emoji1.json"), []byte(`{"name":"smile"}`), 0o644); err != nil {
+		t.Fatalf("write emoji1.json: %v", err)
+	}
+	runControlServiceGit(t, subDir, "add", "emoji1.json")
+	runControlServiceGit(t, subDir, "commit", "-m", "add emoji")
+	runControlServiceGitWithEnv(t, superDir, []string{"GIT_ALLOW_PROTOCOL=file"}, "-c", "protocol.file.allow=always", "submodule", "update", "--remote", "vendor/emojis")
+	runControlServiceGit(t, superDir, "add", "vendor/emojis")
+	runControlServiceGit(t, superDir, "commit", "-m", "update submodule")
+	commitSHA := headControlServiceCommit(t, superDir)
+
+	if err := os.WriteFile(filepath.Join(superDir, "trigger.txt"), []byte("trigger changeset\n"), 0o644); err != nil {
+		t.Fatalf("write trigger.txt: %v", err)
+	}
+
+	checkout := &repositorycheckout.Checkout{
+		RemoteURL:      "https://github.com/buildkite/cleanroom.git",
+		CommitSHA:      commitSHA,
+		DestinationDir: "/workspace",
+		Submodules:     true,
+	}
+	changeset, err := repositorychangeset.BuildFromWorkingTree(superDir, checkout)
+	if err != nil {
+		t.Fatalf("BuildFromWorkingTree: %v", err)
+	}
+	if changeset == nil {
+		t.Fatal("expected changeset")
+	}
+
+	pattern := []string{"vendor/emojis/**"}
+
+	if _, err := stageInputFilesDigestWithChangeset(superDir, changeset, pattern, "test", false); err == nil {
+		t.Fatal("expected error when submodules disabled, got none")
+	}
+
+	digest, err := stageInputFilesDigestWithChangeset(superDir, changeset, pattern, "test", true)
+	if err != nil {
+		t.Fatalf("stageInputFilesDigestWithChangeset: %v", err)
+	}
+	if !strings.HasPrefix(digest, "sha256:") {
+		t.Fatalf("expected sha256 digest, got %q", digest)
+	}
+}
+
+func TestStageKeyFilesDigestWithChangesetHonoursSubmodulesFlag(t *testing.T) {
+	superDir, subDir, _, _ := initControlServiceGitRepoWithSubmodule(t)
+
+	if err := os.WriteFile(filepath.Join(subDir, "emoji1.json"), []byte(`{"name":"smile"}`), 0o644); err != nil {
+		t.Fatalf("write emoji1.json: %v", err)
+	}
+	runControlServiceGit(t, subDir, "add", "emoji1.json")
+	runControlServiceGit(t, subDir, "commit", "-m", "add emoji")
+	runControlServiceGitWithEnv(t, superDir, []string{"GIT_ALLOW_PROTOCOL=file"}, "-c", "protocol.file.allow=always", "submodule", "update", "--remote", "vendor/emojis")
+	runControlServiceGit(t, superDir, "add", "vendor/emojis")
+	runControlServiceGit(t, superDir, "commit", "-m", "update submodule")
+	commitSHA := headControlServiceCommit(t, superDir)
+
+	if err := os.WriteFile(filepath.Join(superDir, "trigger.txt"), []byte("trigger changeset\n"), 0o644); err != nil {
+		t.Fatalf("write trigger.txt: %v", err)
+	}
+
+	checkout := &repositorycheckout.Checkout{
+		RemoteURL:      "https://github.com/buildkite/cleanroom.git",
+		CommitSHA:      commitSHA,
+		DestinationDir: "/workspace",
+		Submodules:     true,
+	}
+	changeset, err := repositorychangeset.BuildFromWorkingTree(superDir, checkout)
+	if err != nil {
+		t.Fatalf("BuildFromWorkingTree: %v", err)
+	}
+	if changeset == nil {
+		t.Fatal("expected changeset")
+	}
+
+	pattern := []string{"vendor/emojis"}
+
+	if _, err := stageKeyFilesDigestWithChangeset(superDir, changeset, pattern, "dependency", false); err == nil {
+		t.Fatal("expected error when submodules disabled, got none")
+	}
+	digest, err := stageKeyFilesDigestWithChangeset(superDir, changeset, []string{"vendor/emojis/**"}, "dependency", true)
+	if err != nil {
+		t.Fatalf("stageKeyFilesDigestWithChangeset: %v", err)
+	}
+	if !strings.HasPrefix(digest, "sha256:") {
+		t.Fatalf("expected sha256 digest, got %q", digest)
+	}
+}
+
 func TestStageInputFilesDigestAtCommitNoGitmodulesAtCommit(t *testing.T) {
 	repoDir := initControlServiceGitRepo(t)
 	if err := os.MkdirAll(filepath.Join(repoDir, "src"), 0o755); err != nil {
