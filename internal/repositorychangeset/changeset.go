@@ -277,6 +277,7 @@ func expandDigestPathsInIndex(repoRoot string, env []string, baseCommitSHA strin
 	seen := make(map[string]struct{}, len(paths))
 	var expanded []string
 	var indexPaths []string
+	var candidates []string
 	for _, rawPath := range paths {
 		normalizedPath := normalizePath(rawPath)
 		if normalizedPath == "" {
@@ -293,16 +294,20 @@ func expandDigestPathsInIndex(repoRoot string, env []string, baseCommitSHA strin
 		if !doublestar.ValidatePattern(normalizedPath) {
 			return nil, fmt.Errorf("repository changeset digest path glob %q is invalid: %w", normalizedPath, path.ErrBadPattern)
 		}
-		if indexPaths == nil {
+		if candidates == nil {
 			var err error
 			indexPaths, err = listIndexPathsIncludingDeleted(repoRoot, env, baseCommitSHA)
 			if err != nil {
 				return nil, err
 			}
-		}
-		candidates := indexPaths
-		if len(worktreeSubs) > 0 {
-			candidates = mergeSubmoduleFiles(candidates, worktreeSubs)
+			if len(worktreeSubs) > 0 {
+				candidates, err = mergeSubmoduleFiles(indexPaths, worktreeSubs)
+				if err != nil {
+					return nil, err
+				}
+			} else {
+				candidates = indexPaths
+			}
 		}
 		matches := 0
 		for _, candidate := range candidates {
@@ -335,6 +340,7 @@ func expandRegularDigestPathsInIndex(repoRoot string, env []string, paths []stri
 	seen := make(map[string]struct{}, len(paths))
 	var expanded []string
 	var indexPaths []string
+	var candidates []string
 	for _, rawPath := range paths {
 		normalizedPath := normalizePath(rawPath)
 		if normalizedPath == "" {
@@ -351,16 +357,20 @@ func expandRegularDigestPathsInIndex(repoRoot string, env []string, paths []stri
 		if !doublestar.ValidatePattern(normalizedPath) {
 			return nil, fmt.Errorf("repository changeset input path glob %q is invalid: %w", normalizedPath, path.ErrBadPattern)
 		}
-		if indexPaths == nil {
+		if candidates == nil {
 			var err error
 			indexPaths, err = listIndexPaths(repoRoot, env)
 			if err != nil {
 				return nil, err
 			}
-		}
-		candidates := indexPaths
-		if len(worktreeSubs) > 0 {
-			candidates = mergeSubmoduleFiles(candidates, worktreeSubs)
+			if len(worktreeSubs) > 0 {
+				candidates, err = mergeSubmoduleFiles(indexPaths, worktreeSubs)
+				if err != nil {
+					return nil, err
+				}
+			} else {
+				candidates = indexPaths
+			}
 		}
 		matches := 0
 		for _, candidate := range candidates {
@@ -824,7 +834,7 @@ func literalGitPathspec(normalizedPath string) string {
 	return ":(literal)" + normalizedPath
 }
 
-func mergeSubmoduleFiles(indexPaths []string, worktreeSubs []submodule.WorktreeSubmodule) []string {
+func mergeSubmoduleFiles(indexPaths []string, worktreeSubs []submodule.WorktreeSubmodule) ([]string, error) {
 	smPaths := make(map[string]struct{}, len(worktreeSubs))
 	for _, sm := range worktreeSubs {
 		smPaths[sm.Path] = struct{}{}
@@ -841,7 +851,7 @@ func mergeSubmoduleFiles(indexPaths []string, worktreeSubs []submodule.WorktreeS
 	for _, sm := range worktreeSubs {
 		smFiles, err := submodule.ListWorktreeSubmoduleFiles(sm)
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("list files for submodule %q: %w", sm.Path, err)
 		}
 		for _, f := range smFiles {
 			if _, exists := seen[f]; exists {
@@ -852,7 +862,7 @@ func mergeSubmoduleFiles(indexPaths []string, worktreeSubs []submodule.WorktreeS
 		}
 	}
 	sort.Strings(merged)
-	return merged
+	return merged, nil
 }
 
 func checkGitlinkOptIn(repoRoot string, env []string, pattern string) error {

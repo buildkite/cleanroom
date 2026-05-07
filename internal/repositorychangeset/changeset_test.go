@@ -757,19 +757,22 @@ func TestDigestRegularFilesFromBaseExpandsSubmoduleGlob(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DigestRegularFilesFromBaseWithOptions: %v", err)
 	}
-	if got, want := len(files), 3; got != want {
-		paths := make([]string, len(files))
+	wantPaths := []string{
+		"vendor/emojis/README.md",
+		"vendor/emojis/emoji1.json",
+		"vendor/emojis/emoji2.json",
+	}
+	if got, want := len(files), len(wantPaths); got != want {
+		gotPaths := make([]string, len(files))
 		for i, f := range files {
-			paths[i] = f.Path
+			gotPaths[i] = f.Path
 		}
-		t.Fatalf("unexpected file count: got %d want %d, paths: %v", got, want, paths)
+		t.Fatalf("unexpected file count: got %d want %d, paths: %v", got, want, gotPaths)
 	}
-	for i := 1; i < len(files); i++ {
-		if files[i].Path < files[i-1].Path {
-			t.Fatalf("results not sorted: %q before %q", files[i-1].Path, files[i].Path)
+	for i, f := range files {
+		if f.Path != wantPaths[i] {
+			t.Fatalf("unexpected path at index %d: got %q want %q", i, f.Path, wantPaths[i])
 		}
-	}
-	for _, f := range files {
 		if f.Mode != "100644" {
 			t.Fatalf("expected mode 100644 for %q, got %q", f.Path, f.Mode)
 		}
