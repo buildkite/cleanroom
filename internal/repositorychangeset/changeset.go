@@ -15,6 +15,7 @@ import (
 	"github.com/bmatcuk/doublestar/v4"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/repositorycheckout"
+	"github.com/buildkite/cleanroom/internal/submodule"
 )
 
 const FormatGitDiffV1 = "git-diff-v1"
@@ -107,15 +108,27 @@ func BuildFromWorkingTree(repoRoot string, checkout *repositorycheckout.Checkout
 	}, nil
 }
 
+type DigestPathsOptions struct {
+	Submodules bool
+}
+
 func (c *Changeset) DigestPathsFromBase(repoRoot string, paths []string) ([]File, error) {
-	return c.digestPathsFromBase(repoRoot, paths, false)
+	return c.digestPathsFromBase(repoRoot, paths, false, DigestPathsOptions{})
 }
 
 func (c *Changeset) DigestRegularFilesFromBase(repoRoot string, paths []string) ([]File, error) {
-	return c.digestPathsFromBase(repoRoot, paths, true)
+	return c.digestPathsFromBase(repoRoot, paths, true, DigestPathsOptions{})
 }
 
-func (c *Changeset) digestPathsFromBase(repoRoot string, paths []string, regularFilesOnly bool) ([]File, error) {
+func (c *Changeset) DigestPathsFromBaseWithOptions(repoRoot string, paths []string, opts DigestPathsOptions) ([]File, error) {
+	return c.digestPathsFromBase(repoRoot, paths, false, opts)
+}
+
+func (c *Changeset) DigestRegularFilesFromBaseWithOptions(repoRoot string, paths []string, opts DigestPathsOptions) ([]File, error) {
+	return c.digestPathsFromBase(repoRoot, paths, true, opts)
+}
+
+func (c *Changeset) digestPathsFromBase(repoRoot string, paths []string, regularFilesOnly bool, opts DigestPathsOptions) ([]File, error) {
 	if c == nil {
 		return nil, errors.New("repository changeset is required")
 	}
@@ -168,18 +181,68 @@ func (c *Changeset) digestPathsFromBase(repoRoot string, paths []string, regular
 		return nil, fmt.Errorf("apply repository changeset patch to temporary git index: %w", err)
 	}
 
+	var worktreeSubs []submodule.WorktreeSubmodule
+	if opts.Submodules {
+		worktreeSubs, err = submodule.ListWorktreeSubmodules(repoRoot)
+		if err != nil {
+			return nil, fmt.Errorf("list submodules: %w", err)
+		}
+	}
+
 	var expandedPaths []string
 	if regularFilesOnly {
-		expandedPaths, err = expandRegularDigestPathsInIndex(repoRoot, env, paths)
+		expandedPaths, err = expandRegularDigestPathsInIndex(repoRoot, env, paths, worktreeSubs)
 	} else {
-		expandedPaths, err = expandDigestPathsInIndex(repoRoot, env, baseCommitSHA, paths)
+		expandedPaths, err = expandDigestPathsInIndex(repoRoot, env, baseCommitSHA, paths, worktreeSubs)
 	}
 	if err != nil {
 		return nil, err
 	}
+
+	type subFileKey struct {
+		sm           submodule.WorktreeSubmodule
+		strippedPath string
+	}
+	subFiles := make(map[string]subFileKey)
+	if len(worktreeSubs) > 0 {
+		for _, normalizedPath := range expandedPaths {
+			if sm, ok := submodule.FindSubmoduleForPath(normalizedPath, worktreeSubs); ok {
+				strippedPath := strings.TrimPrefix(normalizedPath, sm.Path+"/")
+				subFiles[normalizedPath] = subFileKey{sm: sm, strippedPath: strippedPath}
+			}
+		}
+	}
+
 	files := make([]File, 0, len(expandedPaths))
 	for _, normalizedPath := range expandedPaths {
 		file := File{Path: normalizedPath}
+
+		if key, inSub := subFiles[normalizedPath]; inSub {
+			mode, exists, modeErr := pathModeInSubmodule(key.sm.WorktreeDir, key.strippedPath)
+			if modeErr != nil {
+				return nil, fmt.Errorf("check repository changeset path %q in submodule index: %w", normalizedPath, modeErr)
+			}
+			if !exists {
+				if regularFilesOnly {
+					return nil, fmt.Errorf("repository changeset input path %q does not exist", normalizedPath)
+				}
+				file.Deleted = true
+				files = append(files, file)
+				continue
+			}
+			file.Mode = mode
+			if regularFilesOnly && !isRegularGitFileMode(mode) {
+				return nil, fmt.Errorf("repository changeset input path %q is %s; inputs.files must name regular files", normalizedPath, gitModeKind(mode))
+			}
+			blob, blobErr := gitOutput(key.sm.WorktreeDir, os.Environ(), "show", ":"+key.strippedPath)
+			if blobErr != nil {
+				return nil, fmt.Errorf("read repository changeset path %q from submodule: %w", normalizedPath, blobErr)
+			}
+			file.SHA256 = sha256Digest(blob)
+			files = append(files, file)
+			continue
+		}
+
 		mode, exists, err := pathModeInIndex(repoRoot, env, normalizedPath)
 		if err != nil {
 			return nil, fmt.Errorf("check repository changeset path %q in temporary git index: %w", normalizedPath, err)
@@ -210,7 +273,7 @@ func (c *Changeset) digestPathsFromBase(repoRoot string, paths []string, regular
 	return files, nil
 }
 
-func expandDigestPathsInIndex(repoRoot string, env []string, baseCommitSHA string, paths []string) ([]string, error) {
+func expandDigestPathsInIndex(repoRoot string, env []string, baseCommitSHA string, paths []string, worktreeSubs []submodule.WorktreeSubmodule) ([]string, error) {
 	seen := make(map[string]struct{}, len(paths))
 	var expanded []string
 	var indexPaths []string
@@ -237,8 +300,12 @@ func expandDigestPathsInIndex(repoRoot string, env []string, baseCommitSHA strin
 				return nil, err
 			}
 		}
+		candidates := indexPaths
+		if len(worktreeSubs) > 0 {
+			candidates = mergeSubmoduleFiles(candidates, worktreeSubs)
+		}
 		matches := 0
-		for _, candidate := range indexPaths {
+		for _, candidate := range candidates {
 			matched, err := doublestar.Match(normalizedPath, candidate)
 			if err != nil {
 				return nil, fmt.Errorf("repository changeset digest path glob %q is invalid: %w", normalizedPath, err)
@@ -254,6 +321,9 @@ func expandDigestPathsInIndex(repoRoot string, env []string, baseCommitSHA strin
 			expanded = append(expanded, candidate)
 		}
 		if matches == 0 {
+			if optInErr := checkGitlinkOptIn(repoRoot, env, normalizedPath); optInErr != nil {
+				return nil, optInErr
+			}
 			return nil, fmt.Errorf("repository changeset digest path glob %q matched no files", normalizedPath)
 		}
 	}
@@ -261,7 +331,7 @@ func expandDigestPathsInIndex(repoRoot string, env []string, baseCommitSHA strin
 	return expanded, nil
 }
 
-func expandRegularDigestPathsInIndex(repoRoot string, env []string, paths []string) ([]string, error) {
+func expandRegularDigestPathsInIndex(repoRoot string, env []string, paths []string, worktreeSubs []submodule.WorktreeSubmodule) ([]string, error) {
 	seen := make(map[string]struct{}, len(paths))
 	var expanded []string
 	var indexPaths []string
@@ -288,8 +358,12 @@ func expandRegularDigestPathsInIndex(repoRoot string, env []string, paths []stri
 				return nil, err
 			}
 		}
+		candidates := indexPaths
+		if len(worktreeSubs) > 0 {
+			candidates = mergeSubmoduleFiles(candidates, worktreeSubs)
+		}
 		matches := 0
-		for _, candidate := range indexPaths {
+		for _, candidate := range candidates {
 			matched, err := doublestar.Match(normalizedPath, candidate)
 			if err != nil {
 				return nil, fmt.Errorf("repository changeset input path glob %q is invalid: %w", normalizedPath, err)
@@ -305,6 +379,9 @@ func expandRegularDigestPathsInIndex(repoRoot string, env []string, paths []stri
 			expanded = append(expanded, candidate)
 		}
 		if matches == 0 {
+			if optInErr := checkGitlinkOptIn(repoRoot, env, normalizedPath); optInErr != nil {
+				return nil, optInErr
+			}
 			return nil, fmt.Errorf("repository changeset input path glob %q matched no files", normalizedPath)
 		}
 	}
@@ -745,6 +822,79 @@ func gitModeKind(mode string) string {
 
 func literalGitPathspec(normalizedPath string) string {
 	return ":(literal)" + normalizedPath
+}
+
+func mergeSubmoduleFiles(indexPaths []string, worktreeSubs []submodule.WorktreeSubmodule) []string {
+	smPaths := make(map[string]struct{}, len(worktreeSubs))
+	for _, sm := range worktreeSubs {
+		smPaths[sm.Path] = struct{}{}
+	}
+	seen := make(map[string]struct{}, len(indexPaths))
+	merged := make([]string, 0, len(indexPaths))
+	for _, p := range indexPaths {
+		if _, isGitlink := smPaths[p]; isGitlink {
+			continue
+		}
+		seen[p] = struct{}{}
+		merged = append(merged, p)
+	}
+	for _, sm := range worktreeSubs {
+		smFiles, err := submodule.ListWorktreeSubmoduleFiles(sm)
+		if err != nil {
+			continue
+		}
+		for _, f := range smFiles {
+			if _, exists := seen[f]; exists {
+				continue
+			}
+			seen[f] = struct{}{}
+			merged = append(merged, f)
+		}
+	}
+	sort.Strings(merged)
+	return merged
+}
+
+func checkGitlinkOptIn(repoRoot string, env []string, pattern string) error {
+	output, err := gitOutput(repoRoot, env, "ls-files", "--stage", "-z")
+	if err != nil {
+		return nil
+	}
+	output = bytes.TrimRight(output, "\x00")
+	for _, entry := range bytes.Split(output, []byte{0}) {
+		if len(entry) == 0 {
+			continue
+		}
+		metadata, rawPath, ok := bytes.Cut(entry, []byte{'\t'})
+		if !ok {
+			continue
+		}
+		fields := strings.Fields(string(metadata))
+		if len(fields) < 1 || fields[0] != "160000" {
+			continue
+		}
+		smPath := normalizePath(string(rawPath))
+		if smPath == "" {
+			continue
+		}
+		prefix := smPath + "/"
+		matched, matchErr := doublestar.Match(pattern, prefix+"x")
+		if matchErr != nil {
+			continue
+		}
+		if matched || strings.HasPrefix(pattern, prefix) {
+			return fmt.Errorf("repository changeset input path glob %q resolves into submodule %q; enable repository.submodules to digest submodule contents", pattern, smPath)
+		}
+	}
+	return nil
+}
+
+func pathModeInSubmodule(worktreeDir, strippedPath string) (string, bool, error) {
+	output, err := gitOutput(worktreeDir, os.Environ(), "ls-files", "--stage", "-z", "--", literalGitPathspec(strippedPath))
+	if err != nil {
+		return "", false, err
+	}
+	return gitIndexMode(output, strippedPath)
 }
 
 func listIndexPaths(repoRoot string, env []string) ([]string, error) {

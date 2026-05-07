@@ -694,6 +694,246 @@ func TestWorktreeChangesCommandsRejectSubmoduleGitlinkChange(t *testing.T) {
 	}
 }
 
+func initGitRepositoryWithSubmodule(t *testing.T) (superDir, subDir string) {
+	t.Helper()
+	subDir = t.TempDir()
+	runGit(t, subDir, "init")
+	runGit(t, subDir, "config", "user.name", "Cleanroom Test")
+	runGit(t, subDir, "config", "user.email", "cleanroom-test@example.com")
+	if err := os.WriteFile(filepath.Join(subDir, "README.md"), []byte("submodule\n"), 0o644); err != nil {
+		t.Fatalf("write submodule README: %v", err)
+	}
+	runGit(t, subDir, "add", "README.md")
+	runGit(t, subDir, "commit", "-m", "initial submodule commit")
+
+	superDir = t.TempDir()
+	runGit(t, superDir, "init")
+	runGit(t, superDir, "config", "user.name", "Cleanroom Test")
+	runGit(t, superDir, "config", "user.email", "cleanroom-test@example.com")
+	if err := os.WriteFile(filepath.Join(superDir, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatalf("write super README: %v", err)
+	}
+	runGit(t, superDir, "add", "README.md")
+	runGit(t, superDir, "commit", "-m", "initial")
+	runGitWithEnv(t, superDir, []string{"GIT_ALLOW_PROTOCOL=file"}, "-c", "protocol.file.allow=always", "submodule", "add", subDir, "vendor/emojis")
+	runGit(t, superDir, "commit", "-m", "add submodule")
+	return superDir, subDir
+}
+
+func TestDigestRegularFilesFromBaseExpandsSubmoduleGlob(t *testing.T) {
+	superDir, subDir := initGitRepositoryWithSubmodule(t)
+
+	if err := os.WriteFile(filepath.Join(subDir, "emoji1.json"), []byte(`{"name":"smile"}`), 0o644); err != nil {
+		t.Fatalf("write emoji1.json: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(subDir, "emoji2.json"), []byte(`{"name":"wink"}`), 0o644); err != nil {
+		t.Fatalf("write emoji2.json: %v", err)
+	}
+	runGit(t, subDir, "add", "emoji1.json", "emoji2.json")
+	runGit(t, subDir, "commit", "-m", "add emojis")
+	runGitWithEnv(t, superDir, []string{"GIT_ALLOW_PROTOCOL=file"}, "-c", "protocol.file.allow=always", "submodule", "update", "--remote", "vendor/emojis")
+	runGit(t, superDir, "add", "vendor/emojis")
+	runGit(t, superDir, "commit", "-m", "update submodule to include emojis")
+
+	if err := os.WriteFile(filepath.Join(superDir, "change.txt"), []byte("trigger changeset\n"), 0o644); err != nil {
+		t.Fatalf("write change.txt: %v", err)
+	}
+
+	checkout := &repositorycheckout.Checkout{
+		RemoteURL:      "https://github.com/buildkite/cleanroom.git",
+		CommitSHA:      headCommit(t, superDir),
+		DestinationDir: "/workspace",
+	}
+
+	changeset, err := BuildFromWorkingTree(superDir, checkout)
+	if err != nil {
+		t.Fatalf("BuildFromWorkingTree: %v", err)
+	}
+	if changeset == nil {
+		t.Fatal("expected changeset")
+	}
+
+	files, err := changeset.DigestRegularFilesFromBaseWithOptions(superDir, []string{"vendor/emojis/**"}, DigestPathsOptions{Submodules: true})
+	if err != nil {
+		t.Fatalf("DigestRegularFilesFromBaseWithOptions: %v", err)
+	}
+	if got, want := len(files), 3; got != want {
+		paths := make([]string, len(files))
+		for i, f := range files {
+			paths[i] = f.Path
+		}
+		t.Fatalf("unexpected file count: got %d want %d, paths: %v", got, want, paths)
+	}
+	for i := 1; i < len(files); i++ {
+		if files[i].Path < files[i-1].Path {
+			t.Fatalf("results not sorted: %q before %q", files[i-1].Path, files[i].Path)
+		}
+	}
+	for _, f := range files {
+		if f.Mode != "100644" {
+			t.Fatalf("expected mode 100644 for %q, got %q", f.Path, f.Mode)
+		}
+		if !strings.HasPrefix(f.SHA256, "sha256:") {
+			t.Fatalf("expected sha256 digest for %q, got %q", f.Path, f.SHA256)
+		}
+	}
+}
+
+func TestDigestRegularFilesFromBaseRejectsGitlinkLiteral(t *testing.T) {
+	superDir, _ := initGitRepositoryWithSubmodule(t)
+
+	if err := os.WriteFile(filepath.Join(superDir, "change.txt"), []byte("trigger changeset\n"), 0o644); err != nil {
+		t.Fatalf("write change.txt: %v", err)
+	}
+
+	checkout := &repositorycheckout.Checkout{
+		RemoteURL:      "https://github.com/buildkite/cleanroom.git",
+		CommitSHA:      headCommit(t, superDir),
+		DestinationDir: "/workspace",
+	}
+
+	changeset, err := BuildFromWorkingTree(superDir, checkout)
+	if err != nil {
+		t.Fatalf("BuildFromWorkingTree: %v", err)
+	}
+	if changeset == nil {
+		t.Fatal("expected changeset")
+	}
+
+	_, err = changeset.DigestRegularFilesFromBaseWithOptions(superDir, []string{"vendor/emojis"}, DigestPathsOptions{Submodules: true})
+	if err == nil {
+		t.Fatal("expected error for literal gitlink path")
+	}
+	if !strings.Contains(err.Error(), "gitlink") {
+		t.Fatalf("expected gitlink error, got %v", err)
+	}
+}
+
+func TestDigestRegularFilesFromBaseRequiresSubmodulesOptIn(t *testing.T) {
+	superDir, subDir := initGitRepositoryWithSubmodule(t)
+
+	if err := os.WriteFile(filepath.Join(subDir, "emoji1.json"), []byte(`{"name":"smile"}`), 0o644); err != nil {
+		t.Fatalf("write emoji1.json: %v", err)
+	}
+	runGit(t, subDir, "add", "emoji1.json")
+	runGit(t, subDir, "commit", "-m", "add emoji")
+	runGitWithEnv(t, superDir, []string{"GIT_ALLOW_PROTOCOL=file"}, "-c", "protocol.file.allow=always", "submodule", "update", "--remote", "vendor/emojis")
+	runGit(t, superDir, "add", "vendor/emojis")
+	runGit(t, superDir, "commit", "-m", "update submodule")
+
+	if err := os.WriteFile(filepath.Join(superDir, "change.txt"), []byte("trigger\n"), 0o644); err != nil {
+		t.Fatalf("write change.txt: %v", err)
+	}
+
+	checkout := &repositorycheckout.Checkout{
+		RemoteURL:      "https://github.com/buildkite/cleanroom.git",
+		CommitSHA:      headCommit(t, superDir),
+		DestinationDir: "/workspace",
+	}
+
+	changeset, err := BuildFromWorkingTree(superDir, checkout)
+	if err != nil {
+		t.Fatalf("BuildFromWorkingTree: %v", err)
+	}
+	if changeset == nil {
+		t.Fatal("expected changeset")
+	}
+
+	_, err = changeset.DigestRegularFilesFromBaseWithOptions(superDir, []string{"vendor/emojis/**"}, DigestPathsOptions{Submodules: false})
+	if err == nil {
+		t.Fatal("expected error when Submodules is false and pattern resolves into submodule")
+	}
+	if !strings.Contains(err.Error(), "submodule") && !strings.Contains(err.Error(), "gitlink") {
+		t.Fatalf("expected submodule or gitlink error, got %v", err)
+	}
+}
+
+func TestDigestRegularFilesFromBaseRejectsUninitialisedSubmodule(t *testing.T) {
+	superDir, _ := initGitRepositoryWithSubmodule(t)
+
+	if err := os.RemoveAll(filepath.Join(superDir, "vendor/emojis/.git")); err != nil {
+		t.Fatalf("remove submodule .git: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(superDir, "change.txt"), []byte("trigger\n"), 0o644); err != nil {
+		t.Fatalf("write change.txt: %v", err)
+	}
+
+	checkout := &repositorycheckout.Checkout{
+		RemoteURL:      "https://github.com/buildkite/cleanroom.git",
+		CommitSHA:      headCommit(t, superDir),
+		DestinationDir: "/workspace",
+	}
+
+	changeset, err := BuildFromWorkingTree(superDir, checkout)
+	if err != nil {
+		t.Fatalf("BuildFromWorkingTree: %v", err)
+	}
+	if changeset == nil {
+		t.Fatal("expected changeset")
+	}
+
+	_, err = changeset.DigestRegularFilesFromBaseWithOptions(superDir, []string{"vendor/emojis/**"}, DigestPathsOptions{Submodules: true})
+	if err == nil {
+		t.Fatal("expected error for uninitialised submodule")
+	}
+	if !strings.Contains(err.Error(), "initialised") && !strings.Contains(err.Error(), "initialized") && !strings.Contains(err.Error(), "submodule") {
+		t.Fatalf("expected uninitialised submodule error, got %v", err)
+	}
+}
+
+func TestDigestRegularFilesFromBaseStableAcrossRuns(t *testing.T) {
+	superDir, subDir := initGitRepositoryWithSubmodule(t)
+
+	if err := os.WriteFile(filepath.Join(subDir, "a.json"), []byte(`{"a":1}`), 0o644); err != nil {
+		t.Fatalf("write a.json: %v", err)
+	}
+	runGit(t, subDir, "add", "a.json")
+	runGit(t, subDir, "commit", "-m", "add a")
+	runGitWithEnv(t, superDir, []string{"GIT_ALLOW_PROTOCOL=file"}, "-c", "protocol.file.allow=always", "submodule", "update", "--remote", "vendor/emojis")
+	runGit(t, superDir, "add", "vendor/emojis")
+	runGit(t, superDir, "commit", "-m", "update submodule")
+
+	if err := os.WriteFile(filepath.Join(superDir, "change.txt"), []byte("trigger\n"), 0o644); err != nil {
+		t.Fatalf("write change.txt: %v", err)
+	}
+
+	checkout := &repositorycheckout.Checkout{
+		RemoteURL:      "https://github.com/buildkite/cleanroom.git",
+		CommitSHA:      headCommit(t, superDir),
+		DestinationDir: "/workspace",
+	}
+
+	changeset, err := BuildFromWorkingTree(superDir, checkout)
+	if err != nil {
+		t.Fatalf("BuildFromWorkingTree: %v", err)
+	}
+	if changeset == nil {
+		t.Fatal("expected changeset")
+	}
+
+	opts := DigestPathsOptions{Submodules: true}
+
+	first, err := changeset.DigestRegularFilesFromBaseWithOptions(superDir, []string{"vendor/emojis/**"}, opts)
+	if err != nil {
+		t.Fatalf("first DigestRegularFilesFromBaseWithOptions: %v", err)
+	}
+
+	second, err := changeset.DigestRegularFilesFromBaseWithOptions(superDir, []string{"vendor/emojis/**"}, opts)
+	if err != nil {
+		t.Fatalf("second DigestRegularFilesFromBaseWithOptions: %v", err)
+	}
+
+	if len(first) != len(second) {
+		t.Fatalf("file count mismatch: %d vs %d", len(first), len(second))
+	}
+	for i := range first {
+		if first[i].Path != second[i].Path || first[i].SHA256 != second[i].SHA256 {
+			t.Fatalf("result differs at index %d: %+v vs %+v", i, first[i], second[i])
+		}
+	}
+}
+
 func initGitRepository(t *testing.T) string {
 	t.Helper()
 
