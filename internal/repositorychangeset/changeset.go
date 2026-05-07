@@ -868,7 +868,7 @@ func mergeSubmoduleFiles(indexPaths []string, worktreeSubs []submodule.WorktreeS
 func checkGitlinkOptIn(repoRoot string, env []string, pattern string) error {
 	output, err := gitOutput(repoRoot, env, "ls-files", "--stage", "-z")
 	if err != nil {
-		return nil
+		return fmt.Errorf("list git index for gitlink check: %w", err)
 	}
 	output = bytes.TrimRight(output, "\x00")
 	for _, entry := range bytes.Split(output, []byte{0}) {
