@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/bmatcuk/doublestar/v4"
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/cachekey"
 	"github.com/buildkite/cleanroom/internal/cachestore"
@@ -373,8 +374,8 @@ func expandStageKeyFilesAtCommit(ctx context.Context, repoDir, commitSHA string,
 			expanded = append(expanded, file)
 			continue
 		}
-		if _, err := path.Match(file, ""); err != nil {
-			return nil, fmt.Errorf("%s key file glob %q is invalid: %w", stageName, file, err)
+		if !doublestar.ValidatePattern(file) {
+			return nil, fmt.Errorf("%s key file glob %q is invalid: %w", stageName, file, path.ErrBadPattern)
 		}
 		if treeFiles == nil {
 			var err error
@@ -385,7 +386,7 @@ func expandStageKeyFilesAtCommit(ctx context.Context, repoDir, commitSHA string,
 		}
 		matches := 0
 		for _, candidate := range treeFiles {
-			matched, err := path.Match(file, candidate)
+			matched, err := doublestar.Match(file, candidate)
 			if err != nil {
 				return nil, fmt.Errorf("%s key file glob %q is invalid: %w", stageName, file, err)
 			}

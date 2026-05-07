@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/bmatcuk/doublestar/v4"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
 	"github.com/buildkite/cleanroom/internal/repositorycheckout"
 )
@@ -226,8 +227,8 @@ func expandDigestPathsInIndex(repoRoot string, env []string, baseCommitSHA strin
 			expanded = append(expanded, normalizedPath)
 			continue
 		}
-		if _, err := path.Match(normalizedPath, ""); err != nil {
-			return nil, fmt.Errorf("repository changeset digest path glob %q is invalid: %w", normalizedPath, err)
+		if !doublestar.ValidatePattern(normalizedPath) {
+			return nil, fmt.Errorf("repository changeset digest path glob %q is invalid: %w", normalizedPath, path.ErrBadPattern)
 		}
 		if indexPaths == nil {
 			var err error
@@ -238,7 +239,7 @@ func expandDigestPathsInIndex(repoRoot string, env []string, baseCommitSHA strin
 		}
 		matches := 0
 		for _, candidate := range indexPaths {
-			matched, err := path.Match(normalizedPath, candidate)
+			matched, err := doublestar.Match(normalizedPath, candidate)
 			if err != nil {
 				return nil, fmt.Errorf("repository changeset digest path glob %q is invalid: %w", normalizedPath, err)
 			}
@@ -277,8 +278,8 @@ func expandRegularDigestPathsInIndex(repoRoot string, env []string, paths []stri
 			expanded = append(expanded, normalizedPath)
 			continue
 		}
-		if _, err := path.Match(normalizedPath, ""); err != nil {
-			return nil, fmt.Errorf("repository changeset input path glob %q is invalid: %w", normalizedPath, err)
+		if !doublestar.ValidatePattern(normalizedPath) {
+			return nil, fmt.Errorf("repository changeset input path glob %q is invalid: %w", normalizedPath, path.ErrBadPattern)
 		}
 		if indexPaths == nil {
 			var err error
@@ -289,7 +290,7 @@ func expandRegularDigestPathsInIndex(repoRoot string, env []string, paths []stri
 		}
 		matches := 0
 		for _, candidate := range indexPaths {
-			matched, err := path.Match(normalizedPath, candidate)
+			matched, err := doublestar.Match(normalizedPath, candidate)
 			if err != nil {
 				return nil, fmt.Errorf("repository changeset input path glob %q is invalid: %w", normalizedPath, err)
 			}
