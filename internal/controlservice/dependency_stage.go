@@ -437,12 +437,7 @@ func stageInputFilesDigestAtCommit(ctx context.Context, repoDir, commitSHA strin
 		}
 	}
 
-	regularFiles := make([]string, 0, len(expandedFiles))
-	for _, file := range expandedFiles {
-		regularFiles = append(regularFiles, file)
-	}
-
-	allDigests := make(map[string]string, len(regularFiles))
+	allDigests := make(map[string]string, len(expandedFiles))
 
 	if len(parentFiles) > 0 {
 		parentDigests, err := gitFileDigestsAtCommit(ctx, strings.TrimSpace(repoDir), trimmedCommitSHA, parentFiles)
@@ -468,8 +463,8 @@ func stageInputFilesDigestAtCommit(ctx context.Context, repoDir, commitSHA strin
 		}
 	}
 
-	manifest := make([]stageInputFileDigest, 0, len(regularFiles))
-	for _, file := range regularFiles {
+	manifest := make([]stageInputFileDigest, 0, len(expandedFiles))
+	for _, file := range expandedFiles {
 		entry := entryByFile[file]
 		manifest = append(manifest, stageInputFileDigest{
 			Path:   file,
