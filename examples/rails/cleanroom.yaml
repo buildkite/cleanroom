@@ -10,8 +10,8 @@ sandbox:
   dependencies:
     - name: bundle
       env:
-        BUNDLE_PATH: vendor/bundle
-        BUNDLE_APP_CONFIG: vendor/bundle/.bundle
+        BUNDLE_PATH: "${WORKSPACE}/vendor/bundle"
+        BUNDLE_APP_CONFIG: "${WORKSPACE}/vendor/bundle/.bundle"
       command:
         - sh
         - -lc

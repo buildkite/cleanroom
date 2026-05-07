@@ -43,6 +43,8 @@ cleanroom exec \
   --backend darwin-vz \
   --repo-url https://github.com/rails/rails.git \
   --repo-commit cfa4e1b475472c7980a42dd810f237951db5108a \
+  -e BUNDLE_PATH=/workspace/vendor/bundle \
+  -e BUNDLE_APP_CONFIG=/workspace/vendor/bundle/.bundle \
   -- sh -lc 'cd activesupport && bin/test test/benchmarkable_test.rb'
 ```
 
@@ -52,6 +54,8 @@ cleanroom exec \
   (`default-libmysqlclient-dev`, `libxml2-dev`) and runs a full `bundle install`
 - the block sets Bundler env so gems and Bundler app config are materialized
   under the declared repository-local `vendor/bundle` output
+- the execution command passes the same Bundler env because dependency block
+  env is scoped to the create-time dependency command
 - Bundler mirror env injection rewrites the default `https://rubygems.org`
   source through Cleanroom's `/rubygems/` gateway route
 - the dependency stage is keyed on `Gemfile`, `Gemfile.lock`, and the component
