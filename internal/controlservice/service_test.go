@@ -274,7 +274,7 @@ type stubRepositoryMirrorStore struct {
 	mirrorPathErr              error
 	ensureMirrorCalls          int
 	ensureMirrorErr            error
-	EnsureSubmoduleMirrorFunc  func(ctx context.Context, submoduleRemoteURL, gitlinkSHA string) (string, error)
+	ensureSubmoduleMirrorFunc  func(ctx context.Context, submoduleRemoteURL, gitlinkSHA string) (string, error)
 }
 
 type stubClock struct {
@@ -368,8 +368,8 @@ func (s *stubRepositoryMirrorStore) TransportHints(context.Context, string, stri
 }
 
 func (s *stubRepositoryMirrorStore) EnsureSubmoduleMirror(ctx context.Context, submoduleRemoteURL, gitlinkSHA string) (string, error) {
-	if s.EnsureSubmoduleMirrorFunc != nil {
-		return s.EnsureSubmoduleMirrorFunc(ctx, submoduleRemoteURL, gitlinkSHA)
+	if s.ensureSubmoduleMirrorFunc != nil {
+		return s.ensureSubmoduleMirrorFunc(ctx, submoduleRemoteURL, gitlinkSHA)
 	}
 	return "", nil
 }
