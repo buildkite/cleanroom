@@ -366,6 +366,13 @@ func (s *stubRepositoryMirrorStore) TransportHints(context.Context, string, stri
 	return repositorystore.TransportHints{}, nil
 }
 
+func (s *stubRepositoryMirrorStore) EnsureSubmoduleMirror(ctx context.Context, submoduleRemoteURL, gitlinkSHA string) (string, error) {
+	if err := s.EnsureMirrorContains(ctx, submoduleRemoteURL, gitlinkSHA); err != nil {
+		return "", err
+	}
+	return s.MirrorPath(submoduleRemoteURL)
+}
+
 func (c stubClock) Now() time.Time {
 	return c.now
 }
