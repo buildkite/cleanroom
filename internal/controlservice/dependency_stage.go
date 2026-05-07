@@ -320,6 +320,18 @@ func stageKeyFilesDigestAtCommit(ctx context.Context, repoDir, commitSHA string,
 		subFiles[sm.Path] = append(subFiles[sm.Path], stripped)
 	}
 
+	if len(parentFiles) > 0 {
+		parentEntries, err := gitTreeEntriesForFiles(ctx, strings.TrimSpace(repoDir), trimmedCommitSHA, parentFiles)
+		if err != nil {
+			return "", fmt.Errorf("inspect %s key files: %w", stageName, err)
+		}
+		for _, file := range parentFiles {
+			if entry, ok := parentEntries[file]; ok && entry.Mode == "160000" {
+				return "", fmt.Errorf("%s key file %q is a gitlink; inputs.files must name regular files", stageName, file)
+			}
+		}
+	}
+
 	allDigests := make(map[string]string, len(expandedFiles))
 
 	if len(parentFiles) > 0 {
@@ -543,6 +555,15 @@ func expandStageKeyFilesAtCommit(ctx context.Context, repoDir, commitSHA string,
 			expanded = append(expanded, candidate)
 		}
 		if matches == 0 {
+			if len(mirrorSubs) == 0 {
+				if gitlinkPaths, glErr := gitGitlinkPathsAtCommit(ctx, repoDir, commitSHA); glErr == nil {
+					for _, glPath := range gitlinkPaths {
+						if strings.HasPrefix(file, glPath+"/") {
+							return nil, fmt.Errorf("%s key file glob %q is inside submodule %q; enable repository.submodules to digest submodule contents", stageName, file, glPath)
+						}
+					}
+				}
+			}
 			return nil, fmt.Errorf("%s key file glob %q matched no files", stageName, file)
 		}
 	}
@@ -570,6 +591,36 @@ func gitFilesAtCommit(ctx context.Context, repoDir, commitSHA string) ([]string,
 	}
 	sort.Strings(files)
 	return files, nil
+}
+
+func gitGitlinkPathsAtCommit(ctx context.Context, repoDir, commitSHA string) ([]string, error) {
+	cmd := exec.CommandContext(ctx, "git", "-C", repoDir, "ls-tree", "-r", "-z", commitSHA)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		message := strings.TrimSpace(string(output))
+		if message == "" {
+			message = err.Error()
+		}
+		return nil, fmt.Errorf("%s", message)
+	}
+	var paths []string
+	for _, raw := range bytes.Split(output, []byte{0}) {
+		if len(bytes.TrimSpace(raw)) == 0 {
+			continue
+		}
+		metadata, rawPath, ok := bytes.Cut(raw, []byte{'\t'})
+		if !ok {
+			continue
+		}
+		fields := strings.Fields(string(metadata))
+		if len(fields) < 2 {
+			continue
+		}
+		if fields[0] == "160000" {
+			paths = append(paths, string(rawPath))
+		}
+	}
+	return paths, nil
 }
 
 type gitTreeEntry struct {

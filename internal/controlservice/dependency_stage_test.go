@@ -303,3 +303,35 @@ func TestStageInputFilesDigestAtCommitRejectsGitlinkLiteral(t *testing.T) {
 		t.Fatalf("expected gitlink error, got %v", err)
 	}
 }
+
+func TestStageKeyFilesDigestAtCommitRejectsGitlinkLiteral(t *testing.T) {
+	superDir, _, superMirror, subMirror := initControlServiceGitRepoWithSubmodule(t)
+	commitSHA := headControlServiceCommit(t, superDir)
+
+	runControlServiceGit(t, superMirror, "fetch", "--all")
+
+	store := &testSubmoduleStore{mirrorDir: subMirror}
+
+	_, err := stageKeyFilesDigestAtCommit(context.Background(), superMirror, commitSHA, []string{"vendor/emojis"}, "dependency", true, store)
+	if err == nil {
+		t.Fatal("expected error for gitlink literal")
+	}
+	if !strings.Contains(err.Error(), "is a gitlink") {
+		t.Fatalf("expected gitlink error, got %v", err)
+	}
+}
+
+func TestStageKeyFilesDigestAtCommitOptInErrorForSubmoduleGlob(t *testing.T) {
+	superDir, _, superMirror, _ := initControlServiceGitRepoWithSubmodule(t)
+	commitSHA := headControlServiceCommit(t, superDir)
+
+	runControlServiceGit(t, superMirror, "fetch", "--all")
+
+	_, err := stageKeyFilesDigestAtCommit(context.Background(), superMirror, commitSHA, []string{"vendor/emojis/**"}, "dependency", false, nil)
+	if err == nil {
+		t.Fatal("expected error for submodule glob with submodules disabled")
+	}
+	if !strings.Contains(err.Error(), "is inside submodule") && !strings.Contains(err.Error(), "matched no files") && !strings.Contains(err.Error(), "is a gitlink") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
