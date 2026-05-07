@@ -599,6 +599,91 @@ func TestCompileNormalizesDependencyBootstrapConfig(t *testing.T) {
 	}
 }
 
+func TestCompileNormalizesWorkspaceRelativeOutputPaths(t *testing.T) {
+	t.Parallel()
+
+	raw := baseRawPolicy()
+	raw.Sandbox.Dependencies = rawDependencyBlocks(
+		rawPolicyBlock{
+			Name:    "node",
+			Command: rawDependencyCommandSpec{"npm", "ci"},
+			Inputs:  rawPolicyBlockInputs{Files: []string{"package-lock.json"}},
+			Env: map[string]string{
+				"WORKDIR":   "${WORKSPACE}",
+				"WORKCACHE": "$WORKSPACE/.cache",
+			},
+			Outputs: rawPolicyBlockOutputs{
+				Dirs:  []string{"node_modules", "./vendor/bundle", "${WORKSPACE}/.cache/yarn"},
+				Files: []string{"tmp/state.json", "${WORKSPACE}/.npmrc"},
+			},
+		},
+	)
+
+	compiled, err := Compile(raw)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	block := compiled.Dependencies.Blocks[0]
+	if got, want := block.Outputs.Dirs, []string{"/workspace/.cache/yarn", "/workspace/node_modules", "/workspace/vendor/bundle"}; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("unexpected output dirs: got %v want %v", got, want)
+	}
+	if got, want := block.Outputs.Files, []string{"/workspace/.npmrc", "/workspace/tmp/state.json"}; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("unexpected output files: got %v want %v", got, want)
+	}
+	if got, want := block.Env["WORKDIR"], "/workspace"; got != want {
+		t.Fatalf("unexpected WORKDIR: got %q want %q", got, want)
+	}
+	if got, want := block.Env["WORKCACHE"], "/workspace/.cache"; got != want {
+		t.Fatalf("unexpected WORKCACHE: got %q want %q", got, want)
+	}
+}
+
+func TestCompileNormalizesBlockWorkspaceAgainstRepositoryPath(t *testing.T) {
+	t.Parallel()
+
+	raw := baseRawPolicy()
+	raw.Repository = &rawRepository{Path: "/src/"}
+	raw.Sandbox.Dependencies = rawDependencyBlocks(
+		rawPolicyBlock{
+			Name:    "node",
+			Command: rawDependencyCommandSpec{"npm", "ci"},
+			Inputs:  rawPolicyBlockInputs{Files: []string{"package-lock.json"}},
+			Env: map[string]string{
+				"WORKDIR":   "${WORKSPACE}",
+				"WORKCACHE": "$WORKSPACE/.cache",
+			},
+			Outputs: rawPolicyBlockOutputs{
+				Dirs: []string{"node_modules", "${WORKSPACE}/vendor/bundle"},
+			},
+		},
+	)
+
+	compiled, err := Compile(raw)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	block := compiled.Dependencies.Blocks[0]
+	if got, want := block.Outputs.Dirs, []string{"/src/node_modules", "/src/vendor/bundle"}; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("unexpected output dirs: got %v want %v", got, want)
+	}
+	if got, want := block.Env["WORKDIR"], "/src"; got != want {
+		t.Fatalf("unexpected WORKDIR: got %q want %q", got, want)
+	}
+	if got, want := block.Env["WORKCACHE"], "/src/.cache"; got != want {
+		t.Fatalf("unexpected WORKCACHE: got %q want %q", got, want)
+	}
+
+	defaultPathRaw := raw
+	defaultPathRaw.Repository = nil
+	defaultPathCompiled, err := Compile(defaultPathRaw)
+	if err != nil {
+		t.Fatalf("compile default repository path: %v", err)
+	}
+	if defaultPathCompiled.Hash == compiled.Hash {
+		t.Fatalf("expected repository.path to affect normalized block policy hash, got %q", compiled.Hash)
+	}
+}
+
 func TestCompilePreservesDependencyReuseFromYAML(t *testing.T) {
 	t.Parallel()
 
@@ -737,13 +822,15 @@ func TestCompileRejectsInvalidOutputPaths(t *testing.T) {
 		outputs rawPolicyBlockOutputs
 		want    string
 	}{
-		{name: "relative dir", outputs: rawPolicyBlockOutputs{Dirs: []string{"var/cache"}}, want: "must be absolute"},
-		{name: "workspace dir", outputs: rawPolicyBlockOutputs{Dirs: []string{"/workspace/node_modules"}}, want: "must not be under /workspace"},
 		{name: "root dir", outputs: rawPolicyBlockOutputs{Dirs: []string{"/"}}, want: "must not be /"},
+		{name: "repository root dir", outputs: rawPolicyBlockOutputs{Dirs: []string{"/workspace"}}, want: "must not be the repository root"},
+		{name: "workspace variable root dir", outputs: rawPolicyBlockOutputs{Dirs: []string{"${WORKSPACE}"}}, want: "must not be the repository root"},
+		{name: "relative escape", outputs: rawPolicyBlockOutputs{Dirs: []string{"../cache"}}, want: "must stay within the repository root"},
+		{name: "workspace variable escape", outputs: rawPolicyBlockOutputs{Dirs: []string{"${WORKSPACE}/../cache"}}, want: "must stay within the repository root"},
+		{name: "glob dir", outputs: rawPolicyBlockOutputs{Dirs: []string{"node_modules/*"}}, want: "must not contain glob characters"},
 		{name: "unknown variable", outputs: rawPolicyBlockOutputs{Dirs: []string{"${CACHE}/go"}}, want: "unsupported variable expansion"},
 		{name: "home variable typo", outputs: rawPolicyBlockOutputs{Dirs: []string{"$HOMECACHE/go"}}, want: "unsupported variable expansion"},
 		{name: "home braced variable typo", outputs: rawPolicyBlockOutputs{Dirs: []string{"${HOME}CACHE/go"}}, want: "unsupported variable expansion"},
-		{name: "workspace variable dir", outputs: rawPolicyBlockOutputs{Dirs: []string{"${WORKSPACE}/vendor/bundle"}}, want: "must not be under /workspace"},
 		{name: "workspace variable typo", outputs: rawPolicyBlockOutputs{Dirs: []string{"$WORKSPACECACHE/go"}}, want: "unsupported variable expansion"},
 		{name: "workspace braced variable typo", outputs: rawPolicyBlockOutputs{Dirs: []string{"${WORKSPACE}CACHE/go"}}, want: "unsupported variable expansion"},
 		{name: "other user home", outputs: rawPolicyBlockOutputs{Dirs: []string{"~builder/.cache"}}, want: "does not support ~user expansion"},

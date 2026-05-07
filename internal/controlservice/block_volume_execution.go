@@ -3,7 +3,6 @@ package controlservice
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"sort"
 	"strings"
 
@@ -17,13 +16,12 @@ import (
 )
 
 type blockVolumeExecutionPhase struct {
-	StageName           string
-	StageLabel          string
-	InputProjectionRoot string
-	BootstrapPhase      cleanroomv1.CreateSandboxPhase
-	PublishPhase        cleanroomv1.CreateSandboxPhase
-	NetworkStage        policy.NetworkStage
-	CachePublishPhase   blockVolumePublishPhase
+	StageName         string
+	StageLabel        string
+	BootstrapPhase    cleanroomv1.CreateSandboxPhase
+	PublishPhase      cleanroomv1.CreateSandboxPhase
+	NetworkStage      policy.NetworkStage
+	CachePublishPhase blockVolumePublishPhase
 }
 
 type blockVolumeExecutionPublishConfig struct {
@@ -152,12 +150,6 @@ func (s *Service) bootstrapBlockVolumeBlock(
 		return nil, nil
 	}
 	sourceRoot := blockVolumeSourceRoot(repository)
-	inputProjection := &backend.InputProjection{
-		SourceRoot:          sourceRoot,
-		TargetRoot:          filepath.Join(phase.InputProjectionRoot, strings.TrimSpace(block.BlockName)),
-		Files:               append([]string(nil), block.Inputs...),
-		MountSourceReadOnly: true,
-	}
 	env := stageBlockEnvList(block.Env)
 	_, result, stdout, stderr, err := s.runPersistentBootstrapCommandWithOptions(
 		ctx,
@@ -173,7 +165,6 @@ func (s *Service) bootstrapBlockVolumeBlock(
 		persistentSandboxCommandOptions{
 			Dir:                     sourceRoot,
 			ClosedEnv:               true,
-			InputProjection:         inputProjection,
 			CacheOutputFileCaptures: blockVolumeFileCaptures(phase.StageName, block.CacheKey, block.Outputs),
 			OverlayCapture:          blockVolumeOverlayCapture(phase.StageName, block.CacheKey, block.Outputs),
 		},

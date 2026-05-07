@@ -114,6 +114,19 @@ func TestFinalizeDependencyBlockVolumePlanBuildsOrderedKeys(t *testing.T) {
 	if got, want := mutatedPlan.Blocks[0].CacheKey, first.CacheKey; got == want {
 		t.Fatalf("expected first block key to change after env mutation, got %q", got)
 	}
+
+	mutatedRepository := *repository
+	mutatedRepository.DestinationDir = "/src"
+	mutatedPlan, ok, err = svc.finalizeDependencyBlockVolumePlan(context.Background(), compiled, &mutatedRepository, nil, nil, "firecracker", "runtime-base:test")
+	if err != nil {
+		t.Fatalf("finalizeDependencyBlockVolumePlan destination mutation returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected destination-mutated dependency block volume plan")
+	}
+	if got, want := mutatedPlan.Blocks[0].CacheKey, first.CacheKey; got == want {
+		t.Fatalf("expected first block key to change after destination dir mutation, got %q", got)
+	}
 }
 
 func TestFinalizeDependencyBlockVolumePlanRejectsSymlinkInput(t *testing.T) {
@@ -725,7 +738,7 @@ func TestDependencyBlockVolumeRuntimeDecisionRequiresOutputVolumesAndOverlay(t *
 	}
 }
 
-func TestBootstrapDependencyBlockVolumePlanRunsMissesFromInputProjection(t *testing.T) {
+func TestBootstrapDependencyBlockVolumePlanRunsMissesFromWorkspaceOverlay(t *testing.T) {
 	t.Parallel()
 
 	compiled, err := policy.FromProto(testRepositoryTwoDependencyBlocksPolicy())
@@ -794,20 +807,8 @@ func TestBootstrapDependencyBlockVolumePlanRunsMissesFromInputProjection(t *test
 	if !slices.Contains(req.Env, "GOMODCACHE=/root/go/pkg/mod") {
 		t.Fatalf("expected GOMODCACHE env, got %v", req.Env)
 	}
-	if req.InputProjection == nil {
-		t.Fatal("expected input projection")
-	}
-	if got, want := req.InputProjection.SourceRoot, "/workspace"; got != want {
-		t.Fatalf("unexpected projection source root: got %q want %q", got, want)
-	}
-	if got, want := req.InputProjection.TargetRoot, "/run/cleanroom/input-projections/dependencies/go-modules"; got != want {
-		t.Fatalf("unexpected projection target root: got %q want %q", got, want)
-	}
-	if !slices.Equal(req.InputProjection.Files, []string{"go.mod", "go.sum"}) {
-		t.Fatalf("unexpected projection files: got %v", req.InputProjection.Files)
-	}
-	if !req.InputProjection.MountSourceReadOnly {
-		t.Fatal("expected projection to be mounted read-only over source")
+	if req.InputProjection != nil {
+		t.Fatalf("expected dependency block miss to run against the normal workspace, got projection %#v", req.InputProjection)
 	}
 	if req.OverlayCapture == nil {
 		t.Fatal("expected overlay capture request")

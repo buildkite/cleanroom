@@ -115,6 +115,19 @@ func TestFinalizeServiceBlockVolumePlanBuildsOrderedKeys(t *testing.T) {
 	if got, want := mutatedPlan.Blocks[0].CacheKey, first.CacheKey; got == want {
 		t.Fatalf("expected first service block key to change after dependency output key mutation, got %q", got)
 	}
+
+	mutatedRepository := *repository
+	mutatedRepository.DestinationDir = "/src"
+	mutatedPlan, ok, err = svc.finalizeServiceBlockVolumePlan(context.Background(), compiled, &mutatedRepository, nil, nil, "firecracker", "runtime-base:test", dependencyPlan)
+	if err != nil {
+		t.Fatalf("finalizeServiceBlockVolumePlan destination mutation returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected destination-mutated service block-volume plan")
+	}
+	if got, want := mutatedPlan.Blocks[0].CacheKey, first.CacheKey; got == want {
+		t.Fatalf("expected first service block key to change after destination dir mutation, got %q", got)
+	}
 }
 
 func TestLookupServiceBlockVolumeCachesReportsPartialHit(t *testing.T) {
@@ -937,10 +950,7 @@ func TestCreateSandboxReusesDependencyAndServiceBlockVolumesAfterSourceOnlyChang
 
 	var blockExecutions []backend.ExecutionRequest
 	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
-		if req.InputProjection != nil {
-			if req.OverlayCapture == nil {
-				t.Fatalf("block-volume execution %q did not request overlay capture", strings.Join(req.Command, " "))
-			}
+		if req.OverlayCapture != nil {
 			blockExecutions = append(blockExecutions, req)
 		}
 		return &backend.ExecutionResult{
@@ -1033,7 +1043,7 @@ func TestCreateSandboxReusesDependencyAndServiceBlockVolumesAfterSourceOnlyChang
 	}
 }
 
-func TestBootstrapServiceBlockVolumePlanRunsMissesFromInputProjection(t *testing.T) {
+func TestBootstrapServiceBlockVolumePlanRunsMissesFromWorkspaceOverlay(t *testing.T) {
 	t.Parallel()
 
 	compiled, err := policy.FromProto(testRepositoryTwoDependencyTwoServiceBlocksPolicy())
@@ -1105,20 +1115,8 @@ func TestBootstrapServiceBlockVolumePlanRunsMissesFromInputProjection(t *testing
 	if !strings.Contains(strings.Join(req.Env, "\n"), "APP_SERVICE_DATA=/var/lib/cleanroom/services/app") {
 		t.Fatalf("expected APP_SERVICE_DATA env, got %v", req.Env)
 	}
-	if req.InputProjection == nil {
-		t.Fatal("expected input projection")
-	}
-	if got, want := req.InputProjection.SourceRoot, "/workspace"; got != want {
-		t.Fatalf("unexpected projection source root: got %q want %q", got, want)
-	}
-	if got, want := req.InputProjection.TargetRoot, "/run/cleanroom/input-projections/services/app-service"; got != want {
-		t.Fatalf("unexpected projection target root: got %q want %q", got, want)
-	}
-	if got, want := strings.Join(req.InputProjection.Files, "\x00"), strings.Join([]string{"db/seed.sql", "docker-compose.yml", "scripts/prepare-app"}, "\x00"); got != want {
-		t.Fatalf("unexpected projection files: got %v", req.InputProjection.Files)
-	}
-	if !req.InputProjection.MountSourceReadOnly {
-		t.Fatal("expected projection to be mounted read-only over source")
+	if req.InputProjection != nil {
+		t.Fatalf("expected service block miss to run against the normal workspace, got projection %#v", req.InputProjection)
 	}
 	if req.OverlayCapture == nil {
 		t.Fatal("expected overlay capture request")

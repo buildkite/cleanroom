@@ -379,12 +379,17 @@ func Compile(raw rawPolicy) (*CompiledPolicy, error) {
 		return nil, errors.New("sandbox.network.allow cannot be combined with stage-local network blocks")
 	}
 
-	docker := normalizeDocker(raw.Sandbox.Docker)
-	dependencies, err := normalizeDependencies(raw.Sandbox.Dependencies)
+	repository, err := normalizeRepositoryConfig(raw.Repository)
 	if err != nil {
 		return nil, err
 	}
-	services, err := normalizeServices(raw.Sandbox.Services)
+
+	docker := normalizeDocker(raw.Sandbox.Docker)
+	dependencies, err := normalizeDependencies(raw.Sandbox.Dependencies, repository.Path)
+	if err != nil {
+		return nil, err
+	}
+	services, err := normalizeServices(raw.Sandbox.Services, repository.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -811,19 +816,20 @@ func normalizeRepositoryConfig(raw *rawRepository) (RepositoryConfig, error) {
 		remote = "origin"
 	}
 
-	path := strings.TrimSpace(raw.Path)
-	if path == "" {
-		path = "/workspace"
+	repositoryPath := strings.TrimSpace(raw.Path)
+	if repositoryPath == "" {
+		repositoryPath = "/workspace"
 	}
-	if !strings.HasPrefix(path, "/") {
+	if !strings.HasPrefix(repositoryPath, "/") {
 		return RepositoryConfig{}, fmt.Errorf("repository.path %q must be absolute", raw.Path)
 	}
+	repositoryPath = path.Clean(repositoryPath)
 
 	return RepositoryConfig{
 		Implicit:   false,
 		Mode:       mode,
 		Remote:     remote,
-		Path:       path,
+		Path:       repositoryPath,
 		Submodules: raw.Submodules,
 	}, nil
 }
@@ -1103,12 +1109,12 @@ func normalizeDocker(raw rawDockerConfig) DockerService {
 	return DockerService{Required: raw.Required}
 }
 
-func normalizeDependencies(raw rawDependencyStage) (Dependencies, error) {
+func normalizeDependencies(raw rawDependencyStage, workspaceRoot string) (Dependencies, error) {
 	blocksField := raw.blocksField
 	if blocksField == "" {
 		blocksField = "sandbox.dependencies"
 	}
-	blocks, err := normalizeStageBlocks(raw.Blocks, blocksField)
+	blocks, err := normalizeStageBlocks(raw.Blocks, blocksField, workspaceRoot)
 	if err != nil {
 		return Dependencies{}, err
 	}
@@ -1162,8 +1168,8 @@ func normalizeDependencyReuse(raw string, keyFiles []string, field string) (stri
 	}
 }
 
-func normalizeServices(raw rawPolicyBlocks) (Services, error) {
-	blocks, err := normalizeStageBlocks(raw, "sandbox.services")
+func normalizeServices(raw rawPolicyBlocks, workspaceRoot string) (Services, error) {
+	blocks, err := normalizeStageBlocks(raw, "sandbox.services", workspaceRoot)
 	if err != nil {
 		return Services{}, err
 	}
@@ -1321,14 +1327,15 @@ const (
 	defaultBlockWorkspace = "/workspace"
 )
 
-func normalizeStageBlocks(raw []rawPolicyBlock, field string) ([]StageBlock, error) {
+func normalizeStageBlocks(raw []rawPolicyBlock, field string, workspaceRoot string) ([]StageBlock, error) {
 	if len(raw) == 0 {
 		return nil, nil
 	}
+	workspaceRoot = normalizeBlockWorkspaceRoot(workspaceRoot)
 	seenNames := make(map[string]struct{}, len(raw))
 	blocks := make([]StageBlock, 0, len(raw))
 	for i, candidate := range raw {
-		block, err := normalizeStageBlock(candidate, fmt.Sprintf("%s[%d]", field, i))
+		block, err := normalizeStageBlock(candidate, fmt.Sprintf("%s[%d]", field, i), workspaceRoot)
 		if err != nil {
 			return nil, err
 		}
@@ -1344,7 +1351,7 @@ func normalizeStageBlocks(raw []rawPolicyBlock, field string) ([]StageBlock, err
 	return blocks, nil
 }
 
-func normalizeStageBlock(raw rawPolicyBlock, field string) (StageBlock, error) {
+func normalizeStageBlock(raw rawPolicyBlock, field string, workspaceRoot string) (StageBlock, error) {
 	name := strings.TrimSpace(raw.Name)
 	if name == "" {
 		return StageBlock{}, fmt.Errorf("%s.name is required", field)
@@ -1366,11 +1373,11 @@ func normalizeStageBlock(raw rawPolicyBlock, field string) (StageBlock, error) {
 	if len(inputFiles) == 0 {
 		return StageBlock{}, fmt.Errorf("%s.inputs.files must include at least one file or glob", field)
 	}
-	env, err := normalizeBlockEnv(raw.Env, field+".env")
+	env, err := normalizeBlockEnv(raw.Env, field+".env", workspaceRoot)
 	if err != nil {
 		return StageBlock{}, err
 	}
-	outputs, err := normalizeBlockOutputs(raw.Outputs, field+".outputs")
+	outputs, err := normalizeBlockOutputs(raw.Outputs, field+".outputs", workspaceRoot)
 	if err != nil {
 		return StageBlock{}, err
 	}
@@ -1402,10 +1409,11 @@ func validStageBlockName(name string) bool {
 	return true
 }
 
-func normalizeBlockEnv(raw map[string]string, field string) (map[string]string, error) {
+func normalizeBlockEnv(raw map[string]string, field string, workspaceRoot string) (map[string]string, error) {
 	if len(raw) == 0 {
 		return nil, nil
 	}
+	workspaceRoot = normalizeBlockWorkspaceRoot(workspaceRoot)
 	env := make(map[string]string, len(raw))
 	for key, value := range raw {
 		name := strings.TrimSpace(key)
@@ -1415,12 +1423,13 @@ func normalizeBlockEnv(raw map[string]string, field string) (map[string]string, 
 		if !validEnvName(name) {
 			return nil, fmt.Errorf("%s.%s must be a valid environment variable name", field, name)
 		}
-		env[name] = expandGuestEnvValue(value)
+		env[name] = expandGuestEnvValue(value, workspaceRoot)
 	}
 	return env, nil
 }
 
-func expandGuestEnvValue(value string) string {
+func expandGuestEnvValue(value string, workspaceRoot string) string {
+	workspaceRoot = normalizeBlockWorkspaceRoot(workspaceRoot)
 	switch {
 	case value == "~":
 		return defaultBlockHome
@@ -1435,13 +1444,13 @@ func expandGuestEnvValue(value string) string {
 	case strings.HasPrefix(value, "${HOME}/"):
 		return defaultBlockHome + strings.TrimPrefix(value, "${HOME}")
 	case value == "$WORKSPACE":
-		return defaultBlockWorkspace
+		return workspaceRoot
 	case strings.HasPrefix(value, "$WORKSPACE/"):
-		return defaultBlockWorkspace + strings.TrimPrefix(value, "$WORKSPACE")
+		return workspaceRoot + strings.TrimPrefix(value, "$WORKSPACE")
 	case value == "${WORKSPACE}":
-		return defaultBlockWorkspace
+		return workspaceRoot
 	case strings.HasPrefix(value, "${WORKSPACE}/"):
-		return defaultBlockWorkspace + strings.TrimPrefix(value, "${WORKSPACE}")
+		return workspaceRoot + strings.TrimPrefix(value, "${WORKSPACE}")
 	default:
 		return value
 	}
@@ -1463,12 +1472,13 @@ func validEnvName(name string) bool {
 	return name != ""
 }
 
-func normalizeBlockOutputs(raw rawPolicyBlockOutputs, field string) (StageBlockOutputs, error) {
-	dirs, err := normalizeOutputPaths(raw.Dirs, field+".dirs")
+func normalizeBlockOutputs(raw rawPolicyBlockOutputs, field string, workspaceRoot string) (StageBlockOutputs, error) {
+	workspaceRoot = normalizeBlockWorkspaceRoot(workspaceRoot)
+	dirs, err := normalizeOutputPaths(raw.Dirs, field+".dirs", workspaceRoot)
 	if err != nil {
 		return StageBlockOutputs{}, err
 	}
-	files, err := normalizeOutputPaths(raw.Files, field+".files")
+	files, err := normalizeOutputPaths(raw.Files, field+".files", workspaceRoot)
 	if err != nil {
 		return StageBlockOutputs{}, err
 	}
@@ -1478,22 +1488,23 @@ func normalizeBlockOutputs(raw rawPolicyBlockOutputs, field string) (StageBlockO
 	return StageBlockOutputs{Dirs: dirs, Files: files}, nil
 }
 
-func normalizeOutputPaths(raw []string, field string) ([]string, error) {
+func normalizeOutputPaths(raw []string, field string, workspaceRoot string) ([]string, error) {
 	if len(raw) == 0 {
 		return nil, nil
 	}
+	workspaceRoot = normalizeBlockWorkspaceRoot(workspaceRoot)
 	seen := make(map[string]struct{}, len(raw))
 	paths := make([]string, 0, len(raw))
 	for i, candidate := range raw {
-		normalized, err := expandGuestPathValue(strings.TrimSpace(candidate), fmt.Sprintf("%s[%d]", field, i), true)
+		normalized, err := expandGuestPathValue(strings.TrimSpace(candidate), fmt.Sprintf("%s[%d]", field, i), workspaceRoot, true)
 		if err != nil {
 			return nil, err
 		}
-		if strings.HasPrefix(normalized, "/workspace/") || normalized == "/workspace" {
-			return nil, fmt.Errorf("%s[%d] must not be under /workspace", field, i)
-		}
 		if normalized == "/" {
 			return nil, fmt.Errorf("%s[%d] must not be /", field, i)
+		}
+		if normalized == workspaceRoot {
+			return nil, fmt.Errorf("%s[%d] must not be the repository root", field, i)
 		}
 		if _, ok := seen[normalized]; ok {
 			return nil, fmt.Errorf("%s[%d] duplicates output path %q", field, i, normalized)
@@ -1505,10 +1516,12 @@ func normalizeOutputPaths(raw []string, field string) ([]string, error) {
 	return paths, nil
 }
 
-func expandGuestPathValue(value, field string, requireAbsolute bool) (string, error) {
+func expandGuestPathValue(value, field string, workspaceRoot string, requireAbsolute bool) (string, error) {
+	workspaceRoot = normalizeBlockWorkspaceRoot(workspaceRoot)
 	if value == "" {
 		return "", fmt.Errorf("%s cannot be empty", field)
 	}
+	workspaceAnchored := false
 	if value == "~" {
 		value = defaultBlockHome
 	} else if strings.HasPrefix(value, "~/") {
@@ -1524,25 +1537,52 @@ func expandGuestPathValue(value, field string, requireAbsolute bool) (string, er
 	} else if strings.HasPrefix(value, "${HOME}/") {
 		value = defaultBlockHome + strings.TrimPrefix(value, "${HOME}")
 	} else if value == "$WORKSPACE" {
-		value = defaultBlockWorkspace
+		value = workspaceRoot
+		workspaceAnchored = true
 	} else if strings.HasPrefix(value, "$WORKSPACE/") {
-		value = defaultBlockWorkspace + strings.TrimPrefix(value, "$WORKSPACE")
+		value = workspaceRoot + strings.TrimPrefix(value, "$WORKSPACE")
+		workspaceAnchored = true
 	} else if value == "${WORKSPACE}" {
-		value = defaultBlockWorkspace
+		value = workspaceRoot
+		workspaceAnchored = true
 	} else if strings.HasPrefix(value, "${WORKSPACE}/") {
-		value = defaultBlockWorkspace + strings.TrimPrefix(value, "${WORKSPACE}")
+		value = workspaceRoot + strings.TrimPrefix(value, "${WORKSPACE}")
+		workspaceAnchored = true
 	}
 	if strings.Contains(value, "$") {
 		return "", fmt.Errorf("%s contains an unsupported variable expansion", field)
 	}
-	value = path.Clean(strings.ReplaceAll(value, "\\", "/"))
+	value = strings.ReplaceAll(value, "\\", "/")
 	if strings.ContainsAny(value, "*?[") {
 		return "", fmt.Errorf("%s must not contain glob characters", field)
+	}
+	if requireAbsolute && !strings.HasPrefix(value, "/") {
+		relative := path.Clean(value)
+		if relative == "." || relative == ".." || strings.HasPrefix(relative, "../") {
+			return "", fmt.Errorf("%s must stay within the repository root", field)
+		}
+		value = path.Join(workspaceRoot, relative)
+	} else {
+		value = path.Clean(value)
+	}
+	if workspaceAnchored && !pathWithinOrEqual(workspaceRoot, value) {
+		return "", fmt.Errorf("%s must stay within the repository root", field)
 	}
 	if requireAbsolute && !strings.HasPrefix(value, "/") {
 		return "", fmt.Errorf("%s must be absolute", field)
 	}
 	return value, nil
+}
+
+func normalizeBlockWorkspaceRoot(workspaceRoot string) string {
+	workspaceRoot = strings.TrimSpace(workspaceRoot)
+	if workspaceRoot == "" {
+		return defaultBlockWorkspace
+	}
+	if !strings.HasPrefix(workspaceRoot, "/") {
+		return defaultBlockWorkspace
+	}
+	return path.Clean(workspaceRoot)
 }
 
 func validateOutputPathRelationships(dirs, files []string, field string) error {
@@ -1640,6 +1680,12 @@ func pathContains(parent, child string) bool {
 	return strings.HasPrefix(child, parent+"/")
 }
 
+func pathWithinOrEqual(parent, child string) bool {
+	parent = path.Clean(parent)
+	child = path.Clean(child)
+	return child == parent || pathContains(parent, child)
+}
+
 func stageBlocksToProto(blocks []StageBlock) []*cleanroomv1.PolicyBlock {
 	out := make([]*cleanroomv1.PolicyBlock, 0, len(blocks))
 	for _, block := range blocks {
@@ -1679,7 +1725,7 @@ func stageBlocksFromProto(blocks []*cleanroomv1.PolicyBlock, field string) ([]St
 			},
 		})
 	}
-	return normalizeStageBlocks(raw, field+".blocks")
+	return normalizeStageBlocks(raw, field+".blocks", defaultBlockWorkspace)
 }
 
 func cloneStringMap(in map[string]string) map[string]string {

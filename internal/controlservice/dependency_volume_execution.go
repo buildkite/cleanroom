@@ -10,16 +10,13 @@ import (
 	"github.com/buildkite/cleanroom/internal/repositorycheckout"
 )
 
-const dependencyInputProjectionRoot = "/run/cleanroom/input-projections/dependencies"
-
 var dependencyBlockVolumeExecutionPhase = blockVolumeExecutionPhase{
-	StageName:           dependencyVolumeStageName,
-	StageLabel:          "dependency",
-	InputProjectionRoot: dependencyInputProjectionRoot,
-	BootstrapPhase:      cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_BOOTSTRAP_DEPENDENCIES,
-	PublishPhase:        cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_PUBLISH_DEPENDENCY_STAGE_CACHE,
-	NetworkStage:        policy.NetworkStageDependencies,
-	CachePublishPhase:   dependencyBlockVolumePublishPhase,
+	StageName:         dependencyVolumeStageName,
+	StageLabel:        "dependency",
+	BootstrapPhase:    cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_BOOTSTRAP_DEPENDENCIES,
+	PublishPhase:      cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_PUBLISH_DEPENDENCY_STAGE_CACHE,
+	NetworkStage:      policy.NetworkStageDependencies,
+	CachePublishPhase: dependencyBlockVolumePublishPhase,
 }
 
 type dependencyBlockVolumePublishConfig struct {
