@@ -138,6 +138,49 @@ func TestInputProjectionRejectsSymlinkedParent(t *testing.T) {
 	}
 }
 
+func TestExpandInputProjectionFilesDoublestarGlob(t *testing.T) {
+	t.Parallel()
+
+	sourceRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(sourceRoot, "vendor", "pkg"), 0o755); err != nil {
+		t.Fatalf("create vendor dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceRoot, "vendor", "pkg", "lib.go"), []byte("package pkg\n"), 0o644); err != nil {
+		t.Fatalf("write lib.go: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceRoot, "vendor", "top.go"), []byte("package vendor\n"), 0o644); err != nil {
+		t.Fatalf("write top.go: %v", err)
+	}
+
+	files, err := expandInputProjectionFiles(sourceRoot, []string{"vendor/**"})
+	if err != nil {
+		t.Fatalf("expandInputProjectionFiles returned error: %v", err)
+	}
+	if got, want := len(files), 2; got != want {
+		t.Fatalf("unexpected file count: got %d want %d", got, want)
+	}
+	joined := strings.Join(files, ",")
+	if !strings.Contains(joined, "vendor/pkg/lib.go") {
+		t.Fatalf("expected vendor/pkg/lib.go in results, got %v", files)
+	}
+	if !strings.Contains(joined, "vendor/top.go") {
+		t.Fatalf("expected vendor/top.go in results, got %v", files)
+	}
+}
+
+func TestExpandInputProjectionFilesDoublestarGlobNoMatch(t *testing.T) {
+	t.Parallel()
+
+	sourceRoot := t.TempDir()
+	_, err := expandInputProjectionFiles(sourceRoot, []string{"vendor/**"})
+	if err == nil {
+		t.Fatal("expected no-match error")
+	}
+	if !strings.Contains(err.Error(), "matched no files") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func setTestInputProjectionRoot(t *testing.T) func() {
 	t.Helper()
 	previous := inputProjectionRoot

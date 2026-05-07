@@ -385,6 +385,99 @@ func TestResetCommandsUseDoubleForceClean(t *testing.T) {
 	}
 }
 
+func TestDigestPathsFromBaseExpandsDoublestarGlobs(t *testing.T) {
+	repoDir := initGitRepository(t)
+	if err := os.MkdirAll(filepath.Join(repoDir, "subdir", "a"), 0o755); err != nil {
+		t.Fatalf("create nested dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "subdir", "a", "b.txt"), []byte("nested\n"), 0o644); err != nil {
+		t.Fatalf("write nested file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "subdir", "top.txt"), []byte("top\n"), 0o644); err != nil {
+		t.Fatalf("write top file: %v", err)
+	}
+
+	checkout := &repositorycheckout.Checkout{
+		RemoteURL:      "https://github.com/buildkite/cleanroom.git",
+		CommitSHA:      headCommit(t, repoDir),
+		DestinationDir: "/workspace",
+	}
+
+	changeset, err := BuildFromWorkingTree(repoDir, checkout)
+	if err != nil {
+		t.Fatalf("BuildFromWorkingTree returned error: %v", err)
+	}
+	if changeset == nil {
+		t.Fatal("expected changeset")
+	}
+
+	digests, err := changeset.DigestPathsFromBase(repoDir, []string{"subdir/**"})
+	if err != nil {
+		t.Fatalf("DigestPathsFromBase returned error: %v", err)
+	}
+	if got, want := len(digests), 2; got != want {
+		t.Fatalf("unexpected digest count: got %d want %d", got, want)
+	}
+	paths := make([]string, len(digests))
+	for i, d := range digests {
+		paths[i] = d.Path
+	}
+	if !strings.Contains(strings.Join(paths, ","), "subdir/a/b.txt") {
+		t.Fatalf("expected subdir/a/b.txt in results, got %v", paths)
+	}
+
+	_, err = changeset.DigestPathsFromBase(repoDir, []string{"subdir/**/missing.txt"})
+	if err == nil {
+		t.Fatal("expected empty doublestar glob to fail")
+	}
+	if !strings.Contains(err.Error(), "matched no files") {
+		t.Fatalf("unexpected empty glob error: %v", err)
+	}
+}
+
+func TestDigestRegularFilesFromBaseExpandsDoublestarGlobs(t *testing.T) {
+	repoDir := initGitRepository(t)
+	if err := os.MkdirAll(filepath.Join(repoDir, "vendor", "pkg"), 0o755); err != nil {
+		t.Fatalf("create vendor dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "vendor", "pkg", "lib.go"), []byte("package pkg\n"), 0o644); err != nil {
+		t.Fatalf("write lib.go: %v", err)
+	}
+
+	checkout := &repositorycheckout.Checkout{
+		RemoteURL:      "https://github.com/buildkite/cleanroom.git",
+		CommitSHA:      headCommit(t, repoDir),
+		DestinationDir: "/workspace",
+	}
+
+	changeset, err := BuildFromWorkingTree(repoDir, checkout)
+	if err != nil {
+		t.Fatalf("BuildFromWorkingTree returned error: %v", err)
+	}
+	if changeset == nil {
+		t.Fatal("expected changeset")
+	}
+
+	digests, err := changeset.DigestRegularFilesFromBase(repoDir, []string{"vendor/**"})
+	if err != nil {
+		t.Fatalf("DigestRegularFilesFromBase returned error: %v", err)
+	}
+	if got, want := len(digests), 1; got != want {
+		t.Fatalf("unexpected digest count: got %d want %d", got, want)
+	}
+	if got, want := digests[0].Path, "vendor/pkg/lib.go"; got != want {
+		t.Fatalf("unexpected digest path: got %q want %q", got, want)
+	}
+
+	_, err = changeset.DigestRegularFilesFromBase(repoDir, []string{"vendor/**/missing.go"})
+	if err == nil {
+		t.Fatal("expected empty doublestar glob to fail")
+	}
+	if !strings.Contains(err.Error(), "matched no files") {
+		t.Fatalf("unexpected empty glob error: %v", err)
+	}
+}
+
 func TestDigestPathsFromBaseExpandsGlobs(t *testing.T) {
 	repoDir := initGitRepository(t)
 	if err := os.WriteFile(filepath.Join(repoDir, "go.mod"), []byte("module example.com/test\n"), 0o644); err != nil {
