@@ -295,15 +295,16 @@ func stageKeyFilesDigestAtCommit(ctx context.Context, repoDir, commitSHA string,
 		return "", err
 	}
 
+	digests, err := gitFileDigestsAtCommit(ctx, strings.TrimSpace(repoDir), trimmedCommitSHA, expandedFiles)
+	if err != nil {
+		return "", fmt.Errorf("read %s key files: %w", stageName, err)
+	}
+
 	manifest := make([]stageKeyFileDigest, 0, len(expandedFiles))
 	for _, file := range expandedFiles {
-		digest, err := gitFileDigestAtCommit(ctx, strings.TrimSpace(repoDir), trimmedCommitSHA, file)
-		if err != nil {
-			return "", fmt.Errorf("read %s key file %q: %w", stageName, file, err)
-		}
 		manifest = append(manifest, stageKeyFileDigest{
 			Path:   file,
-			SHA256: digest,
+			SHA256: digests[file],
 		})
 	}
 
@@ -326,26 +327,37 @@ func stageInputFilesDigestAtCommit(ctx context.Context, repoDir, commitSHA strin
 		return "", err
 	}
 
-	manifest := make([]stageInputFileDigest, 0, len(expandedFiles))
+	treeEntries, err := gitTreeEntriesForFiles(ctx, strings.TrimSpace(repoDir), trimmedCommitSHA, expandedFiles)
+	if err != nil {
+		return "", fmt.Errorf("inspect %s input files: %w", stageName, err)
+	}
+
+	regularFiles := make([]string, 0, len(expandedFiles))
+	entryByFile := make(map[string]gitTreeEntry, len(expandedFiles))
 	for _, file := range expandedFiles {
-		entry, ok, err := gitTreeEntryAtCommit(ctx, strings.TrimSpace(repoDir), trimmedCommitSHA, file)
-		if err != nil {
-			return "", fmt.Errorf("inspect %s input file %q: %w", stageName, file, err)
-		}
+		entry, ok := treeEntries[file]
 		if !ok {
 			return "", fmt.Errorf("%s input file %q does not exist", stageName, file)
 		}
 		if !isRegularGitTreeFile(entry) {
 			return "", fmt.Errorf("%s input file %q is %s; inputs.files must name regular files", stageName, file, gitTreeEntryKind(entry))
 		}
-		digest, err := gitFileDigestAtCommit(ctx, strings.TrimSpace(repoDir), trimmedCommitSHA, file)
-		if err != nil {
-			return "", fmt.Errorf("read %s input file %q: %w", stageName, file, err)
-		}
+		regularFiles = append(regularFiles, file)
+		entryByFile[file] = entry
+	}
+
+	digests, err := gitFileDigestsAtCommit(ctx, strings.TrimSpace(repoDir), trimmedCommitSHA, regularFiles)
+	if err != nil {
+		return "", fmt.Errorf("read %s input files: %w", stageName, err)
+	}
+
+	manifest := make([]stageInputFileDigest, 0, len(regularFiles))
+	for _, file := range regularFiles {
+		entry := entryByFile[file]
 		manifest = append(manifest, stageInputFileDigest{
 			Path:   file,
 			Mode:   entry.Mode,
-			SHA256: digest,
+			SHA256: digests[file],
 		})
 	}
 	return digestStageInputFileManifest(manifest, stageName)
@@ -430,55 +442,9 @@ func gitFilesAtCommit(ctx context.Context, repoDir, commitSHA string) ([]string,
 	return files, nil
 }
 
-func gitFileDigestAtCommit(ctx context.Context, repoDir, commitSHA, file string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", "-C", repoDir, "show", commitSHA+":"+file)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		message := strings.TrimSpace(string(output))
-		if message == "" {
-			message = err.Error()
-		}
-		return "", fmt.Errorf("%s", message)
-	}
-
-	sum := sha256.Sum256(output)
-	return "sha256:" + hex.EncodeToString(sum[:]), nil
-}
-
 type gitTreeEntry struct {
 	Mode string
 	Type string
-}
-
-func gitTreeEntryAtCommit(ctx context.Context, repoDir, commitSHA, file string) (gitTreeEntry, bool, error) {
-	cmd := exec.CommandContext(ctx, "git", "-C", repoDir, "ls-tree", "-z", commitSHA, "--", literalStageGitPathspec(file))
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		message := strings.TrimSpace(string(output))
-		if message == "" {
-			message = err.Error()
-		}
-		return gitTreeEntry{}, false, fmt.Errorf("%s", message)
-	}
-	output = bytes.TrimRight(output, "\x00")
-	if len(bytes.TrimSpace(output)) == 0 {
-		return gitTreeEntry{}, false, nil
-	}
-	for _, raw := range bytes.Split(output, []byte{0}) {
-		metadata, rawPath, ok := bytes.Cut(raw, []byte{'\t'})
-		if !ok {
-			return gitTreeEntry{}, false, fmt.Errorf("parse git tree entry %q", string(raw))
-		}
-		if path.Clean(strings.ReplaceAll(string(rawPath), "\\", "/")) != file {
-			continue
-		}
-		fields := strings.Fields(string(metadata))
-		if len(fields) < 3 {
-			return gitTreeEntry{}, false, fmt.Errorf("parse git tree entry %q", string(raw))
-		}
-		return gitTreeEntry{Mode: fields[0], Type: fields[1]}, true, nil
-	}
-	return gitTreeEntry{}, false, nil
 }
 
 func isRegularGitTreeFile(entry gitTreeEntry) bool {
