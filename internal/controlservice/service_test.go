@@ -262,18 +262,19 @@ type stubLoader struct {
 }
 
 type stubRepositoryMirrorStore struct {
-	remoteURL          string
-	commitSHA          string
-	commitSHAs         []string
-	withRepositorySHAs []string
-	calls              int
-	err                error
-	ensureContainsFn   func(remoteURL, commitSHA string) error
-	mirrorPath         string
-	mirrorPathCalls    int
-	mirrorPathErr      error
-	ensureMirrorCalls  int
-	ensureMirrorErr    error
+	remoteURL                  string
+	commitSHA                  string
+	commitSHAs                 []string
+	withRepositorySHAs         []string
+	calls                      int
+	err                        error
+	ensureContainsFn           func(remoteURL, commitSHA string) error
+	mirrorPath                 string
+	mirrorPathCalls            int
+	mirrorPathErr              error
+	ensureMirrorCalls          int
+	ensureMirrorErr            error
+	ensureSubmoduleMirrorFunc  func(ctx context.Context, submoduleRemoteURL, gitlinkSHA string) (string, error)
 }
 
 type stubClock struct {
@@ -364,6 +365,13 @@ func (s *stubRepositoryMirrorStore) WithRepository(ctx context.Context, remoteUR
 
 func (s *stubRepositoryMirrorStore) TransportHints(context.Context, string, string, repositorystore.FetchHints) (repositorystore.TransportHints, error) {
 	return repositorystore.TransportHints{}, nil
+}
+
+func (s *stubRepositoryMirrorStore) EnsureSubmoduleMirror(ctx context.Context, submoduleRemoteURL, gitlinkSHA string) (string, error) {
+	if s.ensureSubmoduleMirrorFunc != nil {
+		return s.ensureSubmoduleMirrorFunc(ctx, submoduleRemoteURL, gitlinkSHA)
+	}
+	return "", nil
 }
 
 func (c stubClock) Now() time.Time {

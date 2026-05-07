@@ -22,6 +22,7 @@ type RepositoryStore interface {
 	ReadFileAtCommit(ctx context.Context, remoteURL, commitSHA, path string) ([]byte, error)
 	WithRepository(ctx context.Context, remoteURL, commitSHA string, hints FetchHints, fn func(repoDir string) error) error
 	TransportHints(ctx context.Context, remoteURL, commitSHA string, hints FetchHints) (TransportHints, error)
+	EnsureSubmoduleMirror(ctx context.Context, submoduleRemoteURL, gitlinkSHA string) (mirrorDir string, err error)
 }
 
 type mirrorSource interface {
@@ -90,6 +91,16 @@ func (s *mirrorBackedRepositoryStore) WithRepository(ctx context.Context, remote
 
 func (s *mirrorBackedRepositoryStore) TransportHints(context.Context, string, string, FetchHints) (TransportHints, error) {
 	return TransportHints{}, nil
+}
+
+func (s *mirrorBackedRepositoryStore) EnsureSubmoduleMirror(ctx context.Context, submoduleRemoteURL, gitlinkSHA string) (string, error) {
+	if s == nil || s.mirrors == nil {
+		return "", fmt.Errorf("repository store is nil")
+	}
+	if err := s.mirrors.EnsureMirrorContains(ctx, submoduleRemoteURL, gitlinkSHA); err != nil {
+		return "", err
+	}
+	return s.mirrors.MirrorPath(submoduleRemoteURL)
 }
 
 func (s *mirrorBackedRepositoryStore) repositoryPath(ctx context.Context, remoteURL string) (string, error) {

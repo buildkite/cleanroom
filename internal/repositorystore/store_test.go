@@ -87,6 +87,56 @@ func TestMirrorBackedRepositoryStoreReadFileAtCommit(t *testing.T) {
 	}
 }
 
+func TestEnsureSubmoduleMirror(t *testing.T) {
+	t.Parallel()
+
+	const wantRemoteURL = "https://github.com/example/submodule.git"
+	const wantSHA = "abc1234abc1234abc1234abc1234abc1234abc12"
+	const wantPath = "/mirrors/submodule"
+
+	mock := &mockMirrorSource{mirrorPath: wantPath}
+	store := NewMirrorBacked(mock)
+
+	got, err := store.EnsureSubmoduleMirror(context.Background(), wantRemoteURL, wantSHA)
+	if err != nil {
+		t.Fatalf("EnsureSubmoduleMirror returned error: %v", err)
+	}
+	if got != wantPath {
+		t.Fatalf("unexpected mirror dir: got %q want %q", got, wantPath)
+	}
+	if mock.ensureMirrorContainsURL != wantRemoteURL {
+		t.Fatalf("unexpected EnsureMirrorContains remoteURL: got %q want %q", mock.ensureMirrorContainsURL, wantRemoteURL)
+	}
+	if mock.ensureMirrorContainsSHA != wantSHA {
+		t.Fatalf("unexpected EnsureMirrorContains commitSHA: got %q want %q", mock.ensureMirrorContainsSHA, wantSHA)
+	}
+	if mock.mirrorPathURL != wantRemoteURL {
+		t.Fatalf("unexpected MirrorPath remoteURL: got %q want %q", mock.mirrorPathURL, wantRemoteURL)
+	}
+}
+
+type mockMirrorSource struct {
+	mirrorPath              string
+	ensureMirrorContainsURL string
+	ensureMirrorContainsSHA string
+	mirrorPathURL           string
+}
+
+func (m *mockMirrorSource) MirrorPath(remoteURL string) (string, error) {
+	m.mirrorPathURL = remoteURL
+	return m.mirrorPath, nil
+}
+
+func (m *mockMirrorSource) EnsureMirror(_ context.Context, remoteURL string) (string, error) {
+	return m.mirrorPath, nil
+}
+
+func (m *mockMirrorSource) EnsureMirrorContains(_ context.Context, remoteURL, commitSHA string) error {
+	m.ensureMirrorContainsURL = remoteURL
+	m.ensureMirrorContainsSHA = commitSHA
+	return nil
+}
+
 func runGitCommand(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 

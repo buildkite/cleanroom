@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/bmatcuk/doublestar/v4"
 	"github.com/buildkite/cleanroom/internal/backend"
 	"github.com/buildkite/cleanroom/internal/cachekey"
 	"github.com/buildkite/cleanroom/internal/cachestore"
@@ -22,6 +23,7 @@ import (
 	"github.com/buildkite/cleanroom/internal/repositorychangeset"
 	"github.com/buildkite/cleanroom/internal/repositorycheckout"
 	"github.com/buildkite/cleanroom/internal/repositorystore"
+	"github.com/buildkite/cleanroom/internal/submodule"
 )
 
 const (
@@ -153,9 +155,9 @@ func (s *Service) stageKeyFilesDigest(ctx context.Context, repository *repositor
 			return commitBundle.WithRepository(ctx, repoDir, func(bundleRepoDir string) error {
 				var err error
 				if changeset != nil {
-					digest, err = stageKeyFilesDigestWithChangeset(bundleRepoDir, changeset, files, stageName)
+					digest, err = stageKeyFilesDigestWithChangeset(ctx, bundleRepoDir, changeset, files, stageName, repository.RemoteURL, repository.Submodules, s.RepositoryStore)
 				} else {
-					digest, err = stageKeyFilesDigestAtCommit(ctx, bundleRepoDir, repository.CommitSHA, files, stageName)
+					digest, err = stageKeyFilesDigestAtCommit(ctx, bundleRepoDir, repository.RemoteURL, repository.CommitSHA, files, stageName, repository.Submodules, s.RepositoryStore)
 				}
 				return err
 			})
@@ -169,7 +171,7 @@ func (s *Service) stageKeyFilesDigest(ctx context.Context, repository *repositor
 		var digest string
 		err := s.RepositoryStore.WithRepository(ctx, repository.RemoteURL, repository.CommitSHA, repositorystore.FetchHints{}, func(repoDir string) error {
 			var err error
-			digest, err = stageKeyFilesDigestWithChangeset(repoDir, changeset, files, stageName)
+			digest, err = stageKeyFilesDigestWithChangeset(ctx, repoDir, changeset, files, stageName, repository.RemoteURL, repository.Submodules, s.RepositoryStore)
 			return err
 		})
 		if err != nil {
@@ -180,7 +182,7 @@ func (s *Service) stageKeyFilesDigest(ctx context.Context, repository *repositor
 	var digest string
 	err := s.RepositoryStore.WithRepository(ctx, repository.RemoteURL, repository.CommitSHA, repositorystore.FetchHints{}, func(repoDir string) error {
 		var err error
-		digest, err = stageKeyFilesDigestAtCommit(ctx, repoDir, repository.CommitSHA, files, stageName)
+		digest, err = stageKeyFilesDigestAtCommit(ctx, repoDir, repository.RemoteURL, repository.CommitSHA, files, stageName, repository.Submodules, s.RepositoryStore)
 		return err
 	})
 	if err != nil {
@@ -209,9 +211,9 @@ func (s *Service) stageInputFilesDigest(ctx context.Context, repository *reposit
 			return commitBundle.WithRepository(ctx, repoDir, func(bundleRepoDir string) error {
 				var err error
 				if changeset != nil {
-					digest, err = stageInputFilesDigestWithChangeset(bundleRepoDir, changeset, files, stageName)
+					digest, err = stageInputFilesDigestWithChangeset(ctx, bundleRepoDir, changeset, files, stageName, repository.RemoteURL, repository.Submodules, s.RepositoryStore)
 				} else {
-					digest, err = stageInputFilesDigestAtCommit(ctx, bundleRepoDir, repository.CommitSHA, files, stageName)
+					digest, err = stageInputFilesDigestAtCommit(ctx, bundleRepoDir, repository.RemoteURL, repository.CommitSHA, files, stageName, repository.Submodules, s.RepositoryStore)
 				}
 				return err
 			})
@@ -225,7 +227,7 @@ func (s *Service) stageInputFilesDigest(ctx context.Context, repository *reposit
 		var digest string
 		err := s.RepositoryStore.WithRepository(ctx, repository.RemoteURL, repository.CommitSHA, repositorystore.FetchHints{}, func(repoDir string) error {
 			var err error
-			digest, err = stageInputFilesDigestWithChangeset(repoDir, changeset, files, stageName)
+			digest, err = stageInputFilesDigestWithChangeset(ctx, repoDir, changeset, files, stageName, repository.RemoteURL, repository.Submodules, s.RepositoryStore)
 			return err
 		})
 		if err != nil {
@@ -236,7 +238,7 @@ func (s *Service) stageInputFilesDigest(ctx context.Context, repository *reposit
 	var digest string
 	err := s.RepositoryStore.WithRepository(ctx, repository.RemoteURL, repository.CommitSHA, repositorystore.FetchHints{}, func(repoDir string) error {
 		var err error
-		digest, err = stageInputFilesDigestAtCommit(ctx, repoDir, repository.CommitSHA, files, stageName)
+		digest, err = stageInputFilesDigestAtCommit(ctx, repoDir, repository.RemoteURL, repository.CommitSHA, files, stageName, repository.Submodules, s.RepositoryStore)
 		return err
 	})
 	if err != nil {
@@ -245,9 +247,18 @@ func (s *Service) stageInputFilesDigest(ctx context.Context, repository *reposit
 	return digest, nil
 }
 
-func stageKeyFilesDigestWithChangeset(repoDir string, changeset *repositorychangeset.Changeset, files []string, stageName string) (string, error) {
+func stageKeyFilesDigestWithChangeset(ctx context.Context, repoDir string, changeset *repositorychangeset.Changeset, files []string, stageName string, parentRemoteURL string, submodules bool, store repositorystore.RepositoryStore) (string, error) {
 	manifest := make([]stageKeyFileDigest, 0, len(files))
-	digests, err := changeset.DigestPathsFromBase(strings.TrimSpace(repoDir), files)
+	opts := repositorychangeset.DigestPathsOptions{
+		Submodules:      submodules,
+		ParentRemoteURL: parentRemoteURL,
+	}
+	if submodules && store != nil {
+		opts.EnsureSubmoduleMirror = func(ctx context.Context, url, sha string) (string, error) {
+			return store.EnsureSubmoduleMirror(ctx, url, sha)
+		}
+	}
+	digests, err := changeset.DigestPathsFromBaseWithOptions(strings.TrimSpace(repoDir), files, opts)
 	if err != nil {
 		return "", fmt.Errorf("read %s key files from repository changeset: %w", stageName, err)
 	}
@@ -268,8 +279,17 @@ func stageKeyFilesDigestWithChangeset(repoDir string, changeset *repositorychang
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
-func stageInputFilesDigestWithChangeset(repoDir string, changeset *repositorychangeset.Changeset, files []string, stageName string) (string, error) {
-	digests, err := changeset.DigestRegularFilesFromBase(strings.TrimSpace(repoDir), files)
+func stageInputFilesDigestWithChangeset(ctx context.Context, repoDir string, changeset *repositorychangeset.Changeset, files []string, stageName string, parentRemoteURL string, submodules bool, store repositorystore.RepositoryStore) (string, error) {
+	opts := repositorychangeset.DigestPathsOptions{
+		Submodules:      submodules,
+		ParentRemoteURL: parentRemoteURL,
+	}
+	if submodules && store != nil {
+		opts.EnsureSubmoduleMirror = func(ctx context.Context, url, sha string) (string, error) {
+			return store.EnsureSubmoduleMirror(ctx, url, sha)
+		}
+	}
+	digests, err := changeset.DigestRegularFilesFromBaseWithOptions(strings.TrimSpace(repoDir), files, opts)
 	if err != nil {
 		return "", fmt.Errorf("read %s input files from repository changeset: %w", stageName, err)
 	}
@@ -284,25 +304,83 @@ func stageInputFilesDigestWithChangeset(repoDir string, changeset *repositorycha
 	return digestStageInputFileManifest(manifest, stageName)
 }
 
-func stageKeyFilesDigestAtCommit(ctx context.Context, repoDir, commitSHA string, files []string, stageName string) (string, error) {
+func stageKeyFilesDigestAtCommit(ctx context.Context, repoDir, parentRemoteURL, commitSHA string, files []string, stageName string, submodules bool, store repositorystore.RepositoryStore) (string, error) {
 	trimmedCommitSHA := strings.TrimSpace(commitSHA)
 	if trimmedCommitSHA == "" {
 		return "", fmt.Errorf("%s key file commit SHA is empty", stageName)
 	}
-	expandedFiles, err := expandStageKeyFilesAtCommit(ctx, repoDir, trimmedCommitSHA, files, stageName)
+
+	var mirrorSubs []submodule.MirrorSubmodule
+	if submodules && store != nil {
+		var err error
+		mirrorSubs, err = submodule.ListMirrorSubmodulesAtCommit(ctx, repoDir, parentRemoteURL, trimmedCommitSHA, func(ctx context.Context, url, sha string) (string, error) {
+			return store.EnsureSubmoduleMirror(ctx, url, sha)
+		})
+		if err != nil {
+			return "", fmt.Errorf("load submodule mirrors: %w", err)
+		}
+	}
+
+	expandedFiles, err := expandStageKeyFilesAtCommit(ctx, repoDir, trimmedCommitSHA, files, stageName, mirrorSubs)
 	if err != nil {
 		return "", err
 	}
 
+	var parentFiles []string
+	subFiles := map[string][]string{}
+	for _, f := range expandedFiles {
+		sm, ok := submodule.FindMirrorSubmoduleForPath(f, mirrorSubs)
+		if !ok {
+			parentFiles = append(parentFiles, f)
+			continue
+		}
+		stripped := strings.TrimPrefix(f, sm.Path+"/")
+		subFiles[sm.Path] = append(subFiles[sm.Path], stripped)
+	}
+
+	if len(parentFiles) > 0 {
+		parentEntries, err := gitTreeEntriesForFiles(ctx, strings.TrimSpace(repoDir), trimmedCommitSHA, parentFiles)
+		if err != nil {
+			return "", fmt.Errorf("inspect %s key files: %w", stageName, err)
+		}
+		for _, file := range parentFiles {
+			if entry, ok := parentEntries[file]; ok && entry.Mode == "160000" {
+				return "", fmt.Errorf("%s key file %q is a gitlink; inputs.files must name regular files", stageName, file)
+			}
+		}
+	}
+
+	allDigests := make(map[string]string, len(expandedFiles))
+
+	if len(parentFiles) > 0 {
+		parentDigests, err := gitFileDigestsAtCommit(ctx, strings.TrimSpace(repoDir), trimmedCommitSHA, parentFiles)
+		if err != nil {
+			return "", fmt.Errorf("read %s key files: %w", stageName, err)
+		}
+		for k, v := range parentDigests {
+			allDigests[k] = v
+		}
+	}
+
+	for _, sm := range mirrorSubs {
+		stripped := subFiles[sm.Path]
+		if len(stripped) == 0 {
+			continue
+		}
+		subDigests, err := gitFileDigestsAtCommit(ctx, sm.MirrorDir, sm.GitlinkSHA, stripped)
+		if err != nil {
+			return "", fmt.Errorf("read %s key files in submodule %q: %w", stageName, sm.Path, err)
+		}
+		for k, v := range subDigests {
+			allDigests[sm.Path+"/"+k] = v
+		}
+	}
+
 	manifest := make([]stageKeyFileDigest, 0, len(expandedFiles))
 	for _, file := range expandedFiles {
-		digest, err := gitFileDigestAtCommit(ctx, strings.TrimSpace(repoDir), trimmedCommitSHA, file)
-		if err != nil {
-			return "", fmt.Errorf("read %s key file %q: %w", stageName, file, err)
-		}
 		manifest = append(manifest, stageKeyFileDigest{
 			Path:   file,
-			SHA256: digest,
+			SHA256: allDigests[file],
 		})
 	}
 
@@ -315,36 +393,113 @@ func stageKeyFilesDigestAtCommit(ctx context.Context, repoDir, commitSHA string,
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
-func stageInputFilesDigestAtCommit(ctx context.Context, repoDir, commitSHA string, files []string, stageName string) (string, error) {
+func stageInputFilesDigestAtCommit(ctx context.Context, repoDir, parentRemoteURL, commitSHA string, files []string, stageName string, submodules bool, store repositorystore.RepositoryStore) (string, error) {
 	trimmedCommitSHA := strings.TrimSpace(commitSHA)
 	if trimmedCommitSHA == "" {
 		return "", fmt.Errorf("%s input file commit SHA is empty", stageName)
 	}
-	expandedFiles, err := expandStageKeyFilesAtCommit(ctx, repoDir, trimmedCommitSHA, files, stageName)
+
+	var mirrorSubs []submodule.MirrorSubmodule
+	if submodules && store != nil {
+		var err error
+		mirrorSubs, err = submodule.ListMirrorSubmodulesAtCommit(ctx, repoDir, parentRemoteURL, trimmedCommitSHA, func(ctx context.Context, url, sha string) (string, error) {
+			return store.EnsureSubmoduleMirror(ctx, url, sha)
+		})
+		if err != nil {
+			return "", fmt.Errorf("load submodule mirrors: %w", err)
+		}
+	}
+
+	expandedFiles, err := expandStageKeyFilesAtCommit(ctx, repoDir, trimmedCommitSHA, files, stageName, mirrorSubs)
 	if err != nil {
 		return "", err
 	}
 
+	var parentFiles []string
+	subFiles := map[string][]string{}
+	for _, f := range expandedFiles {
+		sm, ok := submodule.FindMirrorSubmoduleForPath(f, mirrorSubs)
+		if !ok {
+			parentFiles = append(parentFiles, f)
+			continue
+		}
+		stripped := strings.TrimPrefix(f, sm.Path+"/")
+		subFiles[sm.Path] = append(subFiles[sm.Path], stripped)
+	}
+
+	entryByFile := make(map[string]gitTreeEntry, len(expandedFiles))
+
+	if len(parentFiles) > 0 {
+		treeEntries, err := gitTreeEntriesForFiles(ctx, strings.TrimSpace(repoDir), trimmedCommitSHA, parentFiles)
+		if err != nil {
+			return "", fmt.Errorf("inspect %s input files: %w", stageName, err)
+		}
+		for _, file := range parentFiles {
+			entry, ok := treeEntries[file]
+			if !ok {
+				return "", fmt.Errorf("%s input file %q does not exist", stageName, file)
+			}
+			if !isRegularGitTreeFile(entry) {
+				return "", fmt.Errorf("%s input file %q is %s; inputs.files must name regular files", stageName, file, gitTreeEntryKind(entry))
+			}
+			entryByFile[file] = entry
+		}
+	}
+
+	for _, sm := range mirrorSubs {
+		stripped := subFiles[sm.Path]
+		if len(stripped) == 0 {
+			continue
+		}
+		smEntries, err := gitTreeEntriesForFiles(ctx, sm.MirrorDir, sm.GitlinkSHA, stripped)
+		if err != nil {
+			return "", fmt.Errorf("inspect %s input files in submodule %q: %w", stageName, sm.Path, err)
+		}
+		for _, s := range stripped {
+			entry, ok := smEntries[s]
+			if !ok {
+				return "", fmt.Errorf("%s input file %q does not exist", stageName, sm.Path+"/"+s)
+			}
+			if !isRegularGitTreeFile(entry) {
+				return "", fmt.Errorf("%s input file %q is %s; inputs.files must name regular files", stageName, sm.Path+"/"+s, gitTreeEntryKind(entry))
+			}
+			entryByFile[sm.Path+"/"+s] = entry
+		}
+	}
+
+	allDigests := make(map[string]string, len(expandedFiles))
+
+	if len(parentFiles) > 0 {
+		parentDigests, err := gitFileDigestsAtCommit(ctx, strings.TrimSpace(repoDir), trimmedCommitSHA, parentFiles)
+		if err != nil {
+			return "", fmt.Errorf("read %s input files: %w", stageName, err)
+		}
+		for k, v := range parentDigests {
+			allDigests[k] = v
+		}
+	}
+
+	for _, sm := range mirrorSubs {
+		stripped := subFiles[sm.Path]
+		if len(stripped) == 0 {
+			continue
+		}
+		subDigests, err := gitFileDigestsAtCommit(ctx, sm.MirrorDir, sm.GitlinkSHA, stripped)
+		if err != nil {
+			return "", fmt.Errorf("read %s input files in submodule %q: %w", stageName, sm.Path, err)
+		}
+		for k, v := range subDigests {
+			allDigests[sm.Path+"/"+k] = v
+		}
+	}
+
 	manifest := make([]stageInputFileDigest, 0, len(expandedFiles))
 	for _, file := range expandedFiles {
-		entry, ok, err := gitTreeEntryAtCommit(ctx, strings.TrimSpace(repoDir), trimmedCommitSHA, file)
-		if err != nil {
-			return "", fmt.Errorf("inspect %s input file %q: %w", stageName, file, err)
-		}
-		if !ok {
-			return "", fmt.Errorf("%s input file %q does not exist", stageName, file)
-		}
-		if !isRegularGitTreeFile(entry) {
-			return "", fmt.Errorf("%s input file %q is %s; inputs.files must name regular files", stageName, file, gitTreeEntryKind(entry))
-		}
-		digest, err := gitFileDigestAtCommit(ctx, strings.TrimSpace(repoDir), trimmedCommitSHA, file)
-		if err != nil {
-			return "", fmt.Errorf("read %s input file %q: %w", stageName, file, err)
-		}
+		entry := entryByFile[file]
 		manifest = append(manifest, stageInputFileDigest{
 			Path:   file,
 			Mode:   entry.Mode,
-			SHA256: digest,
+			SHA256: allDigests[file],
 		})
 	}
 	return digestStageInputFileManifest(manifest, stageName)
@@ -359,10 +514,10 @@ func digestStageInputFileManifest(manifest []stageInputFileDigest, stageName str
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
-func expandStageKeyFilesAtCommit(ctx context.Context, repoDir, commitSHA string, files []string, stageName string) ([]string, error) {
+func expandStageKeyFilesAtCommit(ctx context.Context, repoDir, commitSHA string, files []string, stageName string, mirrorSubs []submodule.MirrorSubmodule) ([]string, error) {
 	seen := make(map[string]struct{}, len(files))
 	var expanded []string
-	var treeFiles []string
+	var candidates []string
 	for _, file := range files {
 		file = strings.TrimSpace(file)
 		if !strings.ContainsAny(file, "*?[") {
@@ -373,19 +528,37 @@ func expandStageKeyFilesAtCommit(ctx context.Context, repoDir, commitSHA string,
 			expanded = append(expanded, file)
 			continue
 		}
-		if _, err := path.Match(file, ""); err != nil {
-			return nil, fmt.Errorf("%s key file glob %q is invalid: %w", stageName, file, err)
+		if !doublestar.ValidatePattern(file) {
+			return nil, fmt.Errorf("%s key file glob %q is invalid: %w", stageName, file, path.ErrBadPattern)
 		}
-		if treeFiles == nil {
-			var err error
-			treeFiles, err = gitFilesAtCommit(ctx, repoDir, commitSHA)
+		if candidates == nil {
+			parentFiles, err := gitFilesAtCommit(ctx, repoDir, commitSHA)
 			if err != nil {
 				return nil, fmt.Errorf("list %s key files at commit: %w", stageName, err)
 			}
+			gitlinkPaths := make(map[string]struct{}, len(mirrorSubs))
+			for _, sm := range mirrorSubs {
+				gitlinkPaths[sm.Path] = struct{}{}
+			}
+			candidates = make([]string, 0, len(parentFiles))
+			for _, f := range parentFiles {
+				if _, isGitlink := gitlinkPaths[f]; isGitlink {
+					continue
+				}
+				candidates = append(candidates, f)
+			}
+			for _, sm := range mirrorSubs {
+				smFiles, err := submodule.ListMirrorSubmoduleFilesAtSHA(ctx, sm)
+				if err != nil {
+					return nil, fmt.Errorf("list submodule %q files: %w", sm.Path, err)
+				}
+				candidates = append(candidates, smFiles...)
+			}
+			sort.Strings(candidates)
 		}
 		matches := 0
-		for _, candidate := range treeFiles {
-			matched, err := path.Match(file, candidate)
+		for _, candidate := range candidates {
+			matched, err := doublestar.Match(file, candidate)
 			if err != nil {
 				return nil, fmt.Errorf("%s key file glob %q is invalid: %w", stageName, file, err)
 			}
@@ -400,6 +573,15 @@ func expandStageKeyFilesAtCommit(ctx context.Context, repoDir, commitSHA string,
 			expanded = append(expanded, candidate)
 		}
 		if matches == 0 {
+			if len(mirrorSubs) == 0 {
+				if gitlinkPaths, glErr := gitGitlinkPathsAtCommit(ctx, repoDir, commitSHA); glErr == nil {
+					for _, glPath := range gitlinkPaths {
+						if strings.HasPrefix(file, glPath+"/") {
+							return nil, fmt.Errorf("%s key file glob %q is inside submodule %q; enable repository.submodules to digest submodule contents", stageName, file, glPath)
+						}
+					}
+				}
+			}
 			return nil, fmt.Errorf("%s key file glob %q matched no files", stageName, file)
 		}
 	}
@@ -429,55 +611,39 @@ func gitFilesAtCommit(ctx context.Context, repoDir, commitSHA string) ([]string,
 	return files, nil
 }
 
-func gitFileDigestAtCommit(ctx context.Context, repoDir, commitSHA, file string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", "-C", repoDir, "show", commitSHA+":"+file)
+func gitGitlinkPathsAtCommit(ctx context.Context, repoDir, commitSHA string) ([]string, error) {
+	cmd := exec.CommandContext(ctx, "git", "-C", repoDir, "ls-tree", "-r", "-z", commitSHA)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		message := strings.TrimSpace(string(output))
 		if message == "" {
 			message = err.Error()
 		}
-		return "", fmt.Errorf("%s", message)
+		return nil, fmt.Errorf("%s", message)
 	}
-
-	sum := sha256.Sum256(output)
-	return "sha256:" + hex.EncodeToString(sum[:]), nil
+	var paths []string
+	for _, raw := range bytes.Split(output, []byte{0}) {
+		if len(bytes.TrimSpace(raw)) == 0 {
+			continue
+		}
+		metadata, rawPath, ok := bytes.Cut(raw, []byte{'\t'})
+		if !ok {
+			continue
+		}
+		fields := strings.Fields(string(metadata))
+		if len(fields) < 2 {
+			continue
+		}
+		if fields[0] == "160000" {
+			paths = append(paths, string(rawPath))
+		}
+	}
+	return paths, nil
 }
 
 type gitTreeEntry struct {
 	Mode string
 	Type string
-}
-
-func gitTreeEntryAtCommit(ctx context.Context, repoDir, commitSHA, file string) (gitTreeEntry, bool, error) {
-	cmd := exec.CommandContext(ctx, "git", "-C", repoDir, "ls-tree", "-z", commitSHA, "--", literalStageGitPathspec(file))
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		message := strings.TrimSpace(string(output))
-		if message == "" {
-			message = err.Error()
-		}
-		return gitTreeEntry{}, false, fmt.Errorf("%s", message)
-	}
-	output = bytes.TrimRight(output, "\x00")
-	if len(bytes.TrimSpace(output)) == 0 {
-		return gitTreeEntry{}, false, nil
-	}
-	for _, raw := range bytes.Split(output, []byte{0}) {
-		metadata, rawPath, ok := bytes.Cut(raw, []byte{'\t'})
-		if !ok {
-			return gitTreeEntry{}, false, fmt.Errorf("parse git tree entry %q", string(raw))
-		}
-		if path.Clean(strings.ReplaceAll(string(rawPath), "\\", "/")) != file {
-			continue
-		}
-		fields := strings.Fields(string(metadata))
-		if len(fields) < 3 {
-			return gitTreeEntry{}, false, fmt.Errorf("parse git tree entry %q", string(raw))
-		}
-		return gitTreeEntry{Mode: fields[0], Type: fields[1]}, true, nil
-	}
-	return gitTreeEntry{}, false, nil
 }
 
 func isRegularGitTreeFile(entry gitTreeEntry) bool {
@@ -495,10 +661,6 @@ func gitTreeEntryKind(entry gitTreeEntry) string {
 	default:
 		return "not a regular file"
 	}
-}
-
-func literalStageGitPathspec(normalizedPath string) string {
-	return ":(literal)" + normalizedPath
 }
 
 func (s *Service) lookupDependencyStageCache(ctx context.Context, backendName string, compiled *policy.CompiledPolicy, repository *repositorycheckout.Checkout, changeset *repositorychangeset.Changeset, plan dependencyStagePlan) (cachestore.Record, bool, string, error) {

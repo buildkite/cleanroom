@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bmatcuk/doublestar/v4"
 	"github.com/buildkite/cleanroom/internal/vsockexec"
 	"golang.org/x/sys/unix"
 )
@@ -142,8 +143,7 @@ func inputProjectionMatches(sourceRoot, input string) ([]string, error) {
 		return []string{input}, nil
 	}
 
-	pattern := filepath.Join(sourceRoot, filepath.FromSlash(input))
-	matches, err := filepath.Glob(pattern)
+	matches, err := doublestar.Glob(os.DirFS(sourceRoot), input, doublestar.WithFilesOnly())
 	if err != nil {
 		return nil, fmt.Errorf("invalid input projection glob %q: %w", input, err)
 	}
@@ -152,11 +152,7 @@ func inputProjectionMatches(sourceRoot, input string) ([]string, error) {
 	}
 	out := make([]string, 0, len(matches))
 	for _, match := range matches {
-		rel, err := filepath.Rel(sourceRoot, match)
-		if err != nil {
-			return nil, fmt.Errorf("resolve input projection match %q: %w", match, err)
-		}
-		normalized, err := cleanInputProjectionRelativePath(filepath.ToSlash(rel))
+		normalized, err := cleanInputProjectionRelativePath(filepath.ToSlash(match))
 		if err != nil {
 			return nil, err
 		}
