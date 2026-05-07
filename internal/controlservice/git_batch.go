@@ -88,6 +88,11 @@ func gitFileDigestsAtCommit(ctx context.Context, repoDir, commitSHA string, file
 	}()
 
 	go func() {
+		sendErr := func(err error) {
+			io.Copy(io.Discard, stdout)
+			readerDone <- result{nil, err}
+		}
+
 		digests := make(map[string]string, len(files))
 		buf := make([]byte, 32*1024)
 		reader := &bufferedReader{r: stdout, buf: make([]byte, 0, 64*1024)}
@@ -95,23 +100,23 @@ func gitFileDigestsAtCommit(ctx context.Context, repoDir, commitSHA string, file
 		for _, f := range files {
 			header, err := reader.readLine()
 			if err != nil {
-				readerDone <- result{nil, fmt.Errorf("read git cat-file header for %q: %w", f, err)}
+				sendErr(fmt.Errorf("read git cat-file header for %q: %w", f, err))
 				return
 			}
 			headerStr := strings.TrimRight(string(header), "\n")
 			if strings.HasSuffix(headerStr, " missing") {
 				spec := commitSHA + ":" + f
-				readerDone <- result{nil, fmt.Errorf("git cat-file reports %q is missing", spec)}
+				sendErr(fmt.Errorf("git cat-file reports %q is missing", spec))
 				return
 			}
 			fields := strings.Fields(headerStr)
 			if len(fields) < 3 {
-				readerDone <- result{nil, fmt.Errorf("parse git cat-file header %q", headerStr)}
+				sendErr(fmt.Errorf("parse git cat-file header %q", headerStr))
 				return
 			}
 			size, err := strconv.ParseInt(fields[2], 10, 64)
 			if err != nil {
-				readerDone <- result{nil, fmt.Errorf("parse git cat-file size %q: %w", fields[2], err)}
+				sendErr(fmt.Errorf("parse git cat-file size %q: %w", fields[2], err))
 				return
 			}
 
@@ -124,19 +129,19 @@ func gitFileDigestsAtCommit(ctx context.Context, repoDir, commitSHA string, file
 				}
 				n, err := reader.read(buf[:toRead])
 				if err != nil && err != io.EOF {
-					readerDone <- result{nil, fmt.Errorf("read git cat-file content for %q: %w", f, err)}
+					sendErr(fmt.Errorf("read git cat-file content for %q: %w", f, err))
 					return
 				}
 				h.Write(buf[:n])
 				remaining -= int64(n)
 				if err == io.EOF && remaining > 0 {
-					readerDone <- result{nil, fmt.Errorf("unexpected EOF reading git cat-file content for %q", f)}
+					sendErr(fmt.Errorf("unexpected EOF reading git cat-file content for %q", f))
 					return
 				}
 			}
 
 			if _, err := reader.readByte(); err != nil {
-				readerDone <- result{nil, fmt.Errorf("read git cat-file trailing newline for %q: %w", f, err)}
+				sendErr(fmt.Errorf("read git cat-file trailing newline for %q: %w", f, err))
 				return
 			}
 

@@ -20,10 +20,11 @@ func TestGitTreeEntriesForFilesReturnsCorrectModeAndType(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repoDir, "regular.txt"), []byte("hello\n"), 0o644); err != nil {
 		t.Fatalf("write regular.txt: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(repoDir, "executable.sh"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(repoDir, "executable.sh"), []byte("#!/bin/sh\n"), 0o644); err != nil {
 		t.Fatalf("write executable.sh: %v", err)
 	}
 	runTestGit(t, repoDir, "add", ".")
+	runTestGit(t, repoDir, "update-index", "--chmod=+x", "executable.sh")
 	runTestGit(t, repoDir, "commit", "-m", "init")
 	commitSHA := strings.TrimSpace(runTestGit(t, repoDir, "rev-parse", "HEAD"))
 
