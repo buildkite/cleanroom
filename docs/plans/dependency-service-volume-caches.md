@@ -240,6 +240,7 @@ The cache key includes:
 - canonical repository reuse namespace
 - compiled policy identity
 - normalized repository destination path
+- repository source identity while read auditing is unavailable
 - block stage and block name
 - command digest
 - normalized declared environment digest
@@ -324,10 +325,13 @@ workspace and mutable ambient reads, Cleanroom should compare observed reads
 with the declared block state. Undeclared mutable reads should skip portable
 publication and fall back to exact full-rootfs caching.
 
-Until read auditing exists, portable publication relies on the declared-input
-contract plus write-capture safety gates. That is acceptable for an initial
-implementation if the documentation and stream messages make fallback decisions
-clear.
+Until read auditing exists, cache records must either include the repository
+source identity in the key or fall back to exact full-rootfs caching. Including
+the source identity is conservative: it preserves normal writable workspace
+behavior and prevents stale reuse when commands read undeclared repository
+files, but it does not yet deliver source-only reuse across commits. Source-only
+reuse becomes safe once read auditing can prove the block did not consult
+undeclared mutable repository state.
 
 ### Ambient State Model
 
@@ -505,6 +509,8 @@ without exposing storage internals or user-visible modes.
 - Add runtime planning for baseline output collisions.
 - Make cache keys include the normalized repository destination plus normalized
   workspace output declarations.
+- Until read auditing lands, make cache keys include repository source identity
+  so undeclared repository reads cannot produce stale cache hits.
 - Define closed block environment and controlled ambient mutable state.
 
 Definition of done: schema validation accepts workspace outputs, but planning
@@ -530,8 +536,9 @@ directory.
 ### Slice 4: Restore and reuse
 
 - Restore declared outputs on cache hit at their exact guest paths.
-- Prove a source-only commit reuses dependency and service output caches without
-  rerunning block commands.
+- With read auditing enabled, prove a source-only commit reuses dependency and
+  service output caches without rerunning block commands when the observed reads
+  stay within declared inputs.
 - Ensure exact full-rootfs fallback still gives later phases the command's real
   effects.
 

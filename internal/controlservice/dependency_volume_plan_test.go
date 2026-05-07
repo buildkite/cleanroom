@@ -87,10 +87,11 @@ func TestFinalizeDependencyBlockVolumePlanBuildsOrderedKeys(t *testing.T) {
 	}
 	for _, block := range plan.Blocks {
 		for name, value := range map[string]string{
-			"command": block.CommandDigest,
-			"env":     block.EnvDigest,
-			"inputs":  block.InputManifestDigest,
-			"outputs": block.NormalizedOutputsDigest,
+			"command":           block.CommandDigest,
+			"env":               block.EnvDigest,
+			"inputs":            block.InputManifestDigest,
+			"repository_source": block.RepositorySourceDigest,
+			"outputs":           block.NormalizedOutputsDigest,
 		} {
 			if !strings.HasPrefix(value, "sha256:") {
 				t.Fatalf("expected %s digest for block %q, got %q", name, block.BlockName, value)
@@ -126,6 +127,19 @@ func TestFinalizeDependencyBlockVolumePlanBuildsOrderedKeys(t *testing.T) {
 	}
 	if got, want := mutatedPlan.Blocks[0].CacheKey, first.CacheKey; got == want {
 		t.Fatalf("expected first block key to change after destination dir mutation, got %q", got)
+	}
+
+	mutatedRepository = *repository
+	mutatedRepository.Branch = "main"
+	mutatedPlan, ok, err = svc.finalizeDependencyBlockVolumePlan(context.Background(), compiled, &mutatedRepository, nil, nil, "firecracker", "runtime-base:test")
+	if err != nil {
+		t.Fatalf("finalizeDependencyBlockVolumePlan repository source mutation returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected repository-source-mutated dependency block volume plan")
+	}
+	if got, want := mutatedPlan.Blocks[0].CacheKey, first.CacheKey; got == want {
+		t.Fatalf("expected first block key to change after repository source mutation, got %q", got)
 	}
 }
 

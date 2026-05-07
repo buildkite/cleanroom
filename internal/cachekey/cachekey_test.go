@@ -138,6 +138,7 @@ func TestDependencyVolumeKey(t *testing.T) {
 		ReuseNamespace:                  "https://github.com/buildkite/cleanroom.git",
 		CompiledPolicyHash:              "sha256:1111111111111111111111111111111111111111111111111111111111111111",
 		DestinationDir:                  "/workspace",
+		RepositorySourceDigest:          "sha256:9999999999999999999999999999999999999999999999999999999999999999",
 		BlockName:                       "go-modules",
 		CommandDigest:                   "sha256:2222222222222222222222222222222222222222222222222222222222222222",
 		EnvDigest:                       "sha256:3333333333333333333333333333333333333333333333333333333333333333",
@@ -169,6 +170,12 @@ func TestDependencyVolumeKey(t *testing.T) {
 	}
 
 	mutated = inputs
+	mutated.RepositorySourceDigest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	if gotMutated := DependencyVolumeKey(mutated); got == gotMutated {
+		t.Fatalf("dependency volume key did not change after repository source digest mutation: %q", got)
+	}
+
+	mutated = inputs
 	mutated.NormalizedOutputsDigest = "sha256:7777777777777777777777777777777777777777777777777777777777777777"
 	if gotMutated := DependencyVolumeKey(mutated); got == gotMutated {
 		t.Fatalf("dependency volume key did not change after outputs mutation: %q", got)
@@ -182,6 +189,7 @@ func TestServiceVolumeKey(t *testing.T) {
 		ReuseNamespace:               "https://github.com/buildkite/cleanroom.git",
 		CompiledPolicyHash:           "sha256:1111111111111111111111111111111111111111111111111111111111111111",
 		DestinationDir:               "/workspace",
+		RepositorySourceDigest:       "sha256:9999999999999999999999999999999999999999999999999999999999999999",
 		BlockName:                    "postgres",
 		CommandDigest:                "sha256:2222222222222222222222222222222222222222222222222222222222222222",
 		EnvDigest:                    "sha256:3333333333333333333333333333333333333333333333333333333333333333",
@@ -205,6 +213,12 @@ func TestServiceVolumeKey(t *testing.T) {
 	mutated.DestinationDir = "/src"
 	if gotMutated := ServiceVolumeKey(mutated); got == gotMutated {
 		t.Fatalf("service volume key did not change after destination dir mutation: %q", got)
+	}
+
+	mutated = inputs
+	mutated.RepositorySourceDigest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	if gotMutated := ServiceVolumeKey(mutated); got == gotMutated {
+		t.Fatalf("service volume key did not change after repository source digest mutation: %q", got)
 	}
 
 	mutated = inputs
