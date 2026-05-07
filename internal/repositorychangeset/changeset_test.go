@@ -1,6 +1,8 @@
 package repositorychangeset
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -720,16 +722,27 @@ func initGitRepositoryWithSubmodule(t *testing.T) (superDir, subDir string) {
 	return superDir, subDir
 }
 
+func sha256Hex(data []byte) string {
+	sum := sha256.Sum256(data)
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
 func TestDigestRegularFilesFromBaseExpandsSubmoduleGlob(t *testing.T) {
 	superDir, subDir := initGitRepositoryWithSubmodule(t)
 
-	if err := os.WriteFile(filepath.Join(subDir, "emoji1.json"), []byte(`{"name":"smile"}`), 0o644); err != nil {
-		t.Fatalf("write emoji1.json: %v", err)
+	subContents := map[string][]byte{
+		"emoji1.json": []byte(`{"name":"smile"}`),
+		"emoji2.json": []byte(`{"name":"wink"}`),
+		"emoji3.json": []byte(`{"name":"laugh"}`),
+		"emoji4.json": []byte(`{"name":"cry"}`),
+		"emoji5.json": []byte(`{"name":"angry"}`),
 	}
-	if err := os.WriteFile(filepath.Join(subDir, "emoji2.json"), []byte(`{"name":"wink"}`), 0o644); err != nil {
-		t.Fatalf("write emoji2.json: %v", err)
+	for name, content := range subContents {
+		if err := os.WriteFile(filepath.Join(subDir, name), content, 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
 	}
-	runGit(t, subDir, "add", "emoji1.json", "emoji2.json")
+	runGit(t, subDir, "add", ".")
 	runGit(t, subDir, "commit", "-m", "add emojis")
 	runGitWithEnv(t, superDir, []string{"GIT_ALLOW_PROTOCOL=file"}, "-c", "protocol.file.allow=always", "submodule", "update", "--remote", "vendor/emojis")
 	runGit(t, superDir, "add", "vendor/emojis")
@@ -757,27 +770,33 @@ func TestDigestRegularFilesFromBaseExpandsSubmoduleGlob(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DigestRegularFilesFromBaseWithOptions: %v", err)
 	}
-	wantPaths := []string{
-		"vendor/emojis/README.md",
-		"vendor/emojis/emoji1.json",
-		"vendor/emojis/emoji2.json",
+
+	wantFiles := map[string][]byte{
+		"vendor/emojis/README.md":  []byte("submodule\n"),
+		"vendor/emojis/emoji1.json": subContents["emoji1.json"],
+		"vendor/emojis/emoji2.json": subContents["emoji2.json"],
+		"vendor/emojis/emoji3.json": subContents["emoji3.json"],
+		"vendor/emojis/emoji4.json": subContents["emoji4.json"],
+		"vendor/emojis/emoji5.json": subContents["emoji5.json"],
 	}
-	if got, want := len(files), len(wantPaths); got != want {
+	if got, want := len(files), len(wantFiles); got != want {
 		gotPaths := make([]string, len(files))
 		for i, f := range files {
 			gotPaths[i] = f.Path
 		}
 		t.Fatalf("unexpected file count: got %d want %d, paths: %v", got, want, gotPaths)
 	}
-	for i, f := range files {
-		if f.Path != wantPaths[i] {
-			t.Fatalf("unexpected path at index %d: got %q want %q", i, f.Path, wantPaths[i])
+	for _, f := range files {
+		wantContent, ok := wantFiles[f.Path]
+		if !ok {
+			t.Fatalf("unexpected path %q in result", f.Path)
 		}
 		if f.Mode != "100644" {
 			t.Fatalf("expected mode 100644 for %q, got %q", f.Path, f.Mode)
 		}
-		if !strings.HasPrefix(f.SHA256, "sha256:") {
-			t.Fatalf("expected sha256 digest for %q, got %q", f.Path, f.SHA256)
+		wantDigest := sha256Hex(wantContent)
+		if f.SHA256 != wantDigest {
+			t.Fatalf("wrong digest for %q: got %q want %q", f.Path, f.SHA256, wantDigest)
 		}
 	}
 }

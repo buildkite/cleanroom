@@ -2,6 +2,7 @@ package repositorychangeset
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/bmatcuk/doublestar/v4"
 	cleanroomv1 "github.com/buildkite/cleanroom/internal/gen/cleanroom/v1"
+	"github.com/buildkite/cleanroom/internal/gitbatch"
 	"github.com/buildkite/cleanroom/internal/repositorycheckout"
 	"github.com/buildkite/cleanroom/internal/submodule"
 )
@@ -204,12 +206,38 @@ func (c *Changeset) digestPathsFromBase(repoRoot string, paths []string, regular
 		strippedPath string
 	}
 	subFiles := make(map[string]subFileKey)
+	subsByPath := make(map[string][]string)
 	if len(worktreeSubs) > 0 {
 		for _, normalizedPath := range expandedPaths {
 			if sm, ok := submodule.FindSubmoduleForPath(normalizedPath, worktreeSubs); ok {
 				strippedPath := strings.TrimPrefix(normalizedPath, sm.Path+"/")
 				subFiles[normalizedPath] = subFileKey{sm: sm, strippedPath: strippedPath}
+				subsByPath[sm.WorktreeDir] = append(subsByPath[sm.WorktreeDir], strippedPath)
 			}
+		}
+	}
+
+	subEntries := make(map[string]map[string]gitbatch.TreeEntry)
+	subDigests := make(map[string]map[string]string)
+	for worktreeDir, strippedPaths := range subsByPath {
+		entries, entriesErr := gitbatch.TreeEntriesForFilesInWorktree(context.Background(), worktreeDir, strippedPaths)
+		if entriesErr != nil {
+			return nil, fmt.Errorf("read submodule index at %q: %w", worktreeDir, entriesErr)
+		}
+		subEntries[worktreeDir] = entries
+
+		var regularPaths []string
+		for _, sp := range strippedPaths {
+			if e, ok := entries[sp]; ok && isRegularGitFileMode(e.Mode) {
+				regularPaths = append(regularPaths, sp)
+			}
+		}
+		if len(regularPaths) > 0 {
+			digests, digestErr := gitbatch.FileDigestsInWorktree(context.Background(), worktreeDir, regularPaths)
+			if digestErr != nil {
+				return nil, fmt.Errorf("read submodule file digests at %q: %w", worktreeDir, digestErr)
+			}
+			subDigests[worktreeDir] = digests
 		}
 	}
 
@@ -218,10 +246,8 @@ func (c *Changeset) digestPathsFromBase(repoRoot string, paths []string, regular
 		file := File{Path: normalizedPath}
 
 		if key, inSub := subFiles[normalizedPath]; inSub {
-			mode, exists, modeErr := pathModeInSubmodule(key.sm.WorktreeDir, key.strippedPath)
-			if modeErr != nil {
-				return nil, fmt.Errorf("check repository changeset path %q in submodule index: %w", normalizedPath, modeErr)
-			}
+			entries := subEntries[key.sm.WorktreeDir]
+			entry, exists := entries[key.strippedPath]
 			if !exists {
 				if regularFilesOnly {
 					return nil, fmt.Errorf("repository changeset input path %q does not exist", normalizedPath)
@@ -230,15 +256,15 @@ func (c *Changeset) digestPathsFromBase(repoRoot string, paths []string, regular
 				files = append(files, file)
 				continue
 			}
-			file.Mode = mode
-			if regularFilesOnly && !isRegularGitFileMode(mode) {
-				return nil, fmt.Errorf("repository changeset input path %q is %s; inputs.files must name regular files", normalizedPath, gitModeKind(mode))
+			file.Mode = entry.Mode
+			if regularFilesOnly && !isRegularGitFileMode(entry.Mode) {
+				return nil, fmt.Errorf("repository changeset input path %q is %s; inputs.files must name regular files", normalizedPath, gitModeKind(entry.Mode))
 			}
-			blob, blobErr := gitOutput(key.sm.WorktreeDir, os.Environ(), "show", ":"+key.strippedPath)
-			if blobErr != nil {
-				return nil, fmt.Errorf("read repository changeset path %q from submodule: %w", normalizedPath, blobErr)
+			digest, ok := subDigests[key.sm.WorktreeDir][key.strippedPath]
+			if !ok {
+				return nil, fmt.Errorf("read repository changeset path %q from submodule: missing digest", normalizedPath)
 			}
-			file.SHA256 = sha256Digest(blob)
+			file.SHA256 = digest
 			files = append(files, file)
 			continue
 		}
@@ -897,14 +923,6 @@ func checkGitlinkOptIn(repoRoot string, env []string, pattern string) error {
 		}
 	}
 	return nil
-}
-
-func pathModeInSubmodule(worktreeDir, strippedPath string) (string, bool, error) {
-	output, err := gitOutput(worktreeDir, os.Environ(), "ls-files", "--stage", "-z", "--", literalGitPathspec(strippedPath))
-	if err != nil {
-		return "", false, err
-	}
-	return gitIndexMode(output, strippedPath)
 }
 
 func listIndexPaths(repoRoot string, env []string) ([]string, error) {
