@@ -167,6 +167,8 @@ func (s *Service) finalizeServiceBlockVolumeBlockPlan(
 		RuntimeKey:                   strings.TrimSpace(runtimeBaseKey),
 		ReuseNamespace:               strings.TrimSpace(reuseNamespace),
 		CompiledPolicyHash:           strings.TrimSpace(compiled.Hash),
+		DestinationDir:               strings.TrimSpace(normalizeRepositoryCheckoutForComparison(repository).DestinationDir),
+		RepositorySourceDigest:       blockPlan.RepositorySourceDigest,
 		BlockName:                    strings.TrimSpace(block.Name),
 		CommandDigest:                blockPlan.CommandDigest,
 		EnvDigest:                    blockPlan.EnvDigest,

@@ -91,10 +91,11 @@ func TestFinalizeServiceBlockVolumePlanBuildsOrderedKeys(t *testing.T) {
 	}
 	for _, block := range plan.Blocks {
 		for name, value := range map[string]string{
-			"command": block.CommandDigest,
-			"env":     block.EnvDigest,
-			"inputs":  block.InputManifestDigest,
-			"outputs": block.NormalizedOutputsDigest,
+			"command":           block.CommandDigest,
+			"env":               block.EnvDigest,
+			"inputs":            block.InputManifestDigest,
+			"repository_source": block.RepositorySourceDigest,
+			"outputs":           block.NormalizedOutputsDigest,
 		} {
 			if !strings.HasPrefix(value, "sha256:") {
 				t.Fatalf("expected %s digest for block %q, got %q", name, block.BlockName, value)
@@ -114,6 +115,32 @@ func TestFinalizeServiceBlockVolumePlanBuildsOrderedKeys(t *testing.T) {
 	}
 	if got, want := mutatedPlan.Blocks[0].CacheKey, first.CacheKey; got == want {
 		t.Fatalf("expected first service block key to change after dependency output key mutation, got %q", got)
+	}
+
+	mutatedRepository := *repository
+	mutatedRepository.DestinationDir = "/src"
+	mutatedPlan, ok, err = svc.finalizeServiceBlockVolumePlan(context.Background(), compiled, &mutatedRepository, nil, nil, "firecracker", "runtime-base:test", dependencyPlan)
+	if err != nil {
+		t.Fatalf("finalizeServiceBlockVolumePlan destination mutation returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected destination-mutated service block-volume plan")
+	}
+	if got, want := mutatedPlan.Blocks[0].CacheKey, first.CacheKey; got == want {
+		t.Fatalf("expected first service block key to change after destination dir mutation, got %q", got)
+	}
+
+	mutatedRepository = *repository
+	mutatedRepository.Branch = "main"
+	mutatedPlan, ok, err = svc.finalizeServiceBlockVolumePlan(context.Background(), compiled, &mutatedRepository, nil, nil, "firecracker", "runtime-base:test", dependencyPlan)
+	if err != nil {
+		t.Fatalf("finalizeServiceBlockVolumePlan repository source mutation returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected repository-source-mutated service block-volume plan")
+	}
+	if got, want := mutatedPlan.Blocks[0].CacheKey, first.CacheKey; got == want {
+		t.Fatalf("expected first service block key to change after repository source mutation, got %q", got)
 	}
 }
 
@@ -895,7 +922,7 @@ func TestCreateSandboxPassesBlockVolumeSpecsToColdProvision(t *testing.T) {
 	}
 }
 
-func TestCreateSandboxReusesDependencyAndServiceBlockVolumesAfterSourceOnlyChange(t *testing.T) {
+func TestCreateSandboxInvalidatesDependencyAndServiceBlockVolumesAfterSourceOnlyChange(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	adapter := dependencyBlockVolumeRuntimeAdapter()
 	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
@@ -937,10 +964,7 @@ func TestCreateSandboxReusesDependencyAndServiceBlockVolumesAfterSourceOnlyChang
 
 	var blockExecutions []backend.ExecutionRequest
 	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
-		if req.InputProjection != nil {
-			if req.OverlayCapture == nil {
-				t.Fatalf("block-volume execution %q did not request overlay capture", strings.Join(req.Command, " "))
-			}
+		if req.OverlayCapture != nil {
 			blockExecutions = append(blockExecutions, req)
 		}
 		return &backend.ExecutionResult{
@@ -1002,38 +1026,38 @@ func TestCreateSandboxReusesDependencyAndServiceBlockVolumesAfterSourceOnlyChang
 	}); err != nil {
 		t.Fatalf("second CreateSandbox returned error: %v", err)
 	}
-	if got, want := adapter.runCalls, firstRunCalls+1; got != want {
-		t.Fatalf("expected source-only create to run only repository bootstrap, got total run calls %d want %d", got, want)
+	if got, want := adapter.runCalls, firstRunCalls+1+wantBlockExecutions; got != want {
+		t.Fatalf("expected source-only create to rerun repository bootstrap and block executions, got total run calls %d want %d", got, want)
 	}
-	if got, want := len(blockExecutions), wantBlockExecutions; got != want {
-		t.Fatalf("expected source-only create to skip dependency/service block executions, got %d total block executions want %d", got, want)
+	if got, want := len(blockExecutions), wantBlockExecutions*2; got != want {
+		t.Fatalf("expected source-only create to rerun dependency/service block executions, got %d total block executions want %d", got, want)
 	}
-	if got, want := adapter.snapshotCacheOutputsCalls, firstSnapshotCalls; got != want {
-		t.Fatalf("expected source-only create to avoid republishing block volumes, got snapshot calls %d want %d", got, want)
+	if got, want := adapter.snapshotCacheOutputsCalls, firstSnapshotCalls+wantBlockExecutions; got != want {
+		t.Fatalf("expected source-only create to republish block volumes for the new source identity, got snapshot calls %d want %d", got, want)
 	}
 	if got, want := cacheStore.getReadyCount(dependencyVolumeStageName), len(dependencyPlan.Blocks); got != want {
 		t.Fatalf("expected source-only create to look up %d dependency block volumes, got %d", want, got)
 	}
-	if got, want := cacheStore.getReadyHitCount(dependencyVolumeStageName), len(dependencyPlan.Blocks); got != want {
-		t.Fatalf("expected source-only create to hit %d dependency block volumes, got %d", want, got)
+	if got := cacheStore.getReadyHitCount(dependencyVolumeStageName); got != 0 {
+		t.Fatalf("expected source-only create to miss dependency block volumes for the new source identity, got %d hits", got)
 	}
 	if got, want := cacheStore.getReadyCount(serviceVolumeStageName), len(servicePlan.Blocks); got != want {
 		t.Fatalf("expected source-only create to look up %d service block volumes, got %d", want, got)
 	}
-	if got, want := cacheStore.getReadyHitCount(serviceVolumeStageName), len(servicePlan.Blocks); got != want {
-		t.Fatalf("expected source-only create to hit %d service block volumes, got %d", want, got)
+	if got := cacheStore.getReadyHitCount(serviceVolumeStageName); got != 0 {
+		t.Fatalf("expected source-only create to miss service block volumes for the new source identity, got %d hits", got)
 	}
 	if got, want := len(adapter.provisionReq.CacheOutputVolumes), wantBlockExecutions; got != want {
-		t.Fatalf("expected source-only create to attach %d restored block volumes, got %d", want, got)
+		t.Fatalf("expected source-only create to attach %d fresh block volumes, got %d", want, got)
 	}
 	for _, spec := range adapter.provisionReq.CacheOutputVolumes {
-		if strings.TrimSpace(spec.StorageRef) == "" || strings.TrimSpace(spec.SourceSnapshotRef) == "" {
-			t.Fatalf("expected source-only create to restore volume %q from cached storage, got storage=%q source_snapshot=%q", spec.VolumeID, spec.StorageRef, spec.SourceSnapshotRef)
+		if strings.TrimSpace(spec.StorageRef) != "" || strings.TrimSpace(spec.SourceSnapshotRef) != "" {
+			t.Fatalf("expected source-only create to use fresh volume %q for the new source identity, got storage=%q source_snapshot=%q", spec.VolumeID, spec.StorageRef, spec.SourceSnapshotRef)
 		}
 	}
 }
 
-func TestBootstrapServiceBlockVolumePlanRunsMissesFromInputProjection(t *testing.T) {
+func TestBootstrapServiceBlockVolumePlanRunsMissesFromWorkspaceOverlay(t *testing.T) {
 	t.Parallel()
 
 	compiled, err := policy.FromProto(testRepositoryTwoDependencyTwoServiceBlocksPolicy())
@@ -1105,20 +1129,8 @@ func TestBootstrapServiceBlockVolumePlanRunsMissesFromInputProjection(t *testing
 	if !strings.Contains(strings.Join(req.Env, "\n"), "APP_SERVICE_DATA=/var/lib/cleanroom/services/app") {
 		t.Fatalf("expected APP_SERVICE_DATA env, got %v", req.Env)
 	}
-	if req.InputProjection == nil {
-		t.Fatal("expected input projection")
-	}
-	if got, want := req.InputProjection.SourceRoot, "/workspace"; got != want {
-		t.Fatalf("unexpected projection source root: got %q want %q", got, want)
-	}
-	if got, want := req.InputProjection.TargetRoot, "/run/cleanroom/input-projections/services/app-service"; got != want {
-		t.Fatalf("unexpected projection target root: got %q want %q", got, want)
-	}
-	if got, want := strings.Join(req.InputProjection.Files, "\x00"), strings.Join([]string{"db/seed.sql", "docker-compose.yml", "scripts/prepare-app"}, "\x00"); got != want {
-		t.Fatalf("unexpected projection files: got %v", req.InputProjection.Files)
-	}
-	if !req.InputProjection.MountSourceReadOnly {
-		t.Fatal("expected projection to be mounted read-only over source")
+	if req.InputProjection != nil {
+		t.Fatalf("expected service block miss to run against the normal workspace, got projection %#v", req.InputProjection)
 	}
 	if req.OverlayCapture == nil {
 		t.Fatal("expected overlay capture request")

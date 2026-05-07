@@ -77,6 +77,8 @@ type DependencyVolumeInputs struct {
 	RuntimeKey                      string
 	ReuseNamespace                  string
 	CompiledPolicyHash              string
+	DestinationDir                  string
+	RepositorySourceDigest          string
 	BlockName                       string
 	CommandDigest                   string
 	EnvDigest                       string
@@ -94,6 +96,8 @@ type ServiceVolumeInputs struct {
 	RuntimeKey                   string
 	ReuseNamespace               string
 	CompiledPolicyHash           string
+	DestinationDir               string
+	RepositorySourceDigest       string
 	BlockName                    string
 	CommandDigest                string
 	EnvDigest                    string
@@ -181,6 +185,8 @@ func DependencyVolumeKey(in DependencyVolumeInputs) string {
 		{name: "runtime_key", value: canonicalReference(in.RuntimeKey)},
 		{name: "reuse_namespace", value: canonicalReuseNamespace(in.ReuseNamespace)},
 		{name: "compiled_policy_hash", value: canonicalDigest(in.CompiledPolicyHash)},
+		{name: "destination_dir", value: canonicalAbsolutePath(in.DestinationDir)},
+		{name: "repository_source_digest", value: canonicalDigest(in.RepositorySourceDigest)},
 		{name: "block_name", value: canonicalIdentifier(in.BlockName)},
 		{name: "command_digest", value: canonicalDigest(in.CommandDigest)},
 		{name: "env_digest", value: canonicalDigest(in.EnvDigest)},
@@ -200,6 +206,8 @@ func ServiceVolumeKey(in ServiceVolumeInputs) string {
 		{name: "runtime_key", value: canonicalReference(in.RuntimeKey)},
 		{name: "reuse_namespace", value: canonicalReuseNamespace(in.ReuseNamespace)},
 		{name: "compiled_policy_hash", value: canonicalDigest(in.CompiledPolicyHash)},
+		{name: "destination_dir", value: canonicalAbsolutePath(in.DestinationDir)},
+		{name: "repository_source_digest", value: canonicalDigest(in.RepositorySourceDigest)},
 		{name: "block_name", value: canonicalIdentifier(in.BlockName)},
 		{name: "command_digest", value: canonicalDigest(in.CommandDigest)},
 		{name: "env_digest", value: canonicalDigest(in.EnvDigest)},

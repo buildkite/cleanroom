@@ -30,6 +30,7 @@ type blockVolumeBlockPlan struct {
 	CommandDigest                   string
 	EnvDigest                       string
 	InputManifestDigest             string
+	RepositorySourceDigest          string
 	NormalizedOutputsDigest         string
 	DependencyOutputKeysDigest      string
 	PriorDependencyOutputKeysDigest string
@@ -104,6 +105,10 @@ func (s *Service) finalizeBlockVolumeBlockPlanBase(
 	if err != nil {
 		return blockVolumeBlockPlan{}, fmt.Errorf("digest %s block %q env: %w", phaseName, block.Name, err)
 	}
+	repositorySourceDigest, err := blockVolumeRepositorySourceDigest(repository, changeset)
+	if err != nil {
+		return blockVolumeBlockPlan{}, fmt.Errorf("digest %s block %q repository source: %w", phaseName, block.Name, err)
+	}
 	outputsDigest, err := digestCanonicalJSON(block.Outputs)
 	if err != nil {
 		return blockVolumeBlockPlan{}, fmt.Errorf("digest %s block %q outputs: %w", phaseName, block.Name, err)
@@ -118,8 +123,33 @@ func (s *Service) finalizeBlockVolumeBlockPlanBase(
 		CommandDigest:           commandDigest,
 		EnvDigest:               envDigest,
 		InputManifestDigest:     strings.TrimSpace(inputDigest),
+		RepositorySourceDigest:  repositorySourceDigest,
 		NormalizedOutputsDigest: outputsDigest,
 	}, nil
+}
+
+type blockVolumeRepositorySourceIdentity struct {
+	CanonicalRemoteURL          string `json:"canonical_remote_url,omitempty"`
+	CommitSHA                   string `json:"commit_sha,omitempty"`
+	SubmoduleMode               string `json:"submodule_mode,omitempty"`
+	ChangesetDigest             string `json:"changeset_digest,omitempty"`
+	CheckoutMode                string `json:"checkout_mode,omitempty"`
+	MaterializationRecipeDigest string `json:"materialization_recipe_digest,omitempty"`
+}
+
+func blockVolumeRepositorySourceDigest(repository *repositorycheckout.Checkout, changeset *repositorychangeset.Changeset) (string, error) {
+	normalizedRepository := normalizeRepositoryCheckoutForComparison(repository)
+	if normalizedRepository == nil {
+		return "", nil
+	}
+	return digestCanonicalJSON(blockVolumeRepositorySourceIdentity{
+		CanonicalRemoteURL:          strings.TrimSpace(normalizedRepository.RemoteURL),
+		CommitSHA:                   strings.TrimSpace(normalizedRepository.CommitSHA),
+		SubmoduleMode:               workspaceStageSubmoduleMode(normalizedRepository),
+		ChangesetDigest:             strings.TrimSpace(changesetDigest(changeset)),
+		CheckoutMode:                workspaceStageCheckoutMode(normalizedRepository),
+		MaterializationRecipeDigest: workspaceStageMaterializationRecipeDigest(normalizedRepository),
+	})
 }
 
 func lookupBlockVolumeCache(ctx context.Context, store cacheMetadataStore, stageName, backendName string, compiled *policy.CompiledPolicy, block blockVolumeBlockPlan) (blockVolumeBlockPlan, error) {

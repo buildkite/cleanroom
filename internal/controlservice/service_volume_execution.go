@@ -10,16 +10,13 @@ import (
 	"github.com/buildkite/cleanroom/internal/repositorycheckout"
 )
 
-const serviceInputProjectionRoot = "/run/cleanroom/input-projections/services"
-
 var serviceBlockVolumeExecutionPhase = blockVolumeExecutionPhase{
-	StageName:           serviceVolumeStageName,
-	StageLabel:          "service",
-	InputProjectionRoot: serviceInputProjectionRoot,
-	BootstrapPhase:      cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_BOOTSTRAP_SERVICES,
-	PublishPhase:        cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_PUBLISH_SERVICES_STAGE_CACHE,
-	NetworkStage:        policy.NetworkStageServices,
-	CachePublishPhase:   serviceBlockVolumePublishPhase,
+	StageName:         serviceVolumeStageName,
+	StageLabel:        "service",
+	BootstrapPhase:    cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_BOOTSTRAP_SERVICES,
+	PublishPhase:      cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_PUBLISH_SERVICES_STAGE_CACHE,
+	NetworkStage:      policy.NetworkStageServices,
+	CachePublishPhase: serviceBlockVolumePublishPhase,
 }
 
 type serviceBlockVolumePublishConfig struct {
