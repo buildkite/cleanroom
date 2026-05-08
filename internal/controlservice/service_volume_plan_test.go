@@ -14,6 +14,8 @@ import (
 	"github.com/buildkite/cleanroom/internal/observability"
 	"github.com/buildkite/cleanroom/internal/policy"
 	"github.com/buildkite/cleanroom/internal/repositorycheckout"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 func TestFinalizeServiceBlockVolumePlanBuildsOrderedKeys(t *testing.T) {
@@ -925,6 +927,126 @@ func TestCreateSandboxPassesBlockVolumeSpecsToColdProvision(t *testing.T) {
 	}
 }
 
+func TestCreateSandboxReusesDependencyAndServiceBlockVolumesAcrossWarmCreates(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	adapter := dependencyBlockVolumeRuntimeAdapter()
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"package-lock.json":      "{}\n",
+		"public/assets/.keep":    "",
+		"scripts/build-assets":   "#!/bin/sh\ntrue\n",
+		"scripts/prepare-docker": "#!/bin/sh\ntrue\n",
+		"docker-compose.yml":     "services:\n  app:\n    image: example/app\n",
+	})
+	repositoryCheckout.DestinationDir = "/src"
+	svc := newTestService(adapter)
+	svc.RepositoryStore = mirrors
+	cacheStore := &recordingCacheStore{inner: newMemoryCacheStore()}
+	svc.CacheStore = cacheStore
+
+	policyProto := testRepositoryWorkspaceAndDockerBlockVolumePolicy("/src")
+	var blockRuns []backend.ExecutionRequest
+	adapter.runStreamFn = func(_ context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
+		if req.OverlayCapture != nil {
+			blockRuns = append(blockRuns, req)
+		}
+		return &backend.ExecutionResult{
+			ExecutionID:    req.ExecutionID,
+			ExitCode:       0,
+			OverlayCapture: &backend.OverlayCaptureResult{},
+		}, nil
+	}
+	adapter.snapshotCacheOutputsFn = func(_ context.Context, req backend.SnapshotCacheOutputVolumesRequest) (*backend.SnapshotCacheOutputVolumesResult, error) {
+		specsByVolumeID := make(map[string]backend.CacheOutputVolumeSpec, len(adapter.provisionReq.CacheOutputVolumes))
+		for _, spec := range adapter.provisionReq.CacheOutputVolumes {
+			specsByVolumeID[spec.VolumeID] = spec
+		}
+		result := &backend.SnapshotCacheOutputVolumesResult{
+			Volumes: make([]backend.CacheOutputVolumeSnapshot, 0, len(req.VolumeIDs)),
+		}
+		for _, volumeID := range req.VolumeIDs {
+			spec, ok := specsByVolumeID[volumeID]
+			if !ok {
+				t.Fatalf("snapshot requested unknown cache output volume %q", volumeID)
+			}
+			result.Volumes = append(result.Volumes, blockVolumeReuseTestSnapshot(req.SnapshotIDPrefix, spec))
+		}
+		return result, nil
+	}
+
+	req := &cleanroomv1.CreateSandboxRequest{
+		Policy:             policyProto,
+		RepositoryCheckout: repositoryCheckout,
+	}
+	if _, err := svc.CreateSandbox(context.Background(), req); err != nil {
+		t.Fatalf("first CreateSandbox returned error: %v", err)
+	}
+	if got, want := len(blockRuns), 3; got != want {
+		t.Fatalf("expected first create to run dependency and service block misses, got %d want %d", got, want)
+	}
+	if got, want := adapter.snapshotCacheOutputsCalls, 3; got != want {
+		t.Fatalf("expected first create to snapshot dependency and service block volumes, got %d want %d", got, want)
+	}
+	assertBlockVolumeRunsUseWorkspaceRoot(t, blockRuns, "/src")
+	requireFreshCacheOutputSpec(t, adapter.provisionReq.CacheOutputVolumes, dependencyVolumeStageName, "node-modules", "/src/node_modules")
+	requireFreshCacheOutputSpec(t, adapter.provisionReq.CacheOutputVolumes, serviceVolumeStageName, "assets", "/src/public/assets")
+	requireFreshCacheOutputSpec(t, adapter.provisionReq.CacheOutputVolumes, serviceVolumeStageName, "docker-images", "/var/lib/docker")
+	assertReadyBlockVolumeRecords(t, cacheStore, dependencyVolumeStageName, []string{"/src/node_modules"})
+	assertReadyBlockVolumeRecords(t, cacheStore, serviceVolumeStageName, []string{"/var/lib/docker", "/src/public/assets"})
+
+	firstRunCalls := adapter.runCalls
+	cacheStore.resetLookups()
+	recorder := tracetest.NewSpanRecorder()
+	tracerProvider := sdktrace.NewTracerProvider()
+	tracerProvider.RegisterSpanProcessor(recorder)
+	t.Cleanup(func() {
+		_ = tracerProvider.Shutdown(context.Background())
+	})
+	obs, err := observability.NewWithTracerProvider(tracerProvider)
+	if err != nil {
+		t.Fatalf("NewWithTracerProvider returned error: %v", err)
+	}
+	svc.Observability = obs
+
+	resp, err := svc.CreateSandbox(context.Background(), req)
+	if err != nil {
+		t.Fatalf("second CreateSandbox returned error: %v", err)
+	}
+	if got, want := resp.GetSourceKind(), "workspace stage cache"; got != want {
+		t.Fatalf("unexpected second create source kind: got %q want %q", got, want)
+	}
+	if got, want := adapter.runCalls, firstRunCalls; got != want {
+		t.Fatalf("warm create reran bootstrap commands: got %d run calls want %d", got, want)
+	}
+	if got, want := cacheStore.getReadyHitCount(dependencyVolumeStageName), 1; got != want {
+		t.Fatalf("unexpected dependency block-volume hit count: got %d want %d", got, want)
+	}
+	if got, want := cacheStore.getReadyHitCount(serviceVolumeStageName), 2; got != want {
+		t.Fatalf("unexpected service block-volume hit count: got %d want %d", got, want)
+	}
+	if got, want := len(adapter.provisionFromSnapshotReq.CacheOutputVolumes), 3; got != want {
+		t.Fatalf("unexpected warm cache output volume count: got %d want %d", got, want)
+	}
+	requireSourceBackedCacheOutputSpec(t, adapter.provisionFromSnapshotReq.CacheOutputVolumes, dependencyVolumeStageName, "node-modules", "/src/node_modules")
+	requireSourceBackedCacheOutputSpec(t, adapter.provisionFromSnapshotReq.CacheOutputVolumes, serviceVolumeStageName, "assets", "/src/public/assets")
+	requireSourceBackedCacheOutputSpec(t, adapter.provisionFromSnapshotReq.CacheOutputVolumes, serviceVolumeStageName, "docker-images", "/var/lib/docker")
+
+	spans := recorder.Ended()
+	dependencyLookupSpan := findEndedSpanByName(spans, "cleanroom.sandbox.lookup_dependency_block_volume_caches")
+	if dependencyLookupSpan == nil {
+		t.Fatalf("expected dependency block-volume lookup span, got spans %#v", spans)
+	}
+	requireSpanAttributeValue(t, dependencyLookupSpan, observability.AttrCacheResult, observability.CacheResultHit)
+	requireSpanAttributeValue(t, dependencyLookupSpan, "cleanroom.cache.hit_count", "1")
+	requireSpanAttributeValue(t, dependencyLookupSpan, "cleanroom.cache.miss_count", "0")
+	serviceLookupSpan := findEndedSpanByName(spans, "cleanroom.sandbox.lookup_service_block_volume_caches")
+	if serviceLookupSpan == nil {
+		t.Fatalf("expected service block-volume lookup span, got spans %#v", spans)
+	}
+	requireSpanAttributeValue(t, serviceLookupSpan, observability.AttrCacheResult, observability.CacheResultHit)
+	requireSpanAttributeValue(t, serviceLookupSpan, "cleanroom.cache.hit_count", "2")
+	requireSpanAttributeValue(t, serviceLookupSpan, "cleanroom.cache.miss_count", "0")
+}
+
 func TestCreateSandboxInvalidatesDependencyAndServiceBlockVolumesAfterSourceOnlyChange(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	adapter := dependencyBlockVolumeRuntimeAdapter()
@@ -1154,6 +1276,65 @@ func TestBootstrapServiceBlockVolumePlanRunsMissesFromWorkspaceOverlay(t *testin
 	}
 	if !slices.Equal(req.OverlayCapture.IgnoredPrefixes, blockVolumeOverlayCaptureIgnoredPrefixes) {
 		t.Fatalf("unexpected overlay capture ignored prefixes: got %v want %v", req.OverlayCapture.IgnoredPrefixes, blockVolumeOverlayCaptureIgnoredPrefixes)
+	}
+}
+
+func TestBootstrapServiceBlockVolumePlanUsesRepositoryDestinationForMisses(t *testing.T) {
+	t.Parallel()
+
+	compiled, err := policy.FromProto(testRepositoryWorkspaceAndDockerBlockVolumePolicy("/src"))
+	if err != nil {
+		t.Fatalf("policy.FromProto returned error: %v", err)
+	}
+	repository := repositorycheckout.FromProto(testRepositoryCheckoutProto())
+	repository.DestinationDir = "/src"
+	plan := serviceBlockVolumePlan{
+		DependencyOutputDirs: []string{"/src/node_modules"},
+		Blocks: []serviceBlockVolumeBlockPlan{
+			{
+				BlockName: "assets",
+				Command:   append([]string(nil), compiled.Services.Blocks[0].Command...),
+				Env:       cloneDependencyBlockEnv(compiled.Services.Blocks[0].Env),
+				Inputs:    append([]string(nil), compiled.Services.Blocks[0].Inputs.Files...),
+				Outputs:   compiled.Services.Blocks[0].Outputs,
+				CacheKey:  "service-volume:assets",
+			},
+		},
+	}
+
+	var gotReq backend.ExecutionRequest
+	adapter := &stubAdapter{
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
+			gotReq = req
+			return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0}, nil
+		},
+	}
+	svc := newTestService(adapter)
+	publishable, err := svc.bootstrapServiceBlockVolumePlanInPersistentSandbox(
+		context.Background(),
+		adapter,
+		"cr-test",
+		serviceBlockVolumePublishConfig{},
+		compiled,
+		backend.FirecrackerConfig{},
+		repository,
+		plan,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("bootstrapServiceBlockVolumePlanInPersistentSandbox returned error: %v", err)
+	}
+	if !publishable {
+		t.Fatal("expected service block volume plan to remain publishable")
+	}
+	if got, want := gotReq.Dir, "/src"; got != want {
+		t.Fatalf("unexpected service block working dir: got %q want %q", got, want)
+	}
+	if gotReq.OverlayCapture == nil {
+		t.Fatal("expected overlay capture request")
+	}
+	if got, want := gotReq.OverlayCapture.BaselinePaths, []string{"/src/node_modules", "/src/public/assets"}; !slices.Equal(got, want) {
+		t.Fatalf("unexpected overlay capture baseline paths: got %v want %v", got, want)
 	}
 }
 
@@ -1511,6 +1692,131 @@ func testRepositoryTwoDependencyTwoServiceBlocksPolicy() *cleanroomv1.Policy {
 		},
 	}
 	return policyProto
+}
+
+func testRepositoryWorkspaceAndDockerBlockVolumePolicy(workspaceRoot string) *cleanroomv1.Policy {
+	policyProto := testRepositoryPolicy()
+	policyProto.Docker = &cleanroomv1.PolicyDocker{Required: true}
+	policyProto.Dependencies = &cleanroomv1.PolicyDependencies{
+		Blocks: []*cleanroomv1.PolicyBlock{
+			{
+				Name:    "node-modules",
+				Command: []string{"npm", "ci"},
+				Inputs:  &cleanroomv1.PolicyBlockInputs{Files: []string{"package-lock.json"}},
+				Outputs: &cleanroomv1.PolicyBlockOutputs{Dirs: []string{workspaceRoot + "/node_modules"}},
+			},
+		},
+	}
+	policyProto.Services = &cleanroomv1.PolicyServices{
+		Blocks: []*cleanroomv1.PolicyBlock{
+			{
+				Name:    "assets",
+				Command: []string{"./scripts/build-assets"},
+				Inputs: &cleanroomv1.PolicyBlockInputs{
+					Files: []string{"package-lock.json", "public/assets/.keep", "scripts/build-assets"},
+				},
+				Outputs: &cleanroomv1.PolicyBlockOutputs{Dirs: []string{workspaceRoot + "/public/assets"}},
+			},
+			{
+				Name:    "docker-images",
+				Command: []string{"./scripts/prepare-docker"},
+				Inputs: &cleanroomv1.PolicyBlockInputs{
+					Files: []string{"docker-compose.yml", "scripts/prepare-docker"},
+				},
+				Outputs: &cleanroomv1.PolicyBlockOutputs{Dirs: []string{"/var/lib/docker"}},
+			},
+		},
+	}
+	return policyProto
+}
+
+func assertReadyBlockVolumeRecords(t *testing.T, cacheStore cacheMetadataStore, stage string, wantPaths []string) {
+	t.Helper()
+	records, err := cacheStore.List(context.Background())
+	if err != nil {
+		t.Fatalf("List returned error: %v", err)
+	}
+	remaining := append([]string(nil), wantPaths...)
+	found := 0
+	for _, record := range records {
+		if record.Stage != stage {
+			continue
+		}
+		found++
+		if got, want := record.State, cacheStateReady; got != want {
+			t.Fatalf("unexpected %s record state for %q: got %q want %q", stage, record.CacheKey, got, want)
+		}
+		if got, want := len(record.OutputRecords), 1; got != want {
+			t.Fatalf("unexpected %s output record count for %q: got %d want %d", stage, record.CacheKey, got, want)
+		}
+		output := record.OutputRecords[0]
+		remaining = slices.DeleteFunc(remaining, func(path string) bool {
+			return path == output.Path
+		})
+		if output.Kind != "dir" {
+			t.Fatalf("unexpected %s output kind for %q: got %q", stage, record.CacheKey, output.Kind)
+		}
+		if strings.TrimSpace(output.StorageRef) == "" || strings.TrimSpace(output.SnapshotRef) == "" {
+			t.Fatalf("expected source-backed %s output record for %q, got %#v", stage, record.CacheKey, output)
+		}
+	}
+	if len(remaining) > 0 {
+		t.Fatalf("missing %s block-volume output records for paths %v", stage, remaining)
+	}
+	if got, want := found, len(wantPaths); got != want {
+		t.Fatalf("unexpected %s block-volume record count: got %d want %d", stage, got, want)
+	}
+}
+
+func assertBlockVolumeRunsUseWorkspaceRoot(t *testing.T, runs []backend.ExecutionRequest, workspaceRoot string) {
+	t.Helper()
+	for _, run := range runs {
+		if got, want := run.Dir, workspaceRoot; got != want {
+			t.Fatalf("unexpected block run working dir for %s: got %q want %q", run.ExecutionID, got, want)
+		}
+		if run.OverlayCapture == nil {
+			t.Fatalf("expected block run %s to use overlay capture", run.ExecutionID)
+		}
+		if !slices.ContainsFunc(run.OverlayCapture.BaselinePaths, func(path string) bool {
+			return path == workspaceRoot || strings.HasPrefix(path, workspaceRoot+"/")
+		}) {
+			t.Fatalf("expected block run %s to include %s overlay baselines, got %#v", run.ExecutionID, workspaceRoot, run.OverlayCapture.BaselinePaths)
+		}
+		for _, path := range append(append([]string(nil), run.OverlayCapture.BaselinePaths...), run.OverlayCapture.DeclaredFileOutputs...) {
+			if path == "/workspace" || strings.HasPrefix(path, "/workspace/") {
+				t.Fatalf("block run %s used hard-coded /workspace path %q in overlay capture %#v", run.ExecutionID, path, run.OverlayCapture)
+			}
+		}
+	}
+}
+
+func requireFreshCacheOutputSpec(t *testing.T, specs []backend.CacheOutputVolumeSpec, stage, blockName, guestPath string) backend.CacheOutputVolumeSpec {
+	t.Helper()
+	spec := requireCacheOutputVolumeSpec(t, specs, stage, blockName)
+	if strings.TrimSpace(spec.StorageRef) != "" || strings.TrimSpace(spec.SourceSnapshotRef) != "" {
+		t.Fatalf("expected cold %s/%s spec without source storage, got storage=%q source_snapshot=%q", stage, blockName, spec.StorageRef, spec.SourceSnapshotRef)
+	}
+	requireCacheOutputDirMapping(t, spec, stage, blockName, guestPath)
+	return spec
+}
+
+func requireSourceBackedCacheOutputSpec(t *testing.T, specs []backend.CacheOutputVolumeSpec, stage, blockName, guestPath string) backend.CacheOutputVolumeSpec {
+	t.Helper()
+	spec := requireCacheOutputVolumeSpec(t, specs, stage, blockName)
+	if strings.TrimSpace(spec.StorageRef) == "" || strings.TrimSpace(spec.SourceSnapshotRef) == "" {
+		t.Fatalf("expected warm %s/%s spec to be source-backed, got storage=%q source_snapshot=%q", stage, blockName, spec.StorageRef, spec.SourceSnapshotRef)
+	}
+	requireCacheOutputDirMapping(t, spec, stage, blockName, guestPath)
+	return spec
+}
+
+func requireCacheOutputDirMapping(t *testing.T, spec backend.CacheOutputVolumeSpec, stage, blockName, guestPath string) {
+	t.Helper()
+	if !slices.ContainsFunc(spec.DirMappings, func(mapping backend.CacheOutputDirMapping) bool {
+		return mapping.GuestPath == guestPath
+	}) {
+		t.Fatalf("expected %s/%s spec to map %q, got %#v", stage, blockName, guestPath, spec.DirMappings)
+	}
 }
 
 func serviceBlockVolumeTestRecord(compiled *policy.CompiledPolicy, block serviceBlockVolumeBlockPlan) cachestore.Record {
