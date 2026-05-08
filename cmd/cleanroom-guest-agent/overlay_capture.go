@@ -41,6 +41,7 @@ var overlayCaptureScratchMounts = []struct {
 }
 var overlayCaptureRuntimeSockets = []overlayCaptureRuntimeSocket{
 	{SourcePath: "/run/docker.sock", GuestPath: "/run/docker.sock"},
+	{SourcePath: "/var/run/docker.sock", GuestPath: "/var/run/docker.sock"},
 }
 
 func setupOverlayCapture(req vsockexec.ExecRequest) (string, func(), error) {

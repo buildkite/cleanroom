@@ -305,15 +305,27 @@ func TestBindOverlayCaptureRuntimeSocketsIgnoresMissingAndNonSocketPaths(t *test
 	}
 }
 
-func TestOverlayCaptureRuntimeSocketDefaultsStayUnderRunScratch(t *testing.T) {
+func TestOverlayCaptureRuntimeSocketDefaultsCoverDockerSocketPaths(t *testing.T) {
 	t.Parallel()
 
+	want := []overlayCaptureRuntimeSocket{
+		{SourcePath: "/run/docker.sock", GuestPath: "/run/docker.sock"},
+		{SourcePath: "/var/run/docker.sock", GuestPath: "/var/run/docker.sock"},
+	}
+	if len(overlayCaptureRuntimeSockets) != len(want) {
+		t.Fatalf("unexpected runtime socket count: got %d want %d", len(overlayCaptureRuntimeSockets), len(want))
+	}
 	for _, socket := range overlayCaptureRuntimeSockets {
-		if !strings.HasPrefix(socket.SourcePath, "/run/") {
-			t.Fatalf("runtime socket source %q is outside /run", socket.SourcePath)
+		if !strings.HasPrefix(socket.SourcePath, "/run/") && !strings.HasPrefix(socket.SourcePath, "/var/run/") {
+			t.Fatalf("runtime socket source %q is outside expected runtime dirs", socket.SourcePath)
 		}
-		if !strings.HasPrefix(socket.GuestPath, "/run/") {
-			t.Fatalf("runtime socket guest path %q is outside /run", socket.GuestPath)
+		if !strings.HasPrefix(socket.GuestPath, "/run/") && !strings.HasPrefix(socket.GuestPath, "/var/run/") {
+			t.Fatalf("runtime socket guest path %q is outside expected runtime dirs", socket.GuestPath)
+		}
+	}
+	for i, socket := range want {
+		if overlayCaptureRuntimeSockets[i] != socket {
+			t.Fatalf("unexpected runtime socket at %d: got %#v want %#v", i, overlayCaptureRuntimeSockets[i], socket)
 		}
 	}
 }
