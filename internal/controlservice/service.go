@@ -880,7 +880,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 				Changeset:                  changeset,
 				CacheOutputSnapshotAdapter: cacheOutputSnapshotAdapter,
 				Reporter:                   reporter,
-			}, servicesStagePlan, serviceBlockVolumePlan, serviceBlockVolumePlanAvailable, dependencyBlockVolumePublicationSafe); err != nil {
+			}, servicesStagePlan, serviceBlockVolumePlan, serviceBlockVolumePlanAvailable, dependencyBlockVolumePublicationSafe, false); err != nil {
 				return nil, err
 			}
 			if servicesStageCachingEnabled && !serviceBlockVolumePlanAvailable {
@@ -928,7 +928,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 				Changeset:                  changeset,
 				CacheOutputSnapshotAdapter: cacheOutputSnapshotAdapter,
 				Reporter:                   reporter,
-			}, servicesStagePlan, serviceBlockVolumePlan, serviceBlockVolumePlanAvailable, dependencyBlockVolumePublicationSafe); err != nil {
+			}, servicesStagePlan, serviceBlockVolumePlan, serviceBlockVolumePlanAvailable, dependencyBlockVolumePublicationSafe, dependencyBlockVolumePlanAvailable); err != nil {
 				return nil, err
 			}
 			if servicesStageCachingEnabled && !serviceBlockVolumePlanAvailable {
@@ -1104,7 +1104,7 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 			Changeset:                  changeset,
 			CacheOutputSnapshotAdapter: cacheOutputSnapshotAdapter,
 			Reporter:                   reporter,
-		}, servicesStagePlan, serviceBlockVolumePlan, serviceBlockVolumePlanAvailable, dependencyBlockVolumePublicationSafe); err != nil {
+		}, servicesStagePlan, serviceBlockVolumePlan, serviceBlockVolumePlanAvailable, dependencyBlockVolumePublicationSafe, dependencyBlockVolumePlanAvailable); err != nil {
 			return nil, err
 		}
 		if err := s.ensureSandboxCreateStillProvisioning(sandboxID); err != nil {

@@ -19,7 +19,7 @@ const (
 	serviceVolumeStageName = "service-volume"
 	// Bump when service block-volume production semantics change, including
 	// guest baseline environment defaults that can affect command behavior.
-	serviceVolumeProducerVersion     = "cleanroom/service-volume-v1"
+	serviceVolumeProducerVersion     = "cleanroom/service-volume-v2"
 	serviceVolumeOutputLayoutVersion = "aggregate-v1"
 )
 
@@ -118,9 +118,11 @@ func (s *Service) finalizeServiceBlockVolumePlan(
 	normalizedRepository := normalizeRepositoryCheckoutForComparison(repository)
 	reuseNamespace := cachekey.ReuseNamespace("", normalizedRepository.RemoteURL)
 	dependencyOutputKeys := dependencyBlockVolumePlanCacheKeys(dependencyPlan)
+	dependencyOutputDirs := dependencyBlockVolumePlanOutputDirs(dependencyPlan)
 	plan := serviceBlockVolumePlan{
 		ReuseNamespace:       reuseNamespace,
 		DependencyOutputKeys: dependencyOutputKeys,
+		DependencyOutputDirs: dependencyOutputDirs,
 	}
 	priorServiceOutputKeys := make([]string, 0, len(compiled.Services.Blocks))
 
@@ -203,6 +205,7 @@ func (s *Service) lookupServiceBlockVolumeCaches(ctx context.Context, backendNam
 	out := serviceBlockVolumePlan{
 		ReuseNamespace:       plan.ReuseNamespace,
 		DependencyOutputKeys: append([]string(nil), plan.DependencyOutputKeys...),
+		DependencyOutputDirs: append([]string(nil), plan.DependencyOutputDirs...),
 		Blocks:               make([]serviceBlockVolumeBlockPlan, len(plan.Blocks)),
 	}
 	copy(out.Blocks, plan.Blocks)
@@ -214,6 +217,14 @@ func (s *Service) lookupServiceBlockVolumeCaches(ctx context.Context, backendNam
 		out.Blocks[i] = serviceBlockVolumeBlockPlan(block)
 	}
 	return out, nil
+}
+
+func dependencyBlockVolumePlanOutputDirs(plan dependencyBlockVolumePlan) []string {
+	var out []string
+	for _, block := range plan.Blocks {
+		out = blockVolumeOverlayBaselinePaths(out, block.Outputs.Dirs)
+	}
+	return out
 }
 
 func serviceBlockVolumePlanHitMissCounts(plan serviceBlockVolumePlan) (hits, misses int) {

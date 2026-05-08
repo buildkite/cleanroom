@@ -64,10 +64,14 @@ func (s *Service) bootstrapServicesForCreateSandbox(
 	serviceBlockVolumePlan serviceBlockVolumePlan,
 	serviceBlockVolumePlanAvailable bool,
 	dependencyBlockVolumePublicationSafe bool,
+	dependencyBlockVolumeOutputsMounted bool,
 ) error {
 	emitCreateSandboxMessage(cfg.Reporter, cleanroomv1.CreateSandboxPhase_CREATE_SANDBOX_PHASE_BOOTSTRAP_SERVICES, "running services bootstrap")
 	err := s.traceCreateSandboxPhase(ctx, "cleanroom.sandbox.bootstrap_services", createSandboxBootstrapAttrs(cfg.BackendName, cfg.SandboxID, len(servicesStagePlan.BootstrapCommand), cfg.Repository), func(ctx context.Context) error {
 		if serviceBlockVolumePlanAvailable {
+			if !dependencyBlockVolumeOutputsMounted {
+				serviceBlockVolumePlan.DependencyOutputDirs = nil
+			}
 			publishConfig := serviceBlockVolumePublishConfig{
 				Adapter:    cfg.CacheOutputSnapshotAdapter,
 				Backend:    cfg.BackendName,

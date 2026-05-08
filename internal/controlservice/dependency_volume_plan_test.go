@@ -767,6 +767,7 @@ func TestBootstrapDependencyBlockVolumePlanRunsMissesFromWorkspaceOverlay(t *tes
 				Command:   append([]string(nil), compiled.Dependencies.Blocks[0].Command...),
 				Env:       cloneDependencyBlockEnv(compiled.Dependencies.Blocks[0].Env),
 				Inputs:    append([]string(nil), compiled.Dependencies.Blocks[0].Inputs.Files...),
+				Outputs:   compiled.Dependencies.Blocks[0].Outputs,
 				CacheHit:  true,
 			},
 			{
@@ -830,8 +831,10 @@ func TestBootstrapDependencyBlockVolumePlanRunsMissesFromWorkspaceOverlay(t *tes
 	if got, want := req.OverlayCapture.UpperDir, filepath.Join(blockVolumeOverlayCaptureRoot, blockVolumeID(dependencyVolumeStageName, plan.Blocks[1].CacheKey), "upper"); got != want {
 		t.Fatalf("unexpected overlay capture upper dir: got %q want %q", got, want)
 	}
-	if !slices.Equal(req.OverlayCapture.BaselinePaths, plan.Blocks[1].Outputs.Dirs) {
-		t.Fatalf("unexpected overlay capture baseline paths: got %v want %v", req.OverlayCapture.BaselinePaths, plan.Blocks[1].Outputs.Dirs)
+	wantBaselinePaths := append([]string(nil), plan.Blocks[0].Outputs.Dirs...)
+	wantBaselinePaths = append(wantBaselinePaths, plan.Blocks[1].Outputs.Dirs...)
+	if !slices.Equal(req.OverlayCapture.BaselinePaths, wantBaselinePaths) {
+		t.Fatalf("unexpected overlay capture baseline paths: got %v want %v", req.OverlayCapture.BaselinePaths, wantBaselinePaths)
 	}
 	if !slices.Equal(req.OverlayCapture.DeclaredFileOutputs, plan.Blocks[1].Outputs.Files) {
 		t.Fatalf("unexpected overlay capture file outputs: got %v want %v", req.OverlayCapture.DeclaredFileOutputs, plan.Blocks[1].Outputs.Files)
