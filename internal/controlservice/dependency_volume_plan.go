@@ -19,7 +19,7 @@ const (
 	dependencyVolumeStageName = "dependency-volume"
 	// Bump when dependency block-volume production semantics change, including
 	// guest baseline environment defaults that can affect command behavior.
-	dependencyVolumeProducerVersion     = "cleanroom/dependency-volume-v1"
+	dependencyVolumeProducerVersion     = "cleanroom/dependency-volume-v2"
 	dependencyVolumeOutputLayoutVersion = "aggregate-v1"
 )
 

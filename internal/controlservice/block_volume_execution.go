@@ -25,11 +25,12 @@ type blockVolumeExecutionPhase struct {
 }
 
 type blockVolumeExecutionPublishConfig struct {
-	Adapter            backend.CacheOutputVolumeSnapshottingAdapter
-	Backend            string
-	Changeset          *repositorychangeset.Changeset
-	Repository         *repositorycheckout.Checkout
-	ForceExactFallback bool
+	Adapter             backend.CacheOutputVolumeSnapshottingAdapter
+	Backend             string
+	Changeset           *repositorychangeset.Changeset
+	Repository          *repositorycheckout.Checkout
+	InitialBaselineDirs []string
+	ForceExactFallback  bool
 }
 
 func (s *Service) bootstrapBlockVolumePlanInPersistentSandbox(
@@ -49,6 +50,7 @@ func (s *Service) bootstrapBlockVolumePlanInPersistentSandbox(
 	}
 
 	publishable := !publish.ForceExactFallback
+	baselineDirs := append([]string(nil), publish.InitialBaselineDirs...)
 	for _, block := range blocks {
 		blockName := strings.TrimSpace(block.BlockName)
 		if !publishable {
@@ -57,10 +59,12 @@ func (s *Service) bootstrapBlockVolumePlanInPersistentSandbox(
 			if _, err := s.bootstrapBlockVolumeFallback(ctx, adapter, sandboxID, compiled, firecrackerCfg, repository, phase, block, true, reporter); err != nil {
 				return publishable, fmt.Errorf("%s block %q fallback: %w", phase.StageLabel, blockName, err)
 			}
+			baselineDirs = blockVolumeOverlayBaselinePaths(baselineDirs, block.Outputs.Dirs)
 			continue
 		}
 		if block.CacheHit {
 			emitCreateSandboxMessage(reporter, phase.BootstrapPhase, fmt.Sprintf("restoring %s outputs: %s", phase.StageLabel, blockName))
+			baselineDirs = blockVolumeOverlayBaselinePaths(baselineDirs, block.Outputs.Dirs)
 			continue
 		}
 
@@ -78,7 +82,7 @@ func (s *Service) bootstrapBlockVolumePlanInPersistentSandbox(
 		var result *backend.ExecutionResult
 		if err := s.traceCreateSandboxPhase(ctx, fmt.Sprintf("cleanroom.sandbox.bootstrap_%s_block", phase.StageLabel), attrs, func(ctx context.Context) error {
 			var err error
-			result, err = s.bootstrapBlockVolumeBlock(ctx, adapter, sandboxID, compiled, firecrackerCfg, repository, phase, block, reporter)
+			result, err = s.bootstrapBlockVolumeBlock(ctx, adapter, sandboxID, compiled, firecrackerCfg, repository, phase, block, baselineDirs, reporter)
 			return err
 		}); err != nil {
 			return publishable, fmt.Errorf("%s block %q: %w", phase.StageLabel, blockName, err)
@@ -91,6 +95,7 @@ func (s *Service) bootstrapBlockVolumePlanInPersistentSandbox(
 				return publishable, fmt.Errorf("%s block %q fallback: %w", phase.StageLabel, blockName, err)
 			}
 		}
+		baselineDirs = blockVolumeOverlayBaselinePaths(baselineDirs, block.Outputs.Dirs)
 		if publishable && publish.Adapter != nil {
 			emitCreateSandboxMessage(reporter, phase.PublishPhase, fmt.Sprintf("publishing %s outputs: %s", phase.StageLabel, blockName))
 			s.maybePublishBlockVolumeCaches(ctx, publish.Adapter, sandboxID, publish.Backend, compiled, firecrackerCfg, publish.Repository, publish.Changeset, phase.CachePublishPhase, []blockVolumePublishBlock{
@@ -144,6 +149,7 @@ func (s *Service) bootstrapBlockVolumeBlock(
 	repository *repositorycheckout.Checkout,
 	phase blockVolumeExecutionPhase,
 	block blockVolumeBlockPlan,
+	priorOutputDirs []string,
 	reporter CreateSandboxReporter,
 ) (*backend.ExecutionResult, error) {
 	if len(block.Command) == 0 {
@@ -166,7 +172,7 @@ func (s *Service) bootstrapBlockVolumeBlock(
 			Dir:                     sourceRoot,
 			ClosedEnv:               true,
 			CacheOutputFileCaptures: blockVolumeFileCaptures(phase.StageName, block.CacheKey, block.Outputs),
-			OverlayCapture:          blockVolumeOverlayCapture(phase.StageName, block.CacheKey, block.Outputs),
+			OverlayCapture:          blockVolumeOverlayCapture(phase.StageName, block.CacheKey, block.Outputs, priorOutputDirs),
 		},
 		reporter,
 	)

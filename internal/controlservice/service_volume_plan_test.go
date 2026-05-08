@@ -59,6 +59,9 @@ func TestFinalizeServiceBlockVolumePlanBuildsOrderedKeys(t *testing.T) {
 	if got, want := len(plan.DependencyOutputKeys), len(dependencyPlan.Blocks); got != want {
 		t.Fatalf("unexpected dependency output key count: got %d want %d", got, want)
 	}
+	if got, want := plan.DependencyOutputDirs, dependencyBlockVolumePlanOutputDirs(dependencyPlan); !slices.Equal(got, want) {
+		t.Fatalf("unexpected dependency output dirs: got %v want %v", got, want)
+	}
 
 	first := plan.Blocks[0]
 	second := plan.Blocks[1]
@@ -1066,12 +1069,14 @@ func TestBootstrapServiceBlockVolumePlanRunsMissesFromWorkspaceOverlay(t *testin
 	}
 	repository := repositorycheckout.FromProto(testRepositoryCheckoutProto())
 	plan := serviceBlockVolumePlan{
+		DependencyOutputDirs: []string{"/root/.local/share/mise", "/root/go/pkg/mod"},
 		Blocks: []serviceBlockVolumeBlockPlan{
 			{
 				BlockName: "postgres-data",
 				Command:   append([]string(nil), compiled.Services.Blocks[0].Command...),
 				Env:       cloneDependencyBlockEnv(compiled.Services.Blocks[0].Env),
 				Inputs:    append([]string(nil), compiled.Services.Blocks[0].Inputs.Files...),
+				Outputs:   compiled.Services.Blocks[0].Outputs,
 				CacheHit:  true,
 			},
 			{
@@ -1138,14 +1143,78 @@ func TestBootstrapServiceBlockVolumePlanRunsMissesFromWorkspaceOverlay(t *testin
 	if got, want := req.OverlayCapture.UpperDir, filepath.Join(blockVolumeOverlayCaptureRoot, blockVolumeID(serviceVolumeStageName, plan.Blocks[1].CacheKey), "upper"); got != want {
 		t.Fatalf("unexpected overlay capture upper dir: got %q want %q", got, want)
 	}
-	if !slices.Equal(req.OverlayCapture.BaselinePaths, plan.Blocks[1].Outputs.Dirs) {
-		t.Fatalf("unexpected overlay capture baseline paths: got %v want %v", req.OverlayCapture.BaselinePaths, plan.Blocks[1].Outputs.Dirs)
+	wantBaselinePaths := append([]string(nil), plan.DependencyOutputDirs...)
+	wantBaselinePaths = append(wantBaselinePaths, plan.Blocks[0].Outputs.Dirs...)
+	wantBaselinePaths = append(wantBaselinePaths, plan.Blocks[1].Outputs.Dirs...)
+	if !slices.Equal(req.OverlayCapture.BaselinePaths, wantBaselinePaths) {
+		t.Fatalf("unexpected overlay capture baseline paths: got %v want %v", req.OverlayCapture.BaselinePaths, wantBaselinePaths)
 	}
 	if !slices.Equal(req.OverlayCapture.DeclaredFileOutputs, plan.Blocks[1].Outputs.Files) {
 		t.Fatalf("unexpected overlay capture file outputs: got %v want %v", req.OverlayCapture.DeclaredFileOutputs, plan.Blocks[1].Outputs.Files)
 	}
 	if !slices.Equal(req.OverlayCapture.IgnoredPrefixes, blockVolumeOverlayCaptureIgnoredPrefixes) {
 		t.Fatalf("unexpected overlay capture ignored prefixes: got %v want %v", req.OverlayCapture.IgnoredPrefixes, blockVolumeOverlayCaptureIgnoredPrefixes)
+	}
+}
+
+func TestBootstrapServicesForCreateSandboxSkipsDependencyOutputBaselinesWhenUnmounted(t *testing.T) {
+	t.Parallel()
+
+	compiled, err := policy.FromProto(testRepositoryTwoDependencyTwoServiceBlocksPolicy())
+	if err != nil {
+		t.Fatalf("policy.FromProto returned error: %v", err)
+	}
+	repository := repositorycheckout.FromProto(testRepositoryCheckoutProto())
+	plan := serviceBlockVolumePlan{
+		DependencyOutputDirs: []string{"/root/.local/share/mise", "/root/go/pkg/mod"},
+		Blocks: []serviceBlockVolumeBlockPlan{
+			{
+				BlockName: "app-service",
+				Command:   append([]string(nil), compiled.Services.Blocks[1].Command...),
+				Env:       cloneDependencyBlockEnv(compiled.Services.Blocks[1].Env),
+				Inputs:    append([]string(nil), compiled.Services.Blocks[1].Inputs.Files...),
+				Outputs:   compiled.Services.Blocks[1].Outputs,
+				CacheKey:  "service-volume:app-service",
+			},
+		},
+	}
+
+	var gotReqs []backend.ExecutionRequest
+	adapter := &stubAdapter{
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
+			gotReqs = append(gotReqs, req)
+			return &backend.ExecutionResult{ExecutionID: req.ExecutionID, ExitCode: 0}, nil
+		},
+	}
+	svc := newTestService(adapter)
+	err = svc.bootstrapServicesForCreateSandbox(
+		context.Background(),
+		createSandboxCacheBootstrapConfig{
+			Adapter:           adapter,
+			BackendName:       "firecracker",
+			SandboxID:         "cr-test",
+			Compiled:          compiled,
+			FirecrackerConfig: backend.FirecrackerConfig{},
+			Repository:        repository,
+		},
+		servicesStagePlan{},
+		plan,
+		true,
+		true,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("bootstrapServicesForCreateSandbox returned error: %v", err)
+	}
+	if got, want := len(gotReqs), 1; got != want {
+		t.Fatalf("unexpected run count: got %d want %d", got, want)
+	}
+	req := gotReqs[0]
+	if req.OverlayCapture == nil {
+		t.Fatal("expected overlay capture request")
+	}
+	if !slices.Equal(req.OverlayCapture.BaselinePaths, plan.Blocks[0].Outputs.Dirs) {
+		t.Fatalf("unexpected overlay capture baseline paths: got %v want %v", req.OverlayCapture.BaselinePaths, plan.Blocks[0].Outputs.Dirs)
 	}
 }
 

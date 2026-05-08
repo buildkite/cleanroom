@@ -52,6 +52,7 @@ type dependencyBlockVolumeBlockPlan blockVolumeBlockPlan
 type serviceBlockVolumePlan struct {
 	ReuseNamespace       string
 	DependencyOutputKeys []string
+	DependencyOutputDirs []string
 	Blocks               []serviceBlockVolumeBlockPlan
 }
 
