@@ -102,21 +102,33 @@ func TestCreateSnapshotSyncsPausesAndClonesRootFS(t *testing.T) {
 	}
 	t.Cleanup(func() { sendProcessSignal = prevSignal })
 
+	wantMounts := []vsockexec.CacheOutputMount{
+		{
+			DevicePath: "/dev/vdb",
+			MountPath:  "/run/cleanroom/cache-output-volumes/cacheout0",
+			DirMappings: []vsockexec.CacheOutputDirMount{
+				{GuestPath: "/workspace/node_modules", Subpath: "dirs/0"},
+			},
+		},
+	}
+	var gotMounts []vsockexec.CacheOutputMount
 	adapter := &Adapter{
 		runGuestCommandFn: func(_ context.Context, _ context.Context, _ <-chan struct{}, _ func() error, _ string, _ uint32, req vsockexec.ExecRequest, _ backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error) {
 			if len(req.Command) != 1 || req.Command[0] != "sync" {
 				t.Fatalf("unexpected command: %v", req.Command)
 			}
+			gotMounts = cloneCacheOutputMounts(req.CacheOutputMounts)
 			return vsockexec.ExecResponse{ExitCode: 0}, guestExecTiming{}, nil
 		},
 		sandboxes: map[string]*sandboxInstance{
 			"cr-test": {
-				SandboxID:    "cr-test",
-				VsockPath:    "/tmp/fake.sock",
-				GuestPort:    10700,
-				fcCmd:        &exec.Cmd{Process: &os.Process{Pid: 42}},
-				exitedCh:     make(chan struct{}),
-				vmRootFSPath: rootfsPath,
+				SandboxID:         "cr-test",
+				VsockPath:         "/tmp/fake.sock",
+				GuestPort:         10700,
+				fcCmd:             &exec.Cmd{Process: &os.Process{Pid: 42}},
+				exitedCh:          make(chan struct{}),
+				vmRootFSPath:      rootfsPath,
+				cacheOutputMounts: cloneCacheOutputMounts(wantMounts),
 			},
 		},
 	}
@@ -141,6 +153,9 @@ func TestCreateSnapshotSyncsPausesAndClonesRootFS(t *testing.T) {
 	}
 	if got, want := string(data), "snapshot-bytes"; got != want {
 		t.Fatalf("unexpected snapshot contents: got %q want %q", got, want)
+	}
+	if !reflect.DeepEqual(gotMounts, wantMounts) {
+		t.Fatalf("unexpected sync cache output mounts: got %#v want %#v", gotMounts, wantMounts)
 	}
 	if len(signals) != 2 || signals[0] != syscall.SIGSTOP || signals[1] != syscall.SIGCONT {
 		t.Fatalf("unexpected signals: %v", signals)

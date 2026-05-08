@@ -416,11 +416,14 @@ func TestCacheOutputCaptureSourcePathResolvesAbsoluteSymlinkInsideSourceRoot(t *
 func TestSetupCacheOutputMountsOnceRejectsChangedPlan(t *testing.T) {
 	cacheOutputMountState.Lock()
 	previousSignature := cacheOutputMountState.signature
+	previousMountedTargets := append([]string(nil), cacheOutputMountState.mountedTargets...)
 	cacheOutputMountState.signature = "first"
+	cacheOutputMountState.mountedTargets = nil
 	cacheOutputMountState.Unlock()
 	t.Cleanup(func() {
 		cacheOutputMountState.Lock()
 		cacheOutputMountState.signature = previousSignature
+		cacheOutputMountState.mountedTargets = previousMountedTargets
 		cacheOutputMountState.Unlock()
 	})
 
@@ -438,5 +441,48 @@ func TestSetupCacheOutputMountsOnceRejectsChangedPlan(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "mount plan changed") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestSetupCacheOutputMountsOnceClearsMountedTargetsOnEmptyPlan(t *testing.T) {
+	cacheOutputMountState.Lock()
+	previousSignature := cacheOutputMountState.signature
+	previousMountedTargets := append([]string(nil), cacheOutputMountState.mountedTargets...)
+	cacheOutputMountState.signature = "first"
+	cacheOutputMountState.mountedTargets = []string{"/run/cleanroom/cache-output-volumes/cacheout0", "/workspace/node_modules"}
+	cacheOutputMountState.Unlock()
+	t.Cleanup(func() {
+		cacheOutputMountState.Lock()
+		cacheOutputMountState.signature = previousSignature
+		cacheOutputMountState.mountedTargets = previousMountedTargets
+		cacheOutputMountState.Unlock()
+	})
+
+	previousUnmount := unmountCacheOutputTarget
+	var unmounts []string
+	unmountCacheOutputTarget = func(target string, flags int) error {
+		if flags != unix.MNT_DETACH {
+			t.Fatalf("unexpected unmount flags: got %d want %d", flags, unix.MNT_DETACH)
+		}
+		unmounts = append(unmounts, target)
+		return nil
+	}
+	t.Cleanup(func() { unmountCacheOutputTarget = previousUnmount })
+
+	if err := setupCacheOutputMountsOnce(nil); err != nil {
+		t.Fatalf("setupCacheOutputMountsOnce returned error: %v", err)
+	}
+
+	wantUnmounts := []string{"/workspace/node_modules", "/run/cleanroom/cache-output-volumes/cacheout0"}
+	if !reflect.DeepEqual(unmounts, wantUnmounts) {
+		t.Fatalf("unexpected unmounts: got %#v want %#v", unmounts, wantUnmounts)
+	}
+	cacheOutputMountState.Lock()
+	defer cacheOutputMountState.Unlock()
+	if cacheOutputMountState.signature != "" {
+		t.Fatalf("expected cleared signature, got %q", cacheOutputMountState.signature)
+	}
+	if len(cacheOutputMountState.mountedTargets) != 0 {
+		t.Fatalf("expected cleared mounted targets, got %#v", cacheOutputMountState.mountedTargets)
 	}
 }

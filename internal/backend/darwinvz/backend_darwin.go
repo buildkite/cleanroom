@@ -1549,14 +1549,14 @@ func (a *Adapter) executeInSandbox(bootCtx context.Context, runCtx context.Conte
 		return nil, errors.New("missing command")
 	}
 
-	policy := req.Policy
-	if policy == nil {
-		policy = instance.Policy
+	activePolicy := req.Policy
+	if activePolicy == nil {
+		activePolicy = instance.Policy
 	}
-	if policy == nil {
+	if activePolicy == nil {
 		return nil, errors.New("missing compiled policy")
 	}
-	networkPolicy := policy.NetworkPolicyForStage(req.NetworkStage)
+	networkPolicy := activePolicy.NetworkPolicyForStage(req.NetworkStage)
 	allowlistSupported, allowlistStatusDetail, _, supportErr := allowlistSupportForConfig(instance.FirecrackerConfig)
 	if supportErr != nil {
 		return nil, supportErr
@@ -1653,10 +1653,12 @@ func (a *Adapter) executeInSandbox(bootCtx context.Context, runCtx context.Conte
 		Env:                     append([]string(nil), req.Env...),
 		ClosedEnv:               req.ClosedEnv,
 		TTY:                     req.TTY,
-		CacheOutputMounts:       cloneDarwinVZCacheOutputMounts(instance.cacheOutputMounts),
 		CacheOutputFileCaptures: cacheOutputCaptures,
 		InputProjection:         darwinVZInputProjection(req.InputProjection),
 		OverlayCapture:          guestexec.ToVSOCKOverlayCapture(req.OverlayCapture),
+	}
+	if req.NetworkStage != policy.NetworkStageWorkspace {
+		guestReq.CacheOutputMounts = cloneDarwinVZCacheOutputMounts(instance.cacheOutputMounts)
 	}
 	if !req.ClosedEnv && a.GatewayRegistry != nil && gatewayScopeToken != "" {
 		gwPort := a.GatewayPort

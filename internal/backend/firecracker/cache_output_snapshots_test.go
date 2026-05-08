@@ -51,18 +51,30 @@ func TestSnapshotCacheOutputVolumesSyncsPausesAndSnapshotsSelectedVolumes(t *tes
 	}
 
 	var syncCommands [][]string
+	wantMounts := []vsockexec.CacheOutputMount{
+		{
+			DevicePath: "/dev/vdb",
+			MountPath:  "/run/cleanroom/cache-output-volumes/cacheout0",
+			DirMappings: []vsockexec.CacheOutputDirMount{
+				{GuestPath: "/workspace/node_modules", Subpath: "dirs/0"},
+			},
+		},
+	}
+	var gotSyncMounts []vsockexec.CacheOutputMount
 	adapter := &Adapter{
 		runGuestCommandFn: func(_ context.Context, _ context.Context, _ <-chan struct{}, _ func() error, _ string, _ uint32, req vsockexec.ExecRequest, _ backend.OutputStream) (vsockexec.ExecResponse, guestExecTiming, error) {
 			syncCommands = append(syncCommands, append([]string(nil), req.Command...))
+			gotSyncMounts = cloneCacheOutputMounts(req.CacheOutputMounts)
 			return vsockexec.ExecResponse{ExitCode: 0}, guestExecTiming{}, nil
 		},
 		sandboxes: map[string]*sandboxInstance{
 			"cr-test": {
-				SandboxID: "cr-test",
-				VsockPath: "/tmp/fake.sock",
-				GuestPort: 10700,
-				fcCmd:     &exec.Cmd{Process: &os.Process{Pid: 42}},
-				exitedCh:  make(chan struct{}),
+				SandboxID:         "cr-test",
+				VsockPath:         "/tmp/fake.sock",
+				GuestPort:         10700,
+				fcCmd:             &exec.Cmd{Process: &os.Process{Pid: 42}},
+				exitedCh:          make(chan struct{}),
+				cacheOutputMounts: cloneCacheOutputMounts(wantMounts),
 				cacheOutputVolumes: []preparedCacheOutputVolume{
 					testPreparedCacheOutputVolumeWithDriver("dependency-volume", "deps", "key-a", "volume-a", "volume-a-ref", "file"),
 					testPreparedCacheOutputVolume("dependency-volume", "tools", "key-b", "volume-b", "volume-b-ref"),
@@ -84,6 +96,9 @@ func TestSnapshotCacheOutputVolumesSyncsPausesAndSnapshotsSelectedVolumes(t *tes
 	}
 	if got, want := syncCommands, [][]string{{"sync"}}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("unexpected sync commands: got %#v want %#v", got, want)
+	}
+	if !reflect.DeepEqual(gotSyncMounts, wantMounts) {
+		t.Fatalf("unexpected sync cache output mounts: got %#v want %#v", gotSyncMounts, wantMounts)
 	}
 	if got, want := signals, []syscall.Signal{syscall.SIGSTOP, syscall.SIGCONT}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("unexpected signals: got %v want %v", got, want)
