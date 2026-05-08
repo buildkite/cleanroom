@@ -83,3 +83,16 @@ func validateRepositoryCheckoutForPolicy(compiled *policy.CompiledPolicy, reposi
 	}
 	return nil
 }
+
+func validateRepositoryScopedCreatePolicy(compiled *policy.CompiledPolicy, repository *repositorycheckout.Checkout) error {
+	if compiled == nil || repository != nil {
+		return nil
+	}
+	if len(compiled.Dependencies.Blocks) > 0 {
+		return errors.New("sandbox.dependencies blocks require repository checkout")
+	}
+	if len(compiled.Services.Blocks) > 0 {
+		return errors.New("sandbox.services blocks require repository checkout")
+	}
+	return nil
+}

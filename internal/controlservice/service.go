@@ -360,13 +360,16 @@ func (s *Service) createSandbox(ctx context.Context, req *cleanroomv1.CreateSand
 	if err != nil {
 		return nil, fmt.Errorf("invalid policy: %w", err)
 	}
+	repository := repositorycheckout.FromProto(req.GetRepositoryCheckout())
+	if err := validateRepositoryScopedCreatePolicy(compiled, repository); err != nil {
+		return nil, err
+	}
 
 	span.SetAttributes(attribute.String(observability.AttrBackend, backendName))
 	adapter, ok := s.Backends[backendName]
 	if !ok {
 		return nil, fmt.Errorf("unknown backend %q", backendName)
 	}
-	repository := repositorycheckout.FromProto(req.GetRepositoryCheckout())
 	if repository != nil {
 		if commitSHA := strings.TrimSpace(repository.CommitSHA); commitSHA != "" {
 			span.SetAttributes(attribute.String(observability.AttrRepositoryCommitSHA, commitSHA))
