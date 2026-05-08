@@ -193,6 +193,13 @@ explicit request-time changeset input.
   characters. `${HOME}`, `$HOME`, and `~` expand to the Cleanroom block
   execution home, while `${WORKSPACE}` and `$WORKSPACE` expand to the normalized
   repository path.
+- Directory outputs may already exist in the repository, such as
+  `public/assets/.keep`. On a cache miss, Cleanroom seeds the empty output
+  volume from that directory before the block runs. On a cache hit, the cached
+  output volume is authoritative and is mounted over the checkout directory.
+  Seed files do not need to be listed separately in `inputs.files` just to be
+  copied into the output volume; seed changes are covered by the repository and
+  changeset identity used in the block cache key.
 - Block `env` values are literal strings, except leading home-directory
   and workspace shorthand forms (`~`, `~/`, `$HOME`, `$HOME/`, `${HOME}`,
   `${HOME}/`, `$WORKSPACE`, `$WORKSPACE/`, `${WORKSPACE}`, `${WORKSPACE}/`)

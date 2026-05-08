@@ -37,10 +37,39 @@ func TestCacheOutputMountActionsMapsDirsAndRestoresFiles(t *testing.T) {
 		{Kind: cacheOutputActionMkdir, Target: "/run/cleanroom/cache-output-volumes/cacheout0", Mode: 0o755},
 		{Kind: cacheOutputActionMount, Source: "/dev/vdb", Target: "/run/cleanroom/cache-output-volumes/cacheout0", FSType: "ext4"},
 		{Kind: cacheOutputActionMkdir, Source: "/run/cleanroom/cache-output-volumes/cacheout0/dirs/0", VolumeRoot: "/run/cleanroom/cache-output-volumes/cacheout0", VolumeSubpath: "dirs/0", Mode: 0o755, RequireExisting: true},
-		{Kind: cacheOutputActionMkdir, Target: "/root/.local/share/mise", Mode: 0o755, RequireEmpty: true},
+		{Kind: cacheOutputActionMkdir, Target: "/root/.local/share/mise", Mode: 0o755},
 		{Kind: cacheOutputActionBind, Source: "/run/cleanroom/cache-output-volumes/cacheout0/dirs/0", Target: "/root/.local/share/mise", VolumeRoot: "/run/cleanroom/cache-output-volumes/cacheout0", VolumeSubpath: "dirs/0", Flags: unix.MS_BIND},
 		{Kind: cacheOutputActionMkdir, Target: "/root/.config/mise", Mode: 0o755},
 		{Kind: cacheOutputActionRestoreFile, Source: "/run/cleanroom/cache-output-volumes/cacheout0/files/0", Target: "/root/.config/mise/config.toml", VolumeRoot: "/run/cleanroom/cache-output-volumes/cacheout0", VolumeSubpath: "files/0", Mode: 0o600, Required: true},
+	}
+	if !reflect.DeepEqual(actions, want) {
+		t.Fatalf("unexpected actions:\n got %#v\nwant %#v", actions, want)
+	}
+}
+
+func TestCacheOutputMountActionsSeedsDirMappingsOnMiss(t *testing.T) {
+	t.Parallel()
+
+	actions, err := cacheOutputMountActions([]vsockexec.CacheOutputMount{
+		{
+			DevicePath: "/dev/vdb",
+			MountPath:  "/run/cleanroom/cache-output-volumes/cacheout0",
+			DirMappings: []vsockexec.CacheOutputDirMount{
+				{GuestPath: "/workspace/public/assets", Subpath: "dirs/0"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("cacheOutputMountActions returned error: %v", err)
+	}
+
+	want := []cacheOutputMountAction{
+		{Kind: cacheOutputActionMkdir, Target: "/run/cleanroom/cache-output-volumes/cacheout0", Mode: 0o755},
+		{Kind: cacheOutputActionMount, Source: "/dev/vdb", Target: "/run/cleanroom/cache-output-volumes/cacheout0", FSType: "ext4"},
+		{Kind: cacheOutputActionMkdir, Source: "/run/cleanroom/cache-output-volumes/cacheout0/dirs/0", VolumeRoot: "/run/cleanroom/cache-output-volumes/cacheout0", VolumeSubpath: "dirs/0", Mode: 0o755},
+		{Kind: cacheOutputActionMkdir, Target: "/workspace/public/assets", Mode: 0o755},
+		{Kind: cacheOutputActionSeedDir, Source: "/workspace/public/assets", Target: "/run/cleanroom/cache-output-volumes/cacheout0/dirs/0", VolumeRoot: "/run/cleanroom/cache-output-volumes/cacheout0", VolumeSubpath: "dirs/0"},
+		{Kind: cacheOutputActionBind, Source: "/run/cleanroom/cache-output-volumes/cacheout0/dirs/0", Target: "/workspace/public/assets", VolumeRoot: "/run/cleanroom/cache-output-volumes/cacheout0", VolumeSubpath: "dirs/0", Flags: unix.MS_BIND},
 	}
 	if !reflect.DeepEqual(actions, want) {
 		t.Fatalf("unexpected actions:\n got %#v\nwant %#v", actions, want)
@@ -71,27 +100,131 @@ func TestCacheOutputMountActionsLeavesUnspecifiedFileModeUnset(t *testing.T) {
 	}
 }
 
-func TestEnsureCacheOutputDirRejectsNonEmptyMountpoint(t *testing.T) {
+func TestSeedCacheOutputDirCopiesExistingOutputDirectory(t *testing.T) {
 	t.Parallel()
 
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "existing"), []byte("image content"), 0o644); err != nil {
-		t.Fatalf("write existing file: %v", err)
+	root := t.TempDir()
+	sourceRoot := filepath.Join(root, "workspace", "public", "assets")
+	targetRoot := filepath.Join(root, "volume", "dirs", "0")
+	if err := os.MkdirAll(filepath.Join(sourceRoot, "images"), 0o755); err != nil {
+		t.Fatalf("create source dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceRoot, ".keep"), []byte(""), 0o644); err != nil {
+		t.Fatalf("write .keep: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceRoot, "images", "logo.txt"), []byte("logo"), 0o640); err != nil {
+		t.Fatalf("write logo: %v", err)
+	}
+	if err := os.MkdirAll(targetRoot, 0o755); err != nil {
+		t.Fatalf("create target dir: %v", err)
 	}
 
-	err := ensureCacheOutputDir(dir, 0o755, false, true)
-	if err == nil {
-		t.Fatal("expected non-empty directory to fail")
+	if err := seedCacheOutputDir(sourceRoot, targetRoot); err != nil {
+		t.Fatalf("seedCacheOutputDir returned error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "not empty") {
+	if data, err := os.ReadFile(filepath.Join(targetRoot, ".keep")); err != nil {
+		t.Fatalf("read seeded .keep: %v", err)
+	} else if got, want := string(data), ""; got != want {
+		t.Fatalf("unexpected .keep content: got %q want %q", got, want)
+	}
+	if data, err := os.ReadFile(filepath.Join(targetRoot, "images", "logo.txt")); err != nil {
+		t.Fatalf("read seeded logo: %v", err)
+	} else if got, want := string(data), "logo"; got != want {
+		t.Fatalf("unexpected logo content: got %q want %q", got, want)
+	}
+	if info, err := os.Stat(filepath.Join(targetRoot, "images", "logo.txt")); err != nil {
+		t.Fatalf("stat seeded logo: %v", err)
+	} else if got, want := info.Mode().Perm(), os.FileMode(0o640); got != want {
+		t.Fatalf("unexpected seeded logo mode: got %v want %v", got, want)
+	}
+}
+
+func TestSeedCacheOutputDirSkipsMissingSource(t *testing.T) {
+	t.Parallel()
+
+	targetRoot := filepath.Join(t.TempDir(), "volume", "dirs", "0")
+	if err := os.MkdirAll(targetRoot, 0o755); err != nil {
+		t.Fatalf("create target dir: %v", err)
+	}
+	if err := seedCacheOutputDir(filepath.Join(t.TempDir(), "missing"), targetRoot); err != nil {
+		t.Fatalf("seedCacheOutputDir returned error: %v", err)
+	}
+	if entries, err := os.ReadDir(targetRoot); err != nil {
+		t.Fatalf("read target dir: %v", err)
+	} else if len(entries) != 0 {
+		t.Fatalf("expected empty target after missing seed source, got %d entries", len(entries))
+	}
+}
+
+func TestSeedCacheOutputDirSkipsNonEmptyTarget(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	sourceRoot := filepath.Join(root, "workspace", "public", "assets")
+	targetRoot := filepath.Join(root, "volume", "dirs", "0")
+	if err := os.MkdirAll(sourceRoot, 0o755); err != nil {
+		t.Fatalf("create source dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceRoot, ".keep"), []byte("seed"), 0o644); err != nil {
+		t.Fatalf("write source seed: %v", err)
+	}
+	if err := os.MkdirAll(targetRoot, 0o755); err != nil {
+		t.Fatalf("create target dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(targetRoot, "existing"), []byte("cached"), 0o644); err != nil {
+		t.Fatalf("write existing target: %v", err)
+	}
+
+	if err := seedCacheOutputDir(sourceRoot, targetRoot); err != nil {
+		t.Fatalf("seedCacheOutputDir returned error: %v", err)
+	}
+	if data, err := os.ReadFile(filepath.Join(targetRoot, "existing")); err != nil {
+		t.Fatalf("read existing target: %v", err)
+	} else if got, want := string(data), "cached"; got != want {
+		t.Fatalf("unexpected existing target content: got %q want %q", got, want)
+	}
+	if _, err := os.Stat(filepath.Join(targetRoot, ".keep")); !os.IsNotExist(err) {
+		t.Fatalf("expected source seed not to be merged into non-empty target, got err=%v", err)
+	}
+}
+
+func TestSeedCacheOutputDirRejectsSymlinkInsideSource(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	sourceRoot := filepath.Join(root, "workspace", "public", "assets")
+	targetRoot := filepath.Join(root, "volume", "dirs", "0")
+	if err := os.MkdirAll(sourceRoot, 0o755); err != nil {
+		t.Fatalf("create source dir: %v", err)
+	}
+	if err := os.MkdirAll(targetRoot, 0o755); err != nil {
+		t.Fatalf("create target dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceRoot, "copied-before-error"), []byte("partial"), 0o644); err != nil {
+		t.Fatalf("write partial source: %v", err)
+	}
+	if err := os.Symlink("/etc/passwd", filepath.Join(sourceRoot, "passwd")); err != nil {
+		t.Fatalf("create symlink: %v", err)
+	}
+
+	err := seedCacheOutputDir(sourceRoot, targetRoot)
+	if err == nil {
+		t.Fatal("expected symlink seed source to fail")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if entries, readErr := os.ReadDir(targetRoot); readErr != nil {
+		t.Fatalf("read target dir: %v", readErr)
+	} else if len(entries) != 0 {
+		t.Fatalf("expected failed seed cleanup to leave target empty, got %d entries", len(entries))
 	}
 }
 
 func TestEnsureCacheOutputDirRequiresExistingHitSource(t *testing.T) {
 	t.Parallel()
 
-	err := ensureCacheOutputDir(filepath.Join(t.TempDir(), "missing"), 0o755, true, false)
+	err := ensureCacheOutputDir(filepath.Join(t.TempDir(), "missing"), 0o755, true)
 	if err == nil {
 		t.Fatal("expected missing hit source directory to fail")
 	}

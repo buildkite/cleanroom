@@ -188,6 +188,44 @@ detail. A repository at `/workspace` with `outputs.dirs: [node_modules]` and a
 repository at `/src` with the same relative declaration produce different
 normalized guest output paths, output records, and cache identities.
 
+### Output Directory Seeds
+
+Declared output directories may already exist in the checkout. This supports
+normal repository conventions such as keeping `public/assets/.keep` in Git while
+declaring `public/assets` as a generated output.
+
+```yaml
+sandbox:
+  dependencies:
+    - name: frontend-assets
+      command: npm run build
+      inputs:
+        files:
+          - package.json
+          - package-lock.json
+      outputs:
+        dirs:
+          - public/assets
+```
+
+On a block-volume miss, Cleanroom copies the existing output directory contents
+from the checkout into the empty managed output volume before mounting that
+volume at the output path. The block then sees the same seed files it would have
+seen without caching, and any writes land in the managed output volume.
+
+On a hit, Cleanroom treats the cached output volume as authoritative and mounts
+it over the checkout path without merging the current checkout contents into the
+volume. Seed files do not need to be listed separately in `inputs.files` just so
+they can be copied into the output volume. The cache key already includes
+repository source identity and changeset identity, so changing a checked-in seed
+file produces a different block cache identity rather than mutating an existing
+hit.
+
+Seeding is conservative: the declared output path must be a directory when it
+exists, and seed contents must be regular files or directories. Symlinks,
+devices, sockets, and other special files fail instead of being copied into the
+managed output volume.
+
 ### Volatile Writes
 
 `volatile.paths` are explicit unpersisted write allowances. They are for logs,
@@ -260,21 +298,24 @@ until the input manifest format explicitly supports them.
 On a portable block miss, Cleanroom:
 
 1. Starts from the normal sandbox rootfs and normal repository checkout.
-2. Creates a per-block overlay root with the current rootfs as lowerdir.
-3. Mounts scratch paths such as `/tmp`, `/var/tmp`, and `/run` as scratch or
+2. Seeds any pre-existing declared output directories into their empty managed
+   output volumes.
+3. Mounts managed output volumes at declared `outputs.dirs` paths and prepares
+   declared `outputs.files` for post-command capture.
+4. Creates a per-block overlay root with the current rootfs as lowerdir.
+5. Mounts scratch paths such as `/tmp`, `/var/tmp`, and `/run` as scratch or
    filters them from the escaped-write report.
-4. Runs the command inside the overlay view with the normal block working
+6. Runs the command inside the overlay view with the normal block working
    directory, usually `/workspace`.
-5. Scans the overlay upperdir.
-6. Treats declared output writes, volatile writes, and scratch writes as allowed.
-7. Treats every other persistent write as an escaped write.
-8. Copies declared `outputs.dirs` and `outputs.files` from the merged overlay
-   view into a temporary managed output store only after publishability checks
-   pass.
-9. Publishes a portable cache entry only after output metadata is durably
-   persisted.
-10. Materializes the declared outputs back into the real sandbox root for later
-    blocks, services, and user commands.
+7. Scans the overlay upperdir.
+8. Treats declared output writes, volatile writes, and scratch writes as allowed.
+9. Treats every other persistent write as an escaped write.
+10. Captures declared file outputs into their managed output volume only after
+    the command succeeds.
+11. Publishes a portable cache entry only after output metadata is durably
+    persisted.
+12. Leaves declared output volumes mounted for later blocks, services, and user
+    commands.
 
 If escaped writes are found, Cleanroom skips portable publication, discards the
 overlay result, and reruns the block against the real rootfs through the exact
@@ -290,25 +331,17 @@ recorded so leaked storage is not silent.
 ### Cache Hit
 
 On a portable block hit, Cleanroom prepares the repository checkout normally,
-then restores declared outputs at their normalized guest paths before skipping
-the command.
+then mounts declared output volumes at their normalized guest paths before
+skipping the command.
 
 Directory outputs are restored as whole directory trees. File outputs are
 restored as regular files without hiding sibling files in their parent
 directory.
 
-### Baseline Output Collisions
-
-The first implementation should only publish and restore portable directory
-outputs when the output path is absent or an empty directory in the baseline
-checkout. It should only publish and restore portable file outputs when the file
-path is absent in the baseline checkout.
-
-If the committed tree already contains a non-empty output directory or an output
-file at the declared path, Cleanroom should skip portable volume publication for
-that block and use exact full-rootfs caching. Later work can support baseline
-merges by including the baseline output digest in the key, but that is not part
-of the reset slice.
+Directory output hits may mount over existing checkout directories. Cleanroom
+does not merge those checkout contents into the cached volume on hit; the
+cached volume is already tied to the repository and changeset identity that
+created it.
 
 ## Determinism Model
 
@@ -595,14 +628,16 @@ Minimum coverage:
 - declared file outputs are promoted and restored without hiding sibling files
 - escaped persistent writes skip portable publication and trigger exact fallback
 - volatile writes do not skip portable publication and are not restored on hit
-- baseline output collisions skip portable publication
+- pre-existing declared output directories are seeded into empty output volumes
+  on miss and treated as cache-owned volumes on hit
 - temporary output stores are destroyed on command failure, escaped writes,
   undeclared reads, metadata failure, cancellation, and exact fallback
 - cache hits restore output dirs and files before later dependency, service, and
   execution phases
 - source-only commits reuse dependency and service outputs without rerunning
   block commands
-- direct mount optimization is used only for absent or empty output dirs
+- direct mount optimization seeds pre-existing output directories before
+  mounting on miss
 - read audit, when available, rejects undeclared workspace reads
 
 ## Key Learnings From Pressure-Testing
@@ -614,8 +649,8 @@ Minimum coverage:
   commands run normally while still separating declared outputs from escaped
   writes.
 - Direct output-volume mounts are valuable for performance, but only as an
-  optimization. Mounting too early can hide committed files and change command
-  behavior.
+  optimization. Mounting too early or mounting without seeding can hide
+  committed files and change command behavior.
 - Volatile paths are necessary for harmless write noise, but they must stay
   explicit and narrow so they do not become a generic ignore escape hatch.
 - Declared inputs are a correctness contract until read auditing exists. Read
@@ -645,7 +680,6 @@ Minimum coverage:
 
 ## Deferred Work
 
-- Baseline merge support for output paths that already contain committed files.
 - Optional inputs and optional outputs.
 - Per-path output volumes for partial reuse.
 - Explicit service `depends_on`.

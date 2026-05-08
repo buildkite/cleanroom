@@ -23,6 +23,7 @@ const (
 	cacheOutputActionMkdir       cacheOutputMountActionKind = "mkdir"
 	cacheOutputActionMount       cacheOutputMountActionKind = "mount"
 	cacheOutputActionBind        cacheOutputMountActionKind = "bind"
+	cacheOutputActionSeedDir     cacheOutputMountActionKind = "seed-dir"
 	cacheOutputActionRestoreFile cacheOutputMountActionKind = "restore-file"
 )
 
@@ -37,7 +38,6 @@ type cacheOutputMountAction struct {
 	Data            string
 	Mode            fs.FileMode
 	RequireExisting bool
-	RequireEmpty    bool
 	Required        bool
 }
 
@@ -145,7 +145,14 @@ func cacheOutputMountActions(mounts []vsockexec.CacheOutputMount) ([]cacheOutput
 			}
 			actions = append(actions,
 				cacheOutputMountAction{Kind: cacheOutputActionMkdir, Source: sourcePath, VolumeRoot: mountPath, VolumeSubpath: cleanSubpath, Mode: 0o755, RequireExisting: mount.SourcePresent},
-				cacheOutputMountAction{Kind: cacheOutputActionMkdir, Target: guestPath, Mode: 0o755, RequireEmpty: true},
+				cacheOutputMountAction{Kind: cacheOutputActionMkdir, Target: guestPath, Mode: 0o755},
+			)
+			if !mount.SourcePresent {
+				actions = append(actions,
+					cacheOutputMountAction{Kind: cacheOutputActionSeedDir, Source: guestPath, Target: sourcePath, VolumeRoot: mountPath, VolumeSubpath: cleanSubpath},
+				)
+			}
+			actions = append(actions,
 				cacheOutputMountAction{Kind: cacheOutputActionBind, Source: sourcePath, Target: guestPath, VolumeRoot: mountPath, VolumeSubpath: cleanSubpath, Flags: unix.MS_BIND},
 			)
 		}
@@ -215,7 +222,7 @@ func executeCacheOutputMountAction(action cacheOutputMountAction) (bool, error) 
 			_, err := ensureCacheOutputVolumeDir(action.VolumeRoot, action.VolumeSubpath, action.Mode, action.RequireExisting)
 			return false, err
 		}
-		return false, ensureCacheOutputDir(action.Target, action.Mode, action.RequireExisting, action.RequireEmpty)
+		return false, ensureCacheOutputDir(action.Target, action.Mode, action.RequireExisting)
 	case cacheOutputActionMount:
 		if err := unix.Mount(action.Source, action.Target, action.FSType, action.Flags, action.Data); err != nil && err != unix.EBUSY {
 			return false, fmt.Errorf("mount cache output volume %s at %s: %w", action.Source, action.Target, err)
@@ -238,6 +245,11 @@ func executeCacheOutputMountAction(action cacheOutputMountAction) (bool, error) 
 			return false, nil
 		}
 		return true, nil
+	case cacheOutputActionSeedDir:
+		if err := seedCacheOutputDir(action.Source, action.Target); err != nil {
+			return false, err
+		}
+		return false, nil
 	case cacheOutputActionRestoreFile:
 		if action.VolumeRoot != "" {
 			source, sourcePath, err := openCacheOutputVolumeFile(action.VolumeRoot, action.VolumeSubpath, action.Required)
@@ -396,7 +408,7 @@ func requireCacheOutputDirNoSymlink(path string) error {
 	return nil
 }
 
-func ensureCacheOutputDir(path string, mode fs.FileMode, requireExisting, requireEmpty bool) error {
+func ensureCacheOutputDir(path string, mode fs.FileMode, requireExisting bool) error {
 	if mode == 0 {
 		mode = 0o755
 	}
@@ -407,15 +419,6 @@ func ensureCacheOutputDir(path string, mode fs.FileMode, requireExisting, requir
 		}
 		if !info.IsDir() {
 			return fmt.Errorf("cache output path %s is not a directory", path)
-		}
-		if requireEmpty {
-			empty, err := isEmptyCacheOutputDir(path)
-			if err != nil {
-				return err
-			}
-			if !empty {
-				return fmt.Errorf("cache output directory %s is not empty", path)
-			}
 		}
 		return nil
 	}
@@ -437,6 +440,107 @@ func isEmptyCacheOutputDir(path string) (bool, error) {
 		return false, fmt.Errorf("read cache output directory %s: %w", path, err)
 	}
 	return len(entries) == 0, nil
+}
+
+func removeCacheOutputDirContents(path string) error {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return fmt.Errorf("read cache output directory %s: %w", path, err)
+	}
+	var errs []error
+	for _, entry := range entries {
+		entryPath := filepath.Join(path, entry.Name())
+		if err := os.RemoveAll(entryPath); err != nil {
+			errs = append(errs, fmt.Errorf("remove cache output path %s: %w", entryPath, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func seedCacheOutputDir(sourceRoot, targetRoot string) error {
+	sourceRoot, err := cleanAbsoluteCacheOutputPath("seed source", sourceRoot)
+	if err != nil {
+		return err
+	}
+	targetRoot, err = cleanAbsoluteCacheOutputPath("seed target", targetRoot)
+	if err != nil {
+		return err
+	}
+	if err := requireCacheOutputDirNoSymlink(targetRoot); err != nil {
+		return err
+	}
+	empty, err := isEmptyCacheOutputDir(targetRoot)
+	if err != nil {
+		return err
+	}
+	if !empty {
+		return nil
+	}
+
+	sourceInfo, err := os.Lstat(sourceRoot)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("stat cache output seed source %s: %w", sourceRoot, err)
+	}
+	if sourceInfo.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("cache output seed source %s is a symlink", sourceRoot)
+	}
+	if !sourceInfo.IsDir() {
+		return fmt.Errorf("cache output seed source %s is not a directory", sourceRoot)
+	}
+
+	err = filepath.WalkDir(sourceRoot, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return fmt.Errorf("walk cache output seed source %s: %w", path, err)
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("cache output seed source %s is a symlink", path)
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return fmt.Errorf("stat cache output seed source %s: %w", path, err)
+		}
+
+		rel, err := filepath.Rel(sourceRoot, path)
+		if err != nil {
+			return fmt.Errorf("resolve cache output seed path %s: %w", path, err)
+		}
+		if rel == "." {
+			return nil
+		}
+		targetPath := filepath.Join(targetRoot, rel)
+		if info.IsDir() {
+			if err := os.Mkdir(targetPath, info.Mode().Perm()); err != nil && !errors.Is(err, os.ErrExist) {
+				return fmt.Errorf("create cache output seed directory %s: %w", targetPath, err)
+			}
+			return nil
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("cache output seed source %s is not a regular file or directory", path)
+		}
+		source, err := openCacheOutputCaptureSource(path)
+		if err != nil {
+			return err
+		}
+		copyErr := copyCacheOutputFile(source, path, targetPath, info.Mode().Perm())
+		closeErr := source.Close()
+		if copyErr != nil {
+			return copyErr
+		}
+		if closeErr != nil {
+			return fmt.Errorf("close cache output seed source %s: %w", path, closeErr)
+		}
+		return nil
+	})
+	if err != nil {
+		if cleanupErr := removeCacheOutputDirContents(targetRoot); cleanupErr != nil {
+			return fmt.Errorf("%w; cleanup cache output seed target %s: %v", err, targetRoot, cleanupErr)
+		}
+		return err
+	}
+	return nil
 }
 
 func restoreCacheOutputFile(sourcePath, targetPath string, mode fs.FileMode, required bool) error {
@@ -468,7 +572,7 @@ func restoreCacheOutputFileFrom(source *os.File, sourcePath, targetPath string, 
 	}
 
 	targetDir := filepath.Dir(targetPath)
-	if err := ensureCacheOutputDir(targetDir, 0o755, true, false); err != nil {
+	if err := ensureCacheOutputDir(targetDir, 0o755, true); err != nil {
 		return err
 	}
 	if targetInfo, err := os.Lstat(targetPath); err == nil {
@@ -626,7 +730,7 @@ func copyCacheOutputFileWithParentMode(source *os.File, sourcePath, targetPath s
 	}
 
 	targetDir := filepath.Dir(targetPath)
-	if err := ensureCacheOutputDir(targetDir, 0o755, requireParent, false); err != nil {
+	if err := ensureCacheOutputDir(targetDir, 0o755, requireParent); err != nil {
 		return err
 	}
 	tmp, err := os.CreateTemp(targetDir, "."+filepath.Base(targetPath)+".cleanroom-cache-capture-*")
