@@ -383,6 +383,9 @@ func Compile(raw rawPolicy) (*CompiledPolicy, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := validateRepositoryScopedBlocks(raw, repository); err != nil {
+		return nil, err
+	}
 
 	docker := normalizeDocker(raw.Sandbox.Docker)
 	dependencies, err := normalizeDependencies(raw.Sandbox.Dependencies, repository.Path)
@@ -832,6 +835,23 @@ func normalizeRepositoryConfig(raw *rawRepository) (RepositoryConfig, error) {
 		Path:       repositoryPath,
 		Submodules: raw.Submodules,
 	}, nil
+}
+
+func validateRepositoryScopedBlocks(raw rawPolicy, repository RepositoryConfig) error {
+	if repository.Enabled() {
+		return nil
+	}
+	if len(raw.Sandbox.Dependencies.Blocks) > 0 {
+		field := raw.Sandbox.Dependencies.blocksField
+		if field == "" {
+			field = "sandbox.dependencies"
+		}
+		return fmt.Errorf("%s cannot be declared when repository bootstrap is disabled", field)
+	}
+	if len(raw.Sandbox.Services) > 0 {
+		return errors.New("sandbox.services cannot be declared when repository bootstrap is disabled")
+	}
+	return nil
 }
 
 func readPolicy(path string) (rawPolicy, error) {

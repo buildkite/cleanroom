@@ -262,19 +262,19 @@ type stubLoader struct {
 }
 
 type stubRepositoryMirrorStore struct {
-	remoteURL                  string
-	commitSHA                  string
-	commitSHAs                 []string
-	withRepositorySHAs         []string
-	calls                      int
-	err                        error
-	ensureContainsFn           func(remoteURL, commitSHA string) error
-	mirrorPath                 string
-	mirrorPathCalls            int
-	mirrorPathErr              error
-	ensureMirrorCalls          int
-	ensureMirrorErr            error
-	ensureSubmoduleMirrorFunc  func(ctx context.Context, submoduleRemoteURL, gitlinkSHA string) (string, error)
+	remoteURL                 string
+	commitSHA                 string
+	commitSHAs                []string
+	withRepositorySHAs        []string
+	calls                     int
+	err                       error
+	ensureContainsFn          func(remoteURL, commitSHA string) error
+	mirrorPath                string
+	mirrorPathCalls           int
+	mirrorPathErr             error
+	ensureMirrorCalls         int
+	ensureMirrorErr           error
+	ensureSubmoduleMirrorFunc func(ctx context.Context, submoduleRemoteURL, gitlinkSHA string) (string, error)
 }
 
 type stubClock struct {
@@ -6360,6 +6360,53 @@ func TestCreateSandboxRejectsMutableRepositoryCommitRef(t *testing.T) {
 	}
 	if got := adapter.provisionCalls; got != 0 {
 		t.Fatalf("expected no provision call on invalid repository commit ref, got %d", got)
+	}
+}
+
+func TestCreateSandboxRejectsDependencyBlocksWithoutRepositoryCheckout(t *testing.T) {
+	adapter := &stubAdapter{}
+	svc := newTestService(adapter)
+
+	_, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy: testRepositoryDependencyPolicy(),
+	})
+	if err == nil {
+		t.Fatal("expected dependency blocks to require repository checkout")
+	}
+	if !strings.Contains(err.Error(), "sandbox.dependencies") || !strings.Contains(err.Error(), "repository checkout") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := adapter.provisionCalls; got != 0 {
+		t.Fatalf("expected no provision call without repository checkout, got %d", got)
+	}
+}
+
+func TestCreateSandboxRejectsServiceBlocksWithoutRepositoryCheckout(t *testing.T) {
+	adapter := &stubAdapter{}
+	svc := newTestService(adapter)
+
+	policyProto := testRepositoryPolicy()
+	policyProto.Services = &cleanroomv1.PolicyServices{
+		Blocks: []*cleanroomv1.PolicyBlock{testPolicyBlock(
+			"postgres",
+			[]string{"docker", "compose", "up", "-d", "postgres"},
+			[]string{"docker-compose.yml"},
+			[]string{"/var/lib/cleanroom/services/postgres"},
+			nil,
+		)},
+	}
+
+	_, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy: policyProto,
+	})
+	if err == nil {
+		t.Fatal("expected service blocks to require repository checkout")
+	}
+	if !strings.Contains(err.Error(), "sandbox.services") || !strings.Contains(err.Error(), "repository checkout") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := adapter.provisionCalls; got != 0 {
+		t.Fatalf("expected no provision call without repository checkout, got %d", got)
 	}
 }
 
