@@ -2,6 +2,7 @@ package controlservice
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -83,6 +84,93 @@ func TestServicePassesNetworkStagesToBootstrapAndExecution(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("unexpected network stages: got %v want %v", got, want)
 		}
+	}
+}
+
+func TestInternalWorkspaceCopyInRunsAsWorkspaceStage(t *testing.T) {
+	t.Parallel()
+
+	var (
+		mu       sync.Mutex
+		requests []backend.ExecutionRequest
+	)
+	adapter := &stubAdapter{
+		runStreamFn: func(_ context.Context, req backend.ExecutionRequest, _ backend.OutputStream) (*backend.ExecutionResult, error) {
+			mu.Lock()
+			requests = append(requests, req)
+			mu.Unlock()
+			return &backend.ExecutionResult{
+				ExecutionID: req.ExecutionID,
+				ExitCode:    0,
+				LaunchedVM:  true,
+				Message:     "ok",
+			}, nil
+		},
+	}
+	mirrors, repositoryCheckout := testRepositoryMirror(t, map[string]string{
+		"public/assets/app.js": "console.log('asset')\n",
+	})
+	svc := newTestService(adapter)
+	svc.RepositoryStore = mirrors
+
+	createResp, err := svc.CreateSandbox(context.Background(), &cleanroomv1.CreateSandboxRequest{
+		Policy:             testRepositoryPolicy(),
+		RepositoryCheckout: repositoryCheckout,
+	})
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	sandboxID := createResp.GetSandbox().GetSandboxId()
+
+	copyResp, err := svc.CreateInternalWorkspaceCopyInExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+		SandboxId:          sandboxID,
+		Command:            []string{"sh", "-lc", "git -C /workspace clean -ffd"},
+		RepositoryCheckout: repositoryCheckout,
+		Options: &cleanroomv1.ExecutionOptions{
+			SkipRunBefore: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateInternalWorkspaceCopyInExecution returned error: %v", err)
+	}
+	if _, err := svc.WaitExecution(context.Background(), sandboxID, copyResp.GetExecution().GetExecutionId()); err != nil {
+		t.Fatalf("WaitExecution returned error: %v", err)
+	}
+
+	mu.Lock()
+	got := append([]backend.ExecutionRequest(nil), requests...)
+	mu.Unlock()
+	if len(got) < 2 {
+		t.Fatalf("expected repository bootstrap and workspace copy-in execution, got %d request(s)", len(got))
+	}
+	copyInReq := got[len(got)-1]
+	if copyInReq.NetworkStage != policy.NetworkStageWorkspace {
+		t.Fatalf("workspace copy-in should run as workspace stage to clear cache output mounts, got %q", copyInReq.NetworkStage)
+	}
+	if !strings.Contains(strings.Join(copyInReq.Command, "\n"), "git -C /workspace clean -ffd") {
+		t.Fatalf("expected copy-in refresh command, got %#v", copyInReq.Command)
+	}
+
+	diffResp, err := svc.CreateInternalWorkspaceCopyInExecution(context.Background(), &cleanroomv1.CreateExecutionRequest{
+		SandboxId: sandboxID,
+		Command:   []string{"sh", "-lc", "git -C /workspace diff --name-only"},
+		Options: &cleanroomv1.ExecutionOptions{
+			SkipRunBefore: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateInternalWorkspaceCopyInExecution for diff returned error: %v", err)
+	}
+	if _, err := svc.WaitExecution(context.Background(), sandboxID, diffResp.GetExecution().GetExecutionId()); err != nil {
+		t.Fatalf("WaitExecution for diff returned error: %v", err)
+	}
+
+	mu.Lock()
+	got = append([]backend.ExecutionRequest(nil), requests...)
+	mu.Unlock()
+	diffReq := got[len(got)-1]
+	if diffReq.NetworkStage != policy.NetworkStageExecution {
+		t.Fatalf("workspace operation without repository refresh should keep execution stage, got %q", diffReq.NetworkStage)
 	}
 }
 
